@@ -71,6 +71,16 @@ func (g *weightGen) halves(n int) []uint16 {
 	return h
 }
 
+// scales returns n fp16 quantization scales spread around v. They must not all be equal: Core ML
+// on the GPU folds a constant scale tensor to a scalar and then fails an MPSGraph shape assertion.
+func (g *weightGen) scales(n int, v float32) []uint16 {
+	h := make([]uint16, n)
+	for i := range h {
+		h[i] = mlpackage.Float16Bits(v * (0.75 + 0.5*g.rng.Float32()))
+	}
+	return h
+}
+
 func constHalves(n int, v float32) []uint16 {
 	h := make([]uint16, n)
 	for i := range h {
@@ -99,11 +109,11 @@ func WriteMLPackage(dir, format string, layers int, seed uint64) error {
 		case "fp16":
 			v, err = b.F16("w", []int{rows, cols}, g.halves(rows*cols))
 		case "int8":
-			v, err = b.Int8Scaled("w", []int{rows, cols}, []int{1, cols}, g.bytes(rows*cols), constHalves(rows, 0.04/127))
+			v, err = b.Int8Scaled("w", []int{rows, cols}, []int{1, cols}, g.bytes(rows*cols), g.scales(rows, 0.04/127))
 		case "lut4":
 			v, err = b.LUT4("w", []int{rows, cols}, []int{16, cols}, g.bytes(rows*cols/2), g.halves(rows/16*16))
 		case "int4":
-			v, err = b.Int4Scaled("w", []int{rows, cols}, []int{1, 32}, g.bytes(rows*cols/2), constHalves(rows*cols/32, 0.04/7))
+			v, err = b.Int4Scaled("w", []int{rows, cols}, []int{1, 32}, g.bytes(rows*cols/2), g.scales(rows*cols/32, 0.04/7))
 		default:
 			err = fmt.Errorf("unknown Core ML format %q", format)
 		}
@@ -193,7 +203,7 @@ func BuildIR(format string, layers int, seed uint64) (xmlData, bin []byte, err e
 			return b.Const("f16", ws, make([]byte, 2*rows*cols))
 		}
 		c := b.Op("Convert", "opset1", []string{"destination_type", "f16"}, "f16", ws, q)
-		s := b.Const("f16", []int{rows, 1}, f16bytes(constHalves(rows, scale)))
+		s := b.Const("f16", []int{rows, 1}, f16bytes(g.scales(rows, scale)))
 		return b.Op("Multiply", "opset1", []string{"auto_broadcast", "numpy"}, "f16", ws, c, s)
 	}
 	axes := b.Const("i64", []int{1}, i64(-1))

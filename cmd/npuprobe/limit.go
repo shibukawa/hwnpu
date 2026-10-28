@@ -12,7 +12,7 @@ var ladder = []int{2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256}
 // the largest layer count on the NPU and the smallest not on it (0 when not found).
 func (p *prober) sweep(format string, maxBytes int64, rows *[]result) (pass, fail int) {
 	try := func(layers int) bool {
-		r := p.try(format, layers, "npu", true)
+		r := p.isolated(childSpec{Kind: "try", Format: format, Layers: layers, Units: "npu", Quick: true})[0]
 		logResult(r)
 		*rows = append(*rows, r)
 		return r.OnNPU
@@ -64,13 +64,11 @@ func (p *prober) several(format string, layers, n int) []result {
 			models = append(models, l)
 		}
 		r.OnNPU = r.Error == "" && r.Verified && r.NPUOps > 0 && r.OtherOps == 0
-		logResult(r)
 		rows = append(rows, r)
 		if l == nil {
 			break
 		}
 	}
-	fmt.Printf("  with all %d loaded:\n", len(models))
 	for i, l := range models {
 		var r result
 		if err := p.time(l, &r, false); err != nil {
@@ -78,7 +76,6 @@ func (p *prober) several(format string, layers, n int) []result {
 			continue
 		}
 		rows[i].MsAllLoaded, rows[i].CPUAllLoaded = r.MsPerCall, r.CPUUse
-		fmt.Printf("  model %d: %8.1f ms/call, CPU use %.2f\n", i+1, r.MsPerCall, r.CPUUse)
 	}
 	return rows
 }
@@ -115,7 +112,13 @@ func (p *prober) limits(rep *report, formats []string, several bool, save func()
 		}
 		fmt.Printf("\nlimit, several %s models of %d layers (%.2f GiB each) at once:\n", b.format, b.pass, probe.GiB(each))
 		rep.SeveralOf = fmt.Sprintf("%s, %d layers", b.format, b.pass)
-		rep.Several = p.several(b.format, b.pass, n)
+		rep.Several = p.isolated(childSpec{Kind: "several", Format: b.format, Layers: b.pass, N: n})
+		for _, r := range rep.Several {
+			logResult(r)
+			if r.MsAllLoaded > 0 {
+				fmt.Printf("    with all %d loaded: %8.1f ms/call, CPU use %.2f\n", len(rep.Several), r.MsAllLoaded, r.CPUAllLoaded)
+			}
+		}
 		return
 	}
 	rep.Notes = append(rep.Notes, "several models: skipped, no format left the NPU below -max-gb")

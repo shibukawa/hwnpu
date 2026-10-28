@@ -19,7 +19,7 @@ func (p *prober) bench(rep *report, formats []string, layers []int, baselines []
 				if p.coreml && u == "npu" && f == "int4" {
 					continue // Core ML never places blockwise int4 on the Neural Engine
 				}
-				r := p.try(f, n, u, false)
+				r := p.isolated(childSpec{Kind: "try", Format: f, Layers: n, Units: u})[0]
 				logResult(r)
 				rep.Bench = append(rep.Bench, r)
 			}

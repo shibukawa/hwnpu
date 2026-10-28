@@ -111,7 +111,13 @@ func cell(v float64, f string) string {
 	return fmt.Sprintf(f, v)
 }
 
-func errCell(r result) string { return strings.ReplaceAll(short(r.Error, 200), "|", "/") }
+func errCell(r result) string {
+	e := r.Error
+	if e == "" && r.PlanError != "" {
+		e = "placement not verified: " + r.PlanError
+	}
+	return strings.ReplaceAll(short(e, 200), "|", "/")
+}
 
 func formatsOf(rows []result) []string {
 	var fs []string

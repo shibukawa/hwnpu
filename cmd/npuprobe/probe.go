@@ -32,6 +32,7 @@ type result struct {
 	NPUOps      int     `json:"npu_ops"`
 	OtherOps    int     `json:"other_ops"`
 	OtherWhere  string  `json:"other_where,omitempty"`
+	PlanError   string  `json:"plan_error,omitempty"` // why the placement could not be verified
 	Error       string  `json:"error,omitempty"`
 	Calls       int     `json:"calls,omitempty"`
 	MsPerCall   float64 `json:"ms_per_call,omitempty"`
@@ -48,6 +49,8 @@ func (r result) placement() string {
 	switch {
 	case r.Error != "" && r.NPUOps == 0 && r.OtherOps == 0:
 		return "error"
+	case r.NPUOps == 0 && r.OtherOps == 0:
+		return "unverified"
 	case r.OtherOps == 0 && r.NPUOps > 0:
 		return "NPU"
 	case r.NPUOps == 0:
@@ -100,8 +103,7 @@ func (l *loaded) close() {
 // what it learned; the returned model is nil when it could not be compiled.
 func (p *prober) load(format string, layers int, units string, seed uint64, r *result) *loaded {
 	r.Format, r.Layers, r.Units = format, layers, units
-	r.Params = int64(layers) * probe.LayerParams
-	r.WeightBytes = probe.WeightBytes(format, layers)
+	r.Params, r.WeightBytes = paramsAndBytes(format, layers)
 	l := &loaded{}
 	var src hwnpu.GraphSource
 	t := time.Now()
@@ -183,8 +185,8 @@ func fillPlacement(r *result, rep hwnpu.PlacementReport) {
 		parts = append(parts, fmt.Sprintf("%s %d", d, count[d]))
 	}
 	r.OtherWhere = strings.Join(parts, ", ")
-	if !rep.Verified && rep.Reason != "" {
-		r.OtherWhere = strings.TrimPrefix(r.OtherWhere+", ", ", ") + "unverified: " + rep.Reason
+	if !rep.Verified {
+		r.PlanError = rep.Reason
 	}
 }
 
@@ -256,6 +258,10 @@ func (p *prober) time(l *loaded, r *result, quick bool) error {
 		}
 	}
 	return nil
+}
+
+func paramsAndBytes(format string, layers int) (int64, int64) {
+	return int64(layers) * probe.LayerParams, probe.WeightBytes(format, layers)
 }
 
 // try loads, times and closes one model.

@@ -66,6 +66,13 @@ type report struct {
 }
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == childMode {
+		if err := runChild(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, "npuprobe:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	mode := "all"
 	args := os.Args[1:]
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {

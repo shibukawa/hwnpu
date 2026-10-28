@@ -119,10 +119,10 @@ macOS では `go run ./cmd/powerbench` で、Core ML モデルの呼び出し 1 
 `go run ./cmd/npuprobe` は、生成したモデルで NPU を測ります。LLM が 1 トークンを生成するのと同じ形のモデルを Go で作り、まず 0.5B と 1B の重みで形式ごと (Apple は fp16、int8、lut4、int4、Intel は fp16、int8、int4) の速さを測ります (`bench`)。次にモデルを大きくしながら NPU から外れる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込んで、上限がモデルごとか合計かを確かめます (`limit`)。Python もモデルのファイルも root も要らず、クローンしなくても次の 1 行で動きます。結果は `npuprobe-<機種>-<日時>.md` に書き出します。
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/npuprobe@llm-convert
+go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
 ```
 
-`bench` か `limit` を付けると片方だけを行います。Apple で 1 トークンあたりのエネルギーも測るには `go run ./cmd/powerbench -decode 8,16 -gpu` を使います (sudo が要ります)。
+`bench` か `limit` を付けると片方だけを行います。Apple で 1 トークンあたりのエネルギーも測るには `go run ./cmd/powerbench -decode 8,16 -gpu` を使います (sudo が要ります)。機種ごとの手順、結果の読み方、これまでの結果は [PROBE.ja.md](PROBE.ja.md) にまとめてあります。
 
 Go の入っていない Windows 機で試すときは、Go のある機械でビルドした実行ファイルを持っていきます。
 

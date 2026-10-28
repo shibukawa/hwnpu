@@ -74,10 +74,10 @@ It asks for the sudo password once and compares the Neural Engine with the CPU (
 To measure the Neural Engine with generated models, run the probe. It builds LLM decode shaped models in Go and measures 0.5 B and 1 B weights in fp16, int8, lut4 and int4 on the Neural Engine, the CPU and the GPU (`bench`). Then it grows the model in each format until it leaves the Neural Engine, bisects to the boundary, and loads several models just under it at once to tell a limit per model from a limit on the total (`limit`). It needs no Python, no model files and no root, takes about 40 minutes, needs free disk space of about twice the largest model (a quarter of the RAM by default, `-max-gb` to change), and writes `npuprobe-<machine>-<time>.md`. It runs without cloning:
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/npuprobe@llm-convert
+go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
 ```
 
-For the energy per token, `go run ./cmd/powerbench -decode 8,16 -gpu` measures the same models with powermetrics.
+For the energy per token, `go run ./cmd/powerbench -decode 8,16 -gpu` measures the same models with powermetrics. How to read the results, and the results so far: [PROBE.md](PROBE.md).
 
 ## 4. Preparing models
 

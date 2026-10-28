@@ -74,10 +74,10 @@ go run ./cmd/powerbench -model 'path/to/*.mlpackage' -o power.md
 生成したモデルで Neural Engine を測るには、npuprobe を使います。LLM の生成と同じ形のモデルを Go で作り、0.5B と 1B の重みで fp16、int8、lut4、int4 の速さを Neural Engine、CPU、GPU で測ります (`bench`)。次に形式ごとにモデルを大きくしながら Neural Engine から外れる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込んで、上限がモデル 1 つごとか合計かを見分けます (`limit`)。Python もモデルのファイルも root も要りません。40 分ほどかかり、最大のモデルの 2 倍ほどの空きディスクが要ります (既定ではメモリの 4 分の 1 まで試し、`-max-gb` で変えられます)。結果は `npuprobe-<機種>-<日時>.md` に書き出します。クローンしなくても動きます。
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/npuprobe@llm-convert
+go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
 ```
 
-1 トークンあたりのエネルギーは、`go run ./cmd/powerbench -decode 8,16 -gpu` が同じモデルを powermetrics で測ります。
+1 トークンあたりのエネルギーは、`go run ./cmd/powerbench -decode 8,16 -gpu` が同じモデルを powermetrics で測ります。結果の読み方とこれまでの結果は [PROBE.ja.md](PROBE.ja.md) にあります。
 
 ## 4. モデルの用意
 
