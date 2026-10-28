@@ -1,0 +1,70 @@
+id: decision:model-source-selection
+type: decision
+title: 配布モデルの元チェックポイントと量子化形式の選び方
+summary: >-
+  Hugging Face の公式チェックポイントから各 NPU 向けの形式を事前に作って配布する。元は bf16 を基本とし、
+  量子化済みの公開物は「劣化なしに並べ替えられる形式のときだけ」使い、量子化し直しはしない。
+lifecycle: accepted
+authority: authored
+facts:
+  policy:
+    - 変換は配布前に 1 度だけ行い、利用側はダウンロードして実行時コンパイルだけを行う (Core ML の mlmodelc 化、Intel ドライバのコンパイル)
+    - 中間形式 (ONNX) は置かない。LLM は構造のパターンが少なく、config.json と safetensors から Go で直接各形式を組み立てる
+    - 実行先ごとに量子化の方式が違うので、配布物は実行先ごとに別に作る (coreml-ane-lut4g16 など方式まで名前に入れる)
+  decision_tree:
+    - step: 1. 公式リポジトリの候補を集める
+      detail: 元モデル (bf16) と、公式の量子化版 (QAD/QAT、AWQ、GPTQ、compressed-tensors、MLX、GGUF、ONNX)
+    - step: 2. 候補を絞る
+      detail: 同じ元モデルか (base_model、config、tokenizer)。safetensors か GGUF か (pickle の .bin は除外)。量子化されていない層はどれか (埋め込み、lm_head、正規化)
+    - step: 3. 実行先ごとに「劣化なしに並べ替えられるか」で選ぶ
+      detail: >-
+        劣化なしの変換は、量子化の単位がより細かい方式か、範囲がより広い方式への片方向だけ。
+        Intel (対称 int4) には対称 int4/GPTQ 対称/compressed-tensors W4A16 が、AMD (非対称 uint4、128 個ごと) には AWQ がそのまま入る。
+        Apple ANE (LUT 方式、出力 16 行ごとに 16 値の表) にはどの公開量子化も劣化なしでは入らない。
+    - step: 4. 該当がなければ bf16 から自分で量子化する
+      detail: 量子化し直し (4 ビット → 4 ビット) は誤差が二重に乗り、bf16 からの直接量子化より悪い (LFM3 で実測)
+    - step: 5. 必ず精度を測る
+      detail: 元の bf16 の PyTorch 出力と比べる (ロジットの KL、argmax 一致)。manifest に記録し、基準より悪い候補は不採用
+  measured_lfm3_1_7b:
+    source: LiquidAI/LFM3-1.7B (bf16 3.46 GB) と LFM3-1.7B-GGUF の QAD-Q4_0 (対称 int4、32 個ごと、埋め込みは Q6_K)。MLX-4bit は非対称 64 個ごと、ONNX q4 は非対称 32 個ごとで 4/8 ビット混在
+    reference: tools/lfm3/ref_logits.py (PyTorch fp32、24 トークン)。KL は 1 プロンプトなので目安
+    bf16_to_fp16_graph: KL 0.020、argmax 21/24 (Go で組んだグラフ自体の確認、CPU)
+    qad_dequantized: KL 0.35 (QAD は別の fine-tune なので、bf16 との差そのもの)
+    bf16_to_lut4_16rows: KL 0.95 (CPU)、ANE では 0.89 (PostScale あり)
+    qad_to_lut4: KL 0.94 (bf16 から直接より悪い。量子化し直しは避ける)
+    quantizer: >-
+      LUT の表の決め方は min-max 初期値からの k-means (kmeans-minmax) が最良。
+      分位点初期値の k-means (MSE 最小) は KL 3.7、一様 (uniform) は 3.8 と大幅に悪い。
+      大きい重みを残しつつ本体を細かく刻む必要がある。重みの二乗誤差は三方式とも 11〜14% で差がなく、二乗誤差では良し悪しを判断できない
+    sensitivity: MLP を fp16 に残すと KL 0.34、attention/conv の射影を残すと 0.31。埋め込みを残しても 0.91。損失は全体に広がっており、特定の層だけが原因ではない
+  vendor_formats:
+    apple: LUT 4 ビット、出力チャンネル 16 行ごとに 1 表 (per_grouped_channel)。列方向のブロック化 (16x64 など) や入力 32 個ごとの int4 (Q4_0 相当) は ANE に載らず CPU に落ちる。int4 は行ごとのスケールだけ ANE 可
+    intel: 対称 int4 (NF4 可)、チャンネルごとか 128 個ごと、計算は int8/fp16 (OpenVINO GenAI の推奨)。未検証
+    amd: 非対称 uint4、AWQ、128 個ごと、活性 bf16 (Quark の推奨)。hwnpu の AMD バックエンドはモデルを扱えず、カーネルが必要。未検証
+    qualcomm: QNN context binary。チップ世代と SDK に結び付き、公式ツールか AI Hub でしか作れない。Go だけでは配布物を作れない (記憶ベース、未調査)
+  distribution:
+    layout: s3://models/<モデル>/<revision>/<実行先>/ に manifest.json (元リポジトリとコミット、変換ツール版、量子化設定、sha256、必要な OS/ドライバ)、モデル本体、tokenizer.json、config.json
+    size: 2B を 4 ビットにして実行先ごとに 1.1〜1.3 GB。4 実行先で 5 GB 程度
+    license: LFM3 は LFM Open License v1.0。年商 1,000 万ドル以上の組織の商用利用は対象外で、派生物も条件を引き継ぐ
+open_questions:
+  per-row-lut:
+    text: Apple ANE で行ごとの LUT (group 1、表のオーバーヘッド 1.6%) は 16 行ごとと比べて精度と速度がどうか。CPU では KL 0.57 対 0.95
+    state: answered
+    resolution: 2026-10-28 使えない。24 層のコンパイルに 446 秒かかり、配置は検証できず、出力は壊れる (KL 12.9、argmax 0/24)。ANE の LUT は 16 行ごとに限る
+  ane-speed:
+    text: LFM3-1.7B を lut4 で ANE に載せたときの tokens/s と mJ/token (cmd/powerbench、seq 1)
+    state: open
+  better-4bit:
+    text: KL 0.9 は実用には粗い。活性を見た量子化 (AWQ/SmoothQuant 相当) や 6 ビット LUT (ANE の容量上限 1 GB 前後との兼ね合い) で改善できるか
+    state: open
+  intel-amd-verify:
+    text: Intel/AMD の形式は推奨値を写しただけで、実機で未検証
+    state: deferred
+    resolution: 実機が手に入ってから
+relations:
+  - relation: constrained_by
+    to: decision:no-gpu
+  - relation: informs
+    to: milestone:m5-llm-convert
+  - relation: mentions
+    to: backend:apple-coreml

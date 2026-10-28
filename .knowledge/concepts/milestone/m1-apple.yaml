@@ -1,0 +1,33 @@
+id: milestone:m1-apple
+type: milestone
+title: M1 Apple で中核APIを確定
+summary: 手元の Mac で Core ML 推論と MLComputePlan による厳格モードを動かし、公開APIの形を確定する。
+lifecycle: accepted
+scope: {milestone: m1, backend: coreml}
+acceptance:
+  infer:
+    text: 小さな fp16 の ML Program モデルを CPUAndNeuralEngine で推論し、期待値と一致する
+    scope: {milestone: m1}
+    verified_by: [infer-test]
+  strict:
+    text: fp32 演算などで ANE に載らないモデルを厳格モードで読み込むと ErrNotOnNPU と原因の演算が返る
+    scope: {milestone: m1}
+    verified_by: [strict-test]
+verification:
+  infer-test: {state: passed, method: integration, test: TestFP16RunsOnNeuralEngine, authority: observed, scope: {milestone: m1}, evidence: {path: coreml_darwin_test.go, locator: TestFP16RunsOnNeuralEngine}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}, {path: internal/fixtures/coreml/linear_relu_fp16.mlpackage/Data/com.apple.CoreML/model.mlmodel, input_hash: c2f4fcb40acda0c9abebb8a97b366f9d03390108ac3ea8e2539c7b7f888f3ff6}]}
+  strict-test: {state: passed, method: integration, test: TestStrictRejectsFP32, authority: observed, scope: {milestone: m1}, evidence: {path: coreml_darwin_test.go, locator: TestStrictRejectsFP32}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}, {path: internal/fixtures/coreml/linear_relu_fp32.mlpackage/Data/com.apple.CoreML/model.mlmodel, input_hash: 77f1aec36fe3bfe730cc144802db983096d2b273aa6026b58fbc30b36fe218e3}]}
+facts:
+  delivery:
+    outcome: 公開API (Device, Graph, Buffer, Request, Placement) の形を実機で確定する
+    excluded: Intel/AMD の実装、電力計測、CompileSet
+    depends_on_questions: [backend:apple-coreml/block-callback, requirement:npu-only-execution/apple-guarantee-wording]
+history:
+  completed:
+    summary: 2026-10-27 実装完了。macOS 27.0.1 / ANE 16 cores / CGO_ENABLED=0 で受け入れテスト合格。fp16 モデルの最大絶対誤差 0.0014。詳細は docs/design.md 16.1
+relations:
+  - relation: delivers
+    to: requirement:model-execution-api
+  - relation: delivers
+    to: requirement:npu-only-execution
+  - relation: uses
+    to: backend:apple-coreml

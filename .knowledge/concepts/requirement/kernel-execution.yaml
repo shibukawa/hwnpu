@@ -1,0 +1,24 @@
+id: requirement:kernel-execution
+type: requirement
+title: ユーザーカーネルの実行 (AMD)
+summary: IRON/mlir-aie でビルドした xclbin と命令列を AMD NPU で実行する KernelRunner。
+lifecycle: accepted
+scope: {backend: xdna}
+acceptance:
+  run:
+    text: IRON の xclbin と命令列を読み込み、カーネルを実行して正しい結果が得られる
+    verified_by: [sim-run, hw-run]
+verification:
+  sim-run: {state: passed, method: integration, test: TestAMDPassthroughPublicAPI, authority: observed, scope: {backend: xdna}, evidence: {path: amd_sim_test.go, locator: TestAMDPassthroughPublicAPI}, basis: [{path: amd_sim_test.go, input_hash: 7a0c295da2fdd4f079da28af6335d664d8f74193f2da206859b805c7872b798e}]}
+  hw-run: {state: not_run, method: manual, scope: {backend: xdna}}
+facts:
+  api: Device.Kernel → KernelRunner.Load → Program.Kernel → Kernel.NewRun → Run.Set* → Run.Run
+  reason_separate: Intel/Apple はグラフ実行のみで、カーネル実行の公開APIが無い。非対称を隠さない
+open_questions:
+  elf-flow:
+    text: xclbin から ELF ベース (ERT_START_NPU_PREEMPT_ELF) への移行にいつ対応するか
+    state: deferred
+    resolution: AMD の xclbin 経路が動いた後に判断
+  umq:
+    text: UMQ (ユーザー管理キュー) 世代への対応
+    state: deferred

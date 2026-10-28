@@ -1,0 +1,50 @@
+id: backend:apple-coreml
+type: backend
+title: Appleバックエンド (Core ML)
+summary: purego/objc で Core ML を呼ぶ。ANE を直接は使えないが、GPU を除外し、ANE 配置を実行前に検証する。
+lifecycle: accepted
+scope: {backend: coreml, os: darwin}
+constraints:
+  - computeUnits の既定は MLComputeUnitsCPUAndNeuralEngine (macOS 13以降) とし GPU を使わない
+  - 配置検証は MLComputePlan (macOS 14.4以降、ML Program 形式) を使う
+capabilities:
+  inference: {about: capability:coreml/inference, state: implemented, verified_by: [m1-infer]}
+  placement-verify: {about: capability:coreml/placement-verify, state: implemented, verified_by: [m1-strict]}
+  power-control: {about: capability:coreml/power-control, state: not_applicable}
+  power-meter: {about: capability:coreml/power-meter, state: absent}
+facts:
+  dev_machine: 開発機は darwin/arm64 (Go 1.27)
+  observations:
+    small_models_on_cpu: fp16 でも小さなモデルは CPU に置かれる。linear (64,512)->512 は ANE、(32,256)->256 以下は CPU、1x1 conv (最大 256ch 32x32) は CPU (macOS 27.0.1)
+    zero_copy: MLMultiArray initWithDataPointer と outputBackings で入出力ともコピーなし
+    loader_names: MIL の値の名前に "." が入っていると Core ML のローダが segfault する (英数字と _ だけにする)
+    gather_on_cpu: gather (埋め込みの表引き) は大きさによらず CPU に置かれる。linear は 1 演算だけのグラフだと CPU、複数演算で 2048 幅なら ANE
+    lut_formats: >-
+      constexpr_lut_to_dense は出力チャンネル 16 行ごとの表 (per_grouped_channel) なら ANE。列方向にもブロック化した表 (16x64) は全演算が CPU に落ちる。
+      constexpr_blockwise_shift_scale の int4 は行ごとのスケールだけ ANE、入力 32 個や 128 個ごとのブロック (Q4_0 相当) は CPU
+    matmul_error_floor: >-
+      ANE の linear は出力に約 2.5e-4 の絶対誤差の床がある (2048 長の内積、重み rms 0.02。入力 rms 1 で相対 0.03%、rms 0.03 で 0.95%、同じ絶対誤差)。
+      入力を 2^k 倍して重みを 1/2^k 倍しても積が変わらないので効かない。出力が小さい射影 (LFM3 の out_proj/o_proj/w2、出力 rms 0.008) は重み自体を 64 倍し、
+      続くサンドイッチ正規化の中で正確な要素積で戻す (PostScale)。これで層ごとの誤差が 6〜12% から 1.4〜2.7% になった
+    rmsnorm: MIL に rms_norm はなく mul/reduce_mean/rsqrt/mul で組む。小さい値の二乗が fp16 の非正規化数に落ちると精度を失う (1/16 に縮めると層誤差 9% → 6%)。要素演算の精度は十分で、床があるのは行列積
+    fp16_depthwise_conv: 深さ方向 conv (groups=channels) は ANE で正確。conv 演算、タップ展開 (slice/mul/add)、転置の有無で誤差は同一
+  limits:
+    - ANE のみの指定はできない
+    - MLComputePlan は推定で、実行時の配置を保証しない
+    - ANE は fp16 と固定形状が前提。fp32 や動的形状は CPU に回りやすい
+verification:
+  m1-infer: {state: passed, method: integration, test: TestFP16RunsOnNeuralEngine, authority: observed, evidence: {path: coreml_darwin_test.go, locator: TestFP16RunsOnNeuralEngine}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}]}
+  m1-strict: {state: passed, method: integration, test: TestStrictRejectsFP32, authority: observed, evidence: {path: coreml_darwin_test.go, locator: TestStrictRejectsFP32}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}]}
+  zero-copy: {state: passed, method: integration, test: TestOutputBackingZeroCopy, authority: observed, evidence: {path: internal/backend/coreml/zerocopy_darwin_test.go, locator: TestOutputBackingZeroCopy}, basis: [{path: internal/backend/coreml/zerocopy_darwin_test.go, input_hash: 70a16a3dd6fb0a5655137ade24571e2d18f152a550d9ee4094ec28375eada5eb}]}
+open_questions:
+  block-callback:
+    text: MLComputePlan の完了ハンドラ (ブロック) を purego/objc で1つ作って使い回せるか
+    state: answered
+    resolution: 2026-10-27 objc.NewBlock で受けられることを確認。CGO_ENABLED=0 でも別スレッドからのコールバックが動いた
+relations:
+  - relation: verified_by_milestone
+    to: milestone:m5-llm-convert
+  - relation: implements
+    to: requirement:npu-only-execution
+  - relation: implements
+    to: requirement:model-execution-api

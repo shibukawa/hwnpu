@@ -1,0 +1,8 @@
+id: decision:onnxrt-fallback
+type: decision
+title: ONNX Runtime は contrib の逃げ道に留める
+summary: NPU で完結しないモデル向けに purego 版 ONNX Runtime バインディングを別モジュールで任意提供する。
+lifecycle: accepted
+facts:
+  reason: EP は未対応演算を CPU に回すため厳格モードの保証が及ばない。依存も大きい
+  market_note: 主要な Go の ONNX Runtime バインディング (yalue/onnxruntime_go) は cgo 必須で、cgo なし版は空白地帯

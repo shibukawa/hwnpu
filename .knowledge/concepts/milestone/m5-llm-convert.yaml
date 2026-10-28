@@ -1,0 +1,45 @@
+id: milestone:m5-llm-convert
+type: milestone
+title: M5 Go だけの LLM 変換 (LFM3-1.7B → Core ML)
+summary: >-
+  coremltools を使わず、Go だけで Hugging Face のチェックポイントを Neural Engine 用の .mlpackage にする。
+  LFM3-1.7B で全演算が ANE に載り、PyTorch 参照とのロジット一致まで確認した。
+lifecycle: active
+facts:
+  outcome: cmd/hwnpu-convert が config.json と safetensors (bf16) または GGUF から、固定系列長の ML Program を書き出す
+  packages:
+    - internal/mlpackage: MIL プログラムの組み立て (protobuf)、weight.bin (MILBlob 形式)、Manifest.json
+    - internal/milspec, internal/mlspec: coremltools 9.0 の .proto から protoc-gen-go で生成 (google.golang.org/protobuf 依存を追加)
+    - internal/safetensors, internal/gguf: 読み込み (GGUF は Q4_0/Q8_0/Q6_K の逆量子化)
+    - internal/palette: 4 ビット LUT の当てはめ (uniform / kmeans / kmeans-minmax)
+    - internal/llm/lfm3: LFM3 の構造 (短い畳み込み、全注意、スライディング注意、サンドイッチ正規化、部分 RoPE、QK 正規化、sigmoid ゲート)
+  design:
+    - 埋め込みの表引き (gather) は Core ML が常に CPU に置くので、入力は fp16 の埋め込み (1, seq, d) とし、表引きはホスト側で行う
+    - 出力はロジット (1, seq, vocab)。-layers N で途中の隠れ状態を出し、層ごとに参照と比べられる
+    - lm_head は埋め込みと共有 (tie_word_embeddings)。lut4 にしても精度にはほぼ効かない
+  accuracy_pipeline: tools/lfm3/ref_logits.py で PyTorch fp32 の隠れ状態とロジットを保存し、tools/lfm3/eval_logits.py (coremltools、CPU/ANE/GPU) と Go のテスト (TestAgainstReference、TestPerLayer、TestConvPieces) で比べる
+  ane_findings: backend:apple-coreml の observations を参照 (絶対誤差の床、PostScale、LUT の制約)
+  verification_results:
+    graph-vs-pytorch: bf16 → fp16 の全 24 層 (CPU 実行) で KL 0.020、argmax 21/24。グラフの意味は正しい
+    ane-placement: lut4 (16 行ごと) の 24 層 1627 演算がすべて ANE に配置
+verification:
+  roundtrip: {state: passed, method: integration, test: TestRoundTrip, authority: observed, scope: {backend: coreml}, evidence: {path: internal/mlpackage/roundtrip_darwin_test.go, locator: TestRoundTrip}}
+  graph-vs-pytorch: {state: passed, method: integration, test: TestAgainstReference, authority: observed, scope: {backend: coreml}, evidence: {path: internal/llm/lfm3/convert_darwin_test.go, locator: TestAgainstReference}}
+  ane-placement: {state: passed, method: integration, test: TestAgainstReference, authority: observed, scope: {backend: coreml}, evidence: {path: internal/llm/lfm3/convert_darwin_test.go, locator: TestAgainstReference}}
+open_questions:
+  kv-cache:
+    text: 生成 (decode) には KV キャッシュと畳み込みの状態が要る。Core ML の状態 (MLState) と、prefill/decode の重み共有をどう扱うか
+    state: open
+  embedding-table:
+    text: 埋め込み表 (128000x2048) をホスト側で引くために、配布物にどの形式で入れるか (今は元チェックポイントから直接読んでいる)
+    state: open
+  other-architectures:
+    text: Llama/Qwen 系の構造定義を追加する
+    state: deferred
+relations:
+  - relation: depends_on
+    to: milestone:m1-apple
+  - relation: implements
+    to: requirement:model-execution-api
+  - relation: guided_by
+    to: decision:model-source-selection

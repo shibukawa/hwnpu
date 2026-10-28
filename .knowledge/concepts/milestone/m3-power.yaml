@@ -1,0 +1,55 @@
+id: milestone:m3-power
+type: milestone
+title: M3 電力ポリシー、電力量の計測、コンパイルキャッシュ
+summary: 共通の PowerPolicy、積算電力量の PowerSample、WithCacheDir によるコンパイルキャッシュを Intel と Apple に実装する。
+lifecycle: accepted
+scope: {milestone: m3}
+constraints:
+  - AMD バックエンドは未実装のため対象外
+  - Intel は偽のドライバで検証する
+acceptance:
+  policy-mapping:
+    text: PowerLow/Balanced/Performance が Intel のキュー優先度・ワークロード種別・ターボに写像される。電力の設定がない Core ML では CapPowerControl を持たない
+    scope: {milestone: m3}
+    verified_by: [policy-mock, coreml-no-power]
+  energy-sample:
+    text: 電力量を読めるデバイスでは PowerSample が積算ジュールと対象範囲 (npu / package) を返し、読めないデバイスでは ErrUnsupported を返す
+    scope: {milestone: m3}
+    verified_by: [rapl-unit, coreml-no-power]
+  cache:
+    text: WithCacheDir の 2 回目の読み込みはコンパイルを省略し、モデル・ビルドフラグ・版が変わると作り直す
+    scope: {milestone: m3}
+    verified_by: [cache-mock, cache-coreml]
+verification:
+  policy-mock: {state: passed, method: integration, test: TestMockPowerPolicy, authority: observed, scope: {milestone: m3}, evidence: {path: levelzero_mock_test.go, locator: TestMockPowerPolicy}, basis: [{path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}, {path: testdata/zemock/zemock.c, input_hash: 3c4391992c65776ad4c372341a207154f47ffd33f299d26f9381a831d1e1ae6a}]}
+  coreml-no-power: {state: passed, method: integration, test: TestCoreMLHasNoPowerControls, authority: observed, scope: {milestone: m3}, evidence: {path: coreml_darwin_test.go, locator: TestCoreMLHasNoPowerControls}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}]}
+  rapl-unit: {state: passed, method: unit, test: TestRAPL, authority: observed, scope: {milestone: m3}, evidence: {path: internal/power/rapl_test.go, locator: TestRAPL}, basis: [{path: internal/power/rapl_test.go, input_hash: 60e929332f169777ed07cb1fb565d916b6d1db9a5ac851b5a242c15124621b09}]}
+  cache-mock: {state: passed, method: integration, test: TestMockCompileCache, authority: observed, scope: {milestone: m3}, evidence: {path: levelzero_mock_test.go, locator: TestMockCompileCache}, basis: [{path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}]}
+  cache-coreml: {state: passed, method: integration, test: TestCoreMLCompileCache, authority: observed, scope: {milestone: m3}, evidence: {path: coreml_darwin_test.go, locator: TestCoreMLCompileCache}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}]}
+open_questions:
+  policy-effect:
+    text: Intel 実機で電力ポリシーの違いが実際の電力に表れるか
+    state: open
+    resolution: cmd/report の -power low と -power performance を実機で比べる
+  npu-only-energy:
+    text: NPU 単体の電力を読む手段 (Intel、Windows、Apple)
+    state: deferred
+    resolution: 現状は Linux の RAPL (CPU パッケージ全体) のみ。手段が見つかったら ScopeNPU として追加する
+facts:
+  decisions:
+    energy-api:
+      choice: 瞬間値ではなく積算電力量 (ジュール) を返し、平均電力は 2 回の差から求める
+      reason: RAPL は積算カウンタで、短い推論の電力も区間で正しく求められる
+    queue-ordinal-fix: コマンドキューとリストを計算用グループに作るよう修正した (以前は 0 番決め打ち)
+  observations:
+    coreml_cache: キャッシュありの Core ML コンパイルは 158 ms から 27 ms
+history:
+  completed:
+    summary: 2026-10-28 受け入れテストに合格 (Intel は偽のドライバ、Apple は実機)。詳細は docs/design.md 16.4
+relations:
+  - relation: delivers
+    to: requirement:power-control
+  - relation: delivers
+    to: requirement:power-metering
+  - relation: delivers
+    to: requirement:compile-cache
