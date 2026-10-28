@@ -1,0 +1,8 @@
+id: decision:api-layering
+type: decision
+title: モデル実行を中核にし、行列演算は補助層にする
+summary: 中核はモデル実行API。ops (行列演算) と用途別ヘルパーはその上に積む。
+lifecycle: accepted
+facts:
+  layers: [ドライバ (Level Zero / amdxdna / Core ML), hwnpu 中核 (モデル実行・カーネル実行), ops 補助層, 用途別ヘルパー (埋め込み、小型LLM)]
+  capability_split: 計算の投入は GraphRunner (Intel, Apple) と KernelRunner (AMD) に分け、共通化はデバイス・バッファ・同期まで

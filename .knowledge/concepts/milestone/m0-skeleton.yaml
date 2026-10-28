@@ -1,0 +1,18 @@
+id: milestone:m0-skeleton
+type: milestone
+title: M0 骨格と列挙
+summary: internal/dl、accelfs、Enumerate、hwnpuinfo を作り、各OSでNPUの有無を表示する。
+lifecycle: proposed
+scope: {milestone: m0}
+acceptance:
+  enumerate:
+    text: Linux で Intel/AMD の accel デバイス、macOS で ANE 搭載を検出して hwnpuinfo に表示する
+    scope: {milestone: m0}
+    verified_by: [enumerate-test]
+  library-error:
+    text: デバイスはあるがランタイムライブラリが無い場合、試したパス付きの ErrLibrary を返す
+    scope: {milestone: m0}
+    verified_by: [library-error-test]
+verification:
+  enumerate-test: {state: not_run, method: manual, scope: {milestone: m0}}
+  library-error-test: {state: not_run, method: unit, scope: {milestone: m0}}

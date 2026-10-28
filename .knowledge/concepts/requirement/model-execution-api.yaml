@@ -1,0 +1,49 @@
+id: requirement:model-execution-api
+type: requirement
+title: モデル実行API (中核)
+summary: コンパイル済みモデルを読み込み、テンソルを結び付けて実行するAPIを中核にする。行列演算APIは中核にしない。
+lifecycle: accepted
+constraints:
+  - モデルは外部ツールで作った成果物を持ち込む (OpenVINO IR / NPU blob、Core ML モデル、xclbin)
+  - デバイス可視メモリはドライバ側で確保し、Goのメモリを C 側に保持させない
+  - Bytes() 等はゼロコピーのビューを返す
+capabilities:
+  device: {state: partial, scope: {backend: coreml}}
+  compiled-model: {state: partial, scope: {backend: coreml}}
+  tensor: {state: partial, scope: {backend: coreml}}
+  infer-request: {state: partial, scope: {backend: coreml}}
+  async-fence: {state: partial, scope: {backend: coreml}}
+acceptance:
+  run-basic:
+    text: Open → Graph().Compile → NewRequest → Bind → Run の流れで小さなモデルの推論結果が得られる
+    verified_by: [run-basic-test]
+  ctx-cancel:
+    text: 完了待ちは context.Context のキャンセルで ctx.Err() を返して抜ける
+    verified_by: [ctx-cancel-test]
+  tensor-check:
+    text: Bind は Buffer の大きさが ArgInfo.Bytes に満たないとエラーにする
+    verified_by: [tensor-check-test]
+verification:
+  run-basic-test: {state: passed, method: integration, test: TestFP16RunsOnNeuralEngine, authority: observed, scope: {backend: coreml}, evidence: {path: coreml_darwin_test.go, locator: TestFP16RunsOnNeuralEngine}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}, {path: internal/fixtures/coreml/linear_relu_fp16.mlpackage/Data/com.apple.CoreML/model.mlmodel, input_hash: c2f4fcb40acda0c9abebb8a97b366f9d03390108ac3ea8e2539c7b7f888f3ff6}]}
+  ctx-cancel-test: {state: passed, method: unit, test: TestFenceWaitHonoursContext, authority: observed, scope: {backend: coreml}, evidence: {path: internal/backend/coreml/fence_darwin_test.go, locator: TestFenceWaitHonoursContext}, basis: [{path: internal/backend/coreml/fence_darwin_test.go, input_hash: b7ddb3241be3d2a226a019b4d40eac40f3815398168a5deea75db7d3afaef685}]}
+  tensor-check-test: {state: passed, method: integration, test: TestBindRejectsSmallBuffer, authority: observed, scope: {backend: coreml}, evidence: {path: coreml_darwin_test.go, locator: TestBindRejectsSmallBuffer}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}]}
+facts:
+  model_dtype: ArgInfo.ModelDType はモデル上の精度。Intel では fp32 モデルが fp16 で実行されるなど DType と異なることがある
+  arg_order: 入力が先、出力が後。各グループ内の順序はバックエンドが決める (Core ML は名前順)
+  elements:
+    Device: 列挙と選択、電力ポリシー、電力測定
+    Graph: 読み込みとコンパイル、キャッシュ、配置レポート、入出力定義 (Args)
+    Buffer: デバイス可視メモリ。形状と型は Graph.Args の ArgInfo が持つ
+    Request: 入出力の結び付けと同期・非同期実行
+    CompileSet: 形状違いグラフの束 (requirement:shape-variants)
+  rationale_not_matmul: >-
+    NPUは投入1回ごとの固定費が大きく、形状ごとにコンパイルが必要で、層をまとめて流すときに効率が出る。
+    Intelにはカーネル単位の公開APIも無い。
+relations:
+  - relation: decided_by
+    to: decision:api-layering
+open_questions:
+  naming:
+    text: 設計書の Graph/Request を OpenVINO 風の CompiledModel/InferRequest/Tensor に改名するか
+    state: answered
+    resolution: 2026-10-27 ユーザー判断で設計書の Graph/Request/Buffer を維持する

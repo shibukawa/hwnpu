@@ -1,0 +1,20 @@
+{
+  "ze_driver_properties_t": {"size": 40, "fields": {"stype": 0, "pNext": 8, "uuid": 16, "driverVersion": 32}},
+  "ze_driver_extension_properties_t": {"size": 260, "fields": {"name": 0, "version": 256}},
+  "ze_device_properties_t": {"size": 368, "fields": {"stype": 0, "pNext": 8, "type": 16, "vendorId": 20, "deviceId": 24, "flags": 28, "subdeviceId": 32, "coreClockRate": 36, "maxMemAllocSize": 40, "maxHardwareContexts": 48, "maxCommandQueuePriority": 52, "numThreadsPerEU": 56, "physicalEUSimdWidth": 60, "numEUsPerSubslice": 64, "numSubslicesPerSlice": 68, "numSlices": 72, "timerResolution": 80, "timestampValidBits": 88, "kernelTimestampValidBits": 92, "uuid": 96, "name": 112}},
+  "ze_context_desc_t": {"size": 24, "fields": {"stype": 0, "pNext": 8, "flags": 16}},
+  "ze_host_mem_alloc_desc_t": {"size": 24, "fields": {"stype": 0, "pNext": 8, "flags": 16}},
+  "ze_fence_desc_t": {"size": 24, "fields": {"stype": 0, "pNext": 8, "flags": 16}},
+  "ze_command_queue_desc_t": {"size": 40, "fields": {"stype": 0, "pNext": 8, "ordinal": 16, "index": 20, "flags": 24, "mode": 28, "priority": 32}},
+  "ze_command_list_desc_t": {"size": 24, "fields": {"stype": 0, "pNext": 8, "commandQueueGroupOrdinal": 16, "flags": 20}},
+  "ze_graph_compiler_version_info_t": {"size": 4, "fields": {"major": 0, "minor": 2}},
+  "ze_device_graph_properties_t": {"size": 32, "fields": {"stype": 0, "pNext": 8, "graphExtensionVersion": 16, "compilerVersion": 20, "graphFormatsSupported": 24, "maxOVOpsetVersionSupported": 28}},
+  "ze_graph_desc_2_t": {"size": 56, "fields": {"stype": 0, "pNext": 8, "format": 16, "inputSize": 24, "pInput": 32, "pBuildFlags": 40, "flags": 48}},
+  "ze_graph_properties_t": {"size": 24, "fields": {"stype": 0, "pNext": 8, "numGraphArgs": 16}},
+  "ze_graph_properties_2_t": {"size": 24, "fields": {"stype": 0, "pNext": 8, "numGraphArgs": 16, "initStageRequired": 20}},
+  "ze_graph_argument_properties_3_t": {"size": 8776, "fields": {"stype": 0, "pNext": 8, "name": 16, "type": 272, "dims": 276, "networkPrecision": 296, "networkLayout": 300, "devicePrecision": 304, "deviceLayout": 308, "quantReverseScale": 312, "quantZeroPoint": 316, "dims_count": 320, "debug_friendly_name": 324, "associated_tensor_names": 580, "associated_tensor_names_count": 8772}},
+  "ze_graph_dditable_ext_t": {"size": 264, "fields": {"pfnCreate": 0, "pfnDestroy": 8, "pfnGetProperties": 16, "pfnSetArgumentValue": 32, "pfnAppendGraphInitialize": 40, "pfnAppendGraphExecute": 48, "pfnGetNativeBinary": 56, "pfnDeviceGetGraphProperties": 64, "pfnGetArgumentProperties3": 88, "pfnQueryNetworkDestroy": 104, "pfnQueryNetworkGetSupportedLayers": 112, "pfnBuildLogGetString": 120, "pfnCreate2": 128, "pfnQueryNetworkCreate2": 136, "pfnGetProperties2": 168, "pfnGraphInitialize": 176, "pfnCreate3": 200, "pfnSetArgumentValue2": 232, "pfnEvict": 240, "pfnGetArgumentNames": 256}},
+  "ze_command_queue_group_properties_t": {"size": 40, "fields": {"stype": 0, "pNext": 8, "flags": 16, "maxMemoryFillPatternSize": 24, "numQueues": 32}},
+  "ze_command_queue_desc_npu_ext_t": {"size": 24, "fields": {"stype": 0, "pNext": 8, "turbo": 16}},
+  "ze_command_queue_desc_npu_ext_2_t": {"size": 24, "fields": {"stype": 0, "pNext": 8, "options": 16}}
+}

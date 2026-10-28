@@ -1,0 +1,58 @@
+id: milestone:m2-intel
+type: milestone
+title: M2 Intel バックエンド (Level Zero)
+summary: Level Zero と NPU graph 拡張を purego で呼び、コンパイル済み blob と OpenVINO IR を推論する。未対応の演算とビルドログを返す。
+lifecycle: accepted
+scope: {milestone: m2, backend: levelzero}
+constraints:
+  - 開発機に Intel NPU が無いので、偽のドライバ (testdata/zemock) と C ヘッダ由来の ABI 基準値で検証する
+acceptance:
+  native-blob:
+    text: コンパイル済み blob を読み込み、推論結果が期待値と一致する
+    scope: {milestone: m2}
+    verified_by: [native-blob-mock, native-blob-hw]
+  ir-compile:
+    text: OpenVINO IR をドライバ内コンパイラでコンパイルし、OpenVINO と同じ形式のビルドフラグと実行時情報を渡して推論できる
+    scope: {milestone: m2}
+    verified_by: [ir-compile-mock, ir-compile-hw]
+  unsupported-ops:
+    text: NPU コンパイラが対応しない演算を含む IR は ErrNotOnNPU になり、原因の演算とビルドログが返る
+    scope: {milestone: m2}
+    verified_by: [unsupported-ops-mock]
+  build-log:
+    text: その他のコンパイル失敗は BuildError として、ドライバのビルドログとエラーコードが返る
+    scope: {milestone: m2}
+    verified_by: [build-log-mock]
+verification:
+  native-blob-mock: {state: passed, method: integration, test: TestMockNativeBlob, authority: observed, scope: {milestone: m2}, evidence: {path: levelzero_mock_test.go, locator: TestMockNativeBlob}, basis: [{path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}, {path: testdata/zemock/zemock.c, input_hash: 3c4391992c65776ad4c372341a207154f47ffd33f299d26f9381a831d1e1ae6a}]}
+  ir-compile-mock: {state: passed, method: integration, test: TestMockOpenVINOIR, authority: observed, scope: {milestone: m2}, evidence: {path: levelzero_mock_test.go, locator: TestMockOpenVINOIR}, basis: [{path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}, {path: testdata/zemock/zemock.c, input_hash: 3c4391992c65776ad4c372341a207154f47ffd33f299d26f9381a831d1e1ae6a}]}
+  unsupported-ops-mock: {state: passed, method: integration, test: TestMockUnsupportedOperation, authority: observed, scope: {milestone: m2}, evidence: {path: levelzero_mock_test.go, locator: TestMockUnsupportedOperation}, basis: [{path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}]}
+  build-log-mock: {state: passed, method: integration, test: TestMockBuildError, authority: observed, scope: {milestone: m2}, evidence: {path: levelzero_mock_test.go, locator: TestMockBuildError}, basis: [{path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}]}
+  native-blob-hw: {state: not_run, method: manual, scope: {milestone: m2}}
+  ir-compile-hw: {state: not_run, method: manual, scope: {milestone: m2}}
+open_questions:
+  hardware-check:
+    text: Intel Core Ultra 実機 (Linux) で、実際のドライバと NPU コンパイラを相手に IR と blob が動くか
+    state: open
+    resolution: 偽のドライバでの検証は合格。2026-10-28 に実機確認用の cmd/report を用意した。ユーザーの Core Ultra Windows 機で実行してもらう (WSL2 では NPU が見えないため Windows で直接実行する)
+  windows-check:
+    text: Windows の ze_loader.dll 経由で動くか
+    state: deferred
+    resolution: Windows 対応のマイルストーンで確認する
+facts:
+  delivery:
+    outcome: Intel バックエンドの実装と、実機なしで可能な範囲の検証
+    excluded: 電力ポリシー (コマンドキュー NPU 拡張)、コンパイルキャッシュ、mutable command list
+  observations:
+    linux_containers: golang:1.27 の linux/arm64 と linux/amd64 で CGO_ENABLED=0 の全テストが合格
+    abi: macOS arm64 clang と Linux amd64 gcc で生成した ABI 基準値は同一
+history:
+  completed:
+    summary: 2026-10-28 偽のドライバ相手の受け入れテストに合格。実機での検証は未実施。詳細は docs/design.md 16.2
+relations:
+  - relation: uses
+    to: backend:intel-levelzero
+  - relation: delivers
+    to: requirement:model-execution-api
+  - relation: delivers
+    to: requirement:npu-only-execution

@@ -1,0 +1,19 @@
+id: requirement:virtualized-npu
+type: requirement
+title: 仮想化・クラウドからのNPU利用への備え
+summary: 現状クライアントNPUをVMやクラウドから使う口は無いが、将来開放されたらバックエンド追加だけで対応できるようにする。
+lifecycle: proposed
+facts:
+  current_state: クライアントNPUはSoCごとに1つのPCIeデバイスで全コア共有。VMへの割り当て提供は確認できない
+  signals: AMD の shim に virtio ディレクトリがあり、UAPI に物理ファンクション (PF) のデバイス種別がある (推測、未検証)
+  design_hook: Device の下のバックエンド境界を保つ
+assertions:
+  - predicate: vm_support_in_preparation
+    value: possible
+    authority: inferred
+    evidence: {path: docs/design.md}
+open_questions:
+  revisit:
+    text: 仮想化NPUが登場したときにどう対応するか
+    state: deferred
+    resolution: virtio 版 amdxdna などの公開が確認されたら再検討

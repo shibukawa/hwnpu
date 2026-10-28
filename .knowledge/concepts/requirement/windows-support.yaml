@@ -1,0 +1,17 @@
+id: requirement:windows-support
+type: requirement
+title: Windows対応
+summary: Intel は Level Zero で Linux と同じコードを使う。AMD は公開経路が C++ ABI の xrt_coreutil.dll のみなので保留。
+lifecycle: proposed
+scope: {os: windows}
+capabilities:
+  intel: {state: planned, scope: {backend: levelzero}}
+  amd: {state: unknown, scope: {backend: xdna}}
+open_questions:
+  amd-path:
+    text: AMD/Windows は A) xrt_coreutil.dll の旧C APIをpuregoで呼ぶ、B) 自前Cシムを同梱、C) ONNX Runtime contrib に任せる、のどれにするか
+    state: deferred
+    resolution: dumpbin /exports と実機実験で案Aを検証してから決める
+  intel-dll:
+    text: Windows の Intel NPU ドライバ DLL 名と Level Zero loader 同梱の有無
+    state: deferred

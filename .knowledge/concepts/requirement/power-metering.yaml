@@ -1,0 +1,25 @@
+id: requirement:power-metering
+type: requirement
+title: NPU消費電力の計測
+summary: 可能なバックエンドではNPUの消費電力を読めるようにし、省電力の効果を利用者が確かめられるようにする。
+lifecycle: accepted
+capabilities:
+  amd: {state: partial, scope: {backend: xdna}}
+  intel: {state: partial, scope: {backend: levelzero}, verified_by: [sample-test]}
+  apple: {state: absent, scope: {backend: coreml}}
+acceptance:
+  sample:
+    text: CapPowerMeter を持つデバイスで PowerSample がワット値と取得元を返し、持たないデバイスでは ErrUnsupported を返す
+    verified_by: [sample-test]
+verification:
+  sample-test: {state: passed, method: unit, test: TestRAPL, authority: observed, scope: {backend: levelzero}, evidence: {path: internal/power/rapl_test.go, locator: TestRAPL}, basis: [{path: internal/power/rapl_test.go, input_hash: 60e929332f169777ed07cb1fb565d916b6d1db9a5ac851b5a242c15124621b09}]}
+facts:
+  sources:
+    xdna: GET_INFO(QUERY_SENSORS) の POWER センサー (mW)。瞬間値を呼び出し間で台形積分 (Scope=npu)。偽のドライバで検証
+    levelzero: Linux の RAPL で CPU パッケージ全体の積算電力量を読む (Scope=package)。NPU 単体は未対応
+    coreml: 公開APIなし。root 必須の powermetrics の ANE Power を外部で使う
+open_questions:
+  intel-power-source:
+    text: Intel NPU の電力をメトリックストリーマー、sysfs、RAPL のどれで取れるか
+    state: deferred
+    resolution: 2026-10-28 M3 で RAPL (パッケージ全体) を採用。NPU 単体の手段は未発見のため引き続き保留 (milestone:m3-power/npu-only-energy)

@@ -1,0 +1,27 @@
+id: requirement:cgo-free
+type: requirement
+title: cgoなしでのビルドと実行
+summary: CGO_ENABLED=0 でビルドでき、共有ライブラリは purego で動的にロードする。
+lifecycle: accepted
+constraints:
+  - C構造体は値渡しせずポインタで渡し、Go側でレイアウトを再現する
+  - コールバックは原則使わない
+  - 64bit (amd64/arm64) のみ対応
+  - Windows では purego.Dlopen が無いので x/sys/windows の LoadLibraryEx を使う
+acceptance:
+  build:
+    text: CGO_ENABLED=0 で linux/amd64、windows/amd64、darwin/arm64 向けにビルドできる
+    verified_by: [cross-build]
+  abi-golden:
+    text: Go 側の構造体サイズとオフセットが C ヘッダから生成した値と一致する
+    verified_by: [abi-golden-test]
+verification:
+  linux-run: {state: passed, method: integration, test: "CGO_ENABLED=0 go test ./... in golang:1.27 linux/arm64 and linux/amd64", authority: observed, evidence: {path: docs/design.md, locator: "16.2"}, basis: [{path: go.mod, input_hash: 480ef043d862452a31f4169de4fbd44cffb93f6cd42f4867e458f20a15986560}, {path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}]}
+  abi-golden-amd: {state: passed, method: unit, test: TestStructLayouts, authority: observed, scope: {backend: xdna}, evidence: {path: internal/xdna/abi_test.go}, basis: [{path: internal/xdna/abi_test.go, input_hash: b2e08ba60717e9d7ae1b07ac5dbf8403df0c58bd134880194442ab9a8a0d1a24}]}
+  cross-build: {state: passed, method: static, authority: observed, test: "CGO_ENABLED=0 go build ./... for linux/amd64 linux/arm64 windows/amd64 darwin/amd64 darwin/arm64", evidence: {path: docs/design.md, locator: "16.1"}, basis: [{path: go.mod, input_hash: 480ef043d862452a31f4169de4fbd44cffb93f6cd42f4867e458f20a15986560}]}
+  abi-golden-test: {state: passed, method: unit, test: TestABIMatchesCHeaders, authority: observed, scope: {backend: levelzero}, evidence: {path: internal/ze/abi_test.go, locator: TestABIMatchesCHeaders}, basis: [{path: internal/ze/abi_test.go, input_hash: 55b67cfbab595b76935ed5fbf842e85466e6dd15f00ec9dd9dea36463b1b3b7d}, {path: testdata/abi/levelzero_abi.json, input_hash: 7856111389d11e75f11cf75666ecb5a90ee80c85076aa3ed826e0d65f520027f}]}
+open_questions:
+  musl:
+    text: musl や静的リンク環境で purego の fakecgo が dlopen できるか
+    state: deferred
+    resolution: Linux バックエンドの実装時に確認し、不可なら README に制約として書く

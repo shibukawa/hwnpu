@@ -1,0 +1,19 @@
+id: requirement:compile-cache
+type: requirement
+title: コンパイル結果の永続キャッシュ
+summary: コンパイルは時間と電力を消費するので、起動ごとに再コンパイルしない。
+lifecycle: accepted
+acceptance:
+  reuse:
+    text: WithCacheDir 指定時、2回目の読み込みはコンパイルを行わずキャッシュから復元する
+    verified_by: [reuse-test]
+  invalidate:
+    text: モデル、ビルドフラグ、ドライバ・コンパイラのバージョンのいずれかが変わるとキャッシュを使わない
+    verified_by: [invalidate-test]
+verification:
+  reuse-test: {state: passed, method: integration, test: "TestCoreMLCompileCache, TestMockCompileCache", authority: observed, evidence: {path: coreml_darwin_test.go, locator: TestCoreMLCompileCache}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}, {path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}]}
+  invalidate-test: {state: passed, method: integration, test: "TestCoreMLCompileCache, TestMockCompileCache", authority: observed, evidence: {path: levelzero_mock_test.go, locator: TestMockCompileCache}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}, {path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}]}
+facts:
+  artifacts:
+    levelzero: NativeBlob (GetNativeBinary2)
+    coreml: コンパイル済み .mlmodelc ディレクトリ

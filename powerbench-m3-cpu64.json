@@ -1,0 +1,297 @@
+{
+  "time": "2026-10-28T06:16:39Z",
+  "host": "Mac15,13, macOS 27.0.1",
+  "duration_per_phase": "10s",
+  "idle": [
+    {
+      "cpu_mw": 724.4625899750117,
+      "gpu_mw": 6.353221432285056,
+      "ane_mw": 0.2932253888802475,
+      "combined_mw": 731.1091561243471
+    },
+    {
+      "cpu_mw": 610.3345293192549,
+      "gpu_mw": 5.276666812217948,
+      "ane_mw": 0.1954321601232232,
+      "combined_mw": 615.8065947350291
+    },
+    {
+      "cpu_mw": 577.5657821060885,
+      "gpu_mw": 5.958313492899713,
+      "ane_mw": 0.2930318702785287,
+      "combined_mw": 583.8171136986158
+    },
+    {
+      "cpu_mw": 219.6218907032191,
+      "gpu_mw": 4.116072010741373,
+      "ane_mw": 0.29400520236635175,
+      "combined_mw": 224.03194404227384
+    }
+  ],
+  "idle_mean": {
+    "cpu_mw": 532.9961980258935,
+    "gpu_mw": 5.426068437036022,
+    "ane_mw": 0.2689236554120878,
+    "combined_mw": 538.6912021500664
+  },
+  "workloads": [
+    {
+      "name": "mlp_small",
+      "path": "/var/folders/vk/36d9fgzs1cs1nt8m36cqsk7m0000gn/T/hwnpu-powerbench4265085884/coreml/mlp_small.mlpackage",
+      "cpu_only": false,
+      "placement": "0 ops on the NPU, 6 elsewhere (runs on the CPU)",
+      "rows": 1,
+      "physical": 1,
+      "rounds": [
+        {
+          "calls_per_s": 16695.580249838906,
+          "mean_latency_us": 59.84584786482201,
+          "gross": {
+            "cpu_mw": 5873.826345876225,
+            "gpu_mw": 4.661685436877949,
+            "ane_mw": 0,
+            "combined_mw": 5878.487364872441
+          },
+          "net": {
+            "cpu_mw": 5340.830147850332,
+            "gpu_mw": -0.7643830001580731,
+            "ane_mw": -0.2689236554120878,
+            "combined_mw": 5339.796162722374
+          },
+          "energy_per_call_mj": 0.3198329188213687,
+          "energy_per_row_mj": 0.3198329188213687,
+          "energy_per_computed_row_mj": 0.3198329188213687
+        },
+        {
+          "calls_per_s": 16742.251463810553,
+          "mean_latency_us": 59.67837754791438,
+          "gross": {
+            "cpu_mw": 6595.152110778605,
+            "gpu_mw": 5.553478203076279,
+            "ane_mw": 0,
+            "combined_mw": 6600.705684188223
+          },
+          "net": {
+            "cpu_mw": 6062.155912752712,
+            "gpu_mw": 0.12740976604025622,
+            "ane_mw": -0.2689236554120878,
+            "combined_mw": 6062.0144820381565
+          },
+          "energy_per_call_mj": 0.36207880971932527,
+          "energy_per_row_mj": 0.36207880971932527,
+          "energy_per_computed_row_mj": 0.36207880971932527
+        },
+        {
+          "calls_per_s": 16949.891545401173,
+          "mean_latency_us": 58.94841880396854,
+          "gross": {
+            "cpu_mw": 5242.400078612732,
+            "gpu_mw": 4.060574800649968,
+            "ane_mw": 0,
+            "combined_mw": 5246.462065859207
+          },
+          "net": {
+            "cpu_mw": 4709.403880586839,
+            "gpu_mw": -1.3654936363860548,
+            "ane_mw": -0.2689236554120878,
+            "combined_mw": 4707.77086370914
+          },
+          "energy_per_call_mj": 0.2777463708896974,
+          "energy_per_row_mj": 0.2777463708896974,
+          "energy_per_computed_row_mj": 0.2777463708896974
+        }
+      ],
+      "mean": {
+        "calls_per_s": 16795.907753016876,
+        "mean_latency_us": 59.49088140556831,
+        "gross": {
+          "cpu_mw": 5903.792845089187,
+          "gpu_mw": 4.758579480201399,
+          "ane_mw": 0,
+          "combined_mw": 5908.551704973291
+        },
+        "net": {
+          "cpu_mw": 5370.796647063294,
+          "gpu_mw": -0.6674889568346236,
+          "ane_mw": -0.2689236554120878,
+          "combined_mw": 5369.860502823224
+        },
+        "energy_per_call_mj": 0.3198860331434638,
+        "energy_per_row_mj": 0.3198860331434638,
+        "energy_per_computed_row_mj": 0.3198860331434638
+      }
+    },
+    {
+      "name": "mlp_small_ane [CPU only]",
+      "path": "/var/folders/vk/36d9fgzs1cs1nt8m36cqsk7m0000gn/T/hwnpu-powerbench4265085884/coreml/mlp_small_ane.mlpackage",
+      "cpu_only": true,
+      "placement": "0 ops on the NPU, 6 elsewhere (runs on the CPU)",
+      "rows": 1,
+      "physical": 64,
+      "rounds": [
+        {
+          "calls_per_s": 16057.480214576828,
+          "mean_latency_us": 62.22621769655758,
+          "gross": {
+            "cpu_mw": 5958.140778669299,
+            "gpu_mw": 6.148341803210043,
+            "ane_mw": 0,
+            "combined_mw": 5964.287954659266
+          },
+          "net": {
+            "cpu_mw": 5425.144580643406,
+            "gpu_mw": 0.7222733661740204,
+            "ane_mw": -0.2689236554120878,
+            "combined_mw": 5425.596752509199
+          },
+          "energy_per_call_mj": 0.33788593727077393,
+          "energy_per_row_mj": 0.33788593727077393,
+          "energy_per_computed_row_mj": 0.005279467769855843
+        },
+        {
+          "calls_per_s": 16103.065247610946,
+          "mean_latency_us": 62.050249781032626,
+          "gross": {
+            "cpu_mw": 5998.480946893931,
+            "gpu_mw": 6.24748411222415,
+            "ane_mw": 0,
+            "combined_mw": 6004.729593620671
+          },
+          "net": {
+            "cpu_mw": 5465.484748868038,
+            "gpu_mw": 0.8214156751881276,
+            "ane_mw": -0.2689236554120878,
+            "combined_mw": 5466.038391470604
+          },
+          "energy_per_call_mj": 0.3394408646690137,
+          "energy_per_row_mj": 0.3394408646690137,
+          "energy_per_computed_row_mj": 0.005303763510453339
+        },
+        {
+          "calls_per_s": 16190.928646429278,
+          "mean_latency_us": 61.7139310354508,
+          "gross": {
+            "cpu_mw": 5460.044884750676,
+            "gpu_mw": 4.655023847335108,
+            "ane_mw": 0,
+            "combined_mw": 5464.69990548606
+          },
+          "net": {
+            "cpu_mw": 4927.048686724783,
+            "gpu_mw": -0.7710445897009146,
+            "ane_mw": -0.2689236554120878,
+            "combined_mw": 4926.008703335993
+          },
+          "energy_per_call_mj": 0.3042449763635002,
+          "energy_per_row_mj": 0.3042449763635002,
+          "energy_per_computed_row_mj": 0.00475382775567969
+        }
+      ],
+      "mean": {
+        "calls_per_s": 16117.158036205685,
+        "mean_latency_us": 61.996799504347,
+        "gross": {
+          "cpu_mw": 5805.555536771302,
+          "gpu_mw": 5.683616587589767,
+          "ane_mw": 0,
+          "combined_mw": 5811.239151255332
+        },
+        "net": {
+          "cpu_mw": 5272.559338745409,
+          "gpu_mw": 0.25754815055374447,
+          "ane_mw": -0.2689236554120878,
+          "combined_mw": 5272.547949105266
+        },
+        "energy_per_call_mj": 0.32719059276776263,
+        "energy_per_row_mj": 0.32719059276776263,
+        "energy_per_computed_row_mj": 0.005112353011996291
+      }
+    },
+    {
+      "name": "mlp_small_ane",
+      "path": "/var/folders/vk/36d9fgzs1cs1nt8m36cqsk7m0000gn/T/hwnpu-powerbench4265085884/coreml/mlp_small_ane.mlpackage",
+      "cpu_only": false,
+      "placement": "6 ops on the NPU, 0 elsewhere",
+      "rows": 1,
+      "physical": 64,
+      "rounds": [
+        {
+          "calls_per_s": 6107.438365652916,
+          "mean_latency_us": 163.6837909271099,
+          "gross": {
+            "cpu_mw": 3930.8297914859304,
+            "gpu_mw": 4.860347782274522,
+            "ane_mw": 1463.8566513037576,
+            "combined_mw": 5399.548558616745
+          },
+          "net": {
+            "cpu_mw": 3397.833593460037,
+            "gpu_mw": -0.5657206547615008,
+            "ane_mw": 1463.5877276483457,
+            "combined_mw": 4860.8573564666785
+          },
+          "energy_per_call_mj": 0.7958913484585003,
+          "energy_per_row_mj": 0.7958913484585003,
+          "energy_per_computed_row_mj": 0.012435802319664067
+        },
+        {
+          "calls_per_s": 6113.930397889297,
+          "mean_latency_us": 163.51107696546384,
+          "gross": {
+            "cpu_mw": 3980.1974654472588,
+            "gpu_mw": 5.058815513894668,
+            "ane_mw": 1464.2788911740172,
+            "combined_mw": 5449.53393449555
+          },
+          "net": {
+            "cpu_mw": 3447.201267421365,
+            "gpu_mw": -0.36725292314135416,
+            "ane_mw": 1464.0099675186052,
+            "combined_mw": 4910.8427323454835
+          },
+          "energy_per_call_mj": 0.8032218904619599,
+          "energy_per_row_mj": 0.8032218904619599,
+          "energy_per_computed_row_mj": 0.012550342038468124
+        },
+        {
+          "calls_per_s": 6027.945996481791,
+          "mean_latency_us": 165.84748790413747,
+          "gross": {
+            "cpu_mw": 3518.0561170034102,
+            "gpu_mw": 4.85467703032244,
+            "ane_mw": 1463.7349361445524,
+            "combined_mw": 4986.644691785242
+          },
+          "net": {
+            "cpu_mw": 2985.0599189775166,
+            "gpu_mw": -0.5713914067135821,
+            "ane_mw": 1463.4660124891404,
+            "combined_mw": 4447.953489635175
+          },
+          "energy_per_call_mj": 0.7378887422400967,
+          "energy_per_row_mj": 0.7378887422400967,
+          "energy_per_computed_row_mj": 0.011529511597501511
+        }
+      ],
+      "mean": {
+        "calls_per_s": 6083.1049200080015,
+        "mean_latency_us": 164.34745193223708,
+        "gross": {
+          "cpu_mw": 3809.694457978866,
+          "gpu_mw": 4.924613442163876,
+          "ane_mw": 1463.9568262074424,
+          "combined_mw": 5278.575728299179
+        },
+        "net": {
+          "cpu_mw": 3276.6982599529724,
+          "gpu_mw": -0.5014549948721463,
+          "ane_mw": 1463.6879025520304,
+          "combined_mw": 4739.884526149112
+        },
+        "energy_per_call_mj": 0.7790006603868523,
+        "energy_per_row_mj": 0.7790006603868523,
+        "energy_per_computed_row_mj": 0.012171885318544568
+      }
+    }
+  ]
+}

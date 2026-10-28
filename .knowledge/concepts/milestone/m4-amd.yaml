@@ -1,0 +1,72 @@
+id: milestone:m4-amd
+type: milestone
+title: M4 AMD バックエンド (amdxdna)
+summary: Linux の amdxdna ドライバを ioctl で直接呼び、IRON / mlir-aie の xclbin を KernelRunner で実行する。
+lifecycle: accepted
+scope: {milestone: m4, backend: xdna}
+constraints:
+  - 開発機に Ryzen AI 機が無いので、カーネルと XRT のソースから仕様を読み取り、C ヘッダ由来の基準値と Go 製の偽ドライバで検証する
+acceptance:
+  abi:
+    text: ioctl 番号と UAPI の構造体、xclbin の構造体、ERT ヘッダのビット配置が C ヘッダから求めた値と一致する
+    scope: {milestone: m4}
+    verified_by: [abi-xdna, abi-ert, abi-xclbin]
+  kernel-run:
+    text: xclbin を読み込んでハードウェアコンテキストと CU を設定し、ERT_START_CU を投入して syncobj で完了を待ち、結果が正しい
+    scope: {milestone: m4}
+    verified_by: [run-sim, run-public, run-report, run-hw]
+  errors:
+    text: 引数の不足・型違い、コマンドのエラー状態、context の取り消し、PDI の無い xclbin を正しく報告する
+    scope: {milestone: m4}
+    verified_by: [errors-sim]
+  power:
+    text: 電力ポリシーが QoS 優先度に写像され、NPU の電力センサーから電力量を積分できる
+    scope: {milestone: m4}
+    verified_by: [power-sim]
+verification:
+  abi-xdna: {state: passed, method: unit, test: "TestIoctlNumbers, TestStructLayouts", authority: observed, scope: {milestone: m4}, evidence: {path: internal/xdna/abi_test.go}, basis: [{path: internal/xdna/abi_test.go, input_hash: b2e08ba60717e9d7ae1b07ac5dbf8403df0c58bd134880194442ab9a8a0d1a24}, {path: testdata/abi/xdna_abi.json, input_hash: dd7d59b779f4a8284afcd7a2938efc61b36d149137eeeb8235aebc735cd02d90}]}
+  abi-ert: {state: passed, method: unit, test: TestHeaderMatchesCBitfields, authority: observed, scope: {milestone: m4}, evidence: {path: internal/ert/ert_test.go, locator: TestHeaderMatchesCBitfields}, basis: [{path: internal/ert/ert_test.go, input_hash: e180456d57ad0b99e5eb475a32d2e1c2234b8b4d94b84eed3fba0e40c1dca3d6}]}
+  abi-xclbin: {state: passed, method: unit, test: TestLayoutMatchesCHeader, authority: observed, scope: {milestone: m4}, evidence: {path: internal/xclbin/xclbin_test.go, locator: TestLayoutMatchesCHeader}, basis: [{path: internal/xclbin/xclbin_test.go, input_hash: 0c08cc54f6debf7cda53dfdb90f85e6f3d741519e2020c83bad2b9560529a8f9}]}
+  run-sim: {state: passed, method: integration, test: TestPassthroughRun, authority: observed, scope: {milestone: m4}, evidence: {path: internal/backend/amd/amd_test.go, locator: TestPassthroughRun}, basis: [{path: internal/backend/amd/amd_test.go, input_hash: 0eb4649027055847586e4d6e97bbf9d64264dc06fe46be0ca0af02f428e5fe18}]}
+  run-public: {state: passed, method: integration, test: TestAMDPassthroughPublicAPI, authority: observed, scope: {milestone: m4}, evidence: {path: amd_sim_test.go, locator: TestAMDPassthroughPublicAPI}, basis: [{path: amd_sim_test.go, input_hash: 7a0c295da2fdd4f079da28af6335d664d8f74193f2da206859b805c7872b798e}]}
+  run-report: {state: passed, method: integration, test: TestReportAMD, authority: observed, scope: {milestone: m4}, evidence: {path: cmd/report/report_test.go, locator: TestReportAMD}, basis: [{path: cmd/report/report_test.go, input_hash: 66ccb59d50d89f8c28337e8191522fa6842a1677adbb6d2a11397c9e2a990481}]}
+  run-hw: {state: not_run, method: manual, scope: {milestone: m4}}
+  errors-sim: {state: passed, method: integration, test: "TestArgumentChecks, TestCommandErrorAndCancel, TestLoadRejectsXclbinWithoutPDI", authority: observed, scope: {milestone: m4}, evidence: {path: internal/backend/amd/amd_test.go}, basis: [{path: internal/backend/amd/amd_test.go, input_hash: 0eb4649027055847586e4d6e97bbf9d64264dc06fe46be0ca0af02f428e5fe18}]}
+  power-sim: {state: passed, method: integration, test: TestPowerPolicyAndSensor, authority: observed, scope: {milestone: m4}, evidence: {path: internal/backend/amd/amd_test.go, locator: TestPowerPolicyAndSensor}, basis: [{path: internal/backend/amd/amd_test.go, input_hash: 0eb4649027055847586e4d6e97bbf9d64264dc06fe46be0ca0af02f428e5fe18}]}
+open_questions:
+  hardware-check:
+    text: Ryzen AI の Linux 機で、実ドライバと IRON の passthrough 設計を相手に動くか
+    state: open
+    resolution: go run ./cmd/report -xclbin final.xclbin -insts insts.bin を実機で実行してもらう
+  real-xclbin:
+    text: 本物の xclbin (aiecc / xclbinutil が生成したもの) をパーサが正しく読めるか
+    state: open
+    resolution: mlir-aie wheel を導入してビルドする実験はこの環境の権限で拒否された。実機確認の際に同時に確かめる
+  elf-flow:
+    text: ELF 経路 (ERT_START_NPU*) と UMQ 世代、ヒープ拡張への対応
+    state: deferred
+    resolution: xclbin 経路が実機で動いたあとに判断する
+facts:
+  decisions:
+    power-mode:
+      choice: デバイス全体の電力モード (SET_STATE、root 専用) は変更せず、コンテキストの QoS 優先度だけを使う
+      reason: 一般ユーザーで使え、他のプロセスに影響しない
+    energy:
+      choice: 瞬間値のセンサーを PowerSample の呼び出し間で台形積分して EnergyJ を作る
+      reason: 公開 API を積算電力量の形に揃えるため
+    package-name: バックエンドは internal/backend/amd (internal/xdna との名前の衝突を避けた)
+  fixes:
+    - ioctl の EAGAIN を再試行していた (amdxdna はヒープ未準備を EAGAIN で返すため無限ループの恐れ)。EINTR のみに
+    - 構造体内のポインタを整数で持っていた (スタック移動で古いアドレスが渡る恐れ)。unsafe.Pointer 型に
+history:
+  completed:
+    summary: 2026-10-28 偽のドライバ相手に受け入れテストに合格。実機と本物の xclbin では未検証。詳細は docs/design.md 16.5
+relations:
+  - relation: uses
+    to: backend:amd-xdna
+  - relation: delivers
+    to: requirement:kernel-execution
+  - relation: delivers
+    to: requirement:power-control
+  - relation: delivers
+    to: requirement:power-metering

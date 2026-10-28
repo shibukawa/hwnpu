@@ -1,0 +1,74 @@
+id: product:hwnpu
+type: product
+title: hwnpu (CPU内蔵NPUを使うGoライブラリ)
+summary: CPU内蔵のNPUをcgoなしでGoから使い、軽量モデルを低消費電力で動かすためのランタイム層ライブラリ。
+lifecycle: accepted
+authority: authored
+constraints:
+  - cgoを使わない。共有ライブラリはpuregoで呼び、カーネルドライバはx/sys/unixのioctlで直接叩く
+  - 本体モジュールの依存はpuregoとgolang.org/x/sysに限る
+  - GPUは必須にしない。NPU中心に機能を提供する
+non_goals:
+  - GPU (NVIDIA Tensor Core、Intel XMX、AMD RDNA) の利用
+  - 自前のグラフIR、汎用のモデル変換器 (ONNX などあらゆるグラフを受けるもの)、ONNXリーダー
+  - OpenVINOやONNX Runtimeのような汎用推論エンジンになること
+  - データセンター向けNPU (AWS Inferentia、Google TPUなど)
+facts:
+  purpose: 今後出てくる軽量モデルを低消費電力で扱えるようにする
+  positioning: >-
+    ONNX Runtime/OpenVINO (エンジン) の一段下、Level Zero/XRT (ドライバ) の一段上に位置するランタイム層。
+    既存環境が未対応演算をCPU/GPUに黙って回すのに対し、NPU実行の保証と電力の制御・計測で差別化する。
+  stakeholder_statements:
+    - できればpuregoで作りたい
+    - macはCore ML経由になり、NPUのみにはできない
+    - Intel/AMDのNPUは直接使えると考えている
+    - GPUは必須ではなく、できればNPU中心にしたい
+    - NPUはCPUコアと1:1ではなく、クラウドから使う口は今のところ無いが、将来は開放されてほしい
+    - 遅くても処理中の消費電力が少なければ価値がある (2026-10-28)
+    - 実用的な用途のモデルは最低でも0.5B、たいていは1B〜2B。小さすぎるモデルのエッジケースへの対処は不要 (2026-10-28)
+    - モデルは Hugging Face から選び、各 NPU の形式に事前変換して S3/NFS 等に置いて配る。変換は Python でなく Go だけで行いたい (2026-10-28。汎用変換器は非目標のままで、LLM の構造ごとの変換器は対象に入れる)
+  design_document: docs/design.md
+  module_path: github.com/shibukawa/hwnpu
+relations:
+  - relation: has_requirement
+    to: requirement:npu-only-execution
+  - relation: has_requirement
+    to: requirement:model-execution-api
+  - relation: has_requirement
+    to: requirement:power-control
+  - relation: has_requirement
+    to: requirement:power-metering
+  - relation: has_requirement
+    to: requirement:compile-cache
+  - relation: has_requirement
+    to: requirement:shape-variants
+  - relation: has_requirement
+    to: requirement:cgo-free
+  - relation: has_requirement
+    to: requirement:kernel-execution
+  - relation: has_requirement
+    to: requirement:matmul-ops
+  - relation: has_requirement
+    to: requirement:windows-support
+  - relation: has_requirement
+    to: requirement:virtualized-npu
+  - relation: has_backend
+    to: backend:apple-coreml
+  - relation: has_backend
+    to: backend:intel-levelzero
+  - relation: has_backend
+    to: backend:amd-xdna
+  - relation: has_decision
+    to: decision:model-source-selection
+  - relation: has_milestone
+    to: milestone:m5-llm-convert
+open_questions:
+  module-path:
+    text: モジュールパスは github.com/shibukawa/hwnpu でよいか
+    state: answered
+    resolution: 2026-10-27 ユーザー判断で github.com/shibukawa/hwnpu に確定
+history:
+  initial-design:
+    summary: 2026-10-11 に初版設計 (Intel=Level Zero、AMD=ioctl、Apple=contrib) を作成。
+  npu-centric:
+    summary: 2026-10-27 に NPU 専用・省電力の方針を採用し、Core ML を本体に格上げ、GPU を非目標にした。
