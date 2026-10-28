@@ -1,0 +1,20 @@
+id: requirement:power-control
+type: requirement
+title: 電力ポリシーの制御
+summary: 共通の PowerPolicy をバックエンドごとの省電力設定に写像する。
+lifecycle: accepted
+capabilities:
+  intel: {state: partial, scope: {backend: levelzero}, verified_by: [mapping-test]}
+  amd: {state: partial, scope: {backend: xdna}}
+  apple: {state: not_applicable, scope: {backend: coreml}}
+acceptance:
+  mapping:
+    text: PowerLow/Balanced/Performance が各バックエンドの設定に写像され、個別オプションが共通ポリシーより優先する
+    verified_by: [mapping-test]
+verification:
+  mapping-test: {state: passed, method: integration, test: TestMockPowerPolicy, authority: observed, scope: {backend: levelzero}, evidence: {path: levelzero_mock_test.go, locator: TestMockPowerPolicy}, basis: [{path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}]}
+facts:
+  mapping:
+    levelzero: 実装済み (偽のドライバで検証)。Low は優先度 LOW + workload BACKGROUND、Balanced は NORMAL、Performance は HIGH + TURBO
+    xdna: 実装済み (偽のドライバで検証)。QoS priority のみ (Low=0x280, Balanced=0x200, Performance=0x180)。SET_POWER_MODE は root 専用でデバイス全体に効くため使わない
+    coreml: 公開された電力設定は無い。compute units の選択のみ

@@ -1,0 +1,38 @@
+id: backend:amd-xdna
+type: backend
+title: AMDバックエンド (amdxdna ioctl)
+summary: Linux の amdxdna ドライバを x/sys/unix の ioctl で直接叩く。XRT shim (Apache-2.0) を Go に移植する。
+lifecycle: accepted
+scope: {backend: xdna, os: linux}
+constraints:
+  - Linux 6.14 以降 (amdxdna upstream) を前提とする
+  - v1 は KMQ と xclbin 経路のみ
+capabilities:
+  kernel-run: {about: capability:xdna/kernel-run, state: partial}
+  power-control: {about: capability:xdna/power-control, state: partial}
+  power-meter: {about: capability:xdna/power-meter, state: partial}
+  graph-run: {about: capability:xdna/graph-run, state: absent}
+facts:
+  reason_no_xrt_c_api: hw_context と module は C++ 専用、device ベースの xrt::kernel は deprecated、残るC APIは可変長引数
+  status: 偽のドライバ相手に実装済み (M4)。実機では未検証
+  ioctls: [CREATE_HWCTX, DESTROY_HWCTX, CONFIG_HWCTX, CREATE_BO, GET_BO_INFO, SYNC_BO, EXEC_CMD, GET_INFO, SET_STATE, WAIT_CMD, GET_ARRAY]
+open_questions:
+  dev-heap:
+    text: DEV_HEAP BO の大きさと必須性
+    state: answered
+    resolution: 2026-10-28 amdxdna_gem.c で確認。AIE2_DEVM_SIZE (64 MiB) の倍数で必須。BO_DEV より前に作ってマップする。npu1 は 64 MiB 上限で拡張不可
+  ert-payload:
+    text: ERT コマンドのペイロードの正確な並び (shim の BO ダンプで golden を採る)
+    state: answered
+    resolution: 2026-10-28 xrt_kernel.cpp と aie2_message.c で確認。xclbin 経路は ERT_START_CU + CU マスク 1 語 + メタデータの offset どおりのレジスタマップ。ヘッダのビット配置は ert.h の C ビットフィールドと一致を確認
+  wait-mechanism:
+    text: WAIT_CMD と syncobj の使い分け
+    state: answered
+    resolution: 2026-10-28 aie2_pci.c で確認。AIE2 は cmd_wait を実装していないので WAIT_CMD は使えない。syncobj タイムラインを WAIT_FOR_SUBMIT で待つ (XRT shim と同じ)
+relations:
+  - relation: implements
+    to: requirement:kernel-execution
+  - relation: implements
+    to: requirement:power-control
+  - relation: implements
+    to: requirement:power-metering

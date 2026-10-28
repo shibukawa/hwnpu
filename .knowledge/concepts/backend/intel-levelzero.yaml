@@ -1,0 +1,43 @@
+id: backend:intel-levelzero
+type: backend
+title: Intelバックエンド (Level Zero)
+summary: libze_loader と ZE_extension_graph を purego で呼ぶ。ioctl 直叩きはジョブ形式が非公開のため採らない。
+lifecycle: accepted
+scope: {backend: levelzero}
+constraints:
+  - graph 拡張は 1.5 以上を必須とする (Create2 と ze_graph_desc_2_t)
+  - Bind できるのは Level Zero が確保したメモリ (zeMemAllocHost) だけ
+capabilities:
+  native-blob: {about: capability:levelzero/native-blob, state: partial, verified_by: [m2-mock]}
+  ir-compile: {about: capability:levelzero/ir-compile, state: partial, verified_by: [m2-mock]}
+  placement-verify: {about: capability:levelzero/placement-verify, state: partial, verified_by: [m2-mock]}
+  power-control: {about: capability:levelzero/power-control, state: partial}
+  power-meter: {about: capability:levelzero/power-meter, state: partial}
+facts:
+  libraries: [libze_loader.so.1, libze_intel_npu.so.1, libnpu_driver_compiler.so, ze_loader.dll]
+  device_node: /dev/accel/accel0 (render グループ権限が必要)
+  platforms: Meteor Lake, Arrow Lake, Lunar Lake, Panther Lake, Wildcat Lake
+  status: 偽のドライバ相手に実装済み (M2)。実機では未検証
+  version_pitfall: ドライバ、コンパイラ、ファームウェアの版が揃わないと失敗する
+verification:
+  m2-mock: {state: passed, method: integration, test: "TestMock*", authority: observed, evidence: {path: levelzero_mock_test.go}, basis: [{path: levelzero_mock_test.go, input_hash: 1d196e127f0b4485f32ddc1fffd1b8f6e59e1ff410860dd2b278d56980c798a9}]}
+open_questions:
+  rt-info:
+    text: is_new_api と use_indices_for_io_metadata の差し込みを実際のコンパイラが期待どおり解釈するか
+    state: open
+    resolution: OpenVINO が常に設定している値に合わせた。実機で確認する
+  ext-name:
+    text: zeDriverGetExtensionProperties が返す graph 拡張名の形式 (ZE_extension_graph_1_N か)
+    state: answered
+    resolution: 2026-10-28 OpenVINO zero_utils.hpp で確認。新しいドライバは "ZE_extension_graph"、古いドライバは "ZE_extension_graph_1_2" のような版付きの名前。両方に対応した
+  build-flags:
+    text: OpenVINO の serializeIOInfo/serializeConfig のビルドフラグ文字列の正確な形式
+    state: answered
+    resolution: 2026-10-28 model_serializer.cpp から serializeIOInfo を移植 (internal/ovir)。--config は利用者が BuildFlags で渡す
+relations:
+  - relation: implements
+    to: requirement:npu-only-execution
+  - relation: implements
+    to: requirement:model-execution-api
+  - relation: implements
+    to: requirement:power-control

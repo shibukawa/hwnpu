@@ -1,0 +1,8 @@
+id: decision:no-gpu
+type: decision
+title: GPUを対象外にする
+summary: NPU中心・省電力が目的なので GPU (NVIDIA を含む) は扱わない。
+lifecycle: accepted
+facts:
+  reason: GPU を入れるとメモリモデル (明示コピー) と起動設定が異なり、製品が汎用計算ランタイムに変わる
+  alternative: GPU が必要なら ONNX Runtime など既存エンジンを使う

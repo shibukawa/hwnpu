@@ -1,0 +1,16 @@
+id: requirement:matmul-ops
+type: requirement
+title: 行列演算の補助層 (ops)
+summary: 固定形状の行列積などを小さなグラフとして生成・キャッシュして実行する補助パッケージ。中核APIの上に載せる。
+lifecycle: proposed
+constraints:
+  - 形状を固定して何度も使う用途に限る旨をAPIの制約として明記する
+facts:
+  per_backend:
+    levelzero: 行列積1つだけの OpenVINO IR (XML) を Go で生成してコンパイル
+    coreml: 小さな Core ML モデルを生成 (protobuf と重みファイルで手間が大きい)
+    xdna: mlir-aie の行列積サンプルのような事前ビルド済みカーネルを同梱
+  use_case: 埋め込みベクトルの類似度計算など、大きな行列積を同じ形状で繰り返す処理
+relations:
+  - relation: builds_on
+    to: requirement:model-execution-api

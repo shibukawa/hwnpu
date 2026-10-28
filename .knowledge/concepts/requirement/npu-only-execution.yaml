@@ -1,0 +1,49 @@
+id: requirement:npu-only-execution
+type: requirement
+title: NPU実行の保証 (厳格モード)
+summary: NPUだけで完結しないモデルは実行前にエラーにし、原因の演算を返す。既定で有効。
+lifecycle: accepted
+constraints:
+  - 既定の配置方針は PlacementStrict とする
+  - CPUやGPUへの黙ったフォールバックをしない
+capabilities:
+  intel-verify:
+    state: planned
+    scope: {backend: levelzero}
+  amd-verify:
+    state: planned
+    scope: {backend: xdna}
+  apple-verify:
+    state: implemented
+    verified_by: [strict-rejects-test, prefer-reports-test]
+    scope: {backend: coreml}
+acceptance:
+  strict-rejects:
+    text: NPUに載らない演算を含むモデルをコンパイルすると ErrNotOnNPU が返り、PlacementReport に原因の演算名と型が入る
+    verified_by: [strict-rejects-test]
+  prefer-reports:
+    text: PlacementPrefer では続行し、回った演算が PlacementReport に記録される
+    verified_by: [prefer-reports-test]
+  unverifiable-strict:
+    text: 配置を検証できないバックエンドや条件では Verified=false となり、厳格モードではエラーになる
+    verified_by: [unverifiable-strict-test]
+verification:
+  strict-rejects-test: {state: passed, method: integration, test: TestStrictRejectsFP32, authority: observed, scope: {backend: coreml}, evidence: {path: coreml_darwin_test.go, locator: TestStrictRejectsFP32}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}, {path: internal/fixtures/coreml/linear_relu_fp32.mlpackage/Data/com.apple.CoreML/model.mlmodel, input_hash: 77f1aec36fe3bfe730cc144802db983096d2b273aa6026b58fbc30b36fe218e3}]}
+  prefer-reports-test: {state: passed, method: integration, test: TestPreferRunsAndReports, authority: observed, scope: {backend: coreml}, evidence: {path: coreml_darwin_test.go, locator: TestPreferRunsAndReports}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}, {path: internal/fixtures/coreml/linear_relu_fp32.mlpackage/Data/com.apple.CoreML/model.mlmodel, input_hash: 77f1aec36fe3bfe730cc144802db983096d2b273aa6026b58fbc30b36fe218e3}]}
+  unverifiable-strict-test: {state: passed, method: unit, test: TestStrictRejectsUnverifiedPlacement, authority: observed, evidence: {path: placement_test.go, locator: TestStrictRejectsUnverifiedPlacement}, basis: [{path: placement_test.go, input_hash: dcb5664857faf9f4e370a264eef46e889125e938bc3104592fa7a0db34434685}]}
+facts:
+  decisions:
+    apple-guarantee-wording:
+      provisional_choice: Verified=true とし、PlacementReport.Method="coreml-compute-plan" で検証手段を明示する。推定である旨を README と doc コメントに書く
+      evidence: compute plan の配置と実行結果は fixture で整合した。実行時に ANE が使われたことを直接確かめる公開 API は無い
+      change_boundary: PlacementReport に状態値を足すだけで変更でき、公開 API の他の部分に影響しない
+  per_backend:
+    levelzero: 対応レイヤー問い合わせ (QueryNetworkCreate2 / GetSupportedLayers)。NPUプラグインはフォールバックしないのでコンパイル成功でNPU実行が確定
+    xdna: xclbin/ELFはNPU専用なので常に満たす
+    coreml: MLComputePlan で全演算の推奨デバイスが Neural Engine か確認。推定であり実行時の配置は保証されない
+    onnxrt-contrib: EPがグラフを分割するので保証は及ばず Verified=false
+open_questions:
+  apple-guarantee-wording:
+    text: Core ML の検証は推定にすぎない。Verified=true の意味を「推定上NPU」と文書化するだけでよいか、別の状態値を設けるか
+    state: open
+    resolution: 2026-10-27 M1 の実験が終わり見直し時期になった。暫定実装は下の facts.decisions を参照し、ユーザーの確認を待つ

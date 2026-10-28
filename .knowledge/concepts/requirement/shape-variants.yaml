@@ -1,0 +1,42 @@
+id: requirement:shape-variants
+type: requirement
+title: 形状違いモデルの共存と重み共有
+summary: NPUは静的形状を好むため、プリフィル用とデコード用など形状違いのグラフを重み共有で束ねる (CompileSet)。
+lifecycle: proposed
+facts:
+  batch_padding:
+    tool: tools/coreml/ane_pad.py (ML Program のバッチ次元を書き換え、ANE に全演算が載る最小のバッチを探す)
+    runtime: Core ML バックエンドがメタデータ hwnpu.logical_batch / hwnpu.padded_batch を読み、元の形状で受け渡しする (ArgInfo.PaddedDims)
+    feature_padding: 特徴量方向のゼロ埋めは全結合と ReLU なら正確だが正規化を壊し、試したモデルでは ANE に移らなかった
+  motivation: 小型LLMのように系列長やKVキャッシュが変わるモデルをNPUに載せるため
+  intel_mechanism: コンパイラの重み分離機能 (OpenVINO compileWS、コンパイラ6.3以降が必要)
+verification:
+  batch-padding: {state: passed, method: integration, test: TestCoreMLBatchPadding, authority: observed, scope: {backend: coreml}, evidence: {path: coreml_darwin_test.go, locator: TestCoreMLBatchPadding}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}, {path: tools/coreml/ane_pad.py, input_hash: c39a5231aa473c32eccd4bfbbc45c3ff76035e01d3c10c44a74e99a0e0a9cdd5}]}
+open_questions:
+  ane-min-size:
+    text: Core ML は小さなモデルを fp16 でも CPU に置く。軽量モデルを ANE に載せるにはバッチ化などで計算量を増やす必要があるか
+    state: answered
+    resolution: 2026-10-28 必要。配置はモデル全体の計算量で決まり、バッチ次元の拡大で ANE に移る (3 層 MLP 幅 128 はバッチ 64 で ANE)。tools/coreml/ane_pad.py と実行時のパディングを実装した
+  padding-worth:
+    text: ゼロ埋めのパディングで ANE に載せることは、電力の面で得になるか
+    state: answered
+    resolution: >-
+      ユーザー方針は「遅くても処理中の消費電力が少なければ価値がある」(2026-10-28)、基準は mJ/call。
+      M3 (Mac15,13) を cmd/powerbench で測定、mlp_small (3 層 MLP 幅 128) では得にならない。
+      連続実行: CPU 1 行 0.32 mJ/call、CPU 64 行 0.33 mJ/call (5.1 µJ/行)、ANE 64 行 0.78 mJ/call (12.2 µJ/行, CPU 3.3 W + ANE 1.5 W)。
+      毎秒 100 回: 全体の正味電力はアイドルの揺れ (0.2-1.0 W) に埋もれて測れず、ANE レールだけで約 59 mW = 0.6 mJ/call (呼び出しごとの起動停止)。
+      Core ML 呼び出しの固定費 (約 55 µs) が計算を上回る大きさでは CPU が有利。損益分岐のモデルの大きさは未測定
+  ane-break-even:
+    text: Core ML で Neural Engine が CPU よりエネルギーで得になるのは、どの大きさのモデルからか
+    state: answered
+    resolution: >-
+      M3 で測定 (cmd/powerbench, tools/coreml/gen_sweep.py, convert_minilm.py)。損益分岐は約 200 MFLOP/call。
+      13 MFLOP では NPU が 2.2 倍のエネルギー、0.96 GFLOP で 0.38 倍、2.9 GFLOP 以上で約 0.25 倍 (約 1 TFLOP/J 対 CPU 0.25 TFLOP/J)。
+      all-MiniLM-L6-v2 (系列長 128) は CPU 16.5 mJ 対 NPU 4.3 mJ。埋め込みの表引きとプーリングは CPU に残るので Prefer 配置が必要
+  apple-weight-sharing:
+    text: Core ML で形状違いモデルの重み共有をどう実現するか (multifunction モデル等)
+    state: deferred
+    resolution: 軽量LLMのマイルストーンで調査する
+  intel-ws-version:
+    text: 重み分離に必要なコンパイラ版の確認
+    state: deferred

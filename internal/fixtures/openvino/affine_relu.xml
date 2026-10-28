@@ -1,0 +1,97 @@
+<?xml version="1.0"?>
+<net name="affine_relu" version="11">
+	<layers>
+		<layer id="0" name="x" type="Parameter" version="opset1">
+			<data shape="1,8" element_type="f32" />
+			<output>
+				<port id="0" precision="FP32" names="x">
+					<dim>1</dim>
+					<dim>8</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="1" name="scale" type="Const" version="opset1">
+			<data element_type="f32" shape="1" offset="0" size="4" />
+			<output>
+				<port id="0" precision="FP32">
+					<dim>1</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="2" name="mul" type="Multiply" version="opset1">
+			<data auto_broadcast="numpy" />
+			<input>
+				<port id="0" precision="FP32">
+					<dim>1</dim>
+					<dim>8</dim>
+				</port>
+				<port id="1" precision="FP32">
+					<dim>1</dim>
+				</port>
+			</input>
+			<output>
+				<port id="2" precision="FP32">
+					<dim>1</dim>
+					<dim>8</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="3" name="bias" type="Const" version="opset1">
+			<data element_type="f32" shape="1" offset="4" size="4" />
+			<output>
+				<port id="0" precision="FP32">
+					<dim>1</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="4" name="add" type="Add" version="opset1">
+			<data auto_broadcast="numpy" />
+			<input>
+				<port id="0" precision="FP32">
+					<dim>1</dim>
+					<dim>8</dim>
+				</port>
+				<port id="1" precision="FP32">
+					<dim>1</dim>
+				</port>
+			</input>
+			<output>
+				<port id="2" precision="FP32">
+					<dim>1</dim>
+					<dim>8</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="5" name="y" type="ReLU" version="opset1">
+			<input>
+				<port id="0" precision="FP32">
+					<dim>1</dim>
+					<dim>8</dim>
+				</port>
+			</input>
+			<output>
+				<port id="1" precision="FP32" names="y">
+					<dim>1</dim>
+					<dim>8</dim>
+				</port>
+			</output>
+		</layer>
+		<layer id="6" name="y/sink_port_0" type="Result" version="opset1">
+			<input>
+				<port id="0" precision="FP32">
+					<dim>1</dim>
+					<dim>8</dim>
+				</port>
+			</input>
+		</layer>
+	</layers>
+	<edges>
+		<edge from-layer="0" from-port="0" to-layer="2" to-port="0" />
+		<edge from-layer="1" from-port="0" to-layer="2" to-port="1" />
+		<edge from-layer="2" from-port="2" to-layer="4" to-port="0" />
+		<edge from-layer="3" from-port="0" to-layer="4" to-port="1" />
+		<edge from-layer="4" from-port="2" to-layer="5" to-port="0" />
+		<edge from-layer="5" from-port="1" to-layer="6" to-port="0" />
+	</edges>
+	<rt_info />
+</net>
