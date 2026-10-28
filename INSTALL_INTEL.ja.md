@@ -154,6 +154,14 @@ go run ./cmd/report -power low -o low.md
 go run ./cmd/report -power performance -o performance.md
 ```
 
+生成したモデルで NPU を測るには、npuprobe を使います。LLM の生成と同じ形の OpenVINO IR のモデルを Go で作り、0.5B と 1B の重みで fp16、int8、int4 の速さを測ります (`bench`。RAPL を読めるとき、つまり Linux で root のときは 1 トークンあたりのエネルギーも)。次に形式ごとにモデルを大きくしながら、ドライバがコンパイルできなくなる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込みます (`limit`)。Python もモデルのファイルも要りません。数十分から 1 時間ほどかかり、結果は `npuprobe-<機種>-<日時>.md` に書き出します。クローンしなくても動きます。
+
+```bash
+go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
+```
+
+先に `cmd/report` を動かしてください。そこで小さなモデルが失敗するなら、探索も同じように失敗します。結果の読み方は [PROBE.ja.md](PROBE.ja.md) にあります。
+
 ## 5. モデルの用意
 
 hwnpu が受け取るモデルの形式は 2 つです。

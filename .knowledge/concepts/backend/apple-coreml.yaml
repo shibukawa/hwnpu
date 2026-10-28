@@ -16,6 +16,11 @@ facts:
   dev_machine: 開発機は darwin/arm64 (Go 1.27)
   observations:
     small_models_on_cpu: fp16 でも小さなモデルは CPU に置かれる。linear (64,512)->512 は ANE、(32,256)->256 以下は CPU、1x1 conv (最大 256ch 32x32) は CPU (macOS 27.0.1)
+    model_size_limit: >-
+      ANE に載るのはモデル 1 つあたり保存された重みで 1 GiB 未満 (M3 16GB、macOS 27.0.1、cmd/npuprobe limit)。
+      境目は fp16 0.91/1.02、int8 0.96/1.02、lut4 0.99/1.02 GiB (載る/載らない) で形式によらない。超えると全演算が CPU。
+      上限はモデルごとで、0.91 GiB を 3 つ同時に読み込んでも全部 ANE で速度も同じ。大きなネットワークは分割すれば載る。
+      CPU に落ちた lut4 は 1.1 GiB で 1 呼び出し 5 秒以上と極端に遅い (表を展開した fp16 がメモリを圧迫)
     zero_copy: MLMultiArray initWithDataPointer と outputBackings で入出力ともコピーなし
     loader_names: MIL の値の名前に "." が入っていると Core ML のローダが segfault する (英数字と _ だけにする)
     gather_on_cpu: gather (埋め込みの表引き) は大きさによらず CPU に置かれる。linear は 1 演算だけのグラフだと CPU、複数演算で 2048 幅なら ANE

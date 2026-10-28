@@ -154,6 +154,14 @@ go run ./cmd/report -power low -o low.md
 go run ./cmd/report -power performance -o performance.md
 ```
 
+To measure the NPU with generated models, run the probe. It builds LLM decode shaped OpenVINO IR models in Go and measures 0.5 B and 1 B weights in fp16, int8 and int4 (`bench`; with energy per token when the RAPL counters are readable, as root on Linux). Then it grows the model in each format until the driver no longer builds it, bisects to the boundary, and loads several models just under it at once (`limit`). It needs no Python and no model files, takes from tens of minutes to an hour, and writes `npuprobe-<machine>-<time>.md`. It runs without cloning:
+
+```bash
+go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
+```
+
+Run `cmd/report` first: if the small models there fail, the probe will fail the same way. How to read the results: [PROBE.md](PROBE.md).
+
 ## 5. Preparing models
 
 hwnpu takes models in two forms:

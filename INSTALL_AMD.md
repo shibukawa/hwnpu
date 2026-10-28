@@ -25,6 +25,7 @@ hwnpu talks to the Linux **amdxdna** kernel driver directly through `ioctl` and 
 | NPU firmware (`/usr/lib/firmware/amdnpu/`) | yes | From `linux-firmware`, or from the `amdxdna-dkms` / XRT plugin packages. |
 | Read/write on `/dev/accel/accelN` | yes | `render` group. |
 | XRT (`xrt-smi`) | no | Useful to validate the installation. |
+| ROCm | no | ROCm is the GPU stack (`amdgpu`, HIP, ROCr). The NPU has its own driver (`amdxdna`), runtime (XRT) and firmware, and works without ROCm. |
 | IRON / mlir-aie and Peano | no | Needed to **build** kernels (xclbin and instruction stream). |
 | Go | yes | 1.27 or later (see `go.mod`), `CGO_ENABLED=0` works. |
 

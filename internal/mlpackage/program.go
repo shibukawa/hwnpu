@@ -295,6 +295,16 @@ func (b *Builder) LUT4(name string, shape, block []int, indices []byte, lut []ui
 // layout of llama.cpp's Q4_0 when block is [1, 32]. data holds two's complement 4 bit values, two
 // per byte with the low nibble first; scales are fp16 halves, blocks in row major order.
 func (b *Builder) Int4Scaled(name string, shape, block []int, data []byte, scales []uint16) (*Var, error) {
+	return b.scaled(name, 4, shape, block, data, scales)
+}
+
+// Int8Scaled is Int4Scaled for int8 data, one byte per element (coremltools' linear symmetric
+// int8 per output channel when block is [1, cols]).
+func (b *Builder) Int8Scaled(name string, shape, block []int, data []byte, scales []uint16) (*Var, error) {
+	return b.scaled(name, 8, shape, block, data, scales)
+}
+
+func (b *Builder) scaled(name string, bits int, shape, block []int, data []byte, scales []uint16) (*Var, error) {
 	if len(shape) < 1 || len(block) != len(shape) {
 		return nil, fmt.Errorf("mlpackage: %s: block %v does not match shape %v", name, block, shape)
 	}
@@ -308,10 +318,14 @@ func (b *Builder) Int4Scaled(name string, shape, block []int, data []byte, scale
 		scaleShape[i] = d / block[i]
 		tables *= scaleShape[i]
 	}
-	if len(data) != (n+1)/2 || len(scales) != tables {
+	dt, bt, size := milspec.DataType_INT4, BlobInt4, (n+1)/2
+	if bits == 8 {
+		dt, bt, size = milspec.DataType_INT8, BlobInt8, n
+	}
+	if len(data) != size || len(scales) != tables {
 		return nil, fmt.Errorf("mlpackage: %s: %d data bytes and %d scales for shape %v block %v", name, len(data), len(scales), shape, block)
 	}
-	dv, err := b.constValue(milspec.DataType_INT4, shape, data, BlobInt4)
+	dv, err := b.constValue(dt, shape, data, bt)
 	if err != nil {
 		return nil, err
 	}

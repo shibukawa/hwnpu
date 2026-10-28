@@ -25,6 +25,7 @@ hwnpu は、Linux のカーネルドライバ **amdxdna** を `ioctl` と `mmap`
 | NPU のファームウェア（`/usr/lib/firmware/amdnpu/`） | 必要 | `linux-firmware`、または `amdxdna-dkms` や XRT プラグインのパッケージに含まれる。 |
 | `/dev/accel/accelN` の読み書き | 必要 | `render` グループ。 |
 | XRT（`xrt-smi`） | 不要 | 導入の確認に便利。 |
+| ROCm | 不要 | ROCm は GPU 用のスタック（`amdgpu`、HIP、ROCr）。NPU はドライバ（`amdxdna`）、ランタイム（XRT）、ファームウェアが別で、ROCm なしで動く。 |
 | IRON / mlir-aie と Peano | 不要 | カーネル（xclbin と命令列）を**ビルドする**ときに必要。 |
 | Go | 必要 | 1.27 以降（`go.mod` を参照）。`CGO_ENABLED=0` で動く。 |
 
