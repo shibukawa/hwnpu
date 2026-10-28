@@ -1,0 +1,141 @@
+# 手元の機械で hwnpu を確かめる
+
+実機で、hwnpu が NPU を動かせるか、LLM の大きさのモデルがそこでどれだけ速く動くか、NPU がどの大きさのモデルまで受け付けるか、どれだけのエネルギーを使うかを確かめる手順です。どれもモジュールのパスを指定した `go run` で動きます。Go のモジュール以外にクローンやダウンロードは要りません。モデルはツールが Go で生成するので、Python もモデルのファイルも不要です。
+
+English: [PROBE.md](PROBE.md)
+
+## 何を動かすか
+
+| 機械 | 1. 動くか | 2. 速さと大きさの上限 | 3. エネルギー |
+|---|---|---|---|
+| Apple シリコンの Mac | `cmd/report` | `cmd/npuprobe` | `cmd/powerbench -decode 8,16 -gpu`（sudo） |
+| Intel Core Ultra、Linux | `cmd/report` | `cmd/npuprobe` | root で動かした `cmd/npuprobe`（RAPL） |
+| Intel Core Ultra、Windows | `cmd/report` | `cmd/npuprobe` | 未対応 |
+| AMD Ryzen AI、Linux | `cmd/report` | 未対応。AMD バックエンドはモデルではなくカーネルを動かす | |
+
+先に機械の準備をしてください: [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md)、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)、[INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)。Go は 1.27 以降が要ります。古い `go` コマンドでも、既定の設定（`GOTOOLCHAIN=auto`）なら必要な版を自分でダウンロードします。
+
+### 1. 動くか
+
+```bash
+go run github.com/shibukawa/hwnpu/cmd/report@latest -o report.md
+```
+
+見つかった NPU ごとに、埋め込みの小さなモデルをコンパイルし、結果を fp32 の参照値と比べ、時間を測ります。ここで失敗するなら、以下の手順も同じように失敗します。原因（ドライバ、ライブラリ、配置）はレポートに出ます。
+
+### 2. 速さと大きさの上限
+
+```bash
+go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
+```
+
+40 分ほどかかり、今いるディレクトリに `npuprobe-<機種>-<日時>.md` と `.json` を書き出します。Ctrl-C で止めても、そこまでの結果は残ります。コマンド名のあとに `bench` か `limit` を付けると片方だけを行います。
+
+### 3. エネルギー
+
+Apple でエネルギーを測るには `powermetrics` が要り、それには root が要ります。ツールが sudo のパスワードを一度だけ聞きます。
+
+```bash
+go run github.com/shibukawa/hwnpu/cmd/powerbench@latest -decode 8,16 -gpu -o power.md
+```
+
+Linux の Intel では、npuprobe が RAPL のエネルギーカウンタを読めるときに読みます。それには root が要るので、コマンドをビルドしてから sudo で動かします。
+
+```bash
+GOBIN=$PWD go install github.com/shibukawa/hwnpu/cmd/npuprobe@latest
+```
+
+```bash
+sudo ./npuprobe bench
+```
+
+## モデル
+
+どのモデルも、LLM の生成 1 ステップと同じ形です。1 トークンが Llama 3.2 1B の大きさの層（隠れ層 2048、MLP 8192、キーと値が 512 幅のグループ化した注意）を通るので、1 回の呼び出しで、トークンを 1 つ生成するときと同じく全部の重みを 1 回ずつ読みます。1 層の重みは 61 M 個で、8 層で 0.49 B、16 層で 0.97 B です。重みは乱数です（測るのは速さと配置で、精度ではありません）。KV キャッシュに対する注意は省いています。問い合わせが 1 つなら、重みに比べて小さな読み出しだからです。
+
+| 形式 | 重み 1 個のバイト数 | Apple（Core ML） | Intel（OpenVINO IR） |
+|---|---|---|---|
+| fp16 | 2 | fp16 の定数 | fp16 の定数 |
+| int8 | 1 | int8、出力の行ごとに 1 つのスケール | i8 → Convert → Multiply、行ごとに 1 つのスケール |
+| lut4 | 0.5 | 4 ビットの表引き、16 行ごとに 16 値の表 1 つ | — |
+| int4 | 0.5 | int4、入力 32 個ごとに 1 つのスケール（CPU と GPU のみ） | i4 → Convert → Multiply、行ごとに 1 つのスケール |
+
+生成するコードは [internal/probe](internal/probe/model.go) にあります。Intel 用のモデルは、OpenVINO 2026.4 で読み込んで CPU で実行し、正しく動くことを確かめています。
+
+## npuprobe が測るもの
+
+**bench** は、8 層と 16 層を形式ごとに NPU で動かします。Apple では比較のため、Core ML の CPU と GPU でも動かします。各モデルは 2 回の空回しのあと、3 秒以上動かします。
+
+**limit** は、形式ごとにモデルを大きくし（2、4、8、12、16、24、32 … 層）、NPU から外れたら、NPU に載った最大と載らなかった最小の差が 1 層になるまで二分探索します。次に、境目のすぐ下の大きさのモデルを、外れた大きさの 2 倍を超えるだけ同時に読み込み、全部を読み込んだ状態でそれぞれをもう一度動かします。全部が NPU に載ったまま速さも変わらなければ、上限はモデル 1 つごとで、大きなネットワークは複数のモデルに分ければ載せられます。NPU から外れたモデルは CPU では非常に遅いことがあるので、1 回だけ動かします。
+
+計測は 1 つずつ別の子プロセスで行います。フレームワークやドライバがプロセスごと落ちても（Core ML の GPU の経路が一部のグラフで assert したことがあります）、失うのはレポートの 1 行で、その行にエラーが残ります。
+
+列の読み方:
+
+| 列 | 意味 |
+|---|---|
+| placement | Apple は Core ML の計算計画（`MLComputePlan`）が示す演算ごとの置き場所で、`NPU` や `CPU 258` など。Intel はドライバのコンパイラがグラフを作れたら `NPU`。ほかの装置に逃がす仕組みがないので、それ以外はコンパイルエラーになる。 |
+| ms/token、tokens/s | 呼び出し 1 回の実時間。文脈に対する注意を含まないので、実際の生成の上限値。 |
+| weights GB/s | 重みのバイト数 × 1 秒あたりの呼び出し回数。メモリ帯域にどれだけ近いか。 |
+| CPU use | モデルを動かしている間の、プロセスの CPU 時間 ÷ 実時間。NPU（や GPU）が計算していれば 0 に近く、CPU なら 1 以上。root なしで配置を裏付ける。 |
+| net W、mJ/token | 読める電力計があるとき、動かしている間の電力から待機時の電力を引いたもの。 |
+
+オプション:
+
+| フラグ | 既定 | |
+|---|---|---|
+| `-formats` | Apple は `fp16,int8,lut4,int4`、Intel は `fp16,int8,int4` | int4 は Neural Engine では試さない |
+| `-layers` | `8,16` | bench の層の数 |
+| `-baselines` | `cpu,gpu` | Apple で比べる Core ML の装置。空なら比べない |
+| `-max-gb` | Apple はメモリの 4 分の 1、Intel は 6 分の 1、最大 8 | limit で試す重みの最大の大きさ。Apple はこの 2 倍ほどの空きディスクが要る |
+| `-several` | `true` | limit の最後に複数のモデルを同時に読み込む |
+| `-run` | `3s` | モデルごとの計測時間 |
+| `-dir`、`-o` | 一時ディレクトリ、`npuprobe-<機種>-<日時>.md` | |
+
+## これまでの結果
+
+### Apple M3（MacBook Air、16 GB、macOS 27.0.1）
+
+大きさの上限（モデルを 1 つずつ）:
+
+| 形式 | Neural Engine に載った最大 | 載らなかった最小 |
+|---|---|---|
+| fp16 | 8 層、0.91 GiB | 9 層、1.02 GiB |
+| int8 | 17 層、0.96 GiB | 18 層、1.02 GiB |
+| lut4 | 35 層、0.99 GiB | 36 層、1.02 GiB |
+
+- Neural Engine が受け付けるのは、保存された重みが 1 GiB 未満のモデルで、形式によりません。それより大きいモデルは丸ごと CPU に置かれます。
+- 上限はモデルごとです。0.91 GiB の fp16 のモデルを 3 つ（計 2.7 GiB）同時に読み込んでも、3 つとも Neural Engine に載り、どれも 1 回 45 ms と、1 つだけのときと同じ速さでした。
+- CPU に落ちた lut4 のモデルは極端に遅く、1.0〜1.4 GiB で 1 回 5〜13 秒かかりました。CPU では表を 4 倍の大きさの fp16 に展開するので、16 GB の機械ではメモリが足りなくなったためと考えられます。
+
+16 層（0.97 B）での速さとエネルギー。速さは `npuprobe bench`、エネルギーは同じ形のモデルでの `powerbench` です。
+
+| 形式 | 重み | 指定 | 置かれた先 | ms/token | tokens/s | 重み GB/s | CPU use | mJ/token |
+|---|---|---|---|---|---|---|---|---|
+| fp16 | 1.81 GiB | NPU | CPU（上限超え） | 26.9 | 37 | 72 | 3.72 | |
+| fp16 | 1.81 GiB | CPU | CPU | 29.6 | 34 | 66 | 3.29 | 276 |
+| fp16 | 1.81 GiB | GPU | GPU | 24.5 | 41 | 79 | 0.13 | 69 |
+| int8 | 0.91 GiB | NPU | NPU | 41.6 | 24 | 23 | 0.01 | 95 |
+| int8 | 0.91 GiB | CPU | CPU | 29.1 | 34 | 33 | 3.43 | 262 |
+| int8 | 0.91 GiB | GPU | GPU | 42.0 | 24 | 23 | 0.08 | 388 |
+| **lut4** | 0.45 GiB | **NPU** | **NPU** | **7.5** | **133** | 65 | 0.02 | **37** |
+| lut4 | 0.45 GiB | CPU | CPU | 27.3 | 37 | 18 | 3.67 | 256 |
+| lut4 | 0.45 GiB | GPU | GPU（計画を読めず） | 65.1 | 15 | 7 | 0.14 | 256 |
+| int4 | 0.45 GiB | CPU | CPU | 28.1 | 36 | 17 | 3.53 | 300 |
+| **int4** | 0.45 GiB | **GPU** | **GPU** | **8.5** | **117** | 57 | 0.47 | **35** |
+
+- Neural Engine で全速で動くのは lut4 だけです。4 ビットの重みは int8 に比べて 1 トークンで読むバイト数が半分で、生成の速さは重みの読み出しで決まります。
+- Neural Engine と GPU の int4 は、1 トークンあたりのエネルギーがほぼ同じ（37 mJ と 35 mJ）で、CPU はその 7 倍ほどです。
+- 1 B の fp16 は大きさの上限を超えるので、CPU で動きます。
+- CPU は読み出すバイト数ではなく計算で頭打ちになり、どの形式でも 1 トークン 30 ms 前後で、3.3〜3.7 コア分を使います。量子化が効くのは NPU と GPU だけです。
+
+### 求む結果
+
+M4 以降の Apple のチップ（1 GiB の上限はチップやメモリで変わるか）、Linux と Windows の Intel Core Ultra（Intel バックエンドはまだ実機で動いていない）、AMD Ryzen AI の `cmd/report`。`.md` のファイルを付けて issue を開いてください。
+
+## この計測の限界
+
+- 重みが乱数なので、精度については何も分かりません。精度は [MODEL.ja.md](MODEL.ja.md) を参照してください。
+- KV キャッシュがありません。実際の生成では文脈に対する注意が加わりますが、文脈が短いうちは重みに比べて小さい量です。
+- Core ML の計算計画は配置の見積もりです。CPU use で裏付けを取ります。
+- `powerbench -decode` と npuprobe の Intel 向けの経路は、M3 以外の機械ではまだ動かしていません。

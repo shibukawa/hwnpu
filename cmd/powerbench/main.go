@@ -6,6 +6,7 @@
 //	go run ./cmd/powerbench -rate 200       # fixed request rate instead of back-to-back runs
 //	go run ./cmd/powerbench -model my.mlpackage -model my_ane.mlpackage
 //	go run ./cmd/powerbench -model 'build/sweep/*.mlpackage'   # tools/coreml/gen_sweep.py
+//	go run ./cmd/powerbench -decode 8,16 -gpu   # generated LLM decode models (energy per token)
 //
 // A model that reaches the Neural Engine is also measured with Core ML limited to the CPU
 // (-cpu=false skips that), so the same computation is compared on both.
@@ -25,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +34,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/fixtures"
+	"github.com/shibukawa/hwnpu/internal/probe"
 )
 
 type Workload struct {
@@ -108,6 +111,8 @@ func main() {
 	one := flag.Bool("one", false, "load one model at a time and run each variant's rounds back to back (for models of hundreds of MB and more)")
 	gpu := flag.Bool("gpu", false, "also measure each model on the GPU (Core ML CPU and GPU)")
 	flag.Var(&models, "model", "Core ML model to measure instead of the built-in mlp_small pair (repeatable)")
+	decode := flag.String("decode", "", "generate LLM decode shaped models with these layer counts (61 M weights each, e.g. 8,16) instead; implies -one")
+	formats := flag.String("formats", "fp16,int8,lut4,int4", "-decode: weight formats")
 	flag.Parse()
 
 	if runtime.GOOS != "darwin" {
@@ -130,6 +135,30 @@ func main() {
 	}
 	defer dev.Close()
 
+	// Generated models are written just before they are measured and removed after.
+	generate := map[string]func() error{}
+	if *decode != "" {
+		dir, err := os.MkdirTemp("", "hwnpu-powerbench")
+		if err != nil {
+			fail(err.Error())
+		}
+		defer os.RemoveAll(dir)
+		for _, l := range strings.Split(*decode, ",") {
+			layers, err := strconv.Atoi(strings.TrimSpace(l))
+			if err != nil || layers < 1 {
+				fail("-decode: " + l + " is not a layer count")
+			}
+			for _, f := range strings.Split(*formats, ",") {
+				if _, ok := probe.BytesPerParam[f]; !ok {
+					fail("-formats: unknown format " + f)
+				}
+				path := filepath.Join(dir, fmt.Sprintf("dec_l%d_%s.mlpackage", layers, f))
+				generate[path] = func() error { return probe.WriteMLPackage(path, f, layers, uint64(layers)) }
+				models = append(models, path)
+			}
+		}
+		*one = true
+	}
 	if len(models) == 0 {
 		dir, err := os.MkdirTemp("", "hwnpu-powerbench")
 		if err != nil {
@@ -182,6 +211,12 @@ func main() {
 		// before the next one is loaded. Idle is measured after every model to follow drift.
 		measureIdle("start")
 		for i, m := range models {
+			if gen := generate[m]; gen != nil {
+				fmt.Fprintf(os.Stderr, "generating %s\n", filepath.Base(m))
+				if err := gen(); err != nil {
+					fail(err.Error())
+				}
+			}
 			w := prepare(ctx, dev, m, "npu")
 			var ws []*Workload
 			for r := 1; r <= *rounds; r++ {
@@ -204,6 +239,9 @@ func main() {
 				ws = append(ws, c)
 			}
 			rep.Work = append(rep.Work, append(ws, w)...)
+			if generate[m] != nil {
+				os.RemoveAll(m)
+			}
 			time.Sleep(*cool)
 			measureIdle(fmt.Sprintf("model %d", i+1))
 		}
