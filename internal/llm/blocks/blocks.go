@@ -198,18 +198,26 @@ func (g *Graph) SwiGLU(x *mlpackage.Var, gate, up, down string, inter, out int, 
 // laid out as cat(freqs, freqs) like the Hugging Face reference. invFreq has head_dim/2 entries.
 // The constants are named rope_cos_<suffix> and rope_sin_<suffix>.
 func (g *Graph) RopeTables(suffix string, invFreq []float64, seq, headDim int) (cos, sin *mlpackage.Var) {
-	half := headDim / 2
-	c := make([]float32, seq*headDim)
-	s := make([]float32, seq*headDim)
-	for pos := 0; pos < seq; pos++ {
-		for j := 0; j < half; j++ {
-			a := float64(pos) * invFreq[j]
-			c[pos*headDim+j], c[pos*headDim+j+half] = float32(math.Cos(a)), float32(math.Cos(a))
-			s[pos*headDim+j], s[pos*headDim+j+half] = float32(math.Sin(a)), float32(math.Sin(a))
-		}
-	}
+	c, s := RopeValues(invFreq, 0, seq, headDim)
 	shape := []int{1, seq, 1, headDim}
 	return g.F16s("rope_cos_"+suffix, shape, c), g.F16s("rope_sin_"+suffix, shape, s)
+}
+
+// RopeValues returns the cos and sin tables of RopeTables for the n positions from start, for a
+// program that takes them as inputs (a step with a KV cache, at a position known only at run time).
+func RopeValues(invFreq []float64, start, n, headDim int) (cos, sin []float32) {
+	half := headDim / 2
+	c := make([]float32, n*headDim)
+	s := make([]float32, n*headDim)
+	for i := 0; i < n; i++ {
+		pos := start + i
+		for j := 0; j < half; j++ {
+			a := float64(pos) * invFreq[j]
+			c[i*headDim+j], c[i*headDim+j+half] = float32(math.Cos(a)), float32(math.Cos(a))
+			s[i*headDim+j], s[i*headDim+j+half] = float32(math.Sin(a)), float32(math.Sin(a))
+		}
+	}
+	return c, s
 }
 
 // ApplyRope rotates x (1, seq, heads, head_dim): x*cos + rotate_half(x)*sin, where rotate_half
@@ -254,26 +262,27 @@ func (g *Graph) Attention(q, k, v *mlpackage.Var, maskName string, window int) *
 }
 
 // SDPA is scaled dot product attention over q (1, heads, seq, head_dim) and k, v (1, kv_heads,
-// seq, head_dim); query head j reads kv head j / (heads/kv_heads) (repeat_kv). mask returns the
-// additive mask, broadcastable to (1, heads, seq, seq); it is called where the mask is added, and
-// may be nil for none. The result is (1, heads, seq, head_dim).
+// keys, head_dim); query head j reads kv head j / (heads/kv_heads) (repeat_kv). The keys are the
+// queries' own positions, or with a KV cache the cached positions followed by them. mask returns
+// the additive mask, broadcastable to (1, heads, seq, keys); it is called where the mask is added,
+// and may be nil for none. The result is (1, heads, seq, head_dim).
 func (g *Graph) SDPA(q, k, v *mlpackage.Var, mask func() *mlpackage.Var) *mlpackage.Var {
 	nh, s, hd := q.Shape[1], q.Shape[2], q.Shape[3]
-	nkv := k.Shape[1]
+	nkv, sk := k.Shape[1], k.Shape[2]
 	if rep := nh / nkv; rep > 1 {
 		expand := func(x *mlpackage.Var) *mlpackage.Var {
-			x = g.Op("reshape", map[string]any{"x": x, "shape": g.B.Ints(1, int32(nkv), 1, int32(s), int32(hd))}, 1, nkv, 1, s, hd)
-			x = g.Op("tile", map[string]any{"x": x, "reps": g.B.Ints(1, 1, int32(rep), 1, 1)}, 1, nkv, rep, s, hd)
-			return g.Op("reshape", map[string]any{"x": x, "shape": g.B.Ints(1, int32(nh), int32(s), int32(hd))}, 1, nh, s, hd)
+			x = g.Op("reshape", map[string]any{"x": x, "shape": g.B.Ints(1, int32(nkv), 1, int32(sk), int32(hd))}, 1, nkv, 1, sk, hd)
+			x = g.Op("tile", map[string]any{"x": x, "reps": g.B.Ints(1, 1, int32(rep), 1, 1)}, 1, nkv, rep, sk, hd)
+			return g.Op("reshape", map[string]any{"x": x, "shape": g.B.Ints(1, int32(nh), int32(sk), int32(hd))}, 1, nh, sk, hd)
 		}
 		k, v = expand(k), expand(v)
 	}
-	scores := g.Op("matmul", map[string]any{"x": q, "y": k, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(true)}, 1, nh, s, s)
-	scores = g.Op("mul", map[string]any{"x": scores, "y": g.B.ScalarF16(float32(1 / math.Sqrt(float64(hd))))}, 1, nh, s, s)
+	scores := g.Op("matmul", map[string]any{"x": q, "y": k, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(true)}, 1, nh, s, sk)
+	scores = g.Op("mul", map[string]any{"x": scores, "y": g.B.ScalarF16(float32(1 / math.Sqrt(float64(hd))))}, 1, nh, s, sk)
 	if mask != nil {
-		scores = g.Op("add", map[string]any{"x": scores, "y": mask()}, 1, nh, s, s)
+		scores = g.Op("add", map[string]any{"x": scores, "y": mask()}, 1, nh, s, sk)
 	}
-	probs := g.Op("softmax", map[string]any{"x": scores, "axis": g.B.ScalarI32(-1)}, 1, nh, s, s)
+	probs := g.Op("softmax", map[string]any{"x": scores, "axis": g.B.ScalarI32(-1)}, 1, nh, s, sk)
 	return g.Op("matmul", map[string]any{"x": probs, "y": v, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, nh, s, hd)
 }
 

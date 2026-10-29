@@ -1,0 +1,139 @@
+id: decision:coreml-layer-split
+type: decision
+title: Mac 向けの大きなモデルは 1 つで配り、読み込むときに層の境目で分ける数を決める
+summary: >-
+  ANE の大きさの上限はモデル 1 つごと (M3 は 1 GiB、M4 は 1.8 GiB 以上) で、層の境目で分けた部分を出力バッファから次の入力へ直結して
+  順に動かせば、劣化なし・遅延ほぼなしで上限を超えられる。分割数を増やすと消費メモリが大きく減り、遅くなるのは境目 1 つにつき約 0.1〜0.16 ms。
+  そこで配布物は分けない 1 つのパッケージにし、実行時に Go で MIL を境目で切り分けて、チップの上限とメモリの予算から分割数を決める。
+  変換時の分割は hwnpu-convert -target (チップごとの上限、推定サイズで均等に分ける、out.partN.mlpackage と out.parts.json) として入っており、
+  部分をつないで動かす internal/llm/chain、生成の hwnpu-generate、KV キャッシュ (-cache) をその上に実装した。
+  実行時の切り分けは未実装。1 つのパッケージの関数として分ける案は、上限がパッケージ全体で数えられるので使えない。
+lifecycle: proposed
+authority: authored
+scope: {backend: coreml, os: darwin}
+facts:
+  basis: >-
+    backend:apple-coreml の observations.layer_split (M3、lut4 1.81 GiB を 2/4 分割、全部分 ANE、30.0/30.2 ms/token、境目の誤差ゼロ) と
+    layer_split_m4 (M4、3.6 GiB を 2/4/8/16 分割、58.3〜60.6 ms/token、誤差なし、分割が細かいほど消費メモリが減る)
+  what_it_enables:
+    - lut4 で 1 GiB を超える 3〜8B 級のモデル (8B の lut4 は約 4 GiB。M4 で 3.6 GiB が 1 トークン約 58 ms)
+    - 6 ビット LUT など 4 ビットより大きい形式や、感度の高いテンソルを fp16 に残す構成
+    - 同じ配布物を、メモリの少ない機械では細かく、多い機械では粗く (速く) 分けて動かす
+  implemented: >-
+    2026-10-29。hwnpu-convert -target / -parts (llm.PlanSplit、out.parts.json の型 llm.Manifest、1 部分を書く llm.WritePart)、internal/llm/chain
+    (部分を読み込み、出力バッファを次の x に Bind)、internal/tokenizer (byte-level BPE、LFM3 の参照 24 トークンと一致)、cmd/hwnpu-generate
+    (チャットの書式、貪欲法かサンプリング、KV キャッシュなしで固定長の窓を毎トークン動かし、満ちたら古い 4 分の 1 を捨てる)。
+    TestPartsMatchWhole で 1〜3 分割の連鎖が 1 部分とビット単位で一致 (fp16、lut4)。LFM3-1.7B lut4 は 1/2/4/8 分割とも全部 ANE で 34 ms/token 前後
+    (backend:apple-coreml の lfm3_generation)
+  tradeoff: >-
+    分割を細かくするほどメモリが減り、境目 1 つにつき約 0.1 ms (M3) / 0.16 ms (M4) 遅くなる。M4 の 16 分割でも 2 分割より 4% 遅いだけ。
+    上限ぎりぎりまで部分を大きくしても速さの得は小さいので、メモリを主に、速さを従に選べる
+  design:
+    distribution: >-
+      配布物は分けない 1 つの .mlpackage (1 GiB を超えてよい)。チップごとの上限やメモリの量によらず 1 種類で済み、manifest と sha256 も 1 つ。
+      分割数ごとに配布物を作る案と、固定の分割で配る案は採らない (rejected_alternatives)
+    converter: >-
+      hwnpu-convert は今まで通り 1 つのパッケージを書く。1 GiB を超えるときはエラーにせず、そのまま ANE では動かないので分割して使うことを表示する。
+      境目の候補は分割器がグラフから見つけるので、変換器もアーキテクチャのパッケージも変えない。
+      層の境目を優先させたいときだけ、Build が層の出力の値の名前をメタデータ (com.github.shibukawa.hwnpu.cuts) に残す (演算は足さないのでダイジェストは変わらない)
+    splitter: >-
+      internal/mlpackage に分割器を置く。model.mlmodel (protobuf) を読み、main 関数の演算列 (トポロジカル順) で、前後をまたぐ値が 1 つ
+      (と関数の入力) だけになる位置を境目の候補にする。定数 (const、constexpr_*) はまたぐ値に数えず、使う部分へ複製する
+      (RoPE の表や因果マスクのように複数の層で共有する小さな定数は各部分に入る)。残差の流れが 1 本の LLM では各層の後ろ
+      (と層の中の残差の足し込みの後ろ) が候補になる。候補ごとに、そこまでの重みのバイト数を blob の範囲から正確に数える。
+      Split(src, cuts, dst) は部分ごとに新しい .mlpackage を書き、weight.bin は使う blob の範囲だけを読み出してそのまま書く (量子化し直さないのでビット単位で同じ)。
+      部分の入力は x (またぐ値)、関数の入力 (mask など) は使う部分で再び宣言する。出力は y。重みを丸ごとメモリに読まず、blob 単位で流す
+    planner: >-
+      分割数の決め方 (Policy): Parts(n) は n 個に、MaxPartBytes(b) は 1 部分 b 以下で最少の数に、MemoryBudget(b) は消費メモリの見込みが b 以下になる最少の数にする。
+      どれも 1 部分あたりのチップの上限を超えない (既定は M3 の実測に余裕を見た 0.9 GiB。M4 は実測が揃うまで同じ値にし、分かった機種から上げる)。
+      候補の境目の中から、部分の数を決めたうえで最大の部分が最小になるように選ぶ。MemoryBudget に使うメモリの見込みは、npuprobe の計測から作る式 (未確定)
+    cache: >-
+      部分ごとにコンパイル済みの .mlmodelc を既存のコンパイルキャッシュ (WithCacheDir) に置く。キーは元パッケージのダイジェストと部分の範囲 (境目の位置)。
+      同じ分け方なら 2 回目からは切り分けもコンパイルもしない。分割数を変えると最初の 1 回だけ切り分けとコンパイルが要る (M3 で 16 層 1 部分 8 秒)。
+      キャッシュは分割数ごとに増えるので、使っていない分け方は古い順に消せるようにする
+    runtime: >-
+      新しい公開パッケージ (仮: github.com/shibukawa/hwnpu/chain) に置く。Open(ctx, runner, path, policy) が切り分け、コンパイル、全部分の読み込みを行い、
+      部分 i の出力バッファを部分 i+1 の x に、追加の入力は 1 つのバッファを全部分に Bind する (npuprobe split と同じで、コピーなし)。
+      Chain は x と追加の入力、出力 y を 1 つのモデルのように見せ、Run は部分を順に動かす。Parts() で今の分け方と各部分の配置を返す。
+      どの部分も厳格モードで全演算 ANE を確かめる
+    reshape: >-
+      Chain.Reshape(ctx, policy) で動いている途中に分割数を変える。メモリを減らす向きでは、古い部分を閉じてから新しい部分を読み込む (その間は止まる)。
+      増やす (速くする) 向きでは、新しい部分を読み込み終えてから入れ替える。新しい分け方はキャッシュになければ別の goroutine で切り分けとコンパイルをしてから入れ替える。
+      最初の版は生成の要求と要求の間だけで行い、KV キャッシュを持ったままの入れ替えは扱わない (open_questions.reshape-with-state)
+    checking: >-
+      分割器と鎖は milcpu でも動かせるので、Mac なしで確かめられる。hwnpu-check に -parts n を足し、切り分けた部分を順に実行して、
+      まとめた実行とビット単位で一致すること、境目の隠れ状態が参照の hidden と合うことを見る
+    measurement: >-
+      npuprobe split に消費メモリの列を足す: 子プロセスの最大 RSS (getrusage)、全部分を読み込んだあとと実行中の phys_footprint
+      (libproc の proc_pid_rusage を purego で)、コンパイル中の ANECompilerService の量。M3 と M4 で分割数ごとに測り、MemoryBudget の見込みの式を作る
+    port_constraint: >-
+      層の境目で受け渡すのは残差の流れそのもの (参照と同じスケール) でなければならない。ANE 向けの書き換え (LFM3 の PostScale) は層の中で閉じていること。
+      閉じていないと境目の候補が見つからない (分割器がまたぐ値の数で検出するので、黙って壊れることはない)
+    future_state: >-
+      KV キャッシュと畳み込みの状態は層ごとなので、その層を持つ部分が自分の状態を持つ。prefill と decode の 2 つの形と重み共有も部分ごとに作る
+  rejected_alternatives:
+    - 1 つのパッケージの関数 (multifunction) として部分を入れる: 1 GiB の上限はパッケージ全体で数えられ、全関数が CPU に落ちる (backend:apple-coreml の multifunction_limit)
+    - 分割数ごとに配布物を作る: 配布の容量が分割数の種類だけ増え、チップごとの上限が分かるたびに作り直しになる
+    - 変換時の分割だけで配る: 分割数を機械ごとに変えられない。細かい分割で配ると、メモリが十分な機械でも境目の費用を払う
+    - 細かい部分で配り、実行時につなげる: つなげるのも切り分けるのも同じ MIL の書き換えで、1 つで配るほうが配布物が単純
+    - 重みを外に出して入力として渡す: 1 トークンごとに GiB 単位を渡すことになり、ANE の定数として置けない
+    - 部分の一部だけを読み込み、使うたびに読み込み直す: 1 トークンごとに読み込みが入り、生成には遅すぎる
+    - GPU に回す: decision:no-gpu に反する
+acceptance:
+  split-exact:
+    text: 小さな合成モデル (LFM3、BERT) を fp16 と lut4 で書き出し、分割器で 1〜層の数まで切り分けて milcpu で順に実行した結果が、まとめた実行とビット単位で一致する。部分の weight.bin の blob は元と同じバイト列
+  cut-detection:
+    text: LFM3 と BERT で各層の後ろがすべて境目の候補になる。2 つの値がまたぐ位置 (層の中) は候補にならない
+  planner:
+    text: Parts と MaxPartBytes が部分の上限を守り、部分の数が最少で、最大の部分が最小になる。1 つの境目の区間だけで上限を超えるときはエラーになる
+  digests-unchanged:
+    text: 変換器の TestBuildTiny のダイジェストが変わらない
+  ane-run:
+    text: Mac で、1 GiB を超える実物のモデルを Parts 2/4/8 で開き、全部分が ANE に載り、hwnpu-check で分けないとき (CPU の milcpu) と同じ精度になる。Reshape で分割数を変えても出力が変わらない
+  memory-measured:
+    text: npuprobe split が分割数ごとの消費メモリを出し、M3 と M4 で記録される
+open_questions:
+  memory-model:
+    text: 消費メモリは分割数や最大の部分の大きさに対してどう変わるか。MemoryBudget の見込みの式をどう作るか (backend:apple-coreml の split-memory と同じ計測で答える)
+    state: open
+  m4-limit:
+    text: M4 以降で部分の上限の既定をいくつにするか。チップを sysctl で判別して決めるか、初回に npuprobe limit 相当の探索をするか
+    state: open
+  state-in-limit:
+    text: Core ML の状態 (MLState) の KV キャッシュは 1 モデルの上限やメモリの見込みに数えられるか
+    state: open
+  kv-cache:
+    text: >-
+      KV キャッシュなしでは毎トークン窓全体を計算するので、長い文脈は扱えない (窓に比例して遅くなり、窓ごとにコンパイルが要る)。
+      KV キャッシュは層ごとなので部分ごとに持てる。MLState (状態の演算が ANE に載るか未確認) か、入出力のバッファとしてホストが持つ方式か
+    state: answered
+    resolution: >-
+      2026-10-29 入出力のバッファとしてホストが持つ方式を実装 (llm.Cached、internal/llm/decode、hwnpu-convert -cache)。各部分は自分の層の
+      kv_k_N/kv_v_N と win_conv_N を持ち、全部 ANE に載る。LFM3-1.7B でキャッシュ 1024 なら 20.6 ms/token (backend:apple-coreml の kv_cache_host)。
+      MLState との比較は残っている (backend:apple-coreml の mlstate)
+  reshape-with-state:
+    text: 生成の途中 (KV キャッシュを持ったまま) で分割数を変えるには、層ごとの状態を新しい持ち主の部分へ移す必要がある
+    state: deferred
+    resolution: 生成のループ (KV キャッシュ) を作るときに決める。それまでは要求の間でだけ Reshape する
+  vocab-split:
+    text: 出力層だけで部分の上限を超えるモデル (語彙 128k x 隠れ 4096 の fp16 は 1 GiB) では、出力層を語彙方向に分けてロジットをホストで連結する必要がある
+    state: deferred
+    resolution: そのような出力層を持つモデルを扱うときに入れる。最初の版では計画のエラーにする
+  intel-limit:
+    text: Intel NPU にも 1 モデルあたりの大きさの上限があるか (npuprobe limit を実機で)。あれば同じ分割器を OpenVINO IR にも作る
+    state: deferred
+    resolution: Intel の実機が手に入ってから
+history:
+  2026-10-29-runtime-split:
+    summary: 変換時に部分を書き出す案から、1 つで配り実行時に分割数を決める案に改めた。M4 で 2〜16 分割の速さがほぼ同じで、細かいほどメモリが減ると分かったため
+relations:
+  - relation: informed_by
+    to: backend:apple-coreml
+  - relation: extends
+    to: milestone:m5-llm-convert
+  - relation: constrained_by
+    to: decision:no-gpu
+  - relation: mentions
+    to: decision:model-source-selection
+  - relation: mentions
+    to: requirement:compile-cache

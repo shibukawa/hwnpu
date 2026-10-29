@@ -74,6 +74,8 @@ sudo ./npuprobe bench
 - 1 トークンの時間（全部の部分を 1 回ずつ）と、各部分を単独で測った時間の合計の差。差が大きければ、部分を切り替えるたびに重みを読み込み直している
 - 各部分のあとの隠れ状態と、同じ部分を GPU で 1 つずつ動かした結果との誤差（差の rms ÷ 参照の rms）。部分の境目でデータが壊れていないか
 
+部分を動かしたプロセスの最大 RSS（常駐メモリの最大値）も記録します。Core ML や Neural Engine のシステム側のプロセスの分は含みません。`-layout functions` は、部分を別々のパッケージではなく 1 つのパッケージの関数として書き、関数を 1 つずつ別のモデルとして読み込みます。
+
 ```bash
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -parts 2,3,4   # M4 など上限が 2 GiB の機械（3.7 GiB）
@@ -106,6 +108,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 | `-several` | `true` | limit の最後に複数のモデルを同時に読み込む |
 | `-split-layers` | `64` | split で分けるモデル全体の層の数 |
 | `-parts` | `2,4` | split で試す分け方。`1` は分けずに動かす |
+| `-layout` | `files` | split で部分をどう書くか。`files` は部分ごとに別のパッケージ、`functions` は 1 つのパッケージの関数（Core ML、macOS 15 以降）。`files,functions` で両方を比べる |
 | `-ref` | Apple は `gpu`、それ以外は `none` | split で出力を比べる Core ML の装置（`cpu`、`gpu`、`none`）。CPU は lut4 を fp16 に展開するので、大きなモデルではメモリが足りなくなることがある |
 | `-run` | `3s` | モデルごとの計測時間 |
 | `-dir`、`-o` | 一時ディレクトリ、`npuprobe-<機種>-<日時>.md` | |
@@ -147,7 +150,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 1 B の fp16 は大きさの上限を超えるので、CPU で動きます。
 - CPU は読み出すバイト数ではなく計算で頭打ちになり、どの形式でも 1 トークン 30 ms 前後で、3.3〜3.7 コア分を使います。量子化が効くのは NPU と GPU だけです。
 
-上限を超えるモデルを分けて動かした結果（`npuprobe split`、lut4 の 64 層、1.81 GiB、3.9 B 個の重み）:
+上限を超えるモデルを分けて動かした結果（`npuprobe split`、lut4 の 64 層、1.81 GiB、3.9 B 個の重み。レポートは [npuprobe-m3-split.md](npuprobe-m3-split.md)）:
 
 | 分け方 | 部分の大きさ | 置かれた先 | 部分ごとの ms/call | ms/token | 部分の時間の合計 | 重み GB/s | CPU use | 各部分のあとの GPU との誤差 |
 |---|---|---|---|---|---|---|---|---|
@@ -158,6 +161,18 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 部分を切り替える費用は見えません。1 トークンの時間は、各部分を単独で測った時間の合計と同じで（30.0 ms と 30.5 ms）、重みの読み出しは 16 層 1 つのとき（65 GB/s）と変わりません。部分を切り替えるたびに重みを読み込み直してはいません。
 - 分け方は計算結果を変えません。32 層のあとの誤差は 2 つに分けても 4 つに分けても 3.32%、最後はどちらも 4.91% で、境目でデータは壊れていません。誤差は層が増えるにつれて少しずつ増えます。比べている GPU の結果自体も fp16 の誤差を含みます。
 - 64 層は 4 B 級のモデルに当たります（重みは乱数で、文脈に対する注意は含みません）。lut4 で 1 GiB 未満の部分に分ければ、M3 でも 4 B 級を 1 トークン 30 ms ほど（約 33 tokens/s）で動かせる見込みです。
+
+部分を 1 つのパッケージの関数にした場合と比べると（`-layout functions,files`、レポートは [npuprobe-m3-functions.md](npuprobe-m3-functions.md)）:
+
+| 分割数 | 書き方 | 置かれた先 | ms/token | プロセスの最大 RSS |
+|---|---|---|---|---|
+| 2 | 1 つのパッケージの関数 | すべて CPU | 12549 | 5.26 GiB |
+| 2 | 別々のパッケージ | すべて NPU | 30.6 | 1.03 GiB |
+| 4 | 1 つのパッケージの関数 | すべて CPU | 12362 | 6.42 GiB |
+| 4 | 別々のパッケージ | すべて NPU | 31.3 | 0.55 GiB |
+
+- 1 GiB の上限は、読み込む関数ではなくパッケージ全体で数えられます。分けるときは部分ごとに別のパッケージにします。
+- 別々のパッケージでは、プロセスの最大メモリはおよそ 1 部分の重みの大きさです。分けるほど少なくなり、速さはほとんど変わりません。
 
 ### Apple M4
 
@@ -172,7 +187,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 
 - 部分を 1 つ増やすごとに、1 トークンが約 0.15 ms 遅くなります（2 つから 16 にして 2.3 ms）。Core ML の呼び出し 1 回ごとの固定の費用です。1 GiB 未満に分けた 4 つなら 0.6 ms、1 トークンの 1% ほどです。部分が小さいほど割合は大きくなるので、上限に収まる最少の数に分けます（`hwnpu-convert` はそうします）。
 - 分け方は誤差に効きません。各部分のあとの誤差は 2 つでも 4 つでも同じでした。
-- そのため、M4 でも M3 と同じ 1 GiB 未満の部分（`hwnpu-convert` の既定の `-target any`）で動かして損はありません。全部の部分を同時に読み込むので、分けてもメモリは減りません。
+- そのため、M4 でも M3 と同じ 1 GiB 未満の部分（`hwnpu-convert` の既定の `-target any`）で動かして損はありません。全部の部分を同時に読み込みますが、読み込むときのプロセスの最大メモリはおよそ 1 部分の重みの大きさなので（M3 で 2 つなら 1.03 GiB、4 つなら 0.55 GiB。上の表）、メモリの少ない機械では細かく分ける意味があります。
 - Neural Engine が重みを読む速さは M3（65 GB/s）とほぼ同じです。
 
 ### 求む結果
