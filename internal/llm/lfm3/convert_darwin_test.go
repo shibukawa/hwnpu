@@ -19,7 +19,7 @@ import (
 )
 
 // Converts LFM3-1.7B layer by layer and compares the Neural Engine's hidden states and logits
-// with the PyTorch reference written by tools/lfm3/ref_logits.py. Needs HWNPU_LFM3_DIR with
+// with the PyTorch reference written by tools/ref/ref_logits.py. Needs HWNPU_LFM3_DIR with
 // config.json, the checkpoint and ref_bf16.*.bin. HWNPU_LFM3_LAYERS lists the truncation points
 // to check (default "1,3,24"); HWNPU_LFM3_FORMAT picks lut4 (default) or fp16; HWNPU_LFM3_WEIGHTS
 // names the checkpoint file (default LFM3-1.7B.safetensors).

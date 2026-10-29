@@ -58,6 +58,13 @@ func (w stWeights) Rows(name string, begin, end int) ([]float32, error) {
 	return w.f.Float32Range(name, begin*t.Shape[1], end*t.Shape[1])
 }
 
+func (w stWeights) Names() []string { return w.f.Names() }
+
+func (w stWeights) Shape(name string) ([]int, bool) {
+	t, ok := w.f.Lookup(name)
+	return t.Shape, ok
+}
+
 func (w stWeights) Source() string { return "safetensors " + filepath.Base(w.path) }
 func (w stWeights) Close() error   { return w.f.Close() }
 

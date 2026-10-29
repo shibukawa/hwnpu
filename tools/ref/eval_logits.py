@@ -1,11 +1,12 @@
-"""Score a converted LFM3 package against the PyTorch reference of ref_logits.py.
+"""Score a converted package against the PyTorch reference of ref_logits.py with coremltools.
 
     python eval_logits.py MODEL.mlpackage REF_PREFIX [--units cpu|ane|gpu] [--layers N]
 
 REF_PREFIX is the path without extension (ref_bf16 -> ref_bf16.hidden.bin, ref_bf16.logits.bin).
 With --layers N the package is a truncated model and its output is compared with the hidden state
 after layer N; otherwise its logits are compared: relative RMS error, cosine, argmax agreement and
-the mean KL divergence of the reference distribution from the model's. Needs coremltools, numpy.
+the mean KL divergence of the reference distribution from the model's. Needs coremltools, numpy
+and macOS; hwnpu-check -package does the same on any platform with the fp32 CPU interpreter.
 """
 import argparse
 

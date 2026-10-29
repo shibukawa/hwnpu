@@ -915,7 +915,7 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 
 - 方針: モデルは Hugging Face の公式 bf16 から配布前に一度だけ各 NPU の形式へ変換し、S3/NFS などで配る。中間形式 (ONNX) は置かず、`config.json` と safetensors/GGUF から Go で直接組み立てる。量子化済みの公開物は劣化なしに並べ替えられるときだけ使い、量子化し直しはしない (決定の詳細は `.knowledge/concepts/decision/model-source-selection.yaml`)
 - 実装: `internal/mlpackage` (MIL protobuf、MILBlob 形式の weight.bin、Manifest.json)、`internal/milspec`/`internal/mlspec` (coremltools 9.0 の .proto から protoc-gen-go で生成。`google.golang.org/protobuf` を依存に追加)、`internal/safetensors`、`internal/gguf` (Q4_0/Q8_0/Q6_K の逆量子化)、`internal/palette` (4 ビット LUT の当てはめ)、`internal/llm/lfm3` (構造の定義)、`cmd/hwnpu-convert`
-- 検証の流れ: `tools/lfm3/ref_logits.py` で PyTorch fp32 の各層の隠れ状態とロジットを保存し、`-layers N` で切り詰めたモデルを層ごとに照合する (`TestAgainstReference`、`TestPerLayer`)。層の中は `TestConvPieces` で演算ごとに照合し、ANE の数値特性は `TestActivationRange`、配置は `TestPlacementVariants`/`TestOpVariant` で調べた
+- 検証の流れ: `tools/lfm3/ref_logits.py` (現在は `tools/ref/ref_logits.py`) で PyTorch fp32 の各層の隠れ状態とロジットを保存し、`-layers N` で切り詰めたモデルを層ごとに照合する (`TestAgainstReference`、`TestPerLayer`)。層の中は `TestConvPieces` で演算ごとに照合し、ANE の数値特性は `TestActivationRange`、配置は `TestPlacementVariants`/`TestOpVariant` で調べた
 - 結果 (M3): bf16 → fp16 のグラフは CPU で KL 0.020 (argmax 21/24) と正しい。lut4 (出力 16 行ごとの表、`kmeans-minmax`) は 24 層 1627 演算がすべて ANE に載り、KL 0.89。損失のほぼ全部が 4 ビット量子化によるもので、ANE の演算誤差は `-post-scale` で層ごと 1.4〜2.7% に抑えた
 - ANE について分かったこと (MODEL.ja.md にも記載): 行列積の出力に約 2.5e-4 の絶対誤差の床がある。LUT は 16 行ごとの表だけが ANE で動き、列方向のブロック化や行ごとの表、入力ブロックごとのスケールを持つ int4 (Q4_0 相当) は使えない。gather は常に CPU。値の名前にドットがあるとローダが落ちる
 - 未着手: KV キャッシュと畳み込み状態 (Core ML の MLState) による生成、埋め込み表の配布形式、Llama/Qwen 系の構造、Intel IR と AMD 向けの書き出し、精度改善 (活性を見た量子化、6 ビット表)
@@ -927,4 +927,12 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 - `internal/llm/blocks`: 複数のアーキテクチャで使う層 (重み形式を選べる linear、RMSNorm、SwiGLU、RoPE の表と回転、因果マスク、GQA の注意)。アーキテクチャのパッケージは `blocks.Graph` を埋め込み、固有の層 (LFM3 の短い畳み込みなど) だけを書く
 - `internal/llm/archs`: すべてのアーキテクチャを import するだけのパッケージ。この import の一覧がホワイトリスト。`hwnpu-convert` はここから登録を読み、`-archs` で一覧を出す。アーキテクチャは `config.json` から判別し、`-arch` で指定もできる。固有の設定 (`-post-scale`、`-conv`) は登録された `Param` からフラグを作る
 - 検証: `TestBuildTiny` は、小さな合成の LFM3 を 5 通りの設定で組み立てる。Neural Engine なしで動き、プログラムと weight.bin のダイジェストをログに出す。今回の切り出しでは、前後でダイジェストがバイト単位で一致することを確かめた。`TestArch` は、`hwnpu-convert` と同じ経路 (判別とパラメータ) で組み立てた結果が直接の `Build` と同じことを確かめる
-- 次: 汎用の参照出力 (`tools/ref`)、層ごとの比較コマンド、CPU で fp32 のまま実行する簡単なインタプリタ (Mac なしで移植の正しさを確かめるため)、移植手順のスキル。2 つ目のアーキテクチャは BERT 系エンコーダ
+- `Model.Tensors()` は変換が読むテンソルの名前と shape の一覧。`llm.NewSynthetic` はそこから決定的な乱数の重みを作り (実物の重みなしのテスト用)、`llm.Inventory` はチェックポイントと突き合わせて、足りないテンソル、shape の違い、読まれないテンソルを出す。読まれないテンソルは、構造の移し漏れの手がかりになる
+- `llm.Options.NoHead` は、最後の層だけを切り出したときも最終 norm の前の隠れ状態を出力させる。`Start` を層の数にすると、最終 norm と出力層だけを組み立てる
+
+### 16.10 Mac なしの検証: CPU インタプリタと hwnpu-check — 2026-10-29
+
+- `internal/milcpu`: `mlpackage.Builder` が出す演算 (linear、matmul、要素ごとの演算、reduce_mean、rsqrt、softmax、reshape、transpose、tile、slice_by_index、pad、concat、1 次元の conv、constexpr_lut_to_dense、constexpr_blockwise_shift_scale) を CPU で fp32 のまま実行する。目的は「グラフが PyTorch と同じ計算をしているか」の確認で、速さは二の次 (行列積だけ並列。4 コアで約 12 GFLOP/s)。`RoundF16` で演算ごとの結果を fp16 に丸め、Neural Engine の保存精度を近似する (演算の精度ではない)。各演算は手で計算した値と照合し、小さな LFM3 では同じ関数を表す別のグラフ (畳み込みを taps と conv で、PostScale の有無、層ごとの実行とまとめた実行) が一致することを確かめた
+- `cmd/hwnpu-check`: 参照 (`tools/ref/ref_logits.py`) に対して、埋め込み、各層 (参照の入力を与えて単独で)、最終 norm と出力層、モデル全体の順に照合する。層の相対 RMS 誤差が `-tol` (既定 0.01) を超えると終了コード 1 で、最初の層を示す。既定の形式は fp16 (構造の確認)。`-package` は既存のパッケージのロジットを照合する。テストでは、1 つの層の重みだけを変えた参照に対して、その層だけが検出されることを確かめた
+- `tools/ref/ref_logits.py`: `tools/lfm3` から移して汎用にした。隠れ状態は `output_hidden_states` ではなくデコーダ層への hook で取る (多くの実装で `output_hidden_states` の最後は最終 norm の後のため)。`REF.json` にモデルの種類と大きさを書く
+- 次: 移植手順のスキル。2 つ目のアーキテクチャは BERT 系エンコーダ

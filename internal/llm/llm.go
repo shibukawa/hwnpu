@@ -39,10 +39,14 @@ type Options struct {
 	// model the output is the hidden state instead of the logits, for checking layer by layer.
 	Layers int
 	// Start skips the first Start layers: the input is then the hidden state entering layer
-	// Start, and Layers counts from there. Only for checking single layers.
+	// Start, and Layers counts from there. Only for checking single layers; Start equal to the
+	// number of layers builds the final norm and the output layer alone.
 	Start int
 	// Hidden makes the output the final hidden state (after the last norm) rather than logits.
 	Hidden bool
+	// NoHead makes the output the hidden state after the last built layer, before the final norm,
+	// even when that is the model's last layer. For checking the last layer on its own.
+	NoHead bool
 	// Format is "lut4" (4 bit palettized, k-means per 16 rows) or "fp16".
 	Format string
 	// Group is the number of rows sharing a lookup table (16 is what the Neural Engine reads fast).

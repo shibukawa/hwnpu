@@ -33,19 +33,8 @@ func main() {
 	seq := flag.Int("seq", 32, "fixed sequence length")
 	layers := flag.Int("layers", 0, "keep only the first N layers and output their hidden state (0: whole model)")
 	hidden := flag.Bool("hidden", false, "output the final hidden state instead of logits")
-	format := flag.String("format", "lut4", "weight format: lut4 (4 bit palettized) or fp16")
-	group := flag.Int("group", 16, "rows per lookup table for lut4")
-	colBlock := flag.Int("colblock", 0, "columns per lookup table for lut4 (0: whole rows)")
-	keep := flag.String("keep-fp16", "", "comma separated substrings of tensor names to keep in fp16, e.g. embed_tokens")
-	quant := flag.String("quant", "uniform", "lut4 table fitting: uniform, kmeans or kmeans-minmax")
-	params := map[string]*string{}
-	for _, a := range llm.Archs() {
-		for _, p := range a.Params {
-			if _, ok := params[p.Name]; !ok {
-				params[p.Name] = flag.String(p.Name, p.Default, a.Title+": "+p.Usage)
-			}
-		}
-	}
+	var opts llm.Options
+	setOpts := llm.BindFlags(flag.CommandLine, &opts, "lut4")
 	flag.Parse()
 	if *list {
 		for _, a := range llm.Archs() {
@@ -57,13 +46,8 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	opts := llm.Options{Seq: *seq, Layers: *layers, Hidden: *hidden, Format: *format, Group: *group, ColBlock: *colBlock, Quant: *quant, Params: map[string]string{}}
-	if *keep != "" {
-		opts.KeepFP16 = strings.Split(*keep, ",")
-	}
-	for name, v := range params {
-		opts.Params[name] = *v
-	}
+	setOpts()
+	opts.Seq, opts.Layers, opts.Hidden = *seq, *layers, *hidden
 	if err := run(*config, *arch, *weights, *out, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-convert:", err)
 		os.Exit(1)

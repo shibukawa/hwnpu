@@ -178,9 +178,17 @@ go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LF
 
 The package takes `x`, the fp16 token embeddings `(1, seq, hidden)`, and returns `y`, the logits `(1, seq, vocab)`. The embedding lookup stays on the host because Core ML always places `gather` on the CPU. The weights are 4 bit lookup tables (`-format lut4`), one table of 16 fp16 values per 16 output rows, which is the only compressed layout the Neural Engine runs at full speed (see below). `-format fp16` keeps the weights as they are, for checking the graph.
 
+A conversion can be checked without a Mac. `tools/ref/ref_logits.py` saves reference activations from the Hugging Face implementation, and `cmd/hwnpu-check` runs the graph on the CPU in fp32 and compares it layer by layer. Each layer is fed the reference's own input, so errors do not pile up and the first wrong layer stands out; tensors in the checkpoint that the conversion does not read are reported too. With `-package` it compares a written package's logits (lut4, for example) with the reference.
+
+```bash
+python tools/ref/ref_logits.py build/lfm3 build/lfm3/ref --seq 32
+go run ./cmd/hwnpu-check -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -ref build/lfm3/ref
+go run ./cmd/hwnpu-check -package lfm3.mlpackage -ref build/lfm3/ref
+```
+
 ### Choosing the source checkpoint
 
-Convert from the official bf16 checkpoint. Use a published quantized checkpoint only when it can be repacked without loss into the target's format, which is a one way move to a finer or wider scheme: symmetric int4 (GPTQ without reordering, compressed-tensors W4A16) fits Intel's symmetric int4, AWQ fits AMD's asymmetric uint4 with groups of 128. No published 4 bit format fits the Neural Engine's lookup tables, and re-quantizing a 4 bit checkpoint into another 4 bit format compounds the error: for LFM3-1.7B, bf16 to lut4 gives KL 0.95 nats against the bf16 model, the official QAD Q4_0 GGUF re-palettized gives 0.94 even though it starts closer (its own deviation is 0.35). Always measure the result: `tools/lfm3/ref_logits.py` saves the PyTorch hidden states and logits, `tools/lfm3/eval_logits.py` and the Go tests compare the package with them layer by layer.
+Convert from the official bf16 checkpoint. Use a published quantized checkpoint only when it can be repacked without loss into the target's format, which is a one way move to a finer or wider scheme: symmetric int4 (GPTQ without reordering, compressed-tensors W4A16) fits Intel's symmetric int4, AWQ fits AMD's asymmetric uint4 with groups of 128. No published 4 bit format fits the Neural Engine's lookup tables, and re-quantizing a 4 bit checkpoint into another 4 bit format compounds the error: for LFM3-1.7B, bf16 to lut4 gives KL 0.95 nats against the bf16 model, the official QAD Q4_0 GGUF re-palettized gives 0.94 even though it starts closer (its own deviation is 0.35). Always measure the result: `tools/ref/ref_logits.py` saves the PyTorch hidden states and logits, `cmd/hwnpu-check`, `tools/ref/eval_logits.py` and the Go tests compare the package with them layer by layer.
 
 ### What the Neural Engine accepts (M3, macOS 27.0.1)
 

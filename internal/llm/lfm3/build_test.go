@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -31,74 +32,6 @@ func tinyConfig() *Config {
 	}
 	return c
 }
-
-// synthWeights returns deterministic pseudo random tensors for the names and shapes of a config.
-type synthWeights map[string][]int
-
-func newSynthWeights(c *Config) synthWeights {
-	d, hd := c.HiddenSize, c.HeadDim
-	w := synthWeights{
-		"model.embed_tokens.weight":   {c.VocabSize, d},
-		"lm_head.weight":              {c.VocabSize, d},
-		"model.embedding_norm.weight": {d},
-	}
-	for i := 0; i < c.NumLayers; i++ {
-		p := fmt.Sprintf("model.layers.%d.", i)
-		for _, n := range []string{"operator_norm", "post_operator_norm", "ffn_norm", "post_ffn_norm"} {
-			w[p+n+".weight"] = []int{d}
-		}
-		w[p+"feed_forward.w1.weight"] = []int{c.IntermediateSize, d}
-		w[p+"feed_forward.w3.weight"] = []int{c.IntermediateSize, d}
-		w[p+"feed_forward.w2.weight"] = []int{d, c.IntermediateSize}
-		if c.IsAttention(i) {
-			a := p + "self_attn."
-			w[a+"q_proj.weight"] = []int{c.NumHeads * hd, d}
-			w[a+"k_proj.weight"] = []int{c.NumKVHeads * hd, d}
-			w[a+"v_proj.weight"] = []int{c.NumKVHeads * hd, d}
-			w[a+"o_proj.weight"] = []int{d, c.NumHeads * hd}
-			w[a+"gate_proj.weight"] = []int{c.NumHeads, d}
-			w[a+"q_norm.weight"] = []int{hd}
-			w[a+"k_norm.weight"] = []int{hd}
-		} else {
-			w[p+"conv.in_proj.weight"] = []int{3 * d, d}
-			w[p+"conv.out_proj.weight"] = []int{d, d}
-			w[p+"conv.conv.weight"] = []int{d, 1, c.ConvKernel}
-			w[p+"conv.conv.bias"] = []int{d}
-		}
-	}
-	return w
-}
-
-func (w synthWeights) Get(name string) ([]float32, []int, error) {
-	shape, ok := w[name]
-	if !ok {
-		return nil, nil, fmt.Errorf("synth: no tensor %s", name)
-	}
-	n := 1
-	for _, s := range shape {
-		n *= s
-	}
-	h := fnv.New64a()
-	h.Write([]byte(name))
-	seed := h.Sum64()
-	v := make([]float32, n)
-	for i := range v {
-		seed = seed*6364136223846793005 + 1442695040888963407
-		v[i] = float32(int64(seed>>40)-(1<<23)) / (1 << 23) * 0.2
-	}
-	return v, shape, nil
-}
-
-func (w synthWeights) Rows(name string, begin, end int) ([]float32, error) {
-	v, shape, err := w.Get(name)
-	if err != nil {
-		return nil, err
-	}
-	return v[begin*shape[1] : end*shape[1]], nil
-}
-
-func (w synthWeights) Source() string { return "synthetic" }
-func (w synthWeights) Close() error   { return nil }
 
 // build runs a build into a fresh weight file and returns the output description and a digest of
 // the program and the weight file.
@@ -134,7 +67,7 @@ func build(t *testing.T, f func(b *mlpackage.Builder) (in, out mlpackage.Feature
 // output can be checked by comparing go test -v output before and after.
 func TestBuildTiny(t *testing.T) {
 	cfg := tinyConfig()
-	w := newSynthWeights(cfg)
+	w := llm.NewSynthetic(cfg)
 	cases := []struct {
 		name string
 		opts Options
@@ -178,7 +111,7 @@ func TestArch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := newSynthWeights(tinyConfig())
+	w := llm.NewSynthetic(tinyConfig())
 	for _, c := range []struct {
 		params map[string]string
 		direct Options
@@ -201,5 +134,87 @@ func TestArch(t *testing.T) {
 	}
 	if _, err := ParseConfig([]byte(`{"num_hidden_layers": 1, "num_attention_heads": 1, "layer_types": ["mamba"]}`)); err == nil {
 		t.Error("unknown layer type accepted")
+	}
+}
+
+// runCPU builds a program and runs it with the CPU interpreter on x.
+func runCPU(t *testing.T, cfg *Config, w llm.Weights, opts Options, x []float32) []float32 {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "weight.bin")
+	blobs, err := mlpackage.NewBlobWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := mlpackage.NewBuilder("CoreML8", blobs)
+	in, out, err := Build(b, cfg, w, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prog := b.Finish(&mlpackage.Var{Name: out.Name})
+	if err := blobs.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	p, err := milcpu.Load(prog, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := p.Run(map[string]milcpu.Tensor{in.Name: {Shape: in.Shape, Data: x}}, milcpu.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res[out.Name].Data
+}
+
+func relErr(got, ref []float32) float64 {
+	var se, sr float64
+	for i := range ref {
+		d := float64(got[i] - ref[i])
+		se += d * d
+		sr += float64(ref[i]) * float64(ref[i])
+	}
+	return math.Sqrt(se / sr)
+}
+
+// Variants of the program that compute the same function agree on the CPU: the short convolution
+// as taps or as one conv, PostScale on or off, and the model run whole or one layer at a time.
+func TestCPUVariants(t *testing.T) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	seq := 6
+	emb, err := llm.Embed(w, cfg.HiddenSize, []int32{3, 1, 4, 1, 5, 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Options{Seq: seq, Format: "fp16"}
+	ref := runCPU(t, cfg, w, base, emb)
+	if len(ref) != seq*cfg.VocabSize {
+		t.Fatalf("%d logits", len(ref))
+	}
+	for _, c := range []struct {
+		name string
+		opts Options
+	}{
+		{"conv op", Options{Seq: seq, Format: "fp16", ConvMode: "conv"}},
+		{"post-scale 64", Options{Seq: seq, Format: "fp16", PostScale: 64}},
+	} {
+		if e := relErr(runCPU(t, cfg, w, c.opts, emb), ref); e > 1e-5 {
+			t.Errorf("%s: relative error %g against the plain program", c.name, e)
+		}
+	}
+	h := emb
+	for i := 0; i < cfg.NumLayers; i++ {
+		h = runCPU(t, cfg, w, Options{Seq: seq, Format: "fp16", Start: i, Layers: 1, NoHead: true}, h)
+	}
+	logits := runCPU(t, cfg, w, Options{Seq: seq, Format: "fp16", Start: cfg.NumLayers}, h)
+	if e := relErr(logits, ref); e > 1e-6 {
+		t.Errorf("layer by layer: relative error %g against the whole program", e)
+	}
+	if e := relErr(runCPU(t, cfg, w, Options{Seq: seq}, emb), ref); e > 0.2 || e == 0 {
+		t.Errorf("lut4: relative error %g against fp16, expected small but not zero", e)
 	}
 }
