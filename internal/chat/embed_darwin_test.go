@@ -44,7 +44,8 @@ func TestPlamoEmbeddingGolden(t *testing.T) {
 	if err := json.Unmarshal(raw, &golden); err != nil {
 		t.Fatal(err)
 	}
-	c, err := PrepareEmbedder(ctx, EmbedSetup{Dir: dir, Repo: DefaultEmbedRepo, Seqs: DefaultEmbedSeqs, Log: os.Stderr})
+	m, _ := Lookup("plamo-embedding-1b")
+	c, err := PrepareEmbedder(ctx, EmbedSetup{Dir: dir, Repo: m.Repo, Seqs: DefaultEmbedSeqs, Log: os.Stderr})
 	if err != nil {
 		t.Fatal(err)
 	}

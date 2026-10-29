@@ -187,7 +187,7 @@ func TestEmbed(t *testing.T) {
 // request goes to a model that is not loaded.
 func TestEmbeddingsAPI(t *testing.T) {
 	e, _, _ := tinyEmbedder(t)
-	srv := httptest.NewServer((&Server{Emb: e}).Handler())
+	srv := httptest.NewServer((&Server{Embedders: []*Embedder{e}}).Handler())
 	defer srv.Close()
 	post := func(path, body string) (int, map[string]any) {
 		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(body))
@@ -278,6 +278,40 @@ func TestEmbeddingsAPI(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&models)
 	if len(models.Data) != 1 || models.Data[0].ID != "tiny-embed" || models.Data[0].Dimensions != e.Dim() {
 		t.Errorf("models %+v, want the embedding model alone", models.Data)
+	}
+}
+
+// With several models, a request goes to the one its model field names, ignoring case; a name
+// of the other kind or of none of several is an error.
+func TestRoute(t *testing.T) {
+	a, _, _ := tinyEmbedder(t)
+	b, _, _ := tinyEmbedder(t)
+	a.Name, b.Name = "embed-a", "embed-b"
+	srv := httptest.NewServer((&Server{Chats: []*Engine{{Name: "chat-x"}}, Embedders: []*Embedder{a, b}}).Handler())
+	defer srv.Close()
+	for _, c := range []struct {
+		path, model string
+		code        int
+	}{
+		{"/v1/embeddings", "embed-b", http.StatusOK},
+		{"/v1/embeddings", "EMBED-A", http.StatusOK},
+		{"/v1/embeddings", "", http.StatusNotFound},
+		{"/v1/embeddings", "other", http.StatusNotFound},
+		{"/v1/embeddings", "chat-x", http.StatusBadRequest},
+		{"/v1/chat/completions", "embed-a", http.StatusBadRequest},
+	} {
+		body := fmt.Sprintf(`{"model": %q, "input": "ab", "messages": [{"role": "user", "content": "hi"}]}`, c.model)
+		resp, err := http.Post(srv.URL+c.path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != c.code {
+			t.Errorf("%s with model %q: status %d, want %d", c.path, c.model, resp.StatusCode, c.code)
+		}
+	}
+	if _, code, msg := route("x", []string{"only"}, nil, KindChat, ""); code != 0 || msg != "" {
+		t.Errorf("the only model of its kind does not take any name: %d %s", code, msg)
 	}
 }
 

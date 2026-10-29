@@ -16,13 +16,14 @@ import (
 	"time"
 )
 
-// Server serves an Engine with the OpenAI chat completions API (POST /v1/chat/completions,
-// streamed with server-sent events or not, with tools) and an Embedder with the embeddings API
-// (POST /v1/embeddings); GET /v1/models lists both. Either may be missing. Each model runs one
-// request at a time; the others wait.
+// Server serves chat models (Engine) with the OpenAI chat completions API (POST
+// /v1/chat/completions, streamed with server-sent events or not, with tools) and embedding
+// models (Embedder) with the embeddings API (POST /v1/embeddings); GET /v1/models lists them. A
+// request goes to the model of its endpoint's kind that its model field names, or to the only
+// one of that kind whatever it names. Each model runs one request at a time; the others wait.
 type Server struct {
-	E   *Engine   // the chat model (nil for none)
-	Emb *Embedder // the embedding model (nil for none)
+	Chats     []*Engine
+	Embedders []*Embedder
 	// Think is the default of thinking before the answer; a request changes it with
 	// reasoning_effort (none, minimal and low turn it off, medium and high on) or
 	// chat_template_kwargs.enable_thinking.
@@ -50,19 +51,53 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]any{}
-	if s.E != nil {
+	for _, e := range s.Chats {
 		data = append(data, map[string]any{
-			"id": s.E.Name, "object": "model", "created": 0, "owned_by": "hwnpu",
-			"context_length": s.E.Context(),
+			"id": e.Name, "object": "model", "created": 0, "owned_by": "hwnpu",
+			"kind": KindChat, "context_length": e.Context(),
 		})
 	}
-	if s.Emb != nil {
+	for _, e := range s.Embedders {
 		data = append(data, map[string]any{
-			"id": s.Emb.Name, "object": "model", "created": 0, "owned_by": "hwnpu",
-			"context_length": s.Emb.MaxTokens(), "dimensions": s.Emb.Dim(),
+			"id": e.Name, "object": "model", "created": 0, "owned_by": "hwnpu",
+			"kind": KindEmbed, "context_length": e.MaxTokens(), "dimensions": e.Dim(),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+func (s *Server) names() (chats, embedders []string) {
+	for _, e := range s.Chats {
+		chats = append(chats, e.Name)
+	}
+	for _, e := range s.Embedders {
+		embedders = append(embedders, e.Name)
+	}
+	return chats, embedders
+}
+
+// route picks the model a request names among those of the endpoint's kind (names): the one of
+// that name, or the only one. A name of a model of the other kind (others) is an error, so that
+// a client set up with the wrong model finds out. It returns the index, or -1 with the error's
+// status and message.
+func route(model string, names, others []string, kind Kind, other string) (int, int, string) {
+	for i, n := range names {
+		if strings.EqualFold(model, n) {
+			return i, 0, ""
+		}
+	}
+	for _, n := range others {
+		if strings.EqualFold(model, n) {
+			return -1, http.StatusBadRequest, fmt.Sprintf("%s is not a %s model: use %s", n, kind, other)
+		}
+	}
+	switch len(names) {
+	case 0:
+		return -1, http.StatusNotFound, fmt.Sprintf("no %s model is loaded: add one to -use (hwnpu-chat -list shows them)", kind)
+	case 1:
+		return 0, 0, ""
+	}
+	return -1, http.StatusNotFound, fmt.Sprintf("no %s model %q: the model is one of %s", kind, model, strings.Join(names, ", "))
 }
 
 type chatRequest struct {
@@ -99,14 +134,13 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "", err.Error())
 		return
 	}
-	if s.E == nil {
-		apiError(w, http.StatusNotFound, "invalid_request_error", "model_not_found", "no chat model is loaded (start hwnpu-chat with -use chat or -use chat,embed)")
+	chats, embedders := s.names()
+	i, code, msg := route(req.Model, chats, embedders, KindChat, "/v1/embeddings")
+	if i < 0 {
+		apiError(w, code, "invalid_request_error", "model_not_found", msg)
 		return
 	}
-	if s.Emb != nil && req.Model == s.Emb.Name && req.Model != s.E.Name {
-		apiError(w, http.StatusBadRequest, "invalid_request_error", "", req.Model+" is an embedding model: use /v1/embeddings, or the chat model "+s.E.Name)
-		return
-	}
+	e := s.Chats[i]
 	if len(req.Messages) == 0 {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "", "messages is empty")
 		return
@@ -141,7 +175,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	g := Request{Prompt: s.E.Tok.Encode(prompt), MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed}
+	g := Request{Prompt: e.Tok.Encode(prompt), MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed}
 	if req.MaxCompletionTokens > 0 {
 		g.MaxTokens = req.MaxCompletionTokens
 	}
@@ -162,7 +196,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 	chunk := func(delta map[string]any, finish any) map[string]any {
 		return map[string]any{
-			"id": id, "object": "chat.completion.chunk", "created": created, "model": s.E.Name,
+			"id": id, "object": "chat.completion.chunk", "created": created, "model": e.Name,
 			"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}},
 		}
 	}
@@ -192,9 +226,9 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		return c, false
 	}
 	var gen []int32
-	stats, err := s.E.Generate(r.Context(), g, func(sofar []int32) (bool, error) {
+	stats, err := e.Generate(r.Context(), g, func(sofar []int32) (bool, error) {
 		gen = sofar
-		a = Parse(s.E.Tok.Decode(sofar, false), think, req.Tools, false)
+		a = Parse(e.Tok.Decode(sofar, false), think, req.Tools, false)
 		c, stopped := cut(a.Content)
 		if !req.Stream {
 			return stopped, nil
@@ -227,7 +261,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		apiError(w, code, typ, ecode, err.Error())
 		return
 	}
-	text := s.E.Tok.Decode(gen, false)
+	text := e.Tok.Decode(gen, false)
 	a = Parse(text, think, req.Tools, true)
 	a.Content, _ = cut(a.Content)
 	if s.Dump != "" {
@@ -260,7 +294,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 			msg["tool_calls"] = a.ToolCalls
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"id": id, "object": "chat.completion", "created": created, "model": s.E.Name,
+			"id": id, "object": "chat.completion", "created": created, "model": e.Name,
 			"choices": []map[string]any{{"index": 0, "message": msg, "finish_reason": finish}},
 			"usage":   usage,
 		})
@@ -282,7 +316,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	}
 	sse(w, chunk(map[string]any{}, finish))
 	if req.StreamOptions.IncludeUsage {
-		sse(w, map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": s.E.Name, "choices": []any{}, "usage": usage})
+		sse(w, map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": e.Name, "choices": []any{}, "usage": usage})
 	}
 	io.WriteString(w, "data: [DONE]\n\n")
 	flush()
@@ -312,14 +346,13 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "", err.Error())
 		return
 	}
-	if s.Emb == nil {
-		apiError(w, http.StatusNotFound, "invalid_request_error", "model_not_found", "no embedding model is loaded (start hwnpu-chat with -use embed or -use chat,embed)")
+	chats, embedders := s.names()
+	i, code, msg := route(req.Model, embedders, chats, KindEmbed, "/v1/chat/completions")
+	if i < 0 {
+		apiError(w, code, "invalid_request_error", "model_not_found", msg)
 		return
 	}
-	if s.E != nil && req.Model == s.E.Name && req.Model != s.Emb.Name {
-		apiError(w, http.StatusBadRequest, "invalid_request_error", "", req.Model+" is a chat model: use /v1/chat/completions, or the embedding model "+s.Emb.Name)
-		return
-	}
+	emb := s.Embedders[i]
 	var texts []string
 	var one string
 	if json.Unmarshal(req.Input, &one) == nil {
@@ -350,8 +383,8 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "", "encoding_format is neither float nor base64: "+req.EncodingFormat)
 		return
 	}
-	if req.Dimensions != 0 && req.Dimensions != s.Emb.Dim() {
-		apiError(w, http.StatusBadRequest, "invalid_request_error", "", fmt.Sprintf("dimensions must be %d, the model's", s.Emb.Dim()))
+	if req.Dimensions != 0 && req.Dimensions != emb.Dim() {
+		apiError(w, http.StatusBadRequest, "invalid_request_error", "", fmt.Sprintf("dimensions must be %d, the model's", emb.Dim()))
 		return
 	}
 
@@ -360,7 +393,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 	data := make([]map[string]any, len(texts))
 	tokens, truncated := 0, 0
 	for i, text := range texts {
-		e, err := s.Emb.Embed(r.Context(), text, query, req.Truncate)
+		e, err := emb.Embed(r.Context(), text, query, req.Truncate)
 		if err != nil {
 			code, ecode := http.StatusBadRequest, ""
 			switch {
@@ -404,7 +437,7 @@ func (s *Server) embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logf("%s: %d %s, %d tokens in %.2fs%s", id, len(texts), kind, tokens, time.Since(t0).Seconds(), cut)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"object": "list", "data": data, "model": s.Emb.Name,
+		"object": "list", "data": data, "model": emb.Name,
 		"usage": map[string]any{"prompt_tokens": tokens, "total_tokens": tokens},
 	})
 }

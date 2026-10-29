@@ -20,9 +20,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
-// DefaultEmbedRepo is the Hugging Face repository of the embedding model PrepareEmbedder fetches.
-const DefaultEmbedRepo = "pfnet/plamo-embedding-1b"
-
 // DefaultEmbedSeqs are the sequence lengths PrepareEmbedder converts the embedding model for: a
 // text runs on the shortest that holds it, padded, since the cost follows the length.
 var DefaultEmbedSeqs = []int{128, 1024}

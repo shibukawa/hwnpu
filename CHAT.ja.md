@@ -4,13 +4,19 @@
 
 LFM3-1.7B と PLaMo-Embedding-1B を Apple の Neural Engine だけで動かし、ターミナルで使ったり、OpenAI 互換の API として OpenCode などのクライアントから使ったりします。Python は要りません。
 
-どちらのモデルを使うかは `-use` で選びます。
+使うモデルは `-use` に名前で指定します。選べるモデルの名前と用途は `-list` で出ます。
 
-| | ターミナル | `-listen` のとき (3 節) |
-|---|---|---|
-| `-use chat` (既定) | LFM3-1.7B と対話する (1 節) | `/v1/chat/completions` |
-| `-use embed` | PLaMo-Embedding-1B の埋め込みで文を検索する (4 節) | `/v1/embeddings` |
-| `-use chat,embed` | 使えない (どちらか 1 つ) | 両方を 1 つのサーバーで |
+```bash
+go run ./cmd/hwnpu-chat -list
+```
+
+| 名前 | 用途 | ターミナル | `-listen` のとき (3 節) |
+|---|---|---|---|
+| `LFM3-1.7B` (既定) | chat | 対話する (1 節) | `/v1/chat/completions` |
+| `plamo-embedding-1b` | embedding | 埋め込みで文を検索する (4 節) | `/v1/embeddings` |
+
+- ターミナルで動かすのは `-use` に指定した 1 つのモデルで、何をするかはモデルの用途で決まります。サーバーはいくつでも動かせます (例 `-use LFM3-1.7B,plamo-embedding-1b`)
+- 名前の大文字と小文字は区別せず、一覧のリポジトリ名でも指定できます。一覧にない Hugging Face のリポジトリも `-use OWNER/NAME` で指定でき、hwnpu-chat が動かせる構造 (チャットは LFM3、埋め込みは PLaMo のエンコーダ) なら `config.json` から用途を判断します。認証の要るリポジトリは環境変数 `HF_TOKEN`
 
 ## 1. 対話する
 
@@ -35,23 +41,21 @@ go run ./cmd/hwnpu-chat
 
 | フラグ | 既定 | |
 |---|---|---|
-| `-use LIST` | `chat` | 動かすモデル: `chat`、`embed`、`-listen` のときは `chat,embed` も |
+| `-use NAMES` | `LFM3-1.7B` | 動かすモデルをカンマ区切りで: `-list` の名前かリポジトリ `OWNER/NAME`。ターミナルでは 1 つ |
+| `-list` | | モデルの一覧 (用途、大きさ、落としてあるか) を出して終わる |
 | `-listen ADDR` | なし | ターミナルの代わりに OpenAI 互換のサーバーを `ADDR` (例 `127.0.0.1:8080`) で開く (3 節) |
 | `-think` | `true` | 答える前に考えさせる |
 | `-system TEXT` | なし | 対話の system メッセージ |
 | `-n N` | `0` | 1 つの答えの最大トークン数 (0 は文脈が尽きるまで) |
 | `-temp`、`-top-k`、`-top-p`、`-rep` | `0.1`、`50`、`0`、`1.05` | サンプリング (温度、上位 k、上位 p、答えの中の繰り返しの罰則) |
 | `-context N` | `16320` | プロンプトと答えを合わせた最大トークン数。変えると、その長さで変換し直す |
-| `-model DIR` | `~/Library/Caches/hwnpu/models/LFM3-1.7B` | チェックポイントと変換したプログラムの置き場 |
-| `-repo NAME` | `LiquidAI/LFM3-1.7B` | チェックポイントを落とす Hugging Face のリポジトリ。認証の要るものは環境変数 `HF_TOKEN` |
-| `-package A,B` | なし | `hwnpu-convert` で自分で変換したプログラムを使う (5 節) |
+| `-dir DIR` | `~/Library/Caches/hwnpu/models` | モデルの置き場。モデルごとに `DIR/名前` にチェックポイントと変換したプログラムを置く |
+| `-package A,B` | なし | `hwnpu-convert` で自分で変換したチャットのプログラムを使う (5 節) |
 | `-dump DIR` | なし | サーバーで、要求、プロンプト、生成した文を要求ごとに保存する |
 | `-embed-seq A,B` | `128,1024` | 埋め込みモデルを変換する長さ。文はそれが収まる最も短いもので動き、最も長いものが 1 つの文の最大トークン数になる |
-| `-embed-model DIR` | `~/Library/Caches/hwnpu/models/plamo-embedding-1b` | 埋め込みモデルのチェックポイントと変換したプログラムの置き場 |
-| `-embed-repo NAME` | `pfnet/plamo-embedding-1b` | 埋め込みモデルを落とす Hugging Face のリポジトリ |
-| `-embed-package A,B` | なし | `hwnpu-convert` で自分で変換した埋め込みのプログラムを使う (エンコーダは `-seq` だけ)。`config.json` と `model.safetensors` は `-embed-model` に置く |
+| `-embed-package A,B` | なし | `hwnpu-convert` で自分で変換した埋め込みのプログラムを使う (エンコーダは `-seq` だけ)。`config.json` と `model.safetensors` はモデルの置き場に置く |
 
-`-think` から `-context` まで、`-model` から `-package` まではチャットのモデルの、`-embed-` で始まるものは埋め込みモデルのフラグです。`-use` にないモデルのフラグは見ません。
+`-think` から `-context` まで、`-package`、`-config`、`-weights`、`-tokenizer` はチャットのモデルの、`-embed-` で始まるものは埋め込みモデルのフラグです。`-package` とその仲間 (と `-embed-package`) は、`-use` にその用途のモデルが 1 つのときだけ使えます。
 
 - 文脈 16320 は Neural Engine に載る最大です (テンソルの 1 次元は 16384 まで、鍵の軸は文脈 + 1 回のトークン数)。OpenCode には 16K が要ります。対話だけなら `-context 4096` のほうが生成は速くなります (M3 で 1 トークン約 28 ms、16K では約 64 ms)
 
@@ -62,12 +66,12 @@ go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080
 ```
 
 ```bash
-go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use chat,embed
+go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
 ```
 
 | エンドポイント | |
 |---|---|
-| `GET /v1/models` | 読み込んだモデルの名前 (`LFM3-1.7B`、`plamo-embedding-1b`。`-package` のときは 1 つ目のパッケージの名前) と `context_length` (埋め込みモデルは `dimensions` も) |
+| `GET /v1/models` | 読み込んだモデルの名前 (`LFM3-1.7B`、`plamo-embedding-1b`)、用途 `kind` (`chat` か `embedding`)、`context_length`、埋め込みモデルは `dimensions` も |
 | `POST /v1/chat/completions` | `stream` (SSE)、`tools` と `tool_calls`、`reasoning_content`、`max_tokens`、`temperature`、`top_p`、`top_k`、`repetition_penalty`、`seed`、`stop`、`stream_options.include_usage` |
 | `POST /v1/embeddings` | `input` (文字列かその配列)、`encoding_format` (`float` か `base64`)、`dimensions` (モデルの 2048 のみ)、OpenAI にないものとして `input_type` (`query` か `document`、4 節) と `truncate` |
 
@@ -75,7 +79,7 @@ go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use chat,embed
 - 要求は 1 つずつ処理します。前の要求と共通の先頭は読み直さず、`usage.prompt_tokens_details.cached_tokens` にその数が入ります。別の会話が割り込んでも、長い会話は 2 本まで取っておいて戻ります
 - 同じ並びを繰り返し始めたら、そこで止めます
 - `-dump DIR` で、要求、プロンプト、生成した文を要求ごとに保存します。クライアントが何を送っているかを調べるときに使います
-- どのモデルが答えるかはエンドポイントで決まり、リクエストの `model` は見ません。ただし `/v1/chat/completions` に埋め込みモデルの名前 (`/v1/embeddings` にチャットのモデルの名前) を指定するとエラーになります。`-use` にないモデルのエンドポイントは 404 を返します
+- 要求は、エンドポイントの用途のモデルのうち `model` の名前 (大文字小文字は区別しない) のものに行きます。その用途のモデルが 1 つだけなら、名前にかかわらずそれが答えます。複数あるときに知らない名前なら 404 です。用途の違うモデルの名前 (`/v1/chat/completions` に `plamo-embedding-1b`) や、その用途のモデルを読み込んでいないエンドポイントはエラーになります
 
 ```bash
 curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"lfm3","messages":[{"role":"user","content":"日本の首都は？"}]}'
@@ -84,7 +88,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 ## 4. 埋め込み (PLaMo-Embedding-1B)
 
 ```bash
-go run ./cmd/hwnpu-chat -use embed
+go run ./cmd/hwnpu-chat -use plamo-embedding-1b
 ```
 
 [pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) は日本語 (と英語) の文を 2048 個の数のベクトルにします。意味の近い文ほど同じ向きのベクトルになります。最初の起動で `config.json`、`tokenizer.model`、`model.safetensors` (2.1 GB) を `~/Library/Caches/hwnpu/models/plamo-embedding-1b` に落とし、チャットのモデルと同じく `-embed-seq` の長さごとに 1 回ずつ変換します。
@@ -97,7 +101,7 @@ go run ./cmd/hwnpu-chat -use embed
 > ? 日本の首都はどこ？
 ```
 
-API では (`-listen` と、`-use embed` か `-use chat,embed`) 次のようにします。
+API では (`-listen` を付け、`-use` に `plamo-embedding-1b` を入れて) 次のようにします。
 
 ```bash
 curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{"model":"plamo-embedding-1b","input":["東京は日本の首都です。","最近は随分と暖かくなりましたね。"]}'
@@ -125,7 +129,7 @@ go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensor
 ```
 
 ```bash
-go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage -model DIR
+go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage -config DIR/config.json -weights DIR/model.safetensors
 ```
 
 ## 6. OpenCode から使う

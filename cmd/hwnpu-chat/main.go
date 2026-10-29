@@ -1,25 +1,25 @@
-// hwnpu-chat runs two models on the Neural Engine: LFM3-1.7B to chat with, and PLaMo-Embedding-1B
-// to turn texts into embeddings for search. -use picks them: chat (the default) talks in the
-// terminal, embed searches texts typed in the terminal by their embeddings, and with -listen
-// the OpenAI compatible server serves the chat completions API, the embeddings API or both.
+// hwnpu-chat runs models on the Neural Engine by name: chat models (LFM3-1.7B) to talk with, and
+// embedding models (PLaMo-Embedding-1B) to turn texts into vectors for search. -list shows the
+// models it knows and what each is for; -use picks them. In the terminal, a chat model talks
+// and an embedding model searches the texts typed by their embeddings; with -listen, the OpenAI
+// compatible server serves the chat models with the chat completions API and the embedding
+// models with the embeddings API, a request going to the model it names.
 //
 //	hwnpu-chat
-//	hwnpu-chat -use embed
-//	hwnpu-chat -listen 127.0.0.1:8080
-//	hwnpu-chat -listen 127.0.0.1:8080 -use chat,embed
+//	hwnpu-chat -list
+//	hwnpu-chat -use plamo-embedding-1b
+//	hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
 //
-// With no -package, the chat model lives in -model (hwnpu/models/LFM3-1.7B in the user cache
-// directory): the first run downloads the checkpoint from Hugging Face (-repo, 3.5 GB) and
-// converts it twice with a KV cache of -context tokens, 1 token per call to generate and 64 to
-// read prompts about 20 times faster; later runs load what is there. The two share one cache,
-// and a conversation reads only what is new since the last answer.
+// A model lives in -dir/NAME (hwnpu/models/NAME in the user cache directory). The first run
+// downloads it from Hugging Face and converts it; later runs load what is there. A chat model is
+// converted twice with a KV cache of -context tokens, 1 token per call to generate and 64 to read
+// prompts about 20 times faster; the two share one cache, and a conversation reads only what is
+// new since the last answer. An embedding model is converted once per length in -embed-seq, and
+// a text runs on the shortest that holds it.
 //
-// -package takes programs converted by hwnpu-convert instead, with the same -cache and
-// different -seq, separated by commas.
-//
-// The embedding model is the same with the -embed- flags: it lives in -embed-model
-// (hwnpu/models/plamo-embedding-1b), comes from -embed-repo (2.1 GB) and is converted once per
-// length in -embed-seq; a text runs on the shortest that holds it.
+// -package (or -embed-package) takes programs converted by hwnpu-convert instead, separated by
+// commas: for a chat model with the same -cache and different -seq, for an embedding model with
+// different -seq.
 package main
 
 import (
@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -35,22 +36,25 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
 func main() {
-	use := flag.String("use", "chat", "models to run, comma separated: chat (LFM3), embed (PLaMo-Embedding); both only with -listen")
-	model := flag.String("model", chat.DefaultDir(chat.DefaultRepo), "directory of the chat model: the checkpoint and the converted programs, downloaded and converted when missing")
-	repo := flag.String("repo", chat.DefaultRepo, "Hugging Face repository the chat model comes from")
-	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of the converted programs)")
+	use := flag.String("use", "LFM3-1.7B", "models to run, comma separated: names that -list shows, or Hugging Face repositories OWNER/NAME; one in the terminal")
+	list := flag.Bool("list", false, "list the models and what each is for, and exit")
+	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing")
+	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of a chat model's programs)")
 	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
-	config := flag.String("config", "", "config.json of the chat model (default: in -model)")
-	weights := flag.String("weights", "", "checkpoint the token embeddings are read from: .safetensors or .gguf (default: in -model)")
-	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
+	config := flag.String("config", "", "config.json of the chat model (default: in its directory)")
+	weights := flag.String("weights", "", "checkpoint the chat model's token embeddings are read from: .safetensors or .gguf (default: in its directory)")
+	tok := flag.String("tokenizer", "", "tokenizer.json of the chat model (default: next to config.json)")
+	embedSeq := flag.String("embed-seq", ints(chat.DefaultEmbedSeqs), "sequence lengths an embedding model is converted for, comma separated; the longest is the most tokens of a text")
+	embedPkgs := flag.String("embed-package", "", "embedding programs converted by hwnpu-convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
-	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions with chat, embeddings with embed) at this address instead of the terminal, e.g. 127.0.0.1:8080")
-	dump := flag.String("dump", "", "write each request, its prompt and the generated text to this directory (server)")
+	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
+	dump := flag.String("dump", "", "write each chat request, its prompt and the generated text to this directory (server)")
 	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
@@ -58,19 +62,14 @@ func main() {
 	topK := flag.Int("top-k", 50, "sample from the k most likely tokens")
 	topP := flag.Float64("top-p", 0, "sample from the most likely tokens up to this probability (0: off)")
 	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
-	embedModel := flag.String("embed-model", chat.DefaultDir(chat.DefaultEmbedRepo), "directory of the embedding model, downloaded and converted when missing")
-	embedRepo := flag.String("embed-repo", chat.DefaultEmbedRepo, "Hugging Face repository the embedding model comes from")
-	embedSeq := flag.String("embed-seq", ints(chat.DefaultEmbedSeqs), "sequence lengths the embedding model is converted for, comma separated; the longest is the most tokens of a text")
-	embedPkgs := flag.String("embed-package", "", "embedding programs converted by hwnpu-convert instead, comma separated, with different -seq (config.json and the checkpoint in -embed-model)")
 	flag.Parse()
 	if flag.NArg() > 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
-	useChat, useEmbed, err := parseUse(*use, *listen != "")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
-		os.Exit(2)
+	if *list {
+		showModels(os.Stdout, *dir)
+		return
 	}
 	seqs, err := parseInts(*embedSeq)
 	if err != nil {
@@ -84,50 +83,73 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	var e *chat.Engine
-	if useChat {
-		c := chat.Config{ModelConfig: *config, Weights: *weights}
-		if *pkgs != "" {
-			c.Packages = strings.Split(*pkgs, ",")
-			if c.ModelConfig == "" {
-				c.ModelConfig = filepath.Join(*model, "config.json")
-			}
-			if c.Weights == "" {
-				c.Weights = filepath.Join(*model, "model.safetensors")
-			}
-		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: *model, Repo: *repo, Context: *context_, Log: os.Stderr}); err != nil {
-			fail(err)
-		}
-		c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
-		if e, err = chat.Load(ctx, c); err != nil {
-			fail(err)
-		}
-		defer e.Close()
+	models, err := resolve(ctx, *use, *dir, *listen != "")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
+		os.Exit(2)
 	}
-	var emb *chat.Embedder
-	if useEmbed {
-		var c chat.EmbedConfig
-		if *embedPkgs != "" {
-			c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(*embedModel, "config.json"), Weights: filepath.Join(*embedModel, "model.safetensors")}
-		} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: *embedModel, Repo: *embedRepo, Seqs: seqs, Log: os.Stderr}); err != nil {
-			fail(err)
+	var chats []chat.Model
+	for _, m := range models {
+		if m.Kind == chat.KindChat {
+			chats = append(chats, m)
 		}
-		c.CacheDir, c.Log = *cacheDir, os.Stderr
-		if emb, err = chat.LoadEmbedder(ctx, c); err != nil {
-			fail(err)
-		}
-		defer emb.Close()
 	}
-	s := chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}
+	if len(chats) > 1 && (*pkgs != "" || *config != "" || *weights != "" || *tok != "") {
+		fail(errors.New("-package, -config, -weights and -tokenizer are for one chat model; -use names several"))
+	}
+	if len(models)-len(chats) > 1 && *embedPkgs != "" {
+		fail(errors.New("-embed-package is for one embedding model; -use names several"))
+	}
+
+	srv := &chat.Server{Think: *think, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: os.Stderr, Dump: *dump}
+	for _, m := range models {
+		md := filepath.Join(*dir, m.Name)
+		switch m.Kind {
+		case chat.KindChat:
+			c := chat.Config{ModelConfig: *config, Weights: *weights}
+			if *pkgs != "" {
+				c.Packages, c.Name = strings.Split(*pkgs, ","), m.Name
+				if c.ModelConfig == "" {
+					c.ModelConfig = filepath.Join(md, "config.json")
+				}
+				if c.Weights == "" {
+					c.Weights = filepath.Join(md, "model.safetensors")
+				}
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Log: os.Stderr}); err != nil {
+				fail(err)
+			}
+			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+			e, err := chat.Load(ctx, c)
+			if err != nil {
+				fail(err)
+			}
+			defer e.Close()
+			srv.Chats = append(srv.Chats, e)
+		case chat.KindEmbed:
+			var c chat.EmbedConfig
+			if *embedPkgs != "" {
+				c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: filepath.Join(md, "model.safetensors"), Name: m.Name}
+			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Repo, Seqs: seqs, Log: os.Stderr}); err != nil {
+				fail(err)
+			}
+			c.CacheDir, c.Log = *cacheDir, os.Stderr
+			e, err := chat.LoadEmbedder(ctx, c)
+			if err != nil {
+				fail(err)
+			}
+			defer e.Close()
+			srv.Embedders = append(srv.Embedders, e)
+		}
+	}
 	switch {
 	case *listen != "":
-		err = serve(ctx, &chat.Server{E: e, Emb: emb, Think: *think, Defaults: s, Log: os.Stderr, Dump: *dump}, *listen)
-	case useChat:
+		err = serve(ctx, srv, *listen)
+	case len(srv.Chats) > 0:
 		stop() // Ctrl-C stops an answer, not the chat
-		err = talk(e, *system, *think, *maxNew, s)
+		err = talk(srv.Chats[0], *system, *think, *maxNew, srv.Defaults)
 	default:
 		stop()
-		err = search(emb)
+		err = search(srv.Embedders[0])
 	}
 	if err != nil {
 		fail(err)
@@ -139,22 +161,43 @@ func fail(err error) {
 	os.Exit(1)
 }
 
-// parseUse reads -use: which of the chat and the embedding model to run. The terminal takes one.
-func parseUse(use string, server bool) (useChat, useEmbed bool, err error) {
-	for _, u := range strings.Split(use, ",") {
-		switch strings.TrimSpace(u) {
-		case "chat":
-			useChat = true
-		case "embed":
-			useEmbed = true
-		default:
-			return false, false, fmt.Errorf("-use %q: each must be chat or embed", u)
+// resolve reads -use: the models by name, each once. The terminal takes one.
+func resolve(ctx context.Context, use, dir string, server bool) ([]chat.Model, error) {
+	var models []chat.Model
+	seen := map[string]bool{}
+	for _, name := range strings.Split(use, ",") {
+		m, err := chat.Resolve(ctx, strings.TrimSpace(name), dir, os.Stderr)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[m.Name] {
+			seen[m.Name] = true
+			models = append(models, m)
 		}
 	}
-	if useChat && useEmbed && !server {
-		return false, false, errors.New("-use chat,embed needs -listen; in the terminal, use one of them")
+	if len(models) > 1 && !server {
+		return nil, fmt.Errorf("-use %s: the terminal runs one model; several need -listen", use)
 	}
-	return useChat, useEmbed, nil
+	return models, nil
+}
+
+// showModels writes the catalog: each model's name, what it is for, its size and repository,
+// whether it is downloaded to dir, and what it is.
+func showModels(w io.Writer, dir string) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tKIND\tSIZE\tREPOSITORY\tDOWNLOADED\tABOUT")
+	for _, m := range chat.Catalog {
+		got := "no"
+		if chat.Downloaded(filepath.Join(dir, m.Name)) {
+			got = "yes"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%.1f GB\t%s\t%s\t%s\n", m.Name, m.Kind, m.Bytes/1e9, m.Repo, got, m.About)
+	}
+	tw.Flush()
+	fmt.Fprintf(w, "\n-use takes names, comma separated (one in the terminal, any with -listen), or a Hugging Face\n"+
+		"repository OWNER/NAME of a supported architecture. The default is -use LFM3-1.7B.\n"+
+		"In the terminal, a chat model talks and an embedding model searches the texts typed; with -listen,\n"+
+		"chat models answer /v1/chat/completions and embedding models /v1/embeddings.\nModels are kept in %s.\n", dir)
 }
 
 func parseInts(s string) ([]int, error) {
@@ -184,11 +227,11 @@ func serve(ctx context.Context, s *chat.Server, addr string) error {
 		srv.Close()
 	}()
 	var what []string
-	if s.E != nil {
-		what = append(what, fmt.Sprintf("%s (chat, context %d tokens)", s.E.Name, s.E.Context()))
+	for _, e := range s.Chats {
+		what = append(what, fmt.Sprintf("%s (chat, context %d tokens)", e.Name, e.Context()))
 	}
-	if s.Emb != nil {
-		what = append(what, fmt.Sprintf("%s (embeddings, up to %d tokens)", s.Emb.Name, s.Emb.MaxTokens()))
+	for _, e := range s.Embedders {
+		what = append(what, fmt.Sprintf("%s (embeddings, up to %d tokens)", e.Name, e.MaxTokens()))
 	}
 	fmt.Fprintf(os.Stderr, "serving %s at http://%s/v1\n", strings.Join(what, " and "), addr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
