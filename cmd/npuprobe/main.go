@@ -4,6 +4,7 @@
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest          # bench, then limit
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest bench    # speed only
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest limit    # size limit only
+//	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest verify   # K tokens per call
 //
 // The models have the shape of LLM decoding (internal/probe): one token through Llama 3.2 1B
 // sized layers with random weights, so every call reads every weight once, as generating one
@@ -16,6 +17,10 @@
 //
 // limit grows the model in each format until it leaves the NPU, bisects to the boundary, then
 // loads several models just under it at once to tell a limit per model from a limit on the total.
+//
+// verify, run only when asked for, runs the bench models on the NPU with K tokens per call (1, 2,
+// 4 and 8 by default), the call that checks K drafted tokens in speculative decoding. The K at
+// which the time per call starts to grow is about the most speculative decoding can gain.
 //
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
@@ -59,6 +64,7 @@ type report struct {
 	Meter     string   `json:"meter,omitempty"`
 	MaxBytes  int64    `json:"max_bytes"`
 	Bench     []result `json:"bench,omitempty"`
+	Verify    []result `json:"verify,omitempty"`
 	Sweep     []result `json:"sweep,omitempty"`
 	Several   []result `json:"several,omitempty"`
 	SeveralOf string   `json:"several_of,omitempty"`
@@ -80,11 +86,12 @@ func main() {
 	}
 	fs := flag.NewFlagSet("npuprobe", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit] [flags]")
+		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit|verify] [flags]")
 		fs.PrintDefaults()
 	}
 	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel)")
-	layers := fs.String("layers", "8,16", "bench: layer counts (61 M weights each)")
+	layers := fs.String("layers", "8,16", "bench and verify: layer counts (61 M weights each)")
+	tokens := fs.String("tokens", "1,2,4,8", "verify: tokens per call (K drafted tokens checked at once)")
 	baselines := fs.String("baselines", "cpu,gpu", "bench on Apple: also run each model on these Core ML units (empty for none)")
 	maxGB := fs.Float64("max-gb", 0, "limit: largest weight size to try, GiB (default: a quarter of the RAM on Apple, a sixth on Intel, at most 8)")
 	several := fs.Bool("several", true, "limit: after the sweep, load several models just under the limit at once")
@@ -92,20 +99,20 @@ func main() {
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
 	fs.Parse(args)
-	if mode != "all" && mode != "bench" && mode != "limit" {
+	if mode != "all" && mode != "bench" && mode != "limit" && mode != "verify" {
 		fs.Usage()
 		os.Exit(2)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := run(ctx, mode, *formats, *layers, *baselines, *maxGB, *several, *minRun, *work, *out); err != nil {
+	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "npuprobe:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, mode, formats, layerList, baselines string, maxGB float64, several bool, minRun time.Duration, work, out string) error {
+func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, minRun time.Duration, work, out string) error {
 	infos, err := hwnpu.Enumerate(ctx)
 	if err != nil {
 		return err
@@ -155,6 +162,9 @@ func run(ctx context.Context, mode, formats, layerList, baselines string, maxGB 
 		}
 	}
 	limitFormats = slices.DeleteFunc(limitFormats, func(f string) bool { return p.coreml && f == "int4" })
+	if mode == "verify" && len(limitFormats) == 0 {
+		return errors.New("-formats: verify runs on the NPU only, and Core ML never places int4 on the Neural Engine")
+	}
 	var layers []int
 	for _, s := range split(layerList) {
 		n, err := strconv.Atoi(s)
@@ -162,6 +172,14 @@ func run(ctx context.Context, mode, formats, layerList, baselines string, maxGB 
 			return fmt.Errorf("-layers: %q is not a layer count", s)
 		}
 		layers = append(layers, n)
+	}
+	var tokens []int
+	for _, s := range split(tokenList) {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 {
+			return fmt.Errorf("-tokens: %q is not a token count", s)
+		}
+		tokens = append(tokens, n)
 	}
 	var units []string
 	if p.coreml {
@@ -220,11 +238,16 @@ func run(ctx context.Context, mode, formats, layerList, baselines string, maxGB 
 	}
 	fmt.Println()
 
-	if mode != "limit" {
+	if mode == "all" || mode == "bench" {
 		p.bench(&rep, benchFormats, layers, units, save)
 		fmt.Println()
 	}
-	if mode != "bench" && ctx.Err() == nil {
+	if mode == "verify" {
+		// The formats the NPU runs: int4 never reaches the Neural Engine.
+		p.verify(&rep, limitFormats, layers, tokens, save)
+		fmt.Println()
+	}
+	if (mode == "all" || mode == "limit") && ctx.Err() == nil {
 		fmt.Printf("limit: models up to %.1f GiB of weights\n", probe.GiB(rep.MaxBytes))
 		p.limits(&rep, limitFormats, several, save)
 	}
