@@ -1,9 +1,11 @@
-// Package tokenizer reads a Hugging Face tokenizer.json and turns text into token ids and back.
+// Package tokenizer turns text into token ids and back.
 //
-// It handles the byte-level BPE of GPT-2 and its descendants (LFM, Llama 3, Qwen): added tokens
-// are matched in the raw text first, the rest is split by the pre-tokenizer pattern, each piece is
-// mapped byte by byte to printable characters and merged by rank. Other models (WordPiece,
-// Unigram, SentencePiece byte fallback) and other pre-tokenizer patterns are rejected by Load.
+// Load reads a Hugging Face tokenizer.json with the byte-level BPE of GPT-2 and its descendants
+// (LFM, Llama 3, Qwen): added tokens are matched in the raw text first, the rest is split by the
+// pre-tokenizer pattern, each piece is mapped byte by byte to printable characters and merged by
+// rank. Other models (WordPiece, Unigram, SentencePiece byte fallback) and other pre-tokenizer
+// patterns are rejected by Load. LoadSentencePiece reads a SentencePiece BPE tokenizer.model
+// instead (PLaMo).
 package tokenizer
 
 import (
