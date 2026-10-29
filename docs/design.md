@@ -1101,3 +1101,21 @@ go run ./cmd/hwnpu-check -config MODEL_DIR/config.json -weights MODEL_DIR/model.
 
 - **fp16 のあふれに注意**: 参照の RMSNorm は fp32 で計算するが、プログラムは fp16 で `x*x` を取るので、残差の値が絶対値 256 を超えると inf になる。`ref_logits.py` が表示する `max |hidden|` と、`hwnpu-check -f16` で確かめる。超えるなら、二乗の前に縮める書き換え (`Params` の設定) を入れる
 - 次: SentencePiece BPE のトークナイザー (`tokenizer.model`: BPE、byte fallback、正規化 identity、先頭に空白を補う、空白の連続と改行が user-defined)、埋め込みを実行するコマンド (表引き、実行、プーリング。プーリングは本文のトークンだけの平均で、BOS とクエリの前置き「次の文章に対して、関連する文章を検索してください: 」は含めない)
+
+### 16.18 PLaMo-Embedding のトークナイザー: SentencePiece BPE — 2026-10-30
+
+- `internal/tokenizer` に `LoadSentencePiece` を追加した。`tokenizer.model` (SentencePiece の ModelProto) を、依存を足さずに protobuf の符号を手で読む。`tokenizer.json` の `Load` はそのまま。返す `SentencePiece` は `Encode`、`Decode`、`ID`、`VocabSize` を持ち、BOS は付けない (PLaMo の BOS は `<|startoftext|>` = 1。HF は `add_bos_token` で付ける)
+- 符号化は sentencepiece の BPE と同じ手順にした。正規化は identity (空白を ▁ にし、先頭に ▁ を補う。壊れた UTF-8 は 1 バイトずつ U+FFFD)。user-defined の記号 (▁ の 2/4/8/16 個の連続、タブの 1/2/4 個、改行) は最長一致で 1 記号として切り出し、結合しない。残りは文字に分け、隣り合う 2 記号をつないだものが語彙にあれば候補にして、ピースのスコアが高い順 (同点なら左) に結合する。マージの一覧ではなくスコアで決まる。語彙にない記号は UTF-8 のバイト (`<0xNN>`) にする
+- HF の PlamoTokenizer は slow tokenizer で、特殊トークン (`<|unknown|>`、`<|startoftext|>`、`<|endoftext|>`、`<|pad|>`) を先に切り出し、その間ごとに sentencepiece を呼ぶ。そのため特殊トークンの後ろにも ▁ が補われる (`before<|endoftext|>after` は `▁before`、`<|endoftext|>`、`▁after`)。`Encode` も同じにした。`Decode(ids, false)` は `Encode` の逆 (区切りごとに先頭の ▁ を落とす。HF の decode は特殊トークンの前に空白を足すので往復しない)。`skipSpecial` のときは、HF の `skip_special_tokens=True` と同じく区切りをつないでから戻す
+- 対応しない設定は読み込みでエラーにする: Unigram、正規化の規則表 (nmt_nfkc など)、`remove_extra_whitespaces`、空白を後ろに付ける形、unused のピース、byte fallback のない BPE、バイトのピースの欠け
+- 正解: `tools/ref/tokenizer_golden.py` が HF の tokenizer (特殊トークンなし) で id を出し、特殊トークンを含まない文は sentencepiece 単体の結果とも一致することを確かめる。`internal/tokenizer/testdata/plamo-embedding-1b.json` の 32 文 (日本語、英語、混在、空白の連続、タブ、改行、`\r\n`、絵文字と ZWJ、𠮷 などの珍しい字、結合文字、制御文字、▁ そのもの、特殊トークン入り、空文字列) の 599 トークンがすべて一致し、▁ そのものを含む 1 文 (decode で空白に戻る。sentencepiece も同じ) を除いて往復した。`TestPlamoEmbedding` は `HWNPU_PLAMO_DIR` (`tokenizer.model` のある場所) が要る。別に乱数で作った 3032 文 (88072 トークン) でも、符号化と sentencepiece の decode との不一致は 0
+- 小さなモデルのテスト (`TestSentencePiece`): ModelProto をテストの中で組み立て、スコアの順、同点の左優先、user-defined を結合しないこと、バイトへの退避、区切りごとの ▁、往復を確かめる。改変 (同点を右優先、スコアの低い順、user-defined も結合、先頭の ▁ なし、特殊トークンを切り出さない、バイトの代わりに unknown、decode で区切りごとに ▁ を落とさない) はすべてどれかのテストが検出した。実物の語彙ではスコアの同点も user-defined をまたぐ結合も起きないので、この 2 つは小さなモデルでしか見えない
+- 正解を作る環境: sentencepiece 0.2.2 は `SentencePieceProcessor.Init` がなく、`tokenization_plamo.py` が読み込めない。0.2.0 は Python 3.15 用の配布物がないので、Python 3.12 で `pip install sentencepiece==0.2.0 protobuf "transformers<5"` とした (torch は要らない)
+
+```bash
+python tools/ref/tokenizer_golden.py MODEL_DIR internal/tokenizer/testdata/plamo-embedding-1b.json
+HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
+```
+
+- HF の `encode` は `pad_token` を `eos_token` (この tokenizer_config.json では `<|startoftext|>`) にして左に詰める。マスクで隠れるので、パディングの id は結果に効かない
+- 次: 埋め込みを実行するコマンド (BOS と前置きを付けて符号化、表引き、実行、本文のトークンだけの平均プーリング)
