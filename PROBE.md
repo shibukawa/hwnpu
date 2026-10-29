@@ -150,17 +150,17 @@ Speed and energy at 16 layers (0.97 B weights). Speed from `npuprobe bench`, ene
 - fp16 at 1 B is over the size limit and runs on the CPU.
 - The CPU is limited by the arithmetic, not the bytes: about 30 ms per token in every format, at 3.3 to 3.7 cores busy. Quantization only pays on the NPU and the GPU.
 
-A model over the limit, split by layers (`npuprobe split`, lut4, 64 layers, 1.81 GiB; report: [npuprobe-m3-split.md](npuprobe-m3-split.md)):
+A model over the limit run in parts (`npuprobe split`, 64 layers of lut4, 1.81 GiB, 3.9 B weights; report: [npuprobe-m3-split.md](npuprobe-m3-split.md)):
 
-| parts | each part | placement | ms/token | parts alone added up | weights GB/s | CPU use | error vs GPU after each part |
-|---|---|---|---|---|---|---|---|
-| 2 | 32 layers, 0.91 GiB | all NPU | 30.0 | 30.5 | 65 | 0.02 | 3.32%, 4.91% |
-| 4 | 16 layers, 0.45 GiB | all NPU | 30.2 | 30.4 | 64 | 0.02 | 2.31%, 3.32%, 4.21%, 4.91% |
+| split | each part | placement | ms/call of each part | ms/token | parts added up | weights GB/s | CPU use | error against the GPU after each part |
+|---|---|---|---|---|---|---|---|---|
+| 2 ways | 32 layers, 0.91 GiB | all NPU | 15.2, 15.3 | 30.0 | 30.5 | 65 | 0.02 | 3.32%, 4.91% |
+| 4 ways | 16 layers, 0.45 GiB | all NPU | 7.6, 7.6, 7.7, 7.5 | 30.2 | 30.4 | 64 | 0.02 | 2.31%, 3.32%, 4.21%, 4.91% |
 
-- Splitting by layers takes a model past the 1 GiB limit at full speed. 1.81 GiB in one model runs on the CPU; in parts, every part stays on the Neural Engine and the model reads its weights at 65 GB/s, the same as a single 16 layer model (7.5 ms, 0.45 GiB).
-- The parts cost nothing to switch between: one token through all of them takes no longer than the parts timed alone added up, so no part reloads its weights. Four parts take 0.2 ms more than two.
-- Splitting loses nothing: the error after 32 and 64 layers is the same to every digit with 2 and 4 parts. The error is the Neural Engine's arithmetic against the GPU growing with depth, not the boundaries.
-- Smaller parts compile faster in total (8 s each for 16 layers, 16 to 30 s each for 32 layers).
+- The 1 GiB limit is per model, and splitting gets past it: 1.81 GiB of weights, which fall to the CPU as one model, all ran on the Neural Engine.
+- Switching between parts costs nothing visible. The time per token equals the parts' own times added up (30.0 and 30.5 ms), and the weight bandwidth is that of a single 16 layer model (65 GB/s). The weights are not loaded again at each switch.
+- The split does not change the result. The error after 32 layers is 3.32% whether the model is split in 2 or in 4, and 4.91% at the end in both, so nothing breaks at the boundaries. The error grows slowly with the layers; the GPU result it is compared with has fp16 error of its own.
+- 64 layers is the size of a 4 B model (random weights, no attention over the context). Split into lut4 parts under 1 GiB, a 4 B class model should run on the M3's Neural Engine at about 30 ms per token (about 33 tokens/s).
 
 Against the parts written as the functions of one package (`-layout functions,files`; report: [npuprobe-m3-functions.md](npuprobe-m3-functions.md)):
 
@@ -174,20 +174,21 @@ Against the parts written as the functions of one package (`-layout functions,fi
 - The 1 GiB limit counts the whole package, not the function loaded. Split a model into a package per part.
 - With a package per part, the peak memory of the process is about the weights of one part: it falls with more parts, at almost the same speed.
 
-### Apple M4 (measured by a user; report not included yet)
+### Apple M4
 
-A 3.6 GiB model (`npuprobe split -split-layers 128`) split several ways:
+A model over the limit run in parts (`npuprobe split -split-layers 128 -parts 2,4`, 128 layers of lut4, 3.62 GiB, 7.8 B weights):
 
-| parts | each part | ms/token |
-|---|---|---|
-| 2 | 1.8 GiB | 58.3 |
-| 4 | 0.9 GiB | 58.8 |
-| 8 | 0.45 GiB | 59.4 |
-| 16 | 0.23 GiB | 60.6 |
+| split | each part | ms/token | weights GB/s |
+|---|---|---|---|
+| 2 ways | 64 layers, 1.81 GiB | 58.3 | 67 |
+| 4 ways | 32 layers, 0.91 GiB | 58.8 | 66 |
+| 8 ways | 16 layers, 0.45 GiB | 59.4 | 66 |
+| 16 ways | 8 layers, 0.23 GiB | 60.6 | 64 |
 
-- No error with any split, and the memory used fell sharply as the parts got smaller (the measure and the numbers are not recorded yet).
-- Each boundary costs about 0.16 ms: 16 parts are only 4% slower than 2.
-- A 1.8 GiB part ran, so the M4 takes at least 1.8 GiB per model.
+- Each further part adds about 0.15 ms per token (2.3 ms from 2 to 16 parts): the fixed cost of one Core ML call. In 4 parts under 1 GiB that is 0.6 ms, about 1% of a token. The smaller the parts, the larger the share, so split into the fewest parts under the limit (as `hwnpu-convert` does).
+- The split does not change the error; it was the same after each part in 2 and in 4 parts.
+- So the M4 loses nothing running the same parts under 1 GiB as the M3 (`hwnpu-convert`'s default `-target any`). Every part is loaded at once, but the peak memory of the process while loading is about the weights of one part (on the M3, 1.03 GiB in 2 parts and 0.55 GiB in 4; table above), so finer parts help a machine short of memory.
+- The Neural Engine reads the weights at about the M3's speed (65 GB/s).
 
 ### Wanted
 

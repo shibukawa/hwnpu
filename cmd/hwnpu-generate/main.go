@@ -1,7 +1,7 @@
 // hwnpu-generate writes text with a causal language model converted by hwnpu-convert, on the
 // Neural Engine. The model may be in parts (hwnpu-convert -parts), loaded together as one chain.
 //
-//	hwnpu-generate -package lfm3-parts -config DIR/config.json -weights DIR/model.safetensors -prompt "..."
+//	hwnpu-generate -package lfm3.parts.json -config DIR/config.json -weights DIR/model.safetensors -prompt "..."
 //
 // A model converted with a KV cache (hwnpu-convert -cache) reads the prompt -seq tokens per call
 // and then generates one token per call, the keys, values and convolution windows kept in the
@@ -41,7 +41,7 @@ type sampling struct {
 }
 
 func main() {
-	pkg := flag.String("package", "", "the converted model: an .mlpackage, or the directory of parts from hwnpu-convert -parts")
+	pkg := flag.String("package", "", "the converted model: an .mlpackage, or the out.parts.json of a model hwnpu-convert split")
 	config := flag.String("config", "", "config.json of the model")
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from: .safetensors or .gguf")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
@@ -116,9 +116,9 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 			where = fmt.Sprintf("not all on the NPU (%d on the NPU, %d elsewhere)", p.Placement.NPUOps, len(p.Placement.Ops))
 		}
 		if p.Layers > 0 {
-			fmt.Fprintf(os.Stderr, "%s: layers %d to %d, %.2f GiB, %s\n", p.Package, p.Start, p.Start+p.Layers-1, float64(p.WeightBytes)/(1<<30), where)
+			fmt.Fprintf(os.Stderr, "%s: layers %d to %d, %.2f GiB, %s\n", filepath.Base(p.Path), p.Start, p.Start+p.Layers-1, float64(p.WeightBytes)/(1<<30), where)
 		} else {
-			fmt.Fprintf(os.Stderr, "%s: %s\n", p.Package, where)
+			fmt.Fprintf(os.Stderr, "%s: %s\n", filepath.Base(p.Path), where)
 		}
 	}
 	fmt.Fprintf(os.Stderr, "loaded %d parts in %.1fs\n", len(c.Parts()), time.Since(t0).Seconds())

@@ -180,6 +180,21 @@ go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LF
 
 できたパッケージの入力は `x`（fp16 の埋め込み `(1, seq, hidden)`）、出力は `y`（ロジット `(1, seq, vocab)`）です。Core ML は `gather` を必ず CPU に置くので、埋め込みの表引きはホスト側で行います。BERT 系のパッケージは、2 つ目の入力 `mask`（fp16 の `(1, seq)`。トークンは 1、パディングは 0）を取り、最後の隠れ状態 `(1, seq, hidden)` を返します。文埋め込みにするためのプーリング（平均か CLS）と正規化は、ホスト側で行います。重みは 4 ビットの表引き方式（`-format lut4`）で、出力 16 行ごとに fp16 16 個の表を持ちます。これが Neural Engine が全速で読める唯一の圧縮形式です（後述）。`-format fp16` は重みをそのまま書き出し、グラフの確認に使います。
 
+**大きなモデルの分割**：Neural Engine が受け付けるのは、重みのファイルがチップごとの上限より小さいモデルだけです。それより大きいモデルは丸ごと CPU に置かれます。上限はモデル 1 つごとなので、`hwnpu-convert` は上限を超えるモデルを、上限に収まる最少の数の部分に、大きさがそろうように分けます。`-target` でチップを選びます（既定の `any` は、知っているチップの上限のうち最小のもの）。
+
+| `-target` | 1 モデルの上限 | 出典 |
+|---|---|---|
+| `m1` | 1 GiB | 仮。M4 の半分という報告による。`npuprobe limit` で要計測 |
+| `m2` | 1 GiB | 仮。M3 と同じと仮定。`npuprobe limit` で要計測 |
+| `m3` | 1 GiB | `npuprobe limit`：0.99 GiB は Neural Engine、1.02 GiB は CPU（どの形式でも）。[PROBE.ja.md](PROBE.ja.md) |
+| `m4` | 2 GB | 4 B のモデルを lut4 で（2 GB）Neural Engine で動かせたという計測 |
+
+部分ごとの重みの見積もりは上限の 97% までに収め、書き出した後に実際の重みのファイルが上限より小さいことを確かめます。分けたときは `out.part1.mlpackage`、`out.part2.mlpackage` … と、順番と各部分の入出力を書いた `out.parts.json` ができます。各部分の入力 `x` は、その部分の最初の層に入る隠れ状態です（最初の部分ではトークンの埋め込み）。`mask` などほかの入力は全部の部分が取ります。前の部分の出力 `y` のバッファを次の部分の `x` にそのまま渡して順に動かし、最後の部分の `y` がモデルの出力です。M3 では、分けて動かしても 1 つのモデルと同じ速さでした（PROBE.ja.md の `npuprobe split`）。M4 でも、0.91 GiB の 4 つと 1.81 GiB の 2 つで速さも誤差も変わりませんでした（58.8 ms と 58.3 ms）。全部の部分を同時に読み込みますが、読み込むときのプロセスの最大メモリはおよそ 1 部分の重みの大きさになるので、メモリの少ない機械では細かく分ける意味があります（M3 で 1.81 GiB を 2 つにして 1.03 GiB、4 つにして 0.55 GiB）。1 つのパッケージに部分を関数として入れる方法は使えません。上限はパッケージ全体で数えられ、全部 CPU に置かれます。そのため、全部のチップに 1 組の成果物を配れる既定の `any` を勧めます。`-parts N` で部分の数を指定でき、`-target none` で分割をやめます。`-archs` は対応するアーキテクチャに続けて、チップごとの上限を表示します。
+
+```bash
+go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o model.mlpackage -seq 32 -target m3
+```
+
 変換が正しいかは、Mac がなくても確かめられます。`tools/ref/ref_logits.py` で Hugging Face の実装から参照の活性を保存し、`cmd/hwnpu-check` がグラフを CPU で fp32 のまま実行して層ごとに照合します。各層には参照側の入力を与えるので、誤差が後ろの層に積み重ならず、最初に間違っている層がそのまま分かります。チェックポイントにあって変換が読まないテンソルも報告します。`-package` を付けると、書き出したパッケージ（lut4 など）のロジットを参照と比べます。
 
 ```bash
@@ -188,23 +203,16 @@ go run ./cmd/hwnpu-check -config build/lfm3/config.json -weights build/lfm3/LFM3
 go run ./cmd/hwnpu-check -package lfm3.mlpackage -ref build/lfm3/ref
 ```
 
-大きなモデルは `-parts N` で層ごとに N 個のパッケージに分けます。Neural Engine が受け付けるのはパッケージ 1 つあたり保存された重みが 1 GiB 未満（M3）で、上限を超えたパッケージは丸ごと CPU に置かれます。1 つのパッケージに部分を関数として入れても、上限はパッケージ全体で数えられるので載りません。`-o` はディレクトリになり、`part_0.mlpackage` …と、層の区間を書いた `parts.json` が入ります。前の部分の出力バッファを次の部分の入力にそのまま渡すので、分けても結果はビット単位で同じで、速さもほとんど変わりません（境目 1 つにつき 0.1〜0.16 ms）。分けるほど、読み込むときのプロセスのメモリは減ります。
+分けたモデルも 1 つのモデルも、`cmd/hwnpu-generate` で文章を生成できます。`hwnpu-generate` は、Go で書いたトークナイザー（`tokenizer.json` の byte-level BPE）でチャットの書式のプロンプトを作り、埋め込みをチェックポイントから引いて、Neural Engine で 1 トークンずつ生成します。
+
+長い文章には KV キャッシュを使います。`-cache N` を付けて変換すると、プログラムは 1 回に `-seq` トークン（生成には 1）を受け取り、それまでのトークンのキーと値（と LFM3 の畳み込みの直前の値）を入力として読み、新しい分を出力します。キャッシュはホストのバッファに置かれ、`hwnpu-generate` が毎回書き足します。各部分は自分の層の分だけを持つので、分割と組み合わせられます。1 つのモデルなら `-package` に `.mlpackage` を、分けたモデルなら `.parts.json` を渡します。
 
 ```bash
-go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-p2 -seq 128 -quant kmeans-minmax -parts 2
-go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-p2 -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -prompt "Go言語の特徴を3つ、短く説明してください。"
+go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-kv.mlpackage -seq 1 -cache 4096 -quant kmeans-minmax -parts 2
+go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-kv.parts.json -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -n 1500 -prompt "社内向けに、Go言語を採用する理由をまとめた文書を書いてください。"
 ```
 
-`hwnpu-generate` は、Go で書いたトークナイザー（`tokenizer.json` の byte-level BPE）でチャットの書式のプロンプトを作り、埋め込みをチェックポイントから引いて、Neural Engine で 1 トークンずつ生成します。
-
-長い文章には KV キャッシュを使います。`-cache N` を付けて変換すると、プログラムは 1 回に `-seq` トークン（生成には 1）を受け取り、それまでのトークンのキーと値（と LFM3 の畳み込みの直前の値）を入力として読み、新しい分を出力します。キャッシュはホストのバッファに置かれ、`hwnpu-generate` が毎回書き足します。各部分は自分の層の分だけを持つので、`-parts` と組み合わせられます。
-
-```bash
-go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-kv -seq 1 -cache 4096 -quant kmeans-minmax -parts 2
-go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-kv -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -n 1500 -prompt "社内向けに、Go言語を採用する理由をまとめた文書を書いてください。"
-```
-
-M3 の LFM3-1.7B（lut4、2 分割）では、キャッシュが 256 トークンなら 1 トークン 16.8 ms、1024 なら 20.6 ms、4096 なら 37.6 ms でした。遅さは使った量ではなくキャッシュの容量に比例するので、必要な長さに合わせて選んでください。キャッシュなしで変換したモデルは、毎トークン `-seq` の長さの窓全体を計算し、窓が満ちると古いトークンを捨てます（seq 128 で 34 ms 前後）。
+M3 の LFM3-1.7B（lut4、2 分割）では、キャッシュが 256 トークンなら 1 トークン 16.8 ms、1024 なら 20.6 ms、4096 なら 37.6 ms でした。遅さは使った量ではなくキャッシュの容量に比例するので、必要な長さに合わせて選んでください。キャッシュ付きのモデルは、コンパイル済みのキャッシュがあっても読み込みに 15〜20 秒ほどかかります（キャッシュなしのモデルは 1 秒ほど。原因は未調査）。キャッシュなしで変換したモデルは、毎トークン `-seq` の長さの窓全体を計算し、窓が満ちると古いトークンを捨てます（seq 128 で 34 ms 前後）。
 
 ### 元のチェックポイントの選び方
 

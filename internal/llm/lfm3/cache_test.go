@@ -3,7 +3,6 @@ package lfm3
 import (
 	"fmt"
 	"math"
-	"path/filepath"
 	"testing"
 
 	"github.com/shibukawa/hwnpu"
@@ -13,18 +12,18 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
-// cpuProgram loads the parts in dir on the CPU interpreter as a decode.Program: y of each part
-// feeds x of the next, every other input is one buffer shared by the parts that take it.
-func cpuProgram(t *testing.T, dir string) decode.Program {
+// cpuProgram loads the parts of a manifest on the CPU interpreter as a decode.Program: y of each
+// part feeds x of the next, every other input is one buffer shared by the parts that take it.
+func cpuProgram(t *testing.T, manifest string) decode.Program {
 	t.Helper()
-	pdir, list, err := llm.ReadParts(dir)
+	list, err := llm.ReadManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := decode.Program{In: map[string][]byte{}, Out: map[string][]byte{}, InShape: map[string][]int{}, OutShape: map[string][]int{}}
 	var progs []*milcpu.Program
 	for i, part := range list.Parts {
-		prog, f, err := milcpu.OpenPackage(filepath.Join(pdir, part.Package))
+		prog, f, err := milcpu.OpenPackage(part.Path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +36,7 @@ func cpuProgram(t *testing.T, dir string) decode.Program {
 			p.InShape[name] = sh
 			p.In[name] = make([]byte, 2*count(sh))
 		}
-		m, err := mlpackage.ReadModel(filepath.Join(pdir, part.Package))
+		m, err := mlpackage.ReadModel(part.Path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -109,12 +108,8 @@ func TestCachedMatchesFull(t *testing.T) {
 	row := func(i int) []float32 { return emb[i*cfg.HiddenSize : (i+1)*cfg.HiddenSize] }
 	for _, c := range []struct{ q, cache, parts int }{{1, 8, 1}, {1, 10, 3}, {3, 9, 2}, {8, 8, 1}} {
 		t.Run(fmt.Sprintf("q%d cache%d parts%d", c.q, c.cache, c.parts), func(t *testing.T) {
-			dir := filepath.Join(t.TempDir(), "parts")
 			opts := llm.Options{Seq: c.q, Cache: c.cache, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
-			if _, err := llm.WriteParts(dir, cfg, w, opts, c.parts, nil); err != nil {
-				t.Fatal(err)
-			}
-			s, err := decode.New(cpuProgram(t, dir), cfg)
+			s, err := decode.New(cpuProgram(t, writeParts(t, cfg, w, opts, c.parts)), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}

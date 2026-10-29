@@ -238,17 +238,13 @@ func TestPartsMatchWhole(t *testing.T) {
 		opts := llm.Options{Seq: seq, Format: format, Group: 16, Quant: "kmeans-minmax", Params: map[string]string{"post-scale": "1"}}
 		var one []float32
 		for n := 1; n <= cfg.NumLayers; n++ {
-			dir := filepath.Join(t.TempDir(), "parts")
-			if _, err := llm.WriteParts(dir, cfg, w, opts, n, nil); err != nil {
-				t.Fatal(err)
-			}
-			pdir, list, err := llm.ReadParts(dir)
+			list, err := llm.ReadManifest(writeParts(t, cfg, w, opts, n))
 			if err != nil || len(list.Parts) != n {
 				t.Fatalf("read parts: %v, %v", list, err)
 			}
 			h := emb
 			for _, p := range list.Parts {
-				h = runPackage(t, filepath.Join(pdir, p.Package), h)
+				h = runPackage(t, p.Path, h)
 			}
 			if n == 1 {
 				one = h
@@ -261,6 +257,31 @@ func TestPartsMatchWhole(t *testing.T) {
 			}
 		}
 	}
+}
+
+// writeParts writes the model split into n parts as hwnpu-convert does and returns the manifest.
+func writeParts(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options, n int) string {
+	t.Helper()
+	plan, err := llm.PlanSplit(cfg, opts, math.MaxInt64, n)
+	if err != nil || len(plan) != n {
+		t.Fatalf("plan of %d parts: %v, %v", n, plan, err)
+	}
+	dir := t.TempDir()
+	man := &llm.Manifest{Seq: opts.Seq, Cache: opts.Cache}
+	for i, p := range plan {
+		o := opts
+		o.Start, o.Layers = p.Start, p.Layers
+		rec, err := llm.WritePart(filepath.Join(dir, fmt.Sprintf("m.part%d.mlpackage", i+1)), cfg, w, o, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		man.Parts = append(man.Parts, rec)
+	}
+	path := filepath.Join(dir, "m.parts.json")
+	if err := llm.WriteManifest(path, man); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func runPackage(t *testing.T, dir string, x []float32) []float32 {
