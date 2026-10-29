@@ -21,6 +21,7 @@ import (
 type result struct {
 	Format      string  `json:"format"`
 	Layers      int     `json:"layers"`
+	Tokens      int     `json:"tokens"`         // tokens per call: 1, or K drafted tokens checked at once
 	Units       string  `json:"units"`          // npu, or cpu and gpu for the Core ML baselines
 	Copy        int     `json:"copy,omitempty"` // several models at once: which one
 	Params      int64   `json:"params"`
@@ -99,17 +100,18 @@ func (l *loaded) close() {
 	}
 }
 
-// load builds a model, compiles it for the given units and binds its buffers. It fills r with
-// what it learned; the returned model is nil when it could not be compiled.
-func (p *prober) load(format string, layers int, units string, seed uint64, r *result) *loaded {
-	r.Format, r.Layers, r.Units = format, layers, units
+// load builds a model that takes the given tokens per call, compiles it for the given units and
+// binds its buffers. It fills r with what it learned; the returned model is nil when it could not
+// be compiled.
+func (p *prober) load(format string, layers, tokens int, units string, seed uint64, r *result) *loaded {
+	r.Format, r.Layers, r.Tokens, r.Units = format, layers, tokens, units
 	r.Params, r.WeightBytes = paramsAndBytes(format, layers)
 	l := &loaded{}
 	var src hwnpu.GraphSource
 	t := time.Now()
 	if p.coreml {
-		l.path = filepath.Join(p.dir, fmt.Sprintf("probe_l%d_%s_%d.mlpackage", layers, format, seed))
-		if err := probe.WriteMLPackage(l.path, format, layers, seed); err != nil {
+		l.path = filepath.Join(p.dir, fmt.Sprintf("probe_l%d_%s_t%d_%d.mlpackage", layers, format, tokens, seed))
+		if err := probe.WriteMLPackage(l.path, format, layers, tokens, seed); err != nil {
 			r.Error = "build: " + err.Error()
 			l.close()
 			return nil
@@ -117,7 +119,7 @@ func (p *prober) load(format string, layers int, units string, seed uint64, r *r
 		r.FileBytes = probe.DirSize(l.path)
 		src = hwnpu.GraphSource{Path: l.path}
 	} else {
-		xmlData, bin, err := probe.BuildIR(format, layers, seed)
+		xmlData, bin, err := probe.BuildIR(format, layers, tokens, seed)
 		if err != nil {
 			r.Error = "build: " + err.Error()
 			return nil
@@ -265,9 +267,9 @@ func paramsAndBytes(format string, layers int) (int64, int64) {
 }
 
 // try loads, times and closes one model.
-func (p *prober) try(format string, layers int, units string, quickOffNPU bool) result {
+func (p *prober) try(format string, layers, tokens int, units string, quickOffNPU bool) result {
 	var r result
-	l := p.load(format, layers, units, uint64(layers), &r)
+	l := p.load(format, layers, tokens, units, uint64(layers), &r)
 	if l != nil {
 		quick := quickOffNPU && !(r.OtherOps == 0 && r.NPUOps > 0)
 		if err := p.time(l, &r, quick); err != nil {
@@ -281,6 +283,9 @@ func (p *prober) try(format string, layers int, units string, quickOffNPU bool) 
 
 func logResult(r result) {
 	line := fmt.Sprintf("  %-5s %3d layers %6.2f GiB %-4s %-18s build %5.1fs compile %6.1fs", r.Format, r.Layers, probe.GiB(r.WeightBytes), r.Units, r.placement(), r.BuildS, r.CompileS)
+	if r.Tokens > 1 {
+		line = fmt.Sprintf("  K=%-2d", r.Tokens) + line[1:]
+	}
 	if r.Copy > 0 {
 		line = fmt.Sprintf("  model %d: ", r.Copy) + line[2:]
 	}

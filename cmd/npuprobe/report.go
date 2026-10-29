@@ -35,6 +35,24 @@ func markdown(rep *report) string {
 		}
 	}
 
+	if len(rep.Verify) > 0 {
+		sb.WriteString("\n## K tokens per call (checking K drafted tokens)\n\n| weights | format | K | placement | ms/call | × K=1 | ms/token | tokens/s | weights GB/s | CPU use | compile s | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		for _, r := range rep.Verify {
+			ratio, perToken, tps := "", "", ""
+			if base := baseMs(rep.Verify, r); base > 0 && r.MsPerCall > 0 {
+				ratio = fmt.Sprintf("%.2f", r.MsPerCall/base)
+			}
+			if r.MsPerCall > 0 {
+				perToken = fmt.Sprintf("%.1f", r.MsPerCall/float64(r.Tokens))
+				tps = fmt.Sprintf("%.1f", 1000*float64(r.Tokens)/r.MsPerCall)
+			}
+			fmt.Fprintf(&sb, "| %.2f B, %.2f GiB | %s | %d | %s | %s | %s | %s | %s | %s | %s | %.1f | %s |\n",
+				float64(r.Params)/1e9, probe.GiB(r.WeightBytes), r.Format, r.Tokens, r.placement(),
+				cell(r.MsPerCall, "%.1f"), ratio, perToken, tps, cell(r.gbps(), "%.0f"), cell(r.CPUUse, "%.2f"), r.CompileS, errCell(r))
+		}
+		sb.WriteString("\n× K=1 is the time per call over that of one token. Near 1, the call is bound by reading the weights and checking K drafted tokens costs about as much as generating one; tokens/s is then the most speculative decoding could reach if every draft were accepted.\n")
+	}
+
 	if len(rep.Sweep) > 0 {
 		fmt.Fprintf(&sb, "\n## Size limit (one model at a time, up to %.1f GiB)\n\n", probe.GiB(rep.MaxBytes))
 		sb.WriteString("| format | layers | weights | placement | ms/call | weights GB/s | CPU use | compile s | error |\n|---|---|---|---|---|---|---|---|---|\n")
