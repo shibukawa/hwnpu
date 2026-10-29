@@ -81,6 +81,8 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -parts 2,3,4   # machines with a 2 GiB limit such as the M4 (3.7 GiB)
 ```
 
+**kv** runs only when asked for, as `npuprobe kv`. It passes one token through 11 lut4 layers of the bench size with real attention, over a KV cache of each length (256, 1024 and 4096 tokens by default), the cache held either in host buffers bound as inputs and outputs (`host`) or in Core ML states, MLState (`state`). `-kv-cache`, `-kv-layers` and `-kv-modes` change them. `-kv-modes host-mha` gives each of the 16 query heads its own keys and values instead of repeating the 4 cached heads (a cache 4 times as large), to tell the cost of the repeat and of reading the cache apart. `host-int8` passes the cache as int8 with an fp16 scale per token and casts it back in the program (Core ML specification version 10, macOS 26 and later).
+
 **verify** runs the bench models on the NPU with K tokens per call (1 to 128 by default): the call that checks K drafted tokens in speculative decoding, or reads a chunk of the prompt, which reads every weight once whatever K is. While the time per call barely grows with K, the call is bound by reading the weights and checking K drafts costs about as much as generating one token. Past some K the compute runs out and the time grows with K. The report gives that rate in TFLOPS and the K at which reading the weights and computing take as long, from the ratio of the NPU's compute to its weight reading: about the most speculative decoding can gain, and the prompt chunk that uses the NPU best. Attention is only the per-token stand-in; there is none among the drafted tokens. The formats are those the NPU runs (fp16, int8 and lut4 on Apple).
 
 Each measurement runs in a child process of its own, so a framework or driver that aborts (Core ML's GPU path has asserted on some graphs) costs one row of the report, with the error, not the run.
@@ -206,6 +208,23 @@ A model over the limit run in parts (`npuprobe split -split-layers 128 -parts 2,
 - The split does not change the error; it was the same after each part in 2 and in 4 parts.
 - So the M4 loses nothing running the same parts under 1 GiB as the M3 (`hwnpu-convert`'s default `-target any`). Every part is loaded at once, but the peak memory of the process while loading is about the weights of one part (on the M3, 1.03 GiB in 2 parts and 0.55 GiB in 4; table above), so finer parts help a machine short of memory.
 - The Neural Engine reads the weights at about the M3's speed (65 GB/s).
+
+### KV cache (Apple M3, `npuprobe kv`)
+
+11 lut4 layers, one token, all on the Neural Engine (report: [npuprobe-m3-kv.md](npuprobe-m3-kv.md)):
+
+| cache length | KV size | host buffers | MLState |
+|---|---|---|---|
+| 256 | 5.5 MiB | 7.1 ms (CPU use 0.16) | 6.6 ms (0.06) |
+| 1024 | 22 MiB | 11.0 ms (0.18) | 10.0 ms (0.04) |
+| 4096 | 88 MiB | 27.0 ms (0.16) | 26.8 ms (0.02) |
+| 8192 | 176 MiB | 49.5 ms (0.15) | 49.3 ms (0.02) |
+
+- MLState does not change the speed. Only the CPU use falls: with host buffers Core ML handles the inputs on the CPU.
+- Both slow down with the cache's length. The cause is not copying the inputs but the Neural Engine's work over the whole fixed length cache.
+- A value written to a state must be read back before it is used, or the Neural Engine compiler fails (`error code: -14`).
+- The cost is the attention over the whole cache itself (report: [npuprobe-m3-kv-mha.md](npuprobe-m3-kv-mha.md)). `host-mha`, which repeats nothing and holds a cache 4 times as large, takes 14.2 / 36.6 / 63.5 ms at 1024 / 4096 / 8192: only 1.3 times `host`. Neither the bandwidth nor the repeat is the limit; the Neural Engine cannot fill itself with matrix-vector products of one query row (16 heads × cache length per layer, about 8 GFLOP/s at 1K tokens).
+- An int8 cache does not make it faster either (report: [npuprobe-m3-kv-int8.md](npuprobe-m3-kv-int8.md)). `host-int8` stays on the Neural Engine with half the memory, but takes 11.9 / 29.5 / 50.8 ms at 1024 / 4096 / 8192 against 10.8 / 27.6 / 46.5 ms for `host` in the same run: a tenth slower, for the cast over the whole cache. Quantizing the cache saves memory, not time.
 
 ### Wanted
 

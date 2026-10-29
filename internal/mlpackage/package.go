@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Feature describes one model input or output: a multi array of fp16, fp32 or int32.
+// Feature describes one model input or output: a multi array of fp16, fp32, int32 or int8.
 type Feature struct {
 	Name  string
 	DType milspec.DataType
@@ -27,6 +27,8 @@ type Package struct {
 	Metadata map[string]string
 	// Description is the model's short description.
 	Description string
+	// States are the model's state inputs (Builder.State), for Finish.
+	States []Feature
 }
 
 // Create makes the package directory and opens its weight file. The directory is replaced.
@@ -53,6 +55,8 @@ func featureType(f Feature) (*mlspec.FeatureType, error) {
 		dt = mlspec.ArrayFeatureType_FLOAT32
 	case Int32:
 		dt = mlspec.ArrayFeatureType_INT32
+	case Int8:
+		dt = mlspec.ArrayFeatureType_INT8
 	default:
 		return nil, fmt.Errorf("mlpackage: feature %s: unsupported type %v", f.Name, f.DType)
 	}
@@ -76,6 +80,14 @@ func (p *Package) Finish(prog *milspec.Program, specVersion int32, inputs, outpu
 	}
 	if desc.Output, err = featureDescriptions(outputs); err != nil {
 		return err
+	}
+	for _, f := range p.States {
+		t, err := featureType(f)
+		if err != nil {
+			return err
+		}
+		st := &mlspec.FeatureType{Type: &mlspec.FeatureType_StateType{StateType: &mlspec.StateFeatureType{Type: &mlspec.StateFeatureType_ArrayType{ArrayType: t.GetMultiArrayType()}}}}
+		desc.State = append(desc.State, &mlspec.FeatureDescription{Name: f.Name, Type: st})
 	}
 	return p.write(&mlspec.Model{SpecificationVersion: specVersion, Description: desc, Type: &mlspec.Model_MlProgram{MlProgram: prog}})
 }

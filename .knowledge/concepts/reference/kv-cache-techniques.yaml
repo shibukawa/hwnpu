@@ -1,0 +1,51 @@
+id: reference:kv-cache-techniques
+type: reference
+title: KV キャッシュの省メモリ化と高速化の手法と、Neural Engine への当てはめ
+summary: >-
+  MQA/GQA/MLA、KV 量子化、スライディング窓、退避 (StreamingLLM/H2O/SnapKV)、PagedAttention、FlashAttention/Flash-Decoding、
+  層をまたぐ共有 (CLA/YOCO/Apple)、プロンプトのキャッシュ、容量の段階を、ANE の制約 (形が固定、動的な索引は CPU、費用は容量に比例) で評価した。
+  詳細は docs/kv-cache.md。
+lifecycle: active
+authority: authored
+scope: {backend: coreml}
+facts:
+  document: docs/kv-cache.md
+  key_finding: >-
+    ANE での KV キャッシュの費用は帯域でもメモリでもなく、容量全体に対する問い合わせ 1 行の注意の計算 (backend:apple-coreml の kv_cost_source)。
+    したがって量子化や MLA のような「読み出す量を減らす」手法は速さに効かず、「計算する容量を減らす」か「使っている塊だけ計算する」手法が効く
+  usable_now_for_lfm3:
+    - スライディング注意の層 (11 のうち 5、窓 256) をリングバッファにする。長い容量の費用とメモリが約 6/11 (最優先)
+    - 容量の段階 (256/1K/4K/16K) と、ホストのバッファのコピーによる移し替え
+    - プロンプト (system) の KV の保存と再利用。バッファの保存だけ
+    - StreamingLLM 型の退避 (先頭の数トークンと直近の窓) を設定で選べるようにし、固定の容量で終わりのない生成
+    - Flash-Decoding の形: 固定長の塊ごとの重みなしの注意プログラムが (max, 分母, 分子) を返し、ホストで合流。使っている塊だけ動かせば費用が長さに比例。呼び出しの固定費 (1 回約 55 µs) との折り合いは未計測
+  not_applicable:
+    - MQA、MLA (TransMLA)、層をまたぐ共有 (CLA、YOCO、Apple の 37.5%): 学習し直しや追加学習が要る。新しいモデルを選ぶ基準にはなる
+    - PagedAttention: 系列が 1 つで事前確保なら利点がなく、ページ表の間接参照は gather で CPU 行き
+    - FlashAttention のカーネル最適化: Core ML のコンパイラの中で、hwnpu からは触れない
+    - KV 量子化 (KIVI 2 ビット、KVQuant 3 ビット): メモリは減るが ANE の速さには効かない。int8 の入力を cast で戻す形は ANE に載り 1 割遅い (計測済み、backend:apple-coreml の kv_int8)。100K 超を塊分けと一緒に目指すときだけ
+  external_observations:
+    - Apple の on-device モデル (Foundation Models 2025) は後半 37.5% の層の K/V 射影を外して前半のを使い、キャッシュを 37.5% 減らした。ANE で容量が高いという観測と合う
+    - llama.cpp の iSWA (PR 13194) は SWA 層だけ窓の大きさの別キャッシュを持つ (--swa-full で全長に戻す)。LFM3 のリングバッファと同じ発想
+    - Anemll (ANE 向け LLM 変換) は MLState の KV キャッシュで文脈が 2K〜4K 固定。同じ制約に当たっている
+    - Apple Developer Forums に、MLState で複数トークンの prefill をすると一部の状態が更新されないという未解決の報告がある。hwnpu はホストのバッファなので当たらない
+  sources:
+    - https://arxiv.org/abs/2507.13575
+    - https://arxiv.org/abs/2405.12981
+    - https://arxiv.org/abs/2405.05254
+    - https://arxiv.org/abs/2502.07864
+    - https://arxiv.org/abs/2402.02750
+    - https://arxiv.org/abs/2401.18079
+    - https://arxiv.org/abs/2404.14469
+    - https://arxiv.org/abs/2412.19442
+    - https://pytorch.org/blog/flash-decoding/
+    - https://github.com/ggml-org/llama.cpp/pull/13194
+    - https://huggingface.co/blog/mistral-coreml
+    - https://developer.apple.com/forums/thread/783612
+relations:
+  - relation: informed_by
+    to: backend:apple-coreml
+  - relation: informs
+    to: decision:coreml-layer-split
+  - relation: informs
+    to: milestone:m5-llm-convert

@@ -102,6 +102,11 @@ open_questions:
   state-in-limit:
     text: Core ML の状態 (MLState) の KV キャッシュは 1 モデルの上限やメモリの見込みに数えられるか
     state: open
+  sliding-cache:
+    text: >-
+      キャッシュの費用は容量に比例するので、LFM3 のスライディング注意の層 (11 の注意層のうち 5、窓 256) は常に 256 トークンのキャッシュ
+      (リングバッファ) で足りる。全注意の層だけを長い容量にすれば、長い文脈の費用を半分近くにできる見込み。手法の調査と進め方は reference:kv-cache-techniques
+    state: open
   kv-cache:
     text: >-
       KV キャッシュなしでは毎トークン窓全体を計算するので、長い文脈は扱えない (窓に比例して遅くなり、窓ごとにコンパイルが要る)。
@@ -110,7 +115,8 @@ open_questions:
     resolution: >-
       2026-10-29 入出力のバッファとしてホストが持つ方式を実装 (llm.Cached、internal/llm/decode、hwnpu-convert -cache)。各部分は自分の層の
       kv_k_N/kv_v_N と win_conv_N を持ち、全部 ANE に載る。LFM3-1.7B でキャッシュ 1024 なら 20.6 ms/token (backend:apple-coreml の kv_cache_host)。
-      MLState との比較は残っている (backend:apple-coreml の mlstate)
+      MLState と比べた結果、速さは同じで CPU use だけが下がる (backend:apple-coreml の mlstate_kv)。ホスト側バッファのままにする
+      (CPU インタプリタで確かめられ、容量の違うプログラムへの移し替えや分割と扱いやすいため)
   reshape-with-state:
     text: 生成の途中 (KV キャッシュを持ったまま) で分割数を変えるには、層ごとの状態を新しい持ち主の部分へ移す必要がある
     state: deferred
