@@ -1148,3 +1148,19 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 - **全段階を常駐させても動いている段階は遅くならない**: 3 段階を読み込んだ状態で 1024 の段階だけで終わる 900 トークンは 19.2 ms/token で、固定 1024 と同じ
 - **端から端までの利得は今回は示せなかった**: 同じ条件で続けて測った組 (固定 4096 / 段階あり) は 57.4 / 56.7 と 33.1 / 32.4 ms/token で、段階ありが 1〜2% 速いだけ (見込みは 1024 の 1024 トークンが 19 ms、残りが 27.7 ms で約 20%)。計測の間、機械はスワップを 8.7〜9.7 GB 使っていた (別の `hwnpu-chat` が 2 GB、ほかにアプリ多数) ので、どの値も信用しきれない。全段階を読み込んだ直後の 1 本は 71.5 ms/token、同じ構成の 2 本目は 19.2 ms。空いた機械で測り直す
 - 次: 空いた機械での測り直し。`MLModel` の読み込みを速くする手立て (システムの ANE キャッシュの挙動の調査)。塊分けの注意 (16K を超えるため)
+
+### 16.21 hwnpu-chat でチャットと埋め込みを使い分ける (`-use`) — 2026-10-30
+
+- `hwnpu-chat` に `-use` を足した。`chat` (既定、LFM3-1.7B)、`embed` (PLaMo-Embedding-1B)、`chat,embed` (`-listen` のときだけ)。ターミナルでは 1 つを選ぶ: `chat` は従来の対話、`embed` は入力を文書として溜め、`?` で始まる行をクエリとして文書をコサイン類似度の順に並べる。サーバーは `chat` で `/v1/chat/completions`、`embed` で `/v1/embeddings` を出し、`GET /v1/models` は読み込んだモデルを並べる。どのモデルが答えるかはエンドポイントで決め、`model` に相手側のモデルの名前が来たときだけエラーにする (OpenCode などがモデル一覧から埋め込みモデルを選んでしまったときに気づけるように)。読み込んでいないモデルのエンドポイントは 404
+- 埋め込みモデルの用意はチャットと同じ (`PrepareEmbedder`): `config.json`、`tokenizer.model`、`model.safetensors` を落とし、`-embed-seq` (既定 `128,1024`) の長さごとに `embed-sN.mlpackage` に変換する (lut4、kmeans-minmax。LFM3 と同じ設定で、PLaMo での比較はしていない)。lut4 で 1 部分に収まる (16.18)。フラグは `-embed-model`、`-embed-repo`、`-embed-seq`、`-embed-package`
+- 実行 (`chat.Embedder`): BOS (`<|startoftext|>`) を付けて符号化し、収まる最も短いプログラムに右詰めの詰め物とマスクで流し、最終隠れ状態を本文のトークンだけで平均して長さ 1 に揃える。クエリは `QueryPrefix + text` を 1 つの文として符号化し、BOS と `Encode(QueryPrefix)` の個数分を平均から外す。前置きの末尾の空白は単独の `▁` になり、本文の先頭の `▁` は前置き側に入る (小さなトークナイザーで確認。実物の金データ `…ください: 東京の天気は晴れです。` でも、前置きの直後に文頭と同じ id 35913 が来るので、同じと見ている)。双方向なので詰め物の位置は結果に効かない (16.18)。プログラムを長さで選ぶので、短い文は短いプログラムで安く済む
+- 長すぎる文は API では既定でエラー (`context_length_exceeded`)、`truncate: true` で切り詰め (text-embeddings-inference と同じ名前)。ターミナルでは切り詰めて表示する。クエリか文書かは OpenAI の API にないので、Cohere や Voyage と同じ `input_type` (`query`/`search_query`、`document`/`search_document`/`passage`) で受け、既定は文書。`encoding_format: base64` (OpenAI の Python クライアントの既定) は float32 のリトルエンディアン
+- テスト: 小さな PLaMo (hidden 32、2 層、8 と 128 トークンのプログラム) を CPU のインタープリタで動かし、詰め物をした埋め込みが、ちょうどの長さのプログラムで本文だけを平均したものと一致すること (`TestEmbedderPadding`)、BOS と前置きの扱い、空文字列、長すぎる文の切り詰めとエラー (`TestEmbed`)、API (`TestEmbeddingsAPI`) を確かめる。改変 (マスクを外す、平均に BOS を含める、BOS を付けない) はすべて検出した。`HWNPU_PLAMO_DIR` があれば、実物のトークナイザーで、クエリの平均が本文のちょうど先頭から始まることも確かめる (`TestPlamoQueryTokens`)
+- 未確認: この環境は Hugging Face にも Neural Engine にも届かないので、実物での確認はしていない。とくに HF の `encode_query`/`encode_document` が前置きの長さをどう数えるか、平均を正規化するか (コサイン類似度には効かない)、`add_eos_token` の有無は、16.18 の記録からの推測。`tools/ref/embed_golden.py` が HF の `encode_query`/`encode_document` の結果とトークン列を書き、Mac で `TestPlamoEmbeddingGolden` がトークン列の一致、コサイン類似度 0.98 以上、各クエリの最も近い文書の一致を確かめる。fp16 のあふれ (16.18) もここで NaN/Inf として見える
+
+```bash
+python tools/ref/embed_golden.py MODEL_DIR MODEL_DIR/embed_golden.json
+HWNPU_PLAMO_DIR=MODEL_DIR go test -run 'PlamoQueryTokens|PlamoEmbeddingGolden' -v ./internal/chat/
+```
+
+- 次: 実物での照合と速さの計測 (128 と 1024 の 1 文あたりの時間、読み込みの時間)。複数の文をまとめて流すバッチ (今は 1 文ずつ)
