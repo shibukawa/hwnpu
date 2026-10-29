@@ -21,6 +21,7 @@ import (
 type result struct {
 	Format      string  `json:"format"`
 	Layers      int     `json:"layers"`
+	Tokens      int     `json:"tokens"`         // tokens per call: 1, or K drafted tokens checked at once
 	Units       string  `json:"units"`          // npu, or cpu and gpu for the Core ML baselines
 	Copy        int     `json:"copy,omitempty"` // several models at once: which one
 	Params      int64   `json:"params"`
@@ -100,23 +101,26 @@ func (l *loaded) close() {
 	}
 }
 
-// load builds a model, compiles it for the given units and binds its buffers. It fills r with
-// what it learned; the returned model is nil when it could not be compiled.
-func (p *prober) load(format string, layers int, units string, seed uint64, r *result) *loaded {
-	return p.loadPart(format, probe.Whole(layers), units, seed, nil, r)
+// load builds a model that takes the given tokens per call, compiles it for the given units and
+// binds its buffers. It fills r with what it learned; the returned model is nil when it could not
+// be compiled.
+func (p *prober) load(format string, layers, tokens int, units string, seed uint64, r *result) *loaded {
+	part := probe.Whole(layers)
+	part.Tokens = tokens
+	return p.loadPart(format, part, units, seed, nil, r)
 }
 
 // loadPart loads one part of a split model as load does a whole one. When in is not nil it is
 // bound to the input instead of a new buffer, so that the part reads what the one before wrote.
 func (p *prober) loadPart(format string, part probe.Part, units string, seed uint64, in *hwnpu.Buffer, r *result) *loaded {
 	layers := part.Layers
-	r.Format, r.Layers, r.Units = format, layers, units
+	r.Format, r.Layers, r.Tokens, r.Units = format, layers, max(part.Tokens, 1), units
 	r.Params, r.WeightBytes = paramsAndBytes(format, layers)
 	l := &loaded{}
 	var src hwnpu.GraphSource
 	t := time.Now()
 	if p.coreml {
-		l.path = filepath.Join(p.dir, fmt.Sprintf("probe_l%d_%d_%s_%d.mlpackage", part.First, layers, format, seed))
+		l.path = filepath.Join(p.dir, fmt.Sprintf("probe_l%d_%d_%s_t%d_%d.mlpackage", part.First, layers, format, r.Tokens, seed))
 		if err := probe.WriteMLPackagePart(l.path, format, part, seed); err != nil {
 			r.Error = "build: " + err.Error()
 			l.close()
@@ -285,9 +289,9 @@ func paramsAndBytes(format string, layers int) (int64, int64) {
 }
 
 // try loads, times and closes one model.
-func (p *prober) try(format string, layers int, units string, quickOffNPU bool) result {
+func (p *prober) try(format string, layers, tokens int, units string, quickOffNPU bool) result {
 	var r result
-	l := p.load(format, layers, units, uint64(layers), &r)
+	l := p.load(format, layers, tokens, units, uint64(layers), &r)
 	if l != nil {
 		quick := quickOffNPU && !(r.OtherOps == 0 && r.NPUOps > 0)
 		if err := p.time(l, &r, quick); err != nil {
@@ -301,6 +305,9 @@ func (p *prober) try(format string, layers int, units string, quickOffNPU bool) 
 
 func logResult(r result) {
 	line := fmt.Sprintf("  %-5s %3d layers %6.2f GiB %-4s %-18s build %5.1fs compile %6.1fs", r.Format, r.Layers, probe.GiB(r.WeightBytes), r.Units, r.placement(), r.BuildS, r.CompileS)
+	if r.Tokens > 1 {
+		line = fmt.Sprintf("  K=%-2d", r.Tokens) + line[1:]
+	}
 	if r.Copy > 0 {
 		line = fmt.Sprintf("  model %d: ", r.Copy) + line[2:]
 	}

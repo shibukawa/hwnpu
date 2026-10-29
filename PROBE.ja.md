@@ -29,7 +29,7 @@ go run github.com/shibukawa/hwnpu/cmd/report@latest -o report.md
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
 ```
 
-40 分ほどかかり、今いるディレクトリに `npuprobe-<機種>-<日時>.md` と `.json` を書き出します。Ctrl-C で止めても、そこまでの結果は残ります。コマンド名のあとに `bench` か `limit` を付けると片方だけを行います。上限を超えるモデルを分けて動かす検証は `split` で行います（後述）。
+40 分ほどかかり、今いるディレクトリに `npuprobe-<機種>-<日時>.md` と `.json` を書き出します。Ctrl-C で止めても、そこまでの結果は残ります。コマンド名のあとに `bench` か `limit` を付けると片方だけを行います。上限を超えるモデルを分けて動かす検証は `split` で行います（後述）。投機的デコードの検証にあたる計測（後述の verify）は、`verify` を付けたときだけ行います。
 
 ### 3. エネルギー
 
@@ -79,6 +79,8 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -parts 2,3,4   # M4 など上限が 2 GiB の機械（3.7 GiB）
 ```
 
+**verify** は、bench と同じモデルを、1 回の呼び出しで K 個のトークン（既定は 1、2、4、8）を通す形にして NPU で動かします。投機的デコードで、下書きした K 個のトークンを 1 回で確かめる呼び出しと同じ形で、K に関係なく重みは 1 回ずつしか読みません。K を増やしても 1 回の時間がほとんど変わらないうちは重みの読み出しで頭打ちになっていて、K 個の確認が 1 トークンの生成とほぼ同じ時間で済みます。時間が伸び始める K が、投機的デコードで得られる速さの上限の目安です。注意はトークンごとの代わりの演算だけで、下書きのトークンどうしの注意は含みません。形式は NPU で動くもの（Apple は fp16、int8、lut4）です。
+
 計測は 1 つずつ別の子プロセスで行います。フレームワークやドライバがプロセスごと落ちても（Core ML の GPU の経路が一部のグラフで assert したことがあります）、失うのはレポートの 1 行で、その行にエラーが残ります。
 
 列の読み方:
@@ -86,7 +88,8 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 | 列 | 意味 |
 |---|---|
 | placement | Apple は Core ML の計算計画（`MLComputePlan`）が示す演算ごとの置き場所で、`NPU` や `CPU 258` など。Intel はドライバのコンパイラがグラフを作れたら `NPU`。ほかの装置に逃がす仕組みがないので、それ以外はコンパイルエラーになる。 |
-| ms/token、tokens/s | 呼び出し 1 回の実時間。文脈に対する注意を含まないので、実際の生成の上限値。 |
+| ms/token、tokens/s | 呼び出し 1 回の実時間。文脈に対する注意を含まないので、実際の生成の上限値。verify では 1 回の時間を K で割った値で、下書きが全部受け入れられたときの上限。 |
+| × K=1 | verify で、1 回の時間を K=1 のときの時間で割った値。1 に近いほど K 個をほぼ無料で確かめられる。 |
 | weights GB/s | 重みのバイト数 × 1 秒あたりの呼び出し回数。メモリ帯域にどれだけ近いか。 |
 | CPU use | モデルを動かしている間の、プロセスの CPU 時間 ÷ 実時間。NPU（や GPU）が計算していれば 0 に近く、CPU なら 1 以上。root なしで配置を裏付ける。 |
 | net W、mJ/token | 読める電力計があるとき、動かしている間の電力から待機時の電力を引いたもの。 |
@@ -96,7 +99,8 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 | フラグ | 既定 | |
 |---|---|---|
 | `-formats` | Apple は `fp16,int8,lut4,int4`、Intel は `fp16,int8,int4` | int4 は Neural Engine では試さない |
-| `-layers` | `8,16` | bench の層の数 |
+| `-layers` | `8,16` | bench と verify の層の数 |
+| `-tokens` | `1,2,4,8` | verify で 1 回に通すトークンの数 K |
 | `-baselines` | `cpu,gpu` | Apple で比べる Core ML の装置。空なら比べない |
 | `-max-gb` | Apple はメモリの 4 分の 1、Intel は 6 分の 1、最大 8 | limit で試す重みの最大の大きさ。Apple はこの 2 倍ほどの空きディスクが要る |
 | `-several` | `true` | limit の最後に複数のモデルを同時に読み込む |

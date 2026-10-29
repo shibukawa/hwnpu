@@ -29,7 +29,7 @@ It compiles small embedded models for every NPU found, compares the results with
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
 ```
 
-It takes about 40 minutes and writes `npuprobe-<machine>-<time>.md` and `.json` to the current directory; what was measured is kept if it is interrupted with Ctrl-C. `bench` or `limit` after the command name runs one part only. `split` checks a model over the limit run in parts (see below).
+It takes about 40 minutes and writes `npuprobe-<machine>-<time>.md` and `.json` to the current directory; what was measured is kept if it is interrupted with Ctrl-C. `bench` or `limit` after the command name runs one part only. `split` checks a model over the limit run in parts (see below). The speculative decoding measurement (verify, below) runs only when `verify` is given.
 
 ### 3. Energy
 
@@ -79,6 +79,8 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -parts 2,3,4   # machines with a 2 GiB limit such as the M4 (3.7 GiB)
 ```
 
+**verify** runs the bench models on the NPU with K tokens per call (1, 2, 4 and 8 by default): the call that checks K drafted tokens in speculative decoding, which reads every weight once whatever K is. While the time per call barely grows with K, the call is bound by reading the weights and checking K drafts costs about as much as generating one token. The K at which the time starts to grow is about the most speculative decoding can gain. Attention is only the per-token stand-in; there is none among the drafted tokens. The formats are those the NPU runs (fp16, int8 and lut4 on Apple).
+
 Each measurement runs in a child process of its own, so a framework or driver that aborts (Core ML's GPU path has asserted on some graphs) costs one row of the report, with the error, not the run.
 
 How to read the columns:
@@ -86,7 +88,8 @@ How to read the columns:
 | Column | Meaning |
 |---|---|
 | placement | Apple: Core ML's compute plan (`MLComputePlan`) for every operation, e.g. `NPU` or `CPU 258`. Intel: `NPU` when the driver compiler built the graph; it has no fallback, so anything else is a compile error. |
-| ms/token, tokens/s | Wall time per call. Without the attention over the context, so an upper bound for real decoding. |
+| ms/token, tokens/s | Wall time per call. Without the attention over the context, so an upper bound for real decoding. In verify, the time per call divided by K: the bound if every draft were accepted. |
+| × K=1 | verify: the time per call over that at K=1. Near 1, the K tokens are checked almost for free. |
 | weights GB/s | Weight bytes times calls per second: how close a run is to the memory bandwidth. |
 | CPU use | Process CPU time divided by wall time while the model runs. Near 0 when the NPU (or the GPU) does the work, 1 or more when the CPU does. It confirms the placement without root. |
 | net W, mJ/token | Device power meter while running minus idle, when there is a readable meter. |
@@ -96,7 +99,8 @@ Options:
 | Flag | Default | |
 |---|---|---|
 | `-formats` | Apple `fp16,int8,lut4,int4`, Intel `fp16,int8,int4` | int4 is not tried on the Neural Engine |
-| `-layers` | `8,16` | bench layer counts |
+| `-layers` | `8,16` | bench and verify layer counts |
+| `-tokens` | `1,2,4,8` | verify: tokens per call, K |
 | `-baselines` | `cpu,gpu` | Apple: Core ML units to compare with; empty for none |
 | `-max-gb` | a quarter of the RAM on Apple, a sixth on Intel, at most 8 | limit: largest weight size tried. Apple needs free disk space of about twice this |
 | `-several` | `true` | limit: load several models at once after the sweep |

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/ovir"
@@ -38,7 +39,7 @@ func TestBuildIR(t *testing.T) {
 // in order computes the whole.
 func TestSplitWeights(t *testing.T) {
 	parts := Split(5, 2)
-	if len(parts) != 2 || parts[0] != (Part{0, 3, false}) || parts[1] != (Part{3, 2, true}) {
+	if len(parts) != 2 || parts[0] != (Part{First: 0, Layers: 3}) || parts[1] != (Part{First: 3, Layers: 2, Last: true}) {
 		t.Fatalf("Split(5, 2) = %v", parts)
 	}
 	_, whole, err := BuildIR("int8", 2, 7)
@@ -59,5 +60,31 @@ func TestSplitWeights(t *testing.T) {
 	}
 	if bytes.Equal(first[len(first)-w:], second[len(second)-w:]) {
 		t.Error("two layers have the same weights")
+	}
+}
+
+// A call that checks K drafted tokens takes and returns K tokens.
+func TestBuildIRTokens(t *testing.T) {
+	xmlData, _, err := BuildIRPart("int4", Part{Layers: 1, Last: true, Tokens: 4}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := ovir.Parse(xmlData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{1, 4, DModel}
+	if !slices.Equal(m.Inputs[0].Dims, want) || !slices.Equal(m.Outputs[0].Dims, want) {
+		t.Fatalf("input %v output %v, want %v", m.Inputs[0].Dims, m.Outputs[0].Dims, want)
+	}
+}
+
+func TestWriteMLPackageTokens(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "probe.mlpackage")
+	if err := WriteMLPackagePart(dir, "lut4", Part{Layers: 1, Last: true, Tokens: 4}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if n := DirSize(dir); n < WeightBytes("lut4", 1) {
+		t.Fatalf("package %d bytes, weights %d", n, WeightBytes("lut4", 1))
 	}
 }

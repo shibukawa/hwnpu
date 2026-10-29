@@ -25,6 +25,7 @@ type childSpec struct {
 	DeviceID string        `json:"device_id"`
 	Format   string        `json:"format"`
 	Layers   int           `json:"layers"`
+	Tokens   int           `json:"tokens"` // 0 means 1
 	Units    string        `json:"units"`
 	Quick    bool          `json:"quick"`
 	N        int           `json:"n"`
@@ -75,7 +76,7 @@ func (p *prober) child(spec childSpec, out any) error {
 }
 
 func (p *prober) fail(spec childSpec, msg string) result {
-	r := result{Format: spec.Format, Layers: spec.Layers, Units: spec.Units, Error: msg}
+	r := result{Format: spec.Format, Layers: spec.Layers, Tokens: max(spec.Tokens, 1), Units: spec.Units, Error: msg}
 	if r.Units == "" {
 		r.Units = "npu"
 	}
@@ -124,7 +125,7 @@ func runChild(arg string) error {
 	var rs any
 	switch spec.Kind {
 	case "try":
-		rs = []result{p.try(spec.Format, spec.Layers, spec.Units, spec.Quick)}
+		rs = []result{p.try(spec.Format, spec.Layers, max(spec.Tokens, 1), spec.Units, spec.Quick)}
 	case "several":
 		rs = p.several(spec.Format, spec.Layers, spec.N)
 	case "split":
