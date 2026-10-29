@@ -113,7 +113,7 @@ func main() {
 	ref := fs.String("ref", "", "split: Core ML units for the reference output, cpu or gpu, or none (default gpu on Apple, none elsewhere)")
 	kvLayers := fs.Int("kv-layers", 11, "kv: layers with attention over the cache (11 is LFM3-1.7B's attention layers)")
 	kvCache := fs.String("kv-cache", "256,1024,4096", "kv: cache lengths in tokens")
-	kvModes := fs.String("kv-modes", "host,state", "kv: host (buffers bound as inputs and outputs) and state (Core ML MLState); -mha gives every query head its own cached head, so nothing is repeated; -int8 holds the host cache as int8 with fp16 scales, cast back in the program")
+	kvModes := fs.String("kv-modes", "host,state", "kv: host (buffers bound as inputs and outputs) and state (Core ML MLState); -mha gives every query head its own cached head, so nothing is repeated; -int8 holds the host cache as int8 with fp16 scales, cast back in the program; -chunk holds the host cache in chunks of at most 16384 tokens, so that caches over the Neural Engine's dimension limit stay on it")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
@@ -313,7 +313,7 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 		modes := split(sp.kvModes)
 		for _, m := range modes {
 			if b, _, _ := strings.Cut(m, "-"); b != "host" && b != "state" {
-				return fmt.Errorf("-kv-modes: %q is not host or state, optionally -mha or -int8", m)
+				return fmt.Errorf("-kv-modes: %q is not host or state, optionally -mha, -int8 or -chunk", m)
 			}
 		}
 		p.kvs(&rep, sp.kvLayers, caches, modes, save)

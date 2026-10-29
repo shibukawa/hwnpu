@@ -32,13 +32,23 @@ Then type after the `>`.
 | `-system TEXT` | none | the chat's system message |
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |
-| `-context N` | `16320` | most tokens of a prompt and its answer together; another value converts the model again for it |
+| `-context N` | `16320` | most tokens of a prompt and its answer together; another value converts the model again for it; over 16320 the cache is held in chunks |
 | `-model DIR` | `~/Library/Caches/hwnpu/models/LFM3-1.7B` | where the checkpoint and the converted programs are |
 | `-repo NAME` | `LiquidAI/LFM3-1.7B` | the Hugging Face repository of the checkpoint; set `HF_TOKEN` for gated ones |
 | `-package A,B` | none | use programs you converted with `hwnpu-convert` (section 4) |
 | `-dump DIR` | none | with the server, save each request, its prompt and the generated text |
 
-- A context of 16320 is the most the Neural Engine takes (a tensor dimension goes up to 16384, and the key axis is the context plus the tokens per call). OpenCode needs 16K. For chat alone, `-context 4096` generates faster (about 28 ms a token on an M3, against about 64 ms with 16K)
+- The longer the context, the slower each token. OpenCode needs 16K or more. For chat alone, `-context 4096` is faster
+
+| `-context` | generation (M3) | reading a prompt | KV cache |
+|---|---|---|---|
+| 4096 | about 28 ms/token | — | about 50 MiB |
+| 16320 (default) | about 64 ms/token | about 570 tokens/s | about 190 MiB |
+| 32768 | about 138 ms/token | about 300 tokens/s | about 390 MiB |
+| 65536 | about 363 ms/token | about 150 tokens/s | about 770 MiB |
+
+- Over 16320, the cache is held in chunks of 16384 tokens, to stay within the Neural Engine's 16384 per tensor dimension. With 32768 and 65536 the model recalled a passphrase put at the start of prompts of 25,288 and 53,736 tokens
+- The server keeps up to two other conversations as copies of the whole cache, so memory goes up to three times the KV cache above
 
 ## 3. OpenAI compatible server
 
@@ -114,5 +124,5 @@ Put an `opencode.json` in the project directory. The model's name is the one `GE
 
 - OpenCode first asks for a title of the conversation. This model thinks before answering even when told not to, which takes 1 to 2 minutes, and the main request waits meanwhile
 - With 1.7B parameters and 4 bit weights, factual answers can be wrong. Letting it think helps
-- The context is at most 16320 tokens. Longer contexts need the attention computed over the cache in chunks ([docs/kv-cache.md](docs/kv-cache.md))
+- A longer context generates more slowly (about 0.36 s a token with 65536). Contexts up to 65536 were tried
 - The implementation notes are in section 16.17 of [docs/design.md](docs/design.md)

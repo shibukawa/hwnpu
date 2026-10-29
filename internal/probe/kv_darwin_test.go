@@ -11,9 +11,9 @@ import (
 	"github.com/shibukawa/hwnpu/internal/types"
 )
 
-// Every KV cache probe model, the Core ML states and the int8 cache included, is placed on the
-// Neural Engine. A state written and then used without reading it back fails to compile for it
-// (mlpackage.UpdateState).
+// Every KV cache probe model, the Core ML states, the int8 cache and the cache in two chunks
+// included, is placed on the Neural Engine. A state written and then used without reading it
+// back fails to compile for it (mlpackage.UpdateState).
 func TestKVOnNeuralEngine(t *testing.T) {
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)
@@ -25,7 +25,7 @@ func TestKVOnNeuralEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dev.Close()
-	for _, mode := range []string{"host", "state", "host-int8"} {
+	for _, mode := range []string{"host", "state", "host-int8", "host-chunk128"} {
 		dir := filepath.Join(t.TempDir(), fmt.Sprintf("kv_%s.mlpackage", mode))
 		if err := WriteKVPackage(dir, mode, 2, 256, 1); err != nil {
 			t.Fatal(err)

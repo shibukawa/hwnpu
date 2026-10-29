@@ -32,7 +32,7 @@ import (
 func main() {
 	model := flag.String("model", chat.DefaultDir(chat.DefaultRepo), "directory of the model: the checkpoint and the converted programs, downloaded and converted when missing")
 	repo := flag.String("repo", chat.DefaultRepo, "Hugging Face repository the checkpoint comes from")
-	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of the converted programs)")
+	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of the converted programs); over 16320 the cache is held in chunks of 16384, slower per token")
 	pkgs := flag.String("package", "", "programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the model (default: in -model)")
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from: .safetensors or .gguf (default: in -model)")
