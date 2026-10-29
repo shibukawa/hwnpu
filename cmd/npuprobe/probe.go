@@ -115,19 +115,29 @@ func (l *loaded) close() {
 func (p *prober) load(format string, layers, tokens int, units string, seed uint64, r *result) *loaded {
 	part := probe.Whole(layers)
 	part.Tokens = tokens
-	return p.loadPart(format, part, units, seed, nil, r)
+	return p.loadPart(format, part, units, seed, nil, nil, r)
+}
+
+// sharedPart is a part of a split model written as one function of a package that holds them all.
+type sharedPart struct {
+	path, function string
+	fileBytes      int64
 }
 
 // loadPart loads one part of a split model as load does a whole one. When in is not nil it is
 // bound to the input instead of a new buffer, so that the part reads what the one before wrote.
-func (p *prober) loadPart(format string, part probe.Part, units string, seed uint64, in *hwnpu.Buffer, r *result) *loaded {
+// With shared the part is a function of an existing package instead of a package of its own.
+func (p *prober) loadPart(format string, part probe.Part, units string, seed uint64, in *hwnpu.Buffer, shared *sharedPart, r *result) *loaded {
 	layers := part.Layers
 	r.Format, r.Layers, r.Tokens, r.Units = format, layers, max(part.Tokens, 1), units
 	r.Params, r.WeightBytes = paramsAndBytes(format, layers)
 	l := &loaded{}
 	var src hwnpu.GraphSource
 	t := time.Now()
-	if p.coreml {
+	if shared != nil {
+		r.FileBytes = shared.fileBytes
+		src = hwnpu.GraphSource{Path: shared.path, Function: shared.function}
+	} else if p.coreml {
 		l.path = filepath.Join(p.dir, fmt.Sprintf("probe_l%d_%d_%s_t%d_%d.mlpackage", part.First, layers, format, r.Tokens, seed))
 		if err := probe.WriteMLPackagePart(l.path, format, part, seed); err != nil {
 			r.Error = "build: " + err.Error()

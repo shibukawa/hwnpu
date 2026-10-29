@@ -108,6 +108,7 @@ func main() {
 	several := fs.Bool("several", true, "limit: after the sweep, load several models just under the limit at once")
 	splitLayers := fs.Int("split-layers", 64, "split: layers of the whole model (61 M weights each; 64 is 1.8 GiB of lut4)")
 	parts := fs.String("parts", "2,4", "split: numbers of parts to try (1 runs the model unsplit)")
+	layout := fs.String("layout", "files", "split: files (a package per part), functions (one package, a function per part; Core ML on macOS 15) or both, comma separated")
 	ref := fs.String("ref", "", "split: Core ML units for the reference output, cpu or gpu, or none (default gpu on Apple, none elsewhere)")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
@@ -120,7 +121,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	sp := splitOpts{layers: *splitLayers, parts: *parts, ref: *ref}
+	sp := splitOpts{layers: *splitLayers, parts: *parts, layout: *layout, ref: *ref}
 	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "npuprobe:", err)
 		os.Exit(1)
@@ -128,8 +129,8 @@ func main() {
 }
 
 type splitOpts struct {
-	layers     int
-	parts, ref string
+	layers             int
+	parts, layout, ref string
 }
 
 func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, minRun time.Duration, work, out string) error {
@@ -199,6 +200,13 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 			return fmt.Errorf("-parts: %q is not a number of parts of %d layers", s, sp.layers)
 		}
 		splitParts = append(splitParts, n)
+	}
+	var layouts []string
+	for _, s := range split(sp.layout) {
+		if s != "files" && s != "functions" || s == "functions" && !p.coreml {
+			return fmt.Errorf("-layout: %q is not files or functions (functions is for Core ML)", s)
+		}
+		layouts = append(layouts, s)
 	}
 	switch {
 	case sp.ref == "none":
@@ -282,7 +290,7 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 	fmt.Println()
 
 	if mode == "split" {
-		p.splits(&rep, splitFormats, sp.layers, splitParts, sp.ref, save)
+		p.splits(&rep, splitFormats, sp.layers, splitParts, layouts, sp.ref, save)
 	}
 	if mode == "verify" {
 		// The formats the NPU runs: int4 never reaches the Neural Engine.

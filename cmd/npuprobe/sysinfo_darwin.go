@@ -19,6 +19,13 @@ func machine() (cpu, model, osVersion string, ram int64) {
 	return sysctl("machdep.cpu.brand_string"), sysctl("hw.model"), "macOS " + strings.TrimSpace(string(ver)), ram
 }
 
+// maxRSS is the largest resident set this process has had, in bytes.
+func maxRSS() int64 {
+	var ru syscall.Rusage
+	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	return ru.Maxrss // bytes on macOS
+}
+
 // cpuTime is the CPU time this process has used, user and system.
 func cpuTime() time.Duration {
 	var ru syscall.Rusage

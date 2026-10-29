@@ -70,21 +70,67 @@ func (p *Package) Finish(prog *milspec.Program, specVersion int32, inputs, outpu
 		return err
 	}
 	desc := &mlspec.ModelDescription{Metadata: &mlspec.Metadata{ShortDescription: p.Description, UserDefined: p.Metadata}}
-	for _, f := range inputs {
-		t, err := featureType(f)
-		if err != nil {
+	var err error
+	if desc.Input, err = featureDescriptions(inputs); err != nil {
+		return err
+	}
+	if desc.Output, err = featureDescriptions(outputs); err != nil {
+		return err
+	}
+	return p.write(&mlspec.Model{SpecificationVersion: specVersion, Description: desc, Type: &mlspec.Model_MlProgram{MlProgram: prog}})
+}
+
+// Function is one function of a program with several.
+type Function struct {
+	Name            string
+	Fn              *milspec.Function
+	Inputs, Outputs []Feature
+}
+
+// FinishFunctions writes a program with several functions, as Finish does one, and closes the
+// weight file, which the functions share. The first function is the default. Core ML loads one
+// function at a time as a model of its own (MLModelConfiguration.functionName, macOS 15), so a
+// network too large for the Neural Engine can be one package whose functions are its parts.
+func (p *Package) FinishFunctions(fns []Function, specVersion int32) error {
+	if err := p.Blobs.Close(); err != nil {
+		return err
+	}
+	if len(fns) == 0 {
+		return fmt.Errorf("mlpackage: no functions")
+	}
+	desc := &mlspec.ModelDescription{Metadata: &mlspec.Metadata{ShortDescription: p.Description, UserDefined: p.Metadata}, DefaultFunctionName: fns[0].Name}
+	prog := &milspec.Program{Version: 1, Functions: map[string]*milspec.Function{}}
+	for _, f := range fns {
+		if _, dup := prog.Functions[f.Name]; dup {
+			return fmt.Errorf("mlpackage: function %s twice", f.Name)
+		}
+		prog.Functions[f.Name] = f.Fn
+		fd := &mlspec.FunctionDescription{Name: f.Name}
+		var err error
+		if fd.Input, err = featureDescriptions(f.Inputs); err != nil {
 			return err
 		}
-		desc.Input = append(desc.Input, &mlspec.FeatureDescription{Name: f.Name, Type: t})
-	}
-	for _, f := range outputs {
-		t, err := featureType(f)
-		if err != nil {
+		if fd.Output, err = featureDescriptions(f.Outputs); err != nil {
 			return err
 		}
-		desc.Output = append(desc.Output, &mlspec.FeatureDescription{Name: f.Name, Type: t})
+		desc.Functions = append(desc.Functions, fd)
 	}
-	m := &mlspec.Model{SpecificationVersion: specVersion, Description: desc, Type: &mlspec.Model_MlProgram{MlProgram: prog}}
+	return p.write(&mlspec.Model{SpecificationVersion: specVersion, Description: desc, Type: &mlspec.Model_MlProgram{MlProgram: prog}})
+}
+
+func featureDescriptions(fs []Feature) ([]*mlspec.FeatureDescription, error) {
+	var out []*mlspec.FeatureDescription
+	for _, f := range fs {
+		t, err := featureType(f)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, &mlspec.FeatureDescription{Name: f.Name, Type: t})
+	}
+	return out, nil
+}
+
+func (p *Package) write(m *mlspec.Model) error {
 	raw, err := proto.Marshal(m)
 	if err != nil {
 		return err

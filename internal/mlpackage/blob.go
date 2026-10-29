@@ -43,6 +43,9 @@ func NewBlobWriter(path string) (*BlobWriter, error) {
 	return b, b.err
 }
 
+// Size is the number of bytes written so far.
+func (b *BlobWriter) Size() int64 { return b.pos }
+
 func (b *BlobWriter) write(p []byte) {
 	if b.err != nil {
 		return

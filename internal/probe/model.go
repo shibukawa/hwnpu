@@ -140,6 +140,42 @@ func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 	tokens := max(part.Tokens, 1)
 	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("decode layers %d-%d %s %d tokens", part.First, part.First+part.Layers-1, format, tokens)
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
+	y, err := buildPart(b, format, part, seed)
+	if err != nil {
+		return err
+	}
+	io := []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: y.Shape}}
+	return pkg.Finish(b.Finish(y), 9, io, []mlpackage.Feature{{Name: "y", DType: mlpackage.Float16, Shape: y.Shape}})
+}
+
+// PartFunction names the function of part i in a package written by WriteMLPackageParts.
+func PartFunction(i int) string { return fmt.Sprintf("part_%d", i) }
+
+// WriteMLPackageParts writes the parts of a split probe model as the functions of one package
+// (PartFunction), which share its weight file, instead of one package per part.
+func WriteMLPackageParts(dir, format string, parts []Part, seed uint64) error {
+	pkg, err := mlpackage.Create(dir)
+	if err != nil {
+		return err
+	}
+	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("decode %d parts %s", len(parts), format)
+	var fns []mlpackage.Function
+	for i, part := range parts {
+		b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
+		y, err := buildPart(b, format, part, seed)
+		if err != nil {
+			return err
+		}
+		io := []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: y.Shape}}
+		fns = append(fns, mlpackage.Function{Name: PartFunction(i), Fn: b.Function(y), Inputs: io,
+			Outputs: []mlpackage.Feature{{Name: "y", DType: mlpackage.Float16, Shape: y.Shape}}})
+	}
+	return pkg.FinishFunctions(fns, 9)
+}
+
+// buildPart adds the layers of part to b and returns y.
+func buildPart(b *mlpackage.Builder, format string, part Part, seed uint64) (*mlpackage.Var, error) {
+	tokens := max(part.Tokens, 1)
 	var g *weightGen
 	var werr error
 	weight := func(rows, cols int) *mlpackage.Var {
@@ -166,11 +202,11 @@ func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 	x := b.Input("x", mlpackage.Float16, shape...)
 	gamma, err := b.F16("gamma", []int{DModel}, constHalves(DModel, 1))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	beta, err := b.F16("beta", []int{DModel}, constHalves(DModel, 0))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	norm := func(v *mlpackage.Var) *mlpackage.Var {
 		return b.Op("layer_norm", map[string]any{"x": v, "axes": b.Ints(-1), "gamma": gamma, "beta": beta, "epsilon": b.ScalarF16(1e-5)}, mlpackage.Float16, shape...)
@@ -195,15 +231,13 @@ func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 		gate := b.Op("silu", map[string]any{"x": linear(n, DFFN, DModel)}, mlpackage.Float16, 1, tokens, DFFN)
 		h = bin("add", h, linear(bin("mul", gate, linear(n, DFFN, DModel)), DModel, DFFN))
 		if werr != nil {
-			return werr
+			return nil, werr
 		}
 	}
 	if part.Last {
 		h = norm(h)
 	}
-	y := b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, shape...)
-	return pkg.Finish(b.Finish(y), 9, []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: shape}},
-		[]mlpackage.Feature{{Name: "y", DType: mlpackage.Float16, Shape: shape}})
+	return b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, shape...), nil
 }
 
 // BuildIR returns the probe model as OpenVINO IR with weights in the given format: fp16, int8 or
