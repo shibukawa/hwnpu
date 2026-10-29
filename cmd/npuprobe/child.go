@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,7 +20,7 @@ import (
 const childMode, childMark = "_measure", "npuprobe-result "
 
 type childSpec struct {
-	Kind     string        `json:"kind"` // try or several
+	Kind     string        `json:"kind"` // try, several, split or chain
 	Backend  string        `json:"backend"`
 	DeviceID string        `json:"device_id"`
 	Format   string        `json:"format"`
@@ -37,22 +38,30 @@ type childSpec struct {
 // isolated runs spec in a child process and returns its results. A child that dies yields one
 // result carrying the error.
 func (p *prober) isolated(spec childSpec) []result {
+	var rs []result
+	if err := p.child(spec, &rs); err != nil {
+		return []result{p.fail(spec, err.Error())}
+	}
+	return rs
+}
+
+// child runs spec in a child process and decodes what it prints into out.
+func (p *prober) child(spec childSpec, out any) error {
 	spec.Backend, spec.DeviceID = p.dev.Info().Backend, p.dev.Info().ID
 	spec.MinRun, spec.Dir, spec.IdleW, spec.Meter = p.minRun, p.dir, p.idleW, p.meter
 	arg, _ := json.Marshal(spec)
 	exe, err := os.Executable()
 	if err != nil {
-		return []result{p.fail(spec, "executable: "+err.Error())}
+		return fmt.Errorf("executable: %w", err)
 	}
 	cmd := exec.CommandContext(p.ctx, exe, childMode, string(arg))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	for _, line := range strings.Split(string(out), "\n") {
+	stdout, err := cmd.Output()
+	for _, line := range strings.Split(string(stdout), "\n") {
 		if rest, ok := strings.CutPrefix(line, childMark); ok {
-			var rs []result
-			if json.Unmarshal([]byte(rest), &rs) == nil {
-				return rs
+			if json.Unmarshal([]byte(rest), out) == nil {
+				return nil
 			}
 		}
 	}
@@ -63,7 +72,7 @@ func (p *prober) isolated(spec childSpec) []result {
 	if s := strings.TrimSpace(stderr.String()); s != "" {
 		msg += ": " + lastLines(s, 3)
 	}
-	return []result{p.fail(spec, msg)}
+	return errors.New(msg)
 }
 
 func (p *prober) fail(spec childSpec, msg string) result {
@@ -113,12 +122,16 @@ func runChild(arg string) error {
 		return err
 	}
 	p := &prober{ctx: ctx, dev: dev, gr: gr, coreml: info.Backend == "coreml", dir: spec.Dir, minRun: spec.MinRun, idleW: spec.IdleW, meter: spec.Meter}
-	var rs []result
+	var rs any
 	switch spec.Kind {
 	case "try":
 		rs = []result{p.try(spec.Format, spec.Layers, max(spec.Tokens, 1), spec.Units, spec.Quick)}
 	case "several":
 		rs = p.several(spec.Format, spec.Layers, spec.N)
+	case "split":
+		rs = p.split(spec.Format, spec.Layers, spec.N)
+	case "chain":
+		rs = p.chain(spec.Format, spec.Layers, spec.N, spec.Units)
 	default:
 		return fmt.Errorf("unknown measurement %q", spec.Kind)
 	}

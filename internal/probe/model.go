@@ -17,8 +17,8 @@ import (
 //
 //	x (1, tokens, d) fp16 -> layers x [norm, q/k/v/o projections, norm, SwiGLU MLP] -> norm -> y
 //
-// tokens is the number of tokens per call: 1 generates a token; K checks K drafted tokens of
-// speculative decoding in one call, which still reads every weight once for all of them.
+// tokens is 1 to generate a token; K checks K drafted tokens of speculative decoding in one call,
+// which still reads every weight once for all of them.
 const (
 	DModel = 2048
 	DFFN   = 8192
@@ -48,8 +48,10 @@ var fp16Table = func() []uint16 {
 
 type weightGen struct{ rng *rand.Rand }
 
-func newWeightGen(seed uint64) *weightGen {
-	return &weightGen{rng: rand.New(rand.NewPCG(seed, 0x6877_6e70_7531))}
+// newWeightGen gives each layer its own stream, so that a layer has the same weights whichever
+// part of a split model it is in.
+func newWeightGen(seed uint64, layer int) *weightGen {
+	return &weightGen{rng: rand.New(rand.NewPCG(seed, 0x6877_6e70_7531+uint64(layer)<<32))}
 }
 
 func (g *weightGen) bytes(n int) []byte {
@@ -92,18 +94,53 @@ func constHalves(n int, v float32) []uint16 {
 	return h
 }
 
+// Part is a run of layers of a probe model split into several models. Each part maps x, the
+// hidden state before its first layer, to y, the hidden state after its last; only the last part
+// ends with the final norm. The layers have the same weights as in the whole model, so running the
+// parts one after another computes the whole model.
+type Part struct {
+	First  int  // index of the first layer in the whole model
+	Layers int  // number of layers
+	Last   bool // ends with the final norm
+	Tokens int  // tokens per call; 0 means 1
+}
+
+// Whole is the unsplit model of the given layers.
+func Whole(layers int) Part { return Part{Layers: layers, Last: true} }
+
+// Split divides layers into n parts whose sizes differ by at most one layer.
+func Split(layers, n int) []Part {
+	parts := make([]Part, n)
+	first := 0
+	for i := range parts {
+		k := layers / n
+		if i < layers%n {
+			k++
+		}
+		parts[i] = Part{First: first, Layers: k, Last: i == n-1}
+		first += k
+	}
+	return parts
+}
+
 // WriteMLPackage writes the probe model as an ML Program with weights in the given format:
 // fp16, int8 (symmetric, one scale per output row), lut4 (a 16 entry table per 16 rows, the
 // layout the Neural Engine runs at full speed) or int4 (one scale per 32 inputs, which Core ML
 // runs on the CPU or the GPU only).
-func WriteMLPackage(dir, format string, layers, tokens int, seed uint64) error {
+func WriteMLPackage(dir, format string, layers int, seed uint64) error {
+	return WriteMLPackagePart(dir, format, Whole(layers), seed)
+}
+
+// WriteMLPackagePart writes one part of a split probe model, as WriteMLPackage does the whole.
+func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 	pkg, err := mlpackage.Create(dir)
 	if err != nil {
 		return err
 	}
-	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("decode %d layers %s %d tokens", layers, format, tokens)
+	tokens := max(part.Tokens, 1)
+	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("decode layers %d-%d %s %d tokens", part.First, part.First+part.Layers-1, format, tokens)
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-	g := newWeightGen(seed)
+	var g *weightGen
 	var werr error
 	weight := func(rows, cols int) *mlpackage.Var {
 		var v *mlpackage.Var
@@ -145,7 +182,8 @@ func WriteMLPackage(dir, format string, layers, tokens int, seed uint64) error {
 		return b.Op(op, map[string]any{"x": p, "y": q}, mlpackage.Float16, p.Shape...)
 	}
 	h := x
-	for range layers {
+	for i := range part.Layers {
+		g = newWeightGen(seed, part.First+i)
 		n := norm(h)
 		q := linear(n, DModel, DModel)
 		k := linear(n, DKV, DModel)
@@ -160,7 +198,10 @@ func WriteMLPackage(dir, format string, layers, tokens int, seed uint64) error {
 			return werr
 		}
 	}
-	y := b.NamedOp("identity", "y", map[string]any{"x": norm(h)}, mlpackage.Float16, shape...)
+	if part.Last {
+		h = norm(h)
+	}
+	y := b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, shape...)
 	return pkg.Finish(b.Finish(y), 9, []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: shape}},
 		[]mlpackage.Feature{{Name: "y", DType: mlpackage.Float16, Shape: shape}})
 }
@@ -168,9 +209,15 @@ func WriteMLPackage(dir, format string, layers, tokens int, seed uint64) error {
 // BuildIR returns the probe model as OpenVINO IR with weights in the given format: fp16, int8 or
 // int4 (symmetric, one scale per output row, the compressed weight pattern OpenVINO's NNCF writes
 // and the NPU compiler recognizes).
-func BuildIR(format string, layers, tokens int, seed uint64) (xmlData, bin []byte, err error) {
-	b := ovir.NewBuilder(fmt.Sprintf("probe_l%d_%s_t%d", layers, format, tokens), int(WeightBytes(format, layers))+1<<20)
-	g := newWeightGen(seed)
+func BuildIR(format string, layers int, seed uint64) (xmlData, bin []byte, err error) {
+	return BuildIRPart(format, Whole(layers), seed)
+}
+
+// BuildIRPart returns one part of a split probe model, as BuildIR does the whole.
+func BuildIRPart(format string, part Part, seed uint64) (xmlData, bin []byte, err error) {
+	tokens := max(part.Tokens, 1)
+	b := ovir.NewBuilder(fmt.Sprintf("probe_l%d_%d_%s_t%d", part.First, part.Layers, format, tokens), int(WeightBytes(format, part.Layers))+1<<20)
+	var g *weightGen
 	shape := []int{1, tokens, DModel}
 	i64 := func(v ...int64) []byte {
 		p := make([]byte, 8*len(v))
@@ -221,7 +268,8 @@ func BuildIR(format string, layers, tokens int, seed uint64) (xmlData, bin []byt
 	}
 	reps := b.Const("i64", []int{3}, i64(1, 1, DModel/DKV))
 	h := b.Parameter("x", "f16", shape...)
-	for range layers {
+	for i := range part.Layers {
+		g = newWeightGen(seed, part.First+i)
 		n := norm(h)
 		q := linear(n, DModel, DModel)
 		k := linear(n, DKV, DModel)
@@ -232,7 +280,10 @@ func BuildIR(format string, layers, tokens int, seed uint64) (xmlData, bin []byt
 		gate := b.Op("Swish", "opset4", nil, "f16", []int{1, tokens, DFFN}, linear(n, DFFN, DModel))
 		h = bin2("Add", h, linear(bin2("Multiply", gate, linear(n, DFFN, DModel)), DModel, DFFN))
 	}
-	b.Result("y", norm(h))
+	if part.Last {
+		h = norm(h)
+	}
+	b.Result("y", h)
 	if err != nil {
 		return nil, nil, err
 	}
