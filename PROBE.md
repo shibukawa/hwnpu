@@ -225,6 +225,7 @@ A model over the limit run in parts (`npuprobe split -split-layers 128 -parts 2,
 - A value written to a state must be read back before it is used, or the Neural Engine compiler fails (`error code: -14`).
 - The cost is the attention over the whole cache itself (report: [npuprobe-m3-kv-mha.md](npuprobe-m3-kv-mha.md)). `host-mha`, which repeats nothing and holds a cache 4 times as large, takes 14.2 / 36.6 / 63.5 ms at 1024 / 4096 / 8192: only 1.3 times `host`. Neither the bandwidth nor the repeat is the limit; the Neural Engine cannot fill itself with matrix-vector products of one query row (16 heads × cache length per layer, about 8 GFLOP/s at 1K tokens).
 - An int8 cache does not make it faster either (report: [npuprobe-m3-kv-int8.md](npuprobe-m3-kv-int8.md)). `host-int8` stays on the Neural Engine with half the memory, but takes 11.9 / 29.5 / 50.8 ms at 1024 / 4096 / 8192 against 10.8 / 27.6 / 46.5 ms for `host` in the same run: a tenth slower, for the cast over the whole cache. Quantizing the cache saves memory, not time.
+- The Neural Engine takes tensor dimensions up to 16384 (report: [npuprobe-m3-kv-limit.md](npuprobe-m3-kv-limit.md)). With `-kv-layers 2`, a key axis of 16384 (cache 16383) stays on the Neural Engine at 16.6 ms; 16385 (cache 16384) puts 39 attention operations on the CPU, at 117 ms.
 
 ### Wanted
 

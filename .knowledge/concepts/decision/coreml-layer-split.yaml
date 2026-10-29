@@ -106,7 +106,10 @@ open_questions:
     text: >-
       キャッシュの費用は容量に比例するので、LFM3 のスライディング注意の層 (11 の注意層のうち 5、窓 256) は常に 256 トークンのキャッシュ
       (リングバッファ) で足りる。全注意の層だけを長い容量にすれば、長い文脈の費用を半分近くにできる見込み。手法の調査と進め方は reference:kv-cache-techniques
-    state: open
+    state: answered
+    resolution: >-
+      2026-10-30 実装した (lfm3.Config.cacheLen、decode.Session のリング書き込み)。容量 1K あたり 5.5 → 2.8 ms、4K で 27.7 ms、8K で 38.5 ms、
+      出力はリングなしと同一 (backend:apple-coreml の kv_ring_lfm3)。ANE の 1 次元の上限 16384 で文脈は 16383 まで (dim_limit_16384)
   kv-cache:
     text: >-
       KV キャッシュなしでは毎トークン窓全体を計算するので、長い文脈は扱えない (窓に比例して遅くなり、窓ごとにコンパイルが要る)。
