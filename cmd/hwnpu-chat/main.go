@@ -1,13 +1,17 @@
-// hwnpu-chat talks with a causal language model converted by hwnpu-convert with a KV cache, on
-// the Neural Engine: interactively in the terminal, or as an OpenAI compatible server (-listen)
-// for clients such as OpenCode.
+// hwnpu-chat talks with LFM3-1.7B on the Neural Engine: interactively in the terminal, or as an
+// OpenAI compatible server (-listen) for clients such as OpenCode.
 //
-//	hwnpu-chat -package q1.parts.json,q64.mlpackage -config DIR/config.json -weights DIR/model.safetensors
-//	hwnpu-chat -listen 127.0.0.1:8080 -package ... -config ... -weights ...
+//	hwnpu-chat
+//	hwnpu-chat -listen 127.0.0.1:8080
 //
-// -package takes the model converted with the same -cache and different -seq, separated by
-// commas: the one with -seq 1 generates, one with -seq 64 reads prompts about 20 times faster.
-// They share one cache. A conversation reads only what is new since the last answer.
+// With no -package, the model lives in -model (hwnpu/models/LFM3-1.7B in the user cache
+// directory): the first run downloads the checkpoint from Hugging Face (-repo, 3.5 GB) and
+// converts it twice with a KV cache of -context tokens, 1 token per call to generate and 64 to
+// read prompts about 20 times faster; later runs load what is there. The two share one cache,
+// and a conversation reads only what is new since the last answer.
+//
+// -package takes programs converted by hwnpu-convert instead, with the same -cache and
+// different -seq, separated by commas.
 package main
 
 import (
@@ -26,9 +30,12 @@ import (
 )
 
 func main() {
-	pkgs := flag.String("package", "", "the converted model, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
-	config := flag.String("config", "", "config.json of the model")
-	weights := flag.String("weights", "", "checkpoint the token embeddings are read from: .safetensors or .gguf")
+	model := flag.String("model", chat.DefaultDir(chat.DefaultRepo), "directory of the model: the checkpoint and the converted programs, downloaded and converted when missing")
+	repo := flag.String("repo", chat.DefaultRepo, "Hugging Face repository the checkpoint comes from")
+	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of the converted programs)")
+	pkgs := flag.String("package", "", "programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
+	config := flag.String("config", "", "config.json of the model (default: in -model)")
+	weights := flag.String("weights", "", "checkpoint the token embeddings are read from: .safetensors or .gguf (default: in -model)")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	listen := flag.String("listen", "", "serve the OpenAI chat completions API at this address instead of chatting, e.g. 127.0.0.1:8080")
@@ -41,7 +48,7 @@ func main() {
 	topP := flag.Float64("top-p", 0, "sample from the most likely tokens up to this probability (0: off)")
 	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
 	flag.Parse()
-	if *pkgs == "" || *config == "" || *weights == "" {
+	if flag.NArg() > 0 {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -52,10 +59,22 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	e, err := chat.Load(ctx, chat.Config{
-		Packages: strings.Split(*pkgs, ","), ModelConfig: *config, Weights: *weights, Tokenizer: *tok,
-		CacheDir: *cacheDir, Log: os.Stderr,
-	})
+	c := chat.Config{ModelConfig: *config, Weights: *weights}
+	var err error
+	if *pkgs != "" {
+		c.Packages = strings.Split(*pkgs, ",")
+		if c.ModelConfig == "" {
+			c.ModelConfig = filepath.Join(*model, "config.json")
+		}
+		if c.Weights == "" {
+			c.Weights = filepath.Join(*model, "model.safetensors")
+		}
+	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: *model, Repo: *repo, Context: *context_, Log: os.Stderr}); err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
+		os.Exit(1)
+	}
+	c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+	e, err := chat.Load(ctx, c)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
 		os.Exit(1)
