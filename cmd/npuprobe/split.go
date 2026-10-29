@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/probe"
@@ -12,6 +14,7 @@ import (
 // each part bound as the input of the next.
 type splitResult struct {
 	Format      string    `json:"format"`
+	Layout      string    `json:"layout,omitempty"` // functions: the parts are functions of one package
 	Layers      int       `json:"layers"`
 	WeightBytes int64     `json:"weight_bytes"`
 	Parts       []result  `json:"parts"` // each part timed alone, with every part loaded
@@ -23,6 +26,7 @@ type splitResult struct {
 	MJPerToken  float64   `json:"mj_per_token,omitempty"`
 	Ref         string    `json:"ref,omitempty"`     // units of the reference run
 	RelErr      []float64 `json:"rel_err,omitempty"` // after each part: rms(y - reference) / rms(reference)
+	MaxRSS      int64     `json:"max_rss,omitempty"` // peak resident memory of the process that ran the parts
 	Error       string    `json:"error,omitempty"`
 	// y after each part, passed from the child processes and dropped from the report.
 	Outputs [][]float32 `json:"outputs,omitempty"`
@@ -39,19 +43,37 @@ const splitSeed = 7
 
 // split loads every part of a model of the given layers split n ways on the NPU, keeps all of
 // them loaded, runs them once in order to record the outputs, then times each part alone and
-// the whole chain.
-func (p *prober) split(format string, layers, n int) splitResult {
+// the whole chain. With layout "functions" the parts are the functions of one package (Core ML)
+// rather than one package each.
+func (p *prober) split(format string, layers, n int, layout string) splitResult {
 	s := splitResult{Format: format, Layers: layers, WeightBytes: probe.WeightBytes(format, layers)}
+	if layout == "functions" {
+		s.Layout = layout
+	}
 	var models []*loaded
 	defer func() {
 		for _, l := range models {
 			l.close()
 		}
 	}()
+	parts := probe.Split(layers, n)
+	var pkg string
+	if s.Layout == "functions" {
+		pkg = filepath.Join(p.dir, fmt.Sprintf("probe_parts_%d_%d_%s_%d.mlpackage", layers, n, format, splitSeed))
+		if err := probe.WriteMLPackageParts(pkg, format, parts, splitSeed); err != nil {
+			s.Error = "build: " + err.Error()
+			return s
+		}
+		defer os.RemoveAll(pkg)
+	}
 	var in *hwnpu.Buffer
-	for i, part := range probe.Split(layers, n) {
+	for i, part := range parts {
 		r := result{Copy: i + 1}
-		l := p.loadPart(format, part, "npu", splitSeed, in, &r)
+		var shared *sharedPart
+		if pkg != "" {
+			shared = &sharedPart{path: pkg, function: probe.PartFunction(i), fileBytes: probe.DirSize(pkg)}
+		}
+		l := p.loadPart(format, part, "npu", splitSeed, in, shared, &r)
 		r.OnNPU = r.Error == "" && r.Verified && r.NPUOps > 0 && r.OtherOps == 0
 		s.Parts = append(s.Parts, r)
 		if l == nil {
@@ -93,6 +115,7 @@ func (p *prober) split(format string, layers, n int) splitResult {
 		return s
 	}
 	s.MsPerToken, s.CPUUse, s.NetW, s.MJPerToken = r.MsPerCall, r.CPUUse, r.NetW, r.MJPerCall
+	s.MaxRSS = maxRSS()
 	return s
 }
 
@@ -110,7 +133,7 @@ func (p *prober) chain(format string, layers, n int, units string) splitResult {
 	carry.SyncToDevice(0, carry.Size())
 	for i, part := range probe.Split(layers, n) {
 		var r result
-		l := p.loadPart(format, part, units, splitSeed, carry, &r)
+		l := p.loadPart(format, part, units, splitSeed, carry, nil, &r)
 		if l == nil {
 			s.Error = fmt.Sprintf("part %d: %s", i+1, r.Error)
 			return s
@@ -154,38 +177,48 @@ func relErr(y, ref []float32) float64 {
 
 // splits runs each format split each way on the NPU and, when ref is set, compares the output
 // after every part with the same parts run one at a time on ref.
-func (p *prober) splits(rep *report, formats []string, layers int, parts []int, ref string, save func()) {
+func (p *prober) splits(rep *report, formats []string, layers int, parts []int, layouts []string, ref string, save func()) {
 	for _, f := range formats {
 		for _, n := range parts {
-			if p.ctx.Err() != nil {
-				return
+			for _, layout := range layouts {
+				p.splitOne(rep, f, layers, n, layout, ref)
+				save()
 			}
-			fmt.Printf("split, %s %d layers (%.2f GiB) in %d parts:\n", f, layers, probe.GiB(probe.WeightBytes(f, layers)), n)
-			var s splitResult
-			if err := p.child(childSpec{Kind: "split", Format: f, Layers: layers, N: n}, &s); err != nil {
-				s = splitResult{Format: f, Layers: layers, WeightBytes: probe.WeightBytes(f, layers), Error: err.Error()}
-			}
-			if ref != "" && s.Error == "" && p.ctx.Err() == nil {
-				var c splitResult
-				err := p.child(childSpec{Kind: "chain", Format: f, Layers: layers, N: n, Units: ref}, &c)
-				switch {
-				case err != nil:
-					s.Error = "reference: " + err.Error()
-				case c.Error != "":
-					s.Error = "reference: " + c.Error
-				default:
-					s.Ref = ref
-					for i := range min(len(s.Outputs), len(c.Outputs)) {
-						s.RelErr = append(s.RelErr, relErr(s.Outputs[i], c.Outputs[i]))
-					}
-				}
-			}
-			s.Outputs = nil
-			logSplit(s)
-			rep.Split = append(rep.Split, s)
-			save()
 		}
 	}
+}
+
+// splitOne runs one split in a child process and, when ref is set, the reference in another.
+func (p *prober) splitOne(rep *report, f string, layers, n int, layout, ref string) {
+	if p.ctx.Err() != nil {
+		return
+	}
+	fmt.Printf("split, %s %d layers (%.2f GiB) in %d parts (%s):\n", f, layers, probe.GiB(probe.WeightBytes(f, layers)), n, layout)
+	var s splitResult
+	if err := p.child(childSpec{Kind: "split", Format: f, Layers: layers, N: n, Layout: layout}, &s); err != nil {
+		s = splitResult{Format: f, Layers: layers, WeightBytes: probe.WeightBytes(f, layers), Error: err.Error()}
+		if layout == "functions" {
+			s.Layout = layout
+		}
+	}
+	if ref != "" && s.Error == "" && p.ctx.Err() == nil {
+		var c splitResult
+		err := p.child(childSpec{Kind: "chain", Format: f, Layers: layers, N: n, Units: ref}, &c)
+		switch {
+		case err != nil:
+			s.Error = "reference: " + err.Error()
+		case c.Error != "":
+			s.Error = "reference: " + c.Error
+		default:
+			s.Ref = ref
+			for i := range min(len(s.Outputs), len(c.Outputs)) {
+				s.RelErr = append(s.RelErr, relErr(s.Outputs[i], c.Outputs[i]))
+			}
+		}
+	}
+	s.Outputs = nil
+	logSplit(s)
+	rep.Split = append(rep.Split, s)
 }
 
 func logSplit(s splitResult) {
@@ -194,6 +227,9 @@ func logSplit(s splitResult) {
 	}
 	if s.MsPerToken > 0 {
 		fmt.Printf("  all %d parts: %8.1f ms/token (parts alone add up to %.1f), %.0f GB/s, CPU use %.2f", len(s.Parts), s.MsPerToken, s.MsSumParts, s.gbps(), s.CPUUse)
+		if s.MaxRSS > 0 {
+			fmt.Printf(", peak RSS %.2f GiB", probe.GiB(s.MaxRSS))
+		}
 		if s.MJPerToken != 0 {
 			fmt.Printf(", %.0f mJ/token", s.MJPerToken)
 		}

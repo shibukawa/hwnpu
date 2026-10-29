@@ -69,6 +69,27 @@ type Model interface {
 	Build(b *mlpackage.Builder, w Weights, opts Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error)
 }
 
+// Cached is a causal model that can be built to run one step at a time with its state held by
+// the host (Options.Cache). The program then has inputs and outputs named by what the host does
+// with them, besides x and y:
+//
+//   - kv_NAME (1, heads, Cache, head_dim) with output kv_NAME_new (1, heads, Seq, head_dim): the
+//     keys or values of the step's tokens, which the host writes at their positions in kv_NAME
+//   - win_NAME (1, W, width) with output win_NAME_new (1, W+Seq, width): a window of the last W
+//     rows before the step followed by the step's rows; the host keeps the W rows ending at the
+//     last real token (a short convolution's state)
+//   - any other input is given by StepInputs (masks, rotary tables)
+//
+// A step takes up to Seq tokens at positions pos.. ; the rest of x is padding, which only the
+// padded positions themselves see.
+type Cached interface {
+	Model
+	BuildCached(b *mlpackage.Builder, w Weights, opts Options) (ins, outs []mlpackage.Feature, err error)
+	// StepInputs returns the values of the other inputs for a step of valid tokens from pos, of
+	// a program built with Seq q and Cache cache.
+	StepInputs(pos, valid, q, cache int) map[string][]float32
+}
+
 var archs []*Arch
 
 // Register adds an architecture to the whitelist. It is called from the architecture's init.

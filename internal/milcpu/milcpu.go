@@ -61,9 +61,14 @@ type Options struct {
 // Load prepares the main function of prog. weights is the weight file the program's blob values
 // point into (nil if it has none).
 func Load(prog *milspec.Program, weights io.ReaderAt) (*Program, error) {
-	fn, ok := prog.GetFunctions()["main"]
+	return LoadFunction(prog, "main", weights)
+}
+
+// LoadFunction prepares the named function of a program with several, as Load does main.
+func LoadFunction(prog *milspec.Program, name string, weights io.ReaderAt) (*Program, error) {
+	fn, ok := prog.GetFunctions()[name]
 	if !ok {
-		return nil, fmt.Errorf("milcpu: no main function")
+		return nil, fmt.Errorf("milcpu: no function %s", name)
 	}
 	block, ok := fn.GetBlockSpecializations()[fn.GetOpset()]
 	if !ok {

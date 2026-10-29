@@ -29,17 +29,53 @@ type builder struct {
 	opts Options
 	seq  int
 	d    int
+	// With a KV cache (opts.Cache): the inputs and outputs besides x and y.
+	ins     map[string]*mlpackage.Var
+	inList  []mlpackage.Feature
+	outList []*mlpackage.Var
 }
 
 func newBuilder(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) *builder {
-	return &builder{Graph: &blocks.Graph{Name: "lfm3", B: b, W: w, Opts: opts.Options}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize}
+	return &builder{Graph: &blocks.Graph{Name: "lfm3", B: b, W: w, Opts: opts.Options}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, ins: map[string]*mlpackage.Var{}}
+}
+
+// input declares an fp16 program input once and returns it.
+func (m *builder) input(name string, shape ...int) *mlpackage.Var {
+	if v, ok := m.ins[name]; ok {
+		return v
+	}
+	v := m.B.Input(name, mlpackage.Float16, shape...)
+	m.ins[name] = v
+	m.inList = append(m.inList, mlpackage.Feature{Name: name, DType: mlpackage.Float16, Shape: shape})
+	return v
+}
+
+// output makes v a program output called name.
+func (m *builder) output(v *mlpackage.Var, name string) {
+	m.outList = append(m.outList, m.B.NamedOp("identity", name, map[string]any{"x": v}, mlpackage.Float16, v.Shape...))
 }
 
 // Build writes the program for the model into b. The program's input is x, the fp16 token
 // embeddings of shape (1, seq, hidden): the embedding lookup stays on the host because Core ML
 // runs gather on the CPU. The output is y: logits (1, seq, vocab) or a hidden state (1, seq,
-// hidden). It returns the input and output descriptions.
+// hidden). It returns the input and output descriptions. A program with a KV cache has more of
+// both; build it with BuildCached.
 func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (in, out mlpackage.Feature, err error) {
+	if opts.Cache > 0 {
+		return in, out, fmt.Errorf("lfm3: a program with a KV cache has more inputs and outputs; use BuildCached")
+	}
+	ins, outs, err := BuildCached(b, cfg, w, opts)
+	if err != nil {
+		return in, out, err
+	}
+	return ins[0], outs[0], nil
+}
+
+// BuildCached is Build for any Options, returning every input and output: x and y first, then,
+// with opts.Cache, the KV cache of each attention layer (kv_k_N, kv_v_N), the convolution window of
+// each conv layer (win_conv_N), and the masks and rotary tables of each attention type (mask_TYPE,
+// rope_cos_TYPE, rope_sin_TYPE) that StepInputs fills, as llm.Cached describes.
+func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins, outs []mlpackage.Feature, err error) {
 	if opts.Group == 0 {
 		opts.Group = 16
 	}
@@ -56,12 +92,15 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (in, 
 		opts.PostScale = 1
 	}
 	if opts.PostScale != 1 && !cfg.UseSandwichNorm {
-		return in, out, fmt.Errorf("lfm3: PostScale needs sandwich norms to absorb the scale")
+		return nil, nil, fmt.Errorf("lfm3: PostScale needs sandwich norms to absorb the scale")
+	}
+	if opts.Cache > 0 && opts.ConvMode != "taps" {
+		return nil, nil, fmt.Errorf("lfm3: a KV cache needs conv mode taps")
 	}
 	m := newBuilder(b, cfg, w, opts)
 	err = blocks.Run(func() {
 		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
-		in = mlpackage.Feature{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}
+		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
 		h := x
 		for i := opts.Start; i < opts.Start+opts.Layers; i++ {
 			h = m.layer(i, h)
@@ -82,9 +121,13 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (in, 
 				y = m.Linear(h, head, "y", cfg.VocabSize)
 			}
 		}
-		out = mlpackage.Feature{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}
+		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
+		for _, v := range m.outList {
+			outs = append(outs, mlpackage.Feature{Name: v.Name, DType: mlpackage.Float16, Shape: v.Shape})
+		}
+		ins = append(ins, m.inList...)
 	})
-	return in, out, err
+	return ins, outs, err
 }
 
 // rmsNorm is blocks.RMSNorm with LFM3's epsilon; inScale is the producer's PostScale, if any.
@@ -163,8 +206,16 @@ func (m *builder) shortConv(i int, h *mlpackage.Var) *mlpackage.Var {
 		bg, xg := part(0), part(2)
 		cg = part(1)
 		bx := m.Op("mul", map[string]any{"x": bg, "y": xg}, 1, s, d)
-		// pad the sequence axis on the left; pad covers the last two axes
-		padded := m.Op("pad", map[string]any{"x": bx, "pad": m.B.Ints(int32(k-1), 0, 0, 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, s+k-1, d)
+		var padded *mlpackage.Var
+		if m.opts.Cache > 0 {
+			// the last k-1 rows of B*x before the step instead of zeros
+			win := m.input(fmt.Sprintf("win_conv_%d", i), 1, k-1, d)
+			padded = m.Op("concat", map[string]any{"values": []*mlpackage.Var{win, bx}, "axis": m.B.ScalarI32(1), "interleave": m.B.ScalarBool(false)}, 1, s+k-1, d)
+			m.output(padded, fmt.Sprintf("win_conv_%d_new", i))
+		} else {
+			// pad the sequence axis on the left; pad covers the last two axes
+			padded = m.Op("pad", map[string]any{"x": bx, "pad": m.B.Ints(int32(k-1), 0, 0, 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, s+k-1, d)
+		}
 		// y[t] = sum_j w[j] * bx[t + j - (k-1)]: tap j reads the padded sequence shifted by j
 		for j := 0; j < k; j++ {
 			tap := make([]float32, d)
@@ -204,7 +255,12 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("model.layers.%d.self_attn.", i)
 	s, nh, nkv, hd := m.seq, m.cfg.NumHeads, m.cfg.NumKVHeads, m.cfg.HeadDim
 	layerType := m.cfg.LayerTypes[i]
-	cos, sin := m.RopeTables(layerType, m.cfg.RopeInvFreq(layerType), s, hd)
+	var cos, sin *mlpackage.Var
+	if m.opts.Cache > 0 {
+		cos, sin = m.input("rope_cos_"+layerType, 1, s, 1, hd), m.input("rope_sin_"+layerType, 1, s, 1, hd)
+	} else {
+		cos, sin = m.RopeTables(layerType, m.cfg.RopeInvFreq(layerType), s, hd)
+	}
 
 	q := m.Linear(h, p+"q_proj.weight", "", nh*hd)
 	q = m.Op("reshape", map[string]any{"x": q, "shape": m.B.Ints(1, int32(s), int32(nh), int32(hd))}, 1, s, nh, hd)
@@ -222,11 +278,25 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	v = m.Op("reshape", map[string]any{"x": v, "shape": m.B.Ints(1, int32(s), int32(nkv), int32(hd))}, 1, s, nkv, hd)
 	v = m.Op("transpose", map[string]any{"x": v, "perm": m.B.Ints(0, 2, 1, 3)}, 1, nkv, s, hd)
 
-	window := 0
-	if layerType == "sliding_attention" {
-		window = m.cfg.SlidingWindow
+	var o *mlpackage.Var
+	if t := m.opts.Cache; t > 0 {
+		// the cached keys and values, then the step's own
+		m.output(k, fmt.Sprintf("kv_k_%d_new", i))
+		m.output(v, fmt.Sprintf("kv_v_%d_new", i))
+		cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
+			c := m.input(name, 1, nkv, t, hd)
+			return m.Op("concat", map[string]any{"values": []*mlpackage.Var{c, x}, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, nkv, t+s, hd)
+		}
+		k, v = cat(fmt.Sprintf("kv_k_%d", i), k), cat(fmt.Sprintf("kv_v_%d", i), v)
+		mask := m.input("mask_"+layerType, 1, 1, s, t+s)
+		o = m.SDPA(q, k, v, func() *mlpackage.Var { return mask })
+	} else {
+		window := 0
+		if layerType == "sliding_attention" {
+			window = m.cfg.SlidingWindow
+		}
+		o = m.Attention(q, k, v, "mask_"+layerType, window)
 	}
-	o := m.Attention(q, k, v, "mask_"+layerType, window)
 	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, s, nh, hd)
 
 	gate := m.Linear(h, p+"gate_proj.weight", "", nh)
@@ -235,4 +305,42 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	o = m.Op("mul", map[string]any{"x": o, "y": gate}, 1, s, nh, hd)
 	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(s), int32(nh*hd))}, 1, s, nh*hd)
 	return m.LinearS(o, p+"o_proj.weight", "", m.d, m.opts.PostScale)
+}
+
+// StepInputs gives the masks and rotary tables of a step of valid tokens from pos (llm.Cached).
+// Query t (position pos+t) sees cached position j < pos and step token u <= t, and in a sliding
+// layer only those less than the window behind it.
+func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
+	out := map[string][]float32{}
+	for _, lt := range c.LayerTypes {
+		if _, done := out["mask_"+lt]; done || lt == "conv" {
+			continue
+		}
+		window := 0
+		if lt == "sliding_attention" {
+			window = c.SlidingWindow
+		}
+		mask := make([]float32, q*(cache+q))
+		for t := 0; t < q; t++ {
+			p := pos + t
+			row := mask[t*(cache+q):]
+			for j := 0; j < cache+q; j++ {
+				key := j // cached position
+				visible := j < pos
+				if j >= cache {
+					key = pos + j - cache
+					visible = j-cache <= t
+				}
+				if window > 0 && p-key >= window {
+					visible = false
+				}
+				if !visible {
+					row[j] = -1e4
+				}
+			}
+		}
+		out["mask_"+lt] = mask
+		out["rope_cos_"+lt], out["rope_sin_"+lt] = blocks.RopeValues(c.RopeInvFreq(lt), pos, q, c.HeadDim)
+	}
+	return out
 }

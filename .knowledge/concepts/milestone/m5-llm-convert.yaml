@@ -29,9 +29,17 @@ verification:
 open_questions:
   kv-cache:
     text: 生成 (decode) には KV キャッシュと畳み込みの状態が要る。Core ML の状態 (MLState) と、prefill/decode の重み共有をどう扱うか
-    state: open
+    state: answered
+    resolution: >-
+      2026-10-29 ホストが持つバッファを入出力に渡す方式で実装した。注意層は kv_k_N/kv_v_N (1, kv_heads, cache, head_dim) を入力に取り新しい K/V を
+      出力、畳み込み層は直前 6 行の窓 win_conv_N を入出力、マスクと RoPE の表はホストが位置から作って渡す (llm.Cached.StepInputs)。
+      prefill は同じプログラムを 1 回 Q トークンずつ回す。cmd/hwnpu-generate と internal/tokenizer で日本語の文書を生成できた。
+      TestCachedMatchesFull で CPU 上のキャッシュなしのプログラムと相対誤差 6e-4 以内 (4 通りの改変を検出)。MLState と prefill 専用のプログラムは未着手
   embedding-table:
     text: 埋め込み表 (128000x2048) をホスト側で引くために、配布物にどの形式で入れるか (今は元チェックポイントから直接読んでいる)
+    state: open
+  layer-split:
+    text: 1 GiB を超えるモデル (6 ビット LUT、3B 以上) を層ごとの複数パッケージに分けて書き出す。設計は decision:coreml-layer-split
     state: open
   other-architectures:
     text: Llama/Qwen 系の構造定義を追加する
@@ -43,3 +51,5 @@ relations:
     to: requirement:model-execution-api
   - relation: guided_by
     to: decision:model-source-selection
+  - relation: extended_by
+    to: decision:coreml-layer-split

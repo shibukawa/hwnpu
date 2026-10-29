@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -221,4 +222,57 @@ func TestCPUVariants(t *testing.T) {
 	if e := relErr(runCPU(t, cfg, w, Options{Seq: seq}, emb), ref); e > 0.2 || e == 0 {
 		t.Errorf("lut4: relative error %g against fp16, expected small but not zero", e)
 	}
+}
+
+// The model split into parts, a package each, computes exactly what it computes in one part when
+// the parts run one after another, and that is the whole program.
+func TestPartsMatchWhole(t *testing.T) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	seq := 6
+	emb, err := llm.Embed(w, cfg, []int32{3, 1, 4, 1, 5, 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"fp16", "lut4"} {
+		opts := llm.Options{Seq: seq, Format: format, Group: 16, Quant: "kmeans-minmax", Params: map[string]string{"post-scale": "1"}}
+		var one []float32
+		for n := 1; n <= cfg.NumLayers; n++ {
+			dir := filepath.Join(t.TempDir(), "parts")
+			if _, err := llm.WriteParts(dir, cfg, w, opts, n, nil); err != nil {
+				t.Fatal(err)
+			}
+			pdir, list, err := llm.ReadParts(dir)
+			if err != nil || len(list.Parts) != n {
+				t.Fatalf("read parts: %v, %v", list, err)
+			}
+			h := emb
+			for _, p := range list.Parts {
+				h = runPackage(t, filepath.Join(pdir, p.Package), h)
+			}
+			if n == 1 {
+				one = h
+				ref := runCPU(t, cfg, w, Options{Seq: seq, Format: format, Quant: "kmeans-minmax"}, emb)
+				if e := relErr(h, ref); e > 1e-6 {
+					t.Errorf("%s in one part: relative error %g against the whole program", format, e)
+				}
+			} else if !slices.Equal(h, one) {
+				t.Errorf("%s in %d parts: relative error %g against one part, want exactly equal", format, n, relErr(h, one))
+			}
+		}
+	}
+}
+
+func runPackage(t *testing.T, dir string, x []float32) []float32 {
+	t.Helper()
+	p, f, err := milcpu.OpenPackage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	res, err := p.Run(map[string]milcpu.Tensor{"x": {Shape: p.Inputs()["x"], Data: x}}, milcpu.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res["y"].Data
 }

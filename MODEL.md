@@ -186,6 +186,24 @@ go run ./cmd/hwnpu-check -config build/lfm3/config.json -weights build/lfm3/LFM3
 go run ./cmd/hwnpu-check -package lfm3.mlpackage -ref build/lfm3/ref
 ```
 
+A large model is split by layers into N packages with `-parts N`. The Neural Engine takes less than 1 GiB of stored weights per package (M3) and places a package over the limit entirely on the CPU. Writing the parts as the functions of one package does not help: the limit counts the whole package. `-o` is then a directory holding `part_0.mlpackage` ... and `parts.json`, which lists the layers of each part. The output buffer of one part is bound as the input of the next, so the result is the same to the bit and the speed barely changes (0.1 to 0.16 ms per boundary). The more parts, the less memory the process uses while loading.
+
+```bash
+go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-p2 -seq 128 -quant kmeans-minmax -parts 2
+go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-p2 -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -prompt "Name three features of Go, briefly."
+```
+
+`hwnpu-generate` builds a chat prompt with a tokenizer written in Go (the byte-level BPE of `tokenizer.json`), looks up the embeddings in the checkpoint and generates on the Neural Engine one token at a time.
+
+Long text needs a KV cache. Converted with `-cache N`, the program takes `-seq` tokens per call (1 for generating), reads the keys and values of the tokens before them (and LFM3's convolution state) as inputs, and outputs the new ones. The cache lives in host buffers that `hwnpu-generate` appends to after every call. Each part holds only its own layers' cache, so it combines with `-parts`.
+
+```bash
+go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-kv -seq 1 -cache 4096 -quant kmeans-minmax -parts 2
+go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-kv -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -n 1500 -prompt "Write an internal memo on why we should use Go."
+```
+
+LFM3-1.7B (lut4, 2 parts) on an M3 takes 16.8 ms per token with a cache of 256 tokens, 20.6 ms with 1024 and 37.6 ms with 4096: the cost follows the cache's capacity, not how much of it is used, so pick the length you need. A model converted without a cache computes the whole `-seq` window for every token and drops the oldest tokens when it is full (about 34 ms at seq 128).
+
 ### Choosing the source checkpoint
 
 Convert from the official bf16 checkpoint. Use a published quantized checkpoint only when it can be repacked without loss into the target's format, which is a one way move to a finer or wider scheme: symmetric int4 (GPTQ without reordering, compressed-tensors W4A16) fits Intel's symmetric int4, AWQ fits AMD's asymmetric uint4 with groups of 128. No published 4 bit format fits the Neural Engine's lookup tables, and re-quantizing a 4 bit checkpoint into another 4 bit format compounds the error: for LFM3-1.7B, bf16 to lut4 gives KL 0.95 nats against the bf16 model, the official QAD Q4_0 GGUF re-palettized gives 0.94 even though it starts closer (its own deviation is 0.35). Always measure the result: `tools/ref/ref_logits.py` saves the PyTorch hidden states and logits, `cmd/hwnpu-check`, `tools/ref/eval_logits.py` and the Go tests compare the package with them layer by layer.

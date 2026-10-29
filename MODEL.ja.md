@@ -188,6 +188,24 @@ go run ./cmd/hwnpu-check -config build/lfm3/config.json -weights build/lfm3/LFM3
 go run ./cmd/hwnpu-check -package lfm3.mlpackage -ref build/lfm3/ref
 ```
 
+大きなモデルは `-parts N` で層ごとに N 個のパッケージに分けます。Neural Engine が受け付けるのはパッケージ 1 つあたり保存された重みが 1 GiB 未満（M3）で、上限を超えたパッケージは丸ごと CPU に置かれます。1 つのパッケージに部分を関数として入れても、上限はパッケージ全体で数えられるので載りません。`-o` はディレクトリになり、`part_0.mlpackage` …と、層の区間を書いた `parts.json` が入ります。前の部分の出力バッファを次の部分の入力にそのまま渡すので、分けても結果はビット単位で同じで、速さもほとんど変わりません（境目 1 つにつき 0.1〜0.16 ms）。分けるほど、読み込むときのプロセスのメモリは減ります。
+
+```bash
+go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-p2 -seq 128 -quant kmeans-minmax -parts 2
+go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-p2 -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -prompt "Go言語の特徴を3つ、短く説明してください。"
+```
+
+`hwnpu-generate` は、Go で書いたトークナイザー（`tokenizer.json` の byte-level BPE）でチャットの書式のプロンプトを作り、埋め込みをチェックポイントから引いて、Neural Engine で 1 トークンずつ生成します。
+
+長い文章には KV キャッシュを使います。`-cache N` を付けて変換すると、プログラムは 1 回に `-seq` トークン（生成には 1）を受け取り、それまでのトークンのキーと値（と LFM3 の畳み込みの直前の値）を入力として読み、新しい分を出力します。キャッシュはホストのバッファに置かれ、`hwnpu-generate` が毎回書き足します。各部分は自分の層の分だけを持つので、`-parts` と組み合わせられます。
+
+```bash
+go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-kv -seq 1 -cache 4096 -quant kmeans-minmax -parts 2
+go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-kv -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -n 1500 -prompt "社内向けに、Go言語を採用する理由をまとめた文書を書いてください。"
+```
+
+M3 の LFM3-1.7B（lut4、2 分割）では、キャッシュが 256 トークンなら 1 トークン 16.8 ms、1024 なら 20.6 ms、4096 なら 37.6 ms でした。遅さは使った量ではなくキャッシュの容量に比例するので、必要な長さに合わせて選んでください。キャッシュなしで変換したモデルは、毎トークン `-seq` の長さの窓全体を計算し、窓が満ちると古いトークンを捨てます（seq 128 で 34 ms 前後）。
+
 ### 元のチェックポイントの選び方
 
 公式の bf16 から変換します。公開されている量子化済みのものは、対象の形式へ劣化なしに並べ替えられるときだけ使います。劣化なしの変換は「より細かい単位か、より広い範囲の方式」への片方向だけです。対称 int4（並べ替えなしの GPTQ、compressed-tensors の W4A16）は Intel の対称 int4 に、AWQ は AMD の非対称 uint4（128 個ごと）にそのまま入ります。Neural Engine の表引き方式に劣化なしで入る公開形式はなく、4 ビットを別の 4 ビットに量子化し直すと誤差が二重に乗ります。LFM3-1.7B では、bf16 から lut4 にすると bf16 モデルに対する KL が 0.95 nat、公式の QAD Q4_0 GGUF から作り直すと 0.94 でした（QAD 自体の差は 0.35 なので、出発点は近いのに結果は良くなりません）。結果は必ず測ります。`tools/ref/ref_logits.py` が PyTorch の隠れ状態とロジットを保存し、`cmd/hwnpu-check`、`tools/ref/eval_logits.py`、Go のテストがパッケージを層ごとに照合します。
