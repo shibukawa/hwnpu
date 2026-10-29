@@ -155,6 +155,20 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 				out.f[i] = float32(1 / math.Sqrt(float64(v)+float64(eps)))
 			}
 		}
+	case "gelu":
+		x := r.floats("x")
+		mode := r.str("mode", "EXACT")
+		if r.err == nil {
+			out, r.err = gelu(x, mode)
+		}
+	case "layer_norm":
+		x := r.floats("x")
+		axes := r.ints("axes")
+		gamma, beta := r.opt("gamma"), r.opt("beta")
+		eps := r.float("epsilon", 1e-5)
+		if r.err == nil {
+			out, r.err = layerNorm(x, axes, gamma, beta, eps)
+		}
 	case "softmax":
 		x := r.floats("x")
 		axis := r.int("axis", -1)
@@ -413,6 +427,67 @@ func unary(x *value, typ string) *value {
 		out.f[i] = float32(a)
 	}
 	return out
+}
+
+func gelu(x *value, mode string) (*value, error) {
+	out := &value{shape: x.shape, f: make([]float32, len(x.f))}
+	for i, v := range x.f {
+		a := float64(v)
+		switch mode {
+		case "EXACT":
+			a = 0.5 * a * (1 + math.Erf(a/math.Sqrt2))
+		case "TANH_APPROXIMATION":
+			a = 0.5 * a * (1 + math.Tanh(math.Sqrt(2/math.Pi)*(a+0.044715*a*a*a)))
+		case "SIGMOID_APPROXIMATION":
+			a = a / (1 + math.Exp(-1.702*a))
+		default:
+			return nil, fmt.Errorf("gelu mode %q is not supported", mode)
+		}
+		out.f[i] = float32(a)
+	}
+	return out, nil
+}
+
+// layerNorm normalizes over the trailing axes and applies gamma and beta (over those axes).
+func layerNorm(x *value, axes []int32, gamma, beta *value, eps float32) (*value, error) {
+	rank := len(x.shape)
+	first := rank
+	for _, a := range axes {
+		ax, err := axis(int(a), rank)
+		if err != nil {
+			return nil, err
+		}
+		first = min(first, ax)
+	}
+	if len(axes) != rank-first {
+		return nil, fmt.Errorf("layer_norm over axes %v: only trailing axes are supported", axes)
+	}
+	n := numel(x.shape[first:])
+	out := &value{shape: x.shape, f: make([]float32, len(x.f))}
+	for o := 0; o < len(x.f); o += n {
+		row := x.f[o : o+n]
+		var mean, sq float64
+		for _, v := range row {
+			mean += float64(v)
+		}
+		mean /= float64(n)
+		for _, v := range row {
+			d := float64(v) - mean
+			sq += d * d
+		}
+		inv := 1 / math.Sqrt(sq/float64(n)+float64(eps))
+		for j, v := range row {
+			y := (float64(v) - mean) * inv
+			if gamma != nil {
+				y *= float64(gamma.f[j])
+			}
+			if beta != nil {
+				y += float64(beta.f[j])
+			}
+			out.f[o+j] = float32(y)
+		}
+	}
+	return out, nil
 }
 
 // outer, n, inner split a shape around one axis.

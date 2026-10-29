@@ -52,16 +52,21 @@ func (a *Arch) Param(o Options, name string) string {
 type Model interface {
 	// Hidden is the hidden size, the width of the program's input.
 	Hidden() int
-	// Layers is the number of decoder layers.
+	// Layers is the number of layers (decoder or encoder).
 	Layers() int
-	// Vocab is the vocabulary size, the width of the logits.
-	Vocab() int
+	// Output is the width of the model's output per token, and whether it is logits (the
+	// vocabulary size) rather than hidden states (an encoder's last hidden state).
+	Output() (width int, logits bool)
+	// Embedding names the token embedding table, which the host reads.
+	Embedding() string
 	// Tensors lists the tensors the conversion reads, by Hugging Face name, with their shapes.
 	Tensors() map[string][]int
-	// Build writes the program into b. Its input is x, the fp16 token embeddings (1, seq,
-	// hidden): the embedding lookup stays on the host because Core ML runs gather on the CPU.
-	// Its output is y, the logits or a hidden state.
-	Build(b *mlpackage.Builder, w Weights, opts Options) (in, out mlpackage.Feature, err error)
+	// Build writes the program into b. The first input is x, the fp16 token embeddings (1, seq,
+	// hidden), looked up on the host because Core ML runs gather on the CPU; whatever else the
+	// model does before its first layer (position embeddings, an embedding norm) is in the
+	// program when Start is 0. Further inputs, such as an encoder's attention mask, follow. The
+	// output is y: the model's output, or a hidden state for a truncated model.
+	Build(b *mlpackage.Builder, w Weights, opts Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error)
 }
 
 var archs []*Arch

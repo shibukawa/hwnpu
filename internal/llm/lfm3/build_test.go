@@ -120,7 +120,11 @@ func TestArch(t *testing.T) {
 		{map[string]string{"post-scale": "1", "conv": "conv"}, Options{Seq: 6, ConvMode: "conv"}},
 	} {
 		_, _, got := build(t, func(b *mlpackage.Builder) (mlpackage.Feature, mlpackage.Feature, error) {
-			return model.Build(b, w, llm.Options{Seq: 6, Params: c.params})
+			ins, out, err := model.Build(b, w, llm.Options{Seq: 6, Params: c.params})
+			if len(ins) != 1 {
+				t.Fatalf("inputs %v", ins)
+			}
+			return ins[0], out, err
 		})
 		_, _, want := build(t, func(b *mlpackage.Builder) (mlpackage.Feature, mlpackage.Feature, error) {
 			return Build(b, tinyConfig(), w, c.direct)
@@ -186,7 +190,7 @@ func TestCPUVariants(t *testing.T) {
 	cfg := tinyConfig()
 	w := llm.NewSynthetic(cfg)
 	seq := 6
-	emb, err := llm.Embed(w, cfg.HiddenSize, []int32{3, 1, 4, 1, 5, 9})
+	emb, err := llm.Embed(w, cfg, []int32{3, 1, 4, 1, 5, 9})
 	if err != nil {
 		t.Fatal(err)
 	}

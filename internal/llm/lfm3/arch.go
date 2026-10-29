@@ -31,8 +31,11 @@ func (c *Config) Hidden() int { return c.HiddenSize }
 // Layers is the number of layers.
 func (c *Config) Layers() int { return c.NumLayers }
 
-// Vocab is the vocabulary size.
-func (c *Config) Vocab() int { return c.VocabSize }
+// Output is the logits.
+func (c *Config) Output() (int, bool) { return c.VocabSize, true }
+
+// Embedding names the token embedding table.
+func (c *Config) Embedding() string { return "model.embed_tokens.weight" }
 
 // Tensors lists the tensors the conversion reads.
 func (c *Config) Tensors() map[string][]int {
@@ -78,11 +81,12 @@ func (c *Config) Tensors() map[string][]int {
 }
 
 // Build writes the program with the LFM3 settings taken from opts.Params.
-func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (in, out mlpackage.Feature, err error) {
+func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error) {
 	ps := Arch.Param(opts, "post-scale")
 	postScale, err := strconv.ParseFloat(ps, 64)
 	if err != nil {
-		return in, out, fmt.Errorf("lfm3: post-scale %q: %w", ps, err)
+		return nil, out, fmt.Errorf("lfm3: post-scale %q: %w", ps, err)
 	}
-	return Build(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv")})
+	in, out, err := Build(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv")})
+	return []mlpackage.Feature{in}, out, err
 }

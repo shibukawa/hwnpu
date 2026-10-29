@@ -114,7 +114,7 @@ go run ./cmd/report -o report.md
 
 macOS では `go run ./cmd/powerbench` で、Core ML モデルの呼び出し 1 回あたりのエネルギーを powermetrics で測れます。最初に sudo のパスワードを一度だけ聞きます。詳しくは [MODEL.ja.md](MODEL.ja.md) を参照してください。
 
-`go run ./cmd/hwnpu-convert` は、Hugging Face のチェックポイント (safetensors か GGUF) を Python なしで Neural Engine 用の `.mlpackage` に変換します。今は LFM3 のみ対応です。元モデルの選び方と Neural Engine の制約は [MODEL.ja.md](MODEL.ja.md) にまとめてあります。`go run ./cmd/hwnpu-check` は、変換したグラフを CPU で fp32 のまま実行し、Hugging Face の実装の参照 (`tools/ref/ref_logits.py`) と層ごとに照合します。Mac は要りません。
+`go run ./cmd/hwnpu-convert` は、Hugging Face のチェックポイント (safetensors か GGUF) を Python なしで Neural Engine 用の `.mlpackage` に変換します。対応するのは LFM3 と BERT 系エンコーダで、移植の手順は `.claude/skills/port-architecture` にあります。元モデルの選び方と Neural Engine の制約は [MODEL.ja.md](MODEL.ja.md) にまとめてあります。`go run ./cmd/hwnpu-check` は、変換したグラフを CPU で fp32 のまま実行し、Hugging Face の実装の参照 (`tools/ref/ref_logits.py`) と層ごとに照合します。Mac は要りません。
 
 `go run ./cmd/npuprobe` は、生成したモデルで NPU を測ります。LLM が 1 トークンを生成するのと同じ形のモデルを Go で作り、まず 0.5B と 1B の重みで形式ごと (Apple は fp16、int8、lut4、int4、Intel は fp16、int8、int4) の速さを測ります (`bench`)。次にモデルを大きくしながら NPU から外れる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込んで、上限がモデルごとか合計かを確かめます (`limit`)。Python もモデルのファイルも root も要らず、クローンしなくても次の 1 行で動きます。結果は `npuprobe-<機種>-<日時>.md` に書き出します。
 

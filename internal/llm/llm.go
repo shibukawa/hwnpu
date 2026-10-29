@@ -17,11 +17,12 @@ type Weights interface {
 	Close() error
 }
 
-// Embed gathers the embedding rows of the given tokens as fp32 (tokens x hidden).
-func Embed(w Weights, hidden int, tokens []int32) ([]float32, error) {
-	out := make([]float32, 0, len(tokens)*hidden)
+// Embed gathers the rows of a model's token embedding table for the given tokens as fp32
+// (tokens x hidden): the program's input x.
+func Embed(w Weights, m Model, tokens []int32) ([]float32, error) {
+	out := make([]float32, 0, len(tokens)*m.Hidden())
 	for _, t := range tokens {
-		row, err := w.Rows("model.embed_tokens.weight", int(t), int(t)+1)
+		row, err := w.Rows(m.Embedding(), int(t), int(t)+1)
 		if err != nil {
 			return nil, err
 		}
