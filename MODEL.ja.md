@@ -180,6 +180,21 @@ go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LF
 
 できたパッケージの入力は `x`（fp16 の埋め込み `(1, seq, hidden)`）、出力は `y`（ロジット `(1, seq, vocab)`）です。Core ML は `gather` を必ず CPU に置くので、埋め込みの表引きはホスト側で行います。BERT 系のパッケージは、2 つ目の入力 `mask`（fp16 の `(1, seq)`。トークンは 1、パディングは 0）を取り、最後の隠れ状態 `(1, seq, hidden)` を返します。文埋め込みにするためのプーリング（平均か CLS）と正規化は、ホスト側で行います。重みは 4 ビットの表引き方式（`-format lut4`）で、出力 16 行ごとに fp16 16 個の表を持ちます。これが Neural Engine が全速で読める唯一の圧縮形式です（後述）。`-format fp16` は重みをそのまま書き出し、グラフの確認に使います。
 
+**大きなモデルの分割**：Neural Engine が受け付けるのは、重みのファイルがチップごとの上限より小さいモデルだけです。それより大きいモデルは丸ごと CPU に置かれます。上限はモデル 1 つごとなので、`hwnpu-convert` は上限を超えるモデルを、上限に収まる最少の数の部分に、大きさがそろうように分けます。`-target` でチップを選びます（既定の `any` は、知っているチップの上限のうち最小のもの）。
+
+| `-target` | 1 モデルの上限 | 出典 |
+|---|---|---|
+| `m1` | 1 GiB | 仮。M4 の半分という報告による。`npuprobe limit` で要計測 |
+| `m2` | 1 GiB | 仮。M3 と同じと仮定。`npuprobe limit` で要計測 |
+| `m3` | 1 GiB | `npuprobe limit`：0.99 GiB は Neural Engine、1.02 GiB は CPU（どの形式でも）。[PROBE.ja.md](PROBE.ja.md) |
+| `m4` | 2 GB | 4 B のモデルを lut4 で（2 GB）Neural Engine で動かせたという計測 |
+
+部分ごとの重みの見積もりは上限の 97% までに収め、書き出した後に実際の重みのファイルが上限より小さいことを確かめます。分けたときは `out.part1.mlpackage`、`out.part2.mlpackage` … と、順番と各部分の入出力を書いた `out.parts.json` ができます。各部分の入力 `x` は、その部分の最初の層に入る隠れ状態です（最初の部分ではトークンの埋め込み）。`mask` などほかの入力は全部の部分が取ります。前の部分の出力 `y` のバッファを次の部分の `x` にそのまま渡して順に動かし、最後の部分の `y` がモデルの出力です。M3 では、分けて動かしても 1 つのモデルと同じ速さでした（PROBE.ja.md の `npuprobe split`）。`-parts N` で部分の数を指定でき、`-target none` で分割をやめます。`-archs` は対応するアーキテクチャに続けて、チップごとの上限を表示します。
+
+```bash
+go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o model.mlpackage -seq 32 -target m3
+```
+
 変換が正しいかは、Mac がなくても確かめられます。`tools/ref/ref_logits.py` で Hugging Face の実装から参照の活性を保存し、`cmd/hwnpu-check` がグラフを CPU で fp32 のまま実行して層ごとに照合します。各層には参照側の入力を与えるので、誤差が後ろの層に積み重ならず、最初に間違っている層がそのまま分かります。チェックポイントにあって変換が読まないテンソルも報告します。`-package` を付けると、書き出したパッケージ（lut4 など）のロジットを参照と比べます。
 
 ```bash
