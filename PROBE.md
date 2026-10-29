@@ -167,8 +167,11 @@ A model over the limit run in parts (`npuprobe split -split-layers 128 -parts 2,
 |---|---|---|---|
 | 2 ways | 64 layers, 1.81 GiB | 58.3 | 67 |
 | 4 ways | 32 layers, 0.91 GiB | 58.8 | 66 |
+| 8 ways | 16 layers, 0.45 GiB | 59.4 | 66 |
+| 16 ways | 8 layers, 0.23 GiB | 60.6 | 64 |
 
-- As on the M3, the split changes neither the speed nor the error; the error after each part was the same in 2 and in 4 parts.
+- Each further part adds about 0.15 ms per token (2.3 ms from 2 to 16 parts): the fixed cost of one Core ML call. In 4 parts under 1 GiB that is 0.6 ms, about 1% of a token. The smaller the parts, the larger the share, so split into the fewest parts under the limit (as `hwnpu-convert` does).
+- The split does not change the error; it was the same after each part in 2 and in 4 parts.
 - So the M4 loses nothing running the same parts under 1 GiB as the M3 (`hwnpu-convert`'s default `-target any`). Every part is loaded at once, so splitting finer does not save memory either.
 - The Neural Engine reads the weights at about the M3's speed (65 GB/s).
 
