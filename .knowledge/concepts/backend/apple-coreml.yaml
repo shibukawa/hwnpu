@@ -86,6 +86,25 @@ facts:
       続くサンドイッチ正規化の中で正確な要素積で戻す (PostScale)。これで層ごとの誤差が 6〜12% から 1.4〜2.7% になった
     rmsnorm: MIL に rms_norm はなく mul/reduce_mean/rsqrt/mul で組む。小さい値の二乗が fp16 の非正規化数に落ちると精度を失う (1/16 に縮めると層誤差 9% → 6%)。要素演算の精度は十分で、床があるのは行列積
     fp16_depthwise_conv: 深さ方向 conv (groups=channels) は ANE で正確。conv 演算、タップ展開 (slice/mul/add)、転置の有無で誤差は同一
+    weight_read_bandwidth: >-
+      1 トークンずつの生成は重みの読み出しで決まる。ANE が重みを読む速さは M3 で 59〜65 GB/s (DRAM 公称 100 GB/s)、M4 で 66 GB/s (DRAM 公称 120 GB/s)。
+      DRAM が 1.2 倍でも変わらないので、上限は DRAM ではなく ANE の読み出し経路。全速なのは lut4 だけで、int8 は 23 GB/s (M3、cmd/npuprobe bench)
+    tokens_per_call: >-
+      M3 (Mac15,13、macOS 27.0.1)、cmd/npuprobe verify -formats lut4 -layers 16 (重み 0.97 B):
+      K=1 8.2 ms (0.24 TFLOPS)、8 8.3 ms、16 8.3 ms、32 7.9 ms (7.9 TFLOPS)、64 9.1 ms (13.7 TFLOPS)、128 22.1 ms (11.3 TFLOPS)。
+      64 トークンまで 1 トークンとほぼ同じ時間で、つり合いは約 58 トークン。128 は 1 トークンあたりでも 64 より遅い。
+      13.7 TFLOPS は公称 18 TOPS (fp16) の約 4 分の 3。
+      LFM3-1.7B (lut4、hwnpu-convert -seq N) では 1: 13.7 ms、12: 13.9 ms、24: 14.0 ms、48: 15.2 ms (10.9 TFLOPS)、96: 30.0 ms (11.1 TFLOPS)。
+      入力はゼロ、KV キャッシュなし、全位置のロジットを出力。seq 48 だけキャッシュからの読み込みで配置の確認が通らなかった (時間は同じで、原因は未調査)
+    reload_cost: >-
+      M3、LFM3-1.7B の 1 トークン用パッケージ (0.83 GB):
+      WithCacheDir が空の初回読み込み 45 s、キャッシュがあっても最初の数回は 40〜45 s、その後 0.9〜2.1 s。
+      読み込み直後の 1 回目の実行は 24〜32 ms (通常 13.7 ms)、Close は 1〜2 ms。
+      部分ごとに読み込んで捨てる方式は、1 トークンあたり部分の数 × 約 1 s かかり使えない
+    split_parts: >-
+      分割した部分は全部同時に読み込むが、別パッケージに分けるとプロセスの最大 RSS はおよそ 1 部分の重みの大きさまで減る (split_memory_m3)。
+      部分の境目を通るのは隠れ状態 (1, seq, hidden) だけで、層の種類 (LFM3 の conv/全注意/スライディング注意) をまたいで切ってよい。
+      部分を 1 つ増やすと 1 トークンあたり約 0.15 ms 増える (M4)
   limits:
     - ANE のみの指定はできない
     - MLComputePlan は推定で、実行時の配置を保証しない
@@ -93,6 +112,7 @@ facts:
 verification:
   m1-infer: {state: passed, method: integration, test: TestFP16RunsOnNeuralEngine, authority: observed, evidence: {path: coreml_darwin_test.go, locator: TestFP16RunsOnNeuralEngine}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}]}
   m1-strict: {state: passed, method: integration, test: TestStrictRejectsFP32, authority: observed, evidence: {path: coreml_darwin_test.go, locator: TestStrictRejectsFP32}, basis: [{path: coreml_darwin_test.go, input_hash: 506ade11e6a098ad47f75485625fa62bd0b69857b977dc66fe34e0b2fe78ebe6}]}
+  tokens-per-call-m3: {state: passed, method: manual, authority: observed, scope: {backend: coreml, chip: m3}, evidence: {path: PROBE.md, locator: "Apple M3, K tokens per call"}, basis: [{path: PROBE.md, input_hash: 5802925e595c6d87d70d5c3724017a7b61d7d45315549969a400b7759ac652bd}, {path: cmd/npuprobe/verify.go, input_hash: 377165608f80d4ab4e72394b08ab3a5aea0f29b6955637e61a4cde41d1f9bbc9}]}
   zero-copy: {state: passed, method: integration, test: TestOutputBackingZeroCopy, authority: observed, evidence: {path: internal/backend/coreml/zerocopy_darwin_test.go, locator: TestOutputBackingZeroCopy}, basis: [{path: internal/backend/coreml/zerocopy_darwin_test.go, input_hash: 70a16a3dd6fb0a5655137ade24571e2d18f152a550d9ee4094ec28375eada5eb}]}
   layer-split: {state: passed, method: manual, test: npuprobe split, authority: observed, scope: {backend: coreml}, evidence: {path: npuprobe-m3-split.md, locator: A model split into parts run one after another}}
 open_questions:

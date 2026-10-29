@@ -83,7 +83,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 
 **kv** runs only when asked for, as `npuprobe kv`. It passes one token through 11 lut4 layers of the bench size with real attention, over a KV cache of each length (256, 1024 and 4096 tokens by default), the cache held either in host buffers bound as inputs and outputs (`host`) or in Core ML states, MLState (`state`). `-kv-cache`, `-kv-layers` and `-kv-modes` change them. `-kv-modes host-mha` gives each of the 16 query heads its own keys and values instead of repeating the 4 cached heads (a cache 4 times as large), to tell the cost of the repeat and of reading the cache apart. `host-int8` passes the cache as int8 with an fp16 scale per token and casts it back in the program (Core ML specification version 10, macOS 26 and later).
 
-**verify** runs the bench models on the NPU with K tokens per call (1, 2, 4 and 8 by default): the call that checks K drafted tokens in speculative decoding, which reads every weight once whatever K is. While the time per call barely grows with K, the call is bound by reading the weights and checking K drafts costs about as much as generating one token. The K at which the time starts to grow is about the most speculative decoding can gain. Attention is only the per-token stand-in; there is none among the drafted tokens. The formats are those the NPU runs (fp16, int8 and lut4 on Apple).
+**verify** runs the bench models on the NPU with K tokens per call (1 to 128 by default): the call that checks K drafted tokens in speculative decoding, or reads a chunk of the prompt, which reads every weight once whatever K is. While the time per call barely grows with K, the call is bound by reading the weights and checking K drafts costs about as much as generating one token. Past some K the compute runs out and the time grows with K. The report gives that rate in TFLOPS and the K at which reading the weights and computing take as long, from the ratio of the NPU's compute to its weight reading: about the most speculative decoding can gain, and the prompt chunk that uses the NPU best. Attention is only the per-token stand-in; there is none among the drafted tokens. The formats are those the NPU runs (fp16, int8 and lut4 on Apple).
 
 Each measurement runs in a child process of its own, so a framework or driver that aborts (Core ML's GPU path has asserted on some graphs) costs one row of the report, with the error, not the run.
 
@@ -94,6 +94,7 @@ How to read the columns:
 | placement | Apple: Core ML's compute plan (`MLComputePlan`) for every operation, e.g. `NPU` or `CPU 258`. Intel: `NPU` when the driver compiler built the graph; it has no fallback, so anything else is a compile error. |
 | ms/token, tokens/s | Wall time per call. Without the attention over the context, so an upper bound for real decoding. In verify, the time per call divided by K: the bound if every draft were accepted. |
 | × K=1 | verify: the time per call over that at K=1. Near 1, the K tokens are checked almost for free. |
+| TFLOPS | verify: a multiply and an add per weight and token, over the time per call. It stops growing with K once the compute runs out. |
 | weights GB/s | Weight bytes times calls per second: how close a run is to the memory bandwidth. |
 | CPU use | Process CPU time divided by wall time while the model runs. Near 0 when the NPU (or the GPU) does the work, 1 or more when the CPU does. It confirms the placement without root. |
 | net W, mJ/token | Device power meter while running minus idle, when there is a readable meter. |
@@ -104,7 +105,7 @@ Options:
 |---|---|---|
 | `-formats` | Apple `fp16,int8,lut4,int4`, Intel `fp16,int8,int4` | int4 is not tried on the Neural Engine |
 | `-layers` | `8,16` | bench and verify layer counts |
-| `-tokens` | `1,2,4,8` | verify: tokens per call, K |
+| `-tokens` | `1,2,4,8,16,32,64,128` | verify: tokens per call, K |
 | `-baselines` | `cpu,gpu` | Apple: Core ML units to compare with; empty for none |
 | `-max-gb` | a quarter of the RAM on Apple, a sixth on Intel, at most 8 | limit: largest weight size tried. Apple needs free disk space of about twice this |
 | `-several` | `true` | limit: load several models at once after the sweep |
@@ -175,6 +176,22 @@ Against the parts written as the functions of one package (`-layout functions,fi
 
 - The 1 GiB limit counts the whole package, not the function loaded. Split a model into a package per part.
 - With a package per part, the peak memory of the process is about the weights of one part: it falls with more parts, at almost the same speed.
+
+K tokens per call (`npuprobe verify -formats lut4 -layers 16`, 0.97 B weights in lut4):
+
+| K | ms/call | × K=1 | ms/token | TFLOPS |
+|---|---|---|---|---|
+| 1 | 8.2 | 1.00 | 8.2 | 0.24 |
+| 8 | 8.3 | 1.01 | 1.04 | 1.9 |
+| 16 | 8.3 | 1.01 | 0.52 | 3.8 |
+| 32 | 7.9 | 0.96 | 0.25 | 7.9 |
+| 64 | 9.1 | 1.10 | 0.14 | 13.7 |
+| 128 | 22.1 | 2.69 | 0.17 | 11.3 |
+
+- Up to 64 tokens per call take about as long as one: the call is bound by reading the weights (59 GB/s). Generating one token uses 0.24 TFLOPS, under 2% of the Neural Engine's compute.
+- At 64 tokens the compute reaches 13.7 TFLOPS, three quarters of the M3's 18 TOPS (fp16). Reading the weights once takes as long as computing about 58 tokens at that rate.
+- 128 tokens take 2.7 times as long as 64, slower per token than 64: past the limit, splitting a prompt into calls of 64 is faster than calls of 128.
+- So speculative decoding can check up to about 60 drafted tokens for the time of one, and a prompt is read fastest in chunks of about 64 tokens (about 7,000 tokens/s for 1 B weights). LFM3-1.7B converted with `hwnpu-convert -seq` behaved alike: 13.7 ms for 1 token, 15.2 ms for 48, 30.0 ms for 96 (11 TFLOPS).
 
 ### Apple M4
 

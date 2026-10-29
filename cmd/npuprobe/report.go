@@ -36,7 +36,7 @@ func markdown(rep *report) string {
 	}
 
 	if len(rep.Verify) > 0 {
-		sb.WriteString("\n## K tokens per call (checking K drafted tokens)\n\n| weights | format | K | placement | ms/call | × K=1 | ms/token | tokens/s | weights GB/s | CPU use | compile s | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		sb.WriteString("\n## K tokens per call (checking K drafted tokens)\n\n| weights | format | K | placement | ms/call | × K=1 | ms/token | tokens/s | weights GB/s | TFLOPS | CPU use | compile s | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, r := range rep.Verify {
 			ratio, perToken, tps := "", "", ""
 			if base := baseMs(rep.Verify, r); base > 0 && r.MsPerCall > 0 {
@@ -44,13 +44,19 @@ func markdown(rep *report) string {
 			}
 			if r.MsPerCall > 0 {
 				perToken = fmt.Sprintf("%.1f", r.MsPerCall/float64(r.Tokens))
+				if r.MsPerCall < float64(r.Tokens) {
+					perToken = fmt.Sprintf("%.3f", r.MsPerCall/float64(r.Tokens))
+				}
 				tps = fmt.Sprintf("%.1f", 1000*float64(r.Tokens)/r.MsPerCall)
 			}
-			fmt.Fprintf(&sb, "| %.2f B, %.2f GiB | %s | %d | %s | %s | %s | %s | %s | %s | %s | %.1f | %s |\n",
+			fmt.Fprintf(&sb, "| %.2f B, %.2f GiB | %s | %d | %s | %s | %s | %s | %s | %s | %s | %s | %.1f | %s |\n",
 				float64(r.Params)/1e9, probe.GiB(r.WeightBytes), r.Format, r.Tokens, r.placement(),
-				cell(r.MsPerCall, "%.1f"), ratio, perToken, tps, cell(r.gbps(), "%.0f"), cell(r.CPUUse, "%.2f"), r.CompileS, errCell(r))
+				cell(r.MsPerCall, "%.1f"), ratio, perToken, tps, cell(r.gbps(), "%.0f"), cell(r.tflops(), "%.2f"), cell(r.CPUUse, "%.2f"), r.CompileS, errCell(r))
 		}
-		sb.WriteString("\n× K=1 is the time per call over that of one token. Near 1, the call is bound by reading the weights and checking K drafted tokens costs about as much as generating one; tokens/s is then the most speculative decoding could reach if every draft were accepted.\n")
+		sb.WriteString("\n× K=1 is the time per call over that of one token. Near 1, the call is bound by reading the weights and checking K drafted tokens costs about as much as generating one; tokens/s is then the most speculative decoding could reach if every draft were accepted. TFLOPS counts a multiply and an add per weight and token.\n\n")
+		for _, line := range knees(rep.Verify) {
+			fmt.Fprintf(&sb, "- %s\n", line)
+		}
 	}
 
 	if len(rep.Sweep) > 0 {
