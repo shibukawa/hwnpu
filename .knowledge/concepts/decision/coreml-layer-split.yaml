@@ -5,7 +5,8 @@ summary: >-
   ANE の大きさの上限はモデル 1 つごと (M3 は 1 GiB、M4 は 1.8 GiB 以上) で、層の境目で分けた部分を出力バッファから次の入力へ直結して
   順に動かせば、劣化なし・遅延ほぼなしで上限を超えられる。分割数を増やすと消費メモリが大きく減り、遅くなるのは境目 1 つにつき約 0.1〜0.16 ms。
   そこで配布物は分けない 1 つのパッケージにし、実行時に Go で MIL を境目で切り分けて、チップの上限とメモリの予算から分割数を決める。
-  最初の段階として、変換時に分ける hwnpu-convert -parts N (部分ごとに別パッケージ) と、部分をつないで動かす internal/llm/chain、生成の hwnpu-generate を実装した。
+  変換時の分割は hwnpu-convert -target (チップごとの上限、推定サイズで均等に分ける、out.partN.mlpackage と out.parts.json) として入っており、
+  部分をつないで動かす internal/llm/chain、生成の hwnpu-generate、KV キャッシュ (-cache) をその上に実装した。
   実行時の切り分けは未実装。1 つのパッケージの関数として分ける案は、上限がパッケージ全体で数えられるので使えない。
 lifecycle: proposed
 authority: authored
@@ -19,7 +20,7 @@ facts:
     - 6 ビット LUT など 4 ビットより大きい形式や、感度の高いテンソルを fp16 に残す構成
     - 同じ配布物を、メモリの少ない機械では細かく、多い機械では粗く (速く) 分けて動かす
   implemented: >-
-    2026-10-29。llm.WriteParts / ReadParts (ディレクトリに part_N.mlpackage と parts.json)、hwnpu-convert -parts N、internal/llm/chain
+    2026-10-29。hwnpu-convert -target / -parts (llm.PlanSplit、out.parts.json の型 llm.Manifest、1 部分を書く llm.WritePart)、internal/llm/chain
     (部分を読み込み、出力バッファを次の x に Bind)、internal/tokenizer (byte-level BPE、LFM3 の参照 24 トークンと一致)、cmd/hwnpu-generate
     (チャットの書式、貪欲法かサンプリング、KV キャッシュなしで固定長の窓を毎トークン動かし、満ちたら古い 4 分の 1 を捨てる)。
     TestPartsMatchWhole で 1〜3 分割の連鎖が 1 部分とビット単位で一致 (fp16、lut4)。LFM3-1.7B lut4 は 1/2/4/8 分割とも全部 ANE で 34 ms/token 前後

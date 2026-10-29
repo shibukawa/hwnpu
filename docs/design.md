@@ -1000,8 +1000,8 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 
 **実装** (16.12 の設計のうち、変換時に分ける段階。実行時の切り分けは未実装)
 
-- `llm.WriteParts` / `llm.ReadParts`: モデルを連続した層の N 区間に分け、ディレクトリに `part_N.mlpackage` と `parts.json` (層の区間、重みのバイト数、元のチェックポイント、形式、seq) を書く。各部分は既存の `Build` に `Start` と `Layers` を渡して作る。`hwnpu-convert -parts N` がこれを使う
-- `internal/llm/chain`: `parts.json` のディレクトリか 1 つのパッケージを開き、全部分を読み込んで、部分 i の出力バッファを部分 i+1 の `x` に、ほかの入力は 1 つのバッファを全部分に `Bind` する。`Run` は部分を順に動かす
+- 変換時の分割は、main に並行して入った `hwnpu-convert -target` (チップごとの上限、推定サイズで均等に分ける `llm.PlanSplit`、`out.partN.mlpackage` と `out.parts.json`) に合わせた。こちらで書いた層の数で等分する `-parts` とディレクトリ形式は、マージのときに捨てた。`out.parts.json` の型 (`llm.Manifest`) と 1 部分の書き出し (`llm.WritePart`) を `internal/llm` に移し、`chain` とテストからも使う
+- `internal/llm/chain`: `out.parts.json` か 1 つのパッケージを開き、全部分を読み込んで、部分 i の出力バッファを部分 i+1 の `x` に、ほかの入力は 1 つのバッファを全部分に `Bind` する。`Run` は部分を順に動かす
 - `internal/tokenizer`: `tokenizer.json` の byte-level BPE。追加トークンを先に切り出し、GPT-4 型の前処理の正規表現 (Go の regexp にない先読み `\s+(?!\S)` を含む) を手で書いた走査で分け、マージの順位で結合する。対応しない形式 (WordPiece、byte fallback、別の前処理) は `Load` でエラーにする。LFM3 では、Hugging Face が参照のプロンプトに出した 24 トークンと一致した
 - `cmd/hwnpu-generate`: チャットの書式 (`<|startoftext|><|im_start|>user ... <|im_end|>\n<|im_start|>assistant\n`) でプロンプトを作り、埋め込みはチェックポイントからホストで引き、貪欲法かサンプリング (温度、top-k、繰り返しの罰則) で生成する。KV キャッシュはなく、毎トークン固定長の窓全体を動かして最後の位置のロジットを読む。モデルは因果的なので、まだ使っていない位置のゼロは結果を変えない。窓が満ちたら、最初のトークンを残して古い 4 分の 1 を捨てる
 - テスト: `TestPartsMatchWhole` (小さな LFM3 を fp16 と lut4 で 1〜3 分割し、`milcpu` で順に動かした結果が 1 部分とビット単位で一致し、1 部分はまとめたプログラムと一致する)。トークナイザーは前処理の分け方、BPE の結合、往復、LFM3 の実物 (`HWNPU_LFM3_DIR`)
@@ -1027,7 +1027,7 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
   - `win_NAME` (1, W, 幅) と出力 `win_NAME_new` (1, W+Q, 幅): LFM3 の短い畳み込みの、直前 6 行の B*x。プログラムはゼロの左詰めの代わりにこれを前に付ける。ホストは最後の本物のトークンで終わる W 行を残す
   - それ以外の入力はモデルが位置から作る (`StepInputs`): 注意の型ごとのマスク (1, 1, Q, cache+Q) と RoPE の表 (1, Q, 1, head_dim)。gather (CPU 行き) を使わずに位置を渡せる。スライディング注意の窓はマスクで表す
   - 1 ステップは最大 Q トークン。足りない分はゼロで埋め、そこの K/V は書き込まない。prefill は同じプログラムを Q トークンずつ回す
-- 実装: `lfm3.BuildCached` (`Options.Cache`)、`internal/llm/decode` (`Session`: x と `StepInputs` を書き、実行し、K/V と窓を書き戻す。バッファはただの fp16 のバイト列なので、Core ML の鎖とテストの CPU インタプリタで同じコードが動く)、`chain.Program`、`hwnpu-convert -cache N` (-seq は 1 回のトークン数)、`hwnpu-generate` のキャッシュ付きの経路。部分ごとに自分の層のキャッシュを持つので、分割と組み合わさる。`blocks.SDPA` はキーの長さが問い合わせと違ってよいようにし、`blocks.RopeValues` を切り出した (キャッシュなしのダイジェストは変わらない)
+- 実装: `lfm3.BuildCached` (`Options.Cache`)、`internal/llm/decode` (`Session`: x と `StepInputs` を書き、実行し、K/V と窓を書き戻す。バッファはただの fp16 のバイト列なので、Core ML の鎖とテストの CPU インタプリタで同じコードが動く)、`chain.Program`、`hwnpu-convert -cache N` (-seq は 1 回のトークン数。`out.parts.json` に cache を書き、各部分のキャッシュの出力を `state_outputs` に並べる)、`hwnpu-generate` のキャッシュ付きの経路。部分ごとに自分の層のキャッシュを持つので、分割と組み合わさる。`blocks.SDPA` はキーの長さが問い合わせと違ってよいようにし、`blocks.RopeValues` を切り出した (キャッシュなしのダイジェストは変わらない)
 - 検証: `TestCachedMatchesFull` は小さな LFM3 (スライディング窓 3、畳み込み幅 3) の 8 トークンを、Q=1/3/8、キャッシュ 8〜10、1〜3 分割で 1 ステップずつ動かし、各位置のロジットがキャッシュなしのプログラムと相対誤差 6e-4 以内 (キャッシュの fp16 の分)。スライディング窓を外す、K/V の書き込み位置をずらす、畳み込みの窓を取り違える、RoPE の位置をずらす、の 4 つの改変を検出することを確かめた
 - 結果 (M3、LFM3-1.7B lut4 kmeans-minmax、2 分割、全部 ANE、貪欲法):
 
@@ -1041,4 +1041,6 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 
 - 出力はキャッシュなしの貪欲法と一字一句同じ書き出しになった。キャッシュ 4096 で、見出し付きの日本語の社内文書を 1500 トークン、26.7 tokens/s で書いた
 - 遅さはキャッシュの使用量ではなく容量に比例する (形が固定なので毎回全体を計算する)。1000 トークン分の容量につき約 5.4 ms。4096 で増えた分は KV の読み出しに直すと 4.6 GB/s しかなく、Core ML が入力の配列を毎回コピーしている可能性がある (推定、未確認)
+- 読み込み: キャッシュ付きのモデルは、コンパイル済みのキャッシュがあっても 2 回目以降の読み込みに 15〜22 秒かかる (キャッシュなしは 1 秒前後)。原因は調べていない (ANE 向けのコンパイルが毎回やり直されている可能性)
+- マージ後の変換器 (`-target any -parts 2`、重みで均等に分けて 0.40 / 0.41 GiB) でも、キャッシュ 1024 で全部 ANE、22.7 ms/token
 - 次: MLState との比較 (コピーがなくなるか、状態の演算が ANE に載るか)。容量の違うプログラムを用意し、文脈が伸びたら大きいものへキャッシュを移す。prefill 用の Q の大きいプログラム (長いプロンプトで効くかを測る)

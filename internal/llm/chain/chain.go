@@ -1,4 +1,4 @@
-// Package chain runs a model written in parts (llm.WriteParts) as one model: it loads every part,
+// Package chain runs a model written in parts (hwnpu-convert's out.parts.json) as one model: it loads every part,
 // a package of its own, and binds the output buffer of each part as the input x of the next, so
 // that nothing is copied between them. Inputs other than x (such as an encoder's mask) are one
 // buffer bound to every part that takes them.
@@ -7,7 +7,6 @@ package chain
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -16,7 +15,7 @@ import (
 
 // Part is one loaded part.
 type Part struct {
-	llm.Part
+	llm.PartRecord
 	Placement hwnpu.PlacementReport
 	Cached    bool // compiled from the device's cache
 
@@ -33,10 +32,10 @@ type Chain struct {
 	bufs              []*hwnpu.Buffer
 }
 
-// Open loads every part of the model at path on dev: a directory of parts (llm.WriteParts) or a
+// Open loads every part of the model at path on dev: a manifest of parts (out.parts.json) or a
 // single package.
 func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
-	dir, list, err := llm.ReadParts(path)
+	list, err := llm.ReadManifest(path)
 	if err != nil {
 		return nil, err
 	}
@@ -53,10 +52,10 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 		return b, err
 	}
 	for i, lp := range list.Parts {
-		p := &Part{Part: lp}
-		if p.g, err = gr.Compile(ctx, hwnpu.GraphSource{Path: filepath.Join(dir, lp.Package)}); err != nil {
+		p := &Part{PartRecord: lp}
+		if p.g, err = gr.Compile(ctx, hwnpu.GraphSource{Path: lp.Path}); err != nil {
 			c.Close()
-			return nil, fmt.Errorf("chain: part %d (%s): %w", i, lp.Package, err)
+			return nil, fmt.Errorf("chain: part %d (%s): %w", i, lp.Path, err)
 		}
 		c.parts = append(c.parts, p)
 		p.Placement, p.Cached = p.g.Placement(), p.g.Cached()
