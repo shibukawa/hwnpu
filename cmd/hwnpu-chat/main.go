@@ -117,7 +117,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
 	}
-	fmt.Fprintf(os.Stderr, "context %d tokens. /reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n", e.Context())
+	fmt.Fprintln(os.Stderr, "/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer")
 	in := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print("\n> ")
