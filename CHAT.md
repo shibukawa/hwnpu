@@ -1,8 +1,16 @@
-# Chat, an OpenAI compatible API and OpenCode
+# Chat, embeddings, an OpenAI compatible API and OpenCode
 
 [日本語](CHAT.ja.md)
 
-Run LFM3-1.7B on the Apple Neural Engine alone, and talk with it in the terminal or use it as an OpenAI compatible API from clients such as OpenCode. No Python is needed.
+Run LFM3-1.7B and PLaMo-Embedding-1B on the Apple Neural Engine alone, and use them in the terminal or as an OpenAI compatible API from clients such as OpenCode. No Python is needed.
+
+`-use` picks the model:
+
+| | in the terminal | with `-listen` (section 3) |
+|---|---|---|
+| `-use chat` (default) | chat with LFM3-1.7B (section 1) | `/v1/chat/completions` |
+| `-use embed` | search texts by their PLaMo-Embedding-1B embeddings (section 4) | `/v1/embeddings` |
+| `-use chat,embed` | not taken: pick one | both, from one server |
 
 ## 1. Chat
 
@@ -27,7 +35,8 @@ Then type after the `>`.
 
 | Flag | Default | |
 |---|---|---|
-| `-listen ADDR` | none | serve the OpenAI compatible API at `ADDR` (e.g. `127.0.0.1:8080`) instead of chatting (section 3) |
+| `-use LIST` | `chat` | the models to run: `chat`, `embed`, or `chat,embed` with `-listen` |
+| `-listen ADDR` | none | serve the OpenAI compatible API at `ADDR` (e.g. `127.0.0.1:8080`) instead of the terminal (section 3) |
 | `-think` | `true` | let the model think before it answers |
 | `-system TEXT` | none | the chat's system message |
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
@@ -35,8 +44,14 @@ Then type after the `>`.
 | `-context N` | `16320` | most tokens of a prompt and its answer together; another value converts the model again for it |
 | `-model DIR` | `~/Library/Caches/hwnpu/models/LFM3-1.7B` | where the checkpoint and the converted programs are |
 | `-repo NAME` | `LiquidAI/LFM3-1.7B` | the Hugging Face repository of the checkpoint; set `HF_TOKEN` for gated ones |
-| `-package A,B` | none | use programs you converted with `hwnpu-convert` (section 4) |
+| `-package A,B` | none | use programs you converted with `hwnpu-convert` (section 5) |
 | `-dump DIR` | none | with the server, save each request, its prompt and the generated text |
+| `-embed-seq A,B` | `128,1024` | lengths the embedding model is converted for; a text runs on the shortest that holds it, and the longest is the most tokens a text can have |
+| `-embed-model DIR` | `~/Library/Caches/hwnpu/models/plamo-embedding-1b` | where the embedding model's checkpoint and programs are |
+| `-embed-repo NAME` | `pfnet/plamo-embedding-1b` | the Hugging Face repository of the embedding model |
+| `-embed-package A,B` | none | embedding programs you converted with `hwnpu-convert` (encoders take `-seq` only), with `config.json` and `model.safetensors` in `-embed-model` |
+
+The flags from `-think` to `-context` and `-model` to `-package` are the chat model's, the `-embed-` flags the embedding model's; flags of a model not in `-use` are not looked at.
 
 - A context of 16320 is the most the Neural Engine takes (a tensor dimension goes up to 16384, and the key axis is the context plus the tokens per call). OpenCode needs 16K. For chat alone, `-context 4096` generates faster (about 28 ms a token on an M3, against about 64 ms with 16K)
 
@@ -46,22 +61,58 @@ Then type after the `>`.
 go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080
 ```
 
+```bash
+go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use chat,embed
+```
+
 | Endpoint | |
 |---|---|
-| `GET /v1/models` | the model's name (`LFM3-1.7B`; with `-package`, the first package's) and `context_length` |
+| `GET /v1/models` | the names of the models loaded (`LFM3-1.7B`, `plamo-embedding-1b`; with `-package`, the first package's) and their `context_length` (and `dimensions` of the embedding model) |
 | `POST /v1/chat/completions` | `stream` (SSE), `tools` and `tool_calls`, `reasoning_content`, `max_tokens`, `temperature`, `top_p`, `top_k`, `repetition_penalty`, `seed`, `stop`, `stream_options.include_usage` |
+| `POST /v1/embeddings` | `input` (a string or a list), `encoding_format` (`float` or `base64`), `dimensions` (only the model's 2048), and besides OpenAI's: `input_type` (`query` or `document`, section 4) and `truncate` |
 
 - `-think` (default true) decides whether the model thinks; a request changes it with `reasoning_effort` (none, minimal and low turn it off, medium and high on) or `chat_template_kwargs.enable_thinking`
 - Requests run one at a time. The beginning a prompt shares with an earlier one is not read again, and `usage.prompt_tokens_details.cached_tokens` says how much. When another conversation comes in between, up to two long conversations are kept aside and come back
 - Generation stops when the model starts repeating one pattern
 - `-dump DIR` saves each request, its prompt and the generated text, for finding out what a client sends
-- The request's `model` is not looked at: any name gets the same model
+- Each endpoint has its model, whatever the request's `model` says, except that the embedding model's name on `/v1/chat/completions` (or the chat model's on `/v1/embeddings`) is an error. An endpoint whose model is not in `-use` answers 404
 
 ```bash
 curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"lfm3","messages":[{"role":"user","content":"What is the capital of Japan?"}]}'
 ```
 
-## 4. Programs you converted
+## 4. Embeddings (PLaMo-Embedding-1B)
+
+```bash
+go run ./cmd/hwnpu-chat -use embed
+```
+
+[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) turns a Japanese (or English) text into a vector of 2048 numbers; texts of similar meaning get vectors pointing the same way. The first run downloads `config.json`, `tokenizer.model` and `model.safetensors` (2.1 GB) to `~/Library/Caches/hwnpu/models/plamo-embedding-1b` and converts the model once for each length of `-embed-seq`, like the chat model.
+
+In the terminal, each line typed is a document kept for searching, and a line starting with `?` is a query: the documents are listed by their cosine similarity to it, most similar first. `/list` shows the documents, `/reset` clears them, `/exit` or Ctrl-D quits.
+
+```text
+> 東京は日本の首都です。
+> 最近は随分と暖かくなりましたね。
+> ? 日本の首都はどこ？
+```
+
+Over the API (with `-listen`, and `-use embed` or `-use chat,embed`):
+
+```bash
+curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{"model":"plamo-embedding-1b","input":["東京は日本の首都です。","最近は随分と暖かくなりましたね。"]}'
+```
+
+```bash
+curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{"model":"plamo-embedding-1b","input":"日本の首都はどこ？","input_type":"query"}'
+```
+
+- PLaMo-Embedding embeds a search query and what is searched differently: a query gets the instruction `次の文章に対して、関連する文章を検索してください: ` before it (the model's `encode_query`), a document nothing (`encode_document`). On the API, `input_type: "query"` (or `search_query`) makes the inputs queries; the default is `document`, which is also the one for texts that are not about search (clustering, classification). OpenAI's API has no such field, so a client that cannot send it gets documents
+- The embedding is the mean of the last hidden state over the text's own tokens (not the BOS, not the instruction), scaled to length 1, so the dot product of two embeddings is their cosine similarity
+- A text runs on the shortest converted length that holds it, padded. A text over the longest (1024 tokens by default) is an error (`context_length_exceeded`) unless the request says `"truncate": true`; in the terminal it is cut, with a note. The model reads up to 4096 tokens: `-embed-seq 128,1024,4096` converts that length too (the attention over 4096 tokens has not been tried on the Neural Engine)
+- Requests run one at a time, one text after another. The chat and the embedding model run independently of each other
+
+## 5. Programs you converted
 
 To try another quantization or cache length, convert twice with `hwnpu-convert` with the same cache length, and list both in `-package`.
 
@@ -77,7 +128,7 @@ go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensor
 go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage -model DIR
 ```
 
-## 5. Use it from OpenCode
+## 6. Use it from OpenCode
 
 Put an `opencode.json` in the project directory. The model's name is the one `GET /v1/models` returns.
 
@@ -110,9 +161,10 @@ Put an `opencode.json` in the project directory. The model's name is the one `GE
 - A 1.7B model sometimes writes commands that make no sense. Allowing only some commands for `bash` is safer
 - An example on an M3: asked to fix the bug in `add` of main.go, it read the file, changed `a - b` to `a + b` and checked with `go run`, in 12 requests. The first request read 7.4K tokens in 13 seconds; the later ones reused 99% of the prompt and read the rest in 0.1 to 0.5 seconds. Generation takes about 64 ms a token (about 15 tokens/s)
 
-## 6. Limits
+## 7. Limits
 
 - OpenCode first asks for a title of the conversation. This model thinks before answering even when told not to, which takes 1 to 2 minutes, and the main request waits meanwhile
 - With 1.7B parameters and 4 bit weights, factual answers can be wrong. Letting it think helps
 - The context is at most 16320 tokens. Longer contexts need the attention computed over the cache in chunks ([docs/kv-cache.md](docs/kv-cache.md))
-- The implementation notes are in section 16.17 of [docs/design.md](docs/design.md)
+- PLaMo-Embedding-1B on the Neural Engine is not checked against the Hugging Face implementation yet: run `tools/ref/embed_golden.py` and `TestPlamoEmbeddingGolden` in `internal/chat` to compare (section 16.21 of docs/design.md)
+- The implementation notes are in sections 16.17 and 16.21 of [docs/design.md](docs/design.md)

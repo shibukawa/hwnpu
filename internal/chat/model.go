@@ -58,7 +58,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo)}
 	for _, p := range []struct{ seq, parts int }{{1, 2}, {prefillSeq, 0}} {
 		out := filepath.Join(s.Dir, fmt.Sprintf("lfm3-c%d-q%d.mlpackage", s.Context, p.seq))
-		path, err := convert(ctx, c, out, p.seq, p.parts, s.Context, s.Log)
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, p.seq, p.parts, s.Context, s.Log)
 		if err != nil {
 			return Config{}, err
 		}
@@ -67,9 +67,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	return c, nil
 }
 
-// convert writes the program unless it is there, and returns its path. NAME.done, written last,
-// holds the path, so that a conversion cut off is done again.
-func convert(ctx context.Context, c Config, out string, seq, parts, cache int, log io.Writer) (string, error) {
+// convert writes the program of the model (config.json and the checkpoint) unless it is there,
+// and returns its path. NAME.done, written last, holds the path, so that a conversion cut off is
+// done again.
+func convert(ctx context.Context, config, weights, out string, seq, parts, cache int, log io.Writer) (string, error) {
 	done := out[:len(out)-len(".mlpackage")] + ".done"
 	if b, err := os.ReadFile(done); err == nil {
 		return string(b), nil
@@ -77,16 +78,17 @@ func convert(ctx context.Context, c Config, out string, seq, parts, cache int, l
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	a, model, err := llm.LoadConfig(c.ModelConfig, "")
+	a, model, err := llm.LoadConfig(config, "")
 	if err != nil {
 		return "", err
 	}
-	w, err := llm.OpenWeights(c.Weights, a)
+	w, err := llm.OpenWeights(weights, a)
 	if err != nil {
 		return "", err
 	}
 	defer w.Close()
-	// the converter's defaults, with the table fitting that keeps LFM3's answers as they were
+	// the converter's defaults, with the table fitting that keeps LFM3's answers as they were (also
+	// used for the embedding model)
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var opts llm.Options
 	set := llm.BindFlags(fs, &opts, "lut4")
@@ -95,7 +97,11 @@ func convert(ctx context.Context, c Config, out string, seq, parts, cache int, l
 	}
 	set()
 	opts.Seq, opts.Cache = seq, cache
-	fmt.Fprintf(log, "converting %s for the Neural Engine (cache %d, %d per call); this takes a minute or two\n", filepath.Base(out), cache, seq)
+	if cache > 0 {
+		fmt.Fprintf(log, "converting %s for the Neural Engine (cache %d, %d per call); this takes a minute or two\n", filepath.Base(out), cache, seq)
+	} else {
+		fmt.Fprintf(log, "converting %s for the Neural Engine (%d tokens); this takes a minute or two\n", filepath.Base(out), seq)
+	}
 	path, err := llm.Convert(a, model, w, out, "any", parts, opts, log)
 	if err != nil {
 		return "", err
