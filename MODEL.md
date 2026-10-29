@@ -170,7 +170,7 @@ python tools/coreml/gen_sweep.py build/sweep --report build/power-sweep.json
 
 hwnpu cannot convert models at load time without heavy dependencies (OpenVINO's C++ frontends, coremltools in Python, AMD's closed compiler), and converting on every machine would spend time and power against hwnpu's goal. So models are converted once by the developer, with one artifact per vendor in the precision that vendor's NPU reads fastest, and distributed (S3, NFS, a private Hugging Face repository). At load time the application picks the artifact for the device it finds and lets the vendor compile it; `WithCacheDir` keeps that result per machine.
 
-The converter needs no Python: LLMs share a handful of block structures (norm, attention or convolution, gated MLP), so `cmd/hwnpu-convert` builds the graph in Go from `config.json` and reads the weights from the safetensors or GGUF checkpoint. It supports Liquid AI's LFM3 architecture so far and writes Core ML packages; the Intel IR and AMD writers are not implemented yet.
+The converter needs no Python: LLMs share a handful of block structures (norm, attention or convolution, gated MLP), so `cmd/hwnpu-convert` builds the graph in Go from `config.json` and reads the weights from the safetensors or GGUF checkpoint. The supported architectures are a whitelist (`-archs` lists them), so far only Liquid AI's LFM3, detected from `config.json`. It writes Core ML packages; the Intel IR and AMD writers are not implemented yet.
 
 ```bash
 go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o lfm3.mlpackage -seq 32

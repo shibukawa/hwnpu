@@ -13,6 +13,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/backend/coreml"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
@@ -56,7 +57,7 @@ func TestAgainstReference(t *testing.T) {
 	if len(hidden) != (cfg.NumLayers+1)*seq*cfg.HiddenSize || len(logits) != seq*cfg.VocabSize {
 		t.Fatalf("reference sizes do not match the config: hidden %d, logits %d, seq %d", len(hidden), len(logits), seq)
 	}
-	emb, err := Embed(w, cfg.HiddenSize, ids)
+	emb, err := llm.Embed(w, cfg.HiddenSize, ids)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,136 @@
+package llm
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"slices"
+	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/mlpackage"
+)
+
+// Arch describes one supported architecture.
+type Arch struct {
+	// Name identifies the architecture: the GGUF general.architecture and the -arch flag.
+	Name string
+	// Title is the human readable name for the model description.
+	Title string
+	// ModelTypes and Architectures are the config.json model_type and architectures values
+	// that select this architecture.
+	ModelTypes    []string
+	Architectures []string
+	// Params are the architecture's own build settings, read from Options.Params.
+	Params []Param
+	// LoadConfig parses config.json and rejects settings the conversion does not handle.
+	LoadConfig func(raw []byte) (Model, error)
+	// GGUFName maps a Hugging Face tensor name to llama.cpp's ("" when there is none).
+	GGUFName func(name string) string
+	// GGUFShape, if set, corrects the shape of a GGUF tensor to the Hugging Face layout.
+	GGUFShape func(name string, shape []int) []int
+}
+
+// Param is an architecture specific build setting.
+type Param struct {
+	Name, Default, Usage string
+}
+
+// Param returns the value of the architecture's setting name in o, or its default.
+func (a *Arch) Param(o Options, name string) string {
+	if v, ok := o.Params[name]; ok {
+		return v
+	}
+	for _, p := range a.Params {
+		if p.Name == name {
+			return p.Default
+		}
+	}
+	return ""
+}
+
+// Model is a parsed config.json of a supported architecture.
+type Model interface {
+	// Hidden is the hidden size, the width of the program's input.
+	Hidden() int
+	// Build writes the program into b. Its input is x, the fp16 token embeddings (1, seq,
+	// hidden): the embedding lookup stays on the host because Core ML runs gather on the CPU.
+	// Its output is y, the logits or a hidden state.
+	Build(b *mlpackage.Builder, w Weights, opts Options) (in, out mlpackage.Feature, err error)
+}
+
+var archs []*Arch
+
+// Register adds an architecture to the whitelist. It is called from the architecture's init.
+func Register(a *Arch) {
+	if Lookup(a.Name) != nil {
+		panic("llm: architecture " + a.Name + " registered twice")
+	}
+	archs = append(archs, a)
+	slices.SortFunc(archs, func(x, y *Arch) int { return strings.Compare(x.Name, y.Name) })
+}
+
+// Archs returns the registered architectures by name.
+func Archs() []*Arch { return archs }
+
+// Lookup returns the architecture with the given name, or nil.
+func Lookup(name string) *Arch {
+	for _, a := range archs {
+		if a.Name == name {
+			return a
+		}
+	}
+	return nil
+}
+
+func names() string {
+	var n []string
+	for _, a := range archs {
+		n = append(n, a.Name)
+	}
+	return strings.Join(n, ", ")
+}
+
+// Detect picks the architecture of a config.json by its model_type, then its architectures.
+func Detect(raw []byte) (*Arch, error) {
+	var c struct {
+		ModelType     string   `json:"model_type"`
+		Architectures []string `json:"architectures"`
+	}
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return nil, err
+	}
+	for _, a := range archs {
+		if slices.Contains(a.ModelTypes, c.ModelType) {
+			return a, nil
+		}
+	}
+	for _, a := range archs {
+		for _, name := range c.Architectures {
+			if slices.Contains(a.Architectures, name) {
+				return a, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("llm: model_type %q (architectures %v) is not supported; supported: %s", c.ModelType, c.Architectures, names())
+}
+
+// LoadConfig reads config.json. arch names the architecture, or "" to detect it.
+func LoadConfig(path, arch string) (*Arch, Model, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	var a *Arch
+	if arch != "" {
+		if a = Lookup(arch); a == nil {
+			return nil, nil, fmt.Errorf("llm: architecture %q is not supported; supported: %s", arch, names())
+		}
+	} else if a, err = Detect(raw); err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	m, err := a.LoadConfig(raw)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return a, m, nil
+}
