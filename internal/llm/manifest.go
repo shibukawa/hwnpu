@@ -20,7 +20,27 @@ type Manifest struct {
 	Cache    int          `json:"cache,omitempty"` // KV cache length (Options.Cache)
 	Target   string       `json:"target"`
 	MaxBytes int64        `json:"max_bytes"` // the target's limit on a part's weight file
-	Parts    []PartRecord `json:"parts"`
+	Parts    []PartRecord `json:"parts,omitempty"`
+	// Tiers are the same model converted with KV caches of increasing length (hwnpu-convert
+	// -cache a,b,c). A step costs in proportion to the cache's length, so a sequence starts on the
+	// shortest tier and moves to the next when it fills (internal/llm/chain). With tiers, Cache
+	// and Parts are empty.
+	Tiers []Tier `json:"tiers,omitempty"`
+}
+
+// Tier is one cache length of a tiered model.
+type Tier struct {
+	Cache int          `json:"cache"`
+	Parts []PartRecord `json:"parts"`
+}
+
+// Tiered returns the model's tiers in order of cache length: Tiers, or the single tier Cache and
+// Parts describe.
+func (m *Manifest) Tiered() []Tier {
+	if len(m.Tiers) > 0 {
+		return m.Tiers
+	}
+	return []Tier{{Cache: m.Cache, Parts: m.Parts}}
 }
 
 // PartRecord is one part in a Manifest.
@@ -94,10 +114,16 @@ func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlp
 
 // WriteManifest writes m to path (out.parts.json); the parts' paths are made relative to it.
 func WriteManifest(path string, m *Manifest) error {
-	for i := range m.Parts {
-		if rel, err := filepath.Rel(filepath.Dir(path), m.Parts[i].Path); err == nil {
-			m.Parts[i].Path = rel
+	relative := func(parts []PartRecord) {
+		for i := range parts {
+			if rel, err := filepath.Rel(filepath.Dir(path), parts[i].Path); err == nil {
+				parts[i].Path = rel
+			}
 		}
+	}
+	relative(m.Parts)
+	for _, t := range m.Tiers {
+		relative(t.Parts)
 	}
 	js, _ := json.MarshalIndent(m, "", "  ")
 	return os.WriteFile(path, append(js, '\n'), 0o644)
@@ -114,11 +140,20 @@ func ReadManifest(path string) (*Manifest, error) {
 		return nil, err
 	}
 	m := &Manifest{}
-	if err := json.Unmarshal(raw, m); err != nil || len(m.Parts) == 0 {
+	if err := json.Unmarshal(raw, m); err != nil || len(m.Parts) == 0 && len(m.Tiers) == 0 {
 		return nil, fmt.Errorf("llm: %s is not a list of parts", path)
 	}
-	for i := range m.Parts {
-		m.Parts[i].Path = filepath.Join(filepath.Dir(path), m.Parts[i].Path)
+	absolute := func(parts []PartRecord) {
+		for i := range parts {
+			parts[i].Path = filepath.Join(filepath.Dir(path), parts[i].Path)
+		}
+	}
+	absolute(m.Parts)
+	for i, t := range m.Tiers {
+		if len(t.Parts) == 0 || i > 0 && t.Cache <= m.Tiers[i-1].Cache {
+			return nil, fmt.Errorf("llm: %s: tiers must have parts and increasing caches", path)
+		}
+		absolute(t.Parts)
 	}
 	return m, nil
 }

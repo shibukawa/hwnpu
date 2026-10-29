@@ -2,6 +2,7 @@ package coreml
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ebitengine/purego/objc"
 
@@ -78,11 +80,23 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	}
 	g := &graph{}
 	compiled := src.Path
+	// HWNPU_COREML_TRACE=1 prints how long each phase of loading takes, to see where a slow load
+	// goes. It is not part of the API.
+	trace := os.Getenv("HWNPU_COREML_TRACE") != ""
+	phase := time.Now()
+	lap := func(what string) {
+		if trace {
+			fmt.Fprintf(os.Stderr, "coreml: %s: %s %.2fs\n", filepath.Base(src.Path), what, time.Since(phase).Seconds())
+			phase = time.Now()
+		}
+	}
+	var key string // the cache key of the compiled model, when a cache directory is set
 	if !strings.EqualFold(filepath.Ext(src.Path), ".mlmodelc") {
 		var err error
-		if compiled, g.cached, g.compiledDir, err = d.compiledModel(src.Path); err != nil {
+		if compiled, g.cached, g.compiledDir, key, err = d.compiledModel(src.Path); err != nil {
 			return nil, err
 		}
+		lap(map[bool]string{true: "compiled model from cache", false: "compile"}[g.cached])
 	}
 
 	var config objc.ID
@@ -110,6 +124,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			return nsError("load "+src.Path, e)
 		}
 		g.model = retain(model)
+		lap("load")
 		args, err := describeArgs(model)
 		g.args = args
 		if desc := send(model, "modelDescription"); respondsTo(desc, "stateDescriptionsByName") {
@@ -118,10 +133,33 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		return err
 	})
 	if err == nil {
-		var url objc.ID
-		_ = withPool(func() error { url = retain(fileURL(compiled)); return nil })
-		g.placement, err = computePlacement(ctx, url, config, src.Function)
-		_ = withPool(func() error { release(url); return nil })
+		// The compute plan takes as long as loading the model again, and is the same for the same
+		// compiled model, function and OS: with a cache directory it is kept beside the model.
+		placementKey := ""
+		if key != "" {
+			placementKey = cache.Key([]byte("hwnpu-coreml-placement-v1"), []byte(key), []byte(src.Function))
+		}
+		cachedPlan := false
+		if placementKey != "" {
+			if p, ok := cache.Lookup(d.opts.CacheDir, placementKey, ".json"); ok {
+				if raw, e := os.ReadFile(p); e == nil && json.Unmarshal(raw, &g.placement) == nil && g.placement.Verified {
+					cachedPlan = true
+					lap("compute plan from cache")
+				}
+			}
+		}
+		if !cachedPlan {
+			var url objc.ID
+			_ = withPool(func() error { url = retain(fileURL(compiled)); return nil })
+			g.placement, err = computePlacement(ctx, url, config, src.Function)
+			_ = withPool(func() error { release(url); return nil })
+			lap("compute plan")
+			if err == nil && placementKey != "" && g.placement.Verified {
+				if raw, e := json.Marshal(g.placement); e == nil {
+					cache.Store(d.opts.CacheDir, placementKey, ".json", func(tmp string) error { return os.WriteFile(tmp, raw, 0o644) }) // best effort
+				}
+			}
+		}
 	}
 	_ = withPool(func() error { release(config); return nil })
 	if err != nil {
@@ -132,13 +170,13 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 }
 
 // compiledModel returns a compiled .mlmodelc for a source model. With a cache directory the
-// result is looked up and stored there; otherwise it is a temporary directory owned by the graph.
-func (d *device) compiledModel(path string) (compiled string, cached bool, owned string, err error) {
-	var key string
+// result is looked up and stored there, and its key is returned; otherwise it is a temporary
+// directory owned by the graph.
+func (d *device) compiledModel(path string) (compiled string, cached bool, owned string, key string, err error) {
 	if d.opts.CacheDir != "" {
 		digest, err := cache.TreeDigest(path)
 		if err != nil {
-			return "", false, "", fmt.Errorf("coreml: %w", err)
+			return "", false, "", "", fmt.Errorf("coreml: %w", err)
 		}
 		var osVersion string
 		_ = withPool(func() error {
@@ -147,7 +185,7 @@ func (d *device) compiledModel(path string) (compiled string, cached bool, owned
 		})
 		key = cache.Key([]byte("hwnpu-coreml-v1"), digest, []byte(osVersion))
 		if p, ok := cache.Lookup(d.opts.CacheDir, key, ".mlmodelc"); ok {
-			return p, true, "", nil
+			return p, true, "", key, nil
 		}
 	}
 	var tmp string
@@ -161,10 +199,10 @@ func (d *device) compiledModel(path string) (compiled string, cached bool, owned
 		return nil
 	})
 	if err != nil {
-		return "", false, "", err
+		return "", false, "", "", err
 	}
 	if key == "" {
-		return tmp, false, tmp, nil
+		return tmp, false, tmp, "", nil
 	}
 	final, err := cache.Store(d.opts.CacheDir, key, ".mlmodelc", func(dst string) error {
 		if os.Rename(tmp, dst) == nil {
@@ -173,10 +211,10 @@ func (d *device) compiledModel(path string) (compiled string, cached bool, owned
 		return cache.CopyTree(tmp, dst) // the temporary directory may be on another volume
 	})
 	if err != nil {
-		return tmp, false, tmp, nil // caching is best effort
+		return tmp, false, tmp, "", nil // caching is best effort
 	}
 	os.RemoveAll(tmp)
-	return final, false, "", nil
+	return final, false, "", key, nil
 }
 
 // describeArgs lists inputs then outputs, each sorted by name, because Core ML model
