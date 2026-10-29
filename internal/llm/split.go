@@ -60,6 +60,11 @@ func LookupTarget(name string) (Target, error) {
 	return Target{}, fmt.Errorf("llm: unknown target %q; known: any, %s", name, strings.Join(names, ", "))
 }
 
+// NeuralEngineMaxDim is the largest size of one tensor dimension the Neural Engine takes: a model
+// with a longer axis, such as attention over a KV cache of 16384 tokens and the step's own,
+// has those operations placed on the CPU (M3, macOS 27.0.1, npuprobe kv).
+const NeuralEngineMaxDim = 16384
+
 // SplitMargin is the share of a target's limit that the estimated weights of a part may fill.
 // The estimate misses the blob headers and alignment, a few hundred bytes per tensor.
 const SplitMargin = 0.97

@@ -72,9 +72,10 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (in, 
 }
 
 // BuildCached is Build for any Options, returning every input and output: x and y first, then,
-// with opts.Cache, the KV cache of each attention layer (kv_k_N, kv_v_N), the convolution window of
-// each conv layer (win_conv_N), and the masks and rotary tables of each attention type (mask_TYPE,
-// rope_cos_TYPE, rope_sin_TYPE) that StepInputs fills, as llm.Cached describes.
+// with opts.Cache, the KV cache of each attention layer (kv_k_N, kv_v_N; a sliding layer's is a
+// ring of SlidingWindow when that is shorter), the convolution window of each conv layer
+// (win_conv_N), and the masks and rotary tables of each attention type (mask_TYPE, rope_cos_TYPE,
+// rope_sin_TYPE) that StepInputs fills, as llm.Cached describes.
 func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins, outs []mlpackage.Feature, err error) {
 	if opts.Group == 0 {
 		opts.Group = 16
@@ -279,8 +280,10 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	v = m.Op("transpose", map[string]any{"x": v, "perm": m.B.Ints(0, 2, 1, 3)}, 1, nkv, s, hd)
 
 	var o *mlpackage.Var
-	if t := m.opts.Cache; t > 0 {
-		// the cached keys and values, then the step's own
+	if m.opts.Cache > 0 {
+		// the cached keys and values, then the step's own. A sliding layer only ever sees the
+		// last SlidingWindow positions, so its cache is a ring of that many (cacheLen).
+		t := m.cfg.cacheLen(layerType, m.opts.Cache)
 		m.output(k, fmt.Sprintf("kv_k_%d_new", i))
 		m.output(v, fmt.Sprintf("kv_v_%d_new", i))
 		cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
@@ -307,9 +310,20 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	return m.LinearS(o, p+"o_proj.weight", "", m.d, m.opts.PostScale)
 }
 
+// cacheLen is the length of the KV cache of a layer of the given type in a program built with
+// Options.Cache: the whole cache, or for a sliding layer the window when that is smaller. A cache
+// shorter than the longest is a ring the host writes at position mod length (internal/llm/decode).
+func (c *Config) cacheLen(layerType string, cache int) int {
+	if layerType == "sliding_attention" && c.SlidingWindow > 0 && c.SlidingWindow < cache {
+		return c.SlidingWindow
+	}
+	return cache
+}
+
 // StepInputs gives the masks and rotary tables of a step of valid tokens from pos (llm.Cached).
 // Query t (position pos+t) sees cached position j < pos and step token u <= t, and in a sliding
-// layer only those less than the window behind it.
+// layer only those less than the window behind it. A sliding layer's cache is a ring when the
+// window is shorter than the cache: slot j holds the latest position before pos congruent to j.
 func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 	out := map[string][]float32{}
 	for _, lt := range c.LayerTypes {
@@ -320,16 +334,25 @@ func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 		if lt == "sliding_attention" {
 			window = c.SlidingWindow
 		}
-		mask := make([]float32, q*(cache+q))
+		keys := c.cacheLen(lt, cache)
+		ring := keys < cache
+		mask := make([]float32, q*(keys+q))
 		for t := 0; t < q; t++ {
 			p := pos + t
-			row := mask[t*(cache+q):]
-			for j := 0; j < cache+q; j++ {
-				key := j // cached position
-				visible := j < pos
-				if j >= cache {
-					key = pos + j - cache
-					visible = j-cache <= t
+			row := mask[t*(keys+q):]
+			for j := 0; j < keys+q; j++ {
+				var key int
+				var visible bool
+				switch {
+				case j >= keys: // the step's own tokens
+					key = pos + j - keys
+					visible = j-keys <= t
+				case ring: // the latest position written to slot j, if any
+					key = pos - 1 - ((pos-1-j)%keys+keys)%keys
+					visible = key >= 0
+				default:
+					key = j
+					visible = j < pos
 				}
 				if window > 0 && p-key >= window {
 					visible = false
