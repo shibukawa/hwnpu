@@ -112,6 +112,11 @@ func release(id objc.ID) {
 	}
 }
 
+// respondsTo reports whether id implements the selector, for API newer than the oldest macOS.
+func respondsTo(id objc.ID, name string) bool {
+	return id != 0 && sendBool(id, "respondsToSelector:", sel(name))
+}
+
 func isKind(id objc.ID, className string) bool {
 	c := objc.GetClass(className)
 	if id == 0 || c == 0 {

@@ -187,7 +187,7 @@ The package takes `x`, the fp16 token embeddings `(1, seq, hidden)`, and returns
 | `m3` | 1 GiB | `npuprobe limit`: 0.99 GiB on the Neural Engine, 1.02 GiB on the CPU, in every format ([PROBE.md](PROBE.md)) |
 | `m4` | 2 GB | measured: a 4 B model in lut4 (2 GB) ran on the Neural Engine |
 
-The estimated weights of each part fill at most 97% of the limit, and after writing, the actual weight file of each part is checked to be under it. A split model is written as `out.part1.mlpackage`, `out.part2.mlpackage`, … with `out.parts.json`, which lists the parts in order with their inputs and outputs. Each part's input `x` is the hidden state entering its first layer (the token embeddings for the first part); other inputs such as `mask` go to every part. Run the parts in order with the buffer of each part's output `y` bound as the next part's `x`; the last part's `y` is the model's output. On the M3 the parts ran as fast as one model would (`npuprobe split` in PROBE.md). On the M4 too, 4 parts of 0.91 GiB ran as fast as 2 of 1.81 GiB, with the same error (58.8 and 58.3 ms per token). Every part is loaded at once, so finer parts do not save memory, but they cost nothing either: the default `any`, one set of packages for every chip, is the one to use. `-parts N` sets the number of parts, and `-target none` turns splitting off. `-archs` lists the per chip limits after the architectures.
+The estimated weights of each part fill at most 97% of the limit, and after writing, the actual weight file of each part is checked to be under it. A split model is written as `out.part1.mlpackage`, `out.part2.mlpackage`, … with `out.parts.json`, which lists the parts in order with their inputs and outputs. Each part's input `x` is the hidden state entering its first layer (the token embeddings for the first part); other inputs such as `mask` go to every part. Run the parts in order with the buffer of each part's output `y` bound as the next part's `x`; the last part's `y` is the model's output. On the M3 the parts ran as fast as one model would (`npuprobe split` in PROBE.md). On the M4 too, 4 parts of 0.91 GiB ran as fast as 2 of 1.81 GiB, with the same error (58.8 and 58.3 ms per token). Every part is loaded at once, but the peak memory of the process while loading is about the weights of one part, so finer parts help a machine short of memory (on the M3, 1.81 GiB in 2 parts peaked at 1.03 GiB, in 4 at 0.55 GiB). The default `any`, one set of packages for every chip, is the one to use. Writing the parts as the functions of one package does not work: the limit counts the whole package, and every function falls to the CPU. `-parts N` sets the number of parts, and `-target none` turns splitting off. `-archs` lists the per chip limits after the architectures.
 
 ```bash
 go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o model.mlpackage -seq 32 -target m3
@@ -200,6 +200,17 @@ python tools/ref/ref_logits.py build/lfm3 build/lfm3/ref --seq 32
 go run ./cmd/hwnpu-check -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -ref build/lfm3/ref
 go run ./cmd/hwnpu-check -package lfm3.mlpackage -ref build/lfm3/ref
 ```
+
+A split model or a single one generates text with `cmd/hwnpu-generate`.`hwnpu-generate` builds a chat prompt with a tokenizer written in Go (the byte-level BPE of `tokenizer.json`), looks up the embeddings in the checkpoint and generates on the Neural Engine one token at a time.
+
+Long text needs a KV cache. Converted with `-cache N`, the program takes `-seq` tokens per call (1 for generating), reads the keys and values of the tokens before them (and LFM3's convolution state) as inputs, and outputs the new ones. The cache lives in host buffers that `hwnpu-generate` appends to after every call. Each part holds only its own layers' cache, so it combines with splitting. Give `-package` the `.mlpackage` of a single model or the `.parts.json` of a split one.
+
+```bash
+go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o build/lfm3/lfm3-kv.mlpackage -seq 1 -cache 4096 -quant kmeans-minmax -parts 2
+go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-kv.parts.json -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -n 1500 -prompt "Write an internal memo on why we should use Go."
+```
+
+LFM3-1.7B (lut4, 2 parts) on an M3 takes 16.8 ms per token with a cache of 256 tokens, 20.6 ms with 1024 and 37.6 ms with 4096: the cost follows the cache's capacity, not how much of it is used, so pick the length you need. A model with a cache takes 15 to 20 seconds to load even with its compiled cache (about 1 second without a KV cache; not investigated yet). A model converted without a cache computes the whole `-seq` window for every token and drops the oldest tokens when it is full (about 34 ms at seq 128).
 
 ### Choosing the source checkpoint
 

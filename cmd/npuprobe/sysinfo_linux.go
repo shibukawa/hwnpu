@@ -39,6 +39,13 @@ func machine() (cpu, model, osVersion string, ram int64) {
 	return field("/proc/cpuinfo", "model name"), strings.TrimSpace(string(product)), osVersion, kb * 1024
 }
 
+// maxRSS is the largest resident set this process has had, in bytes.
+func maxRSS() int64 {
+	var ru syscall.Rusage
+	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	return ru.Maxrss * 1024 // kilobytes on Linux
+}
+
 func cpuTime() time.Duration {
 	var ru syscall.Rusage
 	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)

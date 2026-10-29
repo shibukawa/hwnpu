@@ -96,6 +96,12 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			units = computeUnitsCPUAndGPU
 		}
 		send(config, "setComputeUnits:", int64(units))
+		if src.Function != "" {
+			if !respondsTo(config, "setFunctionName:") {
+				return fmt.Errorf("coreml: loading function %q needs macOS 15 or later: %w", src.Function, ErrUnsupported)
+			}
+			send(config, "setFunctionName:", nsString(src.Function))
+		}
 		var e objc.ID
 		model := send(class("MLModel"), "modelWithContentsOfURL:configuration:error:", fileURL(compiled), config, &e)
 		if model == 0 {
@@ -109,7 +115,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	if err == nil {
 		var url objc.ID
 		_ = withPool(func() error { url = retain(fileURL(compiled)); return nil })
-		g.placement, err = computePlacement(ctx, url, config)
+		g.placement, err = computePlacement(ctx, url, config, src.Function)
 		_ = withPool(func() error { release(url); return nil })
 	}
 	_ = withPool(func() error { release(config); return nil })

@@ -33,6 +33,9 @@ func machine() (cpu, model, osVersion string, ram int64) {
 	return os.Getenv("PROCESSOR_IDENTIFIER"), "", osVersion, ram
 }
 
+// maxRSS is not measured on Windows.
+func maxRSS() int64 { return 0 }
+
 func cpuTime() time.Duration {
 	var c, e, k, u syscall.Filetime
 	h, err := syscall.GetCurrentProcess()

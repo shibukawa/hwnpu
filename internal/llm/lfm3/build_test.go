@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -221,4 +222,78 @@ func TestCPUVariants(t *testing.T) {
 	if e := relErr(runCPU(t, cfg, w, Options{Seq: seq}, emb), ref); e > 0.2 || e == 0 {
 		t.Errorf("lut4: relative error %g against fp16, expected small but not zero", e)
 	}
+}
+
+// The model split into parts, a package each, computes exactly what it computes in one part when
+// the parts run one after another, and that is the whole program.
+func TestPartsMatchWhole(t *testing.T) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	seq := 6
+	emb, err := llm.Embed(w, cfg, []int32{3, 1, 4, 1, 5, 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"fp16", "lut4"} {
+		opts := llm.Options{Seq: seq, Format: format, Group: 16, Quant: "kmeans-minmax", Params: map[string]string{"post-scale": "1"}}
+		var one []float32
+		for n := 1; n <= cfg.NumLayers; n++ {
+			list, err := llm.ReadManifest(writeParts(t, cfg, w, opts, n))
+			if err != nil || len(list.Parts) != n {
+				t.Fatalf("read parts: %v, %v", list, err)
+			}
+			h := emb
+			for _, p := range list.Parts {
+				h = runPackage(t, p.Path, h)
+			}
+			if n == 1 {
+				one = h
+				ref := runCPU(t, cfg, w, Options{Seq: seq, Format: format, Quant: "kmeans-minmax"}, emb)
+				if e := relErr(h, ref); e > 1e-6 {
+					t.Errorf("%s in one part: relative error %g against the whole program", format, e)
+				}
+			} else if !slices.Equal(h, one) {
+				t.Errorf("%s in %d parts: relative error %g against one part, want exactly equal", format, n, relErr(h, one))
+			}
+		}
+	}
+}
+
+// writeParts writes the model split into n parts as hwnpu-convert does and returns the manifest.
+func writeParts(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options, n int) string {
+	t.Helper()
+	plan, err := llm.PlanSplit(cfg, opts, math.MaxInt64, n)
+	if err != nil || len(plan) != n {
+		t.Fatalf("plan of %d parts: %v, %v", n, plan, err)
+	}
+	dir := t.TempDir()
+	man := &llm.Manifest{Seq: opts.Seq, Cache: opts.Cache}
+	for i, p := range plan {
+		o := opts
+		o.Start, o.Layers = p.Start, p.Layers
+		rec, err := llm.WritePart(filepath.Join(dir, fmt.Sprintf("m.part%d.mlpackage", i+1)), cfg, w, o, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		man.Parts = append(man.Parts, rec)
+	}
+	path := filepath.Join(dir, "m.parts.json")
+	if err := llm.WriteManifest(path, man); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func runPackage(t *testing.T, dir string, x []float32) []float32 {
+	t.Helper()
+	p, f, err := milcpu.OpenPackage(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	res, err := p.Run(map[string]milcpu.Tensor{"x": {Shape: p.Inputs()["x"], Data: x}}, milcpu.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res["y"].Data
 }
