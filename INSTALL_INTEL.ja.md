@@ -187,5 +187,5 @@ NPU のコンパイラが対応しない演算を含むモデルは、`hwnpu.Err
 | デバイスがなく `/dev/accel/accel0` もない | `sudo dmesg \| grep -i vpu` でファームウェアの読み込みエラーを確かめる。ドライバと同じリリースの `intel-fw-npu` を入れ直す。 |
 | `MAPPED_INFERENCE_VERSION is NOT compatible` | ドライバ、コンパイラ、ファームウェアのリリースがずれている。1 つのリリースのパッケージをすべて入れ直す。 |
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` が入っていない。入れるか、コンパイル済みの blob を使う。 |
-| `ZE_extension_graph version ... is not supported` | ドライバが古い（グラフ拡張 1.5 以降が必要）。ドライバを更新する。 |
+| `ZE_extension_graph version ... is not supported` | ドライバが古い（グラフ拡張 1.16 以降が必要。グラフ拡張 1.5 の Windows ドライバでは OpenVINO IR のビルドに失敗した）。ドライバを最新版に更新する。 |
 | Level Zero の詳しい情報がほしい | `ZE_ENABLE_LOADER_DEBUG_TRACE=1` を付けて実行する。 |

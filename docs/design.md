@@ -459,7 +459,7 @@ graph.pfnDeviceGetGraphProperties → graphExtensionVersion, compilerVersion, gr
 | 1.16 | Evict |
 | 1.20 | GetArgumentProperties4, GetArgumentNames |
 
-最低要求は 1.5 (`Create2` と `ze_graph_desc_2_t`) とし、それ未満は `VersionError` にする。1.8 以上では `GetProperties2` の `initStageRequired` を見て `GraphInitialize` を直接呼ぶ (OpenVINO と同じ分岐)。
+最低要求は 1.16 とし、それ未満は `VersionError` にする。1.5 (`Create2` と `ze_graph_desc_2_t` の最初の版) の Windows ドライバ (compiler 5.3) は実機で OpenVINO IR の `pfnCreate2` が `ZE_RESULT_ERROR_INVALID_ARGUMENT` になり、最新ドライバでは通った。1.16 は `ze_graph_desc_2_t` などの stype が新しい値 (`ZE_STRUCTURE_TYPE_GRAPH_DESC_2` = 0xE など) に切り替わった版でもあり、それ未満のドライバは古い値 (0x2 など) を期待する。1.8 以上では `GetProperties2` の `initStageRequired` を見て `GraphInitialize` を直接呼ぶ (OpenVINO と同じ分岐)。
 
 ### 6.4 グラフ生成
 
@@ -776,7 +776,7 @@ func BindAddr(fptr any, addr uintptr)                   // DDI テーブルの�
 実装したもの:
 
 - `internal/dl`: 共有ライブラリの読み込み (Unix は purego.Dlopen、Windows は syscall.LoadLibrary)
-- `internal/ze`: Level Zero 本体と graph 拡張のバインディング。拡張は OpenVINO と同じ規則で名前と版を選び (目標 1.20、最低 1.5)、版に応じた数だけ関数表を読む
+- `internal/ze`: Level Zero 本体と graph 拡張のバインディング。拡張は OpenVINO と同じ規則で名前と版を選び (目標 1.20、最低 1.16)、版に応じた数だけ関数表を読む
 - `internal/ovir`: OpenVINO IR の読み取り、ドライバ内コンパイラ向けの直列化 (ALL_WEIGHTS_COPY 形式)、ビルドフラグの生成、`is_new_api` と `use_indices_for_io_metadata` の実行時情報の差し込み
 - `internal/accelfs`: `/sys/class/accel` の走査 (`intel_vpu` / `amdxdna` の判定)
 - `internal/backend/levelzero`: デバイス列挙、`zeMemAllocHost` のバッファ、グラフ作成、初期化 (`GraphInitialize` とコマンドリスト経由の両方)、実行要求、完了待ち

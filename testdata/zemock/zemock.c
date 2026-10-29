@@ -99,7 +99,7 @@ ze_result_t zeDriverGetExtensionProperties(void *drv, uint32_t *count, ext_props
         strcpy(props[0].name, "ZE_extension_unrelated");
         props[0].version = MAKE_VERSION(3, 0);
         strcpy(props[1].name, "ZE_extension_graph");
-        props[1].version = MAKE_VERSION(1, 12);
+        props[1].version = MAKE_VERSION(1, 16);
         strcpy(props[2].name, "ZE_extension_command_queue_npu");
         props[2].version = MAKE_VERSION(1, 1);
     }
@@ -278,8 +278,8 @@ static ze_result_t pfnCreate2(void *ctx, void *dev, const graph_desc2 *d, graph 
     g_log[0] = 0;
     snprintf(g_last_flags, sizeof g_last_flags, "%s", d->pBuildFlags ? d->pBuildFlags : "");
     g_last_graph_flags = d->flags;
-    /* like real drivers before graph extension 1.16: ze_graph_desc_2_t carries the stype of ze_graph_desc_t */
-    if (d->stype != 0x2) { snprintf(g_log, sizeof g_log, "bad stype %#x", d->stype); return ERR_INVALID_ARGUMENT; }
+    /* like real drivers, check the stype of ze_graph_desc_2_t */
+    if (d->stype != 0xE) { snprintf(g_log, sizeof g_log, "bad stype %#x", d->stype); return ERR_INVALID_ARGUMENT; }
     if (d->format < 3) g_creates[d->format]++;
     graph *g = calloc(1, sizeof(graph));
     ze_result_t r = OK;
@@ -311,7 +311,7 @@ static ze_result_t pfnCreate2(void *ctx, void *dev, const graph_desc2 *d, graph 
 static ze_result_t pfnDestroy(graph *g) { free(g); return OK; }
 
 static ze_result_t pfnGetProperties2(graph *g, graph_props2 *p) {
-    if (p->stype != 0x3) return ERR_INVALID_ARGUMENT;
+    if (p->stype != 0x10) return ERR_INVALID_ARGUMENT;
     p->numGraphArgs = 2;
     p->initStageRequired = g->is_ir ? 0x2 : 0x1;
     return OK;
@@ -320,7 +320,7 @@ static ze_result_t pfnGetProperties(graph *g, graph_props2 *p) { (void)g; p->num
 static ze_result_t pfnGraphInitialize(graph *g) { g->initialized = 1; return OK; }
 
 static ze_result_t pfnGetArgumentProperties3(graph *g, uint32_t i, arg_props3 *p) {
-    if (i > 1 || p->stype != 0x4) return ERR_INVALID_ARGUMENT;
+    if (i > 1 || p->stype != 0xD) return ERR_INVALID_ARGUMENT;
     strcpy(p->name, i == 0 ? "x" : "y");
     p->type = i; /* 0 input, 1 output */
     p->dims[0] = 1;
@@ -356,7 +356,7 @@ static ze_result_t pfnGetNativeBinary(graph *g, size_t *size, uint8_t *out) {
 
 static ze_result_t pfnDeviceGetGraphProperties(void *dev, device_graph_props *p) {
     (void)dev;
-    p->ext = MAKE_VERSION(1, 12);
+    p->ext = MAKE_VERSION(1, 16);
     p->major = 7;
     p->minor = 3;
     p->formats = 0x1 | 0x2;
@@ -366,7 +366,7 @@ static ze_result_t pfnDeviceGetGraphProperties(void *dev, device_graph_props *p)
 
 static ze_result_t pfnQueryNetworkCreate2(void *ctx, void *dev, const graph_desc2 *d, query **q) {
     (void)ctx; (void)dev;
-    if (d->stype != 0x2) return ERR_INVALID_ARGUMENT;
+    if (d->stype != 0xE) return ERR_INVALID_ARGUMENT;
     *q = calloc(1, sizeof(query));
     parse_ir(d->pInput, d->inputSize, NULL, (*q)->layers, sizeof (*q)->layers);
     return OK;

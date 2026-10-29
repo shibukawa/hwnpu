@@ -147,7 +147,7 @@ func TestMockEnumerate(t *testing.T) {
 	info := dev.Info()
 	t.Logf("%+v caps=%v", info, info.Caps)
 	if info.Vendor != hwnpu.VendorIntel || info.Name != "Mock Intel NPU" || info.Caps&hwnpu.CapCompile == 0 ||
-		!strings.Contains(info.Driver, "ZE_extension_graph 1.12") || !strings.Contains(info.Driver, "compiler 7.3") {
+		!strings.Contains(info.Driver, "ZE_extension_graph 1.16") || !strings.Contains(info.Driver, "compiler 7.3") {
 		t.Fatalf("unexpected info %+v", info)
 	}
 }

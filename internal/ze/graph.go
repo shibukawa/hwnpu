@@ -15,7 +15,7 @@ const GraphExtName = "ZE_extension_graph"
 
 // Graph extension versions.
 var (
-	GraphExtMinVersion    = MakeVersion(1, 5)  // pfnCreate2 and ze_graph_desc_2_t
+	GraphExtMinVersion    = MakeVersion(1, 16) // older drivers did not build OpenVINO IR on real hardware
 	GraphExtTargetVersion = MakeVersion(1, 20) // newest version this binding knows
 )
 
@@ -26,7 +26,6 @@ const (
 	stypeDeviceGraphProps = 0x1
 	stypeGraphDesc        = 0x2
 	stypeGraphProperties  = 0x3
-	stypeGraphArgProps    = 0x4
 	stypeGraphDesc2       = 0xE
 	stypeGraphProperties2 = 0x10
 	stypeGraphArgProps3   = 0xD
@@ -277,22 +276,10 @@ func (g *GraphExt) DeviceGraphProperties(dev Handle) (DeviceGraphProperties, err
 	return p, err
 }
 
-// stype picks the stype of a structure for this driver. The values of the newer structures
-// (ZE_STRUCTURE_TYPE_GRAPH_DESC_2 and friends) entered ze_graph_ext.h only in late 2025. Older
-// drivers expect the values of the original structures, which the OpenVINO plugin sent until
-// then, and reject the newer ones with ZE_RESULT_ERROR_INVALID_ARGUMENT. Like the plugin, use
-// the newer values from version 1.16.
-func (g *GraphExt) stype(current, legacy uint32) uint32 {
-	if g.Version >= MakeVersion(1, 16) {
-		return current
-	}
-	return legacy
-}
-
 // Create compiles or loads a graph. input must stay alive until Create returns.
 // On failure the error carries the driver build log when available.
 func (g *GraphExt) Create(ctx, dev Handle, format uint32, input []byte, buildFlags string, flags uint32) (Handle, error) {
-	desc, keep := g.graphDesc(format, input, buildFlags, flags)
+	desc, keep := graphDesc(format, input, buildFlags, flags)
 	var h Handle
 	r := g.pfnCreate2(ctx, dev, &desc, &h)
 	runtimeKeepAlive(keep)
@@ -302,9 +289,9 @@ func (g *GraphExt) Create(ctx, dev Handle, format uint32, input []byte, buildFla
 	return h, nil
 }
 
-func (g *GraphExt) graphDesc(format uint32, input []byte, buildFlags string, flags uint32) (GraphDesc2, [][]byte) {
+func graphDesc(format uint32, input []byte, buildFlags string, flags uint32) (GraphDesc2, [][]byte) {
 	cflags := append([]byte(buildFlags), 0)
-	desc := GraphDesc2{SType: g.stype(stypeGraphDesc2, stypeGraphDesc), Format: format, InputSize: uintptr(len(input)), BuildFlags: unsafe.Pointer(&cflags[0]), Flags: flags}
+	desc := GraphDesc2{SType: stypeGraphDesc2, Format: format, InputSize: uintptr(len(input)), BuildFlags: unsafe.Pointer(&cflags[0]), Flags: flags}
 	if len(input) > 0 {
 		desc.Input = unsafe.Pointer(&input[0])
 	}
@@ -333,7 +320,7 @@ func (g *GraphExt) Destroy(h Handle) error { return check("pfnDestroy", g.pfnDes
 // Before version 1.8 only pfnAppendGraphInitialize exists.
 func (g *GraphExt) Properties(h Handle) (args uint32, stages uint32, err error) {
 	if g.pfnGetProperties2 != nil {
-		p := GraphProperties2{SType: g.stype(stypeGraphProperties2, stypeGraphProperties)}
+		p := GraphProperties2{SType: stypeGraphProperties2}
 		err = check("pfnGetProperties2", g.pfnGetProperties2(h, &p))
 		return p.NumGraphArgs, p.InitStageRequired, err
 	}
@@ -344,7 +331,7 @@ func (g *GraphExt) Properties(h Handle) (args uint32, stages uint32, err error) 
 
 // ArgumentProperties returns ze_graph_argument_properties_3_t of one argument.
 func (g *GraphExt) ArgumentProperties(h Handle, i uint32) (*GraphArgumentProperties3, error) {
-	p := &GraphArgumentProperties3{SType: g.stype(stypeGraphArgProps3, stypeGraphArgProps)}
+	p := &GraphArgumentProperties3{SType: stypeGraphArgProps3}
 	return p, check("pfnGetArgumentProperties3", g.pfnGetArgumentProperties3(h, i, p))
 }
 
@@ -389,7 +376,7 @@ func (g *GraphExt) SupportedLayers(ctx, dev Handle, input []byte, buildFlags str
 	if g.pfnQueryNetworkCreate2 == nil {
 		return nil, fmt.Errorf("pfnQueryNetworkCreate2 is not available in %s", VersionString(g.Version))
 	}
-	desc, keep := g.graphDesc(GraphFormatNGraphLite, input, buildFlags, GraphFlagNone)
+	desc, keep := graphDesc(GraphFormatNGraphLite, input, buildFlags, GraphFlagNone)
 	var q Handle
 	r := g.pfnQueryNetworkCreate2(ctx, dev, &desc, &q)
 	runtimeKeepAlive(keep)

@@ -187,5 +187,5 @@ A model with an operation the NPU compiler does not support fails with `hwnpu.Er
 | No device, `/dev/accel/accel0` missing | Check `sudo dmesg \| grep -i vpu` for firmware load errors; reinstall `intel-fw-npu` from the same release as the driver. |
 | `MAPPED_INFERENCE_VERSION is NOT compatible` | Driver, compiler and firmware are from different releases. Reinstall all packages of one release. |
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` is missing. Install it, or load precompiled blobs. |
-| `ZE_extension_graph version ... is not supported` | The driver is too old for hwnpu (graph extension 1.5 or later is needed). Update the driver. |
+| `ZE_extension_graph version ... is not supported` | The driver is too old for hwnpu (graph extension 1.16 or later is needed; a Windows driver with graph extension 1.5 failed to build OpenVINO IR). Update the driver to the latest release. |
 | Need more detail from Level Zero | Run with `ZE_ENABLE_LOADER_DEBUG_TRACE=1`. |
