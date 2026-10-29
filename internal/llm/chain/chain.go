@@ -7,6 +7,7 @@ package chain
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -35,6 +36,24 @@ type Chain struct {
 // Open loads every part of the model at path on dev: a manifest of parts (out.parts.json) or a
 // single package.
 func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
+	return open(ctx, dev, path, nil)
+}
+
+// Share loads the model at path like Open, but binds its KV cache inputs (kv_*, win_*) to the
+// buffers of the same inputs of c, so that both chains continue one sequence
+// (decode.Session.Add): the same model converted with another number of tokens per call. The
+// buffers stay c's; close the new chain before c.
+func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
+	shared := map[string]*hwnpu.Buffer{}
+	for name, b := range c.inputs {
+		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+			shared[name] = b
+		}
+	}
+	return open(ctx, dev, path, shared)
+}
+
+func open(ctx context.Context, dev *hwnpu.Device, path string, shared map[string]*hwnpu.Buffer) (*Chain, error) {
 	list, err := llm.ReadManifest(path)
 	if err != nil {
 		return nil, err
@@ -85,7 +104,13 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 				}
 			default:
 				if b = c.inputs[a.Name]; b == nil {
-					if b, err = alloc(a.Bytes); err != nil {
+					if b = shared[a.Name]; b != nil {
+						if b.Size() != a.Bytes {
+							c.Close()
+							return nil, fmt.Errorf("chain: part %d takes %s of %d bytes, the shared buffer has %d", i, a.Name, a.Bytes, b.Size())
+						}
+						c.inputs[a.Name], c.inShape[a.Name] = b, a.Dims
+					} else if b, err = alloc(a.Bytes); err != nil {
 						c.Close()
 						return nil, err
 					}
