@@ -52,18 +52,25 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]any{}
 	for _, e := range s.Chats {
-		data = append(data, map[string]any{
-			"id": e.Name, "object": "model", "created": 0, "owned_by": "hwnpu",
-			"kind": KindChat, "context_length": e.Context(),
-		})
+		data = append(data, describe(e.Name, KindChat, map[string]any{"context_length": e.Context()}))
 	}
 	for _, e := range s.Embedders {
-		data = append(data, map[string]any{
-			"id": e.Name, "object": "model", "created": 0, "owned_by": "hwnpu",
-			"kind": KindEmbed, "context_length": e.MaxTokens(), "dimensions": e.Dim(),
-		})
+		data = append(data, describe(e.Name, KindEmbed, map[string]any{"context_length": e.MaxTokens(), "dimensions": e.Dim()}))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+// describe is a model's entry in /v1/models: with its kind, and its features (capabilities)
+// when it is one of the catalog.
+func describe(name string, kind Kind, more map[string]any) map[string]any {
+	m := map[string]any{"id": name, "object": "model", "created": 0, "owned_by": "hwnpu", "kind": kind}
+	if c, ok := Lookup(name); ok {
+		m["capabilities"] = append([]string{}, c.Features...)
+	}
+	for k, v := range more {
+		m[k] = v
+	}
+	return m
 }
 
 func (s *Server) names() (chats, embedders []string) {

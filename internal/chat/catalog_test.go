@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,11 @@ func TestLookup(t *testing.T) {
 			t.Errorf("catalog entry %+v: repeated or incomplete", m)
 		}
 		seen[strings.ToLower(m.Name)] = true
+		for _, f := range m.Features {
+			if !slices.ContainsFunc(Features, func(g struct{ Name, About string }) bool { return g.Name == f }) {
+				t.Errorf("%s: feature %q is not explained in Features", m.Name, f)
+			}
+		}
 	}
 }
 
@@ -70,5 +76,16 @@ func TestResolve(t *testing.T) {
 		if m, err := Resolve(ctx, name, root, io.Discard); err == nil {
 			t.Errorf("%s: %+v, want an error", name, m)
 		}
+	}
+}
+
+// /v1/models gives a model of the catalog its features, and a model outside it none.
+func TestDescribe(t *testing.T) {
+	m := describe("lfm3-1.7b", KindChat, map[string]any{"context_length": 10})
+	if c, _ := m["capabilities"].([]string); !slices.Equal(c, []string{"tools", "thinking"}) || m["kind"] != KindChat || m["context_length"] != 10 {
+		t.Errorf("LFM3-1.7B: %v", m)
+	}
+	if m := describe("my-model", KindChat, nil); m["capabilities"] != nil {
+		t.Errorf("a model outside the catalog: %v", m)
 	}
 }

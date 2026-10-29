@@ -21,19 +21,28 @@ const (
 
 // Model is a model hwnpu-chat runs.
 type Model struct {
-	Name  string // what -use and the API call it
-	Kind  Kind
-	Repo  string  // the Hugging Face repository it is downloaded from
-	Bytes float64 // the size of the download (0: unknown)
-	About string
+	Name     string // what -use and the API call it
+	Kind     Kind
+	Features []string // what it can do besides its kind, from Features
+	Repo     string   // the Hugging Face repository it is downloaded from
+	Bytes    float64  // the size of the download (0: unknown)
+	About    string
+}
+
+// Features explains the features a model of the catalog can have. The names are those of
+// Ollama's capabilities where it has one.
+var Features = []struct{ Name, About string }{
+	{"tools", "calls the tools a request offers (tools, tool_calls), so that agents such as OpenCode can drive it"},
+	{"thinking", "thinks before it answers (reasoning_content), which -think and reasoning_effort turn on and off"},
+	{"query", "embeds search queries and the documents searched differently (input_type)"},
 }
 
 // Catalog lists the models hwnpu-chat knows, by name.
 var Catalog = []Model{
-	{Name: "LFM3-1.7B", Kind: KindChat, Repo: "LiquidAI/LFM3-1.7B", Bytes: 3.5e9,
-		About: "Liquid AI's 1.7B model: chat with thinking and tool calls, for terminals and agents such as OpenCode"},
-	{Name: "plamo-embedding-1b", Kind: KindEmbed, Repo: "pfnet/plamo-embedding-1b", Bytes: 2.1e9,
-		About: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search queries and documents, clustering"},
+	{Name: "LFM3-1.7B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "LiquidAI/LFM3-1.7B", Bytes: 3.5e9,
+		About: "Liquid AI's 1.7B model, text only: small and fast enough to run behind an agent such as OpenCode"},
+	{Name: "plamo-embedding-1b", Kind: KindEmbed, Features: []string{"query"}, Repo: "pfnet/plamo-embedding-1b", Bytes: 2.1e9,
+		About: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"},
 }
 
 // Lookup finds a model of the catalog by its name or its repository, ignoring case.
@@ -58,7 +67,7 @@ func ModelsDir() string {
 
 // Resolve returns the model a name of -use means: one of the catalog, or a Hugging Face
 // repository (OWNER/NAME) of an architecture hwnpu-chat runs, whose config.json it downloads to
-// root/NAME to find out what the model is for.
+// root/NAME to find out what the model is for. What else such a model can do is not known.
 func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, error) {
 	if m, ok := Lookup(name); ok {
 		return m, nil

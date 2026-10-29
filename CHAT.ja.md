@@ -10,10 +10,18 @@ LFM3-1.7B と PLaMo-Embedding-1B を Apple の Neural Engine だけで動かし�
 go run ./cmd/hwnpu-chat -list
 ```
 
-| 名前 | 用途 | ターミナル | `-listen` のとき (3 節) |
-|---|---|---|---|
-| `LFM3-1.7B` (既定) | chat | 対話する (1 節) | `/v1/chat/completions` |
-| `plamo-embedding-1b` | embedding | 埋め込みで文を検索する (4 節) | `/v1/embeddings` |
+| 名前 | 用途 | 機能 | ターミナル | `-listen` のとき (3 節) |
+|---|---|---|---|---|
+| `LFM3-1.7B` (既定) | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
+| `plamo-embedding-1b` | embedding | `query` | 埋め込みで文を検索する (4 節) | `/v1/embeddings` |
+
+機能は、用途のほかにそのモデルができることです (名前は Ollama の capabilities に合わせています)。
+
+| 機能 | |
+|---|---|
+| `tools` | リクエストが示す道具を呼び出す (`tools`、`tool_calls`)。OpenCode のようなエージェントから動かせる (6 節)。LFM3-1.7B はテキストだけだが、小さく速いのでエージェントの裏で動かしやすい |
+| `thinking` | 答える前に考える (`reasoning_content`)。`-think` と `reasoning_effort` で切り替える |
+| `query` | 検索の問いと検索される文書とを別々に埋め込む (`input_type`、4 節) |
 
 - ターミナルで動かすのは `-use` に指定した 1 つのモデルで、何をするかはモデルの用途で決まります。サーバーはいくつでも動かせます (例 `-use LFM3-1.7B,plamo-embedding-1b`)
 - 名前の大文字と小文字は区別せず、一覧のリポジトリ名でも指定できます。一覧にない Hugging Face のリポジトリも `-use OWNER/NAME` で指定でき、hwnpu-chat が動かせる構造 (チャットは LFM3、埋め込みは PLaMo のエンコーダ) なら `config.json` から用途を判断します。認証の要るリポジトリは環境変数 `HF_TOKEN`
@@ -71,7 +79,7 @@ go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
 
 | エンドポイント | |
 |---|---|
-| `GET /v1/models` | 読み込んだモデルの名前 (`LFM3-1.7B`、`plamo-embedding-1b`)、用途 `kind` (`chat` か `embedding`)、`context_length`、埋め込みモデルは `dimensions` も |
+| `GET /v1/models` | 読み込んだモデルの名前 (`LFM3-1.7B`、`plamo-embedding-1b`)、用途 `kind` (`chat` か `embedding`)、機能 `capabilities` (`-list` にあるモデルのみ)、`context_length`、埋め込みモデルは `dimensions` も |
 | `POST /v1/chat/completions` | `stream` (SSE)、`tools` と `tool_calls`、`reasoning_content`、`max_tokens`、`temperature`、`top_p`、`top_k`、`repetition_penalty`、`seed`、`stop`、`stream_options.include_usage` |
 | `POST /v1/embeddings` | `input` (文字列かその配列)、`encoding_format` (`float` か `base64`)、`dimensions` (モデルの 2048 のみ)、OpenAI にないものとして `input_type` (`query` か `document`、4 節) と `truncate` |
 
