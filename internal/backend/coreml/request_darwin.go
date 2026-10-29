@@ -22,6 +22,7 @@ type request struct {
 	g      *graph
 	binds  []*buffer
 	padded []*buffer // per argument: the padded buffer Core ML runs on, or nil
+	state  objc.ID   // retained MLState of a model with state inputs, or 0
 
 	mu       sync.Mutex
 	inflight *fence
@@ -81,7 +82,39 @@ func (r *request) Close() error {
 			r.padded[i] = nil
 		}
 	}
+	if r.state != 0 {
+		_ = withPool(func() error { release(r.state); return nil })
+		r.state = 0
+	}
 	return nil
+}
+
+// ResetState sets every state of the request's MLState to zeros. Core ML does not promise
+// what a new state holds.
+func (r *request) ResetState() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == 0 {
+		return nil
+	}
+	if r.inflight != nil {
+		if ok, _ := r.inflight.Done(); !ok {
+			return errors.New("coreml: cannot reset the state while a submission is running")
+		}
+	}
+	return withPool(func() error {
+		blk := objc.NewBlock(func(_ objc.Block, arr objc.ID) {
+			n := int(sendInt(arr, "count")) * dtypeOf(sendInt(arr, "dataType")).Size()
+			if p := sendPtr(arr, "dataPointer"); p != nil && n > 0 {
+				clear(unsafe.Slice((*byte)(p), n))
+			}
+		})
+		defer blk.Release()
+		for _, name := range r.g.states {
+			send(r.state, "getMultiArrayForStateNamed:handler:", nsString(name), blk)
+		}
+		return nil
+	})
 }
 
 // device returns the buffer Core ML sees for argument i: the caller's buffer, or the padded one.
@@ -132,7 +165,12 @@ func (r *request) predict() error {
 	send(opts, "setOutputBackings:", backings)
 
 	e = 0
-	result := send(r.g.model, "predictionFromFeatures:options:error:", provider, opts, &e)
+	var result objc.ID
+	if r.state != 0 {
+		result = send(r.g.model, "predictionFromFeatures:usingState:options:error:", provider, r.state, opts, &e)
+	} else {
+		result = send(r.g.model, "predictionFromFeatures:options:error:", provider, opts, &e)
+	}
 	if result == 0 {
 		return nsError("predict", e)
 	}

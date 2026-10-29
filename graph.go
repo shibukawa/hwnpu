@@ -135,6 +135,19 @@ func (r *Request) Submit() (Fence, error) {
 	return f, nil
 }
 
+// ResetState sets the state of a model with state inputs (Core ML's MLState, which keeps a
+// value such as a KV cache from one run to the next) back to zeros. A new request starts zeroed;
+// for a model without states it does nothing.
+func (r *Request) ResetState() error {
+	if r.be == nil {
+		return ErrClosed
+	}
+	if s, ok := r.be.(interface{ ResetState() error }); ok {
+		return s.ResetState()
+	}
+	return nil
+}
+
 // Run submits and waits.
 func (r *Request) Run(ctx context.Context) error {
 	f, err := r.Submit()
