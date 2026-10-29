@@ -13,9 +13,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
-// DefaultRepo is the Hugging Face repository of the model Prepare fetches.
-const DefaultRepo = "LiquidAI/LFM3-1.7B"
-
 var hubURL = "https://huggingface.co/"
 
 // DefaultContext is the longest cache the Neural Engine takes with 64 tokens per call: a tensor
@@ -23,16 +20,6 @@ var hubURL = "https://huggingface.co/"
 const DefaultContext = llm.NeuralEngineMaxDim - prefillSeq
 
 const prefillSeq = 64
-
-// DefaultDir is where Prepare keeps the model when not told: hwnpu/models/NAME in the user cache
-// directory.
-func DefaultDir(repo string) string {
-	d, err := os.UserCacheDir()
-	if err != nil {
-		d = os.TempDir()
-	}
-	return filepath.Join(d, "hwnpu", "models", filepath.Base(repo))
-}
 
 // Setup says where the model is and how to get it.
 type Setup struct {
