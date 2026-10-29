@@ -159,6 +159,19 @@ A model over the limit run in parts (`npuprobe split`, 64 layers of lut4, 1.81 G
 - The split does not change the result. The error after 32 layers is 3.32% whether the model is split in 2 or in 4, and 4.91% at the end in both, so nothing breaks at the boundaries. The error grows slowly with the layers; the GPU result it is compared with has fp16 error of its own.
 - 64 layers is the size of a 4 B model (random weights, no attention over the context). Split into lut4 parts under 1 GiB, a 4 B class model should run on the M3's Neural Engine at about 30 ms per token (about 33 tokens/s).
 
+### Apple M4
+
+A model over the limit run in parts (`npuprobe split -split-layers 128 -parts 2,4`, 128 layers of lut4, 3.62 GiB, 7.8 B weights):
+
+| split | each part | ms/token | weights GB/s |
+|---|---|---|---|
+| 2 ways | 64 layers, 1.81 GiB | 58.3 | 67 |
+| 4 ways | 32 layers, 0.91 GiB | 58.8 | 66 |
+
+- As on the M3, the split changes neither the speed nor the error; the error after each part was the same in 2 and in 4 parts.
+- So the M4 loses nothing running the same parts under 1 GiB as the M3 (`hwnpu-convert`'s default `-target any`). Every part is loaded at once, so splitting finer does not save memory either.
+- The Neural Engine reads the weights at about the M3's speed (65 GB/s).
+
 ### Wanted
 
 M4 and later Apple chips (does the 1 GiB limit change with the chip or the RAM?), Intel Core Ultra on Linux and Windows (the Intel backend has not run on real hardware yet), and AMD Ryzen AI for `cmd/report`. Open an issue with the `.md` files.
