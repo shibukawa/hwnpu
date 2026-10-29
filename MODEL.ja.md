@@ -180,9 +180,17 @@ go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LF
 
 できたパッケージの入力は `x`（fp16 の埋め込み `(1, seq, hidden)`）、出力は `y`（ロジット `(1, seq, vocab)`）です。Core ML は `gather` を必ず CPU に置くので、埋め込みの表引きはホスト側で行います。重みは 4 ビットの表引き方式（`-format lut4`）で、出力 16 行ごとに fp16 16 個の表を持ちます。これが Neural Engine が全速で読める唯一の圧縮形式です（後述）。`-format fp16` は重みをそのまま書き出し、グラフの確認に使います。
 
+変換が正しいかは、Mac がなくても確かめられます。`tools/ref/ref_logits.py` で Hugging Face の実装から参照の活性を保存し、`cmd/hwnpu-check` がグラフを CPU で fp32 のまま実行して層ごとに照合します。各層には参照側の入力を与えるので、誤差が後ろの層に積み重ならず、最初に間違っている層がそのまま分かります。チェックポイントにあって変換が読まないテンソルも報告します。`-package` を付けると、書き出したパッケージ（lut4 など）のロジットを参照と比べます。
+
+```bash
+python tools/ref/ref_logits.py build/lfm3 build/lfm3/ref --seq 32
+go run ./cmd/hwnpu-check -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -ref build/lfm3/ref
+go run ./cmd/hwnpu-check -package lfm3.mlpackage -ref build/lfm3/ref
+```
+
 ### 元のチェックポイントの選び方
 
-公式の bf16 から変換します。公開されている量子化済みのものは、対象の形式へ劣化なしに並べ替えられるときだけ使います。劣化なしの変換は「より細かい単位か、より広い範囲の方式」への片方向だけです。対称 int4（並べ替えなしの GPTQ、compressed-tensors の W4A16）は Intel の対称 int4 に、AWQ は AMD の非対称 uint4（128 個ごと）にそのまま入ります。Neural Engine の表引き方式に劣化なしで入る公開形式はなく、4 ビットを別の 4 ビットに量子化し直すと誤差が二重に乗ります。LFM3-1.7B では、bf16 から lut4 にすると bf16 モデルに対する KL が 0.95 nat、公式の QAD Q4_0 GGUF から作り直すと 0.94 でした（QAD 自体の差は 0.35 なので、出発点は近いのに結果は良くなりません）。結果は必ず測ります。`tools/lfm3/ref_logits.py` が PyTorch の隠れ状態とロジットを保存し、`tools/lfm3/eval_logits.py` と Go のテストがパッケージを層ごとに照合します。
+公式の bf16 から変換します。公開されている量子化済みのものは、対象の形式へ劣化なしに並べ替えられるときだけ使います。劣化なしの変換は「より細かい単位か、より広い範囲の方式」への片方向だけです。対称 int4（並べ替えなしの GPTQ、compressed-tensors の W4A16）は Intel の対称 int4 に、AWQ は AMD の非対称 uint4（128 個ごと）にそのまま入ります。Neural Engine の表引き方式に劣化なしで入る公開形式はなく、4 ビットを別の 4 ビットに量子化し直すと誤差が二重に乗ります。LFM3-1.7B では、bf16 から lut4 にすると bf16 モデルに対する KL が 0.95 nat、公式の QAD Q4_0 GGUF から作り直すと 0.94 でした（QAD 自体の差は 0.35 なので、出発点は近いのに結果は良くなりません）。結果は必ず測ります。`tools/ref/ref_logits.py` が PyTorch の隠れ状態とロジットを保存し、`cmd/hwnpu-check`、`tools/ref/eval_logits.py`、Go のテストがパッケージを層ごとに照合します。
 
 ### Neural Engine が受け付ける形式（M3、macOS 27.0.1）
 

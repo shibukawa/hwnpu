@@ -68,7 +68,7 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (in, 
 		}
 		var y *mlpackage.Var
 		switch {
-		case opts.Start+opts.Layers < cfg.NumLayers:
+		case opts.Start+opts.Layers < cfg.NumLayers || opts.NoHead:
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		default:
 			h = m.rmsNorm(h, "model.embedding_norm.weight", m.d)

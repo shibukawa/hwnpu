@@ -52,6 +52,12 @@ func (a *Arch) Param(o Options, name string) string {
 type Model interface {
 	// Hidden is the hidden size, the width of the program's input.
 	Hidden() int
+	// Layers is the number of decoder layers.
+	Layers() int
+	// Vocab is the vocabulary size, the width of the logits.
+	Vocab() int
+	// Tensors lists the tensors the conversion reads, by Hugging Face name, with their shapes.
+	Tensors() map[string][]int
 	// Build writes the program into b. Its input is x, the fp16 token embeddings (1, seq,
 	// hidden): the embedding lookup stays on the host because Core ML runs gather on the CPU.
 	// Its output is y, the logits or a hidden state.
