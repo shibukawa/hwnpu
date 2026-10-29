@@ -175,12 +175,12 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		if r.err == nil {
 			out, r.err = softmax(x, int(axis))
 		}
-	case "reduce_mean":
+	case "reduce_mean", "reduce_sum", "reduce_max":
 		x := r.floats("x")
 		axes := r.ints("axes")
 		keep := r.bool("keep_dims")
 		if r.err == nil {
-			out, r.err = reduceMean(x, axes, keep)
+			out, r.err = reduce(x, axes, keep, typ)
 		}
 	case "linear":
 		x, w := r.floats("x"), r.floats("weight")
@@ -530,7 +530,8 @@ func softmax(x *value, a int) (*value, error) {
 	return out, nil
 }
 
-func reduceMean(x *value, axes []int32, keep bool) (*value, error) {
+// reduce takes the mean, the sum or the largest (reduce_mean, reduce_sum, reduce_max) over axes.
+func reduce(x *value, axes []int32, keep bool, typ string) (*value, error) {
 	rank := len(x.shape)
 	reduced := make([]bool, rank)
 	for _, a := range axes {
@@ -555,6 +556,11 @@ func reduceMean(x *value, axes []int32, keep bool) (*value, error) {
 		}
 	}
 	sums := make([]float64, numel(kept))
+	if typ == "reduce_max" {
+		for i := range sums {
+			sums[i] = math.Inf(-1)
+		}
+	}
 	kst := strides(kept)
 	idx := make([]int, rank)
 	for i := range x.f {
@@ -564,7 +570,11 @@ func reduceMean(x *value, axes []int32, keep bool) (*value, error) {
 				o += idx[d] * kst[d]
 			}
 		}
-		sums[o] += float64(x.f[i])
+		if typ == "reduce_max" {
+			sums[o] = math.Max(sums[o], float64(x.f[i]))
+		} else {
+			sums[o] += float64(x.f[i])
+		}
 		for d := rank - 1; d >= 0; d-- {
 			if idx[d]++; idx[d] < x.shape[d] {
 				break
@@ -574,7 +584,10 @@ func reduceMean(x *value, axes []int32, keep bool) (*value, error) {
 	}
 	out := &value{shape: shape, f: make([]float32, len(sums))}
 	for i, s := range sums {
-		out.f[i] = float32(s / float64(count))
+		if typ == "reduce_mean" {
+			s /= float64(count)
+		}
+		out.f[i] = float32(s)
 	}
 	return out, nil
 }
