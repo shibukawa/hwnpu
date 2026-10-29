@@ -1,6 +1,6 @@
 """Reference activations of a Hugging Face model, for checking a conversion.
 
-    python ref_logits.py MODEL_DIR OUT_PREFIX [--seq 32] [--text "..."] [--encoder]
+    python ref_logits.py MODEL_DIR OUT_PREFIX [--seq 32] [--text "..."] [--encoder] [--attn sdpa]
 
 MODEL_DIR holds config.json, the tokenizer and the checkpoint (and modeling_*.py for models
 that need trust_remote_code; symlinks to downloaded files are fine). Runs on the CPU in float32
@@ -19,7 +19,8 @@ norm; output_hidden_states ends after it in many implementations).
 
 Causal language models load with AutoModelForCausalLM. --encoder loads with AutoModel instead
 (BERT and the like) and writes the last hidden state as the output; there is no padding, so the
-attention mask is all ones. Needs torch and transformers.
+attention mask is all ones. --attn picks transformers' attention implementation: eager by default,
+sdpa for models whose remote code has no other (PLaMo's PlamoBiModel). Needs torch and transformers.
 """
 import argparse
 import json
@@ -49,6 +50,7 @@ def main():
     ap.add_argument("--seq", type=int, default=32)
     ap.add_argument("--text", default=TEXT)
     ap.add_argument("--encoder", action="store_true", help="an encoder: AutoModel, last hidden state as output")
+    ap.add_argument("--attn", default="eager", help="attention implementation (eager, sdpa)")
     a = ap.parse_args()
     prefix = a.out.removesuffix(".npz")
 
@@ -61,7 +63,7 @@ def main():
         raise SystemExit(f"text has only {ids.shape[1]} tokens, need {a.seq}")
     t0 = time.time()
     auto = AutoModel if a.encoder else AutoModelForCausalLM
-    model = auto.from_pretrained(a.model_dir, trust_remote_code=True, dtype=torch.float32, attn_implementation="eager").eval()
+    model = auto.from_pretrained(a.model_dir, trust_remote_code=True, dtype=torch.float32, attn_implementation=a.attn).eval()
     print(f"loaded in {time.time() - t0:.1f}s: {sum(p.numel() for p in model.parameters()) / 1e9:.3f} B parameters", flush=True)
     cfg = model.config.get_text_config() if hasattr(model.config, "get_text_config") else model.config
     layers = decoder_layers(model, cfg.num_hidden_layers)

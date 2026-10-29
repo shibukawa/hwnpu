@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,8 @@ type Chain struct {
 	index int   // the tier loaded
 	cur   *tier // never nil after Open
 
+	sharing bool // made by Share: its cache buffers belong to another chain, so it cannot grow
+
 	mu    sync.Mutex
 	pre   *preload // the next tier being loaded in the background, or nil
 	ahead []*tier  // tiers after the loaded one that LoadAll has loaded, in order
@@ -67,19 +70,42 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
+	return open(ctx, dev, man, nil)
+}
+
+// Share loads the model at path like Open, but binds its KV cache inputs (kv_*, win_*) to the
+// buffers of the same inputs of c's loaded tier, so that both chains continue one sequence
+// (decode.Session.Add): the same model converted with another number of tokens per call. The
+// buffers stay c's; close the new chain before c, and do not Grow either chain while they share.
+func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
+	man, err := llm.ReadManifest(path)
+	if err != nil {
+		return nil, err
+	}
+	shared := map[string]*hwnpu.Buffer{}
+	for name, b := range c.cur.inputs {
+		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+			shared[name] = b
+		}
+	}
+	return open(ctx, dev, man, shared)
+}
+
+func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[string]*hwnpu.Buffer) (*Chain, error) {
 	gr, err := dev.Graph()
 	if err != nil {
 		return nil, err
 	}
-	c := &Chain{dev: dev, gr: gr, tiers: man.Tiered()}
-	if c.cur, err = c.load(ctx, c.tiers[0].Parts); err != nil {
+	c := &Chain{dev: dev, gr: gr, tiers: man.Tiered(), sharing: shared != nil}
+	if c.cur, err = c.load(ctx, c.tiers[0].Parts, shared); err != nil {
 		return nil, err
 	}
 	return c, nil
 }
 
-// load compiles and binds one tier's parts.
-func (c *Chain) load(ctx context.Context, list []llm.PartRecord) (*tier, error) {
+// load compiles and binds one tier's parts. Inputs named in shared are bound to those buffers
+// instead of new ones, and are not owned.
+func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[string]*hwnpu.Buffer) (*tier, error) {
 	start := time.Now()
 	t := &tier{inputs: map[string]*hwnpu.Buffer{}, outputs: map[string]*hwnpu.Buffer{}, inShape: map[string][]int{}, outShape: map[string][]int{}}
 	alloc := func(size int) (*hwnpu.Buffer, error) {
@@ -124,7 +150,12 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord) (*tier, error) 
 				}
 			default:
 				if b = t.inputs[a.Name]; b == nil {
-					if b, err = alloc(a.Bytes); err != nil {
+					if b = shared[a.Name]; b != nil {
+						if b.Size() != a.Bytes {
+							t.close()
+							return nil, fmt.Errorf("chain: part %d takes %s of %d bytes, the shared buffer has %d", i, a.Name, a.Bytes, b.Size())
+						}
+					} else if b, err = alloc(a.Bytes); err != nil {
 						t.close()
 						return nil, err
 					}
@@ -255,8 +286,11 @@ func (c *Chain) LoadAll(ctx context.Context) error {
 	if c.pre != nil {
 		return errors.New("chain: a tier is loading in the background")
 	}
+	if c.sharing {
+		return errors.New("chain: a chain sharing another's cache cannot load more tiers")
+	}
 	for i := c.index + 1 + len(c.ahead); i < len(c.tiers); i++ {
-		t, err := c.load(ctx, c.tiers[i].Parts)
+		t, err := c.load(ctx, c.tiers[i].Parts, nil)
 		if err != nil {
 			return err
 		}
@@ -271,14 +305,14 @@ func (c *Chain) LoadAll(ctx context.Context) error {
 func (c *Chain) Preload(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.pre != nil || len(c.ahead) > 0 || !c.HasNext() {
+	if c.pre != nil || len(c.ahead) > 0 || !c.HasNext() || c.sharing {
 		return
 	}
 	pre := &preload{done: make(chan struct{})}
 	c.pre = pre
 	parts := c.tiers[c.index+1].Parts
 	go func() {
-		pre.t, pre.err = c.load(ctx, parts)
+		pre.t, pre.err = c.load(ctx, parts, nil)
 		close(pre.done)
 	}()
 }
@@ -290,6 +324,9 @@ func (c *Chain) Preload(ctx context.Context) {
 func (c *Chain) Grow(ctx context.Context, migrate func(decode.Program) error) (waited time.Duration, preloaded bool, err error) {
 	if !c.HasNext() {
 		return 0, false, errors.New("chain: no longer tier to grow into")
+	}
+	if c.sharing {
+		return 0, false, errors.New("chain: a chain sharing another's cache cannot grow")
 	}
 	start := time.Now()
 	var next *tier
