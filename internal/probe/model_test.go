@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,7 +14,7 @@ import (
 // HWNPU_IR_OUT to a directory to keep the files, e.g. to check them with OpenVINO's read_model.
 func TestBuildIR(t *testing.T) {
 	for _, f := range []string{"fp16", "int8", "int4"} {
-		xmlData, bin, err := BuildIR(f, 2, 1, 1)
+		xmlData, bin, err := BuildIR(f, 2, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -34,9 +35,37 @@ func TestBuildIR(t *testing.T) {
 	}
 }
 
+// A layer must have the same weights in a part as in the whole model, so that running the parts
+// in order computes the whole.
+func TestSplitWeights(t *testing.T) {
+	parts := Split(5, 2)
+	if len(parts) != 2 || parts[0] != (Part{First: 0, Layers: 3}) || parts[1] != (Part{First: 3, Layers: 2, Last: true}) {
+		t.Fatalf("Split(5, 2) = %v", parts)
+	}
+	_, whole, err := BuildIR("int8", 2, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, second, err := BuildIRPart("int8", Part{First: 1, Layers: 1, Last: true}, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, first, err := BuildIRPart("int8", Part{Layers: 1}, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := int(WeightBytes("int8", 1))
+	if !bytes.Contains(whole, second[len(second)-w:]) || !bytes.Contains(whole, first[len(first)-w:]) {
+		t.Error("a part's layer weights are not in the whole model")
+	}
+	if bytes.Equal(first[len(first)-w:], second[len(second)-w:]) {
+		t.Error("two layers have the same weights")
+	}
+}
+
 // A call that checks K drafted tokens takes and returns K tokens.
 func TestBuildIRTokens(t *testing.T) {
-	xmlData, _, err := BuildIR("int4", 1, 4, 1)
+	xmlData, _, err := BuildIRPart("int4", Part{Layers: 1, Last: true, Tokens: 4}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +81,7 @@ func TestBuildIRTokens(t *testing.T) {
 
 func TestWriteMLPackageTokens(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "probe.mlpackage")
-	if err := WriteMLPackage(dir, "lut4", 1, 4, 1); err != nil {
+	if err := WriteMLPackagePart(dir, "lut4", Part{Layers: 1, Last: true, Tokens: 4}, 1); err != nil {
 		t.Fatal(err)
 	}
 	if n := DirSize(dir); n < WeightBytes("lut4", 1) {

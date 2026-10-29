@@ -11,6 +11,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/backend/coreml"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
@@ -38,7 +39,7 @@ func TestConvPieces(t *testing.T) {
 	defer w.Close()
 	ids := readI32(t, filepath.Join(dir, "ref_bf16.ids.bin"))
 	seq, d, k := len(ids), cfg.HiddenSize, cfg.ConvKernel
-	emb, err := Embed(w, d, ids)
+	emb, err := llm.Embed(w, cfg, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,45 +148,45 @@ func TestConvPieces(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-		m := &builder{cfg: cfg, w: w, opts: Options{Format: "fp16", Group: 16, ConvMode: "taps"}, b: b, seq: seq, d: d}
+		m := newBuilder(b, cfg, w, Options{Seq: seq, Format: "fp16", Group: 16, ConvMode: "taps"})
 		xv := b.Input("x", mlpackage.Float16, 1, seq, d)
 		hv := m.rmsNorm(xv, p+"operator_norm.weight", d)
-		bcxv := m.linear(hv, p+"conv.in_proj.weight", "", 3*d)
+		bcxv := m.Linear(hv, p+"conv.in_proj.weight", "", 3*d)
 		y := bcxv
 		if si >= 1 {
 			part := func(j int) *mlpackage.Var {
-				return m.op("slice_by_index", map[string]any{"x": bcxv, "begin": m.b.Ints(0, 0, int32(j*d)), "end": m.b.Ints(1, int32(seq), int32((j+1)*d)),
-					"begin_mask": m.bools(true, true, false), "end_mask": m.bools(true, true, false)}, 1, seq, d)
+				return m.Op("slice_by_index", map[string]any{"x": bcxv, "begin": m.B.Ints(0, 0, int32(j*d)), "end": m.B.Ints(1, int32(seq), int32((j+1)*d)),
+					"begin_mask": m.Bools(true, true, false), "end_mask": m.Bools(true, true, false)}, 1, seq, d)
 			}
 			bg, cgv, xg := part(0), part(1), part(2)
-			y = m.op("mul", map[string]any{"x": bg, "y": xg}, 1, seq, d)
+			y = m.Op("mul", map[string]any{"x": bg, "y": xg}, 1, seq, d)
 			if si >= 2 {
-				padded := m.op("pad", map[string]any{"x": y, "pad": m.b.Ints(int32(k-1), 0, 0, 0), "mode": m.str("constant"), "constant_val": m.b.ScalarF16(0)}, 1, seq+k-1, d)
+				padded := m.Op("pad", map[string]any{"x": y, "pad": m.B.Ints(int32(k-1), 0, 0, 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, seq+k-1, d)
 				var acc *mlpackage.Var
 				for j := 0; j < k; j++ {
 					tap := make([]float32, d)
 					for c := 0; c < d; c++ {
 						tap[c] = cw[c*k+j]
 					}
-					wv, _ := m.b.F16s(fmt.Sprintf("tap%d", j), []int{1, 1, d}, tap)
-					seg := m.op("slice_by_index", map[string]any{"x": padded, "begin": m.b.Ints(0, int32(j), 0), "end": m.b.Ints(1, int32(j+seq), int32(d)),
-						"begin_mask": m.bools(true, false, true), "end_mask": m.bools(true, false, true)}, 1, seq, d)
-					term := m.op("mul", map[string]any{"x": seg, "y": wv}, 1, seq, d)
+					wv, _ := m.B.F16s(fmt.Sprintf("tap%d", j), []int{1, 1, d}, tap)
+					seg := m.Op("slice_by_index", map[string]any{"x": padded, "begin": m.B.Ints(0, int32(j), 0), "end": m.B.Ints(1, int32(j+seq), int32(d)),
+						"begin_mask": m.Bools(true, false, true), "end_mask": m.Bools(true, false, true)}, 1, seq, d)
+					term := m.Op("mul", map[string]any{"x": seg, "y": wv}, 1, seq, d)
 					if acc == nil {
 						acc = term
 					} else {
-						acc = m.op("add", map[string]any{"x": acc, "y": term}, 1, seq, d)
+						acc = m.Op("add", map[string]any{"x": acc, "y": term}, 1, seq, d)
 					}
 				}
 				y = acc
 				if si >= 3 {
-					y = m.op("mul", map[string]any{"x": cgv, "y": y}, 1, seq, d)
+					y = m.Op("mul", map[string]any{"x": cgv, "y": y}, 1, seq, d)
 					if si >= 4 {
-						y = m.linear(y, p+"conv.out_proj.weight", "", d)
+						y = m.Linear(y, p+"conv.out_proj.weight", "", d)
 						if si >= 5 {
 							y = m.rmsNorm(y, p+"post_operator_norm.weight", d)
 							if si >= 6 {
-								y = m.op("add", map[string]any{"x": y, "y": xv}, 1, seq, d)
+								y = m.Op("add", map[string]any{"x": y, "y": xv}, 1, seq, d)
 							}
 						}
 					}

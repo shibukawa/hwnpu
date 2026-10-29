@@ -79,10 +79,11 @@ type prober struct {
 }
 
 type loaded struct {
-	g    *hwnpu.Graph
-	req  *hwnpu.Request
-	bufs []*hwnpu.Buffer
-	path string
+	g       *hwnpu.Graph
+	req     *hwnpu.Request
+	bufs    []*hwnpu.Buffer // owned, closed with the model
+	in, out *hwnpu.Buffer   // bound to x and y
+	path    string
 }
 
 func (l *loaded) close() {
@@ -104,14 +105,23 @@ func (l *loaded) close() {
 // binds its buffers. It fills r with what it learned; the returned model is nil when it could not
 // be compiled.
 func (p *prober) load(format string, layers, tokens int, units string, seed uint64, r *result) *loaded {
-	r.Format, r.Layers, r.Tokens, r.Units = format, layers, tokens, units
+	part := probe.Whole(layers)
+	part.Tokens = tokens
+	return p.loadPart(format, part, units, seed, nil, r)
+}
+
+// loadPart loads one part of a split model as load does a whole one. When in is not nil it is
+// bound to the input instead of a new buffer, so that the part reads what the one before wrote.
+func (p *prober) loadPart(format string, part probe.Part, units string, seed uint64, in *hwnpu.Buffer, r *result) *loaded {
+	layers := part.Layers
+	r.Format, r.Layers, r.Tokens, r.Units = format, layers, max(part.Tokens, 1), units
 	r.Params, r.WeightBytes = paramsAndBytes(format, layers)
 	l := &loaded{}
 	var src hwnpu.GraphSource
 	t := time.Now()
 	if p.coreml {
-		l.path = filepath.Join(p.dir, fmt.Sprintf("probe_l%d_%s_t%d_%d.mlpackage", layers, format, tokens, seed))
-		if err := probe.WriteMLPackage(l.path, format, layers, tokens, seed); err != nil {
+		l.path = filepath.Join(p.dir, fmt.Sprintf("probe_l%d_%d_%s_t%d_%d.mlpackage", part.First, layers, format, r.Tokens, seed))
+		if err := probe.WriteMLPackagePart(l.path, format, part, seed); err != nil {
 			r.Error = "build: " + err.Error()
 			l.close()
 			return nil
@@ -119,7 +129,7 @@ func (p *prober) load(format string, layers, tokens int, units string, seed uint
 		r.FileBytes = probe.DirSize(l.path)
 		src = hwnpu.GraphSource{Path: l.path}
 	} else {
-		xmlData, bin, err := probe.BuildIR(format, layers, tokens, seed)
+		xmlData, bin, err := probe.BuildIRPart(format, part, seed)
 		if err != nil {
 			r.Error = "build: " + err.Error()
 			return nil
@@ -156,16 +166,23 @@ func (p *prober) load(format string, layers, tokens int, units string, seed uint
 		return nil
 	}
 	for _, a := range g.Args() {
-		b, err := p.dev.AllocBuffer(a.Bytes)
-		if err != nil {
-			r.Error = "buffer: " + err.Error()
-			l.close()
-			return nil
+		b := in
+		if a.Kind != hwnpu.ArgInput || in == nil {
+			if b, err = p.dev.AllocBuffer(a.Bytes); err != nil {
+				r.Error = "buffer: " + err.Error()
+				l.close()
+				return nil
+			}
+			l.bufs = append(l.bufs, b)
+			if a.Kind == hwnpu.ArgInput {
+				fillInput(b.Bytes(), a.DType)
+				b.SyncToDevice(0, a.Bytes)
+			}
 		}
-		l.bufs = append(l.bufs, b)
 		if a.Kind == hwnpu.ArgInput {
-			fillInput(b.Bytes(), a.DType)
-			b.SyncToDevice(0, a.Bytes)
+			l.in = b
+		} else {
+			l.out = b
 		}
 		if err := l.req.Bind(a.Index, b); err != nil {
 			r.Error = "bind: " + err.Error()
@@ -228,12 +245,17 @@ func (p *prober) measureIdle() error {
 // speed, CPU use and, with a power meter, energy of r. quick runs it once, for models that left
 // the NPU and may be very slow on the CPU.
 func (p *prober) time(l *loaded, r *result, quick bool) error {
+	return p.measure(func() error { return l.req.Run(p.ctx) }, r, quick)
+}
+
+// measure times run as time does a model.
+func (p *prober) measure(run func() error, r *result, quick bool) error {
 	warm, minCalls, minRun := 2, 3, p.minRun
 	if quick {
 		warm, minCalls, minRun = 0, 1, 0
 	}
 	for range warm {
-		if err := l.req.Run(p.ctx); err != nil {
+		if err := run(); err != nil {
 			return err
 		}
 	}
@@ -244,7 +266,7 @@ func (p *prober) time(l *loaded, r *result, quick bool) error {
 	c0, t0 := cpuTime(), time.Now()
 	calls := 0
 	for calls < minCalls || (time.Since(t0) < minRun && calls < 1000) {
-		if err := l.req.Run(p.ctx); err != nil {
+		if err := run(); err != nil {
 			return err
 		}
 		calls++

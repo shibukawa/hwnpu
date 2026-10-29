@@ -153,7 +153,7 @@ func main() {
 					fail("-formats: unknown format " + f)
 				}
 				path := filepath.Join(dir, fmt.Sprintf("dec_l%d_%s.mlpackage", layers, f))
-				generate[path] = func() error { return probe.WriteMLPackage(path, f, layers, 1, uint64(layers)) }
+				generate[path] = func() error { return probe.WriteMLPackage(path, f, layers, uint64(layers)) }
 				models = append(models, path)
 			}
 		}

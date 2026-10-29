@@ -106,6 +106,31 @@ func markdown(rep *report) string {
 				cell(r.MsPerCall, "%.1f"), cell(r.CPUUse, "%.2f"), cell(r.MsAllLoaded, "%.1f"), cell(r.CPUAllLoaded, "%.2f"), r.CompileS, errCell(r))
 		}
 	}
+	if len(rep.Split) > 0 {
+		sb.WriteString("\n## A model split into parts run one after another\n\n")
+		sb.WriteString("| format | weights | parts | placement of the parts | ms/token | parts alone added up | tokens/s | weights GB/s | CPU use | mJ/token | error after each part | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		for _, s := range rep.Split {
+			var place, errs []string
+			for _, r := range s.Parts {
+				place = append(place, fmt.Sprintf("%d layers %.2f GiB %s", r.Layers, probe.GiB(r.WeightBytes), r.placement()))
+			}
+			for _, e := range s.RelErr {
+				errs = append(errs, fmt.Sprintf("%.2f%%", 100*e))
+			}
+			against := ""
+			if len(errs) > 0 {
+				against = "vs " + strings.ToUpper(s.Ref) + ": " + strings.Join(errs, ", ")
+			}
+			tps := ""
+			if s.MsPerToken > 0 {
+				tps = fmt.Sprintf("%.1f", 1000/s.MsPerToken)
+			}
+			fmt.Fprintf(&sb, "| %s | %d layers, %.2f GiB | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", s.Format, s.Layers, probe.GiB(s.WeightBytes), len(s.Parts),
+				strings.Join(place, "<br>"), cell(s.MsPerToken, "%.1f"), cell(s.MsSumParts, "%.1f"), tps, cell(s.gbps(), "%.0f"), cell(s.CPUUse, "%.2f"), cell(s.MJPerToken, "%.1f"),
+				against, strings.ReplaceAll(short(s.Error, 200), "|", "/"))
+		}
+		sb.WriteString("\nEvery part is loaded before any is timed. ms/token runs each part once, the output buffer of one bound as the input of the next; parts alone added up is the sum of each part's own time. The error after each part compares the hidden state with the same parts run one at a time on the reference units (rms of the difference over rms of the reference).\n")
+	}
 	if len(rep.Notes) > 0 {
 		sb.WriteString("\n")
 		for _, n := range rep.Notes {
