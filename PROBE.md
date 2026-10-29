@@ -29,7 +29,7 @@ It compiles small embedded models for every NPU found, compares the results with
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
 ```
 
-It takes about 40 minutes and writes `npuprobe-<machine>-<time>.md` and `.json` to the current directory; what was measured is kept if it is interrupted with Ctrl-C. `bench` or `limit` after the command name runs one part only.
+It takes about 40 minutes and writes `npuprobe-<machine>-<time>.md` and `.json` to the current directory; what was measured is kept if it is interrupted with Ctrl-C. `bench` or `limit` after the command name runs one part only. `split` checks a model over the limit run in parts (see below).
 
 ### 3. Energy
 
@@ -68,6 +68,17 @@ The generators are in [internal/probe](internal/probe/model.go). The Intel model
 
 **limit** grows the model in each format (2, 4, 8, 12, 16, 24, 32, … layers) until it leaves the NPU, then bisects to one layer between the largest model on the NPU and the smallest not on it. It then loads several models just under the boundary at once, enough to hold twice the failing size, and runs each again with all of them loaded. If they all stay on the NPU at the same speed, the limit is per model and a larger network can be split into several models. Models that leave the NPU run only once, since they can be very slow on the CPU.
 
+**split** runs only when asked for with `npuprobe split`. It builds a model larger than the limit (64 layers by default, 1.8 GiB of lut4) and splits it into parts small enough for the NPU (2 and 4 by default). The output buffer of each part is bound as the input of the next, and the parts run in order, as a split LLM generates one token. Each layer has the same weights however the model is split, so running the parts in order computes the whole model. It checks three things:
+
+- whether every part stays on the NPU with all of them loaded
+- the time per token (every part once) against the parts' own times added up. A large gap means the weights are loaded again at every switch between parts
+- the error of the hidden state after each part against the same parts run one at a time on the GPU (rms of the difference over rms of the reference), to show that nothing breaks at the boundaries
+
+```bash
+go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split
+go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -parts 2,3,4   # machines with a 2 GiB limit such as the M4 (3.7 GiB)
+```
+
 Each measurement runs in a child process of its own, so a framework or driver that aborts (Core ML's GPU path has asserted on some graphs) costs one row of the report, with the error, not the run.
 
 How to read the columns:
@@ -89,6 +100,9 @@ Options:
 | `-baselines` | `cpu,gpu` | Apple: Core ML units to compare with; empty for none |
 | `-max-gb` | a quarter of the RAM on Apple, a sixth on Intel, at most 8 | limit: largest weight size tried. Apple needs free disk space of about twice this |
 | `-several` | `true` | limit: load several models at once after the sweep |
+| `-split-layers` | `64` | split: layers of the whole model |
+| `-parts` | `2,4` | split: numbers of parts to try; `1` runs the model unsplit |
+| `-ref` | `gpu` on Apple, `none` elsewhere | split: Core ML units for the reference output (`cpu`, `gpu` or `none`). The CPU expands lut4 to fp16, so a large model can run out of memory there |
 | `-run` | `3s` | time per model |
 | `-dir`, `-o` | temporary directory, `npuprobe-<machine>-<time>.md` | |
 
