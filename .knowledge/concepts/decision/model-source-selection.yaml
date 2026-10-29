@@ -55,8 +55,11 @@ open_questions:
     text: LFM3-1.7B を lut4 で ANE に載せたときの tokens/s と mJ/token (cmd/powerbench、seq 1)
     state: open
   better-4bit:
-    text: KL 0.9 は実用には粗い。活性を見た量子化 (AWQ/SmoothQuant 相当) や 6 ビット LUT (ANE の容量上限 1 GB 前後との兼ね合い) で改善できるか
+    text: KL 0.9 は実用には粗い。活性を見た量子化 (AWQ/SmoothQuant 相当) や 6 ビット LUT で改善できるか
     state: open
+    resolution: >-
+      2026-10-29 容量の制約は外れた。ANE の 1 GiB はモデルごとの上限で、層ごとに分けたパッケージを続けて動かせば劣化なし・遅延ほぼなしで超えられる
+      (decision:coreml-layer-split)。6 ビット LUT や一部 fp16 の残しは、精度と 1 トークンの読み出しバイト数 (速さ) の兼ね合いだけで選べる
   intel-amd-verify:
     text: Intel/AMD の形式は推奨値を写しただけで、実機で未検証
     state: deferred
@@ -68,3 +71,5 @@ relations:
     to: milestone:m5-llm-convert
   - relation: mentions
     to: backend:apple-coreml
+  - relation: mentions
+    to: decision:coreml-layer-split

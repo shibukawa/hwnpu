@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ type childSpec struct {
 	Units    string        `json:"units"`
 	Quick    bool          `json:"quick"`
 	N        int           `json:"n"`
+	Layout   string        `json:"layout,omitempty"` // split: files or functions
 	MinRun   time.Duration `json:"min_run"`
 	Dir      string        `json:"dir"`
 	IdleW    float64       `json:"idle_w"`
@@ -112,7 +114,14 @@ func runChild(arg string) error {
 	if info == nil {
 		return fmt.Errorf("device %s %s not found", spec.Backend, spec.DeviceID)
 	}
-	dev, err := hwnpu.OpenDevice(ctx, *info, hwnpu.WithPlacement(hwnpu.PlacementPrefer))
+	opts := []hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
+	if spec.Layout == "functions" {
+		// Every part loads the same package; compile it once.
+		cache := filepath.Join(spec.Dir, "coreml-cache")
+		defer os.RemoveAll(cache)
+		opts = append(opts, hwnpu.WithCacheDir(cache))
+	}
+	dev, err := hwnpu.OpenDevice(ctx, *info, opts...)
 	if err != nil {
 		return err
 	}
@@ -129,7 +138,7 @@ func runChild(arg string) error {
 	case "several":
 		rs = p.several(spec.Format, spec.Layers, spec.N)
 	case "split":
-		rs = p.split(spec.Format, spec.Layers, spec.N)
+		rs = p.split(spec.Format, spec.Layers, spec.N, spec.Layout)
 	case "chain":
 		rs = p.chain(spec.Format, spec.Layers, spec.N, spec.Units)
 	default:

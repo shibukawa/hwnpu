@@ -174,6 +174,10 @@ type GraphSource struct {
 	Blob       []byte // in-memory native blob
 	XML, Bin   []byte // OpenVINO IR
 	BuildFlags string
+	// Function selects one function of a Core ML ML Program with several (macOS 15 and later);
+	// empty means the default function. The functions share the package's weights, and each is
+	// loaded and placed as a model of its own.
+	Function string
 }
 
 // OpPlacement is one operation that does not run on the NPU.

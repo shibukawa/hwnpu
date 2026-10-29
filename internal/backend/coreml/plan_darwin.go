@@ -15,7 +15,8 @@ type planResult struct{ plan, err objc.ID }
 
 // computePlacement loads an MLComputePlan (macOS 14.4+) for the compiled model and lists the
 // ML Program operations whose preferred device is not the Neural Engine.
-func computePlacement(ctx context.Context, compiledURL, config objc.ID) (types.PlacementReport, error) {
+// With a function name only that function is walked; otherwise all of them.
+func computePlacement(ctx context.Context, compiledURL, config objc.ID, function string) (types.PlacementReport, error) {
 	rep := types.PlacementReport{Method: planMethod}
 	if class("MLComputePlan") == 0 {
 		rep.Reason = "MLComputePlan is not available (requires macOS 14.4 or later)"
@@ -55,9 +56,11 @@ func computePlacement(ctx context.Context, compiledURL, config objc.ID) (types.P
 			rep.Reason = "the model is not an ML Program; Core ML cannot report per-operation placement"
 			return nil
 		}
-		_, fns := dictItems(send(program, "functions"))
-		for _, fn := range fns {
-			walkBlock(res.plan, send(fn, "block"), &rep)
+		names, fns := dictItems(send(program, "functions"))
+		for i, fn := range fns {
+			if function == "" || names[i] == function {
+				walkBlock(res.plan, send(fn, "block"), &rep)
+			}
 		}
 		rep.Verified = true
 		return nil

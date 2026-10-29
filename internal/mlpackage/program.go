@@ -345,12 +345,17 @@ func (b *Builder) scaled(name string, bits int, shape, block []int, data []byte,
 
 // Finish returns the program with the given outputs.
 func (b *Builder) Finish(outputs ...*Var) *milspec.Program {
+	return &milspec.Program{Version: 1, Functions: map[string]*milspec.Function{"main": b.Function(outputs...)}}
+}
+
+// Function returns the built function with the given outputs, for a program with several
+// (Package.FinishFunctions). Builders writing to the same BlobWriter share the weight file.
+func (b *Builder) Function(outputs ...*Var) *milspec.Function {
 	block := &milspec.Block{Operations: b.ops}
 	for _, o := range outputs {
 		block.Outputs = append(block.Outputs, o.Name)
 	}
-	fn := &milspec.Function{Inputs: b.inputs, Opset: b.opset, BlockSpecializations: map[string]*milspec.Block{b.opset: block}}
-	return &milspec.Program{Version: 1, Functions: map[string]*milspec.Function{"main": fn}}
+	return &milspec.Function{Inputs: b.inputs, Opset: b.opset, BlockSpecializations: map[string]*milspec.Block{b.opset: block}}
 }
 
 // Float16Bits converts a float32 to IEEE half precision, rounding to nearest even.

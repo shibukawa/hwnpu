@@ -74,6 +74,8 @@ The generators are in [internal/probe](internal/probe/model.go). The Intel model
 - the time per token (every part once) against the parts' own times added up. A large gap means the weights are loaded again at every switch between parts
 - the error of the hidden state after each part against the same parts run one at a time on the GPU (rms of the difference over rms of the reference), to show that nothing breaks at the boundaries
 
+It also records the peak resident memory (RSS) of the process that ran the parts, without the system's own Core ML and Neural Engine processes. `-layout functions` writes the parts as the functions of one package instead of a package each, and loads each function as a model of its own.
+
 ```bash
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split
 go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -parts 2,3,4   # machines with a 2 GiB limit such as the M4 (3.7 GiB)
@@ -106,6 +108,7 @@ Options:
 | `-several` | `true` | limit: load several models at once after the sweep |
 | `-split-layers` | `64` | split: layers of the whole model |
 | `-parts` | `2,4` | split: numbers of parts to try; `1` runs the model unsplit |
+| `-layout` | `files` | split: how the parts are written. `files`, a package per part; `functions`, the functions of one package (Core ML, macOS 15 and later). `files,functions` compares both |
 | `-ref` | `gpu` on Apple, `none` elsewhere | split: Core ML units for the reference output (`cpu`, `gpu` or `none`). The CPU expands lut4 to fp16, so a large model can run out of memory there |
 | `-run` | `3s` | time per model |
 | `-dir`, `-o` | temporary directory, `npuprobe-<machine>-<time>.md` | |
@@ -146,6 +149,45 @@ Speed and energy at 16 layers (0.97 B weights). Speed from `npuprobe bench`, ene
 - The Neural Engine and the GPU with int4 cost about the same energy per token (37 and 35 mJ); the CPU costs about 7 times more.
 - fp16 at 1 B is over the size limit and runs on the CPU.
 - The CPU is limited by the arithmetic, not the bytes: about 30 ms per token in every format, at 3.3 to 3.7 cores busy. Quantization only pays on the NPU and the GPU.
+
+A model over the limit, split by layers (`npuprobe split`, lut4, 64 layers, 1.81 GiB; report: [npuprobe-m3-split.md](npuprobe-m3-split.md)):
+
+| parts | each part | placement | ms/token | parts alone added up | weights GB/s | CPU use | error vs GPU after each part |
+|---|---|---|---|---|---|---|---|
+| 2 | 32 layers, 0.91 GiB | all NPU | 30.0 | 30.5 | 65 | 0.02 | 3.32%, 4.91% |
+| 4 | 16 layers, 0.45 GiB | all NPU | 30.2 | 30.4 | 64 | 0.02 | 2.31%, 3.32%, 4.21%, 4.91% |
+
+- Splitting by layers takes a model past the 1 GiB limit at full speed. 1.81 GiB in one model runs on the CPU; in parts, every part stays on the Neural Engine and the model reads its weights at 65 GB/s, the same as a single 16 layer model (7.5 ms, 0.45 GiB).
+- The parts cost nothing to switch between: one token through all of them takes no longer than the parts timed alone added up, so no part reloads its weights. Four parts take 0.2 ms more than two.
+- Splitting loses nothing: the error after 32 and 64 layers is the same to every digit with 2 and 4 parts. The error is the Neural Engine's arithmetic against the GPU growing with depth, not the boundaries.
+- Smaller parts compile faster in total (8 s each for 16 layers, 16 to 30 s each for 32 layers).
+
+Against the parts written as the functions of one package (`-layout functions,files`; report: [npuprobe-m3-functions.md](npuprobe-m3-functions.md)):
+
+| parts | written as | placement | ms/token | peak RSS of the process |
+|---|---|---|---|---|
+| 2 | functions of one package | all CPU | 12549 | 5.26 GiB |
+| 2 | a package each | all NPU | 30.6 | 1.03 GiB |
+| 4 | functions of one package | all CPU | 12362 | 6.42 GiB |
+| 4 | a package each | all NPU | 31.3 | 0.55 GiB |
+
+- The 1 GiB limit counts the whole package, not the function loaded. Split a model into a package per part.
+- With a package per part, the peak memory of the process is about the weights of one part: it falls with more parts, at almost the same speed.
+
+### Apple M4 (measured by a user; report not included yet)
+
+A 3.6 GiB model (`npuprobe split -split-layers 128`) split several ways:
+
+| parts | each part | ms/token |
+|---|---|---|
+| 2 | 1.8 GiB | 58.3 |
+| 4 | 0.9 GiB | 58.8 |
+| 8 | 0.45 GiB | 59.4 |
+| 16 | 0.23 GiB | 60.6 |
+
+- No error with any split, and the memory used fell sharply as the parts got smaller (the measure and the numbers are not recorded yet).
+- Each boundary costs about 0.16 ms: 16 parts are only 4% slower than 2.
+- A 1.8 GiB part ran, so the M4 takes at least 1.8 GiB per model.
 
 ### Wanted
 
