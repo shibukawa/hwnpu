@@ -262,3 +262,27 @@ func TestMigrateTiers(t *testing.T) {
 		t.Error("moving to a shorter cache did not fail")
 	}
 }
+
+// With the full attention caches in chunks (llm.CacheChunks, made small here: chunks of 4 over 5
+// tokens, so caches of 8 to 12 are in 2 or 3 chunks, the last one shorter), stepping still gives
+// the logits of the program without a cache, sharing and rewinding still work, and a session
+// moves from a cache in one piece to one in chunks.
+func TestCachedChunksMatchFull(t *testing.T) {
+	defer func(over, n int) { llm.CacheChunkOver, llm.CacheChunkLen = over, n }(llm.CacheChunkOver, llm.CacheChunkLen)
+	llm.CacheChunkOver, llm.CacheChunkLen = 5, 4
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	opts := llm.Options{Seq: 3, Cache: 9, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
+	p := cpuProgram(t, writeParts(t, cfg, w, opts, 1))
+	for _, name := range []string{"kv_k_1_c0", "kv_v_1_c2", "mask_full_attention_c1", "mask_full_attention_self", "kv_k_2"} {
+		if _, ok := p.InShape[name]; !ok {
+			t.Fatalf("no input %s; inputs %v", name, p.InShape)
+		}
+	}
+	if sh := p.InShape["kv_k_1_c2"]; sh[2] != 1 {
+		t.Errorf("the last chunk holds %d tokens, want 1", sh[2])
+	}
+	t.Run("matches", TestCachedMatchesFull)
+	t.Run("share and rewind", TestCachedShareAndRewind)
+	t.Run("migrate from one piece to chunks", TestMigrateTiers) // caches of 5 and 12
+}
