@@ -56,7 +56,7 @@ func (p *prober) several(format string, layers, n int) []result {
 			break
 		}
 		r := result{Copy: i + 1}
-		l := p.load(format, layers, "npu", uint64(1000+i), &r)
+		l := p.load(format, layers, 1, "npu", uint64(1000+i), &r)
 		if l != nil {
 			if err := p.time(l, &r, false); err != nil {
 				r.Error = "run: " + err.Error()

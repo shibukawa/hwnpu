@@ -15,7 +15,10 @@ import (
 // The probe models have the shape of LLM decoding (tools/coreml/gen_decode.py): one token through
 // Llama 3.2 1B sized layers with random weights, so every call reads every weight once.
 //
-//	x (1, 1, d) fp16 -> layers x [norm, q/k/v/o projections, norm, SwiGLU MLP] -> norm -> y
+//	x (1, tokens, d) fp16 -> layers x [norm, q/k/v/o projections, norm, SwiGLU MLP] -> norm -> y
+//
+// tokens is 1 to generate a token; K checks K drafted tokens of speculative decoding in one call,
+// which still reads every weight once for all of them.
 const (
 	DModel = 2048
 	DFFN   = 8192
@@ -99,6 +102,7 @@ type Part struct {
 	First  int  // index of the first layer in the whole model
 	Layers int  // number of layers
 	Last   bool // ends with the final norm
+	Tokens int  // tokens per call; 0 means 1
 }
 
 // Whole is the unsplit model of the given layers.
@@ -133,7 +137,8 @@ func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 	if err != nil {
 		return err
 	}
-	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("decode layers %d-%d %s", part.First, part.First+part.Layers-1, format)
+	tokens := max(part.Tokens, 1)
+	pkg.Metadata["com.github.shibukawa.hwnpu.probe"] = fmt.Sprintf("decode layers %d-%d %s %d tokens", part.First, part.First+part.Layers-1, format, tokens)
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
 	var g *weightGen
 	var werr error
@@ -157,7 +162,7 @@ func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 		}
 		return v
 	}
-	shape := []int{1, 1, DModel}
+	shape := []int{1, tokens, DModel}
 	x := b.Input("x", mlpackage.Float16, shape...)
 	gamma, err := b.F16("gamma", []int{DModel}, constHalves(DModel, 1))
 	if err != nil {
@@ -171,7 +176,7 @@ func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 		return b.Op("layer_norm", map[string]any{"x": v, "axes": b.Ints(-1), "gamma": gamma, "beta": beta, "epsilon": b.ScalarF16(1e-5)}, mlpackage.Float16, shape...)
 	}
 	linear := func(v *mlpackage.Var, rows, cols int) *mlpackage.Var {
-		return b.Op("linear", map[string]any{"x": v, "weight": weight(rows, cols)}, mlpackage.Float16, 1, 1, rows)
+		return b.Op("linear", map[string]any{"x": v, "weight": weight(rows, cols)}, mlpackage.Float16, 1, tokens, rows)
 	}
 	bin := func(op string, p, q *mlpackage.Var) *mlpackage.Var {
 		return b.Op(op, map[string]any{"x": p, "y": q}, mlpackage.Float16, p.Shape...)
@@ -187,7 +192,7 @@ func WriteMLPackagePart(dir, format string, part Part, seed uint64) error {
 		kv := b.Op("tile", map[string]any{"x": bin("add", k, v), "reps": b.Ints(1, 1, DModel/DKV)}, mlpackage.Float16, shape...)
 		h = bin("add", h, linear(bin("mul", q, kv), DModel, DModel))
 		n = norm(h)
-		gate := b.Op("silu", map[string]any{"x": linear(n, DFFN, DModel)}, mlpackage.Float16, 1, 1, DFFN)
+		gate := b.Op("silu", map[string]any{"x": linear(n, DFFN, DModel)}, mlpackage.Float16, 1, tokens, DFFN)
 		h = bin("add", h, linear(bin("mul", gate, linear(n, DFFN, DModel)), DModel, DFFN))
 		if werr != nil {
 			return werr
@@ -210,9 +215,10 @@ func BuildIR(format string, layers int, seed uint64) (xmlData, bin []byte, err e
 
 // BuildIRPart returns one part of a split probe model, as BuildIR does the whole.
 func BuildIRPart(format string, part Part, seed uint64) (xmlData, bin []byte, err error) {
-	b := ovir.NewBuilder(fmt.Sprintf("probe_l%d_%d_%s", part.First, part.Layers, format), int(WeightBytes(format, part.Layers))+1<<20)
+	tokens := max(part.Tokens, 1)
+	b := ovir.NewBuilder(fmt.Sprintf("probe_l%d_%d_%s_t%d", part.First, part.Layers, format, tokens), int(WeightBytes(format, part.Layers))+1<<20)
 	var g *weightGen
-	shape := []int{1, 1, DModel}
+	shape := []int{1, tokens, DModel}
 	i64 := func(v ...int64) []byte {
 		p := make([]byte, 8*len(v))
 		for i, x := range v {
@@ -255,7 +261,7 @@ func BuildIRPart(format string, part Part, seed uint64) (xmlData, bin []byte, er
 		return b.Op("MVN", "opset6", []string{"eps", "1e-05", "normalize_variance", "true", "eps_mode", "inside_sqrt"}, "f16", v.Shape, v, axes)
 	}
 	linear := func(v ovir.Value, rows, cols int) ovir.Value {
-		return b.Op("MatMul", "opset1", []string{"transpose_a", "false", "transpose_b", "true"}, "f16", []int{1, 1, rows}, v, weight(rows, cols))
+		return b.Op("MatMul", "opset1", []string{"transpose_a", "false", "transpose_b", "true"}, "f16", []int{1, tokens, rows}, v, weight(rows, cols))
 	}
 	bin2 := func(op string, p, q ovir.Value) ovir.Value {
 		return b.Op(op, "opset1", []string{"auto_broadcast", "numpy"}, "f16", p.Shape, p, q)
@@ -271,7 +277,7 @@ func BuildIRPart(format string, part Part, seed uint64) (xmlData, bin []byte, er
 		kv := b.Op("Tile", "opset1", nil, "f16", shape, bin2("Add", k, v), reps)
 		h = bin2("Add", h, linear(bin2("Multiply", q, kv), DModel, DModel))
 		n = norm(h)
-		gate := b.Op("Swish", "opset4", nil, "f16", []int{1, 1, DFFN}, linear(n, DFFN, DModel))
+		gate := b.Op("Swish", "opset4", nil, "f16", []int{1, tokens, DFFN}, linear(n, DFFN, DModel))
 		h = bin2("Add", h, linear(bin2("Multiply", gate, linear(n, DFFN, DModel)), DModel, DFFN))
 	}
 	if part.Last {
