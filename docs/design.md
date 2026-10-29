@@ -1082,3 +1082,22 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 - 1K トークンの容量あたりの費用は 5.4〜5.6 ms から 2.8 ms に下がった。全注意の層の割合 6/11 どおり。4K で 26% 速く、8K で 1 トークン 38.5 ms (26 tokens/s)
 - **ANE の 1 次元あたりの上限は 16384**: キャッシュ 16384 (鍵の軸 16385) では全注意の層の注意の演算 (2 部分で 42 と 86 演算) が CPU に置かれ、1 トークン 375 ms、読み込み 140 秒、プロセスの最大 RSS 4.5 GiB になった。`npuprobe kv -kv-layers 2 -kv-cache 16383,16384` で境目を確かめた: 鍵 16384 は全部 ANE で 16.6 ms、16385 は注意の 39 演算が CPU で 117 ms (`npuprobe-m3-kv-limit.md`)。`llm.NeuralEngineMaxDim` に記録し、`hwnpu-convert` は `-cache + -seq` がこれを超えると警告する。今の方式で ANE に載る文脈の上限は 16383 トークン (Q=1)
 - 次: 容量の段階 (1K/4K/8K/16K) と移し替え、プロンプトのキャッシュ、塊分けの注意 (16K を超えるにはこれが要る)
+
+### 16.17 3 つ目のアーキテクチャ: PLaMo-Embedding-1B (PlamoBiModel) — 2026-10-30
+
+- `internal/llm/plamo` (アーキテクチャ名 `plamo-bi`): pfnet/plamo-embedding-1b が同梱する `modeling_plamo.py` の `PlamoBiModel` を移した。PLaMo のデコーダの注意を双方向にした日本語の埋め込みモデルで、pre-norm の 16 層 (RMSNorm、注意、SwiGLU、それぞれ残差) と最終 RMSNorm。注意は融合した `qkv_proj` (2304 = 2048+128+128)、16 ヘッドに KV 1 ヘッド (MQA)、head_dim 128、ヘッドごとの重みを持つ QK-norm (重みなしの RMSNorm を head_dim で取り、`q_weight` (16, 128) と `k_weight` (1, 128) を掛ける。eps は 1e-6 に固定)、`rotate_half` の RoPE (base 10000、config に `rope_theta` はない)。MLP の `gate_up_proj` (16384, 2048) は前半が gate、後半が up。出力は最終 norm 後の隠れ状態で、プーリングはホストに任せる
+- 判別: `model_type` の `plamo` は PLaMo の因果 LM (`PlamoForCausalLM`) と同じなので、`architectures` の `PlamoBiModel` で選ぶ (`Arch.ModelTypes` は空)。ほかの `architectures`、MoE (`n_expert`、`sparse_step`)、`eval_*_n_bit` は拒否する。`linear_type: fp8` と `group_size` は学習用の設定で推論のコードは読まないので受け付ける
+- 入力は BERT と同じく `x` と `mask`。位置はパディングに関わらず 0..seq-1。HF の `encode` は左にパディングし、位置 ID をずらさないが、双方向でマスクがあり RoPE は距離にしか依らないので、右パディングでも同じ結果になる (テストの `left padding` で確認)。パディングのバイアスは BERT の `maskBias` を `blocks.MaskBias` に移して共有した
+- `blocks` に `WeightRows` と `LinearRows` を追加: 融合した行列の行の範囲を 1 つの linear にする。定数の名前は `NAME_begin_end`。`gate_up_proj` を 1 つの linear にすると出力の軸がちょうど ANE の上限 16384 になるので、8192 ずつの 2 つにした。lut4 の表は 16 行ごとで、切れ目 (2048、2176、8192) は 16 の倍数なので、部分ごとに量子化しても行列全体を量子化したのと同じ値になる。`Weight` は中身を `matrix` に分けただけで、LFM3 (`TestBuildTiny`) と BERT のダイジェストは変わっていない
+- 検証 (`plamo_test.go`): `modeling_plamo.py` をループで直接書いた fp64 の forward を正解とし、MQA のパディングなし、右パディング、左パディング、GQA (KV 2 ヘッド) の 4 通りで相対誤差 1e-4 以内。1 層ずつ (`NoHead`) と最終 norm だけ (`Start == Layers()`) をつないでも同じ。合成の重みは 0.1 以下で注意がほぼ一様になり、位置やマスクの誤りが見えないので、norm と QK-norm の重みを 1 前後にずらした。正解側は、プログラムが fp16 で持つもの (重み、RoPE の表、入力の埋め込み) を fp16 に丸めて使う (入力を丸めないと 6e-4 ずれた)。lut4 は、行列を丸ごと量子化して戻した重みの正解と 1e-4 以内。実物の大きさ (hidden 2048、16:1 の MQA、1 層) でも 6.0e-5。改変 (マスクを外す、残差の足し先を正規化後にする、gate と up を入れ替える、鍵の RoPE を外す、q_weight をヘッド 0 のものにする、鍵を値の行から取る、最終 norm を外す) はすべて検出した。マスクを外したときに通るのはパディングなしだけ
+- 実物の config.json から、テンソル 130 個の名前と形が safetensors のヘッダと一致すること、1 GiB の上限で lut4 は 1 部分、fp16 は 2 部分になることをテストした (`TestPlamoEmbedding1B`)。パラメータは 10.5 億 (埋め込み表 1.03 億はホスト)
+- `tools/ref/ref_logits.py` に `--attn` を追加した。`PlamoBiModel` の層は `config._attn_implementation` で `{"sdpa": ModifiedAttention}` を引くので、既定の eager では読み込めない
+- 未確認: 実物のチェックポイントでの `hwnpu-check` (この Mac に PyTorch がない)、Neural Engine での配置と精度。手順は次のとおり。`modeling_plamo.py` は transformers 4.47 向けなので、新しい版で読めなければ 4.47〜4.5x を使う。既定の英文は 32 トークンに足りないことがあるので、日本語の文を渡す
+
+```bash
+python tools/ref/ref_logits.py MODEL_DIR build/plamo/ref --seq 32 --encoder --attn sdpa --text "PLaMo-Embedding-1Bは、Preferred Networks, Inc. によって開発された日本語テキスト埋め込みモデルです。検索、分類、クラスタリングに使えます。"
+go run ./cmd/hwnpu-check -config MODEL_DIR/config.json -weights MODEL_DIR/model.safetensors -ref build/plamo/ref -f16
+```
+
+- **fp16 のあふれに注意**: 参照の RMSNorm は fp32 で計算するが、プログラムは fp16 で `x*x` を取るので、残差の値が絶対値 256 を超えると inf になる。`ref_logits.py` が表示する `max |hidden|` と、`hwnpu-check -f16` で確かめる。超えるなら、二乗の前に縮める書き換え (`Params` の設定) を入れる
+- 次: SentencePiece BPE のトークナイザー (`tokenizer.model`: BPE、byte fallback、正規化 identity、先頭に空白を補う、空白の連続と改行が user-defined)、埋め込みを実行するコマンド (表引き、実行、プーリング。プーリングは本文のトークンだけの平均で、BOS とクエリの前置き「次の文章に対して、関連する文章を検索してください: 」は含めない)
