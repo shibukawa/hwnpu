@@ -181,17 +181,28 @@ func resolve(ctx context.Context, use, dir string, server bool) ([]chat.Model, e
 	return models, nil
 }
 
-// showModels writes the catalog: each model's name, what it is for, its size and repository,
-// whether it is downloaded to dir, and what it is.
+// showModels writes the catalog: each model's name, what it is for and what else it can do, its
+// size and repository, whether it is downloaded to dir, and what it is; then what the features
+// mean.
 func showModels(w io.Writer, dir string) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tKIND\tSIZE\tREPOSITORY\tDOWNLOADED\tABOUT")
+	fmt.Fprintln(tw, "NAME\tKIND\tFEATURES\tSIZE\tREPOSITORY\tDOWNLOADED\tABOUT")
 	for _, m := range chat.Catalog {
 		got := "no"
 		if chat.Downloaded(filepath.Join(dir, m.Name)) {
 			got = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%.1f GB\t%s\t%s\t%s\n", m.Name, m.Kind, m.Bytes/1e9, m.Repo, got, m.About)
+		features := strings.Join(m.Features, ",")
+		if features == "" {
+			features = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%.1f GB\t%s\t%s\t%s\n", m.Name, m.Kind, features, m.Bytes/1e9, m.Repo, got, m.About)
+	}
+	tw.Flush()
+	fmt.Fprintln(w, "\nFeatures:")
+	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, f := range chat.Features {
+		fmt.Fprintf(tw, "  %s\t%s\n", f.Name, f.About)
 	}
 	tw.Flush()
 	fmt.Fprintf(w, "\n-use takes names, comma separated (one in the terminal, any with -listen), or a Hugging Face\n"+

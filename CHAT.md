@@ -10,10 +10,18 @@ Run LFM3-1.7B and PLaMo-Embedding-1B on the Apple Neural Engine alone, and use t
 go run ./cmd/hwnpu-chat -list
 ```
 
-| Name | Kind | in the terminal | with `-listen` (section 3) |
-|---|---|---|---|
-| `LFM3-1.7B` (default) | chat | talk with it (section 1) | `/v1/chat/completions` |
-| `plamo-embedding-1b` | embedding | search texts by their embeddings (section 4) | `/v1/embeddings` |
+| Name | Kind | Features | in the terminal | with `-listen` (section 3) |
+|---|---|---|---|---|
+| `LFM3-1.7B` (default) | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
+| `plamo-embedding-1b` | embedding | `query` | search texts by their embeddings (section 4) | `/v1/embeddings` |
+
+The features say what a model can do besides its kind (names as in Ollama's capabilities):
+
+| Feature | |
+|---|---|
+| `tools` | calls the tools a request offers (`tools`, `tool_calls`), so that agents such as OpenCode can drive it (section 6). LFM3-1.7B is text only, and small and fast enough to run behind an agent |
+| `thinking` | thinks before it answers (`reasoning_content`); `-think` and `reasoning_effort` turn it on and off |
+| `query` | embeds search queries and the documents searched differently (`input_type`, section 4) |
 
 - The terminal runs one model, chosen by `-use`; what it does follows the model's kind. The server runs any number, `-use LFM3-1.7B,plamo-embedding-1b` for example
 - Names are matched ignoring case, and the catalog's repository names work too. A Hugging Face repository outside the catalog, `-use OWNER/NAME`, works when its architecture is one hwnpu-chat runs (LFM3 for chat, PLaMo's encoder for embeddings): its `config.json` tells which. Set `HF_TOKEN` for gated repositories
@@ -71,7 +79,7 @@ go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
 
 | Endpoint | |
 |---|---|
-| `GET /v1/models` | the names of the models loaded (`LFM3-1.7B`, `plamo-embedding-1b`), their `kind` (`chat` or `embedding`), `context_length`, and `dimensions` of an embedding model |
+| `GET /v1/models` | the names of the models loaded (`LFM3-1.7B`, `plamo-embedding-1b`), their `kind` (`chat` or `embedding`), `capabilities` (the features, for a model of `-list`), `context_length`, and `dimensions` of an embedding model |
 | `POST /v1/chat/completions` | `stream` (SSE), `tools` and `tool_calls`, `reasoning_content`, `max_tokens`, `temperature`, `top_p`, `top_k`, `repetition_penalty`, `seed`, `stop`, `stream_options.include_usage` |
 | `POST /v1/embeddings` | `input` (a string or a list), `encoding_format` (`float` or `base64`), `dimensions` (only the model's 2048), and besides OpenAI's: `input_type` (`query` or `document`, section 4) and `truncate` |
 
