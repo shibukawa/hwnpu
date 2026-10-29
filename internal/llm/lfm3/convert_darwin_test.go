@@ -13,12 +13,13 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/backend/coreml"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
 
 // Converts LFM3-1.7B layer by layer and compares the Neural Engine's hidden states and logits
-// with the PyTorch reference written by tools/lfm3/ref_logits.py. Needs HWNPU_LFM3_DIR with
+// with the PyTorch reference written by tools/ref/ref_logits.py. Needs HWNPU_LFM3_DIR with
 // config.json, the checkpoint and ref_bf16.*.bin. HWNPU_LFM3_LAYERS lists the truncation points
 // to check (default "1,3,24"); HWNPU_LFM3_FORMAT picks lut4 (default) or fp16; HWNPU_LFM3_WEIGHTS
 // names the checkpoint file (default LFM3-1.7B.safetensors).
@@ -56,7 +57,7 @@ func TestAgainstReference(t *testing.T) {
 	if len(hidden) != (cfg.NumLayers+1)*seq*cfg.HiddenSize || len(logits) != seq*cfg.VocabSize {
 		t.Fatalf("reference sizes do not match the config: hidden %d, logits %d, seq %d", len(hidden), len(logits), seq)
 	}
-	emb, err := Embed(w, cfg.HiddenSize, ids)
+	emb, err := llm.Embed(w, cfg, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
