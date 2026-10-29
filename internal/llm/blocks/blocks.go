@@ -95,7 +95,24 @@ func (g *Graph) Str(s string) *mlpackage.Var {
 
 // Weight adds a (rows, cols) matrix in the chosen format, multiplied by scale.
 func (g *Graph) Weight(name string, rows, cols int, scale float32) *mlpackage.Var {
-	w := g.Get(name, rows, cols)
+	return g.matrix(name, name, g.Get(name, rows, cols), rows, cols, scale)
+}
+
+// WeightRows is Weight for rows [begin, end) of the named matrix of cols columns: one part of a
+// fused projection (PLaMo's qkv_proj and gate_up_proj). The constant is called name_begin_end.
+func (g *Graph) WeightRows(name string, begin, end, cols int, scale float32) *mlpackage.Var {
+	w, err := g.W.Rows(name, begin, end)
+	if err != nil {
+		g.Fail("%v", err)
+	}
+	if len(w) != (end-begin)*cols {
+		g.Fail("%s: rows %d..%d have %d values, expected %d columns", name, begin, end, len(w), cols)
+	}
+	return g.matrix(name, fmt.Sprintf("%s_%d_%d", name, begin, end), w, end-begin, cols, scale)
+}
+
+// matrix writes the (rows, cols) values w of the tensor name as the constant constName.
+func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scale float32) *mlpackage.Var {
 	if scale != 1 {
 		for i := range w {
 			w[i] *= scale
@@ -111,7 +128,7 @@ func (g *Graph) Weight(name string, rows, cols int, scale float32) *mlpackage.Va
 	}
 	switch format {
 	case "fp16":
-		v, err = g.B.F16s(name, []int{rows, cols}, w)
+		v, err = g.B.F16s(constName, []int{rows, cols}, w)
 	case "lut4":
 		mode := palette.Uniform
 		switch g.Opts.Quant {
@@ -124,7 +141,7 @@ func (g *Graph) Weight(name string, rows, cols int, scale float32) *mlpackage.Va
 			g.Fail("unknown quantizer %q", g.Opts.Quant)
 		}
 		q := palette.Quantize(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, 8, mode)
-		v, err = g.B.LUT4(name, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
+		v, err = g.B.LUT4(constName, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
 	default:
 		g.Fail("unknown format %q", g.Opts.Format)
 	}
@@ -149,6 +166,15 @@ func (g *Graph) LinearS(x *mlpackage.Var, name, outName string, outDim int, s fl
 	if outName != "" {
 		return g.B.NamedOp("linear", outName, map[string]any{"x": x, "weight": w}, mlpackage.Float16, shape...)
 	}
+	return g.Op("linear", map[string]any{"x": x, "weight": w}, shape...)
+}
+
+// LinearRows is Linear with rows [begin, end) of the named weight: one output of a fused
+// projection, end-begin wide.
+func (g *Graph) LinearRows(x *mlpackage.Var, name string, begin, end int) *mlpackage.Var {
+	in := x.Shape[len(x.Shape)-1]
+	w := g.WeightRows(name, begin, end, in, 1)
+	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), end-begin)
 	return g.Op("linear", map[string]any{"x": x, "weight": w}, shape...)
 }
 
@@ -254,6 +280,16 @@ func (g *Graph) CausalMask(name string, seq, window int) *mlpackage.Var {
 		}
 	}
 	return g.F16s(name, []int{1, 1, seq, seq}, vals)
+}
+
+// MaskBias turns an encoder's padding mask (1, seq), 1 for tokens and 0 for padding, into the
+// additive attention bias (1, 1, 1, seq): 0 for tokens and -10000 for padding, as transformers'
+// extended attention mask (fp16 safe).
+func (g *Graph) MaskBias(mask *mlpackage.Var) *mlpackage.Var {
+	s := mask.Shape[1]
+	v := g.Op("mul", map[string]any{"x": mask, "y": g.B.ScalarF16(1e4)}, 1, s)
+	v = g.Op("add", map[string]any{"x": v, "y": g.B.ScalarF16(-1e4)}, 1, s)
+	return g.Op("reshape", map[string]any{"x": v, "shape": g.B.Ints(1, 1, 1, int32(s))}, 1, 1, 1, s)
 }
 
 // Attention is causal scaled dot product attention (SDPA with CausalMask(maskName, seq, window)).

@@ -58,7 +58,11 @@ func main() {
 	flag.Parse()
 	if *list {
 		for _, a := range llm.Archs() {
-			fmt.Printf("%s\t%s (model_type %s)\n", a.Name, a.Title, strings.Join(a.ModelTypes, ", "))
+			if len(a.ModelTypes) > 0 {
+				fmt.Printf("%s\t%s (model_type %s)\n", a.Name, a.Title, strings.Join(a.ModelTypes, ", "))
+			} else {
+				fmt.Printf("%s\t%s (architectures %s)\n", a.Name, a.Title, strings.Join(a.Architectures, ", "))
+			}
 		}
 		fmt.Println("\ntargets (-target):")
 		for _, t := range llm.Targets {

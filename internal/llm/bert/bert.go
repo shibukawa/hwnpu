@@ -162,7 +162,7 @@ func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (i
 		}
 		var bias *mlpackage.Var
 		if opts.Layers > 0 {
-			bias = m.maskBias(mask)
+			bias = m.MaskBias(mask)
 		}
 		for i := opts.Start; i < opts.Start+opts.Layers; i++ {
 			h = m.layer(i, h, bias)
@@ -187,15 +187,6 @@ func (m *builder) embeddings(x *mlpackage.Var) *mlpackage.Var {
 	}
 	h := m.Op("add", map[string]any{"x": x, "y": m.F16s(p+"position_and_type", []int{1, m.seq, m.d}, add)}, x.Shape...)
 	return m.LayerNorm(h, p+"LayerNorm.weight", p+"LayerNorm.bias", m.d, m.cfg.LayerNormEps)
-}
-
-// maskBias turns the mask into the additive attention bias (1, 1, 1, seq): 0 for tokens and
-// -10000 for padding, as transformers' extended attention mask (fp16 safe).
-func (m *builder) maskBias(mask *mlpackage.Var) *mlpackage.Var {
-	s := m.seq
-	v := m.Op("mul", map[string]any{"x": mask, "y": m.B.ScalarF16(1e4)}, 1, s)
-	v = m.Op("add", map[string]any{"x": v, "y": m.B.ScalarF16(-1e4)}, 1, s)
-	return m.Op("reshape", map[string]any{"x": v, "shape": m.B.Ints(1, 1, 1, int32(s))}, 1, 1, 1, s)
 }
 
 // layer is BertLayer: self attention with a residual and LayerNorm, then the GELU MLP with a
