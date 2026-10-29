@@ -90,3 +90,13 @@ func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (i
 	in, out, err := Build(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv")})
 	return []mlpackage.Feature{in}, out, err
 }
+
+// BuildCached writes the program with a KV cache (llm.Cached), with the settings of Build.
+func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
+	ps := Arch.Param(opts, "post-scale")
+	postScale, err := strconv.ParseFloat(ps, 64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("lfm3: post-scale %q: %w", ps, err)
+	}
+	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv")})
+}

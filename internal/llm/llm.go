@@ -34,8 +34,12 @@ func Embed(w Weights, m Model, tokens []int32) ([]float32, error) {
 // Options select what to build. They are common to all architectures; settings that only one
 // architecture has go in Params.
 type Options struct {
-	// Seq is the fixed sequence length of the program.
+	// Seq is the fixed sequence length of the program: with Cache, the tokens one call takes.
 	Seq int
+	// Cache, when not zero, builds the program for a causal model (Cached) to run with a KV cache
+	// of this many tokens held by the host: it takes the earlier tokens' keys and values and
+	// the other state it needs as inputs, and outputs the new ones (see Cached).
+	Cache int
 	// Layers truncates the model to its first Layers layers (0 means all); with a truncated
 	// model the output is the hidden state instead of the logits, for checking layer by layer.
 	Layers int
