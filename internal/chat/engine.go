@@ -34,6 +34,8 @@ type Config struct {
 	CacheDir string
 	// Log receives what loading does (nil for none).
 	Log io.Writer
+	// Name is the model's name in the API (default: the first package's).
+	Name string
 }
 
 // Engine runs a model with a KV cache, one request at a time. A prompt that begins like an
@@ -127,7 +129,10 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		c.Tokenizer = filepath.Join(filepath.Dir(c.ModelConfig), "tokenizer.json")
 	}
 	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}}
-	e.Name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
+	e.Name = c.Name
+	if e.Name == "" {
+		e.Name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
+	}
 	if e.Tok, err = tokenizer.Load(c.Tokenizer); err != nil {
 		return nil, err
 	}
