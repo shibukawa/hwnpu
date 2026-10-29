@@ -10,6 +10,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/backend/coreml"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
@@ -37,7 +38,7 @@ func TestANEPrecision(t *testing.T) {
 	defer w.Close()
 	ids := readI32(t, filepath.Join(dir, "ref_bf16.ids.bin"))
 	seq, d := len(ids), cfg.HiddenSize
-	emb, err := Embed(w, d, ids)
+	emb, err := llm.Embed(w, cfg, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,10 +93,10 @@ func TestANEPrecision(t *testing.T) {
 			return m.rmsNorm(x, "model.layers.0.operator_norm.weight", d)
 		}},
 		{"in_proj linear fp16", lin(x), func(m *builder, x *mlpackage.Var) *mlpackage.Var {
-			return m.linear(x, "model.layers.0.conv.in_proj.weight", "", 3*d)
+			return m.Linear(x, "model.layers.0.conv.in_proj.weight", "", 3*d)
 		}},
 		{"rmsnorm + in_proj fp16", lin(normed), func(m *builder, x *mlpackage.Var) *mlpackage.Var {
-			return m.linear(m.rmsNorm(x, "model.layers.0.operator_norm.weight", d), "model.layers.0.conv.in_proj.weight", "", 3*d)
+			return m.Linear(m.rmsNorm(x, "model.layers.0.operator_norm.weight", d), "model.layers.0.conv.in_proj.weight", "", 3*d)
 		}},
 	}
 	for _, c := range cases {
@@ -105,7 +106,7 @@ func TestANEPrecision(t *testing.T) {
 			t.Fatal(err)
 		}
 		b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-		m := &builder{cfg: cfg, w: w, opts: Options{Format: "fp16", Group: 16}, b: b, seq: seq, d: d}
+		m := newBuilder(b, cfg, w, Options{Seq: seq, Format: "fp16", Group: 16})
 		xv := b.Input("x", mlpackage.Float16, 1, seq, d)
 		y := c.build(m, xv)
 		y = b.NamedOp("identity", "y", map[string]any{"x": y}, mlpackage.Float16, y.Shape...)

@@ -172,17 +172,25 @@ python tools/coreml/gen_sweep.py build/sweep --report build/power-sweep.json
 
 hwnpu は読み込み時にモデルを変換できません。変換には OpenVINO の C++ フロントエンド、Python の coremltools、AMD の非公開コンパイラが要り、機械ごとに変換すると時間と電力を使ってしまうからです。そこで、開発者が一度だけ変換し、実行先ごとに（その NPU が最も速く読める精度で）1 つずつ成果物を作って配ります（S3、NFS、Hugging Face の非公開リポジトリなど）。アプリケーションは見つけたデバイス用の成果物を選び、実行時のコンパイルだけをベンダーに任せます。`WithCacheDir` がその結果を機械ごとに保存します。
 
-変換に Python は要りません。LLM の構造は数種類のブロック（正規化、注意機構または畳み込み、ゲート付き MLP）の繰り返しなので、`cmd/hwnpu-convert` は `config.json` からグラフを Go で組み立て、重みは safetensors か GGUF から読みます。今のところ Liquid AI の LFM3 に対応し、Core ML のパッケージを書き出します。Intel の IR と AMD 向けの書き出しは未実装です。
+変換に Python は要りません。LLM の構造は数種類のブロック（正規化、注意機構または畳み込み、ゲート付き MLP）の繰り返しなので、`cmd/hwnpu-convert` は `config.json` からグラフを Go で組み立て、重みは safetensors か GGUF から読みます。対応するアーキテクチャはホワイトリストで管理していて（`-archs` で一覧を表示）、今のところ Liquid AI の LFM3 と BERT 系エンコーダ（all-MiniLM-L6-v2、E5、BGE、GTE など）です。アーキテクチャは `config.json` から判別します。書き出すのは Core ML のパッケージです。Intel の IR と AMD 向けの書き出しは未実装です。
 
 ```bash
 go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o lfm3.mlpackage -seq 32
 ```
 
-できたパッケージの入力は `x`（fp16 の埋め込み `(1, seq, hidden)`）、出力は `y`（ロジット `(1, seq, vocab)`）です。Core ML は `gather` を必ず CPU に置くので、埋め込みの表引きはホスト側で行います。重みは 4 ビットの表引き方式（`-format lut4`）で、出力 16 行ごとに fp16 16 個の表を持ちます。これが Neural Engine が全速で読める唯一の圧縮形式です（後述）。`-format fp16` は重みをそのまま書き出し、グラフの確認に使います。
+できたパッケージの入力は `x`（fp16 の埋め込み `(1, seq, hidden)`）、出力は `y`（ロジット `(1, seq, vocab)`）です。Core ML は `gather` を必ず CPU に置くので、埋め込みの表引きはホスト側で行います。BERT 系のパッケージは、2 つ目の入力 `mask`（fp16 の `(1, seq)`。トークンは 1、パディングは 0）を取り、最後の隠れ状態 `(1, seq, hidden)` を返します。文埋め込みにするためのプーリング（平均か CLS）と正規化は、ホスト側で行います。重みは 4 ビットの表引き方式（`-format lut4`）で、出力 16 行ごとに fp16 16 個の表を持ちます。これが Neural Engine が全速で読める唯一の圧縮形式です（後述）。`-format fp16` は重みをそのまま書き出し、グラフの確認に使います。
+
+変換が正しいかは、Mac がなくても確かめられます。`tools/ref/ref_logits.py` で Hugging Face の実装から参照の活性を保存し、`cmd/hwnpu-check` がグラフを CPU で fp32 のまま実行して層ごとに照合します。各層には参照側の入力を与えるので、誤差が後ろの層に積み重ならず、最初に間違っている層がそのまま分かります。チェックポイントにあって変換が読まないテンソルも報告します。`-package` を付けると、書き出したパッケージ（lut4 など）のロジットを参照と比べます。
+
+```bash
+python tools/ref/ref_logits.py build/lfm3 build/lfm3/ref --seq 32
+go run ./cmd/hwnpu-check -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -ref build/lfm3/ref
+go run ./cmd/hwnpu-check -package lfm3.mlpackage -ref build/lfm3/ref
+```
 
 ### 元のチェックポイントの選び方
 
-公式の bf16 から変換します。公開されている量子化済みのものは、対象の形式へ劣化なしに並べ替えられるときだけ使います。劣化なしの変換は「より細かい単位か、より広い範囲の方式」への片方向だけです。対称 int4（並べ替えなしの GPTQ、compressed-tensors の W4A16）は Intel の対称 int4 に、AWQ は AMD の非対称 uint4（128 個ごと）にそのまま入ります。Neural Engine の表引き方式に劣化なしで入る公開形式はなく、4 ビットを別の 4 ビットに量子化し直すと誤差が二重に乗ります。LFM3-1.7B では、bf16 から lut4 にすると bf16 モデルに対する KL が 0.95 nat、公式の QAD Q4_0 GGUF から作り直すと 0.94 でした（QAD 自体の差は 0.35 なので、出発点は近いのに結果は良くなりません）。結果は必ず測ります。`tools/lfm3/ref_logits.py` が PyTorch の隠れ状態とロジットを保存し、`tools/lfm3/eval_logits.py` と Go のテストがパッケージを層ごとに照合します。
+公式の bf16 から変換します。公開されている量子化済みのものは、対象の形式へ劣化なしに並べ替えられるときだけ使います。劣化なしの変換は「より細かい単位か、より広い範囲の方式」への片方向だけです。対称 int4（並べ替えなしの GPTQ、compressed-tensors の W4A16）は Intel の対称 int4 に、AWQ は AMD の非対称 uint4（128 個ごと）にそのまま入ります。Neural Engine の表引き方式に劣化なしで入る公開形式はなく、4 ビットを別の 4 ビットに量子化し直すと誤差が二重に乗ります。LFM3-1.7B では、bf16 から lut4 にすると bf16 モデルに対する KL が 0.95 nat、公式の QAD Q4_0 GGUF から作り直すと 0.94 でした（QAD 自体の差は 0.35 なので、出発点は近いのに結果は良くなりません）。結果は必ず測ります。`tools/ref/ref_logits.py` が PyTorch の隠れ状態とロジットを保存し、`cmd/hwnpu-check`、`tools/ref/eval_logits.py`、Go のテストがパッケージを層ごとに照合します。
 
 ### Neural Engine が受け付ける形式（M3、macOS 27.0.1）
 
