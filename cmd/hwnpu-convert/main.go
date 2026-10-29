@@ -24,13 +24,15 @@
 // -cache N builds a causal LM to run with a KV cache of N tokens held by the host
 // (internal/llm/decode): -seq is then the tokens per call (1 to generate), and each part takes the
 // cached keys, values and convolution windows of its own layers as inputs and outputs the new
-// ones. cmd/hwnpu-generate runs it.
+// ones. -cache a,b,c writes a tier per length, and generation starts on the shortest tier and
+// moves up as the sequence grows (internal/llm/chain). cmd/hwnpu-generate runs it.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -48,7 +50,7 @@ func main() {
 	hidden := flag.Bool("hidden", false, "output the final hidden state instead of logits")
 	target := flag.String("target", "any", "chip whose Neural Engine size limit decides the split: "+targetNames()+", any (the smallest limit) or none (never split)")
 	parts := flag.Int("parts", 0, "number of parts (0: the fewest under the -target limit)")
-	cache := flag.Int("cache", 0, "build a causal LM to run with a KV cache of this many tokens held by the host; -seq is then the tokens per call (1 to generate)")
+	cache := flag.String("cache", "0", "build a causal LM to run with a KV cache of this many tokens held by the host; -seq is then the tokens per call (1 to generate). Several lengths, comma separated and increasing, write a tier per length: a sequence runs on the shortest and moves up as it grows")
 	var opts llm.Options
 	setOpts := llm.BindFlags(flag.CommandLine, &opts, "lut4")
 	flag.Parse()
@@ -75,8 +77,18 @@ func main() {
 		os.Exit(2)
 	}
 	setOpts()
-	opts.Seq, opts.Layers, opts.Hidden, opts.Cache = *seq, *layers, *hidden, *cache
-	if err := run(*config, *arch, *weights, *out, *target, *parts, opts); err != nil {
+	opts.Seq, opts.Layers, opts.Hidden = *seq, *layers, *hidden
+	var caches []int
+	for _, s := range strings.Split(*cache, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil || n < 0 || len(caches) > 0 && (n <= caches[len(caches)-1] || caches[0] == 0) {
+			fmt.Fprintln(os.Stderr, "hwnpu-convert: -cache takes a length, or increasing lengths separated by commas")
+			os.Exit(2)
+		}
+		caches = append(caches, n)
+	}
+	opts.Cache = caches[0]
+	if err := run(*config, *arch, *weights, *out, *target, *parts, caches, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-convert:", err)
 		os.Exit(1)
 	}
@@ -90,7 +102,7 @@ func targetNames() string {
 	return strings.Join(n, ", ")
 }
 
-func run(config, arch, weights, out, targetName string, nParts int, opts llm.Options) error {
+func run(config, arch, weights, out, targetName string, nParts int, caches []int, opts llm.Options) error {
 	a, model, err := llm.LoadConfig(config, arch)
 	if err != nil {
 		return err
@@ -100,6 +112,6 @@ func run(config, arch, weights, out, targetName string, nParts int, opts llm.Opt
 		return err
 	}
 	defer w.Close()
-	_, err = llm.Convert(a, model, w, out, targetName, nParts, opts, os.Stdout)
+	_, err = llm.ConvertTiers(a, model, w, out, targetName, nParts, caches, opts, os.Stdout)
 	return err
 }

@@ -25,6 +25,11 @@ facts:
     (チャットの書式、貪欲法かサンプリング、KV キャッシュなしで固定長の窓を毎トークン動かし、満ちたら古い 4 分の 1 を捨てる)。
     TestPartsMatchWhole で 1〜3 分割の連鎖が 1 部分とビット単位で一致 (fp16、lut4)。LFM3-1.7B lut4 は 1/2/4/8 分割とも全部 ANE で 34 ms/token 前後
     (backend:apple-coreml の lfm3_generation)
+  tiers: >-
+    2026-10-30 容量の段階を実装 (hwnpu-convert -cache a,b,c → Manifest.Tiers、chain.Grow/Preload/LoadAll、decode.Session.Migrate、
+    hwnpu-generate -preload)。切り替えは 0 秒で出力は固定の長い段階と同一、常駐させても動いている段階は単独と同じ速さ (1024 で 19.2 ms)。
+    段階の読み込み (6〜30 秒) を裏で行うと生成が半分以下になるので既定は先に全部読み込む。端から端の利得 (見込み約 20%) はスワップ 9 GB の機械では
+    1〜2% しか示せず、空いた機械での測り直しが要る (docs/design.md 16.20)
   tradeoff: >-
     分割を細かくするほどメモリが減り、境目 1 つにつき約 0.1 ms (M3) / 0.16 ms (M4) 遅くなる。M4 の 16 分割でも 2 分割より 4% 遅いだけ。
     上限ぎりぎりまで部分を大きくしても速さの得は小さいので、メモリを主に、速さを従に選べる

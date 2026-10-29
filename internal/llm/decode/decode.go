@@ -123,6 +123,60 @@ func (s *Session) Cache() int { return s.t }
 // Pos is the number of tokens in the sequence so far.
 func (s *Session) Pos() int { return s.pos }
 
+// Migrate moves the session to np, a program of the same model whose caches are at least as long
+// (the next tier of a tiered model): the cached rows are copied over, and np becomes the session's
+// only program; add programs of other step lengths again (Add) with buffers shared with np. A ring
+// (a cache shorter than the longest) keeps its length and is copied as is.
+func (s *Session) Migrate(np Program) error {
+	x, ok := np.InShape["x"]
+	if !ok || len(x) != 3 || x[2] != s.hidden {
+		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
+	}
+	if y, ok := np.OutShape["y"]; !ok || len(y) != 3 || y[1] != x[1] || y[2] != s.vocab {
+		return fmt.Errorf("decode: no output y (1, %d, %d)", x[1], s.vocab)
+	}
+	nt := 0
+	for name, sh := range np.InShape {
+		if strings.HasPrefix(name, "kv_") {
+			nt = max(nt, sh[2])
+		}
+		if cacheInput(name) {
+			if _, ok := np.OutShape[name+"_new"]; !ok {
+				return fmt.Errorf("decode: input %s has no output %s_new", name, name)
+			}
+		}
+	}
+	if nt < s.t {
+		return fmt.Errorf("decode: the new program caches %d tokens, fewer than the session's %d", nt, s.t)
+	}
+	first := s.progs[0].p
+	for name, in := range first.In {
+		if !cacheInput(name) {
+			continue
+		}
+		out, ok := np.In[name]
+		if !ok {
+			return fmt.Errorf("decode: the new program has no input %s", name)
+		}
+		sh, nsh := first.InShape[name], np.InShape[name]
+		switch {
+		case len(sh) == 4 && len(nsh) == 4 && nsh[2] > sh[2] && sh[1] == nsh[1] && sh[3] == nsh[3]:
+			// (1, heads, L, d) -> (1, heads, nL, d): each head's rows at the same positions
+			heads, L, nL, d := sh[1], sh[2], nsh[2], sh[3]
+			clear(out)
+			for h := 0; h < heads; h++ {
+				copy(out[2*h*nL*d:], in[2*h*L*d:2*(h+1)*L*d])
+			}
+		case len(in) == len(out):
+			copy(out, in)
+		default:
+			return fmt.Errorf("decode: %s has shape %v in the new program, %v in the session", name, nsh, sh)
+		}
+	}
+	s.progs, s.t = []step{{np, x[1]}}, nt
+	return nil
+}
+
 // Reset empties the cache.
 func (s *Session) Reset() {
 	for name, b := range s.progs[0].p.In {
