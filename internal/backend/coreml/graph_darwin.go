@@ -2,6 +2,7 @@ package coreml
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,6 +63,7 @@ func mlDataType(d types.DType) int64 {
 type graph struct {
 	model       objc.ID // retained MLModel
 	args        []types.ArgInfo
+	states      []string // names of the model's state inputs (MLState), which are not arguments
 	placement   types.PlacementReport
 	compiledDir string // removed on Close when non-empty
 	cached      bool
@@ -110,6 +112,9 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		g.model = retain(model)
 		args, err := describeArgs(model)
 		g.args = args
+		if desc := send(model, "modelDescription"); respondsTo(desc, "stateDescriptionsByName") {
+			g.states, _ = dictItems(send(desc, "stateDescriptionsByName"))
+		}
 		return err
 	})
 	if err == nil {
@@ -266,6 +271,25 @@ func (g *graph) Placement() types.PlacementReport { return g.placement }
 
 func (g *graph) NewRequest() (backend.Request, error) {
 	r := &request{g: g, binds: make([]*buffer, len(g.args)), padded: make([]*buffer, len(g.args))}
+	if len(g.states) > 0 {
+		err := withPool(func() error {
+			if !respondsTo(g.model, "newState") {
+				return fmt.Errorf("coreml: the model has state inputs, which need macOS 15 or later: %w", ErrUnsupported)
+			}
+			r.state = send(g.model, "newState") // owned: a new* method returns it retained
+			if r.state == 0 {
+				return errors.New("coreml: newState failed")
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := r.ResetState(); err != nil {
+			r.Close()
+			return nil, err
+		}
+	}
 	for i, a := range g.args {
 		if a.PaddedDims == nil {
 			continue

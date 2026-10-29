@@ -139,6 +139,14 @@ func markdown(rep *report) string {
 		}
 		sb.WriteString("\nEvery part is loaded before any is timed. ms/token runs each part once, the output buffer of one bound as the input of the next; parts alone added up is the sum of each part's own time. Layout functions writes the parts as the functions of one package, loaded one function at a time. Peak RSS is the largest resident memory of the process that loaded and ran the parts (it leaves out the system's own Core ML and Neural Engine processes). The error after each part compares the hidden state with the same parts run one at a time on the reference units (rms of the difference over rms of the reference).\n")
 	}
+	if len(rep.KV) > 0 {
+		sb.WriteString("\n## KV cache: host buffers against Core ML states\n\n")
+		sb.WriteString("| cache | KV bytes | mode | placement | ms/token | CPU use | error |\n|---|---|---|---|---|---|---|\n")
+		for _, k := range rep.KV {
+			fmt.Fprintf(&sb, "| %d | %.1f MiB | %s | %s | %s | %s | %s |\n", k.Cache, float64(k.CacheBytes)/(1<<20), k.Mode, k.placement(), cell(k.MsPerCall, "%.2f"), cell(k.CPUUse, "%.2f"), errCell(k.result))
+		}
+		sb.WriteString("\nOne token through lut4 layers of the bench size with attention over a cache of the given length. host binds the cache as inputs and outputs the token's keys and values; state keeps it in Core ML states (MLState) and writes the token in with a one-hot row.\n")
+	}
 	if len(rep.Notes) > 0 {
 		sb.WriteString("\n")
 		for _, n := range rep.Notes {

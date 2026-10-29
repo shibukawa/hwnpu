@@ -233,6 +233,10 @@ func fillInput(p []byte, dt hwnpu.DType) {
 			v := math.Float32bits(float32(math.Sin(float64(i/4) / 100)))
 			p[i], p[i+1], p[i+2], p[i+3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
 		}
+	case hwnpu.I8:
+		for i := range p {
+			p[i] = byte(int8(100 * math.Sin(float64(i)/100)))
+		}
 	}
 }
 

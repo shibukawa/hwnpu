@@ -21,7 +21,7 @@ import (
 const childMode, childMark = "_measure", "npuprobe-result "
 
 type childSpec struct {
-	Kind     string        `json:"kind"` // try, several, split or chain
+	Kind     string        `json:"kind"` // try, several, split, chain or kv
 	Backend  string        `json:"backend"`
 	DeviceID string        `json:"device_id"`
 	Format   string        `json:"format"`
@@ -139,6 +139,8 @@ func runChild(arg string) error {
 		rs = p.several(spec.Format, spec.Layers, spec.N)
 	case "split":
 		rs = p.split(spec.Format, spec.Layers, spec.N, spec.Layout)
+	case "kv":
+		rs = p.kv(spec.Layout, spec.Layers, spec.N)
 	case "chain":
 		rs = p.chain(spec.Format, spec.Layers, spec.N, spec.Units)
 	default:
