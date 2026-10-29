@@ -136,3 +136,51 @@ func TestCachedMatchesFull(t *testing.T) {
 		})
 	}
 }
+
+// A session moved to a tier with a longer cache (decode.Session.Migrate) goes on exactly as the
+// longer program would have from the start: the sequence is run on a cache of 5, moved to one of
+// 12 when that is full, and compared with the program without a cache at every position.
+func TestMigrateTiers(t *testing.T) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	tokens := []int32{3, 1, 4, 1, 5, 9, 2, 6}
+	n := len(tokens)
+	emb, err := llm.Embed(w, cfg, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := runCPU(t, cfg, w, Options{Seq: n, Format: "fp16"}, emb)
+	row := func(i int) []float32 { return emb[i*cfg.HiddenSize : (i+1)*cfg.HiddenSize] }
+	opts := llm.Options{Seq: 1, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
+	small, large := opts, opts
+	small.Cache, large.Cache = 5, 12
+	s, err := decode.New(cpuProgram(t, writeParts(t, cfg, w, small, 2)), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	largeProgram := cpuProgram(t, writeParts(t, cfg, w, large, 3))
+	worst := 0.0
+	for pos := 0; pos < n; pos++ {
+		if s.Pos() == s.Cache() {
+			if err := s.Migrate(largeProgram); err != nil {
+				t.Fatal(err)
+			}
+			if s.Cache() != 12 {
+				t.Fatalf("cache %d after the move", s.Cache())
+			}
+		}
+		logits, err := s.Step([][]float32{row(pos)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		worst = math.Max(worst, relErr(logits, full[pos*cfg.VocabSize:(pos+1)*cfg.VocabSize]))
+	}
+	if worst > 2e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g", worst)
+	// Moving back to the shorter cache is refused.
+	if err := s.Migrate(cpuProgram(t, writeParts(t, cfg, w, small, 2))); err == nil {
+		t.Error("moving to a shorter cache did not fail")
+	}
+}

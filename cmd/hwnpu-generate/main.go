@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -54,6 +55,7 @@ func main() {
 	rep := flag.Float64("rep", 1.1, "repetition penalty on tokens already in the window (1: none)")
 	seed := flag.Uint64("seed", 1, "random seed for sampling")
 	special := flag.Bool("special", false, "print special tokens such as <think> too")
+	preload := flag.String("preload", "all", "with cache tiers: all loads every tier before generating (a tier takes 6 to 30 s to load and slows generation while it loads); a fraction 0 to 1 loads the next tier in the background once the cache is that full")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	flag.Parse()
 	if *pkg == "" || *config == "" || *weights == "" || *prompt == "" {
@@ -71,13 +73,22 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	s := sampling{temp: *temp, rep: *rep, topK: *topK, rng: rand.New(rand.NewPCG(*seed, 0))}
-	if err := run(ctx, *pkg, *config, *weights, *tok, *system, *prompt, *raw, *special, *maxNew, *cacheDir, s); err != nil {
+	preloadAt := -1.0 // all
+	if *preload != "all" {
+		if v, err := strconv.ParseFloat(*preload, 64); err != nil || v < 0 || v > 1 {
+			fmt.Fprintln(os.Stderr, "hwnpu-generate: -preload is all or a fraction from 0 to 1")
+			os.Exit(2)
+		} else {
+			preloadAt = v
+		}
+	}
+	if err := run(ctx, *pkg, *config, *weights, *tok, *system, *prompt, *raw, *special, *maxNew, *cacheDir, preloadAt, s); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-generate:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt string, raw, special bool, maxNew int, cacheDir string, s sampling) error {
+func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt string, raw, special bool, maxNew int, cacheDir string, preloadAt float64, s sampling) error {
 	a, model, err := llm.LoadConfig(config, "")
 	if err != nil {
 		return err
@@ -122,6 +133,17 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 		}
 	}
 	fmt.Fprintf(os.Stderr, "loaded %d parts in %.1fs\n", len(c.Parts()), time.Since(t0).Seconds())
+	if tiers := c.Tiers(); len(tiers) > 1 {
+		if preloadAt < 0 {
+			t2 := time.Now()
+			if err := c.LoadAll(ctx); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "cache tiers %v: all loaded in %.1fs; starting on %d\n", tiers, time.Since(t2).Seconds(), tiers[0])
+		} else {
+			fmt.Fprintf(os.Stderr, "cache tiers %v: starting on %d, the next loads in the background at %.0f%% full\n", tiers, tiers[0], 100*preloadAt)
+		}
+	}
 
 	x, y := c.Input("x"), c.Output()
 	if x == nil {
@@ -146,7 +168,7 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 		if !ok {
 			return fmt.Errorf("%s has a KV cache, but %s cannot run with one", pkg, a.Title)
 		}
-		return generateCached(ctx, c.Program(ctx), cm, ids, stops, embed, out, maxNew, s)
+		return generateCached(ctx, c, cm, ids, stops, embed, out, maxNew, preloadAt, s)
 	}
 	hidden := model.Hidden()
 	vocab, _ := model.Output()
@@ -333,16 +355,36 @@ func (p *printer) add(t int32) {
 	}
 }
 
-// generateCached reads the prompt Q tokens per step and then generates one token per step.
-func generateCached(ctx context.Context, prog decode.Program, m llm.Cached, ids []int32, stops map[int32]bool, embed func(int32) ([]float32, error), out *printer, maxNew int, s sampling) error {
-	sess, err := decode.New(prog, m)
+// generateCached reads the prompt Q tokens per step and then generates one token per step. With
+// cache tiers it starts on the loaded (shortest) one, preloads the next when the cache is preloadAt
+// full and moves to it when the cache fills.
+func generateCached(ctx context.Context, c *chain.Chain, m llm.Cached, ids []int32, stops map[int32]bool, embed func(int32) ([]float32, error), out *printer, maxNew int, preloadAt float64, s sampling) error {
+	sess, err := decode.New(c.Program(ctx), m)
 	if err != nil {
 		return err
 	}
-	if len(ids) >= sess.Cache() {
-		return fmt.Errorf("the prompt is %d tokens; the cache holds %d (convert with a larger -cache)", len(ids), sess.Cache())
+	tiers := c.Tiers()
+	if largest := tiers[len(tiers)-1]; len(ids) >= largest {
+		return fmt.Errorf("the prompt is %d tokens; the cache holds %d (convert with a larger -cache)", len(ids), largest)
 	}
+	switches := 0
 	step := func(toks []int32) ([]float32, error) {
+		if sess.Pos()+len(toks) > sess.Cache() {
+			if !c.HasNext() {
+				return nil, fmt.Errorf("the KV cache of %d tokens is full", sess.Cache())
+			}
+			from := sess.Cache()
+			waited, preloaded, err := c.Grow(ctx, sess.Migrate)
+			if err != nil {
+				return nil, err
+			}
+			how := "loaded now"
+			if preloaded {
+				how = "preloaded"
+			}
+			fmt.Fprintf(os.Stderr, "\n[cache %d full: moved to %d in %.1f s (%s)]\n", from, sess.Cache(), waited.Seconds(), how)
+			switches++
+		}
 		var e [][]float32
 		for _, t := range toks {
 			v, err := embed(t)
@@ -351,7 +393,11 @@ func generateCached(ctx context.Context, prog decode.Program, m llm.Cached, ids 
 			}
 			e = append(e, v)
 		}
-		return sess.Step(e)
+		logits, err := sess.Step(e)
+		if err == nil && preloadAt >= 0 && c.HasNext() && float64(sess.Pos()) >= preloadAt*float64(sess.Cache()) {
+			c.Preload(ctx)
+		}
+		return logits, err
 	}
 	t0 := time.Now()
 	var logits []float32
@@ -372,7 +418,7 @@ func generateCached(ctx context.Context, prog decode.Program, m llm.Cached, ids 
 		out.add(next)
 		seen = append(seen, next)
 		n++
-		if sess.Pos() == sess.Cache() {
+		if sess.Pos() == sess.Cache() && !c.HasNext() {
 			fmt.Fprintf(os.Stderr, "\n[the KV cache of %d tokens is full]\n", sess.Cache())
 			break
 		}
@@ -385,7 +431,11 @@ func generateCached(ctx context.Context, prog decode.Program, m llm.Cached, ids 
 	}
 	fmt.Println()
 	gen := time.Since(t1)
-	fmt.Fprintf(os.Stderr, "prompt %d tokens in %.0f ms (%d per step); %d tokens in %.1f s, %.1f ms/token (%.1f tokens/s); cache %d of %d\n",
+	fmt.Fprintf(os.Stderr, "prompt %d tokens in %.0f ms (%d per step); %d tokens in %.1f s, %.1f ms/token (%.1f tokens/s); cache %d of %d",
 		len(ids), float64(prefill.Microseconds())/1000, sess.Q(), n, gen.Seconds(), float64(gen.Microseconds())/1000/float64(max(n, 1)), float64(n)/gen.Seconds(), sess.Pos(), sess.Cache())
+	if switches > 0 {
+		fmt.Fprintf(os.Stderr, " (%d tier switches, waiting included)", switches)
+	}
+	fmt.Fprintln(os.Stderr)
 	return nil
 }

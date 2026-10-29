@@ -33,6 +33,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,7 +53,7 @@ func main() {
 	hidden := flag.Bool("hidden", false, "output the final hidden state instead of logits")
 	target := flag.String("target", "any", "chip whose Neural Engine size limit decides the split: "+targetNames()+", any (the smallest limit) or none (never split)")
 	parts := flag.Int("parts", 0, "number of parts (0: the fewest under the -target limit)")
-	cache := flag.Int("cache", 0, "build a causal LM to run with a KV cache of this many tokens held by the host; -seq is then the tokens per call (1 to generate)")
+	cache := flag.String("cache", "0", "build a causal LM to run with a KV cache of this many tokens held by the host; -seq is then the tokens per call (1 to generate). Several lengths, comma separated and increasing, write a tier per length: a sequence runs on the shortest and moves up as it grows")
 	var opts llm.Options
 	setOpts := llm.BindFlags(flag.CommandLine, &opts, "lut4")
 	flag.Parse()
@@ -75,8 +76,18 @@ func main() {
 		os.Exit(2)
 	}
 	setOpts()
-	opts.Seq, opts.Layers, opts.Hidden, opts.Cache = *seq, *layers, *hidden, *cache
-	if err := run(*config, *arch, *weights, *out, *target, *parts, opts); err != nil {
+	opts.Seq, opts.Layers, opts.Hidden = *seq, *layers, *hidden
+	var caches []int
+	for _, s := range strings.Split(*cache, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil || n < 0 || len(caches) > 0 && (n <= caches[len(caches)-1] || caches[0] == 0) {
+			fmt.Fprintln(os.Stderr, "hwnpu-convert: -cache takes a length, or increasing lengths separated by commas")
+			os.Exit(2)
+		}
+		caches = append(caches, n)
+	}
+	opts.Cache = caches[0]
+	if err := run(*config, *arch, *weights, *out, *target, *parts, caches, opts); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-convert:", err)
 		os.Exit(1)
 	}
@@ -90,7 +101,7 @@ func targetNames() string {
 	return strings.Join(n, ", ")
 }
 
-func run(config, arch, weights, out, targetName string, nParts int, opts llm.Options) error {
+func run(config, arch, weights, out, targetName string, nParts int, caches []int, opts llm.Options) error {
 	a, model, err := llm.LoadConfig(config, arch)
 	if err != nil {
 		return err
@@ -101,9 +112,11 @@ func run(config, arch, weights, out, targetName string, nParts int, opts llm.Opt
 	}
 	defer w.Close()
 
-	if opts.Cache > 0 && opts.Cache+opts.Seq > llm.NeuralEngineMaxDim {
-		fmt.Printf("warning: attention over a cache of %d and %d tokens per call spans %d keys, over the Neural Engine's %d per dimension; it will run on the CPU. Use -cache %d or less\n",
-			opts.Cache, opts.Seq, opts.Cache+opts.Seq, llm.NeuralEngineMaxDim, llm.NeuralEngineMaxDim-opts.Seq)
+	for _, c := range caches {
+		if c > 0 && c+opts.Seq > llm.NeuralEngineMaxDim {
+			fmt.Printf("warning: attention over a cache of %d and %d tokens per call spans %d keys, over the Neural Engine's %d per dimension; it will run on the CPU. Use -cache %d or less\n",
+				c, opts.Seq, c+opts.Seq, llm.NeuralEngineMaxDim, llm.NeuralEngineMaxDim-opts.Seq)
+		}
 	}
 	plan := []llm.Part{{Layers: opts.Layers}}
 	var target llm.Target
@@ -125,33 +138,50 @@ func run(config, arch, weights, out, targetName string, nParts int, opts llm.Opt
 		}
 	}
 	base := strings.TrimSuffix(out, ".mlpackage")
-	man := llm.Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Cache: opts.Cache, Target: target.Name, MaxBytes: target.MaxBytes}
-	for i, p := range plan {
-		path := out
-		if len(plan) > 1 {
-			path = fmt.Sprintf("%s.part%d.mlpackage", base, i+1)
-			opts.Start, opts.Layers = p.Start, p.Layers
+	man := llm.Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Target: target.Name, MaxBytes: target.MaxBytes}
+	tiered := len(caches) > 1
+	for _, cache := range caches {
+		opts.Cache = cache
+		tierBase := base
+		if tiered {
+			tierBase = fmt.Sprintf("%s.c%d", base, cache)
 		}
-		rec, err := buildPart(a, model, w, path, opts)
-		if err != nil {
-			return err
-		}
-		if target.MaxBytes > 0 && rec.WeightBytes >= target.MaxBytes {
-			msg := fmt.Sprintf("%s: weights of %.3f GiB are over the %s limit of %.3f GiB, so the Neural Engine will not take it", path, float64(rec.WeightBytes)/(1<<30), target.Name, float64(target.MaxBytes)/(1<<30))
-			if nParts == 0 {
-				return fmt.Errorf("%s; try -parts %d", msg, len(plan)+1)
+		var recs []llm.PartRecord
+		for i, p := range plan {
+			path := tierBase + ".mlpackage"
+			if len(plan) > 1 {
+				path = fmt.Sprintf("%s.part%d.mlpackage", tierBase, i+1)
+				opts.Start, opts.Layers = p.Start, p.Layers
 			}
-			fmt.Println("warning:", msg)
+			rec, err := buildPart(a, model, w, path, opts)
+			if err != nil {
+				return err
+			}
+			if target.MaxBytes > 0 && rec.WeightBytes >= target.MaxBytes {
+				msg := fmt.Sprintf("%s: weights of %.3f GiB are over the %s limit of %.3f GiB, so the Neural Engine will not take it", path, float64(rec.WeightBytes)/(1<<30), target.Name, float64(target.MaxBytes)/(1<<30))
+				if nParts == 0 {
+					return fmt.Errorf("%s; try -parts %d", msg, len(plan)+1)
+				}
+				fmt.Println("warning:", msg)
+			}
+			recs = append(recs, rec)
 		}
-		if len(plan) > 1 {
-			man.Parts = append(man.Parts, rec)
+		if tiered {
+			man.Tiers = append(man.Tiers, llm.Tier{Cache: cache, Parts: recs})
+		} else if len(plan) > 1 {
+			man.Cache, man.Parts = cache, recs
 		}
 	}
-	if len(plan) > 1 {
+	if tiered || len(plan) > 1 {
 		if err := llm.WriteManifest(base+".parts.json", &man); err != nil {
 			return err
 		}
-		fmt.Printf("%s: %d parts for %s, run in this order with each y bound as the next x\n", base+".parts.json", len(plan), target.Name)
+		switch {
+		case tiered:
+			fmt.Printf("%s: %d tiers of %d parts for %s; hwnpu-generate starts on the shortest cache and moves up\n", base+".parts.json", len(caches), len(plan), target.Name)
+		default:
+			fmt.Printf("%s: %d parts for %s, run in this order with each y bound as the next x\n", base+".parts.json", len(plan), target.Name)
+		}
 	}
 	return nil
 }
