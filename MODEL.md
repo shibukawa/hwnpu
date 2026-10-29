@@ -210,7 +210,7 @@ go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LF
 go run ./cmd/hwnpu-generate -package build/lfm3/lfm3-kv.parts.json -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -n 1500 -prompt "Write an internal memo on why we should use Go."
 ```
 
-LFM3-1.7B (lut4, 2 parts) on an M3 takes 16.8 ms per token with a cache of 256 tokens, 20.6 ms with 1024 and 37.6 ms with 4096: the cost follows the cache's capacity, not how much of it is used, so pick the length you need. A model with a cache takes 15 to 20 seconds to load even with its compiled cache (about 1 second without a KV cache; not investigated yet). A model converted without a cache computes the whole `-seq` window for every token and drops the oldest tokens when it is full (about 34 ms at seq 128).
+The cache of a sliding attention layer (5 of LFM3's 24 layers, window 256) is a ring buffer of the window's length, so only the 6 full attention layers need the long cache. LFM3-1.7B (lut4, 2 parts) on an M3 takes 19.1 ms per token with a cache of 1024 tokens, 27.7 ms with 4096 and 38.5 ms with 8192: the cost follows the cache's capacity, not how much of it is used, so pick the length you need. The Neural Engine takes tensor dimensions up to 16384, so with `-cache` plus `-seq` over 16384 the attention runs on the CPU and is very slow (the converter warns). A model with a cache takes 15 to 20 seconds to load even with its compiled cache (about 1 second without a KV cache; not investigated yet). A model converted without a cache computes the whole `-seq` window for every token and drops the oldest tokens when it is full (about 34 ms at seq 128).
 
 ### Choosing the source checkpoint
 

@@ -74,6 +74,15 @@ facts:
       KV キャッシュを int8 の入力 (ArrayFeatureType INT8 は仕様の版 10、macOS 26 以降が要る) とトークンごとの fp16 スケールで渡し、
       cast と mul で fp16 に戻す形は全演算 ANE に載る。メモリは半分、速さは同じ実行の fp16 より 1 割遅い (1024/4096/8192 で 11.9/29.5/50.8 対
       10.8/27.6/46.5 ms、CPU use 0.25 対 0.16)。量子化は ANE では速さに効かない (M3、macOS 27.0.1、npuprobe-m3-kv-int8.md、2026-10-29)
+    dim_limit_16384: >-
+      ANE に載るテンソルの 1 次元の長さは 16384 まで。KV キャッシュに対する注意で鍵の軸が 16385 になると、その注意の演算 (matmul、softmax など)
+      が CPU に置かれる (npuprobe kv -kv-layers 2: 鍵 16384 は全部 ANE で 16.6 ms、16385 は 39 演算が CPU で 117 ms。
+      LFM3-1.7B のキャッシュ 16384 は 1 トークン 375 ms、読み込み 140 秒、最大 RSS 4.5 GiB)。llm.NeuralEngineMaxDim に記録し、hwnpu-convert が警告する
+      (M3、macOS 27.0.1、npuprobe-m3-kv-limit.md、2026-10-30)
+    kv_ring_lfm3: >-
+      LFM3-1.7B のスライディング注意の層 (5/11、窓 256) のキャッシュを 256 のリングにすると、容量 1K あたりの費用が 5.4〜5.6 ms から 2.8 ms
+      (全注意の層の割合 6/11) に下がる。1024/4096/8192 で 19.1/27.7/38.5 ms/token (リングなしは 20.6/37.6/約 60)、全部 ANE、
+      貪欲法の出力はリングなしと同一。KV のメモリは 8K で 176 → 98.5 MiB (lut4 2 分割、2026-10-30)
     zero_copy: MLMultiArray initWithDataPointer と outputBackings で入出力ともコピーなし
     loader_names: MIL の値の名前に "." が入っていると Core ML のローダが segfault する (英数字と _ だけにする)
     gather_on_cpu: gather (埋め込みの表引き) は大きさによらず CPU に置かれる。linear は 1 演算だけのグラフだと CPU、複数演算で 2048 幅なら ANE

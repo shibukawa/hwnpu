@@ -73,8 +73,10 @@ type Model interface {
 // the host (Options.Cache). The program then has inputs and outputs named by what the host does
 // with them, besides x and y:
 //
-//   - kv_NAME (1, heads, Cache, head_dim) with output kv_NAME_new (1, heads, Seq, head_dim): the
-//     keys or values of the step's tokens, which the host writes at their positions in kv_NAME
+//   - kv_NAME (1, heads, L, head_dim) with output kv_NAME_new (1, heads, Seq, head_dim): the
+//     keys or values of the step's tokens, which the host writes at their positions in kv_NAME.
+//     L is Cache, or less for a layer that only sees a window of the sequence: such a cache is a
+//     ring, written at position mod L, and StepInputs masks it accordingly
 //   - win_NAME (1, W, width) with output win_NAME_new (1, W+Seq, width): a window of the last W
 //     rows before the step followed by the step's rows; the host keeps the W rows ending at the
 //     last real token (a short convolution's state)

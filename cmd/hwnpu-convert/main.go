@@ -101,6 +101,10 @@ func run(config, arch, weights, out, targetName string, nParts int, opts llm.Opt
 	}
 	defer w.Close()
 
+	if opts.Cache > 0 && opts.Cache+opts.Seq > llm.NeuralEngineMaxDim {
+		fmt.Printf("warning: attention over a cache of %d and %d tokens per call spans %d keys, over the Neural Engine's %d per dimension; it will run on the CPU. Use -cache %d or less\n",
+			opts.Cache, opts.Seq, opts.Cache+opts.Seq, llm.NeuralEngineMaxDim, llm.NeuralEngineMaxDim-opts.Seq)
+	}
 	plan := []llm.Part{{Layers: opts.Layers}}
 	var target llm.Target
 	if targetName != "none" {

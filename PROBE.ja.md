@@ -225,6 +225,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 状態に書いた値は、読み直してから使わないと Neural Engine 向けのコンパイルが失敗します（`error code: -14`）。
 - 費用の正体は、容量全体に対する注意の計算です（レポートは [npuprobe-m3-kv-mha.md](npuprobe-m3-kv-mha.md)）。K/V を複製せずキャッシュを 4 倍にした `host-mha` は、1024 / 4096 / 8192 で 14.2 / 36.6 / 63.5 ms と、`host` の 1.3 倍にしかなりません。読み出しの帯域でも複製でもなく、問い合わせが 1 行の行列ベクトル積（層ごとに 16 ヘッド × 容量）を Neural Engine が使い切れないためです（1K トークンで約 8 GFLOP/s）。
 - キャッシュを int8 にしても速くなりません（レポートは [npuprobe-m3-kv-int8.md](npuprobe-m3-kv-int8.md)）。`host-int8` は全演算 Neural Engine に載り、メモリは半分ですが、1024 / 4096 / 8192 で 11.9 / 29.5 / 50.8 ms と、同じ実行の `host`（10.8 / 27.6 / 46.5 ms）より 1 割遅くなります。fp16 に戻す演算が容量全体にかかるためです。量子化はメモリのための手法です。
+- Neural Engine に載るテンソルの 1 次元の長さは 16384 までです（レポートは [npuprobe-m3-kv-limit.md](npuprobe-m3-kv-limit.md)）。`-kv-layers 2` で、鍵の軸が 16384（キャッシュ 16383）なら全部 Neural Engine で 16.6 ms、16385（キャッシュ 16384）では注意の 39 演算が CPU に置かれて 117 ms でした。
 
 ### 求む結果
 
