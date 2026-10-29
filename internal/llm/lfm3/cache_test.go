@@ -3,6 +3,7 @@ package lfm3
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/shibukawa/hwnpu"
@@ -134,5 +135,82 @@ func TestCachedMatchesFull(t *testing.T) {
 			}
 			t.Logf("worst relative error %.2g", worst)
 		})
+	}
+}
+
+// A session that drives two programs over one cache (a long step for prompts, a short one to
+// generate) and goes back to a mark after taking another path gives the logits of the program
+// without a cache: the rings of the sliding layer and the convolution windows come back with the
+// mark.
+func TestCachedShareAndRewind(t *testing.T) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	tokens := []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3}
+	detour := []int32{7, 7, 0, 8, 2, 7}
+	n := len(tokens)
+	emb, err := llm.Embed(w, cfg, append(append([]int32(nil), tokens...), detour...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := runCPU(t, cfg, w, Options{Seq: n, Format: "fp16"}, emb[:n*cfg.HiddenSize])
+	row := func(i int) []float32 { return emb[i*cfg.HiddenSize : (i+1)*cfg.HiddenSize] }
+	const cache = 12
+	program := func(q int) decode.Program {
+		opts := llm.Options{Seq: q, Cache: cache, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
+		return cpuProgram(t, writeParts(t, cfg, w, opts, 2))
+	}
+	short, long := program(1), program(4)
+	for name := range long.In {
+		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+			long.In[name] = short.In[name]
+		}
+	}
+	s, err := decode.New(short, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(long); err != nil {
+		t.Fatal(err)
+	}
+	if s.Q() != 4 {
+		t.Fatalf("Q is %d, want 4", s.Q())
+	}
+	worst := 0.0
+	step := func(rows ...int) {
+		t.Helper()
+		var e [][]float32
+		for _, r := range rows {
+			e = append(e, row(r))
+		}
+		logits, err := s.Step(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if last := rows[len(rows)-1]; last < n {
+			worst = math.Max(worst, relErr(logits, full[last*cfg.VocabSize:(last+1)*cfg.VocabSize]))
+		}
+	}
+	step(0, 1, 2, 3) // long
+	step(4)          // short
+	m := s.Mark()
+	step(n, n+1, n+2, n+3) // a detour that overwrites the rings and the windows
+	step(n + 4)
+	step(n + 5)
+	s.Rewind(m)
+	if s.Pos() != 5 {
+		t.Fatalf("position %d after rewinding, want 5", s.Pos())
+	}
+	step(5, 6)
+	for i := 7; i < n; i++ {
+		step(i)
+	}
+	if worst > 2e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g", worst)
+
+	other := program(4) // its own buffers
+	if err := s.Add(other); err == nil {
+		t.Error("Add took a program that does not share the cache")
 	}
 }
