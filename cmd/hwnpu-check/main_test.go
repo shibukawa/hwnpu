@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/bert"
 	"github.com/shibukawa/hwnpu/internal/llm/check"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -41,9 +42,9 @@ func (w scaled) Get(name string) ([]float32, []int, error) {
 // writeRef runs the model on the CPU in fp32 and writes the result as a reference at prefix.
 func writeRef(t *testing.T, model llm.Model, w llm.Weights, ids []int32, prefix string) {
 	t.Helper()
-	d, nl := model.Hidden(), model.Layers()
+	nl := model.Layers()
 	opts := llm.Options{Seq: len(ids), Format: "fp16"}
-	h, err := llm.Embed(w, d, ids)
+	h, err := llm.Embed(w, model, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +146,11 @@ func TestCheckPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-	in, y, err := model.Build(b, w, llm.Options{Seq: 7, Format: "lut4"})
+	ins, y, err := model.Build(b, w, llm.Options{Seq: 7, Format: "lut4"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pkg.Finish(b.Finish(&mlpackage.Var{Name: y.Name}), 9, []mlpackage.Feature{in}, []mlpackage.Feature{y}); err != nil {
+	if err := pkg.Finish(b.Finish(&mlpackage.Var{Name: y.Name}), 9, ins, []mlpackage.Feature{y}); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkPackage(dir, prefix, true); err != nil {
@@ -158,4 +159,27 @@ func TestCheckPackage(t *testing.T) {
 	if err := checkPackage(dir, filepath.Join(t.TempDir(), "none"), false); err == nil {
 		t.Error("missing reference accepted")
 	}
+}
+
+// Encoders (BERT): a second input (the attention mask, fed ones) and hidden state outputs,
+// compared without argmax and KL.
+func TestCheckEncoder(t *testing.T) {
+	model, err := bert.ParseConfig([]byte(`{"model_type": "bert", "vocab_size": 40, "hidden_size": 32, "num_hidden_layers": 2,
+		"num_attention_heads": 4, "intermediate_size": 64, "max_position_embeddings": 16}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(model)
+	prefix := filepath.Join(t.TempDir(), "ref")
+	writeRef(t, model, w, []int32{2, 17, 5, 33, 9}, prefix)
+	ref, err := check.LoadRef(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	first, err := checkModel(&out, model, w, ref, []int{0, 1}, true, false, 1e-4, llm.Options{Format: "fp16"})
+	if err != nil || first != -1 || strings.Contains(out.String(), "argmax") || !strings.Contains(out.String(), "output 32;") {
+		t.Errorf("first bad layer %d, %v\n%s", first, err, &out)
+	}
+	t.Logf("\n%s", &out)
 }

@@ -15,10 +15,11 @@ import (
 // Ref is a reference run: the token ids, the hidden states and the logits, all fp32.
 type Ref struct {
 	IDs []int32
-	// Hidden holds (layers + 1) x seq x hidden values: the embeddings, then the output of each
-	// decoder layer (before the final norm).
+	// Hidden holds (layers + 1) x seq x hidden values: the token embeddings (the rows of the
+	// embedding table, before anything else the model adds), then the output of each layer
+	// (before a final norm).
 	Hidden []float32
-	// Logits holds seq x vocab values.
+	// Logits holds the model's output, seq x width: logits, or an encoder's last hidden state.
 	Logits []float32
 	// Meta is the JSON sidecar, if there is one.
 	Meta Meta
@@ -33,6 +34,8 @@ type Meta struct {
 	VocabSize  int    `json:"vocab_size"`
 	Text       string `json:"text"`
 	DType      string `json:"dtype"`
+	// Output is "logits" (causal language models) or "hidden" (encoders).
+	Output string `json:"output"`
 }
 
 // LoadRef reads PREFIX.ids.bin, PREFIX.hidden.bin, PREFIX.logits.bin (little endian, row major)
@@ -77,8 +80,8 @@ func readF32(path string) ([]float32, error) {
 	return out, nil
 }
 
-// Validate checks the sizes against a model's dimensions.
-func (r *Ref) Validate(layers, hidden, vocab int) error {
+// Validate checks the sizes against a model's dimensions; width is the output's per token.
+func (r *Ref) Validate(layers, hidden, width int) error {
 	seq := len(r.IDs)
 	if seq == 0 {
 		return fmt.Errorf("reference has no tokens")
@@ -86,13 +89,13 @@ func (r *Ref) Validate(layers, hidden, vocab int) error {
 	if len(r.Hidden) != (layers+1)*seq*hidden {
 		return fmt.Errorf("reference hidden states hold %d values, expected (%d layers + 1) x %d tokens x %d", len(r.Hidden), layers, seq, hidden)
 	}
-	if len(r.Logits) != seq*vocab {
-		return fmt.Errorf("reference logits hold %d values, expected %d tokens x %d", len(r.Logits), seq, vocab)
+	if len(r.Logits) != seq*width {
+		return fmt.Errorf("reference outputs hold %d values, expected %d tokens x %d", len(r.Logits), seq, width)
 	}
 	return nil
 }
 
-// Layer returns the hidden state entering layer i (i = 0 is the embeddings, i = layers the
+// Layer returns the hidden state entering layer i (i = 0 is the token embeddings, i = layers the
 // output of the last layer).
 func (r *Ref) Layer(i, hidden int) []float32 {
 	n := len(r.IDs) * hidden

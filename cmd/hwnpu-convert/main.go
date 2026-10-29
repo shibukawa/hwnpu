@@ -6,8 +6,9 @@
 //
 // The architecture is taken from config.json (model_type, then architectures) unless -arch names
 // it. The weights may also be a GGUF (its blocks are dequantized first). The program's input is
-// x, the fp16 token embeddings (1, seq, hidden), and the output y the logits (1, seq, vocab); the
-// embedding table itself stays with the host. Settings of one architecture only (such as LFM3's
+// x, the fp16 token embeddings (1, seq, hidden), and the output y the logits (1, seq, vocab) or,
+// for an encoder, the last hidden state; the embedding table itself stays with the host. Encoders
+// take a second input, mask (1, seq): 1 for tokens, 0 for padding. Settings of one architecture only (such as LFM3's
 // -post-scale) are flags too, and are ignored by the other architectures.
 package main
 
@@ -73,11 +74,11 @@ func run(config, arch, weights, out string, opts llm.Options) error {
 	pkg.Metadata["com.github.shibukawa.hwnpu.source"] = w.Source()
 	pkg.Metadata["com.github.shibukawa.hwnpu.format"] = opts.Format
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-	in, y, err := model.Build(b, w, opts)
+	ins, y, err := model.Build(b, w, opts)
 	if err != nil {
 		return err
 	}
-	if err := pkg.Finish(b.Finish(&mlpackage.Var{Name: y.Name}), 9, []mlpackage.Feature{in}, []mlpackage.Feature{y}); err != nil {
+	if err := pkg.Finish(b.Finish(&mlpackage.Var{Name: y.Name}), 9, ins, []mlpackage.Feature{y}); err != nil {
 		return err
 	}
 	var size int64
@@ -87,6 +88,10 @@ func run(config, arch, weights, out string, opts llm.Options) error {
 		}
 		return nil
 	})
-	fmt.Printf("%s: input %s %v, output %s %v, %.2f GiB, %.0fs\n", out, in.Name, in.Shape, y.Name, y.Shape, float64(size)/(1<<30), time.Since(start).Seconds())
+	var inputs []string
+	for _, in := range ins {
+		inputs = append(inputs, fmt.Sprintf("%s %v", in.Name, in.Shape))
+	}
+	fmt.Printf("%s: input %s, output %s %v, %.2f GiB, %.0fs\n", out, strings.Join(inputs, ", "), y.Name, y.Shape, float64(size)/(1<<30), time.Since(start).Seconds())
 	return nil
 }

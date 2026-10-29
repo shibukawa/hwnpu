@@ -1,20 +1,25 @@
-"""Reference activations of a Hugging Face causal language model, for checking a conversion.
+"""Reference activations of a Hugging Face model, for checking a conversion.
 
-    python ref_logits.py MODEL_DIR OUT_PREFIX [--seq 32] [--text "..."]
+    python ref_logits.py MODEL_DIR OUT_PREFIX [--seq 32] [--text "..."] [--encoder]
 
 MODEL_DIR holds config.json, the tokenizer and the checkpoint (and modeling_*.py for models
 that need trust_remote_code; symlinks to downloaded files are fine). Runs on the CPU in float32
 and writes, for readers without numpy (hwnpu-check and the Go tests), little endian and row major:
 
     OUT_PREFIX.ids.bin     int32 (seq)                       token ids
-    OUT_PREFIX.hidden.bin  float32 (layers + 1, seq, hidden) embeddings, then each decoder layer's output
-    OUT_PREFIX.logits.bin  float32 (seq, vocab)
-    OUT_PREFIX.json        model_type, seq, sizes, text, dtype
+    OUT_PREFIX.hidden.bin  float32 (layers + 1, seq, hidden) token embeddings, then each layer's output
+    OUT_PREFIX.logits.bin  float32 (seq, vocab) logits, or (seq, hidden) with --encoder
+    OUT_PREFIX.json        model_type, seq, sizes, text, dtype, output
 
-and the same arrays in OUT_PREFIX.npz. The hidden states are taken with hooks on the decoder
-layers rather than from output_hidden_states, whose last entry is after the final norm in many
-implementations: here entry i + 1 is always the output of layer i, before the final norm.
-Needs torch and transformers.
+and the same arrays in OUT_PREFIX.npz. The hidden states are taken with hooks rather than from
+output_hidden_states, so that they mean the same for every model, as hwnpu's programs expect:
+entry 0 is the output of the token embedding table (before position embeddings, scaling or an
+embedding norm, which the program does), and entry i + 1 the output of layer i (before a final
+norm; output_hidden_states ends after it in many implementations).
+
+Causal language models load with AutoModelForCausalLM. --encoder loads with AutoModel instead
+(BERT and the like) and writes the last hidden state as the output; there is no padding, so the
+attention mask is all ones. Needs torch and transformers.
 """
 import argparse
 import json
@@ -43,18 +48,20 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--seq", type=int, default=32)
     ap.add_argument("--text", default=TEXT)
+    ap.add_argument("--encoder", action="store_true", help="an encoder: AutoModel, last hidden state as output")
     a = ap.parse_args()
     prefix = a.out.removesuffix(".npz")
 
     import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import AutoModel, AutoModelForCausalLM, AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(a.model_dir, trust_remote_code=True)
     ids = tok(a.text, return_tensors="pt", add_special_tokens=True)["input_ids"][:, : a.seq]
     if ids.shape[1] < a.seq:
         raise SystemExit(f"text has only {ids.shape[1]} tokens, need {a.seq}")
     t0 = time.time()
-    model = AutoModelForCausalLM.from_pretrained(a.model_dir, trust_remote_code=True, dtype=torch.float32, attn_implementation="eager").eval()
+    auto = AutoModel if a.encoder else AutoModelForCausalLM
+    model = auto.from_pretrained(a.model_dir, trust_remote_code=True, dtype=torch.float32, attn_implementation="eager").eval()
     print(f"loaded in {time.time() - t0:.1f}s: {sum(p.numel() for p in model.parameters()) / 1e9:.3f} B parameters", flush=True)
     cfg = model.config.get_text_config() if hasattr(model.config, "get_text_config") else model.config
     layers = decoder_layers(model, cfg.num_hidden_layers)
@@ -64,16 +71,13 @@ def main():
     def first(x):
         return x[0] if isinstance(x, (tuple, list)) else x
 
-    def pre_hook(_module, args, kwargs):
-        captured["embeddings"] = (args[0] if args else kwargs["hidden_states"]).detach()
-
-    def hook(i):
+    def hook(key):
         def f(_module, _args, out):
-            captured[i] = first(out).detach()
+            captured[key] = first(out).detach()
 
         return f
 
-    handles = [layers[0].register_forward_pre_hook(pre_hook, with_kwargs=True)]
+    handles = [model.get_input_embeddings().register_forward_hook(hook("embeddings"))]
     handles += [layer.register_forward_hook(hook(i)) for i, layer in enumerate(layers)]
     with torch.no_grad():
         t0 = time.time()
@@ -82,7 +86,7 @@ def main():
     for h in handles:
         h.remove()
     hs = torch.stack([captured["embeddings"]] + [captured[i] for i in range(len(layers))], 0)[:, 0].numpy()
-    logits = out.logits[0].numpy()
+    logits = (out.last_hidden_state if a.encoder else out.logits)[0].numpy()
     last = out.hidden_states[-1][0].numpy()
     if not np.allclose(last, hs[-1], atol=1e-5):
         print("note: output_hidden_states[-1] differs from the last layer's output (it is after the final norm)")
@@ -96,16 +100,18 @@ def main():
         "seq": int(ids.shape[1]),
         "hidden_size": int(hs.shape[-1]),
         "num_layers": len(layers),
-        "vocab_size": int(logits.shape[-1]),
+        "vocab_size": int(cfg.vocab_size),
         "text": a.text,
         "dtype": "float32",
+        "output": "hidden" if a.encoder else "logits",
     }
     with open(prefix + ".json", "w") as f:
         json.dump(meta, f, indent=2)
-    top = logits.argmax(-1)
     print("tokens:", ids[0].tolist())
-    print("next-token argmax:", top.tolist())
-    print("decoded continuation:", repr(tok.decode(top[-8:])))
+    if not a.encoder:
+        top = logits.argmax(-1)
+        print("next-token argmax:", top.tolist())
+        print("decoded continuation:", repr(tok.decode(top[-8:])))
     print(f"hidden {hs.shape}, logits {logits.shape}")
     print("mean |hidden| per layer:", [f"{np.abs(h).mean():.3f}" for h in hs])
     print("max |hidden| per layer:", [f"{np.abs(h).max():.1f}" for h in hs])

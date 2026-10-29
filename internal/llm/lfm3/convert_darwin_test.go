@@ -57,7 +57,7 @@ func TestAgainstReference(t *testing.T) {
 	if len(hidden) != (cfg.NumLayers+1)*seq*cfg.HiddenSize || len(logits) != seq*cfg.VocabSize {
 		t.Fatalf("reference sizes do not match the config: hidden %d, logits %d, seq %d", len(hidden), len(logits), seq)
 	}
-	emb, err := llm.Embed(w, cfg.HiddenSize, ids)
+	emb, err := llm.Embed(w, cfg, ids)
 	if err != nil {
 		t.Fatal(err)
 	}

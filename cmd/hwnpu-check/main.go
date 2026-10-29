@@ -10,12 +10,13 @@
 //   - the embeddings looked up on the host against the reference embeddings
 //   - every layer on its own, fed the reference hidden state entering it, so that errors do not
 //     accumulate and the first wrong layer stands out
-//   - the final norm and output layer on their own
+//   - what follows the last layer (final norm and output layer) on its own
 //   - the whole model from the reference embeddings to the logits
 //
 // The exit status is 1 if a layer's relative RMS error exceeds -tol. The default format is fp16,
 // which checks the structure; -format lut4 measures the quantization loss on top. -package
-// instead checks an existing .mlpackage's logits (for example hwnpu-convert's lut4 output).
+// instead checks an existing .mlpackage's output (for example hwnpu-convert's lut4 output). Inputs
+// other than x, such as an encoder's attention mask, are fed ones: the reference has no padding.
 package main
 
 import (
@@ -95,13 +96,18 @@ func run(config, arch, weights, refPrefix, layerList string, full, f16 bool, tol
 
 // checkModel runs the checks and returns the first layer over tol, or -1.
 func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, layers []int, full, f16 bool, tol float64, opts llm.Options) (int, error) {
-	nl, d, vocab := model.Layers(), model.Hidden(), model.Vocab()
-	if err := ref.Validate(nl, d, vocab); err != nil {
+	nl, d := model.Layers(), model.Hidden()
+	width, logits := model.Output()
+	if err := ref.Validate(nl, d, width); err != nil {
 		return -1, err
 	}
 	seq := len(ref.IDs)
 	opts.Seq = seq
-	fmt.Fprintf(out, "%d layers, hidden %d, vocab %d; reference %d tokens", nl, d, vocab, seq)
+	fmt.Fprintf(out, "%d layers, hidden %d, output %d", nl, d, width)
+	if logits {
+		fmt.Fprint(out, " logits")
+	}
+	fmt.Fprintf(out, "; reference %d tokens", seq)
 	if ref.Meta.ModelType != "" {
 		fmt.Fprintf(out, " (%s, %s)", ref.Meta.ModelType, ref.Meta.DType)
 	}
@@ -120,7 +126,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		fmt.Fprintf(out, "tensors: %d missing, %d mismatched, %d unused\n", len(missing), len(mismatched), len(unused))
 	}
 
-	emb, err := llm.Embed(w, d, ref.IDs)
+	emb, err := llm.Embed(w, model, ref.IDs)
 	if err != nil {
 		return -1, err
 	}
@@ -164,11 +170,11 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 	if err != nil {
 		return -1, fmt.Errorf("head: %w", err)
 	}
-	ls, err := check.CompareLogits(got, ref.Logits, vocab)
+	ls, err := compareOutput(got, ref.Logits, width, logits)
 	if err != nil {
 		return -1, err
 	}
-	fmt.Fprintf(out, "final norm and head: %v\n", ls)
+	fmt.Fprintf(out, "after the last layer: %v\n", ls)
 
 	if full {
 		start := time.Now()
@@ -176,7 +182,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		if err != nil {
 			return -1, fmt.Errorf("whole model: %w", err)
 		}
-		ls, err := check.CompareLogits(got, ref.Logits, vocab)
+		ls, err := compareOutput(got, ref.Logits, width, logits)
 		if err != nil {
 			return -1, err
 		}
@@ -186,6 +192,37 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		fmt.Fprintf(out, "first layer over -tol %g: %d\n", tol, first)
 	}
 	return first, nil
+}
+
+// compareOutput compares the model's output with the reference: as logits, with argmax and KL,
+// or as hidden states.
+func compareOutput(got, ref []float32, width int, logits bool) (fmt.Stringer, error) {
+	if logits {
+		return check.CompareLogits(got, ref, width)
+	}
+	return check.Compare(got, ref)
+}
+
+// ones fills the inputs other than x, such as attention masks, with ones (every token valid,
+// as in the reference run).
+func ones(inputs map[string][]int, x []float32) map[string]milcpu.Tensor {
+	feed := map[string]milcpu.Tensor{}
+	for name, shape := range inputs {
+		if name == "x" {
+			feed[name] = milcpu.Tensor{Shape: shape, Data: x}
+			continue
+		}
+		n := 1
+		for _, s := range shape {
+			n *= s
+		}
+		v := make([]float32, n)
+		for i := range v {
+			v[i] = 1
+		}
+		feed[name] = milcpu.Tensor{Shape: shape, Data: v}
+	}
+	return feed
 }
 
 func parseLayers(list string, n int) ([]int, error) {
@@ -207,7 +244,8 @@ func parseLayers(list string, n int) ([]int, error) {
 	return out, nil
 }
 
-// buildRun builds a program into a weight file in dir and runs it on the CPU with input x.
+// buildRun builds a program into a weight file in dir and runs it on the CPU with input x (and
+// ones for any other input).
 func buildRun(model llm.Model, w llm.Weights, opts llm.Options, x []float32, dir string, f16 bool) ([]float32, error) {
 	path := filepath.Join(dir, "weight.bin")
 	blobs, err := mlpackage.NewBlobWriter(path)
@@ -215,7 +253,7 @@ func buildRun(model llm.Model, w llm.Weights, opts llm.Options, x []float32, dir
 		return nil, err
 	}
 	b := mlpackage.NewBuilder("CoreML8", blobs)
-	in, out, err := model.Build(b, w, opts)
+	_, out, err := model.Build(b, w, opts)
 	if err != nil {
 		blobs.Close()
 		return nil, err
@@ -233,14 +271,15 @@ func buildRun(model llm.Model, w llm.Weights, opts llm.Options, x []float32, dir
 	if err != nil {
 		return nil, err
 	}
-	res, err := p.Run(map[string]milcpu.Tensor{in.Name: {Shape: in.Shape, Data: x}}, milcpu.Options{RoundF16: f16})
+	res, err := p.Run(ones(p.Inputs(), x), milcpu.Options{RoundF16: f16})
 	if err != nil {
 		return nil, err
 	}
 	return res[out.Name].Data, nil
 }
 
-// checkPackage runs an existing package on the reference embeddings and compares its logits.
+// checkPackage runs an existing package on the reference embeddings and compares its output
+// (logits unless the reference says it holds hidden states).
 func checkPackage(dir, refPrefix string, f16 bool) error {
 	p, c, err := milcpu.OpenPackage(dir)
 	if err != nil {
@@ -253,20 +292,20 @@ func checkPackage(dir, refPrefix string, f16 bool) error {
 	}
 	seq := len(ref.IDs)
 	if seq == 0 || len(ref.Logits)%seq != 0 {
-		return fmt.Errorf("reference has %d tokens and %d logits", seq, len(ref.Logits))
+		return fmt.Errorf("reference has %d tokens and %d outputs", seq, len(ref.Logits))
 	}
-	vocab := len(ref.Logits) / seq
+	width := len(ref.Logits) / seq
 	shape, ok := p.Inputs()["x"]
 	if !ok || len(shape) != 3 || shape[1] != seq {
 		return fmt.Errorf("%s: input x %v does not take the reference's %d tokens", dir, shape, seq)
 	}
 	d := shape[2]
 	start := time.Now()
-	out, err := p.Run(map[string]milcpu.Tensor{"x": {Shape: shape, Data: ref.Layer(0, d)}}, milcpu.Options{RoundF16: f16})
+	out, err := p.Run(ones(p.Inputs(), ref.Layer(0, d)), milcpu.Options{RoundF16: f16})
 	if err != nil {
 		return err
 	}
-	ls, err := check.CompareLogits(out["y"].Data, ref.Logits, vocab)
+	ls, err := compareOutput(out["y"].Data, ref.Logits, width, ref.Meta.Output != "hidden")
 	if err != nil {
 		return err
 	}

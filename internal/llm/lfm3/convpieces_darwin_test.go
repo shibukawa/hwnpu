@@ -39,7 +39,7 @@ func TestConvPieces(t *testing.T) {
 	defer w.Close()
 	ids := readI32(t, filepath.Join(dir, "ref_bf16.ids.bin"))
 	seq, d, k := len(ids), cfg.HiddenSize, cfg.ConvKernel
-	emb, err := llm.Embed(w, d, ids)
+	emb, err := llm.Embed(w, cfg, ids)
 	if err != nil {
 		t.Fatal(err)
 	}

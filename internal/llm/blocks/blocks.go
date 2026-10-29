@@ -248,10 +248,16 @@ func (g *Graph) CausalMask(name string, seq, window int) *mlpackage.Var {
 	return g.F16s(name, []int{1, 1, seq, seq}, vals)
 }
 
-// Attention is causal scaled dot product attention over q (1, heads, seq, head_dim) and k, v
-// (1, kv_heads, seq, head_dim); query head j reads kv head j / (heads/kv_heads) (repeat_kv). The
-// mask is CausalMask(maskName, seq, window). The result is (1, heads, seq, head_dim).
+// Attention is causal scaled dot product attention (SDPA with CausalMask(maskName, seq, window)).
 func (g *Graph) Attention(q, k, v *mlpackage.Var, maskName string, window int) *mlpackage.Var {
+	return g.SDPA(q, k, v, func() *mlpackage.Var { return g.CausalMask(maskName, q.Shape[2], window) })
+}
+
+// SDPA is scaled dot product attention over q (1, heads, seq, head_dim) and k, v (1, kv_heads,
+// seq, head_dim); query head j reads kv head j / (heads/kv_heads) (repeat_kv). mask returns the
+// additive mask, broadcastable to (1, heads, seq, seq); it is called where the mask is added, and
+// may be nil for none. The result is (1, heads, seq, head_dim).
+func (g *Graph) SDPA(q, k, v *mlpackage.Var, mask func() *mlpackage.Var) *mlpackage.Var {
 	nh, s, hd := q.Shape[1], q.Shape[2], q.Shape[3]
 	nkv := k.Shape[1]
 	if rep := nh / nkv; rep > 1 {
@@ -264,7 +270,44 @@ func (g *Graph) Attention(q, k, v *mlpackage.Var, maskName string, window int) *
 	}
 	scores := g.Op("matmul", map[string]any{"x": q, "y": k, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(true)}, 1, nh, s, s)
 	scores = g.Op("mul", map[string]any{"x": scores, "y": g.B.ScalarF16(float32(1 / math.Sqrt(float64(hd))))}, 1, nh, s, s)
-	scores = g.Op("add", map[string]any{"x": scores, "y": g.CausalMask(maskName, s, window)}, 1, nh, s, s)
+	if mask != nil {
+		scores = g.Op("add", map[string]any{"x": scores, "y": mask()}, 1, nh, s, s)
+	}
 	probs := g.Op("softmax", map[string]any{"x": scores, "axis": g.B.ScalarI32(-1)}, 1, nh, s, s)
 	return g.Op("matmul", map[string]any{"x": probs, "y": v, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, nh, s, hd)
+}
+
+// LinearBias is Linear plus the named bias (out), which stays fp16 whatever the weight format.
+func (g *Graph) LinearBias(x *mlpackage.Var, name, bias, outName string, outDim int) *mlpackage.Var {
+	in := x.Shape[len(x.Shape)-1]
+	w := g.Weight(name, outDim, in, 1)
+	bv := g.F16s(bias, []int{outDim}, g.Get(bias, outDim))
+	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
+	inputs := map[string]any{"x": x, "weight": w, "bias": bv}
+	if outName != "" {
+		return g.B.NamedOp("linear", outName, inputs, mlpackage.Float16, shape...)
+	}
+	return g.Op("linear", inputs, shape...)
+}
+
+// LayerNorm normalizes over the last axis (size n) and applies the named weight and bias.
+func (g *Graph) LayerNorm(x *mlpackage.Var, weight, bias string, n int, eps float64) *mlpackage.Var {
+	gamma := g.F16s(weight, []int{n}, g.Get(weight, n))
+	beta := g.F16s(bias, []int{n}, g.Get(bias, n))
+	return g.Op("layer_norm", map[string]any{"x": x, "axes": g.B.Ints(-1), "gamma": gamma, "beta": beta, "epsilon": g.B.ScalarF16(float32(eps))}, x.Shape...)
+}
+
+// Activation applies a Hugging Face hidden_act: gelu (exact), gelu_new / gelu_pytorch_tanh
+// (tanh approximation), relu, silu.
+func (g *Graph) Activation(x *mlpackage.Var, act string) *mlpackage.Var {
+	switch act {
+	case "gelu":
+		return g.Op("gelu", map[string]any{"x": x, "mode": g.Str("EXACT")}, x.Shape...)
+	case "gelu_new", "gelu_pytorch_tanh":
+		return g.Op("gelu", map[string]any{"x": x, "mode": g.Str("TANH_APPROXIMATION")}, x.Shape...)
+	case "relu", "silu":
+		return g.Op(act, map[string]any{"x": x}, x.Shape...)
+	}
+	g.Fail("activation %q is not supported", act)
+	return nil
 }

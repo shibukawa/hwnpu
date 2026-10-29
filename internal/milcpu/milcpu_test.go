@@ -98,6 +98,27 @@ func TestElementwise(t *testing.T) {
 		}
 		near(t, c.op, got, []int{3}, want, 1e-6)
 	}
+	for _, c := range []struct {
+		mode string
+		want []float32
+	}{
+		// torch.nn.functional.gelu(torch.tensor([-2., 0., 1.5]), approximate="none" / "tanh")
+		{"EXACT", []float32{-0.04550028, 0, 1.39978919}},
+		{"TANH_APPROXIMATION", []float32{-0.04540231, 0, 1.39957154}},
+	} {
+		got := run(t, []int{3}, x, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+			return b.Op("gelu", map[string]any{"x": x, "mode": b.Str("c", c.mode)}, mlpackage.Float16, 3)
+		})
+		near(t, "gelu "+c.mode, got, []int{3}, c.want, 1e-6)
+	}
+	got = run(t, []int{2, 4}, []float32{1, 2, 3, 4, 0, 0, 0, 8}, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+		gamma := f16s(t, b, []int{4}, []float32{1, 1, 2, 2})
+		beta := f16s(t, b, []int{4}, []float32{0, 0, 0, 1})
+		return b.Op("layer_norm", map[string]any{"x": x, "axes": b.Ints(-1), "gamma": gamma, "beta": beta, "epsilon": b.ScalarF16(0)}, mlpackage.Float16, 2, 4)
+	})
+	// row 0: mean 2.5, std sqrt(1.25); row 1: mean 2, std sqrt(12)
+	s0, s1 := float32(math.Sqrt(1.25)), float32(math.Sqrt(12))
+	near(t, "layer_norm", got, []int{2, 4}, []float32{-1.5 / s0, -0.5 / s0, 2 * 0.5 / s0, 2*1.5/s0 + 1, -2 / s1, -2 / s1, 2 * -2 / s1, 2*6/s1 + 1}, 1e-6)
 	got = run(t, []int{2}, []float32{3, 0}, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
 		return b.Op("rsqrt", map[string]any{"x": x, "epsilon": b.ScalarF16(1)}, mlpackage.Float16, 2)
 	})
