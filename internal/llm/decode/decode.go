@@ -48,10 +48,7 @@ func New(p Program, m llm.Cached) (*Session, error) {
 			if len(sh) != 4 {
 				return nil, fmt.Errorf("decode: %s has shape %v, want (1, heads, cache, head_dim)", name, sh)
 			}
-			if s.t != 0 && s.t != sh[2] {
-				return nil, fmt.Errorf("decode: %s caches %d tokens, another input %d", name, sh[2], s.t)
-			}
-			s.t = sh[2]
+			s.t = max(s.t, sh[2]) // the longest cache; shorter ones are rings
 		}
 		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
 			if _, ok := p.OutShape[name+"_new"]; !ok {
@@ -69,7 +66,8 @@ func New(p Program, m llm.Cached) (*Session, error) {
 // Q is the number of tokens one step takes.
 func (s *Session) Q() int { return s.q }
 
-// Cache is the number of tokens the cache holds.
+// Cache is the number of tokens the longest cache holds: the sequence length the session can
+// reach. Shorter caches (a sliding layer's ring) hold the last tokens only.
 func (s *Session) Cache() int { return s.t }
 
 // Pos is the number of tokens in the sequence so far.
@@ -119,11 +117,17 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 		out := s.p.Out[name+"_new"]
 		switch {
 		case strings.HasPrefix(name, "kv_"):
-			// (1, heads, t, d) <- (1, heads, q, d): the step's rows at their positions
-			heads, d := sh[1], sh[3]
+			// (1, heads, L, d) <- (1, heads, q, d): the step's rows at their positions, or
+			// in a cache shorter than the longest (a ring) at position mod L
+			heads, L, d := sh[1], sh[2], sh[3]
 			for h := 0; h < heads; h++ {
-				src := out[2*h*s.q*d : 2*(h*s.q+v)*d]
-				copy(in[2*(h*s.t+s.pos)*d:], src)
+				for i := 0; i < v; i++ {
+					slot := s.pos + i
+					if L < s.t {
+						slot %= L
+					}
+					copy(in[2*(h*L+slot)*d:2*(h*L+slot+1)*d], out[2*(h*s.q+i)*d:2*(h*s.q+i+1)*d])
+				}
 			}
 		case strings.HasPrefix(name, "win_"):
 			// (1, w, d) <- rows v..v+w of (1, w+q, d)
