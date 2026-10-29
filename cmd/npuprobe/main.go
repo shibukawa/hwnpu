@@ -4,6 +4,7 @@
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest          # bench, then limit
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest bench    # speed only
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest limit    # size limit only
+//	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split    # a model over the limit in parts
 //
 // The models have the shape of LLM decoding (internal/probe): one token through Llama 3.2 1B
 // sized layers with random weights, so every call reads every weight once, as generating one
@@ -16,6 +17,13 @@
 //
 // limit grows the model in each format until it leaves the NPU, bisects to the boundary, then
 // loads several models just under it at once to tell a limit per model from a limit on the total.
+//
+// split, run only when asked, builds a model larger than the limit (64 layers, 1.8 GiB of lut4 by
+// default), splits it into parts small enough for the NPU and runs the parts one after another,
+// the output buffer of each bound as the input of the next, as a split LLM would generate a token.
+// It checks that every part stays on the NPU with all of them loaded, compares the time per token
+// with the parts' own times added up, and compares the output after every part with the same parts
+// run one at a time on the GPU.
 //
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
@@ -44,25 +52,26 @@ import (
 )
 
 type report struct {
-	Date      string   `json:"date"`
-	CPU       string   `json:"cpu"`
-	Model     string   `json:"model"`
-	OS        string   `json:"os"`
-	RAMBytes  int64    `json:"ram_bytes"`
-	Device    string   `json:"device"`
-	Backend   string   `json:"backend"`
-	Driver    string   `json:"driver,omitempty"`
-	Firmware  string   `json:"firmware,omitempty"`
-	Version   string   `json:"hwnpu_version"`
-	Go        string   `json:"go"`
-	IdleW     float64  `json:"idle_w,omitempty"`
-	Meter     string   `json:"meter,omitempty"`
-	MaxBytes  int64    `json:"max_bytes"`
-	Bench     []result `json:"bench,omitempty"`
-	Sweep     []result `json:"sweep,omitempty"`
-	Several   []result `json:"several,omitempty"`
-	SeveralOf string   `json:"several_of,omitempty"`
-	Notes     []string `json:"notes,omitempty"`
+	Date      string        `json:"date"`
+	CPU       string        `json:"cpu"`
+	Model     string        `json:"model"`
+	OS        string        `json:"os"`
+	RAMBytes  int64         `json:"ram_bytes"`
+	Device    string        `json:"device"`
+	Backend   string        `json:"backend"`
+	Driver    string        `json:"driver,omitempty"`
+	Firmware  string        `json:"firmware,omitempty"`
+	Version   string        `json:"hwnpu_version"`
+	Go        string        `json:"go"`
+	IdleW     float64       `json:"idle_w,omitempty"`
+	Meter     string        `json:"meter,omitempty"`
+	MaxBytes  int64         `json:"max_bytes"`
+	Bench     []result      `json:"bench,omitempty"`
+	Sweep     []result      `json:"sweep,omitempty"`
+	Several   []result      `json:"several,omitempty"`
+	SeveralOf string        `json:"several_of,omitempty"`
+	Split     []splitResult `json:"split,omitempty"`
+	Notes     []string      `json:"notes,omitempty"`
 }
 
 func main() {
@@ -80,32 +89,41 @@ func main() {
 	}
 	fs := flag.NewFlagSet("npuprobe", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit] [flags]")
+		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit|split] [flags]")
 		fs.PrintDefaults()
 	}
-	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel)")
+	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
 	layers := fs.String("layers", "8,16", "bench: layer counts (61 M weights each)")
 	baselines := fs.String("baselines", "cpu,gpu", "bench on Apple: also run each model on these Core ML units (empty for none)")
 	maxGB := fs.Float64("max-gb", 0, "limit: largest weight size to try, GiB (default: a quarter of the RAM on Apple, a sixth on Intel, at most 8)")
 	several := fs.Bool("several", true, "limit: after the sweep, load several models just under the limit at once")
+	splitLayers := fs.Int("split-layers", 64, "split: layers of the whole model (61 M weights each; 64 is 1.8 GiB of lut4)")
+	parts := fs.String("parts", "2,4", "split: numbers of parts to try (1 runs the model unsplit)")
+	ref := fs.String("ref", "", "split: Core ML units for the reference output, cpu or gpu, or none (default gpu on Apple, none elsewhere)")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
 	fs.Parse(args)
-	if mode != "all" && mode != "bench" && mode != "limit" {
+	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" {
 		fs.Usage()
 		os.Exit(2)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := run(ctx, mode, *formats, *layers, *baselines, *maxGB, *several, *minRun, *work, *out); err != nil {
+	sp := splitOpts{layers: *splitLayers, parts: *parts, ref: *ref}
+	if err := run(ctx, mode, *formats, *layers, *baselines, *maxGB, *several, sp, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "npuprobe:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, mode, formats, layerList, baselines string, maxGB float64, several bool, minRun time.Duration, work, out string) error {
+type splitOpts struct {
+	layers     int
+	parts, ref string
+}
+
+func run(ctx context.Context, mode, formats, layerList, baselines string, maxGB float64, several bool, sp splitOpts, minRun time.Duration, work, out string) error {
 	infos, err := hwnpu.Enumerate(ctx)
 	if err != nil {
 		return err
@@ -155,6 +173,29 @@ func run(ctx context.Context, mode, formats, layerList, baselines string, maxGB 
 		}
 	}
 	limitFormats = slices.DeleteFunc(limitFormats, func(f string) bool { return p.coreml && f == "int4" })
+	splitFormats := split(formats)
+	if formats == "" {
+		splitFormats = []string{"int4"}
+		if p.coreml {
+			splitFormats = []string{"lut4"}
+		}
+	}
+	var splitParts []int
+	for _, s := range split(sp.parts) {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > sp.layers {
+			return fmt.Errorf("-parts: %q is not a number of parts of %d layers", s, sp.layers)
+		}
+		splitParts = append(splitParts, n)
+	}
+	switch {
+	case sp.ref == "none":
+		sp.ref = ""
+	case sp.ref == "" && p.coreml:
+		sp.ref = "gpu"
+	case sp.ref != "" && (!p.coreml || sp.ref != "cpu" && sp.ref != "gpu"):
+		return fmt.Errorf("-ref: %q is not available on %s", sp.ref, info.Backend)
+	}
 	var layers []int
 	for _, s := range split(layerList) {
 		n, err := strconv.Atoi(s)
@@ -220,11 +261,14 @@ func run(ctx context.Context, mode, formats, layerList, baselines string, maxGB 
 	}
 	fmt.Println()
 
-	if mode != "limit" {
+	if mode == "split" {
+		p.splits(&rep, splitFormats, sp.layers, splitParts, sp.ref, save)
+	}
+	if mode == "all" || mode == "bench" {
 		p.bench(&rep, benchFormats, layers, units, save)
 		fmt.Println()
 	}
-	if mode != "bench" && ctx.Err() == nil {
+	if (mode == "all" || mode == "limit") && ctx.Err() == nil {
 		fmt.Printf("limit: models up to %.1f GiB of weights\n", probe.GiB(rep.MaxBytes))
 		p.limits(&rep, limitFormats, several, save)
 	}
