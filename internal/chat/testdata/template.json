@@ -1,0 +1,249 @@
+[
+ {
+  "name": "user",
+  "messages": [
+   {
+    "role": "user",
+    "content": "こんにちは"
+   }
+  ],
+  "want": "<|startoftext|><|im_start|>user\nこんにちは<|im_end|>\n<|im_start|>assistant\n<think>"
+ },
+ {
+  "name": "no think",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are terse."
+   },
+   {
+    "role": "user",
+    "content": "Hi"
+   }
+  ],
+  "want": "<|startoftext|><|im_start|>system\nYou are terse.<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think></think>"
+ },
+ {
+  "name": "history",
+  "messages": [
+   {
+    "role": "system",
+    "content": "Be kind."
+   },
+   {
+    "role": "user",
+    "content": "What is 2+2?"
+   },
+   {
+    "role": "assistant",
+    "content": "4",
+    "reasoning_content": "Easy."
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "And "
+     },
+     {
+      "type": "text",
+      "text": "3+3?"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": "<think>add</think>\n\n6"
+   },
+   {
+    "role": "user",
+    "content": "Thanks"
+   }
+  ],
+  "want": "<|startoftext|><|im_start|>system\nBe kind.<|im_end|>\n<|im_start|>user\nWhat is 2+2?<|im_end|>\n<|im_start|>assistant\n<think></think>4<|im_end|>\n<|im_start|>user\nAnd 3+3?<|im_end|>\n<|im_start|>assistant\n<think></think>6<|im_end|>\n<|im_start|>user\nThanks<|im_end|>\n<|im_start|>assistant\n<think>"
+ },
+ {
+  "name": "tools",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "read",
+     "description": "Read a file. \"Quoted\" and 日本語\n",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "path": {
+        "type": "string"
+       },
+       "offset": {
+        "type": "integer",
+        "minimum": 0
+       },
+       "opts": {
+        "type": "object"
+       }
+      },
+      "required": [
+       "path"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "bash",
+     "description": "Run a command",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "command": {
+        "type": "string"
+       },
+       "timeout": {
+        "type": "number"
+       }
+      }
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are a coding agent."
+   },
+   {
+    "role": "user",
+    "content": "Show main.go"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "reasoning_content": "I should read it.",
+    "tool_calls": [
+     {
+      "id": "call_0",
+      "type": "function",
+      "function": {
+       "name": "read",
+       "arguments": "{\"path\": \"main.go\", \"offset\": 10, \"opts\": {\"a\": [1, 2.5, true, null]}}"
+      }
+     },
+     {
+      "id": "call_1",
+      "type": "function",
+      "function": {
+       "name": "bash",
+       "arguments": "{\"command\": \"ls -la\", \"timeout\": 1.0}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "call_0",
+    "content": "package main\n"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "call_1",
+    "content": [
+     {
+      "type": "text",
+      "text": "a"
+     },
+     {
+      "type": "text",
+      "text": "b"
+     }
+    ]
+   }
+  ],
+  "want": "<|startoftext|><|im_start|>system\nYou are a coding agent.\n\n<tools>\n{\"name\": \"read\", \"description\": \"Read a file. \\\"Quoted\\\" and 日本語\\n\", \"parameters\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"offset\": {\"type\": \"integer\", \"minimum\": 0}, \"opts\": {\"type\": \"object\"}}, \"required\": [\"path\"], \"additionalProperties\": false}}\n{\"name\": \"bash\", \"description\": \"Run a command\", \"parameters\": {\"type\": \"object\", \"properties\": {\"command\": {\"type\": \"string\"}, \"timeout\": {\"type\": \"number\"}}}}\n</tools><|im_end|>\n<|im_start|>user\nShow main.go<|im_end|>\n<|im_start|>assistant\n<think>I should read it.</think><tool_call>\n<function=read>\n<parameter=path>\nmain.go\n</parameter>\n<parameter=offset>\n10\n</parameter>\n<parameter=opts>\n{\"a\": [1, 2.5, true, null]}\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=bash>\n<parameter=command>\nls -la\n</parameter>\n<parameter=timeout>\n1.0\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\npackage main\n\n</tool_response><|im_end|>\n<|im_start|>tool\n<tool_response>\na\nb\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+ },
+ {
+  "name": "merged tool results",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "x",
+     "parameters": {}
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "go"
+   },
+   {
+    "role": "assistant",
+    "content": "Calling.",
+    "tool_calls": [
+     {
+      "id": "c",
+      "type": "function",
+      "function": {
+       "name": "x",
+       "arguments": "{}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c",
+    "content": "one"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c",
+    "content": "two"
+   },
+   {
+    "role": "assistant",
+    "content": "Done."
+   },
+   {
+    "role": "user",
+    "content": "again"
+   }
+  ],
+  "want": "<|startoftext|><|im_start|>system\n<tools>\n{\"name\": \"x\", \"parameters\": {}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think>Calling.<tool_call>\n<function=x>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\none\ntwo\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>Done.<|im_end|>\n<|im_start|>user\nagain<|im_end|>\n<|im_start|>assistant\n<think>"
+ },
+ {
+  "name": "null content",
+  "messages": [
+   {
+    "role": "user",
+    "content": "q"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+     {
+      "id": "c",
+      "type": "function",
+      "function": {
+       "name": "f",
+       "arguments": ""
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c",
+    "content": null
+   }
+  ],
+  "want": "<|startoftext|><|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=f>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+ }
+]
