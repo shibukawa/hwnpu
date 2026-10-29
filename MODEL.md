@@ -178,6 +178,21 @@ go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LF
 
 The package takes `x`, the fp16 token embeddings `(1, seq, hidden)`, and returns `y`, the logits `(1, seq, vocab)`. The embedding lookup stays on the host because Core ML always places `gather` on the CPU. BERT packages take a second input, `mask` (fp16 `(1, seq)`, 1 for tokens and 0 for padding), and return the last hidden state `(1, seq, hidden)`; pooling (mean or CLS) and normalization into a sentence embedding are left to the host. The weights are 4 bit lookup tables (`-format lut4`), one table of 16 fp16 values per 16 output rows, which is the only compressed layout the Neural Engine runs at full speed (see below). `-format fp16` keeps the weights as they are, for checking the graph.
 
+**Splitting a large model**: the Neural Engine takes a model only when its weight file is under a limit that depends on the chip; a larger model is placed on the CPU as a whole. The limit is per model, so `hwnpu-convert` splits a model over it into the fewest parts under it, balanced by size. `-target` picks the chip (the default, `any`, is the smallest limit of the known chips).
+
+| `-target` | limit per model | source |
+|---|---|---|
+| `m1` | 1 GiB | assumed, from a report of half the M4's; to be measured with `npuprobe limit` |
+| `m2` | 1 GiB | assumed the same as the M3's; to be measured with `npuprobe limit` |
+| `m3` | 1 GiB | `npuprobe limit`: 0.99 GiB on the Neural Engine, 1.02 GiB on the CPU, in every format ([PROBE.md](PROBE.md)) |
+| `m4` | 2 GB | measured: a 4 B model in lut4 (2 GB) ran on the Neural Engine |
+
+The estimated weights of each part fill at most 97% of the limit, and after writing, the actual weight file of each part is checked to be under it. A split model is written as `out.part1.mlpackage`, `out.part2.mlpackage`, … with `out.parts.json`, which lists the parts in order with their inputs and outputs. Each part's input `x` is the hidden state entering its first layer (the token embeddings for the first part); other inputs such as `mask` go to every part. Run the parts in order with the buffer of each part's output `y` bound as the next part's `x`; the last part's `y` is the model's output. On the M3 the parts ran as fast as one model would (`npuprobe split` in PROBE.md). On the M4 too, 4 parts of 0.91 GiB ran as fast as 2 of 1.81 GiB, with the same error (58.8 and 58.3 ms per token). Every part is loaded at once, so finer parts do not save memory, but they cost nothing either: the default `any`, one set of packages for every chip, is the one to use. `-parts N` sets the number of parts, and `-target none` turns splitting off. `-archs` lists the per chip limits after the architectures.
+
+```bash
+go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o model.mlpackage -seq 32 -target m3
+```
+
 A conversion can be checked without a Mac. `tools/ref/ref_logits.py` saves reference activations from the Hugging Face implementation, and `cmd/hwnpu-check` runs the graph on the CPU in fp32 and compares it layer by layer. Each layer is fed the reference's own input, so errors do not pile up and the first wrong layer stands out; tensors in the checkpoint that the conversion does not read are reported too. With `-package` it compares a written package's logits (lut4, for example) with the reference.
 
 ```bash
