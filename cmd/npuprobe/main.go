@@ -73,6 +73,7 @@ type report struct {
 	MaxBytes  int64         `json:"max_bytes"`
 	Bench     []result      `json:"bench,omitempty"`
 	Verify    []result      `json:"verify,omitempty"`
+	KV        []kvResult    `json:"kv,omitempty"`
 	Sweep     []result      `json:"sweep,omitempty"`
 	Several   []result      `json:"several,omitempty"`
 	SeveralOf string        `json:"several_of,omitempty"`
@@ -95,7 +96,7 @@ func main() {
 	}
 	fs := flag.NewFlagSet("npuprobe", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit|split|verify] [flags]")
+		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit|split|verify|kv] [flags]")
 		fs.PrintDefaults()
 	}
 	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
@@ -108,18 +109,21 @@ func main() {
 	parts := fs.String("parts", "2,4", "split: numbers of parts to try (1 runs the model unsplit)")
 	layout := fs.String("layout", "files", "split: files (a package per part), functions (one package, a function per part; Core ML on macOS 15) or both, comma separated")
 	ref := fs.String("ref", "", "split: Core ML units for the reference output, cpu or gpu, or none (default gpu on Apple, none elsewhere)")
+	kvLayers := fs.Int("kv-layers", 11, "kv: layers with attention over the cache (11 is LFM3-1.7B's attention layers)")
+	kvCache := fs.String("kv-cache", "256,1024,4096", "kv: cache lengths in tokens")
+	kvModes := fs.String("kv-modes", "host,state", "kv: host (buffers bound as inputs and outputs) and state (Core ML MLState); -mha gives every query head its own cached head, so nothing is repeated; -int8 holds the host cache as int8 with fp16 scales, cast back in the program")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
 	fs.Parse(args)
-	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" {
+	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" {
 		fs.Usage()
 		os.Exit(2)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	sp := splitOpts{layers: *splitLayers, parts: *parts, layout: *layout, ref: *ref}
+	sp := splitOpts{layers: *splitLayers, parts: *parts, layout: *layout, ref: *ref, kvLayers: *kvLayers, kvCache: *kvCache, kvModes: *kvModes}
 	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "npuprobe:", err)
 		os.Exit(1)
@@ -129,6 +133,8 @@ func main() {
 type splitOpts struct {
 	layers             int
 	parts, layout, ref string
+	kvLayers           int
+	kvCache, kvModes   string
 }
 
 func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, minRun time.Duration, work, out string) error {
@@ -289,6 +295,26 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 
 	if mode == "split" {
 		p.splits(&rep, splitFormats, sp.layers, splitParts, layouts, sp.ref, save)
+	}
+	if mode == "kv" {
+		if !p.coreml {
+			return errors.New("kv: the KV cache probe models are Core ML only")
+		}
+		var caches []int
+		for _, s := range split(sp.kvCache) {
+			n, err := strconv.Atoi(s)
+			if err != nil || n < 1 {
+				return fmt.Errorf("-kv-cache: %q is not a token count", s)
+			}
+			caches = append(caches, n)
+		}
+		modes := split(sp.kvModes)
+		for _, m := range modes {
+			if b, _, _ := strings.Cut(m, "-"); b != "host" && b != "state" {
+				return fmt.Errorf("-kv-modes: %q is not host or state, optionally -mha or -int8", m)
+			}
+		}
+		p.kvs(&rep, sp.kvLayers, caches, modes, save)
 	}
 	if mode == "verify" {
 		// The formats the NPU runs: int4 never reaches the Neural Engine.

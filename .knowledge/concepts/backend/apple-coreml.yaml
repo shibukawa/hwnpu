@@ -52,6 +52,28 @@ facts:
       可能性がある (推定)。1 回 8 トークンの版は生成 23.3 ms で、23 トークンのプロンプトの読み込みは速くならなかった (577 ms 対 551 ms)。
       キャッシュ 4096 で日本語の文書を 1500 トークン、26.7 tokens/s で生成できた (M3、macOS 27.0.1、2026-10-29)。
       キャッシュ付きのモデルは、コンパイル済みのキャッシュがあっても 2 回目以降の読み込みに 15〜22 秒かかる (キャッシュなしは約 1 秒。原因未調査)
+    mlstate_kv: >-
+      Core ML の状態 (MLState) の KV キャッシュは ANE に載るが、速さはホスト側バッファとほぼ同じ (npuprobe kv、11 層、lut4、1 トークン:
+      容量 256/1024/4096/8192 で host 7.1/11.0/27.0/49.5 ms、state 6.6/10.0/26.8/49.3 ms)。違うのは CPU use で、host 0.15〜0.18 に対し
+      state 0.02〜0.06 (ホスト側バッファでは Core ML が CPU で入力を扱っている)。容量に比例する費用は両方に残るので、原因は入力のコピーではなく、
+      固定の長さのキャッシュ全体に対する ANE の計算 (連結や更新、GQA の tile、注意)。
+      状態を ANE に載せるには、write_state の後で read_state で読み直し、その値を使う (coremltools の coreml_update_state と同じ形)。
+      書いた値をそのまま使うと ANE 向けのコンパイルが error code -14 で失敗する (CPU と GPU なら読み込める)。
+      新しい行の書き込みは one-hot の列で cache + onehot*(k - cache) とすれば要素ごとの演算だけで済み ANE に載る。slice_update は CPU に置かれる。
+      GQA で K/V を tile で複製せず、問い合わせを (kv ヘッド, グループ) の行列にして読む形は、host では全演算 CPU、state ではコンパイル失敗
+      (M3、macOS 27.0.1、npuprobe-m3-kv.md、2026-10-29)
+    kv_cost_source: >-
+      KV キャッシュの容量に比例する費用の正体は、容量全体に対する注意の計算そのもの。npuprobe kv で K/V を tile で複製せず 16 の問い合わせヘッドが
+      それぞれ K/V を持つ形 (host-mha、キャッシュ 4 倍) にしても 1024/4096/8192 で 14.2/36.6/63.5 ms と host (10.7/28.4/49.8) の 1.3 倍。
+      帯域 (704 MiB を 63.5 ms で読めている) でも tile でも MLState の有無 (入力のコピー) でもない。問い合わせ 1 行の行列ベクトル積
+      (層ごとに 16 ヘッド × 容量 × 128 × 2) を ANE が使い切れず、1K トークンで約 8 GFLOP/s。
+      減らすには、計算する容量を小さくする (リングバッファ、退避、容量の段階)、使っている塊だけ計算する (Flash-Decoding の形)、
+      問い合わせの行を増やす、のいずれか。量子化や MLA のような帯域・メモリの手法は ANE の速さには効かない
+      (M3、macOS 27.0.1、npuprobe-m3-kv-mha.md、2026-10-29。docs/kv-cache.md)
+    kv_int8: >-
+      KV キャッシュを int8 の入力 (ArrayFeatureType INT8 は仕様の版 10、macOS 26 以降が要る) とトークンごとの fp16 スケールで渡し、
+      cast と mul で fp16 に戻す形は全演算 ANE に載る。メモリは半分、速さは同じ実行の fp16 より 1 割遅い (1024/4096/8192 で 11.9/29.5/50.8 対
+      10.8/27.6/46.5 ms、CPU use 0.25 対 0.16)。量子化は ANE では速さに効かない (M3、macOS 27.0.1、npuprobe-m3-kv-int8.md、2026-10-29)
     zero_copy: MLMultiArray initWithDataPointer と outputBackings で入出力ともコピーなし
     loader_names: MIL の値の名前に "." が入っていると Core ML のローダが segfault する (英数字と _ だけにする)
     gather_on_cpu: gather (埋め込みの表引き) は大きさによらず CPU に置かれる。linear は 1 演算だけのグラフだと CPU、複数演算で 2048 幅なら ANE
@@ -82,9 +104,17 @@ open_questions:
     text: 分割数を増やすと消費メモリが減るのはなぜか。常駐の量か、コンパイル時の山か。Core ML の ANE コンパイラは別プロセス (ANECompilerService) で動くので、そちらの量も含むか
     state: open
     resolution: 2026-10-29 一部判明。プロセスの最大 RSS はおよそ 1 部分の重みの大きさ (split_memory_m3)。システム側のプロセスの量はまだ測っていない
+  attention-shapes:
+    text: >-
+      問い合わせの行を増やして ANE の効率を上げる形のうち、何が ANE に載るか。GQA の 4 ヘッドをまとめて (1, 4, 4, T) で読む形は CPU に落ちた。
+      投機的デコードの K 行の問い合わせ、ヘッドをバッチ軸に移す形、塊ごとの注意プログラムは未検証
+    state: open
   mlstate:
     text: Core ML の状態 (MLState、read_state/coreml_update_state) で KV キャッシュを持つと、入力のコピー (と推定される容量に比例する費用) がなくなるか。状態の演算は ANE に載るか
-    state: open
+    state: answered
+    resolution: >-
+      2026-10-29 ANE に載る (書いた後に読み直す形で) が、速さは変わらない。CPU use が 0.15 前後から 0.02〜0.06 に下がるだけ。
+      容量に比例する費用はコピーではなく ANE の計算 (mlstate_kv)
   multifunction:
     text: 1 つのパッケージの関数を 1 つずつ読み込めば、ファイルを分けずに 1 GiB を超えられるか
     state: answered

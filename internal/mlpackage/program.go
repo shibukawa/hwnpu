@@ -16,6 +16,7 @@ const (
 	Float16 = milspec.DataType_FLOAT16
 	Float32 = milspec.DataType_FLOAT32
 	Int32   = milspec.DataType_INT32
+	Int8    = milspec.DataType_INT8
 	UInt4   = milspec.DataType_UINT4
 	Bool    = milspec.DataType_BOOL
 	String  = milspec.DataType_STRING
@@ -89,6 +90,34 @@ func (b *Builder) Input(name string, dt milspec.DataType, shape ...int) *Var {
 	b.names[name] = true
 	b.inputs = append(b.inputs, &milspec.NamedValueType{Name: name, Type: tensorType(dt, shape)})
 	return &Var{Name: name, DType: dt, Shape: shape}
+}
+
+// State declares a state input (Core ML's MLState, macOS 15): a tensor that keeps its value from
+// one prediction to the next. Read it with the read_state operation and write it with WriteState.
+// Declare it in the package too (Package.States).
+func (b *Builder) State(name string, dt milspec.DataType, shape ...int) *Var {
+	b.names[name] = true
+	b.inputs = append(b.inputs, &milspec.NamedValueType{Name: name, Type: &milspec.ValueType{Type: &milspec.ValueType_StateType{StateType: &milspec.StateType{WrappedType: tensorType(dt, shape)}}}})
+	return &Var{Name: name, DType: dt, Shape: shape}
+}
+
+// WriteState stores v in the state s (the write_state operation, which has no output; coremltools
+// writes its coreml_update_state as this followed by read_state).
+func (b *Builder) WriteState(s, v *Var) {
+	op := &milspec.Operation{Type: "write_state", Attributes: map[string]*milspec.Value{"name": stringValue(b.unique("write_state"))}, Inputs: map[string]*milspec.Argument{
+		"input": {Arguments: []*milspec.Argument_Binding{{Binding: &milspec.Argument_Binding_Name{Name: s.Name}}}},
+		"data":  {Arguments: []*milspec.Argument_Binding{{Binding: &milspec.Argument_Binding_Name{Name: v.Name}}}},
+	}}
+	b.ops = append(b.ops, op)
+}
+
+// UpdateState stores v in the state s and returns the state read back (coremltools'
+// coreml_update_state). Use the returned value, not v, after the update: the Neural Engine
+// compiler fails ("error code: -14") on a program that writes a state and goes on with the
+// written value, and takes it when the value is read back (M3, macOS 27.0.1).
+func (b *Builder) UpdateState(s, v *Var) *Var {
+	b.WriteState(s, v)
+	return b.Op("read_state", map[string]any{"input": s}, s.DType, s.Shape...)
 }
 
 // Op appends an operation. Inputs are bound by name; an input may be one Var or a []*Var (for
