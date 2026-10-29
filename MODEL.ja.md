@@ -189,7 +189,7 @@ go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LF
 | `m3` | 1 GiB | `npuprobe limit`：0.99 GiB は Neural Engine、1.02 GiB は CPU（どの形式でも）。[PROBE.ja.md](PROBE.ja.md) |
 | `m4` | 2 GB | 4 B のモデルを lut4 で（2 GB）Neural Engine で動かせたという計測 |
 
-部分ごとの重みの見積もりは上限の 97% までに収め、書き出した後に実際の重みのファイルが上限より小さいことを確かめます。分けたときは `out.part1.mlpackage`、`out.part2.mlpackage` … と、順番と各部分の入出力を書いた `out.parts.json` ができます。各部分の入力 `x` は、その部分の最初の層に入る隠れ状態です（最初の部分ではトークンの埋め込み）。`mask` などほかの入力は全部の部分が取ります。前の部分の出力 `y` のバッファを次の部分の `x` にそのまま渡して順に動かし、最後の部分の `y` がモデルの出力です。M3 では、分けて動かしても 1 つのモデルと同じ速さでした（PROBE.ja.md の `npuprobe split`）。`-parts N` で部分の数を指定でき、`-target none` で分割をやめます。`-archs` は対応するアーキテクチャに続けて、チップごとの上限を表示します。
+部分ごとの重みの見積もりは上限の 97% までに収め、書き出した後に実際の重みのファイルが上限より小さいことを確かめます。分けたときは `out.part1.mlpackage`、`out.part2.mlpackage` … と、順番と各部分の入出力を書いた `out.parts.json` ができます。各部分の入力 `x` は、その部分の最初の層に入る隠れ状態です（最初の部分ではトークンの埋め込み）。`mask` などほかの入力は全部の部分が取ります。前の部分の出力 `y` のバッファを次の部分の `x` にそのまま渡して順に動かし、最後の部分の `y` がモデルの出力です。M3 では、分けて動かしても 1 つのモデルと同じ速さでした（PROBE.ja.md の `npuprobe split`）。M4 でも、0.91 GiB の 4 つと 1.81 GiB の 2 つで速さも誤差も変わりませんでした（58.8 ms と 58.3 ms）。全部の部分を同時に読み込むので、細かく分けてもメモリは減りませんが、損もしません。そのため、全部のチップに 1 組の成果物を配れる既定の `any` を勧めます。`-parts N` で部分の数を指定でき、`-target none` で分割をやめます。`-archs` は対応するアーキテクチャに続けて、チップごとの上限を表示します。
 
 ```bash
 go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o model.mlpackage -seq 32 -target m3
