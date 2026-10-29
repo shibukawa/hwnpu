@@ -10,7 +10,7 @@ Run LFM3-1.7B on the Apple Neural Engine alone, and talk with it in the terminal
 go run ./cmd/hwnpu-chat
 ```
 
-No arguments are needed. The first run does the following by itself (about 3.5 minutes on an M3, besides the download). Later runs only load the compiled programs and start in about a minute.
+No arguments are needed. The first run does the following by itself (about 3.5 minutes on an M3, besides the download). Later runs only load the compiled programs and start in a few seconds to a minute, showing how far loading is.
 
 1. It downloads `config.json`, `tokenizer.json` and `model.safetensors` (3.5 GB) of [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) from Hugging Face to `~/Library/Caches/hwnpu/models/LFM3-1.7B`. A download cut off goes on from where it stopped on the next run
 2. It converts the model twice for the Neural Engine (about a minute each): one generates 1 token per call, the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache
