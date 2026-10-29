@@ -1,0 +1,60 @@
+id: requirement:tokens-per-call-default
+type: requirement
+title: 機種ごとの既定の K (1 回の呼び出しで流すトークン数)
+summary: >-
+  NPU は K トークンまで 1 トークンとほぼ同じ時間で流せ、K は機種の計算と重みの読み出しの比で決まる。
+  プロンプトの区切り、投機的デコードで確かめる数、まとめる系列の数の既定として、機種ごとに K を持つ。
+lifecycle: proposed
+facts:
+  motivation: >-
+    1 トークンずつの生成は重みの読み出しで頭打ちになり、計算能力の 2% 未満しか使わない (M3)。
+    重みを 1 回読む間に K 個まで流すと、時間をほぼ増やさずにスループットが K 倍になる。
+    K を超えると時間は K に比例して伸び、M3 では 1 トークンあたりでも遅くなる
+  estimate: 頭打ちの K ≈ 実効の計算速度 ÷ (4 × 重みを読む速さ)。lut4 は重み 1 個 0.5 バイト、1 トークンは重み 1 個につき 2 FLOP
+  measured:
+    m3: K=64 (lut4、重み 0.97 B で 13.7 TFLOPS、つり合い約 58。backend:apple-coreml の tokens_per_call)
+  expected: >-
+    M4 は fp16 の計算 (公称 38 TOPS は int8) も ANE の読み出し (66 GB/s) も M3 とほぼ同じなので、K も近いと予想。
+    M6 は TOPS が M3 の約 4 倍、メモリ帯域が約 1.7 倍とされ、K は 100〜180 程度と予想 (どちらも未測定の推定)
+  provisional_design: >-
+    仮の方針 (未決定): internal/llm/split.go の Target (MaxBytes を機種ごとに持つ表) に K を足し、Measured と同じく測定済みかを記録する。
+    未知の機種と any には測定済みの最小値 (今は M3 の 64) を使う
+acceptance:
+  per-chip-k: {text: 既知の機種ごとに既定の K を持ち、npuprobe verify で測った値か推定かを区別できる}
+  used-by-convert: {text: hwnpu-convert などが -seq などを指定しないとき、対象の機種の K を既定に使える}
+verification:
+  m3-measured: {state: passed, method: manual, authority: observed, scope: {backend: coreml, chip: m3}, evidence: {path: PROBE.md, locator: "Apple M3, K tokens per call"}, basis: [{path: PROBE.md, input_hash: 5802925e595c6d87d70d5c3724017a7b61d7d45315549969a400b7759ac652bd}, {path: cmd/npuprobe/verify.go, input_hash: 377165608f80d4ab4e72394b08ab3a5aea0f29b6955637e61a4cde41d1f9bbc9}]}
+  m4-measured: {state: not_run, method: manual, scope: {backend: coreml, chip: m4}}
+open_questions:
+  k-other-chips:
+    text: M4、M5、M6 (と M1、M2) の K はいくつか
+    state: open
+    resolution: npuprobe verify -formats lut4 -layers 16 を各機種で動かし、頭打ちが 128 を超えるときは -tokens を広げる
+  k-per-model:
+    text: K はモデルの形でも変わるか。npuprobe の層 (幅 2048、MLP 8192) は 64 で 13.7 TFLOPS、LFM3-1.7B は 96 で 11.1 TFLOPS だった (LFM3 の 64 は未測定)
+    state: open
+  k-per-use:
+    text: >-
+      プロンプトの区切りと投機的デコードで同じ K を使ってよいか。
+      投機的デコードでは下書きが外れる分、頭打ちより小さい K が最適になりうる (受理率で決まる)
+    state: open
+  k-with-kv-cache:
+    text: >-
+      KV キャッシュをホストのバッファで渡す版 (backend:apple-coreml の kv_cache_host) では、1 回 8 トークンにしても
+      23 トークンのプロンプトの読み込みが速くならなかった (577 ms 対 551 ms)。キャッシュなしの計測で K=64 までほぼ同じ時間だったことと合わない。
+      キャッシュの入出力のコピーが重みの読み出しより重くなっているのか、K を活かす前に確かめる
+    state: open
+  k-format:
+    text: lut4 以外の形式 (int8 は読み出しが 23 GB/s) で K を別に持つか
+    state: deferred
+    resolution: ANE で全速なのは lut4 だけなので、当面は lut4 の K だけを持つ。他の形式を使うときに測る
+  k-placement-seq48:
+    text: seq 48 の LFM3 だけ、キャッシュから読み込んだときに配置の確認が通らなかった。K の値によって配置の報告が変わるか
+    state: open
+relations:
+  - relation: depends_on
+    to: requirement:shape-variants
+  - relation: informs
+    to: milestone:m5-llm-convert
+  - relation: constrained_by
+    to: backend:apple-coreml

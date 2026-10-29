@@ -43,6 +43,8 @@ relations:
   - relation: has_requirement
     to: requirement:shape-variants
   - relation: has_requirement
+    to: requirement:tokens-per-call-default
+  - relation: has_requirement
     to: requirement:cgo-free
   - relation: has_requirement
     to: requirement:kernel-execution
