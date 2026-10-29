@@ -919,3 +919,12 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 - 結果 (M3): bf16 → fp16 のグラフは CPU で KL 0.020 (argmax 21/24) と正しい。lut4 (出力 16 行ごとの表、`kmeans-minmax`) は 24 層 1627 演算がすべて ANE に載り、KL 0.89。損失のほぼ全部が 4 ビット量子化によるもので、ANE の演算誤差は `-post-scale` で層ごと 1.4〜2.7% に抑えた
 - ANE について分かったこと (MODEL.ja.md にも記載): 行列積の出力に約 2.5e-4 の絶対誤差の床がある。LUT は 16 行ごとの表だけが ANE で動き、列方向のブロック化や行ごとの表、入力ブロックごとのスケールを持つ int4 (Q4_0 相当) は使えない。gather は常に CPU。値の名前にドットがあるとローダが落ちる
 - 未着手: KV キャッシュと畳み込み状態 (Core ML の MLState) による生成、埋め込み表の配布形式、Llama/Qwen 系の構造、Intel IR と AMD 向けの書き出し、精度改善 (活性を見た量子化、6 ビット表)
+
+### 16.9 対応モデルのホワイトリストと共通ブロック — 2026-10-29
+
+- 方針: llama.cpp と同じく、対応するアーキテクチャをホワイトリストで管理する。各アーキテクチャの構造は、Hugging Face の `modeling_*.py` の forward を手で Go に移したもので、nn.Module 1 つを Go のメソッド 1 つにする。ONNX などからの汎用の取り込みは置かない (ANE 向けの書き換え、たとえば `-post-scale` や畳み込みのタップ分解を入れにくくなるため)。ホワイトリスト外のモデルは、これまで通り `.mlpackage` / OpenVINO IR を持ち込む
+- `internal/llm`: アーキテクチャに依らない部分。`Weights` (safetensors / GGUF を Hugging Face のテンソル名で読む)、`Options` (共通の設定と、アーキテクチャ固有の `Params`)、`Arch` (名前、`config.json` の `model_type` / `architectures`、GGUF の名前の対応表、固有の設定) と登録の仕組み (`Register`、`Detect`、`LoadConfig`)
+- `internal/llm/blocks`: 複数のアーキテクチャで使う層 (重み形式を選べる linear、RMSNorm、SwiGLU、RoPE の表と回転、因果マスク、GQA の注意)。アーキテクチャのパッケージは `blocks.Graph` を埋め込み、固有の層 (LFM3 の短い畳み込みなど) だけを書く
+- `internal/llm/archs`: すべてのアーキテクチャを import するだけのパッケージ。この import の一覧がホワイトリスト。`hwnpu-convert` はここから登録を読み、`-archs` で一覧を出す。アーキテクチャは `config.json` から判別し、`-arch` で指定もできる。固有の設定 (`-post-scale`、`-conv`) は登録された `Param` からフラグを作る
+- 検証: `TestBuildTiny` は、小さな合成の LFM3 を 5 通りの設定で組み立てる。Neural Engine なしで動き、プログラムと weight.bin のダイジェストをログに出す。今回の切り出しでは、前後でダイジェストがバイト単位で一致することを確かめた。`TestArch` は、`hwnpu-convert` と同じ経路 (判別とパラメータ) で組み立てた結果が直接の `Build` と同じことを確かめる
+- 次: 汎用の参照出力 (`tools/ref`)、層ごとの比較コマンド、CPU で fp32 のまま実行する簡単なインタプリタ (Mac なしで移植の正しさを確かめるため)、移植手順のスキル。2 つ目のアーキテクチャは BERT 系エンコーダ

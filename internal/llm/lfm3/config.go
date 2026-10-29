@@ -40,9 +40,18 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	c, err := ParseConfig(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return c, nil
+}
+
+// ParseConfig parses config.json and rejects settings the conversion does not handle.
+func ParseConfig(raw []byte) (*Config, error) {
 	var c Config
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return nil, fmt.Errorf("lfm3: %s: %w", path, err)
+		return nil, fmt.Errorf("lfm3: %w", err)
 	}
 	if c.HeadDim == 0 {
 		c.HeadDim = c.HiddenSize / c.NumHeads

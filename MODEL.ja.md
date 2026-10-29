@@ -172,7 +172,7 @@ python tools/coreml/gen_sweep.py build/sweep --report build/power-sweep.json
 
 hwnpu は読み込み時にモデルを変換できません。変換には OpenVINO の C++ フロントエンド、Python の coremltools、AMD の非公開コンパイラが要り、機械ごとに変換すると時間と電力を使ってしまうからです。そこで、開発者が一度だけ変換し、実行先ごとに（その NPU が最も速く読める精度で）1 つずつ成果物を作って配ります（S3、NFS、Hugging Face の非公開リポジトリなど）。アプリケーションは見つけたデバイス用の成果物を選び、実行時のコンパイルだけをベンダーに任せます。`WithCacheDir` がその結果を機械ごとに保存します。
 
-変換に Python は要りません。LLM の構造は数種類のブロック（正規化、注意機構または畳み込み、ゲート付き MLP）の繰り返しなので、`cmd/hwnpu-convert` は `config.json` からグラフを Go で組み立て、重みは safetensors か GGUF から読みます。今のところ Liquid AI の LFM3 に対応し、Core ML のパッケージを書き出します。Intel の IR と AMD 向けの書き出しは未実装です。
+変換に Python は要りません。LLM の構造は数種類のブロック（正規化、注意機構または畳み込み、ゲート付き MLP）の繰り返しなので、`cmd/hwnpu-convert` は `config.json` からグラフを Go で組み立て、重みは safetensors か GGUF から読みます。対応するアーキテクチャはホワイトリストで管理していて（`-archs` で一覧を表示）、今のところ Liquid AI の LFM3 だけです。アーキテクチャは `config.json` から判別します。書き出すのは Core ML のパッケージです。Intel の IR と AMD 向けの書き出しは未実装です。
 
 ```bash
 go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o lfm3.mlpackage -seq 32
