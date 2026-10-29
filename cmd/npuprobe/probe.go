@@ -67,6 +67,14 @@ func (r result) gbps() float64 {
 	return float64(r.WeightBytes) / (r.MsPerCall / 1000) / 1e9
 }
 
+// tflops is the compute rate of the matrix products: a multiply and an add per weight and token.
+func (r result) tflops() float64 {
+	if r.MsPerCall == 0 {
+		return 0
+	}
+	return 2 * float64(r.Params) * float64(max(r.Tokens, 1)) / (r.MsPerCall / 1000) / 1e12
+}
+
 type prober struct {
 	ctx    context.Context
 	dev    *hwnpu.Device

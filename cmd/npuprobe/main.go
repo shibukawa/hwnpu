@@ -26,9 +26,11 @@
 // with the parts' own times added up, and compares the output after every part with the same parts
 // run one at a time on the GPU.
 //
-// verify, run only when asked for, runs the bench models on the NPU with K tokens per call (1, 2,
-// 4 and 8 by default), the call that checks K drafted tokens in speculative decoding. The K at
-// which the time per call starts to grow is about the most speculative decoding can gain.
+// verify, run only when asked for, runs the bench models on the NPU with K tokens per call (1 to
+// 128 by default), the call that checks K drafted tokens in speculative decoding or reads a chunk
+// of the prompt. The K at which the time per call starts to grow is about the most speculative
+// decoding can gain and the chunk that uses the NPU best; past it the call is bound by the compute,
+// which the report gives in TFLOPS.
 //
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
@@ -101,7 +103,7 @@ func main() {
 	}
 	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
 	layers := fs.String("layers", "8,16", "bench and verify: layer counts (61 M weights each)")
-	tokens := fs.String("tokens", "1,2,4,8", "verify: tokens per call (K drafted tokens checked at once)")
+	tokens := fs.String("tokens", "1,2,4,8,16,32,64,128", "verify: tokens per call (K drafted tokens checked at once, or a chunk of the prompt)")
 	baselines := fs.String("baselines", "cpu,gpu", "bench on Apple: also run each model on these Core ML units (empty for none)")
 	maxGB := fs.Float64("max-gb", 0, "limit: largest weight size to try, GiB (default: a quarter of the RAM on Apple, a sixth on Intel, at most 8)")
 	several := fs.Bool("several", true, "limit: after the sweep, load several models just under the limit at once")
