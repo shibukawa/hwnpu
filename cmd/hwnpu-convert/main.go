@@ -24,22 +24,19 @@
 // -cache N builds a causal LM to run with a KV cache of N tokens held by the host
 // (internal/llm/decode): -seq is then the tokens per call (1 to generate), and each part takes the
 // cached keys, values and convolution windows of its own layers as inputs and outputs the new
-// ones. cmd/hwnpu-generate runs it.
+// ones. -cache a,b,c writes a tier per length, and generation starts on the shortest tier and
+// moves up as the sequence grows (internal/llm/chain). cmd/hwnpu-generate runs it.
 package main
 
 import (
 	"flag"
 	"fmt"
-	"math"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
-	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
 func main() {
@@ -59,7 +56,11 @@ func main() {
 	flag.Parse()
 	if *list {
 		for _, a := range llm.Archs() {
-			fmt.Printf("%s\t%s (model_type %s)\n", a.Name, a.Title, strings.Join(a.ModelTypes, ", "))
+			if len(a.ModelTypes) > 0 {
+				fmt.Printf("%s\t%s (model_type %s)\n", a.Name, a.Title, strings.Join(a.ModelTypes, ", "))
+			} else {
+				fmt.Printf("%s\t%s (architectures %s)\n", a.Name, a.Title, strings.Join(a.Architectures, ", "))
+			}
 		}
 		fmt.Println("\ntargets (-target):")
 		for _, t := range llm.Targets {
@@ -111,112 +112,6 @@ func run(config, arch, weights, out, targetName string, nParts int, caches []int
 		return err
 	}
 	defer w.Close()
-
-	for _, c := range caches {
-		if c > 0 && c+opts.Seq > llm.NeuralEngineMaxDim {
-			fmt.Printf("warning: attention over a cache of %d and %d tokens per call spans %d keys, over the Neural Engine's %d per dimension; it will run on the CPU. Use -cache %d or less\n",
-				c, opts.Seq, c+opts.Seq, llm.NeuralEngineMaxDim, llm.NeuralEngineMaxDim-opts.Seq)
-		}
-	}
-	plan := []llm.Part{{Layers: opts.Layers}}
-	var target llm.Target
-	if targetName != "none" {
-		if target, err = llm.LookupTarget(targetName); err != nil {
-			return err
-		}
-		if !target.Measured {
-			fmt.Printf("note: the %s limit (%.2f GiB) is not measured yet: %s\n", target.Name, float64(target.MaxBytes)/(1<<30), target.Note)
-		}
-	}
-	if opts.Layers == 0 && (targetName != "none" || nParts > 1) {
-		budget := int64(math.MaxInt64)
-		if target.MaxBytes > 0 {
-			budget = int64(llm.SplitMargin * float64(target.MaxBytes))
-		}
-		if plan, err = llm.PlanSplit(model, opts, budget, nParts); err != nil {
-			return err
-		}
-	}
-	base := strings.TrimSuffix(out, ".mlpackage")
-	man := llm.Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Target: target.Name, MaxBytes: target.MaxBytes}
-	tiered := len(caches) > 1
-	for _, cache := range caches {
-		opts.Cache = cache
-		tierBase := base
-		if tiered {
-			tierBase = fmt.Sprintf("%s.c%d", base, cache)
-		}
-		var recs []llm.PartRecord
-		for i, p := range plan {
-			path := tierBase + ".mlpackage"
-			if len(plan) > 1 {
-				path = fmt.Sprintf("%s.part%d.mlpackage", tierBase, i+1)
-				opts.Start, opts.Layers = p.Start, p.Layers
-			}
-			rec, err := buildPart(a, model, w, path, opts)
-			if err != nil {
-				return err
-			}
-			if target.MaxBytes > 0 && rec.WeightBytes >= target.MaxBytes {
-				msg := fmt.Sprintf("%s: weights of %.3f GiB are over the %s limit of %.3f GiB, so the Neural Engine will not take it", path, float64(rec.WeightBytes)/(1<<30), target.Name, float64(target.MaxBytes)/(1<<30))
-				if nParts == 0 {
-					return fmt.Errorf("%s; try -parts %d", msg, len(plan)+1)
-				}
-				fmt.Println("warning:", msg)
-			}
-			recs = append(recs, rec)
-		}
-		if tiered {
-			man.Tiers = append(man.Tiers, llm.Tier{Cache: cache, Parts: recs})
-		} else if len(plan) > 1 {
-			man.Cache, man.Parts = cache, recs
-		}
-	}
-	if tiered || len(plan) > 1 {
-		if err := llm.WriteManifest(base+".parts.json", &man); err != nil {
-			return err
-		}
-		switch {
-		case tiered:
-			fmt.Printf("%s: %d tiers of %d parts for %s; hwnpu-generate starts on the shortest cache and moves up\n", base+".parts.json", len(caches), len(plan), target.Name)
-		default:
-			fmt.Printf("%s: %d parts for %s, run in this order with each y bound as the next x\n", base+".parts.json", len(plan), target.Name)
-		}
-	}
-	return nil
-}
-
-// buildPart writes one program to path.
-func buildPart(a *llm.Arch, model llm.Model, w llm.Weights, path string, opts llm.Options) (llm.PartRecord, error) {
-	start := time.Now()
-	rec, err := llm.WritePart(path, model, w, opts, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("%s from %s, seq %d, %s (hwnpu-convert)", a.Title, w.Source(), opts.Seq, opts.Format)
-		if opts.Start > 0 || opts.Layers > 0 {
-			pkg.Description += fmt.Sprintf(", layers %d-%d", opts.Start, opts.Start+opts.Layers-1)
-		}
-		if opts.Cache > 0 {
-			pkg.Description += fmt.Sprintf(", KV cache %d", opts.Cache)
-		}
-		pkg.Metadata["com.github.shibukawa.hwnpu.source"] = w.Source()
-		pkg.Metadata["com.github.shibukawa.hwnpu.format"] = opts.Format
-	})
-	if err != nil {
-		return rec, err
-	}
-	var size int64
-	filepath.Walk(path, func(_ string, info os.FileInfo, _ error) error {
-		if info != nil && !info.IsDir() {
-			size += info.Size()
-		}
-		return nil
-	})
-	var inputs []string
-	for _, in := range rec.Inputs {
-		inputs = append(inputs, fmt.Sprintf("%s %v", in.Name, in.Shape))
-	}
-	if len(inputs) > 4 {
-		inputs = append(inputs[:2], fmt.Sprintf("and %d more", len(inputs)-2))
-	}
-	fmt.Printf("%s: input %s, output %s %v, %.2f GiB, %.0fs\n", path, strings.Join(inputs, ", "), rec.Output.Name, rec.Output.Shape, float64(size)/(1<<30), time.Since(start).Seconds())
-	return rec, nil
+	_, err = llm.ConvertTiers(a, model, w, out, targetName, nParts, caches, opts, os.Stdout)
+	return err
 }

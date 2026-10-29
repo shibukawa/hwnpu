@@ -1083,7 +1083,62 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 - **ANE の 1 次元あたりの上限は 16384**: キャッシュ 16384 (鍵の軸 16385) では全注意の層の注意の演算 (2 部分で 42 と 86 演算) が CPU に置かれ、1 トークン 375 ms、読み込み 140 秒、プロセスの最大 RSS 4.5 GiB になった。`npuprobe kv -kv-layers 2 -kv-cache 16383,16384` で境目を確かめた: 鍵 16384 は全部 ANE で 16.6 ms、16385 は注意の 39 演算が CPU で 117 ms (`npuprobe-m3-kv-limit.md`)。`llm.NeuralEngineMaxDim` に記録し、`hwnpu-convert` は `-cache + -seq` がこれを超えると警告する。今の方式で ANE に載る文脈の上限は 16383 トークン (Q=1)
 - 次: 容量の段階 (1K/4K/8K/16K) と移し替え、プロンプトのキャッシュ、塊分けの注意 (16K を超えるにはこれが要る)
 
-### 16.17 KV キャッシュの容量の段階 (tiers) と、Core ML の読み込みの時間 — 2026-10-30
+### 16.17 チャット、OpenAI 互換 API、OpenCode — 2026-10-30
+
+- 目的: LFM3-1.7B を Neural Engine だけで動かし、対話、OpenAI 互換の API、コーディングエージェント (OpenCode) から使えるようにする
+- **2 つのプログラムで 1 つのキャッシュ**: 1 回 64 トークン (-seq 64) のプログラムはプロンプトを速く読むが、1 トークンの生成は遅い (キャッシュ 8192、M3):
+
+| -seq | プロンプト 860 トークン | 生成 ms/token |
+|---|---|---|
+| 1 (2 分割) | 35.4 s | 48.0 |
+| 64 (1 部分) | 1.6 s | 77.0 |
+
+  そこで同じキャッシュ長で両方を変換し、両方を読み込む。`chain.Share` は 2 つ目の鎖のキャッシュの入力 (`kv_*`、`win_*`) を 1 つ目の鎖のバッファに `Bind` し、`decode.Session.Add` はそれを確かめて (同じメモリか) プログラムを足す。`Step` はトークンの数を受け取れる最も小さいプログラムを選ぶ。重みは 2 回読み込まれる (ANE に 0.81 GiB × 2、読み込みは 2 回目以降で計 60 秒前後)
+- **文脈 16320**: OpenCode の要求は system と 10 個の道具だけで 7.4K トークンあり、8K では 1 往復で要約 (compaction) が始まる。キャッシュ 16320 なら -seq 64 の鍵の軸がちょうど 16384 (16.16 の上限) で、両方とも全部 ANE に載った。16K で生成は 63〜66 ms/token、7.4K トークンのプロンプトを 13 秒で読む
+- **プロンプトのキャッシュ** (`internal/chat.Engine`): 前の要求と共通の先頭は読み直さない。全注意の層は位置を戻すだけでよい (位置より先の行はマスクで見えず、後のステップは位置より先にしか書かない) が、スライディング層のリングと畳み込みの窓はその場で上書きされるので、プロンプトを読み終えるたびに `decode.Session.Mark` (リングと窓の写し、約 3 MB、最後のロジット付き) を取り、共通の先頭の中で最も後ろの印に `Rewind` する。チャットの書式は前の応答の考え (`<think>`) を消して描き直すので、共通の先頭はちょうど前のプロンプトの終わりになることが多い。並行する別の会話 (OpenCode は本題と並べて題名や要約を頼む) で本題を読み直さないよう、長い系列はキャッシュ全体の写し (`Session.Save`、16K で約 105 MB) で 2 本まで取っておき、共通の先頭が最も長いものに入れ替える。`TestEngineReuse` (CPU インタプリタ、窓 3) は、続き、途中での分岐、別の会話との往復で、最初から読んだときとロジットが一致し、再利用したトークン数が期待どおりであることを確かめる。入れ替えでキャッシュを戻さない、取っておく系列のスライスを共有する、の 2 つの改変を検出する
+- **チャットの書式** (`internal/chat.Render`): LiquidAI/LFM3-1.7B の `chat_template.jinja` を Go に移した。道具は system の末尾に `<tools>` と JSON (キーの順を保ち、Python の `json.dumps` と同じ区切り)、呼び出しは `<tool_call><function=名前><parameter=キー>値</parameter>...` の XML、結果は `tool` の役の `<tool_response>`。最後の user より前の応答の考えは消す。`testdata/template.json` は jinja2 で transformers と同じ設定で描いた期待値で、6 つの会話 (道具、呼び出し、結果の結合、部品の配列の内容、null) が一字一句一致する。生成した XML は `Parse` で OpenAI の `tool_calls` に戻す (値は道具の型が string なら文字列、ほかは JSON として読めればその値)
+- **サーバー** (`hwnpu-chat -listen`): `GET /v1/models`、`POST /v1/chat/completions` (SSE のストリーム、`reasoning_content`、`tool_calls`、`stop`、`stream_options.include_usage`、`usage.prompt_tokens_details.cached_tokens`)。要求は 1 つずつ処理する。`reasoning_effort` が none、minimal、low なら考えずに答えさせる (題名づくりで 2000 トークン以上考え続けたため)。小さなモデルが同じ並びを繰り返し始めたら止める (直近 64 トークンが周期 16 以下の繰り返し)。`-dump DIR` で要求、プロンプト、生成文を保存する
+- **OpenCode 1.18.25** (M3、キャッシュ 16320、`build/opencode-demo`): 「main.go の add 関数のバグを直して」で、read、edit (`a - b` → `a + b`)、`go run` で 5 を確かめて終わった。12 往復、2 回目以降の要求はプロンプトの 99% を再利用 (読むのは 0.1〜0.5 秒)、生成は 63〜68 ms/token。「mul 関数を追加して」も 6 往復で編集と `go run` まで通った (ただし add の表示を mul に置き換えた。指示の取り違えはモデルの力の限界)
+- 残る問題: OpenCode は最初に題名を頼み、モデルは考えないよう指示しても考えてから答えるので 1〜2 分かかり、その間本題の要求は待つ。思考なしの短い答えではモデルの知識が怪しい (富士山を 4,076 m と答えた)。lut4 の量子化の影響か、モデルの大きさの限界かは切り分けていない
+- 引数なしの起動 (`chat.Prepare`): `-model` (既定は `~/Library/Caches/hwnpu/models/LFM3-1.7B`) にチェックポイントがなければ Hugging Face から落とし (途中で切れたら `Range` で続きから、`HF_TOKEN` に対応)、文脈 16320 の 1 トークンと 64 トークンのプログラムがなければ変換する (変換は `llm.Convert` に移し、`hwnpu-convert` と共有)。変換の終わりに `NAME.done` を書き、途中で止まった変換はやり直す。M3 で初回は落とす時間を除いて 3 分 23 秒 (変換 22+25+53 秒、コンパイルと読み込み 80 秒)、2 回目は読み込みだけで 59 秒
+
+### 16.18 3 つ目のアーキテクチャ: PLaMo-Embedding-1B (PlamoBiModel) — 2026-10-30
+
+- `internal/llm/plamo` (アーキテクチャ名 `plamo-bi`): pfnet/plamo-embedding-1b が同梱する `modeling_plamo.py` の `PlamoBiModel` を移した。PLaMo のデコーダの注意を双方向にした日本語の埋め込みモデルで、pre-norm の 16 層 (RMSNorm、注意、SwiGLU、それぞれ残差) と最終 RMSNorm。注意は融合した `qkv_proj` (2304 = 2048+128+128)、16 ヘッドに KV 1 ヘッド (MQA)、head_dim 128、ヘッドごとの重みを持つ QK-norm (重みなしの RMSNorm を head_dim で取り、`q_weight` (16, 128) と `k_weight` (1, 128) を掛ける。eps は 1e-6 に固定)、`rotate_half` の RoPE (base 10000、config に `rope_theta` はない)。MLP の `gate_up_proj` (16384, 2048) は前半が gate、後半が up。出力は最終 norm 後の隠れ状態で、プーリングはホストに任せる
+- 判別: `model_type` の `plamo` は PLaMo の因果 LM (`PlamoForCausalLM`) と同じなので、`architectures` の `PlamoBiModel` で選ぶ (`Arch.ModelTypes` は空)。ほかの `architectures`、MoE (`n_expert`、`sparse_step`)、`eval_*_n_bit` は拒否する。`linear_type: fp8` と `group_size` は学習用の設定で推論のコードは読まないので受け付ける
+- 入力は BERT と同じく `x` と `mask`。位置はパディングに関わらず 0..seq-1。HF の `encode` は左にパディングし、位置 ID をずらさないが、双方向でマスクがあり RoPE は距離にしか依らないので、右パディングでも同じ結果になる (テストの `left padding` で確認)。パディングのバイアスは BERT の `maskBias` を `blocks.MaskBias` に移して共有した
+- `blocks` に `WeightRows` と `LinearRows` を追加: 融合した行列の行の範囲を 1 つの linear にする。定数の名前は `NAME_begin_end`。`gate_up_proj` を 1 つの linear にすると出力の軸がちょうど ANE の上限 16384 になるので、8192 ずつの 2 つにした。lut4 の表は 16 行ごとで、切れ目 (2048、2176、8192) は 16 の倍数なので、部分ごとに量子化しても行列全体を量子化したのと同じ値になる。`Weight` は中身を `matrix` に分けただけで、LFM3 (`TestBuildTiny`) と BERT のダイジェストは変わっていない
+- 検証 (`plamo_test.go`): `modeling_plamo.py` をループで直接書いた fp64 の forward を正解とし、MQA のパディングなし、右パディング、左パディング、GQA (KV 2 ヘッド) の 4 通りで相対誤差 1e-4 以内。1 層ずつ (`NoHead`) と最終 norm だけ (`Start == Layers()`) をつないでも同じ。合成の重みは 0.1 以下で注意がほぼ一様になり、位置やマスクの誤りが見えないので、norm と QK-norm の重みを 1 前後にずらした。正解側は、プログラムが fp16 で持つもの (重み、RoPE の表、入力の埋め込み) を fp16 に丸めて使う (入力を丸めないと 6e-4 ずれた)。lut4 は、行列を丸ごと量子化して戻した重みの正解と 1e-4 以内。実物の大きさ (hidden 2048、16:1 の MQA、1 層) でも 6.0e-5。改変 (マスクを外す、残差の足し先を正規化後にする、gate と up を入れ替える、鍵の RoPE を外す、q_weight をヘッド 0 のものにする、鍵を値の行から取る、最終 norm を外す) はすべて検出した。マスクを外したときに通るのはパディングなしだけ
+- 実物の config.json から、テンソル 130 個の名前と形が safetensors のヘッダと一致すること、1 GiB の上限で lut4 は 1 部分、fp16 は 2 部分になることをテストした (`TestPlamoEmbedding1B`)。パラメータは 10.5 億 (埋め込み表 1.03 億はホスト)
+- `tools/ref/ref_logits.py` に `--attn` を追加した。`PlamoBiModel` の層は `config._attn_implementation` で `{"sdpa": ModifiedAttention}` を引くので、既定の eager では読み込めない
+- 未確認: 実物のチェックポイントでの `hwnpu-check` (この Mac に PyTorch がない)、Neural Engine での配置と精度。手順は次のとおり。`modeling_plamo.py` は transformers 4.47 向けなので、新しい版で読めなければ 4.47〜4.5x を使う。既定の英文は 32 トークンに足りないことがあるので、日本語の文を渡す
+
+```bash
+python tools/ref/ref_logits.py MODEL_DIR build/plamo/ref --seq 32 --encoder --attn sdpa --text "PLaMo-Embedding-1Bは、Preferred Networks, Inc. によって開発された日本語テキスト埋め込みモデルです。検索、分類、クラスタリングに使えます。"
+go run ./cmd/hwnpu-check -config MODEL_DIR/config.json -weights MODEL_DIR/model.safetensors -ref build/plamo/ref -f16
+```
+
+- **fp16 のあふれに注意**: 参照の RMSNorm は fp32 で計算するが、プログラムは fp16 で `x*x` を取るので、残差の値が絶対値 256 を超えると inf になる。`ref_logits.py` が表示する `max |hidden|` と、`hwnpu-check -f16` で確かめる。超えるなら、二乗の前に縮める書き換え (`Params` の設定) を入れる
+- 次: SentencePiece BPE のトークナイザー (`tokenizer.model`: BPE、byte fallback、正規化 identity、先頭に空白を補う、空白の連続と改行が user-defined)、埋め込みを実行するコマンド (表引き、実行、プーリング。プーリングは本文のトークンだけの平均で、BOS とクエリの前置き「次の文章に対して、関連する文章を検索してください: 」は含めない)
+
+### 16.19 PLaMo-Embedding のトークナイザー: SentencePiece BPE — 2026-10-30
+
+- `internal/tokenizer` に `LoadSentencePiece` を追加した。`tokenizer.model` (SentencePiece の ModelProto) を、依存を足さずに protobuf の符号を手で読む。`tokenizer.json` の `Load` はそのまま。返す `SentencePiece` は `Encode`、`Decode`、`ID`、`VocabSize` を持ち、BOS は付けない (PLaMo の BOS は `<|startoftext|>` = 1。HF は `add_bos_token` で付ける)
+- 符号化は sentencepiece の BPE と同じ手順にした。正規化は identity (空白を ▁ にし、先頭に ▁ を補う。壊れた UTF-8 は 1 バイトずつ U+FFFD)。user-defined の記号 (▁ の 2/4/8/16 個の連続、タブの 1/2/4 個、改行) は最長一致で 1 記号として切り出し、結合しない。残りは文字に分け、隣り合う 2 記号をつないだものが語彙にあれば候補にして、ピースのスコアが高い順 (同点なら左) に結合する。マージの一覧ではなくスコアで決まる。語彙にない記号は UTF-8 のバイト (`<0xNN>`) にする
+- HF の PlamoTokenizer は slow tokenizer で、特殊トークン (`<|unknown|>`、`<|startoftext|>`、`<|endoftext|>`、`<|pad|>`) を先に切り出し、その間ごとに sentencepiece を呼ぶ。そのため特殊トークンの後ろにも ▁ が補われる (`before<|endoftext|>after` は `▁before`、`<|endoftext|>`、`▁after`)。`Encode` も同じにした。`Decode(ids, false)` は `Encode` の逆 (区切りごとに先頭の ▁ を落とす。HF の decode は特殊トークンの前に空白を足すので往復しない)。`skipSpecial` のときは、HF の `skip_special_tokens=True` と同じく区切りをつないでから戻す
+- 対応しない設定は読み込みでエラーにする: Unigram、正規化の規則表 (nmt_nfkc など)、`remove_extra_whitespaces`、空白を後ろに付ける形、unused のピース、byte fallback のない BPE、バイトのピースの欠け
+- 正解: `tools/ref/tokenizer_golden.py` が HF の tokenizer (特殊トークンなし) で id を出し、特殊トークンを含まない文は sentencepiece 単体の結果とも一致することを確かめる。`internal/tokenizer/testdata/plamo-embedding-1b.json` の 32 文 (日本語、英語、混在、空白の連続、タブ、改行、`\r\n`、絵文字と ZWJ、𠮷 などの珍しい字、結合文字、制御文字、▁ そのもの、特殊トークン入り、空文字列) の 599 トークンがすべて一致し、▁ そのものを含む 1 文 (decode で空白に戻る。sentencepiece も同じ) を除いて往復した。`TestPlamoEmbedding` は `HWNPU_PLAMO_DIR` (`tokenizer.model` のある場所) が要る。別に乱数で作った 3032 文 (88072 トークン) でも、符号化と sentencepiece の decode との不一致は 0
+- 小さなモデルのテスト (`TestSentencePiece`): ModelProto をテストの中で組み立て、スコアの順、同点の左優先、user-defined を結合しないこと、バイトへの退避、区切りごとの ▁、往復を確かめる。改変 (同点を右優先、スコアの低い順、user-defined も結合、先頭の ▁ なし、特殊トークンを切り出さない、バイトの代わりに unknown、decode で区切りごとに ▁ を落とさない) はすべてどれかのテストが検出した。実物の語彙ではスコアの同点も user-defined をまたぐ結合も起きないので、この 2 つは小さなモデルでしか見えない
+- 正解を作る環境: sentencepiece 0.2.2 は `SentencePieceProcessor.Init` がなく、`tokenization_plamo.py` が読み込めない。0.2.0 は Python 3.15 用の配布物がないので、Python 3.12 で `pip install sentencepiece==0.2.0 protobuf "transformers<5"` とした (torch は要らない)
+
+```bash
+python tools/ref/tokenizer_golden.py MODEL_DIR internal/tokenizer/testdata/plamo-embedding-1b.json
+HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
+```
+
+- HF の `encode` は `pad_token` を `eos_token` (この tokenizer_config.json では `<|startoftext|>`) にして左に詰める。マスクで隠れるので、パディングの id は結果に効かない
+- 次: 埋め込みを実行するコマンド (BOS と前置きを付けて符号化、表引き、実行、本文のトークンだけの平均プーリング)
+### 16.20 KV キャッシュの容量の段階 (tiers) と、Core ML の読み込みの時間 — 2026-10-30
 
 - 方針: 費用は容量に比例するので、短い文脈は短いキャッシュで動かす。`hwnpu-convert -cache 1024,4096,8192` が長さごとの部分 (`out.c1024.part1.mlpackage` …) を 1 つの `out.parts.json` に段階 (`Manifest.Tiers`) として並べる。重みは段階ごとに重複する (LFM3-1.7B の lut4 で 1 段階 0.8 GiB)
 - 実行: `chain.Open` は最初の段階だけを読み込む。`chain.Grow` が次の段階に切り替え、`decode.Session.Migrate` がキャッシュを写す (全注意の層は行をそのまま、スライディング層のリングは長さが同じなのでそのまま。短い段階への移動は拒否)。次の段階は `chain.Preload` で裏で読み込むか、`chain.LoadAll` で先に全部読み込む。`hwnpu-generate -preload` は既定 `all`、`0〜1` で裏の先読みを始める満たし方

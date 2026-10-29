@@ -172,13 +172,13 @@ python tools/coreml/gen_sweep.py build/sweep --report build/power-sweep.json
 
 hwnpu は読み込み時にモデルを変換できません。変換には OpenVINO の C++ フロントエンド、Python の coremltools、AMD の非公開コンパイラが要り、機械ごとに変換すると時間と電力を使ってしまうからです。そこで、開発者が一度だけ変換し、実行先ごとに（その NPU が最も速く読める精度で）1 つずつ成果物を作って配ります（S3、NFS、Hugging Face の非公開リポジトリなど）。アプリケーションは見つけたデバイス用の成果物を選び、実行時のコンパイルだけをベンダーに任せます。`WithCacheDir` がその結果を機械ごとに保存します。
 
-変換に Python は要りません。LLM の構造は数種類のブロック（正規化、注意機構または畳み込み、ゲート付き MLP）の繰り返しなので、`cmd/hwnpu-convert` は `config.json` からグラフを Go で組み立て、重みは safetensors か GGUF から読みます。対応するアーキテクチャはホワイトリストで管理していて（`-archs` で一覧を表示）、今のところ Liquid AI の LFM3 と BERT 系エンコーダ（all-MiniLM-L6-v2、E5、BGE、GTE など）です。アーキテクチャは `config.json` から判別します。書き出すのは Core ML のパッケージです。Intel の IR と AMD 向けの書き出しは未実装です。
+変換に Python は要りません。LLM の構造は数種類のブロック（正規化、注意機構または畳み込み、ゲート付き MLP）の繰り返しなので、`cmd/hwnpu-convert` は `config.json` からグラフを Go で組み立て、重みは safetensors か GGUF から読みます。対応するアーキテクチャはホワイトリストで管理していて（`-archs` で一覧を表示）、今のところ Liquid AI の LFM3、BERT 系エンコーダ（all-MiniLM-L6-v2、E5、BGE、GTE など）、PLaMo の双方向エンコーダ（PLaMo-Embedding-1B）です。アーキテクチャは `config.json` から判別します。書き出すのは Core ML のパッケージです。Intel の IR と AMD 向けの書き出しは未実装です。
 
 ```bash
 go run ./cmd/hwnpu-convert -config build/lfm3/config.json -weights build/lfm3/LFM3-1.7B.safetensors -o lfm3.mlpackage -seq 32
 ```
 
-できたパッケージの入力は `x`（fp16 の埋め込み `(1, seq, hidden)`）、出力は `y`（ロジット `(1, seq, vocab)`）です。Core ML は `gather` を必ず CPU に置くので、埋め込みの表引きはホスト側で行います。BERT 系のパッケージは、2 つ目の入力 `mask`（fp16 の `(1, seq)`。トークンは 1、パディングは 0）を取り、最後の隠れ状態 `(1, seq, hidden)` を返します。文埋め込みにするためのプーリング（平均か CLS）と正規化は、ホスト側で行います。重みは 4 ビットの表引き方式（`-format lut4`）で、出力 16 行ごとに fp16 16 個の表を持ちます。これが Neural Engine が全速で読める唯一の圧縮形式です（後述）。`-format fp16` は重みをそのまま書き出し、グラフの確認に使います。
+できたパッケージの入力は `x`（fp16 の埋め込み `(1, seq, hidden)`）、出力は `y`（ロジット `(1, seq, vocab)`）です。Core ML は `gather` を必ず CPU に置くので、埋め込みの表引きはホスト側で行います。BERT 系と PLaMo-Embedding のパッケージは、2 つ目の入力 `mask`（fp16 の `(1, seq)`。トークンは 1、パディングは 0）を取り、最後の隠れ状態 `(1, seq, hidden)` を返します。文埋め込みにするためのプーリング（平均か CLS）と正規化は、ホスト側で行います。重みは 4 ビットの表引き方式（`-format lut4`）で、出力 16 行ごとに fp16 16 個の表を持ちます。これが Neural Engine が全速で読める唯一の圧縮形式です（後述）。`-format fp16` は重みをそのまま書き出し、グラフの確認に使います。
 
 **大きなモデルの分割**：Neural Engine が受け付けるのは、重みのファイルがチップごとの上限より小さいモデルだけです。それより大きいモデルは丸ごと CPU に置かれます。上限はモデル 1 つごとなので、`hwnpu-convert` は上限を超えるモデルを、上限に収まる最少の数の部分に、大きさがそろうように分けます。`-target` でチップを選びます（既定の `any` は、知っているチップの上限のうち最小のもの）。
 
