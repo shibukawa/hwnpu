@@ -222,6 +222,8 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 
 	id := fmt.Sprintf("chatcmpl-%d-%d", time.Now().Unix(), s.n.Add(1))
 	created := time.Now().Unix()
+	// a long prompt on a large cache takes minutes before its first token
+	s.logf("%s: %d tokens of prompt, %d messages, %d tools", id, len(ids), len(req.Messages), len(req.Tools))
 	chunk := func(delta map[string]any, finish any) map[string]any {
 		return map[string]any{
 			"id": id, "object": "chat.completion.chunk", "created": created, "model": e.Name,
