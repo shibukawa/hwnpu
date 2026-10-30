@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 )
@@ -30,10 +31,10 @@ func TestListenFree(t *testing.T) {
 	}
 }
 
-// The config names the server as the provider hwnpu, its model with the context as the limit,
-// and that model as the one to use.
+// The config names the server as the provider hwnpu, its chat models with their contexts as the
+// limits, and the first as the one to use.
 func TestOpenCodeConfig(t *testing.T) {
-	b, err := openCodeConfig("http://127.0.0.1:31234/v1", "LFM3-1.7B", 16320)
+	b, err := openCodeConfig("http://127.0.0.1:31234/v1", []openModel{{"LFM3-1.7B", 16320}, {"other", 4096}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +58,24 @@ func TestOpenCodeConfig(t *testing.T) {
 	}
 	p := c.Provider["hwnpu"]
 	m, ok := p.Models["LFM3-1.7B"]
+	o := p.Models["other"]
 	if p.NPM != "@ai-sdk/openai-compatible" || p.Options.BaseURL != "http://127.0.0.1:31234/v1" || !ok || !m.ToolCall ||
-		m.Limit.Context != 16320 || m.Limit.Output != 4080 || c.Model != "hwnpu/LFM3-1.7B" {
+		m.Limit.Context != 16320 || m.Limit.Output != 4080 || o.Limit.Context != 4096 || o.Limit.Output != 1024 || c.Model != "hwnpu/LFM3-1.7B" {
 		t.Errorf("config %s", b)
+	}
+}
+
+// The model goes where the command takes it, and not to the commands that refuse -m.
+func TestOpenCodeArgs(t *testing.T) {
+	for _, c := range []struct{ args, want []string }{
+		{nil, []string{"-m", "hwnpu/M"}},
+		{[]string{"--continue"}, []string{"-m", "hwnpu/M", "--continue"}},
+		{[]string{"src/app"}, []string{"-m", "hwnpu/M", "src/app"}},
+		{[]string{"run", "fix it"}, []string{"run", "-m", "hwnpu/M", "fix it"}},
+		{[]string{"models", "hwnpu"}, []string{"models", "hwnpu"}},
+	} {
+		if got := openCodeArgs("hwnpu/M", c.args); fmt.Sprint(got) != fmt.Sprint(c.want) {
+			t.Errorf("%q: got %q, want %q", c.args, got, c.want)
+		}
 	}
 }
