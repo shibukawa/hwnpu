@@ -96,7 +96,8 @@ fp16 の素直なグラフが参照と合ってから入れます。書き換え
 
 ## 間違えやすい点
 
-- **RMSNorm**：`w * x` か `(1 + w) * x` か（Gemma 系は後者）。eps の config 名はモデルごとに違う（`rms_norm_eps`、`norm_eps`、`layer_norm_eps`）
+- **RMSNorm**：`w * x` か `(1 + w) * x` か（Gemma 2/3 は後者、Gemma 4 は前者。世代で変わるので毎回 modeling_*.py を見る）。eps の config 名はモデルごとに違う（`rms_norm_eps`、`norm_eps`、`layer_norm_eps`）
+- **fp16 のあふれ**：norm は `x*x` を fp16 で取るので、入力の絶対値が 256 を超えると inf になる。参照の `max |hidden|` は層の境目しか見ないので、層の中（norm の重みが大きい層の QK-norm など）であふれることがある。`hwnpu-check -f16` で最初にずれた層を、出力を足して中間値ごとに比べる。norm は入力の倍率に依らないので、`x/64` を正規化すれば直る（Gemma 4 の `norm`）。重みの方を割ると、小さな重みが fp16 の非正規化数になる
 - **RoPE の並び**：`rotate_half`（前半と後半を入れ替える）か、偶数と奇数の交互か。部分回転（`partial_rotary_factor`）があるか。`rope_scaling` があるか
 - **GGUF の llama 系**：q/k の重みが RoPE の並びに合わせて並べ替えられている。safetensors と同じ扱いにすると壊れる
 - **`nn.Linear` の重み**は (out, in) の向き。bias があるかは config（`attention_bias`、`mlp_bias` など）で変わる

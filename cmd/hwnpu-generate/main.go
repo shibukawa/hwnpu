@@ -28,6 +28,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
@@ -149,7 +150,7 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 	if x == nil {
 		return fmt.Errorf("%s has no input x", pkg)
 	}
-	ids, stops, err := promptIDs(tk, system, prompt, raw)
+	ids, stops, err := promptIDs(tk, a.Name, system, prompt, raw)
 	if err != nil {
 		return err
 	}
@@ -159,7 +160,7 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 		if e, ok := emb[t]; ok {
 			return e, nil
 		}
-		e, err := llm.Embed(w, model, []int32{t})
+		e, err := llm.TokenRow(w, model, t)
 		emb[t] = e
 		return e, err
 	}
@@ -179,22 +180,49 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 	if len(ids) >= seq {
 		return fmt.Errorf("the prompt is %d tokens; the package takes %d (convert with a larger -seq)", len(ids), seq)
 	}
-	xb := x.Bytes()
-	clear(xb)
+	// x, and the inputs the host looks up per token besides it (llm.TokenInputs)
+	type rowInput struct {
+		b     *hwnpu.Buffer
+		width int
+	}
+	inputs := []rowInput{{x, hidden}}
+	if l, ok := model.(llm.TokenInputs); ok {
+		for _, lk := range l.TokenInputs() {
+			b := c.Input(lk.Input)
+			if b == nil {
+				return fmt.Errorf("%s has no input %s", pkg, lk.Input)
+			}
+			inputs = append(inputs, rowInput{b, lk.Width})
+		}
+	}
+	clearAll := func() {
+		for _, in := range inputs {
+			clear(in.b.Bytes())
+		}
+	}
+	syncAll := func() {
+		for _, in := range inputs {
+			in.b.SyncToDevice(0, in.b.Size())
+		}
+	}
 	write := func(pos int, t int32) error {
 		e, err := embed(t)
 		if err != nil {
 			return err
 		}
-		hwnpu.EncodeF16(xb[2*pos*hidden:2*(pos+1)*hidden], e)
+		for _, in := range inputs {
+			hwnpu.EncodeF16(in.b.Bytes()[2*pos*in.width:2*(pos+1)*in.width], e[:in.width])
+			e = e[in.width:]
+		}
 		return nil
 	}
+	clearAll()
 	for i, t := range ids {
 		if err := write(i, t); err != nil {
 			return err
 		}
 	}
-	x.SyncToDevice(0, x.Size())
+	syncAll()
 
 	logits := make([]float32, vocab)
 	var gen []int32
@@ -226,13 +254,13 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 			// Keep the first token and drop the oldest quarter of the rest.
 			drop := max(seq/4, 1)
 			ids = append(ids[:1], ids[1+drop:]...)
-			clear(xb)
+			clearAll()
 			for i, t := range ids {
 				if err := write(i, t); err != nil {
 					return err
 				}
 			}
-			x.SyncToDevice(0, x.Size())
+			syncAll()
 			if !slid {
 				fmt.Fprintf(os.Stderr, "\n[window of %d tokens full: dropping the oldest]\n", seq)
 				slid = true
@@ -242,7 +270,9 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 		if err := write(len(ids)-1, next); err != nil {
 			return err
 		}
-		x.SyncToDevice(2*(len(ids)-1)*hidden, 2*hidden)
+		for _, in := range inputs {
+			in.b.SyncToDevice(2*(len(ids)-1)*in.width, 2*in.width)
+		}
 	}
 	fmt.Println()
 	if len(gen) > 1 {
@@ -313,9 +343,18 @@ func hasCache(c *chain.Chain) bool {
 
 // promptIDs turns the prompt into tokens, in the chat format unless raw, and returns the tokens
 // that end the answer.
-func promptIDs(tk *tokenizer.Tokenizer, system, prompt string, raw bool) ([]int32, map[int32]bool, error) {
+func promptIDs(tk *tokenizer.Tokenizer, arch, system, prompt string, raw bool) ([]int32, map[int32]bool, error) {
 	text := prompt
-	if !raw {
+	stopTokens := []string{"<|im_end|>", "<|endoftext|>"}
+	switch {
+	case raw:
+		for _, bos := range []string{"<|startoftext|>", "<bos>"} {
+			if _, ok := tk.ID(bos); ok {
+				text = bos + prompt
+				break
+			}
+		}
+	case arch == "lfm3":
 		var sb strings.Builder
 		sb.WriteString("<|startoftext|>")
 		if system != "" {
@@ -323,11 +362,24 @@ func promptIDs(tk *tokenizer.Tokenizer, system, prompt string, raw bool) ([]int3
 		}
 		sb.WriteString("<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n")
 		text = sb.String()
-	} else if _, ok := tk.ID("<|startoftext|>"); ok {
-		text = "<|startoftext|>" + prompt
+	default:
+		// the model's chat format, answering without thinking
+		tmpl, err := chat.TemplateFor(arch)
+		if err != nil {
+			return nil, nil, err
+		}
+		var msgs []chat.Message
+		if system != "" {
+			msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
+		}
+		msgs = append(msgs, chat.Message{Role: "user", Content: chat.Content{Text: prompt}})
+		if text, _, err = tmpl.Render(msgs, nil, chat.Options{NoThink: true}); err != nil {
+			return nil, nil, err
+		}
+		stopTokens = tmpl.Stops()
 	}
 	stops := map[int32]bool{}
-	for _, t := range []string{"<|im_end|>", "<|endoftext|>"} {
+	for _, t := range stopTokens {
 		if id, ok := tk.ID(t); ok {
 			stops[id] = true
 		}

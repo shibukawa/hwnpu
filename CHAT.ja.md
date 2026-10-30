@@ -13,6 +13,7 @@ go run ./cmd/hwnpu-chat -list
 | 名前 | 用途 | 機能 | ターミナル | `-listen` のとき (3 節) |
 |---|---|---|---|---|
 | `LFM3-1.7B` (既定) | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
+| `gemma-4-E2B-it` | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
 | `plamo-embedding-1b` | embedding | `query` | 埋め込みで文を検索する (4 節) | `/v1/embeddings` |
 
 機能は、用途のほかにそのモデルができることです (名前は Ollama の capabilities に合わせています)。
@@ -44,6 +45,19 @@ go run ./cmd/hwnpu-chat
 - `/reset` で会話を消し、`/exit` か Ctrl-D で終わります。Ctrl-C は答えを止めます。行末の `\` で次の行に続けます
 - 会話の 2 回目以降は、前回からの差分だけを読みます
 - 答えのあとに、読んだトークン数と生成の速さ (M3 で約 15 tokens/s) を出します
+
+### Gemma 4 E2B を使う
+
+`-use gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/models/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし、1 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で 2 部分ずつ (約 0.8 + 0.8 GiB) に変換します。
+
+```bash
+go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
+```
+
+- チャットの書式は Gemma 4 の `chat_template.jinja` を Go に移したもので、思考 (`<|think|>`、`reasoning_content` に返す) と道具の呼び出しに対応します
+- 層ごとの埋め込みの表 (4.7 GB) はホストに置き、トークンごとに 1 行 (17.5 KB) を読みます
+- 文脈は 16320 まで (16320 を超えるキャッシュの塊分けは LFM3 だけ)。M3 で 1 トークン約 31 ms (キャッシュ 1024)、文脈 16320 では 55 ms (LFM3-1.7B は 19 ms と 63〜66 ms)
+- Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`-package` で自分で変換するときは `hwnpu-convert` の `-format` を省けば lut6 になります。詳細は docs/design.md の 16.25 と 16.26
 
 ## 2. オプション
 
@@ -152,7 +166,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 ### 画像を読む（LFM3-VL-2B）
 
-LFM3-VL のチェックポイントは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`-vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます。実物での確認はまだです（docs/design.md の 16.26）。
+LFM3-VL のチェックポイントは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`-vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます。実物での確認はまだです（docs/design.md の 16.28）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
@@ -164,7 +178,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpacka
 
 ### 音声を読む（LFM3-Audio-2B）
 
-LFM3-Audio のチェックポイントは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`-audio` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います。実物での確認はまだです（docs/design.md の 16.27）。
+LFM3-Audio のチェックポイントは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`-audio` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います。実物での確認はまだです（docs/design.md の 16.29）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
@@ -172,7 +186,7 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 
 ### 音声で話す（LFM3-Audio-2B の TTS）
 
-`hwnpu-tts` が文章を読み上げて WAV（24 kHz）に書きます。テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.28）。
+`hwnpu-tts` が文章を読み上げて WAV（24 kHz）に書きます。テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.30）。
 
 ```bash
 go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage

@@ -22,6 +22,8 @@ type Arch struct {
 	Architectures []string
 	// Params are the architecture's own build settings, read from Options.Params.
 	Params []Param
+	// Format is the weight format the converters use when not told (lut4 when empty).
+	Format string
 	// LoadConfig parses config.json and rejects settings the conversion does not handle.
 	LoadConfig func(raw []byte) (Model, error)
 	// GGUFName maps a Hugging Face tensor name to llama.cpp's ("" when there is none).
@@ -33,6 +35,14 @@ type Arch struct {
 // Param is an architecture specific build setting.
 type Param struct {
 	Name, Default, Usage string
+}
+
+// DefaultFormat is the weight format to use when none is given.
+func (a *Arch) DefaultFormat() string {
+	if a.Format == "" {
+		return "lut4"
+	}
+	return a.Format
 }
 
 // Param returns the value of the architecture's setting name in o, or its default.
@@ -92,6 +102,27 @@ type Cached interface {
 	// StepInputs returns the values of the other inputs for a step of valid tokens from pos, of
 	// a program built with Seq q and Cache cache.
 	StepInputs(pos, valid, q, cache int) map[string][]float32
+}
+
+// TokenInput is a program input that the host fills per token like x, from a table of the
+// checkpoint that stays on the host: the row of Table for each token, Width values, as an input
+// of shape (1, seq, Width).
+type TokenInput struct {
+	Input, Table string
+	Width        int
+}
+
+// TokenInputs is a model whose program takes inputs looked up per token besides x (Gemma 4's
+// per-layer embeddings). Their tables are not part of the program.
+type TokenInputs interface {
+	TokenInputs() []TokenInput
+}
+
+// Prologue is a model with tensors outside its layers that the program uses before layer 0
+// (Gemma 4's per-layer input projection). Without it, those of a causal LM count as coming after
+// the last layer when the model is split.
+type Prologue interface {
+	BeforeLayers(name string) bool
 }
 
 var archs []*Arch

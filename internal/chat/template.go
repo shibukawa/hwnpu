@@ -1,7 +1,8 @@
 // Package chat turns a conversation into a prompt and a generated answer back into a message,
-// with the chat template of LFM3 (tokenizer chat_template.jinja of LiquidAI/LFM3-1.7B), and
-// runs it on a model with a KV cache (Engine): an interactive chat and an OpenAI compatible
-// server (Server) share it. Tool calls are the template's XML form, converted to and from the
+// with the chat template of the model (Template: LFM3's chat_template.jinja of
+// LiquidAI/LFM3-1.7B, or Gemma 4's of google/gemma-4-E2B-it), and runs it on a model with a KV
+// cache (Engine): an interactive chat and an OpenAI compatible server (Server) share it. Tool
+// calls are the template's own form (LFM3's XML, Gemma 4's notation), converted to and from the
 // OpenAI function calls.
 package chat
 
@@ -131,16 +132,56 @@ func (t Tool) paramType(param string) string {
 	return ""
 }
 
+// Template is a model's chat format.
+type Template interface {
+	// Render writes the conversation as the prompt of the next assistant message, and says
+	// whether the prompt ends inside the model's thinking.
+	Render(msgs []Message, tools []Tool, o Options) (prompt string, thinking bool, err error)
+	// Parse takes apart the text generated after a prompt from Render (with the special
+	// tokens); thinking is what Render said. Unless final, the text may be cut anywhere.
+	Parse(text string, thinking bool, tools []Tool, final bool) Answer
+	// Stops are the special tokens that end an answer.
+	Stops() []string
+}
+
+// LFM3 is the chat format of LiquidAI/LFM3-1.7B: Render and Parse.
+var LFM3 Template = lfm3Format{}
+
+type lfm3Format struct{}
+
+func (lfm3Format) Render(msgs []Message, tools []Tool, o Options) (string, bool, error) {
+	p, err := Render(msgs, tools, o)
+	return p, !o.NoThink, err
+}
+
+func (lfm3Format) Parse(text string, thinking bool, tools []Tool, final bool) Answer {
+	return Parse(text, thinking, tools, final)
+}
+
+func (lfm3Format) Stops() []string { return []string{"<|im_end|>", "<|endoftext|>"} }
+
+// TemplateFor returns the chat format of an architecture (llm.Arch's Name).
+func TemplateFor(arch string) (Template, error) {
+	switch arch {
+	case "lfm3":
+		return LFM3, nil
+	case "gemma4":
+		return Gemma4, nil
+	}
+	return nil, fmt.Errorf("chat: no chat format for %s", arch)
+}
+
 // Template options.
 type Options struct {
-	// NoThink starts the answer with an empty <think></think>, so the model answers at once.
+	// NoThink makes the model answer without thinking first: LFM3's answer starts with an empty
+	// <think></think>, and Gemma 4's system turn leaves out <|think|>.
 	NoThink bool
 	// KeepThinking keeps the thinking of assistant messages before the last user message
 	// (the template's preserve_thinking).
 	KeepThinking bool
 }
 
-// Render writes the conversation as the prompt of the next assistant message.
+// Render writes the conversation as the prompt of the next assistant message in LFM3's format.
 func Render(msgs []Message, tools []Tool, o Options) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("<|startoftext|>")

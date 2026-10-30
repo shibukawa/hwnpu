@@ -32,14 +32,15 @@ type Program struct {
 
 // Session is the state of one sequence.
 type Session struct {
-	progs  []step // by tokens per step, shortest first
-	m      llm.Cached
-	kv     []kvCache
-	t      int // cache length
-	hidden int
-	vocab  int
-	pos    int
-	last   []float32 // h after the last step, if the program outputs it
+	progs   []step // by tokens per step, shortest first
+	m       llm.Cached
+	kv      []kvCache
+	t       int // cache length
+	hidden  int
+	vocab   int
+	pos     int
+	lookups []llm.TokenInput // the model's inputs looked up per token besides x
+	last    []float32        // h after the last step, if the program outputs it
 }
 
 // kvCache is one cache of keys or values: an input kv_NAME, or the chunks kv_NAME_cJ that hold
@@ -87,6 +88,12 @@ func New(p Program, m llm.Cached) (*Session, error) {
 		return nil, fmt.Errorf("decode: no output y (1, q, vocab)")
 	}
 	s := &Session{progs: []step{{p, x[1]}}, m: m, hidden: x[2], vocab: y[2]}
+	if l, ok := m.(llm.TokenInputs); ok {
+		s.lookups = l.TokenInputs()
+	}
+	if err := s.checkLookups(p); err != nil {
+		return nil, err
+	}
 	var err error
 	if s.kv, s.t, err = caches(p); err != nil {
 		return nil, err
@@ -174,8 +181,22 @@ func (s *Session) Add(p Program) error {
 			return fmt.Errorf("decode: a program of %d tokens per step is there already", x[1])
 		}
 	}
+	if err := s.checkLookups(p); err != nil {
+		return err
+	}
 	s.progs = append(s.progs, step{p, x[1]})
 	slices.SortFunc(s.progs, func(a, b step) int { return a.q - b.q })
+	return nil
+}
+
+// checkLookups checks that p takes the model's lookup inputs.
+func (s *Session) checkLookups(p Program) error {
+	q := p.InShape["x"][1]
+	for _, lk := range s.lookups {
+		if sh := p.InShape[lk.Input]; !slices.Equal(sh, []int{1, q, lk.Width}) {
+			return fmt.Errorf("decode: input %s has shape %v, want (1, %d, %d)", lk.Input, sh, q, lk.Width)
+		}
+	}
 	return nil
 }
 
@@ -212,6 +233,9 @@ func (s *Session) Migrate(np Program) error {
 	}
 	if nt < s.t {
 		return fmt.Errorf("decode: the new program caches %d tokens, fewer than the session's %d", nt, s.t)
+	}
+	if err := s.checkLookups(np); err != nil {
+		return err
 	}
 	first := s.progs[0].p
 	for name, in := range first.In {
@@ -334,9 +358,19 @@ func (s *Session) Rewind(m *Mark) {
 	s.pos = m.pos
 }
 
-// Step runs a program over the next tokens, given as their embeddings (at most Q of hidden
-// values each), and returns the logits after the last one. It runs the program with the fewest
-// tokens per step that takes them all.
+// Width is the number of values of a token's row that Step takes: the hidden size, and the widths
+// of the model's lookup inputs (llm.TokenRow).
+func (s *Session) Width() int {
+	n := s.hidden
+	for _, lk := range s.lookups {
+		n += lk.Width
+	}
+	return n
+}
+
+// Step runs a program over the next tokens, given as their rows (at most Q): the embeddings (x)
+// followed by the model's lookup inputs, as llm.TokenRow gathers them. It returns the logits after
+// the last one, running the program with the fewest tokens per step that takes them all.
 func (s *Session) Step(emb [][]float32) ([]float32, error) {
 	v := len(emb)
 	if v == 0 || v > s.Q() {
@@ -355,11 +389,19 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 	}
 	x := p.In["x"]
 	clear(x)
+	for _, lk := range s.lookups {
+		clear(p.In[lk.Input])
+	}
 	for i, e := range emb {
-		if len(e) != s.hidden {
-			return nil, fmt.Errorf("decode: embedding of %d values, want %d", len(e), s.hidden)
+		if len(e) != s.Width() {
+			return nil, fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
 		}
-		hwnpu.EncodeF16(x[2*i*s.hidden:2*(i+1)*s.hidden], e)
+		hwnpu.EncodeF16(x[2*i*s.hidden:2*(i+1)*s.hidden], e[:s.hidden])
+		off := s.hidden
+		for _, lk := range s.lookups {
+			hwnpu.EncodeF16(p.In[lk.Input][2*i*lk.Width:2*(i+1)*lk.Width], e[off:off+lk.Width])
+			off += lk.Width
+		}
 	}
 	for name, vals := range s.m.StepInputs(s.pos, v, q, s.t) {
 		if b, ok := p.In[name]; ok {

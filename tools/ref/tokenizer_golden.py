@@ -3,9 +3,10 @@
     python tokenizer_golden.py MODEL_DIR OUT.json [--random N]
 
 MODEL_DIR holds tokenizer.model, tokenizer_config.json and the tokenizer's remote code
-(tokenization_plamo.py for PLaMo). Each text is encoded by the Hugging Face tokenizer without
-special tokens (no BOS), and, when it contains no special token, also by sentencepiece alone;
-the two must agree. OUT.json holds {"cases": [{"text": ..., "ids": [...]}]}. --random N adds N
+(tokenization_plamo.py for PLaMo), or a tokenizer.json converted from SentencePiece (Gemma).
+Each text is encoded by the Hugging Face tokenizer without special tokens (no BOS), and, when it
+contains no special token and there is a tokenizer.model, also by sentencepiece alone; the two
+must agree. OUT.json holds {"cases": [{"text": ..., "ids": [...]}]}. --random N adds N
 random strings drawn from the texts' characters, spaces, tabs and newlines (for a wider local
 check; the committed golden file has none). Needs transformers and sentencepiece, not torch.
 """
@@ -47,6 +48,9 @@ TEXTS = [
     "<|startoftext|><|endoftext|>",
     "全角スペース　を含む　文",
     "ｶﾀｶﾅ半角 と ① ② ㈱ ㌔",
+    "<|turn>user\nこんにちは<turn|>\n<|turn>model\n",
+    "<|think|>思考<|channel>thought\n考え<channel|>答え",
+    "<|tool_call>call:get_weather{city:<|\"|>Tokyo<|\"|>}<tool_call|>",
 ]
 
 
@@ -58,11 +62,14 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
 
-    import sentencepiece as spm
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(a.model_dir, trust_remote_code=True)
-    sp = spm.SentencePieceProcessor(model_file=os.path.join(a.model_dir, "tokenizer.model"))
+    sp = None
+    if os.path.exists(os.path.join(a.model_dir, "tokenizer.model")):
+        import sentencepiece as spm
+
+        sp = spm.SentencePieceProcessor(model_file=os.path.join(a.model_dir, "tokenizer.model"))
     special = list(tok.added_tokens_encoder)
 
     texts = list(TEXTS)
@@ -75,7 +82,7 @@ def main():
     cases = []
     for t in texts:
         ids = tok(t, add_special_tokens=False)["input_ids"]
-        if not any(s in t for s in special):
+        if sp is not None and not any(s in t for s in special):
             alone = sp.encode(t)
             if alone != ids:
                 raise SystemExit(f"transformers and sentencepiece disagree on {t!r}:\n{ids}\n{alone}")

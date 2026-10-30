@@ -310,3 +310,35 @@ func BenchmarkLinear(b *testing.B) {
 	}
 	b.ReportMetric(float64(2*32*2048*8192)*float64(b.N)/b.Elapsed().Seconds()/1e9, "GFLOP/s")
 }
+
+// 6 and 8 bit tables (uint6 indices packed low bits first, uint8 one per byte) give the values
+// palette.Dequantize gives, exactly.
+func TestConstexprWideTables(t *testing.T) {
+	rows, cols := 32, 12
+	w := make([]float32, rows*cols)
+	for i := range w {
+		w[i] = float32(math.Sin(float64(i) * 0.7))
+	}
+	eye := make([]float32, cols*cols)
+	for i := 0; i < cols; i++ {
+		eye[i*cols+i] = 1
+	}
+	for _, bits := range []int{4, 6, 8} {
+		q := palette.QuantizeBits(w, rows, cols, 16, 0, bits, 8, palette.KMeansMinMax)
+		want := q.Dequantize()
+		got := run(t, []int{cols, cols}, eye, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+			v, err := b.LUT("w", bits, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return b.Op("linear", map[string]any{"x": x, "weight": v}, mlpackage.Float16, cols, rows)
+		})
+		for r := 0; r < rows; r++ {
+			for c := 0; c < cols; c++ {
+				if g := got.Data[c*rows+r]; g != want[r*cols+c] {
+					t.Fatalf("%d bits: (%d, %d) = %g, want %g", bits, r, c, g, want[r*cols+c])
+				}
+			}
+		}
+	}
+}
