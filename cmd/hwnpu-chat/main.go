@@ -30,8 +30,8 @@ import (
 )
 
 func main() {
-	model := flag.String("model", chat.DefaultDir(chat.DefaultRepo), "directory of the model: the checkpoint and the converted programs, downloaded and converted when missing")
-	repo := flag.String("repo", chat.DefaultRepo, "Hugging Face repository the checkpoint comes from")
+	model := flag.String("model", "", "directory of the model: the checkpoint and the converted programs, downloaded and converted when missing (default: hwnpu/models/NAME of -repo in the user cache directory)")
+	repo := flag.String("repo", chat.DefaultRepo, "Hugging Face repository the checkpoint comes from: LiquidAI/LFM3-1.7B or google/gemma-4-E2B-it")
 	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of the converted programs)")
 	pkgs := flag.String("package", "", "programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the model (default: in -model)")
@@ -40,7 +40,7 @@ func main() {
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	listen := flag.String("listen", "", "serve the OpenAI chat completions API at this address instead of chatting, e.g. 127.0.0.1:8080")
 	dump := flag.String("dump", "", "write each request, its prompt and the generated text to this directory (server)")
-	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
+	think := flag.Bool("think", true, "let the model think before it answers")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
 	temp := flag.Float64("temp", 0.1, "sampling temperature; 0 picks the most likely token")
@@ -51,6 +51,9 @@ func main() {
 	if flag.NArg() > 0 {
 		flag.Usage()
 		os.Exit(2)
+	}
+	if *model == "" {
+		*model = chat.DefaultDir(*repo)
 	}
 	if *cacheDir == "" {
 		if d, err := os.UserCacheDir(); err == nil {
@@ -156,7 +159,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 			continue
 		}
 		msgs = append(msgs, chat.Message{Role: "user", Content: chat.Content{Text: text}})
-		prompt, err := chat.Render(msgs, nil, chat.Options{NoThink: !think})
+		prompt, thinking, err := e.Template.Render(msgs, nil, chat.Options{NoThink: !think})
 		if err != nil {
 			return err
 		}
@@ -166,7 +169,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 		thought, answered := false, false
 		st, err := e.Generate(ctx, chat.Request{Prompt: e.Tok.Encode(prompt), MaxTokens: maxNew, Sampling: s}, func(g []int32) (bool, error) {
 			gen = g
-			a := chat.Parse(e.Tok.Decode(g, false), think, nil, false)
+			a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
 			dr, dc := sent.Next(a.Reasoning, a.Content)
 			if dr != "" {
 				fmt.Print(dim + dr + reset)
@@ -188,7 +191,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 			msgs = msgs[:len(msgs)-1]
 			continue
 		}
-		a := chat.Parse(e.Tok.Decode(gen, false), think, nil, true)
+		a := e.Template.Parse(e.Tok.Decode(gen, false), thinking, nil, true)
 		r := a.Reasoning
 		msgs = append(msgs, chat.Message{Role: "assistant", Content: chat.Content{Text: a.Content}, Reasoning: &r})
 		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s]%s\n", dim,

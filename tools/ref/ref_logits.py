@@ -14,8 +14,9 @@ and writes, for readers without numpy (hwnpu-check and the Go tests), little end
 and the same arrays in OUT_PREFIX.npz. The hidden states are taken with hooks rather than from
 output_hidden_states, so that they mean the same for every model, as hwnpu's programs expect:
 entry 0 is the output of the token embedding table (before position embeddings, scaling or an
-embedding norm, which the program does), and entry i + 1 the output of layer i (before a final
-norm; output_hidden_states ends after it in many implementations).
+embedding norm, which the program does: an embedding module with an embed_scale, as Gemma's,
+has it divided out), and entry i + 1 the output of layer i (before a final norm;
+output_hidden_states ends after it in many implementations).
 
 Causal language models load with AutoModelForCausalLM. --encoder loads with AutoModel instead
 (BERT and the like) and writes the last hidden state as the output; there is no padding, so the
@@ -69,31 +70,57 @@ def main():
     layers = decoder_layers(model, cfg.num_hidden_layers)
 
     captured = {}
-
-    def first(x):
-        return x[0] if isinstance(x, (tuple, list)) else x
-
-    def hook(key):
-        def f(_module, _args, out):
-            captured[key] = first(out).detach()
-
-        return f
-
-    handles = [model.get_input_embeddings().register_forward_hook(hook("embeddings"))]
-    handles += [layer.register_forward_hook(hook(i)) for i, layer in enumerate(layers)]
+    handles = hook_hidden(model, layers, captured)
     with torch.no_grad():
         t0 = time.time()
         out = model(input_ids=ids, output_hidden_states=True, use_cache=False)
         print(f"forward in {time.time() - t0:.1f}s", flush=True)
     for h in handles:
         h.remove()
-    hs = torch.stack([captured["embeddings"]] + [captured[i] for i in range(len(layers))], 0)[:, 0].numpy()
+    hs = stack_hidden(captured, len(layers))
     logits = (out.last_hidden_state if a.encoder else out.logits)[0].numpy()
     last = out.hidden_states[-1][0].numpy()
     if not np.allclose(last, hs[-1], atol=1e-5):
         print("note: output_hidden_states[-1] differs from the last layer's output (it is after the final norm)")
+    save(prefix, ids, hs, logits, cfg, a.text, a.encoder, tok)
 
-    np.savez(prefix + ".npz", input_ids=ids[0].numpy().astype(np.int32), hidden=hs, logits=logits)
+
+def hook_hidden(model, layers, captured):
+    """Hooks that put the token embeddings (with an embed_scale divided out) and each layer's
+    output in captured, by "embeddings" and layer index."""
+
+    def first(x):
+        return x[0] if isinstance(x, (tuple, list)) else x
+
+    def hook(key):
+        def f(module, _args, out):
+            out = first(out).detach()
+            if key == "embeddings" and hasattr(module, "embed_scale"):
+                out = out / module.embed_scale.to(out.dtype)
+            captured[key] = out
+
+        return f
+
+    emb = model.get_input_embeddings()
+    if hasattr(emb, "embed_scale"):
+        print(f"embedding scale {float(emb.embed_scale):.6g} divided out of entry 0", flush=True)
+    handles = [emb.register_forward_hook(hook("embeddings"))]
+    return handles + [layer.register_forward_hook(hook(i)) for i, layer in enumerate(layers)]
+
+
+def stack_hidden(captured, n):
+    import torch
+
+    return torch.stack([captured["embeddings"]] + [captured[i] for i in range(n)], 0)[:, 0].numpy()
+
+
+def save(prefix, ids, hs, logits, cfg, text, encoder, tok, extra=None):
+    """Writes the reference files. extra holds more arrays by name, written as PREFIX.NAME.bin
+    (float32): the values of program inputs besides x that hwnpu-check feeds a layer."""
+    extra = extra or {}
+    np.savez(prefix + ".npz", input_ids=ids[0].numpy().astype(np.int32), hidden=hs, logits=logits, **extra)
+    for name, v in extra.items():
+        np.asarray(v, dtype="<f4").tofile(f"{prefix}.{name}.bin")
     ids[0].numpy().astype("<i4").tofile(prefix + ".ids.bin")
     hs.astype("<f4").tofile(prefix + ".hidden.bin")
     logits.astype("<f4").tofile(prefix + ".logits.bin")
@@ -101,16 +128,16 @@ def main():
         "model_type": cfg.model_type,
         "seq": int(ids.shape[1]),
         "hidden_size": int(hs.shape[-1]),
-        "num_layers": len(layers),
+        "num_layers": int(hs.shape[0] - 1),
         "vocab_size": int(cfg.vocab_size),
-        "text": a.text,
+        "text": text,
         "dtype": "float32",
-        "output": "hidden" if a.encoder else "logits",
+        "output": "hidden" if encoder else "logits",
     }
     with open(prefix + ".json", "w") as f:
         json.dump(meta, f, indent=2)
     print("tokens:", ids[0].tolist())
-    if not a.encoder:
+    if not encoder:
         top = logits.argmax(-1)
         print("next-token argmax:", top.tolist())
         print("decoded continuation:", repr(tok.decode(top[-8:])))

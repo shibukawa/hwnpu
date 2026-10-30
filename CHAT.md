@@ -23,6 +23,19 @@ Then type after the `>`.
 - From the second turn on, only what is new since the last answer is read
 - After each answer it shows the tokens read and the speed of generation (about 15 tokens/s on an M3)
 
+### Gemma 4 E2B
+
+`-repo google/gemma-4-E2B-it` runs Google's Gemma 4 E2B (instruction tuned) instead. It goes the same way: `model.safetensors` (10.2 GB, with the audio and vision parts, of which only the text model is converted) is downloaded to `~/Library/Caches/hwnpu/models/gemma-4-E2B-it`, and the programs of 1 and 64 tokens per call are converted with 6 bit tables (lut6) in 2 parts each (about 0.8 + 0.8 GiB).
+
+```bash
+go run ./cmd/hwnpu-chat -repo google/gemma-4-E2B-it
+```
+
+- The chat format is Gemma 4's `chat_template.jinja` in Go, with thinking (`<|think|>`, returned as `reasoning_content`) and tool calls
+- The per-layer embedding table (4.7 GB) stays on the host, which reads one row (17.5 KB) per token
+- About 31 ms per token on the M3 with a cache of 1024, 55 ms with the context of 16320 (LFM3-1.7B: 19 and 63 to 66 ms)
+- 4 bit tables (lut4) cost Gemma 4 much more than LFM3 (it got Mount Fuji's height and the author of Kokoro wrong), so it converts with 6 bit tables by default; `hwnpu-convert` does too when `-format` is left out. See sections 16.21 and 16.22 of docs/design.md
+
 ## 2. Options
 
 | Flag | Default | |
@@ -33,8 +46,8 @@ Then type after the `>`.
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |
 | `-context N` | `16320` | most tokens of a prompt and its answer together; another value converts the model again for it |
-| `-model DIR` | `~/Library/Caches/hwnpu/models/LFM3-1.7B` | where the checkpoint and the converted programs are |
-| `-repo NAME` | `LiquidAI/LFM3-1.7B` | the Hugging Face repository of the checkpoint; set `HF_TOKEN` for gated ones |
+| `-model DIR` | `~/Library/Caches/hwnpu/models/NAME` (of `-repo`) | where the checkpoint and the converted programs are |
+| `-repo NAME` | `LiquidAI/LFM3-1.7B` | the Hugging Face repository of the checkpoint (`LiquidAI/LFM3-1.7B` or `google/gemma-4-E2B-it`); set `HF_TOKEN` for gated ones |
 | `-package A,B` | none | use programs you converted with `hwnpu-convert` (section 4) |
 | `-dump DIR` | none | with the server, save each request, its prompt and the generated text |
 

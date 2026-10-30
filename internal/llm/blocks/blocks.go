@@ -9,7 +9,6 @@ package blocks
 import (
 	"fmt"
 	"math"
-	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -120,16 +119,12 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 	}
 	var v *mlpackage.Var
 	var err error
-	format := g.Opts.Format
-	for _, keep := range g.Opts.KeepFP16 {
-		if strings.Contains(name, keep) {
-			format = "fp16"
-		}
-	}
+	format := g.Opts.FormatOf(name)
 	switch format {
 	case "fp16":
 		v, err = g.B.F16s(constName, []int{rows, cols}, w)
-	case "lut4":
+	case "lut4", "lut6", "lut8":
+		bits := map[string]int{"lut4": 4, "lut6": 6, "lut8": 8}[format]
 		mode := palette.Uniform
 		switch g.Opts.Quant {
 		case "", "uniform":
@@ -140,8 +135,8 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 		default:
 			g.Fail("unknown quantizer %q", g.Opts.Quant)
 		}
-		q := palette.Quantize(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, 8, mode)
-		v, err = g.B.LUT4(constName, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
+		q := palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, mode)
+		v, err = g.B.LUT(constName, bits, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
 	default:
 		g.Fail("unknown format %q", g.Opts.Format)
 	}
@@ -303,6 +298,12 @@ func (g *Graph) Attention(q, k, v *mlpackage.Var, maskName string, window int) *
 // the additive mask, broadcastable to (1, heads, seq, keys); it is called where the mask is added,
 // and may be nil for none. The result is (1, heads, seq, head_dim).
 func (g *Graph) SDPA(q, k, v *mlpackage.Var, mask func() *mlpackage.Var) *mlpackage.Var {
+	return g.SDPAScale(q, k, v, 1/math.Sqrt(float64(q.Shape[3])), mask)
+}
+
+// SDPAScale is SDPA with the scores multiplied by scale instead of 1/sqrt(head_dim); a scale of
+// 1 adds no multiply (Gemma 4, whose query and key norms take the place of the scaling).
+func (g *Graph) SDPAScale(q, k, v *mlpackage.Var, scale float64, mask func() *mlpackage.Var) *mlpackage.Var {
 	nh, s, hd := q.Shape[1], q.Shape[2], q.Shape[3]
 	nkv, sk := k.Shape[1], k.Shape[2]
 	if rep := nh / nkv; rep > 1 {
@@ -314,12 +315,44 @@ func (g *Graph) SDPA(q, k, v *mlpackage.Var, mask func() *mlpackage.Var) *mlpack
 		k, v = expand(k), expand(v)
 	}
 	scores := g.Op("matmul", map[string]any{"x": q, "y": k, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(true)}, 1, nh, s, sk)
-	scores = g.Op("mul", map[string]any{"x": scores, "y": g.B.ScalarF16(float32(1 / math.Sqrt(float64(hd))))}, 1, nh, s, sk)
+	if scale != 1 {
+		scores = g.Op("mul", map[string]any{"x": scores, "y": g.B.ScalarF16(float32(scale))}, 1, nh, s, sk)
+	}
 	if mask != nil {
 		scores = g.Op("add", map[string]any{"x": scores, "y": mask()}, 1, nh, s, sk)
 	}
 	probs := g.Op("softmax", map[string]any{"x": scores, "axis": g.B.ScalarI32(-1)}, 1, nh, s, sk)
 	return g.Op("matmul", map[string]any{"x": probs, "y": v, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, nh, s, hd)
+}
+
+// SDPAGrouped is SDPAScale without copying the keys and values for each query head: the query
+// heads that share a kv head are stacked along the sequence axis, (1, kv_heads, rep*seq,
+// head_dim), so that one matrix product per kv head covers them all. With a long KV cache and few
+// kv heads (Gemma 4: 8 query heads on 1, keys of 16384 x 512), the tile of SDPA copies the cache
+// eight times per layer and step. mask is broadcast over the query heads as in SDPA.
+func (g *Graph) SDPAGrouped(q, k, v *mlpackage.Var, scale float64, mask func() *mlpackage.Var) *mlpackage.Var {
+	nh, s, hd := q.Shape[1], q.Shape[2], q.Shape[3]
+	nkv, sk := k.Shape[1], k.Shape[2]
+	rep := nh / nkv
+	if rep == 1 {
+		return g.SDPAScale(q, k, v, scale, mask)
+	}
+	// head j reads kv head j / rep: heads are grouped consecutively
+	qg := g.Op("reshape", map[string]any{"x": q, "shape": g.B.Ints(1, int32(nkv), int32(rep*s), int32(hd))}, 1, nkv, rep*s, hd)
+	scores := g.Op("matmul", map[string]any{"x": qg, "y": k, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(true)}, 1, nkv, rep*s, sk)
+	if scale != 1 {
+		scores = g.Op("mul", map[string]any{"x": scores, "y": g.B.ScalarF16(float32(scale))}, scores.Shape...)
+	}
+	if mask != nil {
+		scores = g.Op("reshape", map[string]any{"x": scores, "shape": g.B.Ints(1, int32(nh), int32(s), int32(sk))}, 1, nh, s, sk)
+		scores = g.Op("add", map[string]any{"x": scores, "y": mask()}, 1, nh, s, sk)
+	}
+	probs := g.Op("softmax", map[string]any{"x": scores, "axis": g.B.ScalarI32(-1)}, scores.Shape...)
+	if mask != nil {
+		probs = g.Op("reshape", map[string]any{"x": probs, "shape": g.B.Ints(1, int32(nkv), int32(rep*s), int32(sk))}, 1, nkv, rep*s, sk)
+	}
+	o := g.Op("matmul", map[string]any{"x": probs, "y": v, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, nkv, rep*s, hd)
+	return g.Op("reshape", map[string]any{"x": o, "shape": g.B.Ints(1, int32(nh), int32(s), int32(hd))}, 1, nh, s, hd)
 }
 
 // LinearBias is Linear plus the named bias (out), which stays fp16 whatever the weight format.

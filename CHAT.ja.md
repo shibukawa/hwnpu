@@ -23,6 +23,19 @@ go run ./cmd/hwnpu-chat
 - 会話の 2 回目以降は、前回からの差分だけを読みます
 - 答えのあとに、読んだトークン数と生成の速さ (M3 で約 15 tokens/s) を出します
 
+### Gemma 4 E2B を使う
+
+`-repo google/gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/models/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし、1 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で 2 部分ずつ (約 0.8 + 0.8 GiB) に変換します。
+
+```bash
+go run ./cmd/hwnpu-chat -repo google/gemma-4-E2B-it
+```
+
+- チャットの書式は Gemma 4 の `chat_template.jinja` を Go に移したもので、思考 (`<|think|>`、`reasoning_content` に返す) と道具の呼び出しに対応します
+- 層ごとの埋め込みの表 (4.7 GB) はホストに置き、トークンごとに 1 行 (17.5 KB) を読みます
+- M3 で 1 トークン約 31 ms (キャッシュ 1024)、文脈 16320 では 55 ms (LFM3-1.7B は 19 ms と 63〜66 ms)
+- Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`-package` で自分で変換するときは `hwnpu-convert` の `-format` を省けば lut6 になります。詳細は docs/design.md の 16.21 と 16.22
+
 ## 2. オプション
 
 | フラグ | 既定 | |
@@ -33,8 +46,8 @@ go run ./cmd/hwnpu-chat
 | `-n N` | `0` | 1 つの答えの最大トークン数 (0 は文脈が尽きるまで) |
 | `-temp`、`-top-k`、`-top-p`、`-rep` | `0.1`、`50`、`0`、`1.05` | サンプリング (温度、上位 k、上位 p、答えの中の繰り返しの罰則) |
 | `-context N` | `16320` | プロンプトと答えを合わせた最大トークン数。変えると、その長さで変換し直す |
-| `-model DIR` | `~/Library/Caches/hwnpu/models/LFM3-1.7B` | チェックポイントと変換したプログラムの置き場 |
-| `-repo NAME` | `LiquidAI/LFM3-1.7B` | チェックポイントを落とす Hugging Face のリポジトリ。認証の要るものは環境変数 `HF_TOKEN` |
+| `-model DIR` | `~/Library/Caches/hwnpu/models/NAME` (`-repo` の名前) | チェックポイントと変換したプログラムの置き場 |
+| `-repo NAME` | `LiquidAI/LFM3-1.7B` | チェックポイントを落とす Hugging Face のリポジトリ (`LiquidAI/LFM3-1.7B` か `google/gemma-4-E2B-it`)。認証の要るものは環境変数 `HF_TOKEN` |
 | `-package A,B` | なし | `hwnpu-convert` で自分で変換したプログラムを使う (4 節) |
 | `-dump DIR` | なし | サーバーで、要求、プロンプト、生成した文を要求ごとに保存する |
 
