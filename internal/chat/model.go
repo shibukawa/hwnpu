@@ -27,7 +27,12 @@ type Setup struct {
 	Dir     string // holds config.json, tokenizer.json, model.safetensors and the converted programs
 	Repo    string // Hugging Face repository the missing checkpoint files come from
 	Context int    // cache length of the programs
-	Log     io.Writer
+	// Draft makes the program that generates take this many tokens per call instead of 1, for
+	// checking the drafts of speculative decoding (Engine.Draft); 0 or 1 for none. It is one
+	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
+	// generation runs on one.
+	Draft int
+	Log   io.Writer
 }
 
 // Prepare makes the model ready in Dir: it downloads the checkpoint files that are missing from
@@ -48,7 +53,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, p := range []struct{ seq, parts int }{{1, 2}, {prefillSeq, 0}} {
+	progs := []struct{ seq, parts int }{{1, 2}, {prefillSeq, 0}}
+	if s.Draft > 1 {
+		progs[0] = struct{ seq, parts int }{s.Draft, 0}
+	}
+	for _, p := range progs {
 		out := filepath.Join(s.Dir, fmt.Sprintf("%s-c%d-q%d.mlpackage", a.Name, s.Context, p.seq))
 		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: p.seq, parts: p.parts, cache: s.Context}, s.Log)
 		if err != nil {
