@@ -1148,3 +1148,24 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 - **全段階を常駐させても動いている段階は遅くならない**: 3 段階を読み込んだ状態で 1024 の段階だけで終わる 900 トークンは 19.2 ms/token で、固定 1024 と同じ
 - **端から端までの利得は今回は示せなかった**: 同じ条件で続けて測った組 (固定 4096 / 段階あり) は 57.4 / 56.7 と 33.1 / 32.4 ms/token で、段階ありが 1〜2% 速いだけ (見込みは 1024 の 1024 トークンが 19 ms、残りが 27.7 ms で約 20%)。計測の間、機械はスワップを 8.7〜9.7 GB 使っていた (別の `hwnpu-chat` が 2 GB、ほかにアプリ多数) ので、どの値も信用しきれない。全段階を読み込んだ直後の 1 本は 71.5 ms/token、同じ構成の 2 本目は 19.2 ms。空いた機械で測り直す
 - 次: 空いた機械での測り直し。`MLModel` の読み込みを速くする手立て (システムの ANE キャッシュの挙動の調査)。塊分けの注意 (16K を超えるため)
+
+### 16.21 d1-2B: LFM3 の判定モデルと System One API — 2026-10-30
+
+LiquidAI/d1-2B / d1-Omni-2B / LFM3-VL-2B / LFM3-Audio-2B への対応の検討 (2026-10-29) の結論は、テキスト部がどれも LFM3 と同じ構造で、hwnpu は埋め込みの表引きをホストで行う (入力が `x`) ので、画像や音声のエンコーダの出力を `x` に差し込めばテキスト側のプログラムは変わらない、というもの。順に (1) d1-2B のテキストのみ、(2) LFM3-VL の視覚エンコーダ、(3) LFM3-Audio の音声入力 (d1-Omni-2B もこれで揃う)、(4) LFM3-Audio の音声出力、とする。d1-omni-600M (LFM2 系、SigLIP2 と FastConformer) は対象外。この節は (1)。
+
+Hugging Face にこの環境から届かなかったため、構造は llama.cpp (2026-10-29 の master) の `conversion/lfm3.py`、`conversion/lfm2.py`、`src/models/lfm3.cpp`、`tools/server/server-decision.cpp` から読んだ。config.json の値とテンソル名は実物で確かめていない。
+
+- **d1-2B の正体**: LFM3-VL のチェックポイント (`model_type: lfm3_vl`、LFM3 の設定は `text_config` の下) で `architectures: ["D1Model"]`。重みは元のまま (llama.cpp は「the stock weights, the d1 prompt read at its last token」)。違いは読み方だけで、プロンプト全体を 1 回で読み、full_attention の層は双方向、sliding_attention の層と短い畳み込みは因果のまま (`LLAMA_NON_CAUSAL_TYPE_DENSE_ONLY`)。KV キャッシュは使わない。答えは最後のトークンのロジットのうち、選択肢のラベルのトークンだけを使う
+- **`internal/llm/lfm3`**: `ParseConfig` が `text_config` の入れ子を読む (`model_type` は `lfm3` か `lfm3_vl`、`text_config.model_type` は `lfm3`)。テキスト部のテンソル名の接頭辞 `Config.Prefix` は `model.language_model.` (HF の複合モデルの並び。llama.cpp は `language_model.` を取り除いて読む)。出力層は `lm_head.weight` のまま。最上位の `tie_word_embeddings` が `text_config` のものより優先する。`D1Model` なら `Config.D1` で、`d1_codes` が 2、`d1_attention` が `set` (llama.cpp のサーバーが前提にする値) でなければエラー。d1 のプログラムは `x` と `mask` (1, seq) を取り、full_attention の層はパディングだけを隠す (BERT と同じ `MaskBias`)。出力は最終 norm の後の隠れ状態 (`Output()` は隠れ状態の幅)。出力層 (約 1 億 3 千万パラメータ) はプログラムに入れず、ホストがラベルの行だけを読む。KV キャッシュ付きの変換はエラー。GGUF の名前は接頭辞を `model.` に戻して引く。`TestBuildTiny` のダイジェストは変わっていない
+- **`internal/systemone`**: llama.cpp の `POST /v1/systemone` (TypeSafe 互換の System One API) を d1 用に移した。要求の解釈 (`state`、`questions` の `choice` / `score` / `noul`、キーの順を保つ)、プロンプト (llama.cpp が LFM3 d1 の GGUF に書く systemone テンプレート = LFM2 の d1 のプロンプトと `<think></think>`)、ラベル (`d1_labels`: choice は選択肢のキーがすべて 1 文字の英字ならそれ、でなければ A、B…、1 トークンでないものは予備の表から。空白付きの形も同じ選択肢として最大を取る。noul は yes/Yes/YES と no/No/NO、score は数字)、答え (`calibration.json` の `default` の温度で softmax。choice は最大、score は累積確率が半分に達する段階 (中央値)、noul は true の確率。confidence は答えの確率。d1 の api.py に合わせた llama.cpp のとおり)。要求の文字列に control トークンの綴り (`<|im_end|>` など) があれば、最初の文字の後にゼロ幅空白を入れる (`d1_break`)。質問ごとにプロンプトが別なので 1 問 1 回の実行で、`-seq` の違う複数のパッケージのうち、プロンプトが入る最短のものを使う
+- **`internal/pyjson`**: chat の順序付き JSON 値を切り出して共有にし、`json.dumps(indent=2)` の形 (`WriteIndent`) と Jinja の真偽 (`Truthy`) を足した。数値は読んだときの文字列のまま書く (Python は自分の形で書くので、`1.50` などは違う)
+- **`cmd/hwnpu-systemone`**: 要求を 1 つ読んで答えを出すか、`-listen` で `/v1/systemone` と `/v1/models` (`output_modalities: ["decisions"]`) を提供する。`-cpu` は `milcpu` で動かす (Neural Engine のない機械で答えを確かめる用。遅い)
+- **検証**: `reference_test.go` に LFM3 の fp64 の forward (サンドイッチ norm、Lfm2ShortConv、QK norm と部分 RoPE、repeat_kv、ヘッドごとのゲート、SwiGLU。d1 は full_attention だけ双方向) を書いた。今まで LFM3 には独立した正解がなかったので、因果 LM のロジットも照合する。相対誤差は因果 LM 2.9e-7、d1 (パディング 3) 2.8e-7。1 層ずつと最終 norm だけの実行、post-scale 64 も 1e-4 以内。参照側は、プログラムが fp16 で持つ定数 (RoPE の表、eps、注意のスケール) と入力 `x` を fp16 に丸める (丸めないと 1〜3e-4 の差が出て、構造の誤りと区別できない)。改変 (d1 の全注意を因果にする: 0.78、パディングのマスクを外す: 0.76、post_ffn_norm を飛ばす: 0.85) はすべて検出した
+- プロンプトの正解は `tools/ref/systemone_golden.py` が llama.cpp のテンプレートを jinja2 で描画して作る (`internal/systemone/testdata/prompts.json`、7 通り: 説明あり/なし/偽の値の choice、条件あり/なしの noul、score、control トークンの綴り、日本語と入れ子の JSON)。`tojson` は llama.cpp の jinja と同じく ASCII に逃がさず、キーの順を保つ。`TestModel` は小さな d1 を `milcpu` で動かし、パディングのある長いプログラムの答えが、プロンプトの長さのプログラムの出力から独立に計算した確率と一致することを確かめる。最後の行でなく先頭の行を読む、パディングを隠さない、ラベルの組で最大を取らない、エスケープの位置を変える、中央値を別の分位にする、の改変を検出した
+- 未確認: 実物の config.json の値と、テンソル名の接頭辞 (`model.language_model.` は推測)。`hwnpu-check` での照合。参照は d1 のリモートコードの読み方が分からないので、まず llama.cpp と答えを比べるのが確実 (同じ要求を `llama-server --model d1-2B.gguf` の `/v1/systemone` と `hwnpu-systemone -cpu` に送り、確率を比べる)。Neural Engine での配置と精度、速さ (Mac がない)。画像の入力 (次の段階)
+
+```bash
+go run ./cmd/hwnpu-convert -config d1-2B/config.json -weights d1-2B/model.safetensors -seq 512 -o d1-512.mlpackage
+go run ./cmd/hwnpu-systemone -model d1-2B -package d1-512.mlpackage request.json
+go run ./cmd/hwnpu-check -config d1-2B/config.json -weights d1-2B/model.safetensors -ref build/d1/ref   # 参照が作れたら
+```

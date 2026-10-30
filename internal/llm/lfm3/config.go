@@ -3,12 +3,19 @@
 //
 // LFM3 interleaves three kinds of layers: gated short convolutions, full attention and sliding
 // window attention. Every layer is wrapped in sandwich RMS norms and followed by a SwiGLU MLP.
+//
+// The text model of the multimodal checkpoints (LFM3-VL, model_type lfm3_vl, with the LFM3
+// config under text_config) is the same, and so are Liquid AI's d1 decision models built on them
+// (architectures D1Model): those read the whole prompt at once, the full attention layers both
+// ways, and answer from the logits of its last token (Config.D1).
 package lfm3
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 )
 
 // Config is the subset of config.json the conversion needs.
@@ -32,6 +39,16 @@ type Config struct {
 		PartialFactor *float64 `json:"partial_rotary_factor"`
 		Type          string   `json:"rope_type"`
 	} `json:"rope_parameters"`
+
+	// Prefix begins the names of the text model's tensors: "model." in Lfm3ForCausalLM (also
+	// when empty), "model.language_model." in a multimodal checkpoint. The output layer is
+	// lm_head either way.
+	Prefix string `json:"-"`
+	// D1 is a d1 decision model: one call reads the whole prompt with the full attention layers
+	// bidirectional (a padding mask is the program's second input) and the sliding attention
+	// layers and short convolutions causal, as llama.cpp runs it. The output is the final hidden
+	// state; the host reads the logits of the answer labels at the last token from it.
+	D1 bool `json:"-"`
 }
 
 // LoadConfig reads config.json.
@@ -47,11 +64,64 @@ func LoadConfig(path string) (*Config, error) {
 	return c, nil
 }
 
+// The d1 serving settings this package implements; other values are rejected.
+const (
+	d1Codes     = 2
+	d1Attention = "set"
+)
+
 // ParseConfig parses config.json and rejects settings the conversion does not handle.
 func ParseConfig(raw []byte) (*Config, error) {
-	var c Config
-	if err := json.Unmarshal(raw, &c); err != nil {
+	var top struct {
+		ModelType     string          `json:"model_type"`
+		Architectures []string        `json:"architectures"`
+		TextConfig    json.RawMessage `json:"text_config"`
+		Tie           *bool           `json:"tie_word_embeddings"`
+		D1Codes       *int            `json:"d1_codes"`
+		D1Attention   *string         `json:"d1_attention"`
+	}
+	if err := json.Unmarshal(raw, &top); err != nil {
 		return nil, fmt.Errorf("lfm3: %w", err)
+	}
+	var c Config
+	text, nested := raw, false
+	switch top.ModelType {
+	case "lfm3_vl":
+		if len(top.TextConfig) == 0 {
+			return nil, fmt.Errorf("lfm3: %s config has no text_config", top.ModelType)
+		}
+		var t struct {
+			ModelType string `json:"model_type"`
+		}
+		if err := json.Unmarshal(top.TextConfig, &t); err != nil {
+			return nil, fmt.Errorf("lfm3: text_config: %w", err)
+		}
+		if t.ModelType != "" && t.ModelType != "lfm3" {
+			return nil, fmt.Errorf("lfm3: text_config model_type %q is not lfm3", t.ModelType)
+		}
+		text, nested, c.Prefix = top.TextConfig, true, "model.language_model."
+	case "", "lfm3":
+	default:
+		return nil, fmt.Errorf("lfm3: model_type %q is not supported", top.ModelType)
+	}
+	if err := json.Unmarshal(text, &c); err != nil {
+		return nil, fmt.Errorf("lfm3: %w", err)
+	}
+	if nested && top.Tie != nil {
+		c.TieWordEmbed = *top.Tie
+	}
+	if slices.Contains(top.Architectures, "D1Model") {
+		// llama.cpp reads these from the merged config, so they may be in either
+		var t struct {
+			D1Codes     *int    `json:"d1_codes"`
+			D1Attention *string `json:"d1_attention"`
+		}
+		json.Unmarshal(text, &t)
+		codes, attn := cmp.Or(top.D1Codes, t.D1Codes), cmp.Or(top.D1Attention, t.D1Attention)
+		if codes == nil || *codes != d1Codes || attn == nil || *attn != d1Attention {
+			return nil, fmt.Errorf("lfm3: d1 model with d1_codes %v and d1_attention %v is not supported; expected %d and %q", deref(codes), deref(attn), d1Codes, d1Attention)
+		}
+		c.D1 = true
 	}
 	if c.HeadDim == 0 {
 		c.HeadDim = c.HiddenSize / c.NumHeads
@@ -72,6 +142,16 @@ func ParseConfig(raw []byte) (*Config, error) {
 		}
 	}
 	return &c, nil
+}
+
+// prefix is Prefix with its default.
+func (c *Config) prefix() string { return cmp.Or(c.Prefix, "model.") }
+
+func deref[T any](p *T) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 // IsAttention reports whether layer i is an attention layer.
