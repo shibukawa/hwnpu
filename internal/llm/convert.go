@@ -32,9 +32,13 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 		if i > 0 && c <= caches[i-1] {
 			return "", fmt.Errorf("llm: cache lengths must increase: %v", caches)
 		}
-		if c > 0 && c+opts.Seq > NeuralEngineMaxDim {
-			fmt.Fprintf(log, "warning: attention over a cache of %d and %d tokens per call spans %d keys, over the Neural Engine's %d per dimension; it will run on the CPU. Use -cache %d or less\n",
-				c, opts.Seq, c+opts.Seq, NeuralEngineMaxDim, NeuralEngineMaxDim-opts.Seq)
+		lens, chunked := CacheChunks(c)
+		if c > 0 && !chunked && c+opts.Seq > NeuralEngineMaxDim {
+			fmt.Fprintf(log, "warning: attention over a cache of %d and %d tokens per call spans %d keys, over the Neural Engine's %d per dimension; it will run on the CPU. Use -cache %d or less, or more than %d (in chunks)\n",
+				c, opts.Seq, c+opts.Seq, NeuralEngineMaxDim, NeuralEngineMaxDim-opts.Seq, CacheChunkOver)
+		}
+		if c > 0 && chunked {
+			fmt.Fprintf(log, "note: the cache of %d is held in %d chunks of up to %d tokens\n", c, len(lens), CacheChunkLen)
 		}
 	}
 	tiered := len(caches) > 1

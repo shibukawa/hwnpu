@@ -1149,7 +1149,60 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 - **端から端までの利得は今回は示せなかった**: 同じ条件で続けて測った組 (固定 4096 / 段階あり) は 57.4 / 56.7 と 33.1 / 32.4 ms/token で、段階ありが 1〜2% 速いだけ (見込みは 1024 の 1024 トークンが 19 ms、残りが 27.7 ms で約 20%)。計測の間、機械はスワップを 8.7〜9.7 GB 使っていた (別の `hwnpu-chat` が 2 GB、ほかにアプリ多数) ので、どの値も信用しきれない。全段階を読み込んだ直後の 1 本は 71.5 ms/token、同じ構成の 2 本目は 19.2 ms。空いた機械で測り直す
 - 次: 空いた機械での測り直し。`MLModel` の読み込みを速くする手立て (システムの ANE キャッシュの挙動の調査)。塊分けの注意 (16K を超えるため)
 
-### 16.21 d1-2B: LFM3 の判定モデルと System One API — 2026-10-30
+### 16.21 KV キャッシュ: 塊に分けて 16K を超える — 2026-10-30
+
+- 問い: ANE の 1 次元の上限 16384 (16.16) を、キャッシュを 16384 以下の塊に分けることで超えられるか。Flash-Decoding の合流 (塊ごとの最大値、指数の和、出力) を、ホストではなく 1 つのプログラムの中で行えば、ホスト側の仕組み (`decode`、プロンプトのキャッシュ) はほとんど変わらない
+- `npuprobe kv -kv-modes host-chunk` (`internal/probe.splitAttention`): 塊 J ごとに別の入力 `kv_k_N_J`、`kv_v_N_J` (1, 4, 長さ, 128) と `mask_J` を取り、各塊は分けないキャッシュと同じ演算で注意を計算し、塊どうしは要素ごとの演算だけで合わせる。全体の最大値に ln 4n を足した値から指数を取るので、全部の塊の指数の和は 長さ/4 以下、重み付きの値の和は 長さ/4 × 値の最大 以下で、値が 16 未満なら fp16 に収まる。`TestKVChunkMatchesHost` (CPU インタプリタ、キャッシュ 256 を 64 ずつ 4 塊、一部と全部が隠れた塊を含む) で分けないキャッシュと相対誤差 8.4e-7。自分のトークンの項を外す改変を検出する。`milcpu` に `reduce_sum` と `reduce_max` を足した
+- 結果 (M3、6 層 lut4、LFM3-1.7B の全注意の層の数。レポートは `npuprobe-m3-kv-chunk.md`、`npuprobe-m3-kv-chunk-long.md`):
+
+| キャッシュ | host (分けない) | host-chunk (16384 ずつ) |
+|---|---|---|
+| 4096 | 14.5 ms | 13.2 ms |
+| 16320 | 49.1 ms | 43.4 ms |
+| 32768 | (CPU) | 84.0 ms、全部 ANE |
+| 65536 | (CPU) | 201.6 ms、全部 ANE |
+
+- 2 塊以上で全演算が CPU に置かれた形 (キャッシュ 512 を 256 ずつ 2 塊、1 層で切り分け。1 塊なら同じ形でも ANE): 塊を 1 つのテンソルの軸に並べて軸方向に縮約する形 (軸 1 でも軸 0 でも)、各塊をその和の割合 (`和_J / 全体の和`) で重み付けする形、和に 1/n を掛けてから全体の最大値と組み合わせる形。和を先に足し、最後に 1 回だけ全体の和で割る形は載った。理由は分からない (Core ML のコンパイラの中)
+- LFM3-1.7B の見込み: 16K で 1 トークン約 64 ms (16.17) に、注意の増えた分 (上の表の 16K からの差) を足して、32K で約 100 ms、64K で約 220 ms。KV のメモリは全注意の層で 1 トークン 12 KiB、64K で 768 MiB (ほかの会話の写しを取っておく分は別)
+- 次: `lfm3.BuildCached` で、全注意の層のキャッシュを塊の入力にする。`decode.Session` は位置から塊と行を決めて書き込み、`StepInputs` は塊ごとのマスクを作る。64 トークンのプログラムは鍵の軸が塊の長さ + 64 になるので、塊の長さは 16320
+
+### 16.22 KV キャッシュ: LFM3 の文脈を 16K の先へ — 2026-10-30
+
+- 規則 (`llm.CacheChunks`): 16320 (`CacheChunkOver`) を超えるキャッシュは 16384 (`CacheChunkLen`) ずつの塊 (最後は短い) に分け、塊ごとに別の入力 `kv_k_N_cJ` を取る。16320 以下はこれまでどおり 1 つの入力で、変換済みのモデルはそのまま動く。規則はキャッシュの長さだけで決まるので、1 トークンと 64 トークンのプログラムが同じバッファを共有できる。スライディング層のリング (256) は分けない
+- `blocks.ChunkedSDPA`: 塊ごとと、ステップのトークン自身 (`mask_TYPE_self`) の注意を、要素ごとの演算だけで合わせる。全体の最大値に ln 4n を足した値から指数を取り、指数の和と重み付きの値は行列積 (`e @ 1` と `e @ V`) で求め、全部を足して最後に 1 回割る。`lfm3.BuildCached` は全注意の層でキャッシュが塊のときこれを使い、`StepInputs` はマスクを塊ごとと自分の分に分ける。`decode.Session` は `kv_NAME_cJ` を 1 つのキャッシュにまとめ、位置から塊と行を決めて書く。`Mark` はリングと窓だけを写す (塊はリングでない)
+- 64 トークンのプログラムの配置: 16.21 の形 (指数の和を `reduce_sum`、塊ごとに正規化してから和で重み付け) は、1 トークンでは常に ANE だが、64 トークンでは同じグラフでもコンパイルごとに ANE と CPU が入れ替わった (注意だけのグラフで、塊 2048〜16384、2〜8 塊。同じ条件を 2 回で結果が変わる)。実物の 32K で CPU に置かれ、読み込み 198 秒、プロンプトの読みが CPU 1 コアの速さになった。和を行列積にした形は 30 回のコンパイルすべてで ANE (`TestChunkedSDPAOnNeuralEngine`)
+- 検証: `TestCachedChunksMatchFull` (CPU インタプリタ、塊を 4 ずつに縮め、キャッシュ 8〜12 を 2〜3 塊) で、キャッシュなしのプログラムと相対誤差 6.3e-4 以内、共有と巻き戻しも同じ。塊の中の行の位置を 1 ずらす、マスクの塊の境目を 1 ずらす、の改変を検出する
+- 結果 (M3、LFM3-1.7B lut4、`hwnpu-chat -context N`、どちらのプログラムも全部 ANE):
+
+| 文脈 | 塊 | 読み込み (初回、64 トークンのプログラム) | プロンプト | 生成 | 先頭の合言葉 |
+|---|---|---|---|---|---|
+| 32768 | 2 | 39.6 s | 25,288 トークンを 83.7 s | 138 ms/token | 正答 |
+| 65536 | 4 | 49.5 s | 53,736 トークンを 360.8 s | 363 ms/token | 正答 |
+
+- 生成の 1 トークンは、16.21 の 6 層だけの計測から見込んだ値 (32K 約 100 ms、64K 約 220 ms) より遅い。トークン数が少ない (19 と 9) 測り方なので、長い生成での値は測り直す
+- 残り: 使っている塊だけを動かす (今は容量全体を毎回計算する)。プロンプトの読みも文脈に比例して遅くなる
+
+### 16.23 hwnpu-chat でチャットと埋め込みを使い分ける (`-use` にモデル名) — 2026-10-30
+
+- `hwnpu-chat` の `-use` にモデルの名前を書く (既定 `LFM3-1.7B`)。用途 (chat、embedding) はモデルが持つ。最初は `-use chat|embed` と用途で選ぶ形にしたが、同じ用途のモデルは今後増えるので名前にした。モデルの一覧 (`chat.Catalog`: 名前、用途、リポジトリ、大きさ、説明) は `-list` で表にして出す。落としてあるかも出す
+- 名前は大文字小文字を区別せず、一覧のリポジトリ名でもよい。一覧にないリポジトリは `-use OWNER/NAME` で、`config.json` だけ先に落として構造で用途を決める (`llm.Cached` ならチャット、`plamo-bi` なら埋め込み、それ以外は拒否)。モデルは `-dir/名前` (既定 `~/Library/Caches/hwnpu/models/名前`) に置く。これで `-model`、`-repo` と、いったん足した `-embed-model`、`-embed-repo` は要らなくなった。置き場は以前と同じ名前なので、落としたものはそのまま使える
+- ターミナルは 1 つのモデルだけを動かし、用途で動きが決まる: チャットは従来の対話、埋め込みは入力を文書として溜め、`?` で始まる行をクエリとして文書をコサイン類似度の順に並べる。サーバーはいくつでも動かせ、チャットのモデルは `/v1/chat/completions`、埋め込みモデルは `/v1/embeddings` で出し、`GET /v1/models` は全部を `kind` 付きで並べる。要求は `model` の名前で振り分ける (`route`)。その用途のモデルが 1 つなら名前は問わない (従来どおり `"model":"lfm3"` でも答える)。複数で知らない名前は 404。用途の違うモデルの名前はエラーにする (OpenCode などがモデル一覧から埋め込みモデルを選んでしまったときに気づけるように)
+- モデルは用途のほかに機能 (`Features`) を持つ: LFM3-1.7B は `tools` (ツールコール) と `thinking`、PLaMo-Embedding は `query` (クエリと文書を別々に埋め込む)。名前は Ollama の capabilities に合わせた。同じチャットでも、テキストだけでツールコールのできる LFM3 と、マルチモーダルのモデル (別に進めている Gemma 4 E2B なら `vision` など) を選び分けられるように、`-list` に機能の列とその説明を出し、`/v1/models` にも `capabilities` として返す。機能を足すときは `chat.Features` に説明を 1 行足す (`TestLookup` が説明のない機能を拒む)。一覧にないリポジトリの機能は分からないので出さない
+- `-package`、`-config`、`-weights`、`-tokenizer` はチャットのモデルが 1 つ、`-embed-package` は埋め込みモデルが 1 つのときだけ使える。`-context` はチャットのモデル全部に、`-embed-seq` は埋め込みモデル全部に効く
+- 埋め込みモデルの用意はチャットと同じ (`PrepareEmbedder`): `config.json`、`tokenizer.model`、`model.safetensors` を落とし、`-embed-seq` (既定 `128,1024`) の長さごとに `embed-sN.mlpackage` に変換する (lut4、kmeans-minmax。LFM3 と同じ設定で、PLaMo での比較はしていない)。lut4 で 1 部分に収まる (16.18)。フラグは `-embed-seq` と `-embed-package`
+- 実行 (`chat.Embedder`): BOS (`<|startoftext|>`) を付けて符号化し、収まる最も短いプログラムに右詰めの詰め物とマスクで流し、最終隠れ状態を本文のトークンだけで平均して長さ 1 に揃える。クエリは `QueryPrefix + text` を 1 つの文として符号化し、BOS と `Encode(QueryPrefix)` の個数分を平均から外す。前置きの末尾の空白は単独の `▁` になり、本文の先頭の `▁` は前置き側に入る (小さなトークナイザーで確認。実物の金データ `…ください: 東京の天気は晴れです。` でも、前置きの直後に文頭と同じ id 35913 が来るので、同じと見ている)。双方向なので詰め物の位置は結果に効かない (16.18)。プログラムを長さで選ぶので、短い文は短いプログラムで安く済む
+- 長すぎる文は API では既定でエラー (`context_length_exceeded`)、`truncate: true` で切り詰め (text-embeddings-inference と同じ名前)。ターミナルでは切り詰めて表示する。クエリか文書かは OpenAI の API にないので、Cohere や Voyage と同じ `input_type` (`query`/`search_query`、`document`/`search_document`/`passage`) で受け、既定は文書。`encoding_format: base64` (OpenAI の Python クライアントの既定) は float32 のリトルエンディアン
+- テスト: 小さな PLaMo (hidden 32、2 層、8 と 128 トークンのプログラム) を CPU のインタープリタで動かし、詰め物をした埋め込みが、ちょうどの長さのプログラムで本文だけを平均したものと一致すること (`TestEmbedderPadding`)、BOS と前置きの扱い、空文字列、長すぎる文の切り詰めとエラー (`TestEmbed`)、API (`TestEmbeddingsAPI`)、名前での振り分け (`TestRoute`)、一覧の引き方と一覧にないリポジトリの用途の判定 (`TestLookup`、`TestResolve`) を確かめる。改変 (マスクを外す、平均に BOS を含める、BOS を付けない) はすべて検出した。`HWNPU_PLAMO_DIR` があれば、実物のトークナイザーで、クエリの平均が本文のちょうど先頭から始まることも確かめる (`TestPlamoQueryTokens`)
+- 未確認: この環境は Hugging Face にも Neural Engine にも届かないので、実物での確認はしていない。とくに HF の `encode_query`/`encode_document` が前置きの長さをどう数えるか、平均を正規化するか (コサイン類似度には効かない)、`add_eos_token` の有無は、16.18 の記録からの推測。`tools/ref/embed_golden.py` が HF の `encode_query`/`encode_document` の結果とトークン列を書き、Mac で `TestPlamoEmbeddingGolden` がトークン列の一致、コサイン類似度 0.98 以上、各クエリの最も近い文書の一致を確かめる。fp16 のあふれ (16.18) もここで NaN/Inf として見える
+
+```bash
+python tools/ref/embed_golden.py MODEL_DIR MODEL_DIR/embed_golden.json
+HWNPU_PLAMO_DIR=MODEL_DIR go test -run 'PlamoQueryTokens|PlamoEmbeddingGolden' -v ./internal/chat/
+```
+
+- 次: 実物での照合と速さの計測 (128 と 1024 の 1 文あたりの時間、読み込みの時間)。複数の文をまとめて流すバッチ (今は 1 文ずつ)
+
+### 16.24 d1-2B: LFM3 の判定モデルと System One API — 2026-10-30
 
 LiquidAI/d1-2B / d1-Omni-2B / LFM3-VL-2B / LFM3-Audio-2B への対応の検討 (2026-10-29) の結論は、テキスト部がどれも LFM3 と同じ構造で、hwnpu は埋め込みの表引きをホストで行う (入力が `x`) ので、画像や音声のエンコーダの出力を `x` に差し込めばテキスト側のプログラムは変わらない、というもの。順に (1) d1-2B のテキストのみ、(2) LFM3-VL の視覚エンコーダ、(3) LFM3-Audio の音声入力 (d1-Omni-2B もこれで揃う)、(4) LFM3-Audio の音声出力、とする。d1-omni-600M (LFM2 系、SigLIP2 と FastConformer) は対象外。この節は (1)。
 
@@ -1170,9 +1223,9 @@ go run ./cmd/hwnpu-systemone -model d1-2B -package d1-512.mlpackage request.json
 go run ./cmd/hwnpu-check -config d1-2B/config.json -weights d1-2B/model.safetensors -ref build/d1/ref   # 参照が作れたら
 ```
 
-### 16.22 LFM3-VL の視覚エンコーダと画像の入力 — 2026-10-30
+### 16.25 LFM3-VL の視覚エンコーダと画像の入力 — 2026-10-30
 
-16.21 の段階 (2)。LFM3-VL-2B のテキスト部は 16.21 で変換できるようになったので、視覚エンコーダと、画像を d1-2B (`/v1/systemone`) とチャットに渡す部分を足した。構造は llama.cpp の `tools/mtmd/models/lfm3vl.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-image.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、トークン数) から読んだ。HF のリモートコードと config の実物は見ていない。
+16.24 の段階 (2)。LFM3-VL-2B のテキスト部は 16.24 で変換できるようになったので、視覚エンコーダと、画像を d1-2B (`/v1/systemone`) とチャットに渡す部分を足した。構造は llama.cpp の `tools/mtmd/models/lfm3vl.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-image.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、トークン数) から読んだ。HF のリモートコードと config の実物は見ていない。
 
 - **`internal/llm/lfm3vl`** (アーキテクチャ名 `lfm3-vision`): `model_type` は `lfm3_vl` で、これはテキスト部 (`lfm3`) が持つので、視覚エンコーダは `-arch lfm3-vision` で選ぶ。構造は LFM 型で、patchifier (パッチの画素への linear。重みは (d, 3, t, p, p) で、静止画は時間方向の全スライスに同じ画像を入れるので、変換時に t で足し合わせる)、埋め込みの RMSNorm、pre-norm の層 (畳み込みの層: in_proj を B, C, x に分け、B*x にパッチの格子上で 3×3 の depthwise 畳み込み (ゼロ埋め) をかけ C を掛ける。注意の層: QK の RMSNorm、2D RoPE、GQA、双方向)、どちらも SwiGLU。最終 norm はない。projector はパッチごとの LayerNorm (eps 1e-6)、2×2 のパッチの連結 (上の行の左右、下の行の左右)、linear、GELU (erf)、linear
 - **2D RoPE**: ggml の `GGML_ROPE_TYPE_VISION` (`n_dims = head_dim/2`、組は (k, k+head_dim/2))。k が head_dim/4 未満は行、以上は列で回り、どちらの軸も head_dim/2 幅の RoPE の周波数 (`theta^(-2j/(head_dim/2))`)。表を作り直せば `blocks.ApplyRope` で回せる
@@ -1192,11 +1245,11 @@ go run ./cmd/hwnpu-convert -arch lfm3-vision -image 768x384 -format fp16 -config
 go run ./cmd/hwnpu-systemone -model d1-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage,vision-768x384.mlpackage request.json
 ```
 
-### 16.23 LFM3-Audio の音声入力と d1-Omni-2B — 2026-10-30
+### 16.26 LFM3-Audio の音声入力と d1-Omni-2B — 2026-10-30
 
-16.21 の段階 (3)。構造は llama.cpp の `tools/mtmd/models/lfm3a.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-audio.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、マスク) から読んだ。HF のリモートコードと config の実物は見ていない。
+16.24 の段階 (3)。構造は llama.cpp の `tools/mtmd/models/lfm3a.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-audio.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、マスク) から読んだ。HF のリモートコードと config の実物は見ていない。
 
-- **テキスト部** (`internal/llm/lfm3`): `lfm3_audio` は LFM3 の設定が `lfm` キーの下にあり、テンソルは `lfm.model.` (llama.cpp は `lfm.` を取り除いて読む)、出力層は `lfm.lm_head.weight`。`lfm3_omni` は `text_config` の下で、テンソルは `model.language_model.`。d1-Omni-2B (`lfm3_omni` で `D1Model`) も 16.21 の d1 モードで変換できる。視覚エンコーダ (`lfm3vl`) は `lfm3_omni` の config も読む (テンソル名は LFM3-VL と同じ)
+- **テキスト部** (`internal/llm/lfm3`): `lfm3_audio` は LFM3 の設定が `lfm` キーの下にあり、テンソルは `lfm.model.` (llama.cpp は `lfm.` を取り除いて読む)、出力層は `lfm.lm_head.weight`。`lfm3_omni` は `text_config` の下で、テンソルは `model.language_model.`。d1-Omni-2B (`lfm3_omni` で `D1Model`) も 16.24 の d1 モードで変換できる。視覚エンコーダ (`lfm3vl`) は `lfm3_omni` の config も読む (テンソル名は LFM3-VL と同じ)
 - **`internal/llm/lfm3audio`** (アーキテクチャ名 `lfm3-audio-encoder`、`-arch` で選ぶ): LFM3-Audio (`encoder.lfm` が LFM2 の設定、`dim_in`、`sliding_window`。テンソルは `encoder.downsample.`、`encoder.lfm.lfm.`、projector は `mlp.model.0/1/3`) と LFM3-Omni (`audio_encoder_config.text_config`、`num_mel_bins`。テンソルは `model.audio_encoder.downsample.`、`model.audio_encoder.lfm.`、`model.audio_projector.layer_norm/linear_1/linear_2`) の両方。構造は、(時間, メル) 上のストライド 2 の畳み込み 3 つで時間を 1/8 にする部分 (3×3 → SiLU、depthwise 3×3 → pointwise → SiLU を 2 回。カーネルは ggml の読み方で [出力][入力][メル][時間])、チャネル優先で平らにして linear、因果的な LFM2 の層 (短い畳み込みと、スライディング窓 (`sliding_window` 個のキー) の注意。QK norm、head 全体の rotate_half の RoPE、θ = 1e6)、最終 RMSNorm、projector (LayerNorm eps 1e-5、linear、GELU、linear)。FFN の幅は LFM2 の計算 (`block_auto_adjust_ff_dim` など)
 - **固定の長さ**: プログラムは最長のメルフレーム数 (`-frames`、既定 3000 = 30 秒) ごとに変換する。入力は `x` (1, frames, 128) と `mask` (1, frames)。llama.cpp は畳み込みのたびに入力の後ろをゼロで埋めるので、各段の出力のうちクリップより後ろ (出力 t は入力 2t があるときだけ存在する) をマスクを半分ずつ間引いたもので 0 にする。後ろの層は因果的なので、クリップの分の出力は長いプログラムで動かしても同じ。出力の先頭 `ceil(ceil(ceil(frames/2)/2)/2)` 行がクリップの埋め込み
 - **前処理** (`lfm3audio.Features`): llama.cpp の `mtmd_audio_preprocessor_lfm3a` と同じ。16 kHz、最後のフレームが最後の標本を含むよう右をゼロで埋め、400 標本の周期的 Hann 窓を 160 ごとに、パワースペクトル、Slaney のメルフィルタ 128 本 (0〜8 kHz、面積正規化)、log10 (下限 1e-12)、(v + 4) / 4。librosa (1.0.0) の STFT とフィルタで作った正解 (`tools/ref/mel_golden.py`) と 1e-4 以内で一致する。WAV (8/16/24/32 ビット PCM、32 ビット浮動小数点、チャネルは平均) を読み、16 kHz 以外は Hann 窓の sinc で変換する (llama.cpp は miniaudio で読むので、16 kHz 以外は近似)
@@ -1211,9 +1264,9 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 go run ./cmd/hwnpu-systemone -model d1-Omni-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage -audio audio-30s.mlpackage request.json
 ```
 
-### 16.24 LFM3-Audio の音声出力 (TTS) — 2026-10-30
+### 16.27 LFM3-Audio の音声出力 (TTS) — 2026-10-30
 
-16.21 の段階 (4)。構造と生成の手順は llama.cpp の `tools/mtmd/models/lfm3a-gen.cpp` (depthformer とコーデックのデコーダ)、`tools/mtmd/mtmd-helper-gen.cpp` (`lfm3a_gen_audio_pipeline`)、`tools/mtmd/mtmd.cpp` と `mtmd-audio.cpp` (極座標から ISTFT)、`conversion/lfm3.py` (テンソル名、TTS のテンプレート、サンプリングの既定値) から読んだ。
+16.24 の段階 (4)。構造と生成の手順は llama.cpp の `tools/mtmd/models/lfm3a-gen.cpp` (depthformer とコーデックのデコーダ)、`tools/mtmd/mtmd-helper-gen.cpp` (`lfm3a_gen_audio_pipeline`)、`tools/mtmd/mtmd.cpp` と `mtmd-audio.cpp` (極座標から ISTFT)、`conversion/lfm3.py` (テンソル名、TTS のテンプレート、サンプリングの既定値) から読んだ。
 
 - **流れ**: テキスト部が TTS のプロンプト (`<|startoftext|><|im_start|>system\nPerform TTS in {言語} using a {female|male} voice.<|im_end|>\n<|im_start|>user\n{文}<|im_end|>\n<|im_start|>assistant\n<|audio_start|>`、LFM3-Omni は `<|audio_start|>` の前に `<think></think>`) を読み、最終 norm の後の隠れ状態 h を出す。1 フレーム (80 ms) ごとに、depthformer がコードブックを乱数の順に MaskGIT で決め (LFM3-Audio は 12 個を 4 個ずつ 3 回)、各コードを温度、top-k (k 番目と同点は残す)、繰り返しの罰則 (直近の窓でそのコードブックが使ったコード) で選ぶ。いずれかが終端コード (語彙の最後) なら終わり。そうでなければフレームのコードのフィードバック埋め込み (`codebook_embedding` の `コード + コードブック × 語彙` 行の和) をテキスト部の次の入力にして、次の h を得る。最後に、コーデックのデコーダがコードを STFT のフレーム (1 フレームあたり 6) にし、ホストの ISTFT が 24 kHz の標本にする
 - **テキスト部**: `lfm3` に `-hidden-out 1` を足した。KV キャッシュ付きのプログラムがロジット y に加えて h (最終 norm の後) を出力し、`decode.Session.Hidden` がそれを読む。`TestBuildTiny` のダイジェストは変わらない

@@ -65,6 +65,28 @@ func LookupTarget(name string) (Target, error) {
 // has those operations placed on the CPU (M3, macOS 27.0.1, npuprobe kv).
 const NeuralEngineMaxDim = 16384
 
+// A KV cache longer than CacheChunkOver is held in chunks of CacheChunkLen tokens (the last one
+// shorter), each an input of its own, so that no dimension is over NeuralEngineMaxDim: a cache in
+// one piece is concatenated with the step's tokens, so its key axis is the cache plus up to 64
+// tokens per call. The rule depends on the cache alone, so that programs with different tokens
+// per call share the inputs. Tests set them small.
+var (
+	CacheChunkOver = NeuralEngineMaxDim - 64
+	CacheChunkLen  = NeuralEngineMaxDim
+)
+
+// CacheChunks gives the lengths of the inputs that hold a KV cache of n tokens, and whether they
+// are chunks (named kv_NAME_cJ) rather than the cache in one piece (kv_NAME).
+func CacheChunks(n int) (lens []int, chunked bool) {
+	if n <= CacheChunkOver {
+		return []int{n}, false
+	}
+	for ; n > 0; n -= CacheChunkLen {
+		lens = append(lens, min(n, CacheChunkLen))
+	}
+	return lens, true
+}
+
 // SplitMargin is the share of a target's limit that the estimated weights of a part may fill.
 // The estimate misses the blob headers and alignment, a few hundred bytes per tensor.
 const SplitMargin = 0.97
