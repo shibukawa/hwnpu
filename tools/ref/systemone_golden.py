@@ -119,6 +119,9 @@ CASES = [
      {"type": "noul", "instructions": "日本語の質問ですか？", "criteria": {"false": "いいえ"}}, ["true", "false"]),
     ("two images", "a <__media__> in the text", {"type": "noul", "instructions": "Same <__media__>?"}, ["true", "false"], 2),
     ("image without state", None, {"type": "choice", "instructions": "What is shown?", "criteria": {"cat": None, "dog": None}}, ["A", "B"], 1),
+    # a spoken question (d1-Omni): its text is the clip's marker; "instructions" here is what
+    # the request had besides the clip, which the prompt does not show
+    ("spoken question", {"call": "<__media__> here"}, {"type": "score", "instructions": "", "criteria": ["calm", "angry"]}, ["0", "1"], 1, True),
 ]
 
 MARKER = "<__media__>"
@@ -145,16 +148,19 @@ def main():
     cases = []
     for name, state, q, labels, *rest in CASES:
         images = rest[0] if rest else 0
+        spoken = len(rest) > 1 and rest[1]
         opts = options(q)
         for o, label in zip(opts, labels):
             o["label"] = label
-        inp = escape({"id": "q", "type": q["type"], "instructions": q["instructions"], "state": state, "options": opts})
-        if images:
-            # render(): the marker is taken out of the texts, then one per image
+        inp = escape({"id": "q", "type": q["type"], "instructions": "" if spoken else q["instructions"], "state": state, "options": opts})
+        if images or spoken:
+            # render(): the marker is taken out of the texts, then one per image or clip
             inp = replace_text(inp, MARKER, " ")
+        if spoken:
+            inp["instructions"] = MARKER
         want = tmpl.render(images=[MARKER] * images, **inp)
         cases.append({"name": name, "request": {"state": state, "questions": {"q": q}}, "labels": labels, "control": CONTROL,
-                      "images": images, "want": want})
+                      "images": images, "spoken": spoken, "want": want})
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump({"cases": cases}, f, ensure_ascii=False, indent=1)
         f.write("\n")

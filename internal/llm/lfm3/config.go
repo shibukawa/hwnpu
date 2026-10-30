@@ -4,8 +4,8 @@
 // LFM3 interleaves three kinds of layers: gated short convolutions, full attention and sliding
 // window attention. Every layer is wrapped in sandwich RMS norms and followed by a SwiGLU MLP.
 //
-// The text model of the multimodal checkpoints (LFM3-VL, model_type lfm3_vl, with the LFM3
-// config under text_config) is the same, and so are Liquid AI's d1 decision models built on them
+// The text model of the multimodal checkpoints (LFM3-VL and LFM3-Omni, model_type lfm3_vl and
+// lfm3_omni, with the LFM3 config under text_config; LFM3-Audio, lfm3_audio, under lfm) is the same, and so are Liquid AI's d1 decision models built on them
 // (architectures D1Model): those read the whole prompt at once, the full attention layers both
 // ways, and answer from the logits of its last token (Config.D1).
 package lfm3
@@ -41,9 +41,10 @@ type Config struct {
 	} `json:"rope_parameters"`
 
 	// Prefix begins the names of the text model's tensors: "model." in Lfm3ForCausalLM (also
-	// when empty), "model.language_model." in a multimodal checkpoint. The output layer is
-	// lm_head either way.
-	Prefix string `json:"-"`
+	// when empty), "model.language_model." in an LFM3-VL or LFM3-Omni checkpoint, "lfm.model."
+	// in an LFM3-Audio one. HeadName is the output layer's, lm_head.weight when empty.
+	Prefix   string `json:"-"`
+	HeadName string `json:"-"`
 	// D1 is a d1 decision model: one call reads the whole prompt with the full attention layers
 	// bidirectional (a padding mask is the program's second input) and the sliding attention
 	// layers and short convolutions causal, as llama.cpp runs it. The output is the final hidden
@@ -76,6 +77,7 @@ func ParseConfig(raw []byte) (*Config, error) {
 		ModelType     string          `json:"model_type"`
 		Architectures []string        `json:"architectures"`
 		TextConfig    json.RawMessage `json:"text_config"`
+		LFM           json.RawMessage `json:"lfm"`
 		Tie           *bool           `json:"tie_word_embeddings"`
 		D1Codes       *int            `json:"d1_codes"`
 		D1Attention   *string         `json:"d1_attention"`
@@ -86,20 +88,27 @@ func ParseConfig(raw []byte) (*Config, error) {
 	var c Config
 	text, nested := raw, false
 	switch top.ModelType {
-	case "lfm3_vl":
-		if len(top.TextConfig) == 0 {
-			return nil, fmt.Errorf("lfm3: %s config has no text_config", top.ModelType)
+	case "lfm3_vl", "lfm3_omni", "lfm3_audio":
+		// LFM3-Audio's release config has the text model under lfm (and its tensors under lfm.,
+		// as llama.cpp reads them); the others, under text_config in the HF composite layout
+		sub, key, prefix := top.TextConfig, "text_config", "model.language_model."
+		if top.ModelType == "lfm3_audio" {
+			sub, key, prefix = top.LFM, "lfm", "lfm.model."
+			c.HeadName = "lfm.lm_head.weight"
+		}
+		if len(sub) == 0 {
+			return nil, fmt.Errorf("lfm3: %s config has no %s", top.ModelType, key)
 		}
 		var t struct {
 			ModelType string `json:"model_type"`
 		}
-		if err := json.Unmarshal(top.TextConfig, &t); err != nil {
-			return nil, fmt.Errorf("lfm3: text_config: %w", err)
+		if err := json.Unmarshal(sub, &t); err != nil {
+			return nil, fmt.Errorf("lfm3: %s: %w", key, err)
 		}
 		if t.ModelType != "" && t.ModelType != "lfm3" {
-			return nil, fmt.Errorf("lfm3: text_config model_type %q is not lfm3", t.ModelType)
+			return nil, fmt.Errorf("lfm3: %s model_type %q is not lfm3", key, t.ModelType)
 		}
-		text, nested, c.Prefix = top.TextConfig, true, "model.language_model."
+		text, nested, c.Prefix = sub, true, prefix
 	case "", "lfm3":
 	default:
 		return nil, fmt.Errorf("lfm3: model_type %q is not supported", top.ModelType)

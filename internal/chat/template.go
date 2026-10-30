@@ -27,16 +27,22 @@ type Message struct {
 }
 
 // Content is a message's text. The API sends it as a string, null or a list of parts; the text
-// parts are kept, and each image part (image_url, a data URL) becomes MediaMarker in the text
-// where it was, as llama.cpp's server does, and its URL goes to Images.
+// parts are kept, and each image (image_url, a data URL) or audio (input_audio, base64 WAV) part
+// becomes MediaMarker in the text where it was, as llama.cpp's server does, and goes to Media.
 type Content struct {
-	Text   string
-	Parts  bool // sent as a list of parts
-	parts  []string
-	Images []string
+	Text  string
+	Parts bool // sent as a list of parts
+	parts []string
+	Media []Media
 }
 
-// MediaMarker stands for an image in a rendered prompt; Engine.Tokens puts the image's
+// Media is an image or an audio clip of a message.
+type Media struct {
+	Audio bool
+	Data  string // an image's data URL, or a clip's base64 WAV (or data URL)
+}
+
+// MediaMarker stands for an image or a clip in a rendered prompt; Engine.Tokens puts its
 // embeddings there. It ends in a random number, so that a text cannot write it by accident.
 var MediaMarker = fmt.Sprintf("<__media_%016x__>", rand.Uint64())
 
@@ -54,6 +60,9 @@ func (c *Content) UnmarshalJSON(b []byte) error {
 		ImageURL *struct {
 			URL string `json:"url"`
 		} `json:"image_url"`
+		InputAudio *struct {
+			Data string `json:"data"`
+		} `json:"input_audio"`
 	}
 	if err := json.Unmarshal(b, &parts); err != nil {
 		return fmt.Errorf("chat: content is neither a string nor a list of parts: %w", err)
@@ -65,7 +74,10 @@ func (c *Content) UnmarshalJSON(b []byte) error {
 			c.parts = append(c.parts, p.Text)
 			c.Text += p.Text
 		case p.Type == "image_url" && p.ImageURL != nil:
-			c.Images = append(c.Images, p.ImageURL.URL)
+			c.Media = append(c.Media, Media{Data: p.ImageURL.URL})
+			c.Text += MediaMarker
+		case p.Type == "input_audio" && p.InputAudio != nil:
+			c.Media = append(c.Media, Media{Audio: true, Data: p.InputAudio.Data})
 			c.Text += MediaMarker
 		}
 	}

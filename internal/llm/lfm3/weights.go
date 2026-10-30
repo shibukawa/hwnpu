@@ -14,11 +14,12 @@ func pow(a, b float64) float64 { return math.Pow(a, b) }
 func OpenWeights(path string) (llm.Weights, error) { return llm.OpenWeights(path, Arch) }
 
 // ggufName maps a Hugging Face tensor name to llama.cpp's. The text model of a multimodal
-// checkpoint (model.language_model.) is written like Lfm3ForCausalLM's.
+// checkpoint (model.language_model., or lfm. in LFM3-Audio) is written like Lfm3ForCausalLM's.
 func ggufName(name string) string {
 	if rest, ok := strings.CutPrefix(name, "model.language_model."); ok {
 		name = "model." + rest
 	}
+	name = strings.TrimPrefix(name, "lfm.")
 	switch name {
 	case "model.embed_tokens.weight", "lm_head.weight":
 		return "token_embd.weight"

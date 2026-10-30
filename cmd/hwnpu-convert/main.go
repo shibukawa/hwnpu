@@ -25,7 +25,10 @@
 // Some checkpoints hold more than one program. LFM3-VL's config.json selects its text model
 // (lfm3); -arch lfm3-vision converts its vision encoder instead, for one image size (-image
 // WIDTHxHEIGHT, default 512x512; -seq is not used): x is the image's patches and y its
-// embeddings in the text model's input (internal/vision runs it).
+// embeddings in the text model's input (internal/vision runs it). LFM3-Audio's and LFM3-Omni's
+// audio encoder is -arch lfm3-audio-encoder, for clips of up to -frames mel frames (10 ms each,
+// default 3000): x is the clip's log mel frames, mask marks them, y is the embeddings
+// (internal/audio runs it).
 //
 // -cache N builds a causal LM to run with a KV cache of N tokens held by the host
 // (internal/llm/decode): -seq is then the tokens per call (1 to generate), and each part takes the

@@ -1,6 +1,6 @@
 // Package lfm3vl converts the vision encoder of Liquid AI's LFM3-VL (model_type lfm3_vl: the
-// vision tower and the multimodal projector; the text model is internal/llm/lfm3) into a Core ML
-// program for one fixed image size. The architecture is lfm3-vision, chosen with -arch on the
+// vision tower and the multimodal projector; the text model is internal/llm/lfm3), which LFM3-Omni
+// (lfm3_omni) shares, into a Core ML program for one fixed image size. The architecture is lfm3-vision, chosen with -arch on the
 // checkpoint's config.json.
 //
 // The tower is LFM style, as llama.cpp's tools/mtmd/models/lfm3vl.cpp builds it: a patchifier (a
@@ -75,8 +75,8 @@ func ParseConfig(raw []byte) (*Config, error) {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return nil, fmt.Errorf("lfm3vl: %w", err)
 	}
-	if top.ModelType != "lfm3_vl" {
-		return nil, fmt.Errorf("lfm3vl: model_type %q is not lfm3_vl", top.ModelType)
+	if top.ModelType != "lfm3_vl" && top.ModelType != "lfm3_omni" {
+		return nil, fmt.Errorf("lfm3vl: model_type %q is not lfm3_vl or lfm3_omni", top.ModelType)
 	}
 	var c Config
 	if err := json.Unmarshal(raw, &c); err != nil {
