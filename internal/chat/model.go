@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -22,6 +25,26 @@ const DefaultContext = llm.NeuralEngineMaxDim - prefillSeq
 
 const prefillSeq = 64
 
+// DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: a cache of 4096 to run on while a
+// conversation is short, under the context (Setup.Tiers).
+const DefaultTiers = "4096"
+
+// Tiers parses a comma separated list of caches (Setup.Tiers); empty for none.
+func Tiers(s string) ([]int, error) {
+	var out []int
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			continue
+		}
+		n, err := strconv.Atoi(f)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("%q is not a positive number", f)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
 // Setup says where the model is and how to get it.
 type Setup struct {
 	Dir     string // holds config.json, tokenizer.json, model.safetensors and the converted programs
@@ -32,6 +55,10 @@ type Setup struct {
 	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
 	// generation runs on one.
 	Draft int
+	// Tiers are caches shorter than Context to run on while a conversation is short (Engine
+	// tiers): the programs are converted for each, and a conversation moves up as it grows. A
+	// step costs in proportion to the cache, whatever it holds.
+	Tiers []int
 	Log   io.Writer
 }
 
@@ -57,14 +84,27 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if s.Draft > 1 {
 		progs[0] = struct{ seq, parts int }{s.Draft, 0}
 	}
-	for _, p := range progs {
-		out := filepath.Join(s.Dir, fmt.Sprintf("%s-c%d-q%d.mlpackage", a.Name, s.Context, p.seq))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: p.seq, parts: p.parts, cache: s.Context}, s.Log)
-		if err != nil {
-			return Config{}, err
+	var caches []int
+	for _, t := range s.Tiers {
+		if t > 0 && t < s.Context {
+			caches = append(caches, t)
 		}
-		c.Packages = append(c.Packages, path)
 	}
+	slices.Sort(caches)
+	caches = slices.Compact(caches)
+	for _, cache := range append(caches, s.Context) {
+		var pkgs []string
+		for _, p := range progs {
+			out := filepath.Join(s.Dir, fmt.Sprintf("%s-c%d-q%d.mlpackage", a.Name, cache, p.seq))
+			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: p.seq, parts: p.parts, cache: cache}, s.Log)
+			if err != nil {
+				return Config{}, err
+			}
+			pkgs = append(pkgs, path)
+		}
+		c.Tiers = append(c.Tiers, pkgs)
+	}
+	c.Packages = c.Tiers[len(c.Tiers)-1]
 	for _, e := range encoders {
 		if _, _, err := llm.LoadConfig(c.ModelConfig, e.arch); err != nil {
 			continue // the checkpoint has no such encoder
