@@ -22,11 +22,13 @@
 // commas: for a chat model with the same -cache and different -seq, for an embedding model with
 // different -seq.
 //
-// For LFM3-VL, -vision takes its vision encoder (hwnpu-convert -arch lfm3-vision, a package per
-// image size): image_url parts of user messages are read, and in the terminal /image FILE sends an
-// image. For LFM3-Audio, -audio takes its audio encoder (hwnpu-convert -arch lfm3-audio-encoder, a
-// package per clip length): input_audio parts (WAV) are read, and /audio FILE.wav sends a clip.
-// Both go with -package and one chat model. Speech output is not supported (see hwnpu-tts).
+// LFM3-VL-2B, LFM3-Audio-2B and LFM3-Omni-2B read images and audio: their first run also converts
+// the encoders of the checkpoint, the vision encoder for images of 512x512 and the audio encoder
+// for clips of up to 30 seconds. image_url parts of user messages are read, and in the terminal
+// /image FILE sends an image; input_audio parts (WAV) are read, and /audio FILE.wav sends a clip.
+// With -package, -vision takes vision encoders converted by hwnpu-convert -arch lfm3-vision (a
+// package per image size) and -audio audio encoders (-arch lfm3-audio-encoder, a package per clip
+// length). Speech output is not supported (see hwnpu-tts).
 //
 // -opencode serves on a free port from 30000 (or -listen), writes an OpenCode config for the
 // server's chat models, and runs OpenCode on this terminal with the arguments after the flags;
@@ -64,8 +66,8 @@ func main() {
 	tok := flag.String("tokenizer", "", "tokenizer.json of the chat model (default: next to config.json)")
 	embedSeq := flag.String("embed-seq", ints(chat.DefaultEmbedSeqs), "sequence lengths an embedding model is converted for, comma separated; the longest is the most tokens of a text")
 	embedPkgs := flag.String("embed-package", "", "embedding programs converted by hwnpu-convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)")
-	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (with -package)")
-	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (with -package)")
+	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (default: the 512x512 one a model of -list with vision converts)")
+	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (default: the 30 second one a model of -list with audio converts)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
 	dump := flag.String("dump", "", "write each chat request, its prompt and the generated text to this directory (server)")

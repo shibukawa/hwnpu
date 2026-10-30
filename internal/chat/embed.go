@@ -51,7 +51,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo)}
 	for _, seq := range s.Seqs {
 		out := filepath.Join(s.Dir, fmt.Sprintf("embed-s%d.mlpackage", seq))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, seq, 0, 0, s.Log)
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: seq}, s.Log)
 		if err != nil {
 			return EmbedConfig{}, err
 		}
