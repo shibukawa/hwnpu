@@ -40,6 +40,7 @@ type Session struct {
 	vocab   int
 	pos     int
 	lookups []llm.TokenInput // the model's inputs looked up per token besides x
+	last    []float32        // h after the last step, if the program outputs it
 }
 
 // kvCache is one cache of keys or values: an input kv_NAME, or the chunks kv_NAME_cJ that hold
@@ -444,5 +445,14 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 	logits := make([]float32, s.vocab)
 	y := p.Out["y"]
 	hwnpu.DecodeF16(logits, y[2*(v-1)*s.vocab:2*v*s.vocab])
+	s.last = nil
+	if h, ok := p.Out["h"]; ok {
+		s.last = make([]float32, s.hidden)
+		hwnpu.DecodeF16(s.last, h[2*(v-1)*s.hidden:2*v*s.hidden])
+	}
 	return logits, nil
 }
+
+// Hidden is the final hidden state after the last step's last token, for a program that outputs
+// it as h (lfm3's hidden-out); nil otherwise.
+func (s *Session) Hidden() []float32 { return s.last }

@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/pyjson"
 )
 
 // Gemma4 is the chat format of google/gemma-4-E2B-it: its chat_template.jinja ("Gemma 4
@@ -80,11 +82,11 @@ func (gemma4) Render(msgs []Message, tools []Tool, o Options) (string, bool, err
 		for _, tc := range m.ToolCalls {
 			sb.WriteString("<|tool_call>call:" + tc.Function.Name + "{")
 			if a := strings.TrimSpace(tc.Function.Arguments); a != "" && a != "null" {
-				args, err := parseValue([]byte(a))
+				args, err := pyjson.Parse([]byte(a))
 				if err != nil {
 					return "", false, fmt.Errorf("chat: arguments of %s: %w", tc.Function.Name, err)
 				}
-				if args.kind != '{' {
+				if args.Kind != '{' {
 					return "", false, fmt.Errorf("chat: arguments of %s are not a JSON object", tc.Function.Name)
 				}
 				for j, k := range dictsort(args) {
@@ -92,7 +94,7 @@ func (gemma4) Render(msgs []Message, tools []Tool, o Options) (string, bool, err
 						sb.WriteByte(',')
 					}
 					sb.WriteString(k + ":")
-					argument(&sb, args.get(k), false)
+					argument(&sb, args.Get(k), false)
 				}
 			}
 			sb.WriteString("}<tool_call|>")
@@ -115,7 +117,7 @@ func (gemma4) Render(msgs []Message, tools []Tool, o Options) (string, bool, err
 					}
 				}
 				sb.WriteString("<|tool_response>response:" + name + "{value:")
-				argument(&sb, &value{kind: '"', str: f.Content.Text}, false)
+				argument(&sb, &pyjson.Value{Kind: '"', Str: f.Content.Text}, false)
 				sb.WriteString("}<tool_response|>")
 				responded, prevType = true, "tool_response"
 			}
@@ -179,24 +181,24 @@ func stripThinking(text string) string {
 func pyTrim(s string) string { return strings.TrimSpace(s) }
 
 // dictsort is the keys of an object in the order of Jinja's dictsort: case-insensitive.
-func dictsort(v *value) []string {
-	keys := slices.Clone(v.keys)
+func dictsort(v *pyjson.Value) []string {
+	keys := slices.Clone(v.Keys)
 	slices.SortStableFunc(keys, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
 	return keys
 }
 
 // argument is the template's format_argument.
-func argument(sb *strings.Builder, v *value, escapeKeys bool) {
+func argument(sb *strings.Builder, v *pyjson.Value, escapeKeys bool) {
 	switch {
-	case v == nil || v.kind == '0':
+	case v == nil || v.Kind == '0':
 		sb.WriteString("null")
-	case v.kind == '"':
-		sb.WriteString(gq + v.str + gq)
-	case v.kind == 't':
+	case v.Kind == '"':
+		sb.WriteString(gq + v.Str + gq)
+	case v.Kind == 't':
 		sb.WriteString("true")
-	case v.kind == 'f':
+	case v.Kind == 'f':
 		sb.WriteString("false")
-	case v.kind == '{':
+	case v.Kind == '{':
 		sb.WriteByte('{')
 		for i, k := range dictsort(v) {
 			if i > 0 {
@@ -208,12 +210,12 @@ func argument(sb *strings.Builder, v *value, escapeKeys bool) {
 				sb.WriteString(k)
 			}
 			sb.WriteByte(':')
-			argument(sb, v.get(k), escapeKeys)
+			argument(sb, v.Get(k), escapeKeys)
 		}
 		sb.WriteByte('}')
-	case v.kind == '[':
+	case v.Kind == '[':
 		sb.WriteByte('[')
-		for i, f := range v.fields {
+		for i, f := range v.Fields {
 			if i > 0 {
 				sb.WriteByte(',')
 			}
@@ -221,7 +223,7 @@ func argument(sb *strings.Builder, v *value, escapeKeys bool) {
 		}
 		sb.WriteByte(']')
 	default:
-		sb.WriteString(pyNumber(v.str))
+		sb.WriteString(pyNumber(v.Str))
 	}
 }
 
@@ -246,42 +248,42 @@ func pyNumber(s string) string {
 }
 
 // truthy is Jinja's truth of a value (nil for a missing key).
-func truthy(v *value) bool {
+func truthy(v *pyjson.Value) bool {
 	switch {
 	case v == nil:
 		return false
-	case v.kind == '"':
-		return v.str != ""
-	case v.kind == '{', v.kind == '[':
-		return len(v.fields) > 0
-	case v.kind == 'n':
-		f, _ := strconv.ParseFloat(v.str, 64)
+	case v.Kind == '"':
+		return v.Str != ""
+	case v.Kind == '{', v.Kind == '[':
+		return len(v.Fields) > 0
+	case v.Kind == 'n':
+		f, _ := strconv.ParseFloat(v.Str, 64)
 		return f != 0
 	}
-	return v.kind == 't'
+	return v.Kind == 't'
 }
 
 // upper is Jinja's upper filter: of a string, or of Python's str() of anything else.
-func upper(v *value) string {
+func upper(v *pyjson.Value) string {
 	switch {
 	case v == nil:
 		return ""
-	case v.kind == '"':
-		return strings.ToUpper(v.str)
+	case v.Kind == '"':
+		return strings.ToUpper(v.Str)
 	}
 	return strings.ToUpper(pyStr(v))
 }
 
 // pyStr is Python's str() of a JSON value (a list of strings as ['a', 'b']).
-func pyStr(v *value) string {
-	switch v.kind {
+func pyStr(v *pyjson.Value) string {
+	switch v.Kind {
 	case '"':
-		return v.str
+		return v.Str
 	case '[':
 		var items []string
-		for _, f := range v.fields {
-			if f.kind == '"' {
-				items = append(items, "'"+f.str+"'")
+		for _, f := range v.Fields {
+			if f.Kind == '"' {
+				items = append(items, "'"+f.Str+"'")
 			} else {
 				items = append(items, pyStr(f))
 			}
@@ -289,12 +291,12 @@ func pyStr(v *value) string {
 		return "[" + strings.Join(items, ", ") + "]"
 	case '{':
 		var items []string
-		for i, k := range v.keys {
-			items = append(items, "'"+k+"': "+pyStr(v.fields[i]))
+		for i, k := range v.Keys {
+			items = append(items, "'"+k+"': "+pyStr(v.Fields[i]))
 		}
 		return "{" + strings.Join(items, ", ") + "}"
 	case 'n':
-		return pyNumber(v.str)
+		return pyNumber(v.Str)
 	case 't':
 		return "True"
 	case 'f':
@@ -304,27 +306,27 @@ func pyStr(v *value) string {
 }
 
 // declaration is the template's format_function_declaration of a tool's function object.
-func declaration(f *value) string {
+func declaration(f *pyjson.Value) string {
 	var sb strings.Builder
 	sb.WriteString("declaration:")
-	if n := f.get("name"); n != nil {
+	if n := f.Get("name"); n != nil {
 		sb.WriteString(pyStr(n))
 	}
 	sb.WriteString("{description:" + gq)
-	if d := f.get("description"); d != nil {
+	if d := f.Get("description"); d != nil {
 		sb.WriteString(pyStr(d))
 	}
 	sb.WriteString(gq)
-	if params := f.get("parameters"); truthy(params) {
+	if params := f.Get("parameters"); truthy(params) {
 		sb.WriteString(",parameters:{")
-		if props := params.get("properties"); truthy(props) {
+		if props := params.Get("properties"); truthy(props) {
 			sb.WriteString("properties:{")
 			parameters(&sb, props, false)
 			sb.WriteString("},")
 		}
-		if req := params.get("required"); truthy(req) {
+		if req := params.Get("required"); truthy(req) {
 			sb.WriteString("required:[")
-			for i, r := range req.fields {
+			for i, r := range req.Fields {
 				if i > 0 {
 					sb.WriteByte(',')
 				}
@@ -332,17 +334,17 @@ func declaration(f *value) string {
 			}
 			sb.WriteString("],")
 		}
-		if ty := params.get("type"); truthy(ty) {
+		if ty := params.Get("type"); truthy(ty) {
 			sb.WriteString("type:" + gq + upper(ty) + gq + "}")
 		}
 	}
-	if resp := f.get("response"); resp != nil {
+	if resp := f.Get("response"); resp != nil {
 		sb.WriteString(",response:{")
-		if d := resp.get("description"); truthy(d) {
+		if d := resp.Get("description"); truthy(d) {
 			sb.WriteString("description:" + gq + pyStr(d) + gq + ",")
 		}
-		if upper(resp.get("type")) == "OBJECT" {
-			sb.WriteString("type:" + gq + upper(resp.get("type")) + gq + "}")
+		if upper(resp.Get("type")) == "OBJECT" {
+			sb.WriteString("type:" + gq + upper(resp.Get("type")) + gq + "}")
 		}
 	}
 	sb.WriteByte('}')
@@ -353,8 +355,8 @@ var standardKeys = []string{"description", "type", "properties", "required", "nu
 
 // parameters is the template's format_parameters over an object's properties; with filterKeys it
 // leaves out the keys of a schema itself (an object without properties lists its other keys).
-func parameters(sb *strings.Builder, props *value, filterKeys bool) {
-	if props == nil || props.kind != '{' {
+func parameters(sb *strings.Builder, props *pyjson.Value, filterKeys bool) {
+	if props == nil || props.Kind != '{' {
 		return
 	}
 	first := true
@@ -362,7 +364,7 @@ func parameters(sb *strings.Builder, props *value, filterKeys bool) {
 		if filterKeys && slices.Contains(standardKeys, key) {
 			continue
 		}
-		v := props.get(key)
+		v := props.Get(key)
 		if !first {
 			sb.WriteByte(',')
 		}
@@ -375,25 +377,25 @@ func parameters(sb *strings.Builder, props *value, filterKeys bool) {
 			}
 			comma = true
 		}
-		if d := v.get("description"); truthy(d) {
+		if d := v.Get("description"); truthy(d) {
 			sb.WriteString("description:" + gq + pyStr(d) + gq)
 			comma = true
 		}
-		switch upper(v.get("type")) {
+		switch upper(v.Get("type")) {
 		case "STRING":
-			if e := v.get("enum"); truthy(e) {
+			if e := v.Get("enum"); truthy(e) {
 				sep()
 				sb.WriteString("enum:")
 				argument(sb, e, true)
 			}
 		case "ARRAY":
-			if items := v.get("items"); items != nil && items.kind == '{' && truthy(items) {
+			if items := v.Get("items"); items != nil && items.Kind == '{' && truthy(items) {
 				sep()
 				sb.WriteString("items:{")
 				firstItem := true
 				for _, ik := range dictsort(items) {
-					iv := items.get(ik)
-					if iv.kind == '0' {
+					iv := items.Get(ik)
+					if iv.Kind == '0' {
 						continue
 					}
 					if !firstItem {
@@ -403,13 +405,13 @@ func parameters(sb *strings.Builder, props *value, filterKeys bool) {
 					switch ik {
 					case "properties":
 						sb.WriteString("properties:{")
-						if iv.kind == '{' {
+						if iv.Kind == '{' {
 							parameters(sb, iv, false)
 						}
 						sb.WriteString("}")
 					case "required":
 						sb.WriteString("required:[")
-						for i, r := range iv.fields {
+						for i, r := range iv.Fields {
 							if i > 0 {
 								sb.WriteByte(',')
 							}
@@ -418,12 +420,12 @@ func parameters(sb *strings.Builder, props *value, filterKeys bool) {
 						sb.WriteString("]")
 					case "type":
 						sb.WriteString("type:")
-						if iv.kind == '"' {
-							argument(sb, &value{kind: '"', str: strings.ToUpper(iv.str)}, true)
+						if iv.Kind == '"' {
+							argument(sb, &pyjson.Value{Kind: '"', Str: strings.ToUpper(iv.Str)}, true)
 						} else {
-							up := &value{kind: '['}
-							for _, f := range iv.fields {
-								up.fields = append(up.fields, &value{kind: '"', str: upper(f)})
+							up := &pyjson.Value{Kind: '['}
+							for _, f := range iv.Fields {
+								up.Fields = append(up.Fields, &pyjson.Value{Kind: '"', Str: upper(f)})
 							}
 							argument(sb, up, true)
 						}
@@ -435,12 +437,12 @@ func parameters(sb *strings.Builder, props *value, filterKeys bool) {
 				sb.WriteString("}")
 			}
 		}
-		if truthy(v.get("nullable")) {
+		if truthy(v.Get("nullable")) {
 			sep()
 			sb.WriteString("nullable:true")
 		}
-		if upper(v.get("type")) == "OBJECT" {
-			if p := v.get("properties"); p != nil && p.kind == '{' {
+		if upper(v.Get("type")) == "OBJECT" {
+			if p := v.Get("properties"); p != nil && p.Kind == '{' {
 				sep()
 				sb.WriteString("properties:{")
 				parameters(sb, p, false)
@@ -451,10 +453,10 @@ func parameters(sb *strings.Builder, props *value, filterKeys bool) {
 				parameters(sb, v, true)
 				sb.WriteString("}")
 			}
-			if req := v.get("required"); truthy(req) {
+			if req := v.Get("required"); truthy(req) {
 				sep()
 				sb.WriteString("required:[")
-				for i, r := range req.fields {
+				for i, r := range req.Fields {
 					if i > 0 {
 						sb.WriteByte(',')
 					}
@@ -464,7 +466,7 @@ func parameters(sb *strings.Builder, props *value, filterKeys bool) {
 			}
 		}
 		sep()
-		sb.WriteString("type:" + gq + upper(v.get("type")) + gq + "}")
+		sb.WriteString("type:" + gq + upper(v.Get("type")) + gq + "}")
 	}
 }
 

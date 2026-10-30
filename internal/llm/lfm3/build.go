@@ -21,6 +21,10 @@ type Options struct {
 	// adds, which the Neural Engine computes at full fp16 accuracy, or "conv" as one depthwise
 	// conv operation, which it computes with 5 to 12 percent error per layer.
 	ConvMode string
+	// HiddenOut makes a program with a KV cache output h, the final hidden state (1, seq,
+	// hidden), besides the logits y: LFM3-Audio's speech output samples from it
+	// (internal/llm/decode reads it as Session.Hidden).
+	HiddenOut bool
 }
 
 type builder struct {
@@ -33,6 +37,8 @@ type builder struct {
 	ins     map[string]*mlpackage.Var
 	inList  []mlpackage.Feature
 	outList []*mlpackage.Var
+	// padBias is the additive padding mask of a d1 model's bidirectional layers, made once.
+	padBias *mlpackage.Var
 }
 
 func newBuilder(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) *builder {
@@ -98,6 +104,12 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options)
 	if opts.Cache > 0 && opts.ConvMode != "taps" {
 		return nil, nil, fmt.Errorf("lfm3: a KV cache needs conv mode taps")
 	}
+	if cfg.D1 && opts.Cache > 0 {
+		return nil, nil, fmt.Errorf("lfm3: a d1 model reads the whole prompt at once; it has no KV cache")
+	}
+	if cfg.D1 {
+		opts.Hidden = true
+	}
 	m := newBuilder(b, cfg, w, opts)
 	err = blocks.Run(func() {
 		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
@@ -111,15 +123,14 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options)
 		case opts.Start+opts.Layers < cfg.NumLayers || opts.NoHead:
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		default:
-			h = m.rmsNorm(h, "model.embedding_norm.weight", m.d)
+			h = m.rmsNorm(h, cfg.prefix()+"embedding_norm.weight", m.d)
 			if opts.Hidden {
 				y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 			} else {
-				head := "lm_head.weight"
-				if cfg.TieWordEmbed {
-					head = "model.embed_tokens.weight"
+				y = m.Linear(h, cfg.Head(), "y", cfg.VocabSize)
+				if opts.HiddenOut && opts.Cache > 0 {
+					m.output(h, "h")
 				}
-				y = m.Linear(h, head, "y", cfg.VocabSize)
 			}
 		}
 		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
@@ -141,7 +152,7 @@ func (m *builder) rmsNorm(x *mlpackage.Var, name string, n int, inScale ...float
 }
 
 func (m *builder) layer(i int, h *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("model.layers.%d.", i)
+	p := fmt.Sprintf("%slayers.%d.", m.cfg.prefix(), i)
 	residual := h
 	h = m.rmsNorm(h, p+"operator_norm.weight", m.d)
 	if m.cfg.IsAttention(i) {
@@ -167,7 +178,7 @@ func (m *builder) layer(i int, h *mlpackage.Var) *mlpackage.Var {
 // mode it stays in the (1, seq, d) layout: the convolution is K shifted multiply adds over a
 // left padded sequence, with no transposes.
 func (m *builder) shortConv(i int, h *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("model.layers.%d.conv.", i)
+	p := fmt.Sprintf("%slayers.%d.conv.", m.cfg.prefix(), i)
 	d, s, k := m.d, m.seq, m.cfg.ConvKernel
 	bcx := m.Linear(h, p+"in_proj.weight", "", 3*d) // (1, s, 3d)
 	cw := m.Get(p+"conv.weight", d, 1, k)
@@ -251,9 +262,11 @@ func (m *builder) shortConv(i int, h *mlpackage.Var) *mlpackage.Var {
 }
 
 // attention is grouped query attention with QK RMS norm, partial RoPE, a causal (and for sliding
-// layers windowed) mask and a sigmoid gate per head.
+// layers windowed) mask and a sigmoid gate per head. A d1 model's full attention layers are
+// bidirectional instead: only the padding is masked, by the program input mask (1, seq), 1 for
+// the prompt's tokens and 0 for the padding after them.
 func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("model.layers.%d.self_attn.", i)
+	p := fmt.Sprintf("%slayers.%d.self_attn.", m.cfg.prefix(), i)
 	s, nh, nkv, hd := m.seq, m.cfg.NumHeads, m.cfg.NumKVHeads, m.cfg.HeadDim
 	layerType := m.cfg.LayerTypes[i]
 	var cos, sin *mlpackage.Var
@@ -306,6 +319,11 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 			mask := m.input("mask_"+layerType, 1, 1, s, t+s)
 			o = m.SDPA(q, k, v, func() *mlpackage.Var { return mask })
 		}
+	} else if m.cfg.D1 && layerType == "full_attention" {
+		if m.padBias == nil {
+			m.padBias = m.MaskBias(m.input("mask", 1, s))
+		}
+		o = m.SDPA(q, k, v, func() *mlpackage.Var { return m.padBias })
 	} else {
 		window := 0
 		if layerType == "sliding_attention" {

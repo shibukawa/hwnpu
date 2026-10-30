@@ -52,7 +52,15 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	data := []map[string]any{}
 	for _, e := range s.Chats {
-		data = append(data, describe(e.Name, KindChat, map[string]any{"context_length": e.Context()}))
+		in := []string{"text"}
+		if e.Images() {
+			in = append(in, "image")
+		}
+		if e.Audio() {
+			in = append(in, "audio")
+		}
+		data = append(data, describe(e.Name, KindChat, map[string]any{"context_length": e.Context(),
+			"architecture": map[string]any{"input_modalities": in, "output_modalities": []string{"text"}}}))
 	}
 	for _, e := range s.Embedders {
 		data = append(data, describe(e.Name, KindEmbed, map[string]any{"context_length": e.MaxTokens(), "dimensions": e.Dim()}))
@@ -182,7 +190,20 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	g := Request{Prompt: e.Tok.Encode(prompt), MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed}
+	var media []Media
+	for _, m := range req.Messages {
+		media = append(media, m.Content.Media...)
+	}
+	ids, err := e.Tokens(r.Context(), prompt, media)
+	if err != nil {
+		code, typ := http.StatusInternalServerError, "server_error"
+		if errors.Is(err, ErrImage) {
+			code, typ = http.StatusBadRequest, "invalid_request_error"
+		}
+		apiError(w, code, typ, "", err.Error())
+		return
+	}
+	g := Request{Prompt: ids, MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed}
 	if req.MaxCompletionTokens > 0 {
 		g.MaxTokens = req.MaxCompletionTokens
 	}

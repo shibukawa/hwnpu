@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -13,11 +14,13 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/audio"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
 // Config says where the model is.
@@ -32,6 +35,13 @@ type Config struct {
 	ModelConfig, Weights, Tokenizer string
 	// CacheDir is the compile cache ("" for none).
 	CacheDir string
+	// Vision is the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a
+	// package per image size (internal/vision), for a model that reads images (LFM3-VL); none to
+	// take no images. Its config.json and image processor settings are next to ModelConfig.
+	Vision []string
+	// Audio is the LFM3-Audio (or LFM3-Omni) audio encoder converted by hwnpu-convert -arch
+	// lfm3-audio-encoder, a package per clip length (internal/audio); none to take no audio.
+	Audio []string
 	// Log receives what loading does (nil for none).
 	Log io.Writer
 	// Name is the model's name in the API (default: the first package's).
@@ -55,12 +65,27 @@ type Engine struct {
 	w      llm.Weights
 	model  llm.Model
 	emb    map[int32][]float32 // tokens' rows (llm.TokenRow) read so far
+	vis    *vision.Encoder
+	aud    *audio.Encoder
+	images []encoded // encoded images and clips, the most recently used last
+	nextID int32     // the token id of the next one's first row (they count down from -1)
 
 	mu    sync.Mutex
 	sess  *decode.Session
 	cur   seq     // the sequence in the cache
 	saved []saved // put aside, the most recently used last
 }
+
+// encoded is an encoded image or clip: its rows of embeddings stand in prompts as the token ids
+// first, first-1, ...; the same one keeps its ids, so that a prompt with it reuses the cache.
+type encoded struct {
+	key   [32]byte // of the kind and the data
+	first int32
+	rows  [][]float32
+}
+
+// maxImages is how many encoded images and clips are kept.
+var maxImages = 16
 
 // seq is a sequence of tokens in the cache.
 type seq struct {
@@ -134,7 +159,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if c.Tokenizer == "" {
 		c.Tokenizer = filepath.Join(filepath.Dir(c.ModelConfig), "tokenizer.json")
 	}
-	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}}
+	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}, nextID: -1}
 	e.Name = name
 	if e.Template, err = TemplateFor(a.Name); err != nil {
 		return nil, err
@@ -194,6 +219,30 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			return nil, fmt.Errorf("chat: %s: %w", pkg, err)
 		}
 	}
+	if len(c.Vision) > 0 {
+		t0 := time.Now()
+		if e.vis, err = vision.Load(ctx, e.dev, filepath.Dir(c.ModelConfig), c.Vision); err != nil {
+			e.Close()
+			return nil, err
+		}
+		where := "all on the NPU"
+		if !e.vis.OnNPU() {
+			where = "NOT all on the NPU"
+		}
+		logf("vision encoder for images of %v, %s, loaded in %.1fs", e.vis.Sizes(), where, time.Since(t0).Seconds())
+	}
+	if len(c.Audio) > 0 {
+		t0 := time.Now()
+		if e.aud, err = audio.Load(ctx, e.dev, filepath.Dir(c.ModelConfig), c.Audio); err != nil {
+			e.Close()
+			return nil, err
+		}
+		where := "all on the NPU"
+		if !e.aud.OnNPU() {
+			where = "NOT all on the NPU"
+		}
+		logf("audio encoder for clips of up to %.0f s, %s, loaded in %.1fs", e.aud.MaxSeconds(), where, time.Since(t0).Seconds())
+	}
 	logf("ready: context %d tokens, up to %d tokens per call", e.sess.Cache(), e.sess.Q())
 	return e, nil
 }
@@ -226,6 +275,14 @@ func dots(w io.Writer, prefix string) (stop func()) {
 
 // Close releases the model.
 func (e *Engine) Close() error {
+	if e.vis != nil {
+		e.vis.Close()
+		e.vis = nil
+	}
+	if e.aud != nil {
+		e.aud.Close()
+		e.aud = nil
+	}
 	for i := len(e.chains) - 1; i >= 0; i-- {
 		e.chains[i].Close()
 	}
@@ -384,10 +441,128 @@ func (e *Engine) putAside() {
 	}
 }
 
+// Images reports whether the engine reads images.
+func (e *Engine) Images() bool { return e.vis != nil }
+
+// Audio reports whether the engine reads audio.
+func (e *Engine) Audio() bool { return e.aud != nil }
+
+// ErrImage is returned for an image or a clip the engine cannot read.
+var ErrImage = errors.New("chat: media")
+
+// Tokens turns a rendered prompt into tokens. Each MediaMarker in it is the next of media: an
+// image is <|vision_start|>, a token per row of its embeddings, <|vision_end|>; a clip is its
+// rows alone for LFM3-Audio and between the same tokens for LFM3-Omni.
+func (e *Engine) Tokens(ctx context.Context, prompt string, media []Media) ([]int32, error) {
+	pieces := strings.Split(prompt, MediaMarker)
+	if len(pieces)-1 != len(media) {
+		return nil, fmt.Errorf("%w: %d images and clips for %d places in the prompt (they go in user messages)", ErrImage, len(media), len(pieces)-1)
+	}
+	var ids []int32
+	for i, piece := range pieces {
+		ids = append(ids, e.Tok.Encode(piece)...)
+		if i == len(media) {
+			break
+		}
+		e.mu.Lock()
+		enc, err := e.encode(ctx, media[i])
+		e.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		wrap := !media[i].Audio || e.aud.Omni()
+		start, ok1 := e.Tok.ID(vision.Start)
+		end, ok2 := e.Tok.ID(vision.End)
+		if wrap && (!ok1 || !ok2) {
+			return nil, fmt.Errorf("%w: the tokenizer has no %s and %s", ErrImage, vision.Start, vision.End)
+		}
+		if wrap {
+			ids = append(ids, start)
+		}
+		for r := range enc.rows {
+			ids = append(ids, enc.first-int32(r))
+		}
+		if wrap {
+			ids = append(ids, end)
+		}
+	}
+	return ids, nil
+}
+
+// encode returns the encoded image or clip, encoding it unless it is kept.
+func (e *Engine) encode(ctx context.Context, m Media) (*encoded, error) {
+	kind := "image:"
+	if m.Audio {
+		kind = "audio:"
+	}
+	key := sha256.Sum256([]byte(kind + m.Data))
+	for i, im := range e.images {
+		if im.key == key {
+			e.images = append(slices.Delete(e.images, i, i+1), im)
+			return &e.images[len(e.images)-1], nil
+		}
+	}
+	var flat []float32
+	var n int
+	switch {
+	case m.Audio && e.aud == nil:
+		return nil, fmt.Errorf("%w: this model was loaded without an audio encoder", ErrImage)
+	case m.Audio:
+		clip, err := audio.Decode(m.Data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrImage, err)
+		}
+		if flat, n, err = e.aud.Encode(ctx, clip); errors.Is(err, audio.ErrTooLong) {
+			return nil, fmt.Errorf("%w: %v", ErrImage, err)
+		} else if err != nil {
+			return nil, err
+		}
+	case e.vis == nil:
+		return nil, fmt.Errorf("%w: this model was loaded without a vision encoder", ErrImage)
+	default:
+		pic, err := vision.DecodeDataURL(m.Data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrImage, err)
+		}
+		if flat, n, err = e.vis.Encode(ctx, pic); err != nil {
+			return nil, err
+		}
+	}
+	d := e.model.Hidden()
+	im := encoded{key: key, first: e.nextID}
+	for r := range n {
+		im.rows = append(im.rows, flat[r*d:(r+1)*d])
+	}
+	e.nextID -= int32(n)
+	if len(e.images) >= maxImages {
+		e.images = e.images[1:]
+	}
+	e.images = append(e.images, im)
+	return &e.images[len(e.images)-1], nil
+}
+
+// imageRow returns the embedding row of an image token (a negative id).
+func (e *Engine) imageRow(t int32) ([]float32, bool) {
+	for _, im := range e.images {
+		if r := int(im.first - t); r >= 0 && r < len(im.rows) {
+			return im.rows[r], true
+		}
+	}
+	return nil, false
+}
+
 // step runs the tokens and records them as fed.
 func (e *Engine) step(toks []int32) ([]float32, error) {
 	embs := make([][]float32, len(toks))
 	for i, t := range toks {
+		if t < 0 {
+			v, ok := e.imageRow(t)
+			if !ok {
+				return nil, fmt.Errorf("%w: an image of the prompt is no longer kept; send the request again", ErrImage)
+			}
+			embs[i] = v
+			continue
+		}
 		v, ok := e.emb[t]
 		if !ok {
 			var err error

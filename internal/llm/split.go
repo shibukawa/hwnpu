@@ -109,7 +109,10 @@ func EstimateBytes(m Model, opts Options) (pre int64, layers []int64, post int64
 	layers = make([]int64, m.Layers())
 	_, logits := m.Output()
 	tensors := m.Tensors()
-	_, ownHead := tensors["lm_head.weight"]
+	ownHead := false
+	for name := range tensors {
+		ownHead = ownHead || strings.HasSuffix(name, "lm_head.weight")
+	}
 	host := map[string]bool{}
 	if l, ok := m.(TokenInputs); ok {
 		for _, lk := range l.TokenInputs() {

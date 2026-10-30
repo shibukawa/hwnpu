@@ -164,6 +164,46 @@ go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensor
 go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage -config DIR/config.json -weights DIR/model.safetensors
 ```
 
+### Images (LFM3-VL-2B)
+
+For an LFM3-VL checkpoint, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `-vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image. Not yet checked on the real checkpoint (docs/design.md, 16.28).
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
+```
+
+```bash
+go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpackage -vision DIR/vision-512x512.mlpackage -config DIR/config.json -weights DIR/model.safetensors
+```
+
+### Audio (LFM3-Audio-2B)
+
+For an LFM3-Audio checkpoint, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `-audio`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-tts` below speaks a text. Not yet checked on the real checkpoint (docs/design.md, 16.29).
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
+```
+
+### Speech (LFM3-Audio-2B TTS)
+
+`hwnpu-tts` speaks a text into a WAV file (24 kHz). Convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.30).
+
+```bash
+go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
+```
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.mlpackage
+```
+
+```bash
+go run ./cmd/hwnpu-convert -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.mlpackage
+```
+
+```bash
+go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.mlpackage -codec DIR/codec.mlpackage -lang en -o out.wav "Hello from the Neural Engine."
+```
+
 ## 6. Use it from OpenCode
 
 Started like this in the project directory, it runs the server and OpenCode together.

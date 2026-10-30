@@ -22,6 +22,12 @@
 // commas: for a chat model with the same -cache and different -seq, for an embedding model with
 // different -seq.
 //
+// For LFM3-VL, -vision takes its vision encoder (hwnpu-convert -arch lfm3-vision, a package per
+// image size): image_url parts of user messages are read, and in the terminal /image FILE sends an
+// image. For LFM3-Audio, -audio takes its audio encoder (hwnpu-convert -arch lfm3-audio-encoder, a
+// package per clip length): input_audio parts (WAV) are read, and /audio FILE.wav sends a clip.
+// Both go with -package and one chat model. Speech output is not supported (see hwnpu-tts).
+//
 // -opencode serves on a free port from 30000 (or -listen), writes an OpenCode config for the
 // server's chat models, and runs OpenCode on this terminal with the arguments after the flags;
 // when it exits, so does the server.
@@ -30,6 +36,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -57,6 +64,8 @@ func main() {
 	tok := flag.String("tokenizer", "", "tokenizer.json of the chat model (default: next to config.json)")
 	embedSeq := flag.String("embed-seq", ints(chat.DefaultEmbedSeqs), "sequence lengths an embedding model is converted for, comma separated; the longest is the most tokens of a text")
 	embedPkgs := flag.String("embed-package", "", "embedding programs converted by hwnpu-convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)")
+	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (with -package)")
+	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (with -package)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
 	dump := flag.String("dump", "", "write each chat request, its prompt and the generated text to this directory (server)")
@@ -101,8 +110,8 @@ func main() {
 			chats = append(chats, m)
 		}
 	}
-	if len(chats) > 1 && (*pkgs != "" || *config != "" || *weights != "" || *tok != "") {
-		fail(errors.New("-package, -config, -weights and -tokenizer are for one chat model; -use names several"))
+	if len(chats) > 1 && (*pkgs != "" || *config != "" || *weights != "" || *tok != "" || *vis != "" || *aud != "") {
+		fail(errors.New("-package, -config, -weights, -tokenizer, -vision and -audio are for one chat model; -use names several"))
 	}
 	if len(models)-len(chats) > 1 && *embedPkgs != "" {
 		fail(errors.New("-embed-package is for one embedding model; -use names several"))
@@ -126,6 +135,12 @@ func main() {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+			if *vis != "" {
+				c.Vision = strings.Split(*vis, ",")
+			}
+			if *aud != "" {
+				c.Audio = strings.Split(*aud, ",")
+			}
 			e, err := chat.Load(ctx, c)
 			if err != nil {
 				fail(err)
@@ -304,7 +319,14 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
 	}
-	fmt.Fprintln(os.Stderr, "/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer")
+	media := ""
+	if e.Images() {
+		media += "/image FILE [text] sends an image, "
+	}
+	if e.Audio() {
+		media += "/audio FILE.wav [text] sends a clip, "
+	}
+	fmt.Fprintf(os.Stderr, "%s/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n", media)
 	in := bufio.NewReader(os.Stdin)
 	for {
 		text, ok := read(in)
@@ -328,16 +350,45 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 			fmt.Fprintf(os.Stderr, "[thinking %v]\n", think)
 			continue
 		}
-		msgs = append(msgs, chat.Message{Role: "user", Content: chat.Content{Text: text}})
+		content := chat.Content{Text: text}
+		// /image FILE [text], /audio FILE.wav [text]: the image or the clip, then the text
+		for _, cmd := range []string{"/image ", "/audio "} {
+			rest, ok := strings.CutPrefix(text, cmd)
+			if !ok {
+				continue
+			}
+			file, after, _ := strings.Cut(strings.TrimSpace(rest), " ")
+			m, err := mediaFile(file, cmd == "/audio ")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				content.Text = ""
+				break
+			}
+			content = chat.Content{Text: chat.MediaMarker + strings.TrimSpace(after), Media: []chat.Media{m}}
+		}
+		if content.Text == "" {
+			continue
+		}
+		msgs = append(msgs, chat.Message{Role: "user", Content: content})
 		prompt, thinking, err := e.Template.Render(msgs, nil, chat.Options{NoThink: !think})
 		if err != nil {
 			return err
+		}
+		var media []chat.Media
+		for _, m := range msgs {
+			media = append(media, m.Content.Media...)
+		}
+		ids, err := e.Tokens(context.Background(), prompt, media)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			msgs = msgs[:len(msgs)-1]
+			continue
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		var sent chat.Stream
 		var gen []int32
 		thought, answered := false, false
-		st, err := e.Generate(ctx, chat.Request{Prompt: e.Tok.Encode(prompt), MaxTokens: maxNew, Sampling: s}, func(g []int32) (bool, error) {
+		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s}, func(g []int32) (bool, error) {
 			gen = g
 			a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
 			dr, dc := sent.Next(a.Reasoning, a.Content)
@@ -367,6 +418,22 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s]%s\n", dim,
 			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), reset)
 	}
+}
+
+// mediaFile reads an image file as a data URL, or a WAV file as base64.
+func mediaFile(path string, isAudio bool) (chat.Media, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return chat.Media{}, err
+	}
+	if isAudio {
+		return chat.Media{Audio: true, Data: base64.StdEncoding.EncodeToString(raw)}, nil
+	}
+	mime := http.DetectContentType(raw)
+	if !strings.HasPrefix(mime, "image/") {
+		return chat.Media{}, fmt.Errorf("%s is %s, not an image", path, mime)
+	}
+	return chat.Media{Data: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw)}, nil
 }
 
 // search is the interactive search by embeddings: each input is a document kept for searching,
