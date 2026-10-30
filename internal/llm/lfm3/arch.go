@@ -18,6 +18,7 @@ var Arch = &llm.Arch{
 	Params: []llm.Param{
 		{Name: "post-scale", Default: "64", Usage: "power of two multiplied into the weights of out_proj, o_proj and w2 and absorbed by the sandwich norms (Neural Engine accuracy); 1 disables"},
 		{Name: "conv", Default: "taps", Usage: "short convolution as shifted multiply adds (taps) or one conv op (conv)"},
+		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state, besides the logits (LFM3-Audio's speech output reads it)"},
 	},
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	GGUFName:   ggufName,
@@ -114,5 +115,5 @@ func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Optio
 	if err != nil {
 		return nil, nil, fmt.Errorf("lfm3: post-scale %q: %w", ps, err)
 	}
-	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv")})
+	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv"), HiddenOut: Arch.Param(opts, "hidden-out") == "1"})
 }
