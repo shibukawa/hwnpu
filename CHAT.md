@@ -273,10 +273,28 @@ To set it up by hand, put an `opencode.json` in the project directory. The model
 - A 1.7B model sometimes writes commands that make no sense. Allowing only some commands for `bash` is safer
 - An example on an M3: asked to fix the bug in `add` of main.go, it read the file, changed `a - b` to `a + b` and checked with `go run`, in 12 requests. The first request read 7.4K tokens in 13 seconds; the later ones reused 99% of the prompt and read the rest in 0.1 to 0.5 seconds. Generation takes about 64 ms a token (about 15 tokens/s)
 
-## 7. Limits
+## 7. hwnpu-agent: a coding agent on the engine itself
+
+`hwnpu-agent` is a coding agent with four tools, read, edit, write and bash, in the loop of [Pi](https://pi.dev) written in Go on the same engine as hwnpu-chat, with no HTTP in between. Where OpenCode's first request takes about 7.4K tokens for its system prompt and ten tools, hwnpu-agent's system prompt and four declarations take about 630 tokens, so nearly all of the 16K context is left for the task, and it makes no side requests (OpenCode asks for a title first), so the task starts at once.
+
+```bash
+go run ./cmd/hwnpu-agent "fix the bug in the add function of main.go"
+go run ./cmd/hwnpu-agent -C ~/src/demo -yes "add a mul function and print mul(2, 3)"
+go run ./cmd/hwnpu-agent
+```
+
+- With a task on the command line it runs that task and exits (0 when the model answered, 1 otherwise); without one it takes tasks in the terminal, in one conversation (`/reset` starts over, `/exit` quits, Ctrl-C stops the task at hand)
+- It works in `-C` (the current directory): paths are relative to it, commands run in it, and it writes no file outside it. `AGENTS.md` there, if any, goes into the system prompt (up to 4000 characters)
+- Before a command or a change to a file it asks on the terminal; `-yes` skips the question, and `-allow "go *,ls*,cat *"` lets commands matching the patterns run without asking (each part of a command joined with `&&` or `;` must match). Without a terminal and without `-yes` it runs nothing else, so that a script cannot let a 1.7B model loose by accident
+- `-tools read,bash` offers fewer tools (for a question about the code), `-system FILE` replaces the opening of the system prompt, `-think=false` answers without thinking, `-draft` sets the speculative decoding as in hwnpu-chat (8), `-keep-thinking` keeps the thinking of earlier rounds of a task in the conversation, `-steps` limits the rounds (30), `-n` the tokens of an answer (2048), and `-dump DIR` writes each request, its prompt and the generated text as JSON, to compare prompts
+- The conversation is kept within the context without asking the model for a summary: when it would leave fewer than `-n` tokens for the answer, old tool results are folded to their first line and a count, the oldest first, the latest four untouched
+- A 1.7B model needs guards more than rules, as little-coder's work on Pi shows. `edit` and `write` on a file it has not read in the conversation are refused with a hint to read it first. Its thinking is closed at `-think-budget` tokens (1024, as in hwnpu-chat) so that it answers from what it has thought. When it writes its final answer and adds a call anyway, round after round, the second such answer ends the task; a call made twice in a row is not run but answered with a hint to stop, and a third time, like the last round, is followed by one request without tools for the summary. Paths like `/main.go` that it writes for `main.go` are taken as relative, `cd` to a directory it has not seen is refused with the rest of the command to run, and the directory's long absolute path is `.` in what it sees
+- An example on an M3, "fix the bug in the add function of main.go" (`a - b` to `a + b`): 8 requests in 53 seconds, with the model compiled already (loading it takes about 15 seconds then, and about 3 minutes the first time, while Core ML compiles it). The first request read 629 tokens in 1.3 seconds, the later ones only the new messages (0.1 to 0.4 seconds), and it generated at 15 to 16 tokens/s. It read the file, changed the line with edit, read it again, tried `cd /tmp` (refused), ran `go run main.go`, saw 5, and answered with a summary. Earlier forms of the prompt show how little a 1.7B model forgives: with the directory's absolute path in the system prompt it copied the path wrong for 30 rounds, refusing `/main.go` as outside the directory cost another 30, and it kept adding `echo done` after its final answer until repeated answers ended the task. Section 16.35 of [docs/design.md](docs/design.md) has the details
+
+## 8. Limits
 
 - OpenCode first asks for a title of the conversation. This model thinks before answering even when told not to, and the main request waits meanwhile; `-think-budget` (default 1024 tokens, about a minute) bounds the wait
 - With 1.7B parameters and 4 bit weights, factual answers can be wrong. Letting it think helps
 - A longer context generates more slowly (about 0.36 s a token with 65536). Contexts up to 65536 were tried
 - PLaMo-Embedding-1B is converted with 8 bit tables (lut8): in 4 bits its embeddings point elsewhere (cosine 0.76 with fp16's). On an M3 its embeddings have a cosine of 0.997 to 0.999 with the Hugging Face implementation's (`tools/ref/embed_golden.py`, `TestPlamoEmbeddingGolden` in `internal/chat`), as on the CPU. The last layer's MLP produces values past fp16's range, so the converter computes the last layer divided by 64 (`head-scale`, section 16.34 of docs/design.md). Programs converted before, `embed-s128.mlpackage` and `embed-s1024.mlpackage` in lut4, are no longer used and can be deleted
-- The implementation notes are in sections 16.17 and 16.23 of [docs/design.md](docs/design.md)
+- The implementation notes are in sections 16.17, 16.23 and 16.35 of [docs/design.md](docs/design.md)
