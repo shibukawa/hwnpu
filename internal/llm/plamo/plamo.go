@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strconv"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
@@ -55,7 +56,10 @@ var Arch = &llm.Arch{
 	Name:          "plamo-bi",
 	Title:         "PLaMo bidirectional encoder",
 	Architectures: []string{"PlamoBiModel"},
-	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	Params: []llm.Param{
+		{Name: "head-scale", Default: "64", Usage: "power of two the last layer's residual stream and down_proj's input are divided by when the final norm follows, which absorbs it: the last MLP's outputs reach 5e4 in PLaMo-Embedding-1B, past fp16 on the Neural Engine; 1 disables"},
+	},
+	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	// 4 bits lose too much of the sentence embedding: its cosine with fp16's was 0.76 in lut4
 	// (kmeans-minmax; 0.20 uniform) and 0.998 in lut8, 0.91 to 0.94 in int4 (per row or in
 	// groups) and 0.9996 in int8 (PLaMo-Embedding-1B, TestIntelIRCheckpoint)
@@ -153,6 +157,8 @@ type builder struct {
 	cfg *Config
 	seq int
 	d   int
+	// headScale divides the last layer's residual stream and MLP output (Arch's head-scale)
+	headScale float32
 }
 
 // Build writes the program. Its inputs are x, the token embeddings (1, seq, hidden), and mask
@@ -178,7 +184,16 @@ func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (i
 	if opts.Seq > c.MaxPositions {
 		return nil, out, fmt.Errorf("plamo: sequence length %d is longer than the %d positions", opts.Seq, c.MaxPositions)
 	}
-	m := &builder{Graph: &blocks.Graph{Name: "plamo", B: b, W: w, Opts: opts}, cfg: c, seq: opts.Seq, d: c.HiddenSize}
+	hs := Arch.Param(opts, "head-scale")
+	headScale, err := strconv.ParseFloat(hs, 64)
+	if err != nil || headScale <= 0 {
+		return nil, out, fmt.Errorf("plamo: head-scale %q is not a positive number", hs)
+	}
+	head := opts.Start+opts.Layers == c.NumLayers && !opts.NoHead
+	if !head {
+		headScale = 1 // a part's output is the residual stream as the reference has it
+	}
+	m := &builder{Graph: &blocks.Graph{Name: "plamo", B: b, W: w, Opts: opts}, cfg: c, seq: opts.Seq, d: c.HiddenSize, headScale: float32(headScale)}
 	err = blocks.Run(func() {
 		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
 		mask := b.Input("mask", mlpackage.Float16, 1, m.seq)
@@ -192,11 +207,20 @@ func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (i
 			bias := m.MaskBias(mask)
 			cos, sin := m.RopeTables("plamo", c.invFreq(), m.seq, c.HeadDim)
 			for i := opts.Start; i < opts.Start+opts.Layers; i++ {
-				h = m.layer(i, h, bias, cos, sin)
+				s := float32(1)
+				if i == c.NumLayers-1 {
+					s = m.headScale
+				}
+				h = m.layer(i, h, bias, cos, sin, s)
 			}
 		}
-		if opts.Start+opts.Layers == c.NumLayers && !opts.NoHead {
-			h = m.RMSNorm(h, "norm.weight", m.d, c.NormEps, 1)
+		if head {
+			// the norm does not depend on the scale of its input, but for eps
+			k := float64(m.headScale)
+			if opts.Layers == 0 {
+				k = 1
+			}
+			h = m.RMSNorm(h, "norm.weight", m.d, c.NormEps/(k*k), 1)
 		}
 		y := b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		out = mlpackage.Feature{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}
@@ -205,12 +229,17 @@ func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (i
 }
 
 // layer is PlamoDecoderLayer (ModifiedPlamoDecoderLayer in PlamoBiModel): norm, attention and a
-// residual, then norm2, the MLP and a residual.
-func (m *builder) layer(i int, h, bias, cos, sin *mlpackage.Var) *mlpackage.Var {
+// residual, then norm2, the MLP and a residual. The layer's output is divided by scale, a power
+// of two: the residual stream before the MLP's output is added, the MLP's at down_proj's input
+// (norm2 sees the stream unscaled).
+func (m *builder) layer(i int, h, bias, cos, sin *mlpackage.Var, scale float32) *mlpackage.Var {
 	p := fmt.Sprintf("layers.layers.%d.", i)
 	a := m.attention(p+"self_attn.", m.RMSNorm(h, p+"norm.weight", m.d, m.cfg.NormEps, 1), bias, cos, sin)
 	h = m.Op("add", map[string]any{"x": h, "y": a}, h.Shape...)
-	f := m.mlp(p+"mlp.", m.RMSNorm(h, p+"norm2.weight", m.d, m.cfg.NormEps, 1))
+	f := m.mlp(p+"mlp.", m.RMSNorm(h, p+"norm2.weight", m.d, m.cfg.NormEps, 1), 1/scale)
+	if scale != 1 {
+		h = m.Op("mul", map[string]any{"x": h, "y": m.B.ScalarF16(1 / scale)}, h.Shape...)
+	}
 	return m.Op("add", map[string]any{"x": h, "y": f}, h.Shape...)
 }
 
@@ -253,12 +282,17 @@ func (m *builder) headNorm(x *mlpackage.Var, name string) *mlpackage.Var {
 
 // mlp is DenseMLP: gate_up_proj, whose first half is the gate and second half the up
 // projection (_swiglu), then down_proj. The halves are two linear layers, which keeps each
-// output well inside the Neural Engine's 16384 per dimension.
-func (m *builder) mlp(p string, h *mlpackage.Var) *mlpackage.Var {
+// output well inside the Neural Engine's 16384 per dimension. down_proj's input is multiplied by
+// downScale, a power of two (exact; the weights stay as they are, since scaling them would push
+// small weights and the intN scales into fp16's subnormals).
+func (m *builder) mlp(p string, h *mlpackage.Var, downScale float32) *mlpackage.Var {
 	f := m.cfg.IntermediateSize
 	gate := m.LinearRows(h, p+"gate_up_proj.weight", 0, f)
 	up := m.LinearRows(h, p+"gate_up_proj.weight", f, 2*f)
 	gate = m.Op("silu", map[string]any{"x": gate}, gate.Shape...)
 	g := m.Op("mul", map[string]any{"x": gate, "y": up}, gate.Shape...)
+	if downScale != 1 {
+		g = m.Op("mul", map[string]any{"x": g, "y": m.B.ScalarF16(downScale)}, g.Shape...)
+	}
 	return m.Linear(g, p+"down_proj.weight", "", m.d)
 }
