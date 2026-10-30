@@ -50,6 +50,20 @@ type Config struct {
 	// layers and short convolutions causal, as llama.cpp runs it. The output is the final hidden
 	// state; the host reads the logits of the answer labels at the last token from it.
 	D1 bool `json:"-"`
+	// Multimodal is the text model of an LFM3-VL, LFM3-Omni or LFM3-Audio checkpoint (d1 models
+	// included), converted with lut8 when no format is given (Format).
+	Multimodal bool `json:"-"`
+}
+
+// Format is lut8 for the text model of a multimodal checkpoint: with lut4, d1-2B's answers move
+// away from the fp16 ones (the README's ticket goes to the wrong team), LFM3-VL describes
+// pictures wrongly and LFM3-Audio's speech is no longer understood, while lut8 answers as fp16
+// does (docs/design.md 16.31). LFM3 itself keeps the architecture's lut4.
+func (c *Config) Format() string {
+	if c.Multimodal {
+		return "lut8"
+	}
+	return ""
 }
 
 // LoadConfig reads config.json.
@@ -108,7 +122,7 @@ func ParseConfig(raw []byte) (*Config, error) {
 		if t.ModelType != "" && t.ModelType != "lfm3" {
 			return nil, fmt.Errorf("lfm3: %s model_type %q is not lfm3", key, t.ModelType)
 		}
-		text, nested, c.Prefix = sub, true, prefix
+		text, nested, c.Prefix, c.Multimodal = sub, true, prefix, true
 	case "", "lfm3":
 	default:
 		return nil, fmt.Errorf("lfm3: model_type %q is not supported", top.ModelType)
