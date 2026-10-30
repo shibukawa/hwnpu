@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"math"
 	"math/rand/v2"
 	"path/filepath"
@@ -391,9 +392,97 @@ func TestLookupDraft(t *testing.T) {
 	if got := LookupDraft([]int32{1, 2, 3, 4}, 4); got != nil {
 		t.Errorf("no match: %v", got)
 	}
+	if got := LookupDraft([]int32{5, 6, 7, 5}, 4); !slices.Equal(got, []int32{6, 7, 5}) {
+		t.Errorf("1-gram: %v", got)
+	}
 	// the latest occurrence is taken, and the draft stops at the end
 	seq = []int32{1, 2, 3, 9, 1, 2, 3, 8, 1, 2, 3}
 	if got := LookupDraft(seq, 4); !slices.Equal(got, []int32{8, 1, 2, 3}) {
 		t.Errorf("latest: %v", got)
+	}
+}
+
+// With tiers, a conversation starts on the shortest cache that holds its prompt, moves up to a
+// longer one as it grows (the rows copied over), and the logits stay those of reading the
+// sequence from the start on one cache; a new short conversation goes back down, and a
+// sequence put aside comes back on its own tier.
+func TestEngineTiers(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(tinyLFM3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(cfg)
+	newTier := func(cache int) tier {
+		gen, pre := cpuProgram(t, cfg, w, 1, cache), cpuProgram(t, cfg, w, 4, cache)
+		for name := range pre.In {
+			if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+				pre.In[name] = gen.In[name]
+			}
+		}
+		return tier{progs: []decode.Program{gen, pre}, cache: cache}
+	}
+	e := &Engine{w: w, model: cfg, emb: map[int32][]float32{}, Stops: map[int32]bool{}}
+	e.tiers = []tier{newTier(12), newTier(24), newTier(48)}
+	if e.sess, err = e.tiers[0].session(cfg); err != nil {
+		t.Fatal(err)
+	}
+	defer func(n int) { minSaved = n }(minSaved)
+	minSaved = 4
+	rng := rand.New(rand.NewPCG(3, 4))
+	toks := func(n int) []int32 {
+		s := make([]int32, n)
+		for i := range s {
+			s[i] = int32(rng.IntN(cfg.VocabSize))
+		}
+		return s
+	}
+	check := func(name string, prompt []int32, wantTier int) {
+		t.Helper()
+		var st Stats
+		got, err := e.prefill(context.Background(), prompt, &st)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if e.ti != wantTier {
+			t.Errorf("%s: on tier %d (cache %d), want %d", name, e.ti, e.sess.Cache(), wantTier)
+		}
+		if d := relErr(got, refLogits(t, cfg, w, 48, prompt)); d > 2e-3 {
+			t.Errorf("%s: relative error %g against reading the prompt from the start", name, d)
+		}
+	}
+	a := toks(8)
+	check("short prompt", a, 0)
+	// generate past the first tier: 8 in the cache, 12 holds 4 more
+	var gen []int32
+	st, err := e.Generate(context.Background(), Request{Prompt: a, MaxTokens: 10}, func(g []int32) (bool, error) {
+		gen = g
+		return false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Generated != 10 || e.ti != 1 {
+		t.Fatalf("generated %d tokens, on tier %d", st.Generated, e.ti)
+	}
+	all := append(slices.Clone(a), gen[:len(gen)-1]...)
+	if !slices.Equal(e.cur.fed, all) {
+		t.Fatalf("the cache holds %v", e.cur.fed)
+	}
+	if d := relErr(e.cur.last, refLogits(t, cfg, w, 48, all)); d > 2e-3 {
+		t.Errorf("after growing: relative error %g against reading the sequence from the start", d)
+	}
+	// the conversation goes on (17 + 5 = 22 of 24), reusing the cache on the longer tier, and
+	// grows again (28)
+	b := append(slices.Clone(all), toks(5)...)
+	check("continued", b, 1)
+	c := append(slices.Clone(b), toks(6)...)
+	check("grown again", c, 2)
+	// a new short conversation goes back down; the long one is put aside and comes back on its tier
+	d := toks(6)
+	check("new short conversation", d, 0)
+	check("back to the long one", append(slices.Clone(c), toks(2)...), 2)
+	// a prompt too long for any tier
+	if _, err := e.Generate(context.Background(), Request{Prompt: toks(48)}, func([]int32) (bool, error) { return false, nil }); !errors.Is(err, ErrContext) {
+		t.Errorf("a prompt of 48 tokens: %v", err)
 	}
 }

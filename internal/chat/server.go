@@ -317,6 +317,9 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	if stats.Drafted > 0 {
 		looped += fmt.Sprintf(" (%d of %d drafts accepted, %d calls)", stats.Accepted, stats.Drafted, stats.Calls)
 	}
+	if len(e.tiers) > 1 {
+		looped += fmt.Sprintf(" (cache %d)", stats.Cache)
+	}
 	s.logf("%s: prompt %d tokens (%d reused) in %.1fs, %d tokens in %.1fs (%.1f ms/token), %s%s",
 		id, stats.Prompt, stats.Reused, stats.Prefill.Seconds(), stats.Generated, stats.Decode.Seconds(),
 		float64(stats.Decode.Milliseconds())/float64(max(stats.Generated, 1)), finish, looped)
