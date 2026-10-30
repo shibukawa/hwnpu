@@ -1181,3 +1181,9 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 
 - 生成の 1 トークンは、16.21 の 6 層だけの計測から見込んだ値 (32K 約 100 ms、64K 約 220 ms) より遅い。トークン数が少ない (19 と 9) 測り方なので、長い生成での値は測り直す
 - 残り: 使っている塊だけを動かす (今は容量全体を毎回計算する)。プロンプトの読みも文脈に比例して遅くなる
+
+### 16.23 hwnpu-chat -opencode — 2026-10-30
+
+- サーバーと OpenCode をまとめて起動する。モデルを読み込んだあと、127.0.0.1 の 30000〜49151 番 (IANA と macOS の一時ポート 49152 番以降を避ける) から乱数で選んだ位置から空きを探して `net.Listen` し、その listener のまま `http.Server.Serve` に渡す (探してから開くまでの間に取られない)。OpenCode の設定 (プロバイダー `hwnpu`、`@ai-sdk/openai-compatible`、モデルの文脈と出力の上限) をキャッシュディレクトリの `opencode/opencode.json` に書き、`OPENCODE_CONFIG` で渡す。カスタム設定はグローバルより強く、プロジェクトの `opencode.json` より弱い。モデルは `-m hwnpu/NAME` で選ぶ
+- OpenCode は `os/exec` で起動し、標準入力、出力、エラーにこのプロセスのファイルをそのまま渡す (パイプを挟まないので、端末の raw モード、代替画面、マウス、端末への問い合わせがそのまま通る)。サーバーのログはファイルに回す。SIGINT はこのプロセスでは捕まえて捨てる (無視にすると子に継がれる。捕まえた信号は exec で既定に戻る)。OpenCode が終わったらサーバーを閉じ、その終了コードで終わる
+- 検証 (M3、OpenCode 1.19.5): `hwnpu-chat -opencode run "…" < /dev/null` で、ポート 42846 に開き、7 往復で `a - b` を `a + b` に直して終了コード 0、サーバーも止まった。疑似端末で TUI を起動し (`-- --prompt`)、代替画面とマウスが有効になり、5 往復の要求が届き、Ctrl-C 1 回で OpenCode とともに終了コード 0 で終わった。`opencode run` は標準入力が閉じるまで待つ (端末なら問題ない)
