@@ -122,7 +122,7 @@ func run(config, arch, weights, out, targetName string, nParts int, caches []int
 	}
 	defer w.Close()
 	if opts.Format == "" {
-		opts.Format = a.DefaultFormat()
+		opts.Format = a.DefaultFormat(model)
 	}
 	_, err = llm.ConvertTiers(a, model, w, out, targetName, nParts, caches, opts, os.Stdout)
 	return err

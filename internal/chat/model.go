@@ -87,7 +87,7 @@ func convert(ctx context.Context, config, weights, out string, seq, parts, cache
 		return "", err
 	}
 	set()
-	opts.Format = a.DefaultFormat()
+	opts.Format = a.DefaultFormat(model)
 	opts.Seq, opts.Cache = seq, cache
 	if cache > 0 {
 		fmt.Fprintf(log, "converting %s for the Neural Engine (cache %d, %d per call); this takes a minute or two\n", filepath.Base(out), cache, seq)

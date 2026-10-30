@@ -1,6 +1,7 @@
 package lfm3
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -415,6 +416,30 @@ func TestMultimodalConfig(t *testing.T) {
 	}
 	if a, err := llm.Detect([]byte(tinyD1)); err != nil || a != Arch {
 		t.Errorf("d1 detected as %v, %v", a, err)
+	}
+	// the multimodal and d1 checkpoints default to lut8, LFM3 itself to the architecture's lut4
+	d1, err := ParseConfig([]byte(tinyD1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top struct {
+		Text json.RawMessage `json:"text_config"`
+	}
+	if err := json.Unmarshal([]byte(tinyD1), &top); err != nil {
+		t.Fatal(err)
+	}
+	text, err := ParseConfig(top.Text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		cfg  *Config
+		want string
+	}{{"LFM3-VL", cfg, "lut8"}, {"d1", d1, "lut8"}, {"LFM3", text, "lut4"}} {
+		if f := Arch.DefaultFormat(c.cfg); f != c.want {
+			t.Errorf("%s: default format %s, want %s", c.name, f, c.want)
+		}
 	}
 	if g := ggufName("model.language_model.layers.2.feed_forward.w1.weight"); g != "blk.2.ffn_gate.weight" {
 		t.Errorf("gguf name %q", g)
