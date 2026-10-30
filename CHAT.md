@@ -13,7 +13,11 @@ go run ./cmd/hwnpu-chat -list
 | Name | Kind | Features | in the terminal | with `-listen` (section 3) |
 |---|---|---|---|---|
 | `LFM3-1.7B` (default) | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
+| `LFM3-VL-2B` | chat | `tools`, `thinking`, `vision` | talk with it, with images (section 1) | `/v1/chat/completions` |
+| `LFM3-Audio-2B` | chat | `tools`, `thinking`, `audio` | talk with it, with audio (section 1) | `/v1/chat/completions` |
+| `LFM3-Omni-2B` | chat | `tools`, `thinking`, `vision`, `audio` | talk with it, with images and audio (section 1) | `/v1/chat/completions` |
 | `gemma-4-E2B-it` | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
+| `gemma-4-E4B-it` | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
 | `plamo-embedding-1b` | embedding | `query` | search texts by their embeddings (section 4) | `/v1/embeddings` |
 
 The features say what a model can do besides its kind (names as in Ollama's capabilities):
@@ -23,6 +27,8 @@ The features say what a model can do besides its kind (names as in Ollama's capa
 | `tools` | calls the tools a request offers (`tools`, `tool_calls`), so that agents such as OpenCode can drive it (section 6). LFM3-1.7B is text only, and small and fast enough to run behind an agent |
 | `thinking` | thinks before it answers (`reasoning_content`); `-think` and `reasoning_effort` turn it on and off |
 | `query` | embeds search queries and the documents searched differently (`input_type`, section 4) |
+| `vision` | reads the images of user messages (`image_url`); `/image FILE` in the terminal |
+| `audio` | reads the audio of user messages (`input_audio`, WAV); `/audio FILE.wav` in the terminal |
 
 - The terminal runs one model, chosen by `-use`; what it does follows the model's kind. The server runs any number, `-use LFM3-1.7B,plamo-embedding-1b` for example
 - Names are matched ignoring case, and the catalog's repository names work too. A Hugging Face repository outside the catalog, `-use OWNER/NAME`, works when its architecture is one hwnpu-chat runs (LFM3 for chat, PLaMo's encoder for embeddings): its `config.json` tells which. Set `HF_TOKEN` for gated repositories
@@ -46,7 +52,20 @@ Then type after the `>`.
 - From the second turn on, only what is new since the last answer is read
 - After each answer it shows the tokens read and the speed of generation (about 15 tokens/s on an M3)
 
-### Gemma 4 E2B
+### Images and audio (LFM3-VL-2B, LFM3-Audio-2B, LFM3-Omni-2B)
+
+`-use LFM3-VL-2B`, `-use LFM3-Audio-2B` or `-use LFM3-Omni-2B` runs one of Liquid AI's multimodal checkpoints. The first run downloads it (3.8, 4.0 and 4.3 GB) and converts its text model the same way, but with 8 bit tables (lut8, 2 parts each): with 4 bit tables these models describe pictures wrongly and mishear speech (docs/design.md, 16.31). It also converts the encoders the checkpoint has, in fp16: the vision encoder for images of 512x512 (an image is stretched to it) and the audio encoder for clips of up to 30 seconds.
+
+```bash
+go run ./cmd/hwnpu-chat -use LFM3-VL-2B
+```
+
+- In the terminal, `/image FILE question` sends an image and `/audio FILE.wav question` a clip. The server reads the `image_url` (data URLs) and `input_audio` (base64 WAV) parts of user messages
+- About 41 ms per token on the M3 (LFM3-1.7B in lut4: 19 ms)
+- Answers are text; LFM3-Audio's speech output is `hwnpu-tts` (section 5)
+- Other image sizes or clip lengths: convert the encoders yourself and give them with `-package`, `-vision` and `-audio` (section 5)
+
+### Gemma 4 E2B and E4B
 
 `-use gemma-4-E2B-it` runs Google's Gemma 4 E2B (instruction tuned) instead. It goes the same way: `model.safetensors` (10.2 GB, with the audio and vision parts, of which only the text model is converted) is downloaded to `~/Library/Caches/hwnpu/models/gemma-4-E2B-it`, and the programs of 1 and 64 tokens per call are converted with 6 bit tables (lut6) in 2 parts each (about 0.8 + 0.8 GiB).
 
@@ -58,6 +77,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 - The per-layer embedding table (4.7 GB) stays on the host, which reads one row (17.5 KB) per token
 - Contexts up to 16320 (holding the cache in chunks past that is LFM3's only). About 31 ms per token on the M3 with a cache of 1024, 55 ms with the context of 16320 (LFM3-1.7B: 19 and 63 to 66 ms)
 - 4 bit tables (lut4) cost Gemma 4 much more than LFM3 (it got Mount Fuji's height and the author of Kokoro wrong), so it converts with 6 bit tables by default; `hwnpu-convert` does too when `-format` is left out. See sections 16.25 and 16.26 of docs/design.md
+- `-use gemma-4-E4B-it` runs the larger E4B (16.0 GB download, 42 layers of width 2560) the same way, slower than E2B. It is converted by the same code but not yet checked on the M3. The larger Gemma 4 sizes (12B and up) are another architecture, which hwnpu-chat does not run
 
 ## 2. Options
 
@@ -166,7 +186,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 ### Images (LFM3-VL-2B)
 
-For an LFM3-VL checkpoint, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `-vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image. Not yet checked on the real checkpoint (docs/design.md, 16.28).
+`-use LFM3-VL-2B` (section 1) does all of this by itself. For other image sizes, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `-vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image (docs/design.md, 16.28 and 16.31).
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
@@ -178,7 +198,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpacka
 
 ### Audio (LFM3-Audio-2B)
 
-For an LFM3-Audio checkpoint, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `-audio`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-tts` below speaks a text. Not yet checked on the real checkpoint (docs/design.md, 16.29).
+`-use LFM3-Audio-2B` (section 1) does all of this by itself. For other clip lengths, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `-audio`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-tts` below speaks a text (docs/design.md, 16.29 and 16.31).
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage

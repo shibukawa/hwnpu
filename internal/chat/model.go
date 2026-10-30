@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -49,19 +50,58 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	for _, p := range []struct{ seq, parts int }{{1, 2}, {prefillSeq, 0}} {
 		out := filepath.Join(s.Dir, fmt.Sprintf("%s-c%d-q%d.mlpackage", a.Name, s.Context, p.seq))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, p.seq, p.parts, s.Context, s.Log)
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: p.seq, parts: p.parts, cache: s.Context}, s.Log)
 		if err != nil {
 			return Config{}, err
 		}
 		c.Packages = append(c.Packages, path)
 	}
+	for _, e := range encoders {
+		if _, _, err := llm.LoadConfig(c.ModelConfig, e.arch); err != nil {
+			continue // the checkpoint has no such encoder
+		}
+		for _, f := range e.files {
+			if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
+				return Config{}, err
+			}
+		}
+		out := filepath.Join(s.Dir, fmt.Sprintf("%s-%s.mlpackage", e.arch, e.value))
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{arch: e.arch, format: "fp16", params: map[string]string{e.param: e.value}}, s.Log)
+		if err != nil {
+			return Config{}, err
+		}
+		*e.packages(&c) = []string{path}
+	}
 	return c, nil
+}
+
+// encoders are the programs of the multimodal checkpoints besides the text model, converted when
+// config.json has them: LFM3-VL's and LFM3-Omni's vision encoder for one image size (an image is
+// stretched to it), LFM3-Audio's and LFM3-Omni's audio encoder for clips of up to 30 seconds. They
+// stay in fp16 as hwnpu-convert's examples convert them (docs/design.md 16.28, 16.29); files are
+// what else of the repository they read.
+var encoders = []struct {
+	arch, param, value string
+	files              []string
+	packages           func(*Config) *[]string
+}{
+	{"lfm3-vision", "image", "512x512", []string{"processor_config.json"}, func(c *Config) *[]string { return &c.Vision }},
+	{"lfm3-audio-encoder", "frames", "3000", nil, func(c *Config) *[]string { return &c.Audio }},
+}
+
+// program is what convert writes: the program of arch (empty: the one config.json names) with
+// the weights in format (empty: the architecture's default) and the architecture's own settings
+// in params; seq tokens per call, in parts (0: one) and with a KV cache of cache tokens (0: none).
+type program struct {
+	arch, format      string
+	params            map[string]string
+	seq, parts, cache int
 }
 
 // convert writes the program of the model (config.json and the checkpoint) unless it is there,
 // and returns its path. NAME.done, written last, holds the path, so that a conversion cut off is
 // done again.
-func convert(ctx context.Context, config, weights, out string, seq, parts, cache int, log io.Writer) (string, error) {
+func convert(ctx context.Context, config, weights, out string, p program, log io.Writer) (string, error) {
 	done := out[:len(out)-len(".mlpackage")] + ".done"
 	if b, err := os.ReadFile(done); err == nil {
 		return string(b), nil
@@ -69,7 +109,7 @@ func convert(ctx context.Context, config, weights, out string, seq, parts, cache
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	a, model, err := llm.LoadConfig(config, "")
+	a, model, err := llm.LoadConfig(config, p.arch)
 	if err != nil {
 		return "", err
 	}
@@ -87,14 +127,20 @@ func convert(ctx context.Context, config, weights, out string, seq, parts, cache
 		return "", err
 	}
 	set()
-	opts.Format = a.DefaultFormat(model)
-	opts.Seq, opts.Cache = seq, cache
-	if cache > 0 {
-		fmt.Fprintf(log, "converting %s for the Neural Engine (cache %d, %d per call); this takes a minute or two\n", filepath.Base(out), cache, seq)
-	} else {
-		fmt.Fprintf(log, "converting %s for the Neural Engine (%d tokens); this takes a minute or two\n", filepath.Base(out), seq)
+	opts.Format = cmp.Or(p.format, a.DefaultFormat(model))
+	opts.Seq, opts.Cache = p.seq, p.cache
+	for k, v := range p.params {
+		opts.Params[k] = v
 	}
-	path, err := llm.Convert(a, model, w, out, "any", parts, opts, log)
+	switch {
+	case p.cache > 0:
+		fmt.Fprintf(log, "converting %s for the Neural Engine (cache %d, %d per call); this takes a minute or two\n", filepath.Base(out), p.cache, p.seq)
+	case p.seq > 0:
+		fmt.Fprintf(log, "converting %s for the Neural Engine (%d tokens); this takes a minute or two\n", filepath.Base(out), p.seq)
+	default:
+		fmt.Fprintf(log, "converting %s for the Neural Engine; this takes a minute or two\n", filepath.Base(out))
+	}
+	path, err := llm.Convert(a, model, w, out, "any", p.parts, opts, log)
 	if err != nil {
 		return "", err
 	}
