@@ -70,10 +70,11 @@ type Engine struct {
 	images []encoded // encoded images and clips, the most recently used last
 	nextID int32     // the token id of the next one's first row (they count down from -1)
 
-	mu    sync.Mutex
-	sess  *decode.Session
-	cur   seq     // the sequence in the cache
-	saved []saved // put aside, the most recently used last
+	mu     sync.Mutex
+	closed bool // by Close: the programs and the weights are gone
+	sess   *decode.Session
+	cur    seq     // the sequence in the cache
+	saved  []saved // put aside, the most recently used last
 }
 
 // encoded is an encoded image or clip: its rows of embeddings stand in prompts as the token ids
@@ -273,8 +274,15 @@ func dots(w io.Writer, prefix string) (stop func()) {
 	}
 }
 
-// Close releases the model.
+// ErrClosed is returned for a request to a model that Close released.
+var ErrClosed = errors.New("chat: the model is closed")
+
+// Close releases the model. It waits for the step that a generation is running, and the
+// generations after it fail with ErrClosed.
 func (e *Engine) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closed = true
 	if e.vis != nil {
 		e.vis.Close()
 		e.vis = nil
@@ -328,6 +336,9 @@ var ErrContext = errors.New("chat: the prompt does not fit in the context")
 func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32) (stop bool, err error)) (st Stats, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return st, ErrClosed
+	}
 	st.Prompt = len(r.Prompt)
 	if len(r.Prompt) == 0 {
 		return st, errors.New("chat: empty prompt")
@@ -491,6 +502,9 @@ func (e *Engine) Tokens(ctx context.Context, prompt string, media []Media) ([]in
 
 // encode returns the encoded image or clip, encoding it unless it is kept.
 func (e *Engine) encode(ctx context.Context, m Media) (*encoded, error) {
+	if e.closed {
+		return nil, ErrClosed
+	}
 	kind := "image:"
 	if m.Audio {
 		kind = "audio:"
