@@ -3,6 +3,7 @@
 // -archs lists them.
 //
 //	hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -o out.mlpackage [-seq 32] [-format lut4]
+//	hwnpu-convert -backend intel -config DIR/config.json -weights DIR/model.safetensors -o out.xml [-format int4]
 //
 // The architecture is taken from config.json (model_type, then architectures) unless -arch names
 // it. The weights may also be a GGUF (its blocks are dequantized first). The program's input is
@@ -51,13 +52,14 @@ import (
 func main() {
 	config := flag.String("config", "", "config.json of the model")
 	weights := flag.String("weights", "", "checkpoint: .safetensors (bf16) or .gguf")
-	out := flag.String("o", "", "output .mlpackage directory (replaced)")
+	out := flag.String("o", "", "output: an .mlpackage directory (replaced), or an .xml with -backend intel")
+	backend := flag.String("backend", "coreml", "runtime to write for: coreml (an .mlpackage for the Neural Engine) or intel (OpenVINO IR for Intel's NPU, with out.parts.json)")
 	arch := flag.String("arch", "", "architecture (default: detected from config.json)")
 	list := flag.Bool("archs", false, "list the supported architectures and exit")
 	seq := flag.Int("seq", 32, "fixed sequence length")
 	layers := flag.Int("layers", 0, "keep only the first N layers and output their hidden state (0: whole model)")
 	hidden := flag.Bool("hidden", false, "output the final hidden state instead of logits")
-	target := flag.String("target", "any", "chip whose Neural Engine size limit decides the split: "+targetNames()+", any (the smallest limit) or none (never split)")
+	target := flag.String("target", "any", "device whose NPU size limit decides the split: "+targetNames()+", any (the smallest limit of the backend's) or none (never split)")
 	parts := flag.Int("parts", 0, "number of parts (0: the fewest under the -target limit)")
 	cache := flag.String("cache", "0", "build a causal LM to run with a KV cache of this many tokens held by the host; -seq is then the tokens per call (1 to generate). Several lengths, comma separated and increasing, write a tier per length: a sequence runs on the shortest and moves up as it grows")
 	var opts llm.Options
@@ -86,7 +88,7 @@ func main() {
 		os.Exit(2)
 	}
 	setOpts()
-	opts.Seq, opts.Layers, opts.Hidden = *seq, *layers, *hidden
+	opts.Seq, opts.Layers, opts.Hidden, opts.Backend = *seq, *layers, *hidden, *backend
 	var caches []int
 	for _, s := range strings.Split(*cache, ",") {
 		n, err := strconv.Atoi(strings.TrimSpace(s))
@@ -123,6 +125,9 @@ func run(config, arch, weights, out, targetName string, nParts int, caches []int
 	defer w.Close()
 	if opts.Format == "" {
 		opts.Format = a.DefaultFormat(model)
+		if opts.Backend == "intel" {
+			opts.Format = llm.IntelFormat(opts.Format)
+		}
 	}
 	_, err = llm.ConvertTiers(a, model, w, out, targetName, nParts, caches, opts, os.Stdout)
 	return err
