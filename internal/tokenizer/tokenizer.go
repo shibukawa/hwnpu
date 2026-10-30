@@ -27,6 +27,7 @@ type Tokenizer struct {
 	ignoreMerges bool
 	added        []string // contents, longest first
 	addedID      map[string]int32
+	control      []string // contents of the added tokens marked special, in the file's order
 	cache        map[string][]int32
 }
 
@@ -114,6 +115,9 @@ func parse(raw []byte) (*Tokenizer, error) {
 		t.special[a.ID] = true
 		t.addedID[a.Content] = a.ID
 		t.added = append(t.added, a.Content)
+		if a.Special {
+			t.control = append(t.control, a.Content)
+		}
 	}
 	sort.Slice(t.added, func(i, j int) bool { return len(t.added[i]) > len(t.added[j]) })
 	for i, m := range f.Model.Merges {
@@ -137,6 +141,10 @@ func parse(raw []byte) (*Tokenizer, error) {
 
 // VocabSize is one more than the largest id.
 func (t *Tokenizer) VocabSize() int { return len(t.tokens) }
+
+// Control returns the contents of the added tokens marked special (llama.cpp's control tokens,
+// such as "<|im_start|>"), in the order of tokenizer.json.
+func (t *Tokenizer) Control() []string { return t.control }
 
 // ID returns the id of a token by its content (an added token such as "<|im_end|>", or a
 // vocabulary entry in its byte-level form).

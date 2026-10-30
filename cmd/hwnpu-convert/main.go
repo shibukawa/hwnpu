@@ -7,9 +7,10 @@
 // The architecture is taken from config.json (model_type, then architectures) unless -arch names
 // it. The weights may also be a GGUF (its blocks are dequantized first). The program's input is
 // x, the fp16 token embeddings (1, seq, hidden), and the output y the logits (1, seq, vocab) or,
-// for an encoder, the last hidden state; the embedding table itself stays with the host. Encoders
-// take a second input, mask (1, seq): 1 for tokens, 0 for padding. Settings of one architecture only (such as LFM3's
-// -post-scale) are flags too, and are ignored by the other architectures.
+// for an encoder or a d1 decision model, the last hidden state; the embedding table itself stays
+// with the host. Encoders and d1 models take a second input, mask (1, seq): 1 for tokens, 0 for
+// padding. Settings of one architecture only (such as LFM3's -post-scale) are flags too, and are
+// ignored by the other architectures.
 //
 // The Neural Engine takes a model only when its weight file is under a size that depends on the
 // chip (1 GiB on the M3, 2 GB on the M4); a larger one is placed on the CPU as a whole. -target
