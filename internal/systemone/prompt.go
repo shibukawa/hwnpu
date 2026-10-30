@@ -7,11 +7,20 @@ import (
 	"github.com/shibukawa/hwnpu/internal/pyjson"
 )
 
+// MediaMarker stands for an image in a prompt (llama.cpp's mtmd marker). Prompt removes it
+// from the request's texts when there are images.
+const MediaMarker = "<__media__>"
+
 // Prompt writes the d1 prompt of one question, as the systemone template llama.cpp writes for
 // LFM3 d1 renders it: the d1 prompt of LFM2 (prompt.py of the model repository) and the empty
 // thought that the LFM3 template writes before an answer. labels are the options' codes
-// (Labels). escape is applied to every text taken from the request (Escaper).
-func Prompt(state *pyjson.Value, q Question, labels []string, escape func(string) string) string {
+// (Labels). escape is applied to every text taken from the request (Escaper). The images, if
+// any, are a MediaMarker each at the start of the user turn.
+func Prompt(state *pyjson.Value, q Question, labels []string, escape func(string) string, images int) string {
+	if images > 0 {
+		esc := escape
+		escape = func(s string) string { return strings.ReplaceAll(esc(s), MediaMarker, " ") }
+	}
 	var sb strings.Builder
 	text := func(v *pyjson.Value, indent int) {
 		v = escapeValue(v, escape)
@@ -25,6 +34,7 @@ func Prompt(state *pyjson.Value, q Question, labels []string, escape func(string
 		}
 	}
 	sb.WriteString("<|startoftext|><|im_start|>user\n")
+	sb.WriteString(strings.Repeat(MediaMarker, images))
 	if !state.IsNull() {
 		text(state, 2)
 		sb.WriteString("\n\n\nQUESTION:\n")

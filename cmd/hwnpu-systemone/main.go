@@ -12,7 +12,12 @@
 // holds config.json, model.safetensors (the token embeddings and the output layer's rows of the
 // answer labels are read from it), tokenizer.json and calibration.json. -cpu runs the programs
 // with the CPU interpreter instead, slowly, to check the answers on a machine without a Neural
-// Engine. Image input is not supported yet.
+// Engine.
+//
+// d1-2B also answers about images (files, images, or image_url parts of a state made of chat
+// messages, as data URLs) with -vision, its vision encoder converted for one or more image sizes:
+//
+//	hwnpu-convert -arch lfm3-vision -image 512x512 -config d1-2B/config.json -weights d1-2B/model.safetensors -format fp16 -o vision-512x512.mlpackage
 package main
 
 import (
@@ -42,6 +47,7 @@ func main() {
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	cpu := flag.Bool("cpu", false, "run on the CPU interpreter instead of the Neural Engine (slow; for checking)")
 	listen := flag.String("listen", "", "serve POST /v1/systemone at this address, e.g. 127.0.0.1:8080")
+	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: questions about images")
 	flag.Parse()
 	if *pkgs == "" || *model == "" && (*config == "" || *weights == "") || flag.NArg() > 1 || *listen != "" && flag.NArg() > 0 {
 		flag.Usage()
@@ -60,8 +66,12 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	m, err := systemone.Load(ctx, systemone.Config{Packages: strings.Split(*pkgs, ","), ModelConfig: *config, Weights: *weights,
-		Tokenizer: *tok, Calibration: *calib, CacheDir: *cacheDir, CPU: *cpu, Log: os.Stderr})
+	c := systemone.Config{Packages: strings.Split(*pkgs, ","), ModelConfig: *config, Weights: *weights,
+		Tokenizer: *tok, Calibration: *calib, CacheDir: *cacheDir, CPU: *cpu, Log: os.Stderr}
+	if *vis != "" {
+		c.Vision = strings.Split(*vis, ",")
+	}
+	m, err := systemone.Load(ctx, c)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-systemone:", err)
 		os.Exit(1)

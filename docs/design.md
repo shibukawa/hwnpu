@@ -1169,3 +1169,25 @@ go run ./cmd/hwnpu-convert -config d1-2B/config.json -weights d1-2B/model.safete
 go run ./cmd/hwnpu-systemone -model d1-2B -package d1-512.mlpackage request.json
 go run ./cmd/hwnpu-check -config d1-2B/config.json -weights d1-2B/model.safetensors -ref build/d1/ref   # 参照が作れたら
 ```
+
+### 16.22 LFM3-VL の視覚エンコーダと画像の入力 — 2026-10-30
+
+16.21 の段階 (2)。LFM3-VL-2B のテキスト部は 16.21 で変換できるようになったので、視覚エンコーダと、画像を d1-2B (`/v1/systemone`) とチャットに渡す部分を足した。構造は llama.cpp の `tools/mtmd/models/lfm3vl.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-image.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、トークン数) から読んだ。HF のリモートコードと config の実物は見ていない。
+
+- **`internal/llm/lfm3vl`** (アーキテクチャ名 `lfm3-vision`): `model_type` は `lfm3_vl` で、これはテキスト部 (`lfm3`) が持つので、視覚エンコーダは `-arch lfm3-vision` で選ぶ。構造は LFM 型で、patchifier (パッチの画素への linear。重みは (d, 3, t, p, p) で、静止画は時間方向の全スライスに同じ画像を入れるので、変換時に t で足し合わせる)、埋め込みの RMSNorm、pre-norm の層 (畳み込みの層: in_proj を B, C, x に分け、B*x にパッチの格子上で 3×3 の depthwise 畳み込み (ゼロ埋め) をかけ C を掛ける。注意の層: QK の RMSNorm、2D RoPE、GQA、双方向)、どちらも SwiGLU。最終 norm はない。projector はパッチごとの LayerNorm (eps 1e-6)、2×2 のパッチの連結 (上の行の左右、下の行の左右)、linear、GELU (erf)、linear
+- **2D RoPE**: ggml の `GGML_ROPE_TYPE_VISION` (`n_dims = head_dim/2`、組は (k, k+head_dim/2))。k が head_dim/4 未満は行、以上は列で回り、どちらの軸も head_dim/2 幅の RoPE の周波数 (`theta^(-2j/(head_dim/2))`)。表を作り直せば `blocks.ApplyRope` で回せる
+- **3×3 の畳み込み**は LFM3 の `taps` と同じく、(行, 列, チャネル) の並びで 9 回のずらした積和にした (`milcpu` で動き、ANE の conv の誤差も避ける)。2×2 の連結は 5 次元の reshape と transpose
+- **固定の大きさ**: Neural Engine は固定の形なので、プログラムは画像の大きさ 1 つ (`-image 幅x高さ`、2×パッチの倍数) ごとに変換する。`-seq` は使わない。`hwnpu-convert` は、パッケージのメタデータにアーキテクチャ名と固有の設定の実効値 (`com.github.shibukawa.hwnpu.arch`、`...param.image`) を書くようにした。実行側はこれで画像の大きさを知る
+- **前処理** (`lfm3vl.Processor`): `preprocessor_config.json` (と `processor_config.json` の `image_processor`) の平均、標準偏差、`resample` (2 = bilinear、3 = bicubic)、`size` (最小と最大の画素数)。`SmartResize` は llama.cpp の静止画の smart_resize (各辺を 2×パッチの倍数に偶数丸め、画素数が範囲を外れたら縦横比を保って縮小か拡大)。`Resize` は PIL / torchvision のアンチエイリアス付きの縮小拡大 (横、縦の順に、各段で 8 ビットに丸める) を浮動小数点で書いたもので、PIL の結果と ±1 以内で一致する (`tools/ref/resize_golden.py`、4 つの大きさ × 2 つのフィルタ)
+- **`internal/llm/runner`**: KV キャッシュのないプログラム (パッケージか out.parts.json) を NPU (`chain`) か CPU (`milcpu`) で動かす共通部分。`systemone` もこれを使うようにした
+- **`internal/vision`**: 視覚エンコーダのプログラムを大きさごとに読み込み、画像を、処理系が選ぶ大きさ (smart_resize) に縦横比がいちばん近いプログラムの大きさに引き伸ばして埋め込みにする。大きさが同じなら参照と同じ入力、違えば近い格子への引き伸ばしで近似。画像はプロンプトの中で `<|vision_start|>`、埋め込みの行、`<|vision_end|>` (llama.cpp の mtmd と同じ)。動画は扱わない
+- **d1-2B の画像** (`systemone`): `files` / `images` (data URL) と、チャットのメッセージの形の state の `image_url` 部分 (state から取り除く) を、この順に最大 8 枚。llama.cpp のとおり、要求の文字列のメディアの印 `<__media__>` を空白に置き換え、印を画像の数だけユーザーの番の先頭に置き、そこを画像のトークンにする。画像は 1 要求に 1 回だけ埋め込みにして全質問で使う。音声と動画の部分は 501
+- **チャットの画像** (`chat`): `image_url` 部分は、llama.cpp のサーバーと同じく、文字の中のその位置にメディアの印 (起動ごとの乱数入り) を置き、`Engine.Tokens` が画像のトークンにする。画像の行は負のトークン id で表し、同じ画像 (data URL の SHA-256) は同じ id になるので、前のプロンプトのキャッシュがそのまま使える。保持は最近の 16 枚で、追い出した画像が再び来れば別の id で埋め込み直す。`/v1/models` は画像を読めるとき `input_modalities` に `image` を出す。`hwnpu-chat -vision`、対話では `/image FILE 質問`
+- **検証**: `lfm3vl_test.go` に llama.cpp のグラフから書いた fp64 の正解 (patchifier は時間方向に同じ画像を入れて計算、畳み込みは PyTorch の相互相関の定義、RoPE は ggml の式そのまま、2×2 の連結は ggml の reshape と permute をたどった並び) を置き、6×4 パッチの横長の画像で相対誤差 4.5e-7、1 層ずつ (`NoHead`) と projector だけの実行も 1e-4 以内。合成の重み (±0.1) のままでは、層の後ろに norm がないため層の寄与が埋め込みの数 % しかなく、注意もほぼ一様で、層を壊しても誤差 4e-4 程度しか出なかった。そこでテストの重みを学習済みに近い形 (行列は 5 倍、norm は 1 前後、QK の norm は 3 前後) にした。改変 (2×2 の連結の順、RoPE の行と列、周波数の分母、RoPE を外す、畳み込みのタップの転置、B と C の取り違え、patchifier の和を上書き) はすべて 0.05〜1.1 の誤差で検出した。`vision` のテストは縦横比によるプログラムの選択と、出力がそのプログラムの出力と一致することを、`systemone` のテストは画像の埋め込みがユーザーの番の先頭に入ることを (プログラムの出力から独立に計算した確率と 1e-6 以内)、`chat` のテストは画像のトークンの並び、同じ画像の id の再利用、追い出しと埋め込み直しを確かめる
+- 未確認: 実物の config (vision_config の `layer_types` の有無と値、`projector_hidden_size`、patchifier の重みの形が 2 次元か 5 次元か)、テンソル名、実物での参照との照合 (llama.cpp の `llama-mtmd-cli` の埋め込みとの比較が確実)。LFM3-VL のチャットテンプレートの画像の置き方 (今はメッセージの文字の中の位置にそのまま置く)。Neural Engine での配置と精度、速さ
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config LFM3-VL-2B/config.json -weights LFM3-VL-2B/model.safetensors -o vision-512x512.mlpackage
+go run ./cmd/hwnpu-convert -arch lfm3-vision -image 768x384 -format fp16 -config LFM3-VL-2B/config.json -weights LFM3-VL-2B/model.safetensors -o vision-768x384.mlpackage
+go run ./cmd/hwnpu-systemone -model d1-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage,vision-768x384.mlpackage request.json
+```

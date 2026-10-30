@@ -11,12 +11,15 @@
 // and a conversation reads only what is new since the last answer.
 //
 // -package takes programs converted by hwnpu-convert instead, with the same -cache and
-// different -seq, separated by commas.
+// different -seq, separated by commas. For LFM3-VL, -vision takes its vision encoder (hwnpu-convert
+// -arch lfm3-vision, a package per image size): image_url parts of user messages are read, and in
+// the terminal /image FILE sends an image.
 package main
 
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -37,6 +40,7 @@ func main() {
 	config := flag.String("config", "", "config.json of the model (default: in -model)")
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from: .safetensors or .gguf (default: in -model)")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
+	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (with -package)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	listen := flag.String("listen", "", "serve the OpenAI chat completions API at this address instead of chatting, e.g. 127.0.0.1:8080")
 	dump := flag.String("dump", "", "write each request, its prompt and the generated text to this directory (server)")
@@ -74,6 +78,9 @@ func main() {
 		os.Exit(1)
 	}
 	c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+	if *vis != "" {
+		c.Vision = strings.Split(*vis, ",")
+	}
 	e, err := chat.Load(ctx, c)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
@@ -117,7 +124,11 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
 	}
-	fmt.Fprintf(os.Stderr, "context %d tokens. /reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n", e.Context())
+	help := "context %d tokens. /reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n"
+	if e.Images() {
+		help = "context %d tokens. /image FILE [text] sends an image, /reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n"
+	}
+	fmt.Fprintf(os.Stderr, help, e.Context())
 	in := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print("\n> ")
@@ -155,16 +166,37 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 			fmt.Fprintf(os.Stderr, "[thinking %v]\n", think)
 			continue
 		}
-		msgs = append(msgs, chat.Message{Role: "user", Content: chat.Content{Text: text}})
+		content := chat.Content{Text: text}
+		// /image FILE [text]: the image, then the text
+		if rest, ok := strings.CutPrefix(text, "/image "); ok {
+			file, after, _ := strings.Cut(strings.TrimSpace(rest), " ")
+			url, err := dataURL(file)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				continue
+			}
+			content = chat.Content{Text: chat.MediaMarker + strings.TrimSpace(after), Images: []string{url}}
+		}
+		msgs = append(msgs, chat.Message{Role: "user", Content: content})
 		prompt, err := chat.Render(msgs, nil, chat.Options{NoThink: !think})
 		if err != nil {
 			return err
+		}
+		var images []string
+		for _, m := range msgs {
+			images = append(images, m.Content.Images...)
+		}
+		ids, err := e.Tokens(context.Background(), prompt, images)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			msgs = msgs[:len(msgs)-1]
+			continue
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		var sent chat.Stream
 		var gen []int32
 		thought, answered := false, false
-		st, err := e.Generate(ctx, chat.Request{Prompt: e.Tok.Encode(prompt), MaxTokens: maxNew, Sampling: s}, func(g []int32) (bool, error) {
+		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s}, func(g []int32) (bool, error) {
 			gen = g
 			a := chat.Parse(e.Tok.Decode(g, false), think, nil, false)
 			dr, dc := sent.Next(a.Reasoning, a.Content)
@@ -194,4 +226,17 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s]%s\n", dim,
 			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), reset)
 	}
+}
+
+// dataURL reads an image file as a data URL.
+func dataURL(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	mime := http.DetectContentType(raw)
+	if !strings.HasPrefix(mime, "image/") {
+		return "", fmt.Errorf("%s is %s, not an image", path, mime)
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
 }

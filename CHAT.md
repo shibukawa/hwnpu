@@ -77,6 +77,18 @@ go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensor
 go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage -model DIR
 ```
 
+### Images (LFM3-VL-2B)
+
+For an LFM3-VL checkpoint, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `-vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image. Not yet checked on the real checkpoint (docs/design.md, 16.22).
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
+```
+
+```bash
+go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpackage -vision DIR/vision-512x512.mlpackage -model DIR
+```
+
 ## 5. Use it from OpenCode
 
 Put an `opencode.json` in the project directory. The model's name is the one `GET /v1/models` returns.

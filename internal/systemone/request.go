@@ -10,9 +10,11 @@ package systemone
 
 import (
 	"fmt"
+	"image"
 	"strconv"
 
 	"github.com/shibukawa/hwnpu/internal/pyjson"
+	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
 // Request is a parsed System One request.
@@ -21,7 +23,13 @@ type Request struct {
 	// null to ask about nothing but the question.
 	State     *pyjson.Value
 	Questions []Question
+	// Images come first in the prompt: those of files (or images), then those taken out of a
+	// state made of chat messages.
+	Images []image.Image
 }
+
+// MaxImages is the most images a request can have, as llama.cpp's server allows.
+const MaxImages = 8
 
 // Question is one question of a request.
 type Question struct {
@@ -49,8 +57,9 @@ func (e *BadRequest) Error() string { return e.Msg }
 
 func bad(format string, args ...any) error { return &BadRequest{fmt.Sprintf(format, args...)} }
 
-// ParseRequest reads a request body. Image and audio input are not supported yet: a request with
-// files or images is rejected.
+// ParseRequest reads a request body. Images are data URLs, in files (or its alias images) or as
+// image_url parts of a state made of chat messages (an array of messages, or an object with
+// one), which are taken out of the state. Video and audio are not supported.
 func ParseRequest(raw []byte) (*Request, error) {
 	body, err := pyjson.Parse(raw)
 	if err != nil {
@@ -62,22 +71,40 @@ func ParseRequest(raw []byte) (*Request, error) {
 	if v := body.Get("videos"); !v.IsNull() && len(v.Fields) > 0 {
 		return nil, bad(`"videos" is not supported`)
 	}
-	for _, key := range []string{"files", "images"} {
-		if v := body.Get(key); !v.IsNull() {
-			if v.Kind != '[' {
-				return nil, bad("%q must be an array", key)
-			}
-			if len(v.Fields) > 0 {
-				return nil, &Unsupported{"image input is not supported by this server yet"}
-			}
-		}
-	}
 	r := &Request{State: body.Get("state")}
 	if r.State == nil {
 		return nil, bad(`"state" must be provided`)
 	}
-	if hasMedia(r.State) {
-		return nil, &Unsupported{"image and audio parts in the state are not supported by this server yet"}
+	addImage := func(url *pyjson.Value) error {
+		if url == nil || url.Kind != '"' {
+			return bad("media must be data URLs (data:image/...;base64,...)")
+		}
+		if len(r.Images) >= MaxImages {
+			return bad("too many images, the maximum is %d", MaxImages)
+		}
+		img, err := vision.DecodeDataURL(url.Str)
+		if err != nil {
+			return bad("%v", err)
+		}
+		r.Images = append(r.Images, img)
+		return nil
+	}
+	for _, key := range []string{"files", "images"} {
+		v := body.Get(key)
+		if v.IsNull() {
+			continue
+		}
+		if v.Kind != '[' {
+			return nil, bad("%q must be an array", key)
+		}
+		for _, url := range v.Fields {
+			if err := addImage(url); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if r.State, err = takeMedia(r.State, addImage); err != nil {
+		return nil, err
 	}
 	qs := body.Get("questions")
 	if qs == nil || qs.Kind != '{' || len(qs.Fields) == 0 {
@@ -93,34 +120,75 @@ func ParseRequest(raw []byte) (*Request, error) {
 	return r, nil
 }
 
-// Unsupported is a request the server cannot serve (HTTP 501).
-type Unsupported struct{ Msg string }
-
-func (e *Unsupported) Error() string { return e.Msg }
-
-// hasMedia reports whether a state made of chat messages (an array of messages, or an object
-// with one) has image or audio parts, which llama.cpp takes out of the state as media.
-func hasMedia(state *pyjson.Value) bool {
+// takeMedia takes the image_url parts out of the content of a state made of chat messages (an
+// array of messages, or an object with one) and gives their URLs to add, in order, as llama.cpp
+// does. Audio and video parts are not supported.
+func takeMedia(state *pyjson.Value, add func(url *pyjson.Value) error) (*pyjson.Value, error) {
 	msgs := state
 	if state.Kind == '{' {
 		msgs = state.Get("messages")
 	}
 	if msgs == nil || msgs.Kind != '[' {
-		return false
+		return state, nil
 	}
+	out := &pyjson.Value{Kind: '['}
 	for _, m := range msgs.Fields {
 		content := m.Get("content")
 		if content == nil || content.Kind != '[' {
+			out.Fields = append(out.Fields, m)
 			continue
 		}
+		kept := &pyjson.Value{Kind: '['}
 		for _, part := range content.Fields {
-			if t := part.Get("type"); t != nil && t.Kind == '"' && (t.Str == "image_url" || t.Str == "input_audio" || t.Str == "video_url") {
-				return true
+			typ := ""
+			if t := part.Get("type"); t != nil && t.Kind == '"' {
+				typ = t.Str
+			}
+			switch {
+			case typ == "image_url" && part.Get("image_url") != nil:
+				url := part.Get("image_url")
+				if u := url.Get("url"); u != nil {
+					url = u
+				}
+				if err := add(url); err != nil {
+					return nil, err
+				}
+			case typ == "input_audio" && part.Get("input_audio") != nil:
+				return nil, &Unsupported{"audio input needs a model with audio input"}
+			case typ == "video_url" && part.Get("video_url") != nil:
+				return nil, &Unsupported{"video input is not supported by this server"}
+			default:
+				kept.Fields = append(kept.Fields, part)
 			}
 		}
+		mo := &pyjson.Value{Kind: '{'}
+		for i, k := range m.Keys {
+			f := m.Fields[i]
+			if k == "content" {
+				f = kept
+			}
+			mo.Keys, mo.Fields = append(mo.Keys, k), append(mo.Fields, f)
+		}
+		out.Fields = append(out.Fields, mo)
 	}
-	return false
+	if state.Kind != '{' {
+		return out, nil
+	}
+	so := &pyjson.Value{Kind: '{'}
+	for i, k := range state.Keys {
+		f := state.Fields[i]
+		if k == "messages" {
+			f = out
+		}
+		so.Keys, so.Fields = append(so.Keys, k), append(so.Fields, f)
+	}
+	return so, nil
 }
+
+// Unsupported is a request the server cannot serve (HTTP 501).
+type Unsupported struct{ Msg string }
+
+func (e *Unsupported) Error() string { return e.Msg }
 
 func parseQuestion(id string, q *pyjson.Value) (Question, error) {
 	errf := func(format string, args ...any) error {
