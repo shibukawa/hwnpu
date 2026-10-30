@@ -38,4 +38,10 @@ func TestIntelFormats(t *testing.T) {
 			t.Errorf("%s: %s for Intel's NPU, want %s", name, got, want)
 		}
 	}
+	// the embedding models lose their sentence embeddings in 4 bits on the Neural Engine too
+	for name, want := range map[string]string{"lfm3": "lut4", "gemma4": "lut6", "bert": "lut8", "plamo-bi": "lut8"} {
+		if got := llm.Lookup(name).DefaultFormat(nil); got != want {
+			t.Errorf("%s: %s for the Neural Engine, want %s", name, got, want)
+		}
+	}
 }

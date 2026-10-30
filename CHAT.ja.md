@@ -255,5 +255,5 @@ go run ./cmd/hwnpu-chat -opencode
 - OpenCode は最初に会話の題名を頼みます。このモデルは考えないよう指示しても考えてから答えるので 1〜2 分かかり、その間は本題の要求が待ちます
 - 1.7B で 4 ビットの重みなので、知識の問いは誤ることがあります。考えさせたほうが正確です
 - 文脈を長くすると生成が遅くなります (65536 で 1 トークン約 0.36 秒)。試したのは 65536 までです
-- Neural Engine 上の PLaMo-Embedding-1B は、まだ Hugging Face の実装と照合していません。`tools/ref/embed_golden.py` と `internal/chat` の `TestPlamoEmbeddingGolden` で比べられます (docs/design.md の 16.23)
+- PLaMo-Embedding-1B は 8 ビットの表 (lut8) で変換します。4 ビットでは埋め込みの向きがずれます (fp16 とのコサイン類似度 0.76)。M3 での埋め込みは、Hugging Face の実装とのコサイン類似度が 0.971〜0.989 でした (`tools/ref/embed_golden.py` と `internal/chat` の `TestPlamoEmbeddingGolden`)。同じプログラムを CPU で動かすと 0.997 以上なので、残りは Neural Engine の fp16 の演算誤差です (docs/design.md の 16.32)。以前に変換した lut4 の `embed-s128.mlpackage` と `embed-s1024.mlpackage` はもう使わないので、消してかまいません
 - 実装の記録は [docs/design.md](docs/design.md) の 16.17 と 16.23 にあります
