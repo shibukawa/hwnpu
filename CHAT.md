@@ -152,7 +152,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 ### Images (LFM3-VL-2B)
 
-For an LFM3-VL checkpoint, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `-vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image. Not yet checked on the real checkpoint (docs/design.md, 16.25).
+For an LFM3-VL checkpoint, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `-vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image. Not yet checked on the real checkpoint (docs/design.md, 16.26).
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
@@ -164,7 +164,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpacka
 
 ### Audio (LFM3-Audio-2B)
 
-For an LFM3-Audio checkpoint, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `-audio`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-tts` below speaks a text. Not yet checked on the real checkpoint (docs/design.md, 16.26).
+For an LFM3-Audio checkpoint, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `-audio`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-tts` below speaks a text. Not yet checked on the real checkpoint (docs/design.md, 16.27).
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
@@ -172,7 +172,7 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 
 ### Speech (LFM3-Audio-2B TTS)
 
-`hwnpu-tts` speaks a text into a WAV file (24 kHz). Convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.27).
+`hwnpu-tts` speaks a text into a WAV file (24 kHz). Convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.28).
 
 ```bash
 go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
@@ -192,7 +192,20 @@ go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.ml
 
 ## 6. Use it from OpenCode
 
-Put an `opencode.json` in the project directory. The model's name is the one `GET /v1/models` returns.
+Started like this in the project directory, it runs the server and OpenCode together.
+
+```bash
+go run ./cmd/hwnpu-chat -opencode
+```
+
+- After loading the model it serves on a free port from 30000 to 49151 (below 49152, where macOS takes ports for outgoing connections), writes an OpenCode config for that server to `~/Library/Caches/hwnpu/opencode/opencode.json` and hands it to OpenCode with the `OPENCODE_CONFIG` environment variable. Nothing is written into the project
+- OpenCode gets this terminal's standard input, output and error as they are, so its screen, mouse and keys work as when it is started alone. The server's log goes to `~/Library/Caches/hwnpu/opencode/server.log`, off the screen
+- When OpenCode exits, the server stops, and hwnpu-chat ends with OpenCode's exit code
+- The arguments after the flags go to OpenCode; put OpenCode options that start with `-` after `--` (e.g. `hwnpu-chat -opencode -- --continue`, `hwnpu-chat -opencode run "fix the bug in main.go"`). `-listen` serves at that address instead, and `-opencode-bin` names another OpenCode command
+- `opencode run` waits for its standard input to close; from a script, add `< /dev/null`
+- OpenCode puts a project's `opencode.json` over `OPENCODE_CONFIG`: a provider `hwnpu` written there wins, with its address
+
+To set it up by hand, put an `opencode.json` in the project directory. The model's name is the one `GET /v1/models` returns.
 
 ```json
 {
