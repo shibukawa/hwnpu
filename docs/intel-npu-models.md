@@ -190,7 +190,7 @@ macOS では `coreml`、それ以外では `levelzero` を選ぶ。`HWNPU_BACKEN
 
 ### 7.2 hwnpu-chat の初回変換
 
-`hwnpu-chat` は、初回にチェックポイントを取ってきて、その場で変換する (`chat/embed.go` の `embed-s%d.mlpackage` など)。この変換を `Backend` に合わせて `.xml` で書くようにする。変換器は Go だけで書かれているので、Intel 機 (Linux、Windows) でもそのまま動く。
+`hwnpu-chat` は、初回にチェックポイントを取ってきて、その場で変換する (`chat/embed.go` の `embed-lut8-s%d.mlpackage` など)。この変換を `Backend` に合わせて `.xml` で書くようにする。変換器は Go だけで書かれているので、Intel 機 (Linux、Windows) でもそのまま動く。
 
 変換結果の置き場所はバックエンドごとに分ける (`<model>/coreml/`、`<model>/intel/`)。同じディレクトリを Mac と Intel 機で共有しても衝突しない。
 
@@ -281,7 +281,7 @@ PLaMo-Embedding-1B の実物 (`plamo` の `TestIntelIRCheckpoint`、`HWNPU_PLAMO
 
 埋め込みモデルは、MiniLM も PLaMo も 4 ビットでは崩れ、8 ビットなら保たれる。そこで Intel の既定を BERT と PLaMo-Embedding では int8 にした (`Arch.IntelFormat`)。
 
-**Mac 側への反映**: hwnpu-chat は PLaMo-Embedding を lut4 (kmeans-minmax) で変換しており、fp16 とのコサイン類似度は 0.76 しかなかった。BERT と PLaMo の Mac の既定を lut8 にした (design.md 16.32)。実機の Neural Engine では最終層の MLP の出力 (5e4) が fp16 を超えていたので、最終層を 1/64 倍で計算する書き換え (`head-scale`) を入れ、HF の結果と 0.997〜0.999 になった。
+**Mac 側への反映**: hwnpu-chat は PLaMo-Embedding を lut4 (kmeans-minmax) で変換しており、fp16 とのコサイン類似度は 0.76 しかなかった。BERT と PLaMo の Mac の既定を lut8 にした (design.md 16.34)。実機の Neural Engine では最終層の MLP の出力 (5e4) が fp16 を超えていたので、最終層を 1/64 倍で計算する書き換え (`head-scale`) を入れ、HF の結果と 0.997〜0.999 になった。
 
 P1 は以上で終わり。
 

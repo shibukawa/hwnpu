@@ -13,7 +13,11 @@ go run ./cmd/hwnpu-chat -list
 | 名前 | 用途 | 機能 | ターミナル | `-listen` のとき (3 節) |
 |---|---|---|---|---|
 | `LFM3-1.7B` (既定) | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
+| `LFM3-VL-2B` | chat | `tools`、`thinking`、`vision` | 画像を交えて対話する (1 節) | `/v1/chat/completions` |
+| `LFM3-Audio-2B` | chat | `tools`、`thinking`、`audio` | 音声を交えて対話する (1 節) | `/v1/chat/completions` |
+| `LFM3-Omni-2B` | chat | `tools`、`thinking`、`vision`、`audio` | 画像と音声を交えて対話する (1 節) | `/v1/chat/completions` |
 | `gemma-4-E2B-it` | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
+| `gemma-4-E4B-it` | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
 | `plamo-embedding-1b` | embedding | `query` | 埋め込みで文を検索する (4 節) | `/v1/embeddings` |
 
 機能は、用途のほかにそのモデルができることです (名前は Ollama の capabilities に合わせています)。
@@ -23,6 +27,8 @@ go run ./cmd/hwnpu-chat -list
 | `tools` | リクエストが示す道具を呼び出す (`tools`、`tool_calls`)。OpenCode のようなエージェントから動かせる (6 節)。LFM3-1.7B はテキストだけだが、小さく速いのでエージェントの裏で動かしやすい |
 | `thinking` | 答える前に考える (`reasoning_content`)。`-think` と `reasoning_effort` で切り替える |
 | `query` | 検索の問いと検索される文書とを別々に埋め込む (`input_type`、4 節) |
+| `vision` | ユーザーのメッセージの画像 (`image_url`) を読む。対話では `/image FILE` |
+| `audio` | ユーザーのメッセージの音声 (`input_audio`、WAV) を読む。対話では `/audio FILE.wav` |
 
 - ターミナルで動かすのは `-use` に指定した 1 つのモデルで、何をするかはモデルの用途で決まります。サーバーはいくつでも動かせます (例 `-use LFM3-1.7B,plamo-embedding-1b`)
 - 名前の大文字と小文字は区別せず、一覧のリポジトリ名でも指定できます。一覧にない Hugging Face のリポジトリも `-use OWNER/NAME` で指定でき、hwnpu-chat が動かせる構造 (チャットは LFM3、埋め込みは PLaMo のエンコーダ) なら `config.json` から用途を判断します。認証の要るリポジトリは環境変数 `HF_TOKEN`
@@ -36,7 +42,7 @@ go run ./cmd/hwnpu-chat
 引数は要りません。最初の起動では次のことを自動で行います (M3 で、落とす時間を除いて約 3 分半)。2 回目からはコンパイル済みのものを読み込むだけで、数秒から 1 分ほどで始まります。読み込みの間は進み具合を表示します。
 
 1. Hugging Face の [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) から `config.json`、`tokenizer.json`、`model.safetensors` (3.5 GB) を `~/Library/Caches/hwnpu/models/LFM3-1.7B` に落とします。途中で切れても、もう一度起動すれば続きから落とします
-2. Neural Engine 用に 2 回変換します (それぞれ 1 分ほど)。1 回 1 トークンで生成するものと、1 回 64 トークンでプロンプトを約 20 倍速く読むものです。2 つは 1 つの KV キャッシュを共有します
+2. Neural Engine 用に 2 回変換します (それぞれ 1 分ほど)。生成するもの (1 回 8 トークン: 本物 1 つと推測 7 つをまとめて確かめる。3 節) と、1 回 64 トークンでプロンプトを約 20 倍速く読むものです。2 つは 1 つの KV キャッシュを共有します
 3. Neural Engine 向けにコンパイルします (1〜2 分)。結果は `~/Library/Caches/hwnpu` に残ります
 
 起動したら、`>` に続けて話しかけます。
@@ -46,7 +52,20 @@ go run ./cmd/hwnpu-chat
 - 会話の 2 回目以降は、前回からの差分だけを読みます
 - 答えのあとに、読んだトークン数と生成の速さ (M3 で約 15 tokens/s) を出します
 
-### Gemma 4 E2B を使う
+### 画像と音声を読む (LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B)
+
+`-use LFM3-VL-2B`、`-use LFM3-Audio-2B`、`-use LFM3-Omni-2B` で Liquid AI のマルチモーダルのチェックポイントを使えます。初回はそれを落とし (3.8、4.0、4.3 GB)、テキスト部を同じ手順で、ただし 8 ビットの表 (lut8、2 部分ずつ) で変換します。4 ビットの表では画像の説明を誤り、音声を聞き違えるためです (docs/design.md の 16.31)。チェックポイントにあるエンコーダも fp16 で変換します。視覚エンコーダは 512x512 の画像用 (画像はこの大きさに引き伸ばす)、音声エンコーダは 30 秒までのクリップ用です。
+
+```bash
+go run ./cmd/hwnpu-chat -use LFM3-VL-2B
+```
+
+- 対話では `/image FILE 質問` で画像を、`/audio FILE.wav 質問` で音声を送れます。サーバーはユーザーのメッセージの `image_url` (data URL) と `input_audio` (base64 の WAV) を読みます
+- M3 で 1 トークン約 41 ms (lut4 の LFM3-1.7B は 19 ms)
+- 返答は文字です。LFM3-Audio の音声出力は `hwnpu-tts` (5 節)
+- ほかの画像の大きさやクリップの長さを使うには、エンコーダを自分で変換して `-package`、`-vision`、`-audio` で渡します (5 節)
+
+### Gemma 4 E2B と E4B を使う
 
 `-use gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/models/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし、1 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で 2 部分ずつ (約 0.8 + 0.8 GiB) に変換します。
 
@@ -58,6 +77,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 - 層ごとの埋め込みの表 (4.7 GB) はホストに置き、トークンごとに 1 行 (17.5 KB) を読みます
 - 文脈は 16320 まで (16320 を超えるキャッシュの塊分けは LFM3 だけ)。M3 で 1 トークン約 31 ms (キャッシュ 1024)、文脈 16320 では 55 ms (LFM3-1.7B は 19 ms と 63〜66 ms)
 - Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`-package` で自分で変換するときは `hwnpu-convert` の `-format` を省けば lut6 になります。詳細は docs/design.md の 16.25 と 16.26
+- `-use gemma-4-E4B-it` で一回り大きい E4B (ダウンロード 16.0 GB、幅 2560 の 42 層) を同じ手順で使えます。E2B より遅くなります。同じコードで変換しますが、M3 での確認はまだです。12B 以上の Gemma 4 は別のアーキテクチャで、hwnpu-chat では動きません
 
 ## 2. オプション
 
@@ -67,6 +87,8 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-list` | | モデルの一覧 (用途、大きさ、落としてあるか) を出して終わる |
 | `-listen ADDR` | なし | ターミナルの代わりに OpenAI 互換のサーバーを `ADDR` (例 `127.0.0.1:8080`) で開く (3 節) |
 | `-think` | `true` | 答える前に考えさせる |
+| `-think-budget N` | `1024` | 考えるトークン数の上限。超えたら答えに移らせる (0 は無制限) |
+| `-draft N` | `8` | 生成するプログラムの 1 回のトークン数: 本物 1 つと推測 N-1 個をまとめて確かめる (投機的デコード、3 節)。`0` か `1` で 1 回 1 トークン |
 | `-system TEXT` | なし | 対話の system メッセージ |
 | `-n N` | `0` | 1 つの答えの最大トークン数 (0 は文脈が尽きるまで) |
 | `-temp`、`-top-k`、`-top-p`、`-rep` | `0.1`、`50`、`0`、`1.05` | サンプリング (温度、上位 k、上位 p、答えの中の繰り返しの罰則) |
@@ -108,6 +130,7 @@ go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
 | `POST /v1/embeddings` | `input` (文字列かその配列)、`encoding_format` (`float` か `base64`)、`dimensions` (モデルの 2048 のみ)、OpenAI にないものとして `input_type` (`query` か `document`、4 節) と `truncate` |
 
 - 考えるかどうかは `-think` (既定 true) で決め、要求ごとに `reasoning_effort` (none、minimal、low で考えない、medium、high で考える) か `chat_template_kwargs.enable_thinking` で変えられます
+- `-think-budget` (既定 1024) は考えるトークン数の上限です。超えたら「もう時間がない」という一文で思考を閉じ、そこまでの考えで答えさせます。小さなモデルは放っておくと数千トークン考え (1 トークン 64 ms なら数分)、エージェントはその間待たされます。切ったときはログに `thinking cut` と出ます。`0` で無制限
 - 要求は 1 つずつ処理します。前の要求と共通の先頭は読み直さず、`usage.prompt_tokens_details.cached_tokens` にその数が入ります。別の会話が割り込んでも、長い会話は 2 本まで取っておいて戻ります
 - 同じ並びを繰り返し始めたら、そこで止めます
 - `-dump DIR` で、要求、プロンプト、生成した文を要求ごとに保存します。クライアントが何を送っているかを調べるときに使います
@@ -166,7 +189,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 ### 画像を読む（LFM3-VL-2B）
 
-LFM3-VL のチェックポイントは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`-vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます。実物での確認はまだです（docs/design.md の 16.28）。
+`-use LFM3-VL-2B` (1 節) なら以下を自動で行います。ほかの画像の大きさを使うときは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`-vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます（docs/design.md の 16.28 と 16.31）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
@@ -178,7 +201,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpacka
 
 ### 音声を読む（LFM3-Audio-2B）
 
-LFM3-Audio のチェックポイントは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`-audio` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います。実物での確認はまだです（docs/design.md の 16.29）。
+`-use LFM3-Audio-2B` (1 節) なら以下を自動で行います。ほかのクリップの長さを使うときは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`-audio` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います（docs/design.md の 16.29 と 16.31）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
@@ -252,8 +275,8 @@ go run ./cmd/hwnpu-chat -opencode
 
 ## 7. 限界
 
-- OpenCode は最初に会話の題名を頼みます。このモデルは考えないよう指示しても考えてから答えるので 1〜2 分かかり、その間は本題の要求が待ちます
+- OpenCode は最初に会話の題名を頼みます。このモデルは考えないよう指示しても考えてから答え、その間は本題の要求が待ちます。`-think-budget` (既定 1024 トークン、1 分前後) で待ちに上限が付きます
 - 1.7B で 4 ビットの重みなので、知識の問いは誤ることがあります。考えさせたほうが正確です
 - 文脈を長くすると生成が遅くなります (65536 で 1 トークン約 0.36 秒)。試したのは 65536 までです
-- PLaMo-Embedding-1B は 8 ビットの表 (lut8) で変換します。4 ビットでは埋め込みの向きがずれます (fp16 とのコサイン類似度 0.76)。M3 での埋め込みは、Hugging Face の実装とのコサイン類似度が 0.997〜0.999 で、CPU で動かしたときと同じです (`tools/ref/embed_golden.py` と `internal/chat` の `TestPlamoEmbeddingGolden`)。最終層の MLP が fp16 の範囲を超える値を作るので、変換では最終層を 1/64 倍で計算します (`head-scale`。docs/design.md の 16.32)。以前に変換した lut4 の `embed-s128.mlpackage` と `embed-s1024.mlpackage` はもう使わないので、消してかまいません
+- PLaMo-Embedding-1B は 8 ビットの表 (lut8) で変換します。4 ビットでは埋め込みの向きがずれます (fp16 とのコサイン類似度 0.76)。M3 での埋め込みは、Hugging Face の実装とのコサイン類似度が 0.997〜0.999 で、CPU で動かしたときと同じです (`tools/ref/embed_golden.py` と `internal/chat` の `TestPlamoEmbeddingGolden`)。最終層の MLP が fp16 の範囲を超える値を作るので、変換では最終層を 1/64 倍で計算します (`head-scale`。docs/design.md の 16.34)。以前に変換した lut4 の `embed-s128.mlpackage` と `embed-s1024.mlpackage` はもう使わないので、消してかまいません
 - 実装の記録は [docs/design.md](docs/design.md) の 16.17 と 16.23 にあります
