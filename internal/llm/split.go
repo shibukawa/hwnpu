@@ -103,14 +103,22 @@ var layerIndex = regexp.MustCompile(`(?:^|\.)layers?\.(\d+)\.`)
 
 // EstimateBytes estimates the stored weight size of each layer of a model built with opts, and of
 // what comes before the first layer (pre) and after the last (post), from the tensor shapes. The
-// host keeps the embedding table, except when a causal LM ties it to the output layer.
+// host keeps the embedding table, except when a causal LM ties it to the output layer, and the
+// tables of the model's TokenInputs.
 func EstimateBytes(m Model, opts Options) (pre int64, layers []int64, post int64) {
 	layers = make([]int64, m.Layers())
 	_, logits := m.Output()
 	tensors := m.Tensors()
 	_, ownHead := tensors["lm_head.weight"]
+	host := map[string]bool{}
+	if l, ok := m.(TokenInputs); ok {
+		for _, lk := range l.TokenInputs() {
+			host[lk.Table] = true
+		}
+	}
+	prologue, _ := m.(Prologue)
 	for name, shape := range tensors {
-		if name == m.Embedding() && (!logits || ownHead) {
+		if name == m.Embedding() && (!logits || ownHead) || host[name] {
 			continue
 		}
 		n := tensorBytes(name, shape, opts)
@@ -122,7 +130,7 @@ func EstimateBytes(m Model, opts Options) (pre int64, layers []int64, post int64
 		}
 		// Outside the layers: a causal LM's final norm and output layer, an encoder's embedding
 		// stage.
-		if logits {
+		if logits && (prologue == nil || !prologue.BeforeLayers(name)) {
 			post += n
 		} else {
 			pre += n
@@ -131,18 +139,15 @@ func EstimateBytes(m Model, opts Options) (pre int64, layers []int64, post int64
 	return pre, layers, post
 }
 
-// tensorBytes is the stored size of a tensor as blocks.Weight writes a matrix (lut4: 4 bit
-// indices and a 16 entry fp16 table per Group rows and ColBlock columns) and other tensors (fp16).
+// tensorBytes is the stored size of a tensor as blocks.Weight writes a matrix (lutN: N bit
+// indices and a 2^N entry fp16 table per Group rows and ColBlock columns) and other tensors (fp16).
 func tensorBytes(name string, shape []int, o Options) int64 {
 	n := int64(1)
 	for _, d := range shape {
 		n *= int64(d)
 	}
-	keep := false
-	for _, k := range o.KeepFP16 {
-		keep = keep || strings.Contains(name, k)
-	}
-	if len(shape) == 2 && (o.Format == "" || o.Format == "lut4") && !keep {
+	bits := map[string]int64{"": 4, "lut4": 4, "lut6": 6, "lut8": 8}[o.FormatOf(name)]
+	if len(shape) == 2 && bits > 0 {
 		rows, cols := int64(shape[0]), int64(shape[1])
 		group, block := int64(o.Group), int64(o.ColBlock)
 		if group <= 0 {
@@ -151,7 +156,7 @@ func tensorBytes(name string, shape []int, o Options) int64 {
 		if block <= 0 {
 			block = cols
 		}
-		return (n+1)/2 + (rows+group-1)/group*((cols+block-1)/block)*16*2
+		return (n*bits+7)/8 + (rows+group-1)/group*((cols+block-1)/block)*(1<<bits)*2
 	}
 	return 2 * n
 }

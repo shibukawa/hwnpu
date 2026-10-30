@@ -45,15 +45,16 @@ type Config struct {
 // conversations in turn (an agent's, and the title or the summary its client asks for on the
 // side) do not read each other's prompts again.
 type Engine struct {
-	Tok   *tokenizer.Tokenizer
-	Stops map[int32]bool // tokens that end an answer
-	Name  string         // the model's name, from the package
+	Tok      *tokenizer.Tokenizer
+	Template Template       // the model's chat format
+	Stops    map[int32]bool // tokens that end an answer
+	Name     string         // the model's name, from the package
 
 	dev    *hwnpu.Device
 	chains []*chain.Chain
 	w      llm.Weights
 	model  llm.Model
-	emb    map[int32][]float32
+	emb    map[int32][]float32 // tokens' rows (llm.TokenRow) read so far
 
 	mu    sync.Mutex
 	sess  *decode.Session
@@ -135,10 +136,13 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}}
 	e.Name = name
+	if e.Template, err = TemplateFor(a.Name); err != nil {
+		return nil, err
+	}
 	if e.Tok, err = tokenizer.Load(c.Tokenizer); err != nil {
 		return nil, err
 	}
-	for _, t := range []string{"<|im_end|>", "<|endoftext|>"} {
+	for _, t := range e.Template.Stops() {
 		if id, ok := e.Tok.ID(t); ok {
 			e.Stops[id] = true
 		}
@@ -387,10 +391,11 @@ func (e *Engine) step(toks []int32) ([]float32, error) {
 		v, ok := e.emb[t]
 		if !ok {
 			var err error
-			if v, err = llm.Embed(e.w, e.model, []int32{t}); err != nil {
+			if v, err = llm.TokenRow(e.w, e.model, t); err != nil {
 				return nil, err
 			}
-			if len(e.emb) >= 1<<15 {
+			// at most 32768 tokens of LFM3 (2048 values), fewer of a model with wider rows
+			if len(e.emb)*len(v) >= 1<<26 {
 				clear(e.emb)
 			}
 			e.emb[t] = v

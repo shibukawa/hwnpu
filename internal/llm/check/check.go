@@ -23,6 +23,8 @@ type Ref struct {
 	Logits []float32
 	// Meta is the JSON sidecar, if there is one.
 	Meta Meta
+
+	prefix string
 }
 
 // Meta describes a reference run (PREFIX.json).
@@ -41,7 +43,7 @@ type Meta struct {
 // LoadRef reads PREFIX.ids.bin, PREFIX.hidden.bin, PREFIX.logits.bin (little endian, row major)
 // and PREFIX.json if present.
 func LoadRef(prefix string) (*Ref, error) {
-	r := &Ref{}
+	r := &Ref{prefix: prefix}
 	raw, err := os.ReadFile(prefix + ".ids.bin")
 	if err != nil {
 		return nil, err
@@ -66,6 +68,20 @@ func LoadRef(prefix string) (*Ref, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// Extra reads PREFIX.NAME.bin, the reference's value of a program input other than x (fp32, laid
+// out as the input), if the reference has one: what a layer takes from the model's earlier
+// layers besides the hidden state (Gemma 4's per-layer inputs and shared keys and values).
+func (r *Ref) Extra(name string) ([]float32, bool, error) {
+	v, err := readF32(r.prefix + "." + name + ".bin")
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, err
+	}
+	return v, true, nil
 }
 
 func readF32(path string) ([]float32, error) {
