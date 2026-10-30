@@ -315,6 +315,32 @@ type Request struct {
 	MaxTokens int // 0: until the cache is full
 	Sampling
 	Seed uint64 // 0: random
+	// Think bounds the model's thinking (ThinkLimit; the zero value does not).
+	Think ThinkLimit
+}
+
+// ThinkLimit is a budget for the model's thinking: when it has generated Budget tokens inside
+// its thinking (between Open and Close, or since the prompt when Inside) without closing it, End
+// is fed as if generated, so that the answer begins. A small model may think for thousands of
+// tokens, and an agent waits for the answer meanwhile.
+type ThinkLimit struct {
+	Budget      int   // most tokens of thinking (0: no limit)
+	Open, Close int32 // the tokens that open and close the thinking
+	End         []int32
+	Inside      bool // the prompt ends inside the thinking
+}
+
+// ThinkLimit bounds the thinking of a request to budget tokens (0, or a model without thinking
+// tokens: none), with the template's tokens; inside says the prompt ends inside the thinking
+// (Template.Render).
+func (e *Engine) ThinkLimit(budget int, inside bool) ThinkLimit {
+	open, close, end := e.Template.Think()
+	o, ok1 := e.Tok.ID(open)
+	c, ok2 := e.Tok.ID(close)
+	if budget <= 0 || !ok1 || !ok2 {
+		return ThinkLimit{}
+	}
+	return ThinkLimit{Budget: budget, Open: o, Close: c, End: e.Tok.Encode(end), Inside: inside}
 }
 
 // Stats says what a generation did.
@@ -323,7 +349,9 @@ type Stats struct {
 	// Finish is "stop" (the model ended the answer or the caller stopped it) or "length".
 	Finish string
 	// Looped says that the generation stopped because the model repeated itself.
-	Looped          bool
+	Looped bool
+	// ThinkCut says that the thinking reached its budget (Request.Think) and was ended.
+	ThinkCut        bool
 	Prefill, Decode time.Duration
 }
 
@@ -360,6 +388,8 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	var gen []int32
 	t1 := time.Now()
 	defer func() { st.Decode = time.Since(t1) }()
+	think := r.Think
+	inside, thought := think.Budget > 0 && think.Inside, 0
 	for {
 		next := r.pick(slices.Clone(logits), gen, rng)
 		if e.Stops[next] {
@@ -368,6 +398,16 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		}
 		gen = append(gen, next)
 		st.Generated = len(gen)
+		if think.Budget > 0 {
+			switch {
+			case inside && next == think.Close:
+				inside = false
+			case !inside && next == think.Open:
+				inside, thought = true, 0
+			case inside:
+				thought++
+			}
+		}
 		stop, err := emit(gen)
 		if err != nil {
 			return st, err
@@ -387,8 +427,30 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		if err := ctx.Err(); err != nil {
 			return st, err
 		}
-		if logits, err = e.step([]int32{next}); err != nil {
-			return st, err
+		toks := []int32{next}
+		if inside && thought >= think.Budget {
+			// end the thinking: End goes into the sequence as if the model had generated it
+			if e.sess.Pos()+1+len(think.End) > e.sess.Cache() {
+				st.Finish = "length"
+				return st, nil
+			}
+			toks = append(toks, think.End...)
+			gen = append(gen, think.End...)
+			st.Generated = len(gen)
+			inside, st.ThinkCut = false, true
+			if stop, err := emit(gen); err != nil {
+				return st, err
+			} else if stop {
+				st.Finish = "stop"
+				return st, nil
+			}
+		}
+		for len(toks) > 0 {
+			k := min(len(toks), e.sess.Q())
+			if logits, err = e.step(toks[:k]); err != nil {
+				return st, err
+			}
+			toks = toks[k:]
 		}
 	}
 }
