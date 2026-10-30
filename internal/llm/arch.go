@@ -37,8 +37,17 @@ type Param struct {
 	Name, Default, Usage string
 }
 
-// DefaultFormat is the weight format to use when none is given.
-func (a *Arch) DefaultFormat() string {
+// Formatter is a Model whose weight format, when none is given, depends on the checkpoint rather
+// than the architecture alone; an empty Format takes the architecture's.
+type Formatter interface {
+	Format() string
+}
+
+// DefaultFormat is the weight format to use for m when none is given.
+func (a *Arch) DefaultFormat(m Model) string {
+	if f, ok := m.(Formatter); ok && f.Format() != "" {
+		return f.Format()
+	}
 	if a.Format == "" {
 		return "lut4"
 	}
