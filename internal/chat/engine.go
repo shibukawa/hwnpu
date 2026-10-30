@@ -30,6 +30,10 @@ type Config struct {
 	// call (-seq): one of 1 to generate and one of about 64 to read prompts fast. They share
 	// one cache.
 	Packages []string
+	// Tiers are sets of packages like Packages, one set per cache length, shortest first and
+	// Packages last: a conversation runs on the shortest cache that holds it and moves up as it
+	// grows, since a step costs in proportion to the cache (Setup.Tiers). Empty: Packages alone.
+	Tiers [][]string
 	// ModelConfig is config.json, Weights the checkpoint the token embeddings are read from,
 	// Tokenizer tokenizer.json (default: next to config.json).
 	ModelConfig, Weights, Tokenizer string
@@ -61,7 +65,8 @@ type Engine struct {
 	Name     string         // the model's name, from the package
 
 	dev    *hwnpu.Device
-	chains []*chain.Chain
+	tiers  []tier // by cache length, shortest first
+	ti     int    // the tier the session runs on
 	w      llm.Weights
 	model  llm.Model
 	emb    map[int32][]float32 // tokens' rows (llm.TokenRow) read so far
@@ -106,7 +111,16 @@ type mark struct {
 
 type saved struct {
 	seq
-	all *decode.Mark // the whole cache
+	all  *decode.Mark // the whole cache
+	tier int          // the tier the cache was taken on
+}
+
+// tier is one cache length's programs: the one that generates and the one that reads prompts,
+// sharing their cache buffers.
+type tier struct {
+	chains []*chain.Chain
+	progs  []decode.Program
+	cache  int
 }
 
 var (
@@ -188,41 +202,57 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		e.Close()
 		return nil, err
 	}
-	for i, pkg := range c.Packages {
-		t0 := time.Now()
-		stop := dots(c.Log, "  "+filepath.Base(pkg)+" ")
-		var ch *chain.Chain
-		if i == 0 {
-			ch, err = chain.Open(ctx, e.dev, pkg)
-		} else {
-			ch, err = e.chains[0].Share(ctx, e.dev, pkg)
+	tiers := c.Tiers
+	if len(tiers) == 0 {
+		tiers = [][]string{c.Packages}
+	}
+	for _, pkgs := range tiers {
+		var t tier
+		for i, pkg := range pkgs {
+			t0 := time.Now()
+			stop := dots(c.Log, "  "+filepath.Base(pkg)+" ")
+			var ch *chain.Chain
+			if i == 0 {
+				ch, err = chain.Open(ctx, e.dev, pkg)
+			} else {
+				ch, err = t.chains[0].Share(ctx, e.dev, pkg)
+			}
+			stop()
+			if err != nil {
+				logf("")
+				t.close()
+				e.Close()
+				return nil, err
+			}
+			t.chains = append(t.chains, ch)
+			t.progs = append(t.progs, ch.Program(context.Background()))
+			where := "all on the NPU"
+			if !ch.OnNPU() {
+				where = "NOT all on the NPU"
+			}
+			parts := "1 part"
+			if n := len(ch.Parts()); n > 1 {
+				parts = fmt.Sprintf("%d parts", n)
+			}
+			logf(" %.1fs, %s, %s", time.Since(t0).Seconds(), parts, where)
 		}
-		stop()
+		s, err := t.session(cm)
 		if err != nil {
-			logf("")
+			t.close()
 			e.Close()
 			return nil, err
 		}
-		e.chains = append(e.chains, ch)
-		where := "all on the NPU"
-		if !ch.OnNPU() {
-			where = "NOT all on the NPU"
-		}
-		parts := "1 part"
-		if n := len(ch.Parts()); n > 1 {
-			parts = fmt.Sprintf("%d parts", n)
-		}
-		logf(" %.1fs, %s, %s", time.Since(t0).Seconds(), parts, where)
-		p := ch.Program(context.Background())
-		if i == 0 {
-			e.sess, err = decode.New(p, cm)
-		} else {
-			err = e.sess.Add(p)
-		}
-		if err != nil {
+		t.cache = s.Cache()
+		if n := len(e.tiers); n > 0 && t.cache <= e.tiers[n-1].cache {
+			t.close()
 			e.Close()
-			return nil, fmt.Errorf("chat: %s: %w", pkg, err)
+			return nil, fmt.Errorf("chat: the tiers' caches must grow: %d after %d", t.cache, e.tiers[n-1].cache)
 		}
+		e.tiers = append(e.tiers, t)
+	}
+	if e.sess, err = e.tiers[0].session(cm); err != nil {
+		e.Close()
+		return nil, err
 	}
 	if len(c.Vision) > 0 {
 		t0 := time.Now()
@@ -248,13 +278,86 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		}
 		logf("audio encoder for clips of up to %.0f s, %s, loaded in %.1fs", e.aud.MaxSeconds(), where, time.Since(t0).Seconds())
 	}
+	caches := ""
+	if len(e.tiers) > 1 {
+		var cs []string
+		for _, t := range e.tiers {
+			cs = append(cs, fmt.Sprint(t.cache))
+		}
+		caches = " in tiers of " + strings.Join(cs, ", ")
+	}
 	if d := e.Draft(); d > 0 {
 		e.drafter = LookupDraft
-		logf("ready: context %d tokens, up to %d tokens per call, drafts of %d checked per call", e.sess.Cache(), e.sess.Q(), d)
+		logf("ready: context %d tokens%s, up to %d tokens per call, drafts of %d checked per call", e.Context(), caches, e.sess.Q(), d)
 	} else {
-		logf("ready: context %d tokens, up to %d tokens per call", e.sess.Cache(), e.sess.Q())
+		logf("ready: context %d tokens%s, up to %d tokens per call", e.Context(), caches, e.sess.Q())
 	}
 	return e, nil
+}
+
+// session starts an empty sequence on the tier's programs.
+func (t *tier) session(cm llm.Cached) (*decode.Session, error) {
+	s, err := decode.New(t.progs[0], cm)
+	if err != nil {
+		return nil, fmt.Errorf("chat: %s: %w", filepath.Base(t.chains[0].Parts()[0].Path), err)
+	}
+	for i, p := range t.progs[1:] {
+		if err := s.Add(p); err != nil {
+			return nil, fmt.Errorf("chat: %s: %w", filepath.Base(t.chains[i+1].Parts()[0].Path), err)
+		}
+	}
+	return s, nil
+}
+
+func (t *tier) close() {
+	for i := len(t.chains) - 1; i >= 0; i-- {
+		t.chains[i].Close()
+	}
+	t.chains = nil
+}
+
+// tierFor is the shortest tier whose cache holds a prompt of n tokens and something after it,
+// or the last.
+func (e *Engine) tierFor(n int) int {
+	for i, t := range e.tiers {
+		if n < t.cache {
+			return i
+		}
+	}
+	return len(e.tiers) - 1
+}
+
+// use starts an empty sequence on tier i (the session's own tier: Reset).
+func (e *Engine) use(i int) error {
+	if i == e.ti || len(e.tiers) == 0 {
+		e.sess.Reset()
+		return nil
+	}
+	cm := e.model.(llm.Cached)
+	s, err := e.tiers[i].session(cm)
+	if err != nil {
+		return err
+	}
+	e.sess, e.ti = s, i
+	return nil
+}
+
+// room makes sure the cache can take n more tokens, moving the sequence up to a longer tier
+// when it cannot (decode.Session.Migrate copies the rows), and says whether it can.
+func (e *Engine) room(n int) (bool, error) {
+	for e.sess.Pos()+n > e.sess.Cache() && e.ti+1 < len(e.tiers) {
+		t := e.tiers[e.ti+1]
+		if err := e.sess.Migrate(t.progs[0]); err != nil {
+			return false, err
+		}
+		for _, p := range t.progs[1:] {
+			if err := e.sess.Add(p); err != nil {
+				return false, err
+			}
+		}
+		e.ti++
+	}
+	return e.sess.Pos()+n <= e.sess.Cache(), nil
 }
 
 // Draft is how many tokens of drafts a generation checks in one call (speculative decoding):
@@ -266,10 +369,12 @@ func (e *Engine) Draft() int {
 }
 
 // LookupDraft guesses the next tokens of seq from seq itself (prompt lookup decoding): the tokens
-// that followed the latest earlier occurrence of its last few tokens, up to k. An agent copies
-// what it read into what it writes, so its answers repeat the prompt in long stretches.
+// that followed the latest earlier occurrence of its last few tokens (4 down to 1), up to k. An
+// agent copies what it read into what it writes, so its answers repeat the prompt in long
+// stretches. Guessing from 1 token alone is right less often, but checking a guess costs nothing
+// more on the program that generates (design.md 16.37: 7% more tokens per call).
 func LookupDraft(seq []int32, k int) []int32 {
-	const maxN, minN = 3, 2
+	const maxN, minN = 4, 1
 	for n := maxN; n >= minN; n-- {
 		if len(seq) <= n {
 			continue
@@ -331,10 +436,10 @@ func (e *Engine) Close() error {
 		e.aud.Close()
 		e.aud = nil
 	}
-	for i := len(e.chains) - 1; i >= 0; i-- {
-		e.chains[i].Close()
+	for i := len(e.tiers) - 1; i >= 0; i-- {
+		e.tiers[i].close()
 	}
-	e.chains = nil
+	e.tiers = nil
 	if e.dev != nil {
 		e.dev.Close()
 		e.dev = nil
@@ -347,7 +452,12 @@ func (e *Engine) Close() error {
 }
 
 // Context is the most tokens a prompt and its answer can have together.
-func (e *Engine) Context() int { return e.sess.Cache() }
+func (e *Engine) Context() int {
+	if len(e.tiers) == 0 { // a session given directly (tests)
+		return e.sess.Cache()
+	}
+	return e.tiers[len(e.tiers)-1].cache
+}
 
 // Request is one generation.
 type Request struct {
@@ -395,7 +505,9 @@ type Stats struct {
 	// Drafted and Accepted count the tokens guessed ahead (speculative decoding) and those the
 	// model confirmed; Calls the runs of the model while generating.
 	Drafted, Accepted, Calls int
-	Prefill, Decode          time.Duration
+	// Cache is the length of the cache the generation ended on (the tier, Config.Tiers).
+	Cache           int
+	Prefill, Decode time.Duration
 }
 
 // ErrContext is returned for a prompt that does not fit in the cache.
@@ -414,8 +526,8 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	if len(r.Prompt) == 0 {
 		return st, errors.New("chat: empty prompt")
 	}
-	if len(r.Prompt) >= e.sess.Cache() {
-		return st, fmt.Errorf("%w: %d tokens, the cache holds %d", ErrContext, len(r.Prompt), e.sess.Cache())
+	if len(r.Prompt) >= e.Context() {
+		return st, fmt.Errorf("%w: %d tokens, the cache holds %d", ErrContext, len(r.Prompt), e.Context())
 	}
 	t0 := time.Now()
 	logits, err := e.prefill(ctx, r.Prompt, &st)
@@ -430,7 +542,7 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	rng := rand.New(rand.NewPCG(seed, 0))
 	var gen []int32
 	t1 := time.Now()
-	defer func() { st.Decode = time.Since(t1) }()
+	defer func() { st.Decode, st.Cache = time.Since(t1), e.sess.Cache() }()
 	think := r.Think
 	inside, thought := think.Budget > 0 && think.Inside, 0
 	// take takes a generated token into the answer: it is in the cache already, or is next to
@@ -464,7 +576,13 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 			st.Finish, st.Looped = "stop", true
 			return true, nil
 		}
-		if r.MaxTokens > 0 && len(gen) >= r.MaxTokens || e.sess.Pos() >= e.sess.Cache() {
+		if r.MaxTokens > 0 && len(gen) >= r.MaxTokens {
+			st.Finish = "length"
+			return true, nil
+		}
+		if ok, err := e.room(1); err != nil {
+			return true, err
+		} else if !ok {
 			st.Finish = "length"
 			return true, nil
 		}
@@ -485,7 +603,9 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		switch {
 		case inside && thought >= think.Budget:
 			// end the thinking: End goes into the sequence as if the model had generated it
-			if e.sess.Pos()+1+len(think.End) > e.sess.Cache() {
+			if ok, err := e.room(1 + len(think.End)); err != nil {
+				return st, err
+			} else if !ok {
 				st.Finish = "length"
 				return st, nil
 			}
@@ -568,6 +688,9 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		sv := e.saved[from]
 		e.saved = slices.Delete(e.saved, from, from+1)
 		e.putAside()
+		if err := e.use(sv.tier); err != nil {
+			return nil, err
+		}
 		e.sess.Rewind(sv.all)
 		e.cur = sv.seq
 		n, m = e.cur.reach(prompt)
@@ -580,8 +703,11 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		p := m.m.Pos()
 		e.cur.fed, e.cur.last = e.cur.fed[:p], m.logits
 		e.cur.marks = slices.DeleteFunc(e.cur.marks, func(m mark) bool { return m.m.Pos() > p })
-	case n < len(e.cur.fed):
-		e.sess.Reset()
+	case n < len(e.cur.fed) || len(e.cur.fed) == 0:
+		// start over, on the shortest tier that holds the prompt
+		if err := e.use(e.tierFor(len(prompt))); err != nil {
+			return nil, err
+		}
 		e.cur = seq{}
 	}
 	st.Reused = len(e.cur.fed)
@@ -590,6 +716,11 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 			return nil, err
 		}
 		k := min(len(prompt)-len(e.cur.fed), e.sess.Q())
+		if ok, err := e.room(k); err != nil {
+			return nil, err
+		} else if !ok {
+			return nil, fmt.Errorf("%w: %d tokens, the cache holds %d", ErrContext, len(prompt), e.sess.Cache())
+		}
 		if _, err := e.step(prompt[len(e.cur.fed) : len(e.cur.fed)+k]); err != nil {
 			return nil, err
 		}
@@ -607,7 +738,7 @@ func (e *Engine) putAside() {
 		return
 	}
 	q := seq{fed: slices.Clone(e.cur.fed), last: e.cur.last, marks: slices.Clone(e.cur.marks)}
-	e.saved = append(e.saved, saved{q, e.sess.Save()})
+	e.saved = append(e.saved, saved{q, e.sess.Save(), e.ti})
 	if len(e.saved) > maxSaved {
 		e.saved = e.saved[1:]
 	}
