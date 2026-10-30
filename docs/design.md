@@ -1380,3 +1380,16 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
   - 下書きあり、「空はなぜ青いか」を考えさせる要求: 400 トークンを 50.3 秒、371 回、340 個のうち 28 個 (本文では下書きがほとんど当たらない)
   - 下書きなし (Q=1): 計測中。結果はこの節に追記する
 
+### 16.34 埋め込みモデルも lut8 に、PLaMo-Embedding-1B の実機での照合と head-scale — 2026-10-30
+
+- きっかけ: Intel 向けの検証 ([intel-npu-models.md](intel-npu-models.md) §11) で、文埋め込みは 4 ビットで崩れると分かった。fp16 の MIL プログラムとのコサイン類似度 (milcpu) は、PLaMo-Embedding-1B の lut4 が `uniform` で 0.20、hwnpu-chat の `kmeans-minmax` で 0.76、lut8 で 0.998。all-MiniLM-L6-v2 は lut4 で 0.23、lut8 で 0.9988
+- 変更: `bert` と `plamo-bi` の `Arch.Format` を lut8 にした (hwnpu-convert の既定と hwnpu-chat の変換の両方)。PLaMo-Embedding-1B は lut8 でも 1 部分 (0.89 GiB) に収まる。hwnpu-chat の埋め込みのプログラムは名前に形式を入れた (`embed-lut8-s128.mlpackage`)。前の `embed-s128.mlpackage` (lut4) を読み込まず、変換し直させるため。古いものは消さないので、要らなければ手で消す
+- **実機での照合** (M3、`tools/ref/embed_golden.py` の HF fp32 の `encode_query`/`encode_document` と `TestPlamoEmbeddingGolden`): 128 と 1024 トークンのプログラムは全演算が ANE に載り、トークン列は 8 文すべて一致。lut8 にしただけではコサイン類似度が 0.971〜0.989 で、2 文 (「日本の首都はどこですか？」0.978、吾輩は猫である 50 トークン 0.971) が合格条件の 0.98 に届かなかった。同じ 4 文を milcpu (fp32) で動かすと HF との類似度は fp16 の重みで 0.9986〜1.0000、lut8 で 0.9973〜0.9987 なので、グラフと lut8 は正しく、差は Neural Engine 側
+- **層ごとの比較** (`TestANEPrecision`、`precision_darwin_test.go`): 16 層の残差の流れをすべて出力にした lut8 のプログラムを ANE と milcpu (fp32) で動かして比べた。吾輩は猫である (50 トークン、seq 64)。
+  - 層 0〜2 の注意と MLP の出力は rms 0.01〜0.1 と小さく、ANE ではそれぞれ 3〜5% ずれる (行列積の絶対誤差の床、MODEL.md)。残差の流れの誤差は 2〜3% で頭打ちになり、平均した埋め込みにはほとんど残らない
+  - 層 3 の MLP が BOS の 1 チャンネルに 1.2e3 の値を作り、以後の残差に残る (BOS の外では最大 1e2〜1e3)。RMSNorm の `x*x` は fp16 を超える値だが、ANE は崩れなかった (二乗の和を広い範囲で計算しているらしい)。milcpu の `RoundF16` は二乗で inf になり、層 4 以降は役に立たない
+  - **最終層の MLP の出力が fp16 を超える**: `down_proj` の出力は fp32 で最大 5e4 (rms 2570) になり、ANE はトークン 1 のチャンネル 1731 などで -Inf を返した。その手前の silu(gate)·up は最大 1.9e4 で収まっている。埋め込みの ANE と CPU のコサイン類似度は 0.9745
+- **head-scale** (`plamo-bi` の `Params`、既定 64): 最終層の出力は最終の RMSNorm にしか入らず、RMSNorm は入力の倍率に依らない (eps を除く)。そこで最終層で、注意を足した残差を 1/64 倍し、`down_proj` の入力 (silu(gate)·up) も 1/64 倍してから足し、最終 norm の eps を 64² で割る。2 のべき乗の掛け算なので数学的には同じ。重みを 1/64 倍する形も ANE では同じ結果だったが、小さな重みと int8 のスケールが fp16 の非正規化数になり、Intel 向けの int8 の IR が小さなモデルで許容誤差 1e-3 をわずかに超えた (0.00101) ので、入力側にした。最終 norm がないプログラム (分割の途中、`NoHead`) は残差の流れをそのまま返す決まりなので、倍率を掛けない
+- 結果: 埋め込みの ANE と CPU のコサイン類似度は 0.9745 → 0.99986。HF とは 8 文すべて 0.9969〜0.9987 で `TestPlamoEmbeddingGolden` に合格 (milcpu の lut8 と同じ水準)。全演算 ANE。1 文は重みを縮めた版で 37〜41 ms、入力側の版で 72〜84 ms だったが、後者の回は読み込みも 1.5〜2 倍遅かったので、マシンの負荷とみている (未確認)
+- 正解を作る環境: Python 3.12 に torch 2.15、transformers 4.47.1、sentencepiece 0.2.0、protobuf。`modeling_plamo.py` と `tokenization_plamo.py` を置いたディレクトリにチェックポイントをリンクして `HF_HUB_OFFLINE=1` で動かした (fp32 で約 1 分)
+- 次: 長い文 (1024 トークンのプログラム) での最大値。最終層の 5e4 は文によってはさらに大きいかもしれない。`TestANEPrecision` で文を変えて確かめる

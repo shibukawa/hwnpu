@@ -163,7 +163,7 @@ func (b *Builder) op(typ, name string, inputs map[string]any, outDT milspec.Data
 // constValue builds a Value of the given type from little endian bytes, inline or as a blob.
 func (b *Builder) constValue(dt milspec.DataType, shape []int, raw []byte, blobType BlobDType) (*milspec.Value, error) {
 	v := &milspec.Value{Type: tensorType(dt, shape)}
-	if len(raw) > b.ImmediateLimit || dt == UInt4 || dt == UInt6 || dt == UInt8 || dt == milspec.DataType_INT4 {
+	if len(raw) > b.ImmediateLimit || dt == UInt4 || dt == UInt6 || dt == UInt8 || dt == milspec.DataType_INT4 || dt == Int8 {
 		if b.blobs == nil {
 			return nil, fmt.Errorf("mlpackage: a %d byte constant needs a weight file", len(raw))
 		}

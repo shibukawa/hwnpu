@@ -8,6 +8,7 @@ package llm
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -90,6 +91,28 @@ func (o Options) FormatOf(name string) string {
 	return f
 }
 
+// LinearFormat parses the name of a symmetric linear weight format: int4 or int8 with one scale
+// per row, or int4-gN / int8-gN with one per N columns (block 0 for whole rows).
+func LinearFormat(f string) (bits, block int, ok bool) {
+	name, g, grouped := strings.Cut(f, "-g")
+	switch name {
+	case "int4":
+		bits = 4
+	case "int8":
+		bits = 8
+	default:
+		return 0, 0, false
+	}
+	if grouped {
+		n, err := strconv.Atoi(g)
+		if err != nil || n <= 0 {
+			return 0, 0, false
+		}
+		block = n
+	}
+	return bits, block, true
+}
+
 // Options select what to build. They are common to all architectures; settings that only one
 // architecture has go in Params.
 type Options struct {
@@ -111,7 +134,9 @@ type Options struct {
 	// NoHead makes the output the hidden state after the last built layer, before the final norm,
 	// even when that is the model's last layer. For checking the last layer on its own.
 	NoHead bool
-	// Format is "lut4" (4 bit palettized, k-means per 16 rows) or "fp16".
+	// Format is "lut4" (4 bit palettized per 16 rows; lut6 and lut8 have larger tables), "int4"
+	// or "int8" (symmetric, one scale per row; "int4-g128" one per 128 columns: LinearFormat) or
+	// "fp16". The Neural Engine reads lutN fastest, Intel's NPU intN (it cannot run lutN).
 	Format string
 	// Group is the number of rows sharing a lookup table (16 is what the Neural Engine reads fast).
 	Group int
@@ -123,8 +148,13 @@ type Options struct {
 	// FormatFor gives some tensors another format than Format: "SUBSTRING=FORMAT" entries, such
 	// as "mlp=lut8"; the last that matches a tensor's name wins, and KeepFP16 over all.
 	FormatFor []string
-	// Quant selects the table fitting for lut4: "uniform" (default), "kmeans" or "kmeans-minmax".
+	// Quant selects the table fitting for lut4: "uniform" (default), "kmeans" or "kmeans-minmax";
+	// for intN, "mse" (default) searches the clipping point with the smallest squared error and
+	// "uniform" scales each block by its largest weight.
 	Quant string
+	// Backend is the runtime the program is written for: "coreml" (the default, an .mlpackage)
+	// or "intel" (OpenVINO IR for Intel's NPU, internal/ovlower).
+	Backend string
 	// Params holds the architecture's own settings by Param name; missing ones take the default.
 	Params map[string]string
 }

@@ -103,3 +103,40 @@ func TestQuantizeBits(t *testing.T) {
 		t.Error("Quantize is not 4 bits")
 	}
 }
+
+// Symmetric linear quantization of Gaussian rows: int8 keeps a relative RMS error under 1%, int4
+// per row near 0.14 (7 levels each side of a maximum near 3.5 sigma), better with groups of 128
+// columns and with the clipping search. The values packed are those Dequantize reads back.
+func TestQuantizeLinear(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	const rows, cols = 33, 1024 // an odd number of rows: the last 4 bit row pair is a single row
+	w := make([]float32, rows*cols)
+	for i := range w {
+		w[i] = float32(rng.NormFloat64())
+	}
+	for _, c := range []struct {
+		bits, block int
+		search      bool
+		max         float64
+	}{
+		{8, 0, false, 0.01},
+		{4, 0, false, 0.15},
+		{4, 0, true, 0.12},
+		{4, 128, false, 0.125},
+		{4, 128, true, 0.11},
+	} {
+		l := QuantizeLinear(w, rows, cols, c.block, c.bits, c.search)
+		e := relErr(w, l.Dequantize())
+		t.Logf("int%d block %d search %v: rel RMS err %.4f", c.bits, c.block, c.search, e)
+		if e > c.max {
+			t.Errorf("int%d block %d search %v: rel RMS err %.4f, expected under %.2f", c.bits, c.block, c.search, e, c.max)
+		}
+	}
+	// exact levels come back exactly
+	l := QuantizeLinear([]float32{-7, -1, 0, 3, 7, 2}, 1, 6, 0, 4, false)
+	for i, want := range []float32{-7, -1, 0, 3, 7, 2} {
+		if got := l.Dequantize()[i]; got != want {
+			t.Errorf("element %d: %v, want %v", i, got, want)
+		}
+	}
+}
