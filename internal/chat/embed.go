@@ -58,7 +58,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	format := a.DefaultFormat(model)
 	for _, seq := range s.Seqs {
 		out := filepath.Join(s.Dir, fmt.Sprintf("embed-%s-s%d.mlpackage", format, seq))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, seq, 0, 0, s.Log)
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: seq, format: format}, s.Log)
 		if err != nil {
 			return EmbedConfig{}, err
 		}
@@ -97,8 +97,9 @@ type Embedder struct {
 	bos    int32
 	prefix int // tokens of QueryPrefix
 
-	mu    sync.Mutex
-	progs []embedProg // shortest first
+	mu     sync.Mutex
+	closed bool        // by Close
+	progs  []embedProg // shortest first
 }
 
 type embedProg struct {
@@ -211,8 +212,12 @@ func (e *Embedder) add(p decode.Program) error {
 	return nil
 }
 
-// Close releases the model.
+// Close releases the model. It waits for the text being embedded, and the texts after it fail
+// with ErrClosed.
 func (e *Embedder) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closed = true
 	for i := len(e.chains) - 1; i >= 0; i-- {
 		e.chains[i].Close()
 	}
@@ -287,6 +292,9 @@ func (e *Embedder) Embed(ctx context.Context, text string, query, truncate bool)
 func (e *Embedder) run(ids []int32, skip int) ([]float32, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil, ErrClosed
+	}
 	i := slices.IndexFunc(e.progs, func(p embedProg) bool { return p.seq >= len(ids) })
 	if i < 0 {
 		return nil, fmt.Errorf("%w: %d tokens, at most %d", ErrTooLong, len(ids), e.MaxTokens())

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -113,20 +115,29 @@ func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error)
 	if err := os.WriteFile(cfgPath, cfg, 0o644); err != nil {
 		return 1, err
 	}
-	srv := &http.Server{Handler: s.Handler()}
+	// The requests' contexts end with base: on the way out, the generations they run stop after
+	// their step, and Shutdown waits for that, so that the models are closed only when no request
+	// runs on them.
+	base, cancel := context.WithCancel(context.Background())
+	srv := &http.Server{Handler: s.Handler(), BaseContext: func(net.Listener) context.Context { return base },
+		ErrorLog: log.New(logFile, "", log.LstdFlags)} // not on OpenCode's screen
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(l) }()
-	defer srv.Close()
+	defer func() {
+		cancel()
+		srv.Shutdown(context.Background())
+	}()
 	fmt.Fprintf(os.Stderr, "serving %s at %s (context %d tokens), log in %s\nstarting %s with %s\n", models[0].name, baseURL, models[0].context, logPath, bin, cfgPath)
 
 	cmd := exec.Command(path, openCodeArgs("hwnpu/"+models[0].name, args)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+cfgPath)
 	// Ctrl-C in the terminal is OpenCode's: catch it here (a caught signal is reset for the
-	// child, an ignored one would stay ignored) and let OpenCode decide.
+	// child, an ignored one would stay ignored) and let OpenCode decide. It stays caught after
+	// OpenCode exits, so that more presses do not cut short the requests stopping and the models
+	// closing.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
-	defer signal.Stop(sig)
 	go func() {
 		for range sig {
 		}

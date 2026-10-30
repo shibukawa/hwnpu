@@ -13,20 +13,22 @@
 //
 // A model lives in -dir/NAME (hwnpu/models/NAME in the user cache directory). The first run
 // downloads it from Hugging Face and converts it; later runs load what is there. A chat model is
-// converted twice with a KV cache of -context tokens, 1 token per call to generate and 64 to read
-// prompts about 20 times faster; the two share one cache, and a conversation reads only what is
-// new since the last answer. An embedding model is converted once per length in -embed-seq, and
+// converted twice with a KV cache of -context tokens, -draft (8) tokens per call to generate (a
+// token and the guesses after it, checked at once) and 64 to read prompts about 20 times faster;
+// the two share one cache, and a conversation reads only what is new since the last answer. An embedding model is converted once per length in -embed-seq, and
 // a text runs on the shortest that holds it.
 //
 // -package (or -embed-package) takes programs converted by hwnpu-convert instead, separated by
 // commas: for a chat model with the same -cache and different -seq, for an embedding model with
 // different -seq.
 //
-// For LFM3-VL, -vision takes its vision encoder (hwnpu-convert -arch lfm3-vision, a package per
-// image size): image_url parts of user messages are read, and in the terminal /image FILE sends an
-// image. For LFM3-Audio, -audio takes its audio encoder (hwnpu-convert -arch lfm3-audio-encoder, a
-// package per clip length): input_audio parts (WAV) are read, and /audio FILE.wav sends a clip.
-// Both go with -package and one chat model. Speech output is not supported (see hwnpu-tts).
+// LFM3-VL-2B, LFM3-Audio-2B and LFM3-Omni-2B read images and audio: their first run also converts
+// the encoders of the checkpoint, the vision encoder for images of 512x512 and the audio encoder
+// for clips of up to 30 seconds. image_url parts of user messages are read, and in the terminal
+// /image FILE sends an image; input_audio parts (WAV) are read, and /audio FILE.wav sends a clip.
+// With -package, -vision takes vision encoders converted by hwnpu-convert -arch lfm3-vision (a
+// package per image size) and -audio audio encoders (-arch lfm3-audio-encoder, a package per clip
+// length). Speech output is not supported (see hwnpu-tts).
 //
 // -opencode serves on a free port from 30000 (or -listen), writes an OpenCode config for the
 // server's chat models, and runs OpenCode on this terminal with the arguments after the flags;
@@ -64,14 +66,16 @@ func main() {
 	tok := flag.String("tokenizer", "", "tokenizer.json of the chat model (default: next to config.json)")
 	embedSeq := flag.String("embed-seq", ints(chat.DefaultEmbedSeqs), "sequence lengths an embedding model is converted for, comma separated; the longest is the most tokens of a text")
 	embedPkgs := flag.String("embed-package", "", "embedding programs converted by hwnpu-convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)")
-	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (with -package)")
-	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (with -package)")
+	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (default: the 512x512 one a model of -list with vision converts)")
+	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (default: the 30 second one a model of -list with audio converts)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
 	dump := flag.String("dump", "", "write each chat request, its prompt and the generated text to this directory (server)")
 	withOpenCode := flag.Bool("opencode", false, "serve on a free port from 30000 (or -listen) and run OpenCode on this terminal with the chat models; the arguments after the flags go to OpenCode")
 	openCodeBin := flag.String("opencode-bin", "opencode", "the OpenCode command (-opencode)")
 	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
+	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
+	draft := flag.Int("draft", 8, "tokens per call of the program that checks drafts (speculative decoding: tokens guessed from the prompt and the answer so far are checked in one call); 0 or 1 turns it off")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
 	temp := flag.Float64("temp", 0.1, "sampling temperature; 0 picks the most likely token")
@@ -117,7 +121,7 @@ func main() {
 		fail(errors.New("-embed-package is for one embedding model; -use names several"))
 	}
 
-	srv := &chat.Server{Think: *think, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: os.Stderr, Dump: *dump}
+	srv := &chat.Server{Think: *think, ThinkBudget: *thinkBudget, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: os.Stderr, Dump: *dump}
 	for _, m := range models {
 		md := filepath.Join(*dir, m.Name)
 		switch m.Kind {
@@ -131,7 +135,7 @@ func main() {
 				if c.Weights == "" {
 					c.Weights = filepath.Join(md, "model.safetensors")
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Log: os.Stderr}); err != nil {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
@@ -181,7 +185,7 @@ func main() {
 		err = serve(ctx, srv, *listen)
 	case len(srv.Chats) > 0:
 		stop() // Ctrl-C stops an answer, not the chat
-		err = talk(srv.Chats[0], *system, *think, *maxNew, srv.Defaults)
+		err = talk(srv.Chats[0], *system, *think, *thinkBudget, *maxNew, srv.Defaults)
 	default:
 		stop()
 		err = search(srv.Embedders[0])
@@ -314,7 +318,7 @@ func read(in *bufio.Reader) (string, bool) {
 }
 
 // talk is the interactive chat.
-func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling) error {
+func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s chat.Sampling) error {
 	var msgs []chat.Message
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
@@ -388,7 +392,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 		var sent chat.Stream
 		var gen []int32
 		thought, answered := false, false
-		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s}, func(g []int32) (bool, error) {
+		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s, Think: e.ThinkLimit(thinkBudget, thinking)}, func(g []int32) (bool, error) {
 			gen = g
 			a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
 			dr, dc := sent.Next(a.Reasoning, a.Content)
@@ -415,8 +419,15 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 		a := e.Template.Parse(e.Tok.Decode(gen, false), thinking, nil, true)
 		r := a.Reasoning
 		msgs = append(msgs, chat.Message{Role: "assistant", Content: chat.Content{Text: a.Content}, Reasoning: &r})
-		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s]%s\n", dim,
-			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), reset)
+		cut := ""
+		if st.ThinkCut {
+			cut = fmt.Sprintf("; thinking cut at %d tokens", thinkBudget)
+		}
+		if st.Drafted > 0 {
+			cut += fmt.Sprintf("; %d of %d drafts accepted", st.Accepted, st.Drafted)
+		}
+		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]%s\n", dim,
+			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), cut, reset)
 	}
 }
 
