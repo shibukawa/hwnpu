@@ -1,6 +1,7 @@
 // Package palette compresses weights to 4 bit lookup tables, the format the Apple Neural Engine
 // reads at full speed: every group of rows shares a table of 16 fp16 values and each weight
 // becomes a 4 bit index into it (constexpr_lut_to_dense, per_grouped_channel in coremltools).
+// Tables of 64 and 256 entries (6 and 8 bit indices) are the same with more levels.
 package palette
 
 import (
@@ -10,13 +11,14 @@ import (
 	"sync"
 )
 
-// LUT4 is a palettized matrix: Indices holds one 4 bit entry per element in row major order, two
-// per byte with the low nibble first; LUT holds 16 fp16 values per block of Group rows by
-// ColBlock columns, blocks in row major order.
+// LUT4 is a palettized matrix: Indices holds one Bits wide entry per element in row major
+// order, packed low bits first (two per byte with the low nibble first for 4 bits); LUT holds
+// 2^Bits fp16 values per block of Group rows by ColBlock columns, blocks in row major order.
 type LUT4 struct {
 	Rows, Cols int
 	Group      int // rows per table
 	ColBlock   int // columns per table (Cols for whole rows)
+	Bits       int // 4, 6 or 8
 	Indices    []byte
 	LUT        []uint16
 }
@@ -40,14 +42,24 @@ const (
 // rows by colBlock columns (0 means whole rows). iters is the number of Lloyd refinement passes
 // for the k-means modes; 8 is plenty for a 16 entry table.
 func Quantize(w []float32, rows, cols, group, colBlock, iters int, mode Mode) LUT4 {
+	return QuantizeBits(w, rows, cols, group, colBlock, 4, iters, mode)
+}
+
+// QuantizeBits is Quantize with tables of 2^bits entries (bits 4, 6 or 8).
+func QuantizeBits(w []float32, rows, cols, group, colBlock, bits, iters int, mode Mode) LUT4 {
 	if colBlock <= 0 || colBlock > cols {
 		colBlock = cols
 	}
 	if rows%group != 0 || cols%colBlock != 0 {
 		panic("palette: shape not a multiple of the block")
 	}
+	if bits != 4 && bits != 6 && bits != 8 {
+		panic("palette: tables of 4, 6 or 8 bits only")
+	}
+	k := 1 << bits
 	nr, nc := rows/group, cols/colBlock
-	out := LUT4{Rows: rows, Cols: cols, Group: group, ColBlock: colBlock, Indices: make([]byte, (rows*cols+1)/2), LUT: make([]uint16, nr*nc*16)}
+	out := LUT4{Rows: rows, Cols: cols, Group: group, ColBlock: colBlock, Bits: bits, LUT: make([]uint16, nr*nc*k)}
+	idx := make([]uint8, rows*cols)
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
 	for g := 0; g < nr*nc; g++ {
@@ -61,37 +73,63 @@ func Quantize(w []float32, rows, cols, group, colBlock, iters int, mode Mode) LU
 			for r := rb * group; r < (rb+1)*group; r++ {
 				vals = append(vals, w[r*cols+cb*colBlock:r*cols+(cb+1)*colBlock]...)
 			}
-			c := fit(vals, iters, mode)
+			c := fit(vals, k, iters, mode)
 			for i := range c {
-				out.LUT[g*16+i] = f16(c[i])
+				out.LUT[g*k+i] = f16(c[i])
 			}
 			// assign with the rounded table so the indices match what the device will use
 			for i := range c {
-				c[i] = f16val(out.LUT[g*16+i])
+				c[i] = f16val(out.LUT[g*k+i])
 			}
 			i := 0
 			for r := rb * group; r < (rb+1)*group; r++ {
 				for j := r*cols + cb*colBlock; j < r*cols+(cb+1)*colBlock; j++ {
-					k := nearest(c, vals[i])
+					idx[j] = uint8(nearest(c, vals[i]))
 					i++
-					// blocks of one row block never share a byte with another goroutine's: cols is
-					// even, so a row's indices start on a byte boundary
-					out.Indices[j/2] |= byte(k) << (4 * uint(j%2))
 				}
 			}
 		}(g)
 	}
 	wg.Wait()
+	out.Indices = pack(idx, bits)
 	return out
 }
 
-// fit runs k-means with 16 centers over vals. The centers start at the quantiles of the values,
+// pack packs indices of the given width, low bits first.
+func pack(idx []uint8, bits int) []byte {
+	out := make([]byte, (len(idx)*bits+7)/8)
+	for i, q := range idx {
+		bit := i * bits
+		v := uint16(q) << (bit % 8)
+		out[bit/8] |= byte(v)
+		if v>>8 != 0 {
+			out[bit/8+1] |= byte(v >> 8)
+		}
+	}
+	return out
+}
+
+// index reads entry i of indices packed by pack.
+func (l LUT4) index(i int) int {
+	bits := l.Bits
+	if bits == 0 {
+		bits = 4
+	}
+	bit := i * bits
+	v := uint16(l.Indices[bit/8])
+	if bit/8+1 < len(l.Indices) {
+		v |= uint16(l.Indices[bit/8+1]) << 8
+	}
+	return int(v>>(bit%8)) & (1<<bits - 1)
+}
+
+// fit runs k-means with k centers over vals. The centers start at the quantiles of the values,
 // so that every center begins with the same share of them: weights are heavy tailed, and a start
 // spread evenly between the extremes leaves most centers in the empty tails, where Lloyd's
 // algorithm never moves them. Centers are kept sorted so that assignment is a binary search over
 // the midpoints.
-func fit(vals []float32, iters int, mode Mode) [16]float32 {
-	var c [16]float32
+func fit(vals []float32, k, iters int, mode Mode) []float32 {
+	c := make([]float32, k)
 	if mode != KMeans {
 		lo, hi := float32(math.MaxFloat32), float32(-math.MaxFloat32)
 		for _, v := range vals {
@@ -99,7 +137,7 @@ func fit(vals []float32, iters int, mode Mode) [16]float32 {
 			hi = max(hi, v)
 		}
 		for i := range c {
-			c[i] = lo + (hi-lo)*float32(i)/15
+			c[i] = lo + (hi-lo)*float32(i)/float32(k-1)
 		}
 		if mode == Uniform || hi == lo {
 			return c
@@ -124,18 +162,18 @@ func fit(vals []float32, iters int, mode Mode) [16]float32 {
 		return c
 	}
 	for i := range c {
-		c[i] = sample[(2*i+1)*len(sample)/32]
+		c[i] = sample[(2*i+1)*len(sample)/(2*k)]
 	}
 	return lloyd(c, vals, iters)
 }
 
 // lloyd refines sorted centers c over vals.
-func lloyd(c [16]float32, vals []float32, iters int) [16]float32 {
-	var sum [16]float64
-	var cnt [16]int
+func lloyd(c []float32, vals []float32, iters int) []float32 {
+	sum := make([]float64, len(c))
+	cnt := make([]int, len(c))
 	for it := 0; it < iters; it++ {
-		sum = [16]float64{}
-		cnt = [16]int{}
+		clear(sum)
+		clear(cnt)
 		for _, v := range vals {
 			k := nearest(c, v)
 			sum[k] += float64(v)
@@ -146,14 +184,14 @@ func lloyd(c [16]float32, vals []float32, iters int) [16]float32 {
 				c[k] = float32(sum[k] / float64(cnt[k]))
 			}
 		}
-		sort.Slice(c[:], func(i, j int) bool { return c[i] < c[j] })
+		sort.Slice(c, func(i, j int) bool { return c[i] < c[j] })
 	}
 	return c
 }
 
 // nearest returns the index of the closest center; c must be sorted.
-func nearest(c [16]float32, v float32) int {
-	lo, hi := 0, 15
+func nearest(c []float32, v float32) int {
+	lo, hi := 0, len(c)-1
 	for lo < hi {
 		mid := (lo + hi) / 2
 		if v > (c[mid]+c[mid+1])/2 {
@@ -169,10 +207,13 @@ func nearest(c [16]float32, v float32) int {
 func (l LUT4) Dequantize() []float32 {
 	out := make([]float32, l.Rows*l.Cols)
 	nc := l.Cols / l.ColBlock
+	bits := l.Bits
+	if bits == 0 {
+		bits = 4
+	}
 	for i := range out {
-		q := l.Indices[i/2] >> (4 * uint(i%2)) & 15
 		r, c := i/l.Cols, i%l.Cols
-		out[i] = f16val(l.LUT[(r/l.Group*nc+c/l.ColBlock)*16+int(q)])
+		out[i] = f16val(l.LUT[(r/l.Group*nc+c/l.ColBlock)<<bits+l.index(i)])
 	}
 	return out
 }

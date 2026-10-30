@@ -13,7 +13,8 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
-// DefaultRepo is the Hugging Face repository of the model Prepare fetches.
+// DefaultRepo is the Hugging Face repository of the model Prepare fetches when not told. The
+// other one it takes is google/gemma-4-E2B-it.
 const DefaultRepo = "LiquidAI/LFM3-1.7B"
 
 var hubURL = "https://huggingface.co/"
@@ -56,8 +57,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 	}
 	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo)}
+	a, _, err := llm.LoadConfig(c.ModelConfig, "")
+	if err != nil {
+		return Config{}, err
+	}
 	for _, p := range []struct{ seq, parts int }{{1, 2}, {prefillSeq, 0}} {
-		out := filepath.Join(s.Dir, fmt.Sprintf("lfm3-c%d-q%d.mlpackage", s.Context, p.seq))
+		out := filepath.Join(s.Dir, fmt.Sprintf("%s-c%d-q%d.mlpackage", a.Name, s.Context, p.seq))
 		path, err := convert(ctx, c, out, p.seq, p.parts, s.Context, s.Log)
 		if err != nil {
 			return Config{}, err
@@ -86,14 +91,16 @@ func convert(ctx context.Context, c Config, out string, seq, parts, cache int, l
 		return "", err
 	}
 	defer w.Close()
-	// the converter's defaults, with the table fitting that keeps LFM3's answers as they were
+	// the converter's defaults and the architecture's format, with the table fitting that keeps
+	// LFM3's answers as they were
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var opts llm.Options
-	set := llm.BindFlags(fs, &opts, "lut4")
+	set := llm.BindFlags(fs, &opts, "")
 	if err := fs.Parse([]string{"-quant", "kmeans-minmax"}); err != nil {
 		return "", err
 	}
 	set()
+	opts.Format = a.DefaultFormat()
 	opts.Seq, opts.Cache = seq, cache
 	fmt.Fprintf(log, "converting %s for the Neural Engine (cache %d, %d per call); this takes a minute or two\n", filepath.Base(out), cache, seq)
 	path, err := llm.Convert(a, model, w, out, "any", parts, opts, log)

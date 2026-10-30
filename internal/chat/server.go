@@ -105,7 +105,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	if req.ChatTemplateKwargs.EnableThinking != nil {
 		think = *req.ChatTemplateKwargs.EnableThinking
 	}
-	prompt, err := Render(req.Messages, req.Tools, Options{NoThink: !think, KeepThinking: req.ChatTemplateKwargs.PreserveThinking})
+	prompt, thinking, err := s.E.Template.Render(req.Messages, req.Tools, Options{NoThink: !think, KeepThinking: req.ChatTemplateKwargs.PreserveThinking})
 	if err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "", err.Error())
 		return
@@ -173,7 +173,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	var gen []int32
 	stats, err := s.E.Generate(r.Context(), g, func(sofar []int32) (bool, error) {
 		gen = sofar
-		a = Parse(s.E.Tok.Decode(sofar, false), think, req.Tools, false)
+		a = s.E.Template.Parse(s.E.Tok.Decode(sofar, false), thinking, req.Tools, false)
 		c, stopped := cut(a.Content)
 		if !req.Stream {
 			return stopped, nil
@@ -207,7 +207,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := s.E.Tok.Decode(gen, false)
-	a = Parse(text, think, req.Tools, true)
+	a = s.E.Template.Parse(text, thinking, req.Tools, true)
 	a.Content, _ = cut(a.Content)
 	if s.Dump != "" {
 		b, _ := json.MarshalIndent(map[string]any{"request": json.RawMessage(body), "prompt": prompt, "generated": text, "stats": stats}, "", " ")

@@ -72,7 +72,9 @@ func records(fs ...mlpackage.Feature) []FeatureRecord {
 
 // WritePart writes the program for opts (one part when opts.Start or opts.Layers is set) to the
 // package at path. With opts.Cache the model must be Cached, and the part has the cache inputs and
-// outputs of its own layers. describe fills in the package's description and metadata.
+// outputs of its own layers. A Cached model is built with BuildCached also without a cache, so
+// that a part keeps the outputs a later part takes by name (internal/llm/chain). describe fills
+// in the package's description and metadata.
 func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlpackage.Package)) (PartRecord, error) {
 	pkg, err := mlpackage.Create(path)
 	if err != nil {
@@ -83,11 +85,11 @@ func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlp
 	}
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
 	var ins, outs []mlpackage.Feature
-	if opts.Cache > 0 {
-		cm, ok := m.(Cached)
-		if !ok {
-			return PartRecord{}, fmt.Errorf("llm: the model cannot be built with a KV cache")
-		}
+	cm, cached := m.(Cached)
+	if opts.Cache > 0 && !cached {
+		return PartRecord{}, fmt.Errorf("llm: the model cannot be built with a KV cache")
+	}
+	if cached {
 		ins, outs, err = cm.BuildCached(b, w, opts)
 	} else {
 		var y mlpackage.Feature

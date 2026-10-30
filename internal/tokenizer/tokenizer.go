@@ -3,9 +3,11 @@
 // Load reads a Hugging Face tokenizer.json with the byte-level BPE of GPT-2 and its descendants
 // (LFM, Llama 3, Qwen): added tokens are matched in the raw text first, the rest is split by the
 // pre-tokenizer pattern, each piece is mapped byte by byte to printable characters and merged by
-// rank. Other models (WordPiece, Unigram, SentencePiece byte fallback) and other pre-tokenizer
-// patterns are rejected by Load. LoadSentencePiece reads a SentencePiece BPE tokenizer.model
-// instead (PLaMo).
+// rank. It also reads the BPE with byte fallback that SentencePiece models ship as tokenizer.json
+// (Gemma): spaces become ▁, the text between added tokens is merged by rank as one piece, and a
+// character outside the vocabulary becomes its UTF-8 bytes (<0xE3>). Other models (WordPiece,
+// Unigram) and other normalizers and pre-tokenizer patterns are rejected by Load.
+// LoadSentencePiece reads a SentencePiece BPE tokenizer.model instead (PLaMo).
 package tokenizer
 
 import (
@@ -18,7 +20,7 @@ import (
 	"unicode/utf8"
 )
 
-// Tokenizer is a loaded byte-level BPE tokenizer.
+// Tokenizer is a loaded BPE tokenizer, byte-level or with byte fallback.
 type Tokenizer struct {
 	vocab        map[string]int32
 	tokens       []string // by id; added tokens hold their content
@@ -28,6 +30,8 @@ type Tokenizer struct {
 	added        []string // contents, longest first
 	addedID      map[string]int32
 	cache        map[string][]int32
+
+	fallback *fallback // the BPE with byte fallback, or nil for byte-level
 }
 
 // The pre-tokenizer patterns Load accepts. They are applied by split, not by a regular expression:
@@ -84,8 +88,11 @@ func parse(raw []byte) (*Tokenizer, error) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, err
 	}
-	if f.Model.Type != "BPE" || f.Model.ByteFallback {
-		return nil, fmt.Errorf("model %s (byte fallback %v) is not supported; only byte-level BPE", f.Model.Type, f.Model.ByteFallback)
+	if f.Model.Type == "BPE" && f.Model.ByteFallback {
+		return parseFallback(raw, &f)
+	}
+	if f.Model.Type != "BPE" {
+		return nil, fmt.Errorf("model %s is not supported; only BPE", f.Model.Type)
 	}
 	if n := strings.TrimSpace(string(f.Normalizer)); n != "" && n != "null" {
 		return nil, fmt.Errorf("normalizer %s is not supported", n)
@@ -96,6 +103,15 @@ func parse(raw []byte) (*Tokenizer, error) {
 		pt.Pretokenizers[1].Type != "ByteLevel" || pt.Pretokenizers[1].AddPrefix || pt.Pretokenizers[1].UseRegex {
 		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4 pattern, isolated) then ByteLevel without prefix space")
 	}
+	t := newTokenizer(&f)
+	if err := t.readMerges(&f); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+// newTokenizer holds the vocabulary and the added tokens of f.
+func newTokenizer(f *file) *Tokenizer {
 	t := &Tokenizer{vocab: f.Model.Vocab, ranks: map[[2]string]int{}, ignoreMerges: f.Model.IgnoreMerges, addedID: map[string]int32{}, cache: map[string][]int32{}}
 	n := int32(0)
 	for _, id := range f.Model.Vocab {
@@ -116,23 +132,28 @@ func parse(raw []byte) (*Tokenizer, error) {
 		t.added = append(t.added, a.Content)
 	}
 	sort.Slice(t.added, func(i, j int) bool { return len(t.added[i]) > len(t.added[j]) })
+	return t
+}
+
+// readMerges reads the merge ranks.
+func (t *Tokenizer) readMerges(f *file) error {
 	for i, m := range f.Model.Merges {
 		var pair [2]string
 		var s string
 		if json.Unmarshal(m, &s) == nil {
 			a, b, ok := strings.Cut(s, " ")
 			if !ok {
-				return nil, fmt.Errorf("merge %d %q has no space", i, s)
+				return fmt.Errorf("merge %d %q has no space", i, s)
 			}
 			pair = [2]string{a, b}
 		} else if err := json.Unmarshal(m, &pair); err != nil {
-			return nil, fmt.Errorf("merge %d: %w", i, err)
+			return fmt.Errorf("merge %d: %w", i, err)
 		}
 		if _, dup := t.ranks[pair]; !dup {
 			t.ranks[pair] = i
 		}
 	}
-	return t, nil
+	return nil
 }
 
 // VocabSize is one more than the largest id.
@@ -177,6 +198,9 @@ func (t *Tokenizer) addedAt(s string) string {
 }
 
 func (t *Tokenizer) encodeOrdinary(ids []int32, text string) []int32 {
+	if t.fallback != nil {
+		return t.fallback.encode(t, ids, text)
+	}
 	for _, piece := range split(text) {
 		ids = append(ids, t.bpe(piece)...)
 	}
@@ -237,6 +261,9 @@ func (t *Tokenizer) bpe(piece string) []int32 {
 // Decode turns token ids back into text. Added tokens are written as their content unless
 // skipSpecial is set.
 func (t *Tokenizer) Decode(ids []int32, skipSpecial bool) string {
+	if t.fallback != nil {
+		return t.fallback.decode(t, ids, skipSpecial)
+	}
 	var out []byte
 	for _, id := range ids {
 		if id < 0 || int(id) >= len(t.tokens) {

@@ -69,3 +69,37 @@ func TestQuantizeLFM3(t *testing.T) {
 		}
 	}
 }
+
+// Wider tables halve the error with every two bits or so, and the indices read back as packed.
+func TestQuantizeBits(t *testing.T) {
+	rng := rand.New(rand.NewSource(2))
+	const rows, cols = 32, 1000
+	w := make([]float32, rows*cols)
+	for i := range w {
+		w[i] = float32(rng.NormFloat64())
+	}
+	prev := 1.0
+	for _, bits := range []int{4, 6, 8} {
+		q := QuantizeBits(w, rows, cols, 16, 0, bits, 8, KMeansMinMax)
+		if len(q.Indices) != (rows*cols*bits+7)/8 || len(q.LUT) != rows/16<<bits {
+			t.Fatalf("%d bits: %d index bytes, %d table entries", bits, len(q.Indices), len(q.LUT))
+		}
+		d := q.Dequantize()
+		e := relErr(w, d)
+		t.Logf("%d bits: rel RMS err %.4f", bits, e)
+		if e > prev/2 {
+			t.Errorf("%d bits: rel RMS err %.4f, not under half of %.4f", bits, e, prev)
+		}
+		prev = e
+		// every value is an entry of its row's table
+		for i, v := range d {
+			k := q.index(i)
+			if want := f16val(q.LUT[(i/cols/16)<<bits+k]); v != want {
+				t.Fatalf("%d bits: value %d is %g, table entry %g", bits, i, v, want)
+			}
+		}
+	}
+	if Quantize(w, rows, cols, 16, 0, 8, KMeansMinMax).Bits != 4 {
+		t.Error("Quantize is not 4 bits")
+	}
+}
