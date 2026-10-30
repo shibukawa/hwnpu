@@ -45,7 +45,7 @@ func main() {
 	use := flag.String("use", "LFM3-1.7B", "models to run, comma separated: names that -list shows, or Hugging Face repositories OWNER/NAME; one in the terminal")
 	list := flag.Bool("list", false, "list the models and what each is for, and exit")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing")
-	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of a chat model's programs)")
+	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of a chat model's programs); over 16320 the cache is held in chunks of 16384, slower per token")
 	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the chat model (default: in its directory)")
 	weights := flag.String("weights", "", "checkpoint the chat model's token embeddings are read from: .safetensors or .gguf (default: in its directory)")
@@ -284,7 +284,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
 	}
-	fmt.Fprintf(os.Stderr, "context %d tokens. /reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n", e.Context())
+	fmt.Fprintln(os.Stderr, "/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer")
 	in := bufio.NewReader(os.Stdin)
 	for {
 		text, ok := read(in)
