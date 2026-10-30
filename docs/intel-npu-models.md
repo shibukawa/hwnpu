@@ -145,8 +145,9 @@ OpenVINO GenAI の NPU 向けの推奨は「int4、対称、チャネルごと (
 
 | Core ML の既定 | Intel の既定 | 該当 |
 |---|---|---|
-| `lut4` | `int4` | LFM3-1.7B、Gemma 4 E2B、BERT、PLaMo-Embedding |
-| `lut6`、`lut8` | `int8` | d1、LFM3-VL、LFM3-Audio/TTS (M3 で lut4 が劣化した系統。精度を優先) |
+| `lut4` | `int4` | LFM3-1.7B |
+| `lut4` | `int8` (`Arch.IntelFormat`) | BERT、PLaMo-Embedding (int4 では文埋め込みが崩れる。11 節) |
+| `lut6`、`lut8` | `int8` | Gemma 4 E2B (lut6)、d1、LFM3-VL、LFM3-Audio/TTS (M3 で lut4 が劣化した系統。精度を優先) |
 | `fp16` | `fp16` | |
 
 `KeepFP16`、`FormatFor` はそのまま効く。`FormatFor` に `lut*` が書かれていたら、同じ表で読み替える。
@@ -265,7 +266,22 @@ P1〜P3 は Mac だけで進められる。P4 には Intel 機が要る。
 
 all-MiniLM-L6-v2 (隠れ層 384、6 層) は 4 ビットに弱い。int4 でも 0.93 で、文埋め込みに使うなら int8 にしたほうがよい。**Mac の既定 (lut4) では 0.23 で、ほとんど使えない**。BERT の既定の形式は見直しが要る (Intel 向けの作業とは別の問題)。
 
-P1 で残っていること:
+PLaMo-Embedding-1B の実物 (`plamo` の `TestIntelIRCheckpoint`、`HWNPU_PLAMO_DIR`): 3 つの文 (日本語 2、英語 1、`-seq 48`) の文埋め込み (BOS の後の行の平均) を、fp16 の MIL を milcpu で動かした結果と比べ、3 つのうち最も低いコサイン類似度を取った。
 
-- PLaMo-Embedding-1B の実物での L1。チェックポイント (2.1 GB) がこの Mac にない。
+| 形式 | 最も低いコサイン類似度 |
+|---|---|
+| fp16 | 1.00000 |
+| int8 | 0.99959 |
+| int4 (行ごと) | 0.912 |
+| int4-g128 | 0.919 |
+| int4-g32 | 0.936 |
+| 参考: lut4 uniform (milcpu) | 0.198 |
+| 参考: lut4 kmeans-minmax (milcpu、hwnpu-chat の設定) | 0.756 |
+| 参考: lut8 kmeans-minmax (milcpu) | 0.998 |
+
+埋め込みモデルは、MiniLM も PLaMo も 4 ビットでは崩れ、8 ビットなら保たれる。そこで Intel の既定を BERT と PLaMo-Embedding では int8 にした (`Arch.IntelFormat`)。
+
+**Mac 側の問題**: hwnpu-chat は PLaMo-Embedding を lut4 (kmeans-minmax) で変換しており (`chat/model.go`)、fp16 とのコサイン類似度は 0.76 しかない。`TestPlamoEmbeddingGolden` の合格条件 (HF の結果と 0.98 以上) には届かないはず。lut8 なら 0.998。
+
+P1 は以上で終わり。
 
