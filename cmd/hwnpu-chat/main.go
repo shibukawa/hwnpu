@@ -9,6 +9,7 @@
 //	hwnpu-chat -list
 //	hwnpu-chat -use plamo-embedding-1b
 //	hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
+//	hwnpu-chat -opencode [opencode arguments]
 //
 // A model lives in -dir/NAME (hwnpu/models/NAME in the user cache directory). The first run
 // downloads it from Hugging Face and converts it; later runs load what is there. A chat model is
@@ -20,6 +21,10 @@
 // -package (or -embed-package) takes programs converted by hwnpu-convert instead, separated by
 // commas: for a chat model with the same -cache and different -seq, for an embedding model with
 // different -seq.
+//
+// -opencode serves on a free port from 30000 (or -listen), writes an OpenCode config for the
+// server's chat models, and runs OpenCode on this terminal with the arguments after the flags;
+// when it exits, so does the server.
 package main
 
 import (
@@ -55,6 +60,8 @@ func main() {
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
 	dump := flag.String("dump", "", "write each chat request, its prompt and the generated text to this directory (server)")
+	withOpenCode := flag.Bool("opencode", false, "serve on a free port from 30000 (or -listen) and run OpenCode on this terminal with the chat models; the arguments after the flags go to OpenCode")
+	openCodeBin := flag.String("opencode-bin", "opencode", "the OpenCode command (-opencode)")
 	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
@@ -63,7 +70,7 @@ func main() {
 	topP := flag.Float64("top-p", 0, "sample from the most likely tokens up to this probability (0: off)")
 	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
 	flag.Parse()
-	if flag.NArg() > 0 {
+	if flag.NArg() > 0 && !*withOpenCode {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -83,7 +90,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	models, err := resolve(ctx, *use, *dir, *listen != "")
+	models, err := resolve(ctx, *use, *dir, *listen != "" || *withOpenCode)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
 		os.Exit(2)
@@ -142,6 +149,19 @@ func main() {
 		}
 	}
 	switch {
+	case *withOpenCode:
+		stop()
+		code, err := openCode(srv, *listen, openCodeDir(*cacheDir), *openCodeBin, flag.Args())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
+		}
+		for _, e := range srv.Chats {
+			e.Close()
+		}
+		for _, e := range srv.Embedders {
+			e.Close()
+		}
+		os.Exit(code)
 	case *listen != "":
 		err = serve(ctx, srv, *listen)
 	case len(srv.Chats) > 0:
