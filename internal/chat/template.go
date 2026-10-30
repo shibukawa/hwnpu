@@ -142,6 +142,10 @@ type Template interface {
 	Parse(text string, thinking bool, tools []Tool, final bool) Answer
 	// Stops are the special tokens that end an answer.
 	Stops() []string
+	// Think gives the special tokens that open and close the model's thinking, and the text fed
+	// to end the thinking when it has gone on for too long (Request.Think): a sentence that says
+	// so, and close.
+	Think() (open, close, end string)
 }
 
 // LFM3 is the chat format of LiquidAI/LFM3-1.7B: Render and Parse.
@@ -159,6 +163,14 @@ func (lfm3Format) Parse(text string, thinking bool, tools []Tool, final bool) An
 }
 
 func (lfm3Format) Stops() []string { return []string{"<|im_end|>", "<|endoftext|>"} }
+
+func (lfm3Format) Think() (open, close, end string) {
+	return "<think>", "</think>", thinkOver + "</think>"
+}
+
+// thinkOver ends thinking that has reached its budget, before the closing token: the model
+// answers from what it has thought so far.
+const thinkOver = "\n\nI have no more time to think and must answer now.\n"
 
 // TemplateFor returns the chat format of an architecture (llm.Arch's Name).
 func TemplateFor(arch string) (Template, error) {

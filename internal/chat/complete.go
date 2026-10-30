@@ -13,10 +13,10 @@ type Completion struct {
 }
 
 // Complete answers msgs with tools in one call: it renders the prompt in the model's chat
-// format, generates, and takes the answer apart. emit (nil for none) gets the answer parsed so
-// far after each token and returns true to stop there. The media of the messages go with the
-// prompt.
-func (e *Engine) Complete(ctx context.Context, msgs []Message, tools []Tool, o Options, s Sampling, maxTokens int, emit func(partial Answer) (stop bool)) (Completion, error) {
+// format, generates, and takes the answer apart. thinkBudget bounds the thinking (ThinkLimit;
+// 0 for none). emit (nil for none) gets the answer parsed so far after each token and returns
+// true to stop there. The media of the messages go with the prompt.
+func (e *Engine) Complete(ctx context.Context, msgs []Message, tools []Tool, o Options, s Sampling, maxTokens, thinkBudget int, emit func(partial Answer) (stop bool)) (Completion, error) {
 	var c Completion
 	prompt, thinking, err := e.Template.Render(msgs, tools, o)
 	if err != nil {
@@ -28,7 +28,8 @@ func (e *Engine) Complete(ctx context.Context, msgs []Message, tools []Tool, o O
 		return c, err
 	}
 	var gen []int32
-	c.Stats, err = e.Generate(ctx, Request{Prompt: ids, MaxTokens: maxTokens, Sampling: s}, func(sofar []int32) (bool, error) {
+	req := Request{Prompt: ids, MaxTokens: maxTokens, Sampling: s, Think: e.ThinkLimit(thinkBudget, thinking)}
+	c.Stats, err = e.Generate(ctx, req, func(sofar []int32) (bool, error) {
 		gen = sofar
 		if emit != nil {
 			return emit(e.Template.Parse(e.Tok.Decode(sofar, false), thinking, tools, false)), nil

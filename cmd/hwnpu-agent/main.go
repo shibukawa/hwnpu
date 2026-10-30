@@ -15,9 +15,9 @@
 // it asks on the terminal, unless -yes or the command matches -allow (e.g. -allow "go *,ls*");
 // without a terminal and without -yes it runs nothing else.
 //
-// The model must read a file before edit or write changes it, its thinking is cut at
-// -think-budget tokens and the answer asked without thinking, a call it makes twice is not run
-// again, and an answer it repeats ends the task.
+// The model must read a file before edit or write changes it, its thinking is closed at
+// -think-budget tokens so that it answers, a call it makes twice is not run again, and an
+// answer it repeats ends the task.
 //
 // The model is -use, prepared like hwnpu-chat's (downloaded and converted into -dir on the
 // first run, with a context of -context tokens). -tools offers fewer tools, -system replaces
@@ -55,7 +55,8 @@ func main() {
 	yes := flag.Bool("yes", false, "run commands and change files without asking")
 	think := flag.Bool("think", true, "let the model think before each answer")
 	keep := flag.Bool("keep-thinking", false, "keep the thinking of earlier rounds of a task in the conversation (costs context)")
-	thinkBudget := flag.Int("think-budget", 1024, "most tokens of thinking before an answer; past it the answer is asked without thinking (-1: no limit)")
+	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
+	draft := flag.Int("draft", 8, "tokens per call of the program that generates: a token and N-1 guesses checked at once (speculative decoding); 0 or 1 generates one token per call")
 	allow := flag.String("allow", "", "commands that run without asking, comma separated, with * for any text, e.g. \"go *,ls*,cat *\" (each part of a command joined with && or ; must match)")
 	steps := flag.Int("steps", 30, "most rounds of one task")
 	maxNew := flag.Int("n", 2048, "most tokens of one answer; also the tokens kept free when old tool results are folded to fit the context")
@@ -115,7 +116,7 @@ func main() {
 		if c.Weights == "" {
 			c.Weights = filepath.Join(md, "model.safetensors")
 		}
-	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Log: os.Stderr}); err != nil {
+	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Log: os.Stderr}); err != nil {
 		fail(err)
 	}
 	c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
@@ -126,6 +127,9 @@ func main() {
 	defer e.Close()
 	stop()
 
+	if *thinkBudget <= 0 {
+		*thinkBudget = -1 // no limit
+	}
 	in := bufio.NewReader(os.Stdin)
 	cfg := agent.Config{
 		Dir: work, Tools: strings.Split(*tools, ","), System: opening, Instructions: instructions,
@@ -229,6 +233,9 @@ func run(s *agent.Session, task string) error {
 			looped := ""
 			if c.Looped {
 				looped = ", stopped repeating itself"
+			}
+			if c.Drafted > 0 {
+				looped += fmt.Sprintf("; %d of %d drafts accepted", c.Accepted, c.Drafted)
 			}
 			fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]%s\n", dim,
 				c.Stats.Prompt, c.Stats.Prompt-c.Reused, c.Prefill.Seconds(), c.Stats.Generated, float64(c.Stats.Generated)/max(c.Decode.Seconds(), 1e-9), looped, reset)

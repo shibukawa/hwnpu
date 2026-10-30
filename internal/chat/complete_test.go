@@ -57,7 +57,7 @@ func TestComplete(t *testing.T) {
 		t.Fatalf("Count = %d, %v", n, err)
 	}
 	seen := 0
-	c, err := e.Complete(ctx, msgs, tools, Options{NoThink: true}, Sampling{}, 5, func(Answer) bool { seen++; return false })
+	c, err := e.Complete(ctx, msgs, tools, Options{NoThink: true}, Sampling{}, 5, 5, func(Answer) bool { seen++; return false })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestComplete(t *testing.T) {
 		t.Errorf("generated %q, stats %+v, emit called %d times", c.Raw, c.Stats, seen)
 	}
 	// emit stops the generation
-	c, err = e.Complete(ctx, msgs, tools, Options{NoThink: true}, Sampling{}, 5, func(Answer) bool { return true })
+	c, err = e.Complete(ctx, msgs, tools, Options{NoThink: true}, Sampling{}, 5, 0, func(Answer) bool { return true })
 	if err != nil || c.Stats.Generated != 1 || c.Finish != "stop" {
 		t.Errorf("stopped: stats %+v, %v", c.Stats, err)
 	}

@@ -49,9 +49,16 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 		}
 	}
 	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo)}
+	a, model, err := llm.LoadConfig(c.ModelConfig, "")
+	if err != nil {
+		return EmbedConfig{}, err
+	}
+	// the format is in the name, so that a program of an earlier default (lut4 before lut8) is
+	// converted again rather than loaded
+	format := a.DefaultFormat(model)
 	for _, seq := range s.Seqs {
-		out := filepath.Join(s.Dir, fmt.Sprintf("embed-s%d.mlpackage", seq))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: seq}, s.Log)
+		out := filepath.Join(s.Dir, fmt.Sprintf("embed-%s-s%d.mlpackage", format, seq))
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: seq, format: format}, s.Log)
 		if err != nil {
 			return EmbedConfig{}, err
 		}
