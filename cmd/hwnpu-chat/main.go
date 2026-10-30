@@ -13,9 +13,9 @@
 //
 // A model lives in -dir/NAME (hwnpu/models/NAME in the user cache directory). The first run
 // downloads it from Hugging Face and converts it; later runs load what is there. A chat model is
-// converted twice with a KV cache of -context tokens, 1 token per call to generate and 64 to read
-// prompts about 20 times faster; the two share one cache, and a conversation reads only what is
-// new since the last answer. An embedding model is converted once per length in -embed-seq, and
+// converted twice with a KV cache of -context tokens, -draft (8) tokens per call to generate (a
+// token and the guesses after it, checked at once) and 64 to read prompts about 20 times faster;
+// the two share one cache, and a conversation reads only what is new since the last answer. An embedding model is converted once per length in -embed-seq, and
 // a text runs on the shortest that holds it.
 //
 // -package (or -embed-package) takes programs converted by hwnpu-convert instead, separated by
@@ -75,6 +75,7 @@ func main() {
 	openCodeBin := flag.String("opencode-bin", "opencode", "the OpenCode command (-opencode)")
 	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
 	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
+	draft := flag.Int("draft", 8, "tokens per call of the program that checks drafts (speculative decoding: tokens guessed from the prompt and the answer so far are checked in one call); 0 or 1 turns it off")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
 	temp := flag.Float64("temp", 0.1, "sampling temperature; 0 picks the most likely token")
@@ -134,7 +135,7 @@ func main() {
 				if c.Weights == "" {
 					c.Weights = filepath.Join(md, "model.safetensors")
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Log: os.Stderr}); err != nil {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
@@ -421,6 +422,9 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 		cut := ""
 		if st.ThinkCut {
 			cut = fmt.Sprintf("; thinking cut at %d tokens", thinkBudget)
+		}
+		if st.Drafted > 0 {
+			cut += fmt.Sprintf("; %d of %d drafts accepted", st.Accepted, st.Drafted)
 		}
 		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]%s\n", dim,
 			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), cut, reset)

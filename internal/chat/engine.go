@@ -70,6 +70,10 @@ type Engine struct {
 	images []encoded // encoded images and clips, the most recently used last
 	nextID int32     // the token id of the next one's first row (they count down from -1)
 
+	// drafter guesses the next tokens of a sequence, up to k (speculative decoding); nil for
+	// none. Load sets it to Lookup when the model has a program to check drafts with (Draft).
+	drafter func(seq []int32, k int) []int32
+
 	mu     sync.Mutex
 	closed bool // by Close: the programs and the weights are gone
 	sess   *decode.Session
@@ -244,8 +248,44 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		}
 		logf("audio encoder for clips of up to %.0f s, %s, loaded in %.1fs", e.aud.MaxSeconds(), where, time.Since(t0).Seconds())
 	}
-	logf("ready: context %d tokens, up to %d tokens per call", e.sess.Cache(), e.sess.Q())
+	if d := e.Draft(); d > 0 {
+		e.drafter = LookupDraft
+		logf("ready: context %d tokens, up to %d tokens per call, drafts of %d checked per call", e.sess.Cache(), e.sess.Q(), d)
+	} else {
+		logf("ready: context %d tokens, up to %d tokens per call", e.sess.Cache(), e.sess.Q())
+	}
 	return e, nil
+}
+
+// Draft is how many tokens of drafts a generation checks in one call (speculative decoding):
+// one fewer than the tokens per call of the program that generates, the one of the fewest, when
+// it takes more than 1 (Setup.Draft); 0 for none. Generation stays on that program whether or
+// not there are drafts: the Neural Engine takes about 100 ms to switch between programs.
+func (e *Engine) Draft() int {
+	return e.sess.Qs()[0] - 1
+}
+
+// LookupDraft guesses the next tokens of seq from seq itself (prompt lookup decoding): the tokens
+// that followed the latest earlier occurrence of its last few tokens, up to k. An agent copies
+// what it read into what it writes, so its answers repeat the prompt in long stretches.
+func LookupDraft(seq []int32, k int) []int32 {
+	const maxN, minN = 3, 2
+	for n := maxN; n >= minN; n-- {
+		if len(seq) <= n {
+			continue
+		}
+		key := seq[len(seq)-n:]
+	next:
+		for i := len(seq) - n - 1; i >= 0; i-- {
+			for j := range n {
+				if seq[i+j] != key[j] {
+					continue next
+				}
+			}
+			return seq[i+n : min(i+n+k, len(seq))]
+		}
+	}
+	return nil
 }
 
 // dots writes prefix and then a dot every two seconds, until the returned function is called.
@@ -351,8 +391,11 @@ type Stats struct {
 	// Looped says that the generation stopped because the model repeated itself.
 	Looped bool
 	// ThinkCut says that the thinking reached its budget (Request.Think) and was ended.
-	ThinkCut        bool
-	Prefill, Decode time.Duration
+	ThinkCut bool
+	// Drafted and Accepted count the tokens guessed ahead (speculative decoding) and those the
+	// model confirmed; Calls the runs of the model while generating.
+	Drafted, Accepted, Calls int
+	Prefill, Decode          time.Duration
 }
 
 // ErrContext is returned for a prompt that does not fit in the cache.
@@ -390,19 +433,20 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	defer func() { st.Decode = time.Since(t1) }()
 	think := r.Think
 	inside, thought := think.Budget > 0 && think.Inside, 0
-	for {
-		next := r.pick(slices.Clone(logits), gen, rng)
-		if e.Stops[next] {
+	// take takes a generated token into the answer: it is in the cache already, or is next to
+	// go in. It says whether the generation is over.
+	take := func(tok int32) (over bool, err error) {
+		if e.Stops[tok] {
 			st.Finish = "stop"
-			return st, nil
+			return true, nil
 		}
-		gen = append(gen, next)
+		gen = append(gen, tok)
 		st.Generated = len(gen)
 		if think.Budget > 0 {
 			switch {
-			case inside && next == think.Close:
+			case inside && tok == think.Close:
 				inside = false
-			case !inside && next == think.Open:
+			case !inside && tok == think.Open:
 				inside, thought = true, 0
 			case inside:
 				thought++
@@ -410,25 +454,36 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		}
 		stop, err := emit(gen)
 		if err != nil {
-			return st, err
+			return true, err
 		}
 		if stop {
 			st.Finish = "stop"
-			return st, nil
+			return true, nil
 		}
 		if looping(gen) {
 			st.Finish, st.Looped = "stop", true
-			return st, nil
+			return true, nil
 		}
 		if r.MaxTokens > 0 && len(gen) >= r.MaxTokens || e.sess.Pos() >= e.sess.Cache() {
 			st.Finish = "length"
-			return st, nil
+			return true, nil
 		}
-		if err := ctx.Err(); err != nil {
+		return false, ctx.Err()
+	}
+	k := e.Draft()
+	if e.drafter == nil {
+		k = 0
+	}
+	next := r.pick(slices.Clone(logits), gen, rng)
+	for {
+		// next is generated and not in the cache yet
+		if over, err := take(next); over || err != nil {
 			return st, err
 		}
 		toks := []int32{next}
-		if inside && thought >= think.Budget {
+		var drafts []int32
+		switch {
+		case inside && thought >= think.Budget:
 			// end the thinking: End goes into the sequence as if the model had generated it
 			if e.sess.Pos()+1+len(think.End) > e.sess.Cache() {
 				st.Finish = "length"
@@ -444,14 +499,58 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 				st.Finish = "stop"
 				return st, nil
 			}
+		case k > 0:
+			// guess what follows, as far as the answer, the cache and the thinking allow
+			room := e.sess.Cache() - e.sess.Pos() - 1
+			if r.MaxTokens > 0 {
+				room = min(room, r.MaxTokens-len(gen))
+			}
+			if inside {
+				room = min(room, think.Budget-thought)
+			}
+			if room > 0 {
+				drafts = e.drafter(append(slices.Clone(e.cur.fed), next), min(k, room))
+			}
 		}
-		for len(toks) > 0 {
-			k := min(len(toks), e.sess.Q())
-			if logits, err = e.step(toks[:k]); err != nil {
+		if len(drafts) == 0 {
+			for len(toks) > 0 {
+				n := min(len(toks), e.sess.Q())
+				if logits, err = e.step(toks[:n]); err != nil {
+					return st, err
+				}
+				st.Calls++
+				toks = toks[n:]
+			}
+			next = r.pick(slices.Clone(logits), gen, rng)
+			continue
+		}
+		// one call checks the drafts: each is kept when the sampling picks it from the logits
+		// before it, and the token picked where they part (or after the last) is the next
+		st.Drafted += len(drafts)
+		var picked int32
+		kept, err := e.speculate(append(toks, drafts...), func(row func(i int) []float32) int {
+			seen := gen
+			for i, d := range drafts {
+				picked = r.pick(row(i), seen, rng)
+				if picked != d {
+					return i + 1
+				}
+				seen = append(seen, d)
+			}
+			picked = r.pick(row(len(drafts)), seen, rng)
+			return len(drafts) + 1
+		})
+		if err != nil {
+			return st, err
+		}
+		st.Calls++
+		st.Accepted += kept - 1
+		for _, d := range drafts[:kept-1] {
+			if over, err := take(d); over || err != nil {
 				return st, err
 			}
-			toks = toks[k:]
 		}
+		next = picked
 	}
 }
 
@@ -629,6 +728,24 @@ func (e *Engine) imageRow(t int32) ([]float32, bool) {
 
 // step runs the tokens and records them as fed.
 func (e *Engine) step(toks []int32) ([]float32, error) {
+	embs, err := e.rows(toks)
+	if err != nil {
+		return nil, err
+	}
+	logits, err := e.sess.Step(embs)
+	if err != nil {
+		// the cache may be half written
+		e.sess.Reset()
+		e.cur = seq{}
+		return nil, err
+	}
+	e.cur.fed = append(e.cur.fed, toks...)
+	e.cur.last = logits
+	return logits, nil
+}
+
+// rows gathers the tokens' rows: the embeddings of the tokens and of the images (negative ids).
+func (e *Engine) rows(toks []int32) ([][]float32, error) {
 	embs := make([][]float32, len(toks))
 	for i, t := range toks {
 		if t < 0 {
@@ -653,16 +770,26 @@ func (e *Engine) step(toks []int32) ([]float32, error) {
 		}
 		embs[i] = v
 	}
-	logits, err := e.sess.Step(embs)
+	return embs, nil
+}
+
+// speculate runs the tokens like step, keeping only as many as accept says
+// (decode.Session.Speculate), and records those as fed. The kept tokens are a prefix.
+func (e *Engine) speculate(toks []int32, accept func(row func(i int) []float32) int) (int, error) {
+	embs, err := e.rows(toks)
+	if err != nil {
+		return 0, err
+	}
+	logits, kept, err := e.sess.Speculate(embs, accept)
 	if err != nil {
 		// the cache may be half written
 		e.sess.Reset()
 		e.cur = seq{}
-		return nil, err
+		return 0, err
 	}
-	e.cur.fed = append(e.cur.fed, toks...)
+	e.cur.fed = append(e.cur.fed, toks[:kept]...)
 	e.cur.last = logits
-	return logits, nil
+	return kept, nil
 }
 
 // looping reports whether the last loopSpan tokens are one pattern of at most loopPeriod tokens
