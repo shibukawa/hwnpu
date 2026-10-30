@@ -9,7 +9,10 @@ package chat
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/pyjson"
 )
 
 // Message is one message of a conversation, in the shape of the OpenAI chat API.
@@ -24,13 +27,25 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 }
 
-// Content is a message's text. The API sends it as a string, null or a list of parts; only the
-// text parts are kept.
+// Content is a message's text. The API sends it as a string, null or a list of parts; the text
+// parts are kept, and each image (image_url, a data URL) or audio (input_audio, base64 WAV) part
+// becomes MediaMarker in the text where it was, as llama.cpp's server does, and goes to Media.
 type Content struct {
 	Text  string
 	Parts bool // sent as a list of parts
 	parts []string
+	Media []Media
 }
+
+// Media is an image or an audio clip of a message.
+type Media struct {
+	Audio bool
+	Data  string // an image's data URL, or a clip's base64 WAV (or data URL)
+}
+
+// MediaMarker stands for an image or a clip in a rendered prompt; Engine.Tokens puts its
+// embeddings there. It ends in a random number, so that a text cannot write it by accident.
+var MediaMarker = fmt.Sprintf("<__media_%016x__>", rand.Uint64())
 
 func (c *Content) UnmarshalJSON(b []byte) error {
 	*c = Content{}
@@ -41,17 +56,30 @@ func (c *Content) UnmarshalJSON(b []byte) error {
 		return json.Unmarshal(b, &c.Text)
 	}
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
+		InputAudio *struct {
+			Data string `json:"data"`
+		} `json:"input_audio"`
 	}
 	if err := json.Unmarshal(b, &parts); err != nil {
 		return fmt.Errorf("chat: content is neither a string nor a list of parts: %w", err)
 	}
 	c.Parts = true
 	for _, p := range parts {
-		if p.Type == "text" {
+		switch {
+		case p.Type == "text":
 			c.parts = append(c.parts, p.Text)
 			c.Text += p.Text
+		case p.Type == "image_url" && p.ImageURL != nil:
+			c.Media = append(c.Media, Media{Data: p.ImageURL.URL})
+			c.Text += MediaMarker
+		case p.Type == "input_audio" && p.InputAudio != nil:
+			c.Media = append(c.Media, Media{Audio: true, Data: p.InputAudio.Data})
+			c.Text += MediaMarker
 		}
 	}
 	return nil
@@ -71,21 +99,21 @@ type ToolCall struct {
 
 // Tool is a function the model may call: the request's {"type": "function", "function": {...}}.
 type Tool struct {
-	raw *value // the function object
+	raw *pyjson.Value // the function object
 }
 
 func (t *Tool) UnmarshalJSON(b []byte) error {
-	v, err := parseValue(b)
+	v, err := pyjson.Parse(b)
 	if err != nil {
 		return err
 	}
-	if v.kind != '{' {
+	if v.Kind != '{' {
 		return fmt.Errorf("chat: a tool is not an object")
 	}
-	if f := v.get("function"); f != nil {
+	if f := v.Get("function"); f != nil {
 		v = f
 	}
-	if n := v.get("name"); n == nil || n.kind != '"' {
+	if n := v.Get("name"); n == nil || n.Kind != '"' {
 		return fmt.Errorf("chat: a tool has no name")
 	}
 	t.raw = v
@@ -93,13 +121,13 @@ func (t *Tool) UnmarshalJSON(b []byte) error {
 }
 
 // Name is the function's name.
-func (t Tool) Name() string { return t.raw.get("name").str }
+func (t Tool) Name() string { return t.raw.Get("name").Str }
 
 // paramType is the JSON schema type of a parameter ("" when not given).
 func (t Tool) paramType(param string) string {
-	p := t.raw.get("parameters").get("properties").get(param)
-	if ty := p.get("type"); ty != nil && ty.kind == '"' {
-		return ty.str
+	p := t.raw.Get("parameters").Get("properties").Get(param)
+	if ty := p.Get("type"); ty != nil && ty.Kind == '"' {
+		return ty.Str
 	}
 	return ""
 }
@@ -256,11 +284,11 @@ func toolResponse(sb *strings.Builder, s string) {
 }
 
 // toolJSON writes a tool's function object without defer_loading.
-func toolJSON(f *value) string {
+func toolJSON(f *pyjson.Value) string {
 	var sb strings.Builder
 	sb.WriteByte('{')
 	n := 0
-	for i, k := range f.keys {
+	for i, k := range f.Keys {
 		if k == "defer_loading" {
 			continue
 		}
@@ -268,9 +296,9 @@ func toolJSON(f *value) string {
 			sb.WriteString(", ")
 		}
 		n++
-		pyString(&sb, k)
+		pyjson.String(&sb, k)
 		sb.WriteString(": ")
-		f.fields[i].pyJSON(&sb)
+		f.Fields[i].Write(&sb)
 	}
 	sb.WriteByte('}')
 	return sb.String()
@@ -279,16 +307,16 @@ func toolJSON(f *value) string {
 func renderCall(sb *strings.Builder, tc ToolCall) error {
 	sb.WriteString("<tool_call>\n<function=" + tc.Function.Name + ">\n")
 	if a := strings.TrimSpace(tc.Function.Arguments); a != "" && a != "{}" && a != "null" {
-		args, err := parseValue([]byte(a))
+		args, err := pyjson.Parse([]byte(a))
 		if err != nil {
 			return fmt.Errorf("chat: arguments of %s: %w", tc.Function.Name, err)
 		}
-		for i, k := range args.keys {
+		for i, k := range args.Keys {
 			sb.WriteString("<parameter=" + k + ">\n")
-			if v := args.fields[i]; v.kind == '"' {
-				sb.WriteString(v.str)
+			if v := args.Fields[i]; v.Kind == '"' {
+				sb.WriteString(v.Str)
 			} else {
-				v.pyJSON(sb)
+				v.Write(sb)
 			}
 			sb.WriteString("\n</parameter>\n")
 		}

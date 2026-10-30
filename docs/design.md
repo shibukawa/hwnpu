@@ -1258,3 +1258,86 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run 'PlamoQueryTokens|PlamoEmbeddingGolden' -
 - **既定を lut6 にした**: `llm.Arch.Format` (変換の既定の形式) を足し、Gemma 4 は `lut6`。`hwnpu-convert` は `-format` を省くとこれを使い、`hwnpu-chat` の変換も同じ。LFM3 は今のまま lut4
 - `-format-for SUBSTRING=FORMAT` (`Options.FormatFor`) を足した: 名前に SUBSTRING を含むテンソルだけ別の形式にする (最後に合うものが勝ち、`-keep-fp16` がすべてに勝つ)。lut6 のまま一部を lut8 にする混ぜ方は、MLP だけで 1.99 GiB と 2 部分に収まらず、注意だけでは層の誤差の大半 (MLP) が残るので、今回は既定にしていない
 - **hwnpu-chat** (`-use gemma-4-E2B-it`、lut6、文脈 16320、2 部分 0.81 + 0.79 GiB): 1 トークン 55 ms (lut4 は 47 ms)。思考なしで「富士山の高さは3,776メートル」「信濃川」と答え、思考ありの 465 トークンも `stop` で終わり、道具の呼び出しも通った。読み込みは 96 秒と 104 秒 (初回)
+
+### 16.27 d1-2B: LFM3 の判定モデルと System One API — 2026-10-30
+
+LiquidAI/d1-2B / d1-Omni-2B / LFM3-VL-2B / LFM3-Audio-2B への対応の検討 (2026-10-29) の結論は、テキスト部がどれも LFM3 と同じ構造で、hwnpu は埋め込みの表引きをホストで行う (入力が `x`) ので、画像や音声のエンコーダの出力を `x` に差し込めばテキスト側のプログラムは変わらない、というもの。順に (1) d1-2B のテキストのみ、(2) LFM3-VL の視覚エンコーダ、(3) LFM3-Audio の音声入力 (d1-Omni-2B もこれで揃う)、(4) LFM3-Audio の音声出力、とする。d1-omni-600M (LFM2 系、SigLIP2 と FastConformer) は対象外。この節は (1)。
+
+Hugging Face にこの環境から届かなかったため、構造は llama.cpp (2026-10-29 の master) の `conversion/lfm3.py`、`conversion/lfm2.py`、`src/models/lfm3.cpp`、`tools/server/server-decision.cpp` から読んだ。config.json の値とテンソル名は実物で確かめていない。
+
+- **d1-2B の正体**: LFM3-VL のチェックポイント (`model_type: lfm3_vl`、LFM3 の設定は `text_config` の下) で `architectures: ["D1Model"]`。重みは元のまま (llama.cpp は「the stock weights, the d1 prompt read at its last token」)。違いは読み方だけで、プロンプト全体を 1 回で読み、full_attention の層は双方向、sliding_attention の層と短い畳み込みは因果のまま (`LLAMA_NON_CAUSAL_TYPE_DENSE_ONLY`)。KV キャッシュは使わない。答えは最後のトークンのロジットのうち、選択肢のラベルのトークンだけを使う
+- **`internal/llm/lfm3`**: `ParseConfig` が `text_config` の入れ子を読む (`model_type` は `lfm3` か `lfm3_vl`、`text_config.model_type` は `lfm3`)。テキスト部のテンソル名の接頭辞 `Config.Prefix` は `model.language_model.` (HF の複合モデルの並び。llama.cpp は `language_model.` を取り除いて読む)。出力層は `lm_head.weight` のまま。最上位の `tie_word_embeddings` が `text_config` のものより優先する。`D1Model` なら `Config.D1` で、`d1_codes` が 2、`d1_attention` が `set` (llama.cpp のサーバーが前提にする値) でなければエラー。d1 のプログラムは `x` と `mask` (1, seq) を取り、full_attention の層はパディングだけを隠す (BERT と同じ `MaskBias`)。出力は最終 norm の後の隠れ状態 (`Output()` は隠れ状態の幅)。出力層 (約 1 億 3 千万パラメータ) はプログラムに入れず、ホストがラベルの行だけを読む。KV キャッシュ付きの変換はエラー。GGUF の名前は接頭辞を `model.` に戻して引く。`TestBuildTiny` のダイジェストは変わっていない
+- **`internal/systemone`**: llama.cpp の `POST /v1/systemone` (TypeSafe 互換の System One API) を d1 用に移した。要求の解釈 (`state`、`questions` の `choice` / `score` / `noul`、キーの順を保つ)、プロンプト (llama.cpp が LFM3 d1 の GGUF に書く systemone テンプレート = LFM2 の d1 のプロンプトと `<think></think>`)、ラベル (`d1_labels`: choice は選択肢のキーがすべて 1 文字の英字ならそれ、でなければ A、B…、1 トークンでないものは予備の表から。空白付きの形も同じ選択肢として最大を取る。noul は yes/Yes/YES と no/No/NO、score は数字)、答え (`calibration.json` の `default` の温度で softmax。choice は最大、score は累積確率が半分に達する段階 (中央値)、noul は true の確率。confidence は答えの確率。d1 の api.py に合わせた llama.cpp のとおり)。要求の文字列に control トークンの綴り (`<|im_end|>` など) があれば、最初の文字の後にゼロ幅空白を入れる (`d1_break`)。質問ごとにプロンプトが別なので 1 問 1 回の実行で、`-seq` の違う複数のパッケージのうち、プロンプトが入る最短のものを使う
+- **`internal/pyjson`**: chat の順序付き JSON 値を切り出して共有にし、`json.dumps(indent=2)` の形 (`WriteIndent`) と Jinja の真偽 (`Truthy`) を足した。数値は読んだときの文字列のまま書く (Python は自分の形で書くので、`1.50` などは違う)
+- **`cmd/hwnpu-systemone`**: 要求を 1 つ読んで答えを出すか、`-listen` で `/v1/systemone` と `/v1/models` (`output_modalities: ["decisions"]`) を提供する。`-cpu` は `milcpu` で動かす (Neural Engine のない機械で答えを確かめる用。遅い)
+- **検証**: `reference_test.go` に LFM3 の fp64 の forward (サンドイッチ norm、Lfm2ShortConv、QK norm と部分 RoPE、repeat_kv、ヘッドごとのゲート、SwiGLU。d1 は full_attention だけ双方向) を書いた。今まで LFM3 には独立した正解がなかったので、因果 LM のロジットも照合する。相対誤差は因果 LM 2.9e-7、d1 (パディング 3) 2.8e-7。1 層ずつと最終 norm だけの実行、post-scale 64 も 1e-4 以内。参照側は、プログラムが fp16 で持つ定数 (RoPE の表、eps、注意のスケール) と入力 `x` を fp16 に丸める (丸めないと 1〜3e-4 の差が出て、構造の誤りと区別できない)。改変 (d1 の全注意を因果にする: 0.78、パディングのマスクを外す: 0.76、post_ffn_norm を飛ばす: 0.85) はすべて検出した
+- プロンプトの正解は `tools/ref/systemone_golden.py` が llama.cpp のテンプレートを jinja2 で描画して作る (`internal/systemone/testdata/prompts.json`、7 通り: 説明あり/なし/偽の値の choice、条件あり/なしの noul、score、control トークンの綴り、日本語と入れ子の JSON)。`tojson` は llama.cpp の jinja と同じく ASCII に逃がさず、キーの順を保つ。`TestModel` は小さな d1 を `milcpu` で動かし、パディングのある長いプログラムの答えが、プロンプトの長さのプログラムの出力から独立に計算した確率と一致することを確かめる。最後の行でなく先頭の行を読む、パディングを隠さない、ラベルの組で最大を取らない、エスケープの位置を変える、中央値を別の分位にする、の改変を検出した
+- 未確認: 実物の config.json の値と、テンソル名の接頭辞 (`model.language_model.` は推測)。`hwnpu-check` での照合。参照は d1 のリモートコードの読み方が分からないので、まず llama.cpp と答えを比べるのが確実 (同じ要求を `llama-server --model d1-2B.gguf` の `/v1/systemone` と `hwnpu-systemone -cpu` に送り、確率を比べる)。Neural Engine での配置と精度、速さ (Mac がない)。画像の入力 (次の段階)
+
+```bash
+go run ./cmd/hwnpu-convert -config d1-2B/config.json -weights d1-2B/model.safetensors -seq 512 -o d1-512.mlpackage
+go run ./cmd/hwnpu-systemone -model d1-2B -package d1-512.mlpackage request.json
+go run ./cmd/hwnpu-check -config d1-2B/config.json -weights d1-2B/model.safetensors -ref build/d1/ref   # 参照が作れたら
+```
+
+### 16.28 LFM3-VL の視覚エンコーダと画像の入力 — 2026-10-30
+
+16.27 の段階 (2)。LFM3-VL-2B のテキスト部は 16.27 で変換できるようになったので、視覚エンコーダと、画像を d1-2B (`/v1/systemone`) とチャットに渡す部分を足した。構造は llama.cpp の `tools/mtmd/models/lfm3vl.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-image.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、トークン数) から読んだ。HF のリモートコードと config の実物は見ていない。
+
+- **`internal/llm/lfm3vl`** (アーキテクチャ名 `lfm3-vision`): `model_type` は `lfm3_vl` で、これはテキスト部 (`lfm3`) が持つので、視覚エンコーダは `-arch lfm3-vision` で選ぶ。構造は LFM 型で、patchifier (パッチの画素への linear。重みは (d, 3, t, p, p) で、静止画は時間方向の全スライスに同じ画像を入れるので、変換時に t で足し合わせる)、埋め込みの RMSNorm、pre-norm の層 (畳み込みの層: in_proj を B, C, x に分け、B*x にパッチの格子上で 3×3 の depthwise 畳み込み (ゼロ埋め) をかけ C を掛ける。注意の層: QK の RMSNorm、2D RoPE、GQA、双方向)、どちらも SwiGLU。最終 norm はない。projector はパッチごとの LayerNorm (eps 1e-6)、2×2 のパッチの連結 (上の行の左右、下の行の左右)、linear、GELU (erf)、linear
+- **2D RoPE**: ggml の `GGML_ROPE_TYPE_VISION` (`n_dims = head_dim/2`、組は (k, k+head_dim/2))。k が head_dim/4 未満は行、以上は列で回り、どちらの軸も head_dim/2 幅の RoPE の周波数 (`theta^(-2j/(head_dim/2))`)。表を作り直せば `blocks.ApplyRope` で回せる
+- **3×3 の畳み込み**は LFM3 の `taps` と同じく、(行, 列, チャネル) の並びで 9 回のずらした積和にした (`milcpu` で動き、ANE の conv の誤差も避ける)。2×2 の連結は 5 次元の reshape と transpose
+- **固定の大きさ**: Neural Engine は固定の形なので、プログラムは画像の大きさ 1 つ (`-image 幅x高さ`、2×パッチの倍数) ごとに変換する。`-seq` は使わない。`hwnpu-convert` は、パッケージのメタデータにアーキテクチャ名と固有の設定の実効値 (`com.github.shibukawa.hwnpu.arch`、`...param.image`) を書くようにした。実行側はこれで画像の大きさを知る
+- **前処理** (`lfm3vl.Processor`): `preprocessor_config.json` (と `processor_config.json` の `image_processor`) の平均、標準偏差、`resample` (2 = bilinear、3 = bicubic)、`size` (最小と最大の画素数)。`SmartResize` は llama.cpp の静止画の smart_resize (各辺を 2×パッチの倍数に偶数丸め、画素数が範囲を外れたら縦横比を保って縮小か拡大)。`Resize` は PIL / torchvision のアンチエイリアス付きの縮小拡大 (横、縦の順に、各段で 8 ビットに丸める) を浮動小数点で書いたもので、PIL の結果と ±1 以内で一致する (`tools/ref/resize_golden.py`、4 つの大きさ × 2 つのフィルタ)
+- **`internal/llm/runner`**: KV キャッシュのないプログラム (パッケージか out.parts.json) を NPU (`chain`) か CPU (`milcpu`) で動かす共通部分。`systemone` もこれを使うようにした
+- **`internal/vision`**: 視覚エンコーダのプログラムを大きさごとに読み込み、画像を、処理系が選ぶ大きさ (smart_resize) に縦横比がいちばん近いプログラムの大きさに引き伸ばして埋め込みにする。大きさが同じなら参照と同じ入力、違えば近い格子への引き伸ばしで近似。画像はプロンプトの中で `<|vision_start|>`、埋め込みの行、`<|vision_end|>` (llama.cpp の mtmd と同じ)。動画は扱わない
+- **d1-2B の画像** (`systemone`): `files` / `images` (data URL) と、チャットのメッセージの形の state の `image_url` 部分 (state から取り除く) を、この順に最大 8 枚。llama.cpp のとおり、要求の文字列のメディアの印 `<__media__>` を空白に置き換え、印を画像の数だけユーザーの番の先頭に置き、そこを画像のトークンにする。画像は 1 要求に 1 回だけ埋め込みにして全質問で使う。音声と動画の部分は 501
+- **チャットの画像** (`chat`): `image_url` 部分は、llama.cpp のサーバーと同じく、文字の中のその位置にメディアの印 (起動ごとの乱数入り) を置き、`Engine.Tokens` が画像のトークンにする。画像の行は負のトークン id で表し、同じ画像 (data URL の SHA-256) は同じ id になるので、前のプロンプトのキャッシュがそのまま使える。保持は最近の 16 枚で、追い出した画像が再び来れば別の id で埋め込み直す。`/v1/models` は画像を読めるとき `input_modalities` に `image` を出す。`hwnpu-chat -vision`、対話では `/image FILE 質問`
+- **検証**: `lfm3vl_test.go` に llama.cpp のグラフから書いた fp64 の正解 (patchifier は時間方向に同じ画像を入れて計算、畳み込みは PyTorch の相互相関の定義、RoPE は ggml の式そのまま、2×2 の連結は ggml の reshape と permute をたどった並び) を置き、6×4 パッチの横長の画像で相対誤差 4.5e-7、1 層ずつ (`NoHead`) と projector だけの実行も 1e-4 以内。合成の重み (±0.1) のままでは、層の後ろに norm がないため層の寄与が埋め込みの数 % しかなく、注意もほぼ一様で、層を壊しても誤差 4e-4 程度しか出なかった。そこでテストの重みを学習済みに近い形 (行列は 5 倍、norm は 1 前後、QK の norm は 3 前後) にした。改変 (2×2 の連結の順、RoPE の行と列、周波数の分母、RoPE を外す、畳み込みのタップの転置、B と C の取り違え、patchifier の和を上書き) はすべて 0.05〜1.1 の誤差で検出した。`vision` のテストは縦横比によるプログラムの選択と、出力がそのプログラムの出力と一致することを、`systemone` のテストは画像の埋め込みがユーザーの番の先頭に入ることを (プログラムの出力から独立に計算した確率と 1e-6 以内)、`chat` のテストは画像のトークンの並び、同じ画像の id の再利用、追い出しと埋め込み直しを確かめる
+- 未確認: 実物の config (vision_config の `layer_types` の有無と値、`projector_hidden_size`、patchifier の重みの形が 2 次元か 5 次元か)、テンソル名、実物での参照との照合 (llama.cpp の `llama-mtmd-cli` の埋め込みとの比較が確実)。LFM3-VL のチャットテンプレートの画像の置き方 (今はメッセージの文字の中の位置にそのまま置く)。Neural Engine での配置と精度、速さ
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config LFM3-VL-2B/config.json -weights LFM3-VL-2B/model.safetensors -o vision-512x512.mlpackage
+go run ./cmd/hwnpu-convert -arch lfm3-vision -image 768x384 -format fp16 -config LFM3-VL-2B/config.json -weights LFM3-VL-2B/model.safetensors -o vision-768x384.mlpackage
+go run ./cmd/hwnpu-systemone -model d1-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage,vision-768x384.mlpackage request.json
+```
+
+### 16.29 LFM3-Audio の音声入力と d1-Omni-2B — 2026-10-30
+
+16.27 の段階 (3)。構造は llama.cpp の `tools/mtmd/models/lfm3a.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-audio.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、マスク) から読んだ。HF のリモートコードと config の実物は見ていない。
+
+- **テキスト部** (`internal/llm/lfm3`): `lfm3_audio` は LFM3 の設定が `lfm` キーの下にあり、テンソルは `lfm.model.` (llama.cpp は `lfm.` を取り除いて読む)、出力層は `lfm.lm_head.weight`。`lfm3_omni` は `text_config` の下で、テンソルは `model.language_model.`。d1-Omni-2B (`lfm3_omni` で `D1Model`) も 16.27 の d1 モードで変換できる。視覚エンコーダ (`lfm3vl`) は `lfm3_omni` の config も読む (テンソル名は LFM3-VL と同じ)
+- **`internal/llm/lfm3audio`** (アーキテクチャ名 `lfm3-audio-encoder`、`-arch` で選ぶ): LFM3-Audio (`encoder.lfm` が LFM2 の設定、`dim_in`、`sliding_window`。テンソルは `encoder.downsample.`、`encoder.lfm.lfm.`、projector は `mlp.model.0/1/3`) と LFM3-Omni (`audio_encoder_config.text_config`、`num_mel_bins`。テンソルは `model.audio_encoder.downsample.`、`model.audio_encoder.lfm.`、`model.audio_projector.layer_norm/linear_1/linear_2`) の両方。構造は、(時間, メル) 上のストライド 2 の畳み込み 3 つで時間を 1/8 にする部分 (3×3 → SiLU、depthwise 3×3 → pointwise → SiLU を 2 回。カーネルは ggml の読み方で [出力][入力][メル][時間])、チャネル優先で平らにして linear、因果的な LFM2 の層 (短い畳み込みと、スライディング窓 (`sliding_window` 個のキー) の注意。QK norm、head 全体の rotate_half の RoPE、θ = 1e6)、最終 RMSNorm、projector (LayerNorm eps 1e-5、linear、GELU、linear)。FFN の幅は LFM2 の計算 (`block_auto_adjust_ff_dim` など)
+- **固定の長さ**: プログラムは最長のメルフレーム数 (`-frames`、既定 3000 = 30 秒) ごとに変換する。入力は `x` (1, frames, 128) と `mask` (1, frames)。llama.cpp は畳み込みのたびに入力の後ろをゼロで埋めるので、各段の出力のうちクリップより後ろ (出力 t は入力 2t があるときだけ存在する) をマスクを半分ずつ間引いたもので 0 にする。後ろの層は因果的なので、クリップの分の出力は長いプログラムで動かしても同じ。出力の先頭 `ceil(ceil(ceil(frames/2)/2)/2)` 行がクリップの埋め込み
+- **前処理** (`lfm3audio.Features`): llama.cpp の `mtmd_audio_preprocessor_lfm3a` と同じ。16 kHz、最後のフレームが最後の標本を含むよう右をゼロで埋め、400 標本の周期的 Hann 窓を 160 ごとに、パワースペクトル、Slaney のメルフィルタ 128 本 (0〜8 kHz、面積正規化)、log10 (下限 1e-12)、(v + 4) / 4。librosa (1.0.0) の STFT とフィルタで作った正解 (`tools/ref/mel_golden.py`) と 1e-4 以内で一致する。WAV (8/16/24/32 ビット PCM、32 ビット浮動小数点、チャネルは平均) を読み、16 kHz 以外は Hann 窓の sinc で変換する (llama.cpp は miniaudio で読むので、16 kHz 以外は近似)
+- **`internal/audio`**: 長さごとのプログラムを読み込み、クリップが入る最短のもので動かす。どれにも入らなければ `ErrTooLong`。LFM3-Audio はプロンプトに埋め込みをそのまま置き、LFM3-Omni は `<|vision_start|>` と `<|vision_end|>` で囲む (llama.cpp の mtmd のとおり)
+- **チャット**: `input_audio` 部分 (base64 の WAV) を画像と同じくメディアの印で受け、`Engine.Tokens` が埋め込みにする。`Content.Images` は画像と音声の両方を持つ `Content.Media` にした。`hwnpu-chat -audio`、対話では `/audio FILE.wav 質問`。LFM3-Audio の生の ASR (システムプロンプト "Perform live ASR." でアシスタントの番に音声とテキストを交互に置く llama.cpp の流し読み) と音声の出力は扱わない
+- **d1-Omni-2B** (`systemone`): `files` の `data:audio/` URL と state の `input_audio` 部分は、画像と同じくユーザーの番の先頭の印になる。話された質問 (`instructions` が `{"type": "input_audio", ...}`) は、llama.cpp のとおり質問文の位置の印になり、その音声は要求のメディアの後に足す。いずれも `<|vision_start|>` と `<|vision_end|>` で囲む。音声エンコーダがなければ 501
+- **検証**: `lfm3audio_test.go` に llama.cpp のグラフから書いた fp64 の正解 (畳み込みは PyTorch のストライド 2、パディング 1 の定義、窓は直近 `sliding_window` 個) を置き、37 フレームのクリップを 50 フレームのプログラムで (後ろをゼロにしてマスク) 動かした先頭 5 行が、LFM3-Audio と LFM3-Omni の両方の並びで相対誤差 1e-6 未満。1 層ずつと projector だけの実行も 1e-4 以内。改変 (カーネルの時間とメルの取り違え、マスクで 0 にしない: 2e-3、平らにする順、窓なし: 0.11、SiLU を外す、B と x の取り違え、LayerNorm を外す) をすべて検出した。`audio` のテストは、短いプログラムと長いプログラムで同じ埋め込みになることと長すぎるクリップの拒否を、`chat` のテストは LFM3-Audio と LFM3-Omni での音声のトークンの並びを、`systemone` のテストは話された質問の位置 (`TestSpokenTokens`) と、jinja2 で描画した正解 (`spoken question`) を確かめる
+- 未確認: 実物の config (encoder の LFM2 の設定、`subsampling_conv_channels` は NeMo の既定 256 を仮定、projector の幅は `adapter_hidden_size` がなければテキストの幅を仮定)、テンソル名、`lin_out` の重みの形、実物での照合 (llama.cpp の `llama-mtmd-cli` の音声の埋め込みとの比較が確実)。LFM3-Audio のチャットテンプレートでの音声の置き方。Neural Engine での配置と精度、速さ
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config d1-Omni-2B/config.json -weights d1-Omni-2B/model.safetensors -o audio-30s.mlpackage
+go run ./cmd/hwnpu-systemone -model d1-Omni-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage -audio audio-30s.mlpackage request.json
+```
+
+### 16.30 LFM3-Audio の音声出力 (TTS) — 2026-10-30
+
+16.27 の段階 (4)。構造と生成の手順は llama.cpp の `tools/mtmd/models/lfm3a-gen.cpp` (depthformer とコーデックのデコーダ)、`tools/mtmd/mtmd-helper-gen.cpp` (`lfm3a_gen_audio_pipeline`)、`tools/mtmd/mtmd.cpp` と `mtmd-audio.cpp` (極座標から ISTFT)、`conversion/lfm3.py` (テンソル名、TTS のテンプレート、サンプリングの既定値) から読んだ。
+
+- **流れ**: テキスト部が TTS のプロンプト (`<|startoftext|><|im_start|>system\nPerform TTS in {言語} using a {female|male} voice.<|im_end|>\n<|im_start|>user\n{文}<|im_end|>\n<|im_start|>assistant\n<|audio_start|>`、LFM3-Omni は `<|audio_start|>` の前に `<think></think>`) を読み、最終 norm の後の隠れ状態 h を出す。1 フレーム (80 ms) ごとに、depthformer がコードブックを乱数の順に MaskGIT で決め (LFM3-Audio は 12 個を 4 個ずつ 3 回)、各コードを温度、top-k (k 番目と同点は残す)、繰り返しの罰則 (直近の窓でそのコードブックが使ったコード) で選ぶ。いずれかが終端コード (語彙の最後) なら終わり。そうでなければフレームのコードのフィードバック埋め込み (`codebook_embedding` の `コード + コードブック × 語彙` 行の和) をテキスト部の次の入力にして、次の h を得る。最後に、コーデックのデコーダがコードを STFT のフレーム (1 フレームあたり 6) にし、ホストの ISTFT が 24 kHz の標本にする
+- **テキスト部**: `lfm3` に `-hidden-out 1` を足した。KV キャッシュ付きのプログラムがロジット y に加えて h (最終 norm の後) を出力し、`decode.Session.Hidden` がそれを読む。`TestBuildTiny` のダイジェストは変わらない
+- **`internal/llm/lfm3gen`**: `lfm3-depthformer` は MaskGIT の 1 回分のプログラム。入力は x (コードブックごとに、確定したコードの埋め込みかマスクの埋め込み。ホストが表を引く) と h、出力は全コードブックのロジット。中身は h の射影 (`depth_linear`) と x の和、双方向の LFM3 の注意層 (QK norm、全ヘッドの RoPE θ=1e6、ヘッドごとのゲート、サンドイッチなし)、最終 RMSNorm、コードブックごとの RMSNorm、コードブックごとのコード表 (出力層と共有) との積 (バッチの matmul)。`lfm3-codec` はコーデックのデコーダ (`audio_tokenizer/`、`model_type` liquid_codec で自動判別)。入力は各フレームの FSQ のコードの値 (水準の表はホスト)、2 つの射影、各フレームを 6 位置に複製、8 層の因果的な LFM3 の層 (サンドイッチ norm、窓 30 の注意、短い畳み込み)、出力 norm、対数振幅と位相への射影。層の種類と幅は config にないので、重みの形から読む (llama.cpp と同じ)
+- **固定の長さとチャンク**: コーデックのデコーダは `-codec-frames` (既定 64 フレーム = 5.1 秒) ごとに呼ぶ。llama.cpp は状態 (K/V の窓、畳み込みの窓、位置) を持ち越して 1 フレームずつ流すが、ここでは全フレームを生成した後に、デコーダの遡り (注意の層ごとに窓-1、畳み込みの層ごとに核-1 の位置) を覆うだけ重ねたチャンクで動かし、各チャンクの先頭 (ゼロの状態から計算した分) を捨てる。因果的で RoPE は相対位置にしか依らないので、流した場合と同じ結果になる (`TestDecodeCodecChunks` で、5 フレームずつのチャンクと 16 フレーム 1 回が 1e-4 以内で一致)
+- **ISTFT** (`speech.ISTFT`): llama.cpp の `mtmd_audio_streaming_istft` と同じ。振幅 exp(対数振幅) と位相から複素数にし、負の周波数を共役で埋めて逆 DFT (1/N)、周期的 Hann 窓をかけて hop ごとに重ねて足し、窓の二乗の和で割る。先頭の (n_fft-hop)/2 と、最後の flush の後ろの同じ数を捨てる。同じ窓と詰め物で取った STFT から元の信号に 1e-4 以内で戻ることを確かめた
+- **サンプリングの既定**: LFM3-Audio は温度 1.0、top-k 128、罰則 1.1、窓 4096 フレーム。LFM3-Omni は 0.4、top-k なし、1.2、64。`generation_config.json` の `audio_*` が上書きする。乱数は Go の PCG で、llama.cpp (mt19937) と同じ種でも同じ音にはならない
+- **`internal/llm/runner.OpenSession`**: KV キャッシュ付きのプログラムを NPU (`chain`) か CPU (`milcpu`) で開き、`decode.Session` にする (CPU でもキャッシュのバッファを共有する)
+- **`cmd/hwnpu-tts`**: 文を読み上げて 16 ビットの WAV に書く。`-lang` は model card の言語コード (en、ja など) か言語名、`-voice` は female か male
+- **`hwnpu-convert` の設定名**: 設定のフラグは全アーキテクチャで共有されるので、コーデックのフレーム数は音声エンコーダの `-frames` と別の `-codec-frames` にした。同じ名前の設定の既定値が食い違わないことをテストする (`internal/llm/archs` の `TestParamNames`)
+- **検証**: `lfm3gen_test.go` に llama.cpp のグラフから書いた fp64 の LFM3 の層 (ゲート付き注意、窓付きの因果注意か双方向、サンドイッチ norm、短い畳み込み) と、depthformer (LFM3-Audio と LFM3-Omni の両方の並び) とコーデックのデコーダの正解を置いた。相対誤差は 2〜8e-7。改変 (ゲートを外す: 0.52、窓を外す: 0.48、post_ffn_norm を外す: 1.4、コードブックの norm を外す: 0.029、コード表の転置: 1.1、複製の向き: 1.4) をすべて検出した。`speech_test.go` は、小さなテキスト部と depthformer を CPU で動かすフレームの生成 (最初のフレームのコードが手で計算した貪欲法の結果と一致する、確定したコードだけが埋め込みで入る、次のフレームはフィードバック後の h を読む、終端コードで止まる) をスパイで確かめ、確定したコードを戻さない、h を更新しないなどの改変を検出した
+- **扱わないもの**: チャットの返答を音声にすること (llama.cpp はテキストと音声を 6 トークンと 12 フレームで交互に出す `<|mixed_start|>` の形と、`<|audio_start|>` で音声に切り替える形を持つ)、流し出し (フレームごとにすぐ音を出す)、LFM3-Audio の生の ASR
+- 未確認: 実物の config (`depthformer` の項目、`codebooks`、`audio_vocab_size`、コーデックの `config.json`)、テンソル名 (llama.cpp の変換が読む名前に合わせた)、Neural Engine での配置と精度と速さ (1 フレームに depthformer 3 回とテキスト部 1 回。実時間に要るのは 12.5 フレーム/秒)、聞いて分かる音になるか。参照との照合は、llama.cpp のサーバー (LFM3-Audio の mmproj を読み込んだもの) の TTS と、同じコードからデコードした音の比較が確実
+
+```bash
+go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.mlpackage -codec codec.mlpackage -lang ja -o out.wav こんにちは
+```

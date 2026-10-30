@@ -1,6 +1,7 @@
 package lfm3
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 
@@ -12,11 +13,12 @@ import (
 var Arch = &llm.Arch{
 	Name:          "lfm3",
 	Title:         "LFM3",
-	ModelTypes:    []string{"lfm3"},
-	Architectures: []string{"Lfm3ForCausalLM"},
+	ModelTypes:    []string{"lfm3", "lfm3_vl", "lfm3_omni", "lfm3_audio"},
+	Architectures: []string{"Lfm3ForCausalLM", "Lfm3VlForConditionalGeneration", "Lfm3OmniForConditionalGeneration", "Lfm3AudioForConditionalGeneration"},
 	Params: []llm.Param{
 		{Name: "post-scale", Default: "64", Usage: "power of two multiplied into the weights of out_proj, o_proj and w2 and absorbed by the sandwich norms (Neural Engine accuracy); 1 disables"},
 		{Name: "conv", Default: "taps", Usage: "short convolution as shifted multiply adds (taps) or one conv op (conv)"},
+		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state, besides the logits (LFM3-Audio's speech output reads it)"},
 	},
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	GGUFName:   ggufName,
@@ -31,24 +33,39 @@ func (c *Config) Hidden() int { return c.HiddenSize }
 // Layers is the number of layers.
 func (c *Config) Layers() int { return c.NumLayers }
 
-// Output is the logits.
-func (c *Config) Output() (int, bool) { return c.VocabSize, true }
+// Output is the logits, or for a d1 model the final hidden state (Config.D1).
+func (c *Config) Output() (int, bool) {
+	if c.D1 {
+		return c.HiddenSize, false
+	}
+	return c.VocabSize, true
+}
 
 // Embedding names the token embedding table.
-func (c *Config) Embedding() string { return "model.embed_tokens.weight" }
+func (c *Config) Embedding() string { return c.prefix() + "embed_tokens.weight" }
 
-// Tensors lists the tensors the conversion reads.
+// Head names the output layer's weight: lm_head, or the embedding table when they are tied.
+func (c *Config) Head() string {
+	if c.TieWordEmbed {
+		return c.Embedding()
+	}
+	return cmp.Or(c.HeadName, "lm_head.weight")
+}
+
+// Tensors lists the tensors the conversion reads. A d1 model's program ends with the final norm,
+// and its lm_head (when not tied) is left to the host, which reads the rows of the answer
+// labels: it is unused by the conversion.
 func (c *Config) Tensors() map[string][]int {
 	d, hd := c.HiddenSize, c.HeadDim
 	t := map[string][]int{
-		"model.embed_tokens.weight":   {c.VocabSize, d},
-		"model.embedding_norm.weight": {d},
+		c.Embedding():                        {c.VocabSize, d},
+		c.prefix() + "embedding_norm.weight": {d},
 	}
-	if !c.TieWordEmbed {
-		t["lm_head.weight"] = []int{c.VocabSize, d}
+	if !c.TieWordEmbed && !c.D1 {
+		t[c.Head()] = []int{c.VocabSize, d}
 	}
 	for i := 0; i < c.NumLayers; i++ {
-		p := fmt.Sprintf("model.layers.%d.", i)
+		p := fmt.Sprintf("%slayers.%d.", c.prefix(), i)
 		norms := []string{"operator_norm", "ffn_norm"}
 		if c.UseSandwichNorm {
 			norms = append(norms, "post_operator_norm", "post_ffn_norm")
@@ -98,5 +115,5 @@ func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Optio
 	if err != nil {
 		return nil, nil, fmt.Errorf("lfm3: post-scale %q: %w", ps, err)
 	}
-	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv")})
+	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv"), HiddenOut: Arch.Param(opts, "hidden-out") == "1"})
 }
