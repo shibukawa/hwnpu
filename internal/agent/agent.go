@@ -6,8 +6,8 @@
 // the model for a summary.
 //
 // A small model needs guards more than rules: edit and write want the file read first, the
-// thinking is cut at a budget and the answer asked without it, a call made again is not run,
-// and an answer repeated is the end of the task.
+// thinking is closed at a budget, a call made again is not run, and an answer repeated is the
+// end of the task.
 package agent
 
 import (
@@ -27,7 +27,7 @@ import (
 
 // Model answers a conversation: *chat.Engine, or a fake in tests.
 type Model interface {
-	Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, s chat.Sampling, maxTokens int, emit func(partial chat.Answer) (stop bool)) (chat.Completion, error)
+	Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, s chat.Sampling, maxTokens, thinkBudget int, emit func(partial chat.Answer) (stop bool)) (chat.Completion, error)
 	Count(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options) (int, error)
 	Context() int
 }
@@ -46,8 +46,9 @@ type Config struct {
 	// Think lets the model think before each answer; KeepThinking keeps the thinking of earlier
 	// rounds of a task in the conversation (it costs context).
 	Think, KeepThinking bool
-	// ThinkBudget is the most tokens of thinking before an answer: past it the generation
-	// stops and the answer is asked without thinking. Default 1024; negative for no limit.
+	// ThinkBudget is the most tokens of thinking before an answer: past it the thinking is
+	// closed (chat.ThinkLimit) and the model answers from what it has thought. Default 1024;
+	// negative for no limit.
 	ThinkBudget int
 	Sampling    chat.Sampling
 	// MaxTokens is the most tokens of one answer (0: until the cache is full).
@@ -255,39 +256,27 @@ func (s *Session) Run(ctx context.Context, task string, ev Events) (string, erro
 	return s.close(ctx, ev, ErrSteps)
 }
 
-// complete asks the model for the next answer. The thinking is cut at ThinkBudget tokens
-// (or by MaxTokens): then the answer is asked again without thinking.
+// complete asks the model for the next answer, with its thinking bounded by ThinkBudget.
 func (s *Session) complete(ctx context.Context, tools []chat.Tool, ev Events) (chat.Completion, error) {
-	noThink := !s.cfg.Think
-	for {
-		thought := 0
-		emit := func(a chat.Answer) bool {
-			if ev.Delta != nil {
-				ev.Delta(a.Reasoning, a.Content)
-			}
-			if a.Thinking {
-				thought++
-				return s.cfg.ThinkBudget > 0 && thought > s.cfg.ThinkBudget
-			}
+	var emit func(chat.Answer) bool
+	if ev.Delta != nil {
+		emit = func(a chat.Answer) bool {
+			ev.Delta(a.Reasoning, a.Content)
 			return false
 		}
-		c, err := s.m.Complete(ctx, s.msgs, tools, chat.Options{NoThink: noThink}, s.cfg.Sampling, s.cfg.MaxTokens, emit)
-		if err != nil {
-			return c, err
-		}
-		s.dump(c)
-		if ev.Done != nil {
-			ev.Done(c)
-		}
-		if c.Thinking && !noThink {
-			if ev.Note != nil {
-				ev.Note(fmt.Sprintf("thinking cut after %d tokens; answering without it", c.Stats.Generated))
-			}
-			noThink = true
-			continue
-		}
-		return c, nil
 	}
+	c, err := s.m.Complete(ctx, s.msgs, tools, chat.Options{NoThink: !s.cfg.Think}, s.cfg.Sampling, s.cfg.MaxTokens, max(s.cfg.ThinkBudget, 0), emit)
+	if err != nil {
+		return c, err
+	}
+	s.dump(c)
+	if ev.Done != nil {
+		ev.Done(c)
+	}
+	if c.ThinkCut && ev.Note != nil {
+		ev.Note(fmt.Sprintf("thinking cut at %d tokens", s.cfg.ThinkBudget))
+	}
+	return c, nil
 }
 
 // close asks for the answer without tools; cause is the error when there is none.

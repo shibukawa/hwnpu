@@ -43,6 +43,11 @@ var Arch = &llm.Arch{
 	ModelTypes:    []string{"bert"},
 	Architectures: []string{"BertModel"},
 	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	// 4 bits lose too much of the sentence embedding: its cosine with fp16's was 0.23 in lut4
+	// and 0.999 in lut8, 0.91 to 0.96 in int4 (per row or in groups) and 0.9995 in int8
+	// (all-MiniLM-L6-v2, TestIntelIRCheckpoint)
+	Format:      "lut8",
+	IntelFormat: "int8",
 }
 
 func init() { llm.Register(Arch) }

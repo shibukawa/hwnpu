@@ -24,7 +24,7 @@ type script struct {
 	context int
 }
 
-func (s *script) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, _ chat.Sampling, _ int, emit func(chat.Answer) bool) (chat.Completion, error) {
+func (s *script) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, _ chat.Sampling, _, _ int, emit func(chat.Answer) bool) (chat.Completion, error) {
 	s.seen = append(s.seen, slices.Clone(msgs))
 	s.tools = append(s.tools, len(tools))
 	if len(s.answers) == 0 {
@@ -589,8 +589,8 @@ func TestCut(t *testing.T) {
 // cut is a script whose answers end by the token limit.
 type cut struct{ script }
 
-func (c *cut) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, s chat.Sampling, n int, emit func(chat.Answer) bool) (chat.Completion, error) {
-	r, err := c.script.Complete(ctx, msgs, tools, o, s, n, emit)
+func (c *cut) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, s chat.Sampling, n, b int, emit func(chat.Answer) bool) (chat.Completion, error) {
+	r, err := c.script.Complete(ctx, msgs, tools, o, s, n, b, emit)
 	r.Finish = "length"
 	return r, err
 }
@@ -668,7 +668,8 @@ func TestAllowed(t *testing.T) {
 	}
 }
 
-// Thinking past the budget is cut, and the answer is asked without thinking.
+// The thinking budget goes to the model (the engine closes the thinking there), 0 for none,
+// and a cut is reported.
 func TestThinkBudget(t *testing.T) {
 	m := &thinker{}
 	s, err := New(m, Config{Dir: t.TempDir(), Think: true, ThinkBudget: 10})
@@ -680,35 +681,41 @@ func TestThinkBudget(t *testing.T) {
 	if err != nil || got != "answer" {
 		t.Fatalf("Run = %q, %v", got, err)
 	}
-	if !slices.Equal(m.noThink, []bool{false, true}) || len(notes) != 1 || !strings.HasPrefix(notes[0], "thinking cut after 11 tokens") {
-		t.Errorf("requests %v, notes %q", m.noThink, notes)
+	if !slices.Equal(m.budgets, []int{10}) || !slices.Equal(notes, []string{"thinking cut at 10 tokens"}) {
+		t.Errorf("budgets %v, notes %q", m.budgets, notes)
 	}
-	// without a limit, the model finishes thinking on its own
 	m = &thinker{}
 	s, _ = New(m, Config{Dir: t.TempDir(), Think: true, ThinkBudget: -1})
-	if got, err := s.Run(context.Background(), "task", Events{}); err != nil || got != "answer" || !slices.Equal(m.noThink, []bool{false}) {
-		t.Errorf("Run = %q, %v, requests %v", got, err, m.noThink)
+	notes = nil
+	if got, err := s.Run(context.Background(), "task", Events{Note: func(text string) { notes = append(notes, text) }}); err != nil || got != "answer" || !slices.Equal(m.budgets, []int{0}) || len(notes) != 0 {
+		t.Errorf("Run = %q, %v, budgets %v, notes %q", got, err, m.budgets, notes)
+	}
+	m = &thinker{}
+	s, _ = New(m, Config{Dir: t.TempDir(), Think: true})
+	s.Run(context.Background(), "task", Events{})
+	if !slices.Equal(m.budgets, []int{1024}) {
+		t.Errorf("default budget %v", m.budgets)
 	}
 }
 
-// thinker thinks for 50 tokens, unless stopped, and then answers.
+// thinker thinks for 50 tokens and answers; a budget under that cuts the thinking, as the
+// engine does.
 type thinker struct {
 	script
-	noThink []bool
+	budgets []int
 }
 
-func (m *thinker) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, _ chat.Sampling, _ int, emit func(chat.Answer) bool) (chat.Completion, error) {
-	m.noThink = append(m.noThink, o.NoThink)
-	n := 0
-	if !o.NoThink {
-		for ; n < 50; n++ {
-			if emit(chat.Answer{Reasoning: strings.Repeat("hm ", n+1), Thinking: true}) {
-				return chat.Completion{Answer: chat.Answer{Reasoning: strings.Repeat("hm ", n+1), Thinking: true}, Stats: chat.Stats{Finish: "stop", Generated: n + 1}}, nil
-			}
-		}
+func (m *thinker) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, _ chat.Sampling, _, budget int, emit func(chat.Answer) bool) (chat.Completion, error) {
+	m.budgets = append(m.budgets, budget)
+	n, cut := 50, false
+	if budget > 0 && budget < n {
+		n, cut = budget, true
 	}
-	emit(chat.Answer{Reasoning: strings.Repeat("hm ", n), Content: "answer"})
-	return chat.Completion{Answer: chat.Answer{Reasoning: strings.Repeat("hm ", n), Content: "answer"}, Stats: chat.Stats{Finish: "stop", Generated: n + 1}}, nil
+	a := chat.Answer{Reasoning: strings.Repeat("hm ", n), Content: "answer"}
+	if emit != nil {
+		emit(a)
+	}
+	return chat.Completion{Answer: a, Stats: chat.Stats{Finish: "stop", Generated: n + 1, ThinkCut: cut}}, nil
 }
 
 // A cancelled task leaves no trace in the conversation.
@@ -733,8 +740,8 @@ type stopper struct {
 	cancel context.CancelFunc
 }
 
-func (s *stopper) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, smp chat.Sampling, n int, emit func(chat.Answer) bool) (chat.Completion, error) {
-	c, err := s.script.Complete(ctx, msgs, tools, o, smp, n, emit)
+func (s *stopper) Complete(ctx context.Context, msgs []chat.Message, tools []chat.Tool, o chat.Options, smp chat.Sampling, n, b int, emit func(chat.Answer) bool) (chat.Completion, error) {
+	c, err := s.script.Complete(ctx, msgs, tools, o, smp, n, b, emit)
 	s.cancel()
 	return c, err
 }

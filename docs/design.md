@@ -1355,7 +1355,46 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 - **LFM3-VL-2B** (lut8): 1 トークン 41 ms、画像を含むプロンプト (約 300 トークン) の読み込み 0.3 秒
 - **ディスク**: 読み込むたびに Core ML のコンパイル結果がキャッシュ (`~/Library/Caches/hwnpu`) にパッケージと同じくらい増える。試しの変換を何度も読み込むときは `-cache` で別の場所にするとよい
 
-### 16.32 hwnpu-agent: Pi を手本にした 4 道具のコーディングエージェント — 2026-10-30
+### 16.32 hwnpu-chat: 思考の上限 (-think-budget) — 2026-10-30
+
+- 動機: OpenCode で「全く応答が返らない」ときのサーバーのログ (M3、LFM3-1.7B、文脈 16320) は、題名づくりの要求 (587 トークン、道具なし) が 3440 トークン考えて 226 秒、本題 (8136 トークン、道具 11 個) がその後ろで待ってから 4080 トークン生成して OpenCode の出力の上限 (`output: 4080`) で切れていた (`finish_reason: length`)。1 トークン 64 ms は設計どおりで、時間の大半は考えすぎと要求の直列化
+- 実装 (`chat.Request.Think`、`chat.ThinkLimit`): 思考の中 (テンプレートの開く印と閉じる印の間、または `Render` が「思考の中で終わる」と言ったプロンプトの続き) で `Budget` トークン生成しても閉じないとき、`End` (「もう時間がない」の一文と閉じる印。`Template.Think` が与える。LFM3 は `</think>`、Gemma 4 は `<channel|>`) をモデルが生成したものとして系列に流し込み、答えに移らせる。流し込みは `step` を Q トークンずつ回す (prefill と同じ)。流したトークンは `emit` にも渡るので、ストリームは `</think>` を見る。考えないモードで (`<think></think>` の後に) モデルが勝手に `<think>` を開いた場合も、開く印から数えて同じ上限がかかる。`Stats.ThinkCut` で記録し、サーバーのログとターミナルの統計に `thinking cut at N tokens` と出す
+- `-think-budget` (既定 1024) をサーバーとターミナルの両方に。`0` で無制限
+- `TestThinkBudget` (CPU インタプリタ、小さな LFM3、予算 3): 3 トークン目の後に `End` が流れること、流したトークンが `emit` にも届くこと、終わったあとのロジットが prompt と生成列を最初から読んだときと相対誤差 2e-3 以内で一致することを確かめる
+- 調べて問題でなかったもの: サーバーの 1 トークンごとのホスト処理 (全トークンの decode、Parse、ストリームの差分) は 4000 トークンの時点で 0.11 ms。Core ML のバッファの `SyncToDevice`/`SyncFromDevice` は no-op。サンプリングも 1 ms 未満。ホスト側に削るものはない
+- 次の候補 (未着手): 投機的デコード (prompt lookup の下書きを Q=8 のプログラムで検証。1 回の呼び出しの費用はトークン数にほとんど依らないので、`docs/kv-cache.md` 3 節 (c) のとおり効く見込み)、題名づくりなど道具なしの短い要求の思考を切って上限を付ける、使っている塊だけ計算する注意 (`docs/kv-cache.md` 4 節 b)、system プロンプトの K/V をディスクに保存して初回の prefill (7.4K トークンで 13〜17 秒) を省く
+
+### 16.33 hwnpu-chat: 投機的デコード (prompt lookup の下書きを 1 回で確かめる) — 2026-10-30
+
+- 動機: ANE の 1 回の呼び出しの費用はトークン数にほとんど依らない (16.14 の Q=8 は Q=1 の +13%)。`docs/kv-cache.md` 3 節 (c) の「問い合わせの行を増やす」の実装。下書きは追加のモデルなしに、プロンプトと答えの中から作る (prompt lookup decoding: 直近 3 (なければ 2) トークンの並びが前に出てきた最後の場所の続きを、最大 k 個)。エージェントは読んだものを書くものに写すので、答えがプロンプトを長く繰り返す
+- **1 回の呼び出しの費用** (`TestCallTimes`、M3、LFM3-1.7B lut4、キャッシュ 16320、`HWNPU_LFM3_DIR` で動く): Q=1 (2 部分) 65.2 ms、Q=8 (1 部分) 75.0 ms、Q=64 115.1 ms。Q=8 は Q=1 の +15% で、1 回に平均 0.15 個の下書きが当たれば元が取れる
+- **プログラムの切り替えは高い**: Q=1 と Q=8 を交互に呼ぶと 1 組 404.6 ms (続けて呼ぶと 70.4 + 120.6 ms。この計測はスワップ 11 GB の状態で、単独の値も最初の計測より遅い)。Q=1 と Q=64 も 414.9 ms。ANE が重みを載せ直していると見ている。したがって下書きの有無で Q=1 と Q=8 を使い分ける (最初の実装) と、下書きがないときの呼び出しが 2 倍以上になる (本文 400 トークンで 371 回の呼び出しが 50 秒、1 回 136 ms)。**生成は 1 つのプログラムで行う**: `-draft 8` (既定) のときは Q=1 の代わりに Q=8 を変換して読み込み、1 トークンのステップもそれで動かす。読み込むプログラムは従来どおり 2 本 (生成と prefill)。prefill の Q=64 から生成のプログラムへの切り替えは今までどおり要求ごとに 1 回
+- 実装:
+  - `decode.Session.Speculate(emb, accept)`: `Step` を `run` (入力を書いて動かす) と `keep(v')` (先頭 v' 個だけキャッシュに書く) に分け、`accept` が各位置のロジット (`row(i)`、求められたときに読む) を見て何個残すかを返す。全注意層のキャッシュは位置より先がマスクで見えないので捨てる行は放置でよく、リングは i < v' だけ書き、畳み込みの窓は出力 `win_*_new` (W+Q 行) の v'..v'+W 行を取る。コピーは要らない
+  - `chat.Engine`: `Draft()` は生成プログラムの Q−1 (Q=1 なら 0)。`LookupDraft` が下書きを作る。`Generate` は「本物 1 つ + 下書き k 個」を `speculate` に渡し、位置 i の下書きは位置 i−1 のロジットからサンプリングした値と同じなら残す (貪欲法では厳密に同じ出力。温度ありでは近似で、分布の補正はしていない)。分かれた位置でサンプリングした値、または全部当たったときの最後の行の値が次の本物になる。残した下書きは 1 つずつ `take` (停止トークン、思考の上限の計数、`emit`、繰り返しの検出、上限) を通す。下書きの長さは答えの上限、キャッシュの残り、思考の予算の残りで切る
+  - `Stats.Drafted / Accepted / Calls`。サーバーのログに `(a of d drafts accepted, c calls)`
+  - `chat.Prepare` は `Setup.Draft > 1` で生成プログラムを `-seq Draft` で変換する (`lfm3-c16320-q8.mlpackage`、1 部分)。`hwnpu-chat -draft N` (既定 8、0 か 1 で従来の Q=1)
+- 検証: `TestSpeculate` (CPU インタプリタ、小さな LFM3、Q=4 と 8 のプログラム): 答えを知っていて 3 回に 1 回わざと外す下書き係で、生成列が 1 トークンずつの生成と一字一句同じ、19 個の下書きのうち 13 個が残り 20 トークンを 7 回の呼び出しで生成、終了後のロジットが最初から読んだときと相対誤差 2e-3 以内。`TestLookupDraft` は 3-gram と 2-gram、一致なし、最後の出現を取ること
+- **端から端の計測** (M3、同じ 2 つの要求を続けて。スワップ 11 GB の状態なので絶対値は当てにならず、同じ条件で続けて測った組だけ比べる):
+  - 下書きあり (Q=8 のみ)、main.go (約 40 行) を直して全文を書き直す要求 (考えない): 900 トークンを 67.3 秒、483 回の呼び出し、1024 個の下書きのうち 417 個が残った (1 回 1.86 トークン、呼び出し 1 回 139 ms)
+  - 下書きあり、「空はなぜ青いか」を考えさせる要求: 400 トークンを 50.3 秒、371 回、340 個のうち 28 個 (本文では下書きがほとんど当たらない)
+  - 下書きなし (Q=1): 計測中。結果はこの節に追記する
+
+### 16.34 埋め込みモデルも lut8 に、PLaMo-Embedding-1B の実機での照合と head-scale — 2026-10-30
+
+- きっかけ: Intel 向けの検証 ([intel-npu-models.md](intel-npu-models.md) §11) で、文埋め込みは 4 ビットで崩れると分かった。fp16 の MIL プログラムとのコサイン類似度 (milcpu) は、PLaMo-Embedding-1B の lut4 が `uniform` で 0.20、hwnpu-chat の `kmeans-minmax` で 0.76、lut8 で 0.998。all-MiniLM-L6-v2 は lut4 で 0.23、lut8 で 0.9988
+- 変更: `bert` と `plamo-bi` の `Arch.Format` を lut8 にした (hwnpu-convert の既定と hwnpu-chat の変換の両方)。PLaMo-Embedding-1B は lut8 でも 1 部分 (0.89 GiB) に収まる。hwnpu-chat の埋め込みのプログラムは名前に形式を入れた (`embed-lut8-s128.mlpackage`)。前の `embed-s128.mlpackage` (lut4) を読み込まず、変換し直させるため。古いものは消さないので、要らなければ手で消す
+- **実機での照合** (M3、`tools/ref/embed_golden.py` の HF fp32 の `encode_query`/`encode_document` と `TestPlamoEmbeddingGolden`): 128 と 1024 トークンのプログラムは全演算が ANE に載り、トークン列は 8 文すべて一致。lut8 にしただけではコサイン類似度が 0.971〜0.989 で、2 文 (「日本の首都はどこですか？」0.978、吾輩は猫である 50 トークン 0.971) が合格条件の 0.98 に届かなかった。同じ 4 文を milcpu (fp32) で動かすと HF との類似度は fp16 の重みで 0.9986〜1.0000、lut8 で 0.9973〜0.9987 なので、グラフと lut8 は正しく、差は Neural Engine 側
+- **層ごとの比較** (`TestANEPrecision`、`precision_darwin_test.go`): 16 層の残差の流れをすべて出力にした lut8 のプログラムを ANE と milcpu (fp32) で動かして比べた。吾輩は猫である (50 トークン、seq 64)。
+  - 層 0〜2 の注意と MLP の出力は rms 0.01〜0.1 と小さく、ANE ではそれぞれ 3〜5% ずれる (行列積の絶対誤差の床、MODEL.md)。残差の流れの誤差は 2〜3% で頭打ちになり、平均した埋め込みにはほとんど残らない
+  - 層 3 の MLP が BOS の 1 チャンネルに 1.2e3 の値を作り、以後の残差に残る (BOS の外では最大 1e2〜1e3)。RMSNorm の `x*x` は fp16 を超える値だが、ANE は崩れなかった (二乗の和を広い範囲で計算しているらしい)。milcpu の `RoundF16` は二乗で inf になり、層 4 以降は役に立たない
+  - **最終層の MLP の出力が fp16 を超える**: `down_proj` の出力は fp32 で最大 5e4 (rms 2570) になり、ANE はトークン 1 のチャンネル 1731 などで -Inf を返した。その手前の silu(gate)·up は最大 1.9e4 で収まっている。埋め込みの ANE と CPU のコサイン類似度は 0.9745
+- **head-scale** (`plamo-bi` の `Params`、既定 64): 最終層の出力は最終の RMSNorm にしか入らず、RMSNorm は入力の倍率に依らない (eps を除く)。そこで最終層で、注意を足した残差を 1/64 倍し、`down_proj` の入力 (silu(gate)·up) も 1/64 倍してから足し、最終 norm の eps を 64² で割る。2 のべき乗の掛け算なので数学的には同じ。重みを 1/64 倍する形も ANE では同じ結果だったが、小さな重みと int8 のスケールが fp16 の非正規化数になり、Intel 向けの int8 の IR が小さなモデルで許容誤差 1e-3 をわずかに超えた (0.00101) ので、入力側にした。最終 norm がないプログラム (分割の途中、`NoHead`) は残差の流れをそのまま返す決まりなので、倍率を掛けない
+- 結果: 埋め込みの ANE と CPU のコサイン類似度は 0.9745 → 0.99986。HF とは 8 文すべて 0.9969〜0.9987 で `TestPlamoEmbeddingGolden` に合格 (milcpu の lut8 と同じ水準)。全演算 ANE。1 文は重みを縮めた版で 37〜41 ms、入力側の版で 72〜84 ms だったが、後者の回は読み込みも 1.5〜2 倍遅かったので、マシンの負荷とみている (未確認)
+- 正解を作る環境: Python 3.12 に torch 2.15、transformers 4.47.1、sentencepiece 0.2.0、protobuf。`modeling_plamo.py` と `tokenization_plamo.py` を置いたディレクトリにチェックポイントをリンクして `HF_HUB_OFFLINE=1` で動かした (fp32 で約 1 分)
+- 次: 長い文 (1024 トークンのプログラム) での最大値。最終層の 5e4 は文によってはさらに大きいかもしれない。`TestANEPrecision` で文を変えて確かめる
+
+### 16.35 hwnpu-agent: Pi を手本にした 4 道具のコーディングエージェント — 2026-10-30
 
 - 目的: OpenCode の最初の要求は system と道具 10 個で 7.4K トークン (16.17) と 16K の文脈の半分を使い、題名づくりの脇の要求で最初に 1〜2 分待つ。Go で組み込める成熟したエージェントのライブラリはない (kfet/agent は Anthropic の型でプロバイダーなし、pigo と og は internal に閉じた CLI) ので、Pi (pi.dev、4 道具、prompt 約 400〜500 語) のループを Go で書き、`internal/chat.Engine` を HTTP なしで直接呼ぶ `cmd/hwnpu-agent` にした。system prompt と 4 つの宣言で 629 トークン (OpenCode の最初の要求は 7,516)
 - **`chat.Engine.Complete` / `Count`** (`internal/chat/complete.go`): Render → Tokens → Generate → Parse を 1 回にまとめた。サーバーの completions は stop 文字列と media の扱いが絡むのでそのまま。`TestComplete` は `TestEngineReuse` と同じ CPU のインタプリタの小さなモデルで `Generate` まで通す (Generate を通すテストはこれが初)
@@ -1368,7 +1407,8 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
   3. そのあと最終回答 (要約) を書いた末尾に `echo "done"` のような呼び出しを付けることを毎回繰り返し、止まらなかった (思考では「もう呼ばずに答える」と言っている)。内容が前の回答と 70% 以上同じ語で 20 語以上なら最終回答として呼び出しを捨てて終える (`similar`)。同じ呼び出し (名前と引数) が 2 回続いたら実行せず「同じ呼び出し。終わったなら道具を呼ばずに答えよ」を返し、3 回目で `ErrLoop`
   4. 次は `cd /tmp && go run main.go`、`cd / && ...` と見たことのないディレクトリへ移ろうとして `stat main.go: no such file` を繰り返した (23 往復、`ErrLoop` で終了、修正と確認は 8 往復目までに済んでいた)。外への `cd` で始まるコマンドは断って残り (`Run: go run main.go`) を示し、出力中の作業ディレクトリの絶対パスを `.` に置き換え、bash の規則に「do not cd」を足した
   5. 次は同じ `go run main.go` を 3 回繰り返し、要約なしで終わった (11 往復、修正と確認は 6 往復目まで)。繰り返しと往復切れのときは道具なしの要求を 1 回出して要約を書かせる (`close`: user に「Stop using tools. Answer now with a short summary…」を足す。道具の宣言がないので呼べない)。6 回目は 8 往復、53 秒で read → edit → read → (`cd /tmp` を断る) → `go run main.go` → `5` → 要約と、自分から終わった
-- **little-coder から取り入れた 4 つのガード** (Pi の拡張約 90 個とコミュニティの拡張集を見た。人気はサブエージェント、許可ゲート、plan mode、git のチェックポイント、表示で、1.7B に効くのは little-coder の 27 個のガードの側。拡張の仕組み自体は TypeScript のプラグインで Go には合わず、`agent.Config` の関数と AGENTS.md、`-system`、`-tools` で足りる): (a) read していないファイルへの edit と write を断る (`Session.seen`、write したファイルは既知。`/reset` で忘れる)。(b) 思考の上限 `ThinkBudget` (既定 1024、`-think-budget`、負で無制限): `Complete` の emit が `Answer.Thinking` の間のトークンを数えて止め、`Thinking` のまま終わった答えは思考なし (`NoThink`) で問い直す (`Session.complete`。プロンプトは `<think>` まで共通なので読み直しは数トークン)。`MaxTokens` で思考の途中で切れたときも同じ。(c) bash の許可リスト `AllowList` (`-allow "go *,ls*"`): `*` が任意の文字列、`&&`、`||`、`;`、`|`、改行で分けた各部分が合うときだけ確認なし (`Allowed`、`glob`)。(d) output-parser (崩れた呼び出しの修復) は、LFM3 の XML が崩れた例がまだないので見送り。サブエージェント、plan mode、ターンごとの skill 注入は 1.7B には使いこなせないので見送り
+- **little-coder から取り入れた 4 つのガード** (Pi の拡張約 90 個とコミュニティの拡張集を見た。人気はサブエージェント、許可ゲート、plan mode、git のチェックポイント、表示で、1.7B に効くのは little-coder の 27 個のガードの側。拡張の仕組み自体は TypeScript のプラグインで Go には合わず、`agent.Config` の関数と AGENTS.md、`-system`、`-tools` で足りる): (a) read していないファイルへの edit と write を断る (`Session.seen`、write したファイルは既知。`/reset` で忘れる)。(b) 思考の上限 `ThinkBudget` (既定 1024、`-think-budget`、0 で無制限): 16.32 の `chat.ThinkLimit` を `Complete` に渡し、エンジンが `</think>` を差し込んで答えさせる (`Stats.ThinkCut` を画面に出す)。最初は emit で生成を止めて思考なしで問い直す形で書いたが、main を取り込んだときに 16.32 の方式に合わせた (問い直しがなく、考えた分を答えに使える)。生成のプログラムも hwnpu-chat と同じ `-draft` (16.33) のものを使う。(c) bash の許可リスト `AllowList` (`-allow "go *,ls*"`): `*` が任意の文字列、`&&`、`||`、`;`、`|`、改行で分けた各部分が合うときだけ確認なし (`Allowed`、`glob`)。(d) output-parser (崩れた呼び出しの修復) は、LFM3 の XML が崩れた例がまだないので見送り。サブエージェント、plan mode、ターンごとの skill 注入は 1.7B には使いこなせないので見送り
 - **検証** (M3、最終の形): 8 要求、最初の要求 629 トークンを 1.3 秒で読み、以後は新しい分だけ (0.1〜0.4 秒、`Reused` が前の要求のプロンプト全体)、生成 15〜16 tokens/s、全体 53 秒 (コンパイル済みの読み込み 2.4 秒を含む。キャッシュが冷えていると読み込み 14 秒、初回は Core ML のコンパイルで 100 + 65 秒)。OpenCode (16.17) は 12 往復、最初の要求 7.4K トークンを 13 秒。prompt と道具の変更は上の 1〜5 を 1 つずつ入れ、毎回同じ課題を `-dump` 付きで回して往復数と中身で比べた。同じ課題でも結果は揺れる (温度 0.1) ので、1 回ずつの比較は傾向として読む。4 つのガードを入れた後の 7 回目も 8 往復で通った (read → edit → read → `go run` → `go vet` → 要約。思考は最大 378 トークンで上限 1024 には触れず、最後は要約の繰り返しの検出で終わった)
 - テスト (`internal/agent`、モデル不要): 台本の 4 往復 (tool の `tool_call_id` と内容、考えを残さない、ファイルの変更)、edit の 0 回/2 回/空行の違い/外/欠け、write の作成と上書きと外、read の offset/limit/バイト上限/binary/directory/欠け、`/main.go` の解決、bash の末尾切り詰め/終了コード/timeout/`pwd` が `.`/外への cd、予算の畳み (最新 1 つは残る、畳んでも収まらなければ `ErrContext`)、知らない道具、壊れた引数、`-steps`、`ErrCut`、繰り返す回答、繰り返す呼び出し、`Allow` の拒否 (実行されない)、キャンセルで課題の痕跡が残らない、`-dump`。`prompt_test` は 4 道具で 1500 文字以下、`-tools read,bash` で edit の規則が消える、AGENTS.md が 4000 文字で切れる、冒頭の差し替え
 - 未確認: Gemma 4 E2B/E4B での動作 (テンプレートは tools に対応している)、`-think=false` との比較、Pi にある要約方式の compaction、同時に 2 つ以上の tool_calls を出したときの振る舞い (順に実行する実装は入っている)
+

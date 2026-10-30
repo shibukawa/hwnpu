@@ -30,6 +30,9 @@ type Server struct {
 	Think bool
 	// Defaults is the sampling of requests that do not say.
 	Defaults Sampling
+	// ThinkBudget is the most tokens a model thinks before it is made to answer (0: no limit);
+	// see Engine.ThinkLimit.
+	ThinkBudget int
 	// Log receives a line per request (nil for none).
 	Log io.Writer
 	// Dump, when set, is a directory that receives each request, its prompt and the generated
@@ -203,7 +206,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		apiError(w, code, typ, "", err.Error())
 		return
 	}
-	g := Request{Prompt: ids, MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed}
+	g := Request{Prompt: ids, MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed, Think: e.ThinkLimit(s.ThinkBudget, thinking)}
 	if req.MaxCompletionTokens > 0 {
 		g.MaxTokens = req.MaxCompletionTokens
 	}
@@ -307,6 +310,12 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	looped := ""
 	if stats.Looped {
 		looped = " (stopped repeating itself)"
+	}
+	if stats.ThinkCut {
+		looped += fmt.Sprintf(" (thinking cut at %d tokens)", s.ThinkBudget)
+	}
+	if stats.Drafted > 0 {
+		looped += fmt.Sprintf(" (%d of %d drafts accepted, %d calls)", stats.Accepted, stats.Drafted, stats.Calls)
 	}
 	s.logf("%s: prompt %d tokens (%d reused) in %.1fs, %d tokens in %.1fs (%.1f ms/token), %s%s",
 		id, stats.Prompt, stats.Reused, stats.Prefill.Seconds(), stats.Generated, stats.Decode.Seconds(),
