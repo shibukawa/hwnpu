@@ -1354,3 +1354,12 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 - **LFM3-Audio-2B**: 音声入力は "Perform ASR." で `say` の英語を一字一句、日本語を 1 字違いで書き起こした。HF の処理系も音声を `<|audio|>` の並びとしてその位置に置くので、16.29 の置き方で合っている。思考ありで温度 0 だと思考が繰り返して答えに届かないことがある。TTS は lut4 で実時間の約 1.4 倍、lut8 (2 部分) で約 0.5 倍の速さ
 - **LFM3-VL-2B** (lut8): 1 トークン 41 ms、画像を含むプロンプト (約 300 トークン) の読み込み 0.3 秒
 - **ディスク**: 読み込むたびに Core ML のコンパイル結果がキャッシュ (`~/Library/Caches/hwnpu`) にパッケージと同じくらい増える。試しの変換を何度も読み込むときは `-cache` で別の場所にするとよい
+
+### 16.32 埋め込みモデルも lut8 に、PLaMo-Embedding-1B の実機での照合 — 2026-10-30
+
+- きっかけ: Intel 向けの検証 ([intel-npu-models.md](intel-npu-models.md) §11) で、文埋め込みは 4 ビットで崩れると分かった。fp16 の MIL プログラムとのコサイン類似度 (milcpu) は、PLaMo-Embedding-1B の lut4 が `uniform` で 0.20、hwnpu-chat の `kmeans-minmax` で 0.76、lut8 で 0.998。all-MiniLM-L6-v2 は lut4 で 0.23、lut8 で 0.9988
+- 変更: `bert` と `plamo-bi` の `Arch.Format` を lut8 にした (hwnpu-convert の既定と hwnpu-chat の変換の両方)。PLaMo-Embedding-1B は lut8 でも 1 部分 (0.89 GiB) に収まる。hwnpu-chat の埋め込みのプログラムは名前に形式を入れた (`embed-lut8-s128.mlpackage`)。前の `embed-s128.mlpackage` (lut4) を読み込まず、変換し直させるため。古いものは消さないので、要らなければ手で消す
+- **実機での照合** (M3、`tools/ref/embed_golden.py` の HF fp32 の `encode_query`/`encode_document` と `TestPlamoEmbeddingGolden`): 128 と 1024 トークンのプログラムは全演算が ANE に載り、初回の読み込みは 26 秒と 42 秒、1 文 37〜44 ms。トークン列は 8 文すべて一致。コサイン類似度は 0.971〜0.989 で、2 文 (「日本の首都はどこですか？」0.978、吾輩は猫である 50 トークン 0.971) が合格条件の 0.98 に届かない
+- 原因の切り分け: 同じ 4 文を milcpu (fp32) で動かすと、HF との類似度は fp16 の重みで 0.9986〜1.0000、lut8 で 0.9973〜0.9987。グラフと lut8 は正しく、残りの 1〜3% は Neural Engine の fp16 の演算誤差。LFM3 の `-post-scale` に当たる書き換えは PLaMo にはまだない (16.18 のあふれ対策だけ)
+- 正解を作る環境: Python 3.12 に torch 2.15、transformers 4.47.1、sentencepiece 0.2.0、protobuf。`modeling_plamo.py` と `tokenization_plamo.py` を置いたディレクトリにチェックポイントをリンクして `HF_HUB_OFFLINE=1` で動かした (fp32 で約 1 分)
+- 次: ANE での誤差がどの層で増えるかを調べ、`-post-scale` のような書き換えで 0.98 以上にする

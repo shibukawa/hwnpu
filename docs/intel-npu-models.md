@@ -281,7 +281,7 @@ PLaMo-Embedding-1B の実物 (`plamo` の `TestIntelIRCheckpoint`、`HWNPU_PLAMO
 
 埋め込みモデルは、MiniLM も PLaMo も 4 ビットでは崩れ、8 ビットなら保たれる。そこで Intel の既定を BERT と PLaMo-Embedding では int8 にした (`Arch.IntelFormat`)。
 
-**Mac 側の問題**: hwnpu-chat は PLaMo-Embedding を lut4 (kmeans-minmax) で変換しており (`chat/model.go`)、fp16 とのコサイン類似度は 0.76 しかない。`TestPlamoEmbeddingGolden` の合格条件 (HF の結果と 0.98 以上) には届かないはず。lut8 なら 0.998。
+**Mac 側への反映**: hwnpu-chat は PLaMo-Embedding を lut4 (kmeans-minmax) で変換しており、fp16 とのコサイン類似度は 0.76 しかなかった。BERT と PLaMo の Mac の既定を lut8 にした (design.md 16.32)。実機で HF の結果と比べると 0.971〜0.989 で、残りは Neural Engine の fp16 の演算誤差。
 
 P1 は以上で終わり。
 

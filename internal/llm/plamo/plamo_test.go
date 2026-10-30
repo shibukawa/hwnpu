@@ -388,7 +388,7 @@ const plamoEmbedding1B = `{"architectures": ["PlamoBiModel"], "attention_dropout
 	"transformers_version": "4.47.0", "use_cache": false, "vocab_size": 50112}`
 
 // The real model's config lists the 130 tensors of its checkpoint with their shapes (from the
-// safetensors header), and fits the Neural Engine's 1 GiB in one part in lut4 and two in fp16.
+// safetensors header), and fits the Neural Engine's 1 GiB in one part in lut4 and lut8 and two in fp16.
 func TestPlamoEmbedding1B(t *testing.T) {
 	cfg, err := ParseConfig([]byte(plamoEmbedding1B))
 	if err != nil {
@@ -415,7 +415,7 @@ func TestPlamoEmbedding1B(t *testing.T) {
 	}
 	limit := int64(1 << 30)
 	budget := int64(llm.SplitMargin * float64(limit))
-	for format, want := range map[string]int{"lut4": 1, "fp16": 2} {
+	for format, want := range map[string]int{"lut4": 1, "lut8": 1, "fp16": 2} {
 		parts, err := llm.PlanSplit(cfg, llm.Options{Format: format}, budget, 0)
 		if err != nil {
 			t.Fatal(err)

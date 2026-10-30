@@ -56,8 +56,10 @@ var Arch = &llm.Arch{
 	Title:         "PLaMo bidirectional encoder",
 	Architectures: []string{"PlamoBiModel"},
 	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
-	// 4 bits lose too much of the sentence embedding: its cosine with fp16's was 0.91 to 0.94
-	// in int4 (per row or in groups), 0.9995 in int8 (PLaMo-Embedding-1B, TestIntelIRCheckpoint)
+	// 4 bits lose too much of the sentence embedding: its cosine with fp16's was 0.76 in lut4
+	// (kmeans-minmax; 0.20 uniform) and 0.998 in lut8, 0.91 to 0.94 in int4 (per row or in
+	// groups) and 0.9996 in int8 (PLaMo-Embedding-1B, TestIntelIRCheckpoint)
+	Format:      "lut8",
 	IntelFormat: "int8",
 }
 
