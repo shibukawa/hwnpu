@@ -18,11 +18,11 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
-	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
-	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/pyjson"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
 // Config says where the model is.
@@ -39,6 +39,10 @@ type Config struct {
 	// CPU runs the programs with the CPU interpreter (internal/milcpu) instead of the NPU: slow,
 	// for checking the answers on a machine without one.
 	CPU bool
+	// Vision are the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a
+	// package per image size (internal/vision); none to take no images. Its config.json and
+	// image processor settings are the ones next to ModelConfig.
+	Vision []string
 	// Log receives what loading does (nil for none).
 	Log io.Writer
 	// Name is the model's name in the API (default: the first package's).
@@ -53,7 +57,8 @@ type Model struct {
 	cfg         *lfm3.Config
 	w           llm.Weights
 	dev         *hwnpu.Device
-	progs       []program // by Seq
+	progs       []*program // by Seq
+	vision      *vision.Encoder
 	temperature float64
 	escape      func(string) string
 
@@ -64,15 +69,6 @@ type Model struct {
 // encoder is the tokenizer: Encode reads the spellings of added tokens in the text as them.
 type encoder interface {
 	Encode(text string) []int32
-}
-
-// program is one converted package: Seq tokens per call, x and mask in, the hidden states out.
-type program interface {
-	Seq() int
-	// Run reads the n tokens of x (Seq rows of the hidden size, padded with zeros) and returns
-	// the final hidden state at the last of them.
-	Run(ctx context.Context, x []float32, n int) ([]float32, error)
-	Close() error
 }
 
 // Load loads the model.
@@ -127,20 +123,31 @@ func Load(ctx context.Context, c Config) (*Model, error) {
 	}
 	for _, pkg := range c.Packages {
 		t0 := time.Now()
-		var p program
-		if c.CPU {
-			p, err = openCPU(pkg, cfg.HiddenSize)
-		} else {
-			p, err = openDevice(ctx, m.dev, pkg, cfg.HiddenSize, logf)
-		}
+		p, err := openProgram(ctx, m.dev, pkg, cfg.HiddenSize)
 		if err != nil {
 			m.Close()
 			return nil, fmt.Errorf("systemone: %s: %w", pkg, err)
 		}
 		m.progs = append(m.progs, p)
-		logf("%s: %d tokens per call, loaded in %.1fs", filepath.Base(pkg), p.Seq(), time.Since(t0).Seconds())
+		where := "all on the NPU"
+		if !p.OnNPU() {
+			where = "NOT all on the NPU"
+		}
+		logf("%s: %d tokens per call, %s, loaded in %.1fs", filepath.Base(pkg), p.Seq(), where, time.Since(t0).Seconds())
 	}
-	slices.SortFunc(m.progs, func(x, y program) int { return x.Seq() - y.Seq() })
+	slices.SortFunc(m.progs, func(x, y *program) int { return x.Seq() - y.Seq() })
+	if len(c.Vision) > 0 {
+		t0 := time.Now()
+		if m.vision, err = vision.Load(ctx, m.dev, dir, c.Vision); err != nil {
+			m.Close()
+			return nil, err
+		}
+		where := "all on the NPU"
+		if !m.vision.OnNPU() {
+			where = "NOT all on the NPU"
+		}
+		logf("vision encoder for images of %v, %s, loaded in %.1fs", m.vision.Sizes(), where, time.Since(t0).Seconds())
+	}
 	return m, nil
 }
 
@@ -169,6 +176,10 @@ func LoadCalibration(path string) (float64, error) {
 
 // Close releases the model.
 func (m *Model) Close() error {
+	if m.vision != nil {
+		m.vision.Close()
+		m.vision = nil
+	}
 	for _, p := range m.progs {
 		p.Close()
 	}
@@ -217,13 +228,25 @@ func (r *Response) MarshalJSON() ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// Decide answers the questions of a request in turn.
+// Decide answers the questions of a request in turn. The images are encoded once for all the
+// questions.
 func (m *Model) Decide(ctx context.Context, r *Request) (*Response, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var images [][]float32
+	if len(r.Images) > 0 && m.vision == nil {
+		return nil, &Unsupported{"this server does not take images: start it with the vision encoder"}
+	}
+	for _, img := range r.Images {
+		rows, _, err := m.vision.Encode(ctx, img)
+		if err != nil {
+			return nil, err
+		}
+		images = append(images, rows)
+	}
 	res := &Response{Model: m.Name}
 	for _, q := range r.Questions {
-		a, n, err := m.answer(ctx, r.State, q)
+		a, n, err := m.answer(ctx, r.State, q, images)
 		if err != nil {
 			return nil, err
 		}
@@ -234,36 +257,66 @@ func (m *Model) Decide(ctx context.Context, r *Request) (*Response, error) {
 	return res, nil
 }
 
-// Tokens returns the prompt of a question as tokens, with the label groups of its options.
-func (m *Model) Tokens(state *pyjson.Value, q Question) (ids []int32, groups [][]int32, err error) {
+// imageToken stands in Tokens' result for the positions of the images' embeddings.
+const imageToken = -1
+
+// Tokens returns the prompt of a question as tokens, with the label groups of its options. Each
+// image is <|vision_start|>, an imageToken per row of its embeddings (counts), <|vision_end|>.
+func (m *Model) Tokens(state *pyjson.Value, q Question, counts []int) (ids []int32, groups [][]int32, err error) {
 	codes, groups, err := Labels(q, m.tok.Encode)
 	if err != nil {
 		return nil, nil, err
 	}
-	return m.tok.Encode(Prompt(state, q, codes, m.escape)), groups, nil
+	pieces := strings.Split(Prompt(state, q, codes, m.escape, len(counts)), MediaMarker)
+	for i, piece := range pieces {
+		ids = append(ids, m.tok.Encode(piece)...)
+		if i+1 < len(pieces) {
+			start, end := m.tok.Encode(vision.Start), m.tok.Encode(vision.End)
+			if len(start) != 1 || len(end) != 1 {
+				return nil, nil, fmt.Errorf("systemone: the tokenizer has no %s and %s tokens", vision.Start, vision.End)
+			}
+			ids = append(ids, start...)
+			for range counts[i] {
+				ids = append(ids, imageToken)
+			}
+			ids = append(ids, end...)
+		}
+	}
+	return ids, groups, nil
 }
 
-func (m *Model) answer(ctx context.Context, state *pyjson.Value, q Question) (Answer, int, error) {
-	ids, groups, err := m.Tokens(state, q)
+// answer answers one question. images are the requests' images' embeddings, in prompt order.
+func (m *Model) answer(ctx context.Context, state *pyjson.Value, q Question, images [][]float32) (Answer, int, error) {
+	d := m.cfg.HiddenSize
+	var counts []int
+	for _, rows := range images {
+		counts = append(counts, len(rows)/d)
+	}
+	ids, groups, err := m.Tokens(state, q, counts)
 	if err != nil {
 		return Answer{}, 0, err
 	}
 	n := len(ids)
-	i := slices.IndexFunc(m.progs, func(p program) bool { return p.Seq() >= n })
+	i := slices.IndexFunc(m.progs, func(p *program) bool { return p.Seq() >= n })
 	if i < 0 {
 		return Answer{}, 0, bad("questions.%s: the prompt is %d tokens, the model takes %d (convert with a larger -seq)", q.ID, n, m.MaxTokens())
 	}
 	p := m.progs[i]
-	d := m.cfg.HiddenSize
 	x := make([]float32, p.Seq()*d)
+	img := slices.Concat(images...)
 	for j, t := range ids {
+		if t == imageToken {
+			copy(x[j*d:(j+1)*d], img[:d])
+			img = img[d:]
+			continue
+		}
 		e, err := m.row(m.emb, m.cfg.Embedding(), t)
 		if err != nil {
 			return Answer{}, 0, err
 		}
 		copy(x[j*d:], e)
 	}
-	h, err := p.Run(ctx, x, n)
+	h, err := p.last(ctx, x, n)
 	if err != nil {
 		return Answer{}, 0, err
 	}
@@ -299,119 +352,42 @@ func (m *Model) row(cache map[int32][]float32, name string, t int32) ([]float32,
 	return r, nil
 }
 
-// devProgram runs a package on the device.
-type devProgram struct {
-	c          *chain.Chain
-	x, mask, y *hwnpu.Buffer
-	seq, d     int
+// program is one converted package: Seq tokens per call, x and mask in, the hidden states out.
+type program struct {
+	runner.Program
+	seq, d int
 }
 
-func openDevice(ctx context.Context, dev *hwnpu.Device, path string, d int, logf func(string, ...any)) (*devProgram, error) {
-	c, err := chain.Open(ctx, dev, path)
+func openProgram(ctx context.Context, dev *hwnpu.Device, path string, d int) (*program, error) {
+	p, err := runner.Open(ctx, dev, path)
 	if err != nil {
 		return nil, err
 	}
-	p := &devProgram{c: c, x: c.Input("x"), mask: c.Input("mask"), y: c.Output(), d: d}
-	if p.x == nil || p.mask == nil {
-		c.Close()
-		return nil, errors.New("not a d1 program: it needs the inputs x and mask")
-	}
-	p.seq = p.x.Size() / (2 * d)
-	if p.y.Size() != 2*p.seq*d {
-		c.Close()
-		return nil, fmt.Errorf("output of %d bytes is not the hidden state (%d, %d) in fp16", p.y.Size(), p.seq, d)
-	}
-	if !c.OnNPU() {
-		logf("%s: NOT all on the NPU", filepath.Base(path))
-	}
-	return p, nil
-}
-
-func (p *devProgram) Seq() int { return p.seq }
-
-func (p *devProgram) Run(ctx context.Context, x []float32, n int) ([]float32, error) {
-	hwnpu.EncodeF16(p.x.Bytes(), x)
-	mask := make([]float32, p.seq)
-	for i := range n {
-		mask[i] = 1
-	}
-	hwnpu.EncodeF16(p.mask.Bytes(), mask)
-	p.x.SyncToDevice(0, p.x.Size())
-	p.mask.SyncToDevice(0, p.mask.Size())
-	if err := p.c.Run(ctx); err != nil {
-		return nil, err
-	}
-	off := 2 * (n - 1) * p.d
-	p.y.SyncFromDevice(off, 2*p.d)
-	h := make([]float32, p.d)
-	hwnpu.DecodeF16(h, p.y.Bytes()[off:off+2*p.d])
-	return h, nil
-}
-
-func (p *devProgram) Close() error { return p.c.Close() }
-
-// cpuProgram runs a package's parts with the CPU interpreter.
-type cpuProgram struct {
-	parts   []*milcpu.Program
-	closers []io.Closer
-	seq, d  int
-}
-
-func openCPU(path string, d int) (*cpuProgram, error) {
-	man, err := llm.ReadManifest(path)
-	if err != nil {
-		return nil, err
-	}
-	p := &cpuProgram{d: d}
-	for _, part := range man.Tiered()[0].Parts {
-		prog, f, err := milcpu.OpenPackage(part.Path)
-		if err != nil {
-			p.Close()
-			return nil, err
-		}
-		p.parts, p.closers = append(p.parts, prog), append(p.closers, f)
-	}
-	x := p.parts[0].Inputs()["x"]
-	if len(x) != 3 || x[2] != d {
+	x, mask, y := p.Inputs()["x"], p.Inputs()["mask"], p.Output()
+	if len(x) != 3 || x[2] != d || len(mask) != 2 || mask[1] != x[1] || len(p.Inputs()) != 2 {
 		p.Close()
-		return nil, fmt.Errorf("input x %v is not (1, seq, %d)", x, d)
+		return nil, fmt.Errorf("not a d1 program: it takes %v, not x (1, seq, %d) and mask (1, seq)", p.Inputs(), d)
 	}
-	p.seq = x[1]
-	return p, nil
+	if len(y) != 3 || y[1] != x[1] || y[2] != d {
+		p.Close()
+		return nil, fmt.Errorf("output %v is not the hidden state (1, %d, %d)", y, x[1], d)
+	}
+	return &program{Program: p, seq: x[1], d: d}, nil
 }
 
-func (p *cpuProgram) Seq() int { return p.seq }
+// Seq is the tokens per call.
+func (p *program) Seq() int { return p.seq }
 
-func (p *cpuProgram) Run(_ context.Context, x []float32, n int) ([]float32, error) {
+// last reads the n tokens of x (Seq rows of the hidden size, padded with zeros) and returns the
+// final hidden state at the last of them.
+func (p *program) last(ctx context.Context, x []float32, n int) ([]float32, error) {
 	mask := make([]float32, p.seq)
 	for i := range n {
 		mask[i] = 1
 	}
-	h := x
-	for _, part := range p.parts {
-		in := map[string]milcpu.Tensor{}
-		for name, shape := range part.Inputs() {
-			switch name {
-			case "x":
-				in[name] = milcpu.Tensor{Shape: shape, Data: h}
-			case "mask":
-				in[name] = milcpu.Tensor{Shape: shape, Data: mask}
-			default:
-				return nil, fmt.Errorf("unexpected input %s", name)
-			}
-		}
-		out, err := part.Run(in, milcpu.Options{})
-		if err != nil {
-			return nil, err
-		}
-		h = out["y"].Data
+	y, err := p.Run(ctx, map[string][]float32{"x": x, "mask": mask})
+	if err != nil {
+		return nil, err
 	}
-	return h[(n-1)*p.d : n*p.d], nil
-}
-
-func (p *cpuProgram) Close() error {
-	for _, c := range p.closers {
-		c.Close()
-	}
-	return nil
+	return y[(n-1)*p.d : n*p.d], nil
 }

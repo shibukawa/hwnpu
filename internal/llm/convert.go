@@ -106,6 +106,13 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 	return base + ".parts.json", nil
 }
 
+// The package metadata keys of the architecture's name and of its settings (MetaParam + the
+// Param's name), as the program was built with them.
+const (
+	MetaArch  = "com.github.shibukawa.hwnpu.arch"
+	MetaParam = "com.github.shibukawa.hwnpu.param."
+)
+
 // convertPart writes one program to path.
 func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log io.Writer) (PartRecord, error) {
 	start := time.Now()
@@ -119,6 +126,10 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 		}
 		pkg.Metadata["com.github.shibukawa.hwnpu.source"] = w.Source()
 		pkg.Metadata["com.github.shibukawa.hwnpu.format"] = opts.Format
+		pkg.Metadata[MetaArch] = a.Name
+		for _, p := range a.Params {
+			pkg.Metadata[MetaParam+p.Name] = a.Param(opts, p.Name)
+		}
 	})
 	if err != nil {
 		return rec, err

@@ -8,6 +8,7 @@ package chat
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/pyjson"
@@ -25,13 +26,19 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 }
 
-// Content is a message's text. The API sends it as a string, null or a list of parts; only the
-// text parts are kept.
+// Content is a message's text. The API sends it as a string, null or a list of parts; the text
+// parts are kept, and each image part (image_url, a data URL) becomes MediaMarker in the text
+// where it was, as llama.cpp's server does, and its URL goes to Images.
 type Content struct {
-	Text  string
-	Parts bool // sent as a list of parts
-	parts []string
+	Text   string
+	Parts  bool // sent as a list of parts
+	parts  []string
+	Images []string
 }
+
+// MediaMarker stands for an image in a rendered prompt; Engine.Tokens puts the image's
+// embeddings there. It ends in a random number, so that a text cannot write it by accident.
+var MediaMarker = fmt.Sprintf("<__media_%016x__>", rand.Uint64())
 
 func (c *Content) UnmarshalJSON(b []byte) error {
 	*c = Content{}
@@ -42,17 +49,24 @@ func (c *Content) UnmarshalJSON(b []byte) error {
 		return json.Unmarshal(b, &c.Text)
 	}
 	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		ImageURL *struct {
+			URL string `json:"url"`
+		} `json:"image_url"`
 	}
 	if err := json.Unmarshal(b, &parts); err != nil {
 		return fmt.Errorf("chat: content is neither a string nor a list of parts: %w", err)
 	}
 	c.Parts = true
 	for _, p := range parts {
-		if p.Type == "text" {
+		switch {
+		case p.Type == "text":
 			c.parts = append(c.parts, p.Text)
 			c.Text += p.Text
+		case p.Type == "image_url" && p.ImageURL != nil:
+			c.Images = append(c.Images, p.ImageURL.URL)
+			c.Text += MediaMarker
 		}
 	}
 	return nil

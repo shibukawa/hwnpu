@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
 // Config says where the model is.
@@ -32,6 +34,10 @@ type Config struct {
 	ModelConfig, Weights, Tokenizer string
 	// CacheDir is the compile cache ("" for none).
 	CacheDir string
+	// Vision is the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a
+	// package per image size (internal/vision), for a model that reads images (LFM3-VL); none to
+	// take no images. Its config.json and image processor settings are next to ModelConfig.
+	Vision []string
 	// Log receives what loading does (nil for none).
 	Log io.Writer
 	// Name is the model's name in the API (default: the first package's).
@@ -54,12 +60,26 @@ type Engine struct {
 	w      llm.Weights
 	model  llm.Model
 	emb    map[int32][]float32
+	vis    *vision.Encoder
+	images []encoded // encoded images, the most recently used last
+	nextID int32     // the token id of the next image's first row (they count down from -1)
 
 	mu    sync.Mutex
 	sess  *decode.Session
 	cur   seq     // the sequence in the cache
 	saved []saved // put aside, the most recently used last
 }
+
+// encoded is an encoded image: its rows of embeddings stand in prompts as the token ids first,
+// first-1, ...; the same image keeps its ids, so that a prompt with it reuses the cache.
+type encoded struct {
+	key   [32]byte // of the data URL
+	first int32
+	rows  [][]float32
+}
+
+// maxImages is how many encoded images are kept.
+var maxImages = 16
 
 // seq is a sequence of tokens in the cache.
 type seq struct {
@@ -128,7 +148,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if c.Tokenizer == "" {
 		c.Tokenizer = filepath.Join(filepath.Dir(c.ModelConfig), "tokenizer.json")
 	}
-	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}}
+	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}, nextID: -1}
 	e.Name = c.Name
 	if e.Name == "" {
 		e.Name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
@@ -182,11 +202,27 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		}
 	}
 	logf("cache %d tokens, up to %d tokens per call", e.sess.Cache(), e.sess.Q())
+	if len(c.Vision) > 0 {
+		t0 := time.Now()
+		if e.vis, err = vision.Load(ctx, e.dev, filepath.Dir(c.ModelConfig), c.Vision); err != nil {
+			e.Close()
+			return nil, err
+		}
+		where := "all on the NPU"
+		if !e.vis.OnNPU() {
+			where = "NOT all on the NPU"
+		}
+		logf("vision encoder for images of %v, %s, loaded in %.1fs", e.vis.Sizes(), where, time.Since(t0).Seconds())
+	}
 	return e, nil
 }
 
 // Close releases the model.
 func (e *Engine) Close() error {
+	if e.vis != nil {
+		e.vis.Close()
+		e.vis = nil
+	}
 	for i := len(e.chains) - 1; i >= 0; i-- {
 		e.chains[i].Close()
 	}
@@ -345,10 +381,100 @@ func (e *Engine) putAside() {
 	}
 }
 
+// Images reports whether the engine reads images.
+func (e *Engine) Images() bool { return e.vis != nil }
+
+// ErrImage is returned for an image the engine cannot read.
+var ErrImage = errors.New("chat: image")
+
+// Tokens turns a rendered prompt into tokens. Each MediaMarker in it is an image, the next of
+// images (data URLs): <|vision_start|>, a token per row of its embeddings, <|vision_end|>.
+func (e *Engine) Tokens(ctx context.Context, prompt string, images []string) ([]int32, error) {
+	pieces := strings.Split(prompt, MediaMarker)
+	if len(pieces)-1 != len(images) {
+		return nil, fmt.Errorf("%w: %d images for %d places in the prompt (images go in user messages)", ErrImage, len(images), len(pieces)-1)
+	}
+	if len(images) > 0 && e.vis == nil {
+		return nil, fmt.Errorf("%w: this model was loaded without a vision encoder", ErrImage)
+	}
+	var ids []int32
+	for i, piece := range pieces {
+		ids = append(ids, e.Tok.Encode(piece)...)
+		if i == len(images) {
+			break
+		}
+		e.mu.Lock()
+		img, err := e.image(ctx, images[i])
+		e.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		start, ok1 := e.Tok.ID(vision.Start)
+		end, ok2 := e.Tok.ID(vision.End)
+		if !ok1 || !ok2 {
+			return nil, fmt.Errorf("%w: the tokenizer has no %s and %s", ErrImage, vision.Start, vision.End)
+		}
+		ids = append(ids, start)
+		for r := range img.rows {
+			ids = append(ids, img.first-int32(r))
+		}
+		ids = append(ids, end)
+	}
+	return ids, nil
+}
+
+// image returns the encoded image of a data URL, encoding it unless it is kept.
+func (e *Engine) image(ctx context.Context, url string) (*encoded, error) {
+	key := sha256.Sum256([]byte(url))
+	for i, im := range e.images {
+		if im.key == key {
+			e.images = append(slices.Delete(e.images, i, i+1), im)
+			return &e.images[len(e.images)-1], nil
+		}
+	}
+	pic, err := vision.DecodeDataURL(url)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrImage, err)
+	}
+	flat, n, err := e.vis.Encode(ctx, pic)
+	if err != nil {
+		return nil, err
+	}
+	d := e.model.Hidden()
+	im := encoded{key: key, first: e.nextID}
+	for r := range n {
+		im.rows = append(im.rows, flat[r*d:(r+1)*d])
+	}
+	e.nextID -= int32(n)
+	if len(e.images) >= maxImages {
+		e.images = e.images[1:]
+	}
+	e.images = append(e.images, im)
+	return &e.images[len(e.images)-1], nil
+}
+
+// imageRow returns the embedding row of an image token (a negative id).
+func (e *Engine) imageRow(t int32) ([]float32, bool) {
+	for _, im := range e.images {
+		if r := int(im.first - t); r >= 0 && r < len(im.rows) {
+			return im.rows[r], true
+		}
+	}
+	return nil, false
+}
+
 // step runs the tokens and records them as fed.
 func (e *Engine) step(toks []int32) ([]float32, error) {
 	embs := make([][]float32, len(toks))
 	for i, t := range toks {
+		if t < 0 {
+			v, ok := e.imageRow(t)
+			if !ok {
+				return nil, fmt.Errorf("%w: an image of the prompt is no longer kept; send the request again", ErrImage)
+			}
+			embs[i] = v
+			continue
+		}
 		v, ok := e.emb[t]
 		if !ok {
 			var err error

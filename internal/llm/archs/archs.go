@@ -5,5 +5,6 @@ package archs
 import (
 	_ "github.com/shibukawa/hwnpu/internal/llm/bert"
 	_ "github.com/shibukawa/hwnpu/internal/llm/lfm3"
+	_ "github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	_ "github.com/shibukawa/hwnpu/internal/llm/plamo"
 )

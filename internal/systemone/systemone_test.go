@@ -1,10 +1,14 @@
 package systemone
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"math"
 	"os"
 	"path/filepath"
@@ -15,6 +19,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
 // Prompt writes what the systemone template llama.cpp writes for LFM3 d1 renders. The expected
@@ -30,6 +35,7 @@ func TestPromptMatchesTemplate(t *testing.T) {
 			Request json.RawMessage `json:"request"`
 			Labels  []string        `json:"labels"`
 			Control []string        `json:"control"`
+			Images  int             `json:"images"`
 			Want    string          `json:"want"`
 		} `json:"cases"`
 	}
@@ -42,7 +48,7 @@ func TestPromptMatchesTemplate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := Prompt(r.State, r.Questions[0], c.Labels, Escaper(c.Control)); got != c.Want {
+			if got := Prompt(r.State, r.Questions[0], c.Labels, Escaper(c.Control), c.Images); got != c.Want {
 				t.Errorf("prompt\n%q\nwant\n%q", got, c.Want)
 			}
 		})
@@ -180,8 +186,10 @@ func TestParseRequest(t *testing.T) {
 		{"one level", `{"state": "s", "questions": {"q": {"type": "score", "instructions": "?", "criteria": ["a"]}}}`, false},
 		{"empty choice", `{"state": "s", "questions": {"q": {"type": "choice", "instructions": "?", "criteria": {}}}}`, false},
 		{"spoken", `{"state": "s", "questions": {"q": {"type": "noul", "instructions": {"type": "input_audio"}}}}`, false},
-		{"images", `{"state": "s", "images": ["data:image/png;base64,AA=="], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, true},
-		{"image part", `{"state": [{"role": "user", "content": [{"type": "image_url"}]}], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, true},
+		{"not an image", `{"state": "s", "images": ["data:image/png;base64,AA=="], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, false},
+		{"not a data URL", `{"state": "s", "files": ["https://example.com/a.png"], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, false},
+		{"audio part", `{"state": [{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "AA=="}}]}], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, true},
+		{"video part", `{"state": [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AA=="}}]}], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, true},
 	} {
 		_, err := ParseRequest([]byte(c.body))
 		var badReq *BadRequest
@@ -190,7 +198,18 @@ func TestParseRequest(t *testing.T) {
 			t.Errorf("%s: %v", c.name, err)
 		}
 	}
-	r, err := ParseRequest([]byte(`{"state": {"b": 1, "a": 2}, "questions": {"z": {"type": "noul", "instructions": "?"}, "a": {"type": "noul", "instructions": "?"}}}`))
+	// images from files first, then those of the state's messages, which leave the state
+	png := "data:image/png;base64," + pngBase64(t, 3, 2)
+	r, err := ParseRequest([]byte(`{"files": ["` + png + `"], "state": {"x": 1, "messages": [{"role": "user", "content": [` +
+		`{"type": "text", "text": "look"}, {"type": "image_url", "image_url": {"url": "` + png + `"}}]}, {"role": "assistant", "content": "ok"}]},` +
+		`"questions": {"q": {"type": "noul", "instructions": "?"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Images) != 2 || r.State.String() != `{"x": 1, "messages": [{"role": "user", "content": [{"type": "text", "text": "look"}]}, {"role": "assistant", "content": "ok"}]}` {
+		t.Errorf("%d images, state %s", len(r.Images), r.State)
+	}
+	r, err = ParseRequest([]byte(`{"state": {"b": 1, "a": 2}, "questions": {"z": {"type": "noul", "instructions": "?"}, "a": {"type": "noul", "instructions": "?"}}}`))
 	if err != nil || r.Questions[0].ID != "z" || r.State.String() != `{"b": 1, "a": 2}` {
 		t.Errorf("order not kept: %+v, %v", r, err)
 	}
@@ -206,12 +225,12 @@ func TestModel(t *testing.T) {
 	}
 	w := llm.NewSynthetic(cfg)
 	dir := t.TempDir()
-	open := func(seq int) program {
+	open := func(seq int) *program {
 		path := filepath.Join(dir, fmt.Sprintf("d1-%d.mlpackage", seq))
 		if _, err := llm.WritePart(path, cfg, w, llm.Options{Seq: seq, Format: "fp16"}, nil); err != nil {
 			t.Fatal(err)
 		}
-		p, err := openCPU(path, cfg.HiddenSize)
+		p, err := openProgram(context.Background(), nil, path, cfg.HiddenSize)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -225,12 +244,12 @@ func TestModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids, _, err := m.Tokens(req.State, req.Questions[0])
+	ids, _, err := m.Tokens(req.State, req.Questions[0], nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	n := len(ids)
-	m.progs = []program{open(n + 3), open(n + 20)}
+	m.progs = []*program{open(n + 3), open(n + 20)}
 	got, err := m.Decide(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -238,9 +257,80 @@ func TestModel(t *testing.T) {
 	if got.InputTokens != n || got.Answers[0].Type != "choice" {
 		t.Fatalf("response %+v", got)
 	}
-	// the expectation from the whole output of a program of the prompt's length: the hidden
-	// state at the last token times the rows of the labels' tokens in the tied embedding table
-	path := filepath.Join(dir, "whole.mlpackage")
+	// the expectation from the whole output of a program of the prompt's length
+	_, groups, err := Labels(req.Questions[0], enc.Encode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "whole")
+	want := decideOn(t, cfg, w, path, embedRows(t, cfg, w, ids), groups, req.Questions[0], m.temperature)
+	for i, p := range want.Probabilities {
+		if math.Abs(got.Answers[0].Probabilities[i]-p) > 1e-4 {
+			t.Errorf("probabilities %v, want %v", got.Answers[0].Probabilities, want.Probabilities)
+			break
+		}
+	}
+	if slices.Max(want.Probabilities) > 0.999 {
+		t.Errorf("degenerate probabilities %v", want.Probabilities)
+	}
+	// an image: its rows go between <|vision_start|> and <|vision_end|> at the start of the user
+	// turn, and the answer is the program's on that input
+	img := make([]float32, 2*cfg.HiddenSize)
+	for i := range img {
+		img[i] = float32(math.Sin(float64(i))) * 0.3
+	}
+	m.progs = []*program{open(n + 8)}
+	got1, _, err := m.answer(context.Background(), req.State, req.Questions[0], [][]float32{img})
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes, _, _ := Labels(req.Questions[0], enc.Encode)
+	const prefix = "<|startoftext|><|im_start|>user\n"
+	rest, ok := strings.CutPrefix(Prompt(req.State, req.Questions[0], codes, m.escape, 0), prefix)
+	if !ok {
+		t.Fatal("the prompt does not start with the user turn")
+	}
+	ix := embedRows(t, cfg, w, enc.Encode(prefix))
+	ix = append(append(append(ix, embedRows(t, cfg, w, enc.Encode(vision.Start))...), img...), embedRows(t, cfg, w, enc.Encode(vision.End))...)
+	ix = append(ix, embedRows(t, cfg, w, enc.Encode(rest))...)
+	want1 := decideOn(t, cfg, w, path, ix, groups, req.Questions[0], m.temperature)
+	for i, p := range want1.Probabilities {
+		if math.Abs(got1.Probabilities[i]-p) > 1e-6 || math.Abs(got1.Probabilities[0]-got.Answers[0].Probabilities[0]) < 1e-4 {
+			t.Errorf("with an image %v, want %v (without %v)", got1.Probabilities, want1.Probabilities, got.Answers[0].Probabilities)
+			break
+		}
+	}
+	req.Images = []image.Image{image.NewGray(image.Rect(0, 0, 8, 8))}
+	var unsup *Unsupported
+	if _, err := m.Decide(context.Background(), req); !errors.As(err, &unsup) {
+		t.Errorf("an image without a vision encoder: %v", err)
+	}
+	req.Images = nil
+
+	m.progs = []*program{open(n - 1)}
+	var badReq *BadRequest
+	if _, err := m.Decide(context.Background(), req); !errors.As(err, &badReq) {
+		t.Errorf("a prompt longer than the program: %v", err)
+	}
+}
+
+func embedRows(t *testing.T, cfg *lfm3.Config, w llm.Weights, ids []int32) []float32 {
+	t.Helper()
+	x, err := llm.Embed(w, cfg, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x
+}
+
+// decideOn answers q from the whole output of a program as long as x: the hidden state at the
+// last row times the rows of the labels' tokens in the tied embedding table, the best of each
+// group. The program is written to path+the length.
+func decideOn(t *testing.T, cfg *lfm3.Config, w llm.Weights, path string, x []float32, groups [][]int32, q Question, temperature float64) Answer {
+	t.Helper()
+	d := cfg.HiddenSize
+	n := len(x) / d
+	path = fmt.Sprintf("%s-%d.mlpackage", path, n)
 	if _, err := llm.WritePart(path, cfg, w, llm.Options{Seq: n, Format: "fp16"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -249,23 +339,15 @@ func TestModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	x, err := llm.Embed(w, cfg, ids)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ones := make([]float32, n)
 	for i := range ones {
 		ones[i] = 1
 	}
-	res, err := prog.Run(map[string]milcpu.Tensor{"x": {Shape: []int{1, n, cfg.HiddenSize}, Data: x}, "mask": {Shape: []int{1, n}, Data: ones}}, milcpu.Options{})
+	res, err := prog.Run(map[string]milcpu.Tensor{"x": {Shape: []int{1, n, d}, Data: x}, "mask": {Shape: []int{1, n}, Data: ones}}, milcpu.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := res["y"].Data[(n-1)*cfg.HiddenSize:]
-	_, groups, err := Labels(req.Questions[0], enc.Encode)
-	if err != nil {
-		t.Fatal(err)
-	}
+	last := res["y"].Data[(n-1)*d:]
 	logits := make([]float64, len(groups))
 	for i, g := range groups {
 		if len(g) != 2 {
@@ -281,28 +363,29 @@ func TestModel(t *testing.T) {
 			logits[i] = math.Max(logits[i], dot)
 		}
 	}
-	want := Decide(req.Questions[0], logits, m.temperature)
-	for i, p := range want.Probabilities {
-		if math.Abs(got.Answers[0].Probabilities[i]-p) > 1e-4 {
-			t.Errorf("probabilities %v, want %v", got.Answers[0].Probabilities, want.Probabilities)
-			break
-		}
-	}
-	if slices.Max(want.Probabilities) > 0.999 {
-		t.Errorf("degenerate probabilities %v", want.Probabilities)
-	}
-	m.progs = []program{open(n - 1)}
-	var badReq *BadRequest
-	if _, err := m.Decide(context.Background(), req); !errors.As(err, &badReq) {
-		t.Errorf("a prompt longer than the program: %v", err)
-	}
+	return Decide(q, logits, temperature)
 }
 
-// vocabEncoder maps each byte to a token below vocab, and a space followed by a letter to one
-// token of its own.
+func pngBase64(t *testing.T, w, h int) string {
+	t.Helper()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewGray(image.Rect(0, 0, w, h))); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(b.Bytes())
+}
+
+// vocabEncoder maps each byte to a token below vocab, a space followed by a letter to one token
+// of its own, and the image tokens to 1 and 2.
 type vocabEncoder int
 
 func (v vocabEncoder) Encode(text string) []int32 {
+	switch text {
+	case vision.Start:
+		return []int32{1}
+	case vision.End:
+		return []int32{2}
+	}
 	if len(text) == 2 && text[0] == ' ' {
 		return []int32{(int32(text[1]) + 7) % int32(v)}
 	}

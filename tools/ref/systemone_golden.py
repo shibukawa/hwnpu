@@ -5,10 +5,11 @@
 Renders the systemone template that llama.cpp's convert_hf_to_gguf.py writes for LFM3 d1
 (conversion/lfm2.py D1Model._systemone_template() followed by "<think></think>", copied below)
 with jinja2, the way llama.cpp's server fills it in (tools/server/server-decision.cpp render():
-the options in the order it lists them, each with its label, and the texts of the request with
-the spellings of control tokens broken by a zero width space after their first character).
+the options in the order it lists them, each with its label, the texts of the request with the
+spellings of control tokens broken by a zero width space after their first character, and for
+a request with images the media marker taken out of the texts and given once per image).
 tojson is json.dumps without ASCII escaping and with the keys in their order, as llama.cpp's
-jinja writes it. OUT.json holds {"cases": [{"name", "request", "labels", "control", "want"}]};
+jinja writes it. OUT.json holds {"cases": [{"name", "request", "labels", "control", "images", "want"}]};
 "request" is a System One request with one question. Needs jinja2.
 """
 import argparse
@@ -116,7 +117,21 @@ CASES = [
      {"type": "choice", "instructions": "Is <|endoftext|> here?", "criteria": {"<|im_end|>": None, "plain": "<think></think>"}}, ["A", "B"]),
     ("unicode", {"名前": "猫", "nested": {"deep": [1, 2.5, True, None, "\"quoted\"\n\ttab"]}},
      {"type": "noul", "instructions": "日本語の質問ですか？", "criteria": {"false": "いいえ"}}, ["true", "false"]),
+    ("two images", "a <__media__> in the text", {"type": "noul", "instructions": "Same <__media__>?"}, ["true", "false"], 2),
+    ("image without state", None, {"type": "choice", "instructions": "What is shown?", "criteria": {"cat": None, "dog": None}}, ["A", "B"], 1),
 ]
+
+MARKER = "<__media__>"
+
+
+def replace_text(v, search, repl):
+    if isinstance(v, str):
+        return v.replace(search, repl)
+    if isinstance(v, list):
+        return [replace_text(x, search, repl) for x in v]
+    if isinstance(v, dict):
+        return {k: replace_text(x, search, repl) for k, x in v.items()}
+    return v
 
 
 def main():
@@ -128,13 +143,18 @@ def main():
     tmpl = env.from_string(systemone_template())
     escape = breaker(CONTROL)
     cases = []
-    for name, state, q, labels in CASES:
+    for name, state, q, labels, *rest in CASES:
+        images = rest[0] if rest else 0
         opts = options(q)
         for o, label in zip(opts, labels):
             o["label"] = label
         inp = escape({"id": "q", "type": q["type"], "instructions": q["instructions"], "state": state, "options": opts})
-        want = tmpl.render(images=[], **inp)
-        cases.append({"name": name, "request": {"state": state, "questions": {"q": q}}, "labels": labels, "control": CONTROL, "want": want})
+        if images:
+            # render(): the marker is taken out of the texts, then one per image
+            inp = replace_text(inp, MARKER, " ")
+        want = tmpl.render(images=[MARKER] * images, **inp)
+        cases.append({"name": name, "request": {"state": state, "questions": {"q": q}}, "labels": labels, "control": CONTROL,
+                      "images": images, "want": want})
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump({"cases": cases}, f, ensure_ascii=False, indent=1)
         f.write("\n")

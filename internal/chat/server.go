@@ -43,11 +43,16 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
+	in := []string{"text"}
+	if s.E.Images() {
+		in = append(in, "image")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data": []map[string]any{{
 			"id": s.E.Name, "object": "model", "created": 0, "owned_by": "hwnpu",
 			"context_length": s.E.Context(),
+			"architecture":   map[string]any{"input_modalities": in, "output_modalities": []string{"text"}},
 		}},
 	})
 }
@@ -120,7 +125,20 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	g := Request{Prompt: s.E.Tok.Encode(prompt), MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed}
+	var images []string
+	for _, m := range req.Messages {
+		images = append(images, m.Content.Images...)
+	}
+	ids, err := s.E.Tokens(r.Context(), prompt, images)
+	if err != nil {
+		code, typ := http.StatusInternalServerError, "server_error"
+		if errors.Is(err, ErrImage) {
+			code, typ = http.StatusBadRequest, "invalid_request_error"
+		}
+		apiError(w, code, typ, "", err.Error())
+		return
+	}
+	g := Request{Prompt: ids, MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed}
 	if req.MaxCompletionTokens > 0 {
 		g.MaxTokens = req.MaxCompletionTokens
 	}
