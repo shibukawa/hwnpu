@@ -1,0 +1,418 @@
+[
+ {
+  "name": "plain",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Hi"
+   }
+  ],
+  "want": "<bos><|turn>user\nHi<turn|>\n<|turn>model\n"
+ },
+ {
+  "name": "system thinking",
+  "messages": [
+   {
+    "role": "system",
+    "content": "  You are terse.\n"
+   },
+   {
+    "role": "user",
+    "content": "Hi "
+   }
+  ],
+  "want": "<bos><|turn>system\n<|think|>\nYou are terse.<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n"
+ },
+ {
+  "name": "turns with reasoning",
+  "messages": [
+   {
+    "role": "user",
+    "content": "What is 2+2?"
+   },
+   {
+    "role": "assistant",
+    "content": "<|channel>thought\nadd<channel|>4",
+    "reasoning_content": "Two and two."
+   },
+   {
+    "role": "user",
+    "content": "And 3+3?"
+   },
+   {
+    "role": "assistant",
+    "content": "6",
+    "reasoning_content": "Three and three."
+   }
+  ],
+  "want": "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nWhat is 2+2?<turn|>\n<|turn>model\n4<turn|>\n<|turn>user\nAnd 3+3?<turn|>\n<|turn>model\n<|channel>thought\nThree and three.\n<channel|>6<turn|>\n<|turn>model\n"
+ },
+ {
+  "name": "tools",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "edit",
+     "description": "Edits files.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "edits": {
+        "type": "array",
+        "description": "The edits",
+        "items": {
+         "type": "object",
+         "properties": {
+          "path": {
+           "type": "string"
+          },
+          "Old": {
+           "type": "string"
+          },
+          "new": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "path",
+          "new"
+         ]
+        }
+       },
+       "options": {
+        "type": "object",
+        "properties": {
+         "dry_run": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "dry_run"
+        ]
+       },
+       "meta": {
+        "type": "object",
+        "owner": {
+         "type": "string"
+        }
+       },
+       "tags": {
+        "type": "array",
+        "items": {
+         "type": [
+          "string",
+          "null"
+         ]
+        }
+       }
+      },
+      "required": [
+       "edits"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo?"
+   }
+  ],
+  "want": "<bos><|turn>system\n<|think|>\n<|tool>declaration:get_weather{description:<|\"|>Gets the weather of a city.<|\"|>,parameters:{properties:{city:{description:<|\"|>The city's name<|\"|>,type:<|\"|>STRING<|\"|>},days:{description:<|\"|>How many days<|\"|>,nullable:true,type:<|\"|>INTEGER<|\"|>},unit:{enum:[<|\"|>celsius<|\"|>,<|\"|>fahrenheit<|\"|>],type:<|\"|>STRING<|\"|>}},required:[<|\"|>city<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:edit{description:<|\"|>Edits files.<|\"|>,parameters:{properties:{edits:{description:<|\"|>The edits<|\"|>,items:{properties:{new:{type:<|\"|>STRING<|\"|>},Old:{type:<|\"|>STRING<|\"|>},path:{type:<|\"|>STRING<|\"|>}},required:[<|\"|>path<|\"|>,<|\"|>new<|\"|>],type:<|\"|>OBJECT<|\"|>},type:<|\"|>ARRAY<|\"|>},meta:{properties:{owner:{type:<|\"|>STRING<|\"|>}},type:<|\"|>OBJECT<|\"|>},options:{properties:{dry_run:{type:<|\"|>BOOLEAN<|\"|>}},required:[<|\"|>dry_run<|\"|>],type:<|\"|>OBJECT<|\"|>},tags:{items:{type:[<|\"|>STRING<|\"|>,<|\"|>NULL<|\"|>]},type:<|\"|>ARRAY<|\"|>}},required:[<|\"|>edits<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nWeather in Tokyo?<turn|>\n<|turn>model\n"
+ },
+ {
+  "name": "call and responses",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo and Osaka?"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "reasoning_content": "Two cities.",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Tokyo\", \"days\": 2, \"unit\": \"celsius\"}"
+      }
+     },
+     {
+      "id": "c2",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Osaka\"}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "Sunny, 20 C"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c2",
+    "content": "Rain"
+   }
+  ],
+  "want": "<bos><|turn>system\n<|think|>\n<|tool>declaration:get_weather{description:<|\"|>Gets the weather of a city.<|\"|>,parameters:{properties:{city:{description:<|\"|>The city's name<|\"|>,type:<|\"|>STRING<|\"|>},days:{description:<|\"|>How many days<|\"|>,nullable:true,type:<|\"|>INTEGER<|\"|>},unit:{enum:[<|\"|>celsius<|\"|>,<|\"|>fahrenheit<|\"|>],type:<|\"|>STRING<|\"|>}},required:[<|\"|>city<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nWeather in Tokyo and Osaka?<turn|>\n<|turn>model\n<|channel>thought\nTwo cities.\n<channel|><|tool_call>call:get_weather{city:<|\"|>Tokyo<|\"|>,days:2,unit:<|\"|>celsius<|\"|>}<tool_call|><|tool_call>call:get_weather{city:<|\"|>Osaka<|\"|>}<tool_call|><|tool_response>response:get_weather{value:<|\"|>Sunny, 20 C<|\"|>}<tool_response|><|tool_response>response:get_weather{value:<|\"|>Rain<|\"|>}<tool_response|><|channel>thought\n"
+ },
+ {
+  "name": "call and responses without thinking",
+  "no_think": true,
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo?"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Tokyo\"}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "Sunny"
+   }
+  ],
+  "want": "<bos><|turn>system\n<|tool>declaration:get_weather{description:<|\"|>Gets the weather of a city.<|\"|>,parameters:{properties:{city:{description:<|\"|>The city's name<|\"|>,type:<|\"|>STRING<|\"|>},days:{description:<|\"|>How many days<|\"|>,nullable:true,type:<|\"|>INTEGER<|\"|>},unit:{enum:[<|\"|>celsius<|\"|>,<|\"|>fahrenheit<|\"|>],type:<|\"|>STRING<|\"|>}},required:[<|\"|>city<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nWeather in Tokyo?<turn|>\n<|turn>model\n<|tool_call>call:get_weather{city:<|\"|>Tokyo<|\"|>}<tool_call|><|tool_response>response:get_weather{value:<|\"|>Sunny<|\"|>}<tool_response|>"
+ },
+ {
+  "name": "call pending",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me look.",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Kyoto\"}"
+      }
+     }
+    ]
+   }
+  ],
+  "want": "<bos><|turn>user\nWeather?<turn|>\n<|turn>model\n<|tool_call>call:get_weather{city:<|\"|>Kyoto<|\"|>}<tool_call|>Let me look.<|tool_response>"
+ },
+ {
+  "name": "answer after a response and another question",
+  "keep_thinking": true,
+  "messages": [
+   {
+    "role": "system",
+    "content": [
+     {
+      "type": "text",
+      "text": "Be brief."
+     },
+     {
+      "type": "text",
+      "text": " Use tools. "
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Edit it"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "reasoning_content": "I will edit.",
+    "tool_calls": [
+     {
+      "id": "e1",
+      "type": "function",
+      "function": {
+       "name": "edit",
+       "arguments": "{\"edits\": [{\"path\": \"a.go\", \"new\": \"x := 1.0\", \"Old\": \"x := 1\"}], \"options\": {\"dry_run\": false}, \"count\": 3, \"ratio\": 0.5, \"big\": 1e20, \"none\": null, \"Zeta\": true, \"alpha\": [1, \"two\", {\"k\": \"v\"}]}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "e1",
+    "content": [
+     {
+      "type": "text",
+      "text": "done"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": "Edited a.go."
+   },
+   {
+    "role": "user",
+    "content": "Thanks"
+   }
+  ],
+  "want": "<bos><|turn>system\n<|think|>\nBe brief. Use tools. <turn|>\n<|turn>user\nEdit it<turn|>\n<|turn>model\n<|channel>thought\nI will edit.\n<channel|><|tool_call>call:edit{alpha:[1,<|\"|>two<|\"|>,{k:<|\"|>v<|\"|>}],big:1e+20,count:3,edits:[{new:<|\"|>x := 1.0<|\"|>,Old:<|\"|>x := 1<|\"|>,path:<|\"|>a.go<|\"|>}],none:null,options:{dry_run:false},ratio:0.5,Zeta:true}<tool_call|><|tool_response>response:edit{value:<|\"|>done<|\"|>}<tool_response|>Edited a.go.<turn|>\n<|turn>user\nThanks<turn|>\n<|turn>model\n"
+ },
+ {
+  "name": "tool message by name",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Run it"
+   },
+   {
+    "role": "assistant",
+    "content": "Running.",
+    "tool_calls": [
+     {
+      "id": "r1",
+      "type": "function",
+      "function": {
+       "name": "run",
+       "arguments": "{}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "other",
+    "name": "runner",
+    "content": "ok"
+   },
+   {
+    "role": "assistant",
+    "content": "It ran."
+   }
+  ],
+  "want": "<bos><|turn>user\nRun it<turn|>\n<|turn>model\n<|tool_call>call:run{}<tool_call|><|tool_response>response:runner{value:<|\"|>ok<|\"|>}<tool_response|>Running.It ran.<turn|>\n<|turn>model\n"
+ }
+]

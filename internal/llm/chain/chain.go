@@ -1,7 +1,8 @@
 // Package chain runs a model written in parts (hwnpu-convert's out.parts.json) as one model: it
 // loads every part, a package of its own, and binds the output buffer of each part as the input x
-// of the next, so that nothing is copied between them. Inputs other than x (such as an encoder's
-// mask) are one buffer bound to every part that takes them.
+// of the next, so that nothing is copied between them. An input named like an output of an
+// earlier part is bound to that output (Gemma 4's per-layer inputs and shared keys and values);
+// other inputs (such as an encoder's mask) are one buffer bound to every part that takes them.
 //
 // A model converted with several KV cache lengths (tiers) is loaded one tier at a time: the
 // shortest first, since a step costs in proportion to the cache's length, and the next when the
@@ -37,6 +38,7 @@ type tier struct {
 	parts             []*Part
 	inputs, outputs   map[string]*hwnpu.Buffer
 	inShape, outShape map[string][]int
+	passed            map[string]bool // outputs bound as inputs of a later part
 	out               *hwnpu.Buffer
 	bufs              []*hwnpu.Buffer
 	loadTime          time.Duration
@@ -107,7 +109,7 @@ func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[
 // instead of new ones, and are not owned.
 func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[string]*hwnpu.Buffer) (*tier, error) {
 	start := time.Now()
-	t := &tier{inputs: map[string]*hwnpu.Buffer{}, outputs: map[string]*hwnpu.Buffer{}, inShape: map[string][]int{}, outShape: map[string][]int{}}
+	t := &tier{inputs: map[string]*hwnpu.Buffer{}, outputs: map[string]*hwnpu.Buffer{}, inShape: map[string][]int{}, outShape: map[string][]int{}, passed: map[string]bool{}}
 	alloc := func(size int) (*hwnpu.Buffer, error) {
 		b, err := c.dev.AllocBuffer(size)
 		if err == nil {
@@ -148,6 +150,13 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 					t.close()
 					return nil, fmt.Errorf("chain: part %d takes x of %d bytes, the part before gives %d", i, a.Bytes, b.Size())
 				}
+			case t.outputs[a.Name] != nil:
+				b = t.outputs[a.Name]
+				if b.Size() != a.Bytes {
+					t.close()
+					return nil, fmt.Errorf("chain: part %d takes %s of %d bytes, an earlier part outputs %d", i, a.Name, a.Bytes, b.Size())
+				}
+				t.passed[a.Name] = true
 			default:
 				if b = t.inputs[a.Name]; b == nil {
 					if b = shared[a.Name]; b != nil {
@@ -223,8 +232,10 @@ func (t *tier) program(ctx context.Context) decode.Program {
 		if err := t.run(ctx); err != nil {
 			return err
 		}
-		for _, b := range t.outputs {
-			b.SyncFromDevice(0, b.Size())
+		for n, b := range t.outputs {
+			if !t.passed[n] {
+				b.SyncFromDevice(0, b.Size())
+			}
 		}
 		return nil
 	}

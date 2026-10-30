@@ -1208,7 +1208,58 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run 'PlamoQueryTokens|PlamoEmbeddingGolden' -
 - OpenCode は `os/exec` で起動し、標準入力、出力、エラーにこのプロセスのファイルをそのまま渡す (パイプを挟まないので、端末の raw モード、代替画面、マウス、端末への問い合わせがそのまま通る)。サーバーのログはファイルに回す。SIGINT はこのプロセスでは捕まえて捨てる (無視にすると子に継がれる。捕まえた信号は exec で既定に戻る)。OpenCode が終わったらサーバーを閉じ、その終了コードで終わる
 - 検証 (M3、OpenCode 1.19.5): `hwnpu-chat -opencode run "…" < /dev/null` で、ポート 42846 に開き、7 往復で `a - b` を `a + b` に直して終了コード 0、サーバーも止まった。疑似端末で TUI を起動し (`-- --prompt`)、代替画面とマウスが有効になり、5 往復の要求が届き、Ctrl-C 1 回で OpenCode とともに終了コード 0 で終わった。`opencode run` は標準入力が閉じるまで待つ (端末なら問題ない)
 
-### 16.25 d1-2B: LFM3 の判定モデルと System One API — 2026-10-30
+### 16.25 4 つ目のアーキテクチャ: Gemma 4 (gemma-4-E2B-it のテキスト部分) — 2026-10-30
+
+- 対象は `google/gemma-4-E2B-it` (指示調整版) だけ。ベースの `gemma-4-E2B` と config.json は `eos_token_id` しか違わない (同じ構造で、-it は `chat_template.jinja` を持つ)。チェックポイントは `Gemma4ForConditionalGeneration` (テキスト 4.65B、音声塔 0.30B、画像塔 0.17B) で、テキストだけを移した。音声と画像のテンソル 1411 個は `unused`
+- `internal/llm/gemma4` (アーキテクチャ名 `gemma4`): `modeling_gemma4.py` の `Gemma4TextModel` を移した。35 層、hidden 1536、8 ヘッドに KV 1 ヘッド。層の型は sliding (窓 512、head_dim 256) 4 層に full (head_dim 512) 1 層の繰り返し。各層はサンドイッチ norm の注意と GeGLU (`gelu_pytorch_tanh`) の MLP、そのあと層ごとの埋め込みの枝、最後に残差ごと `layer_scalar` を掛ける。注意のスコアは縮めない (`scaling = 1.0`。QK-norm が代わり)。値にも重みなしの RMSNorm。RMSNorm は `w * x` (Gemma 3 までの `(1 + w) * x` ではない)。埋め込みに `sqrt(hidden)` (float32 の参照に合わせて丸めない値)、ロジットに softcap 30 (tanh)。full 層の RoPE は proportional: head_dim 512 のうち先頭 64 周波数だけを回し、残りは周波数 0 (LFM3 の部分回転と同じ並び)
+- **層ごとの埋め込み (PLE)**: 2 つ目の埋め込み表 `embed_tokens_per_layer` (262144 x 8960、bf16 で 4.7 GB) はホストに置く。`llm.TokenInputs` を足し、表の行を `x` と同じようにホストが引いて入力 `ple` (1, seq, 8960) にする (`llm.TokenRow` は x の行の後ろにこれを並べ、`decode.Session.Step` が分けて書く)。層 0 から始まるプログラムが `(norm(per_layer_model_projection(埋め込み)) + ple * 16) / sqrt(2)` を計算し、層 i はその i 番目の 256 を使う。分割したときは出力 `per_layer_inputs` を後ろの部分が同名の入力で受け取る。`per_layer_model_projection` は層の外だが最初の部分に入るので、`llm.Prologue` で分割の見積もりに知らせる。表はホストに置くので見積もりから外す
+- **KV の共有**: 層 15〜34 は自分の K/V を持たず、sliding は層 13、full は層 14 の K/V (キャッシュありならキャッシュとそのステップの分をつないだもの) を使う。キャッシュを持つのは 15 層だけ (full 3 層、sliding 12 層はリング)。共有の元と使う層が別の部分に分かれたときは、元の部分が `shared_k_sliding` などを出力し、後ろの部分が同名の入力で受け取る。そのため `chain` に「前の部分の出力と同じ名前の入力はその出力のバッファに結ぶ」を足した (`passed` は同期しない)。`llm.WritePart` は `Cached` なモデルならキャッシュなしでも `BuildCached` を使い、この出力を落とさない
+- `blocks.SDPAScale` を足した (スコアの倍率を指定。1 なら掛け算を置かない)。`SDPA` はこれを `1/sqrt(head_dim)` で呼ぶだけで、LFM3 (`TestBuildTiny`)、PLaMo、BERT のダイジェストは変わっていない。`blocks.SDPAGrouped` も足した: KV ヘッドを共有する問い合わせのヘッドを系列の軸に積み、KV ヘッドごとに 1 回の行列積にする。`SDPA` の `tile` は KV を問い合わせのヘッドの数だけ複製するので、E2B (8 ヘッドに KV 1、全注意の head_dim 512) でキャッシュ 16320 だと、全注意の 7 層で毎ステップ K と V を 8 倍 (1 つ 128 MB) に写していた。gemma4 だけが使う (LFM3 は今のまま)
+- **fp16 のあふれ**: 実物の層 0 は input_layernorm の重みが最大 270 あり、正規化した入力が 269 になる。それを射影した q/k/v を QK-norm でまた正規化するときに二乗が fp16 を超え、注意の出力が 45% ずれた。残差も layer_scalar (0.018) を掛ける前は 1900 に達する。RMSNorm は入力の倍率に依らないので、gemma4 の norm はすべて `x/64` を正規化する (eps を 64² で割る。数学的に同じ)。`blocks.RMSNorm` の inScale (重みを 64 で割る) は使わない: E2B の norm の重みは小さいものが 0.16 で、割ると fp16 の非正規化数になる (小さなモデルで、重みを割る形は 2.5e-4 ずれた)。PLE の射影の norm だけは入力が小さく (RMS 0.3)、縮めると二乗が非正規化数になって 0.04% → 0.5% に悪化したので縮めない。LFM3 の `post-scale` に当たる書き換えは、Neural Engine で効くか確かめていないので入れていない
+- テスト (`gemma4_test.go`、`cache_test.go`、`config_test.go`): 小さな合成モデル (6 層、sliding/full、GQA、proportional RoPE、PLE、層 3〜5 が層 1・2 の K/V を共有、double wide MLP、softcap) で、`modeling_gemma4.py` をループで直接書いた fp64 の forward と相対誤差 1.6e-6。正解側は Config のメソッド (共有の元、MLP の幅、head_dim) を使わず、HF のコードと同じ判定を自前で書いた。1 層ずつ (参照の `per_layer_inputs` と共有 K/V を与える) と最終段だけでも 1e-4 以内。2〜4 部分に分けても同じ。キャッシュありで 1〜3 部分、q=1/3/4/11 を順に流し、キャッシュなしと 5e-3 以内 (この小さなモデルは縮めないスコアが 30 前後になり fp16 に敏感で、全演算を fp16 に丸めると 0.2〜3% 動く。K/V を fp16 で持つだけの差は 0.2〜0.3%)。改変 15 個 (値の norm を外す、共有の元を最初の層にする、PLE のスライスをずらす、layer_scalar を外す、窓を 1 広げる、リングのスロットを 1 ずらす、proportional を全周波数にする、スコアを 1/sqrt(d) で縮める、埋め込みを縮めない、PLE の行を 16 倍しない、共有の出力を落とす、キャッシュありの共有に今のステップを含めない、softcap を外す、MLP を double wide にしない、ほか) はすべて検出した。実物の config.json から形と分割の見積もり (lut4 で 2 部分) を確かめる。対応しない設定 (MoE、`attention_k_eq_v`、`attention_bias`、双方向、tie しない出力層、ほかの rope、層の型、PLE の語彙の違い、共有の元がない) はエラー
+- 参照: `tools/ref/ref_gemma4.py`。チェックポイント全体を float32 にすると 20 GB で 16 GB の Mac に載らないので、text config から `Gemma4ForCausalLM` を float32 で組み、言語モデルのテンソルだけを 1 つずつ読み、PLE の表はトークンの行だけをチェックポイントから読むモジュールに差し替える (9 GB)。forward は transformers のもの。層の入力の hook で `per_layer_inputs`、層 15 の注意の hook で共有 K/V を取り、`REF.NAME.bin` に書く。`hwnpu-check` は x 以外の入力に、引く表の行 (`ple`)、参照の値 (`check.Ref.Extra`)、どちらもなければ 1 を与える。`ref_logits.py` は埋め込みの `embed_scale` を割って書くようにした (0 番は表の行そのもの、の約束どおり)
+- トークナイザー: Gemma の tokenizer.json は byte fallback の BPE (空白を ▁ に置き換え、間で切らず、マージは順位、語彙にない文字は UTF-8 のバイト)。`tokenizer.Load` が読む (`fallback.go`)。HF の tokenizers と、35 文 (`testdata/gemma-4-E2B-it.json`、`TestGemma4` は `HWNPU_GEMMA4_DIR` が要る) と乱数の 300 文 (計 7026 トークン) で一致。この tokenizer は BOS を付けない (チャットの書式が `<bos>` を書く)
+- チャットの書式: `chat.Template` を足し、LFM3 と Gemma 4 を `TemplateFor(アーキテクチャ名)` で選ぶ。`chat.Gemma4` は chat_template.jinja (2026-07-09 版) の移植で、ターン `<|turn>ROLE`、思考 `<|think|>` と `<|channel>thought ... <channel|>`、道具の宣言・呼び出し・応答の独自の記法 (文字列は `<|"|>`、キーは dictsort) を書く。`Render` は「プロンプトが思考の中で終わるか」も返す (道具の応答の後、思考ありなら `<|channel>thought\n` で終わる)。transformers で描いた 9 会話 (`testdata/gemma4_template.json`、`tools/ref/template_golden.py`) と一字一句一致。生成の終わりは `<turn|>`、`<eos>`、`<|tool_response>`
+- **実物の照合** (`hwnpu-check`、`<bos>` から始まる 31 トークン): `tensors: 0 missing, 0 mismatched, 1471 unused` (音声と画像 1411 個、共有の層の k_proj/v_proj/k_norm 60 個)。fp16 で各層の相対 RMS 誤差 1e-4 以下、最終段とモデル全体は argmax 31/31、KL 0.0000。全演算を fp16 に丸めても (`-f16`) 最悪の層 0.0098 (層 13)、全体は 31/31、KL 0.0004。norm を縮める前は `-f16` で層 0 が 0.30、全体が 16/30、KL 3.17 だった。参照の hidden の最大は 132 (層 30) で、層の境目は fp16 に収まる
+- **lut4 は粗い**: `-format lut4 -quant kmeans-minmax` で各層 5〜31%、全体 argmax 13/31、KL 2.54 (LFM3 は 0.95)。sandwich norm のため層の出力の大半が層の中で作り直され、4 ビットの重みの誤差がほぼそのまま層の出力に出る。重みの誤差も LFM3 より大きい (層 11 で 0.17〜0.22、LFM3 は 0.117)。1 つの群を fp16 に残しても (MLP、注意、PLE の枝、出力層) 半分程度にしかならず、表の当て方 (uniform、kmeans) や群の大きさ (4 行、1 行) でも 11〜21% より下がらない。出力層だけは lut4 でも KL 0.07 で、fp16 に残すと 0
+- **QAT 版**: `google/gemma-4-E2B-it-qat-q4_0-unquantized` (同じ形式の bf16) の重みは 32 個ごとに 16 値以下で、Q4_0 の格子にちょうど乗る。ただし ANE の lut4 は 16 行 x 行全体で 1 つの表なので、32 列ごとの scale は表せず、層 11 の重みの誤差は 0.16〜0.20 にしか下がらない。Q4_0 をそのまま使うには、列のブロックごとの部分積をバッチの行列積で求めて scale を掛けて足す形 (整数 -8..7 の 1 つの表で正確) が要る。未着手
+- **Neural Engine** (M3、`-seq 1`、lut4 kmeans-minmax、`-target m3` で 2 部分 0.54 + 0.52 GiB (層 0〜23 と 24〜34)、変換 80 秒、300 トークンの貪欲法): キャッシュ 1024 で 1 トークン 23.6〜25.8 ms (約 42 tokens/s)、16320 で 47 ms (21 tokens/s)。LFM3-1.7B (19 ms、63〜66 ms) より短い文脈では遅く、長い文脈では速い (キャッシュを持つ層が 15、全注意は 3 層だけ)。`SDPAGrouped` の前 (`tile`) は 1024 で 31〜35 ms、16320 で 90〜150 ms だった。スワップが 10 GB を超えた状態では 1024 でも 72〜80 ms になり、測り直すと戻った (同じ条件で交互に測った)。ソフトキャップ (mul、tanh、mul) は 262144 の軸のままだと CPU に置かれたので、(16, 16384) に畳んでから掛ける。最後に (1, seq, 262144) に戻す reshape だけは CPU に置かれる。畳んだまま出力すると全部 ANE に載るが、1 トークン 137 ms と 4 倍遅くなったので戻した。出力層の linear (出力 262144) 自体は ANE に載る
+- 生成の例 (貪欲法): 英語の説明やコードは自然。「日本の首都は」に「東京」。「富士山の高さは」には 2,400 m 前後と誤った (lut4 の損失。LFM3 も 4,076 m と答えた)
+- **hwnpu-chat** (`-use gemma-4-E2B-it`、文脈 16320、1 トークンと 64 トークンのプログラム): OpenAI 互換 API で、思考なしの日本語の回答、思考あり (`reasoning_content` に分かれる)、道具の呼び出し (`get_weather{"city":"Osaka"}`、`finish_reason: tool_calls`) が通った。読み込みは 1 つ目 133 秒、2 つ目 113 秒 (初回のコンパイル)
+- 未確認: 64 トークンのプログラムの読み込み速度の計測、OpenCode からの利用、分割の境目を層 13 より前にして共有 K/V を部分の間で渡さない形の速さ。lut4 の粗さは 16.26 で 6 ビットの表にして解いた
+
+### 16.26 Gemma 4 の重み: 6 ビットの表 (lut6) を既定に — 2026-10-30
+
+- 問題: lut4 の Gemma 4 E2B は KL 2.54 nats (argmax 13/31)。M3 の Neural Engine で「富士山の高さ」に 3778 と答え、『こころ』の作者や日本一長い川に答えなかった (16.25)
+- **ANE に載る形の候補を測った** (`npuprobe` と同じ作りの一時的なプログラム、E2B の大きさの線形層 6 層、2.08 億パラメータ、トークン 1 つ、M3):
+
+| 形 | 大きさ | 1 回 | 配置 |
+|---|---|---|---|
+| lut4 (16 行ごとに 16 値の表) | 104 MB | 1.81 ms | NPU |
+| lut6 (64 値の表) | 157 MB | 2.65 ms | NPU |
+| lut8 (256 値の表) | 211 MB | 3.49 ms | NPU |
+| Q4_0 を 32 列ずつの grouped conv で (整数 -8..7 の表 1 つ + ブロックごとの scale を掛けて足す) | 117 MB | 12.3 ms | NPU |
+| Q4_0 を 32 列ずつのバッチの matmul で | 117 MB | 42 ms | すべて CPU |
+| fp16 | 415 MB | 6.52 ms | NPU |
+
+  lut6 と lut8 は ANE に載り、速さはほぼ重みのバイト数に比例する。QAT 版 (Q4_0 の格子に乗る) をそのまま使う形は、grouped conv なら ANE に載るが 7 倍遅く、バッチの matmul は CPU に落ちるので見送った。int8 (行ごとの scale) は PROBE.md で lut4 の 5.5 倍遅いと分かっている
+- 実装: `mlpackage.Builder.LUT` (4/6/8 ビット。uint6 は下位ビットから詰める、blob の型 13、uint8 は 1 バイトずつ)、`palette.QuantizeBits` (表の大きさ 2^bits、4 ビットは `Quantize` と同じ値)、`milcpu` の uint6/uint8 の読み出し、`-format lut6|lut8`。`TestConstexprWideTables` が CPU の展開と `Dequantize` の一致を、`TestQuantizeBits` が詰め方と誤差 (ガウスで 0.134 → 0.037 → 0.009) を確かめる。LFM3、PLaMo、BERT のダイジェストは変わっていない
+- 精度 (`hwnpu-check`、`<bos>` から 31 トークン、kmeans-minmax):
+
+| 形式 | 層の誤差の平均 / 最悪 | 全体の argmax | KL (nats) | M3 の 2 部分か | 1 トークン (キャッシュ 1024) |
+|---|---|---|---|---|---|
+| lut4 | 15% / 31% | 13/31 | 2.54 | 2 部分 1.06 GiB | 23〜24 ms |
+| lut6 | 4.7% / 11% | 25/31 | 0.25 | 2 部分 1.60 GiB | 31.5 ms |
+| lut6、全演算を fp16 に丸める | 4.7% / 11% | 24/31 | 0.26 | | |
+| lut8 | 1.2% / 3.0% | 27/31 | 0.048 | 3 部分 2.16 GiB | 41 ms |
+| fp16 | 0.01% | 31/31 | 0.0000 | (4.6 GB、5 部分) | |
+
+- 同じ質問への答え (M3、貪欲法): 富士山の高さ lut4 3778 / lut6 3776 / lut8 3776。17×23 はどれも 391。『こころ』の作者は lut4 が答えず、lut6 と lut8 は夏目漱石。日本一長い川は lut4 が「明確な定義はない」、lut6 と lut8 は信濃川
+- **既定を lut6 にした**: `llm.Arch.Format` (変換の既定の形式) を足し、Gemma 4 は `lut6`。`hwnpu-convert` は `-format` を省くとこれを使い、`hwnpu-chat` の変換も同じ。LFM3 は今のまま lut4
+- `-format-for SUBSTRING=FORMAT` (`Options.FormatFor`) を足した: 名前に SUBSTRING を含むテンソルだけ別の形式にする (最後に合うものが勝ち、`-keep-fp16` がすべてに勝つ)。lut6 のまま一部を lut8 にする混ぜ方は、MLP だけで 1.99 GiB と 2 部分に収まらず、注意だけでは層の誤差の大半 (MLP) が残るので、今回は既定にしていない
+- **hwnpu-chat** (`-use gemma-4-E2B-it`、lut6、文脈 16320、2 部分 0.81 + 0.79 GiB): 1 トークン 55 ms (lut4 は 47 ms)。思考なしで「富士山の高さは3,776メートル」「信濃川」と答え、思考ありの 465 トークンも `stop` で終わり、道具の呼び出しも通った。読み込みは 96 秒と 104 秒 (初回)
+
+### 16.27 d1-2B: LFM3 の判定モデルと System One API — 2026-10-30
 
 LiquidAI/d1-2B / d1-Omni-2B / LFM3-VL-2B / LFM3-Audio-2B への対応の検討 (2026-10-29) の結論は、テキスト部がどれも LFM3 と同じ構造で、hwnpu は埋め込みの表引きをホストで行う (入力が `x`) ので、画像や音声のエンコーダの出力を `x` に差し込めばテキスト側のプログラムは変わらない、というもの。順に (1) d1-2B のテキストのみ、(2) LFM3-VL の視覚エンコーダ、(3) LFM3-Audio の音声入力 (d1-Omni-2B もこれで揃う)、(4) LFM3-Audio の音声出力、とする。d1-omni-600M (LFM2 系、SigLIP2 と FastConformer) は対象外。この節は (1)。
 
@@ -1229,9 +1280,9 @@ go run ./cmd/hwnpu-systemone -model d1-2B -package d1-512.mlpackage request.json
 go run ./cmd/hwnpu-check -config d1-2B/config.json -weights d1-2B/model.safetensors -ref build/d1/ref   # 参照が作れたら
 ```
 
-### 16.26 LFM3-VL の視覚エンコーダと画像の入力 — 2026-10-30
+### 16.28 LFM3-VL の視覚エンコーダと画像の入力 — 2026-10-30
 
-16.25 の段階 (2)。LFM3-VL-2B のテキスト部は 16.25 で変換できるようになったので、視覚エンコーダと、画像を d1-2B (`/v1/systemone`) とチャットに渡す部分を足した。構造は llama.cpp の `tools/mtmd/models/lfm3vl.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-image.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、トークン数) から読んだ。HF のリモートコードと config の実物は見ていない。
+16.27 の段階 (2)。LFM3-VL-2B のテキスト部は 16.27 で変換できるようになったので、視覚エンコーダと、画像を d1-2B (`/v1/systemone`) とチャットに渡す部分を足した。構造は llama.cpp の `tools/mtmd/models/lfm3vl.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-image.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、トークン数) から読んだ。HF のリモートコードと config の実物は見ていない。
 
 - **`internal/llm/lfm3vl`** (アーキテクチャ名 `lfm3-vision`): `model_type` は `lfm3_vl` で、これはテキスト部 (`lfm3`) が持つので、視覚エンコーダは `-arch lfm3-vision` で選ぶ。構造は LFM 型で、patchifier (パッチの画素への linear。重みは (d, 3, t, p, p) で、静止画は時間方向の全スライスに同じ画像を入れるので、変換時に t で足し合わせる)、埋め込みの RMSNorm、pre-norm の層 (畳み込みの層: in_proj を B, C, x に分け、B*x にパッチの格子上で 3×3 の depthwise 畳み込み (ゼロ埋め) をかけ C を掛ける。注意の層: QK の RMSNorm、2D RoPE、GQA、双方向)、どちらも SwiGLU。最終 norm はない。projector はパッチごとの LayerNorm (eps 1e-6)、2×2 のパッチの連結 (上の行の左右、下の行の左右)、linear、GELU (erf)、linear
 - **2D RoPE**: ggml の `GGML_ROPE_TYPE_VISION` (`n_dims = head_dim/2`、組は (k, k+head_dim/2))。k が head_dim/4 未満は行、以上は列で回り、どちらの軸も head_dim/2 幅の RoPE の周波数 (`theta^(-2j/(head_dim/2))`)。表を作り直せば `blocks.ApplyRope` で回せる
@@ -1251,11 +1302,11 @@ go run ./cmd/hwnpu-convert -arch lfm3-vision -image 768x384 -format fp16 -config
 go run ./cmd/hwnpu-systemone -model d1-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage,vision-768x384.mlpackage request.json
 ```
 
-### 16.27 LFM3-Audio の音声入力と d1-Omni-2B — 2026-10-30
+### 16.29 LFM3-Audio の音声入力と d1-Omni-2B — 2026-10-30
 
-16.25 の段階 (3)。構造は llama.cpp の `tools/mtmd/models/lfm3a.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-audio.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、マスク) から読んだ。HF のリモートコードと config の実物は見ていない。
+16.27 の段階 (3)。構造は llama.cpp の `tools/mtmd/models/lfm3a.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-audio.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、マスク) から読んだ。HF のリモートコードと config の実物は見ていない。
 
-- **テキスト部** (`internal/llm/lfm3`): `lfm3_audio` は LFM3 の設定が `lfm` キーの下にあり、テンソルは `lfm.model.` (llama.cpp は `lfm.` を取り除いて読む)、出力層は `lfm.lm_head.weight`。`lfm3_omni` は `text_config` の下で、テンソルは `model.language_model.`。d1-Omni-2B (`lfm3_omni` で `D1Model`) も 16.25 の d1 モードで変換できる。視覚エンコーダ (`lfm3vl`) は `lfm3_omni` の config も読む (テンソル名は LFM3-VL と同じ)
+- **テキスト部** (`internal/llm/lfm3`): `lfm3_audio` は LFM3 の設定が `lfm` キーの下にあり、テンソルは `lfm.model.` (llama.cpp は `lfm.` を取り除いて読む)、出力層は `lfm.lm_head.weight`。`lfm3_omni` は `text_config` の下で、テンソルは `model.language_model.`。d1-Omni-2B (`lfm3_omni` で `D1Model`) も 16.27 の d1 モードで変換できる。視覚エンコーダ (`lfm3vl`) は `lfm3_omni` の config も読む (テンソル名は LFM3-VL と同じ)
 - **`internal/llm/lfm3audio`** (アーキテクチャ名 `lfm3-audio-encoder`、`-arch` で選ぶ): LFM3-Audio (`encoder.lfm` が LFM2 の設定、`dim_in`、`sliding_window`。テンソルは `encoder.downsample.`、`encoder.lfm.lfm.`、projector は `mlp.model.0/1/3`) と LFM3-Omni (`audio_encoder_config.text_config`、`num_mel_bins`。テンソルは `model.audio_encoder.downsample.`、`model.audio_encoder.lfm.`、`model.audio_projector.layer_norm/linear_1/linear_2`) の両方。構造は、(時間, メル) 上のストライド 2 の畳み込み 3 つで時間を 1/8 にする部分 (3×3 → SiLU、depthwise 3×3 → pointwise → SiLU を 2 回。カーネルは ggml の読み方で [出力][入力][メル][時間])、チャネル優先で平らにして linear、因果的な LFM2 の層 (短い畳み込みと、スライディング窓 (`sliding_window` 個のキー) の注意。QK norm、head 全体の rotate_half の RoPE、θ = 1e6)、最終 RMSNorm、projector (LayerNorm eps 1e-5、linear、GELU、linear)。FFN の幅は LFM2 の計算 (`block_auto_adjust_ff_dim` など)
 - **固定の長さ**: プログラムは最長のメルフレーム数 (`-frames`、既定 3000 = 30 秒) ごとに変換する。入力は `x` (1, frames, 128) と `mask` (1, frames)。llama.cpp は畳み込みのたびに入力の後ろをゼロで埋めるので、各段の出力のうちクリップより後ろ (出力 t は入力 2t があるときだけ存在する) をマスクを半分ずつ間引いたもので 0 にする。後ろの層は因果的なので、クリップの分の出力は長いプログラムで動かしても同じ。出力の先頭 `ceil(ceil(ceil(frames/2)/2)/2)` 行がクリップの埋め込み
 - **前処理** (`lfm3audio.Features`): llama.cpp の `mtmd_audio_preprocessor_lfm3a` と同じ。16 kHz、最後のフレームが最後の標本を含むよう右をゼロで埋め、400 標本の周期的 Hann 窓を 160 ごとに、パワースペクトル、Slaney のメルフィルタ 128 本 (0〜8 kHz、面積正規化)、log10 (下限 1e-12)、(v + 4) / 4。librosa (1.0.0) の STFT とフィルタで作った正解 (`tools/ref/mel_golden.py`) と 1e-4 以内で一致する。WAV (8/16/24/32 ビット PCM、32 ビット浮動小数点、チャネルは平均) を読み、16 kHz 以外は Hann 窓の sinc で変換する (llama.cpp は miniaudio で読むので、16 kHz 以外は近似)
@@ -1270,9 +1321,9 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 go run ./cmd/hwnpu-systemone -model d1-Omni-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage -audio audio-30s.mlpackage request.json
 ```
 
-### 16.28 LFM3-Audio の音声出力 (TTS) — 2026-10-30
+### 16.30 LFM3-Audio の音声出力 (TTS) — 2026-10-30
 
-16.25 の段階 (4)。構造と生成の手順は llama.cpp の `tools/mtmd/models/lfm3a-gen.cpp` (depthformer とコーデックのデコーダ)、`tools/mtmd/mtmd-helper-gen.cpp` (`lfm3a_gen_audio_pipeline`)、`tools/mtmd/mtmd.cpp` と `mtmd-audio.cpp` (極座標から ISTFT)、`conversion/lfm3.py` (テンソル名、TTS のテンプレート、サンプリングの既定値) から読んだ。
+16.27 の段階 (4)。構造と生成の手順は llama.cpp の `tools/mtmd/models/lfm3a-gen.cpp` (depthformer とコーデックのデコーダ)、`tools/mtmd/mtmd-helper-gen.cpp` (`lfm3a_gen_audio_pipeline`)、`tools/mtmd/mtmd.cpp` と `mtmd-audio.cpp` (極座標から ISTFT)、`conversion/lfm3.py` (テンソル名、TTS のテンプレート、サンプリングの既定値) から読んだ。
 
 - **流れ**: テキスト部が TTS のプロンプト (`<|startoftext|><|im_start|>system\nPerform TTS in {言語} using a {female|male} voice.<|im_end|>\n<|im_start|>user\n{文}<|im_end|>\n<|im_start|>assistant\n<|audio_start|>`、LFM3-Omni は `<|audio_start|>` の前に `<think></think>`) を読み、最終 norm の後の隠れ状態 h を出す。1 フレーム (80 ms) ごとに、depthformer がコードブックを乱数の順に MaskGIT で決め (LFM3-Audio は 12 個を 4 個ずつ 3 回)、各コードを温度、top-k (k 番目と同点は残す)、繰り返しの罰則 (直近の窓でそのコードブックが使ったコード) で選ぶ。いずれかが終端コード (語彙の最後) なら終わり。そうでなければフレームのコードのフィードバック埋め込み (`codebook_embedding` の `コード + コードブック × 語彙` 行の和) をテキスト部の次の入力にして、次の h を得る。最後に、コーデックのデコーダがコードを STFT のフレーム (1 フレームあたり 6) にし、ホストの ISTFT が 24 kHz の標本にする
 - **テキスト部**: `lfm3` に `-hidden-out 1` を足した。KV キャッシュ付きのプログラムがロジット y に加えて h (最終 norm の後) を出力し、`decode.Session.Hidden` がそれを読む。`TestBuildTiny` のダイジェストは変わらない

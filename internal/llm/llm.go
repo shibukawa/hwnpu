@@ -6,6 +6,11 @@
 // Register. internal/llm/archs imports them all, so its import list is the whitelist.
 package llm
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Weights supplies tensors by their Hugging Face name (model.layers.3.self_attn.q_proj.weight) as
 // float32 in row major order, whatever the checkpoint's own naming and storage format.
 type Weights interface {
@@ -29,6 +34,60 @@ func Embed(w Weights, m Model, tokens []int32) ([]float32, error) {
 		out = append(out, row...)
 	}
 	return out, nil
+}
+
+// TokenRow gathers what the host looks up for one token: the row of the embedding table (x's),
+// followed by the token's row of each of the model's TokenInputs, in order. decode.Session.Step
+// takes the tokens of a step as such rows.
+func TokenRow(w Weights, m Model, token int32) ([]float32, error) {
+	row, err := w.Rows(m.Embedding(), int(token), int(token)+1)
+	if err != nil {
+		return nil, err
+	}
+	if l, ok := m.(TokenInputs); ok {
+		row = append([]float32(nil), row...)
+		for _, lk := range l.TokenInputs() {
+			v, err := w.Rows(lk.Table, int(token), int(token)+1)
+			if err != nil {
+				return nil, err
+			}
+			if len(v) != lk.Width {
+				return nil, fmt.Errorf("llm: %s has rows of %d values, the input %s takes %d", lk.Table, len(v), lk.Input, lk.Width)
+			}
+			row = append(row, v...)
+		}
+	}
+	return row, nil
+}
+
+// TokenInputRows gathers the rows of a lookup input for the tokens (tokens x Width).
+func TokenInputRows(w Weights, lk TokenInput, tokens []int32) ([]float32, error) {
+	out := make([]float32, 0, len(tokens)*lk.Width)
+	for _, t := range tokens {
+		v, err := w.Rows(lk.Table, int(t), int(t)+1)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v...)
+	}
+	return out, nil
+}
+
+// FormatOf is the weight format of the named tensor: fp16 if KeepFP16 names it, else the last
+// FormatFor rule that matches, else Format.
+func (o Options) FormatOf(name string) string {
+	for _, k := range o.KeepFP16 {
+		if strings.Contains(name, k) {
+			return "fp16"
+		}
+	}
+	f := o.Format
+	for _, r := range o.FormatFor {
+		if sub, form, ok := strings.Cut(r, "="); ok && strings.Contains(name, sub) {
+			f = form
+		}
+	}
+	return f
 }
 
 // Options select what to build. They are common to all architectures; settings that only one
@@ -61,6 +120,9 @@ type Options struct {
 	// KeepFP16 lists substrings of tensor names to keep in fp16 regardless of Format, such as
 	// "embed_tokens" for the tied embedding and output layer.
 	KeepFP16 []string
+	// FormatFor gives some tensors another format than Format: "SUBSTRING=FORMAT" entries, such
+	// as "mlp=lut8"; the last that matches a tensor's name wins, and KeepFP16 over all.
+	FormatFor []string
 	// Quant selects the table fitting for lut4: "uniform" (default), "kmeans" or "kmeans-minmax".
 	Quant string
 	// Params holds the architecture's own settings by Param name; missing ones take the default.

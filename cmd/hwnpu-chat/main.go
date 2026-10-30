@@ -370,7 +370,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 			continue
 		}
 		msgs = append(msgs, chat.Message{Role: "user", Content: content})
-		prompt, err := chat.Render(msgs, nil, chat.Options{NoThink: !think})
+		prompt, thinking, err := e.Template.Render(msgs, nil, chat.Options{NoThink: !think})
 		if err != nil {
 			return err
 		}
@@ -390,7 +390,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 		thought, answered := false, false
 		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s}, func(g []int32) (bool, error) {
 			gen = g
-			a := chat.Parse(e.Tok.Decode(g, false), think, nil, false)
+			a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
 			dr, dc := sent.Next(a.Reasoning, a.Content)
 			if dr != "" {
 				fmt.Print(dim + dr + reset)
@@ -412,7 +412,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 			msgs = msgs[:len(msgs)-1]
 			continue
 		}
-		a := chat.Parse(e.Tok.Decode(gen, false), think, nil, true)
+		a := e.Template.Parse(e.Tok.Decode(gen, false), thinking, nil, true)
 		r := a.Reasoning
 		msgs = append(msgs, chat.Message{Role: "assistant", Content: chat.Content{Text: a.Content}, Reasoning: &r})
 		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s]%s\n", dim,

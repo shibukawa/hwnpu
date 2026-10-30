@@ -61,7 +61,7 @@ func main() {
 	parts := flag.Int("parts", 0, "number of parts (0: the fewest under the -target limit)")
 	cache := flag.String("cache", "0", "build a causal LM to run with a KV cache of this many tokens held by the host; -seq is then the tokens per call (1 to generate). Several lengths, comma separated and increasing, write a tier per length: a sequence runs on the shortest and moves up as it grows")
 	var opts llm.Options
-	setOpts := llm.BindFlags(flag.CommandLine, &opts, "lut4")
+	setOpts := llm.BindFlags(flag.CommandLine, &opts, "")
 	flag.Parse()
 	if *list {
 		for _, a := range llm.Archs() {
@@ -121,6 +121,9 @@ func run(config, arch, weights, out, targetName string, nParts int, caches []int
 		return err
 	}
 	defer w.Close()
+	if opts.Format == "" {
+		opts.Format = a.DefaultFormat()
+	}
 	_, err = llm.ConvertTiers(a, model, w, out, targetName, nParts, caches, opts, os.Stdout)
 	return err
 }
