@@ -87,6 +87,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-list` | | list the models, what each is for, and whether it is downloaded |
 | `-listen ADDR` | none | serve the OpenAI compatible API at `ADDR` (e.g. `127.0.0.1:8080`) instead of the terminal (section 3) |
 | `-think` | `true` | let the model think before it answers |
+| `-think-budget N` | `1024` | most tokens the model thinks before it is made to answer (0: no limit) |
 | `-system TEXT` | none | the chat's system message |
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |
@@ -128,6 +129,7 @@ go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
 | `POST /v1/embeddings` | `input` (a string or a list), `encoding_format` (`float` or `base64`), `dimensions` (only the model's 2048), and besides OpenAI's: `input_type` (`query` or `document`, section 4) and `truncate` |
 
 - `-think` (default true) decides whether the model thinks; a request changes it with `reasoning_effort` (none, minimal and low turn it off, medium and high on) or `chat_template_kwargs.enable_thinking`
+- `-think-budget` (default 1024) is the most tokens of thinking: past it, the thinking is closed with a sentence saying so and the model answers from what it has thought. A small model otherwise thinks for thousands of tokens (minutes at 64 ms a token), and an agent waits meanwhile; the log says `thinking cut` when it happened. `0` leaves the thinking unbounded
 - Requests run one at a time. The beginning a prompt shares with an earlier one is not read again, and `usage.prompt_tokens_details.cached_tokens` says how much. When another conversation comes in between, up to two long conversations are kept aside and come back
 - Generation stops when the model starts repeating one pattern
 - `-dump DIR` saves each request, its prompt and the generated text, for finding out what a client sends
@@ -272,7 +274,7 @@ To set it up by hand, put an `opencode.json` in the project directory. The model
 
 ## 7. Limits
 
-- OpenCode first asks for a title of the conversation. This model thinks before answering even when told not to, which takes 1 to 2 minutes, and the main request waits meanwhile
+- OpenCode first asks for a title of the conversation. This model thinks before answering even when told not to, and the main request waits meanwhile; `-think-budget` (default 1024 tokens, about a minute) bounds the wait
 - With 1.7B parameters and 4 bit weights, factual answers can be wrong. Letting it think helps
 - A longer context generates more slowly (about 0.36 s a token with 65536). Contexts up to 65536 were tried
 - PLaMo-Embedding-1B on the Neural Engine is not checked against the Hugging Face implementation yet: run `tools/ref/embed_golden.py` and `TestPlamoEmbeddingGolden` in `internal/chat` to compare (section 16.23 of docs/design.md)

@@ -74,6 +74,7 @@ func main() {
 	withOpenCode := flag.Bool("opencode", false, "serve on a free port from 30000 (or -listen) and run OpenCode on this terminal with the chat models; the arguments after the flags go to OpenCode")
 	openCodeBin := flag.String("opencode-bin", "opencode", "the OpenCode command (-opencode)")
 	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
+	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
 	temp := flag.Float64("temp", 0.1, "sampling temperature; 0 picks the most likely token")
@@ -119,7 +120,7 @@ func main() {
 		fail(errors.New("-embed-package is for one embedding model; -use names several"))
 	}
 
-	srv := &chat.Server{Think: *think, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: os.Stderr, Dump: *dump}
+	srv := &chat.Server{Think: *think, ThinkBudget: *thinkBudget, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: os.Stderr, Dump: *dump}
 	for _, m := range models {
 		md := filepath.Join(*dir, m.Name)
 		switch m.Kind {
@@ -183,7 +184,7 @@ func main() {
 		err = serve(ctx, srv, *listen)
 	case len(srv.Chats) > 0:
 		stop() // Ctrl-C stops an answer, not the chat
-		err = talk(srv.Chats[0], *system, *think, *maxNew, srv.Defaults)
+		err = talk(srv.Chats[0], *system, *think, *thinkBudget, *maxNew, srv.Defaults)
 	default:
 		stop()
 		err = search(srv.Embedders[0])
@@ -316,7 +317,7 @@ func read(in *bufio.Reader) (string, bool) {
 }
 
 // talk is the interactive chat.
-func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling) error {
+func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s chat.Sampling) error {
 	var msgs []chat.Message
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
@@ -390,7 +391,7 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 		var sent chat.Stream
 		var gen []int32
 		thought, answered := false, false
-		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s}, func(g []int32) (bool, error) {
+		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s, Think: e.ThinkLimit(thinkBudget, thinking)}, func(g []int32) (bool, error) {
 			gen = g
 			a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
 			dr, dc := sent.Next(a.Reasoning, a.Content)
@@ -417,8 +418,12 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 		a := e.Template.Parse(e.Tok.Decode(gen, false), thinking, nil, true)
 		r := a.Reasoning
 		msgs = append(msgs, chat.Message{Role: "assistant", Content: chat.Content{Text: a.Content}, Reasoning: &r})
-		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s]%s\n", dim,
-			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), reset)
+		cut := ""
+		if st.ThinkCut {
+			cut = fmt.Sprintf("; thinking cut at %d tokens", thinkBudget)
+		}
+		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]%s\n", dim,
+			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), cut, reset)
 	}
 }
 
