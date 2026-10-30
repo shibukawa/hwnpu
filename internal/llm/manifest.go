@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/hwnpu/internal/ovlower"
 )
 
 // Manifest is out.parts.json, written by hwnpu-convert for a split model: the parts in the
@@ -26,6 +27,11 @@ type Manifest struct {
 	// shortest tier and moves to the next when it fills (internal/llm/chain). With tiers, Cache
 	// and Parts are empty.
 	Tiers []Tier `json:"tiers,omitempty"`
+	// Backend is the runtime the parts are written for (Options.Backend; empty for coreml).
+	Backend string `json:"backend,omitempty"`
+	// Meta is the metadata of the parts (MetaArch, MetaParam...), also in each part's own
+	// metadata: a package's user defined metadata or an IR's rt_info.
+	Meta map[string]string `json:"meta,omitempty"`
 }
 
 // Tier is one cache length of a tiered model.
@@ -74,8 +80,12 @@ func records(fs ...mlpackage.Feature) []FeatureRecord {
 // package at path. With opts.Cache the model must be Cached, and the part has the cache inputs and
 // outputs of its own layers. A Cached model is built with BuildCached also without a cache, so
 // that a part keeps the outputs a later part takes by name (internal/llm/chain). describe fills
-// in the package's description and metadata.
+// in the package's description and metadata. With opts.Backend "intel" the part is OpenVINO IR:
+// path is its .xml.
 func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlpackage.Package)) (PartRecord, error) {
+	if opts.Backend == "intel" {
+		return writeIRPart(path, m, w, opts, describe)
+	}
 	pkg, err := mlpackage.Create(path)
 	if err != nil {
 		return PartRecord{}, err
@@ -84,19 +94,7 @@ func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlp
 		describe(pkg)
 	}
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
-	var ins, outs []mlpackage.Feature
-	cm, cached := m.(Cached)
-	if opts.Cache > 0 && !cached {
-		return PartRecord{}, fmt.Errorf("llm: the model cannot be built with a KV cache")
-	}
-	if cached {
-		ins, outs, err = cm.BuildCached(b, w, opts)
-	} else {
-		var y mlpackage.Feature
-		if ins, y, err = m.Build(b, w, opts); err == nil {
-			outs = []mlpackage.Feature{y}
-		}
-	}
+	ins, outs, err := buildPart(b, m, w, opts)
 	if err != nil {
 		return PartRecord{}, err
 	}
@@ -112,6 +110,67 @@ func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlp
 		rec.WeightBytes = info.Size()
 	}
 	return rec, nil
+}
+
+// buildPart builds the program for opts into b: Build, or BuildCached for a Cached model.
+func buildPart(b *mlpackage.Builder, m Model, w Weights, opts Options) (ins, outs []mlpackage.Feature, err error) {
+	cm, cached := m.(Cached)
+	if opts.Cache > 0 && !cached {
+		return nil, nil, fmt.Errorf("llm: the model cannot be built with a KV cache")
+	}
+	if cached {
+		return cm.BuildCached(b, w, opts)
+	}
+	ins, y, err := m.Build(b, w, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ins, []mlpackage.Feature{y}, nil
+}
+
+// writeIRPart is WritePart for Intel's NPU: the program is built as MIL, its weights in a
+// temporary weight file next to path, and lowered to OpenVINO IR (path, .xml, and its .bin).
+// The description and metadata that describe fills in go into the IR's rt_info.
+func writeIRPart(path string, m Model, w Weights, opts Options, describe func(*mlpackage.Package)) (PartRecord, error) {
+	base := strings.TrimSuffix(path, filepath.Ext(path))
+	tmp := base + ".milblob.tmp"
+	blobs, err := mlpackage.NewBlobWriter(tmp)
+	if err != nil {
+		return PartRecord{}, err
+	}
+	defer os.Remove(tmp)
+	b := mlpackage.NewBuilder("CoreML8", blobs)
+	ins, outs, err := buildPart(b, m, w, opts)
+	if err != nil {
+		blobs.Close()
+		return PartRecord{}, err
+	}
+	var vars []*mlpackage.Var
+	for _, f := range outs {
+		vars = append(vars, &mlpackage.Var{Name: f.Name})
+	}
+	fn := b.Function(vars...)
+	if err := blobs.Close(); err != nil {
+		return PartRecord{}, err
+	}
+	f, err := os.Open(tmp)
+	if err != nil {
+		return PartRecord{}, err
+	}
+	defer f.Close()
+	pkg := &mlpackage.Package{Metadata: map[string]string{}}
+	if describe != nil {
+		describe(pkg)
+	}
+	meta := pkg.Metadata
+	if pkg.Description != "" {
+		meta[MetaDescription] = pkg.Description
+	}
+	size, err := ovlower.WriteFiles(path, filepath.Base(base), fn, f, meta)
+	if err != nil {
+		return PartRecord{}, err
+	}
+	return PartRecord{Path: path, Start: opts.Start, Layers: opts.Layers, WeightBytes: size, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}, nil
 }
 
 // WriteManifest writes m to path (out.parts.json); the parts' paths are made relative to it.

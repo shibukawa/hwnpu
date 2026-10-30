@@ -10,6 +10,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/hwnpu/internal/ovcpu"
 )
 
 const tiny = `{"architectures": ["BertModel"], "model_type": "bert", "vocab_size": 40, "hidden_size": 32,
@@ -244,5 +245,114 @@ func TestConfig(t *testing.T) {
 	}
 	if a, err := llm.Detect([]byte(tiny)); err != nil || a != Arch {
 		t.Errorf("detected %v, %v", a, err)
+	}
+}
+
+// The program lowered to OpenVINO IR for Intel's NPU and run with OpenVINO's CPU plugin
+// (internal/ovcpu) computes the reference, with and without padding; skipped without
+// HWNPU_OV_PYTHON. The IR's output is fp16.
+func TestIntelIR(t *testing.T) {
+	py := ovcpu.Python()
+	if py == "" {
+		t.Skip("HWNPU_OV_PYTHON is not set")
+	}
+	cfg, err := ParseConfig([]byte(tiny))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []int32{2, 17, 5, 33, 9, 0}
+	w := llm.NewSynthetic(cfg)
+	x, err := llm.Embed(w, cfg, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "m.xml")
+	if _, err := llm.WritePart(path, cfg, w, llm.Options{Seq: len(ids), Format: "fp16", Backend: "intel"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, mask := range [][]float64{{1, 1, 1, 1, 1, 1}, {1, 1, 1, 1, 0, 0}} {
+		m := make([]float32, len(mask))
+		for i, v := range mask {
+			m[i] = float32(v)
+		}
+		res, err := ovcpu.Run(py, path, map[string][]float32{"x": x, "mask": m}, ovcpu.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e := relErr(res["y"], reference(t, cfg, w, ids, mask)); e > 1e-3 {
+			t.Errorf("mask %v: relative error %g against the reference", mask, e)
+		}
+	}
+}
+
+// A real checkpoint (HWNPU_BERT_DIR: config.json and model.safetensors, such as
+// sentence-transformers/all-MiniLM-L6-v2) lowered to OpenVINO IR gives the last hidden state
+// the MIL program gives with milcpu (whose agreement with PyTorch is checked on the Mac): the same
+// in fp16, and with the quantization's error in int8 and int4, measured as the cosine of the
+// mean pooled sentence embedding. Needs HWNPU_OV_PYTHON.
+//
+// all-MiniLM-L6-v2 (2026-10-30): int8 0.9995, int4 0.934 (per row) to 0.961 (groups of 32) with
+// the mse scales, 0.909 per row with the uniform ones; lut4 gives 0.23 and lut8 0.9988 with milcpu.
+func TestIntelIRCheckpoint(t *testing.T) {
+	dir, py := os.Getenv("HWNPU_BERT_DIR"), ovcpu.Python()
+	if dir == "" || py == "" {
+		t.Skip("HWNPU_BERT_DIR or HWNPU_OV_PYTHON is not set")
+	}
+	a, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := m.(*Config)
+	w, err := llm.OpenWeights(filepath.Join(dir, "model.safetensors"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	// "hello world, this is hwnpu" and padding, in the uncased BERT vocabulary
+	ids := []int32{101, 7592, 2088, 1010, 2023, 2003, 1044, 2860, 14289, 102, 0, 0, 0, 0, 0, 0}
+	mask := []float32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0}
+	const tokens = 10
+	x, err := llm.Embed(w, cfg, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := run(t, cfg, w, llm.Options{Seq: len(ids), Format: "fp16"}, x, mask)
+	want := make([]float64, tokens*cfg.HiddenSize) // padding rows are not used
+	for i := range want {
+		want[i] = float64(ref[i])
+	}
+	pooled := func(h []float32) []float64 {
+		p := make([]float64, cfg.HiddenSize)
+		for r := 0; r < tokens; r++ {
+			for j := range p {
+				p[j] += float64(h[r*cfg.HiddenSize+j])
+			}
+		}
+		return p
+	}
+	cos := func(a, b []float64) float64 {
+		var ab, aa, bb float64
+		for i := range a {
+			ab, aa, bb = ab+a[i]*b[i], aa+a[i]*a[i], bb+b[i]*b[i]
+		}
+		return ab / math.Sqrt(aa*bb)
+	}
+	for _, c := range []struct {
+		format, quant string
+		minCos        float64
+	}{{"fp16", "", 0.99999}, {"int8", "", 0.999}, {"int4", "mse", 0.92}, {"int4", "uniform", 0.89}, {"int4-g32", "mse", 0.95}} {
+		path := filepath.Join(t.TempDir(), "m.xml")
+		if _, err := llm.WritePart(path, cfg, w, llm.Options{Seq: len(ids), Format: c.format, Quant: c.quant, Backend: "intel"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		res, err := ovcpu.Run(py, path, map[string][]float32{"x": x, "mask": mask}, ovcpu.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, cs := relErr(res["y"][:len(want)], want), cos(pooled(res["y"]), pooled(ref))
+		t.Logf("%s %s: relative error %.4f against the fp16 MIL program, cosine of the embedding %.5f", c.format, c.quant, e, cs)
+		if cs < c.minCos || c.format == "fp16" && e > 2e-3 {
+			t.Errorf("%s %s: cosine %.5f, expected %g or more (relative error %.4f)", c.format, c.quant, cs, c.minCos, e)
+		}
 	}
 }

@@ -19,6 +19,8 @@ type Target struct {
 	// Measured is false for a limit that is assumed and still to be measured with npuprobe limit.
 	Measured bool
 	Note     string
+	// Backend is the runtime of the device's NPU, as Options.Backend ("" for coreml).
+	Backend string
 }
 
 // Targets are the known devices. The limit is per model, not on the total loaded.
@@ -27,15 +29,34 @@ var Targets = []Target{
 	{Name: "m2", MaxBytes: 1 << 30, Note: "assumed as the M3's; to be measured with npuprobe limit"},
 	{Name: "m3", MaxBytes: 1 << 30, Measured: true, Note: "npuprobe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
 	{Name: "m4", MaxBytes: 2e9, Measured: true, Note: "2 GB (a 4 B model in lut4) on the Neural Engine"},
+	{Name: "intel", Backend: "intel", MaxBytes: 2 << 30, Note: "assumed; the NPU shares the system memory, so the driver compiler's time and memory are the likelier limit. To be measured with npuprobe limit"},
 }
 
-// LookupTarget returns the named target. "any" is the smallest limit of all, for a model that
-// runs on every known device.
+// backendOf is a target's or Options' backend with the default filled in.
+func backendOf(b string) string {
+	if b == "" {
+		return "coreml"
+	}
+	return b
+}
+
+// LookupTarget returns the named target of the Neural Engine. "any" is the smallest limit of all,
+// for a model that runs on every known device.
 func LookupTarget(name string) (Target, error) {
+	return LookupTargetFor("coreml", name)
+}
+
+// LookupTargetFor returns the named target of a backend (Options.Backend); "any" is the smallest
+// limit of the backend's devices.
+func LookupTargetFor(backend, name string) (Target, error) {
+	backend = backendOf(backend)
 	if name == "any" {
-		t := Target{Name: "any", Measured: true}
+		t := Target{Name: "any", Measured: true, Backend: backend}
 		var assumed []string
 		for _, k := range Targets {
+			if backendOf(k.Backend) != backend {
+				continue
+			}
 			if t.MaxBytes == 0 || k.MaxBytes < t.MaxBytes {
 				t.MaxBytes = k.MaxBytes
 			}
@@ -52,12 +73,15 @@ func LookupTarget(name string) (Target, error) {
 	}
 	var names []string
 	for _, t := range Targets {
+		if backendOf(t.Backend) != backend {
+			continue
+		}
 		if t.Name == name {
 			return t, nil
 		}
 		names = append(names, t.Name)
 	}
-	return Target{}, fmt.Errorf("llm: unknown target %q; known: any, %s", name, strings.Join(names, ", "))
+	return Target{}, fmt.Errorf("llm: unknown %s target %q; known: any, %s", backend, name, strings.Join(names, ", "))
 }
 
 // NeuralEngineMaxDim is the largest size of one tensor dimension the Neural Engine takes: a model
@@ -143,13 +167,22 @@ func EstimateBytes(m Model, opts Options) (pre int64, layers []int64, post int64
 }
 
 // tensorBytes is the stored size of a tensor as blocks.Weight writes a matrix (lutN: N bit
-// indices and a 2^N entry fp16 table per Group rows and ColBlock columns) and other tensors (fp16).
+// indices and a 2^N entry fp16 table per Group rows and ColBlock columns; intN: N bit integers
+// and an fp16 scale per block) and other tensors (fp16).
 func tensorBytes(name string, shape []int, o Options) int64 {
 	n := int64(1)
 	for _, d := range shape {
 		n *= int64(d)
 	}
-	bits := map[string]int64{"": 4, "lut4": 4, "lut6": 6, "lut8": 8}[o.FormatOf(name)]
+	format := o.FormatOf(name)
+	if b, block, ok := LinearFormat(format); ok && len(shape) == 2 {
+		rows, cols := int64(shape[0]), int64(shape[1])
+		if block <= 0 {
+			block = int(cols)
+		}
+		return (n*int64(b)+7)/8 + rows*(cols/int64(block))*2
+	}
+	bits := map[string]int64{"": 4, "lut4": 4, "lut6": 6, "lut8": 8}[format]
 	if len(shape) == 2 && bits > 0 {
 		rows, cols := int64(shape[0]), int64(shape[1])
 		group, block := int64(o.Group), int64(o.ColBlock)

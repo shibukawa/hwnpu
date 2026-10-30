@@ -3,6 +3,7 @@ package ovir
 import (
 	"fmt"
 	"html"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -13,6 +14,12 @@ type Builder struct {
 	layers []string
 	edges  []string
 	bin    []byte
+	// binW, when set, receives the constants instead of bin: binLen bytes so far, err the first
+	// write error.
+	binW   io.Writer
+	binLen int
+	err    error
+	rtInfo []string
 }
 
 // Value is the output port of a layer.
@@ -25,6 +32,21 @@ type Value struct {
 // NewBuilder starts a model. sizeHint reserves the bin buffer (bytes of constants).
 func NewBuilder(name string, sizeHint int) *Builder {
 	return &Builder{name: name, bin: make([]byte, 0, sizeHint)}
+}
+
+// NewStreamBuilder starts a model whose constants are written to w as they are added, for models
+// too large to hold in memory; Bytes then returns no bin, and Err the first write error.
+func NewStreamBuilder(name string, w io.Writer) *Builder {
+	return &Builder{name: name, binW: w}
+}
+
+// Err is the first error writing the constants of a NewStreamBuilder.
+func (b *Builder) Err() error { return b.err }
+
+// RTInfo adds an entry to the model's rt_info (Model::get_rt_info in OpenVINO). The key must be
+// an XML name.
+func (b *Builder) RTInfo(key, value string) {
+	b.rtInfo = append(b.rtInfo, fmt.Sprintf(`<%s value="%s"/>`, key, html.EscapeString(value)))
 }
 
 func portXML(id int, v Value, names string) string {
@@ -107,19 +129,43 @@ func (b *Builder) Parameter(name, elem string, shape ...int) Value {
 // Const adds a constant whose bytes are appended to the bin file (i4 and u4: two per byte, low
 // nibble first).
 func (b *Builder) Const(elem string, shape []int, data []byte) Value {
-	for len(b.bin)%64 != 0 {
-		b.bin = append(b.bin, 0)
+	var off int
+	if b.binW != nil {
+		if pad := (64 - b.binLen%64) % 64; pad > 0 {
+			b.write(make([]byte, pad))
+		}
+		off = b.binLen
+		b.write(data)
+	} else {
+		for len(b.bin)%64 != 0 {
+			b.bin = append(b.bin, 0)
+		}
+		off = len(b.bin)
+		b.bin = append(b.bin, data...)
 	}
-	off := len(b.bin)
-	b.bin = append(b.bin, data...)
 	v := Value{Elem: elem, Shape: shape}
 	attrs := []string{"element_type", elem, "shape", shapeAttr(shape), "offset", strconv.Itoa(off), "size", strconv.Itoa(len(data))}
 	return b.layer("Const", "opset1", "", attrs, nil, []Value{v}, nil)[0]
 }
 
+func (b *Builder) write(p []byte) {
+	if b.err != nil {
+		return
+	}
+	n, err := b.binW.Write(p)
+	b.binLen += n
+	b.err = err
+}
+
 // Op adds an operation with one output of the given element type and shape.
 func (b *Builder) Op(typ, version string, attrs []string, elem string, shape []int, inputs ...Value) Value {
 	return b.layer(typ, version, "", attrs, inputs, []Value{{Elem: elem, Shape: shape}}, nil)[0]
+}
+
+// NamedOp is Op with the layer's name given ("" for an automatic one). The name of the layer
+// that produces a Result is the name the NPU driver reports for that output.
+func (b *Builder) NamedOp(typ, version, name string, attrs []string, elem string, shape []int, inputs ...Value) Value {
+	return b.layer(typ, version, name, attrs, inputs, []Value{{Elem: elem, Shape: shape}}, nil)[0]
 }
 
 // Result marks v as a model output with the given tensor name.
@@ -130,7 +176,7 @@ func (b *Builder) Result(name string, v Value) {
 	b.layer("Result", "opset1", name+"/sink_port_0", nil, []Value{v}, nil, nil)
 }
 
-// Bytes returns the xml and the bin file.
+// Bytes returns the xml and the bin file (nil for a NewStreamBuilder, which has written it).
 func (b *Builder) Bytes() (xmlData, bin []byte) {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<?xml version=\"1.0\"?>\n<net name=\"%s\" version=\"11\">\n<layers>\n", html.EscapeString(b.name))
@@ -143,6 +189,17 @@ func (b *Builder) Bytes() (xmlData, bin []byte) {
 		sb.WriteString(e)
 		sb.WriteString("\n")
 	}
-	sb.WriteString("</edges>\n<rt_info/>\n</net>\n")
+	sb.WriteString("</edges>\n")
+	if len(b.rtInfo) == 0 {
+		sb.WriteString("<rt_info/>\n")
+	} else {
+		sb.WriteString("<rt_info>\n")
+		for _, r := range b.rtInfo {
+			sb.WriteString(r)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("</rt_info>\n")
+	}
+	sb.WriteString("</net>\n")
 	return []byte(sb.String()), b.bin
 }

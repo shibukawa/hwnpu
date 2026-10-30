@@ -138,7 +138,27 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 		q := palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, mode)
 		v, err = g.B.LUT(constName, bits, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
 	default:
-		g.Fail("unknown format %q", g.Opts.Format)
+		bits, block, ok := llm.LinearFormat(format)
+		if !ok {
+			g.Fail("unknown format %q", format)
+		}
+		if block > 0 && cols%block != 0 {
+			g.Fail("%s: %d columns are not a multiple of the %s blocks", name, cols, format)
+		}
+		search := true
+		switch g.Opts.Quant {
+		case "", "mse":
+		case "uniform":
+			search = false
+		default:
+			g.Fail("quantizer %q is not for %s; use uniform or mse", g.Opts.Quant, format)
+		}
+		q := palette.QuantizeLinear(w, rows, cols, block, bits, search)
+		if bits == 4 {
+			v, err = g.B.Int4Scaled(constName, []int{rows, cols}, []int{1, q.ColBlock}, q.Data, q.Scales)
+		} else {
+			v, err = g.B.Int8Scaled(constName, []int{rows, cols}, []int{1, q.ColBlock}, q.Data, q.Scales)
+		}
 	}
 	if err != nil {
 		g.Fail("%v", err)
