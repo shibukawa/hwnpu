@@ -27,6 +27,10 @@ type gemma4 struct{}
 // turn, and the start of a tool response, which follows a tool call.
 func (gemma4) Stops() []string { return []string{"<turn|>", "<eos>", "<|tool_response>"} }
 
+func (gemma4) Think() (open, close, end string) {
+	return "<|channel>", "<channel|>", thinkOver + "<channel|>"
+}
+
 const gq = `<|"|>` // the template's string quote
 
 func (gemma4) Render(msgs []Message, tools []Tool, o Options) (string, bool, error) {

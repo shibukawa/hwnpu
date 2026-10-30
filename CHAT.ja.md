@@ -87,6 +87,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-list` | | モデルの一覧 (用途、大きさ、落としてあるか) を出して終わる |
 | `-listen ADDR` | なし | ターミナルの代わりに OpenAI 互換のサーバーを `ADDR` (例 `127.0.0.1:8080`) で開く (3 節) |
 | `-think` | `true` | 答える前に考えさせる |
+| `-think-budget N` | `1024` | 考えるトークン数の上限。超えたら答えに移らせる (0 は無制限) |
 | `-system TEXT` | なし | 対話の system メッセージ |
 | `-n N` | `0` | 1 つの答えの最大トークン数 (0 は文脈が尽きるまで) |
 | `-temp`、`-top-k`、`-top-p`、`-rep` | `0.1`、`50`、`0`、`1.05` | サンプリング (温度、上位 k、上位 p、答えの中の繰り返しの罰則) |
@@ -128,6 +129,7 @@ go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
 | `POST /v1/embeddings` | `input` (文字列かその配列)、`encoding_format` (`float` か `base64`)、`dimensions` (モデルの 2048 のみ)、OpenAI にないものとして `input_type` (`query` か `document`、4 節) と `truncate` |
 
 - 考えるかどうかは `-think` (既定 true) で決め、要求ごとに `reasoning_effort` (none、minimal、low で考えない、medium、high で考える) か `chat_template_kwargs.enable_thinking` で変えられます
+- `-think-budget` (既定 1024) は考えるトークン数の上限です。超えたら「もう時間がない」という一文で思考を閉じ、そこまでの考えで答えさせます。小さなモデルは放っておくと数千トークン考え (1 トークン 64 ms なら数分)、エージェントはその間待たされます。切ったときはログに `thinking cut` と出ます。`0` で無制限
 - 要求は 1 つずつ処理します。前の要求と共通の先頭は読み直さず、`usage.prompt_tokens_details.cached_tokens` にその数が入ります。別の会話が割り込んでも、長い会話は 2 本まで取っておいて戻ります
 - 同じ並びを繰り返し始めたら、そこで止めます
 - `-dump DIR` で、要求、プロンプト、生成した文を要求ごとに保存します。クライアントが何を送っているかを調べるときに使います
@@ -272,7 +274,7 @@ go run ./cmd/hwnpu-chat -opencode
 
 ## 7. 限界
 
-- OpenCode は最初に会話の題名を頼みます。このモデルは考えないよう指示しても考えてから答えるので 1〜2 分かかり、その間は本題の要求が待ちます
+- OpenCode は最初に会話の題名を頼みます。このモデルは考えないよう指示しても考えてから答え、その間は本題の要求が待ちます。`-think-budget` (既定 1024 トークン、1 分前後) で待ちに上限が付きます
 - 1.7B で 4 ビットの重みなので、知識の問いは誤ることがあります。考えさせたほうが正確です
 - 文脈を長くすると生成が遅くなります (65536 で 1 トークン約 0.36 秒)。試したのは 65536 までです
 - Neural Engine 上の PLaMo-Embedding-1B は、まだ Hugging Face の実装と照合していません。`tools/ref/embed_golden.py` と `internal/chat` の `TestPlamoEmbeddingGolden` で比べられます (docs/design.md の 16.23)
