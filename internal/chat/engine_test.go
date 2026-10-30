@@ -24,9 +24,14 @@ const tinyLFM3 = `{"hidden_size": 64, "intermediate_size": 96, "num_hidden_layer
 // cpuProgram writes the model as one package with a KV cache and loads it on the CPU interpreter.
 func cpuProgram(t *testing.T, cfg *lfm3.Config, w llm.Weights, q, cache int) decode.Program {
 	t.Helper()
+	return cpuPackage(t, cfg, w, llm.Options{Seq: q, Cache: cache, Format: "fp16", Params: map[string]string{"post-scale": "1"}})
+}
+
+// cpuPackage writes the model as one package and loads it on the CPU interpreter.
+func cpuPackage(t *testing.T, model llm.Model, w llm.Weights, opts llm.Options) decode.Program {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "m.mlpackage")
-	opts := llm.Options{Seq: q, Cache: cache, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
-	if _, err := llm.WritePart(path, cfg, w, opts, nil); err != nil {
+	if _, err := llm.WritePart(path, model, w, opts, nil); err != nil {
 		t.Fatal(err)
 	}
 	prog, f, err := milcpu.OpenPackage(path)
