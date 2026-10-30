@@ -35,14 +35,24 @@ var Features = []struct{ Name, About string }{
 	{"tools", "calls the tools a request offers (tools, tool_calls), so that agents such as OpenCode can drive it"},
 	{"thinking", "thinks before it answers (reasoning_content), which -think and reasoning_effort turn on and off"},
 	{"query", "embeds search queries and the documents searched differently (input_type)"},
+	{"vision", "reads the images of user messages (image_url; /image in the terminal)"},
+	{"audio", "reads the audio of user messages (input_audio, WAV; /audio in the terminal)"},
 }
 
 // Catalog lists the models hwnpu-chat knows, by name.
 var Catalog = []Model{
 	{Name: "LFM3-1.7B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "LiquidAI/LFM3-1.7B", Bytes: 3.5e9,
 		About: "Liquid AI's 1.7B model, text only: small and fast enough to run behind an agent such as OpenCode"},
+	{Name: "LFM3-VL-2B", Kind: KindChat, Features: []string{"tools", "thinking", "vision"}, Repo: "LiquidAI/LFM3-VL-2B", Bytes: 3.8e9,
+		About: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"},
+	{Name: "LFM3-Audio-2B", Kind: KindChat, Features: []string{"tools", "thinking", "audio"}, Repo: "LiquidAI/LFM3-Audio-2B", Bytes: 4.0e9,
+		About: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-tts)"},
+	{Name: "LFM3-Omni-2B", Kind: KindChat, Features: []string{"tools", "thinking", "vision", "audio"}, Repo: "LiquidAI/LFM3-Omni-2B", Bytes: 4.3e9,
+		About: "Liquid AI's LFM3 with both encoders: images of 512x512 and clips up to 30 seconds, answers in text"},
 	{Name: "gemma-4-E2B-it", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "google/gemma-4-E2B-it", Bytes: 10.2e9,
 		About: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"},
+	{Name: "gemma-4-E4B-it", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "google/gemma-4-E4B-it", Bytes: 16.0e9,
+		About: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"},
 	{Name: "plamo-embedding-1b", Kind: KindEmbed, Features: []string{"query"}, Repo: "pfnet/plamo-embedding-1b", Bytes: 2.1e9,
 		About: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"},
 }

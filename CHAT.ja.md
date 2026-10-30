@@ -13,7 +13,11 @@ go run ./cmd/hwnpu-chat -list
 | 名前 | 用途 | 機能 | ターミナル | `-listen` のとき (3 節) |
 |---|---|---|---|---|
 | `LFM3-1.7B` (既定) | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
+| `LFM3-VL-2B` | chat | `tools`、`thinking`、`vision` | 画像を交えて対話する (1 節) | `/v1/chat/completions` |
+| `LFM3-Audio-2B` | chat | `tools`、`thinking`、`audio` | 音声を交えて対話する (1 節) | `/v1/chat/completions` |
+| `LFM3-Omni-2B` | chat | `tools`、`thinking`、`vision`、`audio` | 画像と音声を交えて対話する (1 節) | `/v1/chat/completions` |
 | `gemma-4-E2B-it` | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
+| `gemma-4-E4B-it` | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
 | `plamo-embedding-1b` | embedding | `query` | 埋め込みで文を検索する (4 節) | `/v1/embeddings` |
 
 機能は、用途のほかにそのモデルができることです (名前は Ollama の capabilities に合わせています)。
@@ -23,6 +27,8 @@ go run ./cmd/hwnpu-chat -list
 | `tools` | リクエストが示す道具を呼び出す (`tools`、`tool_calls`)。OpenCode のようなエージェントから動かせる (6 節)。LFM3-1.7B はテキストだけだが、小さく速いのでエージェントの裏で動かしやすい |
 | `thinking` | 答える前に考える (`reasoning_content`)。`-think` と `reasoning_effort` で切り替える |
 | `query` | 検索の問いと検索される文書とを別々に埋め込む (`input_type`、4 節) |
+| `vision` | ユーザーのメッセージの画像 (`image_url`) を読む。対話では `/image FILE` |
+| `audio` | ユーザーのメッセージの音声 (`input_audio`、WAV) を読む。対話では `/audio FILE.wav` |
 
 - ターミナルで動かすのは `-use` に指定した 1 つのモデルで、何をするかはモデルの用途で決まります。サーバーはいくつでも動かせます (例 `-use LFM3-1.7B,plamo-embedding-1b`)
 - 名前の大文字と小文字は区別せず、一覧のリポジトリ名でも指定できます。一覧にない Hugging Face のリポジトリも `-use OWNER/NAME` で指定でき、hwnpu-chat が動かせる構造 (チャットは LFM3、埋め込みは PLaMo のエンコーダ) なら `config.json` から用途を判断します。認証の要るリポジトリは環境変数 `HF_TOKEN`
@@ -46,7 +52,20 @@ go run ./cmd/hwnpu-chat
 - 会話の 2 回目以降は、前回からの差分だけを読みます
 - 答えのあとに、読んだトークン数と生成の速さ (M3 で約 15 tokens/s) を出します
 
-### Gemma 4 E2B を使う
+### 画像と音声を読む (LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B)
+
+`-use LFM3-VL-2B`、`-use LFM3-Audio-2B`、`-use LFM3-Omni-2B` で Liquid AI のマルチモーダルのチェックポイントを使えます。初回はそれを落とし (3.8、4.0、4.3 GB)、テキスト部を同じ手順で、ただし 8 ビットの表 (lut8、2 部分ずつ) で変換します。4 ビットの表では画像の説明を誤り、音声を聞き違えるためです (docs/design.md の 16.31)。チェックポイントにあるエンコーダも fp16 で変換します。視覚エンコーダは 512x512 の画像用 (画像はこの大きさに引き伸ばす)、音声エンコーダは 30 秒までのクリップ用です。
+
+```bash
+go run ./cmd/hwnpu-chat -use LFM3-VL-2B
+```
+
+- 対話では `/image FILE 質問` で画像を、`/audio FILE.wav 質問` で音声を送れます。サーバーはユーザーのメッセージの `image_url` (data URL) と `input_audio` (base64 の WAV) を読みます
+- M3 で 1 トークン約 41 ms (lut4 の LFM3-1.7B は 19 ms)
+- 返答は文字です。LFM3-Audio の音声出力は `hwnpu-tts` (5 節)
+- ほかの画像の大きさやクリップの長さを使うには、エンコーダを自分で変換して `-package`、`-vision`、`-audio` で渡します (5 節)
+
+### Gemma 4 E2B と E4B を使う
 
 `-use gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/models/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし、1 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で 2 部分ずつ (約 0.8 + 0.8 GiB) に変換します。
 
@@ -58,6 +77,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 - 層ごとの埋め込みの表 (4.7 GB) はホストに置き、トークンごとに 1 行 (17.5 KB) を読みます
 - 文脈は 16320 まで (16320 を超えるキャッシュの塊分けは LFM3 だけ)。M3 で 1 トークン約 31 ms (キャッシュ 1024)、文脈 16320 では 55 ms (LFM3-1.7B は 19 ms と 63〜66 ms)
 - Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`-package` で自分で変換するときは `hwnpu-convert` の `-format` を省けば lut6 になります。詳細は docs/design.md の 16.25 と 16.26
+- `-use gemma-4-E4B-it` で一回り大きい E4B (ダウンロード 16.0 GB、幅 2560 の 42 層) を同じ手順で使えます。E2B より遅くなります。同じコードで変換しますが、M3 での確認はまだです。12B 以上の Gemma 4 は別のアーキテクチャで、hwnpu-chat では動きません
 
 ## 2. オプション
 
@@ -166,7 +186,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 ### 画像を読む（LFM3-VL-2B）
 
-LFM3-VL のチェックポイントは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`-vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます。実物での確認はまだです（docs/design.md の 16.28）。
+`-use LFM3-VL-2B` (1 節) なら以下を自動で行います。ほかの画像の大きさを使うときは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`-vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます（docs/design.md の 16.28 と 16.31）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
@@ -178,7 +198,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpacka
 
 ### 音声を読む（LFM3-Audio-2B）
 
-LFM3-Audio のチェックポイントは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`-audio` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います。実物での確認はまだです（docs/design.md の 16.29）。
+`-use LFM3-Audio-2B` (1 節) なら以下を自動で行います。ほかのクリップの長さを使うときは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`-audio` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います（docs/design.md の 16.29 と 16.31）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
