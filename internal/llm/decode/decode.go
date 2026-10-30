@@ -13,6 +13,7 @@ package decode
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -33,11 +34,41 @@ type Program struct {
 type Session struct {
 	progs  []step // by tokens per step, shortest first
 	m      llm.Cached
+	kv     []kvCache
 	t      int // cache length
 	hidden int
 	vocab  int
 	pos    int
 	last   []float32 // h after the last step, if the program outputs it
+}
+
+// kvCache is one cache of keys or values: an input kv_NAME, or the chunks kv_NAME_cJ that hold
+// its positions in order (llm.CacheChunks).
+type kvCache struct {
+	out   string   // the step's rows, kv_NAME_new
+	parts []string // the inputs
+	lens  []int
+	total int
+}
+
+// kvBase gives the cache an input belongs to, kv_NAME for kv_NAME and its chunks kv_NAME_cJ, and
+// the chunk's number (-1 for a cache in one piece).
+func kvBase(name string) (string, int) {
+	if i := strings.LastIndex(name, "_c"); i > 0 {
+		if j, err := strconv.Atoi(name[i+2:]); err == nil {
+			return name[:i], j
+		}
+	}
+	return name, -1
+}
+
+// newOutput is the output that gives the step's rows of a cache input.
+func newOutput(name string) string {
+	if strings.HasPrefix(name, "kv_") {
+		base, _ := kvBase(name)
+		return base + "_new"
+	}
+	return name + "_new"
 }
 
 type step struct {
@@ -56,24 +87,62 @@ func New(p Program, m llm.Cached) (*Session, error) {
 		return nil, fmt.Errorf("decode: no output y (1, q, vocab)")
 	}
 	s := &Session{progs: []step{{p, x[1]}}, m: m, hidden: x[2], vocab: y[2]}
-	for name, sh := range p.InShape {
-		if strings.HasPrefix(name, "kv_") {
-			if len(sh) != 4 {
-				return nil, fmt.Errorf("decode: %s has shape %v, want (1, heads, cache, head_dim)", name, sh)
-			}
-			s.t = max(s.t, sh[2]) // the longest cache; shorter ones are rings
-		}
-		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
-			if _, ok := p.OutShape[name+"_new"]; !ok {
-				return nil, fmt.Errorf("decode: input %s has no output %s_new", name, name)
-			}
-		}
-	}
-	if s.t == 0 {
-		return nil, fmt.Errorf("decode: the program has no KV cache inputs (kv_*)")
+	var err error
+	if s.kv, s.t, err = caches(p); err != nil {
+		return nil, err
 	}
 	s.Reset()
 	return s, nil
+}
+
+// caches gathers the program's KV cache inputs into caches, and gives the longest's length.
+func caches(p Program) ([]kvCache, int, error) {
+	var kv []kvCache
+	t := 0
+	chunks := map[string]map[int]string{}
+	for name, sh := range p.InShape {
+		if strings.HasPrefix(name, "kv_") {
+			if len(sh) != 4 {
+				return nil, 0, fmt.Errorf("decode: %s has shape %v, want (1, heads, cache, head_dim)", name, sh)
+			}
+			base, j := kvBase(name)
+			if chunks[base] == nil {
+				chunks[base] = map[int]string{}
+			}
+			chunks[base][j] = name
+		}
+		if cacheInput(name) {
+			if _, ok := p.OutShape[newOutput(name)]; !ok {
+				return nil, 0, fmt.Errorf("decode: input %s has no output %s", name, newOutput(name))
+			}
+		}
+	}
+	for base, parts := range chunks {
+		c := kvCache{out: base + "_new"}
+		names := []string{parts[-1]}
+		if _, whole := parts[-1]; !whole {
+			names = names[:0]
+			for j := range len(parts) {
+				if parts[j] == "" {
+					return nil, 0, fmt.Errorf("decode: the chunks of %s are not %s_c0 to %s_c%d", base, base, base, len(parts)-1)
+				}
+				names = append(names, parts[j])
+			}
+		} else if len(parts) > 1 {
+			return nil, 0, fmt.Errorf("decode: %s is both whole and in chunks", base)
+		}
+		for _, name := range names {
+			c.parts = append(c.parts, name)
+			c.lens = append(c.lens, p.InShape[name][2])
+			c.total += p.InShape[name][2]
+		}
+		kv = append(kv, c)
+		t = max(t, c.total) // the longest cache; shorter ones are rings
+	}
+	if t == 0 {
+		return nil, 0, fmt.Errorf("decode: the program has no KV cache inputs (kv_*)")
+	}
+	return kv, t, nil
 }
 
 // Add adds a program of the same model that takes another number of tokens per step. Its cache
@@ -96,8 +165,8 @@ func (s *Session) Add(p Program) error {
 		if len(o) != len(b) || unsafe.SliceData(o) != unsafe.SliceData(b) {
 			return fmt.Errorf("decode: the programs do not share the cache input %s", name)
 		}
-		if _, ok := p.OutShape[name+"_new"]; !ok {
-			return fmt.Errorf("decode: input %s has no output %s_new", name, name)
+		if _, ok := p.OutShape[newOutput(name)]; !ok {
+			return fmt.Errorf("decode: input %s has no output %s", name, newOutput(name))
 		}
 	}
 	for _, o := range s.progs {
@@ -127,7 +196,8 @@ func (s *Session) Pos() int { return s.pos }
 // Migrate moves the session to np, a program of the same model whose caches are at least as long
 // (the next tier of a tiered model): the cached rows are copied over, and np becomes the session's
 // only program; add programs of other step lengths again (Add) with buffers shared with np. A ring
-// (a cache shorter than the longest) keeps its length and is copied as is.
+// (a cache shorter than the longest) keeps its length and is copied as is; the other caches move
+// row by row to the same positions, whether the old or the new one is in chunks.
 func (s *Session) Migrate(np Program) error {
 	x, ok := np.InShape["x"]
 	if !ok || len(x) != 3 || x[2] != s.hidden {
@@ -136,46 +206,71 @@ func (s *Session) Migrate(np Program) error {
 	if y, ok := np.OutShape["y"]; !ok || len(y) != 3 || y[1] != x[1] || y[2] != s.vocab {
 		return fmt.Errorf("decode: no output y (1, %d, %d)", x[1], s.vocab)
 	}
-	nt := 0
-	for name, sh := range np.InShape {
-		if strings.HasPrefix(name, "kv_") {
-			nt = max(nt, sh[2])
-		}
-		if cacheInput(name) {
-			if _, ok := np.OutShape[name+"_new"]; !ok {
-				return fmt.Errorf("decode: input %s has no output %s_new", name, name)
-			}
-		}
+	nkv, nt, err := caches(np)
+	if err != nil {
+		return err
 	}
 	if nt < s.t {
 		return fmt.Errorf("decode: the new program caches %d tokens, fewer than the session's %d", nt, s.t)
 	}
 	first := s.progs[0].p
 	for name, in := range first.In {
-		if !cacheInput(name) {
-			continue
-		}
-		out, ok := np.In[name]
-		if !ok {
-			return fmt.Errorf("decode: the new program has no input %s", name)
-		}
-		sh, nsh := first.InShape[name], np.InShape[name]
-		switch {
-		case len(sh) == 4 && len(nsh) == 4 && nsh[2] > sh[2] && sh[1] == nsh[1] && sh[3] == nsh[3]:
-			// (1, heads, L, d) -> (1, heads, nL, d): each head's rows at the same positions
-			heads, L, nL, d := sh[1], sh[2], nsh[2], sh[3]
-			clear(out)
-			for h := 0; h < heads; h++ {
-				copy(out[2*h*nL*d:], in[2*h*L*d:2*(h+1)*L*d])
+		if strings.HasPrefix(name, "win_") {
+			out := np.In[name]
+			if len(out) != len(in) {
+				return fmt.Errorf("decode: %s has shape %v in the new program, %v in the session", name, np.InShape[name], first.InShape[name])
 			}
-		case len(in) == len(out):
 			copy(out, in)
-		default:
-			return fmt.Errorf("decode: %s has shape %v in the new program, %v in the session", name, nsh, sh)
 		}
 	}
-	s.progs, s.t = []step{{np, x[1]}}, nt
+	for _, c := range s.kv {
+		var nc *kvCache
+		for i := range nkv {
+			if nkv[i].out == c.out {
+				nc = &nkv[i]
+			}
+		}
+		if nc == nil {
+			return fmt.Errorf("decode: the new program has no cache %s", strings.TrimSuffix(c.out, "_new"))
+		}
+		sh, nsh := first.InShape[c.parts[0]], np.InShape[nc.parts[0]]
+		if sh[1] != nsh[1] || sh[3] != nsh[3] {
+			return fmt.Errorf("decode: %s has shape %v in the new program, %v in the session", nc.parts[0], nsh, sh)
+		}
+		for _, part := range nc.parts {
+			clear(np.In[part])
+		}
+		if c.total < s.t { // a ring keeps its length
+			if nc.total != c.total {
+				return fmt.Errorf("decode: the ring %s holds %d in the new program, %d in the session", c.parts[0], nc.total, c.total)
+			}
+			copy(np.In[nc.parts[0]], first.In[c.parts[0]])
+			continue
+		}
+		// (1, heads, L, d) -> (1, heads, nL, d): each head's rows at the same positions, in
+		// whichever chunks hold them
+		heads, d := sh[1], sh[3]
+		for pos := 0; pos < c.total; pos++ {
+			j, slot := c.locate(pos)
+			nj, nslot := nc.locate(pos)
+			from, to := first.In[c.parts[j]], np.In[nc.parts[nj]]
+			for h := 0; h < heads; h++ {
+				o, no := (h*c.lens[j]+slot)*2*d, (h*nc.lens[nj]+nslot)*2*d
+				copy(to[no:no+2*d], from[o:o+2*d])
+			}
+		}
+	}
+	s.progs, s.t, s.kv = []step{{np, x[1]}}, nt, nkv
 	return nil
+}
+
+// locate gives the chunk that holds a position of the cache and its row there.
+func (c *kvCache) locate(pos int) (chunk, row int) {
+	for pos >= c.lens[chunk] {
+		pos -= c.lens[chunk]
+		chunk++
+	}
+	return chunk, pos
 }
 
 // Reset empties the cache.
@@ -203,9 +298,15 @@ func (m *Mark) Pos() int { return m.pos }
 // Mark returns the current point of the sequence.
 func (s *Session) Mark() *Mark {
 	m := &Mark{pos: s.pos, bufs: map[string][]byte{}}
-	for name, b := range s.progs[0].p.In {
-		if strings.HasPrefix(name, "win_") || strings.HasPrefix(name, "kv_") && s.progs[0].p.InShape[name][2] < s.t {
+	in := s.progs[0].p.In
+	for name, b := range in {
+		if strings.HasPrefix(name, "win_") {
 			m.bufs[name] = slices.Clone(b)
+		}
+	}
+	for _, c := range s.kv {
+		if c.total < s.t { // a ring
+			m.bufs[c.parts[0]] = slices.Clone(in[c.parts[0]])
 		}
 	}
 	return m
@@ -271,27 +372,31 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 	if err := p.Run(); err != nil {
 		return nil, err
 	}
-	for name, in := range p.In {
-		sh := p.InShape[name]
-		out := p.Out[name+"_new"]
-		switch {
-		case strings.HasPrefix(name, "kv_"):
-			// (1, heads, L, d) <- (1, heads, q, d): the step's rows at their positions, or
-			// in a cache shorter than the longest (a ring) at position mod L
-			heads, L, d := sh[1], sh[2], sh[3]
-			for h := 0; h < heads; h++ {
-				for i := 0; i < v; i++ {
-					slot := s.pos + i
-					if L < s.t {
-						slot %= L
-					}
-					copy(in[2*(h*L+slot)*d:2*(h*L+slot+1)*d], out[2*(h*q+i)*d:2*(h*q+i+1)*d])
-				}
+	for _, c := range s.kv {
+		// (1, heads, L, d) <- (1, heads, q, d): the step's rows at their positions, in the
+		// chunk that holds each, or in a cache shorter than the longest (a ring) at position
+		// mod L
+		out := p.Out[c.out]
+		sh := p.InShape[c.parts[0]]
+		heads, d := sh[1], sh[3]
+		for i := 0; i < v; i++ {
+			pos := s.pos + i
+			if c.total < s.t {
+				pos %= c.total
 			}
-		case strings.HasPrefix(name, "win_"):
+			j, slot := c.locate(pos)
+			in, L := p.In[c.parts[j]], c.lens[j]
+			for h := 0; h < heads; h++ {
+				copy(in[2*(h*L+slot)*d:2*(h*L+slot+1)*d], out[2*(h*q+i)*d:2*(h*q+i+1)*d])
+			}
+		}
+	}
+	for name, in := range p.In {
+		if strings.HasPrefix(name, "win_") {
 			// (1, w, d) <- rows v..v+w of (1, w+q, d)
+			sh := p.InShape[name]
 			w, d := sh[1], sh[2]
-			copy(in, out[2*v*d:2*(v+w)*d])
+			copy(in, p.Out[name+"_new"][2*v*d:2*(v+w)*d])
 		}
 	}
 	s.pos += v

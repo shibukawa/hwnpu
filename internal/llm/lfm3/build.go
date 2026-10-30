@@ -299,13 +299,26 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 		t := m.cfg.cacheLen(layerType, m.opts.Cache)
 		m.output(k, fmt.Sprintf("kv_k_%d_new", i))
 		m.output(v, fmt.Sprintf("kv_v_%d_new", i))
-		cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
-			c := m.input(name, 1, nkv, t, hd)
-			return m.Op("concat", map[string]any{"values": []*mlpackage.Var{c, x}, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, nkv, t+s, hd)
+		if lens, chunked := llm.CacheChunks(t); chunked {
+			// a cache over the Neural Engine's dimension limit: in chunks, each attended on
+			// its own, then the step's tokens with a mask of their own
+			var ks, vs, masks []*mlpackage.Var
+			for j, l := range lens {
+				ks = append(ks, m.input(fmt.Sprintf("kv_k_%d_c%d", i, j), 1, nkv, l, hd))
+				vs = append(vs, m.input(fmt.Sprintf("kv_v_%d_c%d", i, j), 1, nkv, l, hd))
+				masks = append(masks, m.input(fmt.Sprintf("mask_%s_c%d", layerType, j), 1, 1, s, l))
+			}
+			masks = append(masks, m.input("mask_"+layerType+"_self", 1, 1, s, s))
+			o = m.ChunkedSDPA(q, append(ks, k), append(vs, v), masks)
+		} else {
+			cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
+				c := m.input(name, 1, nkv, t, hd)
+				return m.Op("concat", map[string]any{"values": []*mlpackage.Var{c, x}, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, nkv, t+s, hd)
+			}
+			k, v = cat(fmt.Sprintf("kv_k_%d", i), k), cat(fmt.Sprintf("kv_v_%d", i), v)
+			mask := m.input("mask_"+layerType, 1, 1, s, t+s)
+			o = m.SDPA(q, k, v, func() *mlpackage.Var { return mask })
 		}
-		k, v = cat(fmt.Sprintf("kv_k_%d", i), k), cat(fmt.Sprintf("kv_v_%d", i), v)
-		mask := m.input("mask_"+layerType, 1, 1, s, t+s)
-		o = m.SDPA(q, k, v, func() *mlpackage.Var { return mask })
 	} else if m.cfg.D1 && layerType == "full_attention" {
 		if m.padBias == nil {
 			m.padBias = m.MaskBias(m.input("mask", 1, s))
@@ -342,10 +355,12 @@ func (c *Config) cacheLen(layerType string, cache int) int {
 // Query t (position pos+t) sees cached position j < pos and step token u <= t, and in a sliding
 // layer only those less than the window behind it. A sliding layer's cache is a ring when the
 // window is shorter than the cache: slot j holds the latest position before pos congruent to j.
+// A cache in chunks (llm.CacheChunks) has the mask in parts: mask_TYPE_cJ over each chunk and
+// mask_TYPE_self over the step's tokens.
 func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 	out := map[string][]float32{}
 	for _, lt := range c.LayerTypes {
-		if _, done := out["mask_"+lt]; done || lt == "conv" {
+		if _, done := out["rope_cos_"+lt]; done || lt == "conv" {
 			continue
 		}
 		window := 0
@@ -380,7 +395,23 @@ func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 				}
 			}
 		}
-		out["mask_"+lt] = mask
+		if lens, chunked := llm.CacheChunks(keys); chunked {
+			part := func(name string, from, n int) {
+				v := make([]float32, 0, q*n)
+				for t := 0; t < q; t++ {
+					v = append(v, mask[t*(keys+q)+from:t*(keys+q)+from+n]...)
+				}
+				out[name] = v
+			}
+			off := 0
+			for j, l := range lens {
+				part(fmt.Sprintf("mask_%s_c%d", lt, j), off, l)
+				off += l
+			}
+			part("mask_"+lt+"_self", keys, q)
+		} else {
+			out["mask_"+lt] = mask
+		}
 		out["rope_cos_"+lt], out["rope_sin_"+lt] = blocks.RopeValues(c.RopeInvFreq(lt), pos, q, c.HeadDim)
 	}
 	return out

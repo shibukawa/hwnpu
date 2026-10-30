@@ -1,8 +1,30 @@
-# Chat, an OpenAI compatible API and OpenCode
+# Chat, embeddings, an OpenAI compatible API and OpenCode
 
 [日本語](CHAT.ja.md)
 
-Run LFM3-1.7B on the Apple Neural Engine alone, and talk with it in the terminal or use it as an OpenAI compatible API from clients such as OpenCode. No Python is needed.
+Run LFM3-1.7B and PLaMo-Embedding-1B on the Apple Neural Engine alone, and use them in the terminal or as an OpenAI compatible API from clients such as OpenCode. No Python is needed.
+
+`-use` picks the models by name, and `-list` shows the names and what each model is for:
+
+```bash
+go run ./cmd/hwnpu-chat -list
+```
+
+| Name | Kind | Features | in the terminal | with `-listen` (section 3) |
+|---|---|---|---|---|
+| `LFM3-1.7B` (default) | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
+| `plamo-embedding-1b` | embedding | `query` | search texts by their embeddings (section 4) | `/v1/embeddings` |
+
+The features say what a model can do besides its kind (names as in Ollama's capabilities):
+
+| Feature | |
+|---|---|
+| `tools` | calls the tools a request offers (`tools`, `tool_calls`), so that agents such as OpenCode can drive it (section 6). LFM3-1.7B is text only, and small and fast enough to run behind an agent |
+| `thinking` | thinks before it answers (`reasoning_content`); `-think` and `reasoning_effort` turn it on and off |
+| `query` | embeds search queries and the documents searched differently (`input_type`, section 4) |
+
+- The terminal runs one model, chosen by `-use`; what it does follows the model's kind. The server runs any number, `-use LFM3-1.7B,plamo-embedding-1b` for example
+- Names are matched ignoring case, and the catalog's repository names work too. A Hugging Face repository outside the catalog, `-use OWNER/NAME`, works when its architecture is one hwnpu-chat runs (LFM3 for chat, PLaMo's encoder for embeddings): its `config.json` tells which. Set `HF_TOKEN` for gated repositories
 
 ## 1. Chat
 
@@ -10,7 +32,7 @@ Run LFM3-1.7B on the Apple Neural Engine alone, and talk with it in the terminal
 go run ./cmd/hwnpu-chat
 ```
 
-No arguments are needed. The first run does the following by itself (about 3.5 minutes on an M3, besides the download). Later runs only load the compiled programs and start in about a minute.
+No arguments are needed. The first run does the following by itself (about 3.5 minutes on an M3, besides the download). Later runs only load the compiled programs and start in a few seconds to a minute, showing how far loading is.
 
 1. It downloads `config.json`, `tokenizer.json` and `model.safetensors` (3.5 GB) of [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) from Hugging Face to `~/Library/Caches/hwnpu/models/LFM3-1.7B`. A download cut off goes on from where it stopped on the next run
 2. It converts the model twice for the Neural Engine (about a minute each): one generates 1 token per call, the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache
@@ -27,18 +49,33 @@ Then type after the `>`.
 
 | Flag | Default | |
 |---|---|---|
-| `-listen ADDR` | none | serve the OpenAI compatible API at `ADDR` (e.g. `127.0.0.1:8080`) instead of chatting (section 3) |
+| `-use NAMES` | `LFM3-1.7B` | the models to run, comma separated: names from `-list` or repositories `OWNER/NAME`; one in the terminal |
+| `-list` | | list the models, what each is for, and whether it is downloaded |
+| `-listen ADDR` | none | serve the OpenAI compatible API at `ADDR` (e.g. `127.0.0.1:8080`) instead of the terminal (section 3) |
 | `-think` | `true` | let the model think before it answers |
 | `-system TEXT` | none | the chat's system message |
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |
-| `-context N` | `16320` | most tokens of a prompt and its answer together; another value converts the model again for it |
-| `-model DIR` | `~/Library/Caches/hwnpu/models/LFM3-1.7B` | where the checkpoint and the converted programs are |
-| `-repo NAME` | `LiquidAI/LFM3-1.7B` | the Hugging Face repository of the checkpoint; set `HF_TOKEN` for gated ones |
-| `-package A,B` | none | use programs you converted with `hwnpu-convert` (section 4) |
+| `-context N` | `16320` | most tokens of a prompt and its answer together; another value converts the model again for it; over 16320 the cache is held in chunks |
+| `-dir DIR` | `~/Library/Caches/hwnpu/models` | where the models are kept, each in `DIR/NAME` with its checkpoint and converted programs |
+| `-package A,B` | none | chat programs you converted with `hwnpu-convert` (section 5) |
 | `-dump DIR` | none | with the server, save each request, its prompt and the generated text |
+| `-embed-seq A,B` | `128,1024` | lengths an embedding model is converted for; a text runs on the shortest that holds it, and the longest is the most tokens a text can have |
+| `-embed-package A,B` | none | embedding programs you converted with `hwnpu-convert` (encoders take `-seq` only), with `config.json` and `model.safetensors` in the model's directory |
 
-- A context of 16320 is the most the Neural Engine takes (a tensor dimension goes up to 16384, and the key axis is the context plus the tokens per call). OpenCode needs 16K. For chat alone, `-context 4096` generates faster (about 28 ms a token on an M3, against about 64 ms with 16K)
+The flags from `-think` to `-context`, `-package`, `-config`, `-weights` and `-tokenizer` are for chat models, the `-embed-` flags for embedding models. `-package` and its companions (and `-embed-package`) take one model of their kind in `-use`.
+
+- The longer the context, the slower each token. OpenCode needs 16K or more. For chat alone, `-context 4096` is faster
+
+| `-context` | generation (M3) | reading a prompt | KV cache |
+|---|---|---|---|
+| 4096 | about 28 ms/token | — | about 50 MiB |
+| 16320 (default) | about 64 ms/token | about 570 tokens/s | about 190 MiB |
+| 32768 | about 138 ms/token | about 300 tokens/s | about 390 MiB |
+| 65536 | about 363 ms/token | about 150 tokens/s | about 770 MiB |
+
+- Over 16320, the cache is held in chunks of 16384 tokens, to stay within the Neural Engine's 16384 per tensor dimension. With 32768 and 65536 the model recalled a passphrase put at the start of prompts of 25,288 and 53,736 tokens
+- The server keeps up to two other conversations as copies of the whole cache, so memory goes up to three times the KV cache above
 
 ## 3. OpenAI compatible server
 
@@ -46,22 +83,58 @@ Then type after the `>`.
 go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080
 ```
 
+```bash
+go run ./cmd/hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
+```
+
 | Endpoint | |
 |---|---|
-| `GET /v1/models` | the model's name (`LFM3-1.7B`; with `-package`, the first package's) and `context_length` |
+| `GET /v1/models` | the names of the models loaded (`LFM3-1.7B`, `plamo-embedding-1b`), their `kind` (`chat` or `embedding`), `capabilities` (the features, for a model of `-list`), `context_length`, and `dimensions` of an embedding model |
 | `POST /v1/chat/completions` | `stream` (SSE), `tools` and `tool_calls`, `reasoning_content`, `max_tokens`, `temperature`, `top_p`, `top_k`, `repetition_penalty`, `seed`, `stop`, `stream_options.include_usage` |
+| `POST /v1/embeddings` | `input` (a string or a list), `encoding_format` (`float` or `base64`), `dimensions` (only the model's 2048), and besides OpenAI's: `input_type` (`query` or `document`, section 4) and `truncate` |
 
 - `-think` (default true) decides whether the model thinks; a request changes it with `reasoning_effort` (none, minimal and low turn it off, medium and high on) or `chat_template_kwargs.enable_thinking`
 - Requests run one at a time. The beginning a prompt shares with an earlier one is not read again, and `usage.prompt_tokens_details.cached_tokens` says how much. When another conversation comes in between, up to two long conversations are kept aside and come back
 - Generation stops when the model starts repeating one pattern
 - `-dump DIR` saves each request, its prompt and the generated text, for finding out what a client sends
-- The request's `model` is not looked at: any name gets the same model
+- A request goes to the model its `model` names (ignoring case) among the endpoint's kind. When only one model of that kind is loaded, it answers whatever the name; with several, an unknown name answers 404. A model of the other kind (`plamo-embedding-1b` on `/v1/chat/completions`) is an error, and so is an endpoint with no model of its kind loaded
 
 ```bash
 curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"lfm3","messages":[{"role":"user","content":"What is the capital of Japan?"}]}'
 ```
 
-## 4. Programs you converted
+## 4. Embeddings (PLaMo-Embedding-1B)
+
+```bash
+go run ./cmd/hwnpu-chat -use plamo-embedding-1b
+```
+
+[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) turns a Japanese (or English) text into a vector of 2048 numbers; texts of similar meaning get vectors pointing the same way. The first run downloads `config.json`, `tokenizer.model` and `model.safetensors` (2.1 GB) to `~/Library/Caches/hwnpu/models/plamo-embedding-1b` and converts the model once for each length of `-embed-seq`, like the chat model.
+
+In the terminal, each line typed is a document kept for searching, and a line starting with `?` is a query: the documents are listed by their cosine similarity to it, most similar first. `/list` shows the documents, `/reset` clears them, `/exit` or Ctrl-D quits.
+
+```text
+> 東京は日本の首都です。
+> 最近は随分と暖かくなりましたね。
+> ? 日本の首都はどこ？
+```
+
+Over the API (with `-listen` and `plamo-embedding-1b` in `-use`):
+
+```bash
+curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{"model":"plamo-embedding-1b","input":["東京は日本の首都です。","最近は随分と暖かくなりましたね。"]}'
+```
+
+```bash
+curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{"model":"plamo-embedding-1b","input":"日本の首都はどこ？","input_type":"query"}'
+```
+
+- PLaMo-Embedding embeds a search query and what is searched differently: a query gets the instruction `次の文章に対して、関連する文章を検索してください: ` before it (the model's `encode_query`), a document nothing (`encode_document`). On the API, `input_type: "query"` (or `search_query`) makes the inputs queries; the default is `document`, which is also the one for texts that are not about search (clustering, classification). OpenAI's API has no such field, so a client that cannot send it gets documents
+- The embedding is the mean of the last hidden state over the text's own tokens (not the BOS, not the instruction), scaled to length 1, so the dot product of two embeddings is their cosine similarity
+- A text runs on the shortest converted length that holds it, padded. A text over the longest (1024 tokens by default) is an error (`context_length_exceeded`) unless the request says `"truncate": true`; in the terminal it is cut, with a note. The model reads up to 4096 tokens: `-embed-seq 128,1024,4096` converts that length too (the attention over 4096 tokens has not been tried on the Neural Engine)
+- Requests run one at a time, one text after another. The chat and the embedding model run independently of each other
+
+## 5. Programs you converted
 
 To try another quantization or cache length, convert twice with `hwnpu-convert` with the same cache length, and list both in `-package`.
 
@@ -74,24 +147,24 @@ go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensor
 ```
 
 ```bash
-go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage -model DIR
+go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlpackage -config DIR/config.json -weights DIR/model.safetensors
 ```
 
 ### Images (LFM3-VL-2B)
 
-For an LFM3-VL checkpoint, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `-vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image. Not yet checked on the real checkpoint (docs/design.md, 16.22).
+For an LFM3-VL checkpoint, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `-vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image. Not yet checked on the real checkpoint (docs/design.md, 16.25).
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpackage -vision DIR/vision-512x512.mlpackage -model DIR
+go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpackage -vision DIR/vision-512x512.mlpackage -config DIR/config.json -weights DIR/model.safetensors
 ```
 
 ### Audio (LFM3-Audio-2B)
 
-For an LFM3-Audio checkpoint, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `-audio`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Speech output (TTS) is not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.23).
+For an LFM3-Audio checkpoint, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `-audio`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-tts` below speaks a text. Not yet checked on the real checkpoint (docs/design.md, 16.26).
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
@@ -99,7 +172,7 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 
 ### Speech (LFM3-Audio-2B TTS)
 
-`hwnpu-tts` speaks a text into a WAV file (24 kHz). Convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.24).
+`hwnpu-tts` speaks a text into a WAV file (24 kHz). Convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.27).
 
 ```bash
 go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
@@ -117,7 +190,7 @@ go run ./cmd/hwnpu-convert -codec-frames 64 -format fp16 -config DIR/audio_token
 go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.mlpackage -codec DIR/codec.mlpackage -lang en -o out.wav "Hello from the Neural Engine."
 ```
 
-## 5. Use it from OpenCode
+## 6. Use it from OpenCode
 
 Put an `opencode.json` in the project directory. The model's name is the one `GET /v1/models` returns.
 
@@ -150,9 +223,10 @@ Put an `opencode.json` in the project directory. The model's name is the one `GE
 - A 1.7B model sometimes writes commands that make no sense. Allowing only some commands for `bash` is safer
 - An example on an M3: asked to fix the bug in `add` of main.go, it read the file, changed `a - b` to `a + b` and checked with `go run`, in 12 requests. The first request read 7.4K tokens in 13 seconds; the later ones reused 99% of the prompt and read the rest in 0.1 to 0.5 seconds. Generation takes about 64 ms a token (about 15 tokens/s)
 
-## 6. Limits
+## 7. Limits
 
 - OpenCode first asks for a title of the conversation. This model thinks before answering even when told not to, which takes 1 to 2 minutes, and the main request waits meanwhile
 - With 1.7B parameters and 4 bit weights, factual answers can be wrong. Letting it think helps
-- The context is at most 16320 tokens. Longer contexts need the attention computed over the cache in chunks ([docs/kv-cache.md](docs/kv-cache.md))
-- The implementation notes are in section 16.17 of [docs/design.md](docs/design.md)
+- A longer context generates more slowly (about 0.36 s a token with 65536). Contexts up to 65536 were tried
+- PLaMo-Embedding-1B on the Neural Engine is not checked against the Hugging Face implementation yet: run `tools/ref/embed_golden.py` and `TestPlamoEmbeddingGolden` in `internal/chat` to compare (section 16.23 of docs/design.md)
+- The implementation notes are in sections 16.17 and 16.23 of [docs/design.md](docs/design.md)
