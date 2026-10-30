@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -182,4 +183,83 @@ func relErr(got, ref []float32) float64 {
 		den += float64(ref[i]) * float64(ref[i])
 	}
 	return math.Sqrt(num / den)
+}
+
+// A thinking budget ends the thinking by feeding the End tokens after Budget tokens inside it,
+// and the sequence in the cache stays what reading prompt and answer from the start gives.
+func TestThinkBudget(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(tinyLFM3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(cfg)
+	const cache = 40
+	short, long := cpuProgram(t, cfg, w, 1, cache), cpuProgram(t, cfg, w, 4, cache)
+	for name := range long.In {
+		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+			long.In[name] = short.In[name]
+		}
+	}
+	sess, err := decode.New(short, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Add(long); err != nil {
+		t.Fatal(err)
+	}
+	e := &Engine{sess: sess, w: w, model: cfg, emb: map[int32][]float32{}, Stops: map[int32]bool{}}
+	prompt := []int32{3, 1, 4, 1, 5, 9, 2, 6}
+	think := ThinkLimit{Budget: 3, Open: 40, Close: 41, End: []int32{42, 43, 41}, Inside: true}
+	var last []int32
+	emits := 0
+	st, err := e.Generate(context.Background(), Request{Prompt: prompt, MaxTokens: 12, Think: think}, func(gen []int32) (bool, error) {
+		last, emits = gen, emits+1
+		return false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the last token generated is emitted but not read into the cache
+	gen := last
+	if fed := e.cur.fed[len(prompt):]; !slices.Equal(fed, gen[:len(gen)-1]) || len(gen) != st.Generated {
+		t.Fatalf("the sequence has %v, emit saw %v, %d generated", fed, last, st.Generated)
+	}
+	// the thinking is cut after 3 tokens unless the model closed it itself
+	closed := slices.Index(gen[:3], think.Close)
+	switch {
+	case closed < 0 && (!st.ThinkCut || !slices.Equal(gen[3:6], think.End)):
+		t.Errorf("thinking not cut after 3 tokens: cut %v, %v", st.ThinkCut, gen)
+	case closed >= 0 && st.ThinkCut:
+		t.Errorf("thinking cut after the model closed it: %v", gen)
+	}
+	if emits != st.Generated-len(think.End)*btoi(st.ThinkCut)+btoi(st.ThinkCut) {
+		t.Errorf("%d emits for %d tokens", emits, st.Generated)
+	}
+	// the logits after the sequence are those of reading it from the start
+	ref, err := decode.New(cpuProgram(t, cfg, w, 4, cache), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := append(slices.Clone(prompt), gen[:len(gen)-1]...)
+	var want []float32
+	for i := 0; i < len(all); i += 4 {
+		var embs [][]float32
+		for _, tok := range all[i:min(i+4, len(all))] {
+			v, _ := llm.Embed(w, cfg, []int32{tok})
+			embs = append(embs, v)
+		}
+		if want, err = ref.Step(embs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d := relErr(e.cur.last, want); d > 2e-3 {
+		t.Errorf("relative error %g against reading the sequence from the start", d)
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
