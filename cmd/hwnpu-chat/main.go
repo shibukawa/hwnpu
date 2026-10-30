@@ -13,7 +13,9 @@
 // -package takes programs converted by hwnpu-convert instead, with the same -cache and
 // different -seq, separated by commas. For LFM3-VL, -vision takes its vision encoder (hwnpu-convert
 // -arch lfm3-vision, a package per image size): image_url parts of user messages are read, and in
-// the terminal /image FILE sends an image.
+// the terminal /image FILE sends an image. For LFM3-Audio, -audio takes its audio encoder
+// (hwnpu-convert -arch lfm3-audio-encoder, a package per clip length): input_audio parts (WAV)
+// are read, and /audio FILE.wav sends a clip. Speech output is not supported.
 package main
 
 import (
@@ -41,6 +43,7 @@ func main() {
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from: .safetensors or .gguf (default: in -model)")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
 	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (with -package)")
+	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (with -package)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	listen := flag.String("listen", "", "serve the OpenAI chat completions API at this address instead of chatting, e.g. 127.0.0.1:8080")
 	dump := flag.String("dump", "", "write each request, its prompt and the generated text to this directory (server)")
@@ -80,6 +83,9 @@ func main() {
 	c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
 	if *vis != "" {
 		c.Vision = strings.Split(*vis, ",")
+	}
+	if *aud != "" {
+		c.Audio = strings.Split(*aud, ",")
 	}
 	e, err := chat.Load(ctx, c)
 	if err != nil {
@@ -124,11 +130,14 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
 	}
-	help := "context %d tokens. /reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n"
+	media := ""
 	if e.Images() {
-		help = "context %d tokens. /image FILE [text] sends an image, /reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n"
+		media += "/image FILE [text] sends an image, "
 	}
-	fmt.Fprintf(os.Stderr, help, e.Context())
+	if e.Audio() {
+		media += "/audio FILE.wav [text] sends a clip, "
+	}
+	fmt.Fprintf(os.Stderr, "context %d tokens. %s/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n", e.Context(), media)
 	in := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print("\n> ")
@@ -167,26 +176,34 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 			continue
 		}
 		content := chat.Content{Text: text}
-		// /image FILE [text]: the image, then the text
-		if rest, ok := strings.CutPrefix(text, "/image "); ok {
-			file, after, _ := strings.Cut(strings.TrimSpace(rest), " ")
-			url, err := dataURL(file)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
+		// /image FILE [text], /audio FILE.wav [text]: the image or the clip, then the text
+		for _, cmd := range []string{"/image ", "/audio "} {
+			rest, ok := strings.CutPrefix(text, cmd)
+			if !ok {
 				continue
 			}
-			content = chat.Content{Text: chat.MediaMarker + strings.TrimSpace(after), Images: []string{url}}
+			file, after, _ := strings.Cut(strings.TrimSpace(rest), " ")
+			m, err := mediaFile(file, cmd == "/audio ")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				content.Text = ""
+				break
+			}
+			content = chat.Content{Text: chat.MediaMarker + strings.TrimSpace(after), Media: []chat.Media{m}}
+		}
+		if content.Text == "" {
+			continue
 		}
 		msgs = append(msgs, chat.Message{Role: "user", Content: content})
 		prompt, err := chat.Render(msgs, nil, chat.Options{NoThink: !think})
 		if err != nil {
 			return err
 		}
-		var images []string
+		var media []chat.Media
 		for _, m := range msgs {
-			images = append(images, m.Content.Images...)
+			media = append(media, m.Content.Media...)
 		}
-		ids, err := e.Tokens(context.Background(), prompt, images)
+		ids, err := e.Tokens(context.Background(), prompt, media)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			msgs = msgs[:len(msgs)-1]
@@ -228,15 +245,18 @@ func talk(e *chat.Engine, system string, think bool, maxNew int, s chat.Sampling
 	}
 }
 
-// dataURL reads an image file as a data URL.
-func dataURL(path string) (string, error) {
+// mediaFile reads an image file as a data URL, or a WAV file as base64.
+func mediaFile(path string, isAudio bool) (chat.Media, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return chat.Media{}, err
+	}
+	if isAudio {
+		return chat.Media{Audio: true, Data: base64.StdEncoding.EncodeToString(raw)}, nil
 	}
 	mime := http.DetectContentType(raw)
 	if !strings.HasPrefix(mime, "image/") {
-		return "", fmt.Errorf("%s is %s, not an image", path, mime)
+		return chat.Media{}, fmt.Errorf("%s is %s, not an image", path, mime)
 	}
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
+	return chat.Media{Data: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw)}, nil
 }

@@ -18,6 +18,13 @@
 // messages, as data URLs) with -vision, its vision encoder converted for one or more image sizes:
 //
 //	hwnpu-convert -arch lfm3-vision -image 512x512 -config d1-2B/config.json -weights d1-2B/model.safetensors -format fp16 -o vision-512x512.mlpackage
+//
+// d1-Omni-2B answers about audio clips too (WAV: data:audio/ URLs in files, or input_audio parts
+// of the state), and questions asked as a clip (instructions {"type": "input_audio",
+// "input_audio": {"data": BASE64}}), with -audio, its audio encoder converted for one or more
+// clip lengths:
+//
+//	hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -config d1-Omni-2B/config.json -weights d1-Omni-2B/model.safetensors -format fp16 -o audio-30s.mlpackage
 package main
 
 import (
@@ -48,6 +55,7 @@ func main() {
 	cpu := flag.Bool("cpu", false, "run on the CPU interpreter instead of the Neural Engine (slow; for checking)")
 	listen := flag.String("listen", "", "serve POST /v1/systemone at this address, e.g. 127.0.0.1:8080")
 	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: questions about images")
+	aud := flag.String("audio", "", "the LFM3-Omni audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: d1-Omni's questions about audio and spoken questions")
 	flag.Parse()
 	if *pkgs == "" || *model == "" && (*config == "" || *weights == "") || flag.NArg() > 1 || *listen != "" && flag.NArg() > 0 {
 		flag.Usage()
@@ -70,6 +78,9 @@ func main() {
 		Tokenizer: *tok, Calibration: *calib, CacheDir: *cacheDir, CPU: *cpu, Log: os.Stderr}
 	if *vis != "" {
 		c.Vision = strings.Split(*vis, ",")
+	}
+	if *aud != "" {
+		c.Audio = strings.Split(*aud, ",")
 	}
 	m, err := systemone.Load(ctx, c)
 	if err != nil {

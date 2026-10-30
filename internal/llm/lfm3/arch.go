@@ -1,6 +1,7 @@
 package lfm3
 
 import (
+	"cmp"
 	"fmt"
 	"strconv"
 
@@ -12,8 +13,8 @@ import (
 var Arch = &llm.Arch{
 	Name:          "lfm3",
 	Title:         "LFM3",
-	ModelTypes:    []string{"lfm3", "lfm3_vl"},
-	Architectures: []string{"Lfm3ForCausalLM", "Lfm3VlForConditionalGeneration"},
+	ModelTypes:    []string{"lfm3", "lfm3_vl", "lfm3_omni", "lfm3_audio"},
+	Architectures: []string{"Lfm3ForCausalLM", "Lfm3VlForConditionalGeneration", "Lfm3OmniForConditionalGeneration", "Lfm3AudioForConditionalGeneration"},
 	Params: []llm.Param{
 		{Name: "post-scale", Default: "64", Usage: "power of two multiplied into the weights of out_proj, o_proj and w2 and absorbed by the sandwich norms (Neural Engine accuracy); 1 disables"},
 		{Name: "conv", Default: "taps", Usage: "short convolution as shifted multiply adds (taps) or one conv op (conv)"},
@@ -47,7 +48,7 @@ func (c *Config) Head() string {
 	if c.TieWordEmbed {
 		return c.Embedding()
 	}
-	return "lm_head.weight"
+	return cmp.Or(c.HeadName, "lm_head.weight")
 }
 
 // Tensors lists the tensors the conversion reads. A d1 model's program ends with the final norm,
@@ -60,7 +61,7 @@ func (c *Config) Tensors() map[string][]int {
 		c.prefix() + "embedding_norm.weight": {d},
 	}
 	if !c.TieWordEmbed && !c.D1 {
-		t["lm_head.weight"] = []int{c.VocabSize, d}
+		t[c.Head()] = []int{c.VocabSize, d}
 	}
 	for i := 0; i < c.NumLayers; i++ {
 		p := fmt.Sprintf("%slayers.%d.", c.prefix(), i)

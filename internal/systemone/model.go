@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/audio"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
@@ -43,6 +44,9 @@ type Config struct {
 	// package per image size (internal/vision); none to take no images. Its config.json and
 	// image processor settings are the ones next to ModelConfig.
 	Vision []string
+	// Audio is the LFM3-Omni audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder,
+	// a package per clip length (internal/audio), for d1-Omni; none to take no audio.
+	Audio []string
 	// Log receives what loading does (nil for none).
 	Log io.Writer
 	// Name is the model's name in the API (default: the first package's).
@@ -59,6 +63,7 @@ type Model struct {
 	dev         *hwnpu.Device
 	progs       []*program // by Seq
 	vision      *vision.Encoder
+	audio       *audio.Encoder
 	temperature float64
 	escape      func(string) string
 
@@ -148,6 +153,18 @@ func Load(ctx context.Context, c Config) (*Model, error) {
 		}
 		logf("vision encoder for images of %v, %s, loaded in %.1fs", m.vision.Sizes(), where, time.Since(t0).Seconds())
 	}
+	if len(c.Audio) > 0 {
+		t0 := time.Now()
+		if m.audio, err = audio.Load(ctx, m.dev, dir, c.Audio); err != nil {
+			m.Close()
+			return nil, err
+		}
+		where := "all on the NPU"
+		if !m.audio.OnNPU() {
+			where = "NOT all on the NPU"
+		}
+		logf("audio encoder for clips of up to %.0f s, %s, loaded in %.1fs", m.audio.MaxSeconds(), where, time.Since(t0).Seconds())
+	}
 	return m, nil
 }
 
@@ -179,6 +196,10 @@ func (m *Model) Close() error {
 	if m.vision != nil {
 		m.vision.Close()
 		m.vision = nil
+	}
+	if m.audio != nil {
+		m.audio.Close()
+		m.audio = nil
 	}
 	for _, p := range m.progs {
 		p.Close()
@@ -228,25 +249,30 @@ func (r *Response) MarshalJSON() ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// Decide answers the questions of a request in turn. The images are encoded once for all the
-// questions.
+// Decide answers the questions of a request in turn. The images and clips are encoded once for
+// all the questions.
 func (m *Model) Decide(ctx context.Context, r *Request) (*Response, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var images [][]float32
-	if len(r.Images) > 0 && m.vision == nil {
-		return nil, &Unsupported{"this server does not take images: start it with the vision encoder"}
-	}
-	for _, img := range r.Images {
-		rows, _, err := m.vision.Encode(ctx, img)
+	var media [][]float32
+	for _, md := range r.Media {
+		rows, err := m.encode(ctx, md)
 		if err != nil {
 			return nil, err
 		}
-		images = append(images, rows)
+		media = append(media, rows)
 	}
 	res := &Response{Model: m.Name}
 	for _, q := range r.Questions {
-		a, n, err := m.answer(ctx, r.State, q, images)
+		all := media
+		if q.Spoken != nil {
+			rows, err := m.encode(ctx, Media{Audio: q.Spoken})
+			if err != nil {
+				return nil, err
+			}
+			all = append(slices.Clip(media), rows)
+		}
+		a, n, err := m.answer(ctx, r.State, q, all)
 		if err != nil {
 			return nil, err
 		}
@@ -257,17 +283,44 @@ func (m *Model) Decide(ctx context.Context, r *Request) (*Response, error) {
 	return res, nil
 }
 
-// imageToken stands in Tokens' result for the positions of the images' embeddings.
+// encode returns the embeddings of an image or a clip.
+func (m *Model) encode(ctx context.Context, md Media) ([]float32, error) {
+	switch {
+	case md.Image != nil && m.vision == nil:
+		return nil, &Unsupported{"this server does not take images: start it with the vision encoder"}
+	case md.Image != nil:
+		rows, _, err := m.vision.Encode(ctx, md.Image)
+		return rows, err
+	case m.audio == nil:
+		return nil, &Unsupported{"this server does not take audio: start it with the audio encoder (d1-Omni)"}
+	}
+	rows, _, err := m.audio.Encode(ctx, md.Audio)
+	if errors.Is(err, audio.ErrTooLong) {
+		return nil, bad("%v", err)
+	}
+	return rows, err
+}
+
+// imageToken stands in Tokens' result for the positions of the images' and clips' embeddings.
 const imageToken = -1
 
 // Tokens returns the prompt of a question as tokens, with the label groups of its options. Each
-// image is <|vision_start|>, an imageToken per row of its embeddings (counts), <|vision_end|>.
+// image or clip (in d1-Omni a clip is wrapped like an image) is <|vision_start|>, an imageToken
+// per row of its embeddings (counts: the request's media, then the spoken question's),
+// <|vision_end|>.
 func (m *Model) Tokens(state *pyjson.Value, q Question, counts []int) (ids []int32, groups [][]int32, err error) {
 	codes, groups, err := Labels(q, m.tok.Encode)
 	if err != nil {
 		return nil, nil, err
 	}
-	pieces := strings.Split(Prompt(state, q, codes, m.escape, len(counts)), MediaMarker)
+	media := len(counts)
+	if q.Spoken != nil {
+		media--
+	}
+	pieces := strings.Split(Prompt(state, q, codes, m.escape, media), MediaMarker)
+	if len(pieces)-1 != len(counts) {
+		return nil, nil, fmt.Errorf("systemone: %d media for %d places in the prompt", len(counts), len(pieces)-1)
+	}
 	for i, piece := range pieces {
 		ids = append(ids, m.tok.Encode(piece)...)
 		if i+1 < len(pieces) {
@@ -285,11 +338,12 @@ func (m *Model) Tokens(state *pyjson.Value, q Question, counts []int) (ids []int
 	return ids, groups, nil
 }
 
-// answer answers one question. images are the requests' images' embeddings, in prompt order.
-func (m *Model) answer(ctx context.Context, state *pyjson.Value, q Question, images [][]float32) (Answer, int, error) {
+// answer answers one question. media are the embeddings of the request's images and clips, then
+// of the spoken question, in prompt order.
+func (m *Model) answer(ctx context.Context, state *pyjson.Value, q Question, media [][]float32) (Answer, int, error) {
 	d := m.cfg.HiddenSize
 	var counts []int
-	for _, rows := range images {
+	for _, rows := range media {
 		counts = append(counts, len(rows)/d)
 	}
 	ids, groups, err := m.Tokens(state, q, counts)
@@ -303,7 +357,7 @@ func (m *Model) answer(ctx context.Context, state *pyjson.Value, q Question, ima
 	}
 	p := m.progs[i]
 	x := make([]float32, p.Seq()*d)
-	img := slices.Concat(images...)
+	img := slices.Concat(media...)
 	for j, t := range ids {
 		if t == imageToken {
 			copy(x[j*d:(j+1)*d], img[:d])

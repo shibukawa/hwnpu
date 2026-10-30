@@ -1191,3 +1191,22 @@ go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config
 go run ./cmd/hwnpu-convert -arch lfm3-vision -image 768x384 -format fp16 -config LFM3-VL-2B/config.json -weights LFM3-VL-2B/model.safetensors -o vision-768x384.mlpackage
 go run ./cmd/hwnpu-systemone -model d1-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage,vision-768x384.mlpackage request.json
 ```
+
+### 16.23 LFM3-Audio の音声入力と d1-Omni-2B — 2026-10-30
+
+16.21 の段階 (3)。構造は llama.cpp の `tools/mtmd/models/lfm3a.cpp`、`conversion/lfm3.py`、`tools/mtmd/mtmd-audio.cpp` (前処理)、`tools/mtmd/clip.cpp` (位置、マスク) から読んだ。HF のリモートコードと config の実物は見ていない。
+
+- **テキスト部** (`internal/llm/lfm3`): `lfm3_audio` は LFM3 の設定が `lfm` キーの下にあり、テンソルは `lfm.model.` (llama.cpp は `lfm.` を取り除いて読む)、出力層は `lfm.lm_head.weight`。`lfm3_omni` は `text_config` の下で、テンソルは `model.language_model.`。d1-Omni-2B (`lfm3_omni` で `D1Model`) も 16.21 の d1 モードで変換できる。視覚エンコーダ (`lfm3vl`) は `lfm3_omni` の config も読む (テンソル名は LFM3-VL と同じ)
+- **`internal/llm/lfm3audio`** (アーキテクチャ名 `lfm3-audio-encoder`、`-arch` で選ぶ): LFM3-Audio (`encoder.lfm` が LFM2 の設定、`dim_in`、`sliding_window`。テンソルは `encoder.downsample.`、`encoder.lfm.lfm.`、projector は `mlp.model.0/1/3`) と LFM3-Omni (`audio_encoder_config.text_config`、`num_mel_bins`。テンソルは `model.audio_encoder.downsample.`、`model.audio_encoder.lfm.`、`model.audio_projector.layer_norm/linear_1/linear_2`) の両方。構造は、(時間, メル) 上のストライド 2 の畳み込み 3 つで時間を 1/8 にする部分 (3×3 → SiLU、depthwise 3×3 → pointwise → SiLU を 2 回。カーネルは ggml の読み方で [出力][入力][メル][時間])、チャネル優先で平らにして linear、因果的な LFM2 の層 (短い畳み込みと、スライディング窓 (`sliding_window` 個のキー) の注意。QK norm、head 全体の rotate_half の RoPE、θ = 1e6)、最終 RMSNorm、projector (LayerNorm eps 1e-5、linear、GELU、linear)。FFN の幅は LFM2 の計算 (`block_auto_adjust_ff_dim` など)
+- **固定の長さ**: プログラムは最長のメルフレーム数 (`-frames`、既定 3000 = 30 秒) ごとに変換する。入力は `x` (1, frames, 128) と `mask` (1, frames)。llama.cpp は畳み込みのたびに入力の後ろをゼロで埋めるので、各段の出力のうちクリップより後ろ (出力 t は入力 2t があるときだけ存在する) をマスクを半分ずつ間引いたもので 0 にする。後ろの層は因果的なので、クリップの分の出力は長いプログラムで動かしても同じ。出力の先頭 `ceil(ceil(ceil(frames/2)/2)/2)` 行がクリップの埋め込み
+- **前処理** (`lfm3audio.Features`): llama.cpp の `mtmd_audio_preprocessor_lfm3a` と同じ。16 kHz、最後のフレームが最後の標本を含むよう右をゼロで埋め、400 標本の周期的 Hann 窓を 160 ごとに、パワースペクトル、Slaney のメルフィルタ 128 本 (0〜8 kHz、面積正規化)、log10 (下限 1e-12)、(v + 4) / 4。librosa (1.0.0) の STFT とフィルタで作った正解 (`tools/ref/mel_golden.py`) と 1e-4 以内で一致する。WAV (8/16/24/32 ビット PCM、32 ビット浮動小数点、チャネルは平均) を読み、16 kHz 以外は Hann 窓の sinc で変換する (llama.cpp は miniaudio で読むので、16 kHz 以外は近似)
+- **`internal/audio`**: 長さごとのプログラムを読み込み、クリップが入る最短のもので動かす。どれにも入らなければ `ErrTooLong`。LFM3-Audio はプロンプトに埋め込みをそのまま置き、LFM3-Omni は `<|vision_start|>` と `<|vision_end|>` で囲む (llama.cpp の mtmd のとおり)
+- **チャット**: `input_audio` 部分 (base64 の WAV) を画像と同じくメディアの印で受け、`Engine.Tokens` が埋め込みにする。`Content.Images` は画像と音声の両方を持つ `Content.Media` にした。`hwnpu-chat -audio`、対話では `/audio FILE.wav 質問`。LFM3-Audio の生の ASR (システムプロンプト "Perform live ASR." でアシスタントの番に音声とテキストを交互に置く llama.cpp の流し読み) と音声の出力は扱わない
+- **d1-Omni-2B** (`systemone`): `files` の `data:audio/` URL と state の `input_audio` 部分は、画像と同じくユーザーの番の先頭の印になる。話された質問 (`instructions` が `{"type": "input_audio", ...}`) は、llama.cpp のとおり質問文の位置の印になり、その音声は要求のメディアの後に足す。いずれも `<|vision_start|>` と `<|vision_end|>` で囲む。音声エンコーダがなければ 501
+- **検証**: `lfm3audio_test.go` に llama.cpp のグラフから書いた fp64 の正解 (畳み込みは PyTorch のストライド 2、パディング 1 の定義、窓は直近 `sliding_window` 個) を置き、37 フレームのクリップを 50 フレームのプログラムで (後ろをゼロにしてマスク) 動かした先頭 5 行が、LFM3-Audio と LFM3-Omni の両方の並びで相対誤差 1e-6 未満。1 層ずつと projector だけの実行も 1e-4 以内。改変 (カーネルの時間とメルの取り違え、マスクで 0 にしない: 2e-3、平らにする順、窓なし: 0.11、SiLU を外す、B と x の取り違え、LayerNorm を外す) をすべて検出した。`audio` のテストは、短いプログラムと長いプログラムで同じ埋め込みになることと長すぎるクリップの拒否を、`chat` のテストは LFM3-Audio と LFM3-Omni での音声のトークンの並びを、`systemone` のテストは話された質問の位置 (`TestSpokenTokens`) と、jinja2 で描画した正解 (`spoken question`) を確かめる
+- 未確認: 実物の config (encoder の LFM2 の設定、`subsampling_conv_channels` は NeMo の既定 256 を仮定、projector の幅は `adapter_hidden_size` がなければテキストの幅を仮定)、テンソル名、`lin_out` の重みの形、実物での照合 (llama.cpp の `llama-mtmd-cli` の音声の埋め込みとの比較が確実)。LFM3-Audio のチャットテンプレートでの音声の置き方。Neural Engine での配置と精度、速さ
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config d1-Omni-2B/config.json -weights d1-Omni-2B/model.safetensors -o audio-30s.mlpackage
+go run ./cmd/hwnpu-systemone -model d1-Omni-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage -audio audio-30s.mlpackage request.json
+```

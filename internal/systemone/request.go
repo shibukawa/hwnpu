@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"image"
 	"strconv"
+	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/audio"
 	"github.com/shibukawa/hwnpu/internal/pyjson"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
@@ -23,19 +25,28 @@ type Request struct {
 	// null to ask about nothing but the question.
 	State     *pyjson.Value
 	Questions []Question
-	// Images come first in the prompt: those of files (or images), then those taken out of a
+	// Media come first in the prompt: those of files (or images), then those taken out of a
 	// state made of chat messages.
-	Images []image.Image
+	Media []Media
 }
 
-// MaxImages is the most images a request can have, as llama.cpp's server allows.
-const MaxImages = 8
+// Media is an image or an audio clip (at lfm3audio.SampleRate).
+type Media struct {
+	Image image.Image
+	Audio []float32
+}
+
+// MaxMedia is the most images and clips a request can have, as llama.cpp's server allows.
+const MaxMedia = 8
 
 // Question is one question of a request.
 type Question struct {
 	ID           string
 	Type         string // choice, score or noul
 	Instructions *pyjson.Value
+	// Spoken is the question asked as a clip (instructions {"type": "input_audio", ...}), for
+	// a model with audio input (d1-Omni); it is heard where its text would be.
+	Spoken []float32
 	// Options are the possible answers in the order the prompt lists them: a choice's criteria,
 	// a score's levels "0".., a noul's "true" then "false".
 	Options []Option
@@ -59,7 +70,8 @@ func bad(format string, args ...any) error { return &BadRequest{fmt.Sprintf(form
 
 // ParseRequest reads a request body. Images are data URLs, in files (or its alias images) or as
 // image_url parts of a state made of chat messages (an array of messages, or an object with
-// one), which are taken out of the state. Video and audio are not supported.
+// one), which are taken out of the state; clips are WAV, as data:audio/ URLs in files or as
+// input_audio parts (base64). Video is not supported.
 func ParseRequest(raw []byte) (*Request, error) {
 	body, err := pyjson.Parse(raw)
 	if err != nil {
@@ -75,18 +87,24 @@ func ParseRequest(raw []byte) (*Request, error) {
 	if r.State == nil {
 		return nil, bad(`"state" must be provided`)
 	}
-	addImage := func(url *pyjson.Value) error {
-		if url == nil || url.Kind != '"' {
-			return bad("media must be data URLs (data:image/...;base64,...)")
+	add := func(url *pyjson.Value, isAudio bool) error {
+		if url == nil || url.Kind != '"' || !isAudio && !strings.HasPrefix(url.Str, "data:") {
+			return bad("media must be data URLs (data:image/..., data:audio/...;base64,...)")
 		}
-		if len(r.Images) >= MaxImages {
-			return bad("too many images, the maximum is %d", MaxImages)
+		if len(r.Media) >= MaxMedia {
+			return bad("too many images and clips, the maximum is %d", MaxMedia)
 		}
-		img, err := vision.DecodeDataURL(url.Str)
+		var m Media
+		var err error
+		if isAudio || strings.HasPrefix(url.Str, "data:audio/") {
+			m.Audio, err = audio.Decode(url.Str)
+		} else {
+			m.Image, err = vision.DecodeDataURL(url.Str)
+		}
 		if err != nil {
 			return bad("%v", err)
 		}
-		r.Images = append(r.Images, img)
+		r.Media = append(r.Media, m)
 		return nil
 	}
 	for _, key := range []string{"files", "images"} {
@@ -98,12 +116,12 @@ func ParseRequest(raw []byte) (*Request, error) {
 			return nil, bad("%q must be an array", key)
 		}
 		for _, url := range v.Fields {
-			if err := addImage(url); err != nil {
+			if err := add(url, false); err != nil {
 				return nil, err
 			}
 		}
 	}
-	if r.State, err = takeMedia(r.State, addImage); err != nil {
+	if r.State, err = takeMedia(r.State, add); err != nil {
 		return nil, err
 	}
 	qs := body.Get("questions")
@@ -120,10 +138,10 @@ func ParseRequest(raw []byte) (*Request, error) {
 	return r, nil
 }
 
-// takeMedia takes the image_url parts out of the content of a state made of chat messages (an
-// array of messages, or an object with one) and gives their URLs to add, in order, as llama.cpp
-// does. Audio and video parts are not supported.
-func takeMedia(state *pyjson.Value, add func(url *pyjson.Value) error) (*pyjson.Value, error) {
+// takeMedia takes the image_url and input_audio parts out of the content of a state made of
+// chat messages (an array of messages, or an object with one) and gives them to add, in order,
+// as llama.cpp does. Video parts are not supported.
+func takeMedia(state *pyjson.Value, add func(url *pyjson.Value, isAudio bool) error) (*pyjson.Value, error) {
 	msgs := state
 	if state.Kind == '{' {
 		msgs = state.Get("messages")
@@ -150,11 +168,18 @@ func takeMedia(state *pyjson.Value, add func(url *pyjson.Value) error) (*pyjson.
 				if u := url.Get("url"); u != nil {
 					url = u
 				}
-				if err := add(url); err != nil {
+				if err := add(url, false); err != nil {
 					return nil, err
 				}
 			case typ == "input_audio" && part.Get("input_audio") != nil:
-				return nil, &Unsupported{"audio input needs a model with audio input"}
+				in := part.Get("input_audio")
+				data := in.Get("data")
+				if data == nil {
+					data = in.Get("url")
+				}
+				if err := add(data, true); err != nil {
+					return nil, err
+				}
 			case typ == "video_url" && part.Get("video_url") != nil:
 				return nil, &Unsupported{"video input is not supported by this server"}
 			default:
@@ -202,7 +227,15 @@ func parseQuestion(id string, q *pyjson.Value) (Question, error) {
 		return Question{}, errf(`"instructions" must be provided`)
 	}
 	if t := out.Instructions.Get("type"); t != nil && t.Kind == '"' && t.Str == "input_audio" {
-		return Question{}, errf("spoken instructions need a model with audio input")
+		data := out.Instructions.Get("input_audio").Get("data")
+		if data == nil || data.Kind != '"' {
+			return Question{}, errf("spoken instructions need input_audio data")
+		}
+		clip, err := audio.Decode(data.Str)
+		if err != nil {
+			return Question{}, errf("%v", err)
+		}
+		out.Spoken = clip
 	}
 	if t := q.Get("type"); t != nil && t.Kind == '"' {
 		out.Type = t.Str

@@ -89,6 +89,14 @@ go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config
 go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpackage -vision DIR/vision-512x512.mlpackage -model DIR
 ```
 
+### Audio (LFM3-Audio-2B)
+
+For an LFM3-Audio checkpoint, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `-audio`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Speech output (TTS) is not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.23).
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
+```
+
 ## 5. Use it from OpenCode
 
 Put an `opencode.json` in the project directory. The model's name is the one `GET /v1/models` returns.

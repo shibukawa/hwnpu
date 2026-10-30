@@ -19,6 +19,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/hwnpu/internal/pyjson"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
@@ -36,6 +37,7 @@ func TestPromptMatchesTemplate(t *testing.T) {
 			Labels  []string        `json:"labels"`
 			Control []string        `json:"control"`
 			Images  int             `json:"images"`
+			Spoken  bool            `json:"spoken"`
 			Want    string          `json:"want"`
 		} `json:"cases"`
 	}
@@ -48,7 +50,11 @@ func TestPromptMatchesTemplate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := Prompt(r.State, r.Questions[0], c.Labels, Escaper(c.Control), c.Images); got != c.Want {
+			q := r.Questions[0]
+			if c.Spoken {
+				q.Spoken = []float32{}
+			}
+			if got := Prompt(r.State, q, c.Labels, Escaper(c.Control), c.Images); got != c.Want {
 				t.Errorf("prompt\n%q\nwant\n%q", got, c.Want)
 			}
 		})
@@ -188,7 +194,7 @@ func TestParseRequest(t *testing.T) {
 		{"spoken", `{"state": "s", "questions": {"q": {"type": "noul", "instructions": {"type": "input_audio"}}}}`, false},
 		{"not an image", `{"state": "s", "images": ["data:image/png;base64,AA=="], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, false},
 		{"not a data URL", `{"state": "s", "files": ["https://example.com/a.png"], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, false},
-		{"audio part", `{"state": [{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "AA=="}}]}], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, true},
+		{"not a clip", `{"state": [{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "AA=="}}]}], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, false},
 		{"video part", `{"state": [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AA=="}}]}], "questions": {"q": {"type": "noul", "instructions": "?"}}}`, true},
 	} {
 		_, err := ParseRequest([]byte(c.body))
@@ -206,8 +212,8 @@ func TestParseRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Images) != 2 || r.State.String() != `{"x": 1, "messages": [{"role": "user", "content": [{"type": "text", "text": "look"}]}, {"role": "assistant", "content": "ok"}]}` {
-		t.Errorf("%d images, state %s", len(r.Images), r.State)
+	if len(r.Media) != 2 || r.Media[0].Image == nil || r.State.String() != `{"x": 1, "messages": [{"role": "user", "content": [{"type": "text", "text": "look"}]}, {"role": "assistant", "content": "ok"}]}` {
+		t.Errorf("%d media, state %s", len(r.Media), r.State)
 	}
 	r, err = ParseRequest([]byte(`{"state": {"b": 1, "a": 2}, "questions": {"z": {"type": "noul", "instructions": "?"}, "a": {"type": "noul", "instructions": "?"}}}`))
 	if err != nil || r.Questions[0].ID != "z" || r.State.String() != `{"b": 1, "a": 2}` {
@@ -300,12 +306,14 @@ func TestModel(t *testing.T) {
 			break
 		}
 	}
-	req.Images = []image.Image{image.NewGray(image.Rect(0, 0, 8, 8))}
 	var unsup *Unsupported
-	if _, err := m.Decide(context.Background(), req); !errors.As(err, &unsup) {
-		t.Errorf("an image without a vision encoder: %v", err)
+	for _, md := range []Media{{Image: image.NewGray(image.Rect(0, 0, 8, 8))}, {Audio: []float32{0, 0}}} {
+		req.Media = []Media{md}
+		if _, err := m.Decide(context.Background(), req); !errors.As(err, &unsup) {
+			t.Errorf("an image or a clip without an encoder: %v", err)
+		}
 	}
-	req.Images = nil
+	req.Media = nil
 
 	m.progs = []*program{open(n - 1)}
 	var badReq *BadRequest
@@ -404,3 +412,28 @@ const tinyD1 = `{"architectures": ["D1Model"], "model_type": "lfm3_vl", "tie_wor
 		"layer_types": ["full_attention", "conv", "sliding_attention", "full_attention"],
 		"rope_parameters": {"full_attention": {"rope_theta": 10000, "partial_rotary_factor": 0.5, "rope_type": "default"},
 			"sliding_attention": {"rope_theta": 1000, "rope_type": "default"}}}}`
+
+// A spoken question's clip is heard where the instructions would be, after the request's media
+// at the start of the user turn, each between the image tokens.
+func TestSpokenTokens(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(tinyD1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := vocabEncoder(cfg.VocabSize)
+	m := &Model{tok: enc, cfg: cfg, escape: func(s string) string { return s }}
+	q := question(t, `{"type": "choice", "instructions": "?", "criteria": {"x": null, "y": null}}`)
+	q.Spoken = []float32{}
+	ids, _, err := m.Tokens(&pyjson.Value{Kind: '"', Str: "s"}, q, []int{1, 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := enc.Encode("<|startoftext|><|im_start|>user\n")
+	want := append(append([]int32{}, prefix...), 1, -1, 2)
+	want = append(want, enc.Encode("s\n\n\nQUESTION:\n")...)
+	want = append(want, 1, -1, -1, 2)
+	want = append(want, enc.Encode("\n\nOptions:\nx x\ny y\n\nReply with the option code only.<|im_end|>\n<|im_start|>assistant\n<think></think>")...)
+	if !slices.Equal(ids, want) {
+		t.Errorf("tokens\n%v\nwant\n%v", ids, want)
+	}
+}

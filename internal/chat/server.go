@@ -47,6 +47,9 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	if s.E.Images() {
 		in = append(in, "image")
 	}
+	if s.E.Audio() {
+		in = append(in, "audio")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data": []map[string]any{{
@@ -125,11 +128,11 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var images []string
+	var media []Media
 	for _, m := range req.Messages {
-		images = append(images, m.Content.Images...)
+		media = append(media, m.Content.Media...)
 	}
-	ids, err := s.E.Tokens(r.Context(), prompt, images)
+	ids, err := s.E.Tokens(r.Context(), prompt, media)
 	if err != nil {
 		code, typ := http.StatusInternalServerError, "server_error"
 		if errors.Is(err, ErrImage) {
