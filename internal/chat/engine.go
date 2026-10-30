@@ -118,6 +118,11 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			fmt.Fprintf(c.Log, format+"\n", args...)
 		}
 	}
+	name := c.Name
+	if name == "" {
+		name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
+	}
+	logf("loading %s onto the Neural Engine: %d programs, up to a minute or two (Core ML compiles them the first time)", name, len(c.Packages))
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return nil, err
@@ -130,10 +135,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		c.Tokenizer = filepath.Join(filepath.Dir(c.ModelConfig), "tokenizer.json")
 	}
 	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}}
-	e.Name = c.Name
-	if e.Name == "" {
-		e.Name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
-	}
+	e.Name = name
 	if e.Template, err = TemplateFor(a.Name); err != nil {
 		return nil, err
 	}
@@ -158,13 +160,16 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	for i, pkg := range c.Packages {
 		t0 := time.Now()
+		stop := dots(c.Log, "  "+filepath.Base(pkg)+" ")
 		var ch *chain.Chain
 		if i == 0 {
 			ch, err = chain.Open(ctx, e.dev, pkg)
 		} else {
 			ch, err = e.chains[0].Share(ctx, e.dev, pkg)
 		}
+		stop()
 		if err != nil {
+			logf("")
 			e.Close()
 			return nil, err
 		}
@@ -173,7 +178,11 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		if !ch.OnNPU() {
 			where = "NOT all on the NPU"
 		}
-		logf("%s: %d parts, %s, loaded in %.1fs", filepath.Base(pkg), len(ch.Parts()), where, time.Since(t0).Seconds())
+		parts := "1 part"
+		if n := len(ch.Parts()); n > 1 {
+			parts = fmt.Sprintf("%d parts", n)
+		}
+		logf(" %.1fs, %s, %s", time.Since(t0).Seconds(), parts, where)
 		p := ch.Program(context.Background())
 		if i == 0 {
 			e.sess, err = decode.New(p, cm)
@@ -185,8 +194,34 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			return nil, fmt.Errorf("chat: %s: %w", pkg, err)
 		}
 	}
-	logf("cache %d tokens, up to %d tokens per call", e.sess.Cache(), e.sess.Q())
+	logf("ready: context %d tokens, up to %d tokens per call", e.sess.Cache(), e.sess.Q())
 	return e, nil
+}
+
+// dots writes prefix and then a dot every two seconds, until the returned function is called.
+func dots(w io.Writer, prefix string) (stop func()) {
+	if w == nil {
+		return func() {}
+	}
+	io.WriteString(w, prefix)
+	done, exited := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(exited)
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				io.WriteString(w, ".")
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-exited
+	}
 }
 
 // Close releases the model.

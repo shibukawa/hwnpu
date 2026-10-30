@@ -355,6 +355,72 @@ func (g *Graph) SDPAGrouped(q, k, v *mlpackage.Var, scale float64, mask func() *
 	return g.Op("reshape", map[string]any{"x": o, "shape": g.B.Ints(1, int32(nh), int32(s), int32(hd))}, 1, nh, s, hd)
 }
 
+// ChunkedSDPA is SDPA over keys and values in parts, ks[j] and vs[j] (1, nkv, Lj, hd) with
+// masks[j] (1, 1, s, Lj): a KV cache in chunks and the step's own tokens, none of them over the
+// Neural Engine's dimension limit as one concatenated key axis would be. The parts meet in
+// elementwise operations only: the exps of every part's scores are taken from the largest score of
+// all plus ln 4n (n parts), their sums and the values weighted by them are matrix products, added
+// over the parts and divided once. With the shift the sums are at most a quarter of the keys over
+// n, and the weighted values that times the largest value, in fp16. Holding the parts on an axis
+// of one tensor, or weighting each part by its share of the whole, put the whole program on the
+// CPU, and the sums taken by reduce_sum made the placement of 64 tokens per call change from one
+// compile to the next (M3, macOS 27.0.1; npuprobe kv -kv-modes host-chunk, TestChunkedSDPAOnNeuralEngine).
+func (g *Graph) ChunkedSDPA(q *mlpackage.Var, ks, vs, masks []*mlpackage.Var) *mlpackage.Var {
+	nh, s, hd := q.Shape[1], q.Shape[2], q.Shape[3]
+	rows := []int{1, nh, s, 1}
+	expand := func(x *mlpackage.Var) *mlpackage.Var {
+		nkv, sk := x.Shape[1], x.Shape[2]
+		rep := nh / nkv
+		if rep == 1 {
+			return x
+		}
+		x = g.Op("reshape", map[string]any{"x": x, "shape": g.B.Ints(1, int32(nkv), 1, int32(sk), int32(hd))}, 1, nkv, 1, sk, hd)
+		x = g.Op("tile", map[string]any{"x": x, "reps": g.B.Ints(1, 1, int32(rep), 1, 1)}, 1, nkv, rep, sk, hd)
+		return g.Op("reshape", map[string]any{"x": x, "shape": g.B.Ints(1, int32(nh), int32(sk), int32(hd))}, 1, nh, sk, hd)
+	}
+	scale := g.B.ScalarF16(float32(1 / math.Sqrt(float64(hd))))
+	var scores []*mlpackage.Var
+	var top *mlpackage.Var
+	for j, k := range ks {
+		sk := k.Shape[2]
+		sc := g.Op("matmul", map[string]any{"x": q, "y": expand(k), "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(true)}, 1, nh, s, sk)
+		sc = g.Op("mul", map[string]any{"x": sc, "y": scale}, 1, nh, s, sk)
+		sc = g.Op("add", map[string]any{"x": sc, "y": masks[j]}, 1, nh, s, sk)
+		scores = append(scores, sc)
+		mj := g.Op("reduce_max", map[string]any{"x": sc, "axes": g.B.Ints(3), "keep_dims": g.B.ScalarBool(true)}, rows...)
+		if top == nil {
+			top = mj
+		} else {
+			top = g.Op("maximum", map[string]any{"x": top, "y": mj}, rows...)
+		}
+	}
+	top = g.Op("add", map[string]any{"x": top, "y": g.B.ScalarF16(float32(math.Log(float64(4 * len(ks)))))}, rows...)
+	var o, sum *mlpackage.Var
+	for j, sc := range scores {
+		sk := sc.Shape[3]
+		e := g.Op("exp", map[string]any{"x": g.Op("sub", map[string]any{"x": sc, "y": top}, 1, nh, s, sk)}, 1, nh, s, sk)
+		// the sum of the exps and the values weighted by them, as matrix products
+		ones := g.F16s(fmt.Sprintf("ones_%d", sk), []int{sk, 1}, constOnes(sk))
+		l := g.Op("matmul", map[string]any{"x": e, "y": ones, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, rows...)
+		oj := g.Op("matmul", map[string]any{"x": e, "y": expand(vs[j]), "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, nh, s, hd)
+		if o == nil {
+			o, sum = oj, l
+			continue
+		}
+		o = g.Op("add", map[string]any{"x": o, "y": oj}, 1, nh, s, hd)
+		sum = g.Op("add", map[string]any{"x": sum, "y": l}, rows...)
+	}
+	return g.Op("real_div", map[string]any{"x": o, "y": sum}, 1, nh, s, hd)
+}
+
+func constOnes(n int) []float32 {
+	v := make([]float32, n)
+	for i := range v {
+		v[i] = 1
+	}
+	return v
+}
+
 // LinearBias is Linear plus the named bias (out), which stays fp16 whatever the weight format.
 func (g *Graph) LinearBias(x *mlpackage.Var, name, bias, outName string, outDim int) *mlpackage.Var {
 	in := x.Shape[len(x.Shape)-1]

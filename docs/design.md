@@ -1149,7 +1149,66 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 - **端から端までの利得は今回は示せなかった**: 同じ条件で続けて測った組 (固定 4096 / 段階あり) は 57.4 / 56.7 と 33.1 / 32.4 ms/token で、段階ありが 1〜2% 速いだけ (見込みは 1024 の 1024 トークンが 19 ms、残りが 27.7 ms で約 20%)。計測の間、機械はスワップを 8.7〜9.7 GB 使っていた (別の `hwnpu-chat` が 2 GB、ほかにアプリ多数) ので、どの値も信用しきれない。全段階を読み込んだ直後の 1 本は 71.5 ms/token、同じ構成の 2 本目は 19.2 ms。空いた機械で測り直す
 - 次: 空いた機械での測り直し。`MLModel` の読み込みを速くする手立て (システムの ANE キャッシュの挙動の調査)。塊分けの注意 (16K を超えるため)
 
-### 16.21 4 つ目のアーキテクチャ: Gemma 4 (gemma-4-E2B-it のテキスト部分) — 2026-10-30
+### 16.21 KV キャッシュ: 塊に分けて 16K を超える — 2026-10-30
+
+- 問い: ANE の 1 次元の上限 16384 (16.16) を、キャッシュを 16384 以下の塊に分けることで超えられるか。Flash-Decoding の合流 (塊ごとの最大値、指数の和、出力) を、ホストではなく 1 つのプログラムの中で行えば、ホスト側の仕組み (`decode`、プロンプトのキャッシュ) はほとんど変わらない
+- `npuprobe kv -kv-modes host-chunk` (`internal/probe.splitAttention`): 塊 J ごとに別の入力 `kv_k_N_J`、`kv_v_N_J` (1, 4, 長さ, 128) と `mask_J` を取り、各塊は分けないキャッシュと同じ演算で注意を計算し、塊どうしは要素ごとの演算だけで合わせる。全体の最大値に ln 4n を足した値から指数を取るので、全部の塊の指数の和は 長さ/4 以下、重み付きの値の和は 長さ/4 × 値の最大 以下で、値が 16 未満なら fp16 に収まる。`TestKVChunkMatchesHost` (CPU インタプリタ、キャッシュ 256 を 64 ずつ 4 塊、一部と全部が隠れた塊を含む) で分けないキャッシュと相対誤差 8.4e-7。自分のトークンの項を外す改変を検出する。`milcpu` に `reduce_sum` と `reduce_max` を足した
+- 結果 (M3、6 層 lut4、LFM3-1.7B の全注意の層の数。レポートは `npuprobe-m3-kv-chunk.md`、`npuprobe-m3-kv-chunk-long.md`):
+
+| キャッシュ | host (分けない) | host-chunk (16384 ずつ) |
+|---|---|---|
+| 4096 | 14.5 ms | 13.2 ms |
+| 16320 | 49.1 ms | 43.4 ms |
+| 32768 | (CPU) | 84.0 ms、全部 ANE |
+| 65536 | (CPU) | 201.6 ms、全部 ANE |
+
+- 2 塊以上で全演算が CPU に置かれた形 (キャッシュ 512 を 256 ずつ 2 塊、1 層で切り分け。1 塊なら同じ形でも ANE): 塊を 1 つのテンソルの軸に並べて軸方向に縮約する形 (軸 1 でも軸 0 でも)、各塊をその和の割合 (`和_J / 全体の和`) で重み付けする形、和に 1/n を掛けてから全体の最大値と組み合わせる形。和を先に足し、最後に 1 回だけ全体の和で割る形は載った。理由は分からない (Core ML のコンパイラの中)
+- LFM3-1.7B の見込み: 16K で 1 トークン約 64 ms (16.17) に、注意の増えた分 (上の表の 16K からの差) を足して、32K で約 100 ms、64K で約 220 ms。KV のメモリは全注意の層で 1 トークン 12 KiB、64K で 768 MiB (ほかの会話の写しを取っておく分は別)
+- 次: `lfm3.BuildCached` で、全注意の層のキャッシュを塊の入力にする。`decode.Session` は位置から塊と行を決めて書き込み、`StepInputs` は塊ごとのマスクを作る。64 トークンのプログラムは鍵の軸が塊の長さ + 64 になるので、塊の長さは 16320
+
+### 16.22 KV キャッシュ: LFM3 の文脈を 16K の先へ — 2026-10-30
+
+- 規則 (`llm.CacheChunks`): 16320 (`CacheChunkOver`) を超えるキャッシュは 16384 (`CacheChunkLen`) ずつの塊 (最後は短い) に分け、塊ごとに別の入力 `kv_k_N_cJ` を取る。16320 以下はこれまでどおり 1 つの入力で、変換済みのモデルはそのまま動く。規則はキャッシュの長さだけで決まるので、1 トークンと 64 トークンのプログラムが同じバッファを共有できる。スライディング層のリング (256) は分けない
+- `blocks.ChunkedSDPA`: 塊ごとと、ステップのトークン自身 (`mask_TYPE_self`) の注意を、要素ごとの演算だけで合わせる。全体の最大値に ln 4n を足した値から指数を取り、指数の和と重み付きの値は行列積 (`e @ 1` と `e @ V`) で求め、全部を足して最後に 1 回割る。`lfm3.BuildCached` は全注意の層でキャッシュが塊のときこれを使い、`StepInputs` はマスクを塊ごとと自分の分に分ける。`decode.Session` は `kv_NAME_cJ` を 1 つのキャッシュにまとめ、位置から塊と行を決めて書く。`Mark` はリングと窓だけを写す (塊はリングでない)
+- 64 トークンのプログラムの配置: 16.21 の形 (指数の和を `reduce_sum`、塊ごとに正規化してから和で重み付け) は、1 トークンでは常に ANE だが、64 トークンでは同じグラフでもコンパイルごとに ANE と CPU が入れ替わった (注意だけのグラフで、塊 2048〜16384、2〜8 塊。同じ条件を 2 回で結果が変わる)。実物の 32K で CPU に置かれ、読み込み 198 秒、プロンプトの読みが CPU 1 コアの速さになった。和を行列積にした形は 30 回のコンパイルすべてで ANE (`TestChunkedSDPAOnNeuralEngine`)
+- 検証: `TestCachedChunksMatchFull` (CPU インタプリタ、塊を 4 ずつに縮め、キャッシュ 8〜12 を 2〜3 塊) で、キャッシュなしのプログラムと相対誤差 6.3e-4 以内、共有と巻き戻しも同じ。塊の中の行の位置を 1 ずらす、マスクの塊の境目を 1 ずらす、の改変を検出する
+- 結果 (M3、LFM3-1.7B lut4、`hwnpu-chat -context N`、どちらのプログラムも全部 ANE):
+
+| 文脈 | 塊 | 読み込み (初回、64 トークンのプログラム) | プロンプト | 生成 | 先頭の合言葉 |
+|---|---|---|---|---|---|
+| 32768 | 2 | 39.6 s | 25,288 トークンを 83.7 s | 138 ms/token | 正答 |
+| 65536 | 4 | 49.5 s | 53,736 トークンを 360.8 s | 363 ms/token | 正答 |
+
+- 生成の 1 トークンは、16.21 の 6 層だけの計測から見込んだ値 (32K 約 100 ms、64K 約 220 ms) より遅い。トークン数が少ない (19 と 9) 測り方なので、長い生成での値は測り直す
+- 残り: 使っている塊だけを動かす (今は容量全体を毎回計算する)。プロンプトの読みも文脈に比例して遅くなる
+
+### 16.23 hwnpu-chat でチャットと埋め込みを使い分ける (`-use` にモデル名) — 2026-10-30
+
+- `hwnpu-chat` の `-use` にモデルの名前を書く (既定 `LFM3-1.7B`)。用途 (chat、embedding) はモデルが持つ。最初は `-use chat|embed` と用途で選ぶ形にしたが、同じ用途のモデルは今後増えるので名前にした。モデルの一覧 (`chat.Catalog`: 名前、用途、リポジトリ、大きさ、説明) は `-list` で表にして出す。落としてあるかも出す
+- 名前は大文字小文字を区別せず、一覧のリポジトリ名でもよい。一覧にないリポジトリは `-use OWNER/NAME` で、`config.json` だけ先に落として構造で用途を決める (`llm.Cached` ならチャット、`plamo-bi` なら埋め込み、それ以外は拒否)。モデルは `-dir/名前` (既定 `~/Library/Caches/hwnpu/models/名前`) に置く。これで `-model`、`-repo` と、いったん足した `-embed-model`、`-embed-repo` は要らなくなった。置き場は以前と同じ名前なので、落としたものはそのまま使える
+- ターミナルは 1 つのモデルだけを動かし、用途で動きが決まる: チャットは従来の対話、埋め込みは入力を文書として溜め、`?` で始まる行をクエリとして文書をコサイン類似度の順に並べる。サーバーはいくつでも動かせ、チャットのモデルは `/v1/chat/completions`、埋め込みモデルは `/v1/embeddings` で出し、`GET /v1/models` は全部を `kind` 付きで並べる。要求は `model` の名前で振り分ける (`route`)。その用途のモデルが 1 つなら名前は問わない (従来どおり `"model":"lfm3"` でも答える)。複数で知らない名前は 404。用途の違うモデルの名前はエラーにする (OpenCode などがモデル一覧から埋め込みモデルを選んでしまったときに気づけるように)
+- モデルは用途のほかに機能 (`Features`) を持つ: LFM3-1.7B は `tools` (ツールコール) と `thinking`、PLaMo-Embedding は `query` (クエリと文書を別々に埋め込む)。名前は Ollama の capabilities に合わせた。同じチャットでも、テキストだけでツールコールのできる LFM3 と、マルチモーダルのモデル (別に進めている Gemma 4 E2B なら `vision` など) を選び分けられるように、`-list` に機能の列とその説明を出し、`/v1/models` にも `capabilities` として返す。機能を足すときは `chat.Features` に説明を 1 行足す (`TestLookup` が説明のない機能を拒む)。一覧にないリポジトリの機能は分からないので出さない
+- `-package`、`-config`、`-weights`、`-tokenizer` はチャットのモデルが 1 つ、`-embed-package` は埋め込みモデルが 1 つのときだけ使える。`-context` はチャットのモデル全部に、`-embed-seq` は埋め込みモデル全部に効く
+- 埋め込みモデルの用意はチャットと同じ (`PrepareEmbedder`): `config.json`、`tokenizer.model`、`model.safetensors` を落とし、`-embed-seq` (既定 `128,1024`) の長さごとに `embed-sN.mlpackage` に変換する (lut4、kmeans-minmax。LFM3 と同じ設定で、PLaMo での比較はしていない)。lut4 で 1 部分に収まる (16.18)。フラグは `-embed-seq` と `-embed-package`
+- 実行 (`chat.Embedder`): BOS (`<|startoftext|>`) を付けて符号化し、収まる最も短いプログラムに右詰めの詰め物とマスクで流し、最終隠れ状態を本文のトークンだけで平均して長さ 1 に揃える。クエリは `QueryPrefix + text` を 1 つの文として符号化し、BOS と `Encode(QueryPrefix)` の個数分を平均から外す。前置きの末尾の空白は単独の `▁` になり、本文の先頭の `▁` は前置き側に入る (小さなトークナイザーで確認。実物の金データ `…ください: 東京の天気は晴れです。` でも、前置きの直後に文頭と同じ id 35913 が来るので、同じと見ている)。双方向なので詰め物の位置は結果に効かない (16.18)。プログラムを長さで選ぶので、短い文は短いプログラムで安く済む
+- 長すぎる文は API では既定でエラー (`context_length_exceeded`)、`truncate: true` で切り詰め (text-embeddings-inference と同じ名前)。ターミナルでは切り詰めて表示する。クエリか文書かは OpenAI の API にないので、Cohere や Voyage と同じ `input_type` (`query`/`search_query`、`document`/`search_document`/`passage`) で受け、既定は文書。`encoding_format: base64` (OpenAI の Python クライアントの既定) は float32 のリトルエンディアン
+- テスト: 小さな PLaMo (hidden 32、2 層、8 と 128 トークンのプログラム) を CPU のインタープリタで動かし、詰め物をした埋め込みが、ちょうどの長さのプログラムで本文だけを平均したものと一致すること (`TestEmbedderPadding`)、BOS と前置きの扱い、空文字列、長すぎる文の切り詰めとエラー (`TestEmbed`)、API (`TestEmbeddingsAPI`)、名前での振り分け (`TestRoute`)、一覧の引き方と一覧にないリポジトリの用途の判定 (`TestLookup`、`TestResolve`) を確かめる。改変 (マスクを外す、平均に BOS を含める、BOS を付けない) はすべて検出した。`HWNPU_PLAMO_DIR` があれば、実物のトークナイザーで、クエリの平均が本文のちょうど先頭から始まることも確かめる (`TestPlamoQueryTokens`)
+- 未確認: この環境は Hugging Face にも Neural Engine にも届かないので、実物での確認はしていない。とくに HF の `encode_query`/`encode_document` が前置きの長さをどう数えるか、平均を正規化するか (コサイン類似度には効かない)、`add_eos_token` の有無は、16.18 の記録からの推測。`tools/ref/embed_golden.py` が HF の `encode_query`/`encode_document` の結果とトークン列を書き、Mac で `TestPlamoEmbeddingGolden` がトークン列の一致、コサイン類似度 0.98 以上、各クエリの最も近い文書の一致を確かめる。fp16 のあふれ (16.18) もここで NaN/Inf として見える
+
+```bash
+python tools/ref/embed_golden.py MODEL_DIR MODEL_DIR/embed_golden.json
+HWNPU_PLAMO_DIR=MODEL_DIR go test -run 'PlamoQueryTokens|PlamoEmbeddingGolden' -v ./internal/chat/
+```
+
+- 次: 実物での照合と速さの計測 (128 と 1024 の 1 文あたりの時間、読み込みの時間)。複数の文をまとめて流すバッチ (今は 1 文ずつ)
+
+### 16.24 hwnpu-chat -opencode — 2026-10-30
+
+- サーバーと OpenCode をまとめて起動する。モデルを読み込んだあと、127.0.0.1 の 30000〜49151 番 (IANA と macOS の一時ポート 49152 番以降を避ける) から乱数で選んだ位置から空きを探して `net.Listen` し、その listener のまま `http.Server.Serve` に渡す (探してから開くまでの間に取られない)。OpenCode の設定 (プロバイダー `hwnpu`、`@ai-sdk/openai-compatible`、モデルの文脈と出力の上限) をキャッシュディレクトリの `opencode/opencode.json` に書き、`OPENCODE_CONFIG` で渡す。カスタム設定はグローバルより強く、プロジェクトの `opencode.json` より弱い。モデルは `-m hwnpu/NAME` で選ぶ (画面を出すときは先頭に、`run` のときはその後ろに置く。ほかのサブコマンドは `-m` を受け付けず失敗するので付けず、設定の `model` に任せる)。`-use` に複数のモデルを書くと、チャットのモデルを全部設定に並べ、最初のものを使う (埋め込みのモデルもサーバーには出る)
+- OpenCode は `os/exec` で起動し、標準入力、出力、エラーにこのプロセスのファイルをそのまま渡す (パイプを挟まないので、端末の raw モード、代替画面、マウス、端末への問い合わせがそのまま通る)。サーバーのログはファイルに回す。SIGINT はこのプロセスでは捕まえて捨てる (無視にすると子に継がれる。捕まえた信号は exec で既定に戻る)。OpenCode が終わったらサーバーを閉じ、その終了コードで終わる
+- 検証 (M3、OpenCode 1.19.5): `hwnpu-chat -opencode run "…" < /dev/null` で、ポート 42846 に開き、7 往復で `a - b` を `a + b` に直して終了コード 0、サーバーも止まった。疑似端末で TUI を起動し (`-- --prompt`)、代替画面とマウスが有効になり、5 往復の要求が届き、Ctrl-C 1 回で OpenCode とともに終了コード 0 で終わった。`opencode run` は標準入力が閉じるまで待つ (端末なら問題ない)
+
+### 16.25 4 つ目のアーキテクチャ: Gemma 4 (gemma-4-E2B-it のテキスト部分) — 2026-10-30
 
 - 対象は `google/gemma-4-E2B-it` (指示調整版) だけ。ベースの `gemma-4-E2B` と config.json は `eos_token_id` しか違わない (同じ構造で、-it は `chat_template.jinja` を持つ)。チェックポイントは `Gemma4ForConditionalGeneration` (テキスト 4.65B、音声塔 0.30B、画像塔 0.17B) で、テキストだけを移した。音声と画像のテンソル 1411 個は `unused`
 - `internal/llm/gemma4` (アーキテクチャ名 `gemma4`): `modeling_gemma4.py` の `Gemma4TextModel` を移した。35 層、hidden 1536、8 ヘッドに KV 1 ヘッド。層の型は sliding (窓 512、head_dim 256) 4 層に full (head_dim 512) 1 層の繰り返し。各層はサンドイッチ norm の注意と GeGLU (`gelu_pytorch_tanh`) の MLP、そのあと層ごとの埋め込みの枝、最後に残差ごと `layer_scalar` を掛ける。注意のスコアは縮めない (`scaling = 1.0`。QK-norm が代わり)。値にも重みなしの RMSNorm。RMSNorm は `w * x` (Gemma 3 までの `(1 + w) * x` ではない)。埋め込みに `sqrt(hidden)` (float32 の参照に合わせて丸めない値)、ロジットに softcap 30 (tanh)。full 層の RoPE は proportional: head_dim 512 のうち先頭 64 周波数だけを回し、残りは周波数 0 (LFM3 の部分回転と同じ並び)
@@ -1166,12 +1225,12 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 - **QAT 版**: `google/gemma-4-E2B-it-qat-q4_0-unquantized` (同じ形式の bf16) の重みは 32 個ごとに 16 値以下で、Q4_0 の格子にちょうど乗る。ただし ANE の lut4 は 16 行 x 行全体で 1 つの表なので、32 列ごとの scale は表せず、層 11 の重みの誤差は 0.16〜0.20 にしか下がらない。Q4_0 をそのまま使うには、列のブロックごとの部分積をバッチの行列積で求めて scale を掛けて足す形 (整数 -8..7 の 1 つの表で正確) が要る。未着手
 - **Neural Engine** (M3、`-seq 1`、lut4 kmeans-minmax、`-target m3` で 2 部分 0.54 + 0.52 GiB (層 0〜23 と 24〜34)、変換 80 秒、300 トークンの貪欲法): キャッシュ 1024 で 1 トークン 23.6〜25.8 ms (約 42 tokens/s)、16320 で 47 ms (21 tokens/s)。LFM3-1.7B (19 ms、63〜66 ms) より短い文脈では遅く、長い文脈では速い (キャッシュを持つ層が 15、全注意は 3 層だけ)。`SDPAGrouped` の前 (`tile`) は 1024 で 31〜35 ms、16320 で 90〜150 ms だった。スワップが 10 GB を超えた状態では 1024 でも 72〜80 ms になり、測り直すと戻った (同じ条件で交互に測った)。ソフトキャップ (mul、tanh、mul) は 262144 の軸のままだと CPU に置かれたので、(16, 16384) に畳んでから掛ける。最後に (1, seq, 262144) に戻す reshape だけは CPU に置かれる。畳んだまま出力すると全部 ANE に載るが、1 トークン 137 ms と 4 倍遅くなったので戻した。出力層の linear (出力 262144) 自体は ANE に載る
 - 生成の例 (貪欲法): 英語の説明やコードは自然。「日本の首都は」に「東京」。「富士山の高さは」には 2,400 m 前後と誤った (lut4 の損失。LFM3 も 4,076 m と答えた)
-- **hwnpu-chat** (`-repo google/gemma-4-E2B-it`、文脈 16320、1 トークンと 64 トークンのプログラム): OpenAI 互換 API で、思考なしの日本語の回答、思考あり (`reasoning_content` に分かれる)、道具の呼び出し (`get_weather{"city":"Osaka"}`、`finish_reason: tool_calls`) が通った。読み込みは 1 つ目 133 秒、2 つ目 113 秒 (初回のコンパイル)
-- 未確認: 64 トークンのプログラムの読み込み速度の計測、OpenCode からの利用、分割の境目を層 13 より前にして共有 K/V を部分の間で渡さない形の速さ。lut4 の粗さは 16.22 で 6 ビットの表にして解いた
+- **hwnpu-chat** (`-use gemma-4-E2B-it`、文脈 16320、1 トークンと 64 トークンのプログラム): OpenAI 互換 API で、思考なしの日本語の回答、思考あり (`reasoning_content` に分かれる)、道具の呼び出し (`get_weather{"city":"Osaka"}`、`finish_reason: tool_calls`) が通った。読み込みは 1 つ目 133 秒、2 つ目 113 秒 (初回のコンパイル)
+- 未確認: 64 トークンのプログラムの読み込み速度の計測、OpenCode からの利用、分割の境目を層 13 より前にして共有 K/V を部分の間で渡さない形の速さ。lut4 の粗さは 16.26 で 6 ビットの表にして解いた
 
-### 16.22 Gemma 4 の重み: 6 ビットの表 (lut6) を既定に — 2026-10-30
+### 16.26 Gemma 4 の重み: 6 ビットの表 (lut6) を既定に — 2026-10-30
 
-- 問題: lut4 の Gemma 4 E2B は KL 2.54 nats (argmax 13/31)。M3 の Neural Engine で「富士山の高さ」に 3778 と答え、『こころ』の作者や日本一長い川に答えなかった (16.21)
+- 問題: lut4 の Gemma 4 E2B は KL 2.54 nats (argmax 13/31)。M3 の Neural Engine で「富士山の高さ」に 3778 と答え、『こころ』の作者や日本一長い川に答えなかった (16.25)
 - **ANE に載る形の候補を測った** (`npuprobe` と同じ作りの一時的なプログラム、E2B の大きさの線形層 6 層、2.08 億パラメータ、トークン 1 つ、M3):
 
 | 形 | 大きさ | 1 回 | 配置 |
@@ -1198,4 +1257,4 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 - 同じ質問への答え (M3、貪欲法): 富士山の高さ lut4 3778 / lut6 3776 / lut8 3776。17×23 はどれも 391。『こころ』の作者は lut4 が答えず、lut6 と lut8 は夏目漱石。日本一長い川は lut4 が「明確な定義はない」、lut6 と lut8 は信濃川
 - **既定を lut6 にした**: `llm.Arch.Format` (変換の既定の形式) を足し、Gemma 4 は `lut6`。`hwnpu-convert` は `-format` を省くとこれを使い、`hwnpu-chat` の変換も同じ。LFM3 は今のまま lut4
 - `-format-for SUBSTRING=FORMAT` (`Options.FormatFor`) を足した: 名前に SUBSTRING を含むテンソルだけ別の形式にする (最後に合うものが勝ち、`-keep-fp16` がすべてに勝つ)。lut6 のまま一部を lut8 にする混ぜ方は、MLP だけで 1.99 GiB と 2 部分に収まらず、注意だけでは層の誤差の大半 (MLP) が残るので、今回は既定にしていない
-- **hwnpu-chat** (`-repo google/gemma-4-E2B-it`、lut6、文脈 16320、2 部分 0.81 + 0.79 GiB): 1 トークン 55 ms (lut4 は 47 ms)。思考なしで「富士山の高さは3,776メートル」「信濃川」と答え、思考ありの 465 トークンも `stop` で終わり、道具の呼び出しも通った。読み込みは 96 秒と 104 秒 (初回)
+- **hwnpu-chat** (`-use gemma-4-E2B-it`、lut6、文脈 16320、2 部分 0.81 + 0.79 GiB): 1 トークン 55 ms (lut4 は 47 ms)。思考なしで「富士山の高さは3,776メートル」「信濃川」と答え、思考ありの 465 トークンも `stop` で終わり、道具の呼び出しも通った。読み込みは 96 秒と 104 秒 (初回)

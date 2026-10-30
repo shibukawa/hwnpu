@@ -17,7 +17,7 @@ var Arch = &llm.Arch{
 	Architectures: []string{"Gemma4ForConditionalGeneration", "Gemma4ForCausalLM"},
 	// 4 bit tables cost E2B too much (KL 2.54 nats against the reference, against 0.25 with
 	// 6 bits and 0.05 with 8); 6 bits keeps 2 parts on the M3 and runs at 31 ms a token, against
-	// 24 with 4 bits and 41 with 8 (docs/design.md 16.22).
+	// 24 with 4 bits and 41 with 8 (docs/design.md 16.26).
 	Format:     "lut6",
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }
