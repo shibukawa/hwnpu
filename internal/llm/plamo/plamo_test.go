@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/ovcpu"
 	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
 // tiny is a small PlamoBiModel with multi query attention; matrix rows are multiples of the lut4
@@ -482,5 +483,110 @@ func TestIntelIR(t *testing.T) {
 		if e := relErr(got, reference(t, cfg, linear{w, bits}, ids, maskF)); e > 1e-3 {
 			t.Errorf("%s: relative error %g against the reference with quantized matrices", format, e)
 		}
+	}
+}
+
+// The real PLaMo-Embedding-1B (HWNPU_PLAMO_DIR: config.json, tokenizer.model and
+// model.safetensors) lowered to OpenVINO IR gives the sentence embeddings (the mean of the rows
+// after the BOS, as internal/chat pools them) that the fp16 MIL program gives with milcpu: the
+// same in fp16, and with the quantization's error in int8 and int4. Needs HWNPU_OV_PYTHON. The
+// lut4 and lut8 programs, which the Neural Engine runs, are measured the same way with milcpu.
+func TestIntelIRCheckpoint(t *testing.T) {
+	dir, py := os.Getenv("HWNPU_PLAMO_DIR"), ovcpu.Python()
+	if dir == "" || py == "" {
+		t.Skip("HWNPU_PLAMO_DIR or HWNPU_OV_PYTHON is not set")
+	}
+	a, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := m.(*Config)
+	w, err := llm.OpenWeights(filepath.Join(dir, "model.safetensors"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	tok, err := tokenizer.LoadSentencePiece(filepath.Join(dir, "tokenizer.model"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bos, ok := tok.ID("<|startoftext|>")
+	if !ok {
+		t.Fatal("no <|startoftext|> in the tokenizer")
+	}
+	const seq = 48
+	d := cfg.HiddenSize
+	type sentence struct {
+		n       int
+		x, mask []float32
+		want    []float64
+	}
+	var sentences []sentence
+	for _, text := range []string{
+		"PLaMo-Embedding-1Bは、Preferred Networks, Inc. によって開発された日本語テキスト埋め込みモデルです。",
+		"東京は日本の首都です。",
+		"How fast is the Neural Engine?",
+	} {
+		ids := append([]int32{bos}, tok.Encode(text)...)
+		if len(ids) > seq {
+			t.Fatalf("%q: %d tokens", text, len(ids))
+		}
+		s := sentence{n: len(ids), mask: make([]float32, seq)}
+		for i := range ids {
+			s.mask[i] = 1
+		}
+		for len(ids) < seq {
+			ids = append(ids, 3) // pad_token_id
+		}
+		s.x = embed(t, cfg, w, ids)
+		sentences = append(sentences, s)
+	}
+	pool := func(h []float32, n int) []float64 {
+		p := make([]float64, d)
+		for r := 1; r < n; r++ {
+			for j := range p {
+				p[j] += float64(h[r*d+j])
+			}
+		}
+		return p
+	}
+	cos := func(a, b []float64) float64 {
+		var ab, aa, bb float64
+		for i := range a {
+			ab, aa, bb = ab+a[i]*b[i], aa+a[i]*a[i], bb+b[i]*b[i]
+		}
+		return ab / math.Sqrt(aa*bb)
+	}
+	for i, s := range sentences {
+		sentences[i].want = pool(run(t, cfg, w, llm.Options{Seq: seq, Format: "fp16"}, s.x, s.mask), s.n)
+	}
+	for _, f := range []struct{ format, quant string }{{"lut4", "uniform"}, {"lut4", "kmeans-minmax"}, {"lut8", "kmeans-minmax"}} {
+		worst := 1.0
+		for _, s := range sentences {
+			worst = min(worst, cos(pool(run(t, cfg, w, llm.Options{Seq: seq, Format: f.format, Quant: f.quant, Group: 16}, s.x, s.mask), s.n), s.want))
+		}
+		t.Logf("%s %s (milcpu): lowest cosine %.5f", f.format, f.quant, worst)
+	}
+	for _, c := range []struct {
+		format string
+		minCos float64
+	}{{"fp16", 0.99999}, {"int8", 0.999}, {"int4", 0.9}, {"int4-g128", 0.9}, {"int4-g32", 0.9}} {
+		path := filepath.Join(t.TempDir(), "m.xml")
+		if _, err := llm.WritePart(path, cfg, w, llm.Options{Seq: seq, Format: c.format, Backend: "intel"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		worst := 1.0
+		for _, s := range sentences {
+			res, err := ovcpu.Run(py, path, map[string][]float32{"x": s.x, "mask": s.mask}, ovcpu.Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			worst = min(worst, cos(pool(res["y"], s.n), s.want))
+		}
+		t.Logf("%s: lowest cosine %.5f against the fp16 MIL program", c.format, worst)
+		if worst < c.minCos {
+			t.Errorf("%s: cosine %.5f, expected %g or more", c.format, worst, c.minCos)
+		}
+		os.RemoveAll(filepath.Dir(path))
 	}
 }

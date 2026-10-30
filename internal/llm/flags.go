@@ -12,7 +12,7 @@ import (
 func BindFlags(fs *flag.FlagSet, o *Options, defaultFormat string) func() {
 	usage := "weight format: lut4 (4 bit palettized; lut6 and lut8 have 64 and 256 entry tables), int4 or int8 (symmetric, a scale per row; int4-g128 per 128 columns; the formats of Intel's NPU) or fp16"
 	if defaultFormat == "" {
-		usage += " (default: the architecture's, lut4 but for Gemma 4's lut6 and the lut8 of LFM3's multimodal and d1 checkpoints; for Intel's NPU int4 in place of lut4 and int8 of lut6 and lut8)"
+		usage += " (default: the architecture's, lut4 but for Gemma 4's lut6 and the lut8 of LFM3's multimodal and d1 checkpoints; for Intel's NPU int4 in place of lut4 and int8 of lut6 and lut8, but int8 for BERT and PLaMo-Embedding)"
 	}
 	format := fs.String("format", defaultFormat, usage)
 	group := fs.Int("group", 16, "rows per lookup table for lut4")

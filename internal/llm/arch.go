@@ -24,6 +24,9 @@ type Arch struct {
 	Params []Param
 	// Format is the weight format the converters use when not told (lut4 when empty).
 	Format string
+	// IntelFormat is the weight format for Intel's NPU when not told (when empty, IntelFormat of
+	// the Neural Engine's format: int4 for lut4, int8 for lut6 and lut8).
+	IntelFormat string
 	// LoadConfig parses config.json and rejects settings the conversion does not handle.
 	LoadConfig func(raw []byte) (Model, error)
 	// GGUFName maps a Hugging Face tensor name to llama.cpp's ("" when there is none).
@@ -52,6 +55,17 @@ func (a *Arch) DefaultFormat(m Model) string {
 		return "lut4"
 	}
 	return a.Format
+}
+
+// DefaultFormatFor is DefaultFormat for a backend (Options.Backend).
+func (a *Arch) DefaultFormatFor(m Model, backend string) string {
+	if backend != "intel" {
+		return a.DefaultFormat(m)
+	}
+	if a.IntelFormat != "" {
+		return a.IntelFormat
+	}
+	return IntelFormat(a.DefaultFormat(m))
 }
 
 // Param returns the value of the architecture's setting name in o, or its default.

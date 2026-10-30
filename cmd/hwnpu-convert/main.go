@@ -124,10 +124,7 @@ func run(config, arch, weights, out, targetName string, nParts int, caches []int
 	}
 	defer w.Close()
 	if opts.Format == "" {
-		opts.Format = a.DefaultFormat(model)
-		if opts.Backend == "intel" {
-			opts.Format = llm.IntelFormat(opts.Format)
-		}
+		opts.Format = a.DefaultFormatFor(model, opts.Backend)
 	}
 	_, err = llm.ConvertTiers(a, model, w, out, targetName, nParts, caches, opts, os.Stdout)
 	return err
