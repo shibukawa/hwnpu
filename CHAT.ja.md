@@ -152,7 +152,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 ### 画像を読む（LFM3-VL-2B）
 
-LFM3-VL のチェックポイントは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`-vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます。実物での確認はまだです（docs/design.md の 16.25）。
+LFM3-VL のチェックポイントは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`-vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます。実物での確認はまだです（docs/design.md の 16.26）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
@@ -164,7 +164,7 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpacka
 
 ### 音声を読む（LFM3-Audio-2B）
 
-LFM3-Audio のチェックポイントは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`-audio` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います。実物での確認はまだです（docs/design.md の 16.26）。
+LFM3-Audio のチェックポイントは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`-audio` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います。実物での確認はまだです（docs/design.md の 16.27）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
@@ -172,7 +172,7 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 
 ### 音声で話す（LFM3-Audio-2B の TTS）
 
-`hwnpu-tts` が文章を読み上げて WAV（24 kHz）に書きます。テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.27）。
+`hwnpu-tts` が文章を読み上げて WAV（24 kHz）に書きます。テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.28）。
 
 ```bash
 go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
@@ -192,7 +192,20 @@ go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.ml
 
 ## 6. OpenCode から使う
 
-プロジェクトのディレクトリに `opencode.json` を置きます。モデル名は `GET /v1/models` が返す名前にします。
+プロジェクトのディレクトリで次のように起動すると、サーバーと OpenCode をまとめて動かします。
+
+```bash
+go run ./cmd/hwnpu-chat -opencode
+```
+
+- モデルを読み込んだあと、30000〜49151 番の空いたポート (macOS が外向きの接続に使う 49152 番以降は避けます) でサーバーを開き、そのサーバーを使う OpenCode の設定を `~/Library/Caches/hwnpu/opencode/opencode.json` に書いて、環境変数 `OPENCODE_CONFIG` で OpenCode に渡します。プロジェクトのファイルには何も書きません
+- OpenCode はこの端末の標準入力、出力、エラーをそのまま受け継ぐので、画面の描画、マウス、キー操作は単独で起動したときと同じです。サーバーのログは `~/Library/Caches/hwnpu/opencode/server.log` に書き、画面を乱しません
+- OpenCode を終えるとサーバーも止まり、OpenCode の終了コードで終わります
+- フラグのあとの引数は OpenCode に渡します。`-` で始まる OpenCode のオプションは `--` のあとに書きます (例: `hwnpu-chat -opencode -- --continue`、`hwnpu-chat -opencode run "main.go のバグを直して"`)。`-listen` を付けるとそのアドレスで開き、`-opencode-bin` で OpenCode のコマンドを変えられます
+- `opencode run` は標準入力が閉じるまで待つので、スクリプトから使うときは `< /dev/null` を付けます
+- OpenCode はプロジェクトの `opencode.json` を `OPENCODE_CONFIG` より優先します。プロジェクトに別の `hwnpu` プロバイダーを書いてあると、そちらのアドレスが使われます
+
+手で設定するときは、プロジェクトのディレクトリに `opencode.json` を置きます。モデル名は `GET /v1/models` が返す名前にします。
 
 ```json
 {
