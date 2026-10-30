@@ -97,6 +97,26 @@ LFM3-Audio のチェックポイントは、テキスト部を上と同じに変
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
 ```
 
+### 音声で話す（LFM3-Audio-2B の TTS）
+
+`hwnpu-tts` が文章を読み上げて WAV（24 kHz）に書きます。テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.24）。
+
+```bash
+go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
+```
+
+```bash
+go run ./cmd/hwnpu-convert -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.mlpackage
+```
+
+```bash
+go run ./cmd/hwnpu-convert -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.mlpackage
+```
+
+```bash
+go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.mlpackage -codec DIR/codec.mlpackage -lang ja -o out.wav こんにちは
+```
+
 ## 5. OpenCode から使う
 
 プロジェクトのディレクトリに `opencode.json` を置きます。モデル名は `GET /v1/models` が返す名前にします。

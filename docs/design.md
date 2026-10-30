@@ -1210,3 +1210,24 @@ go run ./cmd/hwnpu-systemone -model d1-2B -package d1-1024.mlpackage -vision vis
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config d1-Omni-2B/config.json -weights d1-Omni-2B/model.safetensors -o audio-30s.mlpackage
 go run ./cmd/hwnpu-systemone -model d1-Omni-2B -package d1-1024.mlpackage -vision vision-512x512.mlpackage -audio audio-30s.mlpackage request.json
 ```
+
+### 16.24 LFM3-Audio の音声出力 (TTS) — 2026-10-30
+
+16.21 の段階 (4)。構造と生成の手順は llama.cpp の `tools/mtmd/models/lfm3a-gen.cpp` (depthformer とコーデックのデコーダ)、`tools/mtmd/mtmd-helper-gen.cpp` (`lfm3a_gen_audio_pipeline`)、`tools/mtmd/mtmd.cpp` と `mtmd-audio.cpp` (極座標から ISTFT)、`conversion/lfm3.py` (テンソル名、TTS のテンプレート、サンプリングの既定値) から読んだ。
+
+- **流れ**: テキスト部が TTS のプロンプト (`<|startoftext|><|im_start|>system\nPerform TTS in {言語} using a {female|male} voice.<|im_end|>\n<|im_start|>user\n{文}<|im_end|>\n<|im_start|>assistant\n<|audio_start|>`、LFM3-Omni は `<|audio_start|>` の前に `<think></think>`) を読み、最終 norm の後の隠れ状態 h を出す。1 フレーム (80 ms) ごとに、depthformer がコードブックを乱数の順に MaskGIT で決め (LFM3-Audio は 12 個を 4 個ずつ 3 回)、各コードを温度、top-k (k 番目と同点は残す)、繰り返しの罰則 (直近の窓でそのコードブックが使ったコード) で選ぶ。いずれかが終端コード (語彙の最後) なら終わり。そうでなければフレームのコードのフィードバック埋め込み (`codebook_embedding` の `コード + コードブック × 語彙` 行の和) をテキスト部の次の入力にして、次の h を得る。最後に、コーデックのデコーダがコードを STFT のフレーム (1 フレームあたり 6) にし、ホストの ISTFT が 24 kHz の標本にする
+- **テキスト部**: `lfm3` に `-hidden-out 1` を足した。KV キャッシュ付きのプログラムがロジット y に加えて h (最終 norm の後) を出力し、`decode.Session.Hidden` がそれを読む。`TestBuildTiny` のダイジェストは変わらない
+- **`internal/llm/lfm3gen`**: `lfm3-depthformer` は MaskGIT の 1 回分のプログラム。入力は x (コードブックごとに、確定したコードの埋め込みかマスクの埋め込み。ホストが表を引く) と h、出力は全コードブックのロジット。中身は h の射影 (`depth_linear`) と x の和、双方向の LFM3 の注意層 (QK norm、全ヘッドの RoPE θ=1e6、ヘッドごとのゲート、サンドイッチなし)、最終 RMSNorm、コードブックごとの RMSNorm、コードブックごとのコード表 (出力層と共有) との積 (バッチの matmul)。`lfm3-codec` はコーデックのデコーダ (`audio_tokenizer/`、`model_type` liquid_codec で自動判別)。入力は各フレームの FSQ のコードの値 (水準の表はホスト)、2 つの射影、各フレームを 6 位置に複製、8 層の因果的な LFM3 の層 (サンドイッチ norm、窓 30 の注意、短い畳み込み)、出力 norm、対数振幅と位相への射影。層の種類と幅は config にないので、重みの形から読む (llama.cpp と同じ)
+- **固定の長さとチャンク**: コーデックのデコーダは `-codec-frames` (既定 64 フレーム = 5.1 秒) ごとに呼ぶ。llama.cpp は状態 (K/V の窓、畳み込みの窓、位置) を持ち越して 1 フレームずつ流すが、ここでは全フレームを生成した後に、デコーダの遡り (注意の層ごとに窓-1、畳み込みの層ごとに核-1 の位置) を覆うだけ重ねたチャンクで動かし、各チャンクの先頭 (ゼロの状態から計算した分) を捨てる。因果的で RoPE は相対位置にしか依らないので、流した場合と同じ結果になる (`TestDecodeCodecChunks` で、5 フレームずつのチャンクと 16 フレーム 1 回が 1e-4 以内で一致)
+- **ISTFT** (`speech.ISTFT`): llama.cpp の `mtmd_audio_streaming_istft` と同じ。振幅 exp(対数振幅) と位相から複素数にし、負の周波数を共役で埋めて逆 DFT (1/N)、周期的 Hann 窓をかけて hop ごとに重ねて足し、窓の二乗の和で割る。先頭の (n_fft-hop)/2 と、最後の flush の後ろの同じ数を捨てる。同じ窓と詰め物で取った STFT から元の信号に 1e-4 以内で戻ることを確かめた
+- **サンプリングの既定**: LFM3-Audio は温度 1.0、top-k 128、罰則 1.1、窓 4096 フレーム。LFM3-Omni は 0.4、top-k なし、1.2、64。`generation_config.json` の `audio_*` が上書きする。乱数は Go の PCG で、llama.cpp (mt19937) と同じ種でも同じ音にはならない
+- **`internal/llm/runner.OpenSession`**: KV キャッシュ付きのプログラムを NPU (`chain`) か CPU (`milcpu`) で開き、`decode.Session` にする (CPU でもキャッシュのバッファを共有する)
+- **`cmd/hwnpu-tts`**: 文を読み上げて 16 ビットの WAV に書く。`-lang` は model card の言語コード (en、ja など) か言語名、`-voice` は female か male
+- **`hwnpu-convert` の設定名**: 設定のフラグは全アーキテクチャで共有されるので、コーデックのフレーム数は音声エンコーダの `-frames` と別の `-codec-frames` にした。同じ名前の設定の既定値が食い違わないことをテストする (`internal/llm/archs` の `TestParamNames`)
+- **検証**: `lfm3gen_test.go` に llama.cpp のグラフから書いた fp64 の LFM3 の層 (ゲート付き注意、窓付きの因果注意か双方向、サンドイッチ norm、短い畳み込み) と、depthformer (LFM3-Audio と LFM3-Omni の両方の並び) とコーデックのデコーダの正解を置いた。相対誤差は 2〜8e-7。改変 (ゲートを外す: 0.52、窓を外す: 0.48、post_ffn_norm を外す: 1.4、コードブックの norm を外す: 0.029、コード表の転置: 1.1、複製の向き: 1.4) をすべて検出した。`speech_test.go` は、小さなテキスト部と depthformer を CPU で動かすフレームの生成 (最初のフレームのコードが手で計算した貪欲法の結果と一致する、確定したコードだけが埋め込みで入る、次のフレームはフィードバック後の h を読む、終端コードで止まる) をスパイで確かめ、確定したコードを戻さない、h を更新しないなどの改変を検出した
+- **扱わないもの**: チャットの返答を音声にすること (llama.cpp はテキストと音声を 6 トークンと 12 フレームで交互に出す `<|mixed_start|>` の形と、`<|audio_start|>` で音声に切り替える形を持つ)、流し出し (フレームごとにすぐ音を出す)、LFM3-Audio の生の ASR
+- 未確認: 実物の config (`depthformer` の項目、`codebooks`、`audio_vocab_size`、コーデックの `config.json`)、テンソル名 (llama.cpp の変換が読む名前に合わせた)、Neural Engine での配置と精度と速さ (1 フレームに depthformer 3 回とテキスト部 1 回。実時間に要るのは 12.5 フレーム/秒)、聞いて分かる音になるか。参照との照合は、llama.cpp のサーバー (LFM3-Audio の mmproj を読み込んだもの) の TTS と、同じコードからデコードした音の比較が確実
+
+```bash
+go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.mlpackage -codec codec.mlpackage -lang ja -o out.wav こんにちは
+```

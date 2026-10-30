@@ -21,6 +21,10 @@ type Options struct {
 	// adds, which the Neural Engine computes at full fp16 accuracy, or "conv" as one depthwise
 	// conv operation, which it computes with 5 to 12 percent error per layer.
 	ConvMode string
+	// HiddenOut makes a program with a KV cache output h, the final hidden state (1, seq,
+	// hidden), besides the logits y: LFM3-Audio's speech output samples from it
+	// (internal/llm/decode reads it as Session.Hidden).
+	HiddenOut bool
 }
 
 type builder struct {
@@ -124,6 +128,9 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options)
 				y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 			} else {
 				y = m.Linear(h, cfg.Head(), "y", cfg.VocabSize)
+				if opts.HiddenOut && opts.Cache > 0 {
+					m.output(h, "h")
+				}
 			}
 		}
 		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}

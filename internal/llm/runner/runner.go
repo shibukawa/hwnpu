@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -176,4 +177,122 @@ func (p *cpuProgram) Close() error {
 		c.Close()
 	}
 	return nil
+}
+
+// OpenSession loads a causal model converted with a KV cache (hwnpu-convert -cache), one or more
+// packages of the same cache length and different tokens per call, on dev (nil: the CPU
+// interpreter), and starts a decode session over them; the packages share one cache. Close the
+// returned closer after the session.
+func OpenSession(ctx context.Context, dev *hwnpu.Device, paths []string, m llm.Cached) (*decode.Session, io.Closer, error) {
+	var closers multiCloser
+	var sess *decode.Session
+	var first *chain.Chain
+	var shared map[string][]byte
+	for i, path := range paths {
+		var p decode.Program
+		if dev != nil {
+			var c *chain.Chain
+			var err error
+			if i == 0 {
+				c, err = chain.Open(ctx, dev, path)
+				first = c
+			} else {
+				c, err = first.Share(ctx, dev, path)
+			}
+			if err != nil {
+				closers.Close()
+				return nil, nil, err
+			}
+			closers = append(closers, c)
+			p = c.Program(ctx)
+		} else {
+			cp, c, err := cachedCPU(path, shared)
+			if err != nil {
+				closers.Close()
+				return nil, nil, err
+			}
+			closers = append(closers, c)
+			p = cp
+			if i == 0 {
+				shared = map[string][]byte{}
+				for name, b := range p.In {
+					if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+						shared[name] = b
+					}
+				}
+			}
+		}
+		var err error
+		if i == 0 {
+			sess, err = decode.New(p, m)
+		} else {
+			err = sess.Add(p)
+		}
+		if err != nil {
+			closers.Close()
+			return nil, nil, fmt.Errorf("runner: %s: %w", path, err)
+		}
+	}
+	return sess, closers, nil
+}
+
+type multiCloser []io.Closer
+
+func (m multiCloser) Close() error {
+	for i := len(m) - 1; i >= 0; i-- {
+		m[i].Close()
+	}
+	return nil
+}
+
+// cachedCPU loads one package with a KV cache as a decode.Program on the CPU interpreter; inputs
+// named in shared use those buffers.
+func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer, error) {
+	man, err := llm.ReadManifest(path)
+	if err != nil {
+		return decode.Program{}, nil, err
+	}
+	parts := man.Tiered()[0].Parts
+	if len(parts) != 1 {
+		return decode.Program{}, nil, fmt.Errorf("runner: %s: the CPU interpreter runs a model with a KV cache in one part", path)
+	}
+	prog, f, err := milcpu.OpenPackage(parts[0].Path)
+	if err != nil {
+		return decode.Program{}, nil, err
+	}
+	m, err := mlpackage.ReadModel(parts[0].Path)
+	if err != nil {
+		f.Close()
+		return decode.Program{}, nil, err
+	}
+	p := decode.Program{In: map[string][]byte{}, Out: map[string][]byte{}, InShape: prog.Inputs(), OutShape: map[string][]int{}}
+	for name, sh := range p.InShape {
+		if b, ok := shared[name]; ok && len(b) == 2*count(sh) {
+			p.In[name] = b
+		} else {
+			p.In[name] = make([]byte, 2*count(sh))
+		}
+	}
+	for _, o := range m.GetDescription().GetOutput() {
+		var sh []int
+		for _, d := range o.GetType().GetMultiArrayType().GetShape() {
+			sh = append(sh, int(d))
+		}
+		p.OutShape[o.GetName()] = sh
+		p.Out[o.GetName()] = make([]byte, 2*count(sh))
+	}
+	p.Run = func() error {
+		in := map[string]milcpu.Tensor{}
+		for name, sh := range p.InShape {
+			v := make([]float32, count(sh))
+			hwnpu.DecodeF16(v, p.In[name])
+			in[name] = milcpu.Tensor{Shape: sh, Data: v}
+		}
+		res, err := prog.Run(in, milcpu.Options{})
+		for name, o := range res {
+			hwnpu.EncodeF16(p.Out[name], o.Data)
+		}
+		return err
+	}
+	return p, f, nil
 }
