@@ -49,17 +49,18 @@ func writeRef(t *testing.T, model llm.Model, w llm.Weights, ids []int32, prefix 
 		t.Fatal(err)
 	}
 	hidden := append([]float32(nil), h...)
+	feed := &feeder{model: model, w: w, ref: &check.Ref{IDs: ids}, x: map[string]bool{}}
 	for i := 0; i < nl; i++ {
 		o := opts
 		o.Start, o.Layers, o.NoHead = i, 1, true
-		if h, err = buildRun(model, w, o, h, t.TempDir(), false); err != nil {
+		if h, err = buildRun(model, w, o, feed, h, t.TempDir(), false); err != nil {
 			t.Fatal(err)
 		}
 		hidden = append(hidden, h...)
 	}
 	o := opts
 	o.Start = nl
-	logits, err := buildRun(model, w, o, h, t.TempDir(), false)
+	logits, err := buildRun(model, w, o, feed, h, t.TempDir(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

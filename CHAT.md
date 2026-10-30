@@ -13,6 +13,7 @@ go run ./cmd/hwnpu-chat -list
 | Name | Kind | Features | in the terminal | with `-listen` (section 3) |
 |---|---|---|---|---|
 | `LFM3-1.7B` (default) | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
+| `gemma-4-E2B-it` | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
 | `plamo-embedding-1b` | embedding | `query` | search texts by their embeddings (section 4) | `/v1/embeddings` |
 
 The features say what a model can do besides its kind (names as in Ollama's capabilities):
@@ -44,6 +45,19 @@ Then type after the `>`.
 - `/reset` clears the conversation, `/exit` or Ctrl-D quits, Ctrl-C stops an answer. A line ending in `\` continues on the next line
 - From the second turn on, only what is new since the last answer is read
 - After each answer it shows the tokens read and the speed of generation (about 15 tokens/s on an M3)
+
+### Gemma 4 E2B
+
+`-use gemma-4-E2B-it` runs Google's Gemma 4 E2B (instruction tuned) instead. It goes the same way: `model.safetensors` (10.2 GB, with the audio and vision parts, of which only the text model is converted) is downloaded to `~/Library/Caches/hwnpu/models/gemma-4-E2B-it`, and the programs of 1 and 64 tokens per call are converted with 6 bit tables (lut6) in 2 parts each (about 0.8 + 0.8 GiB).
+
+```bash
+go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
+```
+
+- The chat format is Gemma 4's `chat_template.jinja` in Go, with thinking (`<|think|>`, returned as `reasoning_content`) and tool calls
+- The per-layer embedding table (4.7 GB) stays on the host, which reads one row (17.5 KB) per token
+- Contexts up to 16320 (holding the cache in chunks past that is LFM3's only). About 31 ms per token on the M3 with a cache of 1024, 55 ms with the context of 16320 (LFM3-1.7B: 19 and 63 to 66 ms)
+- 4 bit tables (lut4) cost Gemma 4 much more than LFM3 (it got Mount Fuji's height and the author of Kokoro wrong), so it converts with 6 bit tables by default; `hwnpu-convert` does too when `-format` is left out. See sections 16.25 and 16.26 of docs/design.md
 
 ## 2. Options
 

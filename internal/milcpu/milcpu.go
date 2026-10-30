@@ -224,7 +224,7 @@ func (p *Program) decode(v *milspec.Value) (*value, error) {
 		if err != nil {
 			return nil, err
 		}
-		return decodeRaw(bt, raw, shape, n)
+		return decodeRaw(bt, dt, raw, shape, n)
 	}
 	tv := v.GetImmediateValue().GetTensor()
 	if tv == nil {
@@ -257,7 +257,7 @@ func (p *Program) decode(v *milspec.Value) (*value, error) {
 
 // decodeRaw decodes blob data. Integer weight data (the indices and quantized values of the
 // constexpr operations) is kept in i.
-func decodeRaw(bt mlpackage.BlobDType, raw []byte, shape []int, n int) (*value, error) {
+func decodeRaw(bt mlpackage.BlobDType, dt milspec.DataType, raw []byte, shape []int, n int) (*value, error) {
 	out := &value{shape: shape}
 	switch bt {
 	case mlpackage.BlobFloat16:
@@ -276,9 +276,28 @@ func decodeRaw(bt mlpackage.BlobDType, raw []byte, shape []int, n int) (*value, 
 			out.i[i] = int32(binary.LittleEndian.Uint32(raw[4*i:]))
 		}
 	case mlpackage.BlobUInt8:
+		if dt != milspec.DataType_BOOL {
+			// uint8 data: the indices of an 8 bit table
+			out.i = make([]int32, len(raw))
+			for i, c := range raw {
+				out.i[i] = int32(c)
+			}
+			break
+		}
 		out.b = make([]bool, len(raw))
 		for i, c := range raw {
 			out.b[i] = c != 0
+		}
+	case mlpackage.BlobUInt6:
+		// packed 6 bits at a time, low bits first
+		out.i = make([]int32, n)
+		for i := range out.i {
+			bit := 6 * i
+			v := uint32(raw[bit/8])
+			if bit/8+1 < len(raw) {
+				v |= uint32(raw[bit/8+1]) << 8
+			}
+			out.i[i] = int32(v>>(bit%8)) & 63
 		}
 	case mlpackage.BlobInt8:
 		out.i = make([]int32, len(raw))

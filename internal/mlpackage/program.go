@@ -18,6 +18,8 @@ const (
 	Int32   = milspec.DataType_INT32
 	Int8    = milspec.DataType_INT8
 	UInt4   = milspec.DataType_UINT4
+	UInt6   = milspec.DataType_UINT6
+	UInt8   = milspec.DataType_UINT8
 	Bool    = milspec.DataType_BOOL
 	String  = milspec.DataType_STRING
 )
@@ -161,7 +163,7 @@ func (b *Builder) op(typ, name string, inputs map[string]any, outDT milspec.Data
 // constValue builds a Value of the given type from little endian bytes, inline or as a blob.
 func (b *Builder) constValue(dt milspec.DataType, shape []int, raw []byte, blobType BlobDType) (*milspec.Value, error) {
 	v := &milspec.Value{Type: tensorType(dt, shape)}
-	if len(raw) > b.ImmediateLimit || dt == UInt4 || dt == milspec.DataType_INT4 {
+	if len(raw) > b.ImmediateLimit || dt == UInt4 || dt == UInt6 || dt == UInt8 || dt == milspec.DataType_INT4 {
 		if b.blobs == nil {
 			return nil, fmt.Errorf("mlpackage: a %d byte constant needs a weight file", len(raw))
 		}
@@ -283,6 +285,23 @@ func (b *Builder) Ints(v ...int32) *Var     { x, _ := b.I32("c", []int{len(v)}, 
 // element, row major, two per byte with the low nibble first; lut holds 16 fp16 halves per block,
 // blocks in row major order. shape is the dense shape, [rows, cols...].
 func (b *Builder) LUT4(name string, shape, block []int, indices []byte, lut []uint16) (*Var, error) {
+	return b.LUT(name, 4, shape, block, indices, lut)
+}
+
+// LUT is LUT4 for tables of 2^bits entries, bits 4, 6 or 8: indices are packed bits low first
+// (two per byte for 4, one per byte for 8, four in three bytes for 6).
+func (b *Builder) LUT(name string, bits int, shape, block []int, indices []byte, lut []uint16) (*Var, error) {
+	dt, blob := UInt4, BlobUInt4
+	switch bits {
+	case 4:
+	case 6:
+		dt, blob = UInt6, BlobUInt6
+	case 8:
+		dt, blob = UInt8, BlobUInt8
+	default:
+		return nil, fmt.Errorf("mlpackage: %s: %d bit tables are not supported", name, bits)
+	}
+	entries := 1 << bits
 	if len(shape) < 1 || len(block) != len(shape) {
 		return nil, fmt.Errorf("mlpackage: %s: block %v does not match shape %v", name, block, shape)
 	}
@@ -296,14 +315,14 @@ func (b *Builder) LUT4(name string, shape, block []int, indices []byte, lut []ui
 		lutShape[i] = d / block[i]
 		tables *= lutShape[i]
 	}
-	if len(indices) != (n+1)/2 || len(lut) != tables*16 {
+	if len(indices) != (n*bits+7)/8 || len(lut) != tables*entries {
 		return nil, fmt.Errorf("mlpackage: %s: %d index bytes and %d lut entries for shape %v block %v", name, len(indices), len(lut), shape, block)
 	}
-	idx, err := b.constValue(UInt4, shape, indices, BlobUInt4)
+	idx, err := b.constValue(dt, shape, indices, blob)
 	if err != nil {
 		return nil, err
 	}
-	lutShape[len(shape)] = 16
+	lutShape[len(shape)] = entries
 	lutShape[len(shape)+1] = 1
 	raw := make([]byte, 2*len(lut))
 	for i, h := range lut {

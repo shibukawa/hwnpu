@@ -41,6 +41,8 @@ var Features = []struct{ Name, About string }{
 var Catalog = []Model{
 	{Name: "LFM3-1.7B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "LiquidAI/LFM3-1.7B", Bytes: 3.5e9,
 		About: "Liquid AI's 1.7B model, text only: small and fast enough to run behind an agent such as OpenCode"},
+	{Name: "gemma-4-E2B-it", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "google/gemma-4-E2B-it", Bytes: 10.2e9,
+		About: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"},
 	{Name: "plamo-embedding-1b", Kind: KindEmbed, Features: []string{"query"}, Repo: "pfnet/plamo-embedding-1b", Bytes: 2.1e9,
 		About: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"},
 }

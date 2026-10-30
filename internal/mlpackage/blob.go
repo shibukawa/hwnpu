@@ -17,6 +17,7 @@ const (
 	BlobInt8    BlobDType = 4
 	BlobInt4    BlobDType = 8
 	BlobUInt4   BlobDType = 11
+	BlobUInt6   BlobDType = 13
 	BlobInt32   BlobDType = 14
 )
 

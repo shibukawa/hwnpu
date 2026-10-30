@@ -16,7 +16,9 @@
 // The exit status is 1 if a layer's relative RMS error exceeds -tol. The default format is fp16,
 // which checks the structure; -format lut4 measures the quantization loss on top. -package
 // instead checks an existing .mlpackage's output (for example hwnpu-convert's lut4 output). Inputs
-// other than x, such as an encoder's attention mask, are fed ones: the reference has no padding.
+// other than x are fed what the host looks up for the reference's tokens (llm.TokenInputs), the
+// reference's value when it has one (REF.NAME.bin, such as Gemma 4's per-layer inputs and shared
+// keys and values), or else ones: an encoder's attention mask, as the reference has no padding.
 package main
 
 import (
@@ -135,6 +137,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		return -1, err
 	}
 	fmt.Fprintf(out, "embeddings: %v\n", st)
+	feed := &feeder{model: model, w: w, ref: ref, x: map[string]bool{}}
 
 	tmp, err := os.MkdirTemp("", "hwnpu-check")
 	if err != nil {
@@ -146,7 +149,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		o := opts
 		o.Start, o.Layers, o.NoHead = i, 1, true
 		start := time.Now()
-		got, err := buildRun(model, w, o, ref.Layer(i, d), tmp, f16)
+		got, err := buildRun(model, w, o, feed, ref.Layer(i, d), tmp, f16)
 		if err != nil {
 			return -1, fmt.Errorf("layer %d: %w", i, err)
 		}
@@ -166,7 +169,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 
 	o := opts
 	o.Start = nl
-	got, err := buildRun(model, w, o, ref.Layer(nl, d), tmp, f16)
+	got, err := buildRun(model, w, o, feed, ref.Layer(nl, d), tmp, f16)
 	if err != nil {
 		return -1, fmt.Errorf("head: %w", err)
 	}
@@ -178,7 +181,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 
 	if full {
 		start := time.Now()
-		got, err := buildRun(model, w, opts, ref.Layer(0, d), tmp, f16)
+		got, err := buildRun(model, w, opts, feed, ref.Layer(0, d), tmp, f16)
 		if err != nil {
 			return -1, fmt.Errorf("whole model: %w", err)
 		}
@@ -190,6 +193,9 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 	}
 	if first >= 0 {
 		fmt.Fprintf(out, "first layer over -tol %g: %d\n", tol, first)
+	}
+	if len(feed.from) > 0 {
+		fmt.Fprintf(out, "inputs besides x: %s\n", strings.Join(feed.from, ", "))
 	}
 	return first, nil
 }
@@ -203,10 +209,23 @@ func compareOutput(got, ref []float32, width int, logits bool) (fmt.Stringer, er
 	return check.Compare(got, ref)
 }
 
-// ones fills the inputs other than x, such as attention masks, with ones (every token valid,
-// as in the reference run).
-func ones(inputs map[string][]int, x []float32) map[string]milcpu.Tensor {
+// feeder gives the inputs of a program: x, the rows the host looks up for the reference's tokens
+// (llm.TokenInputs), the reference's values of other inputs (check.Ref.Extra), and ones for the
+// rest, such as attention masks (every token valid, as in the reference run).
+type feeder struct {
+	model llm.Model
+	w     llm.Weights
+	ref   *check.Ref
+	from  []string        // where each input came from, for the report
+	x     map[string]bool // inputs reported
+}
+
+func (f *feeder) inputs(inputs map[string][]int, x []float32) (map[string]milcpu.Tensor, error) {
 	feed := map[string]milcpu.Tensor{}
+	var lookups []llm.TokenInput
+	if l, ok := f.model.(llm.TokenInputs); ok {
+		lookups = l.TokenInputs()
+	}
 	for name, shape := range inputs {
 		if name == "x" {
 			feed[name] = milcpu.Tensor{Shape: shape, Data: x}
@@ -216,13 +235,42 @@ func ones(inputs map[string][]int, x []float32) map[string]milcpu.Tensor {
 		for _, s := range shape {
 			n *= s
 		}
-		v := make([]float32, n)
-		for i := range v {
-			v[i] = 1
+		v, from, err := f.value(name, n, lookups)
+		if err != nil {
+			return nil, err
+		}
+		if !f.x[name] {
+			f.x[name] = true
+			f.from = append(f.from, name+" "+from)
 		}
 		feed[name] = milcpu.Tensor{Shape: shape, Data: v}
 	}
-	return feed
+	return feed, nil
+}
+
+func (f *feeder) value(name string, n int, lookups []llm.TokenInput) ([]float32, string, error) {
+	for _, lk := range lookups {
+		if lk.Input == name {
+			v, err := llm.TokenInputRows(f.w, lk, f.ref.IDs)
+			return v, "(looked up)", err
+		}
+	}
+	if f.ref != nil {
+		v, ok, err := f.ref.Extra(name)
+		switch {
+		case err != nil:
+			return nil, "", err
+		case ok && len(v) != n:
+			return nil, "", fmt.Errorf("the reference's %s has %d values, the program takes %d", name, len(v), n)
+		case ok:
+			return v, "(reference)", nil
+		}
+	}
+	v := make([]float32, n)
+	for i := range v {
+		v[i] = 1
+	}
+	return v, "(ones)", nil
 }
 
 func parseLayers(list string, n int) ([]int, error) {
@@ -244,9 +292,9 @@ func parseLayers(list string, n int) ([]int, error) {
 	return out, nil
 }
 
-// buildRun builds a program into a weight file in dir and runs it on the CPU with input x (and
-// ones for any other input).
-func buildRun(model llm.Model, w llm.Weights, opts llm.Options, x []float32, dir string, f16 bool) ([]float32, error) {
+// buildRun builds a program into a weight file in dir and runs it on the CPU with input x and
+// what feed gives the other inputs.
+func buildRun(model llm.Model, w llm.Weights, opts llm.Options, feed *feeder, x []float32, dir string, f16 bool) ([]float32, error) {
 	path := filepath.Join(dir, "weight.bin")
 	blobs, err := mlpackage.NewBlobWriter(path)
 	if err != nil {
@@ -271,7 +319,11 @@ func buildRun(model llm.Model, w llm.Weights, opts llm.Options, x []float32, dir
 	if err != nil {
 		return nil, err
 	}
-	res, err := p.Run(ones(p.Inputs(), x), milcpu.Options{RoundF16: f16})
+	in, err := feed.inputs(p.Inputs(), x)
+	if err != nil {
+		return nil, err
+	}
+	res, err := p.Run(in, milcpu.Options{RoundF16: f16})
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +353,12 @@ func checkPackage(dir, refPrefix string, f16 bool) error {
 	}
 	d := shape[2]
 	start := time.Now()
-	out, err := p.Run(ones(p.Inputs(), ref.Layer(0, d)), milcpu.Options{RoundF16: f16})
+	feed := &feeder{ref: ref, x: map[string]bool{}}
+	in, err := feed.inputs(p.Inputs(), ref.Layer(0, d))
+	if err != nil {
+		return err
+	}
+	out, err := p.Run(in, milcpu.Options{RoundF16: f16})
 	if err != nil {
 		return err
 	}
