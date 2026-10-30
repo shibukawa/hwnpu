@@ -37,8 +37,24 @@ func listenFree() (net.Listener, error) {
 	return nil, fmt.Errorf("no free port from %d to %d", portLow, portHigh-1)
 }
 
-// openCodeConfig is an OpenCode config with the server as the provider hwnpu and its one model.
-func openCodeConfig(baseURL, model string, context int) ([]byte, error) {
+// openModel is a chat model the server offers OpenCode, with its context in tokens.
+type openModel struct {
+	name    string
+	context int
+}
+
+// openCodeConfig is an OpenCode config with the server as the provider hwnpu, its chat models,
+// and the first of them as the model to use.
+func openCodeConfig(baseURL string, models []openModel) ([]byte, error) {
+	ms := map[string]any{}
+	for _, m := range models {
+		ms[m.name] = map[string]any{
+			"name":      m.name + " on the Neural Engine",
+			"tool_call": true,
+			"reasoning": true,
+			"limit":     map[string]any{"context": m.context, "output": min(4096, m.context/4)},
+		}
+	}
 	return json.MarshalIndent(map[string]any{
 		"$schema": "https://opencode.ai/config.json",
 		"provider": map[string]any{
@@ -46,17 +62,10 @@ func openCodeConfig(baseURL, model string, context int) ([]byte, error) {
 				"npm":     "@ai-sdk/openai-compatible",
 				"name":    "hwnpu (Neural Engine)",
 				"options": map[string]any{"baseURL": baseURL},
-				"models": map[string]any{
-					model: map[string]any{
-						"name":      model + " on the Neural Engine",
-						"tool_call": true,
-						"reasoning": true,
-						"limit":     map[string]any{"context": context, "output": min(4096, context/4)},
-					},
-				},
+				"models":  ms,
 			},
 		},
-		"model": "hwnpu/" + model,
+		"model": "hwnpu/" + models[0].name,
 	}, "", "  ")
 }
 
@@ -65,6 +74,9 @@ func openCodeConfig(baseURL, model string, context int) ([]byte, error) {
 // standard input, output and error as they are, so its interface works as when started alone.
 // The server's log goes to dir/server.log meanwhile. It returns OpenCode's exit code.
 func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error) {
+	if len(s.Chats) == 0 {
+		return 2, fmt.Errorf("-opencode needs a chat model (-use)")
+	}
 	path, err := exec.LookPath(bin)
 	if err != nil {
 		return 1, fmt.Errorf("%s not found; install OpenCode (https://opencode.ai) or name it with -opencode-bin: %w", bin, err)
@@ -89,7 +101,11 @@ func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error)
 	defer logFile.Close()
 	s.Log = logFile
 	baseURL := fmt.Sprintf("http://%s/v1", l.Addr())
-	cfg, err := openCodeConfig(baseURL, s.E.Name, s.E.Context())
+	var models []openModel
+	for _, e := range s.Chats {
+		models = append(models, openModel{e.Name, e.Context()})
+	}
+	cfg, err := openCodeConfig(baseURL, models)
 	if err != nil {
 		return 1, err
 	}
@@ -101,9 +117,9 @@ func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(l) }()
 	defer srv.Close()
-	fmt.Fprintf(os.Stderr, "serving %s at %s (context %d tokens), log in %s\nstarting %s with %s\n", s.E.Name, baseURL, s.E.Context(), logPath, bin, cfgPath)
+	fmt.Fprintf(os.Stderr, "serving %s at %s (context %d tokens), log in %s\nstarting %s with %s\n", models[0].name, baseURL, models[0].context, logPath, bin, cfgPath)
 
-	cmd := exec.Command(path, append([]string{"-m", "hwnpu/" + s.E.Name}, args...)...)
+	cmd := exec.Command(path, openCodeArgs("hwnpu/"+models[0].name, args)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG="+cfgPath)
 	// Ctrl-C in the terminal is OpenCode's: catch it here (a caught signal is reset for the
@@ -132,6 +148,27 @@ func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error)
 		<-waited
 		return 1, fmt.Errorf("the server stopped: %w", err)
 	}
+}
+
+// openCodeSubcommands are OpenCode's commands other than the interface (opencode 1.19).
+var openCodeSubcommands = map[string]bool{
+	"completion": true, "acp": true, "mcp": true, "attach": true, "run": true, "debug": true,
+	"providers": true, "auth": true, "agent": true, "upgrade": true, "uninstall": true,
+	"serve": true, "web": true, "models": true, "stats": true, "export": true, "import": true,
+	"github": true, "pr": true, "session": true, "plugin": true, "plug": true, "db": true,
+}
+
+// openCodeArgs chooses the model on OpenCode's command line where the command takes -m: first
+// for the interface (no arguments, a project directory or options), after run for run. Other
+// commands refuse it, and get the model from the config.
+func openCodeArgs(model string, args []string) []string {
+	switch {
+	case len(args) > 0 && args[0] == "run":
+		return append([]string{"run", "-m", model}, args[1:]...)
+	case len(args) > 0 && openCodeSubcommands[args[0]]:
+		return args
+	}
+	return append([]string{"-m", model}, args...)
 }
 
 // openCodeDir is where -opencode keeps the generated config and the server's log.

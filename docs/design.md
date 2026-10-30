@@ -1182,8 +1182,28 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 - 生成の 1 トークンは、16.21 の 6 層だけの計測から見込んだ値 (32K 約 100 ms、64K 約 220 ms) より遅い。トークン数が少ない (19 と 9) 測り方なので、長い生成での値は測り直す
 - 残り: 使っている塊だけを動かす (今は容量全体を毎回計算する)。プロンプトの読みも文脈に比例して遅くなる
 
-### 16.23 hwnpu-chat -opencode — 2026-10-30
+### 16.23 hwnpu-chat でチャットと埋め込みを使い分ける (`-use` にモデル名) — 2026-10-30
 
-- サーバーと OpenCode をまとめて起動する。モデルを読み込んだあと、127.0.0.1 の 30000〜49151 番 (IANA と macOS の一時ポート 49152 番以降を避ける) から乱数で選んだ位置から空きを探して `net.Listen` し、その listener のまま `http.Server.Serve` に渡す (探してから開くまでの間に取られない)。OpenCode の設定 (プロバイダー `hwnpu`、`@ai-sdk/openai-compatible`、モデルの文脈と出力の上限) をキャッシュディレクトリの `opencode/opencode.json` に書き、`OPENCODE_CONFIG` で渡す。カスタム設定はグローバルより強く、プロジェクトの `opencode.json` より弱い。モデルは `-m hwnpu/NAME` で選ぶ
+- `hwnpu-chat` の `-use` にモデルの名前を書く (既定 `LFM3-1.7B`)。用途 (chat、embedding) はモデルが持つ。最初は `-use chat|embed` と用途で選ぶ形にしたが、同じ用途のモデルは今後増えるので名前にした。モデルの一覧 (`chat.Catalog`: 名前、用途、リポジトリ、大きさ、説明) は `-list` で表にして出す。落としてあるかも出す
+- 名前は大文字小文字を区別せず、一覧のリポジトリ名でもよい。一覧にないリポジトリは `-use OWNER/NAME` で、`config.json` だけ先に落として構造で用途を決める (`llm.Cached` ならチャット、`plamo-bi` なら埋め込み、それ以外は拒否)。モデルは `-dir/名前` (既定 `~/Library/Caches/hwnpu/models/名前`) に置く。これで `-model`、`-repo` と、いったん足した `-embed-model`、`-embed-repo` は要らなくなった。置き場は以前と同じ名前なので、落としたものはそのまま使える
+- ターミナルは 1 つのモデルだけを動かし、用途で動きが決まる: チャットは従来の対話、埋め込みは入力を文書として溜め、`?` で始まる行をクエリとして文書をコサイン類似度の順に並べる。サーバーはいくつでも動かせ、チャットのモデルは `/v1/chat/completions`、埋め込みモデルは `/v1/embeddings` で出し、`GET /v1/models` は全部を `kind` 付きで並べる。要求は `model` の名前で振り分ける (`route`)。その用途のモデルが 1 つなら名前は問わない (従来どおり `"model":"lfm3"` でも答える)。複数で知らない名前は 404。用途の違うモデルの名前はエラーにする (OpenCode などがモデル一覧から埋め込みモデルを選んでしまったときに気づけるように)
+- モデルは用途のほかに機能 (`Features`) を持つ: LFM3-1.7B は `tools` (ツールコール) と `thinking`、PLaMo-Embedding は `query` (クエリと文書を別々に埋め込む)。名前は Ollama の capabilities に合わせた。同じチャットでも、テキストだけでツールコールのできる LFM3 と、マルチモーダルのモデル (別に進めている Gemma 4 E2B なら `vision` など) を選び分けられるように、`-list` に機能の列とその説明を出し、`/v1/models` にも `capabilities` として返す。機能を足すときは `chat.Features` に説明を 1 行足す (`TestLookup` が説明のない機能を拒む)。一覧にないリポジトリの機能は分からないので出さない
+- `-package`、`-config`、`-weights`、`-tokenizer` はチャットのモデルが 1 つ、`-embed-package` は埋め込みモデルが 1 つのときだけ使える。`-context` はチャットのモデル全部に、`-embed-seq` は埋め込みモデル全部に効く
+- 埋め込みモデルの用意はチャットと同じ (`PrepareEmbedder`): `config.json`、`tokenizer.model`、`model.safetensors` を落とし、`-embed-seq` (既定 `128,1024`) の長さごとに `embed-sN.mlpackage` に変換する (lut4、kmeans-minmax。LFM3 と同じ設定で、PLaMo での比較はしていない)。lut4 で 1 部分に収まる (16.18)。フラグは `-embed-seq` と `-embed-package`
+- 実行 (`chat.Embedder`): BOS (`<|startoftext|>`) を付けて符号化し、収まる最も短いプログラムに右詰めの詰め物とマスクで流し、最終隠れ状態を本文のトークンだけで平均して長さ 1 に揃える。クエリは `QueryPrefix + text` を 1 つの文として符号化し、BOS と `Encode(QueryPrefix)` の個数分を平均から外す。前置きの末尾の空白は単独の `▁` になり、本文の先頭の `▁` は前置き側に入る (小さなトークナイザーで確認。実物の金データ `…ください: 東京の天気は晴れです。` でも、前置きの直後に文頭と同じ id 35913 が来るので、同じと見ている)。双方向なので詰め物の位置は結果に効かない (16.18)。プログラムを長さで選ぶので、短い文は短いプログラムで安く済む
+- 長すぎる文は API では既定でエラー (`context_length_exceeded`)、`truncate: true` で切り詰め (text-embeddings-inference と同じ名前)。ターミナルでは切り詰めて表示する。クエリか文書かは OpenAI の API にないので、Cohere や Voyage と同じ `input_type` (`query`/`search_query`、`document`/`search_document`/`passage`) で受け、既定は文書。`encoding_format: base64` (OpenAI の Python クライアントの既定) は float32 のリトルエンディアン
+- テスト: 小さな PLaMo (hidden 32、2 層、8 と 128 トークンのプログラム) を CPU のインタープリタで動かし、詰め物をした埋め込みが、ちょうどの長さのプログラムで本文だけを平均したものと一致すること (`TestEmbedderPadding`)、BOS と前置きの扱い、空文字列、長すぎる文の切り詰めとエラー (`TestEmbed`)、API (`TestEmbeddingsAPI`)、名前での振り分け (`TestRoute`)、一覧の引き方と一覧にないリポジトリの用途の判定 (`TestLookup`、`TestResolve`) を確かめる。改変 (マスクを外す、平均に BOS を含める、BOS を付けない) はすべて検出した。`HWNPU_PLAMO_DIR` があれば、実物のトークナイザーで、クエリの平均が本文のちょうど先頭から始まることも確かめる (`TestPlamoQueryTokens`)
+- 未確認: この環境は Hugging Face にも Neural Engine にも届かないので、実物での確認はしていない。とくに HF の `encode_query`/`encode_document` が前置きの長さをどう数えるか、平均を正規化するか (コサイン類似度には効かない)、`add_eos_token` の有無は、16.18 の記録からの推測。`tools/ref/embed_golden.py` が HF の `encode_query`/`encode_document` の結果とトークン列を書き、Mac で `TestPlamoEmbeddingGolden` がトークン列の一致、コサイン類似度 0.98 以上、各クエリの最も近い文書の一致を確かめる。fp16 のあふれ (16.18) もここで NaN/Inf として見える
+
+```bash
+python tools/ref/embed_golden.py MODEL_DIR MODEL_DIR/embed_golden.json
+HWNPU_PLAMO_DIR=MODEL_DIR go test -run 'PlamoQueryTokens|PlamoEmbeddingGolden' -v ./internal/chat/
+```
+
+- 次: 実物での照合と速さの計測 (128 と 1024 の 1 文あたりの時間、読み込みの時間)。複数の文をまとめて流すバッチ (今は 1 文ずつ)
+
+### 16.24 hwnpu-chat -opencode — 2026-10-30
+
+- サーバーと OpenCode をまとめて起動する。モデルを読み込んだあと、127.0.0.1 の 30000〜49151 番 (IANA と macOS の一時ポート 49152 番以降を避ける) から乱数で選んだ位置から空きを探して `net.Listen` し、その listener のまま `http.Server.Serve` に渡す (探してから開くまでの間に取られない)。OpenCode の設定 (プロバイダー `hwnpu`、`@ai-sdk/openai-compatible`、モデルの文脈と出力の上限) をキャッシュディレクトリの `opencode/opencode.json` に書き、`OPENCODE_CONFIG` で渡す。カスタム設定はグローバルより強く、プロジェクトの `opencode.json` より弱い。モデルは `-m hwnpu/NAME` で選ぶ (画面を出すときは先頭に、`run` のときはその後ろに置く。ほかのサブコマンドは `-m` を受け付けず失敗するので付けず、設定の `model` に任せる)。`-use` に複数のモデルを書くと、チャットのモデルを全部設定に並べ、最初のものを使う (埋め込みのモデルもサーバーには出る)
 - OpenCode は `os/exec` で起動し、標準入力、出力、エラーにこのプロセスのファイルをそのまま渡す (パイプを挟まないので、端末の raw モード、代替画面、マウス、端末への問い合わせがそのまま通る)。サーバーのログはファイルに回す。SIGINT はこのプロセスでは捕まえて捨てる (無視にすると子に継がれる。捕まえた信号は exec で既定に戻る)。OpenCode が終わったらサーバーを閉じ、その終了コードで終わる
 - 検証 (M3、OpenCode 1.19.5): `hwnpu-chat -opencode run "…" < /dev/null` で、ポート 42846 に開き、7 往復で `a - b` を `a + b` に直して終了コード 0、サーバーも止まった。疑似端末で TUI を起動し (`-- --prompt`)、代替画面とマウスが有効になり、5 往復の要求が届き、Ctrl-C 1 回で OpenCode とともに終了コード 0 で終わった。`opencode run` は標準入力が閉じるまで待つ (端末なら問題ない)
