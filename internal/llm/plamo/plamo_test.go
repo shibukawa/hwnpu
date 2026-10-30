@@ -10,6 +10,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/hwnpu/internal/ovcpu"
 	"github.com/shibukawa/hwnpu/internal/palette"
 )
 
@@ -420,6 +421,66 @@ func TestPlamoEmbedding1B(t *testing.T) {
 		}
 		if len(parts) != want {
 			t.Errorf("%s: %d parts, expected %d", format, len(parts), want)
+		}
+	}
+}
+
+// runIR writes the program as OpenVINO IR for Intel's NPU and runs it with OpenVINO's CPU plugin
+// (internal/ovcpu); the test is skipped without HWNPU_OV_PYTHON.
+func runIR(t *testing.T, c *Config, w llm.Weights, opts llm.Options, x, mask []float32) []float32 {
+	t.Helper()
+	py := ovcpu.Python()
+	if py == "" {
+		t.Skip("HWNPU_OV_PYTHON is not set")
+	}
+	opts.Backend = "intel"
+	path := filepath.Join(t.TempDir(), "m.xml")
+	if _, err := llm.WritePart(path, c, w, opts, nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ovcpu.Run(py, path, map[string][]float32{"x": x, "mask": mask}, ovcpu.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res["y"]
+}
+
+// linear are weights with every linear layer's matrix symmetrically quantized per row, as
+// blocks.Weight writes the intN formats (with the mse scales, the default). Per row scales make no difference between a fused
+// projection quantized whole and in its parts.
+type linear struct {
+	weights
+	bits int
+}
+
+func (w linear) Get(name string) ([]float32, []int, error) {
+	v, shape, err := w.weights.Get(name)
+	if err == nil && len(shape) == 2 && strings.HasSuffix(name, ".weight") && name != "embed_tokens.weight" {
+		v = palette.QuantizeLinear(v, shape[0], shape[1], 0, w.bits, true).Dequantize()
+	}
+	return v, shape, err
+}
+
+// The program lowered to OpenVINO IR computes the reference too: in fp16, and in int4 and int8
+// against the reference with the matrices quantized the same way. The IR's output is fp16.
+func TestIntelIR(t *testing.T) {
+	cfg, err := ParseConfig([]byte(tiny))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []int32{1, 17, 5, 33, 9, 0, 21}
+	maskF := []float64{1, 1, 1, 1, 1, 0, 0}
+	mask := []float32{1, 1, 1, 1, 1, 0, 0}
+	w := newWeights(cfg)
+	x := embed(t, cfg, w, ids)
+	if e := relErr(runIR(t, cfg, w, llm.Options{Seq: len(ids), Format: "fp16"}, x, mask), reference(t, cfg, w, ids, maskF)); e > 1e-3 {
+		t.Errorf("fp16: relative error %g against the reference", e)
+	}
+	for _, bits := range []int{4, 8} {
+		format := map[int]string{4: "int4", 8: "int8"}[bits]
+		got := runIR(t, cfg, w, llm.Options{Seq: len(ids), Format: format}, x, mask)
+		if e := relErr(got, reference(t, cfg, linear{w, bits}, ids, maskF)); e > 1e-3 {
+			t.Errorf("%s: relative error %g against the reference with quantized matrices", format, e)
 		}
 	}
 }
