@@ -131,6 +131,7 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 	if e.Name == "" {
 		e.Name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
 	}
+	logf("loading %s onto the Neural Engine: %d programs, up to a minute or two (Core ML compiles them the first time)", e.Name, len(c.Packages))
 	if e.w, err = llm.OpenWeights(c.Weights, a); err != nil {
 		return nil, err
 	}
@@ -144,8 +145,11 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 	}
 	for _, pkg := range c.Packages {
 		t0 := time.Now()
+		stop := dots(c.Log, "  "+filepath.Base(pkg)+" ")
 		ch, err := chain.Open(ctx, e.dev, pkg)
+		stop()
 		if err != nil {
+			logf("")
 			e.Close()
 			return nil, err
 		}
@@ -154,13 +158,17 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 		if !ch.OnNPU() {
 			where = "NOT all on the NPU"
 		}
-		logf("%s: %d parts, %s, loaded in %.1fs", filepath.Base(pkg), len(ch.Parts()), where, time.Since(t0).Seconds())
+		parts := "1 part"
+		if n := len(ch.Parts()); n > 1 {
+			parts = fmt.Sprintf("%d parts", n)
+		}
+		logf(" %.1fs, %s, %s", time.Since(t0).Seconds(), parts, where)
 		if err := e.add(ch.Program(context.Background())); err != nil {
 			e.Close()
 			return nil, fmt.Errorf("chat: %s: %w", pkg, err)
 		}
 	}
-	logf("embeddings of %d dimensions, up to %d tokens", e.Dim(), e.MaxTokens())
+	logf("ready: embeddings of %d dimensions, up to %d tokens", e.Dim(), e.MaxTokens())
 	return e, nil
 }
 

@@ -32,7 +32,7 @@ go run ./cmd/hwnpu-chat -list
 go run ./cmd/hwnpu-chat
 ```
 
-引数は要りません。最初の起動では次のことを自動で行います (M3 で、落とす時間を除いて約 3 分半)。2 回目からはコンパイル済みのものを読み込むだけで、約 1 分で始まります。
+引数は要りません。最初の起動では次のことを自動で行います (M3 で、落とす時間を除いて約 3 分半)。2 回目からはコンパイル済みのものを読み込むだけで、数秒から 1 分ほどで始まります。読み込みの間は進み具合を表示します。
 
 1. Hugging Face の [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) から `config.json`、`tokenizer.json`、`model.safetensors` (3.5 GB) を `~/Library/Caches/hwnpu/models/LFM3-1.7B` に落とします。途中で切れても、もう一度起動すれば続きから落とします
 2. Neural Engine 用に 2 回変換します (それぞれ 1 分ほど)。1 回 1 トークンで生成するものと、1 回 64 トークンでプロンプトを約 20 倍速く読むものです。2 つは 1 つの KV キャッシュを共有します
@@ -56,7 +56,7 @@ go run ./cmd/hwnpu-chat
 | `-system TEXT` | なし | 対話の system メッセージ |
 | `-n N` | `0` | 1 つの答えの最大トークン数 (0 は文脈が尽きるまで) |
 | `-temp`、`-top-k`、`-top-p`、`-rep` | `0.1`、`50`、`0`、`1.05` | サンプリング (温度、上位 k、上位 p、答えの中の繰り返しの罰則) |
-| `-context N` | `16320` | プロンプトと答えを合わせた最大トークン数。変えると、その長さで変換し直す |
+| `-context N` | `16320` | プロンプトと答えを合わせた最大トークン数。変えると、その長さで変換し直す。16320 を超えるとキャッシュを塊に分ける |
 | `-dir DIR` | `~/Library/Caches/hwnpu/models` | モデルの置き場。モデルごとに `DIR/名前` にチェックポイントと変換したプログラムを置く |
 | `-package A,B` | なし | `hwnpu-convert` で自分で変換したチャットのプログラムを使う (5 節) |
 | `-dump DIR` | なし | サーバーで、要求、プロンプト、生成した文を要求ごとに保存する |
@@ -65,7 +65,17 @@ go run ./cmd/hwnpu-chat
 
 `-think` から `-context` まで、`-package`、`-config`、`-weights`、`-tokenizer` はチャットのモデルの、`-embed-` で始まるものは埋め込みモデルのフラグです。`-package` とその仲間 (と `-embed-package`) は、`-use` にその用途のモデルが 1 つのときだけ使えます。
 
-- 文脈 16320 は Neural Engine に載る最大です (テンソルの 1 次元は 16384 まで、鍵の軸は文脈 + 1 回のトークン数)。OpenCode には 16K が要ります。対話だけなら `-context 4096` のほうが生成は速くなります (M3 で 1 トークン約 28 ms、16K では約 64 ms)
+- 文脈を長くするほど、1 トークンの生成は遅くなります。OpenCode には 16K 以上が要ります。対話だけなら `-context 4096` のほうが速くなります
+
+| `-context` | 生成 (M3) | プロンプトを読む速さ | KV キャッシュ |
+|---|---|---|---|
+| 4096 | 約 28 ms/token | — | 約 50 MiB |
+| 16320 (既定) | 約 64 ms/token | 約 570 tokens/s | 約 190 MiB |
+| 32768 | 約 138 ms/token | 約 300 tokens/s | 約 390 MiB |
+| 65536 | 約 363 ms/token | 約 150 tokens/s | 約 770 MiB |
+
+- 16320 を超える文脈では、Neural Engine の 1 次元 16384 の上限に収まるよう、キャッシュを 16384 トークンずつの塊に分けて持ちます。32768 では 25,288 トークン、65536 では 53,736 トークンのプロンプトの先頭に置いた合言葉を正しく答えました
+- サーバーはほかの会話をキャッシュ全体の写しで 2 本まで取っておくので、メモリは上の KV キャッシュの最大 3 倍を使います
 
 ## 3. OpenAI 互換のサーバー
 
@@ -177,6 +187,6 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 - OpenCode は最初に会話の題名を頼みます。このモデルは考えないよう指示しても考えてから答えるので 1〜2 分かかり、その間は本題の要求が待ちます
 - 1.7B で 4 ビットの重みなので、知識の問いは誤ることがあります。考えさせたほうが正確です
-- 文脈は 16320 トークンまでです。これより長い文脈には、キャッシュを塊に分けて注意を計算する方式が要ります ([docs/kv-cache.md](docs/kv-cache.md))
-- Neural Engine 上の PLaMo-Embedding-1B は、まだ Hugging Face の実装と照合していません。`tools/ref/embed_golden.py` と `internal/chat` の `TestPlamoEmbeddingGolden` で比べられます (docs/design.md の 16.21)
-- 実装の記録は [docs/design.md](docs/design.md) の 16.17 と 16.21 にあります
+- 文脈を長くすると生成が遅くなります (65536 で 1 トークン約 0.36 秒)。試したのは 65536 までです
+- Neural Engine 上の PLaMo-Embedding-1B は、まだ Hugging Face の実装と照合していません。`tools/ref/embed_golden.py` と `internal/chat` の `TestPlamoEmbeddingGolden` で比べられます (docs/design.md の 16.23)
+- 実装の記録は [docs/design.md](docs/design.md) の 16.17 と 16.23 にあります
