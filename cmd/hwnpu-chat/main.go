@@ -1,4 +1,5 @@
-// hwnpu-chat runs models on the Neural Engine by name: chat models (LFM3-1.7B) to talk with, and
+// hwnpu-chat runs models on the NPU by name (Apple's Neural Engine, or Intel's NPU on Windows and
+// Linux): chat models (LFM3-1.7B) to talk with, and
 // embedding models (PLaMo-Embedding-1B) to turn texts into vectors for search. -list shows the
 // models it knows and what each is for; -use picks them. In the terminal, a chat model talks
 // and an embedding model searches the texts typed by their embeddings; with -listen, the OpenAI
@@ -17,6 +18,11 @@
 // token and the guesses after it, checked at once) and 64 to read prompts about 20 times faster;
 // the two share one cache, and a conversation reads only what is new since the last answer. An embedding model is converted once per length in -embed-seq, and
 // a text runs on the shortest that holds it.
+//
+// -backend picks the NPU the programs are converted for and run on: coreml (the default on macOS)
+// or intel (elsewhere; OpenVINO IR for Intel's NPU through Level Zero, kept in -dir/NAME/intel).
+// Intel's programs have a 4096 token cache unless -context says otherwise, and take text only:
+// the image and audio encoders are not converted for it yet.
 //
 // -package (or -embed-package) takes programs converted by hwnpu-convert instead, separated by
 // commas: for a chat model with the same -cache and different -seq, for an embedding model with
@@ -53,14 +59,16 @@ import (
 	"text/tabwriter"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 func main() {
 	use := flag.String("use", "LFM3-1.7B", "models to run, comma separated: names that -list shows, or Hugging Face repositories OWNER/NAME; one in the terminal")
 	list := flag.Bool("list", false, "list the models and what each is for, and exit")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing")
-	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of a chat model's programs); over 16320 the cache is held in chunks of 16384, slower per token")
-	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
+	backend := flag.String("backend", llm.HostBackend(), "the NPU to convert for and run on: coreml (Apple's Neural Engine) or intel (Intel's NPU); HWNPU_BACKEND sets the default")
+	context_ := flag.Int("context", 0, fmt.Sprintf("tokens of a prompt and its answer together (the KV cache of a chat model's programs; default %d with coreml, %d with intel); over 16320 the cache is held in chunks of 16384, slower per token", chat.DefaultContext, chat.DefaultIntelContext))
+	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the chat model (default: in its directory)")
 	weights := flag.String("weights", "", "checkpoint the chat model's token embeddings are read from: .safetensors or .gguf (default: in its directory)")
 	tok := flag.String("tokenizer", "", "tokenizer.json of the chat model (default: next to config.json)")
@@ -90,6 +98,17 @@ func main() {
 	if *list {
 		showModels(os.Stdout, *dir)
 		return
+	}
+	if err := llm.CheckBackend(*backend); err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-chat: -backend:", err)
+		os.Exit(2)
+	}
+	if *context_ <= 0 {
+		*context_ = chat.ContextFor(*backend)
+	}
+	if *backend == "intel" && (*vis != "" || *aud != "") {
+		fmt.Fprintln(os.Stderr, "hwnpu-chat: -vision and -audio are not supported on Intel's NPU yet")
+		os.Exit(2)
 	}
 	seqs, err := parseInts(*embedSeq)
 	if err != nil {
@@ -135,7 +154,7 @@ func main() {
 				if c.Weights == "" {
 					c.Weights = filepath.Join(md, "model.safetensors")
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Backend: *backend, Log: os.Stderr}); err != nil {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
@@ -155,7 +174,7 @@ func main() {
 			var c chat.EmbedConfig
 			if *embedPkgs != "" {
 				c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: filepath.Join(md, "model.safetensors"), Name: m.Name}
-			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Repo, Seqs: seqs, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Repo, Seqs: seqs, Backend: *backend, Log: os.Stderr}); err != nil {
 				fail(err)
 			}
 			c.CacheDir, c.Log = *cacheDir, os.Stderr

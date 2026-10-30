@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,9 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/ovrun"
 	"github.com/shibukawa/hwnpu/internal/llm/plamo"
+	"github.com/shibukawa/hwnpu/internal/ovcpu"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
@@ -348,5 +351,52 @@ func TestPlamoQueryTokens(t *testing.T) {
 	}
 	if !strings.HasPrefix(tok.Decode(ids[1:skip], false), strings.TrimSpace(QueryPrefix)) {
 		t.Errorf("the tokens left out are %q, want the instruction", tok.Decode(ids[1:skip], false))
+	}
+}
+
+// The embedder runs programs written for Intel's NPU (OpenVINO IR, here on OpenVINO's CPU
+// plugin) to the embeddings of the Core ML programs on the CPU interpreter. Needs
+// HWNPU_OV_PYTHON.
+func TestEmbedderIntel(t *testing.T) {
+	py := ovcpu.Python()
+	if py == "" {
+		t.Skip("HWNPU_OV_PYTHON is not set")
+	}
+	ref, cfg, w := tinyEmbedder(t)
+	e, err := newEmbedder(ref.Tok, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.w = w
+	for _, seq := range []int{128, 8} {
+		out := filepath.Join(t.TempDir(), fmt.Sprintf("embed-s%d.xml", seq))
+		path, err := llm.Convert(plamo.Arch, cfg, w, out, "any", 0, llm.Options{Seq: seq, Format: "fp16", Backend: "intel"}, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, err := ovrun.Program(py, path, ovcpu.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.add(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct{ n, skip int }{{5, 1}, {11, 3}} {
+		ids := make([]int32, c.n)
+		for i := range ids {
+			ids[i] = int32(1 + (i*37)%250)
+		}
+		got, err := e.run(ids, c.skip)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := ref.run(ids, c.skip)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cos := Cosine(got, want); cos < 0.9999 {
+			t.Errorf("%d tokens: cosine %.6f with the Core ML program's", c.n, cos)
+		}
 	}
 }

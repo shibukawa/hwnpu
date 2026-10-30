@@ -20,6 +20,38 @@ var hubURL = "https://huggingface.co/"
 // dimension goes up to llm.NeuralEngineMaxDim, and the key axis is the cache plus the tokens.
 const DefaultContext = llm.NeuralEngineMaxDim - prefillSeq
 
+// DefaultIntelContext is the cache of the programs for Intel's NPU when none is given. Its
+// limits are not measured yet; the driver compiles each program when it is first loaded, and a
+// shorter cache keeps that and the memory small (OpenVINO GenAI's NPU pipeline defaults to 1024
+// prompt tokens). -context goes longer.
+const DefaultIntelContext = 4096
+
+// ContextFor is the default cache length of a backend's programs.
+func ContextFor(backend string) int {
+	if backend == "intel" {
+		return DefaultIntelContext
+	}
+	return DefaultContext
+}
+
+// NPUName names the NPU that runs a backend's programs, for messages.
+func NPUName(backend string) string {
+	if backend == "intel" {
+		return "Intel's NPU"
+	}
+	return "the Neural Engine"
+}
+
+// ProgramDir is where the programs of a backend are kept in a model's directory: the directory
+// itself for Core ML (where they have always been), a subdirectory named after any other, so
+// that a directory shared by a Mac and an Intel machine holds both.
+func ProgramDir(dir, backend string) string {
+	if backend == "" || backend == "coreml" {
+		return dir
+	}
+	return filepath.Join(dir, backend)
+}
+
 const prefillSeq = 64
 
 // Setup says where the model is and how to get it.
@@ -27,6 +59,9 @@ type Setup struct {
 	Dir     string // holds config.json, tokenizer.json, model.safetensors and the converted programs
 	Repo    string // Hugging Face repository the missing checkpoint files come from
 	Context int    // cache length of the programs
+	// Backend is the runtime the programs are converted for (llm.Options.Backend): "coreml"
+	// (the default) or "intel".
+	Backend string
 	// Draft makes the program that generates take this many tokens per call instead of 1, for
 	// checking the drafts of speculative decoding (Engine.Draft); 0 or 1 for none. It is one
 	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
@@ -48,18 +83,23 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			return Config{}, err
 		}
 	}
-	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo)}
+	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo), Backend: s.Backend}
 	a, _, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return Config{}, err
 	}
+	pd, ext := ProgramDir(s.Dir, s.Backend), llm.ProgramExt(s.Backend)
+	// the 1 token program is over the Neural Engine's 1 GiB in one part
 	progs := []struct{ seq, parts int }{{1, 2}, {prefillSeq, 0}}
+	if s.Backend == "intel" {
+		progs[0].parts = 0
+	}
 	if s.Draft > 1 {
 		progs[0] = struct{ seq, parts int }{s.Draft, 0}
 	}
 	for _, p := range progs {
-		out := filepath.Join(s.Dir, fmt.Sprintf("%s-c%d-q%d.mlpackage", a.Name, s.Context, p.seq))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: p.seq, parts: p.parts, cache: s.Context}, s.Log)
+		out := filepath.Join(pd, fmt.Sprintf("%s-c%d-q%d%s", a.Name, s.Context, p.seq, ext))
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: p.seq, parts: p.parts, cache: s.Context, backend: s.Backend}, s.Log)
 		if err != nil {
 			return Config{}, err
 		}
@@ -69,12 +109,16 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if _, _, err := llm.LoadConfig(c.ModelConfig, e.arch); err != nil {
 			continue // the checkpoint has no such encoder
 		}
+		if s.Backend == "intel" {
+			fmt.Fprintf(s.Log, "%s is not converted for Intel's NPU yet: the model takes text only\n", e.arch)
+			continue
+		}
 		for _, f := range e.files {
 			if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
 				return Config{}, err
 			}
 		}
-		out := filepath.Join(s.Dir, fmt.Sprintf("%s-%s.mlpackage", e.arch, e.value))
+		out := filepath.Join(pd, fmt.Sprintf("%s-%s%s", e.arch, e.value, ext))
 		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{arch: e.arch, format: "fp16", params: map[string]string{e.param: e.value}}, s.Log)
 		if err != nil {
 			return Config{}, err
@@ -99,23 +143,28 @@ var encoders = []struct {
 }
 
 // program is what convert writes: the program of arch (empty: the one config.json names) with
-// the weights in format (empty: the architecture's default) and the architecture's own settings
-// in params; seq tokens per call, in parts (0: one) and with a KV cache of cache tokens (0: none).
+// the weights in format (empty: the architecture's default for the backend) and the
+// architecture's own settings in params; seq tokens per call, in parts (0: as many as the
+// backend needs) and with a KV cache of cache tokens (0: none), for backend (empty: Core ML).
 type program struct {
 	arch, format      string
 	params            map[string]string
 	seq, parts, cache int
+	backend           string
 }
 
 // convert writes the program of the model (config.json and the checkpoint) unless it is there,
 // and returns its path. NAME.done, written last, holds the path, so that a conversion cut off is
 // done again.
 func convert(ctx context.Context, config, weights, out string, p program, log io.Writer) (string, error) {
-	done := out[:len(out)-len(".mlpackage")] + ".done"
+	done := llm.TrimProgramExt(out) + ".done"
 	if b, err := os.ReadFile(done); err == nil {
 		return string(b), nil
 	}
 	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return "", err
 	}
 	a, model, err := llm.LoadConfig(config, p.arch)
@@ -128,26 +177,34 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	}
 	defer w.Close()
 	// the converter's defaults and the architecture's format, with the table fitting that keeps
-	// LFM3's answers as they were (also used for the embedding model)
+	// LFM3's answers as they were (also used for the embedding model); Intel's intN formats
+	// take the converter's default scales
+	backend := cmp.Or(p.backend, "coreml")
+	var args []string
+	if backend == "coreml" {
+		args = []string{"-quant", "kmeans-minmax"}
+	}
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var opts llm.Options
 	set := llm.BindFlags(fs, &opts, "")
-	if err := fs.Parse([]string{"-quant", "kmeans-minmax"}); err != nil {
+	if err := fs.Parse(args); err != nil {
 		return "", err
 	}
 	set()
-	opts.Format = cmp.Or(p.format, a.DefaultFormat(model))
+	opts.Backend = backend
+	opts.Format = cmp.Or(p.format, a.DefaultFormatFor(model, opts.Backend))
 	opts.Seq, opts.Cache = p.seq, p.cache
 	for k, v := range p.params {
 		opts.Params[k] = v
 	}
+	npu := NPUName(opts.Backend)
 	switch {
 	case p.cache > 0:
-		fmt.Fprintf(log, "converting %s for the Neural Engine (cache %d, %d per call); this takes a minute or two\n", filepath.Base(out), p.cache, p.seq)
+		fmt.Fprintf(log, "converting %s for %s (%s, cache %d, %d per call); this takes a minute or two\n", filepath.Base(out), npu, opts.Format, p.cache, p.seq)
 	case p.seq > 0:
-		fmt.Fprintf(log, "converting %s for the Neural Engine (%d tokens); this takes a minute or two\n", filepath.Base(out), p.seq)
+		fmt.Fprintf(log, "converting %s for %s (%s, %d tokens); this takes a minute or two\n", filepath.Base(out), npu, opts.Format, p.seq)
 	default:
-		fmt.Fprintf(log, "converting %s for the Neural Engine; this takes a minute or two\n", filepath.Base(out))
+		fmt.Fprintf(log, "converting %s for %s (%s); this takes a minute or two\n", filepath.Base(out), npu, opts.Format)
 	}
 	path, err := llm.Convert(a, model, w, out, "any", p.parts, opts, log)
 	if err != nil {

@@ -271,7 +271,11 @@ func writeParts(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options, n in
 	for i, p := range plan {
 		o := opts
 		o.Start, o.Layers = p.Start, p.Layers
-		rec, err := llm.WritePart(filepath.Join(dir, fmt.Sprintf("m.part%d.mlpackage", i+1)), cfg, w, o, nil)
+		ext := ".mlpackage"
+		if opts.Backend == "intel" {
+			ext = ".xml"
+		}
+		rec, err := llm.WritePart(filepath.Join(dir, fmt.Sprintf("m.part%d%s", i+1, ext)), cfg, w, o, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

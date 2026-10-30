@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -33,7 +33,9 @@ type EmbedSetup struct {
 	Dir  string // holds config.json, tokenizer.model, model.safetensors and the converted programs
 	Repo string // Hugging Face repository the missing checkpoint files come from
 	Seqs []int  // sequence lengths of the programs
-	Log  io.Writer
+	// Backend is the runtime the programs are converted for: "coreml" (the default) or "intel".
+	Backend string
+	Log     io.Writer
 }
 
 // PrepareEmbedder makes the embedding model ready in Dir like Prepare: it downloads the missing
@@ -48,17 +50,17 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 			return EmbedConfig{}, err
 		}
 	}
-	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo)}
+	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo), Backend: s.Backend}
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return EmbedConfig{}, err
 	}
 	// the format is in the name, so that a program of an earlier default (lut4 before lut8) is
 	// converted again rather than loaded
-	format := a.DefaultFormat(model)
+	format := a.DefaultFormatFor(model, cmp.Or(s.Backend, "coreml"))
 	for _, seq := range s.Seqs {
-		out := filepath.Join(s.Dir, fmt.Sprintf("embed-%s-s%d.mlpackage", format, seq))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: seq, format: format}, s.Log)
+		out := filepath.Join(ProgramDir(s.Dir, s.Backend), fmt.Sprintf("embed-%s-s%d%s", format, seq, llm.ProgramExt(s.Backend)))
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: seq, format: format, backend: s.Backend}, s.Log)
 		if err != nil {
 			return EmbedConfig{}, err
 		}
@@ -77,6 +79,9 @@ type EmbedConfig struct {
 	ModelConfig, Weights, Tokenizer string
 	// CacheDir is the compile cache ("" for none).
 	CacheDir string
+	// Backend is the runtime the packages were converted for, "coreml" or "intel" (default: as
+	// the first package's path tells, llm.ProgramBackend).
+	Backend string
 	// Log receives what loading does (nil for none).
 	Log io.Writer
 	// Name is the model's name in the API (default: the first package's).
@@ -137,17 +142,18 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 	}
 	e.Name = c.Name
 	if e.Name == "" {
-		e.Name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
+		e.Name = llm.TrimProgramExt(filepath.Base(c.Packages[0]))
 	}
-	logf("loading %s onto the Neural Engine: %d programs, up to a minute or two (Core ML compiles them the first time)", e.Name, len(c.Packages))
+	backend := cmp.Or(c.Backend, llm.ProgramBackend(c.Packages[0]))
+	logf("loading %s onto %s: %d programs, %s", e.Name, NPUName(backend), len(c.Packages), compileNote(backend))
 	if e.w, err = llm.OpenWeights(c.Weights, a); err != nil {
 		return nil, err
 	}
-	opts := []hwnpu.Option{hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
+	var opts []hwnpu.Option
 	if c.CacheDir != "" {
 		opts = append(opts, hwnpu.WithCacheDir(c.CacheDir))
 	}
-	if e.dev, err = hwnpu.Open(ctx, opts...); err != nil {
+	if e.dev, err = llm.OpenDevice(ctx, backend, opts...); err != nil {
 		e.Close()
 		return nil, err
 	}

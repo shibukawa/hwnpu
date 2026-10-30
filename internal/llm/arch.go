@@ -25,7 +25,7 @@ type Arch struct {
 	// Format is the weight format the converters use when not told (lut4 when empty).
 	Format string
 	// IntelFormat is the weight format for Intel's NPU when not told (when empty, IntelFormat of
-	// the Neural Engine's format: int4 for lut4, int8 for lut6 and lut8).
+	// the Neural Engine's format: int8 for every lookup table).
 	IntelFormat string
 	// LoadConfig parses config.json and rejects settings the conversion does not handle.
 	LoadConfig func(raw []byte) (Model, error)

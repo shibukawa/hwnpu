@@ -145,10 +145,10 @@ OpenVINO GenAI の NPU 向けの推奨は「int4、対称、チャネルごと (
 
 | Core ML の既定 | Intel の既定 | 該当 |
 |---|---|---|
-| `lut4` | `int4` | LFM3-1.7B |
-| `lut4` | `int8` (`Arch.IntelFormat`) | BERT、PLaMo-Embedding (int4 では文埋め込みが崩れる。11 節) |
-| `lut6`、`lut8` | `int8` | Gemma 4 E2B (lut6)、d1、LFM3-VL、LFM3-Audio/TTS (M3 で lut4 が劣化した系統。精度を優先) |
+| `lut4`、`lut6`、`lut8` | `int8` | すべて (LFM3-1.7B、Gemma 4、d1、LFM3-VL/Audio、BERT、PLaMo-Embedding) |
 | `fp16` | `fp16` | |
+
+最初は lut4 を int4 (行ごと) に読み替えていたが、LFM3-1.7B の実物で PyTorch に対する KL が int4 で 2.44 (argmax 4/24)、int4-g128 で 0.66 (11/24)、int8 で 0.007 (22/24) だった (Neural Engine の lut4 は 0.95、9/24)。Intel の 4 ビットは表引きより粗く、行ごとの int4 は使えない。int8 は重みが lut4 の 2 倍になるが、LFM3-1.7B でも 2 GiB に収まる。int4-g128 は `-format` で選べる。
 
 `KeepFP16`、`FormatFor` はそのまま効く。`FormatFor` に `lut*` が書かれていたら、同じ表で読み替える。
 
@@ -284,4 +284,26 @@ PLaMo-Embedding-1B の実物 (`plamo` の `TestIntelIRCheckpoint`、`HWNPU_PLAMO
 **Mac 側への反映**: hwnpu-chat は PLaMo-Embedding を lut4 (kmeans-minmax) で変換しており、fp16 とのコサイン類似度は 0.76 しかなかった。BERT と PLaMo の Mac の既定を lut8 にした (design.md 16.34)。実機の Neural Engine では最終層の MLP の出力 (5e4) が fp16 を超えていたので、最終層を 1/64 倍で計算する書き換え (`head-scale`) を入れ、HF の結果と 0.997〜0.999 になった。
 
 P1 は以上で終わり。
+
+### P2: hwnpu-chat を Intel の NPU で (2026-10-30)
+
+できたこと:
+
+- `llm.HostBackend` (macOS は `coreml`、それ以外は `intel`。`HWNPU_BACKEND` で上書き)、`llm.OpenDevice` (Core ML は `PlacementPrefer`、Intel は Level Zero)、`llm.ProgramBackend` (`.xml` と manifest の `backend` から判別)、`llm.ProgramExt`、`llm.TrimProgramExt`。
+- `hwnpu-chat -backend` (既定は `HostBackend`)。Intel では変換結果を `<model>/intel/` に `.xml` で置き、既定の形式は int8、`-quant kmeans-minmax` (lut 専用) は渡さない。q1 の 2 分割 (ANE の 1 GiB のため) もしない。文脈の既定は 4096 (`chat.DefaultIntelContext`。Intel の上限は未計測で、ドライバのコンパイル時間とメモリを抑えるため)。画像と音声のエンコーダは Intel ではまだ変換せず、テキストだけで動かす。
+- `chat.Load`、`chat.LoadEmbedder`、`hwnpu-generate` が、変換結果の種類に合わせて装置を開く。`-package` に `.xml` や Intel の `out.parts.json` も渡せる。
+- 既定の形式を int8 に変えた (5.3)。
+- `ovrun.Program` (`internal/llm/ovrun`): Intel の manifest を `decode.Program` として OpenVINO の CPU で動かす (テスト用)。
+
+確かめたこと (Mac、OpenVINO の CPU):
+
+| テスト | 内容 | 結果 |
+|---|---|---|
+| `lfm3` の `TestIntelCachedMatchesFull` | 小さな LFM3 の KV キャッシュ付き IR を 1 トークンずつ、3 トークンずつ、2 分割、キャッシュの塊ありで進め、キャッシュなしの MIL と比べる | 相対誤差 5〜6e-4 |
+| `lfm3` の `TestIntelIRCheckpoint` | LFM3-1.7B の実物を PyTorch のロジットと比べる | 5.3 の表 |
+| `chat` の `TestPrepareIntel` | hwnpu-chat の変換 (`Prepare`) が `intel/` に int8 の IR を書き、画像エンコーダを飛ばし、2 つのプログラムがキャッシュを共有して動く | 合格 |
+| `chat` の `TestEmbedderIntel` | 埋め込みを IR で計算し、Core ML のプログラム (milcpu) と比べる | コサイン類似度 0.9999 以上 |
+| `chat` の `TestIntelLFM3` | LFM3-1.7B の実物を hwnpu-chat と同じ手順で変換し、エンジンが「日本の首都は？」に答える | int8、キャッシュ 256、q8 と q64。貪欲法で「日本の首都は東京です。」(7 トークンを 5 回の呼び出しで。下書き 7 のうち 2 が当たった) |
+
+確かめていないこと: Intel の NPU の実機。Level Zero の模擬ドライバは小さなグラフしか計算しないので、配線は CPU の OpenVINO までしか確かめていない。実機では、ドライバのコンパイラが全演算を受け付けるか、コンパイルにかかる時間、fp16 での精度、1 トークンの時間が分かる。
 

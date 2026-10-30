@@ -1393,3 +1393,14 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 - 結果: 埋め込みの ANE と CPU のコサイン類似度は 0.9745 → 0.99986。HF とは 8 文すべて 0.9969〜0.9987 で `TestPlamoEmbeddingGolden` に合格 (milcpu の lut8 と同じ水準)。全演算 ANE。1 文は重みを縮めた版で 37〜41 ms、入力側の版で 72〜84 ms だったが、後者の回は読み込みも 1.5〜2 倍遅かったので、マシンの負荷とみている (未確認)
 - 正解を作る環境: Python 3.12 に torch 2.15、transformers 4.47.1、sentencepiece 0.2.0、protobuf。`modeling_plamo.py` と `tokenization_plamo.py` を置いたディレクトリにチェックポイントをリンクして `HF_HUB_OFFLINE=1` で動かした (fp32 で約 1 分)
 - 次: 長い文 (1024 トークンのプログラム) での最大値。最終層の 5e4 は文によってはさらに大きいかもしれない。`TestANEPrecision` で文を変えて確かめる
+
+### 16.35 hwnpu-chat を Intel の NPU で (P2) — 2026-10-30
+
+- 目的: Windows (と Linux) の Intel の NPU で `hwnpu-chat` が動くこと。設計は [intel-npu-models.md](intel-npu-models.md) の 7 節と 9 節の P2、記録は 11 節
+- 変換: 小さな LFM3 の KV キャッシュ付きのプログラム (畳み込みの窓、全注意とスライディング注意、キャッシュの塊、分割) は、P1 の `ovlower` に足す演算なしで IR になった。OpenVINO の CPU で 1 トークンずつ進めると、キャッシュなしの MIL と相対誤差 5〜6e-4 で一致する (`TestIntelCachedMatchesFull`)
+- **Intel の既定の形式を int8 に**: LFM3-1.7B の実物を PyTorch のロジット (24 トークン) と比べると、int4 (行ごと) は KL 2.44 (argmax 4/24)、int4-g128 は 0.66 (11/24)、int8 は 0.007 (22/24)。Neural Engine の lut4 (0.95、9/24) より粗い 4 ビットしかないので、lut4 を int4 に読み替えるのをやめ、すべて int8 にした (`llm.IntelFormat`)
+- 実行: `llm.HostBackend` (macOS は coreml、ほかは intel、`HWNPU_BACKEND`)、`llm.OpenDevice` (Intel は Level Zero、`PlacementPrefer` は付けない)、`llm.ProgramBackend` (`.xml` と manifest の `backend`)。`chat.Load`、`chat.LoadEmbedder`、`hwnpu-generate` がこれで装置を開く。`chain` と `decode` は fp16 のバイト列と引数の名前しか使わないので、変更は要らなかった
+- `hwnpu-chat -backend` (既定 `HostBackend`): Intel では `<model>/intel/` に `.xml` で変換する。`-quant kmeans-minmax` (lut 専用) を渡さない。q1 を 2 分割しない (Intel の仮の上限は 2 GiB)。文脈の既定は 4096 (`chat.DefaultIntelContext`。上限は未計測で、ドライバのコンパイル時間とメモリを抑える)。画像と音声のエンコーダは変換せず、テキストだけで動かす
+- テスト用に `ovrun.Program` (`internal/llm/ovrun`) (Intel の manifest を `decode.Program` として OpenVINO の CPU で動かす。呼び出しごとに Python を起動するので遅い)
+- **実物での確認** (`chat` の `TestIntelLFM3`、OpenVINO の CPU): LFM3-1.7B を `Prepare` で hwnpu-chat と同じに変換し (int8、キャッシュ 256、q8 と q64)、エンジンが「日本の首都はどこですか？一文で答えてください。」に貪欲法で「日本の首都は東京です。」と答えた (7 トークン、5 回の呼び出し、投機的デコードの下書き 7 のうち 2 が当たった)
+- 未確認: Intel の NPU の実機。ドライバのコンパイラが全演算を受け付けるか、コンパイルの時間、fp16 での精度 (Neural Engine では PLaMo の最終層があふれた。16.34)、速さ。模擬ドライバは小さなグラフしか計算しない

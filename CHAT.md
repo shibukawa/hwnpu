@@ -2,7 +2,7 @@
 
 [日本語](CHAT.ja.md)
 
-Run LFM3-1.7B and PLaMo-Embedding-1B on the Apple Neural Engine alone, and use them in the terminal or as an OpenAI compatible API from clients such as OpenCode. No Python is needed.
+Run LFM3-1.7B and PLaMo-Embedding-1B on the NPU alone (Apple's Neural Engine on a Mac, Intel's NPU on Windows and Linux; Intel's is experimental, see the end of section 1), and use them in the terminal or as an OpenAI compatible API from clients such as OpenCode. No Python is needed.
 
 `-use` picks the models by name, and `-list` shows the names and what each model is for:
 
@@ -52,6 +52,27 @@ Then type after the `>`.
 - From the second turn on, only what is new since the last answer is read
 - After each answer it shows the tokens read and the speed of generation (about 15 tokens/s on an M3)
 
+### On Intel's NPU (Windows, Linux; experimental)
+
+Off the Mac, the same commands run on Intel's NPU (the NPU of Core Ultra). Install the NPU driver as [INSTALL_INTEL.md](INSTALL_INTEL.md) says first, and check that `go run ./cmd/hwnpuinfo` shows the NPU.
+
+```bash
+go run ./cmd/hwnpu-chat
+```
+
+```bash
+go run ./cmd/hwnpu-chat -use plamo-embedding-1b
+```
+
+What differs from the Mac:
+
+- The programs are OpenVINO IR (`.xml` and `.bin`) in the model directory's `intel/` (on Windows `%LocalAppData%\hwnpu\models\LFM3-1.7B\intel`), so a directory shared with a Mac holds both
+- The weights are int8 (about 1.7 GB per program for LFM3-1.7B): Intel's 4 bit formats are much coarser than the Neural Engine's lut4 (KL against PyTorch 2.44 in int4, 0.007 in int8)
+- The context is 4096 tokens unless `-context` says otherwise; the limits of Intel's NPU are not measured yet
+- On the first load the NPU driver compiles the programs, for a time not measured yet. The result stays in `%LocalAppData%\hwnpu` (`~/.cache/hwnpu` on Linux) and later loads read it
+- Image and audio input (LFM3-VL, LFM3-Audio, LFM3-Omni) are not converted for Intel yet; those models run with text only
+- **It has not run on an Intel NPU yet.** The programs are checked with OpenVINO on the Mac's CPU. If it fails, report the error with the output of `go run ./cmd/hwnpuinfo`; whether `-draft 0` (no speculative decoding) or `-context 1024` gets through helps too
+
 ### Images and audio (LFM3-VL-2B, LFM3-Audio-2B, LFM3-Omni-2B)
 
 `-use LFM3-VL-2B`, `-use LFM3-Audio-2B` or `-use LFM3-Omni-2B` runs one of Liquid AI's multimodal checkpoints. The first run downloads it (3.8, 4.0 and 4.3 GB) and converts its text model the same way, but with 8 bit tables (lut8, 2 parts each): with 4 bit tables these models describe pictures wrongly and mishear speech (docs/design.md, 16.31). It also converts the encoders the checkpoint has, in fp16: the vision encoder for images of 512x512 (an image is stretched to it) and the audio encoder for clips of up to 30 seconds.
@@ -92,7 +113,8 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-system TEXT` | none | the chat's system message |
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |
-| `-context N` | `16320` | most tokens of a prompt and its answer together; another value converts the model again for it; over 16320 the cache is held in chunks |
+| `-backend B` | `coreml` on a Mac, `intel` elsewhere | the NPU to convert for and run on: `coreml` (Apple's Neural Engine) or `intel` (Intel's NPU); `HWNPU_BACKEND` sets it too |
+| `-context N` | `16320` with `coreml`, `4096` with `intel` | most tokens of a prompt and its answer together; another value converts the model again for it; over 16320 the cache is held in chunks |
 | `-dir DIR` | `~/Library/Caches/hwnpu/models` | where the models are kept, each in `DIR/NAME` with its checkpoint and converted programs |
 | `-package A,B` | none | chat programs you converted with `hwnpu-convert` (section 5) |
 | `-dump DIR` | none | with the server, save each request, its prompt and the generated text |

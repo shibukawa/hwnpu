@@ -2,7 +2,7 @@
 
 [English](CHAT.md)
 
-LFM3-1.7B と PLaMo-Embedding-1B を Apple の Neural Engine だけで動かし、ターミナルで使ったり、OpenAI 互換の API として OpenCode などのクライアントから使ったりします。Python は要りません。
+LFM3-1.7B と PLaMo-Embedding-1B を NPU だけで動かし (Mac は Apple の Neural Engine、Windows と Linux は Intel の NPU。Intel は試験的で、1 節の最後を参照)、ターミナルで使ったり、OpenAI 互換の API として OpenCode などのクライアントから使ったりします。Python は要りません。
 
 使うモデルは `-use` に名前で指定します。選べるモデルの名前と用途は `-list` で出ます。
 
@@ -52,6 +52,27 @@ go run ./cmd/hwnpu-chat
 - 会話の 2 回目以降は、前回からの差分だけを読みます
 - 答えのあとに、読んだトークン数と生成の速さ (M3 で約 15 tokens/s) を出します
 
+### Intel の NPU で動かす (Windows、Linux。試験的)
+
+Mac 以外では、同じコマンドが Intel の NPU (Core Ultra の NPU) で動きます。先に [INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の手順で NPU のドライバを入れ、`go run ./cmd/hwnpuinfo` で NPU が見えることを確かめてください。
+
+```bash
+go run ./cmd/hwnpu-chat
+```
+
+```bash
+go run ./cmd/hwnpu-chat -use plamo-embedding-1b
+```
+
+Mac との違い:
+
+- 変換結果は OpenVINO IR (`.xml` と `.bin`) で、モデルのディレクトリの `intel/` に置きます (Windows では `%LocalAppData%\hwnpu\models\LFM3-1.7B\intel`)。Mac と同じディレクトリを共有しても衝突しません
+- 重みは int8 です (LFM3-1.7B で 1 プログラム約 1.7 GB)。Intel の 4 ビットの形式は Neural Engine の lut4 よりずっと粗いためです (PyTorch に対する KL が int4 で 2.44、int8 で 0.007)
+- 文脈の既定は 4096 トークンです (`-context` で変えられます)。Intel の NPU の上限はまだ測っていません
+- 初回の読み込みでは、NPU のドライバがプログラムをコンパイルします。何分かかるかは未計測です。結果は `%LocalAppData%\hwnpu` (Linux では `~/.cache/hwnpu`) に残り、2 回目からはそれを読みます
+- 画像と音声の入力 (LFM3-VL、LFM3-Audio、LFM3-Omni) は、まだ Intel 向けに変換しません。これらのモデルもテキストだけで動きます
+- **Intel の NPU の実機では、まだ一度も動かしていません**。変換結果は Mac の OpenVINO (CPU) で確かめてあります。うまくいかないときは、出たエラーと `go run ./cmd/hwnpuinfo` の出力を添えて報告してください。`-draft 0` (投機的デコードなし) や `-context 1024` で通るかどうかも、手がかりになります
+
 ### 画像と音声を読む (LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B)
 
 `-use LFM3-VL-2B`、`-use LFM3-Audio-2B`、`-use LFM3-Omni-2B` で Liquid AI のマルチモーダルのチェックポイントを使えます。初回はそれを落とし (3.8、4.0、4.3 GB)、テキスト部を同じ手順で、ただし 8 ビットの表 (lut8、2 部分ずつ) で変換します。4 ビットの表では画像の説明を誤り、音声を聞き違えるためです (docs/design.md の 16.31)。チェックポイントにあるエンコーダも fp16 で変換します。視覚エンコーダは 512x512 の画像用 (画像はこの大きさに引き伸ばす)、音声エンコーダは 30 秒までのクリップ用です。
@@ -92,7 +113,8 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-system TEXT` | なし | 対話の system メッセージ |
 | `-n N` | `0` | 1 つの答えの最大トークン数 (0 は文脈が尽きるまで) |
 | `-temp`、`-top-k`、`-top-p`、`-rep` | `0.1`、`50`、`0`、`1.05` | サンプリング (温度、上位 k、上位 p、答えの中の繰り返しの罰則) |
-| `-context N` | `16320` | プロンプトと答えを合わせた最大トークン数。変えると、その長さで変換し直す。16320 を超えるとキャッシュを塊に分ける |
+| `-backend B` | Mac は `coreml`、ほかは `intel` | 変換して動かす NPU: `coreml` (Apple の Neural Engine) か `intel` (Intel の NPU)。環境変数 `HWNPU_BACKEND` でも変えられる |
+| `-context N` | `coreml` は `16320`、`intel` は `4096` | プロンプトと答えを合わせた最大トークン数。変えると、その長さで変換し直す。16320 を超えるとキャッシュを塊に分ける |
 | `-dir DIR` | `~/Library/Caches/hwnpu/models` | モデルの置き場。モデルごとに `DIR/名前` にチェックポイントと変換したプログラムを置く |
 | `-package A,B` | なし | `hwnpu-convert` で自分で変換したチャットのプログラムを使う (5 節) |
 | `-dump DIR` | なし | サーバーで、要求、プロンプト、生成した文を要求ごとに保存する |

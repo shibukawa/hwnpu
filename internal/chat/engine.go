@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -35,6 +36,9 @@ type Config struct {
 	ModelConfig, Weights, Tokenizer string
 	// CacheDir is the compile cache ("" for none).
 	CacheDir string
+	// Backend is the runtime the packages were converted for, "coreml" or "intel" (default: as
+	// the first package's path tells, llm.ProgramBackend).
+	Backend string
 	// Vision is the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a
 	// package per image size (internal/vision), for a model that reads images (LFM3-VL); none to
 	// take no images. Its config.json and image processor settings are next to ModelConfig.
@@ -138,6 +142,14 @@ func (q *seq) reach(prompt []int32) (int, *mark) {
 	return best.m.Pos(), best
 }
 
+// compileNote says how long loading takes the first time, for the loading message.
+func compileNote(backend string) string {
+	if backend == "intel" {
+		return "up to several minutes the first time (the NPU driver compiles them; later loads read the compile cache)"
+	}
+	return "up to a minute or two (Core ML compiles them the first time)"
+}
+
 // Load loads the model.
 func Load(ctx context.Context, c Config) (*Engine, error) {
 	if len(c.Packages) == 0 {
@@ -150,9 +162,10 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	name := c.Name
 	if name == "" {
-		name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
+		name = llm.TrimProgramExt(filepath.Base(c.Packages[0]))
 	}
-	logf("loading %s onto the Neural Engine: %d programs, up to a minute or two (Core ML compiles them the first time)", name, len(c.Packages))
+	backend := cmp.Or(c.Backend, llm.ProgramBackend(c.Packages[0]))
+	logf("loading %s onto %s: %d programs, %s", name, NPUName(backend), len(c.Packages), compileNote(backend))
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return nil, err
@@ -180,11 +193,11 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if e.w, err = llm.OpenWeights(c.Weights, a); err != nil {
 		return nil, err
 	}
-	opts := []hwnpu.Option{hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
+	var opts []hwnpu.Option
 	if c.CacheDir != "" {
 		opts = append(opts, hwnpu.WithCacheDir(c.CacheDir))
 	}
-	if e.dev, err = hwnpu.Open(ctx, opts...); err != nil {
+	if e.dev, err = llm.OpenDevice(ctx, backend, opts...); err != nil {
 		e.Close()
 		return nil, err
 	}

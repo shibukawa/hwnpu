@@ -17,8 +17,11 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/hwnpu/internal/llm/ovrun"
+	"github.com/shibukawa/hwnpu/internal/ovcpu"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
@@ -155,4 +158,102 @@ func safetensorsOf(t *testing.T, w llm.Synthetic) []byte {
 	}
 	out := binary.LittleEndian.AppendUint64(nil, uint64(len(h)))
 	return append(append(out, h...), data...)
+}
+
+// With the intel backend Prepare writes OpenVINO IR in the model's intel directory, in Intel's
+// default format and without the image encoder, and the programs step through a prompt on
+// OpenVINO's CPU plugin (needs HWNPU_OV_PYTHON for that) as the Core ML ones do on the CPU
+// interpreter.
+func TestPrepareIntel(t *testing.T) {
+	vl := `{"model_type": "lfm3_vl", "tie_word_embeddings": true, "projector_hidden_act": "gelu", "projector_bias": true, "projector_hidden_size": 32,
+	"text_config": {"model_type": "lfm3", ` + tinyLFM3[1:] + `,` + imageVL[strings.Index(imageVL, `"vision_config"`):]
+	vcfg, err := lfm3vl.ParseConfig([]byte(vl))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcfg, err := lfm3.ParseConfig([]byte(vl))
+	if err != nil {
+		t.Fatal(err)
+	}
+	weights := llm.NewSynthetic(vcfg)
+	maps.Copy(weights, llm.NewSynthetic(tcfg))
+	files := map[string][]byte{
+		"/org/vl/resolve/main/config.json":       []byte(vl),
+		"/org/vl/resolve/main/tokenizer.json":    []byte(imageTokenizer),
+		"/org/vl/resolve/main/model.safetensors": safetensorsOf(t, weights),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, ok := files[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(b)
+	}))
+	defer srv.Close()
+	defer func(u string) { hubURL = u }(hubURL)
+	hubURL = srv.URL + "/"
+
+	dir := filepath.Join(t.TempDir(), "vl")
+	c, err := Prepare(context.Background(), Setup{Dir: dir, Repo: "org/vl", Context: 16, Draft: 4, Backend: "intel", Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Packages) != 2 || len(c.Vision) != 0 || c.Backend != "intel" {
+		t.Fatalf("packages %q, vision %q, backend %q", c.Packages, c.Vision, c.Backend)
+	}
+	for _, p := range c.Packages {
+		if filepath.Dir(p) != filepath.Join(dir, "intel") || llm.ProgramBackend(p) != "intel" {
+			t.Errorf("%s: not an Intel program in %s", p, filepath.Join(dir, "intel"))
+		}
+		man, err := llm.ReadManifest(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f := man.Meta[llm.MetaFormat]; f != "int8" {
+			t.Errorf("%s: format %q, want int8", p, f)
+		}
+	}
+	py := ovcpu.Python()
+	if py == "" {
+		t.Skip("HWNPU_OV_PYTHON is not set")
+	}
+	var progs []decode.Program
+	for _, p := range c.Packages {
+		prog, err := ovrun.Program(py, p, ovcpu.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		progs = append(progs, prog)
+	}
+	for name := range progs[1].In {
+		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+			progs[1].In[name] = progs[0].In[name] // one cache, as chain.Share binds it
+		}
+	}
+	s, err := decode.New(progs[0], tcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(progs[1]); err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(tcfg)
+	emb, err := llm.Embed(w, tcfg, []int32{3, 1, 4, 1, 5, 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows [][]float32
+	for i := 0; i < 6; i++ {
+		rows = append(rows, emb[i*tcfg.HiddenSize:(i+1)*tcfg.HiddenSize])
+	}
+	logits, err := s.Step(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range logits {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			t.Fatalf("logit %v", v)
+		}
+	}
 }

@@ -51,7 +51,7 @@ func openCodeConfig(baseURL string, models []openModel) ([]byte, error) {
 	ms := map[string]any{}
 	for _, m := range models {
 		ms[m.name] = map[string]any{
-			"name":      m.name + " on the Neural Engine",
+			"name":      m.name + " on the NPU",
 			"tool_call": true,
 			"reasoning": true,
 			"limit":     map[string]any{"context": m.context, "output": min(4096, m.context/4)},
@@ -62,7 +62,7 @@ func openCodeConfig(baseURL string, models []openModel) ([]byte, error) {
 		"provider": map[string]any{
 			"hwnpu": map[string]any{
 				"npm":     "@ai-sdk/openai-compatible",
-				"name":    "hwnpu (Neural Engine)",
+				"name":    "hwnpu (NPU)",
 				"options": map[string]any{"baseURL": baseURL},
 				"models":  ms,
 			},

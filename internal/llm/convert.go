@@ -148,14 +148,13 @@ func metadata(a *Arch, w Weights, opts Options) map[string]string {
 	return m
 }
 
-// IntelFormat is the weight format for Intel's NPU that stands in for a Neural Engine one: int4
-// for lut4 (the 4 bit format each reads fast) and int8 for the finer tables, which the
-// architectures choose where 4 bits lose too much. Other formats are returned as they are.
+// IntelFormat is the weight format for Intel's NPU that stands in for a Neural Engine one: int8
+// for every lookup table. Intel's 4 bit formats lose far more than lut4 does: LFM3-1.7B's KL
+// against PyTorch is 2.44 in int4 (a scale per row) and 0.66 in int4-g128, against 0.95 in lut4
+// and 0.007 in int8 (TestIntelIRCheckpoint). Other formats are returned as they are.
 func IntelFormat(f string) string {
 	switch f {
-	case "", "lut4":
-		return "int4"
-	case "lut6", "lut8":
+	case "", "lut4", "lut6", "lut8":
 		return "int8"
 	}
 	return f

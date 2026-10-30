@@ -43,7 +43,7 @@ type sampling struct {
 }
 
 func main() {
-	pkg := flag.String("package", "", "the converted model: an .mlpackage, or the out.parts.json of a model hwnpu-convert split")
+	pkg := flag.String("package", "", "the converted model: an .mlpackage, an OpenVINO IR .xml (hwnpu-convert -backend intel), or the out.parts.json of a model hwnpu-convert split")
 	config := flag.String("config", "", "config.json of the model")
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from: .safetensors or .gguf")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
@@ -107,11 +107,12 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 	}
 	defer w.Close()
 
-	opts := []hwnpu.Option{hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
+	var opts []hwnpu.Option
 	if cacheDir != "" {
 		opts = append(opts, hwnpu.WithCacheDir(cacheDir))
 	}
-	dev, err := hwnpu.Open(ctx, opts...)
+	// the NPU the package was converted for: the Neural Engine, or Intel's for OpenVINO IR
+	dev, err := llm.OpenDevice(ctx, llm.ProgramBackend(pkg), opts...)
 	if err != nil {
 		return err
 	}
