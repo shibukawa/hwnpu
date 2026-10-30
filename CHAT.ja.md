@@ -152,7 +152,20 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 ## 6. OpenCode から使う
 
-プロジェクトのディレクトリに `opencode.json` を置きます。モデル名は `GET /v1/models` が返す名前にします。
+プロジェクトのディレクトリで次のように起動すると、サーバーと OpenCode をまとめて動かします。
+
+```bash
+go run ./cmd/hwnpu-chat -opencode
+```
+
+- モデルを読み込んだあと、30000〜49151 番の空いたポート (macOS が外向きの接続に使う 49152 番以降は避けます) でサーバーを開き、そのサーバーを使う OpenCode の設定を `~/Library/Caches/hwnpu/opencode/opencode.json` に書いて、環境変数 `OPENCODE_CONFIG` で OpenCode に渡します。プロジェクトのファイルには何も書きません
+- OpenCode はこの端末の標準入力、出力、エラーをそのまま受け継ぐので、画面の描画、マウス、キー操作は単独で起動したときと同じです。サーバーのログは `~/Library/Caches/hwnpu/opencode/server.log` に書き、画面を乱しません
+- OpenCode を終えるとサーバーも止まり、OpenCode の終了コードで終わります
+- フラグのあとの引数は OpenCode に渡します。`-` で始まる OpenCode のオプションは `--` のあとに書きます (例: `hwnpu-chat -opencode -- --continue`、`hwnpu-chat -opencode run "main.go のバグを直して"`)。`-listen` を付けるとそのアドレスで開き、`-opencode-bin` で OpenCode のコマンドを変えられます
+- `opencode run` は標準入力が閉じるまで待つので、スクリプトから使うときは `< /dev/null` を付けます
+- OpenCode はプロジェクトの `opencode.json` を `OPENCODE_CONFIG` より優先します。プロジェクトに別の `hwnpu` プロバイダーを書いてあると、そちらのアドレスが使われます
+
+手で設定するときは、プロジェクトのディレクトリに `opencode.json` を置きます。モデル名は `GET /v1/models` が返す名前にします。
 
 ```json
 {

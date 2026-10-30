@@ -152,7 +152,20 @@ go run ./cmd/hwnpu-chat -package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.mlp
 
 ## 6. Use it from OpenCode
 
-Put an `opencode.json` in the project directory. The model's name is the one `GET /v1/models` returns.
+Started like this in the project directory, it runs the server and OpenCode together.
+
+```bash
+go run ./cmd/hwnpu-chat -opencode
+```
+
+- After loading the model it serves on a free port from 30000 to 49151 (below 49152, where macOS takes ports for outgoing connections), writes an OpenCode config for that server to `~/Library/Caches/hwnpu/opencode/opencode.json` and hands it to OpenCode with the `OPENCODE_CONFIG` environment variable. Nothing is written into the project
+- OpenCode gets this terminal's standard input, output and error as they are, so its screen, mouse and keys work as when it is started alone. The server's log goes to `~/Library/Caches/hwnpu/opencode/server.log`, off the screen
+- When OpenCode exits, the server stops, and hwnpu-chat ends with OpenCode's exit code
+- The arguments after the flags go to OpenCode; put OpenCode options that start with `-` after `--` (e.g. `hwnpu-chat -opencode -- --continue`, `hwnpu-chat -opencode run "fix the bug in main.go"`). `-listen` serves at that address instead, and `-opencode-bin` names another OpenCode command
+- `opencode run` waits for its standard input to close; from a script, add `< /dev/null`
+- OpenCode puts a project's `opencode.json` over `OPENCODE_CONFIG`: a provider `hwnpu` written there wins, with its address
+
+To set it up by hand, put an `opencode.json` in the project directory. The model's name is the one `GET /v1/models` returns.
 
 ```json
 {
