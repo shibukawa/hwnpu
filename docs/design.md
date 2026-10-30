@@ -1341,3 +1341,16 @@ go run ./cmd/hwnpu-systemone -model d1-Omni-2B -package d1-1024.mlpackage -visio
 ```bash
 go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.mlpackage -codec codec.mlpackage -lang ja -o out.wav こんにちは
 ```
+
+### 16.31 LiquidAI の 4 モデルの実機での確認と、テキスト部の lut8 — 2026-10-30
+
+16.27〜16.30 は Mac も Hugging Face もない環境で書いたので、M3 (16 GB) で実物の d1-2B、d1-Omni-2B、LFM3-VL-2B、LFM3-Audio-2B を動かした。
+
+- **config とテンソル名**: 4 つの config.json と safetensors のヘッダーで、11 のプログラム (d1、視覚、音声エンコーダ、テキスト部、depthformer、コーデック) がすべて変換できた。推測だった接頭辞 (`model.language_model.`、`lfm.model.`)、音声エンコーダの `conv_channels` 256 と `lin_out` (768, 4096, 1)、projector の 768 → 2048 は実物どおり。変換が読まないテンソルは、ホストが引く埋め込みの表と `codebook_embedding`、`mask_embedding`、d1-Omni の depthformer、コーデックのエンコーダ側、それと `depth_embeddings.N.to_logits.weight` だけ。最後のものは HF のコードでも埋め込みと共有で、読み込み時に無視される (`_keys_to_ignore_on_load_unexpected`)
+- **配置**: どのプログラムも全部 Neural Engine に載った
+- **lut4 の損失**: d1-2B の README の例 (二重請求と未着の返金) で、lut4 は team を shipping (0.54) と答えた。fp16 (NPU でも CPU のインタプリタでも)、lut8 は README どおり billing (0.57〜0.62)、refund 1.00、urgency medium。lut6 は billing 0.52 対 shipping 0.42 で境目。LFM3-VL-2B のチャットは lut4 だと赤い円と青い四角の画像を「1000pink and blue icon」と言い、日本語が崩れた。lut8 では「白い背景に赤い円と青い四角形」と左右も正しい。LFM3-Audio-2B の TTS は、lut4 の音声を LFM3-Audio 自身の ASR ("Perform ASR.") に戻すと崩れ (「The heck to the other thing.」)、lut8 では「Please send the report to the finance team before Friday.」が一字一句一致し、日本語もほぼ正しい。そこでマルチモーダルと d1 のチェックポイントのテキスト部 (`lfm3.Config.Multimodal`) は既定を lut8 にした (`llm.Formatter`、`Arch.DefaultFormat(model)`)。lut8 は 1 GiB の上限を超えるので 2 部分になる。LFM3-1.7B はチャットで問題が出ていないので lut4 のまま
+- **d1-2B** (lut8): 日本語の問い合わせ (ログインでクラッシュ) は technical 0.998。合成画像 (赤い円、青い四角) の色と左右をすべて当て、猫は 0.003。NPU と CPU のインタプリタの確率の差は 1e-3 程度。2 回目以降は文章 4 問で 0.13 秒、画像 4 問で 0.9 秒
+- **d1-Omni-2B** (lut8): `say` で作った音声の話題、言及された都市、日本語の質問、話された質問 (「Is the customer happy with the delivery?」に対し、苦情の state で 0.05、感謝の state で 0.91) をすべて当てた。README の例は refund 0.94 が一致し、team は billing 0.45 対 shipping 0.52 で README (billing) と逆。fp16 を CPU で動かしても同じなので、量子化と Neural Engine の誤差ではない。HF の実装は質問を最大 `d1_set_size` (16) 問まとめて読み、llama.cpp に合わせたここでは 1 問ずつ読むので、その違いと見ているが、HF の実装とは比べていない (torch がない)
+- **LFM3-Audio-2B**: 音声入力は "Perform ASR." で `say` の英語を一字一句、日本語を 1 字違いで書き起こした。HF の処理系も音声を `<|audio|>` の並びとしてその位置に置くので、16.29 の置き方で合っている。思考ありで温度 0 だと思考が繰り返して答えに届かないことがある。TTS は lut4 で実時間の約 1.4 倍、lut8 (2 部分) で約 0.5 倍の速さ
+- **LFM3-VL-2B** (lut8): 1 トークン 41 ms、画像を含むプロンプト (約 300 トークン) の読み込み 0.3 秒
+- **ディスク**: 読み込むたびに Core ML のコンパイル結果がキャッシュ (`~/Library/Caches/hwnpu`) にパッケージと同じくらい増える。試しの変換を何度も読み込むときは `-cache` で別の場所にするとよい
