@@ -42,7 +42,7 @@ go run ./cmd/hwnpu-chat
 No arguments are needed. The first run does the following by itself (about 3.5 minutes on an M3, besides the download). Later runs only load the compiled programs and start in a few seconds to a minute, showing how far loading is.
 
 1. It downloads `config.json`, `tokenizer.json` and `model.safetensors` (3.5 GB) of [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) from Hugging Face to `~/Library/Caches/hwnpu/models/LFM3-1.7B`. A download cut off goes on from where it stopped on the next run
-2. It converts the model twice for the Neural Engine (about a minute each): one generates 1 token per call, the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache
+2. It converts the model twice for the Neural Engine (about a minute each): one generates, 8 tokens per call (a token and 7 guesses checked at once, section 3), the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache
 3. It compiles them for the Neural Engine (1 to 2 minutes). The result stays in `~/Library/Caches/hwnpu`
 
 Then type after the `>`.
@@ -88,6 +88,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-listen ADDR` | none | serve the OpenAI compatible API at `ADDR` (e.g. `127.0.0.1:8080`) instead of the terminal (section 3) |
 | `-think` | `true` | let the model think before it answers |
 | `-think-budget N` | `1024` | most tokens the model thinks before it is made to answer (0: no limit) |
+| `-draft N` | `8` | tokens per call of the program that generates: a token and N-1 guesses checked at once (speculative decoding, section 3); `0` or `1` generates one token per call |
 | `-system TEXT` | none | the chat's system message |
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |

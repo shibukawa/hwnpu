@@ -207,6 +207,15 @@ func cacheInput(name string) bool {
 // Q is the most tokens one step takes.
 func (s *Session) Q() int { return s.progs[len(s.progs)-1].q }
 
+// Qs is the tokens per step of each program, fewest first.
+func (s *Session) Qs() []int {
+	var qs []int
+	for _, o := range s.progs {
+		qs = append(qs, o.q)
+	}
+	return qs
+}
+
 // Cache is the number of tokens the longest cache holds: the sequence length the session can
 // reach. Shorter caches (a sliding layer's ring) hold the last tokens only.
 func (s *Session) Cache() int { return s.t }
@@ -372,15 +381,41 @@ func (s *Session) Width() int {
 // followed by the model's lookup inputs, as llm.TokenRow gathers them. It returns the logits after
 // the last one, running the program with the fewest tokens per step that takes them all.
 func (s *Session) Step(emb [][]float32) ([]float32, error) {
+	p, q, err := s.run(emb)
+	if err != nil {
+		return nil, err
+	}
+	return s.keep(p, q, len(emb)), nil
+}
+
+// Speculate runs the tokens like Step, but keeps only as many of them as accept says, given the
+// logits after each (row i, after token i, computed when asked): the first token and the drafts
+// of speculative decoding after it, of which the model confirms a beginning. Each row is the
+// logits the token would have been generated from, so a draft that the sampling picks from the
+// row before it is what the model would have generated. The rest are not written to the cache;
+// accept must keep at least 1. It returns the logits after the last token kept and how many.
+func (s *Session) Speculate(emb [][]float32, accept func(row func(i int) []float32) int) ([]float32, int, error) {
+	p, q, err := s.run(emb)
+	if err != nil {
+		return nil, 0, err
+	}
+	kept := accept(func(i int) []float32 { return s.row(p, i) })
+	if kept < 1 || kept > len(emb) {
+		return nil, 0, fmt.Errorf("decode: %d of %d tokens kept", kept, len(emb))
+	}
+	return s.keep(p, q, kept), kept, nil
+}
+
+// run writes the tokens' rows and the step's inputs into the program with the fewest tokens per
+// step that takes them all, and runs it.
+func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 	v := len(emb)
 	if v == 0 || v > s.Q() {
-		return nil, fmt.Errorf("decode: a step takes 1 to %d tokens, not %d", s.Q(), v)
+		return p, 0, fmt.Errorf("decode: a step takes 1 to %d tokens, not %d", s.Q(), v)
 	}
 	if s.pos+v > s.t {
-		return nil, fmt.Errorf("decode: the cache of %d tokens is full", s.t)
+		return p, 0, fmt.Errorf("decode: the cache of %d tokens is full", s.t)
 	}
-	var p Program
-	var q int
 	for _, o := range s.progs {
 		if o.q >= v {
 			p, q = o.p, o.q
@@ -394,7 +429,7 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 	}
 	for i, e := range emb {
 		if len(e) != s.Width() {
-			return nil, fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
+			return p, 0, fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
 		}
 		hwnpu.EncodeF16(x[2*i*s.hidden:2*(i+1)*s.hidden], e[:s.hidden])
 		off := s.hidden
@@ -406,14 +441,20 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 	for name, vals := range s.m.StepInputs(s.pos, v, q, s.t) {
 		if b, ok := p.In[name]; ok {
 			if 2*len(vals) != len(b) {
-				return nil, fmt.Errorf("decode: %s takes %d values, the model gives %d", name, len(b)/2, len(vals))
+				return p, 0, fmt.Errorf("decode: %s takes %d values, the model gives %d", name, len(b)/2, len(vals))
 			}
 			hwnpu.EncodeF16(b, vals)
 		}
 	}
 	if err := p.Run(); err != nil {
-		return nil, err
+		return p, 0, err
 	}
+	return p, q, nil
+}
+
+// keep writes the first v tokens of the step just run into the cache (the program run was p, of
+// q tokens per step), moves the sequence past them, and returns the logits after the last one.
+func (s *Session) keep(p Program, q, v int) []float32 {
 	for _, c := range s.kv {
 		// (1, heads, L, d) <- (1, heads, q, d): the step's rows at their positions, in the
 		// chunk that holds each, or in a cache shorter than the longest (a ring) at position
@@ -435,22 +476,26 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 	}
 	for name, in := range p.In {
 		if strings.HasPrefix(name, "win_") {
-			// (1, w, d) <- rows v..v+w of (1, w+q, d)
+			// (1, w, d) <- rows v..v+w of (1, w+q, d): the window after v tokens
 			sh := p.InShape[name]
 			w, d := sh[1], sh[2]
 			copy(in, p.Out[name+"_new"][2*v*d:2*(v+w)*d])
 		}
 	}
 	s.pos += v
-	logits := make([]float32, s.vocab)
-	y := p.Out["y"]
-	hwnpu.DecodeF16(logits, y[2*(v-1)*s.vocab:2*v*s.vocab])
 	s.last = nil
 	if h, ok := p.Out["h"]; ok {
 		s.last = make([]float32, s.hidden)
 		hwnpu.DecodeF16(s.last, h[2*(v-1)*s.hidden:2*v*s.hidden])
 	}
-	return logits, nil
+	return s.row(p, v-1)
+}
+
+// row returns the logits after token i of the step just run on p.
+func (s *Session) row(p Program, i int) []float32 {
+	logits := make([]float32, s.vocab)
+	hwnpu.DecodeF16(logits, p.Out["y"][2*i*s.vocab:2*(i+1)*s.vocab])
+	return logits
 }
 
 // Hidden is the final hidden state after the last step's last token, for a program that outputs
