@@ -71,6 +71,7 @@ func main() {
 	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (default: the 512x512 one a model of -list with vision converts)")
 	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (default: the 30 second one a model of -list with audio converts)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
+	promptDir := flag.String("prompt-cache", "", "keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)")
 	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
 	dump := flag.String("dump", "", "write each chat request, its prompt and the generated text to this directory (server)")
 	withOpenCode := flag.Bool("opencode", false, "serve on a free port from 30000 (or -listen) and run OpenCode on this terminal with the chat models; the arguments after the flags go to OpenCode")
@@ -147,6 +148,7 @@ func main() {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+			c.PromptDir = chat.PromptStore(*promptDir, *cacheDir)
 			if *vis != "" {
 				c.Vision = strings.Split(*vis, ",")
 			}
