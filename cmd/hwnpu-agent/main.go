@@ -49,6 +49,7 @@ func main() {
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from (default: in the model's directory)")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
+	promptDir := flag.String("prompt-cache", "", "keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)")
 	workDir := flag.String("C", ".", "the working directory of the agent")
 	tools := flag.String("tools", strings.Join(agent.Names, ","), "the tools to offer, comma separated")
 	system := flag.String("system", "", "a file whose text replaces the opening of the system prompt")
@@ -125,6 +126,7 @@ func main() {
 		fail(err)
 	}
 	c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+	c.PromptDir = chat.PromptStore(*promptDir, *cacheDir)
 	e, err := chat.Load(ctx, c)
 	if err != nil {
 		fail(err)
