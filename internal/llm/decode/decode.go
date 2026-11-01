@@ -501,3 +501,136 @@ func (s *Session) row(p Program, i int) []float32 {
 // Hidden is the final hidden state after the last step's last token, for a program that outputs
 // it as h (lfm3's hidden-out); nil otherwise.
 func (s *Session) Hidden() []float32 { return s.last }
+
+// Rows of the longest caches do not depend on the program's cache length or chunks: a position's
+// rows are the same in every program of the model, which is what Migrate relies on. ExportRows
+// packs them position by position, for each long cache in name order each head's d values in
+// fp16, and ImportRows puts them back into a session of any program of the model whose cache
+// holds the positions (a prompt kept on disk for a later run, internal/chat's store). The
+// rings and the convolution windows are not rows: a Mark holds them.
+
+// longCaches is the caches of the full length (not the rings), by name.
+func (s *Session) longCaches() []*kvCache {
+	var cs []*kvCache
+	for i := range s.kv {
+		if s.kv[i].total == s.t {
+			cs = append(cs, &s.kv[i])
+		}
+	}
+	slices.SortFunc(cs, func(a, b *kvCache) int { return strings.Compare(a.out, b.out) })
+	return cs
+}
+
+// RowBytes is the bytes of one position's rows in ExportRows.
+func (s *Session) RowBytes() int {
+	n := 0
+	first := s.progs[0].p
+	for _, c := range s.longCaches() {
+		sh := first.InShape[c.parts[0]]
+		n += 2 * sh[1] * sh[3]
+	}
+	return n
+}
+
+// ExportRows returns the rows of positions from (inclusive) to to (exclusive) of the longest
+// caches, packed as RowBytes bytes per position.
+func (s *Session) ExportRows(from, to int) ([]byte, error) {
+	if from < 0 || to < from || to > s.t {
+		return nil, fmt.Errorf("decode: rows %d to %d of a cache of %d", from, to, s.t)
+	}
+	first := s.progs[0].p
+	out := make([]byte, 0, (to-from)*s.RowBytes())
+	for pos := from; pos < to; pos++ {
+		for _, c := range s.longCaches() {
+			sh := first.InShape[c.parts[0]]
+			heads, d := sh[1], sh[3]
+			j, slot := c.locate(pos)
+			in, L := first.In[c.parts[j]], c.lens[j]
+			for h := 0; h < heads; h++ {
+				out = append(out, in[2*(h*L+slot)*d:2*(h*L+slot+1)*d]...)
+			}
+		}
+	}
+	return out, nil
+}
+
+// ImportRows writes rows from ExportRows (of a session of the same model) at the positions from
+// from on. The sequence's position does not move: Rewind to a Mark at the end of the rows.
+func (s *Session) ImportRows(from int, rows []byte) error {
+	rb := s.RowBytes()
+	if rb == 0 || len(rows)%rb != 0 {
+		return fmt.Errorf("decode: %d bytes of rows, not a multiple of %d", len(rows), rb)
+	}
+	n := len(rows) / rb
+	if from < 0 || from+n > s.t {
+		return fmt.Errorf("decode: rows %d to %d of a cache of %d", from, from+n, s.t)
+	}
+	first := s.progs[0].p
+	off := 0
+	for pos := from; pos < from+n; pos++ {
+		for _, c := range s.longCaches() {
+			sh := first.InShape[c.parts[0]]
+			heads, d := sh[1], sh[3]
+			j, slot := c.locate(pos)
+			in, L := first.In[c.parts[j]], c.lens[j]
+			for h := 0; h < heads; h++ {
+				copy(in[2*(h*L+slot)*d:2*(h*L+slot+1)*d], rows[off:off+2*d])
+				off += 2 * d
+			}
+		}
+	}
+	return nil
+}
+
+// Bufs is what the mark holds besides its position: the rings and the windows at it, by input
+// name. The caller must not change them.
+func (m *Mark) Bufs() map[string][]byte { return m.bufs }
+
+// NewMark makes a mark from its position and buffers (Bufs), as read back from a store. Resume
+// checks it against the session.
+func NewMark(pos int, bufs map[string][]byte) *Mark {
+	return &Mark{pos: pos, bufs: bufs}
+}
+
+// Resume brings an empty sequence to a point kept outside the session: rows (ExportRows) of the
+// positions before the mark, and the mark, from a session of the same model. It checks that the
+// mark's buffers are the session's rings and windows, of the same sizes, and that the rows are
+// exactly the mark's position.
+func (s *Session) Resume(rows []byte, m *Mark) error {
+	if m.pos < 0 || m.pos > s.t {
+		return fmt.Errorf("decode: a mark at %d, the cache holds %d", m.pos, s.t)
+	}
+	if rb := s.RowBytes(); len(rows) != m.pos*rb {
+		return fmt.Errorf("decode: %d bytes of rows for a mark at %d, want %d", len(rows), m.pos, m.pos*rb)
+	}
+	in := s.progs[0].p.In
+	want := map[string]bool{}
+	for name := range in {
+		if strings.HasPrefix(name, "win_") {
+			want[name] = true
+		}
+	}
+	for _, c := range s.kv {
+		if c.total < s.t {
+			want[c.parts[0]] = true
+		}
+	}
+	for name, b := range m.bufs {
+		if !want[name] {
+			return fmt.Errorf("decode: the mark holds %s, which is not a ring or a window of the session", name)
+		}
+		if len(b) != len(in[name]) {
+			return fmt.Errorf("decode: the mark's %s has %d bytes, the session's %d", name, len(b), len(in[name]))
+		}
+		delete(want, name)
+	}
+	for name := range want {
+		return fmt.Errorf("decode: the mark lacks %s", name)
+	}
+	s.Reset()
+	if err := s.ImportRows(0, rows); err != nil {
+		return err
+	}
+	s.Rewind(m)
+	return nil
+}

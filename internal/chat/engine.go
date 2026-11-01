@@ -39,6 +39,10 @@ type Config struct {
 	ModelConfig, Weights, Tokenizer string
 	// CacheDir is the compile cache ("" for none).
 	CacheDir string
+	// PromptDir keeps prompts read on disk for later runs ("" for none): a prompt that begins
+	// like an earlier one (an agent's system message and tools) comes back from there instead
+	// of being read again after a restart (store).
+	PromptDir string
 	// Vision is the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a
 	// package per image size (internal/vision), for a model that reads images (LFM3-VL); none to
 	// take no images. Its config.json and image processor settings are next to ModelConfig.
@@ -79,11 +83,20 @@ type Engine struct {
 	// none. Load sets it to Lookup when the model has a program to check drafts with (Draft).
 	drafter func(seq []int32, k int) []int32
 
+	store *store    // prompts kept on disk (Config.PromptDir); nil for none
+	log   io.Writer // Config.Log
+
 	mu     sync.Mutex
 	closed bool // by Close: the programs and the weights are gone
 	sess   *decode.Session
 	cur    seq     // the sequence in the cache
 	saved  []saved // put aside, the most recently used last
+}
+
+func (e *Engine) logf(format string, args ...any) {
+	if e.log != nil {
+		fmt.Fprintf(e.log, format+"\n", args...)
+	}
 }
 
 // encoded is an encoded image or clip: its rows of embeddings stand in prompts as the token ids
@@ -102,6 +115,7 @@ type seq struct {
 	fed   []int32   // the tokens in the cache
 	last  []float32 // the logits after fed
 	marks []mark
+	base  *entry // the store's entry the sequence came from or extended last; nil for none
 }
 
 type mark struct {
@@ -178,7 +192,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if c.Tokenizer == "" {
 		c.Tokenizer = filepath.Join(filepath.Dir(c.ModelConfig), "tokenizer.json")
 	}
-	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}, nextID: -1}
+	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}, nextID: -1, log: c.Log}
 	e.Name = name
 	if e.Template, err = TemplateFor(a.Name); err != nil {
 		return nil, err
@@ -253,6 +267,22 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if e.sess, err = e.tiers[0].session(cm); err != nil {
 		e.Close()
 		return nil, err
+	}
+	if c.PromptDir != "" {
+		last := e.tiers[len(e.tiers)-1]
+		var sizes []int64
+		for _, ch := range last.chains {
+			for _, p := range ch.Parts() {
+				sizes = append(sizes, p.WeightBytes)
+			}
+		}
+		dir := filepath.Join(c.PromptDir, storeKey(name, tiers[len(tiers)-1], sizes))
+		if e.store, err = openStore(dir); err != nil {
+			logf("prompt store: %v (prompts will not be kept)", err)
+			e.store = nil
+		} else {
+			logf("prompt store: %s, %d prompts kept", dir, len(e.store.entries))
+		}
 	}
 	if len(c.Vision) > 0 {
 		t0 := time.Now()
@@ -496,6 +526,8 @@ func (e *Engine) ThinkLimit(budget int, inside bool) ThinkLimit {
 // Stats says what a generation did.
 type Stats struct {
 	Prompt, Reused, Generated int
+	// Restored is how many of the reused tokens came back from the prompt store on disk.
+	Restored int
 	// Finish is "stop" (the model ended the answer or the caller stopped it) or "length".
 	Finish string
 	// Looped says that the generation stopped because the model repeated itself.
@@ -676,11 +708,30 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 
 // prefill brings the cache to the prompt and returns the logits after it.
 func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]float32, error) {
-	n, m := e.cur.reach(prompt)
-	from := -1
-	for i := range e.saved {
-		if k, _ := e.saved[i].reach(prompt); k > n {
-			n, from = k, i
+	// how far what is in memory brings the prompt: the sequence in the cache (n, going back
+	// to the mark m when not nil) or a sequence put aside (from)
+	var n, from int
+	var m *mark
+	plan := func() {
+		n, m = e.cur.reach(prompt)
+		from = -1
+		for i := range e.saved {
+			if k, _ := e.saved[i].reach(prompt); k > n {
+				n, from = k, i
+			}
+		}
+	}
+	plan()
+	if e.store != nil && n < len(prompt) {
+		// the store brings the prompt further than what is in memory: start on its rows
+		if se, sp := e.store.find(prompt); se != nil && sp > n {
+			if ok, err := e.restore(se, sp, prompt, st); err != nil {
+				return nil, err
+			} else if ok {
+				n, m, from = sp, nil, -2
+			} else {
+				plan() // the session may have been emptied
+			}
 		}
 	}
 	if from >= 0 {
@@ -694,10 +745,12 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		e.sess.Rewind(sv.all)
 		e.cur = sv.seq
 		n, m = e.cur.reach(prompt)
-	} else if n < len(e.cur.fed)/2 {
+	} else if from == -1 && n < len(e.cur.fed)/2 {
 		e.putAside()
 	}
 	switch {
+	case from == -2:
+		// restored from the store
 	case m != nil:
 		e.sess.Rewind(m.m)
 		p := m.m.Pos()
@@ -711,6 +764,7 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		e.cur = seq{}
 	}
 	st.Reused = len(e.cur.fed)
+	var kept []storedMark // marks for the store, every markEvery tokens of the reading
 	for len(e.cur.fed) < len(prompt) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -721,15 +775,57 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		} else if !ok {
 			return nil, fmt.Errorf("%w: %d tokens, the cache holds %d", ErrContext, len(prompt), e.sess.Cache())
 		}
-		if _, err := e.step(prompt[len(e.cur.fed) : len(e.cur.fed)+k]); err != nil {
+		before := len(e.cur.fed)
+		if _, err := e.step(prompt[before : before+k]); err != nil {
 			return nil, err
 		}
+		if e.store != nil && len(e.cur.fed) < len(prompt) && len(e.cur.fed)/markEvery > before/markEvery {
+			m := e.sess.Mark()
+			kept = append(kept, storedMark{m.Pos(), m.Bufs(), e.cur.last})
+		}
 	}
-	e.cur.marks = append(e.cur.marks, mark{e.sess.Mark(), e.cur.last})
+	m = &mark{e.sess.Mark(), e.cur.last}
+	e.cur.marks = append(e.cur.marks, *m)
 	if len(e.cur.marks) > maxMarks {
 		e.cur.marks = e.cur.marks[1:]
 	}
+	if e.store != nil && len(e.cur.fed) >= minStored {
+		kept = append(kept, storedMark{m.m.Pos(), m.m.Bufs(), m.logits})
+		if se, err := e.store.put(e.cur.fed, e.sess, kept, e.cur.base); err != nil {
+			e.logf("prompt store: %v", err)
+		} else {
+			e.cur.base = se
+		}
+	}
 	return e.cur.last, nil
+}
+
+// restore starts the sequence from the store's entry at the mark at pos, on the shortest tier
+// that holds the prompt, and says whether it did: the entry is dropped when its files cannot be
+// read.
+func (e *Engine) restore(se *entry, pos int, prompt []int32, st *Stats) (bool, error) {
+	rows, m, logits, err := e.store.load(se, pos)
+	if err != nil {
+		e.logf("prompt store: %v (dropped)", err)
+		e.store.remove(se)
+		return false, nil
+	}
+	if n, _ := e.cur.reach(prompt); n < len(e.cur.fed)/2 {
+		e.putAside()
+	}
+	if err := e.use(e.tierFor(len(prompt))); err != nil {
+		return false, err
+	}
+	if err := e.sess.Resume(rows, m); err != nil {
+		e.logf("prompt store: %s: %v (dropped)", se.dir, err)
+		e.store.remove(se)
+		e.sess.Reset()
+		e.cur = seq{}
+		return false, nil
+	}
+	e.cur = seq{fed: slices.Clone(se.Tokens[:pos]), last: logits, marks: []mark{{m, logits}}, base: se}
+	st.Restored = pos
+	return true, nil
 }
 
 // putAside saves a copy of the sequence in the cache, when it is long enough to be worth it.

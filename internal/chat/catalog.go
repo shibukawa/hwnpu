@@ -116,3 +116,18 @@ func Downloaded(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, "model.safetensors"))
 	return err == nil
 }
+
+// PromptStore is the directory of the prompt store (Config.PromptDir) for the -prompt-cache
+// flag: dir as given, prompts in the compile cache when empty, none for "off".
+func PromptStore(dir, cacheDir string) string {
+	switch dir {
+	case "off":
+		return ""
+	case "":
+		if cacheDir == "" {
+			return ""
+		}
+		return filepath.Join(cacheDir, "prompts")
+	}
+	return dir
+}
