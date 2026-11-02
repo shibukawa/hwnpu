@@ -1,7 +1,10 @@
 // Package agent is a coding agent of four tools, read, edit, write and bash, on a chat model
 // called in this process (chat.Engine): the loop of Pi (pi.dev) without its harness. The
 // model gets a system prompt of a few lines and the four declarations, well under 1K tokens,
-// calls tools one round at a time, and ends a task by answering without a call. The
+// calls tools one round at a time, and ends a task by answering without a call. A fifth
+// tool, search (Wikipedia, or the web through SearXNG or Brave), makes it an assistant that
+// looks facts up instead of recalling them, which a 1.7B model does badly; with SearchFirst
+// the search is not left to the model. The
 // conversation is kept within the model's context by folding old tool results, not by asking
 // the model for a summary.
 //
@@ -37,8 +40,21 @@ type Config struct {
 	// Dir is the working directory: paths are relative to it, commands run in it, and files
 	// outside it are not written. Default: the process's.
 	Dir string
-	// Tools names the tools to offer, of Names. Default: all four.
+	// Tools names the tools to offer, of Names. Default: DefaultTools, the four coding tools.
 	Tools []string
+	// Search is the search tool's backend: Wikipedia, SearXNG or Brave. Default: Wikipedia.
+	Search Searcher
+	// SearchFirst makes the first round of each task a search, when search is offered: when
+	// the model answers instead (from memory, which a small model does badly) or calls another
+	// tool, that round is dropped and a search for the task's words takes its place. The
+	// model then answers with the results in front of it every time.
+	SearchFirst bool
+	// Searches is the most searches of one task: at the next the model is asked to answer
+	// from the results it has (a small model searches on, with the answer in front of it).
+	// Default 4.
+	Searches int
+	// Results is the most results a search returns. Default 5.
+	Results int
 	// System replaces the opening of the system prompt (DefaultSystem).
 	System string
 	// Instructions are the project's (AGENTS.md), appended to the system prompt.
@@ -98,6 +114,11 @@ func (c *Config) defaults() error {
 	def(&c.ReadBytes, 8192)
 	def(&c.TailLines, 100)
 	def(&c.TailBytes, 8192)
+	def(&c.Results, 5)
+	def(&c.Searches, 4)
+	if c.Search == nil {
+		c.Search = &Wikipedia{}
+	}
 	if c.ThinkBudget == 0 {
 		c.ThinkBudget = 1024
 	}
@@ -128,6 +149,8 @@ var (
 	ErrCut = errors.New("agent: the answer was cut short")
 	// ErrLoop says that the model made the same call three times in a row.
 	ErrLoop = errors.New("agent: the model repeats the same call")
+	// ErrSearches says that the task used all its searches without an answer.
+	ErrSearches = errors.New("agent: the model kept searching")
 )
 
 // nudge is the result of a call the model just made, the second time.
@@ -136,6 +159,12 @@ const nudge = "Same call as the one before; the result would be the same. If the
 // closing asks for the answer when the rounds run out or the model repeats itself: a request
 // without tools, so that it can only answer.
 const closing = "Stop using tools. Answer now with a short summary of what you did and whether it worked."
+
+// closingSearch asks for the answer when the searches of a task are used up.
+const closingSearch = "Stop searching. Answer from the results above, in the language of the question, or say that you could not find it."
+
+// searchesUp is the result of a search past Config.Searches.
+const searchesUp = "No more searches in this task. Answer from the results above, or say that you could not find it."
 
 // Session is a conversation with the agent: a task and the tasks after it share it until
 // Reset.
@@ -202,8 +231,10 @@ func (s *Session) Count(ctx context.Context) (int, error) {
 func (s *Session) Run(ctx context.Context, task string, ev Events) (string, error) {
 	start := len(s.msgs)
 	s.msgs = append(s.msgs, chat.Message{Role: "user", Content: chat.Content{Text: task}})
-	var prev, prevCall string // the content and the call of the round before
-	same := 0                 // rounds the call has been made in a row
+	var prev, prevCall string                     // the content and the call of the round before
+	same := 0                                     // rounds the call has been made in a row
+	first := s.cfg.SearchFirst && s.has("search") // the round to come must be a search
+	searches := 0                                 // searches run in this task
 	for range s.cfg.Steps {
 		if err := s.fit(ctx); err != nil {
 			return "", err
@@ -214,6 +245,22 @@ func (s *Session) Run(ctx context.Context, task string, ev Events) (string, erro
 				s.msgs = s.msgs[:start]
 			}
 			return "", err
+		}
+		if first {
+			first = false
+			if !hasCall(c.ToolCalls, "search") {
+				// an answer from memory, or another tool: the round is dropped and a search
+				// for the task's words takes its place
+				if ev.Note != nil {
+					ev.Note("the first round was not a search; searching for the task")
+				}
+				tc := searchCall(firstLine(task))
+				out := s.call(ctx, tc, ev)
+				s.msgs = append(s.msgs, chat.Message{Role: "assistant", ToolCalls: []chat.ToolCall{tc}},
+					chat.Message{Role: "tool", Name: "search", ToolCallID: tc.ID, Content: chat.Content{Text: out}})
+				prevCall, searches = signature([]chat.ToolCall{tc}), 1
+				continue
+			}
 		}
 		msg := chat.Message{Role: "assistant", Content: chat.Content{Text: c.Content}, ToolCalls: c.ToolCalls}
 		if s.cfg.KeepThinking && c.Reasoning != "" {
@@ -238,22 +285,33 @@ func (s *Session) Run(ctx context.Context, task string, ev Events) (string, erro
 		} else {
 			prevCall, same = sig, 0
 		}
+		refused := false // a search past the limit
 		for _, tc := range c.ToolCalls {
 			if ctx.Err() != nil {
 				s.msgs = s.msgs[:start]
 				return "", ctx.Err()
 			}
 			out := nudge
-			if same == 0 {
+			search := tc.Function.Name == "search"
+			switch {
+			case search && searches >= s.cfg.Searches:
+				out, refused = searchesUp, true
+			case same == 0:
 				out = s.call(ctx, tc, ev)
+				if search {
+					searches++
+				}
 			}
 			s.msgs = append(s.msgs, chat.Message{Role: "tool", Name: tc.Function.Name, ToolCallID: tc.ID, Content: chat.Content{Text: out}})
 		}
 		if same >= 2 {
-			return s.close(ctx, ev, ErrLoop)
+			return s.close(ctx, ev, closing, ErrLoop)
+		}
+		if refused {
+			return s.close(ctx, ev, closingSearch, ErrSearches)
 		}
 	}
-	return s.close(ctx, ev, ErrSteps)
+	return s.close(ctx, ev, closing, ErrSteps)
 }
 
 // complete asks the model for the next answer, with its thinking bounded by ThinkBudget.
@@ -279,9 +337,9 @@ func (s *Session) complete(ctx context.Context, tools []chat.Tool, ev Events) (c
 	return c, nil
 }
 
-// close asks for the answer without tools; cause is the error when there is none.
-func (s *Session) close(ctx context.Context, ev Events, cause error) (string, error) {
-	s.msgs = append(s.msgs, chat.Message{Role: "user", Content: chat.Content{Text: closing}})
+// close asks for the answer without tools, with text; cause is the error when there is none.
+func (s *Session) close(ctx context.Context, ev Events, text string, cause error) (string, error) {
+	s.msgs = append(s.msgs, chat.Message{Role: "user", Content: chat.Content{Text: text}})
 	c, err := s.complete(ctx, nil, ev)
 	if err != nil {
 		return "", err
@@ -420,4 +478,43 @@ func (s *Session) dump(c chat.Completion) {
 	if err := os.WriteFile(name, b, 0o644); err != nil && s.cfg.Log != nil {
 		fmt.Fprintln(s.cfg.Log, "agent:", err)
 	}
+}
+
+// has reports whether a tool is offered.
+func (s *Session) has(name string) bool {
+	for _, t := range s.tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCall reports whether a tool is among the calls.
+func hasCall(tcs []chat.ToolCall, name string) bool {
+	for _, tc := range tcs {
+		if tc.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// searchCall is a call of search with the query, as the model would make it.
+func searchCall(query string) chat.ToolCall {
+	var tc chat.ToolCall
+	tc.ID, tc.Type, tc.Function.Name = "call_search", "function", "search"
+	args, _ := json.Marshal(map[string]string{"query": query})
+	tc.Function.Arguments = string(args)
+	return tc
+}
+
+// firstLine is the first line of a task, cut to 100 characters: the query of the search made
+// for it.
+func firstLine(task string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(task), "\n")
+	if r := []rune(line); len(r) > 100 {
+		line = string(r[:100])
+	}
+	return line
 }

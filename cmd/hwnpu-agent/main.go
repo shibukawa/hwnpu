@@ -19,6 +19,14 @@
 // -think-budget tokens so that it answers, a call it makes twice is not run again, and an
 // answer it repeats ends the task.
 //
+// A fifth tool, search, looks facts up, which a 1.7B model recalls badly: -tools search
+// alone makes an assistant that answers from what it finds, and -search-first searches
+// before the model answers each task, with a query it writes for the task, so that the
+// search is not left to its judgment. -search picks Wikipedia (no key), the Brave Search
+// API (BRAVE_API_KEY) or a SearXNG instance for the web.
+//
+//	hwnpu-agent -tools search -search-first -think=false
+//
 // The model is -use, prepared like hwnpu-chat's (downloaded and converted into -dir on the
 // first run, with a context of -context tokens). -tools offers fewer tools, -system replaces
 // the opening of the system prompt, and -dump writes each request and answer as JSON.
@@ -51,7 +59,9 @@ func main() {
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	promptDir := flag.String("prompt-cache", "", "keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)")
 	workDir := flag.String("C", ".", "the working directory of the agent")
-	tools := flag.String("tools", strings.Join(agent.Names, ","), "the tools to offer, comma separated")
+	tools := flag.String("tools", strings.Join(agent.DefaultTools, ","), "the tools to offer, comma separated: "+strings.Join(agent.Names, ", ")+" (search alone makes an assistant that looks facts up)")
+	search := flag.String("search", "wikipedia", "what the search tool searches: wikipedia, brave (the key in BRAVE_API_KEY), or the URL of a SearXNG instance such as http://localhost:8888")
+	searchFirst := flag.Bool("search-first", false, "search before the model answers each task, with a query it writes for the task, so that the facts are in front of it (search must be among -tools)")
 	system := flag.String("system", "", "a file whose text replaces the opening of the system prompt")
 	yes := flag.Bool("yes", false, "run commands and change files without asking")
 	think := flag.Bool("think", true, "let the model think before each answer")
@@ -100,6 +110,13 @@ func main() {
 	if b, err := os.ReadFile(filepath.Join(work, "AGENTS.md")); err == nil {
 		instructions = string(b)
 	}
+	searcher, err := agent.NewSearcher(*search, os.Getenv("BRAVE_API_KEY"))
+	if err != nil {
+		fail(err)
+	}
+	if *searchFirst && !slices.Contains(strings.Split(*tools, ","), "search") {
+		fail(errors.New("-search-first needs search among -tools"))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	m, err := chat.Resolve(ctx, *use, *dir, os.Stderr)
@@ -142,6 +159,7 @@ func main() {
 		Dir: work, Tools: strings.Split(*tools, ","), System: opening, Instructions: instructions,
 		Think: *think, KeepThinking: *keep, ThinkBudget: *thinkBudget, Sampling: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep},
 		MaxTokens: *maxNew, Reserve: *maxNew, Steps: *steps, Dump: *dump, Log: os.Stderr,
+		Search: searcher, SearchFirst: *searchFirst,
 	}
 	if *allow != "" {
 		cfg.AllowList = strings.Split(*allow, ",")
