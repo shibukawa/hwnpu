@@ -371,8 +371,10 @@ func (r *run) Submit() (backend.Fence, error) {
 			return nil, errors.New("amd: previous submission is still running")
 		}
 	}
+	// A buffer argument left unset is passed as address 0, as XRT does: aiecc always declares
+	// five buffer slots (bo0..bo4) and IRON designs use only some of them.
 	for _, a := range r.kernel.Args {
-		if !r.set[a.Index] {
+		if !r.set[a.Index] && !a.IsBuffer() {
 			return nil, fmt.Errorf("amd: argument %d (%s) is not set", a.Index, a.Name)
 		}
 	}

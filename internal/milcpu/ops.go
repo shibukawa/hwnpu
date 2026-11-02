@@ -125,7 +125,7 @@ func (r *reader) str(name, def string) string {
 	return v.s
 }
 
-func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, error) {
+func (p *Program) eval(op *milspec.Operation, vals map[string]*value, opts Options) (*value, error) {
 	r := &reader{p: p, op: op, vals: vals}
 	var out *value
 	switch typ := op.GetType(); typ {
@@ -185,7 +185,9 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 	case "linear":
 		x, w := r.floats("x"), r.floats("weight")
 		b := r.opt("bias")
-		if r.err == nil {
+		if r.err == nil && opts.Q4NXKernel && w.q4 != nil {
+			out, r.err = linearQ4NX(x, w, b, opts.Q4NXFloor)
+		} else if r.err == nil {
 			out, r.err = linear(x, w, b)
 		}
 	case "matmul":
@@ -1026,5 +1028,6 @@ func shiftScale(data, scale, offset *value) (*value, error) {
 		}
 		out.f[i] = v * scale.f[blocks[i]]
 	}
+	out.q4 = asQ4NX(data, scale, offset)
 	return out, nil
 }

@@ -99,19 +99,26 @@ func (d Dev) CreateBO(typ uint32, size int) (BO, error) {
 }
 
 // Info refreshes MapOffset and XdnaAddr. With PASID the device address of a host buffer is
-// its user address, so call it again after mapping.
+// its user address: the driver reports xdna_addr as invalid for BO_SHARE and returns the user
+// address in vaddr once the buffer is mapped, so call it again after mapping.
 func (d Dev) Info(bo *BO) error {
 	arg := GetBOInfo{Handle: bo.Handle}
 	if err := d.ioctl("GET_BO_INFO", IoctlGetBOInfo, unsafe.Pointer(&arg)); err != nil {
 		return err
 	}
 	bo.MapOffset, bo.XdnaAddr = arg.MapOffset, arg.XdnaAddr
+	if bo.XdnaAddr == InvalidAddr {
+		bo.XdnaAddr = arg.VAddr
+	}
 	return nil
 }
 
-// Sync flushes or invalidates CPU caches for a range of a buffer object.
+// Sync flushes or invalidates CPU caches for a range of a buffer object. The driver writes back
+// and invalidates the range (clflush) whatever the direction, and since Linux 7.0 the
+// FROM_DEVICE direction also asks the firmware to sync a debug BO, failing with EINVAL for any
+// other BO. Both directions are therefore sent as TO_DEVICE, as the XRT shim does.
 func (d Dev) Sync(handle uint32, dir uint32, off, n int) error {
-	arg := SyncBO{Handle: handle, Direction: dir, Offset: uint64(off), Size: uint64(n)}
+	arg := SyncBO{Handle: handle, Direction: SyncToDevice, Offset: uint64(off), Size: uint64(n)}
 	return d.ioctl("SYNC_BO", IoctlSyncBO, unsafe.Pointer(&arg))
 }
 

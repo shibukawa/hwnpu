@@ -864,7 +864,7 @@ AMD バックエンドは未実装なので、Intel (偽のドライバで検証
 | 項目 | 内容 |
 |---|---|
 | デバイスヒープ | `BO_DEV_HEAP` は `AIE2_DEVM_SIZE` (64 MiB) の倍数。npu1 は拡張不可 (最大 64 MiB)、npu4 以降は 512 MiB まで。BO_DEV を作る前にマップが必要 (無いと `EAGAIN`)。BO_DEV の CPU アドレスはヒープのマップ先からの差で決まり、BO_DEV 自体はマップできない |
-| デバイスアドレス | BO_DEV はヒープ内 (`0x4000000` 起点)。BO_SHARE は PASID 有効時はマップ後のユーザーアドレス。hwnpu はマップ後に `GET_BO_INFO` を取り直す |
+| デバイスアドレス | BO_DEV はヒープ内 (`0x4000000` 起点)。BO_SHARE は PASID 有効時はマップ後のユーザーアドレス (`xdna_addr` ではなく `vaddr` に返る。16.39)。hwnpu はマップ後に `GET_BO_INFO` を取り直す |
 | CU の設定 | `CONFIG_HWCTX(CONFIG_CU)` の `cu_bo` は BO_DEV (PDI を置く)。再設定は不可 |
 | PDI の選択 | xclbin の EMBEDDED_METADATA の `extended-data dpu_kernel_id` を AIE_PARTITION の CDO グループの `dpu_kernel_ids` と照合 (XRT shim と同じ)。AIE_PARTITION 内のオフセットはセクション先頭からの相対 |
 | コマンド | xclbin 経路の DPU カーネルは `ERT_START_CU`、`type = ERT_CU`、CU マスク 1 語のあとに、メタデータの `offset` / `size` どおりに引数を並べたレジスタマップ。バッファ引数は BO のデバイスアドレス |
@@ -1477,3 +1477,58 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 - 検証 (CPU インタプリタ、小さな LFM3): `TestEngineStore` (印 8 トークンごと、保存は 8 トークン以上、4 項目で 2 本まで): 再起動後に 20 トークン共通のプロンプトが印 16 から戻って残りを読む。分かれた系列は自分の項目を持ち、共通部分の印 (8、16) を引き継ぐ。続きで行と印が増える。再起動後の同じプロンプトは何も読まない。3 本目で最も古い項目が消え、消えた項目の先頭は分かれた系列の項目から戻る。短いプロンプトは保存しない。各点のロジットは最初から読んだときと相対誤差 2e-3 以内。`TestResume`: 別の系列の行では誤差が 1e-2 を超え、行の不足、印の大きさの違い、印の欠けはエラー
 - 費用の見込み (M3、LFM3-1.7B、未計測): 行が 1 トークン 12 KiB、印が 512 ごとに 2〜3 MB (6 KiB/トークン) で、16K で約 300 MB、OpenCode の 7.4K で約 130 MB。戻すのは SSD から 0.1 秒以下で、印から最大 512 トークンを読み直す (16K の容量で約 1 秒)。初回の 13〜17 秒が 1 秒台になる見込み。書き込みは系列の続きなら差分だけだが、新しい系列は全部を書く。Gemma 4 E2B は印が 7 MB (リング 12 層) なので 512 ごとで 14 KiB/トークン
 - 残り: 退避した系列 (`Save`) もストアに置いてプロセスから外す。印の間隔と系列の数の既定は実機で測って決める。int8 で半分にする (写しには費用がない)
+
+### 16.39 Ryzen AI の実機 (Ubuntu 26.04、mainline の amdxdna) で IRON のカーネルが動いた — 2026-11-02
+
+- 機械: Ryzen AI 9 365 (Strix Point、`1022:17f0` rev `0x10`、npu4、8 列 × 4 コア行、AIE 1.1)、Ubuntu 26.04.1、カーネル 7.0.0-42-generic。ドライバはカーネル同梱の `amdxdna` 0.7.0、ファームウェアは `linux-firmware` の `amdnpu/17f0_10/npu_7.sbin` (版は 1.1.2.64)。PPA、DKMS、XRT は入れていない
+- 権限: `/dev/accel/accel0` は `root:render 0660` に加えて、systemd-logind (uaccess) がログイン中の利用者に ACL で読み書きを与える。デスクトップで使うなら `render` グループへの追加は要らない (SSH だけのログインでは要る)
+- `hwnpuinfo`: `AMD NPU npu4 (Strix Point), 8 columns`、`firmware: 1.1.2.64`。列挙、メタデータ、ファームウェア版は動いた
+- `cmd/report` (カーネル無し): **`SYNC_BO(FROM_DEVICE)` が `EINVAL`**。7.0 の `amdxdna_drm_sync_bo_ioctl` は方向に関係なく clflush (書き戻しと無効化) をしたうえで、FROM_DEVICE のときだけ `amdxdna_hwctx_sync_debug_bo` を呼ぶ。これはハードウェアコンテキストに付けたデバッグ BO 向けで、それ以外の BO は `EINVAL`。キャッシュの処理は TO_DEVICE と同じなので、`xdna.Dev.Sync` は両方向とも TO_DEVICE で送るようにした。xdnasim も FROM_DEVICE を `EINVAL` にして同じ誤りを捕まえる。修正後はホストバッファの確保と同期、デバイスヒープの命令バッファとも合格
+- 電力: mainline 7.0 の `aie2_get_info` には `QUERY_SENSORS` が無い (AMD の DKMS 版ドライバにだけある)。`PowerSample` は `ErrUnsupported` で、report は SKIP。NPU だけの電力を mainline で取る口は今のところ無い
+- **カーネルの実行**: mlir-aie v1.4.4 (cp314 の wheel) と Peano (`utils/peano-requirements.txt` で固定された llvm-aie の nightly) を venv に入れ、IRON の `passthrough_dmas` を `-d npu2 -n 4096` でビルド。AIE コアを使わない設計でも aiecc は Peano を要求する
+  - **xclbinutil が無い**: aiecc は最後に XRT の `xclbinutil` で xclbin をまとめる (`--add-replace-section MEM_TOPOLOGY:JSON:...`、`--add-kernel kernels_main.json`、`--add-replace-section AIE_PARTITION:JSON:partition_main.json`)。XRT を入れずに済むよう、同じ引数を受け付ける `cmd/hwnpu-xclbin` を作った (`AIE_XCLBINUTIL` で aiecc に渡す)。JSON を `xclbin.SpecFromAiecc` で `Spec` にして `Build` する。引数の大きさはポインタと 64 bit が 8、ほかは 4 (opcode 0x00/8、instr 0x08/8、ninstr 0x10/4、bo0..bo4 は 0x14 から 8 ずつ)。MEM_TOPOLOGY は NPU では使わないので読み捨てる。aiecc v1.4.4 の JSON を `internal/xclbin/testdata/aiecc` に置いた
+  - **未設定のバッファ引数**: aiecc はバッファ引数を常に 5 個 (bo0..bo4) 宣言し、passthrough は 3 個しか使わない。XRT と同じく、設定されていないバッファ引数はアドレス 0 で送るようにした (スカラーは今までどおり設定を必須にする)
+  - **共有 BO のデバイスアドレス**: 最初の実行はコマンドが `COMPLETED` で返ったのに出力が 0 のままで、dmesg に `IO_PAGE_FAULT address=0x0..0x3000` (読み 0x0007 と書き 0x0027)。7.0 の BO_SHARE は `dev_addr` が常に `AMDXDNA_INVALID_ADDR` で、PASID のもとでデバイスが使うのは mmap 後に `vaddr` (`mem.userptr`) として返るユーザーアドレス。16.5 で「BO_SHARE の xdna_addr はマップ後のユーザーアドレス」としていたのは誤り。`xdna.Dev.Info` は `xdna_addr` が無効なら `vaddr` を使う。xdnasim も共有 BO の `xdna_addr` を無効にし、マップ後のアドレスで DMA を解決する
+  - **結果**: `cmd/report` の 4 項目のうち電力センサー以外が合格。passthrough (16 KiB) は出力が入力と一致し、最初の実行 0.16 ms、中央値 0.077 ms、最小 0.065 ms (`EXEC_CMD` から syncobj の待ちまで)。hwctx の作成と CU 設定は 1.5 ms。CU 設定 (`CONFIG_CU`)、`ERT_START_CU` のレジスタマップ、syncobj での待ちは 16.5 の読みどおりだった
+- 残り: AIE コアを使う設計 (`vector_scalar_mul` など) を `cmd/report` か統合テストに足す。npu1 (Phoenix、Hawk Point) と AMD の DKMS 版ドライバでの確認
+
+### 16.40 本物の xclbinutil との突き合わせ — 2026-11-02
+
+- 道具: AMD の PPA (`amd-team/xrt`、resolute) の `libxrt-utils` と `libxrt2` (2.25.0)、Ubuntu の `libboost-filesystem1.90.0` と `libboost-program-options1.90.0` の .deb を scratchpad に `dpkg-deb -x` で展開し、`LD_LIBRARY_PATH` を付けて `xclbinutil` だけを動かした。apt では入れず、システムとドライバは 16.39 のまま (PPA の `amdxdna-dkms` は 7.0.0-rc1 で、カーネル同梱のドライバを置き換えるので避けた)
+- 同じ `passthrough_dmas` (npu2、4096) を本物の `xclbinutil` でまとめた。命令列は 16.39 と同一。xclbin は 7 セクション (MEM_TOPOLOGY、AIE_PARTITION、EMBEDDED_METADATA、IP_LAYOUT、CONNECTIVITY、GROUP_CONNECTIVITY、GROUP_TOPOLOGY、7290 バイト)。`hwnpu-xclbin` は 3 セクション (3128 バイト)
+- **xclbinutil から見た違い** (`--dump-section` で両方を JSON にして比較): 引数の大きさ (ポインタと 64 bit が 8、ほかは 4)、kernel id、functional、CDO グループ、PDI は一致。違いは hwnpu も driver も使わないものだけ:
+  - IP_LAYOUT の `m_base_address` が xclbinutil では `~0` (`not_used`)。`Build` も `~0` を書くように直した
+  - AIE_PARTITION の `inference_fingerprint` / `pre_post_fingerprint` (aiecc の固定値 23423 / 12345) と CDO グループの `pre_cdo_groups` (`0xC1`。この xclbin にその番号のグループは無い) を `hwnpu-xclbin` は書かない
+  - メタデータの XML の書き方 (`subtype="1"`、`<instance>`)。hwnpu が読む属性は同じ
+  - 本物の `xclbinutil --info` は `hwnpu-xclbin` の出力を問題なく読む
+- **hwnpu から見た違い**: 本物の xclbin を `xclbin.Parse` で読んだ結果 (カーネル、引数、CU、パーティション、PDI のバイト列) は、同じ JSON から `SpecFromAiecc` + `Build` で作った xclbin を読んだ結果と、UUID を除いて完全に一致。これまで `Parse` は自分の `Build` の出力でしか試していなかったので、本物の配置 (セクションの順序、余分なセクション) を読めることの初めての確認。`internal/xclbin/testdata/aiecc` に本物の xclbin、PDI、JSON を置き、`TestParseXclbinutilOutput` と `TestSpecFromAiecc` で固定した
+- **実機**: 両方の xclbin を `cmd/report -n 200` で実行し、どちらも合格。本物: 初回 0.15 ms、中央値 0.072 ms、最小 0.061 ms。`hwnpu-xclbin`: 初回 0.12 ms、中央値 0.071 ms、最小 0.061 ms。差は計測の揺れの範囲
+- 7.0 の firmware 機能表 (`npu4_fw_feature_table`): FW の major 7 で `AIE2_NPU_COMMAND`、`AIE2_PREEMPT`、`AIE2_TEMPORAL_ONLY` が全部立つ。`ERT_START_CU` と `ERT_START_NPU` はどちらも受け付けられ、プリエンプション付きの `ERT_START_NPU_PREEMPT(_ELF)` は鎖 (`ERT_CMD_CHAIN`) の中でだけ使える
+
+### 16.41 XDNA2 のデータ型と性能のベンチマーク、デバイスを開くときの EINTR — 2026-11-02
+
+- IRON のサンプル (行列積 `whole_array`、bfp16 の `whole_array`、8 列の memcpy) を npu2 向けにビルドし、hwnpu の公開 API で動かして IRON の参照実装と照合した。結果と読み方は [amd-xdna2-bench.md](amd-xdna2-bench.md)、手順とスクリプトは `tools/iron` (Go の実行器 `tools/iron/ironbench`、`bench.sh`)
+- 要点: DMA は 64 GB/s (読み + 書き)。4096³ の行列積は int8 7.3〜7.6 TOPS、int16 5.0〜5.6、bf16 2.7〜3.0 TFLOPS、bf16 を bfp16 で代用 5.6、bfp16 5.9 (2048³ で 8.3)。ピーク (1.8 GHz × 32 コア、1 サイクル 1 MMUL) の 1〜4 割で、コア内の計算が律速。生成の形 (M = 64) では重みを int8 で 14 GB/s、bf16 で 27 GB/s しか読めず、1.7B で 1 トークン約 120 ms の見込み。生成専用の GEMV カーネルが要る。bf16 → bf16 と bfp16 → bfp16 は K が長いと許容誤差を外れる (C を出力型で足すため)
+- **デバイスを開くときの EINTR**: 大きなバッファの実行で 2 回、`interrupted system call` がそのまま返った。dmesg は `amdxdna_drm_open: SVA bind device failed, ret -4`。`open` がアドレス空間を IOMMU に結び付ける途中で Go のプリエンプションのシグナルを受けると `EINTR` になる。`xdna.OpenNode` は `syscall.Open` を再試行していなかったので、`EINTR` なら開き直すようにした (ioctl は 16.5 から再試行している)。修正後、続けて 100 回起動して失敗なし
+- **CREATE_HWCTX のまれな EINVAL (未解決)**: 続けて起動したとき約 125 回に 1 回、ファームウェアがデバイスヒープの登録 (`MAP_HOST_BUFFER`、0x106) を状態 0x4000003 で拒否した。再現は 1 回だけ。原因が分かるまで再試行は入れない
+
+### 16.42 XDNA2 の片方向の DMA 帯域と 4 bit — 2026-11-02
+
+- 読みだけ (DDR → コア、コアは受け取って返すだけ) は 64 MiB で 54 GB/s、256 MiB で 57 GB/s。書きだけは 48 GB/s。DMA 1 本は 14 GB/s で、8 本 (4 列 × 2 チャネル) で頭打ち。読み書き同時 (memcpy) は計 64 GB/s。生成の上限は読みの 55〜57 GB/s で、M3 の Neural Engine の係数 65 GB/s に近い
+- 4 bit: XDNA2 には int8 × int4 の MMUL がある (AIE API)。mlir-aie v1.4.4 は FastFlowLM の Gemma 4 の生成用カーネル (`aie_kernels/flm_gemma4`、q4nx: 32 個ごとに bf16 の scale と min、5 bit/重み) と q4nx → bfp16 の `q4nx_dequant` を含む。`q4nx_dequant` は 1 コア 6.5 G 重み/秒で、32 コアなら読みの帯域で流せる q4nx (88 G 重み/秒) の 2.4 倍。生成は帯域で決まり、1.7B の 1 トークンの下限は q4nx 19 ms、int8 31 ms、bf16 62 ms。詳細は [amd-xdna2-bench.md](amd-xdna2-bench.md) の 4.6 と 4.7、スクリプトは `tools/iron/dma_bw.py` と `q4deq.py`
+- 次: `q4nx_accumulate` を使う生成用の設計で、q4nx の読みが 55 GB/s に近づくか測る
+
+### 16.43 4 bit の生成用 GEMV が読みの帯域に届いた — 2026-11-02
+
+- FastFlowLM の `q4nx_accumulate` (mlir-aie の `aie_kernels/flm_gemma4/q4nx.h`) を 32 × 256 の塊ごとに呼ぶ小さなカーネルと、8 列 × 4 コアの設計を作った (`tools/iron/q4gemv.py`、`q4gemv.cc`)。重みは列ごとに memtile で 4 コアに分け、x は memtile から同報、y は memtile で集める。float64 の W x と比べた誤差は出力の最大値の 0.5〜0.7%
+- 重み 40〜80 MiB で 52〜55 GB/s (84〜87 G 重み/秒)。読みだけの DMA の上限 (16.42、55〜57 GB/s) にほぼ届く。16 コア (8 列 × 2) で足り、8 コアは計算で 41 G 重み/秒、4 列は DMA で 42 GB/s に頭打ち。1 回 ≈ 0.06 ms + バイト数 ÷ 55 GB/s
+- 1.7B を q4nx (1.06 GB) にすると重みの読みで 19 ms/トークン。呼び出しを層ごとに 1 回にまとめれば 21 ms 前後で、M3 の LFM3-1.7B (lut4、26.5 ms、16.37) と同じ水準。AMD の生成の重みは q4nx にする方針。詳細は [amd-xdna2-bench.md](amd-xdna2-bench.md) 4.8
+
+### 16.44 q4nx の書き出しと精度、カーネルの丸めの影響、1 層を 1 回の呼び出しに — 2026-11-03
+
+- **q4nx の書き出し**: `palette.QuantizeQ4NX` (32 列ごとに bf16 の scale と min、既定で範囲の切り詰めを探す)、`palette.Q4NX.Blocks` (カーネルの 32 × 256 の塊)。`blocks.matrix` の `q4nx` は `mlpackage.Builder.UInt4ShiftScaled` (uint4 の値、fp16 の scale と offset = -min / scale の `constexpr_blockwise_shift_scale`) で、CPU のインタプリタと Mac で動く。`llm.Options.Q4NX` で行列を受け取り、`hwnpu-convert` が `OUT.q4nx` (64 バイト境界) と `OUT.q4nx.json` を書く。重複 (段階ごと) は 1 回、塊に切れない行列 (LFM3 の注意の gate_proj、16 行) は索引の `unblocked` に載せるだけ。Intel では使えない (`ovlower` が offset を扱わない)。LFM3-1.7B で 13 秒、1030 MiB
+- **精度** (LFM3-1.7B、24 トークン、bf16 の PyTorch に対し CPU で): q4nx KL 0.381 (argmax 15/24)、Mac の lut4 (`kmeans-minmax`) 0.855 (10/24)、lut6 0.160 (17/24)、fp16 0.0002。q4nx の `-quant uniform` は 0.448。lut4 の `-quant uniform` は 3.76 で、MODEL.md の 0.95 は `kmeans-minmax` の値
+- **カーネルの丸め**: `milcpu.Options.Q4NXKernel` (と `Q4NXFloor`)、`hwnpu-check -q4nx-kernel -q4nx-floor`。q4nx の `constexpr_blockwise_shift_scale` (0..15 の値と浮動小数の offset、32 列ごと) を見分けて、linear をカーネルの算術 (x を bf16、32 列ごとの部分和を bf16 に丸めてから scale、x の和も bf16) で計算する。NPU の GEMV の出力は floor のモデルと 9e-8 で一致し、最近接とは 0.7% 違う (コアの既定の丸めが負の無限大向き)。KL は 0.381 → 0.394 (floor)、0.376 (最近接)。argmax は同じ。カーネルの 0.5〜0.7% は量子化の誤差 (層ごとに 5〜11%) に埋もれる
+- **1 層を 1 回の呼び出しに**: `tools/iron/lfm3conv.py` と `lfm3conv.cc`。LFM3 の畳み込み層の生成 1 ステップ (ノルム 4 つ、in_proj、ゲート付き畳み込み、out_proj、SwiGLU、残差 2 つ) を 8 列 × 2 コアで。コアはチャネルを分け持ち、ノルムは全コアが全体で計算し、ステージの間は DDR の作業領域を介して同報する (1 つの実行時シーケンスの中)。0.876 ms (重み 40 MB、読みの下限の 83%)。4 つの積を別々に呼ぶと積だけで 1.016 ms。層 0 の本物の重みで、コアの算術のモデルに対して 1.1% (SiLU の組み込み tanh から。他の段はモデルと一致)、bf16 の重みの層に対して 9.7% (q4nx の量子化)。プログラムメモリ 16 KiB、グローバル変数の連続領域 (約 15 KiB)、shim の BD 16 個、起動時の floor 丸めに当たった。詳細は [amd-xdna2-bench.md](amd-xdna2-bench.md) 4.9 と 4.10
+- 環境: `/tmp` は tmpfs で再起動で消えるので、torch (参照用) と mlir-aie の環境、モデルは `~/.cache/hwnpu/dev` と `~/.cache/hwnpu/models` に置いた
+- 次: 注意層を 1 回の呼び出しに、層を並べた生成 (同じ形の層は 1 つの設計を重みの位置だけ変えて使う、または `ERT_CMD_CHAIN`)、SiLU を exp2 から

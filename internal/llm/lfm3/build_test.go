@@ -222,6 +222,9 @@ func TestCPUVariants(t *testing.T) {
 	if e := relErr(runCPU(t, cfg, w, Options{Seq: seq}, emb), ref); e > 0.2 || e == 0 {
 		t.Errorf("lut4: relative error %g against fp16, expected small but not zero", e)
 	}
+	if e := relErr(runCPU(t, cfg, w, Options{Seq: seq, Format: "q4nx"}, emb), ref); e > 0.2 || e == 0 {
+		t.Errorf("q4nx: relative error %g against fp16, expected small but not zero", e)
+	}
 }
 
 // The model split into parts, a package each, computes exactly what it computes in one part when

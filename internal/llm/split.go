@@ -168,13 +168,17 @@ func EstimateBytes(m Model, opts Options) (pre int64, layers []int64, post int64
 
 // tensorBytes is the stored size of a tensor as blocks.Weight writes a matrix (lutN: N bit
 // indices and a 2^N entry fp16 table per Group rows and ColBlock columns; intN: N bit integers
-// and an fp16 scale per block) and other tensors (fp16).
+// and an fp16 scale per block; q4nx: 4 bit codes and an fp16 scale and offset per 32 columns)
+// and other tensors (fp16).
 func tensorBytes(name string, shape []int, o Options) int64 {
 	n := int64(1)
 	for _, d := range shape {
 		n *= int64(d)
 	}
 	format := o.FormatOf(name)
+	if format == "q4nx" && len(shape) == 2 {
+		return n/2 + n/32*4 // codes, then an fp16 scale and offset per 32 columns
+	}
 	if b, block, ok := LinearFormat(format); ok && len(shape) == 2 {
 		rows, cols := int64(shape[0]), int64(shape[1])
 		if block <= 0 {

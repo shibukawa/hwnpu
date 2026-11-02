@@ -161,7 +161,8 @@ func IntelFormat(f string) string {
 	return f
 }
 
-// checkIntelFormats rejects lookup table weights, which Intel's NPU cannot run.
+// checkIntelFormats rejects lookup table weights, which Intel's NPU cannot run, and q4nx, whose
+// offsets internal/ovlower does not lower.
 func checkIntelFormats(o Options) error {
 	formats := []string{o.Format}
 	for _, r := range o.FormatFor {
@@ -169,7 +170,7 @@ func checkIntelFormats(o Options) error {
 		formats = append(formats, f)
 	}
 	for _, f := range formats {
-		if strings.HasPrefix(f, "lut") || f == "" {
+		if strings.HasPrefix(f, "lut") || f == "" || f == "q4nx" {
 			return fmt.Errorf("llm: weight format %q does not run on Intel's NPU; use int4, int4-g128, int8 or fp16 (%s for %s)", f, IntelFormat(f), f)
 		}
 	}

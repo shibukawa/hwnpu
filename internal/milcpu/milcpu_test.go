@@ -342,3 +342,35 @@ func TestConstexprWideTables(t *testing.T) {
 		}
 	}
 }
+
+// q4nx as constexpr_blockwise_shift_scale with a float offset reads back the q4nx weights: the
+// fp16 offset (-min / scale) moves a weight by far less than a step of its group.
+func TestConstexprQ4NX(t *testing.T) {
+	rows, cols := 8, 64
+	w := make([]float32, rows*cols)
+	for i := range w {
+		w[i] = float32(math.Sin(float64(i)*0.7))*0.05 + 0.01
+	}
+	eye := make([]float32, cols*cols)
+	for i := 0; i < cols; i++ {
+		eye[i*cols+i] = 1
+	}
+	q := palette.QuantizeQ4NX(w, rows, cols, true)
+	want := q.Dequantize()
+	got := run(t, []int{cols, cols}, eye, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+		scales, offsets := q.ShiftScale()
+		v, err := b.UInt4ShiftScaled("w", []int{rows, cols}, []int{1, palette.Q4NXGroup}, q.Codes, scales, offsets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b.Op("linear", map[string]any{"x": x, "weight": v}, mlpackage.Float16, cols, rows)
+	})
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			step := palette.BF16Value(q.Scales[r*(cols/palette.Q4NXGroup)+c/palette.Q4NXGroup])
+			if d := math.Abs(float64(got.Data[c*rows+r] - want[r*cols+c])); d > 0.01*float64(step) {
+				t.Fatalf("(%d, %d) = %g, want %g (step %g)", r, c, got.Data[c*rows+r], want[r*cols+c], step)
+			}
+		}
+	}
+}

@@ -2,7 +2,7 @@
 
 AMD Ryzen AI プロセッサ（XDNA NPU を積んだ Phoenix、Hawk Point、Strix Point、Krackan Point 以降）を載せた Linux 機で、hwnpu から NPU を使えるようにする手順です。小さなテスト用の設計をビルドし、動作を確かめるところまで扱います。
 
-> **現状。** AMD バックエンドは、カーネルと XRT のソースをもとに作った、amdxdna ドライバを模した偽のドライバでしか試していません。実機で手順 4 の `cmd/report` を実際の設計付きで実行し、結果の報告を送っていただけるのがいちばん助かります。
+> **現状。** Ryzen AI 9 365（Strix Point、npu2 向けの設計）と Ubuntu 26.04 のカーネル同梱ドライバで、`cmd/report` が IRON の passthrough 設計を実行し、出力が一致することを確かめました。Phoenix と Hawk Point（npu 向けの設計）、AMD の DKMS 版ドライバはまだ試していません。実機で手順 4 の `cmd/report` を実際の設計付きで実行し、結果の報告を送っていただけるのがいちばん助かります。
 
 English: [INSTALL_AMD.md](INSTALL_AMD.md)
 
@@ -31,7 +31,23 @@ hwnpu は、Linux のカーネルドライバ **amdxdna** を `ioctl` と `mmap`
 
 Intel と違い、AMD の NPU はモデルを受け取りません。IRON / mlir-aie でビルドしたカーネルを実行します。カーネルは、AIE アレイの構成とカーネルの情報をまとめた **xclbin** と、**命令列**（`insts.bin`）の組です。
 
-## 1. ドライバとファームウェア（Ubuntu 24.04）
+## 1. ドライバとファームウェア
+
+### Ubuntu 26.04
+
+Ubuntu 26.04 のカーネル（7.0）には `amdxdna` ドライバが入っていて、NPU のファームウェアも `linux-firmware` に含まれるので、hwnpu のために入れるものはありません。デバイスがあることを確かめます。
+
+```bash
+ls -l /dev/accel/
+```
+
+```bash
+sudo dmesg | grep -i amdxdna
+```
+
+デスクトップにログインしていれば、systemd-logind がその利用者に `/dev/accel/accel0` の読み書きを与えます。SSH だけで使う場合は、下の手順で `render` グループに加えてください。カーネル同梱のドライバは NPU の電力センサーを返さないので、`cmd/report` はその項目を飛ばします。手順 2 に進んでください。
+
+### Ubuntu 24.04
 
 BIOS を最新にし、BIOS で NPU（IPU と表記されることもあります）が有効になっていることを確かめてください。mlir-aie の手順では、DKMS のドライバモジュールを読み込めるよう、セキュアブートを無効にすることも勧めています。
 
@@ -85,7 +101,7 @@ xrt-smi examine
 
 ## 2. テスト用の設計をビルドする
 
-`cmd/report` は IRON のサンプル `passthrough_dmas` を実行します。このサンプルは NPU の DMA でバッファを写すだけなので、AIE コア用のコンパイラが要りません。mlir-aie の README のとおりに IRON を準備します。
+`cmd/report` は IRON のサンプル `passthrough_dmas` を実行します。このサンプルは NPU の DMA でバッファを写すだけで AIE コアを使いませんが、aiecc は Peano（llvm-aie）を必要とします。Peano は `env_install.sh` が入れます。mlir-aie の README のとおりに IRON を準備します。
 
 ```bash
 git clone https://github.com/Xilinx/mlir-aie.git
@@ -118,6 +134,22 @@ python3 passthrough_dmas.py --dev npu --xclbin-path final.xclbin --insts-path in
 ```
 
 この設計は int32 を 4096 個（16384 バイト）写します。これは `cmd/report` の既定値と同じです。別の `-n` でビルドしたときは、報告プログラムに `-bytes` で大きさを渡してください。
+
+### XRT なしでビルドする
+
+aiecc は xclbin を XRT 付属の `xclbinutil` でまとめます。XRT が無い環境（カーネル同梱ドライバだけの Ubuntu 26.04 など）では `tool 'xclbinutil' not found` で止まります。hwnpu には同じ引数を受け付ける代わりのプログラムがあるので、hwnpu のチェックアウト（手順 3）でビルドし、aiecc に場所を教えます。
+
+```bash
+go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-xclbin
+```
+
+```bash
+AIE_XCLBINUTIL=~/.local/bin/hwnpu-xclbin python3 passthrough_dmas.py --dev npu2 --xclbin-path final.xclbin --insts-path insts.bin
+```
+
+できる xclbin には hwnpu が読む部分（カーネルのメタデータ、計算ユニット、AIE パーティションと PDI）だけが入ります。XRT 向けではありません。
+
+`ensurepip` が無いと言われて `python3 -m venv` が失敗するときは、`python3-venv` を入れてください（`sudo apt install python3-venv`）。
 
 ## 3. hwnpu を取得する
 
@@ -154,6 +186,8 @@ go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power low -o low.md
 ```bash
 go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o performance.md
 ```
+
+Strix Point でのデータ型ごとの性能の実測と、そのスクリプトは [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) と [tools/iron](tools/iron/README.md) にあります。
 
 ## 5. 自分のカーネルを使う
 

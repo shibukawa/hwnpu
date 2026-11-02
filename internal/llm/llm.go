@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/shibukawa/hwnpu/internal/palette"
 )
 
 // Weights supplies tensors by their Hugging Face name (model.layers.3.self_attn.q_proj.weight) as
@@ -149,12 +151,15 @@ type Options struct {
 	// as "mlp=lut8"; the last that matches a tensor's name wins, and KeepFP16 over all.
 	FormatFor []string
 	// Quant selects the table fitting for lut4: "uniform" (default), "kmeans" or "kmeans-minmax";
-	// for intN, "mse" (default) searches the clipping point with the smallest squared error and
-	// "uniform" scales each block by its largest weight.
+	// for intN and q4nx, "mse" (default) searches the clipping point with the smallest squared
+	// error and "uniform" uses the block's whole range.
 	Quant string
 	// Backend is the runtime the program is written for: "coreml" (the default, an .mlpackage)
 	// or "intel" (OpenVINO IR for Intel's NPU, internal/ovlower).
 	Backend string
 	// Params holds the architecture's own settings by Param name; missing ones take the default.
 	Params map[string]string
+	// Q4NX, when set, receives every matrix written in the q4nx format (AMD's NPU), by the name
+	// of its constant, for writing the kernel's blocks next to the program.
+	Q4NX func(name string, q palette.Q4NX)
 }

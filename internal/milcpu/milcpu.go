@@ -38,6 +38,7 @@ type value struct {
 	b     []bool
 	s     string
 	str   bool
+	q4    *q4nxWeight // the codes of a q4nx weight, which f holds dequantized
 }
 
 func (v *value) tensor() Tensor { return Tensor{Shape: v.shape, Data: v.f} }
@@ -56,6 +57,15 @@ type Program struct {
 type Options struct {
 	// RoundF16 rounds every operation's result to fp16.
 	RoundF16 bool
+	// Q4NXKernel computes a linear whose weight is in the q4nx format (4 bit codes, a scale and
+	// a minimum per 32 columns, written as constexpr_blockwise_shift_scale with a float offset)
+	// with the arithmetic of the AMD NPU kernel (FastFlowLM's q4nx_accumulate) instead of in
+	// float32: x is rounded to bf16, each 32 column dot product of the codes is summed in fp32
+	// and rounded to bf16 before the scale multiplies it, and the sum of the 32 x is rounded to
+	// bf16 before the minimum does.
+	Q4NXKernel bool
+	// Q4NXFloor rounds those bf16 conversions toward minus infinity instead of to the nearest.
+	Q4NXFloor bool
 }
 
 // Load prepares the main function of prog. weights is the weight file the program's blob values
@@ -139,7 +149,7 @@ func (p *Program) Run(inputs map[string]Tensor, opts Options) (map[string]Tensor
 		vals[in.GetName()] = &value{shape: shape, f: t.Data}
 	}
 	for i, op := range p.ops {
-		out, err := p.eval(op, vals)
+		out, err := p.eval(op, vals, opts)
 		if err != nil {
 			return nil, fmt.Errorf("milcpu: %s %s: %w", op.GetType(), opName(op), err)
 		}

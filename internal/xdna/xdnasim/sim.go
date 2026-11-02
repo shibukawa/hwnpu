@@ -6,6 +6,9 @@
 //   - CONFIG_CU takes BO_DEV handles holding PDIs; a context is configured once
 //   - EXEC_CMD takes one CMD buffer object whose handle is passed by value, holding an
 //     ERT_START_CU packet; the CU index comes from the CU mask
+//   - host buffers (BO_SHARE) report no xdna_addr; the device address is the user address
+//     returned in vaddr after mmap (PASID), as in Linux 7.0
+//   - SYNC_BO with FROM_DEVICE fails for anything but a debug BO (Linux 7.0)
 //   - completion is signalled on the context's timeline syncobj at the returned sequence number
 //
 // The compute units themselves are simulated by the Exec callback.
@@ -118,6 +121,11 @@ func (s *Sim) Ioctl(req uintptr, arg unsafe.Pointer) error {
 		if b.mapped {
 			a.VAddr = uint64(uintptr(unsafe.Pointer(&b.mem[0])))
 		}
+		// Linux 7.0: host buffers have no device address of their own; with PASID the
+		// device uses the user address (vaddr).
+		if b.typ != xdna.BODev && b.typ != xdna.BODevHeap {
+			a.XdnaAddr = xdna.InvalidAddr
+		}
 		return nil
 	case xdna.IoctlSyncBO:
 		a := (*xdna.SyncBO)(arg)
@@ -126,6 +134,11 @@ func (s *Sim) Ioctl(req uintptr, arg unsafe.Pointer) error {
 			return syscall.ENOENT
 		}
 		if a.Offset >= uint64(len(b.mem)) || a.Direction > xdna.SyncFromDevice {
+			return syscall.EINVAL
+		}
+		// Linux 7.0: FROM_DEVICE syncs a debug BO attached to a hardware context, and fails
+		// for every other BO.
+		if a.Direction == xdna.SyncFromDevice {
 			return syscall.EINVAL
 		}
 		s.Syncs++
@@ -208,7 +221,7 @@ func (s *Sim) createBO(a *xdna.CreateBO) error {
 	if a.Type != xdna.BODev {
 		b.mapOffset = uint64(b.handle) << 32
 		if a.Type != xdna.BODevHeap {
-			b.devAddr = 0x1_0000_0000_0 + uint64(b.handle)<<28 // a DMA address
+			b.devAddr = xdna.InvalidAddr // the user address once mapped (Mmap)
 		}
 	}
 	if a.Type == xdna.BODevHeap {
@@ -229,6 +242,9 @@ func (s *Sim) Mmap(offset uint64, length int) ([]byte, error) {
 				return nil, syscall.EINVAL
 			}
 			b.mapped = true
+			if b.typ != xdna.BODevHeap {
+				b.devAddr = uint64(uintptr(unsafe.Pointer(&b.mem[0])))
+			}
 			return b.mem[:length:length], nil
 		}
 	}

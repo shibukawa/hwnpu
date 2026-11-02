@@ -13,6 +13,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/bert"
 	"github.com/shibukawa/hwnpu/internal/llm/check"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -53,14 +54,14 @@ func writeRef(t *testing.T, model llm.Model, w llm.Weights, ids []int32, prefix 
 	for i := 0; i < nl; i++ {
 		o := opts
 		o.Start, o.Layers, o.NoHead = i, 1, true
-		if h, err = buildRun(model, w, o, feed, h, t.TempDir(), false); err != nil {
+		if h, err = buildRun(model, w, o, feed, h, t.TempDir(), milcpu.Options{}); err != nil {
 			t.Fatal(err)
 		}
 		hidden = append(hidden, h...)
 	}
 	o := opts
 	o.Start = nl
-	logits, err := buildRun(model, w, o, feed, h, t.TempDir(), false)
+	logits, err := buildRun(model, w, o, feed, h, t.TempDir(), milcpu.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	first, err := checkModel(&out, model, w, ref, []int{0, 1, 2}, true, false, 1e-4, opts)
+	first, err := checkModel(&out, model, w, ref, []int{0, 1, 2}, true, milcpu.Options{}, 1e-4, opts)
 	if err != nil || first != -1 {
 		t.Fatalf("first bad layer %d, %v\n%s", first, err, &out)
 	}
@@ -112,7 +113,7 @@ func TestCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	first, err = checkModel(&out, model, w, ref, []int{0, 1, 2}, false, false, 1e-4, opts)
+	first, err = checkModel(&out, model, w, ref, []int{0, 1, 2}, false, milcpu.Options{}, 1e-4, opts)
 	if err != nil || first != 1 || strings.Count(out.String(), "<- over -tol") != 1 {
 		t.Errorf("first bad layer %d, %v\n%s", first, err, &out)
 	}
@@ -124,7 +125,7 @@ func TestCheck(t *testing.T) {
 	}
 	extra["model.layers.0.conv.in_proj.bias"] = []int{192}
 	out.Reset()
-	if _, err := checkModel(&out, model, extra, ref, nil, false, false, 1, opts); err != nil {
+	if _, err := checkModel(&out, model, extra, ref, nil, false, milcpu.Options{}, 1, opts); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "unused tensor: model.layers.0.conv.in_proj.bias") {
@@ -154,10 +155,10 @@ func TestCheckPackage(t *testing.T) {
 	if err := pkg.Finish(b.Finish(&mlpackage.Var{Name: y.Name}), 9, ins, []mlpackage.Feature{y}); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkPackage(dir, prefix, true); err != nil {
+	if err := checkPackage(dir, prefix, milcpu.Options{RoundF16: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkPackage(dir, filepath.Join(t.TempDir(), "none"), false); err == nil {
+	if err := checkPackage(dir, filepath.Join(t.TempDir(), "none"), milcpu.Options{}); err == nil {
 		t.Error("missing reference accepted")
 	}
 }
@@ -178,7 +179,7 @@ func TestCheckEncoder(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	first, err := checkModel(&out, model, w, ref, []int{0, 1}, true, false, 1e-4, llm.Options{Format: "fp16"})
+	first, err := checkModel(&out, model, w, ref, []int{0, 1}, true, milcpu.Options{}, 1e-4, llm.Options{Format: "fp16"})
 	if err != nil || first != -1 || strings.Contains(out.String(), "argmax") || !strings.Contains(out.String(), "output 32;") {
 		t.Errorf("first bad layer %d, %v\n%s", first, err, &out)
 	}

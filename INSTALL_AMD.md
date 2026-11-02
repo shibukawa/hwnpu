@@ -2,7 +2,7 @@
 
 This guide prepares a Linux machine with an AMD Ryzen AI processor (XDNA NPU: Phoenix, Hawk Point, Strix Point, Krackan Point and later) so that hwnpu can use its NPU, builds a small test design, and shows how to check the result.
 
-> **Status.** The AMD backend has been tested against a simulated amdxdna driver only, built from the kernel and XRT sources. Running `cmd/report` with a real design (step 4) and sending the report back is the most useful help right now.
+> **Status.** Checked on a Ryzen AI 9 365 (Strix Point, npu2 designs) with Ubuntu 26.04 and its in-tree driver: `cmd/report` runs the IRON passthrough design and the output matches. Phoenix and Hawk Point (npu designs) and AMD's DKMS driver have not been tested; reports from those machines are the most useful help right now.
 
 Japanese: [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)
 
@@ -31,7 +31,23 @@ hwnpu talks to the Linux **amdxdna** kernel driver directly through `ioctl` and 
 
 Unlike Intel, the AMD NPU does not take models. It runs kernels built with IRON / mlir-aie: an **xclbin** (the AIE array configuration and kernel metadata) plus an **instruction stream** (`insts.bin`).
 
-## 1. Driver and firmware (Ubuntu 24.04)
+## 1. Driver and firmware
+
+### Ubuntu 26.04
+
+Ubuntu 26.04 ships a kernel (7.0) with the `amdxdna` driver and the NPU firmware in `linux-firmware`, so nothing needs to be installed for hwnpu. Check that the device is there:
+
+```bash
+ls -l /dev/accel/
+```
+
+```bash
+sudo dmesg | grep -i amdxdna
+```
+
+On a desktop session, systemd-logind gives the logged-in user access to `/dev/accel/accel0`. For SSH-only use, add the user to the `render` group as described below. The in-tree driver does not report the NPU power sensor, so `cmd/report` skips that check. Continue with step 2.
+
+### Ubuntu 24.04
 
 Use the latest BIOS and make sure the NPU (sometimes called IPU) is enabled in the BIOS. The mlir-aie instructions also recommend disabling Secure Boot, so that the DKMS driver module can load.
 
@@ -85,7 +101,7 @@ xrt-smi examine
 
 ## 2. Build the test design
 
-`cmd/report` runs the IRON example `passthrough_dmas`, which copies a buffer through the NPU's DMAs and needs no AIE core compiler. Set up IRON as described in the mlir-aie README:
+`cmd/report` runs the IRON example `passthrough_dmas`, which copies a buffer through the NPU's DMAs and uses no AIE core. aiecc still needs Peano (llvm-aie), which `env_install.sh` installs. Set up IRON as described in the mlir-aie README:
 
 ```bash
 git clone https://github.com/Xilinx/mlir-aie.git
@@ -118,6 +134,22 @@ python3 passthrough_dmas.py --dev npu --xclbin-path final.xclbin --insts-path in
 ```
 
 The design copies 4096 int32 values (16384 bytes), which is the default of `cmd/report`. If you build it with another `-n`, pass `-bytes` to the report.
+
+### Without XRT
+
+aiecc packages the xclbin with `xclbinutil`, which comes with XRT. Without XRT (for example on Ubuntu 26.04 with the in-tree driver) the build stops with `tool 'xclbinutil' not found`. hwnpu has a stand-in that takes the same arguments; build it from the hwnpu checkout (step 3) and point aiecc at it:
+
+```bash
+go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-xclbin
+```
+
+```bash
+AIE_XCLBINUTIL=~/.local/bin/hwnpu-xclbin python3 passthrough_dmas.py --dev npu2 --xclbin-path final.xclbin --insts-path insts.bin
+```
+
+The result holds what hwnpu reads (kernel metadata, compute units, AIE partition and PDIs) and is not meant for XRT.
+
+If `python3 -m venv` fails because `ensurepip` is missing, install `python3-venv` (`sudo apt install python3-venv`).
 
 ## 3. Get hwnpu
 
@@ -154,6 +186,8 @@ go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power low -o low.md
 ```bash
 go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o performance.md
 ```
+
+Benchmarks of the data types and throughput on Strix Point, and the scripts behind them: [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) (Japanese), [tools/iron](tools/iron/README.md).
 
 ## 5. Using your own kernels
 

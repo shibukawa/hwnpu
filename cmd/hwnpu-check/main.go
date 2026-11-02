@@ -14,7 +14,9 @@
 //   - the whole model from the reference embeddings to the logits
 //
 // The exit status is 1 if a layer's relative RMS error exceeds -tol. The default format is fp16,
-// which checks the structure; -format lut4 measures the quantization loss on top. -package
+// which checks the structure; -format lut4 measures the quantization loss on top. -format q4nx
+// (AMD's NPU) runs in float32 by default; -q4nx-kernel computes its products with the
+// arithmetic of the NPU kernel instead (-q4nx-floor: its default rounding toward minus infinity). -package
 // instead checks an existing .mlpackage's output (for example hwnpu-convert's lut4 output). Inputs
 // other than x are fed what the host looks up for the reference's tokens (llm.TokenInputs), the
 // reference's value when it has one (REF.NAME.bin, such as Gemma 4's per-layer inputs and shared
@@ -47,19 +49,22 @@ func main() {
 	layerList := flag.String("layers", "", "comma separated layers to check on their own (default: all)")
 	full := flag.Bool("full", true, "also run the whole model from the embeddings to the logits")
 	f16 := flag.Bool("f16", false, "round every operation's result to fp16 (storage precision of the Neural Engine)")
+	q4k := flag.Bool("q4nx-kernel", false, "compute the q4nx linear layers with the arithmetic of AMD's NPU kernel (bf16 activations, a bf16 partial sum per 32 columns) instead of in float32")
+	q4floor := flag.Bool("q4nx-floor", false, "with -q4nx-kernel, round to bf16 toward minus infinity instead of to the nearest")
 	tol := flag.Float64("tol", 0.01, "largest relative RMS error of a layer on its own")
 	pkg := flag.String("package", "", "check this .mlpackage's output against the reference logits instead of building")
 	var opts llm.Options
 	setOpts := llm.BindFlags(flag.CommandLine, &opts, "fp16")
 	flag.Parse()
 	setOpts()
+	ro := milcpu.Options{RoundF16: *f16, Q4NXKernel: *q4k, Q4NXFloor: *q4floor}
 	var err error
 	ok := true
 	switch {
 	case *pkg != "" && *ref != "":
-		err = checkPackage(*pkg, *ref, *f16)
+		err = checkPackage(*pkg, *ref, ro)
 	case *config != "" && *weights != "" && *ref != "":
-		ok, err = run(*config, *arch, *weights, *ref, *layerList, *full, *f16, *tol, opts)
+		ok, err = run(*config, *arch, *weights, *ref, *layerList, *full, ro, *tol, opts)
 	default:
 		flag.Usage()
 		os.Exit(2)
@@ -73,7 +78,7 @@ func main() {
 	}
 }
 
-func run(config, arch, weights, refPrefix, layerList string, full, f16 bool, tol float64, opts llm.Options) (bool, error) {
+func run(config, arch, weights, refPrefix, layerList string, full bool, ro milcpu.Options, tol float64, opts llm.Options) (bool, error) {
 	a, model, err := llm.LoadConfig(config, arch)
 	if err != nil {
 		return false, err
@@ -92,12 +97,12 @@ func run(config, arch, weights, refPrefix, layerList string, full, f16 bool, tol
 		return false, err
 	}
 	fmt.Printf("%s, ", a.Title)
-	first, err := checkModel(os.Stdout, model, w, ref, layers, full, f16, tol, opts)
+	first, err := checkModel(os.Stdout, model, w, ref, layers, full, ro, tol, opts)
 	return first < 0, err
 }
 
 // checkModel runs the checks and returns the first layer over tol, or -1.
-func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, layers []int, full, f16 bool, tol float64, opts llm.Options) (int, error) {
+func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, layers []int, full bool, ro milcpu.Options, tol float64, opts llm.Options) (int, error) {
 	nl, d := model.Layers(), model.Hidden()
 	width, logits := model.Output()
 	if err := ref.Validate(nl, d, width); err != nil {
@@ -113,7 +118,11 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 	if ref.Meta.ModelType != "" {
 		fmt.Fprintf(out, " (%s, %s)", ref.Meta.ModelType, ref.Meta.DType)
 	}
-	fmt.Fprintf(out, "; format %s, fp16 rounding %v\n", opts.Format, f16)
+	fmt.Fprintf(out, "; format %s, fp16 rounding %v", opts.Format, ro.RoundF16)
+	if ro.Q4NXKernel {
+		fmt.Fprintf(out, ", q4nx kernel arithmetic (bf16 floor %v)", ro.Q4NXFloor)
+	}
+	fmt.Fprintln(out)
 
 	if missing, unused, mismatched, ok := llm.Inventory(model, w); ok {
 		for _, n := range missing {
@@ -149,7 +158,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		o := opts
 		o.Start, o.Layers, o.NoHead = i, 1, true
 		start := time.Now()
-		got, err := buildRun(model, w, o, feed, ref.Layer(i, d), tmp, f16)
+		got, err := buildRun(model, w, o, feed, ref.Layer(i, d), tmp, ro)
 		if err != nil {
 			return -1, fmt.Errorf("layer %d: %w", i, err)
 		}
@@ -169,7 +178,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 
 	o := opts
 	o.Start = nl
-	got, err := buildRun(model, w, o, feed, ref.Layer(nl, d), tmp, f16)
+	got, err := buildRun(model, w, o, feed, ref.Layer(nl, d), tmp, ro)
 	if err != nil {
 		return -1, fmt.Errorf("head: %w", err)
 	}
@@ -181,7 +190,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 
 	if full {
 		start := time.Now()
-		got, err := buildRun(model, w, opts, feed, ref.Layer(0, d), tmp, f16)
+		got, err := buildRun(model, w, opts, feed, ref.Layer(0, d), tmp, ro)
 		if err != nil {
 			return -1, fmt.Errorf("whole model: %w", err)
 		}
@@ -294,7 +303,7 @@ func parseLayers(list string, n int) ([]int, error) {
 
 // buildRun builds a program into a weight file in dir and runs it on the CPU with input x and
 // what feed gives the other inputs.
-func buildRun(model llm.Model, w llm.Weights, opts llm.Options, feed *feeder, x []float32, dir string, f16 bool) ([]float32, error) {
+func buildRun(model llm.Model, w llm.Weights, opts llm.Options, feed *feeder, x []float32, dir string, ro milcpu.Options) ([]float32, error) {
 	path := filepath.Join(dir, "weight.bin")
 	blobs, err := mlpackage.NewBlobWriter(path)
 	if err != nil {
@@ -323,7 +332,7 @@ func buildRun(model llm.Model, w llm.Weights, opts llm.Options, feed *feeder, x 
 	if err != nil {
 		return nil, err
 	}
-	res, err := p.Run(in, milcpu.Options{RoundF16: f16})
+	res, err := p.Run(in, ro)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +341,7 @@ func buildRun(model llm.Model, w llm.Weights, opts llm.Options, feed *feeder, x 
 
 // checkPackage runs an existing package on the reference embeddings and compares its output
 // (logits unless the reference says it holds hidden states).
-func checkPackage(dir, refPrefix string, f16 bool) error {
+func checkPackage(dir, refPrefix string, ro milcpu.Options) error {
 	p, c, err := milcpu.OpenPackage(dir)
 	if err != nil {
 		return err
@@ -358,7 +367,7 @@ func checkPackage(dir, refPrefix string, f16 bool) error {
 	if err != nil {
 		return err
 	}
-	out, err := p.Run(in, milcpu.Options{RoundF16: f16})
+	out, err := p.Run(in, ro)
 	if err != nil {
 		return err
 	}

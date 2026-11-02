@@ -5,13 +5,20 @@ import (
 	"unsafe"
 )
 
-// OpenNode opens an amdxdna device node such as /dev/accel/accel0.
+// OpenNode opens an amdxdna device node such as /dev/accel/accel0. Opening binds the process
+// address space to the IOMMU (SVA), which fails with EINTR when a signal arrives, as Go's
+// preemption signal does; the open is retried like any other interrupted call.
 func OpenNode(path string) (Driver, error) {
-	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
+	for {
+		fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &node{fd: fd}, nil
 	}
-	return &node{fd: fd}, nil
 }
 
 type node struct{ fd int }

@@ -36,17 +36,26 @@
 // cached keys, values and convolution windows of its own layers as inputs and outputs the new
 // ones. -cache a,b,c writes a tier per length, and generation starts on the shortest tier and
 // moves up as the sequence grows (internal/llm/chain). cmd/hwnpu-generate runs it.
+//
+// -format q4nx writes 4 bit weights with a bf16 scale and minimum per 32 columns, the format of
+// AMD's NPU kernels (docs/amd-xdna2-bench.md). The program holds them as Core ML's
+// constexpr_blockwise_shift_scale, so that hwnpu-check and the CPU interpreter run it, and the
+// same matrices go to out.q4nx in the kernel's 32 x 256 blocks with an index in out.q4nx.json.
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
+	"github.com/shibukawa/hwnpu/internal/palette"
 )
 
 func main() {
@@ -126,6 +135,105 @@ func run(config, arch, weights, out, targetName string, nParts int, caches []int
 	if opts.Format == "" {
 		opts.Format = a.DefaultFormatFor(model, opts.Backend)
 	}
+	var blocks *q4nxWriter
+	if usesQ4NX(opts) {
+		if blocks, err = newQ4NXWriter(strings.TrimSuffix(out, filepath.Ext(out))); err != nil {
+			return err
+		}
+		opts.Q4NX = blocks.add
+	}
 	_, err = llm.ConvertTiers(a, model, w, out, targetName, nParts, caches, opts, os.Stdout)
+	if blocks != nil {
+		err = errors.Join(err, blocks.close())
+	}
 	return err
+}
+
+func usesQ4NX(o llm.Options) bool {
+	if o.Format == "q4nx" {
+		return true
+	}
+	for _, r := range o.FormatFor {
+		if _, f, _ := strings.Cut(r, "="); f == "q4nx" {
+			return true
+		}
+	}
+	return false
+}
+
+// q4nxWriter writes the q4nx matrices of a conversion as the AMD NPU kernel reads them
+// (palette.Q4NX.Blocks) to BASE.q4nx, each at a 64 byte aligned offset, and their index to
+// BASE.q4nx.json. A matrix whose rows are not a multiple of 32 or columns of 256 cannot be cut
+// into the kernel's blocks; it is listed under "unblocked" and not written. A matrix met again
+// (one per cache tier) is written once.
+type q4nxWriter struct {
+	path  string
+	f     *os.File
+	off   int64
+	index q4nxIndex
+	seen  map[string]bool
+	err   error
+}
+
+type q4nxIndex struct {
+	Format    string       `json:"format"`
+	Block     [2]int       `json:"block"`
+	Group     int          `json:"group"`
+	Matrices  []q4nxMatrix `json:"matrices"`
+	Unblocked []q4nxMatrix `json:"unblocked,omitempty"`
+}
+
+type q4nxMatrix struct {
+	Name   string `json:"name"`
+	Rows   int    `json:"rows"`
+	Cols   int    `json:"cols"`
+	Offset int64  `json:"offset,omitempty"`
+	Bytes  int    `json:"bytes,omitempty"`
+}
+
+func newQ4NXWriter(base string) (*q4nxWriter, error) {
+	f, err := os.Create(base + ".q4nx")
+	if err != nil {
+		return nil, err
+	}
+	return &q4nxWriter{path: base + ".q4nx", f: f, seen: map[string]bool{},
+		index: q4nxIndex{Format: "q4nx", Block: [2]int{palette.Q4NXBlockRows, palette.Q4NXBlockCols}, Group: palette.Q4NXGroup}}, nil
+}
+
+func (w *q4nxWriter) add(name string, q palette.Q4NX) {
+	if w.err != nil || w.seen[name] {
+		return
+	}
+	w.seen[name] = true
+	m := q4nxMatrix{Name: name, Rows: q.Rows, Cols: q.Cols}
+	if q.Rows%palette.Q4NXBlockRows != 0 || q.Cols%palette.Q4NXBlockCols != 0 {
+		w.index.Unblocked = append(w.index.Unblocked, m)
+		return
+	}
+	if pad := (64 - w.off%64) % 64; pad > 0 {
+		if _, w.err = w.f.Write(make([]byte, pad)); w.err != nil {
+			return
+		}
+		w.off += pad
+	}
+	b := q.Blocks()
+	m.Offset, m.Bytes = w.off, len(b)
+	if _, w.err = w.f.Write(b); w.err != nil {
+		return
+	}
+	w.off += int64(len(b))
+	w.index.Matrices = append(w.index.Matrices, m)
+}
+
+func (w *q4nxWriter) close() error {
+	err := errors.Join(w.err, w.f.Close())
+	if err != nil {
+		return err
+	}
+	j, err := json.MarshalIndent(w.index, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s: %d q4nx matrices in the AMD kernel's blocks (%.1f MiB), %d not in blocks\n", w.path, len(w.index.Matrices), float64(w.off)/(1<<20), len(w.index.Unblocked))
+	return os.WriteFile(w.path+".json", append(j, '\n'), 0o644)
 }

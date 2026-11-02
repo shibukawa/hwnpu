@@ -162,6 +162,12 @@ python tools/coreml/gen_sweep.py build/sweep --report build/power-sweep.json
 - The design must fit the device: `npu1` (Phoenix, Hawk Point) has 4 columns, `npu4` (Strix Point) 8.
 - Instruction streams must be allocated with `WithBufferKind(BufferInstructions)`, and buffers must be synchronized explicitly (`SyncToDevice`, `SyncFromDevice`).
 
+**Weights for language models**
+
+- AMD's NPU runs 4 bit weights in the q4nx format of FastFlowLM's kernels (in mlir-aie's `aie_kernels/flm_gemma4`): unsigned 4 bit codes with a bf16 scale and minimum per 32 columns, 5 bits a weight. `hwnpu-convert -format q4nx` writes them: the program holds them as `constexpr_blockwise_shift_scale`, so `hwnpu-check` and the Mac run it, and `OUT.q4nx` holds the same matrices in the kernel's 32 x 256 blocks with an index in `OUT.q4nx.json`.
+- On LFM3-1.7B (24 token prompt, KL against the bf16 model on the CPU) q4nx gives KL 0.38 nats and argmax agreement 15 of 24, against 0.85 and 10 of 24 for the Neural Engine's lut4 (`kmeans-minmax`) and 0.16 and 17 of 24 for lut6: a range per 32 weights is finer than a table per whole row. The NPU kernel's own arithmetic (bf16 partial sums, rounded toward minus infinity; `hwnpu-check -q4nx-kernel -q4nx-floor`) moves it to 0.39.
+- A decode step is bound by reading the weights, at up to 55 GB/s: one LFM3 convolution layer (40 MB of q4nx) runs in 0.88 ms as a single call on 16 cores. Measurements: [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md).
+
 **Running models on AMD**
 
 - For ONNX models, AMD's supported route is ONNX Runtime with the Vitis AI execution provider (Ryzen AI Software). AMD's documentation describes int8 quantization for CNNs and bf16 for transformers there, with fp32 models converted to bf16. hwnpu does not cover this route yet.

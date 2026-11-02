@@ -137,6 +137,24 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 		}
 		q := palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, mode)
 		v, err = g.B.LUT(constName, bits, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
+	case "q4nx":
+		if cols%palette.Q4NXGroup != 0 {
+			g.Fail("%s: %d columns are not a multiple of q4nx's groups of %d", name, cols, palette.Q4NXGroup)
+		}
+		search := true
+		switch g.Opts.Quant {
+		case "", "mse":
+		case "uniform":
+			search = false
+		default:
+			g.Fail("quantizer %q is not for q4nx; use uniform or mse", g.Opts.Quant)
+		}
+		q := palette.QuantizeQ4NX(w, rows, cols, search)
+		if g.Opts.Q4NX != nil {
+			g.Opts.Q4NX(constName, q)
+		}
+		scales, offsets := q.ShiftScale()
+		v, err = g.B.UInt4ShiftScaled(constName, []int{rows, cols}, []int{1, palette.Q4NXGroup}, q.Codes, scales, offsets)
 	default:
 		bits, block, ok := llm.LinearFormat(format)
 		if !ok {

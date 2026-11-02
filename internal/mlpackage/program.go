@@ -352,7 +352,21 @@ func (b *Builder) Int8Scaled(name string, shape, block []int, data []byte, scale
 	return b.scaled(name, 8, shape, block, data, scales)
 }
 
+// UInt4ShiftScaled is an asymmetric 4 bit weight: unsigned codes, two per byte with the low
+// nibble first, standing for (code - offset) * scale with one fp16 scale and fp16 offset per
+// block (constexpr_blockwise_shift_scale with a floating point offset).
+func (b *Builder) UInt4ShiftScaled(name string, shape, block []int, data []byte, scales, offsets []uint16) (*Var, error) {
+	if len(offsets) != len(scales) {
+		return nil, fmt.Errorf("mlpackage: %s: %d offsets for %d scales", name, len(offsets), len(scales))
+	}
+	return b.scaledOffset(name, 4, true, shape, block, data, scales, offsets)
+}
+
 func (b *Builder) scaled(name string, bits int, shape, block []int, data []byte, scales []uint16) (*Var, error) {
+	return b.scaledOffset(name, bits, false, shape, block, data, scales, nil)
+}
+
+func (b *Builder) scaledOffset(name string, bits int, unsigned bool, shape, block []int, data []byte, scales, offsets []uint16) (*Var, error) {
 	if len(shape) < 1 || len(block) != len(shape) {
 		return nil, fmt.Errorf("mlpackage: %s: block %v does not match shape %v", name, block, shape)
 	}
@@ -369,6 +383,8 @@ func (b *Builder) scaled(name string, bits int, shape, block []int, data []byte,
 	dt, bt, size := milspec.DataType_INT4, BlobInt4, (n+1)/2
 	if bits == 8 {
 		dt, bt, size = milspec.DataType_INT8, BlobInt8, n
+	} else if unsigned {
+		dt, bt = UInt4, BlobUInt4
 	}
 	if len(data) != size || len(scales) != tables {
 		return nil, fmt.Errorf("mlpackage: %s: %d data bytes and %d scales for shape %v block %v", name, len(data), len(scales), shape, block)
@@ -384,11 +400,19 @@ func (b *Builder) scaled(name string, bits int, shape, block []int, data []byte,
 	save := b.ImmediateLimit
 	b.ImmediateLimit = 0
 	sv, err := b.constValue(Float16, scaleShape, raw, BlobFloat16)
+	args := map[string]any{"data": dv, "scale": sv}
+	if err == nil && offsets != nil {
+		raw := make([]byte, 2*len(offsets))
+		for i, h := range offsets {
+			binary.LittleEndian.PutUint16(raw[2*i:], h)
+		}
+		args["offset"], err = b.constValue(Float16, scaleShape, raw, BlobFloat16)
+	}
 	b.ImmediateLimit = save
 	if err != nil {
 		return nil, err
 	}
-	return b.op("constexpr_blockwise_shift_scale", b.unique(name), map[string]any{"data": dv, "scale": sv}, Float16, shape), nil
+	return b.op("constexpr_blockwise_shift_scale", b.unique(name), args, Float16, shape), nil
 }
 
 // Finish returns the program with the given outputs.

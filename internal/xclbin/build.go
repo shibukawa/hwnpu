@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Spec describes a synthetic xclbin for tests. Build lays it out exactly like xclbinutil:
+// Spec describes an xclbin: a synthetic one for tests, or an aiecc design (SpecFromAiecc). Build lays it out exactly like xclbinutil:
 // header, section table, then EMBEDDED_METADATA, IP_LAYOUT and AIE_PARTITION.
 type Spec struct {
 	UUID        [16]byte
@@ -82,6 +82,7 @@ func ipLayout(cus []CU) []byte {
 		d := out[ipLayoutDataOffset+i*ipDataSize:]
 		le.PutUint32(d[0:], IPPSKernel)
 		le.PutUint32(d[4:], 1|(cu.Functional&3)<<4|(cu.KernelID&0xfff)<<16) // subtype DPU
+		le.PutUint64(d[8:], ^uint64(0))                                     // m_base_address: not used, as xclbinutil
 		copy(d[16:79], cu.Name)
 	}
 	return out
