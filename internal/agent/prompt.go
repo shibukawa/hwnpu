@@ -29,7 +29,7 @@ func Prompt(cfg Config, tools []*Tool) string {
 	var sb strings.Builder
 	coding := false // a tool that works on the directory is offered
 	for _, t := range tools {
-		coding = coding || t.Name != "search"
+		coding = coding || t.Name != "search" && t.Name != "fetch"
 	}
 	switch {
 	case cfg.System != "":

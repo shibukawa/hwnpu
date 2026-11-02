@@ -21,7 +21,11 @@ func TestWikipedia(t *testing.T) {
 		q := r.URL.Query()
 		switch q.Get("list") + q.Get("prop") {
 		case "search":
-			if q.Get("srsearch") != "富士山 高さ" || q.Get("srlimit") != "2" {
+			if q.Get("srsearch") == "存在しない 語" {
+				json.NewEncoder(w).Encode(map[string]any{"query": map[string]any{"search": []any{}}})
+				return
+			}
+			if q.Get("srsearch") != "富士山 高さ" && q.Get("srsearch") != "存在しない" || q.Get("srlimit") != "2" {
 				t.Errorf("search %v", q)
 			}
 			json.NewEncoder(w).Encode(map[string]any{"query": map[string]any{"search": []map[string]any{
@@ -41,13 +45,13 @@ func TestWikipedia(t *testing.T) {
 	}))
 	defer srv.Close()
 	wk := &Wikipedia{URL: srv.URL, Lang: "ja"}
-	res, err := wk.Search(context.Background(), "富士山 高さ", 2)
+	res, err := wk.Search(context.Background(), "『富士山』 高さ", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []Result{
-		{"富士山", "https://ja.wikipedia.org/wiki/%E5%AF%8C%E5%A3%AB%E5%B1%B1", "富士山（ふじさん）は、日本の活火山である。標高は3775.56 m。"},
-		{"高さ", "https://ja.wikipedia.org/wiki/%E9%AB%98%E3%81%95", "垂直方向の長さ"},
+		{"富士山", "https://ja.wikipedia.org/wiki/富士山", "富士山（ふじさん）は、日本の活火山である。標高は3775.56 m。"},
+		{"高さ", "https://ja.wikipedia.org/wiki/高さ", "垂直方向の長さ"},
 	}
 	if len(res) != 2 || res[0] != want[0] || res[1] != want[1] {
 		t.Errorf("got %+v, want %+v", res, want)
@@ -55,8 +59,12 @@ func TestWikipedia(t *testing.T) {
 	if len(asked) != 2 {
 		t.Errorf("%d requests: %v", len(asked), asked)
 	}
+	// nothing for the words together: the first word alone is tried
+	if res, err := wk.Search(context.Background(), "存在しない 語", 2); err != nil || len(res) != 2 || len(asked) != 5 {
+		t.Errorf("the retry: %d results, %v, %d requests", len(res), err, len(asked))
+	}
 	got := Format(res)
-	if !strings.HasPrefix(got, "1. 富士山\nhttps://ja.wikipedia.org/wiki/%E5%AF%8C%E5%A3%AB%E5%B1%B1\n富士山（ふじさん）は") || !strings.Contains(got, "\n\n2. 高さ\n") {
+	if !strings.HasPrefix(got, "1. 富士山\nhttps://ja.wikipedia.org/wiki/富士山\n富士山（ふじさん）は") || !strings.Contains(got, "\n\n2. 高さ\n") {
 		t.Errorf("formatted:\n%s", got)
 	}
 	for q, ja := range map[string]bool{"富士山 高さ": true, "longest river Japan": false, "ｶﾀｶﾅ": true, "": false} {

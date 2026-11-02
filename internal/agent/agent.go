@@ -55,6 +55,9 @@ type Config struct {
 	Searches int
 	// Results is the most results a search returns. Default 5.
 	Results int
+	// FetchChars is the most characters of a page fetch returns. Default 6000 (about 2K
+	// tokens of Japanese, 1.5K of English).
+	FetchChars int
 	// System replaces the opening of the system prompt (DefaultSystem).
 	System string
 	// Instructions are the project's (AGENTS.md), appended to the system prompt.
@@ -116,6 +119,7 @@ func (c *Config) defaults() error {
 	def(&c.TailBytes, 8192)
 	def(&c.Results, 5)
 	def(&c.Searches, 4)
+	def(&c.FetchChars, 6000)
 	if c.Search == nil {
 		c.Search = &Wikipedia{}
 	}
