@@ -293,16 +293,26 @@ func NewSearcher(name, braveKey string) (Searcher, error) {
 
 // readable decodes the percent-encoding of a URL's path when it decodes to text, since the
 // model copies a URL into a fetch call or an answer, and gets a long encoded one wrong
-// (%E5%AD%A2%E6%BD+ad%3E%3D for a Wikipedia title). Go's client encodes it again on fetch.
+// (%E5%AD%A2%E6%BD+ad%3E%3D for a Wikipedia title). Go's client encodes it again on fetch. A
+// path that decodes to a space or a delimiter stays encoded.
 func readable(u string) string {
+	if !strings.Contains(u, "%") {
+		return u
+	}
 	p, err := url.Parse(u)
-	if err != nil || p.RawPath == "" && !strings.Contains(p.Path, "%") && !strings.Contains(u, "%") {
+	if err != nil {
 		return u
 	}
 	path, err := url.PathUnescape(p.EscapedPath())
-	if err != nil || !utf8.ValidString(path) || strings.ContainsAny(path, "?#\x00") {
+	if err != nil || !utf8.ValidString(path) || strings.ContainsAny(path, " ?#\x00") {
 		return u
 	}
-	p.Path, p.RawPath = path, ""
-	return p.String()
+	s := p.Scheme + "://" + p.Host + path
+	if p.RawQuery != "" {
+		s += "?" + p.RawQuery
+	}
+	if p.Fragment != "" {
+		s += "#" + p.EscapedFragment()
+	}
+	return s
 }
