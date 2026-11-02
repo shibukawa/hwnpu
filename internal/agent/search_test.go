@@ -68,10 +68,11 @@ func TestWikipedia(t *testing.T) {
 		t.Errorf("formatted:\n%s", got)
 	}
 	for u, want := range map[string]string{
-		"https://ja.wikipedia.org/wiki/%E5%AF%8C%E5%A3%AB%E5%B1%B1": "https://ja.wikipedia.org/wiki/富士山",
-		"https://example.com/a%20b?q=%E3%81%82":                     "https://example.com/a b?q=%E3%81%82",
-		"https://example.com/plain":                                 "https://example.com/plain",
-		"https://example.com/%FF%FE":                                "https://example.com/%FF%FE",
+		"https://ja.wikipedia.org/wiki/%E5%AF%8C%E5%A3%AB%E5%B1%B1":      "https://ja.wikipedia.org/wiki/富士山",
+		"https://example.com/a%20b?q=%E3%81%82":                          "https://example.com/a%20b?q=%E3%81%82",
+		"https://ja.wikipedia.org/wiki/%E5%B7%9D?x=1#%E6%A6%82%E8%A6%81": "https://ja.wikipedia.org/wiki/川?x=1#%E6%A6%82%E8%A6%81",
+		"https://example.com/plain":                                      "https://example.com/plain",
+		"https://example.com/%FF%FE":                                     "https://example.com/%FF%FE",
 	} {
 		if got := readable(u); got != want {
 			t.Errorf("readable(%q) = %q, want %q", u, got, want)
