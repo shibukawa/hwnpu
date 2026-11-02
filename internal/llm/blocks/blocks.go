@@ -433,7 +433,57 @@ func (g *Graph) ChunkedSDPA(q *mlpackage.Var, ks, vs, masks []*mlpackage.Var) *m
 	return g.Op("real_div", map[string]any{"x": o, "y": sum}, 1, nh, s, hd)
 }
 
+// ChunkedSDPAGrouped is ChunkedSDPA without copying the keys and values for each query head,
+// as SDPAGrouped: the query heads of a kv head are stacked along the sequence axis for the
+// matrix products, and the scores are laid out per query head for the masks and the maximum.
+func (g *Graph) ChunkedSDPAGrouped(q *mlpackage.Var, ks, vs, masks []*mlpackage.Var) *mlpackage.Var {
+	nh, s, hd := q.Shape[1], q.Shape[2], q.Shape[3]
+	nkv := ks[0].Shape[1]
+	rep := nh / nkv
+	if rep == 1 {
+		return g.ChunkedSDPA(q, ks, vs, masks)
+	}
+	rows := []int{1, nh, s, 1}
+	qg := g.Op("reshape", map[string]any{"x": q, "shape": g.B.Ints(1, int32(nkv), int32(rep*s), int32(hd))}, 1, nkv, rep*s, hd)
+	scale := g.B.ScalarF16(float32(1 / math.Sqrt(float64(hd))))
+	var scores []*mlpackage.Var
+	var top *mlpackage.Var
+	for j, k := range ks {
+		sk := k.Shape[2]
+		sc := g.Op("matmul", map[string]any{"x": qg, "y": k, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(true)}, 1, nkv, rep*s, sk)
+		sc = g.Op("reshape", map[string]any{"x": sc, "shape": g.B.Ints(1, int32(nh), int32(s), int32(sk))}, 1, nh, s, sk)
+		sc = g.Op("mul", map[string]any{"x": sc, "y": scale}, 1, nh, s, sk)
+		sc = g.Op("add", map[string]any{"x": sc, "y": masks[j]}, 1, nh, s, sk)
+		scores = append(scores, sc)
+		mj := g.Op("reduce_max", map[string]any{"x": sc, "axes": g.B.Ints(3), "keep_dims": g.B.ScalarBool(true)}, rows...)
+		if top == nil {
+			top = mj
+		} else {
+			top = g.Op("maximum", map[string]any{"x": top, "y": mj}, rows...)
+		}
+	}
+	top = g.Op("add", map[string]any{"x": top, "y": g.B.ScalarF16(float32(math.Log(float64(4 * len(ks)))))}, rows...)
+	var o, sum *mlpackage.Var
+	for j, sc := range scores {
+		sk := sc.Shape[3]
+		e := g.Op("exp", map[string]any{"x": g.Op("sub", map[string]any{"x": sc, "y": top}, 1, nh, s, sk)}, 1, nh, s, sk)
+		e = g.Op("reshape", map[string]any{"x": e, "shape": g.B.Ints(1, int32(nkv), int32(rep*s), int32(sk))}, 1, nkv, rep*s, sk)
+		ones := g.F16s(fmt.Sprintf("ones_%d", sk), []int{sk, 1}, constOnes(sk))
+		l := g.Op("matmul", map[string]any{"x": e, "y": ones, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, nkv, rep*s, 1)
+		oj := g.Op("matmul", map[string]any{"x": e, "y": vs[j], "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, nkv, rep*s, hd)
+		if o == nil {
+			o, sum = oj, l
+			continue
+		}
+		o = g.Op("add", map[string]any{"x": o, "y": oj}, 1, nkv, rep*s, hd)
+		sum = g.Op("add", map[string]any{"x": sum, "y": l}, 1, nkv, rep*s, 1)
+	}
+	o = g.Op("real_div", map[string]any{"x": o, "y": sum}, 1, nkv, rep*s, hd)
+	return g.Op("reshape", map[string]any{"x": o, "shape": g.B.Ints(1, int32(nh), int32(s), int32(hd))}, 1, nh, s, hd)
+}
+
 func constOnes(n int) []float32 {
+
 	v := make([]float32, n)
 	for i := range v {
 		v[i] = 1

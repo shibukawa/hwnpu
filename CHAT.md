@@ -39,10 +39,10 @@ The features say what a model can do besides its kind (names as in Ollama's capa
 go run ./cmd/hwnpu-chat
 ```
 
-No arguments are needed. The first run does the following by itself (about 3.5 minutes on an M3, besides the download). Later runs only load the compiled programs and start in a few seconds to a minute, showing how far loading is.
+No arguments are needed. The first run does the following by itself (about 6.5 minutes on an M3, besides the download: four minutes of conversion and two and a half of compiling). Later runs only load the compiled programs and start in a few seconds to a minute, showing how far loading is.
 
 1. It downloads `config.json`, `tokenizer.json` and `model.safetensors` (3.5 GB) of [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) from Hugging Face to `~/Library/Caches/hwnpu/models/LFM3-1.7B`. A download cut off goes on from where it stopped on the next run
-2. It converts the model twice for the Neural Engine (about a minute each): one generates, 8 tokens per call (a token and 7 guesses checked at once, section 3), the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache
+2. It converts the model for the Neural Engine, with 6 bit tables and the grouped attention (`lfm3-lut6-grouped-c16320-q8.mlpackage` and `-q64`, 2 parts of 1.21 GiB together each, a minute or two each): one generates, 8 tokens per call (a token and 7 guesses checked at once, section 3), the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache. The 4096 tier (`-tier`, section 2) is off for this model: its two more programs would not stay in the Neural Engine's compile cache. Until November 2026 the default was 4 bit tables and the tiled attention (`lfm3-c16320-q8.mlpackage`): those files are no longer read and can be deleted. Against the model in bf16, lut6 is six times closer than lut4 was (KL 0.23 nats to 1.39), a coding task takes 6 rounds where it took 13 to 27, and with the grouped attention a call is still 38% faster than before (section 16.41 of [docs/design.md](docs/design.md))
 3. It compiles them for the Neural Engine (1 to 2 minutes). The result stays in `~/Library/Caches/hwnpu`
 
 Then type after the `>`.
@@ -88,7 +88,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-listen ADDR` | none | serve the OpenAI compatible API at `ADDR` (e.g. `127.0.0.1:8080`) instead of the terminal (section 3) |
 | `-think` | `true` | let the model think before it answers |
 | `-think-budget N` | `1024` | most tokens the model thinks before it is made to answer (0: no limit) |
-| `-tier A,B` | `4096` | caches shorter than `-context` to run on while a conversation is short: it starts on the shortest that holds its prompt and moves up as it grows (a step costs in proportion to the cache, whatever it holds); empty for none |
+| `-tier A,B` | `auto` | caches shorter than `-context` to run on while a conversation is short: it starts on the shortest that holds its prompt and moves up as it grows (a step costs in proportion to the cache, whatever it holds); empty for none. `auto` is `4096` for a model in 4 bit tables and none for 6 or 8 bits: the Neural Engine keeps its compiled programs in a cache of its own of about 4 GiB, and four programs of LFM3-1.7B in lut6 (4.8 GiB) push each other out of it, so every start compiles some of them again: four starts in a row took 110, 92, 77 and 62 seconds, while two programs (2.4 GiB) settle at 3 seconds a start |
 | `-draft N` | `8` | tokens per call of the program that generates: a token and N-1 guesses checked at once (speculative decoding, section 3); `0` or `1` generates one token per call |
 | `-prompt-cache DIR` | `prompts` in the compile cache | keep the prompts read on disk, so that a prompt beginning like an earlier one (an agent's system message and tools) is not read again after a restart (section 3); `off` for none |
 | `-system TEXT` | none | the chat's system message |

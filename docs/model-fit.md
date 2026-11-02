@@ -109,7 +109,7 @@ T2 と同じ仕組みで、プロンプトの前半は前半の塊しか見な�
 - やること: `hwnpu-convert -format lut6` と `hwnpu-check -package` で KL と argmax を測り、`lfm3.Arch.Format` を変える。`chat.Prepare` は形式を名前に入れる (16.34 の `embed-lut8-s128` と同じ) ので古いパッケージと混ざらない。
 - 2026-11-02: lut6 を M3 で試した (design.md 16.39): 富士山が 3,776 m になり、ほかは変わらず (『こころ』と川は lut6 でも誤り)。12〜15 tokens/s (lut4 は 18〜24)。KL は参照ロジット (LFM3 のリモートコードが要る) 待ち
 - 2026-11-02 (KL): `hwnpu-check -package` で bf16 の参照 (32 トークンの英文) に対し、lut6 は KL 0.232 nats、argmax 23/32、cosine 0.963。lut4 は KL 1.387、argmax 16/32、cosine 0.816。見込みの 0.2〜0.3 どおりで、賢さの面では lut6 に変える価値がある。速さ (12〜15 対 18〜24 tokens/s) と重み (+0.4 GiB) との引き換えは未決 (design.md 16.39)
-- 2026-11-02 (grouped と組み合わせ): lut6 + grouped の Q=8 は 42.8 ms で、今の既定 lut4 + tile の 69.2 ms より 38% 速く、lut4 + grouped (41.4) との差は 3%。コーディングの課題は 6 往復で終わる (lut4 は 13〜27)。既定にする価値がある (design.md 16.41)
+- 2026-11-02 (grouped と組み合わせ): lut6 + grouped の Q=8 は 42.8 ms で、今の既定 lut4 + tile の 69.2 ms より 38% 速く、lut4 + grouped (41.4) との差は 3%。コーディングの課題は 6 往復で終わる (lut4 は 13〜27)。既定にした: `lfm3.Config.Format` が lut6、`attn` が grouped、パッケージ名は `lfm3-lut6-grouped-c16320-q8` (design.md 16.41)
 
 ### T8. 活性を見た表の当てはめ (賢さ)
 

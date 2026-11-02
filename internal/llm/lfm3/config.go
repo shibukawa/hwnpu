@@ -58,12 +58,15 @@ type Config struct {
 // Format is lut8 for the text model of a multimodal checkpoint: with lut4, d1-2B's answers move
 // away from the fp16 ones (the README's ticket goes to the wrong team), LFM3-VL describes
 // pictures wrongly and LFM3-Audio's speech is no longer understood, while lut8 answers as fp16
-// does (docs/design.md 16.31). LFM3 itself keeps the architecture's lut4.
+// does (docs/design.md 16.31). LFM3 itself is lut6: against bf16 its KL is 0.23 nats where
+// lut4's is 1.39, a coding task takes 6 rounds where lut4 took 13 to 27, and with the grouped
+// attention a call is still 38% faster than lut4 was with the tiled one (docs/design.md 16.39,
+// 16.41). The weights are 1.21 GiB a program against 0.81.
 func (c *Config) Format() string {
 	if c.Multimodal {
 		return "lut8"
 	}
-	return ""
+	return "lut6"
 }
 
 // LoadConfig reads config.json.

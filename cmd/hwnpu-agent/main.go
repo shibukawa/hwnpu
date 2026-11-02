@@ -68,7 +68,7 @@ func main() {
 	think := flag.Bool("think", true, "let the model think before each answer")
 	keep := flag.Bool("keep-thinking", false, "keep the thinking of earlier rounds of a task in the conversation (costs context)")
 	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
-	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while the conversation is short, comma separated (a step costs in proportion to the cache); empty for none")
+	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while the conversation is short, comma separated (a step costs in proportion to the cache); empty for none, auto for 4096 with a model in 4 bit tables and none with 6 or 8 bits (four such programs overflow the Neural Engine's compile cache and every start compiles them again)")
 	draft := flag.Int("draft", 8, "tokens per call of the program that generates: a token and N-1 guesses checked at once (speculative decoding); 0 or 1 generates one token per call")
 	allow := flag.String("allow", "", "commands that run without asking, comma separated, with * for any text, e.g. \"go *,ls*,cat *\" (each part of a command joined with && or ; must match)")
 	steps := flag.Int("steps", 30, "most rounds of one task")
