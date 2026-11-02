@@ -61,7 +61,7 @@ go run ./cmd/hwnpu-chat -use LFM3-VL-2B
 ```
 
 - 対話では `/image FILE 質問` で画像を、`/audio FILE.wav 質問` で音声を送れます。サーバーはユーザーのメッセージの `image_url` (data URL) と `input_audio` (base64 の WAV) を読みます
-- M3 で 1 トークン約 41 ms (lut4 の LFM3-1.7B は 19 ms)
+- M3 で grouped 注意 (2026 年 11 月からの既定) なら 1 トークン約 36 ms (以前は 41 ms)。画像の説明中は約 70 ms (投機的デコードの推測が当たらない)。約 300 トークンの画像つきプロンプトの読み込みは 0.7 秒。LFM3-1.7B と同じく 4096 の段階は付きません (2 節の `-tier`)
 - 返答は文字です。LFM3-Audio の音声出力は `hwnpu-tts` (5 節)
 - ほかの画像の大きさやクリップの長さを使うには、エンコーダを自分で変換して `-package`、`-vision`、`-audio` で渡します (5 節)
 

@@ -61,7 +61,7 @@ go run ./cmd/hwnpu-chat -use LFM3-VL-2B
 ```
 
 - In the terminal, `/image FILE question` sends an image and `/audio FILE.wav question` a clip. The server reads the `image_url` (data URLs) and `input_audio` (base64 WAV) parts of user messages
-- About 41 ms per token on the M3 (LFM3-1.7B in lut4: 19 ms)
+- About 36 ms per token on the M3 with the grouped attention (the default since November 2026; 41 ms before), and about 70 ms while it describes a picture, where few of the speculative drafts come true. An image prompt of about 300 tokens reads in 0.7 seconds. Like LFM3-1.7B these models get no 4096 tier (section 2, `-tier`)
 - Answers are text; LFM3-Audio's speech output is `hwnpu-tts` (section 5)
 - Other image sizes or clip lengths: convert the encoders yourself and give them with `-package`, `-vision` and `-audio` (section 5)
 
