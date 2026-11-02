@@ -67,6 +67,16 @@ func TestWikipedia(t *testing.T) {
 	if !strings.HasPrefix(got, "1. 富士山\nhttps://ja.wikipedia.org/wiki/富士山\n富士山（ふじさん）は") || !strings.Contains(got, "\n\n2. 高さ\n") {
 		t.Errorf("formatted:\n%s", got)
 	}
+	for u, want := range map[string]string{
+		"https://ja.wikipedia.org/wiki/%E5%AF%8C%E5%A3%AB%E5%B1%B1": "https://ja.wikipedia.org/wiki/富士山",
+		"https://example.com/a%20b?q=%E3%81%82":                       "https://example.com/a b?q=%E3%81%82",
+		"https://example.com/plain":                                   "https://example.com/plain",
+		"https://example.com/%FF%FE":                                  "https://example.com/%FF%FE",
+	} {
+		if got := readable(u); got != want {
+			t.Errorf("readable(%q) = %q, want %q", u, got, want)
+		}
+	}
 	for q, ja := range map[string]bool{"富士山 高さ": true, "longest river Japan": false, "ｶﾀｶﾅ": true, "": false} {
 		if japanese(q) != ja {
 			t.Errorf("japanese(%q) = %v", q, !ja)

@@ -131,7 +131,7 @@ func (s *Session) tool(name string) *Tool {
 	case "search":
 		return &Tool{
 			Name: "search",
-			Rule: "For a question about facts (numbers, names, dates, places, people, works), call search first, with a short query: the names and words of the things asked about. Answer from what the results say and name the source; when they do not answer, say so rather than guess.",
+			Rule: "For a question about facts (names, dates, places, people, works, measurements), call search first, with a short query: the names and words of the things asked about, written as the question writes them (do not translate or romanize a name). Answer from what the results say and name the source; when they do not answer, say so rather than guess. Arithmetic needs no search.",
 			Decl: decl(fmt.Sprintf(`{"name": "search", "description": "Search %s. Returns the top results, each with a title, a URL and a snippet of the page.",
  "parameters": {"type": "object", "properties": {
   "query": {"type": "string", "description": "The search query: the names and words of the things asked about"}},

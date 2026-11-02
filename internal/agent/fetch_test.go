@@ -18,6 +18,10 @@ func TestFetch(t *testing.T) {
 <p>信濃川（しなのがわ）は、<b>全長367 km</b>で日本一長い川。</p>
 
 <div><ul><li>長野県</li><li>新潟県</li></ul></div><p>&amp; &lt;end&gt;</p></body></html>`))
+		case "/site":
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(`<html><body><header><nav><a href="/">ホーム</a><a href="/x">メニュー</a></nav></header>
+<main><h1>記事</h1><nav>目次</nav><p>本文です。</p><aside>関連</aside></main><footer>著作権</footer></body></html>`))
 		case "/text":
 			w.Header().Set("Content-Type", "text/plain")
 			w.Write([]byte(strings.Repeat("あ", 100)))
@@ -31,6 +35,9 @@ func TestFetch(t *testing.T) {
 	got, err := Fetch(context.Background(), nil, srv.URL+"/page", 6000)
 	if err != nil || got != "信濃川\n信濃川（しなのがわ）は、全長367 kmで日本一長い川。\n長野県\n新潟県\n& <end>" {
 		t.Errorf("page: %q, %v", got, err)
+	}
+	if got, err := Fetch(context.Background(), nil, srv.URL+"/site", 6000); err != nil || got != "記事\n本文です。" {
+		t.Errorf("site: %q, %v", got, err)
 	}
 	got, err = Fetch(context.Background(), nil, srv.URL+"/text", 60)
 	if err != nil || got != strings.Repeat("あ", 60)+"\n[... 40 more characters omitted]" {
