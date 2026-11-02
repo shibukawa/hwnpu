@@ -67,7 +67,7 @@ go run ./cmd/hwnpu-chat -use LFM3-VL-2B
 
 ### Gemma 4 E2B と E4B を使う
 
-`-use gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/models/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし、1 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で 2 部分ずつ (約 0.8 + 0.8 GiB) に変換します。
+`-use gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/models/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし、8 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で 2 部分ずつ (約 0.8 + 0.8 GiB) に変換します (2026 年 11 月から名前に形式が入り `gemma4-lut6-c16320-q8.mlpackage` と `-q64`。以前の `gemma4-c16320-q8` などはもう読まれないので消して構いません)。4096 の段階は付きません (2 節の `-tier auto`)。起動は M3 で毎回 100 秒ほどかかります。LFM3 と違って、その部分が Neural Engine のコンパイルのキャッシュに残らないためです (docs/design.md の 16.42)。
 
 ```bash
 go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
