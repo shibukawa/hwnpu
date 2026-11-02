@@ -67,7 +67,7 @@ go run ./cmd/hwnpu-chat -use LFM3-VL-2B
 
 ### Gemma 4 E2B and E4B
 
-`-use gemma-4-E2B-it` runs Google's Gemma 4 E2B (instruction tuned) instead. It goes the same way: `model.safetensors` (10.2 GB, with the audio and vision parts, of which only the text model is converted) is downloaded to `~/Library/Caches/hwnpu/models/gemma-4-E2B-it`, and the programs of 1 and 64 tokens per call are converted with 6 bit tables (lut6) in 2 parts each (about 0.8 + 0.8 GiB).
+`-use gemma-4-E2B-it` runs Google's Gemma 4 E2B (instruction tuned) instead. It goes the same way: `model.safetensors` (10.2 GB, with the audio and vision parts, of which only the text model is converted) is downloaded to `~/Library/Caches/hwnpu/models/gemma-4-E2B-it`, and the programs of 8 and 64 tokens per call are converted with 6 bit tables (lut6) in 2 parts each (about 0.8 + 0.8 GiB; `gemma4-lut6-c16320-q8.mlpackage` and `-q64` since November 2026, when the names began to carry the format: the `gemma4-c16320-q8` files of earlier versions are no longer read and can be deleted). It gets no 4096 tier (`-tier auto`, section 2). Every start takes about 100 seconds on an M3: unlike LFM3's, its parts do not stay in the Neural Engine's compile cache (section 16.42 of docs/design.md).
 
 ```bash
 go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
