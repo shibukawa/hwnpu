@@ -25,12 +25,30 @@ const DefaultContext = llm.NeuralEngineMaxDim - prefillSeq
 
 const prefillSeq = 64
 
-// DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: a cache of 4096 to run on while a
-// conversation is short, under the context (Setup.Tiers).
-const DefaultTiers = "4096"
+// DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: auto, a cache of 4096 to run on
+// while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
+const DefaultTiers = "auto"
+
+// TierAuto in Setup.Tiers (Tiers("auto")) lets Prepare choose: a tier of 4096 for a model in
+// 4 bit tables, none for 6 or 8 bits. The Neural Engine keeps its compiled programs in a cache
+// of its own that holds about 4 GiB: four programs of LFM3-1.7B in lut4 (3.2 GiB) stay in it and
+// load in a second each, four in lut6 (4.8 GiB) push each other out and every start compiles
+// them anew, 17 seconds a part (docs/design.md 16.41); two in lut6 (2.4 GiB) stay.
+const TierAuto = -1
+
+// autoTiers is the choice TierAuto stands for, by the weight format.
+func autoTiers(format string) []int {
+	if format == "lut4" || format == "int4" || format == "int4-g128" {
+		return []int{4096}
+	}
+	return nil
+}
 
 // Tiers parses a comma separated list of caches (Setup.Tiers); empty for none.
 func Tiers(s string) ([]int, error) {
+	if strings.TrimSpace(s) == "auto" {
+		return []int{TierAuto}, nil
+	}
 	var out []int
 	for _, f := range strings.Split(s, ",") {
 		if f = strings.TrimSpace(f); f == "" {
@@ -64,8 +82,9 @@ type Setup struct {
 
 // Prepare makes the model ready in Dir: it downloads the checkpoint files that are missing from
 // Hugging Face, and converts the programs that are missing, one of 1 token per call to generate
-// and one of 64 to read prompts, both with a cache of Context tokens. It returns the Config that
-// loads them.
+// and one of 64 to read prompts, both with a cache of Context tokens, named by the architecture,
+// the weight format and the attention (lfm3-lut6-grouped-c16320-q8.mlpackage). It returns the
+// Config that loads them.
 func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Config{}, err
@@ -76,16 +95,29 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 	}
 	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo)}
-	a, _, err := llm.LoadConfig(c.ModelConfig, "")
+	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return Config{}, err
+	}
+	// the name says what the program is, so that a change of the defaults (LFM3 to lut6 and the
+	// grouped attention, 2026-11) converts anew instead of loading what an earlier version wrote
+	kind := a.Name + "-" + a.DefaultFormat(model)
+	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
+		kind += "-" + attn
 	}
 	progs := []struct{ seq, parts int }{{1, 2}, {prefillSeq, 0}}
 	if s.Draft > 1 {
 		progs[0] = struct{ seq, parts int }{s.Draft, 0}
 	}
+	tiers := s.Tiers
+	if slices.Contains(tiers, TierAuto) {
+		tiers = autoTiers(a.DefaultFormat(model))
+		if len(tiers) == 0 && s.Log != nil {
+			fmt.Fprintf(s.Log, "no shorter cache tier for %s: its programs are %s, and four of them would not stay in the Neural Engine's compile cache (-tier 4096 to have one anyway)\n", c.Name, a.DefaultFormat(model))
+		}
+	}
 	var caches []int
-	for _, t := range s.Tiers {
+	for _, t := range tiers {
 		if t > 0 && t < s.Context {
 			caches = append(caches, t)
 		}
@@ -95,7 +127,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	for _, cache := range append(caches, s.Context) {
 		var pkgs []string
 		for _, p := range progs {
-			out := filepath.Join(s.Dir, fmt.Sprintf("%s-c%d-q%d.mlpackage", a.Name, cache, p.seq))
+			out := filepath.Join(s.Dir, fmt.Sprintf("%s-c%d-q%d.mlpackage", kind, cache, p.seq))
 			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: p.seq, parts: p.parts, cache: cache}, s.Log)
 			if err != nil {
 				return Config{}, err

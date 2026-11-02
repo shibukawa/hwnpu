@@ -22,9 +22,10 @@ type Options struct {
 	// adds, which the Neural Engine computes at full fp16 accuracy, or "conv" as one depthwise
 	// conv operation, which it computes with 5 to 12 percent error per layer.
 	ConvMode string
-	// AttnMode selects how attention with a KV cache reads the cache: "tile" (default) copies
-	// the keys and values for each query head (blocks.SDPA), "grouped" stacks the query heads
-	// that share a kv head and takes one product per kv head (blocks.SDPAGrouped).
+	// AttnMode selects how attention with a KV cache reads the cache: "grouped" (the default)
+	// stacks the query heads that share a kv head and takes one product per kv head
+	// (blocks.SDPAGrouped, ChunkedSDPAGrouped over the chunks of a long cache), "tile" copies
+	// the keys and values for each query head (blocks.SDPA, ChunkedSDPA).
 	AttnMode string
 	// HiddenOut makes a program with a KV cache output h, the final hidden state (1, seq,
 	// hidden), besides the logits y: LFM3-Audio's speech output samples from it
@@ -314,7 +315,11 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 				masks = append(masks, m.input(fmt.Sprintf("mask_%s_c%d", layerType, j), 1, 1, s, l))
 			}
 			masks = append(masks, m.input("mask_"+layerType+"_self", 1, 1, s, s))
-			o = m.ChunkedSDPA(q, append(ks, k), append(vs, v), masks)
+			if m.opts.AttnMode == "grouped" {
+				o = m.ChunkedSDPAGrouped(q, append(ks, k), append(vs, v), masks)
+			} else {
+				o = m.ChunkedSDPA(q, append(ks, k), append(vs, v), masks)
+			}
 		} else {
 			cat := func(name string, x *mlpackage.Var) *mlpackage.Var {
 				c := m.input(name, 1, nkv, t, hd)

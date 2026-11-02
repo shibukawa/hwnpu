@@ -156,3 +156,17 @@ func safetensorsOf(t *testing.T, w llm.Synthetic) []byte {
 	out := binary.LittleEndian.AppendUint64(nil, uint64(len(h)))
 	return append(append(out, h...), data...)
 }
+
+func TestTiersAuto(t *testing.T) {
+	if got, err := Tiers("auto"); err != nil || !slices.Equal(got, []int{TierAuto}) {
+		t.Errorf("Tiers(auto) = %v, %v", got, err)
+	}
+	if got, err := Tiers(" auto "); err != nil || !slices.Equal(got, []int{TierAuto}) {
+		t.Errorf("Tiers( auto ) = %v, %v", got, err)
+	}
+	for format, want := range map[string][]int{"lut4": {4096}, "int4": {4096}, "lut6": nil, "lut8": nil, "fp16": nil} {
+		if got := autoTiers(format); !slices.Equal(got, want) {
+			t.Errorf("autoTiers(%s) = %v, want %v", format, got, want)
+		}
+	}
+}
