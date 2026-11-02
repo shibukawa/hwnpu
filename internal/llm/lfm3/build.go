@@ -2,6 +2,7 @@ package lfm3
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
@@ -21,6 +22,10 @@ type Options struct {
 	// adds, which the Neural Engine computes at full fp16 accuracy, or "conv" as one depthwise
 	// conv operation, which it computes with 5 to 12 percent error per layer.
 	ConvMode string
+	// AttnMode selects how attention with a KV cache reads the cache: "tile" (default) copies
+	// the keys and values for each query head (blocks.SDPA), "grouped" stacks the query heads
+	// that share a kv head and takes one product per kv head (blocks.SDPAGrouped).
+	AttnMode string
 	// HiddenOut makes a program with a KV cache output h, the final hidden state (1, seq,
 	// hidden), besides the logits y: LFM3-Audio's speech output samples from it
 	// (internal/llm/decode reads it as Session.Hidden).
@@ -317,7 +322,11 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 			}
 			k, v = cat(fmt.Sprintf("kv_k_%d", i), k), cat(fmt.Sprintf("kv_v_%d", i), v)
 			mask := m.input("mask_"+layerType, 1, 1, s, t+s)
-			o = m.SDPA(q, k, v, func() *mlpackage.Var { return mask })
+			if m.opts.AttnMode == "grouped" {
+				o = m.SDPAGrouped(q, k, v, 1/math.Sqrt(float64(hd)), func() *mlpackage.Var { return mask })
+			} else {
+				o = m.SDPA(q, k, v, func() *mlpackage.Var { return mask })
+			}
 		}
 	} else if m.cfg.D1 && layerType == "full_attention" {
 		if m.padBias == nil {
