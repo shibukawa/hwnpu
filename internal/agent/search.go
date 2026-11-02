@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Result is one hit of a search.
@@ -37,7 +38,7 @@ func Format(results []Result) string {
 		if i > 0 {
 			sb.WriteString("\n\n")
 		}
-		fmt.Fprintf(&sb, "%d. %s\n%s", i+1, strings.TrimSpace(r.Title), r.URL)
+		fmt.Fprintf(&sb, "%d. %s\n%s", i+1, strings.TrimSpace(r.Title), readable(r.URL))
 		if s := clean(r.Snippet); s != "" {
 			sb.WriteString("\n" + s)
 		}
@@ -288,4 +289,20 @@ func NewSearcher(name, braveKey string) (Searcher, error) {
 		return &SearXNG{URL: name}, nil
 	}
 	return nil, fmt.Errorf("-search %q: wikipedia, brave, or the URL of a SearXNG instance", name)
+}
+
+// readable decodes the percent-encoding of a URL's path when it decodes to text, since the
+// model copies a URL into a fetch call or an answer, and gets a long encoded one wrong
+// (%E5%AD%A2%E6%BD+ad%3E%3D for a Wikipedia title). Go's client encodes it again on fetch.
+func readable(u string) string {
+	p, err := url.Parse(u)
+	if err != nil || p.RawPath == "" && !strings.Contains(p.Path, "%") && !strings.Contains(u, "%") {
+		return u
+	}
+	path, err := url.PathUnescape(p.EscapedPath())
+	if err != nil || !utf8.ValidString(path) || strings.ContainsAny(path, "?#\x00") {
+		return u
+	}
+	p.Path, p.RawPath = path, ""
+	return p.String()
 }

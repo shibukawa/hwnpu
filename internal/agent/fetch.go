@@ -54,13 +54,20 @@ func Fetch(ctx context.Context, client *http.Client, u string, maxChars int) (st
 }
 
 var (
-	dropRe  = regexp.MustCompile(`(?is)<script\b.*?</script\s*>|<style\b.*?</style\s*>|<noscript\b.*?</noscript\s*>|<svg\b.*?</svg\s*>|<head\b.*?</head\s*>|<!--.*?-->`)
+	mainRe  = regexp.MustCompile(`(?is)<main\b.*?</main\s*>|<article\b.*?</article\s*>`)
+	dropRe  = regexp.MustCompile(`(?is)<script\b.*?</script\s*>|<style\b.*?</style\s*>|<noscript\b.*?</noscript\s*>|<svg\b.*?</svg\s*>|<head\b.*?</head\s*>|<nav\b.*?</nav\s*>|<footer\b.*?</footer\s*>|<aside\b.*?</aside\s*>|<!--.*?-->`)
 	blockRe = regexp.MustCompile(`(?i)</?(p|div|br|li|ul|ol|h[1-6]|tr|td|th|table|section|article|header|footer|nav|blockquote|pre|dl|dt|dd)\b[^>]*>`)
 )
 
-// Text turns HTML into text: scripts, styles and the head go, block tags become line breaks,
-// other tags go, entities are decoded, and blank lines go (the model needs no paragraphs).
+// Text turns HTML into text: the main element (or the article) when the page has one, so
+// that a site's menus do not take the characters the model gets (Wikipedia's took 4K tokens of
+// the 6000 characters); scripts, styles, navigation and footers go, block tags become line
+// breaks, other tags go, entities are decoded, and blank lines go (the model needs no
+// paragraphs).
 func Text(h string) string {
+	if m := mainRe.FindString(h); m != "" {
+		h = m
+	}
 	h = dropRe.ReplaceAllString(h, "")
 	h = blockRe.ReplaceAllString(h, "\n")
 	h = html.UnescapeString(tagRe.ReplaceAllString(h, ""))
