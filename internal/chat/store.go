@@ -54,6 +54,8 @@ var (
 	markEvery = 512  // tokens between the marks of an entry
 	minStored = 1024 // shorter sequences are not kept: they read in a second
 	maxStored = 4    // entries per model; the least recently used goes
+
+	staleAfter = time.Hour // a directory without meta.json older than this is removed by openStore
 )
 
 // storeKey names the directory of a model's entries: the rows depend on the model and on its
@@ -91,9 +93,15 @@ func openStore(dir string) (*store, error) {
 		e := &entry{dir: filepath.Join(dir, d.Name())}
 		b, err := os.ReadFile(filepath.Join(e.dir, "meta.json"))
 		if err != nil || json.Unmarshal(b, e) != nil || e.RowBytes <= 0 {
+			// not an entry: one being written by another process (put writes meta.json
+			// last), or left by a write that failed; the old ones go
+			if fi, err := d.Info(); err == nil && time.Since(fi.ModTime()) > staleAfter {
+				os.RemoveAll(e.dir)
+			}
 			continue
 		}
 		if fi, err := os.Stat(filepath.Join(e.dir, "rows.bin")); err != nil || fi.Size() < int64(e.Rows)*int64(e.RowBytes) {
+			os.RemoveAll(e.dir) // its rows went bad: it would be dropped on its first use
 			continue
 		}
 		st.entries = append(st.entries, e)

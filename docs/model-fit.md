@@ -62,6 +62,7 @@ Neural Engine で 1 トークンにかかる時間は、実測ではほぼ次の
 - 2 節の係数の差 (0.47 対 0.22) がそのままなら、LFM3 の 16K は 13.4 + 6 × 0.22 × 16.3 + 3 ≈ 38 ms。写しの分だけでも 10 ms 前後は減る見込み。Q=8 (投機的デコード) では行が 4 × 8 = 32 になるので、行列積の効率も上がる。
 - 16.15 で CPU に落ちた「問い合わせを (kv ヘッド, グループ) の行列にする」形は `npuprobe` の試作で、`SDPAGrouped` (問い合わせのヘッドを系列の軸に積む) はそれとは別の並べ方。Gemma 4 では全演算が ANE に載っている (16.25)。LFM3 (16 Q / 4 KV) で同じになるかは配置の確認が要る。
 - やること: `lfm3/build.go` の `m.SDPA` を `m.SDPAGrouped(q, k, v, 1/sqrt(hd), mask)` に (`ChunkedSDPA` にも同じ並べ方を足す)。`TestPlacementVariants` で配置、`TestCallTimes` で費用、`TestCachedMatchesFull` で一致を確かめる。
+- 2026-11-02: `-attn grouped` で試した (design.md 16.39)。M3 の c16320 で Q=8 の 1 回が 73.5 → 40.7 ms、NPU に載り、貪欲法の答えは tile と同じ。OpenCode の 7.9K の prefill は 14.6 → 10.9 秒、生成は 60 → 34 ms/token。既定にするかは未決
 
 ### T2. 重みなしの注意プログラムに分け、使っている塊だけ動かす (速さとメモリ)
 
@@ -79,6 +80,7 @@ kv-cache.md 4 節 (b) の設計。層を「射影と MLP と畳み込み (重み
 - 実測 (16.37、c16320): Q=8 68.5 ms、Q=64 100.8 ms (635 tokens/s)。Q=8 だけで prefill すると 8 ÷ 0.0685 ≈ 117 tokens/s で、OpenCode の 7.4K が 12 秒 → 63 秒になるので、Q=8 だけでは足りない。
 - Q=16 は未計測。Q=1 → Q=8 が +15%、Q=8 → Q=64 が +47% なので、Q=16 は +5〜10% の見込みで、prefill は 230 tokens/s 前後 (7.4K が 32 秒)。T2 で prefill が長さに比例するようになれば、7.4K は 16K 容量の費用を払わないので、この見込みはさらに縮む。
 - やること: `hwnpu-convert -seq 16` で c16320 を作り、`HWNPU_CALL_PKGS` で `TestCallTimes` を回す。生成の費用が Q=8 の +10% 以内なら、`chat.Prepare` の 2 本を 1 本にする (`-draft 16`)。下書きの幅 15 は n-gram の下書きでは当たりが続かないので (16.37: 7 個と 3 個の差は 10%)、幅は 8 のままで Q=16 の残りを prefill にだけ使う。
+- 2026-11-02: Q=16 を計測した (design.md 16.39): 73.4 ms で Q=8 (69.2 ms) の +6%。1 本化は費用の面で成り立つ。grouped の後で測り直す
 
 ### T4. 退避した系列と system プロンプトの K/V をディスクに置く (メモリ、初回の速さ)
 
@@ -103,6 +105,7 @@ T2 と同じ仕組みで、プロンプトの前半は前半の塊しか見な�
 - 費用: 重み 0.81 → 1.2 GiB (2 部分のまま)、1 トークン +6 ms (1K で 19 → 25 ms、16K で 64 → 70 ms)。常駐は 2 本で +0.8 GiB。
 - 混ぜる形: `-format-for` で感度の高い群だけ lut8 にする。候補は出力の rms が 0.008 と小さい `out_proj`、`o_proj`、`w2` (MODEL.md の誤差の床の話) と出力層 (65536 × 2048、lut4 64 MB → lut8 128 MB、+1 ms)。
 - やること: `hwnpu-convert -format lut6` と `hwnpu-check -package` で KL と argmax を測り、`lfm3.Arch.Format` を変える。`chat.Prepare` は形式を名前に入れる (16.34 の `embed-lut8-s128` と同じ) ので古いパッケージと混ざらない。
+- 2026-11-02: lut6 を M3 で試した (design.md 16.39): 富士山が 3,776 m になり、ほかは変わらず (『こころ』と川は lut6 でも誤り)。12〜15 tokens/s (lut4 は 18〜24)。KL は参照ロジット (LFM3 のリモートコードが要る) 待ち
 
 ### T8. 活性を見た表の当てはめ (賢さ)
 
@@ -120,6 +123,8 @@ MODEL.md の「表の値の選び方」の表は、重みの誤差が最小の�
 ### T10. ANE 側のメモリの計測 (観測)
 
 `npuprobe split` に aned と ANECompilerService の `phys_footprint` を足す (16.12 の未確定事項)。T2 と T3 の効果はこれがないと半分しか見えない。
+
+- 2026-11-02: `footprint` で hwnpu-chat だけ測った (design.md 16.39): 読み込み直後に 2 本 1,968 MB、4 本 2,807 MB。aned は sudo が要り未計測
 
 ### 採らないもの
 

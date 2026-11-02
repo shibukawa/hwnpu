@@ -4,9 +4,12 @@ import (
 	"context"
 	"maps"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
@@ -155,6 +158,58 @@ func TestEngineStore(t *testing.T) {
 	check(e4, "short", toks(6), 0, 0)
 	if len(st4.entries) != 2 {
 		t.Errorf("%d entries after a short prompt, want 2", len(st4.entries))
+	}
+
+	// the mark file of the best entry (the first prompt's own, at its end) is gone: the entry
+	// is dropped, and the prompt comes back from the next best, the diverged conversation's,
+	// at 16
+	e5, st5 := newEngine(dir)
+	if len(st5.entries) != 2 {
+		t.Fatalf("%d entries read back, want 2", len(st5.entries))
+	}
+	for _, e := range st5.entries {
+		if slices.Equal(e.Tokens, a) {
+			if err := os.Remove(filepath.Join(e.dir, markFile(26))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	check(e5, "the best entry's mark file gone", a, 16, 16)
+	if len(st5.entries) != 2 { // the broken one went, and the prompt got an entry again
+		t.Errorf("%d entries after a drop, want 2", len(st5.entries))
+	}
+	// a restart cleans up: an entry whose rows.bin is short goes, a directory without
+	// meta.json goes when old, and stays when it may be being written by another process
+	for _, e := range st5.entries {
+		if slices.Equal(e.Tokens, d) {
+			if err := os.Truncate(filepath.Join(e.dir, "rows.bin"), int64(e.RowBytes)*10); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	stale := time.Now().Add(-2 * staleAfter)
+	for _, name := range []string{"old", "new"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chtimes(filepath.Join(dir, "old"), stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	_, st6 := newEngine(dir)
+	if len(st6.entries) != 1 || !slices.Equal(st6.entries[0].Tokens, a) {
+		t.Errorf("%d entries after the cleanup, want the first prompt's alone", len(st6.entries))
+	}
+	ds, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, de := range ds {
+		names = append(names, de.Name())
+	}
+	if len(names) != 2 || !slices.Contains(names, "new") || slices.Contains(names, "old") {
+		t.Errorf("directories after the cleanup: %v", names)
 	}
 }
 
