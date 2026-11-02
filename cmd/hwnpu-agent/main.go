@@ -23,9 +23,10 @@
 // alone makes an assistant that answers from what it finds, and -search-first searches
 // before the model answers each task, with a query it writes for the task, so that the
 // search is not left to its judgment. -search picks Wikipedia (no key), the Brave Search
-// API (BRAVE_API_KEY) or a SearXNG instance for the web.
+// API (BRAVE_API_KEY) or a SearXNG instance for the web, and fetch reads a page of the
+// results as text.
 //
-//	hwnpu-agent -tools search -search-first -think=false
+//	hwnpu-agent -tools search,fetch -search-first -think=false
 //
 // The model is -use, prepared like hwnpu-chat's (downloaded and converted into -dir on the
 // first run, with a context of -context tokens). -tools offers fewer tools, -system replaces

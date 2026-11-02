@@ -16,11 +16,11 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
-// Names are the tools, in the order they are offered: read, edit, write, bash, search.
-var Names = []string{"read", "edit", "write", "bash", "search"}
+// Names are the tools, in the order they are offered: read, edit, write, bash, search, fetch.
+var Names = []string{"read", "edit", "write", "bash", "search", "fetch"}
 
 // DefaultTools are the tools offered when Config.Tools names none: the four coding tools.
-// search (the web, or Wikipedia) is offered when named.
+// search (the web, or Wikipedia) and fetch (a page) are offered when named.
 var DefaultTools = Names[:4]
 
 // Tool is one of the agent's tools: its declaration for the model, the rule it adds to the
@@ -138,6 +138,17 @@ func (s *Session) tool(name string) *Tool {
   "required": ["query"]}}`, c.Search.About())),
 			Describe: func(args map[string]any) string { return str(args, "query") },
 			Run:      func(ctx context.Context, args map[string]any) string { return c.search(ctx, args) },
+		}
+	case "fetch":
+		return &Tool{
+			Name: "fetch",
+			Rule: "Use fetch to read a page of the results when its snippet does not answer.",
+			Decl: decl(fmt.Sprintf(`{"name": "fetch", "description": "Read a web page as text (the first %d characters).",
+ "parameters": {"type": "object", "properties": {
+  "url": {"type": "string", "description": "The URL of the page, from a search result"}},
+  "required": ["url"]}}`, c.FetchChars)),
+			Describe: func(args map[string]any) string { return str(args, "url") },
+			Run:      func(ctx context.Context, args map[string]any) string { return c.fetch(ctx, args) },
 		}
 	}
 	panic("agent: unknown tool " + name)
@@ -491,4 +502,20 @@ func (c *Config) search(ctx context.Context, args map[string]any) string {
 		return fmt.Sprintf("No results for %q. Try other words: the name of the thing asked about.", query)
 	}
 	return Format(results)
+}
+
+// fetch runs the fetch tool: the page as text, or what went wrong.
+func (c *Config) fetch(ctx context.Context, args map[string]any) string {
+	u := strings.TrimSpace(str(args, "url"))
+	if u == "" {
+		return "url is required."
+	}
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return "url must begin with http:// or https://: copy it from a search result."
+	}
+	text, err := Fetch(ctx, nil, u, c.FetchChars)
+	if err != nil {
+		return "The page could not be read: " + err.Error()
+	}
+	return text
 }

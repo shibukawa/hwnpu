@@ -119,6 +119,25 @@ func (w *Wikipedia) About() string {
 }
 
 func (w *Wikipedia) Search(ctx context.Context, query string, n int) ([]Result, error) {
+	// the model quotes a title (『こころ』 作者), which the search takes literally
+	query = strings.Trim(strings.Map(func(r rune) rune {
+		if strings.ContainsRune("『』「」\"'“”", r) {
+			return ' '
+		}
+		return r
+	}, query), " ")
+	query = strings.Join(strings.Fields(query), " ")
+	out, err := w.search(ctx, query, n)
+	if err == nil && len(out) == 0 {
+		// nothing for the words together: the first is the name, often
+		if first, rest, ok := strings.Cut(query, " "); ok && rest != "" {
+			out, err = w.search(ctx, first, n)
+		}
+	}
+	return out, err
+}
+
+func (w *Wikipedia) search(ctx context.Context, query string, n int) ([]Result, error) {
 	lang := w.Lang
 	if lang == "" {
 		lang = "en"
@@ -146,7 +165,9 @@ func (w *Wikipedia) Search(ctx context.Context, query string, n int) ([]Result, 
 	var out []Result
 	var ids []string
 	for _, h := range hits.Query.Search {
-		out = append(out, Result{Title: h.Title, URL: "https://" + lang + ".wikipedia.org/wiki/" + url.PathEscape(h.Title), Snippet: h.Snippet})
+		// the title as it is, not percent-encoded: the model copies the URL into its answer,
+		// and an encoded one comes out mangled
+		out = append(out, Result{Title: h.Title, URL: "https://" + lang + ".wikipedia.org/wiki/" + strings.ReplaceAll(h.Title, " ", "_"), Snippet: h.Snippet})
 		ids = append(ids, strconv.Itoa(h.PageID))
 	}
 	if len(out) == 0 {
