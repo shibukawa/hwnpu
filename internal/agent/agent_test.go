@@ -770,3 +770,135 @@ func TestDump(t *testing.T) {
 		t.Errorf("dump %s: %v", b, err)
 	}
 }
+
+// fakeSearch is a Searcher that remembers its queries.
+type fakeSearch struct {
+	queries []string
+	results []Result
+	err     error
+}
+
+func (f *fakeSearch) Search(ctx context.Context, q string, n int) ([]Result, error) {
+	f.queries = append(f.queries, q)
+	if q == "x" {
+		return nil, nil // nothing is found for x
+	}
+	return f.results[:min(n, len(f.results))], f.err
+}
+
+func (f *fakeSearch) About() string { return "the test index" }
+
+var fuji = []Result{{"富士山 - Wikipedia", "https://ja.wikipedia.org/wiki/富士山", "富士山は日本の活火山。標高は3776.12 m。"}}
+
+// With search as the only tool the prompt is an assistant's, the declaration says what is
+// searched, and a call returns the results formatted; no results and a failure are told.
+func TestSearchTool(t *testing.T) {
+	fs := &fakeSearch{results: fuji}
+	m := &script{answers: []chat.Answer{
+		calls(call("search", map[string]any{"query": " 富士山  高さ "})),
+		calls(call("search", map[string]any{"query": "x"})),
+		calls(call("search", map[string]any{})),
+		said("3,776 m です。"),
+	}}
+	s, err := New(m, Config{Dir: t.TempDir(), Tools: []string{"search"}, Search: fs, Results: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sys := s.System()
+	if !strings.HasPrefix(sys, SearchSystem) || strings.Contains(sys, "Paths are relative") || strings.Contains(sys, "Files in the current directory") || !strings.Contains(sys, "in the language of the question") {
+		t.Errorf("system prompt:\n%s", sys)
+	}
+	if p, err := chat.Render(s.Messages(), s.Tools(), chat.Options{}); err != nil || !strings.Contains(p, "Search the test index.") {
+		t.Errorf("declaration: %s, %v", p, err)
+	}
+	ans, err := s.Run(context.Background(), "富士山の高さは?", Events{})
+	if err != nil || ans != "3,776 m です。" {
+		t.Fatalf("%q, %v", ans, err)
+	}
+	if !slices.Equal(fs.queries, []string{"富士山 高さ", "x"}) {
+		t.Errorf("queries %q", fs.queries)
+	}
+	msgs := s.Messages()
+	if got := msgs[3].Content.Text; msgs[3].Role != "tool" || got != "1. 富士山 - Wikipedia\nhttps://ja.wikipedia.org/wiki/富士山\n富士山は日本の活火山。標高は3776.12 m。" {
+		t.Errorf("results: %q", got)
+	}
+	if got := msgs[5].Content.Text; !strings.HasPrefix(got, `No results for "x".`) {
+		t.Errorf("no results: %q", got)
+	}
+	if got := msgs[7].Content.Text; got != "query is required." {
+		t.Errorf("no query: %q", got)
+	}
+	fs.err = errors.New("boom")
+	if got := s.cfg.search(context.Background(), map[string]any{"query": "y"}); got != "The search failed: boom" {
+		t.Errorf("failure: %q", got)
+	}
+}
+
+// SearchFirst: a first round that is not a search is dropped, and a search for the task's
+// first line takes its place; a first round that is one runs as it is. The task's searches
+// are limited: past Config.Searches a search returns a hint and the model is asked to answer.
+func TestSearchFirst(t *testing.T) {
+	fs := &fakeSearch{results: fuji}
+	m := &script{answers: []chat.Answer{
+		said("3,776 m, as I recall."),                              // dropped
+		calls(call("search", map[string]any{"query": "富士山の高さは?"})), // the same call: not run
+		said("3,776 m です。"),
+		calls(call("search", map[string]any{"query": "信濃川"})), // a search: runs as it is
+		said("信濃川です。"),
+	}}
+	s, err := New(m, Config{Dir: t.TempDir(), Tools: []string{"search"}, Search: fs, SearchFirst: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ans, err := s.Run(context.Background(), "富士山の高さは?\n(標高で)", Events{})
+	if err != nil || ans != "3,776 m です。" {
+		t.Fatalf("%q, %v", ans, err)
+	}
+	if !slices.Equal(fs.queries, []string{"富士山の高さは?"}) {
+		t.Errorf("queries %q", fs.queries)
+	}
+	msgs := s.Messages()
+	if len(msgs) != 7 || msgs[2].Role != "assistant" || msgs[2].Content.Text != "" || len(msgs[2].ToolCalls) != 1 || msgs[2].ToolCalls[0].Function.Arguments != `{"query":"富士山の高さは?"}` ||
+		msgs[3].Role != "tool" || msgs[3].ToolCallID != msgs[2].ToolCalls[0].ID || !strings.HasPrefix(msgs[3].Content.Text, "1. 富士山 - Wikipedia") ||
+		msgs[5].Content.Text != nudge || msgs[6].Content.Text != "3,776 m です。" {
+		for i, m := range msgs {
+			t.Logf("%d %s %q %v", i, m.Role, m.Content.Text, m.ToolCalls)
+		}
+		t.Fatal("the conversation")
+	}
+	if len(m.seen) != 3 || len(m.seen[1]) != 4 || m.tools[1] != 1 {
+		t.Errorf("%d requests; the second saw %d messages, %d tools", len(m.seen), len(m.seen[1]), m.tools[1])
+	}
+	if ans, err := s.Run(context.Background(), "日本一長い川は?", Events{}); err != nil || ans != "信濃川です。" {
+		t.Fatalf("%q, %v", ans, err)
+	}
+	if !slices.Equal(fs.queries, []string{"富士山の高さは?", "信濃川"}) || len(s.Messages()) != 11 {
+		t.Errorf("queries %q, %d messages", fs.queries, len(s.Messages()))
+	}
+	// without search among the tools nothing is searched
+	m = &script{answers: []chat.Answer{said("done")}}
+	s, _ = New(m, Config{Dir: t.TempDir(), Tools: []string{"read"}, Search: fs, SearchFirst: true})
+	if _, err := s.Run(context.Background(), "x", Events{}); err != nil || len(fs.queries) != 2 || len(m.seen) != 1 {
+		t.Errorf("searched without the tool: %q, %v", fs.queries, err)
+	}
+	// the limit
+	fs = &fakeSearch{results: fuji}
+	m = &script{answers: []chat.Answer{
+		calls(call("search", map[string]any{"query": "a"})),
+		calls(call("search", map[string]any{"query": "b"})),
+		calls(call("search", map[string]any{"query": "c"})),
+		said("I could not find it."),
+	}}
+	s, _ = New(m, Config{Dir: t.TempDir(), Tools: []string{"search"}, Search: fs, Searches: 2})
+	ans, err = s.Run(context.Background(), "x", Events{})
+	if err != nil || ans != "I could not find it." || !slices.Equal(fs.queries, []string{"a", "b"}) {
+		t.Fatalf("%q, %v, queries %q", ans, err, fs.queries)
+	}
+	msgs = s.Messages()
+	if n := len(msgs); msgs[n-3].Content.Text != searchesUp || msgs[n-2].Content.Text != closingSearch || m.tools[3] != 0 {
+		t.Errorf("the end of the conversation: %q, %q, %d tools", msgs[n-3].Content.Text, msgs[n-2].Content.Text, m.tools[3])
+	}
+	if r := []rune(firstLine(strings.Repeat("あ", 120) + "\nx")); len(r) != 100 {
+		t.Errorf("firstLine: %d runes", len(r))
+	}
+}
