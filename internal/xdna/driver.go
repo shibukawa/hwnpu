@@ -141,11 +141,21 @@ func (d Dev) CloseBO(handle uint32) error {
 }
 
 // CreateHwctx creates a hardware context and returns its handle and timeline syncobj.
+//
+// EINVAL is tried again for up to a second: right after another process's context ended,
+// creating one failed with EINVAL now and then on a Ryzen AI 9 365 (the driver is still
+// tearing the old one down), and succeeded moments later.
 func (d Dev) CreateHwctx(qos QoSInfo, maxOPC, numTiles uint32) (handle, syncobj uint32, err error) {
-	arg := CreateHwctx{QoS: unsafe.Pointer(&qos), MaxOPC: maxOPC, NumTiles: numTiles}
-	err = d.ioctl("CREATE_HWCTX", IoctlCreateHwctx, unsafe.Pointer(&arg))
-	runtime.KeepAlive(&qos)
-	return arg.Handle, arg.SyncobjHandle, err
+	deadline := time.Now().Add(time.Second)
+	for {
+		arg := CreateHwctx{QoS: unsafe.Pointer(&qos), MaxOPC: maxOPC, NumTiles: numTiles}
+		err = d.ioctl("CREATE_HWCTX", IoctlCreateHwctx, unsafe.Pointer(&arg))
+		runtime.KeepAlive(&qos)
+		if !errors.Is(err, syscall.EINVAL) || time.Now().After(deadline) {
+			return arg.Handle, arg.SyncobjHandle, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (d Dev) DestroyHwctx(handle uint32) error {

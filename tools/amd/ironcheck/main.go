@@ -46,8 +46,21 @@ type manifest struct {
 		Kind  string `json:"kind"`
 		Form  form   `json:"form"`
 	} `json:"parameters"`
-	Outputs []handle `json:"outputs"`
-	Plan    string   `json:"plan"`
+	Outputs []handle          `json:"outputs"`
+	Plan    string            `json:"plan"`
+	Images  map[string]string `json:"images"`
+	Carried *struct {
+		Carry *struct {
+			Argument string   `json:"argument"`
+			Offset   int      `json:"offset"`
+			Names    []string `json:"names"`
+		} `json:"carry"`
+		Next map[string]struct {
+			Form  *form `json:"form"`
+			Plane int   `json:"plane"`
+			Index int   `json:"index"`
+		} `json:"next"`
+	} `json:"carried"`
 }
 
 // form is how a scratchpad word follows from one per-call value v of the graph (IRON's
@@ -77,6 +90,91 @@ func (f form) eval(v int64) int64 {
 		x &= *f.Mod - 1 // a power of two: floors like Python's %
 	}
 	return x + f.Post
+}
+
+// writeWords writes the scratchpad words of a call with the graph's per-call values: a
+// value a core reads is held shifted left by 2, an address as it is (IRON's Parameter.shift).
+func writeWords(m *manifest, run *hwnpu.Run, values map[string]int64, verbose bool) {
+	if len(m.Parameters) == 0 {
+		return
+	}
+	sp := run.Scratchpad()
+	for _, p := range m.Parameters {
+		gv, ok := values[p.Form.Value]
+		if !ok {
+			log.Fatalf("parameter %s needs the per-call value %s (have %v)", p.Name, p.Form.Value, values)
+		}
+		v := p.Form.eval(gv)
+		if verbose {
+			fmt.Printf("parameter %s (slot %d, %s) = %d from %s = %d\n", p.Name, p.Index, p.Kind, v, p.Form.Value, gv)
+		}
+		if p.Kind == "core" {
+			v <<= 2
+		}
+		if 4*p.Index+4 > len(sp) {
+			log.Fatalf("parameter %s at word %d: the scratchpad has %d bytes", p.Name, p.Index, len(sp))
+		}
+		binary.LittleEndian.PutUint32(sp[4*p.Index:], uint32(v))
+	}
+}
+
+// runCarried runs check/calls.json, a host-driven sequence of a graph with carried values:
+// each call's values go to the scratchpad and the carry buffer's first plane, and its next
+// values come from Affine forms or the carry buffer's second plane.
+func runCarried(ctx context.Context, dir string, m *manifest, run *hwnpu.Run, args map[string]*hwnpu.Buffer) {
+	var calls []struct {
+		Values map[string]int64 `json:"values"`
+		Next   map[string]int64 `json:"next"`
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "check", "calls.json"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &calls); err != nil {
+		log.Fatal(err)
+	}
+	c := m.Carried
+	le := binary.LittleEndian
+	bad := 0
+	t0 := time.Now()
+	for i, call := range calls {
+		writeWords(m, run, call.Values, i == 0)
+		var carry *hwnpu.Buffer
+		if c.Carry != nil {
+			carry = args[c.Carry.Argument]
+			for j, name := range c.Carry.Names {
+				le.PutUint32(carry.Bytes()[c.Carry.Offset+4*j:], uint32(call.Values[name]))
+			}
+			carry.SyncToDevice(c.Carry.Offset, 8*len(c.Carry.Names))
+		}
+		if err := run.Run(ctx); err != nil {
+			log.Fatalf("call %d: %v", i, err)
+		}
+		if carry != nil {
+			carry.SyncFromDevice(c.Carry.Offset, 8*len(c.Carry.Names))
+		}
+		got := map[string]int64{}
+		for name, n := range c.Next {
+			if n.Form != nil {
+				got[name] = n.Form.eval(call.Values[n.Form.Value])
+			} else {
+				o := c.Carry.Offset + 4*(n.Plane*len(c.Carry.Names)+n.Index)
+				got[name] = int64(int32(le.Uint32(carry.Bytes()[o:])))
+			}
+			if got[name] != call.Next[name] {
+				bad++
+			}
+		}
+		if i < 4 || bad > 0 && bad < 4 {
+			fmt.Printf("call %d: values %v -> next %v (reference %v)\n", i, call.Values, got, call.Next)
+		}
+	}
+	fmt.Printf("%d host-driven calls in %.1f ms, %d next values differ from the reference\n", len(calls), time.Since(t0).Seconds()*1000, bad)
+	if bad > 0 {
+		fmt.Println("FAIL")
+		os.Exit(1)
+	}
+	fmt.Println("PASS")
 }
 
 func bf16(h uint16) float64 { return float64(math.Float32frombits(uint32(h) << 16)) }
@@ -134,6 +232,20 @@ func main() {
 		args[a.Kind] = buf
 		run.SetBuffer(a.Index, buf)
 	}
+	for kind, name := range m.Images {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			log.Fatal(err)
+		}
+		copy(args[kind].Bytes(), data)
+	}
+	if m.Carried != nil {
+		for _, buf := range args {
+			buf.SyncToDevice(0, buf.Size())
+		}
+		runCarried(ctx, dir, &m, run, args)
+		return
+	}
 	for _, in := range m.Inputs {
 		data, err := os.ReadFile(filepath.Join(dir, "check", "in_"+in.Name+".bin"))
 		if err != nil {
@@ -155,24 +267,7 @@ func main() {
 			log.Fatal(err)
 		}
 	}
-	if len(m.Parameters) > 0 {
-		sp := run.Scratchpad()
-		for _, p := range m.Parameters {
-			gv, ok := values[p.Form.Value]
-			if !ok {
-				log.Fatalf("parameter %s needs the per-call value %s (check/values.json has %v)", p.Name, p.Form.Value, values)
-			}
-			v := p.Form.eval(gv)
-			fmt.Printf("parameter %s (slot %d, %s) = %d from %s = %d\n", p.Name, p.Index, p.Kind, v, p.Form.Value, gv)
-			if p.Kind == "core" {
-				v <<= 2
-			}
-			if 4*p.Index+4 > len(sp) {
-				log.Fatalf("parameter %s at word %d: the scratchpad has %d bytes", p.Name, p.Index, len(sp))
-			}
-			binary.LittleEndian.PutUint32(sp[4*p.Index:], uint32(v))
-		}
-	}
+	writeWords(&m, run, values, true)
 	t0 = time.Now()
 	if err := run.Run(ctx); err != nil {
 		log.Fatal(err)

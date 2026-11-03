@@ -1548,3 +1548,10 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
   - 同期は XRT と同じく、x86 ではユーザー空間の CLFLUSH + MFENCE (`xdna.FlushCPU`、Go のアセンブリ) にした。Linux 7.0 の `SYNC_BO` はカーネル側の写像でフラッシュするので、ページがまだ固定されていない BO では何もしない経路がある (`Can not get flush memory`)。amd64 以外は今までどおり `SYNC_BO`
 - `xdna.Dev.Wait`: 完了待ちの `SYNCOBJ_TIMELINE_WAIT` が Go のランタイムのシグナルで `EINTR` になると、エラーにしていた。絶対時刻の期限のまま待ち直す
 - 未対応: 前のプロセスの直後に `CREATE_HWCTX` が一時的に `EINVAL` になることがある (前のコンテキストの後始末と重なる)。再試行を足す
+
+### 16.44 AMD: 引き継ぐ値 (段階 A2 の残り) — 2026-11-03
+
+- IRON の `Carried` の値は、ホストから 1 回ずつ呼ぶとき (hwnpu の使い方) は、呼び出しごとの値と同じくスクラッチパッドの語になる (Walk の `node` と `steps` は DMA のオフセット、種類 `addr` でずらさずに書く)。IRON の `_write_values` と `_next_values` に合わせ、呼ぶ前に現在の値を `carry` バッファの 1 段目に書き、呼んだ後は、次の値が Affine の式 (`steps + 1`) ならホストで計算し、計算された値 (`node`) は 2 段目から読む
+- `tools/amd/iron_export.py`: manifest に `carried` (carry の配置と名前の順、次の値の求め方) と `images` (重みを置いた引数の初期像 `arg_<種類>.bin`。状態は 0) を書く。`--check` は引き継ぐ値のあるグラフでは `graph.reference()` で呼び出しの列を作る (`check/calls.json`)
+- 実機: IRON の section-5 の Walk (64 要素の後続表を引く) をホストから 12 回呼び、次の値が全て参照と一致。1 回 0.18 ms
+- 残り: 1 つの ELF に複数のコマンドがある場合 (`Plan.commands`)。バッファのアドレスに依る語 (`recording.addresses`) は manifest に書けないのでエラーにしている。LLM のグラフで出てきたら対応する
