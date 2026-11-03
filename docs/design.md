@@ -1520,3 +1520,11 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 
 - 結論: デコードを NPU に任せる価値はある (CPU の 6 割の速さを、半分以下の電力で、CPU を空けたまま)。ただし演算ごとに xclbin を切り替える方式は使えない。IRON が NPU2 で使う「full ELF」(グラフ全体を 1 つのハードウェアコンテキスト、1 つのコマンドで流す) に対応する必要がある
 - full ELF の投入: XRT は xclbin なしで ELF からハードウェアコンテキストを作り (`xrt::hw_context(device, elf)`)、コマンドは `ERT_START_NPU_PREEMPT_ELF`。Linux 7.0 は `force_cmdlist` (既定 true) の経路で `EXEC_NPU_TYPE_ELF` のスロットを作る。ファームウェアの機能表 (npu4) では、メールボックスのプロトコルの主版 7 で `AIE2_NPU_COMMAND` と `AIE2_PREEMPT` が有効になる。この機械のファームウェアは `npu_7.sbin` (1.1.2.64) なので使える
+
+### 16.41 AMD で LLM を動かす設計 — 2026-11-03
+
+[amd-npu-models.md](amd-npu-models.md) にまとめた。要点:
+
+- AMD に公開されたグラフ用コンパイラはなく、演算ごとの xclbin は切り替え費用 (16.40) で使えない。[amd/IRON](https://github.com/amd/IRON) をビルド時のコンパイラとして使い、モデルの 1 回の呼び出しを 1 つの full ELF にしたものを、hwnpu が Go で実行する。「変換は Go だけで」の例外で、利用者の機械には Python も XRT も要らない
+- full ELF の投入 (CREATE_HWCTX のみ、制御コードと PDI を BO_DEV に、再配置で引数のアドレスを書き、`ERT_START_NPU_PREEMPT_ELF`) は、XRT を root なしで展開して IRON のグラフを動かし、ioctl を `LD_PRELOAD` で記録して確かめた。再配置の種類 5 (shim_dma_48、+0x80000000) と 8 (address_64) は、書き換え後の制御コードと一致
+- 最初のモデルは IRON に既にある Gemma 4 E2B (bf16、IRON の CI で 5.6 トークン/秒)。次に LFM3-1.7B の IRON のアプリケーションを書き、4 ビット (q4nx の一般化) で速くする
