@@ -55,7 +55,11 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (Program, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &devProgram{c: c, p: c.Program(ctx), meta: meta}, nil
+	// the program keeps the context it is taken with for every run, so it must not be the
+	// caller's: hwnpu-chat loads under a signal.NotifyContext whose stop cancels it once the
+	// model is up, and the vision encoder then failed every image with "context canceled"
+	// (the context of a run is checked in Run)
+	return &devProgram{c: c, p: c.Program(context.Background()), meta: meta}, nil
 }
 
 func count(shape []int) int {
@@ -203,7 +207,7 @@ func OpenSession(ctx context.Context, dev *hwnpu.Device, paths []string, m llm.C
 				return nil, nil, err
 			}
 			closers = append(closers, c)
-			p = c.Program(ctx)
+			p = c.Program(context.Background()) // not the caller's context: see Open
 		} else {
 			cp, c, err := cachedCPU(path, shared)
 			if err != nil {

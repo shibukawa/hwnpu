@@ -42,7 +42,7 @@ var Features = []struct{ Name, About string }{
 // Catalog lists the models hwnpu-chat knows, by name.
 var Catalog = []Model{
 	{Name: "LFM3-1.7B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "LiquidAI/LFM3-1.7B", Bytes: 3.5e9,
-		About: "Liquid AI's 1.7B model, text only: small and fast enough to run behind an agent such as OpenCode"},
+		About: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"},
 	{Name: "LFM3-VL-2B", Kind: KindChat, Features: []string{"tools", "thinking", "vision"}, Repo: "LiquidAI/LFM3-VL-2B", Bytes: 3.8e9,
 		About: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"},
 	{Name: "LFM3-Audio-2B", Kind: KindChat, Features: []string{"tools", "thinking", "audio"}, Repo: "LiquidAI/LFM3-Audio-2B", Bytes: 4.0e9,

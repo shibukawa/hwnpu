@@ -12,6 +12,10 @@ import (
 // Options select what to build. Gemma 4 has no settings of its own yet.
 type Options struct {
 	llm.Options
+	// FoldedLogits leaves y as (1, seq, rows, vocab/rows) when the vocabulary is wider than the
+	// Neural Engine takes elementwise (head): the reshape back to (1, seq, vocab) is the one
+	// operation of the program the CPU runs otherwise. decode reads either.
+	FoldedLogits bool
 }
 
 type builder struct {
@@ -152,8 +156,11 @@ func (m *builder) perLayerInputs(h *mlpackage.Var) *mlpackage.Var {
 // The Neural Engine takes the output layer's 262144 wide axis but not elementwise operations over
 // it (they go to the CPU), so the soft cap runs on the logits folded into rows of at most
 // llm.NeuralEngineMaxDim. The reshape back to (1, seq, vocab) still goes to the CPU; leaving y
-// folded puts everything on the Neural Engine but made a token four times slower (137 ms on the
-// M3, against 33), reading the folded output back.
+// folded (Options.FoldedLogits, -logits folded) puts everything on the Neural Engine. An early
+// measurement had that four times slower (137 ms a token on the M3, against 33); on 2026-11-03,
+// with the parts and the speculative decoding of hwnpu-chat, it was 5 to 12% slower (12.8 to
+// 24.8 tokens/s against 13.7 to 28.1), and it did not make the programs stay in the Neural
+// Engine's compile cache, which was the hope (docs/design.md 16.43). flat stays the default.
 func (m *builder) head(h *mlpackage.Var) *mlpackage.Var {
 	c := m.cfg
 	h = m.norm(h, c.Prefix+"norm.weight", m.d)
@@ -172,6 +179,9 @@ func (m *builder) head(h *mlpackage.Var) *mlpackage.Var {
 	y = m.Op("mul", map[string]any{"x": y, "y": m.B.ScalarF16(1 / limit)}, y.Shape...)
 	y = m.Op("tanh", map[string]any{"x": y}, y.Shape...)
 	if rows == 1 {
+		return m.B.NamedOp("mul", "y", map[string]any{"x": y, "y": m.B.ScalarF16(limit)}, mlpackage.Float16, y.Shape...)
+	}
+	if m.opts.FoldedLogits {
 		return m.B.NamedOp("mul", "y", map[string]any{"x": y, "y": m.B.ScalarF16(limit)}, mlpackage.Float16, y.Shape...)
 	}
 	y = m.Op("mul", map[string]any{"x": y, "y": m.B.ScalarF16(limit)}, y.Shape...)

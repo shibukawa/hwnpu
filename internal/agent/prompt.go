@@ -11,6 +11,11 @@ import (
 // directory: a small model copies a long absolute path wrong, and relative paths need none.
 const DefaultSystem = "You are a coding agent working in the current directory. You help with programming tasks by reading files, running commands and editing code with the tools below."
 
+// SearchSystem opens the system prompt when search is the only tool: an assistant that looks
+// facts up. A 1.7B model recalls facts badly (the height of Mount Fuji, the author of a
+// novel) but copies them from a search result well.
+const SearchSystem = "You are a helpful assistant with a search tool. You do not rely on your memory for facts: look them up with search, and answer only from what the results say."
+
 // MaxInstructions is the most characters of project instructions (AGENTS.md) the prompt takes.
 const MaxInstructions = 4000
 
@@ -22,21 +27,35 @@ const MaxFiles = 40
 // tools' own declarations are not in it; the chat template adds them.
 func Prompt(cfg Config, tools []*Tool) string {
 	var sb strings.Builder
-	if cfg.System != "" {
-		sb.WriteString(strings.TrimSpace(cfg.System))
-	} else {
-		sb.WriteString(DefaultSystem)
+	coding := false // a tool that works on the directory is offered
+	for _, t := range tools {
+		coding = coding || t.Name != "search" && t.Name != "fetch"
 	}
-	if files := listing(cfg.Dir); files != "" {
+	switch {
+	case cfg.System != "":
+		sb.WriteString(strings.TrimSpace(cfg.System))
+	case coding:
+		sb.WriteString(DefaultSystem)
+	default:
+		sb.WriteString(SearchSystem)
+	}
+	if files := listing(cfg.Dir); coding && files != "" {
 		sb.WriteString("\n\nFiles in the current directory: " + files)
 	}
-	sb.WriteString("\n\nRules:\n- Work step by step: call a tool, look at its result, then decide the next step.\n- Paths are relative to the current directory (main.go, src/app.go); do not use absolute paths.\n")
+	sb.WriteString("\n\nRules:\n- Work step by step: call a tool, look at its result, then decide the next step.\n")
+	if coding {
+		sb.WriteString("- Paths are relative to the current directory (main.go, src/app.go); do not use absolute paths.\n")
+	}
 	for _, t := range tools {
 		if t.Rule != "" {
 			sb.WriteString("- " + t.Rule + "\n")
 		}
 	}
-	sb.WriteString("- When the task is done, stop calling tools and answer with a short summary of what you did.")
+	if coding {
+		sb.WriteString("- When the task is done, stop calling tools and answer with a short summary of what you did.")
+	} else {
+		sb.WriteString("- When the results answer the question, stop calling tools and answer, in the language of the question.")
+	}
 	if s := strings.TrimSpace(cfg.Instructions); s != "" {
 		if r := []rune(s); len(r) > MaxInstructions {
 			s = string(r[:MaxInstructions]) + "\n[...]"

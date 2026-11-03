@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shibukawa/hwnpu"
@@ -214,4 +215,49 @@ func TestCachedMatchesFull(t *testing.T) {
 			t.Logf("parts %v: worst relative error %.2g", plan, worst)
 		})
 	}
+}
+
+// With the logits left folded (-logits folded, a wide vocabulary), the parts with a cache give
+// the logits of the whole program: decode reads the folded y as the flat one.
+func TestCachedFoldedLogits(t *testing.T) {
+	raw := strings.ReplaceAll(tiny, `"vocab_size": 48, "vocab_size_per_layer_input": 48`, `"vocab_size": 32768, "vocab_size_per_layer_input": 32768`)
+	c, err := ParseConfig([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := newWeights(c)
+	n := len(tokens)
+	feed := map[string][]float32{"x": rows(t, w, c.Embedding(), tokens), "ple": rows(t, w, c.perLayerTable(), tokens)}
+	full := build(t, c, w, Options{Options: llm.Options{Seq: n, Format: "fp16"}}).run(t, feed)["y"]
+	path, plan := writeParts(t, c, w, llm.Options{Seq: 3, Cache: 11, Format: "fp16", Params: map[string]string{"logits": "folded"}}, 2)
+	p := cpuProgram(t, path)
+	if y := p.OutShape["y"]; len(y) != 4 || y[2]*y[3] != c.VocabSize {
+		t.Fatalf("y %v is not folded", y)
+	}
+	s, err := decode.New(p, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worst := 0.0
+	for pos := 0; pos < n; {
+		v := min(3, n-pos)
+		var step [][]float32
+		for i := 0; i < v; i++ {
+			row, err := llm.TokenRow(w, c, tokens[pos+i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			step = append(step, row)
+		}
+		logits, err := s.Step(step)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos += v
+		worst = math.Max(worst, relErr32(logits, full[(pos-1)*c.VocabSize:pos*c.VocabSize]))
+	}
+	if worst > 5e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("parts %v: worst relative error %.2g", plan, worst)
 }

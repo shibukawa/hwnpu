@@ -80,7 +80,7 @@ func main() {
 	openCodeBin := flag.String("opencode-bin", "opencode", "the OpenCode command (-opencode)")
 	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
 	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
-	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while a conversation is short, comma separated (a step costs in proportion to the cache); empty or none for none")
+	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while a conversation is short, comma separated (a step costs in proportion to the cache); empty or none for none, auto for 4096 with a model in 4 bit tables and none with 6 or 8 bits (four such programs overflow the Neural Engine's compile cache and every start compiles them again)")
 	draft := flag.Int("draft", 8, "tokens per call of the program that checks drafts (speculative decoding: tokens guessed from the prompt and the answer so far are checked in one call); 0 or 1 turns it off")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")

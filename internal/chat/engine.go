@@ -750,17 +750,20 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		}
 	}
 	plan()
-	if e.store != nil && n < len(prompt) {
-		// the store brings the prompt further than what is in memory: start on its rows
-		if se, sp := e.store.find(prompt); se != nil && sp > n {
-			if ok, err := e.restore(se, sp, prompt, st); err != nil {
-				return nil, err
-			} else if ok {
-				n, m, from = sp, nil, -2
-			} else {
-				plan() // the session may have been emptied
-			}
+	for e.store != nil && n < len(prompt) {
+		// the store brings the prompt further than what is in memory: start on its rows; an
+		// entry that cannot be read is dropped, and the next best is tried
+		se, sp := e.store.find(prompt)
+		if se == nil || sp <= n {
+			break
 		}
+		if ok, err := e.restore(se, sp, prompt, st); err != nil {
+			return nil, err
+		} else if ok {
+			n, m, from = sp, nil, -2
+			break
+		}
+		plan() // the session may have been emptied
 	}
 	if from >= 0 {
 		// swap the sequence in the cache for the saved one

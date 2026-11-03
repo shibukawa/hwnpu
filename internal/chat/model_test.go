@@ -179,6 +179,25 @@ func safetensorsOf(t *testing.T, w llm.Synthetic) []byte {
 	return append(append(out, h...), data...)
 }
 
+func TestTiersAuto(t *testing.T) {
+	if got, err := Tiers("auto"); err != nil || !slices.Equal(got, []int{TierAuto}) {
+		t.Errorf("Tiers(auto) = %v, %v", got, err)
+	}
+	if got, err := Tiers(" auto "); err != nil || !slices.Equal(got, []int{TierAuto}) {
+		t.Errorf("Tiers( auto ) = %v, %v", got, err)
+	}
+	for format, want := range map[string][]int{"lut4": {4096}, "lut6": nil, "lut8": nil, "fp16": nil} {
+		if got := autoTiers(format, "coreml"); !slices.Equal(got, want) {
+			t.Errorf("autoTiers(%s, coreml) = %v, want %v", format, got, want)
+		}
+	}
+	for _, format := range []string{"int4", "int8"} {
+		if got := autoTiers(format, llm.BackendIntel); !slices.Equal(got, []int{4096}) {
+			t.Errorf("autoTiers(%s, intel) = %v, want 4096", format, got)
+		}
+	}
+}
+
 func TestTiersNone(t *testing.T) {
 	for _, s := range []string{"", "none", " none "} {
 		if got, err := Tiers(s); err != nil || got != nil {
