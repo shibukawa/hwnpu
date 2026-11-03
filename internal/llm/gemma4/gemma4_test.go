@@ -491,4 +491,13 @@ func TestWideVocab(t *testing.T) {
 	if e := relErr(out["y"], ref.logits); e > 1e-4 {
 		t.Errorf("logits: relative error %g", e)
 	}
+	// folded, y is (1, seq, rows, vocab/rows) with the same values in the same order
+	p = build(t, c, w, Options{Options: llm.Options{Seq: len(ids), Format: "fp16"}, FoldedLogits: true})
+	if y := p.outs[0].Shape; len(y) != 4 || y[1] != len(ids) || y[2]*y[3] != c.VocabSize || y[3] > llm.NeuralEngineMaxDim {
+		t.Errorf("folded y %v", y)
+	}
+	out = p.run(t, map[string][]float32{"x": rows(t, w, c.Embedding(), ids), "ple": rows(t, w, c.perLayerTable(), ids)})
+	if e := relErr(out["y"], ref.logits); e > 1e-4 {
+		t.Errorf("folded logits: relative error %g", e)
+	}
 }
