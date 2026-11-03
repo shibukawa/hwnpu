@@ -54,6 +54,19 @@ type Config struct {
 	Log io.Writer
 	// Name is the model's name in the API (default: the first package's).
 	Name string
+	// Backend picks the device (llm.FindDevice): a device backend or the program format of the
+	// packages; empty for HWNPU_BACKEND or the NPU found.
+	Backend string
+}
+
+// programName is a model's name from the path of its program: the file name without the
+// extension of a package, an IR or a list of parts.
+func programName(path string) string {
+	name := filepath.Base(path)
+	for _, ext := range []string{".parts.json", ".mlpackage", ".xml"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return name
 }
 
 // Engine runs a model with a KV cache, one request at a time. A prompt that begins like an
@@ -178,9 +191,8 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	name := c.Name
 	if name == "" {
-		name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
+		name = programName(c.Packages[0])
 	}
-	logf("loading %s onto the Neural Engine: %d programs, up to a minute or two (Core ML compiles them the first time)", name, len(c.Packages))
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return nil, err
@@ -208,14 +220,11 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if e.w, err = llm.OpenWeights(c.Weights, a); err != nil {
 		return nil, err
 	}
-	opts := []hwnpu.Option{hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
-	if c.CacheDir != "" {
-		opts = append(opts, hwnpu.WithCacheDir(c.CacheDir))
-	}
-	if e.dev, err = hwnpu.Open(ctx, opts...); err != nil {
+	if e.dev, _, err = llm.OpenDevice(ctx, c.Backend, c.CacheDir); err != nil {
 		e.Close()
 		return nil, err
 	}
+	logf("loading %s onto %s: %d programs, up to a minute or two (%s)", name, llm.DeviceName(e.dev), len(c.Packages), compileNote(e.dev))
 	tiers := c.Tiers
 	if len(tiers) == 0 {
 		tiers = [][]string{c.Packages}
@@ -323,6 +332,25 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		logf("ready: context %d tokens%s, up to %d tokens per call", e.Context(), caches, e.sess.Q())
 	}
 	return e, nil
+}
+
+// compileNote says how long loading takes on the device the first time.
+func compileNote(dev *hwnpu.Device) string {
+	switch dev.Info().Backend {
+	case "coreml":
+		return "Core ML compiles them the first time"
+	case "levelzero":
+		return "the driver compiles them the first time, which can take several minutes for a large model; the compile cache keeps them"
+	}
+	return "they are compiled first"
+}
+
+// DeviceName is the NPU the model runs on, as logs call it (llm.DeviceName).
+func (e *Engine) DeviceName() string {
+	if e.dev == nil {
+		return ""
+	}
+	return llm.DeviceName(e.dev)
 }
 
 // session starts an empty sequence on the tier's programs.

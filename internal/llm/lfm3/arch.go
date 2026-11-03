@@ -21,9 +21,13 @@ var Arch = &llm.Arch{
 		{Name: "attn", Default: "grouped", Usage: "attention with a KV cache: one product per kv head over the stacked query heads (grouped, blocks.SDPAGrouped; 73.5 to 40.7 ms per call at a cache of 16320 on an M3) or the keys and values tiled per query head (tile)"},
 		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state, besides the logits (LFM3-Audio's speech output reads it)"},
 	},
-	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
-	GGUFName:   ggufName,
-	GGUFShape:  ggufShape,
+	// int8 on Intel's NPU: in LFM3-1.7B, int4 picks the next token fp16 picks at 22 of 52
+	// positions (int4-g128 29, int4-g32 33, the Neural Engine's lut4 26), int8 at 51
+	// (TestIntelIRCheckpoint, docs/intel-npu-models.md 11)
+	IntelFormat: "int8",
+	LoadConfig:  func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	GGUFName:    ggufName,
+	GGUFShape:   ggufShape,
 }
 
 func init() { llm.Register(Arch) }

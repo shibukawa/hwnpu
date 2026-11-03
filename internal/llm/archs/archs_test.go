@@ -33,7 +33,8 @@ func TestIntelFormats(t *testing.T) {
 			t.Errorf("%s: %q for the Neural Engine, DefaultFormat says %q", a.Name, f, a.DefaultFormat(nil))
 		}
 	}
-	for name, want := range map[string]string{"lfm3": "int4", "gemma4": "int8", "bert": "int8", "plamo-bi": "int8"} {
+	// LFM3 in 4 bits picks another next token than fp16 at most positions (lfm3.Arch.IntelFormat)
+	for name, want := range map[string]string{"lfm3": "int8", "gemma4": "int8", "bert": "int8", "plamo-bi": "int8"} {
 		if got := llm.Lookup(name).DefaultFormatFor(nil, "intel"); got != want {
 			t.Errorf("%s: %s for Intel's NPU, want %s", name, got, want)
 		}
