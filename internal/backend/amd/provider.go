@@ -153,5 +153,7 @@ func (p Provider) Open(ctx context.Context, info types.DeviceInfo, opts backend.
 		drv.Close()
 		return nil, fmt.Errorf("amd: map device heap: %w", err)
 	}
+	// No dirty lines over memory the NPU writes (see allocMapped). The driver zeroed the heap.
+	xdna.FlushCPU(d.heapMem)
 	return d, nil
 }

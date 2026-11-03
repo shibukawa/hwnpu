@@ -83,6 +83,20 @@ func (d *device) allocMapped(typ uint32, size int) (*buffer, error) {
 		d.dev.CloseBO(bo.Handle)
 		return nil, fmt.Errorf("amd: map buffer: %w", err)
 	}
+	// Start with no dirty cache lines. A new page is zeroed when it is first touched, through
+	// the CPU's caches; a line still dirty from that is written back over what the NPU wrote
+	// there, by the next flush or eviction. A new output buffer read back as zeros after the
+	// first command on a Ryzen AI 9 365, and as the NPU's results from then on. So touch every
+	// page now and flush it all once; afterwards only lines the caller writes are dirty, and
+	// SyncToDevice cleans them before the NPU runs.
+	clear(mapped)
+	if !xdna.FlushCPU(mapped) {
+		if err := d.dev.Sync(bo.Handle, xdna.SyncToDevice, 0, len(mapped)); err != nil {
+			d.dev.D.Munmap(mapped)
+			d.dev.CloseBO(bo.Handle)
+			return nil, err
+		}
+	}
 	// With PASID the device address of a host buffer is its mapped user address.
 	if err := d.dev.Info(&bo); err != nil {
 		d.dev.D.Munmap(mapped)
@@ -117,13 +131,21 @@ func roundPage(n int) int { return (n + 4095) &^ 4095 }
 
 func (b *buffer) Bytes() []byte { return b.mem }
 
-// The NPU is not cache coherent with the CPU: SYNC_BO flushes or invalidates CPU caches.
-func (b *buffer) SyncToDevice(off, n int) error {
-	return b.d.dev.Sync(b.bo.Handle, xdna.SyncToDevice, off, n)
-}
+// The NPU is not cache coherent with the CPU. On x86 the CPU's cache lines are flushed in
+// user space (CLFLUSH, as XRT does), elsewhere through the driver (SYNC_BO); a flush writes
+// back and invalidates, so one serves both directions.
+func (b *buffer) SyncToDevice(off, n int) error { return b.sync(xdna.SyncToDevice, off, n) }
 
-func (b *buffer) SyncFromDevice(off, n int) error {
-	return b.d.dev.Sync(b.bo.Handle, xdna.SyncFromDevice, off, n)
+func (b *buffer) SyncFromDevice(off, n int) error { return b.sync(xdna.SyncFromDevice, off, n) }
+
+func (b *buffer) sync(dir uint32, off, n int) error {
+	if off < 0 || n < 0 || off+n > len(b.mem) {
+		return fmt.Errorf("amd: sync of [%d, %d) in a buffer of %d bytes", off, off+n, len(b.mem))
+	}
+	if xdna.FlushCPU(b.mem[off : off+n]) {
+		return nil
+	}
+	return b.d.dev.Sync(b.bo.Handle, dir, off, n)
 }
 
 func (b *buffer) Close() error {

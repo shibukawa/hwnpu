@@ -190,6 +190,10 @@ func (r *elfRun) Submit() (backend.Fence, error) {
 			return nil, err
 		}
 	}
+	return r.submit()
+}
+
+func (r *elfRun) submit() (*fence, error) {
 	clear(r.cmd.mem[:64])
 	pkt := ert.PreemptELF{Inst: r.instr.bo.DeviceAddr(), InstSize: uint32(len(r.inst.Ctrl))}
 	if len(r.bufs) > 0 && r.bufs[0] != nil {

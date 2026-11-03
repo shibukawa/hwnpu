@@ -38,9 +38,45 @@ type manifest struct {
 		Kind  string `json:"kind"`
 		Bytes int    `json:"bytes"`
 	} `json:"arguments"`
-	Inputs  []handle `json:"inputs"`
+	Inputs     []handle `json:"inputs"`
+	Parameters []struct {
+		Name  string `json:"name"`
+		Index int    `json:"index"`
+		DType string `json:"dtype"`
+		Kind  string `json:"kind"`
+		Form  form   `json:"form"`
+	} `json:"parameters"`
 	Outputs []handle `json:"outputs"`
 	Plan    string   `json:"plan"`
+}
+
+// form is how a scratchpad word follows from one per-call value v of the graph (IRON's
+// Affine): clamp(((v*scale + bias) >> down)*mul + add, lo, hi) % mod + post, >> flooring.
+type form struct {
+	Value string `json:"value"`
+	Scale int64  `json:"scale"`
+	Bias  int64  `json:"bias"`
+	Down  uint   `json:"down"`
+	Mul   int64  `json:"mul"`
+	Add   int64  `json:"add"`
+	Lo    *int64 `json:"lo"`
+	Hi    *int64 `json:"hi"`
+	Mod   *int64 `json:"mod"`
+	Post  int64  `json:"post"`
+}
+
+func (f form) eval(v int64) int64 {
+	x := ((v*f.Scale+f.Bias)>>f.Down)*f.Mul + f.Add // >> on int64 floors
+	if f.Lo != nil && x < *f.Lo {
+		x = *f.Lo
+	}
+	if f.Hi != nil && x > *f.Hi {
+		x = *f.Hi
+	}
+	if f.Mod != nil {
+		x &= *f.Mod - 1 // a power of two: floors like Python's %
+	}
+	return x + f.Post
 }
 
 func bf16(h uint16) float64 { return float64(math.Float32frombits(uint32(h) << 16)) }
@@ -111,6 +147,32 @@ func main() {
 	for _, buf := range args {
 		buf.SyncToDevice(0, buf.Size())
 	}
+	// Per-call values go to the ctrl scratchpad, a word per parameter: a value a core reads
+	// is held shifted left by 2, an address as it is (IRON's Parameter.shift).
+	values := map[string]int64{}
+	if b, err := os.ReadFile(filepath.Join(dir, "check", "values.json")); err == nil {
+		if err := json.Unmarshal(b, &values); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if len(m.Parameters) > 0 {
+		sp := run.Scratchpad()
+		for _, p := range m.Parameters {
+			gv, ok := values[p.Form.Value]
+			if !ok {
+				log.Fatalf("parameter %s needs the per-call value %s (check/values.json has %v)", p.Name, p.Form.Value, values)
+			}
+			v := p.Form.eval(gv)
+			fmt.Printf("parameter %s (slot %d, %s) = %d from %s = %d\n", p.Name, p.Index, p.Kind, v, p.Form.Value, gv)
+			if p.Kind == "core" {
+				v <<= 2
+			}
+			if 4*p.Index+4 > len(sp) {
+				log.Fatalf("parameter %s at word %d: the scratchpad has %d bytes", p.Name, p.Index, len(sp))
+			}
+			binary.LittleEndian.PutUint32(sp[4*p.Index:], uint32(v))
+		}
+	}
 	t0 = time.Now()
 	if err := run.Run(ctx); err != nil {
 		log.Fatal(err)
@@ -127,7 +189,8 @@ func main() {
 		if out.DType != "bfloat16" {
 			log.Fatalf("output %s: dtype %s is not compared yet", out.Name, out.DType)
 		}
-		got := buf.Bytes()[out.Offset : out.Offset+out.Bytes]
+		// A bounded call writes the first part only; the reference holds just that part.
+		got := buf.Bytes()[out.Offset : out.Offset+min(out.Bytes, len(want))]
 		scale, worst, at := 0.0, 0.0, 0
 		for i := 0; i+1 < len(want); i += 2 {
 			scale = max(scale, math.Abs(bf16(binary.LittleEndian.Uint16(want[i:]))))
@@ -137,6 +200,17 @@ func main() {
 			if d > worst {
 				worst, at = d, i/2
 			}
+		}
+		if len(want) < out.Bytes {
+			// The call was bounded. The device works in whole tiles, so it may write past the
+			// bound up to the tile; the reference holds the first part only.
+			written := 0
+			for _, c := range buf.Bytes()[out.Offset+len(want) : out.Offset+out.Bytes] {
+				if c != 0 {
+					written++
+				}
+			}
+			fmt.Printf("output %s: bounded to %d of %d values, %d bytes written past the bound (to the tile)\n", out.Name, len(want)/2, out.Bytes/2, written)
 		}
 		rel := worst / max(scale, 1e-30)
 		fmt.Printf("output %s: %d values, worst difference %.4g at %d (%.2e of the largest |value| %.4g)\n", out.Name, len(want)/2, worst, at, rel, scale)

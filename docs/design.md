@@ -1537,3 +1537,14 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - `xdnasim`: opcode 22 を受け、CU のないコンテキスト、ヒープ上の制御コード、プリエンプションなしを確かめ、`RunELF` に制御コードを渡す
 - `tools/amd/iron_export.py`: IRON の `CompiledGraph` から ELF と manifest (コマンド、引数の順と大きさ、バッファの配置、入出力、重み、パラメータ) を書き、`--check` で乱数の入力と `graph.reference()` の出力を書く。`tools/amd/ironcheck` はそれを hwnpu だけで動かして照合する
 - 実機 (Ryzen AI 9 365): IRON の ReLU → AXPY (2048 要素) の full ELF が、IRON も XRT も使わずに動き、出力は `graph.reference()` とビット単位で一致。読み込み 1.0 ms、1 回 0.27 ms
+
+### 16.43 AMD: 呼び出しごとの値 (スクラッチパッド) と、キャッシュの一貫性 — 2026-11-03
+
+- IRON の `Scratchpad` の値は、制御コードの TXN の命令で入る: `CREATE_SCRATCHPAD` (op 10。`scratch-pad-ctrl` の BO_DEV のアドレスを種類 8 で書く) が状態表を読み、`UPDATE_REG` (op 12、`{スロット, 関数, FuncArg, RegOff}`) がレジスタに `状態表[スロット]` を足す (INCR) か `× FuncArg` を足す (MUL)。コアが読むパラメータ (種類 `core`) は WRITE で 0 にしてから INCR で入れ、shim の BD の長さは BD の書き込みのあとに MUL で足す (mlir-aie の `AIEUtils.cpp`)。`core` の値は 2 ビット左にずらして書く (ファームウェアが下位ビットを落とすため)
+- スクラッチパッドの語は、グラフの呼び出しごとの値の Affine 変換 (IRON の `Word.form`: `clamp(((v·scale + bias) >> down)·mul + add, lo, hi) % mod + post`)。IRON の bounded ReLU (4096 要素) の `n` はコアあたりの塊の数 `ceil(n / 2048)` (0〜2) になる。`tools/amd/iron_export.py` が式を manifest に書き、`tools/amd/ironcheck` が Go で計算する。`n` = 100、2048、3000、4096 で `graph.reference()` と一致 (デバイスは塊の単位で書くので、`n` を塊に切り上げた所まで書く)
+- `internal/aieelf/txn.go`: 制御コードの TXN (主版 0 の形式) の解読器
+- **キャッシュの一貫性 (実機で見つけた不具合)**: 新しい出力バッファに NPU が書いた結果が、最初のコマンドだけ CPU から 0 に見えた。原因は CPU の汚れたキャッシュ行。新しいページはカーネルが最初に触れたときにキャッシュを通して 0 で埋めるので、その汚れた行が、NPU が DRAM に書いたあとで書き戻され、結果を上書きする。2 回目からはページが既にきれいで起きない。スクラッチパッドが最初の呼び出しだけ効かないように見えたのも、これだった (切り分けの途中で、空のコマンドを先に流す、CREATE_SCRATCHPAD や LOADPDI だけを先に流す、を試したが関係なかった)
+  - 直し方: `allocMapped` でマップした直後に全ページに書いてから全体をフラッシュし、汚れた行のない状態で渡す。デバイスヒープもマップ直後にフラッシュする
+  - 同期は XRT と同じく、x86 ではユーザー空間の CLFLUSH + MFENCE (`xdna.FlushCPU`、Go のアセンブリ) にした。Linux 7.0 の `SYNC_BO` はカーネル側の写像でフラッシュするので、ページがまだ固定されていない BO では何もしない経路がある (`Can not get flush memory`)。amd64 以外は今までどおり `SYNC_BO`
+- `xdna.Dev.Wait`: 完了待ちの `SYNCOBJ_TIMELINE_WAIT` が Go のランタイムのシグナルで `EINTR` になると、エラーにしていた。絶対時刻の期限のまま待ち直す
+- 未対応: 前のプロセスの直後に `CREATE_HWCTX` が一時的に `EINVAL` になることがある (前のコンテキストの後始末と重なる)。再試行を足す

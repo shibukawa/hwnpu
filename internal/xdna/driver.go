@@ -187,7 +187,14 @@ func (d Dev) Wait(syncobj uint32, seq uint64, timeout time.Duration) (bool, erro
 		Handles: unsafe.Pointer(&handle), Points: unsafe.Pointer(&point),
 		TimeoutNsec: MonotonicNow() + int64(timeout), CountHandles: 1, Flags: SyncobjWaitForSubmit,
 	}
-	err := d.D.Ioctl(IoctlSyncobjWait, unsafe.Pointer(&arg))
+	var err error
+	for {
+		// The Go runtime's signals (preemption) interrupt the wait; the absolute deadline
+		// stays, so waiting again is safe.
+		if err = d.D.Ioctl(IoctlSyncobjWait, unsafe.Pointer(&arg)); !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
 	runtime.KeepAlive(&handle)
 	runtime.KeepAlive(&point)
 	if errors.Is(err, syscall.ETIME) || errors.Is(err, syscall.ETIMEDOUT) {

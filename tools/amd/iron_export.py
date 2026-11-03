@@ -56,6 +56,31 @@ def _handle(seq, h) -> dict:
     )
 
 
+def _parameters(compiled) -> list:
+    """The scratchpad words: each parameter's slot and kind, and how its value follows from
+    one per-call value of the graph, as IRON's Affine form
+
+        clamp(((v * scale + bias) >> down) * mul + add, lo, hi) % mod + post
+
+    (``>>`` floors, a missing bound or mod is none).
+    """
+    words = {w.symbol: w for w in compiled.words}
+    out = []
+    for p in compiled.artifacts.parameter_table:
+        entry = dict(name=p.name, index=int(p.index), dtype=p.dtype, kind=p.kind)
+        w = words.get(p.name)
+        if w is None or w.form is None:
+            raise SystemExit(f"parameter {p.name} has no Affine form; hwnpu cannot compute it")
+        f = w.form
+        entry["form"] = dict(
+            value=f.value.name, scale=int(f.scale), bias=int(f.bias), down=int(f.down), mul=int(f.mul),
+            add=int(f.add), lo=None if f.lo is None else int(f.lo), hi=None if f.hi is None else int(f.hi),
+            mod=None if f.mod is None else int(f.mod), post=int(f.post),
+        )
+        out.append(entry)
+    return out
+
+
 def manifest(compiled, elf_name: str) -> dict:
     """The manifest of a CompiledGraph packaged as a full ELF."""
     from iron.common.image.callable import FullELFCallable
@@ -92,7 +117,7 @@ def manifest(compiled, elf_name: str) -> dict:
         inputs=[_handle(seq, h) for h in rec.inputs],
         outputs=[_handle(seq, h) for h in rec.returned],
         weights=weights,
-        parameters=[dict(name=p.name, index=p.index, dtype=p.dtype, kind=p.kind) for p in art.parameter_table],
+        parameters=_parameters(compiled),
         plan=compiled.plan.report(rec.name),
     )
 
@@ -105,8 +130,11 @@ def export(compiled, out: Path) -> dict:
     return m
 
 
-def write_check(graph, m: dict, out: Path, rng: np.random.Generator) -> None:
-    """Random inputs and graph.reference()'s outputs, as raw bytes in check/."""
+def write_check(graph, m: dict, out: Path, rng: np.random.Generator, values: dict) -> None:
+    """Random inputs and graph.reference()'s outputs, as raw bytes in check/.
+
+    ``values`` are the per-call values of the call, saved in check/values.json.
+    """
     from ml_dtypes import bfloat16
 
     d = out / "check"
@@ -116,7 +144,8 @@ def write_check(graph, m: dict, out: Path, rng: np.random.Generator) -> None:
         x = rng.standard_normal(h["shape"]).astype(np.dtype(h["dtype"]) if h["dtype"] != "bfloat16" else bfloat16)
         x.tofile(d / f"in_{h['name']}.bin")
         inputs.append(x)
-    outs = graph.reference(*inputs)
+    (d / "values.json").write_text(json.dumps(values) + "\n")
+    outs = graph.reference(*inputs, **values)
     if not isinstance(outs, (tuple, list)):
         outs = [outs]
     for h, y in zip(m["outputs"], outs):
@@ -137,7 +166,22 @@ def demo_relu_axpy(size: int):
     return g, g.compile(x=(size,), y=(size,))
 
 
-DEMOS = {"relu-axpy": demo_relu_axpy}
+def demo_bounded_relu(size: int):
+    import iron
+    from iron import Scratchpad
+    from iron.operators import ReLU
+
+    class BoundedRelu(iron.Graph):
+        """``relu(x[:n])`` with ``n`` per call (IRON's programming guide, section 3)."""
+
+        def body(self, x, *, n: Scratchpad[np.int32]):
+            return ReLU.step(x[:n])
+
+    g = BoundedRelu()
+    return g, g.compile(x=(size,))
+
+
+DEMOS = {"relu-axpy": demo_relu_axpy, "bounded-relu": demo_bounded_relu}
 
 
 def main(argv=None) -> int:
@@ -148,12 +192,14 @@ def main(argv=None) -> int:
     ap.add_argument("--cols", type=int, default=8)
     ap.add_argument("--size", type=int, default=2048)
     ap.add_argument("--check", action="store_true", help="write inputs and reference outputs")
+    ap.add_argument("--values", nargs="*", default=[], help="per-call values of the checked call, name=int")
     a = ap.parse_args(argv)
     bind_device(a.device, a.cols)
     graph, compiled = DEMOS[a.graph](a.size)
     m = export(compiled, a.out)
     if a.check:
-        write_check(graph, m, a.out, np.random.default_rng(0))
+        values = {k: int(v) for k, v in (x.split("=", 1) for x in a.values)}
+        write_check(graph, m, a.out, np.random.default_rng(0), values)
     print(f"{a.out}: {m['kernels']}, arguments {[(x['kind'], x['bytes']) for x in m['arguments']]}")
     return 0
 
