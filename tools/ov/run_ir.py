@@ -26,7 +26,9 @@ def main():
 
     core = ov.Core()
     model = core.read_model(args.model)
-    compiled = core.compile_model(model, "CPU", {"INFERENCE_PRECISION_HINT": args.precision})
+    # x86 CPUs quantize the activations of compressed (int4/int8) weights to int8 by default
+    # (dynamic quantization), which costs about 1% of accuracy; the check wants the graph itself
+    compiled = core.compile_model(model, "CPU", {"INFERENCE_PRECISION_HINT": args.precision, "DYNAMIC_QUANTIZATION_GROUP_SIZE": "0"})
     feeds = {}
     for spec in args.inputs:
         name, path = spec.split("=", 1)

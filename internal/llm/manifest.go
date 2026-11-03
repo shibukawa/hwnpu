@@ -2,12 +2,14 @@ package llm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/hwnpu/internal/ovir"
 	"github.com/shibukawa/hwnpu/internal/ovlower"
 )
 
@@ -217,4 +219,39 @@ func ReadManifest(path string) (*Manifest, error) {
 		absolute(t.Parts)
 	}
 	return m, nil
+}
+
+// ReadMeta returns the metadata of a model's parts (MetaArch, MetaParam...): the manifest's, or
+// else the first part's own, a package's user defined metadata or an IR's rt_info.
+func ReadMeta(m *Manifest) (map[string]string, error) {
+	if len(m.Meta) > 0 {
+		return m.Meta, nil
+	}
+	parts := m.Tiered()[0].Parts
+	if len(parts) == 0 {
+		return nil, errors.New("llm: no parts")
+	}
+	path := parts[0].Path
+	if strings.EqualFold(filepath.Ext(path), ".xml") {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		rt, err := ovir.ReadRTInfo(raw)
+		if err != nil {
+			return nil, err
+		}
+		meta := map[string]string{}
+		for k, v := range rt {
+			if strings.HasPrefix(k, "com.github.shibukawa.hwnpu.") {
+				meta[k] = v
+			}
+		}
+		return meta, nil
+	}
+	pkg, err := mlpackage.ReadModel(path)
+	if err != nil {
+		return nil, err
+	}
+	return pkg.GetDescription().GetMetadata().GetUserDefined(), nil
 }

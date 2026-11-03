@@ -330,3 +330,46 @@ func InjectRTInfo(src []byte) ([]byte, error) {
 	}
 	return out.Bytes(), nil
 }
+
+// ReadRTInfo returns the model level rt_info entries of the form <key value="..."/> (what
+// Builder.RTInfo writes), by key.
+func ReadRTInfo(src []byte) (map[string]string, error) {
+	dec := xml.NewDecoder(bytes.NewReader(src))
+	out := map[string]string{}
+	depth := 0
+	inNetRT := false
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("ovir: %w", err)
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			switch {
+			case depth == 2 && t.Name.Local == "rt_info":
+				inNetRT = true
+			case inNetRT && depth == 3:
+				for _, a := range t.Attr {
+					if a.Name.Local == "value" {
+						out[t.Name.Local] = a.Value
+					}
+				}
+			case depth == 2:
+				// layers and edges: nothing to read below them
+				if err := dec.Skip(); err != nil {
+					return nil, fmt.Errorf("ovir: %w", err)
+				}
+				depth--
+			}
+		case xml.EndElement:
+			if depth == 2 && t.Name.Local == "rt_info" {
+				inNetRT = false
+			}
+			depth--
+		}
+	}
+}

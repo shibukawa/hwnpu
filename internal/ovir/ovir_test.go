@@ -96,3 +96,19 @@ func TestInjectRTInfo(t *testing.T) {
 		t.Fatalf("layer rt_info modified: %s", got)
 	}
 }
+
+func TestReadRTInfo(t *testing.T) {
+	b := NewBuilder("m", 0)
+	x := b.Parameter("x", "f16", 2)
+	b.Result("y", b.Op("Relu", "opset1", nil, "f16", []int{2}, x))
+	b.RTInfo("com.github.shibukawa.hwnpu.arch", "lfm3 <&>")
+	b.RTInfo("other", "1")
+	xmlData, _ := b.Bytes()
+	got, err := ReadRTInfo(xmlData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["com.github.shibukawa.hwnpu.arch"] != "lfm3 <&>" || got["other"] != "1" || len(got) != 2 {
+		t.Errorf("rt_info %v", got)
+	}
+}

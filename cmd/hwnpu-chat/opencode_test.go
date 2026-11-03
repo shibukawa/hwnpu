@@ -34,7 +34,7 @@ func TestListenFree(t *testing.T) {
 // The config names the server as the provider hwnpu, its chat models with their contexts as the
 // limits, and the first as the one to use.
 func TestOpenCodeConfig(t *testing.T) {
-	b, err := openCodeConfig("http://127.0.0.1:31234/v1", []openModel{{"LFM3-1.7B", 16320}, {"other", 4096}})
+	b, err := openCodeConfig("http://127.0.0.1:31234/v1", []openModel{{"LFM3-1.7B", 16320, ""}, {"other", 4096, ""}})
 	if err != nil {
 		t.Fatal(err)
 	}
