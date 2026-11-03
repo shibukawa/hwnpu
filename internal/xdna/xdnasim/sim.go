@@ -114,7 +114,12 @@ func (s *Sim) Ioctl(req uintptr, arg unsafe.Pointer) error {
 		if !ok {
 			return syscall.ENOENT
 		}
-		a.MapOffset, a.XdnaAddr, a.VAddr = b.mapOffset, b.devAddr, xdna.InvalidAddr
+		// Linux 7.0 sets xdna_addr only for BO_DEV and the heap. A host BO is reached through
+		// its user address (PASID), reported as vaddr once it is mapped.
+		a.MapOffset, a.XdnaAddr, a.VAddr = b.mapOffset, xdna.InvalidAddr, xdna.InvalidAddr
+		if b.typ == xdna.BODev || b.typ == xdna.BODevHeap {
+			a.XdnaAddr = b.devAddr
+		}
 		if b.mapped {
 			a.VAddr = uint64(uintptr(unsafe.Pointer(&b.mem[0])))
 		}
@@ -129,6 +134,12 @@ func (s *Sim) Ioctl(req uintptr, arg unsafe.Pointer) error {
 			return syscall.EINVAL
 		}
 		s.Syncs++
+		// Linux 7.0 flushes the range for either direction, then treats FROM_DEVICE as the
+		// sync of a debug BO, which needs a BO assigned to a hardware context. An ordinary
+		// BO gets EINVAL there (amdxdna_hwctx_sync_debug_bo).
+		if a.Direction == xdna.SyncFromDevice {
+			return syscall.EINVAL
+		}
 		return nil
 	case xdna.IoctlGemClose:
 		a := (*xdna.GemClose)(arg)
@@ -208,7 +219,7 @@ func (s *Sim) createBO(a *xdna.CreateBO) error {
 	if a.Type != xdna.BODev {
 		b.mapOffset = uint64(b.handle) << 32
 		if a.Type != xdna.BODevHeap {
-			b.devAddr = 0x1_0000_0000_0 + uint64(b.handle)<<28 // a DMA address
+			b.devAddr = xdna.InvalidAddr // set to the user address when mapped
 		}
 	}
 	if a.Type == xdna.BODevHeap {
@@ -229,6 +240,9 @@ func (s *Sim) Mmap(offset uint64, length int) ([]byte, error) {
 				return nil, syscall.EINVAL
 			}
 			b.mapped = true
+			if b.typ != xdna.BODevHeap {
+				b.devAddr = uint64(uintptr(unsafe.Pointer(&b.mem[0])))
+			}
 			return b.mem[:length:length], nil
 		}
 	}

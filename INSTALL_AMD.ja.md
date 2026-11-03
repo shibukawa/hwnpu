@@ -2,7 +2,7 @@
 
 AMD Ryzen AI プロセッサ（XDNA NPU を積んだ Phoenix、Hawk Point、Strix Point、Krackan Point 以降）を載せた Linux 機で、hwnpu から NPU を使えるようにする手順です。小さなテスト用の設計をビルドし、動作を確かめるところまで扱います。
 
-> **現状。** AMD バックエンドは、カーネルと XRT のソースをもとに作った、amdxdna ドライバを模した偽のドライバでしか試していません。実機で手順 4 の `cmd/report` を実際の設計付きで実行し、結果の報告を送っていただけるのがいちばん助かります。
+> **現状。** Ryzen AI 9 365（Strix Point、`npu4`、8 列）、Ubuntu 26.04 の Linux 7.0 標準カーネルの amdxdna、ファームウェア 1.1.2.64 で、手順 4 の `cmd/report` が mlir-aie v1.4.4 の passthrough 設計を含めて全て通りました（2026-11-03）。Phoenix と Hawk Point（`npu1`）はまだ試していません。別の機械での報告を送っていただけると助かります。
 
 English: [INSTALL_AMD.md](INSTALL_AMD.md)
 
@@ -85,10 +85,18 @@ xrt-smi examine
 
 ## 2. テスト用の設計をビルドする
 
-`cmd/report` は IRON のサンプル `passthrough_dmas` を実行します。このサンプルは NPU の DMA でバッファを写すだけなので、AIE コア用のコンパイラが要りません。mlir-aie の README のとおりに IRON を準備します。
+`cmd/report` は IRON のサンプル `passthrough_dmas` を実行します。このサンプルは NPU の DMA でバッファを写すだけなので、AIE コア用のコンパイラが要りません。
+
+IRON は **Python 3.12** を必須にしています。ディストリビューションの Python が別の版なら、[uv](https://docs.astral.sh/uv/) で入れられます（root は不要）。
 
 ```bash
-git clone https://github.com/Xilinx/mlir-aie.git
+uv python install 3.12
+```
+
+リリースのタグを取得します。タグのない版では、ビルド済みの wheel が見つからずに止まります。
+
+```bash
+git clone --depth 1 --branch v1.4.4 https://github.com/Xilinx/mlir-aie.git
 ```
 
 ```bash
@@ -96,25 +104,45 @@ cd mlir-aie
 ```
 
 ```bash
-sudo apt install build-essential clang lld cmake ninja-build python3-venv python3-pip uuid-dev
-```
-
-```bash
-source utils/env_install.sh
+PATH=$(dirname $(uv python find 3.12)):$PATH source utils/env_install.sh --no-pre-commit ironenv
 ```
 
 ```bash
 source utils/env_setup.sh
 ```
 
-xclbin と命令列だけをビルドします。Phoenix と Hawk Point では `--dev npu` を、Strix Point 以降では `--dev npu2` を指定します。フラグの名前はサンプルの説明文から取ったものです。版によって違う場合は `--help` で確かめてください。
+最後に `xrt-smi not found` と出ますが、hwnpu は XRT を使わないので無視できます。
+
+xclbin をまとめる `xclbinutil` は XRT の道具です。XRT のパッケージ（手順 1 の PPA の `libxrt-utils`、または Ubuntu 26.04 の universe の `libxrt-utils`）を入れていればそのまま使えます。root がなく XRT を入れられない場合は、パッケージを展開して使えます（Ubuntu 26.04 の例）。
+
+```bash
+mkdir -p ~/xrt-debs && cd ~/xrt-debs
+```
+
+```bash
+apt-get download libxrt-utils libxrt2 libboost-filesystem1.90.0 libboost-program-options1.90.0
+```
+
+```bash
+for d in *.deb; do dpkg -x $d root; done
+```
+
+```bash
+printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/root/usr/lib/x86_64-linux-gnu exec %s/root/usr/bin/xclbinutil "$@"\n' $PWD $PWD > xclbinutil && chmod +x xclbinutil
+```
+
+```bash
+export AIE_XCLBINUTIL=~/xrt-debs/xclbinutil
+```
+
+xclbin と命令列だけをビルドします。Phoenix と Hawk Point では `-d npu` を、Strix Point 以降では `-d npu2` を指定します。
 
 ```bash
 cd programming_examples/basic/passthrough_dmas
 ```
 
 ```bash
-python3 passthrough_dmas.py --dev npu --xclbin-path final.xclbin --insts-path insts.bin
+python3 passthrough_dmas.py -d npu2 -n 4096 --xclbin-path=build/final.xclbin --insts-path=build/insts.bin
 ```
 
 この設計は int32 を 4096 個（16384 バイト）写します。これは `cmd/report` の既定値と同じです。別の `-n` でビルドしたときは、報告プログラムに `-bytes` で大きさを渡してください。
@@ -143,7 +171,7 @@ AMD の NPU が `backend: xdna` として表示されます。世代、AIE の�
 go run ./cmd/report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o report.md
 ```
 
-最初に、バッファの確保とキャッシュの同期、デバイスヒープ上の命令列用バッファ、NPU の電力センサーを確かめます。続いて設計を読み込んで実行し、出力が入力と一致するかを確かめ、実行時間と NPU の電力量を測ります。`-xclbin` を省くと、カーネルの確認は飛ばします。xclbin 内のカーネル名が `MLIR_AIE` でない場合は、`-kernel 名前` で指定してください。
+最初に、バッファの確保とキャッシュの同期、デバイスヒープ上の命令列用バッファ、NPU の電力センサーを確かめます。電力センサー（`QUERY_SENSORS`）は AMD の DKMS 版のドライバにしかなく、Linux 7.0 の標準カーネルでは SKIP になります。続いて設計を読み込んで実行し、出力が入力と一致するかを確かめ、実行時間と NPU の電力量を測ります。`-xclbin` を省くと、カーネルの確認は飛ばします。xclbin 内のカーネル名が `MLIR_AIE` でない場合は、`-kernel 名前` で指定してください。
 
 電力ポリシー（ハードウェアコンテキストの優先度）の効果を比べるときは、2 回実行します。
 
@@ -167,7 +195,7 @@ for _, a := range k.Args() { fmt.Println(a.Index, a.Name, a.Type, a.Buffer) }
 
 - 命令列は `dev.AllocBuffer(n, hwnpu.WithBufferKind(hwnpu.BufferInstructions))` に置きます。命令列はデバイスヒープ上にある必要があるためです。
 - NPU は CPU のキャッシュと自動では同期しません。入力を書いたら `SyncToDevice` を、出力を読む前に `SyncFromDevice` を呼んでください。
-- 引数の並びと大きさは xclbin のメタデータから読みます。IRON の設計では `opcode（3）、instr、ninstr、各バッファ` の順です。
+- 引数の並びと大きさは xclbin のメタデータから読みます。IRON の設計では `opcode（3）、instr、ninstr、各バッファ` の順です。mlir-aie v1.4.4 は、使わないバッファも `bo0`〜`bo4` として署名に並べます。設定しなかった引数は、XRT と同じく 0 で送ります。
 
 ## うまくいかないとき
 

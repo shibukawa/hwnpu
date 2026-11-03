@@ -10,8 +10,9 @@ import (
 	"github.com/shibukawa/hwnpu/internal/xdna"
 )
 
-// A simulated IRON style passthrough design: kernel "MLIR_AIE" with the argument layout IRON
-// host code uses (opcode, instr, ninstr, bo0, bo1, bo2), copying bo0 to bo2.
+// A simulated IRON style passthrough design: kernel "MLIR_AIE" with the argument layout of
+// the xclbin mlir-aie v1.4.4 builds (opcode, instr, ninstr, bo0 ... bo4), copying bo0 to bo2.
+// Host code leaves the unused bo3 and bo4 unset, which XRT sends as zero.
 const (
 	PassthroughKernel = "MLIR_AIE"
 	PassthroughOpcode = 3
@@ -33,6 +34,8 @@ func PassthroughXclbin() []byte {
 			{Index: 3, Name: "bo0", Type: "void*", Offset: 0x14, Size: 8, AddressQualifier: 1},
 			{Index: 4, Name: "bo1", Type: "void*", Offset: 0x1c, Size: 8, AddressQualifier: 1},
 			{Index: 5, Name: "bo2", Type: "void*", Offset: 0x24, Size: 8, AddressQualifier: 1},
+			{Index: 6, Name: "bo3", Type: "void*", Offset: 0x2c, Size: 8, AddressQualifier: 1},
+			{Index: 7, Name: "bo4", Type: "void*", Offset: 0x34, Size: 8, AddressQualifier: 1},
 		}}},
 		CUs:         []xclbin.CU{{Name: PassthroughKernel + ":MLIRAIE", KernelID: passthroughID}},
 		Columns:     1,
@@ -55,7 +58,7 @@ func RunPassthrough(e Exec) error {
 		return errors.New("unexpected PDI")
 	}
 	le := binary.LittleEndian
-	if len(e.Regmap) < 0x2c {
+	if len(e.Regmap) < 0x3c {
 		return fmt.Errorf("register map too short: %d", len(e.Regmap))
 	}
 	if op := le.Uint64(e.Regmap[0x00:]); op != PassthroughOpcode {
@@ -80,6 +83,9 @@ func RunPassthrough(e Exec) error {
 	dst, err := e.Mem(le.Uint64(e.Regmap[0x24:]), n)
 	if err != nil {
 		return err
+	}
+	if le.Uint64(e.Regmap[0x2c:]) != 0 || le.Uint64(e.Regmap[0x34:]) != 0 {
+		return errors.New("unset arguments bo3 and bo4 are not zero")
 	}
 	copy(dst, src)
 	return nil

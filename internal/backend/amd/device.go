@@ -88,6 +88,11 @@ func (d *device) allocMapped(typ uint32, size int) (*buffer, error) {
 		d.dev.CloseBO(bo.Handle)
 		return nil, err
 	}
+	if bo.DeviceAddr() == xdna.InvalidAddr {
+		d.dev.D.Munmap(mapped)
+		d.dev.CloseBO(bo.Handle)
+		return nil, errors.New("amd: the driver reports no device address for a mapped buffer")
+	}
 	return &buffer{d: d, bo: bo, mem: mapped[:size:size], mapped: mapped}, nil
 }
 
@@ -282,7 +287,6 @@ type run struct {
 	kernel *xclbin.Kernel
 	cu     int
 	regmap []byte
-	set    map[int]bool
 	bos    map[int]uint32
 	cmd    *buffer
 	fence  *fence
@@ -311,7 +315,7 @@ func (p *program) NewRun(name string) (backend.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &run{p: p, kernel: k, cu: cu, regmap: make([]byte, (size+3)&^3), set: map[int]bool{}, bos: map[int]uint32{}, cmd: cmd}, nil
+	return &run{p: p, kernel: k, cu: cu, regmap: make([]byte, (size+3)&^3), bos: map[int]uint32{}, cmd: cmd}, nil
 }
 
 func (r *run) arg(i int) (*xclbin.Arg, error) {
@@ -335,7 +339,6 @@ func (r *run) SetArg(i int, value []byte) error {
 		return fmt.Errorf("amd: argument %d (%s) takes %d bytes, got %d", i, a.Name, a.Size, len(value))
 	}
 	copy(r.regmap[a.Offset:], value)
-	r.set[i] = true
 	delete(r.bos, i)
 	return nil
 }
@@ -354,13 +357,12 @@ func (r *run) SetBuffer(i int, b backend.Buffer) error {
 	}
 	switch a.Size {
 	case 8:
-		binary.LittleEndian.PutUint64(r.regmap[a.Offset:], buf.bo.XdnaAddr)
+		binary.LittleEndian.PutUint64(r.regmap[a.Offset:], buf.bo.DeviceAddr())
 	case 4:
-		binary.LittleEndian.PutUint32(r.regmap[a.Offset:], uint32(buf.bo.XdnaAddr))
+		binary.LittleEndian.PutUint32(r.regmap[a.Offset:], uint32(buf.bo.DeviceAddr()))
 	default:
 		return fmt.Errorf("amd: buffer argument %s has size %d", a.Name, a.Size)
 	}
-	r.set[i] = true
 	r.bos[i] = buf.bo.Handle
 	return nil
 }
@@ -371,11 +373,8 @@ func (r *run) Submit() (backend.Fence, error) {
 			return nil, errors.New("amd: previous submission is still running")
 		}
 	}
-	for _, a := range r.kernel.Args {
-		if !r.set[a.Index] {
-			return nil, fmt.Errorf("amd: argument %d (%s) is not set", a.Index, a.Name)
-		}
-	}
+	// Arguments left unset stay zero, as in XRT. IRON lists unused buffers in the kernel
+	// signature (bo3 and bo4 of a three-buffer design), and its host code never sets them.
 	clear(r.cmd.mem)
 	if _, err := ert.StartCU(r.cmd.mem, r.cu, r.regmap); err != nil {
 		return nil, err

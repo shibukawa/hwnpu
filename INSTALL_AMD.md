@@ -2,7 +2,7 @@
 
 This guide prepares a Linux machine with an AMD Ryzen AI processor (XDNA NPU: Phoenix, Hawk Point, Strix Point, Krackan Point and later) so that hwnpu can use its NPU, builds a small test design, and shows how to check the result.
 
-> **Status.** The AMD backend has been tested against a simulated amdxdna driver only, built from the kernel and XRT sources. Running `cmd/report` with a real design (step 4) and sending the report back is the most useful help right now.
+> **Status.** On a Ryzen AI 9 365 (Strix Point, `npu4`, 8 columns) with the amdxdna driver of the stock Linux 7.0 kernel of Ubuntu 26.04 and firmware 1.1.2.64, `cmd/report` (step 4) passes every check, including the passthrough design built with mlir-aie v1.4.4 (2026-11-03). Phoenix and Hawk Point (`npu1`) are untested. Reports from other machines are welcome.
 
 Japanese: [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)
 
@@ -83,12 +83,20 @@ xrt-smi examine
 
 `xrt-smi` comes from the XRT packages and is optional for hwnpu.
 
-## 2. Build the test design
+## 2. Build a test design
 
-`cmd/report` runs the IRON example `passthrough_dmas`, which copies a buffer through the NPU's DMAs and needs no AIE core compiler. Set up IRON as described in the mlir-aie README:
+`cmd/report` runs the IRON example `passthrough_dmas`. It only copies a buffer with the NPU's DMA, so it needs no compiler for the AIE cores.
+
+IRON requires **Python 3.12**. If your distribution ships another version, [uv](https://docs.astral.sh/uv/) installs it without root:
 
 ```bash
-git clone https://github.com/Xilinx/mlir-aie.git
+uv python install 3.12
+```
+
+Check out a release tag. Without one, the script finds no prebuilt wheel and stops.
+
+```bash
+git clone --depth 1 --branch v1.4.4 https://github.com/Xilinx/mlir-aie.git
 ```
 
 ```bash
@@ -96,25 +104,45 @@ cd mlir-aie
 ```
 
 ```bash
-sudo apt install build-essential clang lld cmake ninja-build python3-venv python3-pip uuid-dev
-```
-
-```bash
-source utils/env_install.sh
+PATH=$(dirname $(uv python find 3.12)):$PATH source utils/env_install.sh --no-pre-commit ironenv
 ```
 
 ```bash
 source utils/env_setup.sh
 ```
 
-Build only the xclbin and the instruction stream. Use `--dev npu` for Phoenix and Hawk Point, `--dev npu2` for Strix Point and later. The flag names come from the example's documentation; check `--help` if they differ in your version:
+It ends with `xrt-smi not found`. hwnpu does not use XRT, so ignore it.
+
+The xclbin is packaged by `xclbinutil`, an XRT tool. If you installed the XRT packages (`libxrt-utils` from the PPA of step 1, or from Ubuntu 26.04 universe), it is already there. Without root, unpack the packages instead (Ubuntu 26.04):
+
+```bash
+mkdir -p ~/xrt-debs && cd ~/xrt-debs
+```
+
+```bash
+apt-get download libxrt-utils libxrt2 libboost-filesystem1.90.0 libboost-program-options1.90.0
+```
+
+```bash
+for d in *.deb; do dpkg -x $d root; done
+```
+
+```bash
+printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/root/usr/lib/x86_64-linux-gnu exec %s/root/usr/bin/xclbinutil "$@"\n' $PWD $PWD > xclbinutil && chmod +x xclbinutil
+```
+
+```bash
+export AIE_XCLBINUTIL=~/xrt-debs/xclbinutil
+```
+
+Build only the xclbin and the instruction stream. Use `-d npu` for Phoenix and Hawk Point, `-d npu2` for Strix Point and later:
 
 ```bash
 cd programming_examples/basic/passthrough_dmas
 ```
 
 ```bash
-python3 passthrough_dmas.py --dev npu --xclbin-path final.xclbin --insts-path insts.bin
+python3 passthrough_dmas.py -d npu2 -n 4096 --xclbin-path=build/final.xclbin --insts-path=build/insts.bin
 ```
 
 The design copies 4096 int32 values (16384 bytes), which is the default of `cmd/report`. If you build it with another `-n`, pass `-bytes` to the report.
@@ -143,7 +171,7 @@ Run the report with the design from step 2:
 go run ./cmd/report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o report.md
 ```
 
-It checks buffer allocation and cache synchronization, an instruction buffer in the device heap, the NPU power sensor, and then loads the design, runs it, checks that the output equals the input and measures latency and NPU energy. Without `-xclbin` the kernel check is skipped. If the kernel in your xclbin is not named `MLIR_AIE`, pass `-kernel NAME`.
+It checks buffer allocation and cache synchronization, an instruction buffer in the device heap, the NPU power sensor (`QUERY_SENSORS` exists only in AMD's DKMS driver, so it is skipped on the stock Linux 7.0 kernel), and then loads the design, runs it, checks that the output equals the input and measures latency and NPU energy. Without `-xclbin` the kernel check is skipped. If the kernel in your xclbin is not named `MLIR_AIE`, pass `-kernel NAME`.
 
 To compare power policies (hardware context priority):
 
@@ -167,7 +195,7 @@ for _, a := range k.Args() { fmt.Println(a.Index, a.Name, a.Type, a.Buffer) }
 
 - Put the instruction stream in `dev.AllocBuffer(n, hwnpu.WithBufferKind(hwnpu.BufferInstructions))`; it must live in the device heap.
 - The NPU is not cache coherent: call `SyncToDevice` after writing inputs and `SyncFromDevice` before reading outputs.
-- Argument order and sizes come from the xclbin metadata. IRON designs use `opcode (3), instr, ninstr, buffers...`.
+- Argument order and sizes come from the xclbin metadata. IRON designs use `opcode (3), instr, ninstr, buffers...`. mlir-aie v1.4.4 lists unused buffers in the signature too (`bo0` to `bo4`). Arguments you leave unset are sent as zero, as in XRT.
 
 ## Troubleshooting
 

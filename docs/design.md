@@ -1477,3 +1477,19 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 - 検証 (CPU インタプリタ、小さな LFM3): `TestEngineStore` (印 8 トークンごと、保存は 8 トークン以上、4 項目で 2 本まで): 再起動後に 20 トークン共通のプロンプトが印 16 から戻って残りを読む。分かれた系列は自分の項目を持ち、共通部分の印 (8、16) を引き継ぐ。続きで行と印が増える。再起動後の同じプロンプトは何も読まない。3 本目で最も古い項目が消え、消えた項目の先頭は分かれた系列の項目から戻る。短いプロンプトは保存しない。各点のロジットは最初から読んだときと相対誤差 2e-3 以内。`TestResume`: 別の系列の行では誤差が 1e-2 を超え、行の不足、印の大きさの違い、印の欠けはエラー
 - 費用の見込み (M3、LFM3-1.7B、未計測): 行が 1 トークン 12 KiB、印が 512 ごとに 2〜3 MB (6 KiB/トークン) で、16K で約 300 MB、OpenCode の 7.4K で約 130 MB。戻すのは SSD から 0.1 秒以下で、印から最大 512 トークンを読み直す (16K の容量で約 1 秒)。初回の 13〜17 秒が 1 秒台になる見込み。書き込みは系列の続きなら差分だけだが、新しい系列は全部を書く。Gemma 4 E2B は印が 7 MB (リング 12 層) なので 512 ごとで 14 KiB/トークン
 - 残り: 退避した系列 (`Save`) もストアに置いてプロセスから外す。印の間隔と系列の数の既定は実機で測って決める。int8 で半分にする (写しには費用がない)
+
+### 16.39 AMD: 実機での最初の確認 (Ryzen AI 9 365) — 2026-11-03
+
+- 機械: Ryzen AI 9 365 (Strix Point、PCI 0x17f0、`npu4` で 8 列、AIE 1.1、4 コア行)、Ubuntu 26.04 の Linux 7.0.0-42 標準カーネルの amdxdna (DKMS なし)、ファームウェア 1.1.2.64。XRT は入れていない
+- 設計: mlir-aie v1.4.4 の wheel (Python 3.12 必須。uv で用意) で `passthrough_dmas` を `-d npu2` でビルド。xclbin をまとめる `xclbinutil` は XRT の道具なので、Ubuntu universe の `libxrt-utils` と boost の `.deb` を root なしで展開し、`AIE_XCLBINUTIL` で渡した
+- 結果: `cmd/report` の全項目が合格 (電力センサーは SKIP)。passthrough 16 KiB の 1 回は中央値 0.075 ms、最小 0.068 ms、初回 0.15 ms。xclbin の読み込み (ハードウェアコンテキストの作成と PDI の設定) は 0.5 ms
+- 偽のドライバ (16.5) では見えなかった食い違いが 3 つあった。どれも Linux 7.0 のソース (drivers/accel/amdxdna) で確かめ、`xdnasim` を同じ振る舞いに直した
+
+| 症状 | 原因 | 直し方 |
+|---|---|---|
+| `SyncFromDevice` が `SYNC_BO: invalid argument` | 7.0 の `amdxdna_drm_sync_bo_ioctl` は、向きに関係なく範囲を clflush したあと、`FROM_DEVICE` ならその BO を「デバッグ用の BO」として同期する (`amdxdna_hwctx_sync_debug_bo`)。普通の BO はハードウェアコンテキストに割り当てられていないので `EINVAL` | ioctl には常に `TO_DEVICE` を渡す。x86 の clflush は書き戻しと無効化の両方なので、どちらの向きにも足りる |
+| 実行は終わるが出力が入力と違う | 7.0 では host の BO (`BO_SHARE`、`BO_CMD`) の `xdna_addr` は設定されず `AMDXDNA_INVALID_ADDR` のまま。PASID のもとでは、デバイスは mmap 後のユーザーアドレスを使い、`GET_BO_INFO` の `vaddr` がそれを返す。hwnpu は全ビット 1 のアドレスを引数に入れていた | `xdna.BO.DeviceAddr()`: `xdna_addr` が有効ならそれ (BO_DEV とヒープ)、無効なら `vaddr`。マップ後も無ければエラー |
+| `argument 6 (bo3) is not set` | v1.4.4 の IRON は、3 バッファの設計でも `bo0`〜`bo4` を署名に並べる。ホストのコードは使わない引数を設定せず、XRT はレジスタマップを 0 のまま送る | 未設定の引数は 0 で送る (検査をやめた)。`xdnasim` の passthrough も 8 引数にし、`bo3`、`bo4` が 0 であることを確かめる |
+
+- 電力: upstream の 7.0 には `GET_INFO(QUERY_SENSORS)` の実装がない (DKMS 版だけ)。NPU 単体の電力は読めないので、測るなら RAPL (CPU パッケージ全体) など別の手段が要る
+- 残り: Phoenix / Hawk Point (`npu1`、ヒープ 64 MiB 固定) での確認。ELF 流れと UMQ。LLM に向けた次の段階は、GEMV のカーネル 1 本で速度を測ること (16.40)

@@ -66,7 +66,7 @@ func setup(t *testing.T, d *device, n int) *passthrough {
 		t.Fatal(err)
 	}
 	ks := prog.Kernels()
-	if len(ks) != 1 || ks[0].Name != xdnasim.PassthroughKernel || len(ks[0].Args) != 6 || !ks[0].Args[1].Buffer || ks[0].Args[2].Buffer {
+	if len(ks) != 1 || ks[0].Name != xdnasim.PassthroughKernel || len(ks[0].Args) != 8 || !ks[0].Args[1].Buffer || ks[0].Args[2].Buffer {
 		t.Fatalf("kernels %+v", ks)
 	}
 	p := &passthrough{prog: prog, n: n}
@@ -172,9 +172,6 @@ func TestArgumentChecks(t *testing.T) {
 	}
 	if err := r.SetArg(9, nil); err == nil {
 		t.Error("unknown argument accepted")
-	}
-	if _, err := r.Submit(); err == nil || !strings.Contains(err.Error(), "not set") {
-		t.Errorf("submit with unset arguments: %v", err)
 	}
 	if _, err := prog.NewRun("nope"); err == nil {
 		t.Error("unknown kernel accepted")

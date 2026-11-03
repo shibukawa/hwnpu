@@ -9,7 +9,7 @@ CPU 内蔵の NPU を cgo なしで Go から使うためのライブラリで�
 |---|---|---|
 | macOS (Apple Silicon) | Core ML (GPU を除外し、MLComputePlan で ANE 配置を検証) | M1 実装済み |
 | Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR のドライバ内コンパイル、コンパイル済み blob) | M2 実装済み。実機では未検証 |
-| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。実機では未検証 |
+| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。Ryzen AI 9 365 (Strix Point、Linux 7.0) で IRON の設計の実行を確認 |
 | Windows (AMD Ryzen AI) | なし | 非対応 |
 | WSL2 | なし | 非対応。WSL2 からは Intel と AMD のどちらの NPU も見えない |
 
