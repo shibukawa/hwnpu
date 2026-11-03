@@ -19,6 +19,15 @@
 // -think-budget tokens so that it answers, a call it makes twice is not run again, and an
 // answer it repeats ends the task.
 //
+// A fifth tool, search, looks facts up, which a 1.7B model recalls badly: -tools search
+// alone makes an assistant that answers from what it finds, and -search-first searches
+// before the model answers each task, with a query it writes for the task, so that the
+// search is not left to its judgment. -search picks Wikipedia (no key), the Brave Search
+// API (BRAVE_API_KEY) or a SearXNG instance for the web, and fetch reads a page of the
+// results as text.
+//
+//	hwnpu-agent -tools search,fetch -search-first -think=false
+//
 // The model is -use, prepared like hwnpu-chat's (downloaded and converted into -dir on the
 // first run, with a context of -context tokens). -tools offers fewer tools, -system replaces
 // the opening of the system prompt, and -dump writes each request and answer as JSON.
@@ -44,20 +53,24 @@ func main() {
 	use := flag.String("use", "LFM3-1.7B", "the chat model: a name that hwnpu-chat -list shows (one with tool calls), or a Hugging Face repository OWNER/NAME")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name")
 	context_ := flag.Int("context", chat.DefaultContext, "tokens of the conversation and the answer together (the KV cache of the model's programs)")
-	pkgs := flag.String("package", "", "programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
+	pkgs := flag.String("package", "", "programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the model (default: in its directory)")
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from (default: in the model's directory)")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
+	backend := flag.String("backend", "", "the NPU to convert for and run on: coreml (Apple's Neural Engine), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)")
+	format := flag.String("format", "", "weight format of the chat model's programs: int8, int4, int4-g128 or fp16 on Intel's NPU, lut4, lut6, lut8, int4, int8 or fp16 on the Neural Engine (default: the model's for the NPU, int8 for LFM3 on Intel's NPU)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	promptDir := flag.String("prompt-cache", "", "keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)")
 	workDir := flag.String("C", ".", "the working directory of the agent")
-	tools := flag.String("tools", strings.Join(agent.Names, ","), "the tools to offer, comma separated")
+	tools := flag.String("tools", strings.Join(agent.DefaultTools, ","), "the tools to offer, comma separated: "+strings.Join(agent.Names, ", ")+" (search alone makes an assistant that looks facts up)")
+	search := flag.String("search", "wikipedia", "what the search tool searches: wikipedia, brave (the key in BRAVE_API_KEY), or the URL of a SearXNG instance such as http://localhost:8888")
+	searchFirst := flag.Bool("search-first", false, "search before the model answers each task, with a query it writes for the task, so that the facts are in front of it (search must be among -tools)")
 	system := flag.String("system", "", "a file whose text replaces the opening of the system prompt")
 	yes := flag.Bool("yes", false, "run commands and change files without asking")
 	think := flag.Bool("think", true, "let the model think before each answer")
 	keep := flag.Bool("keep-thinking", false, "keep the thinking of earlier rounds of a task in the conversation (costs context)")
 	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
-	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while the conversation is short, comma separated (a step costs in proportion to the cache); empty for none")
+	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while the conversation is short, comma separated (a step costs in proportion to the cache); empty or none for none, auto for 4096 with a model in 4 bit tables and none with 6 or 8 bits (four such programs overflow the Neural Engine's compile cache and every start compiles them again)")
 	draft := flag.Int("draft", 8, "tokens per call of the program that generates: a token and N-1 guesses checked at once (speculative decoding); 0 or 1 generates one token per call")
 	allow := flag.String("allow", "", "commands that run without asking, comma separated, with * for any text, e.g. \"go *,ls*,cat *\" (each part of a command joined with && or ; must match)")
 	steps := flag.Int("steps", 30, "most rounds of one task")
@@ -101,6 +114,13 @@ func main() {
 	if b, err := os.ReadFile(filepath.Join(work, "AGENTS.md")); err == nil {
 		instructions = string(b)
 	}
+	searcher, err := agent.NewSearcher(*search, os.Getenv("BRAVE_API_KEY"))
+	if err != nil {
+		fail(err)
+	}
+	if *searchFirst && !slices.Contains(strings.Split(*tools, ","), "search") {
+		fail(errors.New("-search-first needs search among -tools"))
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	var c chat.Config
@@ -120,14 +140,14 @@ func main() {
 		md := filepath.Join(*dir, m.Name)
 		c = chat.Config{ModelConfig: *config, Weights: *weights}
 		if *pkgs != "" {
-			c.Packages, c.Name = strings.Split(*pkgs, ","), m.Name
+			c.Packages, c.Name, c.Backend = strings.Split(*pkgs, ","), m.Name, *backend
 			if c.ModelConfig == "" {
 				c.ModelConfig = filepath.Join(md, "config.json")
 			}
 			if c.Weights == "" {
 				c.Weights = filepath.Join(md, "model.safetensors")
 			}
-		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Log: os.Stderr}); err != nil {
+		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
 			fail(err)
 		}
 		c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
@@ -148,6 +168,7 @@ func main() {
 		Dir: work, Tools: strings.Split(*tools, ","), System: opening, Instructions: instructions,
 		Think: *think, KeepThinking: *keep, ThinkBudget: *thinkBudget, Sampling: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep},
 		MaxTokens: *maxNew, Reserve: *maxNew, Steps: *steps, Dump: *dump, Log: os.Stderr,
+		Search: searcher, SearchFirst: *searchFirst,
 	}
 	if *allow != "" {
 		cfg.AllowList = strings.Split(*allow, ",")

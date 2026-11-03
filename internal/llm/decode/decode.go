@@ -84,10 +84,14 @@ func New(p Program, m llm.Cached) (*Session, error) {
 		return nil, fmt.Errorf("decode: no input x (1, q, hidden)")
 	}
 	y, ok := p.OutShape["y"]
-	if !ok || len(y) != 3 || y[1] != x[1] {
+	if !ok || len(y) < 3 || len(y) > 4 || y[1] != x[1] {
 		return nil, fmt.Errorf("decode: no output y (1, q, vocab)")
 	}
-	s := &Session{progs: []step{{p, x[1]}}, m: m, hidden: x[2], vocab: y[2]}
+	vocab := y[2]
+	if len(y) == 4 {
+		vocab *= y[3] // folded into rows (logitsShape)
+	}
+	s := &Session{progs: []step{{p, x[1]}}, m: m, hidden: x[2], vocab: vocab}
 	if l, ok := m.(llm.TokenInputs); ok {
 		s.lookups = l.TokenInputs()
 	}
@@ -160,7 +164,7 @@ func (s *Session) Add(p Program) error {
 	if !ok || len(x) != 3 || x[2] != s.hidden {
 		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
 	}
-	if y, ok := p.OutShape["y"]; !ok || len(y) != 3 || y[1] != x[1] || y[2] != s.vocab {
+	if !logitsShape(p.OutShape["y"], x[1], s.vocab) {
 		return fmt.Errorf("decode: no output y (1, %d, %d)", x[1], s.vocab)
 	}
 	first := s.progs[0].p
@@ -233,7 +237,7 @@ func (s *Session) Migrate(np Program) error {
 	if !ok || len(x) != 3 || x[2] != s.hidden {
 		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
 	}
-	if y, ok := np.OutShape["y"]; !ok || len(y) != 3 || y[1] != x[1] || y[2] != s.vocab {
+	if !logitsShape(np.OutShape["y"], x[1], s.vocab) {
 		return fmt.Errorf("decode: no output y (1, %d, %d)", x[1], s.vocab)
 	}
 	nkv, nt, err := caches(np)
@@ -423,14 +427,16 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 		}
 	}
 	x := p.In["x"]
-	clear(x)
-	for _, lk := range s.lookups {
-		clear(p.In[lk.Input])
-	}
-	for i, e := range emb {
+	for _, e := range emb {
 		if len(e) != s.Width() {
 			return p, 0, fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
 		}
+	}
+	// The rows past the tokens repeat the last token: they are masked out and not kept, but a
+	// row of zeros would make 0/0 in the norms whose epsilon is under fp16's smallest value
+	// (Gemma 4's), and the NaN would reach the tokens' rows through attention (0 * NaN).
+	for i := range q {
+		e := emb[min(i, v-1)]
 		hwnpu.EncodeF16(x[2*i*s.hidden:2*(i+1)*s.hidden], e[:s.hidden])
 		off := s.hidden
 		for _, lk := range s.lookups {
@@ -633,4 +639,17 @@ func (s *Session) Resume(rows []byte, m *Mark) error {
 	}
 	s.Rewind(m)
 	return nil
+}
+
+// logitsShape reports whether y holds the logits of q tokens: (1, q, vocab), or folded into rows
+// (1, q, rows, vocab/rows), which lays out the same (Gemma 4's output stays folded so that the
+// whole program is on the Neural Engine).
+func logitsShape(y []int, q, vocab int) bool {
+	switch len(y) {
+	case 3:
+		return y[0] == 1 && y[1] == q && y[2] == vocab
+	case 4:
+		return y[0] == 1 && y[1] == q && y[2]*y[3] == vocab
+	}
+	return false
 }

@@ -16,8 +16,12 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
-// Names are the tools, in the order they are offered: read, edit, write, bash.
-var Names = []string{"read", "edit", "write", "bash"}
+// Names are the tools, in the order they are offered: read, edit, write, bash, search, fetch.
+var Names = []string{"read", "edit", "write", "bash", "search", "fetch"}
+
+// DefaultTools are the tools offered when Config.Tools names none: the four coding tools.
+// search (the web, or Wikipedia) and fetch (a page) are offered when named.
+var DefaultTools = Names[:4]
 
 // Tool is one of the agent's tools: its declaration for the model, the rule it adds to the
 // system prompt, and what it does.
@@ -39,7 +43,7 @@ type Tool struct {
 func (s *Session) buildTools() ([]*Tool, error) {
 	names := s.cfg.Tools
 	if len(names) == 0 {
-		names = Names
+		names = DefaultTools
 	}
 	var out []*Tool
 	for _, want := range Names {
@@ -123,6 +127,28 @@ func (s *Session) tool(name string) *Tool {
   "required": ["command"]}}`, c.TailLines, int(c.Timeout.Seconds()))),
 			Describe: func(args map[string]any) string { return str(args, "command") },
 			Run:      func(ctx context.Context, args map[string]any) string { return c.bash(ctx, args) },
+		}
+	case "search":
+		return &Tool{
+			Name: "search",
+			Rule: "For a question about facts (names, dates, places, people, works, measurements), call search first, with a short query: the names and words of the things asked about, written as the question writes them (do not translate or romanize a name). Answer from what the results say and name the source; when they do not answer, say so rather than guess. Arithmetic needs no search.",
+			Decl: decl(fmt.Sprintf(`{"name": "search", "description": "Search %s. Returns the top results, each with a title, a URL and a snippet of the page.",
+ "parameters": {"type": "object", "properties": {
+  "query": {"type": "string", "description": "The search query: the names and words of the things asked about"}},
+  "required": ["query"]}}`, c.Search.About())),
+			Describe: func(args map[string]any) string { return str(args, "query") },
+			Run:      func(ctx context.Context, args map[string]any) string { return c.search(ctx, args) },
+		}
+	case "fetch":
+		return &Tool{
+			Name: "fetch",
+			Rule: "Use fetch to read a page of the results when its snippet does not answer.",
+			Decl: decl(fmt.Sprintf(`{"name": "fetch", "description": "Read a web page as text (the first %d characters).",
+ "parameters": {"type": "object", "properties": {
+  "url": {"type": "string", "description": "The URL of the page, from a search result"}},
+  "required": ["url"]}}`, c.FetchChars)),
+			Describe: func(args map[string]any) string { return str(args, "url") },
+			Run:      func(ctx context.Context, args map[string]any) string { return c.fetch(ctx, args) },
 		}
 	}
 	panic("agent: unknown tool " + name)
@@ -460,4 +486,36 @@ func tail(s string, maxLines, maxBytes int) (string, int) {
 		out = "…" + out[len(out)-maxBytes:]
 	}
 	return out, len(lines) - keep
+}
+
+// search runs the search tool: the results formatted for the model, or what went wrong.
+func (c *Config) search(ctx context.Context, args map[string]any) string {
+	query := strings.Join(strings.Fields(str(args, "query")), " ")
+	if query == "" {
+		return "query is required."
+	}
+	results, err := c.Search.Search(ctx, query, c.Results)
+	switch {
+	case err != nil:
+		return "The search failed: " + err.Error()
+	case len(results) == 0:
+		return fmt.Sprintf("No results for %q. Try other words: the name of the thing asked about.", query)
+	}
+	return Format(results)
+}
+
+// fetch runs the fetch tool: the page as text, or what went wrong.
+func (c *Config) fetch(ctx context.Context, args map[string]any) string {
+	u := strings.TrimSpace(str(args, "url"))
+	if u == "" {
+		return "url is required."
+	}
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return "url must begin with http:// or https://: copy it from a search result."
+	}
+	text, err := Fetch(ctx, nil, u, c.FetchChars)
+	if err != nil {
+		return "The page could not be read: " + err.Error()
+	}
+	return text
 }

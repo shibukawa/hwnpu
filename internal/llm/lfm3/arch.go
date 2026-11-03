@@ -18,11 +18,16 @@ var Arch = &llm.Arch{
 	Params: []llm.Param{
 		{Name: "post-scale", Default: "64", Usage: "power of two multiplied into the weights of out_proj, o_proj and w2 and absorbed by the sandwich norms (Neural Engine accuracy); 1 disables"},
 		{Name: "conv", Default: "taps", Usage: "short convolution as shifted multiply adds (taps) or one conv op (conv)"},
+		{Name: "attn", Default: "grouped", Usage: "attention with a KV cache: one product per kv head over the stacked query heads (grouped, blocks.SDPAGrouped; 73.5 to 40.7 ms per call at a cache of 16320 on an M3) or the keys and values tiled per query head (tile)"},
 		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state, besides the logits (LFM3-Audio's speech output reads it)"},
 	},
-	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
-	GGUFName:   ggufName,
-	GGUFShape:  ggufShape,
+	// int8 on Intel's NPU: in LFM3-1.7B, int4 picks the next token fp16 picks at 22 of 52
+	// positions (int4-g128 29, int4-g32 33, the Neural Engine's lut4 26), int8 at 51
+	// (TestIntelIRCheckpoint, docs/intel-npu-models.md 11)
+	IntelFormat: "int8",
+	LoadConfig:  func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	GGUFName:    ggufName,
+	GGUFShape:   ggufShape,
 }
 
 func init() { llm.Register(Arch) }
@@ -115,5 +120,5 @@ func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Optio
 	if err != nil {
 		return nil, nil, fmt.Errorf("lfm3: post-scale %q: %w", ps, err)
 	}
-	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv"), HiddenOut: Arch.Param(opts, "hidden-out") == "1"})
+	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv"), AttnMode: Arch.Param(opts, "attn"), HiddenOut: Arch.Param(opts, "hidden-out") == "1"})
 }

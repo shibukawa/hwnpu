@@ -1475,10 +1475,89 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 - `chat.Engine.prefill`: メモリ内の再利用 (印と退避) より先へ進めるときだけストアから戻す。プロンプトが収まる最も短い段階の空のセッションに `Resume` し、`cur` をその系列の先頭に、`base` をその項目にする。読みながら 512 トークンごと (`markEvery`) と終わりに印を取り、読み終えたら `put`。読めない項目 (ファイルが壊れている、印の形が合わない) はその場で消して読み直す。`Stats.Restored` に戻したトークン数 (`Reused` に含まれる)。サーバーのログは `(N tokens from the prompt store)`、`usage.cached_tokens` には含まれる
 - `-prompt-cache DIR` (hwnpu-chat と hwnpu-agent。既定はコンパイルキャッシュの `prompts`、`off` で無し)。`chat.Config.PromptDir`
 - 検証 (CPU インタプリタ、小さな LFM3): `TestEngineStore` (印 8 トークンごと、保存は 8 トークン以上、4 項目で 2 本まで): 再起動後に 20 トークン共通のプロンプトが印 16 から戻って残りを読む。分かれた系列は自分の項目を持ち、共通部分の印 (8、16) を引き継ぐ。続きで行と印が増える。再起動後の同じプロンプトは何も読まない。3 本目で最も古い項目が消え、消えた項目の先頭は分かれた系列の項目から戻る。短いプロンプトは保存しない。各点のロジットは最初から読んだときと相対誤差 2e-3 以内。`TestResume`: 別の系列の行では誤差が 1e-2 を超え、行の不足、印の大きさの違い、印の欠けはエラー
-- 費用の見込み (M3、LFM3-1.7B、未計測): 行が 1 トークン 12 KiB、印が 512 ごとに 2〜3 MB (6 KiB/トークン) で、16K で約 300 MB、OpenCode の 7.4K で約 130 MB。戻すのは SSD から 0.1 秒以下で、印から最大 512 トークンを読み直す (16K の容量で約 1 秒)。初回の 13〜17 秒が 1 秒台になる見込み。書き込みは系列の続きなら差分だけだが、新しい系列は全部を書く。Gemma 4 E2B は印が 7 MB (リング 12 層) なので 512 ごとで 14 KiB/トークン
-- 残り: 退避した系列 (`Save`) もストアに置いてプロセスから外す。印の間隔と系列の数の既定は実機で測って決める。int8 で半分にする (写しには費用がない)
+- 計測 (M3 16 GB、LFM3-1.7B lut4、文脈 16320、段階 4096/16320、2026-11-01): OpenCode 1.19.5 の最初の要求 (system と道具 10 個と 1 行の依頼で 7,854 トークン) を `-dump` で取り、`-listen` のサーバーに再生して測った。冷えた読み込みは `-prompt-cache off` で 14.6 秒、空のストアに書きながらで 15.1 秒 (書き込みの上乗せは 0.5 秒以内。OpenCode から直接のときは 16.0 秒)。再起動後の同じ要求は 7,854 トークンすべてがストアから戻って 0.2 秒 (ストアの読み出し自体は 96 MB で 17〜36 ms、残りは ANE のバッファへの書き戻し)。依頼の文を変えた要求は印 7680 から戻って 177 トークンを読み 0.7 秒。貪欲法 (temperature 0) の 64 トークンは、冷えた読み込みと復元後で完全に一致した。大きさは、行が 1 トークン 12,288 バイト (見込みどおり)、印が 1 つ 3.45 MB (見込みの 2〜3 MB より大きい。23 のバッファとロジット 128,000 個)、7,857 トークンの項目が 145 MB (印 16)、1 往復進んだ 8,218 トークンの項目が 164 MB (印 17)。512 ごとの印で約 18.7 KiB/トークン、ほかに要求ごとの終わりの印が 3.45 MB ずつ増える (20 往復で 70 MB)。OpenCode は会話ごとに依頼の文で分かれるので会話ごとに 145 MB の項目ができ、4 本で約 600 MB。hwnpu-agent は system と道具で 617 トークン、1 往復の会話が 682 トークンで 1024 に届かず、保存も復元もしない (読み込みは 0.8〜0.9 秒)。Gemma 4 E2B は未計測
+- 残り: 退避した系列 (`Save`) もストアに置いてプロセスから外す。要求ごとの終わりの印は古いものを間引く (512 ごとの印があれば足りる)。int8 で半分にする (写しには費用がない)
 
-### 16.39 AMD: 実機での最初の確認 (Ryzen AI 9 365) — 2026-11-03
+### 16.39 M3 での裏取り: プロンプトストアの段階と壊れたファイル、Q=16、grouped 注意、lut6、メモリ — 2026-11-02
+
+- 目的: 16.38 と `docs/model-fit.md` はクラウドで書き、実機の数値はすべて見込みだった。そのチェックリスト (ブランチとテスト、ストアの端から端、壊れたファイル、Q=16 の費用、lut6、`SDPAGrouped`、メモリ) を M3 16 GB で通した。ストアの端から端の数値は 16.38 の計測の行、それ以外はここ
+- ストアの段階と分岐: 1,524 トークンの要求 (OpenCode の system の先頭 7,000 文字と 1 行) は、冷えた初回でも 7,854 トークンの項目と共通する先頭の印 1024 から戻り (16320 で読んだ行が 4096 の段階に入る)、残り 500 を読んで 0.5 秒。再起動後は 1,524 すべてが戻って 0.0 秒。貪欲法の 48 トークンは冷えた読み込み、復元、`-prompt-cache off` の 3 通りで一致
+- 壊れたファイル: 印ファイルを消した項目は最初の使用で `(dropped)` と出て消える。rows.bin を切り詰めた項目は起動時に数えられなくなる。ここで 2 つ直した。(1) 落とした後に次善の項目を試さず、印 1024 を持つ別の項目があっても全部読み直していたので、`prefill` は見つからなくなるまで繰り返す。(2) 読めない項目のディレクトリ (64 MB) がディスクに残り続け、4 本の上限にも数えられなかったので、`openStore` が消す。meta.json の無いディレクトリは別のプロセスが書いている途中かもしれない (`put` は meta.json を最後に書く) ので、1 時間 (`staleAfter`) より古いものだけ消す。`TestEngineStore` に両方のケースを足した (修正なしでは落ちる)
+- Q=16 (model-fit.md T3): `-seq 16 -cache 16320` を変換して `TestCallTimes`: Q=8 69.2 ms、Q=16 73.4 ms (+6%)、Q=64 109.0 ms。基準の +10% 以内なので、生成と prefill を Q=16 の 1 本にする案は呼び出しの費用の面では成り立つ (prefill は 16 ÷ 0.0734 ≈ 218 tokens/s で 7.9K が 36 秒。今の Q=64 は 14.6 秒)。交互の呼び出しは Q=8/Q=64 で 224 ms (単独の和 178 ms、切り替え 23 ms)、Q=8/Q=16 で 253 ms
+- grouped 注意 (T1): `lfm3/build.go` のキャッシュ付きの注意に `-attn grouped` (`blocks.SDPAGrouped`。既定は `tile`) を足した。`TestCachedMatchesFull` に grouped の場合を足し、CPU で fp16 と 2e-3 以内。M3 の c16320: Q=8 の 1 回が 73.5 → 40.7 ms (−45%、見込みは 38〜50 ms) で「all on the NPU」のまま。chat では 4 問の貪欲法の答えが tile と一字一句同じで 18〜24 → 27〜39 tokens/s。OpenCode の 7,854 トークンの prefill (Q=64 も grouped) は 14.6 → 10.9 秒、その後の生成は 60 → 34 ms/token、64 トークンの文は tile と一致。`ChunkedSDPA` (16320 超) は未対応。既定にするかは未決 (パッケージの名前が同じなので、変えるなら名前に入れる)
+- lut6 (T7): `-format lut6` の c16320 (Q=8 と Q=64、各 2 部分 1.21 GiB) は NPU に載り、初回の読み込みは 64 + 112 秒。4 問 (貪欲法、思考なし、質問ごとに `/reset`): 富士山の高さは lut4「約 4,000 m」/ lut6「3,776 m」。17 × 23 はどちらも 391。『こころ』の作者は lut4「村上春見」/ lut6「宮本明」。日本一長い川は lut4 答えず / lut6「利根川」。4 問中 1 問が直った。速さは lut4 18〜24 tokens/s、lut6 12〜15 tokens/s (下書きの採用率込み)。KL (ユーザーが測定。`hf download` でリモートコードを取り、`ref_logits.py --seq 32` に長い英文を渡し、`hwnpu-check -package` を分割なしの 2 本に): lut6 は rel RMS 0.274、cosine 0.963、argmax 23/32、平均 KL 0.232 nats。lut4 は rel RMS 0.617、cosine 0.816、argmax 16/32、KL 1.387 nats。lut6 は見込みの 0.2〜0.3 に収まり、lut4 の 1/6。lut4 の 1.39 は MODEL.md の 0.89 (24 トークン、別の文) より大きく、文と長さで変わる。`ref_logits.py` には LFM3 の `modeling_lfm3.py` (リポジトリのリモートコード。hwnpu のダウンローダは取らない) が要る。既定の文は LFM3 のトークナイザで 30 トークンなので、`--seq 32` には `--text` で長い文を渡す。`hwnpu-check -package` は分割なしの 1 つの .mlpackage を CPU インタプリタで動かすので、`-target none` で変換したものを渡す
+- メモリ (T10、`footprint`、静かな機械、読み込み直後): 2 本 (`-tier ""`) 1,968 MB、4 本 (既定) 2,807 MB。RSS は 1.08 と 2.36 GiB。7.9K の要求の後は footprint が 791 と 847 MB に落ちる一方 RSS は 1.57 と 2.03 GiB で、重みの載り方 (Core ML の mmap と共有) は footprint では追えない。aned の footprint は sudo が要り未計測
+- テスト: `go test ./internal/llm/... ./internal/chat/ ./cmd/...` と `go vet ./...` は通る。hwnpu-agent の 2 回目はストアに触らない (16.38)
+- 残り: lut6 を既定にするか (KL は 6 分の 1、速さは 12〜15 対 18〜24 tokens/s、重み +0.4 GiB。既定を変えるなら `chat.Prepare` の名前に形式を入れる)。grouped を既定にする (名前に入れる、`ChunkedSDPA`、Gemma 4 と同じ扱い)。Q=16 の 1 本化は grouped の後で測り直す (切り替えの費用も変わる)。OpenCode の `run` は初期化に 45 秒かかってから最初の要求を送る (hwnpu の外)
+
+### 16.40 検索の道具と、最初の往復を検索にする強制 (hwnpu-agent `-tools search -search-first`) — 2026-11-02
+
+16.39 で lut4 の LFM3-1.7B は 4 問中 3 問 (富士山の高さ、『こころ』の作者、日本一長い川) を誤り、lut6 でも 1 問しか直らなかった。知識をモデルの中で解決せず、検索の道具で外に出す案を M3 で試した。
+
+- 下調べ (hwnpu-chat のサーバーに `web_search` を宣言し、結果は手で与える): 事実の 3 問はどれも妥当な検索語 (「富士山 高さ」「『こころ』 作家」「日本 最長 川」) で呼び、17 × 23 と Go の関数は呼ばない。結果を返すと 3 問とも正解で出典の URL も付け、答えの無い結果 (渋川市の人口) には「見つからなかった」と言う。思考なしで 1 往復目 0.7〜3 秒、2 往復目 1〜4 秒、結果は約 200 トークン。思考ありは 10〜23 秒で、『こころ』は結果に夏目漱石とあるのにローマ字化に迷って再検索した。system prompt の「Answer in the language of the question」を「Always answer in Japanese」に変えただけで『こころ』と渋川市で検索を呼ばなくなり、『こころ』は「村上 平作」と捏造した (温度 0 で再現する)。検索の判断をモデルに任せてはいけない
+- 道具 (`internal/agent/search.go`、`tools.go`): `search(query)` は `Searcher` の裏側に `Wikipedia` (MediaWiki API、鍵なし。検索の上位の記事の冒頭 2 文を extracts で取る)、`SearXNG` (JSON)、`Brave` (API、`BRAVE_API_KEY`)。DuckDuckGo の html と lite はこの機械からの GET も POST も 202 の anomaly (ブラウザの検査) で、入れていない。SearXNG の docker は取得をこのセッションの権限が拒んだので httptest だけで確かめた。search だけを出すと system prompt は `SearchSystem` (調べて答えるアシスタント) になり、ディレクトリの一覧やパスの規則は入らない (255 トークン)
+- 強制 (`Config.SearchFirst`): 最初の案は「モデルに検索語を書かせてから検索し、その呼び出しと結果を会話の先頭に置く」だったが、思考なしで検索語だけを書かせると質問の写しや解説が出て (例つきでも同じ)、100 文字で切った検索語では何も見つからなかった。道具を宣言した普通の往復では検索語は良い (6 問中 4 問が呼び、17 × 23 は呼ばず、呼ばなかったのは 1 問) ので、最初の往復はそのまま行い、search を呼ばなかったらその往復を捨てて課題の 1 行目で検索した呼び出しと結果を置く形にした。モデルが同じ検索語で呼び直すと nudge で止まる
+- 検索の上限 (`Config.Searches`、既定 4): 上限なしでは答えが前にあっても検索を続け (富士山は正解の記事が 1 回目にあったのに 3 回)、『こころ』は 30 往復で 14K トークン、5 問で 10 分かかった。上限を越えた呼び出しには「もう検索はない、手元の結果から答えよ」を返し、その往復の後に道具なしの要求で答えを求める (`ErrSearches`)。上限ありで 5 問 146 秒 (読み込み込み)
+- M3 の結果 (lut4、思考なし、Wikipedia、`-search-first`): 富士山は 1 回の検索で「約 3,775.56 m (最高地点 3,776.12 m)」と出典つき (約 3 秒)。『こころ』は Wikipedia の検索が「『こころ』 作者」「心 作家」で小説を返さず、4 回で「見つからなかった」。日本一長い川は「日本 最長の川」にドナウ川が返り (生の質問文「日本一長い川は?」なら「長さ順の日本の川一覧」が出る)、4 回使い切り。渋川市は名前を「Shigyū」とローマ字化して検索し見つからず、答えられないと言った。17 × 23 は検索してから 391。つまり道具の枠組みは動き、残る弱さは Wikipedia の検索の当たりの悪さで、ウェブの検索 (SearXNG か Brave) で測り直すのが次
+- テスト: `TestWikipedia`、`TestSearXNGAndBrave` (httptest)、`TestSearchTool`、`TestSearchFirst` (置き換え、nudge、道具が無いときは検索しない、上限)。`go vet ./...`、`go build ./...`、`go test ./internal/agent/ ./cmd/...` は通る
+- 残り: SearXNG か Brave での測り直し (鍵か docker が要る)。Wikipedia の検索語の整形 (括弧を外す、生の質問文も試す)。思考ありの答えは内容がきれいだが遅い: 思考なしだと「The user is asking...」が本文に出る。ページ本文を読む `fetch` は未実装 (1〜3K トークン、lut4 の prefill 540 tok/s で 2〜6 秒の見込み)
+
+#### 16.40 の追記: fetch、Wikipedia の検索語、思考あり/なし、grouped の Q=16 — 2026-11-02
+
+- 試せなかったもの: SearXNG の docker (`docker run searxng/searxng`) と LFM3 のリモートコード (`hf_hub_download` で `modeling_lfm3.py` など) は、どちらもこのセッションの自動モードの分類器が拒んだ (Code from External、Auto-Mode Bypass)。ウェブ検索の実走と lut6 の KL はユーザーの手で
+- `fetch(url)` (`internal/agent/fetch.go`): ページを文章にして先頭 `Config.FetchChars` (6000) 文字を返す。script、style、head、コメントを落とし、ブロック要素を改行に、タグを除き、実体を戻し、空行を捨てる。Wikipedia の日本語のページは 6000 文字で約 4,200 トークン (prefill 3.8〜4.0 秒)。規則は「抜粋に答えが無ければ fetch で読む」
+- Wikipedia の検索語: モデルは『』「」で題名を囲み、検索はそれを文字通りに取るので外す。語を並べて 0 件なら最初の語 (名前のことが多い) だけで引き直す。結果の URL は百分率符号化せず題名のまま (符号化した URL をモデルが写すと崩れ、`E7%A6%9F5B8%82` のような検索語になった)
+- M3、lut4、Wikipedia、`-tools search,fetch -search-first`、同じ 5 問。思考なし 201 秒: 富士山は 1 回目の検索で記事の冒頭に標高があったのに fetch し、4.6K トークンのページから「富山県・静岡県」「3,876 m」と「3,775.56 m」を行き来する 1,500 トークンの答え (最後は 3,775.56 m)。『こころ』は見つからず、川は中国語で「答えられない」、渋川市はページを読んで数字を出さず、17 × 23 は 391。思考あり 190 秒: 「Mount Fuji height」と英語で検索し英語版を fetch して 3,776.24 m と出典、『こころ』は検索を使い切り (`ErrSearches`)、川は「longest river in Japan」→ Shinano River の記事を fetch して信濃川、渋川市は日本語版を fetch して 69,173 人 (ページの推計人口。ただしページの日付は 2026 年 10 月 1 日で、質問の 2025 年の値として答えた)、17 × 23 は 391。思考ありが 5 問中 4 問 (日付の取り違えを含む)、なしが 2 問、search だけ (前項) が 1 問。思考ありで英語版に行くのは、検索語を英語で書くと `Wikipedia.Lang` の判定 (かなと漢字で ja) が en を選ぶため。英語版の検索は語の並びに強い
+- grouped の Q=16 (16.39 の残り): `-seq 16 -attn grouped` を変換し `TestCallTimes` (`HWNPU_CALL_PKGS` に grouped の 3 本): Q=8 41.4 ms、Q=16 47.8 ms (+15%)、Q=64 82.4 ms。交互は Q=8/Q=64 159.5 ms (和 123.8 ms、切り替え 1 回あたり約 18 ms)、Q=8/Q=16 220.1 ms (和 89.2 ms。Q=16 は直前にコンパイルしたばかりで、測り直しが要る)、Q=16/Q=64 166.9 ms。Q=16 の 1 本化は tile の +6% から +15% に広がり、prefill は 16 ÷ 0.0478 ≈ 335 tokens/s で 7.9K が 23.5 秒 (Q=64 grouped は 10.9 秒)。切り替えの 18 ms × 2 を消しても生成の 1 回が 6.4 ms 増えるので、T3 は grouped では見合わない
+- 残り: ウェブ検索 (SearXNG か Brave) での測り直し。Wikipedia は ja の検索が弱いので、ja で 0 件か外れのとき en も引く手。fetch の 6000 文字は答えの箇所が後ろにあると届かない (渋川市の人口は infobox にあり届いた)。思考なしで長い答えが崩れるのは fetch の 4K トークンの後で、`-think-budget` と `-n` の調整は未検証
+
+#### 16.40 の追記 2: SearXNG でのウェブ検索 — 2026-11-02
+
+- ユーザーが SearXNG (docker、`search.formats` に json) を立て、`-tools search,fetch -search-first -search http://localhost:8888` (思考あり) で同じ 5 問を実行。富士山は「Mount Fuji height meters」→ 英語版と日本語版の Wikipedia が出て、両方を fetch (4.6K と 2.3K トークン) し「約 3,776 m」と両方の出典。『こころ』は「『こころ』 作家」で日本語版の「こゝろ」が 1 位に出て (Wikipedia 自身の検索では出なかった)、fetch して夏目漱石。日本一長い川は「Japan longest river」→ Shinano River を fetch して信濃川 (答えは英語)。渋川市は「Shibagawa City population 2025」とローマ字で検索して品川区が出てしまい、品川区の 426,005 人を答えた (誤り。ローマ字化の問題は 16.39 の lut4 の実験から一貫)。17 × 23 は規則の「numbers」を見て検索し、4 回使い切ってから 391。5 問中 4 問
+- fetch の問題: Wikipedia のページは先頭の 6000 文字がほぼメニュー (「コンテンツにスキップ」「メインメニュー」...) で、4K トークンを使って本文はわずか。`Text` は `<main>` (無ければ `<article>`) があればその中だけを取り、`<nav>`、`<footer>`、`<aside>` を落とすようにした
+- 規則の変更: 「数値」を「measurements」に変えて「Arithmetic needs no search」を足し、名前は「質問の書き方のまま、翻訳もローマ字化もしない」と足した
+- 上の 2 つを入れて同じ 5 問を実行 (思考あり、324 秒。ユーザーの実行は時間を取っていない): 富士山は「富士山 高さ 数メートル」→ 日本語版を fetch (本文だけで 271 行、4.6K → 3.8K トークン) したが、本文の「世界の山」の節のエベレスト 8,848.86 m を混ぜて「約 3,776 m（または 3,999 m）…最新の測量では 8,848.86 m」と崩れた (思考の上限で切れている)。『こころ』は抜粋に「夏目漱石の長編小説」とあり正解。fetch しようとした Wikipedia の URL は百分率符号化を写し間違えて 404。日本一長い川は英語で検索し Shinano River を fetch して信濃川。渋川市は最初「Shigak city」とローマ字 (規則で止まらない) で外れ、2 回目「渋川市 人口 2025」で市の公式ページと統計サイトが出て、抜粋の「2025年人口72,090人」から 72,090 人 (日付は質問のものを当てはめた。市のページ自体には数字が無い)。17 × 23 は `-search-first` が最初の往復を検索にするので 3 回検索してから 391。5 問中 4 問に、富士山の崩れ。ウェブ検索は Wikipedia の検索より明らかに当たりが良く (『こころ』、渋川市)、残る弱さは lut4 のモデル側 (ローマ字化、長い本文からの取り違え、符号化 URL の写し間違え)。URL は `Format` で百分率符号化を戻して渡すようにした (`readable`)
+- 残り: 富士山のような長い記事では本文の前半だけが届き、関係ない節の数値を拾う。fetch に `query` を付けて該当の段落を切り出す手がある。ローマ字化は規則では止まらず、`-search-first` の置き換えの検索語 (課題の 1 行目) の方が当たるので、最初の検索語に日本語が無く課題にあれば課題で引く手も
+
+### 16.41 lut6 と grouped 注意の組み合わせ: 速さを失わずに賢さを上げる — 2026-11-02
+
+16.39 の lut6 は賢さ (KL 0.232 対 1.387) と引き換えに 3 割遅く、16.39 の grouped は 1 回の呼び出しを 45% 速くした。2 つを組み合わせれば今の既定 (lut4、tile) より速いまま lut6 になるはず、という見込みを M3 で確かめた。`-format lut6 -quant kmeans-minmax -attn grouped -target m3` で c16320 の Q=8 と Q=64 を変換 (各 2 部分、1.21 GiB、50〜75 秒)。
+
+- 1 回の呼び出し (`TestCallTimes`、4 本同時に読み込み、RSS 1.65 GiB): lut6 の Q=8 は tile 84.1 ms → grouped 42.8 ms、Q=64 は 109.7 → 90.9 ms。lut4 は tile 69.2 → grouped 41.4 ms (16.39、16.40)。つまり lut6 + grouped (42.8) は今の既定の lut4 + tile (69.2) より 38% 速く、lut4 + grouped との差は 3%。交互 (Q=8 と Q=64、grouped どうし) は 142.7 ms の組で、和 133.7 ms との差 9 ms が切り替え
+- コーディングの課題 (CHAT.md 7 節の `a - b` → `a + b`、`-yes`、`-package` で 2 本だけ、段階なし。壁時計は読み込み込み): lut6 + grouped 90 秒で 6 要求、lut4 + grouped 82 秒で 13 要求、lut6 + tile 103 秒で 6 要求、lut4 + tile 345 秒で 27 要求。読み込みは lut6 が約 75 秒 (2 部分 × 2 本)、lut4 が約 35 秒なので、課題そのものは lut6 + grouped 約 15 秒、lut4 + grouped 約 50 秒、lut6 + tile 約 30 秒、lut4 + tile 約 310 秒。4 つとも直せたが、lut6 の 2 つは read、edit、(cd /tmp の heredoc、断られる)、go run、read、答え、の 6 往復で終わり、lut4 は `/main.go` や `cd /workspace` を繰り返して 13 と 27 往復 (16.35 で見た lut4 の癖そのもの)。生成は lut6 + grouped 22〜43 tokens/s、lut4 + tile 13〜26
+- 5 問 (search と fetch、SearXNG、思考あり、`-package` の 2 本): lut6 + grouped 275 秒で 4 問 (富士山 約 3,776 m、『こころ』は fetch なしで抜粋から夏目漱石、信濃川 367 km と出典、17 × 23。渋川市は抜粋に「令和7年10月1日 人口 69,880 人」を見つけながら PDF を読みに行き、4 回使い切り)。lut4 + grouped 354 秒で 4 問 (渋川市は「Shibagawa」→ 品川区 426,403 人)。lut6 + tile 448 秒で 5 問 (渋川市 70,265 人、2025 年国勢調査を引くサイトから)。lut4 + tile 351 秒で 4 問 (渋川市は思考で 70,265 を見ながら「約 4,256 人」と答えた)。時間は検索の往復の数で揺れるので、速さの比較は呼び出しの費用とコーディングの課題で見る
+- 結論: 見込みどおり。lut6 + grouped は今の既定より呼び出しが 38% 速く、課題の往復が 27 → 6 に減り、KL は 6 分の 1。払うのは重み +0.4 GiB (2 部分) と初回の読み込み (Core ML のコンパイル後は 1 本 37〜39 秒、lut4 の 1 本 16〜19 秒)。既定にする価値がある。変えるには `lfm3.Arch` の既定の形式と注意、`chat.Prepare` のパッケージ名 (形式と注意を名前に入れ、既存の `lfm3-c16320-q8` と衝突させない)、カタログの大きさの記述、16320 超の `ChunkedSDPA` の grouped 対応 (今は tile に落ちる) が要る
+- 既定の切り替え (同日): `lfm3.Config.Format` が LFM3 本体に lut6 を返し (マルチモーダルは lut8 のまま)、`attn` の既定を grouped にした。16320 超の塊のキャッシュには `blocks.ChunkedSDPAGrouped` を足した (ChunkedSDPA と同じ式で、クエリの頭を kv の頭ごとに積み、マスクと最大値の計算は頭ごとの配置で行う)。`TestChunkedSDPAOnNeuralEngine` に grouped の 4 例を足し、1 と 8 と 64 トークン、2 と 4 塊のどれも NPU に載る。`TestCachedChunksMatchFull` は既定が grouped になったので塊の grouped を CPU で検算する。`chat.Prepare` のパッケージ名は構造・形式・注意・容量・Q になり (`lfm3-lut6-grouped-c16320-q8.mlpackage`)、以前の `lfm3-c16320-q8.mlpackage` は読まれなくなる (消してよい)。Gemma 4 も `gemma4-lut6-c16320-q8` に変わり一度変換し直す。カタログの LFM3-1.7B の説明に「6 bit tables」。`hwnpu-convert` の LFM3 の既定も lut6 と grouped になる
+- 残り: 渋川市の問いは lut6 でも揺れる: 抜粋に答えがあっても PDF を読みに行き、思考が 1024 で切れる。`-think-budget` を増やすか、fetch が PDF を断るか
+- 既定で動かした結果 (M3): 変換は 1 部分 44〜67 秒 (8 部分で約 7 分半)、Core ML のコンパイルは 1 本 74〜78 秒。4 問 (思考なし) は富士山 3,776 m、17 × 23 は 391、『こころ』は宮本明、川は利根川で、16.39 の lut6 と同じ 2 問。生成は 28〜45 tokens/s (lut4 + tile は 18〜24)。コーディングの課題は 6 要求で修正
+- 起動が 2 分半になった: コンパイル済みなのに 1 本 35〜43 秒。`HWNPU_COREML_TRACE=1` では hwnpu のコンパイル済みキャッシュは当たり (0.3〜0.5 秒)、`MLModel` の読み込み (ANE 向けのコンパイル。16.12 の「システム側のキャッシュ」) が 1 部分 17〜19 秒で外れている。同じものを読み直すと当たり外れが部分ごとに入れ替わり、2 本 (4 部分 2.4 GiB) だけなら 2 回目は全部当たり (0.05〜0.5 秒、起動 3 秒)、4 本 (8 部分 4.8 GiB) は 4 回続けて起動しても毎回 3〜6 部分が外れ (110、92、77、62 秒)、直後に 2 本に戻すと 3 秒。以前の既定 (lut4 の 4 本 3.2 GiB) は何も挟まず 3 回起動すると 48、33、3 秒で落ち着く。lut4 の 4 本 (3.2 GiB) は朝の実行で全部当たり (1.1〜1.4 秒)。つまり ANE のキャッシュは容量が 3.2〜4.8 GiB の間 (4 GiB か) の LRU で、lut6 の 4 本は入らない。lut4 の 2 部分 (0.8 GiB) も 1 回目 6.7 秒 → 2 回目 0.06 秒なので、部分の数ではなく容量。`~/Library/Caches/com.apple.e5rt.e5bundlecache` は 11 MB で、本体は aned 側 (sudo が要り未確認)
+- 対応: `-tier` の既定を `auto` にし (`chat.TierAuto`)、`Prepare` が形式で決める: lut4 (int4) なら 4096、6 と 8 ビットなら無し (その旨を 1 行出す)。lut6 の既定は c16320 の 2 本 (2.4 GiB) になり、短い会話は c4096 の段階 (grouped で 1 回 27〜28 ms) ではなく c16320 (42.8 ms) で動く。それでも以前の既定 (lut4 + tile、c4096 で 29.9 ms、c16320 で 69.2 ms) と比べ、短い会話で 4 割遅く、長い会話で 4 割速い。4 本にしたければ `-tier 4096` (起動のたびに 2 分半)。初回の起動は変換 4 部分 約 4 分 + コンパイル 2 本 約 2 分半
+- 残り: 段階を lut6 でも持つには、ANE のキャッシュに収まる形が要る: Q=8 と Q=64 で重みを共有する 1 パッケージ 2 関数 (`npuprobe-m3-functions.md` の方向) か、段階の方を Q=8 だけにして 8 トークンずつ読む (4K のプロンプトで 14 秒) か。ANE のキャッシュの容量と場所は aned の側で未確認 (sudo)
+
+### 16.42 既定の切り替えの波及の確認: マルチモーダル、OpenCode、見つかった画像の不具合 — 2026-11-02
+
+16.41 で `attn` の既定を grouped にしたのは LFM3 の全チェックポイントに及ぶ (VL、Audio、Omni、d1 のテキスト部は lut8 のまま grouped になり、名前も変わる)。手元にあるのは LFM3-1.7B だけだったので、LFM3-VL-2B を落として確かめた (3.84 GB、変換は 1 部分 58〜62 秒、視覚エンコーダ 1 秒)。
+
+- `runner.Open` の不具合 (既定の切り替えとは別、cd92cbb の `-opencode` から): `chain.Program(ctx)` は渡された context を以後の全実行に使うのに、`runner.Open` は開いたときの context で取っていた。hwnpu-chat は `signal.NotifyContext` の context でモデルを読み込み、読み込み後に `stop()` を呼ぶ (Ctrl-C を答えの中断に使うため) が、`NotifyContext` の stop は context を取り消すので、以後の視覚エンコーダの実行は全部 `chain: part 0: context canceled` になっていた。`/image` が端末で動かず、サーバーの `image_url` も同じ道。テキストのチェーンは `chat.Engine` が `context.Background()` で取っているので無事だった。`runner.Open` と `OpenSession` の program を `context.Background()` で取るようにした (実行ごとの context は `Run` で確かめる)。audio、speech (hwnpu-tts)、systemone (d1) も `runner` を通るので同じ直し
+- OpenCode の要求 (7,854 トークン、`replay.sh`、新しい既定の 2 本): prefill 10.9 秒 (lut4 + tile 14.6 秒、lut4 + grouped 10.9 秒)、生成 43 ms/token、道具の呼び出しは `read /main.go` で lut4 と同じ文。再起動後はプロンプトストアから 0.1 秒 (ストアの鍵はパッケージ名で変わるので新しい項目から)。読み込みは 33.5 + 37.9 秒 (ANE のキャッシュが外れたとき) と 17.6 + 61.6 秒で、16.41 の 3 秒は何も挟まず起動を重ねたときの値
+- LFM3-VL-2B の `-tier auto`: lut8 なので段階なし (`no shorter cache tier for LFM3-VL-2B: its programs are lut8`)。`lfm3-lut8-grouped-c16320-q8` と `-q64` (各 2 部分 1.63 GiB) は NPU に載り、読み込み 43〜47 秒 (外れ)。視覚エンコーダは 7.1 秒
+- 直した後の LFM3-VL-2B (grouped、lut8): `/image resize.png この画像には何が写っていますか?` に「緑、青、紫、ピンクなどの色が混ざった多色のパターン…全体的にぼやけた外観」(その画像は 16 × 16 の色のグラデーションを拡大した検査用で、そのとおり)。画像つきのプロンプト 278 トークンの読み込み 0.7 秒 (16.31 は約 300 トークンで 0.3 秒。2 部分の lut8 で、視覚エンコーダの実行込み)、生成は画像の答えが 13.9 tokens/s (下書きの採用 1/33: 画像の説明は推測が当たらない)、テキストの質問 (富士山 3,776 m) が 28.1 tokens/s (16.31 の tile は 41 ms/token = 24 tokens/s)。ANE に載り、出力の筋も通るので、grouped の既定はマルチモーダルのテキスト部でも成り立つ
+- 未確認のまま: LFM3-Audio-2B と LFM3-Omni-2B (同じテキスト部なので同じ経路だが実行していない。ディスクが 13 GiB)、d1-2B の systemone と hwnpu-tts (runner の直しが効く側)、Gemma 4 (名前が変わる一度の変換し直しと、lut6 なので `-tier auto` が段階なしを選ぶこと。10.2 GB の取得が要る)
+- Gemma 4 E2B (以前の lut4 のパッケージ 9 GB を消して 10.25 GB を取得): 名前は `gemma4-lut6-c16320-q8` と `-q64` (各 2 部分 0.81 + 0.79 GiB、変換 1 部分 44〜62 秒)、lut6 なので `-tier auto` は段階なし。4 問 (思考なし) は富士山 約 3,776 m、17 × 23 は 391、『こころ』は「どの作品か分かりかねます」、川は信濃川 (ただし「信濃川・長野川のどちらを指すかで変わる」と続く)。16.30 の答え (富士山 3,776 m、信濃川) と同じ範囲。生成 14〜28 tokens/s (16.30 は 55 ms/token = 18 tokens/s)。配置は「NOT all on the NPU」で、part1 の `reshape` 1 つが CPU (配置の記録)。gemma4 の構築は今日触っていないので以前からと思われる
+- Gemma 4 の起動は毎回 98 秒: 4 部分とも `MLModel` の読み込みが 22〜25 秒で、4 回続けて起動しても一度も当たらない (LFM3 の lut6 の 2 本は 2 回目から当たって 3 秒)。CPU に落ちる演算がある部分は ANE のキャッシュに入らないのかもしれない (仮説。LFM3 の部分は全部 NPU)。CHAT.md の「読み込みは数秒から 1 分」は Gemma には当てはまらず、16.30 も初回の 96 と 104 秒しか記録していない。gemma4 の `reshape` を NPU に載せれば起動も直る可能性がある: 残り
+
+### 16.43 Gemma 4 の起動 98 秒の追跡: CPU の reshape でも部分の大きさでもない — 2026-11-03
+
+16.42 の仮説 (part1 の `reshape` が CPU にあるから ANE のキャッシュに残らない) を確かめた。
+
+- `-logits folded` (gemma4 の新しいパラメータ、`Options.FoldedLogits`): y を (1, seq, 16, 16384) のまま出し、最後の reshape を無くす。`decode` は 4 次元の y も読む (`logitsShape`、`TestCachedFoldedLogits`)。結果は「all on the NPU」で、4 問の答えは flat と同じ、生成は 12.8〜24.8 tokens/s (flat 13.7〜28.1) と 5〜12% 遅い (build.go の注釈にあった「4 倍遅い (137 ms)」は再現しない)。しかし起動は 109 秒のままで、4 部分とも 25〜29 秒の外れ。仮説は否定
+- 部分を小さく (`-parts 3`、0.51〜0.55 GiB): 3 回続けて起動しても 16〜28 秒の外れが続く (3 回目に 1 部分だけ当たり)。大きさでもない
+- 同じ手順で LFM3-VL-2B は 57、33、7 秒と 3 回目で落ち着く (4 部分 + 視覚エンコーダが全部当たり)。LFM3-1.7B の lut6 も 2 回目から 3 秒。つまり Gemma 4 のプログラムだけが ANE 側のキャッシュに残らない。hwnpu 側のコンパイル済みキャッシュは毎回当たっている (0.7〜0.8 秒)
+- 形式を変えて同じ Q=8 を 3 回読む (`TestCallTimes`、`-count=1`): lut4 (2 部分 0.54 + 0.52 GiB) は 10.7 + 9.4 秒、10.4 + 9.2 秒、3 回目 0.07 + 0.04 秒で当たる。lut8 (3 部分 0.69〜0.74 GiB) は 3 回とも 8〜10 秒の外れ。lut6 (2 部分) は 29 + 25 秒の外れが続く。LFM3 は lut6 (0.60 GiB の部分) も lut8 (VL、0.81 GiB) も当たるので、大きさの閾値ではない。Gemma 4 の 6 と 8 ビットの表のプログラムだけが ANE 側のキャッシュに残らない、というところまで。理由は ANE 側 (aned の挙動、sudo が要る) で、ここからは追えない。外れたときのコンパイルは lut6 が 1 部分 25〜30 秒、lut8 が 9〜10 秒、lut4 が 10 秒
+- RSS (2 本読み込み): Gemma lut6 1.67 GiB、LFM3 lut6 2.07 GiB (重みはどちらも Core ML の mmap で RSS に全部は出ない)。1 回の呼び出しは Gemma lut6 の Q=8 61.5 ms、Q=64 137.8 ms (LFM3 の lut6 grouped は 41.9 と 78.8 ms)
+- 結論: Gemma 4 の起動約 100 秒は今の形式 (lut6) では避けられず、`-logits folded` も `-parts` も効かない。lut4 なら 3 回目から 1 秒だが、16.26 のとおり答えが悪い。`-logits folded` はパラメータとして残す (全部 NPU に載り、5〜12% 遅い)。残り: aned のキャッシュの方針の確認。Gemma を lut4 の既定に戻すことはしない
+
+### 16.44 AMD: 実機での最初の確認 (Ryzen AI 9 365) — 2026-11-03
 
 - 機械: Ryzen AI 9 365 (Strix Point、PCI 0x17f0、`npu4` で 8 列、AIE 1.1、4 コア行)、Ubuntu 26.04 の Linux 7.0.0-42 標準カーネルの amdxdna (DKMS なし)、ファームウェア 1.1.2.64。XRT は入れていない
 - 設計: mlir-aie v1.4.4 の wheel (Python 3.12 必須。uv で用意) で `passthrough_dmas` を `-d npu2` でビルド。xclbin をまとめる `xclbinutil` は XRT の道具なので、Ubuntu universe の `libxrt-utils` と boost の `.deb` を root なしで展開し、`AIE_XCLBINUTIL` で渡した
@@ -1492,9 +1571,9 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 | `argument 6 (bo3) is not set` | v1.4.4 の IRON は、3 バッファの設計でも `bo0`〜`bo4` を署名に並べる。ホストのコードは使わない引数を設定せず、XRT はレジスタマップを 0 のまま送る | 未設定の引数は 0 で送る (検査をやめた)。`xdnasim` の passthrough も 8 引数にし、`bo3`、`bo4` が 0 であることを確かめる |
 
 - 電力: upstream の 7.0 には `GET_INFO(QUERY_SENSORS)` の実装がない (DKMS 版だけ)。NPU 単体の電力は読めないので、測るなら RAPL (CPU パッケージ全体) など別の手段が要る
-- 残り: Phoenix / Hawk Point (`npu1`、ヒープ 64 MiB 固定) での確認。ELF 流れと UMQ。LLM に向けた次の段階は、GEMV のカーネル 1 本で速度を測ること (16.40)
+- 残り: Phoenix / Hawk Point (`npu1`、ヒープ 64 MiB 固定) での確認。ELF 流れと UMQ。LLM に向けた次の段階は、GEMV のカーネル 1 本で速度を測ること (16.45)
 
-### 16.40 AMD: GEMV で NPU のデコードの速さと電力を測る — 2026-11-03
+### 16.45 AMD: GEMV で NPU のデコードの速さと電力を測る — 2026-11-03
 
 LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が重みを読む速さで決まる。カーネルを自前で書く前に、NPU が DRAM から重みをどれだけ速く、どれだけの電力で読めるかを測った。
 
@@ -1521,15 +1600,15 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - 結論: デコードを NPU に任せる価値はある (CPU の 6 割の速さを、半分以下の電力で、CPU を空けたまま)。ただし演算ごとに xclbin を切り替える方式は使えない。IRON が NPU2 で使う「full ELF」(グラフ全体を 1 つのハードウェアコンテキスト、1 つのコマンドで流す) に対応する必要がある
 - full ELF の投入: XRT は xclbin なしで ELF からハードウェアコンテキストを作り (`xrt::hw_context(device, elf)`)、コマンドは `ERT_START_NPU_PREEMPT_ELF`。Linux 7.0 は `force_cmdlist` (既定 true) の経路で `EXEC_NPU_TYPE_ELF` のスロットを作る。ファームウェアの機能表 (npu4) では、メールボックスのプロトコルの主版 7 で `AIE2_NPU_COMMAND` と `AIE2_PREEMPT` が有効になる。この機械のファームウェアは `npu_7.sbin` (1.1.2.64) なので使える
 
-### 16.41 AMD で LLM を動かす設計 — 2026-11-03
+### 16.46 AMD で LLM を動かす設計 — 2026-11-03
 
 [amd-npu-models.md](amd-npu-models.md) にまとめた。要点:
 
-- AMD に公開されたグラフ用コンパイラはなく、演算ごとの xclbin は切り替え費用 (16.40) で使えない。[amd/IRON](https://github.com/amd/IRON) をビルド時のコンパイラとして使い、モデルの 1 回の呼び出しを 1 つの full ELF にしたものを、hwnpu が Go で実行する。「変換は Go だけで」の例外で、利用者の機械には Python も XRT も要らない
+- AMD に公開されたグラフ用コンパイラはなく、演算ごとの xclbin は切り替え費用 (16.45) で使えない。[amd/IRON](https://github.com/amd/IRON) をビルド時のコンパイラとして使い、モデルの 1 回の呼び出しを 1 つの full ELF にしたものを、hwnpu が Go で実行する。「変換は Go だけで」の例外で、利用者の機械には Python も XRT も要らない
 - full ELF の投入 (CREATE_HWCTX のみ、制御コードと PDI を BO_DEV に、再配置で引数のアドレスを書き、`ERT_START_NPU_PREEMPT_ELF`) は、XRT を root なしで展開して IRON のグラフを動かし、ioctl を `LD_PRELOAD` で記録して確かめた。再配置の種類 5 (shim_dma_48、+0x80000000) と 8 (address_64) は、書き換え後の制御コードと一致
 - 最初のモデルは IRON に既にある Gemma 4 E2B (bf16、IRON の CI で 5.6 トークン/秒)。次に LFM3-1.7B の IRON のアプリケーションを書き、4 ビット (q4nx の一般化) で速くする
 
-### 16.42 AMD: full ELF の実行 (段階 A1) — 2026-11-03
+### 16.47 AMD: full ELF の実行 (段階 A1) — 2026-11-03
 
 - `internal/aieelf`: aiecc の full ELF を読む。グループからインスタンス (`main:sequence`) と制御コード、`.dynsym` から引数と PDI、`.rela.dyn` から再配置 (種類 3、5、8。知らない種類と、制御パケット、プリエンプション、`.ctrldata` はエラー)、`.note.xrt.configuration` から列の数。`Patch` は書き換え前の語から計算するので、引数を変えて何度書き直しても同じになる。テスト用の `Build`
 - `internal/backend/amd/elf.go`: `ProgramSource.ELF` (または中身が ELF の `Xclbin` / `Path`) で読み込む。PDI はプログラムで共有する `BO_DEV`、制御コードは run ごとの `BO_DEV`。引数が変わったときだけ書き直して同期する。`ctrl scratchpad` があれば run ごとに `BO_DEV` を作ってアドレスを書き、`hwnpu.Run.Scratchpad()` で見せる (中身の意味は段階 A2)
@@ -1538,7 +1617,7 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - `tools/amd/iron_export.py`: IRON の `CompiledGraph` から ELF と manifest (コマンド、引数の順と大きさ、バッファの配置、入出力、重み、パラメータ) を書き、`--check` で乱数の入力と `graph.reference()` の出力を書く。`tools/amd/ironcheck` はそれを hwnpu だけで動かして照合する
 - 実機 (Ryzen AI 9 365): IRON の ReLU → AXPY (2048 要素) の full ELF が、IRON も XRT も使わずに動き、出力は `graph.reference()` とビット単位で一致。読み込み 1.0 ms、1 回 0.27 ms
 
-### 16.43 AMD: 呼び出しごとの値 (スクラッチパッド) と、キャッシュの一貫性 — 2026-11-03
+### 16.48 AMD: 呼び出しごとの値 (スクラッチパッド) と、キャッシュの一貫性 — 2026-11-03
 
 - IRON の `Scratchpad` の値は、制御コードの TXN の命令で入る: `CREATE_SCRATCHPAD` (op 10。`scratch-pad-ctrl` の BO_DEV のアドレスを種類 8 で書く) が状態表を読み、`UPDATE_REG` (op 12、`{スロット, 関数, FuncArg, RegOff}`) がレジスタに `状態表[スロット]` を足す (INCR) か `× FuncArg` を足す (MUL)。コアが読むパラメータ (種類 `core`) は WRITE で 0 にしてから INCR で入れ、shim の BD の長さは BD の書き込みのあとに MUL で足す (mlir-aie の `AIEUtils.cpp`)。`core` の値は 2 ビット左にずらして書く (ファームウェアが下位ビットを落とすため)
 - スクラッチパッドの語は、グラフの呼び出しごとの値の Affine 変換 (IRON の `Word.form`: `clamp(((v·scale + bias) >> down)·mul + add, lo, hi) % mod + post`)。IRON の bounded ReLU (4096 要素) の `n` はコアあたりの塊の数 `ceil(n / 2048)` (0〜2) になる。`tools/amd/iron_export.py` が式を manifest に書き、`tools/amd/ironcheck` が Go で計算する。`n` = 100、2048、3000、4096 で `graph.reference()` と一致 (デバイスは塊の単位で書くので、`n` を塊に切り上げた所まで書く)
@@ -1549,17 +1628,17 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - `xdna.Dev.Wait`: 完了待ちの `SYNCOBJ_TIMELINE_WAIT` が Go のランタイムのシグナルで `EINTR` になると、エラーにしていた。絶対時刻の期限のまま待ち直す
 - 未対応: 前のプロセスの直後に `CREATE_HWCTX` が一時的に `EINVAL` になることがある (前のコンテキストの後始末と重なる)。再試行を足す
 
-### 16.44 AMD: 引き継ぐ値 (段階 A2 の残り) — 2026-11-03
+### 16.49 AMD: 引き継ぐ値 (段階 A2 の残り) — 2026-11-03
 
 - IRON の `Carried` の値は、ホストから 1 回ずつ呼ぶとき (hwnpu の使い方) は、呼び出しごとの値と同じくスクラッチパッドの語になる (Walk の `node` と `steps` は DMA のオフセット、種類 `addr` でずらさずに書く)。IRON の `_write_values` と `_next_values` に合わせ、呼ぶ前に現在の値を `carry` バッファの 1 段目に書き、呼んだ後は、次の値が Affine の式 (`steps + 1`) ならホストで計算し、計算された値 (`node`) は 2 段目から読む
 - `tools/amd/iron_export.py`: manifest に `carried` (carry の配置と名前の順、次の値の求め方) と `images` (重みを置いた引数の初期像 `arg_<種類>.bin`。状態は 0) を書く。`--check` は引き継ぐ値のあるグラフでは `graph.reference()` で呼び出しの列を作る (`check/calls.json`)
 - 実機: IRON の section-5 の Walk (64 要素の後続表を引く) をホストから 12 回呼び、次の値が全て参照と一致。1 回 0.18 ms
 - 残り: 1 つの ELF に複数のコマンドがある場合 (`Plan.commands`)。バッファのアドレスに依る語 (`recording.addresses`) は manifest に書けないのでエラーにしている。LLM のグラフで出てきたら対応する
 
-### 16.45 AMD: Gemma 4 E2B が hwnpu で動く (段階 A3) — 2026-11-03
+### 16.50 AMD: Gemma 4 E2B が hwnpu で動く (段階 A3) — 2026-11-03
 
 - `tools/amd/iron_export_lm.py`: IRON の `CausalLM` (今は Gemma 4) を、デコードの 1 ステップとプロンプトの塊 (2048 トークン) の 2 つの版にコンパイルし (IRON の `load_versions` と同じく 1 つの arena に置く)、ELF、arena の bank の初期像 (重みを置いたもの、3.5 GiB × 2 + 1.9 GiB)、manifest を書く。manifest には版ごとに、コマンド (プロンプトはスクラッチパッドが 32 語に収まらず 15 コマンド)、引数、コマンドごとのスクラッチパッドの語、引き継ぐ値 (token と position)、ロジットの出力、全バッファの配置、プロンプトの埋め込みの encoder を書く
-  - 語の形: Affine (16.43)、Linear (`ceil(v·比 + オフセット)`、比とオフセットは分数)、rows の表 (Gather と RowwiseMul / RMSNorm の行数)、MHA の派生値 (演算子の定数と、範囲 `valid` = rows、`kv_valid` = position + 1 の式から、`kv_blocks`、`s_q`、`q_start`、`q_offset` などを Go で計算)。IRON が計算した語を `check/words.json` に書き、`TestWordsMatchIRON` でデコード 5 通り、プロンプト 4 通りの呼び出しの全ての語が一致することを確かめた
+  - 語の形: Affine (16.48)、Linear (`ceil(v·比 + オフセット)`、比とオフセットは分数)、rows の表 (Gather と RowwiseMul / RMSNorm の行数)、MHA の派生値 (演算子の定数と、範囲 `valid` = rows、`kv_valid` = position + 1 の式から、`kv_blocks`、`s_q`、`q_start`、`q_offset` などを Go で計算)。IRON が計算した語を `check/words.json` に書き、`TestWordsMatchIRON` でデコード 5 通り、プロンプト 4 通りの呼び出しの全ての語が一致することを確かめた
   - encoder: プロンプトのトークン ID を、埋め込みの表 (2 つ: 通常と per-layer) から行を引く DMA の制御語に変える (IRON の `Gather.control_words`: 雛形の語の位置に、表のデバイスアドレス + 0x80000000 + ID × 行のバイト数)。`hwnpu.Buffer.DeviceAddress()` を足した
   - 版によっては同じ名前で別の重みを別の場所に持つ (プロンプトの版の w1 など 4 つ)。名前で重複を除かず、版ごとに全部書く
 - `internal/llm/iron`: 実行器。bank を `BO_SHARE` に確保して像を読み込み (9 GB、ページキャッシュから 2〜3 秒)、`Step(token, position)` と `Prompt(tokens, start)` がロジットを返す (ホストで標本を引く。デバイスが引いたトークンは使わない)。プロンプトの 15 コマンドは、Linux 7.0 のデバイスヒープ (npu4 でも 64 MiB 固定。512 MiB に広げられるのは DKMS 版だけ) に制御コード (合計 89 MiB) が載らないので、呼び出しのたびに run を作って閉じる。デコード (21 MiB) は常駐
@@ -1567,28 +1646,28 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - 結果 (Ryzen AI 9 365、実際の重み、greedy): 「日本の首都はどこですか？」に「日本の首都は東京です。」、Go の関数の作成、README (3505 トークン) の 3 点の要約、どれも筋の通った答え。デコード 5.5〜6.1 トークン/秒 (IRON の CI の Krackan で 5.6)。プロンプトは 25 トークンで 0.58 秒、3505 トークン (2 塊) で 19.5 秒 (180 トークン/秒) と、IRON の Llama 3.2 1B (1024 トークンで 0.47 秒) より遅い。要調査
 - 乱数の重みでの IRON の CPU 参照 (`OnHost`) との照合は、コサイン 0.55〜0.83 で一致しなかった。乱数の重みは値の尺度が整っておらず 35 層で丸めの差が増幅されるためと考えるが、未確認。実際の重みでの Hugging Face のロジットとの照合は、torch のない環境なので未実施
 
-### 16.46 AMD: hwnpu-chat と hwnpu-agent (段階 A4) — 2026-11-03
+### 16.51 AMD: hwnpu-chat と hwnpu-agent (段階 A4) — 2026-11-03
 
 - `chat.Engine` の `sess` を interface (`chat.session`) にした。Core ML の `decode.Session` と、IRON の実行器を包む `ironSession` が満たす。IRON の版はトークン ID を受け取る (埋め込みはデバイスで引く) ので、エンジンの `step` はセッションが `tokenSession` ならトークンを渡す
 - `ironSession`: 1 回に読むのは最大 2048 トークン (プロンプトの塊)、生成は 1 トークンずつ (下書きの確認なし)。Mark と Rewind は位置だけ: IRON の KV キャッシュは位置で書くので、巻き戻した先から上書きすればよい (Gemma 4 のスライディング窓の層は、`3 × リング < max_seq_len` のときだけリングになり、4096 ではならない。リングや畳み込みの状態は `restart` が塊の境に制約されるので、そういうモデルはまだ扱わない)。会話の退避 (`Save`)、prompt store、段階の切り替えは Core ML だけ
 - `chat.Config.IRON` と、`hwnpu-chat -iron DIR`、`hwnpu-agent -iron DIR`。トークナイザーとチャットの型は書き出したディレクトリから (エクスポートが `tokenizer.json` などを写す)
 - 実機 (Ryzen AI 9 365): `hwnpu-chat -iron -listen` の OpenAI 互換 API が答え、2 回目の要求でプロンプトの先頭 28 トークンを再利用 (1 トークン 163 ms)。`hwnpu-agent -iron` が `calc.go` を読む道具を使い「エクスポートされた関数は Add と Mul」と答えた (717 トークンのプロンプト、5.9 トークン/秒)
-- プロンプトの遅さ (16.45) はデバイスの計算: 1953 トークンの塊の 15 コマンドが 190〜850 ms ずつ (計 7.6 秒)、run を作って閉じる費用は 1 コマンド 2 ms 以下
+- プロンプトの遅さ (16.50) はデバイスの計算: 1953 トークンの塊の 15 コマンドが 190〜850 ms ずつ (計 7.6 秒)、run を作って閉じる費用は 1 コマンド 2 ms 以下
 
-### 16.47 AMD: prompt store と会話の退避 — 2026-11-03
+### 16.52 AMD: prompt store と会話の退避 — 2026-11-03
 
 - IRON の KV キャッシュ (Gemma 4 E2B は 15 層 × keys / values の 30 本、(4096, G, D) の bf16) は、ホストから読み書きできる arena の bank の中に位置ごとに連続して並び、2 つの版で配置が同じ。`iron.Model.ExportRows` / `ImportRows` が位置の範囲を写す (1 位置 18 KiB、位置ごとにキャッシュを名前順)。KV キャッシュが状態の全てなので (リングや再帰の状態のあるモデルはまだ書き出さない)、行が系列の全てになる
 - `ironSession`: `RowBytes`、`ExportRows`、`Resume` (prompt store から戻す) と、`Save` (系列の行を写した印) / `Rewind` (退避した印なら行を書き戻す)。store は `decode.Session` ではなく `RowBytes` と `ExportRows` だけを求める interface (`rowSource`) を受ける。store のキーはモデルの名前、manifest の更新時刻、bank の大きさ
 - 実機 (README の 6000 文字を system に入れた 2736 トークンの要求、greedy): 初回 13.2 秒。サーバーを再起動して同じ要求は store から 2736 トークンを戻して 0.0 秒、答えは同じ。同じ system で別の質問は store の 2048 の印から戻して残りを読み 6.4 秒。別の文書の会話 (3258 トークン) を挟んだあと元の会話は退避から 2735 トークンを戻して 0.0 秒。store は 1 項目 51 MB
 
-### 16.48 AMD: パッケージ全体の電力 (PPT) — 2026-11-03
+### 16.53 AMD: パッケージ全体の電力 (PPT) — 2026-11-03
 
 - Linux 7.0 の標準カーネルには NPU の電力センサー (`QUERY_SENSORS`) がない。amdgpu の hwmon の `power1_input` (PPT: APU のパッケージ全体、µW、root 不要) を代わりに読み、`Scope` を `package` にする。NPU のセンサーがあればそちらを使う。どちらかがあれば `CapPowerMeter`
 - どちらも瞬間値なので、最初の `PowerSample` から 50 ms ごとに読んで台形で積分する裏の処理を回す (デバイスを閉じると止める)。前は呼び出しの間を 1 本の台形にしていたので、長い区間では 2 点の平均になっていた
 - `Provider.Hwmon` で探す場所を差し替えられる (テスト)。`xdnasim.NoSensors` で Linux 7.0 と同じくセンサーなしにできる
 - 実機: `hwnpuinfo` に `power-meter`、`cmd/report` の電力の項目が通る。Gemma 4 E2B の生成中はパッケージ全体で平均 11.8 W、1 トークン 1.93 J (アイドルの 5〜7 W を含む)
 
-### 16.49 AMD: 投機的デコードの見積もりと、プロンプトの塊の大きさ — 2026-11-03
+### 16.54 AMD: 投機的デコードの見積もりと、プロンプトの塊の大きさ — 2026-11-03
 
 下書きを k トークンまとめて確かめる呼び出しの費用を、プロンプトの版で k 行を流して測った (`ironlm -bench`: 500 トークンのあと、位置 500 で中央値)。
 
@@ -1604,7 +1683,7 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - 副産物: 塊は 1024 の方が速い (長いプロンプトで 2 割、短いもので 2 割)。256 も同じ速さだが、4096 トークンの文脈では Gemma 4 のスライディング窓の層がリングになる (`3 × リング < max_seq_len`。リング = 窓 + 塊 − 1 以上の 2 のべき) ので、位置だけの巻き戻しと行の写しが使えない。1024 ならリングにならない。エクスポートに `--prefill-chunk` を足し、manifest に `restartable` (IRON の `CausalLM.recurrent` が空か) を書く。チャットのエンジンは `restartable` でないものを読み込まない
 - hwnpu-agent の 2 回目の短いプロンプト (84 トークン) は 1.8 秒から 1.1 秒に
 
-### 16.50 AMD: Gemma 4 E2B の画像と音声 — 2026-11-03
+### 16.55 AMD: Gemma 4 E2B の画像と音声 — 2026-11-03
 
 - IRON の `Gemma4Multimodal` は 1 つのグラフで 5 つの版を持つ: デコード、プロンプト、視覚の塔 (入力は画像の画素の行)、音声の塔 (入力は 16 kHz の波形)、`placed` (目印のトークンの位置に塔の出力を差し込むプロンプトの塊)。塔は soft token を共有の状態 `merged` に書き、`placed` の版は ID の列と、目印ごとの「その媒体の何番目から」(`before`) を受け取る。塔ごとに `merged` は 1 つなので、1 回のプロンプトに画像 1 枚と音声 1 本まで (IRON の制約)
 - エクスポート (`tools/amd/iron_export_lm.py gemma4mm`): 5 つの版と、Go の前処理に要る設定 (目印のトークン、視覚の pooling と patch と予算 280、音声の hop と frame など) を書く

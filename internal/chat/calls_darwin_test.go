@@ -31,7 +31,7 @@ func TestCallTimes(t *testing.T) {
 	}
 	groups := os.Getenv("HWNPU_CALL_PKGS")
 	if groups == "" {
-		groups = "lfm3-c16320-q1.parts.json,lfm3-c16320-q8.mlpackage,lfm3-c16320-q64.mlpackage"
+		groups = "lfm3-lut6-grouped-c16320-q8.mlpackage,lfm3-lut6-grouped-c16320-q64.mlpackage"
 	}
 	cache, _ := os.UserCacheDir()
 	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(cache, "hwnpu")))
