@@ -118,3 +118,24 @@ func TestIRON(t *testing.T) {
 		t.Fatal("unexpected layout")
 	}
 }
+
+// TestAddendUnsigned: an offset past 2 GiB into an argument (IRON's 3.5 GiB arena banks) is
+// read as unsigned.
+func TestAddendUnsigned(t *testing.T) {
+	ctrl := make([]byte, 32)
+	f, err := Parse(Build(BuildSpec{Columns: 8, Instances: []BuildInstance{{Kernel: "main", Name: "sequence", Args: 1, Ctrl: ctrl,
+		Relocs: []Reloc{{Offset: 0, Scheme: SchemeShimDMA48, Target: TargetArg, Addend: 0xdee01c00}}}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := f.Instances[0]
+	if in.Relocs[0].Addend != 0xdee01c00 {
+		t.Fatalf("addend %#x", in.Relocs[0].Addend)
+	}
+	code := append([]byte(nil), in.Ctrl...)
+	Patch(code, in.Ctrl, in.Relocs[0], 0x7000_0000_0000)
+	got := uint64(binary.LittleEndian.Uint32(code[8:])&0xffff)<<32 | uint64(binary.LittleEndian.Uint32(code[4:]))
+	if want := uint64(0x7000_0000_0000 + 0xdee01c00 + DDRApertureOffset); got != want {
+		t.Errorf("%#x, want %#x", got, want)
+	}
+}

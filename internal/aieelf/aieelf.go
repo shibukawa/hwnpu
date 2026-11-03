@@ -241,7 +241,10 @@ func readRelocs(ef *elf.File, abiVersion uint8, bySection map[int]*Instance, f *
 	for o := 0; o < len(b); o += 12 {
 		off := binary.LittleEndian.Uint32(b[o:])
 		info := binary.LittleEndian.Uint32(b[o+4:])
-		addend := int64(int32(binary.LittleEndian.Uint32(b[o+8:])))
+		// r_addend is a byte offset into the argument's buffer, unsigned: IRON's arena banks
+		// are 3.5 GiB, and an offset past 2 GiB read as signed pointed below the buffer (a
+		// decode step of Gemma 4 E2B wrote into its own weights).
+		addend := uint64(binary.LittleEndian.Uint32(b[o+8:]))
 		si := elf.R_SYM32(info)
 		if si == 0 || int(si) > len(dsyms) {
 			return fmt.Errorf("aieelf: relocation at %#x: symbol %d", off, si)
@@ -255,7 +258,7 @@ func readRelocs(ef *elf.File, abiVersion uint8, bySection map[int]*Instance, f *
 		if abiVersion == elfABIVersionSchemeLow {
 			scheme, addend = int(addend&0xf), addend>>4
 		}
-		r := Reloc{Offset: int(off), Scheme: scheme, Addend: uint64(addend), Size: uint32(s.Size)}
+		r := Reloc{Offset: int(off), Scheme: scheme, Addend: addend, Size: uint32(s.Size)}
 		switch {
 		case strings.Contains(s.Name, "pdi"):
 			if _, ok := f.PDIs[s.Name]; !ok {

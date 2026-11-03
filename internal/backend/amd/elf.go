@@ -42,24 +42,6 @@ func (d *device) loadELF(data []byte) (backend.Program, error) {
 		p.Close()
 		return nil, err
 	}
-	// The PDIs are shared by every run (XRT 2.21 caches them per module).
-	for _, in := range f.Instances {
-		for _, name := range in.PDIs() {
-			if p.pdis[name] != nil {
-				continue
-			}
-			img := f.PDIs[name]
-			buf, err := d.allocDev(len(img))
-			if err != nil {
-				return fail(fmt.Errorf("amd: PDI %s: %w", name, err))
-			}
-			p.pdis[name] = buf
-			copy(buf.mem, img)
-			if err := buf.SyncToDevice(0, len(img)); err != nil {
-				return fail(err)
-			}
-		}
-	}
 	qos := xdna.QoSInfo{Priority: qosPriority(d.opts.Power)}
 	p.hwctx, p.syncobj, err = d.dev.CreateHwctx(qos, 0, uint32(f.Columns)*uint32(d.meta.Core.RowCount))
 	if err != nil {
@@ -117,6 +99,24 @@ func (p *elfProgram) NewRun(name string) (backend.Run, error) {
 		return fail(fmt.Errorf("amd: control code buffer: %w", err))
 	}
 	copy(r.instr.mem, in.Ctrl)
+	// The PDIs are shared by every run (XRT 2.21 caches them per module), loaded when a run
+	// first needs them: an ELF holds every operator's own instance too, which hwnpu never
+	// runs, and the device heap is 64 MiB on Linux 7.0.
+	for _, name := range in.PDIs() {
+		if p.pdis[name] != nil {
+			continue
+		}
+		img := p.file.PDIs[name]
+		buf, err := p.d.allocDev(len(img))
+		if err != nil {
+			return fail(fmt.Errorf("amd: PDI %s: %w", name, err))
+		}
+		p.pdis[name] = buf
+		copy(buf.mem, img)
+		if err := buf.SyncToDevice(0, len(img)); err != nil {
+			return fail(err)
+		}
+	}
 	if in.Scratchpad > 0 {
 		if r.scratch, err = p.d.allocDev(in.Scratchpad); err != nil {
 			return fail(fmt.Errorf("amd: ctrl scratchpad: %w", err))

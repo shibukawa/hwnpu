@@ -131,6 +131,8 @@ func roundPage(n int) int { return (n + 4095) &^ 4095 }
 
 func (b *buffer) Bytes() []byte { return b.mem }
 
+func (b *buffer) DeviceAddress() uint64 { return b.bo.DeviceAddr() }
+
 // The NPU is not cache coherent with the CPU. On x86 the CPU's cache lines are flushed in
 // user space (CLFLUSH, as XRT does), elsewhere through the driver (SYNC_BO); a flush writes
 // back and invalidates, so one serves both directions.

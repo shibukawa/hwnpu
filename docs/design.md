@@ -1555,3 +1555,14 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - `tools/amd/iron_export.py`: manifest に `carried` (carry の配置と名前の順、次の値の求め方) と `images` (重みを置いた引数の初期像 `arg_<種類>.bin`。状態は 0) を書く。`--check` は引き継ぐ値のあるグラフでは `graph.reference()` で呼び出しの列を作る (`check/calls.json`)
 - 実機: IRON の section-5 の Walk (64 要素の後続表を引く) をホストから 12 回呼び、次の値が全て参照と一致。1 回 0.18 ms
 - 残り: 1 つの ELF に複数のコマンドがある場合 (`Plan.commands`)。バッファのアドレスに依る語 (`recording.addresses`) は manifest に書けないのでエラーにしている。LLM のグラフで出てきたら対応する
+
+### 16.45 AMD: Gemma 4 E2B が hwnpu で動く (段階 A3) — 2026-11-03
+
+- `tools/amd/iron_export_lm.py`: IRON の `CausalLM` (今は Gemma 4) を、デコードの 1 ステップとプロンプトの塊 (2048 トークン) の 2 つの版にコンパイルし (IRON の `load_versions` と同じく 1 つの arena に置く)、ELF、arena の bank の初期像 (重みを置いたもの、3.5 GiB × 2 + 1.9 GiB)、manifest を書く。manifest には版ごとに、コマンド (プロンプトはスクラッチパッドが 32 語に収まらず 15 コマンド)、引数、コマンドごとのスクラッチパッドの語、引き継ぐ値 (token と position)、ロジットの出力、全バッファの配置、プロンプトの埋め込みの encoder を書く
+  - 語の形: Affine (16.43)、Linear (`ceil(v·比 + オフセット)`、比とオフセットは分数)、rows の表 (Gather と RowwiseMul / RMSNorm の行数)、MHA の派生値 (演算子の定数と、範囲 `valid` = rows、`kv_valid` = position + 1 の式から、`kv_blocks`、`s_q`、`q_start`、`q_offset` などを Go で計算)。IRON が計算した語を `check/words.json` に書き、`TestWordsMatchIRON` でデコード 5 通り、プロンプト 4 通りの呼び出しの全ての語が一致することを確かめた
+  - encoder: プロンプトのトークン ID を、埋め込みの表 (2 つ: 通常と per-layer) から行を引く DMA の制御語に変える (IRON の `Gather.control_words`: 雛形の語の位置に、表のデバイスアドレス + 0x80000000 + ID × 行のバイト数)。`hwnpu.Buffer.DeviceAddress()` を足した
+  - 版によっては同じ名前で別の重みを別の場所に持つ (プロンプトの版の w1 など 4 つ)。名前で重複を除かず、版ごとに全部書く
+- `internal/llm/iron`: 実行器。bank を `BO_SHARE` に確保して像を読み込み (9 GB、ページキャッシュから 2〜3 秒)、`Step(token, position)` と `Prompt(tokens, start)` がロジットを返す (ホストで標本を引く。デバイスが引いたトークンは使わない)。プロンプトの 15 コマンドは、Linux 7.0 のデバイスヒープ (npu4 でも 64 MiB 固定。512 MiB に広げられるのは DKMS 版だけ) に制御コード (合計 89 MiB) が載らないので、呼び出しのたびに run を作って閉じる。デコード (21 MiB) は常駐
+- **再配置の addend は符号なし**: arena の bank の 2 GiB を超える位置への addend (10615 個) を符号付きで読んでいたため、DMA が bank の手前を指し、デコードの 1 ステップが自分の重み (第 26 層の per-layer 埋め込みの表) に 1 MiB の NaN を書いていた
+- 結果 (Ryzen AI 9 365、実際の重み、greedy): 「日本の首都はどこですか？」に「日本の首都は東京です。」、Go の関数の作成、README (3505 トークン) の 3 点の要約、どれも筋の通った答え。デコード 5.5〜6.1 トークン/秒 (IRON の CI の Krackan で 5.6)。プロンプトは 25 トークンで 0.58 秒、3505 トークン (2 塊) で 19.5 秒 (180 トークン/秒) と、IRON の Llama 3.2 1B (1024 トークンで 0.47 秒) より遅い。要調査
+- 乱数の重みでの IRON の CPU 参照 (`OnHost`) との照合は、コサイン 0.55〜0.83 で一致しなかった。乱数の重みは値の尺度が整っておらず 35 層で丸めの差が増幅されるためと考えるが、未確認。実際の重みでの Hugging Face のロジットとの照合は、torch のない環境なので未実施
