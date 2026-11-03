@@ -1493,3 +1493,30 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 
 - 電力: upstream の 7.0 には `GET_INFO(QUERY_SENSORS)` の実装がない (DKMS 版だけ)。NPU 単体の電力は読めないので、測るなら RAPL (CPU パッケージ全体) など別の手段が要る
 - 残り: Phoenix / Hawk Point (`npu1`、ヒープ 64 MiB 固定) での確認。ELF 流れと UMQ。LLM に向けた次の段階は、GEMV のカーネル 1 本で速度を測ること (16.40)
+
+### 16.40 AMD: GEMV で NPU のデコードの速さと電力を測る — 2026-11-03
+
+LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が重みを読む速さで決まる。カーネルを自前で書く前に、NPU が DRAM から重みをどれだけ速く、どれだけの電力で読めるかを測った。
+
+- 設計: [amd/IRON](https://github.com/amd/IRON) (Apache-2.0。AMD の NPU 向けの演算子とモデルの集まり) の `iron.operators.GEMV`。mlir-aie の bf16 の `mv` カーネルを 8 列に並べたもの。IRON の固定した mlir-aie の nightly (1.4.5.dev119) で、`op.compile()` だけを呼んで xclbin と命令列を作った (実行には XRT を使わない)。スクリプトは `aie_utils.set_current_device(from_name("npu2", n_cols=8))` で装置を指定する
+- 実行: `tools/amd/gemvbench` (hwnpu の KernelRunner で `kernel(3, instr, ninstr, A, B, C)` を回し、CPU の float64 と照合)。どの形でも誤差は行の大きさの 2.4% 以内で、全行が合格
+- 電力: upstream のドライバには NPU のセンサーがないので、amdgpu の hwmon の `PPT` (APU のパッケージ全体、µW、root 不要) を 50 ms ごとに平均した
+
+| 形 (M×K、bf16) | 重み | 中央値 | 重みを読む速さ |
+|---|---|---|---|
+| 8192×2048 (FFN の上り) | 32 MiB | 0.686 ms | 48.9 GB/s |
+| 8192×2048、2 チャネル | 32 MiB | 0.676 ms | 49.6 GB/s |
+| 2048×8192 (FFN の下り) | 32 MiB | 0.687 ms | 48.8 GB/s |
+| 1536×12288 (Gemma 4 E2B の下り) | 36 MiB | 0.760 ms | 49.6 GB/s |
+| 6144×1536 | 18 MiB | 0.405 ms | 46.6 GB/s |
+| 2048×2048 | 8 MiB | 0.239 ms | 35.1 GB/s |
+
+- 天井は約 50 GB/s で、タイルの大きさやチャネル数ではほとんど変わらない。1 回の投入の固定費は約 0.07 ms (8 MiB で効率が落ちる分)
+- CPU との比較 (同じ機械、Go で 2 GiB を読むだけの合計): 1 スレッド 55 GB/s、8 スレッド 79 GB/s。NPU は CPU が読める最大の約 6 割
+- 電力 (8 秒回し続けたときのパッケージ全体、冷ましてから測ったアイドル 4.7 W): NPU の GEMV は 12.3 W で、32 MiB の 1 回あたり 3〜5 mJ。CPU は読むだけで 18〜28 W、32 MiB あたり 7〜12 mJ (計算を含めればさらに増える)。待つ間 hwnpu はスレッドを眠らせる (syncobj の待ち) ので CPU は空く
+- 見積もり: 4 ビットの重み (q4nx。0.56 バイト/パラメータ前後) なら、LFM3-1.7B は 1 トークン約 1 GB で 50 GB/s なら 40 トークン/秒前後が上限。bf16 なら約 14 トークン/秒
+
+**設計 (演算ごとに xclbin) の切り替え費用** (`tools/amd/ctxbench`): 3 つの GEMV の xclbin を同時に読み込み (ハードウェアコンテキストが 3 つ)、交互に投入すると、単独の合計 1.571 ms に対して 2.960 ms。**切り替え 1 回で約 0.46 ms**。まとめて投入しても縮まない (3.16 ms)。演算が 1 トークンに 100 個あるモデルを演算ごとの xclbin で回すと、切り替えだけで 46 ms になる
+
+- 結論: デコードを NPU に任せる価値はある (CPU の 6 割の速さを、半分以下の電力で、CPU を空けたまま)。ただし演算ごとに xclbin を切り替える方式は使えない。IRON が NPU2 で使う「full ELF」(グラフ全体を 1 つのハードウェアコンテキスト、1 つのコマンドで流す) に対応する必要がある
+- full ELF の投入: XRT は xclbin なしで ELF からハードウェアコンテキストを作り (`xrt::hw_context(device, elf)`)、コマンドは `ERT_START_NPU_PREEMPT_ELF`。Linux 7.0 は `force_cmdlist` (既定 true) の経路で `EXEC_NPU_TYPE_ELF` のスロットを作る。ファームウェアの機能表 (npu4) では、メールボックスのプロトコルの主版 7 で `AIE2_NPU_COMMAND` と `AIE2_PREEMPT` が有効になる。この機械のファームウェアは `npu_7.sbin` (1.1.2.64) なので使える
