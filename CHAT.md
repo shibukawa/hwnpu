@@ -4,6 +4,8 @@
 
 Run LFM3-1.7B and PLaMo-Embedding-1B on the Apple Neural Engine alone, and use them in the terminal or as an OpenAI compatible API from clients such as OpenCode. No Python is needed.
 
+The same commands run on Intel's NPU (Core Ultra), where the models are converted to OpenVINO IR and compiled by the NPU driver; this is not yet tried on the hardware. See [INSTALL_INTEL.md](INSTALL_INTEL.md) section 6.
+
 `-use` picks the models by name, and `-list` shows the names and what each model is for:
 
 ```bash
