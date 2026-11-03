@@ -99,12 +99,12 @@ Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.el
 IRON (amd/IRON) を開発者の機械でコンパイラとして一度だけ使い、`tools/amd/iron_export_lm.py` で書き出したものを hwnpu が Go だけで動かします (利用者の機械に Python も XRT も要りません)。
 
 ```bash
-python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.amd-npu2 --max-seq-len 4096
+python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.amd-npu2 --max-seq-len 4096 --prefill-chunk 1024
 go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.amd-npu2
 go run ./cmd/hwnpu-agent -iron ~/models/gemma-4-E2B-it.amd-npu2 "README.md を要約して"
 ```
 
-Ryzen AI 9 365 で、デコードは 1 秒に 5.5〜6 トークン、プロンプトは 1 秒に 250 トークン前後です (bf16 の重み)。仕組みと制約は [docs/amd-npu-models.md](docs/amd-npu-models.md) にあります。
+Ryzen AI 9 365 で、デコードは 1 秒に 5.5〜6 トークン、プロンプトは 1 秒に 260 トークン前後です (bf16 の重み)。プロンプトの塊は 1024 トークンが速く (IRON の既定の 2048 より 2 割)、4096 トークンの文脈でもスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。仕組みと制約は [docs/amd-npu-models.md](docs/amd-npu-models.md) にあります。
 
 ## Apple での注意
 

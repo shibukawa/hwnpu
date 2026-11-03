@@ -90,6 +90,7 @@ func main() {
 	prompt := flag.String("prompt", "", "generate greedily after this user message (Gemma 4's chat format)")
 	tokPath := flag.String("tokenizer", "", "tokenizer.json for -prompt")
 	maxTokens := flag.Int("max", 200, "tokens to generate for -prompt")
+	bench := flag.Bool("bench", false, "time a decode step against prompt calls of a few tokens (what checking drafts costs)")
 	flag.Parse()
 	dir := flag.Arg(0)
 	ctx := context.Background()
@@ -105,6 +106,10 @@ func main() {
 	}
 	defer m.Close()
 	log.Printf("loaded in %.1f s", time.Since(t0).Seconds())
+	if *bench {
+		benchCalls(ctx, m)
+		return
+	}
 	if *prompt != "" {
 		generate(ctx, m, *prompt, *tokPath, *maxTokens)
 		return
@@ -271,4 +276,37 @@ func generate(ctx context.Context, m *iron.Model, text, tokPath string, maxToken
 	}
 	fmt.Printf("\n\n%d prompt tokens in %.2f s (%.0f tokens/s); %d tokens in %.2f s (%.1f tokens/s)\n",
 		len(ids), ttft.Seconds(), float64(len(ids))/ttft.Seconds(), len(out), el, float64(len(out))/el)
+}
+
+// benchCalls times the decode step and prompt calls of k tokens at the same position, after a
+// prompt of 500 tokens: a call checking k-1 drafts costs what a prompt call of k costs.
+func benchCalls(ctx context.Context, m *iron.Model) {
+	toks := make([]int32, 600)
+	for i := range toks {
+		toks[i] = int32(1000 + i)
+	}
+	if _, err := m.Prompt(ctx, toks[:500], 0); err != nil {
+		log.Fatal(err)
+	}
+	median := func(f func() error) float64 {
+		var ts []float64
+		for i := 0; i < 9; i++ {
+			t := time.Now()
+			if err := f(); err != nil {
+				log.Fatal(err)
+			}
+			ts = append(ts, time.Since(t).Seconds()*1000)
+		}
+		sort.Float64s(ts)
+		return ts[len(ts)/2]
+	}
+	step := median(func() error { _, err := m.Step(ctx, toks[500], 500); return err })
+	fmt.Printf("decode step: %.1f ms\n", step)
+	for _, k := range []int{2, 4, 8, m.Manifest.Config.PrefillChunk} {
+		if k > m.Manifest.Config.PrefillChunk || k > 64 {
+			continue
+		}
+		ms := median(func() error { _, err := m.Prompt(ctx, toks[500:500+k], 500); return err })
+		fmt.Printf("prompt call of %d tokens: %.1f ms (%.2f decode steps)\n", k, ms, ms/step)
+	}
 }

@@ -307,6 +307,9 @@ def export(model, versions, out: Path) -> dict:
             prefill_chunk=int(c.prefill_chunk), num_hidden_layers=int(c.num_hidden_layers),
         ),
         rope_start="start",
+        # Whether the state restarts anywhere: no ring caches, no recurrent layers
+        # (CausalLM.recurrent). Only then is a position all a sequence needs to go back.
+        restartable=not model.recurrent,
         banks={k: dict(bytes=int(n), image=images.get(k)) for k, n in banks.items()},
         versions=vm,
     )
@@ -347,6 +350,7 @@ def main(argv=None) -> int:
     ap.add_argument("checkpoint", help="the Hugging Face directory (config.json, weights, tokenizer)")
     ap.add_argument("out", type=Path)
     ap.add_argument("--max-seq-len", type=int, default=4096)
+    ap.add_argument("--prefill-chunk", type=int, default=None, help="tokens of a prompt chunk (IRON's default 2048)")
     ap.add_argument("--random-weights", type=int, default=None, help="weights drawn at this seed")
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)
@@ -359,6 +363,15 @@ def main(argv=None) -> int:
 
     module, cls = MODELS[a.model]
     Model = getattr(importlib.import_module(module), cls)
+    if a.prefill_chunk:
+        import dataclasses
+
+        base = Model.default_config.__func__
+
+        def default_config(cls, weights, _base=base, _chunk=a.prefill_chunk):
+            return dataclasses.replace(_base(cls, weights), prefill_chunk=_chunk)
+
+        Model.default_config = classmethod(default_config)
     if a.check_only:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
         return 0

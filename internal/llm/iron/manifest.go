@@ -24,9 +24,13 @@ type Manifest struct {
 		PrefillChunk    int `json:"prefill_chunk"`
 		NumHiddenLayers int `json:"num_hidden_layers"`
 	} `json:"config"`
-	RopeStart string              `json:"rope_start"` // "start": a chunk's RoPE row is its start
-	Banks     map[string]Bank     `json:"banks"`
-	Versions  map[string]*Version `json:"versions"`
+	RopeStart string `json:"rope_start"` // "start": a chunk's RoPE row is its start
+	// Restartable says the state is the KV caches written by position (no rings, no recurrent
+	// layers): a sequence goes back by its position, and its rows are all of it. Exports
+	// without it (older ones) are taken as not restartable.
+	Restartable bool                `json:"restartable"`
+	Banks       map[string]Bank     `json:"banks"`
+	Versions    map[string]*Version `json:"versions"`
 }
 
 // Bank is one arena bank: a buffer every version shares, holding weights and states.

@@ -147,6 +147,11 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		dev.Close()
 		return nil, err
 	}
+	if !m.Manifest.Restartable {
+		m.Close()
+		dev.Close()
+		return nil, fmt.Errorf("chat: %s has ring caches or recurrent layers, which the chat engine cannot go back in yet; export it with a prompt chunk that keeps every cache whole (a chunk of 1024 or more for Gemma 4 at 4096 tokens)", c.IRON)
+	}
 	e := &Engine{Stops: map[int32]bool{}, emb: map[int32][]float32{}, nextID: -1, log: c.Log, dev: dev, ir: m}
 	e.Name = name
 	fail := func(err error) (*Engine, error) {
