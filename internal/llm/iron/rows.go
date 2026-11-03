@@ -28,8 +28,13 @@ func (m *Model) caches() ([]kvCache, error) {
 		if p.Bytes%L != 0 {
 			return nil, fmt.Errorf("iron: cache %s of %d bytes is no whole rows of %d positions", name, p.Bytes, L)
 		}
-		if q, ok := m.prompt.m.Buffers[name]; !ok || q != p {
-			return nil, fmt.Errorf("iron: cache %s is placed differently by the prompt chunk", name)
+		for _, v := range []*version{m.prompt, m.placed} {
+			if v == nil {
+				continue
+			}
+			if q, ok := v.m.Buffers[name]; !ok || q != p {
+				return nil, fmt.Errorf("iron: cache %s is placed differently by a prompt chunk", name)
+			}
 		}
 		out = append(out, kvCache{name, p, p.Bytes / L})
 	}

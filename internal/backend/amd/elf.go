@@ -42,6 +42,17 @@ func (d *device) loadELF(data []byte) (backend.Program, error) {
 		p.Close()
 		return nil, err
 	}
+	// The PDIs of the image's own instances ("main", mlir-aie's composed device) are loaded now,
+	// so that they sit together at the start of the device heap: loaded when a run first needs
+	// them, they fell between control code buffers and split the 64 MiB heap until a 40 MiB
+	// control code no longer fit. The operators' own instances, never run, load lazily.
+	for _, in := range f.Instances {
+		if in.Kernel == "main" {
+			if err := p.loadPDIs(in); err != nil {
+				return fail(err)
+			}
+		}
+	}
 	qos := xdna.QoSInfo{Priority: qosPriority(d.opts.Power)}
 	p.hwctx, p.syncobj, err = d.dev.CreateHwctx(qos, 0, uint32(f.Columns)*uint32(d.meta.Core.RowCount))
 	if err != nil {
@@ -55,6 +66,27 @@ func (d *device) loadELF(data []byte) (backend.Program, error) {
 		p.infos = append(p.infos, info)
 	}
 	return p, nil
+}
+
+// loadPDIs loads the PDIs an instance's control code names, once per program (XRT 2.21 caches
+// them per module).
+func (p *elfProgram) loadPDIs(in *aieelf.Instance) error {
+	for _, name := range in.PDIs() {
+		if p.pdis[name] != nil {
+			continue
+		}
+		img := p.file.PDIs[name]
+		buf, err := p.d.allocDev(len(img))
+		if err != nil {
+			return fmt.Errorf("amd: PDI %s: %w", name, err)
+		}
+		p.pdis[name] = buf
+		copy(buf.mem, img)
+		if err := buf.SyncToDevice(0, len(img)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *elfProgram) Kernels() []types.KernelInfo { return p.infos }
@@ -99,23 +131,8 @@ func (p *elfProgram) NewRun(name string) (backend.Run, error) {
 		return fail(fmt.Errorf("amd: control code buffer: %w", err))
 	}
 	copy(r.instr.mem, in.Ctrl)
-	// The PDIs are shared by every run (XRT 2.21 caches them per module), loaded when a run
-	// first needs them: an ELF holds every operator's own instance too, which hwnpu never
-	// runs, and the device heap is 64 MiB on Linux 7.0.
-	for _, name := range in.PDIs() {
-		if p.pdis[name] != nil {
-			continue
-		}
-		img := p.file.PDIs[name]
-		buf, err := p.d.allocDev(len(img))
-		if err != nil {
-			return fail(fmt.Errorf("amd: PDI %s: %w", name, err))
-		}
-		p.pdis[name] = buf
-		copy(buf.mem, img)
-		if err := buf.SyncToDevice(0, len(img)); err != nil {
-			return fail(err)
-		}
+	if err := p.loadPDIs(in); err != nil {
+		return fail(err)
 	}
 	if in.Scratchpad > 0 {
 		if r.scratch, err = p.d.allocDev(in.Scratchpad); err != nil {

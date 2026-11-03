@@ -22,6 +22,10 @@ import (
 type ironSession struct {
 	m   *iron.Model
 	pos int
+	// media finds the image or clip of a negative id (Engine.media); placed is the first id of
+	// the media whose soft tokens each tower last left on the device, by placeholder token.
+	media  func(t int32) (*encoded, int, bool)
+	placed map[int32]int32
 }
 
 var _ session = (*ironSession)(nil)
@@ -98,10 +102,14 @@ func (s *ironSession) Speculate([][]float32, func(func(int) []float32) int) ([]f
 	return nil, 0, errors.New("chat: an IRON model checks no drafts")
 }
 
-// StepTokens runs one token on the decode step, more on the prompt chunk.
+// StepTokens runs one token on the decode step, more on the prompt chunk; a piece holding an
+// image's or a clip's soft tokens (negative ids) runs on the placed prompt chunk.
 func (s *ironSession) StepTokens(toks []int32) ([]float32, error) {
 	if s.pos+len(toks) > s.Cache() {
 		return nil, fmt.Errorf("%w: %d tokens past %d, the cache holds %d", ErrContext, len(toks), s.pos, s.Cache())
+	}
+	if slices.ContainsFunc(toks, func(t int32) bool { return t < 0 }) {
+		return s.stepMedia(toks)
 	}
 	var logits []float32
 	var err error
@@ -114,6 +122,92 @@ func (s *ironSession) StepTokens(toks []int32) ([]float32, error) {
 		return nil, err
 	}
 	s.pos += len(toks)
+	return logits, nil
+}
+
+// stepMedia runs tokens holding soft tokens, in pieces of at most one image and one clip: each
+// tower leaves one media's soft tokens on the device at a time, and a placed chunk reads the
+// run of each from before, its place in the media's run (IRON's Merge).
+func (s *ironSession) stepMedia(toks []int32) ([]float32, error) {
+	mm := s.m.Manifest.Multimodal
+	if mm == nil || s.media == nil {
+		return nil, fmt.Errorf("%w: this model reads no images", ErrImage)
+	}
+	var logits []float32
+	for len(toks) > 0 {
+		// the piece: up to a second image or a second clip
+		var cur [2]*encoded // image, clip
+		var from [2]int
+		n := 0
+		for n < len(toks) {
+			t := toks[n]
+			if t < 0 {
+				im, r, ok := s.media(t)
+				if !ok {
+					return nil, fmt.Errorf("%w: an image of the prompt is no longer kept; send the request again", ErrImage)
+				}
+				k := 0
+				if im.audio {
+					k = 1
+				}
+				if cur[k] == nil {
+					cur[k], from[k] = im, r
+				} else if cur[k] != im {
+					break
+				}
+			}
+			n++
+		}
+		ids := make([]int32, n)
+		for i, t := range toks[:n] {
+			ids[i] = t
+			if t < 0 {
+				if im, _, _ := s.media(t); im.audio {
+					ids[i] = mm.AudioToken
+				} else {
+					ids[i] = mm.ImageToken
+				}
+			}
+		}
+		for k, im := range cur {
+			if im == nil {
+				continue
+			}
+			token := mm.ImageToken
+			if im.audio {
+				token = mm.AudioToken
+			}
+			if s.placed[token] == im.first {
+				continue
+			}
+			var err error
+			if im.audio {
+				_, err = s.m.RunAudio(context.Background(), im.clip)
+			} else {
+				_, err = s.m.RunVision(context.Background(), im.img)
+			}
+			if err != nil {
+				return nil, err
+			}
+			s.placed[token] = im.first
+			_ = k
+		}
+		before := make([]int32, len(mm.Placeholders))
+		for i, p := range mm.Placeholders {
+			switch {
+			case p == mm.ImageToken && cur[0] != nil:
+				before[i] = int32(from[0])
+			case p == mm.AudioToken && cur[1] != nil:
+				before[i] = int32(from[1])
+			}
+		}
+		var err error
+		if logits, err = s.m.PromptPlaced(context.Background(), ids, s.pos, before); err != nil {
+			return nil, err
+		}
+		s.pos += n
+		toks = toks[n:]
+	}
 	return logits, nil
 }
 
@@ -177,7 +271,7 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 			e.Stops[id] = true
 		}
 	}
-	e.sess = &ironSession{m: m}
+	e.sess = &ironSession{m: m, media: e.media, placed: map[int32]int32{}}
 	if c.PromptDir != "" {
 		var sizes []int64
 		for _, b := range m.Manifest.Banks {
@@ -194,4 +288,12 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	}
 	logf("ready: context %d tokens, up to %d tokens per call", e.Context(), e.sess.Q())
 	return e, nil
+}
+
+// irMultimodal is the multimodal settings of an IRON model with towers, or nil.
+func (e *Engine) irMultimodal() *iron.Multimodal {
+	if e.ir == nil || !(e.ir.HasVision() || e.ir.HasAudio()) {
+		return nil
+	}
+	return e.ir.Manifest.Multimodal
 }

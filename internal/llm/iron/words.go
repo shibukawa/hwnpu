@@ -213,6 +213,7 @@ type Param struct {
 	Linear  *Linear  `json:"linear"`
 	Table   *Table   `json:"table"`
 	Derived *Derived `json:"derived"`
+	Grid    bool     `json:"grid"` // looked up in the version's Grid
 }
 
 // Eval computes the word's value (before the kind's shift).
@@ -234,9 +235,27 @@ func (p *Param) Eval(values map[string]int64) (int64, error) {
 // 2 (the firmware drops the low bits), a repeat count by 16, an address as it is
 // (mlir-aie's ParameterScratchpad).
 func writeWords(sp []byte, params []Param, values map[string]int64) error {
+	return writeGridWords(sp, params, values, nil, -1)
+}
+
+// writeGridWords is writeWords with the words of a grid at index row.
+func writeGridWords(sp []byte, params []Param, values map[string]int64, g *Grid, row int) error {
 	for i := range params {
 		p := &params[i]
-		v, err := p.Eval(values)
+		var v int64
+		var err error
+		if p.Grid {
+			var col []int64
+			if g != nil {
+				col = g.Values[p.Name]
+			}
+			if row < 0 || row >= len(col) {
+				return fmt.Errorf("iron: parameter %s is in no grid row %d", p.Name, row)
+			}
+			v = col[row]
+		} else {
+			v, err = p.Eval(values)
+		}
 		if err != nil {
 			return fmt.Errorf("%s: %w", p.Name, err)
 		}

@@ -77,9 +77,11 @@ func (c *Content) UnmarshalJSON(b []byte) error {
 		case p.Type == "image_url" && p.ImageURL != nil:
 			c.Media = append(c.Media, Media{Data: p.ImageURL.URL})
 			c.Text += MediaMarker
+			c.parts = append(c.parts, MediaMarker) // in order, for templates that render parts (Gemma 4's)
 		case p.Type == "input_audio" && p.InputAudio != nil:
 			c.Media = append(c.Media, Media{Audio: true, Data: p.InputAudio.Data})
 			c.Text += MediaMarker
+			c.parts = append(c.parts, MediaMarker)
 		}
 	}
 	return nil

@@ -95,8 +95,6 @@ def _carried(compiled):
     rec = compiled.recording
     if not rec.carry:
         return None
-    if rec.addresses:
-        raise SystemExit("words computed from buffer addresses are not supported yet")
     emit = compiled.emit
     names = list(emit.carried) if emit is not None else []
     nxt = {}

@@ -31,6 +31,58 @@ type Manifest struct {
 	Restartable bool                `json:"restartable"`
 	Banks       map[string]Bank     `json:"banks"`
 	Versions    map[string]*Version `json:"versions"`
+	// Multimodal describes the towers of a model with them (Gemma4Multimodal), or nil.
+	Multimodal *Multimodal `json:"multimodal"`
+}
+
+// Multimodal is what the host needs to run a model's towers: the tokens around and in an
+// image's or a clip's run of soft tokens, and the towers' shapes.
+type Multimodal struct {
+	ImageToken   int32   `json:"image_token_id"`
+	AudioToken   int32   `json:"audio_token_id"`
+	BOI          int32   `json:"boi_token_id"`
+	EOI          int32   `json:"eoi_token_id"`
+	BOA          int32   `json:"boa_token_id"`
+	EOA          int32   `json:"eoa_token_id"`
+	Placeholders []int32 `json:"placeholders"` // the order of the placed chunk's before
+	Vision       struct {
+		PoolingKernelSize int     `json:"pooling_kernel_size"`
+		PatchSize         int     `json:"patch_size"`
+		ImageTokens       int     `json:"image_tokens"` // the soft tokens an image may give
+		Patches           int     `json:"patches"`
+		Largest           [2]int  `json:"largest"`
+		Chunk             int     `json:"chunk"`
+		ImageChunks       int     `json:"image_chunks"`
+		Groups            [][]int `json:"groups"`
+	} `json:"vision"`
+	Audio struct {
+		SampleRate int `json:"sample_rate"`
+		Frame      int `json:"frame"`
+		Hop        int `json:"hop"`
+		MaxSamples int `json:"max_samples"`
+		MaxTokens  int `json:"max_tokens"`
+	} `json:"audio"`
+	TowerValues map[string][]string `json:"tower_values"`
+}
+
+// Address is a per-call value computed from a buffer's device address: the low or the high
+// bits of a gather table's address (IRON's GatherWords.address_words).
+type Address struct {
+	Name     string `json:"name"`
+	Buffer   string `json:"buffer"`
+	Argument string `json:"argument"`
+	Offset   int    `json:"offset"`
+	LowBits  uint   `json:"low_bits"`
+	Member   string `json:"member"` // base_lo or base_hi
+}
+
+// Grid holds a tower's words for every call it can make: the vision tower's by the image's
+// blocks (Pairs, hk by wk), the audio tower's by the clip's valid frames (Frames).
+type Grid struct {
+	Side   int                `json:"side"`
+	Pairs  [][2]int           `json:"pairs"`
+	Frames []int              `json:"frames"`
+	Values map[string][]int64 `json:"values"`
 }
 
 // Bank is one arena bank: a buffer every version shares, holding weights and states.
@@ -50,6 +102,8 @@ type Version struct {
 	Outputs   []Handle             `json:"outputs"`
 	Inputs    []Handle             `json:"inputs"`
 	Encoders  []Encoder            `json:"encoders"`
+	Addresses []Address            `json:"addresses"`
+	Grid      *Grid                `json:"grid"`
 	Plan      string               `json:"plan"`
 }
 

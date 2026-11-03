@@ -37,6 +37,8 @@ MANIFEST_VERSION = 1
 
 MODELS = {
     "gemma4": ("iron.applications.gemma4.model", "Gemma4"),
+    # Gemma 4 with its vision and audio towers (one image and one clip a prompt).
+    "gemma4mm": ("iron.applications.gemma4.model", "Gemma4Multimodal"),
 }
 
 
@@ -135,6 +137,56 @@ def _derived_entry(w, derived: dict, version: str) -> dict:
 _CONFIG = {}
 
 
+_TOWER = {}
+
+
+def _vision_grid(compiled) -> dict:
+    """Every scratchpad word of the vision tower for each image size it can run at, as hwnpu
+    feeds it: the image resized on the host to the processor's size (out_height by
+    out_width, hk by wk blocks of pool * patch pixels, hk * wk soft tokens at most the
+    budget), so the tower's own resampling is 1:1. Keyed by (hk, wk)."""
+    tower, c = _TOWER["vision"], _TOWER["vision"].config
+    side = c.pooling_kernel_size * c.patch_size
+    addr = set(compiled.recording.addresses)
+    # Words of a buffer's address are computed at run time from their forms.
+    gridded = [w for w in compiled.words if not (w.form is not None and w.form.value.name in addr)]
+    pairs, values = [], {w.symbol: [] for w in gridded}
+    zero = {x.name: 0 for x in compiled.recording.values}
+    name = _TOWER["vision_input"]
+    for hk in range(1, c.image_tokens + 1):
+        for wk in range(1, c.image_tokens // hk + 1):
+            oh, ow = hk * side, wk * side
+            v = dict(zero)
+            own = dict(n=oh // c.patch_size * (ow // c.patch_size), hk=hk, wk=wk, walked=tower.walked(hk, wk),
+                       height=oh, width=ow, out_height=oh, out_width=ow)
+            v.update({f"{name}_{k}": x for k, x in own.items()})
+            pairs.append([hk, wk])
+            for w in gridded:
+                values[w.symbol].append(int(w(v)))
+    return dict(side=side, pairs=pairs, values=values)
+
+
+def _audio_grid(compiled) -> dict:
+    """Every scratchpad word of the audio tower for each count of valid feature frames, which
+    the clip's length decides and n and tokens follow from. Keyed by frames."""
+    tower, c = _TOWER["audio"], _TOWER["audio"].config
+    addr = set(compiled.recording.addresses)
+    gridded = [w for w in compiled.words if not (w.form is not None and w.form.value.name in addr)]
+    keys, values = [], {w.symbol: [] for w in gridded}
+    zero = {x.name: 0 for x in compiled.recording.values}
+    name = _TOWER["audio_input"]
+    for frames in range(1, 4 * c.max_tokens + 1):
+        tokens = c.tokens(frames)
+        if tokens > c.max_tokens:
+            break
+        v = dict(zero)
+        v.update({f"{name}_n": -(-frames // 2), f"{name}_frames": frames, f"{name}_tokens": tokens})
+        keys.append(frames)
+        for w in gridded:
+            values[w.symbol].append(int(w(v)))
+    return dict(frames=keys, values=values)
+
+
 def version_manifest(compiled, elf_name: str) -> dict:
     from iron.common.image.callable import FullELFCallable
     from iron.common.image.compose import Composition
@@ -144,22 +196,38 @@ def version_manifest(compiled, elf_name: str) -> dict:
     if not art.full_elf:
         raise SystemExit("the version was packaged as an xclbin per step; hwnpu runs full ELFs only")
     rec, seq = compiled.recording, compiled.sequence
-    if rec.addresses:
-        raise SystemExit("words computed from buffer addresses are not supported yet")
+    from iron.common.image.step import BufferRef
+
+    # Per-call values computed from a buffer's device address (a gather of rows the graph
+    # computed, not an input): base_lo and base_hi of the table's address.
+    addresses = []
+    for name, (buffer, address_words, member) in rec.addresses.items():
+        op = getattr(address_words, "__self__", None)
+        if op is None or not hasattr(op, "low_bits") or member not in ("base_lo", "base_hi"):
+            raise SystemExit(f"address value {name}: {address_words} {member} is not known")
+        kind, offset, length = _place(seq, BufferRef(buffer))
+        addresses.append(dict(name=name, buffer=buffer, argument=kind, offset=offset, low_bits=int(op.low_bits), member=member))
     commands = [
         f"{FullELFCallable.device_name}:{Composition.sequence_name(k)}"
         for k in range(len(seq.packaging.commands) + 1)
     ]
     words = {w.symbol: w for w in compiled.words}
     derived = _derived(compiled)
-    version = "prompt" if compiled.recording.inputs else "decode"
+    missing = []
+    inputs = {h.name for h in compiled.recording.inputs}
+    grid = (_vision_grid(compiled) if _TOWER.get("vision_input") in inputs
+            else _audio_grid(compiled) if _TOWER.get("audio_input") in inputs else None)
+    names = {h.name for h in compiled.recording.inputs}
+    version = "prompt" if names & {"ids", "placed"} else "tower" if names else "decode"
     table = {}
     for p in art.parameter_table:
         w = words.get(p.name)
         if w is None:
             raise SystemExit(f"parameter {p.name} is no word of the version")
         entry = dict(name=p.name, index=int(p.index), dtype=p.dtype, kind=p.kind)
-        if w.form is not None:
+        if grid is not None and p.name in grid["values"]:
+            entry["grid"] = True  # looked up in the version's grid
+        elif w.form is not None:
             entry["form"] = _form(w.form)
         elif w.linear is not None:
             # ceil(v * ratio + offset), both fractions
@@ -167,8 +235,15 @@ def version_manifest(compiled, elf_name: str) -> dict:
             entry["linear"] = dict(value=lin.value, num=lin.ratio.numerator, den=lin.ratio.denominator,
                                    off_num=lin.offset.numerator, off_den=lin.offset.denominator)
         else:
-            entry.update(_derived_entry(w, derived, version))
+            try:
+                entry.update(_derived_entry(w, derived, version))
+            except SystemExit as e:
+                op, dname, counts = derived[w.symbol]
+                missing.append(f"{type(op).__name__}.{dname} from {sorted(counts)}: {e}")
+                continue
         table[p.name] = entry
+    if missing:
+        raise SystemExit("words without a form:\n  " + "\n  ".join(sorted(set(missing))))
     members = _params_by_command(art.params)
     kernels = []
     for name in commands:
@@ -198,6 +273,8 @@ def version_manifest(compiled, elf_name: str) -> dict:
         outputs=outputs,
         inputs=inputs,
         encoders=_encoders(compiled),
+        addresses=addresses,
+        grid=grid,
         plan=compiled.plan.report(rec.name),
     )
 
@@ -209,11 +286,16 @@ def compile_versions(model):
     dev = aie_utils.get_current_device() if hasattr(aie_utils, "get_current_device") else None
     versions, decode = {}, None
     for shapes in model.shapes():
-        prompt = "ids" in shapes
+        prompt = "ids" in shapes or "placed" in shapes
         v = model.compile(dev=dev, feeds=decode if prompt else None, full_elf=None, **shapes)
         if not shapes:
             decode = v
-        versions["prompt" if prompt else "decode"] = v
+        name = ("placed" if "placed" in shapes else "prompt" if "ids" in shapes
+                else "vision" if "rgb" in shapes else "audio" if "wave" in shapes
+                else "decode" if not shapes else None)
+        if name is None or name in versions:
+            raise SystemExit(f"a version on {sorted(shapes)} is not known")
+        versions[name] = v
     return versions
 
 
@@ -261,9 +343,12 @@ def write_words(versions, man: dict, out: Path) -> None:
     }
     res = {}
     for name, v in versions.items():
+        if name not in calls:
+            continue
         words = {w.symbol: w for w in v.words}
         res[name] = []
         for values in calls[name]:
+            values = {x.name: 0 for x in v.recording.values} | values  # towers idle
             per_cmd = []
             for k in man["versions"][name]["kernels"]:
                 slots = {}
@@ -279,7 +364,7 @@ def write_words(versions, man: dict, out: Path) -> None:
 
 def export(model, versions, out: Path) -> dict:
     out.mkdir(parents=True, exist_ok=True)
-    c = model.config
+    c = model.text.config if hasattr(model, "towers") else model.config
     vm = {}
     for name, v in versions.items():
         shutil.copyfile(v.artifacts.image, out / f"{name}.elf")
@@ -297,11 +382,37 @@ def export(model, versions, out: Path) -> dict:
                 banks[a["kind"]] = max(banks.get(a["kind"], 0), a["bytes"])
     images = write_banks(versions, banks, out)
     for n in range(1, 3 * c.prefill_chunk, max(1, c.prefill_chunk // 3)):
-        if model.rope_row(n, 0) != 0:
+        if (model.text if hasattr(model, "towers") else model).rope_row(n, 0) != 0:
             raise SystemExit("rope_row is not the chunk's start: not supported yet")
+    mm = None
+    if hasattr(model, "towers"):
+        mc = model.config
+        v, au = mc.vision, mc.audio
+        text = model.text
+        mm = dict(
+            image_token_id=int(mc.image_token_id), audio_token_id=int(mc.audio_token_id),
+            boi_token_id=int(mc.boi_token_id), eoi_token_id=int(mc.eoi_token_id),
+            boa_token_id=int(mc.boa_token_id), eoa_token_id=int(mc.eoa_token_id),
+            placeholders=[int(t) for t in model.at],  # the order of the placed version's before
+            vision=dict(
+                pooling_kernel_size=int(v.pooling_kernel_size), patch_size=int(v.patch_size),
+                image_tokens=int(v.image_tokens), patches=int(v.patches), largest=[int(x) for x in v.largest],
+                chunk=int(v.chunk),
+                image_chunks=int(model.towers[mc.image_token_id].processor.resample.image_chunks),
+                groups=[[int(g[0]), int(g[1])] for g in model.towers[mc.image_token_id].groups],
+            ),
+            audio=dict(sample_rate=int(au.sample_rate), frame=int(au.frame), hop=int(au.hop),
+                       max_samples=int(au.max_samples), max_tokens=int(au.max_tokens)),
+            tower_values={str(t): [f"{model.tower_inputs[t]}_{x}" for x in model.tower_values[t]] for t in model.towers},
+        )
+        c = text.config
+        model_name, rope_model, recurrent = type(text).__name__, text, text.recurrent
+    else:
+        model_name, rope_model, recurrent = type(model).__name__, model, model.recurrent
     m = dict(
         version=MANIFEST_VERSION,
-        model=type(model).__name__,
+        model=model_name,
+        multimodal=mm,
         config=dict(
             vocab_size=int(c.vocab_size), hidden_size=int(c.hidden_size), max_seq_len=int(c.max_seq_len),
             prefill_chunk=int(c.prefill_chunk), num_hidden_layers=int(c.num_hidden_layers),
@@ -309,7 +420,7 @@ def export(model, versions, out: Path) -> dict:
         rope_start="start",
         # Whether the state restarts anywhere: no ring caches, no recurrent layers
         # (CausalLM.recurrent). Only then is a position all a sequence needs to go back.
-        restartable=not model.recurrent,
+        restartable=not recurrent,
         banks={k: dict(bytes=int(n), image=images.get(k)) for k, n in banks.items()},
         versions=vm,
     )
@@ -376,7 +487,12 @@ def main(argv=None) -> int:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
         return 0
     model = Model.from_checkpoint(a.checkpoint, random_weights=a.random_weights, max_seq_len=a.max_seq_len)
-    c = model.config
+    if hasattr(model, "towers"):
+        it = model.config.image_token_id
+        at = model.config.audio_token_id
+        _TOWER.update(vision=model.towers[it], vision_input=model.tower_inputs[it],
+                      audio=model.towers[at], audio_input=model.tower_inputs[at])
+    c = model.text.config if hasattr(model, "towers") else model.config
     _CONFIG.update(max_seq_len=int(c.max_seq_len), prefill_chunk=int(c.prefill_chunk), vocab_size=int(c.vocab_size))
     versions = compile_versions(model)
     m = export(model, versions, a.out)

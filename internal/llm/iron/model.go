@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -24,6 +25,9 @@ type Model struct {
 	banks    map[string]*hwnpu.Buffer
 	decode   *version
 	prompt   *version
+	placed   *version  // a prompt chunk with the towers' soft tokens at their placeholders
+	vision   *version  // the vision tower, or nil
+	audio    *version  // the audio tower, or nil
 	kv       []kvCache // caches, found once
 }
 
@@ -92,12 +96,15 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 			if len(v.Kernels) != 1 {
 				return fail(fmt.Errorf("iron: the decode step has %d commands", len(v.Kernels)))
 			}
-			if ver.run, err = m.newRun(ver, 0); err != nil {
-				return fail(err)
-			}
-			m.decode = ver
+			m.decode = ver // its run is made once every program's PDIs are in the heap
 		case "prompt":
 			m.prompt = ver
+		case "placed":
+			m.placed = ver
+		case "vision":
+			m.vision = ver
+		case "audio":
+			m.audio = ver
 		default:
 			return fail(fmt.Errorf("iron: unknown version %s", name))
 		}
@@ -107,6 +114,9 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 		return fail(errors.New("iron: the export needs a decode step and a prompt chunk"))
 	}
 	if _, err := m.caches(); err != nil {
+		return fail(err)
+	}
+	if m.decode.run, err = m.newRun(m.decode, 0); err != nil {
 		return fail(err)
 	}
 	return m, nil
@@ -127,7 +137,7 @@ func readInto(path string, dst []byte) error {
 // Close releases the device memory.
 func (m *Model) Close() error {
 	var errs []error
-	for _, v := range []*version{m.decode, m.prompt} {
+	for _, v := range m.versions() {
 		if v == nil {
 			continue
 		}
@@ -145,6 +155,26 @@ func (m *Model) Close() error {
 		errs = append(errs, b.Close())
 	}
 	return errors.Join(errs...)
+}
+
+func (m *Model) versions() []*version {
+	return []*version{m.decode, m.prompt, m.placed, m.vision, m.audio}
+}
+
+func (m *Model) version(name string) *version {
+	switch name {
+	case "decode":
+		return m.decode
+	case "prompt":
+		return m.prompt
+	case "placed":
+		return m.placed
+	case "vision":
+		return m.vision
+	case "audio":
+		return m.audio
+	}
+	return nil
 }
 
 func (m *Model) buffer(v *version, kind string) *hwnpu.Buffer {
@@ -177,6 +207,35 @@ func (m *Model) newRun(v *version, k int) (*hwnpu.Run, error) {
 // values are a call's per-call values (CausalLM's body).
 func callValues(token int32, position, start, rows int) map[string]int64 {
 	return map[string]int64{"token": int64(token), "position": int64(position), "start": int64(start), "rows": int64(rows), "rope_start": int64(start)}
+}
+
+// complete adds what a call of v needs besides own: zero for the values of the parts it does
+// not run (an idle tower's, a tower call's text values), and those of buffer addresses.
+func (m *Model) complete(v *version, own map[string]int64) (map[string]int64, error) {
+	values := make(map[string]int64, len(v.m.Values)+len(v.m.Addresses))
+	for _, n := range v.m.Values {
+		values[n] = 0
+	}
+	for k, x := range own {
+		values[k] = x
+	}
+	for _, a := range v.m.Addresses {
+		buf := m.buffer(v, a.Argument)
+		base, ok := buf.DeviceAddress()
+		if !ok {
+			return nil, errors.New("iron: the device does not expose buffer addresses")
+		}
+		addr := base + uint64(a.Offset)
+		switch a.Member {
+		case "base_lo":
+			values[a.Name] = int64(addr & (1<<a.LowBits - 1))
+		case "base_hi":
+			values[a.Name] = int64(addr >> a.LowBits)
+		default:
+			return nil, fmt.Errorf("iron: address value %s of %s", a.Name, a.Member)
+		}
+	}
+	return values, nil
 }
 
 // carry writes the call's carried values into the first plane of the carry buffer.
@@ -217,7 +276,16 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		return nil, fmt.Errorf("iron: position %d outside the cache of %d", position, m.Manifest.Config.MaxSeqLen)
 	}
 	v := m.decode
-	values := callValues(token, position, 0, 1)
+	if v.run == nil { // dropped for a tower's control code (dropDecode)
+		var err error
+		if v.run, err = m.newRun(v, 0); err != nil {
+			return nil, err
+		}
+	}
+	values, err := m.complete(v, callValues(token, position, 0, 1))
+	if err != nil {
+		return nil, err
+	}
 	if err := writeWords(v.run.Scratchpad(), v.m.Kernels[0].Parameters, values); err != nil {
 		return nil, err
 	}
@@ -249,9 +317,46 @@ func (m *Model) Prompt(ctx context.Context, tokens []int32, start int) ([]float3
 }
 
 func (m *Model) chunk(ctx context.Context, ids []int32, start int) ([]float32, error) {
-	v := m.prompt
+	return m.chunkOn(ctx, m.prompt, ids, start, nil)
+}
+
+// PromptPlaced runs a chunk of up to prefill_chunk tokens holding placeholders of the towers'
+// soft tokens (Multimodal.Placeholders), which the towers have run for (RunVision,
+// RunAudio). before counts each placeholder in the sequence before start.
+func (m *Model) PromptPlaced(ctx context.Context, ids []int32, start int, before []int32) ([]float32, error) {
+	if m.placed == nil {
+		return nil, errors.New("iron: the export has no placed prompt chunk (export the multimodal model)")
+	}
+	if len(ids) == 0 || len(ids) > m.Manifest.Config.PrefillChunk || start+len(ids) > m.Manifest.Config.MaxSeqLen {
+		return nil, fmt.Errorf("iron: a placed chunk of %d tokens from %d", len(ids), start)
+	}
+	return m.chunkOn(ctx, m.placed, ids, start, before)
+}
+
+func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int, before []int32) ([]float32, error) {
 	rows := len(ids)
-	values := callValues(ids[rows-1], start+rows-1, start, rows)
+	values, err := m.complete(v, callValues(ids[rows-1], start+rows-1, start, rows))
+	if err != nil {
+		return nil, err
+	}
+	if before != nil {
+		if err := m.writeInput(v, "before", int32Bytes(before)); err != nil {
+			return nil, err
+		}
+	}
+	// An input of token ids without a host encoder takes the ids themselves (the placed chunk's
+	// placed: the device copies them and gathers their rows itself), zero past the rows.
+	for _, in := range v.m.Inputs {
+		if in.Name == "before" || slices.ContainsFunc(v.m.Encoders, func(e Encoder) bool { return e.Input == in.Name }) {
+			continue
+		}
+		if in.DType != "int32" {
+			return nil, fmt.Errorf("iron: input %s of %s is not token ids", in.Name, in.DType)
+		}
+		if err := m.writeInput(v, in.Name, int32Bytes(ids)); err != nil {
+			return nil, err
+		}
+	}
 	for _, e := range v.m.Encoders {
 		if err := m.encode(v, &e, ids, values); err != nil {
 			return nil, err
@@ -343,9 +448,9 @@ func (m *Model) encode(v *version, e *Encoder, ids []int32, values map[string]in
 // Buffer returns the device memory of a named buffer of a version ("decode" or "prompt"),
 // synced from the device: a KV cache, an intermediate. It is a view, valid until Close.
 func (m *Model) Buffer(version, name string) ([]byte, Placement, error) {
-	v := m.decode
-	if version == "prompt" {
-		v = m.prompt
+	v := m.version(version)
+	if v == nil {
+		return nil, Placement{}, fmt.Errorf("iron: no version %s", version)
 	}
 	p, ok := v.m.Buffers[name]
 	if !ok {
@@ -363,11 +468,73 @@ func (m *Model) Buffer(version, name string) ([]byte, Placement, error) {
 
 // Buffers lists the version's buffers.
 func (m *Model) Buffers(version string) map[string]Placement {
-	if version == "prompt" {
-		return m.prompt.m.Buffers
+	if v := m.version(version); v != nil {
+		return v.m.Buffers
 	}
-	return m.decode.m.Buffers
+	return nil
 }
 
 // Device is the device the model is loaded on.
 func (m *Model) Device() *hwnpu.Device { return m.dev }
+
+func int32Bytes(xs []int32) []byte {
+	b := make([]byte, 4*len(xs))
+	for i, x := range xs {
+		binary.LittleEndian.PutUint32(b[4*i:], uint32(x))
+	}
+	return b
+}
+
+// writeInput writes data at the start of a named input of v.
+func (m *Model) writeInput(v *version, name string, data []byte) error {
+	for _, in := range v.m.Inputs {
+		if in.Name != name {
+			continue
+		}
+		if len(data) > in.Bytes {
+			return fmt.Errorf("iron: %d bytes for input %s of %d", len(data), name, in.Bytes)
+		}
+		buf := m.buffer(v, in.Argument)
+		dst := buf.Bytes()[in.Offset : in.Offset+in.Bytes]
+		copy(dst, data)
+		clear(dst[len(data):])
+		return buf.SyncToDevice(in.Offset, in.Bytes)
+	}
+	return fmt.Errorf("iron: no input %s", name)
+}
+
+// dropDecode releases the decode step's run, whose control code (21 MiB for Gemma 4 E2B) a
+// tower's (up to 40 MiB) may not fit beside in the device heap; Step makes it again.
+func (m *Model) dropDecode() {
+	if m.decode != nil && m.decode.run != nil {
+		m.decode.run.Close()
+		m.decode.run = nil
+	}
+}
+
+// runTower runs every command of a tower version on its input, with the grid's words at row.
+func (m *Model) runTower(ctx context.Context, v *version, input string, data []byte, own map[string]int64, row int) error {
+	values, err := m.complete(v, own)
+	if err != nil {
+		return err
+	}
+	if err := m.writeInput(v, input, data); err != nil {
+		return err
+	}
+	m.dropDecode()
+	for k := range v.m.Kernels {
+		run, err := m.newRun(v, k)
+		if err != nil {
+			return fmt.Errorf("iron: tower command %d: %w", k, err)
+		}
+		err = writeGridWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values, v.m.Grid, row)
+		if err == nil {
+			err = run.Run(ctx)
+		}
+		run.Close()
+		if err != nil {
+			return fmt.Errorf("iron: tower command %d: %w", k, err)
+		}
+	}
+	return nil
+}
