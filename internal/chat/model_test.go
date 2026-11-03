@@ -108,7 +108,7 @@ func TestPrepareEncoders(t *testing.T) {
 	ctx := context.Background()
 
 	dir := filepath.Join(t.TempDir(), "vl")
-	c, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/vl", Context: 64, Log: io.Discard})
+	c, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/vl", Context: 64, Backend: "coreml", Log: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,12 +124,34 @@ func TestPrepareEncoders(t *testing.T) {
 	}
 	vis.Close()
 
-	c, err = Prepare(ctx, Setup{Dir: filepath.Join(t.TempDir(), "text"), Repo: "org/text", Context: 64, Log: io.Discard})
+	c, err = Prepare(ctx, Setup{Dir: filepath.Join(t.TempDir(), "text"), Repo: "org/text", Context: 64, Backend: "coreml", Log: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(c.Packages) != 2 || len(c.Vision) != 0 || len(c.Audio) != 0 {
 		t.Errorf("text only: packages %q, vision %q, audio %q", c.Packages, c.Vision, c.Audio)
+	}
+
+	// for Intel's NPU: OpenVINO IR in intel/, each with its list of parts, the vision encoder too
+	dir = filepath.Join(t.TempDir(), "vl")
+	c, err = Prepare(ctx, Setup{Dir: dir, Repo: "org/vl", Context: 64, Backend: "intel", Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Packages) != 2 || len(c.Vision) != 1 || c.Backend != "intel" {
+		t.Fatalf("intel: packages %q, vision %q, backend %q", c.Packages, c.Vision, c.Backend)
+	}
+	for _, p := range append(c.Packages, c.Vision...) {
+		if filepath.Dir(p) != filepath.Join(dir, "intel") || !strings.HasSuffix(p, ".parts.json") {
+			t.Errorf("intel: %s", p)
+		}
+		man, err := llm.ReadManifest(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if man.Backend != "intel" || !strings.HasSuffix(man.Parts[0].Path, ".xml") {
+			t.Errorf("intel: %s: backend %q, parts %v", p, man.Backend, man.Parts)
+		}
 	}
 }
 
@@ -155,4 +177,18 @@ func safetensorsOf(t *testing.T, w llm.Synthetic) []byte {
 	}
 	out := binary.LittleEndian.AppendUint64(nil, uint64(len(h)))
 	return append(append(out, h...), data...)
+}
+
+func TestTiersNone(t *testing.T) {
+	for _, s := range []string{"", "none", " none "} {
+		if got, err := Tiers(s); err != nil || got != nil {
+			t.Errorf("Tiers(%q) = %v, %v", s, got, err)
+		}
+	}
+	if got, err := Tiers("2048, 4096"); err != nil || len(got) != 2 || got[0] != 2048 || got[1] != 4096 {
+		t.Errorf("Tiers(\"2048, 4096\") = %v, %v", got, err)
+	}
+	if _, err := Tiers("0"); err == nil {
+		t.Error("Tiers(\"0\") is accepted")
+	}
 }

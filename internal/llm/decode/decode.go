@@ -423,14 +423,16 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 		}
 	}
 	x := p.In["x"]
-	clear(x)
-	for _, lk := range s.lookups {
-		clear(p.In[lk.Input])
-	}
-	for i, e := range emb {
+	for _, e := range emb {
 		if len(e) != s.Width() {
 			return p, 0, fmt.Errorf("decode: a token's row has %d values, want %d", len(e), s.Width())
 		}
+	}
+	// The rows past the tokens repeat the last token: they are masked out and not kept, but a
+	// row of zeros would make 0/0 in the norms whose epsilon is under fp16's smallest value
+	// (Gemma 4's), and the NaN would reach the tokens' rows through attention (0 * NaN).
+	for i := range q {
+		e := emb[min(i, v-1)]
 		hwnpu.EncodeF16(x[2*i*s.hidden:2*(i+1)*s.hidden], e[:s.hidden])
 		off := s.hidden
 		for _, lk := range s.lookups {

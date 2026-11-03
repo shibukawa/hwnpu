@@ -62,7 +62,7 @@ func main() {
 	list := flag.Bool("list", false, "list the models and what each is for, and exit")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing")
 	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of a chat model's programs); over 16320 the cache is held in chunks of 16384, slower per token")
-	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
+	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the chat model (default: in its directory)")
 	weights := flag.String("weights", "", "checkpoint the chat model's token embeddings are read from: .safetensors or .gguf (default: in its directory)")
 	tok := flag.String("tokenizer", "", "tokenizer.json of the chat model (default: next to config.json)")
@@ -70,6 +70,8 @@ func main() {
 	embedPkgs := flag.String("embed-package", "", "embedding programs converted by hwnpu-convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)")
 	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (default: the 512x512 one a model of -list with vision converts)")
 	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (default: the 30 second one a model of -list with audio converts)")
+	backend := flag.String("backend", "", "the NPU to convert for and run on: coreml (Apple's Neural Engine), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)")
+	format := flag.String("format", "", "weight format of the chat model's programs: int8, int4, int4-g128 or fp16 on Intel's NPU, lut4, lut6, lut8, int4, int8 or fp16 on the Neural Engine (default: the model's for the NPU, int8 for LFM3 on Intel's NPU)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	promptDir := flag.String("prompt-cache", "", "keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)")
 	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
@@ -78,7 +80,7 @@ func main() {
 	openCodeBin := flag.String("opencode-bin", "opencode", "the OpenCode command (-opencode)")
 	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
 	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
-	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while a conversation is short, comma separated (a step costs in proportion to the cache); empty for none")
+	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while a conversation is short, comma separated (a step costs in proportion to the cache); empty or none for none")
 	draft := flag.Int("draft", 8, "tokens per call of the program that checks drafts (speculative decoding: tokens guessed from the prompt and the answer so far are checked in one call); 0 or 1 turns it off")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
@@ -137,14 +139,14 @@ func main() {
 		case chat.KindChat:
 			c := chat.Config{ModelConfig: *config, Weights: *weights}
 			if *pkgs != "" {
-				c.Packages, c.Name = strings.Split(*pkgs, ","), m.Name
+				c.Packages, c.Name, c.Backend = strings.Split(*pkgs, ","), m.Name, *backend
 				if c.ModelConfig == "" {
 					c.ModelConfig = filepath.Join(md, "config.json")
 				}
 				if c.Weights == "" {
 					c.Weights = filepath.Join(md, "model.safetensors")
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
@@ -164,8 +166,8 @@ func main() {
 		case chat.KindEmbed:
 			var c chat.EmbedConfig
 			if *embedPkgs != "" {
-				c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: filepath.Join(md, "model.safetensors"), Name: m.Name}
-			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Repo, Seqs: seqs, Log: os.Stderr}); err != nil {
+				c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: filepath.Join(md, "model.safetensors"), Name: m.Name, Backend: *backend}
+			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Repo, Seqs: seqs, Backend: *backend, Log: os.Stderr}); err != nil {
 				fail(err)
 			}
 			c.CacheDir, c.Log = *cacheDir, os.Stderr
