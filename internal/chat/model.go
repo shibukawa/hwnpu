@@ -25,14 +25,33 @@ const DefaultContext = llm.NeuralEngineMaxDim - prefillSeq
 
 const prefillSeq = 64
 
-// DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: a cache of 4096 to run on while a
-// conversation is short, under the context (Setup.Tiers).
-const DefaultTiers = "4096"
+// DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: auto, a cache of 4096 to run on
+// while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
+const DefaultTiers = "auto"
+
+// TierAuto in Setup.Tiers (Tiers("auto")) lets Prepare choose: a tier of 4096 for a model in
+// 4 bit tables, none for 6 or 8 bits. The Neural Engine keeps its compiled programs in a cache
+// of its own that holds about 4 GiB: four programs of LFM3-1.7B in lut4 (3.2 GiB) stay in it and
+// load in a second each, four in lut6 (4.8 GiB) push each other out and every start compiles
+// them anew, 17 seconds a part (docs/design.md 16.41); two in lut6 (2.4 GiB) stay.
+const TierAuto = -1
+
+// autoTiers is the choice TierAuto stands for, by the weight format and the backend: the cache
+// that overflows is the Neural Engine's, so another NPU gets the tier whatever the format.
+func autoTiers(format, backend string) []int {
+	if backend != llm.BackendIntel && format != "lut4" {
+		return nil
+	}
+	return []int{4096}
+}
 
 // Tiers parses a comma separated list of caches (Setup.Tiers); empty or "none" for none (an
 // empty argument is hard to pass in some shells, PowerShell's).
 func Tiers(s string) ([]int, error) {
-	if strings.TrimSpace(s) == "none" {
+	switch strings.TrimSpace(s) {
+	case "auto":
+		return []int{TierAuto}, nil
+	case "none":
 		return nil, nil
 	}
 	var out []int
@@ -102,7 +121,8 @@ func targetName(backend string) string {
 // Prepare makes the model ready in Dir: it downloads the checkpoint files that are missing from
 // Hugging Face, and converts the programs that are missing, one of 1 token per call to generate
 // and one of 64 to read prompts, both with a cache of Context tokens, for the NPU found
-// (Setup.Backend). It returns the Config that loads them.
+// (Setup.Backend), named by the architecture, the weight format and the attention
+// (lfm3-lut6-grouped-c16320-q8.mlpackage). It returns the Config that loads them.
 func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Config{}, err
@@ -125,12 +145,13 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// The weight format is in the names of Intel's programs, and of the Neural Engine's when it is
-	// not the default, so that programs of another format are converted rather than loaded (the
-	// Neural Engine's of the default keep the names they had).
-	format := ""
-	if s.Format != "" && s.Format != a.DefaultFormatFor(model, backend) || backend == llm.BackendIntel {
-		format = "-" + cmp.Or(s.Format, a.DefaultFormatFor(model, backend))
+	// The name says what the program is: the format always, since a change of the defaults
+	// (LFM3 to lut6 and the grouped attention, 2026-11) must convert anew instead of loading
+	// what an earlier version wrote, and the attention where the architecture has the setting.
+	format := cmp.Or(s.Format, a.DefaultFormatFor(model, backend))
+	kind := a.Name + "-" + format
+	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
+		kind += "-" + attn
 	}
 	// the Neural Engine's program of one token per call is in two parts; Intel's is whole, since
 	// each part is a graph its driver compiles, slowly for a large one, and no limit is known to
@@ -142,8 +163,15 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if s.Draft > 1 {
 		progs[0] = struct{ seq, parts int }{s.Draft, 0}
 	}
+	tiers := s.Tiers
+	if slices.Contains(tiers, TierAuto) {
+		tiers = autoTiers(format, backend)
+		if len(tiers) == 0 && s.Log != nil {
+			fmt.Fprintf(s.Log, "no shorter cache tier for %s: its programs are %s, and four of them would not stay in the Neural Engine's compile cache (-tier 4096 to have one anyway)\n", c.Name, format)
+		}
+	}
 	var caches []int
-	for _, t := range s.Tiers {
+	for _, t := range tiers {
 		if t > 0 && t < s.Context {
 			caches = append(caches, t)
 		}
@@ -153,7 +181,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	for _, cache := range append(caches, s.Context) {
 		var pkgs []string
 		for _, p := range progs {
-			out := filepath.Join(pdir, fmt.Sprintf("%s%s-c%d-q%d%s", a.Name, format, cache, p.seq, programExt(backend)))
+			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s", kind, cache, p.seq, programExt(backend)))
 			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, seq: p.seq, parts: p.parts, cache: cache}, s.Log)
 			if err != nil {
 				return Config{}, err

@@ -12,8 +12,8 @@ import (
 	"github.com/shibukawa/hwnpu/internal/types"
 )
 
-// ChunkedSDPA over a KV cache in chunks of up to the Neural Engine's dimension limit is placed on
-// it, for one token per call and for a prompt's 64. With the sums of the exps and the weighted
+// ChunkedSDPA and ChunkedSDPAGrouped over a KV cache in chunks of up to the Neural Engine's
+// dimension limit are placed on it, for one token per call and for a prompt's 64. With the sums of the exps and the weighted
 // values taken elementwise and by reduce_sum, the placement of 64 tokens per call changed from
 // one compile to the next (M3, macOS 27.0.1); as matrix products it held in every compile.
 func TestChunkedSDPAOnNeuralEngine(t *testing.T) {
@@ -27,7 +27,11 @@ func TestChunkedSDPAOnNeuralEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dev.Close()
-	for _, c := range []struct{ q, chunk, n int }{{1, 16384, 2}, {16, 16384, 2}, {64, 16384, 2}, {64, 16384, 4}, {64, 4096, 8}} {
+	for _, c := range []struct {
+		q, chunk, n int
+		grouped     bool
+	}{{1, 16384, 2, false}, {16, 16384, 2, false}, {64, 16384, 2, false}, {64, 16384, 4, false}, {64, 4096, 8, false},
+		{1, 16384, 2, true}, {8, 16384, 2, true}, {64, 16384, 2, true}, {64, 16384, 4, true}} {
 		dir := filepath.Join(t.TempDir(), "m.mlpackage")
 		pkg, err := mlpackage.Create(dir)
 		if err != nil {
@@ -51,16 +55,19 @@ func TestChunkedSDPAOnNeuralEngine(t *testing.T) {
 		vs = append(vs, in("v_self", 1, 4, c.q, 128))
 		ms = append(ms, in("m_self", 1, 1, c.q, c.q))
 		o := g.ChunkedSDPA(q, ks, vs, ms)
+		if c.grouped {
+			o = g.ChunkedSDPAGrouped(q, ks, vs, ms)
+		}
 		y := b.NamedOp("identity", "y", map[string]any{"x": o}, mlpackage.Float16, o.Shape...)
 		if err := pkg.Finish(b.Finish(y), 9, ins, []mlpackage.Feature{{Name: "y", DType: mlpackage.Float16, Shape: o.Shape}}); err != nil {
 			t.Fatal(err)
 		}
 		gr, err := dev.Compile(ctx, types.GraphSource{Path: dir})
 		if err != nil {
-			t.Fatalf("q %d, %d chunks of %d: %v", c.q, c.n, c.chunk, err)
+			t.Fatalf("q %d, %d chunks of %d, grouped %v: %v", c.q, c.n, c.chunk, c.grouped, err)
 		}
 		if p := gr.Placement(); p.Verified && !p.OnNPU() {
-			t.Errorf("q %d, %d chunks of %d: %d operations off the Neural Engine", c.q, c.n, c.chunk, len(p.Ops))
+			t.Errorf("q %d, %d chunks of %d, grouped %v: %d operations off the Neural Engine", c.q, c.n, c.chunk, c.grouped, len(p.Ops))
 		}
 		gr.Close()
 	}

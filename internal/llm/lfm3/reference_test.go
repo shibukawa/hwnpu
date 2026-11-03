@@ -436,7 +436,7 @@ func TestMultimodalConfig(t *testing.T) {
 		name string
 		cfg  *Config
 		want string
-	}{{"LFM3-VL", cfg, "lut8"}, {"d1", d1, "lut8"}, {"LFM3", text, "lut4"}} {
+	}{{"LFM3-VL", cfg, "lut8"}, {"d1", d1, "lut8"}, {"LFM3", text, "lut6"}} {
 		if f := Arch.DefaultFormat(c.cfg); f != c.want {
 			t.Errorf("%s: default format %s, want %s", c.name, f, c.want)
 		}
