@@ -2,7 +2,7 @@
 
 Intel Core Ultra（Meteor Lake、Arrow Lake、Lunar Lake、Panther Lake、Wildcat Lake）の NPU を hwnpu から使えるようにし、動作を確かめる手順です。
 
-> **現状。** Intel バックエンドは、Level Zero ドライバを模した偽のドライバでしか試していません。実機で手順 4 の `cmd/report` を実行し、結果の報告を送っていただけるのがいちばん助かります。
+> **現状。** Intel バックエンドは、Level Zero ドライバを模した偽のドライバでしか試していません。hwnpu-chat と hwnpu-agent は、同じプログラムを OpenVINO の CPU で動かして確かめました。実機で手順 4 の `cmd/report` と手順 6 のチャットを実行し、結果を送っていただけるのがいちばん助かります。
 
 English: [INSTALL_INTEL.md](INSTALL_INTEL.md)
 
@@ -177,6 +177,87 @@ g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.xml"})
 
 NPU のコンパイラが対応しない演算を含むモデルは、`hwnpu.ErrNotOnNPU` で失敗します。エラーには、原因の演算とコンパイラのログが含まれます。
 
+## 6. hwnpu-chat と hwnpu-agent
+
+Mac と同じコマンドで、チャットとエージェントが Intel NPU で動きます (実機での確認はまだです。下の「確かめてほしいこと」を参照)。
+
+```bash
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest              # 端末で対話
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-agent@latest "README を要約して"
+```
+
+初回は次のことが起きます。
+
+1. Hugging Face からチェックポイントを取ってくる (LFM3-1.7B で 3.5 GB)。
+2. OpenVINO IR に変換する。置き場所はモデルのディレクトリの `intel/` (`lfm3-int8-c4096-q8.xml` など)。1 つ 10 秒ほどで、既定では 4 つ (キャッシュ 4096 と 16320 のそれぞれに、生成用と読み込み用)。
+3. ドライバ内コンパイラが NPU 向けにコンパイルする。大きなモデルでは **1 つに数分かかることがあります**。結果はコンパイルキャッシュ (`-cache`、既定はユーザーキャッシュの `hwnpu`) に残るので、2 回目からは速くなります。
+
+| フラグ | 意味 |
+|---|---|
+| `-backend` | 使う NPU。`levelzero` (`intel` でも同じ)、`coreml`、`openvino`。既定は `HWNPU_BACKEND`、なければ見つかった NPU |
+| `-format` | チャットモデルの重みの形式。Intel では `int8` (LFM3 の既定)、`int4-g128`、`int4`、`fp16` |
+| `-tier none` | 短いキャッシュの段を作らない。グラフが 4 つから 2 つになり、初回のコンパイルとメモリが半分になる |
+| `-context 4096` | 会話の長さ (KV キャッシュ)。短いほどコンパイルも 1 トークンも速い |
+
+最初は小さく始めると切り分けやすいです。
+
+```bash
+hwnpu-chat -tier none -context 4096
+```
+
+### 確かめてほしいこと
+
+1. `hwnpu-chat -tier none -context 4096` が `ready:` まで進むか。止まったら、そのときのメッセージ (コンパイラのログを含む) をください。
+2. 質問に正しく答えるか。トークン/秒 (答えの後に表示) はいくつか。
+3. 既定の設定 (`hwnpu-chat` だけ) で読み込めるか、コンパイルにどれくらいかかるか、メモリは足りるか。
+4. `hwnpu-agent` がツールを呼べるか。
+5. `hwnpu-formats` で int8、int4-g128、int4 の精度と速さを比べる (下の節)。
+
+### 重みの形式を比べる (hwnpu-formats)
+
+`hwnpu-formats` は、チャットモデルを形式ごとに変換して NPU に載せ、決まった会話 (日本語と、英語とコード) を hwnpu-chat と同じ 1 回 8 トークンで読ませて、次の表を出します。
+
+| 列 | 意味 |
+|---|---|
+| ms per call | 1 回の呼び出しの時間 (中央値)。生成の速さの目安 |
+| next token as reference | 各位置で最も確からしい次のトークンが、基準の形式 (既定は fp16) と同じだった割合 |
+| logits rel. err. | ロジットの基準からの相対誤差 |
+| perplexity | 答えの部分のパープレキシティ。低いほどよい。基準がなくても比べられる |
+
+```bash
+go run ./cmd/hwnpu-formats                                    # int8、int4-g128、int4 を fp16 と比べる
+go run ./cmd/hwnpu-formats -formats int4-g128 -ref int8       # fp16 が NPU に載らないとき
+go run ./cmd/hwnpu-formats -json formats.json                 # 結果をファイルにも書く
+```
+
+基準の fp16 は重みが 3.2 GiB あり、NPU のコンパイルに時間がかかるか、失敗することがあります。そのときは `-ref int8` (fp16 とほぼ同じ) にするか、OpenVINO が入っていれば基準だけ CPU で計算します。
+
+```bash
+HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-formats -ref-backend openvino
+```
+
+変換結果はモデルのディレクトリの `intel/formats/` に残り、2 回目からは変換もコンパイルも省かれます。Linux x86 の OpenVINO CPU (`-backend openvino`) では次のようになりました。NPU での数字を送ってもらえると、Intel の既定の形式を決められます。
+
+| 形式 | 重み (GiB) | 次のトークンが fp16 と同じ | パープレキシティ |
+|---|---|---|---|
+| fp16 | 3.22 | (基準) | 3.81 |
+| int8 | 1.61 | 98% | 3.84 |
+| int4-g128 | 0.83 | 80% | 4.28 |
+| int4 | 0.81 | 76% | 4.89 |
+
+形式を決めたら、hwnpu-chat と hwnpu-agent では `-format int4-g128` のように指定します。
+
+### OpenVINO で切り分ける
+
+hwnpu の Level Zero の経路で失敗するとき、同じ IR を OpenVINO で動かすと、hwnpu の問題かモデル (IR) の問題かを切り分けられます。OpenVINO の入った Python を用意して:
+
+```bash
+python3 -m venv ~/ov && ~/ov/bin/pip install openvino numpy
+HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat -backend openvino -tier none -context 4096
+```
+
+`HWNPU_OV_DEVICE=NPU` は OpenVINO の NPU プラグイン、`CPU` (既定) は CPU で動かします。Windows では `HWNPU_OV_PYTHON` に `python.exe` のパスを指定します。
+
 ## うまくいかないとき
 
 | 症状 | 原因と対処 |
@@ -188,4 +269,6 @@ NPU のコンパイラが対応しない演算を含むモデルは、`hwnpu.Err
 | `MAPPED_INFERENCE_VERSION is NOT compatible` | ドライバ、コンパイラ、ファームウェアのリリースがずれている。1 つのリリースのパッケージをすべて入れ直す。 |
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` が入っていない。入れるか、コンパイル済みの blob を使う。 |
 | `ZE_extension_graph version ... is not supported` | ドライバが古い（グラフ拡張 1.5 以降が必要）。ドライバを更新する。 |
+| hwnpu-chat が `chain: part 0 has no output y` で止まる | ドライバが返す引数の名前が IR の名前と合わない。メッセージと `hwnpuinfo` の結果を送ってほしい。 |
+| hwnpu-chat の読み込み中にメモリが足りなくなる | `-tier none` でグラフを半分にする。`-format int4-g128` で重みを半分にする。 |
 | Level Zero の詳しい情報がほしい | `ZE_ENABLE_LOADER_DEBUG_TRACE=1` を付けて実行する。 |
