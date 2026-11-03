@@ -804,7 +804,7 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 	}
 	if e.store != nil && len(e.cur.fed) >= minStored {
 		kept = append(kept, storedMark{m.m.Pos(), m.m.Bufs(), m.logits})
-		if se, err := e.store.put(e.cur.fed, e.sess.(*decode.Session), kept, e.cur.base); err != nil {
+		if se, err := e.store.put(e.cur.fed, e.sess.(rowSource), kept, e.cur.base); err != nil {
 			e.logf("prompt store: %v", err)
 		} else {
 			e.cur.base = se

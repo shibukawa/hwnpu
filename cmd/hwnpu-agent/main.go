@@ -105,7 +105,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	var c chat.Config
 	if *ironDir != "" {
-		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: os.Stderr}
+		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: os.Stderr, PromptDir: chat.PromptStore(*promptDir, *cacheDir)}
 	} else {
 		m, err := chat.Resolve(ctx, *use, *dir, os.Stderr)
 		if err != nil {

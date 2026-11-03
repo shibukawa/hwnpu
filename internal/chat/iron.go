@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
@@ -14,9 +15,10 @@ import (
 )
 
 // ironSession is the sequence of a model IRON compiled for AMD's NPU (internal/llm/iron). The
-// model embeds the tokens itself and its caches are on the device, written by position: going
-// back to a mark is setting the position (the export refuses models whose state cannot restart
-// anywhere, iron.Manifest.Restartable). A copy of the whole cache (Save) is not kept.
+// model embeds the tokens itself and its state is its KV caches, written by position: going
+// back to a mark is setting the position, and the rows of the positions (iron.Model.ExportRows)
+// are the whole sequence, which Save copies and the prompt store keeps. Models whose state
+// cannot restart anywhere (rings, recurrent layers) are not exported.
 type ironSession struct {
 	m   *iron.Model
 	pos int
@@ -29,11 +31,44 @@ func (s *ironSession) Qs() []int { return []int{1, s.Q()} } // no drafts: the de
 func (s *ironSession) Cache() int {
 	return s.m.Manifest.Config.MaxSeqLen
 }
-func (s *ironSession) Pos() int              { return s.pos }
-func (s *ironSession) Reset()                { s.pos = 0 }
-func (s *ironSession) Mark() *decode.Mark    { return decode.NewMark(s.pos, nil) }
-func (s *ironSession) Save() *decode.Mark    { return nil }
-func (s *ironSession) Rewind(m *decode.Mark) { s.pos = m.Pos() }
+func (s *ironSession) Pos() int           { return s.pos }
+func (s *ironSession) Reset()             { s.pos = 0 }
+func (s *ironSession) Mark() *decode.Mark { return decode.NewMark(s.pos, nil) }
+
+// savedRows is the key of a saved sequence's rows in its mark's buffers.
+const savedRows = "iron-rows"
+
+// Save copies the rows of the whole sequence (18 KiB a token for Gemma 4 E2B).
+func (s *ironSession) Save() *decode.Mark {
+	rows, err := s.m.ExportRows(0, s.pos)
+	if err != nil {
+		return nil
+	}
+	return decode.NewMark(s.pos, map[string][]byte{savedRows: rows})
+}
+
+// Rewind goes back to a mark of this sequence, or brings back a saved one.
+func (s *ironSession) Rewind(m *decode.Mark) {
+	if rows, ok := m.Bufs()[savedRows]; ok {
+		if err := s.m.ImportRows(0, rows); err != nil {
+			s.pos = 0 // the next prompt is read from the start
+			return
+		}
+	}
+	s.pos = m.Pos()
+}
+
+func (s *ironSession) RowBytes() int { return s.m.RowBytes() }
+
+func (s *ironSession) ExportRows(from, to int) ([]byte, error) {
+	if to > s.pos {
+		return nil, fmt.Errorf("chat: rows to %d of a sequence of %d", to, s.pos)
+	}
+	return s.m.ExportRows(from, to)
+}
+
+var _ rowSource = (*ironSession)(nil)
+
 func (s *ironSession) Migrate(decode.Program) error {
 	return errors.New("chat: an IRON model has one cache")
 }
@@ -41,8 +76,18 @@ func (s *ironSession) Add(decode.Program) error {
 	return errors.New("chat: an IRON model has one cache")
 }
 
-func (s *ironSession) Resume([]byte, *decode.Mark) error {
-	return errors.New("chat: an IRON model keeps no prompts on disk")
+// Resume brings an empty sequence to a point of the prompt store: the rows of the positions
+// before the mark.
+func (s *ironSession) Resume(rows []byte, m *decode.Mark) error {
+	rb := s.m.RowBytes()
+	if rb == 0 || len(rows) != m.Pos()*rb {
+		return fmt.Errorf("chat: %d bytes of rows for a mark at %d (%d a row)", len(rows), m.Pos(), rb)
+	}
+	if err := s.m.ImportRows(0, rows); err != nil {
+		return err
+	}
+	s.pos = m.Pos()
+	return nil
 }
 
 func (s *ironSession) Step([][]float32) ([]float32, error) {
@@ -128,6 +173,20 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		}
 	}
 	e.sess = &ironSession{m: m}
+	if c.PromptDir != "" {
+		var sizes []int64
+		for _, b := range m.Manifest.Banks {
+			sizes = append(sizes, int64(b.Bytes))
+		}
+		slices.Sort(sizes)
+		dir := filepath.Join(c.PromptDir, storeKey(name, []string{filepath.Join(c.IRON, "manifest.json")}, sizes))
+		if e.store, err = openStore(dir); err != nil {
+			logf("prompt store: %v (prompts will not be kept)", err)
+			e.store = nil
+		} else {
+			logf("prompt store: %s, %d prompts kept", dir, len(e.store.entries))
+		}
+	}
 	logf("ready: context %d tokens, up to %d tokens per call", e.Context(), e.sess.Q())
 	return e, nil
 }

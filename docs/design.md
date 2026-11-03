@@ -1574,3 +1574,9 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - `chat.Config.IRON` と、`hwnpu-chat -iron DIR`、`hwnpu-agent -iron DIR`。トークナイザーとチャットの型は書き出したディレクトリから (エクスポートが `tokenizer.json` などを写す)
 - 実機 (Ryzen AI 9 365): `hwnpu-chat -iron -listen` の OpenAI 互換 API が答え、2 回目の要求でプロンプトの先頭 28 トークンを再利用 (1 トークン 163 ms)。`hwnpu-agent -iron` が `calc.go` を読む道具を使い「エクスポートされた関数は Add と Mul」と答えた (717 トークンのプロンプト、5.9 トークン/秒)
 - プロンプトの遅さ (16.45) はデバイスの計算: 1953 トークンの塊の 15 コマンドが 190〜850 ms ずつ (計 7.6 秒)、run を作って閉じる費用は 1 コマンド 2 ms 以下
+
+### 16.47 AMD: prompt store と会話の退避 — 2026-11-03
+
+- IRON の KV キャッシュ (Gemma 4 E2B は 15 層 × keys / values の 30 本、(4096, G, D) の bf16) は、ホストから読み書きできる arena の bank の中に位置ごとに連続して並び、2 つの版で配置が同じ。`iron.Model.ExportRows` / `ImportRows` が位置の範囲を写す (1 位置 18 KiB、位置ごとにキャッシュを名前順)。KV キャッシュが状態の全てなので (リングや再帰の状態のあるモデルはまだ書き出さない)、行が系列の全てになる
+- `ironSession`: `RowBytes`、`ExportRows`、`Resume` (prompt store から戻す) と、`Save` (系列の行を写した印) / `Rewind` (退避した印なら行を書き戻す)。store は `decode.Session` ではなく `RowBytes` と `ExportRows` だけを求める interface (`rowSource`) を受ける。store のキーはモデルの名前、manifest の更新時刻、bank の大きさ
+- 実機 (README の 6000 文字を system に入れた 2736 トークンの要求、greedy): 初回 13.2 秒。サーバーを再起動して同じ要求は store から 2736 トークンを戻して 0.0 秒、答えは同じ。同じ system で別の質問は store の 2048 の印から戻して残りを読み 6.4 秒。別の文書の会話 (3258 トークン) を挟んだあと元の会話は退避から 2735 トークンを戻して 0.0 秒。store は 1 項目 51 MB

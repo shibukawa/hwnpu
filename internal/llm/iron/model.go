@@ -24,6 +24,7 @@ type Model struct {
 	banks    map[string]*hwnpu.Buffer
 	decode   *version
 	prompt   *version
+	kv       []kvCache // caches, found once
 }
 
 type version struct {
@@ -104,6 +105,9 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 	}
 	if m.decode == nil || m.prompt == nil {
 		return fail(errors.New("iron: the export needs a decode step and a prompt chunk"))
+	}
+	if _, err := m.caches(); err != nil {
+		return fail(err)
 	}
 	return m, nil
 }
