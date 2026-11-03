@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"math/rand/v2"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
@@ -57,6 +59,10 @@ type Config struct {
 	// Backend picks the device (llm.FindDevice): a device backend or the program format of the
 	// packages; empty for HWNPU_BACKEND or the NPU found.
 	Backend string
+	// IRON is a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), in
+	// place of Packages: its manifest, ELFs and arena. Tokenizer defaults to the
+	// tokenizer.json in it.
+	IRON string
 }
 
 // programName is a model's name from the path of its program: the file name without the
@@ -96,12 +102,13 @@ type Engine struct {
 	// none. Load sets it to Lookup when the model has a program to check drafts with (Draft).
 	drafter func(seq []int32, k int) []int32
 
-	store *store    // prompts kept on disk (Config.PromptDir); nil for none
-	log   io.Writer // Config.Log
+	ir    *iron.Model // the model of an IRON export (Config.IRON); nil for none
+	store *store      // prompts kept on disk (Config.PromptDir); nil for none
+	log   io.Writer   // Config.Log
 
 	mu     sync.Mutex
 	closed bool // by Close: the programs and the weights are gone
-	sess   *decode.Session
+	sess   session
 	cur    seq     // the sequence in the cache
 	saved  []saved // put aside, the most recently used last
 }
@@ -118,6 +125,20 @@ type encoded struct {
 	key   [32]byte // of the kind and the data
 	first int32
 	rows  [][]float32
+	// An IRON model's towers run on the device when a prompt chunk reaches the media (ironSession):
+	// n soft tokens of the decoded image or clip, and no rows.
+	n     int
+	audio bool
+	img   image.Image
+	clip  []float32
+}
+
+// count is the soft tokens of the image or clip.
+func (im *encoded) count() int {
+	if im.rows != nil {
+		return len(im.rows)
+	}
+	return im.n
 }
 
 // maxImages is how many encoded images and clips are kept.
@@ -181,6 +202,9 @@ func (q *seq) reach(prompt []int32) (int, *mark) {
 
 // Load loads the model.
 func Load(ctx context.Context, c Config) (*Engine, error) {
+	if c.IRON != "" {
+		return loadIRON(ctx, c)
+	}
 	if len(c.Packages) == 0 {
 		return nil, errors.New("chat: no package")
 	}
@@ -498,6 +522,10 @@ func (e *Engine) Close() error {
 		e.tiers[i].close()
 	}
 	e.tiers = nil
+	if e.ir != nil {
+		e.ir.Close()
+		e.ir = nil
+	}
 	if e.dev != nil {
 		e.dev.Close()
 		e.dev = nil
@@ -750,10 +778,16 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		}
 	}
 	plan()
-	for e.store != nil && n < len(prompt) {
+	// Images' and clips' ids are numbered anew in each process, so the store matches only the
+	// tokens before the first of them, and keeps no sequence holding one.
+	plain := prompt
+	if i := slices.IndexFunc(prompt, func(t int32) bool { return t < 0 }); i >= 0 {
+		plain = prompt[:i]
+	}
+	for e.store != nil && n < len(plain) {
 		// the store brings the prompt further than what is in memory: start on its rows; an
 		// entry that cannot be read is dropped, and the next best is tried
-		se, sp := e.store.find(prompt)
+		se, sp := e.store.find(plain)
 		if se == nil || sp <= n {
 			break
 		}
@@ -820,9 +854,9 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 	if len(e.cur.marks) > maxMarks {
 		e.cur.marks = e.cur.marks[1:]
 	}
-	if e.store != nil && len(e.cur.fed) >= minStored {
+	if e.store != nil && len(e.cur.fed) >= minStored && !slices.ContainsFunc(e.cur.fed, func(t int32) bool { return t < 0 }) {
 		kept = append(kept, storedMark{m.m.Pos(), m.m.Bufs(), m.logits})
-		if se, err := e.store.put(e.cur.fed, e.sess, kept, e.cur.base); err != nil {
+		if se, err := e.store.put(e.cur.fed, e.sess.(rowSource), kept, e.cur.base); err != nil {
 			e.logf("prompt store: %v", err)
 		} else {
 			e.cur.base = se
@@ -864,18 +898,22 @@ func (e *Engine) putAside() {
 	if len(e.cur.fed) < minSaved {
 		return
 	}
+	all := e.sess.Save()
+	if all == nil {
+		return
+	}
 	q := seq{fed: slices.Clone(e.cur.fed), last: e.cur.last, marks: slices.Clone(e.cur.marks)}
-	e.saved = append(e.saved, saved{q, e.sess.Save(), e.ti})
+	e.saved = append(e.saved, saved{q, all, e.ti})
 	if len(e.saved) > maxSaved {
 		e.saved = e.saved[1:]
 	}
 }
 
 // Images reports whether the engine reads images.
-func (e *Engine) Images() bool { return e.vis != nil }
+func (e *Engine) Images() bool { return e.vis != nil || e.ir != nil && e.ir.HasVision() }
 
 // Audio reports whether the engine reads audio.
-func (e *Engine) Audio() bool { return e.aud != nil }
+func (e *Engine) Audio() bool { return e.aud != nil || e.ir != nil && e.ir.HasAudio() }
 
 // ErrImage is returned for an image or a clip the engine cannot read.
 var ErrImage = errors.New("chat: media")
@@ -900,16 +938,27 @@ func (e *Engine) Tokens(ctx context.Context, prompt string, media []Media) ([]in
 		if err != nil {
 			return nil, err
 		}
-		wrap := !media[i].Audio || e.aud.Omni()
-		start, ok1 := e.Tok.ID(vision.Start)
-		end, ok2 := e.Tok.ID(vision.End)
-		if wrap && (!ok1 || !ok2) {
-			return nil, fmt.Errorf("%w: the tokenizer has no %s and %s", ErrImage, vision.Start, vision.End)
+		var start, end int32
+		var wrap bool
+		if mm := e.irMultimodal(); mm != nil {
+			// Gemma 4's processor: <|image> or <|audio>, the soft tokens, <image|> or <audio|>
+			start, end, wrap = mm.BOI, mm.EOI, true
+			if media[i].Audio {
+				start, end = mm.BOA, mm.EOA
+			}
+		} else {
+			wrap = !media[i].Audio || e.aud.Omni()
+			var ok1, ok2 bool
+			start, ok1 = e.Tok.ID(vision.Start)
+			end, ok2 = e.Tok.ID(vision.End)
+			if wrap && (!ok1 || !ok2) {
+				return nil, fmt.Errorf("%w: the tokenizer has no %s and %s", ErrImage, vision.Start, vision.End)
+			}
 		}
 		if wrap {
 			ids = append(ids, start)
 		}
-		for r := range enc.rows {
+		for r := range enc.count() {
 			ids = append(ids, enc.first-int32(r))
 		}
 		if wrap {
@@ -934,6 +983,9 @@ func (e *Engine) encode(ctx context.Context, m Media) (*encoded, error) {
 			e.images = append(slices.Delete(e.images, i, i+1), im)
 			return &e.images[len(e.images)-1], nil
 		}
+	}
+	if e.ir != nil {
+		return e.encodeIRON(m, key)
 	}
 	var flat []float32
 	var n int
@@ -974,6 +1026,45 @@ func (e *Engine) encode(ctx context.Context, m Media) (*encoded, error) {
 	return &e.images[len(e.images)-1], nil
 }
 
+// encodeIRON decodes an image or a clip for an IRON model's towers and counts its soft tokens.
+func (e *Engine) encodeIRON(m Media, key [32]byte) (*encoded, error) {
+	im := encoded{key: key, first: e.nextID, audio: m.Audio}
+	var err error
+	if m.Audio {
+		if im.clip, err = audio.Decode(m.Data); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrImage, err)
+		}
+		if _, im.n, err = e.ir.AudioTokens(len(im.clip)); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrImage, err)
+		}
+	} else {
+		if im.img, err = vision.DecodeDataURL(m.Data); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrImage, err)
+		}
+		b := im.img.Bounds()
+		if _, _, im.n, err = e.ir.ImageSize(b.Dx(), b.Dy()); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrImage, err)
+		}
+	}
+	e.nextID -= int32(im.n)
+	if len(e.images) >= maxImages {
+		e.images = e.images[1:]
+	}
+	e.images = append(e.images, im)
+	return &e.images[len(e.images)-1], nil
+}
+
+// media finds the image or clip of a negative id and the id's place in its run.
+func (e *Engine) media(t int32) (*encoded, int, bool) {
+	for i := range e.images {
+		im := &e.images[i]
+		if r := int(im.first - t); r >= 0 && r < im.count() {
+			return im, r, true
+		}
+	}
+	return nil, 0, false
+}
+
 // imageRow returns the embedding row of an image token (a negative id).
 func (e *Engine) imageRow(t int32) ([]float32, bool) {
 	for _, im := range e.images {
@@ -986,11 +1077,17 @@ func (e *Engine) imageRow(t int32) ([]float32, bool) {
 
 // step runs the tokens and records them as fed.
 func (e *Engine) step(toks []int32) ([]float32, error) {
-	embs, err := e.rows(toks)
-	if err != nil {
-		return nil, err
+	var logits []float32
+	var err error
+	if ts, ok := e.sess.(tokenSession); ok {
+		logits, err = ts.StepTokens(toks) // images' and clips' ids too: the session runs the towers
+	} else {
+		var embs [][]float32
+		if embs, err = e.rows(toks); err != nil {
+			return nil, err
+		}
+		logits, err = e.sess.Step(embs)
 	}
-	logits, err := e.sess.Step(embs)
 	if err != nil {
 		// the cache may be half written
 		e.sess.Reset()

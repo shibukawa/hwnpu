@@ -2,7 +2,7 @@
 
 This guide prepares a Linux machine with an AMD Ryzen AI processor (XDNA NPU: Phoenix, Hawk Point, Strix Point, Krackan Point and later) so that hwnpu can use its NPU, builds a small test design, and shows how to check the result.
 
-> **Status.** The AMD backend has been tested against a simulated amdxdna driver only, built from the kernel and XRT sources. Running `cmd/report` with a real design (step 4) and sending the report back is the most useful help right now.
+> **Status.** On a Ryzen AI 9 365 (Strix Point, `npu4`, 8 columns) with the amdxdna driver of the stock Linux 7.0 kernel of Ubuntu 26.04 and firmware 1.1.2.64, `cmd/report` (step 4) passes every check, including the passthrough design built with mlir-aie v1.4.4 (2026-11-03). Phoenix and Hawk Point (`npu1`) are untested: hwnpu runs models exported for them as an xclbin per step, which works on the Ryzen AI 9 365 when exported that way for `npu2` (`--per-step`), but NPU1 itself has not run it. Reports from other machines are welcome.
 
 Japanese: [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)
 
@@ -11,13 +11,13 @@ Japanese: [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)
 | Platform | Supported | Notes |
 |---|---|---|
 | Linux (x86-64) | Yes | Kernel with the `amdxdna` driver (step 1). |
-| Windows | **No** | Not supported yet. AMD's Windows driver is only reachable through XRT's C++ library (`xrt_coreutil.dll`), which hwnpu cannot call without cgo. |
-| WSL2 | **No** | Windows is not supported, and WSL2 does not pass the NPU to Linux (there is no `/dev/accel` inside WSL2). Use a native Linux installation. |
+| Windows (x86-64) | **Untested** | Through XRT and xrtshim, a small C library of hwnpu's own (section 6). Tested on Linux against XRT 2.21, not yet on Windows. |
+| WSL2 | **No** | WSL2 does not pass the NPU to Linux (there is no `/dev/accel` inside WSL2). Use Windows itself (section 6) or a native Linux installation. |
 | macOS | Not applicable | Macs have no AMD NPU. |
 
 ## What hwnpu needs
 
-hwnpu talks to the Linux **amdxdna** kernel driver directly through `ioctl` and `mmap`. It does not use XRT at run time. Windows is not supported yet.
+On Linux, hwnpu talks to the **amdxdna** kernel driver directly through `ioctl` and `mmap`. It does not use XRT at run time. On Windows it goes through XRT (section 6).
 
 | Component | Needed by hwnpu | Notes |
 |---|---|---|
@@ -83,12 +83,20 @@ xrt-smi examine
 
 `xrt-smi` comes from the XRT packages and is optional for hwnpu.
 
-## 2. Build the test design
+## 2. Build a test design
 
-`cmd/report` runs the IRON example `passthrough_dmas`, which copies a buffer through the NPU's DMAs and needs no AIE core compiler. Set up IRON as described in the mlir-aie README:
+`cmd/report` runs the IRON example `passthrough_dmas`. It only copies a buffer with the NPU's DMA, so it needs no compiler for the AIE cores.
+
+IRON requires **Python 3.12**. If your distribution ships another version, [uv](https://docs.astral.sh/uv/) installs it without root:
 
 ```bash
-git clone https://github.com/Xilinx/mlir-aie.git
+uv python install 3.12
+```
+
+Check out a release tag. Without one, the script finds no prebuilt wheel and stops.
+
+```bash
+git clone --depth 1 --branch v1.4.4 https://github.com/Xilinx/mlir-aie.git
 ```
 
 ```bash
@@ -96,25 +104,45 @@ cd mlir-aie
 ```
 
 ```bash
-sudo apt install build-essential clang lld cmake ninja-build python3-venv python3-pip uuid-dev
-```
-
-```bash
-source utils/env_install.sh
+PATH=$(dirname $(uv python find 3.12)):$PATH source utils/env_install.sh --no-pre-commit ironenv
 ```
 
 ```bash
 source utils/env_setup.sh
 ```
 
-Build only the xclbin and the instruction stream. Use `--dev npu` for Phoenix and Hawk Point, `--dev npu2` for Strix Point and later. The flag names come from the example's documentation; check `--help` if they differ in your version:
+It ends with `xrt-smi not found`. hwnpu does not use XRT, so ignore it.
+
+The xclbin is packaged by `xclbinutil`, an XRT tool. If you installed the XRT packages (`libxrt-utils` from the PPA of step 1, or from Ubuntu 26.04 universe), it is already there. Without root, unpack the packages instead (Ubuntu 26.04):
+
+```bash
+mkdir -p ~/xrt-debs && cd ~/xrt-debs
+```
+
+```bash
+apt-get download libxrt-utils libxrt2 libboost-filesystem1.90.0 libboost-program-options1.90.0
+```
+
+```bash
+for d in *.deb; do dpkg -x $d root; done
+```
+
+```bash
+printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/root/usr/lib/x86_64-linux-gnu exec %s/root/usr/bin/xclbinutil "$@"\n' $PWD $PWD > xclbinutil && chmod +x xclbinutil
+```
+
+```bash
+export AIE_XCLBINUTIL=~/xrt-debs/xclbinutil
+```
+
+Build only the xclbin and the instruction stream. Use `-d npu` for Phoenix and Hawk Point, `-d npu2` for Strix Point and later:
 
 ```bash
 cd programming_examples/basic/passthrough_dmas
 ```
 
 ```bash
-python3 passthrough_dmas.py --dev npu --xclbin-path final.xclbin --insts-path insts.bin
+python3 passthrough_dmas.py -d npu2 -n 4096 --xclbin-path=build/final.xclbin --insts-path=build/insts.bin
 ```
 
 The design copies 4096 int32 values (16384 bytes), which is the default of `cmd/report`. If you build it with another `-n`, pass `-bytes` to the report.
@@ -143,7 +171,7 @@ Run the report with the design from step 2:
 go run ./cmd/report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o report.md
 ```
 
-It checks buffer allocation and cache synchronization, an instruction buffer in the device heap, the NPU power sensor, and then loads the design, runs it, checks that the output equals the input and measures latency and NPU energy. Without `-xclbin` the kernel check is skipped. If the kernel in your xclbin is not named `MLIR_AIE`, pass `-kernel NAME`.
+It checks buffer allocation and cache synchronization, an instruction buffer in the device heap, the power meter (the NPU's sensor, `QUERY_SENSORS`, exists only in AMD's DKMS driver; on the stock Linux 7.0 kernel hwnpu reads the package power the amdgpu driver reports, PPT, which needs no root and covers the whole APU), and then loads the design, runs it, checks that the output equals the input and measures latency and NPU energy. Without `-xclbin` the kernel check is skipped. If the kernel in your xclbin is not named `MLIR_AIE`, pass `-kernel NAME`.
 
 To compare power policies (hardware context priority):
 
@@ -167,7 +195,32 @@ for _, a := range k.Args() { fmt.Println(a.Index, a.Name, a.Type, a.Buffer) }
 
 - Put the instruction stream in `dev.AllocBuffer(n, hwnpu.WithBufferKind(hwnpu.BufferInstructions))`; it must live in the device heap.
 - The NPU is not cache coherent: call `SyncToDevice` after writing inputs and `SyncFromDevice` before reading outputs.
-- Argument order and sizes come from the xclbin metadata. IRON designs use `opcode (3), instr, ninstr, buffers...`.
+- Argument order and sizes come from the xclbin metadata. IRON designs use `opcode (3), instr, ninstr, buffers...`. mlir-aie v1.4.4 lists unused buffers in the signature too (`bo0` to `bo4`). Arguments you leave unset are sent as zero, as in XRT.
+
+## 6. Windows (untested)
+
+AMD's NPU driver for Windows is reached only through XRT's C++ library, `xrt_coreutil.dll`, which the driver installs. hwnpu has no cgo, so it calls XRT through **xrtshim** (`native/xrtshim`), a C library of its own, loaded at run time (the `xrt` backend, `internal/backend/amdxrt`). The same backend runs on Linux against the XRT packages, which is how it is tested: on the Ryzen AI 9 365 with XRT 2.21.75, it passes `cmd/report`'s passthrough design (an xclbin), IRON's full ELFs with per-call values, and Gemma 4 E2B with images and audio at the speed of the Linux driver (2026-11-04). On Windows it has not run yet: reports are welcome.
+
+1. Install the NPU driver (Ryzen AI driver, from AMD). `C:\Windows\System32\AMD\xrt-smi.exe examine` should list the NPU. A full ELF (Gemma 4 E2B) needs a recent driver, whose XRT creates a hardware context from an ELF (`xrt::hw_context(device, xrt::elf)`; XRT 2.21 does).
+2. Build xrtshim with Visual Studio 2022 (C++ workload) and CMake, in a "Developer PowerShell for VS":
+
+   ```powershell
+   cd native\xrtshim
+   .\make-importlib.ps1          # xrt_coreutil.lib, from the driver's xrt_coreutil.dll
+   cmake -B build -DXRT_LIBRARY=xrt_coreutil.lib
+   cmake --build build --config Release
+   ```
+
+   The XRT headers (2.21) are in `native/xrtshim/include`. If the driver's XRT is much older or newer, its C++ ABI may differ: take headers of its version from XRT's sources (`-DXRT_INCLUDE_DIR`).
+3. Put `build\Release\xrtshim.dll` next to hwnpu's executables (or set `HWNPU_XRTSHIM` to it). hwnpu finds `xrt_coreutil.dll` in `System32\AMD` or the driver store; `HWNPU_XRT_CORE` names another.
+4. Build hwnpu for Windows (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`) and run `hwnpuinfo`: the NPU appears with the backend `xrt`.
+
+Models are exported on Linux (IRON and mlir-aie, see the README), and the exported directory is copied over: `hwnpu-chat -iron DIR` runs it the same way. What differs from Linux:
+
+- The power meter reads XRT's electrical info, when the driver reports the NPU's power there.
+- XRT allocates the control code. On Linux 7.0 its device heap holds 64 MiB, as hwnpu's own driver path does; Windows' may differ.
+
+On Linux, the `xrt` backend lists the NPU only with `HWNPU_BACKEND=xrt` (build the shim with `native/xrtshim/build-linux.sh`, and point `HWNPU_XRTSHIM` at it).
 
 ## Troubleshooting
 

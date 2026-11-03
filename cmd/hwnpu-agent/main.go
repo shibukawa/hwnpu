@@ -80,6 +80,7 @@ func main() {
 	topP := flag.Float64("top-p", 0, "sample from the most likely tokens up to this probability (0: off)")
 	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
 	dump := flag.String("dump", "", "write each request, its prompt and the generated text to this directory")
+	ironDir := flag.String("iron", "", "run a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), this directory, in place of -use")
 	flag.Parse()
 	task := strings.TrimSpace(strings.Join(flag.Args(), " "))
 	tiers, err := chat.Tiers(*tier)
@@ -122,31 +123,36 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	m, err := chat.Resolve(ctx, *use, *dir, os.Stderr)
-	if err != nil {
-		fail(err)
-	}
-	if m.Kind != chat.KindChat {
-		fail(fmt.Errorf("%s is a %s model; the agent needs a chat model with tool calls", m.Name, m.Kind))
-	}
-	if len(m.Features) > 0 && !slices.Contains(m.Features, "tools") {
-		fail(fmt.Errorf("%s has no tool calls; the agent needs a model with the tools feature (hwnpu-chat -list)", m.Name))
-	}
-	md := filepath.Join(*dir, m.Name)
-	c := chat.Config{ModelConfig: *config, Weights: *weights}
-	if *pkgs != "" {
-		c.Packages, c.Name, c.Backend = strings.Split(*pkgs, ","), m.Name, *backend
-		if c.ModelConfig == "" {
-			c.ModelConfig = filepath.Join(md, "config.json")
+	var c chat.Config
+	if *ironDir != "" {
+		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: os.Stderr, PromptDir: chat.PromptStore(*promptDir, *cacheDir)}
+	} else {
+		m, err := chat.Resolve(ctx, *use, *dir, os.Stderr)
+		if err != nil {
+			fail(err)
 		}
-		if c.Weights == "" {
-			c.Weights = filepath.Join(md, "model.safetensors")
+		if m.Kind != chat.KindChat {
+			fail(fmt.Errorf("%s is a %s model; the agent needs a chat model with tool calls", m.Name, m.Kind))
 		}
-	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
-		fail(err)
+		if len(m.Features) > 0 && !slices.Contains(m.Features, "tools") {
+			fail(fmt.Errorf("%s has no tool calls; the agent needs a model with the tools feature (hwnpu-chat -list)", m.Name))
+		}
+		md := filepath.Join(*dir, m.Name)
+		c = chat.Config{ModelConfig: *config, Weights: *weights}
+		if *pkgs != "" {
+			c.Packages, c.Name, c.Backend = strings.Split(*pkgs, ","), m.Name, *backend
+			if c.ModelConfig == "" {
+				c.ModelConfig = filepath.Join(md, "config.json")
+			}
+			if c.Weights == "" {
+				c.Weights = filepath.Join(md, "model.safetensors")
+			}
+		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
+			fail(err)
+		}
+		c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+		c.PromptDir = chat.PromptStore(*promptDir, *cacheDir)
 	}
-	c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
-	c.PromptDir = chat.PromptStore(*promptDir, *cacheDir)
 	e, err := chat.Load(ctx, c)
 	if err != nil {
 		fail(err)

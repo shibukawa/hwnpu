@@ -5,13 +5,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/aieelf"
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/ert"
+	"github.com/shibukawa/hwnpu/internal/power"
 	"github.com/shibukawa/hwnpu/internal/types"
 	"github.com/shibukawa/hwnpu/internal/xclbin"
 	"github.com/shibukawa/hwnpu/internal/xdna"
@@ -27,12 +28,12 @@ type device struct {
 	heapMem []byte
 
 	powerMu sync.Mutex
-	energyJ float64
-	lastW   float64
-	lastT   time.Time
+	meter   *power.Integrator
+	pptPath string // the package power (packagePowerPath), or ""
 }
 
 func (d *device) Close() error {
+	d.stopPower()
 	var errs []error
 	if d.heapMem != nil {
 		errs = append(errs, d.dev.D.Munmap(d.heapMem))
@@ -82,11 +83,30 @@ func (d *device) allocMapped(typ uint32, size int) (*buffer, error) {
 		d.dev.CloseBO(bo.Handle)
 		return nil, fmt.Errorf("amd: map buffer: %w", err)
 	}
+	// Start with no dirty cache lines. A new page is zeroed when it is first touched, through
+	// the CPU's caches; a line still dirty from that is written back over what the NPU wrote
+	// there, by the next flush or eviction. A new output buffer read back as zeros after the
+	// first command on a Ryzen AI 9 365, and as the NPU's results from then on. So touch every
+	// page now and flush it all once; afterwards only lines the caller writes are dirty, and
+	// SyncToDevice cleans them before the NPU runs.
+	clear(mapped)
+	if !xdna.FlushCPU(mapped) {
+		if err := d.dev.Sync(bo.Handle, xdna.SyncToDevice, 0, len(mapped)); err != nil {
+			d.dev.D.Munmap(mapped)
+			d.dev.CloseBO(bo.Handle)
+			return nil, err
+		}
+	}
 	// With PASID the device address of a host buffer is its mapped user address.
 	if err := d.dev.Info(&bo); err != nil {
 		d.dev.D.Munmap(mapped)
 		d.dev.CloseBO(bo.Handle)
 		return nil, err
+	}
+	if bo.DeviceAddr() == xdna.InvalidAddr {
+		d.dev.D.Munmap(mapped)
+		d.dev.CloseBO(bo.Handle)
+		return nil, errors.New("amd: the driver reports no device address for a mapped buffer")
 	}
 	return &buffer{d: d, bo: bo, mem: mapped[:size:size], mapped: mapped}, nil
 }
@@ -111,13 +131,23 @@ func roundPage(n int) int { return (n + 4095) &^ 4095 }
 
 func (b *buffer) Bytes() []byte { return b.mem }
 
-// The NPU is not cache coherent with the CPU: SYNC_BO flushes or invalidates CPU caches.
-func (b *buffer) SyncToDevice(off, n int) error {
-	return b.d.dev.Sync(b.bo.Handle, xdna.SyncToDevice, off, n)
-}
+func (b *buffer) DeviceAddress() uint64 { return b.bo.DeviceAddr() }
 
-func (b *buffer) SyncFromDevice(off, n int) error {
-	return b.d.dev.Sync(b.bo.Handle, xdna.SyncFromDevice, off, n)
+// The NPU is not cache coherent with the CPU. On x86 the CPU's cache lines are flushed in
+// user space (CLFLUSH, as XRT does), elsewhere through the driver (SYNC_BO); a flush writes
+// back and invalidates, so one serves both directions.
+func (b *buffer) SyncToDevice(off, n int) error { return b.sync(xdna.SyncToDevice, off, n) }
+
+func (b *buffer) SyncFromDevice(off, n int) error { return b.sync(xdna.SyncFromDevice, off, n) }
+
+func (b *buffer) sync(dir uint32, off, n int) error {
+	if off < 0 || n < 0 || off+n > len(b.mem) {
+		return fmt.Errorf("amd: sync of [%d, %d) in a buffer of %d bytes", off, off+n, len(b.mem))
+	}
+	if xdna.FlushCPU(b.mem[off : off+n]) {
+		return nil
+	}
+	return b.d.dev.Sync(b.bo.Handle, dir, off, n)
 }
 
 func (b *buffer) Close() error {
@@ -131,30 +161,6 @@ func (b *buffer) Close() error {
 	errs = append(errs, b.d.dev.CloseBO(b.bo.Handle))
 	b.mem, b.mapped = nil, nil
 	return errors.Join(errs...)
-}
-
-// PowerSample reads the NPU power sensor (milliwatts on AIE2) and integrates it into energy.
-func (d *device) PowerSample() (types.PowerSample, error) {
-	sensors, err := d.dev.Sensors()
-	if err != nil {
-		return types.PowerSample{}, err
-	}
-	for _, s := range sensors {
-		if s.Type != xdna.SensorTypePower {
-			continue
-		}
-		w := float64(s.Input) * math.Pow10(int(s.UnitM))
-		now := time.Now()
-		d.powerMu.Lock()
-		if !d.lastT.IsZero() {
-			d.energyJ += (d.lastW + w) / 2 * now.Sub(d.lastT).Seconds()
-		}
-		d.lastW, d.lastT = w, now
-		e := d.energyJ
-		d.powerMu.Unlock()
-		return types.PowerSample{Time: now, EnergyJ: e, Watts: w, Scope: types.ScopeNPU, Source: "amdxdna-sensor (integrated)"}, nil
-	}
-	return types.PowerSample{}, fmt.Errorf("amd: no power sensor: %w", types.ErrUnsupported)
 }
 
 // qosPriority maps the power policy to the hardware context priority (unprivileged). The device
@@ -182,12 +188,18 @@ type program struct {
 }
 
 func (d *device) LoadProgram(ctx context.Context, src types.ProgramSource) (backend.Program, error) {
+	if src.ELF != nil {
+		return d.loadELF(src.ELF)
+	}
 	data := src.Xclbin
 	if data == nil {
 		var err error
 		if data, err = os.ReadFile(src.Path); err != nil {
 			return nil, err
 		}
+	}
+	if aieelf.IsELF(data) {
+		return d.loadELF(data)
 	}
 	f, err := xclbin.Parse(data)
 	if err != nil {
@@ -282,7 +294,6 @@ type run struct {
 	kernel *xclbin.Kernel
 	cu     int
 	regmap []byte
-	set    map[int]bool
 	bos    map[int]uint32
 	cmd    *buffer
 	fence  *fence
@@ -311,7 +322,7 @@ func (p *program) NewRun(name string) (backend.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &run{p: p, kernel: k, cu: cu, regmap: make([]byte, (size+3)&^3), set: map[int]bool{}, bos: map[int]uint32{}, cmd: cmd}, nil
+	return &run{p: p, kernel: k, cu: cu, regmap: make([]byte, (size+3)&^3), bos: map[int]uint32{}, cmd: cmd}, nil
 }
 
 func (r *run) arg(i int) (*xclbin.Arg, error) {
@@ -335,12 +346,14 @@ func (r *run) SetArg(i int, value []byte) error {
 		return fmt.Errorf("amd: argument %d (%s) takes %d bytes, got %d", i, a.Name, a.Size, len(value))
 	}
 	copy(r.regmap[a.Offset:], value)
-	r.set[i] = true
 	delete(r.bos, i)
 	return nil
 }
 
-func (r *run) SetBuffer(i int, b backend.Buffer) error {
+func (r *run) SetBuffer(i int, b backend.Buffer) error { return r.SetBufferAt(i, b, 0, len(b.Bytes())) }
+
+// SetBufferAt sets a buffer argument to a part of a buffer: its address plus off.
+func (r *run) SetBufferAt(i int, b backend.Buffer, off, n int) error {
 	a, err := r.arg(i)
 	if err != nil {
 		return err
@@ -352,15 +365,18 @@ func (r *run) SetBuffer(i int, b backend.Buffer) error {
 	if !ok || buf.d != r.p.d {
 		return errors.New("amd: buffer was not allocated by this device")
 	}
+	if off < 0 || n <= 0 || off+n > len(buf.mem) {
+		return fmt.Errorf("amd: argument %d: [%d, %d) of a %d byte buffer", i, off, off+n, len(buf.mem))
+	}
+	addr := buf.bo.DeviceAddr() + uint64(off)
 	switch a.Size {
 	case 8:
-		binary.LittleEndian.PutUint64(r.regmap[a.Offset:], buf.bo.XdnaAddr)
+		binary.LittleEndian.PutUint64(r.regmap[a.Offset:], addr)
 	case 4:
-		binary.LittleEndian.PutUint32(r.regmap[a.Offset:], uint32(buf.bo.XdnaAddr))
+		binary.LittleEndian.PutUint32(r.regmap[a.Offset:], uint32(addr))
 	default:
 		return fmt.Errorf("amd: buffer argument %s has size %d", a.Name, a.Size)
 	}
-	r.set[i] = true
 	r.bos[i] = buf.bo.Handle
 	return nil
 }
@@ -371,11 +387,8 @@ func (r *run) Submit() (backend.Fence, error) {
 			return nil, errors.New("amd: previous submission is still running")
 		}
 	}
-	for _, a := range r.kernel.Args {
-		if !r.set[a.Index] {
-			return nil, fmt.Errorf("amd: argument %d (%s) is not set", a.Index, a.Name)
-		}
-	}
+	// Arguments left unset stay zero, as in XRT. IRON lists unused buffers in the kernel
+	// signature (bo3 and bo4 of a three-buffer design), and its host code never sets them.
 	clear(r.cmd.mem)
 	if _, err := ert.StartCU(r.cmd.mem, r.cu, r.regmap); err != nil {
 		return nil, err

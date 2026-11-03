@@ -1556,3 +1556,161 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 - 形式を変えて同じ Q=8 を 3 回読む (`TestCallTimes`、`-count=1`): lut4 (2 部分 0.54 + 0.52 GiB) は 10.7 + 9.4 秒、10.4 + 9.2 秒、3 回目 0.07 + 0.04 秒で当たる。lut8 (3 部分 0.69〜0.74 GiB) は 3 回とも 8〜10 秒の外れ。lut6 (2 部分) は 29 + 25 秒の外れが続く。LFM3 は lut6 (0.60 GiB の部分) も lut8 (VL、0.81 GiB) も当たるので、大きさの閾値ではない。Gemma 4 の 6 と 8 ビットの表のプログラムだけが ANE 側のキャッシュに残らない、というところまで。理由は ANE 側 (aned の挙動、sudo が要る) で、ここからは追えない。外れたときのコンパイルは lut6 が 1 部分 25〜30 秒、lut8 が 9〜10 秒、lut4 が 10 秒
 - RSS (2 本読み込み): Gemma lut6 1.67 GiB、LFM3 lut6 2.07 GiB (重みはどちらも Core ML の mmap で RSS に全部は出ない)。1 回の呼び出しは Gemma lut6 の Q=8 61.5 ms、Q=64 137.8 ms (LFM3 の lut6 grouped は 41.9 と 78.8 ms)
 - 結論: Gemma 4 の起動約 100 秒は今の形式 (lut6) では避けられず、`-logits folded` も `-parts` も効かない。lut4 なら 3 回目から 1 秒だが、16.26 のとおり答えが悪い。`-logits folded` はパラメータとして残す (全部 NPU に載り、5〜12% 遅い)。残り: aned のキャッシュの方針の確認。Gemma を lut4 の既定に戻すことはしない
+
+### 16.44 AMD: 実機での最初の確認 (Ryzen AI 9 365) — 2026-11-03
+
+- 機械: Ryzen AI 9 365 (Strix Point、PCI 0x17f0、`npu4` で 8 列、AIE 1.1、4 コア行)、Ubuntu 26.04 の Linux 7.0.0-42 標準カーネルの amdxdna (DKMS なし)、ファームウェア 1.1.2.64。XRT は入れていない
+- 設計: mlir-aie v1.4.4 の wheel (Python 3.12 必須。uv で用意) で `passthrough_dmas` を `-d npu2` でビルド。xclbin をまとめる `xclbinutil` は XRT の道具なので、Ubuntu universe の `libxrt-utils` と boost の `.deb` を root なしで展開し、`AIE_XCLBINUTIL` で渡した
+- 結果: `cmd/report` の全項目が合格 (電力センサーは SKIP)。passthrough 16 KiB の 1 回は中央値 0.075 ms、最小 0.068 ms、初回 0.15 ms。xclbin の読み込み (ハードウェアコンテキストの作成と PDI の設定) は 0.5 ms
+- 偽のドライバ (16.5) では見えなかった食い違いが 3 つあった。どれも Linux 7.0 のソース (drivers/accel/amdxdna) で確かめ、`xdnasim` を同じ振る舞いに直した
+
+| 症状 | 原因 | 直し方 |
+|---|---|---|
+| `SyncFromDevice` が `SYNC_BO: invalid argument` | 7.0 の `amdxdna_drm_sync_bo_ioctl` は、向きに関係なく範囲を clflush したあと、`FROM_DEVICE` ならその BO を「デバッグ用の BO」として同期する (`amdxdna_hwctx_sync_debug_bo`)。普通の BO はハードウェアコンテキストに割り当てられていないので `EINVAL` | ioctl には常に `TO_DEVICE` を渡す。x86 の clflush は書き戻しと無効化の両方なので、どちらの向きにも足りる |
+| 実行は終わるが出力が入力と違う | 7.0 では host の BO (`BO_SHARE`、`BO_CMD`) の `xdna_addr` は設定されず `AMDXDNA_INVALID_ADDR` のまま。PASID のもとでは、デバイスは mmap 後のユーザーアドレスを使い、`GET_BO_INFO` の `vaddr` がそれを返す。hwnpu は全ビット 1 のアドレスを引数に入れていた | `xdna.BO.DeviceAddr()`: `xdna_addr` が有効ならそれ (BO_DEV とヒープ)、無効なら `vaddr`。マップ後も無ければエラー |
+| `argument 6 (bo3) is not set` | v1.4.4 の IRON は、3 バッファの設計でも `bo0`〜`bo4` を署名に並べる。ホストのコードは使わない引数を設定せず、XRT はレジスタマップを 0 のまま送る | 未設定の引数は 0 で送る (検査をやめた)。`xdnasim` の passthrough も 8 引数にし、`bo3`、`bo4` が 0 であることを確かめる |
+
+- 電力: upstream の 7.0 には `GET_INFO(QUERY_SENSORS)` の実装がない (DKMS 版だけ)。NPU 単体の電力は読めないので、測るなら RAPL (CPU パッケージ全体) など別の手段が要る
+- 残り: Phoenix / Hawk Point (`npu1`、ヒープ 64 MiB 固定) での確認。ELF 流れと UMQ。LLM に向けた次の段階は、GEMV のカーネル 1 本で速度を測ること (16.45)
+
+### 16.45 AMD: GEMV で NPU のデコードの速さと電力を測る — 2026-11-03
+
+LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が重みを読む速さで決まる。カーネルを自前で書く前に、NPU が DRAM から重みをどれだけ速く、どれだけの電力で読めるかを測った。
+
+- 設計: [amd/IRON](https://github.com/amd/IRON) (Apache-2.0。AMD の NPU 向けの演算子とモデルの集まり) の `iron.operators.GEMV`。mlir-aie の bf16 の `mv` カーネルを 8 列に並べたもの。IRON の固定した mlir-aie の nightly (1.4.5.dev119) で、`op.compile()` だけを呼んで xclbin と命令列を作った (実行には XRT を使わない)。スクリプトは `aie_utils.set_current_device(from_name("npu2", n_cols=8))` で装置を指定する
+- 実行: `tools/amd/gemvbench` (hwnpu の KernelRunner で `kernel(3, instr, ninstr, A, B, C)` を回し、CPU の float64 と照合)。どの形でも誤差は行の大きさの 2.4% 以内で、全行が合格
+- 電力: upstream のドライバには NPU のセンサーがないので、amdgpu の hwmon の `PPT` (APU のパッケージ全体、µW、root 不要) を 50 ms ごとに平均した
+
+| 形 (M×K、bf16) | 重み | 中央値 | 重みを読む速さ |
+|---|---|---|---|
+| 8192×2048 (FFN の上り) | 32 MiB | 0.686 ms | 48.9 GB/s |
+| 8192×2048、2 チャネル | 32 MiB | 0.676 ms | 49.6 GB/s |
+| 2048×8192 (FFN の下り) | 32 MiB | 0.687 ms | 48.8 GB/s |
+| 1536×12288 (Gemma 4 E2B の下り) | 36 MiB | 0.760 ms | 49.6 GB/s |
+| 6144×1536 | 18 MiB | 0.405 ms | 46.6 GB/s |
+| 2048×2048 | 8 MiB | 0.239 ms | 35.1 GB/s |
+
+- 天井は約 50 GB/s で、タイルの大きさやチャネル数ではほとんど変わらない。1 回の投入の固定費は約 0.07 ms (8 MiB で効率が落ちる分)
+- CPU との比較 (同じ機械、Go で 2 GiB を読むだけの合計): 1 スレッド 55 GB/s、8 スレッド 79 GB/s。NPU は CPU が読める最大の約 6 割
+- 電力 (8 秒回し続けたときのパッケージ全体、冷ましてから測ったアイドル 4.7 W): NPU の GEMV は 12.3 W で、32 MiB の 1 回あたり 3〜5 mJ。CPU は読むだけで 18〜28 W、32 MiB あたり 7〜12 mJ (計算を含めればさらに増える)。待つ間 hwnpu はスレッドを眠らせる (syncobj の待ち) ので CPU は空く
+- 見積もり: 4 ビットの重み (q4nx。0.56 バイト/パラメータ前後) なら、LFM3-1.7B は 1 トークン約 1 GB で 50 GB/s なら 40 トークン/秒前後が上限。bf16 なら約 14 トークン/秒
+
+**設計 (演算ごとに xclbin) の切り替え費用** (`tools/amd/ctxbench`): 3 つの GEMV の xclbin を同時に読み込み (ハードウェアコンテキストが 3 つ)、交互に投入すると、単独の合計 1.571 ms に対して 2.960 ms。**切り替え 1 回で約 0.46 ms**。まとめて投入しても縮まない (3.16 ms)。演算が 1 トークンに 100 個あるモデルを演算ごとの xclbin で回すと、切り替えだけで 46 ms になる
+
+- 結論: デコードを NPU に任せる価値はある (CPU の 6 割の速さを、半分以下の電力で、CPU を空けたまま)。ただし演算ごとに xclbin を切り替える方式は使えない。IRON が NPU2 で使う「full ELF」(グラフ全体を 1 つのハードウェアコンテキスト、1 つのコマンドで流す) に対応する必要がある
+- full ELF の投入: XRT は xclbin なしで ELF からハードウェアコンテキストを作り (`xrt::hw_context(device, elf)`)、コマンドは `ERT_START_NPU_PREEMPT_ELF`。Linux 7.0 は `force_cmdlist` (既定 true) の経路で `EXEC_NPU_TYPE_ELF` のスロットを作る。ファームウェアの機能表 (npu4) では、メールボックスのプロトコルの主版 7 で `AIE2_NPU_COMMAND` と `AIE2_PREEMPT` が有効になる。この機械のファームウェアは `npu_7.sbin` (1.1.2.64) なので使える
+
+### 16.46 AMD で LLM を動かす設計 — 2026-11-03
+
+[amd-npu-models.md](amd-npu-models.md) にまとめた。要点:
+
+- AMD に公開されたグラフ用コンパイラはなく、演算ごとの xclbin は切り替え費用 (16.45) で使えない。[amd/IRON](https://github.com/amd/IRON) をビルド時のコンパイラとして使い、モデルの 1 回の呼び出しを 1 つの full ELF にしたものを、hwnpu が Go で実行する。「変換は Go だけで」の例外で、利用者の機械には Python も XRT も要らない
+- full ELF の投入 (CREATE_HWCTX のみ、制御コードと PDI を BO_DEV に、再配置で引数のアドレスを書き、`ERT_START_NPU_PREEMPT_ELF`) は、XRT を root なしで展開して IRON のグラフを動かし、ioctl を `LD_PRELOAD` で記録して確かめた。再配置の種類 5 (shim_dma_48、+0x80000000) と 8 (address_64) は、書き換え後の制御コードと一致
+- 最初のモデルは IRON に既にある Gemma 4 E2B (bf16、IRON の CI で 5.6 トークン/秒)。次に LFM3-1.7B の IRON のアプリケーションを書き、4 ビット (q4nx の一般化) で速くする
+
+### 16.47 AMD: full ELF の実行 (段階 A1) — 2026-11-03
+
+- `internal/aieelf`: aiecc の full ELF を読む。グループからインスタンス (`main:sequence`) と制御コード、`.dynsym` から引数と PDI、`.rela.dyn` から再配置 (種類 3、5、8。知らない種類と、制御パケット、プリエンプション、`.ctrldata` はエラー)、`.note.xrt.configuration` から列の数。`Patch` は書き換え前の語から計算するので、引数を変えて何度書き直しても同じになる。テスト用の `Build`
+- `internal/backend/amd/elf.go`: `ProgramSource.ELF` (または中身が ELF の `Xclbin` / `Path`) で読み込む。PDI はプログラムで共有する `BO_DEV`、制御コードは run ごとの `BO_DEV`。引数が変わったときだけ書き直して同期する。`ctrl scratchpad` があれば run ごとに `BO_DEV` を作ってアドレスを書き、`hwnpu.Run.Scratchpad()` で見せる (中身の意味は段階 A2)
+- `internal/ert`: `StartNPUPreemptELF`。XRT が書いたパケット (記録) と語ごとに一致することをテストで確かめる
+- `xdnasim`: opcode 22 を受け、CU のないコンテキスト、ヒープ上の制御コード、プリエンプションなしを確かめ、`RunELF` に制御コードを渡す
+- `tools/amd/iron_export.py`: IRON の `CompiledGraph` から ELF と manifest (コマンド、引数の順と大きさ、バッファの配置、入出力、重み、パラメータ) を書き、`--check` で乱数の入力と `graph.reference()` の出力を書く。`tools/amd/ironcheck` はそれを hwnpu だけで動かして照合する
+- 実機 (Ryzen AI 9 365): IRON の ReLU → AXPY (2048 要素) の full ELF が、IRON も XRT も使わずに動き、出力は `graph.reference()` とビット単位で一致。読み込み 1.0 ms、1 回 0.27 ms
+
+### 16.48 AMD: 呼び出しごとの値 (スクラッチパッド) と、キャッシュの一貫性 — 2026-11-03
+
+- IRON の `Scratchpad` の値は、制御コードの TXN の命令で入る: `CREATE_SCRATCHPAD` (op 10。`scratch-pad-ctrl` の BO_DEV のアドレスを種類 8 で書く) が状態表を読み、`UPDATE_REG` (op 12、`{スロット, 関数, FuncArg, RegOff}`) がレジスタに `状態表[スロット]` を足す (INCR) か `× FuncArg` を足す (MUL)。コアが読むパラメータ (種類 `core`) は WRITE で 0 にしてから INCR で入れ、shim の BD の長さは BD の書き込みのあとに MUL で足す (mlir-aie の `AIEUtils.cpp`)。`core` の値は 2 ビット左にずらして書く (ファームウェアが下位ビットを落とすため)
+- スクラッチパッドの語は、グラフの呼び出しごとの値の Affine 変換 (IRON の `Word.form`: `clamp(((v·scale + bias) >> down)·mul + add, lo, hi) % mod + post`)。IRON の bounded ReLU (4096 要素) の `n` はコアあたりの塊の数 `ceil(n / 2048)` (0〜2) になる。`tools/amd/iron_export.py` が式を manifest に書き、`tools/amd/ironcheck` が Go で計算する。`n` = 100、2048、3000、4096 で `graph.reference()` と一致 (デバイスは塊の単位で書くので、`n` を塊に切り上げた所まで書く)
+- `internal/aieelf/txn.go`: 制御コードの TXN (主版 0 の形式) の解読器
+- **キャッシュの一貫性 (実機で見つけた不具合)**: 新しい出力バッファに NPU が書いた結果が、最初のコマンドだけ CPU から 0 に見えた。原因は CPU の汚れたキャッシュ行。新しいページはカーネルが最初に触れたときにキャッシュを通して 0 で埋めるので、その汚れた行が、NPU が DRAM に書いたあとで書き戻され、結果を上書きする。2 回目からはページが既にきれいで起きない。スクラッチパッドが最初の呼び出しだけ効かないように見えたのも、これだった (切り分けの途中で、空のコマンドを先に流す、CREATE_SCRATCHPAD や LOADPDI だけを先に流す、を試したが関係なかった)
+  - 直し方: `allocMapped` でマップした直後に全ページに書いてから全体をフラッシュし、汚れた行のない状態で渡す。デバイスヒープもマップ直後にフラッシュする
+  - 同期は XRT と同じく、x86 ではユーザー空間の CLFLUSH + MFENCE (`xdna.FlushCPU`、Go のアセンブリ) にした。Linux 7.0 の `SYNC_BO` はカーネル側の写像でフラッシュするので、ページがまだ固定されていない BO では何もしない経路がある (`Can not get flush memory`)。amd64 以外は今までどおり `SYNC_BO`
+- `xdna.Dev.Wait`: 完了待ちの `SYNCOBJ_TIMELINE_WAIT` が Go のランタイムのシグナルで `EINTR` になると、エラーにしていた。絶対時刻の期限のまま待ち直す
+- 未対応: 前のプロセスの直後に `CREATE_HWCTX` が一時的に `EINVAL` になることがある (前のコンテキストの後始末と重なる)。再試行を足す
+
+### 16.49 AMD: 引き継ぐ値 (段階 A2 の残り) — 2026-11-03
+
+- IRON の `Carried` の値は、ホストから 1 回ずつ呼ぶとき (hwnpu の使い方) は、呼び出しごとの値と同じくスクラッチパッドの語になる (Walk の `node` と `steps` は DMA のオフセット、種類 `addr` でずらさずに書く)。IRON の `_write_values` と `_next_values` に合わせ、呼ぶ前に現在の値を `carry` バッファの 1 段目に書き、呼んだ後は、次の値が Affine の式 (`steps + 1`) ならホストで計算し、計算された値 (`node`) は 2 段目から読む
+- `tools/amd/iron_export.py`: manifest に `carried` (carry の配置と名前の順、次の値の求め方) と `images` (重みを置いた引数の初期像 `arg_<種類>.bin`。状態は 0) を書く。`--check` は引き継ぐ値のあるグラフでは `graph.reference()` で呼び出しの列を作る (`check/calls.json`)
+- 実機: IRON の section-5 の Walk (64 要素の後続表を引く) をホストから 12 回呼び、次の値が全て参照と一致。1 回 0.18 ms
+- 残り: 1 つの ELF に複数のコマンドがある場合 (`Plan.commands`)。バッファのアドレスに依る語 (`recording.addresses`) は manifest に書けないのでエラーにしている。LLM のグラフで出てきたら対応する
+
+### 16.50 AMD: Gemma 4 E2B が hwnpu で動く (段階 A3) — 2026-11-03
+
+- `tools/amd/iron_export_lm.py`: IRON の `CausalLM` (今は Gemma 4) を、デコードの 1 ステップとプロンプトの塊 (2048 トークン) の 2 つの版にコンパイルし (IRON の `load_versions` と同じく 1 つの arena に置く)、ELF、arena の bank の初期像 (重みを置いたもの、3.5 GiB × 2 + 1.9 GiB)、manifest を書く。manifest には版ごとに、コマンド (プロンプトはスクラッチパッドが 32 語に収まらず 15 コマンド)、引数、コマンドごとのスクラッチパッドの語、引き継ぐ値 (token と position)、ロジットの出力、全バッファの配置、プロンプトの埋め込みの encoder を書く
+  - 語の形: Affine (16.48)、Linear (`ceil(v·比 + オフセット)`、比とオフセットは分数)、rows の表 (Gather と RowwiseMul / RMSNorm の行数)、MHA の派生値 (演算子の定数と、範囲 `valid` = rows、`kv_valid` = position + 1 の式から、`kv_blocks`、`s_q`、`q_start`、`q_offset` などを Go で計算)。IRON が計算した語を `check/words.json` に書き、`TestWordsMatchIRON` でデコード 5 通り、プロンプト 4 通りの呼び出しの全ての語が一致することを確かめた
+  - encoder: プロンプトのトークン ID を、埋め込みの表 (2 つ: 通常と per-layer) から行を引く DMA の制御語に変える (IRON の `Gather.control_words`: 雛形の語の位置に、表のデバイスアドレス + 0x80000000 + ID × 行のバイト数)。`hwnpu.Buffer.DeviceAddress()` を足した
+  - 版によっては同じ名前で別の重みを別の場所に持つ (プロンプトの版の w1 など 4 つ)。名前で重複を除かず、版ごとに全部書く
+- `internal/llm/iron`: 実行器。bank を `BO_SHARE` に確保して像を読み込み (9 GB、ページキャッシュから 2〜3 秒)、`Step(token, position)` と `Prompt(tokens, start)` がロジットを返す (ホストで標本を引く。デバイスが引いたトークンは使わない)。プロンプトの 15 コマンドは、Linux 7.0 のデバイスヒープ (npu4 でも 64 MiB 固定。512 MiB に広げられるのは DKMS 版だけ) に制御コード (合計 89 MiB) が載らないので、呼び出しのたびに run を作って閉じる。デコード (21 MiB) は常駐
+- **再配置の addend は符号なし**: arena の bank の 2 GiB を超える位置への addend (10615 個) を符号付きで読んでいたため、DMA が bank の手前を指し、デコードの 1 ステップが自分の重み (第 26 層の per-layer 埋め込みの表) に 1 MiB の NaN を書いていた
+- 結果 (Ryzen AI 9 365、実際の重み、greedy): 「日本の首都はどこですか？」に「日本の首都は東京です。」、Go の関数の作成、README (3505 トークン) の 3 点の要約、どれも筋の通った答え。デコード 5.5〜6.1 トークン/秒 (IRON の CI の Krackan で 5.6)。プロンプトは 25 トークンで 0.58 秒、3505 トークン (2 塊) で 19.5 秒 (180 トークン/秒) と、IRON の Llama 3.2 1B (1024 トークンで 0.47 秒) より遅い。要調査
+- 乱数の重みでの IRON の CPU 参照 (`OnHost`) との照合は、コサイン 0.55〜0.83 で一致しなかった。乱数の重みは値の尺度が整っておらず 35 層で丸めの差が増幅されるためと考えるが、未確認。実際の重みでの Hugging Face のロジットとの照合は、torch のない環境なので未実施
+
+### 16.51 AMD: hwnpu-chat と hwnpu-agent (段階 A4) — 2026-11-03
+
+- `chat.Engine` の `sess` を interface (`chat.session`) にした。Core ML の `decode.Session` と、IRON の実行器を包む `ironSession` が満たす。IRON の版はトークン ID を受け取る (埋め込みはデバイスで引く) ので、エンジンの `step` はセッションが `tokenSession` ならトークンを渡す
+- `ironSession`: 1 回に読むのは最大 2048 トークン (プロンプトの塊)、生成は 1 トークンずつ (下書きの確認なし)。Mark と Rewind は位置だけ: IRON の KV キャッシュは位置で書くので、巻き戻した先から上書きすればよい (Gemma 4 のスライディング窓の層は、`3 × リング < max_seq_len` のときだけリングになり、4096 ではならない。リングや畳み込みの状態は `restart` が塊の境に制約されるので、そういうモデルはまだ扱わない)。会話の退避 (`Save`)、prompt store、段階の切り替えは Core ML だけ
+- `chat.Config.IRON` と、`hwnpu-chat -iron DIR`、`hwnpu-agent -iron DIR`。トークナイザーとチャットの型は書き出したディレクトリから (エクスポートが `tokenizer.json` などを写す)
+- 実機 (Ryzen AI 9 365): `hwnpu-chat -iron -listen` の OpenAI 互換 API が答え、2 回目の要求でプロンプトの先頭 28 トークンを再利用 (1 トークン 163 ms)。`hwnpu-agent -iron` が `calc.go` を読む道具を使い「エクスポートされた関数は Add と Mul」と答えた (717 トークンのプロンプト、5.9 トークン/秒)
+- プロンプトの遅さ (16.50) はデバイスの計算: 1953 トークンの塊の 15 コマンドが 190〜850 ms ずつ (計 7.6 秒)、run を作って閉じる費用は 1 コマンド 2 ms 以下
+
+### 16.52 AMD: prompt store と会話の退避 — 2026-11-03
+
+- IRON の KV キャッシュ (Gemma 4 E2B は 15 層 × keys / values の 30 本、(4096, G, D) の bf16) は、ホストから読み書きできる arena の bank の中に位置ごとに連続して並び、2 つの版で配置が同じ。`iron.Model.ExportRows` / `ImportRows` が位置の範囲を写す (1 位置 18 KiB、位置ごとにキャッシュを名前順)。KV キャッシュが状態の全てなので (リングや再帰の状態のあるモデルはまだ書き出さない)、行が系列の全てになる
+- `ironSession`: `RowBytes`、`ExportRows`、`Resume` (prompt store から戻す) と、`Save` (系列の行を写した印) / `Rewind` (退避した印なら行を書き戻す)。store は `decode.Session` ではなく `RowBytes` と `ExportRows` だけを求める interface (`rowSource`) を受ける。store のキーはモデルの名前、manifest の更新時刻、bank の大きさ
+- 実機 (README の 6000 文字を system に入れた 2736 トークンの要求、greedy): 初回 13.2 秒。サーバーを再起動して同じ要求は store から 2736 トークンを戻して 0.0 秒、答えは同じ。同じ system で別の質問は store の 2048 の印から戻して残りを読み 6.4 秒。別の文書の会話 (3258 トークン) を挟んだあと元の会話は退避から 2735 トークンを戻して 0.0 秒。store は 1 項目 51 MB
+
+### 16.53 AMD: パッケージ全体の電力 (PPT) — 2026-11-03
+
+- Linux 7.0 の標準カーネルには NPU の電力センサー (`QUERY_SENSORS`) がない。amdgpu の hwmon の `power1_input` (PPT: APU のパッケージ全体、µW、root 不要) を代わりに読み、`Scope` を `package` にする。NPU のセンサーがあればそちらを使う。どちらかがあれば `CapPowerMeter`
+- どちらも瞬間値なので、最初の `PowerSample` から 50 ms ごとに読んで台形で積分する裏の処理を回す (デバイスを閉じると止める)。前は呼び出しの間を 1 本の台形にしていたので、長い区間では 2 点の平均になっていた
+- `Provider.Hwmon` で探す場所を差し替えられる (テスト)。`xdnasim.NoSensors` で Linux 7.0 と同じくセンサーなしにできる
+- 実機: `hwnpuinfo` に `power-meter`、`cmd/report` の電力の項目が通る。Gemma 4 E2B の生成中はパッケージ全体で平均 11.8 W、1 トークン 1.93 J (アイドルの 5〜7 W を含む)
+
+### 16.54 AMD: 投機的デコードの見積もりと、プロンプトの塊の大きさ — 2026-11-03
+
+下書きを k トークンまとめて確かめる呼び出しの費用を、プロンプトの版で k 行を流して測った (`ironlm -bench`: 500 トークンのあと、位置 500 で中央値)。
+
+| プロンプトの塊 | デコード 1 ステップ | 2 / 4 / 8 トークンの呼び出し | 2683 トークンのプロンプト | 10 トークンのプロンプト |
+|---|---|---|---|---|
+| 2048 (IRON の既定) | 166 ms | 1325 ms (8.0 ステップ分) | 13.0 秒 | 0.56 秒 |
+| 1024 | 166 ms | 820 ms (5.0 ステップ分) | 10.2 秒 | 0.43 秒 |
+| 256 | 167 ms | 752 ms (4.5 ステップ分) | 10.2 秒 | 0.43 秒 |
+| 64、8 | — | — | — | — |
+
+- 64 と 8 は作れない (MHA の seq_pad は 64 の倍数、flm.ProjectionGEMM の M は 256 の倍数)
+- 確かめる呼び出しは行数にほとんど依らず、デコード 4.5 ステップ分以上の固定費がかかる (15 コマンドで多くの設計を構成し直す)。下書きの確認が得になるには 1 回に平均 4.5 トークン以上受け入れる必要があり、prompt lookup の下書き (M3 の LFM3 で 1 回 1.07〜1.3 トークン、16.36〜16.37) では届かない。**今の IRON の版では投機的デコードはしない**。するなら、デコードと同じ GEMV の演算で k 行を 1 回の重みの読み出しで処理する確認用の版を、IRON の側に作る必要がある
+- 副産物: 塊は 1024 の方が速い (長いプロンプトで 2 割、短いもので 2 割)。256 も同じ速さだが、4096 トークンの文脈では Gemma 4 のスライディング窓の層がリングになる (`3 × リング < max_seq_len`。リング = 窓 + 塊 − 1 以上の 2 のべき) ので、位置だけの巻き戻しと行の写しが使えない。1024 ならリングにならない。エクスポートに `--prefill-chunk` を足し、manifest に `restartable` (IRON の `CausalLM.recurrent` が空か) を書く。チャットのエンジンは `restartable` でないものを読み込まない
+- hwnpu-agent の 2 回目の短いプロンプト (84 トークン) は 1.8 秒から 1.1 秒に
+
+### 16.55 AMD: Gemma 4 E2B の画像と音声 — 2026-11-03
+
+- IRON の `Gemma4Multimodal` は 1 つのグラフで 5 つの版を持つ: デコード、プロンプト、視覚の塔 (入力は画像の画素の行)、音声の塔 (入力は 16 kHz の波形)、`placed` (目印のトークンの位置に塔の出力を差し込むプロンプトの塊)。塔は soft token を共有の状態 `merged` に書き、`placed` の版は ID の列と、目印ごとの「その媒体の何番目から」(`before`) を受け取る。塔ごとに `merged` は 1 つなので、1 回のプロンプトに画像 1 枚と音声 1 本まで (IRON の制約)
+- エクスポート (`tools/amd/iron_export_lm.py gemma4mm`): 5 つの版と、Go の前処理に要る設定 (目印のトークン、視覚の pooling と patch と予算 280、音声の hop と frame など) を書く
+  - **塔の語は表にした**: 視覚の塔には、形のない派生値が 2〜4 つの値に依るもの (Resample の `image_count` と `patch_count`、ResampleTaps の `count`) があり、式の移植は誤りやすい。hwnpu は画像をホストで処理系の大きさ (48 ピクセルの塊 hk × wk、hk·wk ≤ 280) に縮めてから渡すので、塔の縮小は等倍になる。そこで取りうる (hk, wk) の 1600 通りすべてについて、エクスポート時に IRON の計算で全ての語を評価して表にした。音声の塔は値がどれもフレーム数で決まるので、フレーム数 (1〜3000) の表。バッファのアドレスに依る語だけは表にせず Affine のまま
+  - バッファのアドレスに依る値 (`recording.addresses`: 中間の ID から行を引く表の `base_lo` / `base_hi`) を manifest に書き、Go が実行時に計算する
+- 実行器 (`internal/llm/iron`): `RunVision` (`ImageSize` は IRON の `VisionConfig.size` を移植し、PIL 互換の bicubic でホストで縮め、行を 4096 バイトの塊に揃えて詰める)、`RunAudio` (`AudioTokens`、hop の分の 0 を前に置いた波形)、`PromptPlaced` (`placed` の入力には encoder の制御語ではなくトークン ID そのものを書く: デバイスが写して自分で行を引く)。音声の塔の制御コード (39.8 MiB) は常駐のデコード (21 MiB) と並ばないので、塔を流すときはデコードの run を外し、次のデコードで作り直す。PDI は像の本体 (`main`) の分をプログラムの読み込み時に確保する (run ごとに遅れて確保すると、ヒープの途中に散らばって 40 MiB の連続領域が残らなかった)
+- エンジン: IRON の多モーダルのモデルでは、媒体ごとに soft token の数を数え、`<|image>` + 媒体ごとの負の ID × N + `<image|>` (音声は `<|audio>` / `<audio|>`) にする。`ironSession` は負の ID を含む塊を、媒体の境で分け、その媒体の塔を流し (別の媒体が `merged` に入っているときだけ)、負の ID を目印のトークンに戻し、`before` を付けて `placed` の版で読む。`Content` の `parts` に媒体の目印も順に入れた (Gemma 4 の型は `parts` を書くので、画像が落ちていた)
+- prompt store: 媒体の負の ID はプロセスごとに振り直すので、再起動後に別の画像が同じ ID になりうる。store の照合は最初の負の ID より前だけにし、負の ID を含む系列は書かない (LFM3-VL にもあった危険)
+- 実機 (Ryzen AI 9 365、greedy、思考なし): 白地に赤い円と青い四角の 640×480 の PNG に「左に赤い円、右に青い四角、背景は白」(290 トークン、3.3 秒)、続けて「どちらが大きいか」に「赤い円」(311 トークン再利用、0.8 秒)。ALSA の試験音に「front left」、speech-dispatcher の案内 (約 18 秒) をほぼ正確に書き起こし (756 トークン、2.2 秒)。`ImageSize` と `AudioTokens` は IRON の計算と 6 通り / 5 通りで一致 (テスト)
+
+### 16.56 AMD: Windows のための XRT 経由のバックエンド (xrtshim) — 2026-11-04
+
+- 動機: Windows の AMD の NPU ドライバは XRT の C++ ライブラリ (`xrt_coreutil.dll`) を通してしか使えない。hwnpu は cgo を使わないので、C の ABI を持つ小さなライブラリ `native/xrtshim` (C++ で XRT を呼び、C の関数を出す) を作り、purego (`internal/dl`) で実行時に読む。バックエンドは `xrt` (`internal/backend/amdxrt`)
+- 中継の API: デバイス (数、開く、名前・BDF・platform と electrical の JSON・XRT の版)、バッファ (host_only と cacheable、メモリグループ、map、address、sync)、ハードウェアコンテキスト (xclbin から `register_xclbin`、full ELF から `xrt::elf`)、カーネル (`xrt::kernel` と `xrt::ext::kernel`、`group_id`)、ラン (引数、`get_ctrl_scratchpad_bo`、start で scratchpad を同期、wait、state)。失敗は malloc した文字列を返し、Go 側が写して解放する (スレッドローカルの最後のエラーはゴルーチンがスレッドを移るので使えない)
+- XRT 2.21 で見つかったこと: (1) `run.wait(timeout)` が時間切れになった命令をもう一度待つと `qds_device::wait() unexpected command state` になる (デコード 1 回の 166 ms が区切りの 100 ms を超えた)。待ちは時間を区切らない。(2) xclbin のカーネルの命令列の引数はそれ専用のメモリグループ (`group_id(1)`) にあり、グループ 0 の cacheable のバッファは「local copy」を作ろうとして失敗する。命令列のバッファは Go のメモリに持ち、引数に結んだときにそのグループで XRT のバッファを作って写す (同期で全部に写す)。(3) full ELF のカーネルは開いている間、制御コードを 64 MiB のデバイスヒープに置く。カーネルを開いたままにすると音声の塔 (39.8 MiB) が `ENOSPC` になったので、カーネルは使うランがなくなったら閉じる (iron の塔の前にデコードのランを捨てる 16.55 の手当てがそのまま効く)
+- 選び方: Windows では常に、Linux では `HWNPU_BACKEND=xrt` のときだけデバイスを出す。`amd` (xdna) より先に登録するので、`hwnpu.Open(WithVendor(AMD))` を使う iron やツールはそのまま `xrt` を選ぶ
+- Windows で `xrt_coreutil.dll` は検索パスの外 (`System32\AMD`、ドライバストア) にあるので、先に絶対パスで読み込んでおき、xrtshim の import をそのモジュールに解決させる (`HWNPU_XRT_CORE` で指定もできる)。XRT のヘッダ 2.21.75 (Apache-2.0) を `native/xrtshim/include` に同梱し、`make-importlib.ps1` が DLL の export から import library を作る。MSVC でのビルドは未確認 (zig の x86_64-windows-gnu でコンパイルが通ることだけ確かめた)
+- 電力: XRT の electrical の JSON の `power_consumption_watts` を 50 ms ごとに読んで積分する (`power.Integrator` に amd の PPT と共通化)。Linux 7.0 の標準ドライバでは出ない
+- 検証 (Ryzen AI 9 365、Linux 7.0、XRT 2.21.75 を root なしで展開): `cmd/report` の passthrough (xclbin) が PASS、IRON の relu-axpy・bounded-relu (スクラッチパッド)・walk (引き継ぐ値) がビット単位で一致、`ironlm` の Gemma 4 E2B が 6.1 tok/s (xdna と同じ)、`hwnpu-chat -iron` の多モーダル版で画像 (「左に赤い円、右に青い四角」) と音声 (「Front, left」) が正しい。Windows の実機では未検証
+
+### 16.57 AMD: NPU1 のための「1 ステップごとの xclbin」— 2026-11-04
+
+- 動機: NPU1 (Phoenix、Hawk Point) のファームウェアには full ELF の投入 (AIE2_PREEMPT) がない。IRON は NPU1 では各版を「1 ステップごとの xclbin」にする (`PerStep`)。演算 (ステップ) ごとに、xclbin のカーネル (opcode 3、命令列、その長さ、バッファ) を XRT で 1 回ずつ投入する。設定を共有するので xclbin は少なく、Gemma 4 E2B のデコードは 1095 ステップで xclbin 2 個、プロンプトの塊は 1096 ステップで 4 個
+- 呼び出しごとの値: xclbin にはスクラッチパッドがないので、値は「ディスパッチ時のスカラー」になり、命令列が呼び出しごとに作り直される。mlir-aie は設計ごとに、スカラーから TXN を組み立てる C++ (`dispatch_gen.cpp`、型付きの代入、算術、三項演算子、断る条件、`aie_runtime::txn_append_*`) を生成して共有ライブラリにする。これは Linux 専用で Windows では使えず、近似 (語ごとのあてはめ) は三項演算子 (`s > 1 ? 511 : 0`) で崩れる。そこで書き出し時にこの C++ を命令列プログラム (JSON の命令の並び、`tools/amd/iron_stream.py`) に直し、hwnpu は Go の解釈器 (`internal/llm/iron/stream.go`) で命令列を作る。C の型変換 (符号拡張、切り捨て、通常の算術変換) を写す。知らない行は書き出しで断る。スカラー自体は full ELF と同じ語の式 (Affine、Linear、MHA の導出) で、Go の既存の計算をそのまま使う
+- 照合: 書き出しは各プログラムを、生成ライブラリと同じスカラー (デコードの 13 位置、プロンプトの 8 通りの開始と行数) で比べ、違えば止まる。最初の版で 2 つ形が見つかった (配列の初期化子、シフトの幅を守る三項演算子)。キャッシュにある 64 本の生成 C++ はすべて変換でき、Gemma の 49 本 (NPU2 向け) と NPU1 向けのプログラムはすべて一致した。`check/streams.json` の 64 本は Go の解釈器でも一致する (`TestExportStreams`)
+- 置き場の違い: PerStep では、常駐するもの (重み、KV キャッシュ) はアリーナのバンクにあるが、一時的なものは版ごとの別のプールにあり、位置が 0 から数え直される。どちらも `scratch` という種類なので、最初の書き出しは一時的なものを重みの上に置き、出力は `<pad>` ばかりになった。一時的なものは引数 `pool` (、`pool_1`…) に置く
+- 実行 (`internal/llm/iron/steps.go`): xclbin はモデルで 1 回ずつ読み込む (ハードウェアコンテキスト)。各ステップのランは読み込み時に作り、バッファはバンクの一部として結ぶ (`Run.SetBufferAt` を足した。xdna はアドレスに足し、XRT はサブバッファを作る)。同じコンテキストのコマンドは順に走るので、待たずに続けて投入し (16 個ごとに待つ)、xclbin が替わる前に直前の 1 つを待つ。窓を 1 にすると 12% 遅く、64 にしても変わらない
+- 命令列の置き場: ステップごとにバッファを作ると 2191 個で 64 MiB のデバイスヒープが尽きた。版と xclbin の組ごとに、静的な命令列のバッファと呼び出しごとの命令列のバッファを 1 つずつ持ち、各ステップは 64 バイト境界のスロットを使う。xclbin ごとに分けるのは、XRT が命令列の引数を xclbin ごとのメモリグループ (65537、131073… 上位 16 ビットが xclbin の番号) に置き、複数のグループに結んだバッファを丸ごと複製するため。XRT は待っていないランを、終わっていても再投入できない (`bad command state`) ので、再投入の前に待つ
+- 検証 (Ryzen AI 9 365): 同じ形の書き出しを NPU2 向けに作り (`--per-step`)、xdna と XRT の両方で Gemma 4 E2B が正しく答えた (「red, yellow, and blue」、hwnpu-chat で「Tokyo」「Paris」)。デコード 2.6 tok/s (full ELF は 6.1)、プロンプト 14 トークンで 1.3 秒。NPU1 向けの書き出し (`--device npu1 --cols 4`、xclbin 6 個) は、4 列の模擬 NPU で読み込みと全ステップの命令列の作成が通る (`TestExportLoads`)。NPU1 の実機では未検証
+- 残り: NPU1 は版の xclbin が計 6 個で、ハードウェアコンテキストの上限 6 を使い切る (他のプロセスが NPU を使っていると作れない)。超える書き出しには、コンテキストを入れ替える仕組みが要る。塔 (画像と音声) は IRON が NPU1 で動かさないので対象外

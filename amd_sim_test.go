@@ -67,7 +67,7 @@ func TestAMDPassthroughPublicAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if args := k.Args(); len(args) != 6 || args[3].Name != "bo0" || !args[3].Buffer {
+	if args := k.Args(); len(args) != 8 || args[3].Name != "bo0" || !args[3].Buffer {
 		t.Fatalf("args %+v", args)
 	}
 

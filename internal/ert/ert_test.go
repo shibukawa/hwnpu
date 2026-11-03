@@ -57,3 +57,19 @@ func TestStartCU(t *testing.T) {
 		t.Fatal("Terminal")
 	}
 }
+
+// TestStartNPUPreemptELF checks the packet against the one XRT 2.21 wrote for IRON's
+// two-operator graph, recorded on a Ryzen AI 9 365.
+func TestStartNPUPreemptELF(t *testing.T) {
+	buf := make([]byte, 4096)
+	n, err := StartNPUPreemptELF(buf, PreemptELF{Inst: 0x4020000, InstSize: 0xc830, Arg0: 0x7dfa45a5f000})
+	if err != nil || n != 56 {
+		t.Fatal(n, err)
+	}
+	recorded := []uint32{0x3b00d001, 0x00000000, 0x04020000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x0000c830, 0x00000000, 0x00000000, 0x00000000, 0x45a5f000, 0x00007dfa}
+	for i, w := range recorded {
+		if got := binary.LittleEndian.Uint32(buf[4*i:]); got != w {
+			t.Errorf("word %d: %#x, want %#x", i, got, w)
+		}
+	}
+}

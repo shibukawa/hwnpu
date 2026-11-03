@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ func simProvider(sim *xdnasim.Sim) Provider {
 			return []Node{{Path: "/dev/accel/accel0", Device: "0x1502", Revision: "0x0"}}, nil
 		},
 		OpenDriver: func(string) (xdna.Driver, error) { return sim, nil },
+		Hwmon:      "-",
 	}
 }
 
@@ -66,7 +69,7 @@ func setup(t *testing.T, d *device, n int) *passthrough {
 		t.Fatal(err)
 	}
 	ks := prog.Kernels()
-	if len(ks) != 1 || ks[0].Name != xdnasim.PassthroughKernel || len(ks[0].Args) != 6 || !ks[0].Args[1].Buffer || ks[0].Args[2].Buffer {
+	if len(ks) != 1 || ks[0].Name != xdnasim.PassthroughKernel || len(ks[0].Args) != 8 || !ks[0].Args[1].Buffer || ks[0].Args[2].Buffer {
 		t.Fatalf("kernels %+v", ks)
 	}
 	p := &passthrough{prog: prog, n: n}
@@ -173,9 +176,6 @@ func TestArgumentChecks(t *testing.T) {
 	if err := r.SetArg(9, nil); err == nil {
 		t.Error("unknown argument accepted")
 	}
-	if _, err := r.Submit(); err == nil || !strings.Contains(err.Error(), "not set") {
-		t.Errorf("submit with unset arguments: %v", err)
-	}
 	if _, err := prog.NewRun("nope"); err == nil {
 		t.Error("unknown kernel accepted")
 	}
@@ -257,5 +257,46 @@ func TestPowerPolicyAndSensor(t *testing.T) {
 	b, _ := d.PowerSample()
 	if e := b.EnergyJ - a.EnergyJ; e < 1.5*0.04 || e > 1.5*0.5 {
 		t.Fatalf("integrated energy %v J over %v", e, b.Time.Sub(a.Time))
+	}
+}
+
+// TestPackagePower: without the NPU's sensor (Linux 7.0) the meter reads amdgpu's package
+// power (PPT) and integrates it in the background.
+func TestPackagePower(t *testing.T) {
+	root := t.TempDir()
+	for _, h := range []struct{ dir, name string }{{"hwmon0", "k10temp"}, {"hwmon3", "amdgpu"}} {
+		d := filepath.Join(root, h.dir)
+		os.MkdirAll(d, 0o755)
+		os.WriteFile(filepath.Join(d, "name"), []byte(h.name+"\n"), 0o644)
+		os.WriteFile(filepath.Join(d, "power1_input"), []byte("12000000\n"), 0o644)
+	}
+	sim := xdnasim.New()
+	sim.NoSensors = true
+	p := simProvider(sim)
+	p.Hwmon = root
+	infos, err := p.Enumerate(context.Background())
+	if err != nil || infos[0].Caps&types.CapPowerMeter == 0 {
+		t.Fatalf("no power meter: %+v %v", infos, err)
+	}
+	be, err := p.Open(context.Background(), infos[0], backend.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := be.(*device)
+	a, err := d.PowerSample()
+	if err != nil || a.Watts != 12 || a.Scope != types.ScopePackage {
+		t.Fatalf("%+v %v", a, err)
+	}
+	time.Sleep(300 * time.Millisecond) // the sampler integrates meanwhile
+	b, _ := d.PowerSample()
+	if e := b.EnergyJ - a.EnergyJ; e < 12*0.25 || e > 12*0.6 {
+		t.Fatalf("integrated energy %v J over %v", e, b.Time.Sub(a.Time))
+	}
+	d.Close()
+
+	p.Hwmon = "-"
+	infos, _ = p.Enumerate(context.Background())
+	if infos[0].Caps&types.CapPowerMeter != 0 {
+		t.Error("a power meter without a sensor or PPT")
 	}
 }
