@@ -7,14 +7,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/shibukawa/hwnpu/internal/power"
 	"github.com/shibukawa/hwnpu/internal/types"
 	"github.com/shibukawa/hwnpu/internal/xdna"
 )
-
-// powerInterval is how often the meter samples the power to integrate it into energy.
-const powerInterval = 50 * time.Millisecond
 
 // packagePowerPath finds the package power the amdgpu driver reports on an APU (its hwmon's
 // power1_input, PPT: the whole socket, cores, GPU and NPU, in microwatts), readable without
@@ -69,59 +66,24 @@ func (d *device) watts() (float64, types.PowerScope, string, error) {
 	return 0, "", "", fmt.Errorf("amd: no power sensor: %w", types.ErrUnsupported)
 }
 
-// PowerSample returns the power now and the energy integrated since the first call. The first
-// call starts a sampler that integrates every powerInterval until Close: both sources are
-// instantaneous readings, so energy from two samples alone would be the mean of two moments.
+// PowerSample returns the power now and the energy integrated since the first call (both
+// sources are instantaneous readings: power.Integrator).
 func (d *device) PowerSample() (types.PowerSample, error) {
-	w, scope, source, err := d.watts()
-	if err != nil {
-		return types.PowerSample{}, err
-	}
-	now := time.Now()
 	d.powerMu.Lock()
-	defer d.powerMu.Unlock()
-	d.integrate(w, now)
-	if d.powerStop == nil {
-		d.powerStop, d.powerDone = make(chan struct{}), make(chan struct{})
-		go d.sample(d.powerStop, d.powerDone)
+	if d.meter == nil {
+		d.meter = power.NewIntegrator(d.watts)
 	}
-	return types.PowerSample{Time: now, EnergyJ: d.energyJ, Watts: w, Scope: scope, Source: source + " (integrated)"}, nil
-}
-
-// integrate adds the energy since the last reading, by the trapezoid rule. powerMu is held.
-func (d *device) integrate(w float64, now time.Time) {
-	if !d.lastT.IsZero() {
-		d.energyJ += (d.lastW + w) / 2 * now.Sub(d.lastT).Seconds()
-	}
-	d.lastW, d.lastT = w, now
-}
-
-func (d *device) sample(stop <-chan struct{}, done chan<- struct{}) {
-	defer close(done)
-	t := time.NewTicker(powerInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-t.C:
-			if w, _, _, err := d.watts(); err == nil {
-				d.powerMu.Lock()
-				d.integrate(w, time.Now())
-				d.powerMu.Unlock()
-			}
-		}
-	}
+	m := d.meter
+	d.powerMu.Unlock()
+	return m.Sample()
 }
 
 // stopPower ends the sampler.
 func (d *device) stopPower() {
 	d.powerMu.Lock()
-	stop, done := d.powerStop, d.powerDone
-	d.powerStop = nil
+	m := d.meter
 	d.powerMu.Unlock()
-	if stop != nil {
-		close(stop)
-		<-done
+	if m != nil {
+		m.Stop()
 	}
 }

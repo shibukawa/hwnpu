@@ -11,13 +11,13 @@ English: [INSTALL_AMD.md](INSTALL_AMD.md)
 | プラットフォーム | 対応 | 補足 |
 |---|---|---|
 | Linux（x86-64） | 対応 | `amdxdna` ドライバを含むカーネル（手順 1）。 |
-| Windows | **非対応** | まだ対応していない。AMD の Windows ドライバは XRT の C++ ライブラリ（`xrt_coreutil.dll`）経由でしか使えず、hwnpu は cgo なしではこれを呼べない。 |
-| WSL2 | **非対応** | Windows に対応しておらず、WSL2 は NPU を Linux 側に渡さない（WSL2 の中に `/dev/accel` がない）。Linux を直接インストールした環境で使う。 |
+| Windows（x86-64） | **未確認** | XRT と、hwnpu 自身の小さな C ライブラリ xrtshim を通して使う（手順 6）。Linux の XRT 2.21 では確かめたが、Windows ではまだ動かしていない。 |
+| WSL2 | **非対応** | WSL2 は NPU を Linux 側に渡さない（WSL2 の中に `/dev/accel` がない）。Windows そのもの（手順 6）か、Linux を直接インストールした環境で使う。 |
 | macOS | 該当なし | Mac には AMD の NPU がない。 |
 
 ## hwnpu が必要とするもの
 
-hwnpu は、Linux のカーネルドライバ **amdxdna** を `ioctl` と `mmap` で直接呼びます。実行時に XRT は使いません。Windows にはまだ対応していません。
+Linux では、hwnpu はカーネルドライバ **amdxdna** を `ioctl` と `mmap` で直接呼びます。実行時に XRT は使いません。Windows では XRT を通します（手順 6）。
 
 | 部品 | hwnpu に必要か | 補足 |
 |---|---|---|
@@ -196,6 +196,31 @@ for _, a := range k.Args() { fmt.Println(a.Index, a.Name, a.Type, a.Buffer) }
 - 命令列は `dev.AllocBuffer(n, hwnpu.WithBufferKind(hwnpu.BufferInstructions))` に置きます。命令列はデバイスヒープ上にある必要があるためです。
 - NPU は CPU のキャッシュと自動では同期しません。入力を書いたら `SyncToDevice` を、出力を読む前に `SyncFromDevice` を呼んでください。
 - 引数の並びと大きさは xclbin のメタデータから読みます。IRON の設計では `opcode（3）、instr、ninstr、各バッファ` の順です。mlir-aie v1.4.4 は、使わないバッファも `bo0`〜`bo4` として署名に並べます。設定しなかった引数は、XRT と同じく 0 で送ります。
+
+## 6. Windows（未確認）
+
+AMD の Windows 用 NPU ドライバは、ドライバが入れる XRT の C++ ライブラリ `xrt_coreutil.dll` を通してしか使えません。hwnpu は cgo を使わないので、hwnpu 自身の C ライブラリ **xrtshim**（`native/xrtshim`）を実行時に読み込み、それを通して XRT を呼びます（`xrt` バックエンド、`internal/backend/amdxrt`）。同じバックエンドは Linux の XRT のパッケージでも動き、そこで確かめています。Ryzen AI 9 365 と XRT 2.21.75 で、`cmd/report` の passthrough 設計（xclbin）、呼び出しごとの値を持つ IRON の full ELF、画像と音声を含む Gemma 4 E2B が、Linux のドライバと同じ速さで動きました（2026-11-04）。Windows ではまだ動かしていません。報告を送っていただけると助かります。
+
+1. NPU のドライバ（AMD の Ryzen AI ドライバ）を入れます。`C:\Windows\System32\AMD\xrt-smi.exe examine` で NPU が見えれば準備できています。full ELF（Gemma 4 E2B）には新しいドライバが要ります。ELF からハードウェアコンテキストを作れる XRT（`xrt::hw_context(device, xrt::elf)`。XRT 2.21 はできる）を含むものです。
+2. Visual Studio 2022（C++ のワークロード）と CMake で xrtshim をビルドします。「Developer PowerShell for VS」で次を実行します。
+
+   ```powershell
+   cd native\xrtshim
+   .\make-importlib.ps1          # ドライバの xrt_coreutil.dll から xrt_coreutil.lib を作る
+   cmake -B build -DXRT_LIBRARY=xrt_coreutil.lib
+   cmake --build build --config Release
+   ```
+
+   XRT のヘッダ（2.21）は `native/xrtshim/include` にあります。ドライバの XRT の版が大きく違うと C++ の ABI が合わないことがあるので、その版のヘッダを XRT のソースから取って `-DXRT_INCLUDE_DIR` で渡してください。
+3. `build\Release\xrtshim.dll` を hwnpu の実行ファイルと同じ場所に置きます（または `HWNPU_XRTSHIM` で場所を指定します）。`xrt_coreutil.dll` は `System32\AMD` かドライバストアから探します。別の場所なら `HWNPU_XRT_CORE` で指定します。
+4. hwnpu を Windows 向けにビルドし（`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`）、`hwnpuinfo` を実行します。バックエンド `xrt` の NPU が出れば使えます。
+
+モデルの書き出しは Linux で行い（IRON と mlir-aie。README を参照）、書き出したディレクトリを持っていきます。`hwnpu-chat -iron DIR` で同じように動きます。Linux との違いは次のとおりです。
+
+- 電力は、ドライバが XRT の electrical の情報に NPU の電力を出していればそれを読みます。
+- 制御コードの置き場は XRT が確保します。Linux 7.0 ではデバイスのヒープが 64 MiB で、hwnpu 自身のドライバ経路と同じです。Windows では違うかもしれません。
+
+Linux では、`xrt` バックエンドは `HWNPU_BACKEND=xrt` のときだけ NPU を出します（xrtshim を `native/xrtshim/build-linux.sh` でビルドし、`HWNPU_XRTSHIM` で指定します）。
 
 ## うまくいかないとき
 

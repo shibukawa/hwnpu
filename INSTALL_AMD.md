@@ -11,13 +11,13 @@ Japanese: [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)
 | Platform | Supported | Notes |
 |---|---|---|
 | Linux (x86-64) | Yes | Kernel with the `amdxdna` driver (step 1). |
-| Windows | **No** | Not supported yet. AMD's Windows driver is only reachable through XRT's C++ library (`xrt_coreutil.dll`), which hwnpu cannot call without cgo. |
-| WSL2 | **No** | Windows is not supported, and WSL2 does not pass the NPU to Linux (there is no `/dev/accel` inside WSL2). Use a native Linux installation. |
+| Windows (x86-64) | **Untested** | Through XRT and xrtshim, a small C library of hwnpu's own (section 6). Tested on Linux against XRT 2.21, not yet on Windows. |
+| WSL2 | **No** | WSL2 does not pass the NPU to Linux (there is no `/dev/accel` inside WSL2). Use Windows itself (section 6) or a native Linux installation. |
 | macOS | Not applicable | Macs have no AMD NPU. |
 
 ## What hwnpu needs
 
-hwnpu talks to the Linux **amdxdna** kernel driver directly through `ioctl` and `mmap`. It does not use XRT at run time. Windows is not supported yet.
+On Linux, hwnpu talks to the **amdxdna** kernel driver directly through `ioctl` and `mmap`. It does not use XRT at run time. On Windows it goes through XRT (section 6).
 
 | Component | Needed by hwnpu | Notes |
 |---|---|---|
@@ -196,6 +196,31 @@ for _, a := range k.Args() { fmt.Println(a.Index, a.Name, a.Type, a.Buffer) }
 - Put the instruction stream in `dev.AllocBuffer(n, hwnpu.WithBufferKind(hwnpu.BufferInstructions))`; it must live in the device heap.
 - The NPU is not cache coherent: call `SyncToDevice` after writing inputs and `SyncFromDevice` before reading outputs.
 - Argument order and sizes come from the xclbin metadata. IRON designs use `opcode (3), instr, ninstr, buffers...`. mlir-aie v1.4.4 lists unused buffers in the signature too (`bo0` to `bo4`). Arguments you leave unset are sent as zero, as in XRT.
+
+## 6. Windows (untested)
+
+AMD's NPU driver for Windows is reached only through XRT's C++ library, `xrt_coreutil.dll`, which the driver installs. hwnpu has no cgo, so it calls XRT through **xrtshim** (`native/xrtshim`), a C library of its own, loaded at run time (the `xrt` backend, `internal/backend/amdxrt`). The same backend runs on Linux against the XRT packages, which is how it is tested: on the Ryzen AI 9 365 with XRT 2.21.75, it passes `cmd/report`'s passthrough design (an xclbin), IRON's full ELFs with per-call values, and Gemma 4 E2B with images and audio at the speed of the Linux driver (2026-11-04). On Windows it has not run yet: reports are welcome.
+
+1. Install the NPU driver (Ryzen AI driver, from AMD). `C:\Windows\System32\AMD\xrt-smi.exe examine` should list the NPU. A full ELF (Gemma 4 E2B) needs a recent driver, whose XRT creates a hardware context from an ELF (`xrt::hw_context(device, xrt::elf)`; XRT 2.21 does).
+2. Build xrtshim with Visual Studio 2022 (C++ workload) and CMake, in a "Developer PowerShell for VS":
+
+   ```powershell
+   cd native\xrtshim
+   .\make-importlib.ps1          # xrt_coreutil.lib, from the driver's xrt_coreutil.dll
+   cmake -B build -DXRT_LIBRARY=xrt_coreutil.lib
+   cmake --build build --config Release
+   ```
+
+   The XRT headers (2.21) are in `native/xrtshim/include`. If the driver's XRT is much older or newer, its C++ ABI may differ: take headers of its version from XRT's sources (`-DXRT_INCLUDE_DIR`).
+3. Put `build\Release\xrtshim.dll` next to hwnpu's executables (or set `HWNPU_XRTSHIM` to it). hwnpu finds `xrt_coreutil.dll` in `System32\AMD` or the driver store; `HWNPU_XRT_CORE` names another.
+4. Build hwnpu for Windows (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`) and run `hwnpuinfo`: the NPU appears with the backend `xrt`.
+
+Models are exported on Linux (IRON and mlir-aie, see the README), and the exported directory is copied over: `hwnpu-chat -iron DIR` runs it the same way. What differs from Linux:
+
+- The power meter reads XRT's electrical info, when the driver reports the NPU's power there.
+- XRT allocates the control code. On Linux 7.0 its device heap holds 64 MiB, as hwnpu's own driver path does; Windows' may differ.
+
+On Linux, the `xrt` backend lists the NPU only with `HWNPU_BACKEND=xrt` (build the shim with `native/xrtshim/build-linux.sh`, and point `HWNPU_XRTSHIM` at it).
 
 ## Troubleshooting
 

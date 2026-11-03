@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/aieelf"
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/ert"
+	"github.com/shibukawa/hwnpu/internal/power"
 	"github.com/shibukawa/hwnpu/internal/types"
 	"github.com/shibukawa/hwnpu/internal/xclbin"
 	"github.com/shibukawa/hwnpu/internal/xdna"
@@ -26,13 +27,9 @@ type device struct {
 	heap    xdna.BO
 	heapMem []byte
 
-	powerMu   sync.Mutex
-	energyJ   float64
-	lastW     float64
-	lastT     time.Time
-	pptPath   string // the package power (packagePowerPath), or ""
-	powerStop chan struct{}
-	powerDone chan struct{}
+	powerMu sync.Mutex
+	meter   *power.Integrator
+	pptPath string // the package power (packagePowerPath), or ""
 }
 
 func (d *device) Close() error {
