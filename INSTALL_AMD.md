@@ -171,7 +171,7 @@ Run the report with the design from step 2:
 go run ./cmd/report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o report.md
 ```
 
-It checks buffer allocation and cache synchronization, an instruction buffer in the device heap, the NPU power sensor (`QUERY_SENSORS` exists only in AMD's DKMS driver, so it is skipped on the stock Linux 7.0 kernel), and then loads the design, runs it, checks that the output equals the input and measures latency and NPU energy. Without `-xclbin` the kernel check is skipped. If the kernel in your xclbin is not named `MLIR_AIE`, pass `-kernel NAME`.
+It checks buffer allocation and cache synchronization, an instruction buffer in the device heap, the power meter (the NPU's sensor, `QUERY_SENSORS`, exists only in AMD's DKMS driver; on the stock Linux 7.0 kernel hwnpu reads the package power the amdgpu driver reports, PPT, which needs no root and covers the whole APU), and then loads the design, runs it, checks that the output equals the input and measures latency and NPU energy. Without `-xclbin` the kernel check is skipped. If the kernel in your xclbin is not named `MLIR_AIE`, pass `-kernel NAME`.
 
 To compare power policies (hardware context priority):
 

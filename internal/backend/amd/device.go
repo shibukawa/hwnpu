@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"sync"
 	"time"
@@ -27,13 +26,17 @@ type device struct {
 	heap    xdna.BO
 	heapMem []byte
 
-	powerMu sync.Mutex
-	energyJ float64
-	lastW   float64
-	lastT   time.Time
+	powerMu   sync.Mutex
+	energyJ   float64
+	lastW     float64
+	lastT     time.Time
+	pptPath   string // the package power (packagePowerPath), or ""
+	powerStop chan struct{}
+	powerDone chan struct{}
 }
 
 func (d *device) Close() error {
+	d.stopPower()
 	var errs []error
 	if d.heapMem != nil {
 		errs = append(errs, d.dev.D.Munmap(d.heapMem))
@@ -161,30 +164,6 @@ func (b *buffer) Close() error {
 	errs = append(errs, b.d.dev.CloseBO(b.bo.Handle))
 	b.mem, b.mapped = nil, nil
 	return errors.Join(errs...)
-}
-
-// PowerSample reads the NPU power sensor (milliwatts on AIE2) and integrates it into energy.
-func (d *device) PowerSample() (types.PowerSample, error) {
-	sensors, err := d.dev.Sensors()
-	if err != nil {
-		return types.PowerSample{}, err
-	}
-	for _, s := range sensors {
-		if s.Type != xdna.SensorTypePower {
-			continue
-		}
-		w := float64(s.Input) * math.Pow10(int(s.UnitM))
-		now := time.Now()
-		d.powerMu.Lock()
-		if !d.lastT.IsZero() {
-			d.energyJ += (d.lastW + w) / 2 * now.Sub(d.lastT).Seconds()
-		}
-		d.lastW, d.lastT = w, now
-		e := d.energyJ
-		d.powerMu.Unlock()
-		return types.PowerSample{Time: now, EnergyJ: e, Watts: w, Scope: types.ScopeNPU, Source: "amdxdna-sensor (integrated)"}, nil
-	}
-	return types.PowerSample{}, fmt.Errorf("amd: no power sensor: %w", types.ErrUnsupported)
 }
 
 // qosPriority maps the power policy to the hardware context priority (unprivileged). The device

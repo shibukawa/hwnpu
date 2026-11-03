@@ -368,3 +368,6 @@ func (m *Model) Buffers(version string) map[string]Placement {
 	}
 	return m.decode.m.Buffers
 }
+
+// Device is the device the model is loaded on.
+func (m *Model) Device() *hwnpu.Device { return m.dev }

@@ -46,6 +46,8 @@ type Sim struct {
 	Meta    xdna.AIEMetadata
 	FW      xdna.FirmwareVersion
 	PowerMW uint32
+	// NoSensors makes QUERY_SENSORS unsupported, as on Linux 7.0's driver.
+	NoSensors bool
 	// Run simulates a compute unit. A returned error marks the command ERT_CMD_STATE_ERROR.
 	Run func(e Exec) error
 	// RunELF simulates a full ELF command, likewise.
@@ -496,6 +498,9 @@ func (s *Sim) getInfo(a *xdna.GetInfo) error {
 	case xdna.QueryFirmwareVersion:
 		return put(unsafe.Pointer(&s.FW), unsafe.Sizeof(s.FW))
 	case xdna.QuerySensors:
+		if s.NoSensors {
+			return syscall.EOPNOTSUPP
+		}
 		sensors := []xdna.Sensor{{Input: s.PowerMW, UnitM: -3, Type: xdna.SensorTypePower}, {Input: 37, Type: 1}}
 		copy(sensors[0].Label[:], "Total Power")
 		copy(sensors[0].Units[:], "mW")

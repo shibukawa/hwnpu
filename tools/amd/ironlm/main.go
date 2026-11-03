@@ -251,6 +251,8 @@ func generate(ctx context.Context, m *iron.Model, text, tokPath string, maxToken
 	}
 	ttft := time.Since(t)
 	var out []int32
+	dev := m.Device()
+	p0, perr := dev.PowerSample()
 	t = time.Now()
 	for len(out) < maxTokens {
 		next := argmax(logits)
@@ -264,6 +266,9 @@ func generate(ctx context.Context, m *iron.Model, text, tokPath string, maxToken
 		}
 	}
 	el := time.Since(t).Seconds()
+	if p1, err := dev.PowerSample(); perr == nil && err == nil && len(out) > 0 {
+		fmt.Printf("\n\ngeneration: %.2f W on average (%s), %.2f J per token", hwnpu.AveragePower(p0, p1), p1.Scope, (p1.EnergyJ-p0.EnergyJ)/float64(len(out)))
+	}
 	fmt.Printf("\n\n%d prompt tokens in %.2f s (%.0f tokens/s); %d tokens in %.2f s (%.1f tokens/s)\n",
 		len(ids), ttft.Seconds(), float64(len(ids))/ttft.Seconds(), len(out), el, float64(len(out))/el)
 }

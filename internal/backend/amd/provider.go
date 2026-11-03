@@ -36,6 +36,16 @@ type Provider struct {
 	Nodes func() ([]Node, error)
 	// OpenDriver opens a node; nil uses xdna.OpenNode.
 	OpenDriver func(path string) (xdna.Driver, error)
+	// Hwmon is where the package power is looked for (packagePowerPath): "" is
+	// /sys/class/hwmon on Linux; "-" looks nowhere.
+	Hwmon string
+}
+
+func (p Provider) pptPath() string {
+	if p.Hwmon == "-" || runtime.GOOS != "linux" && p.Hwmon == "" {
+		return ""
+	}
+	return packagePowerPath(p.Hwmon)
 }
 
 func (p Provider) Name() string {
@@ -115,7 +125,7 @@ func (p Provider) Enumerate(ctx context.Context) ([]types.DeviceInfo, error) {
 			continue
 		}
 		caps := types.CapKernel | types.CapPowerControl
-		if _, err := d.Sensors(); err == nil {
+		if _, err := d.Sensors(); err == nil || p.pptPath() != "" {
 			caps |= types.CapPowerMeter
 		}
 		info := types.DeviceInfo{
@@ -137,7 +147,7 @@ func (p Provider) Open(ctx context.Context, info types.DeviceInfo, opts backend.
 	if err != nil {
 		return nil, err
 	}
-	d := &device{dev: xdna.Dev{D: drv}, opts: opts}
+	d := &device{dev: xdna.Dev{D: drv}, opts: opts, pptPath: p.pptPath()}
 	if d.meta, err = d.dev.Metadata(); err != nil {
 		drv.Close()
 		return nil, err

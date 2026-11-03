@@ -1580,3 +1580,10 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - IRON の KV キャッシュ (Gemma 4 E2B は 15 層 × keys / values の 30 本、(4096, G, D) の bf16) は、ホストから読み書きできる arena の bank の中に位置ごとに連続して並び、2 つの版で配置が同じ。`iron.Model.ExportRows` / `ImportRows` が位置の範囲を写す (1 位置 18 KiB、位置ごとにキャッシュを名前順)。KV キャッシュが状態の全てなので (リングや再帰の状態のあるモデルはまだ書き出さない)、行が系列の全てになる
 - `ironSession`: `RowBytes`、`ExportRows`、`Resume` (prompt store から戻す) と、`Save` (系列の行を写した印) / `Rewind` (退避した印なら行を書き戻す)。store は `decode.Session` ではなく `RowBytes` と `ExportRows` だけを求める interface (`rowSource`) を受ける。store のキーはモデルの名前、manifest の更新時刻、bank の大きさ
 - 実機 (README の 6000 文字を system に入れた 2736 トークンの要求、greedy): 初回 13.2 秒。サーバーを再起動して同じ要求は store から 2736 トークンを戻して 0.0 秒、答えは同じ。同じ system で別の質問は store の 2048 の印から戻して残りを読み 6.4 秒。別の文書の会話 (3258 トークン) を挟んだあと元の会話は退避から 2735 トークンを戻して 0.0 秒。store は 1 項目 51 MB
+
+### 16.48 AMD: パッケージ全体の電力 (PPT) — 2026-11-03
+
+- Linux 7.0 の標準カーネルには NPU の電力センサー (`QUERY_SENSORS`) がない。amdgpu の hwmon の `power1_input` (PPT: APU のパッケージ全体、µW、root 不要) を代わりに読み、`Scope` を `package` にする。NPU のセンサーがあればそちらを使う。どちらかがあれば `CapPowerMeter`
+- どちらも瞬間値なので、最初の `PowerSample` から 50 ms ごとに読んで台形で積分する裏の処理を回す (デバイスを閉じると止める)。前は呼び出しの間を 1 本の台形にしていたので、長い区間では 2 点の平均になっていた
+- `Provider.Hwmon` で探す場所を差し替えられる (テスト)。`xdnasim.NoSensors` で Linux 7.0 と同じくセンサーなしにできる
+- 実機: `hwnpuinfo` に `power-meter`、`cmd/report` の電力の項目が通る。Gemma 4 E2B の生成中はパッケージ全体で平均 11.8 W、1 トークン 1.93 J (アイドルの 5〜7 W を含む)
