@@ -10,11 +10,12 @@ import (
 
 // Opcodes (enum ert_cmd_opcode).
 const (
-	OpStartCU         = 0
-	OpStartDPU        = 18
-	OpCmdChain        = 19
-	OpStartNPU        = 20
-	OpStartNPUPreempt = 21
+	OpStartCU            = 0
+	OpStartDPU           = 18
+	OpCmdChain           = 19
+	OpStartNPU           = 20
+	OpStartNPUPreempt    = 21
+	OpStartNPUPreemptELF = 22
 )
 
 // Command types (enum ert_cmd_type).
@@ -86,5 +87,38 @@ func StartCU(dst []byte, cuIndex int, regmap []byte) (int, error) {
 	binary.LittleEndian.PutUint32(dst[0:], Header(StateNew, 0, uint32(count), OpStartCU, TypeCU))
 	binary.LittleEndian.PutUint32(dst[4:], 1<<uint(cuIndex))
 	copy(dst[8:], regmap)
+	return n, nil
+}
+
+// PreemptELF is the payload of ERT_START_NPU_PREEMPT_ELF (struct amdxdna_cmd_preempt_data):
+// the control code of a full ELF and its preemption save and restore code.
+type PreemptELF struct {
+	Inst, Save, Restore             uint64 // device addresses
+	InstSize, SaveSize, RestoreSize uint32
+	// Arg0 is the address of argument 0. XRT writes it after the payload as a side effect of
+	// its register map; the driver does not read it. Kept so the packet matches XRT's.
+	Arg0 uint64
+}
+
+// StartNPUPreemptELF writes an ERT_START_NPU_PREEMPT_ELF packet into dst as XRT does for a
+// full ELF kernel: header, a zero CU mask (an ELF kernel has no compute units), the payload
+// with no properties, and Arg0. It returns the packet length in bytes.
+func StartNPUPreemptELF(dst []byte, p PreemptELF) (int, error) {
+	const words = 1 + 10 + 2
+	n := 4 + 4*words
+	if len(dst) < n {
+		return 0, fmt.Errorf("ert: command buffer of %d bytes is too small for %d", len(dst), n)
+	}
+	le := binary.LittleEndian
+	le.PutUint32(dst[0:], Header(StateNew, 0, words, OpStartNPUPreemptELF, TypeCU))
+	le.PutUint32(dst[4:], 0)
+	le.PutUint64(dst[8:], p.Inst)
+	le.PutUint64(dst[16:], p.Save)
+	le.PutUint64(dst[24:], p.Restore)
+	le.PutUint32(dst[32:], p.InstSize)
+	le.PutUint32(dst[36:], p.SaveSize)
+	le.PutUint32(dst[40:], p.RestoreSize)
+	le.PutUint32(dst[44:], 0) // inst_prop_cnt
+	le.PutUint64(dst[48:], p.Arg0)
 	return n, nil
 }

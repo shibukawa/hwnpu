@@ -1528,3 +1528,12 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - AMD に公開されたグラフ用コンパイラはなく、演算ごとの xclbin は切り替え費用 (16.40) で使えない。[amd/IRON](https://github.com/amd/IRON) をビルド時のコンパイラとして使い、モデルの 1 回の呼び出しを 1 つの full ELF にしたものを、hwnpu が Go で実行する。「変換は Go だけで」の例外で、利用者の機械には Python も XRT も要らない
 - full ELF の投入 (CREATE_HWCTX のみ、制御コードと PDI を BO_DEV に、再配置で引数のアドレスを書き、`ERT_START_NPU_PREEMPT_ELF`) は、XRT を root なしで展開して IRON のグラフを動かし、ioctl を `LD_PRELOAD` で記録して確かめた。再配置の種類 5 (shim_dma_48、+0x80000000) と 8 (address_64) は、書き換え後の制御コードと一致
 - 最初のモデルは IRON に既にある Gemma 4 E2B (bf16、IRON の CI で 5.6 トークン/秒)。次に LFM3-1.7B の IRON のアプリケーションを書き、4 ビット (q4nx の一般化) で速くする
+
+### 16.42 AMD: full ELF の実行 (段階 A1) — 2026-11-03
+
+- `internal/aieelf`: aiecc の full ELF を読む。グループからインスタンス (`main:sequence`) と制御コード、`.dynsym` から引数と PDI、`.rela.dyn` から再配置 (種類 3、5、8。知らない種類と、制御パケット、プリエンプション、`.ctrldata` はエラー)、`.note.xrt.configuration` から列の数。`Patch` は書き換え前の語から計算するので、引数を変えて何度書き直しても同じになる。テスト用の `Build`
+- `internal/backend/amd/elf.go`: `ProgramSource.ELF` (または中身が ELF の `Xclbin` / `Path`) で読み込む。PDI はプログラムで共有する `BO_DEV`、制御コードは run ごとの `BO_DEV`。引数が変わったときだけ書き直して同期する。`ctrl scratchpad` があれば run ごとに `BO_DEV` を作ってアドレスを書き、`hwnpu.Run.Scratchpad()` で見せる (中身の意味は段階 A2)
+- `internal/ert`: `StartNPUPreemptELF`。XRT が書いたパケット (記録) と語ごとに一致することをテストで確かめる
+- `xdnasim`: opcode 22 を受け、CU のないコンテキスト、ヒープ上の制御コード、プリエンプションなしを確かめ、`RunELF` に制御コードを渡す
+- `tools/amd/iron_export.py`: IRON の `CompiledGraph` から ELF と manifest (コマンド、引数の順と大きさ、バッファの配置、入出力、重み、パラメータ) を書き、`--check` で乱数の入力と `graph.reference()` の出力を書く。`tools/amd/ironcheck` はそれを hwnpu だけで動かして照合する
+- 実機 (Ryzen AI 9 365): IRON の ReLU → AXPY (2048 要素) の full ELF が、IRON も XRT も使わずに動き、出力は `graph.reference()` とビット単位で一致。読み込み 1.0 ms、1 回 0.27 ms

@@ -33,6 +33,14 @@ type Exec struct {
 	Mem    func(addr uint64, n int) ([]byte, error)
 }
 
+// ExecELF is the simulated work of one full ELF command (ERT_START_NPU_PREEMPT_ELF). Ctrl is
+// the control code at the command's instruction address, read from the device heap. Mem
+// resolves device addresses: the heap, and the buffer objects listed with the command.
+type ExecELF struct {
+	Ctrl []byte
+	Mem  func(addr uint64, n int) ([]byte, error)
+}
+
 // Sim is a simulated device node.
 type Sim struct {
 	Meta    xdna.AIEMetadata
@@ -40,6 +48,8 @@ type Sim struct {
 	PowerMW uint32
 	// Run simulates a compute unit. A returned error marks the command ERT_CMD_STATE_ERROR.
 	Run func(e Exec) error
+	// RunELF simulates a full ELF command, likewise.
+	RunELF func(e ExecELF) error
 	// Delay postpones completion, to exercise waiting.
 	Delay time.Duration
 
@@ -311,7 +321,11 @@ func (s *Sim) exec(a *xdna.ExecCmd) error {
 	le := binary.LittleEndian
 	header := le.Uint32(cmd.mem)
 	count := int(header>>12) & 0x7ff
-	if op := (header >> 23) & 0x1f; op != ert.OpStartCU {
+	op := (header >> 23) & 0x1f
+	if op == ert.OpStartNPUPreemptELF {
+		return s.execELF(a, c, cmd, args)
+	}
+	if op != ert.OpStartCU {
 		return syscall.EOPNOTSUPP
 	}
 	extra := int(header>>10) & 0x3
@@ -340,6 +354,65 @@ func (s *Sim) exec(a *xdna.ExecCmd) error {
 		state := ert.StateCompleted
 		if s.Run != nil {
 			if err := s.Run(e); err != nil {
+				state = ert.StateError
+			}
+		}
+		s.mu.Lock()
+		le.PutUint32(cmd.mem, le.Uint32(cmd.mem)&^0xf|uint32(state))
+		s.timelines[c.syncobj][seq] = true
+		s.cond.Broadcast()
+		s.mu.Unlock()
+	}
+	if s.Delay > 0 {
+		go func() { time.Sleep(s.Delay); complete() }()
+	} else {
+		s.mu.Unlock()
+		complete()
+		s.mu.Lock()
+	}
+	return nil
+}
+
+// execELF checks a full ELF command as Linux 7.0 does (aie2_cmdlist_fill_npu_elf: no CU
+// index, the preempt payload) and as the firmware needs it: a context with no compute units
+// and control code in the device heap.
+func (s *Sim) execELF(a *xdna.ExecCmd, c *hwctx, cmd *bo, args []uint32) error {
+	le := binary.LittleEndian
+	header := le.Uint32(cmd.mem)
+	count := int(header>>12) & 0x7ff
+	extra := int(header>>10) & 0x3
+	const payload = 40 // struct amdxdna_cmd_preempt_data without properties
+	if c.cus != nil || 4*count < 4*(1+extra)+payload || 4+4*count > len(cmd.mem) {
+		return syscall.EINVAL
+	}
+	p := cmd.mem[4+4*(1+extra):]
+	inst, size := le.Uint64(p), int(le.Uint32(p[24:]))
+	if le.Uint64(p[8:]) != 0 || le.Uint64(p[16:]) != 0 || le.Uint32(p[36:]) != 0 {
+		return syscall.EINVAL // preemption save and restore code and properties are not simulated
+	}
+	if s.heap == nil || inst < s.heap.devAddr || inst+uint64(size) > s.heap.devAddr+uint64(len(s.heap.mem)) {
+		return syscall.EINVAL // the control code must be in the device heap
+	}
+	ctrl := append([]byte(nil), s.heap.mem[inst-s.heap.devAddr:inst-s.heap.devAddr+uint64(size)]...)
+	seq := c.seq
+	c.seq++
+	a.Seq = seq
+	le.PutUint32(cmd.mem, header&^0xf|uint32(ert.StateQueued))
+	mem := s.resolver(args)
+	heapMem := func(addr uint64, n int) ([]byte, error) {
+		s.mu.Lock()
+		h := s.heap
+		s.mu.Unlock()
+		if addr >= h.devAddr && addr+uint64(n) <= h.devAddr+uint64(len(h.mem)) {
+			return h.mem[addr-h.devAddr : addr-h.devAddr+uint64(n)], nil
+		}
+		return mem(addr, n)
+	}
+	e := ExecELF{Ctrl: ctrl, Mem: heapMem}
+	complete := func() {
+		state := ert.StateCompleted
+		if s.RunELF != nil {
+			if err := s.RunELF(e); err != nil {
 				state = ert.StateError
 			}
 		}

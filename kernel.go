@@ -56,8 +56,8 @@ func (r kernelRunner) Load(ctx context.Context, src ProgramSource) (*Program, er
 	if r.d.be == nil {
 		return nil, ErrClosed
 	}
-	if src.Xclbin == nil && src.Path == "" {
-		return nil, errors.New("hwnpu: ProgramSource needs Xclbin or Path")
+	if src.Xclbin == nil && src.ELF == nil && src.Path == "" {
+		return nil, errors.New("hwnpu: ProgramSource needs Xclbin, ELF or Path")
 	}
 	p, err := r.kd.LoadProgram(ctx, src)
 	if err != nil {
@@ -185,6 +185,15 @@ func (r *Run) Run(ctx context.Context) error {
 		return err
 	}
 	return f.Wait(ctx)
+}
+
+// Scratchpad is the memory a full ELF's control code reads parameters from for each command
+// (its ctrl scratchpad), written before Submit, or nil when the kernel has none.
+func (r *Run) Scratchpad() []byte {
+	if s, ok := r.be.(interface{ Scratchpad() []byte }); ok {
+		return s.Scratchpad()
+	}
+	return nil
 }
 
 // Close waits for a running submission and releases the run.

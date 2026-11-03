@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/aieelf"
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/ert"
 	"github.com/shibukawa/hwnpu/internal/types"
@@ -187,12 +188,18 @@ type program struct {
 }
 
 func (d *device) LoadProgram(ctx context.Context, src types.ProgramSource) (backend.Program, error) {
+	if src.ELF != nil {
+		return d.loadELF(src.ELF)
+	}
 	data := src.Xclbin
 	if data == nil {
 		var err error
 		if data, err = os.ReadFile(src.Path); err != nil {
 			return nil, err
 		}
+	}
+	if aieelf.IsELF(data) {
+		return d.loadELF(data)
 	}
 	f, err := xclbin.Parse(data)
 	if err != nil {
