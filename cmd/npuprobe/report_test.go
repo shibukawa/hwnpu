@@ -43,3 +43,20 @@ func TestKnees(t *testing.T) {
 		t.Errorf("read bound: %q", got[1])
 	}
 }
+
+func TestMarkdownAttn(t *testing.T) {
+	rep := &report{Attn: []attnResult{{
+		Form: "grouped", Chunk: 4096,
+		result: result{Format: "none", Tokens: 1, Units: "npu", NPUOps: 20, MsPerCall: 0.5},
+		Passes: []attnPass{{Used: 16384, Layers: 6, Chunks: 4, KVBytes: 6 * 4 * 4 << 20, MsPerPass: 12, MsMerge: 0.6, MaxRSS: 1 << 30}},
+	}}}
+	md := markdown(rep)
+	for _, want := range []string{
+		"| grouped | 1 | 4096 | NPU | 0.500 |",
+		"| grouped | 1 | 4096 | 16384 | 6 × 4 | 12.00 | 0.500 | 0.60 | 0.750 | 96 MiB | 1.00 GiB |",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("missing %q in\n%s", want, md)
+		}
+	}
+}

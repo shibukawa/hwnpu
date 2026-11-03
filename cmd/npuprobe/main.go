@@ -6,6 +6,8 @@
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest limit    # size limit only
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split    # a model over the limit in parts
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest verify   # K tokens per call
+//	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest kv       # attention over a KV cache
+//	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest attn     # attention per chunk of a cache
 //
 // The models have the shape of LLM decoding (internal/probe): one token through Llama 3.2 1B
 // sized layers with random weights, so every call reads every weight once, as generating one
@@ -31,6 +33,14 @@
 // of the prompt. The K at which the time per call starts to grow is about the most speculative
 // decoding can gain and the chunk that uses the NPU best; past it the call is bound by the compute,
 // which the report gives in TFLOPS.
+//
+// attn, run only when asked for (Core ML), builds the attention without weights over one chunk of
+// a KV cache that a model split at its attention would call once per used chunk and layer
+// (docs/model-fit.md T2), checks that it stays on the Neural Engine, times one call, and then
+// times a step's attention over caches of several used lengths (up to LFM3-1.7B's 262144): every
+// chunk in buffers of its own, the outputs merged on the host. A step then costs in proportion to
+// the tokens used instead of to the cache's capacity; the passes show the cost per call, what the
+// host's merge adds, and the memory of the process holding the cache.
 //
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
@@ -76,6 +86,7 @@ type report struct {
 	Bench     []result      `json:"bench,omitempty"`
 	Verify    []result      `json:"verify,omitempty"`
 	KV        []kvResult    `json:"kv,omitempty"`
+	Attn      []attnResult  `json:"attn,omitempty"`
 	Sweep     []result      `json:"sweep,omitempty"`
 	Several   []result      `json:"several,omitempty"`
 	SeveralOf string        `json:"several_of,omitempty"`
@@ -98,7 +109,7 @@ func main() {
 	}
 	fs := flag.NewFlagSet("npuprobe", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit|split|verify|kv] [flags]")
+		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit|split|verify|kv|attn] [flags]")
 		fs.PrintDefaults()
 	}
 	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
@@ -114,18 +125,24 @@ func main() {
 	kvLayers := fs.Int("kv-layers", 11, "kv: layers with attention over the cache (11 is LFM3-1.7B's attention layers)")
 	kvCache := fs.String("kv-cache", "256,1024,4096", "kv: cache lengths in tokens")
 	kvModes := fs.String("kv-modes", "host,state", "kv: host (buffers bound as inputs and outputs) and state (Core ML MLState); -mha gives every query head its own cached head, so nothing is repeated; -int8 holds the host cache as int8 with fp16 scales, cast back in the program; -chunk holds the host cache in chunks of at most 16384 tokens, so that caches over the Neural Engine's dimension limit stay on it")
+	attnChunks := fs.String("attn-chunks", "1024,4096,16384", "attn: chunk lengths in tokens (at most 16384, the Neural Engine's dimension limit)")
+	attnTokens := fs.String("attn-tokens", "1,8,64", "attn: query rows per call (1 a step, 8 a step checking drafts, 64 a chunk of the prompt)")
+	attnForms := fs.String("attn-forms", "grouped", "attn: grouped (the query heads of a kv head stacked in one matrix product, LFM3-1.7B's default) and tile (keys and values copied per query head)")
+	attnUsed := fs.String("attn-used", "4096,16384,65536,262144", "attn: used cache lengths of the passes, ascending; the chunk buffers of every layer are held at once (12 KiB a token with 6 layers: 3 GiB at 262144)")
+	attnLayers := fs.Int("attn-layers", 6, "attn: layers per pass (6 is LFM3-1.7B's full attention layers)")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
 	fs.Parse(args)
-	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" {
+	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" && mode != "attn" {
 		fs.Usage()
 		os.Exit(2)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	sp := splitOpts{layers: *splitLayers, parts: *parts, layout: *layout, ref: *ref, kvLayers: *kvLayers, kvCache: *kvCache, kvModes: *kvModes}
+	sp := splitOpts{layers: *splitLayers, parts: *parts, layout: *layout, ref: *ref, kvLayers: *kvLayers, kvCache: *kvCache, kvModes: *kvModes,
+		attnChunks: *attnChunks, attnTokens: *attnTokens, attnForms: *attnForms, attnUsed: *attnUsed, attnLayers: *attnLayers}
 	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "npuprobe:", err)
 		os.Exit(1)
@@ -137,6 +154,9 @@ type splitOpts struct {
 	parts, layout, ref string
 	kvLayers           int
 	kvCache, kvModes   string
+
+	attnChunks, attnTokens, attnForms, attnUsed string
+	attnLayers                                  int
 }
 
 func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, minRun time.Duration, work, out string) error {
@@ -318,6 +338,41 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 		}
 		p.kvs(&rep, sp.kvLayers, caches, modes, save)
 	}
+	if mode == "attn" {
+		if !p.coreml {
+			return errors.New("attn: the chunk attention probe models are Core ML only")
+		}
+		chunks, err := counts("-attn-chunks", sp.attnChunks)
+		if err != nil {
+			return err
+		}
+		for _, c := range chunks {
+			if c > 16384 {
+				return fmt.Errorf("-attn-chunks: %d is over the Neural Engine's dimension limit of 16384", c)
+			}
+		}
+		tokens, err := counts("-attn-tokens", sp.attnTokens)
+		if err != nil {
+			return err
+		}
+		used, err := counts("-attn-used", sp.attnUsed)
+		if err != nil {
+			return err
+		}
+		if !slices.IsSorted(used) {
+			return errors.New("-attn-used: the lengths go up")
+		}
+		forms := split(sp.attnForms)
+		for _, f := range forms {
+			if !slices.Contains(probe.AttnForms, f) {
+				return fmt.Errorf("-attn-forms: %q is not grouped or tile", f)
+			}
+		}
+		if sp.attnLayers < 1 {
+			return errors.New("-attn-layers: at least 1")
+		}
+		p.attns(&rep, sp.attnLayers, chunks, tokens, forms, used, save)
+	}
 	if mode == "verify" {
 		// The formats the NPU runs: int4 never reaches the Neural Engine.
 		p.verify(&rep, limitFormats, layers, tokens, save)
@@ -339,6 +394,22 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 	}
 	fmt.Printf("\nreport: %s (and %s)\n", out, strings.TrimSuffix(out, ".md")+".json")
 	return nil
+}
+
+// counts parses a comma separated list of positive counts.
+func counts(flagName, s string) ([]int, error) {
+	var out []int
+	for _, f := range split(s) {
+		n, err := strconv.Atoi(f)
+		if err != nil || n < 1 {
+			return nil, fmt.Errorf("%s: %q is not a positive count", flagName, f)
+		}
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: empty", flagName)
+	}
+	return out, nil
 }
 
 func split(s string) []string {

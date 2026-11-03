@@ -21,7 +21,7 @@ import (
 const childMode, childMark = "_measure", "npuprobe-result "
 
 type childSpec struct {
-	Kind     string        `json:"kind"` // try, several, split, chain or kv
+	Kind     string        `json:"kind"` // try, several, split, chain, kv or attn
 	Backend  string        `json:"backend"`
 	DeviceID string        `json:"device_id"`
 	Format   string        `json:"format"`
@@ -30,7 +30,8 @@ type childSpec struct {
 	Units    string        `json:"units"`
 	Quick    bool          `json:"quick"`
 	N        int           `json:"n"`
-	Layout   string        `json:"layout,omitempty"` // split: files or functions
+	Layout   string        `json:"layout,omitempty"` // split: files or functions; kv: the mode; attn: the form
+	Used     []int         `json:"used,omitempty"`   // attn: used cache lengths of the passes
 	MinRun   time.Duration `json:"min_run"`
 	Dir      string        `json:"dir"`
 	IdleW    float64       `json:"idle_w"`
@@ -141,6 +142,8 @@ func runChild(arg string) error {
 		rs = p.split(spec.Format, spec.Layers, spec.N, spec.Layout)
 	case "kv":
 		rs = p.kv(spec.Layout, spec.Layers, spec.N)
+	case "attn":
+		rs = p.attn(spec.Layout, spec.Layers, max(spec.Tokens, 1), spec.N, spec.Used)
 	case "chain":
 		rs = p.chain(spec.Format, spec.Layers, spec.N, spec.Units)
 	default:

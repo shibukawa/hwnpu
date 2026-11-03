@@ -153,6 +153,29 @@ func markdown(rep *report) string {
 		}
 		sb.WriteString("\nOne token through lut4 layers of the bench size with attention over a cache of the given length. host binds the cache as inputs and outputs the token's keys and values; state keeps it in Core ML states (MLState) and writes the token in with a one-hot row.\n")
 	}
+	if len(rep.Attn) > 0 {
+		sb.WriteString("\n## Attention per chunk of a KV cache, merged on the host\n\n")
+		sb.WriteString("| form | Q | chunk | placement | ms/call alone | CPU use | compile s | error |\n|---|---|---|---|---|---|---|---|\n")
+		for _, a := range rep.Attn {
+			fmt.Fprintf(&sb, "| %s | %d | %d | %s | %s | %s | %.1f | %s |\n", a.Form, a.Tokens, a.Chunk, a.placement(), cell(a.MsPerCall, "%.3f"), cell(a.CPUUse, "%.2f"), a.CompileS, errCell(a.result))
+		}
+		sb.WriteString("\n| form | Q | chunk | used | layers × chunks | ms/step | ms/call in the step | of it the merge, ms | ms per 1K used | KV | peak RSS | CPU use | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		for _, a := range rep.Attn {
+			for _, s := range a.Passes {
+				per1K := 0.0
+				if s.MsPerPass > 0 {
+					per1K = s.MsPerPass / (float64(s.Used) / 1024)
+				}
+				rss := ""
+				if s.MaxRSS > 0 {
+					rss = fmt.Sprintf("%.2f GiB", probe.GiB(s.MaxRSS))
+				}
+				fmt.Fprintf(&sb, "| %s | %d | %d | %d | %d × %d | %s | %s | %s | %s | %.0f MiB | %s | %s | %s |\n", a.Form, a.Tokens, a.Chunk, s.Used, s.Layers, s.Chunks,
+					cell(s.MsPerPass, "%.2f"), cell(s.msPerCall(), "%.3f"), cell(s.MsMerge, "%.2f"), cell(per1K, "%.3f"), float64(s.KVBytes)/(1<<20), rss, cell(s.CPUUse, "%.2f"), strings.ReplaceAll(short(s.Error, 200), "|", "/"))
+			}
+		}
+		sb.WriteString("\nThe program is attention without weights over one chunk of the cache (keys and values of 4 kv heads × 128, 16 query heads, Q query rows), returning the chunk's normalized output, largest scores and sums of exps. A step calls it once per chunk holding the used tokens in each layer, every chunk bound from buffers of its own, and merges the outputs on the host in float32. ms/call alone binds one chunk; ms/call in the step is a step's time over its calls, the merge included, so a difference between the two is the cost of binding many buffers. Peak RSS is the measuring process's largest resident memory after the step (it leaves out Core ML's and the Neural Engine's own processes); a peak well over the KV bytes means the inputs were copied.\n")
+	}
 	if len(rep.Notes) > 0 {
 		sb.WriteString("\n")
 		for _, n := range rep.Notes {
