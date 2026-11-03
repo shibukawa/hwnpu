@@ -18,7 +18,10 @@ var Arch = &llm.Arch{
 	// 4 bit tables cost E2B too much (KL 2.54 nats against the reference, against 0.25 with
 	// 6 bits and 0.05 with 8); 6 bits keeps 2 parts on the M3 and runs at 31 ms a token, against
 	// 24 with 4 bits and 41 with 8 (docs/design.md 16.26).
-	Format:     "lut6",
+	Format: "lut6",
+	Params: []llm.Param{
+		{Name: "logits", Default: "flat", Usage: "the logits output y: (1, seq, vocab) with its reshape on the CPU (flat), or left folded into rows of at most 16384 (folded), (1, seq, rows, vocab/rows), so that every operation is on the Neural Engine"},
+	},
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }
 
@@ -102,7 +105,7 @@ func (c *Config) Tensors() map[string][]int {
 // Build writes the program. It returns x and y only; a part of a split model has more inputs and
 // outputs, which BuildCached returns.
 func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error) {
-	ins, outs, err := Build(b, c, w, Options{Options: opts})
+	ins, outs, err := Build(b, c, w, Options{Options: opts, FoldedLogits: Arch.Param(opts, "logits") == "folded"})
 	if err != nil {
 		return nil, out, err
 	}
@@ -112,7 +115,7 @@ func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (i
 // BuildCached writes the program with every input and output (llm.Cached), with or without a
 // KV cache.
 func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
-	return Build(b, c, w, Options{Options: opts})
+	return Build(b, c, w, Options{Options: opts, FoldedLogits: Arch.Param(opts, "logits") == "folded"})
 }
 
 // StepInputs gives the masks and rotary tables of a step of valid tokens from pos (llm.Cached),
