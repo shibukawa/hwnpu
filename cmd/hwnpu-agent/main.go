@@ -53,10 +53,12 @@ func main() {
 	use := flag.String("use", "LFM3-1.7B", "the chat model: a name that hwnpu-chat -list shows (one with tool calls), or a Hugging Face repository OWNER/NAME")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name")
 	context_ := flag.Int("context", chat.DefaultContext, "tokens of the conversation and the answer together (the KV cache of the model's programs)")
-	pkgs := flag.String("package", "", "programs converted by hwnpu-convert instead, comma separated: .mlpackage or out.parts.json, with the same -cache and different -seq")
+	pkgs := flag.String("package", "", "programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the model (default: in its directory)")
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from (default: in the model's directory)")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
+	backend := flag.String("backend", "", "the NPU to convert for and run on: coreml (Apple's Neural Engine), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)")
+	format := flag.String("format", "", "weight format of the chat model's programs: int8, int4, int4-g128 or fp16 on Intel's NPU, lut4, lut6, lut8, int4, int8 or fp16 on the Neural Engine (default: the model's for the NPU, int8 for LFM3 on Intel's NPU)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	promptDir := flag.String("prompt-cache", "", "keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)")
 	workDir := flag.String("C", ".", "the working directory of the agent")
@@ -68,7 +70,7 @@ func main() {
 	think := flag.Bool("think", true, "let the model think before each answer")
 	keep := flag.Bool("keep-thinking", false, "keep the thinking of earlier rounds of a task in the conversation (costs context)")
 	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
-	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while the conversation is short, comma separated (a step costs in proportion to the cache); empty for none, auto for 4096 with a model in 4 bit tables and none with 6 or 8 bits (four such programs overflow the Neural Engine's compile cache and every start compiles them again)")
+	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while the conversation is short, comma separated (a step costs in proportion to the cache); empty or none for none, auto for 4096 with a model in 4 bit tables and none with 6 or 8 bits (four such programs overflow the Neural Engine's compile cache and every start compiles them again)")
 	draft := flag.Int("draft", 8, "tokens per call of the program that generates: a token and N-1 guesses checked at once (speculative decoding); 0 or 1 generates one token per call")
 	allow := flag.String("allow", "", "commands that run without asking, comma separated, with * for any text, e.g. \"go *,ls*,cat *\" (each part of a command joined with && or ; must match)")
 	steps := flag.Int("steps", 30, "most rounds of one task")
@@ -133,14 +135,14 @@ func main() {
 	md := filepath.Join(*dir, m.Name)
 	c := chat.Config{ModelConfig: *config, Weights: *weights}
 	if *pkgs != "" {
-		c.Packages, c.Name = strings.Split(*pkgs, ","), m.Name
+		c.Packages, c.Name, c.Backend = strings.Split(*pkgs, ","), m.Name, *backend
 		if c.ModelConfig == "" {
 			c.ModelConfig = filepath.Join(md, "config.json")
 		}
 		if c.Weights == "" {
 			c.Weights = filepath.Join(md, "model.safetensors")
 		}
-	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Log: os.Stderr}); err != nil {
+	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
 		fail(err)
 	}
 	c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr

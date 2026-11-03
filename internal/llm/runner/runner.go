@@ -44,11 +44,10 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (Program, error) 
 	if len(tiers) != 1 || tiers[0].Cache > 0 {
 		return nil, fmt.Errorf("runner: %s has a KV cache", path)
 	}
-	m, err := mlpackage.ReadModel(tiers[0].Parts[0].Path)
+	meta, err := llm.ReadMeta(man)
 	if err != nil {
 		return nil, err
 	}
-	meta := m.GetDescription().GetMetadata().GetUserDefined()
 	if dev == nil {
 		return openCPU(tiers[0].Parts, meta)
 	}

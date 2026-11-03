@@ -4,6 +4,8 @@
 
 LFM3-1.7B と PLaMo-Embedding-1B を Apple の Neural Engine だけで動かし、ターミナルで使ったり、OpenAI 互換の API として OpenCode などのクライアントから使ったりします。Python は要りません。
 
+同じコマンドが Intel の NPU (Core Ultra) でも動きます。モデルは OpenVINO IR に変換され、NPU のドライバがコンパイルします。実機ではまだ試していません。[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の 6 節を見てください。
+
 使うモデルは `-use` に名前で指定します。選べるモデルの名前と用途は `-list` で出ます。
 
 ```bash

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,10 +40,12 @@ func listenFree() (net.Listener, error) {
 	return nil, fmt.Errorf("no free port from %d to %d", portLow, portHigh-1)
 }
 
-// openModel is a chat model the server offers OpenCode, with its context in tokens.
+// openModel is a chat model the server offers OpenCode, with its context in tokens and the NPU it
+// runs on ("" for the Neural Engine).
 type openModel struct {
 	name    string
 	context int
+	npu     string
 }
 
 // openCodeConfig is an OpenCode config with the server as the provider hwnpu, its chat models,
@@ -51,7 +54,7 @@ func openCodeConfig(baseURL string, models []openModel) ([]byte, error) {
 	ms := map[string]any{}
 	for _, m := range models {
 		ms[m.name] = map[string]any{
-			"name":      m.name + " on the Neural Engine",
+			"name":      m.name + " on " + cmp.Or(m.npu, "the Neural Engine"),
 			"tool_call": true,
 			"reasoning": true,
 			"limit":     map[string]any{"context": m.context, "output": min(4096, m.context/4)},
@@ -62,7 +65,7 @@ func openCodeConfig(baseURL string, models []openModel) ([]byte, error) {
 		"provider": map[string]any{
 			"hwnpu": map[string]any{
 				"npm":     "@ai-sdk/openai-compatible",
-				"name":    "hwnpu (Neural Engine)",
+				"name":    "hwnpu (" + cmp.Or(models[0].npu, "Neural Engine") + ")",
 				"options": map[string]any{"baseURL": baseURL},
 				"models":  ms,
 			},
@@ -105,7 +108,7 @@ func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error)
 	baseURL := fmt.Sprintf("http://%s/v1", l.Addr())
 	var models []openModel
 	for _, e := range s.Chats {
-		models = append(models, openModel{e.Name, e.Context()})
+		models = append(models, openModel{e.Name, e.Context(), e.DeviceName()})
 	}
 	cfg, err := openCodeConfig(baseURL, models)
 	if err != nil {
