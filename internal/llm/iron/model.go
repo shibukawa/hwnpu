@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/shibukawa/hwnpu"
 )
@@ -255,8 +256,11 @@ func (m *Model) chunk(ctx context.Context, ids []int32, start int) ([]float32, e
 	if err := m.carry(v, values); err != nil {
 		return nil, err
 	}
+	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
 	for k := range v.m.Kernels {
+		t0 := time.Now()
 		run, err := m.newRun(v, k)
+		t1 := time.Now()
 		if err != nil {
 			return nil, fmt.Errorf("iron: prompt command %d: %w", k, err)
 		}
@@ -264,7 +268,12 @@ func (m *Model) chunk(ctx context.Context, ids []int32, start int) ([]float32, e
 		if err == nil {
 			err = run.Run(ctx)
 		}
+		t2 := time.Now()
 		run.Close()
+		if timing {
+			fmt.Fprintf(os.Stderr, "prompt command %d (%d rows from %d): setup %.1f ms, run %.1f ms, close %.1f ms\n", k, rows, start,
+				t1.Sub(t0).Seconds()*1000, t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("iron: prompt command %d: %w", k, err)
 		}

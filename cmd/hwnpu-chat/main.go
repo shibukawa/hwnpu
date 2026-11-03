@@ -86,6 +86,7 @@ func main() {
 	topK := flag.Int("top-k", 50, "sample from the k most likely tokens")
 	topP := flag.Float64("top-p", 0, "sample from the most likely tokens up to this probability (0: off)")
 	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
+	ironDir := flag.String("iron", "", "run a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), this directory, in place of -use")
 	flag.Parse()
 	if flag.NArg() > 0 && !*withOpenCode {
 		flag.Usage()
@@ -112,7 +113,12 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	models, err := resolve(ctx, *use, *dir, *listen != "" || *withOpenCode)
+	var models []chat.Model
+	if *ironDir != "" {
+		models = []chat.Model{{Name: strings.TrimSuffix(filepath.Base(*ironDir), ".amd-npu2"), Kind: chat.KindChat}}
+	} else {
+		models, err = resolve(ctx, *use, *dir, *listen != "" || *withOpenCode)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
 		os.Exit(2)
@@ -136,7 +142,9 @@ func main() {
 		switch m.Kind {
 		case chat.KindChat:
 			c := chat.Config{ModelConfig: *config, Weights: *weights}
-			if *pkgs != "" {
+			if *ironDir != "" {
+				c = chat.Config{IRON: *ironDir, Name: m.Name}
+			} else if *pkgs != "" {
 				c.Packages, c.Name = strings.Split(*pkgs, ","), m.Name
 				if c.ModelConfig == "" {
 					c.ModelConfig = filepath.Join(md, "config.json")

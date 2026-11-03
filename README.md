@@ -9,7 +9,7 @@ CPU 内蔵の NPU を cgo なしで Go から使うためのライブラリで�
 |---|---|---|
 | macOS (Apple Silicon) | Core ML (GPU を除外し、MLComputePlan で ANE 配置を検証) | M1 実装済み |
 | Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR のドライバ内コンパイル、コンパイル済み blob) | M2 実装済み。実機では未検証 |
-| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。Ryzen AI 9 365 (Strix Point、Linux 7.0) で IRON の設計の実行を確認 |
+| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。Ryzen AI 9 365 (Strix Point、Linux 7.0) で IRON の設計と full ELF の実行、Gemma 4 E2B の hwnpu-chat / hwnpu-agent を確認 |
 | Windows (AMD Ryzen AI) | なし | 非対応 |
 | WSL2 | なし | 非対応。WSL2 からは Intel と AMD のどちらの NPU も見えない |
 
@@ -90,7 +90,21 @@ out.SyncFromDevice(0, n)
 - 引数の番号、オフセット、型は xclbin のメタデータから読みます (`k.Args()`)
 - `/dev/accel/accelN` に読み書きできる権限 (`render` グループ) が必要です。Linux 6.14 以降のカーネル (amdxdna) を前提にしています
 - 電力ポリシーはハードウェアコンテキストの優先度 (QoS) に反映します。デバイス全体の電力モードは root 専用なので変更しません
-- 電力は NPU のセンサー値 (瞬間値) を読み、`PowerSample` の呼び出し間で積分して電力量にします
+- 電力は NPU のセンサー値 (瞬間値) を読み、`PowerSample` の呼び出し間で積分して電力量にします。Linux 7.0 の標準カーネルにはセンサーがありません (AMD の DKMS 版のドライバだけ)
+
+Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.elf`、グラフ全体を 1 つのハードウェアコンテキストと 1 つのコマンドで流すもの) も読み込めます。カーネル名は `main:sequence` の形で、引数はすべてバッファです。呼び出しごとの値は `run.Scratchpad()` に書きます。
+
+### LLM (Gemma 4 E2B) を AMD の NPU で
+
+IRON (amd/IRON) を開発者の機械でコンパイラとして一度だけ使い、`tools/amd/iron_export_lm.py` で書き出したものを hwnpu が Go だけで動かします (利用者の機械に Python も XRT も要りません)。
+
+```bash
+python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.amd-npu2 --max-seq-len 4096
+go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.amd-npu2
+go run ./cmd/hwnpu-agent -iron ~/models/gemma-4-E2B-it.amd-npu2 "README.md を要約して"
+```
+
+Ryzen AI 9 365 で、デコードは 1 秒に 5.5〜6 トークン、プロンプトは 1 秒に 250 トークン前後です (bf16 の重み)。仕組みと制約は [docs/amd-npu-models.md](docs/amd-npu-models.md) にあります。
 
 ## Apple での注意
 

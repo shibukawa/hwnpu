@@ -19,6 +19,7 @@ import (
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
@@ -54,6 +55,10 @@ type Config struct {
 	Log io.Writer
 	// Name is the model's name in the API (default: the first package's).
 	Name string
+	// IRON is a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), in
+	// place of Packages: its manifest, ELFs and arena. Tokenizer defaults to the
+	// tokenizer.json in it.
+	IRON string
 }
 
 // Engine runs a model with a KV cache, one request at a time. A prompt that begins like an
@@ -83,12 +88,13 @@ type Engine struct {
 	// none. Load sets it to Lookup when the model has a program to check drafts with (Draft).
 	drafter func(seq []int32, k int) []int32
 
-	store *store    // prompts kept on disk (Config.PromptDir); nil for none
-	log   io.Writer // Config.Log
+	ir    *iron.Model // the model of an IRON export (Config.IRON); nil for none
+	store *store      // prompts kept on disk (Config.PromptDir); nil for none
+	log   io.Writer   // Config.Log
 
 	mu     sync.Mutex
 	closed bool // by Close: the programs and the weights are gone
-	sess   *decode.Session
+	sess   session
 	cur    seq     // the sequence in the cache
 	saved  []saved // put aside, the most recently used last
 }
@@ -168,6 +174,9 @@ func (q *seq) reach(prompt []int32) (int, *mark) {
 
 // Load loads the model.
 func Load(ctx context.Context, c Config) (*Engine, error) {
+	if c.IRON != "" {
+		return loadIRON(ctx, c)
+	}
 	if len(c.Packages) == 0 {
 		return nil, errors.New("chat: no package")
 	}
@@ -470,6 +479,10 @@ func (e *Engine) Close() error {
 		e.tiers[i].close()
 	}
 	e.tiers = nil
+	if e.ir != nil {
+		e.ir.Close()
+		e.ir = nil
+	}
 	if e.dev != nil {
 		e.dev.Close()
 		e.dev = nil
@@ -791,7 +804,7 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 	}
 	if e.store != nil && len(e.cur.fed) >= minStored {
 		kept = append(kept, storedMark{m.m.Pos(), m.m.Bufs(), m.logits})
-		if se, err := e.store.put(e.cur.fed, e.sess, kept, e.cur.base); err != nil {
+		if se, err := e.store.put(e.cur.fed, e.sess.(*decode.Session), kept, e.cur.base); err != nil {
 			e.logf("prompt store: %v", err)
 		} else {
 			e.cur.base = se
@@ -833,8 +846,12 @@ func (e *Engine) putAside() {
 	if len(e.cur.fed) < minSaved {
 		return
 	}
+	all := e.sess.Save()
+	if all == nil {
+		return
+	}
 	q := seq{fed: slices.Clone(e.cur.fed), last: e.cur.last, marks: slices.Clone(e.cur.marks)}
-	e.saved = append(e.saved, saved{q, e.sess.Save(), e.ti})
+	e.saved = append(e.saved, saved{q, all, e.ti})
 	if len(e.saved) > maxSaved {
 		e.saved = e.saved[1:]
 	}
@@ -955,11 +972,22 @@ func (e *Engine) imageRow(t int32) ([]float32, bool) {
 
 // step runs the tokens and records them as fed.
 func (e *Engine) step(toks []int32) ([]float32, error) {
-	embs, err := e.rows(toks)
-	if err != nil {
-		return nil, err
+	var logits []float32
+	var err error
+	if ts, ok := e.sess.(tokenSession); ok {
+		for _, t := range toks {
+			if t < 0 {
+				return nil, fmt.Errorf("%w: this model reads no images", ErrImage)
+			}
+		}
+		logits, err = ts.StepTokens(toks)
+	} else {
+		var embs [][]float32
+		if embs, err = e.rows(toks); err != nil {
+			return nil, err
+		}
+		logits, err = e.sess.Step(embs)
 	}
-	logits, err := e.sess.Step(embs)
 	if err != nil {
 		// the cache may be half written
 		e.sess.Reset()

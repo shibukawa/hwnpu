@@ -367,6 +367,11 @@ def main(argv=None) -> int:
     _CONFIG.update(max_seq_len=int(c.max_seq_len), prefill_chunk=int(c.prefill_chunk), vocab_size=int(c.vocab_size))
     versions = compile_versions(model)
     m = export(model, versions, a.out)
+    # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
+    for name in ("tokenizer.json", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json"):
+        src = Path(a.checkpoint) / name
+        if src.is_file():
+            shutil.copyfile(src, a.out / name)
     for name, v in m["versions"].items():
         print(f"{name}: {len(v['kernels'])} commands, arguments {[(x['kind'], x['bytes']) for x in v['arguments']]}")
     if a.check:

@@ -1,6 +1,6 @@
 # 変換したモデルを AMD の NPU で動かす: 設計
 
-作成: 2026-11-03。対象は `hwnpu-chat` と `hwnpu-agent` を AMD Ryzen AI の NPU (XDNA2、Strix Point 以降) で動かすこと。根拠は design.md 16.39 (実機での最初の確認) と 16.40 (GEMV と切り替えの測定)、それとこの文書の 2 節の測定。
+作成: 2026-11-03。**状態 (2026-11-03): 段階 A1〜A4 を実装し、Gemma 4 E2B が `hwnpu-chat -iron` と `hwnpu-agent -iron` で動いた (design.md 16.42〜16.46)。** 対象は `hwnpu-chat` と `hwnpu-agent` を AMD Ryzen AI の NPU (XDNA2、Strix Point 以降) で動かすこと。根拠は design.md 16.39 (実機での最初の確認) と 16.40 (GEMV と切り替えの測定)、それとこの文書の 2 節の測定。
 
 ## 1. 現状
 
