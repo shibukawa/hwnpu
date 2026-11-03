@@ -145,8 +145,9 @@ OpenVINO GenAI の NPU 向けの推奨は「int4、対称、チャネルごと (
 
 | Core ML の既定 | Intel の既定 | 該当 |
 |---|---|---|
-| `lut4` | `int4` | LFM3-1.7B |
+| `lut4` | `int8` (`Arch.IntelFormat`) | LFM3-1.7B (2026-11-03 に int4 から変更。int4 では次のトークンが fp16 と 52 中 22 しか合わない。11 節 P2) |
 | `lut4` | `int8` (`Arch.IntelFormat`) | BERT、PLaMo-Embedding (int4 では文埋め込みが崩れる。11 節) |
+| (その他の `lut4`) | `int4` | |
 | `lut6`、`lut8` | `int8` | Gemma 4 E2B (lut6)、d1、LFM3-VL、LFM3-Audio/TTS (M3 で lut4 が劣化した系統。精度を優先) |
 | `fp16` | `fp16` | |
 
@@ -285,3 +286,59 @@ PLaMo-Embedding-1B の実物 (`plamo` の `TestIntelIRCheckpoint`、`HWNPU_PLAMO
 
 P1 は以上で終わり。
 
+
+### P2・P3 (2026-11-03)
+
+できたこと:
+
+- **バックエンドの選択** (`internal/llm/device.go`)。`llm.FindDevice`/`OpenDevice` が、`-backend` か `HWNPU_BACKEND` か、なければ見つかった NPU (Core ML、Level Zero の順) を開き、変換結果の種類 (`coreml` か `intel`) を返す。`llm.ProgramFormat` は、形式 (`coreml`/`intel`) を名指しされたら端末なしで答える (別の機械のための変換)。7 節の 6 か所のうち、`chat/engine.go`、`chat/embed.go`、`systemone`、`speech`、`hwnpu-generate` を置き換えた。`powerbench` は macOS の `powermetrics` を使う Mac 専用の道具なので Core ML のまま。
+- **hwnpu-chat・hwnpu-agent の初回変換** (`chat.Prepare`、`PrepareEmbedder`)。Intel では `<model>/intel/` に `.xml` で書き、名前に形式を入れる (`lfm3-int8-c4096-q8.xml`)。Core ML の変換結果の場所と名前は今まで通り。`-backend` と `-format` を足した。Intel では 1 トークンの段も 1 つのグラフにする (Core ML は 2 分割)。
+- **`runner` のメタデータ**: manifest の `meta`、なければ IR の `rt_info` (`ovir.ReadRTInfo`) か mlpackage から読む (`llm.ReadMeta`)。画像・音声のエンコーダもこれで IR から読める。
+- **Level Zero の引数名** (10 節の未確定事項への備え)。ドライバの返す名前が IR の名前でなければ、debug 名、tensor 名 (`associated_tensor_names`) の順に IR の名前を探し、なければ IR の Parameter・Result の順番で対応させる (`levelzero.argNames`)。
+- **`openvino` バックエンド** (`internal/backend/openvino`、確認用)。IR を OpenVINO で動かす。Python のプロセス (`serve_ir.py`、埋め込み) とバッファをメモリマップしたファイルで共有し、Level Zero と同じ名前の規則で引数を返す。`-backend openvino` (または `HWNPU_BACKEND=openvino`) と `HWNPU_OV_PYTHON` で使う。`HWNPU_OV_DEVICE=NPU` にすると OpenVINO の NPU プラグインで動くので、実機で Level Zero の経路と比べられる。x86 の CPU では、圧縮した重みの MatMul で活性化を int8 に量子化する既定 (dynamic quantization) が誤差を 1% ほど足すので切っている (`tools/ov/run_ir.py` も同じ。これで `ovlower` と `plamo` の IR テストが x86 でも通るようになった)。
+- **パディングの行**: `decode` は、1 回の呼び出しの残りの行を 0 ではなく最後のトークンの行で埋める。Gemma 4 の RMSNorm の epsilon (1e-6/64²) は fp16 で 0 になるので、0 の行が 1/√0 = ∞ になり、注意の重み 0 × NaN でトークンの行まで NaN になっていた。OpenVINO の CPU で見つかった。NPU も fp16 で計算するので、実機でも起きたはず。
+
+確かめたこと (Linux x86、OpenVINO 2026.4 の CPU、推論の精度 f32):
+
+| テスト | 内容 | 結果 |
+|---|---|---|
+| `lfm3` の `TestIntelIRCached` | KV キャッシュ付きの IR を `chain`・`decode` で 1 トークンずつ・数トークンずつ進め、キャッシュなしの MIL (milcpu) と比べる。分割 1〜3、2 つのプログラムで 1 つのキャッシュを共有 | fp16 で相対誤差 6e-4、int8 で 0.015 |
+| `gemma4` の `TestIntelIRCached` | 同じ。`ple` 入力、部分の間で共有する K/V、パディングした呼び出し | fp16 で 3e-3 (Core ML 側のテストと同じ水準) |
+| `lfm3vl`・`lfm3audio` の `TestIntelIR` | 画像・音声のエンコーダを Go の fp64 参照実装と比べる | 2e-4 |
+| `chat` の `TestPrepareEncoders` | `-backend intel` の Prepare が `intel/` に IR と `parts.json` を書く | 合格 |
+| `levelzero` の `TestArgNames` | 引数名の対応付け | 合格 |
+| hwnpu-chat (実物の LFM3-1.7B、`-backend openvino`) | 変換 (1 プログラム 10 秒ほど) → 読み込み → 対話 | 正しく答える。int4 で 37 トークン/秒 (20 コアの CPU) |
+| hwnpu-agent (同じ、既定の段 4096/16320、下書き 8) | `calc.go` のバグを直す課題 | ツールを呼び、ファイルを直した |
+
+LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_LFM3_DIR`)。日本語と英語の 52 トークンを 1 トークンずつ読み、各位置で最も確からしい次のトークンが fp16 の IR と同じだった数と、ロジットの相対誤差:
+
+| 形式 | 次のトークンが fp16 と同じ | ロジットの相対誤差 (平均 / 最悪) |
+|---|---|---|
+| int8 | 51 / 52 | 0.043 / 0.107 |
+| int4-g32 | 32〜34 / 52 | 0.28 / 0.61 |
+| int4-g128 | 29 / 52 | 0.43 / 1.14 |
+| int4 (行ごと) | 22 / 52 | 0.63 / 1.57 |
+| int4-g128、`embed_tokens` を int8 | 25 / 52 | 0.42 / 1.13 |
+| int4、`embed_tokens` と `conv` を int8 | 27 / 52 | 0.51 / 1.21 |
+| int4、`embed_tokens` と `feed_forward` を int8 | 30 / 52 | 0.37 / 1.02 |
+| 参考: Mac の lut4 (kmeans-minmax、milcpu) | 26 / 52 | 0.44 / 0.76 |
+
+4 ビットはどれも Mac の lut4 と同じ程度に崩れ、出力層 (共有の埋め込み) や一部の層を int8 にしても戻らない。int8 はほぼ fp16 と同じ。そこで **LFM3 の Intel の既定を int8 にした** (`lfm3.Arch.IntelFormat`。5.3 節の表の `lut4 → int4` を置き換える)。重みは 1.6 GiB で int4 の倍。NPU での速さは未測定なので、実機で `-format int4-g128` などと比べて決め直す。
+
+実機で比べるための道具として `cmd/hwnpu-formats` を足した。形式ごとに変換して NPU に載せ、決まった会話 (日本語、英語とコード。294 位置) を 1 回 8 トークンで読ませ、次のトークンの一致、ロジットの誤差、答えのパープレキシティ、1 回の時間を出す。OpenVINO の CPU では:
+
+| 形式 | 重み (GiB) | 次のトークンが fp16 と同じ | パープレキシティ |
+|---|---|---|---|
+| fp16 | 3.22 | (基準) | 3.81 |
+| int8 | 1.61 | 288 / 294 (98%) | 3.84 |
+| int4-g128 | 0.83 | 236 / 294 (80%) | 4.28 |
+| int4 | 0.81 | 222 / 294 (76%) | 4.89 |
+
+チャットの答えのような文では、上の表 (説明文を 1 トークンずつ) より 4 ビットの崩れは小さい。int4-g128 が NPU で int8 よりはっきり速ければ、既定の候補になる。
+
+残り (実機が要る):
+
+- L2: NPU のコンパイラが LFM3-1.7B (int8、`-seq 8` と `64`、キャッシュ 4096 と 16320) を受け付けるか、コンパイルにかかる時間。
+- 引数名が `argNames` の規則で合うか (合わなければ `chain: part 0 has no output y` などで止まる)。
+- 既定の段 (4096 と 16320、それぞれ生成用と読み込み用) では 4 つのグラフが重みを別々に持つ (int8 で 6.4 GiB)。メモリが足りなければ `-tier ""` で 2 つ。
+- Gemma 4 と LFM3-VL/Audio の hwnpu-chat での実行。変換と数値は CPU で確かめたが、実物のチェックポイントでは動かしていない。

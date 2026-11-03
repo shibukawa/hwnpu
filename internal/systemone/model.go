@@ -117,11 +117,7 @@ func Load(ctx context.Context, c Config) (*Model, error) {
 		return nil, err
 	}
 	if !c.CPU {
-		opts := []hwnpu.Option{hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
-		if c.CacheDir != "" {
-			opts = append(opts, hwnpu.WithCacheDir(c.CacheDir))
-		}
-		if m.dev, err = hwnpu.Open(ctx, opts...); err != nil {
+		if m.dev, _, err = llm.OpenDevice(ctx, "", c.CacheDir); err != nil { // HWNPU_BACKEND, else the NPU found
 			m.Close()
 			return nil, err
 		}
