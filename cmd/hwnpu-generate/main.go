@@ -107,11 +107,7 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 	}
 	defer w.Close()
 
-	opts := []hwnpu.Option{hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
-	if cacheDir != "" {
-		opts = append(opts, hwnpu.WithCacheDir(cacheDir))
-	}
-	dev, err := hwnpu.Open(ctx, opts...)
+	dev, _, err := llm.OpenDevice(ctx, "", cacheDir) // HWNPU_BACKEND, else the NPU found
 	if err != nil {
 		return err
 	}

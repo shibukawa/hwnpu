@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -33,7 +33,9 @@ type EmbedSetup struct {
 	Dir  string // holds config.json, tokenizer.model, model.safetensors and the converted programs
 	Repo string // Hugging Face repository the missing checkpoint files come from
 	Seqs []int  // sequence lengths of the programs
-	Log  io.Writer
+	// Backend picks the device as Setup.Backend does.
+	Backend string
+	Log     io.Writer
 }
 
 // PrepareEmbedder makes the embedding model ready in Dir like Prepare: it downloads the missing
@@ -43,22 +45,30 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return EmbedConfig{}, err
 	}
+	backend, err := llm.ProgramFormat(ctx, s.Backend)
+	if err != nil {
+		return EmbedConfig{}, err
+	}
+	pdir, err := programDir(s.Dir, backend)
+	if err != nil {
+		return EmbedConfig{}, err
+	}
 	for _, f := range []string{"config.json", "tokenizer.model", "model.safetensors"} {
 		if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
 			return EmbedConfig{}, err
 		}
 	}
-	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo)}
+	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo), Backend: cmp.Or(s.Backend, backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return EmbedConfig{}, err
 	}
 	// the format is in the name, so that a program of an earlier default (lut4 before lut8) is
 	// converted again rather than loaded
-	format := a.DefaultFormat(model)
+	format := a.DefaultFormatFor(model, backend)
 	for _, seq := range s.Seqs {
-		out := filepath.Join(s.Dir, fmt.Sprintf("embed-%s-s%d.mlpackage", format, seq))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{seq: seq, format: format}, s.Log)
+		out := filepath.Join(pdir, fmt.Sprintf("embed-%s-s%d%s", format, seq, programExt(backend)))
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, seq: seq, format: format}, s.Log)
 		if err != nil {
 			return EmbedConfig{}, err
 		}
@@ -81,6 +91,8 @@ type EmbedConfig struct {
 	Log io.Writer
 	// Name is the model's name in the API (default: the first package's).
 	Name string
+	// Backend picks the device as Config.Backend does.
+	Backend string
 }
 
 // Embedder turns texts into sentence embeddings with PLaMo-Embedding, one text at a time: the
@@ -137,20 +149,16 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 	}
 	e.Name = c.Name
 	if e.Name == "" {
-		e.Name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
+		e.Name = programName(c.Packages[0])
 	}
-	logf("loading %s onto the Neural Engine: %d programs, up to a minute or two (Core ML compiles them the first time)", e.Name, len(c.Packages))
 	if e.w, err = llm.OpenWeights(c.Weights, a); err != nil {
 		return nil, err
 	}
-	opts := []hwnpu.Option{hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
-	if c.CacheDir != "" {
-		opts = append(opts, hwnpu.WithCacheDir(c.CacheDir))
-	}
-	if e.dev, err = hwnpu.Open(ctx, opts...); err != nil {
+	if e.dev, _, err = llm.OpenDevice(ctx, c.Backend, c.CacheDir); err != nil {
 		e.Close()
 		return nil, err
 	}
+	logf("loading %s onto %s: %d programs, up to a minute or two (%s)", e.Name, llm.DeviceName(e.dev), len(c.Packages), compileNote(e.dev))
 	for _, pkg := range c.Packages {
 		t0 := time.Now()
 		stop := dots(c.Log, "  "+filepath.Base(pkg)+" ")

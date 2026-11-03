@@ -138,7 +138,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		return nil, buildErr(err)
 	}
 	// A native blob is code compiled for the NPU, so every operation runs there.
-	return d.finishGraph(h, types.PlacementReport{Verified: true, Method: "levelzero-native-blob"})
+	return d.finishGraph(h, types.PlacementReport{Verified: true, Method: "levelzero-native-blob"}, nil)
 }
 
 func (d *device) compileIR(src types.GraphSource) (backend.Graph, error) {
@@ -188,7 +188,7 @@ func (d *device) compileIR(src types.GraphSource) (backend.Graph, error) {
 		if blobPath, ok := cache.Lookup(d.opts.CacheDir, key, ".blob"); ok {
 			if blob, err := os.ReadFile(blobPath); err == nil {
 				if h, err := d.drv.graph.Create(d.ctx, d.entry.handle, ze.GraphFormatNative, blob, "", ze.GraphFlagNone); err == nil {
-					g, err := d.finishGraph(h, rep)
+					g, err := d.finishGraph(h, rep, model)
 					if err == nil {
 						g.(*graph).cached = true
 					}
@@ -229,7 +229,7 @@ func (d *device) compileIR(src types.GraphSource) (backend.Graph, error) {
 	}
 	// The NPU compiler does not fall back to other devices: a successful build runs entirely
 	// on the NPU.
-	return d.finishGraph(h, rep)
+	return d.finishGraph(h, rep, model)
 }
 
 // cacheKey covers the compiler input and everything about the driver that changes its output.
@@ -246,7 +246,9 @@ func (d *device) cacheKey(input []byte, flags string) string {
 }
 
 // finishGraph reads the arguments and performs the initialization stages the driver requires.
-func (d *device) finishGraph(h ze.Handle, rep types.PlacementReport) (backend.Graph, error) {
+// model is the IR the graph was compiled from (nil for a native blob): the arguments take its
+// names (argNames).
+func (d *device) finishGraph(h ze.Handle, rep types.PlacementReport, model *ovir.Model) (backend.Graph, error) {
 	g := &graph{d: d, h: h, placement: rep}
 	fail := func(err error) (backend.Graph, error) {
 		d.drv.graph.Destroy(h)
@@ -256,6 +258,7 @@ func (d *device) finishGraph(h ze.Handle, rep types.PlacementReport) (backend.Gr
 	if err != nil {
 		return fail(driverErr(err))
 	}
+	var props []*ze.GraphArgumentProperties3
 	for i := uint32(0); i < n; i++ {
 		p, err := d.drv.graph.ArgumentProperties(h, i)
 		if err != nil {
@@ -266,6 +269,10 @@ func (d *device) finishGraph(h ze.Handle, rep types.PlacementReport) (backend.Gr
 			return fail(err)
 		}
 		g.args = append(g.args, a)
+		props = append(props, p)
+	}
+	if model != nil {
+		argNames(g.args, props, model)
 	}
 	if stages&ze.StageInitialize != 0 {
 		if err := d.drv.graph.Initialize(h); err != nil {
@@ -308,6 +315,51 @@ func (d *device) runOnce(record func(list ze.Handle) error) error {
 	}
 	_, err = d.api.SyncFence(f, ^uint64(0))
 	return err
+}
+
+// argNames names the arguments as the IR does, which is what the callers bind by (the MIL names
+// hwnpu-convert keeps: x, y, kv_*, ...). The driver reports a name, a debug name and the tensor
+// names of each argument; which of them carries the IR's name depends on the driver and the
+// compiler, so the first that is a name of the IR wins. Failing all, the arguments are matched to
+// the IR's Parameters and Results in order, which is how the compiler numbers them when the model
+// says use_indices_for_io_metadata (ovir.InjectRTInfo).
+func argNames(args []types.ArgInfo, props []*ze.GraphArgumentProperties3, model *ovir.Model) {
+	ports := map[types.ArgKind][]ovir.Port{types.ArgInput: model.Inputs, types.ArgOutput: model.Outputs}
+	known := map[types.ArgKind]map[string]bool{}
+	count := map[types.ArgKind]int{}
+	for k, ps := range ports {
+		known[k] = map[string]bool{}
+		for _, p := range ps {
+			known[k][p.Name] = true
+		}
+	}
+	for _, a := range args {
+		count[a.Kind]++
+	}
+	seen := map[types.ArgKind]int{}
+	for i := range args {
+		a, p := &args[i], props[i]
+		k := a.Kind
+		nth := seen[k]
+		seen[k]++
+		if known[k][a.Name] {
+			continue
+		}
+		names := []string{ze.CString(p.DebugFriendlyName[:])}
+		for j := 0; j < int(p.AssociatedTensorNamesCount) && j < len(p.AssociatedTensorNames); j++ {
+			names = append(names, ze.CString(p.AssociatedTensorNames[j][:]))
+		}
+		found := false
+		for _, n := range names {
+			if known[k][n] {
+				a.Name, found = n, true
+				break
+			}
+		}
+		if !found && count[k] == len(ports[k]) {
+			a.Name = ports[k][nth].Name
+		}
+	}
 }
 
 var precisions = map[uint32]types.DType{
