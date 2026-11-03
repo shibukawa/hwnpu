@@ -130,6 +130,11 @@ char *xs_bo_alloc(xs_device *d, size_t size, int kind, int group, xs_bo **out) {
 
 void xs_bo_free(xs_bo *b) { delete b; }
 
+char *xs_bo_sub(xs_bo *parent, size_t n, size_t off, xs_bo **out) {
+  *out = nullptr;
+  return guard("sub-buffer", [&] { *out = new xs_bo{xrt::bo(parent->bo, n, off)}; });
+}
+
 char *xs_bo_map(xs_bo *b, void **ptr) {
   *ptr = nullptr;
   return guard("map buffer", [&] { *ptr = b->bo.map(); });

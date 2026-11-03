@@ -1,6 +1,6 @@
 # 変換したモデルを AMD の NPU で動かす: 設計
 
-作成: 2026-11-03。**状態 (2026-11-03): 段階 A1〜A4 を実装し、Gemma 4 E2B が `hwnpu-chat -iron` と `hwnpu-agent -iron` で動いた (design.md 16.47〜16.51)。** 対象は `hwnpu-chat` と `hwnpu-agent` を AMD Ryzen AI の NPU (XDNA2、Strix Point 以降) で動かすこと。根拠は design.md 16.44 (実機での最初の確認) と 16.45 (GEMV と切り替えの測定)、それとこの文書の 2 節の測定。
+作成: 2026-11-03。**状態 (2026-11-04): 段階 A1〜A4 を実装し、Gemma 4 E2B が `hwnpu-chat -iron` と `hwnpu-agent -iron` で動いた (design.md 16.47〜16.51)。Windows 向けの XRT 経由のバックエンド (16.56) と、NPU1 向けの「1 ステップごとの xclbin」(16.57) も実装した。どちらも同じ経路をこの機械 (NPU2、Linux) で実機検証したが、Windows と NPU1 の実機では未検証。** 対象は `hwnpu-chat` と `hwnpu-agent` を AMD Ryzen AI の NPU (XDNA2、Strix Point 以降) で動かすこと。根拠は design.md 16.44 (実機での最初の確認) と 16.45 (GEMV と切り替えの測定)、それとこの文書の 2 節の測定。
 
 ## 1. 現状
 
@@ -138,7 +138,7 @@ gemma-4-E2B-it.amd-npu2/
 ```
 
 - 道具: `tools/amd/iron_export.py` (開発者の機械で一度だけ)。IRON のアプリケーション (`iron.applications.gemma4` など) を、NPU のない機械でも `set_current_device(from_name("npu2", n_cols=8))` でコンパイルし、上の全てを書く。IRON と mlir-aie の版を固定し、manifest に記録する
-- 装置ごと: NPU2 (8 列、Strix、Strix Halo、Krackan) を対象にする。NPU1 (Phoenix、Hawk Point) は full ELF がないので対象外 (IRON も演算ごとの投入になる)
+- 装置ごと: NPU2 (8 列、Strix、Strix Halo、Krackan) は full ELF。NPU1 (Phoenix、Hawk Point、4 列) は full ELF がないので、IRON と同じく「1 ステップごとの xclbin」で書き出す (`--device npu1 --cols 4`、design.md 16.57)。呼び出しごとの値は、mlir-aie が生成する命令列の C++ を命令列プログラムに直して持つ
 - `hwnpu-convert` には `-backend amd` を足さない (Go では作れないため)。`hwnpu-chat` のカタログに AMD の成果物の置き場所 (URL とハッシュ) を持つ
 
 ## 6. 実行側

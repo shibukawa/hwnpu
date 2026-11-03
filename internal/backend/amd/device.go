@@ -350,7 +350,10 @@ func (r *run) SetArg(i int, value []byte) error {
 	return nil
 }
 
-func (r *run) SetBuffer(i int, b backend.Buffer) error {
+func (r *run) SetBuffer(i int, b backend.Buffer) error { return r.SetBufferAt(i, b, 0, len(b.Bytes())) }
+
+// SetBufferAt sets a buffer argument to a part of a buffer: its address plus off.
+func (r *run) SetBufferAt(i int, b backend.Buffer, off, n int) error {
 	a, err := r.arg(i)
 	if err != nil {
 		return err
@@ -362,11 +365,15 @@ func (r *run) SetBuffer(i int, b backend.Buffer) error {
 	if !ok || buf.d != r.p.d {
 		return errors.New("amd: buffer was not allocated by this device")
 	}
+	if off < 0 || n <= 0 || off+n > len(buf.mem) {
+		return fmt.Errorf("amd: argument %d: [%d, %d) of a %d byte buffer", i, off, off+n, len(buf.mem))
+	}
+	addr := buf.bo.DeviceAddr() + uint64(off)
 	switch a.Size {
 	case 8:
-		binary.LittleEndian.PutUint64(r.regmap[a.Offset:], buf.bo.DeviceAddr())
+		binary.LittleEndian.PutUint64(r.regmap[a.Offset:], addr)
 	case 4:
-		binary.LittleEndian.PutUint32(r.regmap[a.Offset:], uint32(buf.bo.DeviceAddr()))
+		binary.LittleEndian.PutUint32(r.regmap[a.Offset:], uint32(addr))
 	default:
 		return fmt.Errorf("amd: buffer argument %s has size %d", a.Name, a.Size)
 	}

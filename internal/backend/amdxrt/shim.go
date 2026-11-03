@@ -58,6 +58,7 @@ type shim struct {
 	devInfo    func(d uintptr, key int32, buf *byte, n uintptr, need *uintptr) unsafe.Pointer
 	boAlloc    func(d uintptr, size uintptr, kind, group int32, out *uintptr) unsafe.Pointer
 	boFree     func(b uintptr)
+	boSub      func(parent uintptr, n, off uintptr, out *uintptr) unsafe.Pointer
 	boMap      func(b uintptr, ptr *unsafe.Pointer) unsafe.Pointer
 	boAddress  func(b uintptr) uint64
 	boSync     func(b uintptr, dir int32, off, n uintptr) unsafe.Pointer
@@ -121,7 +122,7 @@ func bindShim(candidates ...string) (*shim, error) {
 	}{
 		{&s.abi, "xs_abi"}, {&s.freeError, "xs_free_error"},
 		{&s.devCount, "xs_device_count"}, {&s.devOpen, "xs_device_open"}, {&s.devFree, "xs_device_free"}, {&s.devInfo, "xs_device_info"},
-		{&s.boAlloc, "xs_bo_alloc"}, {&s.boFree, "xs_bo_free"}, {&s.boMap, "xs_bo_map"}, {&s.boAddress, "xs_bo_address"}, {&s.boSync, "xs_bo_sync"},
+		{&s.boAlloc, "xs_bo_alloc"}, {&s.boFree, "xs_bo_free"}, {&s.boSub, "xs_bo_sub"}, {&s.boMap, "xs_bo_map"}, {&s.boAddress, "xs_bo_address"}, {&s.boSync, "xs_bo_sync"},
 		{&s.ctxXclbin, "xs_ctx_xclbin"}, {&s.ctxELF, "xs_ctx_elf"}, {&s.ctxFree, "xs_ctx_free"},
 		{&s.kernelOpen, "xs_kernel_open"}, {&s.kernelFree, "xs_kernel_free"}, {&s.kernelGrp, "xs_kernel_group_id"},
 		{&s.runNew, "xs_run_new"}, {&s.runFree, "xs_run_free"}, {&s.runSetBO, "xs_run_set_bo"}, {&s.runSetVal, "xs_run_set_scalar"},

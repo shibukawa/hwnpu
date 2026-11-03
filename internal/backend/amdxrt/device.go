@@ -59,11 +59,13 @@ type buffer struct {
 	mem   []byte
 	addr  uint64
 	instr map[int32]*instrBO // an instruction stream's XRT buffers, by group
+	subs  map[[2]int]uintptr // sub-buffers bound as arguments, by offset and size
 }
 
 type instrBO struct {
-	h   uintptr
-	mem []byte
+	h    uintptr
+	mem  []byte
+	subs map[[2]int]uintptr // parts bound as arguments, by offset and size
 }
 
 func (d *device) AllocBuffer(size int, kind types.BufferKind) (backend.Buffer, error) {
@@ -148,12 +150,36 @@ func (b *buffer) sync(dir int32, off, n int) error {
 	return b.d.s.err(b.d.s.boSync(b.h, dir, uintptr(off), uintptr(n)))
 }
 
+// sub returns the sub-buffer of n bytes from off, made once.
+func (b *buffer) sub(off, n int) (uintptr, error) {
+	key := [2]int{off, n}
+	if h, ok := b.subs[key]; ok {
+		return h, nil
+	}
+	var h uintptr
+	if err := b.d.s.err(b.d.s.boSub(b.h, uintptr(n), uintptr(off), &h)); err != nil {
+		return 0, err
+	}
+	if b.subs == nil {
+		b.subs = map[[2]int]uintptr{}
+	}
+	b.subs[key] = h
+	return h, nil
+}
+
 func (b *buffer) Close() error {
+	for _, h := range b.subs {
+		b.d.s.boFree(h)
+	}
+	b.subs = nil
 	if b.h != 0 {
 		b.d.s.boFree(b.h)
 		b.h = 0
 	}
 	for _, ib := range b.instr {
+		for _, h := range ib.subs {
+			b.d.s.boFree(h)
+		}
 		b.d.s.boFree(ib.h)
 	}
 	b.instr, b.mem = nil, nil
@@ -337,7 +363,10 @@ func (r *run) SetArg(i int, value []byte) error {
 	return r.s.err(r.s.runSetVal(r.h, int32(i), bytePtr(value), uintptr(len(value))))
 }
 
-func (r *run) SetBuffer(i int, b backend.Buffer) error {
+func (r *run) SetBuffer(i int, b backend.Buffer) error { return r.SetBufferAt(i, b, 0, len(b.Bytes())) }
+
+// SetBufferAt sets a buffer argument to a part of a buffer, through an XRT sub-buffer.
+func (r *run) SetBufferAt(i int, b backend.Buffer, off, n int) error {
 	a, err := r.arg(i)
 	if err != nil {
 		return err
@@ -349,13 +378,37 @@ func (r *run) SetBuffer(i int, b backend.Buffer) error {
 	if !ok {
 		return fmt.Errorf("amdxrt: argument %d: a buffer of another device", i)
 	}
-	h := buf.h
-	if buf.instr != nil {
+	if off < 0 || n <= 0 || off+n > len(buf.mem) {
+		return fmt.Errorf("amdxrt: argument %d: [%d, %d) of a %d byte buffer", i, off, off+n, len(buf.mem))
+	}
+	var h uintptr
+	switch {
+	case buf.instr != nil:
 		ib, err := buf.in(r.s.kernelGrp(r.k.h, int32(i)))
 		if err != nil {
 			return err
 		}
 		h = ib.h
+		if off != 0 || n != len(buf.mem) {
+			key := [2]int{off, n}
+			if sh, ok := ib.subs[key]; ok {
+				h = sh
+			} else {
+				if err := r.s.err(r.s.boSub(ib.h, uintptr(n), uintptr(off), &h)); err != nil {
+					return err
+				}
+				if ib.subs == nil {
+					ib.subs = map[[2]int]uintptr{}
+				}
+				ib.subs[key] = h
+			}
+		}
+	case off == 0 && n == len(buf.mem):
+		h = buf.h
+	default:
+		if h, err = buf.sub(off, n); err != nil {
+			return err
+		}
 	}
 	if err := r.s.err(r.s.runSetBO(r.h, int32(i), h)); err != nil {
 		return err
@@ -379,6 +432,18 @@ func (r *run) Scratchpad() []byte {
 }
 
 func (r *run) Submit() (backend.Fence, error) {
+	if r.started {
+		// XRT starts a run again only once it has been waited for, even when it is done (as
+		// a command an in-order queue finished before one that was waited for).
+		var st int32
+		if err := r.s.err(r.s.runWait(r.h, 0, &st)); err != nil {
+			return nil, err
+		}
+		r.started = false
+		if err := result(st); err != nil {
+			return nil, err
+		}
+	}
 	if err := r.s.err(r.s.runStart(r.h)); err != nil {
 		return nil, err
 	}

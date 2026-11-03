@@ -46,6 +46,10 @@ func PassthroughXclbin() []byte {
 	})
 }
 
+// PassthroughMagic is the address a TXN's first write32 names to copy its value's bytes, the
+// form of a stream an IRON per-call program builds (internal/llm/iron).
+const PassthroughMagic = instrMagic
+
 // PassthroughInstructions returns the instruction stream for copying n bytes.
 func PassthroughInstructions(n int) []byte {
 	b := binary.LittleEndian.AppendUint32(nil, instrMagic)
@@ -72,10 +76,16 @@ func RunPassthrough(e Exec) error {
 	if err != nil {
 		return err
 	}
-	if ninstr != 2 || le.Uint32(instr) != instrMagic {
+	var n int
+	switch {
+	case ninstr == 2 && le.Uint32(instr) == instrMagic:
+		n = int(le.Uint32(instr[4:]))
+	case ninstr >= 10 && le.Uint32(instr[16:]) == 0 && le.Uint32(instr[24:]) == instrMagic:
+		// a TXN (an IRON per-call stream) whose first operation writes n to the magic address
+		n = int(le.Uint32(instr[32:]))
+	default:
 		return errors.New("bad instruction stream")
 	}
-	n := int(le.Uint32(instr[4:]))
 	src, err := e.Mem(le.Uint64(e.Regmap[0x14:]), n)
 	if err != nil {
 		return err

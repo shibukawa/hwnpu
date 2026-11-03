@@ -91,10 +91,14 @@ type Bank struct {
 	Image string `json:"image"` // the initial contents, or "" for zeros
 }
 
-// Version is one compiled call shape: the decode step or a prompt chunk.
+// Version is one compiled call shape: the decode step or a prompt chunk. It is one full ELF
+// (NPU2: ELF, Kernels) or an xclbin per step (NPU1, which has no full ELF: Steps, Words).
 type Version struct {
 	ELF       string               `json:"elf"`
 	Kernels   []Kernel             `json:"kernels"` // one per command, run in order
+	Steps     []Step               `json:"steps"`
+	Words     map[string]*Param    `json:"words"` // the steps' dispatch-time scalars, by name
+	Insts     string               `json:"insts"` // the static steps' instruction streams
 	Buffers   map[string]Placement `json:"buffers"`
 	Arguments []Argument           `json:"arguments"`
 	Values    []string             `json:"values"`
@@ -105,6 +109,26 @@ type Version struct {
 	Addresses []Address            `json:"addresses"`
 	Grid      *Grid                `json:"grid"`
 	Plan      string               `json:"plan"`
+}
+
+// Step is one dispatch of an xclbin per step: a kernel of an xclbin, its instruction stream
+// (static: Insts, a word offset and a count in the version's Insts file; or built per call by
+// Program from the dispatch-time scalars named by Scalars), and its buffers, in the kernel's
+// order after the opcode, the stream and its length.
+type Step struct {
+	Xclbin  string       `json:"xclbin"`
+	Kernel  string       `json:"kernel"`
+	Insts   []int        `json:"insts"`
+	Program string       `json:"program"`
+	Scalars []string     `json:"scalars"`
+	Buffers []StepBuffer `json:"buffers"`
+}
+
+// StepBuffer is a part of an argument a step takes as one buffer.
+type StepBuffer struct {
+	Argument string `json:"argument"`
+	Offset   int    `json:"offset"`
+	Bytes    int    `json:"bytes"`
 }
 
 // Placement is where a buffer of the graph lives.
@@ -184,6 +208,19 @@ func ReadManifest(dir string) (*Manifest, error) {
 		return nil, fmt.Errorf("iron: rope_start %q is not supported", m.RopeStart)
 	}
 	for name, v := range m.Versions {
+		if (v.ELF == "") == (len(v.Steps) == 0) {
+			return nil, fmt.Errorf("iron: version %s is neither one full ELF nor an xclbin per step", name)
+		}
+		for i, st := range v.Steps {
+			if st.Program == "" && len(st.Insts) != 2 {
+				return nil, fmt.Errorf("iron: %s: step %d has no instruction stream", name, i)
+			}
+			for _, sc := range st.Scalars {
+				if v.Words[sc] == nil {
+					return nil, fmt.Errorf("iron: %s: step %d reads the scalar %s, which has no word", name, i, sc)
+				}
+			}
+		}
 		for i := range v.Encoders {
 			e := &v.Encoders[i]
 			raw, err := os.ReadFile(filepath.Join(dir, e.Template))

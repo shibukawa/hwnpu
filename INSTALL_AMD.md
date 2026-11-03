@@ -2,7 +2,7 @@
 
 This guide prepares a Linux machine with an AMD Ryzen AI processor (XDNA NPU: Phoenix, Hawk Point, Strix Point, Krackan Point and later) so that hwnpu can use its NPU, builds a small test design, and shows how to check the result.
 
-> **Status.** On a Ryzen AI 9 365 (Strix Point, `npu4`, 8 columns) with the amdxdna driver of the stock Linux 7.0 kernel of Ubuntu 26.04 and firmware 1.1.2.64, `cmd/report` (step 4) passes every check, including the passthrough design built with mlir-aie v1.4.4 (2026-11-03). Phoenix and Hawk Point (`npu1`) are untested. Reports from other machines are welcome.
+> **Status.** On a Ryzen AI 9 365 (Strix Point, `npu4`, 8 columns) with the amdxdna driver of the stock Linux 7.0 kernel of Ubuntu 26.04 and firmware 1.1.2.64, `cmd/report` (step 4) passes every check, including the passthrough design built with mlir-aie v1.4.4 (2026-11-03). Phoenix and Hawk Point (`npu1`) are untested: hwnpu runs models exported for them as an xclbin per step, which works on the Ryzen AI 9 365 when exported that way for `npu2` (`--per-step`), but NPU1 itself has not run it. Reports from other machines are welcome.
 
 Japanese: [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)
 

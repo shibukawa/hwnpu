@@ -2,7 +2,7 @@
 
 AMD Ryzen AI プロセッサ（XDNA NPU を積んだ Phoenix、Hawk Point、Strix Point、Krackan Point 以降）を載せた Linux 機で、hwnpu から NPU を使えるようにする手順です。小さなテスト用の設計をビルドし、動作を確かめるところまで扱います。
 
-> **現状。** Ryzen AI 9 365（Strix Point、`npu4`、8 列）、Ubuntu 26.04 の Linux 7.0 標準カーネルの amdxdna、ファームウェア 1.1.2.64 で、手順 4 の `cmd/report` が mlir-aie v1.4.4 の passthrough 設計を含めて全て通りました（2026-11-03）。Phoenix と Hawk Point（`npu1`）はまだ試していません。別の機械での報告を送っていただけると助かります。
+> **現状。** Ryzen AI 9 365（Strix Point、`npu4`、8 列）、Ubuntu 26.04 の Linux 7.0 標準カーネルの amdxdna、ファームウェア 1.1.2.64 で、手順 4 の `cmd/report` が mlir-aie v1.4.4 の passthrough 設計を含めて全て通りました（2026-11-03）。Phoenix と Hawk Point（`npu1`）はまだ試していません。hwnpu は NPU1 向けに書き出したモデルを「1 ステップごとの xclbin」として動かします。同じ形で `npu2` 向けに書き出したもの（`--per-step`）は Ryzen AI 9 365 で動きましたが、NPU1 の実機では動かしていません。別の機械での報告を送っていただけると助かります。
 
 English: [INSTALL_AMD.md](INSTALL_AMD.md)
 

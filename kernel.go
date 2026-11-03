@@ -151,6 +151,27 @@ func (r *Run) SetBuffer(index int, b *Buffer) *Run {
 	return r.record(r.be.SetBuffer(index, b.be))
 }
 
+// SetBufferAt sets a buffer argument to n bytes of b from byte off: the device gets the
+// address of b plus off (IRON's per-step dispatches take parts of one arena bank).
+func (r *Run) SetBufferAt(index int, b *Buffer, off, n int) *Run {
+	if b == nil || b.be == nil {
+		return r.record(fmt.Errorf("hwnpu: argument %d: nil or closed buffer", index))
+	}
+	if off < 0 || n <= 0 || off+n > len(b.be.Bytes()) {
+		return r.record(fmt.Errorf("hwnpu: argument %d: [%d, %d) of a %d byte buffer", index, off, off+n, len(b.be.Bytes())))
+	}
+	if off == 0 && n == len(b.be.Bytes()) {
+		return r.record(r.be.SetBuffer(index, b.be))
+	}
+	s, ok := r.be.(interface {
+		SetBufferAt(index int, b backend.Buffer, off, n int) error
+	})
+	if !ok {
+		return r.record(fmt.Errorf("hwnpu: argument %d: this device takes whole buffers only: %w", index, ErrUnsupported))
+	}
+	return r.record(s.SetBufferAt(index, b.be, off, n))
+}
+
 // SetUint32 sets a 4 byte scalar argument.
 func (r *Run) SetUint32(index int, v uint32) *Run {
 	return r.record(r.be.SetArg(index, binary.LittleEndian.AppendUint32(nil, v)))

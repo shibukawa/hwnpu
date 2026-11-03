@@ -77,6 +77,8 @@ XS_API char *xs_device_info(xs_device *d, int key, char *buf, size_t n, size_t *
  * full ELF's buffers. */
 XS_API char *xs_bo_alloc(xs_device *d, size_t size, int kind, int group, xs_bo **out);
 XS_API void xs_bo_free(xs_bo *b);
+/* A sub-buffer: n bytes of parent from byte off (xrt::bo(parent, n, off)). */
+XS_API char *xs_bo_sub(xs_bo *parent, size_t n, size_t off, xs_bo **out);
 XS_API char *xs_bo_map(xs_bo *b, void **ptr);
 XS_API uint64_t xs_bo_address(xs_bo *b);
 XS_API char *xs_bo_sync(xs_bo *b, int dir, size_t off, size_t n);

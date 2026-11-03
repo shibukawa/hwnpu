@@ -29,6 +29,8 @@ type Model struct {
 	vision   *version  // the vision tower, or nil
 	audio    *version  // the audio tower, or nil
 	kv       []kvCache // caches, found once
+	// xclbins are the programs of the versions packaged as an xclbin per step, by file.
+	xclbins map[string]*hwnpu.Program
 }
 
 type version struct {
@@ -40,6 +42,9 @@ type version struct {
 	// A prompt chunk's commands are made for each call instead (newRun): their control code
 	// (89 MiB for Gemma 4 E2B) is larger than the device heap (64 MiB on Linux 7.0).
 	run *hwnpu.Run
+	// steps are the runs of a version packaged as an xclbin per step (steps.go).
+	steps   []*stepRun
+	streams stepStreams
 }
 
 // Open loads the model exported in dir onto dev.
@@ -51,7 +56,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 	if err != nil {
 		return nil, err
 	}
-	m := &Model{Manifest: man, dev: dev, banks: map[string]*hwnpu.Buffer{}}
+	m := &Model{Manifest: man, dev: dev, banks: map[string]*hwnpu.Buffer{}, xclbins: map[string]*hwnpu.Program{}}
 	fail := func(err error) (*Model, error) {
 		m.Close()
 		return nil, err
@@ -78,8 +83,10 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 	}
 	for name, v := range man.Versions {
 		ver := &version{m: v, args: map[string]*hwnpu.Buffer{}}
-		if ver.prog, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, v.ELF)}); err != nil {
-			return fail(fmt.Errorf("iron: %s: %w", name, err))
+		if v.ELF != "" {
+			if ver.prog, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, v.ELF)}); err != nil {
+				return fail(fmt.Errorf("iron: %s: %w", name, err))
+			}
 		}
 		for _, a := range v.Arguments {
 			if _, ok := m.banks[a.Kind]; ok {
@@ -91,9 +98,14 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 			}
 			ver.args[a.Kind] = buf
 		}
+		if len(v.Steps) > 0 {
+			if err := m.loadSteps(ctx, kr, dir, ver); err != nil {
+				return fail(fmt.Errorf("iron: %s: %w", name, err))
+			}
+		}
 		switch name {
 		case "decode":
-			if len(v.Kernels) != 1 {
+			if v.ELF != "" && len(v.Kernels) != 1 {
 				return fail(fmt.Errorf("iron: the decode step has %d commands", len(v.Kernels)))
 			}
 			m.decode = ver // its run is made once every program's PDIs are in the heap
@@ -108,7 +120,11 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 		default:
 			return fail(fmt.Errorf("iron: unknown version %s", name))
 		}
-		logf("%s: %d commands", name, len(v.Kernels))
+		if len(v.Steps) > 0 {
+			logf("%s: %d steps (an xclbin per step)", name, len(v.Steps))
+		} else {
+			logf("%s: %d commands", name, len(v.Kernels))
+		}
 	}
 	if m.decode == nil || m.prompt == nil {
 		return fail(errors.New("iron: the export needs a decode step and a prompt chunk"))
@@ -116,8 +132,10 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 	if _, err := m.caches(); err != nil {
 		return fail(err)
 	}
-	if m.decode.run, err = m.newRun(m.decode, 0); err != nil {
-		return fail(err)
+	if m.decode.m.ELF != "" {
+		if m.decode.run, err = m.newRun(m.decode, 0); err != nil {
+			return fail(err)
+		}
 	}
 	return m, nil
 }
@@ -144,12 +162,16 @@ func (m *Model) Close() error {
 		if v.run != nil {
 			errs = append(errs, v.run.Close())
 		}
+		errs = append(errs, v.closeSteps()...)
 		for _, b := range v.args {
 			errs = append(errs, b.Close())
 		}
 		if v.prog != nil {
 			errs = append(errs, v.prog.Close())
 		}
+	}
+	for _, p := range m.xclbins {
+		errs = append(errs, p.Close())
 	}
 	for _, b := range m.banks {
 		errs = append(errs, b.Close())
@@ -276,15 +298,23 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		return nil, fmt.Errorf("iron: position %d outside the cache of %d", position, m.Manifest.Config.MaxSeqLen)
 	}
 	v := m.decode
-	if v.run == nil { // dropped for a tower's control code (dropDecode)
-		var err error
-		if v.run, err = m.newRun(v, 0); err != nil {
-			return nil, err
-		}
-	}
 	values, err := m.complete(v, callValues(token, position, 0, 1))
 	if err != nil {
 		return nil, err
+	}
+	if v.steps != nil {
+		if err := m.carry(v, values); err != nil {
+			return nil, err
+		}
+		if err := m.runSteps(ctx, v, values); err != nil {
+			return nil, err
+		}
+		return m.logits(v)
+	}
+	if v.run == nil { // dropped for a tower's control code (dropDecode)
+		if v.run, err = m.newRun(v, 0); err != nil {
+			return nil, err
+		}
 	}
 	if err := writeWords(v.run.Scratchpad(), v.m.Kernels[0].Parameters, values); err != nil {
 		return nil, err
@@ -364,6 +394,12 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 	}
 	if err := m.carry(v, values); err != nil {
 		return nil, err
+	}
+	if v.steps != nil {
+		if err := m.runSteps(ctx, v, values); err != nil {
+			return nil, err
+		}
+		return m.logits(v)
 	}
 	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
 	for k := range v.m.Kernels {
@@ -520,6 +556,10 @@ func (m *Model) runTower(ctx context.Context, v *version, input string, data []b
 	}
 	if err := m.writeInput(v, input, data); err != nil {
 		return err
+	}
+	if v.steps != nil {
+		// IRON runs the towers on NPU2 only, as full ELFs: their grid words are scratchpad slots.
+		return errors.New("iron: a tower packaged as an xclbin per step is not supported")
 	}
 	m.dropDecode()
 	for k := range v.m.Kernels {

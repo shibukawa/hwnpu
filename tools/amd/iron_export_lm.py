@@ -8,6 +8,9 @@ Writes, into a directory:
                    scratchpad words, carried values, logits and input encoders
   decode.elf       the decode step: one token in, the logits after it out
   prompt.elf       a prompt chunk of up to prefill_chunk tokens, the last one's logits out
+  x_*.xclbin       on NPU1 (no full ELF; --device npu1 --cols 4) or with --per-step: each
+  stream_*.json    version is an xclbin per step instead, the xclbins, the programs of the
+  <v>_insts.bin    steps' per-call instruction streams (iron_stream) and the static ones
   bank_<kind>.bin  the arena's banks as the device holds them: every weight in place,
                    zeros elsewhere (the caches and the other states start at zero)
   gather_*.bin     the control word templates of the prompt's embedding gathers
@@ -64,7 +67,7 @@ def _params_by_command(path) -> dict:
     return out
 
 
-def _encoders(compiled) -> list:
+def _encoders(compiled, place=None) -> list:
     """The host-side encoders of the version's inputs: the embedding gathers of the prompt's
     token ids (IRON's GatherRows.control_words)."""
     seq = compiled.sequence
@@ -78,7 +81,7 @@ def _encoders(compiled) -> list:
             template, slots = op.template
             from iron.common.image.step import BufferRef
 
-            kind, offset, length = _place(seq, BufferRef(e.buffer))
+            kind, offset, length = (place or _place)(seq, BufferRef(e.buffer))
             out.append(dict(
                 input=name, start_word=start, words=int(e.words), table=e.buffer,
                 table_argument=kind, table_offset=offset,
@@ -187,26 +190,162 @@ def _audio_grid(compiled) -> dict:
     return dict(frames=keys, values=values)
 
 
-def version_manifest(compiled, elf_name: str) -> dict:
-    from iron.common.image.callable import FullELFCallable
-    from iron.common.image.compose import Composition
+def _word_entry(w, derived: dict, version: str) -> dict:
+    """How a word follows from the call's values: an Affine form, a linear one, or a
+    derivation (_derived_entry)."""
+    if w.form is not None:
+        return dict(form=_form(w.form))
+    if w.linear is not None:
+        # ceil(v * ratio + offset), both fractions
+        lin = w.linear
+        return dict(linear=dict(value=lin.value, num=lin.ratio.numerator, den=lin.ratio.denominator,
+                                off_num=lin.offset.numerator, off_den=lin.offset.denominator))
+    return _derived_entry(w, derived, version)
+
+
+def _version_kind(compiled) -> str:
+    names = {h.name for h in compiled.recording.inputs}
+    return "prompt" if names & {"ids", "placed"} else "tower" if names else "decode"
+
+
+def _addresses(compiled, place=None) -> list:
+    """Per-call values computed from a buffer's device address (a gather of rows the graph
+    computed, not an input): base_lo and base_hi of the table's address."""
     from iron.common.image.step import BufferRef
 
-    art = compiled.artifacts
-    if not art.full_elf:
-        raise SystemExit("the version was packaged as an xclbin per step; hwnpu runs full ELFs only")
     rec, seq = compiled.recording, compiled.sequence
-    from iron.common.image.step import BufferRef
-
-    # Per-call values computed from a buffer's device address (a gather of rows the graph
-    # computed, not an input): base_lo and base_hi of the table's address.
     addresses = []
     for name, (buffer, address_words, member) in rec.addresses.items():
         op = getattr(address_words, "__self__", None)
         if op is None or not hasattr(op, "low_bits") or member not in ("base_lo", "base_hi"):
             raise SystemExit(f"address value {name}: {address_words} {member} is not known")
-        kind, offset, length = _place(seq, BufferRef(buffer))
+        kind, offset, length = (place or _place)(seq, BufferRef(buffer))
         addresses.append(dict(name=name, buffer=buffer, argument=kind, offset=offset, low_bits=int(op.low_bits), member=member))
+    return addresses
+
+
+def _place_steps(seq, ref):
+    """_place for an xclbin per step (IRON's PerStepCallable): a resident (a weight, a cache)
+    is in the arena's banks as in a full ELF, but a transient is in a pool of the version's
+    own, whose offsets start again from zero: its banks are the arguments pool, pool_1..."""
+    from iron.common.image.allocator import BANK
+
+    kind, offset, length = ref.place(seq.layout)
+    if kind != "scratch":
+        return kind, int(offset), int(length)
+    if ref.root in seq.residents:
+        return _place(seq, ref)
+    k = offset // BANK
+    if length and (offset + length - 1) // BANK != k:
+        raise SystemExit(f"transient {ref.root} crosses a bank of the pool")
+    return ("pool" if k == 0 else f"pool_{k}"), int(offset - k * BANK), int(length)
+
+
+def _pool_arguments(seq) -> list:
+    """The pool's banks an xclbin per step keeps its transients in, as (kind, bytes)."""
+    from iron.common.image.allocator import BANK
+    from iron.common.image.step import BufferRef
+
+    size = 0
+    for root, (kind, offset, length) in seq.layout.items():
+        if kind == "scratch" and root not in seq.residents:
+            size = max(size, offset + length)
+    return [("pool" if k == 0 else f"pool_{k}", min(BANK, size - k * BANK)) for k in range((size + BANK - 1) // BANK)]
+
+
+def _io(compiled, place=None) -> dict:
+    """The version's buffers, arguments, values, carried values, outputs, inputs and encoders,
+    which a full ELF and an xclbin per step describe alike (place: _place_steps for the
+    latter)."""
+    from iron.common.image.step import BufferRef
+
+    place = place or _place
+    rec, seq = compiled.recording, compiled.sequence
+    outputs = []
+    for h in rec.returned:
+        kind, offset, length = place(seq, h.ref())
+        outputs.append(dict(name=h.name, shape=[int(d) for d in h.shape], dtype=str(np.dtype(seq.buffer_dtype(h.ref()))),
+                            argument=kind, offset=offset, bytes=length))
+    inputs = []
+    for h in rec.inputs:
+        kind, offset, length = place(seq, h.ref())
+        inputs.append(dict(name=h.name, shape=[int(d) for d in h.shape], dtype=str(np.dtype(h.dtype)),
+                           argument=kind, offset=offset, bytes=length))
+    buffers = {}
+    for root in seq.layout:
+        kind, offset, length = place(seq, BufferRef(root))
+        buffers[root] = dict(argument=kind, offset=offset, bytes=length, dtype=str(np.dtype(seq.buffer_dtype(BufferRef(root)))))
+    return dict(
+        buffers=buffers,
+        arguments=[dict(index=i, kind=k, bytes=int(n)) for i, (k, n) in enumerate(
+            list(seq.buffer_sizes.arguments().items()) + (_pool_arguments(seq) if place is _place_steps else []))],
+        values=[v.name for v in rec.values],
+        # An xclbin per step carries nothing on the device: every value is a dispatch-time
+        # scalar the host gives each call.
+        carried=_carried(compiled) if compiled.artifacts.full_elf else None,
+        outputs=outputs,
+        inputs=inputs,
+        encoders=_encoders(compiled, place),
+        addresses=_addresses(compiled, place),
+        plan=compiled.plan.report(rec.name),
+    )
+
+
+def steps_manifest(compiled, files: dict) -> dict:
+    """The manifest of a version packaged as an xclbin per step (NPU1, which has no full
+    ELF): each step's xclbin and kernel, its instruction stream (static, or a program of the
+    step's dispatch-time scalars: iron_stream), and its buffers in order. ``files`` gathers
+    what export writes: xclbins and programs by content, static streams in one file."""
+    import hashlib
+
+    import iron_stream
+
+    seq = compiled.sequence
+    words = {w.symbol: w for w in compiled.words}
+    derived = _derived(compiled)
+    version = _version_kind(compiled)
+    files.setdefault("words", {})[version] = words
+    used, steps = {}, []
+    for st in seq.steps:
+        k = seq.packaging.links[id(st.op)].kernel
+        xb = Path(k.xclbin_path).read_bytes()
+        xname = f"x_{hashlib.sha256(xb).hexdigest()[:16]}.xclbin"
+        files["xclbins"][xname] = xb
+        step = dict(xclbin=xname, kernel=k.kernel_name,
+                    buffers=[dict(zip(("argument", "offset", "bytes"), _place_steps(seq, r))) for r in st.buffers])
+        if k.dispatch_params:
+            cpp = (Path(k.dispatch_lib_path).parent / "dispatch_gen.cpp").read_text()
+            pname = f"stream_{hashlib.sha256(cpp.encode()).hexdigest()[:16]}.json"
+            if pname not in files["programs"]:
+                files["programs"][pname] = (iron_stream.parse(cpp), k)
+            step["program"] = pname
+            step["scalars"] = list(k.dispatch_params)
+            for n in k.dispatch_params:
+                if n not in words:
+                    raise SystemExit(f"dispatch scalar {n} is no word of the version")
+                used[n] = words[n]
+            files["checks"].append((pname, k, list(k.dispatch_params), version))
+        else:
+            insts = np.asarray(k.instructions(), np.uint32)
+            step["insts"] = [files["insts_words"], int(insts.size)]
+            files["insts"].append(insts)
+            files["insts_words"] += int(insts.size)
+        steps.append(step)
+    table = {}
+    for n, w in used.items():
+        table[n] = dict(name=n, **_word_entry(w, derived, version))
+    m = _io(compiled, _place_steps)
+    m.update(steps=steps, words=table)
+    return m
+
+
+def version_manifest(compiled, elf_name: str) -> dict:
+    """The manifest of a version packaged as one full ELF (NPU2)."""
+    from iron.common.image.callable import FullELFCallable
+    from iron.common.image.compose import Composition
+
+    art = compiled.artifacts
+    seq = compiled.sequence
     commands = [
         f"{FullELFCallable.device_name}:{Composition.sequence_name(k)}"
         for k in range(len(seq.packaging.commands) + 1)
@@ -217,8 +356,7 @@ def version_manifest(compiled, elf_name: str) -> dict:
     inputs = {h.name for h in compiled.recording.inputs}
     grid = (_vision_grid(compiled) if _TOWER.get("vision_input") in inputs
             else _audio_grid(compiled) if _TOWER.get("audio_input") in inputs else None)
-    names = {h.name for h in compiled.recording.inputs}
-    version = "prompt" if names & {"ids", "placed"} else "tower" if names else "decode"
+    version = _version_kind(compiled)
     table = {}
     for p in art.parameter_table:
         w = words.get(p.name)
@@ -227,16 +365,9 @@ def version_manifest(compiled, elf_name: str) -> dict:
         entry = dict(name=p.name, index=int(p.index), dtype=p.dtype, kind=p.kind)
         if grid is not None and p.name in grid["values"]:
             entry["grid"] = True  # looked up in the version's grid
-        elif w.form is not None:
-            entry["form"] = _form(w.form)
-        elif w.linear is not None:
-            # ceil(v * ratio + offset), both fractions
-            lin = w.linear
-            entry["linear"] = dict(value=lin.value, num=lin.ratio.numerator, den=lin.ratio.denominator,
-                                   off_num=lin.offset.numerator, off_den=lin.offset.denominator)
         else:
             try:
-                entry.update(_derived_entry(w, derived, version))
+                entry.update(_word_entry(w, derived, version))
             except SystemExit as e:
                 op, dname, counts = derived[w.symbol]
                 missing.append(f"{type(op).__name__}.{dname} from {sorted(counts)}: {e}")
@@ -249,46 +380,23 @@ def version_manifest(compiled, elf_name: str) -> dict:
     for name in commands:
         names = members.get(name, list(table) if len(commands) == 1 else [])
         kernels.append(dict(name=name, parameters=[table[n] for n in names]))
-    outputs = []
-    for h in rec.returned:
-        kind, offset, length = _place(seq, h.ref())
-        outputs.append(dict(name=h.name, shape=[int(d) for d in h.shape], dtype=str(np.dtype(seq.buffer_dtype(h.ref()))),
-                            argument=kind, offset=offset, bytes=length))
-    inputs = []
-    for h in rec.inputs:
-        kind, offset, length = _place(seq, h.ref())
-        inputs.append(dict(name=h.name, shape=[int(d) for d in h.shape], dtype=str(np.dtype(h.dtype)),
-                           argument=kind, offset=offset, bytes=length))
-    buffers = {}
-    for root in seq.layout:
-        kind, offset, length = _place(seq, BufferRef(root))
-        buffers[root] = dict(argument=kind, offset=offset, bytes=length, dtype=str(np.dtype(seq.buffer_dtype(BufferRef(root)))))
-    return dict(
-        elf=elf_name,
-        kernels=kernels,
-        buffers=buffers,
-        arguments=[dict(index=i, kind=k, bytes=int(n)) for i, (k, n) in enumerate(seq.buffer_sizes.arguments().items())],
-        values=[v.name for v in rec.values],
-        carried=_carried(compiled),
-        outputs=outputs,
-        inputs=inputs,
-        encoders=_encoders(compiled),
-        addresses=addresses,
-        grid=grid,
-        plan=compiled.plan.report(rec.name),
-    )
+    m = _io(compiled)
+    m.update(elf=elf_name, kernels=kernels, grid=grid)
+    return m
 
 
-def compile_versions(model):
-    """The decode step and the prompt chunk, compiled into one arena as load_versions does."""
+def compile_versions(model, full_elf=None):
+    """The decode step and the prompt chunk, compiled into one arena as load_versions does.
+    full_elf False packages each as an xclbin per step (NPU1's only packaging; on NPU2, to
+    check that path on a machine without NPU1)."""
     import aie.utils as aie_utils
 
     dev = aie_utils.get_current_device() if hasattr(aie_utils, "get_current_device") else None
     versions, decode = {}, None
     for shapes in model.shapes():
         prompt = "ids" in shapes or "placed" in shapes
-        v = model.compile(dev=dev, feeds=decode if prompt else None, full_elf=None, **shapes)
-        if not shapes:
+        v = model.compile(dev=dev, feeds=decode if prompt else None, full_elf=full_elf, **shapes)
+        if not shapes and v.emit is not None:  # only a looping full ELF feeds the prompt (IRON's load_versions)
             decode = v
         name = ("placed" if "placed" in shapes else "prompt" if "ids" in shapes
                 else "vision" if "rgb" in shapes else "audio" if "wave" in shapes
@@ -343,8 +451,8 @@ def write_words(versions, man: dict, out: Path) -> None:
     }
     res = {}
     for name, v in versions.items():
-        if name not in calls:
-            continue
+        if name not in calls or "kernels" not in man["versions"][name]:
+            continue  # an xclbin per step has no scratchpad: write_steps checks its streams
         words = {w.symbol: w for w in v.words}
         res[name] = []
         for values in calls[name]:
@@ -362,13 +470,66 @@ def write_words(versions, man: dict, out: Path) -> None:
     (d / "words.json").write_text(json.dumps(res) + "\n")
 
 
+def write_steps(files: dict, out: Path) -> None:
+    """The files of the versions packaged as an xclbin per step: their xclbins, and their
+    stream programs, each checked against the dispatch library mlir-aie built for it over
+    calls across the context (check/streams.json keeps a few for hwnpu to check)."""
+    import iron_stream
+
+    for name, b in files["xclbins"].items():
+        (out / name).write_bytes(b)
+    L, C = _CONFIG["max_seq_len"], _CONFIG["prefill_chunk"]
+    calls = {
+        "decode": [dict(token=7, position=p, start=0, rows=1, rope_start=0)
+                   for p in (0, 1, 2, 63, 64, 100, 1000, C - 1, C, 2 * C - 1, 2 * C, L - 96, L - 1)],
+        "prompt": [dict(token=7, position=s + r - 1, start=s, rows=r, rope_start=s)
+                   for s, r in ((0, 1), (0, 20), (0, C), (100, 37), (C, C), (L - C, C), (L - 1, 1), (L - 40, 40))],
+    }
+    checked, kept = set(), []
+    for pname, k, scalars, version in files["checks"]:
+        prog = files["programs"][pname][0]
+        key = (pname, tuple(scalars))
+        if key in checked:
+            continue
+        checked.add(key)
+        for values in calls.get(version, [{}]):
+            sc = [int(files["words"][version][n](values)) for n in scalars]
+            try:
+                want = [int(x) for x in k.instructions(**dict(zip(scalars, sc)))]
+            except Exception:  # the dispatch library refused the call
+                want = None
+            try:
+                got = iron_stream.run(prog, sc)
+            except iron_stream.Refused:
+                got = None
+            if got != want:
+                raise SystemExit(f"stream program {pname} differs from its dispatch library at {values}")
+            if len(kept) < 64 and want is not None:
+                kept.append(dict(program=pname, scalars=sc, stream=want))
+    for pname, (prog, _) in files["programs"].items():
+        (out / pname).write_text(json.dumps(prog, separators=(",", ":")) + "\n")
+    if kept:
+        d = out / "check"
+        d.mkdir(exist_ok=True)
+        (d / "streams.json").write_text(json.dumps(kept, separators=(",", ":")) + "\n")
+
+
 def export(model, versions, out: Path) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     c = model.text.config if hasattr(model, "towers") else model.config
     vm = {}
+    files = dict(xclbins={}, programs={}, checks=[], insts=[], insts_words=0)
     for name, v in versions.items():
-        shutil.copyfile(v.artifacts.image, out / f"{name}.elf")
-        vm[name] = version_manifest(v, f"{name}.elf")
+        if v.artifacts.full_elf:
+            shutil.copyfile(v.artifacts.image, out / f"{name}.elf")
+            vm[name] = version_manifest(v, f"{name}.elf")
+        else:
+            files.update(insts=[], insts_words=0)
+            vm[name] = steps_manifest(v, files)
+            if files["insts"]:
+                fn = f"{name}_insts.bin"
+                np.concatenate(files["insts"]).astype("<u4").tofile(out / fn)
+                vm[name]["insts"] = fn
         for i, e in enumerate(vm[name]["encoders"]):
             fn = f"gather_{name}_{i}.bin"
             e.pop("template").tofile(out / fn)
@@ -378,9 +539,10 @@ def export(model, versions, out: Path) -> dict:
     banks = {}
     for m in vm.values():
         for a in m["arguments"]:
-            if a["kind"] not in ("input", "output", "feedback"):
+            if a["kind"] not in ("input", "output", "feedback") and not a["kind"].startswith("pool"):
                 banks[a["kind"]] = max(banks.get(a["kind"], 0), a["bytes"])
     images = write_banks(versions, banks, out)
+    write_steps(files, out)
     for n in range(1, 3 * c.prefill_chunk, max(1, c.prefill_chunk // 3)):
         if (model.text if hasattr(model, "towers") else model).rope_row(n, 0) != 0:
             raise SystemExit("rope_row is not the chunk's start: not supported yet")
@@ -465,6 +627,7 @@ def main(argv=None) -> int:
     ap.add_argument("--random-weights", type=int, default=None, help="weights drawn at this seed")
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)
+    ap.add_argument("--per-step", action="store_true", help="package each version as an xclbin per step (as on NPU1, which has no full ELF)")
     ap.add_argument("--check", type=int, default=0, metavar="TOKENS", help="write a check of a prompt of TOKENS tokens")
     ap.add_argument("--steps", type=int, default=3, help="greedy steps of the check")
     ap.add_argument("--check-only", action="store_true", help="write the check alone, into an export made before")
@@ -494,7 +657,7 @@ def main(argv=None) -> int:
                       audio=model.towers[at], audio_input=model.tower_inputs[at])
     c = model.text.config if hasattr(model, "towers") else model.config
     _CONFIG.update(max_seq_len=int(c.max_seq_len), prefill_chunk=int(c.prefill_chunk), vocab_size=int(c.vocab_size))
-    versions = compile_versions(model)
+    versions = compile_versions(model, full_elf=False if a.per_step else None)
     m = export(model, versions, a.out)
     # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
     for name in ("tokenizer.json", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json"):
@@ -502,7 +665,8 @@ def main(argv=None) -> int:
         if src.is_file():
             shutil.copyfile(src, a.out / name)
     for name, v in m["versions"].items():
-        print(f"{name}: {len(v['kernels'])} commands, arguments {[(x['kind'], x['bytes']) for x in v['arguments']]}")
+        shape = f"{len(v['kernels'])} commands" if "kernels" in v else f"{len(v['steps'])} steps on {len({s['xclbin'] for s in v['steps']})} xclbins"
+        print(f"{name}: {shape}, arguments {[(x['kind'], x['bytes']) for x in v['arguments']]}")
     if a.check:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
     return 0
