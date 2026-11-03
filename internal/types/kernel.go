@@ -14,7 +14,8 @@ const (
 // ProgramSource is the input of KernelRunner.Load.
 type ProgramSource struct {
 	Xclbin []byte // xclbin contents
-	Path   string // or a path to an .xclbin file
+	ELF    []byte // or a full ELF (AIE2P), as IRON and aiecc write for Strix Point and later
+	Path   string // or a path to an .xclbin or full ELF file (told apart by its contents)
 }
 
 // KernelArg describes one kernel argument.

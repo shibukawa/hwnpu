@@ -156,6 +156,18 @@ func (b *Buffer) Bytes() []byte {
 // Size returns the size requested in AllocBuffer.
 func (b *Buffer) Size() int { return b.size }
 
+// DeviceAddress returns the address the device uses for the buffer, for host code that
+// writes addresses into data the device reads (descriptors a kernel's input carries), and
+// false on devices that do not expose it. On AMD NPUs it is the buffer object's address:
+// its mapped user address for a host buffer (PASID), an address in the device heap for an
+// instruction buffer.
+func (b *Buffer) DeviceAddress() (uint64, bool) {
+	if a, ok := b.be.(interface{ DeviceAddress() uint64 }); ok {
+		return a.DeviceAddress(), true
+	}
+	return 0, false
+}
+
 // SyncToDevice makes CPU writes in [off, off+n) visible to the device. Call it before Submit.
 // It is a no-op on devices with CapHostCoherent.
 func (b *Buffer) SyncToDevice(off, n int) error {

@@ -85,7 +85,19 @@ type BO struct {
 	Type      uint32
 	Size      int
 	MapOffset uint64
-	XdnaAddr  uint64
+	XdnaAddr  uint64 // InvalidAddr for host BOs (BO_SHARE, BO_CMD)
+	VAddr     uint64 // the user address of a mapped host BO, or InvalidAddr
+}
+
+// DeviceAddr is the address the NPU uses for the BO. BO_DEV and the heap have one in the
+// device memory (xdna_addr). Host BOs have none: with PASID the NPU reaches them at their
+// user address, which the driver reports as vaddr once they are mapped. Checked on a Ryzen
+// AI 9 365 with Linux 7.0, where xdna_addr stays InvalidAddr for BO_SHARE after mmap.
+func (bo BO) DeviceAddr() uint64 {
+	if bo.XdnaAddr != InvalidAddr {
+		return bo.XdnaAddr
+	}
+	return bo.VAddr
 }
 
 // CreateBO creates a buffer object of the given type.
@@ -98,20 +110,27 @@ func (d Dev) CreateBO(typ uint32, size int) (BO, error) {
 	return bo, d.Info(&bo)
 }
 
-// Info refreshes MapOffset and XdnaAddr. With PASID the device address of a host buffer is
-// its user address, so call it again after mapping.
+// Info refreshes MapOffset, XdnaAddr and VAddr. The device address of a host buffer is its
+// user address, known only after mapping, so call it again then.
 func (d Dev) Info(bo *BO) error {
 	arg := GetBOInfo{Handle: bo.Handle}
 	if err := d.ioctl("GET_BO_INFO", IoctlGetBOInfo, unsafe.Pointer(&arg)); err != nil {
 		return err
 	}
-	bo.MapOffset, bo.XdnaAddr = arg.MapOffset, arg.XdnaAddr
+	bo.MapOffset, bo.XdnaAddr, bo.VAddr = arg.MapOffset, arg.XdnaAddr, arg.VAddr
 	return nil
 }
 
 // Sync flushes or invalidates CPU caches for a range of a buffer object.
+//
+// The ioctl always gets SyncToDevice. The driver flushes the range with clflush for either
+// direction, which writes back and invalidates the lines, so it serves both. For
+// SyncFromDevice, Linux 7.0 then also syncs the BO as a debug BO, which needs a BO assigned
+// to a hardware context, and returns EINVAL for an ordinary BO after the flush is done
+// (amdxdna_drm_sync_bo_ioctl, amdxdna_hwctx_sync_debug_bo). Checked on a Ryzen AI 9 365.
 func (d Dev) Sync(handle uint32, dir uint32, off, n int) error {
-	arg := SyncBO{Handle: handle, Direction: dir, Offset: uint64(off), Size: uint64(n)}
+	_ = dir
+	arg := SyncBO{Handle: handle, Direction: SyncToDevice, Offset: uint64(off), Size: uint64(n)}
 	return d.ioctl("SYNC_BO", IoctlSyncBO, unsafe.Pointer(&arg))
 }
 
@@ -122,11 +141,21 @@ func (d Dev) CloseBO(handle uint32) error {
 }
 
 // CreateHwctx creates a hardware context and returns its handle and timeline syncobj.
+//
+// EINVAL is tried again for up to a second: right after another process's context ended,
+// creating one failed with EINVAL now and then on a Ryzen AI 9 365 (the driver is still
+// tearing the old one down), and succeeded moments later.
 func (d Dev) CreateHwctx(qos QoSInfo, maxOPC, numTiles uint32) (handle, syncobj uint32, err error) {
-	arg := CreateHwctx{QoS: unsafe.Pointer(&qos), MaxOPC: maxOPC, NumTiles: numTiles}
-	err = d.ioctl("CREATE_HWCTX", IoctlCreateHwctx, unsafe.Pointer(&arg))
-	runtime.KeepAlive(&qos)
-	return arg.Handle, arg.SyncobjHandle, err
+	deadline := time.Now().Add(time.Second)
+	for {
+		arg := CreateHwctx{QoS: unsafe.Pointer(&qos), MaxOPC: maxOPC, NumTiles: numTiles}
+		err = d.ioctl("CREATE_HWCTX", IoctlCreateHwctx, unsafe.Pointer(&arg))
+		runtime.KeepAlive(&qos)
+		if !errors.Is(err, syscall.EINVAL) || time.Now().After(deadline) {
+			return arg.Handle, arg.SyncobjHandle, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (d Dev) DestroyHwctx(handle uint32) error {
@@ -168,7 +197,14 @@ func (d Dev) Wait(syncobj uint32, seq uint64, timeout time.Duration) (bool, erro
 		Handles: unsafe.Pointer(&handle), Points: unsafe.Pointer(&point),
 		TimeoutNsec: MonotonicNow() + int64(timeout), CountHandles: 1, Flags: SyncobjWaitForSubmit,
 	}
-	err := d.D.Ioctl(IoctlSyncobjWait, unsafe.Pointer(&arg))
+	var err error
+	for {
+		// The Go runtime's signals (preemption) interrupt the wait; the absolute deadline
+		// stays, so waiting again is safe.
+		if err = d.D.Ioctl(IoctlSyncobjWait, unsafe.Pointer(&arg)); !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
 	runtime.KeepAlive(&handle)
 	runtime.KeepAlive(&point)
 	if errors.Is(err, syscall.ETIME) || errors.Is(err, syscall.ETIMEDOUT) {

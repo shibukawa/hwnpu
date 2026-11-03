@@ -80,7 +80,7 @@ func instructionBuffer(dev *hwnpu.Device) Check {
 }
 
 func powerSensor(dev *hwnpu.Device) Check {
-	c := Check{Name: "NPU power sensor"}
+	c := Check{Name: "power meter (the NPU sensor, else the package power)"}
 	s, err := dev.PowerSample()
 	if err != nil {
 		c.Status, c.Detail = Skip, err.Error()

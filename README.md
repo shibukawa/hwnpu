@@ -9,8 +9,8 @@ CPU 内蔵の NPU を cgo なしで Go から使うためのライブラリで�
 |---|---|---|
 | macOS (Apple Silicon) | Core ML (GPU を除外し、MLComputePlan で ANE 配置を検証) | M1 実装済み |
 | Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR のドライバ内コンパイル、コンパイル済み blob) | M2 実装済み。実機では未検証 |
-| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。実機では未検証 |
-| Windows (AMD Ryzen AI) | なし | 非対応 |
+| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。Ryzen AI 9 365 (Strix Point、Linux 7.0) で IRON の設計と full ELF の実行、Gemma 4 E2B の hwnpu-chat / hwnpu-agent を確認 |
+| Windows (AMD Ryzen AI) | XRT (hwnpu の C ライブラリ xrtshim を通す) | 実装済み。Windows では未検証。同じ経路を Linux の XRT 2.21 で確かめた (Gemma 4 E2B の画像と音声まで) |
 | WSL2 | なし | 非対応。WSL2 からは Intel と AMD のどちらの NPU も見えない |
 
 各 NPU が扱えるデータ形式とモデルの用意の仕方は [MODEL.ja.md](MODEL.ja.md)（[English](MODEL.md)）にあります。
@@ -90,7 +90,34 @@ out.SyncFromDevice(0, n)
 - 引数の番号、オフセット、型は xclbin のメタデータから読みます (`k.Args()`)
 - `/dev/accel/accelN` に読み書きできる権限 (`render` グループ) が必要です。Linux 6.14 以降のカーネル (amdxdna) を前提にしています
 - 電力ポリシーはハードウェアコンテキストの優先度 (QoS) に反映します。デバイス全体の電力モードは root 専用なので変更しません
-- 電力は NPU のセンサー値 (瞬間値) を読み、`PowerSample` の呼び出し間で積分して電力量にします
+- 電力は NPU のセンサー値 (瞬間値) を、なければ amdgpu ドライバが出すパッケージ全体の電力 (PPT、root 不要) を読みます。最初の `PowerSample` から 50 ms ごとに読んで積分し、電力量にします。NPU のセンサーは AMD の DKMS 版のドライバにしかなく、Linux 7.0 の標準カーネルではパッケージ全体の値になります (`Scope` が `package`)
+
+Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.elf`、グラフ全体を 1 つのハードウェアコンテキストと 1 つのコマンドで流すもの) も読み込めます。カーネル名は `main:sequence` の形で、引数はすべてバッファです。呼び出しごとの値は `run.Scratchpad()` に書きます。
+
+### LLM (Gemma 4 E2B) を AMD の NPU で
+
+IRON (amd/IRON) を開発者の機械でコンパイラとして一度だけ使い、`tools/amd/iron_export_lm.py` で書き出したものを hwnpu が Go だけで動かします (利用者の機械に Python も XRT も要りません)。
+
+```bash
+python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.amd-npu2 --max-seq-len 4096 --prefill-chunk 1024
+go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.amd-npu2
+go run ./cmd/hwnpu-agent -iron ~/models/gemma-4-E2B-it.amd-npu2 "README.md を要約して"
+```
+
+画像と音声も読ませるときは、塔 (視覚と音声のエンコーダー) ごと書き出します (`gemma4mm`。1 回のプロンプトに画像 1 枚と音声 1 本まで)。OpenAI 互換 API の `image_url` (data URL) と `input_audio` (WAV) で渡します。
+
+```bash
+python tools/amd/iron_export_lm.py gemma4mm ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.mm.amd-npu2 --max-seq-len 4096 --prefill-chunk 1024
+go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.mm.amd-npu2 -listen 127.0.0.1:8080
+```
+
+Phoenix と Hawk Point (NPU1) には full ELF がないので、`--device npu1 --cols 4` で書き出します。各版は IRON と同じく「1 ステップごとの xclbin」(Gemma 4 E2B のデコードで 1095 ステップ、xclbin は 2 個) になり、呼び出しごとの命令列は書き出しに含めたプログラムから hwnpu が作ります。NPU1 の実機では未検証です。同じ形の書き出しを `--per-step` で NPU2 向けに作ると Ryzen AI 9 365 で正しく動き、デコードは 1 秒に 2.6 トークンでした (full ELF の 6 の半分以下。1 トークンに 1095 回の投入が要るため)。NPU1 は、版ごとの xclbin (計 6 個) で、ハードウェアコンテキストの上限 6 を使い切ります。
+
+```bash
+python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.amd-npu1 --max-seq-len 4096 --prefill-chunk 1024 --device npu1 --cols 4
+```
+
+Ryzen AI 9 365 で、デコードは 1 秒に 5.5〜6 トークン、プロンプトは 1 秒に 260 トークン前後です (bf16 の重み)。プロンプトの塊は 1024 トークンが速く (IRON の既定の 2048 より 2 割)、4096 トークンの文脈でもスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。仕組みと制約は [docs/amd-npu-models.md](docs/amd-npu-models.md) にあります。
 
 ## Apple での注意
 

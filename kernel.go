@@ -56,8 +56,8 @@ func (r kernelRunner) Load(ctx context.Context, src ProgramSource) (*Program, er
 	if r.d.be == nil {
 		return nil, ErrClosed
 	}
-	if src.Xclbin == nil && src.Path == "" {
-		return nil, errors.New("hwnpu: ProgramSource needs Xclbin or Path")
+	if src.Xclbin == nil && src.ELF == nil && src.Path == "" {
+		return nil, errors.New("hwnpu: ProgramSource needs Xclbin, ELF or Path")
 	}
 	p, err := r.kd.LoadProgram(ctx, src)
 	if err != nil {
@@ -151,6 +151,27 @@ func (r *Run) SetBuffer(index int, b *Buffer) *Run {
 	return r.record(r.be.SetBuffer(index, b.be))
 }
 
+// SetBufferAt sets a buffer argument to n bytes of b from byte off: the device gets the
+// address of b plus off (IRON's per-step dispatches take parts of one arena bank).
+func (r *Run) SetBufferAt(index int, b *Buffer, off, n int) *Run {
+	if b == nil || b.be == nil {
+		return r.record(fmt.Errorf("hwnpu: argument %d: nil or closed buffer", index))
+	}
+	if off < 0 || n <= 0 || off+n > len(b.be.Bytes()) {
+		return r.record(fmt.Errorf("hwnpu: argument %d: [%d, %d) of a %d byte buffer", index, off, off+n, len(b.be.Bytes())))
+	}
+	if off == 0 && n == len(b.be.Bytes()) {
+		return r.record(r.be.SetBuffer(index, b.be))
+	}
+	s, ok := r.be.(interface {
+		SetBufferAt(index int, b backend.Buffer, off, n int) error
+	})
+	if !ok {
+		return r.record(fmt.Errorf("hwnpu: argument %d: this device takes whole buffers only: %w", index, ErrUnsupported))
+	}
+	return r.record(s.SetBufferAt(index, b.be, off, n))
+}
+
 // SetUint32 sets a 4 byte scalar argument.
 func (r *Run) SetUint32(index int, v uint32) *Run {
 	return r.record(r.be.SetArg(index, binary.LittleEndian.AppendUint32(nil, v)))
@@ -185,6 +206,15 @@ func (r *Run) Run(ctx context.Context) error {
 		return err
 	}
 	return f.Wait(ctx)
+}
+
+// Scratchpad is the memory a full ELF's control code reads parameters from for each command
+// (its ctrl scratchpad), written before Submit, or nil when the kernel has none.
+func (r *Run) Scratchpad() []byte {
+	if s, ok := r.be.(interface{ Scratchpad() []byte }); ok {
+		return s.Scratchpad()
+	}
+	return nil
 }
 
 // Close waits for a running submission and releases the run.

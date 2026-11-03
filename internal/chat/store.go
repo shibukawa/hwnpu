@@ -201,7 +201,13 @@ func (e *entry) writeMeta() error {
 // (the last at its end). base is the entry the sequence came from or extended last (nil for
 // none): when the tokens go on from base's, base gets the new rows and marks; otherwise a new
 // entry is made, with base's marks inside the shared beginning. It returns the entry.
-func (st *store) put(tokens []int32, sess *decode.Session, marks []storedMark, base *entry) (*entry, error) {
+// rowSource is what the store reads a sequence's rows from: decode.Session, ironSession.
+type rowSource interface {
+	RowBytes() int
+	ExportRows(from, to int) ([]byte, error)
+}
+
+func (st *store) put(tokens []int32, sess rowSource, marks []storedMark, base *entry) (*entry, error) {
 	rb := sess.RowBytes()
 	if base != nil && base.RowBytes != rb {
 		base = nil
@@ -268,7 +274,7 @@ func (st *store) put(tokens []int32, sess *decode.Session, marks []storedMark, b
 
 // append adds the rows of positions Rows to len(tokens) and the marks past Rows to the entry,
 // whose tokens tokens extend.
-func (e *entry) append(tokens []int32, sess *decode.Session, marks []storedMark) error {
+func (e *entry) append(tokens []int32, sess rowSource, marks []storedMark) error {
 	path := filepath.Join(e.dir, "rows.bin")
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
 	if err != nil {
