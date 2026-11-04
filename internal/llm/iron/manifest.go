@@ -28,11 +28,27 @@ type Manifest struct {
 	// Restartable says the state is the KV caches written by position (no rings, no recurrent
 	// layers): a sequence goes back by its position, and its rows are all of it. Exports
 	// without it (older ones) are taken as not restartable.
-	Restartable bool                `json:"restartable"`
+	Restartable bool `json:"restartable"`
+	// Checkpoints are the states of the recurrent layers (IRON's Checkpoints: LFM3's short
+	// convolutions), and Rings the ring caches, of a model that is not Restartable. A state
+	// has a slot per prompt-chunk boundary, slot k the state after the positions up to
+	// k * chunk run so far; a call reads the slot of its start and writes the one of its end,
+	// and ends within the chunk it starts in. Copying the slot a position reads (StateAt) is
+	// what a sequence needs besides its rows to go back to that position; no copy brings a
+	// ring back.
+	Checkpoints []Checkpoint        `json:"checkpoints"`
+	Rings       int                 `json:"rings"`
 	Banks       map[string]Bank     `json:"banks"`
 	Versions    map[string]*Version `json:"versions"`
 	// Multimodal describes the towers of a model with them (Gemma4Multimodal), or nil.
 	Multimodal *Multimodal `json:"multimodal"`
+}
+
+// Checkpoint is a recurrent layer's state: the buffer of its slots.
+type Checkpoint struct {
+	Buffer string `json:"buffer"`
+	Slots  int    `json:"slots"`
+	Chunk  int    `json:"chunk"`
 }
 
 // Multimodal is what the host needs to run a model's towers: the tokens around and in an

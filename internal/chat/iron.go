@@ -15,10 +15,12 @@ import (
 )
 
 // ironSession is the sequence of a model IRON compiled for AMD's NPU (internal/llm/iron). The
-// model embeds the tokens itself and its state is its KV caches, written by position: going
-// back to a mark is setting the position, and the rows of the positions (iron.Model.ExportRows)
-// are the whole sequence, which Save copies and the prompt store keeps. Models whose state
-// cannot restart anywhere (rings, recurrent layers) are not exported.
+// model embeds the tokens itself and its state is its KV caches, written by position, and for a
+// model with recurrent layers (LFM3's short convolutions) their states, a slot per prompt-chunk
+// boundary: a mark holds the slot its position reads (iron.Model.StateAt), so going back to it
+// is setting the position and writing that slot back. The rows of the positions
+// (iron.Model.ExportRows) and a mark's slot are the whole sequence, which Save copies and the
+// prompt store keeps. Models with ring caches are not loaded.
 type ironSession struct {
 	m   *iron.Model
 	pos int
@@ -35,31 +37,67 @@ func (s *ironSession) Qs() []int { return []int{1, s.Q()} } // no drafts: the de
 func (s *ironSession) Cache() int {
 	return s.m.Manifest.Config.MaxSeqLen
 }
-func (s *ironSession) Pos() int           { return s.pos }
-func (s *ironSession) Reset()             { s.pos = 0 }
-func (s *ironSession) Mark() *decode.Mark { return decode.NewMark(s.pos, nil) }
+func (s *ironSession) Pos() int { return s.pos }
+func (s *ironSession) Reset()   { s.pos = 0 }
 
-// savedRows is the key of a saved sequence's rows in its mark's buffers.
-const savedRows = "iron-rows"
+// savedRows is the key of a saved sequence's rows in its mark's buffers, savedState that of the
+// recurrent states' slot at its position.
+const (
+	savedRows  = "iron-rows"
+	savedState = "iron-state"
+)
 
-// Save copies the rows of the whole sequence (18 KiB a token for Gemma 4 E2B).
+// Mark is the position, with the recurrent states' slot there for a model that has them.
+func (s *ironSession) Mark() *decode.Mark {
+	if len(s.m.Manifest.Checkpoints) == 0 {
+		return decode.NewMark(s.pos, nil)
+	}
+	state, err := s.m.StateAt(s.pos)
+	if err != nil {
+		return decode.NewMark(0, nil) // a mark at the start, which needs no state
+	}
+	return decode.NewMark(s.pos, map[string][]byte{savedState: state})
+}
+
+// Save copies the rows of the whole sequence (18 KiB a token for Gemma 4 E2B) and its mark.
 func (s *ironSession) Save() *decode.Mark {
 	rows, err := s.m.ExportRows(0, s.pos)
 	if err != nil {
 		return nil
 	}
-	return decode.NewMark(s.pos, map[string][]byte{savedRows: rows})
+	m := s.Mark()
+	bufs := map[string][]byte{savedRows: rows}
+	if st, ok := m.Bufs()[savedState]; ok {
+		bufs[savedState] = st
+	}
+	return decode.NewMark(m.Pos(), bufs)
 }
 
 // Rewind goes back to a mark of this sequence, or brings back a saved one.
 func (s *ironSession) Rewind(m *decode.Mark) {
-	if rows, ok := m.Bufs()[savedRows]; ok {
-		if err := s.m.ImportRows(0, rows); err != nil {
-			s.pos = 0 // the next prompt is read from the start
-			return
-		}
+	if err := s.restore(m); err != nil {
+		s.pos = 0 // the next prompt is read from the start
+		return
 	}
 	s.pos = m.Pos()
+}
+
+// restore writes back what a mark holds: the rows of a saved sequence, the recurrent states'
+// slot of a model with them. A mark of such a model past the start without its slot is refused.
+func (s *ironSession) restore(m *decode.Mark) error {
+	if rows, ok := m.Bufs()[savedRows]; ok {
+		if err := s.m.ImportRows(0, rows); err != nil {
+			return err
+		}
+	}
+	if len(s.m.Manifest.Checkpoints) == 0 || m.Pos() == 0 {
+		return nil
+	}
+	state, ok := m.Bufs()[savedState]
+	if !ok {
+		return fmt.Errorf("chat: a mark at %d without the recurrent states", m.Pos())
+	}
+	return s.m.SetStateAt(m.Pos(), state)
 }
 
 func (s *ironSession) RowBytes() int { return s.m.RowBytes() }
@@ -88,6 +126,9 @@ func (s *ironSession) Resume(rows []byte, m *decode.Mark) error {
 		return fmt.Errorf("chat: %d bytes of rows for a mark at %d (%d a row)", len(rows), m.Pos(), rb)
 	}
 	if err := s.m.ImportRows(0, rows); err != nil {
+		return err
+	}
+	if err := s.restore(m); err != nil {
 		return err
 	}
 	s.pos = m.Pos()
@@ -216,6 +257,8 @@ func archOf(model string) (string, error) {
 	switch model {
 	case "Gemma4":
 		return "gemma4", nil
+	case "Lfm3":
+		return "lfm3", nil
 	}
 	return "", fmt.Errorf("chat: no chat format for the IRON model %s", model)
 }
@@ -241,10 +284,10 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		dev.Close()
 		return nil, err
 	}
-	if !m.Manifest.Restartable {
+	if !m.Resumable() {
 		m.Close()
 		dev.Close()
-		return nil, fmt.Errorf("chat: %s has ring caches or recurrent layers, which the chat engine cannot go back in yet; export it with a prompt chunk that keeps every cache whole (a chunk of 1024 or more for Gemma 4 at 4096 tokens)", c.IRON)
+		return nil, fmt.Errorf("chat: %s has ring caches (or is an export from before recurrent states were listed), which the chat engine cannot go back in; export it again, with a prompt chunk that keeps every cache whole (a chunk of 1024 or more at 4096 tokens)", c.IRON)
 	}
 	e := &Engine{Stops: map[int32]bool{}, emb: map[int32][]float32{}, nextID: -1, log: c.Log, dev: dev, ir: m}
 	e.Name = name

@@ -42,6 +42,8 @@ MODELS = {
     "gemma4": ("iron.applications.gemma4.model", "Gemma4"),
     # Gemma 4 with its vision and audio towers (one image and one clip a prompt).
     "gemma4mm": ("iron.applications.gemma4.model", "Gemma4Multimodal"),
+    # LFM3 (LFM3-1.7B): an application kept in hwnpu (iron_lfm3.py), IRON has none.
+    "lfm3": ("iron_lfm3", "Lfm3"),
 }
 
 
@@ -583,12 +585,40 @@ def export(model, versions, out: Path) -> dict:
         # Whether the state restarts anywhere: no ring caches, no recurrent layers
         # (CausalLM.recurrent). Only then is a position all a sequence needs to go back.
         restartable=not recurrent,
+        # The recurrent layers' states (IRON's Checkpoints, LFM3's short convolutions): a slot
+        # per prompt-chunk boundary, slot k the state after the positions up to k * chunk run
+        # so far. A host that copies the slot a position reads goes back to it.
+        checkpoints=_checkpoints(vm["decode"]["buffers"], recurrent, c),
+        # The ring caches (a sliding window's, when 3 rings are under max_seq_len), which no
+        # copy of a slot brings back.
+        rings=sum(1 for r in recurrent if not _is_checkpoints(r)),
         banks={k: dict(bytes=int(n), image=images.get(k)) for k, n in banks.items()},
         versions=vm,
     )
     (out / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     write_words(versions, m, out)
     return m
+
+
+def _is_checkpoints(state) -> bool:
+    from iron.lm import Checkpoints
+
+    return isinstance(state, Checkpoints)
+
+
+def _checkpoints(buffers: dict, recurrent, c) -> list:
+    """The buffers of the recurrent states, ``*.slots`` in the layout, one per Checkpoints."""
+    names = sorted(n for n in buffers if n.endswith(".slots"))
+    count = sum(1 for r in recurrent if _is_checkpoints(r))
+    if len(names) != count:
+        raise SystemExit(f"{count} recurrent states, {len(names)} buffers named *.slots: {names}")
+    slots = (int(c.max_seq_len) - 1) // int(c.prefill_chunk) + 2
+    out = []
+    for n in names:
+        if buffers[n]["bytes"] % slots:
+            raise SystemExit(f"{n}: {buffers[n]['bytes']} bytes are no {slots} slots")
+        out.append(dict(buffer=n, slots=slots, chunk=int(c.prefill_chunk)))
+    return out
 
 
 def write_check(Model, args, out: Path, prompt_tokens: int, steps: int, rng: np.random.Generator) -> None:

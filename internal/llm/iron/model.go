@@ -336,12 +336,17 @@ func (m *Model) Prompt(ctx context.Context, tokens []int32, start int) ([]float3
 		return nil, fmt.Errorf("iron: %d tokens from %d do not fit the cache of %d", len(tokens), start, m.Manifest.Config.MaxSeqLen)
 	}
 	var logits []float32
-	for begin := 0; begin < len(tokens); begin += C {
+	for begin := 0; begin < len(tokens); {
 		end := min(begin+C, len(tokens))
+		if len(m.Manifest.Checkpoints) > 0 {
+			// a call ends within the chunk it starts in: its state's slot is the chunk's
+			end = min(end, begin+C-(start+begin)%C)
+		}
 		var err error
 		if logits, err = m.chunk(ctx, tokens[begin:end], start+begin); err != nil {
 			return nil, err
 		}
+		begin = end
 	}
 	return logits, nil
 }

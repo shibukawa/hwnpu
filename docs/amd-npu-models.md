@@ -174,7 +174,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 ## 7. モデルの順番
 
 1. **Gemma 4 E2B (テキスト部、bf16)**: IRON の既存のアプリケーション。AMD が毎晩精度を確かめていて、hwnpu も Apple で対応済み (チャットの型、トークナイザー)。実行器と full ELF の正しさを、移植の誤りと切り分けて確かめられる。重みは Hugging Face から認証なしで取れる。見込み 5〜6 トークン/秒
-2. **LFM3-1.7B (bf16)**: IRON のアプリケーションを書く (Python)。部品は IRON に揃っている (RMSNorm、GEMV/GEMM、RoPE の部分回転、スライディング窓の注意、depthwise の 1 次元畳み込み、SwiGLU)。`port-architecture` スキルと同じく Hugging Face のロジットと照合する。重み 3.4 GB/トークンで 50 GB/s なら上限 14 トークン/秒、実際は 8〜10 と見込む
+2. **LFM3-1.7B (bf16)** (2026-11-04 済み、[design.md](design.md) の 16.63。hwnpu の `tools/amd/iron_lfm3.py`、8.7 トークン/秒): IRON のアプリケーションを書く (Python)。部品は IRON に揃っている (RMSNorm、GEMV/GEMM、RoPE の部分回転、スライディング窓の注意、depthwise の 1 次元畳み込み、SwiGLU)。`port-architecture` スキルと同じく Hugging Face のロジットと照合する。重み 3.4 GB/トークンで 50 GB/s なら上限 14 トークン/秒、実際は 8〜10 と見込む
 3. **4 ビットの重み**: mlir-aie の `q4nx` (FastFlowLM の Gemma 4 から取り出した形式、32 個ごとの scale と min) は今 Gemma 4 E2B の形に固定されている。形を一般化した q4nx の GEMV を IRON に足す。デコードはおおむね 4 倍になる見込み
 
 ## 8. リスク
@@ -195,7 +195,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | A2 | スクラッチパッドと複数コマンド | IRON の section-3 (呼び出しごとの長さ) と section-5 (引き継ぐ値) の例が Go で一致 |
 | A3 | エクスポートと実行器 | Gemma 4 E2B のデコードとプロンプトのロジットが、同じ機械の IRON (pyxrt) と許容誤差内で一致。トークン/秒を測る |
 | A4 | チャット | `hwnpu-chat` と `hwnpu-agent` が AMD で Gemma 4 E2B を使って応答する |
-| A5 | LFM3 | IRON のアプリケーションが Hugging Face のロジットと一致し、hwnpu-chat で動く |
+| A5 | LFM3 | IRON のアプリケーションが Hugging Face のロジットと一致し、hwnpu-chat で動く (済み、16.63) |
 | A6 | 4 ビット | q4nx の一般化とその精度 (KL) の測定 |
 
 ## 10. 開発環境 (root なし)

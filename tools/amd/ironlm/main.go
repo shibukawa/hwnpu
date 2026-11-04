@@ -91,6 +91,7 @@ func main() {
 	tokPath := flag.String("tokenizer", "", "tokenizer.json for -prompt")
 	maxTokens := flag.Int("max", 200, "tokens to generate for -prompt")
 	bench := flag.Bool("bench", false, "time a decode step against prompt calls of a few tokens (what checking drafts costs)")
+	depth := flag.Bool("depth", false, "time a whole prompt chunk and a decode step at each chunk boundary up to the context (an amdxdna command is cut off after 2 s)")
 	flag.Parse()
 	dir := flag.Arg(0)
 	ctx := context.Background()
@@ -108,6 +109,10 @@ func main() {
 	log.Printf("loaded in %.1f s", time.Since(t0).Seconds())
 	if *bench {
 		benchCalls(ctx, m)
+		return
+	}
+	if *depth {
+		benchDepth(ctx, m)
 		return
 	}
 	if *prompt != "" {
@@ -308,5 +313,28 @@ func benchCalls(ctx context.Context, m *iron.Model) {
 		}
 		ms := median(func() error { _, err := m.Prompt(ctx, toks[500:500+k], 500); return err })
 		fmt.Printf("prompt call of %d tokens: %.1f ms (%.2f decode steps)\n", k, ms, ms/step)
+	}
+}
+
+// benchDepth reads a prompt of whole chunks up to the context, timing each chunk, and a decode
+// step after each: the time grows with the position the attention reaches.
+func benchDepth(ctx context.Context, m *iron.Model) {
+	C, L := m.Manifest.Config.PrefillChunk, m.Manifest.Config.MaxSeqLen
+	toks := make([]int32, L)
+	for i := range toks {
+		toks[i] = int32(1000 + (i*7919)%20000)
+	}
+	for start := 0; start < L-1; start += C {
+		n := min(C, L-1-start) // the last chunk leaves a position for the decode step
+		t := time.Now()
+		if _, err := m.Prompt(ctx, toks[start:start+n], start); err != nil {
+			log.Fatalf("chunk at %d: %v", start, err)
+		}
+		chunk := time.Since(t).Seconds()
+		t = time.Now()
+		if _, err := m.Step(ctx, toks[start+n], start+n); err != nil {
+			log.Fatalf("step at %d: %v", start+n, err)
+		}
+		fmt.Printf("chunk of %d from %d: %.2f s (%.0f tokens/s); decode step at %d: %.1f ms\n", n, start, chunk, float64(n)/chunk, start+n, time.Since(t).Seconds()*1000)
 	}
 }
