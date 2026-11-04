@@ -205,6 +205,9 @@ func (c *Config) RopeInvFreq(layerType string) []float64 {
 // PagedLayers are the full attention layers: split at them (llm.Options.Paged), their attention
 // runs on the host's cache in chunks, and the sliding ones keep their rings in the program.
 func (c *Config) PagedLayers() []int {
+	if c.D1 {
+		return nil // no KV cache: one call reads the whole prompt
+	}
 	var out []int
 	for i, t := range c.LayerTypes {
 		if t == "full_attention" {

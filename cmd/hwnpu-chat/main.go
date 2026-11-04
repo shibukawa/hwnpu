@@ -15,10 +15,14 @@
 // downloads it from Hugging Face and converts it; later runs load what is there. A chat model is
 // converted twice with a KV cache of -context tokens, -draft (8) tokens per call to generate (a
 // token and the guesses after it, checked at once) and 64 to read prompts about 20 times faster;
-// the two share one cache, and a conversation reads only what is new since the last answer. With
-// -tier (4096) the pair is converted for the shorter cache too, and a conversation runs on the
-// shortest cache that holds it, about twice as fast, moving up as it grows. An embedding model is converted once per length in -embed-seq, and
-// a text runs on the shortest that holds it.
+// the two share one cache, and a conversation reads only what is new since the last answer.
+// LFM3 is split at its full attention layers (-paged): hwnpu-chat attends over the cache in
+// chunks of 8192 itself, so that a step costs in proportion to the conversation and the cache's
+// memory grows with it, and the context is the model's longest, 262144 tokens. A model that is
+// not split, or -paged -1, costs in proportion to -context (16320) whatever the conversation
+// holds; with -tier (4096) its pair is converted for the shorter cache too, and a conversation
+// runs on the shortest cache that holds it, moving up as it grows. An embedding model is
+// converted once per length in -embed-seq, and a text runs on the shortest that holds it.
 //
 // -package (or -embed-package) takes programs converted by hwnpu-convert instead, separated by
 // commas: for a chat model with the same -cache and different -seq, for an embedding model with
@@ -61,7 +65,8 @@ func main() {
 	use := flag.String("use", "LFM3-1.7B", "models to run, comma separated: names that -list shows, or Hugging Face repositories OWNER/NAME; one in the terminal")
 	list := flag.Bool("list", false, "list the models and what each is for, and exit")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing")
-	context_ := flag.Int("context", chat.DefaultContext, "tokens of a prompt and its answer together (the KV cache of a chat model's programs); over 16320 the cache is held in chunks of 16384, slower per token")
+	context_ := flag.Int("context", 0, "tokens of a prompt and its answer together; 0: the longest the model was trained for when it is split at its attention (-paged: 262144 for LFM3-1.7B, its cache growing with the conversation within a quarter of the memory), else 16320 (over 16320 a whole model's cache is in chunks of 16384, slower per token)")
+	paged := flag.Int("paged", 0, "split a chat model at its full attention layers and attend over the cache in chunks of this many tokens, so that a step costs in proportion to the conversation, not to -context: 0 for 8192 where the model and the NPU allow it (LFM3 on the Neural Engine), -1 never (then -tier applies)")
 	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the chat model (default: in its directory)")
 	weights := flag.String("weights", "", "checkpoint the chat model's token embeddings are read from: .safetensors or .gguf (default: in its directory)")
@@ -154,7 +159,7 @@ func main() {
 				if c.Weights == "" {
 					c.Weights = filepath.Join(md, "model.safetensors")
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr

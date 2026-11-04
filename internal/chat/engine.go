@@ -21,6 +21,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
@@ -290,6 +291,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			return nil, err
 		}
 		t.cache = s.Cache()
+		s.Close()
 		if n := len(e.tiers); n > 0 && t.cache <= e.tiers[n-1].cache {
 			t.close()
 			e.Close()
@@ -300,6 +302,10 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if e.sess, err = e.tiers[0].session(cm); err != nil {
 		e.Close()
 		return nil, err
+	}
+	paged := ""
+	if ds, ok := e.sess.(*decode.Session); ok && ds.Paged() > 0 {
+		paged = e.fitMemory(ds, mem.Physical(), logf)
 	}
 	if c.PromptDir != "" {
 		last := e.tiers[len(e.tiers)-1]
@@ -351,11 +357,33 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	if d := e.Draft(); d > 0 {
 		e.drafter = LookupDraft
-		logf("ready: context %d tokens%s, up to %d tokens per call, drafts of %d checked per call", e.Context(), caches, e.sess.Q(), d)
+		logf("ready: context %d tokens%s%s, up to %d tokens per call, drafts of %d checked per call", e.Context(), caches, paged, e.sess.Q(), d)
 	} else {
-		logf("ready: context %d tokens%s, up to %d tokens per call", e.Context(), caches, e.sess.Q())
+		logf("ready: context %d tokens%s%s, up to %d tokens per call", e.Context(), caches, paged, e.sess.Q())
 	}
 	return e, nil
+}
+
+// memoryShare is the part of the machine's memory the cache of a model split at its attention
+// may grow to: the rest is the programs' (1 to 3 GiB), the system's and the user's.
+const memoryShare = 4
+
+// fitMemory keeps the cache of a session split at its attention within a quarter of the
+// machine's memory (physical, in bytes; 0 when not known): the cache grows with the conversation,
+// so the context is the model's longest unless the cache at that length would not fit. It
+// returns what the ready line says of it.
+func (e *Engine) fitMemory(ds *decode.Session, physical int64, logf func(string, ...any)) string {
+	row := int64(ds.RowBytes())
+	full := row * int64(ds.Cache())
+	if budget := physical / memoryShare; physical > 0 && full > budget {
+		n := int(budget/row) / ds.Paged() * ds.Paged()
+		if n > 0 && n < ds.Cache() && ds.Limit(n) == nil {
+			logf("the context is %d tokens, not %d: its cache would take %.2f GiB, over a quarter of the %.0f GiB of memory", n, e.tiers[len(e.tiers)-1].cache, float64(full)/(1<<30), float64(physical)/(1<<30))
+			e.tiers[len(e.tiers)-1].cache = n
+			full = row * int64(n)
+		}
+	}
+	return fmt.Sprintf(", its cache growing with the conversation by %.0f KiB a token to %.2f GiB (attention in chunks of %d)", float64(row)/1024, float64(full)/(1<<30), ds.Paged())
 }
 
 // compileNote says how long loading takes on the device the first time.
@@ -420,8 +448,16 @@ func (e *Engine) use(i int) error {
 	if err != nil {
 		return err
 	}
+	closeSession(e.sess)
 	e.sess, e.ti = s, i
 	return nil
+}
+
+// closeSession frees what a session holds (the chunks of a cache split at its attention).
+func closeSession(s session) {
+	if ds, ok := s.(*decode.Session); ok && ds != nil {
+		ds.Close()
+	}
 }
 
 // room makes sure the cache can take n more tokens, moving the sequence up to a longer tier
@@ -517,6 +553,9 @@ func (e *Engine) Close() error {
 	if e.aud != nil {
 		e.aud.Close()
 		e.aud = nil
+	}
+	if e.sess != nil {
+		closeSession(e.sess)
 	}
 	for i := len(e.tiers) - 1; i >= 0; i-- {
 		e.tiers[i].close()

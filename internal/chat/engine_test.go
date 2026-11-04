@@ -3,6 +3,8 @@ package chat
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"math"
 	"math/rand/v2"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
+	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
@@ -103,6 +106,47 @@ func TestEngineReuse(t *testing.T) {
 	if err := sess.Add(long); err != nil {
 		t.Fatal(err)
 	}
+	checkReuse(t, cfg, w, sess, cache)
+}
+
+// The engine on a model split at its attention (llm.Paged) reuses earlier prompts as it does on
+// one whole: its marks, and the sequences put aside as the rows they use (decode.Session.Save).
+func TestEngineReusePaged(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(tinyLFM3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(cfg)
+	const cache = 40
+	sess := pagedSession(t, cfg, w, cache, 8, 1, 4)
+	if sess.Paged() != 8 {
+		t.Fatalf("the session is not split at its attention: %d", sess.Paged())
+	}
+	checkReuse(t, cfg, w, sess, cache)
+}
+
+// pagedSession converts the model split at its attention for each number of tokens per call and
+// starts a session over them on the CPU interpreter.
+func pagedSession(t *testing.T, cfg *lfm3.Config, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
+	t.Helper()
+	var paths []string
+	for _, q := range qs {
+		opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
+		path, err := llm.Convert(lfm3.Arch, cfg, w, filepath.Join(t.TempDir(), fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	sess, closer, err := runner.OpenSession(context.Background(), nil, paths, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closer.Close() })
+	return sess
+}
+
+func checkReuse(t *testing.T, cfg *lfm3.Config, w llm.Weights, sess *decode.Session, cache int) {
 	defer func(n int) { minSaved = n }(minSaved)
 	minSaved = 4
 	e := &Engine{sess: sess, w: w, model: cfg, emb: map[int32][]float32{}}
@@ -484,5 +528,35 @@ func TestEngineTiers(t *testing.T) {
 	// a prompt too long for any tier
 	if _, err := e.Generate(context.Background(), Request{Prompt: toks(48)}, func([]int32) (bool, error) { return false, nil }); !errors.Is(err, ErrContext) {
 		t.Errorf("a prompt of 48 tokens: %v", err)
+	}
+}
+
+// The cache of a model split at its attention stays within a quarter of the machine's memory:
+// the context is cut to whole chunks under it, and left as it is when it fits or the memory is
+// not known.
+func TestFitMemory(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(tinyLFM3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(cfg)
+	const cache = 40
+	for _, c := range []struct {
+		physical int64
+		want     int
+	}{{0, 40}, {1 << 30, 40}, {4 * 5000, 16}} {
+		sess := pagedSession(t, cfg, w, cache, 8, 1)
+		row := sess.RowBytes() // 1 full attention layer, keys and values of 8 heads of 8
+		if row != 2*2*8*8 {
+			t.Fatalf("%d bytes a token", row)
+		}
+		e := &Engine{sess: sess, tiers: []tier{{cache: cache}}}
+		note := e.fitMemory(sess, c.physical, func(string, ...any) {})
+		if e.Context() != c.want || sess.Cache() != c.want {
+			t.Errorf("physical %d: context %d, session %d, want %d", c.physical, e.Context(), sess.Cache(), c.want)
+		}
+		if !strings.Contains(note, "chunks of 8") {
+			t.Errorf("note %q", note)
+		}
 	}
 }

@@ -503,6 +503,14 @@ func (s *Session) part(c *kvCache, j int, alloc bool) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
+// Paged is the chunk length of a session split at its attention, 0 for another.
+func (s *Session) Paged() int {
+	if s.chunks == nil {
+		return 0
+	}
+	return s.progs[0].p.Attn.Chunk
+}
+
 // HeldBytes is the memory of the chunks a session split at its attention holds (they stay
 // allocated through Reset, to be used again; Close frees them).
 func (s *Session) HeldBytes() int64 {
