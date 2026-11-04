@@ -76,7 +76,8 @@ class Lfm3Config(DecoderConfig):
                 the default, layers without the sandwich norms, or a layer
                 kind other than conv, full and sliding attention.
         """
-        text = data.get("text_config", {}) if cls.json_prefix == "text_config." else data
+        # the text model's own object: the root, or text_config (LFM3-VL), lfm (LFM3-Audio)
+        text = data.get(cls.json_prefix.rstrip("."), {}) if cls.json_prefix else data
         for kind, params in text.get("rope_parameters", {}).items():
             if params.get("rope_type", "default") != "default":
                 raise ValueError(f"{source}: {kind} RoPE {params['rope_type']!r} is not built here")

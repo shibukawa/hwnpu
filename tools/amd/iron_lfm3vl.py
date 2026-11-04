@@ -324,6 +324,7 @@ class Lfm3Vl(Multimodal):
     """LFM3-VL whole: ``Lfm3`` with the vision tower, an image's soft tokens at its placeholders."""
 
     config = Lfm3VlConfig
+    hwnpu_kind = "lfm3vl"  # the multimodal manifest iron_export_lm.py writes
 
     def __init__(self, config: Lfm3VlConfig, weights):
         assert config.vision is not None

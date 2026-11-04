@@ -105,3 +105,79 @@ func argmax(x []float32) int {
 	}
 	return best
 }
+
+// LFM3-Audio's audio encoder on the NPU gives the soft tokens Hugging Face's does: an export in
+// HWNPU_IRON_AUDIO, and in HWNPU_IRON_AUDIO_CHECK a clip's log-mel features (features.bin,
+// float32, frames by mels) and the soft tokens Hugging Face computed from them (soft.bin).
+func TestLfm3AudioTowerOnDevice(t *testing.T) {
+	dir, check := os.Getenv("HWNPU_IRON_AUDIO"), os.Getenv("HWNPU_IRON_AUDIO_CHECK")
+	if dir == "" || check == "" {
+		t.Skip("HWNPU_IRON_AUDIO and HWNPU_IRON_AUDIO_CHECK are not set")
+	}
+	ctx := context.Background()
+	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	if err != nil {
+		t.Skip(err)
+	}
+	defer dev.Close()
+	m, err := Open(ctx, dev, dir, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	mm := m.Manifest.Multimodal
+	if mm == nil || mm.Kind != "lfm3audio" || !m.HasAudio() {
+		t.Fatalf("%s is no LFM3-Audio export", dir)
+	}
+	f32 := func(name string) []float32 {
+		b, err := os.ReadFile(filepath.Join(check, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]float32, len(b)/4)
+		for i := range out {
+			out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:]))
+		}
+		return out
+	}
+	mels := mm.Audio.Mels
+	feats, want := f32("features.bin"), f32("soft.bin")
+	frames := len(feats) / mels
+	buf := make([]byte, 2*(mm.Audio.MaxFrames+2)*mels)
+	for i, x := range feats {
+		binary.LittleEndian.PutUint16(buf[2*(mels+i):], bf16(x))
+	}
+	n1 := (frames + 1) / 2
+	n2 := (n1 + 1) / 2
+	tokens := (n2 + 1) / 2
+	input := towerInput(mm, mm.AudioToken)
+	own := map[string]int64{input + "_n1": int64(n1), input + "_n2": int64(n2), input + "_tokens": int64(tokens)}
+	if err := m.runTower(ctx, m.audio, input, buf, own, frames-1); err != nil {
+		t.Fatal(err)
+	}
+	merged, _, err := m.Buffer("audio", "merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	width := m.Manifest.Config.HiddenSize
+	at := m.Manifest.Config.PrefillChunk
+	if len(want) != tokens*width {
+		t.Fatalf("%d soft values for %d tokens", len(want), tokens)
+	}
+	worst := 1.0
+	for r := range tokens {
+		g := make([]float32, width)
+		for i := range g {
+			g[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(merged[2*((at+r)*width+i):])) << 16)
+		}
+		c := cosine(g, want[r*width:(r+1)*width])
+		worst = min(worst, c)
+		if testing.Verbose() {
+			t.Logf("soft token %d: cosine %.5f", r, c)
+		}
+	}
+	if worst < 0.98 {
+		t.Fatalf("worst soft token's cosine with Hugging Face's: %.5f", worst)
+	}
+	t.Logf("%d frames, %d soft tokens, worst cosine %.5f", frames, tokens, worst)
+}

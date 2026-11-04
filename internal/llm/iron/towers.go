@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
 
@@ -114,6 +115,18 @@ func (m *Model) AudioTokens(n int) (frames, tokens int, err error) {
 		return 0, 0, errors.New("iron: the model has no audio tower")
 	}
 	a := mm.Audio
+	if mm.Kind == "lfm3audio" {
+		// lfm3audio.Features' frames: the clip padded on the right to whole hops past a frame
+		padded := lfm3audioFrame
+		if n > lfm3audioFrame {
+			padded = n + (lfm3audioHop-(n-lfm3audioFrame)%lfm3audioHop)%lfm3audioHop
+		}
+		frames = (padded-lfm3audioFrame)/lfm3audioHop + 1
+		if frames > a.MaxFrames {
+			return 0, 0, fmt.Errorf("iron: a clip of %.1f s is past the encoder's %.1f s", float64(n)/16000, float64(a.MaxFrames)/100)
+		}
+		return frames, (frames + 7) / 8, nil
+	}
 	audio := min(n, a.MaxSamples) - (a.Frame - a.Frame/2)
 	frames = max(0, (audio+a.Hop-1)/a.Hop)
 	tokens = ((frames+1)/2 + 1) / 2
@@ -126,6 +139,9 @@ func (m *Model) AudioTokens(n int) (frames, tokens int, err error) {
 // RunAudio runs the audio tower on a mono clip at the tower's sample rate (16 kHz; past 30 s it
 // is cut), its soft tokens left where a placed prompt chunk reads them. It returns their count.
 func (m *Model) RunAudio(ctx context.Context, wave []float32) (int, error) {
+	if mm := m.Manifest.Multimodal; mm != nil && mm.Kind == "lfm3audio" {
+		return m.runLfm3Audio(ctx, wave)
+	}
 	frames, tokens, err := m.AudioTokens(len(wave))
 	if err != nil {
 		return 0, err
@@ -209,4 +225,42 @@ func bf16(x float32) uint16 {
 		return uint16(b>>16) | 0x40
 	}
 	return uint16((b + 0x7fff + (b>>16)&1) >> 16)
+}
+
+// lfm3audio.Features' framing: 400 samples a frame every 160.
+const (
+	lfm3audioFrame = 400
+	lfm3audioHop   = 160
+)
+
+// runLfm3Audio runs LFM3-Audio's audio encoder on a mono clip at 16 kHz: its log-mel features
+// (lfm3audio.Features, as the Core ML encoder's input) after a zero row, zeros past them, in
+// bf16, with the valid rows of its three stride-2 stages.
+func (m *Model) runLfm3Audio(ctx context.Context, wave []float32) (int, error) {
+	mm := m.Manifest.Multimodal
+	a := mm.Audio
+	frames, tokens, err := m.AudioTokens(len(wave))
+	if err != nil {
+		return 0, err
+	}
+	mel, n := lfm3audio.Features(wave, a.Mels)
+	if n != frames {
+		return 0, fmt.Errorf("iron: %d feature frames, %d counted", n, frames)
+	}
+	buf := make([]byte, 2*(a.MaxFrames+2)*a.Mels)
+	for i, x := range mel {
+		binary.LittleEndian.PutUint16(buf[2*(a.Mels+i):], bf16(x))
+	}
+	n1 := (frames + 1) / 2
+	n2 := (n1 + 1) / 2
+	input := towerInput(mm, mm.AudioToken)
+	own := map[string]int64{input + "_n1": int64(n1), input + "_n2": int64(n2), input + "_tokens": int64(tokens)}
+	// its words of rows bounded by the clip are looked up by frames, as Gemma 4's
+	if g := m.audio.m.Grid; g == nil || frames-1 >= len(g.Frames) || g.Frames[frames-1] != frames {
+		return 0, fmt.Errorf("iron: no words for %d frames", frames)
+	}
+	if err := m.runTower(ctx, m.audio, input, buf, own, frames-1); err != nil {
+		return 0, err
+	}
+	return tokens, nil
 }
