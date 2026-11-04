@@ -46,7 +46,7 @@ go run ./cmd/hwnpu-chat
 
 1. Hugging Face の [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) から `config.json`、`tokenizer.json`、`model.safetensors` (3.5 GB) を `~/Library/Caches/hwnpu/models/LFM3-1.7B` に落とします。途中で切れても、もう一度起動すれば続きから落とします
 2. Neural Engine 用に、6 ビットの表と grouped 注意で、全注意の層で分けて変換します (`lfm3-lut6-grouped-p8192-c262144-q8.parts.json` と `-q64`。それぞれ 7 部分で合わせて約 1.2 GiB と、重みのない注意のプログラム 1 つ)。生成するもの (1 回 8 トークン: 本物 1 つと推測 7 つをまとめて確かめる。3 節) と、1 回 64 トークンでプロンプトを約 20 倍速く読むものです。2 つは 1 つの KV キャッシュを共有します。全注意の層の注意は、hwnpu-chat が自分の持つキャッシュに対して 8192 トークンの塊ごとに計算します (`-paged`、2 節)。このため 1 ステップの費用は会話の長さに比例し、キャッシュのメモリも会話とともに増えるので、文脈はモデルの上限の 262144 トークンです。2026 年 11 月 4 日までの既定 (`lfm3-lut6-grouped-c16320-q8.mlpackage`、文脈 16320、費用は容量に比例) のファイルはもう読まれないので消して構いません。2026 年 11 月までの既定は 4 ビットの表と tile 注意 (`lfm3-c16320-q8.mlpackage`) で、そのファイルはもう読まれないので消して構いません。bf16 のモデルとの近さは lut4 の 6 倍 (KL 1.39 → 0.23 nats)、コーディングの課題は 13〜27 往復が 6 往復になり、grouped 注意のおかげで 1 回の呼び出しは以前より 38% 速いままです ([docs/design.md](docs/design.md) の 16.41)
-3. Neural Engine 向けにコンパイルします (1〜2 分)。結果は `~/Library/Caches/hwnpu` に残ります
+3. Neural Engine 向けにコンパイルします (1〜2 分)。結果は `~/Library/Caches/hwnpu` に残ります。同じ重みのファイル (生成用と読み込み用のプログラム、そのコンパイル結果) は macOS ではディスクの上で 1 つ分を共有し (APFS の clone。普通のファイルのまま)、プログラムを消したものと 30 日使わなかったもののコンパイル結果は起動時に消します (docs/design.md の 16.64)
 
 起動したら、`>` に続けて話しかけます。
 

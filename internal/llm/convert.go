@@ -184,7 +184,8 @@ func checkIntelFormats(o Options) error {
 	return nil
 }
 
-// convertPart writes one program to path.
+// convertPart writes one program to path, its weights shared with an identical program's next to
+// it (shareWeights).
 func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log io.Writer) (PartRecord, error) {
 	start := time.Now()
 	rec, err := WritePart(path, model, w, opts, func(pkg *mlpackage.Package) {
@@ -202,6 +203,7 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 	if err != nil {
 		return rec, err
 	}
+	shareWeights(path)
 	size := rec.WeightBytes
 	if opts.Backend != "intel" {
 		size = 0

@@ -74,6 +74,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 		}
 		c.Packages = append(c.Packages, path)
 	}
+	shareOnce(pdir, s.Log)
 	return c, nil
 }
 
@@ -185,6 +186,7 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 		}
 	}
 	logf("ready: embeddings of %d dimensions, up to %d tokens", e.Dim(), e.MaxTokens())
+	pruneCache(c.CacheDir, logf) // after loading, which marks this model's entries used
 	return e, nil
 }
 

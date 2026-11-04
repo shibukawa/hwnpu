@@ -374,6 +374,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	} else {
 		logf("ready: context %d tokens%s%s, up to %d tokens per call", e.Context(), caches, paged, e.sess.Q())
 	}
+	pruneCache(c.CacheDir, logf) // after loading, which marks this model's entries used
 	return e, nil
 }
 

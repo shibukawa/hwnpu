@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 )
@@ -234,6 +235,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		c.Tiers = append(c.Tiers, pkgs)
 	}
 	c.Packages = c.Tiers[len(c.Tiers)-1]
+	shareOnce(pdir, s.Log)
 	for _, e := range encoders {
 		if _, _, err := llm.LoadConfig(c.ModelConfig, e.arch); err != nil {
 			continue // the checkpoint has no such encoder
@@ -251,6 +253,37 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		*e.packages(&c) = []string{path}
 	}
 	return c, nil
+}
+
+// sharedMark is the file in a directory of programs that says ShareWeights went over it: the
+// conversions share the weights of what they write since, and the programs written before were
+// shared then.
+const sharedMark = ".weights-shared"
+
+// shareOnce makes the programs in dir that have the same weights share them on the disk
+// (llm.ShareWeights), once per directory: the programs of 8 and 64 tokens per call written before
+// conversions did it themselves.
+func shareOnce(dir string, log io.Writer) {
+	mark := filepath.Join(dir, sharedMark)
+	if _, err := os.Stat(mark); err == nil {
+		return
+	}
+	llm.ShareWeights(dir)
+	os.WriteFile(mark, nil, 0o644)
+}
+
+// cacheAge is how long an entry of the compile cache stays unused before Load removes it.
+const cacheAge = 30 * 24 * time.Hour
+
+// pruneCache removes the entries of the compile cache that are not used any more (cache.Prune):
+// those of programs deleted or not loaded for cacheAge.
+func pruneCache(dir string, logf func(string, ...any)) {
+	if dir == "" {
+		return
+	}
+	if n, bytes, err := cache.Prune(dir, cacheAge); err == nil && n > 0 {
+		logf("compile cache: removed %d entries not used any more (%.2f GiB)", n, float64(bytes)/(1<<30))
+	}
 }
 
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
