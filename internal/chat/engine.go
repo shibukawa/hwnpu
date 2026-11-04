@@ -102,6 +102,7 @@ type Engine struct {
 	// drafter guesses the next tokens of a sequence, up to k (speculative decoding); nil for
 	// none. Load sets it to Lookup when the model has a program to check drafts with (Draft).
 	drafter func(seq []int32, k int) []int32
+	kinds   []tokenKind // Tok's tokens, for repeats; set by the first generation
 
 	ir    *iron.Model // the model of an IRON export (Config.IRON); nil for none
 	store *store      // prompts kept on disk (Config.PromptDir); nil for none
@@ -609,13 +610,23 @@ type ThinkLimit struct {
 // tokens: none), with the template's tokens; inside says the prompt ends inside the thinking
 // (Template.Render).
 func (e *Engine) ThinkLimit(budget int, inside bool) ThinkLimit {
-	open, close, end := e.Template.Think()
-	o, ok1 := e.Tok.ID(open)
-	c, ok2 := e.Tok.ID(close)
-	if budget <= 0 || !ok1 || !ok2 {
+	o, c, ok := e.thinkTokens()
+	if budget <= 0 || !ok {
 		return ThinkLimit{}
 	}
+	_, _, end := e.Template.Think()
 	return ThinkLimit{Budget: budget, Open: o, Close: c, End: e.Tok.Encode(end), Inside: inside}
+}
+
+// thinkTokens returns the tokens that open and close the thinking, if the model has them.
+func (e *Engine) thinkTokens() (open, close int32, ok bool) {
+	if e.Tok == nil || e.Template == nil {
+		return 0, 0, false
+	}
+	o, c, _ := e.Template.Think()
+	open, ok1 := e.Tok.ID(o)
+	close, ok2 := e.Tok.ID(c)
+	return open, close, ok1 && ok2
 }
 
 // Stats says what a generation did.
@@ -627,8 +638,9 @@ type Stats struct {
 	Finish string
 	// Looped says that the generation stopped because the model repeated itself.
 	Looped bool
-	// ThinkCut says that the thinking reached its budget (Request.Think) and was ended.
-	ThinkCut bool
+	// ThinkCut says that the thinking reached its budget (Request.Think) and was ended;
+	// ThinkLooped, that it was ended before, going round in circles (repeats).
+	ThinkCut, ThinkLooped bool
 	// Drafted and Accepted count the tokens guessed ahead (speculative decoding) and those the
 	// model confirmed; Calls the runs of the model while generating.
 	Drafted, Accepted, Calls int
@@ -672,6 +684,11 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	defer func() { st.Decode, st.Cache = time.Since(t1), e.sess.Cache() }()
 	think := r.Think
 	inside, thought := think.Budget > 0 && think.Inside, 0
+	if e.kinds == nil && e.Tok != nil {
+		e.kinds = tokenKinds(e.Tok)
+	}
+	rep, circling := newRepeats(e.kinds), false
+	opens, closes, marks := e.thinkTokens()
 	// take takes a generated token into the answer: it is in the cache already, or is next to
 	// go in. It says whether the generation is over.
 	take := func(tok int32) (over bool, err error) {
@@ -691,6 +708,11 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 				thought++
 			}
 		}
+		if marks && (tok == opens || tok == closes) {
+			// the thinking and the answer count their repeats apart
+			rep.reset()
+			circling = false
+		}
 		stop, err := emit(gen)
 		if err != nil {
 			return true, err
@@ -699,9 +721,13 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 			st.Finish = "stop"
 			return true, nil
 		}
-		if looping(gen) {
-			st.Finish, st.Looped = "stop", true
-			return true, nil
+		if looped := rep.add(tok); looped || looping(gen) {
+			if !inside {
+				st.Finish, st.Looped = "stop", true
+				return true, nil
+			}
+			// the thinking ends as at its budget, and the answer begins
+			circling = true
 		}
 		if r.MaxTokens > 0 && len(gen) >= r.MaxTokens {
 			st.Finish = "length"
@@ -728,7 +754,7 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		toks := []int32{next}
 		var drafts []int32
 		switch {
-		case inside && thought >= think.Budget:
+		case inside && (thought >= think.Budget || circling):
 			// end the thinking: End goes into the sequence as if the model had generated it
 			if ok, err := e.room(1 + len(think.End)); err != nil {
 				return st, err
@@ -739,7 +765,9 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 			toks = append(toks, think.End...)
 			gen = append(gen, think.End...)
 			st.Generated = len(gen)
-			inside, st.ThinkCut = false, true
+			inside, st.ThinkCut, st.ThinkLooped = false, !circling, circling
+			circling = false
+			rep.reset()
 			if stop, err := emit(gen); err != nil {
 				return st, err
 			} else if stop {

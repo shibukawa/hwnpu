@@ -448,6 +448,12 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 		if st.ThinkCut {
 			cut = fmt.Sprintf("; thinking cut at %d tokens", thinkBudget)
 		}
+		if st.ThinkLooped {
+			cut = "; thinking cut going round in circles"
+		}
+		if st.Looped {
+			cut += "; stopped repeating itself"
+		}
 		if st.Drafted > 0 {
 			cut += fmt.Sprintf("; %d of %d drafts accepted", st.Accepted, st.Drafted)
 		}
