@@ -67,6 +67,18 @@ type attention struct {
 	bufs       []*hwnpu.Buffer
 	dev        *hwnpu.Device
 	placement  hwnpu.PlacementReport
+	mass       *mass // the two-level attention's, nil when the manifest has none
+}
+
+// mass is the loaded program without weights that weighs a chunk of bucket summaries for the
+// two-level attention (decode.Sparse).
+type mass struct {
+	g         *hwnpu.Graph
+	req       *hwnpu.Request
+	k, mask   int
+	q, r, w   *hwnpu.Buffer
+	bufs      []*hwnpu.Buffer
+	placement hwnpu.PlacementReport
 }
 
 // Chain is a loaded model in parts.
@@ -206,7 +218,55 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 	if a.q == nil || a.o == nil || a.m == nil || a.l == nil {
 		return fmt.Errorf("chain: the attention program does not have q, o, m and l")
 	}
+	if man.Mass != nil {
+		if a.mass, err = loadMass(ctx, c, man.Mass.Path); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// loadMass loads the mass program of the two-level attention.
+func loadMass(ctx context.Context, c *Chain, path string) (*mass, error) {
+	ms := &mass{}
+	var err error
+	if ms.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path}); err != nil {
+		return nil, fmt.Errorf("chain: the mass program (%s): %w", path, err)
+	}
+	ms.placement = ms.g.Placement()
+	if ms.req, err = ms.g.NewRequest(); err != nil {
+		return nil, err
+	}
+	for _, arg := range ms.g.Args() {
+		switch arg.Name {
+		case "k":
+			ms.k = arg.Index
+			continue
+		case "mask":
+			ms.mask = arg.Index
+			continue
+		}
+		b, err := c.dev.AllocBuffer(arg.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		ms.bufs = append(ms.bufs, b)
+		if err := ms.req.Bind(arg.Index, b); err != nil {
+			return nil, err
+		}
+		switch arg.Name {
+		case "q":
+			ms.q = b
+		case "r":
+			ms.r = b
+		case "w":
+			ms.w = b
+		}
+	}
+	if ms.q == nil || ms.r == nil || ms.w == nil {
+		return nil, fmt.Errorf("chain: the mass program does not have q, r and w")
+	}
+	return ms, nil
 }
 
 // program is the attention as decode takes it, run under ctx (that of the tier's program, not
@@ -239,10 +299,59 @@ func (a *attention) program(ctx context.Context, chunk int) *decode.Attention {
 			}
 			return nil
 		},
+		Mass: a.mass.program(ctx),
+	}
+}
+
+// program is the mass program as decode takes it, nil for none.
+func (ms *mass) program(ctx context.Context) *decode.Mass {
+	if ms == nil {
+		return nil
+	}
+	return &decode.Mass{
+		Q: ms.q.Bytes(), R: ms.r.Bytes(), W: ms.w.Bytes(),
+		Run: func(k, mask decode.Buf) error {
+			for _, x := range []struct {
+				i int
+				b decode.Buf
+			}{{ms.k, k}, {ms.mask, mask}} {
+				hb, ok := x.b.(*hwnpu.Buffer)
+				if !ok {
+					return fmt.Errorf("chain: a chunk not allocated by the attention program")
+				}
+				hb.SyncToDevice(0, hb.Size())
+				if err := ms.req.Bind(x.i, hb); err != nil {
+					return err
+				}
+			}
+			ms.q.SyncToDevice(0, ms.q.Size())
+			ms.r.SyncToDevice(0, ms.r.Size())
+			if err := ms.req.Run(ctx); err != nil {
+				return err
+			}
+			ms.w.SyncFromDevice(0, ms.w.Size())
+			return nil
+		},
+	}
+}
+
+func (ms *mass) close() {
+	if ms == nil {
+		return
+	}
+	if ms.req != nil {
+		ms.req.Close()
+	}
+	if ms.g != nil {
+		ms.g.Close()
+	}
+	for _, b := range ms.bufs {
+		b.Close()
 	}
 }
 
 func (a *attention) close() {
+	a.mass.close()
 	if a.req != nil {
 		a.req.Close()
 	}
@@ -434,18 +543,22 @@ func (c *Chain) Parts() []*Part { return c.cur.parts }
 func (c *Chain) LoadTime() time.Duration { return c.cur.loadTime }
 
 // OnNPU reports whether every loaded part, and the attention program of a model split at its
-// attention, was verified to run on the NPU.
+// attention (with its mass program), was verified to run on the NPU.
 func (c *Chain) OnNPU() bool {
 	for _, p := range c.cur.parts {
 		if !p.Placement.OnNPU() {
 			return false
 		}
 	}
-	if c.cur.attn != nil && !c.cur.attn.placement.OnNPU() {
+	if a := c.cur.attn; a != nil && (!a.placement.OnNPU() || a.mass != nil && !a.mass.placement.OnNPU()) {
 		return false
 	}
 	return len(c.cur.parts) > 0
 }
+
+// HasMass reports whether the model split at its attention has the mass program of the two-level
+// attention (decode.Sparse).
+func (c *Chain) HasMass() bool { return c.cur.attn != nil && c.cur.attn.mass != nil }
 
 // Paged is the chunk length of a model split at its attention, 0 for another.
 func (c *Chain) Paged() int { return c.cur.paged }

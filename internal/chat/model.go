@@ -218,6 +218,13 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			if err != nil {
 				return Config{}, err
 			}
+			if chunk > 0 {
+				// a conversion from before the two-level attention gets its mass program, which
+				// has no weights, instead of being converted again
+				if err := llm.AddMass(path, cmp.Or(a.Param(llm.Options{}, "attn"), "grouped")); err != nil {
+					return Config{}, err
+				}
+			}
 			pkgs = append(pkgs, path)
 		}
 		c.Tiers = append(c.Tiers, pkgs)
