@@ -229,6 +229,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - キャッシュを int8 にしても速くなりません（レポートは [npuprobe-m3-kv-int8.md](npuprobe-m3-kv-int8.md)）。`host-int8` は全演算 Neural Engine に載り、メモリは半分ですが、1024 / 4096 / 8192 で 11.9 / 29.5 / 50.8 ms と、同じ実行の `host`（10.8 / 27.6 / 46.5 ms）より 1 割遅くなります。fp16 に戻す演算が容量全体にかかるためです。量子化はメモリのための手法です。
 - Neural Engine に載るテンソルの 1 次元の長さは 16384 までです（レポートは [npuprobe-m3-kv-limit.md](npuprobe-m3-kv-limit.md)）。`-kv-layers 2` で、鍵の軸が 16384（キャッシュ 16383）なら全部 Neural Engine で 16.6 ms、16385（キャッシュ 16384）では注意の 39 演算が CPU に置かれて 117 ms でした。
 - キャッシュを塊に分けると、この上限を超えても Neural Engine に載ります（`-kv-layers 6`、LFM3-1.7B の全注意の層の数。レポートは [npuprobe-m3-kv-chunk.md](npuprobe-m3-kv-chunk.md) と [npuprobe-m3-kv-chunk-long.md](npuprobe-m3-kv-chunk-long.md)）。`host-chunk` は 4096 / 16320 / 32768 / 65536 で 13.2 / 43.4 / 84.0 / 201.6 ms と全部 Neural Engine で、分けない `host`（4096 / 16320 で 14.5 / 49.1 ms）より遅くなりません。塊は別々の入力にし、塊どうしは要素ごとの演算だけで合わせます。塊を 1 つのテンソルの軸に並べて軸方向に縮約する形や、各塊をその和の割合で重み付けする形は、2 塊から全演算が CPU に置かれました。
+- 塊ごとに重みなしの注意を呼び、ホストで合わせると、費用は容量ではなく使った長さに比例します（`npuprobe attn`、レポートは [npuprobe-m3-attn.md](npuprobe-m3-attn.md)）。grouped、Q=8、塊 8192 の 6 層で、使った長さ 4096 / 16384 / 65536 / 262144 に対して 8.8 / 17.4 / 69.5 / 295.7 ms でした。塊ごとにバッファを付け替えても 1 回の時間は変わらず、最大の常駐メモリは KV のバイト数（262144 で 3 GiB）より 0.1 GiB ほど多いだけで、入力は複製されません。仕事の少ない形は Core ML が CPU に置きます（Q=1 は塊 8192 まで、Q=8 は 2048 まで）。Q=1 では CPU のほうが Neural Engine より 2 倍速くなりました（1K あたり 0.41 対 0.80 ms）。
 
 ### 求む結果
 
