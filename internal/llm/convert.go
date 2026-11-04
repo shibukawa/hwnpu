@@ -225,20 +225,24 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 
 // convertPaged writes a Paged model split at its attention (Options.Paged): the parts PlanPaged
 // gives, out.partN.mlpackage, and the program without weights that attends over one chunk of the
-// host's cache, out.attn.mlpackage, listed by out.parts.json, which it returns.
+// host's cache, out.attn.mlpackage, listed by out.parts.json, which it returns. For Intel's NPU
+// they are OpenVINO IR, out.partN.xml and out.attn.xml.
 func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts Options, log io.Writer) (string, error) {
 	pm, ok := model.(Paged)
 	if !ok {
 		return "", fmt.Errorf("llm: %s cannot be split at its attention (-paged)", a.Title)
 	}
+	intel := opts.Backend == BackendIntel
 	switch {
-	case opts.Backend != "" && opts.Backend != "coreml":
-		return "", fmt.Errorf("llm: -paged is for the Neural Engine (Core ML) so far")
+	case opts.Backend != "" && opts.Backend != "coreml" && !intel:
+		return "", fmt.Errorf("llm: unknown backend %q (coreml or intel)", opts.Backend)
+	case intel && checkIntelFormats(opts) != nil:
+		return "", checkIntelFormats(opts)
 	case opts.Cache <= 0:
 		return "", fmt.Errorf("llm: -paged needs -cache, the longest sequence")
 	case opts.Seq < 1 || opts.Seq > opts.Paged:
 		return "", fmt.Errorf("llm: -paged %d takes 1 to %d tokens per call, not %d", opts.Paged, opts.Paged, opts.Seq)
-	case opts.Paged > NeuralEngineMaxDim:
+	case opts.Paged > NeuralEngineMaxDim && !intel:
 		return "", fmt.Errorf("llm: chunks of %d are over the Neural Engine's %d per dimension", opts.Paged, NeuralEngineMaxDim)
 	case opts.Start != 0 || opts.Layers != 0:
 		return "", fmt.Errorf("llm: -paged converts the whole model")
@@ -259,10 +263,17 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 	if err != nil {
 		return "", err
 	}
-	base := strings.TrimSuffix(out, ".mlpackage")
+	ext := ".mlpackage"
+	if intel {
+		ext = ".xml"
+	}
+	base := strings.TrimSuffix(strings.TrimSuffix(out, ".mlpackage"), ".xml")
 	man := Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Cache: opts.Cache, Target: target.Name, MaxBytes: target.MaxBytes, Paged: opts.Paged}
+	if intel {
+		man.Backend, man.Meta = opts.Backend, metadata(a, w, opts)
+	}
 	for i, p := range plan {
-		path := fmt.Sprintf("%s.part%d.mlpackage", base, i+1)
+		path := fmt.Sprintf("%s.part%d%s", base, i+1, ext)
 		o := opts
 		o.Start, o.Layers = p.Start, p.Layers
 		rec, err := convertPart(a, model, w, path, o, log)
@@ -274,19 +285,25 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 		}
 		man.Parts = append(man.Parts, rec)
 	}
-	heads, kvHeads, headDim := pm.PagedShape()
 	form := "grouped"
 	if a.Param(opts, "attn") == "tile" {
 		form = "tile"
 	}
-	apath := base + ".attn.mlpackage"
+	apath := base + ".attn" + ext
 	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-convert)", a.Title, opts.Paged, opts.Seq, form)
-	ins, outs, err := paged.Write(apath, paged.Shape{Heads: heads, KVHeads: kvHeads, HeadDim: headDim}, form, opts.Seq, opts.Paged, desc)
+	var ins, outs []mlpackage.Feature
+	if intel {
+		_, ins, outs, err = writeIR(apath, &mlpackage.Package{Description: desc}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
+			return paged.Build(b, pm.PagedShape(), form, opts.Seq, opts.Paged)
+		})
+	} else {
+		ins, outs, err = paged.Write(apath, pm.PagedShape(), form, opts.Seq, opts.Paged, desc)
+	}
 	if err != nil {
 		return "", err
 	}
 	man.Attention = &PartRecord{Path: apath, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}
-	if man.Mass, err = writeMass(base, paged.Shape{Heads: heads, KVHeads: kvHeads, HeadDim: headDim}, form, opts.Seq, opts.Paged, a.Title); err != nil {
+	if man.Mass, err = writeMass(base, ext, pm.PagedShape(), form, opts.Seq, opts.Paged, a.Title); err != nil {
 		return "", err
 	}
 	if err := WriteManifest(base+".parts.json", &man); err != nil {
@@ -297,11 +314,20 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 	return base + ".parts.json", nil
 }
 
-// writeMass writes the mass program of a model split at its attention, base.mass.mlpackage.
-func writeMass(base string, sh paged.Shape, form string, seq, chunk int, title string) (*PartRecord, error) {
-	path := base + ".mass.mlpackage"
+// writeMass writes the mass program of a model split at its attention, base.mass.mlpackage, or
+// for Intel's NPU (ext .xml) base.mass.xml.
+func writeMass(base, ext string, sh paged.Shape, form string, seq, chunk int, title string) (*PartRecord, error) {
+	path := base + ".mass" + ext
 	desc := fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (hwnpu-convert)", title, chunk, seq, form)
-	ins, outs, err := paged.WriteMass(path, sh, form, seq, chunk, desc)
+	var ins, outs []mlpackage.Feature
+	var err error
+	if ext == ".xml" {
+		_, ins, outs, err = writeIR(path, &mlpackage.Package{Description: desc}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
+			return paged.BuildMass(b, sh, form, seq, chunk)
+		})
+	} else {
+		ins, outs, err = paged.WriteMass(path, sh, form, seq, chunk, desc)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -310,9 +336,11 @@ func writeMass(base string, sh paged.Shape, form string, seq, chunk int, title s
 
 // AddMass adds the mass program of the two-level attention (decode.Sparse) to a model split at
 // its attention converted before there was one: it has no weights, so it is written from the
-// attention program's shape, next to it, in the attention's form ("grouped" or "tile", Build).
-// It does nothing for a manifest that has it, or that is not split at its attention.
-func AddMass(path, form string) error {
+// attention program's shape, next to it, in the attention's form ("grouped" or "tile", Build),
+// with the model's score scale (paged.Shape.Scale: 0 for 1/sqrt(head_dim), 1 for Gemma 4), as IR
+// for a manifest of Intel's NPU. It does nothing for a manifest that has it, or that is not split
+// at its attention.
+func AddMass(path, form string, scale float64) error {
 	man, err := ReadManifest(path)
 	if err != nil {
 		return err
@@ -332,8 +360,11 @@ func AddMass(path, form string) error {
 	if len(q) != 4 || len(k) != 4 {
 		return fmt.Errorf("llm: %s: the attention program has no q and k of 4 dimensions", path)
 	}
-	base := strings.TrimSuffix(path, ".parts.json")
-	if man.Mass, err = writeMass(base, paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3]}, form, q[2], k[2], man.Model); err != nil {
+	base, ext := strings.TrimSuffix(path, ".parts.json"), ".mlpackage"
+	if man.Backend == BackendIntel {
+		ext = ".xml"
+	}
+	if man.Mass, err = writeMass(base, ext, paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3], Scale: scale}, form, q[2], k[2], man.Model); err != nil {
 		return err
 	}
 	return WriteManifest(path, man)

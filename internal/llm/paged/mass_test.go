@@ -13,9 +13,10 @@ import (
 // The mass program, given the rows' normalizers from the attention program over all the chunks
 // of summaries (Merge.Norm), gives each summary's softmax summed over the rows of its kv head:
 // over two chunks, the first summary of the first chunk not counted (masked), the summaries
-// counted with log S added, one padding row left out (r of -1e4).
+// counted with log S added, one padding row left out (r of -1e4); and with unscaled scores (Gemma
+// 4's, one kv head for all).
 func TestMassMatchesSoftmax(t *testing.T) {
-	for _, sh := range []Shape{{16, 4, 32}, {4, 4, 8}} {
+	for _, sh := range []Shape{{Heads: 16, KVHeads: 4, HeadDim: 32}, {Heads: 4, KVHeads: 4, HeadDim: 8}, {Heads: 8, KVHeads: 1, HeadDim: 16, Scale: 1}} {
 		for _, form := range []string{"grouped", "tile"} {
 			t.Run(fmt.Sprintf("%v %s", sh, form), func(t *testing.T) { checkMass(t, sh, form) })
 		}
@@ -28,6 +29,10 @@ func checkMass(t *testing.T, sh Shape, form string) {
 	logS := float32(math.Log(8))
 	nh, nkv, d := sh.Heads, sh.KVHeads, sh.HeadDim
 	rep := nh / nkv
+	scale := 1 / math.Sqrt(float64(d))
+	if sh.Scale != 0 {
+		scale = sh.Scale
+	}
 	rng := rand.New(rand.NewPCG(5, 6))
 	normal := func(n int) []float32 {
 		v := make([]float32, n)
@@ -54,7 +59,7 @@ func checkMass(t *testing.T, sh Shape, form string) {
 				for i := 0; i < d; i++ {
 					dot += float64(q[(h*tokens+r)*d+i]) * float64(k[(g*chunk*chunks+b)*d+i])
 				}
-				sc[b] = dot/math.Sqrt(float64(d)) + float64(logS)
+				sc[b] = dot*scale + float64(logS)
 				top = max(top, sc[b])
 			}
 			var sum float64

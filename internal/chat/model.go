@@ -86,8 +86,7 @@ type Setup struct {
 	// Paged is the chunk length of a model split at its attention (llm.Options.Paged): a step
 	// then costs in proportion to the tokens in the cache, and the cache's memory grows with the
 	// conversation, so the context can be the model's longest. 0 for paged.DefaultChunk when the
-	// model can be split and the programs are for the Neural Engine, PagedOff for never. A model
-	// split at its attention has no tiers.
+	// model can be split, PagedOff for never. A model split at its attention has no tiers.
 	Paged int
 	// Draft makes the program that generates take this many tokens per call instead of 1, for
 	// checking the drafts of speculative decoding (Engine.Draft); 0 or 1 for none. It is one
@@ -172,7 +171,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
 		kind += "-" + attn
 	}
-	chunk, context := pagedChunk(model, backend, s.Paged), s.Context
+	chunk, context := pagedChunk(model, s.Paged), s.Context
 	if context <= 0 {
 		context = DefaultContext
 		if pm, ok := model.(llm.Paged); ok && chunk > 0 && pm.MaxContext() > 0 {
@@ -226,7 +225,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			if chunk > 0 {
 				// a conversion from before the two-level attention gets its mass program, which
 				// has no weights, instead of being converted again
-				if err := llm.AddMass(path, cmp.Or(a.Param(llm.Options{}, "attn"), "grouped")); err != nil {
+				if err := llm.AddMass(path, cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape().Scale); err != nil {
 					return Config{}, err
 				}
 			}
@@ -255,10 +254,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 }
 
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
-// none: the model must be Paged, and the programs for the Neural Engine.
-func pagedChunk(model llm.Model, backend string, want int) int {
+// none: the model must be Paged (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4), on any
+// NPU.
+func pagedChunk(model llm.Model, want int) int {
 	pm, ok := model.(llm.Paged)
-	if !ok || want < 0 || backend == llm.BackendIntel || len(pm.PagedLayers()) == 0 {
+	if !ok || want < 0 || len(pm.PagedLayers()) == 0 {
 		return 0
 	}
 	return cmp.Or(want, paged.DefaultChunk)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -476,7 +477,11 @@ func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 
 // runs on the host's cache in chunks, so that a step costs in proportion to the conversation.
 func (c *Config) PagedLayers() []int { return c.FullLayers() }
 
-// PagedShape is the full attention's heads, kv heads and head size (llm.Paged).
-func (c *Config) PagedShape() (heads, kvHeads, headDim int) {
-	return c.NumHeads, c.NumKVHeads, c.HeadDim
+// PagedShape is the full attention's heads, kv heads and head size (llm.Paged), its scores
+// scaled by 1/sqrt(head_dim).
+func (c *Config) PagedShape() paged.Shape {
+	return paged.Shape{Heads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim}
 }
+
+// PagedKV is layer itself: every full attention layer has its own keys and values.
+func (c *Config) PagedKV(layer int) int { return layer }

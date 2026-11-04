@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -157,6 +158,8 @@ func HeldInput(name string) bool {
 //     output that the next part takes by name (internal/llm/chain)
 //   - the next part starts at layer N with its attention's output, the input attn_o_N (1,
 //     heads, Seq, head_dim), and x, the hidden state entering the layer
+//   - a layer that attends over the keys and values of an earlier one of PagedLayers (PagedKV,
+//     Gemma 4's KV sharing) outputs attn_q_N only: the host attends over that layer's cache
 //
 // The other layers keep their state in the program as Cached describes. Layer 0 cannot be one of
 // PagedLayers.
@@ -164,8 +167,11 @@ type Paged interface {
 	Cached
 	// PagedLayers are the layers whose attention the host runs, in order.
 	PagedLayers() []int
-	// PagedShape is their attention's heads, kv heads and head size.
-	PagedShape() (heads, kvHeads, headDim int)
+	// PagedShape is their attention's heads, kv heads, head size and score scale.
+	PagedShape() paged.Shape
+	// PagedKV is the layer of PagedLayers whose cache layer attends over: layer itself, or the
+	// earlier layer whose keys and values it reuses.
+	PagedKV(layer int) int
 	// PagedStepInputs is StepInputs for a program built with Options.Paged: without the inputs
 	// of PagedLayers' attention, which the host runs (their masks would span the whole cache).
 	PagedStepInputs(pos, valid, q, cache int) map[string][]float32
