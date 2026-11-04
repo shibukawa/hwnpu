@@ -34,6 +34,7 @@ type Config struct {
 	LayerTypes       []string `json:"layer_types"`
 	UseSandwichNorm  bool     `json:"use_sandwich_norm"`
 	TieWordEmbed     bool     `json:"tie_word_embeddings"`
+	MaxPositions     int      `json:"max_position_embeddings"`
 	RopeParameters   map[string]struct {
 		Theta         float64  `json:"rope_theta"`
 		PartialFactor *float64 `json:"partial_rotary_factor"`
@@ -200,3 +201,23 @@ func (c *Config) RopeInvFreq(layerType string) []float64 {
 	}
 	return inv
 }
+
+// PagedLayers are the full attention layers: split at them (llm.Options.Paged), their attention
+// runs on the host's cache in chunks, and the sliding ones keep their rings in the program.
+func (c *Config) PagedLayers() []int {
+	var out []int
+	for i, t := range c.LayerTypes {
+		if t == "full_attention" {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// PagedShape is the attention's heads, kv heads and head size (llm.Paged).
+func (c *Config) PagedShape() (heads, kvHeads, headDim int) {
+	return c.NumHeads, c.NumKVHeads, c.HeadDim
+}
+
+// MaxContext is max_position_embeddings: 262144 for LFM3-1.7B.
+func (c *Config) MaxContext() int { return c.MaxPositions }

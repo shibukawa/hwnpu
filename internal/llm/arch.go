@@ -127,6 +127,34 @@ type Cached interface {
 	StepInputs(pos, valid, q, cache int) map[string][]float32
 }
 
+// Paged is a Cached model that can be built split at its attention (Options.Paged): the
+// attention of PagedLayers runs between the parts, on a cache the host holds in chunks of
+// Options.Paged tokens (internal/llm/paged), so that a step costs in proportion to the tokens in
+// the cache rather than to its capacity. The parts are cut at those layers (PlanPaged):
+//
+//   - a part that ends where such a layer N begins computes the layer's queries, keys and values
+//     and stops before the attention: it outputs attn_q_N (1, heads, Seq, head_dim), RoPE
+//     applied, and kv_k_N_new and kv_v_N_new (1, kv_heads, Seq, head_dim), and its y is the
+//     hidden state entering the layer. Anything else the rest of the layer needs from it is an
+//     output that the next part takes by name (internal/llm/chain)
+//   - the next part starts at layer N with its attention's output, the input attn_o_N (1,
+//     heads, Seq, head_dim), and x, the hidden state entering the layer
+//
+// The other layers keep their state in the program as Cached describes. Layer 0 cannot be one of
+// PagedLayers.
+type Paged interface {
+	Cached
+	// PagedLayers are the layers whose attention the host runs, in order.
+	PagedLayers() []int
+	// PagedShape is their attention's heads, kv heads and head size.
+	PagedShape() (heads, kvHeads, headDim int)
+	// PagedStepInputs is StepInputs for a program built with Options.Paged: without the inputs
+	// of PagedLayers' attention, which the host runs (their masks would span the whole cache).
+	PagedStepInputs(pos, valid, q, cache int) map[string][]float32
+	// MaxContext is the longest sequence the model was trained for (max_position_embeddings).
+	MaxContext() int
+}
+
 // TokenInput is a program input that the host fills per token like x, from a table of the
 // checkpoint that stays on the host: the row of Table for each token, Width values, as an input
 // of shape (1, seq, Width).

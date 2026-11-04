@@ -12,6 +12,7 @@ package decode
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 )
 
 // Program is the loaded program: its fp16 input and output buffers by name and their shapes.
@@ -28,6 +30,38 @@ type Program struct {
 	// Run computes the outputs from the inputs. Before it, the inputs have been written; after
 	// it, the outputs are read. Sync hooks for device buffers belong in Run.
 	Run func() error
+
+	// A program split at its attention (llm.Paged) has RunPart instead of Run: RunPart(i) runs
+	// part i, its inputs written and its outputs read as Run's. Between part i and i+1 the session
+	// attends for layer Attend[i]: it writes the step's keys and values (kv_k_N_new, kv_v_N_new)
+	// into its own cache, attends attn_q_N over it with Attn and writes the result to the input
+	// attn_o_N. Context is the longest sequence that cache holds.
+	RunPart func(i int) error
+	Attend  []int
+	Attn    *Attention
+	Context int
+}
+
+// Buf is a buffer the attention program can be bound to: a chunk of keys or values of the
+// session's cache, or a mask.
+type Buf interface {
+	Bytes() []byte
+	Close() error
+}
+
+// Attention is the program without weights that attends over one chunk of a long cache the
+// session holds (internal/llm/paged), for the tokens per step of the Program it belongs to.
+type Attention struct {
+	// Chunk is the positions of a chunk.
+	Chunk int
+	// Q is the program's input q, and O, M and L its outputs (fp16, internal/llm/paged).
+	Q, O, M, L []byte
+	// NewBuf allocates a buffer of n bytes of zeros that Run can take, in the memory of the
+	// device: the chunks of every program of the session come from the first program's.
+	NewBuf func(n int) (Buf, error)
+	// Run attends Q over the keys k and values v (1, kv_heads, Chunk, head_dim) with the mask
+	// (1, 1, tokens, Chunk), writing O, M and L.
+	Run func(k, v, mask Buf) error
 }
 
 // Session is the state of one sequence.
@@ -41,15 +75,22 @@ type Session struct {
 	pos     int
 	lookups []llm.TokenInput // the model's inputs looked up per token besides x
 	last    []float32        // h after the last step, if the program outputs it
+
+	// of a program split at its attention: the chunks of each long cache the session holds,
+	// by the cache's output (kv_NAME_new), allocated as the sequence reaches them
+	chunks map[string][]Buf
 }
 
 // kvCache is one cache of keys or values: an input kv_NAME, or the chunks kv_NAME_cJ that hold
-// its positions in order (llm.CacheChunks).
+// its positions in order (llm.CacheChunks), or chunks the session holds itself (paged).
 type kvCache struct {
-	out   string   // the step's rows, kv_NAME_new
-	parts []string // the inputs
-	lens  []int
-	total int
+	out      string   // the step's rows, kv_NAME_new
+	parts    []string // the inputs
+	lens     []int
+	total    int
+	long     bool // holds every position of the sequence (not a ring)
+	chunk    int  // of a cache the session holds: the positions of a chunk; 0 otherwise
+	heads, d int
 }
 
 // kvBase gives the cache an input belongs to, kv_NAME for kv_NAME and its chunks kv_NAME_cJ, and
@@ -75,6 +116,13 @@ func newOutput(name string) string {
 type step struct {
 	p Program
 	q int
+	// of a program split at its attention: the masks of the step's chunks and the merge
+	merge *paged.Merge
+	zero  Buf          // a mask that hides nothing, for the chunks before the step
+	masks map[int]Buf  // by chunk, those the step's tokens fall in
+	spare []Buf        // allocated masks not in use this step
+	o     [3][]float32 // the attention's outputs o, m, l, decoded
+	res   []float32    // the merged attention
 }
 
 // New checks the program's inputs and outputs and starts an empty sequence.
@@ -91,7 +139,7 @@ func New(p Program, m llm.Cached) (*Session, error) {
 	if len(y) == 4 {
 		vocab *= y[3] // folded into rows (logitsShape)
 	}
-	s := &Session{progs: []step{{p, x[1]}}, m: m, hidden: x[2], vocab: vocab}
+	s := &Session{progs: []step{{p: p, q: x[1]}}, m: m, hidden: x[2], vocab: vocab}
 	if l, ok := m.(llm.TokenInputs); ok {
 		s.lookups = l.TokenInputs()
 	}
@@ -102,11 +150,73 @@ func New(p Program, m llm.Cached) (*Session, error) {
 	if s.kv, s.t, err = caches(p); err != nil {
 		return nil, err
 	}
+	if p.RunPart != nil {
+		if _, ok := m.(llm.Paged); !ok {
+			return nil, fmt.Errorf("decode: the program is split at its attention, the model cannot be")
+		}
+		s.chunks = map[string][]Buf{}
+		if err := s.progs[0].checkPaged(s); err != nil {
+			return nil, err
+		}
+	}
 	s.Reset()
 	return s, nil
 }
 
-// caches gathers the program's KV cache inputs into caches, and gives the longest's length.
+// checkPaged checks a program split at its attention and makes its step's buffers.
+func (st *step) checkPaged(s *Session) error {
+	p := st.p
+	if p.Attn == nil || p.Attn.NewBuf == nil || p.Attn.Run == nil || p.Attn.Chunk <= 0 {
+		return fmt.Errorf("decode: a program split at its attention has no attention program")
+	}
+	if p.Attn.Chunk < st.q {
+		return fmt.Errorf("decode: chunks of %d for %d tokens per step", p.Attn.Chunk, st.q)
+	}
+	var heads, d int
+	for _, layer := range p.Attend {
+		for _, name := range []string{fmt.Sprintf("kv_k_%d_new", layer), fmt.Sprintf("kv_v_%d_new", layer)} {
+			c := s.cache(name)
+			if c == nil || c.chunk == 0 {
+				return fmt.Errorf("decode: the program attends for layer %d but has no output %s", layer, name)
+			}
+		}
+		qs, ok := p.OutShape[fmt.Sprintf("attn_q_%d", layer)]
+		if !ok || len(qs) != 4 || qs[2] != st.q {
+			return fmt.Errorf("decode: no output attn_q_%d (1, heads, %d, head_dim)", layer, st.q)
+		}
+		if os := p.InShape[fmt.Sprintf("attn_o_%d", layer)]; !slices.Equal(os, qs) {
+			return fmt.Errorf("decode: input attn_o_%d has shape %v, want %v", layer, os, qs)
+		}
+		heads, d = qs[1], qs[3]
+	}
+	if len(p.Attend) == 0 {
+		return fmt.Errorf("decode: a program split at its attention attends for no layer")
+	}
+	if 2*heads*st.q*d != len(p.Attn.Q) || len(p.Attn.O) != len(p.Attn.Q) || 2*heads*st.q != len(p.Attn.M) || len(p.Attn.L) != len(p.Attn.M) {
+		return fmt.Errorf("decode: the attention program does not take %d heads of %d for %d tokens", heads, d, st.q)
+	}
+	st.merge = paged.NewMerge(heads*st.q, d)
+	st.o = [3][]float32{make([]float32, heads*st.q*d), make([]float32, heads*st.q), make([]float32, heads*st.q)}
+	st.res = make([]float32, heads*st.q*d)
+	st.masks = map[int]Buf{}
+	var err error
+	st.zero, err = p.Attn.NewBuf(2 * st.q * p.Attn.Chunk)
+	return err
+}
+
+// cache returns the cache whose step rows are the output out, or nil.
+func (s *Session) cache(out string) *kvCache {
+	for i := range s.kv {
+		if s.kv[i].out == out {
+			return &s.kv[i]
+		}
+	}
+	return nil
+}
+
+// caches gathers the program's KV cache inputs into caches, and gives the longest's length. For
+// a program split at its attention, the step outputs kv_NAME_new without an input are caches the
+// session holds (in chunks of Attn.Chunk), and the length is Context.
 func caches(p Program) ([]kvCache, int, error) {
 	var kv []kvCache
 	t := 0
@@ -147,12 +257,36 @@ func caches(p Program) ([]kvCache, int, error) {
 			c.lens = append(c.lens, p.InShape[name][2])
 			c.total += p.InShape[name][2]
 		}
+		sh := p.InShape[names[0]]
+		c.heads, c.d = sh[1], sh[3]
 		kv = append(kv, c)
 		t = max(t, c.total) // the longest cache; shorter ones are rings
+	}
+	if p.RunPart != nil {
+		if p.Attn == nil || p.Context <= 0 {
+			return nil, 0, fmt.Errorf("decode: a program split at its attention needs its attention program and its context")
+		}
+		t = p.Context
+		for name, sh := range p.OutShape {
+			base, ok := strings.CutSuffix(name, "_new")
+			if !ok || !strings.HasPrefix(name, "kv_") || chunks[base] != nil {
+				continue
+			}
+			if len(sh) != 4 {
+				return nil, 0, fmt.Errorf("decode: %s has shape %v, want (1, heads, q, head_dim)", name, sh)
+			}
+			kv = append(kv, kvCache{out: name, total: t, long: true, chunk: p.Attn.Chunk, heads: sh[1], d: sh[3]})
+		}
 	}
 	if t == 0 {
 		return nil, 0, fmt.Errorf("decode: the program has no KV cache inputs (kv_*)")
 	}
+	for i := range kv {
+		if kv[i].chunk == 0 && kv[i].total == t {
+			kv[i].long = true
+		}
+	}
+	slices.SortFunc(kv, func(a, b kvCache) int { return strings.Compare(a.out, b.out) })
 	return kv, t, nil
 }
 
@@ -188,7 +322,24 @@ func (s *Session) Add(p Program) error {
 	if err := s.checkLookups(p); err != nil {
 		return err
 	}
-	s.progs = append(s.progs, step{p, x[1]})
+	st := step{p: p, q: x[1]}
+	if (p.RunPart != nil) != (first.RunPart != nil) {
+		return fmt.Errorf("decode: one program is split at its attention and the other is not")
+	}
+	if p.RunPart != nil {
+		if p.Attn == nil || p.Attn.Chunk != first.Attn.Chunk || p.Context != first.Context {
+			return fmt.Errorf("decode: the programs split at their attention hold different caches")
+		}
+		for _, c := range s.kv {
+			if c.chunk > 0 && !slices.Equal(p.OutShape[c.out], []int{1, c.heads, x[1], c.d}) {
+				return fmt.Errorf("decode: the program has no output %s (1, %d, %d, %d)", c.out, c.heads, x[1], c.d)
+			}
+		}
+		if err := st.checkPaged(s); err != nil {
+			return err
+		}
+	}
+	s.progs = append(s.progs, st)
 	slices.SortFunc(s.progs, func(a, b step) int { return a.q - b.q })
 	return nil
 }
@@ -233,6 +384,9 @@ func (s *Session) Pos() int { return s.pos }
 // (a cache shorter than the longest) keeps its length and is copied as is; the other caches move
 // row by row to the same positions, whether the old or the new one is in chunks.
 func (s *Session) Migrate(np Program) error {
+	if s.chunks != nil || np.RunPart != nil {
+		return fmt.Errorf("decode: a program split at its attention has no tiers to move to")
+	}
 	x, ok := np.InShape["x"]
 	if !ok || len(x) != 3 || x[2] != s.hidden {
 		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
@@ -297,12 +451,15 @@ func (s *Session) Migrate(np Program) error {
 			}
 		}
 	}
-	s.progs, s.t, s.kv = []step{{np, x[1]}}, nt, nkv
+	s.progs, s.t, s.kv = []step{{p: np, q: x[1]}}, nt, nkv
 	return nil
 }
 
 // locate gives the chunk that holds a position of the cache and its row there.
 func (c *kvCache) locate(pos int) (chunk, row int) {
+	if c.chunk > 0 {
+		return pos / c.chunk, pos % c.chunk
+	}
 	for pos >= c.lens[chunk] {
 		pos -= c.lens[chunk]
 		chunk++
@@ -310,7 +467,98 @@ func (c *kvCache) locate(pos int) (chunk, row int) {
 	return chunk, pos
 }
 
-// Reset empties the cache.
+// span is the positions chunk j of the cache holds.
+func (c *kvCache) span(j int) int {
+	if c.chunk > 0 {
+		return c.chunk
+	}
+	return c.lens[j]
+}
+
+// part returns the bytes of chunk j of the cache, (1, heads, span, d) in fp16. A chunk the session
+// holds is allocated when alloc is set and it is not there yet; otherwise it is nil.
+func (s *Session) part(c *kvCache, j int, alloc bool) ([]byte, error) {
+	if c.chunk == 0 {
+		return s.progs[0].p.In[c.parts[j]], nil
+	}
+	have := s.chunks[c.out]
+	if j < len(have) && have[j] != nil {
+		return have[j].Bytes(), nil
+	}
+	if !alloc {
+		return nil, nil
+	}
+	if j*c.chunk >= c.total {
+		return nil, fmt.Errorf("decode: chunk %d is past the cache of %d", j, c.total)
+	}
+	for len(have) <= j {
+		have = append(have, nil)
+	}
+	b, err := s.progs[0].p.Attn.NewBuf(2 * c.heads * c.chunk * c.d)
+	if err != nil {
+		return nil, fmt.Errorf("decode: a chunk of the cache: %w", err)
+	}
+	have[j] = b
+	s.chunks[c.out] = have
+	return b.Bytes(), nil
+}
+
+// HeldBytes is the memory of the chunks a session split at its attention holds (they stay
+// allocated through Reset, to be used again; Close frees them).
+func (s *Session) HeldBytes() int64 {
+	var n int64
+	for _, cs := range s.chunks {
+		for _, b := range cs {
+			if b != nil {
+				n += int64(len(b.Bytes()))
+			}
+		}
+	}
+	return n
+}
+
+// Close frees the chunks of the cache the session holds and the masks of its steps. The session
+// cannot be used after.
+func (s *Session) Close() error {
+	for _, cs := range s.chunks {
+		for _, b := range cs {
+			if b != nil {
+				b.Close()
+			}
+		}
+	}
+	s.chunks = nil
+	for i := range s.progs {
+		st := &s.progs[i]
+		for _, b := range append(append([]Buf{st.zero}, st.spare...), slices.Collect(maps.Values(st.masks))...) {
+			if b != nil {
+				b.Close()
+			}
+		}
+		st.zero, st.spare, st.masks = nil, nil, nil
+	}
+	return nil
+}
+
+// Limit lowers the longest sequence of a session split at its attention to n tokens (at most
+// what its programs hold): its cache grows as the sequence does, and the caller may keep it
+// within the memory there is.
+func (s *Session) Limit(n int) error {
+	if s.chunks == nil {
+		return fmt.Errorf("decode: only a program split at its attention can be limited")
+	}
+	if n <= 0 || n > s.progs[0].p.Context {
+		return fmt.Errorf("decode: a limit of %d for a cache of %d", n, s.progs[0].p.Context)
+	}
+	if s.pos > n {
+		return fmt.Errorf("decode: the sequence is %d tokens, over a limit of %d", s.pos, n)
+	}
+	s.t = n
+	return nil
+}
+
+// Reset empties the cache. The chunks a session split at its attention holds stay allocated:
+// their rows past the position are masked.
 func (s *Session) Reset() {
 	for name, b := range s.progs[0].p.In {
 		if cacheInput(name) {
@@ -323,10 +571,12 @@ func (s *Session) Reset() {
 // Mark is a point of a sequence that the session can go back to: the position, and a copy of
 // what the steps after it overwrite in place, the rings of the sliding layers and the
 // convolution windows. The longest caches are not copied: their rows past the position are
-// masked, and the steps after it write only past it.
+// masked, and the steps after it write only past it. A mark from Save also holds the rows of the
+// longest caches before it.
 type Mark struct {
 	pos  int
 	bufs map[string][]byte
+	rows []byte // of Save: ExportRows(0, pos)
 }
 
 // Pos is the position of the mark.
@@ -342,29 +592,30 @@ func (s *Session) Mark() *Mark {
 		}
 	}
 	for _, c := range s.kv {
-		if c.total < s.t { // a ring
+		if !c.long { // a ring
 			m.bufs[c.parts[0]] = slices.Clone(in[c.parts[0]])
 		}
 	}
 	return m
 }
 
-// Save returns the current point of the sequence with a copy of the whole cache, which stays
+// Save returns the current point of the sequence with a copy of the rows before it, which stays
 // good whatever the session does after: it can put aside one sequence for another and come back.
+// It holds what the sequence uses, not the whole cache.
 func (s *Session) Save() *Mark {
-	m := &Mark{pos: s.pos, bufs: map[string][]byte{}}
-	for name, b := range s.progs[0].p.In {
-		if cacheInput(name) {
-			m.bufs[name] = slices.Clone(b)
-		}
-	}
+	m := s.Mark()
+	m.rows, _ = s.ExportRows(0, s.pos)
 	return m
 }
 
 // Rewind goes back to a mark of this session. For a mark from Mark, the rows of the longest
 // caches before it must not have changed since it was taken: it is good until the session
-// rewinds to an earlier point or restores a Save, and steps again.
+// rewinds to an earlier point or restores a Save, and steps again. A mark from Save puts its
+// rows back.
 func (s *Session) Rewind(m *Mark) {
+	if m.rows != nil {
+		s.ImportRows(0, m.rows)
+	}
 	for name, b := range m.bufs {
 		copy(s.progs[0].p.In[name], b)
 	}
@@ -420,9 +671,11 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 	if s.pos+v > s.t {
 		return p, 0, fmt.Errorf("decode: the cache of %d tokens is full", s.t)
 	}
-	for _, o := range s.progs {
-		if o.q >= v {
-			p, q = o.p, o.q
+	var st *step
+	for i := range s.progs {
+		if s.progs[i].q >= v {
+			st = &s.progs[i]
+			p, q = st.p, st.q
 			break
 		}
 	}
@@ -444,7 +697,11 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 			off += lk.Width
 		}
 	}
-	for name, vals := range s.m.StepInputs(s.pos, v, q, s.t) {
+	inputs := s.m.StepInputs
+	if p.RunPart != nil {
+		inputs = s.m.(llm.Paged).PagedStepInputs
+	}
+	for name, vals := range inputs(s.pos, v, q, s.t) {
 		if b, ok := p.In[name]; ok {
 			if 2*len(vals) != len(b) {
 				return p, 0, fmt.Errorf("decode: %s takes %d values, the model gives %d", name, len(b)/2, len(vals))
@@ -452,25 +709,128 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 			hwnpu.EncodeF16(b, vals)
 		}
 	}
+	if p.RunPart != nil {
+		return p, q, s.runPaged(st)
+	}
 	if err := p.Run(); err != nil {
 		return p, 0, err
 	}
 	return p, q, nil
 }
 
+// runPaged runs a program split at its attention: its parts, and between them the attention
+// over the session's own cache. The step's keys and values go into the cache first, all q rows
+// that fit (the padding's past the valid tokens are masked for them and written over later), so
+// that the attention over the cache covers the step's tokens too; keep does not write them again.
+func (s *Session) runPaged(st *step) error {
+	p, q := st.p, st.q
+	att := p.Attn
+	rows := min(q, s.t-s.pos) // rows that fit in the cache
+	used := (s.pos + rows + att.Chunk - 1) / att.Chunk
+	if err := st.stepMasks(s.pos, q, used); err != nil {
+		return err
+	}
+	for i := 0; ; i++ {
+		if err := p.RunPart(i); err != nil {
+			return err
+		}
+		if i == len(p.Attend) {
+			return nil
+		}
+		layer := p.Attend[i]
+		kc, vc := s.cache(fmt.Sprintf("kv_k_%d_new", layer)), s.cache(fmt.Sprintf("kv_v_%d_new", layer))
+		for _, c := range []*kvCache{kc, vc} {
+			if err := s.writeRows(c, p.Out[c.out], q, s.pos, rows); err != nil {
+				return err
+			}
+		}
+		copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])
+		st.merge.Reset()
+		for j := 0; j < used; j++ {
+			mask := st.zero
+			if m, ok := st.masks[j]; ok {
+				mask = m
+			}
+			if err := att.Run(s.chunks[kc.out][j], s.chunks[vc.out][j], mask); err != nil {
+				return fmt.Errorf("decode: attention of layer %d over chunk %d: %w", layer, j, err)
+			}
+			hwnpu.DecodeF16(st.o[0], att.O)
+			hwnpu.DecodeF16(st.o[1], att.M)
+			hwnpu.DecodeF16(st.o[2], att.L)
+			st.merge.Add(st.o[0], st.o[1], st.o[2])
+		}
+		st.merge.Result(st.res)
+		hwnpu.EncodeF16(p.In[fmt.Sprintf("attn_o_%d", layer)], st.res)
+	}
+}
+
+// stepMasks makes the masks of the chunks the step's q tokens from pos fall in: query t (position
+// pos+t) sees the positions up to its own. The chunks before them are wholly seen (zero).
+func (st *step) stepMasks(pos, q, used int) error {
+	c := st.p.Attn.Chunk
+	for j, b := range st.masks {
+		st.spare = append(st.spare, b)
+		delete(st.masks, j)
+	}
+	vals := make([]float32, q*c)
+	for j := pos / c; j < used; j++ {
+		var b Buf
+		if n := len(st.spare); n > 0 {
+			b, st.spare = st.spare[n-1], st.spare[:n-1]
+		} else {
+			var err error
+			if b, err = st.p.Attn.NewBuf(2 * q * c); err != nil {
+				return err
+			}
+		}
+		for t := 0; t < q; t++ {
+			row := vals[t*c : (t+1)*c]
+			for k := range row {
+				if j*c+k <= pos+t {
+					row[k] = 0
+				} else {
+					row[k] = -1e4
+				}
+			}
+		}
+		hwnpu.EncodeF16(b.Bytes(), vals)
+		st.masks[j] = b
+	}
+	return nil
+}
+
+// writeRows writes the first n of the q rows of a step output (1, heads, q, d) into the cache at
+// positions from pos on.
+func (s *Session) writeRows(c *kvCache, out []byte, q, pos, n int) error {
+	for i := 0; i < n; i++ {
+		j, slot := c.locate(pos + i)
+		in, err := s.part(c, j, true)
+		if err != nil {
+			return err
+		}
+		L := c.span(j)
+		for h := 0; h < c.heads; h++ {
+			copy(in[2*(h*L+slot)*c.d:2*(h*L+slot+1)*c.d], out[2*(h*q+i)*c.d:2*(h*q+i+1)*c.d])
+		}
+	}
+	return nil
+}
+
 // keep writes the first v tokens of the step just run into the cache (the program run was p, of
 // q tokens per step), moves the sequence past them, and returns the logits after the last one.
 func (s *Session) keep(p Program, q, v int) []float32 {
 	for _, c := range s.kv {
+		if c.chunk > 0 {
+			continue // written before the attention (runPaged)
+		}
 		// (1, heads, L, d) <- (1, heads, q, d): the step's rows at their positions, in the
 		// chunk that holds each, or in a cache shorter than the longest (a ring) at position
 		// mod L
 		out := p.Out[c.out]
-		sh := p.InShape[c.parts[0]]
-		heads, d := sh[1], sh[3]
+		heads, d := c.heads, c.d
 		for i := 0; i < v; i++ {
 			pos := s.pos + i
-			if c.total < s.t {
+			if !c.long {
 				pos %= c.total
 			}
 			j, slot := c.locate(pos)
@@ -515,11 +875,11 @@ func (s *Session) Hidden() []float32 { return s.last }
 // holds the positions (a prompt kept on disk for a later run, internal/chat's store). The
 // rings and the convolution windows are not rows: a Mark holds them.
 
-// longCaches is the caches of the full length (not the rings), by name.
+// longCaches is the caches that hold every position (not the rings), by name.
 func (s *Session) longCaches() []*kvCache {
 	var cs []*kvCache
 	for i := range s.kv {
-		if s.kv[i].total == s.t {
+		if s.kv[i].long {
 			cs = append(cs, &s.kv[i])
 		}
 	}
@@ -530,10 +890,8 @@ func (s *Session) longCaches() []*kvCache {
 // RowBytes is the bytes of one position's rows in ExportRows.
 func (s *Session) RowBytes() int {
 	n := 0
-	first := s.progs[0].p
 	for _, c := range s.longCaches() {
-		sh := first.InShape[c.parts[0]]
-		n += 2 * sh[1] * sh[3]
+		n += 2 * c.heads * c.d
 	}
 	return n
 }
@@ -544,16 +902,18 @@ func (s *Session) ExportRows(from, to int) ([]byte, error) {
 	if from < 0 || to < from || to > s.t {
 		return nil, fmt.Errorf("decode: rows %d to %d of a cache of %d", from, to, s.t)
 	}
-	first := s.progs[0].p
 	out := make([]byte, 0, (to-from)*s.RowBytes())
 	for pos := from; pos < to; pos++ {
 		for _, c := range s.longCaches() {
-			sh := first.InShape[c.parts[0]]
-			heads, d := sh[1], sh[3]
 			j, slot := c.locate(pos)
-			in, L := first.In[c.parts[j]], c.lens[j]
-			for h := 0; h < heads; h++ {
-				out = append(out, in[2*(h*L+slot)*d:2*(h*L+slot+1)*d]...)
+			in, _ := s.part(c, j, false)
+			L := c.span(j)
+			for h := 0; h < c.heads; h++ {
+				if in == nil { // a chunk never written
+					out = append(out, make([]byte, 2*c.d)...)
+					continue
+				}
+				out = append(out, in[2*(h*L+slot)*c.d:2*(h*L+slot+1)*c.d]...)
 			}
 		}
 	}
@@ -571,17 +931,18 @@ func (s *Session) ImportRows(from int, rows []byte) error {
 	if from < 0 || from+n > s.t {
 		return fmt.Errorf("decode: rows %d to %d of a cache of %d", from, from+n, s.t)
 	}
-	first := s.progs[0].p
 	off := 0
 	for pos := from; pos < from+n; pos++ {
 		for _, c := range s.longCaches() {
-			sh := first.InShape[c.parts[0]]
-			heads, d := sh[1], sh[3]
 			j, slot := c.locate(pos)
-			in, L := first.In[c.parts[j]], c.lens[j]
-			for h := 0; h < heads; h++ {
-				copy(in[2*(h*L+slot)*d:2*(h*L+slot+1)*d], rows[off:off+2*d])
-				off += 2 * d
+			in, err := s.part(c, j, true)
+			if err != nil {
+				return err
+			}
+			L := c.span(j)
+			for h := 0; h < c.heads; h++ {
+				copy(in[2*(h*L+slot)*c.d:2*(h*L+slot+1)*c.d], rows[off:off+2*c.d])
+				off += 2 * c.d
 			}
 		}
 	}
@@ -617,7 +978,7 @@ func (s *Session) Resume(rows []byte, m *Mark) error {
 		}
 	}
 	for _, c := range s.kv {
-		if c.total < s.t {
+		if !c.long {
 			want[c.parts[0]] = true
 		}
 	}
