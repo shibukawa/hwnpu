@@ -62,6 +62,8 @@ type Attention struct {
 	// Run attends Q over the keys k and values v (1, kv_heads, Chunk, head_dim) with the mask
 	// (1, 1, tokens, Chunk), writing O, M and L.
 	Run func(k, v, mask Buf) error
+	// Mass, when not nil, weighs chunks of summaries for the two-level attention (Sparse).
+	Mass *Mass
 }
 
 // Session is the state of one sequence.
@@ -79,6 +81,7 @@ type Session struct {
 	// of a program split at its attention: the chunks of each long cache the session holds,
 	// by the cache's output (kv_NAME_new), allocated as the sequence reaches them
 	chunks map[string][]Buf
+	sparse *sparse // the two-level attention (SetSparse), nil when off
 }
 
 // kvCache is one cache of keys or values: an input kv_NAME, or the chunks kv_NAME_cJ that hold
@@ -123,6 +126,7 @@ type step struct {
 	spare []Buf        // allocated masks not in use this step
 	o     [3][]float32 // the attention's outputs o, m, l, decoded
 	res   []float32    // the merged attention
+	sp    *sparseStep  // of the two-level attention, made on its first call
 }
 
 // New checks the program's inputs and outputs and starts an empty sequence.
@@ -338,6 +342,9 @@ func (s *Session) Add(p Program) error {
 		if err := st.checkPaged(s); err != nil {
 			return err
 		}
+		if s.sparse != nil && p.Attn.Mass == nil {
+			return fmt.Errorf("decode: the session has the two-level attention, the program of %d tokens per step no mass program", st.q)
+		}
 	}
 	s.progs = append(s.progs, st)
 	slices.SortFunc(s.progs, func(a, b step) int { return a.q - b.q })
@@ -511,7 +518,8 @@ func (s *Session) Paged() int {
 	return s.progs[0].p.Attn.Chunk
 }
 
-// HeldBytes is the memory of the chunks a session split at its attention holds (they stay
+// HeldBytes is the memory of the chunks a session split at its attention holds, with the
+// two-level attention's summaries and keys read exactly (they stay
 // allocated through Reset, to be used again; Close frees them).
 func (s *Session) HeldBytes() int64 {
 	var n int64
@@ -520,6 +528,11 @@ func (s *Session) HeldBytes() int64 {
 			if b != nil {
 				n += int64(len(b.Bytes()))
 			}
+		}
+	}
+	if s.sparse != nil {
+		for _, b := range s.sparse.bufs() {
+			n += int64(len(b.Bytes()))
 		}
 	}
 	return n
@@ -536,9 +549,20 @@ func (s *Session) Close() error {
 		}
 	}
 	s.chunks = nil
+	if s.sparse != nil {
+		for _, b := range s.sparse.bufs() {
+			b.Close()
+		}
+		s.sparse = nil
+	}
 	for i := range s.progs {
 		st := &s.progs[i]
-		for _, b := range append(append([]Buf{st.zero}, st.spare...), slices.Collect(maps.Values(st.masks))...) {
+		bufs := append(append([]Buf{st.zero}, st.spare...), slices.Collect(maps.Values(st.masks))...)
+		if st.sp != nil {
+			bufs = append(bufs, st.sp.bufs()...)
+			st.sp = nil
+		}
+		for _, b := range bufs {
 			if b != nil {
 				b.Close()
 			}
@@ -574,6 +598,7 @@ func (s *Session) Reset() {
 		}
 	}
 	s.pos = 0
+	s.sparseTouch(0)
 }
 
 // Mark is a point of a sequence that the session can go back to: the position, and a copy of
@@ -718,7 +743,8 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 		}
 	}
 	if p.RunPart != nil {
-		return p, q, s.runPaged(st)
+		s.sparseTouch(s.pos)
+		return p, q, s.runPaged(st, v)
 	}
 	if err := p.Run(); err != nil {
 		return p, 0, err
@@ -726,11 +752,11 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 	return p, q, nil
 }
 
-// runPaged runs a program split at its attention: its parts, and between them the attention
-// over the session's own cache. The step's keys and values go into the cache first, all q rows
+// runPaged runs a program split at its attention, valid of its rows tokens: its parts, and
+// between them the attention over the session's own cache. The step's keys and values go into the cache first, all q rows
 // that fit (the padding's past the valid tokens are masked for them and written over later), so
 // that the attention over the cache covers the step's tokens too; keep does not write them again.
-func (s *Session) runPaged(st *step) error {
+func (s *Session) runPaged(st *step, valid int) error {
 	p, q := st.p, st.q
 	att := p.Attn
 	rows := min(q, s.t-s.pos) // rows that fit in the cache
@@ -753,6 +779,16 @@ func (s *Session) runPaged(st *step) error {
 			}
 		}
 		copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])
+		if s.sparse != nil {
+			done, err := s.attendSparse(st, layer, kc, vc, rows, min(valid, rows), used)
+			if err != nil {
+				return err
+			}
+			if done {
+				hwnpu.EncodeF16(p.In[fmt.Sprintf("attn_o_%d", layer)], st.res)
+				continue
+			}
+		}
 		st.merge.Reset()
 		for j := 0; j < used; j++ {
 			mask := st.zero
@@ -939,6 +975,7 @@ func (s *Session) ImportRows(from int, rows []byte) error {
 	if from < 0 || from+n > s.t {
 		return fmt.Errorf("decode: rows %d to %d of a cache of %d", from, from+n, s.t)
 	}
+	s.sparseTouch(from)
 	off := 0
 	for pos := from; pos < from+n; pos++ {
 		for _, c := range s.longCaches() {

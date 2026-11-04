@@ -98,6 +98,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |
 | `-context N` | `0` | most tokens of a prompt and its answer together. `0`: the model's longest when it is split at its attention (`-paged`; 262144 for LFM3-1.7B), else 16320. Another value converts the model again for it; a model not split holds its cache in chunks over 16320 |
 | `-paged N` | `0` | split the model at its full attention layers and attend over the cache hwnpu-chat holds in chunks of N tokens: a step costs in proportion to the conversation, not to `-context`, and the cache's memory grows with it (12 KiB a token for LFM3-1.7B, 3 GiB at 262144; the context is cut when that would be over a quarter of the memory). `0` is 8192 where the model and the NPU allow it (LFM3 on the Neural Engine), `-1` never (then `-tier` applies) |
+| `-sparse` | `true` | past about 48K tokens of a model split at its attention (`-paged`), read in each call 16384 keys exactly (32768 while reading a prompt: those of the 8-token buckets that weigh most for the call, the last 512 and the first 4) and every other bucket as the mean of its keys and values: a few times fewer calls at 128K and over ([docs/design.md](docs/design.md) 16.61). `false` reads the whole cache on every call |
 | `-dir DIR` | `~/Library/Caches/hwnpu/models` | where the models are kept, each in `DIR/NAME` with its checkpoint and converted programs |
 | `-package A,B` | none | chat programs you converted with `hwnpu-convert` (section 5) |
 | `-dump DIR` | none | with the server, save each request, its prompt and the generated text |
@@ -118,6 +119,7 @@ The flags from `-think` to `-context`, `-package`, `-config`, `-weights` and `-t
 
 - The cache grows by 12 KiB a token, to 3 GiB at 262144. At every length the model recalled a passphrase put at the start of the prompt
 - A prompt of 250K tokens read at once takes about half an hour. Prompts read are kept on disk (`-prompt-cache`), so the second time reads nothing
+- Past about 48K tokens the two-level attention (`-sparse`, the default) reads fewer keys: at 128K a call of the attention layers is 7 calls over chunks of 8192 instead of 16, at 256K 11 instead of 32. Checked on the CPU with LFM3-1.7B at 128K (pass phrases at 10%, 50% and 90% of the context all recalled, the next-token loss up by 0.007 to 0.009 nats). The times on an M3 are not measured yet. Past 128K, LFM3-1.7B itself misses passphrases far back in a long document (in the CPU check at 256K it recalled only the one at 90%), with or without `-sparse`
 - A model not split (`-paged -1`, Gemma 4) costs in proportion to its cache whatever it holds: the longer the context, the slower each token, and with `-tier 4096` (the default for 4 bit tables) a conversation runs on a cache of 4096 while it fits, about twice as fast, and moves up to `-context` as it grows; the programs of each tier are converted and loaded too. OpenCode needs 16K or more
 
 | `-context` | generation (M3) | reading a prompt | KV cache |

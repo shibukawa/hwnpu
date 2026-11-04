@@ -172,8 +172,106 @@ func cpuPaged(t *testing.T, man *llm.Manifest, allocated *int) decode.Program {
 		hwnpu.EncodeF16(a.L, res["l"].Data)
 		return nil
 	}
+	if man.Mass != nil {
+		mprog, f, err := milcpu.OpenPackage(man.Mass.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		min := mprog.Inputs()
+		ms := &decode.Mass{Q: make([]byte, 2*count(min["q"])), R: make([]byte, 2*count(min["r"])), W: make([]byte, 2*count(outShape(man.Mass.Path)["w"]))}
+		ms.Run = func(k, mask decode.Buf) error {
+			vals := map[string]milcpu.Tensor{}
+			for name, b := range map[string][]byte{"q": ms.Q, "r": ms.R, "k": k.Bytes(), "mask": mask.Bytes()} {
+				x := make([]float32, count(min[name]))
+				hwnpu.DecodeF16(x, b)
+				vals[name] = milcpu.Tensor{Shape: min[name], Data: x}
+			}
+			res, err := mprog.Run(vals, milcpu.Options{})
+			if err != nil {
+				return err
+			}
+			hwnpu.EncodeF16(ms.W, res["w"].Data)
+			return nil
+		}
+		a.Mass = ms
+	}
 	p.Attn = a
 	return p
+}
+
+// The two-level attention (decode.Sparse) runs through the programs hwnpu-convert writes, the
+// mass program among them, and past the length where it pays the logits stay near those of the
+// whole cache: buckets of 4 over chunks of 8, three chunks read exactly. A manifest converted
+// before the mass program gets it from AddMass.
+func TestPagedSparse(t *testing.T) {
+	cfg := pagedConfig()
+	cfg.MaxPositions = 256
+	w := llm.NewSynthetic(cfg)
+	const n, cache, chunk = 200, 208, 8
+	tokens := make([]int32, n)
+	for i := range tokens {
+		tokens[i] = int32((i*7 + i*i) % cfg.VocabSize)
+	}
+	emb, err := llm.Embed(w, cfg, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := func(i int) []float32 { return emb[i*cfg.HiddenSize : (i+1)*cfg.HiddenSize] }
+	man := convertPaged(t, cfg, w, 1, cache, chunk, "grouped")
+	if man.Mass == nil {
+		t.Fatal("the conversion wrote no mass program")
+	}
+	allocated := 0
+	dense, err := decode.New(cpuPaged(t, man, &allocated), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sparse, err := decode.New(cpuPaged(t, man, &allocated), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := decode.Sparse{Bucket: 4, Sinks: 1, Window: 4, Exact: 3, Refresh: 1}
+	if err := sparse.SetSparse(sp); err != nil {
+		t.Fatal(err)
+	}
+	worst := 0.0
+	for pos := range n {
+		want, err := dense.Step([][]float32{row(pos)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := sparse.Step([][]float32{row(pos)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sparse.AttentionCalls() == 0 && !slices.Equal(got, want) {
+			t.Fatalf("at %d, before the two-level attention, the logits differ", pos)
+		}
+		worst = math.Max(worst, relErr(got, want))
+	}
+	if sparse.AttentionCalls() == 0 {
+		t.Fatal("the two-level attention never ran")
+	}
+	if worst > 0.05 || math.IsNaN(worst) {
+		t.Errorf("relative error %g against the whole cache", worst)
+	}
+	t.Logf("worst relative error %.2g, %d calls of the two-level attention", worst, sparse.AttentionCalls())
+
+	// a manifest without the mass program gets it back
+	path := strings.TrimSuffix(man.Attention.Path, ".attn.mlpackage") + ".parts.json"
+	old := *man
+	old.Mass = nil
+	if err := llm.WriteManifest(path, &old); err != nil {
+		t.Fatal(err)
+	}
+	if err := llm.AddMass(path, "grouped"); err != nil {
+		t.Fatal(err)
+	}
+	back, err := llm.ReadManifest(path)
+	if err != nil || back.Mass == nil || back.Mass.Path != man.Mass.Path {
+		t.Fatalf("AddMass: %v, %+v", err, back.Mass)
+	}
 }
 
 // The model split at its attention, stepped through a sequence with the host attending over its

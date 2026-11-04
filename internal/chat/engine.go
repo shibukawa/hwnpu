@@ -64,6 +64,10 @@ type Config struct {
 	// place of Packages: its manifest, ELFs and arena. Tokenizer defaults to the
 	// tokenizer.json in it.
 	IRON string
+	// Dense reads the whole cache of a model split at its attention on every call, instead of
+	// the two-level attention (decode.Sparse) past the length where it costs fewer calls, about
+	// 48K tokens with chunks of 8192.
+	Dense bool
 }
 
 // programName is a model's name from the path of its program: the file name without the
@@ -171,6 +175,7 @@ type tier struct {
 	chains []*chain.Chain
 	progs  []decode.Program
 	cache  int
+	sparse decode.Sparse // the two-level attention of its sessions, a Bucket of 0 for none
 }
 
 var (
@@ -291,6 +296,13 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			e.Close()
 			return nil, err
 		}
+		if !c.Dense && t.chains[0].Paged() > 0 && t.chains[0].HasMass() {
+			if sp := decode.DefaultSparse(); s.SetSparse(sp) != nil {
+				logf("no two-level attention: %v", s.SetSparse(sp))
+			} else {
+				t.sparse = sp
+			}
+		}
 		t.cache = s.Cache()
 		s.Close()
 		if n := len(e.tiers); n > 0 && t.cache <= e.tiers[n-1].cache {
@@ -369,12 +381,15 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 // may grow to: the rest is the programs' (1 to 3 GiB), the system's and the user's.
 const memoryShare = 4
 
-// fitMemory keeps the cache of a session split at its attention within a quarter of the
-// machine's memory (physical, in bytes; 0 when not known): the cache grows with the conversation,
+// fitMemory keeps the cache of a session split at its attention (with the summaries of the
+// two-level attention) within a quarter of the machine's memory (physical, in bytes; 0 when not known): the cache grows with the conversation,
 // so the context is the model's longest unless the cache at that length would not fit. It
 // returns what the ready line says of it.
 func (e *Engine) fitMemory(ds *decode.Session, physical int64, logf func(string, ...any)) string {
 	row := int64(ds.RowBytes())
+	if sp := ds.Sparse(); sp.Bucket > 0 {
+		row += row / int64(sp.Bucket) // the two-level attention's summaries
+	}
 	full := row * int64(ds.Cache())
 	if budget := physical / memoryShare; physical > 0 && full > budget {
 		n := int(budget/row) / ds.Paged() * ds.Paged()
@@ -384,7 +399,23 @@ func (e *Engine) fitMemory(ds *decode.Session, physical int64, logf func(string,
 			full = row * int64(n)
 		}
 	}
-	return fmt.Sprintf(", its cache growing with the conversation by %.0f KiB a token to %.2f GiB (attention in chunks of %d)", float64(row)/1024, float64(full)/(1<<30), ds.Paged())
+	two := ""
+	if sp := ds.Sparse(); sp.Bucket > 0 {
+		two = fmt.Sprintf("; past about %dK tokens, %d keys exactly and the rest as means of %d", sparseFrom(ds.Paged(), sp)/1024, sp.Exact*ds.Paged(), sp.Bucket)
+	}
+	return fmt.Sprintf(", its cache growing with the conversation by %.0f KiB a token to %.2f GiB (attention in chunks of %d%s)", float64(row)/1024, float64(full)/(1<<30), ds.Paged(), two)
+}
+
+// sparseFrom is about the length past which the two-level attention runs for a call of one
+// token: where its calls (twice the chunks of summaries, one for the summaries read exactly and
+// the chunks read exactly) are fewer than the cache's chunks.
+func sparseFrom(chunk int, sp decode.Sparse) int {
+	for n := chunk; ; n += chunk {
+		summaries := (n/sp.Bucket + chunk - 1) / chunk
+		if 2*summaries+1+sp.Exact < n/chunk {
+			return n
+		}
+	}
 }
 
 // compileNote says how long loading takes on the device the first time.
@@ -415,6 +446,12 @@ func (t *tier) session(cm llm.Cached) (*decode.Session, error) {
 	for i, p := range t.progs[1:] {
 		if err := s.Add(p); err != nil {
 			return nil, fmt.Errorf("chat: %s: %w", filepath.Base(t.chains[i+1].Parts()[0].Path), err)
+		}
+	}
+	if t.sparse.Bucket > 0 {
+		if err := s.SetSparse(t.sparse); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("chat: %s: %w", filepath.Base(t.chains[0].Parts()[0].Path), err)
 		}
 	}
 	return s, nil

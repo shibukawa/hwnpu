@@ -286,10 +286,55 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 		return "", err
 	}
 	man.Attention = &PartRecord{Path: apath, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}
+	if man.Mass, err = writeMass(base, paged.Shape{Heads: heads, KVHeads: kvHeads, HeadDim: headDim}, form, opts.Seq, opts.Paged, a.Title); err != nil {
+		return "", err
+	}
 	if err := WriteManifest(base+".parts.json", &man); err != nil {
 		return "", err
 	}
 	fmt.Fprintf(log, "%s: %d parts split at the attention of layers %v, which the host runs over its cache of up to %d tokens in chunks of %d (%s)\n",
 		base+".parts.json", len(plan), pm.PagedLayers(), opts.Cache, opts.Paged, apath)
 	return base + ".parts.json", nil
+}
+
+// writeMass writes the mass program of a model split at its attention, base.mass.mlpackage.
+func writeMass(base string, sh paged.Shape, form string, seq, chunk int, title string) (*PartRecord, error) {
+	path := base + ".mass.mlpackage"
+	desc := fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (hwnpu-convert)", title, chunk, seq, form)
+	ins, outs, err := paged.WriteMass(path, sh, form, seq, chunk, desc)
+	if err != nil {
+		return nil, err
+	}
+	return &PartRecord{Path: path, Inputs: records(ins...), Output: records(outs[0])[0]}, nil
+}
+
+// AddMass adds the mass program of the two-level attention (decode.Sparse) to a model split at
+// its attention converted before there was one: it has no weights, so it is written from the
+// attention program's shape, next to it, in the attention's form ("grouped" or "tile", Build).
+// It does nothing for a manifest that has it, or that is not split at its attention.
+func AddMass(path, form string) error {
+	man, err := ReadManifest(path)
+	if err != nil {
+		return err
+	}
+	if man.Paged == 0 || man.Attention == nil || man.Mass != nil {
+		return nil
+	}
+	var q, k []int
+	for _, in := range man.Attention.Inputs {
+		switch in.Name {
+		case "q":
+			q = in.Shape
+		case "k":
+			k = in.Shape
+		}
+	}
+	if len(q) != 4 || len(k) != 4 {
+		return fmt.Errorf("llm: %s: the attention program has no q and k of 4 dimensions", path)
+	}
+	base := strings.TrimSuffix(path, ".parts.json")
+	if man.Mass, err = writeMass(base, paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3]}, form, q[2], k[2], man.Model); err != nil {
+		return err
+	}
+	return WriteManifest(path, man)
 }
