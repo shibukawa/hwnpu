@@ -112,7 +112,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 	return open(ctx, dev, man, nil)
 }
 
-// Share loads the model at path like Open, but binds its KV cache inputs (kv_*, win_*) to the
+// Share loads the model at path like Open, but binds its KV cache inputs (kv_*, win_*, st_*: llm.CacheInput) to the
 // buffers of the same inputs of c's loaded tier, so that both chains continue one sequence
 // (decode.Session.Add): the same model converted with another number of tokens per call. The
 // buffers stay c's; close the new chain before c, and do not Grow either chain while they share.
@@ -123,7 +123,7 @@ func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Cha
 	}
 	shared := map[string]*hwnpu.Buffer{}
 	for name, b := range c.cur.inputs {
-		if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+		if llm.CacheInput(name) {
 			shared[name] = b
 		}
 	}

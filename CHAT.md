@@ -20,6 +20,7 @@ go run ./cmd/hwnpu-chat -list
 | `LFM3-Omni-2B` | chat | `tools`, `thinking`, `vision`, `audio` | talk with it, with images and audio (section 1) | `/v1/chat/completions` |
 | `gemma-4-E2B-it` | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
 | `gemma-4-E4B-it` | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
+| `Qwen3.5-4B` | chat | `tools`, `thinking` | talk with it (section 1) | `/v1/chat/completions` |
 | `plamo-embedding-1b` | embedding | `query` | search texts by their embeddings (section 4) | `/v1/embeddings` |
 
 The features say what a model can do besides its kind (names as in Ollama's capabilities):
@@ -80,6 +81,15 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 - Contexts up to 16320 (holding the cache in chunks past that is LFM3's only). About 31 ms per token on the M3 with a cache of 1024, 55 ms with the context of 16320 (LFM3-1.7B: 19 and 63 to 66 ms)
 - 4 bit tables (lut4) cost Gemma 4 much more than LFM3 (it got Mount Fuji's height and the author of Kokoro wrong), so it converts with 6 bit tables by default; `hwnpu-convert` does too when `-format` is left out. See sections 16.25 and 16.26 of docs/design.md
 - `-use gemma-4-E4B-it` runs the larger E4B (16.0 GB download, 42 layers of width 2560) the same way, slower than E2B. It is converted by the same code but not yet checked on the M3. The larger Gemma 4 sizes (12B and up) are another architecture, which hwnpu-chat does not run
+
+```bash
+go run ./cmd/hwnpu-chat -use Qwen3.5-4B
+```
+
+- Qwen's Qwen3.5-4B, the strongest at code of the models here (LiveCodeBench v6 55.8 on its model card). Three Gated DeltaNet layers, whose state has a fixed size, to one full attention layer; only the text model is converted (the 9.3 GB download, in two files, has the vision part too)
+- The context is 262144 by default, as LFM3-1.7B's: the model is split at its 8 full attention layers (9 parts, 2.95 GiB in 6 bit tables) and a step costs in proportion to the conversation. The KV cache grows by 32 KiB a token (8 GiB at 262144, LFM3-1.7B's 3 GiB), so a long conversation needs the memory of a larger Mac
+- The chat format is Qwen3.5's `chat_template.jinja` in Go: thinking in `<think>` and tool calls in the same XML as LFM3's
+- Checked on the CPU against PyTorch (docs/design.md 16.62), not yet on the Neural Engine
 
 ## 2. Options
 

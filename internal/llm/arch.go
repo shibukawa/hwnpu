@@ -115,6 +115,10 @@ type Model interface {
 //   - win_NAME (1, W, width) with output win_NAME_new (1, W+Seq, width): a window of the last W
 //     rows before the step followed by the step's rows; the host keeps the W rows ending at the
 //     last real token (a short convolution's state)
+//   - st_NAME with output st_NAME_new of the same shape: a state the step replaces as a whole
+//     (a Gated DeltaNet's recurrent state), as it is after the step's valid tokens: the padding
+//     after them must leave it unchanged. It cannot give the state after fewer tokens than the
+//     step's, so the host runs a step again for a beginning of its tokens (speculative decoding)
 //   - any other input is given by StepInputs (masks, rotary tables)
 //
 // A step takes up to Seq tokens at positions pos.. ; the rest of x is padding, which only the
@@ -125,6 +129,20 @@ type Cached interface {
 	// StepInputs returns the values of the other inputs for a step of valid tokens from pos, of
 	// a program built with Seq q and Cache cache.
 	StepInputs(pos, valid, q, cache int) map[string][]float32
+}
+
+// CacheInput reports whether a program input holds state the host keeps between steps (Cached):
+// a KV cache (kv_), a window (win_) or a state replaced as a whole (st_). The programs of one
+// model that take different numbers of tokens per step share these buffers.
+func CacheInput(name string) bool {
+	return strings.HasPrefix(name, "kv_") || HeldInput(name)
+}
+
+// HeldInput reports whether a program input is state that a step overwrites as a whole rather
+// than by position, a window (win_) or a recurrent state (st_): a point of the sequence to go back
+// to keeps a copy of it.
+func HeldInput(name string) bool {
+	return strings.HasPrefix(name, "win_") || strings.HasPrefix(name, "st_")
 }
 
 // Paged is a Cached model that can be built split at its attention (Options.Paged): the

@@ -199,11 +199,18 @@ func (g *Graph) LinearRows(x *mlpackage.Var, name string, begin, end int) *mlpac
 // is divided by inScale on the output path, where x itself is used so that the compiler cannot
 // fold the division back into the producer's weights.
 func (g *Graph) RMSNorm(x *mlpackage.Var, name string, n int, eps float64, inScale float32) *mlpackage.Var {
+	return g.RMSNormWith(x, name, g.Get(name, n), eps, inScale)
+}
+
+// RMSNormWith is RMSNorm with the weight's values given, n = len(w): for a norm that scales by a
+// function of the stored weight, as the zero centered norms of Qwen3.5 and Gemma 3 (1 + w). The
+// constant is still called name.
+func (g *Graph) RMSNormWith(x *mlpackage.Var, name string, w []float32, eps float64, inScale float32) *mlpackage.Var {
+	n := len(w)
 	k := float32(1)
 	if inScale > 0 {
 		k = inScale
 	}
-	w := g.Get(name, n)
 	for i := range w {
 		w[i] /= k
 	}

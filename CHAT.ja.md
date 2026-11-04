@@ -20,6 +20,7 @@ go run ./cmd/hwnpu-chat -list
 | `LFM3-Omni-2B` | chat | `tools`、`thinking`、`vision`、`audio` | 画像と音声を交えて対話する (1 節) | `/v1/chat/completions` |
 | `gemma-4-E2B-it` | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
 | `gemma-4-E4B-it` | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
+| `Qwen3.5-4B` | chat | `tools`、`thinking` | 対話する (1 節) | `/v1/chat/completions` |
 | `plamo-embedding-1b` | embedding | `query` | 埋め込みで文を検索する (4 節) | `/v1/embeddings` |
 
 機能は、用途のほかにそのモデルができることです (名前は Ollama の capabilities に合わせています)。
@@ -80,6 +81,15 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 - 文脈は 16320 まで (16320 を超えるキャッシュの塊分けは LFM3 だけ)。M3 で 1 トークン約 31 ms (キャッシュ 1024)、文脈 16320 では 55 ms (LFM3-1.7B は 19 ms と 63〜66 ms)
 - Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`-package` で自分で変換するときは `hwnpu-convert` の `-format` を省けば lut6 になります。詳細は docs/design.md の 16.25 と 16.26
 - `-use gemma-4-E4B-it` で一回り大きい E4B (ダウンロード 16.0 GB、幅 2560 の 42 層) を同じ手順で使えます。E2B より遅くなります。同じコードで変換しますが、M3 での確認はまだです。12B 以上の Gemma 4 は別のアーキテクチャで、hwnpu-chat では動きません
+
+```bash
+go run ./cmd/hwnpu-chat -use Qwen3.5-4B
+```
+
+- Qwen の Qwen3.5-4B。ここにあるモデルの中でコーディングに最も強い (モデルカードで LiveCodeBench v6 が 55.8)。状態の大きさが一定の Gated DeltaNet の層 3 つに全注意の層 1 つの構成。変換するのはテキスト部分だけです (ダウンロードは 2 ファイルで 9.3 GB、画像の部分を含む)
+- 文脈は LFM3-1.7B と同じく既定で 262144。全注意の 8 層で分けて (9 部分、6 ビットの表で 2.95 GiB)、1 トークンの費用は会話の長さに比例します。KV キャッシュは 1 トークン 32 KiB で増えます (262144 で 8 GiB。LFM3-1.7B は 3 GiB) ので、長い会話には大きなメモリの Mac が要ります
+- チャットの書式は Qwen3.5 の `chat_template.jinja` を Go に移したもの。思考は `<think>`、道具の呼び出しは LFM3 と同じ XML です
+- CPU で PyTorch と照合しただけで (docs/design.md 16.62)、Neural Engine ではまだ動かしていません
 
 ## 2. オプション
 
