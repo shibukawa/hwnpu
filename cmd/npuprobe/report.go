@@ -176,6 +176,34 @@ func markdown(rep *report) string {
 		}
 		sb.WriteString("\nThe program is attention without weights over one chunk of the cache (keys and values of 4 kv heads × 128, 16 query heads, Q query rows), returning the chunk's normalized output, largest scores and sums of exps. A step calls it once per chunk holding the used tokens in each layer, every chunk bound from buffers of its own, and merges the outputs on the host in float32. ms/call alone binds one chunk; ms/call in the step is a step's time over its calls, the merge included, so a difference between the two is the cost of binding many buffers. Peak RSS is the measuring process's largest resident memory after the step (it leaves out Core ML's and the Neural Engine's own processes); a peak well over the KV bytes means the inputs were copied.\n")
 	}
+	if len(rep.Seam) > 0 {
+		sb.WriteString("\n## A model split at its attention: weighted parts and the chunk attention interleaved\n\n")
+		sb.WriteString("| weights | parts | Q | attention | placement of the parts | of the attention | used | chunks | ms/step weights alone | attention alone | interleaved | ms per seam | seams | CPU use | peak RSS | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		for _, s := range rep.Seam {
+			head := fmt.Sprintf("| %s %d layers, %.2f GiB | %d | %d | %s, %d layers, chunks of %d | %s | %s |", s.Format, s.Layers, probe.GiB(s.WeightBytes), s.AttnLayers+1, s.Tokens, s.Form, s.AttnLayers, s.Chunk,
+				partsPlacement(s.Parts), s.Attn.placement())
+			if len(s.Runs) == 0 {
+				fmt.Fprintf(&sb, "%s | | | | | | | | | %s |\n", head, strings.ReplaceAll(short(s.Error, 200), "|", "/"))
+			}
+			for _, r := range s.Runs {
+				rss := ""
+				if r.MaxRSS > 0 {
+					rss = fmt.Sprintf("%.2f GiB", probe.GiB(r.MaxRSS))
+				}
+				e := r.Error
+				if e == "" {
+					e = s.Error
+				}
+				seam := ""
+				if r.MsMixed > 0 {
+					seam = fmt.Sprintf("%+.3f", r.msPerSeam())
+				}
+				fmt.Fprintf(&sb, "%s %d | %d | %s | %s | %s | %s | %d | %s | %s | %s |\n", head, r.Used, r.Chunks, cell(r.MsWeights, "%.2f"), cell(r.MsAttn, "%.2f"), cell(r.MsMixed, "%.2f"),
+					seam, r.Seams, cell(r.CPUUse, "%.2f"), rss, strings.ReplaceAll(short(e, 200), "|", "/"))
+			}
+		}
+		sb.WriteString("\nThe weighted parts are the bench layers split into one more part than there are attention layers, every part loaded with the attention program at once. A step runs the parts one after another (weights alone), the attention of every layer over the used chunks with the host's merge (attention alone), or the two interleaved as a model split at its attention would run them: part, attention, part, … (interleaved). Each is the fastest of two rounds. ms per seam is what interleaving adds over the two apart, divided by the switches between a part and the attention; near 0, the Neural Engine keeps both kinds of program, and a reload would show as milliseconds.\n")
+	}
 	if len(rep.Notes) > 0 {
 		sb.WriteString("\n")
 		for _, n := range rep.Notes {

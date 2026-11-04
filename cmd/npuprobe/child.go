@@ -21,21 +21,22 @@ import (
 const childMode, childMark = "_measure", "npuprobe-result "
 
 type childSpec struct {
-	Kind     string        `json:"kind"` // try, several, split, chain, kv or attn
-	Backend  string        `json:"backend"`
-	DeviceID string        `json:"device_id"`
-	Format   string        `json:"format"`
-	Layers   int           `json:"layers"`
-	Tokens   int           `json:"tokens"` // 0 means 1
-	Units    string        `json:"units"`
-	Quick    bool          `json:"quick"`
-	N        int           `json:"n"`
-	Layout   string        `json:"layout,omitempty"` // split: files or functions; kv: the mode; attn: the form
-	Used     []int         `json:"used,omitempty"`   // attn: used cache lengths of the passes
-	MinRun   time.Duration `json:"min_run"`
-	Dir      string        `json:"dir"`
-	IdleW    float64       `json:"idle_w"`
-	Meter    bool          `json:"meter"`
+	Kind       string        `json:"kind"` // try, several, split, chain, kv, attn or seam
+	Backend    string        `json:"backend"`
+	DeviceID   string        `json:"device_id"`
+	Format     string        `json:"format"`
+	Layers     int           `json:"layers"`
+	Tokens     int           `json:"tokens"` // 0 means 1
+	Units      string        `json:"units"`
+	Quick      bool          `json:"quick"`
+	N          int           `json:"n"`
+	Layout     string        `json:"layout,omitempty"`      // split: files or functions; kv: the mode; attn: the form
+	Used       []int         `json:"used,omitempty"`        // attn, seam: used cache lengths of the passes
+	AttnLayers int           `json:"attn_layers,omitempty"` // seam: attention layers between the weighted parts
+	MinRun     time.Duration `json:"min_run"`
+	Dir        string        `json:"dir"`
+	IdleW      float64       `json:"idle_w"`
+	Meter      bool          `json:"meter"`
 }
 
 // isolated runs spec in a child process and returns its results. A child that dies yields one
@@ -144,6 +145,8 @@ func runChild(arg string) error {
 		rs = p.kv(spec.Layout, spec.Layers, spec.N)
 	case "attn":
 		rs = p.attn(spec.Layout, spec.Layers, max(spec.Tokens, 1), spec.N, spec.Used)
+	case "seam":
+		rs = p.seam(spec.Format, spec.Layers, spec.AttnLayers, max(spec.Tokens, 1), spec.Layout, spec.N, spec.Used)
 	case "chain":
 		rs = p.chain(spec.Format, spec.Layers, spec.N, spec.Units)
 	default:

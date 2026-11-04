@@ -60,3 +60,24 @@ func TestMarkdownAttn(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkdownSeam(t *testing.T) {
+	on := result{NPUOps: 10}
+	rep := &report{Seam: []seamResult{
+		{Format: "lut4", Layers: 40, WeightBytes: 1 << 30, Tokens: 8, Form: "grouped", Chunk: 8192, AttnLayers: 6,
+			Parts: []result{on, on}, Attn: on,
+			Runs: []seamRun{{Used: 8192, Chunks: 1, MsWeights: 20, MsAttn: 9, MsMixed: 30.2, Seams: 12}}},
+		{Format: "lut4", Layers: 40, WeightBytes: 1 << 30, Tokens: 64, Form: "grouped", Chunk: 8192, AttnLayers: 6, Error: "part 1: boom"},
+	}}
+	md := markdown(rep)
+	want := "| lut4 40 layers, 1.00 GiB | 7 | 8 | grouped, 6 layers, chunks of 8192 | NPU | NPU | 8192 | 1 | 20.00 | 9.00 | 30.20 | +0.100 | 12 |  |  |  |"
+	if !strings.Contains(md, want) {
+		t.Errorf("missing %q in\n%s", want, md)
+	}
+	header := strings.Count("| weights | parts | Q | attention | placement of the parts | of the attention | used | chunks | ms/step weights alone | attention alone | interleaved | ms per seam | seams | CPU use | peak RSS | error |", "|")
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "| lut4 40 layers") && strings.Count(line, "|") != header {
+			t.Errorf("%d cells, want %d: %s", strings.Count(line, "|")-1, header-1, line)
+		}
+	}
+}

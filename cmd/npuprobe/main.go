@@ -8,6 +8,7 @@
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest verify   # K tokens per call
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest kv       # attention over a KV cache
 //	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest attn     # attention per chunk of a cache
+//	go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest seam     # weighted parts and that attention interleaved
 //
 // The models have the shape of LLM decoding (internal/probe): one token through Llama 3.2 1B
 // sized layers with random weights, so every call reads every weight once, as generating one
@@ -41,6 +42,14 @@
 // chunk in buffers of its own, the outputs merged on the host. A step then costs in proportion to
 // the tokens used instead of to the cache's capacity; the passes show the cost per call, what the
 // host's merge adds, and the memory of the process holding the cache.
+//
+// seam, run only when asked for (Core ML), loads a model split at its attention: weighted parts
+// (40 lut4 layers by default, about the 1.2 GiB of LFM3-1.7B in lut6) in one more part than there
+// are attention layers, and the chunk attention program of attn between each two. It times a
+// step of the parts alone, of the attention alone and of the two interleaved; what interleaving
+// adds, per switch between a program with weights and one without, is the cost of the seams of
+// such a model. Alternating two programs with weights has cost a reload of the Neural Engine
+// (35 ms a call); a seam within one chain 0.1 ms.
 //
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
@@ -87,6 +96,7 @@ type report struct {
 	Verify    []result      `json:"verify,omitempty"`
 	KV        []kvResult    `json:"kv,omitempty"`
 	Attn      []attnResult  `json:"attn,omitempty"`
+	Seam      []seamResult  `json:"seam,omitempty"`
 	Sweep     []result      `json:"sweep,omitempty"`
 	Several   []result      `json:"several,omitempty"`
 	SeveralOf string        `json:"several_of,omitempty"`
@@ -109,7 +119,7 @@ func main() {
 	}
 	fs := flag.NewFlagSet("npuprobe", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit|split|verify|kv|attn] [flags]")
+		fmt.Fprintln(fs.Output(), "usage: npuprobe [all|bench|limit|split|verify|kv|attn|seam] [flags]")
 		fs.PrintDefaults()
 	}
 	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
@@ -130,11 +140,17 @@ func main() {
 	attnForms := fs.String("attn-forms", "grouped", "attn: grouped (the query heads of a kv head stacked in one matrix product, LFM3-1.7B's default) and tile (keys and values copied per query head)")
 	attnUsed := fs.String("attn-used", "4096,16384,65536,262144", "attn: used cache lengths of the passes, ascending; the chunk buffers of every layer are held at once (12 KiB a token with 6 layers: 3 GiB at 262144)")
 	attnLayers := fs.Int("attn-layers", 6, "attn: layers per pass (6 is LFM3-1.7B's full attention layers)")
+	seamFormat := fs.String("seam-format", "lut4", "seam: weight format of the weighted parts")
+	seamLayers := fs.Int("seam-layers", 40, "seam: weighted layers (61 M weights each; 40 in lut4 is 1.14 GiB, about LFM3-1.7B in lut6), split into -attn-layers + 1 parts")
+	seamTokens := fs.String("seam-tokens", "8,64", "seam: query rows per call of the parts and the attention (8 a step checking drafts, 64 a chunk of the prompt)")
+	seamForm := fs.String("seam-form", "grouped", "seam: form of the attention, grouped or tile")
+	seamChunk := fs.Int("seam-chunk", 8192, "seam: chunk length of the attention")
+	seamUsed := fs.String("seam-used", "8192,65536", "seam: used cache lengths, ascending")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
 	fs.Parse(args)
-	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" && mode != "attn" {
+	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" && mode != "attn" && mode != "seam" {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -142,7 +158,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	sp := splitOpts{layers: *splitLayers, parts: *parts, layout: *layout, ref: *ref, kvLayers: *kvLayers, kvCache: *kvCache, kvModes: *kvModes,
-		attnChunks: *attnChunks, attnTokens: *attnTokens, attnForms: *attnForms, attnUsed: *attnUsed, attnLayers: *attnLayers}
+		attnChunks: *attnChunks, attnTokens: *attnTokens, attnForms: *attnForms, attnUsed: *attnUsed, attnLayers: *attnLayers,
+		seamFormat: *seamFormat, seamLayers: *seamLayers, seamTokens: *seamTokens, seamForm: *seamForm, seamChunk: *seamChunk, seamUsed: *seamUsed}
 	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "npuprobe:", err)
 		os.Exit(1)
@@ -157,6 +174,9 @@ type splitOpts struct {
 
 	attnChunks, attnTokens, attnForms, attnUsed string
 	attnLayers                                  int
+
+	seamFormat, seamTokens, seamForm, seamUsed string
+	seamLayers, seamChunk                      int
 }
 
 func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, minRun time.Duration, work, out string) error {
@@ -372,6 +392,38 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 			return errors.New("-attn-layers: at least 1")
 		}
 		p.attns(&rep, sp.attnLayers, chunks, tokens, forms, used, save)
+	}
+	if mode == "seam" {
+		if !p.coreml {
+			return errors.New("seam: the chunk attention probe models are Core ML only")
+		}
+		if _, ok := probe.BytesPerParam[sp.seamFormat]; !ok || sp.seamFormat == "int4" {
+			return fmt.Errorf("-seam-format: %q is not a format the Neural Engine runs (fp16, int8, lut4)", sp.seamFormat)
+		}
+		if sp.seamLayers < sp.attnLayers+1 {
+			return fmt.Errorf("-seam-layers: %d layers do not make %d parts", sp.seamLayers, sp.attnLayers+1)
+		}
+		if sp.seamChunk < 1 || sp.seamChunk > 16384 {
+			return fmt.Errorf("-seam-chunk: %d is not 1 to 16384", sp.seamChunk)
+		}
+		if !slices.Contains(probe.AttnForms, sp.seamForm) {
+			return fmt.Errorf("-seam-form: %q is not grouped or tile", sp.seamForm)
+		}
+		tokens, err := counts("-seam-tokens", sp.seamTokens)
+		if err != nil {
+			return err
+		}
+		used, err := counts("-seam-used", sp.seamUsed)
+		if err != nil {
+			return err
+		}
+		if !slices.IsSorted(used) {
+			return errors.New("-seam-used: the lengths go up")
+		}
+		if sp.attnLayers < 1 {
+			return errors.New("-attn-layers: at least 1")
+		}
+		p.seams(&rep, sp.seamFormat, sp.seamLayers, sp.attnLayers, tokens, sp.seamForm, sp.seamChunk, used, save)
 	}
 	if mode == "verify" {
 		// The formats the NPU runs: int4 never reaches the Neural Engine.
