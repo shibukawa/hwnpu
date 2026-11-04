@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -28,6 +29,13 @@ func Convert(a *Arch, model Model, w Weights, out, targetName string, nParts int
 func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nParts int, caches []int, opts Options, log io.Writer) (string, error) {
 	if len(caches) == 0 {
 		caches = []int{opts.Cache}
+	}
+	if opts.Paged > 0 {
+		if len(caches) > 1 {
+			return "", fmt.Errorf("llm: a model split at its attention (-paged) costs in proportion to the tokens used and has no tiers")
+		}
+		opts.Cache = caches[0]
+		return convertPaged(a, model, w, out, targetName, opts, log)
 	}
 	intel := opts.Backend == "intel"
 	switch opts.Backend {
@@ -213,4 +221,75 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 	}
 	fmt.Fprintf(log, "%s: input %s, output %s %v, %.2f GiB, %.0fs\n", path, strings.Join(inputs, ", "), rec.Output.Name, rec.Output.Shape, float64(size)/(1<<30), time.Since(start).Seconds())
 	return rec, nil
+}
+
+// convertPaged writes a Paged model split at its attention (Options.Paged): the parts PlanPaged
+// gives, out.partN.mlpackage, and the program without weights that attends over one chunk of the
+// host's cache, out.attn.mlpackage, listed by out.parts.json, which it returns.
+func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts Options, log io.Writer) (string, error) {
+	pm, ok := model.(Paged)
+	if !ok {
+		return "", fmt.Errorf("llm: %s cannot be split at its attention (-paged)", a.Title)
+	}
+	switch {
+	case opts.Backend != "" && opts.Backend != "coreml":
+		return "", fmt.Errorf("llm: -paged is for the Neural Engine (Core ML) so far")
+	case opts.Cache <= 0:
+		return "", fmt.Errorf("llm: -paged needs -cache, the longest sequence")
+	case opts.Seq < 1 || opts.Seq > opts.Paged:
+		return "", fmt.Errorf("llm: -paged %d takes 1 to %d tokens per call, not %d", opts.Paged, opts.Paged, opts.Seq)
+	case opts.Paged > NeuralEngineMaxDim:
+		return "", fmt.Errorf("llm: chunks of %d are over the Neural Engine's %d per dimension", opts.Paged, NeuralEngineMaxDim)
+	case opts.Start != 0 || opts.Layers != 0:
+		return "", fmt.Errorf("llm: -paged converts the whole model")
+	}
+	var target Target
+	budget := int64(math.MaxInt64)
+	if targetName != "none" {
+		var err error
+		if target, err = LookupTargetFor(opts.Backend, targetName); err != nil {
+			return "", err
+		}
+		if !target.Measured {
+			fmt.Fprintf(log, "note: the %s limit (%.2f GiB) is not measured yet: %s\n", target.Name, float64(target.MaxBytes)/(1<<30), target.Note)
+		}
+		budget = int64(SplitMargin * float64(target.MaxBytes))
+	}
+	plan, err := PlanPaged(model, opts, budget)
+	if err != nil {
+		return "", err
+	}
+	base := strings.TrimSuffix(out, ".mlpackage")
+	man := Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Cache: opts.Cache, Target: target.Name, MaxBytes: target.MaxBytes, Paged: opts.Paged}
+	for i, p := range plan {
+		path := fmt.Sprintf("%s.part%d.mlpackage", base, i+1)
+		o := opts
+		o.Start, o.Layers = p.Start, p.Layers
+		rec, err := convertPart(a, model, w, path, o, log)
+		if err != nil {
+			return "", err
+		}
+		if target.MaxBytes > 0 && rec.WeightBytes >= target.MaxBytes {
+			return "", fmt.Errorf("%s: weights of %.3f GiB are over the %s limit of %.3f GiB", path, float64(rec.WeightBytes)/(1<<30), target.Name, float64(target.MaxBytes)/(1<<30))
+		}
+		man.Parts = append(man.Parts, rec)
+	}
+	heads, kvHeads, headDim := pm.PagedShape()
+	form := "grouped"
+	if a.Param(opts, "attn") == "tile" {
+		form = "tile"
+	}
+	apath := base + ".attn.mlpackage"
+	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-convert)", a.Title, opts.Paged, opts.Seq, form)
+	ins, outs, err := paged.Write(apath, paged.Shape{Heads: heads, KVHeads: kvHeads, HeadDim: headDim}, form, opts.Seq, opts.Paged, desc)
+	if err != nil {
+		return "", err
+	}
+	man.Attention = &PartRecord{Path: apath, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}
+	if err := WriteManifest(base+".parts.json", &man); err != nil {
+		return "", err
+	}
+	fmt.Fprintf(log, "%s: %d parts split at the attention of layers %v, which the host runs over its cache of up to %d tokens in chunks of %d (%s)\n",
+		base+".parts.json", len(plan), pm.PagedLayers(), opts.Cache, opts.Paged, apath)
+	return base + ".parts.json", nil
 }

@@ -248,54 +248,183 @@ func (m multiCloser) Close() error {
 	return nil
 }
 
-// cachedCPU loads one package with a KV cache as a decode.Program on the CPU interpreter; inputs
-// named in shared use those buffers.
+// cachedCPU loads a model with a KV cache as a decode.Program on the CPU interpreter: one package,
+// or the parts of a manifest run in order as internal/llm/chain runs them (x of each part is y of
+// the one before, an input named like an earlier part's output takes it), and for a model split
+// at its attention (the manifest's Paged) in stages with its attention program. Inputs named in
+// shared use those buffers.
 func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer, error) {
 	man, err := llm.ReadManifest(path)
 	if err != nil {
 		return decode.Program{}, nil, err
 	}
-	parts := man.Tiered()[0].Parts
-	if len(parts) != 1 {
-		return decode.Program{}, nil, fmt.Errorf("runner: %s: the CPU interpreter runs a model with a KV cache in one part", path)
+	tiers := man.Tiered()
+	if len(tiers) != 1 {
+		return decode.Program{}, nil, fmt.Errorf("runner: %s: the CPU interpreter runs one cache length", path)
 	}
-	prog, f, err := milcpu.OpenPackage(parts[0].Path)
-	if err != nil {
-		return decode.Program{}, nil, err
+	var closers multiCloser
+	p := decode.Program{In: map[string][]byte{}, Out: map[string][]byte{}, InShape: map[string][]int{}, OutShape: map[string][]int{}}
+	type part struct {
+		prog *milcpu.Program
+		last bool
 	}
-	m, err := mlpackage.ReadModel(parts[0].Path)
-	if err != nil {
-		f.Close()
-		return decode.Program{}, nil, err
-	}
-	p := decode.Program{In: map[string][]byte{}, Out: map[string][]byte{}, InShape: prog.Inputs(), OutShape: map[string][]int{}}
-	for name, sh := range p.InShape {
-		if b, ok := shared[name]; ok && len(b) == 2*count(sh) {
-			p.In[name] = b
-		} else {
-			p.In[name] = make([]byte, 2*count(sh))
+	var parts []part
+	var stages [][]int
+	var cur []int
+	recs := tiers[0].Parts
+	for i, rec := range recs {
+		prog, f, err := milcpu.OpenPackage(rec.Path)
+		if err != nil {
+			closers.Close()
+			return decode.Program{}, nil, err
+		}
+		closers = append(closers, f)
+		outs, err := outputShapes(rec.Path)
+		if err != nil {
+			closers.Close()
+			return decode.Program{}, nil, err
+		}
+		attends := -1
+		for name, sh := range outs {
+			if name == "y" && i < len(recs)-1 {
+				continue
+			}
+			p.OutShape[name], p.Out[name] = sh, make([]byte, 2*count(sh))
+			var layer int
+			if _, err := fmt.Sscanf(name, "attn_q_%d", &layer); err == nil {
+				attends = layer
+			}
+		}
+		for name, sh := range prog.Inputs() {
+			if name == "x" && i > 0 || p.Out[name] != nil {
+				continue
+			}
+			p.InShape[name] = sh
+			if b, ok := shared[name]; ok && len(b) == 2*count(sh) {
+				p.In[name] = b
+			} else {
+				p.In[name] = make([]byte, 2*count(sh))
+			}
+		}
+		parts = append(parts, part{prog: prog, last: i == len(recs)-1})
+		cur = append(cur, i)
+		if attends >= 0 && man.Paged > 0 {
+			stages, cur = append(stages, cur), nil
+			p.Attend = append(p.Attend, attends)
 		}
 	}
+	stages = append(stages, cur)
+	var y milcpu.Tensor
+	run := func(list []int) error {
+		for _, i := range list {
+			in := map[string]milcpu.Tensor{}
+			for name, sh := range parts[i].prog.Inputs() {
+				if name == "x" && i > 0 {
+					in[name] = y
+					continue
+				}
+				b := p.In[name]
+				if b == nil {
+					b = p.Out[name]
+				}
+				v := make([]float32, count(sh))
+				hwnpu.DecodeF16(v, b)
+				in[name] = milcpu.Tensor{Shape: sh, Data: v}
+			}
+			res, err := parts[i].prog.Run(in, milcpu.Options{})
+			if err != nil {
+				return err
+			}
+			for name, o := range res {
+				if name == "y" {
+					y = o
+					if !parts[i].last {
+						continue
+					}
+				}
+				hwnpu.EncodeF16(p.Out[name], o.Data)
+			}
+		}
+		return nil
+	}
+	all := make([]int, len(parts))
+	for i := range all {
+		all[i] = i
+	}
+	p.Run = func() error { return run(all) }
+	if man.Paged > 0 {
+		if man.Attention == nil {
+			closers.Close()
+			return decode.Program{}, nil, fmt.Errorf("runner: %s: no attention program", path)
+		}
+		a, c, err := attentionCPU(man.Attention.Path, man.Paged)
+		if err != nil {
+			closers.Close()
+			return decode.Program{}, nil, err
+		}
+		closers = append(closers, c)
+		p.Run, p.Attn, p.Context = nil, a, man.Cache
+		p.RunPart = func(i int) error { return run(stages[i]) }
+	}
+	return p, closers, nil
+}
+
+// cpuBuf is a decode.Buf in the Go heap.
+type cpuBuf []byte
+
+func (b cpuBuf) Bytes() []byte { return b }
+func (b cpuBuf) Close() error  { return nil }
+
+// attentionCPU loads the attention program of a model split at its attention on the CPU
+// interpreter.
+func attentionCPU(path string, chunk int) (*decode.Attention, io.Closer, error) {
+	prog, f, err := milcpu.OpenPackage(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	outs, err := outputShapes(path)
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	in := prog.Inputs()
+	a := &decode.Attention{Chunk: chunk, Q: make([]byte, 2*count(in["q"])), O: make([]byte, 2*count(outs["o"])), M: make([]byte, 2*count(outs["m"])), L: make([]byte, 2*count(outs["l"]))}
+	a.NewBuf = func(n int) (decode.Buf, error) { return cpuBuf(make([]byte, n)), nil }
+	a.Run = func(k, v, mask decode.Buf) error {
+		vals := map[string]milcpu.Tensor{}
+		for name, b := range map[string][]byte{"q": a.Q, "k": k.Bytes(), "v": v.Bytes(), "mask": mask.Bytes()} {
+			x := make([]float32, count(in[name]))
+			if 2*len(x) != len(b) {
+				return fmt.Errorf("runner: attention input %s has %d bytes for %v", name, len(b), in[name])
+			}
+			hwnpu.DecodeF16(x, b)
+			vals[name] = milcpu.Tensor{Shape: in[name], Data: x}
+		}
+		res, err := prog.Run(vals, milcpu.Options{})
+		if err != nil {
+			return err
+		}
+		hwnpu.EncodeF16(a.O, res["o"].Data)
+		hwnpu.EncodeF16(a.M, res["m"].Data)
+		hwnpu.EncodeF16(a.L, res["l"].Data)
+		return nil
+	}
+	return a, f, nil
+}
+
+// outputShapes reads the outputs of a package and their shapes.
+func outputShapes(path string) (map[string][]int, error) {
+	m, err := mlpackage.ReadModel(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string][]int{}
 	for _, o := range m.GetDescription().GetOutput() {
 		var sh []int
 		for _, d := range o.GetType().GetMultiArrayType().GetShape() {
 			sh = append(sh, int(d))
 		}
-		p.OutShape[o.GetName()] = sh
-		p.Out[o.GetName()] = make([]byte, 2*count(sh))
+		out[o.GetName()] = sh
 	}
-	p.Run = func() error {
-		in := map[string]milcpu.Tensor{}
-		for name, sh := range p.InShape {
-			v := make([]float32, count(sh))
-			hwnpu.DecodeF16(v, p.In[name])
-			in[name] = milcpu.Tensor{Shape: sh, Data: v}
-		}
-		res, err := prog.Run(in, milcpu.Options{})
-		for name, o := range res {
-			hwnpu.EncodeF16(p.Out[name], o.Data)
-		}
-		return err
-	}
-	return p, f, nil
+	return out, nil
 }

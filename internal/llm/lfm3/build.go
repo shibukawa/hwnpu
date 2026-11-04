@@ -116,13 +116,23 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options)
 	if cfg.D1 {
 		opts.Hidden = true
 	}
+	if opts.Paged > 0 && (opts.Cache <= 0 || cfg.D1) {
+		return nil, nil, fmt.Errorf("lfm3: a program split at its attention (Paged) needs a KV cache")
+	}
 	m := newBuilder(b, cfg, w, opts)
 	err = blocks.Run(func() {
 		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
 		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
 		h := x
 		for i := opts.Start; i < opts.Start+opts.Layers; i++ {
+			if i == opts.Start && i > 0 && m.paged(i) {
+				h = m.afterAttention(i, h) // the host attended between the parts
+				continue
+			}
 			h = m.layer(i, h)
+		}
+		if end := opts.Start + opts.Layers; end < cfg.NumLayers && m.paged(end) {
+			m.beforeAttention(end, h) // the host attends next; y is the hidden state entering end
 		}
 		var y *mlpackage.Var
 		switch {
@@ -166,6 +176,40 @@ func (m *builder) layer(i int, h *mlpackage.Var) *mlpackage.Var {
 	} else {
 		h = m.shortConv(i, h)
 	}
+	return m.layerRest(i, h, residual)
+}
+
+// paged reports whether layer i's attention runs on the host between the parts (Options.Paged).
+func (m *builder) paged(i int) bool {
+	return m.opts.Paged > 0 && m.opts.Cache > 0 && m.cfg.LayerTypes[i] == "full_attention"
+}
+
+// beforeAttention is the start of layer i, whose attention the host runs (llm.Paged): it outputs
+// the queries attn_q_N, the step's keys and values kv_k_N_new and kv_v_N_new, and the gate the
+// layer's output takes, attn_gate_N (1, seq, heads, 1), for the next part.
+func (m *builder) beforeAttention(i int, h *mlpackage.Var) {
+	p := fmt.Sprintf("%slayers.%d.", m.cfg.prefix(), i)
+	h = m.rmsNorm(h, p+"operator_norm.weight", m.d)
+	q, k, v := m.qkv(i, h)
+	m.output(q, fmt.Sprintf("attn_q_%d", i))
+	m.output(k, fmt.Sprintf("kv_k_%d_new", i))
+	m.output(v, fmt.Sprintf("kv_v_%d_new", i))
+	m.output(m.gate(i, h), fmt.Sprintf("attn_gate_%d", i))
+}
+
+// afterAttention is the rest of layer i from its attention's output, attn_o_N (1, heads, seq,
+// head_dim), with the gate the part before output and x the hidden state entering the layer.
+func (m *builder) afterAttention(i int, x *mlpackage.Var) *mlpackage.Var {
+	s, nh, hd := m.seq, m.cfg.NumHeads, m.cfg.HeadDim
+	o := m.input(fmt.Sprintf("attn_o_%d", i), 1, nh, s, hd)
+	gate := m.input(fmt.Sprintf("attn_gate_%d", i), 1, s, nh, 1)
+	return m.layerRest(i, m.attnOutput(i, o, gate), x)
+}
+
+// layerRest is a layer after its operator (h) given the residual: the sandwich norm, the
+// residual add and the MLP.
+func (m *builder) layerRest(i int, h, residual *mlpackage.Var) *mlpackage.Var {
+	p := fmt.Sprintf("%slayers.%d.", m.cfg.prefix(), i)
 	if m.cfg.UseSandwichNorm {
 		h = m.rmsNorm(h, p+"post_operator_norm.weight", m.d, m.opts.PostScale)
 	}
@@ -272,32 +316,9 @@ func (m *builder) shortConv(i int, h *mlpackage.Var) *mlpackage.Var {
 // bidirectional instead: only the padding is masked, by the program input mask (1, seq), 1 for
 // the prompt's tokens and 0 for the padding after them.
 func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("%slayers.%d.self_attn.", m.cfg.prefix(), i)
-	s, nh, nkv, hd := m.seq, m.cfg.NumHeads, m.cfg.NumKVHeads, m.cfg.HeadDim
+	s, nkv, hd := m.seq, m.cfg.NumKVHeads, m.cfg.HeadDim
 	layerType := m.cfg.LayerTypes[i]
-	var cos, sin *mlpackage.Var
-	if m.opts.Cache > 0 {
-		cos, sin = m.input("rope_cos_"+layerType, 1, s, 1, hd), m.input("rope_sin_"+layerType, 1, s, 1, hd)
-	} else {
-		cos, sin = m.RopeTables(layerType, m.cfg.RopeInvFreq(layerType), s, hd)
-	}
-
-	q := m.Linear(h, p+"q_proj.weight", "", nh*hd)
-	q = m.Op("reshape", map[string]any{"x": q, "shape": m.B.Ints(1, int32(s), int32(nh), int32(hd))}, 1, s, nh, hd)
-	q = m.rmsNorm(q, p+"q_norm.weight", hd)
-	q = m.ApplyRope(q, cos, sin)
-	q = m.Op("transpose", map[string]any{"x": q, "perm": m.B.Ints(0, 2, 1, 3)}, 1, nh, s, hd)
-
-	k := m.Linear(h, p+"k_proj.weight", "", nkv*hd)
-	k = m.Op("reshape", map[string]any{"x": k, "shape": m.B.Ints(1, int32(s), int32(nkv), int32(hd))}, 1, s, nkv, hd)
-	k = m.rmsNorm(k, p+"k_norm.weight", hd)
-	k = m.ApplyRope(k, cos, sin)
-	k = m.Op("transpose", map[string]any{"x": k, "perm": m.B.Ints(0, 2, 1, 3)}, 1, nkv, s, hd)
-
-	v := m.Linear(h, p+"v_proj.weight", "", nkv*hd)
-	v = m.Op("reshape", map[string]any{"x": v, "shape": m.B.Ints(1, int32(s), int32(nkv), int32(hd))}, 1, s, nkv, hd)
-	v = m.Op("transpose", map[string]any{"x": v, "perm": m.B.Ints(0, 2, 1, 3)}, 1, nkv, s, hd)
-
+	q, k, v := m.qkv(i, h)
 	var o *mlpackage.Var
 	if m.opts.Cache > 0 {
 		// the cached keys and values, then the step's own. A sliding layer only ever sees the
@@ -345,11 +366,54 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 		}
 		o = m.Attention(q, k, v, "mask_"+layerType, window)
 	}
-	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, s, nh, hd)
+	return m.attnOutput(i, o, m.gate(i, h))
+}
 
+// qkv is the attention's queries (1, heads, seq, head_dim) and keys and values (1, kv_heads,
+// seq, head_dim) from the normed hidden state, with the QK norms and RoPE.
+func (m *builder) qkv(i int, h *mlpackage.Var) (q, k, v *mlpackage.Var) {
+	p := fmt.Sprintf("%slayers.%d.self_attn.", m.cfg.prefix(), i)
+	s, nh, nkv, hd := m.seq, m.cfg.NumHeads, m.cfg.NumKVHeads, m.cfg.HeadDim
+	layerType := m.cfg.LayerTypes[i]
+	var cos, sin *mlpackage.Var
+	if m.opts.Cache > 0 {
+		cos, sin = m.input("rope_cos_"+layerType, 1, s, 1, hd), m.input("rope_sin_"+layerType, 1, s, 1, hd)
+	} else {
+		cos, sin = m.RopeTables(layerType, m.cfg.RopeInvFreq(layerType), s, hd)
+	}
+
+	q = m.Linear(h, p+"q_proj.weight", "", nh*hd)
+	q = m.Op("reshape", map[string]any{"x": q, "shape": m.B.Ints(1, int32(s), int32(nh), int32(hd))}, 1, s, nh, hd)
+	q = m.rmsNorm(q, p+"q_norm.weight", hd)
+	q = m.ApplyRope(q, cos, sin)
+	q = m.Op("transpose", map[string]any{"x": q, "perm": m.B.Ints(0, 2, 1, 3)}, 1, nh, s, hd)
+
+	k = m.Linear(h, p+"k_proj.weight", "", nkv*hd)
+	k = m.Op("reshape", map[string]any{"x": k, "shape": m.B.Ints(1, int32(s), int32(nkv), int32(hd))}, 1, s, nkv, hd)
+	k = m.rmsNorm(k, p+"k_norm.weight", hd)
+	k = m.ApplyRope(k, cos, sin)
+	k = m.Op("transpose", map[string]any{"x": k, "perm": m.B.Ints(0, 2, 1, 3)}, 1, nkv, s, hd)
+
+	v = m.Linear(h, p+"v_proj.weight", "", nkv*hd)
+	v = m.Op("reshape", map[string]any{"x": v, "shape": m.B.Ints(1, int32(s), int32(nkv), int32(hd))}, 1, s, nkv, hd)
+	v = m.Op("transpose", map[string]any{"x": v, "perm": m.B.Ints(0, 2, 1, 3)}, 1, nkv, s, hd)
+	return q, k, v
+}
+
+// gate is the attention's sigmoid gate per head, (1, seq, heads, 1), from the normed hidden state.
+func (m *builder) gate(i int, h *mlpackage.Var) *mlpackage.Var {
+	p := fmt.Sprintf("%slayers.%d.self_attn.", m.cfg.prefix(), i)
+	s, nh := m.seq, m.cfg.NumHeads
 	gate := m.Linear(h, p+"gate_proj.weight", "", nh)
 	gate = m.Op("sigmoid", map[string]any{"x": gate}, 1, s, nh)
-	gate = m.Op("reshape", map[string]any{"x": gate, "shape": m.B.Ints(1, int32(s), int32(nh), 1)}, 1, s, nh, 1)
+	return m.Op("reshape", map[string]any{"x": gate, "shape": m.B.Ints(1, int32(s), int32(nh), 1)}, 1, s, nh, 1)
+}
+
+// attnOutput is the attention's output projection of o (1, heads, seq, head_dim), gated.
+func (m *builder) attnOutput(i int, o, gate *mlpackage.Var) *mlpackage.Var {
+	p := fmt.Sprintf("%slayers.%d.self_attn.", m.cfg.prefix(), i)
+	s, nh, hd := m.seq, m.cfg.NumHeads, m.cfg.HeadDim
+	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, s, nh, hd)
 	o = m.Op("mul", map[string]any{"x": o, "y": gate}, 1, s, nh, hd)
 	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(s), int32(nh*hd))}, 1, s, nh*hd)
 	return m.LinearS(o, p+"o_proj.weight", "", m.d, m.opts.PostScale)
@@ -372,9 +436,23 @@ func (c *Config) cacheLen(layerType string, cache int) int {
 // A cache in chunks (llm.CacheChunks) has the mask in parts: mask_TYPE_cJ over each chunk and
 // mask_TYPE_self over the step's tokens.
 func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
+	return c.stepInputs(pos, q, cache, false)
+}
+
+// PagedStepInputs is StepInputs for a program split at its attention (llm.Paged): the full
+// attention layers' rotary tables without their masks, which the host's attention makes.
+func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 {
+	return c.stepInputs(pos, q, cache, true)
+}
+
+func (c *Config) stepInputs(pos, q, cache int, paged bool) map[string][]float32 {
 	out := map[string][]float32{}
 	for _, lt := range c.LayerTypes {
 		if _, done := out["rope_cos_"+lt]; done || lt == "conv" {
+			continue
+		}
+		if paged && lt == "full_attention" {
+			out["rope_cos_"+lt], out["rope_sin_"+lt] = blocks.RopeValues(c.RopeInvFreq(lt), pos, q, c.HeadDim)
 			continue
 		}
 		window := 0

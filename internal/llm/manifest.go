@@ -29,6 +29,11 @@ type Manifest struct {
 	// shortest tier and moves to the next when it fills (internal/llm/chain). With tiers, Cache
 	// and Parts are empty.
 	Tiers []Tier `json:"tiers,omitempty"`
+	// Paged is the chunk length of a model split at its attention (Options.Paged), and Attention
+	// the program without weights that attends over one chunk for Seq query rows
+	// (internal/llm/paged); Cache is then the longest sequence the host's cache holds.
+	Paged     int         `json:"paged,omitempty"`
+	Attention *PartRecord `json:"attention,omitempty"`
 	// Backend is the runtime the parts are written for (Options.Backend; empty for coreml).
 	Backend string `json:"backend,omitempty"`
 	// Meta is the metadata of the parts (MetaArch, MetaParam...), also in each part's own
@@ -188,6 +193,11 @@ func WriteManifest(path string, m *Manifest) error {
 	for _, t := range m.Tiers {
 		relative(t.Parts)
 	}
+	if m.Attention != nil {
+		a := []PartRecord{*m.Attention}
+		relative(a)
+		m.Attention = &a[0]
+	}
 	js, _ := json.MarshalIndent(m, "", "  ")
 	return os.WriteFile(path, append(js, '\n'), 0o644)
 }
@@ -212,6 +222,9 @@ func ReadManifest(path string) (*Manifest, error) {
 		}
 	}
 	absolute(m.Parts)
+	if m.Attention != nil {
+		m.Attention.Path = filepath.Join(filepath.Dir(path), m.Attention.Path)
+	}
 	for i, t := range m.Tiers {
 		if len(t.Parts) == 0 || i > 0 && t.Cache <= m.Tiers[i-1].Cache {
 			return nil, fmt.Errorf("llm: %s: tiers must have parts and increasing caches", path)

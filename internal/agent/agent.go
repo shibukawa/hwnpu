@@ -338,6 +338,9 @@ func (s *Session) complete(ctx context.Context, tools []chat.Tool, ev Events) (c
 	if c.ThinkCut && ev.Note != nil {
 		ev.Note(fmt.Sprintf("thinking cut at %d tokens", s.cfg.ThinkBudget))
 	}
+	if c.ThinkLooped && ev.Note != nil {
+		ev.Note("thinking cut going round in circles")
+	}
 	return c, nil
 }
 

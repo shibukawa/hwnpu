@@ -122,3 +122,5 @@ func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Optio
 	}
 	return BuildCached(b, c, w, Options{Options: opts, PostScale: float32(postScale), ConvMode: Arch.Param(opts, "conv"), AttnMode: Arch.Param(opts, "attn"), HiddenOut: Arch.Param(opts, "hidden-out") == "1"})
 }
+
+var _ llm.Paged = (*Config)(nil)

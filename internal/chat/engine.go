@@ -21,6 +21,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
@@ -101,6 +102,7 @@ type Engine struct {
 	// drafter guesses the next tokens of a sequence, up to k (speculative decoding); nil for
 	// none. Load sets it to Lookup when the model has a program to check drafts with (Draft).
 	drafter func(seq []int32, k int) []int32
+	kinds   []tokenKind // Tok's tokens, for repeats; set by the first generation
 
 	ir    *iron.Model // the model of an IRON export (Config.IRON); nil for none
 	store *store      // prompts kept on disk (Config.PromptDir); nil for none
@@ -290,6 +292,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			return nil, err
 		}
 		t.cache = s.Cache()
+		s.Close()
 		if n := len(e.tiers); n > 0 && t.cache <= e.tiers[n-1].cache {
 			t.close()
 			e.Close()
@@ -300,6 +303,10 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if e.sess, err = e.tiers[0].session(cm); err != nil {
 		e.Close()
 		return nil, err
+	}
+	paged := ""
+	if ds, ok := e.sess.(*decode.Session); ok && ds.Paged() > 0 {
+		paged = e.fitMemory(ds, mem.Physical(), logf)
 	}
 	if c.PromptDir != "" {
 		last := e.tiers[len(e.tiers)-1]
@@ -351,11 +358,33 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	if d := e.Draft(); d > 0 {
 		e.drafter = LookupDraft
-		logf("ready: context %d tokens%s, up to %d tokens per call, drafts of %d checked per call", e.Context(), caches, e.sess.Q(), d)
+		logf("ready: context %d tokens%s%s, up to %d tokens per call, drafts of %d checked per call", e.Context(), caches, paged, e.sess.Q(), d)
 	} else {
-		logf("ready: context %d tokens%s, up to %d tokens per call", e.Context(), caches, e.sess.Q())
+		logf("ready: context %d tokens%s%s, up to %d tokens per call", e.Context(), caches, paged, e.sess.Q())
 	}
 	return e, nil
+}
+
+// memoryShare is the part of the machine's memory the cache of a model split at its attention
+// may grow to: the rest is the programs' (1 to 3 GiB), the system's and the user's.
+const memoryShare = 4
+
+// fitMemory keeps the cache of a session split at its attention within a quarter of the
+// machine's memory (physical, in bytes; 0 when not known): the cache grows with the conversation,
+// so the context is the model's longest unless the cache at that length would not fit. It
+// returns what the ready line says of it.
+func (e *Engine) fitMemory(ds *decode.Session, physical int64, logf func(string, ...any)) string {
+	row := int64(ds.RowBytes())
+	full := row * int64(ds.Cache())
+	if budget := physical / memoryShare; physical > 0 && full > budget {
+		n := int(budget/row) / ds.Paged() * ds.Paged()
+		if n > 0 && n < ds.Cache() && ds.Limit(n) == nil {
+			logf("the context is %d tokens, not %d: its cache would take %.2f GiB, over a quarter of the %.0f GiB of memory", n, e.tiers[len(e.tiers)-1].cache, float64(full)/(1<<30), float64(physical)/(1<<30))
+			e.tiers[len(e.tiers)-1].cache = n
+			full = row * int64(n)
+		}
+	}
+	return fmt.Sprintf(", its cache growing with the conversation by %.0f KiB a token to %.2f GiB (attention in chunks of %d)", float64(row)/1024, float64(full)/(1<<30), ds.Paged())
 }
 
 // compileNote says how long loading takes on the device the first time.
@@ -420,8 +449,16 @@ func (e *Engine) use(i int) error {
 	if err != nil {
 		return err
 	}
+	closeSession(e.sess)
 	e.sess, e.ti = s, i
 	return nil
+}
+
+// closeSession frees what a session holds (the chunks of a cache split at its attention).
+func closeSession(s session) {
+	if ds, ok := s.(*decode.Session); ok && ds != nil {
+		ds.Close()
+	}
 }
 
 // room makes sure the cache can take n more tokens, moving the sequence up to a longer tier
@@ -518,6 +555,9 @@ func (e *Engine) Close() error {
 		e.aud.Close()
 		e.aud = nil
 	}
+	if e.sess != nil {
+		closeSession(e.sess)
+	}
 	for i := len(e.tiers) - 1; i >= 0; i-- {
 		e.tiers[i].close()
 	}
@@ -570,13 +610,23 @@ type ThinkLimit struct {
 // tokens: none), with the template's tokens; inside says the prompt ends inside the thinking
 // (Template.Render).
 func (e *Engine) ThinkLimit(budget int, inside bool) ThinkLimit {
-	open, close, end := e.Template.Think()
-	o, ok1 := e.Tok.ID(open)
-	c, ok2 := e.Tok.ID(close)
-	if budget <= 0 || !ok1 || !ok2 {
+	o, c, ok := e.thinkTokens()
+	if budget <= 0 || !ok {
 		return ThinkLimit{}
 	}
+	_, _, end := e.Template.Think()
 	return ThinkLimit{Budget: budget, Open: o, Close: c, End: e.Tok.Encode(end), Inside: inside}
+}
+
+// thinkTokens returns the tokens that open and close the thinking, if the model has them.
+func (e *Engine) thinkTokens() (open, close int32, ok bool) {
+	if e.Tok == nil || e.Template == nil {
+		return 0, 0, false
+	}
+	o, c, _ := e.Template.Think()
+	open, ok1 := e.Tok.ID(o)
+	close, ok2 := e.Tok.ID(c)
+	return open, close, ok1 && ok2
 }
 
 // Stats says what a generation did.
@@ -588,8 +638,9 @@ type Stats struct {
 	Finish string
 	// Looped says that the generation stopped because the model repeated itself.
 	Looped bool
-	// ThinkCut says that the thinking reached its budget (Request.Think) and was ended.
-	ThinkCut bool
+	// ThinkCut says that the thinking reached its budget (Request.Think) and was ended;
+	// ThinkLooped, that it was ended before, going round in circles (repeats).
+	ThinkCut, ThinkLooped bool
 	// Drafted and Accepted count the tokens guessed ahead (speculative decoding) and those the
 	// model confirmed; Calls the runs of the model while generating.
 	Drafted, Accepted, Calls int
@@ -633,6 +684,11 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	defer func() { st.Decode, st.Cache = time.Since(t1), e.sess.Cache() }()
 	think := r.Think
 	inside, thought := think.Budget > 0 && think.Inside, 0
+	if e.kinds == nil && e.Tok != nil {
+		e.kinds = tokenKinds(e.Tok)
+	}
+	rep, circling := newRepeats(e.kinds), false
+	opens, closes, marks := e.thinkTokens()
 	// take takes a generated token into the answer: it is in the cache already, or is next to
 	// go in. It says whether the generation is over.
 	take := func(tok int32) (over bool, err error) {
@@ -652,6 +708,11 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 				thought++
 			}
 		}
+		if marks && (tok == opens || tok == closes) {
+			// the thinking and the answer count their repeats apart
+			rep.reset()
+			circling = false
+		}
 		stop, err := emit(gen)
 		if err != nil {
 			return true, err
@@ -660,9 +721,13 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 			st.Finish = "stop"
 			return true, nil
 		}
-		if looping(gen) {
-			st.Finish, st.Looped = "stop", true
-			return true, nil
+		if looped := rep.add(tok); looped || looping(gen) {
+			if !inside {
+				st.Finish, st.Looped = "stop", true
+				return true, nil
+			}
+			// the thinking ends as at its budget, and the answer begins
+			circling = true
 		}
 		if r.MaxTokens > 0 && len(gen) >= r.MaxTokens {
 			st.Finish = "length"
@@ -689,7 +754,7 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		toks := []int32{next}
 		var drafts []int32
 		switch {
-		case inside && thought >= think.Budget:
+		case inside && (thought >= think.Budget || circling):
 			// end the thinking: End goes into the sequence as if the model had generated it
 			if ok, err := e.room(1 + len(think.End)); err != nil {
 				return st, err
@@ -700,7 +765,9 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 			toks = append(toks, think.End...)
 			gen = append(gen, think.End...)
 			st.Generated = len(gen)
-			inside, st.ThinkCut = false, true
+			inside, st.ThinkCut, st.ThinkLooped = false, !circling, circling
+			circling = false
+			rep.reset()
 			if stop, err := emit(gen); err != nil {
 				return st, err
 			} else if stop {

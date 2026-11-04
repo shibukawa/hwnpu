@@ -37,3 +37,21 @@ func TestStrides(t *testing.T) {
 		t.Fatal("isContiguous")
 	}
 }
+
+// A request binds other buffers once its submission has finished, as a step that calls one
+// program over the chunks of a KV cache does; it refuses only while the submission runs.
+func TestBindAfterSubmissionFinished(t *testing.T) {
+	r := &request{binds: make([]*buffer, 1)}
+	b := &buffer{}
+	r.inflight = &fence{done: make(chan struct{})}
+	if err := r.Bind(0, b); err == nil {
+		t.Fatal("Bind succeeded while the submission was running")
+	}
+	close(r.inflight.done)
+	if err := r.Bind(0, b); err != nil {
+		t.Fatalf("Bind after the submission finished: %v", err)
+	}
+	if r.binds[0] != b {
+		t.Fatal("the buffer was not bound")
+	}
+}

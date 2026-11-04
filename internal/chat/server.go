@@ -314,6 +314,9 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	if stats.ThinkCut {
 		looped += fmt.Sprintf(" (thinking cut at %d tokens)", s.ThinkBudget)
 	}
+	if stats.ThinkLooped {
+		looped += " (thinking cut going round in circles)"
+	}
 	if stats.Drafted > 0 {
 		looped += fmt.Sprintf(" (%d of %d drafts accepted, %d calls)", stats.Accepted, stats.Drafted, stats.Calls)
 	}
