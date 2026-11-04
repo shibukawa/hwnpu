@@ -23,6 +23,7 @@ type fakeModel struct{ llm.Paged }
 
 func (fakeModel) StepInputs(pos, valid, q, cache int) map[string][]float32      { return nil }
 func (fakeModel) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 { return nil }
+func (fakeModel) PagedKV(layer int) int                                         { return layer }
 
 type cpuBuf []byte
 

@@ -265,7 +265,7 @@ func TestPagedSparse(t *testing.T) {
 	if err := llm.WriteManifest(path, &old); err != nil {
 		t.Fatal(err)
 	}
-	if err := llm.AddMass(path, "grouped"); err != nil {
+	if err := llm.AddMass(path, "grouped", 0); err != nil {
 		t.Fatal(err)
 	}
 	back, err := llm.ReadManifest(path)

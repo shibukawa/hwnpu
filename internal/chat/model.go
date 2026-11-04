@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 )
@@ -32,6 +33,24 @@ const DefaultContext = llm.NeuralEngineMaxDim - prefillSeq
 const PagedOff = -1
 
 const prefillSeq = 64
+
+// The values of Setup.Prefill (-prefill): whether a program of 64 tokens per call reads the
+// prompts beside the one that generates.
+const (
+	// PrefillAuto has one unless the two programs' weights would not stay in the Neural Engine's
+	// compile cache (compileCacheBytes), as Gemma 4 E4B's (2 × 3.26 GiB in lut6) do not: then
+	// every start compiles them again (77 to 87 seconds on an M3) and every question pays 1 to 3
+	// seconds of switching between them, while the one that generates alone starts in 4 seconds
+	// and answers faster. It reads a long prompt 4.4 times slower (16K tokens in 183 seconds
+	// against 42; docs/design.md 16.65)
+	PrefillAuto = "auto"
+	PrefillOn   = "on"  // always a program to read prompts
+	PrefillOff  = "off" // never: the program that generates reads them
+)
+
+// compileCacheBytes is about what the Neural Engine's own cache of compiled programs holds
+// (TierAuto).
+var compileCacheBytes int64 = 4 << 30
 
 // DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: auto, a cache of 4096 to run on
 // while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
@@ -86,14 +105,17 @@ type Setup struct {
 	// Paged is the chunk length of a model split at its attention (llm.Options.Paged): a step
 	// then costs in proportion to the tokens in the cache, and the cache's memory grows with the
 	// conversation, so the context can be the model's longest. 0 for paged.DefaultChunk when the
-	// model can be split and the programs are for the Neural Engine, PagedOff for never. A model
-	// split at its attention has no tiers.
+	// model can be split, PagedOff for never. A model split at its attention has no tiers.
 	Paged int
 	// Draft makes the program that generates take this many tokens per call instead of 1, for
 	// checking the drafts of speculative decoding (Engine.Draft); 0 or 1 for none. It is one
 	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
 	// generation runs on one.
 	Draft int
+	// Prefill is PrefillAuto (also for ""), PrefillOn or PrefillOff: whether a program of 64
+	// tokens per call reads the prompts, or the one that generates does (it must take several
+	// tokens per call, Draft).
+	Prefill string
 	// Tiers are caches shorter than Context to run on while a conversation is short (Engine
 	// tiers): the programs are converted for each, and a conversation moves up as it grows. A
 	// step costs in proportion to the cache, whatever it holds.
@@ -140,6 +162,11 @@ func targetName(backend string) string {
 // (Setup.Backend), named by the architecture, the weight format and the attention
 // (lfm3-lut6-grouped-c16320-q8.mlpackage). It returns the Config that loads them.
 func Prepare(ctx context.Context, s Setup) (Config, error) {
+	switch s.Prefill {
+	case "", PrefillAuto, PrefillOn, PrefillOff:
+	default:
+		return Config{}, fmt.Errorf("chat: -prefill %q is not auto, on or off", s.Prefill)
+	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Config{}, err
 	}
@@ -172,7 +199,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
 		kind += "-" + attn
 	}
-	chunk, context := pagedChunk(model, backend, s.Paged), s.Context
+	chunk, context := pagedChunk(model, s.Paged), s.Context
 	if context <= 0 {
 		context = DefaultContext
 		if pm, ok := model.(llm.Paged); ok && chunk > 0 && pm.MaxContext() > 0 {
@@ -215,6 +242,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	slices.Sort(caches)
 	caches = slices.Compact(caches)
+	if one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(progs)*(len(caches)+1)); one {
+		progs = progs[:1]
+		if s.Log != nil {
+			fmt.Fprintf(s.Log, "one program for %s, which reads the prompts %d tokens per call too: %s (-prefill on for one of %d to read long prompts faster)\n", c.Name, s.Draft, why, prefillSeq)
+		}
+	}
 	for _, cache := range append(caches, context) {
 		var pkgs []string
 		for _, p := range progs {
@@ -226,7 +259,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			if chunk > 0 {
 				// a conversion from before the two-level attention gets its mass program, which
 				// has no weights, instead of being converted again
-				if err := llm.AddMass(path, cmp.Or(a.Param(llm.Options{}, "attn"), "grouped")); err != nil {
+				if err := llm.AddMass(path, cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape().Scale); err != nil {
 					return Config{}, err
 				}
 			}
@@ -235,6 +268,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		c.Tiers = append(c.Tiers, pkgs)
 	}
 	c.Packages = c.Tiers[len(c.Tiers)-1]
+	shareOnce(pdir, s.Log)
 	for _, e := range encoders {
 		if _, _, err := llm.LoadConfig(c.ModelConfig, e.arch); err != nil {
 			continue // the checkpoint has no such encoder
@@ -254,11 +288,67 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	return c, nil
 }
 
+// onePrograms decides Setup.Prefill: whether the program that generates (of draft tokens per
+// call) reads the prompts too, instead of n programs of the model's weights in format, and why.
+func onePrograms(model llm.Model, format, backend, prefill string, draft, n int) (bool, string) {
+	switch {
+	case prefill == PrefillOff:
+		return true, "-prefill off"
+	case prefill == PrefillOn || draft <= 1 || backend == llm.BackendIntel:
+		return false, "" // reading prompts one token per call would be far slower; the cache is the Neural Engine's
+	}
+	var o llm.Options
+	set := llm.BindFlags(flag.NewFlagSet("", flag.ContinueOnError), &o, "")
+	set()
+	o.Format = format
+	pre, layers, post := llm.EstimateBytes(model, o)
+	total := pre + post
+	for _, l := range layers {
+		total += l
+	}
+	if int64(n)*total <= compileCacheBytes {
+		return false, ""
+	}
+	return true, fmt.Sprintf("%d programs would hold %.2f GiB of weights, over the about %d GiB the Neural Engine keeps compiled, so every start would compile them again and every question switch between them", n, float64(int64(n)*total)/(1<<30), compileCacheBytes>>30)
+}
+
+// sharedMark is the file in a directory of programs that says ShareWeights went over it: the
+// conversions share the weights of what they write since, and the programs written before were
+// shared then.
+const sharedMark = ".weights-shared"
+
+// shareOnce makes the programs in dir that have the same weights share them on the disk
+// (llm.ShareWeights), once per directory: the programs of 8 and 64 tokens per call written before
+// conversions did it themselves.
+func shareOnce(dir string, log io.Writer) {
+	mark := filepath.Join(dir, sharedMark)
+	if _, err := os.Stat(mark); err == nil {
+		return
+	}
+	llm.ShareWeights(dir)
+	os.WriteFile(mark, nil, 0o644)
+}
+
+// cacheAge is how long an entry of the compile cache stays unused before Load removes it.
+const cacheAge = 30 * 24 * time.Hour
+
+// pruneCache removes the entries of the compile cache that are not used any more (cache.Prune):
+// those of programs deleted or not loaded for cacheAge.
+func pruneCache(dir string, logf func(string, ...any)) {
+	if dir == "" {
+		return
+	}
+	if n, bytes, err := cache.Prune(dir, cacheAge); err == nil && n > 0 {
+		logf("compile cache: removed %d entries not used any more (%.2f GiB)", n, float64(bytes)/(1<<30))
+	}
+}
+
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
-// none: the model must be Paged, and the programs for the Neural Engine.
-func pagedChunk(model llm.Model, backend string, want int) int {
+// none: the model must be Paged (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4), on any
+// NPU.
+func pagedChunk(model llm.Model, want int) int {
 	pm, ok := model.(llm.Paged)
-	if !ok || want < 0 || backend == llm.BackendIntel || len(pm.PagedLayers()) == 0 {
+	if !ok || want < 0 || len(pm.PagedLayers()) == 0 {
 		return 0
 	}
 	return cmp.Or(want, paged.DefaultChunk)

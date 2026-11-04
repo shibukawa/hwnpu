@@ -143,18 +143,35 @@ func buildPart(b *mlpackage.Builder, m Model, w Weights, opts Options) (ins, out
 // temporary weight file next to path, and lowered to OpenVINO IR (path, .xml, and its .bin).
 // The description and metadata that describe fills in go into the IR's rt_info.
 func writeIRPart(path string, m Model, w Weights, opts Options, describe func(*mlpackage.Package)) (PartRecord, error) {
+	pkg := &mlpackage.Package{Metadata: map[string]string{}}
+	if describe != nil {
+		describe(pkg)
+	}
+	size, ins, outs, err := writeIR(path, pkg, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
+		return buildPart(b, m, w, opts)
+	})
+	if err != nil {
+		return PartRecord{}, err
+	}
+	return PartRecord{Path: path, Start: opts.Start, Layers: opts.Layers, WeightBytes: size, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}, nil
+}
+
+// writeIR builds a program as MIL, its weights in a temporary weight file next to path, and
+// lowers it to OpenVINO IR (path, .xml, and its .bin), with the description and metadata of pkg
+// in its rt_info. It returns the size of the weights and the program's inputs and outputs.
+func writeIR(path string, pkg *mlpackage.Package, build func(*mlpackage.Builder) (ins, outs []mlpackage.Feature, err error)) (int64, []mlpackage.Feature, []mlpackage.Feature, error) {
 	base := strings.TrimSuffix(path, filepath.Ext(path))
 	tmp := base + ".milblob.tmp"
 	blobs, err := mlpackage.NewBlobWriter(tmp)
 	if err != nil {
-		return PartRecord{}, err
+		return 0, nil, nil, err
 	}
 	defer os.Remove(tmp)
 	b := mlpackage.NewBuilder("CoreML8", blobs)
-	ins, outs, err := buildPart(b, m, w, opts)
+	ins, outs, err := build(b)
 	if err != nil {
 		blobs.Close()
-		return PartRecord{}, err
+		return 0, nil, nil, err
 	}
 	var vars []*mlpackage.Var
 	for _, f := range outs {
@@ -162,26 +179,22 @@ func writeIRPart(path string, m Model, w Weights, opts Options, describe func(*m
 	}
 	fn := b.Function(vars...)
 	if err := blobs.Close(); err != nil {
-		return PartRecord{}, err
+		return 0, nil, nil, err
 	}
 	f, err := os.Open(tmp)
 	if err != nil {
-		return PartRecord{}, err
+		return 0, nil, nil, err
 	}
 	defer f.Close()
-	pkg := &mlpackage.Package{Metadata: map[string]string{}}
-	if describe != nil {
-		describe(pkg)
-	}
 	meta := pkg.Metadata
+	if meta == nil {
+		meta = map[string]string{}
+	}
 	if pkg.Description != "" {
 		meta[MetaDescription] = pkg.Description
 	}
 	size, err := ovlower.WriteFiles(path, filepath.Base(base), fn, f, meta)
-	if err != nil {
-		return PartRecord{}, err
-	}
-	return PartRecord{Path: path, Start: opts.Start, Layers: opts.Layers, WeightBytes: size, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}, nil
+	return size, ins, outs, err
 }
 
 // WriteManifest writes m to path (out.parts.json); the parts' paths are made relative to it.

@@ -42,6 +42,7 @@ type Config struct {
 	PerLayerVocab int  `json:"vocab_size_per_layer_input"`
 	KVShared      int  `json:"num_kv_shared_layers"`
 	DoubleWideMLP bool `json:"use_double_wide_mlp"`
+	MaxPositions  int  `json:"max_position_embeddings"`
 
 	// Settings the conversion rejects unless they are off.
 	AttentionBias bool    `json:"attention_bias"`
@@ -91,7 +92,7 @@ func ParseConfig(raw []byte) (*Config, error) {
 	c := Config{
 		HiddenSize: 2304, IntermediateSize: 9216, NumLayers: 30, NumHeads: 8, NumKVHeads: 4, HeadDim: 256,
 		GlobalHeadDim: 512, VocabSize: 262144, NormEps: 1e-6, SlidingWindow: 512, HiddenAct: "gelu_pytorch_tanh",
-		TieWordEmbed: true, PerLayerDim: 256, PerLayerVocab: 262144, Prefix: "model.",
+		TieWordEmbed: true, PerLayerDim: 256, PerLayerVocab: 262144, MaxPositions: 131072, Prefix: "model.",
 	}
 	switch top.ModelType {
 	case "gemma4":
