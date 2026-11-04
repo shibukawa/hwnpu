@@ -23,7 +23,7 @@ func (m *Model) ImageSize(w, h int) (ow, oh, tokens int, err error) {
 		return 0, 0, 0, errors.New("iron: the model has no vision tower")
 	}
 	v := mm.Vision
-	if mm.Kind == "lfm3vl" {
+	if lfm3Vision(mm.Kind) {
 		// one image size: every image is resized (stretched) to it, as hwnpu's Core ML programs
 		return v.Width, v.Height, v.ImageTokens, nil
 	}
@@ -53,7 +53,7 @@ func (m *Model) ImageSize(w, h int) (ow, oh, tokens int, err error) {
 // as the processor's), so the tower's own resampling is 1:1, and its soft tokens left where
 // a placed prompt chunk reads them. It returns the soft tokens' count.
 func (m *Model) RunVision(ctx context.Context, img image.Image) (int, error) {
-	if mm := m.Manifest.Multimodal; mm != nil && mm.Kind == "lfm3vl" {
+	if mm := m.Manifest.Multimodal; mm != nil && lfm3Vision(mm.Kind) {
 		return m.runLfm3VlVision(ctx, img)
 	}
 	b := img.Bounds()
@@ -115,7 +115,7 @@ func (m *Model) AudioTokens(n int) (frames, tokens int, err error) {
 		return 0, 0, errors.New("iron: the model has no audio tower")
 	}
 	a := mm.Audio
-	if mm.Kind == "lfm3audio" {
+	if lfm3Audio(mm.Kind) {
 		// lfm3audio.Features' frames: the clip padded on the right to whole hops past a frame
 		padded := lfm3audioFrame
 		if n > lfm3audioFrame {
@@ -139,7 +139,7 @@ func (m *Model) AudioTokens(n int) (frames, tokens int, err error) {
 // RunAudio runs the audio tower on a mono clip at the tower's sample rate (16 kHz; past 30 s it
 // is cut), its soft tokens left where a placed prompt chunk reads them. It returns their count.
 func (m *Model) RunAudio(ctx context.Context, wave []float32) (int, error) {
-	if mm := m.Manifest.Multimodal; mm != nil && mm.Kind == "lfm3audio" {
+	if mm := m.Manifest.Multimodal; mm != nil && lfm3Audio(mm.Kind) {
 		return m.runLfm3Audio(ctx, wave)
 	}
 	frames, tokens, err := m.AudioTokens(len(wave))
@@ -264,3 +264,8 @@ func (m *Model) runLfm3Audio(ctx context.Context, wave []float32) (int, error) {
 	}
 	return tokens, nil
 }
+
+// lfm3Vision and lfm3Audio report whether a multimodal kind has LFM3-VL's vision tower (LFM3-VL,
+// LFM3-Omni) and LFM3-Audio's encoder (LFM3-Audio, LFM3-Omni).
+func lfm3Vision(kind string) bool { return kind == "lfm3vl" || kind == "lfm3omni" }
+func lfm3Audio(kind string) bool  { return kind == "lfm3audio" || kind == "lfm3omni" }

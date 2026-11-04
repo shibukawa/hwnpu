@@ -48,6 +48,8 @@ MODELS = {
     "lfm3vl": ("iron_lfm3vl", "Lfm3Vl"),
     # LFM3-Audio (LFM3-Audio-2B): LFM3 with its audio encoder, audio in (iron_lfm3audio.py).
     "lfm3audio": ("iron_lfm3audio", "Lfm3Audio"),
+    # LFM3-Omni (LFM3-Omni-2B): LFM3 with both towers, images and audio in (iron_lfm3omni.py).
+    "lfm3omni": ("iron_lfm3omni", "Lfm3Omni"),
 }
 
 
@@ -565,7 +567,27 @@ def export(model, versions, out: Path) -> dict:
             raise SystemExit("rope_row is not the chunk's start: not supported yet")
     mm = None
     kind = getattr(model, "hwnpu_kind", None)
-    if kind == "lfm3audio":
+    if kind == "lfm3omni":
+        # LFM3-Omni: LFM3-VL's vision tower and LFM3-Audio's encoder, each run between the
+        # vision markers
+        mc = model.config
+        v, au = mc.vision, mc.audio
+        it, at = int(mc.image_token_id), int(mc.audio_token_id)
+        start, end = int(mc.vision_start_token_id), int(mc.vision_end_token_id)
+        mm = dict(
+            kind="lfm3omni",
+            image_token_id=it, audio_token_id=at,
+            boi_token_id=start, eoi_token_id=end, boa_token_id=start, eoa_token_id=end,
+            placeholders=[int(t) for t in model.at],
+            vision=dict(width=int(v.width), height=int(v.height), patch_size=int(v.patch_size),
+                        image_tokens=int(v.tokens), patches=int(v.patches), patch_dim=int(v.patch_dim)),
+            audio=dict(sample_rate=16000, hop=160, frame=400, max_frames=int(au.max_frames), mels=int(au.mels),
+                       max_tokens=int(au.max_tokens), max_samples=int(au.max_frames) * 160),
+            tower_values={str(t): [f"{model.tower_inputs[t]}_{x}" for x in model.tower_values[t]] for t in model.towers},
+        )
+        c = model.text.config
+        model_name, rope_model, recurrent = type(model.text).__name__ + "Omni", model.text, model.text.recurrent
+    elif kind == "lfm3audio":
         # LFM3-Audio: the audio encoder, its input the clip's log-mel features; a clip's run of
         # placeholders has no markers around it
         mc = model.config
@@ -729,8 +751,8 @@ def main(argv=None) -> int:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
         return 0
     model = Model.from_checkpoint(a.checkpoint, random_weights=a.random_weights, max_seq_len=a.max_seq_len)
-    if getattr(model, "hwnpu_kind", None) == "lfm3audio":  # its words by grid of frames, as Gemma 4's audio
-        (at,) = model.towers
+    if getattr(model, "hwnpu_kind", None) in ("lfm3audio", "lfm3omni"):  # its words by grid of frames, as Gemma 4's audio
+        at = model.config.audio_token_id
         _TOWER.update(audio=model.towers[at], audio_input=model.tower_inputs[at], audio_kind="lfm3audio")
     if hasattr(model, "towers") and not getattr(model, "hwnpu_kind", None):  # Gemma 4's towers take words by grid
         it = model.config.image_token_id

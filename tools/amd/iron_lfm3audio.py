@@ -289,6 +289,14 @@ class AudioTower(Tower):
     """
 
     layer_class = AudioLayer
+    # where the checkpoint holds each part: the released LFM3-Audio's (transformers maps them
+    # to its modules' on loading); LFM3-Omni's are the modules' own (iron_lfm3omni)
+    names = dict(
+        layers="encoder.lfm.lfm.layers.",
+        downsample="encoder.downsample.",
+        norm="encoder.lfm.lfm.embedding_norm.",
+        projector=dict(layer_norm="mlp.model.0.", linear_1="mlp.model.1.", linear_2="mlp.model.3."),
+    )
     renames = {
         "operator_norm": "input_layernorm",
         "ffn_norm": "post_attention_layernorm",
@@ -305,13 +313,13 @@ class AudioTower(Tower):
         # Set before Tower.__init__() so a recording names its layers apart from the text model's.
         self.audio_encoder = SimpleNamespace(lfm=SimpleNamespace())
         Tower.__init__(self, config, c.max_tokens, c.max_tokens)
-        # the released checkpoint's names (transformers maps them to its modules' on loading)
+        n = self.names
         self.audio_encoder.lfm.layers = self.layers
-        self.load_layers(weights, "encoder.lfm.lfm.layers.")
+        self.load_layers(weights, n["layers"])
         self.audio_encoder.downsample = Downsampler(c)
-        self.audio_encoder.downsample.load_state_dict(weights, path="encoder.downsample.")
+        self.audio_encoder.downsample.load_state_dict(weights, path=n["downsample"])
         self.audio_encoder.lfm.embedding_norm = RMSNorm(c.hidden_size, c.eps)
-        self.audio_encoder.lfm.embedding_norm.load_state_dict(weights, path="encoder.lfm.lfm.embedding_norm.")
+        self.audio_encoder.lfm.embedding_norm.load_state_dict(weights, path=n["norm"])
         # the scratch a call of the short convolutions stages its rows in, shared as CausalLM shares it
         window = iron.state((2, c.prefill_chunk, c.hidden_size))
         tail = iron.state((c.conv_L_cache - 1, c.hidden_size))
@@ -319,8 +327,8 @@ class AudioTower(Tower):
             if layer.conv is not None:
                 layer.conv.conv.window, layer.conv.conv.tail = window, tail
         self.audio_projector = Projector(c)
-        for name, at in (("layer_norm", 0), ("linear_1", 1), ("linear_2", 3)):
-            getattr(self.audio_projector, name).load_state_dict(weights, path=f"mlp.model.{at}.")
+        for name, at in n["projector"].items():
+            getattr(self.audio_projector, name).load_state_dict(weights, path=at)
         self.angles_table = iron.param(rope_angles(c.head_dim, c.max_tokens, c.rope_theta).astype(bfloat16))
 
     def body(self, wave, *, n1: Scratchpad[np.int32], n2: Scratchpad[np.int32], tokens: Scratchpad[np.int32]):

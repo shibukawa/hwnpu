@@ -31,7 +31,7 @@ func TestLfm3VlTowerOnDevice(t *testing.T) {
 	}
 	defer m.Close()
 	mm := m.Manifest.Multimodal
-	if mm == nil || mm.Kind != "lfm3vl" || !m.HasVision() {
+	if mm == nil || !lfm3Vision(mm.Kind) || !m.HasVision() {
 		t.Fatalf("%s is no LFM3-VL export", dir)
 	}
 	f32 := func(name string) []float32 {
@@ -58,7 +58,7 @@ func TestLfm3VlTowerOnDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	width := m.Manifest.Config.HiddenSize
-	at := m.Manifest.Config.PrefillChunk // the soft tokens follow a prompt chunk's rows (Multimodal.at)
+	at := towerAt(m, mm.ImageToken) // the soft tokens follow a prompt chunk's rows (Multimodal.at)
 	got := make([]float32, len(want))
 	for i := range got {
 		h := binary.LittleEndian.Uint16(merged[2*(at*width+i):])
@@ -126,7 +126,7 @@ func TestLfm3AudioTowerOnDevice(t *testing.T) {
 	}
 	defer m.Close()
 	mm := m.Manifest.Multimodal
-	if mm == nil || mm.Kind != "lfm3audio" || !m.HasAudio() {
+	if mm == nil || !lfm3Audio(mm.Kind) || !m.HasAudio() {
 		t.Fatalf("%s is no LFM3-Audio export", dir)
 	}
 	f32 := func(name string) []float32 {
@@ -160,7 +160,7 @@ func TestLfm3AudioTowerOnDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	width := m.Manifest.Config.HiddenSize
-	at := m.Manifest.Config.PrefillChunk
+	at := towerAt(m, mm.AudioToken)
 	if len(want) != tokens*width {
 		t.Fatalf("%d soft values for %d tokens", len(want), tokens)
 	}
@@ -180,4 +180,23 @@ func TestLfm3AudioTowerOnDevice(t *testing.T) {
 		t.Fatalf("worst soft token's cosine with Hugging Face's: %.5f", worst)
 	}
 	t.Logf("%d frames, %d soft tokens, worst cosine %.5f", frames, tokens, worst)
+}
+
+// towerAt is the first row of merged a tower's soft tokens go to: after a prompt chunk's rows and
+// the soft rows of the towers before it, in the placed chunk's order (Multimodal.at).
+func towerAt(m *Model, token int32) int {
+	at := m.Manifest.Config.PrefillChunk
+	mm := m.Manifest.Multimodal
+	for _, p := range mm.Placeholders {
+		if p == token {
+			break
+		}
+		switch {
+		case p == mm.ImageToken:
+			at += mm.Vision.ImageTokens
+		case p == mm.AudioToken:
+			at += mm.Audio.MaxTokens
+		}
+	}
+	return at
 }
