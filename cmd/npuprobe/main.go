@@ -125,7 +125,7 @@ func main() {
 	kvLayers := fs.Int("kv-layers", 11, "kv: layers with attention over the cache (11 is LFM3-1.7B's attention layers)")
 	kvCache := fs.String("kv-cache", "256,1024,4096", "kv: cache lengths in tokens")
 	kvModes := fs.String("kv-modes", "host,state", "kv: host (buffers bound as inputs and outputs) and state (Core ML MLState); -mha gives every query head its own cached head, so nothing is repeated; -int8 holds the host cache as int8 with fp16 scales, cast back in the program; -chunk holds the host cache in chunks of at most 16384 tokens, so that caches over the Neural Engine's dimension limit stay on it")
-	attnChunks := fs.String("attn-chunks", "1024,4096,16384", "attn: chunk lengths in tokens (at most 16384, the Neural Engine's dimension limit)")
+	attnChunks := fs.String("attn-chunks", "1024,2048,4096,8192,16384", "attn: chunk lengths in tokens (at most 16384, the Neural Engine's dimension limit; Core ML puts the shortest on the CPU with few query rows)")
 	attnTokens := fs.String("attn-tokens", "1,8,64", "attn: query rows per call (1 a step, 8 a step checking drafts, 64 a chunk of the prompt)")
 	attnForms := fs.String("attn-forms", "grouped", "attn: grouped (the query heads of a kv head stacked in one matrix product, LFM3-1.7B's default) and tile (keys and values copied per query head)")
 	attnUsed := fs.String("attn-used", "4096,16384,65536,262144", "attn: used cache lengths of the passes, ascending; the chunk buffers of every layer are held at once (12 KiB a token with 6 layers: 3 GiB at 262144)")

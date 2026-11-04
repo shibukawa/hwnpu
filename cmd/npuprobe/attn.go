@@ -92,12 +92,12 @@ func (p *prober) attn(form string, layers, tokens, chunk int, used []int) attnRe
 	}
 	defer l.close()
 	r.OnNPU = r.Error == "" && r.Verified && r.NPUOps > 0 && r.OtherOps == 0
-	if err := p.time(l, r, !r.OnNPU); err != nil {
+	// Core ML puts a program with too little work on the CPU (Q=1 over 1024 keys, M3, macOS
+	// 27.0.1). The passes run wherever it is placed: attention over a chunk is small enough for
+	// the CPU, and its time there is the alternative to weigh against the Neural Engine's.
+	if err := p.time(l, r, false); err != nil {
 		r.Error = "run: " + err.Error()
 		return a
-	}
-	if !r.OnNPU {
-		return a // a pass on the CPU says nothing about the NPU and takes long
 	}
 	a.Passes = p.attnPasses(l, layers, tokens, chunk, used)
 	return a

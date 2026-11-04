@@ -53,7 +53,7 @@ func TestMarkdownAttn(t *testing.T) {
 	md := markdown(rep)
 	for _, want := range []string{
 		"| grouped | 1 | 4096 | NPU | 0.500 |",
-		"| grouped | 1 | 4096 | 16384 | 6 × 4 | 12.00 | 0.500 | 0.60 | 0.750 | 96 MiB | 1.00 GiB |",
+		"| grouped | 1 | 4096 | NPU | 16384 | 6 × 4 | 12.00 | 0.500 | 0.60 | 0.750 | 96 MiB | 1.00 GiB |",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("missing %q in\n%s", want, md)
