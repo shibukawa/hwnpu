@@ -53,6 +53,8 @@ var Catalog = []Model{
 		About: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"},
 	{Name: "gemma-4-E4B-it", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "google/gemma-4-E4B-it", Bytes: 16.0e9,
 		About: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"},
+	{Name: "Qwen3.5-4B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-4B", Bytes: 9.3e9,
+		About: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 6 bit tables (the download has the vision part too, which is not converted); checked on the CPU, not yet on the Neural Engine"},
 	{Name: "plamo-embedding-1b", Kind: KindEmbed, Features: []string{"query"}, Repo: "pfnet/plamo-embedding-1b", Bytes: 2.1e9,
 		About: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"},
 }
@@ -111,10 +113,22 @@ func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, erro
 	return m, nil
 }
 
-// Downloaded reports whether the checkpoint of the model is in dir.
+// Downloaded reports whether the checkpoint of the model is in dir: model.safetensors, or the
+// index of one in several files and all the files it names.
 func Downloaded(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, "model.safetensors"))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(dir, "model.safetensors")); err == nil {
+		return true
+	}
+	files, err := shards(filepath.Join(dir, "model.safetensors.index.json"))
+	if err != nil {
+		return false
+	}
+	for _, f := range files {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // PromptStore is the directory of the prompt store (Config.PromptDir) for the -prompt-cache

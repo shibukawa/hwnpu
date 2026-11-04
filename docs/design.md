@@ -1874,3 +1874,40 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
   - `TestMassMatchesSoftmax`、`TestMergeSubAndAddMerge` (`internal/llm/paged`、CPU のインタプリタ)
   - `TestPagedSparse` (`internal/llm/lfm3`): 小さな LFM3 を変換し (mass のプログラムも)、2 段の注意を 3296 回呼んで、ロジットは全部を読むものと相対誤差 1.4%。`AddMass` が mass のない manifest に書き足す
 - 見込み (16.59 の M3 の実測から。計測なし): 1 トークンは 128K で約 90 ms (今 165)、250K で約 140 ms (今 320)。128K のプロンプトを読む時間は約 7 分 (今 8.6)、250K は約 19 分 (今 29)。プリフィルは約 57K までは今と同じで、要約への 2 回の注意と mass と 4 つの正確な塊の分だけ縮みが小さい。M3 での確認は [handoff-m3-sparse.md](handoff-m3-sparse.md)
+
+### 16.62 Qwen3.5 を移す: Gated DeltaNet と、丸ごと置き換える状態 (`internal/llm/qwen35`) — 2026-11-04
+
+- 動機: model-fit.md 7 節の第一候補。コーディング向けでは、ANE に載る大きさで Qwen3.5-4B が最も強い (LiveCodeBench v6 で 55.8。Gemma 4 E4B は 52.0、E2B は 44.0。どれもモデルカードの自己申告)。9B (65.6) は Qwen3-30B-A3B-Thinking (66.0) と同じくらいで、同じコードで変換できる
+- 構造 (modeling_qwen3_5.py、transformers 5.22): 3 層の Gated DeltaNet に 1 層の全注意の繰り返し。4B は 32 層 (GDN 24、全注意 8)、hidden 2560、語彙 248320 (出力層は埋め込みと共有)
+  - RMS 正規化は 0 中心 (`(1 + w)` を掛ける)。GDN の最後の正規化 (`Qwen3_5RMSNormGated`) だけは `w` をそのまま掛け、`silu(z)` でゲートする
+  - 全注意: `q_proj` が各ヘッドの問い合わせと出力ゲートを並べて出す (ヘッドごとに 256 + 256)。QK 正規化、各ヘッドの先頭 64 次元だけの RoPE (`rotate_half` はその 64 の中で)、GQA (16 ヘッドに kv 4)、出力に `sigmoid(gate)` を要素ごとに掛ける。テキストでは多次元の RoPE (mrope) の 3 つの位置が同じなので、普通の RoPE と同じ
+  - GDN: `in_proj_qkv` (8192 = 問い合わせ 2048 + 鍵 2048 + 値 4096) に幅 4 の深さ方向の因果的な畳み込みと silu。問い合わせと鍵は L2 正規化 (問い合わせはさらに 1/√128)、鍵ヘッド 16 を値ヘッド 32 に 2 つずつ使う (`repeat_interleave`)。減衰 `exp(-exp(A_log) · softplus(a + dt_bias))` と書き込みの強さ `sigmoid(b)` で、値ヘッドごとの状態 S (128 × 128) を 1 トークンずつ `S ← S·decay; S ← S + kᵀ((v − kS)·β); o = qS` と更新する
+  - チェックポイントは画像とテキストのモデル (`Qwen3_5ForConditionalGeneration`、テンソルは `model.language_model.`)。視覚の塔 (`model.visual.`、297 個) と、次の次のトークンを当てる層 (`mtp.`、15 個。投機的デコードの下書きに使える) は変換しない。テキストだけのチェックポイント (`qwen3_5_text`、`model.`) も読む
+- 実装:
+  - nn.Module 1 つにメソッド 1 つ (`decoderLayer`、`attention`、`gatedDeltaNet`、`causalConv`、`deltaRule`)。GDN の更新は 1 トークンずつ書き下した形 (Q=64 では 64 回)。L2 正規化は「epsilon を 1e-6/n にした RMS 正規化に 1/√n を掛ける」と同じなので `RMSNormWith` で書く。`softplus` を CPU のインタプリタに足した (PyTorch の値と照合)
+  - 0 中心の正規化のため、`blocks.RMSNorm` から重みの値を渡す `RMSNormWith` を切り出した (演算の順序は同じ。LFM3 と Gemma 4 のダイジェストは変わらない)
+  - **丸ごと置き換える状態 `st_`** (`llm.Cached` に追加): GDN の状態は KV と違い位置ごとに書けない。プログラムは入力 `st_rec_N` (1, 32, 128, 128) を取り、ステップの後の状態を `st_rec_N_new` に出し、ホストはそれで入力を置き換える。詰め物のトークンは状態を変えてはいけないので、`StepInputs` が `step_valid` (トークンは 1、詰め物は 0) を渡し、詰め物では β と g を 0 にする (状態はそのまま)。畳み込みの状態は LFM3 と同じ `win_conv_N` (直前の 3 行)
+  - 投機的デコードで下書きの一部だけを採るときは、ステップの後の状態が全部のトークンの後のものなので使えない。入力のバッファにはステップの前の状態が残っているので、`decode.Session.Speculate` は採ったトークンだけでもう一度走らせる (状態を持つモデルのときだけ)。`Mark` と `Rewind`、`Resume`、`Migrate`、`chain.Share` は `st_` を `win_` と同じに扱う (`llm.CacheInput`、`llm.HeldInput` にまとめた)
+  - 分割された safetensors (`model.safetensors.index.json`) を読めるようにした (`llm.OpenWeights`。`model.safetensors` を渡して索引しかないときも索引で開く)。Qwen3.5-4B は 2 ファイル
+- 合格条件 (Linux、CPU のインタプリタ):
+  - `TestAgainstFP64`: modeling_qwen3_5.py から直接書いた fp64 の forward と相対誤差 3.7e-7 (小さな合成モデル: 2 種類の層、GQA、部分 RoPE、鍵ヘッドの共有)。最初は 4e-4〜1e-3 ずれた。正解側で `1 + w` の w を先に fp16 に丸めていたためで、プログラムは `1 + w` を一度だけ丸める (二重に丸めると 3% ほどの要素が隣の fp16 にずれる)
+  - `TestLayerByLayer`: 1 層ずつ (Start、Layers、NoHead、最後の正規化と出力層だけ) が正解の各層と、つないだものが全体と一致
+  - `TestCachedMatchesFull`、`TestShareRewindSpeculate`: キャッシュ付きで 1、3、4、10 トークンずつ (最初のステップは詰め物あり) 回したロジットが全体のプログラムと相対誤差 4e-4 以内 (ホストが状態を fp16 で持つ分)。2 つのプログラム (Q=1 と Q=4) が状態を共有し、寄り道の後に `Rewind` で戻り、4 トークンのうち 2 つだけ採る `Speculate` の後も一致
+  - 壊して落ちることを確かめた: 鍵ヘッドの繰り返しの軸、詰め物の β と g、`Speculate` のやり直し、減衰と書き込みの順、出力ゲート、RoPE を頭全体に、キャッシュ内の因果マスク、0 中心でない正規化。どれも少なくとも 1 つのテストが落ちる
+  - `TestParseConfig`: MoE (num_experts)、silu 以外、attention_bias、出力ゲートなし、未知の層の種類、層の数の食い違い、rope_type が default 以外、mrope_section が回転の対を覆わないもの、値ヘッドが鍵ヘッドの倍数でないものを拒む
+- 実物の重みでの照合 (`hwnpu-check`、PyTorch 2.15 と transformers 5.22 の fp32 が参照): この機械の回線が遅く (約 0.4 MB/s) 9.3 GB を落とせなかったので、Hugging Face から範囲読みで層 0 (GDN) と層 3 (全注意) と、照合する 32 トークンの埋め込みの行だけを取り、2 層のテキストだけのチェックポイント (`Qwen3_5ForCausalLM`、ほかの埋め込みの行は 0) にして照合した。`A_log` は F32 で、ほかは BF16
+  - `tensors: 0 missing, 0 mismatched, 0 unused`
+  - fp16: 層 0 (GDN) の相対 RMS 誤差 0.0008、層 1 (全注意) 0.0001、最後の正規化と出力層 0.0000、全体 0.0011 で argmax 32/32、KL 0.0000
+  - fp16 に丸めて (`-f16`): 層 0.0011 と 0.0013、全体 0.0020、argmax 32/32
+  - lut6: 層 0.114 と 0.122、全体 0.21 で argmax 32/32、KL 0.016 (2 層だけの値で、32 層の損失はわからない)
+  - 32 層全部での照合は未実施。回線のよい機械で `python tools/ref/ref_logits.py ~/models/Qwen3.5-4B build/qwen35/ref --seq 32` のあと `go run ./cmd/hwnpu-check -config ~/models/Qwen3.5-4B/config.json -weights ~/models/Qwen3.5-4B/model.safetensors.index.json -ref build/qwen35/ref` (深い層の大きな活性で fp16 があふれないかも、ここで見る)
+- 文脈 262144 (`llm.Paged`、LFM3 の 16.59 と同じ形): 全注意の 8 層の前後でモデルを分け、注意はホストが塊ごとに重みなしのプログラムで読む。分け目の前の部分は `attn_q_N`、`kv_k_N_new`、`kv_v_N_new` に加えて出力ゲート `attn_gate_N` (1, seq, 16, 256) を出し、後の部分がそれを取る (LFM3 のゲートはヘッドごと、Qwen3.5 はチャネルごと)。GDN の状態と畳み込みの窓は各部分の入力のまま。4B は 9 部分 (lut6 で 2.95 GiB、M3 の 1 部分 1 GiB に収まる。最後の部分が出力層を含み 0.52 GiB)。hwnpu-chat は `llm.Paged` のモデルを自動で分け、文脈を `max_position_embeddings` (262144) にする。KV は 1 トークン 32 KiB で、262144 まで使うと 8 GiB (LFM3-1.7B は 3 GiB)
+  - `TestPagedMatchesFull`: 3 部分に分けたものが全体のプログラムと相対誤差 6e-4 以内 (詰め物のあるステップ、2 つのプログラムの共有、塊の境目をまたぐ寄り道からの `Rewind`、2 つだけ採る `Speculate`、`Save`、書き出した行からの `Resume`)。詰め物の扱いとゲートの受け渡しを壊すと落ちる
+  - `TestEngineReuseQwen35` (internal/chat): エンジンが前のプロンプトを再利用しても、先頭から 4 トークンずつ読んだものと相対誤差 3e-3 以内。LFM3 の 2e-3 より緩めたのは、比べる相手 (4 トークンずつ、状態を fp16 で持つ) 自体が全体のプログラムから最大 1.7e-3 ずれるため (エンジンの側は 5.9e-4)。`TestPrepareQwen35`: 2 ファイルに分かれたチェックポイントを索引から取り、分けた形 (3 部分と注意のプログラム) に変換する
+- トークナイザー: Qwen3.5 の tokenizer.json は NFC の正規化と、GPT-4 のものと少し違う分割の規則 (`[\p{L}\p{M}]+` で結合文字を文字に含め、数字は 1 つずつ。`\p{M}` は記号の側から外す) を使う。`golang.org/x/text/unicode/norm` を依存に足し (このリポジトリの 3 つ目)、`internal/tokenizer` が両方の規則を読む。HF の tokenizers 0.23 と、日本語、ヒンディー語、結合文字、全角、特殊トークンを含む 2 文で ID が一致 (`TestQwen35`、`HWNPU_QWEN35_DIR`)。分割は 15 例で HF の分割と一致 (`TestSplitQwen35`)
+- チャット: `chat.Qwen35` が chat_template.jinja を Go に移したもの。道具の宣言は Qwen 自身の説明つきで system に置き、思考は最後の質問より後の回答だけに残す。道具の引数は、オブジェクトと配列は JSON、ほかは Python の `str()` (True、None)。`tools/ref/template_golden.py` を Qwen3.5-4B で描かせた 9 会話と一字一句一致 (`TestQwen35RenderMatchesTemplate`)。回答の分解は LFM3 と同じ XML なので `chat.Parse` を使い、思考の前後の改行を落とす。目録に `Qwen3.5-4B` を足し、hwnpu-chat は分割された safetensors (索引と各ファイル) を落とす (`fetchWeights`)
+- 残り:
+  - **Neural Engine での配置と精度は未確認** (この機械は Linux)。気になる点: GDN の状態を fp16 で持ち続けること (PyTorch は fp32。長い会話で誤差が積もるか)、Q=64 のプログラムで更新を 64 回書き下すこと (GDN 24 層で約 1.8 万演算。コンパイルの時間と ANE への載り方)。後者は塊の形 (FLA の WY 表現。塊の中の下三角の逆行列は `(I − A)(I + A²)(I + A⁴)…` の 6 回の行列積で書ける) を `Params` で選べるようにするのが次の候補
+  - M3 16 GB では、2 つのプログラム (Q=8 と Q=64) の重み 5.9 GiB が ANE のキャッシュ (16.39 で 4 GiB 前後とみた) に収まらず、起動のたびにコンパイルし直すおそれがある。そのときは lut4 (2 本で 3.9 GiB) か、Q=8 だけにする
+  - 分けない形で 16383 を超えるキャッシュ (`llm.CacheChunks` の塊) は未実装 (分けた形を使うので要らない)。2 段の注意 (16.61) が Qwen3.5 でも保つかは未確認
+  - Qwen3.5 の層 `mtp.` を投機的デコードの下書きに使うこと (model-fit.md T9)
