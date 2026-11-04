@@ -189,25 +189,26 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-agent@latest "summarize the README"
 The first run:
 
 1. Downloads the checkpoint from Hugging Face (3.5 GB for LFM3-1.7B).
-2. Converts it to OpenVINO IR in `intel/` of the model's directory (`lfm3-int8-c4096-q8.xml` and so on), about 10 s each; four by default (one that generates and one that reads prompts for each of the caches 4096 and 16320).
+2. Converts it to OpenVINO IR in `intel/` of the model's directory. Since 2026-11-04 it is split at the full attention layers (`-paged`) as for the Neural Engine, with a context of 262144 (`lfm3-int8-grouped-p8192-c262144-q8.parts.json` and `-q64`, 7 parts each and a graph without weights for the attention): a step costs in proportion to the conversation, and the KV cache's memory grows with it (12 KiB a token). Checked on OpenVINO's CPU (`-backend openvino`), not yet on the NPU. The earlier form, whole (four graphs, one that generates and one that reads prompts for each of the caches 4096 and 16320, `lfm3-int8-c4096-q8.xml` and so on), is `-paged -1`.
 3. Has the driver compiler compile them for the NPU, which **can take minutes each** for a large model. The results stay in the compile cache (`-cache`, by default `hwnpu` in the user cache directory), so later runs start faster.
 
 | Flag | Meaning |
 |---|---|
 | `-backend` | The NPU: `levelzero` (also `intel`), `coreml`, `openvino`. Default: `HWNPU_BACKEND`, else the NPU found |
 | `-format` | The chat model's weights. On Intel's NPU `int8` (LFM3's default), `int4-g128`, `int4`, `fp16` |
-| `-tier none` | No shorter cache to start on: two graphs instead of four, half the first compilation and the memory |
+| `-paged -1` | Not split at the full attention layers: one graph instead of one per part, at a cost that follows the context's capacity (then `-tier` applies) |
+| `-tier none` | (with `-paged -1`) No shorter cache to start on: two graphs instead of four, half the first compilation and the memory |
 | `-context 4096` | The conversation's length (the KV cache). Shorter compiles faster and runs each token faster |
 
 Starting small makes failures easier to tell apart:
 
 ```bash
-hwnpu-chat -tier none -context 4096
+hwnpu-chat -paged -1 -tier none -context 4096
 ```
 
 ### What to check
 
-1. Whether `hwnpu-chat -tier none -context 4096` gets to `ready:`. If it stops, please send the message (it includes the compiler's log).
+1. Whether `hwnpu-chat -paged -1 -tier none -context 4096` gets to `ready:`. If it stops, please send the message (it includes the compiler's log).
 2. Whether it answers questions correctly, and the tokens per second shown after each answer.
 3. Whether the defaults (`hwnpu-chat` alone) load, how long the compilation takes, and whether memory suffices.
 4. Whether `hwnpu-agent` calls its tools.

@@ -80,6 +80,9 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins,
 	if opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers {
 		opts.Layers = cfg.NumLayers - opts.Start
 	}
+	if opts.Paged > 0 && opts.Cache <= 0 {
+		return nil, nil, fmt.Errorf("gemma4: a program split at its attention (Paged) needs a KV cache")
+	}
 	m := &builder{Graph: &blocks.Graph{Name: "gemma4", B: b, W: w, Opts: opts.Options}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize,
 		end: opts.Start + opts.Layers, ins: map[string]*mlpackage.Var{}, rope: map[string][2]*mlpackage.Var{}, masks: map[string]*mlpackage.Var{},
 		shared: map[string][2]*mlpackage.Var{}}
@@ -92,7 +95,14 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins,
 			h, ple = m.embedding(x)
 		}
 		for i := opts.Start; i < m.end; i++ {
+			if i == opts.Start && i > 0 && m.paged(i) {
+				h = m.afterAttention(i, h, ple) // the host attended between the parts
+				continue
+			}
 			h = m.layer(i, h, ple)
+		}
+		if m.end < cfg.NumLayers && m.paged(m.end) {
+			m.beforeAttention(m.end, h) // the host attends next; y is the hidden state entering end
 		}
 		var y *mlpackage.Var
 		if m.end < cfg.NumLayers || opts.NoHead {
@@ -222,12 +232,46 @@ func (m *builder) norm(x *mlpackage.Var, name string, n int) *mlpackage.Var {
 // the residual; then the per-layer input gated by the hidden state, projected, normalized and
 // added; and the whole scaled by layer_scalar.
 func (m *builder) layer(i int, h, ple *mlpackage.Var) *mlpackage.Var {
+	if m.paged(i) {
+		m.Fail("layer %d's attention runs on the host: a part must start or end at it", i)
+	}
+	p := fmt.Sprintf("%slayers.%d.", m.cfg.Prefix, i)
+	return m.layerRest(i, m.attention(i, m.norm(h, p+"input_layernorm.weight", m.d)), h, ple)
+}
+
+// paged reports whether layer i's attention runs on the host between the parts (Options.Paged).
+func (m *builder) paged(i int) bool {
+	return m.opts.Paged > 0 && m.opts.Cache > 0 && m.cfg.LayerTypes[i] == "full_attention"
+}
+
+// beforeAttention is the start of layer i, whose attention the host runs (llm.Paged): it outputs
+// the queries attn_q_N and, unless the layer reuses an earlier layer's keys and values, the step's
+// keys and values kv_k_N_new and kv_v_N_new.
+func (m *builder) beforeAttention(i int, h *mlpackage.Var) {
+	p := fmt.Sprintf("%slayers.%d.", m.cfg.Prefix, i)
+	h = m.norm(h, p+"input_layernorm.weight", m.d)
+	m.output(m.query(i, h), fmt.Sprintf("attn_q_%d", i))
+	if !m.cfg.shared(i) {
+		k, v := m.keysValues(i, h)
+		m.output(k, fmt.Sprintf("kv_k_%d_new", i))
+		m.output(v, fmt.Sprintf("kv_v_%d_new", i))
+	}
+}
+
+// afterAttention is the rest of layer i from its attention's output, attn_o_N (1, heads, seq,
+// head_dim), with x the hidden state entering the layer.
+func (m *builder) afterAttention(i int, x, ple *mlpackage.Var) *mlpackage.Var {
+	o := m.input(fmt.Sprintf("attn_o_%d", i), 1, m.cfg.NumHeads, m.seq, m.cfg.headDim(m.cfg.LayerTypes[i]))
+	return m.layerRest(i, m.attnOutput(i, o), x, ple)
+}
+
+// layerRest is a layer after its attention (a, before the norm that follows it), given the
+// hidden state entering the layer.
+func (m *builder) layerRest(i int, a, residual, ple *mlpackage.Var) *mlpackage.Var {
 	c := m.cfg
 	p := fmt.Sprintf("%slayers.%d.", c.Prefix, i)
-	residual := h
-	a := m.attention(i, m.norm(h, p+"input_layernorm.weight", m.d))
 	a = m.norm(a, p+"post_attention_layernorm.weight", m.d)
-	h = m.Op("add", map[string]any{"x": residual, "y": a}, h.Shape...)
+	h := m.Op("add", map[string]any{"x": residual, "y": a}, residual.Shape...)
 
 	residual = h
 	f := m.mlp(i, m.norm(h, p+"pre_feedforward_layernorm.weight", m.d))
@@ -315,13 +359,9 @@ func (m *builder) toHeads(x *mlpackage.Var) *mlpackage.Var {
 // and for a sliding layer windowed; and o_proj.
 func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	c := m.cfg
-	p := fmt.Sprintf("%slayers.%d.self_attn.", c.Prefix, i)
 	lt := c.LayerTypes[i]
-	s, nh, nkv, hd := m.seq, c.NumHeads, c.NumKVHeads, c.headDim(lt)
-	cos, sin := m.ropeTables(lt)
-
-	q := m.heads(m.Linear(h, p+"q_proj.weight", "", nh*hd), nh, hd)
-	q = m.toHeads(m.ApplyRope(m.norm(q, p+"q_norm.weight", hd), cos, sin))
+	s, nkv, hd := m.seq, c.NumKVHeads, c.headDim(lt)
+	q := m.query(i, h)
 
 	keys := s
 	if m.opts.Cache > 0 {
@@ -337,10 +377,7 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 		}
 		k, v = kv[0], kv[1]
 	} else {
-		k = m.heads(m.Linear(h, p+"k_proj.weight", "", nkv*hd), nkv, hd)
-		k = m.toHeads(m.ApplyRope(m.norm(k, p+"k_norm.weight", hd), cos, sin))
-		v = m.heads(m.Linear(h, p+"v_proj.weight", "", nkv*hd), nkv, hd)
-		v = m.toHeads(m.norm(v, "", hd))
+		k, v = m.keysValues(i, h)
 		if m.opts.Cache > 0 {
 			// the cached keys and values, then the step's own
 			t := c.cacheLen(lt, m.opts.Cache)
@@ -361,9 +398,41 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 		}
 	}
 	o := m.SDPAGrouped(q, k, v, 1, func() *mlpackage.Var { return m.mask(lt, keys) })
-	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, s, nh, hd)
-	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(s), int32(nh*hd))}, 1, s, nh*hd)
-	return m.Linear(o, p+"o_proj.weight", "", m.d)
+	return m.attnOutput(i, o)
+}
+
+// query is layer i's queries (1, heads, seq, head_dim): the projection with its norm and RoPE.
+func (m *builder) query(i int, h *mlpackage.Var) *mlpackage.Var {
+	c := m.cfg
+	p := fmt.Sprintf("%slayers.%d.self_attn.", c.Prefix, i)
+	lt := c.LayerTypes[i]
+	nh, hd := c.NumHeads, c.headDim(lt)
+	cos, sin := m.ropeTables(lt)
+	q := m.heads(m.Linear(h, p+"q_proj.weight", "", nh*hd), nh, hd)
+	return m.toHeads(m.ApplyRope(m.norm(q, p+"q_norm.weight", hd), cos, sin))
+}
+
+// keysValues is layer i's keys and values of the step's tokens (1, kv heads, seq, head_dim): the
+// keys with a norm and RoPE, the values with a norm without weight.
+func (m *builder) keysValues(i int, h *mlpackage.Var) (k, v *mlpackage.Var) {
+	c := m.cfg
+	p := fmt.Sprintf("%slayers.%d.self_attn.", c.Prefix, i)
+	lt := c.LayerTypes[i]
+	nkv, hd := c.NumKVHeads, c.headDim(lt)
+	cos, sin := m.ropeTables(lt)
+	k = m.heads(m.Linear(h, p+"k_proj.weight", "", nkv*hd), nkv, hd)
+	k = m.toHeads(m.ApplyRope(m.norm(k, p+"k_norm.weight", hd), cos, sin))
+	v = m.heads(m.Linear(h, p+"v_proj.weight", "", nkv*hd), nkv, hd)
+	return k, m.toHeads(m.norm(v, "", hd))
+}
+
+// attnOutput is o_proj of the attention's output o (1, heads, seq, head_dim).
+func (m *builder) attnOutput(i int, o *mlpackage.Var) *mlpackage.Var {
+	c := m.cfg
+	nh, hd := c.NumHeads, c.headDim(c.LayerTypes[i])
+	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, m.seq, nh, hd)
+	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(m.seq), int32(nh*hd))}, 1, m.seq, nh*hd)
+	return m.Linear(o, fmt.Sprintf("%slayers.%d.self_attn.o_proj.weight", c.Prefix, i), "", m.d)
 }
 
 // sharedAfter reports whether a shared layer of the type comes after the layers built.

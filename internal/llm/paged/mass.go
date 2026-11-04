@@ -63,6 +63,9 @@ func BuildMass(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (
 		return nil, nil, err
 	}
 	scale := b.ScalarF16(float32(1 / math.Sqrt(float64(d))))
+	if sh.Scale != 0 {
+		scale = b.ScalarF16(float32(sh.Scale))
+	}
 	var sc *mlpackage.Var
 	if form == "grouped" && rep > 1 {
 		sc = reshape(matmul(reshape(q, 1, nkv, rep*s, d), k, true, 1, nkv, rep*s, c), 1, nh, s, c)

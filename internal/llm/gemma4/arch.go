@@ -6,6 +6,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -124,9 +125,17 @@ func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Optio
 // layer's cache is a ring when the window is shorter than the cache: slot j holds the latest
 // position before pos congruent to j.
 func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
+	return c.stepInputs(pos, q, cache, false)
+}
+
+func (c *Config) stepInputs(pos, q, cache int, paged bool) map[string][]float32 {
 	out := map[string][]float32{}
 	for _, lt := range c.LayerTypes {
-		if _, done := out["mask_"+lt]; done {
+		if _, done := out["rope_cos_"+lt]; done {
+			continue
+		}
+		if paged && lt == "full_attention" {
+			out["rope_cos_"+lt], out["rope_sin_"+lt] = blocks.RopeValues(c.RopeInvFreq(lt), pos, q, c.headDim(lt))
 			continue
 		}
 		window := 0
@@ -166,6 +175,44 @@ func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 	}
 	return out
 }
+
+// PagedStepInputs is StepInputs for a program split at its attention (llm.Paged): the full
+// attention layers' rotary tables without their mask, which the host's attention makes.
+func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 {
+	return c.stepInputs(pos, q, cache, true)
+}
+
+// PagedLayers are the full attention layers: split at them (llm.Options.Paged), their attention
+// runs on the host's cache in chunks, and the sliding ones keep their rings in the program.
+func (c *Config) PagedLayers() []int {
+	var out []int
+	for i, t := range c.LayerTypes {
+		if t == "full_attention" {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// PagedShape is the full attention layers' heads, kv heads and head size (llm.Paged), with
+// unscaled scores: the query and key norms take the place of the scaling.
+func (c *Config) PagedShape() paged.Shape {
+	return paged.Shape{Heads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.GlobalHeadDim, Scale: 1}
+}
+
+// PagedKV is the layer whose keys and values a full attention layer attends over: its own, or for
+// a shared layer those of the last full attention layer before the shared ones.
+func (c *Config) PagedKV(layer int) int {
+	if c.shared(layer) {
+		return c.source(c.LayerTypes[layer])
+	}
+	return layer
+}
+
+// MaxContext is max_position_embeddings: 131072 for E2B and E4B.
+func (c *Config) MaxContext() int { return c.MaxPositions }
+
+var _ llm.Paged = (*Config)(nil)
 
 // sharedName is the name of the keys ("k") or values ("v") of the layers of a type that the
 // shared layers reuse, as an output of the program that computes them and an input of a later

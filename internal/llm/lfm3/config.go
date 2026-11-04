@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"slices"
+
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 )
 
 // Config is the subset of config.json the conversion needs.
@@ -217,10 +219,14 @@ func (c *Config) PagedLayers() []int {
 	return out
 }
 
-// PagedShape is the attention's heads, kv heads and head size (llm.Paged).
-func (c *Config) PagedShape() (heads, kvHeads, headDim int) {
-	return c.NumHeads, c.NumKVHeads, c.HeadDim
+// PagedShape is the attention's heads, kv heads and head size (llm.Paged), its scores scaled by
+// 1/sqrt(head_dim).
+func (c *Config) PagedShape() paged.Shape {
+	return paged.Shape{Heads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim}
 }
+
+// PagedKV is layer itself: every full attention layer has its own keys and values.
+func (c *Config) PagedKV(layer int) int { return layer }
 
 // MaxContext is max_position_embeddings: 262144 for LFM3-1.7B.
 func (c *Config) MaxContext() int { return c.MaxPositions }

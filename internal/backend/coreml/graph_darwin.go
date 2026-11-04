@@ -185,6 +185,11 @@ func (d *device) compiledModel(path string) (compiled string, cached bool, owned
 		})
 		key = cache.Key([]byte("hwnpu-coreml-v1"), digest, []byte(osVersion))
 		if p, ok := cache.Lookup(d.opts.CacheDir, key, ".mlmodelc"); ok {
+			if _, recorded := cache.Source(d.opts.CacheDir, key); !recorded {
+				// stored before entries recorded their source: share its weights now, once
+				shareWeights(p, path)
+				cache.SetSource(d.opts.CacheDir, key, path)
+			}
 			return p, true, "", key, nil
 		}
 	}
@@ -214,7 +219,22 @@ func (d *device) compiledModel(path string) (compiled string, cached bool, owned
 		return tmp, false, tmp, "", nil // caching is best effort
 	}
 	os.RemoveAll(tmp)
+	shareWeights(final, path)
+	cache.SetSource(d.opts.CacheDir, key, path) // best effort: Prune removes the entry when path is gone
 	return final, false, "", key, nil
+}
+
+// shareWeights makes the weight files of a compiled model clones of the same files of the package
+// it was compiled from (cache.Clone): Core ML copies them as they are, so the compile cache would
+// otherwise hold a second copy of every model's weights. Best effort.
+func shareWeights(compiled, pkg string) {
+	if !strings.EqualFold(filepath.Ext(pkg), ".mlpackage") {
+		return
+	}
+	files, _ := filepath.Glob(filepath.Join(compiled, "weights", "*.bin"))
+	for _, f := range files {
+		cache.Clone(f, filepath.Join(pkg, "Data", "com.apple.CoreML", "weights", filepath.Base(f)))
+	}
 }
 
 // describeArgs lists inputs then outputs, each sorted by name, because Core ML model

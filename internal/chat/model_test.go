@@ -213,10 +213,9 @@ func TestTiersNone(t *testing.T) {
 	}
 }
 
-// For the Neural Engine, Prepare converts a model that can be split at its attention that way,
-// with the longest context it was trained for and no tiers, its chunks no longer than the
-// context; asked not to, or for Intel's NPU, it converts it whole with DefaultContext or the
-// context asked for.
+// Prepare converts a model that can be split at its attention that way, with the longest context
+// it was trained for and no tiers, its chunks no longer than the context, for the Neural Engine
+// and for Intel's NPU (in IR); asked not to, it converts it whole with the context asked for.
 func TestPreparePaged(t *testing.T) {
 	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
 	tcfg, err := lfm3.ParseConfig([]byte(text))
@@ -268,11 +267,71 @@ func TestPreparePaged(t *testing.T) {
 	if want := "lfm3-lut4-grouped-c64-q1"; !strings.HasPrefix(filepath.Base(c.Packages[0]), want) {
 		t.Errorf("not split: %s, want %s", c.Packages[0], want)
 	}
-	c, err = Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Context: 64, Backend: "intel", Log: io.Discard})
+	c, err = Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Backend: "intel", Log: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if man, err := llm.ReadManifest(c.Packages[0]); err != nil || man.Paged != 0 {
-		t.Errorf("intel: %v, paged %d", err, man.Paged)
+	if want := "lfm3-int8-grouped-p96-c96-q1.parts.json"; filepath.Base(c.Packages[0]) != want {
+		t.Errorf("intel: %s, want %s", filepath.Base(c.Packages[0]), want)
+	}
+	man, err := llm.ReadManifest(c.Packages[0])
+	if err != nil || man.Paged != 96 || man.Backend != llm.BackendIntel || man.Attention == nil || filepath.Ext(man.Attention.Path) != ".xml" {
+		t.Errorf("intel: %v, %+v", err, man)
+	}
+}
+
+// Prepare converts the program that reads prompts beside the one that generates unless the two
+// would overflow the Neural Engine's compile cache (here made smaller than the tiny model's
+// weights) or -prefill says otherwise; then the one that generates reads the prompts.
+func TestPreparePrefill(t *testing.T) {
+	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
+	tcfg, err := lfm3.ParseConfig([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"/org/text/resolve/main/config.json":       []byte(text),
+		"/org/text/resolve/main/tokenizer.json":    []byte(imageTokenizer),
+		"/org/text/resolve/main/model.safetensors": safetensorsOf(t, llm.NewSynthetic(tcfg)),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, ok := files[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(b)
+	}))
+	defer srv.Close()
+	defer func(u string) { hubURL = u }(hubURL)
+	hubURL = srv.URL + "/"
+	defer func(n int64) { compileCacheBytes = n }(compileCacheBytes)
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "text")
+	for _, c := range []struct {
+		prefill string
+		cache   int64
+		want    []string
+	}{
+		{"", 4 << 30, []string{"q8", "q64"}},
+		{PrefillAuto, 1024, []string{"q8"}},
+		{PrefillOn, 1024, []string{"q8", "q64"}},
+		{PrefillOff, 4 << 30, []string{"q8"}},
+	} {
+		compileCacheBytes = c.cache
+		cfg, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Prefill: c.prefill, Backend: "coreml", Format: "lut4", Log: io.Discard})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, p := range cfg.Packages {
+			got = append(got, strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "lfm3-lut4-grouped-p96-c96-"), ".parts.json"))
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("-prefill %q with a compile cache of %d: programs %v, want %v", c.prefill, c.cache, got, c.want)
+		}
+	}
+	if _, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Prefill: "sometimes", Backend: "coreml", Log: io.Discard}); err == nil {
+		t.Error("-prefill sometimes is accepted")
 	}
 }

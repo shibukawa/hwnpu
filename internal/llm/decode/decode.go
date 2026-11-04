@@ -35,7 +35,8 @@ type Program struct {
 	// part i, its inputs written and its outputs read as Run's. Between part i and i+1 the session
 	// attends for layer Attend[i]: it writes the step's keys and values (kv_k_N_new, kv_v_N_new)
 	// into its own cache, attends attn_q_N over it with Attn and writes the result to the input
-	// attn_o_N. Context is the longest sequence that cache holds.
+	// attn_o_N. A layer that reuses an earlier layer's keys and values (llm.Paged.PagedKV) attends
+	// over that layer's cache. Context is the longest sequence that cache holds.
 	RunPart func(i int) error
 	Attend  []int
 	Attn    *Attention
@@ -178,7 +179,11 @@ func (st *step) checkPaged(s *Session) error {
 	}
 	var heads, d int
 	for _, layer := range p.Attend {
-		for _, name := range []string{fmt.Sprintf("kv_k_%d_new", layer), fmt.Sprintf("kv_v_%d_new", layer)} {
+		src := s.kvLayer(layer)
+		if src != layer && !slices.Contains(p.Attend, src) || src > layer {
+			return fmt.Errorf("decode: layer %d attends over the cache of layer %d, which the program does not attend for before it", layer, src)
+		}
+		for _, name := range []string{fmt.Sprintf("kv_k_%d_new", src), fmt.Sprintf("kv_v_%d_new", src)} {
 			c := s.cache(name)
 			if c == nil || c.chunk == 0 {
 				return fmt.Errorf("decode: the program attends for layer %d but has no output %s", layer, name)
@@ -206,6 +211,11 @@ func (st *step) checkPaged(s *Session) error {
 	var err error
 	st.zero, err = p.Attn.NewBuf(2 * st.q * p.Attn.Chunk)
 	return err
+}
+
+// kvLayer is the layer whose cache the attention of layer attends over (llm.Paged.PagedKV).
+func (s *Session) kvLayer(layer int) int {
+	return s.m.(llm.Paged).PagedKV(layer)
 }
 
 // cache returns the cache whose step rows are the output out, or nil.
@@ -787,10 +797,13 @@ func (s *Session) runPaged(st *step, valid int) error {
 			return nil
 		}
 		layer := p.Attend[i]
-		kc, vc := s.cache(fmt.Sprintf("kv_k_%d_new", layer)), s.cache(fmt.Sprintf("kv_v_%d_new", layer))
-		for _, c := range []*kvCache{kc, vc} {
-			if err := s.writeRows(c, p.Out[c.out], q, s.pos, rows); err != nil {
-				return err
+		src := s.kvLayer(layer)
+		kc, vc := s.cache(fmt.Sprintf("kv_k_%d_new", src)), s.cache(fmt.Sprintf("kv_v_%d_new", src))
+		if src == layer { // a layer reusing another's keys and values finds the step's written
+			for _, c := range []*kvCache{kc, vc} {
+				if err := s.writeRows(c, p.Out[c.out], q, s.pos, rows); err != nil {
+					return err
+				}
 			}
 		}
 		copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])

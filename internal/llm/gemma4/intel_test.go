@@ -3,6 +3,7 @@ package gemma4
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"path/filepath"
 	"testing"
@@ -111,4 +112,81 @@ func TestIntelIRCached(t *testing.T) {
 			t.Logf("worst relative error %.2g", worst)
 		})
 	}
+}
+
+// TestPagedMatchesFull on OpenVINO's CPU: the parts and the attention program of the model split
+// at its attention, lowered to OpenVINO IR and run through internal/llm/chain, with one program
+// of 4 tokens per call and one of 1 sharing the host's cache, give the logits of the MIL program
+// without a cache. Needs HWNPU_OV_PYTHON.
+func TestIntelIRPaged(t *testing.T) {
+	if ovcpu.Python() == "" {
+		t.Skip("HWNPU_OV_PYTHON is not set")
+	}
+	ctx := context.Background()
+	dev, _, err := llm.OpenDevice(ctx, "openvino", "")
+	if err != nil {
+		t.Skip(err)
+	}
+	defer dev.Close()
+	c := tinyConfig(t)
+	w := newWeights(c)
+	n := len(tokens)
+	feed := map[string][]float32{"x": rows(t, w, c.Embedding(), tokens), "ple": rows(t, w, c.perLayerTable(), tokens)}
+	full := build(t, c, w, Options{Options: llm.Options{Seq: n, Format: "fp16"}}).run(t, feed)["y"]
+	dir := t.TempDir()
+	var paths []string
+	for _, q := range []int{4, 1} {
+		opts := llm.Options{Seq: q, Cache: 13, Paged: 4, Format: "fp16", Backend: llm.BackendIntel}
+		path, err := llm.Convert(Arch, c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.xml", q)), "none", 0, opts, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	ch, err := chain.Open(ctx, dev, paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Close()
+	if ch.Paged() != 4 {
+		t.Fatalf("chunks of %d, want 4", ch.Paged())
+	}
+	s, err := decode.New(ch.Program(ctx), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	g, err := ch.Share(ctx, dev, paths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if err := s.Add(g.Program(ctx)); err != nil {
+		t.Fatal(err)
+	}
+	worst := 0.0
+	for pos := 0; pos < n; {
+		v := min(4, n-pos)
+		if pos >= 4 {
+			v = 1
+		}
+		var step [][]float32
+		for i := 0; i < v; i++ {
+			row, err := llm.TokenRow(w, c, tokens[pos+i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			step = append(step, row)
+		}
+		logits, err := s.Step(step)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos += v
+		worst = math.Max(worst, relErr32(logits, full[(pos-1)*c.VocabSize:pos*c.VocabSize]))
+	}
+	if !(worst <= 5e-3) {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g", worst)
 }

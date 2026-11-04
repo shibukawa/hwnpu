@@ -246,3 +246,61 @@ func TestIntelIRCheckpoint(t *testing.T) {
 		t.Logf("%s: next token as fp16's at %d of %d positions, logits' relative error %.3f on average, %.3f at worst", format, same, len(ref), sum/float64(len(ref)), worst)
 	}
 }
+
+// TestPagedMatchesFull on OpenVINO's CPU: the parts (with the gate passed from the part before
+// each attention to the part after) and the attention program, lowered to OpenVINO IR and run
+// through internal/llm/chain, give the logits of the MIL program without a cache, in steps of 3
+// tokens over the chunks' boundaries. Needs HWNPU_OV_PYTHON.
+func TestIntelIRPaged(t *testing.T) {
+	if ovcpu.Python() == "" {
+		t.Skip("HWNPU_OV_PYTHON is not set")
+	}
+	ctx := context.Background()
+	dev, _, err := llm.OpenDevice(ctx, "openvino", "")
+	if err != nil {
+		t.Skip(err)
+	}
+	defer dev.Close()
+	cfg := pagedConfig()
+	w := llm.NewSynthetic(cfg)
+	tokens := []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}
+	n := len(tokens)
+	emb, err := llm.Embed(w, cfg, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := runCPU(t, cfg, w, Options{Seq: n, Format: "fp16"}, emb)
+	opts := llm.Options{Seq: 3, Cache: 13, Paged: 4, Format: "fp16", Backend: llm.BackendIntel, Params: map[string]string{"post-scale": "1"}}
+	path, err := llm.Convert(Arch, cfg, w, filepath.Join(t.TempDir(), "m.xml"), "none", 0, opts, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := chain.Open(ctx, dev, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Close()
+	s, err := decode.New(ch.Program(ctx), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	worst := 0.0
+	for pos := 0; pos < n; {
+		v := min(3, n-pos)
+		var step [][]float32
+		for i := 0; i < v; i++ {
+			step = append(step, emb[(pos+i)*cfg.HiddenSize:(pos+i+1)*cfg.HiddenSize])
+		}
+		logits, err := s.Step(step)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos += v
+		worst = math.Max(worst, relErr(logits, full[(pos-1)*cfg.VocabSize:pos*cfg.VocabSize]))
+	}
+	if !(worst <= 2e-3) {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g", worst)
+}

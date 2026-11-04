@@ -12,9 +12,10 @@ import (
 
 // The program, called once per chunk and merged, attends as one softmax over the whole cache:
 // chunks wholly visible, one partly visible with a causal mask over several query rows, and one
-// wholly masked, for both forms and for heads that share a kv head or not.
+// wholly masked, for both forms, for heads that share a kv head or not, and unscaled scores (Gemma
+// 4's, one kv head for all).
 func TestMergeMatchesFull(t *testing.T) {
-	for _, sh := range []Shape{{16, 4, 32}, {16, 8, 8}, {4, 4, 8}} {
+	for _, sh := range []Shape{{Heads: 16, KVHeads: 4, HeadDim: 32}, {Heads: 16, KVHeads: 8, HeadDim: 8}, {Heads: 4, KVHeads: 4, HeadDim: 8}, {Heads: 8, KVHeads: 1, HeadDim: 16, Scale: 1}} {
 		for _, form := range []string{"grouped", "tile"} {
 			t.Run(fmt.Sprintf("%v %s", sh, form), func(t *testing.T) { checkMerge(t, sh, form) })
 		}
@@ -38,6 +39,10 @@ func checkMerge(t *testing.T, sh Shape, form string) {
 	visible := func(row, pos int) bool { return pos < first+row+1 }
 	want := make([]float64, nh*tokens*d)
 	rep := nh / nkv
+	scale := 1 / math.Sqrt(float64(d))
+	if sh.Scale != 0 {
+		scale = sh.Scale
+	}
 	for h := 0; h < nh; h++ {
 		kh := h / rep
 		for r := 0; r < tokens; r++ {
@@ -53,7 +58,7 @@ func checkMerge(t *testing.T, sh Shape, form string) {
 				for i, x := range qr {
 					dot += float64(x) * float64(k[(kh*cache+p)*d+i])
 				}
-				scores[p] = dot / math.Sqrt(float64(d))
+				scores[p] = dot * scale
 				top = max(top, scores[p])
 			}
 			var sum float64

@@ -65,8 +65,8 @@ func main() {
 	use := flag.String("use", "LFM3-1.7B", "models to run, comma separated: names that -list shows, or Hugging Face repositories OWNER/NAME; one in the terminal")
 	list := flag.Bool("list", false, "list the models and what each is for, and exit")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing")
-	context_ := flag.Int("context", 0, "tokens of a prompt and its answer together; 0: the longest the model was trained for when it is split at its attention (-paged: 262144 for LFM3-1.7B, its cache growing with the conversation within a quarter of the memory), else 16320 (over 16320 a whole model's cache is in chunks of 16384, slower per token)")
-	paged := flag.Int("paged", 0, "split a chat model at its full attention layers and attend over the cache in chunks of this many tokens, so that a step costs in proportion to the conversation, not to -context: 0 for 8192 where the model and the NPU allow it (LFM3 on the Neural Engine), -1 never (then -tier applies)")
+	context_ := flag.Int("context", 0, "tokens of a prompt and its answer together; 0: the longest the model was trained for when it is split at its attention (-paged: 262144 for LFM3-1.7B and Qwen3.5, 131072 for Gemma 4, its cache growing with the conversation within a quarter of the memory), else 16320 (over 16320 a whole model's cache is in chunks of 16384, slower per token)")
+	paged := flag.Int("paged", 0, "split a chat model at its full attention layers and attend over the cache in chunks of this many tokens, so that a step costs in proportion to the conversation, not to -context: 0 for 8192 where the model allows it (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4, Qwen3.5), -1 never (then -tier applies)")
 	sparse := flag.Bool("sparse", true, "past about 48K tokens of a model split at its attention (-paged), read 16384 keys of the cache exactly (32768 while reading a prompt), those of the 8-token buckets that weigh most, and every other bucket as its mean (two-level attention, a few times faster at 128K and over); false reads the whole cache on every call")
 	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the chat model (default: in its directory)")
@@ -88,6 +88,7 @@ func main() {
 	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
 	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while a conversation is short, comma separated (a step costs in proportion to the cache); empty or none for none, auto for 4096 with a model in 4 bit tables and none with 6 or 8 bits (four such programs overflow the Neural Engine's compile cache and every start compiles them again)")
 	draft := flag.Int("draft", 8, "tokens per call of the program that checks drafts (speculative decoding: tokens guessed from the prompt and the answer so far are checked in one call); 0 or 1 turns it off")
+	prefill := flag.String("prefill", chat.PrefillAuto, "a program of 64 tokens per call to read prompts beside the one that generates: auto (unless the two would not stay in the Neural Engine's compile cache of about 4 GiB, as Gemma 4 E4B's do not: then the one that generates reads the prompts, slower for long ones), on or off")
 	system := flag.String("system", "", "system message (chat)")
 	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
 	temp := flag.Float64("temp", 0.1, "sampling temperature; 0 picks the most likely token")
@@ -160,7 +161,7 @@ func main() {
 				if c.Weights == "" {
 					c.Weights = filepath.Join(md, "model.safetensors")
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr

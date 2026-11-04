@@ -22,9 +22,12 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
-// Shape is the attention's heads.
+// Shape is the attention's heads, and the scale of its scores.
 type Shape struct {
 	Heads, KVHeads, HeadDim int
+	// Scale multiplies the scores; 0 for 1/sqrt(HeadDim). Gemma 4 takes 1: its query and key
+	// norms take the place of the scaling.
+	Scale float64
 }
 
 // DefaultChunk is the chunk length hwnpu-chat converts with: 8 and 64 query rows are on the
@@ -77,6 +80,9 @@ func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins,
 		return nil, nil, err
 	}
 	scale := b.ScalarF16(float32(1 / math.Sqrt(float64(d))))
+	if sh.Scale != 0 {
+		scale = b.ScalarF16(float32(sh.Scale))
+	}
 	rows := []int{1, nh, s, 1}
 	tile := func(x *mlpackage.Var) *mlpackage.Var {
 		if rep == 1 {
