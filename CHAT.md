@@ -41,7 +41,7 @@ The features say what a model can do besides its kind (names as in Ollama's capa
 go run ./cmd/hwnpu-chat
 ```
 
-No arguments are needed. The first run does the following by itself (about 6.5 minutes on an M3, besides the download: four minutes of conversion and two and a half of compiling). Later runs only load the compiled programs and start in a few seconds to a minute, showing how far loading is.
+No arguments are needed. The first run does the following by itself (about 4 minutes on an M3, besides the download: a little over two minutes of conversion and two of compiling). Later runs only load the compiled programs and start in a few seconds to a minute, showing how far loading is.
 
 1. It downloads `config.json`, `tokenizer.json` and `model.safetensors` (3.5 GB) of [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) from Hugging Face to `~/Library/Caches/hwnpu/models/LFM3-1.7B`. A download cut off goes on from where it stopped on the next run
 2. It converts the model for the Neural Engine, with 6 bit tables and the grouped attention, split at its full attention layers (`lfm3-lut6-grouped-p8192-c262144-q8.parts.json` and `-q64`, 7 parts of about 1.2 GiB together each and a program without weights for the attention): one generates, 8 tokens per call (a token and 7 guesses checked at once, section 3), the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache. hwnpu-chat runs the full attention layers' attention itself, over the cache it holds, in chunks of 8192 tokens (`-paged`, section 2): a step then costs in proportion to the conversation, and the cache's memory grows with it, so the context is the model's longest, 262144 tokens. The default until November 4, 2026 (`lfm3-lut6-grouped-c16320-q8.mlpackage`, a context of 16320, every step costing in proportion to it) is no longer read and can be deleted, as can the 4 bit `lfm3-c16320-q8.mlpackage` of before. Against the model in bf16, lut6 is six times closer than lut4 was (KL 0.23 nats to 1.39), a coding task takes 6 rounds where it took 13 to 27, and with the grouped attention a call is still 38% faster than before (section 16.41 of [docs/design.md](docs/design.md))
@@ -106,16 +106,18 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 
 The flags from `-think` to `-context`, `-package`, `-config`, `-weights` and `-tokenizer` are for chat models, the `-embed-` flags for embedding models. `-package` and its companions (and `-embed-package`) take one model of their kind in `-use`.
 
-- With LFM3-1.7B split at its attention (`-paged` 8192, the default), a step costs in proportion to the conversation: a context of 262144 does not slow a short one. Estimates from the attention measured alone with `npuprobe attn` and `npuprobe seam`; the whole model is still to be measured (sections 16.58 and 16.59 of [docs/design.md](docs/design.md)):
+- With LFM3-1.7B split at its attention (`-paged` 8192, the default), a step costs in proportion to the conversation: a context of 262144 does not slow a short one. Measured on an M3 (16 GB) (sections 16.58 and 16.59 of [docs/design.md](docs/design.md)); a short conversation generates 1.3 to 1.7 times as fast as with the model not split (`-paged -1 -context 16320`), with the same answers word for word:
 
-| conversation | generation (M3, estimate) | cache memory |
-|---|---|---|
-| 4096 | about 30 to 34 ms/token | about 48 MiB |
-| 16384 | about 42 ms/token | about 192 MiB |
-| 65536 | about 95 ms/token | about 768 MiB |
-| 262144 | about 320 ms/token | about 3 GiB |
+| conversation | generation (M3) | reading the prompt | memory of the process |
+|---|---|---|---|
+| a few hundred | 28 to 33 ms/token (with the drafts accepted) | — | — |
+| 16K | about 43 ms/token | 19 seconds | about 0.4 GB |
+| 64K | about 93 ms/token | 2.5 minutes | about 1.0 GB |
+| 128K | about 165 ms/token | 8.6 minutes | about 1.8 GB |
+| 250K | about 320 ms/token | 29 minutes | about 3.2 GB |
 
-- A prompt of 262144 tokens read at once would take about half an hour for the attention alone. Prompts read are kept on disk (`-prompt-cache`), so the second time reads nothing
+- The cache grows by 12 KiB a token, to 3 GiB at 262144. At every length the model recalled a passphrase put at the start of the prompt
+- A prompt of 250K tokens read at once takes about half an hour. Prompts read are kept on disk (`-prompt-cache`), so the second time reads nothing
 - A model not split (`-paged -1`, Gemma 4) costs in proportion to its cache whatever it holds: the longer the context, the slower each token, and with `-tier 4096` (the default for 4 bit tables) a conversation runs on a cache of 4096 while it fits, about twice as fast, and moves up to `-context` as it grows; the programs of each tier are converted and loaded too. OpenCode needs 16K or more
 
 | `-context` | generation (M3) | reading a prompt | KV cache |
@@ -312,6 +314,6 @@ go run ./cmd/hwnpu-agent
 
 - OpenCode first asks for a title of the conversation. This model thinks before answering even when told not to, and the main request waits meanwhile; `-think-budget` (default 1024 tokens, about a minute) bounds the wait
 - With 1.7B parameters and 4 bit weights, factual answers can be wrong. Letting it think helps
-- A longer conversation generates more slowly (about 0.1 s a token at 65536 and 0.3 s at 262144, estimated for the model split at its attention). Contexts up to 65536 were tried on the model converted whole; the split model's 262144 is still to be tried on a device
+- A longer conversation generates more slowly (on an M3, about 0.1 s a token at 64K and 0.3 s at 250K), and a prompt of 250K takes about half an hour to read
 - PLaMo-Embedding-1B is converted with 8 bit tables (lut8): in 4 bits its embeddings point elsewhere (cosine 0.76 with fp16's). On an M3 its embeddings have a cosine of 0.997 to 0.999 with the Hugging Face implementation's (`tools/ref/embed_golden.py`, `TestPlamoEmbeddingGolden` in `internal/chat`), as on the CPU. The last layer's MLP produces values past fp16's range, so the converter computes the last layer divided by 64 (`head-scale`, section 16.34 of docs/design.md). Programs converted before, `embed-s128.mlpackage` and `embed-s1024.mlpackage` in lut4, are no longer used and can be deleted
 - The implementation notes are in sections 16.17, 16.23 and 16.35 of [docs/design.md](docs/design.md)
