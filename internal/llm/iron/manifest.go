@@ -28,16 +28,37 @@ type Manifest struct {
 	// Restartable says the state is the KV caches written by position (no rings, no recurrent
 	// layers): a sequence goes back by its position, and its rows are all of it. Exports
 	// without it (older ones) are taken as not restartable.
-	Restartable bool                `json:"restartable"`
+	Restartable bool `json:"restartable"`
+	// Checkpoints are the states of the recurrent layers (IRON's Checkpoints: LFM3's short
+	// convolutions), and Rings the ring caches, of a model that is not Restartable. A state
+	// has a slot per prompt-chunk boundary, slot k the state after the positions up to
+	// k * chunk run so far; a call reads the slot of its start and writes the one of its end,
+	// and ends within the chunk it starts in. Copying the slot a position reads (StateAt) is
+	// what a sequence needs besides its rows to go back to that position; no copy brings a
+	// ring back.
+	Checkpoints []Checkpoint        `json:"checkpoints"`
+	Rings       int                 `json:"rings"`
 	Banks       map[string]Bank     `json:"banks"`
 	Versions    map[string]*Version `json:"versions"`
 	// Multimodal describes the towers of a model with them (Gemma4Multimodal), or nil.
 	Multimodal *Multimodal `json:"multimodal"`
 }
 
+// Checkpoint is a recurrent layer's state: the buffer of its slots.
+type Checkpoint struct {
+	Buffer string `json:"buffer"`
+	Slots  int    `json:"slots"`
+	Chunk  int    `json:"chunk"`
+}
+
 // Multimodal is what the host needs to run a model's towers: the tokens around and in an
 // image's or a clip's run of soft tokens, and the towers' shapes.
 type Multimodal struct {
+	// Kind is "" for Gemma 4's towers (Gemma4Multimodal), "lfm3vl" for LFM3-VL's vision tower
+	// of one image size, whose input is the image's patches (Vision.Width by Height), and
+	// "lfm3audio" for LFM3-Audio's audio encoder, whose input is the clip's log-mel features.
+	// A marker token below zero is none: a run without it.
+	Kind         string  `json:"kind"`
 	ImageToken   int32   `json:"image_token_id"`
 	AudioToken   int32   `json:"audio_token_id"`
 	BOI          int32   `json:"boi_token_id"`
@@ -54,8 +75,15 @@ type Multimodal struct {
 		Chunk             int     `json:"chunk"`
 		ImageChunks       int     `json:"image_chunks"`
 		Groups            [][]int `json:"groups"`
+		// of LFM3-VL's: the image size the tower takes, and a patch's values
+		Width    int `json:"width"`
+		Height   int `json:"height"`
+		PatchDim int `json:"patch_dim"`
 	} `json:"vision"`
 	Audio struct {
+		// of LFM3-Audio's (Kind "lfm3audio"): the longest clip's log-mel frames, and their width
+		MaxFrames  int `json:"max_frames"`
+		Mels       int `json:"mels"`
 		SampleRate int `json:"sample_rate"`
 		Frame      int `json:"frame"`
 		Hop        int `json:"hop"`

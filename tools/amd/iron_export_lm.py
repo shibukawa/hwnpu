@@ -42,6 +42,14 @@ MODELS = {
     "gemma4": ("iron.applications.gemma4.model", "Gemma4"),
     # Gemma 4 with its vision and audio towers (one image and one clip a prompt).
     "gemma4mm": ("iron.applications.gemma4.model", "Gemma4Multimodal"),
+    # LFM3 (LFM3-1.7B): an application kept in hwnpu (iron_lfm3.py), IRON has none.
+    "lfm3": ("iron_lfm3", "Lfm3"),
+    # LFM3-VL (LFM3-VL-2B): LFM3 with its vision tower, for one image size (iron_lfm3vl.py).
+    "lfm3vl": ("iron_lfm3vl", "Lfm3Vl"),
+    # LFM3-Audio (LFM3-Audio-2B): LFM3 with its audio encoder, audio in (iron_lfm3audio.py).
+    "lfm3audio": ("iron_lfm3audio", "Lfm3Audio"),
+    # LFM3-Omni (LFM3-Omni-2B): LFM3 with both towers, images and audio in (iron_lfm3omni.py).
+    "lfm3omni": ("iron_lfm3omni", "Lfm3Omni"),
 }
 
 
@@ -178,6 +186,17 @@ def _audio_grid(compiled) -> dict:
     keys, values = [], {w.symbol: [] for w in gridded}
     zero = {x.name: 0 for x in compiled.recording.values}
     name = _TOWER["audio_input"]
+    if _TOWER.get("audio_kind") == "lfm3audio":
+        # LFM3-Audio's encoder: the valid rows of its three stride-2 stages
+        for frames in range(1, c.max_frames + 1):
+            n1 = -(-frames // 2)
+            n2 = -(-n1 // 2)
+            v = dict(zero)
+            v.update({f"{name}_n1": n1, f"{name}_n2": n2, f"{name}_tokens": -(-n2 // 2)})
+            keys.append(frames)
+            for w in gridded:
+                values[w.symbol].append(int(w(v)))
+        return dict(frames=keys, values=values)
     for frames in range(1, 4 * c.max_tokens + 1):
         tokens = c.tokens(frames)
         if tokens > c.max_tokens:
@@ -547,7 +566,61 @@ def export(model, versions, out: Path) -> dict:
         if (model.text if hasattr(model, "towers") else model).rope_row(n, 0) != 0:
             raise SystemExit("rope_row is not the chunk's start: not supported yet")
     mm = None
-    if hasattr(model, "towers"):
+    kind = getattr(model, "hwnpu_kind", None)
+    if kind == "lfm3omni":
+        # LFM3-Omni: LFM3-VL's vision tower and LFM3-Audio's encoder, each run between the
+        # vision markers
+        mc = model.config
+        v, au = mc.vision, mc.audio
+        it, at = int(mc.image_token_id), int(mc.audio_token_id)
+        start, end = int(mc.vision_start_token_id), int(mc.vision_end_token_id)
+        mm = dict(
+            kind="lfm3omni",
+            image_token_id=it, audio_token_id=at,
+            boi_token_id=start, eoi_token_id=end, boa_token_id=start, eoa_token_id=end,
+            placeholders=[int(t) for t in model.at],
+            vision=dict(width=int(v.width), height=int(v.height), patch_size=int(v.patch_size),
+                        image_tokens=int(v.tokens), patches=int(v.patches), patch_dim=int(v.patch_dim)),
+            audio=dict(sample_rate=16000, hop=160, frame=400, max_frames=int(au.max_frames), mels=int(au.mels),
+                       max_tokens=int(au.max_tokens), max_samples=int(au.max_frames) * 160),
+            tower_values={str(t): [f"{model.tower_inputs[t]}_{x}" for x in model.tower_values[t]] for t in model.towers},
+        )
+        c = model.text.config
+        model_name, rope_model, recurrent = type(model.text).__name__ + "Omni", model.text, model.text.recurrent
+    elif kind == "lfm3audio":
+        # LFM3-Audio: the audio encoder, its input the clip's log-mel features; a clip's run of
+        # placeholders has no markers around it
+        mc = model.config
+        au = mc.audio
+        (token,) = model.towers
+        mm = dict(
+            kind="lfm3audio",
+            image_token_id=-1, audio_token_id=int(mc.audio_token_id),
+            boi_token_id=-1, eoi_token_id=-1, boa_token_id=-1, eoa_token_id=-1,
+            placeholders=[int(t) for t in model.at],
+            audio=dict(sample_rate=16000, hop=160, frame=400, max_frames=int(au.max_frames), mels=int(au.mels),
+                       max_tokens=int(au.max_tokens), max_samples=int(au.max_frames) * 160),
+            tower_values={str(token): [f"{model.tower_inputs[token]}_{x}" for x in model.tower_values[token]]},
+        )
+        c = model.text.config
+        model_name, rope_model, recurrent = type(model.text).__name__ + "Audio", model.text, model.text.recurrent
+    elif kind == "lfm3vl":
+        # LFM3-VL: one vision tower for one image size, its input the image's patches
+        mc = model.config
+        v = mc.vision
+        mm = dict(
+            kind="lfm3vl",
+            image_token_id=int(mc.image_token_id), audio_token_id=-1,
+            boi_token_id=int(mc.vision_start_token_id), eoi_token_id=int(mc.vision_end_token_id),
+            boa_token_id=-1, eoa_token_id=-1,
+            placeholders=[int(t) for t in model.at],
+            vision=dict(width=int(v.width), height=int(v.height), patch_size=int(v.patch_size),
+                        image_tokens=int(v.tokens), patches=int(v.patches), patch_dim=int(v.patch_dim)),
+            tower_values={str(t): [] for t in model.towers},
+        )
+        c = model.text.config
+        model_name, rope_model, recurrent = type(model.text).__name__ + "Vl", model.text, model.text.recurrent
+    elif hasattr(model, "towers"):
         mc = model.config
         v, au = mc.vision, mc.audio
         text = model.text
@@ -583,12 +656,40 @@ def export(model, versions, out: Path) -> dict:
         # Whether the state restarts anywhere: no ring caches, no recurrent layers
         # (CausalLM.recurrent). Only then is a position all a sequence needs to go back.
         restartable=not recurrent,
+        # The recurrent layers' states (IRON's Checkpoints, LFM3's short convolutions): a slot
+        # per prompt-chunk boundary, slot k the state after the positions up to k * chunk run
+        # so far. A host that copies the slot a position reads goes back to it.
+        checkpoints=_checkpoints(vm["decode"]["buffers"], recurrent, c),
+        # The ring caches (a sliding window's, when 3 rings are under max_seq_len), which no
+        # copy of a slot brings back.
+        rings=sum(1 for r in recurrent if not _is_checkpoints(r)),
         banks={k: dict(bytes=int(n), image=images.get(k)) for k, n in banks.items()},
         versions=vm,
     )
     (out / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     write_words(versions, m, out)
     return m
+
+
+def _is_checkpoints(state) -> bool:
+    from iron.lm import Checkpoints
+
+    return isinstance(state, Checkpoints)
+
+
+def _checkpoints(buffers: dict, recurrent, c) -> list:
+    """The buffers of the recurrent states, ``*.slots`` in the layout, one per Checkpoints."""
+    names = sorted(n for n in buffers if n.endswith(".slots"))
+    count = sum(1 for r in recurrent if _is_checkpoints(r))
+    if len(names) != count:
+        raise SystemExit(f"{count} recurrent states, {len(names)} buffers named *.slots: {names}")
+    slots = (int(c.max_seq_len) - 1) // int(c.prefill_chunk) + 2
+    out = []
+    for n in names:
+        if buffers[n]["bytes"] % slots:
+            raise SystemExit(f"{n}: {buffers[n]['bytes']} bytes are no {slots} slots")
+        out.append(dict(buffer=n, slots=slots, chunk=int(c.prefill_chunk)))
+    return out
 
 
 def write_check(Model, args, out: Path, prompt_tokens: int, steps: int, rng: np.random.Generator) -> None:
@@ -650,7 +751,10 @@ def main(argv=None) -> int:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
         return 0
     model = Model.from_checkpoint(a.checkpoint, random_weights=a.random_weights, max_seq_len=a.max_seq_len)
-    if hasattr(model, "towers"):
+    if getattr(model, "hwnpu_kind", None) in ("lfm3audio", "lfm3omni"):  # its words by grid of frames, as Gemma 4's audio
+        at = model.config.audio_token_id
+        _TOWER.update(audio=model.towers[at], audio_input=model.tower_inputs[at], audio_kind="lfm3audio")
+    if hasattr(model, "towers") and not getattr(model, "hwnpu_kind", None):  # Gemma 4's towers take words by grid
         it = model.config.image_token_id
         at = model.config.audio_token_id
         _TOWER.update(vision=model.towers[it], vision_input=model.tower_inputs[it],
@@ -660,7 +764,8 @@ def main(argv=None) -> int:
     versions = compile_versions(model, full_elf=False if a.per_step else None)
     m = export(model, versions, a.out)
     # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
-    for name in ("tokenizer.json", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json"):
+    for name in ("tokenizer.json", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json",
+                 "processor_config.json"):
         src = Path(a.checkpoint) / name
         if src.is_file():
             shutil.copyfile(src, a.out / name)

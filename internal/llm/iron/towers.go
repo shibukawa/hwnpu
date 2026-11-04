@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"os"
+	"path/filepath"
 
+	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
 
@@ -20,6 +23,10 @@ func (m *Model) ImageSize(w, h int) (ow, oh, tokens int, err error) {
 		return 0, 0, 0, errors.New("iron: the model has no vision tower")
 	}
 	v := mm.Vision
+	if lfm3Vision(mm.Kind) {
+		// one image size: every image is resized (stretched) to it, as hwnpu's Core ML programs
+		return v.Width, v.Height, v.ImageTokens, nil
+	}
 	side := v.PoolingKernelSize * v.PatchSize
 	maxPatches := v.ImageTokens * v.PoolingKernelSize * v.PoolingKernelSize
 	target := float64(maxPatches * v.PatchSize * v.PatchSize)
@@ -46,6 +53,9 @@ func (m *Model) ImageSize(w, h int) (ow, oh, tokens int, err error) {
 // as the processor's), so the tower's own resampling is 1:1, and its soft tokens left where
 // a placed prompt chunk reads them. It returns the soft tokens' count.
 func (m *Model) RunVision(ctx context.Context, img image.Image) (int, error) {
+	if mm := m.Manifest.Multimodal; mm != nil && lfm3Vision(mm.Kind) {
+		return m.runLfm3VlVision(ctx, img)
+	}
 	b := img.Bounds()
 	ow, oh, tokens, err := m.ImageSize(b.Dx(), b.Dy())
 	if err != nil {
@@ -105,6 +115,18 @@ func (m *Model) AudioTokens(n int) (frames, tokens int, err error) {
 		return 0, 0, errors.New("iron: the model has no audio tower")
 	}
 	a := mm.Audio
+	if lfm3Audio(mm.Kind) {
+		// lfm3audio.Features' frames: the clip padded on the right to whole hops past a frame
+		padded := lfm3audioFrame
+		if n > lfm3audioFrame {
+			padded = n + (lfm3audioHop-(n-lfm3audioFrame)%lfm3audioHop)%lfm3audioHop
+		}
+		frames = (padded-lfm3audioFrame)/lfm3audioHop + 1
+		if frames > a.MaxFrames {
+			return 0, 0, fmt.Errorf("iron: a clip of %.1f s is past the encoder's %.1f s", float64(n)/16000, float64(a.MaxFrames)/100)
+		}
+		return frames, (frames + 7) / 8, nil
+	}
 	audio := min(n, a.MaxSamples) - (a.Frame - a.Frame/2)
 	frames = max(0, (audio+a.Hop-1)/a.Hop)
 	tokens = ((frames+1)/2 + 1) / 2
@@ -117,6 +139,9 @@ func (m *Model) AudioTokens(n int) (frames, tokens int, err error) {
 // RunAudio runs the audio tower on a mono clip at the tower's sample rate (16 kHz; past 30 s it
 // is cut), its soft tokens left where a placed prompt chunk reads them. It returns their count.
 func (m *Model) RunAudio(ctx context.Context, wave []float32) (int, error) {
+	if mm := m.Manifest.Multimodal; mm != nil && lfm3Audio(mm.Kind) {
+		return m.runLfm3Audio(ctx, wave)
+	}
 	frames, tokens, err := m.AudioTokens(len(wave))
 	if err != nil {
 		return 0, err
@@ -159,3 +184,88 @@ func towerInput(mm *Multimodal, token int32) string {
 // HasVision and HasAudio report whether the export holds the towers.
 func (m *Model) HasVision() bool { return m.vision != nil && m.placed != nil }
 func (m *Model) HasAudio() bool  { return m.audio != nil && m.placed != nil }
+
+// runLfm3VlVision runs LFM3-VL's vision tower on img: resized to the tower's size and cut into
+// patches normalized by the checkpoint's image processor (lfm3vl.Processor, as the Core ML
+// encoder's input), in bf16.
+func (m *Model) runLfm3VlVision(ctx context.Context, img image.Image) (int, error) {
+	mm := m.Manifest.Multimodal
+	v := mm.Vision
+	if m.vlProc == nil {
+		raw, err := os.ReadFile(filepath.Join(m.dir, "config.json"))
+		if err != nil {
+			return 0, err
+		}
+		cfg, err := lfm3vl.ParseConfig(raw)
+		if err != nil {
+			return 0, err
+		}
+		if m.vlProc, err = lfm3vl.LoadProcessor(m.dir, cfg); err != nil {
+			return 0, err
+		}
+	}
+	patches := m.vlProc.Patches(img, v.Width, v.Height)
+	if len(patches) != v.Patches*v.PatchDim {
+		return 0, fmt.Errorf("iron: %d patch values for %d patches of %d", len(patches), v.Patches, v.PatchDim)
+	}
+	buf := make([]byte, 2*len(patches))
+	for i, x := range patches {
+		binary.LittleEndian.PutUint16(buf[2*i:], bf16(x))
+	}
+	if err := m.runTower(ctx, m.vision, towerInput(mm, mm.ImageToken), buf, map[string]int64{}, 0); err != nil {
+		return 0, err
+	}
+	return v.ImageTokens, nil
+}
+
+// bf16 rounds x to bfloat16 (to nearest, ties to even).
+func bf16(x float32) uint16 {
+	b := math.Float32bits(x)
+	if b&0x7fffffff > 0x7f800000 { // NaN
+		return uint16(b>>16) | 0x40
+	}
+	return uint16((b + 0x7fff + (b>>16)&1) >> 16)
+}
+
+// lfm3audio.Features' framing: 400 samples a frame every 160.
+const (
+	lfm3audioFrame = 400
+	lfm3audioHop   = 160
+)
+
+// runLfm3Audio runs LFM3-Audio's audio encoder on a mono clip at 16 kHz: its log-mel features
+// (lfm3audio.Features, as the Core ML encoder's input) after a zero row, zeros past them, in
+// bf16, with the valid rows of its three stride-2 stages.
+func (m *Model) runLfm3Audio(ctx context.Context, wave []float32) (int, error) {
+	mm := m.Manifest.Multimodal
+	a := mm.Audio
+	frames, tokens, err := m.AudioTokens(len(wave))
+	if err != nil {
+		return 0, err
+	}
+	mel, n := lfm3audio.Features(wave, a.Mels)
+	if n != frames {
+		return 0, fmt.Errorf("iron: %d feature frames, %d counted", n, frames)
+	}
+	buf := make([]byte, 2*(a.MaxFrames+2)*a.Mels)
+	for i, x := range mel {
+		binary.LittleEndian.PutUint16(buf[2*(a.Mels+i):], bf16(x))
+	}
+	n1 := (frames + 1) / 2
+	n2 := (n1 + 1) / 2
+	input := towerInput(mm, mm.AudioToken)
+	own := map[string]int64{input + "_n1": int64(n1), input + "_n2": int64(n2), input + "_tokens": int64(tokens)}
+	// its words of rows bounded by the clip are looked up by frames, as Gemma 4's
+	if g := m.audio.m.Grid; g == nil || frames-1 >= len(g.Frames) || g.Frames[frames-1] != frames {
+		return 0, fmt.Errorf("iron: no words for %d frames", frames)
+	}
+	if err := m.runTower(ctx, m.audio, input, buf, own, frames-1); err != nil {
+		return 0, err
+	}
+	return tokens, nil
+}
+
+// lfm3Vision and lfm3Audio report whether a multimodal kind has LFM3-VL's vision tower (LFM3-VL,
+// LFM3-Omni) and LFM3-Audio's encoder (LFM3-Audio, LFM3-Omni).
+func lfm3Vision(kind string) bool { return kind == "lfm3vl" || kind == "lfm3omni" }
+func lfm3Audio(kind string) bool  { return kind == "lfm3audio" || kind == "lfm3omni" }

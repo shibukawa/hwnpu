@@ -57,6 +57,7 @@ func TestParse(t *testing.T) {
 		{name: "answer", text: "hmm</think>\n\nHello <tool", thinking: true, want: Answer{Reasoning: "hmm", Content: "Hello "}},
 		{name: "answer final", text: "hmm</think>\n\nHello <tool", thinking: true, final: true, want: Answer{Reasoning: "hmm", Content: "Hello <tool"}},
 		{name: "no thinking", text: "Hi<|im_end|>", final: true, want: Answer{Content: "Hi"}},
+		{name: "no thinking, newline first", text: "\nFront, left.<|im_end|>", final: true, want: Answer{Content: "Front, left."}},
 		{name: "thinking anyway", text: "So.</think>Hi", final: true, want: Answer{Reasoning: "So.", Content: "Hi"}},
 		{name: "call started", text: "Running.\n<tool_call>\n<function=bash>\n<par", want: Answer{Content: "Running.", Calling: true}},
 		{name: "calls", text: "x</think>Running.\n" + call + "\n\n" + call + "<|im_end|>", thinking: true, final: true,

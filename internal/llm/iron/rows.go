@@ -58,7 +58,7 @@ func (m *Model) RowBytes() int {
 
 // ExportRows copies the KV caches' rows of positions [from, to): position by position, the
 // caches by name. The caches are written by position, so these rows are the whole state of
-// the sequence before to (a model with recurrent state is refused at export).
+// the sequence before to, together with StateAt for a model with recurrent states.
 func (m *Model) ExportRows(from, to int) ([]byte, error) {
 	cs, err := m.caches()
 	if err != nil {
@@ -109,6 +109,88 @@ func (m *Model) ImportRows(from int, rows []byte) error {
 			return err
 		}
 		o += c.row
+	}
+	return nil
+}
+
+// Resumable reports whether a sequence can go back to any position: the state is the KV caches
+// written by position (Restartable), or besides them recurrent states whose slot a position
+// reads can be copied (StateAt), with no ring caches.
+func (m *Model) Resumable() bool {
+	if m.Manifest.Restartable {
+		return true
+	}
+	if len(m.Manifest.Checkpoints) == 0 || m.Manifest.Rings > 0 {
+		return false
+	}
+	// every version places the states alike (one arena), as the caches
+	for _, c := range m.Manifest.Checkpoints {
+		p, ok := m.decode.m.Buffers[c.Buffer]
+		if !ok || c.Slots < 1 || c.Chunk < 1 || p.Bytes%c.Slots != 0 {
+			return false
+		}
+		for _, v := range []*version{m.prompt, m.placed} {
+			if v != nil && v.m.Buffers[c.Buffer] != p {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// stateSlot is the slot of a recurrent state that a call starting at pos reads: 0 before the
+// sequence, else the one its last chunk boundary's calls write (IRON's Checkpoints.at).
+func stateSlot(c Checkpoint, pos int) int {
+	if pos == 0 {
+		return 0
+	}
+	return (pos-1)/c.Chunk + 1
+}
+
+// StateAt copies what a call starting at pos reads of the recurrent states, in their manifest
+// order: with the rows before pos, it is the whole state of the sequence there. It is good while
+// the positions before pos are not run again; the calls after pos change only that slot and
+// later ones. Empty for a model without recurrent states.
+func (m *Model) StateAt(pos int) ([]byte, error) {
+	var out []byte
+	for _, c := range m.Manifest.Checkpoints {
+		p, ok := m.decode.m.Buffers[c.Buffer]
+		if !ok {
+			return nil, fmt.Errorf("iron: no buffer %s of a recurrent state", c.Buffer)
+		}
+		size := p.Bytes / c.Slots
+		off := p.Offset + stateSlot(c, pos)*size
+		buf := m.buffer(m.decode, p.Argument)
+		if err := buf.SyncFromDevice(off, size); err != nil {
+			return nil, err
+		}
+		out = append(out, buf.Bytes()[off:off+size]...)
+	}
+	return out, nil
+}
+
+// SetStateAt writes back what StateAt copied at pos, so that the next call can start there.
+func (m *Model) SetStateAt(pos int, state []byte) error {
+	o := 0
+	for _, c := range m.Manifest.Checkpoints {
+		p, ok := m.decode.m.Buffers[c.Buffer]
+		if !ok {
+			return fmt.Errorf("iron: no buffer %s of a recurrent state", c.Buffer)
+		}
+		size := p.Bytes / c.Slots
+		if o+size > len(state) {
+			return fmt.Errorf("iron: %d bytes of state, the recurrent states take more", len(state))
+		}
+		off := p.Offset + stateSlot(c, pos)*size
+		buf := m.buffer(m.decode, p.Argument)
+		copy(buf.Bytes()[off:off+size], state[o:o+size])
+		if err := buf.SyncToDevice(off, size); err != nil {
+			return err
+		}
+		o += size
+	}
+	if o != len(state) {
+		return fmt.Errorf("iron: %d bytes of state, the recurrent states take %d", len(state), o)
 	}
 	return nil
 }
