@@ -41,6 +41,10 @@ func Parse(text string, thinking bool, tools []Tool, final bool) Answer {
 	case thinking:
 		a.Reasoning, a.Thinking = validPrefix(r), true
 		return a
+	default:
+		// the prompt closed the thinking (<think></think>): what the model writes after it is
+		// the same answer, which it may begin with the newlines it would put after </think>
+		text = strings.TrimLeft(text, " \t\r\n")
 	}
 	content, calls, ok := strings.Cut(text, callTag)
 	if !ok {

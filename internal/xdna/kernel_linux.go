@@ -29,8 +29,16 @@ func (n *node) Ioctl(req uintptr, arg unsafe.Pointer) error {
 	}
 }
 
+// Mmap maps a buffer object. Mapping the device heap can take long enough for a signal (the Go
+// runtime's preemption) to interrupt it: hwnpu-chat failed to start with "map device heap:
+// interrupted system call" right after another process let the NPU go. It is tried again then.
 func (n *node) Mmap(offset uint64, length int) ([]byte, error) {
-	return syscall.Mmap(n.fd, int64(offset), length, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	for {
+		b, err := syscall.Mmap(n.fd, int64(offset), length, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+		if err != syscall.EINTR {
+			return b, err
+		}
+	}
 }
 
 func (n *node) Munmap(b []byte) error { return syscall.Munmap(b) }

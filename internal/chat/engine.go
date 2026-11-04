@@ -1051,6 +1051,7 @@ func (e *Engine) Tokens(ctx context.Context, prompt string, media []Media) ([]in
 			if media[i].Audio {
 				start, end = mm.BOA, mm.EOA
 			}
+			wrap = start >= 0 // LFM3-Audio's clip is its placeholders alone
 		} else {
 			wrap = !media[i].Audio || e.aud.Omni()
 			var ok1, ok2 bool

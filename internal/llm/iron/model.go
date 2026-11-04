@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
 
 // ddrAperture is the offset the NPU's DMA adds to a host address (IRON's APERTURE).
@@ -31,6 +32,8 @@ type Model struct {
 	kv       []kvCache // caches, found once
 	// xclbins are the programs of the versions packaged as an xclbin per step, by file.
 	xclbins map[string]*hwnpu.Program
+	dir     string           // the export's directory
+	vlProc  *lfm3vl.Processor // LFM3-VL's image processor, read on the first image
 }
 
 type version struct {
@@ -56,7 +59,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 	if err != nil {
 		return nil, err
 	}
-	m := &Model{Manifest: man, dev: dev, banks: map[string]*hwnpu.Buffer{}, xclbins: map[string]*hwnpu.Program{}}
+	m := &Model{Manifest: man, dev: dev, banks: map[string]*hwnpu.Buffer{}, xclbins: map[string]*hwnpu.Program{}, dir: dir}
 	fail := func(err error) (*Model, error) {
 		m.Close()
 		return nil, err
@@ -336,12 +339,17 @@ func (m *Model) Prompt(ctx context.Context, tokens []int32, start int) ([]float3
 		return nil, fmt.Errorf("iron: %d tokens from %d do not fit the cache of %d", len(tokens), start, m.Manifest.Config.MaxSeqLen)
 	}
 	var logits []float32
-	for begin := 0; begin < len(tokens); begin += C {
+	for begin := 0; begin < len(tokens); {
 		end := min(begin+C, len(tokens))
+		if len(m.Manifest.Checkpoints) > 0 {
+			// a call ends within the chunk it starts in: its state's slot is the chunk's
+			end = min(end, begin+C-(start+begin)%C)
+		}
 		var err error
 		if logits, err = m.chunk(ctx, tokens[begin:end], start+begin); err != nil {
 			return nil, err
 		}
+		begin = end
 	}
 	return logits, nil
 }
