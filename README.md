@@ -94,7 +94,7 @@ out.SyncFromDevice(0, n)
 
 Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.elf`、グラフ全体を 1 つのハードウェアコンテキストと 1 つのコマンドで流すもの) も読み込めます。カーネル名は `main:sequence` の形で、引数はすべてバッファです。呼び出しごとの値は `run.Scratchpad()` に書きます。
 
-### LLM (Gemma 4 E2B、LFM3-1.7B) を AMD の NPU で
+### LLM (Gemma 4 E2B / E4B、LFM3 とその多モーダル) を AMD の NPU で
 
 IRON (amd/IRON) を開発者の機械でコンパイラとして一度だけ使い、`tools/amd/iron_export_lm.py` で書き出したものを hwnpu が Go だけで動かします (利用者の機械に Python も XRT も要りません)。
 
@@ -104,6 +104,8 @@ go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.amd-npu2
 go run ./cmd/hwnpu-agent -iron ~/models/gemma-4-E2B-it.amd-npu2 "README.md を要約して"
 ```
 
+Gemma 4 E4B (gemma-4-E4B-it) も同じ `gemma4` で書き出します (文脈 4096、塊 1024。書き出しは 15 GB)。デコードは 1 秒に 3.6 トークン (E2B の約 6 割) で、位置 3072 からの 1024 トークンを 8.2 秒で読みます。
+
 LFM3-1.7B は IRON にアプリケーションがないので、hwnpu の `tools/amd/iron_lfm3.py` を使います (`lfm3`)。畳み込みの層の状態は、プロンプトの塊の境ごとに残り、hwnpu はその位置の分を印に写して巻き戻します。文脈 12288、塊 2048 まではスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。Ryzen AI 9 365 で、デコードは 1 秒に 8.7 トークンです。プロンプトは、先頭の 2048 トークンを 2.4 秒、位置 10240 からの 2048 トークンを 12.7 秒で読みます (注意が窓の外も含めて文脈の全体を読むため)。
 
 ```bash
@@ -112,7 +114,16 @@ go run ./cmd/hwnpu-chat -iron ~/models/LFM3-1.7B.amd-npu2
 go run ./cmd/hwnpu-agent -iron ~/models/LFM3-1.7B.amd-npu2 "go test を通して"
 ```
 
-画像と音声も読ませるときは、塔 (視覚と音声のエンコーダー) ごと書き出します (`gemma4mm`。1 回のプロンプトに画像 1 枚と音声 1 本まで)。OpenAI 互換 API の `image_url` (data URL) と `input_audio` (WAV) で渡します。
+LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B も同じく hwnpu の IRON アプリケーションで書き出します (`lfm3vl`、`lfm3audio`、`lfm3omni`)。LFM3-VL は画像を 512 × 512 に引き伸ばして読み (256 トークン)、LFM3-Audio は 41 秒までの音声を読みます (音声での返事は作りません)。LFM3-Omni はその両方です。
+
+```bash
+python tools/amd/iron_export_lm.py lfm3vl ~/models/LFM3-VL-2B ~/models/LFM3-VL-2B.amd-npu2 --max-seq-len 12288 --prefill-chunk 2048
+python tools/amd/iron_export_lm.py lfm3audio ~/models/LFM3-Audio-2B ~/models/LFM3-Audio-2B.amd-npu2 --max-seq-len 12288 --prefill-chunk 2048
+python tools/amd/iron_export_lm.py lfm3omni ~/models/LFM3-Omni-2B ~/models/LFM3-Omni-2B.amd-npu2 --max-seq-len 12288 --prefill-chunk 2048
+go run ./cmd/hwnpu-chat -iron ~/models/LFM3-VL-2B.amd-npu2 -listen 127.0.0.1:8080
+```
+
+Gemma 4 E2B に画像と音声も読ませるときは、塔 (視覚と音声のエンコーダー) ごと書き出します (`gemma4mm`。1 回のプロンプトに画像 1 枚と音声 1 本まで)。OpenAI 互換 API の `image_url` (data URL) と `input_audio` (WAV) で渡します。
 
 ```bash
 python tools/amd/iron_export_lm.py gemma4mm ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.mm.amd-npu2 --max-seq-len 4096 --prefill-chunk 1024
