@@ -44,6 +44,8 @@ MODELS = {
     "gemma4mm": ("iron.applications.gemma4.model", "Gemma4Multimodal"),
     # LFM3 (LFM3-1.7B): an application kept in hwnpu (iron_lfm3.py), IRON has none.
     "lfm3": ("iron_lfm3", "Lfm3"),
+    # LFM3-VL (LFM3-VL-2B): LFM3 with its vision tower, for one image size (iron_lfm3vl.py).
+    "lfm3vl": ("iron_lfm3vl", "Lfm3Vl"),
 }
 
 
@@ -549,7 +551,23 @@ def export(model, versions, out: Path) -> dict:
         if (model.text if hasattr(model, "towers") else model).rope_row(n, 0) != 0:
             raise SystemExit("rope_row is not the chunk's start: not supported yet")
     mm = None
-    if hasattr(model, "towers"):
+    if hasattr(model, "towers") and not hasattr(model.config, "audio"):
+        # LFM3-VL: one vision tower for one image size, its input the image's patches
+        mc = model.config
+        v = mc.vision
+        mm = dict(
+            kind="lfm3vl",
+            image_token_id=int(mc.image_token_id), audio_token_id=-1,
+            boi_token_id=int(mc.vision_start_token_id), eoi_token_id=int(mc.vision_end_token_id),
+            boa_token_id=-1, eoa_token_id=-1,
+            placeholders=[int(t) for t in model.at],
+            vision=dict(width=int(v.width), height=int(v.height), patch_size=int(v.patch_size),
+                        image_tokens=int(v.tokens), patches=int(v.patches), patch_dim=int(v.patch_dim)),
+            tower_values={str(t): [] for t in model.towers},
+        )
+        c = model.text.config
+        model_name, rope_model, recurrent = type(model.text).__name__ + "Vl", model.text, model.text.recurrent
+    elif hasattr(model, "towers"):
         mc = model.config
         v, au = mc.vision, mc.audio
         text = model.text
@@ -680,7 +698,7 @@ def main(argv=None) -> int:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
         return 0
     model = Model.from_checkpoint(a.checkpoint, random_weights=a.random_weights, max_seq_len=a.max_seq_len)
-    if hasattr(model, "towers"):
+    if hasattr(model, "towers") and hasattr(model.config, "audio"):  # Gemma 4's towers take words by grid
         it = model.config.image_token_id
         at = model.config.audio_token_id
         _TOWER.update(vision=model.towers[it], vision_input=model.tower_inputs[it],
@@ -690,7 +708,8 @@ def main(argv=None) -> int:
     versions = compile_versions(model, full_elf=False if a.per_step else None)
     m = export(model, versions, a.out)
     # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
-    for name in ("tokenizer.json", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json"):
+    for name in ("tokenizer.json", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json",
+                 "processor_config.json"):
         src = Path(a.checkpoint) / name
         if src.is_file():
             shutil.copyfile(src, a.out / name)

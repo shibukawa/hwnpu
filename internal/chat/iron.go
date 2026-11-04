@@ -257,7 +257,7 @@ func archOf(model string) (string, error) {
 	switch model {
 	case "Gemma4":
 		return "gemma4", nil
-	case "Lfm3":
+	case "Lfm3", "Lfm3Vl":
 		return "lfm3", nil
 	}
 	return "", fmt.Errorf("chat: no chat format for the IRON model %s", model)

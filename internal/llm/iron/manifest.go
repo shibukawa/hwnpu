@@ -54,6 +54,9 @@ type Checkpoint struct {
 // Multimodal is what the host needs to run a model's towers: the tokens around and in an
 // image's or a clip's run of soft tokens, and the towers' shapes.
 type Multimodal struct {
+	// Kind is "" for Gemma 4's towers (Gemma4Multimodal) and "lfm3vl" for LFM3-VL's vision tower
+	// of one image size, whose input is the image's patches (Vision.Width by Height).
+	Kind         string  `json:"kind"`
 	ImageToken   int32   `json:"image_token_id"`
 	AudioToken   int32   `json:"audio_token_id"`
 	BOI          int32   `json:"boi_token_id"`
@@ -70,6 +73,10 @@ type Multimodal struct {
 		Chunk             int     `json:"chunk"`
 		ImageChunks       int     `json:"image_chunks"`
 		Groups            [][]int `json:"groups"`
+		// of LFM3-VL's: the image size the tower takes, and a patch's values
+		Width    int `json:"width"`
+		Height   int `json:"height"`
+		PatchDim int `json:"patch_dim"`
 	} `json:"vision"`
 	Audio struct {
 		SampleRate int `json:"sample_rate"`

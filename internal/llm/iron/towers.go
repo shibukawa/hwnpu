@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"os"
+	"path/filepath"
 
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
@@ -20,6 +22,10 @@ func (m *Model) ImageSize(w, h int) (ow, oh, tokens int, err error) {
 		return 0, 0, 0, errors.New("iron: the model has no vision tower")
 	}
 	v := mm.Vision
+	if mm.Kind == "lfm3vl" {
+		// one image size: every image is resized (stretched) to it, as hwnpu's Core ML programs
+		return v.Width, v.Height, v.ImageTokens, nil
+	}
 	side := v.PoolingKernelSize * v.PatchSize
 	maxPatches := v.ImageTokens * v.PoolingKernelSize * v.PoolingKernelSize
 	target := float64(maxPatches * v.PatchSize * v.PatchSize)
@@ -46,6 +52,9 @@ func (m *Model) ImageSize(w, h int) (ow, oh, tokens int, err error) {
 // as the processor's), so the tower's own resampling is 1:1, and its soft tokens left where
 // a placed prompt chunk reads them. It returns the soft tokens' count.
 func (m *Model) RunVision(ctx context.Context, img image.Image) (int, error) {
+	if mm := m.Manifest.Multimodal; mm != nil && mm.Kind == "lfm3vl" {
+		return m.runLfm3VlVision(ctx, img)
+	}
 	b := img.Bounds()
 	ow, oh, tokens, err := m.ImageSize(b.Dx(), b.Dy())
 	if err != nil {
@@ -159,3 +168,45 @@ func towerInput(mm *Multimodal, token int32) string {
 // HasVision and HasAudio report whether the export holds the towers.
 func (m *Model) HasVision() bool { return m.vision != nil && m.placed != nil }
 func (m *Model) HasAudio() bool  { return m.audio != nil && m.placed != nil }
+
+// runLfm3VlVision runs LFM3-VL's vision tower on img: resized to the tower's size and cut into
+// patches normalized by the checkpoint's image processor (lfm3vl.Processor, as the Core ML
+// encoder's input), in bf16.
+func (m *Model) runLfm3VlVision(ctx context.Context, img image.Image) (int, error) {
+	mm := m.Manifest.Multimodal
+	v := mm.Vision
+	if m.vlProc == nil {
+		raw, err := os.ReadFile(filepath.Join(m.dir, "config.json"))
+		if err != nil {
+			return 0, err
+		}
+		cfg, err := lfm3vl.ParseConfig(raw)
+		if err != nil {
+			return 0, err
+		}
+		if m.vlProc, err = lfm3vl.LoadProcessor(m.dir, cfg); err != nil {
+			return 0, err
+		}
+	}
+	patches := m.vlProc.Patches(img, v.Width, v.Height)
+	if len(patches) != v.Patches*v.PatchDim {
+		return 0, fmt.Errorf("iron: %d patch values for %d patches of %d", len(patches), v.Patches, v.PatchDim)
+	}
+	buf := make([]byte, 2*len(patches))
+	for i, x := range patches {
+		binary.LittleEndian.PutUint16(buf[2*i:], bf16(x))
+	}
+	if err := m.runTower(ctx, m.vision, towerInput(mm, mm.ImageToken), buf, map[string]int64{}, 0); err != nil {
+		return 0, err
+	}
+	return v.ImageTokens, nil
+}
+
+// bf16 rounds x to bfloat16 (to nearest, ties to even).
+func bf16(x float32) uint16 {
+	b := math.Float32bits(x)
+	if b&0x7fffffff > 0x7f800000 { // NaN
+		return uint16(b>>16) | 0x40
+	}
+	return uint16((b + 0x7fff + (b>>16)&1) >> 16)
+}

@@ -76,12 +76,13 @@ class Lfm3Config(DecoderConfig):
                 the default, layers without the sandwich norms, or a layer
                 kind other than conv, full and sliding attention.
         """
-        for kind, params in data.get("rope_parameters", {}).items():
+        text = data.get("text_config", {}) if cls.json_prefix == "text_config." else data
+        for kind, params in text.get("rope_parameters", {}).items():
             if params.get("rope_type", "default") != "default":
                 raise ValueError(f"{source}: {kind} RoPE {params['rope_type']!r} is not built here")
-        if not data.get("use_sandwich_norm"):
+        if not text.get("use_sandwich_norm"):
             raise ValueError(f"{source}: LFM3 without use_sandwich_norm is not built here")
-        kinds = set(data.get("layer_types", ())) - {"conv", "full_attention", "sliding_attention"}
+        kinds = set(text.get("layer_types", ())) - {"conv", "full_attention", "sliding_attention"}
         if kinds:
             raise ValueError(f"{source}: layer kinds {sorted(kinds)} are not built here")
         return super().from_json(data, source)
