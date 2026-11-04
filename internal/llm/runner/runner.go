@@ -363,6 +363,15 @@ func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer
 			return decode.Program{}, nil, err
 		}
 		closers = append(closers, c)
+		if man.Mass != nil {
+			ms, c, err := massCPU(man.Mass.Path)
+			if err != nil {
+				closers.Close()
+				return decode.Program{}, nil, err
+			}
+			closers = append(closers, c)
+			a.Mass = ms
+		}
 		p.Run, p.Attn, p.Context = nil, a, man.Cache
 		p.RunPart = func(i int) error { return run(stages[i]) }
 	}
@@ -410,6 +419,39 @@ func attentionCPU(path string, chunk int) (*decode.Attention, io.Closer, error) 
 		return nil
 	}
 	return a, f, nil
+}
+
+// massCPU loads the mass program of the two-level attention on the CPU interpreter.
+func massCPU(path string) (*decode.Mass, io.Closer, error) {
+	prog, f, err := milcpu.OpenPackage(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	outs, err := outputShapes(path)
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	in := prog.Inputs()
+	ms := &decode.Mass{Q: make([]byte, 2*count(in["q"])), R: make([]byte, 2*count(in["r"])), W: make([]byte, 2*count(outs["w"]))}
+	ms.Run = func(k, mask decode.Buf) error {
+		vals := map[string]milcpu.Tensor{}
+		for name, b := range map[string][]byte{"q": ms.Q, "r": ms.R, "k": k.Bytes(), "mask": mask.Bytes()} {
+			x := make([]float32, count(in[name]))
+			if 2*len(x) != len(b) {
+				return fmt.Errorf("runner: mass input %s has %d bytes for %v", name, len(b), in[name])
+			}
+			hwnpu.DecodeF16(x, b)
+			vals[name] = milcpu.Tensor{Shape: in[name], Data: x}
+		}
+		res, err := prog.Run(vals, milcpu.Options{})
+		if err != nil {
+			return err
+		}
+		hwnpu.EncodeF16(ms.W, res["w"].Data)
+		return nil
+	}
+	return ms, f, nil
 }
 
 // outputShapes reads the outputs of a package and their shapes.

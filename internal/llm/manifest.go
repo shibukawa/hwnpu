@@ -34,6 +34,10 @@ type Manifest struct {
 	// (internal/llm/paged); Cache is then the longest sequence the host's cache holds.
 	Paged     int         `json:"paged,omitempty"`
 	Attention *PartRecord `json:"attention,omitempty"`
+	// Mass is the program without weights that weighs one chunk of bucket summaries for the
+	// two-level attention (decode.Sparse, paged.BuildMass), of a model split at its attention.
+	// Conversions before it have none (AddMass).
+	Mass *PartRecord `json:"mass,omitempty"`
 	// Backend is the runtime the parts are written for (Options.Backend; empty for coreml).
 	Backend string `json:"backend,omitempty"`
 	// Meta is the metadata of the parts (MetaArch, MetaParam...), also in each part's own
@@ -193,10 +197,12 @@ func WriteManifest(path string, m *Manifest) error {
 	for _, t := range m.Tiers {
 		relative(t.Parts)
 	}
-	if m.Attention != nil {
-		a := []PartRecord{*m.Attention}
-		relative(a)
-		m.Attention = &a[0]
+	for _, r := range []**PartRecord{&m.Attention, &m.Mass} {
+		if *r != nil {
+			a := []PartRecord{**r}
+			relative(a)
+			*r = &a[0]
+		}
 	}
 	js, _ := json.MarshalIndent(m, "", "  ")
 	return os.WriteFile(path, append(js, '\n'), 0o644)
@@ -222,8 +228,10 @@ func ReadManifest(path string) (*Manifest, error) {
 		}
 	}
 	absolute(m.Parts)
-	if m.Attention != nil {
-		m.Attention.Path = filepath.Join(filepath.Dir(path), m.Attention.Path)
+	for _, r := range []*PartRecord{m.Attention, m.Mass} {
+		if r != nil {
+			r.Path = filepath.Join(filepath.Dir(path), r.Path)
+		}
 	}
 	for i, t := range m.Tiers {
 		if len(t.Parts) == 0 || i > 0 && t.Cache <= m.Tiers[i-1].Cache {
