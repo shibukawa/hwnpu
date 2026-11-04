@@ -129,6 +129,12 @@ func TestEngineReusePaged(t *testing.T) {
 // starts a session over them on the CPU interpreter.
 func pagedSession(t *testing.T, cfg *lfm3.Config, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
 	t.Helper()
+	return pagedSessionOn(t, context.Background(), nil, cfg, w, cache, chunk, qs...)
+}
+
+// pagedSessionOn is pagedSession on dev (nil: the CPU interpreter), loaded under ctx.
+func pagedSessionOn(t *testing.T, ctx context.Context, dev *hwnpu.Device, cfg *lfm3.Config, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
+	t.Helper()
 	var paths []string
 	for _, q := range qs {
 		opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
@@ -138,7 +144,7 @@ func pagedSession(t *testing.T, cfg *lfm3.Config, w llm.Weights, cache, chunk in
 		}
 		paths = append(paths, path)
 	}
-	sess, closer, err := runner.OpenSession(context.Background(), nil, paths, cfg)
+	sess, closer, err := runner.OpenSession(ctx, dev, paths, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

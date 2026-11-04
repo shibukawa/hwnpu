@@ -66,7 +66,6 @@ type attention struct {
 	q, o, m, l *hwnpu.Buffer
 	bufs       []*hwnpu.Buffer
 	dev        *hwnpu.Device
-	ctx        context.Context
 	placement  hwnpu.PlacementReport
 }
 
@@ -163,7 +162,7 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 		return fmt.Errorf("chain: the parts of a model split at its attention must alternate with it, ending with a part")
 	}
 	t.stages = append(t.stages, cur)
-	a := &attention{dev: c.dev, ctx: ctx}
+	a := &attention{dev: c.dev}
 	t.attn = a
 	var err error
 	if a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: man.Attention.Path}); err != nil {
@@ -210,8 +209,9 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 	return nil
 }
 
-// program is the attention as decode takes it.
-func (a *attention) program(chunk int) *decode.Attention {
+// program is the attention as decode takes it, run under ctx (that of the tier's program, not
+// the load's: hwnpu-chat cancels the context it loads under once the model is up).
+func (a *attention) program(ctx context.Context, chunk int) *decode.Attention {
 	return &decode.Attention{
 		Chunk: chunk,
 		Q:     a.q.Bytes(), O: a.o.Bytes(), M: a.m.Bytes(), L: a.l.Bytes(),
@@ -231,7 +231,7 @@ func (a *attention) program(chunk int) *decode.Attention {
 				}
 			}
 			a.q.SyncToDevice(0, a.q.Size())
-			if err := a.req.Run(a.ctx); err != nil {
+			if err := a.req.Run(ctx); err != nil {
 				return err
 			}
 			for _, b := range []*hwnpu.Buffer{a.o, a.m, a.l} {
@@ -384,7 +384,7 @@ func (t *tier) program(ctx context.Context) decode.Program {
 		p.Out[n] = b.Bytes()
 	}
 	if t.attn != nil {
-		p.Attend, p.Context, p.Attn = t.attend, t.context, t.attn.program(t.paged)
+		p.Attend, p.Context, p.Attn = t.attend, t.context, t.attn.program(ctx, t.paged)
 		p.RunPart = func(i int) error {
 			for _, part := range t.stages[i] {
 				for _, b := range part.ins {
