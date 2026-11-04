@@ -44,7 +44,7 @@ go run ./cmd/hwnpu-chat
 No arguments are needed. The first run does the following by itself (about 6.5 minutes on an M3, besides the download: four minutes of conversion and two and a half of compiling). Later runs only load the compiled programs and start in a few seconds to a minute, showing how far loading is.
 
 1. It downloads `config.json`, `tokenizer.json` and `model.safetensors` (3.5 GB) of [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) from Hugging Face to `~/Library/Caches/hwnpu/models/LFM3-1.7B`. A download cut off goes on from where it stopped on the next run
-2. It converts the model for the Neural Engine, with 6 bit tables and the grouped attention (`lfm3-lut6-grouped-c16320-q8.mlpackage` and `-q64`, 2 parts of 1.21 GiB together each, a minute or two each): one generates, 8 tokens per call (a token and 7 guesses checked at once, section 3), the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache. The 4096 tier (`-tier`, section 2) is off for this model: its two more programs would not stay in the Neural Engine's compile cache. Until November 2026 the default was 4 bit tables and the tiled attention (`lfm3-c16320-q8.mlpackage`): those files are no longer read and can be deleted. Against the model in bf16, lut6 is six times closer than lut4 was (KL 0.23 nats to 1.39), a coding task takes 6 rounds where it took 13 to 27, and with the grouped attention a call is still 38% faster than before (section 16.41 of [docs/design.md](docs/design.md))
+2. It converts the model for the Neural Engine, with 6 bit tables and the grouped attention, split at its full attention layers (`lfm3-lut6-grouped-p8192-c262144-q8.parts.json` and `-q64`, 7 parts of about 1.2 GiB together each and a program without weights for the attention): one generates, 8 tokens per call (a token and 7 guesses checked at once, section 3), the other reads prompts 64 tokens per call, about 20 times faster. The two share one KV cache. hwnpu-chat runs the full attention layers' attention itself, over the cache it holds, in chunks of 8192 tokens (`-paged`, section 2): a step then costs in proportion to the conversation, and the cache's memory grows with it, so the context is the model's longest, 262144 tokens. The default until November 4, 2026 (`lfm3-lut6-grouped-c16320-q8.mlpackage`, a context of 16320, every step costing in proportion to it) is no longer read and can be deleted, as can the 4 bit `lfm3-c16320-q8.mlpackage` of before. Against the model in bf16, lut6 is six times closer than lut4 was (KL 0.23 nats to 1.39), a coding task takes 6 rounds where it took 13 to 27, and with the grouped attention a call is still 38% faster than before (section 16.41 of [docs/design.md](docs/design.md))
 3. It compiles them for the Neural Engine (1 to 2 minutes). The result stays in `~/Library/Caches/hwnpu`
 
 Then type after the `>`.
@@ -96,7 +96,8 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-system TEXT` | none | the chat's system message |
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |
-| `-context N` | `16320` | most tokens of a prompt and its answer together; another value converts the model again for it; over 16320 the cache is held in chunks |
+| `-context N` | `0` | most tokens of a prompt and its answer together. `0`: the model's longest when it is split at its attention (`-paged`; 262144 for LFM3-1.7B), else 16320. Another value converts the model again for it; a model not split holds its cache in chunks over 16320 |
+| `-paged N` | `0` | split the model at its full attention layers and attend over the cache hwnpu-chat holds in chunks of N tokens: a step costs in proportion to the conversation, not to `-context`, and the cache's memory grows with it (12 KiB a token for LFM3-1.7B, 3 GiB at 262144; the context is cut when that would be over a quarter of the memory). `0` is 8192 where the model and the NPU allow it (LFM3 on the Neural Engine), `-1` never (then `-tier` applies) |
 | `-dir DIR` | `~/Library/Caches/hwnpu/models` | where the models are kept, each in `DIR/NAME` with its checkpoint and converted programs |
 | `-package A,B` | none | chat programs you converted with `hwnpu-convert` (section 5) |
 | `-dump DIR` | none | with the server, save each request, its prompt and the generated text |
@@ -105,7 +106,17 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 
 The flags from `-think` to `-context`, `-package`, `-config`, `-weights` and `-tokenizer` are for chat models, the `-embed-` flags for embedding models. `-package` and its companions (and `-embed-package`) take one model of their kind in `-use`.
 
-- The longer the context, the slower each token. OpenCode needs 16K or more. A step costs in proportion to the cache whatever it holds, so with `-tier 4096` (the default) a conversation runs on a cache of 4096 while it fits, about twice as fast, and moves up to `-context` as it grows; the programs of each tier are converted and loaded too
+- With LFM3-1.7B split at its attention (`-paged` 8192, the default), a step costs in proportion to the conversation: a context of 262144 does not slow a short one. Estimates from the attention measured alone with `npuprobe attn` and `npuprobe seam`; the whole model is still to be measured (sections 16.58 and 16.59 of [docs/design.md](docs/design.md)):
+
+| conversation | generation (M3, estimate) | cache memory |
+|---|---|---|
+| 4096 | about 30 to 34 ms/token | about 48 MiB |
+| 16384 | about 42 ms/token | about 192 MiB |
+| 65536 | about 95 ms/token | about 768 MiB |
+| 262144 | about 320 ms/token | about 3 GiB |
+
+- A prompt of 262144 tokens read at once would take about half an hour for the attention alone. Prompts read are kept on disk (`-prompt-cache`), so the second time reads nothing
+- A model not split (`-paged -1`, Gemma 4) costs in proportion to its cache whatever it holds: the longer the context, the slower each token, and with `-tier 4096` (the default for 4 bit tables) a conversation runs on a cache of 4096 while it fits, about twice as fast, and moves up to `-context` as it grows; the programs of each tier are converted and loaded too. OpenCode needs 16K or more
 
 | `-context` | generation (M3) | reading a prompt | KV cache |
 |---|---|---|---|
@@ -115,7 +126,7 @@ The flags from `-think` to `-context`, `-package`, `-config`, `-weights` and `-t
 | 65536 | about 363 ms/token | about 150 tokens/s | about 770 MiB |
 
 - Over 16320, the cache is held in chunks of 16384 tokens, to stay within the Neural Engine's 16384 per tensor dimension. With 32768 and 65536 the model recalled a passphrase put at the start of prompts of 25,288 and 53,736 tokens
-- The server keeps up to two other conversations as copies of the whole cache, so memory goes up to three times the KV cache above
+- The server keeps up to two other conversations as copies of the part of the cache each used (of the whole cache until November 4, 2026)
 
 ## 3. OpenAI compatible server
 
@@ -262,7 +273,7 @@ To set it up by hand, put an `opencode.json` in the project directory. The model
           "name": "LFM3 1.7B on the Neural Engine",
           "tool_call": true,
           "reasoning": true,
-          "limit": { "context": 16320, "output": 4096 }
+          "limit": { "context": 262144, "output": 4096 }
         }
       }
     }
@@ -274,13 +285,13 @@ To set it up by hand, put an `opencode.json` in the project directory. The model
 }
 ```
 
-- Set `limit.context` to the server's cache length. OpenCode's requests take about 7.4K tokens for the system prompt and the tools alone, so with an 8K cache it starts compacting after one turn
+- Set `limit.context` to the server's context (`ready: context N tokens` at the start). OpenCode's requests take about 7.4K tokens for the system prompt and the tools alone, so with a context of 8K it starts compacting after one turn
 - A 1.7B model sometimes writes commands that make no sense. Allowing only some commands for `bash` is safer
 - An example on an M3: asked to fix the bug in `add` of main.go, it read the file, changed `a - b` to `a + b` and checked with `go run`, in 12 requests. The first request read 7.4K tokens in 13 seconds; the later ones reused 99% of the prompt and read the rest in 0.1 to 0.5 seconds. Generation takes about 64 ms a token (about 15 tokens/s)
 
 ## 7. hwnpu-agent: a coding agent on the engine itself
 
-`hwnpu-agent` is a coding agent with four tools, read, edit, write and bash, in the loop of [Pi](https://pi.dev) written in Go on the same engine as hwnpu-chat, with no HTTP in between. Where OpenCode's first request takes about 7.4K tokens for its system prompt and ten tools, hwnpu-agent's system prompt and four declarations take about 630 tokens, so nearly all of the 16K context is left for the task, and it makes no side requests (OpenCode asks for a title first), so the task starts at once.
+`hwnpu-agent` is a coding agent with four tools, read, edit, write and bash, in the loop of [Pi](https://pi.dev) written in Go on the same engine as hwnpu-chat, with no HTTP in between. Where OpenCode's first request takes about 7.4K tokens for its system prompt and ten tools, hwnpu-agent's system prompt and four declarations take about 630 tokens, so nearly all of the context (262144 for LFM3-1.7B) is left for the task, and it makes no side requests (OpenCode asks for a title first), so the task starts at once.
 
 ```bash
 go run ./cmd/hwnpu-agent "fix the bug in the add function of main.go"
@@ -301,6 +312,6 @@ go run ./cmd/hwnpu-agent
 
 - OpenCode first asks for a title of the conversation. This model thinks before answering even when told not to, and the main request waits meanwhile; `-think-budget` (default 1024 tokens, about a minute) bounds the wait
 - With 1.7B parameters and 4 bit weights, factual answers can be wrong. Letting it think helps
-- A longer context generates more slowly (about 0.36 s a token with 65536). Contexts up to 65536 were tried
+- A longer conversation generates more slowly (about 0.1 s a token at 65536 and 0.3 s at 262144, estimated for the model split at its attention). Contexts up to 65536 were tried on the model converted whole; the split model's 262144 is still to be tried on a device
 - PLaMo-Embedding-1B is converted with 8 bit tables (lut8): in 4 bits its embeddings point elsewhere (cosine 0.76 with fp16's). On an M3 its embeddings have a cosine of 0.997 to 0.999 with the Hugging Face implementation's (`tools/ref/embed_golden.py`, `TestPlamoEmbeddingGolden` in `internal/chat`), as on the CPU. The last layer's MLP produces values past fp16's range, so the converter computes the last layer divided by 64 (`head-scale`, section 16.34 of docs/design.md). Programs converted before, `embed-s128.mlpackage` and `embed-s1024.mlpackage` in lut4, are no longer used and can be deleted
 - The implementation notes are in sections 16.17, 16.23 and 16.35 of [docs/design.md](docs/design.md)
