@@ -279,3 +279,59 @@ func TestPreparePaged(t *testing.T) {
 		t.Errorf("intel: %v, %+v", err, man)
 	}
 }
+
+// Prepare converts the program that reads prompts beside the one that generates unless the two
+// would overflow the Neural Engine's compile cache (here made smaller than the tiny model's
+// weights) or -prefill says otherwise; then the one that generates reads the prompts.
+func TestPreparePrefill(t *testing.T) {
+	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
+	tcfg, err := lfm3.ParseConfig([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"/org/text/resolve/main/config.json":       []byte(text),
+		"/org/text/resolve/main/tokenizer.json":    []byte(imageTokenizer),
+		"/org/text/resolve/main/model.safetensors": safetensorsOf(t, llm.NewSynthetic(tcfg)),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, ok := files[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(b)
+	}))
+	defer srv.Close()
+	defer func(u string) { hubURL = u }(hubURL)
+	hubURL = srv.URL + "/"
+	defer func(n int64) { compileCacheBytes = n }(compileCacheBytes)
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "text")
+	for _, c := range []struct {
+		prefill string
+		cache   int64
+		want    []string
+	}{
+		{"", 4 << 30, []string{"q8", "q64"}},
+		{PrefillAuto, 1024, []string{"q8"}},
+		{PrefillOn, 1024, []string{"q8", "q64"}},
+		{PrefillOff, 4 << 30, []string{"q8"}},
+	} {
+		compileCacheBytes = c.cache
+		cfg, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Prefill: c.prefill, Backend: "coreml", Format: "lut4", Log: io.Discard})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, p := range cfg.Packages {
+			got = append(got, strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "lfm3-lut4-grouped-p96-c96-"), ".parts.json"))
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("-prefill %q with a compile cache of %d: programs %v, want %v", c.prefill, c.cache, got, c.want)
+		}
+	}
+	if _, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Prefill: "sometimes", Backend: "coreml", Log: io.Discard}); err == nil {
+		t.Error("-prefill sometimes is accepted")
+	}
+}

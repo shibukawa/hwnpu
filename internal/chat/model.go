@@ -34,6 +34,24 @@ const PagedOff = -1
 
 const prefillSeq = 64
 
+// The values of Setup.Prefill (-prefill): whether a program of 64 tokens per call reads the
+// prompts beside the one that generates.
+const (
+	// PrefillAuto has one unless the two programs' weights would not stay in the Neural Engine's
+	// compile cache (compileCacheBytes), as Gemma 4 E4B's (2 × 3.26 GiB in lut6) do not: then
+	// every start compiles them again (77 to 87 seconds on an M3) and every question pays 1 to 3
+	// seconds of switching between them, while the one that generates alone starts in 4 seconds
+	// and answers faster. It reads a long prompt 4.4 times slower (16K tokens in 183 seconds
+	// against 42; docs/design.md 16.65)
+	PrefillAuto = "auto"
+	PrefillOn   = "on"  // always a program to read prompts
+	PrefillOff  = "off" // never: the program that generates reads them
+)
+
+// compileCacheBytes is about what the Neural Engine's own cache of compiled programs holds
+// (TierAuto).
+var compileCacheBytes int64 = 4 << 30
+
 // DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: auto, a cache of 4096 to run on
 // while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
 const DefaultTiers = "auto"
@@ -94,6 +112,10 @@ type Setup struct {
 	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
 	// generation runs on one.
 	Draft int
+	// Prefill is PrefillAuto (also for ""), PrefillOn or PrefillOff: whether a program of 64
+	// tokens per call reads the prompts, or the one that generates does (it must take several
+	// tokens per call, Draft).
+	Prefill string
 	// Tiers are caches shorter than Context to run on while a conversation is short (Engine
 	// tiers): the programs are converted for each, and a conversation moves up as it grows. A
 	// step costs in proportion to the cache, whatever it holds.
@@ -140,6 +162,11 @@ func targetName(backend string) string {
 // (Setup.Backend), named by the architecture, the weight format and the attention
 // (lfm3-lut6-grouped-c16320-q8.mlpackage). It returns the Config that loads them.
 func Prepare(ctx context.Context, s Setup) (Config, error) {
+	switch s.Prefill {
+	case "", PrefillAuto, PrefillOn, PrefillOff:
+	default:
+		return Config{}, fmt.Errorf("chat: -prefill %q is not auto, on or off", s.Prefill)
+	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Config{}, err
 	}
@@ -215,6 +242,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	slices.Sort(caches)
 	caches = slices.Compact(caches)
+	if one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(progs)*(len(caches)+1)); one {
+		progs = progs[:1]
+		if s.Log != nil {
+			fmt.Fprintf(s.Log, "one program for %s, which reads the prompts %d tokens per call too: %s (-prefill on for one of %d to read long prompts faster)\n", c.Name, s.Draft, why, prefillSeq)
+		}
+	}
 	for _, cache := range append(caches, context) {
 		var pkgs []string
 		for _, p := range progs {
@@ -253,6 +286,30 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		*e.packages(&c) = []string{path}
 	}
 	return c, nil
+}
+
+// onePrograms decides Setup.Prefill: whether the program that generates (of draft tokens per
+// call) reads the prompts too, instead of n programs of the model's weights in format, and why.
+func onePrograms(model llm.Model, format, backend, prefill string, draft, n int) (bool, string) {
+	switch {
+	case prefill == PrefillOff:
+		return true, "-prefill off"
+	case prefill == PrefillOn || draft <= 1 || backend == llm.BackendIntel:
+		return false, "" // reading prompts one token per call would be far slower; the cache is the Neural Engine's
+	}
+	var o llm.Options
+	set := llm.BindFlags(flag.NewFlagSet("", flag.ContinueOnError), &o, "")
+	set()
+	o.Format = format
+	pre, layers, post := llm.EstimateBytes(model, o)
+	total := pre + post
+	for _, l := range layers {
+		total += l
+	}
+	if int64(n)*total <= compileCacheBytes {
+		return false, ""
+	}
+	return true, fmt.Sprintf("%d programs would hold %.2f GiB of weights, over the about %d GiB the Neural Engine keeps compiled, so every start would compile them again and every question switch between them", n, float64(int64(n)*total)/(1<<30), compileCacheBytes>>30)
 }
 
 // sharedMark is the file in a directory of programs that says ShareWeights went over it: the
