@@ -20,6 +20,7 @@ func BindFlags(fs *flag.FlagSet, o *Options, defaultFormat string) func() {
 	keep := fs.String("keep-fp16", "", "comma separated substrings of tensor names to keep in fp16, e.g. embed_tokens")
 	formatFor := fs.String("format-for", "", "comma separated SUBSTRING=FORMAT: another weight format for the tensors whose names contain SUBSTRING, e.g. mlp=lut8 (the last match wins)")
 	quant := fs.String("quant", "", "lut4 table fitting: uniform (the default), kmeans or kmeans-minmax; intN scales: mse (the default: the clipping with the smallest squared error) or uniform (the block's largest weight)")
+	paged := fs.Int("paged", 0, "with -cache: split the model at its full attention layers and attend over the cache in chunks of this many tokens on the host's side (internal/llm/paged), so that a step costs in proportion to the tokens used, not to -cache; 8192 for the Neural Engine. LFM3 only")
 	params := map[string]*string{}
 	for _, a := range Archs() {
 		for _, p := range a.Params {
@@ -29,7 +30,7 @@ func BindFlags(fs *flag.FlagSet, o *Options, defaultFormat string) func() {
 		}
 	}
 	return func() {
-		o.Format, o.Group, o.ColBlock, o.Quant = *format, *group, *colBlock, *quant
+		o.Format, o.Group, o.ColBlock, o.Quant, o.Paged = *format, *group, *colBlock, *quant, *paged
 		o.KeepFP16 = nil
 		if *keep != "" {
 			o.KeepFP16 = strings.Split(*keep, ",")

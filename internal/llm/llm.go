@@ -122,6 +122,11 @@ type Options struct {
 	// of this many tokens held by the host: it takes the earlier tokens' keys and values and
 	// the other state it needs as inputs, and outputs the new ones (see Cached).
 	Cache int
+	// Paged, when not zero with Cache, builds a Paged model split at its attention: the
+	// attention of its PagedLayers runs between the parts on a cache the host holds in chunks
+	// of Paged tokens (internal/llm/paged), so that a step costs in proportion to the tokens in
+	// the cache, not to Cache. Cache is then the longest sequence, and Seq at most Paged.
+	Paged int
 	// Layers truncates the model to its first Layers layers (0 means all); with a truncated
 	// model the output is the hidden state instead of the logits, for checking layer by layer.
 	Layers int

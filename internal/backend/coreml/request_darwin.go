@@ -37,7 +37,9 @@ func (r *request) Bind(index int, b backend.Buffer) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.inflight != nil {
-		return errors.New("coreml: cannot bind while a submission is running")
+		if ok, _ := r.inflight.Done(); !ok {
+			return errors.New("coreml: cannot bind while a submission is running")
+		}
 	}
 	r.binds[index] = cb
 	return nil

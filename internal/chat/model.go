@@ -15,13 +15,19 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 )
 
 var hubURL = "https://huggingface.co/"
 
-// DefaultContext is the longest cache the Neural Engine takes with 64 tokens per call: a tensor
-// dimension goes up to llm.NeuralEngineMaxDim, and the key axis is the cache plus the tokens.
+// DefaultContext is the longest cache the Neural Engine takes with 64 tokens per call in one
+// piece: a tensor dimension goes up to llm.NeuralEngineMaxDim, and the key axis is the cache plus
+// the tokens. It is the context of a model that cannot be split at its attention; one that can
+// (Setup.Paged) gets the longest it was trained for.
 const DefaultContext = llm.NeuralEngineMaxDim - prefillSeq
+
+// PagedOff in Setup.Paged converts the model whole even when it can be split at its attention.
+const PagedOff = -1
 
 const prefillSeq = 64
 
@@ -70,9 +76,17 @@ func Tiers(s string) ([]int, error) {
 
 // Setup says where the model is and how to get it.
 type Setup struct {
-	Dir     string // holds config.json, tokenizer.json, model.safetensors and the converted programs
-	Repo    string // Hugging Face repository the missing checkpoint files come from
-	Context int    // cache length of the programs
+	Dir  string // holds config.json, tokenizer.json, model.safetensors and the converted programs
+	Repo string // Hugging Face repository the missing checkpoint files come from
+	// Context is the longest prompt and answer together; 0 for the longest the model was trained
+	// for when it is split at its attention (Paged), else DefaultContext.
+	Context int
+	// Paged is the chunk length of a model split at its attention (llm.Options.Paged): a step
+	// then costs in proportion to the tokens in the cache, and the cache's memory grows with the
+	// conversation, so the context can be the model's longest. 0 for paged.DefaultChunk when the
+	// model can be split and the programs are for the Neural Engine, PagedOff for never. A model
+	// split at its attention has no tiers.
+	Paged int
 	// Draft makes the program that generates take this many tokens per call instead of 1, for
 	// checking the drafts of speculative decoding (Engine.Draft); 0 or 1 for none. It is one
 	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
@@ -153,6 +167,17 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
 		kind += "-" + attn
 	}
+	chunk, context := pagedChunk(model, backend, s.Paged), s.Context
+	if context <= 0 {
+		context = DefaultContext
+		if pm, ok := model.(llm.Paged); ok && chunk > 0 && pm.MaxContext() > 0 {
+			context = pm.MaxContext()
+		}
+	}
+	if chunk > 0 {
+		chunk = min(chunk, context)
+		kind += fmt.Sprintf("-p%d", chunk)
+	}
 	// the Neural Engine's program of one token per call is in two parts; Intel's is whole, since
 	// each part is a graph its driver compiles, slowly for a large one, and no limit is known to
 	// call for parts
@@ -164,6 +189,13 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		progs[0] = struct{ seq, parts int }{s.Draft, 0}
 	}
 	tiers := s.Tiers
+	if chunk > 0 {
+		// the cost follows the tokens used, not the cache: no shorter caches to run on
+		if len(tiers) > 0 && !slices.Contains(tiers, TierAuto) && s.Log != nil {
+			fmt.Fprintf(s.Log, "no cache tiers for %s: split at its attention, a step costs in proportion to the conversation, not to the context of %d\n", c.Name, context)
+		}
+		tiers = nil
+	}
 	if slices.Contains(tiers, TierAuto) {
 		tiers = autoTiers(format, backend)
 		if len(tiers) == 0 && s.Log != nil {
@@ -172,17 +204,17 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	var caches []int
 	for _, t := range tiers {
-		if t > 0 && t < s.Context {
+		if t > 0 && t < context {
 			caches = append(caches, t)
 		}
 	}
 	slices.Sort(caches)
 	caches = slices.Compact(caches)
-	for _, cache := range append(caches, s.Context) {
+	for _, cache := range append(caches, context) {
 		var pkgs []string
 		for _, p := range progs {
 			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s", kind, cache, p.seq, programExt(backend)))
-			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, seq: p.seq, parts: p.parts, cache: cache}, s.Log)
+			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, seq: p.seq, parts: p.parts, cache: cache, paged: chunk}, s.Log)
 			if err != nil {
 				return Config{}, err
 			}
@@ -210,6 +242,16 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	return c, nil
 }
 
+// pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
+// none: the model must be Paged, and the programs for the Neural Engine.
+func pagedChunk(model llm.Model, backend string, want int) int {
+	pm, ok := model.(llm.Paged)
+	if !ok || want < 0 || backend == llm.BackendIntel || len(pm.PagedLayers()) == 0 {
+		return 0
+	}
+	return cmp.Or(want, paged.DefaultChunk)
+}
+
 // encoders are the programs of the multimodal checkpoints besides the text model, converted when
 // config.json has them: LFM3-VL's and LFM3-Omni's vision encoder for one image size (an image is
 // stretched to it), LFM3-Audio's and LFM3-Omni's audio encoder for clips of up to 30 seconds. They
@@ -233,6 +275,7 @@ type program struct {
 	arch, format      string
 	params            map[string]string
 	seq, parts, cache int
+	paged             int // llm.Options.Paged
 }
 
 // convert writes the program of the model (config.json and the checkpoint) unless it is there,
@@ -270,12 +313,14 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	if p.backend != llm.BackendIntel && !strings.HasPrefix(opts.Format, "int") {
 		opts.Quant = "kmeans-minmax"
 	}
-	opts.Seq, opts.Cache = p.seq, p.cache
+	opts.Seq, opts.Cache, opts.Paged = p.seq, p.cache, p.paged
 	for k, v := range p.params {
 		opts.Params[k] = v
 	}
 	npu := targetName(p.backend)
 	switch {
+	case p.paged > 0:
+		fmt.Fprintf(log, "converting %s for %s (split at its attention, a context of %d held by the host in chunks of %d, %d per call, %s); this takes a few minutes\n", filepath.Base(out), npu, p.cache, p.paged, p.seq, opts.Format)
 	case p.cache > 0:
 		fmt.Fprintf(log, "converting %s for %s (cache %d, %d per call, %s); this takes a minute or two\n", filepath.Base(out), npu, p.cache, p.seq, opts.Format)
 	case p.seq > 0:

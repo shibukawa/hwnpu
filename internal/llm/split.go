@@ -249,3 +249,53 @@ func fill(cost []int64, cap int64, n int) []Part {
 }
 
 func gib(n int64) float64 { return float64(n) / (1 << 30) }
+
+// PlanPaged divides a Paged model (Options.Paged) into parts cut at its PagedLayers: a part ends
+// where one of them begins and the next starts with it, so that the host's attention runs between
+// them. A run of layers between two such cuts whose estimated weights are over budget is divided
+// further at other layers, as PlanSplit does.
+func PlanPaged(m Model, opts Options, budget int64) ([]Part, error) {
+	pm, ok := m.(Paged)
+	if !ok {
+		return nil, fmt.Errorf("llm: the model cannot be split at its attention (-paged)")
+	}
+	pre, layers, post := EstimateBytes(m, opts)
+	n := len(layers)
+	cuts := pm.PagedLayers()
+	bounds := []int{0}
+	for _, c := range cuts {
+		if c <= bounds[len(bounds)-1] || c >= n {
+			if c == 0 {
+				return nil, fmt.Errorf("llm: layer 0's attention cannot run on the host (-paged)")
+			}
+			return nil, fmt.Errorf("llm: the attention layers %v are not in order within %d layers", cuts, n)
+		}
+		bounds = append(bounds, c)
+	}
+	bounds = append(bounds, n)
+	cost := append([]int64(nil), layers...)
+	cost[0] += pre
+	cost[n-1] += post
+	var out []Part
+	for i := 0; i+1 < len(bounds); i++ {
+		a, b := bounds[i], bounds[i+1]
+		seg := cost[a:b]
+		var total, largest int64
+		for _, c := range seg {
+			total += c
+			largest = max(largest, c)
+		}
+		if total <= budget {
+			out = append(out, Part{Start: a, Layers: b - a, Bytes: total})
+			continue
+		}
+		if largest > budget {
+			return nil, fmt.Errorf("llm: layer %d needs %.2f GiB, over the %.2f GiB a part may hold", a, gib(largest), gib(budget))
+		}
+		for _, p := range fill(seg, budget, 0) {
+			p.Start += a
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}

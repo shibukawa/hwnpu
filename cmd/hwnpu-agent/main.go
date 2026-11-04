@@ -1,7 +1,8 @@
 // hwnpu-agent is a coding agent on the Neural Engine: a chat model (LFM3-1.7B) with four tools,
 // read, edit, write and bash, in the loop of Pi (pi.dev) written in Go on hwnpu-chat's engine.
-// Its system prompt and tool declarations take well under 1K tokens of the 16K context (OpenCode's
-// take 7.4K), and it makes no side requests, so a task starts at once.
+// Its system prompt and tool declarations take well under 1K tokens (OpenCode's take 7.4K), and it
+// makes no side requests, so a task starts at once. The context is LFM3's longest, 262144 tokens,
+// with the model split at its attention as hwnpu-chat does (-paged).
 //
 //	hwnpu-agent "fix the bug in the add function of main.go"
 //	hwnpu-agent -C ~/src/demo -yes "add a mul function and print mul(2, 3)"
@@ -52,7 +53,8 @@ import (
 func main() {
 	use := flag.String("use", "LFM3-1.7B", "the chat model: a name that hwnpu-chat -list shows (one with tool calls), or a Hugging Face repository OWNER/NAME")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name")
-	context_ := flag.Int("context", chat.DefaultContext, "tokens of the conversation and the answer together (the KV cache of the model's programs)")
+	context_ := flag.Int("context", 0, "tokens of a prompt and its answer together; 0: the longest the model was trained for when it is split at its attention (-paged: 262144 for LFM3-1.7B, its cache growing with the conversation within a quarter of the memory), else 16320 (over 16320 a whole model's cache is in chunks of 16384, slower per token)")
+	paged := flag.Int("paged", 0, "split a chat model at its full attention layers and attend over the cache in chunks of this many tokens, so that a step costs in proportion to the conversation, not to -context: 0 for 8192 where the model and the NPU allow it (LFM3 on the Neural Engine), -1 never (then -tier applies)")
 	pkgs := flag.String("package", "", "programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq")
 	config := flag.String("config", "", "config.json of the model (default: in its directory)")
 	weights := flag.String("weights", "", "checkpoint the token embeddings are read from (default: in the model's directory)")
@@ -147,7 +149,7 @@ func main() {
 			if c.Weights == "" {
 				c.Weights = filepath.Join(md, "model.safetensors")
 			}
-		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
+		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
 			fail(err)
 		}
 		c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr

@@ -8,6 +8,11 @@
 // shortest first, since a step costs in proportion to the cache's length, and the next when the
 // sequence outgrows it (Grow), its state carried over by the caller (decode.Session.Migrate). The
 // next tier can be loaded in the background ahead of time (Preload).
+//
+// A model split at its attention (llm.Paged, the manifest's Paged and Attention) runs in stages,
+// the parts between two attention layers, with the program without weights that attends over a
+// chunk of the cache loaded beside them (decode.Program.RunPart and Attn): the session holds that
+// cache in buffers of the device (decode.Attention.NewBuf).
 package chain
 
 import (
@@ -31,6 +36,8 @@ type Part struct {
 
 	g   *hwnpu.Graph
 	req *hwnpu.Request
+	// the part's buffers that a stage of a model split at its attention syncs around it
+	ins, outs []*hwnpu.Buffer
 }
 
 // tier is one loaded set of parts with its buffers.
@@ -42,6 +49,24 @@ type tier struct {
 	out               *hwnpu.Buffer
 	bufs              []*hwnpu.Buffer
 	loadTime          time.Duration
+
+	// of a model split at its attention
+	stages  [][]*Part // the parts between two attention layers
+	attend  []int     // the layer attended after each stage but the last
+	attn    *attention
+	paged   int // the chunk length
+	context int // the longest sequence (the manifest's Cache)
+}
+
+// attention is the loaded program without weights that attends over one chunk of the cache.
+type attention struct {
+	g          *hwnpu.Graph
+	req        *hwnpu.Request
+	k, v, mask int // the arguments bound per call
+	q, o, m, l *hwnpu.Buffer
+	bufs       []*hwnpu.Buffer
+	dev        *hwnpu.Device
+	placement  hwnpu.PlacementReport
 }
 
 // Chain is a loaded model in parts.
@@ -102,7 +127,131 @@ func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[
 	if c.cur, err = c.load(ctx, c.tiers[0].Parts, shared); err != nil {
 		return nil, err
 	}
+	if man.Paged > 0 {
+		if err := c.cur.loadPaged(ctx, c, man); err != nil {
+			c.cur.close()
+			return nil, err
+		}
+	}
 	return c, nil
+}
+
+// loadPaged loads the attention program of a model split at its attention and groups the parts
+// into the stages between the attention layers: a stage ends with a part that outputs attn_q_N.
+func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error {
+	if man.Attention == nil || man.Cache <= 0 || len(man.Tiers) > 0 {
+		return fmt.Errorf("chain: a model split at its attention needs its attention program and one cache length")
+	}
+	t.paged, t.context = man.Paged, man.Cache
+	var cur []*Part
+	for i, p := range t.parts {
+		cur = append(cur, p)
+		layer := -1
+		for _, a := range p.g.Args() {
+			if a.Kind == hwnpu.ArgOutput && strings.HasPrefix(a.Name, "attn_q_") {
+				if _, err := fmt.Sscanf(a.Name, "attn_q_%d", &layer); err != nil {
+					return fmt.Errorf("chain: part %d: output %s", i, a.Name)
+				}
+			}
+		}
+		if layer >= 0 {
+			t.stages, t.attend, cur = append(t.stages, cur), append(t.attend, layer), nil
+		}
+	}
+	if len(cur) == 0 || len(t.attend) == 0 {
+		return fmt.Errorf("chain: the parts of a model split at its attention must alternate with it, ending with a part")
+	}
+	t.stages = append(t.stages, cur)
+	a := &attention{dev: c.dev}
+	t.attn = a
+	var err error
+	if a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: man.Attention.Path}); err != nil {
+		return fmt.Errorf("chain: the attention program (%s): %w", man.Attention.Path, err)
+	}
+	a.placement = a.g.Placement()
+	if a.req, err = a.g.NewRequest(); err != nil {
+		return err
+	}
+	for _, arg := range a.g.Args() {
+		switch arg.Name {
+		case "k":
+			a.k = arg.Index
+			continue
+		case "v":
+			a.v = arg.Index
+			continue
+		case "mask":
+			a.mask = arg.Index
+			continue
+		}
+		b, err := c.dev.AllocBuffer(arg.Bytes)
+		if err != nil {
+			return err
+		}
+		a.bufs = append(a.bufs, b)
+		if err := a.req.Bind(arg.Index, b); err != nil {
+			return err
+		}
+		switch arg.Name {
+		case "q":
+			a.q = b
+		case "o":
+			a.o = b
+		case "m":
+			a.m = b
+		case "l":
+			a.l = b
+		}
+	}
+	if a.q == nil || a.o == nil || a.m == nil || a.l == nil {
+		return fmt.Errorf("chain: the attention program does not have q, o, m and l")
+	}
+	return nil
+}
+
+// program is the attention as decode takes it, run under ctx (that of the tier's program, not
+// the load's: hwnpu-chat cancels the context it loads under once the model is up).
+func (a *attention) program(ctx context.Context, chunk int) *decode.Attention {
+	return &decode.Attention{
+		Chunk: chunk,
+		Q:     a.q.Bytes(), O: a.o.Bytes(), M: a.m.Bytes(), L: a.l.Bytes(),
+		NewBuf: func(n int) (decode.Buf, error) { return a.dev.AllocBuffer(n) },
+		Run: func(k, v, mask decode.Buf) error {
+			for _, x := range []struct {
+				i int
+				b decode.Buf
+			}{{a.k, k}, {a.v, v}, {a.mask, mask}} {
+				hb, ok := x.b.(*hwnpu.Buffer)
+				if !ok {
+					return fmt.Errorf("chain: a chunk not allocated by the attention program")
+				}
+				hb.SyncToDevice(0, hb.Size())
+				if err := a.req.Bind(x.i, hb); err != nil {
+					return err
+				}
+			}
+			a.q.SyncToDevice(0, a.q.Size())
+			if err := a.req.Run(ctx); err != nil {
+				return err
+			}
+			for _, b := range []*hwnpu.Buffer{a.o, a.m, a.l} {
+				b.SyncFromDevice(0, b.Size())
+			}
+			return nil
+		},
+	}
+}
+
+func (a *attention) close() {
+	if a.req != nil {
+		a.req.Close()
+	}
+	if a.g != nil {
+		a.g.Close()
+	}
+	for _, b := range a.bufs {
+		b.Close()
+	}
 }
 
 // load compiles and binds one tier's parts. Inputs named in shared are bound to those buffers
@@ -175,6 +324,11 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 				t.close()
 				return nil, err
 			}
+			if a.Kind == hwnpu.ArgOutput {
+				p.outs = append(p.outs, b)
+			} else {
+				p.ins = append(p.ins, b)
+			}
 		}
 		if out == nil {
 			t.close()
@@ -193,6 +347,10 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 }
 
 func (t *tier) close() {
+	if t.attn != nil {
+		t.attn.close()
+		t.attn = nil
+	}
 	for _, p := range t.parts {
 		if p.req != nil {
 			p.req.Close()
@@ -224,6 +382,23 @@ func (t *tier) program(ctx context.Context) decode.Program {
 	}
 	for n, b := range t.outputs {
 		p.Out[n] = b.Bytes()
+	}
+	if t.attn != nil {
+		p.Attend, p.Context, p.Attn = t.attend, t.context, t.attn.program(ctx, t.paged)
+		p.RunPart = func(i int) error {
+			for _, part := range t.stages[i] {
+				for _, b := range part.ins {
+					b.SyncToDevice(0, b.Size())
+				}
+				if err := part.req.Run(ctx); err != nil {
+					return fmt.Errorf("chain: %s: %w", part.Path, err)
+				}
+				for _, b := range part.outs {
+					b.SyncFromDevice(0, b.Size())
+				}
+			}
+			return nil
+		}
 	}
 	p.Run = func() error {
 		for _, b := range t.inputs {
@@ -258,15 +433,22 @@ func (c *Chain) Parts() []*Part { return c.cur.parts }
 // LoadTime is how long the loaded tier took to compile and bind.
 func (c *Chain) LoadTime() time.Duration { return c.cur.loadTime }
 
-// OnNPU reports whether every loaded part was verified to run on the NPU.
+// OnNPU reports whether every loaded part, and the attention program of a model split at its
+// attention, was verified to run on the NPU.
 func (c *Chain) OnNPU() bool {
 	for _, p := range c.cur.parts {
 		if !p.Placement.OnNPU() {
 			return false
 		}
 	}
+	if c.cur.attn != nil && !c.cur.attn.placement.OnNPU() {
+		return false
+	}
 	return len(c.cur.parts) > 0
 }
+
+// Paged is the chunk length of a model split at its attention, 0 for another.
+func (c *Chain) Paged() int { return c.cur.paged }
 
 // Run runs the parts in order.
 func (c *Chain) Run(ctx context.Context) error { return c.cur.run(ctx) }

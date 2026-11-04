@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"math"
@@ -209,5 +210,69 @@ func TestTiersNone(t *testing.T) {
 	}
 	if _, err := Tiers("0"); err == nil {
 		t.Error("Tiers(\"0\") is accepted")
+	}
+}
+
+// For the Neural Engine, Prepare converts a model that can be split at its attention that way,
+// with the longest context it was trained for and no tiers, its chunks no longer than the
+// context; asked not to, or for Intel's NPU, it converts it whole with DefaultContext or the
+// context asked for.
+func TestPreparePaged(t *testing.T) {
+	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
+	tcfg, err := lfm3.ParseConfig([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"/org/text/resolve/main/config.json":       []byte(text),
+		"/org/text/resolve/main/tokenizer.json":    []byte(imageTokenizer),
+		"/org/text/resolve/main/model.safetensors": safetensorsOf(t, llm.NewSynthetic(tcfg)),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, ok := files[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(b)
+	}))
+	defer srv.Close()
+	defer func(u string) { hubURL = u }(hubURL)
+	hubURL = srv.URL + "/"
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "text")
+	c, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Tiers: []int{TierAuto}, Backend: "coreml", Format: "lut4", Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Tiers) != 1 || len(c.Packages) != 2 {
+		t.Fatalf("tiers %q, packages %q", c.Tiers, c.Packages)
+	}
+	for i, q := range []int{8, 64} {
+		p := c.Packages[i]
+		if want := fmt.Sprintf("lfm3-lut4-grouped-p96-c96-q%d.parts.json", q); filepath.Base(p) != want {
+			t.Errorf("package %s, want %s", filepath.Base(p), want)
+		}
+		man, err := llm.ReadManifest(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if man.Paged != 96 || man.Cache != 96 || man.Seq != q || man.Attention == nil || len(man.Parts) != 2 {
+			t.Errorf("%s: paged %d, cache %d, seq %d, %d parts", p, man.Paged, man.Cache, man.Seq, len(man.Parts))
+		}
+	}
+	c, err = Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Context: 64, Paged: PagedOff, Backend: "coreml", Format: "lut4", Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "lfm3-lut4-grouped-c64-q1"; !strings.HasPrefix(filepath.Base(c.Packages[0]), want) {
+		t.Errorf("not split: %s, want %s", c.Packages[0], want)
+	}
+	c, err = Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Context: 64, Backend: "intel", Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if man, err := llm.ReadManifest(c.Packages[0]); err != nil || man.Paged != 0 {
+		t.Errorf("intel: %v, paged %d", err, man.Paged)
 	}
 }
