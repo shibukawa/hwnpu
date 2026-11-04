@@ -1911,3 +1911,24 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
   - M3 16 GB では、2 つのプログラム (Q=8 と Q=64) の重み 5.9 GiB が ANE のキャッシュ (16.39 で 4 GiB 前後とみた) に収まらず、起動のたびにコンパイルし直すおそれがある。そのときは lut4 (2 本で 3.9 GiB) か、Q=8 だけにする
   - 分けない形で 16383 を超えるキャッシュ (`llm.CacheChunks` の塊) は未実装 (分けた形を使うので要らない)。2 段の注意 (16.61) が Qwen3.5 でも保つかは未確認
   - Qwen3.5 の層 `mtp.` を投機的デコードの下書きに使うこと (model-fit.md T9)
+
+### 16.63 Gemma 4 と LFM3 の VL も注意の前後で分け、Intel の NPU でも分ける — 2026-11-04
+
+- 動機: 16.59 で LFM3-1.7B の文脈 262144 が既定になった。ほかのチャットのモデル (LFM3-VL、Audio、Omni、Gemma 4 E2B と E4B) も、少ないメモリでより長い文脈を持てるようにする。LFM3 の VL、Audio、Omni はテキスト部が `lfm3` なので 16.59 のままで分かれる (`chat.Prepare` が `llm.Paged` なら分ける)。残りは Gemma 4 と、Neural Engine に限っていた分割を Intel の NPU に広げること
+- Gemma 4 の分け方 (`internal/llm/gemma4`): 全注意の層 (E2B は 4、9、14、19、24、29、34) の前後で切る。E2B は 8 部分。全注意の層 N の前で終わる部分は、問い合わせ attn_q_N (norm と比例 RoPE の後) と、自分の鍵と値を持つ層なら kv_k_N_new と kv_v_N_new (k_norm と RoPE、v は重みなしの norm の後) を出す。次の部分は attn_o_N から o_proj、post_attention_layernorm、MLP、層ごとの入力、layer_scalar を計算する。スライディングの層はリングを部分の中に持ち、共有の鍵と値 (shared_k_sliding、層 13 の分) と per_layer_inputs は前の部分の出力を名前で結ぶ (`internal/llm/chain` の既存の規則。後ろの部分のどれもが同じ出力を読む)
+- 鍵と値の共有 (`llm.Paged.PagedKV`): 層 19、24、29、34 は層 14 の鍵と値を読む (num_kv_shared_layers 20)。分けた形ではこれらの層は attn_q_N だけを出し、`decode.Session` は層 14 のキャッシュに対して注意を呼ぶ (そのステップの行は層 14 のときに書いてあるので、書き直さない)。ホストが持つキャッシュは 3 層分で 1 トークン 2 × 3 × 1 ヘッド × 512 × 2 バイト = 6 KiB (131072 で 0.75 GiB)。E4B は自分のを持つ全注意の層が 4 つ、KV ヘッド 2 で 1 トークン 16 KiB (131072 で 2 GiB)。LFM3 は自分の層を返す
+- 注意の倍率 (`paged.Shape.Scale`): Gemma 4 は点数を 1/√d で割らない (q_norm と k_norm がその役)。注意のプログラムに倍率を持たせ、0 なら今までどおり 1/√d。`llm.Paged.PagedShape` は `paged.Shape` を返すようにした
+- 文脈: `max_position_embeddings` を読み、`MaxContext` に返す (E2B と E4B は 131072)。全注意のマスクは `PagedStepInputs` から外し、回転の表だけを残す
+- Intel の NPU (`llm.convertPaged`): `-backend intel` で部分を OpenVINO IR (`out.partN.xml`) に、注意のプログラムも MIL で組んで `ovlower` で IR (`out.attn.xml`) に下ろす (`llm.writeIR` を部分と共用)。Level Zero と OpenVINO の `Bind` は終わった要求の付け替えを許すので、実行側は変えていない。`chat.pagedChunk` は NPU を問わず分けるようにした (Intel の既定は `lfm3-int8-grouped-p8192-c262144-q8.parts.json`)
+- 検証 (CPU のインタプリタ):
+  - `gemma4` の `TestPagedMatchesFull` (小さな Gemma 4: スライディング 4 層、全注意 2 層のうち 1 層が層 2 の鍵と値を共有、層ごとの埋め込み): 1、3、4 トークンのステップ、塊の境をまたぐステップ、塊の倍数でない容量で、キャッシュなしのプログラムとロジットの相対誤差 2.4e-3〜3.2e-3 (分けない KV キャッシュ付きの `TestCachedMatchesFull` と同じ 2.6e-3〜3.2e-3)。持つキャッシュは層 2 の分だけ。`TestPagedShareRewind`: 1 トークンと 4 トークンのプログラムが 1 つの系列を続け、印と `Save` で戻っても同じ
+  - 改変の検出: 倍率を 1/√d に戻すと相対誤差 0.45 で落ちる。`paged` の `TestMergeMatchesFull` に倍率 1、KV ヘッド 1 の形を足した
+  - Intel (OpenVINO 2026.4 の CPU、`HWNPU_OV_PYTHON`。Mac でも pip の openvino で動く): `gemma4` の `TestIntelIRPaged` (4 トークンと 1 トークンの IR が `chain` で 1 つのキャッシュを共有) で 2.8e-3、`lfm3` の `TestIntelIRPaged` (ゲートを部分の間で渡す) で 5.7e-4。`chat` の `TestPreparePaged` は Intel でも分けた IR を書く
+- M3 (16 GB、macOS 27.0.1) の Gemma 4 E2B (lut6、`-draft 8`):
+  - 変換: 部分は 0.12〜0.33 GiB で 1 本 1.61 GiB、Q=8 と Q=64 で計約 3 分。初回のコンパイルは 92 秒と 96 秒。**2 回目からの読み込みは 1.8〜1.9 秒**。分けない 2 部分の形 (`gemma4-lut6-c16320`) は同じ日に 49 秒と 50 秒で、起動のたびにコンパイルし直していた (16.42、16.43 の「lut6 の部分がコンパイルのキャッシュに残らない」)。部分を小さくすると残る
+  - 配置: 部分は最後の 1 つの平らなロジットの reshape (16.43、`-logits folded` で外せる) を除いて全部 Neural Engine。注意のプログラム (head_dim 512、KV ヘッド 1、Q=8 と Q=64) は 17 演算とも Neural Engine
+  - 答え (温度 0、思考なし、4 問): 富士山、17 × 23、川、『こころ』の答えは分けない形と 1 トークンも違わなかった (富士山の 2,360 m の誤りもそのまま。モデルの側)。生成は 23.6、36.0、26.3、26.2 tokens/s で、分けない形 (容量 16320) の 13.3、28.2、20.6、20.9 より速い
+  - 長い文脈 (16.22 の試験、サーバー、`-prompt-cache off`): 81,691 トークンのプロンプトを 299.1 秒 (273 tokens/s) で読み、先頭の合言葉 BLUE-OTTER-42 を正しく答えた。その長さでの生成は 96.7 ms/token (171 トークン)。読み終えた後のプロセスの footprint は 1118 MB (キャッシュは 11 塊 × 8192 × 6 KiB = 528 MiB)
+- M3 の LFM3-VL-2B (lut8): 7 部分ずつ、全部 Neural Engine。文脈 128000、キャッシュは 1 トークン 12 KiB で最大 1.46 GiB。初回のコンパイル 32 秒と 54 秒、2 回目は 1.4 秒と 4.2 秒。画像 (青地に円と右上の黄色い正方形) を正しく説明し (13.9 tokens/s、279 トークンのプロンプトを 0.6 秒)、17 × 23 = 391 (33.7 tokens/s)
+- 確かめていないこと: LFM3-Audio と Omni (config.json だけ見た。全注意の層は VL と同じ 2、6、…、22、文脈 128000) と Gemma 4 E4B (config.json だけ。全注意 5、11、…、41 のうち 29、35、41 が層 23 を共有) の実機。Intel の NPU の実機 (ドライバのコンパイラが注意のグラフを受け付けるか、付け替えの費用)
+- AMD の NPU は対象外: IRON の書き出しが `--max-seq-len` (既定 4096) で文脈を固定し、KV キャッシュはデバイスの bank の中にある。長くすると Gemma 4 のスライディングの層がリングになり (`3 × リング < max_seq_len`、16.54)、エンジンが読み込まない形になる。塊ごとの注意は IRON の側の仕事になる

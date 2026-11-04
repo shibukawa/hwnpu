@@ -342,3 +342,9 @@ LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_LFM3_D
 - 引数名が `argNames` の規則で合うか (合わなければ `chain: part 0 has no output y` などで止まる)。
 - 既定の段 (4096 と 16320、それぞれ生成用と読み込み用) では 4 つのグラフが重みを別々に持つ (int8 で 6.4 GiB)。メモリが足りなければ `-tier ""` で 2 つ。
 - Gemma 4 と LFM3-VL/Audio の hwnpu-chat での実行。変換と数値は CPU で確かめたが、実物のチェックポイントでは動かしていない。
+
+### 注意の前後で分ける形 (2026-11-04、design.md 16.63)
+
+- `hwnpu-convert -paged` が `-backend intel` でも動く: 部分 (`out.partN.xml`) と、重みのない塊 1 つ分の注意 (`out.attn.xml`、MIL で組んで `ovlower` で下ろす)。hwnpu-chat と hwnpu-agent は LFM3 とその VL、Audio、Omni、Gemma 4 を Intel でもこの形で変換し、文脈はモデルの上限 (LFM3-1.7B は `lfm3-int8-grouped-p8192-c262144-q8.parts.json`)。分けない形は `-paged -1`
+- 実行側は変えていない。塊ごとに k、v、mask を付け替えて呼ぶ。Level Zero の `Bind` は終わった要求の付け替えを許し、投入のたびにコマンドリストを記録し直す
+- OpenVINO の CPU で `lfm3` と `gemma4` の `TestIntelIRPaged` が通る (相対誤差 5.7e-4 と 2.8e-3)。NPU の実機では未確認: ドライバのコンパイラが注意のグラフ (塊 8192、fp16) を受け付けるか、呼び出しごとのコマンドリストの記録の費用 (1 ステップに全注意の層 × 使っている塊の数だけ呼ぶ)
