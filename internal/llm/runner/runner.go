@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -219,7 +218,7 @@ func OpenSession(ctx context.Context, dev *hwnpu.Device, paths []string, m llm.C
 			if i == 0 {
 				shared = map[string][]byte{}
 				for name, b := range p.In {
-					if strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_") {
+					if llm.CacheInput(name) {
 						shared[name] = b
 					}
 				}

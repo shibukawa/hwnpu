@@ -3,6 +3,8 @@ package chat
 import (
 	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -149,10 +151,13 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, f := range []string{"config.json", "tokenizer.json", "model.safetensors"} {
+	for _, f := range []string{"config.json", "tokenizer.json"} {
 		if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
 			return Config{}, err
 		}
+	}
+	if err := fetchWeights(ctx, s.Repo, s.Dir, s.Log); err != nil {
+		return Config{}, err
 	}
 	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo), Backend: cmp.Or(s.Backend, backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
@@ -342,6 +347,61 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	return path, os.WriteFile(done, []byte(path), 0o644)
 }
 
+// errNotFound is the error of fetch for a file the repository does not have.
+var errNotFound = errors.New("not in the repository")
+
+// fetchWeights downloads the checkpoint into dir: model.safetensors, or when the repository has
+// it in several files (Qwen3.5-4B), its index model.safetensors.index.json and the files it
+// names. llm.OpenWeights opens either by the name model.safetensors.
+func fetchWeights(ctx context.Context, repo, dir string, log io.Writer) error {
+	single := filepath.Join(dir, "model.safetensors")
+	index := single + ".index.json"
+	if _, err := os.Stat(index); err != nil {
+		err := fetch(ctx, repo, "model.safetensors", single, log)
+		if err == nil || !errors.Is(err, errNotFound) {
+			return err
+		}
+		if err := fetch(ctx, repo, "model.safetensors.index.json", index, log); err != nil {
+			return err
+		}
+	}
+	files, err := shards(index)
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if err := fetch(ctx, repo, f, filepath.Join(dir, f), log); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// shards are the files an index of a checkpoint in several files names, in order.
+func shards(index string) ([]string, error) {
+	raw, err := os.ReadFile(index)
+	if err != nil {
+		return nil, err
+	}
+	var idx struct {
+		WeightMap map[string]string `json:"weight_map"`
+	}
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return nil, fmt.Errorf("chat: %s: %w", index, err)
+	}
+	var files []string
+	for _, f := range idx.WeightMap {
+		if f != filepath.Base(f) {
+			return nil, fmt.Errorf("chat: %s names %q, not a file next to it", index, f)
+		}
+		if !slices.Contains(files, f) {
+			files = append(files, f)
+		}
+	}
+	slices.Sort(files)
+	return files, nil
+}
+
 // fetch downloads a file of a Hugging Face repository to path unless it is there. A download cut
 // off goes on from where it stopped (path.part). HF_TOKEN, when set, is sent for gated models.
 func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
@@ -375,6 +435,8 @@ func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 		have = 0
 	case http.StatusPartialContent:
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	case http.StatusNotFound:
+		return fmt.Errorf("chat: downloading %s: %s: %w", url, resp.Status, errNotFound)
 	default:
 		return fmt.Errorf("chat: downloading %s: %s", url, resp.Status)
 	}

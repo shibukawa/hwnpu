@@ -1,8 +1,8 @@
 // Package chat turns a conversation into a prompt and a generated answer back into a message,
 // with the chat template of the model (Template: LFM3's chat_template.jinja of
-// LiquidAI/LFM3-1.7B, or Gemma 4's of google/gemma-4-E2B-it), and runs it on a model with a KV
+// LiquidAI/LFM3-1.7B, Gemma 4's of google/gemma-4-E2B-it, or Qwen3.5's), and runs it on a model with a KV
 // cache (Engine): an interactive chat and an OpenAI compatible server (Server) share it. Tool
-// calls are the template's own form (LFM3's XML, Gemma 4's notation), converted to and from the
+// calls are the template's own form (LFM3's and Qwen3.5's XML, Gemma 4's notation), converted to and from the
 // OpenAI function calls.
 package chat
 
@@ -181,6 +181,8 @@ func TemplateFor(arch string) (Template, error) {
 		return LFM3, nil
 	case "gemma4":
 		return Gemma4, nil
+	case "qwen35":
+		return Qwen35, nil
 	}
 	return nil, fmt.Errorf("chat: no chat format for %s", arch)
 }

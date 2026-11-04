@@ -106,7 +106,7 @@ func TestEngineReuse(t *testing.T) {
 	if err := sess.Add(long); err != nil {
 		t.Fatal(err)
 	}
-	checkReuse(t, cfg, w, sess, cache)
+	checkReuse(t, cfg, w, sess, cache, 2e-3)
 }
 
 // The engine on a model split at its attention (llm.Paged) reuses earlier prompts as it does on
@@ -122,7 +122,7 @@ func TestEngineReusePaged(t *testing.T) {
 	if sess.Paged() != 8 {
 		t.Fatalf("the session is not split at its attention: %d", sess.Paged())
 	}
-	checkReuse(t, cfg, w, sess, cache)
+	checkReuse(t, cfg, w, sess, cache, 2e-3)
 }
 
 // pagedSession converts the model split at its attention for each number of tokens per call and
@@ -135,10 +135,16 @@ func pagedSession(t *testing.T, cfg *lfm3.Config, w llm.Weights, cache, chunk in
 // pagedSessionOn is pagedSession on dev (nil: the CPU interpreter), loaded under ctx.
 func pagedSessionOn(t *testing.T, ctx context.Context, dev *hwnpu.Device, cfg *lfm3.Config, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
 	t.Helper()
+	return pagedSessionOf(t, ctx, dev, lfm3.Arch, cfg, w, cache, chunk, qs...)
+}
+
+// pagedSessionOf is pagedSessionOn for a model of any architecture.
+func pagedSessionOf(t *testing.T, ctx context.Context, dev *hwnpu.Device, a *llm.Arch, cfg llm.Cached, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
+	t.Helper()
 	var paths []string
 	for _, q := range qs {
 		opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
-		path, err := llm.Convert(lfm3.Arch, cfg, w, filepath.Join(t.TempDir(), fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		path, err := llm.Convert(a, cfg, w, filepath.Join(t.TempDir(), fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -152,12 +158,14 @@ func pagedSessionOn(t *testing.T, ctx context.Context, dev *hwnpu.Device, cfg *l
 	return sess
 }
 
-func checkReuse(t *testing.T, cfg *lfm3.Config, w llm.Weights, sess *decode.Session, cache int) {
+// checkReuse compares the engine's logits with reading each prompt from the start, 4 tokens a
+// step with the state in fp16, within tol.
+func checkReuse(t *testing.T, cfg llm.Cached, w llm.Weights, sess *decode.Session, cache int, tol float64) {
 	defer func(n int) { minSaved = n }(minSaved)
 	minSaved = 4
 	e := &Engine{sess: sess, w: w, model: cfg, emb: map[int32][]float32{}}
 
-	ref, err := decode.New(cpuProgram(t, cfg, w, 4, cache), cfg)
+	ref, err := decode.New(cpuPackage(t, cfg, w, llm.Options{Seq: 4, Cache: cache, Format: "fp16", Params: map[string]string{"post-scale": "1"}}), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,11 +185,12 @@ func checkReuse(t *testing.T, cfg *lfm3.Config, w llm.Weights, sess *decode.Sess
 		return logits
 	}
 
+	vocab, _ := cfg.Output()
 	rng := rand.New(rand.NewPCG(1, 2))
 	toks := func(n int) []int32 {
 		s := make([]int32, n)
 		for i := range s {
-			s[i] = int32(rng.IntN(cfg.VocabSize))
+			s[i] = int32(rng.IntN(vocab))
 		}
 		return s
 	}
@@ -220,7 +229,7 @@ func checkReuse(t *testing.T, cfg *lfm3.Config, w llm.Weights, sess *decode.Sess
 		if st.Reused != c.reused {
 			t.Errorf("%s: reused %d tokens, want %d", c.name, st.Reused, c.reused)
 		}
-		if d := relErr(got, want(c.prompt)); d > 2e-3 {
+		if d := relErr(got, want(c.prompt)); d > tol {
 			t.Errorf("%s: relative error %g against reading the prompt from the start", c.name, d)
 		}
 	}

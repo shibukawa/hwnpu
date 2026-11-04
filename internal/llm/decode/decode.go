@@ -295,7 +295,7 @@ func caches(p Program) ([]kvCache, int, error) {
 }
 
 // Add adds a program of the same model that takes another number of tokens per step. Its cache
-// inputs (kv_*, win_*) must be the same memory as the first program's (chain.Share), so that
+// inputs (kv_*, win_*, st_*: llm.CacheInput) must be the same memory as the first program's (chain.Share), so that
 // steps of either program continue the same sequence.
 func (s *Session) Add(p Program) error {
 	x, ok := p.InShape["x"]
@@ -362,9 +362,7 @@ func (s *Session) checkLookups(p Program) error {
 	return nil
 }
 
-func cacheInput(name string) bool {
-	return strings.HasPrefix(name, "kv_") || strings.HasPrefix(name, "win_")
-}
+func cacheInput(name string) bool { return llm.CacheInput(name) }
 
 // Q is the most tokens one step takes.
 func (s *Session) Q() int { return s.progs[len(s.progs)-1].q }
@@ -413,7 +411,7 @@ func (s *Session) Migrate(np Program) error {
 	}
 	first := s.progs[0].p
 	for name, in := range first.In {
-		if strings.HasPrefix(name, "win_") {
+		if llm.HeldInput(name) {
 			out := np.In[name]
 			if len(out) != len(in) {
 				return fmt.Errorf("decode: %s has shape %v in the new program, %v in the session", name, np.InShape[name], first.InShape[name])
@@ -620,7 +618,7 @@ func (s *Session) Mark() *Mark {
 	m := &Mark{pos: s.pos, bufs: map[string][]byte{}}
 	in := s.progs[0].p.In
 	for name, b := range in {
-		if strings.HasPrefix(name, "win_") {
+		if llm.HeldInput(name) {
 			m.bufs[name] = slices.Clone(b)
 		}
 	}
@@ -691,7 +689,24 @@ func (s *Session) Speculate(emb [][]float32, accept func(row func(i int) []float
 	if kept < 1 || kept > len(emb) {
 		return nil, 0, fmt.Errorf("decode: %d of %d tokens kept", kept, len(emb))
 	}
+	if kept < len(emb) && s.replaced(p) {
+		// a state replaced as a whole is the one after all the step's tokens (llm.Cached): run
+		// the kept ones again from the state before the step, which the inputs still hold
+		if p, q, err = s.run(emb[:kept]); err != nil {
+			return nil, 0, err
+		}
+	}
 	return s.keep(p, q, kept), kept, nil
+}
+
+// replaced reports whether p has state that a step replaces as a whole (st_, llm.Cached).
+func (s *Session) replaced(p Program) bool {
+	for name := range p.In {
+		if strings.HasPrefix(name, "st_") {
+			return true
+		}
+	}
+	return false
 }
 
 // run writes the tokens' rows and the step's inputs into the program with the fewest tokens per
@@ -891,6 +906,10 @@ func (s *Session) keep(p Program, q, v int) []float32 {
 			w, d := sh[1], sh[2]
 			copy(in, p.Out[name+"_new"][2*v*d:2*(v+w)*d])
 		}
+		if strings.HasPrefix(name, "st_") {
+			// the state after the step's valid tokens (llm.Cached): run kept them all
+			copy(in, p.Out[name+"_new"])
+		}
 	}
 	s.pos += v
 	s.last = nil
@@ -1018,7 +1037,7 @@ func (s *Session) Resume(rows []byte, m *Mark) error {
 	in := s.progs[0].p.In
 	want := map[string]bool{}
 	for name := range in {
-		if strings.HasPrefix(name, "win_") {
+		if llm.HeldInput(name) {
 			want[name] = true
 		}
 	}

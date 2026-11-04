@@ -10,4 +10,5 @@ import (
 	_ "github.com/shibukawa/hwnpu/internal/llm/lfm3gen"
 	_ "github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	_ "github.com/shibukawa/hwnpu/internal/llm/plamo"
+	_ "github.com/shibukawa/hwnpu/internal/llm/qwen35"
 )

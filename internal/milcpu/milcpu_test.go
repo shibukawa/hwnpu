@@ -88,6 +88,8 @@ func TestElementwise(t *testing.T) {
 		{"silu", func(a float64) float64 { return a / (1 + math.Exp(-a)) }},
 		{"sigmoid", func(a float64) float64 { return 1 / (1 + math.Exp(-a)) }},
 		{"relu", func(a float64) float64 { return math.Max(a, 0) }},
+		// torch.nn.functional.softplus(torch.tensor([-2., 0., 1.5])): 0.1269, 0.6931, 1.7014
+		{"softplus", func(a float64) float64 { return map[float64]float64{-2: 0.12692801, 0: 0.69314718, 1.5: 1.70141327}[a] }},
 	} {
 		got := run(t, []int{3}, x, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
 			return b.Op(c.op, map[string]any{"x": x}, mlpackage.Float16, 3)

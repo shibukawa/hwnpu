@@ -1,8 +1,9 @@
 // Package tokenizer turns text into token ids and back.
 //
 // Load reads a Hugging Face tokenizer.json with the byte-level BPE of GPT-2 and its descendants
-// (LFM, Llama 3, Qwen): added tokens are matched in the raw text first, the rest is split by the
-// pre-tokenizer pattern, each piece is mapped byte by byte to printable characters and merged by
+// (LFM, Llama 3, Qwen): added tokens are matched in the raw text first, the rest is put in
+// Unicode normalization form C when the tokenizer says so (Qwen3.5) and split by the
+// pre-tokenizer pattern (GPT-4's, or Qwen3.5's), each piece is mapped byte by byte to printable characters and merged by
 // rank. It also reads the BPE with byte fallback that SentencePiece models ship as tokenizer.json
 // (Gemma): spaces become ▁, the text between added tokens is merged by rank as one piece, and a
 // character outside the vocabulary becomes its UTF-8 bytes (<0xE3>). Other models (WordPiece,
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Tokenizer is a loaded BPE tokenizer, byte-level or with byte fallback.
@@ -31,15 +34,28 @@ type Tokenizer struct {
 	addedID      map[string]int32
 	control      []string // contents of the added tokens marked special, in the file's order
 	cache        map[string][]int32
+	style        style // the pre-tokenizer pattern
+	nfc          bool  // the text is put in Unicode normalization form C first
 
 	fallback *fallback // the BPE with byte fallback, or nil for byte-level
 }
 
+// style is a pre-tokenizer pattern that split implements.
+type style int
+
+const (
+	// gpt4 is the GPT-4 pattern, as LFM2/LFM3 and many others ship it.
+	gpt4 style = iota
+	// qwen35 is Qwen3.5's: combining marks (\p{M}) count as letters, and numbers are split into
+	// single digits.
+	qwen35
+)
+
 // The pre-tokenizer patterns Load accepts. They are applied by split, not by a regular expression:
 // Go's regexp has no lookahead for \s+(?!\S).
-var patterns = map[string]bool{
-	// GPT-4 style, as LFM2/LFM3 and many others ship it.
-	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`: true,
+var patterns = map[string]style{
+	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`:        gpt4,
+	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`: qwen35,
 }
 
 type file struct {
@@ -95,16 +111,24 @@ func parse(raw []byte) (*Tokenizer, error) {
 	if f.Model.Type != "BPE" {
 		return nil, fmt.Errorf("model %s is not supported; only BPE", f.Model.Type)
 	}
+	nfc := false
 	if n := strings.TrimSpace(string(f.Normalizer)); n != "" && n != "null" {
-		return nil, fmt.Errorf("normalizer %s is not supported", n)
+		var norm struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(f.Normalizer, &norm) != nil || norm.Type != "NFC" {
+			return nil, fmt.Errorf("normalizer %s is not supported; only NFC", n)
+		}
+		nfc = true
 	}
 	pt := f.PreTokenizer
 	if pt.Type != "Sequence" || len(pt.Pretokenizers) != 2 ||
-		pt.Pretokenizers[0].Type != "Split" || pt.Pretokenizers[0].Behavior != "Isolated" || pt.Pretokenizers[0].Invert || !patterns[pt.Pretokenizers[0].Pattern.Regex] ||
+		pt.Pretokenizers[0].Type != "Split" || pt.Pretokenizers[0].Behavior != "Isolated" || pt.Pretokenizers[0].Invert || !knownPattern(pt.Pretokenizers[0].Pattern.Regex) ||
 		pt.Pretokenizers[1].Type != "ByteLevel" || pt.Pretokenizers[1].AddPrefix || pt.Pretokenizers[1].UseRegex {
-		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4 pattern, isolated) then ByteLevel without prefix space")
+		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4 or Qwen3.5 pattern, isolated) then ByteLevel without prefix space")
 	}
 	t := newTokenizer(&f)
+	t.style, t.nfc = patterns[pt.Pretokenizers[0].Pattern.Regex], nfc
 	if err := t.readMerges(&f); err != nil {
 		return nil, err
 	}
@@ -209,7 +233,10 @@ func (t *Tokenizer) encodeOrdinary(ids []int32, text string) []int32 {
 	if t.fallback != nil {
 		return t.fallback.encode(t, ids, text)
 	}
-	for _, piece := range split(text) {
+	if t.nfc {
+		text = norm.NFC.String(text)
+	}
+	for _, piece := range splitStyle(text, t.style) {
 		ids = append(ids, t.bpe(piece)...)
 	}
 	return ids
@@ -314,11 +341,16 @@ var byteToRune, runeToByte = func() ([256]rune, map[rune]byte) {
 //	(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
 //
 // trying the alternatives in order at each position, as a backtracking regular expression does.
-func split(text string) []string {
+func split(text string) []string { return splitStyle(text, gpt4) }
+
+// splitStyle applies the pattern of a style: split's for gpt4, and for qwen35
+//
+//	(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
+func splitStyle(text string, st style) []string {
 	rs := []rune(text)
 	var out []string
 	for i := 0; i < len(rs); {
-		n := match(rs, i)
+		n := match(rs, i, st)
 		out = append(out, string(rs[i:i+n]))
 		i += n
 	}
@@ -329,9 +361,22 @@ func isL(r rune) bool  { return unicode.IsLetter(r) }
 func isN(r rune) bool  { return unicode.IsNumber(r) }
 func isS(r rune) bool  { return unicode.IsSpace(r) }
 func isNL(r rune) bool { return r == '\r' || r == '\n' }
+func isM(r rune) bool  { return unicode.IsMark(r) }
 
-// match returns the length of the match at i (at least 1).
-func match(rs []rune, i int) int {
+func knownPattern(p string) bool {
+	_, ok := patterns[p]
+	return ok
+}
+
+// match returns the length of the match at i (at least 1) of the style's pattern.
+func match(rs []rune, i int, st style) int {
+	// the letters of the second alternative: \p{L}, or [\p{L}\p{M}] in Qwen3.5's
+	letter := isL
+	digits := 3
+	if st == qwen35 {
+		letter = func(r rune) bool { return isL(r) || isM(r) }
+		digits = 1
+	}
 	rest := len(rs) - i
 	// (?i:'s|'t|'re|'ve|'m|'ll|'d)
 	if rs[i] == '\'' && rest >= 2 {
@@ -341,30 +386,30 @@ func match(rs []rune, i int) int {
 			}
 		}
 	}
-	// [^\r\n\p{L}\p{N}]?\p{L}+
+	// [^\r\n\p{L}\p{N}]?\p{L}+ (a mark may be the optional first character: it is not \p{L})
 	letters := func(j int) int {
 		k := j
-		for k < len(rs) && isL(rs[k]) {
+		for k < len(rs) && letter(rs[k]) {
 			k++
 		}
 		return k - j
 	}
-	if !isNL(rs[i]) && !isL(rs[i]) && !isN(rs[i]) && i+1 < len(rs) && isL(rs[i+1]) {
+	if !isNL(rs[i]) && !isL(rs[i]) && !isN(rs[i]) && i+1 < len(rs) && letter(rs[i+1]) {
 		return 1 + letters(i+1)
 	}
-	if isL(rs[i]) {
+	if letter(rs[i]) {
 		return letters(i)
 	}
-	// \p{N}{1,3}
+	// \p{N}{1,3}, or \p{N}
 	if isN(rs[i]) {
 		k := i
-		for k < len(rs) && k-i < 3 && isN(rs[k]) {
+		for k < len(rs) && k-i < digits && isN(rs[k]) {
 			k++
 		}
 		return k - i
 	}
-	// ' ?[^\s\p{L}\p{N}]+[\r\n]*'
-	other := func(r rune) bool { return !isS(r) && !isL(r) && !isN(r) }
+	// ' ?[^\s\p{L}\p{N}]+[\r\n]*', and \p{M} also excluded in Qwen3.5's
+	other := func(r rune) bool { return !isS(r) && !letter(r) && !isN(r) }
 	j := i
 	if rs[j] == ' ' && j+1 < len(rs) && other(rs[j+1]) {
 		j++
