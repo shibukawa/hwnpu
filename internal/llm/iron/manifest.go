@@ -42,6 +42,8 @@ type Manifest struct {
 	Versions    map[string]*Version `json:"versions"`
 	// Multimodal describes the towers of a model with them (Gemma4Multimodal), or nil.
 	Multimodal *Multimodal `json:"multimodal"`
+	// HostTables are tables whose rows the host writes into the arena before each call.
+	HostTables []HostTable `json:"host_tables"`
 }
 
 // Checkpoint is a recurrent layer's state: the buffer of its slots.
