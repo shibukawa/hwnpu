@@ -472,7 +472,58 @@ def install_linear() -> None:
 
     linear.hwnpu_q4 = True
     F.linear = linear
+    _install_split()
     _fix_bfp_fits()
+
+
+def q_rows(q, begin: int, end: int, k: int, fmt: str):
+    """The bytes of out-features begin..end (multiples of 64) of q, a weight's blocks in fmt with
+    k in-features: a column block (64 out-features) is contiguous, K / 128 blocks."""
+    if begin % CB or end % CB:
+        raise ValueError(f"q_rows: out-features {begin}..{end} are not whole column blocks of {CB}")
+    per = k // (M_TILE * K_TILE // CB) * FORMATS[fmt]
+    return q[begin // CB * per : end // CB * per]
+
+
+def _install_split() -> None:
+    """Make iron.lm's Linear.split (a fused projection's runs of rows, PLaMo 3's qkv_proj and
+    gate_up_proj) on a q_param weight run one QGEMV and cut its output (decode), or q_linear on
+    each run's column blocks (a prompt chunk)."""
+    from iron.lm.blocks import Linear
+
+    base = Linear.split
+    if getattr(base, "hwnpu_q4", False):
+        return
+
+    def split(self, x, *rows: int, **gemv) -> list:
+        entry = _Q4.get(id(self.weight))
+        if entry is None or entry[0] is not self.weight:
+            return base(self, x, *rows, **gemv)
+        _, n, k, fmt = entry
+        if sum(rows) != n:
+            raise ValueError(f"Linear.split: rows {rows} of {n} out-features")
+        one_row = len(x.shape) == 1 or x.shape[0] == 1
+        if one_row:
+            # decode: one QGEMV over the whole weight, its output cut (a contiguous run each);
+            # a GEMV a run costs a command's worth of start-up each (qkv 0.61 -> 0.44 ms on 2B)
+            whole = q_linear(x.reshape(k), self.weight, n, k, fmt)
+        out, end = [], 0
+        for r in rows:
+            if one_row:
+                y = whole[end : end + r]
+                y = y if len(x.shape) == 1 else y.reshape(1, r)
+            else:
+                y = q_linear(x, q_rows(self.weight, end, end + r, k, fmt), r, k, fmt)
+            if self.bias is not None:
+                b = self.bias[end : end + r]
+                lead = int(np.prod(y.shape)) // r
+                y = (y.reshape(lead, r) + b).reshape(y.shape)
+            out.append(y)
+            end += r
+        return out
+
+    split.hwnpu_q4 = True
+    Linear.split = split
 
 
 def _fix_bfp_fits() -> None:
