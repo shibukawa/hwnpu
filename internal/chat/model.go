@@ -130,6 +130,16 @@ type Setup struct {
 	Log    io.Writer
 }
 
+// tokenizerFiles are the files of an architecture's tokenizer in its checkpoint, the one
+// tokenizer.Load reads first: PLaMo 3's tokenizer.jsonl and the thresholds of its
+// tokenizer_config.json, every other model's tokenizer.json.
+func tokenizerFiles(arch string) []string {
+	if arch == "plamo3" {
+		return []string{"tokenizer.jsonl", "tokenizer_config.json"}
+	}
+	return []string{"tokenizer.json"}
+}
+
 // programDir is where the programs for a backend go in a model's directory: Core ML's next to the
 // checkpoint (as before), Intel's in intel/, so that one directory serves both.
 func programDir(dir, backend string) (string, error) {
@@ -178,17 +188,20 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, f := range []string{"config.json", "tokenizer.json"} {
-		if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
-			return Config{}, err
-		}
-	}
-	if err := fetchWeights(ctx, s.Repo, s.Dir, s.Log); err != nil {
+	if err := fetch(ctx, s.Repo, "config.json", filepath.Join(s.Dir, "config.json"), s.Log); err != nil {
 		return Config{}, err
 	}
 	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo), Backend: cmp.Or(s.Backend, backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
+		return Config{}, err
+	}
+	for _, f := range tokenizerFiles(a.Name) {
+		if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
+			return Config{}, err
+		}
+	}
+	if err := fetchWeights(ctx, s.Repo, s.Dir, s.Log); err != nil {
 		return Config{}, err
 	}
 	// The name says what the program is: the format always, since a change of the defaults

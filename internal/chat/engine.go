@@ -233,7 +233,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		return nil, fmt.Errorf("chat: %s cannot run with a KV cache", a.Title)
 	}
 	if c.Tokenizer == "" {
-		c.Tokenizer = filepath.Join(filepath.Dir(c.ModelConfig), "tokenizer.json")
+		c.Tokenizer = filepath.Join(filepath.Dir(c.ModelConfig), tokenizerFiles(a.Name)[0])
 	}
 	e := &Engine{Stops: map[int32]bool{}, model: model, emb: map[int32][]float32{}, nextID: -1, log: c.Log}
 	e.Name = name

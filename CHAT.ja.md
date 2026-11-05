@@ -83,6 +83,24 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 - Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`-package` で自分で変換するときは `hwnpu-convert` の `-format` を省けば lut6 になります。詳細は docs/design.md の 16.25 と 16.26
 - `-use gemma-4-E4B-it` で一回り大きい E4B (ダウンロード 16.0 GB、幅 2560 の 42 層) を同じ手順で使えます。E2B より遅くなります。文脈は同じく 131072 で、キャッシュは 1 トークン 16 KiB (131072 で 2 GiB)。生成用と読み込み用のプログラム 2 本 (6.5 GiB) は Neural Engine のコンパイルのキャッシュ (約 4 GiB) に収まらないので、生成用の 1 本 (1 回 8 トークン) だけを変換して読み込み、プロンプトもそれで読みます (`-prefill auto`)。M3 で 2 回目からの起動は 4 秒ほど、短い質問の生成は 13〜16 tokens/s。代わりに長いプロンプトの読み込みは 2 本のときの 4.4 倍かかります (16K で 183 秒、2 本なら 42 秒)。`-prefill on` で 2 本にできますが、起動は毎回 80 秒前後、質問ごとに 1〜3 秒の切り替えがかかります。125K の合言葉は (2 本で) 正しく答えましたが、スワップが 14 GB に達しました (design.md の 16.65)。16 GB の機械では E2B を勧めます。12B 以上の Gemma 4 は別のアーキテクチャで、hwnpu-chat では動きません
 
+### PLaMo 3 Translate で訳す
+
+Preferred Networks の翻訳モデル PLaMo 3 Translate 2B は `-use plamo-3-translate-2b` で使えます。ほかのモデルと同じく、初回にチェックポイント (5.8 GB) を落として変換します。Neural Engine には 6 ビットの表 (lut6)、Intel の NPU には int8 で、全注意の 3 層 (7、15、23) の前後で分けます (文脈は 262144 トークン、キャッシュは会話とともに 1 トークン 7 KiB ずつ増える)。AMD の NPU では IRON で書き出したものを `-iron` で動かします (README の AMD の節)。打った文がそのまま訳され、それまでの原文と訳文の組が対訳の履歴としてプロンプトに入ります (訳語や文体がそろう)。訳す先は `-to` (既定は、日本語の文字を含む文は英語、ほかは日本語)、`/to LANG` で途中で変えると履歴は消えます。言語は小文字のコードで、`en`、`ja`、`zh-hans`、`ko`、やさしい日本語の `ja(easy)` などです。`-from` で原文の言語、`-form plain` か `polite` で日本語の常体と敬体を指定でき、`-system` は参考文脈になります。考える部分や道具の呼び出しはありません。
+
+```bash
+go run ./cmd/hwnpu-chat -use plamo-3-translate-2b
+go run ./cmd/hwnpu-chat -use plamo-3-translate-2b -to ja -form plain
+go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2
+```
+
+重みの形式による損失 (Hugging Face の fp32 との 31 トークンの KL、design.md の 16.69): lut4 は 1.91 nats で使えず、lut6 が 0.073、lut8 が 0.0066、Intel の int8 が 0.0025。訳の正確さを優先するなら `-format lut8` にできます (重みは 1.3 倍、Mac では未計測)。
+
+サーバーでは、`chat_template_kwargs` に `target_lang`、`source_lang`、`form`、`context`、`glossary` (`[{"source": "NPU", "target": "NPU"}]`) を渡します (vLLM と同じ)。`messages` は原文 (user) と訳文 (assistant) の交互で、最後が今回の原文です。
+
+```bash
+curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"The meeting has been rescheduled."}],"chat_template_kwargs":{"target_lang":"ja"},"temperature":0}'
+```
+
 ## 2. オプション
 
 | フラグ | 既定 | |
@@ -96,7 +114,10 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-draft N` | `8` | 生成するプログラムの 1 回のトークン数: 本物 1 つと推測 N-1 個をまとめて確かめる (投機的デコード、3 節)。`0` か `1` で 1 回 1 トークン |
 | `-prefill auto` | `auto` | 生成用のほかに、1 回 64 トークンでプロンプトを読むプログラムを持つか。`auto` は持つが、2 本の重みが Neural Engine のコンパイルのキャッシュ (約 4 GiB) を超えるなら持たず (Gemma 4 E4B)、生成用のプログラムがプロンプトも読む (長いプロンプトは遅い)。`on` で常に持ち、`off` で持たない |
 | `-prompt-cache DIR` | コンパイルキャッシュの `prompts` | 読んだプロンプトをディスクに残し、起動し直した後も、先頭が同じプロンプト (エージェントの system と道具) を読み直さない (3 節)。`off` で無し |
-| `-system TEXT` | なし | 対話の system メッセージ |
+| `-system TEXT` | なし | 対話の system メッセージ (翻訳モデルでは参考文脈) |
+| `-to LANG` | なし | 翻訳モデル (PLaMo 3 Translate) が訳す先の言語。なしなら日本語を含む文は `en`、ほかは `ja` |
+| `-from LANG` | なし | 翻訳モデルの原文の言語 (なしならモデルが判断する) |
+| `-form plain\|polite` | なし | 日本語へ訳すときの常体と敬体 |
 | `-n N` | `0` | 1 つの答えの最大トークン数 (0 は文脈が尽きるまで) |
 | `-temp`、`-top-k`、`-top-p`、`-rep` | `0.1`、`50`、`0`、`1.05` | サンプリング (温度、上位 k、上位 p、答えの中の繰り返しの罰則) |
 | `-context N` | `0` | プロンプトと答えを合わせた最大トークン数。`0` は、注意で分けたモデル (`-paged`) ならモデルの上限 (LFM3-1.7B と Qwen3.5 は 262144、LFM3-VL、Audio、Omni は 128000、Gemma 4 は 131072)、それ以外は 16320。変えると、その長さで変換し直す。分けないモデルで 16320 を超えるとキャッシュを塊に分ける |

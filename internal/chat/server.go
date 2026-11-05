@@ -139,6 +139,8 @@ type chatRequest struct {
 	ChatTemplateKwargs  struct {
 		EnableThinking   *bool `json:"enable_thinking"`
 		PreserveThinking bool  `json:"preserve_thinking"`
+		// a translation model's (PLaMo 3's): target_lang, source_lang, form, context, glossary
+		Translation
 	} `json:"chat_template_kwargs"`
 }
 
@@ -178,7 +180,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	if req.ChatTemplateKwargs.EnableThinking != nil {
 		think = *req.ChatTemplateKwargs.EnableThinking
 	}
-	prompt, thinking, err := e.Template.Render(req.Messages, req.Tools, Options{NoThink: !think, KeepThinking: req.ChatTemplateKwargs.PreserveThinking})
+	prompt, thinking, err := e.Template.Render(req.Messages, req.Tools, Options{NoThink: !think, KeepThinking: req.ChatTemplateKwargs.PreserveThinking, Translation: &req.ChatTemplateKwargs.Translation})
 	if err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "", err.Error())
 		return

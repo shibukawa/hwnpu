@@ -50,6 +50,8 @@ MODELS = {
     "lfm3audio": ("iron_lfm3audio", "Lfm3Audio"),
     # LFM3-Omni (LFM3-Omni-2B): LFM3 with both towers, images and audio in (iron_lfm3omni.py).
     "lfm3omni": ("iron_lfm3omni", "Lfm3Omni"),
+    # PLaMo 3 (pfnet/plamo-3-translate-2b): an application kept in hwnpu (iron_plamo3.py).
+    "plamo3": ("iron_plamo3", "Plamo3"),
 }
 
 
@@ -764,7 +766,7 @@ def main(argv=None) -> int:
     versions = compile_versions(model, full_elf=False if a.per_step else None)
     m = export(model, versions, a.out)
     # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
-    for name in ("tokenizer.json", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json",
+    for name in ("tokenizer.json", "tokenizer.jsonl", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json",
                  "processor_config.json"):
         src = Path(a.checkpoint) / name
         if src.is_file():

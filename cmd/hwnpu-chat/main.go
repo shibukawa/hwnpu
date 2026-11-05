@@ -43,6 +43,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -95,6 +96,9 @@ func main() {
 	topK := flag.Int("top-k", 50, "sample from the k most likely tokens")
 	topP := flag.Float64("top-p", 0, "sample from the most likely tokens up to this probability (0: off)")
 	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
+	to := flag.String("to", "", "the language a translation model (PLaMo 3 Translate) translates into, a lowercase code: en, ja, zh-hans, ko, ja(easy)... (default: English for a text with Japanese characters, else Japanese) (chat)")
+	from := flag.String("from", "", "the language of the texts a translation model translates (default: the model finds it) (chat)")
+	form := flag.String("form", "", "polite or plain: the style of a translation into Japanese (chat)")
 	ironDir := flag.String("iron", "", "run a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), this directory, in place of -use")
 	flag.Parse()
 	if flag.NArg() > 0 && !*withOpenCode {
@@ -213,7 +217,7 @@ func main() {
 		err = serve(ctx, srv, *listen)
 	case len(srv.Chats) > 0:
 		stop() // Ctrl-C stops an answer, not the chat
-		err = talk(srv.Chats[0], *system, *think, *thinkBudget, *maxNew, srv.Defaults)
+		err = talk(srv.Chats[0], *system, *think, *thinkBudget, *maxNew, srv.Defaults, &chat.Translation{TargetLang: *to, SourceLang: *from, Form: *form})
 	default:
 		stop()
 		err = search(srv.Embedders[0])
@@ -346,7 +350,7 @@ func read(in *bufio.Reader) (string, bool) {
 }
 
 // talk is the interactive chat.
-func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s chat.Sampling) error {
+func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s chat.Sampling, tr *chat.Translation) error {
 	var msgs []chat.Message
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
@@ -357,6 +361,14 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 	}
 	if e.Audio() {
 		media += "/audio FILE.wav [text] sends a clip, "
+	}
+	translator := e.Template == chat.Plamo3
+	if translator {
+		to := tr.TargetLang
+		if to == "" {
+			to = "English for Japanese text, else Japanese"
+		}
+		fmt.Fprintf(os.Stderr, "each text is translated into %s, the earlier ones kept as its history; /to LANG changes the language and clears the history (/to alone: by the text), ", to)
 	}
 	fmt.Fprintf(os.Stderr, "%s/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n", media)
 	in := bufio.NewReader(os.Stdin)
@@ -376,6 +388,15 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 				msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
 			}
 			fmt.Fprintln(os.Stderr, "[conversation cleared]")
+			continue
+		case translator && (text == "/to" || strings.HasPrefix(text, "/to ")):
+			// the history's translations are labelled with the target language: start again
+			tr.TargetLang = strings.TrimSpace(strings.TrimPrefix(text, "/to"))
+			msgs = msgs[:0]
+			if system != "" {
+				msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
+			}
+			fmt.Fprintf(os.Stderr, "[translating into %s; history cleared]\n", cmp.Or(tr.TargetLang, "the language by the text"))
 			continue
 		case strings.HasPrefix(text, "/think"):
 			think = strings.TrimSpace(strings.TrimPrefix(text, "/think")) != "off"
@@ -402,8 +423,13 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 			continue
 		}
 		msgs = append(msgs, chat.Message{Role: "user", Content: content})
-		prompt, thinking, err := e.Template.Render(msgs, nil, chat.Options{NoThink: !think})
+		prompt, thinking, err := e.Template.Render(msgs, nil, chat.Options{NoThink: !think, Translation: tr})
 		if err != nil {
+			if translator { // a language code or a text the template refuses
+				fmt.Fprintln(os.Stderr, "error:", err)
+				msgs = msgs[:len(msgs)-1]
+				continue
+			}
 			return err
 		}
 		var media []chat.Media
