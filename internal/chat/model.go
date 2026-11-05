@@ -130,10 +130,10 @@ type Setup struct {
 	Log    io.Writer
 }
 
-// tokenizerFiles are the files of an architecture's tokenizer in its checkpoint, the one
+// TokenizerFiles are the files of an architecture's tokenizer in its checkpoint, the one
 // tokenizer.Load reads first: PLaMo 3's tokenizer.jsonl and the thresholds of its
 // tokenizer_config.json, every other model's tokenizer.json.
-func tokenizerFiles(arch string) []string {
+func TokenizerFiles(arch string) []string {
 	if arch == "plamo3" {
 		return []string{"tokenizer.jsonl", "tokenizer_config.json"}
 	}
@@ -196,12 +196,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, f := range tokenizerFiles(a.Name) {
+	for _, f := range TokenizerFiles(a.Name) {
 		if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
 			return Config{}, err
 		}
 	}
-	if err := fetchWeights(ctx, s.Repo, s.Dir, s.Log); err != nil {
+	if err := FetchWeights(ctx, s.Repo, s.Dir, s.Log); err != nil {
 		return Config{}, err
 	}
 	// The name says what the program is: the format always, since a change of the defaults
@@ -453,10 +453,10 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 // errNotFound is the error of fetch for a file the repository does not have.
 var errNotFound = errors.New("not in the repository")
 
-// fetchWeights downloads the checkpoint into dir: model.safetensors, or when the repository has
+// FetchWeights downloads the checkpoint into dir: model.safetensors, or when the repository has
 // it in several files (Qwen3.5-4B), its index model.safetensors.index.json and the files it
 // names. llm.OpenWeights opens either by the name model.safetensors.
-func fetchWeights(ctx context.Context, repo, dir string, log io.Writer) error {
+func FetchWeights(ctx context.Context, repo, dir string, log io.Writer) error {
 	single := filepath.Join(dir, "model.safetensors")
 	index := single + ".index.json"
 	if _, err := os.Stat(index); err != nil {
