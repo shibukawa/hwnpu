@@ -156,11 +156,16 @@ func (m *builder) beforeAttention(i int, h *mlpackage.Var) {
 	m.output(v, fmt.Sprintf("kv_v_%d_new", i))
 }
 
-// afterAttention is the rest of layer i from its attention's output, attn_o_N (1, heads, seq,
-// head_dim), with x the hidden state entering the layer.
+// afterAttention is the rest of layer i from its attention's output with the tokens first,
+// attn_ot_N (1, seq, heads, head_dim), which the host lays out (llm.Paged), with x the hidden
+// state entering the layer. Taking attn_o_N (heads first) and transposing it, Core ML put the
+// transpose that begins the last part (layer 23 and the head) on the CPU on an M3, though not the
+// same transpose at the start of the parts before.
 func (m *builder) afterAttention(i int, x *mlpackage.Var) *mlpackage.Var {
-	o := m.input(fmt.Sprintf("attn_o_%d", i), 1, m.cfg.NumHeads, m.seq, m.cfg.HeadDim)
-	return m.layerRest(i, m.attnOutput(i, o), x)
+	c := m.cfg
+	o := m.input(fmt.Sprintf("attn_ot_%d", i), 1, m.seq, c.NumHeads, c.HeadDim)
+	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(m.seq), int32(c.NumHeads*c.HeadDim))}, 1, m.seq, c.NumHeads*c.HeadDim)
+	return m.layerRest(i, m.Linear(o, layerPrefix(i)+"mixer.o_proj.weight", "", m.d), x)
 }
 
 // layerRest is a layer after its attention (a, before post_mixer_norm), given the hidden state
