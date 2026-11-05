@@ -15,8 +15,12 @@ var Arch = &llm.Arch{
 	Title:         "PLaMo 3",
 	ModelTypes:    []string{"plamo3"},
 	Architectures: []string{"Plamo3ForCausalLM"},
-	// lut4 costs PLaMo 3 Translate 2B too much (docs/design.md 16.69): 6 bit tables, as Gemma 4.
-	Format:     "lut6",
+	// 8 bit tables: on an M3's Neural Engine the next token is fp16's at 98% of a conversation's
+	// positions with lut8, 89% with lut6, for 8% more time per call (57.8 ms against 53.7); lut4
+	// is unusable (KL 1.91 nats on the CPU). The two programs of lut8 (4.9 GiB) are over the Neural
+	// Engine's compile cache, so hwnpu-chat keeps the one that generates and reads the prompts
+	// with it, which short texts to translate hardly feel (docs/design.md 16.69).
+	Format:     "lut8",
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }
 

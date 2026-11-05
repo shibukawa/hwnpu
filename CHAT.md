@@ -87,7 +87,7 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 
 ### Translating with PLaMo 3 Translate
 
-Preferred Networks' translation model PLaMo 3 Translate 2B is `-use plamo-3-translate-2b`. As the other models, the first run downloads the checkpoint (5.8 GB) and converts it: 6 bit tables (lut6) for the Neural Engine, int8 for Intel's NPU, split at its 3 full attention layers (7, 15 and 23; a context of 262144 tokens, the cache growing with the conversation by 7 KiB a token). On AMD's NPU, the IRON export runs with `-iron` (the README's AMD section). Each text typed is translated, and the earlier source texts and translations go into the prompt as its translation history (keeping terms and style consistent). `-to` sets the target language (by default English for a text with Japanese characters, else Japanese); `/to LANG` changes it and clears the history. Languages are lowercase codes: `en`, `ja`, `zh-hans`, `ko`, `ja(easy)` (plain Japanese) and so on. `-from` sets the source language, `-form plain` or `polite` the style of Japanese, and `-system` becomes the reference context. The model neither thinks nor calls tools.
+Preferred Networks' translation model PLaMo 3 Translate 2B is `-use plamo-3-translate-2b`. As the other models, the first run downloads the checkpoint (5.8 GB) and converts it: 8 bit tables (lut8) for the Neural Engine, int8 for Intel's NPU, split at its 3 full attention layers (7, 15 and 23; a context of 262144 tokens, the cache growing with the conversation by 7 KiB a token). On AMD's NPU, the IRON export runs with `-iron` (the README's AMD section). Each text typed is translated, and the earlier source texts and translations go into the prompt as its translation history (keeping terms and style consistent). `-to` sets the target language (by default English for a text with Japanese characters, else Japanese); `/to LANG` changes it and clears the history. Languages are lowercase codes: `en`, `ja`, `zh-hans`, `ko`, `ja(easy)` (plain Japanese) and so on. `-from` sets the source language, `-form plain` or `polite` the style of Japanese, and `-system` becomes the reference context. The model neither thinks nor calls tools.
 
 ```bash
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b
@@ -95,7 +95,7 @@ go run ./cmd/hwnpu-chat -use plamo-3-translate-2b -to ja -form plain
 go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2
 ```
 
-The loss of each weight format (KL against Hugging Face's fp32 over 31 tokens, design.md 16.69): lut4 is unusable at 1.91 nats, lut6 0.073, lut8 0.0066, Intel's int8 0.0025. `-format lut8` favours accuracy (1.3 times the weights; not measured on a Mac).
+The weight formats (design.md 16.69): on an M3's Neural Engine, the next token is fp16's at 98% of the positions with lut8, 89% with lut6; a call takes 57.8 ms with lut8, 53.7 with lut6. lut4 is unusable (KL 1.91 nats on the CPU; Intel's int8 0.0025). The two programs of lut8 (4.9 GiB) are over the Neural Engine's compile cache (about 4 GiB), so the one that generates (8 tokens per call) reads the prompts too: short texts hardly feel it, a document of thousands of tokens is read about ten times slower. `-format lut6` favours speed, with two programs.
 
 The server takes `target_lang`, `source_lang`, `form`, `context` and `glossary` (`[{"source": "NPU", "target": "NPU"}]`) in `chat_template_kwargs`, as vLLM does. `messages` alternate source texts (user) and translations (assistant), ending with the text to translate.
 
