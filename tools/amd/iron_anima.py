@@ -75,8 +75,8 @@ class DitFormats:
     MLP's two. The adaLN modulations (in-features 256 on their second linear, no whole blocks),
     the embeddings and the final layer stay bf16.
 
-    q8 draws what bf16 draws (latent cosine to diffusers' fp32 0.961 against bf16's 0.966) in
-    3.4 GiB of pinned memory instead of 5.0; q4 (2.7 GiB) changes the picture (0.78): the
+    q8 draws nearly what bf16 draws (latent cosine to diffusers' fp32 0.961 against bf16's 0.966)
+    in 3.4 GiB of pinned memory instead of 5.0, 2 % slower; q4 (2.7 GiB) changes the picture (0.78): the
     DiT of an 8-step distilled model carries 4 bits' rounding into the image.
     """
 
