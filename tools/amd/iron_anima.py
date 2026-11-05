@@ -66,6 +66,36 @@ class Precisions:
 PREC = Precisions()
 
 
+@dataclasses.dataclass
+class DitFormats:
+    """The DiT blocks' weights (set from the command line): iron_q4's q8 (8.5 bits a weight,
+    the default) or q4nx (5), or bf16. The device dequantizes them to bf16 (rounded to nearest
+    even) for each projection's GEMM, which Precision.MEDIUM multiplies in bfp16 anyway.
+    ``attn`` is the self- and cross-attention's q, k, v and output projections, ``mlp`` the GELU
+    MLP's two. The adaLN modulations (in-features 256 on their second linear, no whole blocks),
+    the embeddings and the final layer stay bf16.
+
+    q8 draws nearly what bf16 draws (latent cosine to diffusers' fp32 0.961 against bf16's 0.966)
+    in 3.4 GiB of pinned memory instead of 5.0, 2 % slower; q4 (2.7 GiB) changes the picture (0.78): the
+    DiT of an 8-step distilled model carries 4 bits' rounding into the image.
+    """
+
+    attn: str = "q8"
+    mlp: str = "q8"
+
+
+DIT_FMT = DitFormats()
+
+
+def dit_param(w, fmt: str):
+    """An iron.param of the DiT weight w in fmt (DitFormats)."""
+    if fmt == "bf16":
+        return iron.param(bf(w))
+    import iron_q4
+
+    return iron_q4.q_param(np.asarray(w, np.float32), fmt)
+
+
 # --- weights ---------------------------------------------------------------------------
 
 
@@ -241,8 +271,8 @@ class DitBlock(iron.Graph):
         p = f"blocks.{i}"
         self.self_attn.load(w, f"{p}.self_attn")
         self.cross_attn.load(w, f"{p}.cross_attn")
-        self.mlp_1 = iron.param(bf(w[f"{p}.mlp.layer1.weight"]))
-        self.mlp_2 = iron.param(bf(w[f"{p}.mlp.layer2.weight"]))
+        self.mlp_1 = dit_param(w[f"{p}.mlp.layer1.weight"], DIT_FMT.mlp)
+        self.mlp_2 = dit_param(w[f"{p}.mlp.layer2.weight"], DIT_FMT.mlp)
         for a, name in zip(self.ada, ("self_attn", "cross_attn", "mlp")):
             a.load(w, f"{p}.adaln_modulation_{name}")
 
@@ -291,10 +321,10 @@ class _Attn(iron.Graph):
         self.kn = iron.param(c.head_dim)
 
     def load(self, w: Safetensors, p: str) -> None:
-        self.q = iron.param(bf(w[f"{p}.q_proj.weight"]))
-        self.k = iron.param(bf(w[f"{p}.k_proj.weight"]))
-        self.v = iron.param(bf(w[f"{p}.v_proj.weight"]))
-        self.o = iron.param(bf(w[f"{p}.output_proj.weight"]))
+        self.q = dit_param(w[f"{p}.q_proj.weight"], DIT_FMT.attn)
+        self.k = dit_param(w[f"{p}.k_proj.weight"], DIT_FMT.attn)
+        self.v = dit_param(w[f"{p}.v_proj.weight"], DIT_FMT.attn)
+        self.o = dit_param(w[f"{p}.output_proj.weight"], DIT_FMT.attn)
         self.qn = iron.param(bf(w[f"{p}.q_norm.weight"]))
         self.kn = iron.param(bf(w[f"{p}.k_norm.weight"]))
 
@@ -923,7 +953,7 @@ def timestep_sinusoid(t: float, dim: int) -> np.ndarray:
 def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
     w = weights(root / "diffusion_models" / ARGS.dit, PREFIX)
     rng = np.random.default_rng(0)
-    meta = dict(config=dataclasses.asdict(c))
+    meta = dict(config=dataclasses.asdict(c), weights=dataclasses.asdict(DIT_FMT))
     # dit_in
     t0 = time.time()
     g = DitIn(c, w)
@@ -983,12 +1013,24 @@ def main(argv=None) -> int:
     ap.add_argument("--text-precision", default=PREC.text.value, choices=[p.value for p in Precision])
     ap.add_argument("--dit-precision", default=PREC.dit.value, choices=[p.value for p in Precision])
     ap.add_argument("--vae-precision", default=PREC.vae.value, choices=[p.value for p in Precision])
+    ap.add_argument("--dit-attn", default=DIT_FMT.attn, choices=("bf16", "q8", "q4"),
+                    help="the DiT blocks' attention projections: q8 (8.5 bits a weight), q4 (q4nx, 5 bits) or bf16")
+    ap.add_argument("--dit-mlp", default=DIT_FMT.mlp, choices=("bf16", "q8", "q4"),
+                    help="the DiT blocks' MLP: q8, q4 or bf16")
     ap.add_argument("--random", action="store_true", help="weights drawn at random in the checkpoint's shapes")
     ap.add_argument("--check", action="store_true", help="write each graph's inputs and reference outputs")
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)
     ARGS = a = ap.parse_args(argv)
     PREC.text, PREC.dit, PREC.vae = Precision(a.text_precision), Precision(a.dit_precision), Precision(a.vae_precision)
+    DIT_FMT.attn, DIT_FMT.mlp = a.dit_attn, a.dit_mlp
+    if (a.dit_attn, a.dit_mlp) != ("bf16", "bf16"):
+        import iron_q4
+
+        # q4nx's prompt path through bf16 (rounded to nearest even): the DiT's activations
+        # have a mean, and DequantBFP's rounding toward negative infinity adds up over them
+        iron_q4.PREFILL["q4"] = "bf16"
+        iron_q4.install_linear()
     bind_device(a.device, a.cols)
     c = DitConfig(width=a.width or a.size, height=a.height or a.size, group=a.group)
     a.out.mkdir(parents=True, exist_ok=True)

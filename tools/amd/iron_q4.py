@@ -9,8 +9,12 @@ The blocks of a weight (N out-features, K in-features) are in the order
 iron.operators.flm.DequantBFP reads (its README, layers 6 to 9): column blocks of 64
 out-features, each K / 512 objects of two pairs of blocks (in-features 0-255, then 256-511),
 a pair's blocks the out-features 0-31, then 32-63. A column block is contiguous, so the GEMV's
-cores each read a run of whole column blocks, and prefill can dequantize the same bytes into
-the bfp16 that flm.ProjectionGEMM reads.
+cores each read a run of whole column blocks, and prefill dequantizes the same bytes for
+the GEMM (DequantBFP into bfp16, or QDequant into bf16: q_linear).
+
+The kernels set the cores' rounding to nearest even: a core starts in floor mode, where every
+narrowing to bf16 or bfp16 rounds toward negative infinity, and over K in-features of inputs
+with a mean that bias grows to several times the quantization's own error (DequantBFP's).
 
 Q4GEMV is ``y = W x`` for one row: one core a column, each with the column blocks of
 ``N / columns`` out-features and all of x. Its kernel (kernels/q4_mv.cc) is FastFlowLM's
@@ -92,7 +96,17 @@ def quantize(w) -> np.ndarray:
         mn[r : r + rows] = m.reshape(-1, K // GROUP)
     safe = np.where(scale != 0, scale, 1)
     codes = np.clip(np.rint((g - mn[..., None]) / safe[..., None]), 0, 15).astype(np.uint8)
-    codes = codes.reshape(N, K)
+    return pack(codes.reshape(N, K), scale, mn)
+
+
+def pack(codes, scale, mn) -> np.ndarray:
+    """q4nx blocks of codes (N, K) 0..15 with each group's scale and minimum (N, K / 32), as
+    quantize writes them: a quantizer of its own (GPTQ) chooses them, this lays them out."""
+    codes = np.asarray(codes, np.uint8)
+    scale, mn = np.asarray(scale, np.float32), np.asarray(mn, np.float32)
+    N, K = codes.shape
+    if N % CB or K % 512:
+        raise ValueError(f"q4nx: ({N}, {K}) is not 64 x 512 blocks")
     # blocks [N/32, K/256]: scales and minima [k // 32, m], codes [m // 16, k, m % 16]
     nb, kb = N // M_TILE, K // K_TILE
     s = scale.reshape(nb, M_TILE, kb, K_TILE // GROUP).transpose(0, 2, 3, 1).astype(bfloat16)
@@ -142,6 +156,16 @@ def quantize8(w) -> np.ndarray:
     scale = (np.abs(g).max(-1) / 127).astype(bfloat16).astype(np.float32)
     safe = np.where(scale > 0, scale, 1)
     codes = np.clip(np.rint(g / safe[..., None]), -127, 127).astype(np.int8).reshape(N, K)
+    return pack8(codes, scale)
+
+
+def pack8(codes, scale) -> np.ndarray:
+    """q8 blocks of codes (N, K) int8 with each group's scale (N, K / 32), as quantize8 writes them."""
+    codes = np.asarray(codes, np.int8)
+    scale = np.asarray(scale, np.float32)
+    N, K = codes.shape
+    if N % CB or K % 512:
+        raise ValueError(f"q8: ({N}, {K}) is not 64 x 512 blocks")
     nb, kb = N // M_TILE, K // K_TILE
     sc = scale.reshape(nb, M_TILE, kb, K_TILE // GROUP).transpose(0, 2, 3, 1).astype(bfloat16)
     c = codes.reshape(nb, M_TILE // 16, 16, kb, K_TILE).transpose(0, 3, 1, 4, 2).reshape(nb, kb, -1)
@@ -198,25 +222,25 @@ def _kernels(fmt: str, k: int, out: int):
     return begin, block, end
 
 
-def _dequant_kernel(k: int):
+def _dequant_kernel(fmt: str, k: int):
     from aie.iron.kernel import ExternalFunction
     from aie.utils import config
 
     kernels = Path(config.aie_kernels_dir())
     here = Path(__file__).resolve().parent / "kernels"
     return ExternalFunction(
-        "q8_dequant",
-        source_file=str(here / "q8_mv.cc"),
-        arg_types=[np.ndarray[(Q8_BLOCK_BYTES,), np.dtype[np.uint8]],
+        f"{fmt}_dequant",
+        source_file=str(here / f"{fmt}_mv.cc"),
+        arg_types=[np.ndarray[(FORMATS[fmt],), np.dtype[np.uint8]],
                    np.ndarray[(CB * K_TILE,), np.dtype[bfloat16]], np.int32],
         include_dirs=[str(kernels / "flm_gemma4"), str(kernels), config.cxx_header_path()],
-        compile_flags=[f"-DQ8_K={k}"],
-        object_file_name=f"q8_dequant_{k}.o",
+        compile_flags=[f"-D{fmt.upper()}_K={k}"],
+        object_file_name=f"{fmt}_dequant_{k}.o",
     )
 
 
 def _operators():
-    """QGEMV and Q8Dequant, defined on first use: IRON's modules load only in its environment."""
+    """QGEMV and QDequant, defined on first use: IRON's modules load only in its environment."""
     import aie.dialects.index as index
     from aie.dialects.aie import T
     from aie.helpers.taplib import TensorAccessPattern
@@ -324,16 +348,19 @@ def _operators():
         def tolerance(self) -> Tolerance:
             return Tolerance.relative(0.05, 1e-2, note="32-column partial sums narrowed to bf16 before the scale")
 
-    class Q8Dequant(Operator):
-        """q8 blocks to the (N, K) bf16 weight, for a prompt chunk's GEMM: a core a column, each
-        with N / columns out-features, writing a column block's 64 rows 256 in-features at a time."""
+    class QDequant(Operator):
+        """q4nx or q8 blocks to the (N, K) bf16 weight (rounded to nearest even), for a prompt
+        chunk's GEMM: a core a column, each with N / columns out-features, writing a column
+        block's 64 rows 256 in-features at a time."""
 
+        fmt: str = param(array=True)
         blocks: int = param(array=True)
         K: int = param(array=True)
         N: int = param(derive=lambda op: op.blocks * CB // (2 * op.K // K_TILE), array=True)
+        block_bytes: int = param(derive=lambda op: FORMATS[op.fmt], array=True)
         num_aie_columns: int = tunable(domain=widths)
 
-        W = In(blocks, Q8_BLOCK_BYTES, dtype=np.uint8, obj_shape=(1, Q8_BLOCK_BYTES), per=(num_aie_columns,))
+        W = In(blocks, block_bytes, dtype=np.uint8, obj_shape=(1, block_bytes), per=(num_aie_columns,))
         w = Out(N, K, obj_shape=(CB, K_TILE), per=(num_aie_columns,))
 
         def resolve(self, dev):
@@ -343,12 +370,12 @@ def _operators():
 
         def compatible(self):
             if (self.N // CB) % self.num_aie_columns:
-                raise ValueError(f"Q8Dequant: {self.N // CB} column blocks over {self.num_aie_columns} columns")
+                raise ValueError(f"QDequant: {self.N // CB} column blocks over {self.num_aie_columns} columns")
 
         def build(self) -> Built:
             n = self.num_aie_columns
             cbs, kbs = self.N // CB // n, self.K // K_TILE
-            deq = _dequant_kernel(self.K)
+            deq = _dequant_kernel(self.fmt, self.K)
             w_f = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
             o_f = [ObjectFifo(self.w.obj_type, depth=1) for _ in range(n)]
 
@@ -384,12 +411,12 @@ def _operators():
             return self.N * self.K
 
         def reference(self, W):
-            return dequantize8(W, self.N, self.K).astype(bfloat16)
+            return dequantize_fmt(W, self.N, self.K, self.fmt).astype(bfloat16)
 
         def tolerance(self) -> Tolerance:
             return Tolerance.relative(0.01, 1e-3, note="a product rounded to bf16")
 
-    return QGEMV, Q8Dequant
+    return QGEMV, QDequant
 
 
 _OPS = None
@@ -406,18 +433,23 @@ def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2):
     """``x @ W.T`` for x (k,), (1, k) or (rows, k) and q, W's blocks in fmt as a 1-D iron.param.
 
     One row runs QGEMV on the blocks. Several (a prompt chunk) dequantize them on the device:
-    q4nx into bfp16 (iron.operators.flm.DequantBFP) for flm.ProjectionGEMM, as IRON's Gemma 4
-    at Precision.MEDIUM multiplies anyway; q8 into bf16 (Q8Dequant) for IRON's own F.linear.
+    q8 into bf16 (QDequant) for IRON's own F.linear at Precision.MEDIUM; q4nx by PREFILL["q4"],
+    "bfp16" (the default) IRON's flm.DequantBFP straight into flm.ProjectionGEMM's bfp16, or
+    "bf16" QDequant as q8. DequantBFP's cores round toward negative infinity, a bias that adds
+    up over the in-features when the inputs have a mean: Anima's DiT 0.24 of the velocity
+    against 0.09 for the quantization alone, so iron_anima.py takes "bf16". Language models'
+    inputs (normalized, about zero mean) show no difference (KL from bf16 the same on Gemma 4
+    E2B and LFM3), and "bf16" costs their prompt chunk 5 to 9 % (LFM3 2048: 628 -> 684 ms).
     """
-    QGEMV, Q8Dequant = operators()
+    QGEMV, QDequant = operators()
     one_row = len(x.shape) == 1 or x.shape[0] == 1
     if one_row:
         y = QGEMV.step(q.reshape(-1, FORMATS[fmt]), x.reshape(k), fmt=fmt, cores=cores)
         return y if len(x.shape) == 1 else y.reshape(1, n)
     from iron import Precision
 
-    if fmt == "q8":
-        w = Q8Dequant.step(q.reshape(-1, Q8_BLOCK_BYTES), K=k)
+    if fmt == "q8" or PREFILL["q4"] == "bf16":
+        w = QDequant.step(q.reshape(-1, FORMATS[fmt]), fmt=fmt, K=k)
         return _BASE["linear"](x, w, precision=Precision.MEDIUM)
     from iron.operators.flm import DequantBFP, ProjectionGEMM
     from iron.operators.flm.gemm.op import Epilogue
@@ -425,6 +457,10 @@ def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2):
     packed = DequantBFP.step(q, K=k, N=n)
     return ProjectionGEMM.step(x, packed, K=k, N=n, bfp16_b=True, precision=Precision.MEDIUM,
                                epilogue_modes=(Epilogue.NONE,))
+
+
+# How q4nx's prompt path dequantizes: "bfp16" (IRON's flm.DequantBFP) or "bf16" (QDequant).
+PREFILL = {"q4": "bfp16"}
 
 
 def q4_linear(x, q, n: int, k: int):
@@ -566,6 +602,7 @@ def _check(args) -> int:
     from iron_graph import bind_device, export_graph, write_check
 
     bind_device("npu2", 8)
+    PREFILL["q4"] = args.prefill
     install_linear()  # the base F.linear q8's prompt path calls, and the bfp16 fix
     n, k, fmt = args.n, args.k, args.fmt
     rng = np.random.default_rng(1)
@@ -597,7 +634,8 @@ def _check(args) -> int:
     shape = (k,) if args.rows == 0 else (args.rows, k)
     cg = g.compile(x=shape)
     m = export_graph(cg, args.out, "qlinear", dict(n=n, k=k, fmt=fmt))
-    x = rng.standard_normal(shape).astype(bfloat16)
+    # a mean in x shows a rounding bias that zero-mean inputs average away
+    x = (rng.standard_normal(shape) + args.x_mean).astype(bfloat16)
     write_check(g, m, args.out, dict(x=x), dict(rows=args.valid or args.rows) if args.rows else None)
     print(f"{args.out}: {fmt} {n} x {k}, {q.nbytes >> 10} KiB of weights")
     return 0
@@ -614,6 +652,8 @@ def main(argv=None) -> int:
     c.add_argument("--cores", type=int, default=2, help="cores a column of the GEMV (1 or 2)")
     c.add_argument("--rows", type=int, default=0, help="rows of x (0: one, (k,)): several run the prefill path")
     c.add_argument("--valid", type=int, default=0, help="rows the call bounds x to (default all)")
+    c.add_argument("--x-mean", type=float, default=0.0, help="the mean of x's random values")
+    c.add_argument("--prefill", choices=("bfp16", "bf16"), default=PREFILL["q4"], help="q4nx's prompt path (q_linear)")
     a = ap.parse_args(argv)
     if a.cmd == "check":
         return _check(a)

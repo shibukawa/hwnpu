@@ -86,8 +86,14 @@ static inline void q8_accumulate(const q8_block *A, const bf16 *B, float *c) {
 
 extern "C" {
 
+// Every call first sets round-to-nearest-even: a core starts in floor mode,
+// where each narrowing to bf16 rounds toward negative infinity. That bias adds
+// up over the in-features when the inputs have a mean (a DiT's do): 4 to 10
+// times the error of the bf16 weights.
+
 // The GEMV's (q4_mv.cc's calls; q8 has no minima, so no sums).
 void q8_mv_begin(const bf16 *x, bf16 *sums, float *acc) {
+  aie::set_rounding(aie::rounding_mode::conv_even);
   (void)x;
   (void)sums;
   zero_256<float, OUT>(acc);
@@ -95,12 +101,14 @@ void q8_mv_begin(const bf16 *x, bf16 *sums, float *acc) {
 
 void q8_mv_block(const uint8_t *block, const bf16 *x, const bf16 *sums,
                  float *acc, int32_t kb, int32_t h) {
+  aie::set_rounding(aie::rounding_mode::conv_even);
   (void)sums;
   q8_accumulate(reinterpret_cast<const q8_block *>(block), x + KT * kb,
                 acc + MT * h);
 }
 
 void q8_mv_end(float *acc, bf16 *y) {
+  aie::set_rounding(aie::rounding_mode::conv_even);
   narrow_to_bf16<OUT>(y, acc);
   zero_256<float, OUT>(acc);
 }
@@ -111,6 +119,7 @@ void q8_mv_end(float *acc, bf16 *y) {
 // scaled by the 16 rows' scales and transposed to [m][k] in two halves of 4
 // in-features, 8 values a row.
 void q8_dequant(const uint8_t *block, bf16 *out, int32_t h) {
+  aie::set_rounding(aie::rounding_mode::conv_even);
   const q8_block *A = reinterpret_cast<const q8_block *>(block);
   bf16 *rows = out + MT * KT * h;
   for (int s = 0; s < MT / PR; s++) {
