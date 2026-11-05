@@ -2028,3 +2028,24 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
   - LFM3-Omni-2B: 同じ画像に「赤い円と青い四角」、`Rear_Right.wav` に「Rear, right.」、画像と `Front_Left.wav` に「音声の言う側の図形は」と聞いて「Red circle」。テキストだけ、hwnpu-agent も動く (エージェントは原因を取り違えて直せなかった)
   - 落とした LFM3-Audio と LFM3-Omni の safetensors は、大きさは合っていたが sha256 が Hugging Face の値と違った。16 MiB ずつ取り直して比べると、それぞれ 10 か所ほどで 2〜6 バイトのビットが反転していた (乱数の重みの照合や値の範囲では見つからない)。直してから書き出し直した。落としたチェックポイントは `x-linked-etag` の sha256 と照らすこと
 - Gemma 4 E4B (`iron_export_lm.py gemma4`、文脈 4096、塊 1024): IRON の Gemma 4 のアプリケーションがそのまま書き出す (プロンプトは 35 コマンド、像は 15 GB)。Hugging Face の bf16 の CPU のロジットと、プロンプト 21 トークンとその後の 16 ステップで最上位がすべて一致 (コサイン 0.99993 以上、最大の差は最大のロジットの 3.6 %)。デコード 278 ms/トークン (3.6 トークン/秒)。塊 1024 は位置 0 から 3.4 秒、3072 から 8.2 秒で、どの 1 コマンドも 2 秒の打ち切りに届かない。hwnpu-chat は「日本の首都は東京です。」「391」(17 × 23)。hwnpu-agent は 16.66 と同じ課題で、テストを走らせて読み、`shapes.go` の `math.Pi * c.R` を `math.Pi * c.R * c.R` に直し、`go test` が通ることを確かめた (考える部分が長く、1 回に約 1100 トークン)
+
+### 16.68 AMD: 画像生成 Anima を NPU だけで (`hwnpu-image`、汎用のグラフの書き出し) — 2026-11-05
+
+- ComfyUI や Diffusers のような画像生成の道具は、UI とワークフロー (ノードのグラフ) と、モデルの実行 (テキストエンコーダ、拡散のデノイザー、VAE、サンプラー) に分かれる。hwnpu は後者を受け持つ。最初のモデルは Anima-Turbo (Cosmos-Predict2 2B の DiT、Qwen3-0.6B と LLM アダプタ、Qwen-Image の VAE。8 ステップ、CFG 1)
+- 言語モデルの書き出し (版が decode と prompt) とは別に、入力から出力への IRON のグラフを書き出す道を足した: `tools/amd/iron_graph.py` と Go の `iron.Graph` (`internal/llm/iron/graph.go`)。同じ ELF に重みのバンクを何組も持てる (`variants`)。DiT の 28 ブロックは 4 ブロックのグラフ 1 つと 7 組のバンク
+- 1024 × 1024、8 ステップで約 70 秒 (DiT 1 ステップ 7.2 秒、VAE 7 秒)。diffusers の fp32 の CPU (9 分 17 秒) と同じノイズで、潜在のコサイン 0.966 (CPU の bf16 は 0.980)。行列積の `MEDIUM` (bfp16) がテキストで誤差を広げていたので、テキストだけ `HIGHEST` にした (0.938 → 0.966、時間は変わらず)
+- トークナイザー: Qwen3 の前分割 (数字を 1 桁ずつ) と、T5 の Unigram (sentencepiece の precompiled charsmap、Viterbi) を Go に足した。transformers と 11 の文 (全角、アクセント、日本語、絵文字) で一致
+- 詳細、測定、書き出しの手順は [amd-npu-models.md](amd-npu-models.md) の 11 節
+
+### 16.69 画像生成 Anima を Neural Engine と Intel の NPU にも (`hwnpu-image -convert`) — 2026-11-05
+
+- AMD の IRON のグラフ (16.68) と同じ部品を、MIL の 1 つの記述 (`internal/imagegen/anima/mil`) から Core ML のパッケージ (`-backend coreml`) と OpenVINO IR (`-backend intel`、`ovlower`) に書く。テキスト、DiT の時刻とパッチと 4 ブロックずつ 7 つと最後の層、VAE の 10 段。変換は Go だけで、256 × 256 で 12 秒 (重み fp16 で 5.1 GB)
+- 実行は `runner.Program` (`internal/imagegen/anima/programs.go`)。パイプラインは IRON と共通にし、部品の実行だけを `engine` で分けた。AMD の出力はこの作り替えの前とビット単位で同じ
+- fp16 の手当て (実測: DiT の残差は 12〜20 ブロックで最大 2.7e5、ゲートつきの MLP の出力 2.3e5、ゲート 4682、Qwen3 の残差 7e3):
+  - DiT の残差を 1/32 で持つ (パッチの埋め込みとゲートを 1/32 に)。正規化は入力の大きさに依らないので、残りはそのまま
+  - 幅の RMS norm と LayerNorm は、行ごとの最大の絶対値で割ってからする (`maxScaled`、`reduce_max` と `real_div`)。固定の倍率 (`RMSNorm` の inScale) では、大きな値のない行の 2 乗が fp16 の非正規数になって精度が落ちる
+  - VAE の値は 8 未満なので手当ては要らない
+- 注意は 1024 クエリずつ (`-qchunk`)。VAE の中段は 1 ヘッド 384 次元、16384 画素
+- CPU のインタプリタに 2 次元の `conv` を足した (`milcpu`)。runner の CPU の実行に `HWNPU_CPU_F16` (演算ごとに fp16 に丸める) を足した
+- 確かめたこと (256 × 256、8 ステップ、diffusers の fp32 と同じノイズ): Core ML を CPU のインタプリタで、潜在のコサイン 0.99985、画像の PSNR 37.4 dB (fp16 に丸めて 0.99899、32.0 dB)。OpenVINO IR を OpenVINO 2026.4 の CPU で 0.99985、37.9 dB (f16 の推論で 0.99478、25.5 dB)。条件づけはコサイン 0.999999、ステップ 0 の速度は 0.999997
+- 実機 (M3、Core Ultra) では未確認。手順と見るところは [handoff-anima-mac-intel.md](handoff-anima-mac-intel.md)

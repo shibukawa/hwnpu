@@ -217,6 +217,45 @@ func TestConv(t *testing.T) {
 	near(t, "conv", got, []int{1, 2, 4}, []float32{0, 0, 1, 2, 10.5, 30.5, 50.5, 70.5}, 0)
 }
 
+// A 3 x 3 convolution of 2 channels to 3, zero padded by 1, against the sum written out.
+func TestConv2D(t *testing.T) {
+	const cin, cout, h, w = 2, 3, 4, 5
+	x := make([]float32, cin*h*w)
+	for i := range x {
+		x[i] = float32(i%7) - 3
+	}
+	wt := make([]float32, cout*cin*9)
+	for i := range wt {
+		wt[i] = float32(i%5)*0.25 - 0.5
+	}
+	bias := []float32{0.5, -1, 2}
+	got := run(t, []int{1, cin, h, w}, x, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+		return b.Op("conv", map[string]any{"x": x, "weight": f16s(t, b, []int{cout, cin, 3, 3}, wt), "bias": f16s(t, b, []int{cout}, bias),
+			"strides": b.Ints(1, 1), "pad_type": b.Str("c", "custom"), "pad": b.Ints(1, 1, 1, 1), "dilations": b.Ints(1, 1), "groups": b.ScalarI32(1)},
+			mlpackage.Float16, 1, cout, h, w)
+	})
+	want := make([]float32, cout*h*w)
+	for o := 0; o < cout; o++ {
+		for y := 0; y < h; y++ {
+			for xx := 0; xx < w; xx++ {
+				acc := bias[o]
+				for c := 0; c < cin; c++ {
+					for ky := 0; ky < 3; ky++ {
+						for kx := 0; kx < 3; kx++ {
+							sy, sx := y+ky-1, xx+kx-1
+							if sy >= 0 && sy < h && sx >= 0 && sx < w {
+								acc += wt[((o*cin+c)*3+ky)*3+kx] * x[(c*h+sy)*w+sx]
+							}
+						}
+					}
+				}
+				want[(o*h+y)*w+xx] = acc
+			}
+		}
+	}
+	near(t, "conv2d", got, []int{1, cout, h, w}, want, 1e-5)
+}
+
 func TestConstexpr(t *testing.T) {
 	// a 4 bit palettized (32, 8) matrix with tables per 16 rows equals its dequantized values
 	rows, cols := 32, 8
