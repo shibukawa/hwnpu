@@ -135,6 +135,18 @@ printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/root/usr/lib/x86_64-linux-gnu exec %s/root
 export AIE_XCLBINUTIL=~/xrt-debs/xclbinutil
 ```
 
+Or skip XRT entirely: hwnpu has a stand-in, `hwnpu-xclbin`, that takes the arguments aiecc passes to `xclbinutil`. Build it from the hwnpu checkout (step 3) and point aiecc at it:
+
+```bash
+go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-xclbin
+```
+
+```bash
+export AIE_XCLBINUTIL=~/.local/bin/hwnpu-xclbin
+```
+
+Its xclbin holds what hwnpu reads (kernel metadata, compute units, the AIE partition and its PDIs) and is not meant for XRT. It also packages the xclbins IRON's operators build (checked with a GEMV on Strix Point; NPU1 is untested).
+
 Build only the xclbin and the instruction stream. Use `-d npu` for Phoenix and Hawk Point, `-d npu2` for Strix Point and later:
 
 ```bash
@@ -182,6 +194,8 @@ go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power low -o low.md
 ```bash
 go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o performance.md
 ```
+
+Benchmarks of the data types and the DMA bandwidth on Strix Point, and the scripts behind them: [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) (Japanese), [tools/iron](tools/iron/README.md).
 
 ## 5. Using your own kernels
 
