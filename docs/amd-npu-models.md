@@ -217,7 +217,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | 部品 | 中身 | グラフ (`tools/amd/iron_anima.py`) |
 |---|---|---|
 | テキスト | Qwen3-0.6B (28 層、因果) の最終層の隠れ状態、その後 LLM アダプタ (6 層。T5 のトークンの埋め込みが自分自身と Qwen3 の隠れ状態に注意する) | `text` (1 つ、5 コマンド)。プロンプトは 512 トークンまで |
-| DiT | Cosmos-Predict2 2B (28 ブロック、hidden 2048、16 ヘッド)。adaLN-zero の自己注意 (3 軸の RoPE)、テキストへの交差注意、GELU の MLP | `dit_in` (パッチの埋め込みと時刻の埋め込み)、`dit_blocks` (4 ブロック。1 つの ELF に重みのバンクが 7 組)、`dit_out` |
+| DiT | Cosmos-Predict2 2B (28 ブロック、hidden 2048、16 ヘッド)。adaLN-zero の自己注意 (3 軸の RoPE)、テキストへの交差注意、GELU の MLP | `dit_in` (パッチの埋め込みと時刻の埋め込み)、`dit_blocks` (4 ブロック。1 つの ELF に重みのバンクが 7 組。ブロックの射影は 8 ビット (q8)、13 節)、`dit_out` |
 | VAE | Qwen-Image の VAE (Wan 2.1 のもの) の復号器を 1 フレームで。因果 3D 畳み込みは時間方向の最後のタップだけ、時間方向の拡大は通らない | `vae/s0`〜`s9` (段ごとに 1 つ) |
 
 ホスト (`internal/imagegen/anima`) がするのは、テンソルの計算でないもの: トークン化 (Qwen3 の BPE と T5 の Unigram、どちらも Go)、埋め込みの行の取り出し、時刻の正弦波、2 × 2 のパッチの並べ替え、flow matching の Euler のステップ (`x += (σ' − σ) v`)、ノイズ、PNG。Anima-Turbo は CFG 1 なので、負のプロンプトも 2 回目の DiT もない。
@@ -240,14 +240,16 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | DiT 1 ステップ (`dit_in`、4 ブロック × 7、`dit_out`) | 7.2 秒 (4 ブロックが 1.0 秒。自己注意 4096 × 4096 が 1 ブロック 0.21 秒で、いちばん重い) |
 | VAE (10 段) | 10 秒 (段ごとの読み込みを含む。読み込みなしでは 7 秒、1024 × 1024 の段は 1 つ 0.8〜0.9 秒) |
 | 合計 | 約 68 秒 |
-| 固定されたメモリの最大 | 5.0 GiB (DiT。全部を読み込んだままだと 14.2 GiB) |
+| 固定されたメモリの最大 | 3.4 GiB (DiT の重み q8。bf16 では 5.0 GiB、全部を読み込んだままだと 14.2 GiB) |
 
 CPU (diffusers、fp32、9 分 17 秒) を参照に、同じノイズから:
 
 | | 潜在のコサイン | 画像の PSNR |
 |---|---|---|
 | CPU の bf16 | 0.980 | 21.5 dB |
-| NPU (テキスト HIGHEST、DiT MEDIUM。既定) | 0.966 | 19.1 dB |
+| NPU (テキスト HIGHEST、DiT MEDIUM、DiT の重み bf16) | 0.966 | 19.1 dB |
+| **NPU (同じで DiT の重み q8。既定、13 節)** | **0.961** | **18.6 dB** |
+| NPU (DiT の重み q4nx) | 0.777 | 12.9 dB |
 | NPU (DiT HIGH。1 ステップ 10.9 秒) | 0.976 | 20.2 dB |
 | NPU (テキストも MEDIUM) | 0.938 | 17.2 dB |
 
@@ -258,11 +260,11 @@ CPU (diffusers、fp32、9 分 17 秒) を参照に、同じノイズから:
 `~/models/Anima` に置くもの: 公式の `split_files` (`diffusion_models/anima-turbo-v1.1.safetensors`、`text_encoders/qwen_3_06b_base.safetensors`) と、circlestone-labs/Anima-Base-v1.0-Diffusers の設定、トークナイザー、VAE (`diffusers/{tokenizer,t5_tokenizer,text_encoder,transformer,vae,text_conditioner,scheduler}`、VAE は diffusers の名前の `diffusion_pytorch_model.safetensors`)。
 
 ```bash
-python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2 --size 1024   # 約 5 分
+python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2 --size 1024   # 約 5 分、4.0 GB (DiT の重み q8)
 go run ./cmd/hwnpu-image -model ~/models/anima-turbo-1024.amd-npu2 -prompt "..." -seed 1 -o out.png
 ```
 
-確かめ方: `--check` で各グラフに乱数の入力と IRON の参照の出力を書き、`go run ./tools/amd/irongraph DIR` で NPU と比べる。`--random` は乱数の重み (チェックポイントの形だけ使う)。全体は `tools/ref/ref_anima.py` (diffusers で CPU) の `noise` を `-noise` に、`-dump` と `-latents` で条件づけ、各ステップの速度、最後の潜在を書いて比べる。
+DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`q4`、`bf16`) で選ぶ (13 節)。確かめ方: `--check` で各グラフに乱数の入力と IRON の参照の出力を書き、`go run ./tools/amd/irongraph DIR` で NPU と比べる。`--random` は乱数の重み (チェックポイントの形だけ使う)。全体は `tools/ref/ref_anima.py` (diffusers で CPU) の `noise` を `-noise` に、`-dump` と `-latents` で条件づけ、各ステップの速度、最後の潜在を書いて比べる。
 
 ### 11.5 残り
 
@@ -286,7 +288,7 @@ IRON の arena (bank) とグラフのバッファは amdxdna の BO_SHARE (shmem
 
 したこと:
 
-- **Anima: 段ごとに読み込む** (`internal/imagegen/anima`): テキスト、DiT、VAE の 10 段は同時には走らないので、走るときに読み込み、終わったら放す。最大は DiT の 5.0 GiB。絵はビット単位で同じ。読み込みはページキャッシュから 1 枚あたり数秒 (VAE の段は特徴マップが大半で、像のファイルは 0.16 GB)
+- **Anima: 段ごとに読み込む** (`internal/imagegen/anima`): テキスト、DiT、VAE の 10 段は同時には走らないので、走るときに読み込み、終わったら放す。最大は DiT の 5.0 GiB (DiT の重みを q8 にして 3.4 GiB、13 節)。絵はビット単位で同じ。読み込みはページキャッシュから 1 枚あたり数秒 (VAE の段は特徴マップが大半で、像のファイルは 0.16 GB)
 - **Gemma 4: PLE をホストに** (`tools/amd/iron_hostple.py`、`iron.HostTable`): PLE は 1 トークンに 1 行 (E2B で 35 層 × 256 × bf16 = 17.5 KiB) しか読まないのに、表全体が固定されていた。表はファイル `ple.bin` (語彙 × 層 × 256、スケールと目印の行の置き換えは IRON の `load_state_dict` と同じ) のまま置き、デバイスには `hwnpu_ple_rows` (層 × 塊の行 × 256、E2B で 18 MB) だけを持つ。ホストは呼び出しの前にトークンの行を読み (`ReadAt`、ページキャッシュ) その順に書き、層はその行を順に読む。gather がなくなるだけで計算は同じ: E2B の生成は 19 トークンの質問と 2483 トークン (塊 3 つ) の要約で古い書き出しと一字一句同じ、速さも同じ (6.1 トークン/秒、塊は 3072 から 6.29 秒 / 古いもの 6.34 秒)
   - コマンドの分け方: IRON は 1 コマンドのスクラッチパッドの語が 32 を超えるところでコマンドを切る。PLE の gather は語を多く使っていたのでプロンプトは 15 コマンドだったが、なくすと 7 コマンドになり、1 つが 3072 から 3.7 秒 (amdxdna の打ち切りに近い) で、制御コードもデコードのものと並んでヒープに入らなかった (`ENOSPC`)。書き出しのときだけ上限を 24 語にして 50 コマンドにした (最長 381 ms)。ホストステップでは切れない (デコードが送り込むプロンプトの版はホストステップを持てない)
   - Go 側はヒープが足りないとき (`ENOSPC`) デコードのランを放してやり直す (IRON と同じ)
@@ -321,7 +323,7 @@ IRON の arena (bank) とグラフのバッファは amdxdna の BO_SHARE (shmem
 演算 (`tools/amd/iron_q4.py`、カーネルは `tools/amd/kernels/q4_mv.cc` と `q8_mv.cc`):
 
 - **デコード** (1 行): `QGEMV`。1 列に 2 コア。メモリタイルが列ブロックの 2 ブロック (出力 0〜31 と 32〜63) を 2 コアに分け、x を両方に配り、出力をつなぐ。q4nx は FastFlowLM の `q4nx_accumulate` (32 列の部分和を bf16 にしてから scale を掛け、min は x の 32 個ごとの和との積 1 回)。q8 は同じ形だが、部分和を bf16 1 つに丸めると 8 ビットの精度が消える (コサイン 0.9998) ので、上位と残りの 2 つの bf16 に分けて scale を掛ける (0.999992)
-- **プロンプト** (複数行): q4nx は IRON の `flm.DequantBFP` でデバイス上で bfp16 に戻し、`flm.ProjectionGEMM` (bfp16 の B)。Gemma 4 はもともと `Precision.MEDIUM` (bfp16) で掛けているので、計算の精度は量子化の分だけ変わる。q8 は `Q8Dequant` (hwnpu の演算。int8 を bf16 にして scale を掛け、16 行 × 8 列ずつ転置して書く) で bf16 の (N, K) に戻し、IRON の `F.linear` に渡す
+- **プロンプト** (複数行): q4nx は IRON の `flm.DequantBFP` でデバイス上で bfp16 に戻し、`flm.ProjectionGEMM` (bfp16 の B)。Gemma 4 はもともと `Precision.MEDIUM` (bfp16) で掛けているので、計算の精度は量子化の分だけ変わる。q8 は `QDequant` (hwnpu の演算。int8 を bf16 にして scale を掛け、16 行 × 8 列ずつ転置して書く) で bf16 の (N, K) に戻し、IRON の `F.linear` に渡す。`QDequant` は q4nx も戻せる (`iron_q4.PREFILL["q4"] = "bf16"`、Anima の DiT。下の「コアの丸めの向き」)
 - **量子化** (q4nx): 32 個ごとに、[min, max] を少し縮めた候補 9 つから、code を決めたあと scale と min を最小 2 乗で合わせ直し、誤差の最も小さいものを選ぶ (llama.cpp の make_qkx と同じ考え)。単純な min-max より重みの誤差が 1 割小さい (E2B の 3 層目の gate_proj で 8.2 % → 7.3 %)。q8 は 32 個の最大の絶対値 / 127
 - **トークンの埋め込み**: 出力の行列と共有 (tied) なので、出力側を 4 ビットにすると bf16 の行がなくなる。PLE と同じくホストの表 (`embed.bin`、12 節) にし、デバイスには塊の行数分 (3 MB) だけ置く
 - IRON への手当て (hwnpu 側で、IRON は変えない): `F.linear` を差し替え、量子化した重みなら `q_linear` へ。`Operand.fits` が bfp16 の型で落ちる (bfp16 の B に呼び出しごとの行数があるとき) ので、バイトの並びで判定する。プロンプトの版の入力 `ids` は表を引かなくなっても読まれている必要があり、全体を 1 回写す (4 KiB)
@@ -421,5 +423,46 @@ NPU の q4 の KL は CPU の見積もり (0.035) と同じで、NPU の計算 (
 - LFM3-VL-2B: 赤い円と青い四角の画像に「赤い楕円と青い四角形が写っています。」、「赤い図形は左右どちら」に「左」(bf16 と同じ)。デコード 8.7 → 11.3 トークン/秒、1.35 → 1.03 J/トークン。固定 4.12 → 2.00 GiB
 - LFM3-Audio-2B: `Front_Left.wav` に「front, left.」、`Rear_Right.wav` に「Rear, right」、speech-dispatcher の案内 (約 10 秒) の書き起こしは bf16 と読点 1 つと「/var/log」→「/var/logs」の 1 か所だけ違う。固定 4.14 → 2.03 GiB
 - LFM3-Omni-2B: 画像に「赤い円と青い四角」、2 つの音声に「Front, left.」「Rear, right.」(bf16 と同じ)。固定 4.51 → 2.39 GiB
+
+### Anima の DiT (`iron_anima.py --dit-attn`、`--dit-mlp`、2026-11-06)
+
+DiT の 28 ブロックの射影 (自己注意と交差注意の q、k、v、o、MLP の 2 つ。DiT の重みの 9 割) を q8 か q4nx にする。adaLN の変調 (2 つ目の線形の入力が 256 で、q4nx のブロックにならない)、埋め込み、最後の層は bf16。既定は両方 q8。4 ブロックのバンク (重みと作業の領域) は 689 → 464 MiB (q8)、359 MiB (q4nx) で、7 組。
+
+Ryzen AI 9 365、1024 × 1024、8 ステップ、同じノイズとプロンプト (ほかに NPU を使うものがない状態):
+
+| DiT の重み | bf16 | **q8 (既定)** | q4nx |
+|---|---|---|---|
+| 固定されたメモリの最大 (`Unevictable` の増え方) | 5020 MiB | **3445 MiB** | 2710 MiB |
+| 書き出し (テキストと VAE を含む) | 5.7 GB | **4.0 GB** | 3.2 GB |
+| デノイズ 8 ステップ / 全体 | 60.1 / 72.6 秒 | **58.5 / 69.4 秒** | 58.0 / 68.9 秒 |
+| diffusers の fp32 (CPU) との潜在のコサイン / 画像の PSNR | 0.966 / 19.1 dB | **0.961 / 18.6 dB** | 0.777 / 12.9 dB |
+
+q8 は bf16 と見分けがつかない (構図、顔、背景の枝まで同じ)。q4nx は顔つきと手の位置が変わり、首飾りが現れる。CPU (fp32) で重みだけを q4nx にして戻しても 0.753 / 12.6 dB で、NPU の q4nx の差はほぼ量子化そのもの。8 ステップに蒸留した DiT は 4 ビットの丸めを絵まで運ぶ。
+
+どこが 4 ビットに弱いか (CPU、fp32、参照の軌跡のステップ 0 と 4 での速度の相対誤差の平均。重みだけを量子化して戻す):
+
+| 量子化したもの (ほかは bf16) | 速度の誤差 |
+|---|---|
+| すべて q8 | 0.010 |
+| adaLN だけ q4nx | 0.0004 |
+| 交差注意だけ q4nx | 0.024 |
+| MLP の 2 つ目だけ q4nx | 0.061 |
+| MLP の 1 つ目だけ q4nx | 0.064 |
+| 自己注意だけ q4nx | 0.088 |
+| すべて q4nx | 0.114 |
+| すべて q4nx を GPTQ で (4 つのプロンプト × 4 ステップのヘッシアン、同じ形式) | 0.070 |
+| GPTQ の q4nx、自己注意と MLP の 1 つ目は q8 (約 6.7 ビット) | 0.033 |
+
+GPTQ は q4nx の誤差を 4 割減らし、CPU の絵は 0.753 → 0.868 / 14.8 dB まで戻るが、q8 (0.010) にはまだ遠く細部が変わる。q4nx から q8 で増える固定は 735 MiB なので、既定は q8 にした。GPTQ の符号を書き出しに読む道は作っていない。
+
+### コアの丸めの向き (2026-11-06)
+
+AIE のコアは丸めのモードが切り捨て (負の無限大へ) のまま始まる。float から bf16 や bfp16 に狭めるたびに値が少しずつ下に寄り、入力 K 個にわたって足されると、入力に平均があるとき (Anima の DiT の活性) 出力の 1 割近い偏りになる。平均 0 の乱数の単体の試験では打ち消し合って見えない。IRON の `flm.DequantBFP` の README にも切り捨てとある。
+
+- hwnpu のカーネル (`q4_mv.cc`、`q8_mv.cc`) は呼ばれるたびに最初に最近接偶数 (`aie::set_rounding(conv_even)`) にする。1 命令で、速さは変わらない
+- q4nx をプロンプトで bf16 に戻す `q4_dequant` (`QDequant` の q4nx 版) を足した。IRON の `DequantBFP` は変えない。量子化した DiT も `--check` の参照 (IRON の `F.linear` に戻した重み) と比べられる (512 × 512 の 4 ブロック、q8 でコサイン 0.999987)
+- 単体 (`iron_q4.py check --x-mean 1`、2048 × 2048、4096 行): `DequantBFP` の経路はコサイン 0.968、`QDequant` (bf16) の経路は 0.99994、q8 は 0.99996
+- Anima の DiT (diffusers の fp32 とのステップ 0 の速度の相対誤差): NPU の q8 は 0.088 → 0.031、q4nx は 0.244 → 0.087。NPU の bf16 は 0.025、CPU で量子化だけなら q8 0.007、q4nx 0.092 で、直したあとの差は量子化と NPU の bf16 の計算の分だけ。絵は上の表のとおり
+- 言語モデル (正規化した、平均がほぼ 0 の入力) では差がほとんど見えない: 書き出し直した Gemma 4 E2B の q4 の NPU の bf16 との KL は 0.097 → 0.093 (最上位の一致 90.0 %、同じ)、LFM3-1.7B は 0.0364 → 0.0362 (92.0 → 93.0 %)。プロンプトの q4nx も `QDequant` (bf16) にすると KL は同じ (0.094、0.0368) で塊が 5〜9 % 遅くなる (LFM3 の 2048 で 628 → 684 ms、E2B の 1024 で 940 → 988 ms) ので、言語モデルの q4nx は `DequantBFP` のまま (`PREFILL["q4"] = "bfp16"` が既定)。デコード (`QGEMV`) は丸めだけが変わり、速さは同じ (LFM3 88 ms、E2B 128 ms)。今ある書き出しはそのまま動き、書き出し直すと丸めが直る
 
 ほかのビット数: AMD の NPU (AIE2P) がそのまま掛けられるのは bf16、bfp16 (8 値で指数 1 つ、約 9 ビット)、int8 など。4 ビット、6 ビット、8 ビットのブロック形式は、コアの中で bf16 に戻しながら掛ける (q4nx、q8 と同じ) ので、形式ごとに GEMV のカーネルと、プロンプト用に bf16 か bfp16 へ戻す演算が要る。q8 は q4nx の形を元にしたので、6 ビットも同じ並びで足せる。
