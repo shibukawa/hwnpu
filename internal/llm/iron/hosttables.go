@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/shibukawa/hwnpu"
 )
 
 // HostTable is a table of rows by token kept on the host (tools/amd/iron_hostple.py: Gemma 4's
@@ -25,8 +23,8 @@ type HostTable struct {
 type hostTable struct {
 	t   HostTable
 	f   *os.File
-	buf *hwnpu.Buffer
-	off int // the buffer's offset in buf
+	arg string // the argument (bank) the buffer is in: its device buffer is the model's of the day
+	off int    // the buffer's offset in it
 	row []byte
 }
 
@@ -45,7 +43,7 @@ func (m *Model) openHostTables() error {
 		if err != nil {
 			return fmt.Errorf("iron: host table: %w", err)
 		}
-		ht := &hostTable{t: t, f: f, buf: m.buffer(m.decode, p.Argument), off: p.Offset, row: make([]byte, t.Layers*t.PartBytes)}
+		ht := &hostTable{t: t, f: f, arg: p.Argument, off: p.Offset, row: make([]byte, t.Layers*t.PartBytes)}
 		m.hostTables = append(m.hostTables, ht)
 		if fi, err := f.Stat(); err != nil || fi.Size() < int64(t.Rows)*int64(len(ht.row)) {
 			return fmt.Errorf("iron: host table %s is shorter than %d rows of %d bytes", t.File, t.Rows, len(ht.row))
@@ -67,7 +65,8 @@ func (m *Model) fillHostTables(ids []int32) error {
 		if len(ids) > t.t.Slots {
 			return fmt.Errorf("iron: %d tokens for host table %s of %d rows", len(ids), t.t.File, t.t.Slots)
 		}
-		dst := t.buf.Bytes()
+		buf := m.buffer(m.decode, t.arg)
+		dst := buf.Bytes()
 		pb := t.t.PartBytes
 		part := t.t.Slots * pb
 		for r, id := range ids {
@@ -82,7 +81,7 @@ func (m *Model) fillHostTables(ids []int32) error {
 			}
 		}
 		for l := 0; l < t.t.Layers; l++ {
-			if err := t.buf.SyncToDevice(t.off+l*part, len(ids)*pb); err != nil {
+			if err := buf.SyncToDevice(t.off+l*part, len(ids)*pb); err != nil {
 				return err
 			}
 		}

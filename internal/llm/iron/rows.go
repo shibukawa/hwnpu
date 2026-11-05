@@ -60,6 +60,9 @@ func (m *Model) RowBytes() int {
 // caches by name. The caches are written by position, so these rows are the whole state of
 // the sequence before to, together with StateAt for a model with recurrent states.
 func (m *Model) ExportRows(from, to int) ([]byte, error) {
+	if m.released {
+		return nil, errReleased
+	}
 	cs, err := m.caches()
 	if err != nil {
 		return nil, err
@@ -86,6 +89,9 @@ func (m *Model) ExportRows(from, to int) ([]byte, error) {
 
 // ImportRows writes rows (ExportRows's layout) at positions from on.
 func (m *Model) ImportRows(from int, rows []byte) error {
+	if m.released {
+		return errReleased
+	}
 	cs, err := m.caches()
 	if err != nil {
 		return err
@@ -152,6 +158,9 @@ func stateSlot(c Checkpoint, pos int) int {
 // the positions before pos are not run again; the calls after pos change only that slot and
 // later ones. Empty for a model without recurrent states.
 func (m *Model) StateAt(pos int) ([]byte, error) {
+	if m.released {
+		return nil, errReleased
+	}
 	var out []byte
 	for _, c := range m.Manifest.Checkpoints {
 		p, ok := m.decode.m.Buffers[c.Buffer]
@@ -171,6 +180,9 @@ func (m *Model) StateAt(pos int) ([]byte, error) {
 
 // SetStateAt writes back what StateAt copied at pos, so that the next call can start there.
 func (m *Model) SetStateAt(pos int, state []byte) error {
+	if m.released {
+		return errReleased
+	}
 	o := 0
 	for _, c := range m.Manifest.Checkpoints {
 		p, ok := m.decode.m.Buffers[c.Buffer]

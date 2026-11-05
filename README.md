@@ -130,6 +130,8 @@ python tools/amd/iron_export_lm.py gemma4mm ~/models/gemma-4-E2B-it ~/models/gem
 go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.mm.amd-npu2 -listen 127.0.0.1:8080
 ```
 
+NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` と `hwnpu-agent` は、`-iron` のモデルを要求が `-idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`-idle 0` で下ろしません。
+
 Preferred Networks の翻訳モデル PLaMo 3 Translate 2B (pfnet/plamo-3-translate-2b) も、hwnpu の `tools/amd/iron_plamo3.py` で書き出します (`plamo3`)。hwnpu-chat は打った文を訳し (日本語を含む文は英語へ、ほかは日本語へ。`-to LANG` で訳す先、`-from` で原文の言語、`-form plain|polite` で日本語の文体)、それまでの対訳を履歴としてプロンプトに残します。OpenAI 互換 API では `chat_template_kwargs` の `target_lang`、`source_lang`、`form`、`context`、`glossary` (vLLM と同じ) で指定し、system メッセージは参考文脈 (`context`) になります。Ryzen AI 9 365 で、デコードは 1 秒に 7.7 トークン (位置 8191 で 6.6)、1024 トークンの塊は位置 0 から 2.2 秒、7168 から 10.5 秒です。
 
 ```bash
