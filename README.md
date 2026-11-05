@@ -106,21 +106,21 @@ go run ./cmd/hwnpu-agent -iron ~/models/gemma-4-E2B-it.amd-npu2 "README.md を�
 
 Gemma 4 E4B (gemma-4-E4B-it) も同じ `gemma4` で書き出します (文脈 4096、塊 1024。書き出しは 15 GB)。デコードは 1 秒に 3.6 トークン (E2B の約 6 割) で、位置 3072 からの 1024 トークンを 8.2 秒で読みます。
 
-LFM3-1.7B は IRON にアプリケーションがないので、hwnpu の `tools/amd/iron_lfm3.py` を使います (`lfm3`)。畳み込みの層の状態は、プロンプトの塊の境ごとに残り、hwnpu はその位置の分を印に写して巻き戻します。文脈 12288、塊 2048 まではスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。Ryzen AI 9 365 で、デコードは 1 秒に 8.7 トークンです。プロンプトは、先頭の 2048 トークンを 2.4 秒、位置 10240 からの 2048 トークンを 12.7 秒で読みます (注意が窓の外も含めて文脈の全体を読むため)。
+LFM3-1.7B は IRON にアプリケーションがないので、hwnpu の `tools/amd/iron_lfm3.py` を使います (`lfm3`)。畳み込みの層の状態は、プロンプトの塊の境ごとに残り、hwnpu はその位置の分を印に写して巻き戻します。文脈 12288、塊 2048 まではスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。`--q4` で MLP と出力の行列を 4 ビット、注意と短い畳み込みの射影を 8 ビット、埋め込みをホストに置くと、Ryzen AI 9 365 で固定されるメモリが 3.75 から 1.64 GiB に、デコードが 1 秒に 8.7 から 11.2 トークン (1 トークン 1.34 → 1.05 J) になり、bf16 との KL は 0.036 nats (最上位の一致 92 %) でした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。プロンプトの速さは変わらず、先頭の 2048 トークンを 2.4 秒、位置 10240 からの 2048 トークンを 12.5 秒で読みます (注意が窓の外も含めて文脈の全体を読むため)。bf16 のままなら `--q4` を外します。
 
 ```bash
-python tools/amd/iron_export_lm.py lfm3 ~/.cache/hwnpu/models/LFM3-1.7B ~/models/LFM3-1.7B.amd-npu2 --max-seq-len 12288 --prefill-chunk 2048
-go run ./cmd/hwnpu-chat -iron ~/models/LFM3-1.7B.amd-npu2
-go run ./cmd/hwnpu-agent -iron ~/models/LFM3-1.7B.amd-npu2 "go test を通して"
+python tools/amd/iron_export_lm.py lfm3 ~/.cache/hwnpu/models/LFM3-1.7B ~/models/LFM3-1.7B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
+go run ./cmd/hwnpu-chat -iron ~/models/LFM3-1.7B.amd-npu2-q4
+go run ./cmd/hwnpu-agent -iron ~/models/LFM3-1.7B.amd-npu2-q4 "go test を通して"
 ```
 
-LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B も同じく hwnpu の IRON アプリケーションで書き出します (`lfm3vl`、`lfm3audio`、`lfm3omni`)。LFM3-VL は画像を 512 × 512 に引き伸ばして読み (256 トークン)、LFM3-Audio は 41 秒までの音声を読みます (音声での返事は作りません)。LFM3-Omni はその両方です。
+LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B も同じく hwnpu の IRON アプリケーションで書き出します (`lfm3vl`、`lfm3audio`、`lfm3omni`)。LFM3-VL は画像を 512 × 512 に引き伸ばして読み (256 トークン)、LFM3-Audio は 41 秒までの音声を読みます (音声での返事は作りません)。LFM3-Omni はその両方です。`--q4` は本体だけを 4 ビットと 8 ビットにし (塔は bf16)、固定されるメモリは VL で 4.12 → 2.00 GiB、Audio で 4.14 → 2.03、Omni で 4.51 → 2.39 GiB になります。
 
 ```bash
-python tools/amd/iron_export_lm.py lfm3vl ~/models/LFM3-VL-2B ~/models/LFM3-VL-2B.amd-npu2 --max-seq-len 12288 --prefill-chunk 2048
-python tools/amd/iron_export_lm.py lfm3audio ~/models/LFM3-Audio-2B ~/models/LFM3-Audio-2B.amd-npu2 --max-seq-len 12288 --prefill-chunk 2048
-python tools/amd/iron_export_lm.py lfm3omni ~/models/LFM3-Omni-2B ~/models/LFM3-Omni-2B.amd-npu2 --max-seq-len 12288 --prefill-chunk 2048
-go run ./cmd/hwnpu-chat -iron ~/models/LFM3-VL-2B.amd-npu2 -listen 127.0.0.1:8080
+python tools/amd/iron_export_lm.py lfm3vl ~/models/LFM3-VL-2B ~/models/LFM3-VL-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
+python tools/amd/iron_export_lm.py lfm3audio ~/models/LFM3-Audio-2B ~/models/LFM3-Audio-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
+python tools/amd/iron_export_lm.py lfm3omni ~/models/LFM3-Omni-2B ~/models/LFM3-Omni-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
+go run ./cmd/hwnpu-chat -iron ~/models/LFM3-VL-2B.amd-npu2-q4 -listen 127.0.0.1:8080
 ```
 
 Gemma 4 E2B に画像と音声も読ませるときは、塔 (視覚と音声のエンコーダー) ごと書き出します (`gemma4mm`。1 回のプロンプトに画像 1 枚と音声 1 本まで)。OpenAI 互換 API の `image_url` (data URL) と `input_audio` (WAV) で渡します。
@@ -132,7 +132,7 @@ go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.mm.amd-npu2 -listen 127.0.
 
 NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` と `hwnpu-agent` は、`-iron` のモデルを要求が `-idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`-idle 0` で下ろしません。
 
-Preferred Networks の翻訳モデル PLaMo 3 Translate 2B (pfnet/plamo-3-translate-2b) も、hwnpu の `tools/amd/iron_plamo3.py` で書き出します (`plamo3`)。hwnpu-chat は打った文を訳し (日本語を含む文は英語へ、ほかは日本語へ。`-to LANG` で訳す先、`-from` で原文の言語、`-form plain|polite` で日本語の文体)、それまでの対訳を履歴としてプロンプトに残します。OpenAI 互換 API では `chat_template_kwargs` の `target_lang`、`source_lang`、`form`、`context`、`glossary` (vLLM と同じ) で指定し、system メッセージは参考文脈 (`context`) になります。`--q4` で MLP と出力の行列を 4 ビット、注意を 8 ビット、埋め込みをホストに置くと、固定されるメモリが 5.96 から 2.16 GiB に、デコードが 1 秒に 7.3 から 11.6 トークンになり (Ryzen AI 9 365、位置 2600 付近)、訳文は 44 文中 36 文が bf16 と同じで、残りも正しい言い換えでした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。bf16 のままなら `--q4` を外します (デコードは 1 秒に 7.7 トークン、位置 8191 で 6.6。1024 トークンの塊は位置 0 から 2.2 秒、7168 から 10.5 秒)。Gemma 4 の書き出しにも `--q4` があります。
+Preferred Networks の翻訳モデル PLaMo 3 Translate 2B (pfnet/plamo-3-translate-2b) も、hwnpu の `tools/amd/iron_plamo3.py` で書き出します (`plamo3`)。hwnpu-chat は打った文を訳し (日本語を含む文は英語へ、ほかは日本語へ。`-to LANG` で訳す先、`-from` で原文の言語、`-form plain|polite` で日本語の文体)、それまでの対訳を履歴としてプロンプトに残します。OpenAI 互換 API では `chat_template_kwargs` の `target_lang`、`source_lang`、`form`、`context`、`glossary` (vLLM と同じ) で指定し、system メッセージは参考文脈 (`context`) になります。`--q4` で MLP と出力の行列を 4 ビット、注意を 8 ビット、埋め込みをホストに置くと、固定されるメモリが 5.96 から 2.16 GiB に、デコードが 1 秒に 7.3 から 11.6 トークンになり (Ryzen AI 9 365、位置 2600 付近)、訳文は 44 文中 36 文が bf16 と同じで、残りも正しい言い換えでした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。bf16 のままなら `--q4` を外します (デコードは 1 秒に 7.7 トークン、位置 8191 で 6.6。1024 トークンの塊は位置 0 から 2.2 秒、7168 から 10.5 秒)。Gemma 4 と LFM3 の書き出しにも `--q4` があります。
 
 ```bash
 python tools/amd/iron_export_lm.py plamo3 ~/models/plamo-3-translate-2b ~/models/plamo-3-translate-2b.amd-npu2-q4 --max-seq-len 8192 --prefill-chunk 1024 --q4
