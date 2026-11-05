@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -23,12 +24,22 @@ func TestClone(t *testing.T) {
 	a, b := write("a.bin", data), write("b.bin", data)
 	other := append(bytes.Clone(data[:len(data)-1]), '?')
 	c := write("c.bin", other)
+	old := time.Now().Add(-time.Hour).Truncate(time.Second)
+	os.Chtimes(b, old, old)
 	ok, err := Clone(b, a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok != canClone {
-		t.Fatalf("Clone of the same bytes: %v, want %v", ok, canClone)
+	if want := CanCloneIn(dir); ok != want {
+		t.Fatalf("Clone of the same bytes: %v, want %v (the file system clones: %v)", ok, want, want)
+	}
+	if ok && runtime.GOOS == "linux" {
+		if again, err := Clone(b, a); again || err != nil || sharedPrefix(b, a, int64(len(data))) < int64(len(data)) {
+			t.Errorf("Clone of a clone: %v, %v; the same blocks for %d bytes", again, err, sharedPrefix(b, a, int64(len(data))))
+		}
+	}
+	if sharedPrefix(c, a, int64(len(data))) > 0 {
+		t.Error("files of their own seen as the same blocks")
 	}
 	if ok, err := Clone(c, a); ok || err != nil {
 		t.Fatalf("Clone of other bytes: %v, %v", ok, err)
@@ -36,8 +47,11 @@ func TestClone(t *testing.T) {
 	if got, _ := os.ReadFile(b); !bytes.Equal(got, data) {
 		t.Fatal("the clone's bytes changed")
 	}
-	if fi, _ := os.Stat(b); fi.Mode().Perm() != 0o600 {
-		t.Errorf("the clone's mode is %v, want 0600", fi.Mode().Perm())
+	if fi, _ := os.Stat(b); fi.Mode().Perm() != 0o600 || !fi.ModTime().Equal(old) {
+		t.Errorf("the clone's mode is %v and time %v, want 0600 and %v", fi.Mode().Perm(), fi.ModTime(), old)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".*")); len(left) > 0 {
+		t.Errorf("temporary files left: %v", left)
 	}
 	write("a.bin", []byte("rewritten"))
 	if got, _ := os.ReadFile(b); !bytes.Equal(got, data) {

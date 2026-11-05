@@ -1,8 +1,8 @@
-# What each improvement bought (as of 2026-11-06, main up to #49)
+# What each improvement bought (as of 2026-11-06, main up to #50 and the sharing on Linux and Windows)
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.78), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.79), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -31,10 +31,10 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Two-level attention (`-sparse`) (16.61, 16.65) | ○ −10–23% at long contexts | ○ −9–27% | | △ +1/8 | | | △ approximate | Apple / Intel |
 | Repetition detection (16.60) | ◎ felt (stops going round in circles) | | | | | | | All |
 | E4B as one program (`-prefill auto`) (16.65) | ○ +25% | ✕ 4.4× slower when long | ◎ 77–87 s → 4 s | ◎ half the weights | | | | Apple |
-| Identical weights shared with clonefile, cleanup (16.64) | | | △ slow once right after the switch | | ◎ about 50 → 20 GiB | | | macOS |
+| Identical files shared on the disk, cleanup (16.64, 16.79) | | | △ Apple: slow once right after the switch | | ◎ M3 about 50 → 20 GiB, two AMD exports 15.2 → 8.2 GiB | | | macOS / Linux (Btrfs, XFS) / Windows (ReFS, unverified) |
 | AMD: full ELF (16.45–50) | ◎ (avoids a 0.46 ms switch per op × 100) | | ○ | | | | | AMD |
 | AMD: prompt chunk 2048 → 1024 (16.54) | | ○ −20% | | | | | | AMD |
-| AMD: 4-bit / 8-bit weights `--q4` (16.73, 16.76–77) | ◎ 1.3–1.6× | unchanged | | ◎ pinned 1/2–1/5 | ○ about half | | △ KL 0.009–0.097 | AMD |
+| AMD: 4-bit / 8-bit weights `--q4` (16.73, 16.76–77) | ◎ 1.3–1.6× | unchanged | | ◎ pinned 1/2–1/5 | ○ weights about half, exports 0.6–0.8× | | △ KL 0.009–0.097 | AMD |
 | AMD: PLE and embedding tables on the host (16.72–73) | unchanged | unchanged | | ◎ E2B 9.08 → 4.60 GB | | | unchanged (word for word) | AMD |
 | AMD: release the NPU while idle `-idle` (16.74) | | | △ reload 0.8–2 s on the next request | ◎ 0 while idle | | | | AMD |
 | Anima loaded one stage at a time (16.72) | 69.3 → 67.7 s/image | | | ◎ 14.2 → 5.0 GiB | | | bit for bit the same | AMD |
@@ -57,7 +57,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | lut6 + grouped as the default (16.41) | lut4 + tile 69.2 ms | 42.8 ms (−38%) | Accuracy rose too (KL 1.387 → 0.232). A coding task went from 27 round trips to 6 |
 | Speculative decoding (16.36) | 15.9 tokens/s (Q=1) | 23.7 tokens/s | 1.5–2× when copying, 1.2–1.5× over a whole task, a little over 10% lost when only thinking. The output distribution is unchanged |
 | n-grams 3..2 → 4..1 (16.37) | 1.552 tokens/call | 1.673 (+7.6%) | Checking is free at Q=8, so 1-grams are drafted too even though they hit less |
-| KV tiers (c4096 → c16320) (16.37) | 19.4 tokens/s | 37.8 tokens/s (1.95×) | lut4 only. With lut6 startup gets worse, so `-tier auto` turns it off (section 5) |
+| KV tiers (c4096 → c16320) (16.37) | 19.4 tokens/s | 37.8 tokens/s (1.95×) | lut4 only. With lut6 startup gets worse, so `-tier auto` turns it off (section 4) |
 | Split at the attention (16.59) | c16320 (unsplit) 19–28 tokens/s | 31–36 tokens/s (1.3–1.7×) | The cost now follows **the length used**. 42.7 ms/token at 16K, 92.8 at 64K, 165 at 128K, 320 at 250K |
 | Same (Gemma 4 E2B, 16.63) | 13.3–28.2 tokens/s | 23.6–36.0 tokens/s | Not one token of the answers differs |
 | Same (LFM3-VL / Audio, 16.65) | 11.9–29.4 / 16.3–23.4 | 24.0–36.0 / 18.8–28.6 | |
@@ -108,12 +108,15 @@ Improvements to the GEMV itself:
 | Same (LFM3, 16.59) | | 1.0 + 1.2 s from the third start | 14 parts plus 2 attention programs still fit in 2.4 GiB |
 | E4B as one program (16.65) | 77–87 s | 3.7–5.5 s | Two programs (6.5 GiB) do not fit in the cache |
 | Sharing with clonefile (16.64) | — | Once, right after the switch, 20–50 s a program | New conversions share from the start, so this happens once |
+| Sharing AMD exports (16.79) | — | The first load of an export +4 s (5.3 GiB of whole files and a 1.67 GiB bank start, from the page cache); 2–11 ms after | Nothing to compile again on AMD. Only where the file system clones |
 | AMD (16.47, 16.50) | — | xclbin 0.5 ms, full ELF 1.0 ms, a 9 GB image 2–3 s from the page cache | |
 | AMD reloading after `-idle` (16.74) | — | E2B (4-bit) 0.8 s, E2B with images and audio 2.0 s | The Neural Engine and Intel take tens of seconds or more to reload, so only IRON releases |
 | Trimming trailing zeros from Anima's bank images (amd-npu-models.md 11.2) | VAE image 8 GB, loads in 10 s | 0.2 GB, 4 s | Startup reads only the manifest (0.5 s); each stage loads when it runs |
 | PLaMo 3 as one lut8 program (`-prefill auto`) (16.71) | Two programs (4.9 GiB) exceed the ANE's compile cache and are recompiled every time | One program fits the cache | The cost: a document of thousands of tokens is read about 10× slower. `-format lut6` keeps two programs |
 
-## 5. Memory
+## 5. Memory and disk
+
+### 5.1 Memory
 
 | Change | Effect | Notes |
 |---|---|---|
@@ -143,6 +146,25 @@ Improvements to the GEMV itself:
 
 - Tables on the host: PLE reads only one row a token, yet the whole table was pinned. The table now stays a file, and before each call only the tokens' rows are written into a small device buffer (18 MB for E2B)
 - The embedding is shared with the output matrix, so making the output 4-bit leaves no bf16 rows. The embedding became a host table the same way
+
+### 5.2 Disk
+
+Most of the disk is weights and their copies: programs for 8 and 64 tokens per call, Core ML's compiled copies, AMD exports of one model with and without images and audio or at 4 bits. Compressing does not help (section 8), so the gains come from fewer bytes (4 bits) and from sharing one copy of the same bytes.
+
+| Change | Effect | Notes |
+|---|---|---|
+| Sharing identical files on macOS (APFS's clonefile) (16.64) | M3: weight files about 49.6 → 20 GiB | The Q=8 and Q=64 programs' `weight.bin` and the `.mlmodelc` Core ML compiles them to. Measured with APFS's per-file private size |
+| Sharing identical files on Linux (FICLONE) (16.79) | Two Gemma 4 E2B 4-bit exports (text 7.0 GB, images and audio 8.2 GB): 15.2 → 9.9 GiB on Btrfs | `ple.bin` 4.4 GiB, `embed.bin` 0.75 GiB, `prompt.elf`, `decode.elf`, `tokenizer.json`. Btrfs, XFS (reflink, the default since xfsprogs 5.1), bcachefs and ZFS with block cloning share; ext4 and tmpfs do nothing |
+| Sharing the start of files (FICLONERANGE, `ClonePrefix`) (16.79) | The same two: 9.9 → 8.2 GiB | The text export's bank (1.67 GiB) is the start of the bank with the towers. Files of one name share their common start in whole blocks |
+| Same, Anima (16.79) | bf16, q4 and q8 exports: 0.09 GiB | Their `text/` and `vae/` were already symlinks. The DiT banks of q4 and q8 differ after 4 MiB |
+| Sharing on Windows (ReFS, Dev Drive) (16.79) | Not measured | FSCTL_DUPLICATE_EXTENTS_TO_FILE, whole files and ranges. NTFS does nothing. Only compiled |
+| Same, the potential on the AMD development machine (16.79) | 68.7 GiB of whole files the same in `~/models` (297 GB), found by hashing | Mostly test exports. Its `/` is ext4, so it stays |
+| 4 bits on AMD `--q4` (16.73, 16.76–77) | Weight banks about half (3.5 → 1.6–1.7 GiB for Gemma 4 E2B and LFM3-1.7B), whole exports 0.6–0.8× (Gemma 4 E2B 9.0 → 7.0 GB, LFM3-1.7B 3.6 → 2.2 GB) | The host tables (`ple.bin`, `embed.bin`) stay bf16 |
+| Anima's DiT at 8 bits (16.78) | Export 5.7 → 4.0 GB | |
+| Trimming trailing zeros from Anima's bank images (amd-npu-models.md 11.2) | VAE image 8 GB → 0.2 GB | |
+| Cleaning up the `/dev/shm` left by OpenVINO (16.72) | 8.4 GB a day | `/dev/shm` is memory, counted here as it fills like a disk |
+| **Cost**: the prompt store (16.38, 16.52) | About 145 MB a sequence (Apple), 51 MB an entry (AMD) | |
+| **Cost**: AMD exports are whole files per variant | Each `-q4`, `.mm`, context or chunk size is a new directory | Shared where the file system clones (above), whole files and common starts; bytes that differ in the middle of a file are not |
 
 ## 6. Accuracy
 
@@ -182,7 +204,6 @@ Fitted to the ANE's limits: 1 GiB a package, 16384 per dimension, tables only pe
 | `-tier auto`, E4B as one program (`-prefill auto`) | Fits the ANE's compile cache (about 4 GiB) for fast startup | 4 programs 62–110 s → 2 programs 3 s; E4B 77–87 s → 4 s |
 | Attention in programs without weights | Smaller parts stay in the ANE's cache; the cost follows the length used | Gemma 4 startup 98 s → 1.9 s |
 | head-scale (embeddings), `-post-scale` (LFM3) | fp16 overflow and the error floor on the ANE | |
-| clonefile (APFS) | Disk about 50 → 20 GiB | Does nothing outside macOS |
 | PLaMo 3's attention output taken token-first (`attn_ot_N`) | Avoids the one `transpose` in the last part that fell to the CPU | Everything on the ANE on an M3. The host reorders (one more copy) |
 | Anima's fp16 handling (DiT residuals at 1/32, `maxScaled` norms) | No fp16 overflow and no subnormals | Not yet checked on hardware |
 
@@ -223,11 +244,14 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | MoE building blocks (at Qwen3.6-35B-A3B's sizes, 16.75) | Reads the chosen experts in place without copying (`ExpertQGEMV`). A layer in 4 ops (`MoEGateUp`, `MoEDown`) | 5.2 → 2.3 → 1.27 ms a layer. Estimated 8–10 tokens/s. Pinning 35 GB does not change the speed |
 | Rounding to nearest even in hwnpu's kernels (16.78) | Removes the downward bias of bf16 narrowing that grows with the number of inputs | Unit check with inputs of mean 1: IRON's `DequantBFP` path cosine 0.968, hwnpu's `QDequant` (bf16) 0.99994. Language models keep `DequantBFP` for prompts (bf16 is 5–9 % slower there and changes nothing) |
 | Anima's DiT at q8 (`iron_anima.py --dit-attn`, `--dit-mlp`, 16.78) | Pinned 5020 → 3445 MiB at 1024×1024 | 2 % slower (weights dequantized every step), same energy (about 1050 J an image). `q4` can be chosen (2710 MiB) |
+| Sharing files between exports (`iron.ShareExport`, 16.79) | Disk: the same files, and the same start of a bank, of exports side by side are kept once | Gemma 4 E2B text and with images and audio 15.2 → 8.2 GiB on Btrfs. Once per export, before it loads. Anima's images stay byte for byte the same |
 | hwnpu-xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | Matrix multiply at 1–4 tenths of the peak (int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
 
 ### 7.4 Common (any NPU, on the host)
 
 Prompt reuse and the prompt store, speculative decoding (Apple / Intel), the think budget, repetition detection, hwnpu-agent's guards (no editing a file it has not read, stopping repeated calls, refusing a `cd` outside), and the search tools.
+
+Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on the file system, not the NPU: clonefile on macOS's APFS, FICLONE and FICLONERANGE on Linux's Btrfs, XFS and others, block cloning on Windows' ReFS and Dev Drive. It covers Apple's programs and compiled copies, Intel's IR (`.bin` of the programs for 8 and 64 tokens) and AMD's exports. Nothing happens on ext4, tmpfs or NTFS. Only macOS cannot share the start of a file.
 
 ## 8. Tried without effect, or not adopted
 
@@ -267,6 +291,7 @@ Prompt reuse and the prompt store, speculative decoding (Apple / Intel), the thi
 - **The rounding fix on AMD**: it is in the exported kernels, so 4-bit exports made before #48 keep the old rounding until exported again (the difference for language models is small)
 - **`-idle`**: memory is given back while idle, but the next request first pays 0.8–2 s to reload. `-idle 0` turns it off
 - **PLaMo 3 as one lut8 program**: short texts are fast, but long documents are read about 10× slower (`-format lut6` gives two programs at lower accuracy)
+- **Sharing on the disk depends on the file system**: ext4, the default of Ubuntu, Debian and many others, cannot share, so each copy takes its full size there. Fedora and openSUSE default to Btrfs. Put the models on Btrfs or XFS to share (on Windows, a Dev Drive). Whole files and the common start of files of one name are shared; bytes after a difference are kept separately
 
 ## 10. Support for each model
 
@@ -467,6 +492,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Cost of attention per chunk | The cost of re-recording command lists when each step calls "full-attention layers × chunks in use" times | intel-npu-models.md, the 16.63 section |
 | Memory | Whether there is enough with tiers, where the 4 graphs keep separate weights (6.4 GiB in int8) | intel-npu-models.md section 11 |
 | Real checkpoints | Running Gemma 4 and LFM3-VL / Audio in hwnpu-chat (conversion and numbers checked on the CPU) | Same |
+| IR shared on Linux | The `.bin` of the programs for 8 and 64 tokens should be shared like Apple's `weight.bin`. Checked only by tests on Btrfs and XFS, not with a real conversion | 16.79 |
 | PLaMo 3 | Whether the int8 IR (two programs of 4 parts each) runs on a real NPU, and its speed. On OpenVINO's CPU it gave the same translations as AMD | 16.71 |
 | Anima | Whether all of it runs on a real NPU, speed, memory. Checked on OpenVINO's CPU (f32). With f16 inference, PSNR drops to 25.5 dB | 16.69, handoff-anima-mac-intel.md section 4 |
 
@@ -476,6 +502,8 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 |---|---|---|
 | NPU1 (Phoenix, Hawk Point) | Whether one xclbin per step works on real hardware (checked only on a simulated 4-column NPU, and with the same export shape on NPU2). 6 xclbins use up the limit of 6 hardware contexts | 16.57 |
 | Windows | xrtshim on real hardware and building with MSVC (checked only through XRT on Linux, and compiling with zig) | 16.56 |
+| Sharing on other file systems | Tried on loop devices only: Btrfs (the tests, two Gemma 4 exports and three Anima exports through hwnpu-chat and hwnpu-image) and XFS (the tests); not bcachefs, ZFS or NFS | 16.79 |
+| Sharing on Windows | ReFS and Dev Drive block cloning is only compiled (windows/amd64, 386, arm64). Whether it shares, the rounding of the last cluster, integrity streams | 16.79 |
 | Checking Gemma 4 E2B | Not compared with HF's logits on the real weights (LFM3 and E4B were). With random weights it disagrees with IRON's CPU reference (cosine 0.55–0.83); the reason is not known | 16.50 |
 | Power of the NPU alone | Upstream Linux 7.0 has no sensor. Current numbers are for the whole package (PPT) | 16.44, 16.53 |
 | `CREATE_HWCTX` right after another process | Can fail with `EINVAL` for a moment. No retry yet | 16.48 |
