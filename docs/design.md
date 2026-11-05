@@ -2095,3 +2095,10 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - Gemma 4: 層ごとの埋め込みの表 (PLE、E2B で 4.4 GB) をファイルのままホストに置き、呼び出しの前にトークンの行をデバイスの小さなバッファ (18 MB) に書く (`tools/amd/iron_hostple.py`、`iron.HostTable`)。E2B は 9.08 → 4.60 GB、E4B は 14.7 → 9.25 GB、画像と音声の E2B は 10.1 → 5.6 GB で、出力は一字一句同じ、速さも同じ
 - OpenVINO のバックエンドが `/dev/shm` に残していた共有バッファのディレクトリ (落ちたプロセスの分、1 日で 8.4 GB) を、開くときに片付ける
 - 詳細と残り (4 ビットの重みなど) は [amd-npu-models.md](amd-npu-models.md) の 12 節
+
+### 16.71 AMD: 4 ビットの重み (q4nx) — 2026-11-05
+
+- `iron_export_lm.py gemma4 --q4`: MLP と出力の行列を q4nx (FastFlowLM の形式、1 重み 5 ビット)、注意の射影は bf16。デコードは hwnpu の `Q4GEMV` (`tools/amd/iron_q4.py`、カーネルは FastFlowLM の `q4nx_accumulate`)、プロンプトは IRON の `flm.DequantBFP` + bfp16 の GEMM。埋め込みは出力の行列と共有なので PLE と同じくホストの表に
+- E2B: 固定 9.08 → 2.02 GB、デコード 6.1 → 7.7 トークン/秒、2.31 → 1.47 J/トークン、bf16 との KL 0.091 nats。E4B: 14.7 → 4.30 GB、3.7 → 5.0 トークン/秒、KL 0.047。画像と音声の E2B: 10.1 → 3.07 GB
+- 注意の射影まで 4 ビットにすると E2B は 1.66 GB だが KL 0.229 (`--q4-attn`)。注意は重みの 1 割強で誤差の大半
+- 詳細は [amd-npu-models.md](amd-npu-models.md) の 13 節
