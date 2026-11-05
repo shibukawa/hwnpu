@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shibukawa/hwnpu"
@@ -211,4 +212,64 @@ func TestCachedMatchesFull(t *testing.T) {
 			t.Logf("parts %v: worst relative error %.2g", plan, worst)
 		})
 	}
+}
+
+// A mark taken before a sliding layer's ring is full holds only the slots in use (decode's
+// ringRows), and brings the sequence back even after the ring has wrapped past it; a saved
+// sequence resumed in another session from the mark's buffers (as the prompt store does) too.
+func TestCachedMarkBeforeRingFull(t *testing.T) {
+	raw := strings.Replace(tiny, `"window_size": 3`, `"window_size": 8`, 1)
+	c, err := ParseConfig([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(c)
+	n := len(tokens)
+	full := build(t, c, w, llm.Options{Seq: n, Format: "fp16"}).run(t, map[string][]float32{"x": rows(t, w, c.Embedding(), tokens)})["y"]
+	path, _ := writeParts(t, c, w, llm.Options{Seq: 1, Cache: 16, Format: "fp16"}, 1)
+	open := func() *decode.Session {
+		s, err := decode.New(cpuProgram(t, path), c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	check := func(what string, logits []float32, pos int) {
+		t.Helper()
+		if e := relErr32(logits, full[(pos-1)*c.VocabSize:pos*c.VocabSize]); e > 5e-3 {
+			t.Errorf("%s: relative error %g after %d tokens", what, e, pos)
+		}
+	}
+	one := func(s *decode.Session, from, to int) []float32 {
+		var logits []float32
+		for i := from; i < to; i++ {
+			logits = step(t, s, c, w, i, i+1)
+		}
+		return logits
+	}
+	s := open()
+	one(s, 0, 5)
+	mark := s.Mark()
+	ringBytes := 0
+	for _, b := range mark.Bufs() {
+		ringBytes += len(b)
+	}
+	// 2 sliding layers, keys and values, 2 kv heads, 5 of 8 slots, 16 values of fp16
+	if want := 2 * 2 * 2 * 5 * 16 * 2; ringBytes != want {
+		t.Errorf("the mark holds %d bytes of rings, want %d (the 5 slots in use)", ringBytes, want)
+	}
+	check("on past the window", one(s, 5, 11), 11) // positions 8 to 10 wrap to slots 0 to 2
+	s.Rewind(mark)
+	check("back to 5, on", one(s, 5, 11), 11)
+	// the prompt store keeps the rows before a mark and the mark's buffers, and resumes them
+	// in a new session: the full layers' rows 0 to 4 are as they were at the mark
+	rows, err := s.ExportRows(0, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := open()
+	if err := r.Resume(rows, decode.NewMark(5, mark.Bufs())); err != nil {
+		t.Fatal(err)
+	}
+	check("resumed elsewhere, on", one(r, 5, 11), 11)
 }

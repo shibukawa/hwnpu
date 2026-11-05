@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -298,6 +299,9 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 		*e.packages(&c) = []string{path}
 	}
+	// A conversion reads the checkpoint into memory (2.4 GiB of PLaMo 3 Translate 2B left after
+	// it): give it back now rather than as Go's scavenger does, a little at a time.
+	debug.FreeOSMemory()
 	return c, nil
 }
 

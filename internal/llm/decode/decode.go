@@ -638,10 +638,55 @@ func (s *Session) Mark() *Mark {
 	}
 	for _, c := range s.kv {
 		if !c.long { // a ring
-			m.bufs[c.parts[0]] = slices.Clone(in[c.parts[0]])
+			m.bufs[c.parts[0]] = s.ringRows(c.parts[0], in[c.parts[0]])
 		}
 	}
 	return m
+}
+
+// ringRows copies a ring (1, kv heads, slots, head_dim) for a mark: whole once the sequence has
+// filled it, else only each head's slots before the position. Before then, slot j at or past the
+// position holds no position the masks let a query see (StepInputs: the latest position before
+// pos congruent to j is j - slots < 0), whatever it was left with, so a mark early in a
+// conversation is a small part of a long window's rings (PLaMo 3's 21 rings of 2048 are 88 MB).
+func (s *Session) ringRows(name string, b []byte) []byte {
+	sh := s.progs[0].p.InShape[name]
+	if len(sh) != 4 || s.pos >= sh[2] {
+		return slices.Clone(b)
+	}
+	heads, slots, row := sh[1], sh[2], 2*sh[3]
+	out := make([]byte, 0, heads*s.pos*row)
+	for h := 0; h < heads; h++ {
+		out = append(out, b[h*slots*row:(h*slots+s.pos)*row]...)
+	}
+	return out
+}
+
+// ringBytes is the size of a mark's copy of a ring at pos (ringRows).
+func (s *Session) ringBytes(name string, pos int) int {
+	sh := s.progs[0].p.InShape[name]
+	if len(sh) != 4 {
+		return -1
+	}
+	return sh[1] * min(pos, sh[2]) * 2 * sh[3]
+}
+
+// putRing writes a mark's copy of a ring back: whole, or each head's first slots (ringRows).
+func (s *Session) putRing(name string, dst, b []byte) error {
+	if len(b) == len(dst) {
+		copy(dst, b)
+		return nil
+	}
+	sh := s.progs[0].p.InShape[name]
+	if len(sh) != 4 || sh[1] == 0 || len(b)%(sh[1]*2*sh[3]) != 0 || len(b)/(sh[1]*2*sh[3]) > sh[2] {
+		return fmt.Errorf("decode: the mark's %s has %d bytes, the session's %d", name, len(b), len(dst))
+	}
+	heads, slots, row := sh[1], sh[2], 2*sh[3]
+	n := len(b) / (heads * row)
+	for h := 0; h < heads; h++ {
+		copy(dst[h*slots*row:(h*slots+n)*row], b[h*n*row:(h+1)*n*row])
+	}
+	return nil
 }
 
 // Save returns the current point of the sequence with a copy of the rows before it, which stays
@@ -662,7 +707,9 @@ func (s *Session) Rewind(m *Mark) {
 		s.ImportRows(0, m.rows)
 	}
 	for name, b := range m.bufs {
-		copy(s.progs[0].p.In[name], b)
+		if err := s.putRing(name, s.progs[0].p.In[name], b); err != nil {
+			panic(err) // a mark of this session: its rings are its own
+		}
 	}
 	s.pos = m.pos
 }
@@ -1088,7 +1135,7 @@ func (s *Session) Resume(rows []byte, m *Mark) error {
 		if !want[name] {
 			return fmt.Errorf("decode: the mark holds %s, which is not a ring or a window of the session", name)
 		}
-		if len(b) != len(in[name]) {
+		if len(b) != len(in[name]) && (llm.HeldInput(name) || len(b) != s.ringBytes(name, m.pos)) {
 			return fmt.Errorf("decode: the mark's %s has %d bytes, the session's %d", name, len(b), len(in[name]))
 		}
 		delete(want, name)
