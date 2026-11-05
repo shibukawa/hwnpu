@@ -14,3 +14,5 @@ func mapFile(path string, size int) ([]byte, error) {
 }
 
 func unmap(b []byte) error { return nil }
+
+func processAlive(pid int) bool { return true }

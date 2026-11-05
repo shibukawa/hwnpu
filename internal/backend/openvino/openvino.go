@@ -88,7 +88,8 @@ func (Provider) Open(ctx context.Context, info types.DeviceInfo, opts backend.Op
 	if !supported {
 		return nil, fmt.Errorf("openvino: %w on this platform", types.ErrUnsupported)
 	}
-	dir, err := os.MkdirTemp(shmDir(), "hwnpu-openvino")
+	removeStale()
+	dir, err := makeDir()
 	if err != nil {
 		return nil, err
 	}

@@ -50,3 +50,18 @@ func unmap(b []byte) error {
 	}
 	return err
 }
+
+// processAlive reports whether a process of that id exists.
+func processAlive(pid int) bool {
+	const queryLimitedInformation = 0x1000
+	h, err := syscall.OpenProcess(queryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer syscall.CloseHandle(h)
+	var code uint32
+	if syscall.GetExitCodeProcess(h, &code) != nil {
+		return true
+	}
+	return code == 259 // STILL_ACTIVE
+}
