@@ -17,46 +17,55 @@ import (
 // ironEngine runs the IRON graphs of tools/amd/iron_anima.py on AMD's NPU: text, dit_in, the
 // groups of dit_blocks (one ELF, a bank per group), dit_out and the VAE's stages. The graphs
 // take and give bf16.
+//
+// A graph's banks are pinned host memory the process's resident size does not count, and
+// the three stages of a picture never run together, so each is on the device only while it
+// runs: the text graph for the conditioning, the DiT for the steps, the VAE a stage at a time.
+// That keeps the peak to the DiT's (4.9 GiB at 1024 x 1024) instead of all of them (14.2 GiB);
+// loading costs a few seconds a picture, from the page cache.
 type ironEngine struct {
-	dit                             DitConfig
-	textG, ditIn, ditBlocks, ditOut *iron.Graph
-	vae                             *VAE
+	dev                      *hwnpu.Device
+	dir                      string
+	dit                      DitConfig
+	ditIn, ditBlocks, ditOut *iron.Graph // open while the steps run
+	cond                     []byte      // bf16, for the DiT when it opens
+	vae                      *VAE
 }
 
-func meta[T any](g *iron.Graph) (T, error) {
-	var m struct {
+func meta[T any](m *iron.GraphManifest) (T, error) {
+	var x struct {
 		Config T `json:"config"`
 	}
-	err := json.Unmarshal(g.Manifest.Meta, &m)
-	return m.Config, err
+	err := json.Unmarshal(m.Meta, &x)
+	return x.Config, err
 }
 
+// openIron reads the export's manifests; the graphs are loaded when they run.
 func openIron(ctx context.Context, dev *hwnpu.Device, dir string) (*ironEngine, DitConfig, TextConfig, error) {
-	e := &ironEngine{}
+	e := &ironEngine{dev: dev, dir: dir}
 	var dc DitConfig
 	var tc TextConfig
 	fail := func(err error) (*ironEngine, DitConfig, TextConfig, error) {
-		e.close()
 		return nil, dc, tc, err
 	}
-	var err error
-	for _, x := range []struct {
-		g    **iron.Graph
-		name string
-	}{{&e.textG, "text"}, {&e.ditIn, "dit_in"}, {&e.ditBlocks, "dit_blocks"}, {&e.ditOut, "dit_out"}} {
-		if *x.g, err = iron.OpenGraph(ctx, dev, filepath.Join(dir, x.name)); err != nil {
+	ms := map[string]*iron.GraphManifest{}
+	for _, name := range []string{"text", "dit_in", "dit_blocks", "dit_out"} {
+		m, err := iron.ReadGraphManifest(filepath.Join(dir, name))
+		if err != nil {
 			return fail(err)
 		}
+		ms[name] = m
 	}
-	if dc, err = meta[DitConfig](e.ditBlocks); err != nil {
+	var err error
+	if dc, err = meta[DitConfig](ms["dit_blocks"]); err != nil {
 		return fail(err)
 	}
-	if tc, err = meta[TextConfig](e.textG); err != nil {
+	if tc, err = meta[TextConfig](ms["text"]); err != nil {
 		return fail(err)
 	}
 	e.dit = dc
-	if n := dc.Layers / dc.Group; e.ditBlocks.Variants() != n {
-		return fail(fmt.Errorf("dit_blocks holds %d groups, the DiT %d", e.ditBlocks.Variants(), n))
+	if n, v := dc.Layers/dc.Group, max(1, len(ms["dit_blocks"].Variants)); v != n {
+		return fail(fmt.Errorf("dit_blocks holds %d groups, the DiT %d", v, n))
 	}
 	if _, err := os.Stat(filepath.Join(dir, "vae", "manifest.json")); err == nil {
 		if e.vae, err = OpenVAE(ctx, dev, filepath.Join(dir, "vae")); err != nil {
@@ -66,17 +75,44 @@ func openIron(ctx context.Context, dev *hwnpu.Device, dir string) (*ironEngine, 
 	return e, dc, tc, nil
 }
 
-func (e *ironEngine) close() error {
+func (e *ironEngine) close() error { return e.closeDiT() }
+
+// closeDiT releases the DiT's graphs, which the next velocity call loads again.
+func (e *ironEngine) closeDiT() error {
 	var errs []error
-	for _, g := range []*iron.Graph{e.textG, e.ditIn, e.ditBlocks, e.ditOut} {
-		if g != nil {
-			errs = append(errs, g.Close())
+	for _, g := range []**iron.Graph{&e.ditIn, &e.ditBlocks, &e.ditOut} {
+		if *g != nil {
+			errs = append(errs, (*g).Close())
+			*g = nil
 		}
 	}
-	if e.vae != nil {
-		errs = append(errs, e.vae.Close())
-	}
 	return errors.Join(errs...)
+}
+
+// openDiT loads the DiT's graphs and gives them the conditioning.
+func (e *ironEngine) openDiT(ctx context.Context) error {
+	if e.ditBlocks != nil {
+		return nil
+	}
+	if e.cond == nil {
+		return errors.New("anima: the DiT runs without conditioning (setCond)")
+	}
+	for _, x := range []struct {
+		g    **iron.Graph
+		name string
+	}{{&e.ditIn, "dit_in"}, {&e.ditBlocks, "dit_blocks"}, {&e.ditOut, "dit_out"}} {
+		g, err := iron.OpenGraph(ctx, e.dev, filepath.Join(e.dir, x.name))
+		if err != nil {
+			e.closeDiT()
+			return err
+		}
+		*x.g = g
+	}
+	if err := e.ditBlocks.SetInput("ctx", e.cond); err != nil {
+		e.closeDiT()
+		return err
+	}
+	return nil
 }
 
 func toBF16(xs []float32) []byte {
@@ -95,27 +131,42 @@ func fromBF16s(b []byte) []float32 {
 	return out
 }
 
+// text loads the text graph, runs it and releases it.
 func (e *ironEngine) text(ctx context.Context, qx, tx []float32, nq, nt int) ([]float32, error) {
-	if err := e.textG.SetInput("qx", toBF16(qx)); err != nil {
-		return nil, err
-	}
-	if err := e.textG.SetInput("tx", toBF16(tx)); err != nil {
-		return nil, err
-	}
-	if err := e.textG.Run(ctx, map[string]int64{"nq": int64(nq), "nt": int64(nt)}); err != nil {
-		return nil, err
-	}
-	out, err := e.textG.Output(e.textG.Outputs()[0].Name)
+	g, err := iron.OpenGraph(ctx, e.dev, filepath.Join(e.dir, "text"))
 	if err != nil {
 		return nil, err
 	}
-	return fromBF16s(out), nil
+	defer g.Close()
+	if err := g.SetInput("qx", toBF16(qx)); err != nil {
+		return nil, err
+	}
+	if err := g.SetInput("tx", toBF16(tx)); err != nil {
+		return nil, err
+	}
+	if err := g.Run(ctx, map[string]int64{"nq": int64(nq), "nt": int64(nt)}); err != nil {
+		return nil, err
+	}
+	out, err := g.Output(g.Outputs()[0].Name)
+	if err != nil {
+		return nil, err
+	}
+	return fromBF16s(out), nil // a copy: the graph's memory goes with Close
 }
 
-func (e *ironEngine) setCond(cond []float32) error { return e.ditBlocks.SetInput("ctx", toBF16(cond)) }
+func (e *ironEngine) setCond(cond []float32) error {
+	e.cond = toBF16(cond)
+	if e.ditBlocks != nil {
+		return e.ditBlocks.SetInput("ctx", e.cond)
+	}
+	return nil
+}
 
-// velocity runs dit_in, each group of dit_blocks and dit_out.
+// velocity runs dit_in, each group of dit_blocks and dit_out, loading the DiT on the first call.
 func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32) ([]float32, error) {
+	if err := e.openDiT(ctx); err != nil {
+		return nil, err
+	}
 	if err := e.ditIn.SetInput("patches", toBF16(patches)); err != nil {
 		return nil, err
 	}
@@ -177,7 +228,11 @@ func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32) ([]
 
 func (e *ironEngine) hasVAE() bool { return e.vae != nil }
 
+// decode releases the DiT and runs the VAE, which loads a stage at a time.
 func (e *ironEngine) decode(ctx context.Context, latents []float32, logf func(string, ...any)) (*image.RGBA, error) {
+	if err := e.closeDiT(); err != nil {
+		return nil, err
+	}
 	e.vae.Logf = logf
 	return e.vae.Decode(ctx, latents)
 }
