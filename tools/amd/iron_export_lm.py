@@ -742,8 +742,9 @@ def main(argv=None) -> int:
     ap.add_argument("--check-only", action="store_true", help="write the check alone, into an export made before")
     ap.add_argument("--q4", action="store_true",
                     help="Gemma 4: the MLP's projections and the head in 4 bits (q4nx, iron_q4), the token "
-                         "embeddings on the host; the attention's stay bf16")
-    ap.add_argument("--q4-attn", action="store_true", help="with --q4, the attention's projections in 4 bits too")
+                         "embeddings on the host; the attention's in --attn")
+    ap.add_argument("--attn", choices=("q8", "q4", "bf16"), default="q8",
+                    help="with --q4, the attention's projections: q8 (8.5 bits a weight), q4 or bf16")
     ap.add_argument("--device-ple", action="store_true",
                     help="Gemma 4: keep the per-layer token table on the device (IRON's own gathers) instead of "
                          "on the host (iron_hostple: 4.4 GiB less pinned memory for E2B)")
@@ -754,7 +755,7 @@ def main(argv=None) -> int:
     if a.model in ("gemma4", "gemma4mm") and not a.device_ple:
         import iron_hostple
 
-        iron_hostple.install(q4=a.q4, q4_attn=a.q4_attn)
+        iron_hostple.install(q4=a.q4, attn=a.attn)
 
     module, cls = MODELS[a.model]
     Model = getattr(importlib.import_module(module), cls)

@@ -123,62 +123,139 @@ def dequantize(q, n: int, k: int) -> np.ndarray:
     return c.astype(np.float32) * np.repeat(s, GROUP, 1) + np.repeat(m, GROUP, 1)
 
 
-def _kernel(k: int):
+# --- q8: 8.5 bits a weight -------------------------------------------------------------------
+
+# A q8 block: 32 out-features by 256 in-features, bf16 scales [k / 32, m], then int8 codes
+# [m / 16, k, m % 16] (q4nx's layout, a byte a code, no minima). w = scale * code.
+Q8_BLOCK_BYTES = 2 * (M_TILE * K_TILE // GROUP) + M_TILE * K_TILE  # 8704
+FORMATS = {"q4": BLOCK_BYTES, "q8": Q8_BLOCK_BYTES}
+
+
+def quantize8(w) -> np.ndarray:
+    """q8 of w (N, K) in q4nx's block order: uint8 (blocks, Q8_BLOCK_BYTES). Each group of 32
+    in-features of an out-feature: scale = its largest magnitude / 127 in bf16, codes rounded."""
+    w = np.asarray(w, np.float32)
+    N, K = w.shape
+    if N % CB or K % 512:
+        raise ValueError(f"q8: ({N}, {K}) is not 64 x 512 blocks")
+    g = w.reshape(N, K // GROUP, GROUP)
+    scale = (np.abs(g).max(-1) / 127).astype(bfloat16).astype(np.float32)
+    safe = np.where(scale > 0, scale, 1)
+    codes = np.clip(np.rint(g / safe[..., None]), -127, 127).astype(np.int8).reshape(N, K)
+    nb, kb = N // M_TILE, K // K_TILE
+    sc = scale.reshape(nb, M_TILE, kb, K_TILE // GROUP).transpose(0, 2, 3, 1).astype(bfloat16)
+    c = codes.reshape(nb, M_TILE // 16, 16, kb, K_TILE).transpose(0, 3, 1, 4, 2).reshape(nb, kb, -1)
+    blocks = np.concatenate([sc.reshape(nb, kb, -1).view(np.uint8), c.view(np.uint8)], axis=-1)
+    blocks = blocks.reshape(N // CB, 2, K // 512, 2, Q8_BLOCK_BYTES).transpose(0, 2, 3, 1, 4)
+    return np.ascontiguousarray(blocks.reshape(-1, Q8_BLOCK_BYTES))
+
+
+def dequantize8(q, n: int, k: int) -> np.ndarray:
+    """The (n, k) float32 weights of quantize8's blocks."""
+    q = np.asarray(q, np.uint8).reshape(n // CB, k // 512, 2, 2, Q8_BLOCK_BYTES)
+    q = q.transpose(0, 3, 1, 2, 4).reshape(n // M_TILE, k // K_TILE, Q8_BLOCK_BYTES)
+    sm = M_TILE * K_TILE // GROUP
+    s = q[..., : 2 * sm].copy().view(bfloat16).astype(np.float32).reshape(n // M_TILE, k // K_TILE, -1, M_TILE)
+    c = q[..., 2 * sm :].copy().view(np.int8)
+    c = c.reshape(n // M_TILE, k // K_TILE, M_TILE // 16, K_TILE, 16).transpose(0, 2, 4, 1, 3).reshape(n, k)
+    s = s.transpose(0, 3, 1, 2).reshape(n, k // GROUP)
+    return c.astype(np.float32) * np.repeat(s, GROUP, 1)
+
+
+def quantize_fmt(w, fmt: str) -> np.ndarray:
+    return quantize(w) if fmt == "q4" else quantize8(w)
+
+
+def dequantize_fmt(q, n: int, k: int, fmt: str) -> np.ndarray:
+    return dequantize(q, n, k) if fmt == "q4" else dequantize8(q, n, k)
+
+
+# --- the kernels and the operators ----------------------------------------------------------
+
+
+def _kernels(fmt: str, k: int, out: int):
+    """The GEMV's begin, block and end calls for fmt at k in-features, out out-features a core."""
     from aie.iron.kernel import ExternalFunction
     from aie.utils import config
 
     kernels = Path(config.aie_kernels_dir())
     here = Path(__file__).resolve().parent / "kernels"
-    blk = np.ndarray[(BLOCK_BYTES,), np.dtype[np.uint8]]
+    blk = np.ndarray[(FORMATS[fmt],), np.dtype[np.uint8]]
     x = np.ndarray[(k,), np.dtype[bfloat16]]
     sums = np.ndarray[(k // GROUP,), np.dtype[bfloat16]]
-    acc = np.ndarray[(CB,), np.dtype[np.float32]]
-    y = np.ndarray[(CB,), np.dtype[bfloat16]]
+    acc = np.ndarray[(out,), np.dtype[np.float32]]
+    y = np.ndarray[(out,), np.dtype[bfloat16]]
     common = dict(
-        source_file=str(here / "q4_mv.cc"),
+        source_file=str(here / f"{fmt}_mv.cc"),
         include_dirs=[str(kernels / "flm_gemma4"), str(kernels), config.cxx_header_path()],
-        compile_flags=[f"-DQ4_K={k}"],
+        compile_flags=[f"-D{fmt.upper()}_K={k}", f"-DQ_OUT={out}"],
     )
-    obj = f"q4_mv_{k}.o"
-    begin = ExternalFunction("q4_mv_begin", arg_types=[x, sums, acc], object_file_name=obj, **common)
-    block = ExternalFunction("q4_mv_block", arg_types=[blk, x, sums, acc, np.int32, np.int32],
+    obj = f"{fmt}_mv_{k}_{out}.o"
+    begin = ExternalFunction(f"{fmt}_mv_begin", arg_types=[x, sums, acc], object_file_name=obj, **common)
+    block = ExternalFunction(f"{fmt}_mv_block", arg_types=[blk, x, sums, acc, np.int32, np.int32],
                              object_file_name=obj, **common)
-    end = ExternalFunction("q4_mv_end", arg_types=[acc, y], object_file_name=obj, **common)
+    end = ExternalFunction(f"{fmt}_mv_end", arg_types=[acc, y], object_file_name=obj, **common)
     return begin, block, end
 
 
-def _operator():
-    """Q4GEMV, defined on first use: IRON's modules load only in its environment."""
+def _dequant_kernel(k: int):
+    from aie.iron.kernel import ExternalFunction
+    from aie.utils import config
+
+    kernels = Path(config.aie_kernels_dir())
+    here = Path(__file__).resolve().parent / "kernels"
+    return ExternalFunction(
+        "q8_dequant",
+        source_file=str(here / "q8_mv.cc"),
+        arg_types=[np.ndarray[(Q8_BLOCK_BYTES,), np.dtype[np.uint8]],
+                   np.ndarray[(CB * K_TILE,), np.dtype[bfloat16]], np.int32],
+        include_dirs=[str(kernels / "flm_gemma4"), str(kernels), config.cxx_header_path()],
+        compile_flags=[f"-DQ8_K={k}"],
+        object_file_name=f"q8_dequant_{k}.o",
+    )
+
+
+def _operators():
+    """QGEMV and Q8Dequant, defined on first use: IRON's modules load only in its environment."""
     import aie.dialects.index as index
     from aie.dialects.aie import T
+    from aie.helpers.taplib import TensorAccessPattern
     from aie.iron import Buffer, In, ObjectFifo, Out, Worker
     from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
     from aie.utils.compile.jit.params import param, tunable, widths
     from aie.utils.verify import Tolerance
 
     from iron.common import Built, Operator
 
-    class Q4GEMV(Operator):
-        """``y = W x``: W as q4nx blocks (quantize), x one row of K, y N.
+    class QGEMV(Operator):
+        """``y = W x``: W as q4nx or q8 blocks (quantize_fmt), x one row of K, y N.
 
-        One core a column, each with N / columns out-features (whole column blocks of 64).
+        Each column takes N / columns out-features (whole column blocks of 64) and all of x.
+        With ``cores`` 2 its memtile splits each pair of blocks between two cores, one for the
+        column block's out-features 0-31, the other for 32-63, gives both x, and joins their
+        outputs.
         """
 
-        # array=True: the counts are the cores' loops
+        fmt: str = param(array=True)
         blocks: int = param(array=True)  # N / 64 * K / 256 * 2
         K: int = param(array=True)
         N: int = param(derive=lambda op: op.blocks * CB // (2 * op.K // K_TILE), array=True)
+        cores: int = param(default=2, array=True)
+        block_bytes: int = param(derive=lambda op: FORMATS[op.fmt], array=True)
         num_aie_columns: int = tunable(domain=widths)
 
-        W = In(blocks, BLOCK_BYTES, dtype=np.uint8, obj_shape=(1, BLOCK_BYTES), per=(num_aie_columns,))
+        W = In(blocks, block_bytes, dtype=np.uint8, obj_shape=(cores, block_bytes), per=(num_aie_columns,))
         x = In(K, obj_shape=(K,), per=(num_aie_columns,), replicate=True)
         y = Out(N, obj_shape=(CB,), per=(num_aie_columns,))
 
         def validate(self):
             if self.K % 512:
-                raise ValueError(f"Q4GEMV: K ({self.K}) must be a multiple of 512")
+                raise ValueError(f"QGEMV: K ({self.K}) must be a multiple of 512")
             if self.blocks % (2 * self.K // K_TILE):
-                raise ValueError(f"Q4GEMV: {self.blocks} blocks are no whole column blocks of K {self.K}")
+                raise ValueError(f"QGEMV: {self.blocks} blocks are no whole column blocks of K {self.K}")
+            if self.cores not in (1, 2):
+                raise ValueError(f"QGEMV: {self.cores} cores a column (1 or 2)")
 
         def resolve(self, dev):
             cbs = self.N // CB
@@ -187,18 +264,30 @@ def _operator():
 
         def compatible(self):
             if (self.N // CB) % self.num_aie_columns:
-                raise ValueError(f"Q4GEMV: {self.N // CB} column blocks over {self.num_aie_columns} columns")
+                raise ValueError(f"QGEMV: {self.N // CB} column blocks over {self.num_aie_columns} columns")
 
         def build(self) -> Built:
-            K, n = self.K, self.num_aie_columns
+            K, n, cores, B = self.K, self.num_aie_columns, self.cores, self.block_bytes
             cbs = self.N // CB // n
             kbs = K // K_TILE
-            begin, block, end = _kernel(K)
-            w_f = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
-            x_f = [ObjectFifo(self.x.obj_type, depth=1) for _ in range(n)]
-            y_f = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
-            sums = [Buffer(np.ndarray[(K // GROUP,), np.dtype[bfloat16]]) for _ in range(n)]
-            accs = [Buffer(np.ndarray[(CB,), np.dtype[np.float32]]) for _ in range(n)]
+            out = CB // cores
+            begin, block, end = _kernels(self.fmt, K, out)
+            blk_t = np.ndarray[(B,), np.dtype[np.uint8]]
+            y_t = np.ndarray[(out,), np.dtype[bfloat16]]
+            w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+            x_l3 = [ObjectFifo(self.x.obj_type, depth=1) for _ in range(n)]
+            y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
+            if cores == 1:
+                w_l1 = [[f] for f in w_l3]
+                x_l1 = x_l3
+                y_l1 = [[f] for f in y_l3]
+            else:
+                w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], tile=AnyMemTile) for f in w_l3]
+                x_l1 = [f.cons().forward(obj_type=self.x.obj_type, tile=AnyMemTile) for f in x_l3]
+                y_l1 = [f.prod().join([0, out], obj_types=[y_t, y_t], depths=[2, 2], tile=AnyMemTile)
+                        for f in y_l3]
+            sums = [[Buffer(np.ndarray[(K // GROUP,), np.dtype[bfloat16]]) for _ in range(cores)] for _ in range(n)]
+            accs = [[Buffer(np.ndarray[(out,), np.dtype[np.float32]]) for _ in range(cores)] for _ in range(n)]
 
             def core(w_f, x_f, y_f, sums, acc, begin, block, end):
                 x = x_f.acquire(1)
@@ -206,7 +295,7 @@ def _operator():
                 for _ in range_(cbs):
                     for kb in range_(kbs):
                         kb32 = index.casts(T.i32(), kb)
-                        for h in range(2):
+                        for h in range(2 if cores == 1 else 1):
                             w = w_f.acquire(1)
                             block(w, x, sums, acc, kb32, h)
                             w_f.release(1)
@@ -216,49 +305,120 @@ def _operator():
                 x_f.release(1)
 
             workers = [
-                Worker(core, [w_f[i].cons(), x_f[i].cons(), y_f[i].prod(), sums[i], accs[i], begin, block, end])
-                for i in range(n)
+                Worker(core, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), sums[i][j], accs[i][j],
+                              begin, block, end])
+                for i in range(n) for j in range(cores)
             ]
-            self.W.bind([f.prod() for f in w_f])
-            self.x.bind([f.prod() for f in x_f])
-            self.y.bind([f.cons() for f in y_f])
+            self.W.bind([f.prod() for f in w_l3])
+            self.x.bind([f.prod() for f in x_l3])
+            self.y.bind([f.cons() for f in y_l3])
             return Built(workers, [])
 
         def ops(self) -> int:
             return 2 * self.N * self.K
 
         def reference(self, W, x):
-            w = dequantize(W, self.N, self.K)
+            w = dequantize_fmt(W, self.N, self.K, self.fmt)
             return (w.astype(np.float64) @ np.asarray(x, np.float64)).astype(bfloat16)
 
         def tolerance(self) -> Tolerance:
             return Tolerance.relative(0.05, 1e-2, note="32-column partial sums narrowed to bf16 before the scale")
 
-    return Q4GEMV
+    class Q8Dequant(Operator):
+        """q8 blocks to the (N, K) bf16 weight, for a prompt chunk's GEMM: a core a column, each
+        with N / columns out-features, writing a column block's 64 rows 256 in-features at a time."""
+
+        blocks: int = param(array=True)
+        K: int = param(array=True)
+        N: int = param(derive=lambda op: op.blocks * CB // (2 * op.K // K_TILE), array=True)
+        num_aie_columns: int = tunable(domain=widths)
+
+        W = In(blocks, Q8_BLOCK_BYTES, dtype=np.uint8, obj_shape=(1, Q8_BLOCK_BYTES), per=(num_aie_columns,))
+        w = Out(N, K, obj_shape=(CB, K_TILE), per=(num_aie_columns,))
+
+        def resolve(self, dev):
+            cbs = self.N // CB
+            cols = self.resolve_columns(dev, self.num_aie_columns, fits=lambda c: cbs % c == 0)
+            return self.replace(num_aie_columns=cols)
+
+        def compatible(self):
+            if (self.N // CB) % self.num_aie_columns:
+                raise ValueError(f"Q8Dequant: {self.N // CB} column blocks over {self.num_aie_columns} columns")
+
+        def build(self) -> Built:
+            n = self.num_aie_columns
+            cbs, kbs = self.N // CB // n, self.K // K_TILE
+            deq = _dequant_kernel(self.K)
+            w_f = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+            o_f = [ObjectFifo(self.w.obj_type, depth=1) for _ in range(n)]
+
+            def core(w_f, o_f, deq):
+                for _ in range_(cbs * kbs):
+                    o = o_f.acquire(1)
+                    for h in range(2):
+                        w = w_f.acquire(1)
+                        deq(w, o, h)
+                        w_f.release(1)
+                    o_f.release(1)
+
+            workers = [Worker(core, [w_f[i].cons(), o_f[i].prod(), deq]) for i in range(n)]
+            self.W.bind([f.prod() for f in w_f])
+            self.w.bind([f.cons() for f in o_f])
+            return Built(workers, [])
+
+        def sequence(self, rt):
+            n, N, K = self.num_aie_columns, self.N, self.K
+            rows = N // n
+            drains = []
+            for lane in range(n):
+                # the lane's column blocks, 256 in-features at a time, 64 rows of 256 each
+                tap = TensorAccessPattern((N, K), lane * rows * K, [rows // CB, K // K_TILE, CB, K_TILE],
+                                          [CB * K, K_TILE, K, 1])
+                drains.append(self.w.drain(tap, lane=lane, wait=True, managed=False))
+            for lane, tap, _, _ in self.W.transfers():
+                self.W.fill(tap, lane=lane, managed=False)
+            for d in drains:
+                d.await_()
+
+        def ops(self) -> int:
+            return self.N * self.K
+
+        def reference(self, W):
+            return dequantize8(W, self.N, self.K).astype(bfloat16)
+
+        def tolerance(self) -> Tolerance:
+            return Tolerance.relative(0.01, 1e-3, note="a product rounded to bf16")
+
+    return QGEMV, Q8Dequant
 
 
-_Q4GEMV = None
+_OPS = None
 
 
-def Q4GEMV():
-    global _Q4GEMV
-    if _Q4GEMV is None:
-        _Q4GEMV = _operator()
-    return _Q4GEMV
+def operators():
+    global _OPS
+    if _OPS is None:
+        _OPS = _operators()
+    return _OPS
 
 
-def q4_linear(x, q, n: int, k: int):
-    """``x @ W.T`` for x (k,), (1, k) or (rows, k) and q, W's q4nx blocks as a 1-D iron.param.
+def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2):
+    """``x @ W.T`` for x (k,), (1, k) or (rows, k) and q, W's blocks in fmt as a 1-D iron.param.
 
-    One row runs Q4GEMV on the blocks. Several (a prompt chunk) dequantize them on the device
-    into bfp16 (iron.operators.flm.DequantBFP, into the graph's scratch) for
-    flm.ProjectionGEMM, as IRON's Gemma 4 at Precision.MEDIUM multiplies anyway.
+    One row runs QGEMV on the blocks. Several (a prompt chunk) dequantize them on the device:
+    q4nx into bfp16 (iron.operators.flm.DequantBFP) for flm.ProjectionGEMM, as IRON's Gemma 4
+    at Precision.MEDIUM multiplies anyway; q8 into bf16 (Q8Dequant) for IRON's own F.linear.
     """
+    QGEMV, Q8Dequant = operators()
     one_row = len(x.shape) == 1 or x.shape[0] == 1
     if one_row:
-        y = Q4GEMV().step(q.reshape(-1, BLOCK_BYTES), x.reshape(k))
+        y = QGEMV.step(q.reshape(-1, FORMATS[fmt]), x.reshape(k), fmt=fmt, cores=cores)
         return y if len(x.shape) == 1 else y.reshape(1, n)
     from iron import Precision
+
+    if fmt == "q8":
+        w = Q8Dequant.step(q.reshape(-1, Q8_BLOCK_BYTES), K=k)
+        return _BASE["linear"](x, w, precision=Precision.MEDIUM)
     from iron.operators.flm import DequantBFP, ProjectionGEMM
     from iron.operators.flm.gemm.op import Epilogue
 
@@ -267,34 +427,44 @@ def q4_linear(x, q, n: int, k: int):
                                epilogue_modes=(Epilogue.NONE,))
 
 
-# q4nx weights by id of their iron.param: (the param, out-features, in-features). The param is
-# held, so no other object takes its id.
-_Q4: dict[int, tuple[object, int, int]] = {}
+def q4_linear(x, q, n: int, k: int):
+    return q_linear(x, q, n, k, "q4")
 
 
-def q4_param(w):
-    """An iron.param of w's q4nx blocks (quantize), known to the patched F.linear."""
+# Quantized weights by id of their iron.param: (the param, out-features, in-features, format).
+# The param is held, so no other object takes its id.
+_Q4: dict[int, tuple[object, int, int, str]] = {}
+_BASE: dict[str, object] = {}
+
+
+def q_param(w, fmt: str = "q4"):
+    """An iron.param of w's blocks in fmt (quantize_fmt), known to the patched F.linear."""
     import iron
 
     n, k = np.shape(w)
-    p = iron.param(quantize(w).reshape(-1))
-    _Q4[id(p)] = (p, n, k)
+    p = iron.param(quantize_fmt(w, fmt).reshape(-1))
+    _Q4[id(p)] = (p, n, k, fmt)
     return p
 
 
+def q4_param(w):
+    return q_param(w, "q4")
+
+
 def install_linear() -> None:
-    """Make iron.functional.linear run q4_linear on the weights q4_param made."""
+    """Make iron.functional.linear run q_linear on the weights q_param made."""
     import iron.functional as F
 
     if getattr(F.linear, "hwnpu_q4", False):
         return
     base = F.linear
+    _BASE["linear"] = base
 
     def linear(x, weight, bias=None, *, precision, **gemv):
         entry = _Q4.get(id(weight))
         if entry is None or entry[0] is not weight:
             return base(x, weight, bias, precision=precision, **gemv)
-        y = q4_linear(x, weight, entry[1], entry[2])
+        y = q_linear(x, weight, entry[1], entry[2], entry[3])
         if bias is None:
             return y
         rows = int(np.prod(y.shape)) // bias.shape[0]
@@ -345,13 +515,14 @@ def _check(args) -> int:
     from iron_graph import bind_device, export_graph, write_check
 
     bind_device("npu2", 8)
-    n, k = args.n, args.k
+    install_linear()  # the base F.linear q8's prompt path calls, and the bfp16 fix
+    n, k, fmt = args.n, args.k, args.fmt
     rng = np.random.default_rng(1)
     w = rng.standard_normal((n, k)).astype(np.float32) * 0.05
-    q = quantize(w)
-    deq = dequantize(q, n, k)
+    q = quantize_fmt(w, fmt)
+    deq = dequantize_fmt(q, n, k, fmt)
     err = np.abs(deq - w).max() / np.abs(w).max()
-    print(f"quantization: largest error {err:.4f} of the largest weight")
+    print(f"quantization ({fmt}): largest error {err:.4f} of the largest weight")
 
     from iron import Scratchpad
 
@@ -361,8 +532,8 @@ def _check(args) -> int:
 
         def body(self, x, *, rows: Scratchpad[np.int32] = np.int32(0)):
             if args.rows:  # a prompt chunk's: bounded per call
-                return q4_linear(x[:rows], self.q, n, k)
-            return q4_linear(x, self.q, n, k)
+                return q_linear(x[:rows], self.q, n, k, fmt, args.cores)
+            return q_linear(x, self.q, n, k, fmt, args.cores)
 
         def reference(self, x, rows=0):
             x = np.asarray(x, np.float64)
@@ -374,20 +545,22 @@ def _check(args) -> int:
     g = G()
     shape = (k,) if args.rows == 0 else (args.rows, k)
     cg = g.compile(x=shape)
-    m = export_graph(cg, args.out, "q4linear", dict(n=n, k=k))
+    m = export_graph(cg, args.out, "qlinear", dict(n=n, k=k, fmt=fmt))
     x = rng.standard_normal(shape).astype(bfloat16)
     write_check(g, m, args.out, dict(x=x), dict(rows=args.valid or args.rows) if args.rows else None)
-    print(f"{args.out}: Q4GEMV {n} x {k}, {q.nbytes >> 10} KiB of weights")
+    print(f"{args.out}: {fmt} {n} x {k}, {q.nbytes >> 10} KiB of weights")
     return 0
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    c = sub.add_parser("check", help="export a graph of one Q4GEMV and its check")
+    c = sub.add_parser("check", help="export a graph of one quantized linear and its check")
     c.add_argument("out", type=Path)
     c.add_argument("--n", type=int, default=1536)
     c.add_argument("--k", type=int, default=1536)
+    c.add_argument("--fmt", choices=sorted(FORMATS), default="q4")
+    c.add_argument("--cores", type=int, default=2, help="cores a column of the GEMV (1 or 2)")
     c.add_argument("--rows", type=int, default=0, help="rows of x (0: one, (k,)): several run the prefill path")
     c.add_argument("--valid", type=int, default=0, help="rows the call bounds x to (default all)")
     a = ap.parse_args(argv)

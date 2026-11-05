@@ -12,10 +12,10 @@ decode step's token at row 0). The layers read their rows from it in order, so n
 is left; what the layers compute is the same, bit for bit.
 
 With install(q4=True), the MLP's projections of every layer (gate, up, down) and the head are
-q4nx, and with q4_attn the attention's (q, k, v, o) too; they are 0.53 GB of E2B's bf16 but
-most of the error (KL from the bf16 logits on 400 positions of text: 0.229 nats with them in
-q4nx, 0.091 without; the head barely matters: 0.2245). q4nx is iron_q4's: 5 bits a weight,
-decode on Q4GEMV, prefill dequantized on the device for the bfp16 GEMM. The head is tied to the token embeddings, whose rows the head no
+q4nx, and the attention's (q, k, v, o) are in ``attn``: q8 (the default), q4 or bf16. They are
+0.53 GB of E2B's bf16 but most of the error (KL from the bf16 logits on 400 positions of text:
+0.229 nats in q4nx, 0.091 in bf16; the head barely matters: 0.2245). The formats are
+iron_q4's: q4nx 5 bits a weight, q8 8.5; decode on QGEMV, prefill dequantized on the device. The head is tied to the token embeddings, whose rows the head no
 longer gives in bf16: they go to the host the same way (embed.bin, embed_rows of
 (prefill_chunk, hidden_size)), times sqrt(hidden_size) on the device as before.
 
@@ -41,20 +41,20 @@ SCRATCHPAD_WORDS = 24
 
 # The tables by id of their model, by buffer: IRON takes no array attribute that is not a weight.
 _TABLES: dict[int, dict[str, np.ndarray]] = {}
-_Q4 = {"on": False, "attn": False}
+_Q4 = {"on": False, "attn": "q8"}
 _HOST_EMBED: dict[int, bool] = {}  # by id of the model: its embeddings on the host
 
 
 def _keep() -> set:
-    """What stays bf16 with q4: attention unless install(q4_attn=True). HWNPU_Q4_KEEP (comma
+    """What stays bf16 with q4: attention where install's attn is "bf16". HWNPU_Q4_KEEP (comma
     separated: head, attn, mlp) names it instead, to measure what each costs."""
     env = os.environ.get("HWNPU_Q4_KEEP")
     if env is not None:
         return set(filter(None, env.split(",")))
-    return set() if _Q4["attn"] else {"attn"}
+    return {"attn"} if _Q4["attn"] == "bf16" else set()
 
 
-def install(q4: bool = False, q4_attn: bool = False) -> None:
+def install(q4: bool = False, attn: str = "q8") -> None:
     """Patch IRON's Gemma4 (and so Gemma4Multimodal's text model) to read its PLE from ple_rows;
     with q4, its projections and head in q4nx and its token embeddings from embed_rows."""
     import iron
@@ -68,7 +68,9 @@ def install(q4: bool = False, q4_attn: bool = False) -> None:
 
         iron_q4.install_linear()
         _Q4["on"] = True
-        _Q4["attn"] = q4_attn
+        if attn not in ("bf16", "q8", "q4"):
+            raise ValueError(f"attention in {attn}: bf16, q8 or q4")
+        _Q4["attn"] = attn
     if getattr(G, "hwnpu_host_ple", False):
         return
     base_init = G.__init__
@@ -103,16 +105,17 @@ def install(q4: bool = False, q4_attn: bool = False) -> None:
 
         keep = _keep()
         m = self.model
+        attn = None if "attn" in keep else _Q4["attn"]
         for layer in m.layers:
             a, mlp = layer.self_attn, layer.mlp
             lins = []
-            if "attn" not in keep:
-                lins += [a.q_proj, a.k_proj, a.v_proj, a.o_proj]
+            if attn is not None:
+                lins += [(lin, attn) for lin in (a.q_proj, a.k_proj, a.v_proj, a.o_proj)]
             if "mlp" not in keep:
-                lins += [mlp.gate_proj, mlp.up_proj, mlp.down_proj]
-            for lin in lins:
+                lins += [(lin, "q4") for lin in (mlp.gate_proj, mlp.up_proj, mlp.down_proj)]
+            for lin, fmt in lins:
                 if lin is not None:
-                    lin.weight = iron_q4.q4_param(np.asarray(lin.weight, np.float32))
+                    lin.weight = iron_q4.q_param(np.asarray(lin.weight, np.float32), fmt)
         if "head" in keep:
             return
         # the head is tied to the embeddings: its own copy in q4nx, the embeddings to the host
