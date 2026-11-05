@@ -1,17 +1,8 @@
-# What each improvement bought (as of 2026-11-06, main up to #46)
+# What each improvement bought (as of 2026-11-06, main up to #49)
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to the MoE measurements in 16.75 and to 16.77), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13) and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
-
-Main additions since the previous version (up to #39):
-- **4-bit and 8-bit weights on AMD** (q4nx and q8). Pinned memory drops to 1/2–1/5, and generation is 1.3–1.6 times faster
-- **Less pinned memory on AMD**. The PLE and embedding tables stay on the host, Anima loads one stage at a time, and the NPU is released while idle (`-idle`)
-- **PLaMo 3 Translate 2B** on all three kinds of NPU (on an M3, checked as far as placement and weight formats)
-- **Anima image generation** (`hwnpu-image`). It runs on AMD; on Apple and Intel it is checked on the CPU only
-- **Three more tokenizers** (PLaMo, T5's Unigram, Qwen3's pre-tokenizer)
-- **Measurements of MoE building blocks at Qwen3.6-35B-A3B's sizes**. Not a port of the model
-- **Host memory fixes**. A conversation mark keeps only the ring slots in use, memory goes back to the OS after a conversion, and the `/dev/shm` left by OpenVINO is cleaned up
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.78), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -47,6 +38,8 @@ Main additions since the previous version (up to #39):
 | AMD: PLE and embedding tables on the host (16.72–73) | unchanged | unchanged | | ◎ E2B 9.08 → 4.60 GB | | | unchanged (word for word) | AMD |
 | AMD: release the NPU while idle `-idle` (16.74) | | | △ reload 0.8–2 s on the next request | ◎ 0 while idle | | | | AMD |
 | Anima loaded one stage at a time (16.72) | 69.3 → 67.7 s/image | | | ◎ 14.2 → 5.0 GiB | | | bit for bit the same | AMD |
+| AMD: Anima's DiT at 8 bits (q8) (16.78) | +2 % (67.3 → 68.3 s/image) | | | ◎ pinned 5020 → 3445 MiB | ○ 5.7 → 4.0 GB | | nearly unchanged (latent cosine 0.966 → 0.961) | AMD |
+| AMD: the cores' rounding set to nearest even (16.78) | unchanged | unchanged | | | | | ◎ Anima's quantized DiT (step-0 error q8 0.088 → 0.031); language models unchanged | AMD |
 | Conversation marks keep only the ring slots in use (16.71) | | | | ○ 578 → 183 MB over 5 translations | | | | All |
 | Memory back to the OS after a conversion (16.71) | | | | ○ 2.4 GB → 154 MB right after startup | | | | All |
 | Cleaning up the `/dev/shm` left by OpenVINO (16.72) | | | | | ○ 8.4 GB a day | | | Intel / OpenVINO |
@@ -138,7 +131,7 @@ Improvements to the GEMV itself:
 
 **Pinned memory on AMD** (16.72–74, amd-npu-models.md sections 12–13). Every page of an NPU buffer is pinned, so it shows neither in the process's RSS nor in swap. What grows is `Unevictable`. Nearly all of it is weights and work areas; the KV cache is under 5 %.
 
-| Model | Original (bf16) | Tables on the host | 4-bit (attention q8 by default) | While idle (`-idle`) |
+| Model | Original (bf16) | Tables on the host | Quantized (4-bit with attention q8 by default; Anima 8-bit) | While idle (`-idle`) |
 |---|---|---|---|---|
 | Gemma 4 E2B | 9.08 GB | 4.60 GB | **1.78 GB** | 0 |
 | Gemma 4 E4B | 14.7 GB | 9.25 GB | **3.53 GB** | 0 |
@@ -146,7 +139,7 @@ Improvements to the GEMV itself:
 | LFM3-1.7B | 3.75 GiB | — | **1.64 GiB** | 0 |
 | LFM3-VL / Audio / Omni | 4.12 / 4.14 / 4.51 GiB | — | **2.00 / 2.03 / 2.39 GiB** | 0 |
 | PLaMo 3 Translate 2B | 5.96 GiB | — | **2.16 GiB** (the 0.51 GiB embedding is a file on the host) | 0 |
-| Anima (1024 × 1024) | 14.2 GiB | **5.0 GiB** loading one stage at a time | — | — |
+| Anima (1024 × 1024) | 14.2 GiB | **5.0 GiB** loading one stage at a time | **3.4 GiB** (DiT at 8 bits; 2.7 GiB at 4 bits) | — |
 
 - Tables on the host: PLE reads only one row a token, yet the whole table was pinned. The table now stays a file, and before each call only the tokens' rows are written into a small device buffer (18 MB for E2B)
 - The embedding is shared with the output matrix, so making the output 4-bit leaves no bf16 rows. The embedding became a host table the same way
@@ -166,6 +159,8 @@ Improvements to the GEMV itself:
 | AMD: q8 GEMV with the partial sum in two bf16s (16.73) | Rounded to one bf16: cosine 0.9998 | Split into high and remainder: 0.999992 | None |
 | AMD: q4nx quantization choosing from 9 candidates (amd-npu-models.md section 13) | Plain min-max: weight error 8.2 % | 7.3 % | None; at export only |
 | AMD 4-bit KL by model | | LFM3 0.036 (92 % match), E4B 0.049, E2B 0.097, PLaMo 3 0.007–0.009 on its translations (36 of 44 the same as bf16) | LFM3 and translation hold up well at 4 bits. Measure LFM3 with a BOS (without it, it looks 4× worse) |
+| AMD: the cores' rounding to nearest even (16.78) | The cores start in floor mode, and each narrowing to bf16 pulls sums of inputs with a mean downward: Anima's DiT step-0 velocity error q8 0.088, q4 0.244 (bf16 0.025) | q8 0.031, q4 0.087 (the quantization alone on the CPU: 0.007, 0.092). Language models: E2B KL 0.097 → 0.093, LFM3 0.036 unchanged | None (one instruction a call). Takes effect when exported again |
+| AMD: Anima's DiT at q8 rather than q4 (16.78) | q4nx: latent cosine 0.777, the face and hands change. GPTQ cuts the velocity error only 0.114 → 0.070 | q8: 0.961 (bf16 0.966), nearly the same picture | 735 MiB more pinned than q4 |
 | Anima: `HIGHEST` for the text only (16.68) | All `MEDIUM` (bfp16): latent cosine 0.938 | 0.966 (bf16 on the CPU: 0.980) | Same time |
 | Anima's fp16 handling (Apple / Intel) (16.69) | DiT residuals reach 2.7e5 and overflow fp16 | Residuals kept at 1/32, norms divided by each row's maximum first: latent cosine 0.99985 on the CPU | None |
 | PLaMo 3 to lut8 (16.71) | lut4: KL 1.91; lut6: 89 % match | lut8: 98 % match (M3) | Weights 1.82 → 2.45 GiB |
@@ -226,6 +221,9 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | Splitting commands (`SCRATCHPAD_WORDS` 24) | Keeps each command under amdxdna's 2 s timeout and the 64 MiB heap | Without the gather, commands grew too long; they are now split at export |
 | Retrying when the heap runs out (`ENOSPC`) | Releases the decode run and tries again | Same as IRON |
 | MoE building blocks (at Qwen3.6-35B-A3B's sizes, 16.75) | Reads the chosen experts in place without copying (`ExpertQGEMV`). A layer in 4 ops (`MoEGateUp`, `MoEDown`) | 5.2 → 2.3 → 1.27 ms a layer. Estimated 8–10 tokens/s. Pinning 35 GB does not change the speed |
+| Rounding to nearest even in hwnpu's kernels (16.78) | Removes the downward bias of bf16 narrowing that grows with the number of inputs | Unit check with inputs of mean 1: IRON's `DequantBFP` path cosine 0.968, hwnpu's `QDequant` (bf16) 0.99994. Language models keep `DequantBFP` for prompts (bf16 is 5–9 % slower there and changes nothing) |
+| Anima's DiT at q8 (`iron_anima.py --dit-attn`, `--dit-mlp`, 16.78) | Pinned 5020 → 3445 MiB at 1024×1024 | 2 % slower (weights dequantized every step), same energy (about 1050 J an image). `q4` can be chosen (2710 MiB) |
+| hwnpu-xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | Matrix multiply at 1–4 tenths of the peak (int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
 
 ### 7.4 Common (any NPU, on the host)
 
@@ -253,6 +251,8 @@ Prompt reuse and the prompt store, speculative decoding (Apple / Intel), the thi
 | AMD MoE: the transposed down as a one-row GEMM | Slower than the GEMV (1.92 ms) | 16.75 |
 | Splitting Anima's DiT into commands with host steps | The first command stopped with `ERT_CMD_STATE_TIMEOUT`. Made one graph of 4 blocks instead | 16.68 |
 | Anima's DiT at `HIGH` | Latent cosine 0.966 → 0.976, but 7.2 → 10.9 s a step | amd-npu-models.md 11.3 |
+| Anima's DiT at 4 bits (q4nx) as the default | Pinned 3445 → 2710 MiB, but latent cosine 0.777 and the picture changes (the loss is the quantization itself: 0.753 on the CPU). GPTQ in the same format: velocity error 0.114 → 0.070 (q8: 0.010) | 16.78 |
+| AMD: language models' q4nx prompts through bf16 (`QDequant`) | KL unchanged (E2B 0.094, LFM3 0.037), prompt chunk 5–9 % slower | 16.78 |
 | RMSNorm with a fixed scale (Anima, fp16) | Squares of rows without large values become subnormals. Replaced by dividing by each row's maximum | 16.69 |
 
 ## 9. Caveats when combining (costs)
@@ -263,6 +263,8 @@ Prompt reuse and the prompt store, speculative decoding (Apple / Intel), the thi
 - **Prefill of long contexts**: reading 256K at once takes about 29 minutes (LFM3). The prompt store is assumed
 - **Noise in the numbers**: many M3 measurements were taken with 5–11 GB of swap. Only pairs measured back to back under the same conditions are compared. On AMD too, a single op can differ by about 1.4× between the first and second run (thought to be the power state). PLaMo 3's 4-bit numbers were measured with another job loading the machine
 - **4 bits on AMD**: how much accuracy drops depends on the model (KL 0.036 for LFM3, 0.097 for E2B). For bf16, export without `--q4`
+- **Anima's DiT at 8 bits**: 2 % slower than bf16. With a seed whose trajectory branches easily, the composition can still change (one of 4 prompts: PSNR 15.4 dB against bf16, the furniture in front differs). For bf16, export with `--dit-attn bf16 --dit-mlp bf16`
+- **The rounding fix on AMD**: it is in the exported kernels, so 4-bit exports made before #48 keep the old rounding until exported again (the difference for language models is small)
 - **`-idle`**: memory is given back while idle, but the next request first pays 0.8–2 s to reload. `-idle 0` turns it off
 - **PLaMo 3 as one lut8 program**: short texts are fast, but long documents are read about 10× slower (`-format lut6` gives two programs at lower accuracy)
 
@@ -282,10 +284,10 @@ Prompt reuse and the prompt store, speculative decoding (Apple / Intel), the thi
 | gemma-4-E2B-it | `gemma4` | byte-fallback BPE (`tokenizer.json`) | Gemma 4 | Text only on Apple / Intel | ◎ lut6, context 131072 | Converts | ◎ q4 7.9 tok/s, 1.78 GB (bf16 6.1 tok/s), images and audio too |
 | gemma-4-E4B-it | `gemma4` | Same | Gemma 4 | Text only | ○ lut6, one program (`-prefill auto`) | Converts | ○ q4 5.6 tok/s, 3.53 GB, context 4096 |
 | Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen's split rules | Qwen3.5 | Text only (the vision tower is not converted) | △ checked on the CPU only, not yet on the ANE | Converts | — |
-| **plamo-3-translate-2b** (new) | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3, translation) | — | ○ lut8, one program, context 262144. Checked on an M3 that all of it is on the ANE, and the weight formats | Converts (int8). Translates on OpenVINO's CPU | ◎ q4 11.6 tok/s, 2.16 GiB, context 8192 |
+| plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3, translation) | — | ○ lut8, one program, context 262144. Checked on an M3 that all of it is on the ANE, and the weight formats | Converts (int8). Translates on OpenVINO's CPU | ◎ q4 11.6 tok/s, 2.16 GiB, context 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (embedding API) | — | ◎ lut8 + head-scale | Converts (int8) | — |
 | BERT family (all-MiniLM-L6-v2 and so on) | `bert` | **Not implemented** (WordPiece) | — | — | Converts only (lut8) | Converts only (int8) | — |
-| **Anima-Turbo** (new, image generation) | `internal/imagegen/anima` (built from one MIL description) | Qwen3 BPE + T5 Unigram | — (`hwnpu-image`) | Images out | △ Converts (fp16). Checked with the CPU interpreter, not on hardware | △ Converts. Checked on OpenVINO's CPU | ◎ 1024×1024, 8 steps in about 70 s, 5.0 GiB pinned |
+| Anima-Turbo (image generation) | `internal/imagegen/anima` (built from one MIL description) | Qwen3 BPE + T5 Unigram | — (`hwnpu-image`) | Images out | △ Converts (fp16). Checked with the CPU interpreter, not on hardware | △ Converts. Checked on OpenVINO's CPU | ◎ 1024×1024, 8 steps in about 68 s, 3.4 GiB pinned (DiT at 8 bits) |
 | Qwen3.6-35B-A3B (reference) | Not ported | — | — | — | — | — | Only MoE layers measured, with random weights (16.75) |
 
 ### 10.2 Tokenizers (`internal/tokenizer`, depending only on `golang.org/x/text`)
@@ -296,9 +298,9 @@ Prompt reuse and the prompt store, speculative decoding (Apple / Intel), the thi
 | Qwen3.5's extensions | Qwen3.5 | NFC normalization (adds `x/text/unicode/norm`), combining marks counted as letters with `[\p{L}\p{M}]+`, digits one at a time | Matches HF tokenizers 0.23 on Japanese, Hindi, combining marks, full-width and special tokens; 15 split cases match (16.62) |
 | byte-fallback BPE (`fallback.go`) | Gemma 4 | Spaces become ▁, text between added tokens merged by rank as one piece, characters outside the vocabulary become UTF-8 bytes (`<0xE3>`). No BOS added (the chat format writes `<bos>`) | Matches HF on 35 texts + 300 random ones (7,026 tokens) (16.25) |
 | SentencePiece BPE (`LoadSentencePiece`) | PLaMo-Embedding | Reads `tokenizer.model`'s protobuf by hand without dependencies. Merges by piece scores, not a merge list; user-defined pieces (runs of ▁, tabs, newlines) are matched longest-first and not merged; a ▁ is added after special tokens too (as HF's slow tokenizer does) | 0 mismatches over 32 texts (599 tokens) + 3,032 random texts (88,072 tokens) (16.19) |
-| PLaMo (`LoadPlamo`; `Load` picks it for a `.jsonl`) (new) | PLaMo 3 Translate | From `tokenizer.jsonl`'s scored pieces, finds the split of least total cost, searching from the end. The cost is the score × 10⁴, rounded as Python's round does, with the sign flipped. HF uses Aho-Corasick; hwnpu looks pieces up in a map of every piece's prefixes. On a tie the longer piece wins. Characters no piece covers become UTF-8 bytes. Cuts at special tokens, at 4 or more of the same character in a row, and at 2 or more spaces | Matches HF on 40 cases + 3,040 random ones. Flipping the tie rule fails the tests (16.70) |
-| Qwen3's pre-tokenizer (new) | Anima's text (Qwen3-0.6B) | GPT-4 style with digits split one by one (Qwen2 / Qwen3's rule) | Matches transformers on 11 texts (16.68) |
-| T5's Unigram (`LoadUnigram`) (new) | Anima's LLM adapter | Normalizes with sentencepiece's precompiled charsmap and splits with Viterbi. An unknown character costs "the lowest score − 10" (as HF). No byte fallback | Matches transformers on 11 texts (full-width, accents, Japanese, emoji) (16.68) |
+| PLaMo (`LoadPlamo`; `Load` picks it for a `.jsonl`) | PLaMo 3 Translate | From `tokenizer.jsonl`'s scored pieces, finds the split of least total cost, searching from the end. The cost is the score × 10⁴, rounded as Python's round does, with the sign flipped. HF uses Aho-Corasick; hwnpu looks pieces up in a map of every piece's prefixes. On a tie the longer piece wins. Characters no piece covers become UTF-8 bytes. Cuts at special tokens, at 4 or more of the same character in a row, and at 2 or more spaces | Matches HF on 40 cases + 3,040 random ones. Flipping the tie rule fails the tests (16.70) |
+| Qwen3's pre-tokenizer | Anima's text (Qwen3-0.6B) | GPT-4 style with digits split one by one (Qwen2 / Qwen3's rule) | Matches transformers on 11 texts (16.68) |
+| T5's Unigram (`LoadUnigram`) | Anima's LLM adapter | Normalizes with sentencepiece's precompiled charsmap and splits with Viterbi. An unknown character costs "the lowest score − 10" (as HF). No byte fallback | Matches transformers on 11 texts (full-width, accents, Japanese, emoji) (16.68) |
 | WordPiece | BERT and others | Not implemented. `Load` returns an error | — |
 
 On AMD (IRON), the tokenizer and chat format read the `tokenizer.json` in the export directory with the same Go code. Embedding lookups used to be device DMA. Now the 4-bit exports and Gemma 4's PLE are host tables (`embed.bin`, `ple.bin`), and only the tokens' rows are written. PLaMo 3 has no `tokenizer.json`, so the IRON side does not read a tokenizer (Go's `LoadPlamo` is used).
@@ -313,7 +315,7 @@ Each one ports `chat_template.jinja` to Go and is checked to match, character fo
 | Gemma 4 (`chat.Gemma4`) | 9 conversations (`gemma4_template.json`) | Its own notation (strings as `<\|"\|>`, keys by dictsort) | `<\|think\|>` and `<\|channel>thought … <channel\|>` |
 | Qwen3.5 (`chat.Qwen35`) | 9 conversations | Qwen's declarations with descriptions. Objects and arrays as JSON arguments, others as Python's `str()` | Kept only in replies after the last question |
 | System One (`internal/systemone`) | 7 cases (llama.cpp's template rendered with jinja2) | d1's choice / score / noul questions | `<think></think>` |
-| PLaMo 3 / PFML3 (`chat.Plamo3`) (new) | 8 cases (`tools/ref/plamo3_template_golden.py`) | No tools. `target_lang`, `source_lang`, `form`, `context`, `glossary` (`Options.Translation`; in the API, `chat_template_kwargs` as in vLLM) | None. A system message becomes `context`. Without a target language, a text with Japanese goes to English and others to Japanese. The label of each past translation is chosen from its source text, so the start of the prompt can be reused |
+| PLaMo 3 / PFML3 (`chat.Plamo3`) | 8 cases (`tools/ref/plamo3_template_golden.py`) | No tools. `target_lang`, `source_lang`, `form`, `context`, `glossary` (`Options.Translation`; in the API, `chat_template_kwargs` as in vLLM) | None. A system message becomes `context`. Without a target language, a text with Japanese goes to English and others to Japanese. The label of each past translation is chosen from its source text, so the start of the prompt can be reused |
 
 In every format, the think budget (`-think-budget`) feeds in the closing mark the format gives (`</think>`, `<channel|>`) to move on to the answer.
 
@@ -385,7 +387,7 @@ hwnpu-chat:
 - `-to`, `-from`, `-form` and `/to LANG` set the languages and style. The server also takes a `glossary`
 - A terminal input line was added: history, line editing, two columns for wide characters, multi-line paste, colors
 
-**Anima-Turbo (image generation, `hwnpu-image`)** (16.68–69, 16.72)
+**Anima-Turbo (image generation, `hwnpu-image`)** (16.68–69, 16.72, 16.78)
 
 Parts:
 - Text: Qwen3-0.6B and an LLM adapter (T5 tokens attend to themselves and to Qwen3's hidden states)
@@ -397,7 +399,7 @@ Parts:
 AMD (`tools/amd/iron_anima.py`):
 - About 70 s at 1024×1024 (7.2 s a DiT step, 60% of it self-attention)
 - Against diffusers in fp32: latent cosine 0.966 (bf16 on the CPU: 0.980). The VAE alone: PSNR 44.5 dB
-- Loaded one stage at a time, at most 5.0 GiB pinned
+- Loaded one stage at a time, at most 5.0 GiB pinned; 3.4 GiB with the DiT's block projections at 8 bits (the default, 16.78), the picture nearly the same. 4 bits (2.7 GiB) change the picture
 
 Apple / Intel (`hwnpu-image -convert`):
 - One MIL description (`internal/imagegen/anima/mil`) is written as a Core ML package or OpenVINO IR, in Go only
@@ -447,10 +449,10 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | LFM3-Audio's TTS | Does it sound the same as the reference (llama.cpp)? Only checked by transcribing it again with ASR | Compare audio decoded from the same codes with llama.cpp's server TTS | 16.30–31 |
 | Long texts with PLaMo-Embedding | Do the last layer's values grow further in the 1024-token program (is head-scale enough)? | Vary the texts in `TestANEPrecision` | 16.34 |
 | BERT family | `hwnpu-check` on real weights and placement on the ANE (only checked on the CPU for Intel) | | 16.11 |
-| **Anima (image generation) as a whole** (new) | Does all of it go on the ANE (a single part on the CPU stops it)? Compile time, speed, memory, and whether the 1024×1024 VAE (one head of 384 dims, 16384 pixels) fits | Section 3 of [handoff-anima-mac-intel.md](handoff-anima-mac-intel.md) | 16.69 |
-| Details of PLaMo 3's accuracy and speed (new) | Placement and weight formats are checked. Translation quality and time for long documents are not measured in detail | Compare KL with fp16 on translation pairs | 16.71 |
-| PLaMo 3's two lut6 programs (new) | Do they (about 3.6 GiB) fit the compile cache (about 4 GiB) and keep startup fast? | Start twice with `-format lut6` | 16.71 |
-| Why macOS memory seemed to shrink with use (new) | The guess is that macOS compressed the rings, which are mostly zeros | Measure the footprint on an M3 after the mark fix (`ringRows`) | 16.71 |
+| **Anima (image generation) as a whole** | Does all of it go on the ANE (a single part on the CPU stops it)? Compile time, speed, memory, and whether the 1024×1024 VAE (one head of 384 dims, 16384 pixels) fits | Section 3 of [handoff-anima-mac-intel.md](handoff-anima-mac-intel.md) | 16.69 |
+| Details of PLaMo 3's accuracy and speed | Placement and weight formats are checked. Translation quality and time for long documents are not measured in detail | Compare KL with fp16 on translation pairs | 16.71 |
+| PLaMo 3's two lut6 programs | Do they (about 3.6 GiB) fit the compile cache (about 4 GiB) and keep startup fast? | Start twice with `-format lut6` | 16.71 |
+| Why macOS memory seemed to shrink with use | The guess is that macOS compressed the rings, which are mostly zeros | Measure the footprint on an M3 after the mark fix (`ringRows`) | 16.71 |
 
 ### 11.2 Intel (NPU)
 
@@ -465,8 +467,8 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Cost of attention per chunk | The cost of re-recording command lists when each step calls "full-attention layers × chunks in use" times | intel-npu-models.md, the 16.63 section |
 | Memory | Whether there is enough with tiers, where the 4 graphs keep separate weights (6.4 GiB in int8) | intel-npu-models.md section 11 |
 | Real checkpoints | Running Gemma 4 and LFM3-VL / Audio in hwnpu-chat (conversion and numbers checked on the CPU) | Same |
-| PLaMo 3 (new) | Whether the int8 IR (two programs of 4 parts each) runs on a real NPU, and its speed. On OpenVINO's CPU it gave the same translations as AMD | 16.71 |
-| Anima (new) | Whether all of it runs on a real NPU, speed, memory. Checked on OpenVINO's CPU (f32). With f16 inference, PSNR drops to 25.5 dB | 16.69, handoff-anima-mac-intel.md section 4 |
+| PLaMo 3 | Whether the int8 IR (two programs of 4 parts each) runs on a real NPU, and its speed. On OpenVINO's CPU it gave the same translations as AMD | 16.71 |
+| Anima | Whether all of it runs on a real NPU, speed, memory. Checked on OpenVINO's CPU (f32). With f16 inference, PSNR drops to 25.5 dB | 16.69, handoff-anima-mac-intel.md section 4 |
 
 ### 11.3 AMD (XDNA)
 
@@ -478,11 +480,13 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Power of the NPU alone | Upstream Linux 7.0 has no sensor. Current numbers are for the whole package (PPT) | 16.44, 16.53 |
 | `CREATE_HWCTX` right after another process | Can fail with `EINVAL` for a moment. No retry yet | 16.48 |
 | Long contexts | IRON exports have a fixed context (4096 / 12288). Attention over chunks is IRON's side's job | 16.63 |
-| Speed of PLaMo 3 at 4 bits (new) | Measured with another job loading the machine (a single GEMV 1.6× slower). Measure again on a quiet machine | 16.76 |
-| Other sizes of PLaMo 3 (new) | 0.8B, 8B and 31B share the structure and should export, but have not been tried | 16.70 |
-| 4-bit KL against HF (new) | The q4 KL for Gemma 4 and PLaMo 3 is against bf16 on the NPU. Only LFM3 was compared with HF fp32 (0.036) | 16.73, 16.76 |
-| MoE (Qwen3.6-35B-A3B) (new) | Loading and running all 40 layers (20 GB of tables) at q4 (tried up to 12 layers; 35 GB pinned checked with bf16). KL with real weights (with random weights, stacking layers gives cosine 0.997 at 12 layers). IRON forms of Gated DeltaNet and attention, MoE for prompts. 8–10 tok/s is an estimate | 16.75 |
-| MoE warning about reusing BDs (new) | aiecc warns about reusing a BD after a `dma_free_task` with no completion guarantee. Thought harmless, but not proven statically | 16.75 |
+| Speed of PLaMo 3 at 4 bits | Measured with another job loading the machine (a single GEMV 1.6× slower). Measure again on a quiet machine | 16.76 |
+| Other sizes of PLaMo 3 | 0.8B, 8B and 31B share the structure and should export, but have not been tried | 16.70 |
+| 4-bit KL against HF | The q4 KL for Gemma 4 and PLaMo 3 is against bf16 on the NPU. Only LFM3 was compared with HF fp32 (0.036) | 16.73, 16.76 |
+| MoE (Qwen3.6-35B-A3B) | Loading and running all 40 layers (20 GB of tables) at q4 (tried up to 12 layers; 35 GB pinned checked with bf16). KL with real weights (with random weights, stacking layers gives cosine 0.997 at 12 layers). IRON forms of Gated DeltaNet and attention, MoE for prompts. 8–10 tok/s is an estimate | 16.75 |
+| MoE warning about reusing BDs | aiecc warns about reusing a BD after a `dma_free_task` with no completion guarantee. Thought harmless, but not proven statically | 16.75 |
+| The rounding fix in the other 4-bit exports | Only Gemma 4 E2B and LFM3-1.7B were exported again and measured (KL 0.093, 0.036). E4B, PLaMo 3 and the multimodal ones keep their old exports | 16.78 |
+| Anima's q8 over many seeds | Compared with fp32 on 3 images. One of 4 seeds changed the composition against bf16; how often that happens is not measured | 16.78 |
 
 ### 11.4 Behaviour with unknown causes
 
@@ -493,11 +497,11 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Only the 8-part split loads slowly from the cache (23.7 s) | Not looked into | 16.13 |
 | On a 128K English document, two-level attention has lower loss than normal attention | Normal attention gets distracted by distant tokens, and two levels narrow that | 16.61 |
 | AMD's prefill is slower than IRON's Llama 3.2 1B | Without rings for the sliding layers, the whole context is read with a mask (skipping outside the window should be several times faster) | 16.50, 16.66 |
-| AMD: splitting Anima's DiT into commands with host steps stops the first command with `ERT_CMD_STATE_TIMEOUT` (new) | Not looked into. Avoided with one graph of 4 blocks | 16.68 |
-| AMD: with Gemma 4 E4B's old export, the first command of the second chunk stops for 61 s (new) | Not looked into. The new export (62 commands) gets through | amd-npu-models.md section 12 |
-| AMD: with random weights the NPU and IRON's reference disagree (PLaMo 3 too, besides Gemma 4) (new) | They agree with the real weights. Random weights may make outliers through bf16 rounding, but this is not checked | 16.50, 16.70 |
-| AMD: MoE layers briefly slowed to 170–520 ms each (new) | Suspected another session using the NPU at the time. The 8 runs after were around 5 ms | 16.75 |
-| AMD: a single op differs by 1.4× between the first and second run (new) | Thought to be the power state | 16.75 |
+| AMD: splitting Anima's DiT into commands with host steps stops the first command with `ERT_CMD_STATE_TIMEOUT` | Not looked into. Avoided with one graph of 4 blocks | 16.68 |
+| AMD: with Gemma 4 E4B's old export, the first command of the second chunk stops for 61 s | Not looked into. The new export (62 commands) gets through | amd-npu-models.md section 12 |
+| AMD: with random weights the NPU and IRON's reference disagree (PLaMo 3 too, besides Gemma 4) | They agree with the real weights. Random weights may make outliers through bf16 rounding, but this is not checked | 16.50, 16.70 |
+| AMD: MoE layers briefly slowed to 170–520 ms each | Suspected another session using the NPU at the time. The 8 runs after were around 5 ms | 16.75 |
+| AMD: a single op differs by 1.4× between the first and second run | Thought to be the power state | 16.75 |
 
 ### 11.5 Not yet written (for reference)
 
@@ -518,4 +522,5 @@ Collected from what the records call "not yet checked", "not measured" or "estim
   - CFG (negative prompts). A non-Turbo Anima is expected to take over 10 minutes an image
   - Calls from ComfyUI nodes
   - A 512×512 export
+  - GPTQ codes read into the export for a 4-bit DiT (velocity error 0.114 → 0.070 on the CPU; still far from q8)
 - Porting Qwen3.6-35B-A3B: an IRON form of Gated DeltaNet, and choosing the route on the device
