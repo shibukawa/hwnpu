@@ -38,3 +38,9 @@ func mapFile(path string, size int) ([]byte, error) {
 }
 
 func unmap(b []byte) error { return syscall.Munmap(b[:cap(b)]) }
+
+// processAlive reports whether a process of that id exists (EPERM: it does, as another user's).
+func processAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}

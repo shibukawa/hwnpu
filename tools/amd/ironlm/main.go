@@ -92,6 +92,9 @@ func main() {
 	maxTokens := flag.Int("max", 200, "tokens to generate for -prompt")
 	bench := flag.Bool("bench", false, "time a decode step against prompt calls of a few tokens (what checking drafts costs)")
 	depth := flag.Bool("depth", false, "time a whole prompt chunk and a decode step at each chunk boundary up to the context (an amdxdna command is cut off after 2 s)")
+	forced := flag.String("forced", "", "a text file: read its first -split tokens as a prompt, then feed the rest one decode step at a time, writing the logits after each to -logits (float32 rows)")
+	split := flag.Int("split", 256, "tokens of -forced read as the prompt")
+	logitsOut := flag.String("logits", "", "where -forced writes its logits")
 	flag.Parse()
 	dir := flag.Arg(0)
 	ctx := context.Background()
@@ -117,6 +120,10 @@ func main() {
 	}
 	if *prompt != "" {
 		generate(ctx, m, *prompt, *tokPath, *maxTokens)
+		return
+	}
+	if *forced != "" {
+		teacher(ctx, m, *forced, *tokPath, *split, *maxTokens, *logitsOut)
 		return
 	}
 	if *nan {
@@ -336,5 +343,54 @@ func benchDepth(ctx context.Context, m *iron.Model) {
 			log.Fatalf("step at %d: %v", start+n, err)
 		}
 		fmt.Printf("chunk of %d from %d: %.2f s (%.0f tokens/s); decode step at %d: %.1f ms\n", n, start, chunk, float64(n)/chunk, start+n, time.Since(t).Seconds()*1000)
+	}
+}
+
+// teacher reads the first split tokens of a text as a prompt, then feeds the next ones (up to
+// max) one decode step at a time and writes the logits before each fed token (the prompt's
+// last, then each step's) as float32 rows: two exports' rows compare position by position.
+func teacher(ctx context.Context, m *iron.Model, path, tokPath string, split, max int, out string) {
+	text, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tok, err := tokenizer.Load(tokPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ids := append([]int32{2}, tok.Encode(string(text))...) // <bos>
+	if len(ids) < split+2 {
+		log.Fatalf("%d tokens, fewer than -split %d and one to feed", len(ids), split)
+	}
+	ids = ids[:min(len(ids), split+max)]
+	f, err := os.Create(out)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+	write := func(l []float32) {
+		if err := binary.Write(f, binary.LittleEndian, l); err != nil {
+			log.Fatal(err)
+		}
+	}
+	t0 := time.Now()
+	logits, err := m.Prompt(ctx, ids[:split], 0)
+	if err != nil {
+		log.Fatal(err)
+	}
+	write(logits)
+	for p := split; p < len(ids)-1; p++ {
+		if logits, err = m.Step(ctx, ids[p], p); err != nil {
+			log.Fatal(err)
+		}
+		write(logits)
+	}
+	log.Printf("%d tokens: %d prompt, %d fed, %d rows of %d logits in %.1f s", len(ids), split, len(ids)-1-split, len(ids)-split, len(logits), time.Since(t0).Seconds())
+	ids32 := make([]byte, 4*len(ids))
+	for i, id := range ids {
+		binary.LittleEndian.PutUint32(ids32[4*i:], uint32(id))
+	}
+	if err := os.WriteFile(out+".ids", ids32, 0o644); err != nil {
+		log.Fatal(err)
 	}
 }
