@@ -8,7 +8,8 @@
 // (Gemma): spaces become ▁, the text between added tokens is merged by rank as one piece, and a
 // character outside the vocabulary becomes its UTF-8 bytes (<0xE3>). Other models (WordPiece,
 // Unigram) and other normalizers and pre-tokenizer patterns are rejected by Load.
-// LoadSentencePiece reads a SentencePiece BPE tokenizer.model instead (PLaMo).
+// LoadSentencePiece reads a SentencePiece BPE tokenizer.model instead (PLaMo's embedding model),
+// and LoadPlamo PLaMo 2/3's tokenizer.jsonl, which Load also reads when given its path.
 package tokenizer
 
 import (
@@ -38,6 +39,7 @@ type Tokenizer struct {
 	nfc          bool  // the text is put in Unicode normalization form C first
 
 	fallback *fallback // the BPE with byte fallback, or nil for byte-level
+	plamo    *plamo    // PLaMo's scored pieces (LoadPlamo), or nil
 }
 
 // style is a pre-tokenizer pattern that split implements.
@@ -90,8 +92,11 @@ type file struct {
 	} `json:"model"`
 }
 
-// Load reads a tokenizer.json.
+// Load reads a tokenizer.json, or PLaMo's tokenizer.jsonl (LoadPlamo).
 func Load(path string) (*Tokenizer, error) {
+	if strings.HasSuffix(path, ".jsonl") {
+		return LoadPlamo(path)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -207,6 +212,9 @@ func (t *Tokenizer) ID(token string) (int32, bool) {
 // Encode turns text into token ids. Added tokens written in the text (such as "<|im_start|>")
 // become their ids.
 func (t *Tokenizer) Encode(text string) []int32 {
+	if t.plamo != nil {
+		return t.plamo.encode(nil, strings.ToValidUTF8(text, "\uFFFD"))
+	}
 	var ids []int32
 	start := 0
 	for i := 0; i < len(text); {
@@ -301,6 +309,9 @@ func (t *Tokenizer) bpe(piece string) []int32 {
 func (t *Tokenizer) Decode(ids []int32, skipSpecial bool) string {
 	if t.fallback != nil {
 		return t.fallback.decode(t, ids, skipSpecial)
+	}
+	if t.plamo != nil {
+		return t.plamo.decode(t, ids, skipSpecial)
 	}
 	var out []byte
 	for _, id := range ids {

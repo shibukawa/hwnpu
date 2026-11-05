@@ -65,6 +65,11 @@ func main() {
 	}
 	if *tok == "" {
 		*tok = filepath.Join(filepath.Dir(*config), "tokenizer.json")
+		if _, err := os.Stat(*tok); err != nil {
+			if jsonl := filepath.Join(filepath.Dir(*config), "tokenizer.jsonl"); fileExists(jsonl) {
+				*tok = jsonl // PLaMo 3's
+			}
+		}
 	}
 	if *cacheDir == "" {
 		if d, err := os.UserCacheDir(); err == nil {
@@ -486,4 +491,9 @@ func generateCached(ctx context.Context, c *chain.Chain, m llm.Cached, ids []int
 	}
 	fmt.Fprintln(os.Stderr)
 	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

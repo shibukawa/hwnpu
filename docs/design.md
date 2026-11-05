@@ -2049,3 +2049,42 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - CPU のインタプリタに 2 次元の `conv` を足した (`milcpu`)。runner の CPU の実行に `HWNPU_CPU_F16` (演算ごとに fp16 に丸める) を足した
 - 確かめたこと (256 × 256、8 ステップ、diffusers の fp32 と同じノイズ): Core ML を CPU のインタプリタで、潜在のコサイン 0.99985、画像の PSNR 37.4 dB (fp16 に丸めて 0.99899、32.0 dB)。OpenVINO IR を OpenVINO 2026.4 の CPU で 0.99985、37.9 dB (f16 の推論で 0.99478、25.5 dB)。条件づけはコサイン 0.999999、ステップ 0 の速度は 0.999997
 - 実機 (M3、Core Ultra) では未確認。手順と見るところは [handoff-anima-mac-intel.md](handoff-anima-mac-intel.md)
+
+### 16.70 AMD: PLaMo 3 Translate 2B を hwnpu-chat で訳す (`iron_plamo3.py`、PLaMo のトークナイザーと PFML3) — 2026-11-05
+
+- 対象は pfnet/plamo-3-translate-2b (`Plamo3ForCausalLM`、2026-10-27 公開)。IRON にアプリケーションがないので hwnpu に置いた (`tools/amd/iron_plamo3.py`、`iron_export_lm.py plamo3`)。IRON の部品だけで書けた
+  - 層は sandwich norm (`SandwichLayer`)。PLaMo の RMSNorm は `(offset + w) * x` で、offset は norm ごとに違う (前の norm、q と k の norm、最後の norm は 1、注意の後は 1/5、MLP の後は 1/5^1.5)。読み込んだ後に重みへ足し込む (Gemma の `plus_one` と同じく float32 で足して bf16 に丸める)
+  - `qkv_proj` (q、k、v の行) と `gate_up_proj` (gate、up の行) はまとめた重みのまま `Linear.split` で分ける。q と k はヘッドごとに RMSNorm、RoPE は rotate_half
+  - 8 層ごとの 1 層 (7、15、23) が全体を、ほかは 2048 位置 (自分を含む) の窓を見る。窓の層の RoPE は θ = 10000、全体の層は θ = 10⁶ の YaRN (倍率 256、元の文脈 4096、beta 32 と 1。modeling_plamo.py の `rope_parameters` は config.json の `rope_parameters` を読まず、`rope_scaling_factor` と `initial_context_length` から作る)。YaRN の cos と sin に掛ける 0.1 ln 256 + 1 は `rope_attention_scaling`
+  - 埋め込みの尺度なし、頭は `lm_head` (tie なし)。トークナイザーは tokenizer.json がないので、IRON 側では読まない (`from_checkpoint` を差し替え)
+- 照合 (`tools/amd/iron_plamo3_check.py`。Hugging Face 側は torch の venv、IRON 側は IRON の venv):
+  - modeling_plamo.py で作った乱数の小さな PLaMo 3 (4 層、2 層ごとに全体、窓 8、YaRN は本物と同じ) で、IRON のグラフをホストで (`OnHost`) 動かし、100 トークン (塊 64 の境をまたぐ) と 4 ステップで最上位 5/5、KL 5e-4 以下。わざと壊すと落ちる: 注意の後の offset を 1 に (KL 0.55)、窓をなくす (0.65)、YaRN の倍率をなくす (0.12)、YaRN の傾斜をなくす (0.011)、全体の層に窓の RoPE (0.22)
+  - 本物の重みで、翻訳の 43 トークンのプロンプトと 16 ステップ: ホストの IRON は Hugging Face (fp32) と最上位 17/17、コサイン 0.9999 以上、KL 最大 3.8e-3。NPU (Ryzen AI 9 365) も 17/17、コサイン 0.9998 以上、最大の差は最大のロジットの 1.7 % (`ironlm` に Hugging Face のロジットを `check/` として渡した)。2596 トークン (塊の境 2 つと窓 2048 をまたぐ) と 8 ステップも NPU で 9/9、コサイン 0.9996 以上
+  - 乱数の重み (実物の形) での NPU と `OnHost` の照合はコサイン 0.45〜0.8 で合わなかった。Gemma 4 と同じ (16.47)。実物の重みでは合うので、照合は実物で行う
+- 速さ (文脈 8192、塊 1024。bank 3.5 GiB + 2.3 GiB、プロンプトは 3 コマンド): デコード 7.7 トークン/秒 (位置 1024 で 133 ms、8191 で 152 ms)。1024 トークンの塊は位置 0 から 2.2 秒、1024 から 4.8、2048 から 6.6、4096 から 8.2、7168 から 10.5 秒。どれも 2 秒の打ち切りに当たらなかった。窓 2047 と塊 1024 のリングは 4096 で、3 × 4096 ≥ 8192 なのでリングにならず、巻き戻しと prompt store が使える
+- トークナイザー (`tokenizer.LoadPlamo`、`Load` が `.jsonl` で選ぶ): tokenizer.jsonl の点数つきの断片に対し、費用 (点数 × 10⁴ を Python の round で丸めたものの符号を反転) の和が最小の分け方を後ろから探す。tokenization_plamo.py は Aho-Corasick の表で同じ探索をするが、hwnpu は全断片の接頭辞の map で引く。同点は位置ごとに長い断片を、どの断片でも覆えない文字は UTF-8 のバイトの断片を、ほかより厳密に安いときだけ選ぶ (表の並びと同じ)。特殊トークン `<|plamo:...|>`、4 回以上続く同じ文字、2 個以上の空白の前後で切る (tokenizer_config.json の閾値)。Hugging Face の出力と、`tools/ref/tokenizer_golden.py` の 40 例 (testdata に置いた) と乱数の 3040 例ですべて一致。同点の扱いを逆にするとテストが落ちる
+- チャットの書式 (`chat.Plamo3`): chat_template.jinja の PFML3 を Go に移した。`target_lang`、`source_lang`、`form`、`context`、`glossary` は `Options.Translation` (API では `chat_template_kwargs`)。テンプレートが拒む system メッセージは `context` にする。訳す先がなければ、日本語の文字を含む文は英語、ほかは日本語にし、履歴の訳文はそれぞれの原文から決めた言語で書く (テンプレートは 1 つの `target_lang` で全部を書くので、自動のときだけ違う。こうしないと次の文の言語で前の訳文の札が変わり、プロンプトの先頭が再利用できない)。`tools/ref/plamo3_template_golden.py` の 8 例でテンプレートと一致。終わりは `<|plamo:tag|>`、`<|plamo:bos|>` (generation_config の eos)
+- 実機: hwnpu-chat で「The meeting has been rescheduled to next Monday.」に「会議は来週の月曜日に延期されました。」、続く日本語に英語、`/to zh-hans` で中国語。2 文目以降は前のプロンプトを再利用 (50 トークンのうち 17 だけ読む)。サーバーの `glossary` (NPU → ニューラル処理装置) と `form` も効いた。`form: plain` の 1 例で Hugging Face (fp32) と読点 1 つ違ったが、そこは Hugging Face 自身で 0.454 対 0.440 の拮抗だった (bf16 の差)
+- Core ML と Intel の NPU は 16.71 で移した。0.8B、8B、31B は同じ構造なので同じアプリケーションで書き出せるはずだが、試していない
+
+### 16.71 PLaMo 3 を移す: Core ML と Intel の NPU (`internal/llm/plamo3`) — 2026-11-05
+
+- modeling_plamo.py の `Plamo3ForCausalLM` を Go に移し、ホワイトリストに入れた (`plamo3`)。形は Gemma 4 (16.25) から層ごとの埋め込み、KV の共有、ロジットの soft cap を除いたもの
+  - norm は Gemma 4 と同じく入力を 1/64 にしてから二乗する (参照の最大 |hidden| は層 18 で 1089、1/64 なしでは fp16 の二乗があふれる)。重みには norm ごとの offset (1、1/5、1/5^1.5) を足して fp16 の定数にする
+  - `qkv_proj` と `gate_up_proj` は `LinearRows` で行ごとに分ける (PLaMo-Embedding と同じ)。`lm_head` は語彙を 16 の倍数に詰めた行数を持つので、行が多ければ語彙の分だけ使う (2B は 107520 でちょうど)
+  - YaRN の concentration (0.1 ln 256 + 1 = 1.5545) は cos と sin に掛けず、全注意の層の注意のスコアに二乗を掛ける (`scoreScale`、注意で分けたときは `PagedShape.Scale`)。キャッシュの鍵は concentration を含まない値になり、ホストの注意 (internal/llm/paged) はスケールを掛けるだけで済む
+  - スライディング窓の層は窓 2048 のリング (Gemma 4 と同じ `StepInputs`)、全注意の 3 層 (7、15、23) で分ける (`llm.Paged`、文脈 262144)
+- 合格条件 (port-architecture):
+  - 小さな合成モデル (4 層、2 層ごとに全注意、窓 3、2B と同じ YaRN、語彙 40 に lm_head 48 行) を fp16 で CPU で動かし、modeling_plamo.py から書いた fp64 の forward (concentration は Hugging Face どおり cos と sin に掛ける) と相対誤差 6.5e-5。1 層ずつも 1.7e-6〜4.8e-5。KV キャッシュ付き (1、3、4、11 トークン/回、1〜3 部分)、注意で分けた形、印と巻き戻しも、キャッシュなしのプログラムと 5e-3 以内 (fp16 のキャッシュ)。OpenVINO の CPU で IR も同じ (`TestIntelIRCached`、`TestIntelIRPaged`、最大 8.4e-4)
+  - わざと壊すとテストが落ちる: concentration をなくす、YaRN の傾斜をなくす、注意の後の offset を 1 に、窓をなくす (プログラムとステップのマスクそれぞれ)、全注意の層を 1 つずらす、残差の足し先を変える
+  - `hwnpu-check` (31 トークン): `tensors: 0 missing, 0 mismatched, 0 unused`。fp32 で各層の相対 RMS 誤差 0.0002 以下、全体で argmax 31/31。`-f16` で各層 0.0006 以下、全体で KL 0.0001 nats、argmax 30/31
+  - 重みの形式 (全体の KL、argmax): lut4 1.91 nats (15/31)、lut6 0.073 (28/31)、lut8 0.0066 (29/31)、int4 0.72 (23/31)、int4-g128 0.32 (23/31)、int8 0.0025 (30/31)。lut4 は使えない
+  - M3 の Neural Engine (`hwnpu-formats -formats lut6,lut8 -ref fp16`、キャッシュ 4096、1 回 8 トークン): どれも全部 Neural Engine に載る。次のトークンが fp16 と同じなのは lut6 で 235/265 (89%)、lut8 で 259/265 (98%)。ロジットの相対誤差 (平均/最大) は 0.148/0.264 と 0.039/0.082。1 回の呼び出しは fp16 105.4 ms、lut6 53.7、lut8 57.8。重みは 4.85、1.82、2.45 GiB
+  - 既定は lut8 にした (Intel は対応表で int8)。lut8 の 2 本 (4.9 GiB) はコンパイルのキャッシュ (約 4 GiB) を超えるので、hwnpu-chat は生成用の 1 本でプロンプトも読む (`-prefill auto`)。翻訳する文は短く、50 トークンで約 0.4 秒。数千トークンの文書は 64 トークンのプログラムの約 10 倍かかるので、`-format lut6` を CHAT に書いた
+- hwnpu-chat: カタログに `plamo-3-translate-2b` (機能 `translation`)。トークナイザーのファイルはアーキテクチャで選ぶ (`tokenizer.jsonl` と `tokenizer_config.json`)。この Linux 機で `-use plamo-3-translate-2b -backend openvino` (OpenVINO の CPU) を実行し、int8 の IR に変換 (2 本で 4 部分ずつ、各 0.34〜0.72 GiB)、AMD と同じ 2 文を同じ訳文に訳した (2 文目は 50 トークンのうち 17 だけ読む)。Core ML の変換 (lut6、8 トークン/回) も Linux で済み、4 部分 0.25〜0.54 GiB (どのチップの 1 GiB にも収まる)
+- M3 で: 注意で分けた形の 1 回 8 トークンの版は `NOT all on the NPU` だった。`hwnpuinfo` で調べると、ホストの注意 (`attn`、17 演算) と 2 段の注意 (`mass`、10 演算) と部分 1〜3 は全部 Neural Engine で、最後の部分 (層 23 の注意の後と出力層、35 演算) の `transpose` 1 つが CPU だった。注意の出力を (1, heads, seq, head_dim) で受けて token を先に並べ替える transpose で、部分 2 と 3 の頭の同じ transpose は Neural Engine に載る。そこで PLaMo 3 の部分は注意の出力を token を先にした `attn_ot_N` (1, seq, heads, head_dim) で受け、並べ替えはホストがする (`decode.putAttnOut`。ホストは塊ごとの結果をもともと自分で合わせているので、24 × 8 × 128 の写しが 1 つ増えるだけ)。`attn_o_N` を受けるほかのモデルは変わらない。並べ替えをやめると分けた形のテストが落ちる
+- M3 で直したあと全部 Neural Engine に載った (`hwnpuinfo` で部分 4 も全部)
+- メモリ: M3 で hwnpu-chat が起動直後 4 GB、使うたびに減ると報告された。この Linux 機 (OpenVINO の経路) で測ると 2 つあった
+  - 変換した直後の起動は 2.4 GB (変換中の最大 3.2 GB)。変換で読んだチェックポイントの残りで、Go はそれを少しずつしか OS に返さない。`chat.Prepare` の終わりに `debug.FreeOSMemory` を呼び、154 MB になった (変換しない起動は 141 MB)
+  - 翻訳 1 回ごとに生きたヒープが約 85 MB 増えた (5 回で 578 MB)。会話の印 (`decode.Session.Mark`、エンジンは 8 個まで持つ) が、スライディング窓の 21 層のリング (2048 位置 × 4 kv ヘッド × 128、鍵と値、計 88 MB) を毎回まるごと写していた。会話の始めはリングはほとんど 0 で、macOS はそれを圧縮するので、使うほど減って見えたと考える (未確認)。位置がリングの長さに届くまでは、位置より後ろのスロットはマスクで見えない (StepInputs: 位置 pos で スロット j ≥ pos の最新の位置は j − 長さ < 0) ので、印は各ヘッドの使っている先頭のスロットだけを持つようにした (`ringRows`、`putRing`。prompt store から戻すときも同じ形を受ける)。5 回で 183 MB (生きたヒープ 36 MB)。窓より手前で印を取り、リングが一周したあとに戻るテスト (`TestCachedMarkBeforeRingFull`) は、書き戻しの位置か持つスロットの数を誤ると落ちる。Gemma 4 と LFM3 も同じ規則のリングなので、短い会話の印は同じく小さくなる
+- 未確認: 精度と速さの詳しい計測。Intel の NPU の実機 (OpenVINO の CPU のみ)。lut6 の 2 本 (約 3.6 GiB) が Neural Engine のコンパイルのキャッシュ (約 4 GiB) に収まるか

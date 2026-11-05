@@ -37,6 +37,7 @@ var Features = []struct{ Name, About string }{
 	{"query", "embeds search queries and the documents searched differently (input_type)"},
 	{"vision", "reads the images of user messages (image_url; /image in the terminal)"},
 	{"audio", "reads the audio of user messages (input_audio, WAV; /audio in the terminal)"},
+	{"translation", "translates the text of each user message (chat_template_kwargs target_lang, source_lang, form, context, glossary; -to in the terminal)"},
 }
 
 // Catalog lists the models hwnpu-chat knows, by name.
@@ -55,6 +56,8 @@ var Catalog = []Model{
 		About: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"},
 	{Name: "Qwen3.5-4B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-4B", Bytes: 9.3e9,
 		About: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 6 bit tables (the download has the vision part too, which is not converted); checked on the CPU, not yet on the Neural Engine"},
+	{Name: "plamo-3-translate-2b", Kind: KindChat, Features: []string{"translation"}, Repo: "pfnet/plamo-3-translate-2b", Bytes: 5.76e9,
+		About: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"},
 	{Name: "plamo-embedding-1b", Kind: KindEmbed, Features: []string{"query"}, Repo: "pfnet/plamo-embedding-1b", Bytes: 2.1e9,
 		About: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"},
 }

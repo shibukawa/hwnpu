@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -259,6 +260,8 @@ func archOf(model string) (string, error) {
 		return "gemma4", nil
 	case "Lfm3", "Lfm3Vl", "Lfm3Audio", "Lfm3Omni":
 		return "lfm3", nil
+	case "Plamo3":
+		return "plamo3", nil
 	}
 	return "", fmt.Errorf("chat: no chat format for the IRON model %s", model)
 }
@@ -305,6 +308,12 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	tok := c.Tokenizer
 	if tok == "" {
 		tok = filepath.Join(c.IRON, "tokenizer.json")
+		if _, err := os.Stat(tok); err != nil {
+			jsonl := filepath.Join(c.IRON, "tokenizer.jsonl") // PLaMo's
+			if _, err := os.Stat(jsonl); err == nil {
+				tok = jsonl
+			}
+		}
 	}
 	if e.Tok, err = tokenizer.Load(tok); err != nil {
 		return fail(err)

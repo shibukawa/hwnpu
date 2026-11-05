@@ -103,13 +103,20 @@ func run(ctx context.Context, use, root, formatList, refFormat, backend, refBack
 	if err := os.MkdirAll(md, 0o755); err != nil {
 		return err
 	}
-	for _, f := range []string{"config.json", "tokenizer.json", "model.safetensors"} {
+	if err := chat.Fetch(ctx, m.Repo, "config.json", filepath.Join(md, "config.json"), os.Stderr); err != nil {
+		return err
+	}
+	a, model, err := llm.LoadConfig(filepath.Join(md, "config.json"), "")
+	if err != nil {
+		return err
+	}
+	// the architecture's tokenizer (PLaMo 3's tokenizer.jsonl) and the checkpoint, in shards or not
+	for _, f := range chat.TokenizerFiles(a.Name) {
 		if err := chat.Fetch(ctx, m.Repo, f, filepath.Join(md, f), os.Stderr); err != nil {
 			return err
 		}
 	}
-	a, model, err := llm.LoadConfig(filepath.Join(md, "config.json"), "")
-	if err != nil {
+	if err := chat.FetchWeights(ctx, m.Repo, md, os.Stderr); err != nil {
 		return err
 	}
 	cm, ok := model.(llm.Cached)
@@ -121,7 +128,7 @@ func run(ctx context.Context, use, root, formatList, refFormat, backend, refBack
 		return err
 	}
 	defer w.Close()
-	tok, err := tokenizer.Load(filepath.Join(md, "tokenizer.json"))
+	tok, err := tokenizer.Load(filepath.Join(md, chat.TokenizerFiles(a.Name)[0]))
 	if err != nil {
 		return err
 	}

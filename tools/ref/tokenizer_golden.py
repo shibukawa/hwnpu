@@ -3,7 +3,8 @@
     python tokenizer_golden.py MODEL_DIR OUT.json [--random N]
 
 MODEL_DIR holds tokenizer.model, tokenizer_config.json and the tokenizer's remote code
-(tokenization_plamo.py for PLaMo), or a tokenizer.json converted from SentencePiece (Gemma).
+(tokenization_plamo.py for PLaMo), or a tokenizer.json converted from SentencePiece (Gemma), or
+PLaMo 2/3's tokenizer.jsonl with its tokenization_plamo.py (which needs numba).
 Each text is encoded by the Hugging Face tokenizer without special tokens (no BOS), and, when it
 contains no special token and there is a tokenizer.model, also by sentencepiece alone; the two
 must agree. OUT.json holds {"cases": [{"text": ..., "ids": [...]}]}. --random N adds N
@@ -51,6 +52,12 @@ TEXTS = [
     "<|turn>user\nこんにちは<turn|>\n<|turn>model\n",
     "<|think|>思考<|channel>thought\n考え<channel|>答え",
     "<|tool_call>call:get_weather{city:<|\"|>Tokyo<|\"|>}<tool_call|>",
+    # PLaMo 3: its PFML3 prompt, runs of a repeated character, special tokens it does not have
+    "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:msg|>The meeting has been rescheduled to next Monday.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>",
+    "会議は来週の月曜日に変更されました。<|plamo:tag|>",
+    "aaaa bbb ーーーーー !!!!!! 。。。。 \n\n\n\n\n end",
+    "<|plamo:nosuch|> and <|plamo:has space|> and <|plamo:|>",
+    "x<|plamo:tag|><|plamo:tag|>y",
 ]
 
 

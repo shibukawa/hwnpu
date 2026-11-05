@@ -157,7 +157,9 @@ func HeldInput(name string) bool {
 //     hidden state entering the layer. Anything else the rest of the layer needs from it is an
 //     output that the next part takes by name (internal/llm/chain)
 //   - the next part starts at layer N with its attention's output, the input attn_o_N (1,
-//     heads, Seq, head_dim), and x, the hidden state entering the layer
+//     heads, Seq, head_dim), and x, the hidden state entering the layer; or attn_ot_N, the same
+//     with the tokens first (1, Seq, heads, head_dim), which spares the part a transpose
+//     (PLaMo 3's, whose transposed input Core ML put on the CPU)
 //   - a layer that attends over the keys and values of an earlier one of PagedLayers (PagedKV,
 //     Gemma 4's KV sharing) outputs attn_q_N only: the host attends over that layer's cache
 //

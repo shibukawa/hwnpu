@@ -193,7 +193,11 @@ func (st *step) checkPaged(s *Session) error {
 		if !ok || len(qs) != 4 || qs[2] != st.q {
 			return fmt.Errorf("decode: no output attn_q_%d (1, heads, %d, head_dim)", layer, st.q)
 		}
-		if os := p.InShape[fmt.Sprintf("attn_o_%d", layer)]; !slices.Equal(os, qs) {
+		if ts, ok := p.InShape[fmt.Sprintf("attn_ot_%d", layer)]; ok {
+			if want := []int{1, qs[2], qs[1], qs[3]}; !slices.Equal(ts, want) {
+				return fmt.Errorf("decode: input attn_ot_%d has shape %v, want %v", layer, ts, want)
+			}
+		} else if os := p.InShape[fmt.Sprintf("attn_o_%d", layer)]; !slices.Equal(os, qs) {
 			return fmt.Errorf("decode: input attn_o_%d has shape %v, want %v", layer, os, qs)
 		}
 		heads, d = qs[1], qs[3]
@@ -634,10 +638,55 @@ func (s *Session) Mark() *Mark {
 	}
 	for _, c := range s.kv {
 		if !c.long { // a ring
-			m.bufs[c.parts[0]] = slices.Clone(in[c.parts[0]])
+			m.bufs[c.parts[0]] = s.ringRows(c.parts[0], in[c.parts[0]])
 		}
 	}
 	return m
+}
+
+// ringRows copies a ring (1, kv heads, slots, head_dim) for a mark: whole once the sequence has
+// filled it, else only each head's slots before the position. Before then, slot j at or past the
+// position holds no position the masks let a query see (StepInputs: the latest position before
+// pos congruent to j is j - slots < 0), whatever it was left with, so a mark early in a
+// conversation is a small part of a long window's rings (PLaMo 3's 21 rings of 2048 are 88 MB).
+func (s *Session) ringRows(name string, b []byte) []byte {
+	sh := s.progs[0].p.InShape[name]
+	if len(sh) != 4 || s.pos >= sh[2] {
+		return slices.Clone(b)
+	}
+	heads, slots, row := sh[1], sh[2], 2*sh[3]
+	out := make([]byte, 0, heads*s.pos*row)
+	for h := 0; h < heads; h++ {
+		out = append(out, b[h*slots*row:(h*slots+s.pos)*row]...)
+	}
+	return out
+}
+
+// ringBytes is the size of a mark's copy of a ring at pos (ringRows).
+func (s *Session) ringBytes(name string, pos int) int {
+	sh := s.progs[0].p.InShape[name]
+	if len(sh) != 4 {
+		return -1
+	}
+	return sh[1] * min(pos, sh[2]) * 2 * sh[3]
+}
+
+// putRing writes a mark's copy of a ring back: whole, or each head's first slots (ringRows).
+func (s *Session) putRing(name string, dst, b []byte) error {
+	if len(b) == len(dst) {
+		copy(dst, b)
+		return nil
+	}
+	sh := s.progs[0].p.InShape[name]
+	if len(sh) != 4 || sh[1] == 0 || len(b)%(sh[1]*2*sh[3]) != 0 || len(b)/(sh[1]*2*sh[3]) > sh[2] {
+		return fmt.Errorf("decode: the mark's %s has %d bytes, the session's %d", name, len(b), len(dst))
+	}
+	heads, slots, row := sh[1], sh[2], 2*sh[3]
+	n := len(b) / (heads * row)
+	for h := 0; h < heads; h++ {
+		copy(dst[h*slots*row:(h*slots+n)*row], b[h*n*row:(h+1)*n*row])
+	}
+	return nil
 }
 
 // Save returns the current point of the sequence with a copy of the rows before it, which stays
@@ -658,7 +707,9 @@ func (s *Session) Rewind(m *Mark) {
 		s.ImportRows(0, m.rows)
 	}
 	for name, b := range m.bufs {
-		copy(s.progs[0].p.In[name], b)
+		if err := s.putRing(name, s.progs[0].p.In[name], b); err != nil {
+			panic(err) // a mark of this session: its rings are its own
+		}
 	}
 	s.pos = m.pos
 }
@@ -813,7 +864,7 @@ func (s *Session) runPaged(st *step, valid int) error {
 				return err
 			}
 			if done {
-				hwnpu.EncodeF16(p.In[fmt.Sprintf("attn_o_%d", layer)], st.res)
+				putAttnOut(p, layer, st.res)
 				continue
 			}
 		}
@@ -832,8 +883,29 @@ func (s *Session) runPaged(st *step, valid int) error {
 			st.merge.Add(st.o[0], st.o[1], st.o[2])
 		}
 		st.merge.Result(st.res)
-		hwnpu.EncodeF16(p.In[fmt.Sprintf("attn_o_%d", layer)], st.res)
+		putAttnOut(p, layer, st.res)
 	}
+}
+
+// putAttnOut writes a layer's attention output res, (1, heads, q, head_dim), to the program's
+// input: attn_o_N as it is, or attn_ot_N with the tokens first, (1, q, heads, head_dim), which
+// spares the part that goes on from the layer a transpose of its input (Core ML put the one that
+// begins PLaMo 3's last part on the CPU).
+func putAttnOut(p Program, layer int, res []float32) {
+	b, ok := p.In[fmt.Sprintf("attn_ot_%d", layer)]
+	if !ok {
+		hwnpu.EncodeF16(p.In[fmt.Sprintf("attn_o_%d", layer)], res)
+		return
+	}
+	sh := p.InShape[fmt.Sprintf("attn_ot_%d", layer)]
+	q, heads, d := sh[1], sh[2], sh[3]
+	t := make([]float32, len(res))
+	for h := 0; h < heads; h++ {
+		for i := 0; i < q; i++ {
+			copy(t[(i*heads+h)*d:(i*heads+h+1)*d], res[(h*q+i)*d:(h*q+i+1)*d])
+		}
+	}
+	hwnpu.EncodeF16(b, t)
 }
 
 // stepMasks makes the masks of the chunks the step's q tokens from pos fall in: query t (position
@@ -1063,7 +1135,7 @@ func (s *Session) Resume(rows []byte, m *Mark) error {
 		if !want[name] {
 			return fmt.Errorf("decode: the mark holds %s, which is not a ring or a window of the session", name)
 		}
-		if len(b) != len(in[name]) {
+		if len(b) != len(in[name]) && (llm.HeldInput(name) || len(b) != s.ringBytes(name, m.pos)) {
 			return fmt.Errorf("decode: the mark's %s has %d bytes, the session's %d", name, len(b), len(in[name]))
 		}
 		delete(want, name)

@@ -52,6 +52,8 @@ Then type after the `>`.
 
 - The model thinks first (`<think>`, shown dim) and then answers. `/think off` makes it answer at once, `/think on` brings thinking back
 - `/reset` clears the conversation, `/exit` or Ctrl-D quits, Ctrl-C stops an answer. A line ending in `\` continues on the next line
+- The input is edited as in a shell: ↑ ↓ (Ctrl-P, Ctrl-N) bring back what was typed before (up to 1000 entries kept in `~/Library/Caches/hwnpu/history/chat`, so also after a restart), and ← →, Home, End, Ctrl-A, Ctrl-E, Ctrl-K, Ctrl-U and Ctrl-W work. Japanese and other wide characters take two columns. A pasted text of several lines comes in as one input, its line breaks shown as `⏎`. Ctrl-C while typing clears the line; on an empty line it quits
+- Loading and help are shown in gray, with `all on the NPU` in green when everything is on the Neural Engine and `NOT all on the NPU` in red when not. No colors when not on a terminal or with `NO_COLOR` set (hwnpu-agent the same)
 - From the second turn on, only what is new since the last answer is read
 - After each answer it shows the tokens read and the speed of generation (about 15 tokens/s on an M3)
 
@@ -83,6 +85,24 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 - 4 bit tables (lut4) cost Gemma 4 much more than LFM3 (it got Mount Fuji's height and the author of Kokoro wrong), so it converts with 6 bit tables by default; `hwnpu-convert` does too when `-format` is left out. See sections 16.25 and 16.26 of docs/design.md
 - `-use gemma-4-E4B-it` runs the larger E4B (16.0 GB download, 42 layers of width 2560) the same way, slower than E2B. Its context is 131072 too, its cache 16 KiB a token (2 GiB at 131072). Its two programs (generating and reading prompts, 6.5 GiB) would not stay in the Neural Engine's compile cache (about 4 GiB), so only the one that generates (8 tokens per call) is converted and loaded, and it reads the prompts too (`-prefill auto`). On the M3 later starts take about 4 seconds and short questions generate at 13 to 16 tokens/s, but a long prompt reads 4.4 times slower than with two (16K in 183 seconds against 42). `-prefill on` gives it the two, at about 80 seconds every start and 1 to 3 seconds of switching every question. It recalled the passphrase at 125K (with two), but swap reached 14 GB (section 16.65 of docs/design.md). On a 16 GB machine, E2B is the better choice. The larger Gemma 4 sizes (12B and up) are another architecture, which hwnpu-chat does not run
 
+### Translating with PLaMo 3 Translate
+
+Preferred Networks' translation model PLaMo 3 Translate 2B is `-use plamo-3-translate-2b`. As the other models, the first run downloads the checkpoint (5.8 GB) and converts it: 8 bit tables (lut8) for the Neural Engine, int8 for Intel's NPU, split at its 3 full attention layers (7, 15 and 23; a context of 262144 tokens, the cache growing with the conversation by 7 KiB a token). On AMD's NPU, the IRON export runs with `-iron` (the README's AMD section). Each text typed is translated, and the earlier source texts and translations go into the prompt as its translation history (keeping terms and style consistent). `-to` sets the target language (by default English for a text with Japanese characters, else Japanese); `/to LANG` changes it and clears the history. Languages are lowercase codes: `en`, `ja`, `zh-hans`, `ko`, `ja(easy)` (plain Japanese) and so on. `-from` sets the source language, `-form plain` or `polite` the style of Japanese, and `-system` becomes the reference context. The model neither thinks nor calls tools.
+
+```bash
+go run ./cmd/hwnpu-chat -use plamo-3-translate-2b
+go run ./cmd/hwnpu-chat -use plamo-3-translate-2b -to ja -form plain
+go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2
+```
+
+The weight formats (design.md 16.71): on an M3's Neural Engine, the next token is fp16's at 98% of the positions with lut8, 89% with lut6; a call takes 57.8 ms with lut8, 53.7 with lut6. lut4 is unusable (KL 1.91 nats on the CPU; Intel's int8 0.0025). The two programs of lut8 (4.9 GiB) are over the Neural Engine's compile cache (about 4 GiB), so the one that generates (8 tokens per call) reads the prompts too: short texts hardly feel it, a document of thousands of tokens is read about ten times slower. `-format lut6` favours speed, with two programs.
+
+The server takes `target_lang`, `source_lang`, `form`, `context` and `glossary` (`[{"source": "NPU", "target": "NPU"}]`) in `chat_template_kwargs`, as vLLM does. `messages` alternate source texts (user) and translations (assistant), ending with the text to translate.
+
+```bash
+curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"The meeting has been rescheduled."}],"chat_template_kwargs":{"target_lang":"ja"},"temperature":0}'
+```
+
 ## 2. Options
 
 | Flag | Default | |
@@ -96,7 +116,10 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 | `-draft N` | `8` | tokens per call of the program that generates: a token and N-1 guesses checked at once (speculative decoding, section 3); `0` or `1` generates one token per call |
 | `-prefill auto` | `auto` | whether a program of 64 tokens per call reads the prompts beside the one that generates. `auto` has one unless the two programs' weights would be over the Neural Engine's compile cache (about 4 GiB; Gemma 4 E4B), and then the one that generates reads the prompts (slower for long ones). `on` always, `off` never |
 | `-prompt-cache DIR` | `prompts` in the compile cache | keep the prompts read on disk, so that a prompt beginning like an earlier one (an agent's system message and tools) is not read again after a restart (section 3); `off` for none |
-| `-system TEXT` | none | the chat's system message |
+| `-system TEXT` | none | the chat's system message (a translation model's reference context) |
+| `-to LANG` | none | the language a translation model (PLaMo 3 Translate) translates into; none: `en` for a text with Japanese characters, else `ja` |
+| `-from LANG` | none | the source language of a translation model (none: the model finds it) |
+| `-form plain\|polite` | none | the style of a translation into Japanese |
 | `-n N` | `0` | most tokens of an answer (0: until the context is full) |
 | `-temp`, `-top-k`, `-top-p`, `-rep` | `0.1`, `50`, `0`, `1.05` | sampling (temperature, top k, top p, repetition penalty within the answer) |
 | `-context N` | `0` | most tokens of a prompt and its answer together. `0`: the model's longest when it is split at its attention (`-paged`; 262144 for LFM3-1.7B and Qwen3.5, 128000 for LFM3-VL, Audio and Omni, 131072 for Gemma 4), else 16320. Another value converts the model again for it; a model not split holds its cache in chunks over 16320 |

@@ -1,9 +1,11 @@
 package main
 
 import (
-	"bufio"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 func TestPreview(t *testing.T) {
@@ -16,7 +18,7 @@ func TestPreview(t *testing.T) {
 }
 
 func TestRead(t *testing.T) {
-	in := bufio.NewReader(strings.NewReader("one \\\n two\n\nlast"))
+	in := console.NewPlainEditor(strings.NewReader("one \\\n two\n\nlast"), io.Discard)
 	if got, ok := read(in); !ok || got != "one \n two" {
 		t.Errorf("continued: %q, %v", got, ok)
 	}

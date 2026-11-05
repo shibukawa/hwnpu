@@ -1,0 +1,138 @@
+[
+ {
+  "messages": [
+   {
+    "role": "user",
+    "content": "The meeting has been rescheduled to next Monday."
+   }
+  ],
+  "kwargs": {
+   "target_lang": "ja"
+  },
+  "want": "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:msg|>The meeting has been rescheduled to next Monday.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>"
+ },
+ {
+  "messages": [
+   {
+    "role": "user",
+    "content": "会議は来週の月曜日に変更されました。"
+   }
+  ],
+  "kwargs": {
+   "target_lang": "en",
+   "source_lang": "ja"
+  },
+  "want": "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>会議は来週の月曜日に変更されました。<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>"
+ },
+ {
+  "messages": [
+   {
+    "role": "user",
+    "content": "Thank you for your help."
+   }
+  ],
+  "kwargs": {
+   "target_lang": "ja",
+   "form": "plain"
+  },
+  "want": "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:msg|>Thank you for your help.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>plain<|plamo:msg|>"
+ },
+ {
+  "messages": [
+   {
+    "role": "user",
+    "content": "Thank you for your help."
+   }
+  ],
+  "kwargs": {
+   "target_lang": "ja(easy)"
+  },
+  "want": "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:msg|>Thank you for your help.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja(easy)<|plamo:msg|>"
+ },
+ {
+  "messages": [
+   {
+    "role": "user",
+    "content": "今日はいい天気ですね。"
+   }
+  ],
+  "kwargs": {
+   "target_lang": "zh-hans"
+  },
+  "want": "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:msg|>今日はいい天気ですね。<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>zh-hans<|plamo:msg|>"
+ },
+ {
+  "messages": [
+   {
+    "role": "user",
+    "content": "Open the project dashboard."
+   },
+   {
+    "role": "assistant",
+    "content": "プロジェクトの管理画面を開きます。"
+   },
+   {
+    "role": "user",
+    "content": "It lists all active tasks."
+   },
+   {
+    "role": "assistant",
+    "content": "進行中のタスクがすべて表示されます。"
+   },
+   {
+    "role": "user",
+    "content": "You can also filter them by owner."
+   }
+  ],
+  "kwargs": {
+   "target_lang": "ja",
+   "source_lang": "en"
+  },
+  "want": "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>Open the project dashboard.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>プロジェクトの管理画面を開きます。<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>It lists all active tasks.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>進行中のタスクがすべて表示されます。<|plamo:tag|>input<|plamo:key|>lang<|plamo:val|>en<|plamo:msg|>You can also filter them by owner.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>"
+ },
+ {
+  "messages": [
+   {
+    "role": "user",
+    "content": "The NPU runs the model at low power.\n\n  Indented line, two  spaces."
+   }
+  ],
+  "kwargs": {
+   "target_lang": "ja",
+   "context": "hwnpu is a Go library for the NPUs built into CPUs.",
+   "glossary": [
+    {
+     "source": "NPU",
+     "target": "NPU"
+    },
+    {
+     "source": "model",
+     "target": "モデル"
+    }
+   ],
+   "form": "polite"
+  },
+  "want": "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>context<|plamo:msg|>hwnpu is a Go library for the NPUs built into CPUs.<|plamo:tag|>glossary<|plamo:index|>NPU<|plamo:item|>NPU<|plamo:index|>model<|plamo:item|>モデル<|plamo:tag|>input<|plamo:msg|>The NPU runs the model at low power.\n\n  Indented line, two  spaces.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:key|>form<|plamo:val|>polite<|plamo:msg|>"
+ },
+ {
+  "messages": [
+   {
+    "role": "user",
+    "content": "Hello."
+   },
+   {
+    "role": "assistant",
+    "content": "こんにちは。"
+   },
+   {
+    "role": "user",
+    "content": "Goodbye."
+   }
+  ],
+  "kwargs": {
+   "target_lang": "ja",
+   "context": ""
+  },
+  "want": "<|plamo:bos|><|plamo:tag|>dataset<|plamo:msg|>translation<|plamo:tag|>input<|plamo:msg|>Hello.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>こんにちは。<|plamo:tag|>input<|plamo:msg|>Goodbye.<|plamo:tag|>output<|plamo:key|>lang<|plamo:val|>ja<|plamo:msg|>"
+ }
+]
