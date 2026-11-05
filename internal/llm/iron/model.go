@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -32,8 +33,10 @@ type Model struct {
 	kv       []kvCache // caches, found once
 	// xclbins are the programs of the versions packaged as an xclbin per step, by file.
 	xclbins map[string]*hwnpu.Program
-	dir     string           // the export's directory
+	dir     string            // the export's directory
 	vlProc  *lfm3vl.Processor // LFM3-VL's image processor, read on the first image
+	// hostTables are the tables kept on the host (HostTable), filled before each call
+	hostTables []*hostTable
 }
 
 type version struct {
@@ -135,6 +138,9 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 	if _, err := m.caches(); err != nil {
 		return fail(err)
 	}
+	if err := m.openHostTables(); err != nil {
+		return fail(err)
+	}
 	if m.decode.m.ELF != "" {
 		if m.decode.run, err = m.newRun(m.decode, 0); err != nil {
 			return fail(err)
@@ -157,6 +163,7 @@ func readInto(path string, dst []byte) error {
 
 // Close releases the device memory.
 func (m *Model) Close() error {
+	m.closeHostTables()
 	var errs []error
 	for _, v := range m.versions() {
 		if v == nil {
@@ -305,6 +312,9 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 	if err != nil {
 		return nil, err
 	}
+	if err := m.fillHostTables([]int32{token}); err != nil {
+		return nil, err
+	}
 	if v.steps != nil {
 		if err := m.carry(v, values); err != nil {
 			return nil, err
@@ -403,6 +413,9 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 	if err := m.carry(v, values); err != nil {
 		return nil, err
 	}
+	if err := m.fillHostTables(ids); err != nil {
+		return nil, err
+	}
 	if v.steps != nil {
 		if err := m.runSteps(ctx, v, values); err != nil {
 			return nil, err
@@ -413,6 +426,12 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 	for k := range v.m.Kernels {
 		t0 := time.Now()
 		run, err := m.newRun(v, k)
+		if errors.Is(err, syscall.ENOSPC) && m.decode.run != nil {
+			// the device heap holds no more control code: release the decode step's (as IRON
+			// releases a run), which Step makes again
+			m.dropDecode()
+			run, err = m.newRun(v, k)
+		}
 		t1 := time.Now()
 		if err != nil {
 			return nil, fmt.Errorf("iron: prompt command %d: %w", k, err)

@@ -668,6 +668,12 @@ def export(model, versions, out: Path) -> dict:
         banks={k: dict(bytes=int(n), image=images.get(k)) for k, n in banks.items()},
         versions=vm,
     )
+    # Tables the host reads rows of into a device buffer before each call (iron_hostple)
+    import iron_hostple
+
+    host_tables = iron_hostple.write(model, vm["decode"]["buffers"], out)
+    if host_tables:
+        m["host_tables"] = host_tables
     (out / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     write_words(versions, m, out)
     return m
@@ -734,9 +740,17 @@ def main(argv=None) -> int:
     ap.add_argument("--check", type=int, default=0, metavar="TOKENS", help="write a check of a prompt of TOKENS tokens")
     ap.add_argument("--steps", type=int, default=3, help="greedy steps of the check")
     ap.add_argument("--check-only", action="store_true", help="write the check alone, into an export made before")
+    ap.add_argument("--device-ple", action="store_true",
+                    help="Gemma 4: keep the per-layer token table on the device (IRON's own gathers) instead of "
+                         "on the host (iron_hostple: 4.4 GiB less pinned memory for E2B)")
     a = ap.parse_args(argv)
     bind_device(a.device, a.cols)
     import importlib
+
+    if a.model in ("gemma4", "gemma4mm") and not a.device_ple:
+        import iron_hostple
+
+        iron_hostple.install()
 
     module, cls = MODELS[a.model]
     Model = getattr(importlib.import_module(module), cls)
