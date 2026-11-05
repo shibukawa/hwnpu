@@ -198,6 +198,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | A5 | LFM3 | IRON のアプリケーションが Hugging Face のロジットと一致し、hwnpu-chat で動く (済み、16.66) |
 | A5b | LFM3 の多モーダル | LFM3-VL、LFM3-Audio、LFM3-Omni の塔が Hugging Face の出力と一致し (乱数の重み)、本物の重みで画像と音声に答える (済み、16.67) |
 | A6 | 4 ビット | q4nx の一般化とその精度 (KL) の測定 |
+| A7 | 画像生成 (Anima) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、11 節) |
 
 ## 10. 開発環境 (root なし)
 
@@ -206,3 +207,65 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 - mlir-aie と IRON: Python 3.12 (uv で用意) の venv に、IRON の `requirements.txt` が固定した wheel を入れる。NPU のない機械でもコンパイルできる
 - XRT (記録と照合のためだけ): Ubuntu 26.04 universe の `libxrt2`、`libxrt-npu2`、`libxrt-utils`、`python3-xrt` と boost の `.deb` を `dpkg -x` で展開し、`XILINX_XRT=<展開先>/usr` と `LD_LIBRARY_PATH` を設定する。`pyxrt` は Python 3.14 用なので、IRON を 3.14 の venv にも入れる。この状態で IRON の full ELF のグラフが Linux 7.0 の標準ドライバで動いた
 - ioctl の記録: `LD_PRELOAD` の小さな C の道具で、amdxdna の ioctl の構造体と、`EXEC_CMD` の時点の全 BO の中身を書き出す
+
+## 11. 画像生成: Anima (`hwnpu-image`)
+
+2026-11-05。Anima (circlestone-labs/Anima) を AMD の NPU だけで動かす。ComfyUI や Diffusers が担う「モデルの実行」の部分を hwnpu が受け持ち、UI やワークフローは持たない。
+
+### 11.1 構成
+
+| 部品 | 中身 | グラフ (`tools/amd/iron_anima.py`) |
+|---|---|---|
+| テキスト | Qwen3-0.6B (28 層、因果) の最終層の隠れ状態、その後 LLM アダプタ (6 層。T5 のトークンの埋め込みが自分自身と Qwen3 の隠れ状態に注意する) | `text` (1 つ、5 コマンド)。プロンプトは 512 トークンまで |
+| DiT | Cosmos-Predict2 2B (28 ブロック、hidden 2048、16 ヘッド)。adaLN-zero の自己注意 (3 軸の RoPE)、テキストへの交差注意、GELU の MLP | `dit_in` (パッチの埋め込みと時刻の埋め込み)、`dit_blocks` (4 ブロック。1 つの ELF に重みのバンクが 7 組)、`dit_out` |
+| VAE | Qwen-Image の VAE (Wan 2.1 のもの) の復号器を 1 フレームで。因果 3D 畳み込みは時間方向の最後のタップだけ、時間方向の拡大は通らない | `vae/s0`〜`s9` (段ごとに 1 つ) |
+
+ホスト (`internal/imagegen/anima`) がするのは、テンソルの計算でないもの: トークン化 (Qwen3 の BPE と T5 の Unigram、どちらも Go)、埋め込みの行の取り出し、時刻の正弦波、2 × 2 のパッチの並べ替え、flow matching の Euler のステップ (`x += (σ' − σ) v`)、ノイズ、PNG。Anima-Turbo は CFG 1 なので、負のプロンプトも 2 回目の DiT もない。
+
+### 11.2 決めたこと
+
+- **汎用のグラフの書き出し** (`tools/amd/iron_graph.py`、Go の `iron.Graph`): 言語モデルの版 (decode、prompt) を持たない、入力から出力への IRON のグラフ。manifest は `iron_export_lm.py` の版の形をそのまま使う。`variants` で、同じ ELF に別の重みのバンクを持てる (DiT の 7 組。コンパイルは 1 回)。バンクの像は末尾のゼロを切って書く (VAE で 8 GB → 0.2 GB、読み込み 10 秒 → 4 秒)
+- **コマンドの大きさ**: 1 コマンドの制御コードはデバイスのヒープ (64 MiB) に、時間は amdxdna の 2 秒に収める。テキストは 7 層ごとに空のホストステップ (`iron.on_host`) でコマンドを分けた (80 MB の ELF が 5 コマンドに)。DiT では同じ分け方で最初のコマンドが `ERT_CMD_STATE_TIMEOUT` で止まった (原因は未調査) ので、4 ブロック (制御コード 20 MB、1.0 秒) を 1 コマンドにし、グループごとにグラフを呼ぶ。VAE は段ごとに別のグラフ
+- **交差注意**: IRON の MHA はクエリより短いキーを取らない (クエリがキーの最後の行という前提)。4096 個のパッチを 512 行ずつに分け、それぞれ 512 個のテキストのキーに注意する
+- **アダプタのマスク**: 注意のキーを有効な行に切る (`k[:n]`)。出力の有効でない行はホストがゼロにする (アダプタのマスクと 512 行への埋めと同じ)
+- **VAE の畳み込み**: チャネルを最後に置いた、ゼロで囲んだ格子 (各行 W + 16 画素、上下に 1 行) にし、3 × 3 の畳み込みは Copy で近傍 9 画素を集めた im2col の行列と GEMM 1 回にする。結果の内側だけを次の格子に Copy で書き戻すので、囲みはずっとゼロのまま (RMS 正規化と SiLU はゼロをゼロのままにする)。行数は 256 の倍数に揃える (GEMM のタイルと、格子全体の写しが奇数の長さに分かれないため)。中段の注意は 1 ヘッド 384 次元で、MHA は `d=384` を取る (16384 行で 423 ms)
+- **精度**: IRON の行列積の `MEDIUM` は A と B を bfp16 に丸める。DiT の射影で `HIGH` の 6.5 倍速い (4096 × 2048 × 2048 で 2.1 対 13.3 ms)。テキストは 1 枚に 1 回なので `HIGHEST` にした (時間は同じ 0.5 秒)。DiT と VAE は `MEDIUM` (`--dit-precision high` で選べる)
+
+### 11.3 測定 (Ryzen AI 9 365、1024 × 1024、Anima-Turbo v1.1、8 ステップ)
+
+| 段 | 時間 |
+|---|---|
+| 読み込み | 4 秒 |
+| テキスト | 0.5 秒 |
+| DiT 1 ステップ (`dit_in`、4 ブロック × 7、`dit_out`) | 7.2 秒 (4 ブロックが 1.0 秒。自己注意 4096 × 4096 が 1 ブロック 0.21 秒で、いちばん重い) |
+| VAE (10 段) | 7 秒 (1024 × 1024 の段は 1 つ 0.8〜0.9 秒) |
+| 合計 | 約 70 秒 |
+
+CPU (diffusers、fp32、9 分 17 秒) を参照に、同じノイズから:
+
+| | 潜在のコサイン | 画像の PSNR |
+|---|---|---|
+| CPU の bf16 | 0.980 | 21.5 dB |
+| NPU (テキスト HIGHEST、DiT MEDIUM。既定) | 0.966 | 19.1 dB |
+| NPU (DiT HIGH。1 ステップ 10.9 秒) | 0.976 | 20.2 dB |
+| NPU (テキストも MEDIUM) | 0.938 | 17.2 dB |
+
+ステップ 0 の速度 (同じ入力) はコサイン 0.9997、条件づけは 0.99989 で、差はステップを重ねて軌跡が離れることで広がる。絵は構図も人物も同じで、細部 (口元、背景の枝) が違う。VAE だけを比べると、同じ潜在から NPU と CPU の画像の PSNR は 44.5 dB。
+
+### 11.4 書き出しの手順
+
+`~/models/Anima` に置くもの: 公式の `split_files` (`diffusion_models/anima-turbo-v1.1.safetensors`、`text_encoders/qwen_3_06b_base.safetensors`) と、circlestone-labs/Anima-Base-v1.0-Diffusers の設定、トークナイザー、VAE (`diffusers/{tokenizer,t5_tokenizer,text_encoder,transformer,vae,text_conditioner,scheduler}`、VAE は diffusers の名前の `diffusion_pytorch_model.safetensors`)。
+
+```bash
+python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2 --size 1024   # 約 5 分
+go run ./cmd/hwnpu-image -model ~/models/anima-turbo-1024.amd-npu2 -prompt "..." -seed 1 -o out.png
+```
+
+確かめ方: `--check` で各グラフに乱数の入力と IRON の参照の出力を書き、`go run ./tools/amd/irongraph DIR` で NPU と比べる。`--random` は乱数の重み (チェックポイントの形だけ使う)。全体は `tools/ref/ref_anima.py` (diffusers で CPU) の `noise` を `-noise` に、`-dump` と `-latents` で条件づけ、各ステップの速度、最後の潜在を書いて比べる。
+
+### 11.5 残り
+
+- 速さ: 自己注意 (head_dim 128 で MHA の B_q が 64 まで) が DiT の 6 割。512 × 512 なら DiT は約 4 分の 1
+- CFG (負のプロンプト) は 1 ステップに DiT が 2 回で、Turbo でない Anima (30〜50 ステップ、CFG 4〜5) は 1 枚 10 分を超える見込み
+- ComfyUI のノードからの呼び出し (同じグラフを持つサーバー) は未実装
+- DiT をホストステップで分けると止まる原因
