@@ -283,6 +283,7 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	iron.ShareExport(c.IRON, func(f string, a ...any) { logf("  "+f, a...) })
 	m, err := iron.Open(ctx, dev, c.IRON, func(f string, a ...any) { logf("  "+f, a...) })
 	if err != nil {
 		dev.Close()

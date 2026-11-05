@@ -132,6 +132,8 @@ go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.mm.amd-npu2 -listen 127.0.
 
 NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` と `hwnpu-agent` は、`-iron` のモデルを要求が `-idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`-idle 0` で下ろしません。
 
+同じモデルの書き出しを複数置くと (文だけと画像と音声つき、4 ビットと bf16 など)、同じファイルを持ちます (Gemma 4 E2B なら `ple.bin` の 4.4 GiB など)。モデルを置くディスクが Btrfs や XFS (reflink)、Windows の ReFS や Dev Drive のように写しを共有できるファイルシステムなら、hwnpu は書き出しを最初に読むときに、隣の書き出しと同じバイトのファイルとファイルの先頭をその写し (reflink) に置き換え、ディスクを 1 つ分しか使いません (Gemma 4 E2B の 2 つで 15.2 → 8.2 GiB。普通のファイルのまま)。ext4 と NTFS では何もしません ([docs/design.md](docs/design.md) の 16.79。Windows は実機では未確認)。
+
 Preferred Networks の翻訳モデル PLaMo 3 Translate 2B (pfnet/plamo-3-translate-2b) も、hwnpu の `tools/amd/iron_plamo3.py` で書き出します (`plamo3`)。hwnpu-chat は打った文を訳し (日本語を含む文は英語へ、ほかは日本語へ。`-to LANG` で訳す先、`-from` で原文の言語、`-form plain|polite` で日本語の文体)、それまでの対訳を履歴としてプロンプトに残します。OpenAI 互換 API では `chat_template_kwargs` の `target_lang`、`source_lang`、`form`、`context`、`glossary` (vLLM と同じ) で指定し、system メッセージは参考文脈 (`context`) になります。`--q4` で MLP と出力の行列を 4 ビット、注意を 8 ビット、埋め込みをホストに置くと、固定されるメモリが 5.96 から 2.16 GiB に、デコードが 1 秒に 7.3 から 11.6 トークンになり (Ryzen AI 9 365、位置 2600 付近)、訳文は 44 文中 36 文が bf16 と同じで、残りも正しい言い換えでした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。bf16 のままなら `--q4` を外します (デコードは 1 秒に 7.7 トークン、位置 8191 で 6.6。1024 トークンの塊は位置 0 から 2.2 秒、7168 から 10.5 秒)。Gemma 4 と LFM3 の書き出しにも `--q4` があります。
 
 ```bash

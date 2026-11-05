@@ -40,7 +40,7 @@ func TestShareWeights(t *testing.T) {
 		}
 		return !os.SameFile(fi, before[f])
 	}
-	if !cache.CanClone() {
+	if !cache.CanCloneIn(dir) {
 		t.Skip("the file system cannot clone")
 	}
 	// the first of each set (in name order) stays, the others become its clones
