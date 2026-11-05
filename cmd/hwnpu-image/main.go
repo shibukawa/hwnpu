@@ -31,6 +31,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
 
 func defaultModel() string {
@@ -88,6 +89,9 @@ func main() {
 		}
 		defer d.Close()
 		dev = d
+	}
+	if !anima.IsProgramExport(*model) {
+		iron.ShareExport(*model, logf)
 	}
 	p, err := anima.Open(ctx, dev, *model)
 	if err != nil {
