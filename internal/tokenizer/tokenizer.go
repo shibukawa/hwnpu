@@ -49,6 +49,8 @@ const (
 	// qwen35 is Qwen3.5's: combining marks (\p{M}) count as letters, and numbers are split into
 	// single digits.
 	qwen35
+	// qwen2 is Qwen2's and Qwen3's: GPT-4's with numbers split into single digits.
+	qwen2
 )
 
 // The pre-tokenizer patterns Load accepts. They are applied by split, not by a regular expression:
@@ -56,6 +58,7 @@ const (
 var patterns = map[string]style{
 	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`:        gpt4,
 	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`: qwen35,
+	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`:             qwen2,
 }
 
 type file struct {
@@ -125,7 +128,7 @@ func parse(raw []byte) (*Tokenizer, error) {
 	if pt.Type != "Sequence" || len(pt.Pretokenizers) != 2 ||
 		pt.Pretokenizers[0].Type != "Split" || pt.Pretokenizers[0].Behavior != "Isolated" || pt.Pretokenizers[0].Invert || !knownPattern(pt.Pretokenizers[0].Pattern.Regex) ||
 		pt.Pretokenizers[1].Type != "ByteLevel" || pt.Pretokenizers[1].AddPrefix || pt.Pretokenizers[1].UseRegex {
-		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4 or Qwen3.5 pattern, isolated) then ByteLevel without prefix space")
+		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4, Qwen3 or Qwen3.5 pattern, isolated) then ByteLevel without prefix space")
 	}
 	t := newTokenizer(&f)
 	t.style, t.nfc = patterns[pt.Pretokenizers[0].Pattern.Regex], nfc
@@ -375,6 +378,9 @@ func match(rs []rune, i int, st style) int {
 	digits := 3
 	if st == qwen35 {
 		letter = func(r rune) bool { return isL(r) || isM(r) }
+		digits = 1
+	}
+	if st == qwen2 {
 		digits = 1
 	}
 	rest := len(rs) - i
