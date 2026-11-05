@@ -44,6 +44,7 @@ func main() {
 	save := flag.Bool("save", false, "write each output as check/got_<name>.bin")
 	variant := flag.Int("variant", 0, "the bank variant to run (the check is variant 0's)")
 	tol := flag.Float64("tol", 0.03, "tolerance of the largest error relative to the output's largest magnitude")
+	pin := flag.Float64("pin", 0, "GiB of device buffers to allocate, fill and keep before loading the graph (a test of large pinned memory)")
 	flag.Parse()
 	dir := flag.Arg(0)
 	ctx := context.Background()
@@ -52,6 +53,24 @@ func main() {
 		log.Fatal(err)
 	}
 	defer dev.Close()
+	for left := int(*pin * (1 << 30)); left > 0; {
+		n := min(left, 7<<29)
+		b, err := dev.AllocBuffer(n)
+		if err != nil {
+			log.Fatalf("pin: after %.1f GiB: %v", *pin-float64(left)/(1<<30), err)
+		}
+		defer b.Close()
+		for i := range b.Bytes() {
+			b.Bytes()[i] = byte(i)
+		}
+		if err := b.SyncToDevice(0, b.Size()); err != nil {
+			log.Fatal(err)
+		}
+		left -= n
+	}
+	if *pin > 0 {
+		fmt.Printf("pinned %.1f GiB\n", *pin)
+	}
 	t0 := time.Now()
 	g, err := iron.OpenGraph(ctx, dev, dir)
 	if err != nil {
