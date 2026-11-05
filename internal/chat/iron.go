@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
@@ -292,7 +293,8 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		dev.Close()
 		return nil, fmt.Errorf("chat: %s has ring caches (or is an export from before recurrent states were listed), which the chat engine cannot go back in; export it again, with a prompt chunk that keeps every cache whole (a chunk of 1024 or more at 4096 tokens)", c.IRON)
 	}
-	e := &Engine{Stops: map[int32]bool{}, emb: map[int32][]float32{}, nextID: -1, log: c.Log, dev: dev, ir: m}
+	e := &Engine{Stops: map[int32]bool{}, emb: map[int32][]float32{}, nextID: -1, log: c.Log, dev: dev, ir: m,
+		idle: c.Idle, devName: llm.DeviceName(dev)}
 	e.Name = name
 	fail := func(err error) (*Engine, error) {
 		e.Close()
@@ -339,6 +341,7 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		}
 	}
 	logf("ready: context %d tokens, up to %d tokens per call", e.Context(), e.sess.Q())
+	e.touch() // released after Config.Idle even when no request comes
 	return e, nil
 }
 
