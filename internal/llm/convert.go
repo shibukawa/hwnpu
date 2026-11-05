@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
@@ -129,9 +130,9 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 		return "", err
 	}
 	if tiered {
-		fmt.Fprintf(log, "%s: %d tiers of %d parts for %s; a sequence starts on the shortest cache and moves up\n", base+".parts.json", len(caches), len(plan), target.Name)
+		fmt.Fprintf(log, "%s: %d tiers of %d parts for %s; a sequence starts on the shortest cache and moves up\n", filepath.Base(base+".parts.json"), len(caches), len(plan), target.Name)
 	} else {
-		fmt.Fprintf(log, "%s: %d parts for %s, run in this order with each y bound as the next x\n", base+".parts.json", len(plan), target.Name)
+		fmt.Fprintf(log, "%s: %d parts for %s, run in this order with each y bound as the next x\n", filepath.Base(base+".parts.json"), len(plan), target.Name)
 	}
 	return base + ".parts.json", nil
 }
@@ -188,6 +189,7 @@ func checkIntelFormats(o Options) error {
 // it (shareWeights).
 func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log io.Writer) (PartRecord, error) {
 	start := time.Now()
+	stop := console.Spin(log, filepath.Base(path)) // a part takes up to a minute: show it goes on
 	rec, err := WritePart(path, model, w, opts, func(pkg *mlpackage.Package) {
 		pkg.Description = fmt.Sprintf("%s from %s, seq %d, %s (hwnpu-convert)", a.Title, w.Source(), opts.Seq, opts.Format)
 		if opts.Start > 0 || opts.Layers > 0 {
@@ -201,6 +203,8 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 		}
 	})
 	if err != nil {
+		stop()
+		io.WriteString(log, "\n")
 		return rec, err
 	}
 	shareWeights(path)
@@ -221,7 +225,8 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 	if len(inputs) > 4 {
 		inputs = append(inputs[:2], fmt.Sprintf("and %d more", len(inputs)-2))
 	}
-	fmt.Fprintf(log, "%s: input %s, output %s %v, %.2f GiB, %.0fs\n", path, strings.Join(inputs, ", "), rec.Output.Name, rec.Output.Shape, float64(size)/(1<<30), time.Since(start).Seconds())
+	stop()
+	fmt.Fprintf(log, ": input %s, output %s %v, %.2f GiB, %.0fs\n", strings.Join(inputs, ", "), rec.Output.Name, rec.Output.Shape, float64(size)/(1<<30), time.Since(start).Seconds())
 	return rec, nil
 }
 
@@ -312,7 +317,7 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 		return "", err
 	}
 	fmt.Fprintf(log, "%s: %d parts split at the attention of layers %v, which the host runs over its cache of up to %d tokens in chunks of %d (%s)\n",
-		base+".parts.json", len(plan), pm.PagedLayers(), opts.Cache, opts.Paged, apath)
+		filepath.Base(base+".parts.json"), len(plan), pm.PagedLayers(), opts.Cache, opts.Paged, filepath.Base(apath))
 	return base + ".parts.json", nil
 }
 

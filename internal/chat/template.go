@@ -183,6 +183,8 @@ func TemplateFor(arch string) (Template, error) {
 		return Gemma4, nil
 	case "qwen35":
 		return Qwen35, nil
+	case "plamo3":
+		return Plamo3, nil
 	}
 	return nil, fmt.Errorf("chat: no chat format for %s", arch)
 }
@@ -195,6 +197,9 @@ type Options struct {
 	// KeepThinking keeps the thinking of assistant messages before the last user message
 	// (the template's preserve_thinking).
 	KeepThinking bool
+	// Translation is what a translation model (PLaMo 3's) is asked besides the texts; nil: the
+	// target language by the text, the rest the model's choice. Other models ignore it.
+	Translation *Translation
 }
 
 // Render writes the conversation as the prompt of the next assistant message in LFM3's format.
