@@ -135,6 +135,18 @@ printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/root/usr/lib/x86_64-linux-gnu exec %s/root
 export AIE_XCLBINUTIL=~/xrt-debs/xclbinutil
 ```
 
+XRT をまったく使わない方法もあります。hwnpu には、aiecc が `xclbinutil` に渡す引数を受け付ける代わりの道具 `hwnpu-xclbin` があります。hwnpu のチェックアウト（手順 3）でビルドし、aiecc に渡します。
+
+```bash
+go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-xclbin
+```
+
+```bash
+export AIE_XCLBINUTIL=~/.local/bin/hwnpu-xclbin
+```
+
+この xclbin には hwnpu が読むもの（カーネルの情報、計算ユニット、AIE のパーティションと PDI）だけが入り、XRT 向けではありません。IRON の演算子がビルドする xclbin もまとめられます（Strix Point の GEMV で確認。NPU1 は未確認）。
+
 xclbin と命令列だけをビルドします。Phoenix と Hawk Point では `-d npu` を、Strix Point 以降では `-d npu2` を指定します。
 
 ```bash
@@ -182,6 +194,8 @@ go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power low -o low.md
 ```bash
 go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o performance.md
 ```
+
+Strix Point でのデータ型ごとの性能と DMA の帯域、それを測ったスクリプトは [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) と [tools/iron](tools/iron/README.md) にあります。
 
 ## 5. 自分のカーネルを使う
 

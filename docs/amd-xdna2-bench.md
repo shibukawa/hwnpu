@@ -2,7 +2,7 @@
 
 測定: 2026-11-02〜03。Ryzen AI 9 365 (Strix Point、npu4、8 列 × 4 行 = 32 コア)、Ubuntu 26.04.1、カーネル 7.0.0-42 同梱の `amdxdna` 0.7.0、ファームウェア 1.1.2.64。設計は mlir-aie v1.4.4 のサンプルを Peano (llvm-aie 22.0.0.2026092101) でビルドし、`hwnpu-xclbin` でまとめ、hwnpu の公開 API (`Kernel` → `Load` → `Run`) で動かした。全ての結果は IRON 自身の参照実装 (`kernels.mm_ref` など) と許容誤差で照合した。
 
-> この文書は数値の記録だけを残す。測った道具 (`tools/iron` のスクリプトと Go の実行器 `tools/iron/ironbench`、xclbinutil の代わりの `cmd/hwnpu-xclbin`) は main に入れず、PR #32 のブランチ `claude/ryzen-ai-linux-support-9d1f7b` (コミット `29209c3`) にだけある。以下に出てくる `tools/iron/…` はそのブランチのファイル。その後 main は IRON の演算子と full ELF に移り (design.md 16.45 以降)、4 ビットの生成は hwnpu の `QGEMV` (`tools/amd/iron_q4.py`、design.md 16.73) になった。ここの数値は、その方式でも変わらないハードウェアの上限 (データ型、DMA の帯域、1 回の実行の固定費) の参考として残す。
+> 測った道具は [tools/iron](../tools/iron/README.md) (スクリプトと Go の実行器 `tools/iron/ironbench`) と、xclbinutil の代わりの `cmd/hwnpu-xclbin`。2026-11-06 に、IRON が固定した mlir-aie (1.4.5.dev119) でも `dma` と `gemm` が動き、`hwnpu-xclbin` でまとめた IRON の GEMV の xclbin が実機で合格することを確かめた。その後 main は IRON の演算子と full ELF に移り (design.md 16.45 以降)、4 ビットの生成は hwnpu の `QGEMV` (`tools/amd/iron_q4.py`、design.md 16.73) になった。ここの数値は、その方式でも変わらないハードウェアの上限 (データ型、DMA の帯域、1 回の実行の固定費) の参考として残す。
 
 ## 1. 要約
 
