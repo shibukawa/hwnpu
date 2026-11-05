@@ -57,6 +57,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -100,6 +101,7 @@ func main() {
 	from := flag.String("from", "", "the language of the texts a translation model translates (default: the model finds it) (chat)")
 	form := flag.String("form", "", "polite or plain: the style of a translation into Japanese (chat)")
 	ironDir := flag.String("iron", "", "run a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), this directory, in place of -use")
+	idle := flag.Duration("idle", 5*time.Minute, "with -iron, give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy")
 	flag.Parse()
 	if flag.NArg() > 0 && !*withOpenCode {
 		flag.Usage()
@@ -171,6 +173,7 @@ func main() {
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, console.Log(os.Stderr)
 			c.PromptDir = chat.PromptStore(*promptDir, *cacheDir)
 			c.Dense = !*sparse
+			c.Idle = *idle
 			if *vis != "" {
 				c.Vision = strings.Split(*vis, ",")
 			}

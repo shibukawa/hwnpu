@@ -44,6 +44,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/agent"
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -85,6 +86,7 @@ func main() {
 	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
 	dump := flag.String("dump", "", "write each request, its prompt and the generated text to this directory")
 	ironDir := flag.String("iron", "", "run a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), this directory, in place of -use")
+	idle := flag.Duration("idle", 5*time.Minute, "with -iron, give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy")
 	flag.Parse()
 	task := strings.TrimSpace(strings.Join(flag.Args(), " "))
 	tiers, err := chat.Tiers(*tier)
@@ -129,7 +131,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	var c chat.Config
 	if *ironDir != "" {
-		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: console.Log(os.Stderr), PromptDir: chat.PromptStore(*promptDir, *cacheDir)}
+		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: console.Log(os.Stderr), PromptDir: chat.PromptStore(*promptDir, *cacheDir), Idle: *idle}
 	} else {
 		m, err := chat.Resolve(ctx, *use, *dir, console.Log(os.Stderr))
 		if err != nil {

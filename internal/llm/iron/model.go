@@ -17,6 +17,9 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
 
+// errReleased is a call to a model that Release left without its device memory.
+var errReleased = errors.New("iron: the model is released (Reload it first)")
+
 // ddrAperture is the offset the NPU's DMA adds to a host address (IRON's APERTURE).
 const ddrAperture = 0x80000000
 
@@ -37,6 +40,8 @@ type Model struct {
 	vlProc  *lfm3vl.Processor // LFM3-VL's image processor, read on the first image
 	// hostTables are the tables kept on the host (HostTable), filled before each call
 	hostTables []*hostTable
+	logf       func(string, ...any)
+	released   bool // by Release: nothing on the device until Reload
 }
 
 type version struct {
@@ -62,57 +67,49 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 	if err != nil {
 		return nil, err
 	}
-	m := &Model{Manifest: man, dev: dev, banks: map[string]*hwnpu.Buffer{}, xclbins: map[string]*hwnpu.Program{}, dir: dir}
-	fail := func(err error) (*Model, error) {
+	m := &Model{Manifest: man, dir: dir, logf: logf}
+	if err := m.load(ctx, dev); err != nil {
 		m.Close()
 		return nil, err
 	}
+	if err := m.openHostTables(); err != nil {
+		m.Close()
+		return nil, err
+	}
+	return m, nil
+}
+
+// load allocates the arena's banks and the versions' buffers on dev, reads the weights into
+// them and loads the programs: what Open does, and Reload again after Release.
+func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
+	man, dir, logf := m.Manifest, m.dir, m.logf
+	m.dev, m.banks, m.xclbins, m.kv = dev, map[string]*hwnpu.Buffer{}, map[string]*hwnpu.Program{}, nil
 	for kind, b := range man.Banks {
 		buf, err := dev.AllocBuffer(b.Bytes)
 		if err != nil {
-			return fail(fmt.Errorf("iron: bank %s (%d MiB): %w", kind, b.Bytes>>20, err))
+			return fmt.Errorf("iron: bank %s (%d MiB): %w", kind, b.Bytes>>20, err)
 		}
 		m.banks[kind] = buf
 		if b.Image != "" {
 			if err := readInto(filepath.Join(dir, b.Image), buf.Bytes()); err != nil {
-				return fail(fmt.Errorf("iron: bank %s: %w", kind, err))
+				return fmt.Errorf("iron: bank %s: %w", kind, err)
 			}
 		}
 		if err := buf.SyncToDevice(0, buf.Size()); err != nil {
-			return fail(err)
+			return err
 		}
 		logf("bank %s: %d MiB", kind, b.Bytes>>20)
 	}
 	kr, err := dev.Kernel()
 	if err != nil {
-		return fail(err)
+		return err
 	}
 	for name, v := range man.Versions {
 		ver := &version{m: v, args: map[string]*hwnpu.Buffer{}}
-		if v.ELF != "" {
-			if ver.prog, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, v.ELF)}); err != nil {
-				return fail(fmt.Errorf("iron: %s: %w", name, err))
-			}
-		}
-		for _, a := range v.Arguments {
-			if _, ok := m.banks[a.Kind]; ok {
-				continue
-			}
-			buf, err := dev.AllocBuffer(max(a.Bytes, 4096))
-			if err != nil {
-				return fail(fmt.Errorf("iron: %s: argument %s: %w", name, a.Kind, err))
-			}
-			ver.args[a.Kind] = buf
-		}
-		if len(v.Steps) > 0 {
-			if err := m.loadSteps(ctx, kr, dir, ver); err != nil {
-				return fail(fmt.Errorf("iron: %s: %w", name, err))
-			}
-		}
 		switch name {
 		case "decode":
 			if v.ELF != "" && len(v.Kernels) != 1 {
-				return fail(fmt.Errorf("iron: the decode step has %d commands", len(v.Kernels)))
+				return fmt.Errorf("iron: the decode step has %d commands", len(v.Kernels))
 			}
 			m.decode = ver // its run is made once every program's PDIs are in the heap
 		case "prompt":
@@ -124,7 +121,27 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 		case "audio":
 			m.audio = ver
 		default:
-			return fail(fmt.Errorf("iron: unknown version %s", name))
+			return fmt.Errorf("iron: unknown version %s", name)
+		}
+		if v.ELF != "" {
+			if ver.prog, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(dir, v.ELF)}); err != nil {
+				return fmt.Errorf("iron: %s: %w", name, err)
+			}
+		}
+		for _, a := range v.Arguments {
+			if _, ok := m.banks[a.Kind]; ok {
+				continue
+			}
+			buf, err := dev.AllocBuffer(max(a.Bytes, 4096))
+			if err != nil {
+				return fmt.Errorf("iron: %s: argument %s: %w", name, a.Kind, err)
+			}
+			ver.args[a.Kind] = buf
+		}
+		if len(v.Steps) > 0 {
+			if err := m.loadSteps(ctx, kr, dir, ver); err != nil {
+				return fmt.Errorf("iron: %s: %w", name, err)
+			}
 		}
 		if len(v.Steps) > 0 {
 			logf("%s: %d steps (an xclbin per step)", name, len(v.Steps))
@@ -133,20 +150,70 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 		}
 	}
 	if m.decode == nil || m.prompt == nil {
-		return fail(errors.New("iron: the export needs a decode step and a prompt chunk"))
+		return errors.New("iron: the export needs a decode step and a prompt chunk")
 	}
 	if _, err := m.caches(); err != nil {
-		return fail(err)
-	}
-	if err := m.openHostTables(); err != nil {
-		return fail(err)
+		return err
 	}
 	if m.decode.m.ELF != "" {
 		if m.decode.run, err = m.newRun(m.decode, 0); err != nil {
-			return fail(err)
+			return err
 		}
 	}
-	return m, nil
+	m.released = false
+	return nil
+}
+
+// Release frees everything the model holds on the device (the banks are pinned host memory
+// that the process's resident size does not show: 1.8 to 9 GB for Gemma 4 E2B), keeping what
+// the host needs to answer about the model and to Reload it: the manifest, the host tables.
+// The caches and the states go with it, so a sequence starts again after Reload; one to come
+// back to is copied out first (ExportRows, StateAt). The model must not run until Reload.
+func (m *Model) Release() error {
+	var errs []error
+	for _, v := range m.versions() {
+		if v == nil {
+			continue
+		}
+		if v.run != nil {
+			errs = append(errs, v.run.Close())
+			v.run = nil
+		}
+		errs = append(errs, v.closeSteps()...)
+		for k, b := range v.args {
+			errs = append(errs, b.Close())
+			delete(v.args, k)
+		}
+		if v.prog != nil {
+			errs = append(errs, v.prog.Close())
+			v.prog = nil
+		}
+	}
+	for _, p := range m.xclbins {
+		errs = append(errs, p.Close())
+	}
+	for _, b := range m.banks {
+		errs = append(errs, b.Close())
+	}
+	m.xclbins, m.banks, m.kv, m.dev = nil, nil, nil, nil
+	m.released = true
+	return errors.Join(errs...)
+}
+
+// Released reports whether the model is released (Release) and not loaded again.
+func (m *Model) Released() bool { return m.released }
+
+// Reload loads the model released by Release onto dev again: the weights from the export, the
+// caches and states at zero.
+func (m *Model) Reload(ctx context.Context, dev *hwnpu.Device) error {
+	if !m.released {
+		return errors.New("iron: Reload of a model that is not released")
+	}
+	if err := m.load(ctx, dev); err != nil {
+		m.Release()
+		return err
+	}
+	return nil
 }
 
 func readInto(path string, dst []byte) error {
@@ -161,32 +228,13 @@ func readInto(path string, dst []byte) error {
 	return nil
 }
 
-// Close releases the device memory.
+// Close releases the device memory and the host tables.
 func (m *Model) Close() error {
 	m.closeHostTables()
-	var errs []error
-	for _, v := range m.versions() {
-		if v == nil {
-			continue
-		}
-		if v.run != nil {
-			errs = append(errs, v.run.Close())
-		}
-		errs = append(errs, v.closeSteps()...)
-		for _, b := range v.args {
-			errs = append(errs, b.Close())
-		}
-		if v.prog != nil {
-			errs = append(errs, v.prog.Close())
-		}
+	if m.released {
+		return nil
 	}
-	for _, p := range m.xclbins {
-		errs = append(errs, p.Close())
-	}
-	for _, b := range m.banks {
-		errs = append(errs, b.Close())
-	}
-	return errors.Join(errs...)
+	return m.Release()
 }
 
 func (m *Model) versions() []*version {
@@ -304,6 +352,9 @@ func (m *Model) logits(v *version) ([]float32, error) {
 
 // Step runs the decode step on token at position and returns the logits after it.
 func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32, error) {
+	if m.released {
+		return nil, errReleased
+	}
 	if position < 0 || position >= m.Manifest.Config.MaxSeqLen {
 		return nil, fmt.Errorf("iron: position %d outside the cache of %d", position, m.Manifest.Config.MaxSeqLen)
 	}
@@ -382,6 +433,9 @@ func (m *Model) PromptPlaced(ctx context.Context, ids []int32, start int, before
 }
 
 func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int, before []int32) ([]float32, error) {
+	if m.released {
+		return nil, errReleased
+	}
 	rows := len(ids)
 	values, err := m.complete(v, callValues(ids[rows-1], start+rows-1, start, rows))
 	if err != nil {
@@ -577,6 +631,9 @@ func (m *Model) dropDecode() {
 
 // runTower runs every command of a tower version on its input, with the grid's words at row.
 func (m *Model) runTower(ctx context.Context, v *version, input string, data []byte, own map[string]int64, row int) error {
+	if m.released {
+		return errReleased
+	}
 	values, err := m.complete(v, own)
 	if err != nil {
 		return err

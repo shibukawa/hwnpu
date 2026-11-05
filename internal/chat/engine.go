@@ -65,6 +65,9 @@ type Config struct {
 	// place of Packages: its manifest, ELFs and arena. Tokenizer defaults to the
 	// tokenizer.json in it.
 	IRON string
+	// Idle, when above zero, releases an IRON model's device memory after this long without a
+	// request, and loads it again for the next one (idle.go).
+	Idle time.Duration
 	// Dense reads the whole cache of a model split at its attention on every call, instead of
 	// the two-level attention (decode.Sparse) past the length where it costs fewer calls, about
 	// 48K tokens with chunks of 8192.
@@ -112,6 +115,13 @@ type Engine struct {
 	ir    *iron.Model // the model of an IRON export (Config.IRON); nil for none
 	store *store      // prompts kept on disk (Config.PromptDir); nil for none
 	log   io.Writer   // Config.Log
+
+	// idle is how long without a request before an IRON model's device memory is released
+	// (Config.Idle, idle.go); lastUsed is the last request's end, idleTimer the clock.
+	idle      time.Duration
+	lastUsed  time.Time
+	idleTimer *time.Timer
+	devName   string // the device's name, kept while the device is closed (idle.go)
 
 	mu     sync.Mutex
 	closed bool // by Close: the programs and the weights are gone
@@ -434,7 +444,7 @@ func compileNote(dev *hwnpu.Device) string {
 // DeviceName is the NPU the model runs on, as logs call it (llm.DeviceName).
 func (e *Engine) DeviceName() string {
 	if e.dev == nil {
-		return ""
+		return e.devName
 	}
 	return llm.DeviceName(e.dev)
 }
@@ -564,6 +574,10 @@ func (e *Engine) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.closed = true
+	if e.idleTimer != nil {
+		e.idleTimer.Stop()
+		e.idleTimer = nil
+	}
 	if e.vis != nil {
 		e.vis.Close()
 		e.vis = nil
@@ -678,6 +692,12 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	if e.closed {
 		return st, ErrClosed
 	}
+	if e.ir != nil && e.ir.Released() {
+		if err := e.reload(ctx); err != nil {
+			return st, err
+		}
+	}
+	defer e.touch()
 	st.Prompt = len(r.Prompt)
 	if len(r.Prompt) == 0 {
 		return st, errors.New("chat: empty prompt")
