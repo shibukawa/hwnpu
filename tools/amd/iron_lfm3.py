@@ -19,9 +19,15 @@ LFM3's layers are of three kinds (``layer_types``):
 Every layer is sandwich-normed (``use_sandwich_norm``): its block's input and
 output, and the feed-forward's (``w1``, ``w3``, ``w2``: SwiGLU). The final
 norm is ``embedding_norm``; the head is the embedding.
+
+With ``install_q4`` (``iron_export_lm.py lfm3 --q4``) the projections are in iron_q4's
+formats, by part: the feed-forward's in q4nx, the attention's and the convolution's in q8,
+the head in q4nx. The head is tied to the token embeddings, whose rows then go to the host
+(``embed.bin``, iron_hostple's ``hwnpu_embed_rows``, as Gemma 4's with ``--q4``).
 """
 
 import dataclasses
+import functools
 
 import numpy as np
 
@@ -38,7 +44,30 @@ from iron.lm import (
     Rope,
     SandwichLayer,
 )
+from iron.operators.copy import Copy
 from iron.operators.sigmoid import Sigmoid
+from ml_dtypes import bfloat16
+
+# By part of the model (mlp, attn, conv, head), its weights' format: iron_q4's "q4" (q4nx) or
+# "q8", or "bf16". Empty: all bf16, IRON's own linear.
+QUANT: dict[str, str] = {}
+
+
+def install_q4(mlp: str = "q4", attn: str = "q8", conv: str = "q8", head: str = "q4") -> None:
+    """Build LFM3 (and the LFM3-VL, Audio and Omni text models) with its projections in these
+    formats ("q4", "q8" or "bf16"), F.linear running iron_q4's on them."""
+    import iron_hostple
+    import iron_q4
+    from iron.common.image import packaging
+
+    fmts = dict(mlp=mlp, attn=attn, conv=conv, head=head)
+    for part, fmt in fmts.items():
+        if fmt not in ("q4", "q8", "bf16"):
+            raise ValueError(f"{part} in {fmt}: q4, q8 or bf16")
+    iron_q4.install_linear()
+    QUANT.update(fmts)
+    # Without the gather of the embeddings, a prompt chunk's commands would merge (iron_hostple).
+    packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, iron_hostple.SCRATCHPAD_WORDS)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -190,6 +219,63 @@ class Lfm3(CausalLM):
                 layer.rope = rope
             elif c.kind(i) == "conv":
                 layer.rope = None
+        self.embed_rows = None
+        if QUANT:
+            self.quantize(QUANT)
+
+    def quantize(self, fmts: dict) -> None:
+        """Put the loaded weights in ``fmts``' formats (``install_q4``)."""
+        import iron_hostple
+        import iron_q4
+
+        def q(w, fmt):
+            return iron_q4.q_param(np.asarray(w, np.float32), fmt)
+
+        for layer in self.layers:
+            if fmts["mlp"] != "bf16":
+                for lin in (layer.mlp.gate_proj, layer.mlp.up_proj, layer.mlp.down_proj):
+                    lin.weight = q(lin.weight, fmts["mlp"])
+            if layer.conv is not None:
+                conv, fmt = layer.conv, fmts["conv"]
+                if fmt != "bf16":
+                    # in_proj one weight: iron_q4's Linear.split cuts it into B, C and x
+                    for lin in (conv.in_proj, conv.out_proj):
+                        lin.weight = q(lin.weight, fmt)
+            elif fmts["attn"] != "bf16":
+                a, fmt = layer.self_attn, fmts["attn"]
+                for lin in (a.q_proj, a.k_proj, a.v_proj, a.o_proj):
+                    lin.weight = q(lin.weight, fmt)
+                # the gate's rows, each head's repeated over its columns: as big as o_proj
+                a.gate = q(a.gate, fmt)
+        if fmts["head"] == "bf16":
+            return
+        # The head is tied to the embeddings: its own copy quantized, the embeddings to the host.
+        c = self.config
+        embed = np.asarray(self.model.embed_tokens.weight)
+        iron_hostple._TABLES.setdefault(id(self), {})[iron_hostple.EMBED] = embed.astype(bfloat16)
+        self.lm_head.weight = q(embed, fmts["head"])
+        self.model.embed_tokens.weight = iron.param(np.zeros((1, c.hidden_size), bfloat16))  # unread
+        self.embed_rows = iron.state((c.prefill_chunk, c.hidden_size), bfloat16, name=iron_hostple.EMBED)
+
+    def lookup(self, ids):
+        # From embed_rows, which the host fills with the call's tokens' rows in order.
+        if self.embed_rows is None:
+            return super().lookup(ids)
+        shape = getattr(ids, "shape", ())
+        if len(shape) == 0:
+            rows = self.embed_rows[:1]
+        else:
+            bound = getattr(ids, "valid", None) or {}
+            rows = self.embed_rows[: bound[0]] if 0 in bound else self.embed_rows[: shape[0]]
+        return Copy.step(rows)
+
+    @functools.wraps(CausalLM.body)
+    def body(self, ids=None, **values):
+        if ids is not None and self.embed_rows is not None:
+            # A version's input must be read, and no table is left to gather from: a copy of
+            # the whole ids (as iron_hostple's Gemma 4), which nothing reads.
+            Copy.step(ids, dtype=np.int32)
+        return super().body(ids, **values)
 
 
 if __name__ == "__main__":
