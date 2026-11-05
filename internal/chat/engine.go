@@ -16,6 +16,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/audio"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
@@ -550,31 +551,9 @@ func LookupDraft(seq []int32, k int) []int32 {
 	return nil
 }
 
-// dots writes prefix and then a dot every two seconds, until the returned function is called.
-func dots(w io.Writer, prefix string) (stop func()) {
-	if w == nil {
-		return func() {}
-	}
-	io.WriteString(w, prefix)
-	done, exited := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(exited)
-		t := time.NewTicker(2 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				io.WriteString(w, ".")
-			}
-		}
-	}()
-	return func() {
-		close(done)
-		<-exited
-	}
-}
+// dots shows that loading goes on after prefix: a spinner and the seconds on a terminal
+// (console.Spin), until stop leaves the prefix for the line's end.
+func dots(w io.Writer, prefix string) (stop func()) { return console.Spin(w, prefix) }
 
 // ErrClosed is returned for a request to a model that Close released.
 var ErrClosed = errors.New("chat: the model is closed")
