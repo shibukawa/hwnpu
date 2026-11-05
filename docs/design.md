@@ -2036,3 +2036,16 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - 1024 × 1024、8 ステップで約 70 秒 (DiT 1 ステップ 7.2 秒、VAE 7 秒)。diffusers の fp32 の CPU (9 分 17 秒) と同じノイズで、潜在のコサイン 0.966 (CPU の bf16 は 0.980)。行列積の `MEDIUM` (bfp16) がテキストで誤差を広げていたので、テキストだけ `HIGHEST` にした (0.938 → 0.966、時間は変わらず)
 - トークナイザー: Qwen3 の前分割 (数字を 1 桁ずつ) と、T5 の Unigram (sentencepiece の precompiled charsmap、Viterbi) を Go に足した。transformers と 11 の文 (全角、アクセント、日本語、絵文字) で一致
 - 詳細、測定、書き出しの手順は [amd-npu-models.md](amd-npu-models.md) の 11 節
+
+### 16.69 画像生成 Anima を Neural Engine と Intel の NPU にも (`hwnpu-image -convert`) — 2026-11-05
+
+- AMD の IRON のグラフ (16.68) と同じ部品を、MIL の 1 つの記述 (`internal/imagegen/anima/mil`) から Core ML のパッケージ (`-backend coreml`) と OpenVINO IR (`-backend intel`、`ovlower`) に書く。テキスト、DiT の時刻とパッチと 4 ブロックずつ 7 つと最後の層、VAE の 10 段。変換は Go だけで、256 × 256 で 12 秒 (重み fp16 で 5.1 GB)
+- 実行は `runner.Program` (`internal/imagegen/anima/programs.go`)。パイプラインは IRON と共通にし、部品の実行だけを `engine` で分けた。AMD の出力はこの作り替えの前とビット単位で同じ
+- fp16 の手当て (実測: DiT の残差は 12〜20 ブロックで最大 2.7e5、ゲートつきの MLP の出力 2.3e5、ゲート 4682、Qwen3 の残差 7e3):
+  - DiT の残差を 1/32 で持つ (パッチの埋め込みとゲートを 1/32 に)。正規化は入力の大きさに依らないので、残りはそのまま
+  - 幅の RMS norm と LayerNorm は、行ごとの最大の絶対値で割ってからする (`maxScaled`、`reduce_max` と `real_div`)。固定の倍率 (`RMSNorm` の inScale) では、大きな値のない行の 2 乗が fp16 の非正規数になって精度が落ちる
+  - VAE の値は 8 未満なので手当ては要らない
+- 注意は 1024 クエリずつ (`-qchunk`)。VAE の中段は 1 ヘッド 384 次元、16384 画素
+- CPU のインタプリタに 2 次元の `conv` を足した (`milcpu`)。runner の CPU の実行に `HWNPU_CPU_F16` (演算ごとに fp16 に丸める) を足した
+- 確かめたこと (256 × 256、8 ステップ、diffusers の fp32 と同じノイズ): Core ML を CPU のインタプリタで、潜在のコサイン 0.99985、画像の PSNR 37.4 dB (fp16 に丸めて 0.99899、32.0 dB)。OpenVINO IR を OpenVINO 2026.4 の CPU で 0.99985、37.9 dB (f16 の推論で 0.99478、25.5 dB)。条件づけはコサイン 0.999999、ステップ 0 の速度は 0.999997
+- 実機 (M3、Core Ultra) では未確認。手順と見るところは [handoff-anima-mac-intel.md](handoff-anima-mac-intel.md)

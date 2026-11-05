@@ -1,13 +1,17 @@
-// hwnpu-image draws a picture from a prompt with Anima (circlestone-labs/Anima) on AMD's NPU:
+// hwnpu-image draws a picture from a prompt with Anima (circlestone-labs/Anima) on an NPU:
 // Qwen3-0.6B and Anima's LLM adapter read the prompt, the Cosmos-Predict2 2B DiT denoises the
-// latents in flow-matching Euler steps, and the Qwen-Image VAE decodes them, all as IRON graphs
-// on the NPU. The host tokenizes, looks up the embedding rows, patches the latents and writes
-// the PNG.
+// latents in flow-matching Euler steps, and the Qwen-Image VAE decodes them, all on the NPU. The
+// host tokenizes, looks up the embedding rows, patches the latents and writes the PNG.
 //
 //	hwnpu-image -prompt "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
 //
-// -model is an export of tools/amd/iron_anima.py (see docs/amd-npu-models.md), for one image
-// size. Anima-Turbo wants 8 to 12 steps and no classifier-free guidance; this runs no negative
+// -model is an export for one image size: on AMD's NPU, of tools/amd/iron_anima.py (see
+// docs/amd-npu-models.md); on Apple's Neural Engine and Intel's NPU, of -convert, which writes
+// Core ML packages (-backend coreml) or OpenVINO IR (-backend intel) in Go from the checkpoints:
+//
+//	hwnpu-image -convert ~/models/Anima -backend coreml -size 1024 -model ~/models/anima-turbo-1024.coreml
+//
+// -cpu runs a Core ML export with the CPU interpreter (slow; for checking without the NPU). Anima-Turbo wants 8 to 12 steps and no classifier-free guidance; this runs no negative
 // prompt. Anima reads Danbooru tags and natural language; its card recommends the prefix
 // "masterpiece, best quality, score_7, safe, ".
 package main
@@ -43,8 +47,27 @@ func main() {
 	seed := flag.Uint64("seed", 0, "the noise's seed (0: from the time)")
 	noise := flag.String("noise", "", "the initial latents as raw float32 (16, H/8, W/8), in place of the seed's")
 	latents := flag.String("latents", "", "also write the final latents as raw float32 here")
+	convert := flag.String("convert", "", "convert the Anima directory (diffusion_models/, text_encoders/, diffusers/) into -model and exit")
+	backend := flag.String("backend", "coreml", "with -convert: coreml (Apple's Neural Engine) or intel (Intel's NPU)")
+	size := flag.Int("size", 1024, "with -convert: the image's width and height in pixels, a multiple of 16")
+	dit := flag.String("dit", "anima-turbo-v1.1.safetensors", "with -convert: the diffusion model in diffusion_models/")
+	textFormat := flag.String("text-format", "fp16", "with -convert: the text encoder's weights (fp16; lut8, lut6 on Core ML; int8 on Intel)")
+	ditFormat := flag.String("dit-format", "fp16", "with -convert: the DiT's weights (fp16; lut8, lut6 on Core ML; int8, int4 on Intel)")
+	group := flag.Int("group", 4, "with -convert: the DiT's blocks a program holds")
+	qchunk := flag.Int("qchunk", 1024, "with -convert: the queries an attention scores at a time")
+	cpu := flag.Bool("cpu", false, "run a Core ML export with the CPU interpreter instead of the NPU")
 	dump := flag.String("dump", "", "a directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py")
 	flag.Parse()
+	if *convert != "" {
+		o := anima.ConvertOptions{Backend: *backend, Width: *size, Height: *size, Dit: *dit,
+			TextFormat: *textFormat, DitFormat: *ditFormat, Group: *group, QChunk: *qchunk}
+		t0 := time.Now()
+		if err := anima.Convert(*convert, *model, o, os.Stderr); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Fprintf(os.Stderr, "%s: converted in %.0f s\n", *model, time.Since(t0).Seconds())
+		return
+	}
 	if *prompt == "" {
 		log.Fatal("hwnpu-image: -prompt is required")
 	}
@@ -53,11 +76,19 @@ func main() {
 	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 
 	t0 := time.Now()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-	if err != nil {
-		log.Fatal(err)
+	var dev *hwnpu.Device
+	if !*cpu {
+		var opts []hwnpu.Option
+		if !anima.IsProgramExport(*model) {
+			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD)) // IRON graphs
+		}
+		d, err := hwnpu.Open(ctx, opts...)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer d.Close()
+		dev = d
 	}
-	defer dev.Close()
 	p, err := anima.Open(ctx, dev, *model)
 	if err != nil {
 		log.Fatal(err)

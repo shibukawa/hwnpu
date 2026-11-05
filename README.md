@@ -149,6 +149,13 @@ go run ./cmd/hwnpu-image -model ~/models/anima-turbo-1024.amd-npu2 -prompt "mast
 
 Ryzen AI 9 365 で、1024 × 1024 の 1 枚が 8 ステップで約 70 秒です (読み込み 4 秒、テキスト 0.5 秒、DiT 1 ステップ 7.2 秒、VAE 7 秒)。`~/models/Anima` の置き方と、精度の測定は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 11 節にあります。
 
+Mac の Neural Engine と Intel の NPU には、`-convert` が同じ部品を Go だけで Core ML のパッケージか OpenVINO IR に書きます (Python は要りません)。CPU のインタプリタと OpenVINO の CPU では参照と一致しますが、実機では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。
+
+```bash
+go run ./cmd/hwnpu-image -convert ~/models/Anima -backend coreml -size 1024 -model ~/models/anima-turbo-1024.coreml   # Intel: -backend intel
+go run ./cmd/hwnpu-image -model ~/models/anima-turbo-1024.coreml -prompt "..." -o out.png
+```
+
 ## Apple での注意
 
 - Core ML は「Neural Engine だけ」を指定できません。hwnpu は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません

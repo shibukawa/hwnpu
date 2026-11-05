@@ -257,7 +257,11 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		pad := r.ints("pad", 0, 0)
 		groups := r.int("groups", 1)
 		if r.err == nil {
-			out, r.err = conv1d(x, w, b, strides, dil, padType, pad, int(groups))
+			if len(x.shape) == 4 {
+				out, r.err = conv2d(x, w, b, strides, dil, padType, pad, int(groups))
+			} else {
+				out, r.err = conv1d(x, w, b, strides, dil, padType, pad, int(groups))
+			}
 		}
 	case "constexpr_lut_to_dense":
 		idx, lut := r.get("indices"), r.floats("lut")
@@ -963,6 +967,85 @@ func conv1d(x, w, bias *value, stride, dil []int32, padType string, pad []int32,
 		}
 	}
 	return out, nil
+}
+
+// conv2d is a grouped 2 D convolution of x (n, c_in, h, w) with weight (c_out, c_in/groups, kh,
+// kw), pad (top, bottom, left, right) for pad_type custom. The output channels run in parallel.
+func conv2d(x, w, bias *value, stride, dil []int32, padType string, pad []int32, groups int) (*value, error) {
+	if len(w.shape) != 4 {
+		return nil, fmt.Errorf("a 2 D convolution needs a weight of rank 4, got %v", w.shape)
+	}
+	n, cin, ih, iw := x.shape[0], x.shape[1], x.shape[2], x.shape[3]
+	cout, cg, kh, kw := w.shape[0], w.shape[1], w.shape[2], w.shape[3]
+	if groups <= 0 || cin != cg*groups || cout%groups != 0 {
+		return nil, fmt.Errorf("x %v, weight %v and groups %d do not match", x.shape, w.shape, groups)
+	}
+	at := func(v []int32, i int) int {
+		if len(v) == 1 {
+			return int(v[0])
+		}
+		return int(v[i])
+	}
+	sh, sw, dh, dw := at(stride, 0), at(stride, 1), at(dil, 0), at(dil, 1)
+	var pt, pb, pl, pr int
+	switch padType {
+	case "valid":
+	case "custom":
+		if len(pad) != 4 {
+			return nil, fmt.Errorf("%d pads for a 2 D convolution", len(pad))
+		}
+		pt, pb, pl, pr = int(pad[0]), int(pad[1]), int(pad[2]), int(pad[3])
+	default:
+		return nil, fmt.Errorf("pad_type %q is not supported", padType)
+	}
+	oh := (ih+pt+pb-dh*(kh-1)-1)/sh + 1
+	ow := (iw+pl+pr-dw*(kw-1)-1)/sw + 1
+	out := &value{shape: []int{n, cout, oh, ow}, f: make([]float32, n*cout*oh*ow)}
+	perGroup := cout / groups
+	parallel(cout, func(lo, hi int) {
+		for oc := lo; oc < hi; oc++ {
+			conv2dChannel(x, w, bias, out, oc, oc/perGroup, n, cin, cg, ih, iw, kh, kw, oh, ow, sh, sw, dh, dw, pt, pl)
+		}
+	})
+	return out, nil
+}
+
+// conv2dChannel computes output channel oc of conv2d, of group g.
+func conv2dChannel(x, w, bias, out *value, oc, g, n, cin, cg, ih, iw, kh, kw, oh, ow, sh, sw, dh, dw, pt, pl int) {
+	cout := out.shape[1]
+	{
+		for b := 0; b < n; b++ {
+			o := out.f[(b*cout+oc)*oh*ow:][:oh*ow]
+			if bias != nil {
+				for i := range o {
+					o[i] = bias.f[oc]
+				}
+			}
+			for ic := 0; ic < cg; ic++ {
+				xp := x.f[(b*cin+g*cg+ic)*ih*iw:][:ih*iw]
+				for ky := 0; ky < kh; ky++ {
+					for kx := 0; kx < kw; kx++ {
+						wv := w.f[((oc*cg+ic)*kh+ky)*kw+kx]
+						if wv == 0 {
+							continue
+						}
+						for y := 0; y < oh; y++ {
+							sy := y*sh + ky*dh - pt
+							if sy < 0 || sy >= ih {
+								continue
+							}
+							row, orow := xp[sy*iw:][:iw], o[y*ow:][:ow]
+							for xx := 0; xx < ow; xx++ {
+								if sx := xx*sw + kx*dw - pl; sx >= 0 && sx < iw {
+									orow[xx] += wv * row[sx]
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 // blockIndex maps each element of shape to its block in a block grid of shape grid.

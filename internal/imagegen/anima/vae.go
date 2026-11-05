@@ -162,9 +162,8 @@ func pixel(v float32) uint8 {
 
 // Decode decodes latents with the export's VAE.
 func (p *Pipeline) Decode(ctx context.Context, latents []float32) (*image.RGBA, error) {
-	if p.vae == nil {
-		return nil, errors.New("anima: the export has no VAE (vae/)")
+	if !p.eng.hasVAE() {
+		return nil, errors.New("anima: the export has no VAE")
 	}
-	p.vae.Logf = p.Logf
-	return p.vae.Decode(ctx, latents)
+	return p.eng.decode(ctx, latents, p.Logf)
 }
