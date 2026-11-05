@@ -92,7 +92,7 @@ Preferred Networks の翻訳モデル PLaMo 3 Translate 2B は `-use plamo-3-tra
 ```bash
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b -to ja -form plain
-go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2
+go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2-q4
 ```
 
 重みの形式 (design.md の 16.71): M3 の Neural Engine で、次のトークンが fp16 と同じになるのは lut8 で 98%、lut6 で 89%。1 回の呼び出しは lut8 が 57.8 ms、lut6 が 53.7 ms。lut4 は使えません (CPU で KL 1.91 nats。Intel の int8 は 0.0025)。lut8 の 2 本のプログラム (4.9 GiB) は Neural Engine のコンパイルのキャッシュ (約 4 GiB) を超えるので、生成用の 1 本 (1 回 8 トークン) だけでプロンプトも読みます。短い文ではほとんど変わりませんが、数千トークンの文書は読み込みが 10 倍ほど遅くなります。速さを優先するなら `-format lut6` で、2 本になります。

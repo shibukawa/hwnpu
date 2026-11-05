@@ -95,6 +95,7 @@ func main() {
 	forced := flag.String("forced", "", "a text file: read its first -split tokens as a prompt, then feed the rest one decode step at a time, writing the logits after each to -logits (float32 rows)")
 	split := flag.Int("split", 256, "tokens of -forced read as the prompt")
 	logitsOut := flag.String("logits", "", "where -forced writes its logits")
+	bos := flag.Int("bos", 2, "the token -forced puts before its text (Gemma 4's <bos> 2; PLaMo 3's 1)")
 	flag.Parse()
 	dir := flag.Arg(0)
 	ctx := context.Background()
@@ -123,7 +124,7 @@ func main() {
 		return
 	}
 	if *forced != "" {
-		teacher(ctx, m, *forced, *tokPath, *split, *maxTokens, *logitsOut)
+		teacher(ctx, m, *forced, *tokPath, int32(*bos), *split, *maxTokens, *logitsOut)
 		return
 	}
 	if *nan {
@@ -349,7 +350,7 @@ func benchDepth(ctx context.Context, m *iron.Model) {
 // teacher reads the first split tokens of a text as a prompt, then feeds the next ones (up to
 // max) one decode step at a time and writes the logits before each fed token (the prompt's
 // last, then each step's) as float32 rows: two exports' rows compare position by position.
-func teacher(ctx context.Context, m *iron.Model, path, tokPath string, split, max int, out string) {
+func teacher(ctx context.Context, m *iron.Model, path, tokPath string, bos int32, split, max int, out string) {
 	text, err := os.ReadFile(path)
 	if err != nil {
 		log.Fatal(err)
@@ -358,7 +359,7 @@ func teacher(ctx context.Context, m *iron.Model, path, tokPath string, split, ma
 	if err != nil {
 		log.Fatal(err)
 	}
-	ids := append([]int32{2}, tok.Encode(string(text))...) // <bos>
+	ids := append([]int32{bos}, tok.Encode(string(text))...)
 	if len(ids) < split+2 {
 		log.Fatalf("%d tokens, fewer than -split %d and one to feed", len(ids), split)
 	}

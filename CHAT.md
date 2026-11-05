@@ -92,7 +92,7 @@ Preferred Networks' translation model PLaMo 3 Translate 2B is `-use plamo-3-tran
 ```bash
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b -to ja -form plain
-go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2
+go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2-q4
 ```
 
 The weight formats (design.md 16.71): on an M3's Neural Engine, the next token is fp16's at 98% of the positions with lut8, 89% with lut6; a call takes 57.8 ms with lut8, 53.7 with lut6. lut4 is unusable (KL 1.91 nats on the CPU; Intel's int8 0.0025). The two programs of lut8 (4.9 GiB) are over the Neural Engine's compile cache (about 4 GiB), so the one that generates (8 tokens per call) reads the prompts too: short texts hardly feel it, a document of thousands of tokens is read about ten times slower. `-format lut6` favours speed, with two programs.

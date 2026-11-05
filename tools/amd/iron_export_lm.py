@@ -741,8 +741,8 @@ def main(argv=None) -> int:
     ap.add_argument("--steps", type=int, default=3, help="greedy steps of the check")
     ap.add_argument("--check-only", action="store_true", help="write the check alone, into an export made before")
     ap.add_argument("--q4", action="store_true",
-                    help="Gemma 4: the MLP's projections and the head in 4 bits (q4nx, iron_q4), the token "
-                         "embeddings on the host; the attention's in --attn")
+                    help="Gemma 4 and PLaMo 3: the MLP's projections and the head in 4 bits (q4nx, iron_q4), "
+                         "the token embeddings on the host; the attention's in --attn")
     ap.add_argument("--attn", choices=("q8", "q4", "bf16"), default="q8",
                     help="with --q4, the attention's projections: q8 (8.5 bits a weight), q4 or bf16")
     ap.add_argument("--device-ple", action="store_true",
@@ -756,6 +756,12 @@ def main(argv=None) -> int:
         import iron_hostple
 
         iron_hostple.install(q4=a.q4, attn=a.attn)
+    elif a.model == "plamo3" and a.q4:
+        import iron_plamo3
+
+        iron_plamo3.install(attn=a.attn)
+    elif a.q4:
+        raise SystemExit(f"--q4: not built for {a.model}")
 
     module, cls = MODELS[a.model]
     Model = getattr(importlib.import_module(module), cls)

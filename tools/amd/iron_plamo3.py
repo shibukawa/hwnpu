@@ -26,9 +26,16 @@ the checkpoint's ``config.json``; the structure follows its ``modeling_plamo.py`
 
 Checkpoints without a tokenizer.json (PLaMo's is tokenizer.jsonl) load with no
 tokenizer: IRON's command line then takes token ids only, and hwnpu tokenizes.
+
+With install() (``iron_export_lm.py plamo3 --q4``) the MLP's projections and the head are
+q4nx, the attention's in ``attn`` (q8 by default; iron_q4's formats), the fused ``qkv_proj`` and
+``gate_up_proj`` each one weight cut into its runs of rows by column block (iron_q4.q_rows). The
+token embeddings, a weight of their own (0.55 GB of 2B's bf16), go to the host as Gemma 4's do
+(iron_hostple: embed.bin, ``embed_rows`` of a prompt chunk's rows on the device).
 """
 
 import dataclasses
+import functools
 import math
 from pathlib import Path
 
@@ -50,6 +57,24 @@ from iron.lm import (
     SandwichLayer,
 )
 from iron.lm.checkpoint import Checkpoint, renamed, weights_file
+from iron.operators.copy import Copy
+
+# install()'s formats: on, and the attention's (q8, q4 or bf16).
+_QUANT = {"on": False, "attn": "q8"}
+
+
+def install(attn: str = "q8") -> None:
+    """Make Plamo3 load its projections and head quantized (iron_q4) and its embeddings on the host."""
+    import iron_hostple
+    import iron_q4
+    from iron.common.image import packaging
+
+    if attn not in ("q8", "q4", "bf16"):
+        raise ValueError(f"attention in {attn}: q8, q4 or bf16")
+    iron_q4.install_linear()
+    _QUANT.update(on=True, attn=attn)
+    # Without the gather of the embeddings, a prompt chunk's commands would merge (iron_hostple).
+    packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, iron_hostple.SCRATCHPAD_WORDS)
 
 # PLaMo's RMSNorm offsets by the norm's name (modeling_plamo.py's Plamo3DecoderLayer).
 OFFSETS = {
@@ -192,6 +217,49 @@ class Plamo3(CausalLM):
                 if key not in OFFSETS:
                     raise ValueError(f"Plamo3: no offset known for the norm {name}")
                 norm.weight = iron.param((np.asarray(weight, np.float32) + OFFSETS[key]).astype(bfloat16))
+        self.host_embed = False
+        if _QUANT["on"]:
+            self.quantize(_QUANT["attn"])
+
+    def quantize(self, attn: str) -> None:
+        """The projections in iron_q4's formats (the MLP's and the head's q4nx, the attention's
+        attn), the token embeddings to the host (iron_hostple's embed.bin)."""
+        import iron_hostple
+        import iron_q4
+
+        def q(lin, fmt):
+            lin.weight = iron_q4.q_param(np.asarray(lin.weight, np.float32), fmt)
+
+        for layer in self.model.layers:
+            if attn != "bf16":
+                q(layer.self_attn.qkv_proj, attn)
+                q(layer.self_attn.o_proj, attn)
+            q(layer.mlp.gate_up_proj, "q4")
+            q(layer.mlp.down_proj, "q4")
+        q(self.lm_head, "q4")
+        c, m = self.config, self.model
+        embed = np.asarray(m.embed_tokens.weight).astype(bfloat16)
+        iron_hostple._TABLES.setdefault(id(self), {})[iron_hostple.EMBED] = embed
+        m.embed_tokens.weight = iron.param(np.zeros((1, c.hidden_size), bfloat16))  # no longer read
+        self.embed_rows = iron.state((c.prefill_chunk, c.hidden_size), bfloat16, name=iron_hostple.EMBED)
+        self.host_embed = True
+
+    def lookup(self, ids):
+        # The embeddings from embed_rows, which the host filled with the call's tokens in order.
+        if not self.host_embed:
+            return super().lookup(ids)
+        shape = getattr(ids, "shape", ())
+        if len(shape) == 0:
+            return Copy.step(self.embed_rows[:1])
+        bound = getattr(ids, "valid", None) or {}
+        return Copy.step(self.embed_rows[: bound[0]] if 0 in bound else self.embed_rows[: shape[0]])
+
+    @functools.wraps(CausalLM.body)
+    def body(self, ids=None, **values):
+        if ids is not None and self.host_embed:
+            # a version's input must be read, and no table is left to gather from (iron_hostple)
+            Copy.step(ids, dtype=np.int32)
+        return super().body(ids, **values)
 
     @classmethod
     def from_checkpoint(cls, path, *, random_weights=None, max_seq_len=None):
