@@ -19,7 +19,7 @@ var Arch = &llm.Arch{
 	// positions with lut8, 89% with lut6, for 8% more time per call (57.8 ms against 53.7); lut4
 	// is unusable (KL 1.91 nats on the CPU). The two programs of lut8 (4.9 GiB) are over the Neural
 	// Engine's compile cache, so hwnpu-chat keeps the one that generates and reads the prompts
-	// with it, which short texts to translate hardly feel (docs/design.md 16.69).
+	// with it, which short texts to translate hardly feel (docs/design.md 16.71).
 	Format:     "lut8",
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }

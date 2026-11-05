@@ -95,7 +95,7 @@ go run ./cmd/hwnpu-chat -use plamo-3-translate-2b -to ja -form plain
 go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2
 ```
 
-重みの形式 (design.md の 16.69): M3 の Neural Engine で、次のトークンが fp16 と同じになるのは lut8 で 98%、lut6 で 89%。1 回の呼び出しは lut8 が 57.8 ms、lut6 が 53.7 ms。lut4 は使えません (CPU で KL 1.91 nats。Intel の int8 は 0.0025)。lut8 の 2 本のプログラム (4.9 GiB) は Neural Engine のコンパイルのキャッシュ (約 4 GiB) を超えるので、生成用の 1 本 (1 回 8 トークン) だけでプロンプトも読みます。短い文ではほとんど変わりませんが、数千トークンの文書は読み込みが 10 倍ほど遅くなります。速さを優先するなら `-format lut6` で、2 本になります。
+重みの形式 (design.md の 16.71): M3 の Neural Engine で、次のトークンが fp16 と同じになるのは lut8 で 98%、lut6 で 89%。1 回の呼び出しは lut8 が 57.8 ms、lut6 が 53.7 ms。lut4 は使えません (CPU で KL 1.91 nats。Intel の int8 は 0.0025)。lut8 の 2 本のプログラム (4.9 GiB) は Neural Engine のコンパイルのキャッシュ (約 4 GiB) を超えるので、生成用の 1 本 (1 回 8 トークン) だけでプロンプトも読みます。短い文ではほとんど変わりませんが、数千トークンの文書は読み込みが 10 倍ほど遅くなります。速さを優先するなら `-format lut6` で、2 本になります。
 
 サーバーでは、`chat_template_kwargs` に `target_lang`、`source_lang`、`form`、`context`、`glossary` (`[{"source": "NPU", "target": "NPU"}]`) を渡します (vLLM と同じ)。`messages` は原文 (user) と訳文 (assistant) の交互で、最後が今回の原文です。
 

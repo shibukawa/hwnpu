@@ -2029,7 +2029,28 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
   - 落とした LFM3-Audio と LFM3-Omni の safetensors は、大きさは合っていたが sha256 が Hugging Face の値と違った。16 MiB ずつ取り直して比べると、それぞれ 10 か所ほどで 2〜6 バイトのビットが反転していた (乱数の重みの照合や値の範囲では見つからない)。直してから書き出し直した。落としたチェックポイントは `x-linked-etag` の sha256 と照らすこと
 - Gemma 4 E4B (`iron_export_lm.py gemma4`、文脈 4096、塊 1024): IRON の Gemma 4 のアプリケーションがそのまま書き出す (プロンプトは 35 コマンド、像は 15 GB)。Hugging Face の bf16 の CPU のロジットと、プロンプト 21 トークンとその後の 16 ステップで最上位がすべて一致 (コサイン 0.99993 以上、最大の差は最大のロジットの 3.6 %)。デコード 278 ms/トークン (3.6 トークン/秒)。塊 1024 は位置 0 から 3.4 秒、3072 から 8.2 秒で、どの 1 コマンドも 2 秒の打ち切りに届かない。hwnpu-chat は「日本の首都は東京です。」「391」(17 × 23)。hwnpu-agent は 16.66 と同じ課題で、テストを走らせて読み、`shapes.go` の `math.Pi * c.R` を `math.Pi * c.R * c.R` に直し、`go test` が通ることを確かめた (考える部分が長く、1 回に約 1100 トークン)
 
-### 16.68 AMD: PLaMo 3 Translate 2B を hwnpu-chat で訳す (`iron_plamo3.py`、PLaMo のトークナイザーと PFML3) — 2026-11-05
+### 16.68 AMD: 画像生成 Anima を NPU だけで (`hwnpu-image`、汎用のグラフの書き出し) — 2026-11-05
+
+- ComfyUI や Diffusers のような画像生成の道具は、UI とワークフロー (ノードのグラフ) と、モデルの実行 (テキストエンコーダ、拡散のデノイザー、VAE、サンプラー) に分かれる。hwnpu は後者を受け持つ。最初のモデルは Anima-Turbo (Cosmos-Predict2 2B の DiT、Qwen3-0.6B と LLM アダプタ、Qwen-Image の VAE。8 ステップ、CFG 1)
+- 言語モデルの書き出し (版が decode と prompt) とは別に、入力から出力への IRON のグラフを書き出す道を足した: `tools/amd/iron_graph.py` と Go の `iron.Graph` (`internal/llm/iron/graph.go`)。同じ ELF に重みのバンクを何組も持てる (`variants`)。DiT の 28 ブロックは 4 ブロックのグラフ 1 つと 7 組のバンク
+- 1024 × 1024、8 ステップで約 70 秒 (DiT 1 ステップ 7.2 秒、VAE 7 秒)。diffusers の fp32 の CPU (9 分 17 秒) と同じノイズで、潜在のコサイン 0.966 (CPU の bf16 は 0.980)。行列積の `MEDIUM` (bfp16) がテキストで誤差を広げていたので、テキストだけ `HIGHEST` にした (0.938 → 0.966、時間は変わらず)
+- トークナイザー: Qwen3 の前分割 (数字を 1 桁ずつ) と、T5 の Unigram (sentencepiece の precompiled charsmap、Viterbi) を Go に足した。transformers と 11 の文 (全角、アクセント、日本語、絵文字) で一致
+- 詳細、測定、書き出しの手順は [amd-npu-models.md](amd-npu-models.md) の 11 節
+
+### 16.69 画像生成 Anima を Neural Engine と Intel の NPU にも (`hwnpu-image -convert`) — 2026-11-05
+
+- AMD の IRON のグラフ (16.68) と同じ部品を、MIL の 1 つの記述 (`internal/imagegen/anima/mil`) から Core ML のパッケージ (`-backend coreml`) と OpenVINO IR (`-backend intel`、`ovlower`) に書く。テキスト、DiT の時刻とパッチと 4 ブロックずつ 7 つと最後の層、VAE の 10 段。変換は Go だけで、256 × 256 で 12 秒 (重み fp16 で 5.1 GB)
+- 実行は `runner.Program` (`internal/imagegen/anima/programs.go`)。パイプラインは IRON と共通にし、部品の実行だけを `engine` で分けた。AMD の出力はこの作り替えの前とビット単位で同じ
+- fp16 の手当て (実測: DiT の残差は 12〜20 ブロックで最大 2.7e5、ゲートつきの MLP の出力 2.3e5、ゲート 4682、Qwen3 の残差 7e3):
+  - DiT の残差を 1/32 で持つ (パッチの埋め込みとゲートを 1/32 に)。正規化は入力の大きさに依らないので、残りはそのまま
+  - 幅の RMS norm と LayerNorm は、行ごとの最大の絶対値で割ってからする (`maxScaled`、`reduce_max` と `real_div`)。固定の倍率 (`RMSNorm` の inScale) では、大きな値のない行の 2 乗が fp16 の非正規数になって精度が落ちる
+  - VAE の値は 8 未満なので手当ては要らない
+- 注意は 1024 クエリずつ (`-qchunk`)。VAE の中段は 1 ヘッド 384 次元、16384 画素
+- CPU のインタプリタに 2 次元の `conv` を足した (`milcpu`)。runner の CPU の実行に `HWNPU_CPU_F16` (演算ごとに fp16 に丸める) を足した
+- 確かめたこと (256 × 256、8 ステップ、diffusers の fp32 と同じノイズ): Core ML を CPU のインタプリタで、潜在のコサイン 0.99985、画像の PSNR 37.4 dB (fp16 に丸めて 0.99899、32.0 dB)。OpenVINO IR を OpenVINO 2026.4 の CPU で 0.99985、37.9 dB (f16 の推論で 0.99478、25.5 dB)。条件づけはコサイン 0.999999、ステップ 0 の速度は 0.999997
+- 実機 (M3、Core Ultra) では未確認。手順と見るところは [handoff-anima-mac-intel.md](handoff-anima-mac-intel.md)
+
+### 16.70 AMD: PLaMo 3 Translate 2B を hwnpu-chat で訳す (`iron_plamo3.py`、PLaMo のトークナイザーと PFML3) — 2026-11-05
 
 - 対象は pfnet/plamo-3-translate-2b (`Plamo3ForCausalLM`、2026-10-27 公開)。IRON にアプリケーションがないので hwnpu に置いた (`tools/amd/iron_plamo3.py`、`iron_export_lm.py plamo3`)。IRON の部品だけで書けた
   - 層は sandwich norm (`SandwichLayer`)。PLaMo の RMSNorm は `(offset + w) * x` で、offset は norm ごとに違う (前の norm、q と k の norm、最後の norm は 1、注意の後は 1/5、MLP の後は 1/5^1.5)。読み込んだ後に重みへ足し込む (Gemma の `plus_one` と同じく float32 で足して bf16 に丸める)
@@ -2044,9 +2065,9 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - トークナイザー (`tokenizer.LoadPlamo`、`Load` が `.jsonl` で選ぶ): tokenizer.jsonl の点数つきの断片に対し、費用 (点数 × 10⁴ を Python の round で丸めたものの符号を反転) の和が最小の分け方を後ろから探す。tokenization_plamo.py は Aho-Corasick の表で同じ探索をするが、hwnpu は全断片の接頭辞の map で引く。同点は位置ごとに長い断片を、どの断片でも覆えない文字は UTF-8 のバイトの断片を、ほかより厳密に安いときだけ選ぶ (表の並びと同じ)。特殊トークン `<|plamo:...|>`、4 回以上続く同じ文字、2 個以上の空白の前後で切る (tokenizer_config.json の閾値)。Hugging Face の出力と、`tools/ref/tokenizer_golden.py` の 40 例 (testdata に置いた) と乱数の 3040 例ですべて一致。同点の扱いを逆にするとテストが落ちる
 - チャットの書式 (`chat.Plamo3`): chat_template.jinja の PFML3 を Go に移した。`target_lang`、`source_lang`、`form`、`context`、`glossary` は `Options.Translation` (API では `chat_template_kwargs`)。テンプレートが拒む system メッセージは `context` にする。訳す先がなければ、日本語の文字を含む文は英語、ほかは日本語にし、履歴の訳文はそれぞれの原文から決めた言語で書く (テンプレートは 1 つの `target_lang` で全部を書くので、自動のときだけ違う。こうしないと次の文の言語で前の訳文の札が変わり、プロンプトの先頭が再利用できない)。`tools/ref/plamo3_template_golden.py` の 8 例でテンプレートと一致。終わりは `<|plamo:tag|>`、`<|plamo:bos|>` (generation_config の eos)
 - 実機: hwnpu-chat で「The meeting has been rescheduled to next Monday.」に「会議は来週の月曜日に延期されました。」、続く日本語に英語、`/to zh-hans` で中国語。2 文目以降は前のプロンプトを再利用 (50 トークンのうち 17 だけ読む)。サーバーの `glossary` (NPU → ニューラル処理装置) と `form` も効いた。`form: plain` の 1 例で Hugging Face (fp32) と読点 1 つ違ったが、そこは Hugging Face 自身で 0.454 対 0.440 の拮抗だった (bf16 の差)
-- Core ML と Intel の NPU は 16.69 で移した。0.8B、8B、31B は同じ構造なので同じアプリケーションで書き出せるはずだが、試していない
+- Core ML と Intel の NPU は 16.71 で移した。0.8B、8B、31B は同じ構造なので同じアプリケーションで書き出せるはずだが、試していない
 
-### 16.69 PLaMo 3 を移す: Core ML と Intel の NPU (`internal/llm/plamo3`) — 2026-11-05
+### 16.71 PLaMo 3 を移す: Core ML と Intel の NPU (`internal/llm/plamo3`) — 2026-11-05
 
 - modeling_plamo.py の `Plamo3ForCausalLM` を Go に移し、ホワイトリストに入れた (`plamo3`)。形は Gemma 4 (16.25) から層ごとの埋め込み、KV の共有、ロジットの soft cap を除いたもの
   - norm は Gemma 4 と同じく入力を 1/64 にしてから二乗する (参照の最大 |hidden| は層 18 で 1089、1/64 なしでは fp16 の二乗があふれる)。重みには norm ごとの offset (1、1/5、1/5^1.5) を足して fp16 の定数にする
