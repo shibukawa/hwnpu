@@ -42,7 +42,6 @@
 package main
 
 import (
-	"bufio"
 	"cmp"
 	"context"
 	"encoding/base64"
@@ -60,6 +59,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 func main() {
@@ -149,7 +149,7 @@ func main() {
 		fail(errors.New("-embed-package is for one embedding model; -use names several"))
 	}
 
-	srv := &chat.Server{Think: *think, ThinkBudget: *thinkBudget, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: os.Stderr, Dump: *dump}
+	srv := &chat.Server{Think: *think, ThinkBudget: *thinkBudget, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: console.Log(os.Stderr), Dump: *dump}
 	for _, m := range models {
 		md := filepath.Join(*dir, m.Name)
 		switch m.Kind {
@@ -165,10 +165,10 @@ func main() {
 				if c.Weights == "" {
 					c.Weights = filepath.Join(md, "model.safetensors")
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Log: console.Log(os.Stderr)}); err != nil {
 				fail(err)
 			}
-			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, console.Log(os.Stderr)
 			c.PromptDir = chat.PromptStore(*promptDir, *cacheDir)
 			c.Dense = !*sparse
 			if *vis != "" {
@@ -187,10 +187,10 @@ func main() {
 			var c chat.EmbedConfig
 			if *embedPkgs != "" {
 				c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: filepath.Join(md, "model.safetensors"), Name: m.Name, Backend: *backend}
-			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Repo, Seqs: seqs, Backend: *backend, Log: os.Stderr}); err != nil {
+			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Repo, Seqs: seqs, Backend: *backend, Log: console.Log(os.Stderr)}); err != nil {
 				fail(err)
 			}
-			c.CacheDir, c.Log = *cacheDir, os.Stderr
+			c.CacheDir, c.Log = *cacheDir, console.Log(os.Stderr)
 			e, err := chat.LoadEmbedder(ctx, c)
 			if err != nil {
 				fail(err)
@@ -237,7 +237,7 @@ func resolve(ctx context.Context, use, dir string, server bool) ([]chat.Model, e
 	var models []chat.Model
 	seen := map[string]bool{}
 	for _, name := range strings.Split(use, ",") {
-		m, err := chat.Resolve(ctx, strings.TrimSpace(name), dir, os.Stderr)
+		m, err := chat.Resolve(ctx, strings.TrimSpace(name), dir, console.Log(os.Stderr))
 		if err != nil {
 			return nil, err
 		}
@@ -315,7 +315,7 @@ func serve(ctx context.Context, s *chat.Server, addr string) error {
 	for _, e := range s.Embedders {
 		what = append(what, fmt.Sprintf("%s (embeddings, up to %d tokens)", e.Name, e.MaxTokens()))
 	}
-	fmt.Fprintf(os.Stderr, "serving %s at http://%s/v1\n", strings.Join(what, " and "), addr)
+	console.Notef("serving %s at http://%s/v1\n", strings.Join(what, " and "), addr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -327,26 +327,15 @@ const (
 	reset = "\x1b[0m"
 )
 
-// read prompts for and reads the next input. A line ending in \ continues on the next line. It
-// returns false at the end of the input.
-func read(in *bufio.Reader) (string, bool) {
-	fmt.Print("\n> ")
-	var lines []string
-	for {
-		line, err := in.ReadString('\n')
-		if err != nil && line == "" {
-			fmt.Println()
-			return "", false
-		}
-		line = strings.TrimRight(line, "\r\n")
-		if strings.HasSuffix(line, `\`) {
-			lines = append(lines, strings.TrimSuffix(line, `\`))
-			fmt.Print(". ")
-			continue
-		}
-		lines = append(lines, line)
-		return strings.TrimSpace(strings.Join(lines, "\n")), true
+// read prompts for and reads the next input with the line editor (a history on the arrows; a line
+// ending in \ continues on the next). It returns false at the end of the input.
+func read(ed *console.Editor) (string, bool) {
+	fmt.Println()
+	text, err := ed.Read("> ")
+	if err != nil {
+		return "", false
 	}
+	return strings.TrimSpace(text), true
 }
 
 // talk is the interactive chat.
@@ -368,12 +357,12 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 		if to == "" {
 			to = "English for Japanese text, else Japanese"
 		}
-		fmt.Fprintf(os.Stderr, "each text is translated into %s, the earlier ones kept as its history; /to LANG changes the language and clears the history (/to alone: by the text), ", to)
+		media += fmt.Sprintf("each text is translated into %s, the earlier ones kept as its history; /to LANG changes the language and clears the history (/to alone: by the text), ", to)
 	}
-	fmt.Fprintf(os.Stderr, "%s/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer\n", media)
-	in := bufio.NewReader(os.Stdin)
+	console.Notef("%s/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer, ↑ ↓ go through what was typed\n", media)
+	ed := console.NewEditor("chat")
 	for {
-		text, ok := read(in)
+		text, ok := read(ed)
 		if !ok {
 			return nil
 		}
@@ -387,7 +376,7 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 			if system != "" {
 				msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
 			}
-			fmt.Fprintln(os.Stderr, "[conversation cleared]")
+			console.Notef("[conversation cleared]\n")
 			continue
 		case translator && (text == "/to" || strings.HasPrefix(text, "/to ")):
 			// the history's translations are labelled with the target language: start again
@@ -396,11 +385,11 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 			if system != "" {
 				msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
 			}
-			fmt.Fprintf(os.Stderr, "[translating into %s; history cleared]\n", cmp.Or(tr.TargetLang, "the language by the text"))
+			console.Notef("[translating into %s; history cleared]\n", cmp.Or(tr.TargetLang, "the language by the text"))
 			continue
 		case strings.HasPrefix(text, "/think"):
 			think = strings.TrimSpace(strings.TrimPrefix(text, "/think")) != "off"
-			fmt.Fprintf(os.Stderr, "[thinking %v]\n", think)
+			console.Notef("[thinking %v]\n", think)
 			continue
 		}
 		content := chat.Content{Text: text}
@@ -515,11 +504,11 @@ func search(e *chat.Embedder) error {
 		v    []float32
 	}
 	var docs []doc
-	fmt.Fprintf(os.Stderr, "%s: %d dimensions, up to %d tokens a text. Each input is a document to search; ?TEXT searches them, /list shows them, /reset clears them, /exit (or Ctrl-D) quits\n",
+	console.Notef("%s: %d dimensions, up to %d tokens a text. Each input is a document to search; ?TEXT searches them, /list shows them, /reset clears them, /exit (or Ctrl-D) quits\n",
 		e.Name, e.Dim(), e.MaxTokens())
-	in := bufio.NewReader(os.Stdin)
+	ed := console.NewEditor("search")
 	for {
-		text, ok := read(in)
+		text, ok := read(ed)
 		if !ok {
 			return nil
 		}
@@ -531,7 +520,7 @@ func search(e *chat.Embedder) error {
 			return nil
 		case text == "/reset":
 			docs = docs[:0]
-			fmt.Fprintln(os.Stderr, "[documents cleared]")
+			console.Notef("[documents cleared]\n")
 			continue
 		case text == "/list":
 			for i, d := range docs {
@@ -557,7 +546,7 @@ func search(e *chat.Embedder) error {
 			continue
 		}
 		if len(docs) == 0 {
-			fmt.Fprintln(os.Stderr, "[no documents yet: type some first]")
+			console.Notef("[no documents yet: type some first]\n")
 			continue
 		}
 		order := make([]int, len(docs))

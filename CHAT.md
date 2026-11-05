@@ -52,6 +52,8 @@ Then type after the `>`.
 
 - The model thinks first (`<think>`, shown dim) and then answers. `/think off` makes it answer at once, `/think on` brings thinking back
 - `/reset` clears the conversation, `/exit` or Ctrl-D quits, Ctrl-C stops an answer. A line ending in `\` continues on the next line
+- The input is edited as in a shell: ↑ ↓ (Ctrl-P, Ctrl-N) bring back what was typed before (up to 1000 entries kept in `~/Library/Caches/hwnpu/history/chat`, so also after a restart), and ← →, Home, End, Ctrl-A, Ctrl-E, Ctrl-K, Ctrl-U and Ctrl-W work. Japanese and other wide characters take two columns. A pasted text of several lines comes in as one input, its line breaks shown as `⏎`. Ctrl-C while typing clears the line; on an empty line it quits
+- Loading and help are shown in gray, with `all on the NPU` in green when everything is on the Neural Engine and `NOT all on the NPU` in red when not. No colors when not on a terminal or with `NO_COLOR` set (hwnpu-agent the same)
 - From the second turn on, only what is new since the last answer is read
 - After each answer it shows the tokens read and the speed of generation (about 15 tokens/s on an M3)
 

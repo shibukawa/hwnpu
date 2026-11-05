@@ -35,7 +35,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -48,6 +47,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/agent"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 func main() {
@@ -129,9 +129,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	var c chat.Config
 	if *ironDir != "" {
-		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: os.Stderr, PromptDir: chat.PromptStore(*promptDir, *cacheDir)}
+		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: console.Log(os.Stderr), PromptDir: chat.PromptStore(*promptDir, *cacheDir)}
 	} else {
-		m, err := chat.Resolve(ctx, *use, *dir, os.Stderr)
+		m, err := chat.Resolve(ctx, *use, *dir, console.Log(os.Stderr))
 		if err != nil {
 			fail(err)
 		}
@@ -151,10 +151,10 @@ func main() {
 			if c.Weights == "" {
 				c.Weights = filepath.Join(md, "model.safetensors")
 			}
-		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Log: os.Stderr}); err != nil {
+		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Log: console.Log(os.Stderr)}); err != nil {
 			fail(err)
 		}
-		c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, os.Stderr
+		c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, console.Log(os.Stderr)
 		c.PromptDir = chat.PromptStore(*promptDir, *cacheDir)
 		c.Dense = !*sparse
 	}
@@ -168,7 +168,7 @@ func main() {
 	if *thinkBudget <= 0 {
 		*thinkBudget = -1 // no limit
 	}
-	in := bufio.NewReader(os.Stdin)
+	ed := console.NewEditor("agent")
 	cfg := agent.Config{
 		Dir: work, Tools: strings.Split(*tools, ","), System: opening, Instructions: instructions,
 		Think: *think, KeepThinking: *keep, ThinkBudget: *thinkBudget, Sampling: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep},
@@ -180,10 +180,9 @@ func main() {
 	}
 	switch {
 	case *yes:
-	case terminal(os.Stdin):
+	case console.Terminal(os.Stdin):
 		cfg.Allow = func(tool, what string) bool {
-			fmt.Fprintf(os.Stderr, "%s%s %s%s [y/N] ", bold, tool, what, reset)
-			line, _ := in.ReadString('\n')
+			line, _ := ed.Ask(fmt.Sprintf("%s%s %s%s [y/N] ", bold, tool, what, reset))
 			line = strings.ToLower(strings.TrimSpace(line))
 			return line == "y" || line == "yes"
 		}
@@ -204,9 +203,9 @@ func main() {
 		}
 		return
 	}
-	fmt.Fprintf(os.Stderr, "%s/reset starts a new conversation, /exit (or Ctrl-D) quits; Ctrl-C stops the task%s\n", dim, reset)
+	console.Notef("/reset starts a new conversation, /exit (or Ctrl-D) quits; Ctrl-C stops the task, ↑ ↓ go through what was typed\n")
 	for {
-		text, ok := read(in)
+		text, ok := read(ed)
 		if !ok {
 			return
 		}
@@ -217,7 +216,7 @@ func main() {
 			return
 		case "/reset":
 			s.Reset()
-			fmt.Fprintln(os.Stderr, "[conversation cleared]")
+			console.Notef("[conversation cleared]\n")
 			continue
 		}
 		if err := run(s, text); err != nil {
@@ -308,31 +307,15 @@ func preview(s string, n int) string {
 	return strings.Join(lines[:n], "\n") + fmt.Sprintf("\n… %d more lines", len(lines)-n)
 }
 
-// read prompts for and reads the next task. A line ending in \ continues on the next line. It
-// returns false at the end of the input.
-func read(in *bufio.Reader) (string, bool) {
-	fmt.Print("\n> ")
-	var lines []string
-	for {
-		line, err := in.ReadString('\n')
-		if err != nil && line == "" {
-			fmt.Println()
-			return "", false
-		}
-		line = strings.TrimRight(line, "\r\n")
-		if strings.HasSuffix(line, `\`) {
-			lines = append(lines, strings.TrimSuffix(line, `\`))
-			fmt.Print(". ")
-			continue
-		}
-		lines = append(lines, line)
-		return strings.TrimSpace(strings.Join(lines, "\n")), true
+// read prompts for and reads the next task with the line editor (a history on the arrows; a line
+// ending in \ continues on the next). It returns false at the end of the input.
+func read(ed *console.Editor) (string, bool) {
+	fmt.Println()
+	text, err := ed.Read("> ")
+	if err != nil {
+		return "", false
 	}
-}
-
-func terminal(f *os.File) bool {
-	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return strings.TrimSpace(text), true
 }
 
 func fail(err error) {
