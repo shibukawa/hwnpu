@@ -39,9 +39,13 @@ from iron_export import _carried, _form, _place, bind_device  # noqa: E402
 MANIFEST_VERSION = 1
 
 MODELS = {
-    "gemma4": ("iron.applications.gemma4.model", "Gemma4"),
+    # Gemma 4 whose prompt chunks run the KV-shared layers on their last row alone
+    # (iron_gemma4.py); gemma4full is IRON's own, every row through every layer.
+    "gemma4": ("iron_gemma4", "Gemma4Tail"),
+    "gemma4full": ("iron.applications.gemma4.model", "Gemma4"),
     # Gemma 4 with its vision and audio towers (one image and one clip a prompt).
-    "gemma4mm": ("iron.applications.gemma4.model", "Gemma4Multimodal"),
+    "gemma4mm": ("iron_gemma4", "Gemma4TailMultimodal"),
+    "gemma4mmfull": ("iron.applications.gemma4.model", "Gemma4Multimodal"),
     # LFM3 (LFM3-1.7B): an application kept in hwnpu (iron_lfm3.py), IRON has none.
     "lfm3": ("iron_lfm3", "Lfm3"),
     # LFM3-VL (LFM3-VL-2B): LFM3 with its vision tower, for one image size (iron_lfm3vl.py).
@@ -643,9 +647,9 @@ def export(model, versions, out: Path) -> dict:
             tower_values={str(t): [f"{model.tower_inputs[t]}_{x}" for x in model.tower_values[t]] for t in model.towers},
         )
         c = text.config
-        model_name, rope_model, recurrent = type(text).__name__, text, text.recurrent
+        model_name, rope_model, recurrent = _name(text), text, text.recurrent
     else:
-        model_name, rope_model, recurrent = type(model).__name__, model, model.recurrent
+        model_name, rope_model, recurrent = _name(model), model, model.recurrent
     m = dict(
         version=MANIFEST_VERSION,
         model=model_name,
@@ -677,6 +681,12 @@ def export(model, versions, out: Path) -> dict:
     (out / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     write_words(versions, m, out)
     return m
+
+
+def _name(model) -> str:
+    """The model's name in the manifest, which picks hwnpu's chat format: a variant's
+    ``hwnpu_name`` (Gemma4Tail is Gemma4), else its class's."""
+    return getattr(model, "hwnpu_name", type(model).__name__)
 
 
 def _is_checkpoints(state) -> bool:
@@ -754,10 +764,15 @@ def main(argv=None) -> int:
     bind_device(a.device, a.cols)
     import importlib
 
-    if a.model in ("gemma4", "gemma4mm") and not a.device_ple:
+    if a.model.startswith("gemma4") and not a.device_ple:
         import iron_hostple
 
-        iron_hostple.install(q4=a.q4, attn=a.attn)
+        if a.model.endswith("full"):
+            iron_hostple.install(q4=a.q4, attn=a.attn)
+        else:
+            import iron_gemma4
+
+            iron_hostple.install(q4=a.q4, attn=a.attn, words=iron_gemma4.SCRATCHPAD_WORDS)
     elif a.model == "plamo3" and a.q4:
         import iron_plamo3
 
