@@ -25,8 +25,12 @@ func (m *Model) caches() ([]kvCache, error) {
 		if !strings.Contains(name, ".cache.") {
 			continue
 		}
-		if p.Bytes%L != 0 {
-			return nil, fmt.Errorf("iron: cache %s of %d bytes is no whole rows of %d positions", name, p.Bytes, L)
+		rows := L
+		if r, ok := m.Manifest.CacheRows[name]; ok && r > 0 {
+			rows = r
+		}
+		if p.Bytes%rows != 0 {
+			return nil, fmt.Errorf("iron: cache %s of %d bytes is no whole rows of %d positions", name, p.Bytes, rows)
 		}
 		for _, v := range []*version{m.prompt, m.placed} {
 			if v == nil {
@@ -36,7 +40,7 @@ func (m *Model) caches() ([]kvCache, error) {
 				return nil, fmt.Errorf("iron: cache %s is placed differently by a prompt chunk", name)
 			}
 		}
-		out = append(out, kvCache{name, p, p.Bytes / L})
+		out = append(out, kvCache{name, p, p.Bytes / rows})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	m.kv = out
