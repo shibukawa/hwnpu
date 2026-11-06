@@ -56,6 +56,9 @@ type version struct {
 	run *hwnpu.Run
 	// barrier is the decode step's empty command (chunkBarrier), kept.
 	barrier *hwnpu.Run
+	// runs are a decode step's commands when it is several (Qwen3.6's: two a layer), each
+	// kept as run is; runs[0] is run.
+	runs []*hwnpu.Run
 	// steps are the runs of a version packaged as an xclbin per step (steps.go).
 	steps   []*stepRun
 	streams stepStreams
@@ -98,7 +101,7 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 		ver := &version{m: v, args: map[string]*hwnpu.Buffer{}}
 		switch name {
 		case "decode":
-			if v.ELF != "" && len(v.Kernels) != 1 {
+			if v.ELF != "" && len(v.Kernels) != 1 && len(v.Fed) == 0 {
 				return fmt.Errorf("iron: the decode step has %d commands", len(v.Kernels))
 			}
 			m.decode = ver // its run is made once every program's PDIs are in the heap
@@ -122,7 +125,13 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 			if _, ok := m.banks[a.Kind]; ok {
 				continue
 			}
-			buf, err := dev.AllocBuffer(max(a.Bytes, 4096))
+			var opts []hwnpu.BufferOption
+			if a.Kind == "feedback" && len(v.Fed) > 0 {
+				// the fed commands' ctrl scratchpads: device heap memory, as the scratchpad
+				// a run makes for itself (IRON's feedback is the next run's scratchpad)
+				opts = append(opts, hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+			}
+			buf, err := dev.AllocBuffer(max(a.Bytes, 4096), opts...)
 			if err != nil {
 				return fmt.Errorf("iron: %s: argument %s: %w", name, a.Kind, err)
 			}
@@ -139,14 +148,14 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 			logf("%s: %d commands", name, len(v.Kernels))
 		}
 	}
-	if m.decode == nil || m.prompt == nil {
+	if m.decode == nil || m.prompt == nil && len(m.decode.m.Fed) == 0 {
 		return errors.New("iron: the export needs a decode step and a prompt chunk")
 	}
 	if _, err := m.caches(); err != nil {
 		return err
 	}
 	if m.decode.m.ELF != "" {
-		if m.decode.run, err = m.newRun(m.decode, 0); err != nil {
+		if err := m.decodeRuns(); err != nil {
 			return err
 		}
 	}
@@ -165,10 +174,7 @@ func (m *Model) Release() error {
 		if v == nil {
 			continue
 		}
-		if v.run != nil {
-			errs = append(errs, v.run.Close())
-			v.run = nil
-		}
+		errs = append(errs, v.closeRuns()...)
 		if v.barrier != nil {
 			errs = append(errs, v.barrier.Close())
 			v.barrier = nil
@@ -504,14 +510,20 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		return m.logits(v)
 	}
 	if v.run == nil { // dropped for a tower's control code (dropDecode)
-		if v.run, err = m.newRun(v, 0); err != nil {
+		if err := m.decodeRuns(); err != nil {
 			return nil, err
 		}
 	}
-	if err := writeWords(v.run.Scratchpad(), v.m.Kernels[0].Parameters, values); err != nil {
+	if err := m.carry(v, values); err != nil {
 		return nil, err
 	}
-	if err := m.carry(v, values); err != nil {
+	if len(v.runs) > 1 {
+		if err := m.runCommands(ctx, v, values); err != nil {
+			return nil, err
+		}
+		return m.logits(v)
+	}
+	if err := writeWords(v.run.Scratchpad(), v.m.Kernels[0].Parameters, values); err != nil {
 		return nil, err
 	}
 	if err := v.run.Run(ctx); err != nil {
@@ -520,12 +532,114 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 	return m.logits(v)
 }
 
+// decodeRuns makes the decode step's runs, one a command, a fed command's scratchpad its
+// buffer of the feedback argument.
+func (m *Model) decodeRuns() error {
+	v := m.decode
+	fed := map[int]Fed{}
+	for _, f := range v.m.Fed {
+		fed[f.Command] = f
+	}
+	runs := make([]*hwnpu.Run, 0, len(v.m.Kernels))
+	fail := func(err error) error {
+		for _, r := range runs {
+			r.Close()
+		}
+		return err
+	}
+	for k := range v.m.Kernels {
+		run, err := m.newRun(v, k)
+		if err != nil {
+			return fail(fmt.Errorf("iron: decode command %d: %w", k, err))
+		}
+		runs = append(runs, run)
+		f, ok := fed[k]
+		if !ok {
+			continue
+		}
+		p, ok := v.m.Buffers[f.Buffer]
+		if !ok || p.Argument != "feedback" || 4*f.Words > p.Bytes {
+			return fail(fmt.Errorf("iron: decode command %d is fed from %s, not a buffer of the feedback argument", k, f.Buffer))
+		}
+		if err := run.UseScratchpad(m.buffer(v, "feedback"), p.Offset, 4*f.Words); err != nil {
+			return fail(fmt.Errorf("iron: decode command %d: %w", k, err))
+		}
+	}
+	v.run, v.runs = runs[0], runs
+	return nil
+}
+
+// runCommands runs every command of v back to back: the host's words in each command the
+// device does not feed, then all submitted before the first wait (a hardware context runs its
+// commands in order, so a fed command reads what the one before it wrote).
+func (m *Model) runCommands(ctx context.Context, v *version, values map[string]int64) error {
+	fed := map[int]bool{}
+	for _, f := range v.m.Fed {
+		fed[f.Command] = true
+	}
+	var fences []hwnpu.Fence
+	var err error
+	// HWNPU_IRON_TIMING: each command waited for and timed alone
+	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	for k, run := range v.runs {
+		if !fed[k] {
+			if err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values); err != nil {
+				break
+			}
+		}
+		var f hwnpu.Fence
+		if f, err = run.Submit(); err != nil {
+			err = fmt.Errorf("iron: decode command %d: %w", k, err)
+			break
+		}
+		if timing {
+			t0 := time.Now()
+			if err = f.Wait(ctx); err != nil {
+				break
+			}
+			fmt.Fprintf(os.Stderr, "decode command %d: %.3f ms\n", k, time.Since(t0).Seconds()*1000)
+			continue
+		}
+		fences = append(fences, f)
+	}
+	for k, f := range fences {
+		if werr := f.Wait(ctx); werr != nil && err == nil {
+			err = fmt.Errorf("iron: decode command %d: %w", k, werr)
+		}
+	}
+	return err
+}
+
+// closeRuns closes v's kept runs.
+func (v *version) closeRuns() []error {
+	var errs []error
+	if len(v.runs) == 0 && v.run != nil {
+		errs = append(errs, v.run.Close())
+	}
+	for _, r := range v.runs {
+		errs = append(errs, r.Close())
+	}
+	v.run, v.runs = nil, nil
+	return errs
+}
+
 // Prompt runs tokens from position start in prompt chunks and returns the logits after the
 // last one. The cache holds the tokens before start.
 func (m *Model) Prompt(ctx context.Context, tokens []int32, start int) ([]float32, error) {
 	C := m.Manifest.Config.PrefillChunk
 	if len(tokens) == 0 || start+len(tokens) > m.Manifest.Config.MaxSeqLen {
 		return nil, fmt.Errorf("iron: %d tokens from %d do not fit the cache of %d", len(tokens), start, m.Manifest.Config.MaxSeqLen)
+	}
+	if m.prompt == nil {
+		// no prompt chunk (Qwen3.6's experts are routed a token at a time): decode steps
+		var logits []float32
+		for i, t := range tokens {
+			var err error
+			if logits, err = m.Step(ctx, t, start+i); err != nil {
+				return nil, err
+			}
+		}
+		return logits, nil
 	}
 	var logits []float32
 	for begin := 0; begin < len(tokens); {
@@ -815,10 +929,7 @@ func (m *Model) dropDecode() {
 	if m.decode == nil {
 		return
 	}
-	if m.decode.run != nil {
-		m.decode.run.Close()
-		m.decode.run = nil
-	}
+	m.decode.closeRuns()
 	if m.decode.barrier != nil {
 		m.decode.barrier.Close()
 		m.decode.barrier = nil

@@ -2612,3 +2612,38 @@ Qwen3.6-35B-A3B の 1 トークン (q4nx、今の部品のまま) の見積も�
 - 足した演算: CPU のインタプリタ (`internal/milcpu`) と OpenVINO IR への下ろし (`internal/ovlower`) に `abs` と `log` (`log(x + epsilon)`)。`ovlower` には前の `softplus` もなく、Qwen3.5 の Intel 向けの変換は通らなかった (16.62 では IR を作っていなかった)。今は `hwnpu-convert -backend intel` が通る。`TestNoNeuralEngineActivations` がプログラムに `silu` と `softplus` が無いことを見る
 - 最終のコードで変換し直して: 9 部分とも Neural Engine、富士山と 17 × 23 = 391 と回文の関数を正しく答え (7.6〜8.9 tokens/s)、位置ごとの KL は日本語 0.0073、英文 0.0052、3276 トークンの損失 3.362
 - 確かめていないこと: Q=64 のプログラム (2 本で ANE のキャッシュを超えるので既定では作らない。1 本の起動を保つ)。**ほかのモデルも ANE の silu を使っている** (LFM3 の畳み込みと MLP、Gemma 4 と PLaMo 3 の MLP。`blocks.SwiGLU`)。Qwen3.5 では鍵の L2 正規化が小さな値の誤差を拡大したので目立ったが、ほかのモデルの lut6 / lut8 の精度の損 (16.65 の LFM3 の系列) の一部がこれかもしれない
+
+### 16.89 AMD: Gated DeltaNet の IRON の形と、MoE の経路の選択をデバイスで (Qwen3.5 と Qwen3.6-35B-A3B、`iron_gdn.py`、`iron_moe.py`、`iron_qwen35.py`) — 2026-11-06
+
+16.75 の残り (Gated DeltaNet の IRON の形、経路の選択をデバイスで) を書き、Qwen3.5 と Qwen3.6-35B-A3B (`qwen3_5_moe`) を `iron_export_lm.py qwen35` / `qwen35moe` で書き出せるようにした。照合は実物の重みの 2 層 (層 0 = GDN と層 3 = 全注意。`~/models/dl/partial.py` で範囲を読んで作った切り詰めの checkpoint: Qwen3.5-4B と Qwen3.6-35B-A3B、後者は 3.2 GB)。40 層全部はまだ載せていない (重み 72 GB を読み込んでいない)。
+
+**Gated DeltaNet (`tools/amd/iron_gdn.py`、`kernels/gdn.cc`)**
+
+- 再帰そのものは mlir-aie に kernel がある (`ssm/gated_delta_rule.cc`、状態を bf16 の 3 本の limb で持ち、l2 norm、softplus、decay、delta rule、出力) が、IRON に演算子がない。`gdn.cc` はそれを写し、ブロックをコアの中で集める `gdn_gather` (q、k、v に silu も掛ける) と、(dt_bias, A) を状態の前ではなく実行時の語で受ける `gdn_rule` に変えた
+- 形: 8 列 × 2 コア。コアは値のヘッド 2 つを持ち、16 列 (slice) ずつ回る。slice の状態 (128 × 16、float32) が入り、呼び出しの行を全部ブロックずつ通し、最後の有効な行の後の状態が出る。列の行はメモリタイルで 2 コアに配り、状態と y と最終状態は 2 コア分を分けて (まとめて) 1 本のシムのチャネルにする。コアの入出力の DMA チャネルは 2 本ずつ、メモリタイルの S2MM は 6 本で、列あたり 2 コアがちょうど収まる (4 コアにはチャネルが足りない)
+- 射影は 1 本にした: `in_proj_qkv`、`in_proj_a`、`in_proj_b` の行を列の順 (`gdn_layout`: 列ごとにその列のキーのヘッドの q と k、値のヘッドの v、ヘッドごとの (a, b)) に並べ替え、1 本の GEMV (Qwen3.5-4B / 3.6 で 8256 行) と 1 本の短い畳み込みにする。a と b の畳み込みのタップは 0, 0, 0, 1 (そのまま通る)。silu はカーネルで q、k、v だけに掛ける。各列が読むのは行のうち自分の 1032 語の連続した部分だけ
+- 状態は演算子の並び (列、コアのヘッド、slice、コア、128、16) で、列の分が連続した 1 本の転送になる。`Checkpoints` の slot ごとに持つ (Granite 4.0-H の Mamba2 と同じ)。dt_bias と A はヘッドごとに 16 ビット 2 つずつの実行時の語 (書き出し時に決まる resident) で渡す (IRON の `Rtp` はベクトルの値を扱わないので 1 語ずつの値にした)
+- 出力: ヘッドごとの RMS norm (重みは `1 +` なし) × silu(z) と `out_proj`。ほかの RMSNorm は `1 + weight` (`RMSNorm.plus_one`)
+- **シムのチャネルのタスクキューは 4 段**: プロンプトの形で、y の転送 16 本を待たずに積んだら止まった (`ERT_CMD_STATE_TIMEOUT`)。続けて 2 回止めると SMU が戻らなくなり (`aie2_smu_init: Access power failed`)、ドライバの読み直しでも直らず再起動が要った。チャネルごとに 3 本までにし、古いものを待ってから次を積む (IRON の Gather が `sync()` で抑えているのと同じ)
+- 照合 (`python tools/amd/iron_gdn.py check OUT [--rows 64 --valid 50]`、`irongraph -tol 0.05`): デコード (1 行) は y の最大の差 1.5e-5 / 0.15、最終状態 2.4e-7 (コサイン 1.000000)。プロンプト (64 行、有効 50) も y 4.9e-4 / 0.19、状態 3.5e-3 / 1.7 (コサイン 1.000000)
+- 速さ: デコード 1 回 0.26〜0.33 ms (32 ヘッド、状態 2 MiB の読み書き)、64 行 7.3 ms (1 行 0.11 ms: 1024 行の塊は 1 層約 117 ms)
+
+**Qwen3.5 (`tools/amd/iron_qwen35.py`、`qwen35`)**
+
+- 注意: `q_proj` はヘッドごとに q と gate (sigmoid を出力に掛ける) が並ぶ。q と k の RMS norm、RoPE は頭の 64 列 (`partial_rotary_factor` 0.25、テキストの位置なので mrope は普通の RoPE)。MLP は SwiGLU
+- 照合 (Qwen3.5-4B の層 0 と 3、32 トークンのプロンプトと貪欲法の 3 ステップ、HF の float32 と): IRON のホストのグラフはコサイン 0.99982〜0.99991、KL ≤ 2.7e-5 (`iron_qwen35_check.py ref` / `iron`)。NPU (bf16) は 0.99975〜0.99986、q8 / q4 (`--q4`) は 0.99607〜0.99813。最上位のトークンは全部一致
+- 4B 全体は未確認 (重み 9 GB を読み込んでいない)
+
+**MoE の経路の選択をデバイスで (`tools/amd/iron_moe.py`、`kernels/moe_route.cc`、`qwen35moe`)**
+
+- デコードのステップは層ごとに 2 コマンド: A (層の mixer、残差、post-attention norm、経路の GEMV (経路の 256 行と共有の専門家のゲート 1 行)、`MoERoute`) と B (16.75 の `MoEGateUp` と `MoEDown`)。間に空のホストステップを置いてコマンドを分け、最後の B の後に出力層のコマンドを置く
+- `MoERoute` (1 コア): ロジットから上位 8 個 (同値は番号の小さい方)、選んだ 8 個だけの softmax (全体の softmax を選んだ分で正規化し直すのと同じ。transformers と同じく bf16 に丸める)、共有の専門家の sigmoid を MoEGateUp の経路の重みとして書き、さらに **コマンド B のスクラッチパッドの語** (選んだ専門家の表の中のバイト位置: `id × 専門家 1 個のバイト数`) を書く。語の位置は IRON の lowering が決めるので、どの語を書くかは重みの表 (`program`、語ごとに専門家の番号、倍率、足す数、シフト) にし、書き出しで lowering の結果 (`params.txt` の B の語の Affine) から埋める (`Qwen35Moe.program_rows`)
+- その出力 (`image`) は版の feedback 引数のバッファで、hwnpu はコマンド B の ctrl スクラッチパッドをそこに置く (manifest の `fed`: B のコマンドの番号とバッファ)。ホストはロジットを読まず、B の語も書かない。IRON の `CarriedLoop` の Emit が次の run のスクラッチパッドに書くのと同じ考え方を、1 回の呼び出しのコマンドの間に使った
+- hwnpu の側 (`internal/llm/iron`、`internal/backend/amd`): 複数コマンドのデコードを許し、コマンドごとの run を持っておく。`fed` のコマンドは `Run.UseScratchpad` で feedback のバッファを ctrl スクラッチパッドにする (その run は自分のスクラッチパッドを持たず、ホストから同期もしない)。全部のコマンドを待たずに積み、最後に待つ (ハードウェアコンテキストは順に実行する)
+- **feedback はデバイスのヒープ (`BufferInstructions`) に置く**: ふつうのバッファ (BO_SHARE) をスクラッチパッドにすると B が `ERT_CMD_STATE_ERROR` になった。ヒープのバッファは、コマンドの処理系はデバイスのアドレス (XdnaAddr) で読むが、シムの DMA はプロセスの仮想アドレス (PASID) で読み書きする。引数の再配置にデバイスのアドレスを入れると A の書き込みが届かない (B は全部 0 番の専門家を読み、HF とのコサインが 0.975 に落ちた) ので、ヒープのバッファを引数にするときは仮想アドレスを入れる (`buffer.dmaAddr`)
+- プロンプト: MoE の版はデコードのステップだけで、hwnpu はプロンプトを 1 トークンずつ通す (塊のトークンを専門家ごとに分ける MoE はまだ)
+- ホストでの照合: IRON の参照には書くデバイスがないので、`MoERoute` の参照が選んだ専門家を `iron_moeprobe.PICKED` に置き、`MoEGateUp` と `MoEDown` の参照がそれを読む
+- 照合 (Qwen3.6-35B-A3B の層 0 と 3、専門家は q4nx): ホストのグラフと HF でコサイン 0.99841〜0.99987、KL ≤ 1.8e-3。NPU とホストのグラフで 0.99997〜0.99998。NPU と HF で 0.99822〜0.99982 (q8 の射影と q4 の出力層 (`--q4`) で 0.99575〜0.99928)。最上位のトークンは全部一致。`MoERoute` 単体はデバイスと参照でビット単位で同じ
+- 時間 (コマンドを 1 つずつ待って。`HWNPU_IRON_TIMING=1`): A (埋め込みと GDN の層) 4.7 ms (q8 で 5.1)、A (全注意の層) 2.9 ms (3.3)、B 1.0 ms、出力層 18.1 ms (q4 で 5.9)。40 層の見積もりは 30 × 4.5 + 10 × 3.3 + 40 × 1.0 + 6 ≈ 210 ms (約 5 トークン/秒)。16.75 の見積もり (8〜10 トークン/秒) より遅いのは A の演算の数のため: q8 にしても縮まない。IRON の短い畳み込み (`F.causal_conv1d`) がデコードで約 10 演算、ゲートつきの norm が 3、`MoERoute` が 0.24 ms (スカラーの選択)
+- 次: 畳み込みとゲートつきの norm を GDN の演算子に入れる、`MoERoute` のベクトル化、40 層の実物 (重みの読み込み、20 GB の表)、プロンプトの MoE、Qwen3.6 のチャットの型の違い (道具の引数の数と真偽を JSON で書く、`preserve_thinking`)
+- 試し方: `python tools/amd/iron_export_lm.py qwen35moe CKPT OUT --max-seq-len 1024 --prefill-chunk 256 [--q4]`、check/ に HF の参照 (`iron_qwen35_check.py ref`) を置いて `go run ./tools/amd/ironlm OUT`

@@ -56,6 +56,10 @@ MODELS = {
     "lfm3omni": ("iron_lfm3omni", "Lfm3Omni"),
     # PLaMo 3 (pfnet/plamo-3-translate-2b): an application kept in hwnpu (iron_plamo3.py).
     "plamo3": ("iron_plamo3", "Plamo3"),
+    # Qwen3.5 (qwen3_5): Gated DeltaNet (iron_gdn.py) and gated attention (iron_qwen35.py).
+    "qwen35": ("iron_qwen35", "Qwen35"),
+    # Qwen3.6-35B-A3B (qwen3_5_moe): Qwen3.5 with experts routed on the device (iron_moe.py).
+    "qwen35moe": ("iron_qwen35", "Qwen35Moe"),
 }
 
 
@@ -566,6 +570,10 @@ def export(model, versions, out: Path) -> dict:
         for a in m["arguments"]:
             if a["kind"] not in ("input", "output", "feedback") and not a["kind"].startswith("pool"):
                 banks[a["kind"]] = max(banks.get(a["kind"], 0), a["bytes"])
+    if hasattr(model, "program_rows"):
+        # Qwen35Moe: the commands whose scratchpad the device writes (iron_moe.py), and the
+        # routing programs that write them, known once the lowering has placed their words.
+        vm["decode"]["fed"] = model.program_rows(vm["decode"]["kernels"])
     images = write_banks(versions, banks, out)
     write_steps(files, out)
     for n in range(1, 3 * c.prefill_chunk, max(1, c.prefill_chunk // 3)):
@@ -816,6 +824,10 @@ def main(argv=None) -> int:
         import iron_lfm3
 
         iron_lfm3.install_q4(attn=a.attn, conv=a.conv)
+    elif a.model.startswith("qwen35") and a.q4:
+        import iron_qwen35
+
+        iron_qwen35.install(attn=a.attn)
     elif a.q4:
         raise SystemExit(f"--q4: not built for {a.model}")
     if a.q4_codes:
