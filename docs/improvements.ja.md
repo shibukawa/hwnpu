@@ -1,8 +1,8 @@
-# 改善策の効果のまとめ (2026-11-06 時点、main の #52 と、塔を使うときだけ読む、スライディング窓の層は窓の中だけまで。2 段の注意の M3 での確認を含む)
+# 改善策の効果のまとめ (2026-11-07 時点、main の #58 まで。2 段の注意と Anima の M3 での確認を含む)
 
 [English](improvements.md)
 
-design.md 16 章の実装記録 (16.81 までと 16.84) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
+design.md 16 章の実装記録 (16.81 までと 16.84、16.85) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
 
 - 「生成」= 1 トークンを作る速さ (ms/token か tokens/s)
 - 「prefill」= プロンプトを読む速さ (最初の応答までの時間)
@@ -43,6 +43,11 @@ design.md 16 章の実装記録 (16.81 までと 16.84) と model-fit.md、intel
 | Anima を段ごとに読み込む (16.72) | 69.3 → 67.7 s/枚 | | | ◎ 14.2 → 5.0 GiB | | | ビット単位で同じ | AMD |
 | AMD: Anima の DiT を 8 ビット (q8) に (16.78) | +2 % (67.3 → 68.3 s/枚) | | | ◎ 固定 5020 → 3445 MiB | ○ 5.7 → 4.0 GB | | ほぼ変わらない (潜在のコサイン 0.966 → 0.961) | AMD |
 | AMD: コアの丸めを最近接偶数に (16.78) | 変わらない | 変わらない | | | | | ◎ Anima の量子化した DiT (ステップ 0 の誤差 q8 0.088 → 0.031)。言語モデルは変わらない | AMD |
+| Apple: Anima を Neural Engine で (16.85) | ◎ 動く (`dit_time`、`dit_patch`、fp16 のテキストが CPU に落ちていた) | | | | | | | Apple |
+| Apple: `hwnpu-image` にコンパイルのキャッシュ (16.85) | | | ◎ 118 → 4.4 s (512×512)。毎回 DiT をコンパイルし直していた | | ◎ 1 回 4 GB のバンドルが溜まらない | | | Apple |
+| Apple: Anima の注意を 512 クエリずつ (16.85) | ○ 1 ステップ 7.0 → 4.5 s (1024×1024) | | | | | | 変わらない | Apple |
+| Apple: Anima の VAE を `upsample_nearest_neighbor` に、段ごとに読む (16.85) | ◎ VAE 14.5 → 3.7 s | | | ◎ 6.9 → 3.8 GB | | | 段 5 の相対誤差 4.8e-4 | Apple |
+| Apple: Anima の既定を int8 に (16.85) | ○ 1 ステップ 4.5 → 4.2 s | | ○ | ○ | ○ 書き出し 4.6 → 2.8 GB | | △ fp16 との潜在のコサイン 0.902 (lut8 は 0.858) | Apple |
 | 会話の印はリングの使っている分だけ (16.71) | | | | ○ 翻訳 5 回で 578 → 183 MB | | | | 共通 |
 | 変換の後にメモリを OS に返す (16.71) | | | | ○ 起動直後 2.4 GB → 154 MB | | | | 共通 |
 | OpenVINO が残す `/dev/shm` を片付ける (16.72) | | | | | ○ 1 日 8.4 GB | | | Intel / OpenVINO |
@@ -216,7 +221,9 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | 注意を重みなしのプログラムに分ける | 部分が小さくなり ANE のキャッシュに残る、費用が使った長さに比例 | Gemma 4 の起動 98 s → 1.9 s |
 | head-scale (埋め込み)、`-post-scale` (LFM3) | ANE の fp16 のあふれと誤差の床 | |
 | PLaMo 3 の注意の出力を token が先の形 (`attn_ot_N`) で受ける | 最後の部分の `transpose` だけが CPU に落ちていたのを避ける | M3 で全部が ANE に載った。並べ替えはホストがする (写しが 1 つ増えるだけ) |
-| Anima の fp16 への手当て (DiT の残差を 1/32 で持つ、`maxScaled` の norm) | fp16 であふれず、非正規数にもならない | 実機では未確認 |
+| Anima の fp16 への手当て (DiT の残差を 1/32 で持つ、`maxScaled` の norm) | fp16 であふれず、非正規数にもならない | M3 で確認 (16.85) |
+| Anima の時刻の部品を 8 行に、パッチの埋め込みを最初のブロックの群に (16.85) | 1 行のままや、単独のプログラムだと、Core ML が部品ごと CPU に置く | Anima の全部が ANE に載る |
+| 注意の点数を 1 つのテンソルで 64 MiB 以下に (`mil.DitQChunk`、16.85) | 点数のテンソルが 65〜68 MiB を超えると、形によらず q kᵀ と softmax が点数あたり 2〜3 倍遅くなる | 1024×1024 の 512 クエリはそのすぐ下。大きな絵は塊を小さくする |
 
 ### 7.2 Intel NPU (OpenVINO IR / Level Zero)
 
@@ -291,6 +298,8 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | Anima の DiT を 4 ビット (q4nx) で既定に | 固定 3445 → 2710 MiB だが、潜在のコサイン 0.777 で絵が変わる (CPU でも 0.753 で、量子化そのものの損)。同じ形式の GPTQ でも速度の誤差 0.114 → 0.070 (q8 は 0.010) | 16.78 |
 | AMD: 言語モデルの q4nx のプロンプトを bf16 (`QDequant`) で | KL は変わらず (E2B 0.094、LFM3 0.037)、プロンプトの塊が 5〜9 % 遅い | 16.78 |
 | 固定の倍率で RMSNorm (Anima、fp16) | 大きな値のない行の 2 乗が非正規数になる。行ごとの最大値で割る形にした | 16.69 |
+| Apple: Anima の自己注意を速くする | Core ML の `scaled_dot_product_attention` 110 ms (今の形は 101)、尺度を q に 103、ヘッドで分ける 96〜118、チャンネルを先に 122。ヘッド 2 × クエリ 256 は 90 ms だが、注意 4 回のコンパイルに 84 s。行の最大を引かないと 87 ms だが fp16 があふれる (norm の重みからの上限は最大 221) | 16.85 |
+| Apple: Anima の DiT を lut8 に | int8 と同じ速さで、fp16 から遠い (潜在のコサイン 0.858 と 0.902) | 16.85 |
 
 ## 9. 組み合わせの注意 (代償)
 
@@ -327,7 +336,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3、翻訳) | — | ○ lut8、1 本、文脈 262144。M3 で全部 ANE に載ることと重みの形式を確認 | 変換は可 (int8)。OpenVINO の CPU で訳せた | ◎ q4 11.6 tok/s、2.16 GiB、文脈 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
-| Anima-Turbo (画像生成) | `internal/imagegen/anima` (MIL の 1 つの記述から作る) | Qwen3 の BPE + T5 の Unigram | — (`hwnpu-image`) | 画像を出力 | △ 変換は可 (fp16)。CPU のインタプリタで照合済み、実機は未確認 | △ 変換は可。OpenVINO の CPU で照合済み | ◎ 1024×1024 で 8 ステップ約 68 s、固定 3.4 GiB (DiT は 8 ビット) |
+| Anima-Turbo (画像生成) | `internal/imagegen/anima` (MIL の 1 つの記述から作る) | Qwen3 の BPE + T5 の Unigram | — (`hwnpu-image`) | 画像を出力 | ◎ M3 で 1024×1024 の 8 ステップ約 40 s、3.8 GB (int8) | △ 変換は可。OpenVINO の CPU で照合済み | ◎ 1024×1024 で 8 ステップ約 68 s、固定 3.4 GiB (DiT は 8 ビット) |
 | Qwen3.6-35B-A3B (参考) | 移植していない | — | — | — | — | — | MoE の層だけを乱数の重みで測った (16.75) |
 
 ### 10.2 トークナイザー (`internal/tokenizer`、依存は `golang.org/x/text` だけ)
@@ -446,6 +455,10 @@ Apple / Intel (`hwnpu-image -convert`):
 - MIL の 1 つの記述 (`internal/imagegen/anima/mil`) から、Core ML のパッケージと OpenVINO IR を Go だけで書く
 - fp16 への手当て: DiT の残差を 1/32 で持ち、norm は行ごとの最大値で割ってから行う
 - CPU での照合: 潜在のコサイン 0.99985、PSNR 37–38 dB
+- M3 (16.85): 全部が Neural Engine に載る。1024×1024 の 8 ステップで 40.4 s (1 ステップ 4.2〜4.4 s、VAE 3.7 s、キャッシュからの起動 2.8 s。初回は 3〜5 分)、footprint 3.8 GB。512×512 は 1 ステップ 0.8 s
+- hwnpu-chat と同じく用意する: `-model` を省くと、チェックポイントを `hwnpu/models/Anima` に落とし、見つけた NPU 向けに書き出す。書き出しの名前は大きさ、形式、書き出しの形の版から (`anima.Prepare`)
+- Core ML の既定はテキストも DiT も int8: fp16 と同じか速く (DiT は重みでなく注意で詰まる)、lut8 より fp16 に近い。テキストは fp16 (1.0 GB) では載らない
+- 自己注意がブロックの約半分。かかる時間は内側の次元でなく点数の数で決まる (q kᵀ で毎秒約 160 億、softmax で約 80 億)。塊の切り方、Core ML の `scaled_dot_product_attention`、ほかの並べ方では最大 11 % まで
 
 **Qwen3.6-35B-A3B (参考、MoE の部品だけ)** (16.75)
 - 載せる前に、今の IRON で書ける MoE の層をその大きさで測った (乱数の重み)
@@ -491,7 +504,8 @@ Apple / Intel (`hwnpu-image -convert`):
 | LFM3-Audio の TTS | 参照 (llama.cpp) と同じ音になるか。確かめたのは ASR で書き起こし直すことだけ | llama.cpp のサーバーの TTS と同じコードからデコードした音を比べる | 16.30–31 |
 | PLaMo-Embedding の長い文 | 1024 トークンのプログラムで最終層の値がさらに大きくならないか (head-scale で足りるか) | `TestANEPrecision` で文を変える | 16.34 |
 | BERT 系 | 実物での `hwnpu-check` と ANE への配置 (Intel 向けに CPU で照合しただけ) | | 16.11 |
-| **Anima (画像生成) 全体** | ANE に全部が載るか (1 つでも CPU に落ちると止まる)、コンパイルの時間、速さ、メモリ、1024×1024 の VAE (1 ヘッド 384 次元、16384 画素) が収まるか | [handoff-anima-mac-intel.md](handoff-anima-mac-intel.md) の 3 節 | 16.69 |
+| Anima の diffusers の fp32 との照合 | M3 では hwnpu 自身の fp16 の書き出しとしか比べていない (int8 で潜在のコサイン 0.902)。その機械に torch がない | `tools/ref/ref_anima.py` → `-noise`、`-latents` | 16.85 |
+| 1024×1024 より大きな Anima | 1024 を超える大きさで注意の塊を小さくした形 (`mil.DitQChunk`) の速さと、VAE の段が収まるかは測っていない | 1280×1280 を書き出して動かす | 16.85 |
 | PLaMo 3 の精度と速さの詳細 | 配置と重みの形式は確認済み。翻訳の質と長い文書の時間は詳しく測っていない | 翻訳の対で fp16 と KL を比べる | 16.71 |
 | PLaMo 3 の lut6 の 2 本 | 約 3.6 GiB がコンパイルのキャッシュ (約 4 GiB) に収まって、起動が速いままか | `-format lut6` で 2 回起動する | 16.71 |
 | macOS のメモリが使うほど減って見えた理由 | 0 の多いリングを macOS が圧縮していた、という見立て | 印の修正 (`ringRows`) の後に M3 で footprint を測る | 16.71 |

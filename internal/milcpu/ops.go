@@ -212,6 +212,12 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		if r.err == nil {
 			out, r.err = tile(x, reps)
 		}
+	case "upsample_nearest_neighbor":
+		x := r.floats("x")
+		sh, sw := r.int("scale_factor_height", 1), r.int("scale_factor_width", 1)
+		if r.err == nil {
+			out, r.err = upsampleNearest(x, int(sh), int(sw))
+		}
 	case "slice_by_index":
 		x := r.floats("x")
 		n := len(x.shape)
@@ -797,6 +803,29 @@ func tile(x *value, reps []int32) (*value, error) {
 				break
 			}
 			idx[d] = 0
+		}
+	}
+	return out, nil
+}
+
+// upsampleNearest repeats each pixel of x (..., H, W) as an sh x sw block.
+func upsampleNearest(x *value, sh, sw int) (*value, error) {
+	n := len(x.shape)
+	if n < 2 || sh < 1 || sw < 1 {
+		return nil, fmt.Errorf("upsample of shape %v by %d x %d", x.shape, sh, sw)
+	}
+	H, W := x.shape[n-2], x.shape[n-1]
+	shape := append([]int(nil), x.shape...)
+	shape[n-2], shape[n-1] = H*sh, W*sw
+	out := &value{shape: shape, f: make([]float32, numel(shape))}
+	planes := numel(x.shape) / (H * W)
+	for p := 0; p < planes; p++ {
+		src, dst := x.f[p*H*W:][:H*W], out.f[p*H*sh*W*sw:]
+		for y := 0; y < H*sh; y++ {
+			row := dst[y*W*sw:][:W*sw]
+			for xx := range row {
+				row[xx] = src[(y/sh)*W+xx/sw]
+			}
 		}
 	}
 	return out, nil

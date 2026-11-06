@@ -229,10 +229,10 @@ func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32) ([]
 func (e *ironEngine) hasVAE() bool { return e.vae != nil }
 
 // decode releases the DiT and runs the VAE, which loads a stage at a time.
-func (e *ironEngine) decode(ctx context.Context, latents []float32, logf func(string, ...any)) (*image.RGBA, error) {
+func (e *ironEngine) decode(ctx context.Context, latents []float32, stage StageFunc) (*image.RGBA, error) {
 	if err := e.closeDiT(); err != nil {
 		return nil, err
 	}
-	e.vae.Logf = logf
+	e.vae.Stage = stage
 	return e.vae.Decode(ctx, latents)
 }

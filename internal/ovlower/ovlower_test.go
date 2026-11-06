@@ -212,6 +212,15 @@ func TestShapes(t *testing.T) {
 	p.check(b.NamedOp("identity", "y", map[string]any{"x": c}, f16, 1, 4, 6, 4), b.NamedOp("identity", "s", map[string]any{"x": pd}, f16, 1, 4, 5))
 }
 
+// upsample_nearest_neighbor, lowered to reshapes and tiles.
+func TestUpsample(t *testing.T) {
+	p := newProgram(t)
+	b := p.b
+	x := p.input("x", -1, 1, 1, 3, 2, 4)
+	u := p.op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": b.ScalarI32(2), "scale_factor_width": b.ScalarI32(2)}, 1, 3, 4, 8)
+	p.check(b.NamedOp("identity", "y", map[string]any{"x": u}, f16, 1, 3, 4, 8))
+}
+
 // Matrix products and linear layers with fp16, int4 (per row and in groups) and int8 weights.
 func TestLinear(t *testing.T) {
 	p := newProgram(t)

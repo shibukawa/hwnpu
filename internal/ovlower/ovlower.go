@@ -437,6 +437,26 @@ func (l *lowerer) op(op *milspec.Operation) {
 		set(b.NamedOp("Transpose", "opset1", name, nil, elem, shape, l.in(op, "x"), l.i64s(l.ints(op, "perm")...)))
 	case "tile":
 		set(b.NamedOp("Tile", "opset1", name, nil, elem, shape, l.in(op, "x"), l.i64s(l.ints(op, "reps")...)))
+	case "upsample_nearest_neighbor":
+		// (N, C, H, W) as reshapes and tiles, each pixel an sh x sw block
+		x := l.in(op, "x")
+		if len(x.Shape) != 4 {
+			l.fail("upsample_nearest_neighbor %s: rank %d", outName, len(x.Shape))
+		}
+		N, C, H, W := int64(x.Shape[0]), int64(x.Shape[1]), int64(x.Shape[2]), int64(x.Shape[3])
+		sh, sw := l.ints(op, "scale_factor_height", 1)[0], l.ints(op, "scale_factor_width", 1)[0]
+		dims := func(v ...int64) []int {
+			out := make([]int, len(v))
+			for i, d := range v {
+				out[i] = int(d)
+			}
+			return out
+		}
+		u := b.Op("Reshape", "opset1", []string{"special_zero", "false"}, elem, dims(N*C, H, W, 1), x, l.i64s(N*C, H, W, 1))
+		u = b.Op("Tile", "opset1", nil, elem, dims(N*C, H, W, sw), u, l.i64s(1, 1, 1, sw))
+		u = b.Op("Reshape", "opset1", []string{"special_zero", "false"}, elem, dims(N*C, H, 1, W*sw), u, l.i64s(N*C, H, 1, W*sw))
+		u = b.Op("Tile", "opset1", nil, elem, dims(N*C, H, sh, W*sw), u, l.i64s(1, 1, sh, 1))
+		set(b.NamedOp("Reshape", "opset1", name, []string{"special_zero", "false"}, elem, shape, u, l.i64s(N, C, H*sh, W*sw)))
 	case "slice_by_index":
 		x := l.in(op, "x")
 		n := len(x.Shape)

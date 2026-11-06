@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
@@ -160,13 +161,11 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 		return nil, err
 	}
 	logf("loading %s onto %s: %d programs, up to a minute or two (%s)", e.Name, llm.DeviceName(e.dev), len(c.Packages), compileNote(e.dev))
-	for _, pkg := range c.Packages {
-		t0 := time.Now()
-		stop := dots(c.Log, "  "+filepath.Base(pkg)+" ")
+	for i, pkg := range c.Packages {
+		bar := console.NewBar(c.Log, fmt.Sprintf("  [%d/%d] %s", i+1, len(c.Packages), filepath.Base(pkg)))
 		ch, err := chain.Open(ctx, e.dev, pkg)
-		stop()
 		if err != nil {
-			logf("")
+			bar.Done("failed")
 			e.Close()
 			return nil, err
 		}
@@ -179,7 +178,7 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 		if n := len(ch.Parts()); n > 1 {
 			parts = fmt.Sprintf("%d parts", n)
 		}
-		logf(" %.1fs, %s, %s", time.Since(t0).Seconds(), parts, where)
+		bar.Done(fmt.Sprintf("%s, %s, %s", console.Duration(bar.Elapsed()), parts, where))
 		if err := e.add(ch.Program(context.Background())); err != nil {
 			e.Close()
 			return nil, fmt.Errorf("chat: %s: %w", pkg, err)

@@ -7,8 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima/mil"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
@@ -29,7 +29,7 @@ type ConvertOptions struct {
 	Group int
 	// QChunk is the queries the attention of the DiT and the VAE scores at a time.
 	QChunk int
-	// Only, when not empty, writes these parts alone (text, time, patch, blocks, final, vae).
+	// Only, when not empty, writes these parts alone (text, time, blocks, final, vae).
 	Only map[string]bool
 }
 
@@ -72,6 +72,9 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	if err := json.Unmarshal(raw, &vcfg); err != nil || len(vcfg.Mean) != 16 || len(vcfg.Std) != 16 {
 		return fmt.Errorf("anima: vae/config.json has no 16 latents_mean and latents_std")
 	}
+	// the parts in the order they are written, for "[3/19]"
+	total := 3 + mil.DitLayers/o.Group + len(mil.VaeStages(o.Width, o.Height))
+	written := 0
 	m := &ProgramManifest{Backend: o.Backend, Width: o.Width, Height: o.Height,
 		Formats: map[string]string{"text": o.TextFormat, "dit": o.DitFormat, "vae": "fp16"}}
 	write := func(kind string, p *mil.Part, format string) (string, error) {
@@ -79,12 +82,14 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
-		t0 := time.Now()
+		written++
+		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
 		opts := llm.Options{Backend: o.Backend, Format: format}
 		if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
+			bar.Done("failed")
 			return "", fmt.Errorf("anima: %s: %w", p.Name, err)
 		}
-		fmt.Fprintf(log, "%s: %.0f s\n", name, time.Since(t0).Seconds())
+		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
 		return name, nil
 	}
 	if m.Text, err = write("text", mil.Text(), o.TextFormat); err != nil {
@@ -93,11 +98,13 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	if m.Time, err = write("time", mil.Time(), o.DitFormat); err != nil {
 		return err
 	}
-	if m.Patch, err = write("patch", mil.Patch(o.Width, o.Height), "fp16"); err != nil {
-		return err
+	m.TimeRows = mil.TimeRows
+	qchunk := mil.DitQChunk(o.Width, o.Height, o.QChunk)
+	if qchunk != o.QChunk {
+		fmt.Fprintf(log, "the DiT's attention scores %d queries at a time (%d would be over 64 MiB of scores)\n", qchunk, o.QChunk)
 	}
 	for first := 0; first < mil.DitLayers; first += o.Group {
-		name, err := write("blocks", mil.Blocks(o.Width, o.Height, first, o.Group, o.QChunk), o.DitFormat)
+		name, err := write("blocks", mil.Blocks(o.Width, o.Height, first, o.Group, qchunk), o.DitFormat)
 		if err != nil {
 			return err
 		}
