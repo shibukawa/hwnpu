@@ -96,6 +96,10 @@ func main() {
 	split := flag.Int("split", 256, "tokens of -forced read as the prompt")
 	logitsOut := flag.String("logits", "", "where -forced writes its logits")
 	bos := flag.Int("bos", 2, "the token -forced puts before its text (Gemma 4's <bos> 2; PLaMo 3's 1)")
+	record := flag.String("record", "", "write a check (check.json and the logits) into this directory from this export's own logits: a prompt of -record-tokens tokens of -text (tokenized with -tokenizer), then -record-calls greedy steps; another export's run on it compares the two")
+	text := flag.String("text", "", "the text file -record reads its prompt from")
+	recordTokens := flag.Int("record-tokens", 2600, "the prompt's tokens for -record")
+	recordCalls := flag.Int("record-calls", 4, "the calls -record writes: the prompt's, then greedy decode steps")
 	flag.Parse()
 	dir := flag.Arg(0)
 	ctx := context.Background()
@@ -117,6 +121,10 @@ func main() {
 	}
 	if *depth {
 		benchDepth(ctx, m)
+		return
+	}
+	if *record != "" {
+		recordCheck(ctx, m, *record, *text, *tokPath, *recordTokens, *recordCalls)
 		return
 	}
 	if *prompt != "" {
@@ -332,13 +340,18 @@ func benchDepth(ctx context.Context, m *iron.Model) {
 	for i := range toks {
 		toks[i] = int32(1000 + (i*7919)%20000)
 	}
+	dev := m.Device()
 	for start := 0; start < L-1; start += C {
 		n := min(C, L-1-start) // the last chunk leaves a position for the decode step
+		p0, perr := dev.PowerSample()
 		t := time.Now()
 		if _, err := m.Prompt(ctx, toks[start:start+n], start); err != nil {
 			log.Fatalf("chunk at %d: %v", start, err)
 		}
 		chunk := time.Since(t).Seconds()
+		if p1, err := dev.PowerSample(); perr == nil && err == nil {
+			fmt.Printf("chunk of %d from %d: %.1f J, %.2f W on average (%s)\n", n, start, p1.EnergyJ-p0.EnergyJ, hwnpu.AveragePower(p0, p1), p1.Scope)
+		}
 		t = time.Now()
 		if _, err := m.Step(ctx, toks[start+n], start+n); err != nil {
 			log.Fatalf("step at %d: %v", start+n, err)
@@ -392,6 +405,65 @@ func teacher(ctx context.Context, m *iron.Model, path, tokPath string, bos int32
 		binary.LittleEndian.PutUint32(ids32[4*i:], uint32(id))
 	}
 	if err := os.WriteFile(out+".ids", ids32, 0o644); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// recordCheck writes a check from this export's own logits: the first n tokens of the text
+// (repeated past its end), then calls-1 greedy decode steps. Run on another export of the same
+// model (its check/), ironlm compares the two exports call by call.
+func recordCheck(ctx context.Context, m *iron.Model, dir, textPath, tokPath string, n, calls int) {
+	tok, err := tokenizer.Load(tokPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	b, err := os.ReadFile(textPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var ids []int32
+	for len(ids) < n {
+		ids = append(ids, tok.Encode(string(b))...)
+	}
+	ids = ids[:n]
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Fatal(err)
+	}
+	c := check{Prompt: ids}
+	history := append([]int32(nil), ids...)
+	var logits []float32
+	for k := 0; k < calls; k++ {
+		t := time.Now()
+		if k == 0 {
+			logits, err = m.Prompt(ctx, history, 0)
+		} else {
+			logits, err = m.Step(ctx, history[len(history)-1], len(history)-1)
+		}
+		if err != nil {
+			log.Fatalf("call %d: %v", k, err)
+		}
+		name := fmt.Sprintf("logits_%d.bin", k)
+		out := make([]byte, 4*len(logits))
+		for i, v := range logits {
+			binary.LittleEndian.PutUint32(out[4*i:], math.Float32bits(v))
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), out, 0o644); err != nil {
+			log.Fatal(err)
+		}
+		top := argmax(logits)
+		c.Calls = append(c.Calls, struct {
+			Tokens int    `json:"tokens"`
+			Logits string `json:"logits"`
+			Top    int32  `json:"top"`
+		}{len(history), name, top})
+		fmt.Printf("call %d (%d tokens, %.1f ms): top %d\n", k, len(history), time.Since(t).Seconds()*1000, top)
+		history = append(history, top)
+	}
+	j, err := json.Marshal(c)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "check.json"), append(j, '\n'), 0o644); err != nil {
 		log.Fatal(err)
 	}
 }
