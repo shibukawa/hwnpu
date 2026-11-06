@@ -456,6 +456,7 @@ Apple / Intel (`hwnpu-image -convert`):
 - fp16 への手当て: DiT の残差を 1/32 で持ち、norm は行ごとの最大値で割ってから行う
 - CPU での照合: 潜在のコサイン 0.99985、PSNR 37–38 dB
 - M3 (16.85): 全部が Neural Engine に載る。1024×1024 の 8 ステップで 40.4 s (1 ステップ 4.2〜4.4 s、VAE 3.7 s、キャッシュからの起動 2.8 s。初回は 3〜5 分)、footprint 3.8 GB。512×512 は 1 ステップ 0.8 s
+- hwnpu-chat と同じく用意する: `-model` を省くと、チェックポイントを `hwnpu/models/Anima` に落とし、見つけた NPU 向けに書き出す。書き出しの名前は大きさ、形式、書き出しの形の版から (`anima.Prepare`)
 - Core ML の既定はテキストも DiT も int8: fp16 と同じか速く (DiT は重みでなく注意で詰まる)、lut8 より fp16 に近い。テキストは fp16 (1.0 GB) では載らない
 - 自己注意がブロックの約半分。かかる時間は内側の次元でなく点数の数で決まる (q kᵀ で毎秒約 160 億、softmax で約 80 億)。塊の切り方、Core ML の `scaled_dot_product_attention`、ほかの並べ方では最大 11 % まで
 

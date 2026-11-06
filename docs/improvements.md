@@ -456,6 +456,7 @@ Apple / Intel (`hwnpu-image -convert`):
 - fp16 handling: DiT residuals kept at 1/32, norms divided by each row's maximum first
 - Checked on the CPU: latent cosine 0.99985, PSNR 37–38 dB
 - M3 (16.85): all on the Neural Engine. 1024×1024, 8 steps: 40.4 s (a step 4.2–4.4 s, VAE 3.7 s, startup 2.8 s from the cache; 3–5 min the first time), footprint 3.8 GB. 512×512: 0.8 s a step
+- Made ready as hwnpu-chat makes its models: without `-model`, the checkpoint is downloaded into `hwnpu/models/Anima` and converted for the NPU found, the export named by its size, formats and layout version (`anima.Prepare`)
 - Core ML's defaults are int8 for the text and the DiT: as fast as fp16 or faster (the DiT is bound by its attention, not its weights), and nearer fp16 than lut8. The text does not fit at fp16 (1.0 GB)
 - Self-attention is about half of a block. Its cost follows the number of scores (q kᵀ about 16 G scores/s, the softmax about 8 G/s), not the inner dimension; the chunking, Core ML's own `scaled_dot_product_attention` and other layouts gain at most 11 %
 

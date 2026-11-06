@@ -150,7 +150,7 @@ python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma
 
 Ryzen AI 9 365 で、デコードは 1 秒に 5.5〜6 トークン、プロンプトは 1 秒に 260 トークン前後です (bf16 の重み)。プロンプトの塊は 1024 トークンが速く (IRON の既定の 2048 より 2 割)、4096 トークンの文脈でもスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。仕組みと制約は [docs/amd-npu-models.md](docs/amd-npu-models.md) にあります。
 
-### 画像生成 (Anima) を AMD の NPU で
+### 画像生成 (Anima)
 
 `go run ./cmd/hwnpu-image` は、Anima (circlestone-labs/Anima、Cosmos-Predict2 2B の DiT と Qwen3-0.6B、Qwen-Image の VAE) でプロンプトから絵を描きます。テキストの符号化、DiT のステップ、VAE の復号はすべて NPU の上の IRON のグラフで、ホストはトークン化、埋め込みの行の取り出し、パッチの並べ替え、Euler のステップ、PNG を受け持ちます。書き出しは画像の大きさごとで、hwnpu の `tools/amd/iron_anima.py` が作ります (Anima-Turbo、1024 × 1024 で 4.0 GB。DiT のブロックの重みは 8 ビット)。
 
@@ -161,12 +161,13 @@ go run ./cmd/hwnpu-image -model ~/models/anima-turbo-1024.amd-npu2 -prompt "mast
 
 Ryzen AI 9 365 で、1024 × 1024 の 1 枚が 8 ステップで約 70 秒、NPU に固定されるメモリは最大 3.4 GiB です (読み込み 4 秒、テキスト 0.5 秒、DiT 1 ステップ 7.2 秒、VAE 7 秒)。`~/models/Anima` の置き方と、精度の測定は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 11 節にあります。
 
-Mac の Neural Engine と Intel の NPU には、`-convert` が同じ部品を Go だけで Core ML のパッケージか OpenVINO IR に書きます (Python は要りません)。CPU のインタプリタと OpenVINO の CPU では参照と一致しますが、実機では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。
+Mac の Neural Engine と Intel の NPU では、hwnpu-chat と同じく、初回の起動でチェックポイントを Hugging Face から落とし (約 5.4 GB)、Go だけで Core ML のパッケージか OpenVINO IR に書き出します (Python は要りません)。置き場所は hwnpu-chat と同じユーザーのキャッシュディレクトリの `hwnpu/models/Anima` (`-dir`) で、書き出しは画像の大きさ (`-size`) と重みの形式ごとです。初回は読み込みのときに NPU 向けのコンパイルもあり、1024 × 1024 で数分かかります。
 
 ```bash
-go run ./cmd/hwnpu-image -convert ~/models/Anima -backend coreml -size 1024 -model ~/models/anima-turbo-1024.coreml   # Intel: -backend intel
-go run ./cmd/hwnpu-image -model ~/models/anima-turbo-1024.coreml -prompt "..." -o out.png
+go run ./cmd/hwnpu-image -prompt "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
 ```
+
+M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。記録は [docs/design.md](docs/design.md) の 16.85 にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `-convert DIR -model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
 
 ## Apple での注意
 
