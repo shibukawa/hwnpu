@@ -1,8 +1,8 @@
-# What each improvement bought (as of 2026-11-06, main up to #52 and the towers loaded only when used, with the two-level attention checked on an M3)
+# What each improvement bought (as of 2026-11-06, main up to #52, the towers loaded only when used and the sliding-window layers reading only their window, with the two-level attention checked on an M3)
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.81), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.81, and 16.84), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -38,6 +38,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | AMD: PLE and embedding tables on the host (16.72–73) | unchanged | unchanged | | ◎ E2B 9.08 → 4.60 GB | | | unchanged (word for word) | AMD |
 | AMD: release the NPU while idle `-idle` (16.74) | | | △ reload 0.8–2 s on the next request | ◎ 0 while idle | | | | AMD |
 | AMD: Gemma 4's KV-shared layers on the prompt's last row only (16.80) | unchanged | ◎ E2B 2.3× (4K 18.3 → 7.8 s), E4B 1.7× | | | | | ○ caches bit for bit the same (last row's logits cosine 0.9996 or more) | AMD |
+| AMD: sliding-window layers read only their window (16.84) | △ −2 % at 4K (PLaMo 3 −14 % at 8K) | ○ E2B −12 % over 4K on top of 16.80 (last chunk −20 %), PLaMo 3 −12 % over 8K | | △ +12 MB (a chunk's rows more in each window cache) | | | unchanged (top token the same, cosine 0.9997 or more) | AMD |
 | AMD: towers loaded only when used (16.81) | | | △ the first image or clip +0.6–0.7 s | ◎ E2B with images and audio 2818 → 1826 MiB while only text | ○ no text-only export needed | | unchanged | AMD |
 | Anima loaded one stage at a time (16.72) | 69.3 → 67.7 s/image | | | ◎ 14.2 → 5.0 GiB | | | bit for bit the same | AMD |
 | AMD: Anima's DiT at 8 bits (q8) (16.78) | +2 % (67.3 → 68.3 s/image) | | | ◎ pinned 5020 → 3445 MiB | ○ 5.7 → 4.0 GB | | nearly unchanged (latent cosine 0.966 → 0.961) | AMD |
@@ -102,6 +103,7 @@ Improvements to the GEMV itself:
 | PLaMo 3's translation history (16.70–71) | Reads the whole history of pairs every time | From the second text on, reads only 17 of 50 tokens | When the target language is chosen automatically, the label of each past translation is fixed by its source text. Otherwise the start of the prompt could not be reused |
 | Coming back from `-idle` (16.74) | — | 830 tokens restored from the host copy, only the next question's 58 tokens read | |
 | AMD: Gemma 4's KV-shared layers on the last row only (16.80) | 4K prompt: E2B 18.3 s, 218 J (q4 the same), E4B 22.9 s, 279 J | E2B 7.8 s, 97 J (q4 8.3 s, 94 J), E4B 13.7 s, 166 J | Only a chunk's last row needs the shared layers' output (E2B 20 of 35, E4B 18 of 42). Faster by computing less, not by adding the GPU |
+| AMD: sliding-window layers read only their window (16.84) | 4K prompt after 16.80: E2B 7.84 s, 92 J; PLaMo 3 q4 8K 60.3 s | E2B 6.87 s, 80 J (the chunk from 3072 2.76 → 2.21 s); PLaMo 3 53.1 s (the chunk from 7168 10.75 → 8.39 s) | IRON's attention read every key from position 0 and only skipped the compute outside the window. A chunk now copies its window's keys (chunk + window) and attends over the copy; a decode step reads its window in place. The chunks before the window's end are unchanged |
 
 ## 4. Startup time
 
@@ -248,6 +250,7 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | Host tables (`iron.HostTable`) | PLE and embeddings are not pinned | The tokens' rows are written before each call. Output word for word the same |
 | `-idle` (`Release` / `Reload`) | A resident server gives back pinned memory while idle | E2B 1775 MiB → 0. The conversation is copied to the host and continues |
 | Towers loaded only when used (`growBanks`, 16.81) | One export with images and audio serves text alone at the text export's memory | Gemma 4 E2B 2818 → 1826 MiB (the text export: 1775), LFM3-Omni 2448 → 1679 MiB until a tower runs; the towers come in 0.6–0.7 s. Same answers. No export again |
+| Windowed attention (`iron_window.py`, 16.84) and the chunk barrier (`chunkBarrier`) | Prompt chunks −12 % (E2B 4K, PLaMo 3 8K), decode −2 to −14 % | Attention of one window layer alone 112 → 66 ms (chunk at 3072). The window form made the second chunk's first command hang in the full ELF (16.80's hang); an empty command in the decode step's hardware context before each chunk (0.3–0.5 ms) prevents it. The cause is unknown |
 | A general graph export (`iron_graph.py`, `iron.Graph`) | Models other than language models (Anima) | One ELF can hold several weight banks (`variants`). The DiT's 7 sets compile once |
 | Splitting commands (`SCRATCHPAD_WORDS` 24) | Keeps each command under amdxdna's 2 s timeout and the 64 MiB heap | Without the gather, commands grew too long; they are now split at export |
 | Retrying when the heap runs out (`ENOSPC`) | Releases the decode run and tries again | Same as IRON |
@@ -301,6 +304,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 - **The rounding fix on AMD**: it is in the exported kernels, so 4-bit exports made before #48 keep the old rounding until exported again (the difference for language models is small)
 - **`-idle`**: memory is given back while idle, but the next request first pays 0.8–2 s to reload. `-idle 0` turns it off
 - **Towers loaded only when used**: the first image or clip after a start (or after `-idle`) waits 0.5–0.7 s more for the towers, and for that moment the old and the new bank are both pinned (Gemma 4 E2B 4-bit: 1.67 + 2.64 GiB). After that the towers stay until the model is released
+- **The chunk barrier** (16.84): every prompt chunk first runs an empty command in the decode step's hardware context (0.3–0.5 ms a chunk). Without it, exports with the windowed attention hang on their second chunk. Exports with an xclbin per step (NPU1) run none
 - **PLaMo 3 as one lut8 program**: short texts are fast, but long documents are read about 10× slower (`-format lut6` gives two programs at lower accuracy)
 - **Sharing on the disk depends on the file system**: ext4, the default of Ubuntu, Debian and many others, cannot share, so each copy takes its full size there. Fedora and openSUSE default to Btrfs. Put the models on Btrfs or XFS to share (on Windows, a Dev Drive). Whole files and the common start of files of one name are shared; bytes after a difference are kept separately
 
@@ -537,7 +541,8 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Which shapes fall to the CPU at the 16384 per-dimension limit and which stay (chunks along an axis, weighting by ratios go to the CPU) | Inside Core ML's compiler | 16.21 |
 | Only the 8-part split loads slowly from the cache (23.7 s) | Not looked into | 16.13 |
 | On a 128K English document, two-level attention has lower loss than normal attention | Normal attention gets distracted by distant tokens, and two levels narrow that | 16.61 |
-| AMD's prefill is slower than IRON's Llama 3.2 1B | Without rings for the sliding layers, the whole context is read with a mask (skipping outside the window should be several times faster) | 16.50, 16.66 |
+| AMD's prefill is slower than IRON's Llama 3.2 1B | Skipping outside the window (16.84) made it only 12 % faster after 16.80 (not several times): the full-attention layers and the shared layers' last row still grow with the context | 16.50, 16.66, 16.84 |
+| AMD: with the windowed attention, a full ELF's second prompt chunk hangs in its first command | Not the words' values, the cut, the bank offsets or the operators (each passes alone and as an xclbin per step). A pause does not help; another hardware context's command does. Avoided with `chunkBarrier` | 16.80, 16.84 |
 | AMD: splitting Anima's DiT into commands with host steps stops the first command with `ERT_CMD_STATE_TIMEOUT` | Not looked into. Avoided with one graph of 4 blocks | 16.68 |
 | AMD: with Gemma 4 E4B's old export, the first command of the second chunk stops for 61 s | Not looked into. The new export (62 commands) gets through | amd-npu-models.md section 12 |
 | AMD: with random weights the NPU and IRON's reference disagree (PLaMo 3 too, besides Gemma 4) | They agree with the real weights. Random weights may make outliers through bf16 rounding, but this is not checked | 16.50, 16.70 |
@@ -553,7 +558,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 - A WordPiece tokenizer (to use the BERT family from hwnpu-chat)
 - Speculative decoding with a draft model (such as Qwen3.5's `mtp.` layers) (T9)
 - Repairing hwnpu-agent's broken calls (output-parser)
-- AMD: attention that skips outside the sliding window, an IRON version for checking drafts
+- AMD: an IRON version for checking drafts
 - The rest of AMD's pinned memory (amd-npu-models.md section 12):
   - One DiT work area for all 7 sets (about 1 GB)
   - Split the VAE into tiles
