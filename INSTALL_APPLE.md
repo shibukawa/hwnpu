@@ -2,7 +2,7 @@
 
 How to use the Neural Engine of an Apple Silicon Mac from hwnpu, from checking the machine to running the report and preparing models.
 
-> **Status.** The Apple backend is the one hwnpu has been developed and measured on (M3, macOS 27). The numbers in [MODEL.md](MODEL.md) come from it.
+> **Status.** The Apple backend is the one hwnpu has been developed and measured on (M3, macOS 27). The numbers in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md) come from it.
 
 日本語: [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md)
 
@@ -69,7 +69,7 @@ To measure the energy per call, which needs root for `powermetrics`:
 go run ./cmd/powerbench -model 'path/to/*.mlpackage' -o power.md
 ```
 
-It asks for the sudo password once and compares the Neural Engine with the CPU (and with the GPU when `-gpu` is given). The results on an M3 and how to read them are in [MODEL.md](MODEL.md).
+It asks for the sudo password once and compares the Neural Engine with the CPU (and with the GPU when `-gpu` is given). The results on an M3 and how to read them are in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
 
 To measure the Neural Engine with generated models, run the probe. It builds LLM decode shaped models in Go and measures 0.5 B and 1 B weights in fp16, int8, lut4 and int4 on the Neural Engine, the CPU and the GPU (`bench`). Then it grows the model in each format until it leaves the Neural Engine, bisects to the boundary, and loads several models just under it at once to tell a limit per model from a limit on the total (`limit`). It needs no Python, no model files and no root, takes about 40 minutes, needs free disk space of about twice the largest model (a quarter of the RAM by default, `-max-gb` to change), and writes `npuprobe-<machine>-<time>.md`. It runs without cloning:
 
@@ -87,12 +87,12 @@ What the Neural Engine needs from a model:
 
 - **fp16.** fp32 operations run on the CPU. Convert with `compute_precision=FLOAT16`.
 - **Fixed shapes.** Dynamic shapes fall back to the CPU. Export one model per sequence length or batch size.
-- **Enough work per call.** Small models are placed on the CPU even in fp16. `tools/coreml/ane_pad.py` pads the batch dimension until the model moves; read the energy results in [MODEL.md](MODEL.md) first, since padding only pays above roughly 200 MFLOP per call.
+- **Enough work per call.** Small models are placed on the CPU even in fp16. `tools/coreml/ane_pad.py` pads the batch dimension until the model moves; read the energy results in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md) first, since padding only pays above roughly 200 MFLOP per call.
 - **Weights under 1 GiB per model.** On an M3 the boundary lay between 0.99 and 1.02 GiB of stored weights in fp16, int8 and lut4 alike (`cmd/npuprobe limit`), and a model above it is placed entirely on the CPU. The limit is per model: three models of 0.91 GiB loaded at once all stayed on the Neural Engine at full speed, so a larger network can be split into several models. Only the 4 bit lookup-table format runs at full speed.
 
 The intended path is `hwnpu-convert`, in Go, from the bf16 checkpoint; coremltools is only the fallback for architectures it does not know.
 
-- **LLM checkpoints with hwnpu-convert** (Go only, no Python). `go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` builds the graph from `config.json` for a known architecture and palettizes the weights to 4 bit. It knows LFM3 so far; other architectures (Llama, Qwen) need their structure added in `internal/llm`. How to choose the source checkpoint and what the Neural Engine accepts are described in [MODEL.md](MODEL.md).
+- **LLM checkpoints with hwnpu-convert** (Go only, no Python). `go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` builds the graph from `config.json` for a known architecture and palettizes the weights to 4 bit. It knows LFM3 so far; other architectures (Llama, Qwen) need their structure added in `internal/llm`. How to choose the source checkpoint and what the Neural Engine accepts are described in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
 - **Anything else with coremltools** (Python). A generic converter that accepts arbitrary graphs is out of hwnpu's scope, so models that are not a supported LLM architecture (encoders such as MiniLM, vision models) are converted from PyTorch with `ct.convert(..., convert_to="mlprogram", compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS14)` and fixed input shapes. `tools/coreml/convert_minilm.py` and `tools/coreml/gen_sweep.py` are worked examples, written for the benchmarks.
 
 ## Troubleshooting
@@ -103,6 +103,6 @@ The intended path is `hwnpu-convert`, in Go, from the bf16 checkpoint; coremltoo
 | `Verified` is false | macOS older than 14.4, or a model in the old `neuralnetwork` format rather than an ML Program. Update macOS and reconvert as an ML Program. |
 | Loading crashes instead of returning an error | A hand-written ML Program with dots in value names, or a corrupt package. coremltools and `hwnpu-convert` write valid names. |
 | The whole model runs on the CPU although it is fp16 | Weights too large (1 GiB or more per model; split it into several models), or weight compression in a layout the Neural Engine does not accept (lookup tables must cover whole rows, 16 per table; blockwise int4 is not accepted). |
-| Results differ from PyTorch by several percent | The Neural Engine's matrix products have an absolute error floor around 2.5e-4; layers whose outputs are tiny lose precision. `hwnpu-convert -post-scale` works around it for LFM3; see [MODEL.md](MODEL.md). |
+| Results differ from PyTorch by several percent | The Neural Engine's matrix products have an absolute error floor around 2.5e-4; layers whose outputs are tiny lose precision. `hwnpu-convert -post-scale` works around it for LFM3; see [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md). |
 | Need a CPU or GPU baseline | Set `HWNPU_COREML_UNITS=cpu` or `gpu` when loading (measurement only, not part of the API). |
 | `powerbench` stops at `Password:` | `powermetrics` needs root; type the sudo password once, the tool keeps the credentials alive. |

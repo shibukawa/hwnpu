@@ -10,7 +10,7 @@
 - 主なコミット
   - `ed838e8` 変換 (`hwnpu-convert -paged N`)、`internal/llm/paged`、`decode.Session` の塊ごとの注意、`internal/llm/chain` の読み込み
   - `01d219f` hwnpu-chat と hwnpu-agent の既定化 (LFM3 は塊 8192 で分け、文脈 262144)、メモリの上限、CPU の runner
-  - `61fafb9` 実物の LFM3-1.7B での CPU 確認 (`TestPagedCheckpoint`)、CHAT.md と MODEL.md、design.md 16.59
+  - `61fafb9` 実物の LFM3-1.7B での CPU 確認 (`TestPagedCheckpoint`)、CHAT.md と MODEL_ARCHITECTURE.md、design.md 16.59
   - その前: `npuprobe attn` と `npuprobe seam` の計測 (design.md 16.58)、Core ML の `Bind` の修正 (`e8fa3fd`)
 - Linux で確かめたこと
   - 小さなモデル: 分けたものと分けないもののロジットの相対誤差は 8.6e-4 以内 (`TestPagedMatchesFull`、`TestPagedShareRewindResume`、`TestEngineReusePaged`)

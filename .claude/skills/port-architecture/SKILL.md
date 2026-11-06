@@ -87,12 +87,12 @@ go run ./cmd/hwnpu-check -config MODEL_DIR/config.json -weights MODEL_DIR/model.
 
 ### 7. Neural Engine 向けの書き換えは最後に入れる
 
-fp16 の素直なグラフが参照と合ってから入れます。書き換えは `Params` の設定にして、既定値を決めます。それを外すと素直なグラフに戻るようにしておき、書き換えの前後で数学的に同じ計算になることをテストで確かめます（LFM3 の `TestCPUVariants`）。Neural Engine の制約（値の名前にドットを使えない、gather は CPU、lut4 は出力 16 行ごとの表、行列積の誤差の床など）は MODEL.md にまとめてあります。
+fp16 の素直なグラフが参照と合ってから入れます。書き換えは `Params` の設定にして、既定値を決めます。それを外すと素直なグラフに戻るようにしておき、書き換えの前後で数学的に同じ計算になることをテストで確かめます（LFM3 の `TestCPUVariants`）。Neural Engine の制約（値の名前にドットを使えない、gather は CPU、lut4 は出力 16 行ごとの表、行列積の誤差の床など）は MODEL_ARCHITECTURE.md にまとめてあります。
 
 ### 8. ドキュメント
 
 - docs/design.md に節を足す：何を移したか、合格条件の数値、未確認の点
-- MODEL.md と MODEL.ja.md の対応アーキテクチャ、README.md の一覧を更新する
+- MODEL_ARCHITECTURE.md と MODEL_ARCHITECTURE.ja.md の対応アーキテクチャ、README.md の一覧、MODEL.md と MODEL.ja.md のおすすめとメモリの表を更新する
 
 ## 間違えやすい点
 
