@@ -25,6 +25,10 @@ type builder struct {
 	seq  int
 	d    int
 	end  int // one past the last layer built
+	// rows is the rows the layers being built compute: seq, or 1 from the first layer that reuses
+	// earlier keys and values on with LastRow (lastFrom), whose rows only the last token's logits
+	// need
+	rows int
 
 	ins     map[string]*mlpackage.Var
 	inList  []mlpackage.Feature
@@ -89,20 +93,34 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins,
 	m := &builder{Graph: &blocks.Graph{Name: "gemma4", B: b, W: w, Opts: opts.Options}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize,
 		end: opts.Start + opts.Layers, ins: map[string]*mlpackage.Var{}, rope: map[string][2]*mlpackage.Var{}, masks: map[string]*mlpackage.Var{},
 		shared: map[string][2]*mlpackage.Var{}}
+	m.rows = m.seq
+	from := m.lastFrom()
+	if opts.Start > 0 && opts.Start >= from {
+		m.rows = 1 // the part before gives the last token's row
+	}
 	err = blocks.Run(func() {
-		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
+		x := b.Input("x", mlpackage.Float16, 1, m.rows, m.d)
 		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
 		h := x
 		var ple *mlpackage.Var
 		if opts.Layers > 0 {
 			h, ple = m.embedding(x)
 		}
+		if m.rows == 1 && ple != nil {
+			ple = m.last(ple) // per_layer_inputs, of every row
+		}
 		for i := opts.Start; i < m.end; i++ {
+			if i == from && i > opts.Start {
+				h, ple = m.toLast(h, ple)
+			}
 			if i == opts.Start && i > 0 && m.paged(i) {
 				h = m.afterAttention(i, h, ple) // the host attended between the parts
 				continue
 			}
 			h = m.layer(i, h, ple)
+		}
+		if m.end == from && m.end > opts.Start {
+			h, ple = m.toLast(h, ple) // the state entering the first layer of the last row alone
 		}
 		if m.end < cfg.NumLayers && m.paged(m.end) {
 			m.beforeAttention(m.end, h) // the host attends next; y is the hidden state entering end
@@ -111,8 +129,8 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins,
 		if m.end < cfg.NumLayers || opts.NoHead {
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		} else {
-			if opts.LastRow {
-				h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+			if opts.LastRow && m.rows > 1 {
+				h = m.last(h)
 			}
 			y = m.head(h)
 		}
@@ -123,6 +141,42 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins,
 		ins = append(ins, m.inList...)
 	})
 	return ins, outs, err
+}
+
+// lastFrom is the first layer that computes the last token's row alone: with LastRow and a KV
+// cache, the first that reuses earlier keys and values. A prompt's step leaves behind the cache
+// and the logits after its last token; those layers write no cache, so the other rows of them go
+// nowhere (design.md 16.80 on AMD, 16.83). Past the last layer without.
+func (m *builder) lastFrom() int {
+	if m.opts.LastRow && m.opts.Cache > 0 && m.cfg.KVShared > 0 {
+		return m.cfg.firstShared()
+	}
+	return m.cfg.NumLayers + 1
+}
+
+// last is the row of v (1, seq, n) of the step's last token, which the input last (1, 1, seq),
+// one-hot, picks: (1, 1, n).
+func (m *builder) last(v *mlpackage.Var) *mlpackage.Var {
+	return m.LastRow(v, m.input("last", 1, 1, m.seq))
+}
+
+// toLast takes the last token's rows of the hidden state and the per-layer inputs: the layers
+// built from here on compute that row alone.
+func (m *builder) toLast(h, ple *mlpackage.Var) (*mlpackage.Var, *mlpackage.Var) {
+	h = m.last(h)
+	if ple != nil {
+		ple = m.last(ple)
+	}
+	m.rows = 1
+	return h, ple
+}
+
+// lastRow4 is last for v (1, 1, seq, n) or (1, seq, 1, n), a mask or a rotary table: the last
+// token's row, (1, 1, 1, n).
+func (m *builder) lastRow4(v *mlpackage.Var) *mlpackage.Var {
+	n := v.Shape[3]
+	flat := m.Op("reshape", map[string]any{"x": v, "shape": m.B.Ints(1, int32(m.seq), int32(n))}, 1, m.seq, n)
+	return m.Op("reshape", map[string]any{"x": m.last(flat), "shape": m.B.Ints(1, 1, 1, int32(n))}, 1, 1, 1, n)
 }
 
 // embedding is what comes before the first layer built: at layer 0, the scaling of the token
@@ -268,7 +322,7 @@ func (m *builder) beforeAttention(i int, h *mlpackage.Var) {
 // afterAttention is the rest of layer i from its attention's output, attn_o_N (1, heads, seq,
 // head_dim), with x the hidden state entering the layer.
 func (m *builder) afterAttention(i int, x, ple *mlpackage.Var) *mlpackage.Var {
-	o := m.input(fmt.Sprintf("attn_o_%d", i), 1, m.cfg.NumHeads, m.seq, m.cfg.headDim(m.cfg.LayerTypes[i]))
+	o := m.input(fmt.Sprintf("attn_o_%d", i), 1, m.cfg.NumHeads, m.rows, m.cfg.headDim(m.cfg.LayerTypes[i]))
 	return m.layerRest(i, m.attnOutput(i, o), x, ple)
 }
 
@@ -290,8 +344,8 @@ func (m *builder) layerRest(i int, a, residual, ple *mlpackage.Var) *mlpackage.V
 		pd := c.PerLayerDim
 		g := m.Linear(h, p+"per_layer_input_gate.weight", "", pd)
 		g = m.Activation(g, c.HiddenAct)
-		mine := m.Op("slice_by_index", map[string]any{"x": ple, "begin": m.B.Ints(0, 0, int32(i*pd)), "end": m.B.Ints(1, int32(m.seq), int32((i+1)*pd)),
-			"begin_mask": m.Bools(true, true, false), "end_mask": m.Bools(true, true, false)}, 1, m.seq, pd)
+		mine := m.Op("slice_by_index", map[string]any{"x": ple, "begin": m.B.Ints(0, 0, int32(i*pd)), "end": m.B.Ints(1, int32(m.rows), int32((i+1)*pd)),
+			"begin_mask": m.Bools(true, true, false), "end_mask": m.Bools(true, true, false)}, 1, m.rows, pd)
 		g = m.Op("mul", map[string]any{"x": g, "y": mine}, g.Shape...)
 		g = m.Linear(g, p+"per_layer_projection.weight", "", m.d)
 		g = m.norm(g, p+"post_per_layer_input_norm.weight", m.d)
@@ -316,6 +370,18 @@ func (m *builder) mlp(i int, h *mlpackage.Var) *mlpackage.Var {
 // ropeTables returns the cos and sin tables (1, seq, 1, head_dim) of a layer type: constants
 // for positions 0..seq-1, or inputs that StepInputs fills with a KV cache.
 func (m *builder) ropeTables(layerType string) (cos, sin *mlpackage.Var) {
+	if m.rows == 1 && m.seq > 1 {
+		// the last token's rows of the tables
+		if t, ok := m.rope[layerType+"/last"]; ok {
+			return t[0], t[1]
+		}
+		m.rows = m.seq
+		cos, sin = m.ropeTables(layerType)
+		m.rows = 1
+		cos, sin = m.lastRow4(cos), m.lastRow4(sin)
+		m.rope[layerType+"/last"] = [2]*mlpackage.Var{cos, sin}
+		return cos, sin
+	}
 	if t, ok := m.rope[layerType]; ok {
 		return t[0], t[1]
 	}
@@ -332,6 +398,18 @@ func (m *builder) ropeTables(layerType string) (cos, sin *mlpackage.Var) {
 // mask returns the additive mask of a layer type over keys keys: causal (and windowed for a
 // sliding layer) without a cache, an input that StepInputs fills with one.
 func (m *builder) mask(layerType string, keys int) *mlpackage.Var {
+	if m.rows == 1 && m.seq > 1 {
+		// the last token's row of the mask
+		if v, ok := m.masks[layerType+"/last"]; ok {
+			return v
+		}
+		m.rows = m.seq
+		v := m.mask(layerType, keys)
+		m.rows = 1
+		v = m.lastRow4(v)
+		m.masks[layerType+"/last"] = v
+		return v
+	}
 	if v, ok := m.masks[layerType]; ok {
 		return v
 	}
@@ -351,7 +429,7 @@ func (m *builder) mask(layerType string, keys int) *mlpackage.Var {
 
 // heads reshapes a projection (1, seq, n*hd) to (1, seq, n, hd).
 func (m *builder) heads(x *mlpackage.Var, n, hd int) *mlpackage.Var {
-	return m.Op("reshape", map[string]any{"x": x, "shape": m.B.Ints(1, int32(m.seq), int32(n), int32(hd))}, 1, m.seq, n, hd)
+	return m.Op("reshape", map[string]any{"x": x, "shape": m.B.Ints(1, int32(m.rows), int32(n), int32(hd))}, 1, m.rows, n, hd)
 }
 
 // toHeads transposes (1, seq, n, hd) to (1, n, seq, hd).
@@ -437,8 +515,8 @@ func (m *builder) keysValues(i int, h *mlpackage.Var) (k, v *mlpackage.Var) {
 func (m *builder) attnOutput(i int, o *mlpackage.Var) *mlpackage.Var {
 	c := m.cfg
 	nh, hd := c.NumHeads, c.headDim(c.LayerTypes[i])
-	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, m.seq, nh, hd)
-	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(m.seq), int32(nh*hd))}, 1, m.seq, nh*hd)
+	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, m.rows, nh, hd)
+	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(m.rows), int32(nh*hd))}, 1, m.rows, nh*hd)
 	return m.Linear(o, fmt.Sprintf("%slayers.%d.self_attn.o_proj.weight", c.Prefix, i), "", m.d)
 }
 
