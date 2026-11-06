@@ -35,6 +35,57 @@ from iron.operators.copy import Copy
 SCRATCHPAD_WORDS = 32
 
 
+# The step before each recording's tail (its last row through the shared layers), by identity.
+_TAIL_AFTER: list = []
+
+
+def _mark_tail() -> None:
+    """Note where the recording's tail starts, for ``install_tail_boundary``."""
+    from iron.common.declare.operator import graph_recorder
+
+    recorder = graph_recorder.get()
+    if recorder is not None and recorder.steps:
+        _TAIL_AFTER.append(recorder.steps[-1])
+
+
+def install_tail_boundary() -> None:
+    """Start a command where a prompt chunk's tail starts, in IRON's packaging.
+
+    IRON starts a command wherever the next step's words would overflow a command's scratchpad
+    (``SCRATCHPAD_WORDS``), so the cuts move with every change to the layers' words. A cut inside
+    the tail made the next chunk's first command hang (design.md 16.80), as did, with
+    iron_window, one that left the head's draw a command of its own (16.84; Go's chunkBarrier
+    is what that hang needed). Starting a command exactly at the tail keeps the tail, the head and
+    the draw in one command (their words fit), as in the exports measured, wherever the layers
+    before put their cuts.
+    """
+    import iron.common.graph.compiled as compiled
+    from iron.common.image import packaging
+
+    if getattr(compiled.plan, "_hwnpu_tail", False):
+        return
+    plan = compiled.plan
+
+    def tail_plan(dev, recording, *args, step_words=None, **kwargs):
+        chosen = plan(dev, recording, *args, step_words=step_words, **kwargs)
+        steps = recording.steps
+        at = next((i + 1 for i, s in enumerate(steps) if any(s is t for t in _TAIL_AFTER)), None)
+        if at is None or not chosen.full_elf or step_words is None or at >= len(step_words):
+            return chosen
+        hosted = {s.at for s in recording.host if 0 < s.at < len(steps)}
+        commands, held = [], frozenset()
+        for i, words in enumerate(step_words):
+            if i and (i in hosted or i == at or len(held | words) > packaging.SCRATCHPAD_WORDS):
+                commands.append(i)
+                held = frozenset()
+            held |= words
+        reasons = [*chosen.reasons, f"Gemma4Tail: a command starts at the tail (step {at}): {commands}"]
+        return dataclasses.replace(chosen, reasons=reasons, commands=tuple(commands))
+
+    tail_plan._hwnpu_tail = True
+    compiled.plan = tail_plan
+
+
 @dataclasses.dataclass(kw_only=True)
 class _Tail(Call):
     """A prompt chunk's last row run as a decode step: ``row``, its row in the chunk."""
@@ -85,6 +136,7 @@ class Gemma4Tail(Gemma4):
             embeddings=Copy.step(call.embeddings[last]).reshape(1, E),
             row=last,
         )
+        _mark_tail()
         for rope in (layer.rope for layer in self.layers[first:]):
             if rope is not None and rope not in tail.ropes:
                 tail.ropes[rope] = rope.rows(tail)
