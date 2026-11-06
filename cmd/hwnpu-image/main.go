@@ -17,6 +17,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"flag"
@@ -52,14 +53,19 @@ func main() {
 	backend := flag.String("backend", "coreml", "with -convert: coreml (Apple's Neural Engine) or intel (Intel's NPU)")
 	size := flag.Int("size", 1024, "with -convert: the image's width and height in pixels, a multiple of 16")
 	dit := flag.String("dit", "anima-turbo-v1.1.safetensors", "with -convert: the diffusion model in diffusion_models/")
-	textFormat := flag.String("text-format", "fp16", "with -convert: the text encoder's weights (fp16; lut8, lut6 on Core ML; int8 on Intel)")
-	ditFormat := flag.String("dit-format", "fp16", "with -convert: the DiT's weights (fp16; lut8, lut6 on Core ML; int8, int4 on Intel)")
+	textFormat := flag.String("text-format", "", "with -convert: the text encoder's weights (fp16; lut8, lut6 on Core ML; int8 on Intel; default int8 on Core ML, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)")
+	ditFormat := flag.String("dit-format", "", "with -convert: the DiT's weights (fp16; lut8, lut6 on Core ML; int8, int4 on Intel; default int8 on Core ML: faster than fp16 at half its memory, and nearer it than lut8; fp16 on Intel)")
 	group := flag.Int("group", 4, "with -convert: the DiT's blocks a program holds")
-	qchunk := flag.Int("qchunk", 1024, "with -convert: the queries an attention scores at a time")
+	qchunk := flag.Int("qchunk", 512, "with -convert: the queries an attention scores at a time (M3: 512 is 25 % faster than 1024 at 1024 x 1024)")
+	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory; \"-\" for none)")
 	cpu := flag.Bool("cpu", false, "run a Core ML export with the CPU interpreter instead of the NPU")
 	dump := flag.String("dump", "", "a directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py")
 	flag.Parse()
 	if *convert != "" {
+		if *backend == "coreml" {
+			*textFormat, *ditFormat = cmp.Or(*textFormat, "int8"), cmp.Or(*ditFormat, "int8")
+		}
+		*textFormat, *ditFormat = cmp.Or(*textFormat, "fp16"), cmp.Or(*ditFormat, "fp16")
 		o := anima.ConvertOptions{Backend: *backend, Width: *size, Height: *size, Dit: *dit,
 			TextFormat: *textFormat, DitFormat: *ditFormat, Group: *group, QChunk: *qchunk}
 		t0 := time.Now()
@@ -80,6 +86,17 @@ func main() {
 	var dev *hwnpu.Device
 	if !*cpu {
 		var opts []hwnpu.Option
+		if *cacheDir == "" {
+			if d, err := os.UserCacheDir(); err == nil {
+				*cacheDir = filepath.Join(d, "hwnpu")
+			}
+		}
+		if *cacheDir != "" && *cacheDir != "-" {
+			// without it, Core ML compiles each package to a new temporary path and the Neural
+			// Engine's compiled bundles are never reused: every start compiled the whole DiT
+			// again (118 s at 512 x 512 on M3)
+			opts = append(opts, hwnpu.WithCacheDir(*cacheDir))
+		}
 		if !anima.IsProgramExport(*model) {
 			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD)) // IRON graphs
 		}

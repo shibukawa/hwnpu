@@ -29,7 +29,7 @@ type ConvertOptions struct {
 	Group int
 	// QChunk is the queries the attention of the DiT and the VAE scores at a time.
 	QChunk int
-	// Only, when not empty, writes these parts alone (text, time, patch, blocks, final, vae).
+	// Only, when not empty, writes these parts alone (text, time, blocks, final, vae).
 	Only map[string]bool
 }
 
@@ -93,11 +93,13 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	if m.Time, err = write("time", mil.Time(), o.DitFormat); err != nil {
 		return err
 	}
-	if m.Patch, err = write("patch", mil.Patch(o.Width, o.Height), "fp16"); err != nil {
-		return err
+	m.TimeRows = mil.TimeRows
+	qchunk := mil.DitQChunk(o.Width, o.Height, o.QChunk)
+	if qchunk != o.QChunk {
+		fmt.Fprintf(log, "the DiT's attention scores %d queries at a time (%d would be over 64 MiB of scores)\n", qchunk, o.QChunk)
 	}
 	for first := 0; first < mil.DitLayers; first += o.Group {
-		name, err := write("blocks", mil.Blocks(o.Width, o.Height, first, o.Group, o.QChunk), o.DitFormat)
+		name, err := write("blocks", mil.Blocks(o.Width, o.Height, first, o.Group, qchunk), o.DitFormat)
 		if err != nil {
 			return err
 		}
