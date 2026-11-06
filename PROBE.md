@@ -239,7 +239,7 @@ M4 and later Apple chips (does the 1 GiB limit change with the chip or the RAM?)
 
 ## Limits of these measurements
 
-- Random weights: the numbers say nothing about accuracy. For accuracy, see [MODEL.md](MODEL.md).
+- Random weights: the numbers say nothing about accuracy. For accuracy, see [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
 - No KV cache: real decoding adds the attention over the context, small next to the weights at short contexts.
 - Core ML's compute plan is an estimate of placement; CPU use is the cross-check.
 - `powerbench -decode` and the Intel paths of npuprobe have not been run on hardware other than the M3 yet.

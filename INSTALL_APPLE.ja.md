@@ -2,7 +2,7 @@
 
 Apple シリコンの Mac で、hwnpu から Neural Engine を使う手順です。機械の確認から、動作確認レポートの実行、モデルの用意までを扱います。
 
-> **現状。** Apple バックエンドは、hwnpu の開発と計測に使ってきたものです（M3、macOS 27）。[MODEL.ja.md](MODEL.ja.md) の数値はここで測りました。
+> **現状。** Apple バックエンドは、hwnpu の開発と計測に使ってきたものです（M3、macOS 27）。[MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) の数値はここで測りました。
 
 English: [INSTALL_APPLE.md](INSTALL_APPLE.md)
 
@@ -69,7 +69,7 @@ fp16 のモデルは、すべての演算が Neural Engine に置かれている
 go run ./cmd/powerbench -model 'path/to/*.mlpackage' -o power.md
 ```
 
-最初に sudo のパスワードを一度だけ聞き、Neural Engine と CPU（`-gpu` を付ければ GPU も）を比べます。M3 での結果と読み方は [MODEL.ja.md](MODEL.ja.md) にあります。
+最初に sudo のパスワードを一度だけ聞き、Neural Engine と CPU（`-gpu` を付ければ GPU も）を比べます。M3 での結果と読み方は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) にあります。
 
 生成したモデルで Neural Engine を測るには、npuprobe を使います。LLM の生成と同じ形のモデルを Go で作り、0.5B と 1B の重みで fp16、int8、lut4、int4 の速さを Neural Engine、CPU、GPU で測ります (`bench`)。次に形式ごとにモデルを大きくしながら Neural Engine から外れる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込んで、上限がモデル 1 つごとか合計かを見分けます (`limit`)。Python もモデルのファイルも root も要りません。40 分ほどかかり、最大のモデルの 2 倍ほどの空きディスクが要ります (既定ではメモリの 4 分の 1 まで試し、`-max-gb` で変えられます)。結果は `npuprobe-<機種>-<日時>.md` に書き出します。クローンしなくても動きます。
 
@@ -87,12 +87,12 @@ Neural Engine がモデルに求めること:
 
 - **fp16 であること。** fp32 の演算は CPU で動きます。`compute_precision=FLOAT16` で変換してください。
 - **形状が固定であること。** 動的な形状は CPU に落ちます。系列長やバッチの大きさごとに 1 つずつモデルを書き出してください。
-- **1 回の呼び出しに十分な計算量があること。** 小さなモデルは fp16 でも CPU に置かれます。`tools/coreml/ane_pad.py` はバッチ次元を広げて Neural Engine に移るまで探します。ただし、得になるのは呼び出し 1 回あたり約 200 MFLOP 以上なので、先に [MODEL.ja.md](MODEL.ja.md) の電力の結果を読んでください。
+- **1 回の呼び出しに十分な計算量があること。** 小さなモデルは fp16 でも CPU に置かれます。`tools/coreml/ane_pad.py` はバッチ次元を広げて Neural Engine に移るまで探します。ただし、得になるのは呼び出し 1 回あたり約 200 MFLOP 以上なので、先に [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) の電力の結果を読んでください。
 - **重みがモデル 1 つあたり 1 GiB 未満であること。** M3 では、境目は fp16、int8、lut4 のどれでも保存された重みで 0.99〜1.02 GiB の間にあり（`cmd/npuprobe limit`）、それを超えるモデルは丸ごと CPU に置かれました。上限はモデルごとで、0.91 GiB のモデルを 3 つ同時に読み込んでもすべて Neural Engine に載り、速さも変わりませんでした。大きなネットワークは複数のモデルに分ければ載せられます。全速で動くのは 4 ビットの表引き方式だけです。
 
 本線は、bf16 のチェックポイントから Go の `hwnpu-convert` で変換することです。coremltools は、hwnpu-convert が構造を知らないモデルのための回避路です。
 
-- **LLM のチェックポイントは hwnpu-convert（Go だけ、Python 不要）で。** `go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` が、既知の構造について `config.json` からグラフを組み立て、重みを 4 ビットの表引きにします。今は LFM3 に対応しています。Llama や Qwen 系は `internal/llm` に構造の定義を足せば対応できます。元のチェックポイントの選び方と Neural Engine が受け付ける形式は [MODEL.ja.md](MODEL.ja.md) にまとめてあります。
+- **LLM のチェックポイントは hwnpu-convert（Go だけ、Python 不要）で。** `go run ./cmd/hwnpu-convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` が、既知の構造について `config.json` からグラフを組み立て、重みを 4 ビットの表引きにします。今は LFM3 に対応しています。Llama や Qwen 系は `internal/llm` に構造の定義を足せば対応できます。元のチェックポイントの選び方と Neural Engine が受け付ける形式は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) にまとめてあります。
 - **それ以外は coremltools（Python）で。** どんなグラフでも受ける汎用の変換器は hwnpu の範囲外なので、対応する LLM の構造ではないモデル（MiniLM のようなエンコーダ、画像モデルなど）は、PyTorch から `ct.convert(..., convert_to="mlprogram", compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS14)` と固定の入力形状で変換します。`tools/coreml/convert_minilm.py` と `tools/coreml/gen_sweep.py` が、ベンチマーク用に書いた実例です。
 
 ## 困ったとき
@@ -103,6 +103,6 @@ Neural Engine がモデルに求めること:
 | `Verified` が false | macOS が 14.4 より古いか、モデルが ML Program ではなく古い `neuralnetwork` 形式。macOS を更新し、ML Program として変換し直す。 |
 | 読み込みがエラーを返さずに落ちる | 手書きの ML Program で値の名前にドットがあるか、パッケージが壊れている。coremltools と `hwnpu-convert` が書く名前は問題ない。 |
 | fp16 なのにモデル全体が CPU で動く | 重みが大きすぎる（モデル 1 つあたり 1 GiB 以上。複数のモデルに分ける）か、Neural Engine が受け付けない並びの重み圧縮（表引きは行全体を 16 行ごとに 1 表、ブロックごとの int4 は不可）。 |
-| 結果が PyTorch と数パーセントずれる | Neural Engine の行列積には約 2.5e-4 の絶対誤差の床があり、出力の小さい層が精度を失う。LFM3 では `hwnpu-convert -post-scale` が回避する。[MODEL.ja.md](MODEL.ja.md) を参照。 |
+| 結果が PyTorch と数パーセントずれる | Neural Engine の行列積には約 2.5e-4 の絶対誤差の床があり、出力の小さい層が精度を失う。LFM3 では `hwnpu-convert -post-scale` が回避する。[MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を参照。 |
 | CPU や GPU との比較がしたい | 読み込み時に `HWNPU_COREML_UNITS=cpu` か `gpu` を設定する（計測専用で、API ではない）。 |
 | `powerbench` が `Password:` で止まる | `powermetrics` に root が要る。sudo のパスワードを一度入れれば、あとはツールが資格を保つ。 |
