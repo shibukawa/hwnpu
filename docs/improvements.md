@@ -1,8 +1,8 @@
-# What each improvement bought (as of 2026-11-06, main up to #52 and the towers loaded only when used, with the two-level attention checked on an M3 and the Neural Engine reading prompts 128 tokens per call)
+# What each improvement bought (as of 2026-11-06, main up to #52 and the towers loaded only when used, with the two-level attention checked on an M3 the Neural Engine reading prompts 128 tokens per call, and Gemma 4's shared layers on the last row alone)
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.82), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.83), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -30,6 +30,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Split at the attention (`-paged`) (16.59, 16.63) | ◎ 1.3–1.7× | | ◎ Gemma 98 s → 1.9 s | ◎ only the length used | | ◎ 262144 by default | unchanged | Apple / Intel |
 | Two-level attention (`-sparse`) (16.61, 16.65) | ◎ a call −52% at 128K, −58% at 250K (LFM3) | ○ −24% at 128K, −44% at 250K (+11% at 64K) | | △ +1/8 and the copies (+0.8 GB at 250K) | | | △ approximate (passkeys kept) | Apple / Intel |
 | The Neural Engine reads prompts 128 tokens per call, logits of the last row alone (16.82) | unchanged | ○ at 16K LFM3 about −20%, E2B −25%, VL −22% | △ converted again once | | | | unchanged | Apple (models split at their attention) |
+| Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | unchanged | ◎ E2B 16K 27.8 → 12.6–13.2 s, 64K 205 → 94.6 s (2.1–2.2 times) | | ○ footprint 1805 → 1392 MB (64K) | | | unchanged (matches the program without a cache on the CPU) | Apple |
 | Repetition detection (16.60) | ◎ felt (stops going round in circles) | | | | | | | All |
 | E4B as one program (`-prefill auto`) (16.65) | ○ +25% | ✕ 4.4× slower when long | ◎ 77–87 s → 4 s | ◎ half the weights | | | | Apple |
 | Identical files shared on the disk, cleanup (16.64, 16.79) | | | △ Apple: slow once right after the switch | | ◎ M3 about 50 → 20 GiB, two AMD exports 15.2 → 8.2 GiB | | | macOS / Linux (Btrfs, XFS) / Windows (ReFS, unverified) |
@@ -98,6 +99,7 @@ Improvements to the GEMV itself:
 | hwnpu-agent (16.35) | OpenCode's first request 7,516 tokens (13 s) | 629 tokens (1.3 s) | A short system prompt with 4 tools |
 | Two-level attention (16.61) | LFM3 at 128K 616 s, at 250K 2186 s (the whole cache, the same day) | 469 s, 1217 s | Slower at 64K, 155 → 173 s (the prompt is read in two levels from about 57K) |
 | Two-level attention (16.65) | Gemma 4 E2B at 125K 709 s, LFM3-VL at 120K 583 s | 521 s, 431 s | Audio 516 s, Omni 501 s |
+| Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | E2B 16K 27.8 s, 64K 205.2 s | 12.6–13.2 s, 94.6 s | The shared layers (15 to 34), and the host's attention of their 4 full attention layers, on the last token's row. That attention runs on the program of 8 tokens that generates. E4B has one program by default and is left as it is |
 | The Neural Engine's prompt chunk of 128, logits of the last row alone (16.82) | LFM3 4K 3.9–5.4 s, 16K 19.3–25.2 s, 64K 160 s; Gemma 4 E2B 16K 31.2 s; LFM3-VL 16K 21.6 s | 3.3–3.9 s, 15.2–16.1 s, 136–146 s; 23.5 s; 16.9 s | Even at 64 rows a call is mostly reading the weights, so one of 128 costs 1.5 times as much. 256 is no faster. Models in one piece and Intel stay at 64 |
 | AMD: prompt chunk 1024 (16.54) | 2,683 tokens 13.0 s | 10.2 s | Short ones too: 0.56 → 0.43 s |
 | 4 bits on AMD (16.73, 16.76–77) | — | Unchanged (LFM3 2048 tokens 2.29 → 2.38 s, PLaMo 3 2596 tokens 11.2 → 11.8 s) | Weights are turned back from q4nx and q8 into bfp16 or bf16 on the device for the GEMM, so prompt speed does not gain |
@@ -215,6 +217,7 @@ Fitted to the ANE's limits: 1 GiB a package, 16384 per dimension, tables only pe
 | `-tier auto`, E4B as one program (`-prefill auto`) | Fits the ANE's compile cache (about 4 GiB) for fast startup | 4 programs 62–110 s → 2 programs 3 s; E4B 77–87 s → 4 s |
 | Attention in programs without weights | Smaller parts stay in the ANE's cache; the cost follows the length used | Gemma 4 startup 98 s → 1.9 s |
 | head-scale (embeddings), `-post-scale` (LFM3) | fp16 overflow and the error floor on the ANE | |
+| Gemma 4's KV-sharing layers on the last row alone (`-last-row`, 16.83) | Prefill. AMD's 16.80, with the host's attention on one row too | E2B 2.1–2.2 times. The attention of the one-row layers runs on the program that generates |
 | The prompt program takes 128 tokens per call, its output layer the last row alone (`-last-row`, 16.82) | Prefill. A call of 64 rows costs 1.06 times one of 8: reading the weights dominates | LFM3 at 16K about −20%, Gemma 4 E2B −25%. The row is taken by a product with a one-hot row (gather is on the CPU) |
 | PLaMo 3's attention output taken token-first (`attn_ot_N`) | Avoids the one `transpose` in the last part that fell to the CPU | Everything on the ANE on an M3. The host reorders (one more copy) |
 | Anima's fp16 handling (DiT residuals at 1/32, `maxScaled` norms) | No fp16 overflow and no subnormals | Not yet checked on hardware |
@@ -477,7 +480,6 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Where two-level attention starts in the prompt | At 64K reading in two levels is a tenth slower than the whole cache. Should the threshold of about 57K go up? | Compare the reading times from 64K to 96K | 16.61 |
 | The copies in two-level attention's `choose` | Copying the buckets that change at each choice is 12% (13 ms) of a call generating at 128K. Would a choice that changes fewer buckets cut it? | pprof (`decode.(*Session).choose`) | 16.61 |
 | The `reshape` in Gemma 4's last part | One `reshape` of the last part split at the attention (after layer 41's attention, and the output layer) is on the CPU (E4B; E2B also says `NOT all on the NPU`). Would PLaMo 3's `attn_ot_N` fix it? | `hwnpuinfo -model ...part8.mlpackage` | 16.65 |
-| Gemma 4's KV-sharing layers on the last row alone on the Neural Engine too | 2.3 times on AMD (16.80). On the Neural Engine the parts save only 2–3 ms a call; what would pay is the host's attention of the 4 shared full attention layers on one row (about 15% of a call at 16K, estimated) | decode running the attention with a number of rows per layer (two-level attention too) | 16.82 |
 | Slowing down past 128K | Why the slope per 1K grows from 1.14 to 1.43 ms (memory pressure, or attention lagging when interleaved?) | | 16.59 |
 | Slowness right after a long prefill | Why the first few calls after reading 256K take 1.29 s each (350 ms after) | | 16.59 |
 | The ANE's memory | Footprint of aned and ANECompilerService (not in RSS) | Needs sudo | 16.39, model-fit.md T10 |

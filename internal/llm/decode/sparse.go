@@ -181,15 +181,16 @@ func (s *Session) sparseTouch(pos int) {
 }
 
 // attendSparse runs the two-level attention of a layer into st.res, the step's rows of the layer
-// already in the cache, the layer's q in the attention program's input. The buckets are chosen
-// for the valid rows (the call's tokens, not its padding). It reports false, doing
-// nothing, when reading the whole cache costs no more calls.
-func (s *Session) attendSparse(st *step, layer int, kc, vc *kvCache, rows, valid, used int) (bool, error) {
+// already in the cache, the layer's q in the attention program's input: its rows at the positions
+// from pos on, rows of them in the cache. The buckets are chosen for the valid rows (the call's
+// tokens, not its padding). It reports false, doing nothing, when reading the whole cache costs
+// no more calls.
+func (s *Session) attendSparse(st *step, layer int, kc, vc *kvCache, pos, rows, valid, used int) (bool, error) {
 	sp := s.sparse
 	cfg := sp.cfg
 	att := st.p.Attn
 	C, S, q := att.Chunk, cfg.Bucket, st.q
-	nB := max(0, (s.pos-cfg.Window)/S)
+	nB := max(0, (pos-cfg.Window)/S)
 	first := s.firstBuckets(cfg)
 	pick, err := s.layout(cfg, q, st.q == s.progs[0].q)
 	if err != nil {
@@ -199,7 +200,7 @@ func (s *Session) attendSparse(st *step, layer int, kc, vc *kvCache, rows, valid
 		return false, nil
 	}
 	nsc := (nB + C - 1) / C
-	exact := (pick*S + s.pos + rows - nB*S + C - 1) / C
+	exact := (pick*S + pos + rows - nB*S + C - 1) / C
 	if 2*nsc+1+exact >= used {
 		return false, nil
 	}
@@ -247,7 +248,7 @@ func (s *Session) attendSparse(st *step, layer int, kc, vc *kvCache, rows, valid
 	}
 	l.since++
 	// the tail: the window and the call's own, the same positions for every kv head
-	tail := s.pos + rows - nB*S
+	tail := pos + rows - nB*S
 	for _, c := range []struct {
 		c *kvCache
 		g []Buf
@@ -271,7 +272,7 @@ func (s *Session) attendSparse(st *step, layer int, kc, vc *kvCache, rows, valid
 	for g := range exact {
 		mask := st.zero
 		if (g+1)*C > pick*S {
-			if mask, err = s.tailMask(ss, g, C, q, pick*S, nB*S, tail); err != nil {
+			if mask, err = s.tailMask(ss, g, C, q, pick*S, nB*S, tail, pos); err != nil {
 				return false, err
 			}
 		}
@@ -535,8 +536,8 @@ func (s *Session) rangeMask(m *rangeMask, q, lo, hi int) (Buf, error) {
 
 // tailMask writes the mask of chunk g read exactly: its slots before tail0 (the buckets picked)
 // seen by every row, then the tail, the positions from pos0 on, seen by the rows at or after
-// them, and nothing after.
-func (s *Session) tailMask(ss *sparseStep, g, C, q, tail0, pos0, tail int) (Buf, error) {
+// them (row t at position pos+t), and nothing after.
+func (s *Session) tailMask(ss *sparseStep, g, C, q, tail0, pos0, tail, pos int) (Buf, error) {
 	for len(ss.gmasks) <= g {
 		ss.gmasks = append(ss.gmasks, nil)
 		ss.gmaskAt = append(ss.gmaskAt, -1)
@@ -570,7 +571,7 @@ func (s *Session) tailMask(ss *sparseStep, g, C, q, tail0, pos0, tail int) (Buf,
 			switch {
 			case gs < tail0:
 				v = 0
-			case gs < tail0+tail && pos0+gs-tail0 <= s.pos+t:
+			case gs < tail0+tail && pos0+gs-tail0 <= pos+t:
 				v = 0
 			}
 			vals[x-a] = v

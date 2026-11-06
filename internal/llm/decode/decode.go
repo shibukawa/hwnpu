@@ -178,6 +178,7 @@ func (st *step) checkPaged(s *Session) error {
 		return fmt.Errorf("decode: chunks of %d for %d tokens per step", p.Attn.Chunk, st.q)
 	}
 	var heads, d int
+	one := false
 	for _, layer := range p.Attend {
 		src := s.kvLayer(layer)
 		if src != layer && !slices.Contains(p.Attend, src) || src > layer {
@@ -190,7 +191,8 @@ func (st *step) checkPaged(s *Session) error {
 			}
 		}
 		qs, ok := p.OutShape[fmt.Sprintf("attn_q_%d", layer)]
-		if !ok || len(qs) != 4 || qs[2] != st.q {
+		if !ok || len(qs) != 4 || qs[2] != st.q && (qs[2] != 1 || rows(p) != 1) {
+			// 1 row: a layer after which only the last token's row is needed (llm.Options.LastRow)
 			return fmt.Errorf("decode: no output attn_q_%d (1, heads, %d, head_dim)", layer, st.q)
 		}
 		if ts, ok := p.InShape[fmt.Sprintf("attn_ot_%d", layer)]; ok {
@@ -201,6 +203,11 @@ func (st *step) checkPaged(s *Session) error {
 			return fmt.Errorf("decode: input attn_o_%d has shape %v, want %v", layer, os, qs)
 		}
 		heads, d = qs[1], qs[3]
+		if qs[2] < st.q {
+			one = true
+		} else if one {
+			return fmt.Errorf("decode: layer %d attends for every row after a layer of the last row alone", layer)
+		}
 	}
 	if len(p.Attend) == 0 {
 		return fmt.Errorf("decode: a program split at its attention attends for no layer")
@@ -849,6 +856,7 @@ func (s *Session) runPaged(st *step, valid int) error {
 	if err := st.stepMasks(s.pos, q, used); err != nil {
 		return err
 	}
+	oneMasks := false // the masks of the last token alone, made for the first layer that needs them
 	for i := 0; ; i++ {
 		if err := p.RunPart(i); err != nil {
 			return err
@@ -866,9 +874,15 @@ func (s *Session) runPaged(st *step, valid int) error {
 				}
 			}
 		}
+		if s.oneRow(p, layer) {
+			if err := s.attendOne(st, layer, kc, vc, valid, &oneMasks); err != nil {
+				return err
+			}
+			continue
+		}
 		copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])
 		if s.sparse != nil {
-			done, err := s.attendSparse(st, layer, kc, vc, rows, min(valid, rows), used)
+			done, err := s.attendSparse(st, layer, kc, vc, s.pos, rows, min(valid, rows), used)
 			if err != nil {
 				return err
 			}
@@ -894,6 +908,70 @@ func (s *Session) runPaged(st *step, valid int) error {
 		st.merge.Result(st.res)
 		putAttnOut(p, layer, st.res)
 	}
+}
+
+// oneRow reports whether p computes layer's query for the step's last token alone: a program that
+// needs only its row of the layers after the one that last writes the cache (llm.Options.LastRow,
+// Gemma 4's layers that reuse earlier keys and values).
+func (s *Session) oneRow(p Program, layer int) bool {
+	sh := p.OutShape[fmt.Sprintf("attn_q_%d", layer)]
+	return sh[2] == 1 && p.InShape["x"][1] > 1
+}
+
+// attendOne runs the attention of layer for the step's last token alone, the one at position
+// s.pos+valid-1, on the program with the fewest tokens per step (its row 0; that program's
+// attention costs a fraction of the step's), and writes its row to the step's attn_o. masks says
+// whether that program's masks are the token's already.
+func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, masks *bool) error {
+	sm := &s.progs[0]
+	if sm == st || sm.p.RunPart == nil {
+		return fmt.Errorf("decode: layer %d attends for the last token alone, and no program of fewer tokens per step runs it", layer)
+	}
+	a := sm.p.Attn
+	pos := s.pos + valid - 1
+	used := pos/a.Chunk + 1 // the chunks the token sees
+	if !*masks {
+		if err := sm.stepMasks(pos, sm.q, used); err != nil {
+			return err
+		}
+		*masks = true
+	}
+	sh := st.p.OutShape[fmt.Sprintf("attn_q_%d", layer)]
+	heads, d := sh[1], sh[3]
+	q := st.p.Out[fmt.Sprintf("attn_q_%d", layer)]
+	for h := range heads {
+		copy(a.Q[2*h*sm.q*d:2*(h*sm.q+1)*d], q[2*h*d:2*(h+1)*d])
+	}
+	done := false
+	if s.sparse != nil {
+		var err error
+		if done, err = s.attendSparse(sm, layer, kc, vc, pos, 1, 1, used); err != nil {
+			return err
+		}
+	}
+	if !done {
+		sm.merge.Reset()
+		for j := 0; j < used; j++ {
+			mask := sm.zero
+			if m, ok := sm.masks[j]; ok {
+				mask = m
+			}
+			if err := a.Run(s.chunks[kc.out][j], s.chunks[vc.out][j], mask); err != nil {
+				return fmt.Errorf("decode: attention of layer %d over chunk %d: %w", layer, j, err)
+			}
+			hwnpu.DecodeF16(sm.o[0], a.O)
+			hwnpu.DecodeF16(sm.o[1], a.M)
+			hwnpu.DecodeF16(sm.o[2], a.L)
+			sm.merge.Add(sm.o[0], sm.o[1], sm.o[2])
+		}
+		sm.merge.Result(sm.res)
+	}
+	res := make([]float32, heads*d)
+	for h := range heads {
+		copy(res[h*d:(h+1)*d], sm.res[h*sm.q*d:(h*sm.q+1)*d])
+	}
+	putAttnOut(st.p, layer, res)
+	return nil
 }
 
 // putAttnOut writes a layer's attention output res, (1, heads, q, head_dim), to the program's
