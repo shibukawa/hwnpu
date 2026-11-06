@@ -135,7 +135,7 @@ OpenVINO GenAI の NPU 向けの推奨は「int4、対称、チャネルごと (
 
 `mlpackage.Builder` には `Int4Scaled`/`Int8Scaled` (MIL の `constexpr_blockwise_shift_scale`) が既にある。`blocks.Graph.matrix` に上の 3 形式を足すだけで、全アーキテクチャで使える。
 
-この形式は Core ML でも動く (Neural Engine での速さは lut より劣る。MODEL.md)。そのため、**Intel 向けの量子化の精度を、Mac の上で今までと同じ手順** (`tools/ref/ref_logits.py` → `hwnpu-check`、`eval_logits.py`) で測れる。
+この形式は Core ML でも動く (Neural Engine での速さは lut より劣る。MODEL_ARCHITECTURE.md)。そのため、**Intel 向けの量子化の精度を、Mac の上で今までと同じ手順** (`tools/ref/ref_logits.py` → `hwnpu-check`、`eval_logits.py`) で測れる。
 
 スケールは、ブロックの最大値の 1〜0.5 倍の 11 通りを切り捨ての位置として試し、二乗誤差が最小のものを選ぶ (`-quant mse`、既定)。最大値をそのまま 7 (int4) か 127 (int8) に当てる min-max は `-quant uniform`。all-MiniLM-L6-v2 の int4 (行ごと) で、文埋め込みのコサイン類似度が min-max の 0.909 から 0.934 に上がったので、mse を既定にした (11 節)。
 
@@ -222,7 +222,7 @@ L0 と L1 は CI に載せられる (Linux の runner に `pip install openvino`
 | **P1 変換パスとキャッシュなしのモデル** | `ovir.Builder` の `.bin` の逐次書き出し。`internal/ovlower` (3 節の全演算、4.2 の名前の規則)。`-backend intel`。`int4`/`int4-g128`/`int8` 形式。manifest の `meta` | BERT (all-MiniLM-L6-v2) と PLaMo-Embedding-1B が L0・L1 に合格 |
 | **P2 KV キャッシュのある LLM** | LFM3-1.7B (畳み込み、リング、段階、塊)。`llm.OpenDevice` と、6 か所の `WithBackend` の置き換え。`runner` の meta の読み方 | LFM3-1.7B が L1 に合格。`hwnpu-generate -backend intel` が OpenVINO CPU の結果と同じトークンを出す (模擬ドライバでは配線だけ確かめる) |
 | **P3 残りのモデル** | Gemma 4 (`ple` 入力、共有 KV)、LFM3-VL の画像エンコーダ、Audio エンコーダ、depthformer と codec、d1 | 全アーキテクチャが L1 に合格 |
-| **P4 実機** | L2・L3。Intel の上限の実測と `llm.Targets`。6 節の形の切り替え (`Options.Backend`)。重み分離の調査 | 各モデルが Intel NPU で動き、MODEL.md に Intel の欄が増える |
+| **P4 実機** | L2・L3。Intel の上限の実測と `llm.Targets`。6 節の形の切り替え (`Options.Backend`)。重み分離の調査 | 各モデルが Intel NPU で動き、MODEL_ARCHITECTURE.md に Intel の欄が増える |
 
 P1〜P3 は Mac だけで進められる。P4 には Intel 機が要る。
 
