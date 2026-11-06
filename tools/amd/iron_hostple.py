@@ -36,7 +36,7 @@ EMBED = "hwnpu_embed_rows"
 # them it is 7, one of them 3.7 s at position 3072, near amdxdna's cutoff (tdr_timeout_ms
 # 2000, about 4 s without progress), and their control code no longer fits the 64 MiB device
 # heap beside the decode step's. A lower limit splits them again (a version with no input,
-# the decode step, stays one command).
+# the decode step, stays one command). install's words sets another (iron_gemma4.Gemma4Tail's).
 SCRATCHPAD_WORDS = 24
 
 # The tables by id of their model, by buffer: IRON takes no array attribute that is not a weight.
@@ -54,9 +54,10 @@ def _keep() -> set:
     return {"attn"} if _Q4["attn"] == "bf16" else set()
 
 
-def install(q4: bool = False, attn: str = "q8") -> None:
+def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS) -> None:
     """Patch IRON's Gemma4 (and so Gemma4Multimodal's text model) to read its PLE from ple_rows;
-    with q4, its projections and head in q4nx and its token embeddings from embed_rows."""
+    with q4, its projections and head in q4nx and its token embeddings from embed_rows. A prompt
+    chunk's command reads up to words scratchpad words."""
     import iron
     from iron.applications.gemma4 import model as g4
     from iron.lm import CausalLM
@@ -147,6 +148,11 @@ def install(q4: bool = False, attn: str = "q8") -> None:
         ple = g4.F.rms_norm(ple, (P,), norm, c.eps * c.hidden_size)
         if call.prompt:
             token = Copy.step(self.ple_rows[i][: call.rows])
+        elif getattr(call, "row", None) is not None:
+            # a prompt chunk's last row run alone (iron_gemma4.Gemma4Tail): the host wrote it at
+            # its row of the chunk, read as the prompt's layers read theirs, then that row
+            rows = Copy.step(self.ple_rows[i][: call.rows])
+            token = Copy.step(rows[call.row])
         else:
             token = Copy.step(self.ple_rows[i][:1])
         return w(x, call, (ple + token.reshape(ple.shape)) * 2**-0.5)
@@ -164,7 +170,7 @@ def install(q4: bool = False, attn: str = "q8") -> None:
 
     from iron.common.image import packaging
 
-    packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, SCRATCHPAD_WORDS)
+    packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, words)
     base_lookup = G.lookup
     G.__init__ = __init__
     G.load_state_dict = load_state_dict
