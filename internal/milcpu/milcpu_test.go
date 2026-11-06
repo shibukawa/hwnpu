@@ -184,6 +184,10 @@ func TestLayout(t *testing.T) {
 		return b.Op("tile", map[string]any{"x": x, "reps": b.Ints(2, 3)}, mlpackage.Float16, 4, 3)
 	})
 	near(t, "tile", got, []int{4, 3}, []float32{1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2}, 0)
+	got = run(t, []int{1, 2, 1, 2}, []float32{1, 2, 3, 4}, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+		return b.Op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": b.ScalarI32(2), "scale_factor_width": b.ScalarI32(3)}, mlpackage.Float16, 1, 2, 2, 6)
+	})
+	near(t, "upsample_nearest_neighbor", got, []int{1, 2, 2, 6}, []float32{1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 3, 3, 3, 4, 4, 4}, 0)
 	got = run(t, []int{2, 3}, x, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
 		bools, _ := b.Bools("c", []int{2}, []bool{true, false})
 		ends, _ := b.Bools("c", []int{2}, []bool{true, true})

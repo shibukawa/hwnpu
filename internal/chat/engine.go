@@ -271,20 +271,23 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if len(tiers) == 0 {
 		tiers = [][]string{c.Packages}
 	}
+	total, loaded := 0, 0
+	for _, pkgs := range tiers {
+		total += len(pkgs)
+	}
 	for _, pkgs := range tiers {
 		var t tier
 		for i, pkg := range pkgs {
-			t0 := time.Now()
-			stop := dots(c.Log, "  "+filepath.Base(pkg)+" ")
+			loaded++
+			bar := console.NewBar(c.Log, fmt.Sprintf("  [%d/%d] %s", loaded, total, filepath.Base(pkg)))
 			var ch *chain.Chain
 			if i == 0 {
 				ch, err = chain.Open(ctx, e.dev, pkg)
 			} else {
 				ch, err = t.chains[0].Share(ctx, e.dev, pkg)
 			}
-			stop()
 			if err != nil {
-				logf("")
+				bar.Done("failed")
 				t.close()
 				e.Close()
 				return nil, err
@@ -299,7 +302,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			if n := len(ch.Parts()); n > 1 {
 				parts = fmt.Sprintf("%d parts", n)
 			}
-			logf(" %.1fs, %s, %s", time.Since(t0).Seconds(), parts, where)
+			bar.Done(fmt.Sprintf("%s, %s, %s", console.Duration(bar.Elapsed()), parts, where))
 		}
 		s, err := t.session(cm)
 		if err != nil {
@@ -560,10 +563,6 @@ func LookupDraft(seq []int32, k int) []int32 {
 	}
 	return nil
 }
-
-// dots shows that loading goes on after prefix: a spinner and the seconds on a terminal
-// (console.Spin), until stop leaves the prefix for the line's end.
-func dots(w io.Writer, prefix string) (stop func()) { return console.Spin(w, prefix) }
 
 // ErrClosed is returned for a request to a model that Close released.
 var ErrClosed = errors.New("chat: the model is closed")

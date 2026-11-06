@@ -47,8 +47,8 @@ type VAE struct {
 	in     GridShape
 	Width  int
 	Height int
-	// Logf, when set, is told each stage's time.
-	Logf func(format string, args ...any)
+	// Stage, when set, is told of each stage as it ends.
+	Stage StageFunc
 }
 
 // OpenVAE reads the stages' manifests in dir; Decode loads each stage onto dev as it runs.
@@ -109,8 +109,8 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 		if out, err = v.stage(ctx, i, dir, latents, out); err != nil {
 			return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)
 		}
-		if v.Logf != nil {
-			v.Logf("vae stage %d: %.2f s", i, time.Since(t0).Seconds())
+		if v.Stage != nil {
+			v.Stage(i, len(v.stages), time.Since(t0))
 		}
 	}
 	W, H := v.Width, v.Height
@@ -179,5 +179,5 @@ func (p *Pipeline) Decode(ctx context.Context, latents []float32) (*image.RGBA, 
 	if !p.eng.hasVAE() {
 		return nil, errors.New("anima: the export has no VAE")
 	}
-	return p.eng.decode(ctx, latents, p.Logf)
+	return p.eng.decode(ctx, latents, p.Stage)
 }
