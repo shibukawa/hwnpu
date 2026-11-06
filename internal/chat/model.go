@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"io"
 	"net/http"
 	"os"
@@ -547,48 +548,72 @@ func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 	default:
 		return fmt.Errorf("chat: downloading %s: %s", url, resp.Status)
 	}
-	total := have + resp.ContentLength
-	size := ""
+	total := int64(-1)
 	if resp.ContentLength >= 0 {
-		size = fmt.Sprintf(" (%.2f GB)", float64(total)/1e9)
+		total = have + resp.ContentLength
 	}
-	fmt.Fprintf(log, "downloading %s from %s%s to %s\n", name, repo, size, filepath.Dir(path))
 	f, err := os.OpenFile(part, flags, 0o644)
 	if err != nil {
 		return err
 	}
-	pw := &progress{w: f, done: have, total: total, name: name, log: log}
+	pw := &progress{w: f, done: have, from: have, total: total,
+		bar: console.NewBar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), repo))}
 	_, err = io.Copy(pw, resp.Body)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if pw.shown {
-		fmt.Fprintln(log)
-	}
 	if err != nil {
+		pw.bar.Done(fmt.Sprintf("stopped at %s: %v (run again to go on)", gb(pw.done, pw.total), err))
 		return fmt.Errorf("chat: downloading %s: %w (run again to go on)", name, err)
 	}
+	pw.bar.Done(fmt.Sprintf("%s in %s to %s", gb(pw.done, -1), console.Duration(pw.bar.Elapsed()), filepath.Dir(path)))
 	return os.Rename(part, path)
 }
 
-// progress writes through and shows how far a download is, once a second.
+// progress writes through and shows how far a download is on its bar: the bytes, the speed and
+// the time left.
 type progress struct {
-	w           io.Writer
-	done, total int64
-	name        string
-	log         io.Writer
-	last        time.Time
-	shown       bool
+	w                 io.Writer
+	done, from, total int64 // total < 0: not known
+	bar               *console.Bar
+	last              time.Time
 }
 
 func (p *progress) Write(b []byte) (int, error) {
 	n, err := p.w.Write(b)
 	p.done += int64(n)
-	if time.Since(p.last) >= time.Second && p.total > 1e7 {
-		fmt.Fprintf(p.log, "\r%s: %.2f / %.2f GB", p.name, float64(p.done)/1e9, float64(p.total)/1e9)
-		p.last, p.shown = time.Now(), true
+	if time.Since(p.last) >= 200*time.Millisecond {
+		p.last = time.Now()
+		frac := -1.0
+		detail := gb(p.done, p.total)
+		if sec := p.bar.Elapsed().Seconds(); sec > 0.5 {
+			rate := float64(p.done-p.from) / sec
+			detail += fmt.Sprintf("  %.1f MB/s", rate/1e6)
+			if p.total > 0 && rate > 0 {
+				detail += ", " + console.Duration(time.Duration(float64(p.total-p.done)/rate*float64(time.Second))) + " left"
+			}
+		}
+		if p.total > 0 {
+			frac = float64(p.done) / float64(p.total)
+		}
+		p.bar.Set(frac, detail)
 	}
 	return n, err
+}
+
+// gb is bytes (of total, when known) for a person: "1.23 / 4.18 GB", "12.30 MB", "2.11 kB".
+func gb(n, total int64) string {
+	unit, div := "GB", 1e9
+	switch m := max(n, total); {
+	case m < 1e6:
+		unit, div = "kB", 1e3
+	case m < 1e9:
+		unit, div = "MB", 1e6
+	}
+	if total < 0 {
+		return fmt.Sprintf("%.2f %s", float64(n)/div, unit)
+	}
+	return fmt.Sprintf("%.2f / %.2f %s", float64(n)/div, float64(total)/div, unit)
 }
 
 // Fetch downloads a file of a Hugging Face repository to path unless it is there, as Prepare does

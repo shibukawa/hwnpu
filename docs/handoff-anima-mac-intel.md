@@ -40,6 +40,8 @@ go test ./internal/imagegen/... ./internal/tokenizer/ ./internal/milcpu/
 
 ## 3. Mac (M3、16 GB)
 
+**2026-11-06 に確かめた** ([design.md](design.md) の 16.85)。1024 × 1024 は全部 Neural Engine で 1 枚 40 秒。そのままでは載らなかった `text` (fp16)、`dit_time`、`dit_patch` は形を変えた。既定の書き出しはテキストも DiT も int8。今は `-model` を省けば、チェックポイントのダウンロードと書き出しを自動でする (`go run ./cmd/hwnpu-image -prompt "..."`)。下は最初の手順の記録。
+
 まず 512 × 512 で、全部が Neural Engine に載るかを見る。
 
 ```sh

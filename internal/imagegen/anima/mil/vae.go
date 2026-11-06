@@ -167,14 +167,12 @@ func vaeAttn(g *graph, x *mlpackage.Var, path string, qchunk int) *mlpackage.Var
 	return g.add(x, o)
 }
 
-// vaeUp is nearest 2x upsampling (each pixel a 2 x 2 block: reshapes and tiles) and the
-// upsampler's 3 x 3 convolution.
+// vaeUp is nearest 2x upsampling and the upsampler's 3 x 3 convolution. upsample_nearest_neighbor
+// is 3 times faster on the Neural Engine than the same as reshapes and tiles (stage 5 at 1024 x
+// 1024 on M3: 412 ms against 1275 ms); OpenVINO IR lowers it to those.
 func vaeUp(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 	C, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
-	u := g.reshape(x, C, H, W, 1)
-	u = g.op("tile", map[string]any{"x": u, "reps": g.B.Ints(1, 1, 1, 2)}, C, H, W, 2)
-	u = g.reshape(u, C, H, 1, 2*W)
-	u = g.op("tile", map[string]any{"x": u, "reps": g.B.Ints(1, 1, 2, 1)}, C, H, 2, 2*W)
-	u = g.reshape(u, 1, C, 2*H, 2*W)
+	u := g.op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": g.B.ScalarI32(2),
+		"scale_factor_width": g.B.ScalarI32(2)}, 1, C, 2*H, 2*W)
 	return conv(g, u, path+".upsamplers.0.resample.1", cout)
 }

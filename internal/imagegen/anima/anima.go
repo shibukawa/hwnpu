@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -77,8 +78,9 @@ type engine interface {
 	// velocity runs the DiT on the patches (tokens x 64, c * 4 + dy * 2 + dx) at the timestep
 	// whose sinusoid is tproj: each patch's velocity (tokens x 64, dy * 32 + dx * 16 + c).
 	velocity(ctx context.Context, patches, tproj []float32) ([]float32, error)
-	// decode runs the VAE on the latents (16, h, w); nil when the export has no VAE.
-	decode(ctx context.Context, latents []float32, logf func(string, ...any)) (*image.RGBA, error)
+	// decode runs the VAE on the latents (16, h, w), telling stage (when not nil) of each stage
+	// as it ends; nil when the export has no VAE.
+	decode(ctx context.Context, latents []float32, stage StageFunc) (*image.RGBA, error)
 	hasVAE() bool
 	close() error
 }
@@ -92,8 +94,10 @@ type Pipeline struct {
 	qwen               *tokenizer.Tokenizer
 	t5                 *tokenizer.Unigram
 	qwenEmbed, t5Embed []byte // bf16 rows
-	// Logf, when set, is told the time each stage takes.
+	// Logf, when set, is told what is done (the text's tokens and time).
 	Logf func(format string, args ...any)
+	// Stage, when set, is told of each stage of the VAE as it ends.
+	Stage StageFunc
 	// Dump, when set, is a directory the conditioning (cond.bin) and each step's velocity
 	// (v<i>.bin, the DiT's output rows) are written to, raw bf16, to check against a reference.
 	Dump string
@@ -112,10 +116,16 @@ func (p *Pipeline) dump(name string, xs []float32) {
 	}
 }
 
+// StageFunc is told that stage i of n took d.
+type StageFunc func(i, n int, d time.Duration)
+
 // Open loads the export in dir onto dev: an IRON export (text/, dit_in/, dit_blocks/, dit_out/,
 // vae/, AMD's NPU), or one of hwnpu-image -convert (manifest.json and the programs, Apple's
 // Neural Engine or Intel's NPU; with dev nil, the CPU interpreter, Core ML packages only).
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error) {
+//
+// log, when not nil, is shown each program of an export of hwnpu-image -convert as it loads (on a
+// terminal, a line with a spinner: the first load compiles it for the NPU, minutes at 1024 x 1024).
+func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
@@ -124,7 +134,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error)
 	var err error
 	if IsProgramExport(dir) {
 		var pe *progEngine
-		pe, p.Dit, p.Text, err = openPrograms(ctx, dev, dir)
+		pe, p.Dit, p.Text, err = openPrograms(ctx, dev, dir, log)
 		if pe != nil {
 			p.eng = pe
 		}
