@@ -2,7 +2,7 @@
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.80), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.81), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -38,6 +38,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | AMD: PLE and embedding tables on the host (16.72–73) | unchanged | unchanged | | ◎ E2B 9.08 → 4.60 GB | | | unchanged (word for word) | AMD |
 | AMD: release the NPU while idle `-idle` (16.74) | | | △ reload 0.8–2 s on the next request | ◎ 0 while idle | | | | AMD |
 | AMD: Gemma 4's KV-shared layers on the prompt's last row only (16.80) | unchanged | ◎ E2B 2.3× (4K 18.3 → 7.8 s), E4B 1.7× | | | | | ○ caches bit for bit the same (last row's logits cosine 0.9996 or more) | AMD |
+| AMD: towers loaded only when used (16.81) | | | △ the first image or clip +0.6–0.7 s | ◎ E2B with images and audio 2818 → 1826 MiB while only text | ○ no text-only export needed | | unchanged | AMD |
 | Anima loaded one stage at a time (16.72) | 69.3 → 67.7 s/image | | | ◎ 14.2 → 5.0 GiB | | | bit for bit the same | AMD |
 | AMD: Anima's DiT at 8 bits (q8) (16.78) | +2 % (67.3 → 68.3 s/image) | | | ◎ pinned 5020 → 3445 MiB | ○ 5.7 → 4.0 GB | | nearly unchanged (latent cosine 0.966 → 0.961) | AMD |
 | AMD: the cores' rounding set to nearest even (16.78) | unchanged | unchanged | | | | | ◎ Anima's quantized DiT (step-0 error q8 0.088 → 0.031); language models unchanged | AMD |
@@ -140,9 +141,9 @@ Improvements to the GEMV itself:
 |---|---|---|---|---|
 | Gemma 4 E2B | 9.08 GB | 4.60 GB | **1.78 GB** | 0 |
 | Gemma 4 E4B | 14.7 GB | 9.25 GB | **3.53 GB** | 0 |
-| Gemma 4 E2B (images and audio) | 10.1 GB | 5.6 GB | **2.82 GB** | 0 |
+| Gemma 4 E2B (images and audio) | 10.1 GB | 5.6 GB | **2.82 GB**; 1.83 GB until an image or a clip comes (16.81) | 0 |
 | LFM3-1.7B | 3.75 GiB | — | **1.64 GiB** | 0 |
-| LFM3-VL / Audio / Omni | 4.12 / 4.14 / 4.51 GiB | — | **2.00 / 2.03 / 2.39 GiB** | 0 |
+| LFM3-VL / Audio / Omni | 4.12 / 4.14 / 4.51 GiB | — | **2.00 / 2.03 / 2.39 GiB**; Omni 1.64 GiB until a tower runs (16.81) | 0 |
 | PLaMo 3 Translate 2B | 5.96 GiB | — | **2.16 GiB** (the 0.51 GiB embedding is a file on the host) | 0 |
 | Anima (1024 × 1024) | 14.2 GiB | **5.0 GiB** loading one stage at a time | **3.4 GiB** (DiT at 8 bits; 2.7 GiB at 4 bits) | — |
 
@@ -240,6 +241,7 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | 4-bit (q4nx) and 8-bit (q8) weights (`iron_q4.py`, `q4_mv.cc`, `q8_mv.cc`) | Generation 1.3–1.6×, pinned 1/2–1/5 | Decode uses `QGEMV`; with 2 cores per column it reaches 55 GB/s like bf16. Prompts turn weights back into bfp16 or bf16 for the GEMM. Swapped in on hwnpu's side without changing IRON |
 | Host tables (`iron.HostTable`) | PLE and embeddings are not pinned | The tokens' rows are written before each call. Output word for word the same |
 | `-idle` (`Release` / `Reload`) | A resident server gives back pinned memory while idle | E2B 1775 MiB → 0. The conversation is copied to the host and continues |
+| Towers loaded only when used (`growBanks`, 16.81) | One export with images and audio serves text alone at the text export's memory | Gemma 4 E2B 2818 → 1826 MiB (the text export: 1775), LFM3-Omni 2448 → 1679 MiB until a tower runs; the towers come in 0.6–0.7 s. Same answers. No export again |
 | A general graph export (`iron_graph.py`, `iron.Graph`) | Models other than language models (Anima) | One ELF can hold several weight banks (`variants`). The DiT's 7 sets compile once |
 | Splitting commands (`SCRATCHPAD_WORDS` 24) | Keeps each command under amdxdna's 2 s timeout and the 64 MiB heap | Without the gather, commands grew too long; they are now split at export |
 | Retrying when the heap runs out (`ENOSPC`) | Releases the decode run and tries again | Same as IRON |
@@ -544,7 +546,6 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 - Repairing hwnpu-agent's broken calls (output-parser)
 - AMD: attention that skips outside the sliding window, an IRON version for checking drafts
 - The rest of AMD's pinned memory (amd-npu-models.md section 12):
-  - Load the towers only when used (about 1 GB for E2B with images and audio)
   - One DiT work area for all 7 sets (about 1 GB)
   - Split the VAE into tiles
 - A 6-bit format on AMD. It can follow q8's layout

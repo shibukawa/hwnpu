@@ -2,7 +2,7 @@
 
 [English](improvements.md)
 
-design.md 16 章の実装記録 (16.80 まで) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
+design.md 16 章の実装記録 (16.81 まで) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
 
 - 「生成」= 1 トークンを作る速さ (ms/token か tokens/s)
 - 「prefill」= プロンプトを読む速さ (最初の応答までの時間)
@@ -38,6 +38,7 @@ design.md 16 章の実装記録 (16.80 まで) と model-fit.md、intel-npu-mode
 | AMD: PLE と埋め込みの表をホストに (16.72–73) | 変わらない | 変わらない | | ◎ E2B 9.08 → 4.60 GB | | | 変わらない (一字一句同じ) | AMD |
 | AMD: 待つ間は NPU を手放す `-idle` (16.74) | | | △ 次の要求で読み直し 0.8–2 s | ◎ 待つ間 0 | | | | AMD |
 | AMD: Gemma 4 の KV を共有する層はプロンプトの最後の行だけ (16.80) | 変わらない | ◎ E2B 2.3 倍 (4K 18.3 → 7.8 s)、E4B 1.7 倍 | | | | | ○ キャッシュはビット単位で同じ (最後の行のロジットはコサイン 0.9996 以上) | AMD |
+| AMD: 塔は使うときだけ読む (16.81) | | | △ 最初の画像か音声で +0.6–0.7 s | ◎ 画像と音声の E2B が文だけの間 2818 → 1826 MiB | ○ 文だけの書き出しが要らない | | 変わらない | AMD |
 | Anima を段ごとに読み込む (16.72) | 69.3 → 67.7 s/枚 | | | ◎ 14.2 → 5.0 GiB | | | ビット単位で同じ | AMD |
 | AMD: Anima の DiT を 8 ビット (q8) に (16.78) | +2 % (67.3 → 68.3 s/枚) | | | ◎ 固定 5020 → 3445 MiB | ○ 5.7 → 4.0 GB | | ほぼ変わらない (潜在のコサイン 0.966 → 0.961) | AMD |
 | AMD: コアの丸めを最近接偶数に (16.78) | 変わらない | 変わらない | | | | | ◎ Anima の量子化した DiT (ステップ 0 の誤差 q8 0.088 → 0.031)。言語モデルは変わらない | AMD |
@@ -140,9 +141,9 @@ GEMV 単体の改善:
 |---|---|---|---|---|
 | Gemma 4 E2B | 9.08 GB | 4.60 GB | **1.78 GB** | 0 |
 | Gemma 4 E4B | 14.7 GB | 9.25 GB | **3.53 GB** | 0 |
-| Gemma 4 E2B (画像と音声) | 10.1 GB | 5.6 GB | **2.82 GB** | 0 |
+| Gemma 4 E2B (画像と音声) | 10.1 GB | 5.6 GB | **2.82 GB**。画像か音声が来るまでは 1.83 GB (16.81) | 0 |
 | LFM3-1.7B | 3.75 GiB | — | **1.64 GiB** | 0 |
-| LFM3-VL / Audio / Omni | 4.12 / 4.14 / 4.51 GiB | — | **2.00 / 2.03 / 2.39 GiB** | 0 |
+| LFM3-VL / Audio / Omni | 4.12 / 4.14 / 4.51 GiB | — | **2.00 / 2.03 / 2.39 GiB**。Omni は塔が走るまで 1.64 GiB (16.81) | 0 |
 | PLaMo 3 Translate 2B | 5.96 GiB | — | **2.16 GiB** (埋め込み 0.51 GiB はホストのファイル) | 0 |
 | Anima (1024 × 1024) | 14.2 GiB | 段ごとに読み込んで **5.0 GiB** | **3.4 GiB** (DiT を 8 ビット。4 ビットなら 2.7 GiB) | — |
 
@@ -240,6 +241,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | 4 ビット (q4nx) と 8 ビット (q8) の重み (`iron_q4.py`、`q4_mv.cc`、`q8_mv.cc`) | 生成 1.3〜1.6 倍、固定 1/2〜1/5 | デコードは `QGEMV`。1 列 2 コアで bf16 と同じ 55 GB/s に届く。プロンプトは bfp16 か bf16 に戻して GEMM。IRON は変えずに hwnpu 側で差し替えた |
 | ホストの表 (`iron.HostTable`) | PLE と埋め込みを固定しない | 呼び出しの前にトークンの行を書く。出力は一字一句同じ |
 | `-idle` (`Release` / `Reload`) | 常駐するサーバーが待つ間に固定メモリを返す | E2B 1775 MiB → 0。会話はホストに写して続きから |
+| 塔は使うときだけ読む (`growBanks`、16.81) | 画像と音声つきの書き出し 1 つで、文だけの用途も文だけの書き出しと同じメモリで | 塔が走るまで Gemma 4 E2B 2818 → 1826 MiB (文だけの書き出しは 1775)、LFM3-Omni 2448 → 1679 MiB。塔は 0.6〜0.7 秒で読む。答えは同じ。書き出し直しは要らない |
 | 汎用のグラフの書き出し (`iron_graph.py`、`iron.Graph`) | 言語モデル以外 (Anima) | 1 つの ELF に重みのバンクを複数 (`variants`) 持てる。DiT の 7 組でもコンパイルは 1 回 |
 | コマンドの分け方 (`SCRATCHPAD_WORDS` 24) | 1 コマンドを amdxdna の 2 秒の打ち切りとヒープ 64 MiB に収める | gather がなくなりコマンドが長くなりすぎたのを、書き出しのときに分けた |
 | ヒープが足りないとき (`ENOSPC`) にやり直す | デコードのランを放してから再試行 | IRON と同じ動き |
@@ -544,7 +546,6 @@ Apple / Intel (`hwnpu-image -convert`):
 - hwnpu-agent の崩れた呼び出しの修復 (output-parser)
 - AMD: スライディング窓の外を飛ばす注意、下書きの確認用の IRON の版
 - AMD の固定メモリの残り (amd-npu-models.md 12 節):
-  - 塔は使うときだけ読み込む (画像と音声の E2B で約 1 GB)
   - DiT の作業領域を 7 組で 1 つにする (約 1 GB)
   - VAE をタイルに分ける
 - AMD の 6 ビットの形式。q8 と同じ並びで足せる
