@@ -1,4 +1,4 @@
-# What each improvement bought (as of 2026-11-06, main up to #50 and the sharing on Linux and Windows)
+# What each improvement bought (as of 2026-11-06, main up to #52 and the towers loaded only when used)
 
 [日本語](improvements.ja.md)
 
@@ -114,6 +114,7 @@ Improvements to the GEMV itself:
 | Sharing AMD exports (16.79) | — | The first load of an export +4 s (5.3 GiB of whole files and a 1.67 GiB bank start, from the page cache); 2–11 ms after | Nothing to compile again on AMD. Only where the file system clones |
 | AMD (16.47, 16.50) | — | xclbin 0.5 ms, full ELF 1.0 ms, a 9 GB image 2–3 s from the page cache | |
 | AMD reloading after `-idle` (16.74) | — | E2B (4-bit) 0.8 s, E2B with images and audio 2.0 s | The Neural Engine and Intel take tens of seconds or more to reload, so only IRON releases |
+| AMD: the towers on the first image or clip (16.81) | Loaded with the model | 0.5–0.7 s once: Gemma 4 E2B 4-bit 992 MiB 0.7 s, LFM3-Omni 768 MiB 0.6 s, Gemma 4 E2B bf16 (16.80's export) 1058 MiB 0.5 s | Text alone starts with the text's part of the bank. After `-idle` the towers are left out again |
 | Trimming trailing zeros from Anima's bank images (amd-npu-models.md 11.2) | VAE image 8 GB, loads in 10 s | 0.2 GB, 4 s | Startup reads only the manifest (0.5 s); each stage loads when it runs |
 | PLaMo 3 as one lut8 program (`-prefill auto`) (16.71) | Two programs (4.9 GiB) exceed the ANE's compile cache and are recompiled every time | One program fits the cache | The cost: a document of thousands of tokens is read about 10× slower. `-format lut6` keeps two programs |
 
@@ -167,6 +168,7 @@ Most of the disk is weights and their copies: programs for 8 and 64 tokens per c
 | Trimming trailing zeros from Anima's bank images (amd-npu-models.md 11.2) | VAE image 8 GB → 0.2 GB | |
 | Cleaning up the `/dev/shm` left by OpenVINO (16.72) | 8.4 GB a day | `/dev/shm` is memory, counted here as it fills like a disk |
 | **Cost**: the prompt store (16.38, 16.52) | About 145 MB a sequence (Apple), 51 MB an entry (AMD) | |
+| Towers loaded only when used (16.81) | A text-only export need not be kept beside the one with images and audio (Gemma 4 E2B 4-bit: 7.0 GB) | It costs 51 MiB more pinned than the text export. Unlike sharing (16.79), it needs no Btrfs or XFS |
 | **Cost**: AMD exports are whole files per variant | Each `-q4`, `.mm`, context or chunk size is a new directory | Shared where the file system clones (above), whole files and common starts; bytes that differ in the middle of a file are not |
 
 ## 6. Accuracy
@@ -294,6 +296,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 - **Anima's DiT at 8 bits**: 2 % slower than bf16. With a seed whose trajectory branches easily, the composition can still change (one of 4 prompts: PSNR 15.4 dB against bf16, the furniture in front differs). For bf16, export with `--dit-attn bf16 --dit-mlp bf16`
 - **The rounding fix on AMD**: it is in the exported kernels, so 4-bit exports made before #48 keep the old rounding until exported again (the difference for language models is small)
 - **`-idle`**: memory is given back while idle, but the next request first pays 0.8–2 s to reload. `-idle 0` turns it off
+- **Towers loaded only when used**: the first image or clip after a start (or after `-idle`) waits 0.5–0.7 s more for the towers, and for that moment the old and the new bank are both pinned (Gemma 4 E2B 4-bit: 1.67 + 2.64 GiB). After that the towers stay until the model is released
 - **PLaMo 3 as one lut8 program**: short texts are fast, but long documents are read about 10× slower (`-format lut6` gives two programs at lower accuracy)
 - **Sharing on the disk depends on the file system**: ext4, the default of Ubuntu, Debian and many others, cannot share, so each copy takes its full size there. Fedora and openSUSE default to Btrfs. Put the models on Btrfs or XFS to share (on Windows, a Dev Drive). Whole files and the common start of files of one name are shared; bytes after a difference are kept separately
 
@@ -369,7 +372,7 @@ In every format, the think budget (`-think-budget`) feeds in the closing mark th
 - Audio out (`lfm3gen`, `hwnpu-tts`, Apple only): the depthformer's MaskGIT, the codec decoder run in overlapping chunks, ISTFT on the host. About 0.5× real time with lut8
 - d1 (`hwnpu-systemone`): one bidirectional pass over the full-attention layers only, answering by the probabilities of the choice labels. A port of llama.cpp's `/v1/systemone`
 - Images in a chat get negative token IDs from the SHA-256 of their data URL, so the same image keeps the prompt cache working (the last 16 are kept)
-- AMD: hwnpu's vision and audio towers on IRON's `Multimodal` (vision 512×512, audio up to 4,096 frames. IRON's MHA needs a head_dim that is a multiple of 64, so 96 is zero-padded to 128)
+- AMD: hwnpu's vision and audio towers on IRON's `Multimodal` (vision 512×512, audio up to 4,096 frames. IRON's MHA needs a head_dim that is a multiple of 64, so 96 is zero-padded to 128). The towers are loaded only when used (16.81): LFM3-Omni 4-bit 2448 → 1679 MiB while only text
 
 **Gemma 4 E2B / E4B** (16.25–26, 16.42–43, 16.50, 16.55, 16.63, 16.65)
 - Structure: per-layer embeddings (PLE; the 4.7 GB table stays on the host and rows are looked up), KV sharing (on E2B, layers 15–34 read the K/V of layers 13 and 14), proportional RoPE, sandwich norms, a logit softcap
@@ -381,6 +384,7 @@ In every format, the think budget (`-think-budget`) feeds in the closing mark th
   - The PLE table (4.4 GB for E2B) moved to the host: 9.08 → 4.60 GB. Output word for word the same
   - With `--q4` (MLP and output q4nx, attention q8, embedding on the host): 1.78 GB. Generation 6.1 → 7.9 tok/s, KL 0.097
   - E4B: 14.7 → 3.53 GB, 3.7 → 5.6 tok/s, KL 0.049
+  - With images and audio, the towers are loaded only when an image or a clip comes (16.81): 2818 → 1826 MiB while only text (the text export: 1775 MiB), the same answers
 - E4B's old export hit `ERT_CMD_STATE_TIMEOUT` on a 2483-token prompt. The new export (62 commands) gets through
 
 **Qwen3.5-4B** (16.62)
