@@ -2465,3 +2465,11 @@ Qwen3.6-35B-A3B の 1 トークン (q4nx、今の部品のまま) の見積も�
 - 書き出しは hwnpu-chat と同じく自動にした (`anima.Prepare`)。`-model` を省くと、見つけた NPU の形式 (`llm.ProgramFormat`) で、`-dir/Anima` (既定はユーザーのキャッシュディレクトリの `hwnpu/models/Anima`) に足りないチェックポイント (公式の split files の DiT と Qwen3-0.6B、Diffusers 版の VAE とその config、トークナイザー 2 つ、計約 5.4 GB) を `chat.Fetch` で落とし、足りない書き出しを作る。書き出しの名前には大きさ、形式、群、塊と書き出しの形の版 (`anima.ExportVersion`、今は 2) が入り (`anima-turbo-v1.1-1024x1024-int8-int8-g4-q512-v2.coreml`)、最後に `.done` を書く。形を変えたら版を上げれば、前の書き出しを読まずに作り直す。Apple と Intel の NPU が見つからず、`~/models/anima-turbo-1024.amd-npu2` があれば今までどおりそれを使う (AMD の書き出しは Python の `iron_anima.py`)。`-convert` は手で書き出す手段として残した
   - M3 で: 足りないトークナイザー 1 つを落とし、書き出し 19 秒、初回の読み込み (コンパイル) 199 秒、1 枚 238 秒。出力は手で書き出したものとビット単位で同じ。手で書き出したものも残していると、2 回目の読み込みが 58 秒だった (同じ中身でも別のパッケージとしてコンパイルされ、Neural Engine のキャッシュの約 4 GiB を超える)。それを消すと 2.7 秒、1 枚 40 秒
 - 未確認: Intel の NPU の実機。新しい形を diffusers と照合し直すこと (この Mac に torch がない)
+
+### 16.86 端末の表示: ダウンロード、書き出し、コンパイル、ステップの進み具合 (`console.Bar`) — 2026-11-07
+
+- `console.Bar`: 端末では、ラベル、スピナー、バー、割合、経過時間、詳しい情報を 1 秒に 10 回描き直し、`Done` でラベルと結果の 1 行を残す。割合が分からないあいだはスピナーと経過時間だけ。端末でなければ (パイプ、ファイル) `Done` の 1 行だけを書き、描き直しもエスケープシーケンスも出さない。`console.Log` の灰色の中で使う (「all on the NPU」は緑、「NOT all on the NPU」は赤のまま)
+- ダウンロード (`chat.Fetch`、hwnpu-chat と hwnpu-agent と hwnpu-image で共通): バーに大きさ、速さ、残り時間 (`downloading model.safetensors from LiquidAI/LFM3-1.7B ▕███░░░▏ 14% 15s 0.47 / 3.46 GB 31.4 MB/s, 1m35s left`)。終わると大きさ、時間、置き場所の 1 行。前は 1 秒ごとに `\r` で数字を書き直すだけで、パイプにもそれを書いていた
+- hwnpu-chat の読み込み: 部品ごとの行に数え (`[3/9]`) を足した (前の `dots` を `Bar` に)
+- hwnpu-image: ログを灰色に。書き出しと読み込み (初回は Neural Engine 向けのコンパイル) は部品ごとに数えとスピナー、読み込みは全部 Neural Engine に載ったかも。ノイズ除去はステップのバー (1 ステップの時間と残り時間)、VAE は段のバー。端末でなければ、今までどおりステップと段ごとの行。VAE の段の時間はログの行ではなく `Pipeline.Stage` (`StageFunc`) で受ける (AMD の `VAE.Stage` も)
+- `anima.Open` は書き出しの部品ごとの行を書く先 (`log`) を取る

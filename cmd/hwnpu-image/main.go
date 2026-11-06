@@ -38,6 +38,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
@@ -81,10 +82,10 @@ func main() {
 		text, dit := anima.Formats(o.Backend)
 		o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
 		t0 := time.Now()
-		if err := anima.Convert(*convert, *model, o, os.Stderr); err != nil {
+		if err := anima.Convert(*convert, *model, o, console.Log(os.Stderr)); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Fprintf(os.Stderr, "%s: converted in %.0f s\n", *model, time.Since(t0).Seconds())
+		fmt.Fprintf(os.Stderr, "%s: converted in %s\n", *model, console.Duration(time.Since(t0)))
 		return
 	}
 	if *prompt == "" {
@@ -92,7 +93,10 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	logf := func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
+	// what goes on in gray (with a spinner or a bar on a terminal), the picture's line as it is
+	lw := console.Log(os.Stderr)
+	live := console.Live(lw)
+	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 
 	if *model == "" {
 		format := llm.BackendCoreML // the CPU interpreter runs Core ML exports
@@ -107,7 +111,7 @@ func main() {
 			log.Fatalf("hwnpu-image: %v (on AMD's NPU, -model names an export of tools/amd/iron_anima.py)", err)
 		default:
 			o.Backend = format
-			if *model, err = anima.Prepare(ctx, anima.Setup{Dir: filepath.Join(*dir, "Anima"), ConvertOptions: o, Log: os.Stderr}); err != nil {
+			if *model, err = anima.Prepare(ctx, anima.Setup{Dir: filepath.Join(*dir, "Anima"), ConvertOptions: o, Log: lw}); err != nil {
 				log.Fatal(err)
 			}
 		}
@@ -140,14 +144,14 @@ func main() {
 	if !anima.IsProgramExport(*model) {
 		iron.ShareExport(*model, logf)
 	}
-	p, err := anima.Open(ctx, dev, *model)
+	p, err := anima.Open(ctx, dev, *model, lw)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer p.Close()
 	p.Logf = logf
 	p.Dump = *dump
-	logf("loaded %s (%dx%d) in %.1f s", *model, p.Dit.Width, p.Dit.Height, time.Since(t0).Seconds())
+	logf("loaded %s (%dx%d) in %s", filepath.Base(*model), p.Dit.Width, p.Dit.Height, console.Duration(time.Since(t0)))
 
 	cond, err := p.Encode(ctx, *prompt)
 	if err != nil {
@@ -167,25 +171,39 @@ func main() {
 		x = p.Noise(s)
 	}
 	sig := anima.Sigmas(*steps, *shift)
-	t1 := time.Now()
+	bar := console.NewBar(lw, "denoising")
+	bar.Set(0, fmt.Sprintf("step 1/%d", *steps))
 	x, err = p.Denoise(ctx, cond, x, sig, func(i int, d time.Duration) {
-		logf("step %d/%d: sigma %.3f -> %.3f, %.1f s", i+1, *steps, sig[i], sig[i+1], d.Seconds())
+		per := bar.Elapsed() / time.Duration(i+1)
+		left := time.Duration(*steps-i-1) * per
+		bar.Set(float64(i+1)/float64(*steps), fmt.Sprintf("step %d/%d, %.1f s a step, %s left", min(i+2, *steps), *steps, per.Seconds(), console.Duration(left)))
+		if !live {
+			logf("step %d/%d: sigma %.3f -> %.3f, %.1f s", i+1, *steps, sig[i], sig[i+1], d.Seconds())
+		}
 	})
 	if err != nil {
+		bar.Done("failed")
 		log.Fatal(err)
 	}
-	logf("denoised in %.1f s", time.Since(t1).Seconds())
+	bar.Done(fmt.Sprintf("%d steps in %s (%.1f s a step)", *steps, console.Duration(bar.Elapsed()), bar.Elapsed().Seconds()/float64(*steps)))
 	if *latents != "" {
 		if err := writeF32(*latents, x); err != nil {
 			log.Fatal(err)
 		}
 	}
-	t2 := time.Now()
+	bar = console.NewBar(lw, "decoding")
+	p.Stage = func(i, n int, d time.Duration) {
+		bar.Set(float64(i+1)/float64(n), fmt.Sprintf("VAE stage %d/%d", min(i+2, n), n))
+		if !live {
+			logf("vae stage %d: %.2f s", i, d.Seconds())
+		}
+	}
 	img, err := p.Decode(ctx, x)
 	if err != nil {
+		bar.Done("failed")
 		log.Fatal(err)
 	}
-	logf("decoded in %.1f s", time.Since(t2).Seconds())
+	bar.Done("in " + console.Duration(bar.Elapsed()))
 	f, err := os.Create(*out)
 	if err != nil {
 		log.Fatal(err)
@@ -196,7 +214,7 @@ func main() {
 	if err := f.Close(); err != nil {
 		log.Fatal(err)
 	}
-	logf("%s: %.1f s in all", *out, time.Since(t0).Seconds())
+	fmt.Fprintf(os.Stderr, "%s: %s in all\n", *out, console.Duration(time.Since(t0)))
 }
 
 func readF32(path string) ([]float32, error) {

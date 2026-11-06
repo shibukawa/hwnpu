@@ -335,3 +335,14 @@ func TestPreparePrefill(t *testing.T) {
 		t.Error("-prefill sometimes is accepted")
 	}
 }
+
+func TestGB(t *testing.T) {
+	for _, c := range []struct {
+		n, total int64
+		want     string
+	}{{2110, -1, "2.11 kB"}, {470e6, 3.46e9, "0.47 / 3.46 GB"}, {111.23e6, 253.81e6, "111.23 / 253.81 MB"}, {3.46e9, -1, "3.46 GB"}} {
+		if got := gb(c.n, c.total); got != c.want {
+			t.Errorf("gb(%d, %d) = %q, want %q", c.n, c.total, got, c.want)
+		}
+	}
+}

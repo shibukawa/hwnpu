@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/ovcpu"
 )
@@ -82,7 +85,7 @@ type progEngine struct {
 	// vae is the VAE's stages; each is loaded only while it runs (at 1024 x 1024 their
 	// working memory is a few GB, as AMD's stages, 16.72)
 	vae      []string
-	open     func(ctx context.Context, name string) (runner.Program, error)
+	open     func(ctx context.Context, name string, show bool) (runner.Program, error)
 	cond     []float32
 	textRows int
 	// timeRows is the rows the time part takes (mil.TimeRows; 1 in earlier exports).
@@ -94,7 +97,7 @@ const (
 	progHidden = 1024
 )
 
-func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string) (*progEngine, DitConfig, TextConfig, error) {
+func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
 	m, err := ReadProgramManifest(dir)
 	var dc DitConfig
 	tc := TextConfig{Rows: progRows, Hidden: progHidden, T5Vocab: 32128, QwenVocab: 151936}
@@ -104,27 +107,41 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string) (*progEngi
 	dc = DitConfig{Width: m.Width, Height: m.Height, Hidden: 2048, Layers: 28, TextDim: progHidden, TextTokens: progRows,
 		LatentChannels: 16, Patch: 2, VAEScale: 8, Group: 28 / max(1, len(m.Blocks))}
 	e := &progEngine{dit: dc, textRows: progRows}
-	open := func(ctx context.Context, name string) (runner.Program, error) {
-		if name == "" {
-			return nil, errors.New("anima: the manifest misses a part")
+	// the programs in the order they load, for "[3/19]"
+	total := 3 + len(m.Blocks) + len(m.Vae)
+	if m.Patch != "" {
+		total++
+	}
+	where := "the CPU interpreter"
+	if dev != nil {
+		where = llm.DeviceName(dev)
+	}
+	if log != nil {
+		fmt.Fprintf(log, "loading %d programs onto %s", total, where)
+		if dev != nil {
+			fmt.Fprint(log, " (the first time, each is compiled for it: minutes at 1024 x 1024)")
 		}
-		if dev == nil && m.Backend == "intel" {
-			// for checking: OpenVINO's CPU plugin through tools/ov/run_ir.py
-			py := ovcpu.Python()
-			if py == "" {
-				return nil, errors.New("anima: an Intel export runs without the NPU on OpenVINO's CPU, which needs HWNPU_OV_PYTHON")
+		fmt.Fprintln(log)
+	}
+	loaded := 0
+	open := func(ctx context.Context, name string, show bool) (runner.Program, error) {
+		var bar *console.Bar
+		if show && log != nil {
+			loaded++
+			bar = console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", loaded, total, name))
+		}
+		p, err := openProgram(ctx, dev, dir, m.Backend, name)
+		if bar != nil {
+			switch {
+			case err != nil:
+				bar.Done("failed")
+			case p.OnNPU():
+				bar.Done(console.Duration(bar.Elapsed()) + ", all on the NPU")
+			default:
+				bar.Done(console.Duration(bar.Elapsed()) + ", " + where)
 			}
-			return &ovProgram{py: py, xml: filepath.Join(dir, name), precision: os.Getenv("HWNPU_OV_PRECISION")}, nil
 		}
-		p, err := runner.Open(ctx, dev, filepath.Join(dir, name))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-		if dev != nil && !p.OnNPU() {
-			p.Close()
-			return nil, fmt.Errorf("%s does not run on the NPU alone", name)
-		}
-		return p, nil
+		return p, err
 	}
 	fail := func(err error) (*progEngine, DitConfig, TextConfig, error) {
 		e.close()
@@ -134,18 +151,18 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string) (*progEngi
 		p    *runner.Program
 		name string
 	}{{&e.textP, m.Text}, {&e.time, m.Time}, {&e.fin, m.Final}} {
-		if *x.p, err = open(ctx, x.name); err != nil {
+		if *x.p, err = open(ctx, x.name, true); err != nil {
 			return fail(err)
 		}
 	}
 	if m.Patch != "" {
-		if e.patch, err = open(ctx, m.Patch); err != nil {
+		if e.patch, err = open(ctx, m.Patch, true); err != nil {
 			return fail(err)
 		}
 	}
 	e.timeRows = max(1, m.TimeRows)
 	for _, name := range m.Blocks {
-		p, err := open(ctx, name)
+		p, err := open(ctx, name, true)
 		if err != nil {
 			return fail(err)
 		}
@@ -154,7 +171,7 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string) (*progEngi
 	// the stages are checked (and compiled into the cache) now, so that a stage that does not
 	// run on the NPU fails here and not after the denoising; Decode loads them again
 	for _, name := range m.Vae {
-		p, err := open(ctx, name)
+		p, err := open(ctx, name, true)
 		if err != nil {
 			return fail(err)
 		}
@@ -162,6 +179,31 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string) (*progEngi
 	}
 	e.vae, e.open = m.Vae, open
 	return e, dc, tc, nil
+}
+
+// openProgram loads one program of an export onto dev (with the CPU interpreter when dev is nil;
+// an Intel export then runs on OpenVINO's CPU plugin) and fails unless it is all on the NPU.
+func openProgram(ctx context.Context, dev *hwnpu.Device, dir, backend, name string) (runner.Program, error) {
+	if name == "" {
+		return nil, errors.New("anima: the manifest misses a part")
+	}
+	if dev == nil && backend == "intel" {
+		// for checking: OpenVINO's CPU plugin through tools/ov/run_ir.py
+		py := ovcpu.Python()
+		if py == "" {
+			return nil, errors.New("anima: an Intel export runs without the NPU on OpenVINO's CPU, which needs HWNPU_OV_PYTHON")
+		}
+		return &ovProgram{py: py, xml: filepath.Join(dir, name), precision: os.Getenv("HWNPU_OV_PRECISION")}, nil
+	}
+	p, err := runner.Open(ctx, dev, filepath.Join(dir, name))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	if dev != nil && !p.OnNPU() {
+		p.Close()
+		return nil, fmt.Errorf("%s does not run on the NPU alone", name)
+	}
+	return p, nil
 }
 
 func (e *progEngine) close() error {
@@ -217,12 +259,12 @@ func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32) ([]
 
 func (e *progEngine) hasVAE() bool { return len(e.vae) > 0 }
 
-// decode runs the VAE's stages; the last gives the image (1, 3, h, w).
-func (e *progEngine) decode(ctx context.Context, latents []float32, logf func(string, ...any)) (*image.RGBA, error) {
+// decode runs the VAE's stages, each loaded while it runs; the last gives the image (1, 3, h, w).
+func (e *progEngine) decode(ctx context.Context, latents []float32, stage StageFunc) (*image.RGBA, error) {
 	x := latents
 	for i, name := range e.vae {
 		t0 := time.Now()
-		s, err := e.open(ctx, name)
+		s, err := e.open(ctx, name, false)
 		if err != nil {
 			return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)
 		}
@@ -231,8 +273,8 @@ func (e *progEngine) decode(ctx context.Context, latents []float32, logf func(st
 		if err != nil {
 			return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)
 		}
-		if logf != nil {
-			logf("vae stage %d: %.2f s", i, time.Since(t0).Seconds())
+		if stage != nil {
+			stage(i, len(e.vae), time.Since(t0))
 		}
 	}
 	W, H := e.dit.Width, e.dit.Height
