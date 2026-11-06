@@ -32,7 +32,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | The Neural Engine reads prompts 128 tokens per call, logits of the last row alone (16.82) | unchanged | ○ at 16K LFM3 about −20%, E2B −25%, VL −22% | △ converted again once | | | | unchanged | Apple (models split at their attention) |
 | Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | unchanged | ◎ E2B 16K 27.8 → 12.6–13.2 s, 64K 205 → 94.6 s (2.1–2.2 times) | | ○ footprint 1805 → 1392 MB (64K) | | | unchanged (matches the program without a cache on the CPU) | Apple |
 | Repetition detection (16.60) | ◎ felt (stops going round in circles) | | | | | | | All |
-| E4B as one program (`-prefill auto`) (16.65) | ○ +25% | ✕ 4.4× slower when long | ◎ 77–87 s → 4 s | ◎ half the weights | | | | Apple |
+| E4B as one program (`-prefill auto`) (16.65, 16.83) | ○ +25% | ✕ 7.5–8× slower when long (than `-prefill on`'s two) | ◎ 77–87 s → 4 s | ◎ half the weights | | | | Apple |
 | Identical files shared on the disk, cleanup (16.64, 16.79) | | | △ Apple: slow once right after the switch | | ◎ M3 about 50 → 20 GiB, two AMD exports 15.2 → 8.2 GiB | | | macOS / Linux (Btrfs, XFS) / Windows (ReFS, unverified) |
 | AMD: full ELF (16.45–50) | ◎ (avoids a 0.46 ms switch per op × 100) | | ○ | | | | | AMD |
 | AMD: prompt chunk 2048 → 1024 (16.54) | | ○ −20% | | | | | | AMD |
@@ -99,7 +99,8 @@ Improvements to the GEMV itself:
 | hwnpu-agent (16.35) | OpenCode's first request 7,516 tokens (13 s) | 629 tokens (1.3 s) | A short system prompt with 4 tools |
 | Two-level attention (16.61) | LFM3 at 128K 616 s, at 250K 2186 s (the whole cache, the same day) | 469 s, 1217 s | Slower at 64K, 155 → 173 s (the prompt is read in two levels from about 57K) |
 | Two-level attention (16.65) | Gemma 4 E2B at 125K 709 s, LFM3-VL at 120K 583 s | 521 s, 431 s | Audio 516 s, Omni 501 s |
-| Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | E2B 16K 27.8 s, 64K 205.2 s | 12.6–13.2 s, 94.6 s | The shared layers (15 to 34), and the host's attention of their 4 full attention layers, on the last token's row. That attention runs on the program of 8 tokens that generates. E4B has one program by default and is left as it is |
+| Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | E2B 16K 27.8 s, 64K 205.2 s | 12.6–13.2 s, 94.6 s | The shared layers (15 to 34), and the host's attention of their 4 full attention layers, on the last token's row. That attention runs on the program of 8 tokens that generates |
+| The same (E4B, `-prefill on`) (16.83) | The default one program: 16K 184.3 s, 64K 1382.8 s | 24.3–25.4 s, 168.4 s (7.5–8.2×) | Two programs (6.5 GiB) do not fit the compile cache: every start takes 135–165 s, and the first tokens after a prompt are slow (3 s at 16K, 14 s at 64K). Generation at 16K is a fifth slower. The default stays one program |
 | The Neural Engine's prompt chunk of 128, logits of the last row alone (16.82) | LFM3 4K 3.9–5.4 s, 16K 19.3–25.2 s, 64K 160 s; Gemma 4 E2B 16K 31.2 s; LFM3-VL 16K 21.6 s | 3.3–3.9 s, 15.2–16.1 s, 136–146 s; 23.5 s; 16.9 s | Even at 64 rows a call is mostly reading the weights, so one of 128 costs 1.5 times as much. 256 is no faster. Models in one piece and Intel stay at 64 |
 | AMD: prompt chunk 1024 (16.54) | 2,683 tokens 13.0 s | 10.2 s | Short ones too: 0.56 → 0.43 s |
 | 4 bits on AMD (16.73, 16.76–77) | — | Unchanged (LFM3 2048 tokens 2.29 → 2.38 s, PLaMo 3 2596 tokens 11.2 → 11.8 s) | Weights are turned back from q4nx and q8 into bfp16 or bf16 on the device for the GEMM, so prompt speed does not gain |
@@ -298,7 +299,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 ## 9. Caveats when combining (costs)
 
 - **lut6 and tiers (`-tier`)**: tiers with lut6 exceed the ANE's cache (about 4 GiB) and every startup takes 1–2 minutes. `-tier auto` makes tiers only with lut4. The split form (`-paged`, now the default) has no tiers
-- **E4B as one program**: startup and short chats are fast, but reading a 16K prompt goes from 41.6 to 182.6 s (4.4×). `-prefill on` brings back two programs
+- **E4B as one program**: startup and short chats are fast, but reading a 16K prompt goes from 41.6 to 182.6 s (4.4×). `-prefill on` brings back two programs. After 16.83 the two read 16K in 24–25 s and 64K in 168 s (one program: 184 and 1383 s), but every start takes 135–165 s and generation at 16K is a fifth slower
 - **Two-level attention**: it is an approximation, so the error grows when attention focuses on a single key (relative error 0.068–1.6 on a small Gemma 4). It passes the passkey test (LFM3 on the M3 up to 250K, and the three in a document of 128K). Around 64K a prompt reads a tenth slower. `-sparse=false` turns it off
 - **Prefill of long contexts**: reading 256K at once takes about 29 minutes (LFM3). The prompt store is assumed
 - **Noise in the numbers**: many M3 measurements were taken with 5–11 GB of swap. Only pairs measured back to back under the same conditions are compared. On AMD too, a single op can differ by about 1.4× between the first and second run (thought to be the power state). PLaMo 3's 4-bit numbers were measured with another job loading the machine
@@ -485,6 +486,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | The ANE's memory | Footprint of aned and ANECompilerService (not in RSS) | Needs sudo | 16.39, model-fit.md T10 |
 | The ANE's compile cache | Its size (about 4 GiB is an estimate) and location, and why only unsplit Gemma 4 at lut6 does not stay | Looking into aned (sudo) | 16.41, 16.43 |
 | Limits on M4 and later | The default per-part limit (0.9 GiB now; an M4 ran with 1.8 GiB and more), memory by number of parts | Measurements from M4 users | 16.12 |
+| Gemma 4 E4B's default `-prefill` | `-prefill on` (two programs) reads long prompts 7.5–8× faster, but every start takes 135–165 s (one program: 86 s) and generation at 16K is a fifth slower. Switch by the prompt's length (load the program of 128 only to read, say), or let `auto` weigh the length? | Compare the round trips including the reload (3–14 s) and the start | 16.65, 16.83 |
 | Gemma 4 E4B against the unsplit form | Skipped for lack of disk | | 16.65 |
 | Gemma 4 and the prompt store | Save and restore time and size with Gemma 4 E2B | Replay the same OpenCode request as 16.38 | 16.38 |
 | hwnpu-agent on Apple with Gemma 4 / Qwen3.5 | The templates support tools, but the agent tasks were not run (Gemma 4 E4B passed on AMD) | The tasks in CHAT.md section 7 | 16.35 |
