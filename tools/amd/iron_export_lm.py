@@ -760,9 +760,17 @@ def main(argv=None) -> int:
     ap.add_argument("--device-ple", action="store_true",
                     help="Gemma 4: keep the per-layer token table on the device (IRON's own gathers) instead of "
                          "on the host (iron_hostple: 4.4 GiB less pinned memory for E2B)")
+    ap.add_argument("--scan-window", action="store_true",
+                    help="IRON's sliding-window attention, which reads the keys from position 0 and masks "
+                         "those out of the window (by default it reads only the window's: iron_window)")
     a = ap.parse_args(argv)
     bind_device(a.device, a.cols)
     import importlib
+
+    if not a.scan_window:
+        import iron_window
+
+        iron_window.install()
 
     if a.model.startswith("gemma4") and not a.device_ple:
         import iron_hostple
@@ -773,6 +781,7 @@ def main(argv=None) -> int:
             import iron_gemma4
 
             iron_hostple.install(q4=a.q4, attn=a.attn, words=iron_gemma4.SCRATCHPAD_WORDS)
+            iron_gemma4.install_tail_boundary()
     elif a.model == "plamo3" and a.q4:
         import iron_plamo3
 

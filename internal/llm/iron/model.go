@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,6 +54,8 @@ type version struct {
 	// A prompt chunk's commands are made for each call instead (newRun): their control code
 	// (89 MiB for Gemma 4 E2B) is larger than the device heap (64 MiB on Linux 7.0).
 	run *hwnpu.Run
+	// barrier is the decode step's empty command (chunkBarrier), kept.
+	barrier *hwnpu.Run
 	// steps are the runs of a version packaged as an xclbin per step (steps.go).
 	steps   []*stepRun
 	streams stepStreams
@@ -165,6 +168,10 @@ func (m *Model) Release() error {
 		if v.run != nil {
 			errs = append(errs, v.run.Close())
 			v.run = nil
+		}
+		if v.barrier != nil {
+			errs = append(errs, v.barrier.Close())
+			v.barrier = nil
 		}
 		errs = append(errs, v.closeSteps()...)
 		for k, b := range v.args {
@@ -601,6 +608,9 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		return m.logits(v)
 	}
 	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	if err := m.chunkBarrier(ctx); err != nil {
+		return nil, err
+	}
 	for k := range v.m.Kernels {
 		t0 := time.Now()
 		run, err := m.newRun(v, k)
@@ -745,6 +755,56 @@ func (m *Model) writeInput(v *version, name string, data []byte) error {
 		return buf.SyncToDevice(in.Offset, in.Bytes)
 	}
 	return fmt.Errorf("iron: no input %s", name)
+}
+
+// chunkBarrier runs an empty command in the decode step's hardware context before a prompt
+// chunk: one of the ELF's empty instances (mlir-aie's aiecc_empty, no control code), 0.3 to 0.5
+// ms. Without it, a prompt chunk's first command can hang until amdxdna's timeout
+// (ERT_CMD_STATE_TIMEOUT) right after the chunk before, in exports whose commands are cut in
+// some places (design.md 16.80 and 16.84); the first chunk always runs, and so does a chunk after
+// any other context's command (a decode step, another process's). The cause is not known; a
+// pause between the chunks does not help. Nothing without an empty instance (an xclbin per
+// step) runs one.
+func (m *Model) chunkBarrier(ctx context.Context) error {
+	v := m.decode
+	if v == nil || v.prog == nil {
+		return nil
+	}
+	if v.barrier == nil {
+		name := ""
+		for _, k := range v.prog.Kernels() {
+			if strings.HasSuffix(k, ":aiecc_empty") {
+				name = k
+				break
+			}
+		}
+		if name == "" {
+			return nil
+		}
+		kern, err := v.prog.Kernel(name)
+		if err != nil {
+			return err
+		}
+		run, err := kern.NewRun()
+		if err != nil {
+			return err
+		}
+		// Never read (it moves nothing), but every argument is bound, as for any run.
+		for _, a := range v.m.Arguments {
+			if a.Index < len(kern.Args()) {
+				run.SetBuffer(a.Index, m.buffer(v, a.Kind))
+			}
+		}
+		if err := run.Err(); err != nil {
+			run.Close()
+			return fmt.Errorf("iron: the chunk barrier %s: %w", name, err)
+		}
+		v.barrier = run
+	}
+	if err := v.barrier.Run(ctx); err != nil {
+		return fmt.Errorf("iron: the chunk barrier: %w", err)
+	}
+	return nil
 }
 
 // dropDecode releases the decode step's run, whose control code (21 MiB for Gemma 4 E2B) a
