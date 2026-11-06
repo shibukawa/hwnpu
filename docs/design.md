@@ -947,7 +947,7 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 
 ### 16.12 Apple: 1 GiB の上限を層ごとの分割で超える (実測と設計) — 2026-10-29
 
-**実測** (M3 16GB、macOS 27.0.1、`npuprobe split`、lut4 64 層 1.81 GiB。レポートは `npuprobe-m3-split.md`)
+**実測** (M3 16GB、macOS 27.0.1、`npuprobe split`、lut4 64 層 1.81 GiB。レポートは `npu_profiles/npuprobe-m3-split.md`)
 
 | 分割 | 各部分 | 配置 | ms/token | 各部分の単独の合計 | 重み GB/s | GPU との誤差 (各部分のあと) |
 |---|---|---|---|---|---|---|
@@ -987,7 +987,7 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 
 ### 16.13 分割の最初の段階: パーツごとのパッケージ、トークナイザー、生成 — 2026-10-29
 
-**multifunction では上限を超えられない** (M3、`npuprobe split -layout functions,files`、lut4 64 層 1.81 GiB。レポートは `npuprobe-m3-functions.md`)。Core ML の ML Program は関数を複数持て、`MLModelConfiguration.functionName` で 1 つずつ別のモデルとして読み込める (macOS 15)。関数は weight.bin を共有するので、1 つのファイルのまま分けられるかを試した。
+**multifunction では上限を超えられない** (M3、`npuprobe split -layout functions,files`、lut4 64 層 1.81 GiB。レポートは `npu_profiles/npuprobe-m3-functions.md`)。Core ML の ML Program は関数を複数持て、`MLModelConfiguration.functionName` で 1 つずつ別のモデルとして読み込める (macOS 15)。関数は weight.bin を共有するので、1 つのファイルのまま分けられるかを試した。
 
 | 分け方 | 配置 | ms/token | プロセスの最大 RSS | GPU との誤差 (最後) |
 |---|---|---|---|---|
@@ -1048,7 +1048,7 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 ### 16.15 KV キャッシュ: ホスト側バッファと MLState の比較 — 2026-10-29
 
 - 実装: `mlpackage.Builder.State` (状態の入力) と `UpdateState` (write_state の後に read_state で読み直す。coremltools の coreml_update_state と同じ形)、`Package.States`。Core ML バックエンドは状態のあるモデルの要求ごとに `newState` で MLState を作り、`predictionFromFeatures:usingState:options:error:` で動かす。状態は引数 (`Args`) には出ない。`Request.ResetState` は `getMultiArrayForStateNamed:handler:` で全状態を 0 にする (新しい要求も 0 から始める。Core ML は新しい状態の中身を約束しないため)。`TestState` で、状態が呼び出しの間で引き継がれ、リセットで 0 に戻ることを確かめた
-- `npuprobe kv`: bench と同じ大きさの層 (lut4) を 11 層 (LFM3-1.7B の注意層の数) にし、本物の注意を入れて 1 トークンを通す。`host` はキャッシュを入力に取り新しい K/V を出力する (LFM3 の方式)、`state` はキャッシュを層ごとの MLState に置き、one-hot の列 (1, 1, cache, 1) で `cache + onehot*(k - cache)` と書き込む (要素ごとの演算だけ。`slice_update` は CPU に置かれる)。レポートは `npuprobe-m3-kv.md`
+- `npuprobe kv`: bench と同じ大きさの層 (lut4) を 11 層 (LFM3-1.7B の注意層の数) にし、本物の注意を入れて 1 トークンを通す。`host` はキャッシュを入力に取り新しい K/V を出力する (LFM3 の方式)、`state` はキャッシュを層ごとの MLState に置き、one-hot の列 (1, 1, cache, 1) で `cache + onehot*(k - cache)` と書き込む (要素ごとの演算だけ。`slice_update` は CPU に置かれる)。レポートは `npu_profiles/npuprobe-m3-kv.md`
 - 結果 (M3、全部 ANE):
 
 | 容量 | KV | host ms (CPU use) | state ms (CPU use) |
@@ -1060,8 +1060,8 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 
 - 速さは変わらない。MLState で下がるのは CPU use だけで、ホスト側バッファでは Core ML が CPU で入力を扱っている分 (0.15 コアほど) がなくなる。容量に比例する費用は両方に残るので、原因は入力のコピーではなく、固定の長さのキャッシュ全体に対する ANE の計算 (連結または更新、GQA の tile、注意)
 - ANE の制約: 状態に書いた値をそのまま後ろで使うと、ANE 向けのコンパイルが `error code: -14` で失敗する (CPU と GPU なら読み込める)。書いた後に読み直した値を使えば載る。GQA で K/V を tile で複製せず、問い合わせを (kv ヘッド, グループ) の行列にしてまとめて読む形 (同じ計算) は、host では全演算 CPU (8192 で 85.7 ms)、state ではコンパイル失敗だった
-- 費用の正体 (`npuprobe kv -kv-modes host,host-mha`、レポート `npuprobe-m3-kv-mha.md`): K/V を `tile` で複製せず 16 の問い合わせヘッドがそれぞれ K/V を持つ形 (キャッシュ 4 倍) は、1024 / 4096 / 8192 で 14.2 / 36.6 / 63.5 ms と host の 1.3 倍にしかならない。帯域でも複製でもなく、容量全体に対する問い合わせ 1 行の注意の計算 (層ごとに 16 ヘッド × 容量、1K トークンで約 8 GFLOP/s) が ANE を使い切れていない。手法の調査と当てはめは `docs/kv-cache.md`
-- int8 のキャッシュ (`npuprobe kv -kv-modes host-int8`、レポート `npuprobe-m3-kv-int8.md`): キャッシュを int8 の入力 (Core ML の仕様の版 10、macOS 26 以降) とトークンごとの fp16 のスケールで渡し、`cast` と `mul` で戻す形は全演算 ANE に載る。メモリは半分で、速さは同じ実行の fp16 より 1 割遅い (1024/4096/8192 で 11.9/29.5/50.8 対 10.8/27.6/46.5 ms)。量子化はメモリのための手法で、ANE の速さには効かない。`mlpackage.Int8` の入力の型を足した
+- 費用の正体 (`npuprobe kv -kv-modes host,host-mha`、レポート `npu_profiles/npuprobe-m3-kv-mha.md`): K/V を `tile` で複製せず 16 の問い合わせヘッドがそれぞれ K/V を持つ形 (キャッシュ 4 倍) は、1024 / 4096 / 8192 で 14.2 / 36.6 / 63.5 ms と host の 1.3 倍にしかならない。帯域でも複製でもなく、容量全体に対する問い合わせ 1 行の注意の計算 (層ごとに 16 ヘッド × 容量、1K トークンで約 8 GFLOP/s) が ANE を使い切れていない。手法の調査と当てはめは `docs/kv-cache.md`
+- int8 のキャッシュ (`npuprobe kv -kv-modes host-int8`、レポート `npu_profiles/npuprobe-m3-kv-int8.md`): キャッシュを int8 の入力 (Core ML の仕様の版 10、macOS 26 以降) とトークンごとの fp16 のスケールで渡し、`cast` と `mul` で戻す形は全演算 ANE に載る。メモリは半分で、速さは同じ実行の fp16 より 1 割遅い (1024/4096/8192 で 11.9/29.5/50.8 対 10.8/27.6/46.5 ms)。量子化はメモリのための手法で、ANE の速さには効かない。`mlpackage.Int8` の入力の型を足した
 - 判断: LFM3 はホスト側バッファのままにする。CPU インタプリタ (`milcpu`) で確かめられ、容量の違うプログラムへの移し替えや分割と扱いやすい。CPU を空けたいとき (電力) は MLState に移す価値がある。状態の仕組みは `mlpackage` とバックエンドに残した
 - 次: 容量の費用を減らす。LFM3 のスライディング注意の層 (11 のうち 5、窓 256) は 256 トークンのリングバッファで足りるので、全注意の層だけを長い容量にする
 
@@ -1080,7 +1080,7 @@ Core ML は小さなモデルを fp16 でも CPU に置く。配置はモデル�
 | 16384 | — | 375.5 ms | 注意の演算が CPU (下記) | — |
 
 - 1K トークンの容量あたりの費用は 5.4〜5.6 ms から 2.8 ms に下がった。全注意の層の割合 6/11 どおり。4K で 26% 速く、8K で 1 トークン 38.5 ms (26 tokens/s)
-- **ANE の 1 次元あたりの上限は 16384**: キャッシュ 16384 (鍵の軸 16385) では全注意の層の注意の演算 (2 部分で 42 と 86 演算) が CPU に置かれ、1 トークン 375 ms、読み込み 140 秒、プロセスの最大 RSS 4.5 GiB になった。`npuprobe kv -kv-layers 2 -kv-cache 16383,16384` で境目を確かめた: 鍵 16384 は全部 ANE で 16.6 ms、16385 は注意の 39 演算が CPU で 117 ms (`npuprobe-m3-kv-limit.md`)。`llm.NeuralEngineMaxDim` に記録し、`hwnpu-convert` は `-cache + -seq` がこれを超えると警告する。今の方式で ANE に載る文脈の上限は 16383 トークン (Q=1)
+- **ANE の 1 次元あたりの上限は 16384**: キャッシュ 16384 (鍵の軸 16385) では全注意の層の注意の演算 (2 部分で 42 と 86 演算) が CPU に置かれ、1 トークン 375 ms、読み込み 140 秒、プロセスの最大 RSS 4.5 GiB になった。`npuprobe kv -kv-layers 2 -kv-cache 16383,16384` で境目を確かめた: 鍵 16384 は全部 ANE で 16.6 ms、16385 は注意の 39 演算が CPU で 117 ms (`npu_profiles/npuprobe-m3-kv-limit.md`)。`llm.NeuralEngineMaxDim` に記録し、`hwnpu-convert` は `-cache + -seq` がこれを超えると警告する。今の方式で ANE に載る文脈の上限は 16383 トークン (Q=1)
 - 次: 容量の段階 (1K/4K/8K/16K) と移し替え、プロンプトのキャッシュ、塊分けの注意 (16K を超えるにはこれが要る)
 
 ### 16.17 チャット、OpenAI 互換 API、OpenCode — 2026-10-30
@@ -1153,7 +1153,7 @@ HWNPU_PLAMO_DIR=MODEL_DIR go test -run PlamoEmbedding ./internal/tokenizer/
 
 - 問い: ANE の 1 次元の上限 16384 (16.16) を、キャッシュを 16384 以下の塊に分けることで超えられるか。Flash-Decoding の合流 (塊ごとの最大値、指数の和、出力) を、ホストではなく 1 つのプログラムの中で行えば、ホスト側の仕組み (`decode`、プロンプトのキャッシュ) はほとんど変わらない
 - `npuprobe kv -kv-modes host-chunk` (`internal/probe.splitAttention`): 塊 J ごとに別の入力 `kv_k_N_J`、`kv_v_N_J` (1, 4, 長さ, 128) と `mask_J` を取り、各塊は分けないキャッシュと同じ演算で注意を計算し、塊どうしは要素ごとの演算だけで合わせる。全体の最大値に ln 4n を足した値から指数を取るので、全部の塊の指数の和は 長さ/4 以下、重み付きの値の和は 長さ/4 × 値の最大 以下で、値が 16 未満なら fp16 に収まる。`TestKVChunkMatchesHost` (CPU インタプリタ、キャッシュ 256 を 64 ずつ 4 塊、一部と全部が隠れた塊を含む) で分けないキャッシュと相対誤差 8.4e-7。自分のトークンの項を外す改変を検出する。`milcpu` に `reduce_sum` と `reduce_max` を足した
-- 結果 (M3、6 層 lut4、LFM3-1.7B の全注意の層の数。レポートは `npuprobe-m3-kv-chunk.md`、`npuprobe-m3-kv-chunk-long.md`):
+- 結果 (M3、6 層 lut4、LFM3-1.7B の全注意の層の数。レポートは `npu_profiles/npuprobe-m3-kv-chunk.md`、`npu_profiles/npuprobe-m3-kv-chunk-long.md`):
 
 | キャッシュ | host (分けない) | host-chunk (16384 ずつ) |
 |---|---|---|
@@ -1532,7 +1532,7 @@ go run ./cmd/hwnpu-tts -model LFM3-Audio-2B -text tts-q1.mlpackage -depth depth.
 - 既定で動かした結果 (M3): 変換は 1 部分 44〜67 秒 (8 部分で約 7 分半)、Core ML のコンパイルは 1 本 74〜78 秒。4 問 (思考なし) は富士山 3,776 m、17 × 23 は 391、『こころ』は宮本明、川は利根川で、16.39 の lut6 と同じ 2 問。生成は 28〜45 tokens/s (lut4 + tile は 18〜24)。コーディングの課題は 6 要求で修正
 - 起動が 2 分半になった: コンパイル済みなのに 1 本 35〜43 秒。`HWNPU_COREML_TRACE=1` では hwnpu のコンパイル済みキャッシュは当たり (0.3〜0.5 秒)、`MLModel` の読み込み (ANE 向けのコンパイル。16.12 の「システム側のキャッシュ」) が 1 部分 17〜19 秒で外れている。同じものを読み直すと当たり外れが部分ごとに入れ替わり、2 本 (4 部分 2.4 GiB) だけなら 2 回目は全部当たり (0.05〜0.5 秒、起動 3 秒)、4 本 (8 部分 4.8 GiB) は 4 回続けて起動しても毎回 3〜6 部分が外れ (110、92、77、62 秒)、直後に 2 本に戻すと 3 秒。以前の既定 (lut4 の 4 本 3.2 GiB) は何も挟まず 3 回起動すると 48、33、3 秒で落ち着く。lut4 の 4 本 (3.2 GiB) は朝の実行で全部当たり (1.1〜1.4 秒)。つまり ANE のキャッシュは容量が 3.2〜4.8 GiB の間 (4 GiB か) の LRU で、lut6 の 4 本は入らない。lut4 の 2 部分 (0.8 GiB) も 1 回目 6.7 秒 → 2 回目 0.06 秒なので、部分の数ではなく容量。`~/Library/Caches/com.apple.e5rt.e5bundlecache` は 11 MB で、本体は aned 側 (sudo が要り未確認)
 - 対応: `-tier` の既定を `auto` にし (`chat.TierAuto`)、`Prepare` が形式で決める: lut4 (int4) なら 4096、6 と 8 ビットなら無し (その旨を 1 行出す)。lut6 の既定は c16320 の 2 本 (2.4 GiB) になり、短い会話は c4096 の段階 (grouped で 1 回 27〜28 ms) ではなく c16320 (42.8 ms) で動く。それでも以前の既定 (lut4 + tile、c4096 で 29.9 ms、c16320 で 69.2 ms) と比べ、短い会話で 4 割遅く、長い会話で 4 割速い。4 本にしたければ `-tier 4096` (起動のたびに 2 分半)。初回の起動は変換 4 部分 約 4 分 + コンパイル 2 本 約 2 分半
-- 残り: 段階を lut6 でも持つには、ANE のキャッシュに収まる形が要る: Q=8 と Q=64 で重みを共有する 1 パッケージ 2 関数 (`npuprobe-m3-functions.md` の方向) か、段階の方を Q=8 だけにして 8 トークンずつ読む (4K のプロンプトで 14 秒) か。ANE のキャッシュの容量と場所は aned の側で未確認 (sudo)
+- 残り: 段階を lut6 でも持つには、ANE のキャッシュに収まる形が要る: Q=8 と Q=64 で重みを共有する 1 パッケージ 2 関数 (`npu_profiles/npuprobe-m3-functions.md` の方向) か、段階の方を Q=8 だけにして 8 トークンずつ読む (4K のプロンプトで 14 秒) か。ANE のキャッシュの容量と場所は aned の側で未確認 (sudo)
 
 ### 16.42 既定の切り替えの波及の確認: マルチモーダル、OpenCode、見つかった画像の不具合 — 2026-11-02
 
@@ -1721,7 +1721,7 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
 - プローブ (`internal/probe/attn.go`、`cmd/npuprobe/attn.go`): 重みなしで 1 塊に対する注意を計算し、塊の中で正規化した出力 o、行ごとの最大値 m、指数の和 l を返す。指数の和は 1 との行列積 (16.22 の `reduce_sum` の配置の揺れを避ける)。ホストは `probe.ChunkMerge` で float32 のまま合わせる (Flash-Decoding の合流を逐次に)。1 ステップは、6 層それぞれの使っている塊を別々のバッファから付け替えて呼ぶ。`TestChunkAttnMergeMatchesFull` (CPU インタプリタ、4 塊、一部と全部が隠れた塊、Q=3 の因果マスク) は 1 回の softmax と相対誤差 1.4e-4。最大値が変わったときの掛け直しを外す改変と、ヘッドの並びを取り違える改変を検出する
 - 見つかった不具合: Core ML の `request.Bind` は、一度でも投入したリクエストを、終わっていても「実行中」として付け替えを断っていた。今までの生成はバッファを最初に 1 回付けるだけなので当たらなかった。`Submit` と Level Zero と同じく、終わっていれば付け替えるようにした (`TestBindAfterSubmissionFinished`)
 - 配置 (M3、macOS 27.0.1。grouped): Core ML は仕事の少ない形を CPU に置く。Q=1 は塊 8192 まで CPU、16384 で ANE。Q=8 は 2048 まで CPU、4096 から ANE。Q=64 は 1024 から ANE。tile (K/V を問い合わせの頭ごとに複製) は Q=1 でも 4096 から ANE で、計算が多い形ほど ANE に置かれる
-- 結果 (`npuprobe-m3-attn.md`。6 層分の注意、1 ステップの ms。合わせる時間を含む):
+- 結果 (`npu_profiles/npuprobe-m3-attn.md`。6 層分の注意、1 ステップの ms。合わせる時間を含む):
 
 | Q | 塊 | 配置 | 4096 使用 | 16384 | 65536 | 262144 | 1K あたり (16K〜64K) | うち合わせる時間 (262144) |
 |---|---|---|---|---|---|---|---|---|
@@ -1751,7 +1751,7 @@ LLM のデコード (1 トークンずつ) は行列ベクトル積 (GEMV) が�
   プロンプトの読みは Q=64、塊 8192 で 1K あたり 3.5 ms なので、256K を一度に読むと注意だけで約 30 分 (平均 128K × 3.5 ms × 4096 回)。prompt store と退避が前提になる
 - 結論: T2 の注意の側は合格。256K の容量を常に持っても短い会話は今より遅くならず、長い会話は数倍速くなる見込み。メモリは使った分だけ (塊を使い始めたときに確保すれば、1 トークン 12 KiB、256K で 3 GiB)。塊は 8192 (Q=8 と Q=64 の両方で ANE、Q=8 で最速、合わせる時間も小さい) を第一候補にする
 - M4 でも配置の境目はほぼ同じだった (ユーザーの計測。Q=1 は塊 16384 から、Q=8 は 4096 から ANE)。境目は機種ではなく Core ML (macOS 27) の判断で決まっているとみる。塊は 16384 を超えられない (1 次元の上限、16.16) が、1 回の時間は鍵の数にほぼ比例し、呼び出しごとの固定費は塊 16384 で数 % なので、大きくしても得はない
-- 切り替えの費用 (`npuprobe seam`、`npuprobe-m3-seam.md`): lut4 の 40 層 (1.13 GiB、lut6 の LFM3-1.7B と同じくらい) を 7 部分にし、その間に 6 層分の塊ごとの注意 (grouped、塊 8192) を挟んで全部を同時に読み込み、1 ステップを 3 通りで測った (それぞれ 2 回のうち速いほう):
+- 切り替えの費用 (`npuprobe seam`、`npu_profiles/npuprobe-m3-seam.md`): lut4 の 40 層 (1.13 GiB、lut6 の LFM3-1.7B と同じくらい) を 7 部分にし、その間に 6 層分の塊ごとの注意 (grouped、塊 8192) を挟んで全部を同時に読み込み、1 ステップを 3 通りで測った (それぞれ 2 回のうち速いほう):
 
 | Q | 使用 | 重みだけ | 注意だけ | 交互 | 交互 − 和 | 境目 1 つ (12 回) |
 |---|---|---|---|---|---|---|
