@@ -25,6 +25,8 @@ q4nx_accumulate.
 """
 
 import argparse
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -186,7 +188,39 @@ def dequantize8(q, n: int, k: int) -> np.ndarray:
     return c.astype(np.float32) * np.repeat(s, GROUP, 1)
 
 
+def weight_key(w) -> str:
+    """A weight's name among chosen codes (load_codes): a hash of its shape and bf16 values, the
+    same whichever program loaded it from the checkpoint."""
+    b = np.ascontiguousarray(np.asarray(w, np.float32).astype(bfloat16))
+    return hashlib.sha1(repr(b.shape).encode() + b.view(np.uint16).tobytes()).hexdigest()
+
+
+# Codes another quantizer chose (q4_gptq.py's GPTQ): by weight_key, (format, the .npy path).
+_CODES: dict[str, tuple[str, Path]] = {}
+CODES_USED = {"hit": 0, "miss": 0}
+
+
+def load_codes(path) -> int:
+    """Make quantize_fmt take the blocks q4_gptq.py wrote into path (index.json and a .npy a
+    weight) for the weights they were chosen for, instead of rounding them. Returns how many."""
+    path = Path(path)
+    index = json.loads((path / "index.json").read_text())
+    for k, e in index.items():
+        _CODES[k] = (e["fmt"], path / f"{k}.npy")
+    return len(index)
+
+
 def quantize_fmt(w, fmt: str) -> np.ndarray:
+    if _CODES:
+        hit = _CODES.get(weight_key(w))
+        if hit is not None and hit[0] == fmt:
+            CODES_USED["hit"] += 1
+            q = np.load(hit[1])
+            n, k = np.shape(w)
+            if q.shape != (n * k // (M_TILE * K_TILE), FORMATS[fmt]):
+                raise ValueError(f"codes {hit[1]}: {q.shape} for a ({n}, {k}) weight in {fmt}")
+            return q
+        CODES_USED["miss"] += 1
     return quantize(w) if fmt == "q4" else quantize8(w)
 
 
