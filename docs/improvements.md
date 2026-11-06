@@ -1,4 +1,4 @@
-# What each improvement bought (as of 2026-11-06, main up to #52 and the towers loaded only when used)
+# What each improvement bought (as of 2026-11-06, main up to #52 and the towers loaded only when used, with the two-level attention checked on an M3)
 
 [日本語](improvements.ja.md)
 
@@ -28,7 +28,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Prompt store (disk) (16.38, 16.52) | | ◎ 7.9K tok 14.6 s → 0.2 s | | | △ about 145 MB a sequence | | | All (AMD too) |
 | hwnpu-agent (short system prompt) (16.35) | | ◎ 7.5K → 629 tok | | | | | | All |
 | Split at the attention (`-paged`) (16.59, 16.63) | ◎ 1.3–1.7× | | ◎ Gemma 98 s → 1.9 s | ◎ only the length used | | ◎ 262144 by default | unchanged | Apple / Intel |
-| Two-level attention (`-sparse`) (16.61, 16.65) | ○ −10–23% at long contexts | ○ −9–27% | | △ +1/8 | | | △ approximate | Apple / Intel |
+| Two-level attention (`-sparse`) (16.61, 16.65) | ◎ a call −52% at 128K, −58% at 250K (LFM3) | ○ −24% at 128K, −44% at 250K (+11% at 64K) | | △ +1/8 and the copies (+0.8 GB at 250K) | | | △ approximate (passkeys kept) | Apple / Intel |
 | Repetition detection (16.60) | ◎ felt (stops going round in circles) | | | | | | | All |
 | E4B as one program (`-prefill auto`) (16.65) | ○ +25% | ✕ 4.4× slower when long | ◎ 77–87 s → 4 s | ◎ half the weights | | | | Apple |
 | Identical files shared on the disk, cleanup (16.64, 16.79) | | | △ Apple: slow once right after the switch | | ◎ M3 about 50 → 20 GiB, two AMD exports 15.2 → 8.2 GiB | | | macOS / Linux (Btrfs, XFS) / Windows (ReFS, unverified) |
@@ -63,7 +63,10 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Split at the attention (16.59) | c16320 (unsplit) 19–28 tokens/s | 31–36 tokens/s (1.3–1.7×) | The cost now follows **the length used**. 42.7 ms/token at 16K, 92.8 at 64K, 165 at 128K, 320 at 250K |
 | Same (Gemma 4 E2B, 16.63) | 13.3–28.2 tokens/s | 23.6–36.0 tokens/s | Not one token of the answers differs |
 | Same (LFM3-VL / Audio, 16.65) | 11.9–29.4 / 16.3–23.4 | 24.0–36.0 / 18.8–28.6 | |
-| Two-level attention (Gemma 4 E2B, 16.65) | 82.4 ms at 64K, 119.5 at 125K | 73.9, 92.4 ms | For LFM3 on an M3 there is only an estimate (165 → about 90 ms at 128K) |
+| Two-level attention (LFM3, 16.61) | a call 101 ms at 64K, 221 at 128K, 345 at 250K (the whole cache, the same day) | 84, 105, 144 ms (generating at 78, 90, 126 ms/token) | As estimated (about 90 ms/token at 128K). The host's copies in `choose` take 13 ms a call (12%) |
+| Two-level attention (Gemma 4 E2B, 16.65) | 82.4 ms at 64K, 119.5 at 125K | 73.9, 92.4 ms | |
+| Two-level attention (LFM3-VL / Audio / Omni, 16.65) | a call 179 ms at 120K (VL, the same day) | VL 111, Audio 120, Omni 118 ms | |
+| Two-level attention's `Refresh` 4 / 16 (16.61) | a call 105–111 ms at 128K (choosing every call) | 81–90 with 4, 76–83 with 16 | The three passkeys kept. The default stays every call |
 | E4B as one program (16.65) | 10–13 tokens/s | 13.4–16.4 tokens/s | No more reloading weights when switching between Q=8 and Q=64 |
 | Think budget (16.32) | A title request thought for 3440 tokens, 226 s | Cut at 1024 tokens and made to answer | Cuts waiting time, not the time per token |
 | Repetition detection (16.60) | Could run for hours with a 262144 context | Finds the loop and stops it / closes the thinking | Never stopped any of 24 normal answers |
@@ -92,7 +95,8 @@ Improvements to the GEMV itself:
 | Prompt store (16.38) | 7,854 tokens after a restart 14.6 s | 0.2 s; 0.7 s even with a changed text | Writing adds under 0.5 s. Greedy output matches exactly |
 | Same (AMD, 16.52) | 2,736 tokens 13.2 s | 0.0 s | 51 MB an entry |
 | hwnpu-agent (16.35) | OpenCode's first request 7,516 tokens (13 s) | 629 tokens (1.3 s) | A short system prompt with 4 tools |
-| Two-level attention (16.65) | Gemma 4 E2B at 125K 709 s | 521 s | |
+| Two-level attention (16.61) | LFM3 at 128K 616 s, at 250K 2186 s (the whole cache, the same day) | 469 s, 1217 s | Slower at 64K, 155 → 173 s (the prompt is read in two levels from about 57K) |
+| Two-level attention (16.65) | Gemma 4 E2B at 125K 709 s, LFM3-VL at 120K 583 s | 521 s, 431 s | Audio 516 s, Omni 501 s |
 | AMD: prompt chunk 1024 (16.54) | 2,683 tokens 13.0 s | 10.2 s | Short ones too: 0.56 → 0.43 s |
 | 4 bits on AMD (16.73, 16.76–77) | — | Unchanged (LFM3 2048 tokens 2.29 → 2.38 s, PLaMo 3 2596 tokens 11.2 → 11.8 s) | Weights are turned back from q4nx and q8 into bfp16 or bf16 on the device for the GEMM, so prompt speed does not gain |
 | PLaMo 3's translation history (16.70–71) | Reads the whole history of pairs every time | From the second text on, reads only 17 of 50 tokens | When the target language is chosen automatically, the label of each past translation is fixed by its source text. Otherwise the start of the prompt could not be reused |
@@ -132,7 +136,7 @@ Improvements to the GEMV itself:
 | PLE table on the host (16.25) | Gemma 4's 4.7 GB table is kept off the ANE | |
 | E4B as one program (16.65) | Resident weights 6.5 → 3.26 GiB | |
 | KV tiers (16.37) | **Cost**: 2 programs 2.29 GiB → 4 programs 2.73–2.96 GiB (RSS), footprint 1,968 → 2,807 MB | Each tier has its own copy of the weights |
-| Two-level attention (16.61) | **Cost**: +1/8 for the summaries (6 → 7 KiB/token) | |
+| Two-level attention (16.61) | **Cost**: +1/8 for the summaries (LFM3 12 → 14, Gemma 4 E2B 6 → 7 KiB/token) and the copies of the chunks read exactly | LFM3's footprint at 250K 3.28 → 4.09 GB |
 | Conversation marks keep only the ring slots in use (`ringRows`) (16.71) | 578 → 183 MB over 5 PLaMo 3 translations (live heap +85 MB a turn → 36 MB in all) | Each mark used to copy the whole ring of the window layers (88 MB). Helps short chats with Gemma 4 and LFM3 too |
 | `debug.FreeOSMemory` after a conversion (16.71) | Startup right after a conversion 2.4 GB → 154 MB | Go was slow to give back what was left of the checkpoint read during the conversion |
 
@@ -289,7 +293,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 
 - **lut6 and tiers (`-tier`)**: tiers with lut6 exceed the ANE's cache (about 4 GiB) and every startup takes 1–2 minutes. `-tier auto` makes tiers only with lut4. The split form (`-paged`, now the default) has no tiers
 - **E4B as one program**: startup and short chats are fast, but reading a 16K prompt goes from 41.6 to 182.6 s (4.4×). `-prefill on` brings back two programs
-- **Two-level attention**: it is an approximation, so the error grows when attention focuses on a single key (relative error 0.068–1.6 on a small Gemma 4). It passes the passkey test. `-sparse=false` turns it off
+- **Two-level attention**: it is an approximation, so the error grows when attention focuses on a single key (relative error 0.068–1.6 on a small Gemma 4). It passes the passkey test (LFM3 on the M3 up to 250K, and the three in a document of 128K). Around 64K a prompt reads a tenth slower. `-sparse=false` turns it off
 - **Prefill of long contexts**: reading 256K at once takes about 29 minutes (LFM3). The prompt store is assumed
 - **Noise in the numbers**: many M3 measurements were taken with 5–11 GB of swap. Only pairs measured back to back under the same conditions are compared. On AMD too, a single op can differ by about 1.4× between the first and second run (thought to be the power state). PLaMo 3's 4-bit numbers were measured with another job loading the machine
 - **4 bits on AMD**: how much accuracy drops depends on the model (KL 0.036 for LFM3, 0.097 for E2B). For bf16, export without `--q4`
@@ -466,9 +470,10 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Qwen3.5's Q=64 program | Compile time and placement of the update unrolled 64 times (about 18,000 ops) | If it does not fit, add the chunked form (WY representation) through `Params` | 16.62 |
 | Checking all 32 layers of Qwen3.5 | Only 2 layers were checked with the real weights. Does fp16 overflow in deeper layers? | `ref_logits.py` → `hwnpu-check` on a machine with a good line | 16.62 |
 | Qwen3.5 with two-level attention | Do answers hold with two-level attention (`-sparse`)? | Passkey test | 16.62 |
-| LFM3's two-level attention | Speed on an M3 (estimated 165 → about 90 ms/token at 128K), placement of the mass program, host time | The steps in [handoff-m3-sparse.md](handoff-m3-sparse.md) | 16.61 |
-| Two-level attention's `Refresh` | Accuracy when reselecting only every few steps | Compare with the default (every step) on real weights | 16.61 |
-| Long contexts for VL / Audio / Omni / E4B | Speed with two-level attention (16.65's table is from before it) | The same test as 16.65 | 16.65 |
+| Two-level attention's `Refresh` as the default | With 4 or 16 the passkeys hold and a call is 14–32% faster (checked 2026-11-06), but finer differences such as loss or KL are not measured on the Neural Engine | Compare the logits with choosing every call on real weights | 16.61 |
+| Where two-level attention starts in the prompt | At 64K reading in two levels is a tenth slower than the whole cache. Should the threshold of about 57K go up? | Compare the reading times from 64K to 96K | 16.61 |
+| The copies in two-level attention's `choose` | Copying the buckets that change at each choice is 12% (13 ms) of a call generating at 128K. Would a choice that changes fewer buckets cut it? | pprof (`decode.(*Session).choose`) | 16.61 |
+| The `reshape` in Gemma 4's last part | One `reshape` of the last part split at the attention (after layer 41's attention, and the output layer) is on the CPU (E4B; E2B also says `NOT all on the NPU`). Would PLaMo 3's `attn_ot_N` fix it? | `hwnpuinfo -model ...part8.mlpackage` | 16.65 |
 | Slowing down past 128K | Why the slope per 1K grows from 1.14 to 1.43 ms (memory pressure, or attention lagging when interleaved?) | | 16.59 |
 | Slowness right after a long prefill | Why the first few calls after reading 256K take 1.29 s each (350 ms after) | | 16.59 |
 | The ANE's memory | Footprint of aned and ANECompilerService (not in RSS) | Needs sudo | 16.39, model-fit.md T10 |

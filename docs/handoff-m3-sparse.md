@@ -2,6 +2,8 @@
 
 作成: 2026-11-04。Linux (aix1) で実装し CPU で確かめた 2 段の注意を、Neural Engine のある Mac (M3、16 GB) で測るためのメモ。設計と CPU での確認は [docs/design.md](design.md) の 16.61。
 
+**2026-11-06 に M3 で実施済み**: 結果は [docs/design.md](design.md) の 16.61 の「M3 での確認」(LFM3-1.7B の配置、速さ、ホスト側の時間、`Refresh`) と 16.65 の末尾 (VL、Audio、Omni、E4B)。
+
 ## 1. ここまでの状態
 
 - ブランチ: `t3/sparse-two-level` (main の `a4bdeed`、#35 の後から)
