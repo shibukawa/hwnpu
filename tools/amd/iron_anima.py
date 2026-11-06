@@ -1017,6 +1017,9 @@ def main(argv=None) -> int:
                     help="the DiT blocks' attention projections: q8 (8.5 bits a weight), q4 (q4nx, 5 bits) or bf16")
     ap.add_argument("--dit-mlp", default=DIT_FMT.mlp, choices=("bf16", "q8", "q4"),
                     help="the DiT blocks' MLP: q8, q4 or bf16")
+    ap.add_argument("--q4-codes", type=Path, default=None,
+                    help="codes tools/amd/anima_gptq.py chose (OUT/codes) for the DiT's q4 and q8 projections, "
+                         "in place of rounding them")
     ap.add_argument("--random", action="store_true", help="weights drawn at random in the checkpoint's shapes")
     ap.add_argument("--check", action="store_true", help="write each graph's inputs and reference outputs")
     ap.add_argument("--device", default="npu2")
@@ -1031,6 +1034,10 @@ def main(argv=None) -> int:
         # have a mean, and DequantBFP's rounding toward negative infinity adds up over them
         iron_q4.PREFILL["q4"] = "bf16"
         iron_q4.install_linear()
+        if a.q4_codes is not None:
+            iron_q4.load_codes(a.q4_codes)
+    elif a.q4_codes is not None:
+        ap.error("--q4-codes needs --dit-attn or --dit-mlp q4 or q8")
     bind_device(a.device, a.cols)
     c = DitConfig(width=a.width or a.size, height=a.height or a.size, group=a.group)
     a.out.mkdir(parents=True, exist_ok=True)
@@ -1038,6 +1045,11 @@ def main(argv=None) -> int:
         export_text(a.root, a.out, a.check)
     if "dit" in a.only:
         export_dit(a.root, a.out, c, a.check)
+        if a.q4_codes is not None:
+            import iron_q4
+
+            print(f"--q4-codes: {iron_q4.CODES_USED['hit']} weights took the chosen codes, "
+                  f"{iron_q4.CODES_USED['miss']} were rounded")
     if "vae" in a.only:
         export_vae(a.root, a.out, c.width, c.height, a.check, a.stages)
     return 0

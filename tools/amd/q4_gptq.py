@@ -65,6 +65,35 @@ MODELS = {
         q4=("mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"),
         q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"),
     ),
+    "plamo3": dict(
+        bos=1, layers="model.layers.layers", remote=True,
+        q4=("mlp.gate_up_proj", "mlp.down_proj"),
+        q8=("mixer.qkv_proj", "mixer.o_proj"),
+    ),
+    # lfm3vl's text model (iron_lfm3.Lfm3 in the export), run on text alone
+    "lfm3vl": dict(
+        bos=124894, layers="model.language_model.layers", remote=True, auto="AutoModelForImageTextToText",
+        text="model.language_model", head="lm_head",
+        q4=("feed_forward.w1", "feed_forward.w3", "feed_forward.w2"),
+        q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+            "conv.in_proj", "conv.out_proj"),
+    ),
+    # lfm3audio's text model (iron_lfm3.Lfm3 in the export), run on text alone
+    "lfm3audio": dict(
+        bos=124894, layers="model.language_model.layers", remote=True, auto="AutoModelForSeq2SeqLM",
+        text="model.language_model", head="lm_head",
+        q4=("feed_forward.w1", "feed_forward.w3", "feed_forward.w2"),
+        q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+            "conv.in_proj", "conv.out_proj"),
+    ),
+    # lfm3omni's text model (iron_lfm3.Lfm3 in the export), run on text alone
+    "lfm3omni": dict(
+        bos=124894, layers="model.language_model.layers", remote=True, auto="AutoModelForImageTextToText",
+        text="model.language_model", head="lm_head",
+        q4=("feed_forward.w1", "feed_forward.w3", "feed_forward.w2"),
+        q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
+            "conv.in_proj", "conv.out_proj"),
+    ),
     "lfm3": dict(
         bos=124894, layers="model.layers", remote=True,
         q4=("feed_forward.w1", "feed_forward.w3", "feed_forward.w2"),
@@ -130,6 +159,39 @@ def _lut_nearest(x, lo, step, T):
     return cand.gather(1, best[:, None])[:, 0]
 
 
+def lut_wkmeans(w, fmt: str, d, iters: int = 8) -> np.ndarray:
+    """Tables fitted to w (N, K) against the activations: Lloyd's algorithm from the Uniform
+    levels (palette.KMeansMinMax), each weight counted by d (K,), its in-feature's E[x^2] (H's
+    diagonal), so the levels go where the output's error is (model-fit.md T8, 1)."""
+    import torch
+
+    k = 1 << LUT_BITS[fmt]
+    N, K = np.shape(w)
+    T = torch.as_tensor(lut_tables(w, fmt))
+    V = torch.as_tensor(np.asarray(w, np.float32)).reshape(-1, LUT_GROUP * K)
+    wt = torch.as_tensor(np.tile(np.asarray(d, np.float32), LUT_GROUP))
+    out = torch.empty_like(T)
+    step = max(1, (1 << 22) // (LUT_GROUP * K))  # blocks at a time: ~16 MB of values
+    for b0 in range(0, V.shape[0], step):
+        v, t = V[b0 : b0 + step], T[b0 : b0 + step].clone()
+        for _ in range(iters):
+            i = torch.searchsorted(((t[:, 1:] + t[:, :-1]) / 2).contiguous(), v)
+            num = torch.zeros_like(t).scatter_add_(1, i, v * wt)
+            den = torch.zeros_like(t).scatter_add_(1, i, wt.expand_as(v).contiguous())
+            t = torch.where(den > 0, num / torch.where(den > 0, den, 1), t)
+            t, _ = torch.sort(t, 1)
+        out[b0 : b0 + step] = t
+    return out.numpy().astype(np.float16).astype(np.float32)
+
+
+def _lut_nearest_sorted(x, T):
+    """For x (N,) torch, the index of the nearest level of each row's sorted table T (N, k)."""
+    import torch
+
+    mid = ((T[:, 1:] + T[:, :-1]) / 2).contiguous()
+    return torch.searchsorted(mid, x[:, None].contiguous())[:, 0]
+
+
 def lut_rtn(w, fmt: str) -> np.ndarray:
     """w (N, K) with each weight its table's nearest level (palette.QuantizeBits, Uniform)."""
     import torch
@@ -153,17 +215,18 @@ def rtn(w, fmt: str) -> np.ndarray:
     return iron_q4.dequantize_fmt(iron_q4.quantize_fmt(w, fmt), n, k, fmt)
 
 
-def gptq(w, H, fmt: str = "q4", block: int = 128, damp: float = 0.01):
+def gptq(w, H, fmt: str = "q4", block: int = 128, damp: float = 0.01, lut_fit: str = "uniform"):
     """GPTQ of w (N, K) float32 against H (K, K). q4 and q8: the codes (N, K) and each group's
     scale and minimum (N, K / 32), as iron_q4.pack (q4) or pack8 (q8) lays them out, the group's
     parameters fitted when GPTQ reaches it. lutN: the indices (N, K) and the tables, fixed first
-    (lut_tables of w), and the quantized weights."""
+    (lut_tables of w, or lut_wkmeans with lut_fit "wkmeans"), and the quantized weights."""
     import torch
 
     G = iron_q4.GROUP
     W = torch.as_tensor(np.asarray(w, np.float32)).clone()
     N, K = W.shape
     H = torch.as_tensor(H, dtype=torch.float64).clone()
+    diag = torch.diag(H).float().numpy().copy()
     dead = torch.diag(H) == 0
     H[dead, dead] = 1
     W[:, dead] = 0
@@ -172,9 +235,8 @@ def gptq(w, H, fmt: str = "q4", block: int = 128, damp: float = 0.01):
     lut = fmt in LUT_BITS
     codes = torch.empty((N, K), dtype=torch.int16)
     if lut:
-        T = lut_tables(w, fmt)
+        T = lut_wkmeans(w, fmt, diag) if lut_fit == "wkmeans" else lut_tables(w, fmt)
         Tr = torch.as_tensor(np.repeat(T, LUT_GROUP, 0))
-        lo_t, step_t = Tr[:, 0], (Tr[:, -1] - Tr[:, 0]) / (Tr.shape[1] - 1)
         Q = torch.empty_like(W)
     else:
         lo, hi = (0, 15) if fmt == "q4" else (-127, 127)
@@ -189,7 +251,7 @@ def gptq(w, H, fmt: str = "q4", block: int = 128, damp: float = 0.01):
             col = i1 + i
             x = W1[:, i]
             if lut:
-                c = _lut_nearest(x, lo_t, step_t, Tr)
+                c = _lut_nearest_sorted(x, Tr)
                 q = torch.gather(Tr, 1, c[:, None])[:, 0]
                 Q[:, col] = q
             else:
@@ -220,14 +282,35 @@ def blocks_of(codes, scale, mn, fmt: str) -> np.ndarray:
 # --- the model -------------------------------------------------------------------------------
 
 
+class TextLM:
+    """A multimodal checkpoint's text model alone: its decoder (text, a dotted path) and head,
+    called with token ids as a causal LM is (the towers are not run)."""
+
+    def __init__(self, m, text: str, head: str):
+        self.m, self.text, self.head = m, _get(m, text), _get(m, head)
+
+    def __getattr__(self, name):
+        return getattr(self.m, name)
+
+    def __call__(self, input_ids):
+        import types
+
+        return types.SimpleNamespace(logits=self.head(self.text(input_ids=input_ids)[0]))
+
+    def get_output_embeddings(self):
+        return self.head
+
+
 def load(path: Path, spec):
     import torch
     import transformers
 
     torch.set_grad_enabled(False)
-    m = transformers.AutoModelForCausalLM.from_pretrained(
-        path, dtype=torch.float32, trust_remote_code=spec["remote"])
+    auto = getattr(transformers, spec.get("auto", "AutoModelForCausalLM"))
+    m = auto.from_pretrained(path, dtype=torch.float32, trust_remote_code=spec["remote"])
     m.eval()
+    if "text" in spec:
+        m = TextLM(m, spec["text"], spec["head"])
     tok = transformers.AutoTokenizer.from_pretrained(path, trust_remote_code=spec["remote"])
     # the head is tied to the embeddings: its own copy, to quantize without touching the lookup
     head = m.get_output_embeddings()
@@ -320,6 +403,9 @@ def main(argv=None) -> int:
                     help="the q8 projections (attention, convolutions): GPTQ too, or rounded")
     ap.add_argument("--head", choices=("q4", "q8", "bf16", *LUT_BITS), default="q4")
     ap.add_argument("--head-method", choices=("gptq", "rtn"), default=None, help="the head's (default --method)")
+    ap.add_argument("--lut-fit", choices=("uniform", "wkmeans"), default="uniform",
+                    help="lutN with GPTQ: the tables palette.Uniform fits (the converter's), or Lloyd's from them "
+                         "with each weight counted by its in-feature's E[x^2] (lut_wkmeans)")
     ap.add_argument("--fmt-q4", choices=("q4", "q8", *LUT_BITS), default="q4",
                     help="the format of the projections the export holds in q4nx (the MLP's)")
     ap.add_argument("--fmt-q8", choices=("q4", "q8", *LUT_BITS), default="q8",
@@ -447,7 +533,7 @@ def main(argv=None) -> int:
                     if fmt in iron_q4.FORMATS:
                         put(name, lin, fmt, iron_q4.quantize_fmt(w, fmt))
                     continue
-                c, s, mn = gptq(w, (H.double() / n).numpy(), fmt, damp=a.damp)
+                c, s, mn = gptq(w, (H.double() / n).numpy(), fmt, damp=a.damp, lut_fit=a.lut_fit)
                 if fmt in LUT_BITS:
                     put_lut(name, lin, fmt, c, s)
                     set_weight(lin, mn)
@@ -460,7 +546,7 @@ def main(argv=None) -> int:
     res = evaluate(m, ev, refs, a.eval_skip)
     if index:
         (codes_dir / "index.json").write_text(json.dumps(index, indent=1))
-    out = dict(model=a.model, method=a.method, q8=a.q8, head=a.head, head_method=a.head_method, damp=a.damp, fmt_q4=a.fmt_q4, fmt_q8=a.fmt_q8,
+    out = dict(model=a.model, method=a.method, lut_fit=a.lut_fit, q8=a.q8, head=a.head, head_method=a.head_method, damp=a.damp, fmt_q4=a.fmt_q4, fmt_q8=a.fmt_q8,
                calib_seqs=a.calib_seqs,
                eval={Path(p).name: dict(zip(("kl_mean", "kl_median", "kl_p95", "top1"), r)) for p, r in zip(EVAL, res)})
     a.out.mkdir(parents=True, exist_ok=True)
