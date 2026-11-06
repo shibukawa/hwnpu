@@ -151,9 +151,12 @@ class GatedNorm(iron.Graph):
 class GatedDeltaNet(iron.Graph):
     """Qwen3.5's linear attention, as the checkpoint's ``linear_attn`` names it (module docstring)."""
 
-    def __init__(self, c: Qwen35Config):
+    def __init__(self, c: Qwen35Config, fold: bool = False):
         E = c.hidden_size
         H, KH = c.linear_num_value_heads, c.linear_num_key_heads
+        # fold (a model with a decode step only): the short convolution in GatedDeltaRule, its
+        # rows before the call in the state's first pair of each column (iron_gdn's conv)
+        self.fold = fold
         dk, dv, K = c.linear_key_head_dim, c.linear_value_head_dim, c.linear_conv_kernel_dim
         self.shape = (H, KH, dk, dv)
         self.qkv = 2 * KH * dk + H * dv
@@ -168,7 +171,8 @@ class GatedDeltaNet(iron.Graph):
         self.norm = GatedNorm(dv, c.eps)
         self.out_proj = Linear(H * dv, E, False, precision=c.precision)
         self.config = c  # the fused projection and convolution are made once loaded
-        self.state = Checkpoints.of((H * dk * dv,), c.max_seq_len, c.prefill_chunk, np.float32)
+        extra = COLUMNS * 2 * dk * iron_gdn.SLICE if fold else 0
+        self.state = Checkpoints.of((H * dk * dv + extra,), c.max_seq_len, c.prefill_chunk, np.float32)
         self.words = None
 
     def load_state_dict(self, tree, *, path: str = "") -> None:
@@ -179,8 +183,10 @@ class GatedDeltaNet(iron.Graph):
         # The fused projection and convolution, made from the checkpoint's own (bound here, so
         # that nothing reads them from the checkpoint).
         self.in_proj = Linear(c.hidden_size, W, False, precision=c.precision)
-        self.conv = CausalConv1d(c, W, c.linear_conv_kernel_dim)
-        self.in_proj._bound = self.conv._bound = True
+        self.in_proj._bound = True
+        if not self.fold:
+            self.conv = CausalConv1d(c, W, c.linear_conv_kernel_dim)
+            self.conv._bound = True
         order = iron_gdn.gdn_layout(H, KH, dk, dv, COLUMNS)
         rows = np.concatenate([np.asarray(p.weight) for p in (self.in_proj_qkv, self.in_proj_a, self.in_proj_b)])
         self.in_proj.weight = iron.param(np.ascontiguousarray(rows[order]))
@@ -190,9 +196,13 @@ class GatedDeltaNet(iron.Graph):
         taps[: self.qkv] = w
         taps[self.qkv :, 0, K - 1] = 1  # a and b: the row itself
         taps = taps[order]
-        self.conv.weight = iron.param(np.ascontiguousarray(taps))
         # A row per tap, as CausalConv1d.load_state_dict makes them.
-        self.conv.taps = iron.param(np.ascontiguousarray(taps.reshape(len(order), K).T))
+        rows = iron.param(np.ascontiguousarray(taps.reshape(len(order), K).T))
+        if self.fold:
+            self.taps = rows
+        else:
+            self.conv.weight = iron.param(np.ascontiguousarray(taps))
+            self.conv.taps = rows
         A = -np.exp(np.asarray(self.A_log, np.float32))
         self.words = iron_gdn.head_words(np.asarray(self.dt_bias, np.float32), A)
         # read once here: the fused copies are what the device holds
@@ -201,12 +211,15 @@ class GatedDeltaNet(iron.Graph):
 
     def body(self, x, call):
         H, KH, dk, dv = self.shape
-        GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS))
+        shape = dict(heads=H, key_heads=KH, key_dim=dk, value_dim=dv, words=self.words)
         p = self.in_proj(x)
-        u = self.conv(p, call)
         read, write = self.state.at(call)
-        y, final = GDR.step(u, Copy.step(read, dtype=np.float32), heads=H, key_heads=KH, key_dim=dk,
-                            value_dim=dv, words=self.words)
+        if self.fold:
+            GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), self.config.linear_conv_kernel_dim)
+            y, final = GDR.step(p, self.taps, Copy.step(read, dtype=np.float32), **shape)
+        else:
+            GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS))
+            y, final = GDR.step(self.conv(p, call), Copy.step(read, dtype=np.float32), **shape)
         Copy.step(final, write, dtype=np.float32)
         return self.out_proj(self.norm(y, self.in_proj_z(x)))
 
@@ -238,11 +251,13 @@ class GatedAttention(Attention):
 class Qwen35Layer(DecoderLayer):
     """Layer ``i``: Gated DeltaNet or gated attention, then the feed-forward, pre-normed."""
 
+    fold = False  # GatedDeltaNet's fold: only where the model has no prompt chunk
+
     def __init__(self, c: Qwen35Config, i: int):
         if c.linear(i):
             super().__init__(c, i, self_attn=iron.Graph(), cache=iron.Graph())
             del self.self_attn, self.cache
-            self.linear_attn = GatedDeltaNet(c)
+            self.linear_attn = GatedDeltaNet(c, self.fold)
         else:
             super().__init__(c, i, GatedAttention(c, i))
             self.linear_attn = None
@@ -357,6 +372,11 @@ class SparseMoe(iron.Graph):
 class Qwen35MoeLayer(Qwen35Layer):
     """``Qwen35Layer`` whose feed-forward is ``SparseMoe`` (its residual added in MoEDown)."""
 
+    # Not folded: with the fold, the next decode step's first command hangs on the device after
+    # the last layer's experts (B) ran (ERT_CMD_STATE_TIMEOUT; design.md 16.90). The fold itself
+    # checks out: alone, in a dense decode-only model, and in a mirror of the layer.
+    fold = False
+
     def __init__(self, c: Qwen35Config, i: int):
         super().__init__(c, i)
         self.mlp = SparseMoe(c, i)
@@ -466,3 +486,4 @@ def moe_class(base, layers: int):
 
 if __name__ == "__main__":
     lm.main(Qwen35)
+

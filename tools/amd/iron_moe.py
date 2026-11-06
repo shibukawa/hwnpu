@@ -137,3 +137,55 @@ def quantize_experts(weights: list, fmt: str = "q4") -> np.ndarray:
 
     return np.concatenate([iron_q4.quantize_fmt(np.asarray(w, np.float32), fmt).reshape(-1, iron_q4.FORMATS[fmt])
                            for w in weights])
+
+
+def _check(args) -> int:
+    """A graph of one MoERoute (random logits and a program of every word kind) and its check."""
+    import iron
+    from iron_graph import bind_device, export_graph, write_check
+
+    bind_device("npu2", 8)
+    R = route_operator()
+    n = 320
+    rng = np.random.default_rng(args.seed)
+    logits = (rng.standard_normal(n) * 2).astype(bfloat16)
+    if args.ties:  # equal logits: the lower index first
+        logits[[7, 100, 200]] = logits.max()
+    program = np.zeros((SLOTS, 4), np.int32)
+    program[:, 0] = -1
+    program[:, 2] = np.arange(SLOTS) * 3
+    for s in range(16):  # the 8 chosen's offsets twice: addr words, then core words
+        program[s] = (s % 8, 1 << 18, 64 * s, 2 if s >= 8 else 0)
+
+    class Graph(iron.Graph):
+        def body(self, logits, program):
+            return R.step(logits, program, n=n)
+
+        def reference(self, logits, program):
+            ids, w = route_reference(logits, 256, 8)
+            p = np.asarray(program, np.int64).reshape(SLOTS, 4)
+            img = np.where(p[:, 0] < 0, p[:, 2], ids[np.clip(p[:, 0], 0, 7)] * p[:, 1] + p[:, 2])
+            return w, (img << p[:, 3]).astype(np.int32)
+
+    g = Graph()
+    cg = g.compile(logits=(n,), program=((4 * SLOTS,), np.int32))
+    m = export_graph(cg, args.out, "moeroute", dict(n=n))
+    write_check(g, m, args.out, dict(logits=logits, program=program.reshape(-1)), None)
+    print(f"{args.out}: MoERoute, top 8 of 256 and the shared gate")
+    return 0
+
+
+def main(argv=None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("check", help="export a graph of one MoERoute and its check")
+    c.add_argument("out", type=Path)
+    c.add_argument("--seed", type=int, default=5)
+    c.add_argument("--ties", action="store_true")
+    return _check(ap.parse_args(argv))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

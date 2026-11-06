@@ -13,7 +13,14 @@ import (
 // <parameter=KEY>), the tools declared in the system turn with Qwen's instructions.
 var Qwen35 Template = qwen35Format{}
 
-type qwen35Format struct{}
+// Qwen36 is the chat format of Qwen/Qwen3.6 (chat_template.jinja of Qwen3.6-35B-A3B): Qwen35's,
+// but a tool call's argument that is not a string is written as JSON (true, null, 1.5) where
+// Qwen3.5 writes Python's str() of it (True, None). Its preserve_thinking is o.KeepThinking.
+var Qwen36 Template = qwen35Format{json: true}
+
+type qwen35Format struct {
+	json bool // Qwen3.6: every argument but a string as JSON
+}
 
 func (qwen35Format) Stops() []string { return []string{"<|im_end|>", "<|endoftext|>"} }
 
@@ -27,7 +34,7 @@ const qwen35Tools = "\n</tools>\n\nIf you choose to call a function ONLY reply i
 // Render writes what the template does with add_generation_prompt, and enable_thinking unless
 // o.NoThink. The thinking of the answers before the last user question is left out, as the
 // template does, unless o.KeepThinking.
-func (qwen35Format) Render(msgs []Message, tools []Tool, o Options) (string, bool, error) {
+func (f qwen35Format) Render(msgs []Message, tools []Tool, o Options) (string, bool, error) {
 	if len(msgs) == 0 {
 		return "", false, fmt.Errorf("chat: no messages")
 	}
@@ -95,7 +102,7 @@ func (qwen35Format) Render(msgs []Message, tools []Tool, o Options) (string, boo
 				case strings.TrimSpace(content) != "":
 					sb.WriteString("\n\n")
 				}
-				if err := qwen35Call(&sb, tc); err != nil {
+				if err := qwen35Call(&sb, tc, f.json); err != nil {
 					return "", false, err
 				}
 			}
@@ -121,9 +128,9 @@ func (qwen35Format) Render(msgs []Message, tools []Tool, o Options) (string, boo
 	return sb.String(), true, nil
 }
 
-// qwen35Call writes a tool call: each argument a parameter, an object or a list as JSON and
-// anything else as Python's str() of it.
-func qwen35Call(sb *strings.Builder, tc ToolCall) error {
+// qwen35Call writes a tool call: each argument a parameter, a string as it is, an object or a
+// list as JSON, and anything else as Python's str() of it, or (asJSON, Qwen3.6) as JSON.
+func qwen35Call(sb *strings.Builder, tc ToolCall, asJSON bool) error {
 	sb.WriteString("<tool_call>\n<function=" + tc.Function.Name + ">\n")
 	if a := strings.TrimSpace(tc.Function.Arguments); a != "" && a != "null" {
 		args, err := pyjson.Parse([]byte(a))
@@ -132,9 +139,14 @@ func qwen35Call(sb *strings.Builder, tc ToolCall) error {
 		}
 		for i, k := range args.Keys {
 			sb.WriteString("<parameter=" + k + ">\n")
-			if v := args.Fields[i]; v.Kind == '{' || v.Kind == '[' {
+			switch v := args.Fields[i]; {
+			case v.Kind == '{' || v.Kind == '[':
 				v.Write(sb)
-			} else {
+			case asJSON && v.Kind == 'n':
+				sb.WriteString(pyNumber(v.Str)) // json.dumps of the float or int Python read
+			case asJSON && v.Kind != '"':
+				v.Write(sb)
+			default:
 				sb.WriteString(pyStr(v))
 			}
 			sb.WriteString("\n</parameter>\n")

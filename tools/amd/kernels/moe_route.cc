@@ -33,6 +33,11 @@
 #endif
 
 static_assert(ROUTE_TOP < 16 && ROUTE_W >= ROUTE_TOP + 1, "moe_route: up to 15 chosen");
+static_assert(ROUTE_EXPERTS % 32 == 0, "moe_route: experts in whole vectors of 32");
+
+// Kept off the stack (a core's is 1 KiB).
+alignas(64) static bfloat16 lv[ROUTE_EXPERTS];
+alignas(64) static float lane[16], e[16];
 
 extern "C" void moe_route(const bfloat16 *restrict logits,
                           const int32_t *restrict program,
@@ -41,30 +46,37 @@ extern "C" void moe_route(const bfloat16 *restrict logits,
       aie::swap_rounding(aie::rounding_mode::conv_even);
   int32_t id[ROUTE_TOP];
   float v[ROUTE_TOP];
+  // A copy of the routed logits, each chosen one put to -inf: per pick, the
+  // largest by a vector max, then the first lane holding it (ties to the
+  // lower index).
+  constexpr int N = 32;
+  using vec = aie::vector<bfloat16, N>;
+  for (int i = 0; i < ROUTE_EXPERTS; i += N)
+    aie::store_v(lv + i, aie::load_v<N>(logits + i));
   for (int k = 0; k < ROUTE_TOP; k++) {
-    int best = -1;
-    float bv = 0;
-    for (int e = 0; e < ROUTE_EXPERTS; e++) {
-      bool taken = false;
-      for (int j = 0; j < k; j++)
-        taken |= id[j] == e;
-      const float x = (float)logits[e];
-      if (!taken && (best < 0 || x > bv)) {
-        best = e;
-        bv = x;
+    vec m = aie::load_v<N>(lv);
+    for (int i = N; i < ROUTE_EXPERTS; i += N)
+      m = aie::max(m, aie::load_v<N>(lv + i));
+    const bfloat16 best = aie::reduce_max(m);
+    const vec b = aie::broadcast<bfloat16, N>(best);
+    int at = 0;
+    for (int i = 0; i < ROUTE_EXPERTS; i += N) {
+      const uint32_t hit = aie::eq(aie::load_v<N>(lv + i), b).to_uint32();
+      if (hit) {
+        at = i + __builtin_ctz(hit);
+        break;
       }
     }
-    id[k] = best;
-    v[k] = bv;
+    id[k] = at;
+    v[k] = (float)best;
+    lv[at] = (bfloat16)(-__builtin_inff());
   }
   // exp of each chosen logit less the largest, and of minus the shared logit
-  alignas(64) float lane[16];
   for (int i = 0; i < 16; i++)
     lane[i] = -100.0f;
   for (int k = 0; k < ROUTE_TOP; k++)
     lane[k] = v[k] - v[0];
   lane[ROUTE_TOP] = -(float)logits[ROUTE_EXPERTS];
-  alignas(64) float e[16];
   aie::store_v(e, exp_f32<16>(aie::accum<accfloat, 16>(aie::load_v<16>(lane)))
                       .to_vector<float>());
   float sum = 0;

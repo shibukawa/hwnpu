@@ -75,3 +75,45 @@ func TestQwen35Parse(t *testing.T) {
 		t.Errorf("TemplateFor(qwen35) = %v, %v", tp, err)
 	}
 }
+
+// Qwen36.Render writes what Qwen3.6's chat_template.jinja does (testdata/qwen36_template.json:
+// tools/ref/template_golden.py with Qwen/Qwen3.6-35B-A3B), preserve_thinking as KeepThinking.
+func TestQwen36RenderMatchesTemplate(t *testing.T) {
+	raw, err := os.ReadFile("testdata/qwen36_template.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name         string    `json:"name"`
+		NoThink      bool      `json:"no_think"`
+		KeepThinking bool      `json:"keep_thinking"`
+		Messages     []Message `json:"messages"`
+		Tools        []Tool    `json:"tools"`
+		Want         string    `json:"want"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			got, _, err := Qwen36.Render(c.Messages, c.Tools, Options{NoThink: c.NoThink, KeepThinking: c.KeepThinking})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.Want {
+				t.Errorf("got\n%s\nwant\n%s", got, c.Want)
+			}
+		})
+	}
+	if tp, err := TemplateFor("qwen36"); err != nil || tp != Qwen36 {
+		t.Errorf("TemplateFor(qwen36) = %v, %v", tp, err)
+	}
+	dir := t.TempDir()
+	if qwen36Template(dir) {
+		t.Error("no chat_template.jinja: not Qwen3.6")
+	}
+	os.WriteFile(dir+"/chat_template.jinja", []byte("{%- if preserve_thinking is defined %}"), 0o644)
+	if !qwen36Template(dir) {
+		t.Error("a template with preserve_thinking: Qwen3.6")
+	}
+}

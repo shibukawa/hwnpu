@@ -7,6 +7,10 @@
 //   gdn_gather  fills row t of the block from a row of the core's column: the
 //               short convolution's output, silu applied here to q, k and v (not
 //               to a and b, which run past the convolution unchanged)
+//   gdn_conv    (a decode step, GDR_SEG defined) the short convolution of the
+//               core's column itself: the row and the taps in, the rows before
+//               it from the state's first object, the rows ending with it out
+//               to the final state's first object
 //   gdn_rule    gated_delta_rule on that block, the state without the head's
 //               (dt_bias, A) before it: those two come as runtime parameter
 //               words, each float in two 16-bit halves
@@ -479,3 +483,53 @@ extern "C" void gdn_gather(const bfloat16 *restrict seg, int32_t t, int32_t qo,
   blk[2 * R * Dk + R * Dv + R + t] = seg[abo + 1];
   aie::set_rounding(saved_rounding);
 }
+
+#ifdef GDR_SEG
+// The short convolution of a decode step, in the core (GatedDeltaRule's conv):
+// GDR_SEG channels (the core's column), GDR_CONV taps.
+constexpr int SEG = GDR_SEG, KC = GDR_CONV;
+static_assert(KC >= 2 && (KC - 1) * SEG <= 2 * Dk * Dv, "gdn_conv: 2 taps or more, the rows in a half");
+alignas(64) bfloat16 u_row[(SEG + 31) / 32 * 32];
+
+// xt: the row (SEG), then the taps' rows (KC of SEG, oldest row's tap first).
+// hin: the KC - 1 rows before this one (oldest first, bf16, packed). hout: the
+// KC - 1 rows ending with this one. u_row: sum_k tap[k] row[t - KC + 1 + k],
+// summed in float32 (the newest row's term first), rounded once to bf16.
+extern "C" void gdn_conv(const bfloat16 *restrict xt, const float *restrict hin,
+                         float *restrict hout) {
+  const aie::rounding_mode saved_rounding =
+      aie::swap_rounding(aie::rounding_mode::conv_even);
+  const bfloat16 *x = xt, *taps = xt + SEG;
+  const bfloat16 *h = (const bfloat16 *)hin;
+  bfloat16 *o = (bfloat16 *)hout;
+  int i = 0;
+  for (; i + 16 <= SEG; i += 16) {
+    acc_t<16> acc = aie::mul(aie::load_unaligned_v<16>(taps + (KC - 1) * SEG + i),
+                             aie::load_unaligned_v<16>(x + i));
+    for (int k = 0; k < KC - 1; k++)
+      acc = aie::mac(acc, aie::load_unaligned_v<16>(taps + k * SEG + i),
+                     aie::load_unaligned_v<16>(h + k * SEG + i));
+    aie::store_v(u_row + i, acc.to_vector<bfloat16>());
+  }
+  for (; i < SEG; i++) {
+    float a = (float)taps[(KC - 1) * SEG + i] * (float)x[i];
+    for (int k = 0; k < KC - 1; k++)
+      a += (float)taps[k * SEG + i] * (float)h[k * SEG + i];
+    u_row[i] = (bfloat16)a;
+  }
+  for (int k = 0; k + 1 < KC - 1; k++)
+    for (int j = 0; j < SEG; j++)
+      o[k * SEG + j] = h[(k + 1) * SEG + j];
+  for (int j = 0; j < SEG; j++)
+    o[(KC - 2) * SEG + j] = x[j];
+  for (int j = (KC - 1) * SEG; j < 2 * Dk * Dv; j++)  // the rest of the half
+    o[j] = (bfloat16)0.0f;
+  aie::set_rounding(saved_rounding);
+}
+
+// gdn_gather from the convolution's output (gdn_conv) in place of a row.
+extern "C" void gdn_gather_conv(int32_t t, int32_t qo, int32_t ko, int32_t vo,
+                                int32_t abo) {
+  gdn_gather(u_row, t, qo, ko, vo, abo);
+}
+#endif

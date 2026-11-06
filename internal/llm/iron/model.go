@@ -101,9 +101,6 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 		ver := &version{m: v, args: map[string]*hwnpu.Buffer{}}
 		switch name {
 		case "decode":
-			if v.ELF != "" && len(v.Kernels) != 1 && len(v.Fed) == 0 {
-				return fmt.Errorf("iron: the decode step has %d commands", len(v.Kernels))
-			}
 			m.decode = ver // its run is made once every program's PDIs are in the heap
 		case "prompt":
 			m.prompt = ver
@@ -148,8 +145,8 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 			logf("%s: %d commands", name, len(v.Kernels))
 		}
 	}
-	if m.decode == nil || m.prompt == nil && len(m.decode.m.Fed) == 0 {
-		return errors.New("iron: the export needs a decode step and a prompt chunk")
+	if m.decode == nil { // without a prompt chunk, Prompt runs the decode step a token at a time
+		return errors.New("iron: the export needs a decode step")
 	}
 	if _, err := m.caches(); err != nil {
 		return err

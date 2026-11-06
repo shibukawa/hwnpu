@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -269,6 +270,13 @@ func archOf(model string) (string, error) {
 	return "", fmt.Errorf("chat: no chat format for the IRON model %s", model)
 }
 
+// qwen36Template reports whether an export's chat_template.jinja is Qwen3.6's (it has
+// preserve_thinking), which the model's class does not tell from Qwen3.5's.
+func qwen36Template(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, "chat_template.jinja"))
+	return err == nil && bytes.Contains(b, []byte("preserve_thinking"))
+}
+
 // loadIRON loads a model IRON compiled for AMD's NPU (Config.IRON).
 func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	logf := func(format string, args ...any) {
@@ -306,6 +314,9 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	arch, err := archOf(m.Manifest.Model)
 	if err != nil {
 		return fail(err)
+	}
+	if arch == "qwen35" && qwen36Template(c.IRON) {
+		arch = "qwen36"
 	}
 	if e.Template, err = TemplateFor(arch); err != nil {
 		return fail(err)

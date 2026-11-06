@@ -349,7 +349,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
 | Anima-Turbo (画像生成) | `internal/imagegen/anima` (MIL の 1 つの記述から作る) | Qwen3 の BPE + T5 の Unigram | — (`hwnpu-image`) | 画像を出力 | ◎ M3 で 1024×1024 の 8 ステップ約 40 s、3.8 GB (int8) | △ 変換は可。OpenVINO の CPU で照合済み | ◎ 1024×1024 で 8 ステップ約 68 s、固定 3.4 GiB (DiT は 8 ビット) |
-| Qwen3.6-35B-A3B | `qwen35moe` (IRON のみ) | Qwen3.5 と同じ | Qwen3.5 (道具の引数の書き方が少し違う) | — | — | — | △ `iron_export_lm.py qwen35moe`、経路はデバイスで。実物の重みの 2 層で HF とコサイン 0.998 (16.89)。40 層は未確認、見積もり約 5 tok/s |
+| Qwen3.6-35B-A3B | `qwen35moe` (IRON のみ) | Qwen3.5 と同じ | Qwen3.6 (`Qwen36`: 道具の引数を JSON で、16.90) | — | — | — | △ `iron_export_lm.py qwen35moe`、経路はデバイスで。実物の重みの 2 層で HF とコサイン 0.998 (16.89)。40 層は未確認、見積もり約 5 tok/s |
 
 ### 10.2 トークナイザー (`internal/tokenizer`、依存は `golang.org/x/text` だけ)
 
@@ -554,7 +554,7 @@ Apple / Intel (`hwnpu-image -convert`):
 | PLaMo 3 の 4 ビットの速さ | 別の作業の負荷がある状態で測った (単体の GEMV が 1.6 倍遅い状態)。静かな機械で測り直す | 16.76 |
 | PLaMo 3 のほかの大きさ | 0.8B、8B、31B は同じ構造なので書き出せるはずだが、試していない | 16.70 |
 | 4 ビットの KL と HF | Gemma 4 と PLaMo 3 の q4 の KL は NPU の bf16 と比べた値。HF の fp32 とは LFM3 だけ比べた (0.036) | 16.73、16.76 |
-| MoE (Qwen3.6-35B-A3B) | 40 層全部 (表 20 GB) を q4 で読み込んで動かすこと (実物の重みは 2 層まで、乱数の重みは 12 層まで。bf16 では 35 GB の固定を確認)。40 層の KL と速さ (見積もり約 5 tok/s)。プロンプトの MoE (今は 1 トークンずつ)。Qwen3.6 のチャットの型の違い (道具の引数) | 16.75、16.89 |
+| MoE (Qwen3.6-35B-A3B) | 40 層全部 (表 20 GB) を q4 で読み込んで動かすこと (実物の重みは 2 層まで、乱数の重みは 12 層まで。bf16 では 35 GB の固定を確認。重みは読み込み中)。40 層の KL と速さ (見積もり約 5 tok/s)。プロンプトの MoE (今は 1 トークンずつ)。GDN の演算子の中の畳み込みは MoE のモデルで次のステップを止める (16.90): 原因を探すか、入れないまま | 16.75、16.89、16.90 |
 | Qwen3.5-4B の全体 (AMD) | 32 層全部での照合と速さ (実物の重みは 2 層だけ。重み 9 GB を読み込んで `iron_export_lm.py qwen35`) | 16.89 |
 | MoE の BD の再利用の警告 | aiecc が、完了の保証のない `dma_free_task` の後に BD を使い回すと警告する。実害はないと見ているが、静的には証明していない | 16.75 |
 | ほかの 4 ビットの書き出しへの丸めの修正 | 書き出し直して測ったのは Gemma 4 E2B と LFM3-1.7B だけ (KL 0.093、0.036)。E4B、PLaMo 3、多モーダルは古い書き出しのまま | 16.78 |
@@ -596,4 +596,4 @@ Apple / Intel (`hwnpu-image -convert`):
   - ComfyUI のノードからの呼び出し
   - 512×512 の書き出し
   - GPTQ の 4 ビットの DiT (`tools/amd/anima_gptq.py`、`iron_anima.py --q4-codes`、16.87) を NPU の 1024×1024 の画像で確かめる (CPU の 512×512 では潜在のコサイン 0.939、q8 は 0.962)
-- Qwen3.6-35B-A3B の残り (16.89): 短い畳み込みとゲートつきの norm を GDN の演算子に入れて A の演算を減らす、`MoERoute` のベクトル化、プロンプトの MoE (塊のトークンを専門家ごとに)
+- Qwen3.6-35B-A3B の残り (16.89、16.90): 短い畳み込みは GDN の演算子に入り照合も通るが、MoE のモデルでは最後の層の専門家の後に次のステップの最初のコマンドが止まるので入れていない。ゲートつきの norm はまだ。`MoERoute` はベクトル化した (0.24 → 0.1 ms)。プロンプトの MoE (塊のトークンを専門家ごとに)

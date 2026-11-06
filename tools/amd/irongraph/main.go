@@ -34,6 +34,12 @@ func values(b []byte, dtype string) []float64 {
 			out[i] = float64(math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:])))
 		}
 		return out
+	case "int32":
+		out := make([]float64, len(b)/4)
+		for i := range out {
+			out[i] = float64(int32(binary.LittleEndian.Uint32(b[4*i:])))
+		}
+		return out
 	}
 	log.Fatalf("dtype %s", dtype)
 	return nil
