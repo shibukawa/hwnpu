@@ -226,7 +226,7 @@ prefill (Q=64) は塊の形が要る。塊の中は (I + tril(β K Kᵀ))⁻¹ �
 
 ## 6. 確かめ方
 
-新しいモデルを入れるときの全部の手順 (Mac に収まるか、量子化の形式と校正の方法の選び方、各 NPU の教訓) は [new-model-checklist.md](new-model-checklist.md)。
+新しいモデルを入れるときの全部の手順 (Mac に収まるか、量子化の形式と校正の方法の選び方、各 NPU の教訓) は [new-model-checklist.ja.md](new-model-checklist.ja.md)。
 
 - 時間の式の係数: `TestCallTimes` (`HWNPU_CALL_PKGS`) で 1 本ごとの 1 回の費用を測り、2 節の表に行を足す。T1 と T3 の判断はこれで決まる。
 - メモリ: `npuprobe split` にシステム側の `phys_footprint` を足す (T10)。スワップが 1 GB 未満の機械で測る (16.36 の条件)。

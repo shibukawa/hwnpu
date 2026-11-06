@@ -1,224 +1,226 @@
-# 新しいモデルを入れるときの検証の手順
+# Checks when bringing in a new model
 
-作成: 2026-11-07。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
+[日本語](new-model-checklist.ja.md)
 
-数値の出典は [design.md](design.md) の 16 章 (カッコ内の番号)、[improvements.md](improvements.md)、[model-fit.md](model-fit.md)、[amd-npu-models.md](amd-npu-models.md)。構造を Go に移す作業そのものの手順と合格条件は `.claude/skills/port-architecture` にあるので、ここでは繰り返さない。
+Written 2026-11-07. While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
 
-| 段 | 何を決めるか | どこで |
+The numbers come from chapter 16 of [design.md](design.md) (section numbers in parentheses), [improvements.md](improvements.md), [model-fit.md](model-fit.md) and [amd-npu-models.md](amd-npu-models.md). The steps and pass conditions for moving a structure to Go are in `.claude/skills/port-architecture` and are not repeated here.
+
+| Stage | What it decides | Where |
 |---|---|---|
-| 1 | 机上で入るか、速いか (選ぶかどうか) | どこでも |
-| 2 | 構造が正しいか (fp64、HF との照合、トークナイザー、チャットの型) | CPU |
-| 3 | Mac の Neural Engine に収まるか、全部が NPU に載るか | Mac |
-| 4 | AMD / Intel の形 | Linux / Windows |
-| 5 | **量子化の形式と校正の方法** | CPU で見積もり、NPU で確認 |
-| 6 | メモリ (常駐、固定、ディスク) | 各 NPU |
-| 7 | 速さ (生成、プロンプト、起動) | 各 NPU |
-| 8 | 長い文脈 | Mac (Intel) |
-| 9 | 用途での確認と記録 | 各 NPU |
+| 1 | Whether it fits and is fast, on paper (whether to choose it) | Anywhere |
+| 2 | Whether the structure is right (fp64, against HF, tokenizer, chat format) | CPU |
+| 3 | Whether it fits on the Mac's Neural Engine, and all of it runs on the NPU | Mac |
+| 4 | The AMD / Intel form | Linux / Windows |
+| 5 | **The quantization format and the calibration method** | Estimated on the CPU, checked on the NPU |
+| 6 | Memory (resident, pinned, disk) | Each NPU |
+| 7 | Speed (generation, prompts, startup) | Each NPU |
+| 8 | Long contexts | Mac (Intel) |
+| 9 | Checks in use, and the record | Each NPU |
 
-各項目の「合格」は目安で、満たさないときは理由を design.md に書いてから先に進む。
+Each "pass" is a guide. When a model does not meet it, write the reason in design.md before going on.
 
-## 1. 机上の見積もり (移植する前に)
+## 1. Estimates on paper (before porting)
 
-[model-fit.md](model-fit.md) の 2 節と 4 節の式と基準で、config.json だけから見積もる。
+Estimate from config.json alone, with the formula and criteria in sections 2 and 4 of [model-fit.md](model-fit.md).
 
-- **1 トークンの時間 (ANE)** ≈ 重みのバイト ÷ 65 GB/s + 長い容量に対して注意を計算する層の数 × 0.22 ms (`SDPAGrouped` の形) × 容量 / 1K + 3 ms
-  - KV の共有は注意の計算の回数を減らさない (メモリだけ)。窓、短い畳み込み、Mamba2、GDN の層は容量に依らない
-- **重み**: lut4 0.5 B、lut6 0.75 B、lut8 1 B / 重み。M3 (16 GB) で常駐は 3 GiB までが目安。AMD は 4 ビット (q4nx 5 ビット + 注意 q8) で bf16 の 1/2〜1/5 の固定
-- **語彙**: 出力層は語彙 × 隠れ。262144 の軸は ANE で CPU に落ちるので (16, 16384) に畳む手間が要る (Gemma 4、16.25)
-- **使えない構造**: MoE のルーティング (`gather`)、学習済みの疎な注意、可変の形。AMD の MoE は部品を測っただけ (16.75)
-- **ライセンスと言語** (hwnpu-chat の目録に載せるか)
+- **Time per token (ANE)** ≈ weight bytes ÷ 65 GB/s + layers that compute attention over the long capacity × 0.22 ms (the `SDPAGrouped` form) × capacity / 1K + 3 ms
+  - Sharing KV does not reduce how many attentions are computed (only memory). Window, short-convolution, Mamba2 and GDN layers do not depend on the capacity
+- **Weights**: lut4 0.5 B, lut6 0.75 B, lut8 1 B a weight. On an M3 (16 GB), keep resident memory under 3 GiB. On AMD, 4 bits (q4nx at 5 bits + attention at q8) pins 1/2–1/5 of bf16
+- **Vocabulary**: the output layer is vocabulary × hidden. A 262144 axis falls to the CPU on the ANE, so it has to be folded to (16, 16384) (Gemma 4, 16.25)
+- **Structures that cannot be used**: MoE routing (`gather`), learned sparse attention, variable shapes. On AMD only the MoE building blocks were measured (16.75)
+- **License and languages** (whether it goes into hwnpu-chat's catalog)
 
-**合格**: 1K で 50 ms 以下、16K で 100 ms 以下の見込み。M3 で常駐 3 GiB 以内に入る形式がある。
+**Pass**: an estimate of 50 ms or less at 1K and 100 ms or less at 16K, and a format in which resident memory fits in 3 GiB on an M3.
 
-## 2. 構造の正しさ (CPU)
+## 2. A correct structure (CPU)
 
-`port-architecture` スキルの合格条件 (fp64 の参照と 1e-4、1 層ずつとまとめての一致、壊して検出、`hwnpu-check` の層ごとの照合) に加え、今までに後から見つかったもの:
+On top of the pass conditions of the `port-architecture` skill (1e-4 against an fp64 reference, one layer at a time matching all at once, breaking it to see the test fail, layer-by-layer checks with `hwnpu-check`), these were found later:
 
-| 確かめること | 道具 | 教訓 |
+| What to check | Tools | Lesson |
 |---|---|---|
-| **BOS を付けて**比べる | `tools/ref/ref_logits.py`、`hwnpu-check`、`ironlm -forced -bos` | LFM3 は BOS なしだと KL が 4 倍に見え、0 層目の活性が外れ値になる (amd-npu-models.md 13 節)。チャットの型で実際に付くトークンで測る |
-| 実物の重みで照合する | `hwnpu-check`、`iron_plamo3_check.py` | 乱数の重みでは NPU と CPU の参照が食い違うことがある (Gemma 4、PLaMo 3)。合否は実物の重みで |
-| トークナイザーが HF と一致する | `tools/ref/tokenizer_golden.py` | 固定の文 + 数千の乱数の文で 0 件の食い違い。同点の扱い (PLaMo)、NFC と結合文字 (Qwen3.5)、byte fallback (Gemma 4) を逆にしたらテストが落ちることも確かめる |
-| チャットの型が jinja2 と一字一句同じ | `tools/ref/template_golden.py` | 道具の呼び出し、考える部分の扱い、過去の考えの削除 |
-| 多モーダルの前処理 | `resize_golden.py`、`mel_golden.py` | PIL との ±1、librosa との 1e-4 |
-| 埋め込みモデル | `embed_golden.py` | HF との cosine 0.997 以上 |
-| 画像生成 | `tools/ref/ref_anima.py` | diffusers の fp32 と潜在の cosine、VAE の PSNR |
+| Compare **with a BOS** | `tools/ref/ref_logits.py`, `hwnpu-check`, `ironlm -forced -bos` | Without a BOS, LFM3's KL looks 4× worse and layer 0's activations become outliers (amd-npu-models.md section 13). Measure with the tokens the chat format actually puts first |
+| Check against the real weights | `hwnpu-check`, `iron_plamo3_check.py` | With random weights the NPU and the CPU reference can disagree (Gemma 4, PLaMo 3). Decide pass or fail with the real weights |
+| The tokenizer matches HF | `tools/ref/tokenizer_golden.py` | 0 mismatches over fixed texts plus thousands of random ones. Also check that the tests fail when ties (PLaMo), NFC and combining marks (Qwen3.5) or byte fallback (Gemma 4) are handled the other way |
+| The chat format matches jinja2 character for character | `tools/ref/template_golden.py` | Tool calls, thinking, dropping earlier thinking |
+| Multimodal preprocessing | `resize_golden.py`, `mel_golden.py` | ±1 against PIL, 1e-4 against librosa |
+| Embedding models | `embed_golden.py` | Cosine 0.997 or more against HF |
+| Image generation | `tools/ref/ref_anima.py` | Latent cosine against diffusers' fp32, PSNR of the VAE |
 
-## 3. Mac の Neural Engine に収まるか
+## 3. Does it fit on the Mac's Neural Engine?
 
-**最初に確かめる**: Mac がないと何も決まらない項目。引き継ぎの文書 (`docs/handoff-*.md`) を書いて Mac で測る。
+**Check this first**: nothing here can be settled without a Mac. Write a handoff (`docs/handoff-*.md`) and measure on a Mac.
 
-### 3.1 上限
+### 3.1 Limits
 
-| 上限 | 対処 | 節 |
+| Limit | What to do | Section |
 |---|---|---|
-| 1 パッケージ 1 GiB (1 部分の既定は 0.9 GiB) | 層で分ける (別のパッケージ。multifunction では越えられない) | 16.12–13 |
-| 1 次元 16384 | 注意で分けた塊 (`-paged`)、ソフトキャップを (16, 16384) に畳む | 16.21, 16.25 |
-| コンパイルのキャッシュ約 4 GiB (LRU) | 2 本 (Q=8 と Q=64) の合計が超えるなら 1 本 (`-prefill auto`)。段階 (`-tier`) は lut4 だけ | 16.41, 16.65, 16.71 |
-| 表は 16 行ごと | 形式の選び方は 5 節 | |
-| `gather` は CPU | 埋め込みの行はホストで引く (PLE も) | 16.25 |
-| 注意のスコアは 1 テンソル 64 MiB 未満 | 超えると 2〜3 倍遅い。問い合わせを塊に (`mil.DitQChunk`) | 16.85 |
+| 1 GiB a package (0.9 GiB a part by default) | Split by layers (separate packages; multifunction cannot get past it) | 16.12–13 |
+| 16384 per dimension | Attention split into chunks (`-paged`), the softcap folded to (16, 16384) | 16.21, 16.25 |
+| A compile cache of about 4 GiB (LRU) | If the two programs (Q=8 and Q=64) exceed it, use one (`-prefill auto`). Tiers (`-tier`) only with lut4 | 16.41, 16.65, 16.71 |
+| Tables only per 16 rows | How to choose the format is in section 5 | |
+| `gather` runs on the CPU | Look up embedding rows on the host (PLE too) | 16.25 |
+| Attention scores under 64 MiB a tensor | Past it, 2–3× slower. Chunk the queries (`mil.DitQChunk`) | 16.85 |
 
-### 3.2 全部が NPU に載るか
+### 3.2 Does all of it run on the NPU?
 
-`hwnpuinfo -model PART.mlpackage` で各部分が `all on the NPU` か。今までに CPU に落ちたもの:
+Check that each part is `all on the NPU` with `hwnpuinfo -model PART.mlpackage`. What fell to the CPU before:
 
-- `tile` で K/V を写す注意の形、問い合わせを行列にした形 → `SDPAGrouped` (16.25, 16.39)。順番だけで配置が変わる
-- 最後の部分の `transpose` / `reshape` → 出力をトークン先に取る (`attn_ot_N`、PLaMo 3)。Gemma 4 の最後の部分の `reshape` は未解決 (improvements.md 11.1)
-- 1 行の部品、単独のプログラムの部品 → 8 行にする、隣の群に入れる (Anima、16.85)
-- `reduce_sum` → 行列積で和を取る (塊の注意、30 回中 30 回 ANE)
+- Attention that copies K/V with `tile`, and the form with the queries as a matrix → `SDPAGrouped` (16.25, 16.39). The order alone changes the placement
+- A `transpose` / `reshape` in the last part → take the output token-first (`attn_ot_N`, PLaMo 3). The `reshape` in Gemma 4's last part is not solved yet (improvements.md 11.1)
+- Parts with one row, and parts as programs of their own → 8 rows, or put into the neighbouring group (Anima, 16.85)
+- `reduce_sum` → sum with a matrix multiply (chunked attention: on the ANE 30 times of 30)
 
-### 3.3 fp16 であふれないか
+### 3.3 Does fp16 overflow?
 
-`hwnpu-check -f16` で層ごとの相対 RMS が 0.01 未満か。効いた手当て:
+Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`. What helped:
 
-- 正規化の入力を 1/64 にする (Gemma 4: KL 3.17 → 0.0004、PLaMo 3 も)
-- 最後の層を head-scale で縮める (PLaMo-Embedding)、`-post-scale` (LFM3、1 層 1.4〜2.7 %)
-- 残差を 1/32 で持ち、正規化は行ごとの最大で割ってから (Anima。固定の倍率だと非正規数になる)
-- 詰め物の行を最後のトークンで埋める (Gemma 4 の eps が fp16 で 0 になって NaN)
+- Scale the norms' inputs by 1/64 (Gemma 4: KL 3.17 → 0.0004; PLaMo 3 too)
+- Shrink the last layer with head-scale (PLaMo-Embedding), `-post-scale` (LFM3, 1.4–2.7 % a layer)
+- Keep residuals at 1/32, and divide by each row's maximum before a norm (Anima; a fixed scale made subnormals)
+- Fill padding rows with the last token (Gemma 4's eps becomes 0 in fp16 and gives NaN)
 
-### 3.4 合格
+### 3.4 Pass
 
-- 全部の部分が `all on the NPU`
-- 2 回目の起動が数秒 (コンパイルのキャッシュに残る)。分けた形 (`-paged`) で Gemma 4 は 98 s → 1.9 s
-- `hwnpu-check -package` の KL と argmax を記録 (形式ごと、5 節)
+- Every part is `all on the NPU`
+- The second start takes a few seconds (the parts stay in the compile cache). In the split form (`-paged`), Gemma 4 went from 98 s to 1.9 s
+- Record the KL and argmax of `hwnpu-check -package` (for each format, section 5)
 
-## 4. AMD (IRON) と Intel の形
+## 4. The AMD (IRON) and Intel forms
 
 ### 4.1 AMD
 
-| 確かめること | 教訓 | 節 |
+| What to check | Lesson | Section |
 |---|---|---|
-| IRON に同じアプリがあるか。なければ IRON の部品から書く | LFM3 (`iron_lfm3.py`)、PLaMo 3 (`iron_plamo3.py`) は部品から書いた | 16.66, 16.70 |
-| HF と top-1 で照合 (`iron_export_lm.py --check`) | 長いプロンプト (2000 トークン超) でも | 16.76 |
-| full ELF で 1 本に | xclbin の切り替えは 1 回 0.46 ms | 16.45–50 |
-| プロンプトの塊 1024 | 2048 より 20 % 速い。256 は窓の層がリングになり巻き戻せない | 16.54 |
-| 1 コマンドを 2 s 未満に | 長いと `ERT_CMD_STATE_TIMEOUT`。書き出しで分ける (`SCRATCHPAD_WORDS`) | 16.65 |
-| 窓の層は窓の中だけ読む (`iron_window.py`) | プロンプトが −12 %。塊の前に空のコマンド (`chunkBarrier`) がないと 2 つ目の塊で止まる。キャッシュの行数は `cache_rows` で書き出す | 16.84, 16.87 |
-| KV を共有する層はプロンプトの最後の行だけ | Gemma 4 E2B のプロンプトが 2.3 倍速い | 16.80 |
-| 表はホストに (PLE、埋め込み) | E2B 9.08 → 4.60 GB の固定。出力は同じ | 16.72–73 |
-| 塔は使うときだけ読む (`growBanks`) | テキストだけの書き出しが要らない | 16.81 |
-| `-idle` で固定を返す | 次の要求に 0.8〜2 s | 16.74 |
-| コアの丸めを最近接偶数に | 床関数の丸めで平均のある和が下に偏る (Anima の DiT) | 16.78 |
-| MHA の head_dim は 64 の倍数 | 96 は 128 に詰める (LFM3-VL の塔) | 16.65 |
-| 状態のある層 (畳み込み) は塊の境目で写す | 印への巻き戻しとプロンプトの保存のため | 16.66 |
-| 投機的デコードは**しない** | 下書きの確認が 4.5 ステップ分の費用 | |
+| Does IRON have the same application? If not, write it from IRON's building blocks | LFM3 (`iron_lfm3.py`) and PLaMo 3 (`iron_plamo3.py`) were written from the building blocks | 16.66, 16.70 |
+| Check top-1 against HF (`iron_export_lm.py --check`) | Long prompts (over 2000 tokens) too | 16.76 |
+| One full ELF | Switching xclbins costs 0.46 ms each | 16.45–50 |
+| Prompt chunks of 1024 | 20 % faster than 2048. At 256 the window layers become rings and cannot roll back | 16.54 |
+| Each command under 2 s | Longer ones end in `ERT_CMD_STATE_TIMEOUT`. Split them at export (`SCRATCHPAD_WORDS`) | 16.65 |
+| Window layers read only their window (`iron_window.py`) | Prompts −12 %. Without an empty command before each chunk (`chunkBarrier`) the second chunk hangs. The caches' rows are written as `cache_rows` | 16.84, 16.87 |
+| KV-shared layers on the prompt's last row only | Gemma 4 E2B's prompts 2.3× faster | 16.80 |
+| Tables on the host (PLE, embeddings) | E2B pinned 9.08 → 4.60 GB, the same output | 16.72–73 |
+| Towers loaded only when used (`growBanks`) | No text-only export needed | 16.81 |
+| `-idle` gives back pinned memory | The next request pays 0.8–2 s | 16.74 |
+| The cores' rounding to nearest even | Floor rounding pulls sums of inputs with a mean downward (Anima's DiT) | 16.78 |
+| MHA's head_dim a multiple of 64 | Pad 96 to 128 (LFM3-VL's tower) | 16.65 |
+| Layers with state (convolutions) copied at chunk boundaries | For rolling back to marks and for the prompt store | 16.66 |
+| **No** speculative decoding | Checking a draft costs 4.5 decode steps | |
 
 ### 4.2 Intel
 
-- `ovlower` で IR に。既定は int8 (int4 は fp16 と次のトークンが 22/52 しか合わない)。今は OpenVINO の CPU で精度だけ確かめられる (実機の速さとメモリは未計測)
+- To IR with `ovlower`. int8 by default (with int4 the next token matches fp16 only 22/52). For now only accuracy can be checked, on OpenVINO's CPU (speed and memory on a real NPU are not measured)
 
-## 5. 量子化: 形式と校正の方法を選ぶ
+## 5. Quantization: choosing the format and the calibration method
 
-**一番手間がかかり、一番効く段**。モデルによって 4 ビットの落ち方が 10 倍違う (AMD の q4 の KL: PLaMo 3 の訳文 0.009、LFM3 0.036、E4B 0.049、E2B 0.097)。次の順に決める。
+**The stage that takes the most work and pays the most.** How much 4 bits lose differs tenfold between models (AMD q4 KL: PLaMo 3 on its translations 0.009, LFM3 0.036, E4B 0.049, E2B 0.097). Decide in this order.
 
-### 5.1 測り方を揃える
+### 5.1 Measure the same way
 
-- **KL(参照 ‖ 量子化)** の平均、中央値、95 %点、top-1 の一致。400 位置 (前の 256 トークンをプロンプトとして読ませ、その後を 1 つずつ)、**BOS あり**
-- 文は 5 種: README (日英の混在)、GPL-3 (**校正に使わない**。合いすぎの検出用)、wiki40b-ja の評価分、wikitext-2 の試験分、Go のコード。置き場は `~/models/calib`
-- 参照は fp32 の CPU (HF) か、同じ NPU の bf16。NPU の量子化の KL が CPU の見積もりと同じかを確かめる (LFM3 0.036 と 0.035、LFM3-VL も同じ傾向)。違えば NPU の計算 (丸め、bfp16) を疑う
-- 画像生成は KL の代わりに、参照の軌跡の上での速度の相対 RMS と、自由に走らせた最後の潜在の cosine (`tools/amd/anima_gptq.py`)
+- **KL(reference ‖ quantized)**: mean, median, 95th percentile and top-1 agreement over 400 positions (the first 256 tokens read as a prompt, then one at a time), **with a BOS**
+- Five texts: the README (Japanese and English mixed), GPL-3 (**not used for calibration**, to catch overfitting), the evaluation part of wiki40b-ja, the test part of wikitext-2, and Go code. They live in `~/models/calib`
+- The reference is fp32 on the CPU (HF) or bf16 on the same NPU. Check that the quantized KL on the NPU matches the CPU estimate (LFM3 0.036 against 0.035; LFM3-VL the same way). If it does not, suspect the NPU's arithmetic (rounding, bfp16)
+- For image generation, instead of KL: the velocity's relative RMS error along the reference trajectory, and the cosine of the final latents of a free run (`tools/amd/anima_gptq.py`)
 
-### 5.2 部分ごとのビット数を CPU で掃く
+### 5.2 Sweep the bits per part on the CPU
 
-部分 (注意の射影、MLP、出力の行列、畳み込み、塔) ごとに 4 / 8 / bf16 を切り替えて CPU で KL を測る (`q4_gptq.py --method rtn` の `--q8`、`--head`、`--fmt-*` で組み合わせる)。今までの結論:
+Switch each part (attention projections, MLP, output matrix, convolutions, towers) between 4 bits, 8 bits and bf16, and measure KL on the CPU (combine `--q8`, `--head` and `--fmt-*` of `q4_gptq.py --method rtn`). The conclusions so far:
 
-- **注意の射影は 8 ビット**: 重みの 1 割余りなのに 4 ビットにすると誤差の大半 (E2B 0.097 → 0.229)。固定は +0.12 GB だけ
-- MLP と出力の行列は 4 ビット。出力の行列は 4 ビットでもほとんど効かない
-- 短い畳み込みは 8 ビット (4 ビットで +0.01)
-- サンドイッチ正規化の層 (Gemma 4、PLaMo 3) は 4 ビットに弱い。ANE の表なら lut6 以上 (Gemma 4 の lut4 は KL 2.54、PLaMo 3 は 1.91)
-- 多モーダルの文の部分、TTS、d1 の判定、埋め込みは lut8 (lut4 で崩れた)
-- 蒸留した 8 ステップの DiT は 4 ビットに弱い (q4nx で潜在の cosine 0.777)。q8 が既定
+- **Attention projections at 8 bits**: a little over 10 % of the weights, yet at 4 bits they cause most of the error (E2B 0.097 → 0.229). Only +0.12 GB pinned
+- MLP and output matrix at 4 bits. The output matrix at 4 bits barely matters
+- Short convolutions at 8 bits (+0.01 at 4 bits)
+- Layers with sandwich norms (Gemma 4, PLaMo 3) are weak at 4 bits. With the ANE's tables, lut6 or more (Gemma 4 lut4 KL 2.54, PLaMo 3 1.91)
+- lut8 for multimodal models' text parts, TTS, d1's judgments and embeddings (they broke down with lut4)
+- A distilled 8-step DiT is weak at 4 bits (q4nx: latent cosine 0.777). q8 is the default
 
-### 5.3 校正の方法を順に試す
+### 5.3 Try the calibration methods in order
 
-同じ形式のまま、どの符号 (段) を選ぶかで精度を上げる。形式が変わらないので速さとメモリは同じ。
+Keep the format and raise accuracy by choosing the codes (levels) better. The format does not change, so speed and memory stay the same.
 
-| 順 | 方法 | 道具 | 結果の例 | 注意 |
+| Order | Method | Tools | Example results | Notes |
 |---|---|---|---|---|
-| 1 | 丸め (RTN)。q4nx は 9 つの候補から最小の誤差を選ぶ | `iron_q4.quantize_fmt`、`palette.QuantizeBits` | 重みの誤差 8.2 → 7.3 % | 基準。重みの誤差が最小でも出力の誤差が最小とは限らない |
-| 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-convert -codes` | E2B の wiki-ja 0.221 → 0.081、LFM3 0.071 → 0.038、LFM3-VL の README 0.164 → 0.061 (NPU) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
-| 3 | **表の当てはめ** (Apple の lutN): E[x²] で重み付けした k-means | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038、lut4 0.66 → 0.33 (Go の変換) | 一様な表から始める (重みの誤差が最小の k-means から始めると KL は最悪)。ANE での確認は handoff-m3-gptq.md |
-| 4 | AWQ 式のスケールの折り込み | 未実装 | | model-fit.md T8 の 2。lut4 をさらに下げたいとき |
+| 1 | Rounding (RTN). q4nx picks the least error of 9 candidates | `iron_q4.quantize_fmt`, `palette.QuantizeBits` | Weight error 8.2 → 7.3 % | The baseline. The least weight error is not the least output error |
+| 2 | **GPTQ** (pushes each column's error onto the later columns, with H = E[xxᵀ]) | `tools/amd/q4_gptq.py` → AMD: `iron_export_lm.py --q4-codes`; Apple: `hwnpu-convert -codes` | E2B wiki-ja 0.221 → 0.081, LFM3 0.071 → 0.038, LFM3-VL README 0.164 → 0.061 (NPU) | Damp by **0.1** × the mean of H's diagonal (0.01 overfitted the calibration texts and made the GPL worse than rounding). Calibrate on general text (wikitext-2 and wiki40b-ja, 64 × 512 tokens); the repository's documents alone overfit too. Leave the BOS position out of H. Quantize the earlier layers before measuring the next ones (a few layers a pass) |
+| 3 | **Fitting the tables** (Apple's lutN): k-means weighted by E[x²] | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038, lut4 0.66 → 0.33 (through Go's converter) | Start from the uniform tables (starting from the k-means of least weight error gives the worst KL). The ANE check is in handoff-m3-gptq.md |
+| 4 | AWQ-style scales folded into the previous op | Not written | | model-fit.md T8, 2. When lut4 has to go lower |
 
-**採るかどうか**: 校正に使っていない GPL でも丸めより悪くならないこと。LFM3-Audio は GPL だけ GPTQ で変わらない (0.154 → 0.161) が、他の 4 文が半分以下なので採った。悪くなる文があれば、減衰を上げる (0.3 で試した)、校正の文を足す。
+**Whether to adopt it**: the GPL, not used for calibration, must not get worse than rounding. For LFM3-Audio GPTQ leaves only the GPL unchanged (0.154 → 0.161), but the other four texts drop by half or more, so it was adopted. If a text gets worse, raise the damping (0.3 was tried) or add calibration text.
 
-**校正の費用**: CPU の fp32 で 2B 級 25〜60 分、E4B 2.4 時間 (fp32 で 30 GB 以上使う。並べて流すと OOM になる)。Linux では `systemd-run --user` で流す (セッションと一緒に殺されない)。
+**Cost of calibration**: fp32 on the CPU, 25–60 minutes for 2B models, 2.4 hours for E4B (over 30 GB in fp32; running two side by side ran out of memory). On Linux, run it with `systemd-run --user` (so it is not killed with the session).
 
-**符号の引き当て**: 符号はチェックポイントの重みの形と bf16 の値のハッシュで引く (`iron_q4.weight_key` = `palette.WeightKey`)。書き出しが重みを並べ替えたり、つないだりすると当たらない。書き出しのログの「N weights took the chosen codes」で数を確かめる (LFM3-VL: 73 個。q8 の部分は既定で丸めるので含まない)。PLaMo 3 の `gate_up_proj` のように 1 つの重みのまま量子化するものは当たる。
+**Matching the codes**: codes are looked up by a hash of the checkpoint weight's shape and bf16 values (`iron_q4.weight_key` = `palette.WeightKey`). If the export reorders or concatenates weights, they do not match. Check the count in the export's log, "N weights took the chosen codes" (LFM3-VL: 73; the q8 parts are rounded by default and not included). A weight quantized as one, like PLaMo 3's `gate_up_proj`, matches.
 
-### 5.4 形式の決め方
+### 5.4 Choosing the format
 
-| 目安 | 判断 |
+| Guide | Decision |
 |---|---|
-| KL 0.05 未満 (CPU の HF との比較) | port-architecture の目安。4 ビットを既定にしてよい |
-| KL 0.05〜0.2 | 答えの質 (9 節) を見て決める。ANE の lut6 (LFM3 0.232) はここ |
-| KL 1 以上 | 使えない (lut4 の LFM3 は事実の質問 4 問中 3 問を誤った) |
+| KL under 0.05 (against HF on the CPU) | port-architecture's guide. 4 bits can be the default |
+| KL 0.05–0.2 | Decide by the quality of the answers (section 9). The ANE's lut6 (LFM3 0.232) is here |
+| KL 1 or more | Not usable (lut4 LFM3 got 3 of 4 factual questions wrong) |
 
-速さとの引き換えは、重みのバイトどおり (ANE の lut4 / lut6 / lut8 で 1.81 / 2.65 / 3.49 ms)。lut6 の遅さは `SDPAGrouped` で取り戻した (16.41)。
+The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.65 / 3.49 ms). lut6's slowness was won back with `SDPAGrouped` (16.41).
 
-## 6. メモリ
+## 6. Memory
 
-| 測るもの | 道具 | 教訓 |
+| What to measure | Tools | Lesson |
 |---|---|---|
-| AMD の固定 (`Unevictable` の増え) | `/proc/meminfo` (RSS に出ない) | 大半は重みと作業域。KV は 5 % 未満 |
-| Mac の `phys_footprint` | `npuprobe split` | ANE 側 (aned) は未計測 (model-fit.md T10) |
-| 会話の印の大きさ | | 使っているリングの行だけ写す (`ringRows`、578 → 183 MB) |
-| 変換の直後 | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
-| KV の大きさと文脈 | | 物理メモリの 1/4 を超えたら塊単位で縮める |
-| ディスク | `cache.Clone` | 同じファイル (Q=8 と Q=64 の `weight.bin`、書き出しの同じ始まり) を共有。ext4 では共有されない |
+| AMD pinned memory (the rise of `Unevictable`) | `/proc/meminfo` (not in RSS) | Mostly weights and work areas. KV is under 5 % |
+| The Mac's `phys_footprint` | `npuprobe split` | The ANE's side (aned) is not measured (model-fit.md T10) |
+| Size of conversation marks | | Copy only the ring rows in use (`ringRows`, 578 → 183 MB) |
+| Right after a conversion | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
+| KV size and context | | Past 1/4 of physical memory, shrink by whole chunks |
+| Disk | `cache.Clone` | Share identical files (the Q=8 and Q=64 `weight.bin`, the common start of exports). Nothing is shared on ext4 |
 
-**合格**: [improvements.md](improvements.md) の 5.1 の表に行を足せる数値が揃う。
+**Pass**: enough numbers to add a row to the table in [improvements.md](improvements.md) 5.1.
 
-## 7. 速さ
+## 7. Speed
 
-| 測るもの | 道具 |
+| What to measure | Tools |
 |---|---|
-| 1 回の呼び出し (Q=8、Q=64) | `TestCallTimes` (`HWNPU_CALL_PKGS`) |
-| 生成の tokens/s、プロンプト、起動 (2 回目) | `hwnpu-generate`、`hwnpu-chat` のログ |
-| 形式ごとの比較 | `hwnpu-formats` |
-| AMD の GEMV、電力 | `tools/amd/gemvbench`、`powerbench` |
+| One call (Q=8, Q=64) | `TestCallTimes` (`HWNPU_CALL_PKGS`) |
+| Generation tokens/s, prompts, startup (the second) | `hwnpu-generate`, `hwnpu-chat`'s log |
+| Comparing formats | `hwnpu-formats` |
+| AMD GEMV, power | `tools/amd/gemvbench`, `powerbench` |
 
-続けて入れるもの (どのモデルにも効いた):
+Things to bring in next (they helped every model):
 
-- 2 本のプログラム (生成と読み込み) で 1 つのキャッシュ、前のプロンプトの再利用、プロンプトの保存 (ディスク)
-- 投機的デコード (プロンプトの n-gram、Apple / Intel)。考える予算 (`-think-budget`)、繰り返しの検出
+- Two programs (generation and prompt reading) on one cache, reuse of the previous prompt, the prompt store (disk)
+- Speculative decoding (n-grams from the prompt, Apple / Intel), the think budget (`-think-budget`), repetition detection
 
-同じ条件で続けて測った組だけを比べる (M3 はスワップ、AMD は電源の状態で 1.4 倍ぶれる)。
+Compare only pairs measured back to back under the same conditions (on the M3 swap, on AMD the power state, make numbers vary by up to 1.4×).
 
-## 8. 長い文脈
+## 8. Long contexts
 
-- 注意で分ける (`-paged`): 費用が使った長さに比例。既定 262144
-- 2 段の注意 (`-sparse`): 約 48K から。合言葉の試験 (128K、250K、文書の 10 / 50 / 90 % の 3 つ)
-- 状態型の層 (GDN) は 1 トークンずつと Q=64 の塊の一致 (`TestCachedMatchesFull` の形)
+- Split at the attention (`-paged`): the cost follows the length used. 262144 by default
+- Two-level attention (`-sparse`): from about 48K. Passkey tests (128K, 250K, and three at 10 / 50 / 90 % of a document)
+- Layers with state (GDN): one token at a time must match chunks of Q=64 (the form of `TestCachedMatchesFull`)
 
-## 9. 用途での確認と記録
+## 9. Checks in use, and the record
 
-KL だけで決めない。モデルの用途で bf16 (または fp16) と並べる:
+Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for what it is used for:
 
-| 用途 | 確かめ方 |
+| Use | How to check |
 |---|---|
-| チャット | 16.26 の 4 問 (富士山、17 × 23、『こころ』、信濃川)、hwnpu-agent の課題 (`go test` が通るか) |
-| 翻訳 | **訳文のトークンだけ**で KL と一致を測る (原文の側は予測しないので高く出る)。44 文で bf16 と一字一句同じ数 |
-| 画像の説明、音声の書き起こし、TTS | 同じ画像と音声で答えを並べる。TTS はもう一度 ASR に通す |
-| 埋め込み | HF との cosine |
-| 画像生成 | 同じ雑音で画像を並べる。種によって構図が変わることがある (4 つに 1 つ) |
+| Chat | 16.26's four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River), hwnpu-agent's task (does `go test` pass?) |
+| Translation | Measure KL and agreement **on the translation's tokens only** (the source side is not predicted, so it scores high). How many of 44 texts are word for word the same as bf16 |
+| Image descriptions, transcription, TTS | Compare the answers for the same images and audio. Run TTS output back through ASR |
+| Embeddings | Cosine against HF |
+| Image generation | Compare images from the same noise. The composition can change with some seeds (one in four) |
 
-**記録**:
+**The record**:
 
-- design.md の 16 章に節を足す (数値、採ったもの、採らなかったものと理由)
-- [improvements.md](improvements.md) と [improvements.ja.md](improvements.ja.md) の表 (速さ、メモリ、精度、モデルの一覧 10 節、未確認 11 節)
-- Mac で測れなかったことは `docs/handoff-*.md` に、持っていくもの、コマンド、期待する値を書く
+- Add a section to chapter 16 of design.md (numbers, what was adopted, what was not and why)
+- The tables in [improvements.md](improvements.md) and [improvements.ja.md](improvements.ja.md) (speed, memory, accuracy, the model list in section 10, not yet verified in section 11)
+- What could not be measured on a Mac goes into `docs/handoff-*.md`, with what to bring, the commands and the expected values
 
-## 10. 試して効かなかったもの (繰り返さない)
+## 10. Tried without effect (do not repeat)
 
-[improvements.md](improvements.md) の 8 節の要点: 小さなモデルを詰め物で ANE に (CPU より遅い)、multifunction で 1 GiB を越える (全部 CPU)、MLState の KV、int8 の KV、次の段階を裏で読み込む、Q=16 の 1 本、E4B の lut4、モデルの圧縮、上位の鍵だけの疎な注意、AMD の注意の 4 ビット、GEMV の 1 列 1 コア、MoE の専門家の写し、DiT の `HIGH`、DiT の q4 の既定化、q4nx のプロンプトを bf16 で、RMSNorm の固定の倍率。
+The gist of section 8 of [improvements.md](improvements.md): padding small models into batches for the ANE (slower than the CPU), getting past 1 GiB with multifunction (all on the CPU), the KV cache in MLState, an int8 KV cache, loading the next tier in the background, one Q=16 program, E4B at lut4, compressing the model, sparse attention on the top keys alone, AMD attention at 4 bits, a GEMV with one core per column, copying MoE experts, the DiT at `HIGH`, the DiT at q4 by default, q4nx prompts through bf16, RMSNorm with a fixed scale.
 
-## 11. 今進めているもの (2026-11-07)
+## 11. In progress (2026-11-07)
 
-- AMD: E4B、PLaMo 3、LFM3-Omni の GPTQ の符号での書き出しと NPU の KL、画像と音声つきの E2B を E2B の符号で
-- Apple: GPTQ の lut6 / lut4 の表の ANE での確認 ([handoff-m3-gptq.md](handoff-m3-gptq.md))。hwnpu-chat はまだ `-codes` を取らない
-- Anima: DiT の GPTQ (`anima_gptq.py`)。512×512 の丸めで速度の誤差 0.123、潜在の cosine 0.868
+- AMD: exports with the GPTQ codes and KL on the NPU for E4B, PLaMo 3 and LFM3-Omni; E2B with images and audio, using E2B's codes
+- Apple: checking the GPTQ lut6 / lut4 tables on the ANE ([handoff-m3-gptq.md](handoff-m3-gptq.md)). hwnpu-chat does not take `-codes` yet
+- Anima: GPTQ of the DiT (`anima_gptq.py`). Rounding at 512×512: velocity error 0.123, latent cosine 0.868
 
-結果が出たら 5.3 節の表と、この節を更新する。
+When results come in, update the table in 5.3 and this section.
