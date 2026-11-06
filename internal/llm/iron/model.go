@@ -84,21 +84,8 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, logf func(string, 
 func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 	man, dir, logf := m.Manifest, m.dir, m.logf
 	m.dev, m.banks, m.xclbins, m.kv = dev, map[string]*hwnpu.Buffer{}, map[string]*hwnpu.Program{}, nil
-	for kind, b := range man.Banks {
-		buf, err := dev.AllocBuffer(b.Bytes)
-		if err != nil {
-			return fmt.Errorf("iron: bank %s (%d MiB): %w", kind, b.Bytes>>20, err)
-		}
-		m.banks[kind] = buf
-		if b.Image != "" {
-			if err := readInto(filepath.Join(dir, b.Image), buf.Bytes()); err != nil {
-				return fmt.Errorf("iron: bank %s: %w", kind, err)
-			}
-		}
-		if err := buf.SyncToDevice(0, buf.Size()); err != nil {
-			return err
-		}
-		logf("bank %s: %d MiB", kind, b.Bytes>>20)
+	if err := m.loadBanks(); err != nil {
+		return err
 	}
 	kr, err := dev.Kernel()
 	if err != nil {
@@ -211,6 +198,140 @@ func (m *Model) Reload(ctx context.Context, dev *hwnpu.Device) error {
 	}
 	if err := m.load(ctx, dev); err != nil {
 		m.Release()
+		return err
+	}
+	return nil
+}
+
+// loadBanks allocates the arena's banks on m.dev and reads the weights into them: of an export
+// with towers, only the start of each bank that the text's versions use (textBanks), until a
+// tower runs (growBanks).
+func (m *Model) loadBanks() error {
+	text := m.Manifest.textBanks()
+	for kind, b := range m.Manifest.Banks {
+		n := b.Bytes
+		if t, ok := text[kind]; ok {
+			n = t
+		}
+		buf, err := m.dev.AllocBuffer(n)
+		if err != nil {
+			return fmt.Errorf("iron: bank %s (%d MiB): %w", kind, n>>20, err)
+		}
+		m.banks[kind] = buf
+		if b.Image != "" {
+			if err := readAt(filepath.Join(m.dir, b.Image), 0, buf.Bytes()); err != nil {
+				return fmt.Errorf("iron: bank %s: %w", kind, err)
+			}
+		}
+		if err := buf.SyncToDevice(0, buf.Size()); err != nil {
+			return err
+		}
+		if n < b.Bytes {
+			m.logf("bank %s: %d MiB, %d MiB more when a tower runs", kind, n>>20, (b.Bytes-n)>>20)
+		} else {
+			m.logf("bank %s: %d MiB", kind, n>>20)
+		}
+	}
+	return nil
+}
+
+// growBanks gives the banks loadBanks left short their whole size, for a tower and the prompt
+// chunks that read its soft tokens: a new buffer with the text's part as the device left it
+// (its weights, and the caches and states of the sequence, which goes on) and the towers'
+// weights read from the bank's image. The old bank and the decode step's run, bound to it, go;
+// Step makes the run again. Until Release, the banks stay whole; Reload leaves the towers out
+// again. For a moment both buffers are pinned (Gemma 4 E2B in 4 bits: 1.7 and 2.6 GiB).
+func (m *Model) growBanks() error {
+	if m.released {
+		return errReleased
+	}
+	t0, grown := time.Now(), 0
+	for kind, b := range m.Manifest.Banks {
+		old := m.banks[kind]
+		if old == nil || old.Size() >= b.Bytes {
+			continue
+		}
+		n := old.Size()
+		buf, err := m.dev.AllocBuffer(b.Bytes)
+		if err != nil {
+			return fmt.Errorf("iron: bank %s with the towers (%d MiB): %w", kind, b.Bytes>>20, err)
+		}
+		if err := old.SyncFromDevice(0, n); err != nil {
+			buf.Close()
+			return err
+		}
+		copy(buf.Bytes(), old.Bytes()[:n])
+		if b.Image != "" {
+			if err := readAt(filepath.Join(m.dir, b.Image), int64(n), buf.Bytes()[n:]); err != nil {
+				buf.Close()
+				return fmt.Errorf("iron: bank %s: %w", kind, err)
+			}
+		}
+		if err := buf.SyncToDevice(0, buf.Size()); err != nil {
+			buf.Close()
+			return err
+		}
+		m.dropDecode()
+		m.banks[kind] = buf
+		if err := old.Close(); err != nil {
+			return err
+		}
+		grown += b.Bytes - n
+	}
+	if grown > 0 {
+		m.logf("towers loaded: %d MiB more in %.1f s", grown>>20, time.Since(t0).Seconds())
+	}
+	return nil
+}
+
+// textBanks is how much of each bank the text's versions (the decode step and the prompt
+// chunk) use, for the banks they use only the start of: what loadBanks allocates of an export
+// with towers until one runs. It is nil for an export without towers, one packaged as an
+// xclbin per step (whose runs are bound to the banks), and when a text version places a buffer
+// past what its argument says it uses.
+func (man *Manifest) textBanks() map[string]int {
+	if man.Versions["vision"] == nil && man.Versions["audio"] == nil {
+		return nil
+	}
+	out := map[string]int{}
+	for _, name := range []string{"decode", "prompt"} {
+		v := man.Versions[name]
+		if v == nil || len(v.Steps) > 0 {
+			return nil
+		}
+		for _, a := range v.Arguments {
+			if _, ok := man.Banks[a.Kind]; ok {
+				out[a.Kind] = max(out[a.Kind], a.Bytes)
+			}
+		}
+	}
+	for _, name := range []string{"decode", "prompt"} {
+		for _, p := range man.Versions[name].Buffers {
+			if n, ok := out[p.Argument]; ok && p.Offset+p.Bytes > n {
+				return nil
+			}
+		}
+	}
+	for kind, n := range out {
+		if n <= 0 || n >= man.Banks[kind].Bytes {
+			delete(out, kind)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// readAt fills dst from a file at off; past the file's end (an image without its trailing zeros)
+// dst keeps the zeros of a new buffer.
+func readAt(path string, off int64, dst []byte) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.ReadAt(dst, off); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
 	return nil
@@ -426,6 +547,9 @@ func (m *Model) PromptPlaced(ctx context.Context, ids []int32, start int, before
 	if m.placed == nil {
 		return nil, errors.New("iron: the export has no placed prompt chunk (export the multimodal model)")
 	}
+	if err := m.growBanks(); err != nil {
+		return nil, err
+	}
 	if len(ids) == 0 || len(ids) > m.Manifest.Config.PrefillChunk || start+len(ids) > m.Manifest.Config.MaxSeqLen {
 		return nil, fmt.Errorf("iron: a placed chunk of %d tokens from %d", len(ids), start)
 	}
@@ -577,6 +701,9 @@ func (m *Model) Buffer(version, name string) ([]byte, Placement, error) {
 	if buf == nil {
 		return nil, p, fmt.Errorf("iron: %s: no argument %s", version, p.Argument)
 	}
+	if p.Offset+p.Bytes > buf.Size() {
+		return nil, p, fmt.Errorf("iron: %s's buffer %s is in the towers' part of the bank, loaded when a tower runs", version, name)
+	}
 	if err := buf.SyncFromDevice(p.Offset, p.Bytes); err != nil {
 		return nil, p, err
 	}
@@ -631,8 +758,8 @@ func (m *Model) dropDecode() {
 
 // runTower runs every command of a tower version on its input, with the grid's words at row.
 func (m *Model) runTower(ctx context.Context, v *version, input string, data []byte, own map[string]int64, row int) error {
-	if m.released {
-		return errReleased
+	if err := m.growBanks(); err != nil {
+		return err
 	}
 	values, err := m.complete(v, own)
 	if err != nil {
