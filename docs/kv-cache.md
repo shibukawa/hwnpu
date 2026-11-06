@@ -42,7 +42,7 @@ Neural Engine (Core ML) 側の制約で、手法の実現性が決まる。
 
 ## 3. 容量に比例する費用の内訳
 
-費用がどこから来るかを `npuprobe kv` で切り分けた (M3、11 層 lut4、1 トークン、全部 ANE。レポートは `npuprobe-m3-kv.md` と `npuprobe-m3-kv-mha.md`)。
+費用がどこから来るかを `npuprobe kv` で切り分けた (M3、11 層 lut4、1 トークン、全部 ANE。レポートは `npu_profiles/npuprobe-m3-kv.md` と `npu_profiles/npuprobe-m3-kv-mha.md`)。
 
 | 容量 | host (GQA、K/V を tile で 16 ヘッドに複製) | state (MLState) | host-mha (16 の Q ヘッドがそれぞれ K/V を持つ。複製なし、キャッシュ 4 倍) | host-int8 (キャッシュを int8 とトークンごとの fp16 スケールで渡し、`cast` と `mul` で戻す) |
 |---|---|---|---|---|
@@ -51,7 +51,7 @@ Neural Engine (Core ML) 側の制約で、手法の実現性が決まる。
 | 8192 | 49.8 ms (176 MiB) | 49.3 ms | 63.5 ms (704 MiB) | 50.8 ms (89 MiB) |
 | 1K あたりの傾き | 5.6 ms | 5.6 ms | 7.0 ms | 5.6 ms |
 
-host の値は実行ごとに 46〜55 ms (8K) の幅で揺れる。int8 は同じ実行の host (10.8 / 27.6 / 46.5 ms) と比べて 1.1 / 1.9 / 4.3 ms 遅く、傾きは同じ (`npuprobe-m3-kv-int8.md`)。
+host の値は実行ごとに 46〜55 ms (8K) の幅で揺れる。int8 は同じ実行の host (10.8 / 27.6 / 46.5 ms) と比べて 1.1 / 1.9 / 4.3 ms 遅く、傾きは同じ (`npu_profiles/npuprobe-m3-kv-int8.md`)。
 
 - **入力のコピーではない**: MLState にしても速さは同じ (16.15)。
 - **帯域でもない**: キャッシュのバイト数を 4 倍にしても (host-mha) 費用は 1.3 倍。8K で 704 MiB を読んで 63.5 ms なので、読み出しは少なくとも 11 GB/s は出ており、ANE の帯域 (重みで 65 GB/s) の壁には当たっていない。

@@ -152,12 +152,12 @@ Speed and energy at 16 layers (0.97 B weights). Speed from `npuprobe bench`, ene
 | int4 | 0.45 GiB | CPU | CPU | 28.1 | 36 | 17 | 3.53 | 300 |
 | **int4** | 0.45 GiB | **GPU** | **GPU** | **8.5** | **117** | 57 | 0.47 | **35** |
 
-- Only lut4 runs at full speed on the Neural Engine: 4 bit weights halve the bytes read per token against int8, and decoding is bound by the weight reads.
+- Only lut4 runs at full speed on the Neural Engine (on the M2 with macOS 27.2, int8 and fp16 did too; see the M2 section): 4 bit weights halve the bytes read per token against int8, and decoding is bound by the weight reads.
 - The Neural Engine and the GPU with int4 cost about the same energy per token (37 and 35 mJ); the CPU costs about 7 times more.
 - fp16 at 1 B is over the size limit and runs on the CPU.
 - The CPU is limited by the arithmetic, not the bytes: about 30 ms per token in every format, at 3.3 to 3.7 cores busy. Quantization only pays on the NPU and the GPU.
 
-A model over the limit run in parts (`npuprobe split`, 64 layers of lut4, 1.81 GiB, 3.9 B weights; report: [npuprobe-m3-split.md](npuprobe-m3-split.md)):
+A model over the limit run in parts (`npuprobe split`, 64 layers of lut4, 1.81 GiB, 3.9 B weights; report: [npuprobe-m3-split.md](npu_profiles/npuprobe-m3-split.md)):
 
 | split | each part | placement | ms/call of each part | ms/token | parts added up | weights GB/s | CPU use | error against the GPU after each part |
 |---|---|---|---|---|---|---|---|---|
@@ -169,7 +169,7 @@ A model over the limit run in parts (`npuprobe split`, 64 layers of lut4, 1.81 G
 - The split does not change the result. The error after 32 layers is 3.32% whether the model is split in 2 or in 4, and 4.91% at the end in both, so nothing breaks at the boundaries. The error grows slowly with the layers; the GPU result it is compared with has fp16 error of its own.
 - 64 layers is the size of a 4 B model (random weights, no attention over the context). Split into lut4 parts under 1 GiB, a 4 B class model should run on the M3's Neural Engine at about 30 ms per token (about 33 tokens/s).
 
-Against the parts written as the functions of one package (`-layout functions,files`; report: [npuprobe-m3-functions.md](npuprobe-m3-functions.md)):
+Against the parts written as the functions of one package (`-layout functions,files`; report: [npuprobe-m3-functions.md](npu_profiles/npuprobe-m3-functions.md)):
 
 | parts | written as | placement | ms/token | peak RSS of the process |
 |---|---|---|---|---|
@@ -197,6 +197,25 @@ K tokens per call (`npuprobe verify -formats lut4 -layers 16`, 0.97 B weights in
 - 128 tokens take 2.7 times as long as 64, slower per token than 64: past the limit, splitting a prompt into calls of 64 is faster than calls of 128.
 - So speculative decoding can check up to about 60 drafted tokens for the time of one, and a prompt is read fastest in chunks of about 64 tokens (about 7,000 tokens/s for 1 B weights). LFM3-1.7B converted with `hwnpu-convert -seq` behaved alike: 13.7 ms for 1 token, 15.2 ms for 48, 30.0 ms for 96 (11 TFLOPS).
 
+### Apple M2 (MacBook Air, 16 GB, macOS 27.2)
+
+`npuprobe` with the defaults (bench and limit; report: [npuprobe-m2.md](npu_profiles/npuprobe-m2.md)). 16 layers (0.97 B), against the M3 above:
+
+| format | weights | unit | M2 ms/token | M3 ms/token | M2 weights GB/s | M3 weights GB/s |
+|---|---|---|---|---|---|---|
+| lut4 | 0.45 GiB | NPU | 7.8 | 7.5 | 63 | 65 |
+| int8 | 0.91 GiB | NPU | 15.6 | 41.6 | 62 | 23 |
+| int4 | 0.45 GiB | GPU | 8.5 | 8.5 | 57 | 57 |
+| fp16 | 1.81 GiB | GPU | 25.5 | 24.5 | 76 | 79 |
+| lut4 | 0.45 GiB | GPU | 55.4 | 65.1 | 9 | 7 |
+| every format | | CPU | 35 or so | 27 to 30 | | |
+
+- The size limit is the M3's to the layer: fp16 8 layers (0.91 GiB) on the Neural Engine and 9 (1.02 GiB) not, int8 17 and 18, lut4 35 (0.99 GiB) and 36. Three fp16 models of 0.91 GiB loaded at once all stay on the Neural Engine at 15 to 16 ms a call, as alone.
+- lut4 runs at the M3's speed, so decoding bound by the weights should be about as fast. The CPU is about a fifth slower.
+- int8 and fp16 run at full speed too: every format reads its weights at about 60 GB/s (0.49 B fp16: 15.9 ms). On the M3 only lut4 did. The M3 ran macOS 27.0.1 and the M2 27.2, so whether the chip or the OS makes the difference is open; `npuprobe bench -formats fp16,int8,lut4` on the M3 with 27.2 tells.
+- lut4 put on the CPU over the limit is as slow as on the M3 (40 layers 6.3 s a call, 48 layers 17.7 s).
+- Compiling takes longer than on the M3 (lut4 32 layers: 25 s).
+
 ### Apple M4
 
 A model over the limit run in parts (`npuprobe split -split-layers 128 -parts 2,4`, 128 layers of lut4, 3.62 GiB, 7.8 B weights):
@@ -215,7 +234,7 @@ A model over the limit run in parts (`npuprobe split -split-layers 128 -parts 2,
 
 ### KV cache (Apple M3, `npuprobe kv`)
 
-11 lut4 layers, one token, all on the Neural Engine (report: [npuprobe-m3-kv.md](npuprobe-m3-kv.md)):
+11 lut4 layers, one token, all on the Neural Engine (report: [npuprobe-m3-kv.md](npu_profiles/npuprobe-m3-kv.md)):
 
 | cache length | KV size | host buffers | MLState |
 |---|---|---|---|
@@ -227,11 +246,11 @@ A model over the limit run in parts (`npuprobe split -split-layers 128 -parts 2,
 - MLState does not change the speed. Only the CPU use falls: with host buffers Core ML handles the inputs on the CPU.
 - Both slow down with the cache's length. The cause is not copying the inputs but the Neural Engine's work over the whole fixed length cache.
 - A value written to a state must be read back before it is used, or the Neural Engine compiler fails (`error code: -14`).
-- The cost is the attention over the whole cache itself (report: [npuprobe-m3-kv-mha.md](npuprobe-m3-kv-mha.md)). `host-mha`, which repeats nothing and holds a cache 4 times as large, takes 14.2 / 36.6 / 63.5 ms at 1024 / 4096 / 8192: only 1.3 times `host`. Neither the bandwidth nor the repeat is the limit; the Neural Engine cannot fill itself with matrix-vector products of one query row (16 heads × cache length per layer, about 8 GFLOP/s at 1K tokens).
-- An int8 cache does not make it faster either (report: [npuprobe-m3-kv-int8.md](npuprobe-m3-kv-int8.md)). `host-int8` stays on the Neural Engine with half the memory, but takes 11.9 / 29.5 / 50.8 ms at 1024 / 4096 / 8192 against 10.8 / 27.6 / 46.5 ms for `host` in the same run: a tenth slower, for the cast over the whole cache. Quantizing the cache saves memory, not time.
-- The Neural Engine takes tensor dimensions up to 16384 (report: [npuprobe-m3-kv-limit.md](npuprobe-m3-kv-limit.md)). With `-kv-layers 2`, a key axis of 16384 (cache 16383) stays on the Neural Engine at 16.6 ms; 16385 (cache 16384) puts 39 attention operations on the CPU, at 117 ms.
-- A cache in chunks stays on the Neural Engine past that limit (`-kv-layers 6`, LFM3-1.7B's full attention layers; reports: [npuprobe-m3-kv-chunk.md](npuprobe-m3-kv-chunk.md) and [npuprobe-m3-kv-chunk-long.md](npuprobe-m3-kv-chunk-long.md)). `host-chunk` takes 13.2 / 43.4 / 84.0 / 201.6 ms at 4096 / 16320 / 32768 / 65536, all on the Neural Engine, and is no slower than the plain `host` (14.5 / 49.1 ms at 4096 / 16320). Each chunk is an input of its own, and the chunks meet in elementwise operations only. Holding the chunks on an axis of one tensor and reducing over it, or weighting each chunk by its share of the sum, put every operation on the CPU from two chunks on.
-- Attention without weights called per chunk and merged on the host costs in proportion to the tokens used, not to the capacity (`npuprobe attn`; report: [npuprobe-m3-attn.md](npuprobe-m3-attn.md)). Grouped, Q=8, chunks of 8192, 6 layers: 8.8 / 17.4 / 69.5 / 295.7 ms at 4096 / 16384 / 65536 / 262144 tokens used. Binding each chunk's own buffers does not change the time per call, and the peak resident memory is the KV bytes (3 GiB at 262144) plus about 0.1 GiB: the inputs are not copied. Core ML puts the forms with little work on the CPU (Q=1 up to chunks of 8192, Q=8 up to 2048); with Q=1 the CPU is twice as fast as the Neural Engine (0.41 against 0.80 ms per 1K).
+- The cost is the attention over the whole cache itself (report: [npuprobe-m3-kv-mha.md](npu_profiles/npuprobe-m3-kv-mha.md)). `host-mha`, which repeats nothing and holds a cache 4 times as large, takes 14.2 / 36.6 / 63.5 ms at 1024 / 4096 / 8192: only 1.3 times `host`. Neither the bandwidth nor the repeat is the limit; the Neural Engine cannot fill itself with matrix-vector products of one query row (16 heads × cache length per layer, about 8 GFLOP/s at 1K tokens).
+- An int8 cache does not make it faster either (report: [npuprobe-m3-kv-int8.md](npu_profiles/npuprobe-m3-kv-int8.md)). `host-int8` stays on the Neural Engine with half the memory, but takes 11.9 / 29.5 / 50.8 ms at 1024 / 4096 / 8192 against 10.8 / 27.6 / 46.5 ms for `host` in the same run: a tenth slower, for the cast over the whole cache. Quantizing the cache saves memory, not time.
+- The Neural Engine takes tensor dimensions up to 16384 (report: [npuprobe-m3-kv-limit.md](npu_profiles/npuprobe-m3-kv-limit.md)). With `-kv-layers 2`, a key axis of 16384 (cache 16383) stays on the Neural Engine at 16.6 ms; 16385 (cache 16384) puts 39 attention operations on the CPU, at 117 ms.
+- A cache in chunks stays on the Neural Engine past that limit (`-kv-layers 6`, LFM3-1.7B's full attention layers; reports: [npuprobe-m3-kv-chunk.md](npu_profiles/npuprobe-m3-kv-chunk.md) and [npuprobe-m3-kv-chunk-long.md](npu_profiles/npuprobe-m3-kv-chunk-long.md)). `host-chunk` takes 13.2 / 43.4 / 84.0 / 201.6 ms at 4096 / 16320 / 32768 / 65536, all on the Neural Engine, and is no slower than the plain `host` (14.5 / 49.1 ms at 4096 / 16320). Each chunk is an input of its own, and the chunks meet in elementwise operations only. Holding the chunks on an axis of one tensor and reducing over it, or weighting each chunk by its share of the sum, put every operation on the CPU from two chunks on.
+- Attention without weights called per chunk and merged on the host costs in proportion to the tokens used, not to the capacity (`npuprobe attn`; report: [npuprobe-m3-attn.md](npu_profiles/npuprobe-m3-attn.md)). Grouped, Q=8, chunks of 8192, 6 layers: 8.8 / 17.4 / 69.5 / 295.7 ms at 4096 / 16384 / 65536 / 262144 tokens used. Binding each chunk's own buffers does not change the time per call, and the peak resident memory is the KV bytes (3 GiB at 262144) plus about 0.1 GiB: the inputs are not copied. Core ML puts the forms with little work on the CPU (Q=1 up to chunks of 8192, Q=8 up to 2048); with Q=1 the CPU is twice as fast as the Neural Engine (0.41 against 0.80 ms per 1K).
 
 ### Wanted
 
