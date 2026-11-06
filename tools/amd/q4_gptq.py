@@ -28,9 +28,9 @@ as the export does, so the later layers' inputs are the device's. H leaves out e
 (--skip-first) and is damped by 0.1 of its mean diagonal (--damp): GPTQ's usual 0.01 fitted the
 calibration texts and made an unseen one (the GPL) worse than rounding.
 
---fmt-q4, --fmt-q8 and --head lutN measure Apple's lookup tables (internal/palette's Uniform
-tables of 16 rows) the same way, rounded or GPTQ against fixed tables; no codes are written for
-them.
+--fmt-q4, --fmt-q8 and --head lutN do the same for Apple's lookup tables (internal/palette's
+Uniform tables of 16 rows): GPTQ chooses each weight's entry of its fixed table, and OUT/codes
+holds the indices and tables (KEY.idx, KEY.tab) that hwnpu-convert -codes reads.
 
 The calibration texts (CALIB) include general English and Japanese, in ~/models/calib:
 wikitext-2-raw-v1's train split (wikitext2-train.txt) and test split (wikitext2-test.txt, from
@@ -369,11 +369,29 @@ def main(argv=None) -> int:
         np.save(codes_dir / f"{k}.npy", blocks)
         index[k] = dict(name=name, fmt=fmt, shape=list(lin.weight.shape))
 
+    def put_lut(name, lin, fmt, idx, table):
+        """lutN for hwnpu-convert -codes (internal/palette.LoadCodes): the indices (rows, cols)
+        uint8 and the tables (rows / LUT_GROUP, 2^bits) float32 (fp16 values), raw."""
+        codes_dir.mkdir(parents=True, exist_ok=True)
+        k = key(lin.weight.detach().numpy())
+        np.ascontiguousarray(idx, np.uint8).tofile(codes_dir / f"{k}.idx")
+        np.ascontiguousarray(table, "<f4").tofile(codes_dir / f"{k}.tab")
+        index[k] = dict(name=name, fmt=fmt, shape=list(lin.weight.shape), group=LUT_GROUP)
+
     if a.method == "codes":  # evaluate codes written before (--codes): those, the rest rounded
         n = iron_q4.load_codes(a.codes)
+        luts = {k: e for k, e in json.loads((a.codes / "index.json").read_text()).items() if e["fmt"] in LUT_BITS}
         for mine in lins_all:
             for name, lin, fmt, _ in mine:
                 w = lin.weight.detach().numpy()
+                e = luts.get(key(w)) if fmt in LUT_BITS else None
+                if e is not None and e["fmt"] == fmt:
+                    rows, cols = w.shape
+                    idx = np.fromfile(a.codes / f"{key(w)}.idx", np.uint8).reshape(rows, cols)
+                    tab = np.fromfile(a.codes / f"{key(w)}.tab", "<f4").reshape(rows // e["group"], -1)
+                    set_weight(lin, np.take_along_axis(np.repeat(tab, e["group"], 0), idx.astype(np.int64), 1))
+                    iron_q4.CODES_USED["hit"] += 1
+                    continue
                 set_weight(lin, iron_q4.dequantize_fmt(iron_q4.quantize_fmt(w, fmt), *w.shape, fmt)
                            if fmt in iron_q4.FORMATS else rtn(w, fmt))
         print(f"{a.codes}: {n} weights, {iron_q4.CODES_USED}")
@@ -431,6 +449,7 @@ def main(argv=None) -> int:
                     continue
                 c, s, mn = gptq(w, (H.double() / n).numpy(), fmt, damp=a.damp)
                 if fmt in LUT_BITS:
+                    put_lut(name, lin, fmt, c, s)
                     set_weight(lin, mn)
                     continue
                 blocks = blocks_of(c, s, mn, fmt)

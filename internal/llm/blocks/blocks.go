@@ -9,6 +9,7 @@ package blocks
 import (
 	"fmt"
 	"math"
+	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -112,6 +113,25 @@ func (g *Graph) WeightRows(name string, begin, end, cols int, scale float32) *ml
 
 // matrix writes the (rows, cols) values w of the tensor name as the constant constName.
 func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scale float32) *mlpackage.Var {
+	format := g.Opts.FormatOf(name)
+	if bits := map[string]int{"lut4": 4, "lut6": 6, "lut8": 8}[format]; bits != 0 && g.Opts.Codes != "" {
+		// codes chosen for the weight as the checkpoint holds it, before the scale
+		c, err := LoadCodes(g.Opts.Codes)
+		if err != nil {
+			g.Fail("%v", err)
+		}
+		q, ok, err := c.Lookup(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, scale)
+		if err != nil {
+			g.Fail("%s: %v", name, err)
+		}
+		if ok {
+			v, err := g.B.LUT(constName, bits, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
+			if err != nil {
+				g.Fail("%v", err)
+			}
+			return v
+		}
+	}
 	if scale != 1 {
 		for i := range w {
 			w[i] *= scale
@@ -119,7 +139,6 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 	}
 	var v *mlpackage.Var
 	var err error
-	format := g.Opts.FormatOf(name)
 	switch format {
 	case "fp16":
 		v, err = g.B.F16s(constName, []int{rows, cols}, w)
@@ -531,4 +550,19 @@ func (g *Graph) Activation(x *mlpackage.Var, act string) *mlpackage.Var {
 	}
 	g.Fail("activation %q is not supported", act)
 	return nil
+}
+
+var codes sync.Map // by directory: *palette.Codes
+
+// LoadCodes reads a codes directory (llm.Options.Codes) once per process.
+func LoadCodes(dir string) (*palette.Codes, error) {
+	if c, ok := codes.Load(dir); ok {
+		return c.(*palette.Codes), nil
+	}
+	c, err := palette.LoadCodes(dir)
+	if err != nil {
+		return nil, err
+	}
+	got, _ := codes.LoadOrStore(dir, c)
+	return got.(*palette.Codes), nil
 }
