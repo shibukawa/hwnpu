@@ -137,7 +137,7 @@ func New(p Program, m llm.Cached) (*Session, error) {
 		return nil, fmt.Errorf("decode: no input x (1, q, hidden)")
 	}
 	y, ok := p.OutShape["y"]
-	if !ok || len(y) < 3 || len(y) > 4 || y[1] != x[1] {
+	if !ok || len(y) < 3 || len(y) > 4 || y[1] != rows(p) {
 		return nil, fmt.Errorf("decode: no output y (1, q, vocab)")
 	}
 	vocab := y[2]
@@ -316,8 +316,8 @@ func (s *Session) Add(p Program) error {
 	if !ok || len(x) != 3 || x[2] != s.hidden {
 		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
 	}
-	if !logitsShape(p.OutShape["y"], x[1], s.vocab) {
-		return fmt.Errorf("decode: no output y (1, %d, %d)", x[1], s.vocab)
+	if !logitsShape(p.OutShape["y"], rows(p), s.vocab) {
+		return fmt.Errorf("decode: no output y (1, %d, %d)", rows(p), s.vocab)
 	}
 	first := s.progs[0].p
 	for name, b := range first.In {
@@ -410,8 +410,8 @@ func (s *Session) Migrate(np Program) error {
 	if !ok || len(x) != 3 || x[2] != s.hidden {
 		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
 	}
-	if !logitsShape(np.OutShape["y"], x[1], s.vocab) {
-		return fmt.Errorf("decode: no output y (1, %d, %d)", x[1], s.vocab)
+	if !logitsShape(np.OutShape["y"], rows(np), s.vocab) {
+		return fmt.Errorf("decode: no output y (1, %d, %d)", rows(np), s.vocab)
 	}
 	nkv, nt, err := caches(np)
 	if err != nil {
@@ -728,7 +728,7 @@ func (s *Session) Width() int {
 // followed by the model's lookup inputs, as llm.TokenRow gathers them. It returns the logits after
 // the last one, running the program with the fewest tokens per step that takes them all.
 func (s *Session) Step(emb [][]float32) ([]float32, error) {
-	p, q, err := s.run(emb)
+	p, q, err := s.run(emb, false)
 	if err != nil {
 		return nil, err
 	}
@@ -742,7 +742,7 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 // row before it is what the model would have generated. The rest are not written to the cache;
 // accept must keep at least 1. It returns the logits after the last token kept and how many.
 func (s *Session) Speculate(emb [][]float32, accept func(row func(i int) []float32) int) ([]float32, int, error) {
-	p, q, err := s.run(emb)
+	p, q, err := s.run(emb, true)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -753,7 +753,7 @@ func (s *Session) Speculate(emb [][]float32, accept func(row func(i int) []float
 	if kept < len(emb) && s.replaced(p) {
 		// a state replaced as a whole is the one after all the step's tokens (llm.Cached): run
 		// the kept ones again from the state before the step, which the inputs still hold
-		if p, q, err = s.run(emb[:kept]); err != nil {
+		if p, q, err = s.run(emb[:kept], false); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -771,8 +771,9 @@ func (s *Session) replaced(p Program) bool {
 }
 
 // run writes the tokens' rows and the step's inputs into the program with the fewest tokens per
-// step that takes them all, and runs it.
-func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
+// step that takes them all, and runs it. With each, the program must compute the logits after
+// each token, not after the last alone (llm.Options.LastRow).
+func (s *Session) run(emb [][]float32, each bool) (p Program, q int, err error) {
 	v := len(emb)
 	if v == 0 || v > s.Q() {
 		return p, 0, fmt.Errorf("decode: a step takes 1 to %d tokens, not %d", s.Q(), v)
@@ -782,11 +783,14 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 	}
 	var st *step
 	for i := range s.progs {
-		if s.progs[i].q >= v {
+		if s.progs[i].q >= v && (!each || v == 1 || rows(s.progs[i].p) == s.progs[i].q) {
 			st = &s.progs[i]
 			p, q = st.p, st.q
 			break
 		}
+	}
+	if st == nil {
+		return p, 0, fmt.Errorf("decode: no program computes the logits after each of %d tokens (the longer ones compute them after the last alone)", v)
 	}
 	x := p.In["x"]
 	for _, e := range emb {
@@ -805,6 +809,11 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 			hwnpu.EncodeF16(p.In[lk.Input][2*i*lk.Width:2*(i+1)*lk.Width], e[off:off+lk.Width])
 			off += lk.Width
 		}
+	}
+	if last, ok := p.In["last"]; ok && rows(p) == 1 {
+		// one-hot: the program's output layer reads the last token's row alone
+		clear(last)
+		hwnpu.EncodeF16(last[2*(v-1):2*v], []float32{1})
 	}
 	inputs := s.m.StepInputs
 	if p.RunPart != nil {
@@ -998,14 +1007,28 @@ func (s *Session) keep(p Program, q, v int) []float32 {
 	}
 	s.pos += v
 	s.last = nil
+	i := v - 1
+	if rows(p) == 1 {
+		i = 0 // the program computed the last token's row alone
+	}
 	if h, ok := p.Out["h"]; ok {
 		s.last = make([]float32, s.hidden)
-		hwnpu.DecodeF16(s.last, h[2*(v-1)*s.hidden:2*v*s.hidden])
+		hwnpu.DecodeF16(s.last, h[2*i*s.hidden:2*(i+1)*s.hidden])
 	}
-	return s.row(p, v-1)
+	return s.row(p, i)
 }
 
-// row returns the logits after token i of the step just run on p.
+// rows is the number of rows of p's logits: 1 for a program that computes them after the token
+// its input last picks (llm.Options.LastRow), otherwise one per token of a step.
+func rows(p Program) int {
+	q := p.InShape["x"][1]
+	if sh := p.InShape["last"]; slices.Equal(sh, []int{1, 1, q}) && q > 1 {
+		return 1
+	}
+	return q
+}
+
+// row returns the logits after token i of the step just run on p (row i of its output).
 func (s *Session) row(p Program, i int) []float32 {
 	logits := make([]float32, s.vocab)
 	hwnpu.DecodeF16(logits, p.Out["y"][2*i*s.vocab:2*(i+1)*s.vocab])

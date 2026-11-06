@@ -21,6 +21,7 @@ func BindFlags(fs *flag.FlagSet, o *Options, defaultFormat string) func() {
 	formatFor := fs.String("format-for", "", "comma separated SUBSTRING=FORMAT: another weight format for the tensors whose names contain SUBSTRING, e.g. mlp=lut8 (the last match wins)")
 	quant := fs.String("quant", "", "lut4 table fitting: uniform (the default), kmeans or kmeans-minmax; intN scales: mse (the default: the clipping with the smallest squared error) or uniform (the block's largest weight)")
 	paged := fs.Int("paged", 0, "with -cache: split the model at its full attention layers and attend over the cache in chunks of this many tokens on the host's side (internal/llm/paged), so that a step costs in proportion to the tokens used, not to -cache; 8192 for the Neural Engine. LFM3 only")
+	lastRow := fs.Bool("last-row", false, "with -cache: compute the logits after the last token of a call only (the program takes last, a one-hot row; for reading prompts). LFM3 and Gemma 4")
 	params := map[string]*string{}
 	for _, a := range Archs() {
 		for _, p := range a.Params {
@@ -30,7 +31,7 @@ func BindFlags(fs *flag.FlagSet, o *Options, defaultFormat string) func() {
 		}
 	}
 	return func() {
-		o.Format, o.Group, o.ColBlock, o.Quant, o.Paged = *format, *group, *colBlock, *quant, *paged
+		o.Format, o.Group, o.ColBlock, o.Quant, o.Paged, o.LastRow = *format, *group, *colBlock, *quant, *paged, *lastRow
 		o.KeepFP16 = nil
 		if *keep != "" {
 			o.KeepFP16 = strings.Split(*keep, ",")

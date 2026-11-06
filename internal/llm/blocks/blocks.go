@@ -184,6 +184,12 @@ func (g *Graph) LinearS(x *mlpackage.Var, name, outName string, outDim int, s fl
 	return g.Op("linear", map[string]any{"x": x, "weight": w}, shape...)
 }
 
+// LastRow is the row of x (1, seq, d) that sel (1, 1, seq), one-hot, picks: (1, 1, d). A matrix
+// product, since the Neural Engine runs gather on the CPU; with one 1 it is the row exactly.
+func (g *Graph) LastRow(x, sel *mlpackage.Var) *mlpackage.Var {
+	return g.Op("matmul", map[string]any{"x": sel, "y": x, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, 1, x.Shape[2])
+}
+
 // LinearRows is Linear with rows [begin, end) of the named weight: one output of a fused
 // projection, end-begin wide.
 func (g *Graph) LinearRows(x *mlpackage.Var, name string, begin, end int) *mlpackage.Var {

@@ -88,7 +88,7 @@ func TestPrepareQwen35(t *testing.T) {
 	if len(c.Packages) != 2 {
 		t.Fatalf("packages %q", c.Packages)
 	}
-	for i, q := range []int{8, 64} {
+	for i, q := range []int{8, 96} { // the program that reads prompts takes a chunk per call
 		p := c.Packages[i]
 		if want := fmt.Sprintf("qwen35-fp16-p96-c96-q%d.parts.json", q); filepath.Base(p) != want {
 			t.Errorf("package %s, want %s", filepath.Base(p), want)

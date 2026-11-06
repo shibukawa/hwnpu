@@ -80,6 +80,9 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins,
 	if opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers {
 		opts.Layers = cfg.NumLayers - opts.Start
 	}
+	if opts.LastRow && opts.Cache <= 0 {
+		return nil, nil, fmt.Errorf("gemma4: the logits of the last row alone (LastRow) are of a program with a KV cache")
+	}
 	if opts.Paged > 0 && opts.Cache <= 0 {
 		return nil, nil, fmt.Errorf("gemma4: a program split at its attention (Paged) needs a KV cache")
 	}
@@ -108,6 +111,9 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options) (ins,
 		if m.end < cfg.NumLayers || opts.NoHead {
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		} else {
+			if opts.LastRow {
+				h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+			}
 			y = m.head(h)
 		}
 		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
@@ -173,6 +179,7 @@ func (m *builder) perLayerInputs(h *mlpackage.Var) *mlpackage.Var {
 // Engine's compile cache, which was the hope (docs/design.md 16.43). flat stays the default.
 func (m *builder) head(h *mlpackage.Var) *mlpackage.Var {
 	c := m.cfg
+	seq := h.Shape[1] // 1 for the last row alone (LastRow)
 	h = m.norm(h, c.Prefix+"norm.weight", m.d)
 	if c.Softcap == nil {
 		return m.Linear(h, c.Embedding(), "y", c.VocabSize)
@@ -184,7 +191,7 @@ func (m *builder) head(h *mlpackage.Var) *mlpackage.Var {
 		rows++
 	}
 	if rows > 1 {
-		y = m.Op("reshape", map[string]any{"x": y, "shape": m.B.Ints(1, int32(m.seq), int32(rows), int32(c.VocabSize/rows))}, 1, m.seq, rows, c.VocabSize/rows)
+		y = m.Op("reshape", map[string]any{"x": y, "shape": m.B.Ints(1, int32(seq), int32(rows), int32(c.VocabSize/rows))}, 1, seq, rows, c.VocabSize/rows)
 	}
 	y = m.Op("mul", map[string]any{"x": y, "y": m.B.ScalarF16(1 / limit)}, y.Shape...)
 	y = m.Op("tanh", map[string]any{"x": y}, y.Shape...)
@@ -195,7 +202,7 @@ func (m *builder) head(h *mlpackage.Var) *mlpackage.Var {
 		return m.B.NamedOp("mul", "y", map[string]any{"x": y, "y": m.B.ScalarF16(limit)}, mlpackage.Float16, y.Shape...)
 	}
 	y = m.Op("mul", map[string]any{"x": y, "y": m.B.ScalarF16(limit)}, y.Shape...)
-	return m.B.NamedOp("reshape", "y", map[string]any{"x": y, "shape": m.B.Ints(1, int32(m.seq), int32(c.VocabSize))}, mlpackage.Float16, 1, m.seq, c.VocabSize)
+	return m.B.NamedOp("reshape", "y", map[string]any{"x": y, "shape": m.B.Ints(1, int32(seq), int32(c.VocabSize))}, mlpackage.Float16, 1, seq, c.VocabSize)
 }
 
 // normScale is how much the norms scale their input down before taking the squares. The square

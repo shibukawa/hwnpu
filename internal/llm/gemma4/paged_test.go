@@ -234,3 +234,49 @@ func TestPagedSparse(t *testing.T) {
 		}
 	}
 }
+
+// A program of 4 tokens per call with the output layer for its last token alone (LastRow), beside
+// one of 1, gives the logits of the program without a cache after each step, a short one too.
+func TestPagedLastRow(t *testing.T) {
+	c := tinyConfig(t)
+	w := newWeights(c)
+	n := len(tokens)
+	feed := map[string][]float32{"x": rows(t, w, c.Embedding(), tokens), "ple": rows(t, w, c.perLayerTable(), tokens)}
+	full := build(t, c, w, Options{Options: llm.Options{Seq: n, Format: "fp16"}}).run(t, feed)["y"]
+	dir := t.TempDir()
+	var paths []string
+	for _, q := range []int{1, 4} {
+		opts := llm.Options{Seq: q, Cache: 12, Paged: 4, LastRow: q > 1, Format: "fp16"}
+		path, err := llm.Convert(Arch, c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	s, cl, err := runner.OpenSession(context.Background(), nil, paths, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	worst, pos := 0.0, 0
+	for _, v := range []int{4, 3, 1, 2} {
+		var step [][]float32
+		for i := range v {
+			row, err := llm.TokenRow(w, c, tokens[pos+i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			step = append(step, row)
+		}
+		logits, err := s.Step(step)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos += v
+		worst = math.Max(worst, relErr32(logits, full[(pos-1)*c.VocabSize:pos*c.VocabSize]))
+	}
+	if worst > 5e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g", worst)
+}

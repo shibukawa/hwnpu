@@ -24,6 +24,7 @@ var Arch = &llm.Arch{
 		{Name: "logits", Default: "flat", Usage: "the logits output y: (1, seq, vocab) with its reshape on the CPU (flat), or left folded into rows of at most 16384 (folded), (1, seq, rows, vocab/rows), so that every operation is on the Neural Engine"},
 	},
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	LastRow:    true,
 }
 
 func init() { llm.Register(Arch) }

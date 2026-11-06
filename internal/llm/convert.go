@@ -31,6 +31,9 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 	if len(caches) == 0 {
 		caches = []int{opts.Cache}
 	}
+	if opts.LastRow && (!a.LastRow || caches[0] <= 0) {
+		return "", fmt.Errorf("llm: %s cannot build the output layer for the last row alone (-last-row needs an architecture that has it and -cache)", a.Name)
+	}
 	if opts.Paged > 0 {
 		if len(caches) > 1 {
 			return "", fmt.Errorf("llm: a model split at its attention (-paged) costs in proportion to the tokens used and has no tiers")
