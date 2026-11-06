@@ -157,6 +157,10 @@ type Options struct {
 	// for intN, "mse" (default) searches the clipping point with the smallest squared error and
 	// "uniform" scales each block by its largest weight.
 	Quant string
+	// Codes is a directory of lookup tables and indices chosen against the activations
+	// (tools/amd/q4_gptq.py's GPTQ, internal/palette.Codes): the lutN weights it names take
+	// them instead of Quant's fitting; the others are fitted as usual. Empty: none.
+	Codes string
 	// Backend is the runtime the program is written for: "coreml" (the default, an .mlpackage)
 	// or "intel" (OpenVINO IR for Intel's NPU, internal/ovlower).
 	Backend string

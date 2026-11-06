@@ -47,6 +47,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
+	"github.com/shibukawa/hwnpu/internal/llm/blocks"
 )
 
 func main() {
@@ -127,5 +128,13 @@ func run(config, arch, weights, out, targetName string, nParts int, caches []int
 		opts.Format = a.DefaultFormatFor(model, opts.Backend)
 	}
 	_, err = llm.ConvertTiers(a, model, w, out, targetName, nParts, caches, opts, os.Stdout)
+	if err == nil && opts.Codes != "" {
+		c, cerr := blocks.LoadCodes(opts.Codes)
+		if cerr != nil {
+			return cerr
+		}
+		// a weight in two programs (the parts' copies) counts twice
+		fmt.Printf("-codes: %d weights took the chosen tables (%d in %s)\n", c.Hits(), c.Len(), opts.Codes)
+	}
 	return err
 }
