@@ -2,7 +2,7 @@
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.81, and 16.84 to 16.88), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md and handoff-anima-mac-intel.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.81, and 16.84 to 16.88), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -197,10 +197,10 @@ Most of the disk is weights and their copies: programs for 8 and 64 tokens per c
 | AMD: q8 GEMV with the partial sum in two bf16s (16.73) | Rounded to one bf16: cosine 0.9998 | Split into high and remainder: 0.999992 | None |
 | AMD: q4nx quantization choosing from 9 candidates (amd-npu-models.md section 13) | Plain min-max: weight error 8.2 % | 7.3 % | None; at export only |
 | AMD 4-bit KL by model | | LFM3 0.036 (92 % match), E4B 0.049, E2B 0.097, PLaMo 3 0.007–0.009 on its translations (36 of 44 the same as bf16) | LFM3 and translation hold up well at 4 bits. Measure LFM3 with a BOS (without it, it looks 4× worse) |
-| AMD: 4-bit codes chosen by GPTQ (16.87, `q4_gptq.py`, `--q4-codes`) | Each weight rounded to its nearest level: KL from the NPU's bf16 on E2B 0.120 (README), 0.221 (Japanese Wikipedia); LFM3 0.032, 0.071 | E2B 0.092, 0.081 (top-1 79 → 88 %); LFM3 0.017, 0.038. The GPL, not calibrated on: E2B 0.161 → 0.140, LFM3 0.110 → 0.092 | Same format, so speed and memory are unchanged. Calibration on the CPU before the export (E2B about 40 min, LFM3 about 25). With H damped by 0.01 instead of 0.1 it fitted the calibration texts and made the GPL worse than rounding |
-| Apple: lut6 entries chosen by GPTQ (16.87, `hwnpu-convert -codes`) | LFM3 lut6: KL (CPU estimate) README 0.070, wiki40b-ja 0.112 | 0.027, 0.068. Through Go's converter 0.074 → 0.050 (top-1 105 → 111 of 128) | Same format and speed. Not yet checked on the ANE. lut4 goes 2.7 → 0.66, still not usable |
+| AMD: 4-bit codes chosen by GPTQ (16.87, `q4_gptq.py`, `--q4-codes`) | Each weight rounded to its nearest level: KL from the NPU's bf16 on E2B 0.120 (README), 0.221 (Japanese Wikipedia); LFM3 0.032, 0.071 | E2B 0.092, 0.081 (top-1 79 → 88 %); LFM3 0.017, 0.038. The GPL, not calibrated on: E2B 0.161 → 0.140, LFM3 0.110 → 0.092 | Same format, so speed and memory are unchanged. Calibration on the CPU before the export (E2B about 40 min, LFM3 about 25). With H damped by 0.01 instead of 0.1 it fitted the calibration texts and made the GPL worse than rounding. Also on the NPU, wiki-ja: E4B 0.083 → 0.049, LFM3-VL 0.067 → 0.034, Audio 0.046 → 0.022, Omni 0.048 → 0.024, PLaMo 3 0.058 → 0.040 (README and GPL mostly better too; Audio's GPL 0.154 → 0.161). LFM3's multimodal models have their own text weights, so each is calibrated (amd-npu-models.md 13, "continued") |
+| Apple: lut6 entries chosen by GPTQ (16.87, `hwnpu-convert -codes`) | LFM3 lut6: KL (CPU estimate) README 0.070, wiki40b-ja 0.112 | 0.027, 0.068. Through Go's converter 0.074 → 0.050 (top-1 105 → 111 of 128) | Same format and speed. Not yet checked on the ANE (handoff-m3-gptq.md). Fitting the tables too, by k-means weighted with E[x²] (`--lut-fit wkmeans`): lut6 0.050 → 0.038 through Go's converter (top-1 112 of 128); lut4 2.7 → 0.66 → 0.33, better but still 4× lut6's rounding |
 | AMD: the cores' rounding to nearest even (16.78) | The cores start in floor mode, and each narrowing to bf16 pulls sums of inputs with a mean downward: Anima's DiT step-0 velocity error q8 0.088, q4 0.244 (bf16 0.025) | q8 0.031, q4 0.087 (the quantization alone on the CPU: 0.007, 0.092). Language models: E2B KL 0.097 → 0.093, LFM3 0.036 unchanged | None (one instruction a call). Takes effect when exported again |
-| AMD: Anima's DiT at q8 rather than q4 (16.78) | q4nx: latent cosine 0.777, the face and hands change. GPTQ cuts the velocity error only 0.114 → 0.070 | q8: 0.961 (bf16 0.966), nearly the same picture | 735 MiB more pinned than q4 |
+| AMD: Anima's DiT at q8 rather than q4 (16.78) | q4nx: latent cosine 0.777, the face and hands change. GPTQ (`anima_gptq.py`, 16.87) at 512×512 on the CPU: velocity error 0.123 → 0.071, latent cosine 0.868 → 0.939 (q8: 0.013, 0.962) | q8: 0.961 (bf16 0.966), nearly the same picture | 735 MiB more pinned than q4 |
 | Anima: `HIGHEST` for the text only (16.68) | All `MEDIUM` (bfp16): latent cosine 0.938 | 0.966 (bf16 on the CPU: 0.980) | Same time |
 | Anima's fp16 handling (Apple / Intel) (16.69) | DiT residuals reach 2.7e5 and overflow fp16 | Residuals kept at 1/32, norms divided by each row's maximum first: latent cosine 0.99985 on the CPU | None |
 | PLaMo 3 to lut8 (16.71) | lut4: KL 1.91; lut6: 89 % match | lut8: 98 % match (M3) | Weights 1.82 → 2.45 GiB |
@@ -298,7 +298,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | AMD MoE: the transposed down as a one-row GEMM | Slower than the GEMV (1.92 ms) | 16.75 |
 | Splitting Anima's DiT into commands with host steps | The first command stopped with `ERT_CMD_STATE_TIMEOUT`. Made one graph of 4 blocks instead | 16.68 |
 | Anima's DiT at `HIGH` | Latent cosine 0.966 → 0.976, but 7.2 → 10.9 s a step | amd-npu-models.md 11.3 |
-| Anima's DiT at 4 bits (q4nx) as the default | Pinned 3445 → 2710 MiB, but latent cosine 0.777 and the picture changes (the loss is the quantization itself: 0.753 on the CPU). GPTQ in the same format: velocity error 0.114 → 0.070 (q8: 0.010) | 16.78 |
+| Anima's DiT at 4 bits (q4nx) as the default | Pinned 3445 → 2710 MiB, but latent cosine 0.777 and the picture changes (the loss is the quantization itself: 0.753 on the CPU). GPTQ in the same format (16.87, 512×512): velocity error 0.123 → 0.071, latent cosine 0.868 → 0.939 (q8: 0.013, 0.962). Closer, still q8 by default; `--q4-codes` makes it a choice | 16.78, 16.87 |
 | AMD: language models' q4nx prompts through bf16 (`QDequant`) | KL unchanged (E2B 0.094, LFM3 0.037), prompt chunk 5–9 % slower | 16.78 |
 | RMSNorm with a fixed scale (Anima, fp16) | Squares of rows without large values become subnormals. Replaced by dividing by each row's maximum | 16.69 |
 | Apple: faster self-attention for Anima | Core ML's `scaled_dot_product_attention` 110 ms (101 now), the scale on q 103, heads in groups 96–118, channels first 122. Heads 2 × queries 256: 90 ms, but 84 s to compile 4 attentions. Without the row max 87 ms, but fp16 overflows (bounds from the norms' weights reach 221) | 16.85 |
@@ -505,6 +505,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | LFM3-Audio's TTS | Does it sound the same as the reference (llama.cpp)? Only checked by transcribing it again with ASR | Compare audio decoded from the same codes with llama.cpp's server TTS | 16.30–31 |
 | Long texts with PLaMo-Embedding | Do the last layer's values grow further in the 1024-token program (is head-scale enough)? | Vary the texts in `TestANEPrecision` | 16.34 |
 | BERT family | `hwnpu-check` on real weights and placement on the ANE (only checked on the CPU for Intel) | | 16.11 |
+| lut6 / lut4 tables chosen by GPTQ (`hwnpu-convert -codes`) | Checked only through milcpu on Linux (LFM3 lut6 KL 0.074 → 0.038, lut4 2.7 → 0.33). KL with the ANE's fp16, placement (`all on the NPU`), speed unchanged, answers to 16.39's questions. hwnpu-chat does not take `-codes` yet | The steps in handoff-m3-gptq.md: copy the codes (1.7 GB each) and `ref128`, then `hwnpu-convert -codes` → `hwnpu-check -package` | 16.87 |
 | Anima against diffusers in fp32 | On the M3 only compared with hwnpu's own fp16 export (int8: latent cosine 0.902). No torch on that machine | `tools/ref/ref_anima.py` → `-noise`, `-latents` | 16.85 |
 | Anima above 1024×1024 | The smaller attention chunks for sizes past 1024 (`mil.DitQChunk`) are not measured, nor whether the VAE stages fit | Convert 1280×1280 and run | 16.85 |
 | Details of PLaMo 3's accuracy and speed | Placement and weight formats are checked. Translation quality and time for long documents are not measured in detail | Compare KL with fp16 on translation pairs | 16.71 |
@@ -566,7 +567,8 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 
 ### 11.5 Not yet written (for reference)
 
-- Fitting the tables themselves with activations in view (weighted k-means, AWQ-style scales), for lut4. Choosing each weight's entry by GPTQ is in since 16.87 (lut6's KL halved; lut4 2.7 → 0.66, still not usable) (model-fit.md T8)
+- AWQ-style scales for lut4 (model-fit.md T8, 2). GPTQ choosing each weight's entry and k-means weighted with E[x²] fitting the tables are in since 16.87 (lut6 0.074 → 0.038 through Go's converter; lut4 2.7 → 0.33, still 4× lut6's rounding)
+- hwnpu-chat taking GPTQ's codes (`chat.Prepare`, fetching the codes, a `-gptq` in the package name), after the ANE check (handoff-m3-gptq.md)
 - Writing the embedding tables at conversion so the checkpoint (LFM3 3.5 GB, Gemma 4 10.2 GB) is not opened at run time (T5)
 - Conversations set aside moved out of the process (to disk), halved with int8 (the rest of T4)
 - Changing the number of parts at run time (`MemoryBudget`, `Reshape`) (16.12)
@@ -582,5 +584,5 @@ Collected from what the records call "not yet checked", "not measured" or "estim
   - CFG (negative prompts). A non-Turbo Anima is expected to take over 10 minutes an image
   - Calls from ComfyUI nodes
   - A 512×512 export
-  - GPTQ for a 4-bit DiT. The export reads codes since 16.87 (`iron_q4.load_codes`), but there is no calibration tool for the DiT (velocity error 0.114 → 0.070 on the CPU; still far from q8)
+  - A 4-bit DiT with GPTQ (`tools/amd/anima_gptq.py`, `iron_anima.py --q4-codes`, 16.87) checked as an image at 1024×1024 on the NPU (on the CPU at 512×512: latent cosine 0.939 against q8's 0.962)
 - Porting Qwen3.6-35B-A3B: an IRON form of Gated DeltaNet, and choosing the route on the device
