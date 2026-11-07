@@ -125,6 +125,24 @@ func TestEngineReusePaged(t *testing.T) {
 	checkReuse(t, cfg, w, sess, cache, 2e-3)
 }
 
+// So does it with the program of 4 tokens per call computing the logits after its last token
+// alone (llm.Options.LastRow), as Prepare converts the one that reads prompts.
+func TestEngineReusePagedLastRow(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(tinyLFM3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := llm.NewSynthetic(cfg)
+	const cache = 40
+	defer func(b bool) { lastRow = b }(lastRow)
+	lastRow = true
+	checkReuse(t, cfg, w, pagedSession(t, cfg, w, cache, 8, 1, 4), cache, 2e-3)
+}
+
+// lastRow makes pagedSessionOf convert the programs of more than 1 token per call with
+// llm.Options.LastRow.
+var lastRow bool
+
 // pagedSession converts the model split at its attention for each number of tokens per call and
 // starts a session over them on the CPU interpreter.
 func pagedSession(t *testing.T, cfg *lfm3.Config, w llm.Weights, cache, chunk int, qs ...int) *decode.Session {
@@ -143,7 +161,7 @@ func pagedSessionOf(t *testing.T, ctx context.Context, dev *hwnpu.Device, a *llm
 	t.Helper()
 	var paths []string
 	for _, q := range qs {
-		opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
+		opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, LastRow: lastRow && q > 1, Format: "fp16", Params: map[string]string{"post-scale": "1"}}
 		path, err := llm.Convert(a, cfg, w, filepath.Join(t.TempDir(), fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
 		if err != nil {
 			t.Fatal(err)

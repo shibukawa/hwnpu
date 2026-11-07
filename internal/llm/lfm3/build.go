@@ -116,6 +116,9 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options)
 	if cfg.D1 {
 		opts.Hidden = true
 	}
+	if opts.LastRow && (opts.Cache <= 0 || opts.Hidden) {
+		return nil, nil, fmt.Errorf("lfm3: the logits of the last row alone (LastRow) are of a program with a KV cache")
+	}
 	if opts.Paged > 0 && (opts.Cache <= 0 || cfg.D1) {
 		return nil, nil, fmt.Errorf("lfm3: a program split at its attention (Paged) needs a KV cache")
 	}
@@ -139,6 +142,9 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts Options)
 		case opts.Start+opts.Layers < cfg.NumLayers || opts.NoHead:
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		default:
+			if opts.LastRow {
+				h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+			}
 			h = m.rmsNorm(h, cfg.prefix()+"embedding_norm.weight", m.d)
 			if opts.Hidden {
 				y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)

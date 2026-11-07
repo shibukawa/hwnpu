@@ -28,6 +28,7 @@ var Arch = &llm.Arch{
 	LoadConfig:  func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	GGUFName:    ggufName,
 	GGUFShape:   ggufShape,
+	LastRow:     true,
 }
 
 func init() { llm.Register(Arch) }

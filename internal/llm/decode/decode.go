@@ -137,7 +137,7 @@ func New(p Program, m llm.Cached) (*Session, error) {
 		return nil, fmt.Errorf("decode: no input x (1, q, hidden)")
 	}
 	y, ok := p.OutShape["y"]
-	if !ok || len(y) < 3 || len(y) > 4 || y[1] != x[1] {
+	if !ok || len(y) < 3 || len(y) > 4 || y[1] != rows(p) {
 		return nil, fmt.Errorf("decode: no output y (1, q, vocab)")
 	}
 	vocab := y[2]
@@ -178,6 +178,7 @@ func (st *step) checkPaged(s *Session) error {
 		return fmt.Errorf("decode: chunks of %d for %d tokens per step", p.Attn.Chunk, st.q)
 	}
 	var heads, d int
+	one := false
 	for _, layer := range p.Attend {
 		src := s.kvLayer(layer)
 		if src != layer && !slices.Contains(p.Attend, src) || src > layer {
@@ -190,7 +191,8 @@ func (st *step) checkPaged(s *Session) error {
 			}
 		}
 		qs, ok := p.OutShape[fmt.Sprintf("attn_q_%d", layer)]
-		if !ok || len(qs) != 4 || qs[2] != st.q {
+		if !ok || len(qs) != 4 || qs[2] != st.q && (qs[2] != 1 || rows(p) != 1) {
+			// 1 row: a layer after which only the last token's row is needed (llm.Options.LastRow)
 			return fmt.Errorf("decode: no output attn_q_%d (1, heads, %d, head_dim)", layer, st.q)
 		}
 		if ts, ok := p.InShape[fmt.Sprintf("attn_ot_%d", layer)]; ok {
@@ -201,6 +203,11 @@ func (st *step) checkPaged(s *Session) error {
 			return fmt.Errorf("decode: input attn_o_%d has shape %v, want %v", layer, os, qs)
 		}
 		heads, d = qs[1], qs[3]
+		if qs[2] < st.q {
+			one = true
+		} else if one {
+			return fmt.Errorf("decode: layer %d attends for every row after a layer of the last row alone", layer)
+		}
 	}
 	if len(p.Attend) == 0 {
 		return fmt.Errorf("decode: a program split at its attention attends for no layer")
@@ -316,8 +323,8 @@ func (s *Session) Add(p Program) error {
 	if !ok || len(x) != 3 || x[2] != s.hidden {
 		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
 	}
-	if !logitsShape(p.OutShape["y"], x[1], s.vocab) {
-		return fmt.Errorf("decode: no output y (1, %d, %d)", x[1], s.vocab)
+	if !logitsShape(p.OutShape["y"], rows(p), s.vocab) {
+		return fmt.Errorf("decode: no output y (1, %d, %d)", rows(p), s.vocab)
 	}
 	first := s.progs[0].p
 	for name, b := range first.In {
@@ -410,8 +417,8 @@ func (s *Session) Migrate(np Program) error {
 	if !ok || len(x) != 3 || x[2] != s.hidden {
 		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
 	}
-	if !logitsShape(np.OutShape["y"], x[1], s.vocab) {
-		return fmt.Errorf("decode: no output y (1, %d, %d)", x[1], s.vocab)
+	if !logitsShape(np.OutShape["y"], rows(np), s.vocab) {
+		return fmt.Errorf("decode: no output y (1, %d, %d)", rows(np), s.vocab)
 	}
 	nkv, nt, err := caches(np)
 	if err != nil {
@@ -728,7 +735,7 @@ func (s *Session) Width() int {
 // followed by the model's lookup inputs, as llm.TokenRow gathers them. It returns the logits after
 // the last one, running the program with the fewest tokens per step that takes them all.
 func (s *Session) Step(emb [][]float32) ([]float32, error) {
-	p, q, err := s.run(emb)
+	p, q, err := s.run(emb, false)
 	if err != nil {
 		return nil, err
 	}
@@ -742,7 +749,7 @@ func (s *Session) Step(emb [][]float32) ([]float32, error) {
 // row before it is what the model would have generated. The rest are not written to the cache;
 // accept must keep at least 1. It returns the logits after the last token kept and how many.
 func (s *Session) Speculate(emb [][]float32, accept func(row func(i int) []float32) int) ([]float32, int, error) {
-	p, q, err := s.run(emb)
+	p, q, err := s.run(emb, true)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -753,7 +760,7 @@ func (s *Session) Speculate(emb [][]float32, accept func(row func(i int) []float
 	if kept < len(emb) && s.replaced(p) {
 		// a state replaced as a whole is the one after all the step's tokens (llm.Cached): run
 		// the kept ones again from the state before the step, which the inputs still hold
-		if p, q, err = s.run(emb[:kept]); err != nil {
+		if p, q, err = s.run(emb[:kept], false); err != nil {
 			return nil, 0, err
 		}
 	}
@@ -771,8 +778,9 @@ func (s *Session) replaced(p Program) bool {
 }
 
 // run writes the tokens' rows and the step's inputs into the program with the fewest tokens per
-// step that takes them all, and runs it.
-func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
+// step that takes them all, and runs it. With each, the program must compute the logits after
+// each token, not after the last alone (llm.Options.LastRow).
+func (s *Session) run(emb [][]float32, each bool) (p Program, q int, err error) {
 	v := len(emb)
 	if v == 0 || v > s.Q() {
 		return p, 0, fmt.Errorf("decode: a step takes 1 to %d tokens, not %d", s.Q(), v)
@@ -782,11 +790,14 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 	}
 	var st *step
 	for i := range s.progs {
-		if s.progs[i].q >= v {
+		if s.progs[i].q >= v && (!each || v == 1 || rows(s.progs[i].p) == s.progs[i].q) {
 			st = &s.progs[i]
 			p, q = st.p, st.q
 			break
 		}
+	}
+	if st == nil {
+		return p, 0, fmt.Errorf("decode: no program computes the logits after each of %d tokens (the longer ones compute them after the last alone)", v)
 	}
 	x := p.In["x"]
 	for _, e := range emb {
@@ -805,6 +816,11 @@ func (s *Session) run(emb [][]float32) (p Program, q int, err error) {
 			hwnpu.EncodeF16(p.In[lk.Input][2*i*lk.Width:2*(i+1)*lk.Width], e[off:off+lk.Width])
 			off += lk.Width
 		}
+	}
+	if last, ok := p.In["last"]; ok && rows(p) == 1 {
+		// one-hot: the program's output layer reads the last token's row alone
+		clear(last)
+		hwnpu.EncodeF16(last[2*(v-1):2*v], []float32{1})
 	}
 	inputs := s.m.StepInputs
 	if p.RunPart != nil {
@@ -840,6 +856,7 @@ func (s *Session) runPaged(st *step, valid int) error {
 	if err := st.stepMasks(s.pos, q, used); err != nil {
 		return err
 	}
+	oneMasks := false // the masks of the last token alone, made for the first layer that needs them
 	for i := 0; ; i++ {
 		if err := p.RunPart(i); err != nil {
 			return err
@@ -857,9 +874,15 @@ func (s *Session) runPaged(st *step, valid int) error {
 				}
 			}
 		}
+		if s.oneRow(p, layer) {
+			if err := s.attendOne(st, layer, kc, vc, valid, &oneMasks); err != nil {
+				return err
+			}
+			continue
+		}
 		copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])
 		if s.sparse != nil {
-			done, err := s.attendSparse(st, layer, kc, vc, rows, min(valid, rows), used)
+			done, err := s.attendSparse(st, layer, kc, vc, s.pos, rows, min(valid, rows), used)
 			if err != nil {
 				return err
 			}
@@ -885,6 +908,70 @@ func (s *Session) runPaged(st *step, valid int) error {
 		st.merge.Result(st.res)
 		putAttnOut(p, layer, st.res)
 	}
+}
+
+// oneRow reports whether p computes layer's query for the step's last token alone: a program that
+// needs only its row of the layers after the one that last writes the cache (llm.Options.LastRow,
+// Gemma 4's layers that reuse earlier keys and values).
+func (s *Session) oneRow(p Program, layer int) bool {
+	sh := p.OutShape[fmt.Sprintf("attn_q_%d", layer)]
+	return sh[2] == 1 && p.InShape["x"][1] > 1
+}
+
+// attendOne runs the attention of layer for the step's last token alone, the one at position
+// s.pos+valid-1, on the program with the fewest tokens per step (its row 0; that program's
+// attention costs a fraction of the step's), and writes its row to the step's attn_o. masks says
+// whether that program's masks are the token's already.
+func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, masks *bool) error {
+	sm := &s.progs[0]
+	if sm == st || sm.p.RunPart == nil {
+		return fmt.Errorf("decode: layer %d attends for the last token alone, and no program of fewer tokens per step runs it", layer)
+	}
+	a := sm.p.Attn
+	pos := s.pos + valid - 1
+	used := pos/a.Chunk + 1 // the chunks the token sees
+	if !*masks {
+		if err := sm.stepMasks(pos, sm.q, used); err != nil {
+			return err
+		}
+		*masks = true
+	}
+	sh := st.p.OutShape[fmt.Sprintf("attn_q_%d", layer)]
+	heads, d := sh[1], sh[3]
+	q := st.p.Out[fmt.Sprintf("attn_q_%d", layer)]
+	for h := range heads {
+		copy(a.Q[2*h*sm.q*d:2*(h*sm.q+1)*d], q[2*h*d:2*(h+1)*d])
+	}
+	done := false
+	if s.sparse != nil {
+		var err error
+		if done, err = s.attendSparse(sm, layer, kc, vc, pos, 1, 1, used); err != nil {
+			return err
+		}
+	}
+	if !done {
+		sm.merge.Reset()
+		for j := 0; j < used; j++ {
+			mask := sm.zero
+			if m, ok := sm.masks[j]; ok {
+				mask = m
+			}
+			if err := a.Run(s.chunks[kc.out][j], s.chunks[vc.out][j], mask); err != nil {
+				return fmt.Errorf("decode: attention of layer %d over chunk %d: %w", layer, j, err)
+			}
+			hwnpu.DecodeF16(sm.o[0], a.O)
+			hwnpu.DecodeF16(sm.o[1], a.M)
+			hwnpu.DecodeF16(sm.o[2], a.L)
+			sm.merge.Add(sm.o[0], sm.o[1], sm.o[2])
+		}
+		sm.merge.Result(sm.res)
+	}
+	res := make([]float32, heads*d)
+	for h := range heads {
+		copy(res[h*d:(h+1)*d], sm.res[h*sm.q*d:(h*sm.q+1)*d])
+	}
+	putAttnOut(st.p, layer, res)
+	return nil
 }
 
 // putAttnOut writes a layer's attention output res, (1, heads, q, head_dim), to the program's
@@ -998,14 +1085,28 @@ func (s *Session) keep(p Program, q, v int) []float32 {
 	}
 	s.pos += v
 	s.last = nil
+	i := v - 1
+	if rows(p) == 1 {
+		i = 0 // the program computed the last token's row alone
+	}
 	if h, ok := p.Out["h"]; ok {
 		s.last = make([]float32, s.hidden)
-		hwnpu.DecodeF16(s.last, h[2*(v-1)*s.hidden:2*v*s.hidden])
+		hwnpu.DecodeF16(s.last, h[2*i*s.hidden:2*(i+1)*s.hidden])
 	}
-	return s.row(p, v-1)
+	return s.row(p, i)
 }
 
-// row returns the logits after token i of the step just run on p.
+// rows is the number of rows of p's logits: 1 for a program that computes them after the token
+// its input last picks (llm.Options.LastRow), otherwise one per token of a step.
+func rows(p Program) int {
+	q := p.InShape["x"][1]
+	if sh := p.InShape["last"]; slices.Equal(sh, []int{1, 1, q}) && q > 1 {
+		return 1
+	}
+	return q
+}
+
+// row returns the logits after token i of the step just run on p (row i of its output).
 func (s *Session) row(p Program, i int) []float32 {
 	logits := make([]float32, s.vocab)
 	hwnpu.DecodeF16(logits, p.Out["y"][2*i*s.vocab:2*(i+1)*s.vocab])

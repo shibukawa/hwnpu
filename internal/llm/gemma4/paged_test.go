@@ -234,3 +234,126 @@ func TestPagedSparse(t *testing.T) {
 		}
 	}
 }
+
+// convertLastRow converts programs of 1 and 4 tokens per call split at their attention, the one
+// of 4 with LastRow.
+func convertLastRow(t *testing.T, c *Config, w llm.Weights, cache, chunk int) []string {
+	t.Helper()
+	dir := t.TempDir()
+	var paths []string
+	for _, q := range []int{1, 4} {
+		opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, LastRow: q > 1, Format: "fp16"}
+		path, err := llm.Convert(Arch, c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	return paths
+}
+
+// A program of 4 tokens per call with LastRow, beside one of 1, computes the layers that reuse
+// earlier keys and values (3 to 5) and the output layer for the last token alone: the sliding
+// ones with that token's row of the mask and the rotary tables, the full attention layer 5 with
+// the host attending for that token on the program of 1. It gives the logits of the program
+// without a cache after each step, a short one too.
+func TestPagedLastRow(t *testing.T) {
+	c := tinyConfig(t)
+	w := newWeights(c)
+	n := len(tokens)
+	feed := map[string][]float32{"x": rows(t, w, c.Embedding(), tokens), "ple": rows(t, w, c.perLayerTable(), tokens)}
+	full := build(t, c, w, Options{Options: llm.Options{Seq: n, Format: "fp16"}}).run(t, feed)["y"]
+	paths := convertLastRow(t, c, w, 12, 4)
+	man, err := llm.ReadManifest(paths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Parts) != 3 || !slices.Equal(man.Parts[1].Output.Shape, []int{1, 1, c.HiddenSize}) {
+		t.Fatalf("%d parts, the second's y %v: want 3 parts, the second giving the last row (1, 1, %d)", len(man.Parts), man.Parts[1].Output.Shape, c.HiddenSize)
+	}
+	s, cl, err := runner.OpenSession(context.Background(), nil, paths, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	worst, pos := 0.0, 0
+	for _, v := range []int{4, 3, 1, 2} {
+		var step [][]float32
+		for i := range v {
+			row, err := llm.TokenRow(w, c, tokens[pos+i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			step = append(step, row)
+		}
+		logits, err := s.Step(step)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos += v
+		worst = math.Max(worst, relErr32(logits, full[(pos-1)*c.VocabSize:pos*c.VocabSize]))
+	}
+	if worst > 5e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g", worst)
+}
+
+// With the two-level attention, the host's attention for the last token alone (layer 5) chooses
+// and reads its buckets at that token's position: over 200 tokens read 4, 1 and 3 at a time, the
+// logits stay near those of reading the whole cache, as TestPagedSparse's do.
+func TestPagedLastRowSparse(t *testing.T) {
+	c := tinyConfig(t)
+	c.MaxPositions = 256
+	w := llm.NewSynthetic(c)
+	const n, cache, chunk = 200, 208, 8
+	ids := make([]int32, n)
+	for i := range ids {
+		ids[i] = int32((i*7 + i*i) % c.VocabSize)
+	}
+	paths := convertLastRow(t, c, w, cache, chunk)
+	run := func(sparse bool) ([][]float32, int) {
+		s, cl, err := runner.OpenSession(context.Background(), nil, paths, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cl.Close()
+		if sparse {
+			if err := s.SetSparse(decode.Sparse{Bucket: 4, Sinks: 1, Window: 4, Exact: 3, Prefill: 4, Refresh: 1}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var out [][]float32
+		for pos, k := 0, 0; pos < n; k++ {
+			v := min([]int{4, 1, 3}[k%3], n-pos)
+			var step [][]float32
+			for i := range v {
+				row, err := llm.TokenRow(w, c, ids[pos+i])
+				if err != nil {
+					t.Fatal(err)
+				}
+				step = append(step, row)
+			}
+			logits, err := s.Step(step)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, logits)
+			pos += v
+		}
+		return out, s.AttentionCalls()
+	}
+	dense, _ := run(false)
+	got, calls := run(true)
+	if calls == 0 {
+		t.Fatal("the two-level attention never ran")
+	}
+	worst := 0.0
+	for i := range dense {
+		worst = math.Max(worst, relErr32(got[i], dense[i]))
+	}
+	if worst > 0.1 || math.IsNaN(worst) {
+		t.Errorf("relative error %g against the whole cache", worst)
+	}
+	t.Logf("worst relative error %.2g, %d calls of the two-level attention", worst, calls)
+}

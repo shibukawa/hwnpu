@@ -34,10 +34,18 @@ const DefaultContext = llm.NeuralEngineMaxDim - prefillSeq
 // PagedOff in Setup.Paged converts the model whole even when it can be split at its attention.
 const PagedOff = -1
 
+// prefillSeq is the tokens per call of the program that reads prompts, of a model in one piece:
+// its key axis is the cache plus these (DefaultContext).
 const prefillSeq = 64
 
-// The values of Setup.Prefill (-prefill): whether a program of 64 tokens per call reads the
-// prompts beside the one that generates.
+// pagedPrefillSeq is that of a model split at its attention on the Neural Engine, which has no
+// such bound. A call costs little more for more tokens up to about 128 (the weights are read once
+// per call): on an M3, LFM3-1.7B reads 4K, 16K and 64K tokens in 3.9, 16.0 and 136 s with 128
+// rather than 4.7, 25.2 and 160 s with 64, and 256 is no faster (design.md 16.82).
+const pagedPrefillSeq = 128
+
+// The values of Setup.Prefill (-prefill): whether a program of 64 tokens per call (128 for a
+// model split at its attention) reads the prompts beside the one that generates.
 const (
 	// PrefillAuto has one unless the two programs' weights would not stay in the Neural Engine's
 	// compile cache (compileCacheBytes), as Gemma 4 E4B's (2 × 3.26 GiB in lut6) do not: then
@@ -115,7 +123,7 @@ type Setup struct {
 	// generation runs on one.
 	Draft int
 	// Prefill is PrefillAuto (also for ""), PrefillOn or PrefillOff: whether a program of 64
-	// tokens per call reads the prompts, or the one that generates does (it must take several
+	// tokens per call (128 split at its attention) reads the prompts, or the one that generates does (it must take several
 	// tokens per call, Draft).
 	Prefill string
 	// Tiers are caches shorter than Context to run on while a conversation is short (Engine
@@ -170,9 +178,10 @@ func targetName(backend string) string {
 
 // Prepare makes the model ready in Dir: it downloads the checkpoint files that are missing from
 // Hugging Face, and converts the programs that are missing, one of 1 token per call to generate
-// and one of 64 to read prompts, both with a cache of Context tokens, for the NPU found
-// (Setup.Backend), named by the architecture, the weight format and the attention
-// (lfm3-lut6-grouped-c16320-q8.mlpackage). It returns the Config that loads them.
+// and one of 64 to read prompts (128 for a model split at its attention on the Neural Engine,
+// with the logits after the last token alone where the architecture can: -last), both with a
+// cache of Context tokens, for the NPU found (Setup.Backend), named by the architecture, the
+// weight format and the attention (lfm3-lut6-grouped-p8192-c262144-q8.mlpackage). It returns the Config that loads them.
 func Prepare(ctx context.Context, s Setup) (Config, error) {
 	switch s.Prefill {
 	case "", PrefillAuto, PrefillOn, PrefillOff:
@@ -228,12 +237,22 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// the Neural Engine's program of one token per call is in two parts; Intel's is whole, since
 	// each part is a graph its driver compiles, slowly for a large one, and no limit is known to
 	// call for parts
-	progs := []struct{ seq, parts int }{{1, 2}, {prefillSeq, 0}}
+	// the program that reads prompts computes the logits after the last token alone where the
+	// architecture can (llm.Options.LastRow): the output layer is the model's widest
+	type prog struct {
+		seq, parts int
+		lastRow    bool
+	}
+	pre := prog{prefillSeq, 0, a.LastRow && backend != llm.BackendIntel}
+	if chunk > 0 && backend != llm.BackendIntel {
+		pre.seq = min(pagedPrefillSeq, chunk) // a call's tokens fit in a chunk
+	}
+	progs := []prog{{1, 2, false}, pre}
 	if backend == llm.BackendIntel {
 		progs[0].parts = 0
 	}
 	if s.Draft > 1 {
-		progs[0] = struct{ seq, parts int }{s.Draft, 0}
+		progs[0] = prog{s.Draft, 0, false}
 	}
 	tiers := s.Tiers
 	if chunk > 0 {
@@ -260,14 +279,18 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(progs)*(len(caches)+1)); one {
 		progs = progs[:1]
 		if s.Log != nil {
-			fmt.Fprintf(s.Log, "one program for %s, which reads the prompts %d tokens per call too: %s (-prefill on for one of %d to read long prompts faster)\n", c.Name, s.Draft, why, prefillSeq)
+			fmt.Fprintf(s.Log, "one program for %s, which reads the prompts %d tokens per call too: %s (-prefill on for one of %d to read long prompts faster)\n", c.Name, s.Draft, why, pre.seq)
 		}
 	}
 	for _, cache := range append(caches, context) {
 		var pkgs []string
 		for _, p := range progs {
-			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s", kind, cache, p.seq, programExt(backend)))
-			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, seq: p.seq, parts: p.parts, cache: cache, paged: chunk}, s.Log)
+			last := ""
+			if p.lastRow {
+				last = "-last"
+			}
+			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s%s", kind, cache, p.seq, last, programExt(backend)))
+			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow}, s.Log)
 			if err != nil {
 				return Config{}, err
 			}
@@ -395,7 +418,8 @@ type program struct {
 	arch, format      string
 	params            map[string]string
 	seq, parts, cache int
-	paged             int // llm.Options.Paged
+	paged             int  // llm.Options.Paged
+	lastRow           bool // llm.Options.LastRow
 }
 
 // convert writes the program of the model (config.json and the checkpoint) unless it is there,
@@ -433,7 +457,7 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	if p.backend != llm.BackendIntel && !strings.HasPrefix(opts.Format, "int") {
 		opts.Quant = "kmeans-minmax"
 	}
-	opts.Seq, opts.Cache, opts.Paged = p.seq, p.cache, p.paged
+	opts.Seq, opts.Cache, opts.Paged, opts.LastRow = p.seq, p.cache, p.paged, p.lastRow
 	for k, v := range p.params {
 		opts.Params[k] = v
 	}

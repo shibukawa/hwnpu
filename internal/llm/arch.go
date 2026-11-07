@@ -34,6 +34,8 @@ type Arch struct {
 	GGUFName func(name string) string
 	// GGUFShape, if set, corrects the shape of a GGUF tensor to the Hugging Face layout.
 	GGUFShape func(name string, shape []int) []int
+	// LastRow reports that the architecture builds Options.LastRow.
+	LastRow bool
 }
 
 // Param is an architecture specific build setting.

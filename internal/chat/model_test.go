@@ -247,9 +247,12 @@ func TestPreparePaged(t *testing.T) {
 	if len(c.Tiers) != 1 || len(c.Packages) != 2 {
 		t.Fatalf("tiers %q, packages %q", c.Tiers, c.Packages)
 	}
-	for i, q := range []int{8, 64} {
+	// the program that reads prompts takes a chunk (at most 128) per call and computes the logits
+	// after the last token alone
+	for i, name := range []string{"q8", "q96-last"} {
+		q := []int{8, 96}[i]
 		p := c.Packages[i]
-		if want := fmt.Sprintf("lfm3-lut4-grouped-p96-c96-q%d.parts.json", q); filepath.Base(p) != want {
+		if want := fmt.Sprintf("lfm3-lut4-grouped-p96-c96-%s.parts.json", name); filepath.Base(p) != want {
 			t.Errorf("package %s, want %s", filepath.Base(p), want)
 		}
 		man, err := llm.ReadManifest(p)
@@ -313,9 +316,9 @@ func TestPreparePrefill(t *testing.T) {
 		cache   int64
 		want    []string
 	}{
-		{"", 4 << 30, []string{"q8", "q64"}},
+		{"", 4 << 30, []string{"q8", "q96-last"}},
 		{PrefillAuto, 1024, []string{"q8"}},
-		{PrefillOn, 1024, []string{"q8", "q64"}},
+		{PrefillOn, 1024, []string{"q8", "q96-last"}},
 		{PrefillOff, 4 << 30, []string{"q8"}},
 	} {
 		compileCacheBytes = c.cache

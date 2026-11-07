@@ -139,6 +139,11 @@ type Options struct {
 	// NoHead makes the output the hidden state after the last built layer, before the final norm,
 	// even when that is the model's last layer. For checking the last layer on its own.
 	NoHead bool
+	// LastRow, with Cache, builds the output layer for one row of the call: the program takes
+	// last (1, 1, Seq), one-hot, and y is the logits after the token it picks (1, 1, vocab), not
+	// after each. For a program that reads prompts, of which only the logits after the last token
+	// are used: the output layer is the widest of the model (Arch.LastRow).
+	LastRow bool
 	// Format is "lut4" (4 bit palettized per 16 rows; lut6 and lut8 have larger tables), "int4"
 	// or "int8" (symmetric, one scale per row; "int4-g128" one per 128 columns: LinearFormat) or
 	// "fp16". The Neural Engine reads lutN fastest, Intel's NPU intN (it cannot run lutN).
