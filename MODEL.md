@@ -87,7 +87,7 @@ The columns are the memory installed in the machine. The second header row is ro
 
 | Model | Use | At start | Growth with the conversation (KV cache) | Basis |
 |---|---|---|---|---|
-| LFM3-1.7B | Chat, coding | 2.2 GB | 12 KiB/token (3 GiB at 262144) | measured |
+| LFM3-1.7B | Chat, coding | 2.2 GB (Apple's Neural Engine: about 3.0–3.3 GB) | 12 KiB/token (3 GiB at 262144) | measured (AMD and an M3) |
 | Gemma 4 E2B | Chat, coding | 2.3 GB | 6 KiB/token (0.75 GiB at 131072) | measured |
 | Gemma 4 E2B with images and audio | Images, audio (one image and 30 seconds a prompt) | 3.4 GB (2.4 GB until an image or audio arrives) | 6 KiB/token | measured |
 | Gemma 4 E4B | Chat, coding | 4.0 GB | 16 KiB/token (2 GiB at 131072) | measured |
@@ -103,6 +103,8 @@ The columns are the memory installed in the machine. The second header row is ro
 | Qwen3.6-35B-A3B (planned) | Chat, code | about 25 GB | — | estimated from 4-bit weights; not ported |
 
 - The weights mix 4 and 8 bits (the MLP and output matrices at 4 bits, the attention projections at 8; for image generation, the DiT at 8 bits)
-- "Measured" is the memory pinned for the NPU, measured on a Ryzen AI 9 365, plus the process's own. It follows from the size of the weights, so other NPUs are expected to be close
+- "Measured" is the memory pinned for the NPU, measured on a Ryzen AI 9 365, plus the process's own. It follows from the size of the weights
+- Apple's Neural Engine holds more: its weights are 6 and 8 bit tables (LFM3-1.7B in 6 bits; its VL, Audio, Omni and d1 checkpoints, PLaMo 3 and Qwen3.5 in 8), and hwnpu-chat loads two programs, the one that generates and the one that reads prompts, each with its own copy of the weights (one for Gemma 4 E4B, PLaMo 3 and Qwen3.5). On an M3 (2026-11-07), LFM3-1.7B held 2.43 GiB on the Neural Engine (two programs of 1.21 GiB) plus the process's 0.5–0.9 GB. The other models are not measured on Apple yet; expect them above the table as well
+- The Neural Engine's share is kernel memory of its driver, in no process's RSS or footprint (Activity Monitor and `top` do not show it). hwnpu-chat says how much it is after loading; a program compiled just then comes onto the Neural Engine at its first call
 - Not counted: Gemma 4's per-layer embedding table (4.4 GB for E2B) and the token embedding tables (0.5 to 0.75 GB) stay files, and only the rows used are read. They go into the OS's page cache, which drops them when memory runs short
 - Several exports of one model (text only, and with images and audio, for example) can share their files on the disk (Btrfs, XFS, APFS, ReFS). Memory is not shared: run at once, they count separately
