@@ -274,8 +274,11 @@ class GatedAttention(Attention):
 class Qwen35Layer(DecoderLayer):
     """Layer ``i``: Gated DeltaNet or gated attention, then the feed-forward, pre-normed."""
 
-    fold = False  # GatedDeltaNet's fold
-    prompt = False  # with fold: the model has a prompt chunk too (GatedDeltaNet's prompt)
+    # GatedDeltaNet's fold (the decode step's convolution and gated norm in its operator), with a
+    # prompt chunk too (GatedDeltaNet's prompt: the host copies the convolution's rows between
+    # the two around a chunk, hwnpu's conv_pairs)
+    fold = True
+    prompt = True
 
     def __init__(self, c: Qwen35Config, i: int):
         if c.linear(i):
@@ -314,6 +317,24 @@ class Qwen35(CausalLM):
         RMSNorm.plus_one(self)
         if QUANT:
             self.quantize(QUANT)
+
+    def hwnpu_conv_pairs(self) -> list:
+        """For hwnpu: each folded Gated DeltaNet layer's two homes of the convolution's rows
+        (the state's pair ahead of each column's run, the decode step's; the convolution's own
+        state, the prompt chunk's), which the host copies between around a prompt chunk."""
+        out = []
+        for i, layer in enumerate(self.layers):
+            g = layer.linear_attn
+            if g is None or not (g.fold and g.prompt):
+                continue
+            H, KH, dk, dv = g.shape
+            pair = 2 * dk * iron_gdn.SLICE
+            out.append(dict(state=f"model.layers.{i}.linear_attn.state.slots",
+                            conv=f"model.layers.{i}.linear_attn.conv.state.slots",
+                            columns=COLUMNS, seg=iron_gdn.column_widths(H, KH, dk, dv, COLUMNS),
+                            rows=self.config.linear_conv_kernel_dim - 1, pair=pair,
+                            run=(H // (2 * COLUMNS) * (dv // iron_gdn.SLICE) + 1) * pair))
+        return out
 
     def quantize(self, fmts: dict) -> None:
         """Put the loaded projections in ``fmts``' formats (``install``)."""
@@ -549,24 +570,6 @@ class Qwen35Moe(Qwen35):
             return CausalLM.body(self, **standard)
         finally:
             causal.Call = made
-
-    def hwnpu_conv_pairs(self) -> list:
-        """For hwnpu: each folded Gated DeltaNet layer's two homes of the convolution's rows
-        (the state's pair ahead of each column's run, the decode step's; the convolution's own
-        state, the prompt chunk's), which the host copies between around a prompt chunk."""
-        out = []
-        for i, layer in enumerate(self.layers):
-            g = layer.linear_attn
-            if g is None or not (g.fold and g.prompt):
-                continue
-            H, KH, dk, dv = g.shape
-            pair = 2 * dk * iron_gdn.SLICE
-            out.append(dict(state=f"model.layers.{i}.linear_attn.state.slots",
-                            conv=f"model.layers.{i}.linear_attn.conv.state.slots",
-                            columns=COLUMNS, seg=iron_gdn.column_widths(H, KH, dk, dv, COLUMNS),
-                            rows=self.config.linear_conv_kernel_dim - 1, pair=pair,
-                            run=(H // (2 * COLUMNS) * (dv // iron_gdn.SLICE) + 1) * pair))
-        return out
 
     def _moe_states(self) -> "MoEStates":
         if getattr(self, "_moe", None) is None:
