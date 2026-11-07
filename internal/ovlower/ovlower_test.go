@@ -182,6 +182,9 @@ func TestElementwise(t *testing.T) {
 	}
 	h = p.op("add", map[string]any{"x": h, "y": p.op("sqrt", map[string]any{"x": z}, sh...)}, sh...)
 	h = p.op("add", map[string]any{"x": h, "y": p.op("exp", map[string]any{"x": x}, sh...)}, sh...)
+	h = p.op("add", map[string]any{"x": h, "y": p.op("abs", map[string]any{"x": x}, sh...)}, sh...)
+	h = p.op("add", map[string]any{"x": h, "y": p.op("log", map[string]any{"x": z, "epsilon": b.ScalarF16(0.5)}, sh...)}, sh...)
+	h = p.op("add", map[string]any{"x": h, "y": p.op("log", map[string]any{"x": z, "epsilon": b.ScalarF16(0)}, sh...)}, sh...)
 	h = p.op("add", map[string]any{"x": h, "y": p.op("gelu", map[string]any{"x": x, "mode": b.Str("c", "EXACT")}, sh...)}, sh...)
 	h = p.op("add", map[string]any{"x": h, "y": p.op("gelu", map[string]any{"x": z, "mode": b.Str("c", "TANH_APPROXIMATION")}, sh...)}, sh...)
 	h = p.op("layer_norm", map[string]any{"x": h, "axes": b.Ints(-1), "gamma": g, "beta": beta, "epsilon": b.ScalarF16(1e-5)}, sh...)

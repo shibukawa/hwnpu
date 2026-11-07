@@ -1,8 +1,8 @@
-# 改善策の効果のまとめ (2026-11-07 時点、main の #58 まで。2 段の注意と Anima の M3 での確認を含む)
+# 改善策の効果のまとめ (2026-11-07 時点、main の #58 まで。2 段の注意と Anima と Qwen3.5-4B の M3 での確認を含む)
 
 [English](improvements.md)
 
-design.md 16 章の実装記録 (16.81 までと 16.84〜16.87) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
+design.md 16 章の実装記録 (16.81 までと 16.84〜16.88) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
 
 - 「生成」= 1 トークンを作る速さ (ms/token か tokens/s)
 - 「prefill」= プロンプトを読む速さ (最初の応答までの時間)
@@ -226,6 +226,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | Anima の fp16 への手当て (DiT の残差を 1/32 で持つ、`maxScaled` の norm) | fp16 であふれず、非正規数にもならない | M3 で確認 (16.85) |
 | Anima の時刻の部品を 8 行に、パッチの埋め込みを最初のブロックの群に (16.85) | 1 行のままや、単独のプログラムだと、Core ML が部品ごと CPU に置く | Anima の全部が ANE に載る |
 | 注意の点数を 1 つのテンソルで 64 MiB 以下に (`mil.DitQChunk`、16.85) | 点数のテンソルが 65〜68 MiB を超えると、形によらず q kᵀ と softmax が点数あたり 2〜3 倍遅くなる | 1024×1024 の 512 クエリはそのすぐ下。大きな絵は塊を小さくする |
+| Qwen3.5 の silu と softplus を exp、log、real_div で書く、GDN の q を 1024 倍 (16.88) | ANE の `softplus` はある入力で 0 (減衰が 1 になる)、`silu` は 1.4% ずれ、小さな値の裾ほど悪い。o = q S の積が fp16 の非正規数に落ちる | ANE での KL 0.33〜0.76 → 0.005〜0.007。長いプロンプトの合言葉 1/3 → 3/3 |
 
 ### 7.2 Intel NPU (OpenVINO IR / Level Zero)
 
@@ -334,7 +335,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | d1-2B / d1-Omni-2B | `lfm3` の d1 モード | 同上 | System One API (`hwnpu-systemone`) | 画像 (d1-2B)、画像と音声 (d1-Omni) | ◎ lut8 | 変換は可 | — |
 | gemma-4-E2B-it | `gemma4` | byte fallback の BPE (`tokenizer.json`) | Gemma 4 | Apple / Intel はテキストのみ | ◎ lut6、文脈 131072 | 変換は可 | ◎ q4 7.9 tok/s、1.78 GB (bf16 は 6.1 tok/s)、画像と音声も |
 | gemma-4-E4B-it | `gemma4` | 同上 | Gemma 4 | テキストのみ | ○ lut6、1 本 (`-prefill auto`) | 変換は可 | ○ q4 5.6 tok/s、3.53 GB、文脈 4096 |
-| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | △ CPU で照合のみ、ANE は未確認 | 変換は可 | — |
+| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | — |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3、翻訳) | — | ○ lut8、1 本、文脈 262144。M3 で全部 ANE に載ることと重みの形式を確認 | 変換は可 (int8)。OpenVINO の CPU で訳せた | ◎ q4 11.6 tok/s、2.16 GiB、文脈 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
@@ -409,9 +410,9 @@ AMD (IRON) では、トークナイザーとチャットの型は書き出した
 **Qwen3.5-4B** (16.62)
 - 構造: Gated DeltaNet 24 層 + 全注意 8 層。GDN の状態 (値ヘッドごとに 128×128) は位置ごとに書けないので、新しい種類の状態 `st_` (プログラムが出した新しい状態で丸ごと置き換える) を足した。詰め物のトークンで状態を変えないよう `step_valid` を渡す。投機的デコードで下書きの一部だけを採るときは、採ったトークンだけで実行し直す
 - 0 中心の RMSNorm (`1 + w`)、出力ゲート、先頭 64 次元だけの RoPE。分割された safetensors (`model.safetensors.index.json`) を読めるようにした
-- 照合: fp64 の正解と 3.7e-7。実物の重みは回線の都合で 2 層分だけ取り、argmax 32/32 (fp16)、lut6 で KL 0.016
-- 注意の前後で 9 部分 (lut6 で 2.95 GiB) に分け、文脈 262144 (KV は 32 KiB/token)
-- **ANE での配置・速さは未確認**。2 本で 5.9 GiB は ANE のキャッシュを超えるおそれがある
+- 照合: fp64 の正解と 3.7e-7。32 層全部を PyTorch の fp32 と (16.88): fp16 で KL 0.0000、lut8 で 0.0015〜0.0050、lut6 で 0.031〜0.135 (lut6 は崩れるので既定は lut8)
+- 注意の前後で 9 部分 (lut8 で 3.9 GiB) に分け、文脈 262144 (KV は 32 KiB/token。16 GB では 114688)
+- M3 (16.88): 全部 ANE。2 本では ANE のキャッシュを超えるので Q=8 の 1 本。2 回目の起動 2〜4.5 秒。ANE の `silu` と `softplus` の誤りで長いプロンプトを読めなかったのを、exp、log、real_div で書き直して直した (KL 0.33〜0.76 → 0.005〜0.007、13K トークンの合言葉 3/3)
 
 **PLaMo 3 Translate 2B** (16.70–71、16.76)
 
@@ -484,10 +485,8 @@ Apple / Intel (`hwnpu-image -convert`):
 
 | 項目 | 分かっていないこと | 確かめ方・必要なもの | 節 |
 |---|---|---|---|
-| Qwen3.5-4B 全体 | ANE への配置、速さ、起動。2 本で 5.9 GiB はコンパイルのキャッシュ (約 4 GiB) を超えるおそれ | Mac で `hwnpu-chat -use Qwen3.5-4B`。起動が毎回遅ければ 1 本 (`-prefill off`) か lut4 | 16.62 |
-| Qwen3.5 の GDN の状態 | fp16 で持ち続けて長い会話で誤差が積もるか (PyTorch は fp32) | 長い会話でロジットを fp32 の参照と比べる | 16.62 |
-| Qwen3.5 の Q=64 のプログラム | 更新を 64 回書き下した形 (約 1.8 万演算) のコンパイル時間と ANE への載り方 | 載らなければ塊の形 (WY 表現) を `Params` で足す | 16.62 |
-| Qwen3.5 の 32 層全体の照合 | 実物の重みで照合したのは 2 層だけ。深い層で fp16 があふれないか | 回線のよい機械で `ref_logits.py` → `hwnpu-check` | 16.62 |
+| Qwen3.5 の Q=64 のプログラム | 2 本 (Q=8 と Q=64) は lut8 で 7.9 GiB と ANE のキャッシュを超えるので既定では作らない。長いプロンプトの読みは 1 本で 66 tokens/s (13K)。Q=64 の速さとコンパイルの時間は測っていない | `-prefill on` | 16.62、16.88 |
+| ほかのモデルの ANE の silu | LFM3、Gemma 4、PLaMo 3 も `blocks.SwiGLU` などで ANE の `silu` を使う。Qwen3.5 の 1.4% のずれが、ほかのモデルの lut6 / lut8 の損の一部かもしれない | `silu` を exp と real_div にした版と KL を比べる | 16.88 |
 | Qwen3.5 と 2 段の注意 | 2 段の注意 (`-sparse`) で答えが保たれるか | 合言葉の試験 | 16.62 |
 | 2 段の注意の `Refresh` を既定に | 4 か 16 で合言葉は保ち 1 回 14–32% 速い (2026-11-06 確認) が、損失や KL のような細かい差は Neural Engine で測っていない | 実物でロジットを毎回選び直す形と比べる | 16.61 |
 | 2 段の注意のプリフィルの境目 | 64K では 2 段の読みが全部を読む形より 1 割遅い。約 57K の境目を上げるべきか | 64K〜96K で読む時間を比べる | 16.61 |
