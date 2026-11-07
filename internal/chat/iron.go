@@ -363,6 +363,10 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 			break
 		}
 	}
+	e.turnEnd = -1
+	if ids := e.Tok.Encode("\n"); len(ids) == 1 {
+		e.turnEnd = ids[0]
+	}
 	e.markTurns = len(m.Manifest.Checkpoints) > 0 && !m.Manifest.Restartable
 	e.sess = &ironSession{m: m, media: e.media, placed: map[int32]int32{}}
 	if c.PromptDir != "" {

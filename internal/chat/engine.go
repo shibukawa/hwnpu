@@ -101,6 +101,7 @@ type Engine struct {
 	// turn renders the last assistant turn anew, Qwen3.6 without its thinking, so it shares the
 	// prompt only up to that turn's start). -1: none.
 	turnStart int32
+	turnEnd   int32 // the newline that ends a turn's header, or -1
 	markTurns bool
 
 	dev    *hwnpu.Device
@@ -945,6 +946,14 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		for i := len(prompt) - 1; i >= 0 && cut < 0; i-- {
 			if prompt[i] == e.turnStart {
 				cut = i
+			}
+		}
+		// past the turn's header line (<|im_start|>assistant\n, which the next turn renders
+		// alike): fewer tokens after the mark, read as decode steps
+		for i := cut + 1; cut >= 0 && e.turnEnd >= 0 && i < len(prompt) && i <= cut+4; i++ {
+			if prompt[i] == e.turnEnd {
+				cut = i + 1
+				break
 			}
 		}
 	}

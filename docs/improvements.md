@@ -595,4 +595,4 @@ Collected from what the records call "not yet checked", "not measured" or "estim
   - Calls from ComfyUI nodes
   - A 512×512 export
   - A 4-bit DiT with GPTQ (`tools/amd/anima_gptq.py`, `iron_anima.py --q4-codes`, 16.87) checked as an image at 1024×1024 on the NPU (on the CPU at 512×512: latent cosine 0.939 against q8's 0.962)
-- The rest of Qwen3.6-35B-A3B (16.89–16.93; all 40 layers at q4, 5.8 tok/s, prompts in chunks at 25 ms a token): faster GDN layers in prompt chunks (2.2 s a chunk however short; since 16.94 a conversation's next turn is not read again and short pieces run as decode steps)
+- The rest of Qwen3.6-35B-A3B (16.89–16.93; all 40 layers at q4, 5.8 tok/s, prompts in chunks at 25 ms a token): the prompt chunk's projection GEMMs and weight expansions (1.6 s a chunk however short: 256 rows computed whatever the call's, the weights expanded every chunk, 16.95)
