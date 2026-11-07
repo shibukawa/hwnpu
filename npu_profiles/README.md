@@ -4,6 +4,7 @@ Reports written by `cmd/npuprobe` and `cmd/powerbench` on real machines, named `
 
 | chip | reports |
 |---|---|
+| Apple M1 (MacBook Pro 13", 16 GB, macOS 27.2) | `npuprobe-m1` (bench, limit) |
 | Apple M2 (MacBook Air, 16 GB, macOS 27.2) | `npuprobe-m2.md` (bench, limit) |
 | Apple M3 (MacBook Air, 16 GB, macOS 27.0.1; `-macos27.2` on 27.2) | `npuprobe-m3-macos27.2` (bench), `npuprobe-m3-split`, `-functions`, `-kv`, `-kv-mha`, `-kv-int8`, `-kv-limit`, `-kv-chunk`, `-kv-chunk-long`, `-attn`, `-seam`; `powerbench-m3`, `-cpu64`, `-rate100` |
 
