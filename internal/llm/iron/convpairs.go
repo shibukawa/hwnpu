@@ -34,7 +34,7 @@ func (m *Model) slotBytes(v *version, name string, s int) ([]byte, Region, error
 	}
 	size := p.Bytes / slots
 	r := Region{Name: name, Argument: p.Argument, Offset: p.Offset + s*size, Bytes: size}
-	b, err := m.readRegion(v, r, size)
+	b, err := m.viewRegion(v, r, size)
 	return b, r, err
 }
 

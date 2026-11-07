@@ -448,8 +448,8 @@ def _check(args) -> int:
     ids, w, sg = route_chunk(logits, E)
     real = T - args.pad
     rows, slot, counts = plan(ids[:real], E, T)
-    if counts.max() > CAP:
-        raise SystemExit(f"an expert has {counts.max()} rows, past {CAP}")
+    if counts[:E].max() > CAP:
+        raise SystemExit(f"an expert has {counts[:E].max()} rows, past {CAP}")
     hn = (rng.standard_normal((T, K)) * 0.5).astype(bfloat16)
     xs = stream_x(hn, rows, counts)
     A = TOP * T
@@ -473,7 +473,7 @@ def _check(args) -> int:
     m = export_graph(cg, args.out, "moep", dict(experts=E, tokens=T))
     print(cg.plan.report("moep"))
     write_check(g, m, args.out, dict(counts=counts_words(counts), x=xs), None)
-    print(f"{args.out}: MoEGroupGateUp and MoEGroupDown, {T} tokens over {E} experts (most {counts.max()} rows)")
+    print(f"{args.out}: MoEGroupGateUp and MoEGroupDown, {T} tokens over {E} experts (most {counts[:E].max()} rows)")
     return 0
 
 
