@@ -154,7 +154,9 @@ func (m *builder) layerRest(i int, h, residual *mlpackage.Var) *mlpackage.Var {
 	h = m.Op("add", map[string]any{"x": h, "y": residual}, h.Shape...)
 	residual = h
 	f := m.norm(h, p+"post_attention_layernorm.weight")
-	f = m.SwiGLU(f, p+"mlp.gate_proj.weight", p+"mlp.up_proj.weight", p+"mlp.down_proj.weight", m.cfg.IntermediateSize, m.d, 1)
+	gate := m.silu(m.Linear(f, p+"mlp.gate_proj.weight", "", m.cfg.IntermediateSize))
+	f = m.Op("mul", map[string]any{"x": gate, "y": m.Linear(f, p+"mlp.up_proj.weight", "", m.cfg.IntermediateSize)}, gate.Shape...)
+	f = m.Linear(f, p+"mlp.down_proj.weight", "", m.d) // blocks.SwiGLU with silu (m.silu)
 	return m.Op("add", map[string]any{"x": f, "y": residual}, f.Shape...)
 }
 
@@ -322,7 +324,11 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 		}
 		return x
 	}
-	q := l2(m.reshape(m.slice(qkv, 2, 0, kd), 1, s, hk, dk), p+"l2_q", 1/math.Sqrt(float64(dk)))
+	// the queries are scaled up by oScale: o = q S is read only by the gated norm, which does not
+	// change with its input's scale, and at their own size (1/sqrt(dk) times a unit vector) the
+	// products in q S are around 1e-5, under fp16's smallest normal value, which the Neural
+	// Engine does not keep: o was 6% off on an M3 and the norm made that 17%
+	q := l2(m.reshape(m.slice(qkv, 2, 0, kd), 1, s, hk, dk), p+"l2_q", oScale/math.Sqrt(float64(dk)))
 	k := l2(m.reshape(m.slice(qkv, 2, kd, 2*kd), 1, s, hk, dk), p+"l2_k", 1)
 	v := m.reshape(m.slice(qkv, 2, 2*kd, 2*kd+vd), 1, s, hv, dv)
 	q, k, v = m.swap12(repeat(q)), m.swap12(repeat(k)), m.swap12(v) // (1, hv, s, d)
@@ -336,7 +342,7 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 		negA[j] = float32(-math.Exp(float64(v)))
 	}
 	g := m.Op("add", map[string]any{"x": a, "y": m.const16(p+"dt_bias", []int{1, 1, hv}, dt)}, a.Shape...)
-	g = m.Op("softplus", map[string]any{"x": g}, g.Shape...)
+	g = m.softplus(g)
 	g = m.Op("mul", map[string]any{"x": g, "y": m.const16(p+"A_log", []int{1, 1, hv}, negA)}, g.Shape...)
 	if m.opts.Cache > 0 {
 		valid := m.input("step_valid", 1, s, 1)
@@ -358,12 +364,38 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 		m.output(state, fmt.Sprintf("st_rec_%d_new", i))
 	}
 
-	// Qwen3_5RMSNormGated over each head: norm(o) * w * silu(z)
-	o = m.RMSNorm(m.swap12(o), p+"norm.weight", dv, c.NormEps, 1) // (1, s, hv, dv)
+	// Qwen3_5RMSNormGated over each head, norm(o) * w * silu(z), of o / oScale, normalized as o / oNormIn with eps grown by
+	// (oScale / oNormIn)^2. The division is a multiply of its own, not the norm's inScale, which
+	// would divide the norm's weight by oNormIn into fp16, below its normal values for weights
+	// under 0.004
+	o = m.Op("mul", map[string]any{"x": m.swap12(o), "y": m.B.ScalarF16(1.0 / oNormIn)}, 1, s, hv, dv)
+	r := float64(oScale / oNormIn)
+	o = m.RMSNorm(o, p+"norm.weight", dv, c.NormEps*r*r, 1) // (1, s, hv, dv)
 	zg := m.reshape(z, 1, s, hv, dv)
-	zg = m.Op("silu", map[string]any{"x": zg}, zg.Shape...)
+	zg = m.silu(zg)
 	o = m.Op("mul", map[string]any{"x": o, "y": zg}, o.Shape...)
 	return m.Linear(m.reshape(o, 1, s, vd), p+"out_proj.weight", "", m.d)
+}
+
+// oScale is how much the Gated DeltaNet's queries, and so its output o = q S, are scaled up
+// (gatedDeltaNet), and oNormIn by how much o is scaled down before the gated norm squares it:
+// the squares of o * 16 neither overflow (o at most a few hundred) nor matter where they
+// underflow (eps * 256 dominates there, as eps does at o's own size).
+const (
+	oScale  = 1024
+	oNormIn = 64
+)
+
+// softplus is log(1 + exp(x)) written as relu(x) + log(1 + exp(-|x|)), which neither overflows
+// nor underflows in fp16. The Neural Engine's own softplus gave 0 for inputs where it should
+// not (an M3: the decay exp(-exp(A_log) softplus(a + dt_bias)) of Qwen3.5-4B's Gated DeltaNet
+// came out 1 where the CPU gave 0.003 to 0.13, and the model lost track of long prompts).
+func (m *builder) softplus(x *mlpackage.Var) *mlpackage.Var {
+	pos := m.Op("relu", map[string]any{"x": x}, x.Shape...)
+	neg := m.Op("mul", map[string]any{"x": m.Op("abs", map[string]any{"x": x}, x.Shape...), "y": m.B.ScalarF16(-1)}, x.Shape...)
+	tail := m.Op("add", map[string]any{"x": m.Op("exp", map[string]any{"x": neg}, x.Shape...), "y": m.B.ScalarF16(1)}, x.Shape...)
+	tail = m.Op("log", map[string]any{"x": tail, "epsilon": m.B.ScalarF16(0)}, x.Shape...) // tail >= 1
+	return m.Op("add", map[string]any{"x": pos, "y": tail}, x.Shape...)
 }
 
 // causalConv is the depthwise causal convolution of the Gated DeltaNet over x (1, seq, channels)
@@ -398,7 +430,17 @@ func (m *builder) causalConv(i int, x *mlpackage.Var) *mlpackage.Var {
 			y = m.Op("add", map[string]any{"x": y, "y": term}, 1, s, ch)
 		}
 	}
-	return m.Op("silu", map[string]any{"x": y}, y.Shape...)
+	return m.silu(y)
+}
+
+// silu is x / (1 + exp(-x)). The Neural Engine's own silu is about 1.4% off over the
+// convolution's outputs of Qwen3.5-4B (an M3), and much more on the small values of its tail,
+// which the L2 norm of the keys then scales up to unit rows. Past x = -11, exp(-x) overflows fp16
+// to inf and the quotient is 0 (silu is under 2e-4 there).
+func (m *builder) silu(x *mlpackage.Var) *mlpackage.Var {
+	neg := m.Op("mul", map[string]any{"x": x, "y": m.B.ScalarF16(-1)}, x.Shape...)
+	den := m.Op("add", map[string]any{"x": m.Op("exp", map[string]any{"x": neg}, x.Shape...), "y": m.B.ScalarF16(1)}, x.Shape...)
+	return m.Op("real_div", map[string]any{"x": x, "y": den}, x.Shape...)
 }
 
 // deltaRule is the gated delta rule (torch_recurrent_gated_delta_rule) over q, k (1, heads, seq,

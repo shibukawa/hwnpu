@@ -88,6 +88,7 @@ func TestElementwise(t *testing.T) {
 		{"silu", func(a float64) float64 { return a / (1 + math.Exp(-a)) }},
 		{"sigmoid", func(a float64) float64 { return 1 / (1 + math.Exp(-a)) }},
 		{"relu", func(a float64) float64 { return math.Max(a, 0) }},
+		{"abs", math.Abs},
 		// torch.nn.functional.softplus(torch.tensor([-2., 0., 1.5])): 0.1269, 0.6931, 1.7014
 		{"softplus", func(a float64) float64 { return map[float64]float64{-2: 0.12692801, 0: 0.69314718, 1.5: 1.70141327}[a] }},
 	} {
@@ -125,6 +126,10 @@ func TestElementwise(t *testing.T) {
 		return b.Op("rsqrt", map[string]any{"x": x, "epsilon": b.ScalarF16(1)}, mlpackage.Float16, 2)
 	})
 	near(t, "rsqrt", got, []int{2}, []float32{0.5, 1}, 1e-6)
+	got = run(t, []int{2}, []float32{1, 0}, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+		return b.Op("log", map[string]any{"x": x, "epsilon": b.ScalarF16(1)}, mlpackage.Float16, 2)
+	})
+	near(t, "log", got, []int{2}, []float32{float32(math.Ln2), 0}, 1e-6)
 }
 
 func TestReductions(t *testing.T) {
