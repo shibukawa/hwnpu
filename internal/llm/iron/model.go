@@ -808,11 +808,20 @@ func (m *Model) chunkBarrier(ctx context.Context) error {
 }
 
 // dropDecode releases the decode step's run, whose control code (21 MiB for Gemma 4 E2B) a
-// tower's (up to 40 MiB) may not fit beside in the device heap; Step makes it again.
+// tower's (up to 40 MiB) may not fit beside in the device heap; Step makes it again. The chunk
+// barrier goes too: it is bound to the banks, which growBanks replaces (its run on the closed
+// bank failed with ENOENT, the first prompt chunk after a tower); chunkBarrier makes it again.
 func (m *Model) dropDecode() {
-	if m.decode != nil && m.decode.run != nil {
+	if m.decode == nil {
+		return
+	}
+	if m.decode.run != nil {
 		m.decode.run.Close()
 		m.decode.run = nil
+	}
+	if m.decode.barrier != nil {
+		m.decode.barrier.Close()
+		m.decode.barrier = nil
 	}
 }
 

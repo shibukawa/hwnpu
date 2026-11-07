@@ -2,7 +2,7 @@
 
 [English](improvements.md)
 
-design.md 16 章の実装記録 (16.81 までと 16.84〜16.88) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
+design.md 16 章の実装記録 (16.81 までと 16.84〜16.88) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md、handoff-m3-gptq.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
 
 - 「生成」= 1 トークンを作る速さ (ms/token か tokens/s)
 - 「prefill」= プロンプトを読む速さ (最初の応答までの時間)
@@ -197,10 +197,10 @@ GEMV 単体の改善:
 | AMD: q8 の GEMV で部分和を 2 つの bf16 に分ける (16.73) | 1 つの bf16 に丸めると、コサイン 0.9998 | 上位と残りに分けると 0.999992 | なし |
 | AMD: q4nx の量子化で候補 9 つから選ぶ (amd-npu-models.md 13 節) | 単純な min-max: 重みの誤差 8.2 % | 7.3 % | なし。書き出しのときだけ |
 | AMD のモデルごとの 4 ビットの KL | | LFM3 0.036 (一致 92 %)、E4B 0.049、E2B 0.097、PLaMo 3 は訳文で 0.007–0.009 (44 文中 36 文が bf16 と同じ) | LFM3 と翻訳は 4 ビットに強い。LFM3 は BOS を置いて測る (置かないと 4 倍悪く見える) |
-| AMD: 4 ビットの符号を GPTQ で選ぶ (16.87、`q4_gptq.py`、`--q4-codes`) | 重みを最も近い段に丸める: NPU の bf16 との KL は E2B で README 0.120、日本語の Wikipedia 0.221、LFM3 で 0.032、0.071 | E2B 0.092、0.081 (一致 79 → 88 %)、LFM3 0.017、0.038。校正にない GPL も E2B 0.161 → 0.140、LFM3 0.110 → 0.092 | 形式は同じで速さとメモリは変わらない。書き出しの前に CPU で校正 (E2B 約 40 分、LFM3 約 25 分)。H の減衰を 0.01 にすると校正の文に合いすぎ、GPL が丸めより悪くなった |
-| Apple の lut6 の段を GPTQ で選ぶ (16.87、`hwnpu-convert -codes`) | LFM3 の lut6: KL (CPU の見積もり) README 0.070、wiki40b-ja 0.112 | 0.027、0.068。Go の変換で 0.074 → 0.050 (一致 105 → 111/128) | 形式と速さは同じ。ANE では未確認。lut4 は 2.7 → 0.66 でまだ使えない |
+| AMD: 4 ビットの符号を GPTQ で選ぶ (16.87、`q4_gptq.py`、`--q4-codes`) | 重みを最も近い段に丸める: NPU の bf16 との KL は E2B で README 0.120、日本語の Wikipedia 0.221、LFM3 で 0.032、0.071 | E2B 0.092、0.081 (一致 79 → 88 %)、LFM3 0.017、0.038。校正にない GPL も E2B 0.161 → 0.140、LFM3 0.110 → 0.092 | 形式は同じで速さとメモリは変わらない。書き出しの前に CPU で校正 (E2B 約 40 分、LFM3 約 25 分)。H の減衰を 0.01 にすると校正の文に合いすぎ、GPL が丸めより悪くなった。NPU の wiki-ja で E4B 0.083 → 0.049、LFM3-VL 0.067 → 0.034、Audio 0.046 → 0.022、Omni 0.048 → 0.024、PLaMo 3 0.058 → 0.040 (README と GPL もほぼ良くなる。Audio の GPL だけ 0.154 → 0.161)。LFM3 の多モーダルは文の部分の重みが別なので、それぞれ校正する (amd-npu-models.md 13 節の「続き」) |
+| Apple の lut6 の段を GPTQ で選ぶ (16.87、`hwnpu-convert -codes`) | LFM3 の lut6: KL (CPU の見積もり) README 0.070、wiki40b-ja 0.112 | 0.027、0.068。Go の変換で 0.074 → 0.050 (一致 105 → 111/128) | 形式と速さは同じ。ANE では未確認 (handoff-m3-gptq.md)。表も E[x²] で重み付けした k-means で当てはめると (`--lut-fit wkmeans`)、Go の変換で lut6 0.050 → 0.038 (一致 112/128)、lut4 は 2.7 → 0.66 → 0.33。良くはなったが lut6 の丸めの 4 倍 |
 | AMD: コアの丸めを最近接偶数に (16.78) | コアは切り捨てのまま始まり、bf16 に狭めるたびに平均のある入力の和が下に寄る: Anima の DiT のステップ 0 の速度の誤差 q8 0.088、q4 0.244 (bf16 0.025) | q8 0.031、q4 0.087 (CPU で量子化だけなら 0.007、0.092)。言語モデルは E2B の KL 0.097 → 0.093、LFM3 は 0.036 のまま | なし (呼び出しごとに 1 命令)。書き出し直すと効く |
-| AMD: Anima の DiT を q4 でなく q8 に (16.78) | q4nx: 潜在のコサイン 0.777、顔つきと手が変わる。GPTQ でも速度の誤差は 0.114 → 0.070 まで | q8: 0.961 (bf16 0.966)、ほぼ同じ絵 | 固定が q4 より 735 MiB 多い |
+| AMD: Anima の DiT を q4 でなく q8 に (16.78) | q4nx: 潜在のコサイン 0.777、顔つきと手が変わる。GPTQ (`anima_gptq.py`、16.87) は 512×512 の CPU で速度の誤差 0.123 → 0.071、潜在のコサイン 0.868 → 0.939 (q8 は 0.013、0.962) | q8: 0.961 (bf16 0.966)、ほぼ同じ絵 | 固定が q4 より 735 MiB 多い |
 | Anima: テキストだけ `HIGHEST` (16.68) | すべて `MEDIUM` (bfp16): 潜在のコサイン 0.938 | 0.966 (CPU の bf16 は 0.980) | 時間は変わらない |
 | Anima の fp16 への手当て (Apple / Intel) (16.69) | DiT の残差は最大 2.7e5 で fp16 があふれる | 残差を 1/32 で持ち、norm は行ごとの最大値で割ってから: CPU で潜在のコサイン 0.99985 | なし |
 | PLaMo 3 を lut8 に (16.71) | lut4: KL 1.91、lut6: 一致 89 % | lut8: 一致 98 % (M3) | 重み 1.82 → 2.45 GiB |
@@ -298,7 +298,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | AMD の MoE: 転置した down を 1 行の GEMM で | GEMV より遅い (1.92 ms) | 16.75 |
 | Anima の DiT をホストステップでコマンドに分ける | 最初のコマンドが `ERT_CMD_STATE_TIMEOUT` で止まった。4 ブロックで 1 グラフにした | 16.68 |
 | Anima の DiT を `HIGH` に | 潜在のコサイン 0.966 → 0.976 だが、1 ステップ 7.2 → 10.9 s | amd-npu-models.md 11.3 |
-| Anima の DiT を 4 ビット (q4nx) で既定に | 固定 3445 → 2710 MiB だが、潜在のコサイン 0.777 で絵が変わる (CPU でも 0.753 で、量子化そのものの損)。同じ形式の GPTQ でも速度の誤差 0.114 → 0.070 (q8 は 0.010) | 16.78 |
+| Anima の DiT を 4 ビット (q4nx) で既定に | 固定 3445 → 2710 MiB だが、潜在のコサイン 0.777 で絵が変わる (CPU でも 0.753 で、量子化そのものの損)。同じ形式の GPTQ (16.87、512×512) で速度の誤差 0.123 → 0.071、潜在のコサイン 0.868 → 0.939 (q8 は 0.013、0.962)。近づいたが既定は q8 のまま。`--q4-codes` で選べる | 16.78、16.87 |
 | AMD: 言語モデルの q4nx のプロンプトを bf16 (`QDequant`) で | KL は変わらず (E2B 0.094、LFM3 0.037)、プロンプトの塊が 5〜9 % 遅い | 16.78 |
 | 固定の倍率で RMSNorm (Anima、fp16) | 大きな値のない行の 2 乗が非正規数になる。行ごとの最大値で割る形にした | 16.69 |
 | Apple: Anima の自己注意を速くする | Core ML の `scaled_dot_product_attention` 110 ms (今の形は 101)、尺度を q に 103、ヘッドで分ける 96〜118、チャンネルを先に 122。ヘッド 2 × クエリ 256 は 90 ms だが、注意 4 回のコンパイルに 84 s。行の最大を引かないと 87 ms だが fp16 があふれる (norm の重みからの上限は最大 221) | 16.85 |
@@ -485,6 +485,7 @@ Apple / Intel (`hwnpu-image -convert`):
 
 | 項目 | 分かっていないこと | 確かめ方・必要なもの | 節 |
 |---|---|---|---|
+| GPTQ で選んだ lut6 / lut4 の表 (`hwnpu-convert -codes`) | Linux の milcpu でしか確かめていない (LFM3 の lut6 の KL 0.074 → 0.038、lut4 2.7 → 0.33)。ANE の fp16 での KL、配置 (`all on the NPU`)、速さが変わらないこと、16.39 の質問の答え。hwnpu-chat はまだ `-codes` を取らない | handoff-m3-gptq.md の手順: 符号 (各 1.7 GB) と `ref128` を持ってきて `hwnpu-convert -codes` → `hwnpu-check -package` | 16.87 |
 | Qwen3.5 の Q=64 のプログラム | 2 本 (Q=8 と Q=64) は lut8 で 7.9 GiB と ANE のキャッシュを超えるので既定では作らない。長いプロンプトの読みは 1 本で 66 tokens/s (13K)。Q=64 の速さとコンパイルの時間は測っていない | `-prefill on` | 16.62、16.88 |
 | ほかのモデルの ANE の silu | LFM3、Gemma 4、PLaMo 3 も `blocks.SwiGLU` などで ANE の `silu` を使う。Qwen3.5 の 1.4% のずれが、ほかのモデルの lut6 / lut8 の損の一部かもしれない | `silu` を exp と real_div にした版と KL を比べる | 16.88 |
 | Qwen3.5 と 2 段の注意 | 2 段の注意 (`-sparse`) で答えが保たれるか | 合言葉の試験 | 16.62 |
@@ -566,7 +567,8 @@ Apple / Intel (`hwnpu-image -convert`):
 
 ### 11.5 まだ書いていないもの (参考)
 
-- 活性を見た表そのものの当てはめ (重み付き k-means、AWQ 式のスケール) で lut4 をさらに。GPTQ で段を選ぶ部分は 16.87 で入れた (lut6 の KL が半分、lut4 は 2.7 → 0.66 でまだ使えない) (model-fit.md T8)
+- lut4 の AWQ 式のスケール (model-fit.md T8 の 2)。GPTQ で段を選ぶことと、E[x²] で重み付けした k-means で表を当てはめることは 16.87 で入れた (Go の変換で lut6 0.074 → 0.038、lut4 は 2.7 → 0.33 で、まだ lut6 の丸めの 4 倍)
+- hwnpu-chat が GPTQ の符号を使う (`chat.Prepare`、符号の取得、パッケージ名に `-gptq`)。ANE での確認 (handoff-m3-gptq.md) の後
 - 埋め込みの表を変換時に書き出し、実行時にチェックポイント (LFM3 3.5 GB、Gemma 4 10.2 GB) を開かない (T5)
 - 退避した会話をプロセスの外 (ディスク) へ、int8 で半分に (T4 の残り)
 - 実行時の分割数の変更 (`MemoryBudget`、`Reshape`) (16.12)
@@ -582,5 +584,5 @@ Apple / Intel (`hwnpu-image -convert`):
   - CFG (負のプロンプト)。Turbo でない Anima は 1 枚 10 分を超える見込み
   - ComfyUI のノードからの呼び出し
   - 512×512 の書き出し
-  - 4 ビットの DiT の GPTQ。書き出しが符号を読む道 (`iron_q4.load_codes`) は 16.87 でできたが、DiT の校正の道具はない (CPU で速度の誤差 0.114 → 0.070。q8 にはまだ遠い)
+  - GPTQ の 4 ビットの DiT (`tools/amd/anima_gptq.py`、`iron_anima.py --q4-codes`、16.87) を NPU の 1024×1024 の画像で確かめる (CPU の 512×512 では潜在のコサイン 0.939、q8 は 0.962)
 - Qwen3.6-35B-A3B の移植。Gated DeltaNet の IRON の形と、経路の選択をデバイスで行うこと
