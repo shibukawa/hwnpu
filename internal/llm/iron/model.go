@@ -544,6 +544,16 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 	return m.logits(v)
 }
 
+// hostStep is v's host step of kind for layer, or nil.
+func (v *version) hostStep(kind string, layer int) *HostStep {
+	for i := range v.m.Host {
+		if h := &v.m.Host[i]; h.Kind == kind && h.Layer == layer {
+			return h
+		}
+	}
+	return nil
+}
+
 // decodeRuns makes the decode step's runs, one a command, a fed command's scratchpad its
 // buffer of the feedback argument.
 func (m *Model) decodeRuns() error {
@@ -734,35 +744,80 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		return m.logits(v)
 	}
 	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	if err := m.convPairsIn(v, start); err != nil {
+		return nil, err
+	}
 	if err := m.chunkBarrier(ctx); err != nil {
 		return nil, err
 	}
+	routes := map[int]*moeRoute{} // by layer: its moe_route's, until its moe_combine
 	for k := range v.m.Kernels {
-		t0 := time.Now()
-		run, err := m.newRun(v, k)
-		if errors.Is(err, syscall.ENOSPC) && m.decode.run != nil {
-			// the device heap holds no more control code: release the decode step's (as IRON
-			// releases a run), which Step makes again
-			m.dropDecode()
-			run, err = m.newRun(v, k)
+		runOnce := func() error {
+			t0 := time.Now()
+			run, err := m.newRun(v, k)
+			if errors.Is(err, syscall.ENOSPC) && m.decode.run != nil {
+				// the device heap holds no more control code: release the decode step's (as IRON
+				// releases a run), which Step makes again
+				m.dropDecode()
+				run, err = m.newRun(v, k)
+			}
+			t1 := time.Now()
+			if err != nil {
+				return fmt.Errorf("iron: prompt command %d: %w", k, err)
+			}
+			err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values)
+			if err == nil {
+				err = run.Run(ctx)
+			}
+			t2 := time.Now()
+			run.Close()
+			if timing {
+				fmt.Fprintf(os.Stderr, "prompt command %d (%d rows from %d): setup %.1f ms, run %.1f ms, close %.1f ms\n", k, rows, start,
+					t1.Sub(t0).Seconds()*1000, t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
+			}
+			if err != nil {
+				return fmt.Errorf("iron: prompt command %d: %w", k, err)
+			}
+			return nil
 		}
-		t1 := time.Now()
-		if err != nil {
-			return nil, fmt.Errorf("iron: prompt command %d: %w", k, err)
+		var route *HostStep
+		for i := range v.m.Host {
+			h := &v.m.Host[i]
+			if h.Command != k {
+				continue
+			}
+			switch h.Kind {
+			case "moe_route":
+				rt, err := m.moeHostRoute(v, h, rows)
+				if err != nil {
+					return nil, err
+				}
+				routes[h.Layer], route = rt, h
+			case "moe_combine":
+				if err := m.moeHostCombine(v, h, routes[h.Layer], rows); err != nil {
+					return nil, err
+				}
+				delete(routes, h.Layer)
+			default:
+				return nil, fmt.Errorf("iron: a host step %s before prompt command %d", h.Kind, k)
+			}
 		}
-		err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values)
-		if err == nil {
-			err = run.Run(ctx)
+		if route == nil {
+			if err := runOnce(); err != nil {
+				return nil, err
+			}
+			continue
 		}
-		t2 := time.Now()
-		run.Close()
-		if timing {
-			fmt.Fprintf(os.Stderr, "prompt command %d (%d rows from %d): setup %.1f ms, run %.1f ms, close %.1f ms\n", k, rows, start,
-				t1.Sub(t0).Seconds()*1000, t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
+		combine := v.hostStep("moe_combine", route.Layer)
+		if combine == nil {
+			return nil, fmt.Errorf("iron: layer %d's moe_route without a moe_combine", route.Layer)
 		}
-		if err != nil {
-			return nil, fmt.Errorf("iron: prompt command %d: %w", k, err)
+		if err := m.runMoECommand(ctx, v, routes[route.Layer], route, combine, runOnce); err != nil {
+			return nil, err
 		}
+	}
+	if err := m.convPairsOut(v, start, rows); err != nil {
+		return nil, err
 	}
 	return m.logits(v)
 }

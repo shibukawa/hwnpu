@@ -176,7 +176,7 @@ def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, v
 
 
 @functools.cache
-def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0):
+def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pairs: bool = False):
     """The GatedDeltaRule operator for ``n`` columns of two cores, each core ``hc`` value heads:
     each core's words (four a head) are values of their own, so it is made per shape.
 
@@ -189,7 +189,11 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0):
     ``norm`` > 0 (with ``conv``): its eps; the operator also applies Qwen3.5's gated norm
     without its weight (y / rms(y) * silu(z), each value head; the output projection holds the
     weight). ``z`` (rows, heads value_dim) comes in on x's channel after the row, each column
-    its value heads'."""
+    its value heads'.
+
+    ``pairs`` (without ``conv``: a prompt chunk of a model whose decode step has it): the state
+    has conv's layout, the pair ahead of each column's run left as it is (read past, not
+    written: the host keeps the convolution's rows there)."""
     import aie.dialects.index as index
     from aie.dialects.aie import T
     from aie.extras.dialects import arith
@@ -268,7 +272,7 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0):
         hv: int = param(derive=lambda op: op.heads * op.value_dim, repr=False)
         # with conv, a pair more a column: the rows before the call
         states: int = param(derive=lambda op: op.heads * op.key_dim * op.value_dim
-                            + (n * 2 * op.key_dim * SLICE if conv else 0), repr=False)
+                            + (n * 2 * op.key_dim * SLICE if conv or pairs else 0), repr=False)
         pair: int = param(derive=lambda op: 2 * op.key_dim * SLICE, repr=False)
         block: int = param(derive=lambda op: 1 if op.rows == 1 else BLOCK, array=True)
         ypair: int = param(derive=lambda op: 2 * op.block * SLICE, repr=False)
@@ -412,11 +416,13 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0):
             H, KH, dk, dv, hc, S, R, blocks = self.geometry()
             rows, W, seg, HV = self.rows, self.width, self.seg, self.hv
             zw, TW = self.zw, self.twidth
-            run = (hc * S + (1 if conv else 0)) * self.pair  # a column's states, contiguous
+            run = (hc * S + (1 if conv or pairs else 0)) * self.pair  # a column's states, contiguous
+            skip = self.pair if pairs else 0  # the pair ahead of the run, left as it is
             # The fills first: a prompt chunk's drains are 2 hc S descriptors a column, past what a
             # channel's task queue holds before the data they wait for has come in.
             for c in range(n):
-                self.state.fill(TAP((self.states,), c * run, [run], [1]), lane=c, managed=False)
+                self.state.fill(TAP((self.states,), c * run + skip, [run - skip], [1]), lane=c,
+                                managed=False)
                 if conv:  # the row once (the core keeps the convolution's output), then the taps
                     self.x.fill(TAP((rows, TW), c * seg, [seg], [1]), lane=c, managed=False)
                     if norm:
@@ -425,8 +431,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0):
                 else:
                     self.x.fill(TAP((rows, W), c * seg, [hc * S, rows, seg], [0, W, 1]), lane=c,
                                 managed=False)
-            drains = [self.final.drain(TAP((self.states,), c * run, [run], [1]), lane=c, wait=True,
-                                       managed=False) for c in range(n)]
+            drains = [self.final.drain(TAP((self.states,), c * run + skip, [run - skip], [1]), lane=c,
+                                       wait=True, managed=False) for c in range(n)]
             if R == 1:
                 for c in range(n):
                     h0 = c * 2 * hc  # the column's first head (core 0's), core 1's from h0 + hc
@@ -469,9 +475,16 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0):
                 return y, put(final)
         else:
             def reference(self, x, state):
-                return gdn_reference(x, state, self.words, heads=self.heads, key_heads=self.key_heads,
-                                     key_dim=self.key_dim, value_dim=self.value_dim, n=n,
-                                     valid=int(self.valid if self.valid is not None else self.rows))
+                st = np.asarray(state, np.float32)
+                if pairs:  # the runs without their pairs ahead, put back after
+                    st = st.reshape(n, -1)
+                    head, st = st[:, : self.pair], st[:, self.pair :].reshape(-1)
+                y, final = gdn_reference(x, st, self.words, heads=self.heads, key_heads=self.key_heads,
+                                         key_dim=self.key_dim, value_dim=self.value_dim, n=n,
+                                         valid=int(self.valid if self.valid is not None else self.rows))
+                if pairs:
+                    final = np.concatenate([head, final.reshape(n, -1)], axis=1).reshape(-1)
+                return y, final
 
         def tolerance(self) -> Tolerance:
             return Tolerance.relative(0.02, 1e-3, note="bf16 q, k, v after silu; the state in limbs")

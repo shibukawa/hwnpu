@@ -414,6 +414,32 @@ def version_manifest(compiled, elf_name: str) -> dict:
     return m
 
 
+def host_steps(compiled) -> list:
+    """The version's host steps hwnpu runs itself (a step's fn with an ``hwnpu`` dict: Qwen3.6's
+    prompt experts, iron_qwen35.MoEHost): before which command, what it is, and the placement,
+    shape and type of what it reads and writes. Any other host step is refused."""
+    rec, seq = compiled.recording, compiled.sequence
+    edges = list(compiled.plan.commands)
+    out = []
+    for h in rec.host:
+        info = getattr(h.fn, "hwnpu", None)
+        if info is None and not h.reads and not h.writes:
+            continue  # a command's end alone (iron_qwen35's decode step: on_host(lambda: None))
+        if info is None:
+            raise SystemExit(f"{rec.name}: a host step ({h.fn!r}) hwnpu does not know")
+        if h.at not in edges:
+            raise SystemExit(f"{rec.name}: host step {info['kind']} at step {h.at}, no command's start")
+
+        def region(x):
+            kind, offset, length = _place(seq, x.ref())
+            return dict(name=x.name, argument=kind, offset=int(offset), bytes=int(length),
+                        shape=[int(d) for d in x.shape], dtype=str(np.dtype(x.dtype)))
+
+        out.append(dict(command=edges.index(h.at) + 1, **info,
+                        reads=[region(x) for x in h.reads], writes=[region(x) for x in h.writes]))
+    return out
+
+
 def compile_versions(model, full_elf=None):
     """The decode step and the prompt chunk, compiled into one arena as load_versions does.
     full_elf False packages each as an xclbin per step (NPU1's only packaging; on NPU2, to
@@ -552,6 +578,8 @@ def export(model, versions, out: Path) -> dict:
         if v.artifacts.full_elf:
             shutil.copyfile(v.artifacts.image, out / f"{name}.elf")
             vm[name] = version_manifest(v, f"{name}.elf")
+            if v.recording.host:
+                vm[name]["host"] = host_steps(v)
         else:
             files.update(insts=[], insts_words=0)
             vm[name] = steps_manifest(v, files)
@@ -570,6 +598,16 @@ def export(model, versions, out: Path) -> dict:
         for a in m["arguments"]:
             if a["kind"] not in ("input", "output", "feedback") and not a["kind"].startswith("pool"):
                 banks[a["kind"]] = max(banks.get(a["kind"], 0), a["bytes"])
+    conv_pairs = model.hwnpu_conv_pairs() if hasattr(model, "hwnpu_conv_pairs") else []
+    for e in conv_pairs:
+        # the convolution's own state is the prompt chunk's alone: a resident, at the same place
+        # in every version, listed in the decode step's too (the checkpoints and hwnpu read it)
+        for k in ("state", "conv"):
+            have = [m["buffers"][e[k]] for m in vm.values() if e[k] in m["buffers"]]
+            if not have or any(h != have[0] for h in have):
+                raise SystemExit(f"conv_pairs: buffer {e[k]} not one resident in the versions")
+            for m in vm.values():
+                m["buffers"].setdefault(e[k], have[0])
     if hasattr(model, "program_rows"):
         # Qwen35Moe: the commands whose scratchpad the device writes (iron_moe.py), and the
         # routing programs that write them, known once the lowering has placed their words.
@@ -674,6 +712,9 @@ def export(model, versions, out: Path) -> dict:
         # per prompt-chunk boundary, slot k the state after the positions up to k * chunk run
         # so far. A host that copies the slot a position reads goes back to it.
         checkpoints=_checkpoints(vm["decode"]["buffers"], recurrent, c),
+        # Qwen3.6's folded Gated DeltaNet: the convolution's rows in two homes, which the host
+        # copies between around a prompt chunk (iron_qwen35's hwnpu_conv_pairs)
+        conv_pairs=conv_pairs or None,
         # The ring caches (a sliding window's, when 3 rings are under max_seq_len), which no
         # copy of a slot brings back.
         rings=sum(1 for r in recurrent if not _is_checkpoints(r)),

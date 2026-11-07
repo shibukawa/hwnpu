@@ -51,8 +51,12 @@ from iron.operators.sigmoid import Sigmoid
 import iron_gdn
 import iron_moe
 import iron_moeprobe
+import iron_moep
 
 COLUMNS = 8  # the columns GatedDeltaRule spreads over (npu2)
+# Qwen3.6 with a prompt chunk (its experts routed on the host, iron_moep.py); without it the
+# export is the decode step alone, the prompt run a token at a time.
+PROMPT = True
 
 # install()'s formats (iron_q4's), by part: the mixers' projections (Gated DeltaNet's and the
 # attention's), a dense MLP's, the head. Empty: all bf16.
@@ -151,13 +155,16 @@ class GatedNorm(iron.Graph):
 class GatedDeltaNet(iron.Graph):
     """Qwen3.5's linear attention, as the checkpoint's ``linear_attn`` names it (module docstring)."""
 
-    def __init__(self, c: Qwen35Config, fold: bool = False):
+    def __init__(self, c: Qwen35Config, fold: bool = False, prompt: bool = False):
         E = c.hidden_size
         H, KH = c.linear_num_value_heads, c.linear_num_key_heads
         # fold (a model with a decode step only): the short convolution and the gated norm in
         # GatedDeltaRule (iron_gdn's conv and norm), the convolution's rows before the call in
-        # the state's first pair of each column, the norm's weight in out_proj
-        self.fold = fold
+        # the state's first pair of each column, the norm's weight in out_proj. With prompt too
+        # (a prompt chunk besides): the chunk runs IRON's convolution on a state of its own and
+        # the plain operator past each column's pair (iron_gdn's pairs), and the host copies the
+        # convolution's rows between the two around the chunk (hwnpu's conv_pairs).
+        self.fold, self.prompt = fold, prompt
         dk, dv, K = c.linear_key_head_dim, c.linear_value_head_dim, c.linear_conv_kernel_dim
         self.shape = (H, KH, dk, dv)
         self.qkv = 2 * KH * dk + H * dv
@@ -185,7 +192,7 @@ class GatedDeltaNet(iron.Graph):
         # that nothing reads them from the checkpoint).
         self.in_proj = Linear(c.hidden_size, W, False, precision=c.precision)
         self.in_proj._bound = True
-        if not self.fold:
+        if not self.fold or self.prompt:
             self.conv = CausalConv1d(c, W, c.linear_conv_kernel_dim)
             self.conv._bound = True
         order = iron_gdn.gdn_layout(H, KH, dk, dv, COLUMNS)
@@ -195,7 +202,10 @@ class GatedDeltaNet(iron.Graph):
             # the norm's weight on out_proj's input columns (each value head's dv)
             w = np.asarray(self.out_proj.weight, np.float32) * np.tile(np.asarray(self.norm.weight, np.float32), H)
             self.out_proj.weight = iron.param(w.astype(np.asarray(self.out_proj.weight).dtype))
-            self.norm = None
+            if self.prompt:  # the chunk's norm without its weight (out_proj holds it)
+                self.norm.weight = iron.param(np.ones(dv, np.asarray(self.norm.weight).dtype))
+            else:
+                self.norm = None
         w = np.asarray(self.conv1d.weight)
         K = w.shape[-1]
         taps = np.zeros((self.qkv + 2 * H, 1, K), w.dtype)
@@ -206,7 +216,7 @@ class GatedDeltaNet(iron.Graph):
         rows = iron.param(np.ascontiguousarray(taps.reshape(len(order), K).T))
         if self.fold:
             self.taps = rows
-        else:
+        if not self.fold or self.prompt:
             self.conv.weight = iron.param(np.ascontiguousarray(taps))
             self.conv.taps = rows
         A = -np.exp(np.asarray(self.A_log, np.float32))
@@ -220,6 +230,11 @@ class GatedDeltaNet(iron.Graph):
         shape = dict(heads=H, key_heads=KH, key_dim=dk, value_dim=dv, words=self.words)
         p = self.in_proj(x)
         read, write = self.state.at(call)
+        if self.fold and call.prompt:
+            GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), pairs=True)
+            y, final = GDR.step(self.conv(p, call), Copy.step(read, dtype=np.float32), **shape)
+            Copy.step(final, write, dtype=np.float32)
+            return self.out_proj(self.norm(y, self.in_proj_z(x)))
         if self.fold:
             c = self.config
             GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), c.linear_conv_kernel_dim, float(c.eps))
@@ -259,13 +274,14 @@ class GatedAttention(Attention):
 class Qwen35Layer(DecoderLayer):
     """Layer ``i``: Gated DeltaNet or gated attention, then the feed-forward, pre-normed."""
 
-    fold = False  # GatedDeltaNet's fold: only where the model has no prompt chunk
+    fold = False  # GatedDeltaNet's fold
+    prompt = False  # with fold: the model has a prompt chunk too (GatedDeltaNet's prompt)
 
     def __init__(self, c: Qwen35Config, i: int):
         if c.linear(i):
             super().__init__(c, i, self_attn=iron.Graph(), cache=iron.Graph())
             del self.self_attn, self.cache
-            self.linear_attn = GatedDeltaNet(c, self.fold)
+            self.linear_attn = GatedDeltaNet(c, self.fold, self.fold and self.prompt)
         else:
             super().__init__(c, i, GatedAttention(c, i))
             self.linear_attn = None
@@ -320,6 +336,9 @@ class Qwen35(CausalLM):
             if not isinstance(layer.mlp, SparseMoe):
                 for lin in (layer.mlp.gate_proj, layer.mlp.up_proj, layer.mlp.down_proj):
                     q(lin, "weight", fmts["mlp"])
+            else:  # the prompt chunk's shared expert
+                for lin in layer.mlp.shared:
+                    q(lin, "weight", fmts["mlp"])
         # the head its own quantized copy where it is tied: the embeddings stay bf16
         q(self.lm_head, "weight", fmts["head"])
 
@@ -364,9 +383,14 @@ class SparseMoe(iron.Graph):
         self.router = iron.param(router)
         # B's scratchpad image: written once the lowering has placed its words (program_rows)
         self.program = iron.param(np.zeros(4 * iron_moe.SLOTS, np.int32))
+        # a prompt chunk's shared expert: its own projections (the table's copy is for the
+        # decode step's MoEGateUp and MoEDown)
+        self.shared = [sh.gate_proj, sh.up_proj, sh.down_proj]
         self.gate = self.experts = self.shared_expert = self.shared_expert_gate = None
 
     def body(self, hn, h, call):
+        if call.prompt:
+            return self.prompt_body(hn, h, call)
         E, I = self.hidden, self.inter
         Route = iron_moe.route_operator()
         logits = F.linear(hn, self.router, precision=self.precision)
@@ -383,15 +407,83 @@ class SparseMoe(iron.Graph):
         iron.on_host(lambda: None)
         return y.reshape(1, E)
 
+    def prompt_body(self, hn, h, call):
+        """A prompt chunk's experts, the host routing them (iron_moep.py): the router's logits
+        on the device; the host's route; the shared expert, MoEGroupGateUp and MoEGroupDown;
+        the host's combine into ``call.moe.out``.
+
+        IRON's arena does not count a host step's reads as uses: a buffer the host reads must be
+        the last step's output, or a state (h and the shared expert's output are copied into
+        one), or a later step may have written over it."""
+        moe, (C, E), I = call.moe, hn.shape, self.inter
+        Copy.step(h, moe.h)
+        logits = F.linear(hn, self.router, precision=self.precision)
+        iron.on_host(MoEHost("moe_route", self.index, self.n, C, moe), logits, hn,
+                     writes=(moe.counts, moe.xs))
+        g, u, d = self.shared
+        Copy.step(d(F.silu(g(hn)) * u(hn)), moe.s)
+        GU, D = iron_moep.group_operators(self.n)
+        A = iron_moep.TOP * C
+        a = GU.step(self.gu, moe.counts, moe.xs, rows=self.gu.shape[0], A=A, K=E, NE=I)
+        y = D.step(self.down, moe.counts, a, rows=self.down.shape[0], A=A, KE=I, N=E)
+        iron.on_host(MoEHost("moe_combine", self.index, self.n, C, moe), moe.h, y, moe.s,
+                     writes=(moe.out,))
+        return moe.out[: call.rows]
+
+
+class MoEStates:
+    """A prompt chunk's states the host writes for every layer's experts (one set: the layers
+    run in turn): the counts and x's stream (route), the layer's output (combine)."""
+
+    def __init__(self, C: int, E: int):
+        A = iron_moep.TOP * C
+        self.counts = iron.state((2 * iron_moep.COUNTS,), bfloat16, name="moe_counts")
+        self.xs = iron.state((2 * A * E,), bfloat16, name="moe_xs")
+        self.out = iron.state((C, E), bfloat16, name="moe_out")
+        self.h = iron.state((C, E), bfloat16, name="moe_h")  # the residual, for combine
+        self.s = iron.state((C, E), bfloat16, name="moe_s")  # the shared expert's output
+        self.plans = {}  # by layer: route's plan, for combine (the host reference)
+
+
+class MoEHost:
+    """A host step of a prompt chunk's experts: ``hwnpu`` names it for hwnpu (which runs its own
+    in Go); called, it is the reference's (iron_moep's route_chunk, plan, stream_x, combine)."""
+
+    def __init__(self, kind: str, layer: int, experts: int, C: int, states: MoEStates):
+        self.kind, self.layer, self.experts, self.C, self.states = kind, layer, experts, C, states
+        self.hwnpu = dict(kind=kind, layer=layer, experts=experts, top=iron_moep.TOP,
+                          cap=iron_moep.CAP, tokens=C)
+
+    def __call__(self, *args):
+        getattr(self, self.kind)(*args)
+
+    def moe_route(self, logits, hn, counts, xs):
+        n, C = len(logits), self.C
+        ids, w, sg = iron_moep.route_chunk(logits, self.experts)
+        rows, slot, cnt = iron_moep.plan(ids, self.experts, C)  # the rows past the call's: padding
+        counts[:] = iron_moep.counts_words(cnt)
+        xs[:] = iron_moep.stream_x(hn, rows, cnt)
+        self.states.plans[self.layer] = (slot, w, sg)
+
+    def moe_combine(self, h, y, s, out):
+        slot, w, sg = self.states.plans.pop(self.layer)
+        n = len(slot)
+        h, s = np.asarray(h)[:n], np.asarray(s)[:n]
+        out[:n] = iron_moep.combine(h, np.asarray(y).reshape(-1, np.asarray(h).shape[1]), slot, w, s, sg)
+        out[n:] = 0
+
 
 class Qwen35MoeLayer(Qwen35Layer):
     """``Qwen35Layer`` whose feed-forward is ``SparseMoe`` (its residual added in MoEDown)."""
 
-    # Folded (the model has a decode step only). With the fold, the next decode step's first
-    # command hung on the device after the last layer's experts (B) ran (ERT_CMD_STATE_TIMEOUT;
-    # design.md 16.90) until hwnpu ran an empty command in another hardware context before each
-    # step (internal/llm/iron's stepBarrier, 16.92).
+    # Folded: the decode step's GatedDeltaNet runs the convolution and the gated norm in its
+    # operator; a prompt chunk (PROMPT) runs IRON's convolution on a state of its own, the host
+    # copying the rows between the two (GatedDeltaNet's prompt). With the fold, the next decode
+    # step's first command hung on the device after the last layer's experts (B) ran
+    # (ERT_CMD_STATE_TIMEOUT; design.md 16.90) until hwnpu ran an empty command in another
+    # hardware context before each step (internal/llm/iron's stepBarrier, 16.92).
     fold = True
+    prompt = PROMPT
 
     def __init__(self, c: Qwen35Config, i: int):
         super().__init__(c, i)
@@ -422,7 +514,9 @@ class Qwen35Moe(Qwen35):
         return moe_class(cls, layers).from_checkpoint(path, **kwargs)
 
     def shapes(self):
-        return [{}]  # the decode step alone
+        if not PROMPT:
+            return [{}]  # the decode step alone
+        return super().shapes()
 
     def draw(self, logits, call):
         # No draw on the device: its commands end at host steps, so no Emit carries a drawn
@@ -430,9 +524,11 @@ class Qwen35Moe(Qwen35):
         return logits, iron.carry(token=call.token + 0, position=call.position + 1)
 
     def record(self, **shapes):
-        self._fed = []
+        if not shapes or not hasattr(self, "_fed"):  # the decode step's (a prompt chunk feeds none)
+            self._fed = []
         recording = super().record(**shapes)
-        recording.feedback.extend(name for _, name in self._fed)
+        if not shapes:
+            recording.feedback.extend(name for _, name in self._fed)
         return recording
 
     def moe_body(self, values, **standard):
@@ -444,6 +540,8 @@ class Qwen35Moe(Qwen35):
         def call(**kw):
             c = made(**kw)
             c.experts, c.feedback = experts, self._fed
+            if c.prompt:
+                c.moe = self._moe_states()
             return c
 
         causal.Call = call
@@ -451,6 +549,29 @@ class Qwen35Moe(Qwen35):
             return CausalLM.body(self, **standard)
         finally:
             causal.Call = made
+
+    def hwnpu_conv_pairs(self) -> list:
+        """For hwnpu: each folded Gated DeltaNet layer's two homes of the convolution's rows
+        (the state's pair ahead of each column's run, the decode step's; the convolution's own
+        state, the prompt chunk's), which the host copies between around a prompt chunk."""
+        out = []
+        for i, layer in enumerate(self.layers):
+            g = layer.linear_attn
+            if g is None or not (g.fold and g.prompt):
+                continue
+            H, KH, dk, dv = g.shape
+            pair = 2 * dk * iron_gdn.SLICE
+            out.append(dict(state=f"model.layers.{i}.linear_attn.state.slots",
+                            conv=f"model.layers.{i}.linear_attn.conv.state.slots",
+                            columns=COLUMNS, seg=iron_gdn.column_widths(H, KH, dk, dv, COLUMNS),
+                            rows=self.config.linear_conv_kernel_dim - 1, pair=pair,
+                            run=(H // (2 * COLUMNS) * (dv // iron_gdn.SLICE) + 1) * pair))
+        return out
+
+    def _moe_states(self) -> "MoEStates":
+        if getattr(self, "_moe", None) is None:
+            self._moe = MoEStates(self.config.prefill_chunk, self.config.hidden_size)
+        return self._moe
 
     def program_rows(self, kernels) -> list:
         """Fill each layer's MoERoute program from the decode step's commands (the manifest's

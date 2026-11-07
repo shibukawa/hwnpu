@@ -349,7 +349,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (embedding API) | — | ◎ lut8 + head-scale | Converts (int8) | — |
 | BERT family (all-MiniLM-L6-v2 and so on) | `bert` | **Not implemented** (WordPiece) | — | — | Converts only (lut8) | Converts only (int8) | — |
 | Anima-Turbo (image generation) | `internal/imagegen/anima` (built from one MIL description) | Qwen3 BPE + T5 Unigram | — (`hwnpu-image`) | Images out | ◎ M3: 1024×1024, 8 steps in about 40 s, 3.8 GB (int8) | △ Converts. Checked on OpenVINO's CPU | ◎ 1024×1024, 8 steps in about 68 s, 3.4 GiB pinned (DiT at 8 bits) |
-| Qwen3.6-35B-A3B | `qwen35moe` (IRON only) | Same as Qwen3.5 | Qwen3.6 (`Qwen36`: tool arguments as JSON, 16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`, routed on the device. All 40 layers (23 GB) at 5.8 tok/s (the convolution and the gated norm inside the GDN operator, 16.92), cosine 0.986–0.996 against HF, every top token agrees (16.91). Prompts go a token at a time |
+| Qwen3.6-35B-A3B | `qwen35moe` (IRON only) | Same as Qwen3.5 | Qwen3.6 (`Qwen36`: tool arguments as JSON, 16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`. All 40 layers (23 GB): decode at 5.8 tok/s (16.92), prompts in chunks at 25 ms a token (routed on the host, 16.93), cosine 0.985–0.996 against HF, every top token agrees. Prompts go a token at a time |
 
 ### 10.2 Tokenizers (`internal/tokenizer`, depending only on `golang.org/x/text`)
 
@@ -554,7 +554,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Speed of PLaMo 3 at 4 bits | Measured with another job loading the machine (a single GEMV 1.6× slower). Measure again on a quiet machine | 16.76 |
 | Other sizes of PLaMo 3 | 0.8B, 8B and 31B share the structure and should export, but have not been tried | 16.70 |
 | 4-bit KL against HF | The q4 KL for Gemma 4 and PLaMo 3 is against bf16 on the NPU. Only LFM3 was compared with HF fp32 (0.036) | 16.73, 16.76 |
-| MoE (Qwen3.6-35B-A3B) | All 40 layers run at q4, 5.8 tok/s (16.91, 16.92). MoE for prompts (a token at a time for now; needs an operator that streams every expert once a chunk) | 16.75, 16.89–16.92 |
+| MoE (Qwen3.6-35B-A3B) | All 40 layers run at q4, 5.8 tok/s; prompts in chunks at 25 ms a token (16.91–16.93). Most of the rest is the prompt's GDN layers (about 38 ms each) and how fast the experts' weights stream | 16.75, 16.89–16.93 |
 | MoE warning about reusing BDs | aiecc warns about reusing a BD after a `dma_free_task` with no completion guarantee. Thought harmless, but not proven statically | 16.75 |
 | The rounding fix in the other 4-bit exports | Only Gemma 4 E2B and LFM3-1.7B were exported again and measured (KL 0.093, 0.036). E4B, PLaMo 3 and the multimodal ones keep their old exports | 16.78 |
 | Anima's q8 over many seeds | Compared with fp32 on 3 images. One of 4 seeds changed the composition against bf16; how often that happens is not measured | 16.78 |
@@ -595,4 +595,4 @@ Collected from what the records call "not yet checked", "not measured" or "estim
   - Calls from ComfyUI nodes
   - A 512×512 export
   - A 4-bit DiT with GPTQ (`tools/amd/anima_gptq.py`, `iron_anima.py --q4-codes`, 16.87) checked as an image at 1024×1024 on the NPU (on the CPU at 512×512: latent cosine 0.939 against q8's 0.962)
-- The rest of Qwen3.6-35B-A3B (16.89–16.92; all 40 layers at q4, 5.8 tok/s, the convolution and the gated norm inside the GDN operator): MoE for prompts (every expert's weights streamed once a chunk, only the tokens routed to it computed; estimated about 1.2 s for 256 tokens). The convolution and the norm in Qwen3.5's prompt chunks too (the same state layout)
+- The rest of Qwen3.6-35B-A3B (16.89–16.93; all 40 layers at q4, 5.8 tok/s, prompts in chunks at 25 ms a token): faster GDN layers in prompt chunks, keeping the state between a conversation's turns. The convolution and the norm in dense Qwen3.5's decode step too (16.93's pairs and conv_pairs)
