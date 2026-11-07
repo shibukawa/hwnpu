@@ -104,6 +104,7 @@ Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`
 | `-idle` gives back pinned memory | The next request pays 0.8–2 s | 16.74 |
 | The cores' rounding to nearest even | Floor rounding pulls sums of inputs with a mean downward (Anima's DiT) | 16.78 |
 | MHA's head_dim a multiple of 64 | Pad 96 to 128 (LFM3-VL's tower) | 16.65 |
+| Images and audio in the final export form | Towers loaded on first use replace the banks; the chunk barrier bound to the old bank failed (ENOENT) until 2026-11-07. Send an image and a clip through `hwnpu-chat` after any change to the export | 16.81, 16.87 |
 | Layers with state (convolutions) copied at chunk boundaries | For rolling back to marks and for the prompt store | 16.66 |
 | **No** speculative decoding | Checking a draft costs 4.5 decode steps | |
 
@@ -140,11 +141,11 @@ Keep the format and raise accuracy by choosing the codes (levels) better. The fo
 | Order | Method | Tools | Example results | Notes |
 |---|---|---|---|---|
 | 1 | Rounding (RTN). q4nx picks the least error of 9 candidates | `iron_q4.quantize_fmt`, `palette.QuantizeBits` | Weight error 8.2 → 7.3 % | The baseline. The least weight error is not the least output error |
-| 2 | **GPTQ** (pushes each column's error onto the later columns, with H = E[xxᵀ]) | `tools/amd/q4_gptq.py` → AMD: `iron_export_lm.py --q4-codes`; Apple: `hwnpu-convert -codes` | E2B wiki-ja 0.221 → 0.081, LFM3 0.071 → 0.038, LFM3-VL README 0.164 → 0.061 (NPU) | Damp by **0.1** × the mean of H's diagonal (0.01 overfitted the calibration texts and made the GPL worse than rounding). Calibrate on general text (wikitext-2 and wiki40b-ja, 64 × 512 tokens); the repository's documents alone overfit too. Leave the BOS position out of H. Quantize the earlier layers before measuring the next ones (a few layers a pass) |
+| 2 | **GPTQ** (pushes each column's error onto the later columns, with H = E[xxᵀ]) | `tools/amd/q4_gptq.py` → AMD: `iron_export_lm.py --q4-codes`; Apple: `hwnpu-convert -codes` | NPU wiki-ja: E2B 0.221 → 0.081, E4B 0.083 → 0.049, LFM3 0.071 → 0.038, LFM3-VL 0.067 → 0.034, PLaMo 3 0.058 → 0.040. Anima's DiT q4: latent cosine 0.868 → 0.939 (q8 0.962) | Damp by **0.1** × the mean of H's diagonal (0.01 overfitted the calibration texts and made the GPL worse than rounding). Calibrate on general text (wikitext-2 and wiki40b-ja, 64 × 512 tokens); the repository's documents alone overfit too. Leave the BOS position out of H. Quantize the earlier layers before measuring the next ones (a few layers a pass) |
 | 3 | **Fitting the tables** (Apple's lutN): k-means weighted by E[x²] | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038, lut4 0.66 → 0.33 (through Go's converter) | Start from the uniform tables (starting from the k-means of least weight error gives the worst KL). The ANE check is in handoff-m3-gptq.md |
 | 4 | AWQ-style scales folded into the previous op | Not written | | model-fit.md T8, 2. When lut4 has to go lower |
 
-**Whether to adopt it**: the GPL, not used for calibration, must not get worse than rounding. For LFM3-Audio GPTQ leaves only the GPL unchanged (0.154 → 0.161), but the other four texts drop by half or more, so it was adopted. If a text gets worse, raise the damping (0.3 was tried) or add calibration text.
+**Whether to adopt it**: the GPL, not used for calibration, must not get worse than rounding. For LFM3-Audio GPTQ leaves only the GPL unchanged (0.154 → 0.161), but the other four texts drop by half or more, so it was adopted. A multimodal model's text part is often trained again (LFM3-VL / Audio / Omni): calibrate each, do not reuse the base model's codes. If a text gets worse, raise the damping (0.3 was tried) or add calibration text.
 
 **Cost of calibration**: fp32 on the CPU, 25–60 minutes for 2B models, 2.4 hours for E4B (over 30 GB in fp32; running two side by side ran out of memory). On Linux, run it with `systemd-run --user` (so it is not killed with the session).
 
@@ -219,8 +220,8 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 
 ## 11. In progress (2026-11-07)
 
-- AMD: exports with the GPTQ codes and KL on the NPU for E4B, PLaMo 3 and LFM3-Omni; E2B with images and audio, using E2B's codes
+- Done on AMD: GPTQ codes for E2B, E4B, LFM3 (and VL / Audio / Omni) and PLaMo 3, measured on the NPU (amd-npu-models.md 13, "continued"). Against bf16: E2B with images and audio gave the same answers to text, an image and a clip; PLaMo 3's translations word for word the same 14/20 rounded, 17/20 with GPTQ
 - Apple: checking the GPTQ lut6 / lut4 tables on the ANE ([handoff-m3-gptq.md](handoff-m3-gptq.md)). hwnpu-chat does not take `-codes` yet
-- Anima: GPTQ of the DiT (`anima_gptq.py`). Rounding at 512×512: velocity error 0.123, latent cosine 0.868
+- Anima: the 4-bit DiT with GPTQ (latent cosine 0.939 on the CPU at 512×512) not yet checked as an image at 1024×1024 on the NPU
 
 When results come in, update the table in 5.3 and this section.
