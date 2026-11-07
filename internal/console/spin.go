@@ -38,7 +38,7 @@ func Spin(w io.Writer, label string) (stop func()) {
 	}
 	start := time.Now()
 	draw := func(i int) {
-		fmt.Fprintf(w, "\r%s %s %ds\x1b[K", label, spinFrames[i%len(spinFrames)], int(time.Since(start).Seconds()))
+		io.WriteString(w, oneLine(w, fmt.Sprintf("\r%s %s %ds", label, spinFrames[i%len(spinFrames)], int(time.Since(start).Seconds()))))
 	}
 	draw(0)
 	done, exited := make(chan struct{}), make(chan struct{})
