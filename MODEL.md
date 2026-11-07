@@ -99,7 +99,7 @@ The columns are the memory installed in the machine. The second header row is ro
 | Anima-Turbo (1024 × 1024) | Image generation | 4.1 GB (the DiT stage, the largest) | none | measured |
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |
-| Qwen3.5-4B | Chat, code | about 3.6 GB | 32 KiB/token (8 GiB at 262144) | estimated from the weights; not yet checked on an NPU |
+| Qwen3.5-4B | Chat, code | about 4.2 GB (3.9 GiB of 8 bit weights) | 32 KiB/token (8 GiB at 262144; 114688 tokens on 16 GB) | runs on an M3's Neural Engine; memory estimated from the weights |
 | Qwen3.6-35B-A3B (planned) | Chat, code | about 25 GB | — | estimated from 4-bit weights; not ported |
 
 - The weights mix 4 and 8 bits (the MLP and output matrices at 4 bits, the attention projections at 8; for image generation, the DiT at 8 bits)

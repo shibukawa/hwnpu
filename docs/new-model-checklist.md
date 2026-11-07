@@ -79,6 +79,7 @@ Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`
 - Shrink the last layer with head-scale (PLaMo-Embedding), `-post-scale` (LFM3, 1.4–2.7 % a layer)
 - Keep residuals at 1/32, and divide by each row's maximum before a norm (Anima; a fixed scale made subnormals)
 - Fill padding rows with the last token (Gemma 4's eps becomes 0 in fp16 and gives NaN)
+- The ANE's own `softplus` and `silu` are inaccurate (softplus returned 0 for some inputs; silu off by 1.4 % in its tail). Use `builder.softplus` and `builder.silu` (written with exp and log). Products below fp16's smallest normal (6e-5) lose digits on the ANE: scale them up and divide later (Qwen3.5's GDN output, 16.88). `hwnpu-check` on the CPU does not show these: compare the per-position KL on the ANE with Core ML's CPU (`HWNPU_COREML_UNITS=cpu`)
 
 ### 3.4 Pass
 

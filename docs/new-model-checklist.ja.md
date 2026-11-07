@@ -79,6 +79,7 @@
 - 最後の層を head-scale で縮める (PLaMo-Embedding)、`-post-scale` (LFM3、1 層 1.4〜2.7 %)
 - 残差を 1/32 で持ち、正規化は行ごとの最大で割ってから (Anima。固定の倍率だと非正規数になる)
 - 詰め物の行を最後のトークンで埋める (Gemma 4 の eps が fp16 で 0 になって NaN)
+- ANE の `softplus` と `silu` は不正確 (softplus がある入力で 0、silu は裾で 1.4 % ずれる)。exp と log で書いた `builder.softplus`、`builder.silu` を使う。fp16 の正規の最小値 (6e-5) を下回る積は ANE で桁を失うので、大きくしてから後で割る (Qwen3.5 の GDN の出力、16.88)。CPU の `hwnpu-check` ではこれは見えないので、ANE と Core ML の CPU (`HWNPU_COREML_UNITS=cpu`) で位置ごとの KL を比べる
 
 ### 3.4 合格
 

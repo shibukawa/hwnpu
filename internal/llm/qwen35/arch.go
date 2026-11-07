@@ -13,7 +13,7 @@ var Arch = &llm.Arch{
 	Title:         "Qwen3.5",
 	ModelTypes:    []string{"qwen3_5", "qwen3_5_text"},
 	Architectures: []string{"Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM"},
-	Format:        "lut6",
+	Format:        "lut8",
 	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }
 

@@ -1,8 +1,8 @@
-# What each improvement bought (as of 2026-11-07, main up to #58, with the two-level attention and Anima checked on an M3)
+# What each improvement bought (as of 2026-11-07, main up to #58, with the two-level attention, Anima and Qwen3.5-4B checked on an M3)
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.81, and 16.84 to 16.87), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.81, and 16.84 to 16.88), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -226,6 +226,7 @@ Fitted to the ANE's limits: 1 GiB a package, 16384 per dimension, tables only pe
 | Anima's fp16 handling (DiT residuals at 1/32, `maxScaled` norms) | No fp16 overflow and no subnormals | Checked on an M3 (16.85) |
 | Anima's time part with 8 rows, its patch embedding in the first group of blocks (16.85) | With one row, and as a program of its own, Core ML puts the whole part on the CPU | All of Anima on the ANE |
 | Attention scores under 64 MiB a tensor (`mil.DitQChunk`, 16.85) | Past about 65–68 MiB a score tensor, q kᵀ and its softmax run 2–3× slower per score, whatever the shape | 1024×1024 at 512 queries is just under it; larger images take smaller chunks |
+| Qwen3.5's silu and softplus written with exp, log and real_div, the GDN's q scaled up 1024× (16.88) | The ANE's `softplus` gives 0 for some inputs (the decay becomes 1), its `silu` is 1.4% off and worse on small values in the tail; the products of o = q S fall to fp16 subnormals | KL on the ANE 0.33–0.76 → 0.005–0.007; passkeys in long prompts 1/3 → 3/3 |
 
 ### 7.2 Intel NPU (OpenVINO IR / Level Zero)
 
@@ -334,7 +335,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | d1-2B / d1-Omni-2B | `lfm3` in d1 mode | Same | System One API (`hwnpu-systemone`) | Images (d1-2B), images and audio (d1-Omni) | ◎ lut8 | Converts | — |
 | gemma-4-E2B-it | `gemma4` | byte-fallback BPE (`tokenizer.json`) | Gemma 4 | Text only on Apple / Intel | ◎ lut6, context 131072 | Converts | ◎ q4 7.9 tok/s, 1.78 GB (bf16 6.1 tok/s), images and audio too |
 | gemma-4-E4B-it | `gemma4` | Same | Gemma 4 | Text only | ○ lut6, one program (`-prefill auto`) | Converts | ○ q4 5.6 tok/s, 3.53 GB, context 4096 |
-| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen's split rules | Qwen3.5 | Text only (the vision tower is not converted) | △ checked on the CPU only, not yet on the ANE | Converts | — |
+| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen's split rules | Qwen3.5 | Text only (the vision tower is not converted) | ◎ lut8, one program (Q=8), all on the ANE, KL 0.005–0.007, about 8 tokens/s | Converts (int8) | — |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3, translation) | — | ○ lut8, one program, context 262144. Checked on an M3 that all of it is on the ANE, and the weight formats | Converts (int8). Translates on OpenVINO's CPU | ◎ q4 11.6 tok/s, 2.16 GiB, context 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (embedding API) | — | ◎ lut8 + head-scale | Converts (int8) | — |
 | BERT family (all-MiniLM-L6-v2 and so on) | `bert` | **Not implemented** (WordPiece) | — | — | Converts only (lut8) | Converts only (int8) | — |
@@ -409,9 +410,9 @@ In every format, the think budget (`-think-budget`) feeds in the closing mark th
 **Qwen3.5-4B** (16.62)
 - Structure: 24 Gated DeltaNet layers + 8 full-attention layers. The GDN state (128×128 per value head) cannot be written per position, so a new kind of state `st_` was added (replaced whole by the new state the program outputs). `step_valid` keeps padding tokens from changing the state. When speculative decoding accepts only part of a draft, it reruns with the accepted tokens only
 - Zero-centered RMSNorm (`1 + w`), an output gate, RoPE on the first 64 dimensions only. Sharded safetensors (`model.safetensors.index.json`) can now be read
-- Checked: 3.7e-7 against an fp64 reference. Only 2 layers of the real weights were fetched (a slow line): argmax 32/32 (fp16), KL 0.016 with lut6
-- Split into 9 parts at the attention (2.95 GiB with lut6), context 262144 (KV 32 KiB/token)
-- **Placement and speed on the ANE not yet checked**. Two programs at 5.9 GiB may exceed the ANE's cache
+- Checked: 3.7e-7 against an fp64 reference. All 32 layers against PyTorch fp32 (16.88): KL 0.0000 in fp16, 0.0015–0.0050 with lut8, 0.031–0.135 with lut6 (lut6 breaks answers, so lut8 is the default)
+- Split into 9 parts at the attention (3.9 GiB with lut8), context 262144 (KV 32 KiB/token; 114688 on 16 GB)
+- On an M3 (16.88): all on the ANE. Two programs exceed the ANE's cache, so one (Q=8). Second start 2–4.5 s. The ANE's `silu` and `softplus` made it lose long prompts; written with exp, log and real_div it reads them (KL 0.33–0.76 → 0.005–0.007, passkeys at 13K tokens 3/3)
 
 **PLaMo 3 Translate 2B** (16.70–71, 16.76)
 
@@ -484,10 +485,8 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 
 | Item | Unknown | How to check / what is needed | Section |
 |---|---|---|---|
-| Qwen3.5-4B as a whole | Placement on the ANE, speed, startup. Two programs at 5.9 GiB may exceed the compile cache (about 4 GiB) | `hwnpu-chat -use Qwen3.5-4B` on a Mac. If every start is slow, one program (`-prefill off`) or lut4 | 16.62 |
-| Qwen3.5's GDN state | Whether keeping it in fp16 accumulates error over long chats (PyTorch uses fp32) | Compare logits with an fp32 reference over a long chat | 16.62 |
-| Qwen3.5's Q=64 program | Compile time and placement of the update unrolled 64 times (about 18,000 ops) | If it does not fit, add the chunked form (WY representation) through `Params` | 16.62 |
-| Checking all 32 layers of Qwen3.5 | Only 2 layers were checked with the real weights. Does fp16 overflow in deeper layers? | `ref_logits.py` → `hwnpu-check` on a machine with a good line | 16.62 |
+| Qwen3.5's Q=64 program | Two programs (Q=8 and Q=64) take 7.9 GiB with lut8, over the ANE's cache, so it is not made by default. One program reads long prompts at 66 tokens/s (13K). Q=64's speed and compile time not measured | `-prefill on` | 16.62, 16.88 |
+| The ANE's silu in other models | LFM3, Gemma 4 and PLaMo 3 also use the ANE's `silu` (`blocks.SwiGLU` and others). Qwen3.5's 1.4% error may be part of the other models' lut6 / lut8 losses | Compare KL with `silu` written as exp and real_div | 16.88 |
 | Qwen3.5 with two-level attention | Do answers hold with two-level attention (`-sparse`)? | Passkey test | 16.62 |
 | Two-level attention's `Refresh` as the default | With 4 or 16 the passkeys hold and a call is 14–32% faster (checked 2026-11-06), but finer differences such as loss or KL are not measured on the Neural Engine | Compare the logits with choosing every call on real weights | 16.61 |
 | Where two-level attention starts in the prompt | At 64K reading in two levels is a tenth slower than the whole cache. Should the threshold of about 57K go up? | Compare the reading times from 64K to 96K | 16.61 |
