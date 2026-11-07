@@ -31,7 +31,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Two-level attention (`-sparse`) (16.61, 16.65) | ◎ a call −52% at 128K, −58% at 250K (LFM3) | ○ −24% at 128K, −44% at 250K (+11% at 64K) | | △ +1/8 and the copies (+0.8 GB at 250K) | | | △ approximate (passkeys kept) | Apple / Intel |
 | The Neural Engine reads prompts 128 tokens per call, logits of the last row alone (16.82) | unchanged | ○ at 16K LFM3 about −20%, E2B −25%, VL −22% | △ converted again once | | | | unchanged | Apple (models split at their attention) |
 | Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | unchanged | ◎ E2B 16K 27.8 → 12.6–13.2 s, 64K 205 → 94.6 s (2.1–2.2 times) | | ○ footprint 1805 → 1392 MB (64K) | | | unchanged (matches the program without a cache on the CPU) | Apple |
-| Neural Engine: silu written with exp and real_div (`blocks.SiLU`, 16.89) | △ +3% | △ +9% | △ converted again once | | | | ◎ lut8 KL 1/2.5 (LFM3 0.058 → 0.022), PLaMo 3 −20–40%; lut6 under a tenth | Apple (Intel unchanged) |
+| Neural Engine: silu written with exp and real_div (`blocks.SiLU`, 16.89) | △ +3% | △ +9% | △ converted again once | | | | ◎ lut8 KL 1/2.5 (LFM3 0.058 → 0.022), PLaMo 3 −20–40%; lut6 under a tenth. ◎ Anima's DiT: latent cosine with diffusers' fp32 0.55–0.85 → 0.67–0.98, no slower | Apple (Intel unchanged) |
 | Repetition detection (16.60) | ◎ felt (stops going round in circles) | | | | | | | All |
 | E4B as one program (`-prefill auto`) (16.65, 16.83) | ○ +25% | ✕ 7.5–8× slower when long (than `-prefill on`'s two) | ◎ 77–87 s → 4 s | ◎ half the weights | | | | Apple |
 | Identical files shared on the disk, cleanup (16.64, 16.79) | | | △ Apple: slow once right after the switch | | ◎ M3 about 50 → 20 GiB, two AMD exports 15.2 → 8.2 GiB | | | macOS / Linux (Btrfs, XFS) / Windows (ReFS, unverified) |
@@ -50,7 +50,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Apple: `hwnpu-image` with the compile cache (16.85) | | | ◎ 118 → 4.4 s (512×512), every start had compiled the DiT again | | ◎ no 4 GB of bundles a start | | | Apple |
 | Apple: Anima's attention 512 queries at a time (16.85) | ○ a step 7.0 → 4.5 s (1024×1024) | | | | | | unchanged | Apple |
 | Apple: Anima's VAE with `upsample_nearest_neighbor`, loaded one stage at a time (16.85) | ◎ VAE 14.5 → 3.7 s | | | ◎ 6.9 → 3.8 GB | | | stage 5 rel. error 4.8e-4 | Apple |
-| Apple: Anima at int8 by default (16.85) | ○ a step 4.5 → 4.2 s | | ○ | ○ | ○ export 4.6 → 2.8 GB | | △ latent cosine 0.902 against fp16 (lut8 0.858) | Apple |
+| Apple: Anima at int8 by default (16.85) | ○ a step 4.5 → 4.2 s | | ○ | ○ | ○ export 4.6 → 2.8 GB | | △ latent cosine 0.902 against fp16 (lut8 0.858); with the DiT's silu fixed (16.89), fp16 is only 0.006–0.025 nearer diffusers' fp32 | Apple |
 | Conversation marks keep only the ring slots in use (16.71) | | | | ○ 578 → 183 MB over 5 translations | | | | All |
 | Memory back to the OS after a conversion (16.71) | | | | ○ 2.4 GB → 154 MB right after startup | | | | All |
 | Cleaning up the `/dev/shm` left by OpenVINO (16.72) | | | | | ○ 8.4 GB a day | | | Intel / OpenVINO |
@@ -234,7 +234,7 @@ Fitted to the ANE's limits: 1 GiB a package, 16384 per dimension, tables only pe
 | Anima's fp16 handling (DiT residuals at 1/32, `maxScaled` norms) | No fp16 overflow and no subnormals | Checked on an M3 (16.85) |
 | Anima's time part with 8 rows, its patch embedding in the first group of blocks (16.85) | With one row, and as a program of its own, Core ML puts the whole part on the CPU | All of Anima on the ANE |
 | Attention scores under 64 MiB a tensor (`mil.DitQChunk`, 16.85) | Past about 65–68 MiB a score tensor, q kᵀ and its softmax run 2–3× slower per score, whatever the shape | 1024×1024 at 512 queries is just under it; larger images take smaller chunks |
-| The other models' silu written with exp and real_div too (`blocks.SiLU`, 16.89) | The ANE's `silu` was most of the loss in lut8 | KL on the ANE: LFM3 lut8 0.058 / 0.012 → 0.022 / 0.0048 (English / Japanese, as on Core ML's CPU), PLaMo 3 lut8 0.0067 / 0.0069 → 0.0053 / 0.0042, PLaMo-Embedding cosine 0.99986 → 0.99993. Gemma 4's `gelu` is unchanged by rewriting, so it stays |
+| The other models' silu written with exp and real_div too (`blocks.SiLU`, 16.89) | The ANE's `silu` was most of the loss in lut8 | KL on the ANE: LFM3 lut8 0.058 / 0.012 → 0.022 / 0.0048 (English / Japanese, as on Core ML's CPU), PLaMo 3 lut8 0.0067 / 0.0069 → 0.0053 / 0.0042, PLaMo-Embedding cosine 0.99986 → 0.99993. Gemma 4's `gelu` is unchanged by rewriting, so it stays. Anima's DiT (the time embedding and the modulation's input): latent cosine with diffusers' fp32 over 3 prompts 0.846 / 0.555 / 0.751 → 0.948 / 0.672 / 0.977, PSNR 12.6–14.7 → 14.1–25.8 dB; its VAE's silu changes no image and stays |
 | Qwen3.5's silu and softplus written with exp, log and real_div, the GDN's q scaled up 1024× (16.88) | The ANE's `softplus` gives 0 for some inputs (the decay becomes 1), its `silu` is 1.4% off and worse on small values in the tail; the products of o = q S fall to fp16 subnormals | KL on the ANE 0.33–0.76 → 0.005–0.007; passkeys in long prompts 1/3 → 3/3 |
 
 ### 7.2 Intel NPU (OpenVINO IR / Level Zero)
@@ -495,7 +495,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Item | Unknown | How to check / what is needed | Section |
 |---|---|---|---|
 | Qwen3.5's Q=64 program | Two programs (Q=8 and Q=64) take 7.9 GiB with lut8, over the ANE's cache, so it is not made by default. One program reads long prompts at 66 tokens/s (13K). Q=64's speed and compile time not measured | `-prefill on` | 16.62, 16.88 |
-| `blocks.SiLU` in the towers and multimodal models | LFM3-VL / Audio / Omni / d1 with their vision and audio towers, TTS and Anima's text take the same rewrite and are converted again, but only LFM3-1.7B, PLaMo 3 and PLaMo-Embedding were measured. Anima's DiT and VAE keep the ANE's `silu` | Compare VL's image descriptions, TTS and Anima's images with the earlier version | 16.89 |
+| `blocks.SiLU` in the towers and multimodal models | LFM3-VL / Audio / Omni / d1 with their vision and audio towers, TTS take the same rewrite and are converted again, but only LFM3-1.7B, PLaMo 3, PLaMo-Embedding and Anima were measured | Compare VL's image descriptions and TTS with the earlier version | 16.89 |
 | Qwen3.5 with two-level attention | Do answers hold with two-level attention (`-sparse`)? | Passkey test | 16.62 |
 | Two-level attention's `Refresh` as the default | With 4 or 16 the passkeys hold and a call is 14–32% faster (checked 2026-11-06), but finer differences such as loss or KL are not measured on the Neural Engine | Compare the logits with choosing every call on real weights | 16.61 |
 | Where two-level attention starts in the prompt | At 64K reading in two levels is a tenth slower than the whole cache. Should the threshold of about 57K go up? | Compare the reading times from 64K to 96K | 16.61 |
@@ -516,7 +516,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Long texts with PLaMo-Embedding | Do the last layer's values grow further in the 1024-token program (is head-scale enough)? | Vary the texts in `TestANEPrecision` | 16.34 |
 | BERT family | `hwnpu-check` on real weights and placement on the ANE (only checked on the CPU for Intel) | | 16.11 |
 | GPTQ's lut6 tables in the answers | On the ANE the KL falls as on the CPU, all on the ANE, same speed (16.89). Whether the answers get better is not told by 12 questions (10/12 either way). lut4 + wkmeans not tried on the ANE. hwnpu-chat does not take `-codes` yet | More questions and hwnpu-agent's tasks with and without the codes | 16.87, 16.89 |
-| Anima against diffusers in fp32 | On the M3 only compared with hwnpu's own fp16 export (int8: latent cosine 0.902). No torch on that machine | `tools/ref/ref_anima.py` → `-noise`, `-latents` | 16.85 |
+| Anima's remaining error against diffusers' fp32 | Measured in 16.89 (latent cosine 0.67–0.98 over 3 prompts after the DiT's silu). What is left is not split between the text's int8, the DiT's int8 and fp16 arithmetic | Swap the text and the DiT to fp16 one at a time | 16.85, 16.89 |
 | Anima above 1024×1024 | The smaller attention chunks for sizes past 1024 (`mil.DitQChunk`) are not measured, nor whether the VAE stages fit | Convert 1280×1280 and run | 16.85 |
 | Details of PLaMo 3's accuracy and speed | Placement and weight formats are checked. Translation quality and time for long documents are not measured in detail | Compare KL with fp16 on translation pairs | 16.71 |
 | PLaMo 3's two lut6 programs | Do they (about 3.6 GiB) fit the compile cache (about 4 GiB) and keep startup fast? | Start twice with `-format lut6` | 16.71 |

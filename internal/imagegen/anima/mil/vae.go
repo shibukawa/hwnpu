@@ -140,6 +140,9 @@ func vaeRes(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 	if x.Shape[1] != cout {
 		h = conv(g, x, path+".conv_shortcut", cout)
 	}
+	// the Neural Engine's own silu, unlike the DiT's (blocks.SiLU): written with exp and real_div,
+	// no image changed (PSNR within 0.04 dB of diffusers' fp32) and the VAE took 15 to 20 % longer
+	// (design.md 16.89)
 	a := g.op("silu", map[string]any{"x": chanNorm(g, x, path+".norm1.gamma")}, x.Shape...)
 	a = conv(g, a, path+".conv1", cout)
 	a = g.op("silu", map[string]any{"x": chanNorm(g, a, path+".norm2.gamma")}, a.Shape...)

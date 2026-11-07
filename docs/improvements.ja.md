@@ -31,7 +31,7 @@ design.md 16 章の実装記録 (16.89 まで) と model-fit.md、intel-npu-mode
 | 2 段の注意 (`-sparse`) (16.61, 16.65) | ◎ 1 回が 128K で −52%、250K で −58% (LFM3) | ○ 128K −24%、250K −44% (64K は +11%) | | △ +1/8 と写し (250K で +0.8 GB) | | | △ 近似 (合言葉は保つ) | Apple / Intel |
 | Neural Engine のプロンプトを 1 回 128 トークン、ロジットは最後の行だけ (16.82) | 変わらない | ○ 16K で LFM3 約 −20%、E2B −25%、VL −22% | △ 初回に変換し直す | | | | 変わらない | Apple (注意で分けたモデル) |
 | Neural Engine: Gemma 4 の KV を共有する層を最後の行だけ (16.83) | 変わらない | ◎ E2B 16K 27.8 → 12.6–13.2 s、64K 205 → 94.6 s (2.1–2.2 倍) | | ○ footprint 1805 → 1392 MB (64K) | | | 変わらない (CPU でキャッシュのない形と一致) | Apple |
-| Neural Engine: silu を exp と real_div で書く (`blocks.SiLU`、16.89) | △ +3 % | △ +9 % | △ 一度変換し直し | | | | ◎ lut8 の KL 1/2.5 (LFM3 0.058 → 0.022)、PLaMo 3 −20〜40 %。lut6 は 1 割弱 | Apple (Intel は変わらない) |
+| Neural Engine: silu を exp と real_div で書く (`blocks.SiLU`、16.89) | △ +3 % | △ +9 % | △ 一度変換し直し | | | | ◎ lut8 の KL 1/2.5 (LFM3 0.058 → 0.022)、PLaMo 3 −20〜40 %。lut6 は 1 割弱。◎ Anima の DiT: diffusers の fp32 との潜在のコサイン 0.55〜0.85 → 0.67〜0.98、遅くならない | Apple (Intel は変わらない) |
 | 繰り返しの検出 (16.60) | ◎ 体感 (堂々めぐりを止める) | | | | | | | 共通 |
 | E4B を 1 本に (`-prefill auto`) (16.65, 16.83) | ○ +25% | ✕ 長いと 7.5〜8 倍遅い (`-prefill on` の 2 本に比べ) | ◎ 77–87 s → 4 s | ◎ 重み半分 | | | | Apple |
 | 同じファイルをディスクの上で共有、掃除 (16.64, 16.79) | | | △ Apple: 置き換え直後の 1 回だけ遅い | | ◎ M3 約 50 → 20 GiB、AMD の書き出し 2 つ 15.2 → 8.2 GiB | | | macOS / Linux (Btrfs、XFS) / Windows (ReFS、未確認) |
@@ -50,7 +50,7 @@ design.md 16 章の実装記録 (16.89 まで) と model-fit.md、intel-npu-mode
 | Apple: `hwnpu-image` にコンパイルのキャッシュ (16.85) | | | ◎ 118 → 4.4 s (512×512)。毎回 DiT をコンパイルし直していた | | ◎ 1 回 4 GB のバンドルが溜まらない | | | Apple |
 | Apple: Anima の注意を 512 クエリずつ (16.85) | ○ 1 ステップ 7.0 → 4.5 s (1024×1024) | | | | | | 変わらない | Apple |
 | Apple: Anima の VAE を `upsample_nearest_neighbor` に、段ごとに読む (16.85) | ◎ VAE 14.5 → 3.7 s | | | ◎ 6.9 → 3.8 GB | | | 段 5 の相対誤差 4.8e-4 | Apple |
-| Apple: Anima の既定を int8 に (16.85) | ○ 1 ステップ 4.5 → 4.2 s | | ○ | ○ | ○ 書き出し 4.6 → 2.8 GB | | △ fp16 との潜在のコサイン 0.902 (lut8 は 0.858) | Apple |
+| Apple: Anima の既定を int8 に (16.85) | ○ 1 ステップ 4.5 → 4.2 s | | ○ | ○ | ○ 書き出し 4.6 → 2.8 GB | | △ fp16 との潜在のコサイン 0.902 (lut8 は 0.858)。DiT の silu を直した後 (16.89) は、fp16 は diffusers の fp32 に 0.006〜0.025 近いだけ | Apple |
 | 会話の印はリングの使っている分だけ (16.71) | | | | ○ 翻訳 5 回で 578 → 183 MB | | | | 共通 |
 | 変換の後にメモリを OS に返す (16.71) | | | | ○ 起動直後 2.4 GB → 154 MB | | | | 共通 |
 | OpenVINO が残す `/dev/shm` を片付ける (16.72) | | | | | ○ 1 日 8.4 GB | | | Intel / OpenVINO |
@@ -234,7 +234,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | Anima の fp16 への手当て (DiT の残差を 1/32 で持つ、`maxScaled` の norm) | fp16 であふれず、非正規数にもならない | M3 で確認 (16.85) |
 | Anima の時刻の部品を 8 行に、パッチの埋め込みを最初のブロックの群に (16.85) | 1 行のままや、単独のプログラムだと、Core ML が部品ごと CPU に置く | Anima の全部が ANE に載る |
 | 注意の点数を 1 つのテンソルで 64 MiB 以下に (`mil.DitQChunk`、16.85) | 点数のテンソルが 65〜68 MiB を超えると、形によらず q kᵀ と softmax が点数あたり 2〜3 倍遅くなる | 1024×1024 の 512 クエリはそのすぐ下。大きな絵は塊を小さくする |
-| ほかのモデルの silu も exp と real_div で (`blocks.SiLU`、16.89) | ANE の `silu` のずれが lut8 の損の大半だった | ANE での KL: LFM3 lut8 0.058 / 0.012 → 0.022 / 0.0048 (英 / 日、Core ML の CPU と同じ水準)、PLaMo 3 lut8 0.0067 / 0.0069 → 0.0053 / 0.0042、PLaMo-Embedding のコサイン 0.99986 → 0.99993。Gemma 4 の `gelu` は書き直しても同じなのでそのまま |
+| ほかのモデルの silu も exp と real_div で (`blocks.SiLU`、16.89) | ANE の `silu` のずれが lut8 の損の大半だった | ANE での KL: LFM3 lut8 0.058 / 0.012 → 0.022 / 0.0048 (英 / 日、Core ML の CPU と同じ水準)、PLaMo 3 lut8 0.0067 / 0.0069 → 0.0053 / 0.0042、PLaMo-Embedding のコサイン 0.99986 → 0.99993。Gemma 4 の `gelu` は書き直しても同じなのでそのまま。Anima の DiT (時刻の埋め込みと変調の入力): diffusers の fp32 との潜在のコサイン (3 つのプロンプト) 0.846 / 0.555 / 0.751 → 0.948 / 0.672 / 0.977、PSNR 12.6〜14.7 → 14.1〜25.8 dB。VAE の silu は画像を変えないのでそのまま |
 | Qwen3.5 の silu と softplus を exp、log、real_div で書く、GDN の q を 1024 倍 (16.88) | ANE の `softplus` はある入力で 0 (減衰が 1 になる)、`silu` は 1.4% ずれ、小さな値の裾ほど悪い。o = q S の積が fp16 の非正規数に落ちる | ANE での KL 0.33〜0.76 → 0.005〜0.007。長いプロンプトの合言葉 1/3 → 3/3 |
 
 ### 7.2 Intel NPU (OpenVINO IR / Level Zero)
@@ -496,7 +496,7 @@ Apple / Intel (`hwnpu-image -convert`):
 |---|---|---|---|
 | GPTQ の lut6 の表と答え | ANE でも CPU と同じく KL が下がり、全部 ANE、速さも同じ (16.89)。答えが良くなるかは 12 問では分からない (どちらも 10/12)。lut4 + wkmeans は ANE で試していない。hwnpu-chat はまだ `-codes` を取らない | 符号あり・なしで問いを増やし、hwnpu-agent の課題も | 16.87、16.89 |
 | Qwen3.5 の Q=64 のプログラム | 2 本 (Q=8 と Q=64) は lut8 で 7.9 GiB と ANE のキャッシュを超えるので既定では作らない。長いプロンプトの読みは 1 本で 66 tokens/s (13K)。Q=64 の速さとコンパイルの時間は測っていない | `-prefill on` | 16.62、16.88 |
-| `blocks.SiLU` の塔と多モーダル | LFM3-VL / Audio / Omni / d1 と視覚・音声の塔、TTS、Anima の文の部分も同じ書き換えで変換し直しになるが、測ったのは LFM3-1.7B、PLaMo 3、PLaMo-Embedding だけ。Anima の DiT と VAE の `silu` は変えていない | VL の画像の説明、TTS、Anima の画像を前の版と比べる | 16.89 |
+| `blocks.SiLU` の塔と多モーダル | LFM3-VL / Audio / Omni / d1 と視覚・音声の塔、TTS も同じ書き換えで変換し直しになるが、測ったのは LFM3-1.7B、PLaMo 3、PLaMo-Embedding、Anima だけ | VL の画像の説明、TTS を前の版と比べる | 16.89 |
 | Qwen3.5 と 2 段の注意 | 2 段の注意 (`-sparse`) で答えが保たれるか | 合言葉の試験 | 16.62 |
 | 2 段の注意の `Refresh` を既定に | 4 か 16 で合言葉は保ち 1 回 14–32% 速い (2026-11-06 確認) が、損失や KL のような細かい差は Neural Engine で測っていない | 実物でロジットを毎回選び直す形と比べる | 16.61 |
 | 2 段の注意のプリフィルの境目 | 64K では 2 段の読みが全部を読む形より 1 割遅い。約 57K の境目を上げるべきか | 64K〜96K で読む時間を比べる | 16.61 |
@@ -516,7 +516,7 @@ Apple / Intel (`hwnpu-image -convert`):
 | LFM3-Audio の TTS | 参照 (llama.cpp) と同じ音になるか。確かめたのは ASR で書き起こし直すことだけ | llama.cpp のサーバーの TTS と同じコードからデコードした音を比べる | 16.30–31 |
 | PLaMo-Embedding の長い文 | 1024 トークンのプログラムで最終層の値がさらに大きくならないか (head-scale で足りるか) | `TestANEPrecision` で文を変える | 16.34 |
 | BERT 系 | 実物での `hwnpu-check` と ANE への配置 (Intel 向けに CPU で照合しただけ) | | 16.11 |
-| Anima の diffusers の fp32 との照合 | M3 では hwnpu 自身の fp16 の書き出しとしか比べていない (int8 で潜在のコサイン 0.902)。その機械に torch がない | `tools/ref/ref_anima.py` → `-noise`、`-latents` | 16.85 |
+| Anima の diffusers の fp32 との残りの差 | 16.89 で測った (DiT の silu を直して 3 つのプロンプトで潜在のコサイン 0.67〜0.98)。残りが文の int8、DiT の int8、fp16 の計算のどれかは分けていない | 文と DiT を 1 つずつ fp16 にして比べる | 16.85、16.89 |
 | 1024×1024 より大きな Anima | 1024 を超える大きさで注意の塊を小さくした形 (`mil.DitQChunk`) の速さと、VAE の段が収まるかは測っていない | 1280×1280 を書き出して動かす | 16.85 |
 | PLaMo 3 の精度と速さの詳細 | 配置と重みの形式は確認済み。翻訳の質と長い文書の時間は詳しく測っていない | 翻訳の対で fp16 と KL を比べる | 16.71 |
 | PLaMo 3 の lut6 の 2 本 | 約 3.6 GiB がコンパイルのキャッシュ (約 4 GiB) に収まって、起動が速いままか | `-format lut6` で 2 回起動する | 16.71 |

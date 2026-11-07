@@ -2688,7 +2688,7 @@ Qwen3.6-35B-A3B の 1 トークン (q4nx、今の部品のまま) の見積も�
 
 **silu (`blocks.SiLU`)**
 
-- 16.88 の残り: Qwen3.5 で見つけた ANE の `silu` のずれ (1.4%、裾の小さな値ほど大きい) が、ほかのモデルの精度の損にも入っているか。`blocks.SwiGLU` と `Activation("silu")` を `x / (1 + exp(-x))` (`blocks.SiLU`) にし、LFM3 (VL、Audio、Omni、d1 の文の部分を含む)、LFM3 の視覚と音声の塔、TTS の depthformer、PLaMo 3、PLaMo-Embedding、Anima の文の部分 (Qwen3-0.6B) に効く
+- 16.88 の残り: Qwen3.5 で見つけた ANE の `silu` のずれ (1.4%、裾の小さな値ほど大きい) が、ほかのモデルの精度の損にも入っているか。`blocks.SwiGLU` と `Activation("silu")` を `x / (1 + exp(-x))` (`blocks.SiLU`) にし、LFM3 (VL、Audio、Omni、d1 の文の部分を含む)、LFM3 の視覚と音声の塔、TTS の depthformer、PLaMo 3、PLaMo-Embedding、Anima の文の部分 (Qwen3-0.6B) に効く。Anima の DiT の silu も (下)
 - 測り方: 128 トークンの英文 (LFM3 の model card) と日本文 (富士山、『こころ』、信濃川の段落) の PyTorch fp32 の参照 (`ref_logits.py`、BOS あり) に対し、`hwnpu-convert -seq 128` (キャッシュなし、2〜3 部分) を coremltools で CPU_AND_NE と CPU_ONLY に通して最後の logits の KL を比べた。`tools/ref/eval_logits.py` を parts.json を順につなげるように広げた (前の部分の出力を同じ名前の入力に、Gemma 4 の `ple` はチェックポイントの表の行を `--table` で)
 - 位置ごとの KL の平均 (英文 / 日本文)。どれも配置は全部 Neural Engine (`hwnpuinfo`):
 
@@ -2704,7 +2704,27 @@ Qwen3.6-35B-A3B の 1 トークン (q4nx、今の部品のまま) の見積も�
   - Gemma 4 E2B (lut6) の MLP は `gelu` (tanh 近似)。同じく `x / (1 + exp(-1.5958 (x + 0.044715 x³)))` で書いても KL は 0.243 / 0.424 → 0.240 / 0.428 で変わらない (CPU 0.245 / 0.411)。ANE の `gelu` は十分正確なのでそのまま
 - 費用 (LFM3 lut6、チャットの形: 注意で 7 部分、Q=8 と Q=128): 3790 トークンのプロンプトが 2.7 → 2.95 秒 (+9%、4 回ずつ 2 巡)、生成の 1 回の呼び出しが 33.9 → 35 ms 前後 (+3%、ばらつきに近い)。1 つの演算が 4 つになるため。温度 0 の要約の答えは見出しまで同じで、その先の言い回しは分かれた
 - 変換し直し: プログラムの名前は形式と設定で決まり、silu を変えても同じ名前になる。`llm.Arch.Revision` を足し、hwnpu-chat の変換の名前に `-r1` を入れた (`lfm3-r1-lut6-grouped-p8192-...`、`lfm3-vision-r1-512x512`、`embed-r1-lut8-s128`)。lfm3、lfm3-vision、lfm3-audio-encoder、plamo3、plamo-bi が 1。Anima は `ExportVersion` を 3 に。古い名前のプログラムは消さないので、ディスクに残る
-- 確かめていないこと: LFM3-VL / Audio / Omni / d1 と塔、TTS、Anima の画像 (どれも同じ書き換えで、変換し直しになる)。Anima の DiT と VAE の `silu` (`anima/mil` の自前の `op`) は変えていない
+- 確かめていないこと: LFM3-VL / Audio / Omni / d1 と塔、TTS (どれも同じ書き換えで、変換し直しになる)
+
+**Anima の画像 (M3、1024 × 1024、既定の int8 / int8)**
+
+- diffusers の fp32 (`tools/ref/ref_anima.py`、CPU で 1 枚 5 分) の参照を 3 つのプロンプト (少女と桜、本を読む眼鏡の男、山と湖の夕焼け) で作り、同じノイズ (`-noise`) から書き出しを変えて比べた (条件づけのコサイン、最後の潜在のコサイン、画像の PSNR)。16.85 では torch がなく、hwnpu 自身の fp16 の書き出しとしか比べていなかった
+- 試すために一時的な環境変数で silu を切り替え (コミットしない)、書き出しごとに 3 枚:
+
+| 書き出し | 条件づけ | 潜在のコサイン | PSNR (dB) | 1 ステップ / VAE |
+|---|---|---|---|---|
+| A: 文も ANE の silu (前の版) | 0.9976 / 0.9975 / 0.9928 | 0.847 / 0.559 / 0.752 | 12.6 / 12.7 / 14.8 | 4.1 s / 3.2 s |
+| B: 文だけ `blocks.SiLU` | 0.9976 / 0.9975 / 0.9924 | 0.846 / 0.555 / 0.751 | 12.6 / 12.7 / 14.7 | 4.1 s / 3.3〜3.4 s |
+| C: B と DiT の silu | 同じ | **0.948 / 0.672 / 0.977** | **16.1 / 14.1 / 25.8** | 4.1〜4.2 s / 3.4〜3.5 s |
+| D: C と VAE の silu | 同じ | C と同じ | 16.1 / 14.1 / 25.8 (+0.04 以内) | 4.2〜4.3 s / 4.0〜4.3 s |
+| E: C で DiT を fp16 | 同じ | 0.960 / 0.697 / 0.983 | 17.1 / 14.5 / 26.8 | 4.5 s / 3.7 s |
+
+  - 文の silu は効かない (条件づけの誤差は int8 の量子化で決まる)
+  - **DiT の silu** (時刻の埋め込み `dit_time` と、各ブロックと最後の層の変調の入力の `act`) が、ANE の上の誤差の大半だった。小さなテンソル (8 行と 1 行) で、28 ブロックすべての shift、scale、gate を動かす。直すと風景はほぼ参照どおり、少女も参照に寄り、男は窓とカーテンが参照に寄った (姿勢はまだ違う)。時間は変わらない
+  - VAE の silu は画像を変えず、VAE が 15〜20 % 遅くなるのでそのまま
+  - DiT の fp16 は C より少し近い (潜在 +0.006〜0.025) が 8 % 遅く、書き出しが 1.8 GB 増えるので、既定は int8 のまま。16.85 の「int8 は fp16 との潜在のコサイン 0.902」は両方に ANE の silu の誤差が入っていた
+- 採ったもの: DiT の 3 か所の silu を `blocks.SiLU` に (`anima/mil/dit.go`)。`ExportVersion` 3 (文と DiT)。最終のコードで書き出し直すと C と潜在がビット単位で同じ
+- 残る差: 2 つ目のプロンプトは C でも 0.67 (軌跡の分かれやすい種)。参照に対する残りの誤差の内訳 (文の int8、DiT の int8、fp16 の計算) は分けていない
 
 **Neural Engine のメモリ (`mem.NPUWired`、model-fit.md T10)**
 
