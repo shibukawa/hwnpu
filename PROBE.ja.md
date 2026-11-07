@@ -152,7 +152,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 | int4 | 0.45 GiB | CPU | CPU | 28.1 | 36 | 17 | 3.53 | 300 |
 | **int4** | 0.45 GiB | **GPU** | **GPU** | **8.5** | **117** | 57 | 0.47 | **35** |
 
-- Neural Engine で全速で動くのは lut4 だけです（M2 の macOS 27.2 では int8 と fp16 も全速でした。下の M2 の節）。4 ビットの重みは int8 に比べて 1 トークンで読むバイト数が半分で、生成の速さは重みの読み出しで決まります。
+- Neural Engine で全速で動くのは lut4 だけです（M2 では int8 と fp16 も全速でした。下の M2 の節。M3 を macOS 27.2 にしても int8 と fp16 は遅いままで、OS ではなくチップの違いです）。4 ビットの重みは int8 に比べて 1 トークンで読むバイト数が半分で、生成の速さは重みの読み出しで決まります。
 - Neural Engine と GPU の int4 は、1 トークンあたりのエネルギーがほぼ同じ（37 mJ と 35 mJ）で、CPU はその 7 倍ほどです。
 - 1 B の fp16 は大きさの上限を超えるので、CPU で動きます。
 - CPU は読み出すバイト数ではなく計算で頭打ちになり、どの形式でも 1 トークン 30 ms 前後で、3.3〜3.7 コア分を使います。量子化が効くのは NPU と GPU だけです。
@@ -212,7 +212,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 
 - 大きさの上限は M3 と層の数まで同じです。fp16 は 8 層（0.91 GiB）が Neural Engine に載り 9 層（1.02 GiB）は載らず、int8 は 17 層と 18 層、lut4 は 35 層（0.99 GiB）と 36 層です。0.91 GiB の fp16 のモデルを 3 つ同時に読み込んでも、3 つとも Neural Engine に載り、1 回 15〜16 ms と 1 つのときと同じでした。
 - lut4 は M3 と同じ速さなので、重みの読み出しで決まる生成もほぼ同じ速さのはずです。CPU は 2 割ほど遅くなります。
-- int8 と fp16 も全速で動きました。どの形式も重みを約 60 GB/s で読みます（0.49 B の fp16 で 15.9 ms）。M3 で全速だったのは lut4 だけです。M3 は macOS 27.0.1、M2 は 27.2 で測ったので、違いがチップによるのか OS によるのかはまだ分かりません。27.2 の M3 で `npuprobe bench -formats fp16,int8,lut4` を動かせば分かります。
+- int8 と fp16 も全速で動きました。どの形式も重みを約 60 GB/s で読みます（0.49 B の fp16 で 15.9 ms）。M3 で全速だったのは lut4 だけです。違いは OS ではなくチップによります。M3 を M2 と同じ macOS 27.2（Core ML も同じ Build 26B123）にして `npuprobe bench` を測り直しても、Neural Engine の int8 は 16 層で 42.2 ms（23 GB/s）、fp16 は 8 層で 45.6 ms（21 GB/s）と 27.0.1 のときと変わらず、lut4 だけが 7.6 ms（64 GB/s）でした（レポートは [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)）。
 - 上限を超えて CPU に置かれた lut4 は、M3 と同じく極端に遅くなります（40 層で 1 回 6.3 秒、48 層で 17.7 秒）。
 - コンパイルは M3 より長くかかります（lut4 の 32 層で 25 秒）。
 
