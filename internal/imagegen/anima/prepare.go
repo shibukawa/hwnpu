@@ -16,7 +16,7 @@ import (
 // ExportVersion is the layout of the programs Convert writes. Prepare names its exports by it,
 // so that an export of an earlier layout is not loaded by a later hwnpu: 2 is the time part of
 // mil.TimeRows rows and the patch embedding in the first group of blocks (design.md 16.85); 3 the
-// silu of the DiT and the text written with exp and real_div (blocks.SiLU, design.md 16.89).
+// silu of the DiT and the text written with exp and real_div (blocks.SiLU, design.md 16.95).
 const ExportVersion = 3
 
 // The Hugging Face repositories Prepare downloads from: the official split files (the diffusion

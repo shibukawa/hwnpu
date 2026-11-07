@@ -40,7 +40,7 @@ func Time() *Part {
 		x := g.input("x", 1, TimeRows, DitHidden)
 		// silu as blocks.SiLU: the Neural Engine's own silu here and on the modulation's input
 		// moved every block's shift and scale, and the final latents' cosine with diffusers' fp32
-		// was 0.55 to 0.85 over 3 prompts; with blocks.SiLU 0.67 to 0.98, no slower (design.md 16.89)
+		// was 0.55 to 0.85 over 3 prompts; with blocks.SiLU 0.67 to 0.98, no slower (design.md 16.95)
 		temb := g.Linear(g.SiLU(g.Linear(x, "dit.t_embedder.1.linear_1.weight", "", DitHidden)),
 			"dit.t_embedder.1.linear_2.weight", "", 3*DitHidden)
 		et := g.rmsNorm(x, "dit.t_embedding_norm.weight", 1e-6)

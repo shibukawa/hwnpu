@@ -271,7 +271,7 @@ func (g *Graph) SwiGLU(x *mlpackage.Var, gate, up, down string, inter, out int, 
 // x times its sigmoid, which gives the same values) is about 1.4% off on an M3, more on the small
 // values of its tail (design.md 16.88): the logits' KL from PyTorch's fp32 on the Neural Engine
 // fell 2.5 times with this form for LFM3-1.7B in lut8 (0.058 to 0.022), to that of the same program
-// on Core ML's CPU, and by a third for PLaMo 3 in lut8 (design.md 16.89). It costs 3 operations
+// on Core ML's CPU, and by a third for PLaMo 3 in lut8 (design.md 16.95). It costs 3 operations
 // more: a prompt is read about 9% slower, a step about 3%. Past x = -11, exp(-x) overflows fp16 to
 // inf and the quotient is 0 (silu is under 2e-4 there).
 func (g *Graph) SiLU(x *mlpackage.Var) *mlpackage.Var {
@@ -558,7 +558,7 @@ func (g *Graph) LayerNorm(x *mlpackage.Var, weight, bias string, n int, eps floa
 
 // Activation applies a Hugging Face hidden_act: gelu (exact), gelu_new / gelu_pytorch_tanh
 // (tanh approximation), relu, silu (SiLU). The Neural Engine's own gelu is kept: written with exp
-// and real_div, Gemma 4 E2B's KL was the same (design.md 16.89).
+// and real_div, Gemma 4 E2B's KL was the same (design.md 16.95).
 func (g *Graph) Activation(x *mlpackage.Var, act string) *mlpackage.Var {
 	switch act {
 	case "gelu":
