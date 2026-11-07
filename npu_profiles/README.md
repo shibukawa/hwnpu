@@ -5,6 +5,6 @@ Reports written by `cmd/npuprobe` and `cmd/powerbench` on real machines, named `
 | chip | reports |
 |---|---|
 | Apple M2 (MacBook Air, 16 GB, macOS 27.2) | `npuprobe-m2.md` (bench, limit) |
-| Apple M3 (MacBook Air, 16 GB, macOS 27.0.1) | `npuprobe-m3-split`, `-functions`, `-kv`, `-kv-mha`, `-kv-int8`, `-kv-limit`, `-kv-chunk`, `-kv-chunk-long`, `-attn`, `-seam`; `powerbench-m3`, `-cpu64`, `-rate100` |
+| Apple M3 (MacBook Air, 16 GB, macOS 27.0.1; `-macos27.2` on 27.2) | `npuprobe-m3-macos27.2` (bench), `npuprobe-m3-split`, `-functions`, `-kv`, `-kv-mha`, `-kv-int8`, `-kv-limit`, `-kv-chunk`, `-kv-chunk-long`, `-attn`, `-seam`; `powerbench-m3`, `-cpu64`, `-rate100` |
 
 The `.json` next to a `.md` is the same run in machine readable form. A new machine's report goes here as `npuprobe-<chip>.md`, with a section in PROBE.md.

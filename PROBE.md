@@ -152,7 +152,7 @@ Speed and energy at 16 layers (0.97 B weights). Speed from `npuprobe bench`, ene
 | int4 | 0.45 GiB | CPU | CPU | 28.1 | 36 | 17 | 3.53 | 300 |
 | **int4** | 0.45 GiB | **GPU** | **GPU** | **8.5** | **117** | 57 | 0.47 | **35** |
 
-- Only lut4 runs at full speed on the Neural Engine (on the M2 with macOS 27.2, int8 and fp16 did too; see the M2 section): 4 bit weights halve the bytes read per token against int8, and decoding is bound by the weight reads.
+- Only lut4 runs at full speed on the Neural Engine (on the M2, int8 and fp16 did too; see the M2 section. On the M3 with macOS 27.2 they stay slow, so the chip makes the difference, not the OS): 4 bit weights halve the bytes read per token against int8, and decoding is bound by the weight reads.
 - The Neural Engine and the GPU with int4 cost about the same energy per token (37 and 35 mJ); the CPU costs about 7 times more.
 - fp16 at 1 B is over the size limit and runs on the CPU.
 - The CPU is limited by the arithmetic, not the bytes: about 30 ms per token in every format, at 3.3 to 3.7 cores busy. Quantization only pays on the NPU and the GPU.
@@ -212,7 +212,7 @@ K tokens per call (`npuprobe verify -formats lut4 -layers 16`, 0.97 B weights in
 
 - The size limit is the M3's to the layer: fp16 8 layers (0.91 GiB) on the Neural Engine and 9 (1.02 GiB) not, int8 17 and 18, lut4 35 (0.99 GiB) and 36. Three fp16 models of 0.91 GiB loaded at once all stay on the Neural Engine at 15 to 16 ms a call, as alone.
 - lut4 runs at the M3's speed, so decoding bound by the weights should be about as fast. The CPU is about a fifth slower.
-- int8 and fp16 run at full speed too: every format reads its weights at about 60 GB/s (0.49 B fp16: 15.9 ms). On the M3 only lut4 did. The M3 ran macOS 27.0.1 and the M2 27.2, so whether the chip or the OS makes the difference is open; `npuprobe bench -formats fp16,int8,lut4` on the M3 with 27.2 tells.
+- int8 and fp16 run at full speed too: every format reads its weights at about 60 GB/s (0.49 B fp16: 15.9 ms). On the M3 only lut4 did, and the chip makes the difference, not the OS: rerun on the M3 with the M2's macOS 27.2 (the same Core ML, Build 26B123), `npuprobe bench` still gives int8 on the Neural Engine 42.2 ms at 16 layers (23 GB/s) and fp16 45.6 ms at 8 layers (21 GB/s), as on 27.0.1, and only lut4 7.6 ms (64 GB/s) (report: [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)).
 - lut4 put on the CPU over the limit is as slow as on the M3 (40 layers 6.3 s a call, 48 layers 17.7 s).
 - Compiling takes longer than on the M3 (lut4 32 layers: 25 s).
 
