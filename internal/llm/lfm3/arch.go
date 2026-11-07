@@ -12,6 +12,7 @@ import (
 // Arch registers LFM3 with the whitelist in internal/llm.
 var Arch = &llm.Arch{
 	Name:          "lfm3",
+	Revision:      1, // blocks.SiLU
 	Title:         "LFM3",
 	ModelTypes:    []string{"lfm3", "lfm3_vl", "lfm3_omni", "lfm3_audio"},
 	Architectures: []string{"Lfm3ForCausalLM", "Lfm3VlForConditionalGeneration", "Lfm3OmniForConditionalGeneration", "Lfm3AudioForConditionalGeneration"},

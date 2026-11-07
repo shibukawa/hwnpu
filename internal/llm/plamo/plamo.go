@@ -54,6 +54,7 @@ type Config struct {
 // architectures value: model_type "plamo" is shared with the causal PLaMo models.
 var Arch = &llm.Arch{
 	Name:          "plamo-bi",
+	Revision:      1, // blocks.SiLU
 	Title:         "PLaMo bidirectional encoder",
 	Architectures: []string{"PlamoBiModel"},
 	Params: []llm.Param{
@@ -289,7 +290,7 @@ func (m *builder) mlp(p string, h *mlpackage.Var, downScale float32) *mlpackage.
 	f := m.cfg.IntermediateSize
 	gate := m.LinearRows(h, p+"gate_up_proj.weight", 0, f)
 	up := m.LinearRows(h, p+"gate_up_proj.weight", f, 2*f)
-	gate = m.Op("silu", map[string]any{"x": gate}, gate.Shape...)
+	gate = m.SiLU(gate)
 	g := m.Op("mul", map[string]any{"x": gate, "y": up}, gate.Shape...)
 	if downScale != 1 {
 		g = m.Op("mul", map[string]any{"x": g, "y": m.B.ScalarF16(downScale)}, g.Shape...)

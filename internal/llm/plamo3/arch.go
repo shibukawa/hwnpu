@@ -12,6 +12,7 @@ import (
 // Arch registers PLaMo 3 with the whitelist in internal/llm.
 var Arch = &llm.Arch{
 	Name:          "plamo3",
+	Revision:      1, // blocks.SiLU
 	Title:         "PLaMo 3",
 	ModelTypes:    []string{"plamo3"},
 	Architectures: []string{"Plamo3ForCausalLM"},

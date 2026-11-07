@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/probe"
 )
 
@@ -27,7 +28,11 @@ type splitResult struct {
 	Ref         string    `json:"ref,omitempty"`     // units of the reference run
 	RelErr      []float64 `json:"rel_err,omitempty"` // after each part: rms(y - reference) / rms(reference)
 	MaxRSS      int64     `json:"max_rss,omitempty"` // peak resident memory of the process that ran the parts
-	Error       string    `json:"error,omitempty"`
+	// what loading and running the parts once added to the Neural Engine driver's wired memory
+	// (mem.NPUWired): where the weights are, outside the process's RSS. A program Core ML has
+	// just compiled comes onto the Neural Engine at its first call, not when it is loaded
+	NPUWired int64  `json:"npu_wired,omitempty"`
+	Error    string `json:"error,omitempty"`
 	// y after each part, passed from the child processes and dropped from the report.
 	Outputs [][]float32 `json:"outputs,omitempty"`
 }
@@ -57,6 +62,7 @@ func (p *prober) split(format string, layers, n int, layout string) splitResult 
 		}
 	}()
 	parts := probe.Split(layers, n)
+	wired0, wired := mem.NPUWired()
 	var pkg string
 	if s.Layout == "functions" {
 		pkg = filepath.Join(p.dir, fmt.Sprintf("probe_parts_%d_%d_%s_%d.mlpackage", layers, n, format, splitSeed))
@@ -98,6 +104,9 @@ func (p *prober) split(format string, layers, n int, layout string) splitResult 
 	if err := chain(); err != nil {
 		s.Error = "run: " + err.Error()
 		return s
+	}
+	if w, ok := mem.NPUWired(); wired && ok {
+		s.NPUWired = w - wired0
 	}
 	for _, l := range models {
 		s.Outputs = append(s.Outputs, readF16(l.out))
@@ -229,6 +238,9 @@ func logSplit(s splitResult) {
 		fmt.Printf("  all %d parts: %8.1f ms/token (parts alone add up to %.1f), %.0f GB/s, CPU use %.2f", len(s.Parts), s.MsPerToken, s.MsSumParts, s.gbps(), s.CPUUse)
 		if s.MaxRSS > 0 {
 			fmt.Printf(", peak RSS %.2f GiB", probe.GiB(s.MaxRSS))
+		}
+		if s.NPUWired > 0 {
+			fmt.Printf(", Neural Engine %.2f GiB", probe.GiB(s.NPUWired))
 		}
 		if s.MJPerToken != 0 {
 			fmt.Printf(", %.0f mJ/token", s.MJPerToken)

@@ -25,8 +25,9 @@ import (
 
 // Arch registers the audio encoder with the whitelist; it is chosen with -arch.
 var Arch = &llm.Arch{
-	Name:  "lfm3-audio-encoder",
-	Title: "LFM3 audio encoder",
+	Name:     "lfm3-audio-encoder",
+	Revision: 1, // blocks.SiLU
+	Title:    "LFM3 audio encoder",
 	Params: []llm.Param{
 		{Name: "frames", Default: "3000", Usage: "mel frames (10 ms each) of the audio encoder's program: the longest clip it takes"},
 	},
@@ -368,7 +369,7 @@ func (m *builder) downsample(x, mask *mlpackage.Var) *mlpackage.Var {
 	t := x.Shape[1]
 	h := m.Op("reshape", map[string]any{"x": x, "shape": m.B.Ints(1, int32(t), int32(c.MelBins), 1)}, 1, t, c.MelBins, 1)
 	mk := m.Op("reshape", map[string]any{"x": mask, "shape": m.B.Ints(1, int32(t), 1, 1)}, 1, t, 1, 1)
-	silu := func(v *mlpackage.Var) *mlpackage.Var { return m.Op("silu", map[string]any{"x": v}, v.Shape...) }
+	silu := m.SiLU
 	gate := func(v *mlpackage.Var) *mlpackage.Var {
 		mk = m.halve(mk)
 		return m.Op("mul", map[string]any{"x": v, "y": mk}, v.Shape...)

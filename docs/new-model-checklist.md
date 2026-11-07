@@ -17,6 +17,7 @@ The numbers come from chapter 16 of [design.md](design.md) (section numbers in p
 | 7 | Speed (generation, prompts, startup) | Each NPU |
 | 8 | Long contexts | Mac (Intel) |
 | 9 | Checks in use, and the record | Each NPU |
+| 10 | Values for combining it as a part (residency, input and output kinds) | Each NPU |
 
 Each "pass" is a guide. When a model does not meet it, write the reason in design.md before going on.
 
@@ -97,6 +98,7 @@ Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`
 | Check top-1 against HF (`iron_export_lm.py --check`) | Long prompts (over 2000 tokens) too | 16.76 |
 | One full ELF | Switching xclbins costs 0.46 ms each | 16.45–50 |
 | Prompt chunks of 1024 | 20 % faster than 2048. At 256 the window layers become rings and cannot roll back | 16.54 |
+| At most 3 transfers queued on one shim channel | Queuing 16 without waiting hung the command, and two hangs in a row needed a reboot. Wait for the oldest before queuing more | 16.89 (PR #66) |
 | Each command under 2 s | Longer ones end in `ERT_CMD_STATE_TIMEOUT`. Split them at export (`SCRATCHPAD_WORDS`) | 16.65 |
 | Window layers read only their window (`iron_window.py`) | Prompts −12 %. Without an empty command before each chunk (`chunkBarrier`) the second chunk hangs. The caches' rows are written as `cache_rows` | 16.84, 16.87 |
 | KV-shared layers on the prompt's last row only | Gemma 4 E2B's prompts 2.3× faster | 16.80 |
@@ -215,11 +217,30 @@ Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for wh
 - The tables in [improvements.md](improvements.md) and [improvements.ja.md](improvements.ja.md) (speed, memory, accuracy, the model list in section 10, not yet verified in section 11)
 - What could not be measured on a Mac goes into `docs/handoff-*.md`, with what to bring, the commands and the expected values
 
-## 10. Tried without effect (do not repeat)
+## 10. Values for combining it as a part
+
+Later, models will be chained, such as speech recognition → LLM → TTS, and run at the same time in one process (design.md 16.94, a plan, not implemented). Measure and record the values that the residency management and the matching with the connected models will need when the model comes in.
+
+| What to record | How to measure | What it is for |
+|---|---|---|
+| The pinned size of each part (stage, tower, DiT, VAE, ...) | AMD: the size of the process's `/dev/accel/accel0` mappings (`smaps`). Mac: each part's weights and `phys_footprint` | The memory budget |
+| Each part's reload time (the second load) | AMD: `Release` / `Reload`. Mac: when the ANE's cache hits | Whether it may be evicted. Parts whose delay is heard, as in a speech chain, stay resident |
+| Parts that run together, and parts that run in turn | From the flow of the processing | Only parts that run in turn can be loaded a stage at a time (Anima's text → DiT → VAE) |
+| AMD: the longest command | Logs of `hwnpu-chat` / `irongraph` | Other models wait for it. The further below 2 s (4.1), the easier to run beside others |
+| Mac: the parts' total weights and the switching time | `TestCallTimes`'s alternating calls | Past the ANE's cache (about 4 GiB), parts are evicted and recompiled in minutes. A switch costs 15–35 ms |
+| The data kinds and conditions of the inputs and outputs | The model card and the preprocessing | Text (tokenizer and languages), structured text (can it follow a schema), images (sizes it takes), audio (sample rate, channels). For matching against the connected models |
+| Whether it can stream, and the time to the first output | Feed it chunks and take chunks out | Estimating the delay of a speech chain |
+
+- Pass data to other models as text (token IDs when the tokenizer is the same). Hidden states are not compatible with another model's, even with the same tokenizer. Connect vectors directly only between parts trained together (LFM3-Audio's text model and depthformer, a tower and its projection, Anima's text encoder and adapter)
+- Record a model that keeps audio as audio (Audio, Omni) as one part whose input and output are audio
+
+**Pass**: the values in the table above are written in the design.md section.
+
+## 11. Tried without effect (do not repeat)
 
 The gist of section 8 of [improvements.md](improvements.md): padding small models into batches for the ANE (slower than the CPU), getting past 1 GiB with multifunction (all on the CPU), the KV cache in MLState, an int8 KV cache, loading the next tier in the background, one Q=16 program, E4B at lut4, compressing the model, sparse attention on the top keys alone, AMD attention at 4 bits, a GEMV with one core per column, copying MoE experts, the DiT at `HIGH`, the DiT at q4 by default, q4nx prompts through bf16, RMSNorm with a fixed scale.
 
-## 11. In progress (2026-11-07)
+## 12. In progress (2026-11-07)
 
 - Done on AMD: GPTQ codes for E2B, E4B, LFM3 (and VL / Audio / Omni) and PLaMo 3, measured on the NPU (amd-npu-models.md 13, "continued"). Against bf16: E2B with images and audio gave the same answers to text, an image and a clip; PLaMo 3's translations word for word the same 14/20 rounded, 17/20 with GPTQ
 - Apple: checking the GPTQ lut6 / lut4 tables on the ANE ([handoff-m3-gptq.md](handoff-m3-gptq.md)). hwnpu-chat does not take `-codes` yet

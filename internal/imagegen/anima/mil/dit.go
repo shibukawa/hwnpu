@@ -38,7 +38,10 @@ const TimeRows = 8
 func Time() *Part {
 	return &Part{Name: "dit_time", build: func(g *graph) {
 		x := g.input("x", 1, TimeRows, DitHidden)
-		temb := g.Linear(g.op("silu", map[string]any{"x": g.Linear(x, "dit.t_embedder.1.linear_1.weight", "", DitHidden)}, 1, TimeRows, DitHidden),
+		// silu as blocks.SiLU: the Neural Engine's own silu here and on the modulation's input
+		// moved every block's shift and scale, and the final latents' cosine with diffusers' fp32
+		// was 0.55 to 0.85 over 3 prompts; with blocks.SiLU 0.67 to 0.98, no slower (design.md 16.95)
+		temb := g.Linear(g.SiLU(g.Linear(x, "dit.t_embedder.1.linear_1.weight", "", DitHidden)),
 			"dit.t_embedder.1.linear_2.weight", "", 3*DitHidden)
 		et := g.rmsNorm(x, "dit.t_embedding_norm.weight", 1e-6)
 		g.output(g.concat(-1, temb, et))
@@ -96,7 +99,7 @@ func Blocks(w, h, first, count, qchunk int) *Part {
 		t := g.input("t", 1, 1, TimeDim)
 		ctx := g.input("ctx", 1, TextRows, textHidden)
 		temb := g.slice(t, -1, 0, 3*DitHidden)
-		act := g.op("silu", map[string]any{"x": g.slice(t, -1, 3*DitHidden, TimeDim)}, 1, 1, DitHidden)
+		act := g.SiLU(g.slice(t, -1, 3*DitHidden, TimeDim))
 		cos, sin := ropeTables(g, gh, gw)
 		for i := first; i < first+count; i++ {
 			x = ditBlock(g, i, x, act, temb, ctx, cos, sin, qchunk)
@@ -113,7 +116,7 @@ func Final(w, h int) *Part {
 		n := gh * gw
 		x := g.input("x", 1, n, DitHidden)
 		t := g.input("t", 1, 1, TimeDim)
-		act := g.op("silu", map[string]any{"x": g.slice(t, -1, 3*DitHidden, TimeDim)}, 1, 1, DitHidden)
+		act := g.SiLU(g.slice(t, -1, 3*DitHidden, TimeDim))
 		m := g.Linear(g.Linear(act, "dit.final_layer.adaln_modulation.1.weight", "", ditLoRA), "dit.final_layer.adaln_modulation.2.weight", "", 2*DitHidden)
 		m = g.add(m, g.slice(t, -1, 0, 2*DitHidden))
 		shift, scale := g.slice(m, -1, 0, DitHidden), g.slice(m, -1, DitHidden, 2*DitHidden)
