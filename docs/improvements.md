@@ -274,6 +274,8 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | Splitting commands (`SCRATCHPAD_WORDS` 24) | Keeps each command under amdxdna's 2 s timeout and the 64 MiB heap | Without the gather, commands grew too long; they are now split at export |
 | Retrying when the heap runs out (`ENOSPC`) | Releases the decode run and tries again | Same as IRON |
 | MoE building blocks (at Qwen3.6-35B-A3B's sizes, 16.75) | Reads the chosen experts in place without copying (`ExpertQGEMV`). A layer in 4 ops (`MoEGateUp`, `MoEDown`) | 5.2 → 2.3 → 1.27 ms a layer. Estimated 8–10 tokens/s. Pinning 35 GB does not change the speed |
+| An IRON operator for Gated DeltaNet (`iron_gdn.py`, 16.89) | mlir-aie's recurrence kernel, with the rows gathered per column and the state moved a slice at a time (8 columns × 2 cores) | 0.26–0.33 ms a layer in decode, 0.11 ms a row in a prompt. Cosine 1.000000 against the reference |
+| Choosing the MoE route on the device (`iron_moe.py`, 16.89) | The routing command writes the experts' offsets into the experts' command's scratchpad (a feedback buffer in the device heap). The host neither reads the logits nor writes the words | A layer is two commands, A (mixer and routing) and B (experts, 1.0 ms). With Qwen3.6's 2 layers, NPU vs the host graph: cosine 0.99997 |
 | Rounding to nearest even in hwnpu's kernels (16.78) | Removes the downward bias of bf16 narrowing that grows with the number of inputs | Unit check with inputs of mean 1: IRON's `DequantBFP` path cosine 0.968, hwnpu's `QDequant` (bf16) 0.99994. Language models keep `DequantBFP` for prompts (bf16 is 5–9 % slower there and changes nothing) |
 | Anima's DiT at q8 (`iron_anima.py --dit-attn`, `--dit-mlp`, 16.78) | Pinned 5020 → 3445 MiB at 1024×1024 | 2 % slower (weights dequantized every step), same energy (about 1050 J an image). `q4` can be chosen (2710 MiB) |
 | Sharing files between exports (`iron.ShareExport`, 16.79) | Disk: the same files, and the same start of a bank, of exports side by side are kept once | Gemma 4 E2B text and with images and audio 15.2 → 8.2 GiB on Btrfs. Once per export, before it loads. Anima's images stay byte for byte the same |
@@ -344,12 +346,12 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | d1-2B / d1-Omni-2B | `lfm3` in d1 mode | Same | System One API (`hwnpu-systemone`) | Images (d1-2B), images and audio (d1-Omni) | ◎ lut8 | Converts | — |
 | gemma-4-E2B-it | `gemma4` | byte-fallback BPE (`tokenizer.json`) | Gemma 4 | Text only on Apple / Intel | ◎ lut6, context 131072 | Converts | ◎ q4 7.9 tok/s, 1.78 GB (bf16 6.1 tok/s), images and audio too |
 | gemma-4-E4B-it | `gemma4` | Same | Gemma 4 | Text only | ○ lut6, one program (`-prefill auto`) | Converts | ○ q4 5.6 tok/s, 3.53 GB, context 4096 |
-| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen's split rules | Qwen3.5 | Text only (the vision tower is not converted) | ◎ lut8, one program (Q=8), all on the ANE, KL 0.005–0.007, about 8 tokens/s | Converts (int8) | — |
+| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen's split rules | Qwen3.5 | Text only (the vision tower is not converted) | ◎ lut8, one program (Q=8), all on the ANE, KL 0.005–0.007, about 8 tokens/s | Converts (int8) | ○ `iron_export_lm.py qwen35 --q4`. 32 layers at 6.4 tok/s (16.94), 4.7 GB. Top token 8/9 against HF (the host graph at the same q4 misses the same one, 16.92) |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3, translation) | — | ○ lut8, one program, context 262144. Checked on an M3 that all of it is on the ANE, and the weight formats | Converts (int8). Translates on OpenVINO's CPU | ◎ q4 11.6 tok/s, 2.16 GiB, context 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (embedding API) | — | ◎ lut8 + head-scale | Converts (int8) | — |
 | BERT family (all-MiniLM-L6-v2 and so on) | `bert` | **Not implemented** (WordPiece) | — | — | Converts only (lut8) | Converts only (int8) | — |
 | Anima-Turbo (image generation) | `internal/imagegen/anima` (built from one MIL description) | Qwen3 BPE + T5 Unigram | — (`hwnpu-image`) | Images out | ◎ M3: 1024×1024, 8 steps in about 40 s, 3.8 GB (int8) | △ Converts. Checked on OpenVINO's CPU | ◎ 1024×1024, 8 steps in about 68 s, 3.4 GiB pinned (DiT at 8 bits) |
-| Qwen3.6-35B-A3B (reference) | Not ported | — | — | — | — | — | Only MoE layers measured, with random weights (16.75) |
+| Qwen3.6-35B-A3B | `qwen35moe` (IRON only) | Same as Qwen3.5 | Qwen3.6 (`Qwen36`: tool arguments as JSON, 16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`. All 40 layers (23 GB): decode at 5.8 tok/s (16.92), prompts in chunks at 25 ms a token (routed on the host, 16.93), cosine 0.985–0.996 against HF, every top token agrees. Prompts go a token at a time |
 
 ### 10.2 Tokenizers (`internal/tokenizer`, depending only on `golang.org/x/text`)
 
@@ -472,11 +474,11 @@ Apple / Intel (`hwnpu-image -convert`):
 - Core ML's defaults are int8 for the text and the DiT: as fast as fp16 or faster (the DiT is bound by its attention, not its weights), and nearer fp16 than lut8. The text does not fit at fp16 (1.0 GB)
 - Self-attention is about half of a block. Its cost follows the number of scores (q kᵀ about 16 G scores/s, the softmax about 8 G/s), not the inner dimension; the chunking, Core ML's own `scaled_dot_product_attention` and other layouts gain at most 11 %
 
-**Qwen3.6-35B-A3B (reference, MoE building blocks only)** (16.75)
-- Before bringing the model over, MoE layers that today's IRON can express were measured at its sizes (random weights)
-- Reading 4-bit experts in place and folding a layer into 4 ops: 1.27 ms a layer
-- Estimated 100–120 ms a token (8–10 tok/s)
-- There is no IRON form of Gated DeltaNet yet
+**Qwen3.6-35B-A3B** (16.75, 16.89)
+- Before bringing the model over, MoE layers that today's IRON can express were measured at its sizes (random weights). Reading 4-bit experts in place and folding a layer into 4 ops: 1.27 ms a layer
+- AMD (16.89): Gated DeltaNet is an IRON operator of hwnpu's (`iron_gdn.py`). The route is chosen on the device: a layer splits into a routing command A and an experts' command B, and A writes the experts' offsets into B's scratchpad
+- Cosine 0.998–0.9998 against HF on 2 layers of real weights (layers 0 and 3; q4nx experts). Decode only; a prompt runs a token at a time
+- A takes 2.9–5 ms, B 1.0 ms, the head 5.9 ms (q4). Estimated about 210 ms (5 tok/s) for 40 layers. Most of the rest is A's op count (IRON's short convolution is about 10 ops)
 
 **PLaMo-Embedding-1B** (16.18–19, 16.23, 16.34)
 - Structure: PLaMo's decoder with bidirectional attention. The fused `qkv_proj` and `gate_up_proj` are split by row ranges (8192 at a time, because of the 16384 limit)
@@ -554,7 +556,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Speed of PLaMo 3 at 4 bits | Measured with another job loading the machine (a single GEMV 1.6× slower). Measure again on a quiet machine | 16.76 |
 | Other sizes of PLaMo 3 | 0.8B, 8B and 31B share the structure and should export, but have not been tried | 16.70 |
 | 4-bit KL against HF | The q4 KL for Gemma 4 and PLaMo 3 is against bf16 on the NPU. Only LFM3 was compared with HF fp32 (0.036) | 16.73, 16.76 |
-| MoE (Qwen3.6-35B-A3B) | Loading and running all 40 layers (20 GB of tables) at q4 (tried up to 12 layers; 35 GB pinned checked with bf16). KL with real weights (with random weights, stacking layers gives cosine 0.997 at 12 layers). IRON forms of Gated DeltaNet and attention, MoE for prompts. 8–10 tok/s is an estimate | 16.75 |
+| MoE (Qwen3.6-35B-A3B) | All 40 layers run at q4, 5.8 tok/s; prompts in chunks at 25 ms a token (16.91–16.93). Most of the rest is the prompt's GDN layers (about 38 ms each) and how fast the experts' weights stream | 16.75, 16.89–16.93 |
 | MoE warning about reusing BDs | aiecc warns about reusing a BD after a `dma_free_task` with no completion guarantee. Thought harmless, but not proven statically | 16.75 |
 | The rounding fix in the other 4-bit exports | Only Gemma 4 E2B and LFM3-1.7B were exported again and measured (KL 0.093, 0.036). E4B, PLaMo 3 and the multimodal ones keep their old exports | 16.78 |
 | Anima's q8 over many seeds | Compared with fp32 on 3 images. One of 4 seeds changed the composition against bf16; how often that happens is not measured | 16.78 |
@@ -595,4 +597,4 @@ Collected from what the records call "not yet checked", "not measured" or "estim
   - Calls from ComfyUI nodes
   - A 512×512 export
   - A 4-bit DiT with GPTQ (`tools/amd/anima_gptq.py`, `iron_anima.py --q4-codes`, 16.87) checked as an image at 1024×1024 on the NPU (on the CPU at 512×512: latent cosine 0.939 against q8's 0.962)
-- Porting Qwen3.6-35B-A3B: an IRON form of Gated DeltaNet, and choosing the route on the device
+- The rest of Qwen3.6-35B-A3B (16.89–16.93; all 40 layers at q4, 5.8 tok/s, prompts in chunks at 25 ms a token): the prompt chunk's projection GEMMs and weight expansions (1.6 s a chunk however short: 256 rows computed whatever the call's, the weights expanded every chunk, 16.95)

@@ -172,6 +172,29 @@ func (r *elfRun) SetBuffer(i int, b backend.Buffer) error {
 	return nil
 }
 
+// UseScratchpad points the control code's ctrl scratchpad at n bytes of b from off, which the
+// device writes: the run's own scratchpad goes, and nothing syncs b's bytes from the host.
+func (r *elfRun) UseScratchpad(b backend.Buffer, off, n int) error {
+	buf, ok := b.(*buffer)
+	if !ok || buf.d != r.p.d {
+		return errors.New("amd: buffer was not allocated by this device")
+	}
+	if r.scratch == nil {
+		return fmt.Errorf("amd: kernel %s reads no ctrl scratchpad", r.inst.FullName())
+	}
+	if off < 0 || n <= 0 || off+n > len(buf.mem) || off%4 != 0 {
+		return fmt.Errorf("amd: scratchpad [%d, %d) of a %d byte buffer", off, off+n, len(buf.mem))
+	}
+	for _, rel := range r.inst.Relocs {
+		if rel.Target == aieelf.TargetScratchpad {
+			aieelf.Patch(r.instr.mem, r.inst.Ctrl, rel, buf.bo.DeviceAddr()+uint64(off))
+		}
+	}
+	err := r.scratch.Close()
+	r.scratch, r.dirty = nil, true
+	return err
+}
+
 // Scratchpad is the ctrl scratchpad the control code reads per command, or nil.
 func (r *elfRun) Scratchpad() []byte {
 	if r.scratch == nil {
@@ -193,7 +216,7 @@ func (r *elfRun) Submit() (backend.Fence, error) {
 			}
 			var addr uint64
 			if b := r.bufs[rel.Arg]; b != nil {
-				addr = b.bo.DeviceAddr()
+				addr = b.dmaAddr()
 			}
 			aieelf.Patch(r.instr.mem, r.inst.Ctrl, rel, addr)
 		}

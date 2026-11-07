@@ -217,6 +217,26 @@ func (r *Run) Scratchpad() []byte {
 	return nil
 }
 
+// UseScratchpad makes the run's control code read its ctrl scratchpad from n bytes of b at off,
+// in place of a scratchpad of its own: memory the device writes (an earlier command's output,
+// which sets this command's parameters). The run then neither writes nor syncs it, and
+// Scratchpad returns nil.
+func (r *Run) UseScratchpad(b *Buffer, off, n int) error {
+	if b == nil || b.be == nil {
+		return fmt.Errorf("hwnpu: scratchpad: nil or closed buffer")
+	}
+	if off < 0 || n <= 0 || off+n > len(b.be.Bytes()) {
+		return fmt.Errorf("hwnpu: scratchpad: [%d, %d) of a %d byte buffer", off, off+n, len(b.be.Bytes()))
+	}
+	s, ok := r.be.(interface {
+		UseScratchpad(b backend.Buffer, off, n int) error
+	})
+	if !ok {
+		return fmt.Errorf("hwnpu: this device's runs read their own scratchpad only: %w", ErrUnsupported)
+	}
+	return s.UseScratchpad(b.be, off, n)
+}
+
 // Close waits for a running submission and releases the run.
 func (r *Run) Close() error {
 	if r.be == nil {

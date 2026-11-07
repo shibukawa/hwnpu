@@ -56,6 +56,13 @@ type version struct {
 	run *hwnpu.Run
 	// barrier is the decode step's empty command (chunkBarrier), kept.
 	barrier *hwnpu.Run
+	// stepProg is the decode ELF loaded again, a hardware context of its own, and stepRun its
+	// empty command (stepBarrier).
+	stepProg *hwnpu.Program
+	stepRun  *hwnpu.Run
+	// runs are a decode step's commands when it is several (Qwen3.6's: two a layer), each
+	// kept as run is; runs[0] is run.
+	runs []*hwnpu.Run
 	// steps are the runs of a version packaged as an xclbin per step (steps.go).
 	steps   []*stepRun
 	streams stepStreams
@@ -98,9 +105,6 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 		ver := &version{m: v, args: map[string]*hwnpu.Buffer{}}
 		switch name {
 		case "decode":
-			if v.ELF != "" && len(v.Kernels) != 1 {
-				return fmt.Errorf("iron: the decode step has %d commands", len(v.Kernels))
-			}
 			m.decode = ver // its run is made once every program's PDIs are in the heap
 		case "prompt":
 			m.prompt = ver
@@ -122,7 +126,13 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 			if _, ok := m.banks[a.Kind]; ok {
 				continue
 			}
-			buf, err := dev.AllocBuffer(max(a.Bytes, 4096))
+			var opts []hwnpu.BufferOption
+			if a.Kind == "feedback" && len(v.Fed) > 0 {
+				// the fed commands' ctrl scratchpads: device heap memory, as the scratchpad
+				// a run makes for itself (IRON's feedback is the next run's scratchpad)
+				opts = append(opts, hwnpu.WithBufferKind(hwnpu.BufferInstructions))
+			}
+			buf, err := dev.AllocBuffer(max(a.Bytes, 4096), opts...)
 			if err != nil {
 				return fmt.Errorf("iron: %s: argument %s: %w", name, a.Kind, err)
 			}
@@ -139,14 +149,14 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 			logf("%s: %d commands", name, len(v.Kernels))
 		}
 	}
-	if m.decode == nil || m.prompt == nil {
-		return errors.New("iron: the export needs a decode step and a prompt chunk")
+	if m.decode == nil { // without a prompt chunk, Prompt runs the decode step a token at a time
+		return errors.New("iron: the export needs a decode step")
 	}
 	if _, err := m.caches(); err != nil {
 		return err
 	}
 	if m.decode.m.ELF != "" {
-		if m.decode.run, err = m.newRun(m.decode, 0); err != nil {
+		if err := m.decodeRuns(); err != nil {
 			return err
 		}
 	}
@@ -165,13 +175,18 @@ func (m *Model) Release() error {
 		if v == nil {
 			continue
 		}
-		if v.run != nil {
-			errs = append(errs, v.run.Close())
-			v.run = nil
-		}
+		errs = append(errs, v.closeRuns()...)
 		if v.barrier != nil {
 			errs = append(errs, v.barrier.Close())
 			v.barrier = nil
+		}
+		if v.stepRun != nil {
+			errs = append(errs, v.stepRun.Close())
+			v.stepRun = nil
+		}
+		if v.stepProg != nil {
+			errs = append(errs, v.stepProg.Close())
+			v.stepProg = nil
 		}
 		errs = append(errs, v.closeSteps()...)
 		for k, b := range v.args {
@@ -504,14 +519,23 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		return m.logits(v)
 	}
 	if v.run == nil { // dropped for a tower's control code (dropDecode)
-		if v.run, err = m.newRun(v, 0); err != nil {
+		if err := m.decodeRuns(); err != nil {
 			return nil, err
 		}
 	}
-	if err := writeWords(v.run.Scratchpad(), v.m.Kernels[0].Parameters, values); err != nil {
+	if err := m.carry(v, values); err != nil {
 		return nil, err
 	}
-	if err := m.carry(v, values); err != nil {
+	if len(v.runs) > 1 {
+		if err := m.stepBarrier(ctx); err != nil {
+			return nil, err
+		}
+		if err := m.runCommands(ctx, v, values); err != nil {
+			return nil, err
+		}
+		return m.logits(v)
+	}
+	if err := writeWords(v.run.Scratchpad(), v.m.Kernels[0].Parameters, values); err != nil {
 		return nil, err
 	}
 	if err := v.run.Run(ctx); err != nil {
@@ -520,12 +544,124 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 	return m.logits(v)
 }
 
+// hostStep is v's host step of kind for layer, or nil.
+func (v *version) hostStep(kind string, layer int) *HostStep {
+	for i := range v.m.Host {
+		if h := &v.m.Host[i]; h.Kind == kind && h.Layer == layer {
+			return h
+		}
+	}
+	return nil
+}
+
+// decodeRuns makes the decode step's runs, one a command, a fed command's scratchpad its
+// buffer of the feedback argument.
+func (m *Model) decodeRuns() error {
+	v := m.decode
+	fed := map[int]Fed{}
+	for _, f := range v.m.Fed {
+		fed[f.Command] = f
+	}
+	runs := make([]*hwnpu.Run, 0, len(v.m.Kernels))
+	fail := func(err error) error {
+		for _, r := range runs {
+			r.Close()
+		}
+		return err
+	}
+	for k := range v.m.Kernels {
+		run, err := m.newRun(v, k)
+		if err != nil {
+			return fail(fmt.Errorf("iron: decode command %d: %w", k, err))
+		}
+		runs = append(runs, run)
+		f, ok := fed[k]
+		if !ok {
+			continue
+		}
+		p, ok := v.m.Buffers[f.Buffer]
+		if !ok || p.Argument != "feedback" || 4*f.Words > p.Bytes {
+			return fail(fmt.Errorf("iron: decode command %d is fed from %s, not a buffer of the feedback argument", k, f.Buffer))
+		}
+		if err := run.UseScratchpad(m.buffer(v, "feedback"), p.Offset, 4*f.Words); err != nil {
+			return fail(fmt.Errorf("iron: decode command %d: %w", k, err))
+		}
+	}
+	v.run, v.runs = runs[0], runs
+	return nil
+}
+
+// runCommands runs every command of v back to back: the host's words in each command the
+// device does not feed, then all submitted before the first wait (a hardware context runs its
+// commands in order, so a fed command reads what the one before it wrote).
+func (m *Model) runCommands(ctx context.Context, v *version, values map[string]int64) error {
+	fed := map[int]bool{}
+	for _, f := range v.m.Fed {
+		fed[f.Command] = true
+	}
+	var fences []hwnpu.Fence
+	var err error
+	// HWNPU_IRON_TIMING: each command waited for and timed alone
+	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	for k, run := range v.runs {
+		if !fed[k] {
+			if err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values); err != nil {
+				break
+			}
+		}
+		var f hwnpu.Fence
+		if f, err = run.Submit(); err != nil {
+			err = fmt.Errorf("iron: decode command %d: %w", k, err)
+			break
+		}
+		if timing {
+			t0 := time.Now()
+			if err = f.Wait(ctx); err != nil {
+				break
+			}
+			fmt.Fprintf(os.Stderr, "decode command %d: %.3f ms\n", k, time.Since(t0).Seconds()*1000)
+			continue
+		}
+		fences = append(fences, f)
+	}
+	for k, f := range fences {
+		if werr := f.Wait(ctx); werr != nil && err == nil {
+			err = fmt.Errorf("iron: decode command %d: %w", k, werr)
+		}
+	}
+	return err
+}
+
+// closeRuns closes v's kept runs.
+func (v *version) closeRuns() []error {
+	var errs []error
+	if len(v.runs) == 0 && v.run != nil {
+		errs = append(errs, v.run.Close())
+	}
+	for _, r := range v.runs {
+		errs = append(errs, r.Close())
+	}
+	v.run, v.runs = nil, nil
+	return errs
+}
+
 // Prompt runs tokens from position start in prompt chunks and returns the logits after the
 // last one. The cache holds the tokens before start.
 func (m *Model) Prompt(ctx context.Context, tokens []int32, start int) ([]float32, error) {
 	C := m.Manifest.Config.PrefillChunk
 	if len(tokens) == 0 || start+len(tokens) > m.Manifest.Config.MaxSeqLen {
 		return nil, fmt.Errorf("iron: %d tokens from %d do not fit the cache of %d", len(tokens), start, m.Manifest.Config.MaxSeqLen)
+	}
+	if m.prompt == nil {
+		// no prompt chunk (Qwen3.6's experts are routed a token at a time): decode steps
+		var logits []float32
+		for i, t := range tokens {
+			var err error
+			if logits, err = m.Step(ctx, t, start+i); err != nil {
+				return nil, err
+			}
+		}
+		return logits, nil
 	}
 	var logits []float32
 	for begin := 0; begin < len(tokens); {
@@ -608,35 +744,80 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		return m.logits(v)
 	}
 	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	if err := m.convPairsIn(v, start); err != nil {
+		return nil, err
+	}
 	if err := m.chunkBarrier(ctx); err != nil {
 		return nil, err
 	}
+	routes := map[int]*moeRoute{} // by layer: its moe_route's, until its moe_combine
 	for k := range v.m.Kernels {
-		t0 := time.Now()
-		run, err := m.newRun(v, k)
-		if errors.Is(err, syscall.ENOSPC) && m.decode.run != nil {
-			// the device heap holds no more control code: release the decode step's (as IRON
-			// releases a run), which Step makes again
-			m.dropDecode()
-			run, err = m.newRun(v, k)
+		runOnce := func() error {
+			t0 := time.Now()
+			run, err := m.newRun(v, k)
+			if errors.Is(err, syscall.ENOSPC) && m.decode.run != nil {
+				// the device heap holds no more control code: release the decode step's (as IRON
+				// releases a run), which Step makes again
+				m.dropDecode()
+				run, err = m.newRun(v, k)
+			}
+			t1 := time.Now()
+			if err != nil {
+				return fmt.Errorf("iron: prompt command %d: %w", k, err)
+			}
+			err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values)
+			if err == nil {
+				err = run.Run(ctx)
+			}
+			t2 := time.Now()
+			run.Close()
+			if timing {
+				fmt.Fprintf(os.Stderr, "prompt command %d (%d rows from %d): setup %.1f ms, run %.1f ms, close %.1f ms\n", k, rows, start,
+					t1.Sub(t0).Seconds()*1000, t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
+			}
+			if err != nil {
+				return fmt.Errorf("iron: prompt command %d: %w", k, err)
+			}
+			return nil
 		}
-		t1 := time.Now()
-		if err != nil {
-			return nil, fmt.Errorf("iron: prompt command %d: %w", k, err)
+		var route *HostStep
+		for i := range v.m.Host {
+			h := &v.m.Host[i]
+			if h.Command != k {
+				continue
+			}
+			switch h.Kind {
+			case "moe_route":
+				rt, err := m.moeHostRoute(v, h, rows)
+				if err != nil {
+					return nil, err
+				}
+				routes[h.Layer], route = rt, h
+			case "moe_combine":
+				if err := m.moeHostCombine(v, h, routes[h.Layer], rows); err != nil {
+					return nil, err
+				}
+				delete(routes, h.Layer)
+			default:
+				return nil, fmt.Errorf("iron: a host step %s before prompt command %d", h.Kind, k)
+			}
 		}
-		err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values)
-		if err == nil {
-			err = run.Run(ctx)
+		if route == nil {
+			if err := runOnce(); err != nil {
+				return nil, err
+			}
+			continue
 		}
-		t2 := time.Now()
-		run.Close()
-		if timing {
-			fmt.Fprintf(os.Stderr, "prompt command %d (%d rows from %d): setup %.1f ms, run %.1f ms, close %.1f ms\n", k, rows, start,
-				t1.Sub(t0).Seconds()*1000, t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
+		combine := v.hostStep("moe_combine", route.Layer)
+		if combine == nil {
+			return nil, fmt.Errorf("iron: layer %d's moe_route without a moe_combine", route.Layer)
 		}
-		if err != nil {
-			return nil, fmt.Errorf("iron: prompt command %d: %w", k, err)
+		if err := m.runMoECommand(ctx, v, routes[route.Layer], route, combine, runOnce); err != nil {
+			return nil, err
 		}
+	}
+	if err := m.convPairsOut(v, start, rows); err != nil {
+		return nil, err
 	}
 	return m.logits(v)
 }
@@ -771,38 +952,78 @@ func (m *Model) chunkBarrier(ctx context.Context) error {
 		return nil
 	}
 	if v.barrier == nil {
-		name := ""
-		for _, k := range v.prog.Kernels() {
-			if strings.HasSuffix(k, ":aiecc_empty") {
-				name = k
-				break
-			}
-		}
-		if name == "" {
-			return nil
-		}
-		kern, err := v.prog.Kernel(name)
-		if err != nil {
+		run, err := m.emptyRun(v, v.prog)
+		if err != nil || run == nil {
 			return err
-		}
-		run, err := kern.NewRun()
-		if err != nil {
-			return err
-		}
-		// Never read (it moves nothing), but every argument is bound, as for any run.
-		for _, a := range v.m.Arguments {
-			if a.Index < len(kern.Args()) {
-				run.SetBuffer(a.Index, m.buffer(v, a.Kind))
-			}
-		}
-		if err := run.Err(); err != nil {
-			run.Close()
-			return fmt.Errorf("iron: the chunk barrier %s: %w", name, err)
 		}
 		v.barrier = run
 	}
 	if err := v.barrier.Run(ctx); err != nil {
 		return fmt.Errorf("iron: the chunk barrier: %w", err)
+	}
+	return nil
+}
+
+// emptyRun makes a run of prog's empty instance (mlir-aie's aiecc_empty, no control code) with
+// v's arguments bound, or nil when prog has none.
+func (m *Model) emptyRun(v *version, prog *hwnpu.Program) (*hwnpu.Run, error) {
+	name := ""
+	for _, k := range prog.Kernels() {
+		if strings.HasSuffix(k, ":aiecc_empty") {
+			name = k
+			break
+		}
+	}
+	if name == "" {
+		return nil, nil
+	}
+	kern, err := prog.Kernel(name)
+	if err != nil {
+		return nil, err
+	}
+	run, err := kern.NewRun()
+	if err != nil {
+		return nil, err
+	}
+	// Never read (it moves nothing), but every argument is bound, as for any run.
+	for _, a := range v.m.Arguments {
+		if a.Index < len(kern.Args()) {
+			run.SetBuffer(a.Index, m.buffer(v, a.Kind))
+		}
+	}
+	if err := run.Err(); err != nil {
+		run.Close()
+		return nil, fmt.Errorf("iron: %s: %w", name, err)
+	}
+	return run, nil
+}
+
+// stepBarrier runs an empty command in a hardware context of its own (the decode ELF loaded a
+// second time) before a decode step of several commands. Without it, Qwen3.6 with the short
+// convolution in the GDN operator hung the next step's first command (ERT_CMD_STATE_TIMEOUT)
+// right after the last layer's experts command, every time (design.md 16.90, 16.92); an empty
+// command in the decode step's own context does not help, as a pause did not for chunkBarrier.
+// About 0.3 ms a step.
+func (m *Model) stepBarrier(ctx context.Context) error {
+	v := m.decode
+	if v.stepRun == nil {
+		if v.stepProg == nil {
+			kr, err := m.dev.Kernel()
+			if err != nil {
+				return err
+			}
+			if v.stepProg, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(m.dir, v.m.ELF)}); err != nil {
+				return fmt.Errorf("iron: the step barrier: %w", err)
+			}
+		}
+		run, err := m.emptyRun(v, v.stepProg)
+		if err != nil || run == nil {
+			return err
+		}
+		v.stepRun = run
+	}
+	if err := v.stepRun.Run(ctx); err != nil {
+		return fmt.Errorf("iron: the step barrier: %w", err)
 	}
 	return nil
 }
@@ -815,13 +1036,14 @@ func (m *Model) dropDecode() {
 	if m.decode == nil {
 		return
 	}
-	if m.decode.run != nil {
-		m.decode.run.Close()
-		m.decode.run = nil
-	}
+	m.decode.closeRuns()
 	if m.decode.barrier != nil {
 		m.decode.barrier.Close()
 		m.decode.barrier = nil
+	}
+	if m.decode.stepRun != nil {
+		m.decode.stepRun.Close()
+		m.decode.stepRun = nil
 	}
 }
 

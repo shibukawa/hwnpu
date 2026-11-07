@@ -408,6 +408,17 @@ def expert_operators():
 # --- the fused layer (--q4moe q4 --fused) ----------------------------------------------------
 
 SHARED = EXPERTS  # the shared expert's index in the tables (one more than the routed)
+# By a MoERoute's ``picked`` key, the experts its reference chose last (iron_moe.py): on the host,
+# where no device writes the scratchpad, the experts' references read them from here.
+PICKED: dict[int, list[int]] = {}
+
+
+def picked_offsets(op, given, expert_bytes):
+    """The 8 experts' byte offsets a reference reads: its call's (e0 .. e7), or where the step's
+    ``picked`` names a routing step, the experts that step's reference chose."""
+    if op.picked >= 0 and op.picked in PICKED:
+        return [int(e) * expert_bytes for e in PICKED[op.picked]]
+    return [int(v) for v in given]
 WV = 16  # routing weights an input holds: the 8 picked, then the shared expert's
 
 
@@ -480,6 +491,7 @@ def fused_operators():
         K: int = param(array=True)
         NE: int = param(array=True)
         YN: int = param(derive=lambda op: (TOP + 1) * op.NE, array=True)
+        picked: int = param(default=-1, repr=False)  # the routing step (PICKED) on the host
         num_aie_columns: int = tunable(domain=widths)
 
         W = In(rows, B, dtype=np.uint8, obj_shape=(2, B), per=(num_aie_columns,))
@@ -585,7 +597,8 @@ def fused_operators():
             x = np.asarray(x, np.float64)
             w = np.asarray(w, np.float64)
             ys = []
-            for idx, at in enumerate([e0, e1, e2, e3, e4, e5, e6, e7, SHARED * eb]):
+            routed = picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], eb)
+            for idx, at in enumerate([*routed, SHARED * eb]):
                 gu = dequantize(flat[int(at) : int(at) + eb], 2 * self.NE, self.K).astype(np.float64)
                 gu = gu.reshape(self.NE // CB, 2, CB, self.K)
                 g = gu[:, 0].reshape(self.NE, self.K) @ x
@@ -608,6 +621,7 @@ def fused_operators():
         KE: int = param(array=True)
         K: int = param(derive=lambda op: (TOP + 1) * op.KE, array=True)
         N: int = param(array=True)
+        picked: int = param(default=-1, repr=False)  # the routing step (PICKED) on the host
         num_aie_columns: int = tunable(domain=widths)
 
         W = In(rows, B, dtype=np.uint8, obj_shape=(2, B), per=(num_aie_columns,))
@@ -706,7 +720,8 @@ def fused_operators():
             flat = np.asarray(W, np.uint8).reshape(-1)
             x = np.asarray(x, np.float64)
             y = np.asarray(r, np.float64).copy()
-            for i, at in enumerate([e0, e1, e2, e3, e4, e5, e6, e7, SHARED * eb]):
+            routed = picked_offsets(self, [e0, e1, e2, e3, e4, e5, e6, e7], eb)
+            for i, at in enumerate([*routed, SHARED * eb]):
                 d = dequantize(flat[int(at) : int(at) + eb], self.N, self.KE).astype(np.float64)
                 y += d @ x[i * self.KE : (i + 1) * self.KE]
             return y.astype(bfloat16)

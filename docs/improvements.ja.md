@@ -274,6 +274,8 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | コマンドの分け方 (`SCRATCHPAD_WORDS` 24) | 1 コマンドを amdxdna の 2 秒の打ち切りとヒープ 64 MiB に収める | gather がなくなりコマンドが長くなりすぎたのを、書き出しのときに分けた |
 | ヒープが足りないとき (`ENOSPC`) にやり直す | デコードのランを放してから再試行 | IRON と同じ動き |
 | MoE の部品 (Qwen3.6-35B-A3B の大きさ、16.75) | 選んだ専門家を、写さずにその場で読む (`ExpertQGEMV`)。層を 4 演算にまとめる (`MoEGateUp`、`MoEDown`) | 1 層 5.2 → 2.3 → 1.27 ms。見積もりは 8〜10 tokens/s。35 GB を固定しても速さは変わらない |
+| Gated DeltaNet の IRON の演算子 (`iron_gdn.py`、16.89) | mlir-aie の再帰のカーネルに、列ごとの行の集め方と slice ごとの状態の出し入れを付けた (8 列 × 2 コア) | デコード 1 層 0.26〜0.33 ms、プロンプト 1 行 0.11 ms。参照とコサイン 1.000000 |
+| MoE の経路の選択をデバイスで (`iron_moe.py`、16.89) | 経路のコマンドが、専門家のコマンドのスクラッチパッドに専門家の位置を書く (feedback のバッファ、デバイスのヒープ)。ホストはロジットを読まず語も書かない | 1 層は A (mixer と経路) と B (専門家、1.0 ms) の 2 コマンド。Qwen3.6 の 2 層で NPU とホストのグラフがコサイン 0.99997 |
 | hwnpu のカーネルの丸めを最近接偶数に (16.78) | bf16 に狭めるたびに下に寄り、入力の数だけ積み重なる偏りをなくす | 平均 1 の入力の単体の試験で、IRON の `DequantBFP` の経路はコサイン 0.968、hwnpu の `QDequant` (bf16) は 0.99994。言語モデルのプロンプトは `DequantBFP` のまま (bf16 では 5〜9 % 遅く、精度は変わらない) |
 | Anima の DiT を q8 に (`iron_anima.py --dit-attn`、`--dit-mlp`、16.78) | 1024×1024 で固定 5020 → 3445 MiB | 毎ステップ重みを戻す分 2 % 遅く、電力量は同じ (1 枚約 1050 J)。`q4` も選べる (2710 MiB) |
 | 書き出しどうしのファイルの共有 (`iron.ShareExport`、16.79) | ディスク: 並べた書き出しの同じファイルと bank の同じ先頭を 1 つ分だけ持つ | Gemma 4 E2B の文だけと画像と音声つきで、Btrfs で 15.2 → 8.2 GiB。書き出しごとに 1 回、読み込む前に。Anima の画像はバイト単位で変わらない |
@@ -344,12 +346,12 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | d1-2B / d1-Omni-2B | `lfm3` の d1 モード | 同上 | System One API (`hwnpu-systemone`) | 画像 (d1-2B)、画像と音声 (d1-Omni) | ◎ lut8 | 変換は可 | — |
 | gemma-4-E2B-it | `gemma4` | byte fallback の BPE (`tokenizer.json`) | Gemma 4 | Apple / Intel はテキストのみ | ◎ lut6、文脈 131072 | 変換は可 | ◎ q4 7.9 tok/s、1.78 GB (bf16 は 6.1 tok/s)、画像と音声も |
 | gemma-4-E4B-it | `gemma4` | 同上 | Gemma 4 | テキストのみ | ○ lut6、1 本 (`-prefill auto`) | 変換は可 | ○ q4 5.6 tok/s、3.53 GB、文脈 4096 |
-| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | — |
+| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | ○ `iron_export_lm.py qwen35 --q4`。32 層で 6.4 tok/s (16.94)、4.7 GB。HF と最上位のトークン 8/9 (同じ q4 のホストのグラフと同じ所で外れる、16.92) |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3、翻訳) | — | ○ lut8、1 本、文脈 262144。M3 で全部 ANE に載ることと重みの形式を確認 | 変換は可 (int8)。OpenVINO の CPU で訳せた | ◎ q4 11.6 tok/s、2.16 GiB、文脈 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
 | Anima-Turbo (画像生成) | `internal/imagegen/anima` (MIL の 1 つの記述から作る) | Qwen3 の BPE + T5 の Unigram | — (`hwnpu-image`) | 画像を出力 | ◎ M3 で 1024×1024 の 8 ステップ約 40 s、3.8 GB (int8) | △ 変換は可。OpenVINO の CPU で照合済み | ◎ 1024×1024 で 8 ステップ約 68 s、固定 3.4 GiB (DiT は 8 ビット) |
-| Qwen3.6-35B-A3B (参考) | 移植していない | — | — | — | — | — | MoE の層だけを乱数の重みで測った (16.75) |
+| Qwen3.6-35B-A3B | `qwen35moe` (IRON のみ) | Qwen3.5 と同じ | Qwen3.6 (`Qwen36`: 道具の引数を JSON で、16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`。40 層 (23 GB) でデコード 5.8 tok/s (16.92)、プロンプトは塊で 25 ms/トークン (経路はホスト、16.93)、HF とコサイン 0.985〜0.996、最上位のトークンは全部一致。プロンプトは 1 トークンずつ |
 
 ### 10.2 トークナイザー (`internal/tokenizer`、依存は `golang.org/x/text` だけ)
 
@@ -472,11 +474,11 @@ Apple / Intel (`hwnpu-image -convert`):
 - Core ML の既定はテキストも DiT も int8: fp16 と同じか速く (DiT は重みでなく注意で詰まる)、lut8 より fp16 に近い。テキストは fp16 (1.0 GB) では載らない
 - 自己注意がブロックの約半分。かかる時間は内側の次元でなく点数の数で決まる (q kᵀ で毎秒約 160 億、softmax で約 80 億)。塊の切り方、Core ML の `scaled_dot_product_attention`、ほかの並べ方では最大 11 % まで
 
-**Qwen3.6-35B-A3B (参考、MoE の部品だけ)** (16.75)
-- 載せる前に、今の IRON で書ける MoE の層をその大きさで測った (乱数の重み)
-- 4 ビットの専門家をその場で読み、層を 4 演算にまとめて 1 層 1.27 ms
-- 1 トークンの見積もりは 100〜120 ms (8〜10 tok/s)
-- Gated DeltaNet の IRON の形はまだない
+**Qwen3.6-35B-A3B** (16.75、16.89)
+- 載せる前に、今の IRON で書ける MoE の層をその大きさで測った (乱数の重み)。4 ビットの専門家をその場で読み、層を 4 演算にまとめて 1 層 1.27 ms
+- AMD (16.89): Gated DeltaNet は hwnpu の IRON の演算子 (`iron_gdn.py`)。経路の選択はデバイスで、層は経路のコマンド A と専門家のコマンド B に分かれ、A が B のスクラッチパッドに専門家の位置を書く
+- 実物の重みの 2 層 (層 0 と 3) で HF とコサイン 0.998〜0.9998 (専門家は q4nx)。デコードだけで、プロンプトは 1 トークンずつ
+- 時間は A が 2.9〜5 ms、B が 1.0 ms、出力層 5.9 ms (q4)。40 層の見積もりは約 210 ms (5 tok/s)。A の演算の数 (IRON の短い畳み込みが約 10) が残りの大半
 
 **PLaMo-Embedding-1B** (16.18–19、16.23、16.34)
 - 構造: PLaMo のデコーダの注意を双方向にしたもの。融合した `qkv_proj` と `gate_up_proj` を行の範囲で分けた (16384 の上限に当たるため 8192 ずつ)
@@ -554,7 +556,7 @@ Apple / Intel (`hwnpu-image -convert`):
 | PLaMo 3 の 4 ビットの速さ | 別の作業の負荷がある状態で測った (単体の GEMV が 1.6 倍遅い状態)。静かな機械で測り直す | 16.76 |
 | PLaMo 3 のほかの大きさ | 0.8B、8B、31B は同じ構造なので書き出せるはずだが、試していない | 16.70 |
 | 4 ビットの KL と HF | Gemma 4 と PLaMo 3 の q4 の KL は NPU の bf16 と比べた値。HF の fp32 とは LFM3 だけ比べた (0.036) | 16.73、16.76 |
-| MoE (Qwen3.6-35B-A3B) | 40 層全部 (表 20 GB) を q4 で読み込んで動かすこと (12 層までで、bf16 では 35 GB の固定を確認)。実物の重みでの KL (乱数の重みでは、層を重ねると 12 層でコサイン 0.997)。Gated DeltaNet と注意の IRON の形、プロンプトの MoE。8〜10 tok/s は見積もり | 16.75 |
+| MoE (Qwen3.6-35B-A3B) | 40 層は q4 で 5.8 tok/s、プロンプトは塊で 25 ms/トークン (16.91〜16.93)。プロンプトの GDN の層 (1 層 約 38 ms) と専門家の重みを読む速さが残りの大半 | 16.75、16.89〜16.93 |
 | MoE の BD の再利用の警告 | aiecc が、完了の保証のない `dma_free_task` の後に BD を使い回すと警告する。実害はないと見ているが、静的には証明していない | 16.75 |
 | ほかの 4 ビットの書き出しへの丸めの修正 | 書き出し直して測ったのは Gemma 4 E2B と LFM3-1.7B だけ (KL 0.093、0.036)。E4B、PLaMo 3、多モーダルは古い書き出しのまま | 16.78 |
 | 多くの seed での Anima の q8 | fp32 と比べたのは 3 枚。4 つの seed のうち 1 つで bf16 と構図が変わった。どのくらいの頻度で起きるかは測っていない | 16.78 |
@@ -595,4 +597,4 @@ Apple / Intel (`hwnpu-image -convert`):
   - ComfyUI のノードからの呼び出し
   - 512×512 の書き出し
   - GPTQ の 4 ビットの DiT (`tools/amd/anima_gptq.py`、`iron_anima.py --q4-codes`、16.87) を NPU の 1024×1024 の画像で確かめる (CPU の 512×512 では潜在のコサイン 0.939、q8 は 0.962)
-- Qwen3.6-35B-A3B の移植。Gated DeltaNet の IRON の形と、経路の選択をデバイスで行うこと
+- Qwen3.6-35B-A3B の残り (16.89〜16.93、40 層は q4 で 5.8 tok/s、プロンプトは塊で 25 ms/トークン): プロンプトの塊の射影の GEMM と重みの展開 (短い塊でも 1 回 1.6 s: 有効な行が少なくても 256 行で計算し、重みを塊ごとに展開する、16.95)

@@ -37,7 +37,10 @@ type Manifest struct {
 	// what a sequence needs besides its rows to go back to that position; no copy brings a
 	// ring back.
 	Checkpoints []Checkpoint `json:"checkpoints"`
-	Rings       int          `json:"rings"`
+	// ConvPairs are Qwen3.6's folded Gated DeltaNet layers, whose convolution's rows the host
+	// copies between the decode step's home and the prompt chunk's around a chunk (convpairs.go).
+	ConvPairs []ConvPair `json:"conv_pairs"`
+	Rings     int        `json:"rings"`
 	// CacheRows is the positions of each KV cache by buffer name, where it is not MaxSeqLen
 	// (iron_window's sliding layers hold a prompt chunk's rows more). Older exports lack it.
 	CacheRows map[string]int      `json:"cache_rows"`
@@ -142,6 +145,19 @@ type Version struct {
 	Addresses []Address            `json:"addresses"`
 	Grid      *Grid                `json:"grid"`
 	Plan      string               `json:"plan"`
+	// Fed are the commands whose scratchpad the device writes (Qwen3.6's experts, routed on
+	// the device: tools/amd/iron_moe.py), each a buffer of the feedback argument.
+	Fed []Fed `json:"fed"`
+	// Host are the host steps hwnpu runs between the commands (Qwen3.6's prompt experts: moe.go).
+	Host []HostStep `json:"host"`
+}
+
+// Fed is a command whose ctrl scratchpad is Buffer, Words words that an earlier command of the
+// call writes: the host writes none of its words.
+type Fed struct {
+	Command int    `json:"command"`
+	Buffer  string `json:"buffer"`
+	Words   int    `json:"words"`
 }
 
 // Step is one dispatch of an xclbin per step: a kernel of an xclbin, its instruction stream

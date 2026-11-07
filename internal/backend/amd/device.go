@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/shibukawa/hwnpu/internal/aieelf"
 	"github.com/shibukawa/hwnpu/internal/backend"
@@ -128,6 +129,17 @@ func (d *device) allocDev(size int) (*buffer, error) {
 }
 
 func roundPage(n int) int { return (n + 4095) &^ 4095 }
+
+// dmaAddr is where the array's DMA reads and writes the buffer: its device address, but for a
+// device heap buffer (BO_DEV) its user address in the heap's mapping. The DMA translates user
+// addresses (PASID), while the heap's own device address is what the control code reads its
+// instructions and scratchpad from.
+func (b *buffer) dmaAddr() uint64 {
+	if b.mapped == nil && len(b.mem) > 0 && b.bo.XdnaAddr != xdna.InvalidAddr {
+		return uint64(uintptr(unsafe.Pointer(&b.mem[0])))
+	}
+	return b.bo.DeviceAddr()
+}
 
 func (b *buffer) Bytes() []byte { return b.mem }
 
