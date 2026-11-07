@@ -59,8 +59,10 @@ const (
 )
 
 // compileCacheBytes is about what the Neural Engine's own cache of compiled programs holds
-// (TierAuto).
-var compileCacheBytes int64 = 4 << 30
+// (TierAuto), with some room to spare: on an M3 the two programs of Qwen3.5-2B (3.56 GiB in
+// lut8) were compiled again at every start (4 to 5 minutes), one alone starts in 1.5 seconds
+// (docs/design.md 16.99). The cache is about 4 GiB.
+var compileCacheBytes int64 = 7 << 29 // 3.5 GiB
 
 // DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: auto, a cache of 4096 to run on
 // while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
@@ -351,7 +353,7 @@ func onePrograms(model llm.Model, format, backend, prefill string, draft, n int)
 	if int64(n)*total <= compileCacheBytes {
 		return false, ""
 	}
-	return true, fmt.Sprintf("%d programs would hold %.2f GiB of weights, over the about %d GiB the Neural Engine keeps compiled, so every start would compile them again and every question switch between them", n, float64(int64(n)*total)/(1<<30), compileCacheBytes>>30)
+	return true, fmt.Sprintf("%d programs would hold %.2f GiB of weights, over the about %.1f GiB the Neural Engine keeps compiled, so every start would compile them again and every question switch between them", n, float64(int64(n)*total)/(1<<30), float64(compileCacheBytes)/(1<<30))
 }
 
 // sharedMark is the file in a directory of programs that says ShareWeights went over it: the

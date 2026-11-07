@@ -5,6 +5,7 @@ import (
 	"io"
 	"math"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/shibukawa/hwnpu"
@@ -303,6 +304,72 @@ func TestPagedMatchesFull(t *testing.T) {
 	step(r, 8, 9, 10)
 	if worst > 2e-3 {
 		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g", worst)
+}
+
+// A program that reads prompts with the output layer for the last row alone (LastRow) continues
+// the sequence of one of 1 token per call (the Gated DeltaNet's states and windows shared) and
+// gives the logits after the last token of each step, a step shorter than its 4 tokens too; its
+// last part outputs one row of logits, it checks no drafts, and it needs a KV cache.
+func TestPagedLastRow(t *testing.T) {
+	cfg := tinyConfig(t)
+	w := llm.NewSynthetic(cfg)
+	tokens := []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}
+	n := len(tokens)
+	emb := embed16(t, cfg, w, tokens)
+	full := runCPU(t, cfg, w, llm.Options{Seq: n, Format: "fp16"}, emb)
+	row := func(i int) []float32 { return emb[i*cfg.HiddenSize : (i+1)*cfg.HiddenSize] }
+	const cache, chunk = 16, 4
+	allocated := 0
+	short := cpuPaged(t, convertPaged(t, cfg, w, 1, cache, chunk), &allocated)
+	opts := llm.Options{Seq: 4, Cache: cache, Paged: chunk, LastRow: true, Format: "fp16"}
+	path, err := llm.Convert(Arch, cfg, w, filepath.Join(t.TempDir(), "m.mlpackage"), "none", 0, opts, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := llm.ReadManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	long := cpuPaged(t, man, &allocated)
+	if sh := long.OutShape["y"]; !slices.Equal(sh, []int{1, 1, cfg.VocabSize}) {
+		t.Fatalf("y %v, want (1, 1, %d)", sh, cfg.VocabSize)
+	}
+	for name := range long.In {
+		if llm.CacheInput(name) {
+			long.In[name] = short.In[name]
+		}
+	}
+	s, err := decode.New(short, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(long); err != nil {
+		t.Fatal(err)
+	}
+	worst, pos := 0.0, 0
+	for _, v := range []int{4, 3, 1, 2, 1} {
+		var e [][]float32
+		for i := range v {
+			e = append(e, row(pos+i))
+		}
+		logits, err := s.Step(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pos += v
+		worst = math.Max(worst, relErr(logits, full[(pos-1)*cfg.VocabSize:pos*cfg.VocabSize]))
+	}
+	if worst > 2e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	if _, _, err := s.Speculate([][]float32{row(0), row(1), row(2)}, func(func(int) []float32) int { return 1 }); err == nil {
+		t.Error("the last row's program checked drafts")
+	}
+	opts.Cache, opts.Paged = 0, 0
+	if _, err := llm.Convert(Arch, cfg, w, filepath.Join(t.TempDir(), "n.mlpackage"), "none", 0, opts, io.Discard); err == nil {
+		t.Error("LastRow without a cache was built")
 	}
 	t.Logf("worst relative error %.2g", worst)
 }

@@ -84,6 +84,9 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 	if opts.Paged > 0 && opts.Cache <= 0 {
 		return nil, nil, fmt.Errorf("qwen35: a program split at its attention (Paged) needs a KV cache")
 	}
+	if opts.LastRow && (opts.Cache <= 0 || opts.Hidden) {
+		return nil, nil, fmt.Errorf("qwen35: the logits of the last row alone (LastRow) are of a program with a KV cache")
+	}
 	if _, chunked := llm.CacheChunks(opts.Cache); opts.Cache > 0 && opts.Paged == 0 && chunked {
 		return nil, nil, fmt.Errorf("qwen35: a KV cache of %d is over the Neural Engine's dimension limit; split the model at its attention (Paged) for a longer one", opts.Cache)
 	}
@@ -107,6 +110,9 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 		case opts.Start+opts.Layers < cfg.NumLayers || opts.NoHead:
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		default:
+			if opts.LastRow {
+				h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+			}
 			h = m.norm(h, cfg.prefix()+"norm.weight")
 			if opts.Hidden {
 				y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)

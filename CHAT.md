@@ -89,6 +89,8 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 
 Preferred Networks' translation model PLaMo 3 Translate 2B is `-use plamo-3-translate-2b`. As the other models, the first run downloads the checkpoint (5.8 GB) and converts it: 8 bit tables (lut8) for the Neural Engine, int8 for Intel's NPU, split at its 3 full attention layers (7, 15 and 23; a context of 262144 tokens, the cache growing with the conversation by 7 KiB a token). On AMD's NPU, the IRON export runs with `-iron` (the README's AMD section). Each text typed is translated, and the earlier source texts and translations go into the prompt as its translation history (keeping terms and style consistent). `-to` sets the target language (by default English for a text with Japanese characters, else Japanese); `/to LANG` changes it and clears the history. Languages are lowercase codes: `en`, `ja`, `zh-hans`, `ko`, `ja(easy)` (plain Japanese) and so on. `-from` sets the source language, `-form plain` or `polite` the style of Japanese, and `-system` becomes the reference context. The model neither thinks nor calls tools.
 
+`-use plamo-3-translate-0.8b` is the same model in a smaller size (download 1.8 GB). On an M3 it generates about 3 times as fast as the 2B (53 against 17 tokens/s), and its two programs (8 and 128 tokens per call, 1.38 GiB together) fit the Neural Engine's compile cache, so it reads a document of 1600 tokens in 1.2 seconds. Of 20 sentences (English to Japanese and Japanese to English), 8 came out word for word as the 2B's and the other 12 were correct rewordings.
+
 ```bash
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b -to ja -form plain

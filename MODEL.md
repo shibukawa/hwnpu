@@ -47,8 +47,9 @@ The columns are the memory installed in the machine. The second header row is ro
 <td colspan="5"><b>Gemma 4 E2B with images and audio</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0 GB, images too)</td>
 </tr>
 <tr>
-<th>Translation<br><sub>hwnpu-chat <code>-use plamo-3-translate-2b</code></sub></th>
-<td colspan="6"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
+<th>Translation<br><sub>hwnpu-chat <code>-use plamo-3-translate-2b</code>, <code>-use plamo-3-translate-0.8b</code></sub></th>
+<td><b>PLaMo 3 Translate 0.8B</b> (about 2.4 GB)<br>3 times as fast as the 2B, translations differing from it by rewordings</td>
+<td colspan="5"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
 </tr>
 <tr>
 <th>Image generation<br><sub>hwnpu-image</sub></th>
@@ -95,16 +96,19 @@ The columns are the memory installed in the machine. The second header row is ro
 | LFM3-Audio-2B | Audio (clips up to 30 seconds) | 2.6 GB | 12 KiB/token | measured |
 | LFM3-Omni-2B | Images and audio | 3.0 GB (2.2 GB until an image or audio arrives) | 12 KiB/token | measured |
 | PLaMo 3 Translate 2B | Translation | 2.7 GB | 7 KiB/token (1.75 GiB at 262144) | measured |
+| PLaMo 3 Translate 0.8B | Translation | about 2.4 GB (M3: 1.38 GiB on the Neural Engine and 1.0 GB of the process) | 1 KiB/token (0.28 GiB at 262144) | measured on an M3 |
 | PLaMo-Embedding-1B | Sentence embeddings | 1.3 GB | none | estimated from the weights |
 | Anima-Turbo (1024 × 1024) | Image generation | 4.1 GB (the DiT stage, the largest) | none | measured |
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |
+| Qwen3.5-0.8B | Chat (weak at Japanese facts) | about 2.6 GB (M3: 1.47 GiB on the Neural Engine and 1.1 GB of the process) | 14 KiB/token (3.38 GiB at 262144) | measured on an M3 |
+| Qwen3.5-2B | Chat, code | about 3.3 GB (M3: 1.78 GiB on the Neural Engine and 1.5 GB of the process) | 14 KiB/token (3.38 GiB at 262144) | measured on an M3 |
 | Qwen3.5-4B | Chat, code | about 4.2 GB (3.9 GiB of 8 bit weights) | 32 KiB/token (8 GiB at 262144; 114688 tokens on 16 GB) | runs on an M3's Neural Engine; memory estimated from the weights |
 | Qwen3.6-35B-A3B (planned) | Chat, code | about 25 GB | — | estimated from 4-bit weights; not ported |
 
 - The weights mix 4 and 8 bits (the MLP and output matrices at 4 bits, the attention projections at 8; for image generation, the DiT at 8 bits)
 - "Measured" is the memory pinned for the NPU, measured on a Ryzen AI 9 365, plus the process's own. It follows from the size of the weights
-- Apple's Neural Engine holds more: its weights are 6 and 8 bit tables (LFM3-1.7B in 6 bits; its VL, Audio, Omni and d1 checkpoints, PLaMo 3 and Qwen3.5 in 8), and hwnpu-chat loads two programs, the one that generates and the one that reads prompts, each with its own copy of the weights (one for Gemma 4 E4B, PLaMo 3 and Qwen3.5). On an M3 (2026-11-07), LFM3-1.7B held 2.43 GiB on the Neural Engine (two programs of 1.21 GiB) plus the process's 0.5–0.9 GB. The other models are not measured on Apple yet; expect them above the table as well
+- Apple's Neural Engine holds more: its weights are 6 and 8 bit tables (LFM3-1.7B in 6 bits; its VL, Audio, Omni and d1 checkpoints, PLaMo 3 and Qwen3.5 in 8), and hwnpu-chat loads two programs, the one that generates and the one that reads prompts, each with its own copy of the weights (one for Gemma 4 E4B, PLaMo 3 Translate 2B, Qwen3.5-2B and 4B). On an M3 (2026-11-07), LFM3-1.7B held 2.43 GiB on the Neural Engine (two programs of 1.21 GiB) plus the process's 0.5–0.9 GB, and PLaMo 3 Translate 0.8B 1.38 GiB in its two programs plus the process's 1.0 GB. The other models are not measured on Apple yet; expect them above the table as well
 - The Neural Engine's share is kernel memory of its driver, in no process's RSS or footprint (Activity Monitor and `top` do not show it). hwnpu-chat says how much it is after loading; a program compiled just then comes onto the Neural Engine at its first call
 - Not counted: Gemma 4's per-layer embedding table (4.4 GB for E2B) and the token embedding tables (0.5 to 0.75 GB) stay files, and only the rows used are read. They go into the OS's page cache, which drops them when memory runs short
 - Several exports of one model (text only, and with images and audio, for example) can share their files on the disk (Btrfs, XFS, APFS, ReFS). Memory is not shared: run at once, they count separately

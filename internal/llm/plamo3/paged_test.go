@@ -105,3 +105,48 @@ func TestPagedShareRewind(t *testing.T) {
 	check("saved, 4", step(t, s, c, w, 6, 10), 10)
 	check("saved, 1", step(t, s, c, w, 10, 11), 11)
 }
+
+// A program that reads prompts with the output layer for the last row alone (LastRow), beside
+// one of 1 token per call, gives the logits after the last token of each step, a step shorter
+// than its 4 tokens too; its last part outputs one row of logits, and it needs a KV cache.
+func TestPagedLastRow(t *testing.T) {
+	c := tinyConfig(t)
+	w := llm.NewSynthetic(c)
+	n := len(tokens)
+	full := build(t, c, w, llm.Options{Seq: n, Format: "fp16"}).run(t, map[string][]float32{"x": rows(t, w, c.Embedding(), tokens)})["y"]
+	dir := t.TempDir()
+	var paths []string
+	for _, q := range []int{1, 4} {
+		opts := llm.Options{Seq: q, Cache: 16, Paged: 4, LastRow: q > 1, Format: "fp16"}
+		path, err := llm.Convert(Arch, c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	man, err := llm.ReadManifest(paths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if y := man.Parts[len(man.Parts)-1].Output; !slices.Equal(y.Shape, []int{1, 1, c.VocabSize}) {
+		t.Fatalf("y %v, want (1, 1, %d)", y.Shape, c.VocabSize)
+	}
+	s, cl, err := runner.OpenSession(context.Background(), nil, paths, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	worst, pos := 0.0, 0
+	for _, v := range []int{4, 3, 1, 2, 1} {
+		logits := step(t, s, c, w, pos, pos+v)
+		pos += v
+		worst = math.Max(worst, relErr32(logits, full[(pos-1)*c.VocabSize:pos*c.VocabSize]))
+	}
+	if worst > 5e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	if _, err := llm.Convert(Arch, c, w, filepath.Join(dir, "n.mlpackage"), "none", 0, llm.Options{Seq: 4, LastRow: true, Format: "fp16"}, io.Discard); err == nil {
+		t.Error("LastRow without a cache was built")
+	}
+	t.Logf("worst relative error %.2g", worst)
+}

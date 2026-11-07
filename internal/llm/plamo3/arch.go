@@ -22,6 +22,7 @@ var Arch = &llm.Arch{
 	// Engine's compile cache, so hwnpu-chat keeps the one that generates and reads the prompts
 	// with it, which short texts to translate hardly feel (docs/design.md 16.71).
 	Format:     "lut8",
+	LastRow:    true,
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }
 

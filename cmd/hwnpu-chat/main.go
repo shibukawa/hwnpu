@@ -185,6 +185,7 @@ func main() {
 				fail(err)
 			}
 			defer e.Close()
+			e.NoThink = m.NoThink && !flagGiven("think")
 			srv.Chats = append(srv.Chats, e)
 		case chat.KindEmbed:
 			var c chat.EmbedConfig
@@ -220,7 +221,7 @@ func main() {
 		err = serve(ctx, srv, *listen)
 	case len(srv.Chats) > 0:
 		stop() // Ctrl-C stops an answer, not the chat
-		err = talk(srv.Chats[0], *system, *think, *thinkBudget, *maxNew, srv.Defaults, &chat.Translation{TargetLang: *to, SourceLang: *from, Form: *form})
+		err = talk(srv.Chats[0], *system, *think && !srv.Chats[0].NoThink, *thinkBudget, *maxNew, srv.Defaults, &chat.Translation{TargetLang: *to, SourceLang: *from, Form: *form})
 	default:
 		stop()
 		err = search(srv.Embedders[0])
@@ -572,4 +573,11 @@ func oneLine(s string) string {
 		return string(r[:59]) + "…"
 	}
 	return s
+}
+
+// flagGiven reports whether the flag of that name was set on the command line.
+func flagGiven(name string) bool {
+	given := false
+	flag.Visit(func(f *flag.Flag) { given = given || f.Name == name })
+	return given
 }

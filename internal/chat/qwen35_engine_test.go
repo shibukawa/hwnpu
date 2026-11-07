@@ -88,9 +88,11 @@ func TestPrepareQwen35(t *testing.T) {
 	if len(c.Packages) != 2 {
 		t.Fatalf("packages %q", c.Packages)
 	}
-	for i, q := range []int{8, 96} { // the program that reads prompts takes a chunk per call
-		p := c.Packages[i]
-		if want := fmt.Sprintf("qwen35-fp16-p96-c96-q%d.parts.json", q); filepath.Base(p) != want {
+	// the program that reads prompts takes a chunk per call, and computes the logits after the
+	// last token alone (llm.Options.LastRow)
+	for i, name := range []string{"q8", "q96-last"} {
+		p, q := c.Packages[i], []int{8, 96}[i]
+		if want := fmt.Sprintf("qwen35-fp16-p96-c96-%s.parts.json", name); filepath.Base(p) != want {
 			t.Errorf("package %s, want %s", filepath.Base(p), want)
 		}
 		man, err := llm.ReadManifest(p)

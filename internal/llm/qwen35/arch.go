@@ -14,6 +14,7 @@ var Arch = &llm.Arch{
 	ModelTypes:    []string{"qwen3_5", "qwen3_5_text"},
 	Architectures: []string{"Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM"},
 	Format:        "lut8",
+	LastRow:       true,
 	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }
 
