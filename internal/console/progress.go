@@ -3,6 +3,7 @@ package console
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +81,7 @@ func (b *Bar) draw(i int) {
 	frac, detail := b.frac, b.detail
 	b.mu.Unlock()
 	var s strings.Builder
-	fmt.Fprintf(&s, "\r%s %s", b.label, spinFrames[i%len(spinFrames)])
+	fmt.Fprintf(&s, " %s", spinFrames[i%len(spinFrames)])
 	if frac >= 0 {
 		full := int(frac * barWidth)
 		fmt.Fprintf(&s, " ▕%s%s▏ %3.0f%%", strings.Repeat("█", full), strings.Repeat("░", barWidth-full), frac*100)
@@ -89,8 +90,66 @@ func (b *Bar) draw(i int) {
 	if detail != "" {
 		s.WriteString("  " + detail)
 	}
-	s.WriteString("\x1b[K")
-	io.WriteString(b.w, s.String())
+	label := b.label
+	if n := columnsOf(b.w); n > 0 {
+		// a narrow terminal shortens the label first: the bar and how far it is are what to see
+		label = shorten(label, max(n-1-columnsIn(s.String()), 16))
+	}
+	io.WriteString(b.w, oneLine(b.w, "\r"+label+s.String()))
+}
+
+// columnsIn is the columns s takes.
+func columnsIn(s string) int {
+	n := 0
+	for _, r := range s {
+		n += cellWidth(r)
+	}
+	return n
+}
+
+// shorten keeps the start of s and an ellipsis when it takes more than n columns.
+func shorten(s string, n int) string {
+	if columnsIn(s) <= n {
+		return s
+	}
+	return cut(s, n-1) + "…"
+}
+
+// oneLine makes a line that \r starts to redraw in place: cut to the terminal's width, as one
+// that wraps leaves its first rows behind at each redraw (\r goes back to the start of the last
+// row only), and written with the terminal's wrapping off (DECAWM), so that a line still wider
+// than the terminal thinks (wide characters, a window made narrower) is clipped, not wrapped. It
+// ends with erasing what is left of the row.
+func oneLine(w io.Writer, line string) string {
+	if n := columnsOf(w); n > 0 {
+		line = cut(line, n-1)
+	}
+	return "\x1b[?7l" + line + "\x1b[K\x1b[?7h"
+}
+
+// cut keeps of s (a leading \r aside) what fits in n columns.
+func cut(s string, n int) string {
+	used := 0
+	for i, r := range s {
+		if r == '\r' {
+			continue
+		}
+		if used += cellWidth(r); used > n {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+// columnsOf is the width of the terminal w writes to, 0 when not known.
+func columnsOf(w io.Writer) int {
+	if l, ok := w.(logWriter); ok {
+		w = l.w
+	}
+	if f, ok := w.(*os.File); ok {
+		return columns(f)
+	}
+	return 0
 }
 
 // Duration is d for a person: 0.4s, 12s, 3m05s, 1h02m.

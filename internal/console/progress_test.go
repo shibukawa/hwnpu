@@ -47,3 +47,37 @@ func TestDuration(t *testing.T) {
 		}
 	}
 }
+
+// TestCut keeps what fits in the columns, wide characters as two.
+func TestCut(t *testing.T) {
+	for _, c := range []struct {
+		s    string
+		n    int
+		want string
+	}{
+		{"\rdownloading x", 5, "\rdownl"},
+		{"\rabc", 10, "\rabc"},
+		{"\r書き出し 12%", 5, "\r書き"},
+		{"\rx ▕██░░▏ 50%", 6, "\rx ▕██░"},
+	} {
+		if got := cut(c.s, c.n); got != c.want {
+			t.Errorf("cut(%q, %d) = %q, want %q", c.s, c.n, got, c.want)
+		}
+	}
+}
+
+// TestOneLine turns the terminal's wrapping off for the redraw and on again.
+func TestOneLine(t *testing.T) {
+	if got, want := oneLine(&liveBuffer{}, "\rx"), "\x1b[?7l\rx\x1b[K\x1b[?7h"; got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+}
+
+func TestShorten(t *testing.T) {
+	if got, want := shorten("downloading model.safetensors", 12), "downloading…"; got != want {
+		t.Errorf("%q, want %q", got, want)
+	}
+	if got := shorten("abc", 3); got != "abc" {
+		t.Errorf("%q", got)
+	}
+}
