@@ -216,7 +216,16 @@ func reference(t *testing.T, c *Config, w llm.Weights, x []float32, stop int) []
 							oh[e] += S[r*dv+e] * q[r]
 						}
 					}
-					oh = rms(oh, gn, c.NormEps)
+					// the program normalizes o scaled by r = oScale / oNormIn with eps r^2 in fp16
+					var ms float64
+					for _, a := range oh {
+						ms += a * a
+					}
+					r2 := float64(oScale/oNormIn) * float64(oScale/oNormIn)
+					inv := 1 / math.Sqrt(ms/float64(dv)+round16(c.NormEps*r2)/r2)
+					for e := range oh {
+						oh[e] *= inv * gn[e]
+					}
 					for e := range oh {
 						o[j*dv+e] = oh[e] * silu(z[j*dv+e])
 					}
@@ -530,5 +539,42 @@ func TestBuildTiny(t *testing.T) {
 			}
 			t.Logf("%s", digest)
 		})
+	}
+}
+
+// The program has none of the Neural Engine's own silu and softplus, which were off by percents
+// on an M3 (silu over the convolution's small outputs, softplus 0 where the decay needs it), and
+// the model lost long prompts: they are written with exp, log and real_div (builder.silu,
+// builder.softplus).
+func TestNoNeuralEngineActivations(t *testing.T) {
+	cfg := tinyConfig(t)
+	path := filepath.Join(t.TempDir(), "weight.bin")
+	blobs, err := mlpackage.NewBlobWriter(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := mlpackage.NewBuilder("CoreML8", blobs)
+	_, outs, err := BuildCached(b, cfg, llm.NewSynthetic(cfg), llm.Options{Seq: 4, Cache: 8, Format: "fp16"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []*mlpackage.Var
+	for _, o := range outs {
+		names = append(names, &mlpackage.Var{Name: o.Name})
+	}
+	prog := b.Finish(names...)
+	blobs.Close()
+	fn := prog.GetFunctions()["main"]
+	ops := map[string]int{}
+	for _, op := range fn.GetBlockSpecializations()[fn.GetOpset()].GetOperations() {
+		ops[op.GetType()]++
+	}
+	for _, bad := range []string{"silu", "softplus"} {
+		if ops[bad] > 0 {
+			t.Errorf("%d %s operations", ops[bad], bad)
+		}
+	}
+	if ops["log"] == 0 || ops["real_div"] == 0 {
+		t.Errorf("no log or real_div: %v", ops)
 	}
 }

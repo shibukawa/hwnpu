@@ -365,7 +365,7 @@ var binaryOps = map[string]string{"add": "Add", "sub": "Subtract", "mul": "Multi
 
 var unaryOps = map[string][2]string{
 	"silu": {"Swish", "opset4"}, "sigmoid": {"Sigmoid", "opset1"}, "tanh": {"Tanh", "opset1"},
-	"exp": {"Exp", "opset1"}, "relu": {"Relu", "opset1"}, "sqrt": {"Sqrt", "opset1"},
+	"exp": {"Exp", "opset1"}, "relu": {"Relu", "opset1"}, "sqrt": {"Sqrt", "opset1"}, "abs": {"Abs", "opset1"},
 }
 
 var reduceOps = map[string]string{"reduce_mean": "ReduceMean", "reduce_max": "ReduceMax", "reduce_sum": "ReduceSum"}
@@ -393,9 +393,16 @@ func (l *lowerer) op(op *milspec.Operation) {
 		}
 	case "add", "sub", "mul", "real_div", "maximum", "minimum":
 		set(b.NamedOp(binaryOps[typ], "opset1", name, numpy, elem, shape, l.in(op, "x"), l.in(op, "y")))
-	case "silu", "sigmoid", "tanh", "exp", "relu", "sqrt":
+	case "silu", "sigmoid", "tanh", "exp", "relu", "sqrt", "abs":
 		u := unaryOps[typ]
 		set(b.NamedOp(u[0], u[1], name, nil, elem, shape, l.in(op, "x")))
+	case "log":
+		// log(x + epsilon)
+		x := l.in(op, "x")
+		if eps := l.float(op, "epsilon", 0); eps != 0 {
+			x = b.Op("Add", "opset1", numpy, elem, shape, x, l.f16(eps))
+		}
+		set(b.NamedOp("Log", "opset1", name, nil, elem, shape, x))
 	case "rsqrt":
 		// 1 / sqrt(x + epsilon)
 		x := l.in(op, "x")

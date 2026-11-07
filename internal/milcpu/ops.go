@@ -141,10 +141,19 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		if r.err == nil {
 			out, r.err = broadcast(x, y, binaryOp(typ))
 		}
-	case "silu", "sigmoid", "relu", "tanh", "exp", "sqrt", "softplus":
+	case "silu", "sigmoid", "relu", "tanh", "exp", "sqrt", "softplus", "abs":
 		x := r.floats("x")
 		if r.err == nil {
 			out = unary(x, typ)
+		}
+	case "log":
+		x := r.floats("x")
+		eps := r.float("epsilon", 1e-45)
+		if r.err == nil {
+			out = &value{shape: x.shape, f: make([]float32, len(x.f))}
+			for i, v := range x.f {
+				out.f[i] = float32(math.Log(float64(v) + float64(eps)))
+			}
 		}
 	case "rsqrt":
 		x := r.floats("x")
@@ -433,6 +442,8 @@ func unary(x *value, typ string) *value {
 			a = math.Exp(a)
 		case "sqrt":
 			a = math.Sqrt(a)
+		case "abs":
+			a = math.Abs(a)
 		case "softplus":
 			// log(1 + exp(a)), without overflowing exp for large a
 			a = math.Max(a, 0) + math.Log1p(math.Exp(-math.Abs(a)))
