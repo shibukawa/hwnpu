@@ -27,45 +27,72 @@ const (
 // Grid is the patches down and across of an image of w x h pixels (8 x 2 pixels a patch).
 func Grid(w, h int) (gh, gw int) { return h / 16, w / 16 }
 
-// Time is the timestep embedding: input x (1, 1, 2048), the sinusoid of sigma (diffusers'
-// Timesteps, cos first); output y (1, 1, 8192), t_embedder's output then t_embedding_norm's.
+// TimeRows is the rows of Time's input: the Neural Engine takes the time part only with 8 rows or
+// more (with one, Core ML places all of it on the CPU), so a call carries a step's sinusoid in
+// row 0 and zeros after it.
+const TimeRows = 8
+
+// Time is the timestep embedding: input x (1, TimeRows, 2048), sinusoids of sigma (diffusers'
+// Timesteps, cos first); output y (1, TimeRows, 8192), t_embedder's output then
+// t_embedding_norm's, row by row.
 func Time() *Part {
 	return &Part{Name: "dit_time", build: func(g *graph) {
-		x := g.input("x", 1, 1, DitHidden)
-		temb := g.Linear(g.op("silu", map[string]any{"x": g.Linear(x, "dit.t_embedder.1.linear_1.weight", "", DitHidden)}, 1, 1, DitHidden),
+		x := g.input("x", 1, TimeRows, DitHidden)
+		temb := g.Linear(g.op("silu", map[string]any{"x": g.Linear(x, "dit.t_embedder.1.linear_1.weight", "", DitHidden)}, 1, TimeRows, DitHidden),
 			"dit.t_embedder.1.linear_2.weight", "", 3*DitHidden)
 		et := g.rmsNorm(x, "dit.t_embedding_norm.weight", 1e-6)
 		g.output(g.concat(-1, temb, et))
 	}}
 }
 
-// Patch is the patch embedding: input x (1, patches, 64); output y (1, patches, 2048), the
-// residual stream divided by DitScale.
-func Patch(w, h int) *Part {
-	return &Part{Name: "dit_patch", build: func(g *graph) {
-		gh, gw := Grid(w, h)
-		n := gh * gw
-		x := g.input("x", 1, n, PatchDim)
-		raw := g.Get("dit.x_embedder.proj.1.weight", DitHidden, (16+1)*4)
-		wt := make([]float32, DitHidden*PatchDim)
-		for o := 0; o < DitHidden; o++ {
-			for i := 0; i < PatchDim; i++ {
-				wt[o*PatchDim+i] = raw[o*68+i] / DitScale
-			}
+// patchEmbed is the patch embedding of x (1, patches, 64): (1, patches, 2048), the residual
+// stream divided by DitScale. It runs at the head of the first group of blocks: alone, as a
+// program of its own, Core ML places it on the CPU (at 512 x 512 and 1024 x 1024).
+func patchEmbed(g *graph, x *mlpackage.Var) *mlpackage.Var {
+	raw := g.Get("dit.x_embedder.proj.1.weight", DitHidden, (16+1)*4)
+	wt := make([]float32, DitHidden*PatchDim)
+	for o := 0; o < DitHidden; o++ {
+		for i := 0; i < PatchDim; i++ {
+			wt[o*PatchDim+i] = raw[o*68+i] / DitScale
 		}
-		g.output(g.linearConst(x, "dit.x_embedder", wt, DitHidden, nil))
-	}}
+	}
+	return g.linearConst(x, "dit.x_embedder", wt, DitHidden, nil)
+}
+
+// maxScoreBytes is the largest fp16 score tensor (heads x queries x keys) an attention should
+// make at once: past about 64 MiB the Neural Engine runs q k^T and its softmax 2 to 3 times
+// slower per score (M3, design.md 16.85; 65 MiB fast, 68 MiB slow).
+const maxScoreBytes = 64 << 20
+
+// DitQChunk is qchunk, halved until the self-attention's scores of a chunk (16 heads by qchunk
+// by the patches of a w x h image, fp16) are within maxScoreBytes.
+func DitQChunk(w, h, qchunk int) int {
+	gh, gw := Grid(w, h)
+	n := gh * gw
+	if qchunk <= 0 || qchunk > n {
+		qchunk = n
+	}
+	for qchunk > 1 && ditHeads*qchunk*n*2 > maxScoreBytes {
+		qchunk /= 2
+	}
+	return qchunk
 }
 
 // Blocks is the DiT's blocks first..first+count-1: inputs x (1, patches, 2048), the residual
-// stream divided by DitScale; t (1, 1, 8192), Time's output; ctx (1, 512, 1024), the text's
+// stream divided by DitScale (for the first group, the patches (1, patches, 64), which it
+// embeds); t (1, 1, 8192), a row of Time's output; ctx (1, 512, 1024), the text's
 // conditioning. Output y, the residual stream after them. Self-attention runs qchunk queries at
 // a time (0: all at once).
 func Blocks(w, h, first, count, qchunk int) *Part {
 	return &Part{Name: fmt.Sprintf("dit_blocks_%d", first), build: func(g *graph) {
 		gh, gw := Grid(w, h)
 		n := gh * gw
-		x := g.input("x", 1, n, DitHidden)
+		var x *mlpackage.Var
+		if first == 0 {
+			x = patchEmbed(g, g.input("x", 1, n, PatchDim))
+		} else {
+			x = g.input("x", 1, n, DitHidden)
+		}
 		t := g.input("t", 1, 1, TimeDim)
 		ctx := g.input("ctx", 1, TextRows, textHidden)
 		temb := g.slice(t, -1, 0, 3*DitHidden)

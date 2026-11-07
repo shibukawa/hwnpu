@@ -182,6 +182,9 @@ func TestElementwise(t *testing.T) {
 	}
 	h = p.op("add", map[string]any{"x": h, "y": p.op("sqrt", map[string]any{"x": z}, sh...)}, sh...)
 	h = p.op("add", map[string]any{"x": h, "y": p.op("exp", map[string]any{"x": x}, sh...)}, sh...)
+	h = p.op("add", map[string]any{"x": h, "y": p.op("abs", map[string]any{"x": x}, sh...)}, sh...)
+	h = p.op("add", map[string]any{"x": h, "y": p.op("log", map[string]any{"x": z, "epsilon": b.ScalarF16(0.5)}, sh...)}, sh...)
+	h = p.op("add", map[string]any{"x": h, "y": p.op("log", map[string]any{"x": z, "epsilon": b.ScalarF16(0)}, sh...)}, sh...)
 	h = p.op("add", map[string]any{"x": h, "y": p.op("gelu", map[string]any{"x": x, "mode": b.Str("c", "EXACT")}, sh...)}, sh...)
 	h = p.op("add", map[string]any{"x": h, "y": p.op("gelu", map[string]any{"x": z, "mode": b.Str("c", "TANH_APPROXIMATION")}, sh...)}, sh...)
 	h = p.op("layer_norm", map[string]any{"x": h, "axes": b.Ints(-1), "gamma": g, "beta": beta, "epsilon": b.ScalarF16(1e-5)}, sh...)
@@ -210,6 +213,15 @@ func TestShapes(t *testing.T) {
 		"squeeze_mask": p.bools(false, false, false, true)}, 1, 4, 3)
 	pd := p.op("pad", map[string]any{"x": st, "pad": b.Ints(2, 0), "mode": b.Str("c", "constant"), "constant_val": b.ScalarF16(0.5)}, 1, 4, 5)
 	p.check(b.NamedOp("identity", "y", map[string]any{"x": c}, f16, 1, 4, 6, 4), b.NamedOp("identity", "s", map[string]any{"x": pd}, f16, 1, 4, 5))
+}
+
+// upsample_nearest_neighbor, lowered to reshapes and tiles.
+func TestUpsample(t *testing.T) {
+	p := newProgram(t)
+	b := p.b
+	x := p.input("x", -1, 1, 1, 3, 2, 4)
+	u := p.op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": b.ScalarI32(2), "scale_factor_width": b.ScalarI32(2)}, 1, 3, 4, 8)
+	p.check(b.NamedOp("identity", "y", map[string]any{"x": u}, f16, 1, 3, 4, 8))
 }
 
 // Matrix products and linear layers with fp16, int4 (per row and in groups) and int8 weights.

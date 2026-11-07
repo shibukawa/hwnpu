@@ -88,6 +88,7 @@ func TestElementwise(t *testing.T) {
 		{"silu", func(a float64) float64 { return a / (1 + math.Exp(-a)) }},
 		{"sigmoid", func(a float64) float64 { return 1 / (1 + math.Exp(-a)) }},
 		{"relu", func(a float64) float64 { return math.Max(a, 0) }},
+		{"abs", math.Abs},
 		// torch.nn.functional.softplus(torch.tensor([-2., 0., 1.5])): 0.1269, 0.6931, 1.7014
 		{"softplus", func(a float64) float64 { return map[float64]float64{-2: 0.12692801, 0: 0.69314718, 1.5: 1.70141327}[a] }},
 	} {
@@ -125,6 +126,10 @@ func TestElementwise(t *testing.T) {
 		return b.Op("rsqrt", map[string]any{"x": x, "epsilon": b.ScalarF16(1)}, mlpackage.Float16, 2)
 	})
 	near(t, "rsqrt", got, []int{2}, []float32{0.5, 1}, 1e-6)
+	got = run(t, []int{2}, []float32{1, 0}, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+		return b.Op("log", map[string]any{"x": x, "epsilon": b.ScalarF16(1)}, mlpackage.Float16, 2)
+	})
+	near(t, "log", got, []int{2}, []float32{float32(math.Ln2), 0}, 1e-6)
 }
 
 func TestReductions(t *testing.T) {
@@ -184,6 +189,10 @@ func TestLayout(t *testing.T) {
 		return b.Op("tile", map[string]any{"x": x, "reps": b.Ints(2, 3)}, mlpackage.Float16, 4, 3)
 	})
 	near(t, "tile", got, []int{4, 3}, []float32{1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2}, 0)
+	got = run(t, []int{1, 2, 1, 2}, []float32{1, 2, 3, 4}, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
+		return b.Op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": b.ScalarI32(2), "scale_factor_width": b.ScalarI32(3)}, mlpackage.Float16, 1, 2, 2, 6)
+	})
+	near(t, "upsample_nearest_neighbor", got, []int{1, 2, 2, 6}, []float32{1, 1, 1, 2, 2, 2, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 3, 3, 3, 4, 4, 4}, 0)
 	got = run(t, []int{2, 3}, x, func(b *mlpackage.Builder, x *mlpackage.Var) *mlpackage.Var {
 		bools, _ := b.Bools("c", []int{2}, []bool{true, false})
 		ends, _ := b.Bools("c", []int{2}, []bool{true, true})

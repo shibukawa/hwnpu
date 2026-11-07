@@ -36,10 +36,13 @@ type Manifest struct {
 	// and ends within the chunk it starts in. Copying the slot a position reads (StateAt) is
 	// what a sequence needs besides its rows to go back to that position; no copy brings a
 	// ring back.
-	Checkpoints []Checkpoint        `json:"checkpoints"`
-	Rings       int                 `json:"rings"`
-	Banks       map[string]Bank     `json:"banks"`
-	Versions    map[string]*Version `json:"versions"`
+	Checkpoints []Checkpoint `json:"checkpoints"`
+	Rings       int          `json:"rings"`
+	// CacheRows is the positions of each KV cache by buffer name, where it is not MaxSeqLen
+	// (iron_window's sliding layers hold a prompt chunk's rows more). Older exports lack it.
+	CacheRows map[string]int      `json:"cache_rows"`
+	Banks     map[string]Bank     `json:"banks"`
+	Versions  map[string]*Version `json:"versions"`
 	// Multimodal describes the towers of a model with them (Gemma4Multimodal), or nil.
 	Multimodal *Multimodal `json:"multimodal"`
 	// HostTables are tables whose rows the host writes into the arena before each call.

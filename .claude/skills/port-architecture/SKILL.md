@@ -10,6 +10,8 @@ hwnpu-convert が扱うモデルはホワイトリストで、各アーキテク
 - `internal/llm/lfm3`：因果 LM。畳み込み層と注意層が混在し、Neural Engine 向けの書き換え（`post-scale`、`conv`）が入っている
 - `internal/llm/bert`：エンコーダ。埋め込み段、attention mask の入力、隠れ状態の出力がある。`bert_test.go` の fp64 の正解実装が、テストの書き方の手本
 
+移植の後の検証 (Neural Engine の上限と配置、AMD の形、量子化の形式と GPTQ などの校正、メモリと速さ) は docs/new-model-checklist.ja.md (英語版は docs/new-model-checklist.md) の順に進めてください。
+
 ## 合格条件
 
 すべて満たすまで完了ではありません。結果の数値は docs/design.md の新しい節に残します。

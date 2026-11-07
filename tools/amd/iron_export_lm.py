@@ -669,6 +669,10 @@ def export(model, versions, out: Path) -> dict:
         # The ring caches (a sliding window's, when 3 rings are under max_seq_len), which no
         # copy of a slot brings back.
         rings=sum(1 for r in recurrent if not _is_checkpoints(r)),
+        # The KV caches' rows (positions), by buffer: max_seq_len, or more for iron_window's
+        # sliding layers (a prompt chunk's rows past the context). A position's row is its bytes
+        # over these.
+        cache_rows=_cache_rows(model, vm["decode"]["buffers"]),
         banks={k: dict(bytes=int(n), image=images.get(k)) for k, n in banks.items()},
         versions=vm,
     )
@@ -681,6 +685,25 @@ def export(model, versions, out: Path) -> dict:
     (out / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     write_words(versions, m, out)
     return m
+
+
+def _cache_rows(model, buffers) -> dict:
+    """By KV cache buffer (".cache." in its name), its rows: the first dimension of the state the
+    name leads to from the model (model.layers.4.cache.keys). Names that lead nowhere are left
+    out, and hwnpu takes max_seq_len rows for them."""
+    out = {}
+    for name in buffers:
+        if ".cache." not in name:
+            continue
+        obj = model
+        for part in name.split("."):
+            obj = obj[int(part)] if part.isdigit() and hasattr(obj, "__getitem__") else getattr(obj, part, None)
+            if obj is None:
+                break
+        shape = getattr(obj, "shape", None)
+        if shape:
+            out[name] = int(shape[0])
+    return out
 
 
 def _name(model) -> str:
@@ -757,12 +780,23 @@ def main(argv=None) -> int:
                     help="with --q4, the attention's projections: q8 (8.5 bits a weight), q4 or bf16")
     ap.add_argument("--conv", choices=("q8", "q4", "bf16"), default="q8",
                     help="with --q4, LFM3's short convolutions' projections (in_proj, out_proj)")
+    ap.add_argument("--q4-codes", type=Path, default=None,
+                    help="with --q4, the codes q4_gptq.py chose against the activations (GPTQ): its weights take "
+                         "them instead of rounding to the nearest level, the others are rounded")
     ap.add_argument("--device-ple", action="store_true",
                     help="Gemma 4: keep the per-layer token table on the device (IRON's own gathers) instead of "
                          "on the host (iron_hostple: 4.4 GiB less pinned memory for E2B)")
+    ap.add_argument("--scan-window", action="store_true",
+                    help="IRON's sliding-window attention, which reads the keys from position 0 and masks "
+                         "those out of the window (by default it reads only the window's: iron_window)")
     a = ap.parse_args(argv)
     bind_device(a.device, a.cols)
     import importlib
+
+    if not a.scan_window:
+        import iron_window
+
+        iron_window.install()
 
     if a.model.startswith("gemma4") and not a.device_ple:
         import iron_hostple
@@ -773,6 +807,7 @@ def main(argv=None) -> int:
             import iron_gemma4
 
             iron_hostple.install(q4=a.q4, attn=a.attn, words=iron_gemma4.SCRATCHPAD_WORDS)
+            iron_gemma4.install_tail_boundary()
     elif a.model == "plamo3" and a.q4:
         import iron_plamo3
 
@@ -783,6 +818,12 @@ def main(argv=None) -> int:
         iron_lfm3.install_q4(attn=a.attn, conv=a.conv)
     elif a.q4:
         raise SystemExit(f"--q4: not built for {a.model}")
+    if a.q4_codes:
+        if not a.q4:
+            raise SystemExit("--q4-codes: with --q4")
+        import iron_q4
+
+        print(f"{a.q4_codes}: codes of {iron_q4.load_codes(a.q4_codes)} weights")
 
     module, cls = MODELS[a.model]
     Model = getattr(importlib.import_module(module), cls)
@@ -799,6 +840,11 @@ def main(argv=None) -> int:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
         return 0
     model = Model.from_checkpoint(a.checkpoint, random_weights=a.random_weights, max_seq_len=a.max_seq_len)
+    if a.q4_codes:
+        import iron_q4
+
+        used = iron_q4.CODES_USED
+        print(f"--q4-codes: {used['hit']} weights took the chosen codes, {used['miss']} were rounded")
     if getattr(model, "hwnpu_kind", None) in ("lfm3audio", "lfm3omni"):  # its words by grid of frames, as Gemma 4's audio
         at = model.config.audio_token_id
         _TOWER.update(audio=model.towers[at], audio_input=model.tower_inputs[at], audio_kind="lfm3audio")

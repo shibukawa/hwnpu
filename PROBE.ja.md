@@ -152,12 +152,12 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 | int4 | 0.45 GiB | CPU | CPU | 28.1 | 36 | 17 | 3.53 | 300 |
 | **int4** | 0.45 GiB | **GPU** | **GPU** | **8.5** | **117** | 57 | 0.47 | **35** |
 
-- Neural Engine で全速で動くのは lut4 だけです。4 ビットの重みは int8 に比べて 1 トークンで読むバイト数が半分で、生成の速さは重みの読み出しで決まります。
+- Neural Engine で全速で動くのは lut4 だけです（M2 では int8 と fp16 も全速でした。下の M2 の節。M3 を macOS 27.2 にしても int8 と fp16 は遅いままで、OS ではなくチップの違いです）。4 ビットの重みは int8 に比べて 1 トークンで読むバイト数が半分で、生成の速さは重みの読み出しで決まります。
 - Neural Engine と GPU の int4 は、1 トークンあたりのエネルギーがほぼ同じ（37 mJ と 35 mJ）で、CPU はその 7 倍ほどです。
 - 1 B の fp16 は大きさの上限を超えるので、CPU で動きます。
 - CPU は読み出すバイト数ではなく計算で頭打ちになり、どの形式でも 1 トークン 30 ms 前後で、3.3〜3.7 コア分を使います。量子化が効くのは NPU と GPU だけです。
 
-上限を超えるモデルを分けて動かした結果（`npuprobe split`、lut4 の 64 層、1.81 GiB、3.9 B 個の重み。レポートは [npuprobe-m3-split.md](npuprobe-m3-split.md)）:
+上限を超えるモデルを分けて動かした結果（`npuprobe split`、lut4 の 64 層、1.81 GiB、3.9 B 個の重み。レポートは [npuprobe-m3-split.md](npu_profiles/npuprobe-m3-split.md)）:
 
 | 分け方 | 部分の大きさ | 置かれた先 | 部分ごとの ms/call | ms/token | 部分の時間の合計 | 重み GB/s | CPU use | 各部分のあとの GPU との誤差 |
 |---|---|---|---|---|---|---|---|---|
@@ -169,7 +169,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 分け方は計算結果を変えません。32 層のあとの誤差は 2 つに分けても 4 つに分けても 3.32%、最後はどちらも 4.91% で、境目でデータは壊れていません。誤差は層が増えるにつれて少しずつ増えます。比べている GPU の結果自体も fp16 の誤差を含みます。
 - 64 層は 4 B 級のモデルに当たります（重みは乱数で、文脈に対する注意は含みません）。lut4 で 1 GiB 未満の部分に分ければ、M3 でも 4 B 級を 1 トークン 30 ms ほど（約 33 tokens/s）で動かせる見込みです。
 
-部分を 1 つのパッケージの関数にした場合と比べると（`-layout functions,files`、レポートは [npuprobe-m3-functions.md](npuprobe-m3-functions.md)）:
+部分を 1 つのパッケージの関数にした場合と比べると（`-layout functions,files`、レポートは [npuprobe-m3-functions.md](npu_profiles/npuprobe-m3-functions.md)）:
 
 | 分割数 | 書き方 | 置かれた先 | ms/token | プロセスの最大 RSS |
 |---|---|---|---|---|
@@ -197,6 +197,25 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 128 トークンは 64 トークンの 2.7 倍の時間がかかり、1 トークンあたりでも 64 より遅くなります。上限を超えたら、128 ずつより 64 ずつに分けて流すほうが速くなります。
 - つまり、投機的デコードでは 1 トークンの時間で約 60 個の下書きを確かめられ、プロンプトは約 64 トークンずつ読むのが最も速くなります（重み 1 B で毎秒約 7,000 トークン）。`hwnpu-convert -seq` で変換した LFM3-1.7B も同じ傾向でした（1 トークンで 13.7 ms、48 で 15.2 ms、96 で 30.0 ms、11 TFLOPS）。
 
+### Apple M2（MacBook Air、16 GB、macOS 27.2）
+
+既定の `npuprobe`（bench と limit。レポートは [npuprobe-m2.md](npu_profiles/npuprobe-m2.md)）。16 層（0.97 B）で、上の M3 と比べると:
+
+| 形式 | 重み | 指定 | M2 ms/token | M3 ms/token | M2 重み GB/s | M3 重み GB/s |
+|---|---|---|---|---|---|---|
+| lut4 | 0.45 GiB | NPU | 7.8 | 7.5 | 63 | 65 |
+| int8 | 0.91 GiB | NPU | 15.6 | 41.6 | 62 | 23 |
+| int4 | 0.45 GiB | GPU | 8.5 | 8.5 | 57 | 57 |
+| fp16 | 1.81 GiB | GPU | 25.5 | 24.5 | 76 | 79 |
+| lut4 | 0.45 GiB | GPU | 55.4 | 65.1 | 9 | 7 |
+| どの形式も | | CPU | 35 前後 | 27〜30 | | |
+
+- 大きさの上限は M3 と層の数まで同じです。fp16 は 8 層（0.91 GiB）が Neural Engine に載り 9 層（1.02 GiB）は載らず、int8 は 17 層と 18 層、lut4 は 35 層（0.99 GiB）と 36 層です。0.91 GiB の fp16 のモデルを 3 つ同時に読み込んでも、3 つとも Neural Engine に載り、1 回 15〜16 ms と 1 つのときと同じでした。
+- lut4 は M3 と同じ速さなので、重みの読み出しで決まる生成もほぼ同じ速さのはずです。CPU は 2 割ほど遅くなります。
+- int8 と fp16 も全速で動きました。どの形式も重みを約 60 GB/s で読みます（0.49 B の fp16 で 15.9 ms）。M3 で全速だったのは lut4 だけです。違いは OS ではなくチップによります。M3 を M2 と同じ macOS 27.2（Core ML も同じ Build 26B123）にして `npuprobe bench` を測り直しても、Neural Engine の int8 は 16 層で 42.2 ms（23 GB/s）、fp16 は 8 層で 45.6 ms（21 GB/s）と 27.0.1 のときと変わらず、lut4 だけが 7.6 ms（64 GB/s）でした（レポートは [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)）。
+- 上限を超えて CPU に置かれた lut4 は、M3 と同じく極端に遅くなります（40 層で 1 回 6.3 秒、48 層で 17.7 秒）。
+- コンパイルは M3 より長くかかります（lut4 の 32 層で 25 秒）。
+
 ### Apple M4
 
 上限を超えるモデルを分けて動かした結果（`npuprobe split -split-layers 128 -parts 2,4`、lut4 の 128 層、3.62 GiB、7.8 B 個の重み）:
@@ -215,7 +234,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 
 ### KV キャッシュ（Apple M3、`npuprobe kv`）
 
-11 層、lut4、1 トークン、全部 Neural Engine（レポートは [npuprobe-m3-kv.md](npuprobe-m3-kv.md)）:
+11 層、lut4、1 トークン、全部 Neural Engine（レポートは [npuprobe-m3-kv.md](npu_profiles/npuprobe-m3-kv.md)）:
 
 | キャッシュの容量 | KV の大きさ | ホストのバッファ | MLState |
 |---|---|---|---|
@@ -227,11 +246,11 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - MLState にしても速さは変わりません。下がるのは CPU use だけで、ホストのバッファでは Core ML が CPU で入力を扱っている分です。
 - どちらも、キャッシュの容量に比例して遅くなります。原因は入力のコピーではなく、固定の長さのキャッシュ全体に対する Neural Engine の計算です。
 - 状態に書いた値は、読み直してから使わないと Neural Engine 向けのコンパイルが失敗します（`error code: -14`）。
-- 費用の正体は、容量全体に対する注意の計算です（レポートは [npuprobe-m3-kv-mha.md](npuprobe-m3-kv-mha.md)）。K/V を複製せずキャッシュを 4 倍にした `host-mha` は、1024 / 4096 / 8192 で 14.2 / 36.6 / 63.5 ms と、`host` の 1.3 倍にしかなりません。読み出しの帯域でも複製でもなく、問い合わせが 1 行の行列ベクトル積（層ごとに 16 ヘッド × 容量）を Neural Engine が使い切れないためです（1K トークンで約 8 GFLOP/s）。
-- キャッシュを int8 にしても速くなりません（レポートは [npuprobe-m3-kv-int8.md](npuprobe-m3-kv-int8.md)）。`host-int8` は全演算 Neural Engine に載り、メモリは半分ですが、1024 / 4096 / 8192 で 11.9 / 29.5 / 50.8 ms と、同じ実行の `host`（10.8 / 27.6 / 46.5 ms）より 1 割遅くなります。fp16 に戻す演算が容量全体にかかるためです。量子化はメモリのための手法です。
-- Neural Engine に載るテンソルの 1 次元の長さは 16384 までです（レポートは [npuprobe-m3-kv-limit.md](npuprobe-m3-kv-limit.md)）。`-kv-layers 2` で、鍵の軸が 16384（キャッシュ 16383）なら全部 Neural Engine で 16.6 ms、16385（キャッシュ 16384）では注意の 39 演算が CPU に置かれて 117 ms でした。
-- キャッシュを塊に分けると、この上限を超えても Neural Engine に載ります（`-kv-layers 6`、LFM3-1.7B の全注意の層の数。レポートは [npuprobe-m3-kv-chunk.md](npuprobe-m3-kv-chunk.md) と [npuprobe-m3-kv-chunk-long.md](npuprobe-m3-kv-chunk-long.md)）。`host-chunk` は 4096 / 16320 / 32768 / 65536 で 13.2 / 43.4 / 84.0 / 201.6 ms と全部 Neural Engine で、分けない `host`（4096 / 16320 で 14.5 / 49.1 ms）より遅くなりません。塊は別々の入力にし、塊どうしは要素ごとの演算だけで合わせます。塊を 1 つのテンソルの軸に並べて軸方向に縮約する形や、各塊をその和の割合で重み付けする形は、2 塊から全演算が CPU に置かれました。
-- 塊ごとに重みなしの注意を呼び、ホストで合わせると、費用は容量ではなく使った長さに比例します（`npuprobe attn`、レポートは [npuprobe-m3-attn.md](npuprobe-m3-attn.md)）。grouped、Q=8、塊 8192 の 6 層で、使った長さ 4096 / 16384 / 65536 / 262144 に対して 8.8 / 17.4 / 69.5 / 295.7 ms でした。塊ごとにバッファを付け替えても 1 回の時間は変わらず、最大の常駐メモリは KV のバイト数（262144 で 3 GiB）より 0.1 GiB ほど多いだけで、入力は複製されません。仕事の少ない形は Core ML が CPU に置きます（Q=1 は塊 8192 まで、Q=8 は 2048 まで）。Q=1 では CPU のほうが Neural Engine より 2 倍速くなりました（1K あたり 0.41 対 0.80 ms）。
+- 費用の正体は、容量全体に対する注意の計算です（レポートは [npuprobe-m3-kv-mha.md](npu_profiles/npuprobe-m3-kv-mha.md)）。K/V を複製せずキャッシュを 4 倍にした `host-mha` は、1024 / 4096 / 8192 で 14.2 / 36.6 / 63.5 ms と、`host` の 1.3 倍にしかなりません。読み出しの帯域でも複製でもなく、問い合わせが 1 行の行列ベクトル積（層ごとに 16 ヘッド × 容量）を Neural Engine が使い切れないためです（1K トークンで約 8 GFLOP/s）。
+- キャッシュを int8 にしても速くなりません（レポートは [npuprobe-m3-kv-int8.md](npu_profiles/npuprobe-m3-kv-int8.md)）。`host-int8` は全演算 Neural Engine に載り、メモリは半分ですが、1024 / 4096 / 8192 で 11.9 / 29.5 / 50.8 ms と、同じ実行の `host`（10.8 / 27.6 / 46.5 ms）より 1 割遅くなります。fp16 に戻す演算が容量全体にかかるためです。量子化はメモリのための手法です。
+- Neural Engine に載るテンソルの 1 次元の長さは 16384 までです（レポートは [npuprobe-m3-kv-limit.md](npu_profiles/npuprobe-m3-kv-limit.md)）。`-kv-layers 2` で、鍵の軸が 16384（キャッシュ 16383）なら全部 Neural Engine で 16.6 ms、16385（キャッシュ 16384）では注意の 39 演算が CPU に置かれて 117 ms でした。
+- キャッシュを塊に分けると、この上限を超えても Neural Engine に載ります（`-kv-layers 6`、LFM3-1.7B の全注意の層の数。レポートは [npuprobe-m3-kv-chunk.md](npu_profiles/npuprobe-m3-kv-chunk.md) と [npuprobe-m3-kv-chunk-long.md](npu_profiles/npuprobe-m3-kv-chunk-long.md)）。`host-chunk` は 4096 / 16320 / 32768 / 65536 で 13.2 / 43.4 / 84.0 / 201.6 ms と全部 Neural Engine で、分けない `host`（4096 / 16320 で 14.5 / 49.1 ms）より遅くなりません。塊は別々の入力にし、塊どうしは要素ごとの演算だけで合わせます。塊を 1 つのテンソルの軸に並べて軸方向に縮約する形や、各塊をその和の割合で重み付けする形は、2 塊から全演算が CPU に置かれました。
+- 塊ごとに重みなしの注意を呼び、ホストで合わせると、費用は容量ではなく使った長さに比例します（`npuprobe attn`、レポートは [npuprobe-m3-attn.md](npu_profiles/npuprobe-m3-attn.md)）。grouped、Q=8、塊 8192 の 6 層で、使った長さ 4096 / 16384 / 65536 / 262144 に対して 8.8 / 17.4 / 69.5 / 295.7 ms でした。塊ごとにバッファを付け替えても 1 回の時間は変わらず、最大の常駐メモリは KV のバイト数（262144 で 3 GiB）より 0.1 GiB ほど多いだけで、入力は複製されません。仕事の少ない形は Core ML が CPU に置きます（Q=1 は塊 8192 まで、Q=8 は 2048 まで）。Q=1 では CPU のほうが Neural Engine より 2 倍速くなりました（1K あたり 0.41 対 0.80 ms）。
 
 ### 求む結果
 
