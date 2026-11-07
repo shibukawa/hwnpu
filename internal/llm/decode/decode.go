@@ -315,6 +315,37 @@ func caches(p Program) ([]kvCache, int, error) {
 	return kv, t, nil
 }
 
+// SetInputF16 copies b, fp16 values, into the input name of every program of the session that
+// has it: an input the session neither holds (llm.CacheInput) nor writes each step (x, the token
+// lookups, last and StepInputs'), which then stays as set across steps, marks and rewinds, until
+// set again. Whisper's decoder takes its cross attention's keys and values of a clip this way.
+func (s *Session) SetInputF16(name string, b []byte) error {
+	if name == "x" || name == "last" || cacheInput(name) {
+		return fmt.Errorf("decode: the session writes the input %s itself", name)
+	}
+	for _, lk := range s.lookups {
+		if lk.Input == name {
+			return fmt.Errorf("decode: the session writes the input %s itself", name)
+		}
+	}
+	found := false
+	for _, st := range s.progs {
+		in, ok := st.p.In[name]
+		if !ok {
+			continue
+		}
+		if len(in) != len(b) {
+			return fmt.Errorf("decode: input %s takes %d bytes, not %d", name, len(in), len(b))
+		}
+		copy(in, b)
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("decode: no program has an input %s", name)
+	}
+	return nil
+}
+
 // Add adds a program of the same model that takes another number of tokens per step. Its cache
 // inputs (kv_*, win_*, st_*: llm.CacheInput) must be the same memory as the first program's (chain.Share), so that
 // steps of either program continue the same sequence.

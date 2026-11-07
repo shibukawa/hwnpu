@@ -203,6 +203,35 @@ func (g *Graph) LinearS(x *mlpackage.Var, name, outName string, outDim int, s fl
 	return g.Op("linear", map[string]any{"x": x, "weight": w}, shape...)
 }
 
+// LinearPadded is Linear with the weight's rows padded with zeros to a multiple of the format's
+// row group (Opts.Group), which the lookup tables need, and the result cut back to outDim:
+// Whisper's output layer, its 51866 rows not a multiple of 16. With rows that divide already it
+// is Linear.
+func (g *Graph) LinearPadded(x *mlpackage.Var, name, outName string, outDim int) *mlpackage.Var {
+	in := x.Shape[len(x.Shape)-1]
+	group := max(g.Opts.Group, 1)
+	rows := (outDim + group - 1) / group * group
+	if rows == outDim {
+		return g.Linear(x, name, outName, outDim)
+	}
+	w := append(g.Get(name, outDim, in), make([]float32, (rows-outDim)*in)...)
+	y := g.Op("linear", map[string]any{"x": x, "weight": g.matrix(name, name, w, rows, in, 1)}, append(append([]int{}, x.Shape[:len(x.Shape)-1]...), rows)...)
+	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
+	n := len(shape)
+	begin, end := make([]int32, n), make([]int32, n)
+	bm, em := make([]bool, n), make([]bool, n)
+	for i := range shape {
+		end[i] = int32(shape[i])
+		bm[i], em[i] = true, true
+	}
+	bm[n-1], em[n-1] = false, false
+	inputs := map[string]any{"x": y, "begin": g.B.Ints(begin...), "end": g.B.Ints(end...), "begin_mask": g.Bools(bm...), "end_mask": g.Bools(em...)}
+	if outName != "" {
+		return g.B.NamedOp("slice_by_index", outName, inputs, mlpackage.Float16, shape...)
+	}
+	return g.Op("slice_by_index", inputs, shape...)
+}
+
 // LastRow is the row of x (1, seq, d) that sel (1, 1, seq), one-hot, picks: (1, 1, d). A matrix
 // product, since the Neural Engine runs gather on the CPU; with one 1 it is the row exactly.
 func (g *Graph) LastRow(x, sel *mlpackage.Var) *mlpackage.Var {

@@ -53,6 +53,10 @@ const (
 	qwen35
 	// qwen2 is Qwen2's and Qwen3's: GPT-4's with numbers split into single digits.
 	qwen2
+	// gpt2 is GPT-2's, of a ByteLevel pre-tokenizer with use_regex (Whisper's):
+	//
+	//	's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+	gpt2
 )
 
 // The pre-tokenizer patterns Load accepts. They are applied by split, not by a regular expression:
@@ -71,7 +75,10 @@ type file struct {
 	} `json:"added_tokens"`
 	Normalizer   json.RawMessage `json:"normalizer"`
 	PreTokenizer struct {
-		Type          string `json:"type"`
+		Type string `json:"type"`
+		// of a ByteLevel pre-tokenizer alone (GPT-2's, Whisper's)
+		AddPrefix     bool `json:"add_prefix_space"`
+		UseRegex      bool `json:"use_regex"`
 		Pretokenizers []struct {
 			Type    string `json:"type"`
 			Pattern struct {
@@ -130,6 +137,14 @@ func parse(raw []byte) (*Tokenizer, error) {
 		nfc = true
 	}
 	pt := f.PreTokenizer
+	if pt.Type == "ByteLevel" && pt.UseRegex && !pt.AddPrefix {
+		t := newTokenizer(&f)
+		t.style, t.nfc = gpt2, nfc
+		if err := t.readMerges(&f); err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
 	if pt.Type != "Sequence" || len(pt.Pretokenizers) != 2 ||
 		pt.Pretokenizers[0].Type != "Split" || pt.Pretokenizers[0].Behavior != "Isolated" || pt.Pretokenizers[0].Invert || !knownPattern(pt.Pretokenizers[0].Pattern.Regex) ||
 		pt.Pretokenizers[1].Type != "ByteLevel" || pt.Pretokenizers[1].AddPrefix || pt.Pretokenizers[1].UseRegex {
@@ -371,6 +386,47 @@ func splitStyle(text string, st style) []string {
 	return out
 }
 
+// matchGPT2 is match for GPT-2's pattern:
+//
+//	's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
+//
+// the contractions in lower case only, and a letter, number or other run taking one space before
+// it.
+func matchGPT2(rs []rune, i int) int {
+	rest := len(rs) - i
+	if rs[i] == '\'' && rest >= 2 {
+		for _, c := range []string{"s", "t", "re", "ve", "m", "ll", "d"} {
+			if rest > len(c) && string(rs[i+1:i+1+len(c)]) == c {
+				return 1 + len(c)
+			}
+		}
+	}
+	other := func(r rune) bool { return !isS(r) && !isL(r) && !isN(r) }
+	j := i
+	if rs[j] == ' ' && j+1 < len(rs) && !isS(rs[j+1]) {
+		j++ // the space before a letter, number or other run
+	}
+	for _, class := range []func(rune) bool{isL, isN, other} {
+		if class(rs[j]) {
+			k := j
+			for k < len(rs) && class(rs[k]) {
+				k++
+			}
+			return k - i
+		}
+	}
+	// \s+(?!\S): the whole run of whitespace at the end of the text, otherwise all but its last
+	// character (which then goes with what follows, as the space of ' ?\p{L}+' or alone); \s+
+	end := i
+	for end < len(rs) && isS(rs[end]) {
+		end++
+	}
+	if end == len(rs) || end-1 == i {
+		return end - i
+	}
+	return end - 1 - i
+}
+
 func isL(r rune) bool  { return unicode.IsLetter(r) }
 func isN(r rune) bool  { return unicode.IsNumber(r) }
 func isS(r rune) bool  { return unicode.IsSpace(r) }
@@ -384,6 +440,9 @@ func knownPattern(p string) bool {
 
 // match returns the length of the match at i (at least 1) of the style's pattern.
 func match(rs []rune, i int, st style) int {
+	if st == gpt2 {
+		return matchGPT2(rs, i)
+	}
 	// the letters of the second alternative: \p{L}, or [\p{L}\p{M}] in Qwen3.5's
 	letter := isL
 	digits := 3
