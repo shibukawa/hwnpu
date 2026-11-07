@@ -27,8 +27,9 @@ import (
 // Arch registers the LFM3-VL vision encoder with the whitelist. It has no model_type of its own
 // (the checkpoint's is lfm3_vl, whose text model is lfm3), so it is chosen with -arch.
 var Arch = &llm.Arch{
-	Name:  "lfm3-vision",
-	Title: "LFM3-VL vision encoder",
+	Name:     "lfm3-vision",
+	Revision: 1, // blocks.SiLU
+	Title:    "LFM3-VL vision encoder",
 	Params: []llm.Param{
 		{Name: "image", Default: "512x512", Usage: "image size WIDTHxHEIGHT in pixels of the vision encoder's program, multiples of twice the patch size"},
 	},
