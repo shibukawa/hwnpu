@@ -154,8 +154,9 @@ class GatedDeltaNet(iron.Graph):
     def __init__(self, c: Qwen35Config, fold: bool = False):
         E = c.hidden_size
         H, KH = c.linear_num_value_heads, c.linear_num_key_heads
-        # fold (a model with a decode step only): the short convolution in GatedDeltaRule, its
-        # rows before the call in the state's first pair of each column (iron_gdn's conv)
+        # fold (a model with a decode step only): the short convolution and the gated norm in
+        # GatedDeltaRule (iron_gdn's conv and norm), the convolution's rows before the call in
+        # the state's first pair of each column, the norm's weight in out_proj
         self.fold = fold
         dk, dv, K = c.linear_key_head_dim, c.linear_value_head_dim, c.linear_conv_kernel_dim
         self.shape = (H, KH, dk, dv)
@@ -190,6 +191,11 @@ class GatedDeltaNet(iron.Graph):
         order = iron_gdn.gdn_layout(H, KH, dk, dv, COLUMNS)
         rows = np.concatenate([np.asarray(p.weight) for p in (self.in_proj_qkv, self.in_proj_a, self.in_proj_b)])
         self.in_proj.weight = iron.param(np.ascontiguousarray(rows[order]))
+        if self.fold:
+            # the norm's weight on out_proj's input columns (each value head's dv)
+            w = np.asarray(self.out_proj.weight, np.float32) * np.tile(np.asarray(self.norm.weight, np.float32), H)
+            self.out_proj.weight = iron.param(w.astype(np.asarray(self.out_proj.weight).dtype))
+            self.norm = None
         w = np.asarray(self.conv1d.weight)
         K = w.shape[-1]
         taps = np.zeros((self.qkv + 2 * H, 1, K), w.dtype)
@@ -215,11 +221,13 @@ class GatedDeltaNet(iron.Graph):
         p = self.in_proj(x)
         read, write = self.state.at(call)
         if self.fold:
-            GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), self.config.linear_conv_kernel_dim)
-            y, final = GDR.step(p, self.taps, Copy.step(read, dtype=np.float32), **shape)
-        else:
-            GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS))
-            y, final = GDR.step(self.conv(p, call), Copy.step(read, dtype=np.float32), **shape)
+            c = self.config
+            GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), c.linear_conv_kernel_dim, float(c.eps))
+            y, final = GDR.step(p, self.in_proj_z(x), self.taps, Copy.step(read, dtype=np.float32), **shape)
+            Copy.step(final, write, dtype=np.float32)
+            return self.out_proj(y)
+        GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS))
+        y, final = GDR.step(self.conv(p, call), Copy.step(read, dtype=np.float32), **shape)
         Copy.step(final, write, dtype=np.float32)
         return self.out_proj(self.norm(y, self.in_proj_z(x)))
 
@@ -379,10 +387,11 @@ class SparseMoe(iron.Graph):
 class Qwen35MoeLayer(Qwen35Layer):
     """``Qwen35Layer`` whose feed-forward is ``SparseMoe`` (its residual added in MoEDown)."""
 
-    # Not folded: with the fold, the next decode step's first command hangs on the device after
-    # the last layer's experts (B) ran (ERT_CMD_STATE_TIMEOUT; design.md 16.90). The fold itself
-    # checks out: alone, in a dense decode-only model, and in a mirror of the layer.
-    fold = False
+    # Folded (the model has a decode step only). With the fold, the next decode step's first
+    # command hung on the device after the last layer's experts (B) ran (ERT_CMD_STATE_TIMEOUT;
+    # design.md 16.90) until hwnpu ran an empty command in another hardware context before each
+    # step (internal/llm/iron's stepBarrier, 16.92).
+    fold = True
 
     def __init__(self, c: Qwen35Config, i: int):
         super().__init__(c, i)

@@ -344,12 +344,12 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | d1-2B / d1-Omni-2B | `lfm3` の d1 モード | 同上 | System One API (`hwnpu-systemone`) | 画像 (d1-2B)、画像と音声 (d1-Omni) | ◎ lut8 | 変換は可 | — |
 | gemma-4-E2B-it | `gemma4` | byte fallback の BPE (`tokenizer.json`) | Gemma 4 | Apple / Intel はテキストのみ | ◎ lut6、文脈 131072 | 変換は可 | ◎ q4 7.9 tok/s、1.78 GB (bf16 は 6.1 tok/s)、画像と音声も |
 | gemma-4-E4B-it | `gemma4` | 同上 | Gemma 4 | テキストのみ | ○ lut6、1 本 (`-prefill auto`) | 変換は可 | ○ q4 5.6 tok/s、3.53 GB、文脈 4096 |
-| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | △ `iron_export_lm.py qwen35`。実物の重みの 2 層で HF とコサイン 0.9997 (16.89)。全体は未確認 |
+| Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | ○ `iron_export_lm.py qwen35 --q4`。32 層で 5.8 tok/s、4.7 GB。HF と最上位のトークン 8/9 (同じ q4 のホストのグラフと同じ所で外れる、16.92) |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3、翻訳) | — | ○ lut8、1 本、文脈 262144。M3 で全部 ANE に載ることと重みの形式を確認 | 変換は可 (int8)。OpenVINO の CPU で訳せた | ◎ q4 11.6 tok/s、2.16 GiB、文脈 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
 | Anima-Turbo (画像生成) | `internal/imagegen/anima` (MIL の 1 つの記述から作る) | Qwen3 の BPE + T5 の Unigram | — (`hwnpu-image`) | 画像を出力 | ◎ M3 で 1024×1024 の 8 ステップ約 40 s、3.8 GB (int8) | △ 変換は可。OpenVINO の CPU で照合済み | ◎ 1024×1024 で 8 ステップ約 68 s、固定 3.4 GiB (DiT は 8 ビット) |
-| Qwen3.6-35B-A3B | `qwen35moe` (IRON のみ) | Qwen3.5 と同じ | Qwen3.6 (`Qwen36`: 道具の引数を JSON で、16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`、経路はデバイスで。40 層 (23 GB) で 5.2 tok/s、HF とコサイン 0.986〜0.995 (同じ q4 のホストと 0.993〜0.998)、最上位のトークンは全部一致 (16.91)。プロンプトは 1 トークンずつ |
+| Qwen3.6-35B-A3B | `qwen35moe` (IRON のみ) | Qwen3.5 と同じ | Qwen3.6 (`Qwen36`: 道具の引数を JSON で、16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`、経路はデバイスで。40 層 (23 GB) で 5.8 tok/s (畳み込みとゲートつきの norm を GDN の演算子の中に、16.92)、HF とコサイン 0.986〜0.996、最上位のトークンは全部一致 (16.91)。プロンプトは 1 トークンずつ |
 
 ### 10.2 トークナイザー (`internal/tokenizer`、依存は `golang.org/x/text` だけ)
 
@@ -554,8 +554,7 @@ Apple / Intel (`hwnpu-image -convert`):
 | PLaMo 3 の 4 ビットの速さ | 別の作業の負荷がある状態で測った (単体の GEMV が 1.6 倍遅い状態)。静かな機械で測り直す | 16.76 |
 | PLaMo 3 のほかの大きさ | 0.8B、8B、31B は同じ構造なので書き出せるはずだが、試していない | 16.70 |
 | 4 ビットの KL と HF | Gemma 4 と PLaMo 3 の q4 の KL は NPU の bf16 と比べた値。HF の fp32 とは LFM3 だけ比べた (0.036) | 16.73、16.76 |
-| MoE (Qwen3.6-35B-A3B) | 40 層は q4 で動いた (5.2 tok/s、16.91)。プロンプトの MoE (今は 1 トークンずつ)。GDN の演算子の中の畳み込みは MoE のモデルで次のステップを止める (16.90): 原因を探すか、入れないまま | 16.75、16.89、16.90、16.91 |
-| Qwen3.5-4B の全体 (AMD) | 32 層全部での照合と速さ (実物の重みは 2 層だけ。重み 9 GB を読み込んで `iron_export_lm.py qwen35`) | 16.89 |
+| MoE (Qwen3.6-35B-A3B) | 40 層は q4 で 5.8 tok/s (16.91、16.92)。プロンプトの MoE (今は 1 トークンずつ。塊ごとに全部の専門家を流す演算子が要る) | 16.75、16.89〜16.92 |
 | MoE の BD の再利用の警告 | aiecc が、完了の保証のない `dma_free_task` の後に BD を使い回すと警告する。実害はないと見ているが、静的には証明していない | 16.75 |
 | ほかの 4 ビットの書き出しへの丸めの修正 | 書き出し直して測ったのは Gemma 4 E2B と LFM3-1.7B だけ (KL 0.093、0.036)。E4B、PLaMo 3、多モーダルは古い書き出しのまま | 16.78 |
 | 多くの seed での Anima の q8 | fp32 と比べたのは 3 枚。4 つの seed のうち 1 つで bf16 と構図が変わった。どのくらいの頻度で起きるかは測っていない | 16.78 |
@@ -596,4 +595,4 @@ Apple / Intel (`hwnpu-image -convert`):
   - ComfyUI のノードからの呼び出し
   - 512×512 の書き出し
   - GPTQ の 4 ビットの DiT (`tools/amd/anima_gptq.py`、`iron_anima.py --q4-codes`、16.87) を NPU の 1024×1024 の画像で確かめる (CPU の 512×512 では潜在のコサイン 0.939、q8 は 0.962)
-- Qwen3.6-35B-A3B の残り (16.89〜16.91、40 層は q4 で 5.2 tok/s): 短い畳み込みは GDN の演算子に入り照合も通るが、MoE のモデルでは最後の層の専門家の後に次のステップの最初のコマンドが止まるので入れていない。ゲートつきの norm はまだ。`MoERoute` はベクトル化した (0.24 → 0.1 ms)。プロンプトの MoE (塊のトークンを専門家ごとに)
+- Qwen3.6-35B-A3B の残り (16.89〜16.92、40 層は q4 で 5.8 tok/s、畳み込みとゲートつきの norm は GDN の演算子の中): プロンプトの MoE (塊ごとに全部の専門家の重みを 1 回ずつ流し、該当するトークンだけ計算する。見積もり 256 トークンで約 1.2 秒)。Qwen3.5 のプロンプトの塊にも畳み込みと norm を入れる (状態の並びを揃える)

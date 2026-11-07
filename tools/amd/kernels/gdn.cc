@@ -231,15 +231,14 @@ inline __attribute__((always_inline)) bf_t<L> silu16(bf_t<L> x) {
   return mul_limbs(bf16_limbs(q), x).to_vector<bfloat16>();
 }
 
-template <int N>
-inline __attribute__((always_inline)) void silu_row(const bfloat16 *x,
-                                                    bfloat16 *out) {
-  for (int i = 0; i < N; i += L)
+// One copy for every length (n a multiple of 16): the program memory is tight.
+__attribute__((noinline)) void silu_row(const bfloat16 *x, bfloat16 *out, int n) {
+  for (int i = 0; i < n; i += L)
     aie::store_v(out + i, silu16(aie::load_v<L>(x + i)));
 }
 } // namespace
 
-extern "C" void gdn_rule(float *restrict start, float *restrict final,
+extern "C" __attribute__((noinline)) void gdn_rule(float *restrict start, float *restrict final,
                          bfloat16 *restrict y, int32_t valid, int32_t b_idx,
                          int32_t dt_hi, int32_t dt_lo, int32_t a_hi,
                          int32_t a_lo) {
@@ -472,26 +471,44 @@ extern "C" void gdn_rule(float *restrict start, float *restrict final,
 // Row t of the block from seg, a row of the core's column: q and k (key_dim
 // each) at qo and ko, v's slice (value_dim) at vo, silu applied to all three,
 // then a and b, the two words at abo.
-extern "C" void gdn_gather(const bfloat16 *restrict seg, int32_t t, int32_t qo,
-                           int32_t ko, int32_t vo, int32_t abo) {
+static void gather_row(const bfloat16 *restrict seg, int32_t t, int32_t qo,
+                       int32_t ko, int32_t vo, int32_t abo) {
   const aie::rounding_mode saved_rounding =
       aie::swap_rounding(aie::rounding_mode::conv_even);
-  silu_row<Dk>(seg + qo, blk + t * Dk);
-  silu_row<Dk>(seg + ko, blk + R * Dk + t * Dk);
-  silu_row<Dv>(seg + vo, blk + 2 * R * Dk + t * Dv);
+  silu_row(seg + qo, blk + t * Dk, Dk);
+  silu_row(seg + ko, blk + R * Dk + t * Dk, Dk);
+  silu_row(seg + vo, blk + 2 * R * Dk + t * Dv, Dv);
   blk[2 * R * Dk + R * Dv + t] = seg[abo];
   blk[2 * R * Dk + R * Dv + R + t] = seg[abo + 1];
   aie::set_rounding(saved_rounding);
 }
 
+#ifndef GDR_SEG
+extern "C" void gdn_gather(const bfloat16 *restrict seg, int32_t t, int32_t qo,
+                           int32_t ko, int32_t vo, int32_t abo) {
+  gather_row(seg, t, qo, ko, vo, abo);
+}
+#endif
+
 #ifdef GDR_SEG
 // The short convolution of a decode step, in the core (GatedDeltaRule's conv):
 // GDR_SEG channels (the core's column), GDR_CONV taps.
+// GDR_NORM_DIM (the value head's dim, with GDR_NORM_ZW the z the column holds): the gated
+// norm too. A row is then the convolution's GDR_SEG channels, then the column's z (raw).
+#ifdef GDR_NORM_DIM
+constexpr int ZW = GDR_NORM_ZW, HD = GDR_NORM_DIM;
+#else
+constexpr int ZW = 0;
+#endif
 constexpr int SEG = GDR_SEG, KC = GDR_CONV;
 static_assert(KC >= 2 && (KC - 1) * SEG <= 2 * Dk * Dv, "gdn_conv: 2 taps or more, the rows in a half");
 alignas(64) bfloat16 u_row[(SEG + 31) / 32 * 32];
+#ifdef GDR_NORM_DIM
+alignas(64) bfloat16 y_keep[HD];                   // a value head's y, its slices (gdn_rule_keep)
+float y_rinv;                                      // 1 / rms of y_keep (gdn_norm at slice 0)
+#endif
 
-// xt: the row (SEG), then the taps' rows (KC of SEG, oldest row's tap first).
+// xt: the row (SEG, then ZW of z), then the taps' rows (KC of SEG, oldest row's tap first).
 // hin: the KC - 1 rows before this one (oldest first, bf16, packed). hout: the
 // KC - 1 rows ending with this one. u_row: sum_k tap[k] row[t - KC + 1 + k],
 // summed in float32 (the newest row's term first), rounded once to bf16.
@@ -499,7 +516,7 @@ extern "C" void gdn_conv(const bfloat16 *restrict xt, const float *restrict hin,
                          float *restrict hout) {
   const aie::rounding_mode saved_rounding =
       aie::swap_rounding(aie::rounding_mode::conv_even);
-  const bfloat16 *x = xt, *taps = xt + SEG;
+  const bfloat16 *x = xt, *taps = xt + SEG + ZW;
   const bfloat16 *h = (const bfloat16 *)hin;
   bfloat16 *o = (bfloat16 *)hout;
   int i = 0;
@@ -530,6 +547,45 @@ extern "C" void gdn_conv(const bfloat16 *restrict xt, const float *restrict hin,
 // gdn_gather from the convolution's output (gdn_conv) in place of a row.
 extern "C" void gdn_gather_conv(int32_t t, int32_t qo, int32_t ko, int32_t vo,
                                 int32_t abo) {
-  gdn_gather(u_row, t, qo, ko, vo, abo);
+  gather_row(u_row, t, qo, ko, vo, abo);
 }
+
+#ifdef GDR_NORM_DIM
+static_assert(R == 1 && HD % Dv == 0 && HD % 32 == 0, "gdn_norm: a decode step's row, whole slices");
+
+// gdn_rule with y kept in the core: slice s of the value head into y_keep.
+extern "C" void gdn_rule_keep(float *restrict start, float *restrict final,
+                              int32_t valid, int32_t b_idx, int32_t dt_hi,
+                              int32_t dt_lo, int32_t a_hi, int32_t a_lo,
+                              int32_t s) {
+  gdn_rule(start, final, y_keep + s * Dv, valid, b_idx, dt_hi, dt_lo, a_hi, a_lo);
+}
+
+// Slice s of the gated norm of the value head kept (Qwen3.5's RMSNormGated without its
+// weight, which the output projection holds): y / rms(y) * silu(z), z the head's at zo of
+// the column's, float32 inside, rounded once to bf16. Slice 0 finds the rms. xt: the row
+// (gdn_conv's), the core holding it until the norm's last slice.
+extern "C" void gdn_norm(bfloat16 *restrict out, const bfloat16 *restrict xt, int32_t s,
+                         int32_t zo) {
+  const aie::rounding_mode saved_rounding =
+      aie::swap_rounding(aie::rounding_mode::conv_even);
+  if (s == 0) {
+    acc_t<32> sq = aie::zeros<accfloat, 32>();
+    for (int i = 0; i < HD; i += 32) {
+      const bf_t<32> v = aie::load_v<32>(y_keep + i);
+      sq = aie::mac(sq, v, v);
+    }
+    const float ms = aie::reduce_add(sq.to_vector<float>()) / (float)HD;
+    y_rinv = rsqrt_newton(ms + GDR_NORM_EPS);
+  }
+  alignas(32) bfloat16 z[L], g[L];
+  for (int j = 0; j < L; j++)  // z at any offset: copied to an aligned row
+    z[j] = xt[SEG + zo + s * Dv + j];
+  silu_row(z, g, L);
+  const acc_t<L> yg = aie::mul(aie::load_v<L>(y_keep + s * Dv), aie::load_v<L>(g));
+  aie::store_v(out, aie::mul(yg.to_vector<float>(), aie::broadcast<float, L>(y_rinv))
+                        .to_vector<bfloat16>());
+  aie::set_rounding(saved_rounding);
+}
+#endif
 #endif

@@ -121,6 +121,8 @@ def iron(a) -> int:
         iron_qwen35.install()  # the export's --q4
     if a.moe:
         return iron_decode(a, OnHost, Qwen35Moe)
+    if a.decode:  # q4's projections have a GEMV reference on the host, not a GEMM one
+        return iron_decode(a, OnHost, Qwen35)
 
     work = Path(a.work)
     r = json.loads((work / "ref.json").read_text())
@@ -190,6 +192,7 @@ def main() -> int:
     ap.add_argument("--chunk", type=int, default=16, help="iron: the prompt chunk")
     ap.add_argument("--q4", action="store_true", help="iron: the projections as the export's --q4 makes them")
     ap.add_argument("--stream", action="store_true", help="ref: read a layer's weights only while it runs")
+    ap.add_argument("--decode", action="store_true", help="iron: Qwen35 a token at a time (the decode step)")
     ap.add_argument("--moe", action="store_true", help="iron: Qwen35Moe, a token at a time (decode only)")
     a = ap.parse_args()
     if a.step == "ref":

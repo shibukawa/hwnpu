@@ -56,6 +56,10 @@ type version struct {
 	run *hwnpu.Run
 	// barrier is the decode step's empty command (chunkBarrier), kept.
 	barrier *hwnpu.Run
+	// stepProg is the decode ELF loaded again, a hardware context of its own, and stepRun its
+	// empty command (stepBarrier).
+	stepProg *hwnpu.Program
+	stepRun  *hwnpu.Run
 	// runs are a decode step's commands when it is several (Qwen3.6's: two a layer), each
 	// kept as run is; runs[0] is run.
 	runs []*hwnpu.Run
@@ -175,6 +179,14 @@ func (m *Model) Release() error {
 		if v.barrier != nil {
 			errs = append(errs, v.barrier.Close())
 			v.barrier = nil
+		}
+		if v.stepRun != nil {
+			errs = append(errs, v.stepRun.Close())
+			v.stepRun = nil
+		}
+		if v.stepProg != nil {
+			errs = append(errs, v.stepProg.Close())
+			v.stepProg = nil
 		}
 		errs = append(errs, v.closeSteps()...)
 		for k, b := range v.args {
@@ -515,6 +527,9 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		return nil, err
 	}
 	if len(v.runs) > 1 {
+		if err := m.stepBarrier(ctx); err != nil {
+			return nil, err
+		}
 		if err := m.runCommands(ctx, v, values); err != nil {
 			return nil, err
 		}
@@ -882,38 +897,78 @@ func (m *Model) chunkBarrier(ctx context.Context) error {
 		return nil
 	}
 	if v.barrier == nil {
-		name := ""
-		for _, k := range v.prog.Kernels() {
-			if strings.HasSuffix(k, ":aiecc_empty") {
-				name = k
-				break
-			}
-		}
-		if name == "" {
-			return nil
-		}
-		kern, err := v.prog.Kernel(name)
-		if err != nil {
+		run, err := m.emptyRun(v, v.prog)
+		if err != nil || run == nil {
 			return err
-		}
-		run, err := kern.NewRun()
-		if err != nil {
-			return err
-		}
-		// Never read (it moves nothing), but every argument is bound, as for any run.
-		for _, a := range v.m.Arguments {
-			if a.Index < len(kern.Args()) {
-				run.SetBuffer(a.Index, m.buffer(v, a.Kind))
-			}
-		}
-		if err := run.Err(); err != nil {
-			run.Close()
-			return fmt.Errorf("iron: the chunk barrier %s: %w", name, err)
 		}
 		v.barrier = run
 	}
 	if err := v.barrier.Run(ctx); err != nil {
 		return fmt.Errorf("iron: the chunk barrier: %w", err)
+	}
+	return nil
+}
+
+// emptyRun makes a run of prog's empty instance (mlir-aie's aiecc_empty, no control code) with
+// v's arguments bound, or nil when prog has none.
+func (m *Model) emptyRun(v *version, prog *hwnpu.Program) (*hwnpu.Run, error) {
+	name := ""
+	for _, k := range prog.Kernels() {
+		if strings.HasSuffix(k, ":aiecc_empty") {
+			name = k
+			break
+		}
+	}
+	if name == "" {
+		return nil, nil
+	}
+	kern, err := prog.Kernel(name)
+	if err != nil {
+		return nil, err
+	}
+	run, err := kern.NewRun()
+	if err != nil {
+		return nil, err
+	}
+	// Never read (it moves nothing), but every argument is bound, as for any run.
+	for _, a := range v.m.Arguments {
+		if a.Index < len(kern.Args()) {
+			run.SetBuffer(a.Index, m.buffer(v, a.Kind))
+		}
+	}
+	if err := run.Err(); err != nil {
+		run.Close()
+		return nil, fmt.Errorf("iron: %s: %w", name, err)
+	}
+	return run, nil
+}
+
+// stepBarrier runs an empty command in a hardware context of its own (the decode ELF loaded a
+// second time) before a decode step of several commands. Without it, Qwen3.6 with the short
+// convolution in the GDN operator hung the next step's first command (ERT_CMD_STATE_TIMEOUT)
+// right after the last layer's experts command, every time (design.md 16.90, 16.92); an empty
+// command in the decode step's own context does not help, as a pause did not for chunkBarrier.
+// About 0.3 ms a step.
+func (m *Model) stepBarrier(ctx context.Context) error {
+	v := m.decode
+	if v.stepRun == nil {
+		if v.stepProg == nil {
+			kr, err := m.dev.Kernel()
+			if err != nil {
+				return err
+			}
+			if v.stepProg, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(m.dir, v.m.ELF)}); err != nil {
+				return fmt.Errorf("iron: the step barrier: %w", err)
+			}
+		}
+		run, err := m.emptyRun(v, v.stepProg)
+		if err != nil || run == nil {
+			return err
+		}
+		v.stepRun = run
+	}
+	if err := v.stepRun.Run(ctx); err != nil {
+		return fmt.Errorf("iron: the step barrier: %w", err)
 	}
 	return nil
 }
@@ -930,6 +985,10 @@ func (m *Model) dropDecode() {
 	if m.decode.barrier != nil {
 		m.decode.barrier.Close()
 		m.decode.barrier = nil
+	}
+	if m.decode.stepRun != nil {
+		m.decode.stepRun.Close()
+		m.decode.stepRun = nil
 	}
 }
 
