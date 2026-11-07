@@ -275,8 +275,15 @@ class Qwen35(CausalLM):
     layer_class = Qwen35Layer
 
     def __init__(self, config: Qwen35Config, weights):
-        # A multimodal checkpoint's text model is model.language_model.
-        super().__init__(config, renamed(weights, {"model.language_model": "model"}))
+        # A multimodal checkpoint's text model is model.language_model; its
+        # vision tower (model.visual) and multi-token prediction head (mtp)
+        # are left out (renamed's namespaces are new, so dropping them leaves
+        # weights as it was).
+        weights = renamed(weights, {"model.language_model": "model"})
+        vars(weights).pop("mtp", None)
+        if "model" in vars(weights):
+            vars(weights.model).pop("visual", None)
+        super().__init__(config, weights)
         for i, layer in enumerate(self.layers):
             if config.linear(i):
                 layer.rope = None

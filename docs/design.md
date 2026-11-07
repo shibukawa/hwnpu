@@ -2676,4 +2676,19 @@ Qwen3.6-35B-A3B の 1 トークン (q4nx、今の部品のまま) の見積も�
 - どちらの型かはクラス名では分からない (Qwen3.5 にも MoE の大きさがある) ので、書き出しの `chat_template.jinja` に `preserve_thinking` があれば Qwen3.6 にする
 - 照合: `tools/ref/template_golden.py` で Qwen3.6-35B-A3B の型から作った 9 件 (`testdata/qwen36_template.json`) と一致。3.5 の 9 件も作り直して同じ
 
-**40 層**: 重みの読み込み中 (26 本、約 2〜3 MB/s)。IRON の checkpoint は mmap で読み、使ったページを捨てる (`MADV_DONTNEED`) ので、72 GB の bf16 でも 60 GB の機械で書き出せる見込み (専門家は層ごとにすぐ q4nx にする)
+**40 層**: 16.91
+
+### 16.91 AMD: Qwen3.6-35B-A3B の 40 層を NPU で (q4、5.2 tokens/s) — 2026-11-07
+
+実物の重み (72 GB、26 本) の 40 層全部を `iron_export_lm.py qwen35moe CKPT OUT --max-seq-len 1024 --prefill-chunk 256 --q4` で書き出し、NPU で動かした。プロンプトの MoE はまだないので、書き出しはデコードの版だけ (プロンプトも 1 トークンずつ)。
+
+- **読み込み**: 本物の checkpoint は視覚の塔 (`model.visual.*`) と MTP の頭 (`mtp.*`) を持ち、IRON の `load_state_dict` は余りの重みを誤りにする。`Qwen35.__init__` で `renamed` の後の木から外す (2 層の切り詰めの checkpoint には無かった)
+- **書き出し**: 29.6 分、最大 RSS 50 GB (60 GB の機械で通る。他の重い仕事と並べない)。バンク 23 GB (7 個)、`decode.elf` 53 MB、デコードは 81 コマンド。hwnpu の読み込み 6〜8 秒
+- **HF の参照**: float32 の 35B は 140 GB で載らないので、`iron_qwen35_check.py ref --stream` はモデルを meta の装置に作り、層ごとに前のフックで重みを読み (`safe_open`)、後のフックで捨てる (メモリ 20 GB 未満、9 回の呼び出しで約 25 分)。2 層の切り詰めでは前の参照とビット単位で同じ
+- **照合** (32 トークンのプロンプトと貪欲法の 8 ステップ、最上位のトークンは全部一致):
+  - NPU 対 HF の float32: コサイン 0.98613〜0.99512
+  - IRON のホストのグラフ (同じ q4、`iron_qwen35_check.py iron --moe --q4`) 対 HF: 0.99192〜0.99589、KL ≤ 6.9e-2。差の大半は q4 (専門家と頭の 4 ビット、40 層で積み重なる)
+  - NPU 対 ホストの q4: 0.99343〜0.99842 (`ironlm` の閾値 0.99 で PASS)。残りは bf16 の活性 (2 層では 0.99997)
+- **速さ**: デコード 1 ステップ 192 ms (5.2 tokens/s、16.89 の見積もりどおり)。プロンプトは 1 トークンずつなので 32 トークンで 6.1 秒
+- `hwnpu-chat -iron OUT` で Qwen3.6 の型 (16.90、`chat_template.jinja` の `preserve_thinking` で選ぶ) のまま会話できる: 「日本の首都はどこですか？一文で答えてください。」に思考の後で「日本の首都は東京です。」(21 トークンのプロンプト 4.1 秒、209 トークン)
+- 残り: プロンプトの MoE (塊のトークンを専門家ごとに)、A の演算の数 (畳み込みは 16.90 の止まる件、ゲートつきの norm)

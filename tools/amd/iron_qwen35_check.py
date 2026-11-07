@@ -33,7 +33,7 @@ def ref(a) -> None:
     work = Path(a.work)
     work.mkdir(parents=True, exist_ok=True)
     tokens = AutoTokenizer.from_pretrained(a.model_dir)(a.text)["input_ids"][: a.tokens]
-    model = AutoModelForCausalLM.from_pretrained(a.model_dir, dtype=torch.float32)
+    model = streamed(a.model_dir) if a.stream else AutoModelForCausalLM.from_pretrained(a.model_dir, dtype=torch.float32)
     model.eval()
     calls, history = [], list(tokens)
     with torch.no_grad():
@@ -45,6 +45,58 @@ def ref(a) -> None:
             history.append(int(np.argmax(logits)))
     (work / "ref.json").write_text(json.dumps(dict(model=str(a.model_dir), prompt=tokens, calls=calls)) + "\n")
     print(f"{work}/ref.json: a prompt of {len(tokens)} tokens and {a.steps} steps, tops {[c['top'] for c in calls]}")
+
+
+def streamed(model_dir):
+    """The checkpoint's text model in float32, a decoder layer's weights read only while it runs.
+
+    For a checkpoint whose float32 weights do not fit in memory (Qwen3.6-35B-A3B: 140 GB):
+    the model is built on the meta device, the embeddings, final norm and head are read once,
+    and each layer reads its weights from the shards before it runs and drops them after.
+    """
+    import torch
+    from safetensors import safe_open
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    config = AutoConfig.from_pretrained(model_dir)
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(config, dtype=torch.float32)
+    index = Path(model_dir) / "model.safetensors.index.json"
+    if index.exists():
+        where = json.loads(index.read_text())["weight_map"]
+    else:
+        with safe_open(str(Path(model_dir) / "model.safetensors"), framework="pt") as f:
+            where = dict.fromkeys(f.keys(), "model.safetensors")
+    files = {}
+
+    def tensor(name):
+        # The HF names of a multimodal checkpoint's text model are under model.language_model.
+        if name == "lm_head.weight" and name not in where and config.get_text_config().tie_word_embeddings:
+            name = "model.embed_tokens.weight"
+        stored = name if name in where else name.replace("model.", "model.language_model.", 1)
+        f = where[stored]
+        if f not in files:
+            files[f] = safe_open(str(Path(model_dir) / f), framework="pt")
+        return files[f].get_tensor(stored).float()
+
+    def put(module, prefix, load):
+        for n, p in list(module.named_parameters(recurse=True)):
+            owner, _, leaf = n.rpartition(".")
+            m = module.get_submodule(owner) if owner else module
+            t = tensor(prefix + n) if load else torch.empty(p.shape, device="meta")
+            m._parameters[leaf] = torch.nn.Parameter(t, requires_grad=False)
+
+    for name in ("model.embed_tokens", "model.norm", "lm_head"):
+        put(model.get_submodule(name), name + ".", True)
+    if config.get_text_config().tie_word_embeddings:
+        model.lm_head.weight = model.model.embed_tokens.weight
+    rotary = model.model.rotary_emb
+    model.model.rotary_emb = type(rotary)(config=rotary.config)  # its buffers, off the meta device
+    for i, layer in enumerate(model.model.layers):
+        prefix = f"model.layers.{i}."
+        layer.register_forward_pre_hook(lambda m, args, prefix=prefix: put(m, prefix, True))
+        layer.register_forward_hook(lambda m, args, out, prefix=prefix: put(m, prefix, False))
+    return model
 
 
 def compare(got, want):
@@ -62,8 +114,11 @@ def iron(a) -> int:
     import dataclasses
 
     from iron.lm.model import OnHost
+    import iron_qwen35
     from iron_qwen35 import Qwen35, Qwen35Moe
 
+    if a.q4:
+        iron_qwen35.install()  # the export's --q4
     if a.moe:
         return iron_decode(a, OnHost, Qwen35Moe)
 
@@ -133,6 +188,8 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=3, help="ref: greedy steps after the prompt")
     ap.add_argument("--max-seq-len", type=int, default=64, help="iron: the context")
     ap.add_argument("--chunk", type=int, default=16, help="iron: the prompt chunk")
+    ap.add_argument("--q4", action="store_true", help="iron: the projections as the export's --q4 makes them")
+    ap.add_argument("--stream", action="store_true", help="ref: read a layer's weights only while it runs")
     ap.add_argument("--moe", action="store_true", help="iron: Qwen35Moe, a token at a time (decode only)")
     a = ap.parse_args()
     if a.step == "ref":
