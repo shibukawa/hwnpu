@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -31,6 +32,10 @@ type ironSession struct {
 	// the media whose soft tokens each tower last left on the device, by placeholder token.
 	media  func(t int32) (*encoded, int, bool)
 	placed map[int32]int32
+	// step is the last decode step's time and chunk the shortest prompt chunk's: a few tokens
+	// run as decode steps when they cost less than a chunk (Qwen3.6's chunk takes 2.2 s however
+	// short, a step 0.17 s), once both have been seen.
+	step, chunk time.Duration
 }
 
 var _ session = (*ironSession)(nil)
@@ -157,10 +162,22 @@ func (s *ironSession) StepTokens(toks []int32) ([]float32, error) {
 	}
 	var logits []float32
 	var err error
-	if len(toks) == 1 {
+	t0 := time.Now()
+	switch {
+	case len(toks) == 1:
 		logits, err = s.m.Step(context.Background(), toks[0], s.pos)
-	} else {
+		s.step = time.Since(t0)
+	case s.step > 0 && s.chunk > 0 && time.Duration(len(toks))*s.step < s.chunk:
+		for i, t := range toks {
+			if logits, err = s.m.Step(context.Background(), t, s.pos+i); err != nil {
+				break
+			}
+		}
+	default:
 		logits, err = s.m.Prompt(context.Background(), toks, s.pos)
+		if d := time.Since(t0); s.chunk == 0 || d < s.chunk {
+			s.chunk = d
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -339,6 +356,14 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 			e.Stops[id] = true
 		}
 	}
+	e.turnStart = -1
+	for _, t := range []string{"<|im_start|>", "<start_of_turn>"} {
+		if id, ok := e.Tok.ID(t); ok {
+			e.turnStart = id
+			break
+		}
+	}
+	e.markTurns = len(m.Manifest.Checkpoints) > 0 && !m.Manifest.Restartable
 	e.sess = &ironSession{m: m, media: e.media, placed: map[int32]int32{}}
 	if c.PromptDir != "" {
 		var sizes []int64

@@ -96,6 +96,13 @@ type Engine struct {
 	Stops    map[int32]bool // tokens that end an answer
 	Name     string         // the model's name, from the package
 
+	// turnStart is the token that starts a turn of the chat format, where prefill also marks the
+	// sequence when markTurns (a model whose recurrent states go back only to a mark: the next
+	// turn renders the last assistant turn anew, Qwen3.6 without its thinking, so it shares the
+	// prompt only up to that turn's start). -1: none.
+	turnStart int32
+	markTurns bool
+
 	dev    *hwnpu.Device
 	tiers  []tier // by cache length, shortest first
 	ti     int    // the tier the session runs on
@@ -933,11 +940,22 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 	}
 	st.Reused = len(e.cur.fed)
 	var kept []storedMark // marks for the store, every markEvery tokens of the reading
+	cut := -1             // the last turn's start: a mark there too (markTurns)
+	if e.markTurns && e.turnStart >= 0 {
+		for i := len(prompt) - 1; i >= 0 && cut < 0; i-- {
+			if prompt[i] == e.turnStart {
+				cut = i
+			}
+		}
+	}
 	for len(e.cur.fed) < len(prompt) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		k := min(len(prompt)-len(e.cur.fed), e.sess.Q())
+		if before := len(e.cur.fed); cut > before && cut < before+k {
+			k = cut - before
+		}
 		if ok, err := e.room(k); err != nil {
 			return nil, err
 		} else if !ok {
@@ -946,6 +964,12 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		before := len(e.cur.fed)
 		if _, err := e.step(prompt[before : before+k]); err != nil {
 			return nil, err
+		}
+		if len(e.cur.fed) == cut && cut < len(prompt) {
+			e.cur.marks = append(e.cur.marks, mark{e.sess.Mark(), e.cur.last})
+			if len(e.cur.marks) > maxMarks {
+				e.cur.marks = e.cur.marks[1:]
+			}
 		}
 		if e.store != nil && len(e.cur.fed) < len(prompt) && len(e.cur.fed)/markEvery > before/markEvery {
 			m := e.sess.Mark()
