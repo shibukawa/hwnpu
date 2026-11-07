@@ -483,6 +483,12 @@ static void gather_row(const bfloat16 *restrict seg, int32_t t, int32_t qo,
   aie::set_rounding(saved_rounding);
 }
 
+// A block's y of zeros: a prompt chunk's blocks past the call's rows (no rule run on them).
+extern "C" void gdn_zero_y(bfloat16 *restrict y) {
+  for (int i = 0; i < R * Dv; i += 16)
+    aie::store_v(y + i, aie::zeros<bfloat16, 16>());
+}
+
 #ifndef GDR_SEG
 extern "C" void gdn_gather(const bfloat16 *restrict seg, int32_t t, int32_t qo,
                            int32_t ko, int32_t vo, int32_t abo) {

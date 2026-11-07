@@ -241,7 +241,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                 normk = ExternalFunction("gdn_norm", arg_types=[y_t, xt_t, i32, i32], **common)
                 return gather, rule, convk, normk
             return gather, rule, convk, None
-        return gather, rule, None, None
+        # without conv, the third: a y of zeros (a prompt chunk's blocks past the call's rows)
+        return gather, rule, ExternalFunction("gdn_zero_y", arg_types=[y_t], **common), None
 
     def i32c(v: int):
         return arith.constant(v, T.i32())
@@ -340,6 +341,10 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                 valid = w[self.count]
                 hp = [w[self.value(f"hp{k}_{u}")] for u in range(4 * hc)]
                 zero, size = i32c(0), i32c(R)
+                nb = None  # a prompt chunk's blocks holding the call's rows (one at least)
+                if not conv and blocks > 1:
+                    full = arith.divsi(arith.addi(valid, i32c(R - 1)), size)
+                    nb = index.casts(T.index(), arith.minsi(arith.maxsi(full, i32c(1)), i32c(blocks)))
                 if conv:
                     xt, st, fin = x_f.acquire(1), s_f.acquire(1), f_f.acquire(1)
                     convk(xt, st, fin)
@@ -357,7 +362,9 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                         s32 = index.casts(T.i32(), s)
                         vo = arith.addi(i32c(vbase), arith.muli(s32, i32c(SLICE)))
                         st, fin = s_f.acquire(1), f_f.acquire(1)
-                        for b in range_(blocks):
+                        # a prompt chunk's blocks past the call's rows: x read past, y zero
+                        # (the rule's work, with no live row, skipped)
+                        for b in range_(nb if nb is not None else blocks):
                             for t in range_(R):
                                 if conv:
                                     gather(index.casts(T.i32(), t), qo, ko, vo, abo)
@@ -374,6 +381,14 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                             else:
                                 y = y_f.acquire(1)
                                 rule(st, fin, y, live, b32, *hpi)
+                                y_f.release(1)
+                        if nb is not None:
+                            for _ in range_(nb, blocks):
+                                for _ in range_(R):
+                                    x_f.acquire(1)
+                                    x_f.release(1)
+                                y = y_f.acquire(1)
+                                convk(y)  # gdn_zero_y
                                 y_f.release(1)
                         s_f.release(1)
                         f_f.release(1)
@@ -397,9 +412,9 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                             x_f, s_f, y_f, f_f, g, r, ck, None, rtp, j, k)
                         ks = [gather, rule, convk]
                     else:
-                        fn = lambda x_f, s_f, y_f, f_f, g, r, rtp, j=j, k=2 * c + j: core(  # noqa: E731
-                            x_f, s_f, y_f, f_f, g, r, None, None, rtp, j, k)
-                        ks = [gather, rule]
+                        fn = lambda x_f, s_f, y_f, f_f, g, r, zk, rtp, j=j, k=2 * c + j: core(  # noqa: E731
+                            x_f, s_f, y_f, f_f, g, r, zk, None, rtp, j, k)
+                        ks = [gather, rule, convk]
                     workers.append(Worker(fn, [x_l1[c].cons(), s_l1[c][j].cons(), y_l1[c][j].prod(),
                                                f_l1[c][j].prod(), *ks, rtps[2 * c + j]]))
             self.x.bind([f.prod() for f in x_l3])
