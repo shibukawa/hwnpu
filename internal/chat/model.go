@@ -219,7 +219,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// (LFM3 to lut6 and the grouped attention, 2026-11) must convert anew instead of loading
 	// what an earlier version wrote, and the attention where the architecture has the setting.
 	format := cmp.Or(s.Format, a.DefaultFormatFor(model, backend))
-	kind := a.Name + "-" + format
+	kind := a.Name + a.Rev() + "-" + format
 	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
 		kind += "-" + attn
 	}
@@ -308,7 +308,8 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	c.Packages = c.Tiers[len(c.Tiers)-1]
 	shareOnce(pdir, s.Log)
 	for _, e := range encoders {
-		if _, _, err := llm.LoadConfig(c.ModelConfig, e.arch); err != nil {
+		ea, _, err := llm.LoadConfig(c.ModelConfig, e.arch)
+		if err != nil {
 			continue // the checkpoint has no such encoder
 		}
 		for _, f := range e.files {
@@ -316,7 +317,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				return Config{}, err
 			}
 		}
-		out := filepath.Join(pdir, fmt.Sprintf("%s-%s%s", e.arch, e.value, programExt(backend)))
+		out := filepath.Join(pdir, fmt.Sprintf("%s%s-%s%s", e.arch, ea.Rev(), e.value, programExt(backend)))
 		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: e.arch, format: "fp16", params: map[string]string{e.param: e.value}}, s.Log)
 		if err != nil {
 			return Config{}, err

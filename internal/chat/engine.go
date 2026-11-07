@@ -267,6 +267,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		return nil, err
 	}
 	logf("loading %s onto %s: %d programs, up to a minute or two (%s)", name, llm.DeviceName(e.dev), len(c.Packages), compileNote(e.dev))
+	wired0, wired := mem.NPUWired()
 	tiers := c.Tiers
 	if len(tiers) == 0 {
 		tiers = [][]string{c.Packages}
@@ -373,6 +374,24 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			where = "NOT all on the NPU"
 		}
 		logf("audio encoder for clips of up to %.0f s, %s, loaded in %.1fs", e.aud.MaxSeconds(), where, time.Since(t0).Seconds())
+	}
+	if w, ok := mem.NPUWired(); wired && ok && w > wired0 {
+		// a program Core ML has just compiled comes onto the Neural Engine at its first call
+		// (an M3: 0.27 of 2.43 GiB after the load, all of it after the first question)
+		var weights int64
+		for _, t := range e.tiers {
+			for _, ch := range t.chains {
+				for _, p := range ch.Parts() {
+					weights += p.WeightBytes
+				}
+			}
+		}
+		held := w - wired0
+		if held < weights/2 {
+			logf("the Neural Engine holds %.2f GiB for them so far: programs compiled just now come onto it at their first call (%.2f GiB of weights in all), in kernel memory of its driver, not in this process's footprint", float64(held)/(1<<30), float64(weights)/(1<<30))
+		} else {
+			logf("the Neural Engine holds %.2f GiB for them: kernel memory of its driver, in neither this process's footprint nor aned's", float64(held)/(1<<30))
+		}
 	}
 	caches := ""
 	if len(e.tiers) > 1 {

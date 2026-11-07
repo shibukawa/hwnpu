@@ -186,7 +186,7 @@ func (m *builder) mlp(i int, h *mlpackage.Var) *mlpackage.Var {
 	f := m.cfg.IntermediateSize
 	gate := m.LinearRows(h, p+"gate_up_proj.weight", 0, f)
 	up := m.LinearRows(h, p+"gate_up_proj.weight", f, 2*f)
-	gate = m.Op("silu", map[string]any{"x": gate}, gate.Shape...)
+	gate = m.SiLU(gate)
 	g := m.Op("mul", map[string]any{"x": gate, "y": up}, gate.Shape...)
 	return m.Linear(g, p+"down_proj.weight", "", m.d)
 }

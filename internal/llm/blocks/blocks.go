@@ -262,9 +262,22 @@ func (g *Graph) RMSNormWith(x *mlpackage.Var, name string, w []float32, eps floa
 func (g *Graph) SwiGLU(x *mlpackage.Var, gate, up, down string, inter, out int, scale float32) *mlpackage.Var {
 	gv := g.Linear(x, gate, "", inter)
 	u := g.Linear(x, up, "", inter)
-	gv = g.Op("silu", map[string]any{"x": gv}, gv.Shape...)
+	gv = g.SiLU(gv)
 	f := g.Op("mul", map[string]any{"x": gv, "y": u}, gv.Shape...)
 	return g.LinearS(f, down, "", out, scale)
+}
+
+// SiLU is silu(x) = x sigmoid(x), written as x / (1 + exp(-x)). The Neural Engine's own silu (and
+// x times its sigmoid, which gives the same values) is about 1.4% off on an M3, more on the small
+// values of its tail (design.md 16.88): the logits' KL from PyTorch's fp32 on the Neural Engine
+// fell 2.5 times with this form for LFM3-1.7B in lut8 (0.058 to 0.022), to that of the same program
+// on Core ML's CPU, and by a third for PLaMo 3 in lut8 (design.md 16.89). It costs 3 operations
+// more: a prompt is read about 9% slower, a step about 3%. Past x = -11, exp(-x) overflows fp16 to
+// inf and the quotient is 0 (silu is under 2e-4 there).
+func (g *Graph) SiLU(x *mlpackage.Var) *mlpackage.Var {
+	neg := g.Op("mul", map[string]any{"x": x, "y": g.B.ScalarF16(-1)}, x.Shape...)
+	den := g.Op("add", map[string]any{"x": g.Op("exp", map[string]any{"x": neg}, x.Shape...), "y": g.B.ScalarF16(1)}, x.Shape...)
+	return g.Op("real_div", map[string]any{"x": x, "y": den}, x.Shape...)
 }
 
 // RopeTables returns cos and sin tables of shape (1, seq, 1, head_dim) for positions 0..seq-1,
@@ -544,14 +557,17 @@ func (g *Graph) LayerNorm(x *mlpackage.Var, weight, bias string, n int, eps floa
 }
 
 // Activation applies a Hugging Face hidden_act: gelu (exact), gelu_new / gelu_pytorch_tanh
-// (tanh approximation), relu, silu.
+// (tanh approximation), relu, silu (SiLU). The Neural Engine's own gelu is kept: written with exp
+// and real_div, Gemma 4 E2B's KL was the same (design.md 16.89).
 func (g *Graph) Activation(x *mlpackage.Var, act string) *mlpackage.Var {
 	switch act {
 	case "gelu":
 		return g.Op("gelu", map[string]any{"x": x, "mode": g.Str("EXACT")}, x.Shape...)
 	case "gelu_new", "gelu_pytorch_tanh":
 		return g.Op("gelu", map[string]any{"x": x, "mode": g.Str("TANH_APPROXIMATION")}, x.Shape...)
-	case "relu", "silu":
+	case "silu":
+		return g.SiLU(x)
+	case "relu":
 		return g.Op(act, map[string]any{"x": x}, x.Shape...)
 	}
 	g.Fail("activation %q is not supported", act)

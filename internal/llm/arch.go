@@ -36,6 +36,20 @@ type Arch struct {
 	GGUFShape func(name string, shape []int) []int
 	// LastRow reports that the architecture builds Options.LastRow.
 	LastRow bool
+	// Revision counts the changes to the programs the architecture builds that call for
+	// converting a model again, the weights and options the same: hwnpu-chat names its
+	// conversions by it (Rev), so that it does not load one of an earlier revision. 1: silu
+	// written with exp and real_div (blocks.SiLU, 2026-11-07).
+	Revision int
+}
+
+// Rev is "-rN" for the architecture's Revision N, "" for none: for the names of the programs
+// converted from it.
+func (a *Arch) Rev() string {
+	if a.Revision == 0 {
+		return ""
+	}
+	return fmt.Sprintf("-r%d", a.Revision)
 }
 
 // Param is an architecture specific build setting.

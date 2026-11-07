@@ -10,7 +10,7 @@ import (
 // TestExportName puts what changes the programs, and the layout version, in the name.
 func TestExportName(t *testing.T) {
 	o := ConvertOptions{Backend: "coreml", Width: 1024, Height: 1024, Dit: "anima-turbo-v1.1.safetensors", TextFormat: "int8", DitFormat: "int8", Group: 4, QChunk: 512}
-	if got, want := ExportName(o), "anima-turbo-v1.1-1024x1024-int8-int8-g4-q512-v2.coreml"; got != want {
+	if got, want := ExportName(o), "anima-turbo-v1.1-1024x1024-int8-int8-g4-q512-v3.coreml"; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
 	o.Backend = "intel"

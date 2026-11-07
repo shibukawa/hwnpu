@@ -135,6 +135,7 @@ MODEL_ARCHITECTURE.md の「表の値の選び方」の表は、重みの誤差�
 `npuprobe split` に aned と ANECompilerService の `phys_footprint` を足す (16.12 の未確定事項)。T2 と T3 の効果はこれがないと半分しか見えない。
 
 - 2026-11-02: `footprint` で hwnpu-chat だけ測った (design.md 16.39): 読み込み直後に 2 本 1,968 MB、4 本 2,807 MB。aned は sudo が要り未計測
+- 2026-11-07: 重みは aned ではなくカーネルの wired メモリ (`com.apple.driver.AppleH11ANEInterface`) にあり、`mach_memory_info` で root なしで読める。`mem.NPUWired` にし、hwnpu-chat の読み込みのログと `npuprobe split` の「Neural Engine」の列に出す。LFM3 lut6 の 2 本で 2.43 GiB (design.md 16.89)
 
 ### 採らないもの
 

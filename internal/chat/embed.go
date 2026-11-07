@@ -68,7 +68,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	// converted again rather than loaded
 	format := a.DefaultFormatFor(model, backend)
 	for _, seq := range s.Seqs {
-		out := filepath.Join(pdir, fmt.Sprintf("embed-%s-s%d%s", format, seq, programExt(backend)))
+		out := filepath.Join(pdir, fmt.Sprintf("embed%s-%s-s%d%s", a.Rev(), format, seq, programExt(backend)))
 		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, seq: seq, format: format}, s.Log)
 		if err != nil {
 			return EmbedConfig{}, err

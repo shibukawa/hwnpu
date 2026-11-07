@@ -2683,3 +2683,53 @@ Qwen3.6-35B-A3B の 1 トークン (q4nx、今の部品のまま) の見積も�
 4. 常駐のプロセスは `chat.Server` を広げる形で、1〜3 と並行して進められる
 
 未定のこと: 種類の型を Go でどう表すか (インターフェースか、タグつきの構造体か)、時計の基準 (音声のサンプル数か、単調な壁時計か)、列を分けて本当に同時に動かせるか、TTS と LLM を同時に動かしたときの生成の遅れ。
+
+### 16.89 ほかのモデルの silu も exp と real_div で書く、Neural Engine のメモリを読む、GPTQ の表を M3 で確かめる — 2026-11-07
+
+**silu (`blocks.SiLU`)**
+
+- 16.88 の残り: Qwen3.5 で見つけた ANE の `silu` のずれ (1.4%、裾の小さな値ほど大きい) が、ほかのモデルの精度の損にも入っているか。`blocks.SwiGLU` と `Activation("silu")` を `x / (1 + exp(-x))` (`blocks.SiLU`) にし、LFM3 (VL、Audio、Omni、d1 の文の部分を含む)、LFM3 の視覚と音声の塔、TTS の depthformer、PLaMo 3、PLaMo-Embedding、Anima の文の部分 (Qwen3-0.6B) に効く
+- 測り方: 128 トークンの英文 (LFM3 の model card) と日本文 (富士山、『こころ』、信濃川の段落) の PyTorch fp32 の参照 (`ref_logits.py`、BOS あり) に対し、`hwnpu-convert -seq 128` (キャッシュなし、2〜3 部分) を coremltools で CPU_AND_NE と CPU_ONLY に通して最後の logits の KL を比べた。`tools/ref/eval_logits.py` を parts.json を順につなげるように広げた (前の部分の出力を同じ名前の入力に、Gemma 4 の `ple` はチェックポイントの表の行を `--table` で)
+- 位置ごとの KL の平均 (英文 / 日本文)。どれも配置は全部 Neural Engine (`hwnpuinfo`):
+
+| モデル (形式) | ANE の silu | `blocks.SiLU` | 同じプログラムを Core ML の CPU で |
+|---|---|---|---|
+| LFM3-1.7B (lut6) | 0.365 / 0.082 | 0.336 / 0.076 | 0.337 / 0.077 |
+| LFM3-1.7B (lut8) | 0.058 / 0.012 | **0.022 / 0.0048** | 0.026 / 0.0058 |
+| PLaMo 3 Translate 2B (lut8) | 0.0067 / 0.0069 | **0.0053 / 0.0042** | 0.0069 / 0.0065 |
+
+  - ANE の上の損はほぼ silu だった。直すと Core ML の CPU (fp32 の計算) と同じ水準になる。lut6 では量子化の損が大きく、差は 1 割に満たない。lut8 では KL が 2.5 分の 1
+  - `x · sigmoid(x)` は ANE の `silu` と値まで同じ (ANE の中では同じものらしい)。`sigmoid` では直らない
+  - PLaMo-Embedding-1B (lut8 + head-scale、`TestANEPrecision`): 出力の相対誤差 0.0243 → 0.0170、CPU との埋め込みのコサイン 0.99986 → **0.99993**
+  - Gemma 4 E2B (lut6) の MLP は `gelu` (tanh 近似)。同じく `x / (1 + exp(-1.5958 (x + 0.044715 x³)))` で書いても KL は 0.243 / 0.424 → 0.240 / 0.428 で変わらない (CPU 0.245 / 0.411)。ANE の `gelu` は十分正確なのでそのまま
+- 費用 (LFM3 lut6、チャットの形: 注意で 7 部分、Q=8 と Q=128): 3790 トークンのプロンプトが 2.7 → 2.95 秒 (+9%、4 回ずつ 2 巡)、生成の 1 回の呼び出しが 33.9 → 35 ms 前後 (+3%、ばらつきに近い)。1 つの演算が 4 つになるため。温度 0 の要約の答えは見出しまで同じで、その先の言い回しは分かれた
+- 変換し直し: プログラムの名前は形式と設定で決まり、silu を変えても同じ名前になる。`llm.Arch.Revision` を足し、hwnpu-chat の変換の名前に `-r1` を入れた (`lfm3-r1-lut6-grouped-p8192-...`、`lfm3-vision-r1-512x512`、`embed-r1-lut8-s128`)。lfm3、lfm3-vision、lfm3-audio-encoder、plamo3、plamo-bi が 1。Anima は `ExportVersion` を 3 に。古い名前のプログラムは消さないので、ディスクに残る
+- 確かめていないこと: LFM3-VL / Audio / Omni / d1 と塔、TTS、Anima の画像 (どれも同じ書き換えで、変換し直しになる)。Anima の DiT と VAE の `silu` (`anima/mil` の自前の `op`) は変えていない
+
+**Neural Engine のメモリ (`mem.NPUWired`、model-fit.md T10)**
+
+- ANE に載せた重みはプロセスの RSS にも footprint にも aned にも出ず、カーネルの wired メモリの `com.apple.driver.AppleH11ANEInterface` に入る (2026-11-06 に zprint で確かめた)。`mach_memory_info` (root 不要) を purego で呼び、その名前の大きさを返す。vm のタグ番号は macOS 27.2 で 167 → 158 に変わっていたので名前で探す。何も載せていないときは 144〜192 KiB (27.0.1 で見えた 1.22 GiB の下地はなくなっていた)
+- hwnpu-chat は読み込みの前後の差を出す: LFM3-1.7B lut6 の 2 本 (Q=8 と Q=128) で「the Neural Engine holds 2.43 GiB」(重み 1.21 GiB × 2。同じ重みでもプログラムが違えば 2 つ持つ)。終わると戻る
+- `npuprobe split` の表に「Neural Engine」の列: lut4 の 32 層を 2 部分 (重み 0.91 GiB) で 0.46 GiB。npuprobe の部分は同じ種で作るので 2 つが同じ中身になり、ドライバーは 1 つだけ持つらしい
+
+**GPTQ で選んだ lut6 の表 (16.87) を M3 で** (docs/handoff-m3-gptq.md)
+
+- 符号は Linux の機械に届かず、M3 で作り直した: `q4_gptq.py lfm3 CKPT OUT --fmt-q4 lut6 --fmt-q8 lut6 --head lut6 --lut-fit wkmeans --q8 gptq` (校正の文 `~/models/calib` も作り直した。GPL-3 は Mac にないので評価から抜ける)。`--q8 gptq` がないと注意と畳み込みの射影は丸めのままで、符号は 143 のうち 73 (MLP と出力層) だけになる (引き継ぎの手順にはこの引数が抜けていた)。校正は 2141 秒 (4 層ずつ 7 回、1 回 4〜5 分。スワップが 9 GB を超えていると 1 回目が 45 分かかった)。符号は 1.6 GB
+- CPU の見積もり (bf16 の重みに対する KL): README 0.0203、wiki40b-ja 0.0500、wikitext-2 0.0291、Go 0.0189
+- `hwnpu-convert -codes` で 143 の重みが選んだ表を取り、2 部分とも全部 Neural Engine。上の英文と日本文 128 トークンの PyTorch fp32 に対する KL (平均、英文は中央値も):
+
+| 変換 | ANE | Core ML の CPU |
+|---|---|---|
+| 変換器の丸め (`-quant` 既定) | 英 0.336 (中央値 0.179) / 日 0.076 | 0.334 / 0.077 |
+| チャットの丸め (`kmeans-minmax`) | 英 0.322 (0.155) / 日 0.054 | |
+| GPTQ、MLP と出力層だけ (73) | 英 0.255 (0.126) / 日 0.050 | 0.259 / 0.050 |
+| GPTQ、全部 (143) + wkmeans | **英 0.247 (0.097) / 日 0.035** | 0.255 / 0.037 |
+
+  - ANE でも CPU と同じ順で、ANE の上乗せはない (silu を直した後)。チャットの丸めに対して英文の平均 −23 %、中央値 −37 %、日本文 −35 %。英文の平均は markdown のリンクなど予測の難しい位置で決まり、どの変換でも大きい
+- チャットの形 (注意で 7 部分、Q=8 と Q=128、`-quant kmeans-minmax -codes`) で hwnpu-chat と比べた (名前を合わせて変換したものを置いた)。速さは同じ: 3790 トークンを 2.9 秒、生成の 1 回の呼び出し 33〜36 ms
+- 答え (温度 0、考えない): 事実の 12 問 (富士山の高さ、首都、『吾輩は猫である』の作者、水、光の速さ、琵琶湖、1 年の日数、一番近い恒星、英語の 4 問) で、丸めも GPTQ も 10/12。外したのは丸めが猫の作者と恒星、GPTQ が**富士山 (4,324.5 m と答えた)** と猫の作者。bf16 の PyTorch は富士山を 3,776 m と答え、「日本で一番長い川」には丸めも GPTQ も bf16 も崩れる (モデルの限界)
+- 判断: KL は確かに下がるが、少数の問いでは答えの良し悪しは見分けられず、GPTQ で富士山が崩れた例もある。既定にするには、もっと多くの問い (と hwnpu-agent の課題) で比べてから。符号の配り方 (1.6 GB) も未定のまま。lut4 + wkmeans は試していない (16.87 の CPU で lut6 の丸めの 4 倍)
+
+**hwnpu-chat の ANE のメモリの表示 (追記)**
+
+- Core ML がその場でコンパイルしたプログラムは、読み込んだ直後には ANE に載らず (LFM3 で 0.27 GiB)、最初の呼び出しで載る (2.43 GiB)。キャッシュから読んだときは読み込んだ時点で 2.43 GiB。hwnpu-chat は差が重みの半分に満たないとき「so far: programs compiled just now come onto it at their first call」と書く。`npuprobe split` は 1 回動かした後に測る

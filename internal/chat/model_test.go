@@ -252,7 +252,7 @@ func TestPreparePaged(t *testing.T) {
 	for i, name := range []string{"q8", "q96-last"} {
 		q := []int{8, 96}[i]
 		p := c.Packages[i]
-		if want := fmt.Sprintf("lfm3-lut4-grouped-p96-c96-%s.parts.json", name); filepath.Base(p) != want {
+		if want := fmt.Sprintf("lfm3-r1-lut4-grouped-p96-c96-%s.parts.json", name); filepath.Base(p) != want {
 			t.Errorf("package %s, want %s", filepath.Base(p), want)
 		}
 		man, err := llm.ReadManifest(p)
@@ -267,14 +267,14 @@ func TestPreparePaged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "lfm3-lut4-grouped-c64-q1"; !strings.HasPrefix(filepath.Base(c.Packages[0]), want) {
+	if want := "lfm3-r1-lut4-grouped-c64-q1"; !strings.HasPrefix(filepath.Base(c.Packages[0]), want) {
 		t.Errorf("not split: %s, want %s", c.Packages[0], want)
 	}
 	c, err = Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Backend: "intel", Log: io.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "lfm3-int8-grouped-p96-c96-q1.parts.json"; filepath.Base(c.Packages[0]) != want {
+	if want := "lfm3-r1-int8-grouped-p96-c96-q1.parts.json"; filepath.Base(c.Packages[0]) != want {
 		t.Errorf("intel: %s, want %s", filepath.Base(c.Packages[0]), want)
 	}
 	man, err := llm.ReadManifest(c.Packages[0])
@@ -328,7 +328,7 @@ func TestPreparePrefill(t *testing.T) {
 		}
 		var got []string
 		for _, p := range cfg.Packages {
-			got = append(got, strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "lfm3-lut4-grouped-p96-c96-"), ".parts.json"))
+			got = append(got, strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "lfm3-r1-lut4-grouped-p96-c96-"), ".parts.json"))
 		}
 		if !slices.Equal(got, c.want) {
 			t.Errorf("-prefill %q with a compile cache of %d: programs %v, want %v", c.prefill, c.cache, got, c.want)

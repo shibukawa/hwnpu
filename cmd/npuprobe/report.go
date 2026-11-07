@@ -114,7 +114,7 @@ func markdown(rep *report) string {
 	}
 	if len(rep.Split) > 0 {
 		sb.WriteString("\n## A model split into parts run one after another\n\n")
-		sb.WriteString("| format | weights | parts | layout | placement of the parts | ms/token | parts alone added up | tokens/s | weights GB/s | CPU use | peak RSS | mJ/token | error after each part | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+		sb.WriteString("| format | weights | parts | layout | placement of the parts | ms/token | parts alone added up | tokens/s | weights GB/s | CPU use | peak RSS | Neural Engine | mJ/token | error after each part | error |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
 		for _, s := range rep.Split {
 			var place, errs []string
 			for _, r := range s.Parts {
@@ -139,11 +139,15 @@ func markdown(rep *report) string {
 			if s.MaxRSS > 0 {
 				rss = fmt.Sprintf("%.2f GiB", probe.GiB(s.MaxRSS))
 			}
-			fmt.Fprintf(&sb, "| %s | %d layers, %.2f GiB | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", s.Format, s.Layers, probe.GiB(s.WeightBytes), len(s.Parts), layout,
-				strings.Join(place, "<br>"), cell(s.MsPerToken, "%.1f"), cell(s.MsSumParts, "%.1f"), tps, cell(s.gbps(), "%.0f"), cell(s.CPUUse, "%.2f"), rss, cell(s.MJPerToken, "%.1f"),
+			ane := ""
+			if s.NPUWired > 0 {
+				ane = fmt.Sprintf("%.2f GiB", probe.GiB(s.NPUWired))
+			}
+			fmt.Fprintf(&sb, "| %s | %d layers, %.2f GiB | %d | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n", s.Format, s.Layers, probe.GiB(s.WeightBytes), len(s.Parts), layout,
+				strings.Join(place, "<br>"), cell(s.MsPerToken, "%.1f"), cell(s.MsSumParts, "%.1f"), tps, cell(s.gbps(), "%.0f"), cell(s.CPUUse, "%.2f"), rss, ane, cell(s.MJPerToken, "%.1f"),
 				against, strings.ReplaceAll(short(s.Error, 200), "|", "/"))
 		}
-		sb.WriteString("\nEvery part is loaded before any is timed. ms/token runs each part once, the output buffer of one bound as the input of the next; parts alone added up is the sum of each part's own time. Layout functions writes the parts as the functions of one package, loaded one function at a time. Peak RSS is the largest resident memory of the process that loaded and ran the parts (it leaves out the system's own Core ML and Neural Engine processes). The error after each part compares the hidden state with the same parts run one at a time on the reference units (rms of the difference over rms of the reference).\n")
+		sb.WriteString("\nEvery part is loaded before any is timed. ms/token runs each part once, the output buffer of one bound as the input of the next; parts alone added up is the sum of each part's own time. Layout functions writes the parts as the functions of one package, loaded one function at a time. Peak RSS is the largest resident memory of the process that loaded and ran the parts (it leaves out the system's own Core ML and Neural Engine processes). Neural Engine is what loading the parts and running them once added to the wired kernel memory of the Neural Engine's driver (com.apple.driver.AppleH11ANEInterface, read with mach_memory_info): where the weights on the Neural Engine are, in no process's RSS. The error after each part compares the hidden state with the same parts run one at a time on the reference units (rms of the difference over rms of the reference).\n")
 	}
 	if len(rep.KV) > 0 {
 		sb.WriteString("\n## KV cache: host buffers against Core ML states\n\n")
