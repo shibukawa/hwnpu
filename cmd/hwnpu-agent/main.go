@@ -130,6 +130,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	var c chat.Config
+	noThink := false // the model's own default (chat.Model.NoThink) when -think is not given
 	if *ironDir != "" {
 		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: console.Log(os.Stderr), PromptDir: chat.PromptStore(*promptDir, *cacheDir), Idle: *idle}
 	} else {
@@ -143,6 +144,7 @@ func main() {
 		if len(m.Features) > 0 && !slices.Contains(m.Features, "tools") {
 			fail(fmt.Errorf("%s has no tool calls; the agent needs a model with the tools feature (hwnpu-chat -list)", m.Name))
 		}
+		noThink = m.NoThink && !flagGiven("think")
 		md := filepath.Join(*dir, m.Name)
 		c = chat.Config{ModelConfig: *config, Weights: *weights}
 		if *pkgs != "" {
@@ -173,7 +175,7 @@ func main() {
 	ed := console.NewEditor("agent")
 	cfg := agent.Config{
 		Dir: work, Tools: strings.Split(*tools, ","), System: opening, Instructions: instructions,
-		Think: *think, KeepThinking: *keep, ThinkBudget: *thinkBudget, Sampling: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep},
+		Think: *think && !noThink, KeepThinking: *keep, ThinkBudget: *thinkBudget, Sampling: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep},
 		MaxTokens: *maxNew, Reserve: *maxNew, Steps: *steps, Dump: *dump, Log: os.Stderr,
 		Search: searcher, SearchFirst: *searchFirst,
 	}
@@ -330,3 +332,10 @@ const (
 	bold  = "\x1b[1m"
 	reset = "\x1b[0m"
 )
+
+// flagGiven reports whether the flag of that name was set on the command line.
+func flagGiven(name string) bool {
+	given := false
+	flag.Visit(func(f *flag.Flag) { given = given || f.Name == name })
+	return given
+}

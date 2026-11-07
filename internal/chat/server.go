@@ -144,6 +144,25 @@ type chatRequest struct {
 	} `json:"chat_template_kwargs"`
 }
 
+// thinks decides whether the model thinks before answering req: the server's default (Think),
+// off for a model that answers without thinking by default (Engine.NoThink), then what the
+// request asks.
+func (s *Server) thinks(e *Engine, req *chatRequest) bool {
+	think := s.Think && !e.NoThink
+	switch req.ReasoningEffort {
+	case "none", "minimal", "low":
+		// A small model thinks at length whatever it is asked; the side tasks of agents
+		// (titles) ask for little thinking and want the answer.
+		think = false
+	case "medium", "high":
+		think = true
+	}
+	if req.ChatTemplateKwargs.EnableThinking != nil {
+		think = *req.ChatTemplateKwargs.EnableThinking
+	}
+	return think
+}
+
 func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	var req chatRequest
 	body, err := io.ReadAll(r.Body)
@@ -168,18 +187,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	if string(req.ToolChoice) == `"none"` {
 		req.Tools = nil
 	}
-	think := s.Think
-	switch req.ReasoningEffort {
-	case "none", "minimal", "low":
-		// A small model thinks at length whatever it is asked; the side tasks of agents
-		// (titles) ask for little thinking and want the answer.
-		think = false
-	case "medium", "high":
-		think = true
-	}
-	if req.ChatTemplateKwargs.EnableThinking != nil {
-		think = *req.ChatTemplateKwargs.EnableThinking
-	}
+	think := s.thinks(e, &req)
 	prompt, thinking, err := e.Template.Render(req.Messages, req.Tools, Options{NoThink: !think, KeepThinking: req.ChatTemplateKwargs.PreserveThinking, Translation: &req.ChatTemplateKwargs.Translation})
 	if err != nil {
 		apiError(w, http.StatusBadRequest, "invalid_request_error", "", err.Error())

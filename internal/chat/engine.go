@@ -95,6 +95,9 @@ type Engine struct {
 	Template Template       // the model's chat format
 	Stops    map[int32]bool // tokens that end an answer
 	Name     string         // the model's name, from the package
+	// NoThink makes the model answer without thinking unless a request asks for thinking
+	// (reasoning_effort, enable_thinking): Model.NoThink when -think was not given.
+	NoThink bool
 
 	// turnStart is the token that starts a turn of the chat format, where prefill also marks the
 	// sequence when markTurns (a model whose recurrent states go back only to a mark: the next

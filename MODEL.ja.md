@@ -47,8 +47,9 @@ English: [MODEL.md](MODEL.md)
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0 GB、画像も)</td>
 </tr>
 <tr>
-<th>翻訳<br><sub>hwnpu-chat <code>-use plamo-3-translate-2b</code></sub></th>
-<td colspan="6"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
+<th>翻訳<br><sub>hwnpu-chat <code>-use plamo-3-translate-2b</code>、<code>-use plamo-3-translate-0.8b</code></sub></th>
+<td><b>PLaMo 3 Translate 0.8B</b> (約 2.4 GB)<br>2B の 3 倍速、訳は 2B の言い換え程度の違い</td>
+<td colspan="5"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
 </tr>
 <tr>
 <th>画像生成<br><sub>hwnpu-image</sub></th>
@@ -95,16 +96,19 @@ English: [MODEL.md](MODEL.md)
 | LFM3-Audio-2B | 音声 (1 本 30 秒まで) | 2.6 GB | 12 KiB/トークン | 実測 |
 | LFM3-Omni-2B | 画像と音声 | 3.0 GB (画像か音声が来るまでは 2.2 GB) | 12 KiB/トークン | 実測 |
 | PLaMo 3 Translate 2B | 翻訳 | 2.7 GB | 7 KiB/トークン (262144 で 1.75 GiB) | 実測 |
+| PLaMo 3 Translate 0.8B | 翻訳 | 約 2.4 GB (M3: Neural Engine に 1.38 GiB とプロセスの 1.0 GB) | 1 KiB/トークン (262144 で 0.28 GiB) | M3 で実測 |
 | PLaMo-Embedding-1B | 文の埋め込み | 1.3 GB | なし | 重みから見込み |
 | Anima-Turbo (1024 × 1024) | 画像生成 | 4.1 GB (DiT の段の最大) | なし | 実測 |
 | LFM3-Audio-2B (読み上げ) | 読み上げ | 約 2.4 GB | 12 KiB/トークン | 重みから見込み |
 | d1-2B、d1-Omni-2B | 状態の判定 | 約 2.4 GB、約 2.8 GB | 短い入力のみ | 重みから見込み |
+| Qwen3.5-0.8B | チャット (日本語の事実に弱い) | 約 2.6 GB (M3: Neural Engine に 1.47 GiB とプロセスの 1.1 GB) | 14 KiB/トークン (262144 で 3.38 GiB) | M3 で実測 |
+| Qwen3.5-2B | チャット、コード | 約 3.3 GB (M3: Neural Engine に 1.78 GiB とプロセスの 1.5 GB) | 14 KiB/トークン (262144 で 3.38 GiB) | M3 で実測 |
 | Qwen3.5-4B | チャット、コード | 約 4.2 GB (8 ビットの重み 3.9 GiB) | 32 KiB/トークン (262144 で 8 GiB。16 GB では 114688 トークン) | M3 の Neural Engine で動作を確認。メモリは重みから見込み |
 | Qwen3.6-35B-A3B (予定) | チャット、コード | 約 25 GB | — | 4 ビットの重みからの見込み。移植していない |
 
 - 重みは 4 ビットと 8 ビットを混ぜた形です (MLP と出力の行列が 4 ビット、注意の射影が 8 ビット。画像生成は DiT が 8 ビット)
 - 「実測」は、NPU に固定されたメモリを Ryzen AI 9 365 で測った値に、プロセスの分を足したものです。モデルの重みの大きさで決まります
-- Apple の Neural Engine ではもっと多くなります。重みは 6 ビットと 8 ビットの表 (LFM3-1.7B は 6 ビット、その VL、Audio、Omni、d1 と PLaMo 3、Qwen3.5 は 8 ビット) で、hwnpu-chat は生成用とプロンプトを読む用の 2 本のプログラムを読み込み、それぞれが重みを持ちます (Gemma 4 E4B、PLaMo 3、Qwen3.5 は 1 本)。M3 で測ると (2026-11-07)、LFM3-1.7B は Neural Engine に 2.43 GiB (1.21 GiB のプログラム 2 本)、それにプロセスの 0.5〜0.9 GB でした。ほかのモデルは Apple ではまだ測っていませんが、同じく表より多くなる見込みです
+- Apple の Neural Engine ではもっと多くなります。重みは 6 ビットと 8 ビットの表 (LFM3-1.7B は 6 ビット、その VL、Audio、Omni、d1 と PLaMo 3、Qwen3.5 は 8 ビット) で、hwnpu-chat は生成用とプロンプトを読む用の 2 本のプログラムを読み込み、それぞれが重みを持ちます (Gemma 4 E4B、PLaMo 3 Translate 2B、Qwen3.5-2B と 4B は 1 本)。M3 で測ると (2026-11-07)、LFM3-1.7B は Neural Engine に 2.43 GiB (1.21 GiB のプログラム 2 本)、それにプロセスの 0.5〜0.9 GB、PLaMo 3 Translate 0.8B は 2 本で 1.38 GiB、それにプロセスの 1.0 GB でした。ほかのモデルは Apple ではまだ測っていませんが、同じく表より多くなる見込みです
 - Neural Engine の分はそのドライバーのカーネルのメモリで、どのプロセスの RSS にも footprint にも出ません (アクティビティモニタや `top` には見えません)。hwnpu-chat は読み込んだ後にその量を表示します。その場でコンパイルしたプログラムは、最初の呼び出しで Neural Engine に載ります
 - 数えていないもの: Gemma 4 の層ごとの埋め込みの表 (E2B で 4.4 GB) と、トークンの埋め込みの表 (0.5〜0.75 GB) は、ファイルのまま置いて、使う行だけを読みます。OS のページキャッシュに入りますが、メモリが足りなければ捨てられます
 - 同じモデルの複数の書き出し (文だけと画像と音声つきなど) は、ディスクの上で同じファイルを共有できます (Btrfs、XFS、APFS、ReFS)。メモリの上では共有しないので、同時に動かせば別々に数えます

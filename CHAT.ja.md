@@ -89,6 +89,8 @@ go run ./cmd/hwnpu-chat -use gemma-4-E2B-it
 
 Preferred Networks の翻訳モデル PLaMo 3 Translate 2B は `-use plamo-3-translate-2b` で使えます。ほかのモデルと同じく、初回にチェックポイント (5.8 GB) を落として変換します。Neural Engine には 8 ビットの表 (lut8)、Intel の NPU には int8 で、全注意の 3 層 (7、15、23) の前後で分けます (文脈は 262144 トークン、キャッシュは会話とともに 1 トークン 7 KiB ずつ増える)。AMD の NPU では IRON で書き出したものを `-iron` で動かします (README の AMD の節)。打った文がそのまま訳され、それまでの原文と訳文の組が対訳の履歴としてプロンプトに入ります (訳語や文体がそろう)。訳す先は `-to` (既定は、日本語の文字を含む文は英語、ほかは日本語)、`/to LANG` で途中で変えると履歴は消えます。言語は小文字のコードで、`en`、`ja`、`zh-hans`、`ko`、やさしい日本語の `ja(easy)` などです。`-from` で原文の言語、`-form plain` か `polite` で日本語の常体と敬体を指定でき、`-system` は参考文脈になります。考える部分や道具の呼び出しはありません。
 
+`-use plamo-3-translate-0.8b` は同じモデルの小さい版です (ダウンロード 1.8 GB)。M3 では生成が 2B の約 3 倍速く (1 秒に 53 トークン、2B は 17)、2 本のプログラム (1 回 8 トークンと 128 トークン、合わせて 1.38 GiB) が Neural Engine のコンパイルのキャッシュに収まるので、1600 トークンの文書を 1.2 秒で読みます。20 文 (英 → 日と日 → 英) のうち 8 文は 2B と一字一句同じ訳で、残りの 12 文も正しい言い換えでした。
+
 ```bash
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b
 go run ./cmd/hwnpu-chat -use plamo-3-translate-2b -to ja -form plain

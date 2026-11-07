@@ -62,6 +62,9 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 	if opts.Paged > 0 && opts.Cache <= 0 {
 		return nil, nil, fmt.Errorf("plamo3: a program split at its attention (Paged) needs a KV cache")
 	}
+	if opts.LastRow && opts.Cache <= 0 {
+		return nil, nil, fmt.Errorf("plamo3: the logits of the last row alone (LastRow) are of a program with a KV cache")
+	}
 	m := &builder{Graph: &blocks.Graph{Name: "plamo3", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize,
 		end: opts.Start + opts.Layers, ins: map[string]*mlpackage.Var{}, rope: map[bool][2]*mlpackage.Var{}, masks: map[bool]*mlpackage.Var{}}
 	err = blocks.Run(func() {
@@ -83,6 +86,9 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 		if m.end < cfg.NumLayers || opts.NoHead {
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		} else {
+			if opts.LastRow {
+				h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+			}
 			y = m.head(h)
 		}
 		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}

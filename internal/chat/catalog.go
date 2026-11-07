@@ -27,6 +27,11 @@ type Model struct {
 	Repo     string   // the Hugging Face repository it is downloaded from
 	Bytes    float64  // the size of the download (0: unknown)
 	About    string
+	// NoThink is the model's own default of answering without thinking first, which -think
+	// given on the command line, reasoning_effort or enable_thinking override (Qwen3.5's 0.8B
+	// and 2B: their chat templates think only when asked, and the 0.8B thinks to the budget on
+	// simple questions, docs/design.md 16.99).
+	NoThink bool
 }
 
 // Features explains the features a model of the catalog can have. The names are those of
@@ -56,8 +61,14 @@ var Catalog = []Model{
 		About: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"},
 	{Name: "Qwen3.5-4B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-4B", Bytes: 9.3e9,
 		About: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 8 bit tables (6 bit ones lose too much) read 8 tokens per call; the download has the vision part too, which is not converted"},
+	{Name: "Qwen3.5-0.8B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-0.8B", Bytes: 1.77e9, NoThink: true,
+		About: "Qwen's smallest Qwen3.5, the 4B's structure in 0.8B: fast, but weak at facts; its text model in 8 bit tables, answering without thinking unless asked; the download has the vision part too, which is not converted"},
+	{Name: "Qwen3.5-2B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-2B", Bytes: 4.57e9, NoThink: true,
+		About: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 8 bit tables read 8 tokens per call, answering without thinking unless asked; the download has the vision part too, which is not converted"},
 	{Name: "plamo-3-translate-2b", Kind: KindChat, Features: []string{"translation"}, Repo: "pfnet/plamo-3-translate-2b", Bytes: 5.76e9,
 		About: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"},
+	{Name: "plamo-3-translate-0.8b", Kind: KindChat, Features: []string{"translation"}, Repo: "pfnet/plamo-3-translate-0.8b", Bytes: 1.79e9,
+		About: "Preferred Networks' PLaMo 3 Translate 0.8B: the 2B's translation in a third of the memory, for small machines, in 8 bit tables"},
 	{Name: "plamo-embedding-1b", Kind: KindEmbed, Features: []string{"query"}, Repo: "pfnet/plamo-embedding-1b", Bytes: 2.1e9,
 		About: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"},
 }
