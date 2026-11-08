@@ -16,7 +16,7 @@ var EncoderArch = &llm.Arch{
 	Name:  "whisper-encoder",
 	Title: "Whisper audio encoder",
 	Params: []llm.Param{
-		{Name: "qchunk", Default: "500", Usage: "queries per attention of the encoder's layers (0: all 1500 at once); the scores of 20 heads over 1500 keys are 90 MB at once, over the 64 MiB a tensor past which the Neural Engine slows down"},
+		{Name: "qchunk", Default: "0", Usage: "queries per attention of the encoder's layers (0: all 1500 at once); the scores of 20 heads over 1500 keys are 90 MB, over the 64 MiB guide of a tensor, yet on an M3 0, 300, 500 and 750 took 520, 518, 537 and 555 ms with the same output"},
 	},
 	// 8 bit tables, as the other encoders (bert, plamo-bi): to be measured
 	Format:     "lut8",

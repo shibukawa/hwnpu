@@ -170,6 +170,18 @@ func (c *Config) check() error {
 	return nil
 }
 
+// Format is lut6 for Qwen3.5-2B (hidden size 2048) and the architecture's lut8 for the others.
+// On an M3 the 2B's lut6 gives lut8's next token at 260 of 283 (perplexity 3.75 against 3.83)
+// and the same 10 of 12 short questions right, in 1.32 GiB of weights against 1.78; the
+// 0.8B's lut6 gives fp16's next token at only 242 of 283 (lut8 274) and gets 17 × 23 wrong,
+// the 4B's loses too much, and lut4 repeats itself on both small ones (docs/design.md 16.115).
+func (c *Config) Format() string {
+	if c.HiddenSize == 2048 {
+		return "lut6"
+	}
+	return ""
+}
+
 // RotaryDim is the leading dimensions of each head that RoPE rotates (partial_rotary_factor).
 func (c *Config) RotaryDim() int {
 	f := 1.0
