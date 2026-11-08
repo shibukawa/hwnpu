@@ -10,6 +10,8 @@ import (
 	"math"
 	"os"
 	"sort"
+
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // Tensor describes one tensor of the file.
@@ -151,9 +153,7 @@ func (f *File) Float32Range(name string, begin, end int) ([]float32, error) {
 		if len(raw) != 2*n {
 			return nil, fmt.Errorf("safetensors: %s: %d bytes for %d BF16 values", name, len(raw), n)
 		}
-		for i := range out {
-			out[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(raw[2*i:])) << 16)
-		}
+		vecops.BF16ToF32(out, raw)
 	case "F16":
 		if len(raw) != 2*n {
 			return nil, fmt.Errorf("safetensors: %s: %d bytes for %d F16 values", name, len(raw), n)
