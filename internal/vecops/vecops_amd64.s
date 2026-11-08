@@ -366,3 +366,176 @@ bfloop:
 	JNZ  bfloop
 	VZEROUPPER
 	RET
+
+// Constants of the packing kernels.
+DATA low4<>+0(SB)/1, $0x0f
+GLOBL low4<>(SB), RODATA|NOPTR, $1
+DATA low6<>+0(SB)/1, $0x3f
+GLOBL low6<>(SB), RODATA|NOPTR, $1
+DATA mul16<>+0(SB)/2, $0x1001 // bytes 1, 16: an even entry plus 16 times the odd one
+GLOBL mul16<>(SB), RODATA|NOPTR, $2
+DATA mul64<>+0(SB)/2, $0x4001 // bytes 1, 64
+GLOBL mul64<>(SB), RODATA|NOPTR, $2
+DATA mul4096<>+0(SB)/4, $0x10000001 // words 1, 4096
+GLOBL mul4096<>(SB), RODATA|NOPTR, $4
+
+// VPSHUFB indices keeping the low three bytes of each dword of a lane, then four zeros.
+DATA shuf24<>+0(SB)/8, $0x0908060504020100
+DATA shuf24<>+8(SB)/8, $0x808080800e0d0c0a
+DATA shuf24<>+16(SB)/8, $0x0908060504020100
+DATA shuf24<>+24(SB)/8, $0x808080800e0d0c0a
+GLOBL shuf24<>(SB), RODATA|NOPTR, $32
+
+// VPERMD indices joining the three dwords of each lane that shuf24 filled.
+DATA perm24<>+0(SB)/4, $0
+DATA perm24<>+4(SB)/4, $1
+DATA perm24<>+8(SB)/4, $2
+DATA perm24<>+12(SB)/4, $4
+DATA perm24<>+16(SB)/4, $5
+DATA perm24<>+20(SB)/4, $6
+DATA perm24<>+24(SB)/4, $3
+DATA perm24<>+28(SB)/4, $7
+GLOBL perm24<>(SB), RODATA|NOPTR, $32
+
+// func pack4AVX2(dst *byte, idx *uint8, n int)
+// n is a positive multiple of 32: VPMADDUBSW makes each pair a word e+16o, VPACKUSWB takes the
+// low bytes, and VPERMQ joins the two lanes' halves.
+TEXT ·pack4AVX2(SB), NOSPLIT, $0-24
+	MOVQ         dst+0(FP), DI
+	MOVQ         idx+8(FP), SI
+	MOVQ         n+16(FP), CX
+	VPBROADCASTB low4<>(SB), Y15
+	VPBROADCASTW mul16<>(SB), Y14
+
+p4loop:
+	VMOVDQU    0(SI), Y0
+	VPAND      Y15, Y0, Y0
+	VPMADDUBSW Y14, Y0, Y0
+	VPACKUSWB  Y0, Y0, Y0
+	VPERMQ     $0x08, Y0, Y0
+	VMOVDQU    X0, 0(DI)
+	ADDQ       $32, SI
+	ADDQ       $16, DI
+	SUBQ       $32, CX
+	JNZ        p4loop
+	VZEROUPPER
+	RET
+
+// func pack6AVX2(dst *byte, idx *uint8, n int)
+// n is a positive multiple of 32: VPMADDUBSW makes each pair a word a+64b, VPMADDWD each four a
+// dword of 24 bits, and VPSHUFB and VPERMD gather their low three bytes into 24.
+TEXT ·pack6AVX2(SB), NOSPLIT, $0-24
+	MOVQ         dst+0(FP), DI
+	MOVQ         idx+8(FP), SI
+	MOVQ         n+16(FP), CX
+	VPBROADCASTB low6<>(SB), Y15
+	VPBROADCASTW mul64<>(SB), Y14
+	VPBROADCASTD mul4096<>(SB), Y13
+	VMOVDQU      shuf24<>(SB), Y12
+	VMOVDQU      perm24<>(SB), Y11
+
+p6loop:
+	VMOVDQU      0(SI), Y0
+	VPAND        Y15, Y0, Y0
+	VPMADDUBSW   Y14, Y0, Y0
+	VPMADDWD     Y13, Y0, Y0
+	VPSHUFB      Y12, Y0, Y0
+	VPERMD       Y0, Y11, Y0
+	VMOVDQU      X0, 0(DI)
+	VEXTRACTI128 $1, Y0, X1
+	MOVQ         X1, 16(DI)
+	ADDQ         $32, SI
+	ADDQ         $24, DI
+	SUBQ         $32, CX
+	JNZ          p6loop
+	VZEROUPPER
+	RET
+
+// func hasF16C() bool
+TEXT ·hasF16C(SB), NOSPLIT, $0-1
+	MOVL $1, AX
+	XORL CX, CX
+	CPUID
+	SHRL $29, CX
+	ANDL $1, CX
+	MOVB CX, ret+0(FP)
+	RET
+
+DATA sign16<>+0(SB)/2, $0x7fff
+GLOBL sign16<>(SB), RODATA|NOPTR, $2
+DATA inf16<>+0(SB)/2, $0x7c00
+GLOBL inf16<>(SB), RODATA|NOPTR, $2
+
+// func f32ToF16F16C(dst *byte, src *float32, n int) (nan bool)
+// n is a positive multiple of 32: VCVTPS2PH with immediate 0 rounds to nearest even. Y8 collects
+// the unordered compares of each value with itself: the NaNs.
+TEXT ·f32ToF16F16C(SB), NOSPLIT, $0-25
+	MOVQ   dst+0(FP), DI
+	MOVQ   src+8(FP), SI
+	MOVQ   n+16(FP), CX
+	VXORPS Y8, Y8, Y8
+
+hloop:
+	VMOVUPS   0(SI), Y0
+	VMOVUPS   32(SI), Y1
+	VMOVUPS   64(SI), Y2
+	VMOVUPS   96(SI), Y3
+	VCMPPS    $3, Y0, Y0, Y4
+	VCMPPS    $3, Y1, Y1, Y5
+	VCMPPS    $3, Y2, Y2, Y6
+	VCMPPS    $3, Y3, Y3, Y7
+	VORPS     Y4, Y8, Y8
+	VORPS     Y5, Y8, Y8
+	VORPS     Y6, Y8, Y8
+	VORPS     Y7, Y8, Y8
+	VCVTPS2PH $0, Y0, 0(DI)
+	VCVTPS2PH $0, Y1, 16(DI)
+	VCVTPS2PH $0, Y2, 32(DI)
+	VCVTPS2PH $0, Y3, 48(DI)
+	ADDQ      $128, SI
+	ADDQ      $64, DI
+	SUBQ      $32, CX
+	JNZ       hloop
+
+	VPTEST Y8, Y8
+	SETNE  nan+24(FP)
+	VZEROUPPER
+	RET
+
+// func f16ToF32F16C(dst *float32, src *byte, n int) (nan bool)
+// n is a positive multiple of 32: VCVTPH2PS is exact. Y8 collects the halves above 0x7c00 once
+// their sign is cleared: the NaNs.
+TEXT ·f16ToF32F16C(SB), NOSPLIT, $0-25
+	MOVQ         dst+0(FP), DI
+	MOVQ         src+8(FP), SI
+	MOVQ         n+16(FP), CX
+	VPBROADCASTW sign16<>(SB), Y14
+	VPBROADCASTW inf16<>(SB), Y15
+	VPXOR        Y8, Y8, Y8
+
+floop:
+	VMOVDQU   0(SI), Y0
+	VMOVDQU   32(SI), Y1
+	VPAND     Y14, Y0, Y2
+	VPAND     Y14, Y1, Y3
+	VPCMPGTW  Y15, Y2, Y2
+	VPCMPGTW  Y15, Y3, Y3
+	VPOR      Y2, Y8, Y8
+	VPOR      Y3, Y8, Y8
+	VCVTPH2PS 0(SI), Y4
+	VCVTPH2PS 16(SI), Y5
+	VCVTPH2PS 32(SI), Y6
+	VCVTPH2PS 48(SI), Y7
+	VMOVUPS   Y4, 0(DI)
+	VMOVUPS   Y5, 32(DI)
+	VMOVUPS   Y6, 64(DI)
+	VMOVUPS   Y7, 96(DI)
+	ADDQ      $64, SI
+	ADDQ      $128, DI
+	SUBQ      $32, CX
+	JNZ       floop
+
+	VPTEST Y8, Y8
+	SETNE  nan+24(FP)
+	VZEROUPPER
+	RET

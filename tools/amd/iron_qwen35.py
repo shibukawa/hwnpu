@@ -27,6 +27,7 @@ root, or its ``text_config``); the structure follows transformers' modeling_qwen
 """
 
 import dataclasses
+import functools
 
 import numpy as np
 from ml_dtypes import bfloat16
@@ -58,19 +59,34 @@ COLUMNS = 8  # the columns GatedDeltaRule spreads over (npu2)
 # export is the decode step alone, the prompt run a token at a time.
 PROMPT = True
 
+# A dense model's prompt commands: IRON cuts a command when its scratchpad words would pass this
+# (packaging.SCRATCHPAD_WORDS, 32), and nothing else bounds its control code. Qwen3.5-2B's q4
+# chunk came out as 3 commands, the second over the 64 MiB device heap (CREATE_BO: EINVAL);
+# PLaMo 3's and LFM3's 24 (iron_hostple's) cut it shorter. Qwen3.6's routed decode step keeps 32
+# (iron_moe.SLOTS).
+DENSE_SCRATCHPAD_WORDS = 24
+
+
+def install_dense() -> None:
+    """Cut a dense Qwen3.5's commands at DENSE_SCRATCHPAD_WORDS scratchpad words."""
+    from iron.common.image import packaging
+
+    packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, DENSE_SCRATCHPAD_WORDS)
+
+
 # install()'s formats (iron_q4's), by part: the mixers' projections (Gated DeltaNet's and the
 # attention's), a dense MLP's, the head. Empty: all bf16.
 QUANT: dict[str, str] = {}
 
 
 def install(attn: str = "q8", mlp: str = "q4", head: str = "q4") -> None:
-    """Build Qwen3.5 with its projections in these formats ("q4", "q8" or "bf16"), F.linear
+    """Build Qwen3.5 with its projections in these formats ("q4", "q6", "q8" or "bf16"), F.linear
     running iron_q4's on them. The router and the experts' tables are as they are without it."""
     import iron_q4
 
     for part, fmt in dict(attn=attn, mlp=mlp, head=head).items():
-        if fmt not in ("q4", "q8", "bf16"):
-            raise ValueError(f"{part} in {fmt}: q4, q8 or bf16")
+        if fmt not in ("q4", "q6", "q8", "bf16"):
+            raise ValueError(f"{part} in {fmt}: q4, q6, q8 or bf16")
     iron_q4.install_linear()
     QUANT.update(attn=attn, mlp=mlp, head=head)
 
@@ -187,7 +203,7 @@ class GatedDeltaNet(iron.Graph):
         super().load_state_dict(tree, path=path)
         c = self.config
         H, KH, dk, dv = self.shape
-        W = self.qkv + 2 * H
+        W = COLUMNS * iron_gdn.column_widths(H, KH, dk, dv, COLUMNS)  # with the columns' padding
         # The fused projection and convolution, made from the checkpoint's own (bound here, so
         # that nothing reads them from the checkpoint).
         self.in_proj = Linear(c.hidden_size, W, False, precision=c.precision)
@@ -197,7 +213,7 @@ class GatedDeltaNet(iron.Graph):
             self.conv._bound = True
         order = iron_gdn.gdn_layout(H, KH, dk, dv, COLUMNS)
         rows = np.concatenate([np.asarray(p.weight) for p in (self.in_proj_qkv, self.in_proj_a, self.in_proj_b)])
-        self.in_proj.weight = iron.param(np.ascontiguousarray(rows[order]))
+        self.in_proj.weight = iron.param(np.ascontiguousarray(iron_gdn.padded(rows)[order]))
         if self.fold:
             # the norm's weight on out_proj's input columns (each value head's dv)
             w = np.asarray(self.out_proj.weight, np.float32) * np.tile(np.asarray(self.norm.weight, np.float32), H)
@@ -211,7 +227,7 @@ class GatedDeltaNet(iron.Graph):
         taps = np.zeros((self.qkv + 2 * H, 1, K), w.dtype)
         taps[: self.qkv] = w
         taps[self.qkv :, 0, K - 1] = 1  # a and b: the row itself
-        taps = taps[order]
+        taps = iron_gdn.padded(taps)[order]
         # A row per tap, as CausalConv1d.load_state_dict makes them.
         rows = iron.param(np.ascontiguousarray(taps.reshape(len(order), K).T))
         if self.fold:
@@ -300,6 +316,10 @@ class Qwen35(CausalLM):
 
     config = Qwen35Config
     layer_class = Qwen35Layer
+    # With install(), the token embeddings go to the host (iron_hostple's embed.bin, embed_rows
+    # of a call's rows on the device, as PLaMo 3's and LFM3's): 0.47 GiB of 0.8B's bf16, 0.95 of
+    # 2B's. Qwen35Moe's routed decode step keeps them.
+    host_tables = True
 
     def __init__(self, config: Qwen35Config, weights):
         # A multimodal checkpoint's text model is model.language_model; its
@@ -315,8 +335,40 @@ class Qwen35(CausalLM):
             if config.linear(i):
                 layer.rope = None
         RMSNorm.plus_one(self)
+        self.host_embed = False
         if QUANT:
             self.quantize(QUANT)
+            if self.host_tables:
+                self.embed_on_host()
+
+    def embed_on_host(self) -> None:
+        """The token embeddings to the host (iron_hostple's embed.bin); the head (tied to them)
+        keeps the quantized copy quantize made."""
+        import iron_hostple
+
+        c, m = self.config, self.model
+        embed = np.asarray(m.embed_tokens.weight).astype(bfloat16)
+        iron_hostple._TABLES.setdefault(id(self), {})[iron_hostple.EMBED] = embed
+        m.embed_tokens.weight = iron.param(np.zeros((1, c.hidden_size), bfloat16))  # no longer read
+        self.embed_rows = iron.state((c.prefill_chunk, c.hidden_size), bfloat16, name=iron_hostple.EMBED)
+        self.host_embed = True
+
+    def lookup(self, ids):
+        # The embeddings from embed_rows, which the host filled with the call's tokens in order.
+        if not self.host_embed:
+            return super().lookup(ids)
+        shape = getattr(ids, "shape", ())
+        if len(shape) == 0:
+            return Copy.step(self.embed_rows[:1])
+        bound = getattr(ids, "valid", None) or {}
+        return Copy.step(self.embed_rows[: bound[0]] if 0 in bound else self.embed_rows[: shape[0]])
+
+    @functools.wraps(CausalLM.body)
+    def body(self, ids=None, **values):
+        if ids is not None and self.host_embed:
+            # a version's input must be read, and no table is left to gather from (iron_hostple)
+            Copy.step(ids, dtype=np.int32)
+        return super().body(ids, **values)
 
     def hwnpu_conv_pairs(self) -> list:
         """For hwnpu: each folded Gated DeltaNet layer's two homes of the convolution's rows
@@ -523,6 +575,7 @@ class Qwen35Moe(Qwen35):
     writes them (``hwnpu_fed``)."""
 
     layer_class = Qwen35MoeLayer
+    host_tables = False  # its routed decode step reads the embeddings on the device
     hwnpu_name = "Qwen35Moe"
 
     @classmethod

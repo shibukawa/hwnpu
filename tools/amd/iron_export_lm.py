@@ -808,13 +808,61 @@ def write_check(Model, args, out: Path, prompt_tokens: int, steps: int, rng: np.
     (d / "check.json").write_text(json.dumps(dict(prompt=tokens, calls=calls)) + "\n")
 
 
+def prompt_attention_profile(model, pipelines: int) -> None:
+    """Give the prompt chunk's attention (MHA at prefill_chunk rows) ``pipelines`` pipelines, as
+    IRON's Llama profile does (iron/applications/llama/profiles/npu2.json: 8 at its chunk, 4 in
+    decode). Without a profile MHA takes its default, 1: Gemma 4 E2B's chunk of 1024 spent 60 %
+    of its time in attention (design.md 16.107). The decode step's attention is left as it is."""
+    from iron.common.declare.profile import Profile
+    from iron.operators.mha import MHA
+
+    if model.profile is not None:
+        raise SystemExit(f"--mha-pipelines: {type(model).__name__} has a profile of its own")
+    C = int(model.config.prefill_chunk)
+    # MHA takes whole rounds of 64 rows on each pipeline (a chunk of 256: 4 at most), and an even
+    # number above 6
+    while pipelines > 1 and (C % (64 * pipelines) or (pipelines > 6 and pipelines % 2)):
+        pipelines -= 1
+    if pipelines > 1:
+        p = Profile()
+        p.add(MHA, seq_pad=C, num_pipelines=pipelines)
+        model.profile = p
+    print(f"prompt attention: {pipelines} pipelines at {C} rows")
+
+
+def install_command_per_step(out: Path) -> None:
+    """Cut a prompt chunk's full ELF into a command a step (each runs on its own, as the plan's
+    commands queue them), and write each command's operator into out/steps.json, so that
+    HWNPU_IRON_TIMING's times say which operator they are. The decode step (no input tensor
+    beyond its token) is left as it is."""
+    import dataclasses
+
+    from iron.common.graph import compiled
+
+    base = compiled.plan
+    steps = {}
+
+    def plan(dev, recording, *args, **kwargs):
+        p = base(dev, recording, *args, **kwargs)
+        if p.full_elf and len(recording.steps) > 1 and recording.inputs:
+            p = dataclasses.replace(p, commands=tuple(range(1, len(recording.steps))))
+            steps[recording.name] = [type(s.op).__name__ + " " + str(getattr(s.op, "name", "")) for s in recording.steps]
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "steps.json").write_text(json.dumps(steps, indent=1))
+        return p
+
+    compiled.plan = plan
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model", choices=sorted(MODELS))
     ap.add_argument("checkpoint", help="the Hugging Face directory (config.json, weights, tokenizer)")
     ap.add_argument("out", type=Path)
     ap.add_argument("--max-seq-len", type=int, default=4096)
-    ap.add_argument("--prefill-chunk", type=int, default=None, help="tokens of a prompt chunk (IRON's default 2048)")
+    ap.add_argument("--prefill-chunk", type=int, default=None,
+                    help="tokens of a prompt chunk (default 512 for qwen35, IRON's own for qwen35moe, 1024 for the "
+                         "others: design.md 16.54, 16.108)")
     ap.add_argument("--random-weights", type=int, default=None, help="weights drawn at this seed")
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)
@@ -829,12 +877,24 @@ def main(argv=None) -> int:
                     help="with --q4, the attention's projections: q8 (8.5 bits a weight), q4 or bf16")
     ap.add_argument("--conv", choices=("q8", "q4", "bf16"), default="q8",
                     help="with --q4, LFM3's short convolutions' projections (in_proj, out_proj)")
+    ap.add_argument("--mlp", choices=("q4", "q6", "q8"), default="q4",
+                    help="with --q4, Qwen3.5's MLP: q4nx, or q6 (6.5 bits a weight) for the small models (0.8B, "
+                         "2B), whose 4-bit MLP is most of the error")
+    ap.add_argument("--head", choices=("q4", "q6", "q8", "bf16"), default="q4",
+                    help="with --q4, Qwen3.5's head (tied to the embeddings)")
     ap.add_argument("--q4-codes", type=Path, default=None,
                     help="with --q4, the codes q4_gptq.py chose against the activations (GPTQ): its weights take "
                          "them instead of rounding to the nearest level, the others are rounded")
     ap.add_argument("--device-ple", action="store_true",
                     help="Gemma 4: keep the per-layer token table on the device (IRON's own gathers) instead of "
                          "on the host (iron_hostple: 4.4 GiB less pinned memory for E2B)")
+    ap.add_argument("--mha-pipelines", type=int, default=None,
+                    help="the pipelines of a prompt chunk's attention (MHA's num_pipelines; default 8, 1 for "
+                         "qwen35moe, not measured with more; 1 is IRON's default without a profile, which left a "
+                         "chunk's attention on one pipeline)")
+    ap.add_argument("--command-per-step", action="store_true",
+                    help="for measuring: the prompt chunk a command per step (HWNPU_IRON_TIMING times each), "
+                         "the steps' operators by command in OUT/steps.json")
     ap.add_argument("--scan-window", action="store_true",
                     help="IRON's sliding-window attention, which reads the keys from position 0 and masks "
                          "those out of the window (by default it reads only the window's: iron_window)")
@@ -868,9 +928,13 @@ def main(argv=None) -> int:
     elif a.model.startswith("qwen35") and a.q4:
         import iron_qwen35
 
-        iron_qwen35.install(attn=a.attn)
+        iron_qwen35.install(attn=a.attn, mlp=a.mlp, head=a.head)
     elif a.q4:
         raise SystemExit(f"--q4: not built for {a.model}")
+    if a.model == "qwen35":
+        import iron_qwen35
+
+        iron_qwen35.install_dense()
     if a.q4_codes:
         if not a.q4:
             raise SystemExit("--q4-codes: with --q4")
@@ -880,6 +944,11 @@ def main(argv=None) -> int:
 
     module, cls = MODELS[a.model]
     Model = getattr(importlib.import_module(module), cls)
+    if a.prefill_chunk is None and a.model != "qwen35moe":
+        # A chunk of 1024: short prompts as fast as 256, long ones as 2048 (LFM3: 30 tokens 536 ->
+        # 409 ms against 2048). Gated DeltaNet's operator and projections run the chunk's rows
+        # whatever the call's, so Qwen3.5 takes 512 (300 tokens 911 ms at 256, 664 at 512).
+        a.prefill_chunk = 512 if a.model == "qwen35" else 1024
     if a.prefill_chunk:
         import dataclasses
 
@@ -892,7 +961,12 @@ def main(argv=None) -> int:
     if a.check_only:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
         return 0
+    if a.command_per_step:  # last: it overrides the cuts the installs above make
+        install_command_per_step(a.out)
     model = Model.from_checkpoint(a.checkpoint, random_weights=a.random_weights, max_seq_len=a.max_seq_len)
+    pipelines = a.mha_pipelines if a.mha_pipelines is not None else (1 if a.model == "qwen35moe" else 8)
+    if pipelines > 1:
+        prompt_attention_profile(model, pipelines)
     if a.q4_codes:
         import iron_q4
 

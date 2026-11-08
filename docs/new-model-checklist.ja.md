@@ -41,7 +41,7 @@
 | 確かめること | 道具 | 教訓 |
 |---|---|---|
 | **BOS を付けて**比べる | `tools/ref/ref_logits.py`、`hwnpu-check`、`ironlm -forced -bos` | LFM3 は BOS なしだと KL が 4 倍に見え、0 層目の活性が外れ値になる (amd-npu-models.md 13 節)。チャットの型で実際に付くトークンで測る |
-| 実物の重みで照合する | `hwnpu-check`、`iron_plamo3_check.py` | 乱数の重みでは NPU と CPU の参照が食い違うことがある (Gemma 4、PLaMo 3)。合否は実物の重みで |
+| 実物の重みで照合する | `hwnpu-check`、`iron_plamo3_check.py`、AMD は `ironlm -forced` + `tools/ref/forced_logits.py` | 乱数の重みでは NPU と CPU の参照が食い違う (Gemma 4、PLaMo 3)。乱数の重みはロジットが平らで、bf16 の丸めと bfp16 の GEMM の差が層ごとに広がるため (16.107)。合否は実物の重みで |
 | トークナイザーが HF と一致する | `tools/ref/tokenizer_golden.py` | 固定の文 + 数千の乱数の文で 0 件の食い違い。同点の扱い (PLaMo)、NFC と結合文字 (Qwen3.5)、byte fallback (Gemma 4) を逆にしたらテストが落ちることも確かめる |
 | チャットの型が jinja2 と一字一句同じ | `tools/ref/template_golden.py` | 道具の呼び出し、考える部分の扱い、過去の考えの削除 |
 | 多モーダルの前処理 | `resize_golden.py`、`mel_golden.py` | PIL との ±1、librosa との 1e-4 |
@@ -95,14 +95,19 @@
 | 確かめること | 教訓 | 節 |
 |---|---|---|
 | IRON に同じアプリがあるか。なければ IRON の部品から書く | LFM3 (`iron_lfm3.py`)、PLaMo 3 (`iron_plamo3.py`) は部品から書いた | 16.66, 16.70 |
-| HF と top-1 で照合 (`iron_export_lm.py --check`) | 長いプロンプト (2000 トークン超) でも | 16.76 |
+| HF と照合 (`ironlm -forced` の 400 行を `tools/ref/forced_logits.py` で HF の fp32 と) | bf16 の書き出しで KL 0.001〜0.014、最上位 96〜99 % が目安 (E2B、E4B、PLaMo 3、Qwen3.5)。長いプロンプト (2000 トークン超) でも | 16.76, 16.102 |
+| **プロンプトの MHA を複数のパイプラインに** (`--mha-pipelines`、既定 8) | 書き出しにプロファイルがないと MHA は 1 本で動き、塊の 6 割になっていた。8 本で塊が 2〜5 倍速く、ロジットは同じ。塊 256 は 4 本まで。書き出しのログの `prompt attention: N pipelines`、カーネルの名前の `num_pipelines` で確かめる | 16.107 |
+| 塊の大きさ | 注意のモデルは 1024 (LFM3 も 2048 より短いプロンプトが −24 %、長いものは同じ)。GDN のモデル (Qwen3.5) は 512 (256 は長いプロンプトが遅く、1024 は短いプロンプトが遅い) | 16.54, 16.108 |
+| 量子化する射影は出力 64 × 入力 512 の倍数 | 融合した射影 (GDN の in_proj 6176 行) は列ごとに 0 の行で揃える (`iron_gdn.column_widths`) | 16.104 |
+| 1 コマンドの制御コードはデバイスのヒープ (64 MiB) に収める | 密なモデルは `SCRATCHPAD_WORDS` 24 で切る (Qwen3.5-2B の q4 は 32 で `CREATE_BO: invalid argument`) | 16.104 |
+| 遅い演算の内訳 | `--command-per-step` で手順ごとのコマンドにし、`HWNPU_IRON_TIMING` で測る (塊は 1 つだけ流す。16.80 の止まる件を避ける) | 16.107 |
 | full ELF で 1 本に | xclbin の切り替えは 1 回 0.46 ms | 16.45–50 |
 | プロンプトの塊 1024 | 2048 より 20 % 速い。256 は窓の層がリングになり巻き戻せない | 16.54 |
 | 1 つのシムのチャネルに積む転送は 3 本まで | 待たずに 16 本積んだら止まり、続けて 2 回止めると再起動が要った。古いものを待ってから次を積む | 16.89 (PR #66) |
 | 1 コマンドを 2 s 未満に | 長いと `ERT_CMD_STATE_TIMEOUT`。書き出しで分ける (`SCRATCHPAD_WORDS`) | 16.65 |
 | 窓の層は窓の中だけ読む (`iron_window.py`) | プロンプトが −12 %。塊の前に空のコマンド (`chunkBarrier`) がないと 2 つ目の塊で止まる。キャッシュの行数は `cache_rows` で書き出す | 16.84, 16.87 |
 | KV を共有する層はプロンプトの最後の行だけ | Gemma 4 E2B のプロンプトが 2.3 倍速い | 16.80 |
-| 表はホストに (PLE、埋め込み) | E2B 9.08 → 4.60 GB の固定。出力は同じ | 16.72–73 |
+| 表はホストに (PLE、埋め込み) | E2B 9.08 → 4.60 GB の固定。出力は同じ。出力の行列を埋め込みと共有するモデルも、量子化した写しを持つなら埋め込みはホストへ (Qwen3.5 −0.47〜0.95 GiB) | 16.72–73, 16.104 |
 | 塔は使うときだけ読む (`growBanks`) | テキストだけの書き出しが要らない | 16.81 |
 | `-idle` で固定を返す | 次の要求に 0.8〜2 s | 16.74 |
 | コアの丸めを最近接偶数に | 床関数の丸めで平均のある和が下に偏る (Anima の DiT) | 16.78 |
@@ -110,6 +115,7 @@
 | 画像と音声を最後の書き出しの形で通す | 塔を初めて使うときに重みのバッファを取り替えるので、古いバッファに結び付いた塊の前の空のコマンドが失敗していた (ENOENT、2026-11-07 に修正)。書き出しを変えたら `hwnpu-chat` で画像と音声を 1 回ずつ通す | 16.81, 16.87 |
 | 状態のある層 (畳み込み) は塊の境目で写す | 印への巻き戻しとプロンプトの保存のため | 16.66 |
 | 投機的デコードは**しない** | 下書きの確認が 4.5 ステップ分の費用 | |
+| 画像生成などのグラフの組 (`variants`) は 1 つの bank で読み替える (`iron.GraphOptions.SwapVariants`) | Anima の DiT の 7 組で固定 3445 → 1236 MiB、+2 % | 16.106 |
 
 ### 4.2 Intel
 
@@ -135,7 +141,8 @@
 - 短い畳み込みは 8 ビット (4 ビットで +0.01)
 - サンドイッチ正規化の層 (Gemma 4、PLaMo 3) は 4 ビットに弱い。ANE の表なら lut6 以上 (Gemma 4 の lut4 は KL 2.54、PLaMo 3 は 1.91)
 - 多モーダルの文の部分、TTS、d1 の判定、埋め込みは lut8 (lut4 で崩れた)
-- 蒸留した 8 ステップの DiT は 4 ビットに弱い (q4nx で潜在の cosine 0.777)。q8 が既定
+- 蒸留した 8 ステップの DiT は 4 ビットに弱い (q4nx で潜在の cosine 0.777)。q8 が既定 (q6 は構図を保つ)
+- **小さいモデル (2B 以下) の MLP は 4 ビットで崩れることがある**: Qwen3.5-0.8B は README 0.055 に対し GPL 0.34 (GPTQ でも 0.30)。AMD の q6 (6.5 ビット、`--mlp q6 --head q6`) で 0.044。GPL を必ず見る。4B は q4 で 0.042 なので q4 のまま
 
 ### 5.3 校正の方法を順に試す
 
@@ -147,6 +154,7 @@
 | 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-convert -codes` | NPU の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、LFM3-VL 0.067 → 0.034、PLaMo 3 0.058 → 0.040。Anima の DiT の q4: 潜在の cosine 0.868 → 0.939 (q8 0.962) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
 | 3 | **表の当てはめ** (Apple の lutN): E[x²] で重み付けした k-means | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038、lut4 0.66 → 0.33 (Go の変換) | 一様な表から始める (重みの誤差が最小の k-means から始めると KL は最悪)。ANE での確認は handoff-m3-gptq.md |
 | 4 | AWQ 式のスケールの折り込み | 未実装 | | model-fit.md T8 の 2。lut4 をさらに下げたいとき |
+| — | 形式を 1 段上げる (AMD の q6) | `iron_export_lm.py --mlp q6`、`q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B の GPL 0.34 → 0.044 | 校正で直らないとき。GEMV は q8 とほぼ同じ時間で、得るのはメモリ (q8 の 76 %) |
 
 **採るかどうか**: 校正に使っていない GPL でも丸めより悪くならないこと。LFM3-Audio は GPL だけ GPTQ で変わらない (0.154 → 0.161) が、他の 4 文が半分以下なので採った。多モーダルのモデルの文の部分は学習し直してあることが多い (LFM3-VL / Audio / Omni) ので、元のモデルの符号を使い回さず、それぞれ校正する。悪くなる文があれば、減衰を上げる (0.3 で試した)、校正の文を足す。
 
@@ -168,7 +176,7 @@
 
 | 測るもの | 道具 | 教訓 |
 |---|---|---|
-| AMD の固定 (`Unevictable` の増え) | `/proc/meminfo` (RSS に出ない) | 大半は重みと作業域。KV は 5 % 未満 |
+| AMD の固定 (`Unevictable` の増え) | `/proc/meminfo` (RSS に出ない)、書き出しの `manifest.json` の bank の合計 | 大半は重みと作業域。KV は 5 % 未満 |
 | Mac の `phys_footprint` | `npuprobe split` | ANE 側 (aned) は未計測 (model-fit.md T10) |
 | 会話の印の大きさ | | 使っているリングの行だけ写す (`ringRows`、578 → 183 MB) |
 | 変換の直後 | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
@@ -238,9 +246,14 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 
 ## 11. 試して効かなかったもの (繰り返さない)
 
-[improvements.md](improvements.md) の 8 節の要点: 小さなモデルを詰め物で ANE に (CPU より遅い)、multifunction で 1 GiB を越える (全部 CPU)、MLState の KV、int8 の KV、次の段階を裏で読み込む、Q=16 の 1 本、E4B の lut4、モデルの圧縮、上位の鍵だけの疎な注意、AMD の注意の 4 ビット、GEMV の 1 列 1 コア、MoE の専門家の写し、DiT の `HIGH`、DiT の q4 の既定化、q4nx のプロンプトを bf16 で、RMSNorm の固定の倍率。
+[improvements.md](improvements.md) の 8 節の要点: 小さなモデルを詰め物で ANE に (CPU より遅い)、小さな Qwen3.5 の MLP の 4 ビットを GPTQ で直す (GPL は直らない、q6 にした)、q6 で GEMV を速くする (q8 と同じ時間)、multifunction で 1 GiB を越える (全部 CPU)、MLState の KV、int8 の KV、次の段階を裏で読み込む、Q=16 の 1 本、E4B の lut4、モデルの圧縮、上位の鍵だけの疎な注意、AMD の注意の 4 ビット、GEMV の 1 列 1 コア、MoE の専門家の写し、DiT の `HIGH`、DiT の q4 の既定化、q4nx のプロンプトを bf16 で、RMSNorm の固定の倍率。
 
-## 12. 今進めているもの (2026-11-07)
+## 12. 今進めているもの (2026-11-08)
+
+- AMD の手元の書き出しは 8 本のパイプラインと新しい塊の大きさで書き出し直した (16.108)。今後書き出しを変えたら、画像と音声を `hwnpu-chat` で 1 回ずつ通す
+- Qwen3.6 のプロンプトの注意のパイプラインは未計測 (1 本のまま)
+
+### 2026-11-07 の時点
 
 - AMD は済み: E2B、E4B、LFM3 (と VL / Audio / Omni)、PLaMo 3 の GPTQ の符号を NPU で測った (amd-npu-models.md 13 節の「続き」)。bf16 との比較: 画像と音声つきの E2B は文、画像、音声とも丸めと同じく正しい答え。PLaMo 3 の訳文が bf16 と一字一句同じなのは丸め 14/20、GPTQ 17/20
 - Apple: GPTQ の lut6 / lut4 の表の ANE での確認 ([handoff-m3-gptq.md](handoff-m3-gptq.md))。hwnpu-chat はまだ `-codes` を取らない

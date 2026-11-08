@@ -24,6 +24,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/ovir"
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // Lower writes the MIL function fn as OpenVINO IR named name and returns the xml. weights is
@@ -677,9 +678,15 @@ func elemOf(dt milspec.DataType) string {
 }
 
 func f32ToF16(raw []byte) []byte {
-	out := make([]byte, len(raw)/2)
-	for i := 0; i < len(raw)/4; i++ {
-		binary.LittleEndian.PutUint16(out[2*i:], mlpackage.Float16Bits(math.Float32frombits(binary.LittleEndian.Uint32(raw[4*i:]))))
+	n := len(raw) / 4
+	out := make([]byte, 2*n)
+	var buf [1024]float32
+	for i := 0; i < n; i += len(buf) {
+		f := buf[:min(len(buf), n-i)]
+		for j := range f {
+			f[j] = math.Float32frombits(binary.LittleEndian.Uint32(raw[4*(i+j):]))
+		}
+		vecops.F32ToF16(out[2*i:], f)
 	}
 	return out
 }

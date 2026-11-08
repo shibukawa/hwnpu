@@ -212,3 +212,141 @@ func BF16ToF32(dst []float32, src []byte) {
 		dst[i] = math.Float32frombits(uint32(src[2*i])<<16 | uint32(src[2*i+1])<<24)
 	}
 }
+
+// PackedLen is the number of bytes Pack writes for n entries of the given width.
+func PackedLen(n, bits int) int { return (n*bits + 7) / 8 }
+
+// Pack packs the low bits of each entry of idx into dst, low bits first: entry i takes bits
+// i*bits to (i+1)*bits-1, counting from bit 0 of dst[0] (for 4 bits, two per byte with the low
+// nibble first). bits is from 1 to 8. dst must hold PackedLen(len(idx), bits) bytes, all of which
+// are overwritten.
+func Pack(dst []byte, idx []uint8, bits int) {
+	if bits < 1 || bits > 8 {
+		panic("vecops: pack of 1 to 8 bits only")
+	}
+	dst = dst[:PackedLen(len(idx), bits)]
+	if bits == 8 {
+		copy(dst, idx)
+		return
+	}
+	done := 0
+	if haveKernels {
+		done = packKernel(dst, idx, bits)
+	}
+	packGo(dst[done*bits/8:], idx[done:], bits)
+}
+
+// packGo packs eight entries (bits bytes) at a time through a word, then the tail an entry at a
+// time. Entries are masked to their width.
+func packGo(dst []byte, idx []uint8, bits int) {
+	mask := uint64(1)<<bits - 1
+	n := len(idx) &^ 7
+	for i := 0; i < n; i += 8 {
+		var w uint64
+		for j, q := range idx[i : i+8] {
+			w |= (uint64(q) & mask) << (j * bits)
+		}
+		o := dst[i/8*bits : i/8*bits+bits]
+		for j := range o {
+			o[j] = byte(w >> (8 * j))
+		}
+	}
+	tail := dst[n/8*bits:]
+	clear(tail)
+	for i, q := range idx[n:] {
+		bit := i * bits
+		v := (uint16(q) & uint16(mask)) << (bit % 8)
+		tail[bit/8] |= byte(v)
+		if v>>8 != 0 {
+			tail[bit/8+1] |= byte(v >> 8)
+		}
+	}
+}
+
+// F32ToF16 writes src as little endian IEEE half precision into dst, which must hold
+// 2*len(src) bytes: rounded to nearest even, overflowing to infinity, and every NaN as the quiet
+// NaN sign|0x7e00 (its payload dropped).
+func F32ToF16(dst []byte, src []float32) {
+	_ = dst[:2*len(src)]
+	done := 0
+	if haveF16 {
+		// the hardware keeps a NaN's payload: a part with NaNs is redone in Go
+		done = f32ToF16Kernel(dst, src)
+	}
+	for i := done; i < len(src); i++ {
+		h := F16Bits(src[i])
+		dst[2*i], dst[2*i+1] = byte(h), byte(h>>8)
+	}
+}
+
+// F16ToF32 decodes little endian IEEE half precision values from src into dst; src must hold
+// 2*len(dst) bytes. Every value is exact; a NaN keeps its payload, quiet or not.
+func F16ToF32(dst []float32, src []byte) {
+	_ = src[:2*len(dst)]
+	done := 0
+	if haveF16 {
+		// the hardware sets the quiet bit of a signaling NaN: a part with NaNs is redone in Go
+		done = f16ToF32Kernel(dst, src)
+	}
+	for i := done; i < len(dst); i++ {
+		dst[i] = F16Value(uint16(src[2*i]) | uint16(src[2*i+1])<<8)
+	}
+}
+
+// F16Bits is one value of F32ToF16.
+func F16Bits(f float32) uint16 {
+	x := math.Float32bits(f)
+	sign := uint16(x>>16) & 0x8000
+	exp := int((x>>23)&0xff) - 127 + 15
+	mant := x & 0x7fffff
+	switch {
+	case (x>>23)&0xff == 0xff: // inf or nan
+		if mant != 0 {
+			return sign | 0x7e00
+		}
+		return sign | 0x7c00
+	case exp >= 0x1f:
+		return sign | 0x7c00
+	case exp <= 0:
+		if exp < -10 {
+			return sign
+		}
+		mant |= 0x800000
+		shift := uint(14 - exp)
+		h := uint16(mant >> shift)
+		rem := mant & (1<<shift - 1)
+		half := uint32(1) << (shift - 1)
+		if rem > half || (rem == half && h&1 == 1) {
+			h++
+		}
+		return sign | h
+	}
+	h := sign | uint16(exp)<<10 | uint16(mant>>13)
+	rem := mant & 0x1fff
+	if rem > 0x1000 || (rem == 0x1000 && h&1 == 1) {
+		h++ // may carry into the exponent, which is correct rounding
+	}
+	return h
+}
+
+// F16Value is one value of F16ToF32.
+func F16Value(h uint16) float32 {
+	sign := uint32(h>>15) << 31
+	exp := uint32(h>>10) & 0x1f
+	mant := uint32(h & 0x3ff)
+	switch exp {
+	case 0:
+		if mant == 0 {
+			return math.Float32frombits(sign)
+		}
+		e := uint32(127 - 15 + 1) // subnormal: normalize
+		for mant&0x400 == 0 {
+			mant <<= 1
+			e--
+		}
+		return math.Float32frombits(sign | e<<23 | (mant&0x3ff)<<13)
+	case 0x1f:
+		return math.Float32frombits(sign | 0xff<<23 | mant<<13)
+	}
+	return math.Float32frombits(sign | (exp+127-15)<<23 | mant<<13)
+}

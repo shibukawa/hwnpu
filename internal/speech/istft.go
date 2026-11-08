@@ -5,6 +5,9 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
+	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // ISTFT turns STFT frames into samples as llama.cpp's mtmd_audio_streaming_istft does: each
@@ -38,26 +41,95 @@ func NewISTFT(nfft, hop int) *ISTFT {
 // Frame adds one frame given as log magnitudes then phases of the nfft/2+1 bins (the codec's
 // output) and returns the samples that are complete.
 func (t *ISTFT) Frame(polar []float32) []float32 {
-	bins := t.nfft/2 + 1
+	t.inverse(polar, t.re, t.im, t.td)
+	return t.add(t.td)
+}
+
+// Frames adds the frames of stft one after another, as Frame each, with their inverse DFTs
+// taken in parallel, and returns the samples that are complete.
+func (t *ISTFT) Frames(stft []float32) []float32 {
+	w := 2 * (t.nfft/2 + 1)
+	frames := len(stft) / w
+	td := make([]float64, frames*t.nfft)
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), frames) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			re, im := make([]float64, t.nfft), make([]float64, t.nfft)
+			for f := int(next.Add(1) - 1); f < frames; f = int(next.Add(1) - 1) {
+				t.inverse(stft[f*w:(f+1)*w], re, im, td[f*t.nfft:(f+1)*t.nfft])
+			}
+		}()
+	}
+	wg.Wait()
+	var out []float32
+	for f := range frames {
+		out = append(out, t.add(td[f*t.nfft:(f+1)*t.nfft])...)
+	}
+	return out
+}
+
+// inverse writes the inverse DFT of the frame polar to td, with re and im as scratch.
+func (t *ISTFT) inverse(polar []float32, re, im, td []float64) {
+	nfft := t.nfft
+	bins := nfft/2 + 1
 	for j := 0; j < bins; j++ {
 		mag := math.Exp(float64(polar[j]))
 		ph := float64(polar[bins+j])
-		t.re[j], t.im[j] = mag*math.Cos(ph), mag*math.Sin(ph)
+		re[j], im[j] = mag*math.Cos(ph), mag*math.Sin(ph)
 	}
 	for j := 1; j < bins-1; j++ {
-		t.re[t.nfft-j], t.im[t.nfft-j] = t.re[j], -t.im[j]
+		re[nfft-j], im[nfft-j] = re[j], -im[j]
 	}
-	for n := 0; n < t.nfft; n++ {
-		var acc float64
-		for k := 0; k < t.nfft; k++ {
-			idx := (k * n) % t.nfft
-			acc += t.re[k]*t.cos[idx] - t.im[k]*t.sin[idx]
+	re, im = re[:nfft], im[:nfft]
+	cs, sn := t.cos[:nfft], t.sin[:nfft]
+	// Four outputs at a time, each summed over k in order as one would alone (the result is the
+	// same to the bit); the table index (k*n) mod nfft steps by n without a division.
+	n := 0
+	for ; n+4 <= nfft; n += 4 {
+		var a0, a1, a2, a3 float64
+		var i0, i1, i2, i3 int
+		for k := range re {
+			r, m := re[k], im[k]
+			a0 += r*cs[i0] - m*sn[i0]
+			a1 += r*cs[i1] - m*sn[i1]
+			a2 += r*cs[i2] - m*sn[i2]
+			a3 += r*cs[i3] - m*sn[i3]
+			if i0 += n; i0 >= nfft {
+				i0 -= nfft
+			}
+			if i1 += n + 1; i1 >= nfft {
+				i1 -= nfft
+			}
+			if i2 += n + 2; i2 >= nfft {
+				i2 -= nfft
+			}
+			if i3 += n + 3; i3 >= nfft {
+				i3 -= nfft
+			}
 		}
-		t.td[n] = acc / float64(t.nfft)
+		td[n], td[n+1], td[n+2], td[n+3] = a0/float64(nfft), a1/float64(nfft), a2/float64(nfft), a3/float64(nfft)
 	}
+	for ; n < nfft; n++ {
+		var acc float64
+		idx := 0
+		for k := range re {
+			acc += re[k]*cs[idx] - im[k]*sn[idx]
+			if idx += n; idx >= nfft {
+				idx -= nfft
+			}
+		}
+		td[n] = acc / float64(nfft)
+	}
+}
+
+// add overlaps and adds the inverse DFT td of a frame and returns the samples that are complete.
+func (t *ISTFT) add(td []float64) []float32 {
 	for j := 0; j < t.nfft; j++ {
 		t.wsum[j] += t.window[j] * t.window[j]
-		t.overlap[j] += t.td[j] * t.window[j]
+		t.overlap[j] += td[j] * t.window[j]
 	}
 	out := t.take(t.hop)
 	n := min(t.toRemove, len(out))

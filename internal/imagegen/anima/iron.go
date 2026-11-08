@@ -23,6 +23,11 @@ import (
 // runs: the text graph for the conditioning, the DiT for the steps, the VAE a stage at a time.
 // That keeps the peak to the DiT's (4.9 GiB at 1024 x 1024) instead of all of them (14.2 GiB);
 // loading costs a few seconds a picture, from the page cache.
+// ResidentDiT keeps every group of the DiT's blocks on the NPU (7 banks at 1024 x 1024); by
+// default one bank is kept and each group's weights are read into it before the group runs
+// (iron.GraphOptions.SwapVariants).
+var ResidentDiT = false
+
 type ironEngine struct {
 	dev                      *hwnpu.Device
 	dir                      string
@@ -101,7 +106,7 @@ func (e *ironEngine) openDiT(ctx context.Context) error {
 		g    **iron.Graph
 		name string
 	}{{&e.ditIn, "dit_in"}, {&e.ditBlocks, "dit_blocks"}, {&e.ditOut, "dit_out"}} {
-		g, err := iron.OpenGraph(ctx, e.dev, filepath.Join(e.dir, x.name))
+		g, err := iron.OpenGraphWith(ctx, e.dev, filepath.Join(e.dir, x.name), iron.GraphOptions{SwapVariants: !ResidentDiT})
 		if err != nil {
 			e.closeDiT()
 			return err

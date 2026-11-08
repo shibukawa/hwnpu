@@ -9,6 +9,7 @@ import (
 	"math"
 
 	"github.com/shibukawa/hwnpu/internal/milspec"
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // Data types of program values, in MIL's numbering.
@@ -226,11 +227,9 @@ func (b *Builder) F16(name string, shape []int, halves []uint16) (*Var, error) {
 
 // F16s converts float32 values to fp16 and adds them as a constant.
 func (b *Builder) F16s(name string, shape []int, vals []float32) (*Var, error) {
-	h := make([]uint16, len(vals))
-	for i, v := range vals {
-		h[i] = Float16Bits(v)
-	}
-	return b.F16(name, shape, h)
+	raw := make([]byte, 2*len(vals))
+	vecops.F32ToF16(raw, vals)
+	return b.constOp(name, Float16, shape, raw, BlobFloat16)
 }
 
 // F32 adds an fp32 constant.
@@ -407,60 +406,7 @@ func (b *Builder) Function(outputs ...*Var) *milspec.Function {
 }
 
 // Float16Bits converts a float32 to IEEE half precision, rounding to nearest even.
-func Float16Bits(f float32) uint16 {
-	x := math.Float32bits(f)
-	sign := uint16(x>>16) & 0x8000
-	exp := int((x>>23)&0xff) - 127 + 15
-	mant := x & 0x7fffff
-	switch {
-	case (x>>23)&0xff == 0xff: // inf or nan
-		if mant != 0 {
-			return sign | 0x7e00
-		}
-		return sign | 0x7c00
-	case exp >= 0x1f:
-		return sign | 0x7c00
-	case exp <= 0:
-		if exp < -10 {
-			return sign
-		}
-		mant |= 0x800000
-		shift := uint(14 - exp)
-		h := uint16(mant >> shift)
-		rem := mant & (1<<shift - 1)
-		half := uint32(1) << (shift - 1)
-		if rem > half || (rem == half && h&1 == 1) {
-			h++
-		}
-		return sign | h
-	}
-	h := sign | uint16(exp)<<10 | uint16(mant>>13)
-	rem := mant & 0x1fff
-	if rem > 0x1000 || (rem == 0x1000 && h&1 == 1) {
-		h++
-	}
-	return h
-}
+func Float16Bits(f float32) uint16 { return vecops.F16Bits(f) }
 
 // Float16Value converts IEEE half precision bits to float32.
-func Float16Value(h uint16) float32 {
-	sign := uint32(h>>15) << 31
-	exp := uint32(h>>10) & 0x1f
-	mant := uint32(h & 0x3ff)
-	switch exp {
-	case 0:
-		if mant == 0 {
-			return math.Float32frombits(sign)
-		}
-		e := uint32(127 - 15 + 1)
-		for mant&0x400 == 0 {
-			mant <<= 1
-			e--
-		}
-		mant &= 0x3ff
-		return math.Float32frombits(sign | e<<23 | mant<<13)
-	case 0x1f:
-		return math.Float32frombits(sign | 0xff<<23 | mant<<13)
-	}
-	return math.Float32frombits(sign | (exp+127-15)<<23 | mant<<13)
-}
+func Float16Value(h uint16) float32 { return vecops.F16Value(h) }

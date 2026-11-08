@@ -144,7 +144,12 @@ def dequantize(q, n: int, k: int) -> np.ndarray:
 # A q8 block: 32 out-features by 256 in-features, bf16 scales [k / 32, m], then int8 codes
 # [m / 16, k, m % 16] (q4nx's layout, a byte a code, no minima). w = scale * code.
 Q8_BLOCK_BYTES = 2 * (M_TILE * K_TILE // GROUP) + M_TILE * K_TILE  # 8704
-FORMATS = {"q4": BLOCK_BYTES, "q8": Q8_BLOCK_BYTES}
+# A q6 block: q8's scales, then its codes (-31..31, stored as code + 32) in q8's order, in two
+# planes: the low 4 bits as q4nx's nibbles, then the high 2 bits, 32 bytes for each 128 codes
+# (code 32 j + i of the 128 in bits 2 j and 2 j + 1 of byte i). 6.5 bits a weight.
+Q6_BLOCK_BYTES = 2 * (M_TILE * K_TILE // GROUP) + M_TILE * K_TILE * 3 // 4  # 6656
+Q6_UNIT = 128  # codes a high-bit run covers (kernels/q6_mv.cc's load)
+FORMATS = {"q4": BLOCK_BYTES, "q6": Q6_BLOCK_BYTES, "q8": Q8_BLOCK_BYTES}
 
 
 def quantize8(w) -> np.ndarray:
@@ -188,6 +193,61 @@ def dequantize8(q, n: int, k: int) -> np.ndarray:
     return c.astype(np.float32) * np.repeat(s, GROUP, 1)
 
 
+# --- q6: 6.5 bits a weight -------------------------------------------------------------------
+
+
+def quantize6(w) -> np.ndarray:
+    """q6 of w (N, K) in q4nx's block order: uint8 (blocks, Q6_BLOCK_BYTES). Each group of 32
+    in-features of an out-feature: scale = its largest magnitude / 31 in bf16, codes rounded."""
+    w = np.asarray(w, np.float32)
+    N, K = w.shape
+    if N % CB or K % 512:
+        raise ValueError(f"q6: ({N}, {K}) is not 64 x 512 blocks")
+    g = w.reshape(N, K // GROUP, GROUP)
+    scale = (np.abs(g).max(-1) / 31).astype(bfloat16).astype(np.float32)
+    safe = np.where(scale > 0, scale, 1)
+    codes = np.clip(np.rint(g / safe[..., None]), -31, 31).astype(np.int8).reshape(N, K)
+    return pack6(codes, scale)
+
+
+def pack6(codes, scale) -> np.ndarray:
+    """q6 blocks of codes (N, K) -31..31 with each group's scale (N, K / 32)."""
+    codes = np.asarray(codes, np.int8)
+    scale = np.asarray(scale, np.float32)
+    N, K = codes.shape
+    if N % CB or K % 512:
+        raise ValueError(f"q6: ({N}, {K}) is not 64 x 512 blocks")
+    nb, kb = N // M_TILE, K // K_TILE
+    sc = scale.reshape(nb, M_TILE, kb, K_TILE // GROUP).transpose(0, 2, 3, 1).astype(bfloat16)
+    u = (codes.astype(np.int16) + 32).astype(np.uint8)
+    c = u.reshape(nb, M_TILE // 16, 16, kb, K_TILE).transpose(0, 3, 1, 4, 2).reshape(nb, kb, -1)
+    lo = c & 15
+    lo = (lo[..., 0::2] | (lo[..., 1::2] << 4)).astype(np.uint8)
+    h = (c >> 4).reshape(nb, kb, -1, 4, Q6_UNIT // 4)
+    hi = (h[..., 0, :] | (h[..., 1, :] << 2) | (h[..., 2, :] << 4) | (h[..., 3, :] << 6)).astype(np.uint8)
+    blocks = np.concatenate([sc.reshape(nb, kb, -1).view(np.uint8), lo, hi.reshape(nb, kb, -1)], axis=-1)
+    blocks = blocks.reshape(N // CB, 2, K // 512, 2, Q6_BLOCK_BYTES).transpose(0, 2, 3, 1, 4)
+    return np.ascontiguousarray(blocks.reshape(-1, Q6_BLOCK_BYTES))
+
+
+def dequantize6(q, n: int, k: int) -> np.ndarray:
+    """The (n, k) float32 weights of quantize6's blocks."""
+    q = np.asarray(q, np.uint8).reshape(n // CB, k // 512, 2, 2, Q6_BLOCK_BYTES)
+    q = q.transpose(0, 3, 1, 2, 4).reshape(n // M_TILE, k // K_TILE, Q6_BLOCK_BYTES)
+    sm = M_TILE * K_TILE // GROUP
+    nc = M_TILE * K_TILE
+    s = q[..., : 2 * sm].copy().view(bfloat16).astype(np.float32).reshape(n // M_TILE, k // K_TILE, -1, M_TILE)
+    lo = q[..., 2 * sm : 2 * sm + nc // 2]
+    hi = q[..., 2 * sm + nc // 2 :].reshape(*q.shape[:2], -1, Q6_UNIT // 4)
+    c = np.empty((*q.shape[:2], nc), np.uint8)
+    c[..., 0::2], c[..., 1::2] = lo & 15, lo >> 4
+    h = np.stack([(hi >> (2 * j)) & 3 for j in range(4)], axis=-2).reshape(*q.shape[:2], nc)
+    c = (c | (h << 4)).astype(np.int16) - 32
+    c = c.reshape(n // M_TILE, k // K_TILE, M_TILE // 16, K_TILE, 16).transpose(0, 2, 4, 1, 3).reshape(n, k)
+    s = s.transpose(0, 3, 1, 2).reshape(n, k // GROUP)
+    return c.astype(np.float32) * np.repeat(s, GROUP, 1)
+
+
 def weight_key(w) -> str:
     """A weight's name among chosen codes (load_codes): a hash of its shape and bf16 values, the
     same whichever program loaded it from the checkpoint."""
@@ -221,11 +281,11 @@ def quantize_fmt(w, fmt: str) -> np.ndarray:
                 raise ValueError(f"codes {hit[1]}: {q.shape} for a ({n}, {k}) weight in {fmt}")
             return q
         CODES_USED["miss"] += 1
-    return quantize(w) if fmt == "q4" else quantize8(w)
+    return {"q4": quantize, "q6": quantize6, "q8": quantize8}[fmt](w)
 
 
 def dequantize_fmt(q, n: int, k: int, fmt: str) -> np.ndarray:
-    return dequantize(q, n, k) if fmt == "q4" else dequantize8(q, n, k)
+    return {"q4": dequantize, "q6": dequantize6, "q8": dequantize8}[fmt](q, n, k)
 
 
 # --- the kernels and the operators ----------------------------------------------------------
@@ -482,7 +542,7 @@ def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2):
         return y if len(x.shape) == 1 else y.reshape(1, n)
     from iron import Precision
 
-    if fmt == "q8" or PREFILL["q4"] == "bf16":
+    if fmt in ("q6", "q8") or PREFILL["q4"] == "bf16":
         w = QDequant.step(q.reshape(-1, FORMATS[fmt]), fmt=fmt, K=k)
         return _BASE["linear"](x, w, precision=Precision.MEDIUM)
     from iron.operators.flm import DequantBFP, ProjectionGEMM
