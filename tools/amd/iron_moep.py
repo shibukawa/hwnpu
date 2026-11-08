@@ -31,7 +31,7 @@ from ml_dtypes import bfloat16
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 TOP = 8
-CAP = 64  # rows of one expert a core keeps (kernels/moe_rows.cc's MOE_CAP)
+CAP = 128  # rows of one expert a core keeps (kernels/moe_rows.cc's MOE_CAP)
 COUNTS = 512  # int32 words of the counts: each expert's (256 at most), then the padding rows' (256)
 PAD = 256  # the counts' word of the padding rows
 

@@ -153,9 +153,10 @@ def norm_reference(y, z, eps):
     return (y * r * (z / (1 + np.exp(-z)))).astype(bfloat16)
 
 
-def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, valid):
+def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, valid, silu=True):
     """numpy float32, as transformers' torch_recurrent_gated_delta_rule (silu on q, k, v first,
-    the l2 norm in the rule): y (rows, H dv) and the final state, both in the operator's layouts."""
+    the l2 norm in the rule): y (rows, H dv) and the final state, both in the operator's layouts.
+    ``silu`` False: x has it applied already (silu_operator's output)."""
     H, KH, dk, dv = heads, key_heads, key_dim, value_dim
     rows = x.shape[0]
     x = np.asarray(x, np.float32)
@@ -163,8 +164,8 @@ def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, v
     inv = np.argsort(order, kind="stable")[: 2 * KH * dk + H * dv + 2 * H]  # the padding last
     # back to transformers' order: q, k, v, a, b
     hf = x[:, inv]
-    silu = lambda v: v / (1 + np.exp(-v))  # noqa: E731
-    qkv = silu(hf[:, : 2 * KH * dk + H * dv]).astype(bfloat16).astype(np.float32)
+    act = (lambda v: v / (1 + np.exp(-v))) if silu else (lambda v: v)  # noqa: E731
+    qkv = act(hf[:, : 2 * KH * dk + H * dv]).astype(bfloat16).astype(np.float32)
     q = qkv[:, : KH * dk].reshape(rows, KH, dk)
     k = qkv[:, KH * dk : 2 * KH * dk].reshape(rows, KH, dk)
     v = qkv[:, 2 * KH * dk :].reshape(rows, H, dv)
@@ -195,7 +196,8 @@ def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, v
 
 
 @functools.cache
-def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pairs: bool = False):
+def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pairs: bool = False,
+                 presilu: bool = False):
     """The GatedDeltaRule operator for ``n`` columns of two cores, each core ``hc`` value heads:
     each core's words (four a head) are values of their own, so it is made per shape.
 
@@ -212,7 +214,12 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
 
     ``pairs`` (without ``conv``: a prompt chunk of a model whose decode step has it): the state
     has conv's layout, the pair ahead of each column's run left as it is (read past, not
-    written: the host keeps the convolution's rows there)."""
+    written: the host keeps the convolution's rows there).
+
+    ``presilu`` (a prompt chunk, without ``conv``): x comes with silu applied to q, k and v
+    (silu_operator), so the cores only copy a row's parts. Each core reads every row once per
+    slice of its value heads (16 times for Qwen3.6), which with the silu in the core was three
+    quarters of the operator's time."""
     import aie.dialects.index as index
     from aie.dialects.aie import T
     from aie.extras.dialects import arith
@@ -231,6 +238,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
 
     def kernels(R: int, blocks: int, dk: int, seg: int, dv: int, zw: int):
         flags = [f"-DGDR_SEG={seg}", f"-DGDR_CONV={conv}"] if conv else []
+        if presilu:
+            flags.append("-DGDR_PRESILU")
         if norm:
             flags += [f"-DGDR_NORM_DIM={dv}", f"-DGDR_NORM_ZW={zw}", f"-DGDR_NORM_EPS={norm!r}f"]
         kdir = Path(config.aie_kernels_dir())
@@ -242,7 +251,7 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                            f"-DGDR_ROWS={R}", f"-DGDR_KEY_DIM={dk}", f"-DGDR_VALUE_DIM={SLICE}",
                            f"-DGDR_BLOCKS={blocks}", *flags],
             object_file_name=f"gdn_{R}_{dk}_{blocks}" + (f"_c{conv}_{seg}" if conv else "")
-            + (f"_n{dv}_{zw}" if norm else "") + ".o",
+            + (f"_n{dv}_{zw}" if norm else "") + ("_p" if presilu else "") + ".o",
         )
         seg_t = np.ndarray[(seg,), np.dtype[bfloat16]]
         st_t = np.ndarray[(dk * SLICE,), np.dtype[np.float32]]
@@ -327,6 +336,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                 raise ValueError(f"GatedDeltaRule: {conv - 1} rows of {self.seg} past a pair's half")
             if norm and not conv:
                 raise ValueError("GatedDeltaRule: the norm in the core is a decode step's, with conv")
+            if presilu and conv:
+                raise ValueError("GatedDeltaRule: silu before the operator is a prompt chunk's, without conv")
 
         def geometry(self):
             H, KH, dk, dv = self.heads, self.key_heads, self.key_dim, self.value_dim
@@ -515,7 +526,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                     head, st = st[:, : self.pair], st[:, self.pair :].reshape(-1)
                 y, final = gdn_reference(x, st, self.words, heads=self.heads, key_heads=self.key_heads,
                                          key_dim=self.key_dim, value_dim=self.value_dim, n=n,
-                                         valid=int(self.valid if self.valid is not None else self.rows))
+                                         valid=int(self.valid if self.valid is not None else self.rows),
+                                         silu=not presilu)
                 if pairs:
                     final = np.concatenate([head, final.reshape(n, -1)], axis=1).reshape(-1)
                 return y, final
@@ -532,6 +544,123 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
     return type("GatedDeltaRule", (_GatedDeltaRule,), ns)
 
 
+def silu_raw(heads: int, key_heads: int, key_dim: int, value_dim: int, n: int) -> int:
+    """The channels at the end of a column's part of a row silu_operator leaves as they are:
+    (a, b) of its value heads and the column's padding (column_widths)."""
+    return column_widths(heads, key_heads, key_dim, value_dim, n) - (2 * key_heads // n * key_dim
+                                                                     + heads // n * value_dim)
+
+
+def silu_parts(seg: int, raw: int, cores: int = 4) -> int:
+    """How many cores of a column share a row in silu_operator: equal parts of the silu'd
+    channels, each whole vectors (16), the last with the ``raw`` channels after."""
+    for p in range(cores, 0, -1):
+        if (seg - raw) % (p * 16) == 0:
+            return p
+    raise ValueError(f"silu_operator: {seg - raw} channels are no whole vectors")
+
+
+@functools.cache
+def silu_operator(n: int = 8):
+    """``u = GdnSiLU(x)``: silu applied to every column's q, k and v of a prompt chunk's rows
+    (gdn_layout), its (a, b) left as they are, float32 inside and rounded once to bf16 as
+    GatedDeltaRule's gather does it: what that operator takes with ``presilu``. Each column's
+    cores (silu_parts) take a part of its rows' channels."""
+    from aie.iron import In, ObjectFifo, Out, Worker
+    from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
+    from aie.iron.kernel import ExternalFunction
+    from aie.helpers.taplib import TensorAccessPattern as TAP
+    from aie.utils import config
+    from aie.utils.compile.jit.params import param, per_call
+    from aie.utils.verify import Tolerance
+
+    from iron.common import Built, Operator
+
+    class GdnSiLU(Operator):
+        """``u = GdnSiLU(x)`` over (rows, columns seg), each column's last ``raw`` channels
+        (a and b) unchanged (silu_operator)."""
+
+        rows: int = param(array=True)
+        columns: int = param(default=n, init=False, array=True)
+        seg: int = param(array=True)
+        raw: int = param(array=True)
+        width: int = param(derive=lambda op: n * op.seg, repr=False)
+        parts: int = param(derive=lambda op: silu_parts(op.seg, op.raw), array=True)
+
+        x = In(rows, width, obj_shape=(seg,), per=(columns,))
+        u = Out(rows, width, obj_shape=(seg,), per=(columns,))
+        # a prompt chunk's rows past the call's come through too (GatedDeltaRule reads past them)
+        valid = per_call(bounds=rows)
+
+        def build(self) -> Built:
+            P, N = self.parts, (self.seg - self.raw) // self.parts
+            kdir = Path(config.aie_kernels_dir())
+            here = Path(__file__).resolve().parent / "kernels"
+            seg_t = np.ndarray[(self.seg,), np.dtype[bfloat16]]
+            part_t = np.ndarray[(N,), np.dtype[bfloat16]]
+            tail_t = np.ndarray[(N + self.raw,), np.dtype[bfloat16]]
+            common = dict(
+                source_file=str(here / "gdn.cc"),
+                include_dirs=[str(kdir), config.cxx_header_path()],
+                compile_flags=["-ffp-contract=off", "-fno-fast-math", "-fno-unroll-loops",
+                               f"-DGDR_SILU_N={N}", f"-DGDR_SILU_RAW={self.raw}"],
+                object_file_name=f"gdn_silu_{N}_{self.raw}.o",
+            )
+            body = ExternalFunction("gdn_silu", arg_types=[part_t, part_t], **common)
+            tail = ExternalFunction("gdn_silu_tail", arg_types=[tail_t, tail_t], **common)
+            cuts = [k * N for k in range(P)]
+            types = [part_t] * (P - 1) + [tail_t]
+            x_l3 = [ObjectFifo(seg_t, depth=2) for _ in range(n)]
+            x_l1 = [f.cons().split(cuts, obj_types=types, depths=[2] * P, tile=AnyMemTile) for f in x_l3]
+            u_l3 = [ObjectFifo(seg_t, depth=2) for _ in range(n)]
+            u_l1 = [f.prod().join(cuts, obj_types=types, depths=[2] * P, tile=AnyMemTile) for f in u_l3]
+            rows = self.rows
+
+            def core(xf, uf, k):
+                for _ in range_(rows):
+                    a, b = xf.acquire(1), uf.acquire(1)
+                    k(a, b)
+                    xf.release(1)
+                    uf.release(1)
+
+            workers = [Worker(core, [x_l1[c][j].cons(), u_l1[c][j].prod(), tail if j == P - 1 else body])
+                       for c in range(n) for j in range(P)]
+            self.x.bind([f.prod() for f in x_l3])
+            self.u.bind([f.cons() for f in u_l3])
+            return Built(workers, [])
+
+        def sequence(self, rt):
+            W, seg = self.width, self.seg
+            for c in range(n):
+                self.x.fill(TAP((self.rows, W), c * seg, [self.rows, seg], [W, 1]), lane=c, managed=False)
+            drains = [self.u.drain(TAP((self.rows, W), c * seg, [self.rows, seg], [W, 1]), lane=c,
+                                   wait=True, managed=False) for c in range(n)]
+            for d in drains:
+                d.await_()
+
+        def ops(self) -> int:
+            return self.rows * self.width
+
+        def reference(self, x):
+            return silu_reference(x, self.seg, self.raw)
+
+        def tolerance(self) -> Tolerance:
+            return Tolerance.relative(0.01, 1e-3, note="exp_f32 and a float inverse, rounded once to bf16")
+
+    return GdnSiLU
+
+
+def silu_reference(x, seg: int, raw: int):
+    """GdnSiLU in numpy: silu on each column's first seg - raw channels, float32, then bf16."""
+    x = np.asarray(x, bfloat16)
+    rows = x.shape[0]
+    v = x.astype(np.float32).reshape(rows, -1, seg)
+    out = v.copy()
+    out[..., : seg - raw] = v[..., : seg - raw] / (1 + np.exp(-v[..., : seg - raw]))
+    return out.reshape(x.shape).astype(bfloat16)
+
+
 def _check(args) -> int:
     import iron
     from iron import Scratchpad
@@ -546,7 +675,8 @@ def _check(args) -> int:
     words = head_words(dt_bias, A)
     K = args.conv
     eps = 1e-6 if args.norm else 0.0
-    G = gdn_operator(n, H // (2 * n), K, eps)
+    G = gdn_operator(n, H // (2 * n), K, eps, presilu=args.presilu)
+    S = silu_operator(n) if args.presilu else None
     seg = column_widths(H, KH, dk, dv, n)
     zw = H // n * dv if args.norm else 0
     W = n * seg
@@ -590,6 +720,8 @@ def _check(args) -> int:
 
     class Graph(iron.Graph):
         def body(self, x, state, *, valid: Scratchpad[np.int32] = np.int32(rows)):
+            if S is not None:
+                x = S.step(x, seg=seg, raw=silu_raw(H, KH, dk, dv, n))
             xs = x[:valid] if rows > 1 and not args.unbounded else x
             return G.step(xs, state, heads=H, key_heads=KH, key_dim=dk, value_dim=dv, words=words)
 
@@ -620,6 +752,7 @@ def main(argv=None) -> int:
     c.add_argument("--key-heads", type=int, default=16)
     c.add_argument("--conv", type=int, default=0, help="the convolution's taps in the operator (decode)")
     c.add_argument("--norm", action="store_true", help="with --conv: the gated norm in the operator too")
+    c.add_argument("--presilu", action="store_true", help="silu before the operator (GdnSiLU), a prompt chunk's")
     a = ap.parse_args(argv)
     return _check(a)
 

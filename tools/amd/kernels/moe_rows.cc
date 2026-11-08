@@ -18,7 +18,7 @@
 #include "common/activations.h"
 
 #ifndef MOE_CAP
-#define MOE_CAP 64
+#define MOE_CAP 128
 #endif
 
 constexpr int KT = 256; // in-features a block

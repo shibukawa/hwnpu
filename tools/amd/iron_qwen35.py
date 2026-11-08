@@ -184,6 +184,7 @@ class GatedDeltaNet(iron.Graph):
         dk, dv, K = c.linear_key_head_dim, c.linear_value_head_dim, c.linear_conv_kernel_dim
         self.shape = (H, KH, dk, dv)
         self.qkv = 2 * KH * dk + H * dv
+        self.seg = iron_gdn.column_widths(H, KH, dk, dv, COLUMNS)
         self.in_proj_qkv = Linear(E, self.qkv, False, precision=c.precision)
         self.in_proj_a = Linear(E, H, False, precision=c.precision)
         self.in_proj_b = Linear(E, H, False, precision=c.precision)
@@ -246,9 +247,11 @@ class GatedDeltaNet(iron.Graph):
         shape = dict(heads=H, key_heads=KH, key_dim=dk, value_dim=dv, words=self.words)
         p = self.in_proj(x)
         read, write = self.state.at(call)
-        if self.fold and call.prompt:
-            GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), pairs=True)
-            y, final = GDR.step(self.conv(p, call), Copy.step(read, dtype=np.float32), **shape)
+        if call.prompt:  # silu once before the operator, which reads each row once a slice
+            GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), pairs=self.fold, presilu=True)
+            u = iron_gdn.silu_operator(COLUMNS).step(self.conv(p, call), seg=self.seg,
+                                                      raw=iron_gdn.silu_raw(H, KH, dk, dv, COLUMNS))
+            y, final = GDR.step(u, Copy.step(read, dtype=np.float32), **shape)
             Copy.step(final, write, dtype=np.float32)
             return self.out_proj(self.norm(y, self.in_proj_z(x)))
         if self.fold:
