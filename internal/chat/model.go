@@ -103,6 +103,24 @@ func mtpArch(config, weights string, a *llm.Arch) string {
 // (docs/design.md 16.99). The cache is about 4 GiB.
 var compileCacheBytes int64 = 7 << 29 // 3.5 GiB
 
+// m1HoldBytes is what an M1's Neural Engine holds of the programs loaded together before every
+// call slows down about 12 times, as if parts were loaded again on each: lut4 parts holding 2.86
+// GiB ran at their own times added up, 2.97 GiB at 828 against 72 ms a token, whatever the number
+// of parts (npuprobe split, PROBE.md). The M2 (3.65 GiB at full speed), the M3 and the M4 have no
+// such limit below the compile cache, so the programs are the same files on every chip and an M1
+// only loads fewer of them: the one that generates reads the prompts too (onePrograms).
+const m1HoldBytes = 2867 << 20 // 2.8 GiB
+
+// neuralEngineHold is what the machine's Neural Engine holds of the programs loaded together
+// before it slows down, 0 for no such limit: m1HoldBytes on an M1 (the M1 Pro, Max and Ultra,
+// with the same Neural Engine, are taken to be alike; not measured).
+var neuralEngineHold = func() int64 {
+	if strings.HasPrefix(cpuBrand(), "Apple M1") {
+		return m1HoldBytes
+	}
+	return 0
+}
+
 // DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: auto, a cache of 4096 to run on
 // while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
 const DefaultTiers = "auto"
@@ -373,10 +391,27 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	slices.Sort(caches)
 	caches = slices.Compact(caches)
-	if one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(caches)+1, pre.kvOnly); one {
+	// the programs loaded beside the model's, which the Neural Engine holds too where it holds
+	// only so much (neuralEngineHold): the multi-token prediction layer's and the encoders'
+	var others int64
+	hold := neuralEngineHold()
+	if hold > 0 && backend != llm.BackendIntel {
+		others = besideBytes(c.ModelConfig, mtp, s.Format, backend)
+	}
+	one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(caches)+1, pre.kvOnly, others)
+	if one {
 		progs = progs[:1]
 		if s.Log != nil {
 			fmt.Fprintf(s.Log, "one program for %s, which reads the prompts %d tokens per call too: %s (-prefill on for one of %d to read long prompts faster)\n", c.Name, s.Draft, why, pre.seq)
+		}
+	}
+	if gen, read := programBytes(model, format, pre.kvOnly); hold > 0 && backend != llm.BackendIntel && s.Log != nil {
+		held := int64(len(caches)+1)*gen + others
+		if !one {
+			held += int64(len(caches)+1) * read
+		}
+		if held > hold {
+			fmt.Fprintf(s.Log, "%s's programs hold %.2f GiB on the Neural Engine, over the %.1f GiB an M1 holds before every call slows down about 12 times: expect it to be slow on this machine (a smaller -format holds less)\n", c.Name, float64(held)/(1<<30), float64(hold)/(1<<30))
 		}
 	}
 	for _, cache := range append(caches, context) {
@@ -456,24 +491,42 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 // onePrograms decides Setup.Prefill: whether the program that generates (of draft tokens per
 // call) reads the prompts too, instead of a pair of programs for each of tiers cache lengths, and
 // why. The one that reads prompts has the model's weights in format, or with kvOnly those of the
-// layers that write the caches (llm.Options.KVOnly).
-func onePrograms(model llm.Model, format, backend, prefill string, draft, tiers int, kvOnly bool) (bool, string) {
+// layers that write the caches (llm.Options.KVOnly). Two are too many when they would not stay
+// in the Neural Engine's compile cache (compileCacheBytes), or, with the others loaded beside
+// them (bytes of weights), would hold more than the machine's Neural Engine holds before it slows
+// down (neuralEngineHold, an M1's).
+func onePrograms(model llm.Model, format, backend, prefill string, draft, tiers int, kvOnly bool, others int64) (bool, string) {
 	switch {
 	case prefill == PrefillOff:
 		return true, "-prefill off"
 	case prefill == PrefillOn || draft <= 1 || backend == llm.BackendIntel:
 		return false, "" // reading prompts one token per call would be far slower; the cache is the Neural Engine's
 	}
-	var o llm.Options
-	set := llm.BindFlags(flag.NewFlagSet("", flag.ContinueOnError), &o, "")
-	set()
-	o.Format = format
-	pre, layers, post := llm.EstimateBytes(model, o)
+	gen, read := programBytes(model, format, kvOnly)
+	total := int64(tiers) * (gen + read)
+	if hold := neuralEngineHold(); hold > 0 && total+others > hold {
+		why := fmt.Sprintf("%d programs would hold %.2f GiB on the Neural Engine", 2*tiers, float64(total)/(1<<30))
+		if others > 0 {
+			why += fmt.Sprintf(" with the %.2f GiB of the programs beside them", float64(others)/(1<<30))
+		}
+		return true, why + fmt.Sprintf(", over the %.1f GiB an M1 holds before every call slows down about 12 times", float64(hold)/(1<<30))
+	}
+	if total <= compileCacheBytes {
+		return false, ""
+	}
+	return true, fmt.Sprintf("%d programs would hold %.2f GiB of weights, over the about %.1f GiB the Neural Engine keeps compiled, so every start would compile them again and every question switch between them", 2*tiers, float64(total)/(1<<30), float64(compileCacheBytes)/(1<<30))
+}
+
+// programBytes estimates the weights of a model's program that generates and of the one that
+// reads prompts, in format; with kvOnly the latter has only the layers that write the caches and
+// no output layer.
+func programBytes(model llm.Model, format string, kvOnly bool) (gen, read int64) {
+	pre, layers, post := estimate(model, format)
 	n := len(layers) // the layers of the program that reads prompts
 	if kvOnly {
 		n = model.(llm.CacheWriters).CacheLayers()
 	}
-	gen, read := pre+post, pre
+	gen, read = pre+post, pre
 	if !kvOnly {
 		read += post
 	}
@@ -483,11 +536,41 @@ func onePrograms(model llm.Model, format, backend, prefill string, draft, tiers 
 			read += l
 		}
 	}
-	total := int64(tiers) * (gen + read)
-	if total <= compileCacheBytes {
-		return false, ""
+	return gen, read
+}
+
+// estimate is llm.EstimateBytes with the converter's defaults and the weights in format.
+func estimate(model llm.Model, format string) (pre int64, layers []int64, post int64) {
+	var o llm.Options
+	set := llm.BindFlags(flag.NewFlagSet("", flag.ContinueOnError), &o, "")
+	set()
+	o.Format = format
+	return llm.EstimateBytes(model, o)
+}
+
+// besideBytes estimates the weights of the programs Prepare converts beside a model's and the
+// engine loads with them: the multi-token prediction layer's (arch mtp, "" for none, in format or
+// its default) and the encoders' of a multimodal checkpoint (fp16).
+func besideBytes(config, mtp, format, backend string) int64 {
+	var n int64
+	add := func(m llm.Model, f string) {
+		pre, layers, post := estimate(m, f)
+		n += pre + post
+		for _, l := range layers {
+			n += l
+		}
 	}
-	return true, fmt.Sprintf("%d programs would hold %.2f GiB of weights, over the about %.1f GiB the Neural Engine keeps compiled, so every start would compile them again and every question switch between them", 2*tiers, float64(total)/(1<<30), float64(compileCacheBytes)/(1<<30))
+	if mtp != "" {
+		if ma, mm, err := llm.LoadConfig(config, mtp); err == nil {
+			add(mm, cmp.Or(format, ma.DefaultFormatFor(mm, backend)))
+		}
+	}
+	for _, e := range encoders {
+		if _, em, err := llm.LoadConfig(config, e.arch); err == nil {
+			add(em, "fp16")
+		}
+	}
+	return n
 }
 
 // sharedMark is the file in a directory of programs that says ShareWeights went over it: the

@@ -518,7 +518,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 
 | Item | Unknown | How to check / what is needed | Section |
 |---|---|---|---|
-| Qwen3.5's Q=64 program | Two programs (Q=8 and Q=64) take 7.9 GiB with lut8, over the ANE's cache, so it is not made by default. One program reads long prompts at 66 tokens/s (13K). Q=64's speed and compile time not measured | `-prefill on` | 16.62, 16.88 |
+| Qwen3.5-4B's prompt program, and the first compile of GDN programs | 0.8B and 2B (lut6) load two programs by default (Q=8 and Q=128 with `-last`, 16.99, 16.115). 4B keeps one (two at lut8 take 7.9 GiB) and reads long prompts at 66 tokens/s (13K). The Q=128 program with GDN layers compiles for 13–15 minutes the first time. Would Q=64 (or a smaller GDN chunk) compile faster, and how fast would 4B read with two programs at lut6? | `-prefill on`, compile times at Q=32 / 64 / 128 | 16.62, 16.88, 16.99, 16.115 |
 | `blocks.SiLU` in the towers and multimodal models | LFM3-VL / Audio / Omni / d1 with their vision and audio towers, TTS take the same rewrite and are converted again, but only LFM3-1.7B, PLaMo 3, PLaMo-Embedding and Anima were measured | Compare VL's image descriptions and TTS with the earlier version | 16.95 |
 | Qwen3.5 with two-level attention | Do answers hold with two-level attention (`-sparse`)? | Passkey test | 16.62 |
 | Two-level attention's `Refresh` as the default | With 4 or 16 the passkeys hold and a call is 14–32% faster (checked 2026-11-06), but finer differences such as loss or KL are not measured on the Neural Engine | Compare the logits with choosing every call on real weights | 16.61 |
@@ -528,22 +528,23 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Slowing down past 128K | Why the slope per 1K grows from 1.14 to 1.43 ms (memory pressure, or attention lagging when interleaved?) | | 16.59 |
 | Slowness right after a long prefill | Why the first few calls after reading 256K take 1.29 s each (350 ms after) | | 16.59 |
 | The ANE's memory (the rest) | The weights' share is now read by `mem.NPUWired` (16.95, no root: 2.43 GiB for LFM3's two lut6 programs). The KV's and intermediate values' share, and the compile cache's, are not told apart | Compare after loading and while generating with a long context | 16.95, model-fit.md T10 |
-| The ANE's compile cache | Its size (about 4 GiB is an estimate) and location, and why only unsplit Gemma 4 at lut6 does not stay | Looking into aned (sudo) | 16.41, 16.43 |
-| Limits on M4 and later | The default per-part limit (0.9 GiB now; an M4 ran with 1.8 GiB and more), memory by number of parts | Measurements from M4 users | 16.12 |
-| Gemma 4 E4B's default `-prefill` | `-prefill on` (two programs) reads long prompts 7.5–8× faster, but every start takes 135–165 s (one program: 86 s) and generation at 16K is a fifth slower. Switch by the prompt's length (load the program of 128 only to read, say), or let `auto` weigh the length? | Compare the round trips including the reload (3–14 s) and the start | 16.65, 16.83 |
+| The ANE's compile cache | Its size (about 4 GiB is an estimate; `-prefill auto` assumes 3.5 GiB, since Qwen3.5-2B's two programs of 3.56 GiB were compiled again at every start, 16.99) and location | Looking into aned (sudo) | 16.41, 16.99 |
+| Limits on the M4 and later | The M1 to the M3 are measured: 0.99 GiB a package. Only the M1 slows down 12× once the Neural Engine holds over 2.86 GiB of parts run in turn (16.109); the M2 runs 3.62 GiB at full speed (PROBE.md, 2026-11-09). An M4 ran 3.62 GiB in total, and parts of 1.8 GiB and more, at full speed. Whether a larger default per part (0.9 GiB now) pays on the M4 | `npuprobe limit` and `npuprobe split` on an M4 | 16.12, 16.109 |
+| Two programs on the M1 | Since 16.118, `-prefill auto` on an M1 keeps one program when the two with the programs loaded beside them (MTP, encoders) would hold over 2.8 GiB (Qwen3.5-2B lut6: 2.64 + 0.40 GiB → one). Not measured: how much faster LFM3-VL / Audio / Omni (3.26 GiB for two, plus the encoder) generate on the M1 with one, against how much slower they read long prompts | `HWNPU_PROFILE=1` with `-prefill auto` and `-prefill on` on the M1 | 16.109, 16.118 |
+| Gemma 4 E4B's default `-prefill` | With `-kv-only` (16.112) the two programs take 4.88 GiB (6.51 before), still over 3.5 GiB, so `auto` keeps one. `-prefill on` has not been measured since. Before, two programs read long prompts 7.5–8× faster, but every start took 135–165 s (one program: 86 s) and generation at 16K was a fifth slower. Switch by the prompt's length, or let `auto` weigh the length? | Start and round trips with `-prefill on` after `-kv-only` | 16.65, 16.83, 16.112 |
 | Gemma 4 E4B against the unsplit form | Skipped for lack of disk | | 16.65 |
 | Gemma 4 and the prompt store | Save and restore time and size with Gemma 4 E2B | Replay the same OpenCode request as 16.38 | 16.38 |
 | hwnpu-agent on Apple with Gemma 4 / Qwen3.5 | The templates support tools, but the agent tasks were not run (Gemma 4 E4B passed on AMD) | The tasks in CHAT.md section 7 | 16.35 |
-| The rest of speculative decoding | Acceptance at Q=4, acceptance in OpenCode's round trips (7.4K, long XML), comparison with temperature 0 | Replays with `-dump` | 16.36 |
+| Qwen3.5-0.8B / 2B | 2B against HF (0.8B passes with the same code), 2B lut6's KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), passkeys over long contexts | `hwnpu-check`; the KL with the host's or another split | 16.99, 16.115 |
+| The rest of speculative decoding | Prompt lookup: acceptance at Q=4, in OpenCode's round trips (7.4K, long XML), against temperature 0. MTP drafts (16.109): 4B on the M3, the time to the first draft after a long prompt (up to 64 calls) | Replays with `-dump` | 16.36, 16.109 |
 | d1-Omni-2B differing from its README | The team answer is the opposite of the README's. HF's code reads up to 16 questions together, hwnpu one at a time. Not compared with HF | Compare with HF's code where torch is available | 16.31 |
 | LFM3-Audio's TTS | Does it sound the same as the reference (llama.cpp)? Only checked by transcribing it again with ASR | Compare audio decoded from the same codes with llama.cpp's server TTS | 16.30–31 |
 | Long texts with PLaMo-Embedding | Do the last layer's values grow further in the 1024-token program (is head-scale enough)? | Vary the texts in `TestANEPrecision` | 16.34 |
 | BERT family | `hwnpu-check` on real weights and placement on the ANE (only checked on the CPU for Intel) | | 16.11 |
 | GPTQ's lut6 tables in the answers | On the ANE the KL falls as on the CPU, all on the ANE, same speed (16.95). Whether the answers get better is not told by 12 questions (10/12 either way). lut4 + wkmeans not tried on the ANE. Gemma 4 E2B (16.114): KL on the ANE 1.02 → 0.56 (English), 12 questions 10 → 11 of 12; hwnpu-chat takes them with `-codes`, not by default (2.1 GB of codes to hand out) | More questions and hwnpu-agent's tasks with and without the codes; a way to hand out the codes | 16.87, 16.95, 16.114 |
-| Anima's remaining error against diffusers' fp32 | Measured in 16.95 (latent cosine 0.67–0.98 over 3 prompts after the DiT's silu). What is left is not split between the text's int8, the DiT's int8 and fp16 arithmetic | Swap the text and the DiT to fp16 one at a time | 16.85, 16.95 |
+| Anima's remaining error against diffusers' fp32 | Latent cosine 0.67–0.98 over 3 prompts after the DiT's silu; the DiT in fp16 brings it only 0.006–0.025 closer (16.95). How much of the rest is the text's int8 is not measured | Swap the text encoder to fp16 | 16.85, 16.95 |
 | Anima above 1024×1024 | The smaller attention chunks for sizes past 1024 (`mil.DitQChunk`) are not measured, nor whether the VAE stages fit | Convert 1280×1280 and run | 16.85 |
 | Details of PLaMo 3's accuracy and speed | Placement and weight formats are checked. Translation quality and time for long documents are not measured in detail | Compare KL with fp16 on translation pairs | 16.71 |
-| PLaMo 3's two lut6 programs | Do they (about 3.6 GiB) fit the compile cache (about 4 GiB) and keep startup fast? | Start twice with `-format lut6` | 16.71 |
 | Why macOS memory seemed to shrink with use | The guess is that macOS compressed the rings, which are mostly zeros | Measure the footprint on an M3 after the mark fix (`ringRows`) | 16.71 |
 
 ### 11.2 Intel (NPU)
@@ -585,7 +586,6 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 
 | Behaviour | Current guess | Section |
 |---|---|---|
-| Only unsplit Gemma 4 at lut6 / lut8 does not stay in the ANE's cache | A policy on the ANE's side (aned). The split form stays, so it no longer matters | 16.43 |
 | Which shapes fall to the CPU at the 16384 per-dimension limit and which stay (chunks along an axis, weighting by ratios go to the CPU) | Inside Core ML's compiler | 16.21 |
 | Only the 8-part split loads slowly from the cache (23.7 s) | Not looked into | 16.13 |
 | On a 128K English document, two-level attention has lower loss than normal attention | Normal attention gets distracted by distant tokens, and two levels narrow that | 16.61 |

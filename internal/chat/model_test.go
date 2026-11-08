@@ -125,10 +125,28 @@ func TestPrepareEncoders(t *testing.T) {
 		t.Fatal(err)
 	}
 	vis.Close()
+	// what an M1's Neural Engine holds beside the model's programs: the vision encoder's weights,
+	// in fp16 as converted (a real checkpoint's estimates match the files: Qwen3.5-2B's
+	// multi-token prediction layer in lut6 0.400 GiB, as on the disk)
+	_, vm, err := llm.LoadConfig(c.ModelConfig, "lfm3-vision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pre, layers, post := estimate(vm, "fp16")
+	want := pre + post
+	for _, l := range layers {
+		want += l
+	}
+	if n := besideBytes(c.ModelConfig, "", "lut4", "coreml"); n != want || n == 0 {
+		t.Errorf("the programs beside the model are estimated at %d bytes, the vision encoder's in fp16 are %d", n, want)
+	}
 
 	c, err = Prepare(ctx, Setup{Dir: filepath.Join(t.TempDir(), "text"), Repo: "org/text", Context: 64, Backend: "coreml", Log: io.Discard})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if n := besideBytes(c.ModelConfig, "", "", "coreml"); n != 0 {
+		t.Errorf("text only: %d bytes of programs beside the model", n)
 	}
 	if len(c.Packages) != 2 || len(c.Vision) != 0 || len(c.Audio) != 0 {
 		t.Errorf("text only: packages %q, vision %q, audio %q", c.Packages, c.Vision, c.Audio)
@@ -396,7 +414,8 @@ func TestPrepareCodes(t *testing.T) {
 
 // Prepare converts the program that reads prompts beside the one that generates unless the two
 // would overflow the Neural Engine's compile cache (here made smaller than the tiny model's
-// weights) or -prefill says otherwise; then the one that generates reads the prompts.
+// weights), hold more than an M1's Neural Engine holds (neuralEngineHold, likewise), or -prefill
+// says otherwise; then the one that generates reads the prompts.
 func TestPreparePrefill(t *testing.T) {
 	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
 	tcfg, err := lfm3.ParseConfig([]byte(text))
@@ -420,33 +439,89 @@ func TestPreparePrefill(t *testing.T) {
 	defer func(u string) { hubURL = u }(hubURL)
 	hubURL = srv.URL + "/"
 	defer func(n int64) { compileCacheBytes = n }(compileCacheBytes)
+	defer func(f func() int64) { neuralEngineHold = f }(neuralEngineHold)
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "text")
 	for _, c := range []struct {
-		prefill string
-		cache   int64
-		want    []string
+		prefill     string
+		cache, hold int64
+		want        []string
 	}{
-		{"", 4 << 30, []string{"q8", "q96-last"}},
-		{PrefillAuto, 1024, []string{"q8"}},
-		{PrefillOn, 1024, []string{"q8", "q96-last"}},
-		{PrefillOff, 4 << 30, []string{"q8"}},
+		{"", 4 << 30, 0, []string{"q8", "q96-last"}},
+		{PrefillAuto, 1024, 0, []string{"q8"}},
+		{PrefillOn, 1024, 0, []string{"q8", "q96-last"}},
+		{PrefillOff, 4 << 30, 0, []string{"q8"}},
+		{PrefillAuto, 4 << 30, m1HoldBytes, []string{"q8", "q96-last"}}, // an M1 holds the tiny model
+		{PrefillAuto, 4 << 30, 1024, []string{"q8"}},                    // an M1 that would not
+		{PrefillOn, 4 << 30, 1024, []string{"q8", "q96-last"}},
 	} {
 		compileCacheBytes = c.cache
-		cfg, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Prefill: c.prefill, Backend: "coreml", Format: "lut4", Log: io.Discard})
+		neuralEngineHold = func() int64 { return c.hold }
+		var log strings.Builder
+		cfg, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Prefill: c.prefill, Backend: "coreml", Format: "lut4", Log: &log})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if slow := strings.Contains(log.String(), "expect it to be slow"); slow != (c.hold == 1024) {
+			t.Errorf("-prefill %q, an M1 holding %d: warned of the slowdown %v, log:\n%s", c.prefill, c.hold, slow, log.String())
 		}
 		var got []string
 		for _, p := range cfg.Packages {
 			got = append(got, strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p), "lfm3-r1-lut4-grouped-p96-c96-"), ".parts.json"))
 		}
 		if !slices.Equal(got, c.want) {
-			t.Errorf("-prefill %q with a compile cache of %d: programs %v, want %v", c.prefill, c.cache, got, c.want)
+			t.Errorf("-prefill %q with a compile cache of %d and an M1 holding %d: programs %v, want %v", c.prefill, c.cache, c.hold, got, c.want)
 		}
 	}
 	if _, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Prefill: "sometimes", Backend: "coreml", Log: io.Discard}); err == nil {
 		t.Error("-prefill sometimes is accepted")
+	}
+}
+
+// onePrograms counts the programs loaded beside the model's (the multi-token prediction layer's,
+// the encoders') against an M1's Neural Engine, and not against the compile cache of another chip.
+func TestOneProgramsBeside(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(`{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var model llm.Model = cfg
+	gen, read := programBytes(model, "lut4", false)
+	if gen <= 0 || read <= 0 {
+		t.Fatalf("the programs' weights are %d and %d bytes", gen, read)
+	}
+	defer func(n int64) { compileCacheBytes = n }(compileCacheBytes)
+	defer func(f func() int64) { neuralEngineHold = f }(neuralEngineHold)
+	compileCacheBytes = gen + read
+	for _, c := range []struct {
+		hold, others int64
+		one          bool
+	}{
+		{0, 0, false},
+		{0, 1 << 40, false}, // no limit on what the Neural Engine holds: the compile cache alone
+		{gen + read, 0, false},
+		{gen + read, 1, true},
+		{gen + read - 1, 0, true},
+	} {
+		neuralEngineHold = func() int64 { return c.hold }
+		if one, why := onePrograms(model, "lut4", "coreml", PrefillAuto, 8, 1, false, c.others); one != c.one {
+			t.Errorf("holding %d with %d beside: one program %v (%s), want %v", c.hold, c.others, one, why, c.one)
+		}
+	}
+}
+
+// besideBytes counts a checkpoint's multi-token prediction layer, which the drafts load beside the
+// model, and nothing for a checkpoint without one.
+func TestBesideBytesMTP(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(tinyQwen35MTP), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n := besideBytes(path, "qwen35-mtp", "lut8", "coreml"); n <= 0 {
+		t.Errorf("the multi-token prediction layer is estimated at %d bytes", n)
+	}
+	if n := besideBytes(path, "", "lut8", "coreml"); n != 0 {
+		t.Errorf("without drafts from it: %d bytes", n)
 	}
 }
 

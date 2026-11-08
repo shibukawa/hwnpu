@@ -25,10 +25,11 @@ type Target struct {
 
 // Targets are the known devices. The limit is per model, not on the total loaded; but on the M1
 // parts run one after another slow down about 12 times once they hold over about 2.9 GiB on the
-// Neural Engine together (npuprobe split, PROBE.md), which a split does not avoid.
+// Neural Engine together (npuprobe split, PROBE.md), which a split does not avoid. The M2 runs
+// 3.62 GiB so, the M4 too.
 var Targets = []Target{
 	{Name: "m1", MaxBytes: 1 << 30, Measured: true, Note: "npuprobe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
-	{Name: "m2", MaxBytes: 1 << 30, Note: "assumed as the M3's; to be measured with npuprobe limit"},
+	{Name: "m2", MaxBytes: 1 << 30, Measured: true, Note: "npuprobe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
 	{Name: "m3", MaxBytes: 1 << 30, Measured: true, Note: "npuprobe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
 	{Name: "m4", MaxBytes: 2e9, Measured: true, Note: "2 GB (a 4 B model in lut4) on the Neural Engine"},
 	{Name: "intel", Backend: "intel", MaxBytes: 2 << 30, Note: "assumed; the NPU shares the system memory, so the driver compiler's time and memory are the likelier limit. To be measured with npuprobe limit"},
