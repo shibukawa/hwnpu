@@ -3174,7 +3174,7 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - Qwen3.5-0.8B (q6、塊 512): ロジット (1024 行) は前の書き出しとビット単位で同じ。512 トークンの塊 0.9 → **0.5 s**
 - 残り: Qwen3.6 の塊 3.9 s のうち専門家のコマンド (B) が 2.56 s (重みを読む速さが下限)、A が 0.7 s。`GatedDeltaRule` の 7.7 ms は、各コアが全部の行を 16 回 DMA で受けること (1 行ずつの object) と、状態の 3 つの bf16 の limb の計算
 
-### 16.109 Gemma 4: プロンプトを読むプログラムをキャッシュを書く層だけに (`-kv-only`)、ステップの内訳 (`HWNPU_PROFILE`) — 2026-11-08
+### 16.112 Gemma 4: プロンプトを読むプログラムをキャッシュを書く層だけに (`-kv-only`)、ステップの内訳 (`HWNPU_PROFILE`) — 2026-11-08
 
 - 動機: M1 (MacBook Pro 13"、16 GB、macOS 27.2) で Gemma 4 E2B の生成の 1 ステップ (Q=8) の内訳を測ると、部分 7 つは 3.5〜5.3 ms なのに、層 29〜33 の部分だけが 7.9 ms だった。`-prefill off` (生成用の 1 本だけ) にすると 4.7 ms に戻り、生成は 17.5 → 20.0 tokens/s。2 本 (q8 と q128-last、重み 3.20 GiB) を読み込むと Neural Engine が抱えるメモリ (`mem.NPUWired`) は 1.96 GiB で、1 本 (1.63 GiB) のときより 0.33 GiB 多いだけ。2 本目の重みはほとんど載らず、生成の部分の 1 つが呼び出しのたびに載せ直されている (推定。中は見えない)
 - 見方: Gemma 4 の層 15〜34 (E2B。E4B は 24〜41) は前の層の鍵と値を使い回し、キャッシュに書かない。プロンプトを読むプログラムに要るのは、キャッシュを書く層 0〜14 だけ。今の q128-last は層 15〜34 を最後の行だけで計算していた (16.83) が、その重みと出力層 (計 1.2 GiB) を持っていた。プロンプトの最後のトークンのロジットは、生成用のプログラムで読めば出る
@@ -3205,7 +3205,7 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
   - ソフトキャップをホストで (`-logits raw`、出力層の後の mul、tanh、mul と CPU の `reshape` を外す): 測る前に、macOS の `mediaanalysisd` (CPU 122%) と Apple Intelligence の推論サービスが Neural Engine を使い始め、どの形も 0.7 tokens/s に落ちて測れなかった。ホストの側 (サンプリングでのソフトキャップ) は書いていないので戻した
 - 残り: E4B の `-prefill on` (2 本 4.88 GiB) で起動と生成の干渉を測る。M3 での確認。消費電力 (`powerbench` は sudo が要る)。LFM3 など全部の層がキャッシュを書くモデルでも、KV だけのプログラムは出力層 (LFM3 で約 0.19 GiB) を外せる (`CacheLayers` を全層にした形。今は CacheWriters を持つモデルだけ)
 
-### 16.110 Gemma 4: ロジットのソフトキャップをホストで (`-logits host`、既定、gemma4 の版 1) — 2026-11-08
+### 16.113 Gemma 4: ロジットのソフトキャップをホストで (`-logits host`、既定、gemma4 の版 1) — 2026-11-08
 
 - 動機: new-model-checklist.md の 3.2 節で Mac に残っていた「Gemma 4 の最後の部分の `reshape`」。生成用の最後の部分 (出力層) は、ソフトキャップ (mul、tanh、mul) を (16, 16384) に畳んだロジットに掛け、(1, seq, 262144) に戻す `reshape` 1 つが CPU に置かれていた (16.43)。毎ステップ、Neural Engine と CPU が出力層で交代する。消費電力を優先する方針 (new-model-checklist.md の冒頭) では、CPU に落ちる演算をなくしたい
 - 測ったこと (M1、E2B、1 本、Q=8、21 トークンの質問の後の 176 トークン、3 回ずつ交互): 出力層の部分 (part7) とすぐ前の部分 (part6、重みがほぼ同じ) の差が、プログラムの中でキャップを掛ける形で 3.9〜4.5 ms、キャップなしで 1.5〜1.9 ms。1 ステップ約 2.3 ms (4%) 短い。キャップなしは全部 Neural Engine
@@ -3216,9 +3216,37 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
   - `chat`: セッションをキャップの前の値で使い、サンプリング (`Sampling.softcap`) が使う値だけに掛ける。キャップは単調なので、温度 0 と上位 k の選び方は変わらない。確率は上位 k 個のキャップ後の値で計算する。繰り返しの罰はキャップ後の値に掛けてから、キャップ前に戻して書く (`uncapped`、atanh)。CPU の手間は 1 ステップに数十の tanh
   - `hwnpu-check` (組み立てと `-package`) と `hwnpu-generate` のキャッシュなしの経路も、メタデータのキャップを掛けてから比べる、選ぶ
 - テスト: `TestPickSoftcap` (キャップ前の値をキャップつきで選ぶと、キャップ後の値を選ぶのと温度 0 で同じ、温度・top-k・top-p で 500 種のうち 99% 以上同じ。罰で順位が入れ替わる例 (100 と 80 に 1.05) で、キャップ後に掛けたときの答え 1 を選ぶ)。罰をキャップ前の値に掛ける改変は落ちる (43/500、0/500)。gemma4 の部分と全体、キャッシュ、注意で分けた形のテストは、メタデータのキャップを掛けてから比べる
-- M1 での結果 (E2B、lut6、温度 0。16.109 の KV だけのプロンプト用と組み合わせて):
+- M1 での結果 (E2B、lut6、温度 0。16.112 の KV だけのプロンプト用と組み合わせて):
   - 配置: 2 本とも `all on the NPU` (前は生成用が `NOT all on the NPU`)
   - 21 トークンの質問の後の生成: 1 ステップ 53.3 ms、出力層の部分 6.4 ms (すぐ前の部分との差 1.1 ms)、20.1 tokens/s
   - 4249 トークンのプロンプト: 2.5 s、その後の生成 25.0 tokens/s
   - 答えは、短い質問の 176 トークン、要約の 150 トークンとも、プログラムの中でキャップを掛ける形と一字一句同じ
 - 確かめていないこと: M3 と M2、Intel (OpenVINO の IR も同じ `host` の形になる。CPU での照合だけ)、温度ありの答えの分布を実物で比べること (単体のテストだけ)、消費電力 (`powerbench` に sudo が要る)
+
+### 16.114 Gemma 4 E2B の lut6 を GPTQ で (M1 の 16 GB で校正)、hwnpu-chat の `-codes` と `-format-for`、Neural Engine の上の KL (`hwnpu-generate -score`) — 2026-11-08
+
+- 動機: new-model-checklist.md 5.3 節の Mac に残っていたもの (hwnpu-chat が GPTQ の符号を取らない)。16.95 は LFM3 を M3 で確かめただけで、チャットの既定の Gemma 4 E2B は Apple の lut6 で校正していなかった
+- **16 GB の Mac で校正する** (`q4_gptq.py` の `load_gemma4_lean`、`MODELS["gemma4"]` の `lean`): E2B の文の部分は fp32 で 4.6B (18.5 GB) に出力層の写し 1.6 GB で、16 GB に入らない。2 つの埋め込みの表 (PLE 2.35B、語彙 0.40B) は引くだけなので、チェックポイントを memmap して使う行だけ読む (`TableRows`)。モデルは語彙 1 で組み立ててから表を差し替え、残りの重みと各層の `layer_scalar` (バッファ。最初は読み漏らして答えが崩れた) をファイルから fp32 で入れる。約 9 GB。transformers の bf16 の `from_pretrained` とのロジットの KL は 0.003 以下で、最上位はすべて一致 (`tools/ref/ref_gemma4.py` と同じ考え)
+  - 1 回分の校正は、その回で量子化する最後の層の後で打ち切る (`_Stop`)。後ろの層と出力層 (語彙 262144) を計算しない
+  - 参照のロジットは採点する位置だけ持つ (1 文 0.7 GB → 0.4 GB)
+  - 校正の文は `tools/amd/calib_data.py` で Hugging Face の parquet から作る (`~/models/calib`)。GPL-3 は Mac にないので評価から抜ける
+  - PyTorch は Homebrew の `pytorch` (2.15、venv は `/opt/homebrew/opt/pytorch/libexec`)。ref-venv はその venv の Python で作り、site-packages を `.pth` で足し、transformers などを入れた。coremltools は Python 3.15 の native がなく、`eval_logits.py` は使えない
+- 校正: `q4_gptq.py gemma4 CKPT OUT --fmt-q4 lut6 --fmt-q8 lut6 --head lut6 --lut-fit wkmeans --q8 gptq` (16.95 の LFM3 と同じ)。M1 の CPU 4 スレッドで **87 分**。後半はスワップ (最大 11.6 GB) で 1 回 7〜15 分に延びた。206 個の重み (MLP、注意、出力層。共有の層の k と v は持たない)、符号 2.1 GB。CPU の見積もり (bf16 の重みとの KL、後ろ 400 位置): README 0.088、wiki40b-ja 0.084、wikitext-2 0.080、Go 0.034
+- **Neural Engine の上の KL** (`hwnpu-generate -score REF,...`、足した): キャッシュなしのプログラム (`hwnpu-convert -seq 128`) を参照のトークンで 1 回流し、全位置で PyTorch の fp32 (`ref_gemma4.py`) と比べる。文は校正にない wikitext-2 の試験分と wiki40b-ja の評価分の先頭 128 トークン (BOS あり)。どれも 2〜3 部分で全部 Neural Engine
+
+| E2B (Neural Engine、128 トークン) | 英 KL 平均 / 中央値、最上位 | 日 KL 平均 / 中央値、最上位 | 重み |
+|---|---|---|---|
+| lut6 の丸め (チャットの `kmeans-minmax`) | 1.02 / 0.25、88/128 | 1.16 / 0.47、82/128 | 1.60 GiB |
+| 同、`per_layer` を lut8 | 0.94 / 0.25、92 | 1.03 / 0.43、81 | 1.61 GiB |
+| lut6 の GPTQ (`-codes`、206 個が当たる) | 0.74 / 0.13、94 | 1.02 / 0.34、90 | 1.60 GiB |
+| **GPTQ、`per_layer` を lut8** | **0.56 / 0.08、97** | **0.94 / 0.20、92** | 1.61 GiB |
+| lut8 の丸め (目安) | 0.10 / 0.02、118 | 0.10 / 0.02、113 | 2.16 GiB |
+
+  - 文の先頭の数トークンは分布が平らで KL が大きく (最大 8〜13)、平均を押し上げる。16.95 の 0.24 / 0.42 (別の文) とは比べられない。CPU の見積もり (後ろ 400 位置) より大きいのも同じ理由と、fp16 の計算 (lut8 でも 0.10)
+  - **`per_layer` の射影** (層ごとの `per_layer_input_gate` と `per_layer_projection`、`per_layer_model_projection`、合わせて 41M): 校正の対象 (MODELS の q4 / q8) に入っておらず、変換器が lut6 に丸めていた。lut8 にすると +0.01 GiB で、GPTQ と合わせたときに中央値が 4 割下がる (丸めだけでは小さい)。fp16 の 5 部分のプログラムは Core ML が `Unable to compute the prediction` で動かなかった
+- **hwnpu-chat の `-codes DIR` と `-format-for SUBSTRING=FORMAT`** (hwnpu-agent も、`chat.Setup.Codes`、`FormatFor`): 変換に `llm.Options.Codes`、`FormatFor` を渡す。名前に符号の index.json のハッシュと規則を入れ (`gemma4-r1-lut6-gptq-27b3b448-per_layer.lut8-p8192-...`)、符号なしのものと混ざらない。lutN でない形式に `-codes` は誤り。変換ごとに当たった数を出す (生成用 206、KV だけのプロンプト用 101)。`TestPrepareCodes`
+- チャットの形 (M1、注意で分けた 8 部分と KV だけの 3 部分、温度 0、考えない) で、16.95 の 12 問を 1 問ずつ:
+  - 丸め 10/12 (『吾輩は猫である』の作者を「野獣橋」、一番大きい湖を洞爺湖)。GPTQ と GPTQ + `per_layer` lut8 は 11/12 (夏目漱石。湖は洞爺湖のまま)。残りの答えは同じか言い回しだけ
+  - 速さは同じ: 長い答え (171〜199 トークン、プロンプト込み) 20.2〜21.9 → 20.5〜21.9 tokens/s。Neural Engine の重み 1.98 → 2.00 GiB (`per_layer` lut8)。全部 Neural Engine
+- 判断: 電力の方針 (読むバイトは同じかほぼ同じ) のまま精度が上がるので、`-codes` で使えるようにした。既定にはしない: 符号 2.1 GB の配り方が決まっていない (16.95 と同じ)、12 問では 1 問の差
+- 確かめていないこと: E4B (fp32 で 30 GB を超え、lean でも層だけで 15 GB ほどの見込みで、16 GB の Mac では難しい)、問いを増やした比較と hwnpu-agent の課題、M3 と M2、`per_layer` を GPTQ の対象に入れること、lut4 + GPTQ のチャット

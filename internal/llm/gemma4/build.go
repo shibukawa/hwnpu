@@ -229,7 +229,7 @@ func (m *builder) perLayerInputs(h *mlpackage.Var) *mlpackage.Var {
 // head is the final norm, the output layer tied to the embeddings and the soft cap of the logits.
 // By default (Options.HostSoftcap) the host applies the soft cap: it is monotonic, so sampling
 // needs its values for the few most likely tokens alone, and the program is all on the Neural
-// Engine. On an M1 the output layer's part took 2.3 ms less a step (docs/design.md 16.110).
+// Engine. On an M1 the output layer's part took 2.3 ms less a step (docs/design.md 16.113).
 // In the program instead: the Neural Engine takes the output layer's 262144 wide axis but not
 // elementwise operations over it (they go to the CPU), so the soft cap runs on the logits folded
 // into rows of at most llm.NeuralEngineMaxDim. The reshape back to (1, seq, vocab) still goes to

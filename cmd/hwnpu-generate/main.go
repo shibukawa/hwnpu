@@ -10,6 +10,12 @@
 // logits at the last one: the positions after it hold zeros and do not change the result, because
 // the model is causal; when the window is full, the oldest quarter is dropped (after the first
 // token). The token embeddings are read from the checkpoint on the host, as the package expects.
+//
+// -score REF[,REF...] instead runs a model without a cache once over each reference's tokens
+// (tools/ref/ref_logits.py or ref_gemma4.py, REF.ids.bin and REF.logits.bin) and prints how far
+// its logits are from the reference's at every position: the mean and median KL(ref || model),
+// argmax agreement and cosine. It measures the loss of a conversion on the NPU itself (fp16
+// computation and quantization), where hwnpu-check -package measures it on the fp32 interpreter.
 package main
 
 import (
@@ -32,6 +38,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	_ "github.com/shibukawa/hwnpu/internal/llm/archs"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
+	"github.com/shibukawa/hwnpu/internal/llm/check"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
@@ -58,8 +65,9 @@ func main() {
 	special := flag.Bool("special", false, "print special tokens such as <think> too")
 	preload := flag.String("preload", "all", "with cache tiers: all loads every tier before generating (a tier takes 6 to 30 s to load and slows generation while it loads); a fraction 0 to 1 loads the next tier in the background once the cache is that full")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
+	score := flag.String("score", "", "comma separated reference prefixes (tools/ref/ref_logits.py): score the logits of a model without a cache on their tokens instead of generating")
 	flag.Parse()
-	if *pkg == "" || *config == "" || *weights == "" || *prompt == "" {
+	if *pkg == "" || *config == "" || *weights == "" || *prompt == "" && *score == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -88,13 +96,13 @@ func main() {
 			preloadAt = v
 		}
 	}
-	if err := run(ctx, *pkg, *config, *weights, *tok, *system, *prompt, *raw, *special, *maxNew, *cacheDir, preloadAt, s); err != nil {
+	if err := run(ctx, *pkg, *config, *weights, *tok, *system, *prompt, *score, *raw, *special, *maxNew, *cacheDir, preloadAt, s); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-generate:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt string, raw, special bool, maxNew int, cacheDir string, preloadAt float64, s sampling) error {
+func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt, score string, raw, special bool, maxNew int, cacheDir string, preloadAt float64, s sampling) error {
 	a, model, err := llm.LoadConfig(config, "")
 	if err != nil {
 		return err
@@ -151,9 +159,12 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 	if x == nil {
 		return fmt.Errorf("%s has no input x", pkg)
 	}
-	ids, stops, err := promptIDs(tk, a.Name, system, prompt, raw)
-	if err != nil {
-		return err
+	var ids []int32
+	var stops map[int32]bool
+	if score == "" {
+		if ids, stops, err = promptIDs(tk, a.Name, system, prompt, raw); err != nil {
+			return err
+		}
 	}
 	out := newPrinter(tk, special)
 	emb := map[int32][]float32{}
@@ -166,6 +177,9 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 		return e, err
 	}
 	if hasCache(c) {
+		if score != "" {
+			return fmt.Errorf("-score takes a model without a cache (hwnpu-convert -seq N); %s has one", pkg)
+		}
 		cm, ok := model.(llm.Cached)
 		if !ok {
 			return fmt.Errorf("%s has a KV cache, but %s cannot run with one", pkg, a.Title)
@@ -178,7 +192,7 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 	if y.Size() != 2*seq*vocab {
 		return fmt.Errorf("output of %d bytes is not logits (%d, %d) in fp16", y.Size(), seq, vocab)
 	}
-	if len(ids) >= seq {
+	if score == "" && len(ids) >= seq {
 		return fmt.Errorf("the prompt is %d tokens; the package takes %d (convert with a larger -seq)", len(ids), seq)
 	}
 	// x, and the inputs the host looks up per token besides it (llm.TokenInputs)
@@ -217,6 +231,44 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 		}
 		return nil
 	}
+	softcap := llm.HostSoftcap(c.Meta()) // the soft cap the program leaves to the host
+	if score != "" {
+		for _, prefix := range strings.Split(score, ",") {
+			ref, err := check.LoadRef(prefix)
+			if err != nil {
+				return err
+			}
+			n := len(ref.IDs)
+			if n > seq || len(ref.Logits) != n*vocab {
+				return fmt.Errorf("%s: %d tokens and %d logits; the package takes %d tokens of a vocabulary of %d", prefix, n, len(ref.Logits), seq, vocab)
+			}
+			clearAll()
+			for i, t := range ref.IDs {
+				if err := write(i, t); err != nil {
+					return err
+				}
+			}
+			syncAll()
+			if err := c.Run(ctx); err != nil {
+				return err
+			}
+			y.SyncFromDevice(0, 2*n*vocab)
+			got := make([]float32, n*vocab)
+			hwnpu.DecodeF16(got, y.Bytes()[:2*n*vocab])
+			kls := make([]float64, n)
+			for i := range n {
+				llm.Softcap(got[i*vocab:(i+1)*vocab], softcap)
+				kls[i] = check.KL(ref.Logits[i*vocab:(i+1)*vocab], got[i*vocab:(i+1)*vocab])
+			}
+			st, err := check.CompareLogits(got, ref.Logits, vocab)
+			if err != nil {
+				return err
+			}
+			sort.Float64s(kls)
+			fmt.Printf("%s: KL mean %.4f, median %.4f, largest %.3f; argmax %d/%d; cosine %.5f\n", filepath.Base(prefix), st.KL, kls[n/2], kls[n-1], st.Agree, st.N, st.Cosine)
+		}
+		return nil
+	}
 	clearAll()
 	for i, t := range ids {
 		if err := write(i, t); err != nil {
@@ -226,7 +278,6 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 	syncAll()
 
 	logits := make([]float32, vocab)
-	softcap := llm.HostSoftcap(c.Meta()) // the soft cap the program leaves to the host
 	var gen []int32
 	var first, total time.Duration
 	slid := false
