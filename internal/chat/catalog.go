@@ -64,7 +64,7 @@ var Catalog = []Model{
 	{Name: "Qwen3.5-0.8B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-0.8B", Bytes: 1.77e9, NoThink: true,
 		About: "Qwen's smallest Qwen3.5, the 4B's structure in 0.8B: fast, but weak at facts; its text model in 8 bit tables, answering without thinking unless asked; the download has the vision part too, which is not converted"},
 	{Name: "Qwen3.5-2B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-2B", Bytes: 4.57e9, NoThink: true,
-		About: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 8 bit tables read 8 tokens per call, answering without thinking unless asked; the download has the vision part too, which is not converted"},
+		About: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"},
 	{Name: "plamo-3-translate-2b", Kind: KindChat, Features: []string{"translation"}, Repo: "pfnet/plamo-3-translate-2b", Bytes: 5.76e9,
 		About: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"},
 	{Name: "plamo-3-translate-0.8b", Kind: KindChat, Features: []string{"translation"}, Repo: "pfnet/plamo-3-translate-0.8b", Bytes: 1.79e9,

@@ -2,7 +2,7 @@
 
 [日本語](new-model-checklist.ja.md)
 
-Written 2026-11-07. While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
+Written 2026-11-07, updated 2026-11-08 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B and Whisper large-v3-turbo added). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
 
 ## Policy: power over speed
 
@@ -51,9 +51,12 @@ On top of the pass conditions of the `port-architecture` skill (1e-4 against an 
 |---|---|---|
 | Compare **with a BOS** | `tools/ref/ref_logits.py`, `hwnpu-check`, `ironlm -forced -bos` | Without a BOS, LFM3's KL looks 4× worse and layer 0's activations become outliers (amd-npu-models.md section 13). Measure with the tokens the chat format actually puts first |
 | Check against the real weights | `hwnpu-check`, `iron_plamo3_check.py`; on AMD `ironlm -forced` + `tools/ref/forced_logits.py` | With random weights the NPU and the CPU reference disagree (Gemma 4, PLaMo 3): their logits are flat, and bf16 rounding and the bfp16 GEMMs spread layer by layer (16.107). Decide pass or fail with the real weights |
+| Check the real weights **of every size** | `hwnpu-check` | The same structure takes other paths through its config at other sizes (Qwen3.5-0.8B has as many value heads as key heads). Qwen3.5-4B was never checked against its real weights. Check every size that goes into the catalog |
 | The tokenizer matches HF | `tools/ref/tokenizer_golden.py` | 0 mismatches over fixed texts plus thousands of random ones. Also check that the tests fail when ties (PLaMo), NFC and combining marks (Qwen3.5) or byte fallback (Gemma 4) are handled the other way |
 | The chat format matches jinja2 character for character | `tools/ref/template_golden.py` | Tool calls, thinking, dropping earlier thinking |
-| Multimodal preprocessing | `resize_golden.py`, `mel_golden.py` | ±1 against PIL, 1e-4 against librosa |
+| The chat format's defaults do not differ by size | The template and the model card | Qwen3.5-0.8B / 2B answer without thinking by default, 4B thinks. Made to think, the small ones ran on to the budget, so the catalog's `NoThink` follows the default (-think on the command line overrides it) |
+| Multimodal preprocessing | `resize_golden.py`, `mel_golden.py`, `whisper_mel_golden.py` | ±1 against PIL, 1e-4 against librosa |
+| Encoder-decoders (speech) | `tools/ref/ref_whisper.py`, `hwnpu-check` (the mel frames as input through `REF.x.bin`) | Check the encoder, the cross attention's keys and values and the decoder each on their own. For audio over 30 seconds, follow HF's windowing too (features over the whole clip, the next window from the timestamps): cut every 30 seconds, HF drops text as well |
 | Embedding models | `embed_golden.py` | Cosine 0.997 or more against HF |
 | Image generation | `tools/ref/ref_anima.py` | Latent cosine against diffusers' fp32, PSNR of the VAE |
 
@@ -67,10 +70,10 @@ On top of the pass conditions of the `port-architecture` skill (1e-4 against an 
 |---|---|---|
 | 1 GiB a package (0.9 GiB a part by default) | Split by layers (separate packages; multifunction cannot get past it) | 16.12–13 |
 | 16384 per dimension | Attention split into chunks (`-paged`), the softcap folded to (16, 16384) | 16.21, 16.25 |
-| A compile cache of about 4 GiB (LRU) | If the two programs (Q=8 and Q=64) exceed it, use one (`-prefill auto`). Tiers (`-tier`) only with lut4 | 16.41, 16.65, 16.71 |
-| Tables only per 16 rows | How to choose the format is in section 5 | |
+| A compile cache of about 4 GiB (LRU), **about 3.5 GiB in effect** | If the two programs (Q=8 and Q=64) exceed it, use one (`-prefill auto`, at 3.5 GiB). Qwen3.5-2B's two programs of 3.56 GiB were compiled again at every start, 4–5 minutes. Tiers (`-tier`) only with lut4 | 16.41, 16.65, 16.71, 16.99 |
+| Tables only per 16 rows | How to choose the format is in section 5. An output layer whose rows are not a multiple of 16 (Whisper's vocabulary of 51866) is padded with rows of zeros and sliced back (`blocks.LinearPadded`); unpadded, the lut conversion fails | 16.100 |
 | `gather` runs on the CPU | Look up embedding rows on the host (PLE too) | 16.25 |
-| Attention scores under 64 MiB a tensor | Past it, 2–3× slower. Chunk the queries (`mil.DitQChunk`) | 16.85 |
+| Attention scores under 64 MiB a tensor | Past it, 2–3× slower. Chunk the queries (`mil.DitQChunk`). Not always: Whisper's encoder (20 heads × 1500 × 1500 = 90 MB) was no faster in chunks (0 / 300 / 500 / 750 queries: 520 / 518 / 537 / 555 ms, the same output). Measure before splitting | 16.85, 16.115 |
 
 ### 3.2 Does all of it run on the NPU?
 
@@ -83,7 +86,14 @@ Check that each part is `all on the NPU` with `hwnpuinfo -model PART.mlpackage`.
 
 ### 3.3 Does fp16 overflow?
 
-Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`. What helped:
+Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`. Layers that pass one at a time can still drift as a whole (Whisper: 0.0003 or less a layer, a cosine of 0.9978 for the whole). Look also at:
+
+- The whole `-f16` run and the cosine **per position**, counting the positions of the speech or prompt apart from the padding's
+- Where massive activations (attention sinks) arise: the largest values of each layer of HF's hidden states (`REF.hidden.bin`). Whisper puts 300 at silent positions from layer 21
+- **Before hunting the cause, compare with HF run in fp16.** If it drifts as much, the port is not wrong (Whisper: HF's fp16 0.9978 too)
+- On the ANE and on Core ML's CPU, programs of the first N layers (`hwnpu-convert -layers N`) against HF's layers show where the drift starts (`TestEncoderOnDevice` in `internal/transcribe`). Whisper stays at 0.9996 or more through layer 20; at layer 21 which silent position becomes a sink varies. The CPU and the ANE drift as much (cosine 0.97) from HF as from each other, the speech positions hold, and the transcripts are HF's. A LayerNorm divided by each row's maximum changed nothing, so it is not an overflow
+
+What helped:
 
 - Scale the norms' inputs by 1/64 (Gemma 4: KL 3.17 → 0.0004; PLaMo 3 too)
 - Shrink the last layer with head-scale (PLaMo-Embedding), `-post-scale` (LFM3, 1.4–2.7 % a layer)
@@ -94,7 +104,8 @@ Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`
 ### 3.4 Pass
 
 - Every part is `all on the NPU`
-- The second start takes a few seconds (the parts stay in the compile cache). In the split form (`-paged`), Gemma 4 went from 98 s to 1.9 s
+- The second and **third** starts take a few seconds (the parts stay in the compile cache). In the split form (`-paged`), Gemma 4 went from 98 s to 1.9 s. The second alone misses two programs that evict each other (16.99)
+- Record the first compile time of each part. Qwen3.5's 128 tokens a call (GDN) took 13–15 minutes the first time (not solved)
 - Record the KL and argmax of `hwnpu-check -package` (for each format, section 5)
 
 ## 4. The AMD (IRON) and Intel forms
@@ -181,8 +192,17 @@ Keep the format and raise accuracy by choosing the codes (levels) better. The fo
 | KL under 0.05 (against HF on the CPU) | port-architecture's guide. 4 bits can be the default |
 | KL 0.05–0.2 | Decide by the quality of the answers (section 9). The ANE's lut6 (LFM3 0.232) is here |
 | KL 1 or more | Not usable (lut4 LFM3 got 3 of 4 factual questions wrong) |
+| `hwnpu-formats`: the reference's next token 90% or more, and as many short questions right | Take the smaller one (Qwen3.5-2B's lut6: 92% of lut8's, 10 of 12 right in both. 16.115) |
+| 85–90% likewise, or new mistakes in arithmetic or facts | Keep the next larger format (Qwen3.5-0.8B's lut6: 86% of fp16's, and 17 × 23 wrong) |
+| Under 80% likewise, or answers that repeat a phrase | Not usable (Qwen3.5's lut4: 60–76%, 5–6 of 12 answers repeating) |
+| Audio and image encoders | Decide by the error rates of the text (WER, CER). Whisper's lut6: WER 4.43% → 4.87%, CER 3.60% → 3.94%, so it stays lut8 |
 
 The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.65 / 3.49 ms). lut6's slowness was won back with `SDPAGrouped` (16.41).
+
+- Make fp16 the reference. When fp16 does not fit a part (0.97 GiB; Qwen3.5-2B's last layer with its output layer of a 248K vocabulary is 1.04 GiB), use lut8 (`hwnpu-formats -ref lut8`) and check lut8 itself by its KL against HF on the CPU
+- On a short text, perplexity can be lower quantized (Qwen3.5's lut6). Compare by agreement with the reference
+- When a smaller format brings the two programs (8 tokens per call and the one for prompts) under the compile cache (about 3.5 GiB), `-prefill auto` goes from one program to two (Qwen3.5-2B at lut6). Measure the resident memory and the first compile again
+- The format may differ by size: within one architecture, decide it per checkpoint with `Formatter` (the config's `Format()`; LFM3 and its VL, Qwen3.5's 2B against the 0.8B and 4B)
 
 ## 6. Memory
 
@@ -202,6 +222,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 | What to measure | Tools |
 |---|---|
 | One call (Q=8, Q=64) | `TestCallTimes` (`HWNPU_CALL_PKGS`) |
+| One encoder call (the ANE and Core ML's CPU) | `TestEncoderOnDevice` (`HWNPU_WHISPER_UNITS`) |
 | Generation tokens/s, prompts, startup (the second) | `hwnpu-generate`, `hwnpu-chat`'s log |
 | Comparing formats | `hwnpu-formats` |
 | AMD GEMV, power | `tools/amd/gemvbench`, `powerbench` |
@@ -209,6 +230,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 Things to bring in next (they helped every model):
 
 - Two programs (generation and prompt reading) on one cache, reuse of the previous prompt, the prompt store (disk)
+- **The prompt program's output layer on the last row only** (`LastRow`, #56). PLaMo 3 and Qwen3.5 lacked it; with it, reading a document took 25 % less (16.99)
 - Speculative decoding (n-grams from the prompt, Apple / Intel), the think budget (`-think-budget`), repetition detection
 - A model whose later layers write no cache (shared keys and values) gets a prompt program that stops at the last layer that writes one (`-kv-only`, `llm.CacheWriters`; Gemma 4 E2B 1.6 → 0.38 GiB, 16.112). When the two programs do not fit the Neural Engine, generation slows down too
 - A monotonic operation after the output layer (the soft cap) goes to the host's sampling, so that the output layer is all on the Neural Engine (`llm.LogitSoftcap`, 16.113)
@@ -229,10 +251,18 @@ Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for wh
 | Use | How to check |
 |---|---|
 | Chat | 16.26's four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River), hwnpu-agent's task (does `go test` pass?) |
-| Translation | Measure KL and agreement **on the translation's tokens only** (the source side is not predicted, so it scores high). How many of 44 texts are word for word the same as bf16 |
-| Image descriptions, transcription, TTS | Compare the answers for the same images and audio. Run TTS output back through ASR |
+| Translation | Measure KL and agreement **on the translation's tokens only** (the source side is not predicted, so it scores high). How many of 44 texts are word for word the same as bf16. `hwnpu-formats` measures on chat text, so its perplexity means nothing for a translation model (28 thousand for PLaMo 3 Translate) |
+| Image descriptions, TTS | Compare the answers for the same images and audio. Run TTS output back through ASR |
+| Transcription | English: LibriSpeech's 73 validation clips (`hf-internal-testing/librispeech_asr_dummy`, with the truth); Japanese: 12 texts in four `say` voices. Count the clips word for word the same as HF fp32, and the WER / CER (16.115). Audio over 30 seconds too |
 | Embeddings | Cosine against HF |
 | Image generation | Compare images from the same noise. The composition can change with some seeds (one in four) |
+
+**In practice**:
+
+- fp16 programs for the comparison double the disk used. Remove a format's programs once compared
+- Core ML makes `~/Library/Caches/<process>/com.apple.e5rt.e5bundlecache` for every process, test binaries (`transcribe.test`) included, several GB each (6.2 GB from the Whisper comparison)
+- A stalled download never times out (`chat.fetch` does not detect stalls; kotoba-whisper stopped at 158 MB for an hour)
+- `hwnpu-formats` shows the weights of a single unsplit program as 0.00 GiB
 
 **The record**:
 
@@ -261,12 +291,14 @@ Later, models will be chained, such as speech recognition → LLM → TTS, and r
 
 ## 11. Tried without effect (do not repeat)
 
-The gist of section 8 of [improvements.md](improvements.md): padding small models into batches for the ANE (slower than the CPU), fixing a small Qwen3.5's 4-bit MLP with GPTQ (the GPL stays broken; q6 instead), a faster GEMV from q6 (q8's time), getting past 1 GiB with multifunction (all on the CPU), the KV cache in MLState, an int8 KV cache, loading the next tier in the background, one Q=16 program, E4B at lut4, compressing the model, sparse attention on the top keys alone, AMD attention at 4 bits, a GEMV with one core per column, copying MoE experts, the DiT at `HIGH`, the DiT at q4 by default, q4nx prompts through bf16, RMSNorm with a fixed scale.
+The gist of section 8 of [improvements.md](improvements.md): padding small models into batches for the ANE (slower than the CPU), fixing a small Qwen3.5's 4-bit MLP with GPTQ (the GPL stays broken; q6 instead), a faster GEMV from q6 (q8's time), getting past 1 GiB with multifunction (all on the CPU), the KV cache in MLState, an int8 KV cache, loading the next tier in the background, one Q=16 program, E4B at lut4, compressing the model, sparse attention on the top keys alone, AMD attention at 4 bits, a GEMV with one core per column, copying MoE experts, the DiT at `HIGH`, the DiT at q4 by default, q4nx prompts through bf16, RMSNorm with a fixed scale. Whisper's encoder LayerNorm divided by each row's maximum (the output did not change, 16.115), Whisper's encoder attention in chunks of queries (no faster).
 
 ## 12. In progress (2026-11-08)
 
 - The AMD exports here were exported again with 8 pipelines and the new chunk sizes (16.108). When an export changes, pass an image and a clip through `hwnpu-chat`
 - Qwen3.6's prompt attention pipelines are not measured (it keeps 1)
+- Qwen3.5-2B at lut6: the KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), long contexts and the hwnpu-agent tasks
+- Whisper: the formats on real recordings (noise, overlapping speakers)
 
 ### As of 2026-11-07
 
@@ -274,4 +306,4 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Apple: checking the GPTQ lut6 / lut4 tables on the ANE ([handoff-m3-gptq.md](handoff-m3-gptq.md)). Done for LFM3 (16.95) and Gemma 4 E2B on the M1 (16.114); hwnpu-chat takes `-codes` and `-format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 - Anima: the 4-bit DiT with GPTQ (latent cosine 0.939 on the CPU at 512×512) not yet checked as an image at 1024×1024 on the NPU
 
-When results come in, update the table in 5.3 and this section.
+When results come in, update the tables in 5.3 and 5.4 and this section.
