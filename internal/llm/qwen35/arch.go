@@ -30,6 +30,9 @@ var MTPArch = &llm.Arch{
 	Format:     "lut8",
 	LastRow:    true,
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseMTP(raw) },
+	Params: []llm.Param{
+		{Name: "draft-vocab", Default: "0", Usage: "N (a multiple of 16): the output layer has the rows of the N most frequent tokens alone (DraftVocab), whose ids the manifest lists in the order of the logits; 0 for the whole vocabulary. A draft is a guess the model checks, so fewer tokens change only how many are taken"},
+	},
 }
 
 func init() {

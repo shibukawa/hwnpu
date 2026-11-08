@@ -1,6 +1,7 @@
 package qwen35
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
@@ -382,4 +384,82 @@ func TestPagedLastRow(t *testing.T) {
 		t.Error("LastRow without a cache was built")
 	}
 	t.Logf("worst relative error %.2g", worst)
+}
+
+// Every layer writes a cache or a state, and the last is a full attention the host runs: a
+// program that only reads tokens into them (llm.Options.KVOnly) has all the layers but the last
+// one's attention, MLP and the output layer (the last part ends with layer 3's keys and values).
+// It reads the beginning of the sequence without logits, a call shorter than its 4 tokens and one
+// over a chunk's boundary too, and the program of 1 token per call goes on from its caches and
+// Gated DeltaNet states with the logits of the program without a cache.
+func TestPagedKVOnly(t *testing.T) {
+	cfg := tinyConfig(t)
+	w := llm.NewSynthetic(cfg)
+	tokens := []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}
+	n := len(tokens)
+	if l, ok := llm.KVOnlyLayers(cfg); !ok || l != cfg.Layers() {
+		t.Fatalf("KVOnlyLayers %d, %v: want all %d layers", l, ok, cfg.Layers())
+	}
+	emb := embed16(t, cfg, w, tokens)
+	full := runCPU(t, cfg, w, llm.Options{Seq: n, Format: "fp16"}, emb)
+	dir := t.TempDir()
+	var paths []string
+	for _, q := range []int{1, 4} {
+		// as hwnpu-chat converts them for drafts from the multi-token prediction layer: the
+		// final hidden states out (hidden-out), which the program without logits has none of
+		opts := llm.Options{Seq: q, Cache: 16, Paged: 4, KVOnly: q > 1, Format: "fp16", Params: map[string]string{"hidden-out": "1"}}
+		path, err := llm.Convert(Arch, cfg, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	man, err := llm.ReadManifest(paths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := man.Parts[len(man.Parts)-1]
+	if !man.KVOnly || last.Start+last.Layers != cfg.Layers()-1 {
+		t.Fatalf("KVOnly %v, the last part ends at layer %d: want the parts up to layer %d (and its keys and values)", man.KVOnly, last.Start+last.Layers, cfg.Layers()-1)
+	}
+	s, cl, err := runner.OpenSession(context.Background(), nil, paths, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	row := func(i int) []float32 { return emb[i*cfg.HiddenSize : (i+1)*cfg.HiddenSize] }
+	step := func(from, to int) []float32 {
+		t.Helper()
+		var rs [][]float32
+		for i := from; i < to; i++ {
+			rs = append(rs, row(i))
+		}
+		logits, err := s.Step(rs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return logits
+	}
+	pos := 0
+	for _, v := range []int{3, 4} {
+		if logits := step(pos, pos+v); logits != nil {
+			t.Fatalf("a step of %d tokens on the program that writes the caches gave logits", v)
+		}
+		pos += v
+	}
+	if h := s.HiddenRows(); h != nil {
+		t.Errorf("the program that writes the caches gave %d hidden states", len(h))
+	}
+	worst := 0.0
+	for ; pos < n; pos++ {
+		logits := step(pos, pos+1)
+		worst = math.Max(worst, relErr(logits, full[pos*cfg.VocabSize:(pos+1)*cfg.VocabSize]))
+		if h := s.HiddenRows(); len(h) != 1 {
+			t.Errorf("position %d: %d hidden states, want the token's", pos, len(h))
+		}
+	}
+	if worst > 2e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g on the 4 tokens after reading 7 without logits", worst)
 }

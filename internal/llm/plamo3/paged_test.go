@@ -150,3 +150,56 @@ func TestPagedLastRow(t *testing.T) {
 	}
 	t.Logf("worst relative error %.2g", worst)
 }
+
+// The last layer is a full attention the host runs (pattern 2: layers 1 and 3): a program that only
+// reads tokens into the caches (llm.Options.KVOnly) stops at its keys and values, without its MLP
+// and the output layer. It reads the beginning of the sequence without logits, over a chunk's
+// boundary and with the window layers' rings turning, and the program of 1 token per call goes on
+// from its caches with the logits of the program without a cache.
+func TestPagedKVOnly(t *testing.T) {
+	c := tinyConfig(t)
+	w := llm.NewSynthetic(c)
+	n := len(tokens)
+	if l, ok := llm.KVOnlyLayers(c); !ok || l != c.Layers() {
+		t.Fatalf("KVOnlyLayers %d, %v: want all %d layers", l, ok, c.Layers())
+	}
+	full := build(t, c, w, llm.Options{Seq: n, Format: "fp16"}).run(t, map[string][]float32{"x": rows(t, w, c.Embedding(), tokens)})["y"]
+	dir := t.TempDir()
+	var paths []string
+	for _, q := range []int{1, 4} {
+		opts := llm.Options{Seq: q, Cache: 16, Paged: 4, KVOnly: q > 1, Format: "fp16"}
+		path, err := llm.Convert(Arch, c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	man, err := llm.ReadManifest(paths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := man.Parts[len(man.Parts)-1]; !man.KVOnly || last.Start+last.Layers != c.Layers()-1 {
+		t.Fatalf("KVOnly %v, the last part ends at layer %d: want layer %d's keys and values", man.KVOnly, last.Start+last.Layers, c.Layers()-1)
+	}
+	s, cl, err := runner.OpenSession(context.Background(), nil, paths, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	pos := 0
+	for _, v := range []int{3, 4} {
+		if logits := step(t, s, c, w, pos, pos+v); logits != nil {
+			t.Fatalf("a step of %d tokens on the program that writes the caches gave logits", v)
+		}
+		pos += v
+	}
+	worst := 0.0
+	for ; pos < n; pos++ {
+		logits := step(t, s, c, w, pos, pos+1)
+		worst = math.Max(worst, relErr32(logits, full[pos*c.VocabSize:(pos+1)*c.VocabSize]))
+	}
+	if worst > 5e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	t.Logf("worst relative error %.2g on the %d tokens after reading 7 without logits", worst, n-7)
+}

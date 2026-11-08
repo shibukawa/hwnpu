@@ -218,6 +218,32 @@ type CacheWriters interface {
 	CacheLayers() int
 }
 
+// OutputSubset is a model whose program, built with some options, gives the logits of some tokens
+// alone: OutputIDs are their ids in the order of the logits, nil for the whole vocabulary. The
+// conversion writes them into the manifest (Manifest.OutputIDs), where the host finds which token
+// a logit is of (the drafts of Qwen3.5's multi-token prediction layer among the frequent tokens).
+type OutputSubset interface {
+	OutputIDs(opts Options) ([]int32, error)
+}
+
+// KVOnlyLayers is how many layers a program that only reads tokens into the caches
+// (Options.KVOnly) builds, the last of them up to its keys and values, and whether the model has
+// such a program: the CacheLayers of a model whose later layers write no cache (CacheWriters), or
+// all the layers of a Paged model whose last layer's attention the host runs (Qwen3.5, PLaMo 3):
+// that layer's output and the output layer feed only the logits, which such a program does not
+// give.
+func KVOnlyLayers(m Model) (int, bool) {
+	if cw, ok := m.(CacheWriters); ok {
+		return cw.CacheLayers(), true
+	}
+	pm, ok := m.(Paged)
+	if !ok {
+		return 0, false
+	}
+	n := m.Layers()
+	return n, n > 0 && slices.Contains(pm.PagedLayers(), n-1)
+}
+
 // LogitSoftcap is a model whose program may leave the soft cap of its logits to the host
 // (Gemma 4's -logits host): HostSoftcap is the cap c of a program built with opts, whose logits y
 // the host turns into c*tanh(y/c), and 0 when the program applies it. The conversion writes it

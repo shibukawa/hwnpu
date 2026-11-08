@@ -95,6 +95,9 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 	}
 	base := strings.TrimSuffix(strings.TrimSuffix(out, ".mlpackage"), ".xml")
 	man := Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Target: target.Name, MaxBytes: target.MaxBytes}
+	if man.OutputIDs, err = outputIDs(model, opts); err != nil {
+		return "", err
+	}
 	if intel {
 		man.Backend, man.Meta = opts.Backend, metadata(a, model, w, opts)
 	}
@@ -290,6 +293,9 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 	}
 	base := strings.TrimSuffix(strings.TrimSuffix(out, ".mlpackage"), ".xml")
 	man := Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Cache: opts.Cache, Target: target.Name, MaxBytes: target.MaxBytes, Paged: opts.Paged, KVOnly: opts.KVOnly}
+	if man.OutputIDs, err = outputIDs(model, opts); err != nil {
+		return "", err
+	}
 	if intel {
 		man.Backend, man.Meta = opts.Backend, metadata(a, model, w, opts)
 	}
@@ -332,7 +338,8 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 	}
 	what := fmt.Sprintf("%d parts", len(plan))
 	if opts.KVOnly {
-		what = fmt.Sprintf("%d parts writing the caches of the first %d layers (no logits)", len(plan), model.(CacheWriters).CacheLayers())
+		n, _ := KVOnlyLayers(model)
+		what = fmt.Sprintf("%d parts writing the caches of the first %d layers (no logits)", len(plan), n)
 	}
 	fmt.Fprintf(log, "%s: %s split at the attention of layers %v, which the host runs over its cache of up to %d tokens in chunks of %d (%s)\n",
 		filepath.Base(base+".parts.json"), what, pm.PagedLayers(), opts.Cache, opts.Paged, filepath.Base(apath))
@@ -393,4 +400,13 @@ func AddMass(path, form string, scale float64) error {
 		return err
 	}
 	return WriteManifest(path, man)
+}
+
+// outputIDs is OutputSubset's ids of a model's program built with opts, nil for the whole
+// vocabulary (Manifest.OutputIDs).
+func outputIDs(m Model, opts Options) ([]int32, error) {
+	if os, ok := m.(OutputSubset); ok {
+		return os.OutputIDs(opts)
+	}
+	return nil, nil
 }

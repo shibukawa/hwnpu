@@ -88,10 +88,11 @@ func TestPrepareQwen35(t *testing.T) {
 	if len(c.Packages) != 2 {
 		t.Fatalf("packages %q", c.Packages)
 	}
-	// the program that reads prompts takes a chunk per call, and computes the logits after the
-	// last token alone (llm.Options.LastRow); the one that checks drafts also outputs what each
-	// row adds to the Gated DeltaNet's state (-sr, state-rows)
-	for i, name := range []string{"sr-c96-q8", "c96-q96-last"} {
+	// the program that reads prompts takes a chunk per call and only writes the caches and states
+	// (llm.Options.KVOnly): the last layer is a full attention the host runs, so the program
+	// stops at its keys and values, without its MLP and the output layer; the one that checks
+	// drafts also outputs what each row adds to the Gated DeltaNet's state (-sr, state-rows)
+	for i, name := range []string{"sr-c96-q8", "c96-q96-kv"} {
 		p, q := c.Packages[i], []int{8, 96}[i]
 		if want := fmt.Sprintf("qwen35-fp16-p96-%s.parts.json", name); filepath.Base(p) != want {
 			t.Errorf("package %s, want %s", filepath.Base(p), want)
@@ -100,9 +101,9 @@ func TestPrepareQwen35(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// cut at the full attention layers 1 and 3
-		if man.Paged != 96 || man.Cache != 96 || man.Seq != q || man.Attention == nil || len(man.Parts) != 3 {
-			t.Errorf("%s: paged %d, cache %d, seq %d, %d parts", p, man.Paged, man.Cache, man.Seq, len(man.Parts))
+		// cut at the full attention layers 1 and 3; the one that reads prompts ends at layer 3
+		if parts := []int{3, 2}[i]; man.Paged != 96 || man.Cache != 96 || man.Seq != q || man.Attention == nil || len(man.Parts) != parts || man.KVOnly != (i == 1) {
+			t.Errorf("%s: paged %d, cache %d, seq %d, %d parts, KVOnly %v", p, man.Paged, man.Cache, man.Seq, len(man.Parts), man.KVOnly)
 		}
 	}
 	if !Downloaded(dir) || !strings.HasSuffix(c.Weights, "model.safetensors") {

@@ -28,7 +28,8 @@ type mtpDrafter struct {
 	e      *Engine
 	chains []*chain.Chain
 	sess   *decode.Session
-	k      int // the most drafts it guesses in a row
+	k      int     // the most drafts it guesses in a row
+	ids    []int32 // the tokens of the logits, in their order (llm.Manifest.OutputIDs); nil: all
 
 	// fed is the sequence the hidden states and the entries are of; hrows the model's final
 	// hidden states at positions [hbase, hbase+len(hrows)) of it
@@ -51,6 +52,12 @@ const mtpKeep = 4096
 // it, and the layer's own attention over the positions before these is not worth a call per
 // mtpSeq of them.
 const mtpStart = 512
+
+// mtpVocab is how many of the most frequent tokens the layer guesses among (qwen35-mtp's
+// draft-vocab, HWNPU_MTP_VOCAB at conversion; 0 for the whole vocabulary): its output layer is
+// most of its weights (Qwen3.5-2B: 0.36 of 0.40 GiB in lut6, of 248320 tokens), read at every
+// draft. The 32768 most frequent cover 98.3% of the tokens of Japanese and English text and code.
+var mtpVocab = 32768
 
 // mtpDrafts is the most drafts in a row the layer guesses (HWNPU_MTP_DRAFTS overrides it): each
 // after the first costs a call of the layer and is right less often.
@@ -79,6 +86,11 @@ func loadMTP(ctx context.Context, e *Engine, c Config) (*mtpDrafter, error) {
 		m.k = v
 	}
 	m.k = min(m.k, ds.Qs()[0]-1)
+	man, err := llm.ReadManifest(c.MTP[0])
+	if err != nil {
+		return nil, err
+	}
+	m.ids = man.OutputIDs
 	for i, pkg := range c.MTP {
 		var ch *chain.Chain
 		if i == 0 {
@@ -230,7 +242,10 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 		t += n
 		m.real += n
 	}
-	drafts := []int32{argmax(logits)}
+	if m.ids != nil && len(logits) != len(m.ids) {
+		return nil, fmt.Errorf("chat: %d logits of the multi-token prediction layer for %d tokens", len(logits), len(m.ids))
+	}
+	drafts := []int32{m.token(argmax(logits))}
 	for len(drafts) < k {
 		x, err := m.e.rows(drafts[len(drafts)-1:])
 		if err != nil {
@@ -243,10 +258,18 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 			return nil, err
 		}
 		h = m.sess.Hidden()
-		drafts = append(drafts, argmax(logits))
+		drafts = append(drafts, m.token(argmax(logits)))
 	}
 	// back to the entries read for real
 	return drafts, m.sess.Truncate(m.real)
+}
+
+// token is the token of the i-th logit.
+func (m *mtpDrafter) token(i int32) int32 {
+	if m.ids != nil {
+		return m.ids[i]
+	}
+	return i
 }
 
 func argmax(v []float32) int32 {

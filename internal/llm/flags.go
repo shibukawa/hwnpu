@@ -23,7 +23,7 @@ func BindFlags(fs *flag.FlagSet, o *Options, defaultFormat string) func() {
 	codes := fs.String("codes", "", "lutN: a directory of tables and indices chosen against the activations by tools/amd/q4_gptq.py (GPTQ), for the weights it names")
 	paged := fs.Int("paged", 0, "with -cache: split the model at its full attention layers and attend over the cache in chunks of this many tokens on the host's side (internal/llm/paged), so that a step costs in proportion to the tokens used, not to -cache; 8192 for the Neural Engine. LFM3 only")
 	lastRow := fs.Bool("last-row", false, "with -cache: compute the logits after the last token of a call only (the program takes last, a one-hot row; for reading prompts). LFM3 and Gemma 4")
-	kvOnly := fs.Bool("kv-only", false, "with -paged: build only the layers that write the caches, with no output layer (for reading prompts; the program that generates reads their last tokens). Gemma 4")
+	kvOnly := fs.Bool("kv-only", false, "with -paged: build only the layers that write the caches, with no output layer (for reading prompts; the program that generates reads their last tokens). Gemma 4, and models whose last layer is an attention the host runs (Qwen3.5, PLaMo 3)")
 	params := map[string]*string{}
 	for _, a := range Archs() {
 		for _, p := range a.Params {

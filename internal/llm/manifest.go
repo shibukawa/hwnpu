@@ -42,6 +42,9 @@ type Manifest struct {
 	// KVOnly marks a model split at its attention converted with Options.KVOnly: its parts end
 	// with the last layer that writes a cache, and the program outputs no logits.
 	KVOnly bool `json:"kv_only,omitempty"`
+	// OutputIDs are the tokens of the logits y, in their order, of a program that gives the
+	// logits of some tokens alone (OutputSubset); none for the whole vocabulary.
+	OutputIDs []int32 `json:"output_ids,omitempty"`
 	// Backend is the runtime the parts are written for (Options.Backend; empty for coreml).
 	Backend string `json:"backend,omitempty"`
 	// Meta is the metadata of the parts (MetaArch, MetaParam...), also in each part's own

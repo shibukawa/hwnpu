@@ -2,6 +2,8 @@ package chat
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -169,4 +171,36 @@ func mtpFromStart(t *testing.T, cfg *qwen35.Config, mm *qwen35.MTP, w llm.Weight
 	h := run(cfg, llm.Options{Seq: n, Format: "fp16", Hidden: true}, map[string][]float32{"x": x[:n*d]})
 	y := run(mm, llm.Options{Seq: n, Format: "fp16"}, map[string][]float32{"x": x[d:], "hid": h})
 	return y[(n-1)*cfg.VocabSize:]
+}
+
+// With an output layer of some tokens alone (qwen35-mtp's draft-vocab), the i-th logit is of the
+// manifest's i-th token; without, of token i. The architecture's draft-vocab follows
+// HWNPU_MTP_VOCAB, and one without the setting has none.
+func TestMTPToken(t *testing.T) {
+	m := &mtpDrafter{ids: []int32{2, 7, 40}}
+	if got := m.token(1); got != 7 {
+		t.Errorf("logit 1 is of token %d, want 7", got)
+	}
+	m.ids = nil
+	if got := m.token(1); got != 1 {
+		t.Errorf("without ids, logit 1 is of token %d", got)
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(tinyQwen35MTP), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ma, _, err := llm.LoadConfig(path, "qwen35-mtp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := draftVocab(ma); k != mtpVocab {
+		t.Errorf("draft-vocab %d, want %d", k, mtpVocab)
+	}
+	t.Setenv("HWNPU_MTP_VOCAB", "0")
+	if k := draftVocab(ma); k != 0 {
+		t.Errorf("HWNPU_MTP_VOCAB=0: draft-vocab %d", k)
+	}
+	if k := draftVocab(&llm.Arch{Name: "other"}); k != 0 {
+		t.Errorf("an architecture without draft-vocab: %d", k)
+	}
 }

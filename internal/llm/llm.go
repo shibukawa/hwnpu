@@ -144,10 +144,12 @@ type Options struct {
 	// after each. For a program that reads prompts, of which only the logits after the last token
 	// are used: the output layer is the widest of the model (Arch.LastRow).
 	LastRow bool
-	// KVOnly, with Paged, builds only the layers that write the caches (CacheWriters): the
+	// KVOnly, with Paged, builds only the layers that write the caches (KVOnlyLayers): the
 	// program reads tokens into the caches and outputs no logits. For reading prompts, all of a
 	// prompt but its last tokens, which the program that generates reads; a model whose later
-	// layers reuse earlier keys and values (Gemma 4) leaves most of its weights out of it.
+	// layers reuse earlier keys and values (Gemma 4) leaves most of its weights out of it, one
+	// whose last layer is an attention the host runs (Qwen3.5, PLaMo 3) that layer's MLP and the
+	// output layer.
 	KVOnly bool
 	// Format is "lut4" (4 bit palettized per 16 rows; lut6 and lut8 have larger tables), "int4"
 	// or "int8" (symmetric, one scale per row; "int4-g128" one per 128 columns: LinearFormat) or

@@ -311,11 +311,10 @@ func PlanPaged(m Model, opts Options, budget int64) ([]Part, error) {
 // attention the host runs computes that layer's output, which no later cache needs when it is
 // the last cache writer; its keys and values come from the part before.
 func kvOnlyParts(m Model, plan []Part) ([]Part, error) {
-	cw, ok := m.(CacheWriters)
+	n, ok := KVOnlyLayers(m)
 	if !ok {
-		return nil, fmt.Errorf("llm: the model has no layers that write no cache, so it has nothing to leave out (-kv-only)")
+		return nil, fmt.Errorf("llm: the model's later layers write caches and its last layer's attention does not run on the host, so it has nothing to leave out (-kv-only)")
 	}
-	n := cw.CacheLayers()
 	paged := map[int]bool{}
 	for _, l := range m.(Paged).PagedLayers() {
 		paged[l] = true

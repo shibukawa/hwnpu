@@ -1,9 +1,13 @@
 package qwen35
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -238,4 +242,91 @@ func mtpWeights(c *MTP) llm.Synthetic {
 		w[name] = shape
 	}
 	return w
+}
+
+// With draft-vocab the MTP program's output layer has the rows of the most frequent tokens alone:
+// its logits are the whole vocabulary's at those ids, which the manifest lists in their order;
+// split at its attention as hwnpu-chat converts it. A count that is not a multiple of 16, or a
+// token past the vocabulary, is refused.
+func TestMTPDraftVocab(t *testing.T) {
+	c := tinyMTP(t)
+	w := mtpWeights(c)
+	defer func(b []byte) { draftVocab = b }(draftVocab)
+	rank := []int{7, 0, 30, 2, 47, 9, 11, 12, 13, 21, 22, 23, 40, 1, 5, 8, 33, 34}
+	draftVocab = make([]byte, 4*len(rank))
+	for i, id := range rank {
+		binary.LittleEndian.PutUint32(draftVocab[4*i:], uint32(id))
+	}
+	ids, err := DraftVocab(16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.IsSorted(ids) || slices.Contains(ids, 33) || !slices.Contains(ids, 47) {
+		t.Fatalf("DraftVocab(16) = %v: want the first 16 ranked, in ascending order", ids)
+	}
+	x, hid := mtpInputs(t, c, w, []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3})
+	want, _ := mtpReference(t, c, w, x, hid)
+	rows := mtpRows(c, x, hid)
+	opts := llm.Options{Seq: 4, Cache: 32, Paged: 8, Format: "fp16", Params: map[string]string{"draft-vocab": "16"}}
+	path, err := llm.Convert(MTPArch, c, w, filepath.Join(t.TempDir(), "m.mlpackage"), "none", 0, opts, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	man, err := llm.ReadManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(man.OutputIDs, ids) {
+		t.Fatalf("manifest's output ids %v, want %v", man.OutputIDs, ids)
+	}
+	var allocated int
+	s, err := decode.New(cpuPaged(t, man, &allocated), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pos := 0; pos < len(rows); pos += 4 {
+		v := min(4, len(rows)-pos)
+		logits, err := s.Step(rows[pos : pos+v])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(logits) != len(ids) {
+			t.Fatalf("%d logits, want %d", len(logits), len(ids))
+		}
+		i := pos + v - 1
+		sub := make([]float64, len(ids))
+		for j, id := range ids {
+			sub[j] = want[i][id]
+		}
+		if e := relErr64(logits, [][]float64{sub}, len(ids)); e > 1e-3 {
+			t.Errorf("position %d: relative error %g against the whole vocabulary's logits at the ids", i, e)
+		}
+	}
+	for _, k := range []string{"15", "-16", "x"} {
+		if _, err := c.OutputIDs(llm.Options{Params: map[string]string{"draft-vocab": k}}); err == nil {
+			t.Errorf("draft-vocab %s is taken", k)
+		}
+	}
+	draftVocab = binary.LittleEndian.AppendUint32(draftVocab[:4*15], 48) // past the vocabulary
+	if _, err := c.OutputIDs(llm.Options{Params: map[string]string{"draft-vocab": "16"}}); err == nil {
+		t.Error("a token past the vocabulary is taken")
+	}
+	if n, err := c.Narrow(16); err != nil || n.Tensors()[c.Head()][0] != 16 {
+		t.Errorf("Narrow(16): %v", err)
+	}
+}
+
+// The embedded ranking is of the Qwen3.5 tokenizer: the control tokens first, then 65536 ids in
+// all, each once.
+func TestDraftVocabEmbedded(t *testing.T) {
+	if n := len(draftVocab) / 4; n != 65536 {
+		t.Fatalf("%d ids ranked, want 65536", n)
+	}
+	ids, err := DraftVocab(65536)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(slices.Compact(ids)) != 65536 || ids[len(ids)-1] >= 248320 {
+		t.Errorf("the ids are not distinct tokens of the vocabulary of 248320")
+	}
 }

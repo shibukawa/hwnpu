@@ -348,9 +348,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// call for parts
 	// the program that reads prompts computes the logits after the last token alone where the
 	// architecture can (llm.Options.LastRow): the output layer is the model's widest. Split at
-	// its attention, a model whose later layers write no cache (Gemma 4's shared layers) has one
-	// that only writes the caches (llm.Options.KVOnly), without those layers and the output layer,
-	// and the program that generates reads the last tokens of a prompt
+	// its attention, a model whose later layers write no cache (Gemma 4's shared layers), or
+	// whose last layer is an attention the host runs (Qwen3.5, PLaMo 3), has one that only writes
+	// the caches (llm.Options.KVOnly), without those layers (that last layer's MLP) and the output
+	// layer, and the program that generates reads the last tokens of a prompt
 	type prog struct {
 		seq, parts      int
 		lastRow, kvOnly bool
@@ -358,7 +359,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	pre := prog{seq: prefillSeq, lastRow: a.LastRow && backend != llm.BackendIntel}
 	if chunk > 0 && backend != llm.BackendIntel {
 		pre.seq = min(pagedPrefillSeq, chunk) // a call's tokens fit in a chunk
-		if cw, ok := model.(llm.CacheWriters); ok && cw.CacheLayers() < model.Layers() {
+		if _, ok := llm.KVOnlyLayers(model); ok {
 			pre.lastRow, pre.kvOnly = false, true
 		}
 	}
@@ -457,8 +458,14 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if chunk > 0 {
 			mkind += fmt.Sprintf("-p%d", chunk)
 		}
+		// its output layer has the rows of the most frequent tokens alone (draft-vocab)
+		var mparams map[string]string
+		if k := draftVocab(ma); k > 0 {
+			mkind += fmt.Sprintf("-v%d", k)
+			mparams = map[string]string{"draft-vocab": strconv.Itoa(k)}
+		}
 		out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d-last%s", mkind, context, mtpSeq, programExt(backend)))
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: mtp, format: s.Format, seq: mtpSeq, cache: context, paged: chunk, lastRow: true}, s.Log)
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: mtp, format: s.Format, params: mparams, seq: mtpSeq, cache: context, paged: chunk, lastRow: true}, s.Log)
 		if err != nil {
 			return Config{}, err
 		}
@@ -524,7 +531,7 @@ func programBytes(model llm.Model, format string, kvOnly bool) (gen, read int64)
 	pre, layers, post := estimate(model, format)
 	n := len(layers) // the layers of the program that reads prompts
 	if kvOnly {
-		n = model.(llm.CacheWriters).CacheLayers()
+		n, _ = llm.KVOnlyLayers(model) // the last of them up to its keys and values: counted whole
 	}
 	gen, read = pre+post, pre
 	if !kvOnly {
@@ -548,6 +555,18 @@ func estimate(model llm.Model, format string) (pre int64, layers []int64, post i
 	return llm.EstimateBytes(model, o)
 }
 
+// draftVocab is the draft-vocab of a multi-token prediction layer's architecture a: mtpVocab
+// (HWNPU_MTP_VOCAB), 0 for the whole vocabulary or an architecture without the setting.
+func draftVocab(a *llm.Arch) int {
+	if !slices.ContainsFunc(a.Params, func(p llm.Param) bool { return p.Name == "draft-vocab" }) {
+		return 0
+	}
+	if v, err := strconv.Atoi(os.Getenv("HWNPU_MTP_VOCAB")); err == nil && v >= 0 {
+		return v
+	}
+	return mtpVocab
+}
+
 // besideBytes estimates the weights of the programs Prepare converts beside a model's and the
 // engine loads with them: the multi-token prediction layer's (arch mtp, "" for none, in format or
 // its default) and the encoders' of a multimodal checkpoint (fp16).
@@ -562,7 +581,13 @@ func besideBytes(config, mtp, format, backend string) int64 {
 	}
 	if mtp != "" {
 		if ma, mm, err := llm.LoadConfig(config, mtp); err == nil {
-			add(mm, cmp.Or(format, ma.DefaultFormatFor(mm, backend)))
+			f := cmp.Or(format, ma.DefaultFormatFor(mm, backend))
+			if nm, ok := mm.(interface{ Narrow(int) (llm.Model, error) }); ok && draftVocab(ma) > 0 {
+				if n, err := nm.Narrow(draftVocab(ma)); err == nil {
+					mm = n
+				}
+			}
+			add(mm, f)
 		}
 	}
 	for _, e := range encoders {
