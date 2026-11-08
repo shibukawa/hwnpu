@@ -128,15 +128,27 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		fmt.Fprintf(out, "tensors: %d missing, %d mismatched, %d unused\n", len(missing), len(mismatched), len(unused))
 	}
 
-	emb, err := llm.Embed(w, model, ref.IDs)
-	if err != nil {
+	// The input of a program from the first layer: the reference's x (REF.x.bin) for a model
+	// whose input is not token embeddings (an audio encoder's mel frames), whose own steps before
+	// its first layer the program then has; otherwise the embeddings, ref.Layer(0).
+	first0 := ref.Layer(0, d)
+	if x, ok, err := ref.Extra("x"); err != nil {
 		return -1, err
+	} else if ok {
+		first0 = x
+		fmt.Fprintf(out, "input: the reference's x (%d values)\n", len(x))
 	}
-	st, err := check.Compare(emb, ref.Layer(0, d))
-	if err != nil {
-		return -1, err
+	if model.Embedding() != "" {
+		emb, err := llm.Embed(w, model, ref.IDs)
+		if err != nil {
+			return -1, err
+		}
+		st, err := check.Compare(emb, ref.Layer(0, d))
+		if err != nil {
+			return -1, err
+		}
+		fmt.Fprintf(out, "embeddings: %v\n", st)
 	}
-	fmt.Fprintf(out, "embeddings: %v\n", st)
 	feed := &feeder{model: model, w: w, ref: ref, x: map[string]bool{}}
 
 	tmp, err := os.MkdirTemp("", "hwnpu-check")
@@ -149,7 +161,11 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		o := opts
 		o.Start, o.Layers, o.NoHead = i, 1, true
 		start := time.Now()
-		got, err := buildRun(model, w, o, feed, ref.Layer(i, d), tmp, f16)
+		in := ref.Layer(i, d)
+		if i == 0 {
+			in = first0
+		}
+		got, err := buildRun(model, w, o, feed, in, tmp, f16)
 		if err != nil {
 			return -1, fmt.Errorf("layer %d: %w", i, err)
 		}
@@ -181,7 +197,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 
 	if full {
 		start := time.Now()
-		got, err := buildRun(model, w, opts, feed, ref.Layer(0, d), tmp, f16)
+		got, err := buildRun(model, w, opts, feed, first0, tmp, f16)
 		if err != nil {
 			return -1, fmt.Errorf("whole model: %w", err)
 		}

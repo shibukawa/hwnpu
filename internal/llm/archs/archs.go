@@ -12,4 +12,5 @@ import (
 	_ "github.com/shibukawa/hwnpu/internal/llm/plamo"
 	_ "github.com/shibukawa/hwnpu/internal/llm/plamo3"
 	_ "github.com/shibukawa/hwnpu/internal/llm/qwen35"
+	_ "github.com/shibukawa/hwnpu/internal/llm/whisper"
 )

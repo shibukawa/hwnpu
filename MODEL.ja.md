@@ -42,7 +42,11 @@ English: [MODEL.md](MODEL.md)
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6 GB)</td>
 </tr>
 <tr>
-<th>文字起こし、音声を読む<br><sub>hwnpu-chat (<code>input_audio</code>、<code>/audio</code>)</sub></th>
+<th>文字起こし<br><sub>hwnpu-transcribe</sub></th>
+<td colspan="6"><b>Whisper large-v3-turbo</b> (約 1.9 GB)<br>99 言語、タイムスタンプつき、30 秒を 0.6 秒で読む</td>
+</tr>
+<tr>
+<th>音声を読む (音声についての質問)<br><sub>hwnpu-chat (<code>input_audio</code>、<code>/audio</code>)</sub></th>
 <td><b>LFM3-Audio-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0 GB、画像も)</td>
 </tr>
@@ -93,6 +97,7 @@ English: [MODEL.md](MODEL.md)
 | Gemma 4 E2B 画像と音声つき | 画像、音声 (1 回に 1 枚と 30 秒まで) | 3.4 GB (画像か音声が来るまでは 2.4 GB) | 6 KiB/トークン | 実測 |
 | Gemma 4 E4B | チャット、コーディング | 4.0 GB | 16 KiB/トークン (131072 で 2 GiB) | 実測 |
 | LFM3-VL-2B | 画像 (512 × 512) | 2.6 GB | 12 KiB/トークン (128000 で 1.46 GiB) | 実測 |
+| Whisper large-v3-turbo | 文字起こし (長さの上限なし、30 秒ずつ) | 約 1.9 GB (M3: Neural Engine に 0.78 GiB とプロセスの 1.1 GB) | なし (30 秒ごとに 448 トークンまで) | M3 で実測 |
 | LFM3-Audio-2B | 音声 (1 本 30 秒まで) | 2.6 GB | 12 KiB/トークン | 実測 |
 | LFM3-Omni-2B | 画像と音声 | 3.0 GB (画像か音声が来るまでは 2.2 GB) | 12 KiB/トークン | 実測 |
 | PLaMo 3 Translate 2B | 翻訳 | 2.7 GB | 7 KiB/トークン (262144 で 1.75 GiB) | 実測 |
