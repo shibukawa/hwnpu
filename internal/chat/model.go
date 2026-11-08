@@ -300,21 +300,27 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// each part is a graph its driver compiles, slowly for a large one, and no limit is known to
 	// call for parts
 	// the program that reads prompts computes the logits after the last token alone where the
-	// architecture can (llm.Options.LastRow): the output layer is the model's widest
+	// architecture can (llm.Options.LastRow): the output layer is the model's widest. Split at
+	// its attention, a model whose later layers write no cache (Gemma 4's shared layers) has one
+	// that only writes the caches (llm.Options.KVOnly), without those layers and the output layer,
+	// and the program that generates reads the last tokens of a prompt
 	type prog struct {
-		seq, parts int
-		lastRow    bool
+		seq, parts      int
+		lastRow, kvOnly bool
 	}
-	pre := prog{prefillSeq, 0, a.LastRow && backend != llm.BackendIntel}
+	pre := prog{seq: prefillSeq, lastRow: a.LastRow && backend != llm.BackendIntel}
 	if chunk > 0 && backend != llm.BackendIntel {
 		pre.seq = min(pagedPrefillSeq, chunk) // a call's tokens fit in a chunk
+		if cw, ok := model.(llm.CacheWriters); ok && cw.CacheLayers() < model.Layers() {
+			pre.lastRow, pre.kvOnly = false, true
+		}
 	}
-	progs := []prog{{1, 2, false}, pre}
+	progs := []prog{{seq: 1, parts: 2}, pre}
 	if backend == llm.BackendIntel {
 		progs[0].parts = 0
 	}
 	if s.Draft > 1 {
-		progs[0] = prog{s.Draft, 0, false}
+		progs[0] = prog{seq: s.Draft}
 	}
 	tiers := s.Tiers
 	if chunk > 0 {
@@ -338,7 +344,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	slices.Sort(caches)
 	caches = slices.Compact(caches)
-	if one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(progs)*(len(caches)+1)); one {
+	if one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(caches)+1, pre.kvOnly); one {
 		progs = progs[:1]
 		if s.Log != nil {
 			fmt.Fprintf(s.Log, "one program for %s, which reads the prompts %d tokens per call too: %s (-prefill on for one of %d to read long prompts faster)\n", c.Name, s.Draft, why, pre.seq)
@@ -348,8 +354,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		var pkgs []string
 		for i, p := range progs {
 			last := ""
-			if p.lastRow {
+			switch {
+			case p.lastRow:
 				last = "-last"
+			case p.kvOnly:
+				last = "-kv"
 			}
 			pk, pp := kind, params
 			if i == 0 && stateRows {
@@ -357,7 +366,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				pp["state-rows"] = "1"
 			}
 			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s%s", pk, cache, p.seq, last, programExt(backend)))
-			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow}, s.Log)
+			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow, kvOnly: p.kvOnly}, s.Log)
 			if err != nil {
 				return Config{}, err
 			}
@@ -416,8 +425,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 }
 
 // onePrograms decides Setup.Prefill: whether the program that generates (of draft tokens per
-// call) reads the prompts too, instead of n programs of the model's weights in format, and why.
-func onePrograms(model llm.Model, format, backend, prefill string, draft, n int) (bool, string) {
+// call) reads the prompts too, instead of a pair of programs for each of tiers cache lengths, and
+// why. The one that reads prompts has the model's weights in format, or with kvOnly those of the
+// layers that write the caches (llm.Options.KVOnly).
+func onePrograms(model llm.Model, format, backend, prefill string, draft, tiers int, kvOnly bool) (bool, string) {
 	switch {
 	case prefill == PrefillOff:
 		return true, "-prefill off"
@@ -429,14 +440,25 @@ func onePrograms(model llm.Model, format, backend, prefill string, draft, n int)
 	set()
 	o.Format = format
 	pre, layers, post := llm.EstimateBytes(model, o)
-	total := pre + post
-	for _, l := range layers {
-		total += l
+	n := len(layers) // the layers of the program that reads prompts
+	if kvOnly {
+		n = model.(llm.CacheWriters).CacheLayers()
 	}
-	if int64(n)*total <= compileCacheBytes {
+	gen, read := pre+post, pre
+	if !kvOnly {
+		read += post
+	}
+	for i, l := range layers {
+		gen += l
+		if i < n {
+			read += l
+		}
+	}
+	total := int64(tiers) * (gen + read)
+	if total <= compileCacheBytes {
 		return false, ""
 	}
-	return true, fmt.Sprintf("%d programs would hold %.2f GiB of weights, over the about %.1f GiB the Neural Engine keeps compiled, so every start would compile them again and every question switch between them", n, float64(int64(n)*total)/(1<<30), float64(compileCacheBytes)/(1<<30))
+	return true, fmt.Sprintf("%d programs would hold %.2f GiB of weights, over the about %.1f GiB the Neural Engine keeps compiled, so every start would compile them again and every question switch between them", 2*tiers, float64(total)/(1<<30), float64(compileCacheBytes)/(1<<30))
 }
 
 // sharedMark is the file in a directory of programs that says ShareWeights went over it: the
@@ -506,6 +528,7 @@ type program struct {
 	seq, parts, cache int
 	paged             int  // llm.Options.Paged
 	lastRow           bool // llm.Options.LastRow
+	kvOnly            bool // llm.Options.KVOnly
 }
 
 // convert writes the program of the model (config.json and the checkpoint) unless it is there,
@@ -543,7 +566,7 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	if p.backend != llm.BackendIntel && !strings.HasPrefix(opts.Format, "int") {
 		opts.Quant = "kmeans-minmax"
 	}
-	opts.Seq, opts.Cache, opts.Paged, opts.LastRow = p.seq, p.cache, p.paged, p.lastRow
+	opts.Seq, opts.Cache, opts.Paged, opts.LastRow, opts.KVOnly = p.seq, p.cache, p.paged, p.lastRow, p.kvOnly
 	for k, v := range p.params {
 		opts.Params[k] = v
 	}

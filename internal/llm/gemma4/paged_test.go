@@ -357,3 +357,77 @@ func TestPagedLastRowSparse(t *testing.T) {
 	}
 	t.Logf("worst relative error %.2g, %d calls of the two-level attention", worst, calls)
 }
+
+// A program of 4 tokens per call that only writes the caches (llm.Options.KVOnly) has the layers
+// before the shared ones alone: one part, up to the keys and values of layer 2, which the session
+// writes into its cache though nothing attends for it. It reads the beginning of the sequence
+// without logits, and the program of 1 token per call goes on from its caches with the logits of
+// the program without a cache: the rings of the sliding layers, the shared keys and layer 2's
+// cache are all as reading every token on the program of 1 leaves them.
+func TestPagedKVOnly(t *testing.T) {
+	c := tinyConfig(t)
+	w := newWeights(c)
+	n := len(tokens)
+	if c.CacheLayers() != 3 {
+		t.Fatalf("CacheLayers %d, want 3", c.CacheLayers())
+	}
+	feed := map[string][]float32{"x": rows(t, w, c.Embedding(), tokens), "ple": rows(t, w, c.perLayerTable(), tokens)}
+	full := build(t, c, w, Options{Options: llm.Options{Seq: n, Format: "fp16"}}).run(t, feed)["y"]
+	dir := t.TempDir()
+	var paths []string
+	for _, q := range []int{1, 4} {
+		opts := llm.Options{Seq: q, Cache: 16, Paged: 4, KVOnly: q > 1, Format: "fp16"}
+		path, err := llm.Convert(Arch, c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	man, err := llm.ReadManifest(paths[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !man.KVOnly || len(man.Parts) != 1 || man.Parts[0].Layers != 2 {
+		t.Fatalf("KVOnly %v, %d parts: want one part of layers 0 and 1 (and layer 2's keys and values)", man.KVOnly, len(man.Parts))
+	}
+	s, cl, err := runner.OpenSession(context.Background(), nil, paths, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	step := func(from, to int) []float32 {
+		t.Helper()
+		var rs [][]float32
+		for i := from; i < to; i++ {
+			row, err := llm.TokenRow(w, c, tokens[i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			rs = append(rs, row)
+		}
+		logits, err := s.Step(rs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return logits
+	}
+	pos := 0
+	for _, v := range []int{3, 4} { // over a chunk's boundary, a short call first
+		if logits := step(pos, pos+v); logits != nil {
+			t.Fatalf("a step of %d tokens on the program that writes the caches gave logits", v)
+		}
+		pos += v
+	}
+	worst := 0.0
+	for ; pos < n; pos++ {
+		logits := step(pos, pos+1)
+		worst = math.Max(worst, relErr32(logits, full[pos*c.VocabSize:(pos+1)*c.VocabSize]))
+	}
+	if worst > 5e-3 {
+		t.Errorf("relative error %g against the program without a cache", worst)
+	}
+	if pos-7 != 4 {
+		t.Fatalf("%d tokens compared, want 4", pos-7)
+	}
+	t.Logf("worst relative error %.2g on the 4 tokens after reading 7 without logits", worst)
+}

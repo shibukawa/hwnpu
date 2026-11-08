@@ -32,6 +32,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Two-level attention (`-sparse`) (16.61, 16.65) | ◎ a call −52% at 128K, −58% at 250K (LFM3) | ○ −24% at 128K, −44% at 250K (+11% at 64K) | | △ +1/8 and the copies (+0.8 GB at 250K) | | | △ approximate (passkeys kept) | Apple / Intel |
 | The Neural Engine reads prompts 128 tokens per call, logits of the last row alone (16.82) | unchanged | ○ at 16K LFM3 about −20%, E2B −25%, VL −22% | △ converted again once | | | | unchanged | Apple (models split at their attention) |
 | Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | unchanged | ◎ E2B 16K 27.8 → 12.6–13.2 s, 64K 205 → 94.6 s (2.1–2.2 times) | | ○ footprint 1805 → 1392 MB (64K) | | | unchanged (matches the program without a cache on the CPU) | Apple |
+| Neural Engine: Gemma 4's prompt program with only the layers that write the caches (`-kv-only`) (16.109) | ○ +13–17% on the M1 (no more clash with the second program) | ◎ E2B on the M1, 4249 tokens 4.2–4.6 → 2.4–2.7 s | ○ second program 2.6–3.5 → 0.4–0.5 s | ◎ weights 3.20 → 1.98 GiB, ANE 1.96 → 1.73 GiB | | | unchanged (the same answers to the letter) | Apple |
 | Neural Engine: silu written with exp and real_div (`blocks.SiLU`, 16.95) | △ +3% | △ +9% | △ converted again once | | | | ◎ lut8 KL 1/2.5 (LFM3 0.058 → 0.022), PLaMo 3 −20–40%; lut6 under a tenth. ◎ Anima's DiT: latent cosine with diffusers' fp32 0.55–0.85 → 0.67–0.98, no slower | Apple (Intel unchanged) |
 | Repetition detection (16.60) | ◎ felt (stops going round in circles) | | | | | | | All |
 | E4B as one program (`-prefill auto`) (16.65, 16.83) | ○ +25% | ✕ 7.5–8× slower when long (than `-prefill on`'s two) | ◎ 77–87 s → 4 s | ◎ half the weights | | | | Apple |
@@ -113,6 +114,7 @@ Improvements to the GEMV itself:
 | Two-level attention (16.65) | Gemma 4 E2B at 125K 709 s, LFM3-VL at 120K 583 s | 521 s, 431 s | Audio 516 s, Omni 501 s |
 | Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | E2B 16K 27.8 s, 64K 205.2 s | 12.6–13.2 s, 94.6 s | The shared layers (15 to 34), and the host's attention of their 4 full attention layers, on the last token's row. That attention runs on the program of 8 tokens that generates |
 | The same (E4B, `-prefill on`) (16.83) | The default one program: 16K 184.3 s, 64K 1382.8 s | 24.3–25.4 s, 168.4 s (7.5–8.2×) | Two programs (6.5 GiB) do not fit the compile cache: every start takes 135–165 s, and the first tokens after a prompt are slow (3 s at 16K, 14 s at 64K). Generation at 16K is a fifth slower. The default stays one program |
+| Neural Engine: Gemma 4's prompt program with only the layers that write the caches (16.109) | E2B on the M1, 4249 tokens 4.2–4.6 s (q128-last, 8 parts, 1.6 GiB) | 2.4–2.7 s (3 parts, 0.38 GiB) | Layers 0 to 14 alone read 128 tokens at a time; the last 8 tokens go through the program that generates, which gives the logits. The output layer's `reshape` on the CPU is gone from the prompt program too |
 | The Neural Engine's prompt chunk of 128, logits of the last row alone (16.82) | LFM3 4K 3.9–5.4 s, 16K 19.3–25.2 s, 64K 160 s; Gemma 4 E2B 16K 31.2 s; LFM3-VL 16K 21.6 s | 3.3–3.9 s, 15.2–16.1 s, 136–146 s; 23.5 s; 16.9 s | Even at 64 rows a call is mostly reading the weights, so one of 128 costs 1.5 times as much. 256 is no faster. Models in one piece and Intel stay at 64 |
 | AMD: prompt chunk 1024 (16.54) | 2,683 tokens 13.0 s | 10.2 s | Short ones too: 0.56 → 0.43 s |
 | 4 bits on AMD (16.73, 16.76–77) | — | Unchanged (LFM3 2048 tokens 2.29 → 2.38 s, PLaMo 3 2596 tokens 11.2 → 11.8 s) | Weights are turned back from q4nx and q8 into bfp16 or bf16 on the device for the GEMM, so prompt speed does not gain |
@@ -154,6 +156,7 @@ Improvements to the GEMV itself:
 | Shrinking the context to fit memory (16.59) | If the cache is over 1/4 of physical memory, it shrinks by whole chunks | Up to 4 GiB on a 16 GB M3 |
 | PLE table on the host (16.25) | Gemma 4's 4.7 GB table is kept off the ANE | |
 | E4B as one program (16.65) | Resident weights 6.5 → 3.26 GiB | |
+| Gemma 4's prompt program with only the layers that write the caches (16.109) | E2B's two programs' weights 3.20 → 1.98 GiB (the Neural Engine holds 1.96 → 1.73 GiB). E4B 6.51 → 4.88 GiB | E4B is still over the compile cache's mark, so it stays one program |
 | KV tiers (16.37) | **Cost**: 2 programs 2.29 GiB → 4 programs 2.73–2.96 GiB (RSS), footprint 1,968 → 2,807 MB | Each tier has its own copy of the weights |
 | Two-level attention (16.61) | **Cost**: +1/8 for the summaries (LFM3 12 → 14, Gemma 4 E2B 6 → 7 KiB/token) and the copies of the chunks read exactly | LFM3's footprint at 250K 3.28 → 4.09 GB |
 | Conversation marks keep only the ring slots in use (`ringRows`) (16.71) | 578 → 183 MB over 5 PLaMo 3 translations (live heap +85 MB a turn → 36 MB in all) | Each mark used to copy the whole ring of the window layers (88 MB). Helps short chats with Gemma 4 and LFM3 too |
@@ -237,6 +240,7 @@ Fitted to the ANE's limits: 1 GiB a package, 16384 per dimension, tables only pe
 | Attention in programs without weights | Smaller parts stay in the ANE's cache; the cost follows the length used | Gemma 4 startup 98 s → 1.9 s |
 | head-scale (embeddings), `-post-scale` (LFM3) | fp16 overflow and the error floor on the ANE | |
 | Gemma 4's KV-sharing layers on the last row alone (`-last-row`, 16.83) | Prefill. AMD's 16.80, with the host's attention on one row too | E2B 2.1–2.2 times. The attention of the one-row layers runs on the program that generates |
+| Gemma 4's prompt program with only the layers that write the caches (`-kv-only`, 16.109) | Prefill, memory, generation. The shared layers write no keys and values, so reading a prompt does not need them | E2B's second program 1.6 → 0.38 GiB. On the M1 the slowdown of generation with both loaded (one part +3 ms each call) is gone too |
 | The prompt program takes 128 tokens per call, its output layer the last row alone (`-last-row`, 16.82) | Prefill. A call of 64 rows costs 1.06 times one of 8: reading the weights dominates | LFM3 at 16K about −20%, Gemma 4 E2B −25%. The row is taken by a product with a one-hot row (gather is on the CPU) |
 | PLaMo 3's attention output taken token-first (`attn_ot_N`) | Avoids the one `transpose` in the last part that fell to the CPU | Everything on the ANE on an M3. The host reorders (one more copy) |
 | Anima's fp16 handling (DiT residuals at 1/32, `maxScaled` norms) | No fp16 overflow and no subnormals | Checked on an M3 (16.85) |
@@ -364,7 +368,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (embedding API) | — | ◎ lut8 + head-scale | Converts (int8) | — |
 | BERT family (all-MiniLM-L6-v2 and so on) | `bert` | **Not implemented** (WordPiece) | — | — | Converts only (lut8) | Converts only (int8) | — |
 | Anima-Turbo (image generation) | `internal/imagegen/anima` (built from one MIL description) | Qwen3 BPE + T5 Unigram | — (`hwnpu-image`) | Images out | ◎ M3: 1024×1024, 8 steps in about 40 s, 3.8 GB (int8) | △ Converts. Checked on OpenVINO's CPU | ◎ 1024×1024, 8 steps in about 68 s, 3.4 GiB pinned (DiT at 8 bits) |
-| Qwen3.6-35B-A3B | `qwen35moe` (IRON only) | Same as Qwen3.5 | Qwen3.6 (`Qwen36`: tool arguments as JSON, 16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`. All 40 layers (23 GB): decode at 5.8 tok/s (16.92), prompts in chunks at 25 ms a token (routed on the host, 16.93), cosine 0.989–0.997 against HF (experts and head by GPTQ, `qwen36_gptq.py`, 16.101), every top token agrees. Prompts go a token at a time |
+| Qwen3.6-35B-A3B | `qwen35moe` (IRON only) | Same as Qwen3.5 | Qwen3.6 (`Qwen36`: tool arguments as JSON, 16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`. All 40 layers (23 GB): decode at 5.8 tok/s (16.92), prompts in chunks at 25 ms a token (routed on the host, 16.93), cosine 0.989–0.997 against HF (experts and head by GPTQ, `qwen36_gptq.py`, 16.109), every top token agrees. Prompts go a token at a time |
 
 ### 10.2 Tokenizers (`internal/tokenizer`, depending only on `golang.org/x/text`)
 
@@ -515,7 +519,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Two-level attention's `Refresh` as the default | With 4 or 16 the passkeys hold and a call is 14–32% faster (checked 2026-11-06), but finer differences such as loss or KL are not measured on the Neural Engine | Compare the logits with choosing every call on real weights | 16.61 |
 | Where two-level attention starts in the prompt | At 64K reading in two levels is a tenth slower than the whole cache. Should the threshold of about 57K go up? | Compare the reading times from 64K to 96K | 16.61 |
 | The copies in two-level attention's `choose` | Copying the buckets that change at each choice is 12% (13 ms) of a call generating at 128K. Would a choice that changes fewer buckets cut it? | pprof (`decode.(*Session).choose`) | 16.61 |
-| The `reshape` in Gemma 4's last part | One `reshape` of the last part split at the attention (after layer 41's attention, and the output layer) is on the CPU (E4B; E2B also says `NOT all on the NPU`). Would PLaMo 3's `attn_ot_N` fix it? | `hwnpuinfo -model ...part8.mlpackage` | 16.65 |
+| The `reshape` in Gemma 4's last part | In the generating program's last part (the output layer), the one `reshape` that brings the logits back to (1, seq, 262144) after the soft cap is on the CPU (16.43; `-logits folded` removes it but is 5–12% slower). The prompt program has no output layer since 16.109 and is all on the Neural Engine. Moving the soft cap into the host's sampling was being measured on the M1 when other work took the Neural Engine, and was not measured | The soft cap on the host (monotonic, so the top k are the same; values only for the top k and the tokens the repetition penalty touches) | 16.43, 16.109 |
 | Slowing down past 128K | Why the slope per 1K grows from 1.14 to 1.43 ms (memory pressure, or attention lagging when interleaved?) | | 16.59 |
 | Slowness right after a long prefill | Why the first few calls after reading 256K take 1.29 s each (350 ms after) | | 16.59 |
 | The ANE's memory (the rest) | The weights' share is now read by `mem.NPUWired` (16.95, no root: 2.43 GiB for LFM3's two lut6 programs). The KV's and intermediate values' share, and the compile cache's, are not told apart | Compare after loading and while generating with a long context | 16.95, model-fit.md T10 |
@@ -610,3 +614,56 @@ Explained (2026-11-08, 16.107):
   - CFG (negative prompts). A non-Turbo Anima is expected to take over 10 minutes an image
   - Calls from ComfyUI nodes
 - The rest of Qwen3.6-35B-A3B (16.89–16.93; all 40 layers at q4, 5.8 tok/s, prompts in chunks at 25 ms a token): the prompt chunk's projection GEMMs and weight expansions (1.6 s a chunk however short: 256 rows computed whatever the call's, the weights expanded every chunk, 16.95)
+
+## 12. The speed ceiling and what software can still move (estimate of 2026-11-08)
+
+This section uses `npuprobe` on the M1, M2 and M3 (PROBE.md, `npu_profiles/`) and the AMD measurements (amd-xdna2-bench.md) to answer two questions: does a faster NPU make generation faster, and what can software still change? 12.2 is an estimate from public specs and has not been measured.
+
+### 12.1 The ceiling is how fast the NPU reads DRAM
+
+With 16 layers (0.97 B):
+
+| | M1 | M2 | M3 | AMD (Ryzen AI 9 365) |
+|---|---|---|---|---|
+| NPU, rated | 11 TOPS | 15.8 TOPS | 18 TOPS | 50 TOPS |
+| DRAM bandwidth | 68 GB/s | 100 GB/s | 100 GB/s | 90–120 GB/s |
+| int8 weights read at | 62 GB/s | 62 GB/s | 23 GB/s (slow on the M3 only) | — |
+| 4-bit weights read at | 44 GB/s (lut4) | 63 GB/s (lut4) | 64 GB/s (lut4) | 55 GB/s (q4nx GEMV) |
+
+- **The ANE reads weights at about 62–64 GB/s on every Apple chip measured.** DRAM grew 1.47× from the M1 to the M2, but int8 stayed at 62 GB/s. On the M2 and M3 the limit is the ANE's own path to memory, not DRAM (100 GB/s)
+- **Moving bytes is the limit, not computing.** On the M2, int8 and lut4 differ 2× in work per byte yet both read at about 63 GB/s
+- **Only the M1's lut4 was compute-bound.** Expanding the 4-bit table is slow there, and the M2 was 1.41× faster (close to the TOPS ratio of 1.44). The M2 reached the ceiling. The M3 has 14% more TOPS and went from 63 to 64 GB/s
+- **AMD is the same.** DMA tops out at 55–57 GB/s with 8 channels (14 GB/s each). The 4-bit GEMV reaches that with 16 cores, and 32 cores are no faster (2.4× spare compute)
+- TOPS helps only prefill and attention over a long context (the one-row matrix-vector products the ANE cannot fill). One generated token follows model-fit.md section 2: weight bytes ÷ read bandwidth + attention + about 3 ms. A faster NPU shrinks only the second term
+
+### 12.2 What newer chips may bring (not measured)
+
+Generation of LFM3-1.7B (lut4, short context) compared with the M3. The NPU's share of DRAM is assumed to be 50–60%, from Apple's 64% and AMD's roughly half.
+
+| | NPU read, expected | Generation | Prefill | Runs on hwnpu |
+|---|---|---|---|---|
+| Apple M6 (two Neural Engines, 170 GB/s) | The same if one engine still reads 64 GB/s. Up to about 2× if both can be used at once or the path is wider | 1.1–2× | About 2× the M5's compute, 2–4× the M3 | Yes (Core ML) |
+| Snapdragon X2 Elite (80 TOPS, 152 GB/s) | 75–100 GB/s | 1.3–1.6× | About 4× the M3 on paper (effective unknown; AMD reaches 10–40% of its rating) | No (no Qualcomm backend) |
+| Snapdragon X2 Elite Extreme (228 GB/s) | 115–150 GB/s | 1.8–2.2× | Same as above | Same as above |
+
+- The M6's second engine helps generation only if a layer's matrices can be split into two programs called at the same time. That doubles the fixed cost per call
+- To check: run `npuprobe` on the new machine and read "weights GB/s" for lut4 at 16 layers. If it is about 64, generation is the same as the M3 and only prefill gains
+
+### 12.3 What software can move
+
+Tokens/s ≈ read bandwidth ÷ bytes read per token × tokens advanced per read (minus the time not spent reading). The bandwidth is close to the ceiling (12.1), so the other terms are what is left.
+
+| Term | Method | State | Expected or measured | Section |
+|---|---|---|---|---|
+| Bytes read per token | Fewer bits (lut3 and lut4 mixed per layer, tables fitted to activations) | Up to choosing levels with GPTQ (16.87). Fitting the table is not done | A trade against accuracy | model-fit.md T8 |
+| 〃 | MoE (read only the experts in use) | Done on AMD with Qwen3.6-35B-A3B (16.89–16.93). Not on the ANE (the routing `gather` goes to the CPU, model-fit.md section 4) | LFM2.5-8B-A1B (8.3B total, 1.5B active) reads about 0.75 GB a token at lut4, a floor of about 12 ms on the ANE. Computing every expert densely reads 4.2 GB, about 65 ms | — |
+| Tokens advanced per read | Speculative decoding (prompt lookup) | Done on Apple and Intel. A Q=8 call costs 13% more than Q=1 | 15.9 → 23.7 tokens/s, 1.2–1.5× over a whole task | 16.33, 16.36, 16.37 |
+| 〃 | A draft model (such as Qwen3.5's `mtp.` layers) for more hits | Not done | Gains if it beats prompt lookup's 1.07–1.67 tokens a call | model-fit.md T9 |
+| 〃 | Read once for several requests (batching) | Not done | One read serves several conversations. Total throughput grows when subagents run side by side | — |
+| 〃 | Draft checking on AMD | Not done. The current IRON export spends 4.5 decode steps on a check, so it is off | A GEMV that handles k rows in one read of the weights should give what Apple gets | 16.54 |
+| Time not spent reading | Fixed cost per call (about 3 ms), switching parts, host work | LFM3-1.7B at a 1K capacity: of 19.1 ms, 13.4 ms reading weights, 2.8 ms attention, 3 ms fixed | 15–16 ms expected after trimming the fixed cost and attention | model-fit.md section 2 |
+| 〃 | AMD: one submission for a whole layer | Done (a full ELF is 2.7× faster than submitting each op). A fused layer reaches 83% of the read floor | Avoids piling up the 0.06 ms per call | amd-xdna2-bench.md section 4.10, amd-npu-models.md section 2 |
+| Attention over a long context (compute-bound) | `SDPAGrouped`, splitting around attention to compute only the length used | Done (16.39, 16.59). Two-level attention (16.61) | Both TOPS and how the program is written shrink this | 16.39, 16.59, 16.61 |
+| (For reference) Another reader | Use the DRAM bandwidth the ANE leaves (100 − 64 GB/s on the M3) from the CPU, for example drafting on the CPU and checking on the ANE | Not tried. Using the GPU is a non-goal | Whether syncing pays off is not measured | — |
+
+Expected (M3, LFM3-1.7B, lut4, short context; rough): 19–21 ms now (about 48 tokens/s) → 15–16 ms after trimming the fixed cost and attention (about 60–65 tokens/s; the weight floor is 13.4 ms, about 75) → about 80–90 tokens/s effective with speculative decoding. The default lut6 reads 1.5× the weight bytes, so its weight term is that much larger.

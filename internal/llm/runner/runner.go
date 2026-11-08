@@ -315,7 +315,12 @@ func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer
 			p.Attend = append(p.Attend, attends)
 		}
 	}
-	stages = append(stages, cur)
+	if len(cur) == 0 && man.KVOnly && len(p.Attend) > 0 {
+		// as internal/llm/chain: the last part computes keys and values nothing attends for
+		p.Attend = p.Attend[:len(p.Attend)-1]
+	} else {
+		stages = append(stages, cur)
+	}
 	var y milcpu.Tensor
 	run := func(list []int) error {
 		for _, i := range list {
@@ -374,7 +379,7 @@ func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer
 			closers = append(closers, c)
 			a.Mass = ms
 		}
-		p.Run, p.Attn, p.Context = nil, a, man.Cache
+		p.Run, p.Attn, p.Context, p.NoLogits = nil, a, man.Cache, man.KVOnly
 		p.RunPart = func(i int) error { return run(stages[i]) }
 	}
 	return p, closers, nil

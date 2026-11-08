@@ -61,6 +61,8 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
 func main() {
@@ -482,6 +484,12 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 		}
 		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]%s\n", dim,
 			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), cut, reset)
+		if os.Getenv("HWNPU_PROFILE") != "" {
+			decode.WriteProfile(os.Stderr)
+			if b, ok := mem.NPUWired(); ok {
+				fmt.Fprintf(os.Stderr, "profile: the Neural Engine holds %.2f GiB\n", float64(b)/(1<<30))
+			}
+		}
 	}
 }
 

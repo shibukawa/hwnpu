@@ -38,6 +38,9 @@ type Manifest struct {
 	// two-level attention (decode.Sparse, paged.BuildMass), of a model split at its attention.
 	// Conversions before it have none (AddMass).
 	Mass *PartRecord `json:"mass,omitempty"`
+	// KVOnly marks a model split at its attention converted with Options.KVOnly: its parts end
+	// with the last layer that writes a cache, and the program outputs no logits.
+	KVOnly bool `json:"kv_only,omitempty"`
 	// Backend is the runtime the parts are written for (Options.Backend; empty for coreml).
 	Backend string `json:"backend,omitempty"`
 	// Meta is the metadata of the parts (MetaArch, MetaParam...), also in each part's own

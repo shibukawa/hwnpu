@@ -213,7 +213,19 @@ func (c *Config) PagedKV(layer int) int {
 // MaxContext is max_position_embeddings: 131072 for E2B and E4B.
 func (c *Config) MaxContext() int { return c.MaxPositions }
 
-var _ llm.Paged = (*Config)(nil)
+// CacheLayers is the layers before the first shared one (llm.CacheWriters): the shared layers
+// reuse the keys and values of the last layer of each type before them and write no cache.
+func (c *Config) CacheLayers() int {
+	if c.KVShared <= 0 {
+		return c.NumLayers
+	}
+	return c.firstShared()
+}
+
+var (
+	_ llm.Paged        = (*Config)(nil)
+	_ llm.CacheWriters = (*Config)(nil)
+)
 
 // sharedName is the name of the keys ("k") or values ("v") of the layers of a type that the
 // shared layers reuse, as an output of the program that computes them and an input of a later

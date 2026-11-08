@@ -209,6 +209,13 @@ type Paged interface {
 	MaxContext() int
 }
 
+// CacheWriters is a Paged model whose layers past the first CacheLayers write no cache: they
+// reuse the keys and values of earlier layers (Gemma 4's shared layers), so a program that only
+// reads tokens into the caches (Options.KVOnly) stops before them.
+type CacheWriters interface {
+	CacheLayers() int
+}
+
 // TokenInput is a program input that the host fills per token like x, from a table of the
 // checkpoint that stays on the host: the row of Table for each token, Width values, as an input
 // of shape (1, seq, Width).

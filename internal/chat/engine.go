@@ -914,6 +914,25 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 	}
 }
 
+// logitsQ is, when the tier's program that reads prompts gives no logits (llm.Options.KVOnly),
+// the most tokens a call of those that do reads; otherwise 0.
+func (e *Engine) logitsQ() int {
+	q, none := 0, false
+	if e.ti < len(e.tiers) {
+		for _, p := range e.tiers[e.ti].progs {
+			if p.NoLogits {
+				none = true
+			} else if n := p.InShape["x"]; len(n) == 3 {
+				q = max(q, n[1])
+			}
+		}
+	}
+	if !none {
+		return 0
+	}
+	return q
+}
+
 // prefill brings the cache to the prompt and returns the logits after it.
 func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]float32, error) {
 	// how far what is in memory brings the prompt: the sequence in the cache (n, going back
@@ -943,7 +962,9 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		if se == nil || sp <= n {
 			break
 		}
-		if ok, err := e.restore(se, sp, prompt, st); err != nil {
+		if ok, err := e.restore(se, sp, prompt, st); errors.Is(err, errNoLogits) {
+			break
+		} else if err != nil {
 			return nil, err
 		} else if ok {
 			n, m, from = sp, nil, -2
@@ -1002,7 +1023,13 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		k := min(len(prompt)-len(e.cur.fed), e.sess.Q())
+		rest := len(prompt) - len(e.cur.fed)
+		k := min(rest, e.sess.Q())
+		if g := e.logitsQ(); g > 0 && rest > g {
+			// the program that reads prompts gives no logits: the last tokens go through the one
+			// that generates, which does
+			k = min(rest-g, e.sess.Q())
+		}
 		if before := len(e.cur.fed); cut > before && cut < before+k {
 			k = cut - before
 		}
@@ -1042,6 +1069,9 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 	return e.cur.last, nil
 }
 
+// errNoLogits is restore's refusal of a mark that ends the prompt but holds no logits after it.
+var errNoLogits = errors.New("chat: the stored mark has no logits")
+
 // restore starts the sequence from the store's entry at the mark at pos, on the shortest tier
 // that holds the prompt, and says whether it did: the entry is dropped when its files cannot be
 // read.
@@ -1051,6 +1081,10 @@ func (e *Engine) restore(se *entry, pos int, prompt []int32, st *Stats) (bool, e
 		e.logf("prompt store: %v (dropped)", err)
 		e.store.remove(se)
 		return false, nil
+	}
+	if logits == nil && pos >= len(prompt) {
+		// a mark inside a reading by a program that gives no logits (llm.Options.KVOnly)
+		return false, errNoLogits
 	}
 	if n, _ := e.cur.reach(prompt); n < len(e.cur.fed)/2 {
 		e.putAside()

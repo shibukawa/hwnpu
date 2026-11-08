@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/shibukawa/hwnpu"
@@ -41,6 +42,10 @@ type Program struct {
 	Attend  []int
 	Attn    *Attention
 	Context int
+	// NoLogits marks a program that only reads tokens into the caches (llm.Options.KVOnly): its
+	// y is not logits, and a step on it returns none. Its last part computes the keys and values
+	// of layers it does not attend for, which the session writes into its cache.
+	NoLogits bool
 }
 
 // Buf is a buffer the attention program can be bound to: a chunk of keys or values of the
@@ -139,7 +144,7 @@ func New(p Program, m llm.Cached) (*Session, error) {
 		return nil, fmt.Errorf("decode: no input x (1, q, hidden)")
 	}
 	y, ok := p.OutShape["y"]
-	if !ok || len(y) < 3 || len(y) > 4 || y[1] != rows(p) {
+	if !ok || len(y) < 3 || len(y) > 4 || y[1] != rows(p) || p.NoLogits {
 		return nil, fmt.Errorf("decode: no output y (1, q, vocab)")
 	}
 	vocab := y[2]
@@ -211,10 +216,10 @@ func (st *step) checkPaged(s *Session) error {
 			return fmt.Errorf("decode: layer %d attends for every row after a layer of the last row alone", layer)
 		}
 	}
-	if len(p.Attend) == 0 {
+	if len(p.Attend) == 0 && !p.NoLogits {
 		return fmt.Errorf("decode: a program split at its attention attends for no layer")
 	}
-	if 2*heads*st.q*d != len(p.Attn.Q) || len(p.Attn.O) != len(p.Attn.Q) || 2*heads*st.q != len(p.Attn.M) || len(p.Attn.L) != len(p.Attn.M) {
+	if len(p.Attend) > 0 && (2*heads*st.q*d != len(p.Attn.Q) || len(p.Attn.O) != len(p.Attn.Q) || 2*heads*st.q != len(p.Attn.M) || len(p.Attn.L) != len(p.Attn.M)) {
 		return fmt.Errorf("decode: the attention program does not take %d heads of %d for %d tokens", heads, d, st.q)
 	}
 	st.merge = paged.NewMerge(heads*st.q, d)
@@ -356,7 +361,7 @@ func (s *Session) Add(p Program) error {
 	if !ok || len(x) != 3 || x[2] != s.hidden {
 		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
 	}
-	if !logitsShape(p.OutShape["y"], rows(p), s.vocab) {
+	if !p.NoLogits && !logitsShape(p.OutShape["y"], rows(p), s.vocab) {
 		return fmt.Errorf("decode: no output y (1, %d, %d)", rows(p), s.vocab)
 	}
 	first := s.progs[0].p
@@ -921,11 +926,26 @@ func (s *Session) runPaged(st *step, valid int) error {
 		return err
 	}
 	oneMasks := false // the masks of the last token alone, made for the first layer that needs them
+	prof := profStep(q)
+	var t0 time.Time
 	for i := 0; ; i++ {
+		if prof != nil {
+			if i > 0 {
+				prof.attend[i-1] += time.Since(t0)
+			}
+			t0 = time.Now()
+		}
 		if err := p.RunPart(i); err != nil {
 			return err
 		}
+		if prof != nil {
+			prof.part(i, time.Since(t0))
+			t0 = time.Now()
+		}
 		if i == len(p.Attend) {
+			if p.NoLogits {
+				return s.writeUnattended(p, q, rows)
+			}
 			return nil
 		}
 		layer := p.Attend[i]
@@ -972,6 +992,38 @@ func (s *Session) runPaged(st *step, valid int) error {
 		st.merge.Result(st.res)
 		putAttnOut(p, layer, st.res)
 	}
+}
+
+// writeUnattended writes the step's rows of the caches p outputs but attends for no layer of
+// (a program that only reads tokens into the caches: the last layer that writes one).
+func (s *Session) writeUnattended(p Program, q, rows int) error {
+	done := map[int]bool{}
+	for _, layer := range p.Attend {
+		done[s.kvLayer(layer)] = true
+	}
+	for i := range s.kv {
+		c := &s.kv[i]
+		if c.chunk == 0 {
+			continue
+		}
+		var layer int
+		if _, err := fmt.Sscanf(c.out, "kv_k_%d_new", &layer); err != nil {
+			if _, err := fmt.Sscanf(c.out, "kv_v_%d_new", &layer); err != nil {
+				return fmt.Errorf("decode: cache output %s", c.out)
+			}
+		}
+		if done[layer] {
+			continue
+		}
+		out, ok := p.Out[c.out]
+		if !ok {
+			return fmt.Errorf("decode: the program reads tokens into the caches but has no output %s", c.out)
+		}
+		if err := s.writeRows(c, out, q, s.pos, rows); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // oneRow reports whether p computes layer's query for the step's last token alone: a program that
@@ -1169,6 +1221,9 @@ func (s *Session) keep(p Program, q, v int) []float32 {
 		}
 		s.last = s.lastRows[len(s.lastRows)-1]
 	}
+	if p.NoLogits {
+		return nil
+	}
 	return s.row(p, i)
 }
 
@@ -1211,6 +1266,9 @@ func rows(p Program) int {
 
 // row returns the logits after token i of the step just run on p (row i of its output).
 func (s *Session) row(p Program, i int) []float32 {
+	if profile.on {
+		defer profRows(p.InShape["x"][1], time.Now())
+	}
 	logits := make([]float32, s.vocab)
 	hwnpu.DecodeF16(logits, p.Out["y"][2*i*s.vocab:2*(i+1)*s.vocab])
 	return logits

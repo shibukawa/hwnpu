@@ -54,8 +54,9 @@ type tier struct {
 	stages  [][]*Part // the parts between two attention layers
 	attend  []int     // the layer attended after each stage but the last
 	attn    *attention
-	paged   int // the chunk length
-	context int // the longest sequence (the manifest's Cache)
+	paged   int  // the chunk length
+	context int  // the longest sequence (the manifest's Cache)
+	kvOnly  bool // the parts write the caches and output no logits (llm.Manifest.KVOnly)
 }
 
 // attention is the loaded program without weights that attends over one chunk of the cache.
@@ -154,7 +155,7 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 	if man.Attention == nil || man.Cache <= 0 || len(man.Tiers) > 0 {
 		return fmt.Errorf("chain: a model split at its attention needs its attention program and one cache length")
 	}
-	t.paged, t.context = man.Paged, man.Cache
+	t.paged, t.context, t.kvOnly = man.Paged, man.Cache, man.KVOnly
 	var cur []*Part
 	for i, p := range t.parts {
 		cur = append(cur, p)
@@ -170,10 +171,16 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 			t.stages, t.attend, cur = append(t.stages, cur), append(t.attend, layer), nil
 		}
 	}
-	if len(cur) == 0 || len(t.attend) == 0 {
-		return fmt.Errorf("chain: the parts of a model split at its attention must alternate with it, ending with a part")
+	if len(cur) == 0 && t.kvOnly {
+		// the last part computes the keys and values of a layer whose output no cache needs:
+		// the session writes them, and nothing attends for it
+		t.attend = t.attend[:len(t.attend)-1]
+	} else {
+		if len(cur) == 0 || len(t.attend) == 0 {
+			return fmt.Errorf("chain: the parts of a model split at its attention must alternate with it, ending with a part")
+		}
+		t.stages = append(t.stages, cur)
 	}
-	t.stages = append(t.stages, cur)
 	a := &attention{dev: c.dev}
 	t.attn = a
 	var err error
@@ -493,7 +500,7 @@ func (t *tier) program(ctx context.Context) decode.Program {
 		p.Out[n] = b.Bytes()
 	}
 	if t.attn != nil {
-		p.Attend, p.Context, p.Attn = t.attend, t.context, t.attn.program(ctx, t.paged)
+		p.Attend, p.Context, p.Attn, p.NoLogits = t.attend, t.context, t.attn.program(ctx, t.paged), t.kvOnly
 		p.RunPart = func(i int) error {
 			for _, part := range t.stages[i] {
 				for _, b := range part.ins {
