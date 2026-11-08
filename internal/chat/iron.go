@@ -395,3 +395,49 @@ func (e *Engine) irMultimodal() *iron.Multimodal {
 	}
 	return e.ir.Manifest.Multimodal
 }
+
+// AMDExport is the IRON export hwnpu-chat and hwnpu-agent run when -iron is not given and the only
+// NPU is AMD's, which runs no programs of hwnpu-convert: ~/models/NAME.amd-npu2-q4, else NAME.amd-npu2, for the
+// model -use names. It is "" when a backend is named (backend or HWNPU_BACKEND), an Apple or
+// Intel NPU is found, or no AMD one.
+func AMDExport(ctx context.Context, use, backend string) (string, error) {
+	if backend != "" || strings.TrimSpace(os.Getenv(llm.BackendEnv)) != "" {
+		return "", nil
+	}
+	if _, _, err := llm.FindDevice(ctx, ""); err == nil {
+		return "", nil
+	}
+	infos, _ := hwnpu.Enumerate(ctx)
+	amd := false
+	for _, info := range infos {
+		amd = amd || info.Vendor == hwnpu.VendorAMD
+	}
+	if !amd {
+		return "", nil
+	}
+	home, _ := os.UserHomeDir()
+	root := filepath.Join(home, "models")
+	name := strings.TrimSpace(use)
+	if strings.Contains(name, ",") {
+		return "", fmt.Errorf("-use %s: on AMD's NPU, one chat model runs at a time; -iron names its export (tools/amd/iron_export_lm.py)", use)
+	}
+	name = filepath.Base(name) // OWNER/NAME
+	for _, suffix := range []string{".amd-npu2-q4", ".amd-npu2"} {
+		d := filepath.Join(root, name+suffix)
+		if _, err := os.Stat(filepath.Join(d, "manifest.json")); err == nil {
+			return d, nil
+		}
+	}
+	found, _ := filepath.Glob(filepath.Join(root, "*.amd-npu2*"))
+	var names []string
+	for _, d := range found {
+		if _, err := os.Stat(filepath.Join(d, "manifest.json")); err == nil {
+			names = append(names, filepath.Base(d))
+		}
+	}
+	msg := fmt.Sprintf("AMD's NPU runs exports of tools/amd/iron_export_lm.py, and %s has none of %s (%s.amd-npu2-q4 or %s.amd-npu2); -iron names one", root, name, name, name)
+	if len(names) > 0 {
+		msg += ": " + strings.Join(names, ", ")
+	}
+	return "", errors.New(msg)
+}

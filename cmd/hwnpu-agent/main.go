@@ -134,6 +134,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	var c chat.Config
 	noThink := false // the model's own default (chat.Model.NoThink) when -think is not given
+	if *ironDir == "" && *pkgs == "" {
+		if *ironDir, err = chat.AMDExport(ctx, *use, *backend); err != nil {
+			fail(err)
+		} else if *ironDir != "" {
+			fmt.Fprintf(os.Stderr, "hwnpu-agent: AMD's NPU: -iron %s\n", *ironDir)
+		}
+	}
 	if *ironDir != "" {
 		c = chat.Config{IRON: *ironDir, Tokenizer: *tok, Log: console.Log(os.Stderr), PromptDir: chat.PromptStore(*promptDir, *cacheDir), Idle: *idle}
 	} else {
