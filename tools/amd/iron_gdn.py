@@ -41,10 +41,12 @@ BLOCK = 16  # rows a prompt chunk's kernel call runs (GDR_ROWS)
 QUEUED = 3  # drains a shim channel holds queued at once (its task queue is 4 deep)
 
 
-# A column's part of a row is rounded up to this many channels, so that the n columns make whole
-# blocks of 64 out-features for the fused projection's 8-bit and 4-bit GEMV (n = 8). Qwen3.5-4B's
-# (1032) needs none; 0.8B and 2B (as many value heads as key heads: 772) get 4 channels of zeros.
-COLUMN_ALIGN = 8
+# A column's part of a row is rounded up to this many channels, so that the n columns (8) make
+# column blocks of 64 out-features a multiple of 8, and the fused projection's GEMV spreads over
+# all 8 columns: its column blocks must divide evenly among them. Qwen3.5-0.8B and 2B's 772
+# rounded to 8 only (776, 97 blocks) ran on one column, 571 us a decode step's projection
+# against 217 at 832 (104 blocks); Qwen3.5-4B's and Qwen3.6's 1032 (129 blocks) on three.
+COLUMN_ALIGN = 64
 
 
 def column_widths(heads: int, key_heads: int, key_dim: int, value_dim: int, n: int) -> int:
@@ -197,7 +199,7 @@ def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, v
 
 @functools.cache
 def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pairs: bool = False,
-                 presilu: bool = False):
+                 presilu: bool = False, steps: int = 0):
     """The GatedDeltaRule operator for ``n`` columns of two cores, each core ``hc`` value heads:
     each core's words (four a head) are values of their own, so it is made per shape.
 
@@ -219,7 +221,12 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
     ``presilu`` (a prompt chunk, without ``conv``): x comes with silu applied to q, k and v
     (silu_operator), so the cores only copy a row's parts. Each core reads every row once per
     slice of its value heads (16 times for Qwen3.6), which with the silu in the core was three
-    quarters of the operator's time."""
+    quarters of the operator's time.
+
+    ``steps`` > 1 (with ``conv`` and ``norm``: a check of drafts, iron_verify.py): ``steps``
+    rows a call, each run as a decode step's row in turn, the state staying in the cores; the
+    final state is ``steps`` states, the one after each row (the host keeps the one after the
+    last row it keeps), y each row's."""
     import aie.dialects.index as index
     from aie.dialects.aie import T
     from aie.extras.dialects import arith
@@ -238,6 +245,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
 
     def kernels(R: int, blocks: int, dk: int, seg: int, dv: int, zw: int):
         flags = [f"-DGDR_SEG={seg}", f"-DGDR_CONV={conv}"] if conv else []
+        if steps:
+            flags.append(f"-DGDR_STEPS={steps}")
         if presilu:
             flags.append("-DGDR_PRESILU")
         if norm:
@@ -251,7 +260,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                            f"-DGDR_ROWS={R}", f"-DGDR_KEY_DIM={dk}", f"-DGDR_VALUE_DIM={SLICE}",
                            f"-DGDR_BLOCKS={blocks}", *flags],
             object_file_name=f"gdn_{R}_{dk}_{blocks}" + (f"_c{conv}_{seg}" if conv else "")
-            + (f"_n{dv}_{zw}" if norm else "") + ("_p" if presilu else "") + ".o",
+            + (f"_n{dv}_{zw}" if norm else "") + ("_p" if presilu else "")
+            + (f"_s{steps}" if steps else "") + ".o",
         )
         seg_t = np.ndarray[(seg,), np.dtype[bfloat16]]
         st_t = np.ndarray[(dk * SLICE,), np.dtype[np.float32]]
@@ -260,6 +270,14 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
         gather = ExternalFunction("gdn_gather", arg_types=[seg_t, i32, i32, i32, i32, i32], **common)
         rule = ExternalFunction("gdn_rule", arg_types=[st_t, st_t, y_t, i32, i32, i32, i32, i32, i32],
                                 **common)
+        if steps:
+            xt_t = np.ndarray[(steps * (seg + zw) + conv * seg,), np.dtype[bfloat16]]
+            head_t = np.ndarray[(dv,), np.dtype[bfloat16]]
+            convk = ExternalFunction("gdn_conv_step", arg_types=[xt_t, st_t, st_t, i32], **common)
+            gather = ExternalFunction("gdn_gather_step", arg_types=[i32] * 5, **common)
+            rule = ExternalFunction("gdn_rule_step", arg_types=[st_t, st_t, *[i32] * 6], **common)
+            normk = ExternalFunction("gdn_norm_step", arg_types=[head_t, xt_t, i32, i32], **common)
+            return gather, rule, convk, normk
         if conv:
             xt_t = np.ndarray[((1 + conv) * seg + zw,), np.dtype[bfloat16]]
             convk = ExternalFunction("gdn_conv", arg_types=[xt_t, st_t, st_t], **common)
@@ -302,9 +320,12 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
         # with conv, a pair more a column: the rows before the call
         states: int = param(derive=lambda op: op.heads * op.key_dim * op.value_dim
                             + (n * 2 * op.key_dim * SLICE if conv or pairs else 0), repr=False)
+        # the final states: with steps, the one after each row
+        finals: int = param(derive=lambda op: max(steps, 1) * op.states, repr=False)
         pair: int = param(derive=lambda op: 2 * op.key_dim * SLICE, repr=False)
-        block: int = param(derive=lambda op: 1 if op.rows == 1 else BLOCK, array=True)
-        ypair: int = param(derive=lambda op: 2 * op.block * SLICE, repr=False)
+        block: int = param(derive=lambda op: 1 if op.rows == 1 or steps else BLOCK, array=True)
+        # y's objects: a slice of each core's head (with steps, its whole head) for a row
+        ypair: int = param(derive=lambda op: 2 * op.value_dim if steps else 2 * op.block * SLICE, repr=False)
 
         x = In(rows, twidth, obj_shape=(seg,), per=(columns,))
         if norm:  # x's channel, after the row: the column's value heads' z
@@ -313,7 +334,7 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             taps = In(conv, twidth, obj_shape=(seg,), per=(columns,))  # x's channel, after the row
         state = In(states, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
         y = Out(rows, hv, obj_shape=(ypair,), per=(columns,))
-        final = Out(states, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+        final = Out(finals, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
         valid = per_call(bounds=rows)
         count = per_call(derive=lambda op: op.valid)
 
@@ -324,14 +345,17 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                                  f"of two cores")
             if self.value_dim % SLICE or self.key_dim % 16:
                 raise ValueError("GatedDeltaRule: value_dim whole slices of 16, key_dim of 16")
-            if self.rows != 1 and self.rows % BLOCK:
+            if self.rows != 1 and self.rows % BLOCK and not steps:
                 raise ValueError(f"GatedDeltaRule: rows ({self.rows}) one or whole blocks of {BLOCK}")
             if H != cores * hc:
                 raise ValueError(f"GatedDeltaRule: {H} value heads, made for {cores * hc}")
             if len(self.words) != 4 * H:
                 raise ValueError(f"GatedDeltaRule: {len(self.words)} words for {H} heads")
-            if conv and self.rows != 1:
-                raise ValueError("GatedDeltaRule: the convolution in the core is a decode step's")
+            if conv and self.rows != max(steps, 1):
+                raise ValueError("GatedDeltaRule: the convolution in the core is a decode step's "
+                                 "(steps: as many rows as steps)")
+            if steps and not (conv and norm):
+                raise ValueError("GatedDeltaRule: steps run the decode step's convolution and norm")
             if conv and (conv - 1) * self.seg > conv_hist_words(self.key_dim):
                 raise ValueError(f"GatedDeltaRule: {conv - 1} rows of {self.seg} past a pair's half")
             if norm and not conv:
@@ -342,14 +366,16 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
         def geometry(self):
             H, KH, dk, dv = self.heads, self.key_heads, self.key_dim, self.value_dim
             hc, S, R = H // cores, dv // SLICE, self.block
-            return H, KH, dk, dv, hc, S, R, self.rows // R
+            return H, KH, dk, dv, hc, S, R, (steps if steps else self.rows // R)
 
         def build(self) -> Built:
             H, KH, dk, dv, hc, S, R, blocks = self.geometry()
             gather, rule, convk, normk = kernels(R, blocks, dk, self.seg, dv, self.zw)
             seg_t = np.ndarray[((1 + conv) * self.seg + self.zw,), np.dtype[bfloat16]]
+            if steps:
+                seg_t = np.ndarray[(steps * (self.seg + self.zw) + conv * self.seg,), np.dtype[bfloat16]]
             st_t = np.ndarray[(dk * SLICE,), np.dtype[np.float32]]
-            y_t = np.ndarray[(R * SLICE,), np.dtype[bfloat16]]
+            y_t = np.ndarray[(dv if steps else R * SLICE,), np.dtype[bfloat16]]
             xd = 1 if conv else 2
             x_l3 = [ObjectFifo(seg_t, depth=xd) for _ in range(n)]
             x_l1 = [f.cons().forward(obj_type=seg_t, depth=xd, tile=AnyMemTile) for f in x_l3]
@@ -357,7 +383,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             s_l1 = [f.cons().split([0, dk * SLICE], obj_types=[st_t, st_t], depths=[1, 1],
                                    tile=AnyMemTile) for f in s_l3]
             y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
-            y_l1 = [f.prod().join([0, R * SLICE], obj_types=[y_t, y_t], depths=[2, 2], tile=AnyMemTile)
+            y_l1 = [f.prod().join([0, dv if steps else R * SLICE], obj_types=[y_t, y_t], depths=[2, 2],
+                                  tile=AnyMemTile)
                     for f in y_l3]
             f_l3 = [ObjectFifo(self.final.obj_type, depth=1) for _ in range(n)]
             f_l1 = [f.prod().join([0, dk * SLICE], obj_types=[st_t, st_t], depths=[1, 1], tile=AnyMemTile)
@@ -366,7 +393,41 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             rtps = [Rtp([self.count, *(self.value(f"hp{k}_{w}") for w in range(4 * hc))])
                     for k in range(cores)]
 
+            def core_steps(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k):
+                w = rtp.read()
+                hp = [w[self.value(f"hp{k}_{u}")] for u in range(4 * hc)]
+                xt, st = x_f.acquire(1), s_f.acquire(1)
+                for m in range(steps):  # the rows before each row, and its convolution
+                    fin = f_f.acquire(1)
+                    convk(xt, st, fin, i32c(m))
+                    f_f.release(1)
+                s_f.release(1)
+                for i in range(hc):
+                    hl = j * hc + i
+                    kl = hl // rep
+                    qo, ko = i32c(kl * dk), i32c(KHg * dk + kl * dk)
+                    vbase = 2 * KHg * dk + hl * dv
+                    abo = i32c(2 * KHg * dk + Hg * dv + 2 * hl)
+                    hpi = (hp[4 * i], hp[4 * i + 1], hp[4 * i + 2], hp[4 * i + 3])
+                    for s in range_(S):
+                        s32 = index.casts(T.i32(), s)
+                        vo = arith.addi(i32c(vbase), arith.muli(s32, i32c(SLICE)))
+                        st = s_f.acquire(1)
+                        for m in range(steps):  # the slice's state stays in the core row to row
+                            gather(i32c(m), qo, ko, vo, abo)
+                            fin = f_f.acquire(1)
+                            rule(st, fin, i32c(m), *hpi, s32)
+                            f_f.release(1)
+                        s_f.release(1)
+                    for m in range(steps):
+                        y = y_f.acquire(1)
+                        normk(y, xt, i32c(hl * dv), i32c(m))
+                        y_f.release(1)
+                x_f.release(1)
+
             def core(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k):
+                if steps:
+                    return core_steps(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k)
                 w = rtp.read()
                 valid = w[self.count]
                 hp = [w[self.value(f"hp{k}_{u}")] for u in range(4 * hc)]
@@ -458,6 +519,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             return Built(workers, rtps)
 
         def sequence(self, rt):
+            if steps:
+                return self.sequence_steps(rt)
             H, KH, dk, dv, hc, S, R, blocks = self.geometry()
             rows, W, seg, HV = self.rows, self.width, self.seg, self.hv
             zw, TW = self.zw, self.twidth
@@ -499,10 +562,49 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             for d in drains:
                 d.await_()
 
+        def sequence_steps(self, rt):
+            """steps: each column's rows, their z and the taps in; the state once; out, the rows
+            before each row (a pair a row, its run's first), then each slice's state after each
+            row, into that row's state of the finals; y a row's head a core at a time."""
+            H, KH, dk, dv, hc, S, R, blocks = self.geometry()
+            M, seg, HV, zw, TW, st = steps, self.seg, self.hv, self.zw, self.twidth, self.states
+            run = (hc * S + 1) * self.pair
+            for c in range(n):
+                self.state.fill(TAP((st,), c * run, [run], [1]), lane=c, managed=False)
+                self.x.fill(TAP((M, TW), c * seg, [M, seg], [TW, 1]), lane=c, managed=False)
+                self.z.fill(TAP((M, HV), c * zw, [M, zw], [HV, 1]), lane=c, managed=False)
+                self.taps.fill(TAP((conv, TW), c * seg, [conv, seg], [TW, 1]), lane=c, managed=False)
+            drains = []
+            for c in range(n):
+                drains.append(self.final.drain(TAP((M * st,), c * run, [M, self.pair], [st, 1]), lane=c,
+                                               wait=True, managed=False))
+                drains.append(self.final.drain(
+                    TAP((M * st,), c * run + self.pair, [hc * S, M, self.pair], [self.pair, st, 1]),
+                    lane=c, wait=True, managed=False))
+                h0 = c * 2 * hc  # (head, row, core, value): core 1's heads from h0 + hc
+                drains.append(self.y.drain(TAP((M, HV), h0 * dv, [hc, M, 2, dv], [dv, HV, hc * dv, 1]),
+                                           lane=c, wait=True, managed=False))
+            for d in drains:
+                d.await_()
+
         def ops(self) -> int:
             return 6 * self.rows * self.heads * self.key_dim * self.value_dim
 
-        if norm:
+        if steps:
+            def reference(self, x, z, taps, state):
+                shape = dict(heads=self.heads, key_heads=self.key_heads, key_dim=self.key_dim,
+                             value_dim=self.value_dim, n=n)
+                H, dv = self.heads, self.value_dim
+                st, ys, finals = np.asarray(state, np.float32), [], []
+                for m in range(steps):
+                    u, rest, put = conv_reference(np.asarray(x)[m : m + 1], taps, st, **shape)
+                    y, final = gdn_reference(u, rest, self.words, **shape, valid=1)
+                    ys.append(norm_reference(np.asarray(y).reshape(1, H, dv),
+                                             np.asarray(z)[m : m + 1].reshape(1, H, dv), norm).reshape(1, H * dv))
+                    st = put(final)
+                    finals.append(st)
+                return np.concatenate(ys), np.concatenate(finals)
+        elif norm:
             def reference(self, x, z, taps, state):
                 shape = dict(heads=self.heads, key_heads=self.key_heads, key_dim=self.key_dim,
                              value_dim=self.value_dim, n=n)

@@ -27,6 +27,8 @@ type session interface {
 // tokenSession is a session that reads token ids itself (the model embeds them on the device).
 type tokenSession interface {
 	StepTokens(toks []int32) ([]float32, error)
+	// SpeculateTokens is Speculate on token ids.
+	SpeculateTokens(toks []int32, accept func(row func(i int) []float32) int) ([]float32, int, error)
 }
 
 var _ session = (*decode.Session)(nil)

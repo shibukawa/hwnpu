@@ -100,7 +100,12 @@ static inline void q6_accumulate(const q6_block *A, const bf16 *B, float *c) {
   }
 }
 
+#include "mv_rows.h"
+
 extern "C" {
+
+// The GEMV of ROWS rows (mv_rows.h).
+MV_ROWS_CALLS(q6, q6_block, q6_codes)
 
 // Every call first sets round-to-nearest-even (q8_mv.cc).
 

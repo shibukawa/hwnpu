@@ -570,6 +570,10 @@ q8 と同じブロックと並びで符号を 6 ビット (−31〜31) にした
 - Anima の DiT: `iron_anima.py --dit-attn q6 --dit-mlp q6` (上)
 - GPTQ と CPU の見積もり: `q4_gptq.py --fmt-q4 q6 --head q6`
 
+### 下書きを確かめる版 (`--verify`、2026-11-08)
+
+`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。`hwnpu-chat -iron` はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。ロジットはデコードのステップとビット単位で同じなので、temp 0 の文は変わらない。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン (design.md の 16.117)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_IRON_DRAFTS=0` で使わない。
+
 #### Qwen3.6-35B-A3B (`tools/amd/qwen36_gptq.py`、2026-11-08)
 
 `q4_gptq.py` はモデル全体を fp32 で持つので、36 B パラメータ (fp32 で 140 GB) の Qwen3.6 は入らない。`qwen36_gptq.py` は 1 層ずつ重みを safetensors から読み (meta デバイスのモデルに差し込む)、校正の文のその層の前の隠れ状態だけを持って進める。層の 4 ビットの重みを GPTQ で選び、量子化した重みで次の層への入力を作る。
