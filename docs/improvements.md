@@ -23,6 +23,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | lut6 / lut8 (weight formats) (16.26, 16.31, 16.41) | △ heavier is slower | | △ | △ bigger weights | | | ◎ KL 1/6–1/10 | Apple |
 | Think budget `-think-budget` (16.32) | ◎ felt (stops minutes of spinning) | | | | | | | All |
 | Speculative decoding (prompt lookup) (16.33, 16.36–37) | ○ 1.2–1.5× | | | | | | unchanged | Apple / Intel |
+| Speculative decoding: drafts from Qwen3.5's MTP layer, and the GDN state brought back on the host (`state-rows`) (16.109) | ◎ 0.8B (M1) 26.1 → 43.8 tok/s (code), 25.8 → 30.3 (Japanese) | | △ one more program (0.27 GiB) | △ +0.27 GiB on the ANE | | | unchanged (the distribution; fp16 rounding may change the text partway) | Apple |
 | KV tiers `-tier` (16.20, 16.37) | ◎ 1.95× (short chats) | ◎ over 2× | ✕ worse with lut6 | △ +0.5–0.7 GiB | | | | Apple (now lut4 only) |
 | Caching the placement result (16.20) | | | ○ 42 → 16 s | | | | | Apple |
 | Prompt store (disk) (16.38, 16.52) | | ◎ 7.9K tok 14.6 s → 0.2 s | | | △ about 145 MB a sequence | | | All (AMD too) |

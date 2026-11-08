@@ -73,8 +73,31 @@ func softplus(x float64) float64 { return math.Log1p(math.Exp(x)) }
 // after layer stop.
 func reference(t *testing.T, c *Config, w llm.Weights, x []float32, stop int) [][]float64 {
 	d := c.HiddenSize
-	s := len(x) / d
-	p := c.prefix()
+	h := make([][]float64, len(x)/d)
+	for i := range h {
+		h[i] = make([]float64, d)
+		for j := range h[i] {
+			h[i][j] = float64(x[i*d+j])
+		}
+	}
+	var layers []refLayer
+	for l := 0; l < c.NumLayers; l++ {
+		layers = append(layers, refLayer{fmt.Sprintf("%slayers.%d.", c.prefix(), l), c.IsLinear(l)})
+	}
+	return referenceLayers(t, c, w, h, layers, c.prefix()+"norm.weight", stop)
+}
+
+// refLayer is a decoder layer of the reference: its tensors' prefix and its kind.
+type refLayer struct {
+	prefix string
+	linear bool
+}
+
+// referenceLayers runs the layers over the hidden states h (rows at positions 0, 1, ...), and the
+// final norm, or with stop >= 0 stops after layer stop. It changes h.
+func referenceLayers(t *testing.T, c *Config, w llm.Weights, h [][]float64, layers []refLayer, final string, stop int) [][]float64 {
+	d := c.HiddenSize
+	s := len(h)
 	matvec := func(m []float64, rows int, v []float64) []float64 {
 		cols := len(v)
 		y := make([]float64, rows)
@@ -110,13 +133,6 @@ func reference(t *testing.T, c *Config, w llm.Weights, x []float32, stop int) []
 		}
 		return g
 	}
-	h := make([][]float64, s)
-	for i := range h {
-		h[i] = make([]float64, d)
-		for j := range h[i] {
-			h[i][j] = float64(x[i*d+j])
-		}
-	}
 	inv := c.RopeInvFreq()
 	rot := c.RotaryDim()
 	ropeAt := func(v []float64, pos int) {
@@ -135,15 +151,15 @@ func reference(t *testing.T, c *Config, w llm.Weights, x []float32, stop int) []
 		}
 		copy(v, r)
 	}
-	for l := 0; l < c.NumLayers; l++ {
-		lp := fmt.Sprintf("%slayers.%d.", p, l)
+	for l, layer := range layers {
+		lp := layer.prefix
 		in := onePlus(lp + "input_layernorm.weight")
 		hn := make([][]float64, s)
 		for i := range h {
 			hn[i] = rms(h[i], in, c.NormEps)
 		}
 		mix := make([][]float64, s)
-		if c.IsLinear(l) {
+		if layer.linear {
 			a := lp + "linear_attn."
 			hk, hv, dk, dv, K := c.LinearKeyHeads, c.LinearValueHeads, c.LinearKeyDim, c.LinearValueDim, c.ConvKernel
 			kd, vd, cd := c.keyDim(), c.valueDim(), c.convDim()
@@ -308,7 +324,7 @@ func reference(t *testing.T, c *Config, w llm.Weights, x []float32, stop int) []
 			return h
 		}
 	}
-	fin := onePlus(p + "norm.weight")
+	fin := onePlus(final)
 	for i := range h {
 		h[i] = rms(h[i], fin, c.NormEps)
 	}
@@ -345,7 +361,7 @@ func logits(t *testing.T, c *Config, w llm.Weights, h [][]float64) [][]float64 {
 
 // buildProgram builds a program into a fresh weight file and returns it with its inputs and
 // outputs and a digest of the program and the weights.
-func buildProgram(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options) (p *milcpu.Program, ins, outs []mlpackage.Feature, digest string) {
+func buildProgram(t *testing.T, cfg llm.Cached, w llm.Weights, opts llm.Options) (p *milcpu.Program, ins, outs []mlpackage.Feature, digest string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "weight.bin")
 	blobs, err := mlpackage.NewBlobWriter(path)
@@ -353,7 +369,7 @@ func buildProgram(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options) (p
 		t.Fatal(err)
 	}
 	b := mlpackage.NewBuilder("CoreML8", blobs)
-	ins, outs, err = BuildCached(b, cfg, w, opts)
+	ins, outs, err = cfg.BuildCached(b, w, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +402,7 @@ func buildProgram(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options) (p
 }
 
 // runCPU builds a program without a cache and runs it on x with the CPU interpreter.
-func runCPU(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options, x []float32) []float32 {
+func runCPU(t *testing.T, cfg llm.Cached, w llm.Weights, opts llm.Options, x []float32) []float32 {
 	t.Helper()
 	p, ins, outs, _ := buildProgram(t, cfg, w, opts)
 	res, err := p.Run(map[string]milcpu.Tensor{"x": {Shape: ins[0].Shape, Data: x}}, milcpu.Options{})

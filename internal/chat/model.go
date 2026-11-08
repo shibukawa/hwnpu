@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,6 +58,40 @@ const (
 	PrefillOn   = "on"  // always a program to read prompts
 	PrefillOff  = "off" // never: the program that generates reads them
 )
+
+// The values of Setup.MTP (-mtp).
+const (
+	MTPAuto = "auto" // drafts from the multi-token prediction layer when the checkpoint has one
+	MTPOff  = "off"  // drafts from the prompt alone
+)
+
+// mtpSeq is the tokens per call of the multi-token prediction layer's program: it reads the
+// tokens the model kept in a call (up to Setup.Draft) and guesses from the last, then one at a
+// time for the drafts after the first; the prompt in calls of as many.
+const mtpSeq = 8
+
+// mtpArch is the architecture of a model's multi-token prediction layer, "" for none: that of
+// the arch with -mtp, when the checkpoint has its tensors.
+func mtpArch(config, weights string, a *llm.Arch) string {
+	name := a.Name + "-mtp"
+	ma, mm, err := llm.LoadConfig(config, name)
+	if err != nil {
+		return ""
+	}
+	w, err := llm.OpenWeights(weights, ma)
+	if err != nil {
+		return ""
+	}
+	defer w.Close()
+	for t := range mm.Tensors() {
+		if strings.HasPrefix(t, "mtp.") && strings.HasSuffix(t, "norm.weight") {
+			if _, _, err := w.Get(t); err != nil {
+				return ""
+			}
+		}
+	}
+	return name
+}
 
 // compileCacheBytes is about what the Neural Engine's own cache of compiled programs holds
 // (TierAuto), with some room to spare: on an M3 the two programs of Qwen3.5-2B (3.56 GiB in
@@ -124,6 +159,11 @@ type Setup struct {
 	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
 	// generation runs on one.
 	Draft int
+	// MTP is MTPAuto (also for "") or MTPOff: whether the drafts come from the checkpoint's
+	// multi-token prediction layer (Qwen3.5's mtp., -arch qwen35-mtp) as well as from the prompt,
+	// when it has one and Draft is above 1. The programs of the model then also output their
+	// final hidden states (hidden-out), which the layer reads.
+	MTP string
 	// Prefill is PrefillAuto (also for ""), PrefillOn or PrefillOff: whether a program of 64
 	// tokens per call (128 split at its attention) reads the prompts, or the one that generates does (it must take several
 	// tokens per call, Draft).
@@ -190,6 +230,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	default:
 		return Config{}, fmt.Errorf("chat: -prefill %q is not auto, on or off", s.Prefill)
 	}
+	switch s.MTP {
+	case "", MTPAuto, MTPOff:
+	default:
+		return Config{}, fmt.Errorf("chat: -mtp %q is not auto or off", s.MTP)
+	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Config{}, err
 	}
@@ -225,6 +270,21 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
 		kind += "-" + attn
 	}
+	// with drafts from the multi-token prediction layer, the programs also output their final
+	// hidden states, which the layer reads: other programs, named -h
+	var mtp string
+	params := map[string]string{}
+	if s.Draft > 1 && s.MTP != MTPOff && backend != llm.BackendIntel {
+		if mtp = mtpArch(c.ModelConfig, c.Weights, a); mtp != "" {
+			kind += "-h"
+			params["hidden-out"] = "1"
+		}
+	}
+	// with drafts, the program that checks them, of a model whose state a step replaces as a
+	// whole (Qwen3.5's Gated DeltaNet), also outputs what each row adds to it, so that keeping a
+	// beginning of the drafts does not run them again (llm.StateReplayer): another program,
+	// named -sr
+	stateRows := s.Draft > 1 && a.Param(llm.Options{}, "state-rows") != ""
 	chunk, context := pagedChunk(model, s.Paged), s.Context
 	if context <= 0 {
 		context = DefaultContext
@@ -286,13 +346,18 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	for _, cache := range append(caches, context) {
 		var pkgs []string
-		for _, p := range progs {
+		for i, p := range progs {
 			last := ""
 			if p.lastRow {
 				last = "-last"
 			}
-			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s%s", kind, cache, p.seq, last, programExt(backend)))
-			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow}, s.Log)
+			pk, pp := kind, params
+			if i == 0 && stateRows {
+				pk, pp = kind+"-sr", maps.Clone(params)
+				pp["state-rows"] = "1"
+			}
+			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s%s", pk, cache, p.seq, last, programExt(backend)))
+			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow}, s.Log)
 			if err != nil {
 				return Config{}, err
 			}
@@ -308,6 +373,24 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		c.Tiers = append(c.Tiers, pkgs)
 	}
 	c.Packages = c.Tiers[len(c.Tiers)-1]
+	if mtp != "" {
+		// the multi-token prediction layer, with a cache of the context: it reads the model's
+		// hidden states from where it starts, and only the last row's logits are drafts
+		ma, mm, err := llm.LoadConfig(c.ModelConfig, mtp)
+		if err != nil {
+			return Config{}, err
+		}
+		mkind := ma.Name + ma.Rev() + "-" + cmp.Or(s.Format, ma.DefaultFormatFor(mm, backend))
+		if chunk > 0 {
+			mkind += fmt.Sprintf("-p%d", chunk)
+		}
+		out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d-last%s", mkind, context, mtpSeq, programExt(backend)))
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: mtp, format: s.Format, seq: mtpSeq, cache: context, paged: chunk, lastRow: true}, s.Log)
+		if err != nil {
+			return Config{}, err
+		}
+		c.MTP = []string{path}
+	}
 	shareOnce(pdir, s.Log)
 	for _, e := range encoders {
 		ea, _, err := llm.LoadConfig(c.ModelConfig, e.arch)
