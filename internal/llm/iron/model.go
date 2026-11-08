@@ -786,6 +786,7 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 			if h.Command != k {
 				continue
 			}
+			th := time.Now()
 			switch h.Kind {
 			case "moe_route":
 				rt, err := m.moeHostRoute(v, h, rows)
@@ -801,6 +802,9 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 			default:
 				return nil, fmt.Errorf("iron: a host step %s before prompt command %d", h.Kind, k)
 			}
+			if timing {
+				fmt.Fprintf(os.Stderr, "host %s of layer %d: %.1f ms\n", h.Kind, h.Layer, time.Since(th).Seconds()*1000)
+			}
 		}
 		if route == nil {
 			if err := runOnce(); err != nil {
@@ -812,8 +816,12 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		if combine == nil {
 			return nil, fmt.Errorf("iron: layer %d's moe_route without a moe_combine", route.Layer)
 		}
+		tm := time.Now()
 		if err := m.runMoECommand(ctx, v, routes[route.Layer], route, combine, runOnce); err != nil {
 			return nil, err
+		}
+		if timing {
+			fmt.Fprintf(os.Stderr, "moe command %d: %.1f ms in all\n", k, time.Since(tm).Seconds()*1000)
 		}
 	}
 	if err := m.convPairsOut(v, start, rows); err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sort"
 )
 
 // HostStep is a host step of a version that hwnpu runs itself, before command Command
@@ -56,7 +55,8 @@ type moeRoute struct {
 
 type moePass struct {
 	counts []byte // moeCounts int32
-	xs     []byte // MoEGroupGateUp's x (bf16)
+	xs     []byte // MoEGroupGateUp's x (bf16) of the pass's rows; the padding rows' after them are not written
+	rows   int    // the pass's rows (top a token): the experts' output past them is zero, not read
 }
 
 func (m *Model) region(v *version, r Region) ([]byte, error) {
@@ -70,7 +70,19 @@ func (m *Model) region(v *version, r Region) ([]byte, error) {
 	return buf.Bytes()[r.Offset : r.Offset+r.Bytes], nil
 }
 
+// readRegion returns a copy of r's first n bytes once the device's writes are visible: the
+// buffers' memory is slow to read a few bytes at a time (a 32-token chunk's top-8 took 1.1 ms
+// longer reading the logits in place).
 func (m *Model) readRegion(v *version, r Region, n int) ([]byte, error) {
+	b, err := m.viewRegion(v, r, n)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), b...), nil
+}
+
+// viewRegion is readRegion's bytes in the buffer itself, for a caller writing them back.
+func (m *Model) viewRegion(v *version, r Region, n int) ([]byte, error) {
 	b, err := m.region(v, r)
 	if err != nil {
 		return nil, err
@@ -107,6 +119,24 @@ func putBF16(b []byte, i int, x float32) {
 
 func roundBF16(x float32) float32 { return math.Float32frombits(uint32(bf16(x)) << 16) }
 
+// topK puts the indices of vals' len(best) largest into best, largest first, ties to the lower
+// index (a stable sort's first len(best)).
+func topK(best []int, vals []float32) {
+	n := 0
+	for i, x := range vals {
+		if n == len(best) && x <= vals[best[n-1]] {
+			continue
+		}
+		j := min(n, len(best)-1)
+		for j > 0 && x > vals[best[j-1]] {
+			best[j] = best[j-1]
+			j--
+		}
+		best[j] = i
+		n = min(n+1, len(best))
+	}
+}
+
 // moeHostRoute runs a moe_route step over the chunk's first n rows, as iron_moep's route_chunk
 // and plan (iron_qwen35.MoEHost.moe_route) do, split into passes of at most Cap rows an expert.
 func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) {
@@ -132,16 +162,13 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 	rt := &moeRoute{w: make([]float32, n*top), shared: make([]float32, n),
 		pass: make([]int32, n*top), row: make([]int32, n*top)}
 	ids := make([]int32, n*top)
-	order := make([]int, E)
+	order := make([]int, top)
 	vals := make([]float32, L)
 	for t := 0; t < n; t++ {
 		for i := range vals {
 			vals[i] = bf16At(logits, t*L+i)
 		}
-		for i := range order {
-			order[i] = i
-		}
-		sort.SliceStable(order, func(a, b int) bool { return vals[order[a]] > vals[order[b]] })
+		topK(order[:top], vals[:E])
 		var sum float64
 		e := make([]float64, top)
 		for k := 0; k < top; k++ {
@@ -186,7 +213,10 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 		for i := top * len(tokens); i < A; i++ {
 			groups[moePad] = append(groups[moePad], -1)
 		}
-		ps := moePass{counts: make([]byte, 4*moeCounts), xs: make([]byte, 2*2*A*K)}
+		// the cores read the padding rows' x past, so only the real rows' (the first ones, the
+		// padding group last) are written: a 32-token chunk's 1/8 of the A rows'
+		real := top * len(tokens)
+		ps := moePass{counts: make([]byte, 4*moeCounts), xs: make([]byte, 2*2*real*K), rows: real}
 		at, x := 0, 0
 		for e, list := range groups {
 			c := len(list)
@@ -197,6 +227,9 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 				}
 			}
 			at += c
+			if e == moePad {
+				break // the padding rows: last, their x unwritten
+			}
 			for g := 0; g < 2; g++ { // the gate's pass over the k-blocks, then the up's
 				for kb := 0; kb < K/moeKT; kb++ {
 					for _, choice := range list {
@@ -257,6 +290,7 @@ func (m *Model) moeHostCombine(v *version, h *HostStep, rt *moeRoute, n int) err
 // pass's counts and x written first, its output (combine's second read) copied out after.
 func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, route, combine *HostStep, run func() error) error {
 	yr := combine.Reads[1]
+	K := combine.Reads[0].Shape[1]
 	for _, p := range rt.passes {
 		if err := m.writeRegion(v, route.Writes[0], p.counts); err != nil {
 			return err
@@ -267,7 +301,7 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 		if err := run(); err != nil {
 			return err
 		}
-		y, err := m.readRegion(v, yr, yr.Bytes)
+		y, err := m.readRegion(v, yr, min(yr.Bytes, 2*p.rows*K)) // the real rows; the padding rows' are zero
 		if err != nil {
 			return err
 		}
