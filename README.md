@@ -104,6 +104,8 @@ go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.amd-npu2
 go run ./cmd/hwnpu-agent -iron ~/models/gemma-4-E2B-it.amd-npu2 "README.md を要約して"
 ```
 
+Apple と Intel の NPU がなく AMD の NPU があるとき、`hwnpu-chat` と `hwnpu-agent` は `-iron` がなくても `-use` のモデル (既定 LFM3-1.7B) の書き出しを `~/models/NAME.amd-npu2-q4`、なければ `~/models/NAME.amd-npu2` から選びます (`go run ./cmd/hwnpu-chat -use gemma-4-E2B-it`)。
+
 Gemma 4 E4B (gemma-4-E4B-it) も同じ `gemma4` で書き出します (文脈 4096、塊 1024。書き出しは 15 GB)。デコードは 1 秒に 3.6 トークン (E2B の約 6 割) で、位置 3072 からの 1024 トークンを 8.2 秒で読みます。
 
 LFM3-1.7B は IRON にアプリケーションがないので、hwnpu の `tools/amd/iron_lfm3.py` を使います (`lfm3`)。畳み込みの層の状態は、プロンプトの塊の境ごとに残り、hwnpu はその位置の分を印に写して巻き戻します。文脈 12288、塊 2048 まではスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。`--q4` で MLP と出力の行列を 4 ビット、注意と短い畳み込みの射影を 8 ビット、埋め込みをホストに置くと、Ryzen AI 9 365 で固定されるメモリが 3.75 から 1.64 GiB に、デコードが 1 秒に 8.7 から 11.2 トークン (1 トークン 1.34 → 1.05 J) になり、bf16 との KL は 0.036 nats (最上位の一致 92 %) でした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。プロンプトの速さは変わらず、先頭の 2048 トークンを 2.4 秒、位置 10240 からの 2048 トークンを 12.5 秒で読みます (注意が窓の外も含めて文脈の全体を読むため)。bf16 のままなら `--q4` を外します。

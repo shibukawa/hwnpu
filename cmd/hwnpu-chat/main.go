@@ -133,6 +133,13 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if *ironDir == "" && *pkgs == "" {
+		if *ironDir, err = chat.AMDExport(ctx, *use, *backend); err != nil {
+			fail(err)
+		} else if *ironDir != "" {
+			fmt.Fprintf(os.Stderr, "hwnpu-chat: AMD's NPU: -iron %s\n", *ironDir)
+		}
+	}
 	var models []chat.Model
 	if *ironDir != "" {
 		models = []chat.Model{{Name: strings.TrimSuffix(filepath.Base(*ironDir), ".amd-npu2"), Kind: chat.KindChat}}
