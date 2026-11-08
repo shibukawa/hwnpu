@@ -31,7 +31,7 @@ from ml_dtypes import bfloat16
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 TOP = 8
-CAP = 128  # rows of one expert a core keeps (kernels/moe_rows.cc's MOE_CAP)
+CAP = 256  # rows of one expert a core keeps (kernels/moe_rows.cc's MOE_CAP): a 256-token chunk's all
 COUNTS = 512  # int32 words of the counts: each expert's (256 at most), then the padding rows' (256)
 PAD = 256  # the counts' word of the padding rows
 
@@ -132,7 +132,9 @@ def group_operators(experts: int = 256, cap: int = CAP):
     blk_t = np.ndarray[(B,), np.dtype[np.uint8]]
     half_t = np.ndarray[(MT,), np.dtype[bfloat16]]
     cnt_t = np.ndarray[(COUNTS,), np.dtype[np.int32]]
-    acc_t = np.ndarray[(cap * MT,), np.dtype[np.float32]]
+    ST = MT // 2  # a gate-up core's strip of a block (moe_rows.cc's ST)
+    strip_t = np.ndarray[(ST,), np.dtype[bfloat16]]
+    acc_t = np.ndarray[(cap * ST,), np.dtype[np.float32]]
 
     def kernel(name, args):
         kdir = Path(config.aie_kernels_dir())
@@ -173,8 +175,9 @@ def group_operators(experts: int = 256, cap: int = CAP):
     class MoEGroupGateUp(Operator):
         """``a = silu(G_e x) * (U_e x)`` for each of the A rows, the rows sorted by expert and
         ``x`` in stream_x's order, ``counts`` the experts' rows. Column c reads every expert's
-        column blocks 2c and 2c + 1 (gate and up of out-features 64 c ..), its two cores a half
-        each; a is (A, NE)."""
+        column blocks 2c and 2c + 1 (gate and up of out-features 64 c ..), each block to two of
+        its four cores, a strip (16 out-features) each: a core keeps 16 accumulators of the gate
+        and of the up a row, so cap rows of an expert fit; a is (A, NE)."""
 
         rows: int = param(array=True)  # blocks in the table
         A: int = param(array=True)  # rows: 8 a token
@@ -199,21 +202,21 @@ def group_operators(experts: int = 256, cap: int = CAP):
         def build(self) -> Built:
             kbs = self.K // K_TILE
             k_counts = kernel("moe_rows_counts", [self.counts.obj_type, cnt_t, np.int32, np.int32])
-            k_pad = kernel("moe_rows_pad", [half_t])
-            k_zero = kernel("moe_rows_zero", [acc_t, acc_t])
-            k_acc = kernel("moe_rows_acc", [blk_t, self.x.obj_type, acc_t, np.int32])
-            k_acc2 = kernel("moe_rows_acc2", [blk_t, self.x.obj_type, self.x.obj_type, acc_t, np.int32])
-            k_glu = kernel("moe_rows_glu", [acc_t, acc_t, np.int32, half_t])
+            k_pad = kernel("moe_gu_pad", [strip_t])
+            k_zero = kernel("moe_gu_zero", [acc_t, acc_t])
+            k_acc = kernel("moe_gu_acc", [blk_t, self.x.obj_type, acc_t, np.int32, np.int32])
+            k_acc2 = kernel("moe_gu_acc2", [blk_t, self.x.obj_type, self.x.obj_type, acc_t, np.int32, np.int32])
+            k_glu = kernel("moe_gu_glu", [acc_t, acc_t, np.int32, strip_t])
             w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(cols)]
             w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], depths=[2, 2], tile=AnyMemTile)
                     for f in w_l3]
             x_l3 = [ObjectFifo(self.x.obj_type, depth=2) for _ in range(cols)]
             x_l1 = [f.cons().forward(obj_type=self.x.obj_type, depth=4, tile=AnyMemTile) for f in x_l3]
             a_l3 = [ObjectFifo(self.a.obj_type, depth=2) for _ in range(cols)]
-            a_l1 = [f.prod().join([0, MT], obj_types=[half_t, half_t], depths=[2, 2], tile=AnyMemTile)
-                    for f in a_l3]
+            a_l1 = [f.prod().join([0, ST, 2 * ST, 3 * ST], obj_types=[strip_t] * 4, depths=[2] * 4,
+                                  tile=AnyMemTile) for f in a_l3]
 
-            def core(w_f, x_f, y_f, cnt, g, u, kc, kz, kacc, kacc2, kglu, kpad):
+            def core(w_f, x_f, y_f, cnt, g, u, kc, kz, kacc, kacc2, kglu, kpad, h):
                 for part in range(4):
                     c = x_f.acquire(1)
                     kc(c, cnt, i32c(part), i32c(COUNTS // 4))
@@ -227,11 +230,11 @@ def group_operators(experts: int = 256, cap: int = CAP):
                             b = w_f.acquire(1)
                             for p in range_(two):
                                 xt = x_f.acquire(2)
-                                kacc2(b, xt[0], xt[1], acc, i32(arith_mul2(p)))
+                                kacc2(b, xt[0], xt[1], acc, i32(arith_mul2(p)), i32c(h))
                                 x_f.release(2)
                             for _ in range_(one):
                                 xt = x_f.acquire(1)
-                                kacc(b, xt, acc, i32(arith_sub1(n)))
+                                kacc(b, xt, acc, i32(arith_sub1(n)), i32c(h))
                                 x_f.release(1)
                             w_f.release(1)
                     for r in range_(n):
@@ -250,10 +253,13 @@ def group_operators(experts: int = 256, cap: int = CAP):
 
             workers = []
             for i in range(cols):
-                for j in range(2):
-                    cnt, g, u = Buffer(cnt_t), Buffer(acc_t), Buffer(acc_t)
-                    workers.append(Worker(core, [w_l1[i][j].cons(), x_l1[i].cons(), a_l1[i][j].prod(),
-                                                 cnt, g, u, k_counts, k_zero, k_acc, k_acc2, k_glu, k_pad]))
+                for j in range(2):  # the block, then its strip: out-features 32 j + 16 h ..
+                    for h in range(2):
+                        cnt, g, u = Buffer(cnt_t), Buffer(acc_t), Buffer(acc_t)
+                        fn = lambda w_f, x_f, y_f, cnt, g, u, kc, kz, ka, ka2, kg, kp, h=h: core(  # noqa: E731
+                            w_f, x_f, y_f, cnt, g, u, kc, kz, ka, ka2, kg, kp, h)
+                        workers.append(Worker(fn, [w_l1[i][j].cons(), x_l1[i].cons(), a_l1[i][2 * j + h].prod(),
+                                                   cnt, g, u, k_counts, k_zero, k_acc, k_acc2, k_glu, k_pad]))
             self.W.bind([f.prod() for f in w_l3])
             self.counts.bind([f.prod() for f in x_l3])
             self.x.bind([f.prod() for f in x_l3])
@@ -305,8 +311,9 @@ def group_operators(experts: int = 256, cap: int = CAP):
 
     class MoEGroupDown(Operator):
         """``y = D_e a`` for each of the A rows (sorted by expert, a (A, KE)): column c keeps
-        out-features 256 c .. 256 c + 255, a column block (64) of every expert at a time; y is
-        (A, N), without the routing weights or the residual (the host's combine)."""
+        out-features 256 c .. 256 c + 255, a column block (64) of every expert at a time, its
+        two blocks of 32 each to two of its four cores, a strip (16) each; y is (A, N), without
+        the routing weights or the residual (the host's combine)."""
 
         aiecc_flags = ("--reclaim-runtime-bds",)
 
@@ -335,19 +342,20 @@ def group_operators(experts: int = 256, cap: int = CAP):
         def build(self) -> Built:
             per = self.N // CB // cols  # column blocks a column
             k_counts = kernel("moe_rows_counts", [self.counts.obj_type, cnt_t, np.int32, np.int32])
-            k_down = kernel("moe_rows_down", [blk_t, blk_t, self.a.obj_type, half_t])
-            k_down2 = kernel("moe_rows_down2", [blk_t, blk_t, self.a.obj_type, self.a.obj_type, half_t, half_t])
-            k_pad = kernel("moe_rows_pad", [half_t])
+            k_down = kernel("moe_dn", [blk_t, blk_t, self.a.obj_type, strip_t, np.int32])
+            k_down2 = kernel("moe_dn2", [blk_t, blk_t, self.a.obj_type, self.a.obj_type, strip_t, strip_t,
+                                         np.int32])
+            k_pad = kernel("moe_gu_pad", [strip_t])
             w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(cols)]
             w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], depths=[2, 2], tile=AnyMemTile)
                     for f in w_l3]
             x_l3 = [ObjectFifo(self.a.obj_type, depth=2) for _ in range(cols)]
             x_l1 = [f.cons().forward(obj_type=self.a.obj_type, depth=4, tile=AnyMemTile) for f in x_l3]
             y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(cols)]
-            y_l1 = [f.prod().join([0, MT], obj_types=[half_t, half_t], depths=[4, 4], tile=AnyMemTile)
-                    for f in y_l3]
+            y_l1 = [f.prod().join([0, ST, 2 * ST, 3 * ST], obj_types=[strip_t] * 4, depths=[4] * 4,
+                                  tile=AnyMemTile) for f in y_l3]
 
-            def core(w_f, x_f, y_f, cnt, kc, kd, kd2, kpad):
+            def core(w_f, x_f, y_f, cnt, kc, kd, kd2, kpad, h):
                 for part in range(2):
                     c = x_f.acquire(1)
                     kc(c, cnt, i32c(part), i32c(COUNTS // 2))
@@ -360,12 +368,12 @@ def group_operators(experts: int = 256, cap: int = CAP):
                         b = w_f.acquire(2)  # k-blocks 0 and 1 of the column block
                         for _ in range_(two):
                             xt, y = x_f.acquire(2), y_f.acquire(2)
-                            kd2(b[0], b[1], xt[0], xt[1], y[0], y[1])
+                            kd2(b[0], b[1], xt[0], xt[1], y[0], y[1], i32c(h))
                             x_f.release(2)
                             y_f.release(2)
                         for _ in range_(one):
                             xt, y = x_f.acquire(1), y_f.acquire(1)
-                            kd(b[0], b[1], xt, y)
+                            kd(b[0], b[1], xt, y, i32c(h))
                             x_f.release(1)
                             y_f.release(1)
                         w_f.release(2)
@@ -378,10 +386,13 @@ def group_operators(experts: int = 256, cap: int = CAP):
 
             workers = []
             for i in range(cols):
-                for j in range(2):
-                    cnt = Buffer(cnt_t)
-                    workers.append(Worker(core, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(),
-                                                 cnt, k_counts, k_down, k_down2, k_pad]))
+                for j in range(2):  # the block, then its strip: out-features 32 j + 16 h ..
+                    for h in range(2):
+                        cnt = Buffer(cnt_t)
+                        fn = lambda w_f, x_f, y_f, cnt, kc, kd, kd2, kp, h=h: core(  # noqa: E731
+                            w_f, x_f, y_f, cnt, kc, kd, kd2, kp, h)
+                        workers.append(Worker(fn, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][2 * j + h].prod(),
+                                                   cnt, k_counts, k_down, k_down2, k_pad]))
             self.W.bind([f.prod() for f in w_l3])
             self.counts.bind([f.prod() for f in x_l3])
             self.a.bind([f.prod() for f in x_l3])
@@ -445,6 +456,7 @@ def _check(args) -> int:
     gu = rand_q4(rng, 2 * NE, K, E, 0.02)
     down = rand_q4(rng, N, NE, E, 0.02)
     logits = rng.standard_normal((T, E + 1)).astype(np.float32)
+    logits[:, : args.hot] += 4  # experts nearly every token chooses
     ids, w, sg = route_chunk(logits, E)
     real = T - args.pad
     rows, slot, counts = plan(ids[:real], E, T)
@@ -488,6 +500,7 @@ def main(argv=None) -> int:
     c.add_argument("--tokens", type=int, default=16)
     c.add_argument("--seed", type=int, default=7)
     c.add_argument("--pad", type=int, default=3, help="tokens of the chunk past the call's (padding)")
+    c.add_argument("--hot", type=int, default=0, help="experts favoured by every token (rows past 128)")
     return _check(ap.parse_args(argv))
 
 

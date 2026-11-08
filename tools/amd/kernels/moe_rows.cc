@@ -7,9 +7,10 @@
 // objects on the x channel), so the cores loop over it; the streams themselves
 // are static (8 rows a token, whatever the routing).
 //
-//   gate and up: a core keeps 32 out-features of the gate and of the up for up
-//     to MOE_CAP rows of an expert, and writes silu(g) u for each row once the
-//     expert's k-blocks have passed (moe_rows_glu)
+//   gate and up: a core keeps one strip (16 out-features) of a block's 32, of the
+//     gate and of the up, for up to MOE_CAP rows of an expert, and writes
+//     silu(g) u for each row once the expert's k-blocks have passed (moe_gu_glu);
+//     two cores share each block, a strip each (moe_gu_*)
 //   down: a core takes one 32-out-feature block of both k-blocks of an expert
 //     at a time, and writes it for each of the expert's rows (moe_rows_down)
 //===----------------------------------------------------------------------===//
@@ -18,7 +19,7 @@
 #include "common/activations.h"
 
 #ifndef MOE_CAP
-#define MOE_CAP 128
+#define MOE_CAP 256
 #endif
 
 constexpr int KT = 256; // in-features a block
@@ -79,6 +80,63 @@ inline void q4nx_accumulate2(const q4nx_block<M, N> *A, const bf16 *B0, const bf
   }
 }
 
+// q4nx_accumulate (q4nx.h) on strip h of the block (its out-features 16 h .. 16 h + 15) for R
+// rows of x (1 or 2) at once: the same sums and roundings as q4nx_accumulate on that strip.
+template <int R, int M, int N>
+inline void q4nx_strip(const q4nx_block<M, N> *A, int h, const bf16 *const *B, float *const *c,
+                       const bf16 *const *s) {
+  constexpr int pr = 16;
+  const int row = h * pr;
+  const uint4 *qs_ptr = A->qs + h * (N / 32) * 4 * (pr * 4);
+  aie::accum<accfloat, pr> acc[R];
+#pragma clang loop unroll(full)
+  for (int i = 0; i < R; i++)
+    acc[i].from_vector(aie::load_v<pr>(c[i] + row));
+  uint32_t sm = row;
+  AIE_LOOP_RANGE(N / 32, N / 32)
+  for (int sub = 0; sub < N / 32; sub++) {
+    aie::vector<bf16, 32> b[R];
+#pragma clang loop unroll(full)
+    for (int i = 0; i < R; i++)
+      b[i] = aie::load_v<32>(B[i] + 32 * sub);
+    aie::vector<bf16, pr> scales = aie::load_v<pr>(A->scales + sm);
+    aie::vector<bf16, pr> mins = aie::load_v<pr>(A->mins + sm);
+    sm += M;
+    aie::vector<bf16, pr * 8> cc[4];
+#pragma clang loop unroll(full)
+    for (int sv = 0; sv < 4; sv++) {
+      aie::vector<uint4, pr * 8> q = aie::load_v<pr * 8>(qs_ptr);
+      qs_ptr += pr * 4;
+      aie::accum<accfloat, pr * 8> f;
+      f.from_vector(aie::to_float(q, 0));
+      cc[sv] = f.template to_vector<bf16>();
+    }
+    aie::accum<accfloat, pr> t[R];
+#pragma clang loop unroll(full)
+    for (int i = 0; i < R; i++)
+      t[i] = aie::mul(cc[0].extract<pr>(0), b[i].get(0));
+#pragma clang loop unroll(full)
+    for (int sv = 0; sv < 4; sv++) {
+#pragma clang loop unroll(full)
+      for (int k = 0; k < 8; k++) {
+        if (sv == 0 && k == 0)
+          continue;
+#pragma clang loop unroll(full)
+        for (int i = 0; i < R; i++)
+          t[i] = aie::mac(t[i], cc[sv].extract<pr>(k), b[i].get(sv * 8 + k));
+      }
+    }
+#pragma clang loop unroll(full)
+    for (int i = 0; i < R; i++) {
+      acc[i] = aie::mac(acc[i], t[i].template to_vector<bf16>(), scales);
+      acc[i] = aie::mac(acc[i], mins, s[i][sub]);
+    }
+  }
+#pragma clang loop unroll(full)
+  for (int i = 0; i < R; i++)
+    aie::store_v(c[i] + row, acc[i].template to_vector<float>());
+}
+
 // sums[g] = x[32 g] + ... + x[32 g + 31] for one k-block of x (q4nx's minimums).
 inline void tile_sums(const bf16 *x, bf16 *sums) {
   for (int l = 0; l < KT / 32; l++)
@@ -96,43 +154,84 @@ void moe_rows_counts(const bf16 *a, int32_t *counts, int32_t part, int32_t words
     counts[part * words + i] = p[i];
 }
 
-void moe_rows_zero(float *g, float *u) {
-  for (int i = 0; i < CAP * MT; i += 16) {
+// The gate and up of MoEGroupGateUp: a core's strip (16 out-features, ST) of each row.
+constexpr int ST = 16;
+
+void moe_gu_zero(float *g, float *u) {
+  for (int i = 0; i < CAP * ST; i += 16) {
     aie::store_v(g + i, aie::zeros<float, 16>());
     aie::store_v(u + i, aie::zeros<float, 16>());
   }
 }
 
-// Row r of an expert: acc[r] += the block's 32 rows times one k-block x of the row.
-void moe_rows_acc(const uint8_t *blk, const bf16 *x, float *acc, int32_t r) {
+// Row r of an expert: acc[r] += strip h of the block times one k-block x of the row.
+void moe_gu_acc(const uint8_t *blk, const bf16 *x, float *acc, int32_t r, int32_t h) {
   alignas(32) bf16 sums[KT / 32];
   tile_sums(x, sums);
-  q4nx_accumulate<MT, KT>(reinterpret_cast<const block_t *>(blk), x, acc + r * MT, sums);
+  const bf16 *xs[1] = {x}, *ss[1] = {sums};
+  float *cs[1] = {acc + r * ST - h * ST};
+  q4nx_strip<1>(reinterpret_cast<const block_t *>(blk), h, xs, cs, ss);
 }
 
-// Rows r and r + 1 of an expert at once (moe_rows_acc twice).
-void moe_rows_acc2(const uint8_t *blk, const bf16 *x0, const bf16 *x1, float *acc, int32_t r) {
+// Rows r and r + 1 at once (moe_gu_acc twice).
+void moe_gu_acc2(const uint8_t *blk, const bf16 *x0, const bf16 *x1, float *acc, int32_t r,
+                 int32_t h) {
   alignas(32) bf16 s0[KT / 32], s1[KT / 32];
   tile_sums(x0, s0);
   tile_sums(x1, s1);
-  q4nx_accumulate2<MT, KT>(reinterpret_cast<const block_t *>(blk), x0, x1, acc + r * MT,
-                           acc + (r + 1) * MT, s0, s1);
+  const bf16 *xs[2] = {x0, x1}, *ss[2] = {s0, s1};
+  float *cs[2] = {acc + r * ST - h * ST, acc + (r + 1) * ST - h * ST};
+  q4nx_strip<2>(reinterpret_cast<const block_t *>(blk), h, xs, cs, ss);
 }
 
-// y = silu(g[r]) u[r] (32 out-features), then g[r] and u[r] back to zero.
-void moe_rows_glu(float *g, float *u, int32_t r, bf16 *y) {
-  float *gr = g + r * MT, *ur = u + r * MT;
-  for (int i = 0; i < MT; i += 16) {
-    aie::vector<float, 16> gv = aie::load_v<16>(gr + i);
-    aie::vector<float, 16> uv = aie::load_v<16>(ur + i);
-    aie::vector<float, 16> a = silu_vec<16>(gv);
-    aie::store_v(gr + i, aie::mul(a, uv).template to_vector<float>());
-  }
-  narrow_to_bf16<MT>(y, gr);
-  for (int i = 0; i < MT; i += 16) {
-    aie::store_v(gr + i, aie::zeros<float, 16>());
-    aie::store_v(ur + i, aie::zeros<float, 16>());
-  }
+// y = silu(g[r]) u[r] (the strip's 16 out-features), then g[r] and u[r] back to zero.
+void moe_gu_glu(float *g, float *u, int32_t r, bf16 *y) {
+  float *gr = g + r * ST, *ur = u + r * ST;
+  aie::vector<float, 16> gv = aie::load_v<16>(gr);
+  aie::vector<float, 16> uv = aie::load_v<16>(ur);
+  aie::store_v(gr, aie::mul(silu_vec<16>(gv), uv).template to_vector<float>());
+  narrow_to_bf16<ST>(y, gr);
+  aie::store_v(gr, aie::zeros<float, 16>());
+  aie::store_v(ur, aie::zeros<float, 16>());
+}
+
+void moe_gu_pad(bf16 *y) {
+  aie::store_v(y, aie::zeros<bf16, ST>());
+}
+
+// MoEGroupDown: a core's strip h (16 out-features) of a column block, both k-blocks (b0 for
+// x[0..255], b1 for x[256..511]), for one row (moe_dn) or two (moe_dn2). The same sums and
+// roundings as moe_rows_down's on those out-features.
+void moe_dn(const uint8_t *b0, const uint8_t *b1, const bf16 *x, bf16 *y, int32_t h) {
+  alignas(64) float acc[MT];
+  alignas(32) bf16 sums[2 * KT / 32];
+  aie::store_v(acc + h * ST, aie::zeros<float, 16>());
+  tile_sums(x, sums);
+  tile_sums(x + KT, sums + KT / 32);
+  const bf16 *x0[1] = {x}, *x1[1] = {x + KT}, *s0[1] = {sums}, *s1[1] = {sums + KT / 32};
+  float *c[1] = {acc};
+  q4nx_strip<1>(reinterpret_cast<const block_t *>(b0), h, x0, c, s0);
+  q4nx_strip<1>(reinterpret_cast<const block_t *>(b1), h, x1, c, s1);
+  narrow_to_bf16<ST>(y, acc + h * ST);
+}
+
+void moe_dn2(const uint8_t *b0, const uint8_t *b1, const bf16 *xa, const bf16 *xb, bf16 *ya,
+             bf16 *yb, int32_t h) {
+  alignas(64) float a0[MT], a1[MT];
+  alignas(32) bf16 sa[2 * KT / 32], sb[2 * KT / 32];
+  aie::store_v(a0 + h * ST, aie::zeros<float, 16>());
+  aie::store_v(a1 + h * ST, aie::zeros<float, 16>());
+  tile_sums(xa, sa);
+  tile_sums(xa + KT, sa + KT / 32);
+  tile_sums(xb, sb);
+  tile_sums(xb + KT, sb + KT / 32);
+  const bf16 *x0[2] = {xa, xb}, *x1[2] = {xa + KT, xb + KT};
+  const bf16 *s0[2] = {sa, sb}, *s1[2] = {sa + KT / 32, sb + KT / 32};
+  float *c[2] = {a0, a1};
+  q4nx_strip<2>(reinterpret_cast<const block_t *>(b0), h, x0, c, s0);
+  q4nx_strip<2>(reinterpret_cast<const block_t *>(b1), h, x1, c, s1);
+  narrow_to_bf16<ST>(ya, a0 + h * ST);
+  narrow_to_bf16<ST>(yb, a1 + h * ST);
 }
 
 // A padding row's output: zeros.

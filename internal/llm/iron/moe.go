@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 )
 
 // HostStep is a host step of a version that hwnpu runs itself, before command Command
@@ -270,23 +272,36 @@ func (m *Model) moeHostCombine(v *version, h *HostStep, rt *moeRoute, n int) err
 		return err
 	}
 	o := make([]byte, out.Bytes)
-	acc := make([]float32, K)
-	for t := 0; t < n; t++ {
-		g := rt.shared[t]
-		for i := range acc {
-			acc[i] = bf16At(resid, t*K+i) + g*bf16At(sh, t*K+i)
-		}
-		for k := 0; k < top; k++ {
-			c := t*top + k
-			y, w, base := rt.outs[rt.pass[c]], rt.w[c], int(rt.row[c])*K
-			for i := range acc {
-				acc[i] += w * bf16At(y, base+i)
+	// the tokens split among the CPUs, each token's sums in the same order as one loop's
+	workers := min(runtime.GOMAXPROCS(0), n)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(lo, hi int) {
+			defer wg.Done()
+			acc := make([]float32, K)
+			for t := lo; t < hi; t++ {
+				g := rt.shared[t]
+				rr, sr := resid[2*t*K:2*(t+1)*K], sh[2*t*K:2*(t+1)*K]
+				for i := range acc {
+					acc[i] = bf16At(rr, i) + g*bf16At(sr, i)
+				}
+				for k := 0; k < top; k++ {
+					c := t*top + k
+					base := int(rt.row[c]) * K
+					y, w := rt.outs[rt.pass[c]][2*base:2*(base+K)], rt.w[c]
+					for i := range acc {
+						acc[i] += w * bf16At(y, i)
+					}
+				}
+				ot := o[2*t*K : 2*(t+1)*K]
+				for i, x := range acc {
+					putBF16(ot, i, x)
+				}
 			}
-		}
-		for i := range acc {
-			putBF16(o, t*K+i, acc[i])
-		}
+		}(w*n/workers, (w+1)*n/workers)
 	}
+	wg.Wait()
 	return m.writeRegion(v, out, o)
 }
 
