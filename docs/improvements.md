@@ -351,7 +351,7 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (embedding API) | — | ◎ lut8 + head-scale | Converts (int8) | — |
 | BERT family (all-MiniLM-L6-v2 and so on) | `bert` | **Not implemented** (WordPiece) | — | — | Converts only (lut8) | Converts only (int8) | — |
 | Anima-Turbo (image generation) | `internal/imagegen/anima` (built from one MIL description) | Qwen3 BPE + T5 Unigram | — (`hwnpu-image`) | Images out | ◎ M3: 1024×1024, 8 steps in about 40 s, 3.8 GB (int8) | △ Converts. Checked on OpenVINO's CPU | ◎ 1024×1024, 8 steps in about 68 s, 3.4 GiB pinned (DiT at 8 bits) |
-| Qwen3.6-35B-A3B | `qwen35moe` (IRON only) | Same as Qwen3.5 | Qwen3.6 (`Qwen36`: tool arguments as JSON, 16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`. All 40 layers (23 GB): decode at 5.8 tok/s (16.92), prompts in chunks at 25 ms a token (routed on the host, 16.93), cosine 0.985–0.996 against HF, every top token agrees. Prompts go a token at a time |
+| Qwen3.6-35B-A3B | `qwen35moe` (IRON only) | Same as Qwen3.5 | Qwen3.6 (`Qwen36`: tool arguments as JSON, 16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`. All 40 layers (23 GB): decode at 5.8 tok/s (16.92), prompts in chunks at 25 ms a token (routed on the host, 16.93), cosine 0.989–0.997 against HF (experts and head by GPTQ, `qwen36_gptq.py`, 16.101), every top token agrees. Prompts go a token at a time |
 
 ### 10.2 Tokenizers (`internal/tokenizer`, depending only on `golang.org/x/text`)
 
