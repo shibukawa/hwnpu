@@ -311,8 +311,9 @@ def group_operators(experts: int = 256, cap: int = CAP):
 
     class MoEGroupDown(Operator):
         """``y = D_e a`` for each of the A rows (sorted by expert, a (A, KE)): column c keeps
-        out-features 256 c .. 256 c + 255, a column block (64) of every expert at a time; y is
-        (A, N), without the routing weights or the residual (the host's combine)."""
+        out-features 256 c .. 256 c + 255, a column block (64) of every expert at a time, its
+        two blocks of 32 each to two of its four cores, a strip (16) each; y is (A, N), without
+        the routing weights or the residual (the host's combine)."""
 
         aiecc_flags = ("--reclaim-runtime-bds",)
 
@@ -341,19 +342,20 @@ def group_operators(experts: int = 256, cap: int = CAP):
         def build(self) -> Built:
             per = self.N // CB // cols  # column blocks a column
             k_counts = kernel("moe_rows_counts", [self.counts.obj_type, cnt_t, np.int32, np.int32])
-            k_down = kernel("moe_rows_down", [blk_t, blk_t, self.a.obj_type, half_t])
-            k_down2 = kernel("moe_rows_down2", [blk_t, blk_t, self.a.obj_type, self.a.obj_type, half_t, half_t])
-            k_pad = kernel("moe_rows_pad", [half_t])
+            k_down = kernel("moe_dn", [blk_t, blk_t, self.a.obj_type, strip_t, np.int32])
+            k_down2 = kernel("moe_dn2", [blk_t, blk_t, self.a.obj_type, self.a.obj_type, strip_t, strip_t,
+                                         np.int32])
+            k_pad = kernel("moe_gu_pad", [strip_t])
             w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(cols)]
             w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], depths=[2, 2], tile=AnyMemTile)
                     for f in w_l3]
             x_l3 = [ObjectFifo(self.a.obj_type, depth=2) for _ in range(cols)]
             x_l1 = [f.cons().forward(obj_type=self.a.obj_type, depth=4, tile=AnyMemTile) for f in x_l3]
             y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(cols)]
-            y_l1 = [f.prod().join([0, MT], obj_types=[half_t, half_t], depths=[4, 4], tile=AnyMemTile)
-                    for f in y_l3]
+            y_l1 = [f.prod().join([0, ST, 2 * ST, 3 * ST], obj_types=[strip_t] * 4, depths=[4] * 4,
+                                  tile=AnyMemTile) for f in y_l3]
 
-            def core(w_f, x_f, y_f, cnt, kc, kd, kd2, kpad):
+            def core(w_f, x_f, y_f, cnt, kc, kd, kd2, kpad, h):
                 for part in range(2):
                     c = x_f.acquire(1)
                     kc(c, cnt, i32c(part), i32c(COUNTS // 2))
@@ -366,12 +368,12 @@ def group_operators(experts: int = 256, cap: int = CAP):
                         b = w_f.acquire(2)  # k-blocks 0 and 1 of the column block
                         for _ in range_(two):
                             xt, y = x_f.acquire(2), y_f.acquire(2)
-                            kd2(b[0], b[1], xt[0], xt[1], y[0], y[1])
+                            kd2(b[0], b[1], xt[0], xt[1], y[0], y[1], i32c(h))
                             x_f.release(2)
                             y_f.release(2)
                         for _ in range_(one):
                             xt, y = x_f.acquire(1), y_f.acquire(1)
-                            kd(b[0], b[1], xt, y)
+                            kd(b[0], b[1], xt, y, i32c(h))
                             x_f.release(1)
                             y_f.release(1)
                         w_f.release(2)
@@ -384,10 +386,13 @@ def group_operators(experts: int = 256, cap: int = CAP):
 
             workers = []
             for i in range(cols):
-                for j in range(2):
-                    cnt = Buffer(cnt_t)
-                    workers.append(Worker(core, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(),
-                                                 cnt, k_counts, k_down, k_down2, k_pad]))
+                for j in range(2):  # the block, then its strip: out-features 32 j + 16 h ..
+                    for h in range(2):
+                        cnt = Buffer(cnt_t)
+                        fn = lambda w_f, x_f, y_f, cnt, kc, kd, kd2, kp, h=h: core(  # noqa: E731
+                            w_f, x_f, y_f, cnt, kc, kd, kd2, kp, h)
+                        workers.append(Worker(fn, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][2 * j + h].prod(),
+                                                   cnt, k_counts, k_down, k_down2, k_pad]))
             self.W.bind([f.prod() for f in w_l3])
             self.counts.bind([f.prod() for f in x_l3])
             self.a.bind([f.prod() for f in x_l3])

@@ -199,6 +199,41 @@ void moe_gu_pad(bf16 *y) {
   aie::store_v(y, aie::zeros<bf16, ST>());
 }
 
+// MoEGroupDown: a core's strip h (16 out-features) of a column block, both k-blocks (b0 for
+// x[0..255], b1 for x[256..511]), for one row (moe_dn) or two (moe_dn2). The same sums and
+// roundings as moe_rows_down's on those out-features.
+void moe_dn(const uint8_t *b0, const uint8_t *b1, const bf16 *x, bf16 *y, int32_t h) {
+  alignas(64) float acc[MT];
+  alignas(32) bf16 sums[2 * KT / 32];
+  aie::store_v(acc + h * ST, aie::zeros<float, 16>());
+  tile_sums(x, sums);
+  tile_sums(x + KT, sums + KT / 32);
+  const bf16 *x0[1] = {x}, *x1[1] = {x + KT}, *s0[1] = {sums}, *s1[1] = {sums + KT / 32};
+  float *c[1] = {acc};
+  q4nx_strip<1>(reinterpret_cast<const block_t *>(b0), h, x0, c, s0);
+  q4nx_strip<1>(reinterpret_cast<const block_t *>(b1), h, x1, c, s1);
+  narrow_to_bf16<ST>(y, acc + h * ST);
+}
+
+void moe_dn2(const uint8_t *b0, const uint8_t *b1, const bf16 *xa, const bf16 *xb, bf16 *ya,
+             bf16 *yb, int32_t h) {
+  alignas(64) float a0[MT], a1[MT];
+  alignas(32) bf16 sa[2 * KT / 32], sb[2 * KT / 32];
+  aie::store_v(a0 + h * ST, aie::zeros<float, 16>());
+  aie::store_v(a1 + h * ST, aie::zeros<float, 16>());
+  tile_sums(xa, sa);
+  tile_sums(xa + KT, sa + KT / 32);
+  tile_sums(xb, sb);
+  tile_sums(xb + KT, sb + KT / 32);
+  const bf16 *x0[2] = {xa, xb}, *x1[2] = {xa + KT, xb + KT};
+  const bf16 *s0[2] = {sa, sb}, *s1[2] = {sa + KT / 32, sb + KT / 32};
+  float *c[2] = {a0, a1};
+  q4nx_strip<2>(reinterpret_cast<const block_t *>(b0), h, x0, c, s0);
+  q4nx_strip<2>(reinterpret_cast<const block_t *>(b1), h, x1, c, s1);
+  narrow_to_bf16<ST>(ya, a0 + h * ST);
+  narrow_to_bf16<ST>(yb, a1 + h * ST);
+}
+
 // A padding row's output: zeros.
 void moe_rows_pad(bf16 *y) {
   aie::store_v(y, aie::zeros<bf16, MT>());
