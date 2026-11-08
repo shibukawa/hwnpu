@@ -4,6 +4,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"unsafe"
 
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
@@ -94,6 +95,9 @@ func QuantizeLinear(w []float32, rows, cols, colBlock, bits int, search bool) Li
 							for j, v := range q {
 								l.Data[base+j] = byte(v)
 							}
+						} else if base%2 == 0 && colBlock%2 == 0 {
+							// whole bytes of their own: the low nibbles of q, packed
+							vecops.Pack(l.Data[base/2:], unsafe.Slice((*uint8)(unsafe.Pointer(&q[0])), len(q)), 4)
 						} else {
 							for j, v := range q {
 								i := base + j

@@ -15,6 +15,14 @@
 #define AND16B(m, n, d) WORD $(0x4E201C00 | (m)<<16 | (n)<<5 | (d)) // .16B
 #define FMINV(n, d) WORD $(0x6EB0F800 | (n)<<5 | (d))              // across the lanes into Sd
 #define FMAXV(n, d) WORD $(0x6E30F800 | (n)<<5 | (d))
+#define FCMEQ(m, n, d) WORD $(0x4E20E400 | (m)<<16 | (n)<<5 | (d)) // all ones where n == m: not for a NaN
+#define FCVTN(n, d) WORD $(0x0E216800 | (n)<<5 | (d))               // .4S to the low .4H, to nearest even
+#define FCVTN2(n, d) WORD $(0x4E216800 | (n)<<5 | (d))              // .4S to the high .4H
+#define FCVTL(n, d) WORD $(0x0E217800 | (n)<<5 | (d))               // the low .4H to .4S
+#define FCVTL2(n, d) WORD $(0x4E217800 | (n)<<5 | (d))              // the high .4H to .4S
+#define UMINVS(n, d) WORD $(0x6EB1A800 | (n)<<5 | (d))              // .4S, across the lanes
+#define CMHIH(m, n, d) WORD $(0x6E603400 | (m)<<16 | (n)<<5 | (d))  // .8H: all ones where n > m, unsigned
+#define UMAXVH(n, d) WORD $(0x6E70A800 | (n)<<5 | (d))              // .8H, across the lanes
 
 // One threshold, broadcast in register m, against the 16 values in V0-V3: the counts in V4-V7
 // grow by one where the value is above it.
@@ -302,4 +310,120 @@ bfloop:
 	VST1.P [V2.S4, V3.S4, V4.S4, V5.S4], 64(R0)
 	SUBS   $16, R2, R2
 	BNE    bfloop
+	RET
+
+// func pack4NEON(dst *byte, idx *uint8, n int)
+// n is a positive multiple of 32: LD2 splits even and odd entries, and each byte is the even
+// one's low nibble below the odd one's.
+TEXT ·pack4NEON(SB), NOSPLIT, $0-24
+	MOVD  dst+0(FP), R0
+	MOVD  idx+8(FP), R1
+	MOVD  n+16(FP), R2
+	VMOVI $0x0f, V31.B16
+
+p4loop:
+	VLD2.P 32(R1), [V0.B16, V1.B16]
+	VAND   V31.B16, V0.B16, V0.B16
+	VSHL   $4, V1.B16, V1.B16
+	VORR   V1.B16, V0.B16, V0.B16
+	VST1.P [V0.B16], 16(R0)
+	SUBS   $32, R2, R2
+	BNE    p4loop
+	RET
+
+// func pack6NEON(dst *byte, idx *uint8, n int)
+// n is a positive multiple of 64: LD4 splits the entries a b c d of every four, which take the
+// 24 bits of three bytes a|b<<6, b>>2|c<<4, c>>4|d<<2, and ST3 interleaves those back.
+TEXT ·pack6NEON(SB), NOSPLIT, $0-24
+	MOVD  dst+0(FP), R0
+	MOVD  idx+8(FP), R1
+	MOVD  n+16(FP), R2
+	VMOVI $0x3f, V31.B16
+
+p6loop:
+	VLD4.P 64(R1), [V0.B16, V1.B16, V2.B16, V3.B16]
+	VAND   V31.B16, V0.B16, V0.B16
+	VAND   V31.B16, V1.B16, V1.B16
+	VAND   V31.B16, V2.B16, V2.B16
+	VSHL   $6, V1.B16, V4.B16
+	VORR   V4.B16, V0.B16, V4.B16
+	VUSHR  $2, V1.B16, V5.B16
+	VSHL   $4, V2.B16, V6.B16
+	VORR   V6.B16, V5.B16, V5.B16
+	VUSHR  $4, V2.B16, V6.B16
+	VSHL   $2, V3.B16, V7.B16
+	VORR   V7.B16, V6.B16, V6.B16
+	VST3.P [V4.B16, V5.B16, V6.B16], 48(R0)
+	SUBS   $64, R2, R2
+	BNE    p6loop
+	RET
+
+// func f32ToF16NEON(dst *byte, src *float32, n int) (nan bool)
+// n is a positive multiple of 16: FCVTN rounds to nearest even (the FPCR's mode, which Go leaves
+// at its default). V20 keeps the lanes that were equal to themselves so far: no NaN.
+TEXT ·f32ToF16NEON(SB), NOSPLIT, $0-25
+	MOVD dst+0(FP), R0
+	MOVD src+8(FP), R1
+	MOVD n+16(FP), R2
+	VMOVI $0xff, V20.B16
+
+hloop:
+	VLD1.P 64(R1), [V0.S4, V1.S4, V2.S4, V3.S4]
+	FCMEQ(0, 0, 8)
+	FCMEQ(1, 1, 9)
+	FCMEQ(2, 2, 10)
+	FCMEQ(3, 3, 11)
+	VAND   V8.B16, V20.B16, V20.B16
+	VAND   V9.B16, V20.B16, V20.B16
+	VAND   V10.B16, V20.B16, V20.B16
+	VAND   V11.B16, V20.B16, V20.B16
+	FCVTN(0, 4)
+	FCVTN2(1, 4)
+	FCVTN(2, 5)
+	FCVTN2(3, 5)
+	VST1.P [V4.H8, V5.H8], 32(R0)
+	SUBS   $16, R2, R2
+	BNE    hloop
+
+	UMINVS(20, 20)
+	VMOV  V20.S[0], R3
+	CMPW  $0, R3
+	CSET  EQ, R3
+	MOVB  R3, nan+24(FP)
+	RET
+
+// func f16ToF32NEON(dst *float32, src *byte, n int) (nan bool)
+// n is a positive multiple of 16: FCVTL is exact. V20 collects the halves above 0x7c00 once their
+// sign is cleared: the NaNs.
+TEXT ·f16ToF32NEON(SB), NOSPLIT, $0-25
+	MOVD  dst+0(FP), R0
+	MOVD  src+8(FP), R1
+	MOVD  n+16(FP), R2
+	MOVW  $0x7fff, R3
+	VDUP  R3, V30.H8
+	MOVW  $0x7c00, R3
+	VDUP  R3, V29.H8
+	VEOR  V20.B16, V20.B16, V20.B16
+
+floop:
+	VLD1.P 32(R1), [V0.H8, V1.H8]
+	VAND   V30.B16, V0.B16, V6.B16
+	VAND   V30.B16, V1.B16, V7.B16
+	CMHIH(29, 6, 6)
+	CMHIH(29, 7, 7)
+	VORR   V6.B16, V20.B16, V20.B16
+	VORR   V7.B16, V20.B16, V20.B16
+	FCVTL(0, 2)
+	FCVTL2(0, 3)
+	FCVTL(1, 4)
+	FCVTL2(1, 5)
+	VST1.P [V2.S4, V3.S4, V4.S4, V5.S4], 64(R0)
+	SUBS   $16, R2, R2
+	BNE    floop
+
+	UMAXVH(20, 20)
+	VMOV  V20.H[0], R3
+	CMPW  $0, R3
+	CSET  NE, R3
+	MOVB  R3, nan+24(FP)
 	RET

@@ -158,9 +158,7 @@ func (f *File) Float32Range(name string, begin, end int) ([]float32, error) {
 		if len(raw) != 2*n {
 			return nil, fmt.Errorf("safetensors: %s: %d bytes for %d F16 values", name, len(raw), n)
 		}
-		for i := range out {
-			out[i] = f16to32(binary.LittleEndian.Uint16(raw[2*i:]))
-		}
+		vecops.F16ToF32(out, raw)
 	case "F32":
 		if len(raw) != 4*n {
 			return nil, fmt.Errorf("safetensors: %s: %d bytes for %d F32 values", name, len(raw), n)
@@ -172,27 +170,4 @@ func (f *File) Float32Range(name string, begin, end int) ([]float32, error) {
 		return nil, fmt.Errorf("safetensors: %s: cannot convert %s to float32", name, t.DType)
 	}
 	return out, nil
-}
-
-func f16to32(h uint16) float32 {
-	sign := uint32(h>>15) << 31
-	exp := uint32(h>>10) & 0x1f
-	mant := uint32(h & 0x3ff)
-	switch exp {
-	case 0:
-		if mant == 0 {
-			return math.Float32frombits(sign)
-		}
-		// subnormal: normalize
-		e := uint32(127 - 15 + 1)
-		for mant&0x400 == 0 {
-			mant <<= 1
-			e--
-		}
-		mant &= 0x3ff
-		return math.Float32frombits(sign | e<<23 | mant<<13)
-	case 0x1f:
-		return math.Float32frombits(sign | 0xff<<23 | mant<<13)
-	}
-	return math.Float32frombits(sign | (exp+127-15)<<23 | mant<<13)
 }

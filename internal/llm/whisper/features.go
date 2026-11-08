@@ -74,15 +74,7 @@ func logMel(samples []float32, mels int) []float32 {
 				for j := range in {
 					in[j] = window[j] * x[f*hop+j]
 				}
-				for k := 0; k < bins; k++ {
-					var re, im float64
-					for j, v := range in {
-						idx := (k * j) % nFFT
-						re += v * cos[idx]
-						im -= v * sin[idx]
-					}
-					power[k] = re*re + im*im
-				}
+				lfm3audio.PowerSpectrum(power, in, cos, sin)
 				for m := 0; m < mels; m++ {
 					var s float64
 					for k, p := range power {

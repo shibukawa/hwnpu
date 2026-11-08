@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/shibukawa/hwnpu/internal/vecops"
 )
@@ -62,65 +63,113 @@ func QuantizeBits(w []float32, rows, cols, group, colBlock, bits, iters int, mod
 	k := 1 << bits
 	nr, nc := rows/group, cols/colBlock
 	out := LUT4{Rows: rows, Cols: cols, Group: group, ColBlock: colBlock, Bits: bits, LUT: make([]uint16, nr*nc*k)}
-	idx := make([]uint8, rows*cols)
+	out.Indices = make([]byte, vecops.PackedLen(rows*cols, bits))
+	// A block of whole rows is a run of w, and its indices a run of whole bytes of the output
+	// when its length is a multiple of 8: it is read in place and packed there. Other blocks are
+	// copied out, and their indices packed at the end.
+	inPlace := colBlock == cols && group*cols%8 == 0
+	var idx []uint8
+	if !inPlace {
+		idx = make([]uint8, rows*cols)
+	}
+	var next atomic.Int64
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
-	for g := 0; g < nr*nc; g++ {
+	for range min(runtime.GOMAXPROCS(0), nr*nc) {
 		wg.Add(1)
-		sem <- struct{}{}
-		go func(g int) {
+		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
-			rb, cb := g/nc, g%nc
-			vals := make([]float32, 0, group*colBlock)
-			for r := rb * group; r < (rb+1)*group; r++ {
-				vals = append(vals, w[r*cols+cb*colBlock:r*cols+(cb+1)*colBlock]...)
+			var sc scratch
+			c, mids := make([]float32, k), make([]float32, k-1)
+			var th vecops.Thresholds
+			for {
+				g := int(next.Add(1) - 1)
+				if g >= nr*nc {
+					return
+				}
+				rb, cb := g/nc, g%nc
+				var vals []float32
+				if inPlace {
+					vals = w[rb*group*cols : (rb+1)*group*cols]
+				} else {
+					vals = grow(&sc.vals, group*colBlock)
+					for r := range group {
+						copy(vals[r*colBlock:], w[(rb*group+r)*cols+cb*colBlock:][:colBlock])
+					}
+				}
+				fit(c, vals, iters, mode, &sc)
+				for i := range c {
+					out.LUT[g*k+i] = f16(c[i])
+				}
+				// assign with the rounded table so the indices match what the device will use
+				for i := range c {
+					c[i] = f16val(out.LUT[g*k+i])
+				}
+				ids := grow(&sc.ids, len(vals))
+				if inPlace && bits == 8 {
+					ids = out.Indices[len(vals)*g:][:len(vals)] // one byte per index: no packing
+				}
+				th.Reset(midpoints(mids, c))
+				th.Assign(ids, vals)
+				if inPlace {
+					if bits != 8 {
+						vecops.Pack(out.Indices[len(vals)*g*bits/8:], ids, bits)
+					}
+					continue
+				}
+				for r := range group {
+					copy(idx[(rb*group+r)*cols+cb*colBlock:][:colBlock], ids[r*colBlock:(r+1)*colBlock])
+				}
 			}
-			c := fit(vals, k, iters, mode)
-			for i := range c {
-				out.LUT[g*k+i] = f16(c[i])
-			}
-			// assign with the rounded table so the indices match what the device will use
-			for i := range c {
-				c[i] = f16val(out.LUT[g*k+i])
-			}
-			ids := make([]uint8, len(vals))
-			vecops.NewThresholds(midpoints(make([]float32, k-1), c)).Assign(ids, vals)
-			for r := 0; r < group; r++ {
-				copy(idx[(rb*group+r)*cols+cb*colBlock:][:colBlock], ids[r*colBlock:(r+1)*colBlock])
-			}
-		}(g)
+		}()
 	}
 	wg.Wait()
-	out.Indices = pack(idx, bits)
+	if !inPlace {
+		packParallel(out.Indices, idx, bits)
+	}
 	return out
+}
+
+// packParallel is vecops.Pack over the processors, in runs of whole bytes.
+func packParallel(dst []byte, idx []uint8, bits int) {
+	const chunk = 1 << 20 // entries, a multiple of 8
+	if len(idx) <= chunk {
+		vecops.Pack(dst, idx, bits)
+		return
+	}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	for i := 0; i < len(idx); i += chunk {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			vecops.Pack(dst[i/8*bits:], idx[i:min(i+chunk, len(idx))], bits)
+		}()
+	}
+	wg.Wait()
 }
 
 // pack packs indices of the given width, low bits first.
 func pack(idx []uint8, bits int) []byte {
-	out := make([]byte, (len(idx)*bits+7)/8)
-	switch bits {
-	case 8:
-		copy(out, idx)
-		return out
-	case 4:
-		for i := range len(idx) / 2 {
-			out[i] = idx[2*i] | idx[2*i+1]<<4
-		}
-		if len(idx)%2 == 1 {
-			out[len(out)-1] = idx[len(idx)-1]
-		}
-		return out
-	}
-	for i, q := range idx {
-		bit := i * bits
-		v := uint16(q) << (bit % 8)
-		out[bit/8] |= byte(v)
-		if v>>8 != 0 {
-			out[bit/8+1] |= byte(v >> 8)
-		}
-	}
+	out := make([]byte, vecops.PackedLen(len(idx), bits))
+	packParallel(out, idx, bits)
 	return out
+}
+
+// scratch holds a worker's buffers, reused from block to block: the values of a block that is
+// not a run of w, its indices, and fit's and lloyd's own.
+type scratch struct {
+	vals, sample, tmp []float32
+	ids, lloydIDs     []uint8
+}
+
+// grow returns (*buf)[:n], growing *buf when it is shorter.
+func grow[T any](buf *[]T, n int) []T {
+	if cap(*buf) < n {
+		*buf = make([]T, n)
+	}
+	return (*buf)[:n]
 }
 
 // index reads entry i of indices packed by pack.
@@ -142,8 +191,8 @@ func (l LUT4) index(i int) int {
 // spread evenly between the extremes leaves most centers in the empty tails, where Lloyd's
 // algorithm never moves them. Centers are kept sorted so that assignment is a binary search over
 // the midpoints.
-func fit(vals []float32, k, iters int, mode Mode) []float32 {
-	c := make([]float32, k)
+func fit(c, vals []float32, iters int, mode Mode, sc *scratch) {
+	k := len(c)
 	if mode != KMeans {
 		lo, hi, ok := vecops.MinMax(vals)
 		if !ok { // NaNs: the order of min and max decides
@@ -157,43 +206,45 @@ func fit(vals []float32, k, iters int, mode Mode) []float32 {
 			c[i] = lo + (hi-lo)*float32(i)/float32(k-1)
 		}
 		if mode == Uniform || hi == lo {
-			return c
+			return
 		}
-		return lloyd(c, vals, iters)
+		lloyd(c, vals, iters, sc)
+		return
 	}
-	sample := vals
-	if len(sample) > 1<<16 {
+	var sample []float32
+	if len(vals) > 1<<16 {
 		step := len(vals) / (1 << 16)
-		sample = make([]float32, 0, 1<<16)
-		for i := 0; i < len(vals); i += step {
-			sample = append(sample, vals[i])
+		sample = grow(&sc.sample, (len(vals)+step-1)/step)
+		for i := range sample {
+			sample[i] = vals[i*step]
 		}
 	} else {
-		sample = append([]float32(nil), vals...)
+		sample = grow(&sc.sample, len(vals))
+		copy(sample, vals)
 	}
-	sortValues(sample)
+	sortSample(sample, sc)
 	if sample[0] == sample[len(sample)-1] {
 		for i := range c {
 			c[i] = sample[0]
 		}
-		return c
+		return
 	}
 	for i := range c {
 		c[i] = sample[(2*i+1)*len(sample)/(2*k)]
 	}
-	return lloyd(c, vals, iters)
+	lloyd(c, vals, iters, sc)
 }
 
-// lloyd refines sorted centers c over vals.
-func lloyd(c []float32, vals []float32, iters int) []float32 {
-	sum := make([]float64, len(c))
-	cnt := make([]int, len(c))
-	ids := make([]uint8, len(vals))
+// lloyd refines sorted centers c (at most 256) over vals in place.
+func lloyd(c []float32, vals []float32, iters int, sc *scratch) {
+	var sum [256]float64
+	var cnt [256]int
+	ids := grow(&sc.lloydIDs, len(vals))
 	mids := make([]float32, len(c)-1)
 	var th vecops.Thresholds
 	for it := 0; it < iters; it++ {
-		clear(sum)
-		clear(cnt)
+		clear(sum[:])
+		clear(cnt[:])
 		th.Reset(midpoints(mids, c))
 		th.Assign(ids, vals)
 		for i, v := range vals {
@@ -208,7 +259,6 @@ func lloyd(c []float32, vals []float32, iters int) []float32 {
 		}
 		sortValues(c)
 	}
-	return c
 }
 
 // sortValues sorts x ascending. slices.Sort runs the same pdqsort as sort.Slice with <, so it
@@ -220,6 +270,70 @@ func sortValues(x []float32) {
 		return
 	}
 	slices.Sort(x)
+}
+
+// sortSample is sortValues for the k-means sample, by radix sort when that gives the same
+// order: values that compare equal are then the same bits, except the zeros of either sign,
+// whose order only pdqsort itself decides, and NaNs. With both zeros, or a NaN, sortValues
+// sorts.
+func sortSample(x []float32, sc *scratch) {
+	var pos, neg bool
+	for _, v := range x {
+		if v != v {
+			sortValues(x)
+			return
+		}
+		if v == 0 {
+			if math.Signbit(float64(v)) {
+				neg = true
+			} else {
+				pos = true
+			}
+		}
+	}
+	if pos && neg || len(x) < 256 {
+		sortValues(x)
+		return
+	}
+	radixSort(x, grow(&sc.tmp, len(x)))
+}
+
+// radixSort sorts x, without NaNs, ascending by the order of its bits made monotone (negative
+// values with all bits flipped, others with the sign set): three passes of 11 bits, between x
+// and tmp, skipping a pass whose digit all values share.
+func radixSort(x, tmp []float32) {
+	key := func(v float32) uint32 {
+		b := math.Float32bits(v)
+		return b ^ (uint32(int32(b)>>31) | 0x80000000)
+	}
+	var counts [3][2048]int
+	for _, v := range x {
+		k := key(v)
+		counts[0][k&2047]++
+		counts[1][k>>11&2047]++
+		counts[2][k>>22]++
+	}
+	src, dst := x, tmp
+	for p, shift := range [3]uint{0, 11, 22} {
+		cnt := &counts[p]
+		if cnt[key(src[0])>>shift&2047] == len(src) {
+			continue
+		}
+		sum := 0
+		for i, n := range cnt {
+			cnt[i] = sum
+			sum += n
+		}
+		for _, v := range src {
+			d := key(v) >> shift & 2047
+			dst[cnt[d]] = v
+			cnt[d]++
+		}
+		src, dst = dst, src
+	}
+	if &src[0] != &x[0] {
+		copy(x, src)
+	}
 }
 
 // midpoints writes to mids the midpoints between neighbouring centers c, the thresholds of the

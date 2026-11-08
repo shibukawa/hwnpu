@@ -18,3 +18,11 @@ func quantizeSymKernel(dst []int8, vals []float32, s, qmin, qmax float32) int { 
 func bf16Kernel(dst []float32, src []byte) int { return 0 }
 
 const kernelScales = 0
+
+func packKernel(dst []byte, idx []uint8, bits int) int { return 0 }
+
+var haveF16 = false
+
+func f32ToF16Kernel(dst []byte, src []float32) int { return 0 }
+
+func f16ToF32Kernel(dst []float32, src []byte) int { return 0 }
