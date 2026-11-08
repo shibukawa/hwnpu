@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -90,6 +91,7 @@ func main() {
 	prompt := flag.String("prompt", "", "generate greedily after this user message (Gemma 4's chat format)")
 	tokPath := flag.String("tokenizer", "", "tokenizer.json for -prompt")
 	maxTokens := flag.Int("max", 200, "tokens to generate for -prompt")
+	verify := flag.Bool("verify", false, "check the version checking drafts (--verify) against decode steps, Keep after fewer rows, and time it")
 	bench := flag.Bool("bench", false, "time a decode step against prompt calls of a few tokens (what checking drafts costs)")
 	depth := flag.Bool("depth", false, "time a whole prompt chunk and a decode step at each chunk boundary up to the context (an amdxdna command is cut off after 2 s)")
 	forced := flag.String("forced", "", "a text file: read its first -split tokens as a prompt, then feed the rest one decode step at a time, writing the logits after each to -logits (float32 rows)")
@@ -115,6 +117,10 @@ func main() {
 	}
 	defer m.Close()
 	log.Printf("loaded in %.1f s", time.Since(t0).Seconds())
+	if *verify {
+		verifyCheck(ctx, m)
+		return
+	}
 	if *bench {
 		benchCalls(ctx, m)
 		return
@@ -330,6 +336,107 @@ func benchCalls(ctx context.Context, m *iron.Model) {
 		ms := median(func() error { _, err := m.Prompt(ctx, toks[500:500+k], 500); return err })
 		fmt.Printf("prompt call of %d tokens: %.1f ms (%.2f decode steps)\n", k, ms, ms/step)
 	}
+}
+
+// verifyCheck compares the version checking drafts with decode steps on the same tokens after a
+// prompt of 500 tokens: each row's logits, then the step after keeping fewer rows (Keep), then
+// the times of a check and of a decode step.
+func verifyCheck(ctx context.Context, m *iron.Model) {
+	R := m.VerifyRows()
+	if R == 0 {
+		log.Fatal("the export has no version checking drafts")
+	}
+	toks := make([]int32, 600)
+	for i := range toks {
+		toks[i] = int32(1000 + 7*i)
+	}
+	const at = 500
+	if _, err := m.Prompt(ctx, toks[:at], 0); err != nil {
+		log.Fatal(err)
+	}
+	saved, err := m.StateAt(at)
+	if err != nil {
+		log.Fatal(err)
+	}
+	steps := func(ts []int32) [][]float32 {
+		if err := m.SetStateAt(at, saved); err != nil {
+			log.Fatal(err)
+		}
+		var out [][]float32
+		for i, t := range ts {
+			l, err := m.Step(ctx, t, at+i)
+			if err != nil {
+				log.Fatal(err)
+			}
+			out = append(out, l)
+		}
+		return out
+	}
+	check := toks[at : at+R]
+	want := steps(check)
+	if err := m.SetStateAt(at, saved); err != nil {
+		log.Fatal(err)
+	}
+	got, err := m.Verify(ctx, check, at)
+	if err != nil {
+		log.Fatal(err)
+	}
+	bad := 0
+	for r := range got {
+		cos, rel := compare(got[r], want[r])
+		g, w := argmax(got[r]), argmax(want[r])
+		fmt.Printf("row %d: cosine %.6f, largest error %.4f of the largest logit, top %d (decode %d)\n", r, cos, rel, g, w)
+		if cos < 0.99 {
+			bad++
+		}
+	}
+	// keep k rows, then a decode step on another token: as k rows then that token by decode steps
+	for k := 1; k < R; k++ {
+		if err := m.SetStateAt(at, saved); err != nil {
+			log.Fatal(err)
+		}
+		if _, err := m.Verify(ctx, check, at); err != nil {
+			log.Fatal(err)
+		}
+		if err := m.Keep(at, k); err != nil {
+			log.Fatal(err)
+		}
+		next := int32(4242 + k)
+		l, err := m.Step(ctx, next, at+k)
+		if err != nil {
+			log.Fatal(err)
+		}
+		ref := steps(append(slices.Clone(check[:k]), next))
+		cos, rel := compare(l, ref[k])
+		fmt.Printf("keep %d, then a step: cosine %.6f, largest error %.4f, top %d (decode %d)\n", k, cos, rel, argmax(l), argmax(ref[k]))
+		if cos < 0.99 {
+			bad++
+		}
+	}
+	median := func(f func() error) float64 {
+		var ts []float64
+		for i := 0; i < 15; i++ {
+			if err := m.SetStateAt(at, saved); err != nil {
+				log.Fatal(err)
+			}
+			t := time.Now()
+			if err := f(); err != nil {
+				log.Fatal(err)
+			}
+			ts = append(ts, time.Since(t).Seconds()*1000)
+		}
+		sort.Float64s(ts)
+		return ts[len(ts)/2]
+	}
+	step := median(func() error { _, err := m.Step(ctx, check[0], at); return err })
+	ver := median(func() error { _, err := m.Verify(ctx, check, at); return err })
+	keep := median(func() error { return m.Keep(at, 1) })
+	fmt.Printf("decode step %.1f ms; check of %d rows %.1f ms (%.2f steps); keep 1 row %.2f ms\n", step, R, ver, ver/step, keep)
+	if bad > 0 {
+		fmt.Println("FAIL")
+		os.Exit(1)
+	}
+	fmt.Println("PASS")
 }
 
 // benchDepth reads a prompt of whole chunks up to the context, timing each chunk, and a decode

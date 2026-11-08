@@ -1,4 +1,4 @@
-# What each improvement bought (as of 2026-11-08, main up to #73, with AMD's checks and changes: Hugging Face comparisons, PLaMo 3 0.8B and Qwen3.5-0.8B / 2B, 6-bit weights, Anima's DiT in one bank, and the prompt's attention on 8 pipelines)
+# What each improvement bought (as of 2026-11-08, main up to #73, with AMD's checks and changes: Hugging Face comparisons, PLaMo 3 0.8B and Qwen3.5-0.8B / 2B, 6-bit weights, Anima's DiT in one bank, the prompt's attention on 8 pipelines, and checking drafts in one call)
 
 [日本語](improvements.ja.md)
 
@@ -23,6 +23,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | lut6 / lut8 (weight formats) (16.26, 16.31, 16.41) | △ heavier is slower | | △ | △ bigger weights | | | ◎ KL 1/6–1/10 | Apple |
 | Think budget `-think-budget` (16.32) | ◎ felt (stops minutes of spinning) | | | | | | | All |
 | Speculative decoding (prompt lookup) (16.33, 16.36–37) | ○ 1.2–1.5× | | | | | | unchanged | Apple / Intel |
+| AMD: checking drafts in one call (`--verify`, speculative decoding with prompt-lookup drafts) (16.117) | ◎ Qwen3.5-0.8B 82 → 72 ms/token (code), 82 → 62 (Japanese) | | | △ +30 MB of control code in the device heap, the GDN states after each row (0.8B 2 × 20 MB) | | | unchanged (logits bit for bit the decode step's: the text is the same at temperature 0) | AMD (needs exporting again; Qwen3.5 only for now) |
 | Speculative decoding: drafts from Qwen3.5's MTP layer, and the GDN state brought back on the host (`state-rows`) (16.109) | ◎ 0.8B (M1) 26.1 → 43.8 tok/s (code), 25.8 → 30.3 (Japanese) | | △ one more program (0.27 GiB) | △ +0.27 GiB on the ANE | | | unchanged (the distribution; fp16 rounding may change the text partway) | Apple |
 | KV tiers `-tier` (16.20, 16.37) | ◎ 1.95× (short chats) | ◎ over 2× | ✕ worse with lut6 | △ +0.5–0.7 GiB | | | | Apple (now lut4 only) |
 | Caching the placement result (16.20) | | | ○ 42 → 16 s | | | | | Apple |
@@ -48,6 +49,7 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | AMD: towers loaded only when used (16.81) | | | △ the first image or clip +0.6–0.7 s | ◎ E2B with images and audio 2818 → 1826 MiB while only text | ○ no text-only export needed | | unchanged | AMD |
 | AMD: the prompt's attention on 8 pipelines (`--mha-pipelines`, 16.107) | unchanged | ◎ chunks 2.3–4× faster on E2B (from 0 1.16 → 0.50 s, from 3072 2.53 → 0.64 s), LFM3 2.1–4.8×, PLaMo 3 2B 2.7–4.8×, 0.8B 2.4–4.8×. Energy −66 to −83 % | | | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
 | AMD: Qwen3.6's prompt experts' gate and up on four cores a column, rows an expert 128 → 256 (16.116) | unchanged | ◎ chunk of 256 3.9 → 3.0 s (always one pass of the experts' weights), 2.7 s with the host's combine on all CPUs, 2.6 s with the experts' down on four cores a column | | | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
+| AMD: Gated DeltaNet's columns aligned to 64 (`COLUMN_ALIGN`, 16.117) | ○ Qwen3.5-0.8B decode 85.6 → 82.5 ms (the fused projection on 8 columns, not 1) | | | △ zero rows (0.8B +7 % of that projection) | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
 | AMD: the prompt GDN's silu once before the operator (`GdnSiLU`, 16.111) | unchanged | ◎ Qwen3.6 chunk of 256 4.5 → 3.9 s (GDN layer 43 → 22 ms), Qwen3.5-0.8B chunk of 512 0.9 → 0.5 s | | | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
 | AMD: Qwen3.5-0.8B / 2B with 6-bit MLPs (q6) and the embeddings on the host (16.104–105) | unchanged | | | ◎ 0.8B 1858 → 1069 MiB, 2B 4017 → 2014 MiB | | | ◎ KL from HF on the GPL 0.34 at q4 → 0.044 (0.8B) | AMD |
 | AMD: Anima's DiT in one bank (`SwapVariants`, 16.106) | △ denoising +2 % | | | ◎ pinned 3445 → 1236 MiB | | | bit for bit the same | AMD |
@@ -274,7 +276,7 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 |---|---|---|
 | full ELF (the whole graph in one context, one command) | Avoids switching xclbins per op (0.46 ms each, 46 ms for 100 ops) | Gemma 4 E2B 5.5–6.1 tok/s, LFM3-1.7B 8.7 tok/s (bf16) |
 | Prompt chunk 2048 → 1024 | Prefill −20% | 256 is as fast, but Gemma 4's sliding layers become rings and can no longer roll back |
-| **No** speculative decoding | A draft-checking call costs 4.5 decode steps | Loses unless over 4.5 tokens are accepted per call |
+| Checking drafts in one call (`--verify`, 16.117) | A prompt chunk checking 2–8 tokens costs 3–9 decode steps (the chunk's cost whatever its rows), so a version of 3 rows runs the decode step's operators over them: a GEMV of a few rows (the weights streamed once), the GDN operator over the rows in one call keeping the state after each, attention a row at a time | 3 rows 1.27 decode steps (Qwen3.5-0.8B). The states of the rows not kept are copied back by the host (`Keep`, 1.5 ms), not run again |
 | Prompt store and setting conversations aside | Prefill after a restart 13.2 s → 0.0 s | LFM3 copies its convolution state at each chunk boundary to roll back (16.66) |
 | CLFLUSH from user space, a flush right after mapping | Fixes first results coming out as 0 from dirty cache lines | |
 | One xclbin per step (for NPU1) | Runs on Phoenix / Hawk Point, which have no full ELF | 2.6 tok/s (full ELF 6.1). Not yet run on a real NPU1 |
@@ -303,7 +305,7 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 
 ### 7.4 Common (any NPU, on the host)
 
-Prompt reuse and the prompt store, speculative decoding (Apple / Intel), the think budget, repetition detection, hwnpu-agent's guards (no editing a file it has not read, stopping repeated calls, refusing a `cd` outside), and the search tools.
+Prompt reuse and the prompt store, speculative decoding (Apple / Intel, AMD's Qwen3.5), the think budget, repetition detection, hwnpu-agent's guards (no editing a file it has not read, stopping repeated calls, refusing a `cd` outside), and the search tools.
 
 Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on the file system, not the NPU: clonefile on macOS's APFS, FICLONE and FICLONERANGE on Linux's Btrfs, XFS and others, block cloning on Windows' ReFS and Dev Drive. It covers Apple's programs and compiled copies, Intel's IR (`.bin` of the programs for 8 and 64 tokens) and AMD's exports. Nothing happens on ext4, tmpfs or NTFS. Only macOS cannot share the start of a file.
 
@@ -574,7 +576,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Other sizes of PLaMo 3 | 0.8B exported, checked against HF and on translations (16.103). 8B and 31B not tried | 16.70, 16.103 |
 | MoE (Qwen3.6-35B-A3B) | All 40 layers run at q4, 5.8 tok/s; prompts in chunks at 25 ms a token (16.91–16.93). A chunk of 256 now takes 2.6 s (16.110–16.111, 16.116); most of it is how fast the experts' weights stream | 16.75, 16.89–16.93, 16.110–16.111, 16.116 |
 | MoE warning about reusing BDs | aiecc warns about reusing a BD after a `dma_free_task` with no completion guarantee. Thought harmless, but not proven statically | 16.75 |
-| Speed of Qwen3.5-0.8B / 2B | They match HF on the NPU (bf16 KL 0.001–0.006) and serve at q6. Generation 11.6 (0.8B) and 8.1 tok/s (2B), slower than the M3 (27–30, 16–20): bound by the count of ops in 24 layers | 16.104 |
+| Speed of Qwen3.5-0.8B / 2B | They match HF on the NPU (bf16 KL 0.001–0.006) and serve at q6. Generation 11.6 (0.8B) and 8.1 tok/s (2B), slower than the M3 (27–30, 16–20): bound by the count of ops in 24 layers. With drafts checked in one call (16.117), 0.8B 13.9–16.2 tok/s; 2B not measured | 16.104, 16.117 |
 | Pipelines of Qwen3.6's prompt attention | The exports' default of 8 (16.107) is not measured on Qwen3.6, which keeps 1 | 16.107 |
 | Speed of q6's GEMV | About q8's time, bound by taking out the high 2 bits. Another layout might be faster | 16.105 |
 | `iron_q4.py check --valid` | Bounding the prompt path's rows fails the check for q8 as well (unbounded it passes). Thought to be the check's, not fixed | 16.105 |
@@ -608,9 +610,9 @@ Explained (2026-11-08, 16.107):
 - Conversations set aside moved out of the process (to disk), halved with int8 (the rest of T4)
 - Changing the number of parts at run time (`MemoryBudget`, `Reshape`) (16.12)
 - A WordPiece tokenizer (to use the BERT family from hwnpu-chat)
-- Speculative decoding with a draft model (such as Qwen3.5's `mtp.` layers) (T9)
+- Speculative decoding with a draft model (such as Qwen3.5's `mtp.` layers) (T9): Apple done (16.109); AMD not yet (the model's hidden states out and a version of the MTP layer)
 - Repairing hwnpu-agent's broken calls (output-parser)
-- AMD: an IRON version for checking drafts
+- AMD: the rest of checking drafts (16.117): a GEMV of a few rows for q4 (Gemma 4, PLaMo 3, LFM3 at 4 bits), Gemma 4's shared layers (last row only) and ring caches, attention over the rows in one MHA, fewer copies of the states
 - The rest of AMD's pinned memory (amd-npu-models.md section 12):
   - Split the VAE into tiles (with the DiT in one bank (16.106), a VAE stage is now the largest)
 - The rest of Anima:

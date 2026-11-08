@@ -51,6 +51,7 @@ from iron.operators.sigmoid import Sigmoid
 
 import iron_gdn
 import iron_moe
+import iron_verify
 import iron_moeprobe
 import iron_moep
 
@@ -199,6 +200,11 @@ class GatedDeltaNet(iron.Graph):
         extra = COLUMNS * 2 * dk * iron_gdn.SLICE if fold else 0
         self.state = Checkpoints.of((H * dk * dv + extra,), c.max_seq_len, c.prefill_chunk, np.float32)
         self.words = None
+        R = iron_verify.ROWS["rows"]
+        if R and fold:
+            # the version checking drafts (iron_verify): the state after each of its rows but the
+            # last, from which the host puts back the one after the last draft kept
+            self.rows_state = iron.state((R - 1, H * dk * dv + extra), np.float32)
 
     def load_state_dict(self, tree, *, path: str = "") -> None:
         super().load_state_dict(tree, path=path)
@@ -247,6 +253,8 @@ class GatedDeltaNet(iron.Graph):
         shape = dict(heads=H, key_heads=KH, key_dim=dk, value_dim=dv, words=self.words)
         p = self.in_proj(x)
         read, write = self.state.at(call)
+        if iron_verify.is_rows(x) and self.fold:
+            return self.rows_body(x, p, read, write, shape)
         if call.prompt:  # silu once before the operator, which reads each row once a slice
             GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), pairs=self.fold, presilu=True)
             u = iron_gdn.silu_operator(COLUMNS).step(self.conv(p, call), seg=self.seg,
@@ -264,6 +272,22 @@ class GatedDeltaNet(iron.Graph):
         y, final = GDR.step(self.conv(p, call), Copy.step(read, dtype=np.float32), **shape)
         Copy.step(final, write, dtype=np.float32)
         return self.out_proj(self.norm(y, self.in_proj_z(x)))
+
+
+    def rows_body(self, x, p, read, write, shape):
+        """The version checking drafts: the decode step's operator over its few rows in one call
+        (iron_gdn's steps), each row run as a decode step's, the state after each kept: the last
+        row's to the slot, the others' to rows_state."""
+        c = self.config
+        H, KH, dk, dv = self.shape
+        R = x.shape[0]
+        GDR = iron_gdn.gdn_operator(COLUMNS, H // (2 * COLUMNS), c.linear_conv_kernel_dim, float(c.eps),
+                                    steps=R)
+        y, finals = GDR.step(p, self.in_proj_z(x), self.taps, Copy.step(read, dtype=np.float32), **shape)
+        size = finals.shape[0] // R
+        Copy.step(finals[(R - 1) * size :], write, dtype=np.float32)
+        Copy.step(finals[: (R - 1) * size], self.rows_state.reshape((R - 1) * size), dtype=np.float32)
+        return self.out_proj(y)
 
 
 class GatedAttention(Attention):

@@ -1364,11 +1364,18 @@ func (e *Engine) rows(toks []int32) ([][]float32, error) {
 // speculate runs the tokens like step, keeping only as many as accept says
 // (decode.Session.Speculate), and records those as fed. The kept tokens are a prefix.
 func (e *Engine) speculate(toks []int32, accept func(row func(i int) []float32) int) (int, error) {
-	embs, err := e.rows(toks)
-	if err != nil {
-		return 0, err
+	var logits []float32
+	var kept int
+	var err error
+	if ts, ok := e.sess.(tokenSession); ok {
+		logits, kept, err = ts.SpeculateTokens(toks, accept)
+	} else {
+		var embs [][]float32
+		if embs, err = e.rows(toks); err != nil {
+			return 0, err
+		}
+		logits, kept, err = e.sess.Speculate(embs, accept)
 	}
-	logits, kept, err := e.sess.Speculate(embs, accept)
 	if err != nil {
 		// the cache may be half written
 		e.sess.Reset()

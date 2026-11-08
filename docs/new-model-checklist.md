@@ -119,6 +119,7 @@ What helped:
 | **The prompt's MHA on several pipelines** (`--mha-pipelines`, default 8) | Without a profile in the export, MHA ran on one pipeline, 60 % of a chunk. On 8, chunks are 2–5× faster with the same logits. A chunk of 256 takes 4 at most. Check `prompt attention: N pipelines` in the export's log and `num_pipelines` in the kernels' names | 16.107 |
 | The chunk's size | 1024 for attention models (LFM3 too: short prompts −24 % against 2048, long ones the same). 512 for GDN models (Qwen3.5: 256 slows long prompts, 1024 short ones) | 16.54, 16.108 |
 | Quantized projections in multiples of 64 out by 512 in | Pad a fused projection (GDN's in_proj, 6176 rows) per column with rows of zeros (`iron_gdn.column_widths`) | 16.104 |
+| **The GEMV's 64-row blocks divide evenly over the 8 columns** | The GEMV takes only as many columns as divide its blocks. Qwen3.5-0.8B's GDN projection (776 × 8 = 97 blocks, a prime) ran on one column: 571 µs against 217 on 8. Look at `num_aie_columns` in the kernels' names (`--command-per-step`), and pad (`iron_gdn.COLUMN_ALIGN` 64) | 16.117 |
 | A command's control code within the device heap (64 MiB) | Dense models cut at `SCRATCHPAD_WORDS` 24 (Qwen3.5-2B's q4 at 32: `CREATE_BO: invalid argument`) | 16.104 |
 | Where a slow chunk's time goes | `--command-per-step` (a command a step) and `HWNPU_IRON_TIMING`. Run one chunk only (16.80's hang). Read the times only: on Qwen3.6 that export's logits do not match HF. Whether transfers or compute bound an operator: compare with a build whose kernel computes nothing (Qwen3.6's experts: 8.4 ms streaming the weights alone, 20 ms with the compute) | 16.107, 16.116 |
 | **Check prompts against HF at the chunk's own size** (64, 128, the chunk's size: `iron_qwen35_check.py ref --tokens N --stream` into `EXPORT/check`, then `ironlm`) | A 32-token check takes only the one-pass path. Qwen3.6's MoE broke when a 256-token chunk ran in several passes (cosine 0.578) | 16.110 |
@@ -139,7 +140,7 @@ What helped:
 | MHA's head_dim a multiple of 64 | Pad 96 to 128 (LFM3-VL's tower) | 16.65 |
 | Images and audio in the final export form | Towers loaded on first use replace the banks; the chunk barrier bound to the old bank failed (ENOENT) until 2026-11-07. Send an image and a clip through `hwnpu-chat` after any change to the export | 16.81, 16.87 |
 | Layers with state (convolutions) copied at chunk boundaries | For rolling back to marks and for the prompt store | 16.66 |
-| **No** speculative decoding | Checking a draft costs 4.5 decode steps | |
+| **Checking drafts in one call** (`--verify 3`) | A prompt chunk checking 2–8 tokens costs 3–9 decode steps, so the export adds a version running the decode step's operators over 3 rows: every op needs a form of a few rows (the GEMV `QGEMVRows`, q8 and q6 only so far; a recurrent operator over the rows in one call keeping the state after each, as `iron_gdn`'s `steps`; attention a row at a time). Layers that run the last row only (Gemma 4's shared ones) and ring caches need all rows. Pass: `ironlm -verify` (every row and the step after `Keep` bit for bit the decode step's). Qwen3.5-0.8B: 1.27 decode steps, 82 → 62–72 ms/token | 16.117 |
 | A graph's groups (`variants`, an image model's DiT) in one bank, read in turn (`iron.GraphOptions.SwapVariants`) | Anima's DiT, 7 groups: pinned 3445 → 1236 MiB, +2 % | 16.106 |
 
 ### 4.2 Intel
@@ -236,7 +237,7 @@ Things to bring in next (they helped every model):
 
 - Two programs (generation and prompt reading) on one cache, reuse of the previous prompt, the prompt store (disk)
 - **The prompt program's output layer on the last row only** (`LastRow`, #56). PLaMo 3 and Qwen3.5 lacked it; with it, reading a document took 25 % less (16.99)
-- Speculative decoding (n-grams from the prompt, Apple / Intel), the think budget (`-think-budget`), repetition detection
+- Speculative decoding (n-grams from the prompt, Apple / Intel; AMD with `--verify`, 4.1), the think budget (`-think-budget`), repetition detection
 - A model whose later layers write no cache (shared keys and values) gets a prompt program that stops at the last layer that writes one (`-kv-only`, `llm.CacheWriters`; Gemma 4 E2B 1.6 → 0.38 GiB, 16.112). When the two programs do not fit the Neural Engine, generation slows down too
 - A monotonic operation after the output layer (the soft cap) goes to the host's sampling, so that the output layer is all on the Neural Engine (`llm.LogitSoftcap`, 16.113)
 - `HWNPU_PROFILE=1` breaks a step down (ms per part, per host attention and for reading the logits, with the memory the Neural Engine holds)
@@ -302,6 +303,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 
 - The AMD exports here were exported again with 8 pipelines and the new chunk sizes (16.108). When an export changes, pass an image and a clip through `hwnpu-chat`
 - Qwen3.6's prompt attention pipelines are not measured (it keeps 1)
+- AMD's checking of drafts (16.117): a GEMV of a few rows for q4 (Gemma 4, PLaMo 3, LFM3 at 4 bits), Gemma 4's shared layers and ring caches, Qwen3.5's MTP layer as the drafter
 - Qwen3.5-2B at lut6: the KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), long contexts and the hwnpu-agent tasks
 - Whisper: the formats on real recordings (noise, overlapping speakers)
 

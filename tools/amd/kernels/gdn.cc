@@ -620,5 +620,89 @@ extern "C" void gdn_norm(bfloat16 *restrict out, const bfloat16 *restrict xt, in
                         .to_vector<bfloat16>());
   aie::set_rounding(saved_rounding);
 }
+
+#ifdef GDR_STEPS
+// A check of drafts (iron_gdn's steps): GDR_STEPS rows a call, each run as a decode step's
+// row, the state after each written out (gdn_rule with GDR_ROWS 1 and GDR_BLOCKS steps: block
+// m loads nothing, the state stays in the core from the row before). xt: the rows (STEPS of
+// SEG), their z (STEPS of ZW), then the taps (KC of SEG).
+constexpr int STEPS = GDR_STEPS, SEGP = (SEG + 31) / 32 * 32;
+static_assert(R == 1 && GDR_BLOCKS == STEPS, "gdn steps: a row a block");
+alignas(64) bfloat16 u_rows[STEPS * SEGP];
+alignas(64) bfloat16 y_rows[STEPS * HD];
+
+// Row m's convolution (into u_rows) and the KC - 1 rows ending with it (hout): the rows are
+// hin's KC - 1, then xt's, so row m reads hin's past the first m and xt's up to m.
+extern "C" void gdn_conv_step(const bfloat16 *restrict xt, const float *restrict hin,
+                              float *restrict hout, int32_t m) {
+  const aie::rounding_mode saved_rounding =
+      aie::swap_rounding(aie::rounding_mode::conv_even);
+  const bfloat16 *h = (const bfloat16 *)hin, *taps = xt + STEPS * (SEG + ZW);
+  bfloat16 *o = (bfloat16 *)hout;
+  // row j of the run (0 to KC - 2: hin's, then xt's)
+  auto at = [&](int j) { return j < KC - 1 ? h + j * SEG : xt + (j - (KC - 1)) * SEG; };
+  const bfloat16 *x = xt + m * SEG;
+  bfloat16 *u = u_rows + m * SEGP;
+  int i = 0;
+  for (; i + 16 <= SEG; i += 16) {
+    acc_t<16> acc = aie::mul(aie::load_unaligned_v<16>(taps + (KC - 1) * SEG + i),
+                             aie::load_unaligned_v<16>(x + i));
+    for (int k = 0; k < KC - 1; k++)
+      acc = aie::mac(acc, aie::load_unaligned_v<16>(taps + k * SEG + i),
+                     aie::load_unaligned_v<16>(at(m + k) + i));
+    aie::store_v(u + i, acc.to_vector<bfloat16>());
+  }
+  for (; i < SEG; i++) {
+    float a = (float)taps[(KC - 1) * SEG + i] * (float)x[i];
+    for (int k = 0; k < KC - 1; k++)
+      a += (float)taps[k * SEG + i] * (float)at(m + k)[i];
+    u[i] = (bfloat16)a;
+  }
+  for (int k = 0; k < KC - 1; k++) {
+    const bfloat16 *src = at(m + 1 + k);
+    for (int j = 0; j < SEG; j++)
+      o[k * SEG + j] = src[j];
+  }
+  for (int j = (KC - 1) * SEG; j < 2 * Dk * Dv; j++)
+    o[j] = (bfloat16)0.0f;
+  aie::set_rounding(saved_rounding);
+}
+
+extern "C" void gdn_gather_step(int32_t m, int32_t qo, int32_t ko, int32_t vo, int32_t abo) {
+  gather_row(u_rows + m * SEGP, 0, qo, ko, vo, abo);
+}
+
+// gdn_rule_keep for row m (b_idx): slice s of the value head into row m of y_rows.
+extern "C" void gdn_rule_step(float *restrict start, float *restrict final, int32_t m,
+                              int32_t dt_hi, int32_t dt_lo, int32_t a_hi, int32_t a_lo,
+                              int32_t s) {
+  gdn_rule(start, final, y_rows + m * HD + s * Dv, 1, m, dt_hi, dt_lo, a_hi, a_lo);
+}
+
+// gdn_norm for row m: the whole value head (HD) into out.
+extern "C" void gdn_norm_step(bfloat16 *restrict out, const bfloat16 *restrict xt, int32_t zo,
+                              int32_t m) {
+  const aie::rounding_mode saved_rounding =
+      aie::swap_rounding(aie::rounding_mode::conv_even);
+  const bfloat16 *yk = y_rows + m * HD, *zr = xt + STEPS * SEG + m * ZW + zo;
+  acc_t<32> sq = aie::zeros<accfloat, 32>();
+  for (int i = 0; i < HD; i += 32) {
+    const bf_t<32> v = aie::load_v<32>(yk + i);
+    sq = aie::mac(sq, v, v);
+  }
+  const float ms = aie::reduce_add(sq.to_vector<float>()) / (float)HD;
+  const float rinv = rsqrt_newton(ms + GDR_NORM_EPS);
+  for (int c = 0; c < HD; c += L) {
+    alignas(32) bfloat16 z[L], g[L];
+    for (int j = 0; j < L; j++)
+      z[j] = zr[c + j];
+    silu_row(z, g, L);
+    const acc_t<L> yg = aie::mul(aie::load_v<L>(yk + c), aie::load_v<L>(g));
+    aie::store_v(out + c, aie::mul(yg.to_vector<float>(), aie::broadcast<float, L>(rinv))
+                              .to_vector<bfloat16>());
+  }
+  aie::set_rounding(saved_rounding);
+}
+#endif
 #endif
 #endif

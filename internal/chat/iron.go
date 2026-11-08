@@ -40,8 +40,17 @@ type ironSession struct {
 
 var _ session = (*ironSession)(nil)
 
-func (s *ironSession) Q() int    { return s.m.Manifest.Config.PrefillChunk }
-func (s *ironSession) Qs() []int { return []int{1, s.Q()} } // no drafts: the decode step reads 1
+func (s *ironSession) Q() int { return s.m.Manifest.Config.PrefillChunk }
+
+// Qs: the check of drafts' rows first when the export has it (iron_export_lm.py --verify), so
+// that a generation checks that many less one drafts a call (Engine.Draft); else the decode
+// step's 1. HWNPU_IRON_DRAFTS=0 leaves the check unused.
+func (s *ironSession) Qs() []int {
+	if r := s.m.VerifyRows(); r > 1 && os.Getenv("HWNPU_IRON_DRAFTS") != "0" {
+		return []int{r, s.Q()}
+	}
+	return []int{1, s.Q()}
+}
 func (s *ironSession) Cache() int {
 	return s.m.Manifest.Config.MaxSeqLen
 }
@@ -148,7 +157,69 @@ func (s *ironSession) Step([][]float32) ([]float32, error) {
 }
 
 func (s *ironSession) Speculate([][]float32, func(func(int) []float32) int) ([]float32, int, error) {
-	return nil, 0, errors.New("chat: an IRON model checks no drafts")
+	return nil, 0, errors.New("chat: an IRON model reads token ids, not embeddings")
+}
+
+// SpeculateTokens checks toks (the next token, then drafts) in one call of the version checking
+// drafts (iron.Model.Verify), padded to its rows with the last token (rows past the drafts are
+// never read, and Keep drops their states), and keeps the rows accept says. A check that would
+// cross a prompt-chunk boundary (the recurrent states' slot is a chunk's) runs decode steps
+// instead, one for each row accept reads.
+func (s *ironSession) SpeculateTokens(toks []int32, accept func(row func(i int) []float32) int) ([]float32, int, error) {
+	ctx := context.Background()
+	R := s.m.VerifyRows()
+	C := s.m.Manifest.Config.PrefillChunk
+	if len(toks) == 0 || len(toks) > R {
+		return nil, 0, fmt.Errorf("chat: %d tokens to check, a check takes 1 to %d", len(toks), R)
+	}
+	if s.pos+R > s.Cache() {
+		return nil, 0, fmt.Errorf("%w: %d tokens past %d, the cache holds %d", ErrContext, R, s.pos, s.Cache())
+	}
+	if slices.ContainsFunc(toks, func(t int32) bool { return t < 0 }) {
+		return nil, 0, errors.New("chat: drafts of an image's soft tokens")
+	}
+	if len(s.m.Manifest.Checkpoints) > 0 && s.pos%C+R > C {
+		var rows [][]float32
+		var err error
+		row := func(i int) []float32 {
+			for len(rows) <= i && err == nil {
+				var l []float32
+				if l, err = s.m.Step(ctx, toks[len(rows)], s.pos+len(rows)); err == nil {
+					rows = append(rows, l)
+				}
+			}
+			if err != nil {
+				return make([]float32, s.m.Manifest.Config.VocabSize)
+			}
+			return rows[i]
+		}
+		kept := accept(row)
+		if err != nil {
+			return nil, 0, err
+		}
+		if kept != len(rows) {
+			return nil, 0, fmt.Errorf("chat: %d rows kept of %d run", kept, len(rows))
+		}
+		s.pos += kept
+		return rows[kept-1], kept, nil
+	}
+	ids := slices.Clone(toks)
+	for len(ids) < R {
+		ids = append(ids, toks[len(toks)-1])
+	}
+	logits, err := s.m.Verify(ctx, ids, s.pos)
+	if err != nil {
+		return nil, 0, err
+	}
+	kept := accept(func(i int) []float32 { return logits[i] })
+	if kept < 1 || kept > len(toks) {
+		return nil, 0, fmt.Errorf("chat: %d rows kept of %d checked", kept, len(toks))
+	}
+	if err := s.m.Keep(s.pos, kept); err != nil {
+		return nil, 0, err
+	}
+	s.pos += kept
+	return logits[kept-1], kept, nil
 }
 
 // StepTokens runs one token on the decode step, more on the prompt chunk; a piece holding an
@@ -383,7 +454,13 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 			logf("prompt store: %s, %d prompts kept", dir, len(e.store.entries))
 		}
 	}
-	logf("ready: context %d tokens, up to %d tokens per call", e.Context(), e.sess.Q())
+	if d := e.Draft(); d > 0 {
+		// the export checks drafts (iron_export_lm.py --verify): from the prompt and the answer
+		e.drafter = LookupDraft
+		logf("ready: context %d tokens, up to %d tokens per call, drafts of %d checked per call", e.Context(), e.sess.Q(), d)
+	} else {
+		logf("ready: context %d tokens, up to %d tokens per call", e.Context(), e.sess.Q())
+	}
 	e.touch() // released after Config.Idle even when no request comes
 	return e, nil
 }

@@ -566,9 +566,13 @@ GPTQ で q4 の誤差は約半分になり、潜在の cosine は q8 との差�
 
 q8 と同じブロックと並びで符号を 6 ビット (−31〜31) にした形式 (`iron_q4.quantize6`、`kernels/q6_mv.cc`)。符号の下位 4 ビットを q4nx と同じニブルに、上位 2 ビットを 128 個ごとに 32 バイトに置く。6.5 ビット/重み。GEMV は q8 とほぼ同じ時間 (8192 × 2048 で 0.42〜0.47 ms、q8 0.43〜0.50 ms、q4 0.30〜0.35 ms: 上位ビットの取り出しで律速) なので、得るのはメモリと精度 (重みの相対 RMS 誤差 q4 0.071、q6 0.022、q8 0.005)。
 
-- 小さい Qwen3.5 (0.8B、2B) の MLP と出力の行列: q4 では GPL の KL が 0.34 / 0.16 に崩れる (GPTQ でも 0.30) が、q6 で 0.044 / 0.019 (`iron_export_lm.py qwen35 --q4 --mlp q6 --head q6`、design.md の 16.104)
+- 小さい Qwen3.5 (0.8B、2B) の MLP と出力の行列: q4 では GPL の KL が 0.34 / 0.16 に崩れる (GPTQ でも 0.30) が、q6 で 0.044 / 0.019 (`iron_export_lm.py qwen35 --q4 --mlp q6 --head q6`、design.md の 16.104)。`--verify 3` も足すと下書きを確かめる版がつく (下の節)
 - Anima の DiT: `iron_anima.py --dit-attn q6 --dit-mlp q6` (上)
 - GPTQ と CPU の見積もり: `q4_gptq.py --fmt-q4 q6 --head q6`
+
+### 下書きを確かめる版 (`--verify`、2026-11-08)
+
+`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。`hwnpu-chat -iron` はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。ロジットはデコードのステップとビット単位で同じなので、temp 0 の文は変わらない。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン (design.md の 16.117)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_IRON_DRAFTS=0` で使わない。
 
 #### Qwen3.6-35B-A3B (`tools/amd/qwen36_gptq.py`、2026-11-08)
 

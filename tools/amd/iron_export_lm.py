@@ -453,7 +453,8 @@ def compile_versions(model, full_elf=None):
         v = model.compile(dev=dev, feeds=decode if prompt else None, full_elf=full_elf, **shapes)
         if not shapes and v.emit is not None:  # only a looping full ELF feeds the prompt (IRON's load_versions)
             decode = v
-        name = ("placed" if "placed" in shapes else "prompt" if "ids" in shapes
+        verify = "ids" in shapes and shapes["ids"][0][0] == getattr(model, "verify_rows", 0)
+        name = ("verify" if verify else "placed" if "placed" in shapes else "prompt" if "ids" in shapes
                 else "vision" if "rgb" in shapes else "audio" if "wave" in shapes
                 else "decode" if not shapes else None)
         if name is None or name in versions:
@@ -888,6 +889,9 @@ def main(argv=None) -> int:
     ap.add_argument("--device-ple", action="store_true",
                     help="Gemma 4: keep the per-layer token table on the device (IRON's own gathers) instead of "
                          "on the host (iron_hostple: 4.4 GiB less pinned memory for E2B)")
+    ap.add_argument("--verify", type=int, default=0, metavar="ROWS",
+                    help="add the version checking drafts: ROWS tokens (the next and the drafts) a call, "
+                         "every row's logits out (iron_verify.py)")
     ap.add_argument("--mha-pipelines", type=int, default=None,
                     help="the pipelines of a prompt chunk's attention (MHA's num_pipelines; default 8, 1 for "
                          "qwen35moe, not measured with more; 1 is IRON's default without a profile, which left a "
@@ -958,6 +962,10 @@ def main(argv=None) -> int:
             return dataclasses.replace(_base(cls, weights), prefill_chunk=_chunk)
 
         Model.default_config = classmethod(default_config)
+    if a.verify:
+        import iron_verify
+
+        iron_verify.install(Model, a.verify)
     if a.check_only:
         write_check(Model, a, a.out, a.check, a.steps, np.random.default_rng(1))
         return 0

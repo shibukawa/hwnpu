@@ -84,6 +84,13 @@ static inline void q8_accumulate(const q8_block *A, const bf16 *B, float *c) {
   }
 }
 
+// The 128 codes of unit u, for mv_rows.h.
+static inline aie::vector<int8_t, 8 * PR> q8_codes(const q8_block *A, int u) {
+  return aie::load_v<8 * PR>(A->qs + u * 8 * PR);
+}
+
+#include "mv_rows.h"
+
 extern "C" {
 
 // Every call first sets round-to-nearest-even: a core starts in floor mode,
@@ -149,5 +156,8 @@ void q8_dequant(const uint8_t *block, bf16 *out, int32_t h) {
     }
   }
 }
+
+// The GEMV of ROWS rows (mv_rows.h).
+MV_ROWS_CALLS(q8, q8_block, q8_codes)
 
 } // extern "C"

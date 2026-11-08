@@ -32,7 +32,7 @@ func (m *Model) caches() ([]kvCache, error) {
 		if p.Bytes%rows != 0 {
 			return nil, fmt.Errorf("iron: cache %s of %d bytes is no whole rows of %d positions", name, p.Bytes, rows)
 		}
-		for _, v := range []*version{m.prompt, m.placed} {
+		for _, v := range []*version{m.prompt, m.placed, m.verify} {
 			if v == nil {
 				continue
 			}
@@ -139,7 +139,7 @@ func (m *Model) Resumable() bool {
 		if !ok || c.Slots < 1 || c.Chunk < 1 || p.Bytes%c.Slots != 0 {
 			return false
 		}
-		for _, v := range []*version{m.prompt, m.placed} {
+		for _, v := range []*version{m.prompt, m.placed, m.verify} {
 			if v != nil && v.m.Buffers[c.Buffer] != p {
 				return false
 			}

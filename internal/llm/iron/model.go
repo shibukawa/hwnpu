@@ -32,6 +32,7 @@ type Model struct {
 	decode   *version
 	prompt   *version
 	placed   *version  // a prompt chunk with the towers' soft tokens at their placeholders
+	verify   *version  // the check of drafts (verify.go), or nil
 	vision   *version  // the vision tower, or nil
 	audio    *version  // the audio tower, or nil
 	kv       []kvCache // caches, found once
@@ -63,6 +64,9 @@ type version struct {
 	// runs are a decode step's commands when it is several (Qwen3.6's: two a layer), each
 	// kept as run is; runs[0] is run.
 	runs []*hwnpu.Run
+	// perCall: the check of drafts' commands made for each call (verify.go), their control
+	// code not fitting the device heap beside the decode step's.
+	perCall bool
 	// steps are the runs of a version packaged as an xclbin per step (steps.go).
 	steps   []*stepRun
 	streams stepStreams
@@ -110,6 +114,8 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 			m.prompt = ver
 		case "placed":
 			m.placed = ver
+		case "verify":
+			m.verify = ver
 		case "vision":
 			m.vision = ver
 		case "audio":
@@ -381,7 +387,7 @@ func (m *Model) Close() error {
 }
 
 func (m *Model) versions() []*version {
-	return []*version{m.decode, m.prompt, m.placed, m.vision, m.audio}
+	return []*version{m.decode, m.prompt, m.placed, m.verify, m.vision, m.audio}
 }
 
 func (m *Model) version(name string) *version {
@@ -392,6 +398,8 @@ func (m *Model) version(name string) *version {
 		return m.prompt
 	case "placed":
 		return m.placed
+	case "verify":
+		return m.verify
 	case "vision":
 		return m.vision
 	case "audio":
@@ -761,9 +769,9 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		runOnce := func() error {
 			t0 := time.Now()
 			run, err := m.newRun(v, k)
-			if errors.Is(err, syscall.ENOSPC) && m.decode.run != nil {
+			if errors.Is(err, syscall.ENOSPC) && (m.decode.run != nil || m.verify != nil && m.verify.run != nil) {
 				// the device heap holds no more control code: release the decode step's (as IRON
-				// releases a run), which Step makes again
+				// releases a run) and the check of drafts', which Step and Verify make again
 				m.dropDecode()
 				run, err = m.newRun(v, k)
 			}
@@ -1051,7 +1059,11 @@ func (m *Model) stepBarrier(ctx context.Context) error {
 // tower's (up to 40 MiB) may not fit beside in the device heap; Step makes it again. The chunk
 // barrier goes too: it is bound to the banks, which growBanks replaces (its run on the closed
 // bank failed with ENOENT, the first prompt chunk after a tower); chunkBarrier makes it again.
+// The check of drafts' kept runs go too (Verify makes them again).
 func (m *Model) dropDecode() {
+	if m.verify != nil {
+		m.verify.closeRuns()
+	}
 	if m.decode == nil {
 		return
 	}
