@@ -9,9 +9,9 @@ import (
 
 // withGo runs f with the kernels turned off.
 func withGo(f func()) {
-	saved := haveKernels
-	haveKernels = false
-	defer func() { haveKernels = saved }()
+	saved, savedF16 := haveKernels, haveF16
+	haveKernels, haveF16 = false, false
+	defer func() { haveKernels, haveF16 = saved, savedF16 }()
 	f()
 }
 
@@ -328,6 +328,188 @@ func BenchmarkBF16(b *testing.B) {
 			b.SetBytes(int64(len(src)))
 			for b.Loop() {
 				BF16ToF32(dst, src)
+			}
+		})
+	}
+}
+
+// packRef is the plain bit by bit packing Pack must match.
+func packRef(idx []uint8, bits int) []byte {
+	out := make([]byte, PackedLen(len(idx), bits))
+	for i, q := range idx {
+		for b := range bits {
+			if q>>b&1 != 0 {
+				bit := i*bits + b
+				out[bit/8] |= 1 << (bit % 8)
+			}
+		}
+	}
+	return out
+}
+
+func TestPack(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	for bits := 1; bits <= 8; bits++ {
+		for _, n := range append(sizes, 127, 128, 129, 191, 192, 4096+63) {
+			idx := make([]uint8, n)
+			for i := range idx {
+				idx[i] = uint8(rng.Intn(256)) // the bits above the width must be ignored
+			}
+			want := packRef(idx, bits)
+			for _, kern := range []bool{false, true} {
+				got := make([]byte, len(want)+8)
+				for i := range got {
+					got[i] = 0xa5 // overwritten, and nothing written past the end
+				}
+				run := func() { Pack(got, idx, bits) }
+				if kern {
+					run()
+				} else {
+					withGo(run)
+				}
+				if !slices.Equal(got[:len(want)], want) {
+					t.Fatalf("bits %d n %d kernels %v: got %x want %x", bits, n, kern, got[:len(want)], want)
+				}
+				for _, b := range got[len(want):] {
+					if b != 0xa5 {
+						t.Fatalf("bits %d n %d kernels %v: wrote past the end", bits, n, kern)
+					}
+				}
+			}
+		}
+	}
+}
+
+func BenchmarkPack(b *testing.B) {
+	idx := make([]uint8, 1<<16)
+	for i := range idx {
+		idx[i] = uint8(i * 37)
+	}
+	dst := make([]byte, len(idx))
+	for _, bits := range []int{4, 6} {
+		for _, kern := range []bool{false, true} {
+			b.Run(map[bool]string{false: "go", true: "simd"}[kern]+"/"+string(rune('0'+bits)), func(b *testing.B) {
+				saved := haveKernels
+				haveKernels = haveKernels && kern
+				defer func() { haveKernels = saved }()
+				b.SetBytes(int64(len(idx)))
+				for b.Loop() {
+					Pack(dst, idx, bits)
+				}
+			})
+		}
+	}
+}
+
+// halfCases are float32 values around the edges of half precision: subnormals and the
+// ties of their rounding, the largest finite half and the overflow past it, and infinities.
+func halfCases() []float32 {
+	var c []float32
+	for _, b := range []uint32{
+		0, 0x80000000, 1, 0x00800000, // float32 zeros and subnormals
+		0x33000000, 0x33000001, 0x337fffff, 0x33800000, 0x33c00000, 0x33a00000, // 2^-25 and around the smallest half
+		0x387fc000, 0x387fe000, 0x38800000, // the largest subnormal half and the tie above it
+		0x477fe000, 0x477fefff, 0x477ff000, 0x47800000, // 65504, below and at the tie to infinity
+		0x7f7fffff, 0x7f800000, 0xff800000, // the largest float32, infinities
+		0x3f801000, 0x3f803000, 0x3f800fff, 0x3f801001, // ties to even and around them
+	} {
+		c = append(c, math.Float32frombits(b), math.Float32frombits(b|0x80000000))
+	}
+	return c
+}
+
+func TestF16(t *testing.T) {
+	rng := rand.New(rand.NewSource(5))
+	for _, n := range append(sizes, 16, 17, 4096+15) {
+		for trial := range 4 {
+			src := make([]float32, n)
+			for i := range src {
+				switch rng.Intn(4) {
+				case 0:
+					src[i] = math.Float32frombits(rng.Uint32()) // any bits, NaNs among them
+				case 1:
+					c := halfCases()
+					src[i] = c[rng.Intn(len(c))]
+				default:
+					src[i] = float32(rng.NormFloat64() * math.Pow(2, float64(rng.Intn(40)-25)))
+				}
+				if trial < 2 && src[i] != src[i] {
+					src[i] = 1 // the first trials without NaNs, so the kernels run
+				}
+			}
+			want := make([]byte, 2*n)
+			for i, v := range src {
+				h := F16Bits(v)
+				want[2*i], want[2*i+1] = byte(h), byte(h>>8)
+			}
+			got := make([]byte, 2*n)
+			F32ToF16(got, src)
+			if !slices.Equal(got, want) {
+				for i := range n {
+					if got[2*i] != want[2*i] || got[2*i+1] != want[2*i+1] {
+						t.Fatalf("n %d: %08x to half got %02x%02x want %02x%02x", n, math.Float32bits(src[i]), got[2*i+1], got[2*i], want[2*i+1], want[2*i])
+					}
+				}
+			}
+			// every half, NaNs and signaling NaNs among them in the later trials
+			halves := make([]byte, 2*n)
+			for i := range n {
+				h := uint16(rng.Intn(1 << 16))
+				if trial < 2 && h&0x7c00 == 0x7c00 && h&0x3ff != 0 {
+					h &^= 0x0400
+				}
+				halves[2*i], halves[2*i+1] = byte(h), byte(h>>8)
+			}
+			back := make([]float32, n)
+			F16ToF32(back, halves)
+			for i, v := range back {
+				w := F16Value(uint16(halves[2*i]) | uint16(halves[2*i+1])<<8)
+				if math.Float32bits(v) != math.Float32bits(w) {
+					t.Fatalf("n %d: half %02x%02x got %08x want %08x", n, halves[2*i+1], halves[2*i], math.Float32bits(v), math.Float32bits(w))
+				}
+			}
+		}
+	}
+	// all 65536 halves, without NaNs, round trip through the kernels
+	all := make([]byte, 0, 1<<17)
+	for h := range 1 << 16 {
+		if h&0x7c00 == 0x7c00 && h&0x3ff != 0 {
+			continue
+		}
+		all = append(all, byte(h), byte(h>>8))
+	}
+	all = all[:len(all)&^63]
+	f := make([]float32, len(all)/2)
+	F16ToF32(f, all)
+	again := make([]byte, len(all))
+	F32ToF16(again, f)
+	if !slices.Equal(again, all) {
+		t.Fatal("halves do not round trip")
+	}
+}
+
+func BenchmarkF16(b *testing.B) {
+	src := benchVals(1 << 16)
+	half := make([]byte, 2*len(src))
+	for _, kern := range []bool{false, true} {
+		name := map[bool]string{false: "go", true: "simd"}[kern]
+		set := func(b *testing.B) func() {
+			saved := haveF16
+			haveF16 = haveF16 && kern
+			return func() { haveF16 = saved }
+		}
+		b.Run(name+"/encode", func(b *testing.B) {
+			defer set(b)()
+			b.SetBytes(int64(4 * len(src)))
+			for b.Loop() {
+				F32ToF16(half, src)
+			}
+		})
+		b.Run(name+"/decode", func(b *testing.B) {
+			defer set(b)()
+			b.SetBytes(int64(4 * len(src)))
+			for b.Loop() {
+				F16ToF32(src, half)
 			}
 		})
 	}

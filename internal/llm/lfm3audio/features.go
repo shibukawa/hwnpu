@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // The feature extractor of LFM3-Audio and LFM3-Omni, as llama.cpp's converter checks it and
@@ -39,33 +42,83 @@ func Features(samples []float32, mels int) ([]float32, int) {
 		cos[i], sin[i] = math.Cos(a), math.Sin(a)
 	}
 	out := make([]float32, frames*mels)
-	in := make([]float64, nFFT)
-	power := make([]float64, bins)
-	for f := 0; f < frames; f++ {
-		for j := range in {
-			in[j] = 0
-			if k := f*hop + j; k < n {
-				in[j] = window[j] * float64(samples[k])
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(runtime.GOMAXPROCS(0), frames) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			in := make([]float64, nFFT)
+			power := make([]float64, bins)
+			for f := int(next.Add(1) - 1); f < frames; f = int(next.Add(1) - 1) {
+				for j := range in {
+					in[j] = 0
+					if k := f*hop + j; k < n {
+						in[j] = window[j] * float64(samples[k])
+					}
+				}
+				PowerSpectrum(power, in, cos, sin)
+				for m := 0; m < mels; m++ {
+					var sum float64
+					for k, p := range power {
+						sum += p * filters[m*bins+k]
+					}
+					out[f*mels+m] = float32((math.Log10(math.Max(sum, 1e-12)) + 4) / 4)
+				}
 			}
-		}
-		for k := 0; k < bins; k++ {
-			var re, im float64
-			for j, v := range in {
-				idx := (k * j) % nFFT
-				re += v * cos[idx]
-				im -= v * sin[idx]
-			}
-			power[k] = re*re + im*im
-		}
-		for m := 0; m < mels; m++ {
-			var sum float64
-			for k, p := range power {
-				sum += p * filters[m*bins+k]
-			}
-			out[f*mels+m] = float32((math.Log10(math.Max(sum, 1e-12)) + 4) / 4)
-		}
+		}()
 	}
+	wg.Wait()
 	return out, frames
+}
+
+// PowerSpectrum writes the power |X_k|^2 of the DFT of in to power[k] for the bins
+// k < len(power), with cos and sin the tables of 2πi/len(in). Each bin is summed over in in
+// order, re += v*cos and im -= v*sin, four bins at a time with the table index (k*j) mod
+// len(in) stepped by k instead of divided.
+func PowerSpectrum(power, in, cos, sin []float64) {
+	n := len(in)
+	cos, sin = cos[:n], sin[:n]
+	k := 0
+	for ; k+4 <= len(power); k += 4 {
+		var r0, r1, r2, r3, m0, m1, m2, m3 float64
+		var i0, i1, i2, i3 int
+		for _, v := range in {
+			r0 += v * cos[i0]
+			m0 -= v * sin[i0]
+			r1 += v * cos[i1]
+			m1 -= v * sin[i1]
+			r2 += v * cos[i2]
+			m2 -= v * sin[i2]
+			r3 += v * cos[i3]
+			m3 -= v * sin[i3]
+			if i0 += k; i0 >= n {
+				i0 -= n
+			}
+			if i1 += k + 1; i1 >= n {
+				i1 -= n
+			}
+			if i2 += k + 2; i2 >= n {
+				i2 -= n
+			}
+			if i3 += k + 3; i3 >= n {
+				i3 -= n
+			}
+		}
+		power[k], power[k+1], power[k+2], power[k+3] = r0*r0+m0*m0, r1*r1+m1*m1, r2*r2+m2*m2, r3*r3+m3*m3
+	}
+	for ; k < len(power); k++ {
+		var re, im float64
+		idx := 0
+		for _, v := range in {
+			re += v * cos[idx]
+			im -= v * sin[idx]
+			if idx += k; idx >= n {
+				idx -= n
+			}
+		}
+		power[k] = re*re + im*im
+	}
 }
 
 // MelFilters is the Slaney mel filter bank (mels, n_fft/2+1) from 0 Hz to half the sample rate,

@@ -454,12 +454,7 @@ func (s *Synth) Decode(ctx context.Context, frames [][]int32) ([]float32, error)
 		return nil, err
 	}
 	t := NewISTFT(s.codec.NFFT, s.codec.Hop)
-	var pcm []float32
-	w := 2 * s.codec.Bins()
-	for i := 0; i < len(stft); i += w {
-		pcm = append(pcm, t.Frame(stft[i:i+w])...)
-	}
-	return append(pcm, t.Flush()...), nil
+	return append(t.Frames(stft), t.Flush()...), nil
 }
 
 // DecodeCodec runs the codec decoder program (of fr frames per call) over frames, in chunks
