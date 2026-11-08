@@ -168,6 +168,9 @@ func TestCachedShareAndRewind(t *testing.T) {
 			long.In[name] = short.In[name]
 		}
 	}
+	calls := 0
+	run := long.Run
+	long.Run = func() error { calls++; return run() }
 	s, err := decode.New(short, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -179,6 +182,12 @@ func TestCachedShareAndRewind(t *testing.T) {
 		t.Fatalf("Q is %d, want 4", s.Q())
 	}
 	worst := 0.0
+	check := func(logits []float32, last int) {
+		t.Helper()
+		if last < n {
+			worst = math.Max(worst, relErr(logits, full[last*cfg.VocabSize:(last+1)*cfg.VocabSize]))
+		}
+	}
 	step := func(rows ...int) {
 		t.Helper()
 		var e [][]float32
@@ -189,9 +198,7 @@ func TestCachedShareAndRewind(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if last := rows[len(rows)-1]; last < n {
-			worst = math.Max(worst, relErr(logits, full[last*cfg.VocabSize:(last+1)*cfg.VocabSize]))
-		}
+		check(logits, rows[len(rows)-1])
 	}
 	step(0, 1, 2, 3) // long
 	step(4)          // short
@@ -203,7 +210,22 @@ func TestCachedShareAndRewind(t *testing.T) {
 	if s.Pos() != 5 {
 		t.Fatalf("position %d after rewinding, want 5", s.Pos())
 	}
-	step(5, 6)
+	// tokens 5, 6 and then two drafts that are not the sequence's: only 5 and 6 are kept. The
+	// windows are cut from win_conv_N_new at the kept rows (decode.Session.keep), so the
+	// drafts' beginning needs no second call, unlike a state replaced as a whole (st_)
+	calls = 0
+	logits, kept, err := s.Speculate([][]float32{row(5), row(6), row(n), row(n + 1)}, func(r func(i int) []float32) int {
+		check(r(0), 5)
+		check(r(1), 6)
+		return 2
+	})
+	if err != nil || kept != 2 || s.Pos() != 7 {
+		t.Fatalf("speculate kept %d to position %d, %v; want 2 to 7", kept, s.Pos(), err)
+	}
+	check(logits, 6)
+	if calls != 1 {
+		t.Errorf("the speculation took %d calls, want 1", calls)
+	}
 	for i := 7; i < n; i++ {
 		step(i)
 	}

@@ -236,6 +236,20 @@ K tokens per call (`npuprobe verify -formats lut4 -layers 16`, 0.97 B weights in
 - The CPU takes about 38 ms per token in every format, at about 5 cores busy.
 - lut4 put on the CPU over the limit is slow, though less than on the M2 (36 layers 2.7 s a call, 40 layers 3.3 s, 48 layers 6.3 s).
 - Compiling is quicker than on the M2 (lut4 32 layers: 16.2 s against 25 s).
+- **The M1 has a limit on the total too, when the parts run in turn** (`npuprobe split -formats lut4 -parts 8 -ref none`, 2026-11-08; report: [npuprobe-m1-split-104.md](npu_profiles/npuprobe-m1-split-104.md)). Up to 2.83 GiB of weights, all the parts loaded and run one after another take their own times added up; from 2.95 GiB every token takes about 12 times as long, as if parts were loaded again on each call. The number of parts does not matter (2.95 GiB in 4 parts: 986 ms). The M4 runs 3.62 GiB in 8 parts at its full speed (below). `npuprobe limit`'s several models (3 × 0.99 GiB) did not show it, because each model is timed alone, many calls in a row:
+
+| total | parts | Neural Engine holds | ms/token | parts alone added up | weights GB/s |
+|---|---|---|---|---|---|
+| 1.81 GiB | 8 × 0.23 | 1.83 GiB | 44.9 | 44.7 | 43 |
+| 2.27 GiB | 8 × 0.28 | 2.29 GiB | 55.2 | 55.2 | 44 |
+| 2.72 GiB | 8 × 0.34 | 2.74 GiB | 65.8 | 65.9 | 44 |
+| 2.83 GiB | 8 × 0.35 | 2.86 GiB | 68.6 | 68.9 | 44 |
+| **2.95 GiB** | 8 × 0.37 | 2.97 GiB | **828** | 71.9 | 4 |
+| 2.95 GiB | 4 × 0.74 | 2.97 GiB | 986 | 70.9 | 3 |
+| 3.17 GiB | 8 × 0.40 | 3.20 GiB | 814 | 77.0 | 4 |
+| 3.62 GiB | 8 × 0.45 | 3.66 GiB | 1010 | 86.3 | 4 |
+
+  So on the M1 a model's programs that run in turn should hold under about 2.8 GiB on the Neural Engine. Qwen3.5-4B in lut8 (3.96 GiB) and lut6 (2.95 GiB) are over it and generate at about 1 token/s; in lut4 (1.96 GiB) at 10.9 (docs/design.md 16.109).
 
 ### Apple M4
 
