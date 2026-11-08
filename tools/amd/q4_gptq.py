@@ -94,6 +94,17 @@ MODELS = {
         q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj",
             "conv.in_proj", "conv.out_proj"),
     ),
+    # Qwen3.5 (Qwen3_5ForConditionalGeneration)'s text model (iron_qwen35.Qwen35), run on text
+    # alone. Its <|endoftext|> stands for the BOS it does not have. Gated DeltaNet's a and b
+    # (a row a value head) are left out of q8 here: the export rounds them in the fused
+    # projection, which these 16-row weights alone are not whole blocks of.
+    "qwen35": dict(
+        bos=248044, layers="model.language_model.layers", remote=False, auto="AutoModelForImageTextToText",
+        text="model.language_model", head="lm_head",
+        q4=("mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"),
+        q8=("linear_attn.in_proj_qkv", "linear_attn.in_proj_z", "linear_attn.out_proj",
+            "self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"),
+    ),
     "lfm3": dict(
         bos=124894, layers="model.layers", remote=True,
         q4=("feed_forward.w1", "feed_forward.w3", "feed_forward.w2"),
@@ -122,11 +133,15 @@ def key(w) -> str:
 # --- GPTQ ------------------------------------------------------------------------------------
 
 
+# The symmetric formats' largest code (q6 and q8: w = scale * code, code -SYM..SYM).
+SYM = {"q6": 31, "q8": 127}
+
+
 def _group_params(g: np.ndarray, fmt: str):
     """A group's scale and minimum (q4nx, iron_q4._fit) or scale (q8) for g (N, 32)."""
     if fmt == "q4":
         return iron_q4._fit(g)
-    s = (np.abs(g).max(-1) / 127).astype(bfloat16).astype(np.float32)
+    s = (np.abs(g).max(-1) / SYM[fmt]).astype(bfloat16).astype(np.float32)
     return s, np.zeros_like(s)
 
 
@@ -239,7 +254,7 @@ def gptq(w, H, fmt: str = "q4", block: int = 128, damp: float = 0.01, lut_fit: s
         Tr = torch.as_tensor(np.repeat(T, LUT_GROUP, 0))
         Q = torch.empty_like(W)
     else:
-        lo, hi = (0, 15) if fmt == "q4" else (-127, 127)
+        lo, hi = (0, 15) if fmt == "q4" else (-SYM[fmt], SYM[fmt])
         scale = np.empty((N, K // G), np.float32)
         mn = np.zeros((N, K // G), np.float32)
     for i1 in range(0, K, block):
@@ -276,6 +291,8 @@ def gptq(w, H, fmt: str = "q4", block: int = 128, damp: float = 0.01, lut_fit: s
 def blocks_of(codes, scale, mn, fmt: str) -> np.ndarray:
     if fmt == "q4":
         return iron_q4.pack(codes.astype(np.uint8), scale, mn)
+    if fmt == "q6":
+        return iron_q4.pack6(codes.astype(np.int8), scale)
     return iron_q4.pack8(codes.astype(np.int8), scale)
 
 
@@ -401,14 +418,14 @@ def main(argv=None) -> int:
     ap.add_argument("--codes", type=Path)
     ap.add_argument("--q8", choices=("gptq", "rtn"), default="rtn",
                     help="the q8 projections (attention, convolutions): GPTQ too, or rounded")
-    ap.add_argument("--head", choices=("q4", "q8", "bf16", *LUT_BITS), default="q4")
+    ap.add_argument("--head", choices=("q4", "q6", "q8", "bf16", *LUT_BITS), default="q4")
     ap.add_argument("--head-method", choices=("gptq", "rtn"), default=None, help="the head's (default --method)")
     ap.add_argument("--lut-fit", choices=("uniform", "wkmeans"), default="uniform",
                     help="lutN with GPTQ: the tables palette.Uniform fits (the converter's), or Lloyd's from them "
                          "with each weight counted by its in-feature's E[x^2] (lut_wkmeans)")
-    ap.add_argument("--fmt-q4", choices=("q4", "q8", *LUT_BITS), default="q4",
+    ap.add_argument("--fmt-q4", choices=("q4", "q6", "q8", *LUT_BITS), default="q4",
                     help="the format of the projections the export holds in q4nx (the MLP's)")
-    ap.add_argument("--fmt-q8", choices=("q4", "q8", *LUT_BITS), default="q8",
+    ap.add_argument("--fmt-q8", choices=("q4", "q6", "q8", *LUT_BITS), default="q8",
                     help="the format of those it holds in q8 (attention, convolutions); lutN measures Apple's")
     ap.add_argument("--calib", nargs="*", help="calibration texts (default CALIB)")
     ap.add_argument("--eval", nargs="*", help="evaluation texts (default EVAL)")

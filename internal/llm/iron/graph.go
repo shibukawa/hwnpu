@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -56,20 +57,41 @@ func ReadGraphManifest(dir string) (*GraphManifest, error) {
 type Graph struct {
 	Manifest *GraphManifest
 	dev      *hwnpu.Device
+	dir      string
 	banks    map[string]*hwnpu.Buffer   // the variant in use
-	variants []map[string]*hwnpu.Buffer // every variant's banks (one, with no variants)
-	v        *version
+	variants []map[string]*hwnpu.Buffer // every variant's banks (one, with no variants or swapped)
+	// swapped (GraphOptions.SwapVariants): one set of banks, the variant in use (cur) read into
+	// them by Use
+	swapped bool
+	cur     int
+	v       *version
 	// Timing, when set, is told each command's run time.
 	Timing func(command int, run time.Duration)
 }
 
+// GraphOptions are OpenGraphWith's choices.
+type GraphOptions struct {
+	// SwapVariants keeps one set of banks for all the variants and reads a variant's images
+	// into them when Use selects it, instead of keeping every variant's banks on the device.
+	// The banks' images are the weights the export placed first (iron_graph.py: the
+	// parameters, then the work area); the work area is reused, as no call leaves anything
+	// in it for the next. Anima's DiT (7 groups of 4 blocks at 1024 x 1024, q8): pinned
+	// 7 x 464 MiB -> 464 MiB, at a read of 304 MiB a group (page cache to the bank).
+	SwapVariants bool
+}
+
 // OpenGraph loads the graph exported in dir onto dev.
 func OpenGraph(ctx context.Context, dev *hwnpu.Device, dir string) (*Graph, error) {
+	return OpenGraphWith(ctx, dev, dir, GraphOptions{})
+}
+
+// OpenGraphWith is OpenGraph with options.
+func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt GraphOptions) (*Graph, error) {
 	man, err := ReadGraphManifest(dir)
 	if err != nil {
 		return nil, err
 	}
-	g := &Graph{Manifest: man, dev: dev}
+	g := &Graph{Manifest: man, dev: dev, dir: dir}
 	fail := func(err error) (*Graph, error) {
 		g.Close()
 		return nil, fmt.Errorf("iron: %s: %w", man.Name, err)
@@ -77,6 +99,10 @@ func OpenGraph(ctx context.Context, dev *hwnpu.Device, dir string) (*Graph, erro
 	images := man.Variants
 	if len(images) == 0 {
 		images = []map[string]string{nil}
+	}
+	if opt.SwapVariants && len(images) > 1 {
+		g.swapped = true
+		images = images[:1]
 	}
 	for i, img := range images {
 		banks := map[string]*hwnpu.Buffer{}
@@ -144,15 +170,61 @@ func (g *Graph) Close() error {
 }
 
 // Variants is the number of bank variants (1 without any).
-func (g *Graph) Variants() int { return len(g.variants) }
-
-// Use selects the variant the next runs bind.
-func (g *Graph) Use(i int) error {
-	if i < 0 || i >= len(g.variants) {
-		return fmt.Errorf("iron: %s: no variant %d of %d", g.Manifest.Name, i, len(g.variants))
+func (g *Graph) Variants() int {
+	if g.swapped {
+		return len(g.Manifest.Variants)
 	}
-	g.banks = g.variants[i]
+	return len(g.variants)
+}
+
+// Use selects the variant the next runs bind. With SwapVariants it reads the variant's images
+// into the banks (when it is not the one there).
+func (g *Graph) Use(i int) error {
+	if i < 0 || i >= g.Variants() {
+		return fmt.Errorf("iron: %s: no variant %d of %d", g.Manifest.Name, i, g.Variants())
+	}
+	if !g.swapped {
+		g.banks = g.variants[i]
+		return nil
+	}
+	if i == g.cur {
+		return nil
+	}
+	for kind, b := range g.Manifest.Banks {
+		name := b.Image
+		if s, ok := g.Manifest.Variants[i][kind]; ok {
+			name = s
+		}
+		if name == "" {
+			continue
+		}
+		buf := g.banks[kind]
+		n, err := readPrefix(filepath.Join(g.dir, name), buf.Bytes())
+		if err != nil {
+			g.cur = -1 // the banks hold part of one variant and part of another
+			return fmt.Errorf("iron: %s: variant %d: bank %s: %w", g.Manifest.Name, i, kind, err)
+		}
+		if err := buf.SyncToDevice(0, n); err != nil {
+			g.cur = -1
+			return err
+		}
+	}
+	g.cur = i
 	return nil
+}
+
+// readPrefix reads the file at path into the start of dst and returns how many bytes it read.
+func readPrefix(path string, dst []byte) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	n, err := io.ReadFull(f, dst)
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		err = nil
+	}
+	return n, err
 }
 
 func (g *Graph) buffer(kind string) *hwnpu.Buffer {

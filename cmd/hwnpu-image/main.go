@@ -70,8 +70,10 @@ func main() {
 	qchunk := flag.Int("qchunk", 512, "the queries an attention scores at a time (M3: 512 is 25 % faster than 1024 at 1024 x 1024)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory; \"-\" for none)")
 	cpu := flag.Bool("cpu", false, "run a Core ML export with the CPU interpreter instead of the NPU")
+	resident := flag.Bool("resident-dit", false, "AMD: keep every group of the DiT's blocks on the NPU (pinned memory 7 banks, 3.4 GB at q8) instead of reading each group's weights into one bank before it runs")
 	dump := flag.String("dump", "", "a directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py")
 	flag.Parse()
+	anima.ResidentDiT = *resident
 	o := anima.ConvertOptions{Backend: *backend, Width: *size, Height: *size, Dit: *dit,
 		TextFormat: *textFormat, DitFormat: *ditFormat, Group: *group, QChunk: *qchunk}
 	if *convert != "" {

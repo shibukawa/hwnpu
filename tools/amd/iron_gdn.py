@@ -41,14 +41,24 @@ BLOCK = 16  # rows a prompt chunk's kernel call runs (GDR_ROWS)
 QUEUED = 3  # drains a shim channel holds queued at once (its task queue is 4 deep)
 
 
+# A column's part of a row is rounded up to this many channels, so that the n columns make whole
+# blocks of 64 out-features for the fused projection's 8-bit and 4-bit GEMV (n = 8). Qwen3.5-4B's
+# (1032) needs none; 0.8B and 2B (as many value heads as key heads: 772) get 4 channels of zeros.
+COLUMN_ALIGN = 8
+
+
 def column_widths(heads: int, key_heads: int, key_dim: int, value_dim: int, n: int) -> int:
-    """A column's part of a row: its key heads' q and k, its value heads' v and (a, b)."""
-    return 2 * key_heads // n * key_dim + heads // n * (value_dim + 2)
+    """A column's part of a row: its key heads' q and k, its value heads' v and (a, b), then
+    zeros up to a multiple of COLUMN_ALIGN."""
+    w = 2 * key_heads // n * key_dim + heads // n * (value_dim + 2)
+    return -(-w // COLUMN_ALIGN) * COLUMN_ALIGN
 
 
 def gdn_layout(heads: int, key_heads: int, key_dim: int, value_dim: int, n: int) -> np.ndarray:
     """The order of the fused projection's rows for ``n`` columns: index i of the result is the
-    row of transformers' [q (KH dk), k (KH dk), v (H dv), a (H), b (H)] that row i of ours is."""
+    row of transformers' [q (KH dk), k (KH dk), v (H dv), a (H), b (H)] that row i of ours is.
+    A column's padding (column_widths) is the index one past the last row: a row of zeros
+    appended to the weights (``padded``)."""
     q0, k0, v0 = 0, key_heads * key_dim, 2 * key_heads * key_dim
     a0 = v0 + heads * value_dim
     b0 = a0 + heads
@@ -62,7 +72,15 @@ def gdn_layout(heads: int, key_heads: int, key_dim: int, value_dim: int, n: int)
         order += [v0 + h * value_dim + i for h in vs for i in range(value_dim)]
         for h in vs:
             order += [a0 + h, b0 + h]
+        order += [b0 + heads] * (column_widths(heads, key_heads, key_dim, value_dim, n) * (c + 1) - len(order))
     return np.array(order)
+
+
+def padded(rows: np.ndarray) -> np.ndarray:
+    """rows (transformers' [q, k, v, a, b], ...) with a row of zeros after them, for
+    ``rows[gdn_layout(...)]`` to fill the columns' padding."""
+    rows = np.asarray(rows)
+    return np.concatenate([rows, np.zeros((1, *rows.shape[1:]), rows.dtype)])
 
 
 def state_order(heads: int, key_dim: int, value_dim: int, n: int) -> np.ndarray:
@@ -141,7 +159,8 @@ def gdn_reference(x, state, words, *, heads, key_heads, key_dim, value_dim, n, v
     H, KH, dk, dv = heads, key_heads, key_dim, value_dim
     rows = x.shape[0]
     x = np.asarray(x, np.float32)
-    inv = np.argsort(gdn_layout(H, KH, dk, dv, n))
+    order = gdn_layout(H, KH, dk, dv, n)
+    inv = np.argsort(order, kind="stable")[: 2 * KH * dk + H * dv + 2 * H]  # the padding last
     # back to transformers' order: q, k, v, a, b
     hf = x[:, inv]
     silu = lambda v: v / (1 + np.exp(-v))  # noqa: E731
