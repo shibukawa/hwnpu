@@ -1,8 +1,8 @@
-# What each improvement bought (as of 2026-11-08, main up to #73, with AMD's checks and changes: Hugging Face comparisons, PLaMo 3 0.8B and Qwen3.5-0.8B / 2B, 6-bit weights, Anima's DiT in one bank, the prompt's attention on 8 pipelines, and checking drafts in one call)
+# What each improvement bought (as of 2026-11-08, main up to #83, with AMD's checks and changes: Hugging Face comparisons, PLaMo 3 0.8B and Qwen3.5-0.8B / 2B, 6-bit weights, Anima's DiT in one bank, the prompt's attention on 8 pipelines, and checking drafts in one call)
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.107), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.117), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -573,12 +573,12 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Sharing on Windows | ReFS and Dev Drive block cloning is only compiled (windows/amd64, 386, arm64). Whether it shares, the rounding of the last cluster, integrity streams | 16.79 |
 | Power of the NPU alone | Upstream Linux 7.0 has no sensor. Current numbers are for the whole package (PPT) | 16.44, 16.53 |
 | Long contexts | IRON exports have a fixed context (4096 / 12288). Attention over chunks is IRON's side's job | 16.63 |
-| Other sizes of PLaMo 3 | 0.8B exported, checked against HF and on translations (16.103). 8B and 31B not tried | 16.70, 16.103 |
-| MoE (Qwen3.6-35B-A3B) | All 40 layers run at q4, 5.8 tok/s; prompts in chunks at 25 ms a token (16.91–16.93). A chunk of 256 now takes 2.6 s (16.110–16.111, 16.116); most of it is how fast the experts' weights stream | 16.75, 16.89–16.93, 16.110–16.111, 16.116 |
+| Other sizes of PLaMo 3 | 8B and 31B not tried | 16.70 |
 | MoE warning about reusing BDs | aiecc warns about reusing a BD after a `dma_free_task` with no completion guarantee. Thought harmless, but not proven statically | 16.75 |
-| Speed of Qwen3.5-0.8B / 2B | They match HF on the NPU (bf16 KL 0.001–0.006) and serve at q6. Generation 11.6 (0.8B) and 8.1 tok/s (2B), slower than the M3 (27–30, 16–20): bound by the count of ops in 24 layers. With drafts checked in one call (16.117), 0.8B 13.9–16.2 tok/s; 2B not measured | 16.104, 16.117 |
+| Drafts on Qwen3.5-2B and 4B | Checking drafts in one call (16.117) is measured only on 0.8B (82 → 62–72 ms/token). 2B (q6) not measured; 4B is q4 and waits for a GEMV of a few rows at q4 | 16.117 |
 | Pipelines of Qwen3.6's prompt attention | The exports' default of 8 (16.107) is not measured on Qwen3.6, which keeps 1 | 16.107 |
 | Speed of q6's GEMV | About q8's time, bound by taking out the high 2 bits. Another layout might be faster | 16.105 |
+| `iron_moep.py check` from 64 tokens | aiecc fails in `AIEDMATasksToNPUPass` (main as well). The prompt experts were checked against HF through Go instead | 16.116 |
 | `iron_q4.py check --valid` | Bounding the prompt path's rows fails the check for q8 as well (unbounded it passes). Thought to be the check's, not fixed | 16.105 |
 
 ### 11.4 Behaviour with unknown causes
@@ -591,16 +591,8 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | On a 128K English document, two-level attention has lower loss than normal attention | Normal attention gets distracted by distant tokens, and two levels narrow that | 16.61 |
 | AMD: with the windowed attention, a full ELF's second prompt chunk hangs in its first command | Not the words' values, the cut, the bank offsets or the operators (each passes alone and as an xclbin per step). A pause does not help; another hardware context's command does. Avoided with `chunkBarrier` | 16.80, 16.84 |
 | AMD: splitting Anima's DiT into commands with host steps stops the first command with `ERT_CMD_STATE_TIMEOUT` | Not looked into. Avoided with one graph of 4 blocks | 16.68 |
-| AMD: with Gemma 4 E4B's old export, the first command of the second chunk stops for 61 s | Not looked into. The new export (62 commands) gets through | amd-npu-models.md section 12 |
-| AMD: MoE layers briefly slowed to 170–520 ms each | Suspected another session using the NPU at the time. The 8 runs after were around 5 ms | 16.75 |
+| AMD: with `--command-per-step`, Qwen3.6's 2 layers give logits at cosine 0.32 against HF on a chunk of 256 (the normal export 0.98) | Not confirmed. Perhaps the per-step export routes before the router's logits are written (it picks experts 0–7). Use it for timing only | 16.116 |
 | AMD: a single op differs by 1.4× between the first and second run | Thought to be the power state | 16.75 |
-
-Explained (2026-11-08, 16.107):
-
-- AMD's prefill was slower than IRON's Llama 3.2 1B: 60 % of a chunk was MHA, all on one pipeline (IRON's Llama takes 8 through its profile). On 8, E2B's chunk of 1024 takes 1.16 → 0.50 s (Llama 1B 0.47 s)
-- Speed of PLaMo 3 at 4 bits: on a quiet machine too, q4 makes 11.5 tok/s (bf16 7.4), as in 16.76 (16.107)
-- 4-bit KL against HF: E2B, E4B and PLaMo 3 compared with HF fp32 (16.102). E4B's README seemed to gain less on the NPU because bf16 on the NPU was the reference (against HF, GPTQ 0.047 → 0.025)
-- With random weights the NPU and IRON's reference disagree: their logits are flat (median gap between the first and the second 0.23; real weights 1.51), and bf16 rounding spreads layer by layer. The decode path's difference (cosine 0.985) is as large as fp32 against bf16 on the CPU (0.988); the prompt path's bfp16 GEMMs widen it (0.89). With real weights it matches HF
 
 ### 11.5 Not yet written (for reference)
 
@@ -618,7 +610,7 @@ Explained (2026-11-08, 16.107):
 - The rest of Anima:
   - CFG (negative prompts). A non-Turbo Anima is expected to take over 10 minutes an image
   - Calls from ComfyUI nodes
-- The rest of Qwen3.6-35B-A3B (16.89–16.93; all 40 layers at q4, 5.8 tok/s, prompts in chunks at 25 ms a token): the prompt chunk's projection GEMMs and weight expansions (1.6 s a chunk however short: 256 rows computed whatever the call's, the weights expanded every chunk, 16.95)
+- The rest of Qwen3.6-35B-A3B's prompt (16.116; a chunk of 256 2.6 s): the experts' command (B, 1.49 s) is bound by the kernel's arithmetic (streaming the weights alone takes 8.4 + 4.4 ms of 19–23 + 15–17 ms a layer; a scalar MAC, no mmul. bf16 mmul in groups of 8 rows was tried and was not faster), the GDN and attention command (A, about 0.7 s; `GatedDeltaRule` receives every row 16 times), the host's routing (about 2.8 ms a layer, mostly a 16 MB copy of x)
 
 ## 12. The speed ceiling and what software can still move (estimate of 2026-11-08)
 
@@ -663,9 +655,9 @@ Tokens/s ≈ read bandwidth ÷ bytes read per token × tokens advanced per read 
 | Bytes read per token | Fewer bits (lut3 and lut4 mixed per layer, tables fitted to activations) | Up to choosing levels with GPTQ (16.87). Fitting the table is not done | A trade against accuracy | model-fit.md T8 |
 | 〃 | MoE (read only the experts in use) | Done on AMD with Qwen3.6-35B-A3B (16.89–16.93). Not on the ANE (the routing `gather` goes to the CPU, model-fit.md section 4) | LFM2.5-8B-A1B (8.3B total, 1.5B active) reads about 0.75 GB a token at lut4, a floor of about 12 ms on the ANE. Computing every expert densely reads 4.2 GB, about 65 ms | — |
 | Tokens advanced per read | Speculative decoding (prompt lookup) | Done on Apple and Intel. A Q=8 call costs 13% more than Q=1 | 15.9 → 23.7 tokens/s, 1.2–1.5× over a whole task | 16.33, 16.36, 16.37 |
-| 〃 | A draft model (such as Qwen3.5's `mtp.` layers) for more hits | Not done | Gains if it beats prompt lookup's 1.07–1.67 tokens a call | model-fit.md T9 |
+| 〃 | A draft model (such as Qwen3.5's `mtp.` layers) for more hits | Apple done (16.109, M1 Qwen3.5-0.8B 26.1 → 43.8 tok/s on code). AMD not yet | Gains if it beats prompt lookup's 1.07–1.67 tokens a call | model-fit.md T9 |
 | 〃 | Read once for several requests (batching) | Not done | One read serves several conversations. Total throughput grows when subagents run side by side | — |
-| 〃 | Draft checking on AMD | Not done. The current IRON export spends 4.5 decode steps on a check, so it is off | A GEMV that handles k rows in one read of the weights should give what Apple gets | 16.54 |
+| 〃 | Draft checking on AMD | Done for q8 / q6 (16.117): a check of 3 rows costs 1.27 decode steps. q4 not yet | Qwen3.5-0.8B 82 → 62–72 ms/token with prompt-lookup drafts | 16.117 |
 | Time not spent reading | Fixed cost per call (about 3 ms), switching parts, host work | LFM3-1.7B at a 1K capacity: of 19.1 ms, 13.4 ms reading weights, 2.8 ms attention, 3 ms fixed | 15–16 ms expected after trimming the fixed cost and attention | model-fit.md section 2 |
 | 〃 | AMD: one submission for a whole layer | Done (a full ELF is 2.7× faster than submitting each op). A fused layer reaches 83% of the read floor | Avoids piling up the 0.06 ms per call | amd-xdna2-bench.md section 4.10, amd-npu-models.md section 2 |
 | Attention over a long context (compute-bound) | `SDPAGrouped`, splitting around attention to compute only the length used | Done (16.39, 16.59). Two-level attention (16.61) | Both TOPS and how the program is written shrink this | 16.39, 16.59, 16.61 |
