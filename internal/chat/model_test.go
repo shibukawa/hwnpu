@@ -20,6 +20,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/hwnpu/internal/palette"
 	"github.com/shibukawa/hwnpu/internal/vision"
 )
 
@@ -280,6 +281,116 @@ func TestPreparePaged(t *testing.T) {
 	man, err := llm.ReadManifest(c.Packages[0])
 	if err != nil || man.Paged != 96 || man.Backend != llm.BackendIntel || man.Attention == nil || filepath.Ext(man.Attention.Path) != ".xml" {
 		t.Errorf("intel: %v, %+v", err, man)
+	}
+}
+
+// With -codes, Prepare converts programs of their own (named by the codes) whose lutN weights
+// take the chosen tables, and leaves the programs without codes as they were; codes are refused
+// for a format that is not a lookup table.
+func TestPrepareCodes(t *testing.T) {
+	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
+	tcfg, err := lfm3.ParseConfig([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syn := llm.NewSynthetic(tcfg)
+	files := map[string][]byte{
+		"/org/text/resolve/main/config.json":       []byte(text),
+		"/org/text/resolve/main/tokenizer.json":    []byte(imageTokenizer),
+		"/org/text/resolve/main/model.safetensors": safetensorsOf(t, syn),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, ok := files[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(b)
+	}))
+	defer srv.Close()
+	defer func(u string) { hubURL = u }(hubURL)
+	hubURL = srv.URL + "/"
+	// codes for every feed-forward weight: each row's entry i % 16 of a table of 16 rows
+	codes := t.TempDir()
+	index := map[string]any{}
+	for _, name := range slices.Sorted(maps.Keys(syn)) {
+		v, shape, err := syn.Get(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(name, "feed_forward.w") || len(shape) != 2 || shape[0]%16 != 0 {
+			continue
+		}
+		key := palette.WeightKey(v, shape[0], shape[1])
+		idx := make([]byte, len(v))
+		for i := range idx {
+			idx[i] = byte(i % 16)
+		}
+		tab := make([]byte, shape[0]/16*16*4)
+		for i := range shape[0] / 16 * 16 {
+			binary.LittleEndian.PutUint32(tab[4*i:], math.Float32bits(float32(i%16)/100-0.08))
+		}
+		os.WriteFile(filepath.Join(codes, key+".idx"), idx, 0o644)
+		os.WriteFile(filepath.Join(codes, key+".tab"), tab, 0o644)
+		index[key] = map[string]any{"name": name, "fmt": "lut4", "shape": shape, "group": 16}
+	}
+	b, _ := json.Marshal(index)
+	os.WriteFile(filepath.Join(codes, "index.json"), b, 0o644)
+	if len(index) == 0 {
+		t.Fatal("no feed-forward weights")
+	}
+	ctx := context.Background()
+	dir := filepath.Join(t.TempDir(), "text")
+	var log strings.Builder
+	c, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Backend: "coreml", Format: "lut4", Codes: codes, Log: &log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := codesHash(codes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range c.Packages {
+		if !strings.HasPrefix(filepath.Base(p), "lfm3-r1-lut4-grouped-gptq-"+h+"-") {
+			t.Errorf("package %s is not named by the codes (%s)", filepath.Base(p), h)
+		}
+	}
+	if want := fmt.Sprintf("-codes: %d weights took the chosen tables", len(index)); strings.Count(log.String(), want) != len(c.Packages) {
+		t.Errorf("log %q, want %q for each of %d programs", log.String(), want, len(c.Packages))
+	}
+	plain, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Backend: "coreml", Format: "lut4", Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Equal(plain.Packages, c.Packages) || strings.Contains(plain.Packages[0], "gptq") {
+		t.Errorf("without codes: %q, with: %q", plain.Packages, c.Packages)
+	}
+	if _, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Backend: "coreml", Format: "fp16", Codes: codes, Log: io.Discard}); err == nil {
+		t.Error("codes are taken for fp16")
+	}
+	// -format-for: programs of their own, with the rule's tensors in its format
+	ff, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Draft: 8, Backend: "coreml", Format: "lut4", Codes: codes, FormatFor: []string{"self_attn=lut8"}, Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "lfm3-r1-lut4-grouped-gptq-" + h + "-self_attn.lut8-"; !strings.HasPrefix(filepath.Base(ff.Packages[0]), want) {
+		t.Errorf("package %s, want %s...", filepath.Base(ff.Packages[0]), want)
+	}
+	bytes := func(p string) (n int64) {
+		man, err := llm.ReadManifest(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range man.Parts {
+			n += part.WeightBytes
+		}
+		return n
+	}
+	if a, b := bytes(ff.Packages[0]), bytes(c.Packages[0]); a <= b {
+		t.Errorf("with the attention in lut8 the weights are %d bytes, not more than lut4's %d", a, b)
+	}
+	if _, err := Prepare(ctx, Setup{Dir: dir, Repo: "org/text", Backend: "coreml", Format: "lut4", FormatFor: []string{"lut8"}, Log: io.Discard}); err == nil {
+		t.Error("-format-for lut8 (no SUBSTRING=) is taken")
 	}
 }
 

@@ -61,6 +61,8 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/mem"
 )
 
 func main() {
@@ -80,6 +82,8 @@ func main() {
 	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (default: the 30 second one a model of -list with audio converts)")
 	backend := flag.String("backend", "", "the NPU to convert for and run on: coreml (Apple's Neural Engine), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)")
 	format := flag.String("format", "", "weight format of the chat model's programs: int8, int4, int4-g128 or fp16 on Intel's NPU, lut4, lut6, lut8, int4, int8 or fp16 on the Neural Engine (default: the model's for the NPU, int8 for LFM3 on Intel's NPU)")
+	codes := flag.String("codes", "", "directory of lookup tables chosen against the activations (tools/amd/q4_gptq.py --fmt-q4 lut6 ...) for the chat model's lutN weights; the programs are converted anew for them")
+	formatFor_ := flag.String("format-for", "", "comma separated SUBSTRING=FORMAT: another weight format for the chat model's tensors whose names contain SUBSTRING, e.g. per_layer=lut8 (the last match wins); the programs are converted anew for them")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	promptDir := flag.String("prompt-cache", "", "keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)")
 	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
@@ -168,7 +172,7 @@ func main() {
 				if c.Weights == "" {
 					c.Weights = filepath.Join(md, "model.safetensors")
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, MTP: *mtp, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Log: console.Log(os.Stderr)}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, MTP: *mtp, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Codes: *codes, FormatFor: formatFor(*formatFor_), Log: console.Log(os.Stderr)}); err != nil {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, console.Log(os.Stderr)
@@ -482,6 +486,12 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 		}
 		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]%s\n", dim,
 			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), cut, reset)
+		if os.Getenv("HWNPU_PROFILE") != "" {
+			decode.WriteProfile(os.Stderr)
+			if b, ok := mem.NPUWired(); ok {
+				fmt.Fprintf(os.Stderr, "profile: the Neural Engine holds %.2f GiB\n", float64(b)/(1<<30))
+			}
+		}
 	}
 }
 
@@ -581,4 +591,12 @@ func flagGiven(name string) bool {
 	given := false
 	flag.Visit(func(f *flag.Flag) { given = given || f.Name == name })
 	return given
+}
+
+// formatFor splits -format-for into its SUBSTRING=FORMAT entries (chat.Setup.FormatFor).
+func formatFor(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }

@@ -297,5 +297,38 @@ func PlanPaged(m Model, opts Options, budget int64) ([]Part, error) {
 			out = append(out, p)
 		}
 	}
+	if opts.KVOnly {
+		return kvOnlyParts(m, out)
+	}
+	return out, nil
+}
+
+// kvOnlyParts keeps the parts of a paged plan that a program writing the caches alone needs
+// (Options.KVOnly): those of the first CacheLayers layers. A part beginning at a layer whose
+// attention the host runs computes that layer's output, which no later cache needs when it is
+// the last cache writer; its keys and values come from the part before.
+func kvOnlyParts(m Model, plan []Part) ([]Part, error) {
+	cw, ok := m.(CacheWriters)
+	if !ok {
+		return nil, fmt.Errorf("llm: the model has no layers that write no cache, so it has nothing to leave out (-kv-only)")
+	}
+	n := cw.CacheLayers()
+	paged := map[int]bool{}
+	for _, l := range m.(Paged).PagedLayers() {
+		paged[l] = true
+	}
+	var out []Part
+	for _, p := range plan {
+		if p.Start >= n || p.Start == n-1 && paged[p.Start] {
+			break
+		}
+		if p.Start+p.Layers > n {
+			return nil, fmt.Errorf("llm: the part of layers %d to %d goes past the last that writes a cache (%d); -kv-only takes a model split there", p.Start, p.Start+p.Layers-1, n-1)
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("llm: no part writes a cache (-kv-only)")
+	}
 	return out, nil
 }

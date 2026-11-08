@@ -4,6 +4,15 @@
 
 作成: 2026-11-07。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
 
+## 方針: 速さより消費電力
+
+hwnpu の目的は、NPU だけで動かして消費電力を下げること。手法を選ぶときは次の順に考える。
+
+- **合計の時間が同じなら、NPU に載せる**。CPU や GPU に移して少し速くなる形 (短い文脈の注意を CPU で計算するなど) は採らない。GPU は使わない
+- **読む重みのバイトを減らす**。1 トークンの電力の大半は重みの読み出しで、読む量を減らせば速さと電力の両方に効く (ビット数、プロンプト用のプログラムに要らない層を持たせない、MoE)
+- **NPU の上での無駄を減らす**。読み込んだプログラムが NPU のメモリに収まらず載せ直しが起きる形、1 つの演算だけ CPU に落ちて NPU と CPU を往復する形は、速さが同じでも電力を使う
+- 電力は `powerbench` で 1 トークンあたりの mJ を測る (Mac は sudo が要る)。測れないときは、読む重みのバイト、NPU が抱えるメモリ (`mem.NPUWired`)、CPU の使用率で代わりに比べる
+
 数値の出典は [design.md](design.md) の 16 章 (カッコ内の番号)、[improvements.md](improvements.md)、[model-fit.md](model-fit.md)、[amd-npu-models.md](amd-npu-models.md)。構造を Go に移す作業そのものの手順と合格条件は `.claude/skills/port-architecture` にあるので、ここでは繰り返さない。
 
 | 段 | 何を決めるか | どこで |
@@ -28,7 +37,7 @@
 - **1 トークンの時間 (ANE)** ≈ 重みのバイト ÷ 65 GB/s + 長い容量に対して注意を計算する層の数 × 0.22 ms (`SDPAGrouped` の形) × 容量 / 1K + 3 ms
   - KV の共有は注意の計算の回数を減らさない (メモリだけ)。窓、短い畳み込み、Mamba2、GDN の層は容量に依らない
 - **重み**: lut4 0.5 B、lut6 0.75 B、lut8 1 B / 重み。M3 (16 GB) で常駐は 3 GiB までが目安。AMD は 4 ビット (q4nx 5 ビット + 注意 q8) で bf16 の 1/2〜1/5 の固定
-- **語彙**: 出力層は語彙 × 隠れ。262144 の軸は ANE で CPU に落ちるので (16, 16384) に畳む手間が要る (Gemma 4、16.25)
+- **語彙**: 出力層は語彙 × 隠れ。linear は 262144 の軸でも ANE に載るが、その後の要素ごとの演算は CPU に落ちる。単調な演算 (ソフトキャップ) はホストに回す (Gemma 4、16.113)
 - **使えない構造**: MoE のルーティング (`gather`)、学習済みの疎な注意、可変の形。AMD の MoE は部品を測っただけ (16.75)
 - **ライセンスと言語** (hwnpu-chat の目録に載せるか)
 
@@ -68,7 +77,7 @@
 `hwnpuinfo -model PART.mlpackage` で各部分が `all on the NPU` か。今までに CPU に落ちたもの:
 
 - `tile` で K/V を写す注意の形、問い合わせを行列にした形 → `SDPAGrouped` (16.25, 16.39)。順番だけで配置が変わる
-- 最後の部分の `transpose` / `reshape` → 出力をトークン先に取る (`attn_ot_N`、PLaMo 3)。Gemma 4 の最後の部分の `reshape` は未解決 (improvements.md 11.1)
+- 最後の部分の `transpose` / `reshape` → 出力をトークン先に取る (`attn_ot_N`、PLaMo 3)。出力層の後の要素ごとの演算 (Gemma 4 のソフトキャップ) は、ホストのサンプリングで上位の値だけに掛ける (`-logits host`、`llm.LogitSoftcap`、16.113)
 - 1 行の部品、単独のプログラムの部品 → 8 行にする、隣の群に入れる (Anima、16.85)
 - `reduce_sum` → 行列積で和を取る (塊の注意、30 回中 30 回 ANE)
 
@@ -130,6 +139,7 @@
 - **KL(参照 ‖ 量子化)** の平均、中央値、95 %点、top-1 の一致。400 位置 (前の 256 トークンをプロンプトとして読ませ、その後を 1 つずつ)、**BOS あり**
 - 文は 5 種: README (日英の混在)、GPL-3 (**校正に使わない**。合いすぎの検出用)、wiki40b-ja の評価分、wikitext-2 の試験分、Go のコード。置き場は `~/models/calib`
 - 参照は fp32 の CPU (HF) か、同じ NPU の bf16。NPU の量子化の KL が CPU の見積もりと同じかを確かめる (LFM3 0.036 と 0.035、LFM3-VL も同じ傾向)。違えば NPU の計算 (丸め、bfp16) を疑う
+- Apple の Neural Engine の上: `hwnpu-generate -package P.parts.json -score REF,...` がキャッシュなしのプログラム (`hwnpu-convert -seq 128`) を参照 (`ref_logits.py` / `ref_gemma4.py`) のトークンで流し、全位置の KL (平均、中央値、最大)、最上位、コサインを出す。文の先頭の数トークンの KL が大きい (8〜13) ので、設定の比較は同じ文どうしで (16.114)
 - 画像生成は KL の代わりに、参照の軌跡の上での速度の相対 RMS と、自由に走らせた最後の潜在の cosine (`tools/amd/anima_gptq.py`)
 
 ### 5.2 部分ごとのビット数を CPU で掃く
@@ -151,14 +161,16 @@
 | 順 | 方法 | 道具 | 結果の例 | 注意 |
 |---|---|---|---|---|
 | 1 | 丸め (RTN)。q4nx は 9 つの候補から最小の誤差を選ぶ | `iron_q4.quantize_fmt`、`palette.QuantizeBits` | 重みの誤差 8.2 → 7.3 % | 基準。重みの誤差が最小でも出力の誤差が最小とは限らない |
-| 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-convert -codes` | NPU の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、LFM3-VL 0.067 → 0.034、PLaMo 3 0.058 → 0.040。Anima の DiT の q4: 潜在の cosine 0.868 → 0.939 (q8 0.962) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
+| 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-convert -codes`、`hwnpu-chat -codes` | NPU の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、LFM3-VL 0.067 → 0.034、PLaMo 3 0.058 → 0.040。Anima の DiT の q4: 潜在の cosine 0.868 → 0.939 (q8 0.962) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
 | 3 | **表の当てはめ** (Apple の lutN): E[x²] で重み付けした k-means | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038、lut4 0.66 → 0.33 (Go の変換) | 一様な表から始める (重みの誤差が最小の k-means から始めると KL は最悪)。ANE での確認は handoff-m3-gptq.md |
 | 4 | AWQ 式のスケールの折り込み | 未実装 | | model-fit.md T8 の 2。lut4 をさらに下げたいとき |
 | — | 形式を 1 段上げる (AMD の q6) | `iron_export_lm.py --mlp q6`、`q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B の GPL 0.34 → 0.044 | 校正で直らないとき。GEMV は q8 とほぼ同じ時間で、得るのはメモリ (q8 の 76 %) |
 
 **採るかどうか**: 校正に使っていない GPL でも丸めより悪くならないこと。LFM3-Audio は GPL だけ GPTQ で変わらない (0.154 → 0.161) が、他の 4 文が半分以下なので採った。多モーダルのモデルの文の部分は学習し直してあることが多い (LFM3-VL / Audio / Omni) ので、元のモデルの符号を使い回さず、それぞれ校正する。悪くなる文があれば、減衰を上げる (0.3 で試した)、校正の文を足す。
 
-**校正の費用**: CPU の fp32 で 2B 級 25〜60 分、E4B 2.4 時間 (fp32 で 30 GB 以上使う。並べて流すと OOM になる)。Linux では `systemd-run --user` で流す (セッションと一緒に殺されない)。
+**校正の費用**: CPU の fp32 で 2B 級 25〜60 分、E4B 2.4 時間 (fp32 で 30 GB 以上使う。並べて流すと OOM になる)。Linux では `systemd-run --user` で流す (セッションと一緒に殺されない)。**16 GB の Mac** でも Gemma 4 E2B は埋め込みの表をファイルから読めば (`q4_gptq.py` の `lean`、約 9 GB) 校正できる: M1 の 4 スレッドで 87 分、後半はスワップで遅くなる。校正の文は `tools/amd/calib_data.py`、PyTorch は Homebrew (16.114)。
+
+**校正の対象にない重み**: 変換器は形式の重みをすべて丸め、MODELS が名前を挙げない重みも量子化する。Gemma 4 の `per_layer` の射影 (41M) を lut6 にすると GPTQ の後で目立つ: `-format-for per_layer=lut8` (+0.01 GiB) で ANE の KL の中央値 0.13 → 0.08 (16.114)。q4 / q8 の一覧の外の小さな射影を探し、1 段上げておく。
 
 **符号の引き当て**: 符号はチェックポイントの重みの形と bf16 の値のハッシュで引く (`iron_q4.weight_key` = `palette.WeightKey`)。書き出しが重みを並べ替えたり、つないだりすると当たらない。書き出しのログの「N weights took the chosen codes」で数を確かめる (LFM3-VL: 73 個。q8 の部分は既定で丸めるので含まない)。PLaMo 3 の `gate_up_proj` のように 1 つの重みのまま量子化するものは当たる。
 
@@ -177,7 +189,7 @@
 | 測るもの | 道具 | 教訓 |
 |---|---|---|
 | AMD の固定 (`Unevictable` の増え) | `/proc/meminfo` (RSS に出ない)、書き出しの `manifest.json` の bank の合計 | 大半は重みと作業域。KV は 5 % 未満 |
-| Mac の `phys_footprint` | `npuprobe split` | ANE 側 (aned) は未計測 (model-fit.md T10) |
+| Mac の `phys_footprint` と Neural Engine が抱えるメモリ | `npuprobe split`、`hwnpu-chat` の読み込みのログ、`HWNPU_PROFILE=1` | 重みはカーネルの wired メモリにあり、`mem.NPUWired` で読める (16.95)。2 本のプログラムがそこに収まらないと、生成の部分が毎回載せ直される (M1 の Gemma 4、16.112) |
 | 会話の印の大きさ | | 使っているリングの行だけ写す (`ringRows`、578 → 183 MB) |
 | 変換の直後 | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
 | KV の大きさと文脈 | | 物理メモリの 1/4 を超えたら塊単位で縮める |
@@ -198,6 +210,9 @@
 
 - 2 本のプログラム (生成と読み込み) で 1 つのキャッシュ、前のプロンプトの再利用、プロンプトの保存 (ディスク)
 - 投機的デコード (プロンプトの n-gram、Apple / Intel)。考える予算 (`-think-budget`)、繰り返しの検出
+- 後ろの層がキャッシュを書かないモデル (KV の共有) は、プロンプト用のプログラムをキャッシュを書く層までにする (`-kv-only`、`llm.CacheWriters`。Gemma 4 E2B で 1.6 → 0.38 GiB、16.112)。2 本が Neural Engine に収まらないと生成まで遅くなる
+- 出力層の後の単調な演算 (ソフトキャップ) はホストのサンプリングに回し、出力層まで全部 Neural Engine に (`llm.LogitSoftcap`、16.113)
+- 1 ステップの内訳は `HWNPU_PROFILE=1` (部分、ホストの注意、ロジットの読み出しごとの ms と、Neural Engine が抱えるメモリ)
 
 同じ条件で続けて測った組だけを比べる (M3 はスワップ、AMD は電源の状態で 1.4 倍ぶれる)。
 
@@ -256,7 +271,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 ### 2026-11-07 の時点
 
 - AMD は済み: E2B、E4B、LFM3 (と VL / Audio / Omni)、PLaMo 3 の GPTQ の符号を NPU で測った (amd-npu-models.md 13 節の「続き」)。bf16 との比較: 画像と音声つきの E2B は文、画像、音声とも丸めと同じく正しい答え。PLaMo 3 の訳文が bf16 と一字一句同じなのは丸め 14/20、GPTQ 17/20
-- Apple: GPTQ の lut6 / lut4 の表の ANE での確認 ([handoff-m3-gptq.md](handoff-m3-gptq.md))。hwnpu-chat はまだ `-codes` を取らない
+- Apple: GPTQ の lut6 / lut4 の表の ANE での確認 ([handoff-m3-gptq.md](handoff-m3-gptq.md))。LFM3 (16.95) と Gemma 4 E2B を M1 で (16.114) 済み。hwnpu-chat は `-codes` と `-format-for` を取るが既定ではない (符号の配り方が未定)。E4B は 16 GB の Mac では校正できない
 - Anima: GPTQ の 4 ビットの DiT (CPU の 512×512 で潜在の cosine 0.939) を NPU の 1024×1024 の画像で確かめていない
 
 結果が出たら 5.3 節の表と、この節を更新する。

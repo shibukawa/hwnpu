@@ -21,13 +21,29 @@ var Arch = &llm.Arch{
 	// 24 with 4 bits and 41 with 8 (docs/design.md 16.26).
 	Format: "lut6",
 	Params: []llm.Param{
-		{Name: "logits", Default: "flat", Usage: "the logits output y: (1, seq, vocab) with its reshape on the CPU (flat), or left folded into rows of at most 16384 (folded), (1, seq, rows, vocab/rows), so that every operation is on the Neural Engine"},
+		{Name: "logits", Default: "host", Usage: "the logits output y: before the soft cap, which the host applies (host), or with the soft cap in the program, (1, seq, vocab) with its reshape on the CPU (flat) or left folded into rows of at most 16384 (folded), (1, seq, rows, vocab/rows), so that every operation is on the Neural Engine"},
 	},
+	// 1: the soft cap on the host (-logits host, 2026-11-08)
+	Revision:   1,
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	LastRow:    true,
 }
 
 func init() { llm.Register(Arch) }
+
+func options(opts llm.Options) Options {
+	logits := Arch.Param(opts, "logits")
+	return Options{Options: opts, FoldedLogits: logits == "folded", HostSoftcap: logits == "host"}
+}
+
+// HostSoftcap is final_logit_softcapping for a program built with -logits host, which leaves it
+// to the host (llm.LogitSoftcap); 0 otherwise.
+func (c *Config) HostSoftcap(opts llm.Options) float64 {
+	if c.Softcap == nil || Arch.Param(opts, "logits") != "host" {
+		return 0
+	}
+	return *c.Softcap
+}
 
 // Hidden is the hidden size.
 func (c *Config) Hidden() int { return c.HiddenSize }
@@ -107,7 +123,7 @@ func (c *Config) Tensors() map[string][]int {
 // Build writes the program. It returns x and y only; a part of a split model has more inputs and
 // outputs, which BuildCached returns.
 func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins []mlpackage.Feature, out mlpackage.Feature, err error) {
-	ins, outs, err := Build(b, c, w, Options{Options: opts, FoldedLogits: Arch.Param(opts, "logits") == "folded"})
+	ins, outs, err := Build(b, c, w, options(opts))
 	if err != nil {
 		return nil, out, err
 	}
@@ -117,7 +133,7 @@ func (c *Config) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (i
 // BuildCached writes the program with every input and output (llm.Cached), with or without a
 // KV cache.
 func (c *Config) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
-	return Build(b, c, w, Options{Options: opts, FoldedLogits: Arch.Param(opts, "logits") == "folded"})
+	return Build(b, c, w, options(opts))
 }
 
 // StepInputs gives the masks and rotary tables of a step of valid tokens from pos (llm.Cached),
@@ -213,7 +229,20 @@ func (c *Config) PagedKV(layer int) int {
 // MaxContext is max_position_embeddings: 131072 for E2B and E4B.
 func (c *Config) MaxContext() int { return c.MaxPositions }
 
-var _ llm.Paged = (*Config)(nil)
+// CacheLayers is the layers before the first shared one (llm.CacheWriters): the shared layers
+// reuse the keys and values of the last layer of each type before them and write no cache.
+func (c *Config) CacheLayers() int {
+	if c.KVShared <= 0 {
+		return c.NumLayers
+	}
+	return c.firstShared()
+}
+
+var (
+	_ llm.Paged        = (*Config)(nil)
+	_ llm.CacheWriters = (*Config)(nil)
+	_ llm.LogitSoftcap = (*Config)(nil)
+)
 
 // sharedName is the name of the keys ("k") or values ("v") of the layers of a type that the
 // shared layers reuse, as an output of the program that computes them and an input of a later

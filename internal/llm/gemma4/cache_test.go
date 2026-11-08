@@ -52,6 +52,9 @@ func cpuProgram(t *testing.T, manifest string) decode.Program {
 		t.Fatal(err)
 	}
 	p := decode.Program{In: map[string][]byte{}, Out: map[string][]byte{}, InShape: map[string][]int{}, OutShape: map[string][]int{}}
+	if p.Meta, err = llm.ReadMeta(list); err != nil {
+		t.Fatal(err)
+	}
 	var progs []*milcpu.Program
 	passed := map[string]bool{}
 	for i, part := range list.Parts {
@@ -163,6 +166,11 @@ func TestPartsMatchWhole(t *testing.T) {
 		}
 		got := make([]float32, len(whole))
 		hwnpu.DecodeF16(got, p.Out["y"])
+		if sc := llm.HostSoftcap(p.Meta); sc != *c.Softcap {
+			t.Fatalf("the parts leave a soft cap of %g to the host, want %g (-logits host by default)", sc, *c.Softcap)
+		} else {
+			llm.Softcap(got, sc)
+		}
 		e := relErr32(got, whole)
 		if e > 2e-3 {
 			t.Errorf("%d parts %v: relative error %g", parts, plan, e)

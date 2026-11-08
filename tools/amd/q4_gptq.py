@@ -61,7 +61,7 @@ REPO = Path(__file__).resolve().parents[2]
 # the embeddings) is q4nx.
 MODELS = {
     "gemma4": dict(
-        bos=2, layers="model.language_model.layers", remote=False,
+        bos=2, layers="model.language_model.layers", remote=False, lean=True,
         q4=("mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"),
         q8=("self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj", "self_attn.o_proj"),
     ),
@@ -318,11 +318,87 @@ class TextLM:
         return self.head
 
 
+class TableRows:
+    """A lookup table (an embedding) read from the checkpoint's file as the rows are looked up,
+    times scale, in fp32: what Gemma 4's scaled embeddings give, without the table in memory."""
+
+    def __init__(self, path: Path, name: str, scale: float):
+        import json as _json
+        import struct
+
+        with open(path, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            e = _json.loads(f.read(n))[name]
+        if e["dtype"] != "BF16":
+            raise ValueError(f"{name}: {e['dtype']}, expected BF16")
+        self.rows = np.memmap(path, np.uint16, "r", 8 + n + e["data_offsets"][0], tuple(e["shape"]))
+        self.scale = scale
+
+    def __call__(self, ids):
+        import torch
+
+        r = np.ascontiguousarray(self.rows[ids.numpy().reshape(-1)]).astype(np.uint32) << 16
+        x = torch.from_numpy(r.view(np.float32)).reshape(*ids.shape, -1)
+        return x * torch.tensor(self.scale, dtype=torch.float32)
+
+
+def load_gemma4_lean(path: Path):
+    """Gemma 4's text model in fp32 with its two embedding tables (2.75B of E2B's 4.6B) left in
+    the file (TableRows): E2B in about 9 GB instead of 20. The head is the embeddings' own fp32
+    copy. As Gemma4ForCausalLM.from_pretrained in fp32, but built with a vocabulary of 1 so that
+    the tables are never made."""
+    import copy
+
+    import torch
+    import transformers
+    from safetensors import safe_open
+    from transformers.models.gemma4 import modeling_gemma4 as g4
+
+    cfg = transformers.AutoConfig.from_pretrained(path).get_text_config()
+    small = copy.deepcopy(cfg)
+    small.vocab_size = small.vocab_size_per_layer_input = 1
+    small.pad_token_id = 0
+    m = g4.Gemma4ForCausalLM(small)
+    m.config = m.model.config = cfg
+    files = sorted(path.glob("*.safetensors"))
+    if len(files) != 1:
+        raise ValueError(f"{path}: {len(files)} safetensors files, expected 1")
+    pre = "model.language_model."
+    del m.model.embed_tokens, m.model.embed_tokens_per_layer
+    m.model.embed_tokens = TableRows(files[0], pre + "embed_tokens.weight", cfg.hidden_size**0.5)
+    m.model.embed_tokens_per_layer = TableRows(files[0], pre + "embed_tokens_per_layer.weight",
+                                               cfg.hidden_size_per_layer_input**0.5)
+    m.lm_head = torch.nn.Linear(cfg.hidden_size, cfg.vocab_size, bias=False)
+    m.vocab_size = m.model.vocab_size = cfg.vocab_size
+    with safe_open(files[0], "pt") as f:
+        names = set(f.keys())
+        for name, p in m.named_parameters():
+            src = pre + "embed_tokens.weight" if name == "lm_head.weight" else pre + name.removeprefix("model.")
+            if src not in names:
+                # the KV-shared layers' k and v (and their norms) are not in the checkpoint
+                if ".self_attn." in name and m.model.layers[int(name.split(".")[2])].self_attn.is_kv_shared_layer:
+                    continue
+                raise ValueError(f"{name}: {src} not in the checkpoint")
+            p.data = f.get_tensor(src).float()
+        # buffers the checkpoint holds (each layer's layer_scalar)
+        for name, b in m.named_buffers():
+            src = pre + name.removeprefix("model.")
+            if src in names:
+                b.copy_(f.get_tensor(src).float())
+    m.eval()
+    # the layers where MODELS["gemma4"] looks for them (not a submodule: state_dict would recurse)
+    object.__setattr__(m.model, "language_model", m.model)
+    return m
+
+
 def load(path: Path, spec):
     import torch
     import transformers
 
     torch.set_grad_enabled(False)
+    if spec.get("lean"):
+        m = load_gemma4_lean(path)
+        return m, transformers.AutoTokenizer.from_pretrained(path)
     auto = getattr(transformers, spec.get("auto", "AutoModelForCausalLM"))
     m = auto.from_pretrained(path, dtype=torch.float32, trust_remote_code=spec["remote"])
     m.eval()
@@ -396,10 +472,15 @@ def kl_stats(ref, q):
 
 
 def evaluate(m, ev, refs, skip: int):
+    """refs: the reference logits of the scored positions alone (from skip)."""
     out = []
     for ids, ref in zip(ev, refs):
-        out.append(kl_stats(ref[skip:], logits_of(m, ids)[skip:]))
+        out.append(kl_stats(ref, logits_of(m, ids)[skip:]))
     return out
+
+
+class _Stop(Exception):
+    """Ends a calibration pass at its last layer: the later layers and the head are not needed."""
 
 
 def set_weight(lin, w):
@@ -453,7 +534,8 @@ def main(argv=None) -> int:
     global EVAL
     EVAL = [p for p in (a.eval or EVAL) if Path(p).is_absolute() and Path(p).is_file() or (REPO / p).is_file()]
     ev = [texts([p], tok, bos, a.eval_len, 1)[0] for p in EVAL]
-    refs = [logits_of(m, ids) for ids in ev]
+    # the scored positions alone (a vocabulary of 262144 makes a text's logits 0.7 GB)
+    refs = [logits_of(m, ids)[a.eval_skip :].clone() for ids in ev]
     print(f"loaded, reference logits: {time.time() - t0:.0f} s", flush=True)
 
     # each projection's format and method: the 4-bit parts' (MODELS' q4, the head), the q8 parts'
@@ -533,10 +615,19 @@ def main(argv=None) -> int:
 
             for _, lin, _, _ in lins:
                 hooks.append(lin.register_forward_hook(hook))
+            if max(grp) < len(lins_all) - 1 or a.head == "bf16":  # not the head's pass
+
+                def stop(*_):
+                    raise _Stop
+
+                hooks.append(_get(m, spec["layers"])[max(grp)].register_forward_hook(stop))
             t = time.time()
             for ids in calib:
                 same.clear()
-                m(input_ids=torch.tensor([ids]))
+                try:
+                    m(input_ids=torch.tensor([ids]))
+                except _Stop:
+                    pass
             same.clear()
             for h in hooks:
                 h.remove()
