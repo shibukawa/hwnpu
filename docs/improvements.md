@@ -1,8 +1,8 @@
-# What each improvement bought (as of 2026-11-07, main up to #58, with the two-level attention, Anima and Qwen3.5-4B checked on an M3, the Neural Engine reading prompts 128 tokens per call, Gemma 4's shared layers on the last row alone, silu written with exp and real_div in every model, and the Neural Engine's memory measured)
+# What each improvement bought (as of 2026-11-08, main up to #73, with AMD's checks and changes: Hugging Face comparisons, PLaMo 3 0.8B and Qwen3.5-0.8B / 2B, 6-bit weights, Anima's DiT in one bank, and the prompt's attention on 8 pipelines)
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.95), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.107), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -43,6 +43,9 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | AMD: Gemma 4's KV-shared layers on the prompt's last row only (16.80) | unchanged | ◎ E2B 2.3× (4K 18.3 → 7.8 s), E4B 1.7× | | | | | ○ caches bit for bit the same (last row's logits cosine 0.9996 or more) | AMD |
 | AMD: sliding-window layers read only their window (16.84) | △ −2 % at 4K (PLaMo 3 −14 % at 8K) | ○ E2B −12 % over 4K on top of 16.80 (last chunk −20 %), PLaMo 3 −12 % over 8K | | △ +12 MB (a chunk's rows more in each window cache) | | | unchanged (top token the same, cosine 0.9997 or more) | AMD |
 | AMD: towers loaded only when used (16.81) | | | △ the first image or clip +0.6–0.7 s | ◎ E2B with images and audio 2818 → 1826 MiB while only text | ○ no text-only export needed | | unchanged | AMD |
+| AMD: the prompt's attention on 8 pipelines (`--mha-pipelines`, 16.107) | unchanged | ◎ chunks 2.3–4× faster on E2B (from 0 1.16 → 0.50 s, from 3072 2.53 → 0.64 s), LFM3 2.1–4.8×, PLaMo 3 2B 2.7–4.8×, 0.8B 2.4–4.8×. Energy −66 to −83 % | | | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
+| AMD: Qwen3.5-0.8B / 2B with 6-bit MLPs (q6) and the embeddings on the host (16.104–105) | unchanged | | | ◎ 0.8B 1858 → 1069 MiB, 2B 4017 → 2014 MiB | | | ◎ KL from HF on the GPL 0.34 at q4 → 0.044 (0.8B) | AMD |
+| AMD: Anima's DiT in one bank (`SwapVariants`, 16.106) | △ denoising +2 % | | | ◎ pinned 3445 → 1236 MiB | | | bit for bit the same | AMD |
 | Anima loaded one stage at a time (16.72) | 69.3 → 67.7 s/image | | | ◎ 14.2 → 5.0 GiB | | | bit for bit the same | AMD |
 | AMD: Anima's DiT at 8 bits (q8) (16.78) | +2 % (67.3 → 68.3 s/image) | | | ◎ pinned 5020 → 3445 MiB | ○ 5.7 → 4.0 GB | | nearly unchanged (latent cosine 0.966 → 0.961) | AMD |
 | AMD: the cores' rounding set to nearest even (16.78) | unchanged | unchanged | | | | | ◎ Anima's quantized DiT (step-0 error q8 0.088 → 0.031); language models unchanged | AMD |
@@ -114,6 +117,7 @@ Improvements to the GEMV itself:
 | PLaMo 3's translation history (16.70–71) | Reads the whole history of pairs every time | From the second text on, reads only 17 of 50 tokens | When the target language is chosen automatically, the label of each past translation is fixed by its source text. Otherwise the start of the prompt could not be reused |
 | Coming back from `-idle` (16.74) | — | 830 tokens restored from the host copy, only the next question's 58 tokens read | |
 | AMD: Gemma 4's KV-shared layers on the last row only (16.80) | 4K prompt: E2B 18.3 s, 218 J (q4 the same), E4B 22.9 s, 279 J | E2B 7.8 s, 97 J (q4 8.3 s, 94 J), E4B 13.7 s, 166 J | Only a chunk's last row needs the shared layers' output (E2B 20 of 35, E4B 18 of 42). Faster by computing less, not by adding the GPU |
+| AMD: the prompt's attention on 8 pipelines (16.107) | E2B q4, a chunk of 1024: from 0 1.16 s, 13.7 J; from 3072 2.53 s, 49.6 J. LFM3, a chunk of 2048: from 0 2.73 s, from 10240 11.39 s | 0.50 s, 4.7 J; 0.64 s, 8.6 J. 1.30 s, 2.39 s | 60 % of a chunk was MHA, all with `num_pipelines` 1 (the exports had no profile). Now 8, as IRON's Llama. Logits bit for bit the same. Qwen3.5 (chunks of 256) takes 4: 0.63 → 0.59 s (from 3840 1.04 → 0.69 s) |
 | AMD: sliding-window layers read only their window (16.84) | 4K prompt after 16.80: E2B 7.84 s, 92 J; PLaMo 3 q4 8K 60.3 s | E2B 6.87 s, 80 J (the chunk from 3072 2.76 → 2.21 s); PLaMo 3 53.1 s (the chunk from 7168 10.75 → 8.39 s) | IRON's attention read every key from position 0 and only skipped the compute outside the window. A chunk now copies its window's keys (chunk + window) and attends over the copy; a decode step reads its window in place. The chunks before the window's end are unchanged |
 
 ## 4. Startup time
@@ -163,7 +167,9 @@ Improvements to the GEMV itself:
 | LFM3-1.7B | 3.75 GiB | — | **1.64 GiB** | 0 |
 | LFM3-VL / Audio / Omni | 4.12 / 4.14 / 4.51 GiB | — | **2.00 / 2.03 / 2.39 GiB**; Omni 1.64 GiB until a tower runs (16.81) | 0 |
 | PLaMo 3 Translate 2B | 5.96 GiB | — | **2.16 GiB** (the 0.51 GiB embedding is a file on the host) | 0 |
-| Anima (1024 × 1024) | 14.2 GiB | **5.0 GiB** loading one stage at a time | **3.4 GiB** (DiT at 8 bits; 2.7 GiB at 4 bits) | — |
+| PLaMo 3 Translate 0.8B | 1.77 GiB | — | **0.58 GiB** (16.103) | 0 |
+| Qwen3.5-0.8B / 2B | 1.81 / 3.92 GiB | — | **1.04 / 1.97 GiB** (6-bit MLP and head, embeddings on the host, 16.104) | 0 |
+| Anima (1024 × 1024) | 14.2 GiB | **5.0 GiB** loading one stage at a time | **3.4 GiB** (DiT at 8 bits; 2.7 GiB at 4 bits). **1.2 GiB** with the DiT's 7 groups read in turn into one bank (16.106) | — |
 
 - Tables on the host: PLE reads only one row a token, yet the whole table was pinned. The table now stays a file, and before each call only the tokens' rows are written into a small device buffer (18 MB for E2B)
 - The embedding is shared with the output matrix, so making the output 4-bit leaves no bf16 rows. The embedding became a host table the same way
@@ -279,6 +285,11 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | Rounding to nearest even in hwnpu's kernels (16.78) | Removes the downward bias of bf16 narrowing that grows with the number of inputs | Unit check with inputs of mean 1: IRON's `DequantBFP` path cosine 0.968, hwnpu's `QDequant` (bf16) 0.99994. Language models keep `DequantBFP` for prompts (bf16 is 5–9 % slower there and changes nothing) |
 | Anima's DiT at q8 (`iron_anima.py --dit-attn`, `--dit-mlp`, 16.78) | Pinned 5020 → 3445 MiB at 1024×1024 | 2 % slower (weights dequantized every step), same energy (about 1050 J an image). `q4` can be chosen (2710 MiB) |
 | Sharing files between exports (`iron.ShareExport`, 16.79) | Disk: the same files, and the same start of a bank, of exports side by side are kept once | Gemma 4 E2B text and with images and audio 15.2 → 8.2 GiB on Btrfs. Once per export, before it loads. Anima's images stay byte for byte the same |
+| The prompt's attention on several pipelines (`iron_export_lm.py --mha-pipelines`, default 8, 16.107) | The prompt chunk's MHA on 8 pipelines (4 for chunks of 256), as IRON's Llama profile has it | Chunks 2–5× faster, energy −66 to −83 %. Logits bit for bit the same. Takes an export again. Qwen3.6 keeps 1 (not measured) |
+| 6-bit weights (q6, `kernels/q6_mv.cc`, 16.105) | q8's layout with 6-bit codes (6.5 bits a weight) | Relative RMS weight error q4 0.071, q6 0.022, q8 0.005. The GEMV takes about q8's time (bound by taking out the high bits). For the small Qwen3.5's MLP and Anima's DiT (`--dit-attn q6`) |
+| Qwen3.5's embeddings on the host (16.104) | The head holds a quantized copy, so the bf16 table on the device was unused | 0.8B −0.47 GiB, 2B −0.95 GiB. Logits bit for bit the same. Qwen3.6 keeps it (its routing reads it) |
+| GDN columns in whole blocks of 64 rows (16.104) | Puts the fused projection of the Qwen3.5 with as many value heads as key heads (0.8B, 2B) on q8 / q4 | A column 772 → 776 channels (rows of zeros). 4B unchanged |
+| Anima's DiT in one bank (`iron.GraphOptions.SwapVariants`, 16.106) | One bank for the 7 groups, a group's weight image (304 MiB) read into it when it runs | Pinned 3445 → 1236 MiB, denoising +2 %, latents byte for byte the same. `-resident-dit` keeps all |
 | hwnpu-xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | Matrix multiply at 1–4 tenths of the peak (int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
 
 ### 7.4 Common (any NPU, on the host)
@@ -549,17 +560,15 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Windows | xrtshim on real hardware and building with MSVC (checked only through XRT on Linux, and compiling with zig) | 16.56 |
 | Sharing on other file systems | Tried on loop devices only: Btrfs (the tests, two Gemma 4 exports and three Anima exports through hwnpu-chat and hwnpu-image) and XFS (the tests); not bcachefs, ZFS or NFS | 16.79 |
 | Sharing on Windows | ReFS and Dev Drive block cloning is only compiled (windows/amd64, 386, arm64). Whether it shares, the rounding of the last cluster, integrity streams | 16.79 |
-| Checking Gemma 4 E2B | Not compared with HF's logits on the real weights (LFM3 and E4B were). With random weights it disagrees with IRON's CPU reference (cosine 0.55–0.83); the reason is not known | 16.50 |
 | Power of the NPU alone | Upstream Linux 7.0 has no sensor. Current numbers are for the whole package (PPT) | 16.44, 16.53 |
-| `CREATE_HWCTX` right after another process | Can fail with `EINVAL` for a moment. No retry yet | 16.48 |
 | Long contexts | IRON exports have a fixed context (4096 / 12288). Attention over chunks is IRON's side's job | 16.63 |
-| Speed of PLaMo 3 at 4 bits | Measured with another job loading the machine (a single GEMV 1.6× slower). Measure again on a quiet machine | 16.76 |
-| Other sizes of PLaMo 3 | 0.8B, 8B and 31B share the structure and should export, but have not been tried | 16.70 |
-| 4-bit KL against HF | The q4 KL for Gemma 4 and PLaMo 3 is against bf16 on the NPU. Only LFM3 was compared with HF fp32 (0.036) | 16.73, 16.76 |
+| Other sizes of PLaMo 3 | 0.8B exported, checked against HF and on translations (16.103). 8B and 31B not tried | 16.70, 16.103 |
 | MoE (Qwen3.6-35B-A3B) | All 40 layers run at q4, 5.8 tok/s; prompts in chunks at 25 ms a token (16.91–16.93). Most of the rest is the prompt's GDN layers (about 38 ms each) and how fast the experts' weights stream | 16.75, 16.89–16.93 |
 | MoE warning about reusing BDs | aiecc warns about reusing a BD after a `dma_free_task` with no completion guarantee. Thought harmless, but not proven statically | 16.75 |
-| The rounding fix in the other 4-bit exports | Only Gemma 4 E2B and LFM3-1.7B were exported again and measured (KL 0.093, 0.036). E4B, PLaMo 3 and the multimodal ones keep their old exports | 16.78 |
-| Anima's q8 over many seeds | Compared with fp32 on 3 images. One of 4 seeds changed the composition against bf16; how often that happens is not measured | 16.78 |
+| Speed of Qwen3.5-0.8B / 2B | They match HF on the NPU (bf16 KL 0.001–0.006) and serve at q6. Generation 11.6 (0.8B) and 8.1 tok/s (2B), slower than the M3 (27–30, 16–20): bound by the count of ops in 24 layers | 16.104 |
+| Pipelines of Qwen3.6's prompt attention | The exports' default of 8 (16.107) is not measured on Qwen3.6, which keeps 1 | 16.107 |
+| Speed of q6's GEMV | About q8's time, bound by taking out the high 2 bits. Another layout might be faster | 16.105 |
+| `iron_q4.py check --valid` | Bounding the prompt path's rows fails the check for q8 as well (unbounded it passes). Thought to be the check's, not fixed | 16.105 |
 
 ### 11.4 Behaviour with unknown causes
 
@@ -569,13 +578,18 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Which shapes fall to the CPU at the 16384 per-dimension limit and which stay (chunks along an axis, weighting by ratios go to the CPU) | Inside Core ML's compiler | 16.21 |
 | Only the 8-part split loads slowly from the cache (23.7 s) | Not looked into | 16.13 |
 | On a 128K English document, two-level attention has lower loss than normal attention | Normal attention gets distracted by distant tokens, and two levels narrow that | 16.61 |
-| AMD's prefill is slower than IRON's Llama 3.2 1B | Skipping outside the window (16.84) made it only 12 % faster after 16.80 (not several times): the full-attention layers and the shared layers' last row still grow with the context | 16.50, 16.66, 16.84 |
 | AMD: with the windowed attention, a full ELF's second prompt chunk hangs in its first command | Not the words' values, the cut, the bank offsets or the operators (each passes alone and as an xclbin per step). A pause does not help; another hardware context's command does. Avoided with `chunkBarrier` | 16.80, 16.84 |
 | AMD: splitting Anima's DiT into commands with host steps stops the first command with `ERT_CMD_STATE_TIMEOUT` | Not looked into. Avoided with one graph of 4 blocks | 16.68 |
 | AMD: with Gemma 4 E4B's old export, the first command of the second chunk stops for 61 s | Not looked into. The new export (62 commands) gets through | amd-npu-models.md section 12 |
-| AMD: with random weights the NPU and IRON's reference disagree (PLaMo 3 too, besides Gemma 4) | They agree with the real weights. Random weights may make outliers through bf16 rounding, but this is not checked | 16.50, 16.70 |
 | AMD: MoE layers briefly slowed to 170–520 ms each | Suspected another session using the NPU at the time. The 8 runs after were around 5 ms | 16.75 |
 | AMD: a single op differs by 1.4× between the first and second run | Thought to be the power state | 16.75 |
+
+Explained (2026-11-08, 16.107):
+
+- AMD's prefill was slower than IRON's Llama 3.2 1B: 60 % of a chunk was MHA, all on one pipeline (IRON's Llama takes 8 through its profile). On 8, E2B's chunk of 1024 takes 1.16 → 0.50 s (Llama 1B 0.47 s)
+- Speed of PLaMo 3 at 4 bits: on a quiet machine too, q4 makes 11.5 tok/s (bf16 7.4), as in 16.76 (16.107)
+- 4-bit KL against HF: E2B, E4B and PLaMo 3 compared with HF fp32 (16.102). E4B's README seemed to gain less on the NPU because bf16 on the NPU was the reference (against HF, GPTQ 0.047 → 0.025)
+- With random weights the NPU and IRON's reference disagree: their logits are flat (median gap between the first and the second 0.23; real weights 1.51), and bf16 rounding spreads layer by layer. The decode path's difference (cosine 0.985) is as large as fp32 against bf16 on the CPU (0.988); the prompt path's bfp16 GEMMs widen it (0.89). With real weights it matches HF
 
 ### 11.5 Not yet written (for reference)
 
@@ -589,12 +603,8 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 - Repairing hwnpu-agent's broken calls (output-parser)
 - AMD: an IRON version for checking drafts
 - The rest of AMD's pinned memory (amd-npu-models.md section 12):
-  - One DiT work area for all 7 sets (about 1 GB)
-  - Split the VAE into tiles
-- A 6-bit format on AMD. It can follow q8's layout
+  - Split the VAE into tiles (with the DiT in one bank (16.106), a VAE stage is now the largest)
 - The rest of Anima:
   - CFG (negative prompts). A non-Turbo Anima is expected to take over 10 minutes an image
   - Calls from ComfyUI nodes
-  - A 512×512 export
-  - A 4-bit DiT with GPTQ (`tools/amd/anima_gptq.py`, `iron_anima.py --q4-codes`, 16.87) checked as an image at 1024×1024 on the NPU (on the CPU at 512×512: latent cosine 0.939 against q8's 0.962)
 - The rest of Qwen3.6-35B-A3B (16.89–16.93; all 40 layers at q4, 5.8 tok/s, prompts in chunks at 25 ms a token): the prompt chunk's projection GEMMs and weight expansions (1.6 s a chunk however short: 256 rows computed whatever the call's, the weights expanded every chunk, 16.95)

@@ -704,6 +704,8 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		return nil, errReleased
 	}
 	rows := len(ids)
+	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	tHost := time.Now()
 	values, err := m.complete(v, callValues(ids[rows-1], start+rows-1, start, rows))
 	if err != nil {
 		return nil, err
@@ -743,12 +745,16 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		}
 		return m.logits(v)
 	}
-	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
 	if err := m.convPairsIn(v, start); err != nil {
 		return nil, err
 	}
+	tBarrier := time.Now()
 	if err := m.chunkBarrier(ctx); err != nil {
 		return nil, err
+	}
+	if timing {
+		fmt.Fprintf(os.Stderr, "prompt chunk (%d rows from %d): inputs and host tables %.1f ms, barrier %.1f ms\n", rows, start,
+			tBarrier.Sub(tHost).Seconds()*1000, time.Since(tBarrier).Seconds()*1000)
 	}
 	routes := map[int]*moeRoute{} // by layer: its moe_route's, until its moe_combine
 	for k := range v.m.Kernels {
@@ -827,7 +833,12 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 	if err := m.convPairsOut(v, start, rows); err != nil {
 		return nil, err
 	}
-	return m.logits(v)
+	tLogits := time.Now()
+	logits, err := m.logits(v)
+	if timing {
+		fmt.Fprintf(os.Stderr, "prompt chunk (%d rows from %d): logits %.1f ms\n", rows, start, time.Since(tLogits).Seconds()*1000)
+	}
+	return logits, err
 }
 
 // encode writes the control words gathering ids' rows from e's table into e's input (IRON's

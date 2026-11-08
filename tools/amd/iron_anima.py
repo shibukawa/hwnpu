@@ -1013,10 +1013,10 @@ def main(argv=None) -> int:
     ap.add_argument("--text-precision", default=PREC.text.value, choices=[p.value for p in Precision])
     ap.add_argument("--dit-precision", default=PREC.dit.value, choices=[p.value for p in Precision])
     ap.add_argument("--vae-precision", default=PREC.vae.value, choices=[p.value for p in Precision])
-    ap.add_argument("--dit-attn", default=DIT_FMT.attn, choices=("bf16", "q8", "q4"),
-                    help="the DiT blocks' attention projections: q8 (8.5 bits a weight), q4 (q4nx, 5 bits) or bf16")
-    ap.add_argument("--dit-mlp", default=DIT_FMT.mlp, choices=("bf16", "q8", "q4"),
-                    help="the DiT blocks' MLP: q8, q4 or bf16")
+    ap.add_argument("--dit-attn", default=DIT_FMT.attn, choices=("bf16", "q8", "q6", "q4"),
+                    help="the DiT blocks' attention projections: q8 (8.5 bits a weight), q6 (6.5 bits), q4 (q4nx, 5 bits) or bf16")
+    ap.add_argument("--dit-mlp", default=DIT_FMT.mlp, choices=("bf16", "q8", "q6", "q4"),
+                    help="the DiT blocks' MLP: q8, q6, q4 or bf16")
     ap.add_argument("--q4-codes", type=Path, default=None,
                     help="codes tools/amd/anima_gptq.py chose (OUT/codes) for the DiT's q4 and q8 projections, "
                          "in place of rounding them")

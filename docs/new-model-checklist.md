@@ -41,7 +41,7 @@ On top of the pass conditions of the `port-architecture` skill (1e-4 against an 
 | What to check | Tools | Lesson |
 |---|---|---|
 | Compare **with a BOS** | `tools/ref/ref_logits.py`, `hwnpu-check`, `ironlm -forced -bos` | Without a BOS, LFM3's KL looks 4× worse and layer 0's activations become outliers (amd-npu-models.md section 13). Measure with the tokens the chat format actually puts first |
-| Check against the real weights | `hwnpu-check`, `iron_plamo3_check.py` | With random weights the NPU and the CPU reference can disagree (Gemma 4, PLaMo 3). Decide pass or fail with the real weights |
+| Check against the real weights | `hwnpu-check`, `iron_plamo3_check.py`; on AMD `ironlm -forced` + `tools/ref/forced_logits.py` | With random weights the NPU and the CPU reference disagree (Gemma 4, PLaMo 3): their logits are flat, and bf16 rounding and the bfp16 GEMMs spread layer by layer (16.107). Decide pass or fail with the real weights |
 | The tokenizer matches HF | `tools/ref/tokenizer_golden.py` | 0 mismatches over fixed texts plus thousands of random ones. Also check that the tests fail when ties (PLaMo), NFC and combining marks (Qwen3.5) or byte fallback (Gemma 4) are handled the other way |
 | The chat format matches jinja2 character for character | `tools/ref/template_golden.py` | Tool calls, thinking, dropping earlier thinking |
 | Multimodal preprocessing | `resize_golden.py`, `mel_golden.py` | ±1 against PIL, 1e-4 against librosa |
@@ -95,14 +95,19 @@ Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`
 | What to check | Lesson | Section |
 |---|---|---|
 | Does IRON have the same application? If not, write it from IRON's building blocks | LFM3 (`iron_lfm3.py`) and PLaMo 3 (`iron_plamo3.py`) were written from the building blocks | 16.66, 16.70 |
-| Check top-1 against HF (`iron_export_lm.py --check`) | Long prompts (over 2000 tokens) too | 16.76 |
+| Check against HF (400 rows of `ironlm -forced` against HF fp32 with `tools/ref/forced_logits.py`) | A bf16 export lands at KL 0.001–0.014, top-1 96–99 % (E2B, E4B, PLaMo 3, Qwen3.5). Long prompts (over 2000 tokens) too | 16.76, 16.102 |
+| **The prompt's MHA on several pipelines** (`--mha-pipelines`, default 8) | Without a profile in the export, MHA ran on one pipeline, 60 % of a chunk. On 8, chunks are 2–5× faster with the same logits. A chunk of 256 takes 4 at most. Check `prompt attention: N pipelines` in the export's log and `num_pipelines` in the kernels' names | 16.107 |
+| The chunk's size | 1024 for attention models (LFM3 too: short prompts −24 % against 2048, long ones the same). 512 for GDN models (Qwen3.5: 256 slows long prompts, 1024 short ones) | 16.54, 16.108 |
+| Quantized projections in multiples of 64 out by 512 in | Pad a fused projection (GDN's in_proj, 6176 rows) per column with rows of zeros (`iron_gdn.column_widths`) | 16.104 |
+| A command's control code within the device heap (64 MiB) | Dense models cut at `SCRATCHPAD_WORDS` 24 (Qwen3.5-2B's q4 at 32: `CREATE_BO: invalid argument`) | 16.104 |
+| Where a slow chunk's time goes | `--command-per-step` (a command a step) and `HWNPU_IRON_TIMING`. Run one chunk only (16.80's hang) | 16.107 |
 | One full ELF | Switching xclbins costs 0.46 ms each | 16.45–50 |
 | Prompt chunks of 1024 | 20 % faster than 2048. At 256 the window layers become rings and cannot roll back | 16.54 |
 | At most 3 transfers queued on one shim channel | Queuing 16 without waiting hung the command, and two hangs in a row needed a reboot. Wait for the oldest before queuing more | 16.89 (PR #66) |
 | Each command under 2 s | Longer ones end in `ERT_CMD_STATE_TIMEOUT`. Split them at export (`SCRATCHPAD_WORDS`) | 16.65 |
 | Window layers read only their window (`iron_window.py`) | Prompts −12 %. Without an empty command before each chunk (`chunkBarrier`) the second chunk hangs. The caches' rows are written as `cache_rows` | 16.84, 16.87 |
 | KV-shared layers on the prompt's last row only | Gemma 4 E2B's prompts 2.3× faster | 16.80 |
-| Tables on the host (PLE, embeddings) | E2B pinned 9.08 → 4.60 GB, the same output | 16.72–73 |
+| Tables on the host (PLE, embeddings) | E2B pinned 9.08 → 4.60 GB, the same output. With a head tied to the embeddings, put them on the host too once the head holds a quantized copy (Qwen3.5 −0.47 to −0.95 GiB) | 16.72–73, 16.104 |
 | Towers loaded only when used (`growBanks`) | No text-only export needed | 16.81 |
 | `-idle` gives back pinned memory | The next request pays 0.8–2 s | 16.74 |
 | The cores' rounding to nearest even | Floor rounding pulls sums of inputs with a mean downward (Anima's DiT) | 16.78 |
@@ -110,6 +115,7 @@ Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`
 | Images and audio in the final export form | Towers loaded on first use replace the banks; the chunk barrier bound to the old bank failed (ENOENT) until 2026-11-07. Send an image and a clip through `hwnpu-chat` after any change to the export | 16.81, 16.87 |
 | Layers with state (convolutions) copied at chunk boundaries | For rolling back to marks and for the prompt store | 16.66 |
 | **No** speculative decoding | Checking a draft costs 4.5 decode steps | |
+| A graph's groups (`variants`, an image model's DiT) in one bank, read in turn (`iron.GraphOptions.SwapVariants`) | Anima's DiT, 7 groups: pinned 3445 → 1236 MiB, +2 % | 16.106 |
 
 ### 4.2 Intel
 
@@ -135,7 +141,8 @@ Switch each part (attention projections, MLP, output matrix, convolutions, tower
 - Short convolutions at 8 bits (+0.01 at 4 bits)
 - Layers with sandwich norms (Gemma 4, PLaMo 3) are weak at 4 bits. With the ANE's tables, lut6 or more (Gemma 4 lut4 KL 2.54, PLaMo 3 1.91)
 - lut8 for multimodal models' text parts, TTS, d1's judgments and embeddings (they broke down with lut4)
-- A distilled 8-step DiT is weak at 4 bits (q4nx: latent cosine 0.777). q8 is the default
+- A distilled 8-step DiT is weak at 4 bits (q4nx: latent cosine 0.777). q8 is the default (q6 keeps the composition)
+- **A small model's (2B or less) MLP can break at 4 bits**: Qwen3.5-0.8B README 0.055 but GPL 0.34 (0.30 with GPTQ). AMD's q6 (6.5 bits, `--mlp q6 --head q6`) gives 0.044. Always look at the GPL. 4B makes 0.042 at q4 and stays at q4
 
 ### 5.3 Try the calibration methods in order
 
@@ -147,6 +154,7 @@ Keep the format and raise accuracy by choosing the codes (levels) better. The fo
 | 2 | **GPTQ** (pushes each column's error onto the later columns, with H = E[xxᵀ]) | `tools/amd/q4_gptq.py` → AMD: `iron_export_lm.py --q4-codes`; Apple: `hwnpu-convert -codes` | NPU wiki-ja: E2B 0.221 → 0.081, E4B 0.083 → 0.049, LFM3 0.071 → 0.038, LFM3-VL 0.067 → 0.034, PLaMo 3 0.058 → 0.040. Anima's DiT q4: latent cosine 0.868 → 0.939 (q8 0.962) | Damp by **0.1** × the mean of H's diagonal (0.01 overfitted the calibration texts and made the GPL worse than rounding). Calibrate on general text (wikitext-2 and wiki40b-ja, 64 × 512 tokens); the repository's documents alone overfit too. Leave the BOS position out of H. Quantize the earlier layers before measuring the next ones (a few layers a pass) |
 | 3 | **Fitting the tables** (Apple's lutN): k-means weighted by E[x²] | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038, lut4 0.66 → 0.33 (through Go's converter) | Start from the uniform tables (starting from the k-means of least weight error gives the worst KL). The ANE check is in handoff-m3-gptq.md |
 | 4 | AWQ-style scales folded into the previous op | Not written | | model-fit.md T8, 2. When lut4 has to go lower |
+| — | One format up (AMD's q6) | `iron_export_lm.py --mlp q6`, `q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B GPL 0.34 → 0.044 | When calibration does not fix it. The GEMV takes about q8's time; the gain is memory (76 % of q8) |
 
 **Whether to adopt it**: the GPL, not used for calibration, must not get worse than rounding. For LFM3-Audio GPTQ leaves only the GPL unchanged (0.154 → 0.161), but the other four texts drop by half or more, so it was adopted. A multimodal model's text part is often trained again (LFM3-VL / Audio / Omni): calibrate each, do not reuse the base model's codes. If a text gets worse, raise the damping (0.3 was tried) or add calibration text.
 
@@ -168,7 +176,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 
 | What to measure | Tools | Lesson |
 |---|---|---|
-| AMD pinned memory (the rise of `Unevictable`) | `/proc/meminfo` (not in RSS) | Mostly weights and work areas. KV is under 5 % |
+| AMD pinned memory (the rise of `Unevictable`) | `/proc/meminfo` (not in RSS), the banks in the export's `manifest.json` | Mostly weights and work areas. KV is under 5 % |
 | The Mac's `phys_footprint` | `npuprobe split` | The ANE's side (aned) is not measured (model-fit.md T10) |
 | Size of conversation marks | | Copy only the ring rows in use (`ringRows`, 578 → 183 MB) |
 | Right after a conversion | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
@@ -238,9 +246,14 @@ Later, models will be chained, such as speech recognition → LLM → TTS, and r
 
 ## 11. Tried without effect (do not repeat)
 
-The gist of section 8 of [improvements.md](improvements.md): padding small models into batches for the ANE (slower than the CPU), getting past 1 GiB with multifunction (all on the CPU), the KV cache in MLState, an int8 KV cache, loading the next tier in the background, one Q=16 program, E4B at lut4, compressing the model, sparse attention on the top keys alone, AMD attention at 4 bits, a GEMV with one core per column, copying MoE experts, the DiT at `HIGH`, the DiT at q4 by default, q4nx prompts through bf16, RMSNorm with a fixed scale.
+The gist of section 8 of [improvements.md](improvements.md): padding small models into batches for the ANE (slower than the CPU), fixing a small Qwen3.5's 4-bit MLP with GPTQ (the GPL stays broken; q6 instead), a faster GEMV from q6 (q8's time), getting past 1 GiB with multifunction (all on the CPU), the KV cache in MLState, an int8 KV cache, loading the next tier in the background, one Q=16 program, E4B at lut4, compressing the model, sparse attention on the top keys alone, AMD attention at 4 bits, a GEMV with one core per column, copying MoE experts, the DiT at `HIGH`, the DiT at q4 by default, q4nx prompts through bf16, RMSNorm with a fixed scale.
 
-## 12. In progress (2026-11-07)
+## 12. In progress (2026-11-08)
+
+- The AMD exports here were exported again with 8 pipelines and the new chunk sizes (16.108). When an export changes, pass an image and a clip through `hwnpu-chat`
+- Qwen3.6's prompt attention pipelines are not measured (it keeps 1)
+
+### As of 2026-11-07
 
 - Done on AMD: GPTQ codes for E2B, E4B, LFM3 (and VL / Audio / Omni) and PLaMo 3, measured on the NPU (amd-npu-models.md 13, "continued"). Against bf16: E2B with images and audio gave the same answers to text, an image and a clip; PLaMo 3's translations word for word the same 14/20 rounded, 17/20 with GPTQ
 - Apple: checking the GPTQ lut6 / lut4 tables on the ANE ([handoff-m3-gptq.md](handoff-m3-gptq.md)). hwnpu-chat does not take `-codes` yet
