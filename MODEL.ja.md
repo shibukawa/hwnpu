@@ -107,7 +107,7 @@ English: [MODEL.md](MODEL.md)
 | LFM3-Audio-2B (読み上げ) | 読み上げ | 約 2.4 GB | 12 KiB/トークン | 重みから見込み |
 | d1-2B、d1-Omni-2B | 状態の判定 | 約 2.4 GB、約 2.8 GB | 短い入力のみ | 重みから見込み |
 | Qwen3.5-0.8B | チャット (日本語の事実に弱い) | 1.5 GB (MLP は 6 ビット。M3: Neural Engine に 1.47 GiB とプロセスの 1.1 GB で約 2.6 GB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M3) |
-| Qwen3.5-2B | チャット、コード | 2.4 GB (MLP は 6 ビット。M3: Neural Engine に 6 ビットの表の 2 本で 2.67 GiB とプロセスの 1.4 GB で約 4.1 GB。`-prefill off` で 1.32 GiB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M3) |
+| Qwen3.5-2B | チャット、コード | 2.4 GB (MLP は 6 ビット。M3: Neural Engine に 6 ビットの表の 2 本で 2.67 GiB とプロセスの 1.5 GB で約 4.2 GB。`-prefill off` で 1.32 GiB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M3) |
 | Qwen3.5-4B | チャット、コード | 約 4.2 GB (8 ビットの重み 3.9 GiB) | 32 KiB/トークン (262144 で 8 GiB。16 GB では 114688 トークン) | M3 の Neural Engine で動作を確認。メモリは重みから見込み |
 | Qwen3.6-35B-A3B (予定) | チャット、コード | 約 25 GB | — | 4 ビットの重みからの見込み。移植していない |
 

@@ -107,7 +107,7 @@ The columns are the memory installed in the machine. The second header row is ro
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |
 | Qwen3.5-0.8B | Chat (weak at Japanese facts) | 1.5 GB (6-bit MLP; M3: 1.47 GiB on the Neural Engine and 1.1 GB of the process, about 2.6 GB) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and M3) |
-| Qwen3.5-2B | Chat, code | 2.4 GB (6-bit MLP; M3: 2.67 GiB on the Neural Engine in two programs of 6 bit tables and 1.4 GB of the process, about 4.1 GB; 1.32 GiB with `-prefill off`) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and M3) |
+| Qwen3.5-2B | Chat, code | 2.4 GB (6-bit MLP; M3: 2.67 GiB on the Neural Engine in two programs of 6 bit tables and 1.5 GB of the process, about 4.2 GB; 1.32 GiB with `-prefill off`) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and M3) |
 | Qwen3.5-4B | Chat, code | about 4.2 GB (3.9 GiB of 8 bit weights) | 32 KiB/token (8 GiB at 262144; 114688 tokens on 16 GB) | runs on an M3's Neural Engine; memory estimated from the weights |
 | Qwen3.6-35B-A3B (planned) | Chat, code | about 25 GB | — | estimated from 4-bit weights; not ported |
 
