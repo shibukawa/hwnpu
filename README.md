@@ -144,7 +144,7 @@ go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2-q4
 go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2-q4 -to zh-hans
 ```
 
-Qwen3.5 (0.8B、2B、4B) は hwnpu の `tools/amd/iron_qwen35.py` で書き出します (`qwen35`)。0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします (`--mlp q6 --head q6`。注意と GDN の射影は 8 ビット、埋め込みはホスト。固定されるメモリは 0.8B 1.04 GiB、2B 1.97 GiB)。`--verify 3` を足すと、次のトークンと推測 2 つを 1 回で確かめる版も書き出し、hwnpu-chat はプロンプトと答えからの推測を確かめながら生成します (投機的デコード。ロジットは 1 トークンずつと同じなので、温度 0 なら文も同じ)。Ryzen AI 9 365 の 0.8B で 1 トークン 82 ms が、コードで 72 ms、日本語の説明で 62 ms になりました ([docs/design.md](docs/design.md) の 16.116)。`HWNPU_IRON_DRAFTS=0` で推測を使いません。
+Qwen3.5 (0.8B、2B、4B) は hwnpu の `tools/amd/iron_qwen35.py` で書き出します (`qwen35`)。0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします (`--mlp q6 --head q6`。注意と GDN の射影は 8 ビット、埋め込みはホスト。固定されるメモリは 0.8B 1.04 GiB、2B 1.97 GiB)。`--verify 3` を足すと、次のトークンと推測 2 つを 1 回で確かめる版も書き出し、hwnpu-chat はプロンプトと答えからの推測を確かめながら生成します (投機的デコード。ロジットは 1 トークンずつと同じなので、温度 0 なら文も同じ)。Ryzen AI 9 365 の 0.8B で 1 トークン 82 ms が、コードで 72 ms、日本語の説明で 62 ms になりました ([docs/design.md](docs/design.md) の 16.117)。`HWNPU_IRON_DRAFTS=0` で推測を使いません。
 
 ```bash
 python tools/amd/iron_export_lm.py qwen35 ~/models/Qwen3.5-0.8B ~/models/Qwen3.5-0.8B.amd-npu2-q6 --q4 --mlp q6 --head q6 --verify 3
