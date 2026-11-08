@@ -508,6 +508,9 @@ func (t *tier) session(cm llm.Cached) (*decode.Session, error) {
 			return nil, fmt.Errorf("chat: %s: %w", filepath.Base(t.chains[i+1].Parts()[0].Path), err)
 		}
 	}
+	// the soft cap of the logits, where the host applies it, goes on the few that sampling looks
+	// at (Sampling.softcap)
+	s.SetRawLogits(true)
 	if t.sparse.Bucket > 0 {
 		if err := s.SetSparse(t.sparse); err != nil {
 			s.Close()
@@ -754,6 +757,9 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		return st, fmt.Errorf("%w: %d tokens, the cache holds %d", ErrContext, len(r.Prompt), e.Context())
 	}
 	t0 := time.Now()
+	if sc, ok := e.sess.(interface{ Softcap() float64 }); ok {
+		r.softcap = sc.Softcap()
+	}
 	logits, err := e.prefill(ctx, r.Prompt, &st)
 	if err != nil {
 		return st, err

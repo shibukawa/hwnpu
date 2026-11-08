@@ -16,6 +16,10 @@ type Options struct {
 	// Neural Engine takes elementwise (head): the reshape back to (1, seq, vocab) is the one
 	// operation of the program the CPU runs otherwise. decode reads either.
 	FoldedLogits bool
+	// HostSoftcap leaves the soft cap of the logits to the host (-logits host, the default): y is
+	// the output layer's (1, seq, vocab), all on the Neural Engine, and the host applies
+	// tanh(y/cap)*cap to the logits it uses (llm.LogitSoftcap).
+	HostSoftcap bool
 }
 
 type builder struct {
@@ -223,19 +227,19 @@ func (m *builder) perLayerInputs(h *mlpackage.Var) *mlpackage.Var {
 }
 
 // head is the final norm, the output layer tied to the embeddings and the soft cap of the logits.
-// The Neural Engine takes the output layer's 262144 wide axis but not elementwise operations over
-// it (they go to the CPU), so the soft cap runs on the logits folded into rows of at most
-// llm.NeuralEngineMaxDim. The reshape back to (1, seq, vocab) still goes to the CPU; leaving y
-// folded (Options.FoldedLogits, -logits folded) puts everything on the Neural Engine. An early
-// measurement had that four times slower (137 ms a token on the M3, against 33); on 2026-11-03,
-// with the parts and the speculative decoding of hwnpu-chat, it was 5 to 12% slower (12.8 to
-// 24.8 tokens/s against 13.7 to 28.1), and it did not make the programs stay in the Neural
-// Engine's compile cache, which was the hope (docs/design.md 16.43). flat stays the default.
+// By default (Options.HostSoftcap) the host applies the soft cap: it is monotonic, so sampling
+// needs its values for the few most likely tokens alone, and the program is all on the Neural
+// Engine. On an M1 the output layer's part took 2.3 ms less a step (docs/design.md 16.110).
+// In the program instead: the Neural Engine takes the output layer's 262144 wide axis but not
+// elementwise operations over it (they go to the CPU), so the soft cap runs on the logits folded
+// into rows of at most llm.NeuralEngineMaxDim. The reshape back to (1, seq, vocab) still goes to
+// the CPU (flat); leaving y folded (Options.FoldedLogits) puts everything on the Neural Engine
+// but was 5 to 12% slower on an M3 (16.43).
 func (m *builder) head(h *mlpackage.Var) *mlpackage.Var {
 	c := m.cfg
 	seq := h.Shape[1] // 1 for the last row alone (LastRow)
 	h = m.norm(h, c.Prefix+"norm.weight", m.d)
-	if c.Softcap == nil {
+	if c.Softcap == nil || m.opts.HostSoftcap {
 		return m.Linear(h, c.Embedding(), "y", c.VocabSize)
 	}
 	limit := float32(*c.Softcap)

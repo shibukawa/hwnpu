@@ -226,6 +226,7 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 	syncAll()
 
 	logits := make([]float32, vocab)
+	softcap := llm.HostSoftcap(c.Meta()) // the soft cap the program leaves to the host
 	var gen []int32
 	var first, total time.Duration
 	slid := false
@@ -238,6 +239,7 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt stri
 		off := 2 * (n - 1) * vocab
 		y.SyncFromDevice(off, 2*vocab)
 		hwnpu.DecodeF16(logits, y.Bytes()[off:off+2*vocab])
+		llm.Softcap(logits, softcap)
 		next := s.pick(logits, ids)
 		d := time.Since(t)
 		if len(gen) == 0 {

@@ -266,6 +266,7 @@ func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer
 	}
 	var closers multiCloser
 	p := decode.Program{In: map[string][]byte{}, Out: map[string][]byte{}, InShape: map[string][]int{}, OutShape: map[string][]int{}}
+	p.Meta, _ = llm.ReadMeta(man) // conversions from before the metadata have none
 	type part struct {
 		prog *milcpu.Program
 		last bool

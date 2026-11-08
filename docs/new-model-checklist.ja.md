@@ -4,6 +4,15 @@
 
 作成: 2026-11-07。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
 
+## 方針: 速さより消費電力
+
+hwnpu の目的は、NPU だけで動かして消費電力を下げること。手法を選ぶときは次の順に考える。
+
+- **合計の時間が同じなら、NPU に載せる**。CPU や GPU に移して少し速くなる形 (短い文脈の注意を CPU で計算するなど) は採らない。GPU は使わない
+- **読む重みのバイトを減らす**。1 トークンの電力の大半は重みの読み出しで、読む量を減らせば速さと電力の両方に効く (ビット数、プロンプト用のプログラムに要らない層を持たせない、MoE)
+- **NPU の上での無駄を減らす**。読み込んだプログラムが NPU のメモリに収まらず載せ直しが起きる形、1 つの演算だけ CPU に落ちて NPU と CPU を往復する形は、速さが同じでも電力を使う
+- 電力は `powerbench` で 1 トークンあたりの mJ を測る (Mac は sudo が要る)。測れないときは、読む重みのバイト、NPU が抱えるメモリ (`mem.NPUWired`)、CPU の使用率で代わりに比べる
+
 数値の出典は [design.md](design.md) の 16 章 (カッコ内の番号)、[improvements.md](improvements.md)、[model-fit.md](model-fit.md)、[amd-npu-models.md](amd-npu-models.md)。構造を Go に移す作業そのものの手順と合格条件は `.claude/skills/port-architecture` にあるので、ここでは繰り返さない。
 
 | 段 | 何を決めるか | どこで |
@@ -28,7 +37,7 @@
 - **1 トークンの時間 (ANE)** ≈ 重みのバイト ÷ 65 GB/s + 長い容量に対して注意を計算する層の数 × 0.22 ms (`SDPAGrouped` の形) × 容量 / 1K + 3 ms
   - KV の共有は注意の計算の回数を減らさない (メモリだけ)。窓、短い畳み込み、Mamba2、GDN の層は容量に依らない
 - **重み**: lut4 0.5 B、lut6 0.75 B、lut8 1 B / 重み。M3 (16 GB) で常駐は 3 GiB までが目安。AMD は 4 ビット (q4nx 5 ビット + 注意 q8) で bf16 の 1/2〜1/5 の固定
-- **語彙**: 出力層は語彙 × 隠れ。262144 の軸は ANE で CPU に落ちるので (16, 16384) に畳む手間が要る (Gemma 4、16.25)
+- **語彙**: 出力層は語彙 × 隠れ。linear は 262144 の軸でも ANE に載るが、その後の要素ごとの演算は CPU に落ちる。単調な演算 (ソフトキャップ) はホストに回す (Gemma 4、16.110)
 - **使えない構造**: MoE のルーティング (`gather`)、学習済みの疎な注意、可変の形。AMD の MoE は部品を測っただけ (16.75)
 - **ライセンスと言語** (hwnpu-chat の目録に載せるか)
 
@@ -68,7 +77,7 @@
 `hwnpuinfo -model PART.mlpackage` で各部分が `all on the NPU` か。今までに CPU に落ちたもの:
 
 - `tile` で K/V を写す注意の形、問い合わせを行列にした形 → `SDPAGrouped` (16.25, 16.39)。順番だけで配置が変わる
-- 最後の部分の `transpose` / `reshape` → 出力をトークン先に取る (`attn_ot_N`、PLaMo 3)。Gemma 4 の最後の部分の `reshape` は未解決 (improvements.md 11.1)
+- 最後の部分の `transpose` / `reshape` → 出力をトークン先に取る (`attn_ot_N`、PLaMo 3)。出力層の後の要素ごとの演算 (Gemma 4 のソフトキャップ) は、ホストのサンプリングで上位の値だけに掛ける (`-logits host`、`llm.LogitSoftcap`、16.110)
 - 1 行の部品、単独のプログラムの部品 → 8 行にする、隣の群に入れる (Anima、16.85)
 - `reduce_sum` → 行列積で和を取る (塊の注意、30 回中 30 回 ANE)
 
@@ -177,7 +186,7 @@
 | 測るもの | 道具 | 教訓 |
 |---|---|---|
 | AMD の固定 (`Unevictable` の増え) | `/proc/meminfo` (RSS に出ない)、書き出しの `manifest.json` の bank の合計 | 大半は重みと作業域。KV は 5 % 未満 |
-| Mac の `phys_footprint` | `npuprobe split` | ANE 側 (aned) は未計測 (model-fit.md T10) |
+| Mac の `phys_footprint` と Neural Engine が抱えるメモリ | `npuprobe split`、`hwnpu-chat` の読み込みのログ、`HWNPU_PROFILE=1` | 重みはカーネルの wired メモリにあり、`mem.NPUWired` で読める (16.95)。2 本のプログラムがそこに収まらないと、生成の部分が毎回載せ直される (M1 の Gemma 4、16.109) |
 | 会話の印の大きさ | | 使っているリングの行だけ写す (`ringRows`、578 → 183 MB) |
 | 変換の直後 | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
 | KV の大きさと文脈 | | 物理メモリの 1/4 を超えたら塊単位で縮める |
@@ -198,6 +207,9 @@
 
 - 2 本のプログラム (生成と読み込み) で 1 つのキャッシュ、前のプロンプトの再利用、プロンプトの保存 (ディスク)
 - 投機的デコード (プロンプトの n-gram、Apple / Intel)。考える予算 (`-think-budget`)、繰り返しの検出
+- 後ろの層がキャッシュを書かないモデル (KV の共有) は、プロンプト用のプログラムをキャッシュを書く層までにする (`-kv-only`、`llm.CacheWriters`。Gemma 4 E2B で 1.6 → 0.38 GiB、16.109)。2 本が Neural Engine に収まらないと生成まで遅くなる
+- 出力層の後の単調な演算 (ソフトキャップ) はホストのサンプリングに回し、出力層まで全部 Neural Engine に (`llm.LogitSoftcap`、16.110)
+- 1 ステップの内訳は `HWNPU_PROFILE=1` (部分、ホストの注意、ロジットの読み出しごとの ms と、Neural Engine が抱えるメモリ)
 
 同じ条件で続けて測った組だけを比べる (M3 はスワップ、AMD は電源の状態で 1.4 倍ぶれる)。
 

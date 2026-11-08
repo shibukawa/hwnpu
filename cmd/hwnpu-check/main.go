@@ -189,7 +189,11 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 	if err != nil {
 		return -1, fmt.Errorf("head: %w", err)
 	}
-	ls, err := compareOutput(got, ref.Logits, width, logits)
+	softcap := 0.0 // the cap the program leaves to the host (llm.LogitSoftcap)
+	if lc, ok := model.(llm.LogitSoftcap); ok {
+		softcap = lc.HostSoftcap(opts)
+	}
+	ls, err := compareOutput(got, ref.Logits, width, logits, softcap)
 	if err != nil {
 		return -1, err
 	}
@@ -201,7 +205,7 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 		if err != nil {
 			return -1, fmt.Errorf("whole model: %w", err)
 		}
-		ls, err := compareOutput(got, ref.Logits, width, logits)
+		ls, err := compareOutput(got, ref.Logits, width, logits, softcap)
 		if err != nil {
 			return -1, err
 		}
@@ -217,9 +221,10 @@ func checkModel(out io.Writer, model llm.Model, w llm.Weights, ref *check.Ref, l
 }
 
 // compareOutput compares the model's output with the reference: as logits, with argmax and KL,
-// or as hidden states.
-func compareOutput(got, ref []float32, width int, logits bool) (fmt.Stringer, error) {
+// after the soft cap the program leaves to the host (0 for none), or as hidden states.
+func compareOutput(got, ref []float32, width int, logits bool, softcap float64) (fmt.Stringer, error) {
 	if logits {
+		llm.Softcap(got, softcap)
 		return check.CompareLogits(got, ref, width)
 	}
 	return check.Compare(got, ref)
@@ -378,7 +383,11 @@ func checkPackage(dir, refPrefix string, f16 bool) error {
 	if err != nil {
 		return err
 	}
-	ls, err := compareOutput(out["y"].Data, ref.Logits, width, ref.Meta.Output != "hidden")
+	softcap := 0.0 // the cap the package leaves to the host (llm.MetaSoftcap)
+	if m, err := mlpackage.ReadModel(dir); err == nil {
+		softcap = llm.HostSoftcap(m.GetDescription().GetMetadata().GetUserDefined())
+	}
+	ls, err := compareOutput(out["y"].Data, ref.Logits, width, ref.Meta.Output != "hidden", softcap)
 	if err != nil {
 		return err
 	}

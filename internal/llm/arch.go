@@ -3,8 +3,10 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
@@ -214,6 +216,34 @@ type Paged interface {
 // reads tokens into the caches (Options.KVOnly) stops before them.
 type CacheWriters interface {
 	CacheLayers() int
+}
+
+// LogitSoftcap is a model whose program may leave the soft cap of its logits to the host
+// (Gemma 4's -logits host): HostSoftcap is the cap c of a program built with opts, whose logits y
+// the host turns into c*tanh(y/c), and 0 when the program applies it. The conversion writes it
+// into the parts' metadata (MetaSoftcap), where the host finds it.
+type LogitSoftcap interface {
+	HostSoftcap(opts Options) float64
+}
+
+// HostSoftcap is the soft cap the host applies to the logits of a program with the metadata meta
+// (ReadMeta): MetaSoftcap, 0 for none.
+func HostSoftcap(meta map[string]string) float64 {
+	c, err := strconv.ParseFloat(meta[MetaSoftcap], 64)
+	if err != nil || c <= 0 {
+		return 0
+	}
+	return c
+}
+
+// Softcap applies the soft cap c to the logits in place: c*tanh(y/c). c 0 leaves them.
+func Softcap(logits []float32, c float64) {
+	if c <= 0 {
+		return
+	}
+	for i, y := range logits {
+		logits[i] = float32(c * math.Tanh(float64(y)/c))
+	}
 }
 
 // TokenInput is a program input that the host fills per token like x, from a table of the

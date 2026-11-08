@@ -19,6 +19,34 @@ type Sampling struct {
 	// logits; it multiplies negative ones), as Hugging Face's repetition_penalty does. 1 or 0
 	// turns it off. The prompt is left out: an agent copies names from it.
 	Repetition float64
+
+	// softcap is the soft cap c the engine's session leaves to sampling (decode.Session.Softcap):
+	// the logits are the program's y, the model's are c*tanh(y/c). It is monotonic, so the most
+	// likely tokens are the same, and pick applies it to the values it uses alone.
+	softcap float64
+}
+
+// capped is the logit after the soft cap.
+func (s Sampling) capped(y float32) float64 {
+	if s.softcap <= 0 {
+		return float64(y)
+	}
+	return s.softcap * math.Tanh(float64(y)/s.softcap)
+}
+
+// uncapped is the logit before the soft cap whose capped value is l (capped's inverse): a value at
+// or past the cap, which no logit reaches, is far past every logit.
+func (s Sampling) uncapped(l float64) float32 {
+	c := s.softcap
+	switch {
+	case c <= 0:
+		return float32(l)
+	case l >= c:
+		return float32(math.MaxFloat32)
+	case l <= -c:
+		return -float32(math.MaxFloat32)
+	}
+	return float32(c * math.Atanh(l/c))
 }
 
 // pick chooses a token. It changes logits.
@@ -30,10 +58,20 @@ func (s Sampling) pick(logits []float32, seen []int32, rng *rand.Rand) int32 {
 				continue
 			}
 			done[t] = true
-			if l := logits[t]; l > 0 {
-				logits[t] = l / float32(s.Repetition)
+			if s.softcap <= 0 {
+				if l := logits[t]; l > 0 {
+					logits[t] = l / float32(s.Repetition)
+				} else {
+					logits[t] = l * float32(s.Repetition)
+				}
+				continue
+			}
+			// on the capped logit, as the model's are; written back before the cap, so that the
+			// order with the others stays
+			if l := s.capped(logits[t]); l > 0 {
+				logits[t] = s.uncapped(l / s.Repetition)
 			} else {
-				logits[t] = l * float32(s.Repetition)
+				logits[t] = s.uncapped(l * s.Repetition)
 			}
 		}
 	}
@@ -49,8 +87,13 @@ func (s Sampling) pick(logits []float32, seen []int32, rng *rand.Rand) int32 {
 	idx := topK(logits, s.TopK)
 	ps := make([]float64, len(idx))
 	var sum float64
+	top := s.capped(logits[idx[0]])
 	for i, j := range idx {
-		ps[i] = math.Exp(float64(logits[j]-logits[idx[0]]) / s.Temperature)
+		if s.softcap > 0 {
+			ps[i] = math.Exp((s.capped(logits[j]) - top) / s.Temperature)
+		} else {
+			ps[i] = math.Exp(float64(logits[j]-logits[idx[0]]) / s.Temperature)
+		}
 		sum += ps[i]
 	}
 	if s.TopP > 0 && s.TopP < 1 {

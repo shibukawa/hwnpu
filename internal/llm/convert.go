@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,7 +96,7 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 	base := strings.TrimSuffix(strings.TrimSuffix(out, ".mlpackage"), ".xml")
 	man := Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Target: target.Name, MaxBytes: target.MaxBytes}
 	if intel {
-		man.Backend, man.Meta = opts.Backend, metadata(a, w, opts)
+		man.Backend, man.Meta = opts.Backend, metadata(a, model, w, opts)
 	}
 	for _, cache := range caches {
 		opts.Cache = cache
@@ -147,18 +148,25 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 // Param's name), as the program was built with them, and of the checkpoint, the weight format and
 // the description (the IR's; a package has a field of its own).
 const (
-	MetaArch        = "com.github.shibukawa.hwnpu.arch"
-	MetaParam       = "com.github.shibukawa.hwnpu.param."
+	MetaArch  = "com.github.shibukawa.hwnpu.arch"
+	MetaParam = "com.github.shibukawa.hwnpu.param."
+	// MetaSoftcap is the soft cap the host applies to the logits (LogitSoftcap), when not 0.
+	MetaSoftcap     = "com.github.shibukawa.hwnpu.softcap"
 	MetaSource      = "com.github.shibukawa.hwnpu.source"
 	MetaFormat      = "com.github.shibukawa.hwnpu.format"
 	MetaDescription = "com.github.shibukawa.hwnpu.description"
 )
 
 // metadata is what a part's metadata records of how it was built.
-func metadata(a *Arch, w Weights, opts Options) map[string]string {
+func metadata(a *Arch, model Model, w Weights, opts Options) map[string]string {
 	m := map[string]string{MetaSource: w.Source(), MetaFormat: opts.Format, MetaArch: a.Name}
 	for _, p := range a.Params {
 		m[MetaParam+p.Name] = a.Param(opts, p.Name)
+	}
+	if lc, ok := model.(LogitSoftcap); ok {
+		if c := lc.HostSoftcap(opts); c > 0 {
+			m[MetaSoftcap] = strconv.FormatFloat(c, 'g', -1, 64)
+		}
 	}
 	return m
 }
@@ -204,7 +212,7 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 		if opts.Cache > 0 {
 			pkg.Description += fmt.Sprintf(", KV cache %d", opts.Cache)
 		}
-		for k, v := range metadata(a, w, opts) {
+		for k, v := range metadata(a, model, w, opts) {
 			pkg.Metadata[k] = v
 		}
 	})
@@ -283,7 +291,7 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 	base := strings.TrimSuffix(strings.TrimSuffix(out, ".mlpackage"), ".xml")
 	man := Manifest{Model: a.Title, Source: w.Source(), Format: opts.Format, Seq: opts.Seq, Cache: opts.Cache, Target: target.Name, MaxBytes: target.MaxBytes, Paged: opts.Paged, KVOnly: opts.KVOnly}
 	if intel {
-		man.Backend, man.Meta = opts.Backend, metadata(a, w, opts)
+		man.Backend, man.Meta = opts.Backend, metadata(a, model, w, opts)
 	}
 	for i, p := range plan {
 		path := fmt.Sprintf("%s.part%d%s", base, i+1, ext)

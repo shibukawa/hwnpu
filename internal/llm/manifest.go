@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -90,6 +91,19 @@ func records(fs ...mlpackage.Feature) []FeatureRecord {
 	return out
 }
 
+// markSoftcap writes into the part's metadata the soft cap its logits leave to the host
+// (MetaSoftcap), whatever describe wrote: without it the host would take them as capped.
+func markSoftcap(pkg *mlpackage.Package, m Model, opts Options) {
+	if lc, ok := m.(LogitSoftcap); ok {
+		if c := lc.HostSoftcap(opts); c > 0 {
+			if pkg.Metadata == nil {
+				pkg.Metadata = map[string]string{}
+			}
+			pkg.Metadata[MetaSoftcap] = strconv.FormatFloat(c, 'g', -1, 64)
+		}
+	}
+}
+
 // WritePart writes the program for opts (one part when opts.Start or opts.Layers is set) to the
 // package at path. With opts.Cache the model must be Cached, and the part has the cache inputs and
 // outputs of its own layers. A Cached model is built with BuildCached also without a cache, so
@@ -107,6 +121,7 @@ func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlp
 	if describe != nil {
 		describe(pkg)
 	}
+	markSoftcap(pkg, m, opts)
 	b := mlpackage.NewBuilder("CoreML8", pkg.Blobs)
 	ins, outs, err := buildPart(b, m, w, opts)
 	if err != nil {
@@ -150,6 +165,7 @@ func writeIRPart(path string, m Model, w Weights, opts Options, describe func(*m
 	if describe != nil {
 		describe(pkg)
 	}
+	markSoftcap(pkg, m, opts)
 	size, ins, outs, err := writeIR(path, pkg, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
 		return buildPart(b, m, w, opts)
 	})

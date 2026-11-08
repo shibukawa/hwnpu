@@ -46,6 +46,9 @@ type Program struct {
 	// y is not logits, and a step on it returns none. Its last part computes the keys and values
 	// of layers it does not attend for, which the session writes into its cache.
 	NoLogits bool
+	// Meta is the metadata of the program's parts (llm.ReadMeta), from which the session learns
+	// whether the host applies the logits' soft cap (llm.HostSoftcap).
+	Meta map[string]string
 }
 
 // Buf is a buffer the attention program can be bound to: a chunk of keys or values of the
@@ -90,6 +93,9 @@ type Session struct {
 	// by the cache's output (kv_NAME_new), allocated as the sequence reaches them
 	chunks map[string][]Buf
 	sparse *sparse // the two-level attention (SetSparse), nil when off
+
+	softcap float64 // the soft cap the host applies to the program's logits, 0 for none
+	raw     bool    // return the logits before it (SetRawLogits)
 }
 
 // kvCache is one cache of keys or values: an input kv_NAME, or the chunks kv_NAME_cJ that hold
@@ -152,6 +158,7 @@ func New(p Program, m llm.Cached) (*Session, error) {
 		vocab *= y[3] // folded into rows (logitsShape)
 	}
 	s := &Session{progs: []step{{p: p, q: x[1]}}, m: m, hidden: x[2], vocab: vocab}
+	s.softcap = llm.HostSoftcap(p.Meta)
 	if l, ok := m.(llm.TokenInputs); ok {
 		s.lookups = l.TokenInputs()
 	}
@@ -363,6 +370,9 @@ func (s *Session) Add(p Program) error {
 	}
 	if !p.NoLogits && !logitsShape(p.OutShape["y"], rows(p), s.vocab) {
 		return fmt.Errorf("decode: no output y (1, %d, %d)", rows(p), s.vocab)
+	}
+	if c := llm.HostSoftcap(p.Meta); !p.NoLogits && c != s.softcap {
+		return fmt.Errorf("decode: the programs leave different soft caps of the logits to the host (%g and %g)", s.softcap, c)
 	}
 	first := s.progs[0].p
 	for name, b := range first.In {
@@ -1271,8 +1281,20 @@ func (s *Session) row(p Program, i int) []float32 {
 	}
 	logits := make([]float32, s.vocab)
 	hwnpu.DecodeF16(logits, p.Out["y"][2*i*s.vocab:2*(i+1)*s.vocab])
+	if !s.raw {
+		llm.Softcap(logits, s.softcap)
+	}
 	return logits
 }
+
+// Softcap is the soft cap c the host applies to the program's logits (llm.LogitSoftcap): the
+// logits are c*tanh(y/c) of the program's y. 0 when the program applied any itself.
+func (s *Session) Softcap() float64 { return s.softcap }
+
+// SetRawLogits makes the steps return the program's logits before the host's soft cap, for a
+// caller that applies it to the few it needs (the cap is monotonic). Without a cap it changes
+// nothing.
+func (s *Session) SetRawLogits(raw bool) { s.raw = raw }
 
 // Hidden is the final hidden state after the last step's last token, for a program that outputs
 // it as h (lfm3's hidden-out); nil otherwise.

@@ -4,6 +4,15 @@
 
 Written 2026-11-07. While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
 
+## Policy: power over speed
+
+hwnpu's aim is to run on the NPU alone and use less power. Weigh methods in this order:
+
+- **When the total time is the same, keep the work on the NPU.** A form that gets a little faster by moving work to the CPU or the GPU (attention over a short context on the CPU, say) is not taken. The GPU is not used
+- **Read fewer bytes of weights.** Reading the weights is most of a token's energy, and reading less helps speed and power at once (fewer bits, no layers a prompt program does not need, MoE)
+- **Cut the waste on the NPU.** Programs that do not fit the NPU's memory and are loaded again, or one operation on the CPU that makes the NPU and the CPU take turns, use power even at the same speed
+- Measure power with `powerbench` as mJ per token (the Mac needs sudo). When it cannot be measured, compare the weight bytes read, the memory the NPU holds (`mem.NPUWired`) and the CPU use instead
+
 The numbers come from chapter 16 of [design.md](design.md) (section numbers in parentheses), [improvements.md](improvements.md), [model-fit.md](model-fit.md) and [amd-npu-models.md](amd-npu-models.md). The steps and pass conditions for moving a structure to Go are in `.claude/skills/port-architecture` and are not repeated here.
 
 | Stage | What it decides | Where |
@@ -28,7 +37,7 @@ Estimate from config.json alone, with the formula and criteria in sections 2 and
 - **Time per token (ANE)** ≈ weight bytes ÷ 65 GB/s + layers that compute attention over the long capacity × 0.22 ms (the `SDPAGrouped` form) × capacity / 1K + 3 ms
   - Sharing KV does not reduce how many attentions are computed (only memory). Window, short-convolution, Mamba2 and GDN layers do not depend on the capacity
 - **Weights**: lut4 0.5 B, lut6 0.75 B, lut8 1 B a weight. On an M3 (16 GB), keep resident memory under 3 GiB. On AMD, 4 bits (q4nx at 5 bits + attention at q8) pins 1/2–1/5 of bf16
-- **Vocabulary**: the output layer is vocabulary × hidden. A 262144 axis falls to the CPU on the ANE, so it has to be folded to (16, 16384) (Gemma 4, 16.25)
+- **Vocabulary**: the output layer is vocabulary × hidden. The linear takes a 262144 axis on the ANE, but elementwise operations after it fall to the CPU. Leave a monotonic one (the soft cap) to the host (Gemma 4, 16.110)
 - **Structures that cannot be used**: MoE routing (`gather`), learned sparse attention, variable shapes. On AMD only the MoE building blocks were measured (16.75)
 - **License and languages** (whether it goes into hwnpu-chat's catalog)
 
@@ -68,7 +77,7 @@ On top of the pass conditions of the `port-architecture` skill (1e-4 against an 
 Check that each part is `all on the NPU` with `hwnpuinfo -model PART.mlpackage`. What fell to the CPU before:
 
 - Attention that copies K/V with `tile`, and the form with the queries as a matrix → `SDPAGrouped` (16.25, 16.39). The order alone changes the placement
-- A `transpose` / `reshape` in the last part → take the output token-first (`attn_ot_N`, PLaMo 3). The `reshape` in Gemma 4's last part is not solved yet (improvements.md 11.1)
+- A `transpose` / `reshape` in the last part → take the output token-first (`attn_ot_N`, PLaMo 3). Elementwise operations after the output layer (Gemma 4's soft cap) → the host's sampling applies them to the top values only (`-logits host`, `llm.LogitSoftcap`, 16.110)
 - Parts with one row, and parts as programs of their own → 8 rows, or put into the neighbouring group (Anima, 16.85)
 - `reduce_sum` → sum with a matrix multiply (chunked attention: on the ANE 30 times of 30)
 
@@ -177,7 +186,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 | What to measure | Tools | Lesson |
 |---|---|---|
 | AMD pinned memory (the rise of `Unevictable`) | `/proc/meminfo` (not in RSS), the banks in the export's `manifest.json` | Mostly weights and work areas. KV is under 5 % |
-| The Mac's `phys_footprint` | `npuprobe split` | The ANE's side (aned) is not measured (model-fit.md T10) |
+| The Mac's `phys_footprint` and the memory the Neural Engine holds | `npuprobe split`, `hwnpu-chat`'s loading log, `HWNPU_PROFILE=1` | The weights are in the kernel's wired memory, read with `mem.NPUWired` (16.95). When two programs do not fit there, a part of generation is loaded again on every call (Gemma 4 on the M1, 16.109) |
 | Size of conversation marks | | Copy only the ring rows in use (`ringRows`, 578 → 183 MB) |
 | Right after a conversion | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
 | KV size and context | | Past 1/4 of physical memory, shrink by whole chunks |
@@ -198,6 +207,9 @@ Things to bring in next (they helped every model):
 
 - Two programs (generation and prompt reading) on one cache, reuse of the previous prompt, the prompt store (disk)
 - Speculative decoding (n-grams from the prompt, Apple / Intel), the think budget (`-think-budget`), repetition detection
+- A model whose later layers write no cache (shared keys and values) gets a prompt program that stops at the last layer that writes one (`-kv-only`, `llm.CacheWriters`; Gemma 4 E2B 1.6 → 0.38 GiB, 16.109). When the two programs do not fit the Neural Engine, generation slows down too
+- A monotonic operation after the output layer (the soft cap) goes to the host's sampling, so that the output layer is all on the Neural Engine (`llm.LogitSoftcap`, 16.110)
+- `HWNPU_PROFILE=1` breaks a step down (ms per part, per host attention and for reading the logits, with the memory the Neural Engine holds)
 
 Compare only pairs measured back to back under the same conditions (on the M3 swap, on AMD the power state, make numbers vary by up to 1.4×).
 

@@ -90,7 +90,8 @@ type Chain struct {
 	index int   // the tier loaded
 	cur   *tier // never nil after Open
 
-	sharing bool // made by Share: its cache buffers belong to another chain, so it cannot grow
+	sharing bool              // made by Share: its cache buffers belong to another chain, so it cannot grow
+	meta    map[string]string // the parts' metadata (llm.ReadMeta), nil when unread
 
 	mu    sync.Mutex
 	pre   *preload // the next tier being loaded in the background, or nil
@@ -137,6 +138,7 @@ func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[
 		return nil, err
 	}
 	c := &Chain{dev: dev, gr: gr, tiers: man.Tiered(), sharing: shared != nil}
+	c.meta, _ = llm.ReadMeta(man) // conversions from before the metadata have none
 	if c.cur, err = c.load(ctx, c.tiers[0].Parts, shared); err != nil {
 		return nil, err
 	}
@@ -533,9 +535,16 @@ func (t *tier) program(ctx context.Context) decode.Program {
 	return p
 }
 
+// Meta is the metadata of the parts (llm.ReadMeta), nil for a conversion from before it.
+func (c *Chain) Meta() map[string]string { return c.meta }
+
 // Program returns the loaded tier as a decode.Program: its inputs and outputs by name (y is the
-// last part's). After Grow the program is a different one; take it again.
-func (c *Chain) Program(ctx context.Context) decode.Program { return c.cur.program(ctx) }
+// last part's) and the parts' metadata. After Grow the program is a different one; take it again.
+func (c *Chain) Program(ctx context.Context) decode.Program {
+	p := c.cur.program(ctx)
+	p.Meta = c.meta
+	return p
+}
 
 // Input returns the buffer of a model input (x, or another input such as mask).
 func (c *Chain) Input(name string) *hwnpu.Buffer { return c.cur.inputs[name] }
