@@ -475,13 +475,40 @@ static void gather_row(const bfloat16 *restrict seg, int32_t t, int32_t qo,
                        int32_t ko, int32_t vo, int32_t abo) {
   const aie::rounding_mode saved_rounding =
       aie::swap_rounding(aie::rounding_mode::conv_even);
+#ifdef GDR_PRESILU
+  // silu applied before the operator (GdnSiLU): the row's parts copied
+  for (int i = 0; i < Dk; i += L)
+    aie::store_v(blk + t * Dk + i, aie::load_unaligned_v<L>(seg + qo + i));
+  for (int i = 0; i < Dk; i += L)
+    aie::store_v(blk + R * Dk + t * Dk + i, aie::load_unaligned_v<L>(seg + ko + i));
+  for (int i = 0; i < Dv; i += L)
+    aie::store_v(blk + 2 * R * Dk + t * Dv + i, aie::load_unaligned_v<L>(seg + vo + i));
+#else
   silu_row(seg + qo, blk + t * Dk, Dk);
   silu_row(seg + ko, blk + R * Dk + t * Dk, Dk);
   silu_row(seg + vo, blk + 2 * R * Dk + t * Dv, Dv);
+#endif
   blk[2 * R * Dk + R * Dv + t] = seg[abo];
   blk[2 * R * Dk + R * Dv + R + t] = seg[abo + 1];
   aie::set_rounding(saved_rounding);
 }
+
+#ifdef GDR_SILU_N
+// GdnSiLU (iron_gdn.silu_operator): a core's part of a row, silu applied to its first
+// GDR_SILU_N channels; gdn_silu_tail's part has GDR_SILU_RAW more (a and b), left as they are.
+extern "C" void gdn_silu(const bfloat16 *restrict x, bfloat16 *restrict y) {
+  const aie::rounding_mode saved_rounding =
+      aie::swap_rounding(aie::rounding_mode::conv_even);
+  silu_row(x, y, GDR_SILU_N);
+  aie::set_rounding(saved_rounding);
+}
+
+extern "C" void gdn_silu_tail(const bfloat16 *restrict x, bfloat16 *restrict y) {
+  gdn_silu(x, y);
+  for (int i = GDR_SILU_N; i < GDR_SILU_N + GDR_SILU_RAW; i++)
+    y[i] = x[i];
+}
+#endif
 
 // A block's y of zeros: a prompt chunk's blocks past the call's rows (no rule run on them).
 extern "C" void gdn_zero_y(bfloat16 *restrict y) {
