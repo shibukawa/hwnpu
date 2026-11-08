@@ -108,7 +108,7 @@ What helped:
 
 - Every part is `all on the NPU`
 - The second and **third** starts take a few seconds (the parts stay in the compile cache). In the split form (`-paged`), Gemma 4 went from 98 s to 1.9 s. The second alone misses two programs that evict each other (16.99)
-- Record the first compile time of each part. Qwen3.5's 128 tokens a call (GDN) took 13–15 minutes the first time (not solved)
+- Record the first compile time of each part. Qwen3.5's 128 tokens a call (GDN) took 13–15 minutes the first time on an M3 and 12–27 on an M1; 64 tokens a call is no lighter (16.121)
 - On an M1, the parts' times in `HWNPU_PROFILE=1` hold steady from call to call. When the parts run in turn hold more than about 2.9 GiB, the same part varies and every call is 10× slower or more (a reload). On an M1, `-prefill auto` keeps one program when the two with the MTP layer's and the encoders' programs would hold over 2.8 GiB (16.118); a model whose program that generates holds over it alone (Qwen3.5-4B lut8, Gemma 4 E4B) gets a warning in the log (16.109, 16.112)
 - **A change to the graph that keeps the program's name raises `llm.Arch.Revision`** (the name takes `-rN`). Otherwise hwnpu-chat reuses programs converted before the change (the silu rewrite, lfm3 / plamo3 r1; the host soft cap, gemma4 r1; Anima's `ExportVersion`, 16.95, 16.113)
 - Record the KL and argmax of `hwnpu-check -package` (for each format, section 5)
@@ -250,8 +250,8 @@ Things to bring in next (they helped every model):
 
 - Two programs (generation and prompt reading) on one cache, reuse of the previous prompt, the prompt store (disk)
 - **The prompt program's output layer on the last row only** (`LastRow`, #56). PLaMo 3 and Qwen3.5 lacked it; with it, reading a document took 25 % less (16.99)
-- Speculative decoding (n-grams from the prompt, Apple / Intel; AMD with `--verify`, 4.1; drafts from the checkpoint's MTP layer with the GDN state brought back on the host, `-mtp` and `state-rows`, Apple, 16.109), the think budget (`-think-budget`), repetition detection
-- A model whose later layers write no cache (shared keys and values) gets a prompt program that stops at the last layer that writes one (`-kv-only`, `llm.CacheWriters`; Gemma 4 E2B 1.6 → 0.38 GiB, 16.112). When the two programs do not fit the Neural Engine, generation slows down too
+- Speculative decoding (n-grams from the prompt, Apple / Intel; AMD with `--verify`, 4.1; drafts from the checkpoint's MTP layer with the GDN state brought back on the host, `-mtp` and `state-rows`, Apple, 16.109; its output layer of the 32768 most frequent tokens alone, `draft-vocab`, 1.2–1.3× faster, 16.120. A new tokenizer needs its ranking from `tools/draftvocab`), the think budget (`-think-budget`), repetition detection
+- A model whose later layers write no cache (shared keys and values) gets a prompt program that stops at the last layer that writes one (`-kv-only`, `llm.CacheWriters`; Gemma 4 E2B 1.6 → 0.38 GiB, 16.112). So does one whose last layer is an attention the host runs, without that layer's MLP and the output layer (`llm.KVOnlyLayers`; Qwen3.5-2B 1.32 → 0.96 GiB, so the two fit an M1 and a 4K prompt reads 4× faster there, 16.119). When the two programs do not fit the Neural Engine, generation slows down too
 - A monotonic operation after the output layer (the soft cap) goes to the host's sampling, so that the output layer is all on the Neural Engine (`llm.LogitSoftcap`, 16.113)
 - `HWNPU_PROFILE=1` breaks a step down (ms per part, per host attention and for reading the logits, with the memory the Neural Engine holds)
 
@@ -321,6 +321,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Qwen3.5-2B at lut6: the KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), long contexts and the hwnpu-agent tasks
 - Whisper: the formats on real recordings (noise, overlapping speakers)
 - Qwen3.5-4B's lut6 (2.97 GiB) on the M1 is just over its 2.8 GiB; 0.1–0.2 GiB less (the output layer at lut4, say) would let it run at full speed (16.109)
+- Apple's prompt programs writing the caches alone (16.119) on PLaMo 3 and Qwen3.5-0.8B / 4B are not run on the real models yet
 - Apple's GPTQ codes: hwnpu-chat takes them with `-codes` and `-format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
 When results come in, update the tables in 5.3 and 5.4 and this section.
