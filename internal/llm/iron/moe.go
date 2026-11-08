@@ -51,6 +51,10 @@ type moeRoute struct {
 	pass, row []int32   // (n, top)
 	passes    []moePass
 	outs      [][]byte // each pass's experts' output (8 C rows of the hidden size, bf16)
+	// hn is the chunk's rows of the experts' input, as route read it: the command's shared
+	// expert reads it again each pass, and the arena lets the experts' output (MoEGroupDown's y)
+	// lie over it, so a pass after the first writes it back first
+	hn []byte
 }
 
 type moePass struct {
@@ -160,7 +164,7 @@ func (m *Model) moeHostRoute(v *version, h *HostStep, n int) (*moeRoute, error) 
 		return nil, err
 	}
 	rt := &moeRoute{w: make([]float32, n*top), shared: make([]float32, n),
-		pass: make([]int32, n*top), row: make([]int32, n*top)}
+		pass: make([]int32, n*top), row: make([]int32, n*top), hn: rows}
 	ids := make([]int32, n*top)
 	order := make([]int, top)
 	vals := make([]float32, L)
@@ -291,7 +295,12 @@ func (m *Model) moeHostCombine(v *version, h *HostStep, rt *moeRoute, n int) err
 func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, route, combine *HostStep, run func() error) error {
 	yr := combine.Reads[1]
 	K := combine.Reads[0].Shape[1]
-	for _, p := range rt.passes {
+	for i, p := range rt.passes {
+		if i > 0 { // the last pass's y lies over the shared expert's input
+			if err := m.writeRegion(v, route.Reads[1], rt.hn); err != nil {
+				return err
+			}
+		}
 		if err := m.writeRegion(v, route.Writes[0], p.counts); err != nil {
 			return err
 		}
