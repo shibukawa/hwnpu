@@ -4,6 +4,8 @@ import (
 	"math"
 	"runtime"
 	"sync"
+
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // Linear is a symmetrically quantized matrix: each weight is a Bits wide two's complement
@@ -49,13 +51,6 @@ func QuantizeLinear(w []float32, rows, cols, colBlock, bits int, search bool) Li
 	}
 	qmax := float32(int(1)<<(bits-1) - 1)
 	qmin := -qmax - 1
-	quant := func(v, s float32) int {
-		if s == 0 {
-			return 0
-		}
-		q := float32(math.RoundToEven(float64(v / s)))
-		return int(min(max(q, qmin), qmax))
-	}
 	// rows are independent; 4 bit rows share no byte only for even cols, so hand out rows in
 	// pairs
 	work := make(chan int, rows)
@@ -68,37 +63,41 @@ func QuantizeLinear(w []float32, rows, cols, colBlock, bits int, search bool) Li
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			q := make([]int8, colBlock)
+			scales := make([]float32, len(clips))
+			errs := make([]float32, len(clips))
 			for r0 := range work {
 				for r := r0; r < min(r0+2, rows); r++ {
 					for b := 0; b < nc; b++ {
 						blk := w[r*cols+b*colBlock : r*cols+(b+1)*colBlock]
-						var top float32
-						for _, v := range blk {
-							top = max(top, float32(math.Abs(float64(v))))
-						}
-						best, bestErr := f16(top/qmax), float32(math.Inf(1))
-						if search {
-							for _, c := range clips {
-								s := f16val(f16(top * c / qmax))
-								var e float32
-								for _, v := range blk {
-									d := v - float32(quant(v, s))*s
-									e += d * d
+						top, ok := vecops.AbsMax(blk)
+						if !ok {
+							l.Scales[r*nc+b] = quantizeNaN(q, blk, qmin, qmax, search)
+						} else {
+							best, bestErr := f16(top/qmax), float32(math.Inf(1))
+							if search {
+								for i, c := range clips {
+									scales[i] = f16val(f16(top * c / qmax))
 								}
-								if e < bestErr {
-									best, bestErr = f16(top*c/qmax), e
+								vecops.ClipErrors(errs, blk, scales, qmin, qmax)
+								for i, c := range clips {
+									if errs[i] < bestErr {
+										best, bestErr = f16(top*c/qmax), errs[i]
+									}
 								}
 							}
+							l.Scales[r*nc+b] = best
+							vecops.QuantizeSym(q, blk, f16val(best), qmin, qmax)
 						}
-						l.Scales[r*nc+b] = best
-						s := f16val(best)
-						for j, v := range blk {
-							i := r*cols + b*colBlock + j
-							q := quant(v, s)
-							if bits == 8 {
-								l.Data[i] = byte(int8(q))
-							} else {
-								l.Data[i/2] |= byte(q&0xf) << (4 * (i % 2))
+						base := r*cols + b*colBlock
+						if bits == 8 {
+							for j, v := range q {
+								l.Data[base+j] = byte(v)
+							}
+						} else {
+							for j, v := range q {
+								i := base + j
+								l.Data[i/2] |= byte(v&0xf) << (4 * (i % 2))
 							}
 						}
 					}
@@ -108,6 +107,41 @@ func QuantizeLinear(w []float32, rows, cols, colBlock, bits int, search bool) Li
 	}
 	wg.Wait()
 	return l
+}
+
+// quantizeNaN is QuantizeLinear's block with NaNs, in Go: NaNs take part in the maximum and
+// errors as they come (the vecops kernels do not promise that), and the scale is returned.
+func quantizeNaN(dst []int8, blk []float32, qmin, qmax float32, search bool) uint16 {
+	quant := func(v, s float32) int {
+		if s == 0 {
+			return 0
+		}
+		q := float32(math.RoundToEven(float64(v / s)))
+		return int(min(max(q, qmin), qmax))
+	}
+	var top float32
+	for _, v := range blk {
+		top = max(top, float32(math.Abs(float64(v))))
+	}
+	best, bestErr := f16(top/qmax), float32(math.Inf(1))
+	if search {
+		for _, c := range clips {
+			s := f16val(f16(top * c / qmax))
+			var e float32
+			for _, v := range blk {
+				d := v - float32(float32(quant(v, s))*s)
+				e = float32(e + float32(d*d))
+			}
+			if e < bestErr {
+				best, bestErr = f16(top*c/qmax), e
+			}
+		}
+	}
+	s := f16val(best)
+	for j, v := range blk {
+		dst[j] = int8(quant(v, s))
+	}
+	return best
 }
 
 // Dequantize returns the matrix the quantized values stand for.

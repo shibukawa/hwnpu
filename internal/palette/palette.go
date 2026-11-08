@@ -7,8 +7,11 @@ package palette
 import (
 	"math"
 	"runtime"
+	"slices"
 	"sort"
 	"sync"
+
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // LUT4 is a palettized matrix: Indices holds one Bits wide entry per element in row major
@@ -81,12 +84,10 @@ func QuantizeBits(w []float32, rows, cols, group, colBlock, bits, iters int, mod
 			for i := range c {
 				c[i] = f16val(out.LUT[g*k+i])
 			}
-			i := 0
-			for r := rb * group; r < (rb+1)*group; r++ {
-				for j := r*cols + cb*colBlock; j < r*cols+(cb+1)*colBlock; j++ {
-					idx[j] = uint8(nearest(c, vals[i]))
-					i++
-				}
+			ids := make([]uint8, len(vals))
+			vecops.NewThresholds(midpoints(make([]float32, k-1), c)).Assign(ids, vals)
+			for r := 0; r < group; r++ {
+				copy(idx[(rb*group+r)*cols+cb*colBlock:][:colBlock], ids[r*colBlock:(r+1)*colBlock])
 			}
 		}(g)
 	}
@@ -98,6 +99,19 @@ func QuantizeBits(w []float32, rows, cols, group, colBlock, bits, iters int, mod
 // pack packs indices of the given width, low bits first.
 func pack(idx []uint8, bits int) []byte {
 	out := make([]byte, (len(idx)*bits+7)/8)
+	switch bits {
+	case 8:
+		copy(out, idx)
+		return out
+	case 4:
+		for i := range len(idx) / 2 {
+			out[i] = idx[2*i] | idx[2*i+1]<<4
+		}
+		if len(idx)%2 == 1 {
+			out[len(out)-1] = idx[len(idx)-1]
+		}
+		return out
+	}
 	for i, q := range idx {
 		bit := i * bits
 		v := uint16(q) << (bit % 8)
@@ -131,10 +145,13 @@ func (l LUT4) index(i int) int {
 func fit(vals []float32, k, iters int, mode Mode) []float32 {
 	c := make([]float32, k)
 	if mode != KMeans {
-		lo, hi := float32(math.MaxFloat32), float32(-math.MaxFloat32)
-		for _, v := range vals {
-			lo = min(lo, v)
-			hi = max(hi, v)
+		lo, hi, ok := vecops.MinMax(vals)
+		if !ok { // NaNs: the order of min and max decides
+			lo, hi = float32(math.MaxFloat32), float32(-math.MaxFloat32)
+			for _, v := range vals {
+				lo = min(lo, v)
+				hi = max(hi, v)
+			}
 		}
 		for i := range c {
 			c[i] = lo + (hi-lo)*float32(i)/float32(k-1)
@@ -154,7 +171,7 @@ func fit(vals []float32, k, iters int, mode Mode) []float32 {
 	} else {
 		sample = append([]float32(nil), vals...)
 	}
-	sort.Slice(sample, func(i, j int) bool { return sample[i] < sample[j] })
+	sortValues(sample)
 	if sample[0] == sample[len(sample)-1] {
 		for i := range c {
 			c[i] = sample[0]
@@ -171,11 +188,16 @@ func fit(vals []float32, k, iters int, mode Mode) []float32 {
 func lloyd(c []float32, vals []float32, iters int) []float32 {
 	sum := make([]float64, len(c))
 	cnt := make([]int, len(c))
+	ids := make([]uint8, len(vals))
+	mids := make([]float32, len(c)-1)
+	var th vecops.Thresholds
 	for it := 0; it < iters; it++ {
 		clear(sum)
 		clear(cnt)
-		for _, v := range vals {
-			k := nearest(c, v)
+		th.Reset(midpoints(mids, c))
+		th.Assign(ids, vals)
+		for i, v := range vals {
+			k := ids[i]
 			sum[k] += float64(v)
 			cnt[k]++
 		}
@@ -184,23 +206,29 @@ func lloyd(c []float32, vals []float32, iters int) []float32 {
 				c[k] = float32(sum[k] / float64(cnt[k]))
 			}
 		}
-		sort.Slice(c, func(i, j int) bool { return c[i] < c[j] })
+		sortValues(c)
 	}
 	return c
 }
 
-// nearest returns the index of the closest center; c must be sorted.
-func nearest(c []float32, v float32) int {
-	lo, hi := 0, len(c)-1
-	for lo < hi {
-		mid := (lo + hi) / 2
-		if v > (c[mid]+c[mid+1])/2 {
-			lo = mid + 1
-		} else {
-			hi = mid
-		}
+// sortValues sorts x ascending. slices.Sort runs the same pdqsort as sort.Slice with <, so it
+// leaves even zeros of either sign in the same order, only without sort.Slice's indirect calls;
+// NaNs, which it orders differently, take sort.Slice.
+func sortValues(x []float32) {
+	if slices.ContainsFunc(x, func(v float32) bool { return v != v }) {
+		sort.Slice(x, func(i, j int) bool { return x[i] < x[j] })
+		return
 	}
-	return lo
+	slices.Sort(x)
+}
+
+// midpoints writes to mids the midpoints between neighbouring centers c, the thresholds of the
+// nearest center for sorted c: a value goes to the number of midpoints below it.
+func midpoints(mids, c []float32) []float32 {
+	for i := range mids {
+		mids[i] = (c[i] + c[i+1]) / 2
+	}
+	return mids
 }
 
 // Dequantize expands the matrix back to float32, for checking.
