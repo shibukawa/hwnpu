@@ -3355,3 +3355,16 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 確かめる版の内訳 (手順ごとのコマンドで、GDN を 3 回呼んでいたとき): 数行の GEMV 157 回、`Copy` 226 回 (状態 1.1 MB の写しが 1 回 0.3 ms)、RMSNorm と要素ごとの演算が 1 回 0.2 ms
 - 使い方: `iron_export_lm.py qwen35 CKPT OUT --q4 --mlp q6 --head q6 --verify 3`。`hwnpu-chat -iron OUT` は版があれば 2 つの下書きを確かめる (`HWNPU_IRON_DRAFTS=0` で使わない)
 - 残り: q4 の数行の GEMV (Gemma 4、PLaMo 3、LFM3 の 4 ビット)、Gemma 4 の共有の層 (最後の行だけの形) と窓の注意、MTP の層を下書きに (本体の隠れ状態を出し、MTP の層の版を足す)、注意を数行の MHA 1 回に、状態の写しを減らす
+
+### 16.118 M1 だけ `-prefill auto` の予算を 2.8 GiB に (`neuralEngineHold`)、一緒に読み込むプログラムも数える — 2026-11-09
+
+- 動機: M1 は、順に回す部分を Neural Engine が 2.86 GiB 持つまでは単独の合計どおりで、2.97 GiB から 1 回ごとに約 12 倍遅い (16.109、PROBE.md)。M2 は同じ大きさ (`npuprobe split -formats lut4 -parts 8 -split-layers 96,100,104,128`) で 3.65 GiB まで単独の合計どおり (46.8 / 48.6 / 50.5 / 62.2 ms、63 GB/s)。M3 も Qwen3.5-4B の lut8 (1 本 3.96 GiB) が見込みどおりの速さで、M4 は 3.62 GiB で全速。境目は M1 だけ
+- 判断: 全部のチップを 2.8 GiB にそろえると、M2 以降で LFM3-VL / Audio / Omni がプロンプト用を失い、E4B と Qwen3.5-4B は形式を下げることになる。変換するプログラムはもともとチップによらず同じファイル (部分は `-target any` の 0.99 GiB、名前にチップは入らない) なので、M1 では読み込むプログラムを減らすだけにした。Hugging Face から変換済みのものを落とす形にしても、置くファイルの組は全チップで共通で、M1 はプロンプト用を使わない
+- 変更 (`internal/chat/model.go`):
+  - `neuralEngineHold`: `machdep.cpu.brand_string` が `Apple M1` で始まれば `m1HoldBytes` (2.8 GiB)、ほかは 0 (境目なし)。M1 Pro / Max / Ultra は同じ Neural Engine なので同じに扱う (測っていない)
+  - `onePrograms`: 2 本と、一緒に読み込むプログラムの重み (`besideBytes`: MTP の層、塔は fp16) の合計が境目を超えると 1 本。コンパイルのキャッシュ (3.5 GiB) との比べは今までどおり 2 本だけで、M2 以降の判断は変わらない
+  - 生成用 1 本でも境目を超えるとき (Qwen3.5-4B の lut8、E4B の lut6) は、ログに「expect it to be slow on this machine」と出す。変換と読み込みは止めない
+  - 見積もり (`programBytes`、`besideBytes`) は実物のファイルと合う: Qwen3.5-2B の lut6 で生成用 1.321 GiB (ファイル 1.322)、MTP の層 0.400 GiB (0.400)。16.109 の 0.8B の MTP 0.26 GiB に対し、2B は 0.40 GiB
+- テスト: `TestPreparePrefill` (M1 の境目より小さい・大きい模型で 2 本と 1 本、警告)、`TestOneProgramsBeside` (一緒に読み込む分を M1 でだけ数える)、`TestBesideBytesMTP`、`TestPrepareEncoders` (塔の重みを数える)。境目の比べから一緒に読み込む分を外す改変、`neuralEngineHold` を使わない改変はどちらも落ちる
+- M1 (16 GB、macOS 27.2) で Qwen3.5-2B (lut6、MTP): 「2 programs would hold 2.64 GiB on the Neural Engine with the 0.40 GiB of the programs beside them, over the 2.8 GiB an M1 holds」で 1 本。全部 Neural Engine、Neural Engine が持つ量 0.89 GiB (読み込み直後。最初の呼び出しで載る分は含まない)、17 × 23 = 391 を 1 秒 34.5 トークン (114 の下書きのうち 62 採用)
+- 確かめていないこと: LFM3-VL / Audio / Omni を M1 で 1 本にしたときの生成と長いプロンプトの読み (別に計測中)、M1 Pro / Max / Ultra の境目、Q=8 と Q=128 を 1 つのパッケージの関数にして重みを共有できるか (できれば、どのチップでも 2 本の分が半分になる)
