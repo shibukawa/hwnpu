@@ -1,5 +1,8 @@
 package xdna
 
+// The test is x86-64 only (the file name), as cacheLine and the CLFLUSH loop are: elsewhere
+// FlushCPU does nothing.
+
 import "testing"
 
 func TestFlushCPU(t *testing.T) {
