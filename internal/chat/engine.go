@@ -38,6 +38,10 @@ type Config struct {
 	// Packages last: a conversation runs on the shortest cache that holds it and moves up as it
 	// grows, since a step costs in proportion to the cache (Setup.Tiers). Empty: Packages alone.
 	Tiers [][]string
+	// MTP is the program of the checkpoint's multi-token prediction layer (Setup.MTP), which
+	// guesses the drafts of speculative decoding from the model's final hidden states: the
+	// Packages must output them (hidden-out). Empty: drafts from the prompt alone.
+	MTP []string
 	// ModelConfig is config.json, Weights the checkpoint the token embeddings are read from,
 	// Tokenizer tokenizer.json (default: next to config.json).
 	ModelConfig, Weights, Tokenizer string
@@ -121,6 +125,7 @@ type Engine struct {
 	// drafter guesses the next tokens of a sequence, up to k (speculative decoding); nil for
 	// none. Load sets it to Lookup when the model has a program to check drafts with (Draft).
 	drafter func(seq []int32, k int) []int32
+	mtp     *mtpDrafter // the multi-token prediction layer (Config.MTP); nil for none
 	kinds   []tokenKind // Tok's tokens, for repeats; set by the first generation
 
 	ir    *iron.Model // the model of an IRON export (Config.IRON); nil for none
@@ -414,7 +419,17 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	if d := e.Draft(); d > 0 {
 		e.drafter = LookupDraft
-		logf("ready: context %d tokens%s%s, up to %d tokens per call, drafts of %d checked per call", e.Context(), caches, paged, e.sess.Q(), d)
+		how := ""
+		if len(c.MTP) > 0 {
+			t0 := time.Now()
+			if e.mtp, err = loadMTP(ctx, e, c); err != nil {
+				e.Close()
+				return nil, err
+			}
+			e.drafter = e.mtp.draft
+			how = fmt.Sprintf(" (the multi-token prediction layer's %d at most, or the prompt's; loaded in %.1fs)", e.mtp.k, time.Since(t0).Seconds())
+		}
+		logf("ready: context %d tokens%s%s, up to %d tokens per call, drafts of %d checked per call%s", e.Context(), caches, paged, e.sess.Q(), d, how)
 	} else {
 		logf("ready: context %d tokens%s%s, up to %d tokens per call", e.Context(), caches, paged, e.sess.Q())
 	}
@@ -606,6 +621,10 @@ func (e *Engine) Close() error {
 	if e.idleTimer != nil {
 		e.idleTimer.Stop()
 		e.idleTimer = nil
+	}
+	if e.mtp != nil {
+		e.mtp.close()
+		e.mtp = nil
 	}
 	if e.vis != nil {
 		e.vis.Close()
@@ -1253,9 +1272,24 @@ func (e *Engine) step(toks []int32) ([]float32, error) {
 		e.cur = seq{}
 		return nil, err
 	}
+	pos0 := len(e.cur.fed)
 	e.cur.fed = append(e.cur.fed, toks...)
 	e.cur.last = logits
+	e.recordHidden(pos0)
 	return logits, nil
+}
+
+// recordHidden gives the multi-token prediction layer the model's final hidden states of the
+// tokens the last step kept, from pos0 on.
+func (e *Engine) recordHidden(pos0 int) {
+	if e.mtp == nil {
+		return
+	}
+	var rows [][]float32
+	if ds, ok := e.sess.(*decode.Session); ok {
+		rows = ds.HiddenRows()
+	}
+	e.mtp.record(e.cur.fed, pos0, rows)
 }
 
 // rows gathers the tokens' rows: the embeddings of the tokens and of the images (negative ids).
@@ -1301,8 +1335,10 @@ func (e *Engine) speculate(toks []int32, accept func(row func(i int) []float32) 
 		e.cur = seq{}
 		return 0, err
 	}
+	pos0 := len(e.cur.fed)
 	e.cur.fed = append(e.cur.fed, toks[:kept]...)
 	e.cur.last = logits
+	e.recordHidden(pos0)
 	return kept, nil
 }
 

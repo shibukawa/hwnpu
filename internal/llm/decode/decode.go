@@ -78,6 +78,8 @@ type Session struct {
 	pos     int
 	lookups []llm.TokenInput // the model's inputs looked up per token besides x
 	last    []float32        // h after the last step, if the program outputs it
+	// lastRows is h of each kept token of the last step, when the program outputs it per row
+	lastRows [][]float32
 
 	// of a program split at its attention: the chunks of each long cache the session holds,
 	// by the cache's output (kv_NAME_new), allocated as the sequence reaches them
@@ -789,13 +791,44 @@ func (s *Session) Speculate(emb [][]float32, accept func(row func(i int) []float
 		return nil, 0, fmt.Errorf("decode: %d of %d tokens kept", kept, len(emb))
 	}
 	if kept < len(emb) && s.replaced(p) {
-		// a state replaced as a whole is the one after all the step's tokens (llm.Cached): run
-		// the kept ones again from the state before the step, which the inputs still hold
-		if p, q, err = s.run(emb[:kept], false); err != nil {
+		// a state replaced as a whole is the one after all the step's tokens (llm.Cached):
+		// bring the state before the step, which the inputs still hold, to the one after the
+		// kept tokens on the host when the program gives what each row adds to it, or run the
+		// kept ones again
+		if ok, err := s.replay(p, kept); err != nil {
 			return nil, 0, err
+		} else if !ok {
+			if p, q, err = s.run(emb[:kept], false); err != nil {
+				return nil, 0, err
+			}
 		}
 	}
 	return s.keep(p, q, kept), kept, nil
+}
+
+// replay writes into each st_NAME_new of p the state after the first n rows of the step it
+// ran, from st_NAME_rows (llm.StateReplayer), and reports whether it could: every state needs
+// its rows.
+func (s *Session) replay(p Program, n int) (bool, error) {
+	r, ok := s.m.(llm.StateReplayer)
+	if !ok {
+		return false, nil
+	}
+	var names []string
+	for name := range p.In {
+		if strings.HasPrefix(name, "st_") {
+			if _, ok := p.Out[name+"_rows"]; !ok {
+				return false, nil
+			}
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
+		if err := r.ReplayState(name, p.In[name], p.Out[name+"_rows"], p.OutShape[name+"_rows"], n, p.Out[name+"_new"]); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // replaced reports whether p has state that a step replaces as a whole (st_, llm.Cached).
@@ -1115,16 +1148,55 @@ func (s *Session) keep(p Program, q, v int) []float32 {
 		}
 	}
 	s.pos += v
-	s.last = nil
+	s.last, s.lastRows = nil, nil
 	i := v - 1
 	if rows(p) == 1 {
 		i = 0 // the program computed the last token's row alone
 	}
 	if h, ok := p.Out["h"]; ok {
-		s.last = make([]float32, s.hidden)
-		hwnpu.DecodeF16(s.last, h[2*i*s.hidden:2*(i+1)*s.hidden])
+		// h has a row per token, or only the last token's (rows of the logits)
+		hr := len(h) / (2 * s.hidden)
+		from, last := 0, i
+		if hr == q {
+			from, last = 0, v-1
+		} else {
+			from = i
+		}
+		for r := from; r <= last; r++ {
+			row := make([]float32, s.hidden)
+			hwnpu.DecodeF16(row, h[2*r*s.hidden:2*(r+1)*s.hidden])
+			s.lastRows = append(s.lastRows, row)
+		}
+		s.last = s.lastRows[len(s.lastRows)-1]
 	}
 	return s.row(p, i)
+}
+
+// HiddenRows is the final hidden states h of the last step's kept tokens, one per token, for a
+// program that outputs h for every row (llm qwen35's hidden-out); only the last token's for one
+// that outputs it for the last row alone, and nil for one without h.
+func (s *Session) HiddenRows() [][]float32 { return s.lastRows }
+
+// Truncate drops the positions from n on, which the next steps write again. Only a session whose
+// state is all KV caches that hold every position can go back without a mark: a window, a
+// state replaced as a whole or a ring would not be as it was at n.
+func (s *Session) Truncate(n int) error {
+	if n >= s.pos {
+		return nil
+	}
+	for _, c := range s.kv {
+		if !c.long {
+			return fmt.Errorf("decode: a ring cache cannot go back without a mark")
+		}
+	}
+	for name := range s.progs[0].p.In {
+		if llm.HeldInput(name) {
+			return fmt.Errorf("decode: %s cannot go back without a mark", name)
+		}
+	}
+	s.pos = max(n, 0)
+	s.last, s.lastRows = nil, nil
+	return nil
 }
 
 // rows is the number of rows of p's logits: 1 for a program that computes them after the token

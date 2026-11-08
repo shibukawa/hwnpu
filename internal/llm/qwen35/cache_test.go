@@ -14,7 +14,7 @@ import (
 // cpuProgram builds the program with a cache and runs it on the CPU interpreter as a
 // decode.Program. The inputs that hold the state between steps (llm.CacheInput) are taken from
 // shared when given, so that two programs continue one sequence.
-func cpuProgram(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options, shared map[string][]byte) decode.Program {
+func cpuProgram(t *testing.T, cfg llm.Cached, w llm.Weights, opts llm.Options, shared map[string][]byte) decode.Program {
 	t.Helper()
 	prog, ins, outs, _ := buildProgram(t, cfg, w, opts)
 	p := decode.Program{In: map[string][]byte{}, Out: map[string][]byte{}, InShape: map[string][]int{}, OutShape: map[string][]int{}}
@@ -106,6 +106,15 @@ func TestCachedMatchesFull(t *testing.T) {
 // tokens, gives the logits of the program without a cache. The recurrent states come back with
 // the mark, and the step that kept fewer tokens than it ran leaves the state after those.
 func TestShareRewindSpeculate(t *testing.T) {
+	for _, rows := range []bool{false, true} {
+		t.Run(fmt.Sprintf("state-rows %v", rows), func(t *testing.T) { testShareRewindSpeculate(t, rows) })
+	}
+}
+
+// testShareRewindSpeculate is TestShareRewindSpeculate with the programs' st_rec_N_rows
+// (state-rows), from which the host keeps the drafts' beginning without running it again: the
+// speculation is then one call.
+func testShareRewindSpeculate(t *testing.T, stateRows bool) {
 	cfg := tinyConfig(t)
 	w := llm.NewSynthetic(cfg)
 	tokens := []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3}
@@ -115,8 +124,15 @@ func TestShareRewindSpeculate(t *testing.T) {
 	full := runCPU(t, cfg, w, llm.Options{Seq: n, Format: "fp16"}, emb[:n*cfg.HiddenSize])
 	row := func(i int) []float32 { return emb[i*cfg.HiddenSize : (i+1)*cfg.HiddenSize] }
 	const cache = 16
-	short := cpuProgram(t, cfg, w, llm.Options{Seq: 1, Cache: cache, Format: "fp16"}, nil)
-	long := cpuProgram(t, cfg, w, llm.Options{Seq: 4, Cache: cache, Format: "fp16"}, short.In)
+	var params map[string]string
+	if stateRows {
+		params = map[string]string{"state-rows": "1"}
+	}
+	short := cpuProgram(t, cfg, w, llm.Options{Seq: 1, Cache: cache, Format: "fp16", Params: params}, nil)
+	long := cpuProgram(t, cfg, w, llm.Options{Seq: 4, Cache: cache, Format: "fp16", Params: params}, short.In)
+	calls := 0
+	run := long.Run
+	long.Run = func() error { calls++; return run() }
 	s, err := decode.New(short, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +170,7 @@ func TestShareRewindSpeculate(t *testing.T) {
 	}
 	// tokens 5, 6 and then two drafts that are not the sequence's: only 5 and 6 are kept
 	e := [][]float32{row(5), row(6), row(n), row(n + 1)}
+	calls = 0
 	logits, kept, err := s.Speculate(e, func(r func(i int) []float32) int {
 		check(r(0), 5)
 		check(r(1), 6)
@@ -163,6 +180,9 @@ func TestShareRewindSpeculate(t *testing.T) {
 		t.Fatalf("speculate kept %d to position %d, %v; want 2 to 7", kept, s.Pos(), err)
 	}
 	check(logits, 6)
+	if want := map[bool]int{false: 2, true: 1}[stateRows]; calls != want {
+		t.Errorf("the speculation took %d calls, want %d", calls, want)
+	}
 	for i := 7; i < n; i++ {
 		step(i)
 	}

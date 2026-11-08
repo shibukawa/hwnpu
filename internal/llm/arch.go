@@ -148,6 +148,18 @@ type Cached interface {
 	StepInputs(pos, valid, q, cache int) map[string][]float32
 }
 
+// StateReplayer is a Cached model whose program can also output, for a state replaced as a whole
+// (st_NAME), st_NAME_rows: what each of the step's rows adds to it. From that, the host brings
+// the state before a step to the one after the step's first n tokens, which the program cannot
+// give, instead of running those tokens again (speculative decoding keeps a beginning of a
+// step's tokens).
+type StateReplayer interface {
+	// ReplayState writes into after the state st_NAME (name) after the first n rows of a step,
+	// from before, the state before the step, and rows, the program's st_NAME_rows of shape
+	// rowShape; all fp16.
+	ReplayState(name string, before, rows []byte, rowShape []int, n int, after []byte) error
+}
+
 // CacheInput reports whether a program input holds state the host keeps between steps (Cached):
 // a KV cache (kv_), a window (win_) or a state replaced as a whole (st_). The programs of one
 // model that take different numbers of tokens per step share these buffers.

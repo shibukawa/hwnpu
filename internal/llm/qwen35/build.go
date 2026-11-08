@@ -16,6 +16,15 @@ type builder struct {
 	opts llm.Options
 	seq  int
 	d    int
+	// mtp builds the multi-token prediction layer (MTP) instead of the model: its one layer, a
+	// full attention layer, is mtp.layers.0.
+	mtp bool
+	// hiddenOut makes a program with a KV cache also output h, the final hidden state of every
+	// row (after the last norm), which the MTP layer reads (Arch param hidden-out).
+	hiddenOut bool
+	// stateRows makes a program with a KV cache also output st_rec_N_rows, the rows' inputs of
+	// each Gated DeltaNet's delta rule (Arch param state-rows, Config.ReplayState).
+	stateRows bool
 	// With a KV cache (opts.Cache): the inputs and outputs besides x and y.
 	ins     map[string]*mlpackage.Var
 	inList  []mlpackage.Feature
@@ -72,14 +81,23 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 // keys and values kv_k_N_new and kv_v_N_new and its output gate attn_gate_N (1, seq, heads,
 // head_dim), and the next part takes the attention's output attn_o_N and the gate.
 func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
+	return buildCached(b, cfg, w, opts, false, Arch.Param(opts, "hidden-out") == "1")
+}
+
+// buildCached is BuildCached of the model, or with mtp of its MTP layer (MTP.BuildCached).
+func buildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options, mtp, hiddenOut bool) (ins, outs []mlpackage.Feature, err error) {
+	layers := cfg.NumLayers
+	if mtp {
+		layers = 2 // the front and the decoder layer (MTP.Layers)
+	}
 	if opts.Group == 0 {
 		opts.Group = 16
 	}
 	if opts.Format == "" {
 		opts.Format = Arch.Format
 	}
-	if opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers {
-		opts.Layers = cfg.NumLayers - opts.Start
+	if opts.Layers <= 0 || opts.Start+opts.Layers > layers {
+		opts.Layers = layers - opts.Start
 	}
 	if opts.Paged > 0 && opts.Cache <= 0 {
 		return nil, nil, fmt.Errorf("qwen35: a program split at its attention (Paged) needs a KV cache")
@@ -90,7 +108,7 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 	if _, chunked := llm.CacheChunks(opts.Cache); opts.Cache > 0 && opts.Paged == 0 && chunked {
 		return nil, nil, fmt.Errorf("qwen35: a KV cache of %d is over the Neural Engine's dimension limit; split the model at its attention (Paged) for a longer one", opts.Cache)
 	}
-	m := &builder{Graph: &blocks.Graph{Name: "qwen35", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, ins: map[string]*mlpackage.Var{}}
+	m := &builder{Graph: &blocks.Graph{Name: "qwen35", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, mtp: mtp, hiddenOut: hiddenOut, stateRows: !mtp && Arch.Param(opts, "state-rows") == "1", ins: map[string]*mlpackage.Var{}}
 	err = blocks.Run(func() {
 		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
 		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
@@ -100,20 +118,43 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 				h = m.afterAttention(i, h) // the host attended between the parts
 				continue
 			}
+			if m.mtp && i == 0 {
+				h = m.mtpInput(h)
+				continue
+			}
 			h = m.decoderLayer(i, h)
 		}
-		if end := opts.Start + opts.Layers; end < cfg.NumLayers && m.paged(end) {
+		if end := opts.Start + opts.Layers; end < layers && m.paged(end) {
 			m.beforeAttention(end, h) // the host attends next; y is the hidden state entering end
 		}
 		var y *mlpackage.Var
 		switch {
-		case opts.Start+opts.Layers < cfg.NumLayers || opts.NoHead:
+		case opts.Start+opts.Layers < layers || opts.NoHead:
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		default:
-			if opts.LastRow {
-				h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+			norm := cfg.prefix() + "norm.weight"
+			if m.mtp {
+				norm = "mtp.norm.weight"
 			}
-			h = m.norm(h, cfg.prefix()+"norm.weight")
+			if m.hiddenOut && !m.mtp && opts.Cache > 0 {
+				// h of every row, which the MTP layer reads after each token, then the logits
+				// of the rows the program computes them for
+				h = m.norm(h, norm)
+				m.output(h, "h")
+				if opts.LastRow {
+					h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+				}
+			} else {
+				if opts.LastRow {
+					h = m.LastRow(h, m.input("last", 1, 1, m.seq))
+				}
+				h = m.norm(h, norm)
+				if m.mtp && opts.Cache > 0 && !opts.Hidden {
+					// the MTP layer's own final hidden state, which it reads in place of the
+					// model's for the drafts after the first
+					m.output(h, "h")
+				}
+			}
 			if opts.Hidden {
 				y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 			} else {
@@ -129,6 +170,29 @@ func BuildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 	return ins, outs, err
 }
 
+// layer is the prefix of layer i's tensors: the model's layers.N., or mtp.layers.0. for the MTP
+// model, whose layer 1 it is.
+func (m *builder) layer(i int) string {
+	if m.mtp {
+		return "mtp.layers.0."
+	}
+	return fmt.Sprintf("%slayers.%d.", m.cfg.prefix(), i)
+}
+
+// linear reports whether layer i is a Gated DeltaNet layer; the MTP layer is full attention.
+func (m *builder) linear(i int) bool { return !m.mtp && m.cfg.IsLinear(i) }
+
+// mtpInput is layer 0 of the MTP model, the front of Qwen3_5MultiTokenPredictor (vLLM's
+// qwen3_5_mtp.py): the embedding x of the token after a position and the model's final hidden
+// state at the position, hid (1, seq, hidden), each through its zero centered RMS norm,
+// concatenated (the embedding first) and projected back to the hidden size by fc.
+func (m *builder) mtpInput(x *mlpackage.Var) *mlpackage.Var {
+	e := m.norm(x, "mtp.pre_fc_norm_embedding.weight")
+	h := m.norm(m.input("hid", 1, m.seq, m.d), "mtp.pre_fc_norm_hidden.weight")
+	cat := m.Op("concat", map[string]any{"values": []*mlpackage.Var{e, h}, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, m.seq, 2*m.d)
+	return m.Linear(cat, "mtp.fc.weight", "", m.d)
+}
+
 // norm is Qwen3_5RMSNorm, zero centered: x normalized times 1 + w.
 func (m *builder) norm(x *mlpackage.Var, name string) *mlpackage.Var {
 	n := x.Shape[len(x.Shape)-1]
@@ -142,10 +206,10 @@ func (m *builder) norm(x *mlpackage.Var, name string) *mlpackage.Var {
 // decoderLayer is Qwen3_5DecoderLayer: the token mixer (Gated DeltaNet or full attention) and
 // the MLP, each after its norm and added to the residual.
 func (m *builder) decoderLayer(i int, h *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("%slayers.%d.", m.cfg.prefix(), i)
+	p := m.layer(i)
 	residual := h
 	h = m.norm(h, p+"input_layernorm.weight")
-	if m.cfg.IsLinear(i) {
+	if m.linear(i) {
 		h = m.gatedDeltaNet(i, h)
 	} else {
 		h = m.attention(i, h)
@@ -156,7 +220,7 @@ func (m *builder) decoderLayer(i int, h *mlpackage.Var) *mlpackage.Var {
 // layerRest is a layer after its token mixer (h) given the residual: the residual add and the
 // MLP after its norm.
 func (m *builder) layerRest(i int, h, residual *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("%slayers.%d.", m.cfg.prefix(), i)
+	p := m.layer(i)
 	h = m.Op("add", map[string]any{"x": h, "y": residual}, h.Shape...)
 	residual = h
 	f := m.norm(h, p+"post_attention_layernorm.weight")
@@ -201,14 +265,14 @@ func (m *builder) const16(name string, shape []int, vals []float32) *mlpackage.V
 
 // paged reports whether layer i's attention runs on the host between the parts (Options.Paged).
 func (m *builder) paged(i int) bool {
-	return m.opts.Paged > 0 && m.opts.Cache > 0 && !m.cfg.IsLinear(i)
+	return m.opts.Paged > 0 && m.opts.Cache > 0 && !m.linear(i)
 }
 
 // beforeAttention is the start of layer i, whose attention the host runs (llm.Paged): it outputs
 // the queries attn_q_N, the step's keys and values kv_k_N_new and kv_v_N_new, and the output gate
 // attn_gate_N for the next part.
 func (m *builder) beforeAttention(i int, h *mlpackage.Var) {
-	p := fmt.Sprintf("%slayers.%d.", m.cfg.prefix(), i)
+	p := m.layer(i)
 	q, k, v, gate := m.qkvGate(i, m.norm(h, p+"input_layernorm.weight"))
 	m.output(q, fmt.Sprintf("attn_q_%d", i))
 	m.output(k, fmt.Sprintf("kv_k_%d_new", i))
@@ -255,7 +319,7 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 // seq, head_dim) with the QK norms and RoPE, and the output gate (1, seq, heads, head_dim), from
 // the normed hidden state.
 func (m *builder) qkvGate(i int, h *mlpackage.Var) (q, k, v, gate *mlpackage.Var) {
-	p := fmt.Sprintf("%slayers.%d.self_attn.", m.cfg.prefix(), i)
+	p := m.layer(i) + "self_attn."
 	s, nh, nkv, hd := m.seq, m.cfg.NumHeads, m.cfg.NumKVHeads, m.cfg.HeadDim
 	rot := m.cfg.RotaryDim()
 	var cos, sin *mlpackage.Var
@@ -288,7 +352,7 @@ func (m *builder) qkvGate(i int, h *mlpackage.Var) (q, k, v, gate *mlpackage.Var
 // attnOutput is the attention's output o (1, heads, seq, head_dim) times sigmoid of the gate
 // (1, seq, heads, head_dim), through o_proj.
 func (m *builder) attnOutput(i int, o, gate *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("%slayers.%d.self_attn.", m.cfg.prefix(), i)
+	p := m.layer(i) + "self_attn."
 	s, nh, hd := m.seq, m.cfg.NumHeads, m.cfg.HeadDim
 	o = m.swap12(o) // (1, s, nh, hd)
 	o = m.Op("mul", map[string]any{"x": o, "y": m.Op("sigmoid", map[string]any{"x": gate}, gate.Shape...)}, o.Shape...)
@@ -303,7 +367,7 @@ func (m *builder) attnOutput(i int, o, gate *mlpackage.Var) *mlpackage.Var {
 // exp(-exp(A_log) * softplus(a + dt_bias)) and the write strength sigmoid(b), and its output goes
 // through an RMS norm per head gated by silu(z) to out_proj.
 func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("%slayers.%d.linear_attn.", m.cfg.prefix(), i)
+	p := m.layer(i) + "linear_attn."
 	c := m.cfg
 	s, hk, hv, dk, dv := m.seq, c.LinearKeyHeads, c.LinearValueHeads, c.LinearKeyDim, c.LinearValueDim
 	kd, vd := c.keyDim(), c.valueDim()
@@ -365,9 +429,16 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 	if m.opts.Cache > 0 {
 		state = m.input(fmt.Sprintf("st_rec_%d", i), 1, hv, dk, dv)
 	}
-	o, state := m.deltaRule(q, k, v, perHead(decay), perHead(beta), state)
+	decayH, betaH := perHead(decay), perHead(beta)
+	o, state := m.deltaRule(q, k, v, decayH, betaH, state)
 	if m.opts.Cache > 0 {
 		m.output(state, fmt.Sprintf("st_rec_%d_new", i))
+		if m.stateRows {
+			// what each row adds to the state, for the host to bring the state before the step
+			// to the one after a beginning of its rows (ReplayState): k, v, beta and the decay
+			rows := m.Op("concat", map[string]any{"values": []*mlpackage.Var{k, v, betaH, decayH}, "axis": m.B.ScalarI32(3), "interleave": m.B.ScalarBool(false)}, 1, hv, s, dk+dv+2)
+			m.output(rows, fmt.Sprintf("st_rec_%d_rows", i))
+		}
 	}
 
 	// Qwen3_5RMSNormGated over each head, norm(o) * w * silu(z), of o / oScale, normalized as o / oNormIn with eps grown by
@@ -409,7 +480,7 @@ func (m *builder) softplus(x *mlpackage.Var) *mlpackage.Var {
 // zeros, or with a cache by the last rows before the step (win_conv_N, output with the step's
 // rows as win_conv_N_new).
 func (m *builder) causalConv(i int, x *mlpackage.Var) *mlpackage.Var {
-	p := fmt.Sprintf("%slayers.%d.linear_attn.", m.cfg.prefix(), i)
+	p := m.layer(i) + "linear_attn."
 	s, ch, k := m.seq, x.Shape[2], m.cfg.ConvKernel
 	cw := m.Get(p+"conv1d.weight", ch, 1, k)
 	padded := x

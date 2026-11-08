@@ -18,8 +18,18 @@ import (
 // convertPaged converts the model split at its attention with hwnpu-convert's code path.
 func convertPaged(t *testing.T, cfg *Config, w llm.Weights, q, cache, chunk int) *llm.Manifest {
 	t.Helper()
+	return convertPagedModel(t, cfg, w, q, cache, chunk)
+}
+
+// convertPagedModel is convertPaged for the model or its MTP layer.
+func convertPagedModel(t *testing.T, m llm.Model, w llm.Weights, q, cache, chunk int) *llm.Manifest {
+	t.Helper()
+	a := Arch
+	if _, ok := m.(*MTP); ok {
+		a = MTPArch
+	}
 	opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, Format: "fp16"}
-	path, err := llm.Convert(Arch, cfg, w, filepath.Join(t.TempDir(), "m.mlpackage"), "none", 0, opts, io.Discard)
+	path, err := llm.Convert(a, m, w, filepath.Join(t.TempDir(), "m.mlpackage"), "none", 0, opts, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

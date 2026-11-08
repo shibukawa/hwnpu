@@ -55,6 +55,11 @@ type Config struct {
 	// Mixture of experts settings of the MoE models (Qwen3.5-35B-A3B and up), rejected.
 	NumExperts int `json:"num_experts"`
 
+	// The multi-token prediction layers (mtp.), which the MTP model (-arch qwen35-mtp) reads:
+	// how many, and whether they have an embedding table of their own.
+	MTPLayers        int  `json:"mtp_num_hidden_layers"`
+	MTPOwnEmbeddings bool `json:"mtp_use_dedicated_embeddings"`
+
 	// Prefix begins the names of the text model's tensors: "model.language_model." in an image
 	// and text checkpoint, "model." in a text only one.
 	Prefix string `json:"-"`

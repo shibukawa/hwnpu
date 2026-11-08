@@ -16,9 +16,26 @@ var Arch = &llm.Arch{
 	Format:        "lut8",
 	LastRow:       true,
 	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	Params: []llm.Param{
+		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state of every row, which the MTP layer (-arch qwen35-mtp) reads for speculative decoding"},
+		{Name: "state-rows", Default: "0", Usage: "1: a program with a KV cache also outputs st_rec_N_rows, each row's k, v, beta and decay of the Gated DeltaNet layer N, so that the host keeps a beginning of a step's tokens without running them again (speculative decoding)"},
+	},
 }
 
-func init() { llm.Register(Arch) }
+// MTPArch registers the multi-token prediction layer of a Qwen3.5 checkpoint (mtp.) as a model of
+// its own, which guesses the token after next for speculative decoding; it is chosen with -arch.
+var MTPArch = &llm.Arch{
+	Name:       "qwen35-mtp",
+	Title:      "Qwen3.5 multi-token prediction",
+	Format:     "lut8",
+	LastRow:    true,
+	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseMTP(raw) },
+}
+
+func init() {
+	llm.Register(Arch)
+	llm.Register(MTPArch)
+}
 
 // Hidden is the hidden size.
 func (c *Config) Hidden() int { return c.HiddenSize }

@@ -89,10 +89,11 @@ func TestPrepareQwen35(t *testing.T) {
 		t.Fatalf("packages %q", c.Packages)
 	}
 	// the program that reads prompts takes a chunk per call, and computes the logits after the
-	// last token alone (llm.Options.LastRow)
-	for i, name := range []string{"q8", "q96-last"} {
+	// last token alone (llm.Options.LastRow); the one that checks drafts also outputs what each
+	// row adds to the Gated DeltaNet's state (-sr, state-rows)
+	for i, name := range []string{"sr-c96-q8", "c96-q96-last"} {
 		p, q := c.Packages[i], []int{8, 96}[i]
-		if want := fmt.Sprintf("qwen35-fp16-p96-c96-%s.parts.json", name); filepath.Base(p) != want {
+		if want := fmt.Sprintf("qwen35-fp16-p96-%s.parts.json", name); filepath.Base(p) != want {
 			t.Errorf("package %s, want %s", filepath.Base(p), want)
 		}
 		man, err := llm.ReadManifest(p)
