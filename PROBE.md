@@ -215,6 +215,16 @@ K tokens per call (`npuprobe verify -formats lut4 -layers 16`, 0.97 B weights in
 - int8 and fp16 run at full speed too: every format reads its weights at about 60 GB/s (0.49 B fp16: 15.9 ms). On the M3 only lut4 did, and the chip makes the difference, not the OS: rerun on the M3 with the M2's macOS 27.2 (the same Core ML, Build 26B123), `npuprobe bench` still gives int8 on the Neural Engine 42.2 ms at 16 layers (23 GB/s) and fp16 45.6 ms at 8 layers (21 GB/s), as on 27.0.1, and only lut4 7.6 ms (64 GB/s) (report: [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)).
 - lut4 put on the CPU over the limit is as slow as on the M3 (40 layers 6.3 s a call, 48 layers 17.7 s).
 - Compiling takes longer than on the M3 (lut4 32 layers: 25 s).
+- **No limit on the total of parts run in turn, unlike the M1** (`npuprobe split -formats lut4 -parts 8 -ref none -split-layers N`, 2026-11-09; the same sizes as the M1's table below; reports: [96](npu_profiles/npuprobe-m2-split-96.md), [100](npu_profiles/npuprobe-m2-split-100.md), [104](npu_profiles/npuprobe-m2-split-104.md), [128](npu_profiles/npuprobe-m2-split-128.md) layers). Up to 3.62 GiB, the parts loaded at once and run one after another take their own times added up, at 63 GB/s:
+
+| total | parts | Neural Engine holds | ms/token | parts alone added up | weights GB/s |
+|---|---|---|---|---|---|
+| 2.72 GiB | 8 × 0.34 | 2.74 GiB | 46.8 | 47.4 | 62 |
+| 2.83 GiB | 8 × 0.35 | 2.85 GiB | 48.6 | 49.2 | 63 |
+| 2.95 GiB | 8 × 0.37 | 2.97 GiB | 50.5 | 51.2 | 63 |
+| 3.62 GiB | 8 × 0.45 | 3.65 GiB | 62.2 | 62.4 | 63 |
+
+  So the M1 alone slows down past about 2.9 GiB; the M2, the M3 (Qwen3.5-4B in lut8, 3.96 GiB in one program, at its expected 8 tokens/s, docs/design.md 16.88) and the M4 (3.62 GiB) do not.
 
 ### Apple M1 (MacBook Pro 13", 16 GB, macOS 27.2)
 
@@ -249,7 +259,7 @@ K tokens per call (`npuprobe verify -formats lut4 -layers 16`, 0.97 B weights in
 | 3.17 GiB | 8 × 0.40 | 3.20 GiB | 814 | 77.0 | 4 |
 | 3.62 GiB | 8 × 0.45 | 3.66 GiB | 1010 | 86.3 | 4 |
 
-  So on the M1 a model's programs that run in turn should hold under about 2.8 GiB on the Neural Engine. Qwen3.5-4B in lut8 (3.96 GiB) and lut6 (2.95 GiB) are over it and generate at about 1 token/s; in lut4 (1.96 GiB) at 10.9 (docs/design.md 16.109).
+  So on the M1 a model's programs that run in turn should hold under about 2.8 GiB on the Neural Engine. The M2 has no such limit (above). Qwen3.5-4B in lut8 (3.96 GiB) and lut6 (2.95 GiB) are over it and generate at about 1 token/s; in lut4 (1.96 GiB) at 10.9 (docs/design.md 16.109).
 
 ### Apple M4
 

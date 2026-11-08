@@ -215,6 +215,16 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - int8 と fp16 も全速で動きました。どの形式も重みを約 60 GB/s で読みます（0.49 B の fp16 で 15.9 ms）。M3 で全速だったのは lut4 だけです。違いは OS ではなくチップによります。M3 を M2 と同じ macOS 27.2（Core ML も同じ Build 26B123）にして `npuprobe bench` を測り直しても、Neural Engine の int8 は 16 層で 42.2 ms（23 GB/s）、fp16 は 8 層で 45.6 ms（21 GB/s）と 27.0.1 のときと変わらず、lut4 だけが 7.6 ms（64 GB/s）でした（レポートは [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)）。
 - 上限を超えて CPU に置かれた lut4 は、M3 と同じく極端に遅くなります（40 層で 1 回 6.3 秒、48 層で 17.7 秒）。
 - コンパイルは M3 より長くかかります（lut4 の 32 層で 25 秒）。
+- **M1 と違い、部分を順に回すときの合計の上限はありません**（`npuprobe split -formats lut4 -parts 8 -ref none -split-layers N`、2026-11-09。下の M1 の表と同じ大きさ。レポートは [96](npu_profiles/npuprobe-m2-split-96.md)、[100](npu_profiles/npuprobe-m2-split-100.md)、[104](npu_profiles/npuprobe-m2-split-104.md)、[128](npu_profiles/npuprobe-m2-split-128.md) 層）。3.62 GiB まで、全部を読み込んで順に回した時間は単独の合計どおりで、63 GB/s で読みます:
+
+| 合計 | 部分 | Neural Engine が持つ量 | ms/token | 単独で回した時間の合計 | 重みの GB/s |
+|---|---|---|---|---|---|
+| 2.72 GiB | 8 × 0.34 | 2.74 GiB | 46.8 | 47.4 | 62 |
+| 2.83 GiB | 8 × 0.35 | 2.85 GiB | 48.6 | 49.2 | 63 |
+| 2.95 GiB | 8 × 0.37 | 2.97 GiB | 50.5 | 51.2 | 63 |
+| 3.62 GiB | 8 × 0.45 | 3.65 GiB | 62.2 | 62.4 | 63 |
+
+  約 2.9 GiB を超えて遅くなるのは M1 だけです。M2、M3（Qwen3.5-4B の lut8、1 本で 3.96 GiB が見込みどおり 8 tokens/s、docs/design.md 16.88）、M4（3.62 GiB）は遅くなりません。
 
 ### Apple M1（MacBook Pro 13 インチ、16 GB、macOS 27.2）
 
@@ -249,7 +259,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 | 3.17 GiB | 8 × 0.40 | 3.20 GiB | 814 | 77.0 | 4 |
 | 3.62 GiB | 8 × 0.45 | 3.66 GiB | 1010 | 86.3 | 4 |
 
-  なので M1 では、順に回すプログラムの重みを Neural Engine の上で約 2.8 GiB 未満にします。Qwen3.5-4B の lut8（3.96 GiB）と lut6（2.95 GiB）はこれを超えて生成が約 1 トークン/秒、lut4（1.96 GiB）なら 10.9 です（docs/design.md 16.109）。
+  なので M1 では、順に回すプログラムの重みを Neural Engine の上で約 2.8 GiB 未満にします。M2 にはこの上限はありません（上）。Qwen3.5-4B の lut8（3.96 GiB）と lut6（2.95 GiB）はこれを超えて生成が約 1 トークン/秒、lut4（1.96 GiB）なら 10.9 です（docs/design.md 16.109）。
 
 ### Apple M4
 

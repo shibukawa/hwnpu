@@ -37,7 +37,7 @@ Estimate from config.json alone, with the formula and criteria in sections 2 and
 - **Time per token (ANE)** ≈ weight bytes ÷ 65 GB/s + layers that compute attention over the long capacity × 0.22 ms (the `SDPAGrouped` form) × capacity / 1K + 3 ms
   - Sharing KV does not reduce how many attentions are computed (only memory). Window, short-convolution, Mamba2 and GDN layers do not depend on the capacity
 - **Time per token (AMD)**: generation is bound by the count of operators, not by the weight bytes (Qwen3.5-0.8B 82–86 ms at bf16, q4 and q6 alike; PLaMo 3 2B q4 85 ms; Qwen3.6-35B-A3B's 40 layers 172 ms where reading the weights alone would take about 33 ms). Estimate from the layer count and the times of models already in (16.104, 16.107, 16.92)
-- **Weights**: lut4 0.5 B, lut6 0.75 B, lut8 1 B a weight. On an M3 (16 GB), keep resident memory under 3 GiB. On AMD, 4 bits (q4nx at 5 bits + attention at q8) pins 1/2–1/5 of bf16. On an M1 (16 GB), keep the total weights the Neural Engine holds for the parts run in turn under 2.9 GiB: past it every call is about 12× slower (Qwen3.5-4B lut6 at 2.97 GiB 1.1 tok/s, lut4 at 1.99 GiB 10.9; an M4 ran 3.62 GiB at full speed, 16.109)
+- **Weights**: lut4 0.5 B, lut6 0.75 B, lut8 1 B a weight. On an M3 (16 GB), keep resident memory under 3 GiB. On AMD, 4 bits (q4nx at 5 bits + attention at q8) pins 1/2–1/5 of bf16. On an M1 (16 GB), keep the total weights the Neural Engine holds for the parts run in turn under 2.9 GiB: past it every call is about 12× slower (Qwen3.5-4B lut6 at 2.97 GiB 1.1 tok/s, lut4 at 1.99 GiB 10.9; the M2 and the M4 ran 3.62 GiB at full speed, 16.109, PROBE.md)
 - **Vocabulary**: the output layer is vocabulary × hidden. The linear takes a 262144 axis on the ANE, but elementwise operations after it fall to the CPU. Leave a monotonic one (the soft cap) to the host (Gemma 4, 16.113)
 - **Structures that cannot be used**: MoE routing (`gather`), learned sparse attention, variable shapes. MoE runs on AMD (Qwen3.6-35B-A3B: the routing on the device while generating, on the host for prompts, 16.89–16.93, 16.110)
 - **Layers the checkpoint carries for drafting** (Qwen3.5's `mtp.`): do not drop them at conversion. As drafts they beat prompt lookup (Qwen3.5-0.8B on the M1: 26.1 → 43.8 tok/s on code, 16.109)
@@ -109,6 +109,8 @@ What helped:
 - Every part is `all on the NPU`
 - The second and **third** starts take a few seconds (the parts stay in the compile cache). In the split form (`-paged`), Gemma 4 went from 98 s to 1.9 s. The second alone misses two programs that evict each other (16.99)
 - Record the first compile time of each part. Qwen3.5's 128 tokens a call (GDN) took 13–15 minutes the first time (not solved)
+- On an M1, the parts' times in `HWNPU_PROFILE=1` hold steady from call to call. When the parts run in turn hold more than about 2.9 GiB, the same part varies and every call is 10× slower or more (a reload). On an M1, `-prefill auto` keeps one program when the two with the MTP layer's and the encoders' programs would hold over 2.8 GiB (16.118); a model whose program that generates holds over it alone (Qwen3.5-4B lut8, Gemma 4 E4B) gets a warning in the log (16.109, 16.112)
+- **A change to the graph that keeps the program's name raises `llm.Arch.Revision`** (the name takes `-rN`). Otherwise hwnpu-chat reuses programs converted before the change (the silu rewrite, lfm3 / plamo3 r1; the host soft cap, gemma4 r1; Anima's `ExportVersion`, 16.95, 16.113)
 - Record the KL and argmax of `hwnpu-check -package` (for each format, section 5)
 
 ## 4. The AMD (IRON) and Intel forms
@@ -196,6 +198,8 @@ Keep the format and raise accuracy by choosing the codes (levels) better. The fo
 
 **Weights the calibration leaves out**: the converter rounds every weight in the format, the ones MODELS does not name too. Gemma 4's `per_layer` projections (41M) at lut6 cost a lot next to GPTQ: `-format-for per_layer=lut8` (+0.01 GiB) took the median KL on the ANE 0.13 → 0.08 (16.114). Look for small projections outside the q4 / q8 lists and keep them a step up.
 
+**Calibrate every projection**: `q4_gptq.py` without `--q8 gptq` leaves the attention and convolution projections rounded (LFM3: codes for 73 of 143 weights; with it 143, and the English KL 0.255 → 0.247, 16.95). A model loaded lean for a 16 GB Mac must first match transformers' logits (KL 0.003 or less, the same top-1): Gemma 4's `layer_scalar` buffers were missed at first and broke the answers (16.114).
+
 **Matching the codes**: codes are looked up by a hash of the checkpoint weight's shape and bf16 values (`iron_q4.weight_key` = `palette.WeightKey`). If the export reorders or concatenates weights, they do not match. Check the count in the export's log, "N weights took the chosen codes" (LFM3-VL: 73; the q8 parts are rounded by default and not included). A weight quantized as one, like PLaMo 3's `gate_up_proj`, matches.
 
 ### 5.4 Choosing the format
@@ -214,6 +218,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 
 - Make fp16 the reference. When fp16 does not fit a part (0.97 GiB; Qwen3.5-2B's last layer with its output layer of a 248K vocabulary is 1.04 GiB), use lut8 (`hwnpu-formats -ref lut8`) and check lut8 itself by its KL against HF on the CPU
 - On a short text, perplexity can be lower quantized (Qwen3.5's lut6). Compare by agreement with the reference
+- npuprobe's read speed per format is not the model's: on the M1, npuprobe reads int8 at 62 GB/s, but Gemma 4 E2B's parts read it at about 48 GB/s, so int8 was slower than lut6 by its extra bytes (16.112). Measure the real parts with `HWNPU_PROFILE=1` before choosing a format for speed
 - When a smaller format brings the two programs (8 tokens per call and the one for prompts) under the compile cache (about 3.5 GiB), `-prefill auto` goes from one program to two (Qwen3.5-2B at lut6). Measure the resident memory and the first compile again
 - The format may differ by size: within one architecture, decide it per checkpoint with `Formatter` (the config's `Format()`; LFM3 and its VL, Qwen3.5's 2B against the 0.8B and 4B)
 
@@ -222,7 +227,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 | What to measure | Tools | Lesson |
 |---|---|---|
 | AMD pinned memory (the rise of `Unevictable`) | `/proc/meminfo` (not in RSS), the banks in the export's `manifest.json` | Mostly weights and work areas. KV is under 5 % |
-| The Mac's `phys_footprint` and the memory the Neural Engine holds | `npuprobe split`, `hwnpu-chat`'s loading log, `HWNPU_PROFILE=1` | The weights are in the kernel's wired memory, read with `mem.NPUWired` (16.95). When two programs do not fit there, a part of generation is loaded again on every call (Gemma 4 on the M1, 16.112) |
+| The Mac's `phys_footprint` and the memory the Neural Engine holds | `npuprobe split`, `hwnpu-chat`'s loading log, `HWNPU_PROFILE=1` | The weights are in the kernel's wired memory, read with `mem.NPUWired` (16.95). Programs Core ML has just compiled come onto it at their first call, not at loading (LFM3: 0.27 GiB after loading, 2.43 GiB after one call), so measure after one call. When two programs do not fit there, a part of generation is loaded again on every call (Gemma 4 on the M1, 16.112) |
 | Size of conversation marks | | Copy only the ring rows in use (`ringRows`, 578 → 183 MB) |
 | Right after a conversion | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
 | KV size and context | | Past 1/4 of physical memory, shrink by whole chunks |
@@ -250,7 +255,9 @@ Things to bring in next (they helped every model):
 - A monotonic operation after the output layer (the soft cap) goes to the host's sampling, so that the output layer is all on the Neural Engine (`llm.LogitSoftcap`, 16.113)
 - `HWNPU_PROFILE=1` breaks a step down (ms per part, per host attention and for reading the logits, with the memory the Neural Engine holds)
 
-Compare only pairs measured back to back under the same conditions (on the M3 swap, on AMD the power state, make numbers vary by up to 1.4×). On AMD, check first that no other process holds `/dev/accel` (`ls -l /proc/*/fd 2>/dev/null | grep accel`; a `hwnpu-chat -listen` left running counts): another user of the NPU made commands up to 50× slower.
+Compare only pairs measured back to back under the same conditions (on the M3 swap, on AMD the power state, make numbers vary by up to 1.4×). On AMD, check first that no other process holds `/dev/accel` (`ls -l /proc/*/fd 2>/dev/null | grep accel`; a `hwnpu-chat -listen` left running counts): another user of the NPU made commands up to 50× slower. On a Mac, macOS's own services take the Neural Engine too: with `mediaanalysisd` (122 % CPU) and Apple Intelligence's inference running, every form fell to 0.7 tokens/s (16.112). Look at `top` before measuring and measure again when it settles.
+
+Drafts from an MTP layer: measure 1, 2 and 3 drafts on both code and prose. Each extra draft costs one call of the MTP layer with the output layer, and the third lost on Japanese (Qwen3.5-0.8B / 2B: 2 by default, 16.109). Bring back the state of layers whose state is replaced each step (GDN) on the host from the rows kept (`state-rows`), not by running them again: it helps prompt-lookup drafts too (26.1 → 32.1 tokens/s).
 
 ## 8. Long contexts
 
@@ -264,7 +271,7 @@ Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for wh
 
 | Use | How to check |
 |---|---|
-| Chat | 16.26's four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River), hwnpu-agent's task (does `go test` pass?) |
+| Chat | 16.26's four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River), hwnpu-agent's task (does `go test` pass?). When a small model gets facts wrong, ask fp16 the same: if it errs alike, it is the model's limit, not the quantization or the port (Qwen3.5-0.8B, 16.99) |
 | Translation | Measure KL and agreement **on the translation's tokens only** (the source side is not predicted, so it scores high). How many of 44 texts are word for word the same as bf16. `hwnpu-formats` measures on chat text, so its perplexity means nothing for a translation model (28 thousand for PLaMo 3 Translate) |
 | Image descriptions, TTS | Compare the answers for the same images and audio. Run TTS output back through ASR |
 | Transcription | English: LibriSpeech's 73 validation clips (`hf-internal-testing/librispeech_asr_dummy`, with the truth); Japanese: 12 texts in four `say` voices. Count the clips word for word the same as HF fp32, and the WER / CER (16.115). Audio over 30 seconds too |
@@ -313,6 +320,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - AMD's checking of drafts (16.117): a GEMV of a few rows for q4 (Gemma 4, PLaMo 3, LFM3, Qwen3.5-4B and Qwen3.6 at 4 bits), Gemma 4's shared layers and ring caches, Qwen3.5's MTP layer as the drafter
 - Qwen3.5-2B at lut6: the KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), long contexts and the hwnpu-agent tasks
 - Whisper: the formats on real recordings (noise, overlapping speakers)
+- Qwen3.5-4B's lut6 (2.97 GiB) on the M1 is just over its 2.8 GiB; 0.1–0.2 GiB less (the output layer at lut4, say) would let it run at full speed (16.109)
 - Apple's GPTQ codes: hwnpu-chat takes them with `-codes` and `-format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
 When results come in, update the tables in 5.3 and 5.4 and this section.
