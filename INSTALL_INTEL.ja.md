@@ -259,6 +259,16 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 
 `HWNPU_OV_DEVICE=NPU` は OpenVINO の NPU プラグイン、`CPU` (既定) は CPU で動かします。Windows では `HWNPU_OV_PYTHON` に `python.exe` のパスを指定します。
 
+## 7. まとめて確かめる (Windows)
+
+`tools/intel/hwnpu-intel-check.ps1` (PowerShell 5.1) は、手順 4 と 6 などをクローンの中の `go run` で時間の上限をつけて順に動かし、ログを `%USERPROFILE%\hwnpu-intel-logs` の zip にまとめます。中身は機種とドライバ、各コマンドの出力、時間、メモリです。失敗したテストがあっても次に進み、同じ `-Out` で再実行すると成功したテストは飛ばします。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
+```
+
+`-Level quick` (30 分ほど) はデバイス、`cmd/report`、小さな LFM3-1.7B のチャット。`standard` (既定。数時間、初回は 25 GB ほどのダウンロード) は、LFM3-1.7B の既定の設定、hwnpu-agent、hwnpu-formats、PLaMo 3 Translate、PLaMo-Embedding、Gemma 4 E2B、512 × 512 の Anima を足します。`full` はさらにチャットへの画像と音声、Qwen3.5、1024 × 1024 の Anima、npuprobe。`-List` でテストの一覧、`-Only` と `-Skip` で選べます。
+
 ## うまくいかないとき
 
 | 症状 | 原因と対処 |

@@ -259,6 +259,16 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 
 `HWNPU_OV_DEVICE=NPU` runs on OpenVINO's NPU plugin, `CPU` (the default) on the CPU. On Windows, set `HWNPU_OV_PYTHON` to the path of `python.exe`.
 
+## 7. All the checks at once (Windows)
+
+`tools/intel/hwnpu-intel-check.ps1` (PowerShell 5.1) runs steps 4 and 6 and more in one go, each with `go run` in the clone and a time limit, and packs the logs into a zip under `%USERPROFILE%\hwnpu-intel-logs`: the machine and the driver, each command's output, its time and memory. A test that fails does not stop the others, and running it again with the same `-Out` skips the tests that passed.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
+```
+
+`-Level quick` (about 30 minutes) checks the device, `cmd/report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, hwnpu-agent, hwnpu-formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Anima at 1024 x 1024 and npuprobe. `-List` shows the tests, `-Only` and `-Skip` choose them.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
