@@ -85,7 +85,8 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Two-level attention (LFM3, 16.61) | a call 101 ms at 64K, 221 at 128K, 345 at 250K (the whole cache, the same day) | 84, 105, 144 ms (generating at 78, 90, 126 ms/token) | As estimated (about 90 ms/token at 128K). The host's copies in `choose` take 13 ms a call (12%) |
 | Two-level attention (Gemma 4 E2B, 16.65) | 82.4 ms at 64K, 119.5 at 125K | 73.9, 92.4 ms | |
 | Two-level attention (LFM3-VL / Audio / Omni, 16.65) | a call 179 ms at 120K (VL, the same day) | VL 111, Audio 120, Omni 118 ms | |
-| Two-level attention's `Refresh` 4 / 16 (16.61) | a call 105–111 ms at 128K (choosing every call) | 81–90 with 4, 76–83 with 16 | The three passkeys kept. The default stays every call |
+| Two-level attention's `Refresh` 4 / 16 (16.61, 16.122) | a call 105–111 ms at 128K (choosing every call) | 81–90 with 4, 76–83 with 16 | The three passkeys kept, but on the M1's Qwen3.5-2B at 128K the KL against the whole cache is 4× and 9× (0.017 and 0.038 against 0.004). The default stays every call |
+| Two-level attention (Qwen3.5-2B on the M1, 16.122) | a call 224 ms at 128K, 146–153 at 64K | 121, 106–109 ms | KL 0.004 against the whole cache, top-1 the same 245/256. Prompts of 88K and 190K read 0.78 and 0.68× the time |
 | E4B as one program (16.65) | 10–13 tokens/s | 13.4–16.4 tokens/s | No more reloading weights when switching between Q=8 and Q=64 |
 | Think budget (16.32) | A title request thought for 3440 tokens, 226 s | Cut at 1024 tokens and made to answer | Cuts waiting time, not the time per token |
 | Repetition detection (16.60) | Could run for hours with a 262144 context | Finds the loop and stops it / closes the thinking | Never stopped any of 24 normal answers |
@@ -521,10 +522,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 |---|---|---|---|
 | Qwen3.5-4B's prompt program | 0.8B and 2B (lut6) load two programs by default (Q=8, and Q=128 writing the caches alone, 16.119). 4B keeps one (two at lut8 take 7.3 GiB with the prompt's writing the caches alone) and reads long prompts at 66 tokens/s (13K). How fast would 4B read with two programs at lut6? The first compile of a GDN prompt program stays 12–27 minutes on the M1 (Q=64 is no lighter, 16.121) | `-prefill on` on an M3 | 16.62, 16.88, 16.119, 16.121 |
 | `blocks.SiLU` in the towers and multimodal models | LFM3-VL / Audio / Omni / d1 with their vision and audio towers, TTS take the same rewrite and are converted again, but only LFM3-1.7B, PLaMo 3, PLaMo-Embedding and Anima were measured | Compare VL's image descriptions and TTS with the earlier version | 16.95 |
-| Qwen3.5 with two-level attention | Do answers hold with two-level attention (`-sparse`)? | Passkey test | 16.62 |
-| Two-level attention's `Refresh` as the default | With 4 or 16 the passkeys hold and a call is 14–32% faster (checked 2026-11-06), but finer differences such as loss or KL are not measured on the Neural Engine | Compare the logits with choosing every call on real weights | 16.61 |
-| Where two-level attention starts in the prompt | At 64K reading in two levels is a tenth slower than the whole cache. Should the threshold of about 57K go up? | Compare the reading times from 64K to 96K | 16.61 |
-| The copies in two-level attention's `choose` | Copying the buckets that change at each choice is 12% (13 ms) of a call generating at 128K. Would a choice that changes fewer buckets cut it? | pprof (`decode.(*Session).choose`) | 16.61 |
+| The copies in two-level attention's `choose` | 12% (13 ms) of a call at 128K with LFM3 on the M3, but 2–3% (3 ms) with Qwen3.5-2B on the M1 (16.122). Would a choice that changes fewer buckets pay on the M3? | pprof (`decode.(*Session).choose`, `TestLongContext`'s `HWNPU_LONG_PROFILE`) | 16.61, 16.122 |
 | Gemma 4's soft cap on the host (16.113) | Checked on the M1. The speed on the M3 and M2, the answers with temperature on the real model, Intel's IR | Compare the output layer's part with `HWNPU_PROFILE=1` on the same question | 16.113 |
 | Slowing down past 128K | Why the slope per 1K grows from 1.14 to 1.43 ms (memory pressure, or attention lagging when interleaved?) | | 16.59 |
 | Slowness right after a long prefill | Why the first few calls after reading 256K take 1.29 s each (350 ms after) | | 16.59 |

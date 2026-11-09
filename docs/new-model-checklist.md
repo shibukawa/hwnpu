@@ -262,7 +262,7 @@ Drafts from an MTP layer: measure 1, 2 and 3 drafts on both code and prose. Each
 ## 8. Long contexts
 
 - Split at the attention (`-paged`): the cost follows the length used. 262144 by default
-- Two-level attention (`-sparse`): from about 48K. Passkey tests (128K, 250K, and three at 10 / 50 / 90 % of a document)
+- Two-level attention (`-sparse`): from about 48K. Passkey tests (128K, 250K, and three at 10 / 50 / 90 % of a document), and the KL against the whole cache over a long document's continuation (`TestLongContext`: Qwen3.5-2B 0.004 at 128K, 16.122). A small model may miss the passkeys with the whole cache too (Qwen3.5-2B at 190K): compare the two
 - Layers with state (GDN): one token at a time must match chunks of Q=64 (the form of `TestCachedMatchesFull`)
 
 ## 9. Checks in use, and the record
