@@ -219,6 +219,17 @@ go run ./cmd/hwnpu-image face-detect --draw photo.jpg               # AMD: the C
 go run ./cmd/hwnpu-image face-detect --device npu photo.jpg          # AMD's NPU: the export above
 ```
 
+### 画像生成 (Sana、Sana-Sprint)
+
+AMD の NPU では、`hwnpu-image -model` に NVlabs の Sana (線形注意の DiT、Gemma 2 2B、DC-AE の VAE) の書き出しも渡せます。Anima より軽い枠で、Sana-Sprint は 2 ステップで描きます (ガイダンスは埋め込み)。Sana は 20 ステップと CFG です。書き出しは `tools/amd/iron_sana.py` が、Efficient-Large-Model の diffusers のリポジトリから作ります。
+
+```bash
+python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px ~/models/sana-sprint-0.6b-1024.amd-npu2
+go run ./cmd/hwnpu-image -model ~/models/sana-sprint-0.6b-1024.amd-npu2 -prompt "a watercolor painting of a red fox in a snowy birch forest" -o fox.png
+```
+
+Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana-Sprint 0.6B で約 24 秒 (テキスト 3 秒、DiT 2 ステップ 2.8 秒、VAE 15 秒)、Sana 600M で 70〜80 秒、Sana-Sprint 1.6B で 32 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
+
 ## Apple での注意
 
 - Core ML は「Neural Engine だけ」を指定できません。hwnpu は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません

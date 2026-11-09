@@ -102,6 +102,7 @@ func main() {
 	topK := flag.Int("top-k", 50, "sample from the k most likely tokens")
 	topP := flag.Float64("top-p", 0, "sample from the most likely tokens up to this probability (0: off)")
 	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
+	seed := flag.Uint64("seed", 0, "random seed of the sampling, the same for every answer (0: a new one for each answer, shown after it) (chat)")
 	to := flag.String("to", "", "the language a translation model (PLaMo 3 Translate) translates into, a lowercase code: en, ja, zh-hans, ko, ja(easy)... (default: English for a text with Japanese characters, else Japanese) (chat)")
 	from := flag.String("from", "", "the language of the texts a translation model translates (default: the model finds it) (chat)")
 	form := flag.String("form", "", "polite or plain: the style of a translation into Japanese (chat)")
@@ -238,7 +239,7 @@ func main() {
 		err = serve(ctx, srv, *listen)
 	case len(srv.Chats) > 0:
 		stop() // Ctrl-C stops an answer, not the chat
-		err = talk(srv.Chats[0], *system, *think && !srv.Chats[0].NoThink, *thinkBudget, *maxNew, srv.Defaults, &chat.Translation{TargetLang: *to, SourceLang: *from, Form: *form})
+		err = talk(srv.Chats[0], *system, *think && !srv.Chats[0].NoThink, *thinkBudget, *maxNew, srv.Defaults, *seed, &chat.Translation{TargetLang: *to, SourceLang: *from, Form: *form})
 	default:
 		stop()
 		err = search(srv.Embedders[0])
@@ -348,7 +349,7 @@ func read(ed *console.Editor) (string, bool) {
 }
 
 // talk is the interactive chat.
-func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s chat.Sampling, tr *chat.Translation) error {
+func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s chat.Sampling, seed uint64, tr *chat.Translation) error {
 	var msgs []chat.Message
 	if system != "" {
 		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
@@ -444,7 +445,7 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 		var sent chat.Stream
 		var gen []int32
 		thought, answered := false, false
-		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s, Think: e.ThinkLimit(thinkBudget, thinking)}, func(g []int32) (bool, error) {
+		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s, Seed: seed, Think: e.ThinkLimit(thinkBudget, thinking)}, func(g []int32) (bool, error) {
 			gen = g
 			a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
 			dr, dc := sent.Next(a.Reasoning, a.Content)
@@ -483,6 +484,9 @@ func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s 
 		}
 		if st.Drafted > 0 {
 			cut += fmt.Sprintf("; %d of %d drafts accepted", st.Accepted, st.Drafted)
+		}
+		if s.Temperature > 0 {
+			cut += fmt.Sprintf("; seed %d", st.Seed)
 		}
 		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]%s\n", dim,
 			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), cut, reset)

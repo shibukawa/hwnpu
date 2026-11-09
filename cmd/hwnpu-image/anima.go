@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image/png"
 	"math"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"time"
@@ -210,7 +211,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	} else {
 		s := c.Seed
 		if s == 0 {
-			s = uint64(time.Now().UnixNano())
+			s = rand.Uint64()
 		}
 		logf("seed %d", s)
 		x = p.Noise(s)

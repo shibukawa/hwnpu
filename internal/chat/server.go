@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -226,6 +227,9 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g := Request{Prompt: ids, MaxTokens: req.MaxTokens, Sampling: s.Defaults, Seed: req.Seed, Think: e.ThinkLimit(s.ThinkBudget, thinking)}
+	if g.Seed == 0 {
+		g.Seed = rand.Uint64() // drawn here so that the response and the log tell it
+	}
 	if req.MaxCompletionTokens > 0 {
 		g.MaxTokens = req.MaxCompletionTokens
 	}
@@ -245,10 +249,10 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	id := fmt.Sprintf("chatcmpl-%d-%d", time.Now().Unix(), s.n.Add(1))
 	created := time.Now().Unix()
 	// a long prompt on a large cache takes minutes before its first token
-	s.logf("%s: %d tokens of prompt, %d messages, %d tools", id, len(ids), len(req.Messages), len(req.Tools))
+	s.logf("%s: %d tokens of prompt, %d messages, %d tools, seed %d", id, len(ids), len(req.Messages), len(req.Tools), g.Seed)
 	chunk := func(delta map[string]any, finish any) map[string]any {
 		return map[string]any{
-			"id": id, "object": "chat.completion.chunk", "created": created, "model": e.Name,
+			"id": id, "object": "chat.completion.chunk", "created": created, "model": e.Name, "seed": g.Seed,
 			"choices": []map[string]any{{"index": 0, "delta": delta, "finish_reason": finish}},
 		}
 	}
@@ -361,7 +365,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 			msg["tool_calls"] = a.ToolCalls
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"id": id, "object": "chat.completion", "created": created, "model": e.Name,
+			"id": id, "object": "chat.completion", "created": created, "model": e.Name, "seed": g.Seed,
 			"choices": []map[string]any{{"index": 0, "message": msg, "finish_reason": finish}},
 			"usage":   usage,
 		})
@@ -383,7 +387,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	}
 	sse(w, chunk(map[string]any{}, finish))
 	if req.StreamOptions.IncludeUsage {
-		sse(w, map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": e.Name, "choices": []any{}, "usage": usage})
+		sse(w, map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": e.Name, "seed": g.Seed, "choices": []any{}, "usage": usage})
 	}
 	io.WriteString(w, "data: [DONE]\n\n")
 	flush()

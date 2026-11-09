@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"time"
@@ -86,7 +87,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 	} else {
 		s := r.seed
 		if s == 0 {
-			s = uint64(time.Now().UnixNano())
+			s = rand.Uint64()
 		}
 		logf("seed %d", s)
 		noises = p.Noise(s, n)
