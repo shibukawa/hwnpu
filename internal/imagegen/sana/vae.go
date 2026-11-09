@@ -18,7 +18,8 @@ import (
 )
 
 // GridShape is a padded channel-last grid of the VAE (iron_anima.GridShape, which
-// iron_sana's VAE uses): H rows of W pixels of C channels, each row padded to Wp = W + Pad
+// iron_sana's VAE uses): H rows of W pixels of C channels, each row padded to Wp, W + 1
+// rounded up to 16 (W + Pad in exports that wrote pad)
 // pixels (one zero pixel before the image), a zero row above and below and a zero pixel before
 // the first, rounded up to 256 rows.
 type GridShape struct {
@@ -29,7 +30,12 @@ type GridShape struct {
 }
 
 // Wp is a padded row's pixels.
-func (g GridShape) Wp() int { return g.W + g.Pad }
+func (g GridShape) Wp() int {
+	if g.Pad != 0 {
+		return g.W + g.Pad // exports that wrote pad
+	}
+	return (g.W + 1 + 15) / 16 * 16
+}
 
 // Pixel is the row of pixel (y, x).
 func (g GridShape) Pixel(y, x int) int { return 1 + g.Wp() + y*g.Wp() + 1 + x }
@@ -95,12 +101,70 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 	if len(latents) != v.Latent*g.H*g.W {
 		return nil, fmt.Errorf("vae: %d latent values for %dx%dx%d", len(latents), v.Latent, g.H, g.W)
 	}
+	// Each stage's graph is loaded while the one before runs (two stages on the device at
+	// most): the loads, about a third of the decoder's time, are hidden.
+	type opened struct {
+		g   *iron.Graph
+		err error
+	}
+	load := func(i int) chan opened {
+		ch := make(chan opened, 1)
+		go func() {
+			g, err := iron.OpenGraph(ctx, v.dev, v.stages[i])
+			ch <- opened{g, err}
+		}()
+		return ch
+	}
 	var out []byte
-	for i, dir := range v.stages {
+	next := load(0)
+	cur := <-next
+	if cur.err != nil {
+		return nil, fmt.Errorf("vae stage 0: %w", cur.err)
+	}
+	if err := v.writeLatents(cur.g, latents); err != nil {
+		cur.g.Close()
+		return nil, err
+	}
+	for i := range v.stages {
 		t0 := time.Now()
-		var err error
-		if out, err = v.stage(ctx, i, dir, latents, out); err != nil {
+		next = nil
+		if i+1 < len(v.stages) {
+			next = load(i + 1)
+		}
+		fail := func(err error) (*image.RGBA, error) {
+			cur.g.Close()
+			if next != nil {
+				if n := <-next; n.g != nil {
+					n.g.Close()
+				}
+			}
 			return nil, fmt.Errorf("vae stage %d: %w", i, err)
+		}
+		if err := cur.g.Run(ctx, nil); err != nil {
+			return fail(err)
+		}
+		o, err := cur.g.Output(cur.g.Outputs()[0].Name)
+		if err != nil {
+			return fail(err)
+		}
+		if next == nil {
+			out = append([]byte(nil), o...)
+			cur.g.Close()
+		} else {
+			// the output straight into the next stage's input (one copy)
+			n := <-next
+			next = nil
+			if n.err != nil {
+				return fail(n.err)
+			}
+			in, err := n.g.Input("x")
+			if err != nil || len(in) != len(o) {
+				n.g.Close()
+				return fail(fmt.Errorf("the next stage's input (%d bytes) for %d bytes: %v", len(in), len(o), err))
+			}
+			copy(in, o)
+			cur.g.Close()
+			cur = n
 		}
 		if v.Stage != nil {
 			v.Stage(i, len(v.stages), time.Since(t0))
@@ -124,38 +188,23 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 	return img, nil
 }
 
-func (v *VAE) stage(ctx context.Context, i int, dir string, latents []float32, prev []byte) ([]byte, error) {
-	s, err := iron.OpenGraph(ctx, v.dev, dir)
+// writeLatents writes the latents into the first stage's input grid (bf16, zeros around).
+func (v *VAE) writeLatents(s *iron.Graph, latents []float32) error {
+	in, err := s.Input("x")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer s.Close()
-	if i == 0 {
-		in, err := s.Input("x")
-		if err != nil {
-			return nil, err
-		}
-		g := v.in
-		clear(in)
-		for y := 0; y < g.H; y++ {
-			for x := 0; x < g.W; x++ {
-				o := 2 * g.Pixel(y, x) * g.C
-				for c := 0; c < v.Latent; c++ {
-					binary.LittleEndian.PutUint16(in[o+2*c:], bf16(latents[(c*g.H+y)*g.W+x]))
-				}
+	g := v.in
+	clear(in)
+	for y := 0; y < g.H; y++ {
+		for x := 0; x < g.W; x++ {
+			o := 2 * g.Pixel(y, x) * g.C
+			for c := 0; c < v.Latent; c++ {
+				binary.LittleEndian.PutUint16(in[o+2*c:], bf16(latents[(c*g.H+y)*g.W+x]))
 			}
 		}
-	} else if err := s.SetInput("x", prev); err != nil {
-		return nil, err
 	}
-	if err := s.Run(ctx, nil); err != nil {
-		return nil, err
-	}
-	out, err := s.Output(s.Outputs()[0].Name)
-	if err != nil {
-		return nil, err
-	}
-	return append([]byte(nil), out...), nil
+	return nil
 }
 
 // pixel is the decoder's output, clamped to [-1, 1], as an 8-bit value (diffusers'

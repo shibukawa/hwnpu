@@ -263,7 +263,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | 注意の前後で分けた IR | 文脈 262144 | OpenVINO の CPU で照合済み |
 | パディングの行を最後のトークンで埋める | Gemma 4 の NaN (eps が fp16 で 0 になる) を防ぐ | Apple にも効く |
 | PLaMo 3 の IR (int8、注意の前後で分ける) | 翻訳 | OpenVINO の CPU で AMD と同じ訳文 |
-| Anima の IR (`hwnpu-image -convert -backend intel`) | 画像生成 | OpenVINO の CPU で、潜在のコサイン 0.99985、PSNR 37.9 dB |
+| Anima の IR (`hwnpu-image convert --backend intel`) | 画像生成 | OpenVINO の CPU で、潜在のコサイン 0.99985、PSNR 37.9 dB |
 | 開くときに、落ちたプロセスの `/dev/shm` を片付ける | 共有バッファの残り (1 日で 8.4 GB) | |
 
 **注意: Intel の NPU の実機では速さもメモリも測っていない。** ここにある数値はすべて OpenVINO の CPU での精度の照合。
@@ -487,7 +487,7 @@ AMD (`tools/amd/iron_anima.py`):
 - diffusers の fp32 との比べ: 潜在のコサイン 0.966 (CPU の bf16 は 0.980)。VAE だけなら PSNR 44.5 dB
 - 段ごとに読み込み、固定は最大 5.0 GiB。DiT のブロックの射影を 8 ビットにして 3.4 GiB (既定、16.78)、絵はほぼ同じ。4 ビット (2.7 GiB) では絵が変わる
 
-Apple / Intel (`hwnpu-image -convert`):
+Apple / Intel (`hwnpu-image convert`):
 - MIL の 1 つの記述 (`internal/imagegen/anima/mil`) から、Core ML のパッケージと OpenVINO IR を Go だけで書く
 - fp16 への手当て: DiT の残差を 1/32 で持ち、norm は行ごとの最大値で割ってから行う
 - CPU での照合: 潜在のコサイン 0.99985、PSNR 37–38 dB

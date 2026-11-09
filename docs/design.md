@@ -639,6 +639,7 @@ Level Zero loader (`ze_loader.dll`) が PATH にあれば Linux と同じコー�
 
 - `OrtGetApiBase()` が返す関数ポインタ表は純粋な C ABI で purego 向き。EP は OpenVINO (Intel) / VitisAI (AMD) / CoreML (Apple) / QNN (Qualcomm)。
 - NPU で完結しないモデルを動かすための逃げ道。EP はグラフを分割して未対応の演算を CPU に回すため、hwnpu の厳格モードの保証は及ばない。`Placement()` は `Verified = false` を返す。
+- 2026-11-10: CPU の実行系として `internal/onnxrt` を作った (CPU の EP だけ、float32 のテンソルだけ)。models.yaml の `device: {VENDOR: cpu}` が置くモデル (小さなモデルで、NPU では演算ごとの費用が計算より重いもの) に使う (16.126)。
 
 ---
 
@@ -3377,3 +3378,58 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 見つけたこと: IRON の MHA はスコアを bf16 で持つ。Sana 600M の交差注意 (q と k の正規化なし) はスコアが約 1750 で行の中の差が数単位しかなく、条件つきの出力だけがずれて CFG で崩れた (潜在 0.79)。鍵から先頭の鍵を引いて (softmax は変わらない) 0.963。Anima の交差注意にも同じことが起きていないかは見ていない
 - 共有の変更: `internal/tokenizer` のバイトフォールバックは、Gemma 2 の語彙に `<0x09>` がなく (タブは普通のトークン) 読めなかった。文字そのものが語彙にあるバイトは `<0x..>` がなくてよいことにした (encode は文字を先に引くので使われない)。`TestTokens` (`HWNPU_SANA_TOKENIZER`) が HF の id と 3 つのプロンプト (日本語、絵文字、タブ) で一致
 - `hwnpu-image`: `-model` が Sana の書き出し (`model.json` と `caption/`) なら Sana で描く。`-steps` の既定はモデルごと (Anima 8、Sana-Sprint 2、Sana 20)、`-guidance` (既定 4.5)、`-noise` は Sana-Sprint ではステップ + 1 個
+
+### 16.120 AMD: Depth Anything 3 の深度 (`iron_da3.py`、`hwnpu-depth`) — 2026-11-09
+
+- 動機: Apache-2.0 の軽い画像の分析。DA3MONO-LARGE (0.33B、DINOv2 ViT-L と DPT) は 1 枚の深度に特化した版、DA3METRIC-LARGE は同じ構造でメートル、DA3-SMALL / BASE は複数視点の版を 1 枚として (深度と確信度)
+- 504 × 378 で LARGE 0.7 秒、SMALL 0.26 秒 (推定だけ)。固定の最大 0.49〜1.39 GiB。公式の CPU (fp32) と深度のコサイン 0.9993〜0.9999。記録は amd-npu-models.md の 15 節
+- 書き出しは縦横比ごとの大きさ (長辺 504 の 5 つ) を持ち、hwnpu-depth が近いものを選ぶ
+- 新しく作った部品: 行を 16 の倍数に足した格子 (`Grid`)、ストライド 2 の 3 × 3、転置畳み込み (GEMM と画素への Copy)、双線形の拡大 (補間の行列の GEMM 2 回と転置の Copy)、2 次元の RoPE (q と k の次元の並べ替え)、ヘッドのチャネルの 64 の倍数への埋め
+- `hwnpu-depth`: 画像ごとに NAME.depth.png (逆深度を 8 ビットに、元の大きさで)、`-raw` で float32、`-sky` で空か確信度、`-focal` / `-fov` でメートル (METRIC)。`internal/vision/depth` の `TestQuantile`、`TestSky`、`TestPatches`、`TestNearest`
+
+### 16.121 AMD: MoGe-2 (`iron_moge.py`、`hwnpu-depth`) — 2026-11-09
+
+- 動機: 焦点距離を知らなくてもメートル単位の深度、点群、法線が出る (MIT)。DA3METRIC は焦点距離が要る
+- 構成は DINOv2 と ConvStack の neck と 3 つのヘッド。正規化は使われていない (設定の `res_block_*_norm` が none)。3 × 3 は端の画素を複製する詰め (`Grid(rep=True)` と `fill_pads`)、双線形の align_corners=False の行列、torch なしで `model.pt` を読む `TorchZip`
+- 3 つのヘッドは 1 つのプログラムに重みのバンクを 3 組 (`SwapVariants`)。全部を載せたままだと固定 3.9 GiB (ヘッドの作業領域 773 MiB × 3 と neck 736 MiB)
+- 812 × 602 で vits 約 2.7 秒、vitl 約 3.6 秒。公式の CPU と深度のコサイン 0.9999、相対誤差の平均 0.7〜1.2 %。記録は amd-npu-models.md の 16 節
+- 後処理は Go (`internal/vision/moge`): 焦点距離と z のずれは 1 変数の Levenberg–Marquardt (`TestRecoverFocalShift` が既知の値を戻す)
+
+### 16.122 Sana の負のプロンプトと正方形以外、VAE の段を先に読む、深度推定の大きさと複数の画像、MoGe-2 の画角 — 2026-11-09
+
+- Sana: `-negative` (指示文なしの Gemma 2 をもう 1 回)、`iron_sana.py --width --height` (Sana のビン。トークンと VAE の密な行を 256 の倍数に 0 で埋め、線形注意の鍵から消す)。VAE は次の段を読み込みながら走らせ、出力を次の入力へ直接写す (Sana 15 → 13 秒、Anima 11 → 9.4 秒、画素は同じ)。Anima の交差注意のスコアは小さく (最大 8)、Sana 600M のような bf16 の問題はない
+- 深度推定: 引き伸ばしの誤差 (公式の大きさとの比べで 6〜12 %) が NPU の誤差 (1 %) より大きかったので、書き出しを公式の大きさで 9 つにし、画像の公式の大きさを優先する
+- DA3 の複数の画像 (`--views N`、`hwnpu-depth` が `cameras.json` と `-ply`): 視点のトークンを詰めて並べ、視点の中の注意は窓、視点をまたぐ注意は先頭の範囲。参照する視点の選択とカメラの MLP はホスト。3 枚で 1.1 秒、公式と深度 0.9998
+- MoGe-2: `-fov` で画角を与える (z のずれだけを解く)
+- 対象外: DA3NESTED / LARGE / GIANT は CC BY-NC
+- 記録は amd-npu-models.md の 11、14〜16 節
+
+### 16.123 hwnpu-image をサブコマンドに (generate、depth、convert)、引数は kong — 2026-11-10
+
+- 画像のコマンドが増えてきたので、`hwnpu-depth` を `hwnpu-image depth` にまとめ、`hwnpu-image -convert` を `hwnpu-image convert` に、絵を描くのを `hwnpu-image generate "プロンプト"` にした。`hwnpu-depth` は消した
+- 引数は標準の flag から `github.com/alecthomas/kong` に。サブコマンドごとに構造体のフィールドとタグで書き、`--help` が出る。フラグは `--model` (`-m`)、`--out` (`-o`) のように 2 本の `-`。プロンプトと画像は位置引数。generate と convert は Anima の書き出しの設定 (`--backend`、`--size`、形式など) の構造体を共有する
+- 今回は hwnpu-image だけ。ほかのコマンド (hwnpu-chat、hwnpu-transcribe など) は標準の flag のまま
+
+### 16.124 hwnpu-image のモデルを models.yaml から選ぶ、-o なしで開く — 2026-11-10
+
+- models.yaml に種類 `image` (Anima-Turbo、Sana-Sprint 0.6B / 1.6B、Sana 600M、SANA 1.5 1.6B) と `depth` (DA3 の 4 つ、MoGe-2 の 3 つ) を足した。用途 `image` は Anima-Turbo、`depth` は DA3MONO-LARGE
+- `hwnpu-image generate -m sana` はファミリーなので、hwnpu-chat と同じくマシンのメモリで選ぶ (Sana-Sprint 0.6B が 8 GB、1.6B が 16 GB から)。固定のメモリはどれも 2.3 GiB で同じなので、境目は速さ (1.6B は 1.6 倍) と質の釣り合いで決めた。20 ステップの Sana はファミリー `sana-full`。メモリはタグでも明示できる (`sana:8g`、`8G`、`8GB`、`8 g`、表の列にない `12g` も、そのメモリのマシンの選び方)
+- `hwnpu-image list [image|depth]`: hwnpu-chat の -list と同じ表 (`chat.ListHave`) で、ダウンロードの列の代わりに AMD の書き出し (`~/models/NAME.amd-npu2`)。`-m` の名前が合わないとき (`chat.NoModelError`) も、その種類の表を出してからエラーにする
+- 名前で選んだモデルは AMD の NPU では `~/models/NAME.amd-npu2` か `NAME-1024.amd-npu2` (小文字) を使う。ないときは、落とすリポジトリと `iron_*.py` のコマンドを示して止まる (書き出しを自動で作るのはまだ)。Mac / Intel の Anima は今までどおり自動で落として変換する。`/` や `.`、`~` を含む値は書き出しのディレクトリ
+- `-o` を省くと `image.png` (あれば `image (2).png`、…) に書き、OS のビューアで開く (macOS は open、Windows は rundll32 の FileProtocolHandler、ほかは xdg-open。DISPLAY も WAYLAND_DISPLAY もないときは開かない)
+
+### 16.125 AMD: YuNet の顔検出 (`iron_yunet.py`、`hwnpu-image face-detect`) と小さなモデルの NPU の費用 — 2026-11-10
+
+- OpenCV Zoo の YuNet (MIT) を 1 つの IRON グラフに (docs/amd-npu-models.md 17 節)。1 × 1 と深さ方向の 3 × 3 を 1 つの畳み込みに、バイアスは「1 のチャンネル」に、ReLU は ProjectionGEMM の clamp (下限 0、`ReluGEMM`) に。結果は OpenCV の FaceDetectorYN と一致
+- models.yaml に種類 `face-detect` と YuNet (用途 `face-detect`)。`hwnpu-image face-detect` は JSON 行を出し、`--draw` で描いた画像、`--repeat` で時間
+- `iron.GraphOptions.KeepRuns`: コマンドの run を一度作って持ち続ける。毎フレーム呼ぶ小さなグラフで、ホストの CPU が 1.6 → 1.1 ms。制御コードがデバイスのヒープ (64 MiB) に残るので、大きなグラフには使わない
+- 測定の結論: 320 × 256 で NPU 29 ms・127 mJ、CPU (onnxruntime 1 スレッド) 2.7 ms・7.7 mJ。NPU は CPU を約 2 ms 空けるが、エネルギーは 16 倍。演算の切り替え (GEMM と他で約 250 µs) が支配的で、小さなモデルでは「NPU に置けば省エネ」は成り立たない。置き場所の方針 (CPU を空けるか、エネルギーか) はこの数字で決める
+
+### 16.126 置き場所をベンダーごとに (models.yaml の device)、ONNX Runtime の CPU 実行系 — 2026-11-10
+
+- 16.125 の結論は AMD の NPU (IRON) の話で、NPU 一般の話ではない。Apple の Neural Engine と Intel の NPU はグラフをまとめて投入するので、小さなモデルでも NPU が得かもしれない。そこで置き場所をモデルごと・NPU のベンダーごとに書く: models.yaml の `device: {amd: cpu}` (amd、apple、intel に npu か cpu。書かないベンダーは npu)。ユーザーの models.yaml は名前を挙げたベンダーだけを変え、ほかを残す
+- 上書きの順は、コマンドの `--device`、`HWNPU_DEVICE`、models.yaml (`chat.ChooseDevice`、理由も返す)。ゲームなどで CPU を空けたい人は `--device npu`
+- `internal/onnxrt`: ONNX Runtime の共有ライブラリを purego で呼ぶ (cgo なし)。OrtApi は API 16 を求め (それより新しいライブラリならどれでも)、関数は表の位置で呼ぶ。1 スレッド既定、スピンなし (`session.*.allow_spinning = 0`)。ライブラリは `HWNPU_ONNXRUNTIME` かシステムのもの。自動で取ってくることはしない (ネイティブのライブラリの配布は利用者が決める)。`FreeShapes` は ONNX の入出力の形と value_info を protowire で外す
+- face-detect: AMD では既定で CPU (YuNet の ONNX は models.yaml の sha256 で固定して自動で取得)、`--device npu` で export。Apple と Intel では YuNet の NPU のグラフがまだないので CPU に落とし、その旨を出す (`--device npu` を明示したときはエラー)
+- `hwnpu-image list` の列を RUNS FROM に: このマシンで CPU に置くモデルは「CPU (ONNX Runtime)」、ほかは AMD の書き出し
+- Go のコマンドで 320 × 256: CPU 3.96 ms・10 mJ、NPU 30.5 ms・137 mJ。前処理が 11 ms かかっていたので、lfm3vl.RGB に速い道を足した (結果は color.Convert と同じ。テストで確かめる)

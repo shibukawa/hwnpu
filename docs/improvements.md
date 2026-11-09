@@ -263,7 +263,7 @@ Fitted to the ANE's limits: 1 GiB a package, 16384 per dimension, tables only pe
 | IR split at the attention | 262144 context | Checked on OpenVINO's CPU |
 | Padding rows filled with the last token | Prevents Gemma 4's NaN (eps becomes 0 in fp16) | Helps Apple too |
 | PLaMo 3's IR (int8, split at the attention) | Translation | Same translations as AMD on OpenVINO's CPU |
-| Anima's IR (`hwnpu-image -convert -backend intel`) | Image generation | On OpenVINO's CPU, latent cosine 0.99985, PSNR 37.9 dB |
+| Anima's IR (`hwnpu-image convert --backend intel`) | Image generation | On OpenVINO's CPU, latent cosine 0.99985, PSNR 37.9 dB |
 | Cleaning up crashed processes' `/dev/shm` on open | Leftover shared buffers (8.4 GB in a day) | |
 
 **Note: neither speed nor memory has been measured on a real Intel NPU.** Every number here is an accuracy check on OpenVINO's CPU.
@@ -487,7 +487,7 @@ AMD (`tools/amd/iron_anima.py`):
 - Against diffusers in fp32: latent cosine 0.966 (bf16 on the CPU: 0.980). The VAE alone: PSNR 44.5 dB
 - Loaded one stage at a time, at most 5.0 GiB pinned; 3.4 GiB with the DiT's block projections at 8 bits (the default, 16.78), the picture nearly the same. 4 bits (2.7 GiB) change the picture
 
-Apple / Intel (`hwnpu-image -convert`):
+Apple / Intel (`hwnpu-image convert`):
 - One MIL description (`internal/imagegen/anima/mil`) is written as a Core ML package or OpenVINO IR, in Go only
 - fp16 handling: DiT residuals kept at 1/32, norms divided by each row's maximum first
 - Checked on the CPU: latent cosine 0.99985, PSNR 37–38 dB

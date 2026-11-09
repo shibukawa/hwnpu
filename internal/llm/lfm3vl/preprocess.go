@@ -155,14 +155,72 @@ func (p *Processor) Patches(img image.Image, w, h int) []float32 {
 // in floating point; the libraries' fixed point arithmetic can differ by one in a few pixels.
 func Resize(img image.Image, w, h int, filter string) []uint8 {
 	b := img.Bounds()
+	return ResizeRGB(RGB(img), b.Dx(), b.Dy(), w, h, filter)
+}
+
+// RGB is img's pixels as RGB bytes in raster order (alpha dropped, as color.NRGBA's R, G, B).
+// RGBA, NRGBA and 4:2:0 / 4:4:4 YCbCr pictures (PNG, JPEG) take a fast path.
+func RGB(img image.Image) []uint8 {
+	b := img.Bounds()
 	sw, sh := b.Dx(), b.Dy()
 	src := make([]uint8, sw*sh*3)
+	switch m := img.(type) {
+	case *image.NRGBA:
+		for y := 0; y < sh; y++ {
+			row := m.Pix[(y+b.Min.Y-m.Rect.Min.Y)*m.Stride+(b.Min.X-m.Rect.Min.X)*4:]
+			for x := 0; x < sw; x++ {
+				copy(src[(y*sw+x)*3:(y*sw+x)*3+3], row[4*x:4*x+3])
+			}
+		}
+		return src
+	case *image.RGBA:
+		if opaque(m) {
+			for y := 0; y < sh; y++ {
+				row := m.Pix[(y+b.Min.Y-m.Rect.Min.Y)*m.Stride+(b.Min.X-m.Rect.Min.X)*4:]
+				for x := 0; x < sw; x++ {
+					copy(src[(y*sw+x)*3:(y*sw+x)*3+3], row[4*x:4*x+3])
+				}
+			}
+			return src
+		}
+	case *image.YCbCr:
+		for y := 0; y < sh; y++ {
+			for x := 0; x < sw; x++ {
+				// RGBA's conversion, as NRGBAModel's (YCbCrToRGB can differ by one)
+				r, g, bl, _ := m.YCbCrAt(b.Min.X+x, b.Min.Y+y).RGBA()
+				i := (y*sw + x) * 3
+				src[i], src[i+1], src[i+2] = uint8(r>>8), uint8(g>>8), uint8(bl>>8)
+			}
+		}
+		return src
+	}
 	for y := 0; y < sh; y++ {
 		for x := 0; x < sw; x++ {
 			c := color.NRGBAModel.Convert(img.At(b.Min.X+x, b.Min.Y+y)).(color.NRGBA)
 			i := (y*sw + x) * 3
 			src[i], src[i+1], src[i+2] = c.R, c.G, c.B
 		}
+	}
+	return src
+}
+
+// opaque reports whether every pixel of m has alpha 255 (its R, G, B are then NRGBA's).
+func opaque(m *image.RGBA) bool {
+	for y := m.Rect.Min.Y; y < m.Rect.Max.Y; y++ {
+		row := m.Pix[(y-m.Rect.Min.Y)*m.Stride:]
+		for x := 0; x < m.Rect.Dx(); x++ {
+			if row[4*x+3] != 255 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// ResizeRGB is Resize of RGB bytes src (sw x sh); the same size is src itself.
+func ResizeRGB(src []uint8, sw, sh, w, h int, filter string) []uint8 {
+	if sw == w && sh == h {
+		return src
 	}
 	support, kernel := 1.0, func(x float64) float64 { return math.Max(0, 1-math.Abs(x)) }
 	if filter == "bicubic" {

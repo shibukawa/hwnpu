@@ -65,6 +65,9 @@ type Graph struct {
 	swapped bool
 	cur     int
 	v       *version
+	// keep (GraphOptions.KeepRuns): each command's run, made by the first Run
+	keep bool
+	runs []*hwnpu.Run
 	// Timing, when set, is told each command's run time.
 	Timing func(command int, run time.Duration)
 }
@@ -78,6 +81,12 @@ type GraphOptions struct {
 	// in it for the next. Anima's DiT (7 groups of 4 blocks at 1024 x 1024, q8): pinned
 	// 7 x 464 MiB -> 464 MiB, at a read of 304 MiB a group (page cache to the bank).
 	SwapVariants bool
+	// KeepRuns makes each command's run once and keeps it, its control code in the device
+	// heap (64 MiB on Linux 7.0, shared by every program), instead of making it for each call:
+	// for a small graph called often (a face detector on each frame of a camera). Making a run
+	// allocates, copies and flushes the control code: YuNet at 320 x 256 took 1.6 ms of the
+	// host's CPU a call, kept 1.1 ms (the rest is the submission and the wait in the kernel).
+	KeepRuns bool
 }
 
 // OpenGraph loads the graph exported in dir onto dev.
@@ -91,7 +100,7 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 	if err != nil {
 		return nil, err
 	}
-	g := &Graph{Manifest: man, dev: dev, dir: dir}
+	g := &Graph{Manifest: man, dev: dev, dir: dir, keep: opt.KeepRuns}
 	fail := func(err error) (*Graph, error) {
 		g.Close()
 		return nil, fmt.Errorf("iron: %s: %w", man.Name, err)
@@ -153,6 +162,12 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 // Close releases the device memory.
 func (g *Graph) Close() error {
 	var errs []error
+	for _, r := range g.runs {
+		if r != nil {
+			errs = append(errs, r.Close())
+		}
+	}
+	g.runs = nil
 	if v := g.v; v != nil {
 		for _, b := range v.args {
 			errs = append(errs, b.Close())
@@ -318,9 +333,17 @@ func (g *Graph) Run(ctx context.Context, values map[string]int64) error {
 		if err != nil {
 			return err
 		}
-		run, err := kern.NewRun()
-		if err != nil {
+		var run *hwnpu.Run
+		if g.keep && k < len(g.runs) && g.runs[k] != nil {
+			run = g.runs[k]
+		} else if run, err = kern.NewRun(); err != nil {
 			return err
+		}
+		if g.keep {
+			if len(g.runs) < len(v.m.Kernels) {
+				g.runs = make([]*hwnpu.Run, len(v.m.Kernels))
+			}
+			g.runs[k] = run
 		}
 		for _, a := range v.m.Arguments {
 			run.SetBuffer(a.Index, g.buffer(a.Kind))
@@ -336,7 +359,9 @@ func (g *Graph) Run(ctx context.Context, values map[string]int64) error {
 		if g.Timing != nil {
 			g.Timing(k, time.Since(t0))
 		}
-		run.Close()
+		if !g.keep {
+			run.Close()
+		}
 		if err != nil {
 			return fmt.Errorf("iron: %s: command %d: %w", g.Manifest.Name, k, err)
 		}

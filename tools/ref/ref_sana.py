@@ -69,8 +69,11 @@ def main() -> int:
     ap.add_argument("--text", type=Path, help="the repository whose text_encoder/ and tokenizer/ to use (default: root)")
     ap.add_argument("--prompt", default="a cyberpunk cat with a neon sign that says \"Sana\"")
     ap.add_argument("--size", type=int, default=1024)
+    ap.add_argument("--width", type=int, default=0)
+    ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--steps", type=int, default=0, help="steps (default 2 for Sprint, 20 for Sana)")
     ap.add_argument("--guidance", type=float, default=4.5)
+    ap.add_argument("--negative", default="", help="Sana's negative prompt (default empty)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dtype", default="float32", choices=("float32", "bfloat16"))
     ap.add_argument("--no-softcap", action="store_true", help="Gemma 2 without its attention logit softcapping (50)")
@@ -96,10 +99,11 @@ def main() -> int:
     ids, emb, mask = encode(tok, gemma, a.prompt, True)
     rec["ids"], rec["emb"], rec["mask"] = ids, emb.numpy(), mask.numpy().astype(np.int32)
     if not sprint:
-        nids, nemb, nmask = encode(tok, gemma, "", False)
+        nids, nemb, nmask = encode(tok, gemma, a.negative, False)
         rec["neg_ids"], rec["neg_emb"], rec["neg_mask"] = nids, nemb.numpy(), nmask.numpy().astype(np.int32)
     del gemma
-    h = w = a.size // 32
+    W, H = a.width or a.size, a.height or a.size
+    h, w = H // 32, W // 32
     g = torch.Generator().manual_seed(a.seed)
     nnoise = steps + 1 if sprint else 1
     if a.noise is not None:
@@ -165,7 +169,7 @@ def main() -> int:
     from PIL import Image
 
     Image.fromarray(pixels).save(a.out.with_suffix(".png"))
-    print(f"{a.out.with_suffix('.png')}: {a.size}x{a.size}, {steps} steps, {len(ids)} tokens ({int(mask.sum())} kept)")
+    print(f"{a.out.with_suffix('.png')}: {W}x{H}, {steps} steps, {len(ids)} tokens ({int(mask.sum())} kept)")
     return 0
 
 

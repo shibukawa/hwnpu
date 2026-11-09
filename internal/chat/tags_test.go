@@ -108,3 +108,54 @@ func TestRouteByFamily(t *testing.T) {
 		t.Errorf("a tag not loaded routed to %d", i)
 	}
 }
+
+// TestImageMemoryTags checks the image families picked by a machine's memory written as a tag
+// (hwnpu-image generate -m sana:8g), in any case, with or without a space, and of any size, not
+// only MODEL.md's columns.
+func TestImageMemoryTags(t *testing.T) {
+	for name, want := range map[string]string{
+		"sana:8g": "Sana-Sprint-0.6B", "sana:8G": "Sana-Sprint-0.6B", "sana:8GB": "Sana-Sprint-0.6B", "sana:8 G": "Sana-Sprint-0.6B",
+		"sana:12g": "Sana-Sprint-0.6B", "sana:4g": "Sana-Sprint-0.6B", "sana:16G": "Sana-Sprint-1.6B", "sana:100g": "Sana-Sprint-1.6B",
+		"sana-full:8g": "Sana-600M", "moge:20g": "moge-2-vitb", "image:8g": "Anima-Turbo", "depth:64g": "DA3MONO-LARGE",
+	} {
+		m, _, ok, err := Pick(name, 59)
+		if !ok || err != nil || m.Name != want {
+			t.Errorf("Pick(%q) = %s, %v, %v; want %s", name, m.Name, ok, err, want)
+		}
+	}
+}
+
+func TestDevice(t *testing.T) {
+	m, ok := Lookup("YuNet")
+	if !ok {
+		t.Fatal("no YuNet")
+	}
+	if m.DeviceFor("amd") != "cpu" || m.DeviceFor("apple") != "npu" || m.DeviceFor("intel") != "npu" {
+		t.Errorf("YuNet's devices %v", m.Device)
+	}
+	t.Setenv("HWNPU_DEVICE", "")
+	if d, why, _ := ChooseDevice(m, "amd", ""); d != "cpu" || !strings.Contains(why, "models.yaml") {
+		t.Errorf("amd: %s (%s)", d, why)
+	}
+	if d, _, _ := ChooseDevice(m, "amd", "npu"); d != "npu" {
+		t.Errorf("--device npu: %s", d)
+	}
+	t.Setenv("HWNPU_DEVICE", "NPU")
+	if d, why, _ := ChooseDevice(m, "amd", ""); d != "npu" || why != "HWNPU_DEVICE" {
+		t.Errorf("HWNPU_DEVICE: %s (%s)", d, why)
+	}
+	if _, _, err := ChooseDevice(m, "amd", "gpu"); err == nil {
+		t.Error("--device gpu: no error")
+	}
+}
+
+// TestDeviceMerge: a file over another changes the vendors it names and keeps the others.
+func TestDeviceMerge(t *testing.T) {
+	base := map[string]string{"amd": "cpu", "apple": "npu"}
+	over := map[string]string{"amd": "npu"}
+	dst := &modelEntry{Device: &base}
+	merge(dst, &modelEntry{Device: &over})
+	if got := *dst.Device; got["amd"] != "npu" || got["apple"] != "npu" || base["amd"] != "cpu" {
+		t.Errorf("merged %v, base %v", got, base)
+	}
+}
