@@ -105,6 +105,7 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 | PLaMo 3 Translate 2B | 翻訳 | 2.7 GB | 7 KiB/トークン (262144 で 1.75 GiB) | 実測 |
 | PLaMo 3 Translate 0.8B | 翻訳 | 1.0 GB (M3: Neural Engine に 1.38 GiB とプロセスの 1.0 GB で約 2.4 GB) | 1 KiB/トークン (262144 で 0.28 GiB) | 実測 (AMD と M3) |
 | PLaMo-Embedding-1B | 文の埋め込み | 1.3 GB | なし | 重みから見込み |
+| Depth Anything 3 Mono Large (504 × 504、AMD) | 深度推定 (hwnpu-depth) | 1.4 GB | なし | 実測 |
 | Sana-Sprint 0.6B、Sana 600M、Sana-Sprint 1.6B、SANA 1.5 1.6B (1024 × 1024、AMD) | 画像生成 | 2.3 GB (テキストのグラフ。Gemma 2 は 8 ビット。DiT は 1 組ずつ、VAE は段ごとに読む) | なし | 実測 |
 | Anima-Turbo (1024 × 1024) | 画像生成 | 1.9 GB (VAE の段の最大。DiT はブロックの重みを 1 組ずつ読む) | なし | 実測 |
 | LFM3-Audio-2B (読み上げ) | 読み上げ | 約 2.4 GB | 12 KiB/トークン | 重みから見込み |

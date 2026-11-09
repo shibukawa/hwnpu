@@ -189,6 +189,17 @@ go run ./cmd/hwnpu-image -model ~/models/sana-sprint-0.6b-1024.amd-npu2 -prompt 
 
 Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana-Sprint 0.6B で約 24 秒 (テキスト 3 秒、DiT 2 ステップ 2.8 秒、VAE 15 秒)、Sana 600M で 70〜80 秒、Sana-Sprint 1.6B で 32 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
 
+### 深度推定 (Depth Anything 3)
+
+`go run ./cmd/hwnpu-depth` は、AMD の NPU で写真の深度を推定します。モデルは Depth Anything 3 の単眼の版 (depth-anything/DA3MONO-LARGE、Apache-2.0。DINOv2 ViT-L と DPT) です。画像ごとに `NAME.depth.png` (近いほど明るい) を書き、`-raw` で深度の float32、`-sky` で空の画像も書きます。深度は相対値です。
+
+```bash
+python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE ~/models/da3mono-large-504.amd-npu2
+go run ./cmd/hwnpu-depth photo.jpg
+```
+
+Ryzen AI 9 365 で 1 枚 1〜1.2 秒 (504 × 504)、NPU に固定されるメモリは最大 1.4 GiB です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
+
 ## Apple での注意
 
 - Core ML は「Neural Engine だけ」を指定できません。hwnpu は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません

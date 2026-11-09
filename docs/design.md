@@ -3377,3 +3377,10 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 見つけたこと: IRON の MHA はスコアを bf16 で持つ。Sana 600M の交差注意 (q と k の正規化なし) はスコアが約 1750 で行の中の差が数単位しかなく、条件つきの出力だけがずれて CFG で崩れた (潜在 0.79)。鍵から先頭の鍵を引いて (softmax は変わらない) 0.963。Anima の交差注意にも同じことが起きていないかは見ていない
 - 共有の変更: `internal/tokenizer` のバイトフォールバックは、Gemma 2 の語彙に `<0x09>` がなく (タブは普通のトークン) 読めなかった。文字そのものが語彙にあるバイトは `<0x..>` がなくてよいことにした (encode は文字を先に引くので使われない)。`TestTokens` (`HWNPU_SANA_TOKENIZER`) が HF の id と 3 つのプロンプト (日本語、絵文字、タブ) で一致
 - `hwnpu-image`: `-model` が Sana の書き出し (`model.json` と `caption/`) なら Sana で描く。`-steps` の既定はモデルごと (Anima 8、Sana-Sprint 2、Sana 20)、`-guidance` (既定 4.5)、`-noise` は Sana-Sprint ではステップ + 1 個
+
+### 16.120 AMD: Depth Anything 3 の単眼の深度 (`iron_da3.py`、`hwnpu-depth`) — 2026-11-09
+
+- 動機: Apache-2.0 の軽い画像の分析。DA3MONO-LARGE (0.33B、DINOv2 ViT-L と DPT) は DA3 の中で 1 枚の画像の深度に特化した版で、構造が Depth Anything V2 と同じ
+- 504 × 504 で 1 枚 1.0〜1.2 秒、固定の最大 1.39 GiB。公式の CPU (fp32) と深度のコサイン 0.9999。記録は amd-npu-models.md の 15 節
+- 新しく作った部品: 行を 16 の倍数に足した格子 (`Grid`)、ストライド 2 の 3 × 3、転置畳み込み (GEMM と画素への Copy)、双線形の拡大 (補間の行列の GEMM 2 回と転置の Copy)
+- `hwnpu-depth`: 画像ごとに NAME.depth.png (逆深度を 8 ビットに、元の大きさで)、`-raw` で float32、`-sky` で空。`internal/vision/depth` の `TestQuantile`、`TestSky`、`TestPatches`
