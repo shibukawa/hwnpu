@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MoGe-2 (Ruicheng/moge-2-*-normal, MIT: DINOv2 ViT, a ConvStack neck, points, normal and mask
 heads and a metric scale head) on the CPU with the official modules: the reference hwnpu's NPU
-depth (cmd/hwnpu-depth, tools/amd/iron_moge.py) is checked against.
+depth (cmd/hwnpu-image depth, tools/amd/iron_moge.py) is checked against.
 
 Needs the official repository (github.com/microsoft/MoGe, MIT) for its modules (--src, the
 directory holding moge/) and scipy (its focal and shift solver); utils3d, which only the

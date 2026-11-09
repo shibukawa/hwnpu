@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Depth Anything 3 (DA3MONO-LARGE, DA3METRIC-LARGE: DINOv2 ViT and a DPT head; DA3-SMALL and
 DA3-BASE on one picture: DualDPT's depth and confidence) on the CPU with
-the official modules: the reference hwnpu's NPU depth (cmd/hwnpu-depth, tools/amd/iron_da3.py)
+the official modules: the reference hwnpu's NPU depth (cmd/hwnpu-image depth, tools/amd/iron_da3.py)
 is checked against.
 
 Needs the official repository's src/ (github.com/ByteDance-Seed/Depth-Anything-3, Apache-2.0)

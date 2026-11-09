@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Depth Anything 3's monocular depth (depth-anything/DA3MONO-LARGE, Apache-2.0) on IRON: the
-graphs cmd/hwnpu-depth runs on AMD's NPU.
+graphs cmd/hwnpu-image depth runs on AMD's NPU.
 
 DA3MONO-LARGE is DINOv2's ViT-L/14 (24 blocks, hidden 1024) and a DPT head: the backbone's
 layers 4, 11, 17 and 23 (after the final norm) projected and resized to four scales (4x, 2x,
@@ -924,13 +924,13 @@ def export_mv(root: Path, out: Path, c: Config, check: bool) -> None:
 
 # The sizes an export holds by default: the official processor's (the longest side 504, the
 # other to the nearest multiple of 14) for 1:1, 4:3, 3:2, 16:10 and 16:9, landscape and
-# portrait. hwnpu-depth takes the official size of the picture when the export has it, else the
+# portrait. hwnpu-image depth takes the official size of the picture when the export has it, else the
 # one nearest its aspect (stretching it: 6 to 12 % of the depth for 1.6 against 4:3 or 16:9).
 SIZES = ["504x504", "504x378", "378x504", "504x336", "336x504", "504x322", "322x504", "504x280", "280x504"]
 
 
 def model_kind(root: Path) -> dict:
-    """What hwnpu-depth reads of the model: metric depth (DA3METRIC: meters = focal in pixels
+    """What hwnpu-image depth reads of the model: metric depth (DA3METRIC: meters = focal in pixels
     x depth / 300) or relative."""
     name = json.loads((root / "config.json").read_text()).get("model_name", root.name).lower()
     head = json.loads((root / "config.json").read_text())["config"]["head"]["__object__"]["name"]

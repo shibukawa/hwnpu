@@ -264,10 +264,10 @@ CPU (diffusers、fp32、9 分 17 秒) を参照に、同じノイズから:
 
 ```bash
 python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2 --size 1024   # 約 5 分、4.0 GB (DiT の重み q8)
-go run ./cmd/hwnpu-image -model ~/models/anima-turbo-1024.amd-npu2 -prompt "..." -seed 1 -o out.png
+go run ./cmd/hwnpu-image generate --model ~/models/anima-turbo-1024.amd-npu2 "..." --seed 1 -o out.png
 ```
 
-DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`q4`、`bf16`) で選ぶ (13 節)。確かめ方: `--check` で各グラフに乱数の入力と IRON の参照の出力を書き、`go run ./tools/amd/irongraph DIR` で NPU と比べる。`--random` は乱数の重み (チェックポイントの形だけ使う)。全体は `tools/ref/ref_anima.py` (diffusers で CPU) の `noise` を `-noise` に、`-dump` と `-latents` で条件づけ、各ステップの速度、最後の潜在を書いて比べる。
+DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`q4`、`bf16`) で選ぶ (13 節)。確かめ方: `--check` で各グラフに乱数の入力と IRON の参照の出力を書き、`go run ./tools/amd/irongraph DIR` で NPU と比べる。`--random` は乱数の重み (チェックポイントの形だけ使う)。全体は `tools/ref/ref_anima.py` (diffusers で CPU) の `noise` を `--noise` に、`--dump` と `--latents` で条件づけ、各ステップの速度、最後の潜在を書いて比べる。
 
 ### 11.5 残り
 
@@ -311,7 +311,7 @@ IRON の arena (bank) とグラフのバッファは amdxdna の BO_SHARE (shmem
 - **4 ビットの重み**: 13 節で済み
 - **常駐するサーバーで待つ間はモデルを放す** (2026-11-06 済み、`-idle`、既定 5 分): `iron.Model.Release` / `Reload` (マニフェストとホストの表は残し、デバイスのものを全部放す) と `chat.Engine` の時計 (`internal/chat/idle.go`)。放す前に会話をホストに写し (`putAside`、256 トークン以上)、次の要求で読み直してそこから続ける。E2B の 4 ビットで 1775 MiB → 0、読み直し 0.8 秒、830 トークンを写しから戻した。画像と音声の E2B で 2818 MiB → 0、読み直し 2.0 秒、画像の後の質問に正しく答えた。Neural Engine と Intel の NPU は読み直しに数十秒以上かかるので放さない
 - **塔を使うときだけ読む** (2026-11-06 済み、design.md の 16.81): バンクは塔の分が後ろにあるので、文の版が使う先頭だけを確保し、塔が初めて走る前に全体に育てる (0.6〜0.7 秒)。書き出しはそのまま。文だけの間は E2B の画像と音声の 4 ビットで 2818 → 1826 MiB (文だけの書き出しの 1775 MiB と 51 MiB 差)、LFM3-Omni で 2448 → 1679 MiB。答えは同じ
-- **DiT の 7 組を 1 つの bank で** (2026-11-08 済み、design.md の 16.106): 作業領域だけを分けるより大きく、bank を 1 組だけ確保して、組を切り替えるたびにその組の重みの像 (304 MiB) を bank の先頭に読む (`iron.GraphOptions.SwapVariants`、hwnpu-image の既定。`-resident-dit` で前の形)。1024 × 1024 の q8 で固定の最大 3445 → 1236 MiB、ノイズ除去 +2 %、潜在はバイト単位で同じ
+- **DiT の 7 組を 1 つの bank で** (2026-11-08 済み、design.md の 16.106): 作業領域だけを分けるより大きく、bank を 1 組だけ確保して、組を切り替えるたびにその組の重みの像 (304 MiB) を bank の先頭に読む (`iron.GraphOptions.SwapVariants`、hwnpu-image の既定。`--resident-dit` で前の形)。1024 × 1024 の q8 で固定の最大 3445 → 1236 MiB、ノイズ除去 +2 %、潜在はバイト単位で同じ
 - **VAE をタイルに分ける**: VAE の段は特徴マップが大半。分ければ段の最大 1.2 GB が数分の 1 に (DiT を 1 つの bank にしたので、今は VAE の段が最大)
 - **PLaMo の embed_tokens をホストに**: 13 節の PLaMo 3 の `--q4` で済み (0.55 GB)
 
@@ -653,33 +653,33 @@ Efficient-Large-Model の diffusers のリポジトリをそのまま置く (`tr
 
 ```bash
 python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px ~/models/sana-sprint-0.6b-1024.amd-npu2
-go run ./cmd/hwnpu-image -model ~/models/sana-sprint-0.6b-1024.amd-npu2 -prompt "..." -seed 1 -o out.png
+go run ./cmd/hwnpu-image generate --model ~/models/sana-sprint-0.6b-1024.amd-npu2 "..." --seed 1 -o out.png
 ```
 
-`--only` で部品を選べる (`text caption dit_in dit_blocks dit_out vae`)。`--text-format bf16` は Gemma 2 を bf16 に (固定 4.0 GiB)、`--dit-precision high` は DiT の射影を HIGH に (Sana 600M で絵は同じ、2.5 倍遅い)。確かめ方は Anima と同じ: `--check` と `go run ./tools/amd/irongraph DIR`、全体は `tools/ref/ref_sana.py` の `noise` を raw の float32 にして `-noise` に (Sana-Sprint はステップ + 1 個)、`-latents` で最後の潜在、`-dump DIR` で各ステップの DiT の出力とキャプション。
+`--only` で部品を選べる (`text caption dit_in dit_blocks dit_out vae`)。`--text-format bf16` は Gemma 2 を bf16 に (固定 4.0 GiB)、`--dit-precision high` は DiT の射影を HIGH に (Sana 600M で絵は同じ、2.5 倍遅い)。確かめ方は Anima と同じ: `--check` と `go run ./tools/amd/irongraph DIR`、全体は `tools/ref/ref_sana.py` の `noise` を raw の float32 にして `--noise` に (Sana-Sprint はステップ + 1 個)、`--latents` で最後の潜在、`--dump DIR` で各ステップの DiT の出力とキャプション。
 
 ### 14.5 追加 (2026-11-09)
 
 - **VAE の段を先に読む** (`sana.VAE.Decode`): 段 i を走らせている間に段 i + 1 のグラフを読み込み、出力をそのまま次の段の入力に写す (ホストへの写しが 1 回減る)。VAE 15 → 13 秒、1 枚 24 → 20 秒 (Sana-Sprint 0.6B)、画素はビット単位で同じ。固定は 2 段分まで増える。同じことを Anima の VAE にもした (11 → 9.4 秒、画素は同じ)
-- **負のプロンプト** (`hwnpu-image -negative`、Sana): 指示文なしで Gemma 2 をもう 1 回走らせ (`EncodeNegative`)、CFG の空の側でそのキャプションに切り替える。空のときは今までどおり (テキストは 1 回)。参照と同じノイズで潜在のコサイン 0.78 だが、CPU の bf16 でも 0.85 (負のプロンプトがあると軌跡が精度に敏感になる)、1 回目の DiT は uncond 0.9993、cond 0.9998
+- **負のプロンプト** (`hwnpu-image generate --negative`、Sana): 指示文なしで Gemma 2 をもう 1 回走らせ (`EncodeNegative`)、CFG の空の側でそのキャプションに切り替える。空のときは今までどおり (テキストは 1 回)。参照と同じノイズで潜在のコサイン 0.78 だが、CPU の bf16 でも 0.85 (負のプロンプトがあると軌跡が精度に敏感になる)、1 回目の DiT は uncond 0.9993、cond 0.9998
 - **正方形以外の大きさ** (`iron_sana.py --width --height`): Sana のビン (1152 × 896、896 × 1152、1344 × 768、768 × 1344 など、32 の倍数)。トークン (36 × 28 = 1008) は 256 の倍数 (1024) に 0 で埋め、線形注意の鍵の列で埋めた行を消す (DiT と VAE の EfficientViT の段)。VAE の格子は行を 16 の倍数に足す (`GridShape.Hp`、Wp は W + 1 を 16 の倍数に。正方形は前と同じ配置)。1152 × 896 の Sana-Sprint 0.6B: 潜在のコサイン 0.9977、PSNR 33.4 dB、1 枚 27 秒
 - Anima の交差注意も bf16 のスコアの問題がないかを見た: スコアは最大 8 (Sana 600M の 1750 に対し) で、鍵をずらす必要はない
 
 ### 14.6 残り
 
 - VAE は実行だけで約 10 秒 (Sana-Sprint の時間の 6 割)。EfficientViT の段の深さ方向の畳み込みは要素ごとの演算 (5 × 5 で 49 回) が主
-- 書き出しは 1 つの大きさ。大きさごとに書き出す (`hwnpu-image -model` はその書き出しの大きさで描く)
+- 書き出しは 1 つの大きさ。大きさごとに書き出す (`hwnpu-image generate --model` はその書き出しの大きさで描く)
 - Mac と Intel (Core ML、OpenVINO) は未対応
 - Sana 1600M (1.0) は Sana 600M と同じ VAE 1.0、1.6B の DiT で、同じ手順で書き出せるはず (確かめていない)
 
-## 15. 深度推定: Depth Anything 3 (`hwnpu-depth`、2026-11-09)
+## 15. 深度推定: Depth Anything 3 (`hwnpu-image depth`、2026-11-09)
 
 Depth Anything 3 (Apache-2.0) を AMD の NPU だけで動かす。4 つの版に対応する。
 
 | 書き出し | 中身 | 出力 |
 |---|---|---|
 | `da3mono-large` (DA3MONO-LARGE) | DINOv2 ViT-L/14 (24 ブロック) と DPT | 相対の深度 (大きいほど遠い) と空 |
-| `da3metric-large` (DA3METRIC-LARGE) | 同じ構造 | 深度 × 焦点距離 (画素) ÷ 300 = メートル (`-focal` か `-fov`) と空 |
+| `da3metric-large` (DA3METRIC-LARGE) | 同じ構造 | 深度 × 焦点距離 (画素) ÷ 300 = メートル (`--focal` か `--fov`) と空 |
 | `da3-small` / `da3-base` (DA3-SMALL / BASE) | ViT-S / B、複数視点用の注意 (1 枚として)、DualDPT の深度の側 | 相対の深度と確信度 |
 
 ### 15.1 構成
@@ -718,26 +718,26 @@ Depth Anything 3 (Apache-2.0) を AMD の NPU だけで動かす。4 つの版�
 
 ```bash
 python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE ~/models/da3mono-large.amd-npu2   # --sizes 504x504 504x378 ...
-go run ./cmd/hwnpu-depth photo.jpg                      # photo.depth.png (近いほど明るい)
-go run ./cmd/hwnpu-depth -raw -sky -out DIR a.jpg b.png   # 深度の float32 と空 (DA3-SMALL / BASE は確信度) も
-go run ./cmd/hwnpu-depth -model ~/models/da3metric-large.amd-npu2 -fov 60 photo.jpg   # メートル (-raw も)
+go run ./cmd/hwnpu-image depth photo.jpg                      # photo.depth.png (近いほど明るい)
+go run ./cmd/hwnpu-image depth --raw --sky --out DIR a.jpg b.png   # 深度の float32 と空 (DA3-SMALL / BASE は確信度) も
+go run ./cmd/hwnpu-image depth --model ~/models/da3metric-large.amd-npu2 --fov 60 photo.jpg   # メートル (--raw も)
 ```
 
 参照: `tools/ref/ref_da3.py` (公式リポジトリの `src/` と addict、einops、omegaconf が要る)。書き出しと同じ大きさの画像を渡すと縮小の差が出ない。
 
 ### 15.5 大きさの選び方 (2026-11-09)
 
-公式は長辺を 504 にし、短辺を 14 の倍数に丸める (1024 × 640 なら 504 × 322)。最も近い縦横比の書き出しに引き伸ばすと、公式の深度との差が大きかった (CPU、1024 × 640 の画像で、504 × 280 に引き伸ばすと相対誤差の平均 12 %、504 × 378 で 6 %。NPU の数値の誤差は 1 % 前後)。書き出しの既定の大きさを公式の大きさで 9 つ (1:1、4:3、3:2、16:10、16:9 と縦長) にし、`hwnpu-depth` は画像の公式の大きさがあればそれを、なければ最も近い縦横比を使う (`depth.Official`、`Choose`)。MoGe-2 も同じく 9 つの縦横比を持ち、公式の num_tokens の格子があればそれを使う。
+公式は長辺を 504 にし、短辺を 14 の倍数に丸める (1024 × 640 なら 504 × 322)。最も近い縦横比の書き出しに引き伸ばすと、公式の深度との差が大きかった (CPU、1024 × 640 の画像で、504 × 280 に引き伸ばすと相対誤差の平均 12 %、504 × 378 で 6 %。NPU の数値の誤差は 1 % 前後)。書き出しの既定の大きさを公式の大きさで 9 つ (1:1、4:3、3:2、16:10、16:9 と縦長) にし、`hwnpu-image depth` は画像の公式の大きさがあればそれを、なければ最も近い縦横比を使う (`depth.Official`、`Choose`)。MoGe-2 も同じく 9 つの縦横比を持ち、公式の num_tokens の格子があればそれを使う。
 
 ### 15.6 複数の画像 (`iron_da3.py --views N`、2026-11-09)
 
-DA3-SMALL / BASE を N 枚の同じ場面の画像に同時に使う: 深度は全部で 1 つの尺度、カメラ (世界からカメラへの [R | t] と内部パラメータ) も出す。`hwnpu-depth -model <--views の書き出し> a.jpg b.jpg c.jpg` が `cameras.json` と各画像の深度を書き、`-ply` で全部の画素を参照の視点の座標で 1 つの点群にする。
+DA3-SMALL / BASE を N 枚の同じ場面の画像に同時に使う: 深度は全部で 1 つの尺度、カメラ (世界からカメラへの [R | t] と内部パラメータ) も出す。`hwnpu-image depth --model <--views の書き出し> a.jpg b.jpg c.jpg` が `cameras.json` と各画像の深度を書き、`--ply` で全部の画素を参照の視点の座標で 1 つの点群にする。
 
 - ViT は視点のトークンを詰めて並べる (視点 i の行は i × 973 から、`Config.tall`)。視点の中の注意は各視点の先頭からの窓 (1024 行、鍵は `k[s : s + 1024][:973]`。窓の後ろの行は次の視点が上書きする)、視点をまたぐ注意は全部の行 (`k[:N × 973]`)。埋めた行が視点の間に入らないので、マスクは要らない
 - グラフはブロック 3 の前で 2 つに分ける (`vit_a`、`vit_b`): 公式はそこでクラストークンから参照する視点を選び (`saddle_balanced`、3 枚以上) 先頭に並べ替える。選択と並べ替えはホスト (`depth.SaddleBalanced`、公式の値と一致するテスト)。カメラトークンは参照の視点とほかの視点で別。ヘッドは 1 枚のものを視点ごとに
 - カメラ: 最後の層のカメラトークン (局所の出力と全体の出力を並べた 768) に cam_dec (小さな MLP) をホストで掛け、四元数と画角から [R | t] と焦点距離にする (公式の `pose_encoding_to_extri_intri`、`affine_inverse`)
 - 3 枚 (504 × 378、DA3-SMALL): 1.1 秒 (ViT 0.39 秒、ヘッド 3 回 0.47 秒)。参照する視点をそろえると公式と深度のコサイン 0.9998、相対誤差 1.2 %、回転の差 0.0016 以下、焦点距離の差 1 % 前後
-- 注意: ほぼ同じ画像どうしでは参照する視点の選択が同点に近く (類似度の差 3 × 10⁻⁵)、NPU の bf16 の差で公式と違う視点を選ぶことがある (`-ref` で指定できる)
+- 注意: ほぼ同じ画像どうしでは参照する視点の選択が同点に近く (類似度の差 3 × 10⁻⁵)、NPU の bf16 の差で公式と違う視点を選ぶことがある (`--ref` で指定できる)
 - 書き出しは視点の数と大きさを固定 (`--views 3 --sizes 504x378`)
 
 ### 15.7 残り
@@ -745,9 +745,9 @@ DA3-SMALL / BASE を N 枚の同じ場面の画像に同時に使う: 深度は�
 - DA3NESTED、DA3-LARGE / GIANT は CC BY-NC なので対象外
 - 複数の画像は書き出しごとに枚数が決まる。光線の補助ヘッド (`use_ray_pose`) と、カメラを与える使い方 (`cam_enc`) は未対応
 
-## 16. 深度と形: MoGe-2 (`hwnpu-depth`、2026-11-09)
+## 16. 深度と形: MoGe-2 (`hwnpu-image depth`、2026-11-09)
 
-MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal、MIT) を AMD の NPU で動かす。1 枚の画像から、焦点距離を知らなくてもメートル単位の深度、点群、法線、有効な画素のマスクを出す (焦点距離は点群から解く)。`hwnpu-depth -model ~/models/moge-2-vits.amd-npu2` で使い、`-normal` で法線、`-sky` でマスク、`-raw` で深度と点群の float32。
+MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal、MIT) を AMD の NPU で動かす。1 枚の画像から、焦点距離を知らなくてもメートル単位の深度、点群、法線、有効な画素のマスクを出す (焦点距離は点群から解く)。`hwnpu-image depth --model ~/models/moge-2-vits.amd-npu2` で使い、`--normal` で法線、`--sky` でマスク、`--raw` で深度と点群の float32。
 
 ### 16.1 構成
 
@@ -781,4 +781,4 @@ MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal、MIT) を AMD の NPU で動かす。
 ### 16.3 残り
 
 - ヘッドが重い (16 倍の解像度の 3 × 3 と、3 つのヘッドが同じ neck の出力を別々に処理する)
-- マスクで点群を消す以外の後処理 (深度の段差の検出など) は未対応。画角を与えて解く `fov_x` は `hwnpu-depth -fov` (焦点距離は与えたもので、z のずれだけを解く)
+- マスクで点群を消す以外の後処理 (深度の段差の検出など) は未対応。画角を与えて解く `fov_x` は `hwnpu-image depth --fov` (焦点距離は与えたもので、z のずれだけを解く)

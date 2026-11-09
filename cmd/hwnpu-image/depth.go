@@ -1,36 +1,15 @@
-// hwnpu-depth estimates the depth of pictures on AMD's NPU with Depth Anything 3's monocular
-// model (depth-anything/DA3MONO-LARGE, Apache-2.0), an export of tools/amd/iron_da3.py
-// (internal/vision/depth):
-//
-//	hwnpu-depth -model ~/models/da3mono-large.amd-npu2 photo.jpg
-//
-// MoGe-2 (Ruicheng/moge-2-*-normal, MIT), an export of tools/amd/iron_moge.py, gives metric
-// depth (and a point map, normals and a mask) without the camera's focal length: it solves it.
-//
-// For each picture it writes NAME.depth.png next to it (or into -out): the inverse depth
-// (near is bright) normalized to 8 bits, at the picture's size. -raw also writes the depth as
-// raw float32 (NAME.depth.f32, row major, at the export's size it ran at, printed) and -sky the
-// sky mask. The export holds several sizes (the longest side 504) and the picture is stretched
-// to the one nearest its aspect.
-//
-// The depth is relative (larger is farther, up to an unknown scale), except with an export of
-// DA3METRIC-LARGE given the camera's focal length (-focal, in the picture's pixels) or
-// horizontal field of view (-fov, degrees): then it is meters, and -raw writes meters.
 package main
 
 import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"log"
 	"math"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -44,86 +23,91 @@ import (
 	"github.com/shibukawa/hwnpu/internal/vision/moge"
 )
 
-func defaultModel() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "models", "da3mono-large.amd-npu2")
+// DepthCmd is "hwnpu-image depth": the depth of pictures on AMD's NPU with Depth Anything 3
+// (depth-anything/DA3*, Apache-2.0; exports of tools/amd/iron_da3.py, internal/vision/depth) or
+// MoGe-2 (Ruicheng/moge-2-*-normal, MIT; exports of tools/amd/iron_moge.py, internal/vision/moge).
+//
+// For each picture it writes NAME.depth.png next to it (or into --out): the inverse depth (near
+// is bright) normalized to 8 bits, at the picture's size. The export holds DA3's or MoGe-2's
+// official sizes and the picture is resized to the one nearest its aspect.
+//
+// The depth is relative (larger is farther, up to an unknown scale), except with DA3METRIC-LARGE
+// given the camera's focal length (--focal, in the picture's pixels) or horizontal field of view
+// (--fov, degrees), and with MoGe-2, which solves the focal length: then it is meters. An export
+// of DA3-SMALL / BASE with --views N takes N pictures of one scene together: one scale for all,
+// the cameras in cameras.json and with --ply the points in one frame.
+type DepthCmd struct {
+	Pictures []string `arg:"" type:"existingfile" help:"The pictures (with a multi-view export, exactly its views)."`
+	Model    string   `short:"m" placeholder:"EXPORT" default:"~/models/da3mono-large.amd-npu2" type:"path" help:"An export of tools/amd/iron_da3.py or tools/amd/iron_moge.py."`
+	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory to write into (default: next to each picture)."`
+	Raw      bool     `help:"Also write the depth as raw float32 (NAME.depth.f32, at the export's size; MoGe-2 also NAME.points.f32)."`
+	Sky      bool     `help:"Also write the sky mask (NAME.sky.png); DA3-SMALL / BASE: the confidence (NAME.conf.png); MoGe-2: the mask (NAME.mask.png)."`
+	Normal   bool     `help:"MoGe-2: also write the normals (NAME.normal.png, (n + 1) / 2 as RGB)."`
+	Keep     bool     `name:"export-size" help:"Write the pictures at the export's size instead of the input's."`
+	Focal    float64  `placeholder:"PIXELS" help:"DA3METRIC-LARGE: the focal length in the picture's pixels (fx = fy), for meters."`
+	Fov      float64  `placeholder:"DEGREES" help:"The horizontal field of view in degrees, in place of --focal (MoGe-2: given, not solved)."`
+	Ref      int      `default:"-1" help:"A multi-view export: the reference view's index (default: chosen as DA3 does)."`
+	Ply      string   `type:"path" placeholder:"FILE" help:"A multi-view export: also write the views' points in one frame as a PLY file."`
 }
 
-func main() {
-	model := flag.String("model", defaultModel(), "an export of tools/amd/iron_da3.py or tools/amd/iron_moge.py")
-	outDir := flag.String("out", "", "the directory to write into (default: next to each picture)")
-	raw := flag.Bool("raw", false, "also write the depth as raw float32 (NAME.depth.f32, the export's size)")
-	sky := flag.Bool("sky", false, "also write the sky mask (NAME.sky.png), or with DA3-SMALL / BASE the confidence (NAME.conf.png)")
-	keep := flag.Bool("export-size", false, "write the picture at the export's size instead of the input's")
-	focal := flag.Float64("focal", 0, "a metric export: the focal length in the picture's pixels (fx = fy)")
-	fov := flag.Float64("fov", 0, "a metric export: the horizontal field of view in degrees, in place of -focal (MoGe-2: given, not solved)")
-	refView := flag.Int("ref", -1, "a multi-view export: the reference view's index (default: chosen as DA3 does)")
-	ply := flag.String("ply", "", "a multi-view export: also write the views' points in one frame as a PLY file here")
-	normal := flag.Bool("normal", false, "MoGe-2: also write the normals (NAME.normal.png, (n + 1) / 2 as RGB)")
-	flag.Parse()
-	if flag.NArg() == 0 {
-		log.Fatal("hwnpu-depth: give one or more pictures")
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+// Run estimates the depth of each picture.
+func (c *DepthCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
 	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer dev.Close()
-	iron.ShareExport(*model, logf)
-	o := opts{dir: *outDir, raw: *raw, sky: *sky, keep: *keep, focal: *focal, fov: *fov, normal: *normal}
-	if depth.IsMultiExport(*model) {
-		m, err := depth.OpenMulti(ctx, dev, *model)
+	iron.ShareExport(c.Model, logf)
+	o := opts{dir: c.Out, raw: c.Raw, sky: c.Sky, keep: c.Keep, focal: c.Focal, fov: c.Fov, normal: c.Normal}
+	if depth.IsMultiExport(c.Model) {
+		m, err := depth.OpenMulti(ctx, dev, c.Model)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		defer m.Close()
 		m.Logf = logf
-		m.Ref = *refView
-		if err := runMulti(ctx, m, flag.Args(), o, *ply, logf); err != nil {
-			log.Fatal(err)
-		}
-		return
+		m.Ref = c.Ref
+		return runMulti(ctx, m, c.Pictures, o, c.Ply, logf)
 	}
-	if moge.IsExport(*model) {
-		m, err := moge.Open(ctx, dev, *model)
+	if moge.IsExport(c.Model) {
+		m, err := moge.Open(ctx, dev, c.Model)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		defer m.Close()
 		m.Logf = logf
-		m.FovX = *fov
-		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(*model), m.Sizes)
-		for _, path := range flag.Args() {
+		m.FovX = c.Fov
+		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(c.Model), m.Sizes)
+		for _, path := range c.Pictures {
 			if err := runMoge(ctx, m, path, o, logf); err != nil {
-				log.Fatalf("%s: %v", path, err)
+				return fmt.Errorf("%s: %w", path, err)
 			}
 		}
-		return
+		return nil
 	}
-	e, err := depth.Open(ctx, dev, *model)
+	e, err := depth.Open(ctx, dev, c.Model)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer e.Close()
 	e.Logf = logf
 	kind := "relative depth"
 	if e.Metric {
 		kind = "metric depth"
-		if *focal == 0 && *fov == 0 {
-			kind += " (relative without -focal or -fov)"
+		if c.Focal == 0 && c.Fov == 0 {
+			kind += " (relative without --focal or --fov)"
 		}
 	}
-	logf("%s: %s, sizes %v (%s)", filepath.Base(*model), kind, e.Sizes, console.Duration(time.Since(t0)))
-	for _, path := range flag.Args() {
+	logf("%s: %s, sizes %v (%s)", filepath.Base(c.Model), kind, e.Sizes, console.Duration(time.Since(t0)))
+	for _, path := range c.Pictures {
 		if err := run(ctx, e, path, o, logf); err != nil {
-			log.Fatalf("%s: %v", path, err)
+			return fmt.Errorf("%s: %w", path, err)
 		}
 	}
+	return nil
 }
 
 type opts struct {
@@ -133,8 +117,8 @@ type opts struct {
 }
 
 // runMoge writes MoGe-2's depth (meters) of the picture at path: NAME.depth.png (the inverse
-// depth, the masked pixels black), -raw NAME.depth.f32 (+Inf where masked) and NAME.points.f32
-// (x, y, z a pixel), -sky NAME.mask.png, -normal NAME.normal.png.
+// depth, the masked pixels black), --raw NAME.depth.f32 (+Inf where masked) and NAME.points.f32
+// (x, y, z a pixel), --sky NAME.mask.png, --normal NAME.normal.png.
 func runMoge(ctx context.Context, m *moge.Estimator, path string, o opts, logf func(string, ...any)) error {
 	img, err := decode(path)
 	if err != nil {
@@ -200,12 +184,12 @@ func runMoge(ctx context.Context, m *moge.Estimator, path string, o opts, logf f
 }
 
 // runMulti runs a multi-view export (iron_da3.py --views) on the pictures together: each
-// one's NAME.depth.png (one scale for all; -raw, -sky the confidence), cameras.json beside the
-// first's (or in -out: each picture's world-to-camera [R | t] and intrinsics at the processed
-// size), and -ply the points of all the views in the reference view's frame.
+// one's NAME.depth.png (one scale for all; --raw, --sky the confidence), cameras.json beside the
+// first's (or in --out: each picture's world-to-camera [R | t] and intrinsics at the processed
+// size), and --ply the points of all the views in the reference view's frame.
 func runMulti(ctx context.Context, m *depth.Multi, paths []string, o opts, ply string, logf func(string, ...any)) error {
 	if len(paths) != m.Views {
-		return fmt.Errorf("hwnpu-depth: the export takes %d pictures together, got %d", m.Views, len(paths))
+		return fmt.Errorf("the export takes %d pictures together, got %d", m.Views, len(paths))
 	}
 	imgs := make([]image.Image, len(paths))
 	for i, p := range paths {
@@ -330,14 +314,6 @@ func decode(path string) (image.Image, error) {
 	defer f.Close()
 	img, _, err := image.Decode(f)
 	return img, err
-}
-
-func writeF32(path string, xs []float32) error {
-	b := make([]byte, 4*len(xs))
-	for i, d := range xs {
-		binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(d))
-	}
-	return os.WriteFile(path, b, 0o644)
 }
 
 func writeRGB(path string, n []float32, w, h int) error {

@@ -3402,3 +3402,9 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - MoGe-2: `-fov` で画角を与える (z のずれだけを解く)
 - 対象外: DA3NESTED / LARGE / GIANT は CC BY-NC
 - 記録は amd-npu-models.md の 11、14〜16 節
+
+### 16.123 hwnpu-image をサブコマンドに (generate、depth、convert)、引数は kong — 2026-11-10
+
+- 画像のコマンドが増えてきたので、`hwnpu-depth` を `hwnpu-image depth` にまとめ、`hwnpu-image -convert` を `hwnpu-image convert` に、絵を描くのを `hwnpu-image generate "プロンプト"` にした。`hwnpu-depth` は消した
+- 引数は標準の flag から `github.com/alecthomas/kong` に。サブコマンドごとに構造体のフィールドとタグで書き、`--help` が出る。フラグは `--model` (`-m`)、`--out` (`-o`) のように 2 本の `-`。プロンプトと画像は位置引数。generate と convert は Anima の書き出しの設定 (`--backend`、`--size`、形式など) の構造体を共有する
+- 今回は hwnpu-image だけ。ほかのコマンド (hwnpu-chat、hwnpu-transcribe など) は標準の flag のまま

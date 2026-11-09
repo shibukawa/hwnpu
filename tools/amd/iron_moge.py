@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal, MIT) on IRON: the graphs cmd/hwnpu-depth runs on
+"""MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal, MIT) on IRON: the graphs cmd/hwnpu-image depth runs on
 AMD's NPU for a metric point map, depth, normals and a mask from one picture.
 
 MoGe-2 is DINOv2's ViT (some of its layers after the final norm, each projected by a 1 x 1

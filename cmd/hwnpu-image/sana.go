@@ -17,11 +17,11 @@ import (
 // sanaRun is what runSana takes from the command line.
 type sanaRun struct {
 	model, prompt, negative, out, noise, latents string
-	steps                              int
-	guidance                           float64
-	seed                               uint64
-	resident                           bool
-	dump                               string
+	steps                                        int
+	guidance                                     float64
+	seed                                         uint64
+	resident                                     bool
+	dump                                         string
 }
 
 // runSana draws the picture with an export of tools/amd/iron_sana.py (Sana or Sana-Sprint) on
@@ -63,7 +63,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 	var neg sana.Cond
 	if r.negative != "" {
 		if m.Sprint {
-			return fmt.Errorf("hwnpu-image: Sana-Sprint runs no classifier-free guidance: -negative is for Sana")
+			return fmt.Errorf("Sana-Sprint runs no classifier-free guidance: --negative is for Sana")
 		}
 		if neg, err = p.EncodeNegative(ctx, r.negative, cond); err != nil {
 			return err
@@ -78,7 +78,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 		}
 		size := len(x) / n
 		if size*n != len(x) || size != p.Dit.Latent*p.Dit.Tokens() {
-			return fmt.Errorf("hwnpu-image: %s: %d values for %d noises of %d", r.noise, len(x), n, p.Dit.Latent*p.Dit.Tokens())
+			return fmt.Errorf("%s: %d values for %d noises of %d", r.noise, len(x), n, p.Dit.Latent*p.Dit.Tokens())
 		}
 		for k := 0; k < n; k++ {
 			noises = append(noises, x[k*size:(k+1)*size])

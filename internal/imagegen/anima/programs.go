@@ -19,10 +19,10 @@ import (
 	"github.com/shibukawa/hwnpu/internal/ovcpu"
 )
 
-// ProgramKind is the kind of manifest.json of an export of hwnpu-image -convert.
+// ProgramKind is the kind of manifest.json of an export of hwnpu-image convert.
 const ProgramKind = "anima-programs"
 
-// ProgramManifest is manifest.json of an export of hwnpu-image -convert: the programs (Core ML
+// ProgramManifest is manifest.json of an export of hwnpu-image convert: the programs (Core ML
 // packages, or OpenVINO IR .xml) by part, relative to the export's directory.
 type ProgramManifest struct {
 	Kind    string `json:"kind"`
@@ -44,13 +44,13 @@ type ProgramManifest struct {
 	Vae    []string `json:"vae"` // the VAE's stages, in order
 }
 
-// IsProgramExport reports whether dir holds an export of hwnpu-image -convert.
+// IsProgramExport reports whether dir holds an export of hwnpu-image convert.
 func IsProgramExport(dir string) bool {
 	m, err := ReadProgramManifest(dir)
 	return err == nil && m.Kind == ProgramKind
 }
 
-// ReadProgramManifest reads dir/manifest.json of an export of hwnpu-image -convert.
+// ReadProgramManifest reads dir/manifest.json of an export of hwnpu-image convert.
 func ReadProgramManifest(dir string) (*ProgramManifest, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
@@ -61,7 +61,7 @@ func ReadProgramManifest(dir string) (*ProgramManifest, error) {
 		return nil, err
 	}
 	if m.Kind != ProgramKind {
-		return nil, fmt.Errorf("anima: %s is not an export of hwnpu-image -convert", dir)
+		return nil, fmt.Errorf("anima: %s is not an export of hwnpu-image convert", dir)
 	}
 	return &m, nil
 }
