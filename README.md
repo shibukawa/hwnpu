@@ -187,7 +187,7 @@ python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px ~/models/sana-spr
 go run ./cmd/hwnpu-image -model ~/models/sana-sprint-0.6b-1024.amd-npu2 -prompt "a watercolor painting of a red fox in a snowy birch forest" -o fox.png
 ```
 
-Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana-Sprint 0.6B で約 24 秒 (テキスト 3 秒、DiT 2 ステップ 2.8 秒、VAE 15 秒)、Sana 600M で 70〜80 秒、Sana-Sprint 1.6B で 32 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
+Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana-Sprint 0.6B で約 20 秒 (テキスト 3 秒、DiT 2 ステップ 2.8 秒、VAE 13 秒)、Sana 600M で 70〜80 秒、Sana-Sprint 1.6B で 32 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。Sana は `-negative` で負のプロンプトを付けられます。正方形以外は Sana のビンの大きさ (`iron_sana.py --width 1152 --height 896` など) で書き出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
 
 ### 深度推定 (Depth Anything 3)
 
@@ -198,7 +198,7 @@ python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE ~/models/da3mono-large.amd-n
 go run ./cmd/hwnpu-depth photo.jpg
 ```
 
-Ryzen AI 9 365 で 1 枚 0.7 秒 (LARGE、504 × 378)、SMALL は 0.26 秒、NPU に固定されるメモリは最大 1.4 GiB (SMALL 0.5 GiB) です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
+Ryzen AI 9 365 で 1 枚 0.7 秒 (LARGE、504 × 378)、SMALL は 0.26 秒、NPU に固定されるメモリは最大 1.4 GiB (SMALL 0.5 GiB) です。DA3-SMALL / BASE を `--views 3` で書き出すと、同じ場面の 3 枚を同時に推定して、1 つの尺度の深度とカメラの位置 (`cameras.json`)、点群 (`-ply`) を出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
 
 MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal、MIT) の書き出し (`tools/amd/iron_moge.py`) を渡すと、焦点距離を知らなくてもメートル単位の深度、点群 (`-raw`)、法線 (`-normal`)、有効な画素のマスク (`-sky`) を出します。812 × 602 で 1 枚 2.7〜3.6 秒です (16 節)。
 

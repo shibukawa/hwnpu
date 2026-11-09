@@ -18,9 +18,14 @@ func TestRecoverFocalShift(t *testing.T) {
 		pts[3*i+1] = float32(uv[2*i+1] / focal * z)
 		pts[3*i+2] = float32(z - shift)
 	}
-	f, s := RecoverFocalShift(pts, nil, w, h)
+	f, s := RecoverFocalShift(pts, nil, w, h, 0)
 	if math.Abs(f-focal) > 1e-3 || math.Abs(s-shift) > 1e-3 {
 		t.Errorf("focal %v shift %v, want %v %v", f, s, focal, shift)
+	}
+	// the focal given: the shift alone
+	f, s = RecoverFocalShift(pts, nil, w, h, focal)
+	if f != focal || math.Abs(s-shift) > 1e-3 {
+		t.Errorf("given focal: %v shift %v, want %v", f, s, shift)
 	}
 }
 

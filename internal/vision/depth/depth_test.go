@@ -58,6 +58,16 @@ func TestPatches(t *testing.T) {
 	}
 }
 
+// TestOfficial checks DA3's processor's sizes: 1024 x 640 -> 504 x 315 -> 504 x 322 (a tie,
+// up), 1920 x 1080 -> 504 x 283.5 (284) -> 280, 3000 x 4000 -> 378 x 504.
+func TestOfficial(t *testing.T) {
+	for _, c := range []struct{ w, h, ww, wh int }{{1024, 640, 504, 322}, {1920, 1080, 504, 280}, {3000, 4000, 378, 504}, {504, 504, 504, 504}} {
+		if w, h := Official(c.w, c.h, 504); w != c.ww || h != c.wh {
+			t.Errorf("Official(%d, %d) = %dx%d, want %dx%d", c.w, c.h, w, h, c.ww, c.wh)
+		}
+	}
+}
+
 // TestNearest checks the size choice by aspect.
 func TestNearest(t *testing.T) {
 	e := &Estimator{Export: Export{Sizes: [][2]int{{504, 504}, {504, 378}, {378, 504}, {504, 280}, {280, 504}}}}
@@ -66,6 +76,24 @@ func TestNearest(t *testing.T) {
 	} {
 		if w, h := e.Nearest(c.w, c.h); w != c.ww || h != c.wh {
 			t.Errorf("Nearest(%d, %d) = %dx%d, want %dx%d", c.w, c.h, w, h, c.ww, c.wh)
+		}
+	}
+}
+
+// TestSaddleBalanced checks the reference view against the official select_reference_view
+// ("saddle_balanced") on class tokens sin(0.7 i (v + 1) + v) + 0.3 v cos(i), 16 wide: views 3,
+// 4 and 5 give 1, 2 and 2.
+func TestSaddleBalanced(t *testing.T) {
+	for S, want := range map[int]int{3: 1, 4: 2, 5: 2} {
+		cls := make([][]float32, S)
+		for v := range cls {
+			cls[v] = make([]float32, 16)
+			for i := range cls[v] {
+				cls[v][i] = float32(math.Sin(0.7*float64(i*(v+1))+float64(v)) + 0.3*float64(v)*math.Cos(float64(i)))
+			}
+		}
+		if got := SaddleBalanced(cls); got != want {
+			t.Errorf("%d views: %d, want %d", S, got, want)
 		}
 	}
 }

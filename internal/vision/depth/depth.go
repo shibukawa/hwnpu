@@ -139,6 +139,34 @@ func (e *Estimator) Nearest(w, h int) (int, int) {
 	return bw, bh
 }
 
+// Official is DA3's input processor's size of a w x h picture (upper_bound_resize): the
+// longest side to longest, the other scaled and rounded, then each to the nearest multiple of
+// 14 (up on a tie).
+func Official(w, h, longest int) (int, int) {
+	scale := float64(longest) / float64(max(w, h))
+	nw, nh := max(1, int(math.RoundToEven(float64(w)*scale))), max(1, int(math.RoundToEven(float64(h)*scale)))
+	near := func(x int) int {
+		down := x / 14 * 14
+		if up := down + 14; up-x <= x-down {
+			return up
+		}
+		return down
+	}
+	return near(nw), near(nh)
+}
+
+// Choose is the size the export runs a w x h picture at: DA3's own size of it when the export
+// holds it, else the size nearest its aspect.
+func (e *Estimator) Choose(w, h int) (int, int) {
+	ow, oh := Official(w, h, 504)
+	for _, s := range e.Sizes {
+		if s[0] == ow && s[1] == oh {
+			return ow, oh
+		}
+	}
+	return e.Nearest(w, h)
+}
+
 // use loads the graphs of size w x h, releasing another's.
 func (e *Estimator) use(ctx context.Context, w, h int) (*sized, error) {
 	if e.cur != nil && e.cur.Model.Width == w && e.cur.Model.Height == h {
@@ -228,7 +256,7 @@ func PatchRows(px []uint8, W, H, P, tokens int, mean, std []float32) []float32 {
 func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, error) {
 	b := img.Bounds()
 	t0 := time.Now()
-	w, h := e.Nearest(b.Dx(), b.Dy())
+	w, h := e.Choose(b.Dx(), b.Dy())
 	s, err := e.use(ctx, w, h)
 	if err != nil {
 		return nil, err

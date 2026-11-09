@@ -16,7 +16,7 @@ import (
 
 // sanaRun is what runSana takes from the command line.
 type sanaRun struct {
-	model, prompt, out, noise, latents string
+	model, prompt, negative, out, noise, latents string
 	steps                              int
 	guidance                           float64
 	seed                               uint64
@@ -54,11 +54,20 @@ func runSana(ctx context.Context, r sanaRun) error {
 	if guidance == 0 {
 		guidance = m.Guidance
 	}
-	logf("loaded %s (%dx%d) in %s", filepath.Base(r.model), p.Dit.Size, p.Dit.Size, console.Duration(time.Since(t0)))
+	logf("loaded %s (%dx%d) in %s", filepath.Base(r.model), p.Dit.W(), p.Dit.H(), console.Duration(time.Since(t0)))
 
 	cond, err := p.Encode(ctx, r.prompt)
 	if err != nil {
 		return err
+	}
+	var neg sana.Cond
+	if r.negative != "" {
+		if m.Sprint {
+			return fmt.Errorf("hwnpu-image: Sana-Sprint runs no classifier-free guidance: -negative is for Sana")
+		}
+		if neg, err = p.EncodeNegative(ctx, r.negative, cond); err != nil {
+			return err
+		}
 	}
 	var noises [][]float32
 	n := p.NoiseCount(steps)
@@ -68,8 +77,8 @@ func runSana(ctx context.Context, r sanaRun) error {
 			return err
 		}
 		size := len(x) / n
-		if size*n != len(x) || size != p.Dit.Latent*p.Dit.Grid()*p.Dit.Grid() {
-			return fmt.Errorf("hwnpu-image: %s: %d values for %d noises of %d", r.noise, len(x), n, p.Dit.Latent*p.Dit.Grid()*p.Dit.Grid())
+		if size*n != len(x) || size != p.Dit.Latent*p.Dit.Tokens() {
+			return fmt.Errorf("hwnpu-image: %s: %d values for %d noises of %d", r.noise, len(x), n, p.Dit.Latent*p.Dit.Tokens())
 		}
 		for k := 0; k < n; k++ {
 			noises = append(noises, x[k*size:(k+1)*size])
@@ -84,7 +93,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 	}
 	bar := console.NewBar(lw, "denoising")
 	bar.Set(0, fmt.Sprintf("step 1/%d", steps))
-	x, err := p.Generate(ctx, cond, noises, steps, guidance, func(i, n int, d time.Duration) {
+	x, err := p.Generate(ctx, cond, neg, noises, steps, guidance, func(i, n int, d time.Duration) {
 		per := bar.Elapsed() / time.Duration(i+1)
 		bar.Set(float64(i+1)/float64(n), fmt.Sprintf("step %d/%d, %.1f s a step", min(i+2, n), n, per.Seconds()))
 		if !live {

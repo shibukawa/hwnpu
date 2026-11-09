@@ -48,7 +48,11 @@ def main() -> int:
     ap.add_argument("--src", type=Path, required=True, help="the official repository's src/")
     ap.add_argument("--width", type=int, default=504)
     ap.add_argument("--height", type=int, default=504)
+    ap.add_argument("--more", type=Path, nargs="*", default=[],
+                    help="DA3-SMALL / BASE: more views of the scene (the multi-view model: depths and cameras)")
     a = ap.parse_args()
+    if a.more:
+        return multi(a)
     sys.path.insert(0, str(a.src))
     from safetensors.torch import load_file
 
@@ -73,7 +77,7 @@ def main() -> int:
     rec["image"] = img
     x = torch.from_numpy(img).permute(2, 0, 1)[None, None]  # (1, 1, 3, h, w)
     vit = bb.pretrained
-    rec["pos_embed"] = vit.interpolate_pos_encoding(torch.zeros(1, 1 + (a.width // 14) * (a.height // 14), vit.embed_dim), a.height, a.width)[0]  # DINOv2 calls the rows w.numpy()
+    rec["pos_embed"] = vit.interpolate_pos_encoding(torch.zeros(1, 1 + (a.width // 14) * (a.height // 14), vit.embed_dim), a.height, a.width)[0].numpy()  # DINOv2 calls the rows w
     feats, _ = bb(x)
     rec["feats"] = np.stack([f[0][0, 0].numpy() for f in feats])  # (4, N, C)
     rec["cls"] = np.stack([f[1][0, 0].numpy() for f in feats])
@@ -101,6 +105,47 @@ def main() -> int:
     Image.fromarray(g).save(a.out.with_suffix(".png"))
     extra = f", sky {float((rec['sky'] > 0.3).mean()):.3f} of the pixels" if "sky" in rec else f", confidence {rec['conf'].mean():.2f}"
     print(f"{a.out.with_suffix('.png')}: {a.width}x{a.height}, depth {rec['depth'].min():.3f}..{rec['depth'].max():.3f}{extra}")
+    return 0
+
+
+@torch.no_grad()
+def multi(a) -> int:
+    """The any-view model on several views: each view's depth and confidence, and the cameras
+    (cam_dec on the last layer's camera tokens: world-to-camera extrinsics and intrinsics at the
+    processed size), the backbone choosing the reference view (3 views or more)."""
+    sys.path.insert(0, str(a.src))
+    from safetensors.torch import load_file
+
+    from depth_anything_3.model.cam_dec import CameraDec
+    from depth_anything_3.model.dinov2.dinov2 import DinoV2
+    from depth_anything_3.model.dualdpt import DualDPT
+    from depth_anything_3.model.utils.transform import pose_encoding_to_extri_intri
+    from depth_anything_3.utils.geometry import affine_inverse
+
+    cfg = json.loads((a.root / "config.json").read_text())["config"]
+    net, head, cd = dict(cfg["net"]), dict(cfg["head"]), dict(cfg["cam_dec"])
+    for d in (net, head, cd):
+        d.pop("__object__")
+    bb, dpt, dec = DinoV2(**net).eval(), DualDPT(**head).eval(), CameraDec(**cd).eval()
+    sd = load_file(a.root / "model.safetensors")
+    for m, p in ((bb, "model.backbone."), (dpt, "model.head."), (dec, "model.cam_dec.")):
+        part = {k.removeprefix(p): v for k, v in sd.items() if k.startswith(p)}
+        missing, unexpected = m.load_state_dict(part, strict=False)
+        assert not unexpected and all("_aux" in k for k in missing), (missing, unexpected)
+    imgs = [load_image(p, a.width, a.height) for p in [a.image, *a.more]]
+    x = torch.from_numpy(np.stack(imgs)).permute(0, 3, 1, 2)[None]  # (1, S, 3, h, w)
+    feats, _ = bb(x)
+    out = dpt(feats, a.height, a.width, patch_start_idx=0)
+    pose = dec(feats[-1][1])
+    c2w, ixt = pose_encoding_to_extri_intri(pose, (a.height, a.width))
+    w2c = affine_inverse(c2w)
+    rec = dict(images=np.stack(imgs), depths=out["depth"][0].numpy(), confs=out["depth_conf"][0].numpy(),
+               pose_enc=pose[0].numpy(), extrinsics=w2c[0].numpy(), intrinsics=ixt[0].numpy(),
+               cam_tokens=feats[-1][1][0].numpy())
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(a.out.with_suffix(".npz"), **rec)
+    for i, e in enumerate(rec["extrinsics"]):
+        print(f"view {i}: t {np.round(e[:3, 3], 3)}, fx {rec['intrinsics'][i][0, 0]:.1f}, depth {rec['depths'][i].min():.2f}..{rec['depths'][i].max():.2f}")
     return 0
 
 

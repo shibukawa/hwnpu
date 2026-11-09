@@ -3393,3 +3393,12 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 3 つのヘッドは 1 つのプログラムに重みのバンクを 3 組 (`SwapVariants`)。全部を載せたままだと固定 3.9 GiB (ヘッドの作業領域 773 MiB × 3 と neck 736 MiB)
 - 812 × 602 で vits 約 2.7 秒、vitl 約 3.6 秒。公式の CPU と深度のコサイン 0.9999、相対誤差の平均 0.7〜1.2 %。記録は amd-npu-models.md の 16 節
 - 後処理は Go (`internal/vision/moge`): 焦点距離と z のずれは 1 変数の Levenberg–Marquardt (`TestRecoverFocalShift` が既知の値を戻す)
+
+### 16.122 Sana の負のプロンプトと正方形以外、VAE の段を先に読む、深度推定の大きさと複数の画像、MoGe-2 の画角 — 2026-11-09
+
+- Sana: `-negative` (指示文なしの Gemma 2 をもう 1 回)、`iron_sana.py --width --height` (Sana のビン。トークンと VAE の密な行を 256 の倍数に 0 で埋め、線形注意の鍵から消す)。VAE は次の段を読み込みながら走らせ、出力を次の入力へ直接写す (Sana 15 → 13 秒、Anima 11 → 9.4 秒、画素は同じ)。Anima の交差注意のスコアは小さく (最大 8)、Sana 600M のような bf16 の問題はない
+- 深度推定: 引き伸ばしの誤差 (公式の大きさとの比べで 6〜12 %) が NPU の誤差 (1 %) より大きかったので、書き出しを公式の大きさで 9 つにし、画像の公式の大きさを優先する
+- DA3 の複数の画像 (`--views N`、`hwnpu-depth` が `cameras.json` と `-ply`): 視点のトークンを詰めて並べ、視点の中の注意は窓、視点をまたぐ注意は先頭の範囲。参照する視点の選択とカメラの MLP はホスト。3 枚で 1.1 秒、公式と深度 0.9998
+- MoGe-2: `-fov` で画角を与える (z のずれだけを解く)
+- 対象外: DA3NESTED / LARGE / GIANT は CC BY-NC
+- 記録は amd-npu-models.md の 11、14〜16 節

@@ -32,7 +32,7 @@ product gives each head's row ``[N, c D, 0...]``; RMS-normalizing that row of 64
 ``8 N / (c D)`` to within ``(N / D)^2 / c^2`` (``c D`` dominates), which the norm's weight
 ``c / 8`` turns into ``N / D``. A head whose ``D`` is 0 gives 0, as the reference's eps does.
 
-  python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px OUT --size 1024
+  python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px OUT --size 1024   # or --width 1152 --height 896
 
 See docs/amd-npu-models.md.
 """
@@ -55,7 +55,7 @@ from iron.operators.mha import MHA
 from iron.operators.relu import ReLU
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from iron_anima import RandomWeights, Safetensors, bf, command_boundary, tap, variant_bank  # noqa: E402
+from iron_anima import RandomWeights, Safetensors, bf, command_boundary, pipelines, tap, variant_bank  # noqa: E402
 from iron_graph import bind_device, export_graph, write_check  # noqa: E402
 
 
@@ -208,7 +208,8 @@ def linear_attention(q, kt, vt, k: LinearAttnConsts):
 class DitConfig:
     """SanaTransformer2DModel's shape (transformer/config.json) at one image size."""
 
-    size: int = 1024
+    width: int = 1024
+    height: int = 1024
     hidden: int = 1152
     heads: int = 36
     layers: int = 28
@@ -225,12 +226,23 @@ class DitConfig:
     vae_scale: int = 32
 
     @property
-    def grid(self) -> int:
-        return self.size // self.vae_scale
+    def gw(self) -> int:
+        return self.width // self.vae_scale
+
+    @property
+    def gh(self) -> int:
+        return self.height // self.vae_scale
 
     @property
     def tokens(self) -> int:
-        return self.grid * self.grid
+        """The latent pixels: the tokens that are the picture's."""
+        return self.gw * self.gh
+
+    @property
+    def ntok(self) -> int:
+        """The tokens' rows as the graphs hold them: whole 256 rows (the GEMMs'), the rest
+        padding (masked out of the linear attention's sums)."""
+        return -(-self.tokens // 256) * 256
 
     @property
     def att_heads(self) -> int:
@@ -250,11 +262,13 @@ class DitConfig:
         return -(-self.cross_head_dim // 64) * 64
 
     @classmethod
-    def of(cls, cfg: dict, size: int, group: int) -> "DitConfig":
+    def of(cls, cfg: dict, width: int, height: int, group: int) -> "DitConfig":
         E = cfg["num_attention_heads"] * cfg["attention_head_dim"]
         assert cfg["attention_head_dim"] == 32 and cfg.get("patch_size", 1) == 1, cfg
         assert cfg.get("interpolation_scale") is None, "a positional embedding is not supported"
-        return cls(size=size, hidden=E, heads=cfg["num_attention_heads"], layers=cfg["num_layers"],
+        if width % 32 or height % 32:
+            raise SystemExit(f"{width}x{height}: not multiples of 32 (DC-AE's)")
+        return cls(width=width, height=height, hidden=E, heads=cfg["num_attention_heads"], layers=cfg["num_layers"],
                    cross_heads=cfg["num_cross_attention_heads"], cross_head_dim=cfg["cross_attention_head_dim"],
                    mlp=int(cfg["mlp_ratio"] * E), caption=cfg["caption_channels"], latent=cfg["in_channels"],
                    guidance=bool(cfg.get("guidance_embeds")), guidance_scale=cfg.get("guidance_embeds_scale") or 0.1,
@@ -266,13 +280,12 @@ class DitConfig:
 
 
 def dw_rows(c: DitConfig) -> int:
-    W = c.grid
-    return (W + 2) * (W + 1) + 2
+    return (c.gh + 2) * (c.gw + 1) + 2
 
 
 def dw_band(c: DitConfig) -> int:
     """The grid row of token (0, 0)."""
-    return 1 + (c.grid + 1)
+    return 1 + (c.gw + 1)
 
 
 def cross_rows(w: np.ndarray, b, heads: int, dim: int, pad: int):
@@ -300,8 +313,16 @@ class Shared:
     """What every block of a dit_blocks graph shares."""
 
     def __init__(self, c: DitConfig):
-        n, Ch = c.tokens, c.mlp
+        n, Ch = c.ntok, c.mlp
         self.lin = LinearAttnConsts(c.att_heads, n)
+        if c.ntok != c.tokens:
+            # the keys' columns of the padding rows: zeros, so no sum of the attention counts them
+            m = np.zeros((c.att_dim, n), np.float32)
+            m[:, : c.tokens] = 1
+            self.kmask = iron.param(bf(m))
+            self.fbuf = iron.state((n, Ch))
+        else:
+            self.kmask = None
         self.one = iron.param(bf(np.ones(c.hidden)))
         self.eye = iron.param(bf(np.eye(c.att_dim))) if c.qk_norm else None
         self.grid_a = iron.state((dw_rows(c), Ch))
@@ -383,11 +404,12 @@ class SanaBlock(iron.Graph):
         """``x`` (tokens, Ch) through a 3 x 3 depthwise convolution (zero padded), over the
         grid's band of rows (W + 1 to a token row; the pad column's rows are not tokens)."""
         c = self.c
-        W, Wp = c.grid, c.grid + 1
+        H, W, Wp = c.gh, c.gw, c.gw + 1
         Ch = x.shape[1]
         band = dw_band(c)
-        Copy.step(x, grid, dst=tap((dw_rows(c), Ch), band * Ch, [W, W * Ch], [Wp * Ch, 1]))
-        n = W * Wp
+        Copy.step(x, grid, src=tap(tuple(x.shape), 0, [H * W * Ch], [1]),
+                  dst=tap((dw_rows(c), Ch), band * Ch, [H, W * Ch], [Wp * Ch, 1]))
+        n = H * Wp
         y = None
         for dy in range(3):
             for dx in range(3):
@@ -411,6 +433,8 @@ class SanaBlock(iron.Graph):
             kt = F.linear(sh.eye, k, precision=Precision.HIGHEST)  # the transpose, exactly
         else:
             kt = ReLU.step(F.linear(self.k, h, precision=PREC.dit))  # (A, n)
+        if sh.kmask is not None:
+            kt = kt * sh.kmask
         vt = F.linear(self.v, h, precision=PREC.dit)  # (64 H, n)
         o = linear_attention(ReLU.step(q), kt, vt, sh.lin)
         x = x + F.linear(o, self.o, self.ob, precision=PREC.dit) * gate_msa
@@ -432,8 +456,9 @@ class SanaBlock(iron.Graph):
         q, k, v = q.reshape(n, Hc, Dp), k.reshape(L, Hc, Dp), v.reshape(L, Hc, Dp)
         o = sh.cross
         for s in range(0, n, L):
-            o[s : s + L] = MHA.step(q[s : s + L], k[:nk], v[:nk], heads_interleaved=True, kv_interleaved=True,
-                                    causal=False, d=Dp, scale=MHA_SCALE, num_pipelines=8).reshape(L, P)
+            Lq = min(L, n - s)  # MHA takes no more queries than keys
+            o[s : s + Lq] = MHA.step(q[s : s + Lq], k[:nk], v[:nk], heads_interleaved=True, kv_interleaved=True,
+                                     causal=False, d=Dp, scale=MHA_SCALE, num_pipelines=pipelines(Lq)).reshape(Lq, P)
         x = x + F.linear(o, self.co, self.cob, precision=PREC.dit)
         # GLUMBConv
         h = F.layer_norm(x, (E,), eps=1e-6) * (scale_mlp + sh.one) + shift_mlp
@@ -442,8 +467,13 @@ class SanaBlock(iron.Graph):
         a = self.depthwise(a, sh.grid_a, self.da, self.dab)
         g = self.depthwise(g, sh.grid_g, self.dg, self.dgb)
         f = a * F.silu(g)  # the band's rows; the pad column's are dropped next
-        W, Wp, Ch = c.grid, c.grid + 1, c.mlp
-        f = Copy.step(f, src=tap((W * Wp, Ch), 0, [W, W * Ch], [Wp * Ch, 1])).reshape(n, Ch)
+        H, W, Wp, Ch = c.gh, c.gw, c.gw + 1, c.mlp
+        src = tap((H * Wp, Ch), 0, [H, W * Ch], [Wp * Ch, 1])
+        if sh.kmask is None:
+            f = Copy.step(f, src=src).reshape(n, Ch)
+        else:  # into whole 256 rows, zeros past the tokens
+            Copy.step(f, sh.fbuf, src=src, dst=tap((n, Ch), 0, [H * W * Ch], [1]))
+            f = sh.fbuf[0:n]
         return x + F.linear(f, self.pt, precision=PREC.dit) * gate_mlp
 
 
@@ -673,7 +703,48 @@ class Text(iron.Graph):
 # odd rows with a weight each. The EfficientViT blocks run on the dense tokens (n, C) and their
 # depthwise convolutions on a grid of their own (DwGrid).
 
-from iron_anima import GridShape  # noqa: E402
+
+
+@dataclasses.dataclass(frozen=True)
+class GridShape:
+    """iron_anima's padded channel-last grid, for any size: rows of Wp pixels (Wp >= W + 1, a
+    multiple of 16: the same as iron_anima's W + 16 for a W of whole 16s), the image's rows
+    and zero rows to Hp, a multiple of 16, a zero row above and below and a zero pixel before
+    the first, rounded up to 256 rows. A convolution runs over whole chunks of Hp rows and
+    copies the image's rows."""
+
+    H: int
+    W: int
+    C: int
+
+    @property
+    def Wp(self) -> int:
+        return -(-(self.W + 1) // 16) * 16
+
+    @property
+    def Hp(self) -> int:
+        return -(-self.H // 16) * 16
+
+    @property
+    def rows(self) -> int:
+        return -(-((self.Hp + 2) * self.Wp + 2) // 256) * 256
+
+    @property
+    def band(self) -> int:
+        return 1 + self.Wp
+
+    def pixel(self, y: int, x: int) -> int:
+        return self.band + y * self.Wp + 1 + x
+
+    def chunk(self, cin: int) -> int:
+        """Image rows a convolution takes at once: a multiple of 16 dividing Hp, its im2col rows
+        (9 cin wide) at most 64 MiB."""
+        best = 16
+        for r in range(16, self.Hp + 1, 16):
+            if self.Hp % r == 0 and r * self.Wp * 9 * cin * 2 <= 64 << 20:
+                best = r
+        return best
+
 
 VAE_C = [128, 256, 512, 512, 1024, 1024]  # decoder_block_out_channels
 VAE_VIT = 3  # the resolutions (from the lowest) of EfficientViT blocks
@@ -711,7 +782,8 @@ def dw_band_conv(x, state, g: DwGrid, taps, bias=None):
     """``x`` (H W, C) dense through the depthwise convolution ``taps`` (k k, C), zero padded:
     the result over the grid's band (H Wp, C), whose pad columns' rows are not pixels."""
     C = x.shape[1]
-    Copy.step(x, state, dst=tap((g.rows, C), g.band * C, [g.H, g.W * C], [g.Wp * C, 1]))
+    Copy.step(x, state, src=tap(tuple(x.shape), 0, [g.H * g.W * C], [1]),
+              dst=tap((g.rows, C), g.band * C, [g.H, g.W * C], [g.Wp * C, 1]))
     n = g.H * g.Wp
     y = None
     for dy in range(g.k):
@@ -722,10 +794,15 @@ def dw_band_conv(x, state, g: DwGrid, taps, bias=None):
     return y if bias is None else y + bias
 
 
-def band_dense(y, g: DwGrid):
-    """The pixels' rows of a band (H Wp, C): (H W, C)."""
+def band_dense(y, g: DwGrid, out=None):
+    """The pixels' rows of a band (H Wp, C): (H W, C), or into ``out`` (a state of more rows,
+    zeros past them)."""
     C = y.shape[1]
-    return Copy.step(y, src=tap((g.H * g.Wp, C), 0, [g.H, g.W * C], [g.Wp * C, 1])).reshape(g.H * g.W, C)
+    src = tap((g.H * g.Wp, C), 0, [g.H, g.W * C], [g.Wp * C, 1])
+    if out is None:
+        return Copy.step(y, src=src).reshape(g.H * g.W, C)
+    Copy.step(y, out, src=src, dst=tap(tuple(out.shape), 0, [g.H * g.W * C], [1]))
+    return out[0 : out.shape[0]]
 
 
 def dw_taps(w: np.ndarray) -> np.ndarray:
@@ -751,6 +828,8 @@ class VaeStage(iron.Graph):
         self.states = []
         self.consts = {}  # the linear attentions' constants by (heads, n)
         self.dw = {}  # depthwise grids by (H, W, k, C)
+        self.kmask = {}  # by (C, rows): the keys of the dense rows past the pixels, zeros
+        self.padded = {}  # by (C, rows): states for the dense rows, zeros past the pixels
         self._cols = {}
         H, W = g.H, g.W
         for op in ops:
@@ -767,7 +846,15 @@ class VaeStage(iron.Graph):
                 _, path, C = op
                 n = H * W
                 Hh = C // 32
-                self.consts.setdefault((Hh, n), LinearAttnConsts(Hh, n))
+                npad = -(-n // 256) * 256  # the dense rows: whole 256 rows for the GEMMs
+                if (Hh, npad) not in self.consts:
+                    self.consts[(Hh, npad)] = LinearAttnConsts(Hh, npad)
+                    if npad != n:
+                        m = np.zeros((C, npad), np.float32)
+                        m[:, :n] = 1
+                        self.kmask[(C, npad)] = iron.param(bf(m))  # the padding rows' keys out
+                        for ch in (C, 4 * C):
+                            self.padded.setdefault((ch, npad), [iron.state((npad, ch)) for _ in range(2)])
                 a = f"{path}.attn."
                 qkv = np.concatenate([f32(w[a + "to_q.weight"]), f32(w[a + "to_k.weight"]), f32(w[a + "to_v.weight"])])
                 perm = [np.concatenate([np.arange(96 * h + 32 * j, 96 * h + 32 * j + 32) for h in range(Hh)]) for j in range(3)]
@@ -873,14 +960,18 @@ class VaeStage(iron.Graph):
 
     def interior_from(self, src, g: GridShape, dst, r0: int, R: int, step: int = 1) -> None:
         """Copy ``R`` image rows of ``src`` (band rows, R Wp of them) into the grid ``dst``'s
-        rows r0, r0 + step, ..."""
+        rows r0, r0 + step, ... (those that are the image's: before H)."""
         C, Wp = g.C, g.Wp
-        Copy.step(src, dst, src=tap((R * Wp, C), C, [R, g.W * C], [Wp * C, 1]),
-                  dst=tap((g.rows, C), g.pixel(r0, 0) * C, [R, g.W * C], [step * Wp * C, 1]))
+        n = min(R, -(-(g.H - r0) // step))
+        if n <= 0:
+            return
+        Copy.step(src, dst, src=tap((R * Wp, C), C, [n, g.W * C], [Wp * C, 1]),
+                  dst=tap((g.rows, C), g.pixel(r0, 0) * C, [n, g.W * C], [step * Wp * C, 1]))
 
     def dense_to_grid(self, x, g: GridShape):
         out = self.new_grid(g)
-        Copy.step(x, out, dst=tap((g.rows, g.C), g.pixel(0, 0) * g.C, [g.H, g.W * g.C], [g.Wp * g.C, 1]))
+        Copy.step(x, out, src=tap(tuple(x.shape), 0, [g.H * g.W * g.C], [1]),
+                  dst=tap((g.rows, g.C), g.pixel(0, 0) * g.C, [g.H, g.W * g.C], [g.Wp * g.C, 1]))
         return self.view(out)
 
     def cols_state(self, n: int, k: int):
@@ -892,8 +983,19 @@ class VaeStage(iron.Graph):
         return self._cols[key]
 
     def grid_to_dense(self, x, g: GridShape):
-        C = g.C
-        return Copy.step(x, src=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [g.Wp * C, 1])).reshape(g.H * g.W, C)
+        """The pixels (H W, C); in whole 256 rows (zeros past them) when H W is not."""
+        C, n = g.C, g.H * g.W
+        src = tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [g.Wp * C, 1])
+        if n % 256 == 0:
+            return Copy.step(x, src=src).reshape(n, C)
+        out = self.new_grid_shape((-(-n // 256) * 256, C))
+        Copy.step(x, out, src=src, dst=tap(out.shape, 0, [n * C], [1]))
+        return self.view(out)
+
+    def new_grid_shape(self, shape):
+        s = iron.state(shape)
+        self.states.append(s)
+        return s
 
     def conv3(self, x, g: GridShape, wname: str, cout: int, post=None, parity: bool = False):
         """The 3 x 3 convolution of the grid x into a new grid of cout channels. ``post(y, r0,
@@ -904,7 +1006,7 @@ class VaeStage(iron.Graph):
         Wp, C = g.Wp, g.C
         R = g.chunk(C)
         if parity:
-            R = max(32, R) if g.H % max(32, R) == 0 else R
+            R = max(32, R) if g.Hp % max(32, R) == 0 else R
             assert R % 2 == 0 and (R // 2) * Wp % 256 == 0, (g, R)
         for r0 in range(0, g.H, R):
             for i in (0, 1) if parity else (None,):
@@ -947,24 +1049,31 @@ class VaeStage(iron.Graph):
         return dw_band_conv(x, self.dw[(H, W, k, x.shape[1])], g, taps, bias), g
 
     def vit(self, xd, H: int, W: int, path: str):
-        """An EfficientViT block on the dense tokens xd (n, C)."""
+        """An EfficientViT block on the dense tokens xd (n, C): the pixels' H W rows, then
+        zero rows to whole 256 (whose keys are masked out of the attention's sums)."""
         n, C = xd.shape
         Hh = C // 32
         k = self.consts[(Hh, n)]
+        mask = self.kmask.get((C, n))
+        pads = self.padded.get((C, n))
         P = PREC.vae
         p = lambda s: self.w(f"{path}.{s}")  # noqa: E731
         q = F.linear(xd, p("q"), precision=P)
         kk = F.linear(xd, p("k"), precision=P)
         v = F.linear(xd, p("v"), precision=P)
         kt = ReLU.step(F.linear(p("kt"), xd, precision=P))
+        if mask is not None:
+            kt = kt * mask
         vt = F.linear(p("vt"), xd, precision=P)
         o1 = linear_attention(ReLU.step(q), kt, vt, k)
         # the multi-scale branch: 5 x 5 depthwise, then the grouped 1 x 1 (block diagonal)
-        qm = band_dense(*self.dwconv(q, H, W, 5, p("ms_q_taps")))
-        km = band_dense(*self.dwconv(kk, H, W, 5, p("ms_k_taps")))
-        vm = band_dense(*self.dwconv(v, H, W, 5, p("ms_v_taps")))
-        o2 = linear_attention(ReLU.step(F.linear(qm, p("ms_q"), precision=P)), ReLU.step(F.linear(p("ms_k"), km, precision=P)),
-                              F.linear(p("ms_v"), vm, precision=P), k)
+        qm = band_dense(*self.dwconv(q, H, W, 5, p("ms_q_taps")), out=pads[0] if pads else None)
+        km = band_dense(*self.dwconv(kk, H, W, 5, p("ms_k_taps")), out=pads[1] if pads else None)
+        ktm = ReLU.step(F.linear(p("ms_k"), km, precision=P))
+        if mask is not None:
+            ktm = ktm * mask
+        vm = band_dense(*self.dwconv(v, H, W, 5, p("ms_v_taps")), out=pads[1] if pads else None)
+        o2 = linear_attention(ReLU.step(F.linear(qm, p("ms_q"), precision=P)), ktm, F.linear(p("ms_v"), vm, precision=P), k)
         a = F.linear(o1, p("o1"), precision=P) + F.linear(o2, p("o2"), precision=P)
         x1 = xd + F.rms_norm(a, (C,), p("on"), 1e-5) + p("onb")
         # GLUMBConv
@@ -972,7 +1081,7 @@ class VaeStage(iron.Graph):
         hg = F.silu(F.linear(x1, p("ig"), p("igb"), precision=P))
         ya, g3 = self.dwconv(ha, H, W, 3, p("da"), p("dab"))
         yg, _ = self.dwconv(hg, H, W, 3, p("dg"), p("dgb"))
-        f = band_dense(ya * F.silu(yg), g3)
+        f = band_dense(ya * F.silu(yg), g3, out=self.padded[(4 * C, n)][0] if pads else None)
         f = F.linear(f, p("pt"), precision=P)
         return x1 + F.rms_norm(f, (C,), p("fn"), 1e-5) + p("fnb")
 
@@ -982,7 +1091,7 @@ class VaeStage(iron.Graph):
         u = self.new_grid(gu)
         for dy in range(2):
             for dx in range(2):
-                src = (tap((g.H * g.W, cin), 0, [g.H, g.W, cin], [g.W * cin, cin, 1]) if dense else
+                src = (tap(tuple(x.shape), 0, [g.H, g.W, cin], [g.W * cin, cin, 1]) if dense else
                        tap((g.rows, cin), g.pixel(0, 0) * cin, [g.H, g.W, cin], [g.Wp * cin, cin, 1]))
                 Copy.step(x, u, src=src,
                           dst=tap((gu.rows, cin), gu.pixel(dy, dx) * cin, [g.H, g.W, cin], [2 * gu.Wp * cin, 2 * cin, 1]))
@@ -1032,15 +1141,15 @@ class VaeStage(iron.Graph):
         return Copy.step(x)
 
 
-def vae_stages(size: int) -> list[tuple[list, GridShape]]:
+def vae_stages(width: int, height: int) -> list[tuple[list, GridShape]]:
     """The decoder in stages (each a graph, under amdxdna's 2 s a command), with each one's
     input grid."""
-    h = size // 32
+    h, w = height // 32, width // 32
     d = "decoder.up_blocks"
     vit = lambda i, j: ("vit", f"{d}.{i}.{j}", VAE_C[i])  # noqa: E731
     res = lambda i, j: ("res", f"{d}.{i}.{j}", VAE_C[i])  # noqa: E731
     up = lambda i: ("up", f"{d}.{i}.0", VAE_C[i + 1], VAE_C[i])  # noqa: E731
-    G = lambda s, c: GridShape(h * s, h * s, c)  # noqa: E731
+    G = lambda s, c: GridShape(h * s, w * s, c)  # noqa: E731
     return [
         ([("in",), vit(5, 0), vit(5, 1), vit(5, 2)], G(1, 64)),
         ([up(4), vit(4, 1), vit(4, 2), vit(4, 3)], G(1, 1024)),
@@ -1058,11 +1167,11 @@ def vae_stages(size: int) -> list[tuple[list, GridShape]]:
     ]
 
 
-def export_vae(root: Path, out: Path, size: int, check: bool, only: list | None = None) -> None:
+def export_vae(root: Path, out: Path, width: int, height: int, check: bool, only: list | None = None) -> None:
     w = (RandomWeights if ARGS.random else Safetensors)(root / "vae" / "diffusion_pytorch_model.safetensors")
     cfg = json.loads((root / "vae" / "config.json").read_text())
     assert cfg["decoder_block_out_channels"] == VAE_C and cfg["upsample_block_type"] == "interpolate", cfg
-    stages = vae_stages(size)
+    stages = vae_stages(width, height)
     d = out / "vae"
     d.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
@@ -1074,7 +1183,7 @@ def export_vae(root: Path, out: Path, size: int, check: bool, only: list | None 
         cg = st.compile(x=(g.rows, g.C))
         go = st.g_out if ops[-1][0] != "head" else None
         meta = dict(stage=i, ops=[list(o) for o in ops], grid_in=dataclasses.asdict(g),
-                    grid_out=None if go is None else dataclasses.asdict(go), pad=16, width=size, height=size)
+                    grid_out=None if go is None else dataclasses.asdict(go), width=width, height=height)
         m = export_graph(cg, d / f"s{i}", f"vae_s{i}", meta)
         print(f"vae s{i}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         if check:
@@ -1084,7 +1193,7 @@ def export_vae(root: Path, out: Path, size: int, check: bool, only: list | None 
             if ops[0][0] == "in":
                 x[:, 32:] = 0
             write_check(st, m, d / f"s{i}", dict(x=bf(x)))
-    (d / "manifest.json").write_text(json.dumps(dict(stages=len(stages), width=size, height=size, pad=16,
+    (d / "manifest.json").write_text(json.dumps(dict(stages=len(stages), width=width, height=height, wp="ceil16",
                                                      latent_channels=32, scaling_factor=cfg["scaling_factor"]), indent=1) + "\n")
 
 
@@ -1126,7 +1235,7 @@ def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
     w = (RandomWeights if ARGS.random else Safetensors)(root / "transformer" / "diffusion_pytorch_model.safetensors")
     rng = np.random.default_rng(0)
     meta = dict(config=dataclasses.asdict(c))
-    E, n = c.hidden, c.tokens
+    E, n = c.hidden, c.ntok
     if "caption" in ARGS.only:
         t0 = time.time()
         g = Caption(c, w)
@@ -1199,7 +1308,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", type=Path, help="a diffusers repository of Sana (transformer/, vae/, text_encoder/, tokenizer/)")
     ap.add_argument("out", type=Path)
-    ap.add_argument("--size", type=int, default=1024)
+    ap.add_argument("--size", type=int, default=1024, help="the picture's width and height")
+    ap.add_argument("--width", type=int, default=0, help="the picture's width (Sana's bins: 1152x896, 1344x768, ...)")
+    ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--group", type=int, default=4)
     ap.add_argument("--only", nargs="*", default=["text", "caption", "dit_in", "dit_blocks", "dit_out", "vae"],
                     help="parts to export: text, caption, dit_in, dit_blocks, dit_out, vae")
@@ -1219,7 +1330,7 @@ def main(argv=None) -> int:
     TEXT_FMT["fmt"] = a.text_format
     bind_device(a.device, a.cols)
     cfg = json.loads((a.root / "transformer" / "config.json").read_text())
-    c = DitConfig.of(cfg, a.size, a.group)
+    c = DitConfig.of(cfg, a.width or a.size, a.height or a.size, a.group)
     if a.layers:
         c = dataclasses.replace(c, layers=a.layers)
     PREC.dit = Precision(a.dit_precision)
@@ -1231,7 +1342,7 @@ def main(argv=None) -> int:
     if {"caption", "dit_in", "dit_blocks", "dit_out"} & set(a.only):
         export_dit(a.root, a.out, c, a.check)
     if "vae" in a.only:
-        export_vae(a.root, a.out, a.size, a.check, a.stages)
+        export_vae(a.root, a.out, c.width, c.height, a.check, a.stages)
     return 0
 
 

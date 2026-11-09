@@ -55,7 +55,9 @@ const MaxSequence = 300
 
 // DitConfig is the DiT's shape (iron_sana.DitConfig).
 type DitConfig struct {
-	Size          int     `json:"size"`
+	Size          int     `json:"size"` // exports before width and height
+	Width         int     `json:"width"`
+	Height        int     `json:"height"`
 	Hidden        int     `json:"hidden"`
 	Layers        int     `json:"layers"`
 	Latent        int     `json:"latent"`
@@ -68,7 +70,33 @@ type DitConfig struct {
 }
 
 // Grid is the tokens down (and across).
-func (c DitConfig) Grid() int { return c.Size / c.VAEScale }
+// W and H are the picture's width and height.
+func (c DitConfig) W() int {
+	if c.Width == 0 {
+		return c.Size
+	}
+	return c.Width
+}
+
+// H is the picture's height.
+func (c DitConfig) H() int {
+	if c.Height == 0 {
+		return c.Size
+	}
+	return c.Height
+}
+
+// GW and GH are the latents' columns and rows.
+func (c DitConfig) GW() int { return c.W() / c.VAEScale }
+
+// GH is the latents' rows.
+func (c DitConfig) GH() int { return c.H() / c.VAEScale }
+
+// Tokens is the latent pixels; NTok the rows the graphs hold them in (whole 256, zeros past).
+func (c DitConfig) Tokens() int { return c.GW() * c.GH() }
+
+// NTok is Tokens rounded up to 256.
+func (c DitConfig) NTok() int { return (c.Tokens() + 255) / 256 * 256 }
 
 // TextConfig is Gemma 2's shape (iron_sana.TextConfig).
 type TextConfig struct {
@@ -108,7 +136,7 @@ type Pipeline struct {
 	vae   *VAE
 
 	ditIn, ditBlocks, ditOut *iron.Graph // open while the steps run
-	cond                     []byte      // the caption, bf16 (TextRows, Hidden)
+	ctxSet                   []byte      // the caption dit_blocks holds
 
 	// ResidentDiT keeps every group's weights on the NPU instead of reading each group's
 	// into one bank before it runs.
@@ -136,8 +164,10 @@ func (p *Pipeline) dump(name string, xs []float32) {
 	}
 }
 
-// Cond is a prompt's conditioning: the caption rows (in the pipeline) and how many count.
+// Cond is a prompt's conditioning: the caption (bf16, TextRows x hidden) and how many of its
+// rows count.
 type Cond struct {
+	ctx  []byte
 	Rows int // the rows of the caption that count (the rest masked)
 }
 
@@ -226,7 +256,16 @@ func (p *Pipeline) logf(format string, args ...any) {
 // Tokens returns the Gemma tokens of the prompt after the instruction (<bos> first), cut as
 // the pipeline's tokenizer cuts them, and the length it pads them to.
 func (p *Pipeline) Tokens(prompt string) (ids []int32, total int) {
+	return p.tokens(prompt, true)
+}
+
+// tokens is Tokens, or without the instruction (the negative prompt's: padded to 300).
+func (p *Pipeline) tokens(prompt string, instruction bool) (ids []int32, total int) {
 	prompt = strings.ToLower(strings.TrimSpace(prompt))
+	if !instruction {
+		ids = append([]int32{p.bos}, p.tok.Encode(prompt)...)
+		return ids[:min(len(ids), MaxSequence)], MaxSequence
+	}
 	chi := 1 + len(p.tok.Encode(Instruction))
 	total = chi + MaxSequence - 2
 	ids = append([]int32{p.bos}, p.tok.Encode(Instruction+prompt)...)
@@ -238,8 +277,22 @@ func (p *Pipeline) Tokens(prompt string) (ids []int32, total int) {
 
 // Encode runs Gemma 2 and the caption projection on the prompt.
 func (p *Pipeline) Encode(ctx context.Context, prompt string) (Cond, error) {
+	return p.encode(ctx, prompt, true)
+}
+
+// EncodeNegative is Sana's negative prompt's conditioning (Gemma 2 without the instruction).
+// The empty prompt needs no run: its one row, Gemma's first (<bos>), is any prompt's first row,
+// so it is cond's caption with one row counting.
+func (p *Pipeline) EncodeNegative(ctx context.Context, prompt string, cond Cond) (Cond, error) {
+	if strings.TrimSpace(prompt) == "" {
+		return Cond{ctx: cond.ctx, Rows: 1}, nil
+	}
+	return p.encode(ctx, prompt, false)
+}
+
+func (p *Pipeline) encode(ctx context.Context, prompt string, instruction bool) (Cond, error) {
 	t0 := time.Now()
-	ids, total := p.Tokens(prompt)
+	ids, total := p.tokens(prompt, instruction)
 	E, R := p.Text.Hidden, p.Text.Rows
 	if len(ids) > R {
 		return Cond{}, fmt.Errorf("sana: %d tokens, the text graph takes %d", len(ids), R)
@@ -301,19 +354,20 @@ func (p *Pipeline) Encode(ctx context.Context, prompt string) (Cond, error) {
 	if err != nil {
 		return Cond{}, err
 	}
-	p.cond = append(p.cond[:0], out...)
-	p.dump("cond.bin", fromBF16s(out))
+	cond := append([]byte(nil), out...)
+	if instruction {
+		p.dump("cond.bin", fromBF16s(out))
+	}
 	p.logf("text: %d tokens (%d kept) in %.2f s (Gemma 2 %.2f s)", len(ids), keep, time.Since(t0).Seconds(), t1.Sub(t0).Seconds())
-	return Cond{Rows: keep}, nil
+	return Cond{ctx: cond, Rows: keep}, nil
 }
 
-// Noise returns n Gaussian latents for seed, each (latent, grid, grid) channel major.
+// Noise returns n Gaussian latents for seed, each (latent, rows, columns) channel major.
 func (p *Pipeline) Noise(seed uint64, n int) [][]float32 {
-	g := p.Dit.Grid()
 	r := rand.New(rand.NewPCG(seed, 0x73616e61))
 	out := make([][]float32, n)
 	for k := range out {
-		out[k] = make([]float32, p.Dit.Latent*g*g)
+		out[k] = make([]float32, p.Dit.Latent*p.Dit.Tokens())
 		for i := range out[k] {
 			out[k][i] = float32(r.NormFloat64())
 		}
@@ -334,8 +388,8 @@ type StepFunc func(i, n int, d time.Duration)
 
 // Generate runs the steps from the noises (NoiseCount of them) under cond: the latents.
 // guidance is the guidance scale (Sana-Sprint: embedded; Sana: classifier-free, the DiT twice
-// a step).
-func (p *Pipeline) Generate(ctx context.Context, cond Cond, noises [][]float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
+// a step, on neg (EncodeNegative) and on cond).
+func (p *Pipeline) Generate(ctx context.Context, cond, neg Cond, noises [][]float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
 	if len(noises) < p.NoiseCount(steps) {
 		return nil, fmt.Errorf("sana: %d noises for %d steps", len(noises), steps)
 	}
@@ -345,7 +399,10 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, noises [][]float32, 
 	if p.Model.Sprint {
 		return p.sprint(ctx, cond, noises, steps, guidance, step)
 	}
-	return p.dpm(ctx, cond, noises[0], steps, guidance, step)
+	if neg.ctx == nil {
+		neg = Cond{ctx: cond.ctx, Rows: 1}
+	}
+	return p.dpm(ctx, cond, neg, noises[0], steps, guidance, step)
 }
 
 func (p *Pipeline) sprint(ctx context.Context, cond Cond, noises [][]float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
@@ -366,7 +423,7 @@ func (p *Pipeline) sprint(ctx context.Context, cond Cond, noises [][]float32, st
 		for j := range x {
 			in[j] = x[j] / sd * float32(scale)
 		}
-		outs, err := p.velocity(ctx, in, TimestepSinusoid(st, 256), gproj, []int{cond.Rows})
+		outs, err := p.velocity(ctx, in, TimestepSinusoid(st, 256), gproj, []Cond{cond})
 		if err != nil {
 			return nil, fmt.Errorf("sana: step %d: %w", i, err)
 		}
@@ -391,14 +448,13 @@ func (p *Pipeline) sprint(ctx context.Context, cond Cond, noises [][]float32, st
 	return x0, nil
 }
 
-func (p *Pipeline) dpm(ctx context.Context, cond Cond, noise []float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
+func (p *Pipeline) dpm(ctx context.Context, cond, neg Cond, noise []float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
 	m := p.Model
 	d := NewDPM(steps, m.FlowShift, m.TrainSteps)
 	x := append([]float32(nil), noise...)
 	for i := 0; i < steps; i++ {
 		t0 := time.Now()
-		// the empty negative prompt is Gemma's first row alone, the prompt's own first row
-		outs, err := p.velocity(ctx, x, TimestepSinusoid(d.Timesteps[i], 256), nil, []int{1, cond.Rows})
+		outs, err := p.velocity(ctx, x, TimestepSinusoid(d.Timesteps[i], 256), nil, []Cond{neg, cond})
 		if err != nil {
 			return nil, fmt.Errorf("sana: step %d: %w", i, err)
 		}
@@ -445,9 +501,6 @@ func (p *Pipeline) openDiT(ctx context.Context) error {
 	if p.ditBlocks != nil {
 		return nil
 	}
-	if p.cond == nil {
-		return errors.New("sana: the DiT runs without a prompt (Encode)")
-	}
 	for _, x := range []struct {
 		g    **iron.Graph
 		name string
@@ -459,22 +512,19 @@ func (p *Pipeline) openDiT(ctx context.Context) error {
 		}
 		*x.g = g
 	}
-	if err := p.ditBlocks.SetInput("ctx", p.cond); err != nil {
-		p.closeDiT()
-		return err
-	}
+	p.ctxSet = nil
 	return nil
 }
 
 // velocity runs the DiT on the latents x (latent, grid, grid) at the timestep's sinusoid tproj
-// (and the guidance's, gproj), once for each count of the caption's rows in rows: the outputs,
-// the latents' layout. Each group of blocks runs every call before the next group's weights
-// are read.
-func (p *Pipeline) velocity(ctx context.Context, x []float32, tproj, gproj []float32, rows []int) ([][]float32, error) {
+// (and the guidance's, gproj), once for each conditioning in conds: the outputs, the latents'
+// layout. Each group of blocks runs every call before the next group's weights are read.
+func (p *Pipeline) velocity(ctx context.Context, x []float32, tproj, gproj []float32, conds []Cond) ([][]float32, error) {
+	rows := conds
 	c := p.Dit
-	n := c.Grid() * c.Grid()
+	n := c.Tokens()
 	L := c.Latent
-	patches := make([]float32, n*L)
+	patches := make([]float32, c.NTok()*L) // zeros past the tokens
 	for ch := 0; ch < L; ch++ {
 		for t := 0; t < n; t++ {
 			patches[t*L+ch] = x[ch*n+t]
@@ -523,11 +573,20 @@ func (p *Pipeline) velocity(ctx context.Context, x []float32, tproj, gproj []flo
 		if err := b.Use(gi); err != nil {
 			return nil, err
 		}
-		for k, nk := range rows {
+		for k, cd := range conds {
+			if cd.ctx == nil {
+				return nil, errors.New("sana: the DiT runs without a prompt (Encode)")
+			}
+			if len(p.ctxSet) == 0 || &cd.ctx[0] != &p.ctxSet[0] {
+				if err := b.SetInput("ctx", cd.ctx); err != nil {
+					return nil, err
+				}
+				p.ctxSet = cd.ctx
+			}
 			if err := b.SetInput("x", hs[k]); err != nil {
 				return nil, err
 			}
-			if err := b.Run(ctx, map[string]int64{"nk": int64(nk)}); err != nil {
+			if err := b.Run(ctx, map[string]int64{"nk": int64(cd.Rows)}); err != nil {
 				return nil, fmt.Errorf("blocks %d..%d: %w", gi*c.Group, (gi+1)*c.Group-1, err)
 			}
 			o, err := b.Output(b.Outputs()[0].Name)

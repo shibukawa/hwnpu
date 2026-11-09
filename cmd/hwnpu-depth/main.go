@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
@@ -38,6 +39,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	"github.com/shibukawa/hwnpu/internal/vision/depth"
 	"github.com/shibukawa/hwnpu/internal/vision/moge"
 )
@@ -54,7 +56,9 @@ func main() {
 	sky := flag.Bool("sky", false, "also write the sky mask (NAME.sky.png), or with DA3-SMALL / BASE the confidence (NAME.conf.png)")
 	keep := flag.Bool("export-size", false, "write the picture at the export's size instead of the input's")
 	focal := flag.Float64("focal", 0, "a metric export: the focal length in the picture's pixels (fx = fy)")
-	fov := flag.Float64("fov", 0, "a metric export: the horizontal field of view in degrees, in place of -focal")
+	fov := flag.Float64("fov", 0, "a metric export: the horizontal field of view in degrees, in place of -focal (MoGe-2: given, not solved)")
+	refView := flag.Int("ref", -1, "a multi-view export: the reference view's index (default: chosen as DA3 does)")
+	ply := flag.String("ply", "", "a multi-view export: also write the views' points in one frame as a PLY file here")
 	normal := flag.Bool("normal", false, "MoGe-2: also write the normals (NAME.normal.png, (n + 1) / 2 as RGB)")
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -72,6 +76,19 @@ func main() {
 	defer dev.Close()
 	iron.ShareExport(*model, logf)
 	o := opts{dir: *outDir, raw: *raw, sky: *sky, keep: *keep, focal: *focal, fov: *fov, normal: *normal}
+	if depth.IsMultiExport(*model) {
+		m, err := depth.OpenMulti(ctx, dev, *model)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer m.Close()
+		m.Logf = logf
+		m.Ref = *refView
+		if err := runMulti(ctx, m, flag.Args(), o, *ply, logf); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if moge.IsExport(*model) {
 		m, err := moge.Open(ctx, dev, *model)
 		if err != nil {
@@ -79,6 +96,7 @@ func main() {
 		}
 		defer m.Close()
 		m.Logf = logf
+		m.FovX = *fov
 		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(*model), m.Sizes)
 		for _, path := range flag.Args() {
 			if err := runMoge(ctx, m, path, o, logf); err != nil {
@@ -179,6 +197,129 @@ func runMoge(ctx context.Context, m *moge.Estimator, path string, o opts, logf f
 	logf("%s: %dx%d in %s, %.2f m at the centre, %.2f m nearest, horizontal fov %.1f°", out, r.W, r.H,
 		console.Duration(time.Since(t0)), c, near, r.FovX)
 	return nil
+}
+
+// runMulti runs a multi-view export (iron_da3.py --views) on the pictures together: each
+// one's NAME.depth.png (one scale for all; -raw, -sky the confidence), cameras.json beside the
+// first's (or in -out: each picture's world-to-camera [R | t] and intrinsics at the processed
+// size), and -ply the points of all the views in the reference view's frame.
+func runMulti(ctx context.Context, m *depth.Multi, paths []string, o opts, ply string, logf func(string, ...any)) error {
+	if len(paths) != m.Views {
+		return fmt.Errorf("hwnpu-depth: the export takes %d pictures together, got %d", m.Views, len(paths))
+	}
+	imgs := make([]image.Image, len(paths))
+	for i, p := range paths {
+		img, err := decode(p)
+		if err != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+		imgs[i] = img
+	}
+	t0 := time.Now()
+	rs, cams, err := m.Estimate(ctx, imgs)
+	if err != nil {
+		return err
+	}
+	lo, hi := float32(math.Inf(1)), float32(math.Inf(-1))
+	for _, r := range rs {
+		for _, d := range r.Depth {
+			lo, hi = min(lo, 1/d), max(hi, 1/d)
+		}
+	}
+	type camJSON struct {
+		Image      string        `json:"image"`
+		W2C        [3][4]float64 `json:"world_to_camera"`
+		Intrinsics [3][3]float64 `json:"intrinsics"`
+		Width      int           `json:"width"`
+		Height     int           `json:"height"`
+	}
+	var cj []camJSON
+	for i, r := range rs {
+		base := strings.TrimSuffix(filepath.Base(paths[i]), filepath.Ext(paths[i]))
+		dir := o.dir
+		if dir == "" {
+			dir = filepath.Dir(paths[i])
+		}
+		ow, oh := imgs[i].Bounds().Dx(), imgs[i].Bounds().Dy()
+		inv := make([]float32, len(r.Depth))
+		for p, d := range r.Depth {
+			inv[p] = 1 / d
+		}
+		if err := writeGray(filepath.Join(dir, base+".depth.png"), Bilinear(inv, r.W, r.H, ow, oh), ow, oh, lo, hi); err != nil {
+			return err
+		}
+		if o.sky {
+			cl, ch := slices.Min(r.Conf), slices.Max(r.Conf)
+			if err := writeGray(filepath.Join(dir, base+".conf.png"), Bilinear(r.Conf, r.W, r.H, ow, oh), ow, oh, cl, ch); err != nil {
+				return err
+			}
+		}
+		if o.raw {
+			if err := writeF32(filepath.Join(dir, base+".depth.f32"), r.Depth); err != nil {
+				return err
+			}
+		}
+		c := cams[i]
+		var j camJSON
+		j.Image, j.Width, j.Height = paths[i], r.W, r.H
+		for a := 0; a < 3; a++ {
+			copy(j.W2C[a][:], c.W2C[a*4:a*4+4])
+		}
+		j.Intrinsics = [3][3]float64{{c.Fx, 0, c.Cx}, {0, c.Fy, c.Cy}, {0, 0, 1}}
+		cj = append(cj, j)
+		logf("%s: camera at (%.3f, %.3f, %.3f) of the reference's frame, fx %.1f", paths[i],
+			-(c.W2C[0]*c.W2C[3] + c.W2C[4]*c.W2C[7] + c.W2C[8]*c.W2C[11]),
+			-(c.W2C[1]*c.W2C[3] + c.W2C[5]*c.W2C[7] + c.W2C[9]*c.W2C[11]),
+			-(c.W2C[2]*c.W2C[3] + c.W2C[6]*c.W2C[7] + c.W2C[10]*c.W2C[11]), c.Fx)
+	}
+	dir := o.dir
+	if dir == "" {
+		dir = filepath.Dir(paths[0])
+	}
+	b, _ := json.MarshalIndent(cj, "", " ")
+	if err := os.WriteFile(filepath.Join(dir, "cameras.json"), append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	if ply != "" {
+		if err := writePLY(ply, imgs, rs, cams); err != nil {
+			return err
+		}
+	}
+	logf("%d views in %s; cameras.json in %s", len(paths), console.Duration(time.Since(t0)), dir)
+	return nil
+}
+
+// writePLY writes every view's pixels as points in the reference view's frame (world = R^T
+// (camera - t) of each view's world-to-camera [R | t]), colored by the picture.
+func writePLY(path string, imgs []image.Image, rs []*depth.Result, cams []depth.Camera) error {
+	var body []byte
+	n := 0
+	for i, r := range rs {
+		c := cams[i]
+		px := lfm3vl.Resize(imgs[i], r.W, r.H, "bilinear")
+		for y := 0; y < r.H; y++ {
+			for x := 0; x < r.W; x++ {
+				d := float64(r.Depth[y*r.W+x])
+				pc := [3]float64{(float64(x) + 0.5 - c.Cx) / c.Fx * d, (float64(y) + 0.5 - c.Cy) / c.Fy * d, d}
+				var pw [3]float32
+				for a := 0; a < 3; a++ {
+					var s float64
+					for k := 0; k < 3; k++ {
+						s += c.W2C[k*4+a] * (pc[k] - c.W2C[k*4+3])
+					}
+					pw[a] = float32(s)
+				}
+				for _, v := range pw {
+					body = binary.LittleEndian.AppendUint32(body, math.Float32bits(v))
+				}
+				o := 3 * (y*r.W + x)
+				body = append(body, px[o], px[o+1], px[o+2])
+				n++
+			}
+		}
+	}
+	head := fmt.Sprintf("ply\nformat binary_little_endian 1.0\nelement vertex %d\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nend_header\n", n)
+	return os.WriteFile(path, append([]byte(head), body...), 0o644)
 }
 
 func decode(path string) (image.Image, error) {

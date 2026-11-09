@@ -446,7 +446,8 @@ def export(w: Weights, mc: dict, out: Path, c: Config, check: bool) -> None:
     (out / "model.json").write_text(json.dumps(dict(kind="moge", **meta), indent=1) + "\n")
 
 
-ASPECTS = {"1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "16:9": 16 / 9, "9:16": 9 / 16}
+ASPECTS = {"1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "3:2": 3 / 2, "2:3": 2 / 3, "16:10": 16 / 10, "10:16": 10 / 16,
+           "16:9": 16 / 9, "9:16": 9 / 16}
 
 ARGS = None
 

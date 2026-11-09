@@ -66,6 +66,7 @@ func main() {
 	prompt := flag.String("prompt", "", "what to draw (Danbooru tags and natural language)")
 	out := flag.String("o", "anima.png", "the PNG to write")
 	steps := flag.Int("steps", 0, "steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Sana-Sprint 2, 1 to 4; Sana 20)")
+	negative := flag.String("negative", "", "Sana: the negative prompt of the classifier-free guidance (default empty)")
 	guidance := flag.Float64("guidance", 0, "Sana: the guidance scale (default 4.5; Sana-Sprint embeds it, Sana runs classifier-free guidance)")
 	shift := flag.Float64("shift", 3.0, "the sigma schedule's shift (Anima's scheduler: 3)")
 	seed := flag.Uint64("seed", 0, "the noise's seed (0: from the time)")
@@ -107,7 +108,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if *model != "" && sana.IsExport(*model) {
-		err := runSana(ctx, sanaRun{model: *model, prompt: *prompt, out: *out, noise: *noise, latents: *latents,
+		err := runSana(ctx, sanaRun{model: *model, prompt: *prompt, negative: *negative, out: *out, noise: *noise, latents: *latents,
 			steps: *steps, guidance: *guidance, seed: *seed, resident: *resident, dump: *dump})
 		if err != nil {
 			log.Fatal(err)

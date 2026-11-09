@@ -26,9 +26,10 @@ import (
 
 // Export is model.json of an export: its sizes, each a directory WxH.
 type Export struct {
-	Name  string   `json:"name"`
-	Kind  string   `json:"kind"` // "moge"
-	Sizes [][2]int `json:"sizes"`
+	Name   string   `json:"name"`
+	Kind   string   `json:"kind"` // "moge"
+	Sizes  [][2]int `json:"sizes"`
+	Tokens int      `json:"tokens"` // MoGe's num_tokens the sizes were made for
 }
 
 // sizeConfig is model.json of one size.
@@ -73,6 +74,9 @@ type Estimator struct {
 	dev *hwnpu.Device
 	dir string
 	cur *sized
+	// FovX, when not 0, is the camera's horizontal field of view in degrees: the focal length
+	// is not solved but taken from it (infer's fov_x), only the z shift is.
+	FovX float64
 	// Logf, when set, is told what is done.
 	Logf func(format string, args ...any)
 }
@@ -128,6 +132,22 @@ func (e *Estimator) Nearest(w, h int) (int, int) {
 	return bw, bh
 }
 
+// Choose is the size the export runs a w x h picture at: MoGe's own (the patch grid of Tokens
+// at the picture's aspect, rounded) when the export holds it, else the nearest by aspect.
+func (e *Estimator) Choose(w, h int) (int, int) {
+	if e.Tokens > 0 {
+		a := float64(w) / float64(h)
+		bw := int(math.RoundToEven(math.Sqrt(float64(e.Tokens) * a)))
+		bh := int(math.RoundToEven(math.Sqrt(float64(e.Tokens) / a)))
+		for _, s := range e.Sizes {
+			if s[0] == 14*bw && s[1] == 14*bh {
+				return s[0], s[1]
+			}
+		}
+	}
+	return e.Nearest(w, h)
+}
+
 func (e *Estimator) use(ctx context.Context, w, h int) (*sized, error) {
 	if e.cur != nil && e.cur.Width == w && e.cur.Height == h {
 		return e.cur, nil
@@ -176,7 +196,7 @@ func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, err
 	b := img.Bounds()
 	ow, oh := b.Dx(), b.Dy()
 	t0 := time.Now()
-	w, h := e.Nearest(ow, oh)
+	w, h := e.Choose(ow, oh)
 	s, err := e.use(ctx, w, h)
 	if err != nil {
 		return nil, err
@@ -248,7 +268,7 @@ func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, err
 		ch += n
 	}
 	t3 := time.Now()
-	r := Post(raw, W4, H4, ow, oh, scaleLogit)
+	r := Post(raw, W4, H4, ow, oh, scaleLogit, e.FovX)
 	if e.Logf != nil {
 		e.Logf("moge: %dx%d, load %.2f s, vit %.2f s, neck %.2f s, heads %.2f s, post %.2f s; scale %.2f, fov %.1f°",
 			w, h, tl.Sub(t0).Seconds(), t1.Sub(tl).Seconds(), t2.Sub(t1).Seconds(), t3.Sub(t2).Seconds(),
@@ -260,8 +280,9 @@ func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, err
 // Post is MoGe's infer() on the heads' raw outputs (7 maps of w x h: points' 3, normal's 3,
 // the mask's logit) for a picture of ow x oh: resized (bilinear, align_corners=False), the
 // points' remap (x, y times exp z; z = exp z), the focal length and shift solved on the
-// masked point map, the depth (z + shift) times exp(scaleLogit).
-func Post(raw [][]float32, w, h, ow, oh int, scaleLogit float32) *Result {
+// masked point map (only the shift, given fovX in degrees), the depth (z + shift) times
+// exp(scaleLogit).
+func Post(raw [][]float32, w, h, ow, oh int, scaleLogit float32, fovX float64) *Result {
 	m := make([][]float32, len(raw))
 	for i := range raw {
 		m[i] = Bilinear(raw[i], w, h, ow, oh)
@@ -280,8 +301,13 @@ func Post(raw [][]float32, w, h, ow, oh int, scaleLogit float32) *Result {
 		r.Normal[3*i], r.Normal[3*i+1], r.Normal[3*i+2] = nx/l, ny/l, nz/l
 		r.Mask[i] = m[6][i] > 0 // sigmoid > 0.5
 	}
-	focal, shift := RecoverFocalShift(r.Points, r.Mask, ow, oh)
 	a := float64(ow) / float64(oh)
+	var given float64
+	if fovX > 0 {
+		// infer's focal of fov_x, relative to the half diagonal
+		given = a / math.Sqrt(1+a*a) / math.Tan(fovX*math.Pi/360)
+	}
+	focal, shift := RecoverFocalShift(r.Points, r.Mask, ow, oh, given)
 	fx := focal / 2 * math.Sqrt(1+a*a) / a
 	fy := focal / 2 * math.Sqrt(1+a*a)
 	r.Fx, r.Fy = fx*float64(ow), fy*float64(oh)
@@ -352,8 +378,8 @@ func ViewUV(w, h int) []float64 {
 // RecoverFocalShift is MoGe's recover_focal_shift: the point map (3 a pixel, w x h) and its
 // mask resized to 64 x 64 (nearest), the shift minimizing |focal xy / (z + shift) - uv| with
 // the best focal for each shift (least squares from 0, as scipy's LM), then that focal (relative
-// to the half diagonal).
-func RecoverFocalShift(points []float32, mask []bool, w, h int) (float64, float64) {
+// to the half diagonal). A given focal (not 0) is kept and only the shift solved.
+func RecoverFocalShift(points []float32, mask []bool, w, h int, given float64) (float64, float64) {
 	const S = 64
 	uv := ViewUV(w, h)
 	var xs, ys, zs, us, vs []float64
@@ -376,6 +402,9 @@ func RecoverFocalShift(points []float32, mask []bool, w, h int) (float64, float6
 		return 1, 0
 	}
 	focalAt := func(s float64) float64 {
+		if given > 0 {
+			return given
+		}
 		var num, den float64
 		for i := range xs {
 			px, py := xs[i]/(zs[i]+s), ys[i]/(zs[i]+s)

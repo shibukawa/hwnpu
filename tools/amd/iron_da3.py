@@ -93,6 +93,19 @@ class Config:
     rope_start: int = -1
     cat_token: bool = False
     dual: bool = False  # the head is DualDPT (layer norm and UV embeddings; depth and confidence)
+    views: int = 0  # the any-view models on this many views at once (VitMV); 0: one picture (Vit)
+
+    @property
+    def t1(self) -> int:
+        """A view's token rows: its class (camera) token and its patches."""
+        return 1 + self.patches
+
+    @property
+    def tall(self) -> int:
+        """The views' rows, one after another without padding, then zeros: each view's local
+        attention takes a window of ``tokens`` rows from its first (the next view's first rows
+        too, whose outputs the next view writes over), the global one all the rows."""
+        return -(-((self.views - 1) * self.t1 + self.tokens) // 512) * 512
 
     @property
     def feat_dim(self) -> int:
@@ -245,7 +258,9 @@ class VitBlock(iron.Graph):
         self.f2 = iron.param(bf(g("mlp.fc2.weight") * ls2[:, None]))
         self.f2b = iron.param(bf(g("mlp.fc2.bias") * ls2))
 
-    def body(self, x, nk, angles=None):
+    def body(self, x, nk, angles=None, mv=None):
+        """``mv``: the views' layout (VitMV.body): (the attention's output state, the views,
+        the local window's rows, this block's global, the global keys' count)."""
         c = self.c
         E, H = c.hidden, c.heads
         D = E // H
@@ -261,8 +276,21 @@ class VitBlock(iron.Graph):
         if self.rope:
             q = F.rope(q.reshape(T * H, D), angles).reshape(T, E)
             k = F.rope(k.reshape(T * H, D), angles).reshape(T, E)
-        o = MHA.step(q.reshape(T, H, D), k.reshape(T, H, D)[:nk], v.reshape(T, H, D)[:nk], heads_interleaved=True,
-                     kv_interleaved=True, causal=False, d=D, num_pipelines=8)
+        q, k, v = q.reshape(T, H, D), k.reshape(T, H, D), v.reshape(T, H, D)
+        if mv is None:
+            o = MHA.step(q, k[:nk], v[:nk], heads_interleaved=True, kv_interleaved=True, causal=False, d=D, num_pipelines=8)
+        else:
+            st, views, win, glob, na = mv
+            if glob:  # over every view's tokens (no padding among them)
+                o = MHA.step(q, k[:na], v[:na], heads_interleaved=True, kv_interleaved=True, causal=False, d=D,
+                             num_pipelines=8)
+            else:  # each view's own, a window from its first row; in order, each writing over the last's tail
+                for i in range(views):
+                    s0 = i * c.t1
+                    st[s0 : s0 + win] = MHA.step(q[s0 : s0 + win], k[s0 : s0 + win][:nk], v[s0 : s0 + win][:nk],
+                                                 heads_interleaved=True, kv_interleaved=True, causal=False, d=D,
+                                                 num_pipelines=8).reshape(win, E)
+                o = st[0:T]
         x = x + F.linear(o.reshape(T, E), self.o, self.ob, precision=P)
         h = F.layer_norm(x, (E,), self.n2, self.n2b, eps=1e-6)
         h = F.linear(F.gelu(F.linear(h, self.f1, self.f1b, precision=P)), self.f2, self.f2b, precision=P)
@@ -345,6 +373,99 @@ class Vit(iron.Graph):
                 Copy.step(n, st, dst=tap((T, 2 * E), E, [T, E], [2 * E, 1]))
                 outs.append(Copy.step(st[0:T]))
         return tuple(outs)
+
+
+class VitMV(iron.Graph):
+    """DA3's any-view backbone on ``views`` pictures, their tokens one after another (Config.tall).
+
+    ``part`` "a": the patch embedding and the blocks before alt_start - 1; input ``patches`` (tall,
+    640), view i's class token's row at i t1 (zeros), its patches after it; output ``x``. The
+    host picks the reference view on its class tokens (3 views or more) and puts it first.
+    ``part`` "b": the blocks from alt_start - 1; input ``x``; outputs the four features (tall, 2
+    hidden: the last local block's output beside the normed one) and the last layer's raw local
+    and global outputs (their class rows are the camera tokens cam_dec takes). Per call: ``nk``,
+    a view's token rows (t1), ``na``, all of them (views t1).
+    """
+
+    def __init__(self, c: Config, w, part: str):
+        E, T = c.hidden, c.tall
+        self.c, self.part = c, part
+        assert c.alt_start > 0 and c.cat_token and c.views > 0, "a DA3 any-view model"
+        # the official backbone picks the reference view before block alt_start - 1
+        if part == "a":
+            idx = range(c.alt_start - 1)
+        else:
+            idx = range(c.alt_start - 1, max(c.out_layers) + 1)
+        self.blocks = [VitBlock(c, w, i) for i in idx]
+        self.first = idx[0]
+        self.st = iron.state((T, E))
+        loc, flat = rope2d_table(c, False), rope2d_table(c, True)
+        al, af = np.zeros((T, 64), np.float32), np.zeros((T, 64), np.float32)
+        al[:, ::2], af[:, ::2] = 1, 1  # cos 1, sin 0 on the zero rows
+        for i in range(c.views):
+            al[i * c.t1 : (i + 1) * c.t1] = loc[: c.t1]
+            af[i * c.t1 : (i + 1) * c.t1] = flat[: c.t1]
+        self.angles, self.angles_flat = iron.param(bf(al)), iron.param(bf(af))
+        if part == "a":
+            pw = f32(w["model.backbone.pretrained.patch_embed.proj.weight"]).reshape(E, -1)
+            self.pe = iron.param(bf(padded(pw, E, PE_IN)))
+            one = pos_embed(w, c)
+            one[1:] += f32(w["model.backbone.pretrained.patch_embed.proj.bias"])
+            one[0] += f32(w["model.backbone.pretrained.cls_token"]).reshape(-1)
+            pos = np.zeros((T, E), np.float32)
+            for i in range(c.views):
+                pos[i * c.t1 : (i + 1) * c.t1] = one
+            self.pos = iron.param(bf(pos))
+        else:
+            keep, cam = np.ones((T, E), np.float32), np.zeros((T, E), np.float32)
+            ct = f32(w["model.backbone.pretrained.camera_token"])[0]  # (2, E): the reference view's, the others'
+            for i in range(c.views):
+                keep[i * c.t1] = 0
+                cam[i * c.t1] = ct[0 if i == 0 else 1]
+            self.keep, self.cam = iron.param(bf(keep)), iron.param(bf(cam))
+            self.norm = iron.param(bf(w["model.backbone.pretrained.norm.weight"]))
+            self.normb = iron.param(bf(w["model.backbone.pretrained.norm.bias"]))
+            self.feats = [iron.state((T, 2 * E)) for _ in c.out_layers]
+
+    def run(self, x, nk, na, local):
+        c = self.c
+        E, T = c.hidden, c.tall
+        outs = []
+        for j, b in enumerate(self.blocks):
+            i = self.first + j
+            if j and i % c.split == 0:
+                command_boundary()
+            glob = i >= c.alt_start and i % 2 == 1
+            if i == c.alt_start:
+                x = x * self.keep + self.cam
+            angles = (self.angles_flat if glob else self.angles) if b.rope else None
+            x = b(x, nk, angles, (self.st, c.views, c.tokens, glob, na))
+            if not glob:
+                local = x
+            if i in c.out_layers:
+                n = F.layer_norm(x, (E,), self.norm, self.normb, eps=1e-6)
+                st = self.feats[len(outs)]
+                Copy.step(local, st, dst=tap((T, 2 * E), 0, [T, E], [2 * E, 1]))
+                Copy.step(n, st, dst=tap((T, 2 * E), E, [T, E], [2 * E, 1]))
+                outs.append(Copy.step(st[0:T]))
+        return x, local, outs
+
+    def signature(self):
+        import inspect
+
+        P = inspect.Parameter
+        sc = Scratchpad[np.int32]
+        first = "patches" if self.part == "a" else "x"
+        return inspect.Signature([P(first, P.POSITIONAL_OR_KEYWORD), P("nk", P.KEYWORD_ONLY, annotation=sc),
+                                  P("na", P.KEYWORD_ONLY, annotation=sc)])
+
+    def body(self, inp, *, nk, na):
+        if self.part == "a":
+            x = F.linear(inp, self.pe, precision=PREC.vit) + self.pos
+            x, _, _ = self.run(x, nk, na, x)
+            return Copy.step(x)
+        x, local, outs = self.run(inp, nk, na, inp)
+        return (*outs, Copy.step(local), Copy.step(x))
 
 
 # --- grids and the head --------------------------------------------------------------------------
@@ -768,10 +889,44 @@ def export(root: Path, out: Path, c: Config, check: bool) -> None:
     (out / "model.json").write_text(json.dumps(dict(name=root.name, kind="depth", **meta), indent=1) + "\n")
 
 
-# The sizes an export holds by default: the longest side 504 (the official process_res) and the
-# other rounded to 14, for 1:1, 4:3, 3:4, 16:9 and 9:16. hwnpu-depth takes the one nearest
-# the picture's aspect and stretches it to that.
-SIZES = ["504x504", "504x378", "378x504", "504x280", "280x504"]
+def export_mv(root: Path, out: Path, c: Config, check: bool) -> None:
+    """DA3's any-view model on ``c.views`` pictures of one size: vit_a, vit_b, head (one view's),
+    and cam_dec's weights for the host (cam_dec.bin, float32, the layers in model.json)."""
+    w = Safetensors(root / "model.safetensors")
+    hc = dataclasses.replace(c, views=0)
+    meta = dict(config=dataclasses.asdict(c), mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225], patch=PATCH,
+                tokens=c.tokens, rows=c.t1, tall=c.tall, views=c.views, width=c.width, height=c.height)
+    rng = np.random.default_rng(0)
+    for part in ("a", "b"):
+        t0 = time.time()
+        g = VitMV(c, w, part)
+        cg = g.compile(**{("patches" if part == "a" else "x"): (c.tall, PE_IN if part == "a" else c.hidden)})
+        m = export_graph(cg, out / f"vit_{part}", f"vit_{part}", meta)
+        print(f"vit_{part}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+        if check:
+            x = rng.standard_normal((c.tall, PE_IN if part == "a" else c.hidden)).astype(np.float32)
+            write_check(g, m, out / f"vit_{part}", {("patches" if part == "a" else "x"): bf(x)}, dict(nk=c.t1, na=c.views * c.t1))
+    t0 = time.time()
+    g = Head(hc, w)
+    cg = g.compile(**{f"f{i}": (c.tokens, c.feat_dim) for i in range(4)})
+    m = export_graph(cg, out / "head", "head", meta)
+    print(f"head: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+    layers = []
+    with open(out / "cam_dec.bin", "wb") as fh:
+        for n in ("backbone.0", "backbone.2", "fc_t", "fc_qvec", "fc_fov.0"):
+            wt, b = f32(w[f"model.cam_dec.{n}.weight"]), f32(w[f"model.cam_dec.{n}.bias"])
+            fh.write(wt.tobytes())
+            fh.write(b.tobytes())
+            layers.append(dict(name=n, out=wt.shape[0], inp=wt.shape[1]))
+    m = dict(name=root.name, kind="depth-mv", sizes=[[c.width, c.height]], second="confidence", cam_dec=layers, **meta)
+    (out / "model.json").write_text(json.dumps(m, indent=1) + "\n")
+
+
+# The sizes an export holds by default: the official processor's (the longest side 504, the
+# other to the nearest multiple of 14) for 1:1, 4:3, 3:2, 16:10 and 16:9, landscape and
+# portrait. hwnpu-depth takes the official size of the picture when the export has it, else the
+# one nearest its aspect (stretching it: 6 to 12 % of the depth for 1.6 against 4:3 or 16:9).
+SIZES = ["504x504", "504x378", "378x504", "504x336", "336x504", "504x322", "322x504", "504x280", "280x504"]
 
 
 def model_kind(root: Path) -> dict:
@@ -791,6 +946,8 @@ def main(argv=None) -> int:
     ap.add_argument("root", type=Path, help="a DA3 mono repository (config.json, model.safetensors)")
     ap.add_argument("out", type=Path)
     ap.add_argument("--sizes", nargs="*", default=SIZES, help="WxH (multiples of 14), each a directory of the export")
+    ap.add_argument("--views", type=int, default=0,
+                    help="DA3-SMALL / BASE on this many pictures at once (depths in one scale and the cameras), at the first of --sizes")
     ap.add_argument("--only", nargs="*", default=["vit", "head"])
     ap.add_argument("--random", action="store_true")
     ap.add_argument("--check", action="store_true")
@@ -798,6 +955,11 @@ def main(argv=None) -> int:
     ap.add_argument("--cols", type=int, default=8)
     ARGS = a = ap.parse_args(argv)
     bind_device(a.device, a.cols)
+    if a.views:
+        width, height = (int(v) for v in a.sizes[0].split("x"))
+        c = dataclasses.replace(Config.of(a.root, width, height), views=a.views)
+        export_mv(a.root, a.out, c, a.check)
+        return 0
     sizes = []
     for wh in a.sizes:
         width, height = (int(v) for v in wh.split("x"))
