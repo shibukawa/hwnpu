@@ -436,7 +436,9 @@ categories:
   depth:
     about: depth estimation (hwnpu-image depth)
     picks:
-      - {machine: 8, model: DA3MONO-LARGE}
+      - {machine: 8, model: DA3-SMALL}
+      - {machine: 16, model: DA3-BASE}
+      - {machine: 24, model: DA3MONO-LARGE}
   face-detect:
     about: face detection (hwnpu-image face-detect)
     picks:
