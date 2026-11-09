@@ -200,6 +200,13 @@ go run ./cmd/hwnpu-depth photo.jpg
 
 Ryzen AI 9 365 で 1 枚 0.7 秒 (LARGE、504 × 378)、SMALL は 0.26 秒、NPU に固定されるメモリは最大 1.4 GiB (SMALL 0.5 GiB) です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
 
+MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal、MIT) の書き出し (`tools/amd/iron_moge.py`) を渡すと、焦点距離を知らなくてもメートル単位の深度、点群 (`-raw`)、法線 (`-normal`)、有効な画素のマスク (`-sky`) を出します。812 × 602 で 1 枚 2.7〜3.6 秒です (16 節)。
+
+```bash
+python tools/amd/iron_moge.py ~/models/moge-2-vits-normal ~/models/moge-2-vits.amd-npu2
+go run ./cmd/hwnpu-depth -model ~/models/moge-2-vits.amd-npu2 -normal photo.jpg
+```
+
 ## Apple での注意
 
 - Core ML は「Neural Engine だけ」を指定できません。hwnpu は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません

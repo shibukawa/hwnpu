@@ -4,6 +4,9 @@
 //
 //	hwnpu-depth -model ~/models/da3mono-large.amd-npu2 photo.jpg
 //
+// MoGe-2 (Ruicheng/moge-2-*-normal, MIT), an export of tools/amd/iron_moge.py, gives metric
+// depth (and a point map, normals and a mask) without the camera's focal length: it solves it.
+//
 // For each picture it writes NAME.depth.png next to it (or into -out): the inverse depth
 // (near is bright) normalized to 8 bits, at the picture's size. -raw also writes the depth as
 // raw float32 (NAME.depth.f32, row major, at the export's size it ran at, printed) and -sky the
@@ -36,6 +39,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/vision/depth"
+	"github.com/shibukawa/hwnpu/internal/vision/moge"
 )
 
 func defaultModel() string {
@@ -44,13 +48,14 @@ func defaultModel() string {
 }
 
 func main() {
-	model := flag.String("model", defaultModel(), "an export of tools/amd/iron_da3.py")
+	model := flag.String("model", defaultModel(), "an export of tools/amd/iron_da3.py or tools/amd/iron_moge.py")
 	outDir := flag.String("out", "", "the directory to write into (default: next to each picture)")
 	raw := flag.Bool("raw", false, "also write the depth as raw float32 (NAME.depth.f32, the export's size)")
 	sky := flag.Bool("sky", false, "also write the sky mask (NAME.sky.png), or with DA3-SMALL / BASE the confidence (NAME.conf.png)")
 	keep := flag.Bool("export-size", false, "write the picture at the export's size instead of the input's")
 	focal := flag.Float64("focal", 0, "a metric export: the focal length in the picture's pixels (fx = fy)")
 	fov := flag.Float64("fov", 0, "a metric export: the horizontal field of view in degrees, in place of -focal")
+	normal := flag.Bool("normal", false, "MoGe-2: also write the normals (NAME.normal.png, (n + 1) / 2 as RGB)")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		log.Fatal("hwnpu-depth: give one or more pictures")
@@ -66,6 +71,22 @@ func main() {
 	}
 	defer dev.Close()
 	iron.ShareExport(*model, logf)
+	o := opts{dir: *outDir, raw: *raw, sky: *sky, keep: *keep, focal: *focal, fov: *fov, normal: *normal}
+	if moge.IsExport(*model) {
+		m, err := moge.Open(ctx, dev, *model)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer m.Close()
+		m.Logf = logf
+		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(*model), m.Sizes)
+		for _, path := range flag.Args() {
+			if err := runMoge(ctx, m, path, o, logf); err != nil {
+				log.Fatalf("%s: %v", path, err)
+			}
+		}
+		return
+	}
 	e, err := depth.Open(ctx, dev, *model)
 	if err != nil {
 		log.Fatal(err)
@@ -80,7 +101,6 @@ func main() {
 		}
 	}
 	logf("%s: %s, sizes %v (%s)", filepath.Base(*model), kind, e.Sizes, console.Duration(time.Since(t0)))
-	o := opts{dir: *outDir, raw: *raw, sky: *sky, keep: *keep, focal: *focal, fov: *fov}
 	for _, path := range flag.Args() {
 		if err := run(ctx, e, path, o, logf); err != nil {
 			log.Fatalf("%s: %v", path, err)
@@ -89,9 +109,111 @@ func main() {
 }
 
 type opts struct {
-	dir            string
-	raw, sky, keep bool
-	focal, fov     float64
+	dir                    string
+	raw, sky, keep, normal bool
+	focal, fov             float64
+}
+
+// runMoge writes MoGe-2's depth (meters) of the picture at path: NAME.depth.png (the inverse
+// depth, the masked pixels black), -raw NAME.depth.f32 (+Inf where masked) and NAME.points.f32
+// (x, y, z a pixel), -sky NAME.mask.png, -normal NAME.normal.png.
+func runMoge(ctx context.Context, m *moge.Estimator, path string, o opts, logf func(string, ...any)) error {
+	img, err := decode(path)
+	if err != nil {
+		return err
+	}
+	t0 := time.Now()
+	r, err := m.Estimate(ctx, img)
+	if err != nil {
+		return err
+	}
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	dir := o.dir
+	if dir == "" {
+		dir = filepath.Dir(path)
+	}
+	inv := make([]float32, len(r.Depth))
+	lo, hi := float32(math.Inf(1)), float32(math.Inf(-1))
+	var near float32 = float32(math.Inf(1))
+	for i, d := range r.Depth {
+		if r.Mask[i] {
+			inv[i] = 1 / d
+			lo, hi = min(lo, inv[i]), max(hi, inv[i])
+			near = min(near, d)
+		}
+	}
+	for i := range inv {
+		if !r.Mask[i] {
+			inv[i] = lo // black
+		}
+	}
+	out := filepath.Join(dir, base+".depth.png")
+	if err := writeGray(out, inv, r.W, r.H, lo, hi); err != nil {
+		return err
+	}
+	if o.sky {
+		mk := make([]float32, len(r.Mask))
+		for i, v := range r.Mask {
+			if v {
+				mk[i] = 1
+			}
+		}
+		if err := writeGray(filepath.Join(dir, base+".mask.png"), mk, r.W, r.H, 0, 1); err != nil {
+			return err
+		}
+	}
+	if o.normal {
+		if err := writeRGB(filepath.Join(dir, base+".normal.png"), r.Normal, r.W, r.H); err != nil {
+			return err
+		}
+	}
+	if o.raw {
+		if err := writeF32(filepath.Join(dir, base+".depth.f32"), r.Depth); err != nil {
+			return err
+		}
+		if err := writeF32(filepath.Join(dir, base+".points.f32"), r.Points); err != nil {
+			return err
+		}
+	}
+	c := r.Depth[(r.H/2)*r.W+r.W/2]
+	logf("%s: %dx%d in %s, %.2f m at the centre, %.2f m nearest, horizontal fov %.1f°", out, r.W, r.H,
+		console.Duration(time.Since(t0)), c, near, r.FovX)
+	return nil
+}
+
+func decode(path string) (image.Image, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	return img, err
+}
+
+func writeF32(path string, xs []float32) error {
+	b := make([]byte, 4*len(xs))
+	for i, d := range xs {
+		binary.LittleEndian.PutUint32(b[4*i:], math.Float32bits(d))
+	}
+	return os.WriteFile(path, b, 0o644)
+}
+
+func writeRGB(path string, n []float32, w, h int) error {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	c := func(v float32) uint8 { return uint8(math.Round(float64(min(1, max(0, (v+1)/2))) * 255)) }
+	for i := 0; i < w*h; i++ {
+		img.SetRGBA(i%w, i/w, color.RGBA{c(n[3*i]), c(n[3*i+1]), c(n[3*i+2]), 255})
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func run(ctx context.Context, e *depth.Estimator, path string, o opts, logf func(string, ...any)) error {

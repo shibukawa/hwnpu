@@ -3385,3 +3385,11 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 書き出しは縦横比ごとの大きさ (長辺 504 の 5 つ) を持ち、hwnpu-depth が近いものを選ぶ
 - 新しく作った部品: 行を 16 の倍数に足した格子 (`Grid`)、ストライド 2 の 3 × 3、転置畳み込み (GEMM と画素への Copy)、双線形の拡大 (補間の行列の GEMM 2 回と転置の Copy)、2 次元の RoPE (q と k の次元の並べ替え)、ヘッドのチャネルの 64 の倍数への埋め
 - `hwnpu-depth`: 画像ごとに NAME.depth.png (逆深度を 8 ビットに、元の大きさで)、`-raw` で float32、`-sky` で空か確信度、`-focal` / `-fov` でメートル (METRIC)。`internal/vision/depth` の `TestQuantile`、`TestSky`、`TestPatches`、`TestNearest`
+
+### 16.121 AMD: MoGe-2 (`iron_moge.py`、`hwnpu-depth`) — 2026-11-09
+
+- 動機: 焦点距離を知らなくてもメートル単位の深度、点群、法線が出る (MIT)。DA3METRIC は焦点距離が要る
+- 構成は DINOv2 と ConvStack の neck と 3 つのヘッド。正規化は使われていない (設定の `res_block_*_norm` が none)。3 × 3 は端の画素を複製する詰め (`Grid(rep=True)` と `fill_pads`)、双線形の align_corners=False の行列、torch なしで `model.pt` を読む `TorchZip`
+- 3 つのヘッドは 1 つのプログラムに重みのバンクを 3 組 (`SwapVariants`)。全部を載せたままだと固定 3.9 GiB (ヘッドの作業領域 773 MiB × 3 と neck 736 MiB)
+- 812 × 602 で vits 約 2.7 秒、vitl 約 3.6 秒。公式の CPU と深度のコサイン 0.9999、相対誤差の平均 0.7〜1.2 %。記録は amd-npu-models.md の 16 節
+- 後処理は Go (`internal/vision/moge`): 焦点距離と z のずれは 1 変数の Levenberg–Marquardt (`TestRecoverFocalShift` が既知の値を戻す)

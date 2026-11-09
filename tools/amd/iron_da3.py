@@ -359,10 +359,13 @@ class Grid:
     H: int
     W: int
     C: int
+    # replicate padding (padding_mode="replicate"): the pads hold the edge pixels (fill_pads),
+    # so a row has its own pad on each side (Wp >= W + 2)
+    rep: bool = False
 
     @property
     def Wp(self) -> int:
-        return -(-(self.W + 1) // 16) * 16
+        return -(-(self.W + (2 if self.rep else 1)) // 16) * 16
 
     @property
     def Hp(self) -> int:
@@ -389,16 +392,20 @@ class Grid:
         return best
 
 
-def interp_matrix(n_out: int, n_in: int) -> np.ndarray:
-    """Bilinear interpolation with align_corners=True as a matrix (n_out, n_in)."""
+def interp_matrix(n_out: int, n_in: int, align: bool = True) -> np.ndarray:
+    """Bilinear interpolation as a matrix (n_out, n_in): align_corners=True, or False (torch's:
+    source (o + 0.5) n_in / n_out - 0.5, clamped at 0)."""
     m = np.zeros((n_out, n_in), np.float64)
     for o in range(n_out):
-        s = o * (n_in - 1) / (n_out - 1) if n_out > 1 else 0.0
+        if align:
+            s = o * (n_in - 1) / (n_out - 1) if n_out > 1 else 0.0
+        else:
+            s = max(0.0, (o + 0.5) * n_in / n_out - 0.5)
         i0 = min(int(math.floor(s)), n_in - 1)
         t = s - i0
+        i1 = min(i0 + 1, n_in - 1)  # the last column takes both weights past the end
         m[o, i0] += 1 - t
-        if t > 0:
-            m[o, i0 + 1] += t
+        m[o, i1] += t
     return m
 
 
@@ -432,7 +439,162 @@ def padded(x, *shape) -> np.ndarray:
     return out
 
 
-class Head(iron.Graph):
+class ConvOps(iron.Graph):
+    """What a convolutional graph's body takes: weights by name, states, grids and dense pixels,
+    3 x 3 convolutions, transposed convolutions and bilinear resizes. A subclass calls
+    init_ops() first in its __init__."""
+
+    def init_ops(self) -> None:
+        self.params = []
+        self._index = {}
+        self.states = []
+        self._cols = {}
+
+    def _param(self, name: str, x) -> None:
+        self._index[name] = len(self.params)
+        self.params.append(iron.param(bf(x)))
+
+    def w(self, name: str):
+        return self.params[self._index[name]] if name in self._index else None
+
+    def deconv_weight(self, name: str, wt: np.ndarray, b, cout: int, cin: int) -> None:
+        """A ConvTranspose2d's weight (cin, cout, k, k) and bias, padded, as deconv takes it."""
+        k = wt.shape[2]
+        wt = padded(wt, cin, cout, k, k)
+        self._param(name, wt.transpose(2, 3, 1, 0).reshape(k * k * cout, cin))  # rows (ky, kx, cout)
+        self._param(f"{name}.b", np.tile(padded(b, cout), k * k))
+
+    def _conv3(self, name: str, wt: np.ndarray, b, cout: int, cin: int) -> None:
+        """A 3 x 3 convolution (cout, cin, 3, 3), its channels zero-padded, as an im2col matrix."""
+        wt = padded(wt, cout, cin, 3, 3)
+        self._param(f"{name}.w", wt.transpose(0, 2, 3, 1).reshape(cout, -1))
+        if b is not None:
+            self._param(f"{name}.b", padded(b, cout))
+
+    def state(self, shape):
+        s = iron.state(shape)
+        self.states.append(s)
+        return s
+
+    @staticmethod
+    def view(s):
+        return s[0 : s.shape[0]]
+
+    # --- moving between dense pixels (H W, C) and grids ---
+
+    def to_grid(self, x, g: Grid, first: int = 0):
+        """The grid of dense pixels x (rows from ``first``: (H W, C) or more rows)."""
+        out = self.state((g.rows, g.C))
+        Copy.step(x, out, src=tap(tuple(x.shape), first * g.C, [g.H * g.W * g.C], [1]),
+                  dst=tap((g.rows, g.C), g.pixel(0, 0) * g.C, [g.H, g.W * g.C], [g.Wp * g.C, 1]))
+        self.fill_pads(out, g)
+        return self.view(out)
+
+    def fill_pads(self, out, g: Grid) -> None:
+        """A replicate-padded grid's pads: each row's edge pixels beside it, then the first
+        and the last row (with their pads) above and below. Nothing for a zero-padded grid."""
+        if not g.rep:
+            return
+        C, Wp = g.C, g.Wp
+        sh = (g.rows, C)
+        Copy.step(out, out, src=tap(sh, g.pixel(0, 0) * C, [g.H, C], [Wp * C, 1]), dst=tap(sh, g.pixel(0, -1) * C, [g.H, C], [Wp * C, 1]))
+        Copy.step(out, out, src=tap(sh, g.pixel(0, g.W - 1) * C, [g.H, C], [Wp * C, 1]), dst=tap(sh, g.pixel(0, g.W) * C, [g.H, C], [Wp * C, 1]))
+        n = (g.W + 2) * C
+        Copy.step(out, out, src=tap(sh, g.pixel(0, -1) * C, [n], [1]), dst=tap(sh, g.pixel(-1, -1) * C, [n], [1]))
+        Copy.step(out, out, src=tap(sh, g.pixel(g.H - 1, -1) * C, [n], [1]), dst=tap(sh, g.pixel(g.H, -1) * C, [n], [1]))
+
+    def to_dense(self, x, g: Grid):
+        """The pixels (H W, C), in a state of whole 256 rows (zeros past them, for the GEMMs)."""
+        C, n = g.C, g.H * g.W
+        out = self.state((-(-n // 256) * 256, C))
+        Copy.step(x, out, src=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [g.Wp * C, 1]),
+                  dst=tap(out.shape, 0, [n * C], [1]))
+        return self.view(out)
+
+    def cols(self, n: int, k: int):
+        key = (n, k)
+        if key not in self._cols:
+            self._cols[key] = self.state((n, k))
+        return self._cols[key]
+
+    def conv3(self, x, g: Grid, name: str, cout: int, post=None):
+        """The 3 x 3 convolution (stride 1, padded as the grid is) of grid x into a new grid
+        (padded the same). ``post(y, r0)`` takes each chunk's GEMM result (band rows from image
+        row r0) before the copy."""
+        go = Grid(g.H, g.W, cout, g.rep)
+        out = self.state((go.rows, cout))
+        Wp, C = g.Wp, g.C
+        R = g.chunk(C)
+        for r0 in range(0, g.H, R):
+            n = R * Wp
+            start = (g.band + r0 * Wp - Wp - 1) * C
+            if 3 * C <= 2046:
+                cols = Copy.step(x, src=tap((g.rows, C), start, [R, Wp, 3, 3 * C], [Wp * C, C, Wp * C, 1])).reshape(n, 9 * C)
+            else:  # a DMA dimension is at most 1023 words
+                cs = self.cols(n, 9 * C)
+                for dy in range(3):
+                    Copy.step(x, cs, src=tap((g.rows, C), start + dy * Wp * C, [R, Wp, 3, C], [Wp * C, C, C, 1]),
+                              dst=tap((n, 9 * C), dy * 3 * C, [n, 3, C], [9 * C, C, 1]))
+                cols = cs[0:n]
+            y = F.linear(cols, self.w(f"{name}.w"), self.w(f"{name}.b"), precision=PREC.head)
+            if post is not None:
+                y = post(y, r0)
+            rows = min(R, g.H - r0)
+            Copy.step(y, out, src=tap((n, cout), cout, [rows, g.W * cout], [Wp * cout, 1]),
+                      dst=tap((go.rows, cout), go.pixel(r0, 0) * cout, [rows, g.W * cout], [Wp * cout, 1]))
+        self.fill_pads(out, go)
+        return self.view(out), go
+
+    def conv3_s2(self, x, g: Grid, name: str, cout: int):
+        """The 3 x 3 convolution with stride 2 (padding 1): dense (H/2 W/2, cout)."""
+        Ho, Wo, C = (g.H + 1) // 2, (g.W + 1) // 2, g.C
+        n = Ho * Wo
+        m = -(-n // 256) * 256
+        cs = self.cols(m, 9 * C)
+        for dy in range(3):
+            for oy in range(Ho):
+                # output row oy's window rows 2 oy - 1 + dy; pixel 2 ox - 1 + dx
+                Copy.step(x, cs, src=tap((g.rows, C), (g.band + (2 * oy - 1 + dy) * g.Wp) * C, [Wo, 3, C], [2 * C, C, 1]),
+                          dst=tap((m, 9 * C), oy * Wo * 9 * C + dy * 3 * C, [Wo, 3, C], [9 * C, C, 1]))
+        y = F.linear(cs[0:m], self.w(f"{name}.w"), self.w(f"{name}.b"), precision=PREC.head)
+        return y[0:n]
+
+    def deconv(self, x, H: int, W: int, name: str, k: int, cout: int, first: int = 0, rep: bool = False):
+        """ConvTranspose2d with kernel = stride = k of dense x (rows from ``first``, cin): a
+        grid (kH, kW, cout). The weight is ``name`` (deconv_weight)."""
+        y = F.linear(x, self.w(name), self.w(f"{name}.b"), precision=PREC.head)  # (rows, k k cout)
+        go = Grid(k * H, k * W, cout, rep)
+        out = self.state((go.rows, cout))
+        kk = k * k * cout
+        for ky in range(k):
+            for kx in range(k):
+                Copy.step(y, out, src=tap(tuple(y.shape), (first * kk) + (ky * k + kx) * cout, [H, W, cout], [W * kk, kk, 1]),
+                          dst=tap((go.rows, cout), go.pixel(ky, kx) * cout, [H, W, cout], [k * go.Wp * cout, k * cout, 1]))
+        self.fill_pads(out, go)
+        return self.view(out), go
+
+    def add_interp(self, n_out: int, n_in: int, align: bool = True) -> None:
+        """The interpolation matrix resize takes, padded to 64 rows and columns (in __init__)."""
+        key = f"interp{'' if align else 'f'}{n_out}x{n_in}"
+        if key not in self._index:
+            m = np.zeros((pad64(n_out), pad64(n_in)), np.float32)
+            m[:n_out, :n_in] = interp_matrix(n_out, n_in, align)
+            self._param(key, m)
+
+    def resize(self, x, H: int, W: int, H2: int, W2: int, C: int, align: bool = True):
+        """Bilinear (align_corners, or not) of dense x (H W, C) to (H2 W2, C)."""
+        a = "" if align else "f"
+        # along the columns: transpose to (W, H C), the matrix (W2, W) on the left
+        t = self.state((pad64(W), H * C))
+        Copy.step(x, t, src=tap(tuple(x.shape), 0, [W, H, C], [C, W * C, 1]), dst=tap((pad64(W), H * C), 0, [W, H * C], [H * C, 1]))
+        u = GEMM.step(self.w(f"interp{a}{W2}x{W}"), self.view(t), b_col_maj=False, precision=PREC.resize)  # (pad W2, H C)
+        # back to rows: (H, W2 C), the matrix (H2, H) on the left
+        v = self.state((pad64(H), W2 * C))
+        Copy.step(u, v, src=tap((pad64(W2), H * C), 0, [H, W2, C], [C, H * C, 1]), dst=tap((pad64(H), W2 * C), 0, [H, W2 * C], [W2 * C, 1]))
+        y = GEMM.step(self.w(f"interp{a}{H2}x{H}"), self.view(v), b_col_maj=False, precision=PREC.resize)  # (pad H2, W2 C)
+        return y[0:H2].reshape(H2 * W2, C)
+
+class Head(ConvOps):
     """DPT's head (DualDPT's depth branch for DA3's any-view models) on the four features:
     input ``f0``..``f3`` (tokens, feat_dim), the class token's row first; output the image's
     pixels (H W, 64): channel 0 depth's logit, 1 sky's (DPT) or the confidence's (DualDPT).
@@ -440,10 +602,7 @@ class Head(iron.Graph):
 
     def __init__(self, c: Config, w=None):
         self.c = c
-        self.params = []
-        self._index = {}
-        self.states = []
-        self._cols = {}
+        self.init_ops()
         H, W = c.gh, c.gw
         Fe = c.features
         p = "model.head."
@@ -465,10 +624,8 @@ class Head(iron.Graph):
                 pe[1 : 1 + c.patches, : oc[i]] = uv_embed(W, H, oc[i], c.width / c.height)
                 self._param(f"pe{i}", pe)
         for i, k in ((0, 4), (1, 2)):
-            wt = np.zeros((oc[i], oc[i], k, k)) if z else g(f"resize_layers.{i}.weight")  # (cin, cout, k, k)
-            wt = padded(wt, ocp[i], ocp[i], k, k)
-            self._param(f"up{i}", wt.transpose(2, 3, 1, 0).reshape(k * k * ocp[i], ocp[i]))  # rows (ky, kx, cout)
-            self._param(f"up{i}.b", np.tile(padded(np.zeros(oc[i]) if z else g(f"resize_layers.{i}.bias"), ocp[i]), k * k))
+            self.deconv_weight(f"up{i}", np.zeros((oc[i], oc[i], k, k)) if z else g(f"resize_layers.{i}.weight"),
+                               np.zeros(oc[i]) if z else g(f"resize_layers.{i}.bias"), ocp[i], ocp[i])
         self._conv3("down3", np.zeros((oc[3], oc[3], 3, 3)) if z else g("resize_layers.3.weight"),
                     np.zeros(oc[3]) if z else g("resize_layers.3.bias"), ocp[3], ocp[3])
         for i in range(4):
@@ -503,122 +660,7 @@ class Head(iron.Graph):
         self.sizes = [((H + 1) // 2, (W + 1) // 2), (H, W), (2 * H, 2 * W), (4 * H, 4 * W), (8 * H, 8 * W), (c.height, c.width)]
         for a, b in zip(self.sizes, self.sizes[1:]):
             for n_in, n_out in ((a[0], b[0]), (a[1], b[1])):
-                key = f"interp{n_out}x{n_in}"
-                if key not in self._index:
-                    m = np.zeros((pad64(n_out), pad64(n_in)), np.float32)
-                    m[:n_out, :n_in] = interp_matrix(n_out, n_in)
-                    self._param(key, m)
-
-    def _param(self, name: str, x) -> None:
-        self._index[name] = len(self.params)
-        self.params.append(iron.param(bf(x)))
-
-    def w(self, name: str):
-        return self.params[self._index[name]] if name in self._index else None
-
-    def _conv3(self, name: str, wt: np.ndarray, b, cout: int, cin: int) -> None:
-        """A 3 x 3 convolution (cout, cin, 3, 3), its channels zero-padded, as an im2col matrix."""
-        wt = padded(wt, cout, cin, 3, 3)
-        self._param(f"{name}.w", wt.transpose(0, 2, 3, 1).reshape(cout, -1))
-        if b is not None:
-            self._param(f"{name}.b", padded(b, cout))
-
-    def state(self, shape):
-        s = iron.state(shape)
-        self.states.append(s)
-        return s
-
-    @staticmethod
-    def view(s):
-        return s[0 : s.shape[0]]
-
-    # --- moving between dense pixels (H W, C) and grids ---
-
-    def to_grid(self, x, g: Grid, first: int = 0):
-        """The grid of dense pixels x (rows from ``first``: (H W, C) or more rows)."""
-        out = self.state((g.rows, g.C))
-        Copy.step(x, out, src=tap(tuple(x.shape), first * g.C, [g.H * g.W * g.C], [1]),
-                  dst=tap((g.rows, g.C), g.pixel(0, 0) * g.C, [g.H, g.W * g.C], [g.Wp * g.C, 1]))
-        return self.view(out)
-
-    def to_dense(self, x, g: Grid):
-        """The pixels (H W, C), in a state of whole 256 rows (zeros past them, for the GEMMs)."""
-        C, n = g.C, g.H * g.W
-        out = self.state((-(-n // 256) * 256, C))
-        Copy.step(x, out, src=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [g.Wp * C, 1]),
-                  dst=tap(out.shape, 0, [n * C], [1]))
-        return self.view(out)
-
-    def cols(self, n: int, k: int):
-        key = (n, k)
-        if key not in self._cols:
-            self._cols[key] = self.state((n, k))
-        return self._cols[key]
-
-    def conv3(self, x, g: Grid, name: str, cout: int, post=None):
-        """The 3 x 3 convolution (stride 1, zero padded) of grid x into a new grid. ``post(y,
-        r0)`` takes each chunk's GEMM result (band rows from image row r0) before the copy."""
-        go = Grid(g.H, g.W, cout)
-        out = self.state((go.rows, cout))
-        Wp, C = g.Wp, g.C
-        R = g.chunk(C)
-        for r0 in range(0, g.H, R):
-            n = R * Wp
-            start = (g.band + r0 * Wp - Wp - 1) * C
-            if 3 * C <= 2046:
-                cols = Copy.step(x, src=tap((g.rows, C), start, [R, Wp, 3, 3 * C], [Wp * C, C, Wp * C, 1])).reshape(n, 9 * C)
-            else:  # a DMA dimension is at most 1023 words
-                cs = self.cols(n, 9 * C)
-                for dy in range(3):
-                    Copy.step(x, cs, src=tap((g.rows, C), start + dy * Wp * C, [R, Wp, 3, C], [Wp * C, C, C, 1]),
-                              dst=tap((n, 9 * C), dy * 3 * C, [n, 3, C], [9 * C, C, 1]))
-                cols = cs[0:n]
-            y = F.linear(cols, self.w(f"{name}.w"), self.w(f"{name}.b"), precision=PREC.head)
-            if post is not None:
-                y = post(y, r0)
-            rows = min(R, g.H - r0)
-            Copy.step(y, out, src=tap((n, cout), cout, [rows, g.W * cout], [Wp * cout, 1]),
-                      dst=tap((go.rows, cout), go.pixel(r0, 0) * cout, [rows, g.W * cout], [Wp * cout, 1]))
-        return self.view(out), go
-
-    def conv3_s2(self, x, g: Grid, name: str, cout: int):
-        """The 3 x 3 convolution with stride 2 (padding 1): dense (H/2 W/2, cout)."""
-        Ho, Wo, C = (g.H + 1) // 2, (g.W + 1) // 2, g.C
-        n = Ho * Wo
-        m = -(-n // 256) * 256
-        cs = self.cols(m, 9 * C)
-        for dy in range(3):
-            for oy in range(Ho):
-                # output row oy's window rows 2 oy - 1 + dy; pixel 2 ox - 1 + dx
-                Copy.step(x, cs, src=tap((g.rows, C), (g.band + (2 * oy - 1 + dy) * g.Wp) * C, [Wo, 3, C], [2 * C, C, 1]),
-                          dst=tap((m, 9 * C), oy * Wo * 9 * C + dy * 3 * C, [Wo, 3, C], [9 * C, C, 1]))
-        y = F.linear(cs[0:m], self.w(f"{name}.w"), self.w(f"{name}.b"), precision=PREC.head)
-        return y[0:n]
-
-    def deconv(self, x, H: int, W: int, i: int, k: int, cout: int, first: int = 0):
-        """ConvTranspose2d with kernel = stride = k of dense x (rows from ``first``, cin): a
-        grid (kH, kW, cout)."""
-        y = F.linear(x, self.w(f"up{i}"), self.w(f"up{i}.b"), precision=PREC.head)  # (rows, k k cout)
-        go = Grid(k * H, k * W, cout)
-        out = self.state((go.rows, cout))
-        kk = k * k * cout
-        for ky in range(k):
-            for kx in range(k):
-                Copy.step(y, out, src=tap(tuple(y.shape), (first * kk) + (ky * k + kx) * cout, [H, W, cout], [W * kk, kk, 1]),
-                          dst=tap((go.rows, cout), go.pixel(ky, kx) * cout, [H, W, cout], [k * go.Wp * cout, k * cout, 1]))
-        return self.view(out), go
-
-    def resize(self, x, H: int, W: int, H2: int, W2: int, C: int):
-        """Bilinear (align_corners) of dense x (H W, C) to (H2 W2, C)."""
-        # along the columns: transpose to (W, H C), the matrix (W2, W) on the left
-        t = self.state((pad64(W), H * C))
-        Copy.step(x, t, src=tap(tuple(x.shape), 0, [W, H, C], [C, W * C, 1]), dst=tap((pad64(W), H * C), 0, [W, H * C], [H * C, 1]))
-        u = GEMM.step(self.w(f"interp{W2}x{W}"), self.view(t), b_col_maj=False, precision=PREC.resize)  # (pad W2, H C)
-        # back to rows: (H, W2 C), the matrix (H2, H) on the left
-        v = self.state((pad64(H), W2 * C))
-        Copy.step(u, v, src=tap((pad64(W2), H * C), 0, [H, W2, C], [C, H * C, 1]), dst=tap((pad64(H), W2 * C), 0, [H, W2 * C], [W2 * C, 1]))
-        y = GEMM.step(self.w(f"interp{H2}x{H}"), self.view(v), b_col_maj=False, precision=PREC.resize)  # (pad H2, W2 C)
-        return y[0:H2].reshape(H2 * W2, C)
+                self.add_interp(n_out, n_in)
 
     def rcu(self, x, g: Grid, name: str):
         """A residual conv unit: ReLU, conv, ReLU, conv, plus x (grids)."""
@@ -656,9 +698,9 @@ class Head(iron.Graph):
             if c.dual:
                 p = p + self.w(f"pe{i}")
             if i == 0:
-                feats.append(self.deconv(p, H, W, 0, 4, oc[0], first=1))
+                feats.append(self.deconv(p, H, W, "up0", 4, oc[0], first=1))
             elif i == 1:
-                feats.append(self.deconv(p, H, W, 1, 2, oc[1], first=1))
+                feats.append(self.deconv(p, H, W, "up1", 2, oc[1], first=1))
             elif i == 2:
                 g = Grid(H, W, oc[2])
                 feats.append((self.to_grid(p, g, first=1), g))

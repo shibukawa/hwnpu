@@ -198,10 +198,16 @@ func (r *Result) Meters(fx, fy float64, ow, oh int) {
 // PIL's antialiased bicubic (the official processor takes OpenCV's cubic or area, and keeps
 // the aspect: the export's sizes are near it).
 func (e *sized) Patches(img image.Image) []float32 {
-	W, H, P := e.Model.Width, e.Model.Height, e.Patch
-	px := lfm3vl.Resize(img, W, H, "bicubic")
+	W, H := e.Model.Width, e.Model.Height
+	return PatchRows(lfm3vl.Resize(img, W, H, "bicubic"), W, H, e.Patch, e.Tokens, e.Mean, e.Std)
+}
+
+// PatchRows is a ViT's input of the RGB pixels px (W x H, raster order): row 0 zeros (the class
+// token's), then each patch x patch square's normalized values (channel, row, column), padded
+// to 640 columns, tokens rows in all.
+func PatchRows(px []uint8, W, H, P, tokens int, mean, std []float32) []float32 {
 	gw, gh := W/P, H/P
-	out := make([]float32, e.Tokens*patchIn)
+	out := make([]float32, tokens*patchIn)
 	for py := 0; py < gh; py++ {
 		for pxi := 0; pxi < gw; pxi++ {
 			row := out[(1+py*gw+pxi)*patchIn:]
@@ -209,7 +215,7 @@ func (e *sized) Patches(img image.Image) []float32 {
 				for ky := 0; ky < P; ky++ {
 					for kx := 0; kx < P; kx++ {
 						v := float32(px[((py*P+ky)*W+pxi*P+kx)*3+c]) / 255
-						row[(c*P+ky)*P+kx] = (v - e.Mean[c]) / e.Std[c]
+						row[(c*P+ky)*P+kx] = (v - mean[c]) / std[c]
 					}
 				}
 			}
@@ -311,6 +317,12 @@ func Quantile(xs []float32, q float64) float32 {
 	f := float32(pos - float64(i))
 	return xs[i] + f*(xs[i+1]-xs[i])
 }
+
+// ToBF16 rounds xs to bfloat16 bytes (to nearest, ties to even).
+func ToBF16(xs []float32) []byte { return toBF16(xs) }
+
+// FromBF16 is the float32 of a bfloat16.
+func FromBF16(h uint16) float32 { return fromBF16(h) }
 
 func toBF16(xs []float32) []byte {
 	b := make([]byte, 2*len(xs))

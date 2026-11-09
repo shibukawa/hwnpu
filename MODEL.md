@@ -105,6 +105,7 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 | PLaMo 3 Translate 2B | Translation | 2.7 GB | 7 KiB/token (1.75 GiB at 262144) | measured |
 | PLaMo 3 Translate 0.8B | Translation | 1.0 GB (M3: 1.38 GiB on the Neural Engine and 1.0 GB of the process, about 2.4 GB) | 1 KiB/token (0.28 GiB at 262144) | measured (AMD and M3) |
 | PLaMo-Embedding-1B | Sentence embeddings | 1.3 GB | none | estimated from the weights |
+| MoGe-2 ViT-S / B / L (AMD) | Metric depth, points, normals (hwnpu-depth) | 1.9 GB (S), 2.1 GB (B), 2.6 GB (L) | none | measured |
 | Depth Anything 3 Mono / Metric Large, Small, Base (AMD) | Depth estimation (hwnpu-depth) | 1.4 GB (Large), 0.75 GB (Base), 0.5 GB (Small) | none | measured |
 | Sana-Sprint 0.6B, Sana 600M, Sana-Sprint 1.6B, SANA 1.5 1.6B (1024 × 1024, AMD) | Image generation | 2.3 GB (the text graph, Gemma 2 in 8 bits; the DiT a group at a time, the VAE a stage at a time) | none | measured |
 | Anima-Turbo (1024 × 1024) | Image generation | 1.9 GB (the VAE's largest stage; the DiT reads its blocks' weights a group at a time) | none | measured |
