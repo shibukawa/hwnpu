@@ -31,6 +31,7 @@ import (
 	"image/png"
 	"log"
 	"math"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -167,7 +168,7 @@ func main() {
 	} else {
 		s := *seed
 		if s == 0 {
-			s = uint64(time.Now().UnixNano())
+			s = rand.Uint64()
 		}
 		logf("seed %d", s)
 		x = p.Noise(s)

@@ -279,7 +279,7 @@ func (s *Synth) Speak(ctx context.Context, r Request) ([]float32, [][]int32, err
 	if s.sess.Hidden() == nil {
 		return nil, nil, errors.New("speech: the text model does not output its hidden state h (convert it with -hidden-out 1)")
 	}
-	seed := cmp.Or(r.Seed, uint64(time.Now().UnixNano()))
+	seed := cmp.Or(r.Seed, rand.Uint64())
 	frames, err := s.Frames(ctx, s.sess.Hidden(), rand.New(rand.NewPCG(seed, 0)), r.MaxFrames)
 	if err != nil {
 		return nil, nil, err

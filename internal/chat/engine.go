@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -672,7 +673,7 @@ type Request struct {
 	Prompt    []int32
 	MaxTokens int // 0: until the cache is full
 	Sampling
-	Seed uint64 // 0: random
+	Seed uint64 // 0: random (Stats.Seed tells which)
 	// Think bounds the model's thinking (ThinkLimit; the zero value does not).
 	Think ThinkLimit
 }
@@ -729,6 +730,8 @@ type Stats struct {
 	// Cache is the length of the cache the generation ended on (the tier, Config.Tiers).
 	Cache           int
 	Prefill, Decode time.Duration
+	// Seed is the seed the tokens were sampled with: Request.Seed, or the one drawn for 0.
+	Seed uint64
 }
 
 // ErrContext is returned for a prompt that does not fit in the cache.
@@ -765,10 +768,8 @@ func (e *Engine) Generate(ctx context.Context, r Request, emit func(gen []int32)
 		return st, err
 	}
 	st.Prefill = time.Since(t0)
-	seed := r.Seed
-	if seed == 0 {
-		seed = uint64(time.Now().UnixNano())
-	}
+	seed := cmp.Or(r.Seed, rand.Uint64())
+	st.Seed = seed
 	rng := rand.New(rand.NewPCG(seed, 0))
 	var gen []int32
 	t1 := time.Now()

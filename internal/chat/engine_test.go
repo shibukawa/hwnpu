@@ -392,6 +392,25 @@ func TestSpeculate(t *testing.T) {
 	if len(want) != n {
 		t.Fatalf("plain generated %d tokens", len(want))
 	}
+	// sampling: the seed drawn for 0 is told, and gives the same answer again
+	sample := func(seed uint64) ([]int32, Stats) {
+		var got []int32
+		st, err := plain.Generate(context.Background(), Request{Prompt: prompt, MaxTokens: n, Sampling: Sampling{Temperature: 1}, Seed: seed}, func(gen []int32) (bool, error) {
+			got = gen
+			return false, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got, st
+	}
+	drawn, ds := sample(0)
+	if ds.Seed == 0 {
+		t.Fatal("the drawn seed is not told")
+	}
+	if again, as := sample(ds.Seed); !slices.Equal(again, drawn) || as.Seed != ds.Seed {
+		t.Errorf("seed %d gave %v, then %v (seed %d)", ds.Seed, drawn, again, as.Seed)
+	}
 	// speculative: a drafter that knows the answer, wrong at every third guess
 	e := newEngine(4, 8)
 	if e.Draft() != 3 {
