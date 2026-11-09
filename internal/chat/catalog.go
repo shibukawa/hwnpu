@@ -17,13 +17,14 @@ import (
 type Kind string
 
 const (
-	KindChat       Kind = "chat"       // generates text: the chat completions API
-	KindEmbed      Kind = "embedding"  // turns a text into a vector: the embeddings API
-	KindTranscribe Kind = "transcribe" // speech to text: hwnpu-transcribe
-	KindSpeech     Kind = "speech"     // text to speech: hwnpu-tts
-	KindDecision   Kind = "decision"   // answers about a state: hwnpu-systemone
-	KindImage      Kind = "image"      // draws a picture from a prompt: hwnpu-image generate
-	KindDepth      Kind = "depth"      // the depth of a picture: hwnpu-image depth
+	KindChat       Kind = "chat"        // generates text: the chat completions API
+	KindEmbed      Kind = "embedding"   // turns a text into a vector: the embeddings API
+	KindTranscribe Kind = "transcribe"  // speech to text: hwnpu-transcribe
+	KindSpeech     Kind = "speech"      // text to speech: hwnpu-tts
+	KindDecision   Kind = "decision"    // answers about a state: hwnpu-systemone
+	KindImage      Kind = "image"       // draws a picture from a prompt: hwnpu-image generate
+	KindDepth      Kind = "depth"       // the depth of a picture: hwnpu-image depth
+	KindFace       Kind = "face-detect" // the faces in a picture: hwnpu-image face-detect
 )
 
 // Model is a model of the definitions (models.yaml).

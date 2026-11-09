@@ -3416,3 +3416,10 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - `hwnpu-image list [image|depth]`: hwnpu-chat の -list と同じ表 (`chat.ListHave`) で、ダウンロードの列の代わりに AMD の書き出し (`~/models/NAME.amd-npu2`)。`-m` の名前が合わないとき (`chat.NoModelError`) も、その種類の表を出してからエラーにする
 - 名前で選んだモデルは AMD の NPU では `~/models/NAME.amd-npu2` か `NAME-1024.amd-npu2` (小文字) を使う。ないときは、落とすリポジトリと `iron_*.py` のコマンドを示して止まる (書き出しを自動で作るのはまだ)。Mac / Intel の Anima は今までどおり自動で落として変換する。`/` や `.`、`~` を含む値は書き出しのディレクトリ
 - `-o` を省くと `image.png` (あれば `image (2).png`、…) に書き、OS のビューアで開く (macOS は open、Windows は rundll32 の FileProtocolHandler、ほかは xdg-open。DISPLAY も WAYLAND_DISPLAY もないときは開かない)
+
+### 16.125 AMD: YuNet の顔検出 (`iron_yunet.py`、`hwnpu-image face-detect`) と小さなモデルの NPU の費用 — 2026-11-10
+
+- OpenCV Zoo の YuNet (MIT) を 1 つの IRON グラフに (docs/amd-npu-models.md 17 節)。1 × 1 と深さ方向の 3 × 3 を 1 つの畳み込みに、バイアスは「1 のチャンネル」に、ReLU は ProjectionGEMM の clamp (下限 0、`ReluGEMM`) に。結果は OpenCV の FaceDetectorYN と一致
+- models.yaml に種類 `face-detect` と YuNet (用途 `face-detect`)。`hwnpu-image face-detect` は JSON 行を出し、`--draw` で描いた画像、`--repeat` で時間
+- `iron.GraphOptions.KeepRuns`: コマンドの run を一度作って持ち続ける。毎フレーム呼ぶ小さなグラフで、ホストの CPU が 1.6 → 1.1 ms。制御コードがデバイスのヒープ (64 MiB) に残るので、大きなグラフには使わない
+- 測定の結論: 320 × 256 で NPU 29 ms・127 mJ、CPU (onnxruntime 1 スレッド) 2.7 ms・7.7 mJ。NPU は CPU を約 2 ms 空けるが、エネルギーは 16 倍。演算の切り替え (GEMM と他で約 250 µs) が支配的で、小さなモデルでは「NPU に置けば省エネ」は成り立たない。置き場所の方針 (CPU を空けるか、エネルギーか) はこの数字で決める

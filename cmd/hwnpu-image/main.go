@@ -4,9 +4,10 @@
 //	hwnpu-image generate -m sana "a red fox in a snowy forest" -o fox.png
 //	hwnpu-image depth photo.jpg                                  # photo.depth.png
 //	hwnpu-image depth -m moge --normal --raw photo.jpg
+//	hwnpu-image face-detect --draw photo.jpg                     # JSON lines, photo.faces.png
 //
 // --model takes a name, a family or a use of models.yaml (image, anima, sana, sana:1.6b,
-// sana-full; depth, da3:small, da3metric, moge:vits): a family alone picks for the machine's
+// sana-full; depth, da3:small, da3metric, moge:vits; face-detect, yunet): a family alone picks for the machine's
 // memory, as hwnpu-chat's -use. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
 // value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
 // image.png here (image (2).png, ... when taken) and shows it in the system's viewer.
@@ -46,10 +47,11 @@ import (
 )
 
 type cli struct {
-	Generate GenerateCmd `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Sana-Sprint)."`
-	Depth    DepthCmd    `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's NPU)."`
-	Convert  ConvertCmd  `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export."`
-	List     ListCmd     `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
+	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Sana-Sprint)."`
+	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's NPU)."`
+	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; AMD's NPU)."`
+	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export."`
+	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 }
 
 func main() {

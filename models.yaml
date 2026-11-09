@@ -7,7 +7,7 @@
 #   family, tag   FAMILY:TAG picks it (plamo3translate:2b); the family alone picks the tag of the
 #                 largest machine up to this machine's memory
 #   kind          chat, embedding (hwnpu-chat, hwnpu-agent), transcribe (hwnpu-transcribe),
-#                 speech (hwnpu-tts), decision (hwnpu-systemone), image, depth (hwnpu-image)
+#                 speech (hwnpu-tts), decision (hwnpu-systemone), image, depth, face-detect (hwnpu-image)
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory)
 #   arch          the structure, one of hwnpu-convert -archs (default: from config.json)
@@ -292,6 +292,15 @@ models:
     memory: 1.9
     bytes: 0.14e9
     about: "MoGe-2 ViT-S: metric depth, points, normals and a mask"
+  YuNet:
+    family: yunet
+    tag: 2023mar
+    kind: face-detect
+    from: hf:opencv/face_detection_yunet
+    machine: 8
+    memory: 0.03
+    bytes: 0.23e6
+    about: "YuNet (OpenCV Zoo, MIT): faces' boxes and five landmarks (eyes, nose, mouth corners)"
 
 categories:
   chat:
@@ -345,3 +354,7 @@ categories:
     about: depth estimation (hwnpu-image depth)
     picks:
       - {machine: 8, model: DA3MONO-LARGE}
+  face-detect:
+    about: face detection (hwnpu-image face-detect)
+    picks:
+      - {machine: 8, model: YuNet}

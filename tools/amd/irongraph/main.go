@@ -14,6 +14,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
+	"syscall"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -50,6 +52,8 @@ func main() {
 	save := flag.Bool("save", false, "write each output as check/got_<name>.bin")
 	variant := flag.Int("variant", 0, "the bank variant to run (the check is variant 0's)")
 	tol := flag.Float64("tol", 0.03, "tolerance of the largest error relative to the output's largest magnitude")
+	keep := flag.Bool("keep", false, "keep each command's run (iron.GraphOptions.KeepRuns)")
+	cpuprofile := flag.String("cpuprofile", "", "write the runs' CPU profile (go tool pprof) to this file")
 	pin := flag.Float64("pin", 0, "GiB of device buffers to allocate, fill and keep before loading the graph (a test of large pinned memory)")
 	flag.Parse()
 	dir := flag.Arg(0)
@@ -78,7 +82,7 @@ func main() {
 		fmt.Printf("pinned %.1f GiB\n", *pin)
 	}
 	t0 := time.Now()
-	g, err := iron.OpenGraph(ctx, dev, dir)
+	g, err := iron.OpenGraphWith(ctx, dev, dir, iron.GraphOptions{KeepRuns: *keep})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -104,6 +108,16 @@ func main() {
 	}
 	per := make([]time.Duration, len(g.Manifest.Graph.Kernels))
 	g.Timing = func(k int, d time.Duration) { per[k] += d }
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatal(err)
+		}
+	}
+	cpu0, wall0 := cpuTime(), time.Now()
 	for i := 0; i < max(1, *runs); i++ {
 		clear(per)
 		t := time.Now()
@@ -112,6 +126,12 @@ func main() {
 		}
 		fmt.Printf("run %d: %.1f ms (commands %v)\n", i, time.Since(t).Seconds()*1000, per)
 	}
+	if *cpuprofile != "" {
+		pprof.StopCPUProfile()
+	}
+	n := float64(max(1, *runs))
+	fmt.Printf("mean %.2f ms a run, the host's CPU %.3f ms a run (user and system)\n",
+		time.Since(wall0).Seconds()*1000/n, (cpuTime()-cpu0).Seconds()*1000/n)
 	bad := false
 	for _, h := range g.Outputs() {
 		got, err := g.Output(h.Name)
@@ -150,4 +170,13 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("PASS")
+}
+
+// cpuTime is the process's user and system CPU time so far.
+func cpuTime() time.Duration {
+	var ru syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+		return 0
+	}
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }

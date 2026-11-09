@@ -394,6 +394,7 @@ var kinds = map[Kind]string{
 	KindDecision:   "hwnpu-systemone",
 	KindImage:      "hwnpu-image generate",
 	KindDepth:      "hwnpu-image depth",
+	KindFace:       "hwnpu-image face-detect",
 }
 
 // build makes the catalog, the categories and the aliases of what was merged.
