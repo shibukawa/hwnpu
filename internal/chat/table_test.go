@@ -196,7 +196,12 @@ func TestUserErrors(t *testing.T) {
 		{"unknown key", "version: 1\nmodels:\n  LFM3-1.7B:\n    memroy: 1\n", "memroy"},
 		{"no version", "models: {}\n", "no version"},
 		{"bad kind", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: video\n", "kind"},
-		{"bad source", "version: 1\nmodels:\n  x:\n    from: s3:bucket/x\n    kind: chat\n", "only hf:"},
+		{"unknown source", "version: 1\nmodels:\n  x:\n    from: s3:bucket/x\n    kind: chat\n", "not SOURCE:NAME"},
+		{"search unknown", "version: 1\nsearch: [mirror, hf]\n", "no source \"mirror\""},
+		{"source type", "version: 1\nsources:\n  m: {type: ftp}\n", "not path or s3"},
+		{"source option", "version: 1\nsources:\n  m: {type: s3, bucket: \"--exec\"}\n", "starts with -"},
+		{"source escapes", "version: 1\nsources:\n  m: {type: path, path: /tmp}\nmodels:\n  x:\n    from: m:../etc\n    kind: chat\n", "inside the source"},
+		{"bad digest", "version: 1\nmodels:\n  LFM3-1.7B:\n    sha256: {config.json: abc}\n", "64 hex"},
 		{"bad feature", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: chat\n    features: [flying]\n", "flying"},
 		{"like nothing", "version: 1\nmodels:\n  x:\n    like: nothing\n", "no such model"},
 	} {

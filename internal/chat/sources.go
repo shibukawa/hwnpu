@@ -1,0 +1,338 @@
+package chat
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"sync"
+
+	"github.com/shibukawa/hwnpu/internal/console"
+)
+
+// Where the files of the models come from (docs/model-table.md 5): Hugging Face (the source
+// "hf", always there), shared folders (path) and S3 (s3, through the aws command, any endpoint:
+// rustfs, MinIO). A model's from names its source; a model from hf is looked for in the sources
+// of Search in order, so that a mirror of Hugging Face is read first.
+
+// SourceHF is the name of Hugging Face's source.
+const SourceHF = "hf"
+
+// Source is a place the files of models are read from.
+type Source struct {
+	Name string
+	Type string // "hf", "path" or "s3"
+	// Path is a path source's folder: a model's files are in Path/NAME (for hf models in a
+	// search, Path/OWNER/NAME, or Path/OWNER/NAME@REVISION first when pinned).
+	Path string
+	// The bucket and the prefix of an s3 source, and what the aws command is given: the
+	// endpoint (--endpoint-url, for rustfs, MinIO and the like), the region, the profile of
+	// ~/.aws/config, and no_sign for a public bucket (--no-sign-request).
+	Bucket, Prefix, Endpoint, Region, Profile string
+	NoSign                                    bool
+}
+
+// String describes the source for logs and -list.
+func (s Source) String() string {
+	switch s.Type {
+	case "path":
+		return fmt.Sprintf("%s (folder %s)", s.Name, s.Path)
+	case "s3":
+		d := fmt.Sprintf("%s (s3://%s/%s", s.Name, s.Bucket, s.Prefix)
+		if s.Endpoint != "" {
+			d += " at " + s.Endpoint
+		}
+		return d + ")"
+	}
+	return s.Name + " (Hugging Face)"
+}
+
+var (
+	// Sources are the sources of the definitions by name, Hugging Face's among them.
+	Sources = map[string]Source{SourceHF: {Name: SourceHF, Type: "hf"}}
+	// Search is the order the sources are looked in for a model from hf (the definitions'
+	// search; [hf] when they give none).
+	Search = []string{SourceHF}
+	// digests are the SHA-256 of the files of the models the definitions pin (sha256), by the
+	// model's Source() and the file's name.
+	digests = map[string]map[string]string{}
+
+	// found remembers the source a repository's first file came from, to take the rest from
+	// there too.
+	foundMu sync.Mutex
+	found   = map[string]string{}
+)
+
+// sourceEntry is a source in a definition file.
+type sourceEntry struct {
+	Type     string `yaml:"type"`
+	Path     string `yaml:"path"`
+	Bucket   string `yaml:"bucket"`
+	Prefix   string `yaml:"prefix"`
+	Endpoint string `yaml:"endpoint"`
+	Region   string `yaml:"region"`
+	Profile  string `yaml:"profile"`
+	NoSign   bool   `yaml:"no_sign"`
+}
+
+var sourceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// toSource checks a source of a definition file.
+func toSource(name string, e *sourceEntry) (Source, error) {
+	s := Source{Name: name, Type: e.Type, Path: e.Path, Bucket: e.Bucket, Prefix: e.Prefix, Endpoint: e.Endpoint, Region: e.Region, Profile: e.Profile, NoSign: e.NoSign}
+	if !sourceName.MatchString(name) || name == SourceHF {
+		return s, fmt.Errorf("source %q: a name of letters, digits, - and _, not %s", name, SourceHF)
+	}
+	// what goes to the aws command as an argument must not read as an option
+	for _, v := range []string{s.Bucket, s.Prefix, s.Endpoint, s.Region, s.Profile} {
+		if strings.HasPrefix(v, "-") {
+			return s, fmt.Errorf("source %s: %q starts with -", name, v)
+		}
+	}
+	switch s.Type {
+	case "path":
+		if s.Path == "" {
+			return s, fmt.Errorf("source %s: a path source needs path", name)
+		}
+		if rest, ok := strings.CutPrefix(s.Path, "~"); ok && (rest == "" || rest[0] == '/' || rest[0] == '\\') {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return s, err
+			}
+			s.Path = filepath.Join(home, rest)
+		}
+	case "s3":
+		if s.Bucket == "" {
+			return s, fmt.Errorf("source %s: an s3 source needs bucket", name)
+		}
+		if s.Prefix != "" && !strings.HasSuffix(s.Prefix, "/") {
+			s.Prefix += "/"
+		}
+	default:
+		return s, fmt.Errorf("source %s: type %q is not path or s3", name, s.Type)
+	}
+	return s, nil
+}
+
+// splitSource reads a repository as fetch takes it: SOURCE:NAME for a model of a path or s3
+// source, else OWNER/NAME[@REVISION], from hf (looked for in Search).
+func splitSource(repo string) (source, name string) {
+	if s, n, ok := strings.Cut(repo, ":"); ok {
+		if _, known := Sources[s]; known && s != SourceHF {
+			return s, n
+		}
+	}
+	return "", repo
+}
+
+// safeName reports whether name is a relative path of a source's model that stays inside it.
+func safeName(name string) bool {
+	if name == "" || strings.HasPrefix(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, ":") {
+		return false
+	}
+	return !slices.Contains(strings.Split(name, "/"), "..")
+}
+
+// fetch puts a file of a model's repository at path unless it is there. repo is Model.Source():
+// OWNER/NAME or OWNER/NAME@REVISION from hf, looked for in Search in order (the source the
+// repository's first file came from first), or SOURCE:NAME from that source alone. A file the
+// definitions pin (sha256) is checked; one that differs is removed and the next source tried.
+func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	src, key := splitSource(repo)
+	order := []string{src}
+	if src == "" {
+		order = slices.Clone(Search)
+		foundMu.Lock()
+		if f, ok := found[repo]; ok {
+			order = append([]string{f}, slices.DeleteFunc(order, func(s string) bool { return s == f })...)
+		}
+		foundMu.Unlock()
+	}
+	var errs []error
+	for _, sn := range order {
+		s := Sources[sn]
+		var err error
+		switch s.Type {
+		case "hf":
+			err = fetchHF(ctx, key, name, path, log)
+		case "path":
+			err = fetchPath(s, key, name, path, log)
+		case "s3":
+			err = fetchS3(ctx, s, key, name, path, log)
+		default:
+			err = fmt.Errorf("chat: no source %q", sn)
+		}
+		if err == nil {
+			if err = verify(repo, name, path); err == nil {
+				foundMu.Lock()
+				found[repo] = sn
+				foundMu.Unlock()
+				return nil
+			}
+			os.Remove(path)
+		}
+		if errors.Is(err, errNotFound) {
+			continue
+		}
+		errs = append(errs, err)
+		if len(order) > 1 && log != nil {
+			fmt.Fprintf(log, "%s: %v; trying the next source\n", s.Name, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return fmt.Errorf("chat: %s of %s is in none of the sources %s: %w", name, key, strings.Join(order, ", "), errNotFound)
+}
+
+// verify checks a fetched file against the SHA-256 the definitions pin for it, if any.
+func verify(repo, name, path string) error {
+	want, ok := digests[repo][name]
+	if !ok {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
+		return fmt.Errorf("chat: %s of %s has SHA-256 %s, not the %s of the definitions", name, repo, got, want)
+	}
+	return nil
+}
+
+// fetchPath copies a file of a path source's model: Path/NAME/FILE, or for a model from hf
+// looked for in it, Path/OWNER/NAME@REVISION/FILE and then Path/OWNER/NAME/FILE. A hard link is
+// made where the folder allows it.
+func fetchPath(s Source, key, name, dst string, log io.Writer) error {
+	base, rev, _ := strings.Cut(key, "@")
+	if !safeName(base) || !safeName(name) || strings.ContainsAny(rev, "/\\") {
+		return fmt.Errorf("chat: %s: %s/%s is not a file inside the source", s.Name, key, name)
+	}
+	var dirs []string
+	if rev != "" {
+		dirs = append(dirs, base+"@"+rev)
+	}
+	dirs = append(dirs, base)
+	for _, d := range dirs {
+		src := filepath.Join(s.Path, filepath.FromSlash(d), filepath.FromSlash(name))
+		fi, err := os.Stat(src)
+		if err != nil || fi.IsDir() {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if os.Link(src, dst) == nil {
+			if log != nil {
+				fmt.Fprintf(log, "linked %s from %s\n", name, s)
+			}
+			return nil
+		}
+		in, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		part := dst + ".part"
+		out, err := os.Create(part)
+		if err != nil {
+			return err
+		}
+		pw := &progress{w: out, total: fi.Size(), bar: console.NewBar(log, fmt.Sprintf("copying %s from %s", path.Base(name), s.Name))}
+		_, err = io.Copy(pw, in)
+		if cerr := out.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(part)
+			return fmt.Errorf("chat: copying %s: %w", src, err)
+		}
+		pw.bar.Done(fmt.Sprintf("%s to %s", gb(pw.done, -1), filepath.Dir(dst)))
+		return os.Rename(part, dst)
+	}
+	return fmt.Errorf("chat: %s: %s/%s: %w", s.Name, key, name, errNotFound)
+}
+
+// awsCommand is the aws command (a test puts a fake in its place).
+var awsCommand = "aws"
+
+// fetchS3 downloads a file of an s3 source's model with the aws command: s3://BUCKET/PREFIX/NAME/
+// FILE, or for a model from hf, PREFIX/OWNER/NAME@REVISION/FILE and then PREFIX/OWNER/NAME/FILE.
+// The aws command's own settings (AWS_* variables, ~/.aws/config) apply; the source adds the
+// endpoint, the region, the profile and no_sign.
+func fetchS3(ctx context.Context, s Source, key, name, dst string, log io.Writer) error {
+	base, rev, _ := strings.Cut(key, "@")
+	if !safeName(base) || !safeName(name) || strings.ContainsAny(rev, "/\\") {
+		return fmt.Errorf("chat: %s: %s/%s is not a file inside the source", s.Name, key, name)
+	}
+	aws, err := exec.LookPath(awsCommand)
+	if err != nil {
+		return fmt.Errorf("chat: source %s reads S3 with the aws command (AWS CLI v2), which is not installed: %w", s.Name, err)
+	}
+	var keys []string
+	if rev != "" {
+		keys = append(keys, base+"@"+rev)
+	}
+	keys = append(keys, base)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		url := "s3://" + s.Bucket + "/" + s.Prefix + k + "/" + name
+		part := dst + ".part"
+		args := []string{"s3", "cp", "--only-show-errors"}
+		if s.Endpoint != "" {
+			args = append(args, "--endpoint-url", s.Endpoint)
+		}
+		if s.Region != "" {
+			args = append(args, "--region", s.Region)
+		}
+		if s.Profile != "" {
+			args = append(args, "--profile", s.Profile)
+		}
+		if s.NoSign {
+			args = append(args, "--no-sign-request")
+		}
+		args = append(args, "--", url, part)
+		bar := console.NewBar(log, fmt.Sprintf("downloading %s from %s", path.Base(name), url))
+		cmd := exec.CommandContext(ctx, aws, args...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			os.Remove(part)
+			msg := strings.TrimSpace(stderr.String())
+			if strings.Contains(msg, "404") || strings.Contains(msg, "Not Found") || strings.Contains(msg, "NoSuchKey") {
+				bar.Done("not there")
+				continue
+			}
+			bar.Done("failed")
+			return fmt.Errorf("chat: aws s3 cp %s: %v: %s", url, err, msg)
+		}
+		size := int64(0)
+		if fi, err := os.Stat(part); err == nil {
+			size = fi.Size()
+		}
+		bar.Done(fmt.Sprintf("%s in %s to %s", gb(size, -1), console.Duration(bar.Elapsed()), filepath.Dir(dst)))
+		return os.Rename(part, dst)
+	}
+	return fmt.Errorf("chat: %s: %s/%s: %w", s.Name, key, name, errNotFound)
+}

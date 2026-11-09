@@ -31,6 +31,11 @@ type Model struct {
 	Features []string // what it can do besides its kind, from Features
 	Repo     string   // the Hugging Face repository it is downloaded from
 	Revision string   // the repository's revision to download ("": main)
+	// SourceName is the source of sources the model comes from, "" for hf (Hugging Face, or the
+	// sources of Search); Repo is then the model's folder in it.
+	SourceName string
+	// SHA256 pins the repository's files by name.
+	SHA256 map[string]string
 	// Arch is the structure the definitions name (llm.Lookup), "" for the one config.json says.
 	Arch string
 	// Files are the definition files that wrote the model (ModelFiles).
@@ -62,12 +67,16 @@ func (m Model) DirName() string {
 	return path.Base(m.Repo)
 }
 
-// Source is the repository as fetch takes it: OWNER/NAME, or OWNER/NAME@REVISION when pinned.
+// Source is the repository as fetch takes it: OWNER/NAME, or OWNER/NAME@REVISION when pinned,
+// from hf (or the sources of Search), or SOURCE:NAME from a source of sources.
 func (m Model) Source() string {
-	if m.Revision == "" {
-		return m.Repo
+	switch {
+	case m.SourceName != "":
+		return m.SourceName + ":" + m.Repo
+	case m.Revision != "":
+		return m.Repo + "@" + m.Revision
 	}
-	return m.Repo + "@" + m.Revision
+	return m.Repo
 }
 
 // Features explains the features a model of the catalog can have. The names are those of
@@ -118,16 +127,16 @@ func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, erro
 	if ok {
 		return m, kindIs(m, KindChat, KindEmbed)
 	}
-	if strings.Count(name, "/") != 1 {
-		return Model{}, fmt.Errorf("chat: no model %q (-list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME)", name)
+	m, ok = repoModel(name)
+	if !ok {
+		return Model{}, errNoModel(name)
 	}
-	m = Model{Name: filepath.Base(name), Repo: name}
-	dir := filepath.Join(root, m.Name)
+	dir := filepath.Join(root, m.DirName())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return m, err
 	}
 	path := filepath.Join(dir, "config.json")
-	if err := fetch(ctx, name, "config.json", path, log); err != nil {
+	if err := fetch(ctx, m.Source(), "config.json", path, log); err != nil {
 		return m, err
 	}
 	a, model, err := llm.LoadConfig(path, "")
@@ -180,11 +189,33 @@ func ResolveFor(name string, kind Kind, log io.Writer) (Model, error) {
 	if ok {
 		return m, kindIs(m, kind)
 	}
-	if strings.Count(name, "/") != 1 {
-		return Model{}, fmt.Errorf("chat: no model %q (-list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME)", name)
+	m, ok = repoModel(name)
+	if !ok {
+		return Model{}, errNoModel(name)
+	}
+	m.Kind = kind
+	return m, nil
+}
+
+func errNoModel(name string) error {
+	return fmt.Errorf("chat: no model %q (-list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME, a model of a source of the definitions SOURCE:NAME)", name)
+}
+
+// repoModel is the model a name of a repository means: OWNER/NAME or OWNER/NAME@REVISION of
+// Hugging Face (or the sources of Search), or SOURCE:NAME, a model of a source of the
+// definitions. ok is false for neither.
+func repoModel(name string) (Model, bool) {
+	if src, rest := splitSource(name); src != "" {
+		if !safeName(rest) || strings.Contains(rest, "@") {
+			return Model{}, false
+		}
+		return Model{Name: path.Base(rest), Repo: rest, SourceName: src}, true
 	}
 	repo, rev, _ := strings.Cut(name, "@")
-	return Model{Name: path.Base(repo), Kind: kind, Repo: repo, Revision: rev}, nil
+	if strings.Count(repo, "/") != 1 || !safeName(repo) || strings.HasSuffix(repo, "/") {
+		return Model{}, false
+	}
+	return Model{Name: path.Base(repo), Repo: repo, Revision: rev}, true
 }
 
 // Downloaded reports whether the model is in dir: its tables (TablesFile, written once its

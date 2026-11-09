@@ -826,13 +826,10 @@ func shards(index string) ([]string, error) {
 	return files, nil
 }
 
-// fetch downloads a file of a Hugging Face repository to path unless it is there. A download cut
-// off goes on from where it stopped (path.part). HF_TOKEN, when set, is sent for gated models.
-// repo is OWNER/NAME, or OWNER/NAME@REVISION for a revision other than main (Model.Source).
-func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
-	}
+// fetchHF downloads a file of a Hugging Face repository to path (fetch). A download cut off goes
+// on from where it stopped (path.part). HF_TOKEN, when set, is sent for gated models. repo is
+// OWNER/NAME, or OWNER/NAME@REVISION for a revision other than main.
+func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error {
 	repo, rev, _ := strings.Cut(repo, "@")
 	url := hubURL + repo + "/resolve/" + cmp.Or(rev, "main") + "/" + name
 	part := path + ".part"
@@ -934,8 +931,8 @@ func gb(n, total int64) string {
 	return fmt.Sprintf("%.2f / %.2f %s", float64(n)/div, float64(total)/div, unit)
 }
 
-// Fetch downloads a file of a Hugging Face repository to path unless it is there, as Prepare does
-// for the checkpoint.
+// Fetch puts a file of a model's repository (Model.Source) at path unless it is there, from the
+// model's source or the sources of Search, as Prepare does for the checkpoint.
 func Fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 	return fetch(ctx, repo, name, path, log)
 }

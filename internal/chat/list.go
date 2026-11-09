@@ -113,5 +113,10 @@ func List(w io.Writer, dir string, ks ...Kind) {
 			fmt.Fprintf(w, "  %s -> %s\n", from, Aliases[from])
 		}
 	}
-	fmt.Fprintf(w, "\nDefinitions: %s (yours: %s, %s, -models)\n", strings.Join(ModelFiles, ", "), UserModelsFile(), ModelsEnv)
+	var srcs []string
+	for _, s := range Search {
+		srcs = append(srcs, Sources[s].String())
+	}
+	fmt.Fprintf(w, "\nModels from hf are looked for in: %s\n", strings.Join(srcs, ", "))
+	fmt.Fprintf(w, "Definitions: %s (yours: %s, %s, -models)\n", strings.Join(ModelFiles, ", "), UserModelsFile(), ModelsEnv)
 }

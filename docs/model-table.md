@@ -1,6 +1,6 @@
 # モデルの定義ファイル (models.yaml) (設計案)
 
-作成: 2026-11-09。状態: 1 段と、hwnpu-tts / hwnpu-systemone の自動の準備 (4.5 段の一部) を実装。ほかは設計案。
+作成: 2026-11-09。状態: 1 段、取得元の切り替え (3 段の一部: path、s3、全体の探索順、sha256)、hwnpu-tts / hwnpu-systemone の自動の準備 (4.5 段の一部) を実装。ほかは設計案。
 
 ## 0. 実装したもの (2026-11-09)
 
@@ -9,6 +9,8 @@
 - `-list` (hwnpu-chat、hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
 - hwnpu-transcribe、hwnpu-tts、hwnpu-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。hwnpu-tts と hwnpu-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
 - 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
+- 取得元 (`internal/chat/sources.go`): ユーザーのファイルの `sources` (`type: path` の共有フォルダ、`type: s3` を aws コマンドで。`endpoint`、`region`、`profile`、`no_sign`) と、全体の探索順 `search` (既定 `[hf]`、5.4 節)。`from: SOURCE:NAME` でモデルごとに名指し。`-use SOURCE:NAME` も。ファイルごとに `search` の順に探し、見つかった取得元を次のファイルから先に見る。共有フォルダはハードリンクを試してから写す。リビジョンを固定したモデルは `OWNER/NAME@REV/` を先に探す。`sha256` を書いたファイルは、どの取得元から取っても確かめ、違えば消して次の取得元へ。組み込みのファイルは `sources` と `search` を持たない。まだないもの: `copy: false` (写さずに読む)、オフライン (11.3 節)、ダウンロードしながらの sha256 の計算 (今は取ったあとに読み直す)
+  - 確かめたこと: テスト (共有フォルダを先に、なければ HF。`hf` のない探索順は HF に出ない。sha256 の違う写しを飛ばす。固定したリビジョンのフォルダを先に。`SOURCE:NAME` のモデル。偽の aws で S3 の URL、endpoint、profile、no_sign と、ないもの。aws がないときのエラー)。sha256 の確認と探索順を壊すとテストが落ちる。M3 で、whisper-large-v3-turbo の写しを置いたフォルダだけを探索順にして (`search: [share]`)、空のモデルのフォルダから取得、変換、表、書き起こしまで通った (HF への通信なし)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
 - 確かめたこと (M3、2026-11-09):
   - hwnpu-transcribe: 表を書いて書き起こし、チェックポイントを退けても同じ結果

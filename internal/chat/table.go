@@ -111,6 +111,19 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 		return err
 	}
 	Catalog, Categories, Aliases, ModelFiles = catalog, categories, aliases, t.files
+	Sources, Search = t.sources, t.search
+	digests = map[string]map[string]string{}
+	for _, m := range catalog {
+		for f, d := range m.SHA256 {
+			if digests[m.Source()] == nil {
+				digests[m.Source()] = map[string]string{}
+			}
+			digests[m.Source()][f] = d
+		}
+	}
+	foundMu.Lock()
+	clear(found)
+	foundMu.Unlock()
 	return nil
 }
 
@@ -125,10 +138,13 @@ type modelEntry struct {
 	Memory   *float64  `yaml:"memory"`
 	Bytes    *float64  `yaml:"bytes"`
 	Features *[]string `yaml:"features"`
-	NoThink  *bool     `yaml:"no_think"`
-	About    *string   `yaml:"about"`
-	Like     string    `yaml:"like"`
-	Remove   bool      `yaml:"remove"`
+	// SHA256 pins the repository's files by name (config.json, model.safetensors, ...): a file
+	// fetched from any source must have it (docs/model-table.md 5.3).
+	SHA256  *map[string]string `yaml:"sha256"`
+	NoThink *bool              `yaml:"no_think"`
+	About   *string            `yaml:"about"`
+	Like    string             `yaml:"like"`
+	Remove  bool               `yaml:"remove"`
 }
 
 type pickEntry struct {
@@ -144,14 +160,15 @@ type categoryEntry struct {
 	Remove  bool        `yaml:"remove"`
 }
 
-// tableFile is a definition file. Sources, NPUs, Builds and Cache are designed
-// (docs/model-table.md) but not read yet: a file that has them gets a warning.
+// tableFile is a definition file. NPUs, Builds and Cache are designed (docs/model-table.md) but
+// not read yet: a file that has them gets a warning.
 type tableFile struct {
 	Version    int                       `yaml:"version"`
 	Models     map[string]*modelEntry    `yaml:"models"`
 	Categories map[string]*categoryEntry `yaml:"categories"`
 	Aliases    map[string]string         `yaml:"aliases"`
-	Sources    any                       `yaml:"sources"`
+	Sources    map[string]*sourceEntry   `yaml:"sources"`
+	Search     *[]string                 `yaml:"search"`
 	NPUs       any                       `yaml:"npus"`
 	Builds     any                       `yaml:"builds"`
 	Cache      any                       `yaml:"cache"`
@@ -188,11 +205,15 @@ type table struct {
 	aliases    map[string]string
 	aliasFile  map[string]string
 	removed    map[string]string // models a file removed, by the file
+	sources    map[string]Source
+	search     []string
+	searchFile string
 }
 
 func newTable(log io.Writer) *table {
 	return &table{log: log, models: map[string]*modelEntry{}, origin: map[string][]string{},
-		cats: map[string]*category{}, aliases: map[string]string{}, aliasFile: map[string]string{}, removed: map[string]string{}}
+		cats: map[string]*category{}, aliases: map[string]string{}, aliasFile: map[string]string{}, removed: map[string]string{},
+		sources: map[string]Source{SourceHF: {Name: SourceHF, Type: "hf"}}, search: []string{SourceHF}, searchFile: Builtin}
 }
 
 func (t *table) warn(file, format string, args ...any) {
@@ -231,7 +252,23 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 	if err := yaml.Unmarshal(raw, &o); err != nil {
 		return fmt.Errorf("chat: %s: %w", name, err)
 	}
-	for key, v := range map[string]any{"sources": f.Sources, "npus": f.NPUs, "builds": f.Builds, "cache": f.Cache} {
+	if builtin && (f.Sources != nil || f.Search != nil) {
+		return fmt.Errorf("chat: %s: sources and search are the user's to set", name)
+	}
+	for key, e := range f.Sources {
+		s, err := toSource(key, e)
+		if err != nil {
+			return fmt.Errorf("chat: %s: %w", name, err)
+		}
+		t.sources[key] = s
+	}
+	if f.Search != nil {
+		if len(*f.Search) == 0 {
+			return fmt.Errorf("chat: %s: search lists no source", name)
+		}
+		t.search, t.searchFile = slices.Clone(*f.Search), name
+	}
+	for key, v := range map[string]any{"npus": f.NPUs, "builds": f.Builds, "cache": f.Cache} {
 		if v != nil {
 			if builtin {
 				return fmt.Errorf("chat: %s: %s is not read yet", name, key)
@@ -360,6 +397,11 @@ var kinds = map[Kind]string{
 // build makes the catalog, the categories and the aliases of what was merged.
 func (t *table) build() ([]Model, []Category, map[string]string, error) {
 	var errs []error
+	for _, s := range t.search {
+		if _, ok := t.sources[s]; !ok {
+			errs = append(errs, fmt.Errorf("chat: %s: search: no source %q (sources defines them; hf is Hugging Face)", t.searchFile, s))
+		}
+	}
 	var catalog []Model
 	byName := map[string]bool{}
 	for _, name := range t.modelOrder {
@@ -368,7 +410,7 @@ func (t *table) build() ([]Model, []Category, map[string]string, error) {
 			errs = append(errs, err)
 			continue
 		}
-		m, err := toModel(name, e)
+		m, err := toModel(name, e, t.sources)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("chat: %s: %w", strings.Join(t.origin[name], ", "), err))
 			continue
@@ -438,14 +480,14 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 		return nil, err
 	}
 	out := *base
-	out.Tag, out.Like = nil, ""
+	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About})
+		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256})
 	return &out, nil
 }
 
 // toModel is the catalog's entry of a merged model.
-func toModel(name string, e *modelEntry) (Model, error) {
+func toModel(name string, e *modelEntry, sources map[string]Source) (Model, error) {
 	m := Model{Name: name}
 	get := func(p *string) string {
 		if p == nil {
@@ -464,15 +506,30 @@ func toModel(name string, e *modelEntry) (Model, error) {
 		return m, fmt.Errorf("model %s: kind %q is not one of %s", name, m.Kind, strings.Join(ks, ", "))
 	}
 	src := get(e.From)
-	repo, ok := strings.CutPrefix(src, "hf:")
-	if !ok {
-		return m, fmt.Errorf("model %s: from %q: only hf:OWNER/NAME is read so far (path and s3 sources: docs/model-table.md)", name, src)
-	}
-	repo, m.Revision, _ = strings.Cut(repo, "@")
-	if strings.Count(repo, "/") != 1 || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") || strings.Contains(repo, "..") {
-		return m, fmt.Errorf("model %s: from %q is not hf:OWNER/NAME", name, src)
+	sn, repo, ok := strings.Cut(src, ":")
+	switch s, known := sources[sn]; {
+	case !ok || !known:
+		return m, fmt.Errorf("model %s: from %q is not SOURCE:NAME (hf:OWNER/NAME, or a source of sources)", name, src)
+	case s.Type == "hf":
+		repo, m.Revision, _ = strings.Cut(repo, "@")
+		if strings.Count(repo, "/") != 1 || !safeName(repo) || strings.HasSuffix(repo, "/") {
+			return m, fmt.Errorf("model %s: from %q is not hf:OWNER/NAME", name, src)
+		}
+	default:
+		if !safeName(repo) || strings.Contains(repo, "@") {
+			return m, fmt.Errorf("model %s: from %q: NAME must be a folder inside the source", name, src)
+		}
+		m.SourceName = sn
 	}
 	m.Repo = repo
+	if e.SHA256 != nil {
+		for f, d := range *e.SHA256 {
+			if len(d) != 64 || strings.Trim(strings.ToLower(d), "0123456789abcdef") != "" {
+				return m, fmt.Errorf("model %s: sha256 of %s is not 64 hex digits", name, f)
+			}
+		}
+		m.SHA256 = *e.SHA256
+	}
 	if e.Machine != nil {
 		m.Machine = *e.Machine
 	}
