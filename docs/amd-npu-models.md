@@ -200,6 +200,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | A5b | LFM3 の多モーダル | LFM3-VL、LFM3-Audio、LFM3-Omni の塔が Hugging Face の出力と一致し (乱数の重み)、本物の重みで画像と音声に答える (済み、16.67) |
 | A6 | 4 ビット | q4nx の一般化とその精度 (KL) の測定 |
 | A7 | 画像生成 (Anima) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、11 節) |
+| A8 | 画像生成 (Sana、Sana-Sprint) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、14 節) |
 
 ## 10. 開発環境 (root なし)
 
@@ -600,3 +601,66 @@ NPU (Ryzen AI 9 365、`ironlm`、HF の bf16 のロジットとのコサイン�
 - 最上位のトークンはどちらも 9 回すべて一致。最低のコサインは 0.9850 → 0.9894 で、`ironlm` の基準 (すべて 0.99 以上) にはまだ 1 回 (最後の呼び出し) 届かない。9 回では揺れが大きく、全体の比較は CPU の KL (3 つの文で 2,304 位置) で見る
 - 速さ、メモリは変わらない (デコード 5.7〜5.8 tok/s、書き出し 23 GB)
 
+
+## 14. 画像生成: Sana と Sana-Sprint (`hwnpu-image`、2026-11-09)
+
+NVlabs の Sana (Efficient-Large-Model の `*_diffusers`、Apache-2.0。テキストエンコーダの Gemma 2 2B は Gemma の利用規約) を AMD の NPU だけで動かす。Anima より軽い枠: DC-AE の潜在は 32 チャネルで辺が 32 分の 1 なので、1024 × 1024 でもトークンは 1024 個 (Anima は 4096)、自己注意は ReLU の線形注意でトークン数の 2 乗にならない。Sana-Sprint は SCM で 1〜4 ステップに蒸留され、ガイダンスの強さを埋め込みで受ける (CFG なし)。
+
+### 14.1 構成
+
+| 部品 | 中身 | グラフ (`tools/amd/iron_sana.py`) |
+|---|---|---|
+| テキスト | Gemma 2 2B (26 層、因果) の最終層の隠れ状態。diffusers の指示文 (約 208 トークン) の後にプロンプトを続け、先頭の行と、詰めた長さ (指示文 + 298) の最後の 299 行を使う (詰めた行はマスク) | `text` (1 つ、7 コマンド、512 行。射影は q8)。全 Sana で同じ |
+| キャプション | DiT の caption_projection (線形、tanh の GELU、線形) と RMS 正規化を 300 行に | `caption` |
+| DiT | 0.6B: hidden 1152、28 ブロック。1.6B: hidden 2240、20 ブロック。adaLN-single、線形の自己注意、プロンプトへの交差注意、GLUMBConv (1 × 1、深さ方向 3 × 3、ゲート、1 × 1) | `dit_in`、`dit_blocks` (4 ブロック。1 つの ELF に重みのバンクがグループごと)、`dit_out` |
+| VAE | DC-AE f32c32 の復号器: conv_in、低い 3 解像度に EfficientViT (多スケールの線形注意と GLUMBConv) を 3 つずつ、高い 3 解像度に ResBlock を 3 つずつ、各解像度の入りに 2 倍の拡大 | `vae/s0`〜`s12` (段ごとに 1 つ) |
+
+ホスト (`internal/imagegen/sana`) がするのは、トークン化 (Gemma の BPE、Go)、埋め込みの行 × √2304 (`embed.bin` を ReadAt で)、残す行の選び出し、時刻の正弦波、スケジューラ (Sana-Sprint の SCM、Sana の flow DPM-Solver++ 2 次)、ノイズ、PNG。Sana の CFG の空のプロンプトは Gemma の先頭の行 (`<bos>`) だけで、これはプロンプトの先頭の行と同じなので、テキストを 2 回走らせず同じキャプションの 1 行目だけで DiT を呼ぶ (`nk` = 1)。
+
+### 14.2 決めたこと
+
+- **割り算のない線形注意**: IRON に要素ごとの割り算がない。ヘッドの出力は `N / D` (`N = relu(q)(relu(K)ᵀV)`、`D = relu(q)·Σrelu(K)`)。値の行をヘッドあたり 64 行に並べ (値 32 行、定数 c の行、0)、1 回の行列積で各ヘッドの行 `[N, cD, 0…]` を作る。その 64 の行を RMS 正規化すると cD が支配して `8N/(cD)`、重み c/8 で `N/D` (誤差は `(N/D)²/c²` の割合。c = 4096)。D = 0 のヘッドは 0 になり、参照の eps と同じ。`relu(K)ᵀ` は重みを左に置いた行列積 (`F.linear(W, h)`) で作り、q と k の正規化がある Sana-Sprint は単位行列との HIGHEST の積で転置する。線形注意の 2 つの積は HIGHEST
+- **ヘッドの埋め**: 重みを左に置く積 (MEDIUM、flm.ProjectionGEMM) は行が 256 の倍数。値の 64H 行と、正規化のないモデルの鍵の 32H 行がそうなるようにヘッドを 0 で足す (Sana 600M は 36 → 40、1.6B は 70 → 72)
+- **深さ方向の畳み込み**: 行列積にしない。トークンの格子を 0 で囲んだ状態に写し (各行の後に 0 の画素)、9 個のタップのそれぞれが帯の連続した行の範囲になるので、行ごとの重みの積と和 (要素ごと) で計算する。VAE の 5 × 5 も同じ
+- **交差注意**: MHA は `d` が 64 の倍数なので、ヘッド (72、112) を 128 に 0 で埋める。キーは有効な行 (`k[:nk]`)。**鍵から先頭の行の鍵を引く** (softmax はクエリごとの定数を消すので答えは同じ): Sana 600M のスコアは q と k の正規化がなく、絶対値が約 1750 で行の中の差は数単位しかない。MHA はスコアを bf16 で持つので刻みが 8 になり、条件つきの出力だけがずれ、CFG で 4.5 倍に広がって 20 ステップで絵が崩れた (潜在のコサイン 0.79)。引くと 0.960 (CPU の bf16 の 0.962 と同じ)
+- **MHA のスケール**: MHA は scale × log₂e を bf16 に丸める (最大 0.4 %、温度のずれ)。scale を ln 2 (積がちょうど 1) にして、本来のスケールはクエリの重みに float32 で掛けておく。Gemma 2 も同じ。この絵では効果は見えなかった
+- **Gemma 2 の softcap**: 注意のロジットの softcap (50) は入れない。CPU で外しても残す行のコサインは 0.99999、画像の PSNR 47 dB
+- **Gemma 2 の q8**: 固定メモリを 4.0 → 2.3 GiB。q8 のブロックは入力 512 単位なので、入力 2304 列は 0 で 2560 列に写してから積む。精度は HIGHEST のまま (QDequant で bf16 に戻してから)。HF との行のコサイン 0.9998〜0.99999 (bf16 は 0.9999)
+- **VAE の近道**: conv_in の入力チャネルの繰り返しと、拡大ブロックの近道 (チャネルを画素に並べ替え) は 3 × 3 の中央のタップに足す。チャネルを半分にする拡大は出力の行の偶奇で使う入力チャネルが変わるので、偶数行と奇数行を別の重みで積む。im2col はチャネル 1024 で DMA の次元の上限 (1023 語) を超えるので、縦のタップごとに 3 回に分けて写す
+
+### 14.3 測定 (Ryzen AI 9 365、1024 × 1024)
+
+プロンプト `a cyberpunk cat with a neon sign that says "Sana"`、CPU の参照 (`tools/ref/ref_sana.py`、diffusers の fp32) と同じノイズから。時間は `hwnpu-image` の表示 (読み込みを含む)。
+
+| | ステップ | テキスト | DiT | VAE (13 段) | 合計 | 潜在のコサイン (CPU の bf16) | 画像の PSNR |
+|---|---|---|---|---|---|---|---|
+| Sana-Sprint 0.6B | 2 | 2.6〜3.0 秒 | 2.8 秒 (1.3 秒/ステップ) | 15 秒 | **24 秒** | 0.997 | 31.2 dB |
+| Sana 600M | 20 (CFG 4.5) | 3.0〜3.6 秒 | 48〜55 秒 (2.4〜2.7 秒/ステップ) | 15 秒 | 70〜81 秒 | 0.963 (0.962) | 20.0 dB |
+| Sana-Sprint 1.6B | 2 | 3.7 秒 | 6.1 秒 | 15 秒 | 32 秒 | 0.983 (0.994) | 25.2 dB |
+| SANA 1.5 1.6B | 20 (CFG 4.5) | 3.1 秒 | 95 秒 (4.8 秒/ステップ) | 15 秒 | 116 秒 | 0.984 | 21.4 dB |
+
+- 固定されるメモリの最大はどれも 2349 MiB (テキストのグラフ、Gemma 2 の q8)。DiT は重みをグループごとに 1 つのバンクに読み込み、VAE は段ごとに読み込んで放す
+- DiT の 4 ブロックは 0.6B で 170 ms (1 ステップ 7 回)、1.6B で 438 ms (5 回)。CFG は 1 グループの重みで空のプロンプトとプロンプトを続けて呼ぶ
+- VAE は実行だけで約 10 秒、残りは段ごとの読み込み。最も長い段 (1024 × 1024 の ResBlock) は 1.1 秒で、amdxdna の 2 秒に収まる
+- 書き出しの大きさ: テキスト 3.4 GB (グラフ 2.2 GB と埋め込みの表 1.2 GB)、DiT 0.6B 1.6 GB / 1.6B 3.7 GB、VAE 0.9 GB。テキストと (Sana 1.1 の) VAE は全モデルで同じなので、`cp --reflink` と `iron.ShareExport` でブロックを共有する
+- 書き出しは 1 モデル 1〜3 分 (テキスト 1 分、DiT のブロック 40〜55 秒、VAE の 13 段で 1 分)
+- 部品ごとの確かめ: IRON の参照 (CPU) と diffusers の fp32 は、caption、dit_in、dit_out、ブロック 2 つ、VAE の各段のどれもコサイン 0.9998〜0.99999。Gemma 2 の残す行は 0.9998 以上 (q8)。NPU と IRON の参照は `--check` と `tools/amd/irongraph` で
+
+### 14.4 書き出しの手順
+
+Efficient-Large-Model の diffusers のリポジトリをそのまま置く (`transformer/`、`vae/`、`text_encoder/`、`tokenizer/`、`scheduler/`)。Gemma 2 (`text_encoder/`、`tokenizer/`) はどのリポジトリも同じファイルなので、1 つを落としてほかはシンボリックリンクでよい。
+
+```bash
+python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px ~/models/sana-sprint-0.6b-1024.amd-npu2
+go run ./cmd/hwnpu-image -model ~/models/sana-sprint-0.6b-1024.amd-npu2 -prompt "..." -seed 1 -o out.png
+```
+
+`--only` で部品を選べる (`text caption dit_in dit_blocks dit_out vae`)。`--text-format bf16` は Gemma 2 を bf16 に (固定 4.0 GiB)、`--dit-precision high` は DiT の射影を HIGH に (Sana 600M で絵は同じ、2.5 倍遅い)。確かめ方は Anima と同じ: `--check` と `go run ./tools/amd/irongraph DIR`、全体は `tools/ref/ref_sana.py` の `noise` を raw の float32 にして `-noise` に (Sana-Sprint はステップ + 1 個)、`-latents` で最後の潜在、`-dump DIR` で各ステップの DiT の出力とキャプション。
+
+### 14.5 残り
+
+- VAE が全体の 6 割 (Sana-Sprint)。段の読み込み (約 5 秒) は段をまとめるか、続けて描くときに読み込んだままにすれば減る。EfficientViT の段の深さ方向の畳み込みは要素ごとの演算 (5 × 5 で 49 回) が主
+- 1024 × 1024 だけ。DC-AE の DiT は位置埋め込みがないので 512 や縦長の書き出しも同じ手順で作れる (Sana の解像度のビン分けはしていない)
+- 負のプロンプトは空だけ (Sana)。別のものはテキストをもう 1 回走らせ、キャプションをもう 1 つ持つことになる
+- Mac と Intel (Core ML、OpenVINO) は未対応
+- Sana 1600M (1.0) は Sana 600M と同じ VAE 1.0、1.6B の DiT で、同じ手順で書き出せるはず (確かめていない)
