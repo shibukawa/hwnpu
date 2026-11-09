@@ -124,3 +124,38 @@ func TestImageMemoryTags(t *testing.T) {
 		}
 	}
 }
+
+func TestDevice(t *testing.T) {
+	m, ok := Lookup("YuNet")
+	if !ok {
+		t.Fatal("no YuNet")
+	}
+	if m.DeviceFor("amd") != "cpu" || m.DeviceFor("apple") != "npu" || m.DeviceFor("intel") != "npu" {
+		t.Errorf("YuNet's devices %v", m.Device)
+	}
+	t.Setenv("HWNPU_DEVICE", "")
+	if d, why, _ := ChooseDevice(m, "amd", ""); d != "cpu" || !strings.Contains(why, "models.yaml") {
+		t.Errorf("amd: %s (%s)", d, why)
+	}
+	if d, _, _ := ChooseDevice(m, "amd", "npu"); d != "npu" {
+		t.Errorf("--device npu: %s", d)
+	}
+	t.Setenv("HWNPU_DEVICE", "NPU")
+	if d, why, _ := ChooseDevice(m, "amd", ""); d != "npu" || why != "HWNPU_DEVICE" {
+		t.Errorf("HWNPU_DEVICE: %s (%s)", d, why)
+	}
+	if _, _, err := ChooseDevice(m, "amd", "gpu"); err == nil {
+		t.Error("--device gpu: no error")
+	}
+}
+
+// TestDeviceMerge: a file over another changes the vendors it names and keeps the others.
+func TestDeviceMerge(t *testing.T) {
+	base := map[string]string{"amd": "cpu", "apple": "npu"}
+	over := map[string]string{"amd": "npu"}
+	dst := &modelEntry{Device: &base}
+	merge(dst, &modelEntry{Device: &over})
+	if got := *dst.Device; got["amd"] != "npu" || got["apple"] != "npu" || base["amd"] != "cpu" {
+		t.Errorf("merged %v, base %v", got, base)
+	}
+}

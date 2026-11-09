@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -142,9 +143,12 @@ type modelEntry struct {
 	// fetched from any source must have it (docs/model-table.md 5.3).
 	SHA256  *map[string]string `yaml:"sha256"`
 	NoThink *bool              `yaml:"no_think"`
-	About   *string            `yaml:"about"`
-	Like    string             `yaml:"like"`
-	Remove  bool               `yaml:"remove"`
+	// Device is where the model runs by the vendor of the machine's NPU (amd: cpu); a file
+	// over another changes the vendors it names and keeps the others.
+	Device *map[string]string `yaml:"device"`
+	About  *string            `yaml:"about"`
+	Like   string             `yaml:"like"`
+	Remove bool               `yaml:"remove"`
 }
 
 type pickEntry struct {
@@ -334,6 +338,11 @@ func (t *table) addModel(file, name string, e *modelEntry, builtin bool) error {
 
 // merge sets the fields of dst that src gives.
 func merge(dst, src *modelEntry) {
+	if src.Device != nil && dst.Device != nil {
+		m := maps.Clone(*dst.Device)
+		maps.Copy(m, *src.Device)
+		defer func() { dst.Device = &m }()
+	}
 	d, s := reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem()
 	for i := range s.NumField() {
 		f := s.Field(i)
@@ -485,7 +494,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out := *base
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256})
+		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device})
 	return &out, nil
 }
 
@@ -552,6 +561,15 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 			}
 		}
 		m.Features = slices.Clone(*e.Features)
+	}
+	if e.Device != nil {
+		for v, d := range *e.Device {
+			if !slices.Contains(Vendors, v) || !slices.Contains(Devices, d) {
+				return m, fmt.Errorf("model %s: device %s: %s: the vendors are %s, the devices %s", name, v, d,
+					strings.Join(Vendors, ", "), strings.Join(Devices, ", "))
+			}
+		}
+		m.Device = maps.Clone(*e.Device)
 	}
 	if m.Tag != "" && m.Family == "" {
 		return m, fmt.Errorf("model %s: a tag needs a family", name)

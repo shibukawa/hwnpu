@@ -809,9 +809,24 @@ OpenCV Zoo の YuNet (`face_detection_yunet_2023mar.onnx`、MIT、5.3 万パラ�
 - 待ちはカーネルの syncobj で眠る (ポーリングではない)。ホストの CPU は、実行のたびに作っていた run (制御コードの確保、コピー、キャッシュのフラッシュ) が半分だった: `KeepRuns` で 1.6 → 1.1 ms。残りは提出と待ちのシステムコール、Go のスレッドの切り替え (1 回に約 60)
 - `irongraph` に `-keep` (KeepRuns)、`-cpuprofile`、1 回あたりのホストの CPU 時間を足した
 
-### 17.3 残り
+### 17.3 置き場所: models.yaml の device
+
+測定を受けて、置き場所をモデルごと・NPU のベンダーごとに書けるようにした (`device: {amd: cpu}`、書かないベンダーは npu。コマンドの `--device` と `HWNPU_DEVICE` で上書き)。Apple と Intel は、グラフ全体をまとめて投入するので AMD とは事情が違うはずで、まだ測っていないので npu のままにしている。CPU の実行系は ONNX Runtime の共有ライブラリを purego で呼ぶ (`internal/onnxrt`)。YuNet の 2023mar 版は形が 640 × 640 に固定されているので、入出力の形と value_info を外して (`onnxrt.FreeShapes`) どの大きさでも動かす (2026may 版と差 0)。
+
+`hwnpu-image face-detect --repeat 301` (selfie を 320 × 180 にした画像、320 × 256 で実行、Go のコマンド全体):
+
+| | 1 枚 | 正味の電力 | 1 枚のエネルギー | ホストの CPU |
+|---|---|---|---|---|
+| CPU (ONNX Runtime 1.31、1 スレッド、スピンなし) | 3.96 ms | 2.57 W | 10 mJ | 約 5 ms |
+| NPU | 30.5 ms | 4.5 W | 137 mJ | 約 2.5 ms |
+
+- 前処理が最初は 1 枚 11 ms だった (lfm3vl.Resize が画素ごとに color.Convert し、同じ大きさでもフィルタを 2 回かけていた)。RGB の取り出しに NRGBA、RGBA、YCbCr の速い道を足し、同じ大きさは素通しにした
+- CPU の結果は OpenCV と一致 (スコア 0.916 / 0.917)
+
+### 17.4 残り
 
 - 速くするなら: GEMM の出力を次のグリッドの band 行へ直接書く (状態の連続した部分には書ける。パッドの列を 0 にする工夫が要る)、1/2 の段を幅 32 に、演算の数を一桁減らす。小さなモデルで CPU に勝つには、演算ごとに配列を組み直すいまの方式ではなく、モデル全体を 1 つの構成で流す設計が要る
 - MediaPipe Face Landmarker (478 点、虹彩) は、同じ理由で NPU では得にならない見込み
-- 入力の縮小 (lfm3vl.Resize、1 画素ずつ color.Convert) は 2048 × 1150 で 280 ms。カメラの RGB をそのまま受ける道を作る
+- 入力の縮小は 2048 × 1150 から 640 × 359 で 190 ms (float64 の 2 回のフィルタ)。カメラの RGB をそのまま受ける道を作る
+- Mac (Core ML、CPU と Neural Engine) と Intel (OpenVINO の NPU) で同じ 320 × 256 を測り、device の既定を決める
 

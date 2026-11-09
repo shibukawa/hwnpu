@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -67,10 +68,15 @@ func (c *ListCmd) Run() error {
 	return nil
 }
 
-// listModels writes chat's list of the models of kinds, with the AMD export each runs
-// (~/models/NAME.amd-npu2) in place of the download.
+// listModels writes chat's list of the models of kinds with, in place of the download, what
+// each runs from on this machine: the CPU where models.yaml's device (or HWNPU_DEVICE) puts it
+// for this machine's NPU, else the AMD export (~/models/NAME.amd-npu2) or "-".
 func listModels(w io.Writer, kinds ...chat.Kind) {
-	chat.ListHave(w, "AMD EXPORT", func(m chat.Model) string {
+	vendor := npuVendor(context.Background())
+	chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
+		if d, _, err := chat.ChooseDevice(m, vendor, ""); err == nil && d == "cpu" {
+			return "CPU (ONNX Runtime)"
+		}
 		if d, err := amdExport(m, ""); err == nil {
 			return "~/models/" + filepath.Base(d)
 		}

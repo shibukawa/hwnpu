@@ -209,11 +209,14 @@ python tools/amd/iron_moge.py ~/models/moge-2-vits-normal ~/models/moge-2-vits.a
 go run ./cmd/hwnpu-image depth -m moge:vits --normal photo.jpg
 ```
 
-`go run ./cmd/hwnpu-image face-detect` は、AMD の NPU で写真の顔を探します (YuNet、OpenCV Zoo、MIT)。画像ごとに 1 行の JSON で、顔の枠 (x, y, w, h)、スコア、5 点 (右目、左目、鼻先、口の右端と左端) を出します。`--draw` で枠と点を描いた `NAME.faces.png` も書きます。書き出しは 320×256 と 640×480 を持ち、画像を縮める割合が最も小さいものを使います (`--size` で固定)。結果は OpenCV の FaceDetectorYN と一致しますが、この小さなモデルでは NPU は CPU より遅く、電力も多く使います (docs/amd-npu-models.md 17 節)。
+`go run ./cmd/hwnpu-image face-detect` は、写真の顔を探します (YuNet、OpenCV Zoo、MIT)。画像ごとに 1 行の JSON で、顔の枠 (x, y, w, h)、スコア、5 点 (右目、左目、鼻先、口の右端と左端) を出します。`--draw` で枠と点を描いた `NAME.faces.png` も書きます。大きさは 320×256 と 640×480 で、画像を縮める割合が最も小さいものを使います (`--size` で固定)。結果は OpenCV の FaceDetectorYN と一致します。
+
+どこで動かすかは、models.yaml の `device` が NPU のベンダーごとに決めます。YuNet は AMD では CPU です。AMD の NPU では、この小さなモデルの演算ごとの切り替えが重く、320×256 で 1 枚 30 ms・137 mJ かかるのに対し、CPU では 4 ms・10 mJ だからです (docs/amd-npu-models.md 17 節)。CPU では ONNX Runtime の共有ライブラリを使います。[リリース](https://github.com/microsoft/onnxruntime/releases)の `lib/libonnxruntime.so` を置いて、`HWNPU_ONNXRUNTIME` にそのパスを入れてください (システムにあればそれを使います)。ONNX のファイルは自動で取ってきます。`--device npu|cpu` か `HWNPU_DEVICE` で、置き場所を上書きできます (ゲームなどで CPU を空けたいときは `--device npu`)。`hwnpu-image list` の RUNS FROM の列に、このマシンでの置き場所が出ます。
 
 ```bash
 python tools/amd/iron_yunet.py ~/models/face_detection_yunet ~/models/yunet.amd-npu2   # hf:opencv/face_detection_yunet
-go run ./cmd/hwnpu-image face-detect --draw photo.jpg
+go run ./cmd/hwnpu-image face-detect --draw photo.jpg               # AMD: the CPU (ONNX Runtime)
+go run ./cmd/hwnpu-image face-detect --device npu photo.jpg          # AMD's NPU: the export above
 ```
 
 ## Apple での注意

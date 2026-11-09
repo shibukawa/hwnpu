@@ -1,10 +1,11 @@
-// Package face finds faces in a picture on AMD's NPU with YuNet (OpenCV Zoo's
-// face_detection_yunet_2023mar, MIT), the graph tools/amd/iron_yunet.py exports: each face's
-// box, score and five landmarks (the eyes, the nose tip and the mouth's corners).
+// Package face finds faces in a picture with YuNet (OpenCV Zoo's face_detection_yunet_2023mar,
+// MIT): each face's box, score and five landmarks (the eyes, the nose tip and the mouth's
+// corners). It runs on AMD's NPU (the graph tools/amd/iron_yunet.py exports, Open) or on the
+// CPU (the ONNX file with ONNX Runtime, OpenCPU), where models.yaml's device puts it.
 //
-// The host scales the picture to fit one of the export's sizes (without enlarging it), places
-// it at the top left (zeros past it, as OpenCV pads to multiples of 32), runs the graph, then
-// decodes the three strides' cells and suppresses the overlaps as OpenCV's FaceDetectorYN does.
+// The host scales the picture to fit one of the sizes (without enlarging it), places it at the
+// top left (zeros past it, as OpenCV pads to multiples of 32), runs the network, then decodes
+// the three strides' cells and suppresses the overlaps as OpenCV's FaceDetectorYN does.
 package face
 
 import (
@@ -22,6 +23,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
 )
 
 // Export is model.json of an export: its sizes, each a directory WxH.
@@ -69,49 +71,92 @@ type Face struct {
 	Landmarks [5][2]float32
 }
 
-// Detector is a loaded export. One size's graph is on the device at a time.
+// Detector is a loaded model: an export on the NPU (one size's graph on the device at a time)
+// or the ONNX file on the CPU.
 type Detector struct {
 	Export
-	dev *hwnpu.Device
-	dir string
-	cur *sized
+	// Device is where it runs: "npu" or "cpu".
+	Device string
+	run    runner
 	// Score is the least score a face is kept with (OpenCV's default 0.9), NMS the overlap
 	// (intersection over union) above which the lower of two faces goes (0.3), TopK the most
 	// faces kept before the suppression (5000).
 	Score, NMS float32
 	TopK       int
-	// Size, when set, is the export's size every picture runs at (else Choose's).
+	// Size, when set, is the size every picture runs at (else Choose's).
 	Size [2]int
 	// Logf, when set, is told what is done.
 	Logf func(format string, args ...any)
+	// OnClose, when set, is called by Close after the model is released (the caller's device).
+	OnClose func()
 }
 
-type sized struct {
-	w, h int
-	g    *iron.Graph
+// cells are one stride's outputs: per cell the class's and objectness' probabilities, the
+// box's dx, dy, log w, log h (4 a cell) and the landmarks' x, y (10 a cell), in strides from
+// the cell.
+type cells struct {
+	stride    int
+	cls, obj  []float32
+	bbox, kps []float32
 }
 
-// Open reads the export in dir; a size's graph is loaded onto dev for the first picture
-// that takes it.
+// runner runs the network on a W x H picture's RGB pixels px (pw x ph at the top left).
+type runner interface {
+	run(ctx context.Context, px []uint8, pw, ph, W, H int) ([]cells, error)
+	close() error
+}
+
+// Open reads the export (tools/amd/iron_yunet.py) in dir; a size's graph is loaded onto dev for
+// the first picture that takes it.
 func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Detector, error) {
 	x, err := readExport(dir)
 	if err != nil {
 		return nil, err
 	}
-	return &Detector{Export: *x, dev: dev, dir: dir, Score: 0.9, NMS: 0.3, TopK: 5000}, nil
+	return newDetector(*x, "npu", &npuRunner{x: *x, dev: dev, dir: dir}), nil
 }
 
-// Close releases the device memory.
-func (d *Detector) Close() error {
-	if d.cur == nil {
-		return nil
+// CPUSizes are the sizes OpenCPU runs at by default: the exports' (iron_yunet.py's), for the
+// same results. Detector.Size takes any multiple of 32.
+var CPUSizes = [][2]int{{320, 256}, {640, 480}}
+
+// OpenCPU loads the ONNX file (face_detection_yunet_2023mar.onnx; its fixed 640 x 640 shapes
+// are freed) into ONNX Runtime on threads threads of the CPU (0: the calling thread).
+func OpenCPU(path string, threads int) (*Detector, error) {
+	rt, err := onnxrt.Load()
+	if err != nil {
+		return nil, err
 	}
-	err := d.cur.g.Close()
-	d.cur = nil
+	b, err := onnxrt.ReadModel(path)
+	if err != nil {
+		return nil, err
+	}
+	if b, err = onnxrt.FreeShapes(b); err != nil {
+		return nil, err
+	}
+	s, err := rt.Open(b, onnxrt.Options{Threads: threads})
+	if err != nil {
+		return nil, err
+	}
+	x := Export{Name: "YuNet", Kind: "face-detect", Sizes: CPUSizes, Strides: []int{8, 16, 32}}
+	return newDetector(x, "cpu", &cpuRunner{s: s, strides: x.Strides}), nil
+}
+
+func newDetector(x Export, device string, r runner) *Detector {
+	return &Detector{Export: x, Device: device, run: r, Score: 0.9, NMS: 0.3, TopK: 5000}
+}
+
+// Close releases the model (the device memory, or the session).
+func (d *Detector) Close() error {
+	err := d.run.close()
+	if d.OnClose != nil {
+		d.OnClose()
+		d.OnClose = nil
+	}
 	return err
 }
 
-// Choose is the export's size a w x h picture runs at: the one it is scaled down least to fit
+// Choose is the size a w x h picture runs at: the one it is scaled down least to fit
 // (not enlarged: a smaller picture sits at the top left), the smallest of those.
 func (d *Detector) Choose(w, h int) (int, int) {
 	if d.Size != [2]int{} {
@@ -130,25 +175,6 @@ func (d *Detector) Choose(w, h int) (int, int) {
 // fit is the scale that fits a w x h picture into W x H, at most 1.
 func fit(w, h, W, H int) float64 {
 	return min(1, float64(W)/float64(w), float64(H)/float64(h))
-}
-
-func (d *Detector) use(ctx context.Context, w, h int) (*sized, error) {
-	if d.cur != nil && d.cur.w == w && d.cur.h == h {
-		return d.cur, nil
-	}
-	if !slices.Contains(d.Sizes, [2]int{w, h}) {
-		return nil, fmt.Errorf("face: the export has no %dx%d (it has %v)", w, h, d.Sizes)
-	}
-	if err := d.Close(); err != nil {
-		return nil, err
-	}
-	// A small graph called for each frame: its commands' runs are kept (made once).
-	g, err := iron.OpenGraphWith(ctx, d.dev, filepath.Join(d.dir, fmt.Sprintf("%dx%d", w, h)), iron.GraphOptions{KeepRuns: true})
-	if err != nil {
-		return nil, err
-	}
-	d.cur = &sized{w: w, h: h, g: g}
-	return d.cur, nil
 }
 
 // Input is the graph's input of the RGB pixels px (pw x ph, raster order) for a W x H graph:
@@ -175,32 +201,24 @@ func Input(px []uint8, pw, ph, W, H int) []byte {
 // Detect finds the faces in img, the highest score first.
 func (d *Detector) Detect(ctx context.Context, img image.Image) ([]Face, error) {
 	b := img.Bounds()
-	t0 := time.Now()
 	W, H := d.Choose(b.Dx(), b.Dy())
-	s, err := d.use(ctx, W, H)
-	if err != nil {
-		return nil, err
+	if W%32 != 0 || H%32 != 0 || W <= 0 || H <= 0 {
+		return nil, fmt.Errorf("face: %dx%d is not of multiples of 32", W, H)
 	}
 	sc := fit(b.Dx(), b.Dy(), W, H)
 	pw, ph := max(1, int(math.Round(float64(b.Dx())*sc))), max(1, int(math.Round(float64(b.Dy())*sc)))
 	pw, ph = min(pw, W), min(ph, H)
-	tl := time.Now()
-	in := Input(lfm3vl.Resize(img, pw, ph, "bilinear"), pw, ph, W, H)
-	if err := s.g.SetInput(s.g.Inputs()[0].Name, in); err != nil {
-		return nil, err
-	}
+	t0 := time.Now()
+	px := lfm3vl.Resize(img, pw, ph, "bilinear")
 	t1 := time.Now()
-	if err := s.g.Run(ctx, nil); err != nil {
-		return nil, fmt.Errorf("face: %w", err)
+	out, err := d.run.run(ctx, px, pw, ph, W, H)
+	if err != nil {
+		return nil, err
 	}
 	t2 := time.Now()
 	var faces []Face
-	for i, h := range s.g.Outputs() {
-		out, err := s.g.Output(h.Name)
-		if err != nil {
-			return nil, err
-		}
-		faces = append(faces, d.decode(out, W, H, d.Strides[i])...)
+	for _, c := range out {
+		faces = append(faces, d.decode(c, W, H)...)
 	}
 	faces = d.suppress(faces)
 	inv := float32(1 / sc)
@@ -213,39 +231,34 @@ func (d *Detector) Detect(ctx context.Context, img image.Image) ([]Face, error) 
 		}
 	}
 	if d.Logf != nil {
-		d.Logf("face: %dx%d at %dx%d, load %.1f ms, input %.1f ms, graph %.1f ms, decode %.1f ms", pw, ph, W, H,
-			tl.Sub(t0).Seconds()*1000, t1.Sub(tl).Seconds()*1000, t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
+		d.Logf("face: %dx%d at %dx%d on the %s, resize %.1f ms, network %.1f ms, decode %.1f ms", pw, ph, W, H, d.Device,
+			t1.Sub(t0).Seconds()*1000, t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
 	}
 	return faces, nil
 }
 
-// decode is the faces of one stride's cells (W/s x H/s, row major, Channels columns each:
-// the class's and objectness' logits, the box's dx, dy, log w, log h, then the landmarks' x,
-// y, all in strides from the cell) at least Score, as OpenCV's FaceDetectorYN::postProcess.
-func (d *Detector) decode(out []byte, W, H, stride int) []Face {
-	cols, rows := W/stride, H/stride
-	C := d.Channels
-	at := func(cell, ch int) float32 { return fromBF16(binary.LittleEndian.Uint16(out[2*(cell*C+ch):])) }
-	st := float32(stride)
+// decode is the faces of one stride's cells (W/s x H/s, row major) at least Score, as OpenCV's
+// FaceDetectorYN::postProcess.
+func (d *Detector) decode(c cells, W, H int) []Face {
+	cols, rows := W/c.stride, H/c.stride
+	st := float32(c.stride)
 	var faces []Face
 	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
-			cell := r*cols + c
-			cls := clamp01(sigmoid(at(cell, d.Head.Cls)))
-			obj := clamp01(sigmoid(at(cell, d.Head.Obj)))
-			score := float32(math.Sqrt(float64(cls * obj)))
+		for col := 0; col < cols; col++ {
+			i := r*cols + col
+			score := float32(math.Sqrt(float64(clamp01(c.cls[i]) * clamp01(c.obj[i]))))
 			if score < d.Score {
 				continue
 			}
-			bb := d.Head.BBox
-			cx := (float32(c) + at(cell, bb)) * st
-			cy := (float32(r) + at(cell, bb+1)) * st
-			w := float32(math.Exp(float64(at(cell, bb+2)))) * st
-			h := float32(math.Exp(float64(at(cell, bb+3)))) * st
+			bb := c.bbox[4*i : 4*i+4]
+			cx := (float32(col) + bb[0]) * st
+			cy := (float32(r) + bb[1]) * st
+			w := float32(math.Exp(float64(bb[2]))) * st
+			h := float32(math.Exp(float64(bb[3]))) * st
 			f := Face{X: cx - w/2, Y: cy - h/2, W: w, H: h, Score: score}
 			for n := range f.Landmarks {
-				f.Landmarks[n][0] = (at(cell, d.Head.Kps+2*n) + float32(c)) * st
-				f.Landmarks[n][1] = (at(cell, d.Head.Kps+2*n+1) + float32(r)) * st
+				f.Landmarks[n][0] = (c.kps[10*i+2*n] + float32(col)) * st
+				f.Landmarks[n][1] = (c.kps[10*i+2*n+1] + float32(r)) * st
 			}
 			faces = append(faces, f)
 		}
@@ -293,6 +306,121 @@ func IoU(a, b Face) float32 {
 	}
 	in := (x1 - x0) * (y1 - y0)
 	return in / (a.W*a.H + b.W*b.H - in)
+}
+
+// npuRunner runs the export's graph of the size asked (one on the device at a time).
+type npuRunner struct {
+	x    Export
+	dev  *hwnpu.Device
+	dir  string
+	w, h int
+	g    *iron.Graph
+}
+
+func (r *npuRunner) close() error {
+	if r.g == nil {
+		return nil
+	}
+	err := r.g.Close()
+	r.g = nil
+	return err
+}
+
+func (r *npuRunner) run(ctx context.Context, px []uint8, pw, ph, W, H int) ([]cells, error) {
+	if r.g == nil || r.w != W || r.h != H {
+		if !slices.Contains(r.x.Sizes, [2]int{W, H}) {
+			return nil, fmt.Errorf("face: the export has no %dx%d (it has %v)", W, H, r.x.Sizes)
+		}
+		if err := r.close(); err != nil {
+			return nil, err
+		}
+		// A small graph called for each frame: its commands' runs are kept (made once).
+		g, err := iron.OpenGraphWith(ctx, r.dev, filepath.Join(r.dir, fmt.Sprintf("%dx%d", W, H)), iron.GraphOptions{KeepRuns: true})
+		if err != nil {
+			return nil, err
+		}
+		r.g, r.w, r.h = g, W, H
+	}
+	if err := r.g.SetInput(r.g.Inputs()[0].Name, Input(px, pw, ph, W, H)); err != nil {
+		return nil, err
+	}
+	if err := r.g.Run(ctx, nil); err != nil {
+		return nil, fmt.Errorf("face: %w", err)
+	}
+	var out []cells
+	for i, h := range r.g.Outputs() {
+		b, err := r.g.Output(h.Name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r.x.cells(b, W, H, r.x.Strides[i]))
+	}
+	return out, nil
+}
+
+// cells reads one stride's graph output (cells x Channels bfloat16: the logits, box and
+// landmarks at Head's columns).
+func (x Export) cells(out []byte, W, H, stride int) cells {
+	n := (W / stride) * (H / stride)
+	C := x.Channels
+	at := func(cell, ch int) float32 { return fromBF16(binary.LittleEndian.Uint16(out[2*(cell*C+ch):])) }
+	c := cells{stride: stride, cls: make([]float32, n), obj: make([]float32, n), bbox: make([]float32, 4*n), kps: make([]float32, 10*n)}
+	for i := 0; i < n; i++ {
+		c.cls[i] = sigmoid(at(i, x.Head.Cls))
+		c.obj[i] = sigmoid(at(i, x.Head.Obj))
+		for k := 0; k < 4; k++ {
+			c.bbox[4*i+k] = at(i, x.Head.BBox+k)
+		}
+		for k := 0; k < 10; k++ {
+			c.kps[10*i+k] = at(i, x.Head.Kps+k)
+		}
+	}
+	return c
+}
+
+// cpuRunner runs the ONNX model with ONNX Runtime.
+type cpuRunner struct {
+	s       *onnxrt.Session
+	strides []int
+}
+
+func (r *cpuRunner) close() error { return r.s.Close() }
+
+func (r *cpuRunner) run(ctx context.Context, px []uint8, pw, ph, W, H int) ([]cells, error) {
+	// (1, 3, H, W): B, G, R planes in 0..255 (blobFromImage), zeros past the picture
+	x := make([]float32, 3*W*H)
+	for y := 0; y < ph; y++ {
+		for i := 0; i < pw; i++ {
+			p := (y*pw + i) * 3
+			o := y*W + i
+			x[o], x[W*H+o], x[2*W*H+o] = float32(px[p+2]), float32(px[p+1]), float32(px[p])
+		}
+	}
+	out, err := r.s.Run(map[string]onnxrt.Tensor{r.s.Inputs[0]: {Shape: []int64{1, 3, int64(H), int64(W)}, Data: x}})
+	if err != nil {
+		return nil, fmt.Errorf("face: %w", err)
+	}
+	var cs []cells
+	for _, st := range r.strides {
+		get := func(k string) ([]float32, error) {
+			t, ok := out[fmt.Sprintf("%s_%d", k, st)]
+			if !ok {
+				return nil, fmt.Errorf("face: the model has no output %s_%d", k, st)
+			}
+			return t.Data, nil
+		}
+		c := cells{stride: st}
+		for _, f := range []struct {
+			k string
+			p *[]float32
+		}{{"cls", &c.cls}, {"obj", &c.obj}, {"bbox", &c.bbox}, {"kps", &c.kps}} {
+			if *f.p, err = get(f.k); err != nil {
+				return nil, err
+			}
+		}
+		cs = append(cs, c)
+	}
+	return cs, nil
 }
 
 func sigmoid(x float32) float32 { return float32(1 / (1 + math.Exp(-float64(x)))) }

@@ -8,6 +8,8 @@
 #                 largest machine up to this machine's memory
 #   kind          chat, embedding (hwnpu-chat, hwnpu-agent), transcribe (hwnpu-transcribe),
 #                 speech (hwnpu-tts), decision (hwnpu-systemone), image, depth, face-detect (hwnpu-image)
+#   device        where it runs by the NPU's vendor (amd, apple, intel): npu (the default) or cpu;
+#                 a command's --device and HWNPU_DEVICE override it
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory)
 #   arch          the structure, one of hwnpu-convert -archs (default: from config.json)
@@ -297,6 +299,11 @@ models:
     tag: 2023mar
     kind: face-detect
     from: hf:opencv/face_detection_yunet
+    # AMD's NPU (IRON) switches its array for each operator: 29 ms and 127 mJ a picture at
+    # 320 x 256, the CPU (onnxruntime, 1 thread) 2.7 ms and 7.7 mJ (docs/amd-npu-models.md 17).
+    # Apple and Intel compile the whole graph: not measured yet, the NPU
+    device: {amd: cpu}
+    sha256: {face_detection_yunet_2023mar.onnx: 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4}
     machine: 8
     memory: 0.03
     bytes: 0.23e6

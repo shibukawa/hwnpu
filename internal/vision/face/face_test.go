@@ -28,6 +28,7 @@ func TestChoose(t *testing.T) {
 func TestDecode(t *testing.T) {
 	d := &Detector{Export: Export{Channels: 64}, Score: 0.9, NMS: 0.3, TopK: 5000}
 	d.Head.Cls, d.Head.Obj, d.Head.BBox, d.Head.Kps = 0, 1, 2, 6
+	// the NPU's output: cells of 64 bfloat16 columns, the logits first
 	W, H, s := 32, 16, 8
 	out := make([]byte, (W/s)*(H/s)*64*2)
 	put := func(cell, ch int, v float32) { binary.LittleEndian.PutUint16(out[2*(cell*64+ch):], toBF16(v)) }
@@ -43,7 +44,7 @@ func TestDecode(t *testing.T) {
 	put(cell, 5, 0)
 	put(cell, 6, -1)
 	put(cell, 7, 1)
-	f := d.decode(out, W, H, s)
+	f := d.decode(d.cells(out, W, H, s), W, H)
 	if len(f) != 1 {
 		t.Fatalf("%d faces", len(f))
 	}

@@ -19,16 +19,20 @@ import (
 	"github.com/shibukawa/hwnpu/internal/vision/face"
 )
 
-// FaceDetectCmd is "hwnpu-image face-detect": the faces in pictures on AMD's NPU with YuNet
-// (OpenCV Zoo's face_detection_yunet_2023mar, MIT; exports of tools/amd/iron_yunet.py,
-// internal/vision/face).
+// FaceDetectCmd is "hwnpu-image face-detect": the faces in pictures with YuNet (OpenCV Zoo's
+// face_detection_yunet_2023mar, MIT; internal/vision/face), on AMD's NPU (exports of
+// tools/amd/iron_yunet.py) or on the CPU (the ONNX file with ONNX Runtime). models.yaml's
+// device says which for the machine's NPU (YuNet: the CPU on AMD, where the NPU took 16 times
+// the energy); --device and HWNPU_DEVICE override it.
 //
 // For each picture it prints one line of JSON: the faces' boxes (x, y, w, h), scores and five
 // landmarks (the right eye, the left eye, the nose tip, the mouth's right and left corners) in
 // the picture's pixels. With --draw it also writes NAME.faces.png with them drawn.
 type FaceDetectCmd struct {
 	Pictures []string `arg:"" type:"existingfile" help:"The pictures."`
-	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"face-detect" help:"The model: a name, a family or a use of models.yaml (face-detect: YuNet), run from ~/models/NAME.amd-npu2, or an export's directory (tools/amd/iron_yunet.py)."`
+	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"face-detect" help:"The model: a name, a family or a use of models.yaml (face-detect: YuNet), an export's directory (tools/amd/iron_yunet.py, the NPU) or an ONNX file (the CPU)."`
+	Device   string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads  int      `default:"1" help:"The CPU's threads (1: the least CPU time and energy)."`
 	Size     string   `placeholder:"WxH" help:"The export's size to run at (default: the one the picture is scaled down least to fit)."`
 	Score    float32  `default:"0.9" help:"The least score a face is kept with."`
 	NMS      float32  `name:"nms" default:"0.3" help:"The overlap (intersection over union) above which the lower of two faces goes."`
@@ -41,22 +45,7 @@ type FaceDetectCmd struct {
 func (c *FaceDetectCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-	if err != nil {
-		return err
-	}
-	defer dev.Close()
-	model := expandHome(c.Model)
-	if !isPath(c.Model) {
-		m, err := resolve(c.Model, chat.KindFace)
-		if err != nil {
-			return err
-		}
-		if model, err = amdExport(m, "tools/amd/iron_yunet.py"); err != nil {
-			return err
-		}
-	}
-	d, err := face.Open(ctx, dev, model)
+	d, err := c.open(ctx, logf)
 	if err != nil {
 		return err
 	}
@@ -105,6 +94,108 @@ func (c *FaceDetectCmd) Run(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// open loads the detector where it runs: the NPU (an export, AMD's) or the CPU (the ONNX file).
+func (c *FaceDetectCmd) open(ctx context.Context, logf func(string, ...any)) (*face.Detector, error) {
+	model := expandHome(c.Model)
+	vendor := npuVendor(ctx)
+	if isPath(c.Model) {
+		device := c.Device
+		if device == "" {
+			device = "npu"
+			if strings.EqualFold(filepath.Ext(model), ".onnx") {
+				device = "cpu"
+			}
+		}
+		if device == "cpu" {
+			return face.OpenCPU(model, c.Threads)
+		}
+		return openFaceNPU(ctx, model)
+	}
+	m, err := resolve(c.Model, chat.KindFace)
+	if err != nil {
+		return nil, err
+	}
+	device, why, err := chat.ChooseDevice(m, vendor, c.Device)
+	if err != nil {
+		return nil, err
+	}
+	if device == "npu" && vendor != "amd" {
+		// only AMD's NPU has YuNet's graph (iron_yunet.py) yet
+		if c.Device == "npu" {
+			return nil, fmt.Errorf("%s runs on AMD's NPU only (this machine's NPU: %s); --device cpu runs it on the CPU", m.Name, orNone(vendor))
+		}
+		device, why = "cpu", fmt.Sprintf("no %s graph for this NPU (%s)", m.Name, orNone(vendor))
+	}
+	logf("%s on the %s (%s)", m.Name, device, why)
+	if device == "cpu" {
+		path, err := faceONNX(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+		return face.OpenCPU(path, c.Threads)
+	}
+	dir, err := amdExport(m, "tools/amd/iron_yunet.py")
+	if err != nil {
+		return nil, err
+	}
+	return openFaceNPU(ctx, dir)
+}
+
+// openFaceNPU loads the export in dir onto AMD's NPU; the device closes with the detector.
+func openFaceNPU(ctx context.Context, dir string) (*face.Detector, error) {
+	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	if err != nil {
+		return nil, err
+	}
+	d, err := face.Open(ctx, dev, dir)
+	if err != nil {
+		dev.Close()
+		return nil, err
+	}
+	d.OnClose = func() { dev.Close() }
+	return d, nil
+}
+
+// faceONNX is the model's ONNX file: in ~/models/NAME (a download for iron_yunet.py) when
+// there, else fetched into hwnpu's models directory (models.yaml pins its sha256).
+func faceONNX(ctx context.Context, m chat.Model) (string, error) {
+	const file = "face_detection_yunet_2023mar.onnx"
+	home, _ := os.UserHomeDir()
+	if p := filepath.Join(home, "models", filepath.Base(m.Repo), file); fileExists(p) {
+		return p, nil
+	}
+	p := filepath.Join(chat.ModelsDir(), m.Name, file)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return "", err
+	}
+	if err := chat.Fetch(ctx, m.Source(), file, p, os.Stderr); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
+}
+
+// npuVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.
+func npuVendor(ctx context.Context) string {
+	dev, err := hwnpu.Open(ctx)
+	if err != nil {
+		return ""
+	}
+	defer dev.Close()
+	return dev.Info().Vendor.String()
+}
+
+func orNone(v string) string {
+	if v == "" {
+		return "none"
+	}
+	return v
 }
 
 func readPicture(path string) (image.Image, error) {

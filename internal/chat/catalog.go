@@ -50,6 +50,10 @@ type Model struct {
 	// and 2B: their chat templates think only when asked, and the 0.8B thinks to the budget on
 	// simple questions, docs/design.md 16.99).
 	NoThink bool
+	// Device is where the model runs by the vendor of the machine's NPU (Vendors: "amd",
+	// "apple", "intel"), Devices: "npu" or "cpu"; a vendor it leaves out runs it on the NPU
+	// (DeviceFor).
+	Device map[string]string
 	// Family and Tag name the model as FAMILY:TAG (plamo3translate:2b). The family alone picks
 	// the tag for the machine's memory: the one of the largest Machine that the machine has.
 	Family, Tag string

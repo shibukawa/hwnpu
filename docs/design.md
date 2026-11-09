@@ -639,6 +639,7 @@ Level Zero loader (`ze_loader.dll`) が PATH にあれば Linux と同じコー�
 
 - `OrtGetApiBase()` が返す関数ポインタ表は純粋な C ABI で purego 向き。EP は OpenVINO (Intel) / VitisAI (AMD) / CoreML (Apple) / QNN (Qualcomm)。
 - NPU で完結しないモデルを動かすための逃げ道。EP はグラフを分割して未対応の演算を CPU に回すため、hwnpu の厳格モードの保証は及ばない。`Placement()` は `Verified = false` を返す。
+- 2026-11-10: CPU の実行系として `internal/onnxrt` を作った (CPU の EP だけ、float32 のテンソルだけ)。models.yaml の `device: {VENDOR: cpu}` が置くモデル (小さなモデルで、NPU では演算ごとの費用が計算より重いもの) に使う (16.126)。
 
 ---
 
@@ -3423,3 +3424,12 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - models.yaml に種類 `face-detect` と YuNet (用途 `face-detect`)。`hwnpu-image face-detect` は JSON 行を出し、`--draw` で描いた画像、`--repeat` で時間
 - `iron.GraphOptions.KeepRuns`: コマンドの run を一度作って持ち続ける。毎フレーム呼ぶ小さなグラフで、ホストの CPU が 1.6 → 1.1 ms。制御コードがデバイスのヒープ (64 MiB) に残るので、大きなグラフには使わない
 - 測定の結論: 320 × 256 で NPU 29 ms・127 mJ、CPU (onnxruntime 1 スレッド) 2.7 ms・7.7 mJ。NPU は CPU を約 2 ms 空けるが、エネルギーは 16 倍。演算の切り替え (GEMM と他で約 250 µs) が支配的で、小さなモデルでは「NPU に置けば省エネ」は成り立たない。置き場所の方針 (CPU を空けるか、エネルギーか) はこの数字で決める
+
+### 16.126 置き場所をベンダーごとに (models.yaml の device)、ONNX Runtime の CPU 実行系 — 2026-11-10
+
+- 16.125 の結論は AMD の NPU (IRON) の話で、NPU 一般の話ではない。Apple の Neural Engine と Intel の NPU はグラフをまとめて投入するので、小さなモデルでも NPU が得かもしれない。そこで置き場所をモデルごと・NPU のベンダーごとに書く: models.yaml の `device: {amd: cpu}` (amd、apple、intel に npu か cpu。書かないベンダーは npu)。ユーザーの models.yaml は名前を挙げたベンダーだけを変え、ほかを残す
+- 上書きの順は、コマンドの `--device`、`HWNPU_DEVICE`、models.yaml (`chat.ChooseDevice`、理由も返す)。ゲームなどで CPU を空けたい人は `--device npu`
+- `internal/onnxrt`: ONNX Runtime の共有ライブラリを purego で呼ぶ (cgo なし)。OrtApi は API 16 を求め (それより新しいライブラリならどれでも)、関数は表の位置で呼ぶ。1 スレッド既定、スピンなし (`session.*.allow_spinning = 0`)。ライブラリは `HWNPU_ONNXRUNTIME` かシステムのもの。自動で取ってくることはしない (ネイティブのライブラリの配布は利用者が決める)。`FreeShapes` は ONNX の入出力の形と value_info を protowire で外す
+- face-detect: AMD では既定で CPU (YuNet の ONNX は models.yaml の sha256 で固定して自動で取得)、`--device npu` で export。Apple と Intel では YuNet の NPU のグラフがまだないので CPU に落とし、その旨を出す (`--device npu` を明示したときはエラー)
+- `hwnpu-image list` の列を RUNS FROM に: このマシンで CPU に置くモデルは「CPU (ONNX Runtime)」、ほかは AMD の書き出し
+- Go のコマンドで 320 × 256: CPU 3.96 ms・10 mJ、NPU 30.5 ms・137 mJ。前処理が 11 ms かかっていたので、lfm3vl.RGB に速い道を足した (結果は color.Convert と同じ。テストで確かめる)
