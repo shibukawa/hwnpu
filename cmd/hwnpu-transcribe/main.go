@@ -4,6 +4,7 @@
 //	hwnpu-transcribe -language ja a.wav b.wav
 //	hwnpu-transcribe -translate speech.wav           # into English
 //	hwnpu-transcribe -use kotoba-tech/kotoba-whisper-v2.2 speech.wav
+//	hwnpu-transcribe -list                           # the models of the definitions (models.yaml)
 //
 // The first run downloads the checkpoint (1.6 GB for whisper-large-v3-turbo) into -dir and
 // converts its three programs (the encoder, the cross attention's keys and values, the decoder),
@@ -32,7 +33,9 @@ import (
 )
 
 func main() {
-	use := flag.String("use", transcribe.DefaultRepo, "the Whisper checkpoint: a Hugging Face repository OWNER/NAME")
+	use := flag.String("use", "transcribe", "the Whisper model: a name, a use or a family of -list (transcribe, whisper:large-v3-turbo), or a Hugging Face repository OWNER/NAME")
+	list := flag.Bool("list", false, "list the transcription models of the definitions and exit")
+	modelFiles := flag.String("models", "", chat.ModelsUsage)
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept (as hwnpu-chat's -dir): the checkpoint and its programs in NAME/")
 	language := flag.String("language", "", "language code of the speech (ja, en, ...); none: detected in each 30 seconds")
 	translate := flag.Bool("translate", false, "turn the speech into English text instead of its own language's")
@@ -43,8 +46,21 @@ func main() {
 	verbose := flag.Bool("v", false, "print each window's language and times")
 	stamps := flag.Bool("timestamps", false, "print each segment with its start and end (a clip over 30 seconds is decoded in segments)")
 	flag.Parse()
-	if flag.NArg() == 0 || strings.Count(*use, "/") != 1 {
+	if err := chat.LoadUserModels(*modelFiles, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-transcribe:", err)
+		os.Exit(2)
+	}
+	if *list {
+		chat.List(os.Stdout, *dir, chat.KindTranscribe)
+		return
+	}
+	if flag.NArg() == 0 {
 		flag.Usage()
+		os.Exit(2)
+	}
+	m, err := chat.ResolveFor(*use, chat.KindTranscribe, os.Stderr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-transcribe:", err)
 		os.Exit(2)
 	}
 	if *cacheDir == "" {
@@ -54,7 +70,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	s := transcribe.Setup{Dir: filepath.Join(*dir, filepath.Base(*use)), Repo: *use, Format: *format, Log: os.Stderr}
+	s := transcribe.Setup{Dir: filepath.Join(*dir, m.DirName()), Repo: m.Source(), Format: *format, Log: os.Stderr}
 	o := transcribe.Options{Language: *language, Translate: *translate, MaxTokens: *maxTokens}
 	if err := run(ctx, s, o, *cpu, *cacheDir, *verbose, *stamps, flag.Args()); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-transcribe:", err)

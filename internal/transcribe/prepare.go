@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -56,6 +57,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return Config{}, err
 	}
 	c := Config{Dir: s.Dir}
+	// the checkpoint is downloaded only to convert a program or write the tables from it: what
+	// was converted runs without it
+	checkpoint := sync.OnceValues(func() (string, error) {
+		return filepath.Join(s.Dir, "model.safetensors"), chat.FetchWeights(ctx, s.Repo, s.Dir, log)
+	})
 	for _, p := range []struct {
 		arch *llm.Arch
 		opts llm.Options
@@ -76,10 +82,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			*p.path = string(b)
 			continue
 		}
-		if err := chat.FetchWeights(ctx, s.Repo, s.Dir, log); err != nil {
+		weights, err := checkpoint()
+		if err != nil {
 			return Config{}, err
 		}
-		path, err := convert(config, filepath.Join(s.Dir, "model.safetensors"), out, p.arch, format, p.opts, log)
+		path, err := convert(config, weights, out, p.arch, format, p.opts, log)
 		if err != nil {
 			return Config{}, err
 		}
@@ -87,6 +94,14 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			return Config{}, err
 		}
 		*p.path = path
+	}
+	// the decoder's token embeddings, which the host looks up
+	_, dec, err := llm.LoadConfig(config, whisper.Arch.Name)
+	if err != nil {
+		return Config{}, err
+	}
+	if c.Weights, err = chat.Tables(filepath.Join(s.Dir, chat.TablesFile), whisper.Arch, llm.HostTables(dec), checkpoint, log); err != nil {
+		return Config{}, err
 	}
 	// a conversion reads the checkpoint into memory: give it back now
 	debug.FreeOSMemory()

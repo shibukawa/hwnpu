@@ -66,7 +66,7 @@ import (
 )
 
 func main() {
-	use := flag.String("use", "LFM3-1.7B", "models to run, comma separated: names that -list shows, or Hugging Face repositories OWNER/NAME; one in the terminal")
+	use := flag.String("use", "LFM3-1.7B", "models to run, comma separated: names that -list shows, uses or families picked for the machine's memory (translate, plamo3translate) or with a tag (plamo3translate:2b), or Hugging Face repositories OWNER/NAME; one in the terminal")
 	list := flag.Bool("list", false, "list the models and what each is for, and exit")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing")
 	context_ := flag.Int("context", 0, "tokens of a prompt and its answer together; 0: the longest the model was trained for when it is split at its attention (-paged: 262144 for LFM3-1.7B and Qwen3.5, 131072 for Gemma 4, its cache growing with the conversation within a quarter of the memory), else 16320 (over 16320 a whole model's cache is in chunks of 16384, slower per token)")
@@ -107,7 +107,12 @@ func main() {
 	form := flag.String("form", "", "polite or plain: the style of a translation into Japanese (chat)")
 	ironDir := flag.String("iron", "", "run a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), this directory, in place of -use")
 	idle := flag.Duration("idle", 5*time.Minute, "with -iron, give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy")
+	modelFiles := flag.String("models", "", chat.ModelsUsage)
 	flag.Parse()
+	if err := chat.LoadUserModels(*modelFiles, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
+		os.Exit(2)
+	}
 	if flag.NArg() > 0 && !*withOpenCode {
 		flag.Usage()
 		os.Exit(2)
@@ -165,7 +170,7 @@ func main() {
 
 	srv := &chat.Server{Think: *think, ThinkBudget: *thinkBudget, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: console.Log(os.Stderr), Dump: *dump}
 	for _, m := range models {
-		md := filepath.Join(*dir, m.Name)
+		md := filepath.Join(*dir, m.DirName())
 		switch m.Kind {
 		case chat.KindChat:
 			c := chat.Config{ModelConfig: *config, Weights: *weights}
@@ -177,9 +182,9 @@ func main() {
 					c.ModelConfig = filepath.Join(md, "config.json")
 				}
 				if c.Weights == "" {
-					c.Weights = filepath.Join(md, "model.safetensors")
+					c.Weights = chat.WeightsIn(md)
 				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, MTP: *mtp, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Codes: *codes, FormatFor: formatFor(*formatFor_), Log: console.Log(os.Stderr)}); err != nil {
+			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name, Context: *context_, Paged: *paged, Draft: *draft, MTP: *mtp, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Codes: *codes, FormatFor: formatFor(*formatFor_), Log: console.Log(os.Stderr)}); err != nil {
 				fail(err)
 			}
 			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, console.Log(os.Stderr)
@@ -202,8 +207,8 @@ func main() {
 		case chat.KindEmbed:
 			var c chat.EmbedConfig
 			if *embedPkgs != "" {
-				c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: filepath.Join(md, "model.safetensors"), Name: m.Name, Backend: *backend}
-			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Repo, Seqs: seqs, Backend: *backend, Log: console.Log(os.Stderr)}); err != nil {
+				c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: chat.WeightsIn(md), Name: m.Name, Backend: *backend}
+			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Source(), Name: m.Name, Seqs: seqs, Backend: *backend, Log: console.Log(os.Stderr)}); err != nil {
 				fail(err)
 			}
 			c.CacheDir, c.Log = *cacheDir, console.Log(os.Stderr)
@@ -268,32 +273,20 @@ func resolve(ctx context.Context, use, dir string, server bool) ([]chat.Model, e
 	return models, nil
 }
 
-// showModels writes the catalog: each model's name, what it is for and what else it can do, its
-// size and repository, whether it is downloaded to dir, and what it is; then what the features
-// mean.
+// showModels writes the models of the definitions hwnpu-chat runs (chat.List) and what the
+// features mean.
 func showModels(w io.Writer, dir string) {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tKIND\tFEATURES\tSIZE\tREPOSITORY\tDOWNLOADED\tABOUT")
-	for _, m := range chat.Catalog {
-		got := "no"
-		if chat.Downloaded(filepath.Join(dir, m.Name)) {
-			got = "yes"
-		}
-		features := strings.Join(m.Features, ",")
-		if features == "" {
-			features = "-"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%.1f GB\t%s\t%s\t%s\n", m.Name, m.Kind, features, m.Bytes/1e9, m.Repo, got, m.About)
-	}
-	tw.Flush()
+	chat.List(w, dir, chat.KindChat, chat.KindEmbed)
 	fmt.Fprintln(w, "\nFeatures:")
-	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, f := range chat.Features {
 		fmt.Fprintf(tw, "  %s\t%s\n", f.Name, f.About)
 	}
 	tw.Flush()
-	fmt.Fprintf(w, "\n-use takes names, comma separated (one in the terminal, any with -listen), or a Hugging Face\n"+
-		"repository OWNER/NAME of a supported architecture. The default is -use LFM3-1.7B.\n"+
+	fmt.Fprintf(w, "\n-use takes names, comma separated (one in the terminal, any with -listen): a model's name, a use\n"+
+		"or a family (translate, plamo3translate), either with a tag (plamo3translate:2b, chat:e4b, chat:16g), or a\n"+
+		"Hugging Face repository OWNER/NAME of a supported architecture. The default is -use LFM3-1.7B.\n"+
+		"Requests may name a model the same ways. Only the model picked is downloaded.\n"+
 		"In the terminal, a chat model talks and an embedding model searches the texts typed; with -listen,\n"+
 		"chat models answer /v1/chat/completions and embedding models /v1/embeddings.\nModels are kept in %s.\n", dir)
 }

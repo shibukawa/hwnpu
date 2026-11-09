@@ -34,6 +34,9 @@ The features say what a model can do besides its kind (names as in Ollama's capa
 | `audio` | reads the audio of user messages (`input_audio`, WAV); `/audio FILE.wav` in the terminal |
 
 - The terminal runs one model, chosen by `-use`; what it does follows the model's kind. The server runs any number, `-use LFM3-1.7B,plamo-embedding-1b` for example
+- A use or a family picks the model for the machine's memory, as the table of [MODEL.md](MODEL.md) recommends: `-use translate` runs PLaMo 3 Translate 0.8B on a machine of 8 GB and 2B from 16 GB; `-use chat` runs LFM3-1.7B on 8 GB, Gemma 4 E2B on 16 GB and E4B from 24 GB. A tag chooses one, like a Docker image's: a model's (`-use plamo3translate:2b`, `-use gemma4:e4b`, `-use chat:e4b`) or a machine's memory, a column of MODEL.md's table (`-use chat:24g` is what a machine of 24 GB runs, `-use plamo3translate:8g`). The uses are `chat` (`code`, `agent`), `vision`, `audio`, `translate` and `embedding` (`embed`, `search`); `-list` shows the families and tags and what each name picks on this machine. Only the model picked is downloaded and converted. `HWNPU_MEMORY=24` picks as a machine of 24 GB would. API requests may name the model the same ways
+- The models, the uses and what they pick come from [models.yaml](models.yaml), embedded in hwnpu. A file of your own, `~/.config/hwnpu/models.yaml` (`%LOCALAPPDATA%\hwnpu\models.yaml` on Windows; also `HWNPU_MODELS` and `-models FILE`), adds to it and overrides it with differences only: a model of your own (`like:` takes another's fields, `from: hf:OWNER/NAME@REVISION`), a use's column (`categories: translate: picks: [{machine: 8, model: ...}]`) or an alias that runs another model wherever one is picked (`aliases: plamo-3-translate-0.8b: my-distill`). `-list` shows the files read and the aliases (docs/model-table.md)
+- Sources: the same file can read the models from a shared folder or S3 before (or instead of) Hugging Face: `sources: {share: {type: path, path: /Volumes/share/hf}, lab: {type: s3, bucket: models, prefix: hf/, endpoint: http://rustfs.lab:9000, profile: rustfs}}` and `search: [share, lab, hf]` look for `OWNER/NAME/` in each in turn (S3 through the `aws` command; leave `hf` out to never ask Hugging Face). A model of your own can name one (`from: share:team/my-distill`), and `sha256: {config.json: ...}` pins files whatever source they come from
 - Names are matched ignoring case, and the catalog's repository names work too. A Hugging Face repository outside the catalog, `-use OWNER/NAME`, works when its architecture is one hwnpu-chat runs (LFM3 for chat, PLaMo's encoder for embeddings): its `config.json` tells which. Set `HF_TOKEN` for gated repositories
 
 ## 1. Chat
@@ -109,7 +112,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 
 | Flag | Default | |
 |---|---|---|
-| `-use NAMES` | `LFM3-1.7B` | the models to run, comma separated: names from `-list` or repositories `OWNER/NAME`; one in the terminal |
+| `-use NAMES` | `LFM3-1.7B` | the models to run, comma separated: names from `-list`, uses and families (`translate`, `plamo3translate`, `plamo3translate:2b`) or repositories `OWNER/NAME`; one in the terminal |
 | `-list` | | list the models, what each is for, and whether it is downloaded |
 | `-listen ADDR` | none | serve the OpenAI compatible API at `ADDR` (e.g. `127.0.0.1:8080`) instead of the terminal (section 3) |
 | `-think` | `true` | let the model think before it answers |
@@ -258,7 +261,7 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 
 ### Speech (LFM3-Audio-2B TTS)
 
-`hwnpu-tts` speaks a text into a WAV file (24 kHz). Convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.30).
+`hwnpu-tts -lang en -o out.wav "Hello from the Neural Engine."` speaks a text into a WAV file (24 kHz) with LFM3-Audio-2B (`-use speech`): the first run downloads it into the models' directory (shared with hwnpu-chat's LFM3-Audio-2B), converts the programs below by itself, in 8 bit tables, and writes the tables it reads (`speech-tables.safetensors`), so that later runs need no checkpoint. To convert them yourself instead: convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.30).
 
 ```bash
 go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage

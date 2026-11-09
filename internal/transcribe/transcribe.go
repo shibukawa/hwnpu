@@ -28,11 +28,13 @@ import (
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
-// Config names a checkpoint's directory (config.json, generation_config.json, tokenizer.json,
-// model.safetensors) and its three programs.
+// Config names a checkpoint's directory (config.json, generation_config.json, tokenizer.json)
+// and its three programs. Weights is the file the decoder's token embeddings are read from: the
+// tables Prepare writes (chat.TablesFile), or the checkpoint ("": model.safetensors in Dir).
 type Config struct {
 	Dir                     string
 	Encoder, Cross, Decoder string
+	Weights                 string
 }
 
 // generation is what decoding needs of generation_config.json.
@@ -94,7 +96,7 @@ func Load(ctx context.Context, dev *hwnpu.Device, c Config) (*Transcriber, error
 	if t.tok, err = tokenizer.Load(filepath.Join(c.Dir, "tokenizer.json")); err != nil {
 		return nil, err
 	}
-	if t.w, err = llm.OpenWeights(filepath.Join(c.Dir, "model.safetensors"), whisper.Arch); err != nil {
+	if t.w, err = llm.OpenWeights(cmp.Or(c.Weights, filepath.Join(c.Dir, "model.safetensors")), whisper.Arch); err != nil {
 		return nil, err
 	}
 	if t.enc, err = runner.Open(ctx, dev, c.Encoder); err != nil {

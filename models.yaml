@@ -1,0 +1,227 @@
+# The models hwnpu knows, and the models each use recommends on a machine of each memory
+# (MODEL.md's table). hwnpu embeds this file; a file of your own adds to it and overrides it:
+# ~/.config/hwnpu/models.yaml (%LOCALAPPDATA%\hwnpu\models.yaml on Windows), HWNPU_MODELS, or
+# -models FILE. Write only what changes there. The design is docs/model-table.md.
+#
+# models: NAME: what -use and the API call it.
+#   family, tag   FAMILY:TAG picks it (plamo3translate:2b); the family alone picks the tag of the
+#                 largest machine up to this machine's memory
+#   kind          chat, embedding (hwnpu-chat, hwnpu-agent), transcribe (hwnpu-transcribe),
+#                 speech (hwnpu-tts), decision (hwnpu-systemone)
+#   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
+#                 Models of one repository share its download (NAME's directory)
+#   arch          the structure, one of hwnpu-convert -archs (default: from config.json)
+#   machine       the least memory of a machine, in GB, the family recommends the model for
+#   memory        what the model takes running, in GB (MODEL.md, "at start")
+#   bytes         the size of the download
+#   features      what it can do besides its kind (hwnpu-chat -list explains them)
+#   no_think      answers without thinking unless asked (its chat template's own default)
+#   like          another model whose fields this one takes, except its tag
+#   remove        true: drop the model
+# categories: NAME: a use (-use translate). picks are MODEL.md's columns: the model a machine of
+#   that much memory (GB) or more runs. A file of your own replaces a column's model, or drops it
+#   with remove: true.
+# aliases: NAME: OTHER runs OTHER wherever NAME is picked (a use, a family's tag, -use, a request).
+version: 1
+
+models:
+  LFM3-1.7B:
+    family: lfm3
+    tag: 1.7b
+    kind: chat
+    from: hf:LiquidAI/LFM3-1.7B
+    machine: 8
+    memory: 2.2
+    bytes: 3.5e9
+    features: [tools, thinking]
+    about: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"
+  LFM3-VL-2B:
+    family: lfm3-vl
+    tag: 2b
+    kind: chat
+    from: hf:LiquidAI/LFM3-VL-2B
+    machine: 8
+    memory: 2.6
+    bytes: 3.8e9
+    features: [tools, thinking, vision]
+    about: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"
+  LFM3-Audio-2B:
+    family: lfm3-audio
+    tag: 2b
+    kind: chat
+    from: hf:LiquidAI/LFM3-Audio-2B
+    machine: 8
+    memory: 2.6
+    bytes: 4.0e9
+    features: [tools, thinking, audio]
+    about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-tts)"
+  LFM3-Omni-2B:
+    family: lfm3-omni
+    tag: 2b
+    kind: chat
+    from: hf:LiquidAI/LFM3-Omni-2B
+    machine: 8
+    memory: 3.0
+    bytes: 4.3e9
+    features: [tools, thinking, vision, audio]
+    about: "Liquid AI's LFM3 with both encoders: images of 512x512 and clips up to 30 seconds, answers in text"
+  gemma-4-E2B-it:
+    family: gemma4
+    tag: e2b
+    kind: chat
+    from: hf:google/gemma-4-E2B-it
+    machine: 8
+    memory: 2.3
+    bytes: 10.2e9
+    features: [tools, thinking]
+    about: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"
+  gemma-4-E4B-it:
+    family: gemma4
+    tag: e4b
+    kind: chat
+    from: hf:google/gemma-4-E4B-it
+    machine: 24
+    memory: 4.0
+    bytes: 16.0e9
+    features: [tools, thinking]
+    about: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"
+  Qwen3.5-4B:
+    family: qwen3.5
+    tag: 4b
+    kind: chat
+    from: hf:Qwen/Qwen3.5-4B
+    machine: 24
+    memory: 4.2
+    bytes: 9.3e9
+    features: [tools, thinking]
+    about: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 8 bit tables (6 bit ones lose too much) read 8 tokens per call; the download has the vision part too, which is not converted"
+  Qwen3.5-0.8B:
+    family: qwen3.5
+    tag: 0.8b
+    kind: chat
+    from: hf:Qwen/Qwen3.5-0.8B
+    machine: 8
+    memory: 2.6
+    bytes: 1.77e9
+    features: [tools, thinking]
+    no_think: true
+    about: "Qwen's smallest Qwen3.5, the 4B's structure in 0.8B: fast, but weak at facts; its text model in 8 bit tables, answering without thinking unless asked; the download has the vision part too, which is not converted"
+  Qwen3.5-2B:
+    family: qwen3.5
+    tag: 2b
+    kind: chat
+    from: hf:Qwen/Qwen3.5-2B
+    machine: 16
+    memory: 4.2
+    bytes: 4.57e9
+    features: [tools, thinking]
+    no_think: true
+    about: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"
+  plamo-3-translate-2b:
+    family: plamo3translate
+    tag: 2b
+    kind: chat
+    from: hf:pfnet/plamo-3-translate-2b
+    machine: 16
+    memory: 2.7
+    bytes: 5.76e9
+    features: [translation]
+    about: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"
+  plamo-3-translate-0.8b:
+    family: plamo3translate
+    tag: 0.8b
+    kind: chat
+    from: hf:pfnet/plamo-3-translate-0.8b
+    machine: 8
+    memory: 2.4
+    bytes: 1.79e9
+    features: [translation]
+    about: "Preferred Networks' PLaMo 3 Translate 0.8B: the 2B's translation in a third of the memory, for small machines, in 8 bit tables"
+  plamo-embedding-1b:
+    family: plamo-embedding
+    tag: 1b
+    kind: embedding
+    from: hf:pfnet/plamo-embedding-1b
+    machine: 8
+    memory: 1.3
+    bytes: 2.1e9
+    features: [query]
+    about: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"
+  whisper-large-v3-turbo:
+    family: whisper
+    tag: large-v3-turbo
+    kind: transcribe
+    from: hf:openai/whisper-large-v3-turbo
+    machine: 8
+    memory: 1.9
+    bytes: 1.6e9
+    about: "OpenAI's Whisper large-v3-turbo: transcription of 99 languages, with timestamps, in 8 bit tables"
+  LFM3-Audio-2B-TTS:
+    family: lfm3-audio-tts
+    tag: 2b
+    kind: speech
+    from: hf:LiquidAI/LFM3-Audio-2B
+    machine: 8
+    memory: 2.4
+    bytes: 4.0e9
+    about: "LFM3-Audio-2B speaking a text (24 kHz WAV): its text model in 8 bit tables, the depthformer and the codec decoder in fp16; shares LFM3-Audio-2B's download"
+  d1-2B:
+    family: d1
+    tag: 2b
+    kind: decision
+    from: hf:LiquidAI/d1-2B
+    machine: 8
+    memory: 2.4
+    about: "Liquid AI's d1-2B: answers typed questions about a state (the System One API), images too, in 8 bit tables"
+  d1-Omni-2B:
+    family: d1-omni
+    tag: 2b
+    kind: decision
+    from: hf:LiquidAI/d1-Omni-2B
+    machine: 8
+    memory: 2.8
+    about: "Liquid AI's d1-Omni-2B: d1 with an audio encoder, questions about images and clips and questions asked as a clip"
+
+categories:
+  chat:
+    aliases: [code, agent]
+    about: chat and coding, with tool calls
+    picks:
+      - {machine: 8, model: LFM3-1.7B}
+      - {machine: 16, model: gemma-4-E2B-it}
+      - {machine: 24, model: gemma-4-E4B-it}
+  vision:
+    about: reads images (image generation is another use)
+    picks:
+      - {machine: 8, model: LFM3-VL-2B}
+  audio:
+    about: reads audio, questions about it (transcription is transcribe)
+    picks:
+      - {machine: 8, model: LFM3-Audio-2B}
+      - {machine: 16, model: LFM3-Omni-2B}
+  translate:
+    aliases: [translation]
+    about: translation
+    picks:
+      - {machine: 8, model: plamo-3-translate-0.8b}
+      - {machine: 16, model: plamo-3-translate-2b}
+  embedding:
+    aliases: [embed, search]
+    about: sentence embeddings, search
+    picks:
+      - {machine: 8, model: plamo-embedding-1b}
+  transcribe:
+    aliases: [transcription, asr]
+    about: speech to text (hwnpu-transcribe)
+    picks:
+      - {machine: 8, model: whisper-large-v3-turbo}
+  speech:
+    aliases: [tts]
+    about: text to speech (hwnpu-tts)
+    picks:
+      - {machine: 8, model: LFM3-Audio-2B-TTS}
+  decision:
+    aliases: [systemone]
+    about: typed questions about a state (hwnpu-systemone)
+    picks:
+      - {machine: 8, model: d1-2B}

@@ -52,7 +52,7 @@ import (
 )
 
 func main() {
-	use := flag.String("use", "LFM3-1.7B", "the chat model: a name that hwnpu-chat -list shows (one with tool calls), or a Hugging Face repository OWNER/NAME")
+	use := flag.String("use", "LFM3-1.7B", "the chat model: a name that hwnpu-chat -list shows (one with tool calls), chat for the one recommended for the machine's memory, a family with or without a tag (gemma4, gemma4:e4b), or a Hugging Face repository OWNER/NAME")
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name")
 	context_ := flag.Int("context", 0, "tokens of a prompt and its answer together; 0: the longest the model was trained for when it is split at its attention (-paged: 262144 for LFM3-1.7B and Qwen3.5, 131072 for Gemma 4, its cache growing with the conversation within a quarter of the memory), else 16320 (over 16320 a whole model's cache is in chunks of 16384, slower per token)")
 	paged := flag.Int("paged", 0, "split a chat model at its full attention layers and attend over the cache in chunks of this many tokens, so that a step costs in proportion to the conversation, not to -context: 0 for 8192 where the model allows it (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4, Qwen3.5), -1 never (then -tier applies)")
@@ -90,7 +90,12 @@ func main() {
 	dump := flag.String("dump", "", "write each request, its prompt and the generated text to this directory")
 	ironDir := flag.String("iron", "", "run a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), this directory, in place of -use")
 	idle := flag.Duration("idle", 5*time.Minute, "with -iron, give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy")
+	modelFiles := flag.String("models", "", chat.ModelsUsage)
 	flag.Parse()
+	if err := chat.LoadUserModels(*modelFiles, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-agent:", err)
+		os.Exit(2)
+	}
 	task := strings.TrimSpace(strings.Join(flag.Args(), " "))
 	tiers, err := chat.Tiers(*tier)
 	if err != nil {
@@ -155,7 +160,7 @@ func main() {
 			fail(fmt.Errorf("%s has no tool calls; the agent needs a model with the tools feature (hwnpu-chat -list)", m.Name))
 		}
 		noThink = m.NoThink && !flagGiven("think")
-		md := filepath.Join(*dir, m.Name)
+		md := filepath.Join(*dir, m.DirName())
 		c = chat.Config{ModelConfig: *config, Weights: *weights}
 		if *pkgs != "" {
 			c.Packages, c.Name, c.Backend = strings.Split(*pkgs, ","), m.Name, *backend
@@ -163,9 +168,9 @@ func main() {
 				c.ModelConfig = filepath.Join(md, "config.json")
 			}
 			if c.Weights == "" {
-				c.Weights = filepath.Join(md, "model.safetensors")
+				c.Weights = chat.WeightsIn(md)
 			}
-		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Repo, Context: *context_, Paged: *paged, Draft: *draft, MTP: *mtp, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Codes: *codes, FormatFor: formatFor(*formatFor_), Log: console.Log(os.Stderr)}); err != nil {
+		} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name, Context: *context_, Paged: *paged, Draft: *draft, MTP: *mtp, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Codes: *codes, FormatFor: formatFor(*formatFor_), Log: console.Log(os.Stderr)}); err != nil {
 			fail(err)
 		}
 		c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, console.Log(os.Stderr)

@@ -33,6 +33,7 @@ const QueryPrefix = "次の文章に対して、関連する文章を検索し�
 type EmbedSetup struct {
 	Dir  string // holds config.json, tokenizer.model, model.safetensors and the converted programs
 	Repo string // Hugging Face repository the missing checkpoint files come from
+	Name string // what the API calls the model, "" for the repository's name
 	Seqs []int  // sequence lengths of the programs
 	// Backend picks the device as Setup.Backend does.
 	Backend string
@@ -54,12 +55,12 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	if err != nil {
 		return EmbedConfig{}, err
 	}
-	for _, f := range []string{"config.json", "tokenizer.model", "model.safetensors"} {
+	for _, f := range []string{"config.json", "tokenizer.model"} {
 		if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
 			return EmbedConfig{}, err
 		}
 	}
-	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo), Backend: cmp.Or(s.Backend, backend)}
+	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return EmbedConfig{}, err
@@ -67,8 +68,17 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	// the format is in the name, so that a program of an earlier default (lut4 before lut8) is
 	// converted again rather than loaded
 	format := a.DefaultFormatFor(model, backend)
+	// the checkpoint is downloaded only to write a program or the tables from it (tables.go)
+	checkpoint := sync.OnceValues(func() (string, error) {
+		return c.Weights, fetch(ctx, s.Repo, "model.safetensors", c.Weights, s.Log)
+	})
 	for _, seq := range s.Seqs {
 		out := filepath.Join(pdir, fmt.Sprintf("embed%s-%s-s%d%s", a.Rev(), format, seq, programExt(backend)))
+		if !converted(out) {
+			if _, err := checkpoint(); err != nil {
+				return EmbedConfig{}, err
+			}
+		}
 		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, seq: seq, format: format}, s.Log)
 		if err != nil {
 			return EmbedConfig{}, err
@@ -76,6 +86,9 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 		c.Packages = append(c.Packages, path)
 	}
 	shareOnce(pdir, s.Log)
+	if c.Weights, err = writeTables(s.Dir, a, model, checkpoint, s.Log); err != nil {
+		return EmbedConfig{}, err
+	}
 	return c, nil
 }
 

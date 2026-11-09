@@ -77,7 +77,12 @@ func main() {
 	seq := flag.Int("seq", 8, "tokens per call (hwnpu-chat and hwnpu-agent generate with 8: a token and 7 drafts)")
 	cacheDir := flag.String("cache-dir", "", "compile cache (default: hwnpu in the user cache directory, as hwnpu-chat's -cache)")
 	jsonOut := flag.String("json", "", "also write the results to this file")
+	modelFiles := flag.String("models", "", chat.ModelsUsage)
 	flag.Parse()
+	if err := chat.LoadUserModels(*modelFiles, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-formats:", err)
+		os.Exit(2)
+	}
 	if *cacheDir == "" {
 		if d, err := os.UserCacheDir(); err == nil {
 			*cacheDir = filepath.Join(d, "hwnpu")
@@ -99,11 +104,11 @@ func run(ctx context.Context, use, root, formatList, refFormat, backend, refBack
 	if m.Kind != chat.KindChat {
 		return fmt.Errorf("%s is not a chat model", m.Name)
 	}
-	md := filepath.Join(root, m.Name)
+	md := filepath.Join(root, m.DirName())
 	if err := os.MkdirAll(md, 0o755); err != nil {
 		return err
 	}
-	if err := chat.Fetch(ctx, m.Repo, "config.json", filepath.Join(md, "config.json"), os.Stderr); err != nil {
+	if err := chat.Fetch(ctx, m.Source(), "config.json", filepath.Join(md, "config.json"), os.Stderr); err != nil {
 		return err
 	}
 	a, model, err := llm.LoadConfig(filepath.Join(md, "config.json"), "")
@@ -112,11 +117,11 @@ func run(ctx context.Context, use, root, formatList, refFormat, backend, refBack
 	}
 	// the architecture's tokenizer (PLaMo 3's tokenizer.jsonl) and the checkpoint, in shards or not
 	for _, f := range chat.TokenizerFiles(a.Name) {
-		if err := chat.Fetch(ctx, m.Repo, f, filepath.Join(md, f), os.Stderr); err != nil {
+		if err := chat.Fetch(ctx, m.Source(), f, filepath.Join(md, f), os.Stderr); err != nil {
 			return err
 		}
 	}
-	if err := chat.FetchWeights(ctx, m.Repo, md, os.Stderr); err != nil {
+	if err := chat.FetchWeights(ctx, m.Source(), md, os.Stderr); err != nil {
 		return err
 	}
 	cm, ok := model.(llm.Cached)

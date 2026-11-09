@@ -49,6 +49,9 @@ type Config struct {
 	// the depthformer's code tables), tokenizer.json, generation_config.json (optional), and
 	// audio_tokenizer/config.json.
 	Dir string
+	// Weights is the file the host's tables are read from: the tables Prepare writes
+	// (TablesFile), or the checkpoint ("": model.safetensors in Dir).
+	Weights string
 	// CacheDir is the compile cache ("" for none). CPU runs everything with the CPU interpreter.
 	CacheDir string
 	CPU      bool
@@ -119,7 +122,7 @@ func Load(ctx context.Context, c Config) (*Synth, error) {
 		return nil, err
 	}
 	s.tok = tok
-	if s.w, err = llm.OpenWeights(filepath.Join(c.Dir, "model.safetensors"), lfm3.Arch); err != nil {
+	if s.w, err = llm.OpenWeights(cmp.Or(c.Weights, filepath.Join(c.Dir, "model.safetensors")), lfm3.Arch); err != nil {
 		return nil, err
 	}
 	s.closers = append(s.closers, s.w)
