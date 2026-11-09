@@ -113,6 +113,9 @@ func LinearFormat(f string) (bits, block int, ok bool) {
 	return bits, block, true
 }
 
+// NoLayers in Options.Layers builds no layer (the part before layer 0's attention, PlanPaged).
+const NoLayers = -1
+
 // Options select what to build. They are common to all architectures; settings that only one
 // architecture has go in Params.
 type Options struct {
@@ -129,6 +132,8 @@ type Options struct {
 	Paged int
 	// Layers truncates the model to its first Layers layers (0 means all); with a truncated
 	// model the output is the hidden state instead of the logits, for checking layer by layer.
+	// NoLayers builds none: the first part of a model split at its attention whose layer 0's
+	// attention runs on the host (Paged), which outputs that attention's inputs alone.
 	Layers int
 	// Start skips the first Start layers: the input is then the hidden state entering layer
 	// Start, and Layers counts from there. Only for checking single layers; Start equal to the

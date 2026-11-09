@@ -25,6 +25,11 @@ const (
 	KindImage      Kind = "image"       // draws a picture from a prompt: hwnpu-image generate
 	KindDepth      Kind = "depth"       // the depth of a picture: hwnpu-image depth
 	KindFace       Kind = "face-detect" // the faces in a picture: hwnpu-image face-detect
+	KindPitch      Kind = "pitch"       // the pitch of a voice or an instrument: hwnpu-pitch
+	KindPose       Kind = "pose"        // people's keypoints in an image: hwnpu-pose
+	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: hwnpu-notes
+	KindMusic      Kind = "music"       // music from a style: hwnpu-music
+	KindSFX        Kind = "sfx"         // sound effects from a text: hwnpu-music
 )
 
 // Model is a model of the definitions (models.yaml).
@@ -189,12 +194,19 @@ func kindIs(m Model, ks ...Kind) error {
 // the definitions by its name, a use or a family (with a tag or picked for the machine's
 // memory), or a Hugging Face repository OWNER/NAME, taken to be of that kind.
 func ResolveFor(name string, kind Kind, log io.Writer) (Model, error) {
+	return ResolveForKinds(name, log, kind)
+}
+
+// ResolveForKinds is ResolveFor for a command that runs models of several kinds (hwnpu-music:
+// music and sound effects); a repository is taken to be of the first.
+func ResolveForKinds(name string, log io.Writer, kinds ...Kind) (Model, error) {
+	kind := kinds[0]
 	m, ok, err := lookupFor(name, log)
 	if err != nil {
 		return Model{}, err
 	}
 	if ok {
-		return m, kindIs(m, kind)
+		return m, kindIs(m, kinds...)
 	}
 	m, ok = repoModel(name)
 	if !ok {

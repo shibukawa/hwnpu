@@ -404,6 +404,11 @@ var kinds = map[Kind]string{
 	KindImage:      "hwnpu-image generate",
 	KindDepth:      "hwnpu-image depth",
 	KindFace:       "hwnpu-image face-detect",
+	KindPitch:      "hwnpu-pitch",
+	KindPose:       "hwnpu-pose",
+	KindNotes:      "hwnpu-notes",
+	KindMusic:      "hwnpu-music",
+	KindSFX:        "hwnpu-music",
 }
 
 // build makes the catalog, the categories and the aliases of what was merged.

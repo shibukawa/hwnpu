@@ -7,7 +7,8 @@
 #   family, tag   FAMILY:TAG picks it (plamo3translate:2b); the family alone picks the tag of the
 #                 largest machine up to this machine's memory
 #   kind          chat, embedding (hwnpu-chat, hwnpu-agent), transcribe (hwnpu-transcribe),
-#                 speech (hwnpu-tts), decision (hwnpu-systemone), image, depth, face-detect (hwnpu-image)
+#                 speech (hwnpu-tts), decision (hwnpu-systemone), image, depth, face-detect (hwnpu-image),
+#                 pitch (hwnpu-pitch), pose (hwnpu-pose), notes (hwnpu-notes), music, sfx (hwnpu-music)
 #   device        where it runs by the NPU's vendor (amd, apple, intel): npu (the default) or cpu;
 #                 a command's --device and HWNPU_DEVICE override it
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
@@ -119,6 +120,16 @@ models:
     features: [tools, thinking]
     no_think: true
     about: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"
+  Qwen3-0.6B:
+    family: qwen3
+    tag: 0.6b
+    kind: chat
+    from: hf:Qwen/Qwen3-0.6B
+    machine: 8
+    memory: 3.9
+    bytes: 1.52e9
+    features: [tools, thinking]
+    about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts and with a context of 4096 (-paged 1024 for 32768, slower); in 8 bit tables, tool calls as JSON"
   plamo-3-translate-2b:
     family: plamo3translate
     tag: 2b
@@ -183,6 +194,71 @@ models:
     machine: 8
     memory: 2.8
     about: "Liquid AI's d1-Omni-2B: d1 with an audio encoder, questions about images and clips and questions asked as a clip"
+  swift-f0:
+    family: swiftf0
+    tag: "0.3"
+    kind: pitch
+    # lars76/swift-f0 0.3.0's swift_f0/model.onnx (MIT), byte for byte (sha256), from a mirror on
+    # Hugging Face: the project publishes it on GitHub and PyPI only
+    from: hf:aaatmy/swift-f0-onnx@7877fbaad8ea5dbe0fac0edc4b2703cbea381c14
+    sha256: {model.onnx: 6385e8c2ebc3872e82c9ff5946228de44cd3be77a750ea53698b7dbfe94b0a22}
+    machine: 8
+    memory: 0.06
+    bytes: 1.4e5
+    about: "SwiftF0 0.3.0: the pitch of one voice or instrument every 16 ms, from 47 to 2094 Hz, with a voicing confidence; 14K parameters"
+  RTMO-s:
+    family: rtmo
+    tag: s
+    kind: pose
+    # OpenMMLab MMPose's RTMO-s (Apache-2.0), the ONNX export Transformers.js reads
+    from: hf:Xenova/RTMO-s@d8c526187f341d287753831c9c8b1ecc4855bba1
+    sha256: {onnx/model.onnx: 1cd6a3517658903233e9ccb78666554862f57f0944b6886e2048093594aef4e7}
+    machine: 8
+    memory: 0.23
+    bytes: 4.0e7
+    about: "RTMO-s: the people in an image and their 17 COCO keypoints in one pass, without a person detector; 9.9M parameters, images stretched to 640x640"
+  basic-pitch:
+    family: basic-pitch
+    tag: icassp2022
+    kind: notes
+    # spotify/basic-pitch's basic_pitch/saved_models/icassp_2022/nmp.onnx (Apache-2.0), byte for
+    # byte (sha256), from a mirror on Hugging Face: Spotify's repository there holds no weights
+    from: hf:AEmotionStudio/basic-pitch-onnx-models@327fd8ccd2f0bb84cbe56b4a0e9d318398ddf763
+    sha256: {nmp.onnx: 2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec}
+    machine: 8
+    memory: 0.07
+    bytes: 2.3e5
+    about: "Spotify's Basic Pitch: the notes of any instrument, several at once, with pitch bends, written as MIDI; 36K parameters"
+  magenta-realtime-2-small:
+    family: magenta-realtime-2
+    tag: small
+    kind: music
+    # Google DeepMind's Magenta RealTime 2 (code Apache-2.0, weights CC-BY 4.0: credit "Magenta
+    # RealTime 2 by Google DeepMind" where the music is used)
+    from: hf:google/magenta-realtime-2@010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc
+    machine: 8
+    memory: 1.0
+    bytes: 1.7e9
+    about: "Magenta RealTime 2 small (230M): 48 kHz stereo music from a text of its style (MusicCoCa), 25 frames a second; weights CC-BY 4.0"
+  MOSS-SoundEffect-v2.0:
+    family: moss-soundeffect
+    tag: v2.0
+    kind: sfx
+    # OpenMOSS's MOSS-SoundEffect v2.0 (code and weights Apache-2.0): Qwen3-1.7B reads the
+    # prompt, a 1.3B Wan DiT denoises, the DAC VAE decodes; hwnpu-music runs it. The machine
+    # picks the text encoder's format (sfx.Formats): fp16 here, lut8 with 5 layers in fp16 in
+    # the -lut8 one (moss-soundeffect:8g)
+    from: hf:OpenMOSS-Team/MOSS-SoundEffect-v2.0@e35df4d82fbe87fcd5d14e5d100e349c0c3c076d
+    machine: 16
+    memory: 2.3
+    bytes: 1.15e10
+    about: "MOSS-SoundEffect v2.0 (1.3B DiT, Qwen3-1.7B text encoder in fp16, DAC VAE): up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
+  MOSS-SoundEffect-v2.0-lut8:
+    like: MOSS-SoundEffect-v2.0
+    tag: v2.0-lut8
+    machine: 8
+    memory: 2.2
+    about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
   # hwnpu-image generate: on AMD's NPU the export ~/models/NAME.amd-npu2 (or NAME-1024.amd-npu2,
   # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's and Intel's NPU Anima is
@@ -365,3 +441,29 @@ categories:
     about: face detection (hwnpu-image face-detect)
     picks:
       - {machine: 8, model: YuNet}
+  pitch:
+    aliases: [f0]
+    about: the pitch (F0) of a voice or an instrument (hwnpu-pitch)
+    picks:
+      - {machine: 8, model: swift-f0}
+  pose:
+    aliases: [keypoints]
+    about: people and their 17 keypoints in an image (hwnpu-pose)
+    picks:
+      - {machine: 8, model: RTMO-s}
+  notes:
+    aliases: [midi]
+    about: the notes of music, as MIDI (hwnpu-notes)
+    picks:
+      - {machine: 8, model: basic-pitch}
+  music:
+    aliases: [music-generation]
+    about: music from a text of its style (hwnpu-music)
+    picks:
+      - {machine: 8, model: magenta-realtime-2-small}
+  sfx:
+    aliases: [sound-effects, sound-effect]
+    about: sound effects from a text (hwnpu-music)
+    picks:
+      - {machine: 8, model: MOSS-SoundEffect-v2.0-lut8}
+      - {machine: 16, model: MOSS-SoundEffect-v2.0}

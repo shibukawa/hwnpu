@@ -211,6 +211,16 @@ type Paged interface {
 	MaxContext() int
 }
 
+// Unpaged is a Paged model that runs faster in one piece, with its cache in the program, than
+// split at its attention: every layer of Qwen3 attends, so a split model calls the Neural Engine
+// twice a layer (on an M1, Qwen3-0.6B generates 11 to 12 tokens/s whole with a cache of 4096,
+// 5.9 split in chunks of 1024 and 3 in chunks of 8192). hwnpu-chat splits it only when told
+// (-paged N), and gives it a cache of UnpagedContext tokens otherwise: the longest whole program
+// Core ML runs (Qwen3-0.6B's 28 layers of keys and values fail to predict from 8192).
+type Unpaged interface {
+	UnpagedContext() int
+}
+
 // CacheWriters is a Paged model whose layers past the first CacheLayers write no cache: they
 // reuse the keys and values of earlier layers (Gemma 4's shared layers), so a program that only
 // reads tokens into the caches (Options.KVOnly) stops before them.

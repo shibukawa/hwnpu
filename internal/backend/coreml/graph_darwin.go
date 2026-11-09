@@ -105,7 +105,11 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		// HWNPU_COREML_UNITS=cpu|gpu loads the model on the CPU or the GPU instead, as the
 		// baselines cmd/powerbench compares the Neural Engine with. It is not part of the API.
 		units := computeUnitsCPUAndNeuralEngine
-		switch os.Getenv("HWNPU_COREML_UNITS") {
+		want := src.Units
+		if env := os.Getenv("HWNPU_COREML_UNITS"); env != "" {
+			want = env
+		}
+		switch want {
 		case "cpu":
 			units = computeUnitsCPUOnly
 		case "gpu":
@@ -137,7 +141,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		// compiled model, function and OS: with a cache directory it is kept beside the model.
 		placementKey := ""
 		if key != "" {
-			placementKey = cache.Key([]byte("hwnpu-coreml-placement-v1"), []byte(key), []byte(src.Function))
+			placementKey = cache.Key([]byte("hwnpu-coreml-placement-v1"), []byte(key), []byte(src.Function), []byte(src.Units+"|"+os.Getenv("HWNPU_COREML_UNITS")))
 		}
 		cachedPlan := false
 		if placementKey != "" {

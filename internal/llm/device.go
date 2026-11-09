@@ -105,6 +105,11 @@ func OpenDevice(ctx context.Context, name, cacheDir string, opts ...hwnpu.Option
 	if err != nil {
 		return nil, "", err
 	}
+	if backend == "coreml" {
+		if err := lockNPU(ctx); err != nil {
+			return nil, "", err
+		}
+	}
 	opts = append([]hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementPrefer)}, opts...)
 	if cacheDir != "" {
 		opts = append(opts, hwnpu.WithCacheDir(cacheDir))

@@ -33,7 +33,7 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 <tbody>
 <tr>
 <th>Chat, coding<br><sub>hwnpu-chat, hwnpu-agent <code>-use chat</code></sub></th>
-<td><b>LFM3-1.7B</b> (2.2 GB)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.3 GB)<br>a size larger, 5B with its per-layer embeddings</td>
+<td><b>LFM3-1.7B</b> (2.2 GB)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.3 GB)<br>a size larger, 5B with its per-layer embeddings<br><b>Qwen3-0.6B</b> (<code>-use qwen3</code>, 1.5 GB download)<br>the smallest download, weak at facts, a context of 4096</td>
 <td><b>Gemma 4 E2B</b> (2.3 GB)<br>with a long context too (+0.8 GB at 131072)<br><b>Gemma 4 E4B</b> (4.0 GB)<br>for short conversations</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>with a long context too (+2.1 GB at 131072)</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>planned: Qwen3.6-35B-A3B (MoE, about 25 GB at 4 bits)</i></td>
@@ -46,6 +46,27 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 <tr>
 <th>Transcription<br><sub>hwnpu-transcribe</sub></th>
 <td colspan="6"><b>Whisper large-v3-turbo</b> (about 1.9 GB)<br>99 languages, with timestamps, 30 seconds read in 0.6 s</td>
+</tr>
+<tr>
+<th>Pitch (F0)<br><sub>hwnpu-pitch</sub></th>
+<td colspan="6"><b>SwiftF0</b> (about 0.06 GB)<br>the pitch of one voice or instrument every 16 ms, with a voicing confidence; 41 seconds in 0.24 s</td>
+</tr>
+<tr>
+<th>Notes (MIDI)<br><sub>hwnpu-notes</sub></th>
+<td colspan="6"><b>Basic Pitch</b> (about 0.07 GB)<br>any instrument, chords too, with pitch bends, as MIDI; 35 times real time</td>
+</tr>
+<tr>
+<th>People's poses<br><sub>hwnpu-pose</sub></th>
+<td colspan="6"><b>RTMO-s</b> (about 0.23 GB)<br>the people in an image and their 17 keypoints in one pass (no person detector); about 0.1 s an image</td>
+</tr>
+<tr>
+<th>Music generation<br><sub>hwnpu-music generate</sub></th>
+<td colspan="6"><b>Magenta RealTime 2 small</b> (about 1.0 GB)<br>48 kHz stereo music in the style of texts or recordings, playing a MIDI file's notes or going on from a clip, streamed as it comes, about 1.4 times faster than real time; weights CC-BY 4.0 (credit "Magenta RealTime 2 by Google DeepMind" where the music is used)</td>
+</tr>
+<tr>
+<th>Sound effects<br><sub>hwnpu-music generate -m sfx</sub></th>
+<td><b>MOSS-SoundEffect v2.0</b> (about 2.2 GB; the text encoder in lut8 with 5 layers in fp16)</td>
+<td colspan="5"><b>MOSS-SoundEffect v2.0</b> (about 2.3 GB; the text encoder in fp16)<br>up to 30 s of 48 kHz mono from an English or Chinese description; 10 s in about 4 minutes at the card's 100 steps on an M1 (<code>-steps 50</code>: half); Apache-2.0</td>
 </tr>
 <tr>
 <th>Reading audio (questions about it)<br><sub>hwnpu-chat <code>-use audio</code> (<code>input_audio</code>, <code>/audio</code>)</sub></th>
@@ -99,6 +120,11 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 | Gemma 4 E2B with images and audio | Images, audio (one image and 30 seconds a prompt) | 3.4 GB (2.4 GB until an image or audio arrives) | 6 KiB/token | measured |
 | Gemma 4 E4B | Chat, coding | 4.0 GB | 16 KiB/token (2 GiB at 131072) | measured |
 | LFM3-VL-2B | Images (512 × 512) | 2.6 GB | 12 KiB/token (1.46 GiB at 128000) | measured |
+| SwiftF0 | Pitch (F0) | about 0.06 GB (M1: a footprint of 58 MB; 14K weights) | none (30 seconds at a time) | measured on an M1 |
+| Basic Pitch | Notes (MIDI) | about 0.07 GB (M1: a footprint of 75 MB; 36K weights) | none (2 second windows) | measured on an M1 |
+| RTMO-s | People's poses | about 0.23 GB (M1: a footprint of 232 MB; 9.9M weights in fp16) | none (an image at a time) | measured on an M1 |
+| Magenta RealTime 2 small | Music generation | about 1.0 GB (M1 footprints: a text style 0.97 GB, a recording's style 0.55 GB, going on from a clip 0.96 GB, 0.42 GB with the codes given by `-codes`) | none (a window of the last 41 frames) | measured on an M1 |
+| MOSS-SoundEffect v2.0 | Sound effects | about 2.3 GB (M1: a peak footprint of 2.34 GB with the text encoder in fp16, 2.17 GB in lut8; the text encoder's programs, 2.8 GB in fp16 or 1.7 GB in lut8, run first and are let go, then the DiT's 1.4 GB in lut8 and the decoder's 0.2 GB) | none (30 seconds of latents at a time) | measured on an M1 |
 | Whisper large-v3-turbo | Transcription (any length, 30 seconds at a time) | about 1.9 GB (M3: 0.78 GiB on the Neural Engine and 1.1 GB of the process) | none (up to 448 tokens every 30 seconds) | measured on an M3 |
 | LFM3-Audio-2B | Audio (clips up to 30 seconds) | 2.6 GB | 12 KiB/token | measured |
 | LFM3-Omni-2B | Images and audio | 3.0 GB (2.2 GB until an image or audio arrives) | 12 KiB/token | measured |
@@ -111,6 +137,7 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 | Anima-Turbo (1024 × 1024) | Image generation | 1.9 GB (the VAE's largest stage; the DiT reads its blocks' weights a group at a time) | none | measured |
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |
+| Qwen3-0.6B | Chat (weak at facts) | about 3.9 GB (M1: 1.16 GiB on the Neural Engine in two programs of 8 bit tables and 2.75 GB of the process, with the cache of 4096 in the programs) | 112 KiB/token (0.44 GiB at 4096; held from the start) | measured on an M1 |
 | Qwen3.5-0.8B | Chat (weak at Japanese facts) | 1.5 GB (6-bit MLP; M3: 1.47 GiB on the Neural Engine and 1.1 GB of the process, about 2.6 GB) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and M3) |
 | Qwen3.5-2B | Chat, code | 2.4 GB (6-bit MLP; M3: 2.67 GiB on the Neural Engine in two programs of 6 bit tables and 1.5 GB of the process, about 4.2 GB; 1.32 GiB with `-prefill off`) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and M3) |
 | Qwen3.5-4B | Chat, code | about 4.2 GB (3.9 GiB of 8 bit weights) | 32 KiB/token (8 GiB at 262144; 114688 tokens on 16 GB) | runs on an M3's Neural Engine; memory estimated from the weights |
@@ -120,5 +147,6 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 - "Measured" is the memory pinned for the NPU, measured on a Ryzen AI 9 365, plus the process's own. It follows from the size of the weights
 - Apple's Neural Engine holds more: its weights are 6 and 8 bit tables (LFM3-1.7B and Qwen3.5-2B in 6 bits; LFM3's VL, Audio, Omni and d1 checkpoints, PLaMo 3 and the other Qwen3.5 in 8), and hwnpu-chat loads two programs, the one that generates and the one that reads prompts, each with its own copy of the weights (one for Gemma 4 E4B, PLaMo 3 Translate 2B and Qwen3.5-4B). On an M3 (2026-11-07), LFM3-1.7B held 2.43 GiB on the Neural Engine (two programs of 1.21 GiB) plus the process's 0.5–0.9 GB, and PLaMo 3 Translate 0.8B 1.38 GiB in its two programs plus the process's 1.0 GB. The other models are not measured on Apple yet; expect them above the table as well
 - The Neural Engine's share is kernel memory of its driver, in no process's RSS or footprint (Activity Monitor and `top` do not show it). hwnpu-chat says how much it is after loading; a program compiled just then comes onto the Neural Engine at its first call
+- Qwen3-0.6B is one program with its cache of 4096 inside, not split at its attention as the other chat models are: all 28 of its layers attend, and split it calls the Neural Engine twice a layer (on an M1, 11 to 12 tokens/s whole, 5.9 with `-paged 1024`, 3 with chunks of 8192). `-paged 1024` gives it a context of 32768, its cache then growing with the conversation. AMD's NPU has no export for it yet
 - Not counted: Gemma 4's per-layer embedding table (4.4 GB for E2B) and the token embedding tables (0.5 to 0.75 GB) stay files, and only the rows used are read. They go into the OS's page cache, which drops them when memory runs short
 - Several exports of one model (text only, and with images and audio, for example) can share their files on the disk (Btrfs, XFS, APFS, ReFS). Memory is not shared: run at once, they count separately

@@ -166,9 +166,31 @@ func MelFilters(mels, nfft, rate int) []float64 {
 
 // ReadWAV decodes a WAV file (PCM of 8, 16, 24 or 32 bits, or 32 bit float; channels are
 // averaged) and resamples it to SampleRate.
-func ReadWAV(data []byte) ([]float32, error) {
+func ReadWAV(data []byte) ([]float32, error) { return ReadWAVAt(data, SampleRate) }
+
+// ReadWAVAt is ReadWAV resampling to the rate given.
+func ReadWAVAt(data []byte, to int) ([]float32, error) {
+	chans, rate, err := decodeWAV(data)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]float32, len(chans[0]))
+	for i := range out {
+		var sum float64
+		for _, c := range chans {
+			sum += float64(c[i])
+		}
+		out[i] = float32(sum / float64(len(chans)))
+	}
+	return Resample(out, rate, to), nil
+}
+
+// DecodeWAV decodes a WAV file as ReadWAV does into its channels at its own rate, and the rate.
+func DecodeWAV(data []byte) ([][]float32, int, error) { return decodeWAV(data) }
+
+func decodeWAV(data []byte) ([][]float32, int, error) {
 	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WAVE" {
-		return nil, errors.New("audio: not a WAV file")
+		return nil, 0, errors.New("audio: not a WAV file")
 	}
 	var format, channels, bits int
 	var rate int
@@ -179,7 +201,7 @@ func ReadWAV(data []byte) ([]float32, error) {
 		switch id {
 		case "fmt ":
 			if len(body) < 16 {
-				return nil, errors.New("audio: short fmt chunk")
+				return nil, 0, errors.New("audio: short fmt chunk")
 			}
 			format, channels = int(binary.LittleEndian.Uint16(body)), int(binary.LittleEndian.Uint16(body[2:]))
 			rate, bits = int(binary.LittleEndian.Uint32(body[4:])), int(binary.LittleEndian.Uint16(body[14:]))
@@ -192,16 +214,18 @@ func ReadWAV(data []byte) ([]float32, error) {
 		p += 8 + size + size%2
 	}
 	if channels == 0 || rate == 0 || pcm == nil {
-		return nil, errors.New("audio: WAV without fmt or data")
+		return nil, 0, errors.New("audio: WAV without fmt or data")
 	}
 	width := bits / 8
 	if !(format == 1 && (bits == 8 || bits == 16 || bits == 24 || bits == 32) || format == 3 && bits == 32) {
-		return nil, fmt.Errorf("audio: WAV format %d with %d bits is not supported", format, bits)
+		return nil, 0, fmt.Errorf("audio: WAV format %d with %d bits is not supported", format, bits)
 	}
 	n := len(pcm) / (width * channels)
-	out := make([]float32, n)
+	out := make([][]float32, channels)
+	for c := range out {
+		out[c] = make([]float32, n)
+	}
 	for i := 0; i < n; i++ {
-		var sum float64
 		for c := 0; c < channels; c++ {
 			b := pcm[(i*channels+c)*width:]
 			var v float64
@@ -217,11 +241,10 @@ func ReadWAV(data []byte) ([]float32, error) {
 			default:
 				v = float64(int32(binary.LittleEndian.Uint32(b))) / (1 << 31)
 			}
-			sum += v
+			out[c][i] = float32(v)
 		}
-		out[i] = float32(sum / float64(channels))
 	}
-	return Resample(out, rate, SampleRate), nil
+	return out, rate, nil
 }
 
 // Resample converts samples from one rate to another with a Hann windowed sinc low pass at the

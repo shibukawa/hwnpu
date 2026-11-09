@@ -369,6 +369,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | gemma-4-E2B-it | `gemma4` | byte fallback の BPE (`tokenizer.json`) | Gemma 4 | Apple / Intel はテキストのみ | ◎ lut6、文脈 131072 | 変換は可 | ◎ q4 7.9 tok/s、1.78 GB (bf16 は 6.1 tok/s)、画像と音声も |
 | gemma-4-E4B-it | `gemma4` | 同上 | Gemma 4 | テキストのみ | ○ lut6、1 本 (`-prefill auto`) | 変換は可 | ○ q4 5.6 tok/s、3.53 GB、文脈 4096 |
 | Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | ○ `iron_export_lm.py qwen35 --q4`。32 層で 6.4 tok/s (16.94)、4.7 GB。HF と最上位のトークン 8/9 (同じ q4 のホストのグラフと同じ所で外れる、16.92) |
+| Qwen3-0.6B | `qwen3` (16.127) | Qwen3 の前分割 (Anima と同じ `tokenizer.json`) | Qwen3 | — | ○ lut8、注意で分けない 1 本 (文脈 4096、`llm.Unpaged`)、全部 ANE、M1 で 9.5〜12.4 tokens/s、Neural Engine 1.16 GiB + プロセス 2.75 GB。CPU の lut8 の KL 0.014 | 変換は可 (int8)、実機は未確認 | — (書き出しなし) |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3、翻訳) | — | ○ lut8、1 本、文脈 262144。M3 で全部 ANE に載ることと重みの形式を確認 | 変換は可 (int8)。OpenVINO の CPU で訳せた | ◎ q4 11.6 tok/s、2.16 GiB、文脈 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
@@ -399,6 +400,7 @@ AMD (IRON) では、トークナイザーとチャットの型は書き出した
 | LFM3 (`chat.Render`) | 6 会話 (`testdata/template.json`) | system の末尾に `<tools>` と JSON (キーの順を保つ)、呼び出しは `<tool_call><function=名前><parameter=キー>値</parameter>` の XML | `<think>…</think>`。前の応答の思考は消す |
 | Gemma 4 (`chat.Gemma4`) | 9 会話 (`gemma4_template.json`) | 独自の記法 (文字列は `<\|"\|>`、キーは dictsort) | `<\|think\|>` と `<\|channel>thought … <channel\|>` |
 | Qwen3.5 (`chat.Qwen35`) | 9 会話 | Qwen の説明つきの宣言。引数はオブジェクトと配列が JSON、ほかは Python の `str()` | 最後の質問より後の回答だけに残す |
+| Qwen3 (`chat.Qwen3`) | 9 会話 (`qwen3_template.json`、`--text-content`) | Hermes 式: `<tools>` に JSON、呼び出しは `<tool_call>{"name": …, "arguments": {…}}</tool_call>` | 最後の質問より後の回答だけに残す。思考ありでは `<think>\n` まで書く (テンプレートはモデルに書かせる) |
 | System One (`internal/systemone`) | 7 通り (llama.cpp のテンプレートを jinja2 で描画) | d1 の choice / score / noul の問い | `<think></think>` |
 | PLaMo 3 / PFML3 (`chat.Plamo3`) | 8 例 (`tools/ref/plamo3_template_golden.py`) | 道具なし。`target_lang`、`source_lang`、`form`、`context`、`glossary` (`Options.Translation`、API では vLLM と同じ `chat_template_kwargs`) | なし。system メッセージは `context` にする。訳す先がなければ、日本語を含む文は英語へ、ほかは日本語へ訳す。履歴の訳文の札は原文ごとに決めるので、プロンプトの先頭を再利用できる |
 
