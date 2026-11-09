@@ -199,9 +199,15 @@ func ResolveFor(name string, kind Kind, log io.Writer) (Model, error) {
 	return m, nil
 }
 
-func errNoModel(name string) error {
-	return fmt.Errorf("chat: no model %q (-list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME, a model of a source of the definitions SOURCE:NAME)", name)
+// NoModelError is the error of a name that is no model, family or use of the definitions nor a
+// repository.
+type NoModelError struct{ Name string }
+
+func (e *NoModelError) Error() string {
+	return fmt.Sprintf("chat: no model %q (-list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME, a model of a source of the definitions SOURCE:NAME)", e.Name)
 }
+
+func errNoModel(name string) error { return &NoModelError{Name: name} }
 
 // repoModel is the model a name of a repository means: OWNER/NAME or OWNER/NAME@REVISION of
 // Hugging Face (or the sources of Search), or SOURCE:NAME, a model of a source of the

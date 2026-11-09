@@ -49,6 +49,7 @@ type cli struct {
 	Generate GenerateCmd `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Sana-Sprint)."`
 	Depth    DepthCmd    `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's NPU)."`
 	Convert  ConvertCmd  `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export."`
+	List     ListCmd     `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 }
 
 func main() {

@@ -14,17 +14,25 @@ import (
 // and family of them picks on a machine of each of MODEL.md's columns; the aliases; and the
 // definition files read.
 func List(w io.Writer, dir string, ks ...Kind) {
+	ListHave(w, "DOWNLOADED", func(m Model) string {
+		if Downloaded(filepath.Join(dir, m.DirName())) {
+			return "yes"
+		}
+		return "no"
+	}, ks...)
+}
+
+// ListHave is List with the column of whether a model is here named column and filled by have
+// (hwnpu-image: its export on AMD's NPU).
+func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 	of := func(m Model) bool { return len(ks) == 0 || slices.Contains(ks, m.Kind) }
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTAG\tKIND\tFEATURES\tSIZE\tREPOSITORY\tDOWNLOADED\tABOUT")
+	fmt.Fprintf(tw, "NAME\tTAG\tKIND\tFEATURES\tSIZE\tREPOSITORY\t%s\tABOUT\n", column)
 	for _, m := range Catalog {
 		if !of(m) {
 			continue
 		}
-		got := "no"
-		if Downloaded(filepath.Join(dir, m.DirName())) {
-			got = "yes"
-		}
+		got := have(m)
 		features := strings.Join(m.Features, ",")
 		if features == "" {
 			features = "-"
@@ -41,7 +49,20 @@ func List(w io.Writer, dir string, ks ...Kind) {
 	tw.Flush()
 	// MODEL.md's table: what each use and family picks on a machine of each column's memory
 	machine := MachineMemory()
-	fmt.Fprintf(w, "\nUses and families pick by the machine's memory (this one: %d GB), or by a tag: a model's (plamo3translate:2b)\nor a memory's (plamo3translate:8g):\n", machine)
+	// the tags' examples: plamo3translate:2b, else a family of these kinds with more than one tag
+	family, tag := "plamo3translate", "2b"
+	if !slices.ContainsFunc(Catalog, func(m Model) bool { return of(m) && m.Family == family }) {
+		count := map[string]int{}
+		for _, m := range Catalog {
+			if of(m) && m.Tag != "" {
+				if count[m.Family]++; count[m.Family] == 2 {
+					family, tag = m.Family, m.Tag
+					break
+				}
+			}
+		}
+	}
+	fmt.Fprintf(w, "\nUses and families pick by the machine's memory (this one: %d GB), or by a tag: a model's (%s:%s)\nor a memory's (%s:8g):\n", machine, family, tag, family)
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	head := "  NAME\tHERE"
 	for _, c := range Columns {

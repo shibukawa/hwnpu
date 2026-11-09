@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +35,47 @@ func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	if err := chat.LoadUserModels("", os.Stderr); err != nil {
 		return chat.Model{}, err
 	}
-	return chat.ResolveFor(name, kind, os.Stderr)
+	m, err := chat.ResolveFor(name, kind, os.Stderr)
+	if e := (*chat.NoModelError)(nil); errors.As(err, &e) {
+		err = fmt.Errorf("no %s model, family or use %q (hwnpu-image list shows them)", kind, name)
+	}
+	if err != nil {
+		// what there is, then the error (kong prints it last)
+		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, name, kind)
+		listModels(os.Stderr, kind)
+		fmt.Fprintln(os.Stderr)
+	}
+	return m, err
+}
+
+// ListCmd is "hwnpu-image list": the image and depth models of the definitions (models.yaml),
+// whether their exports are here, and what each use and family picks for each machine's memory.
+type ListCmd struct {
+	Kind string `arg:"" optional:"" enum:"image,depth," default:"" help:"Only image or depth models."`
+}
+
+// Run lists the models.
+func (c *ListCmd) Run() error {
+	if err := chat.LoadUserModels("", os.Stderr); err != nil {
+		return err
+	}
+	if c.Kind != "" {
+		listModels(os.Stdout, chat.Kind(c.Kind))
+	} else {
+		listModels(os.Stdout, chat.KindImage, chat.KindDepth)
+	}
+	return nil
+}
+
+// listModels writes chat's list of the models of kinds, with the AMD export each runs
+// (~/models/NAME.amd-npu2) in place of the download.
+func listModels(w io.Writer, kinds ...chat.Kind) {
+	chat.ListHave(w, "AMD EXPORT", func(m chat.Model) string {
+		if d, err := amdExport(m, ""); err == nil {
+			return "~/models/" + filepath.Base(d)
+		}
+		return "-"
+	}, kinds...)
 }
 
 // amdExport is the export of model m on AMD's NPU: ~/models/NAME.amd-npu2 or
