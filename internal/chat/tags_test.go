@@ -108,3 +108,19 @@ func TestRouteByFamily(t *testing.T) {
 		t.Errorf("a tag not loaded routed to %d", i)
 	}
 }
+
+// TestImageMemoryTags checks the image families picked by a machine's memory written as a tag
+// (hwnpu-image generate -m sana:8g), in any case, with or without a space, and of any size, not
+// only MODEL.md's columns.
+func TestImageMemoryTags(t *testing.T) {
+	for name, want := range map[string]string{
+		"sana:8g": "Sana-Sprint-0.6B", "sana:8G": "Sana-Sprint-0.6B", "sana:8GB": "Sana-Sprint-0.6B", "sana:8 G": "Sana-Sprint-0.6B",
+		"sana:12g": "Sana-Sprint-0.6B", "sana:4g": "Sana-Sprint-0.6B", "sana:16G": "Sana-Sprint-1.6B", "sana:100g": "Sana-Sprint-1.6B",
+		"sana-full:8g": "Sana-600M", "moge:20g": "moge-2-vitb", "image:8g": "Anima-Turbo", "depth:64g": "DA3MONO-LARGE",
+	} {
+		m, _, ok, err := Pick(name, 59)
+		if !ok || err != nil || m.Name != want {
+			t.Errorf("Pick(%q) = %s, %v, %v; want %s", name, m.Name, ok, err, want)
+		}
+	}
+}

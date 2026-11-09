@@ -168,7 +168,7 @@ python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2
 go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"
 ```
 
-`--model` (`-m`) を省くと Anima で、AMD の NPU では `~/models/anima-turbo-1024.amd-npu2` を使います。モデルは models.yaml の名前、ファミリー (`anima`、`sana`、`sana:1.6b`、`sana-full`)、書き出しのディレクトリのどれでも指定できます。ファミリーだけのときは、マシンのメモリで大きさを選びます (`sana` は 16 GB 以上で Sana-Sprint 1.6B、それ未満で 0.6B)。名前で選んだモデルは `~/models/NAME.amd-npu2` (小文字、`-1024` 付きも) を探します。`-o` を省くと、今のディレクトリの `image.png` (あれば `image (2).png`、`image (3).png`、…) に書き、OS のビューア (macOS は open、Windows は関連付け、Linux は xdg-open) で開きます。
+`--model` (`-m`) を省くと Anima で、AMD の NPU では `~/models/anima-turbo-1024.amd-npu2` を使います。モデルは models.yaml の名前、ファミリー (`anima`、`sana`、`sana:1.6b`、`sana-full`)、書き出しのディレクトリのどれでも指定できます。ファミリーだけのときは、マシンのメモリで大きさを選びます (`sana` は 16 GB 以上で Sana-Sprint 1.6B、それ未満で 0.6B)。メモリは `-m sana:8g` (`8G`、`8GB`、表の列にない `12g` も可) のように明示でき、そのメモリのマシンで選ばれるものになります。名前で選んだモデルは `~/models/NAME.amd-npu2` (小文字、`-1024` 付きも) を探します。`-o` を省くと、今のディレクトリの `image.png` (あれば `image (2).png`、`image (3).png`、…) に書き、OS のビューア (macOS は open、Windows は関連付け、Linux は xdg-open) で開きます。
 
 Ryzen AI 9 365 で、1024 × 1024 の 1 枚が 8 ステップで約 70 秒、NPU に固定されるメモリは最大 3.4 GiB です (読み込み 4 秒、テキスト 0.5 秒、DiT 1 ステップ 7.2 秒、VAE 7 秒)。`~/models/Anima` の置き方と、精度の測定は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 11 節にあります。
 

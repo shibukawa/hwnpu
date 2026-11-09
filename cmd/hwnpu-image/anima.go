@@ -62,7 +62,7 @@ func (c *ConvertCmd) Run() error {
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima, Sana or Sana-Sprint.
 type GenerateCmd struct {
 	Prompt   string  `arg:"" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English)."`
-	Model    string  `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (anima, sana, sana:1.6b, sana-full; a family alone picks for the machine's memory), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's and Intel's Anima is downloaded and converted into --dir on its first run."`
+	Model    string  `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (anima, sana, sana:1.6b, sana-full; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's and Intel's Anima is downloaded and converted into --dir on its first run."`
 	Dir      string  `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir): Anima's checkpoint and exports in Anima/."`
 	Out      string  `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer)."`
 	Steps    int     `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Sana-Sprint 2, 1 to 4; Sana 20)."`

@@ -64,7 +64,7 @@ func MemoryTag(tag string) (int, bool) {
 			return 0, false
 		}
 	}
-	n, err := strconv.Atoi(num)
+	n, err := strconv.Atoi(strings.TrimSpace(num)) // 8 g, 8 GB too
 	return n, err == nil && n > 0
 }
 

@@ -3412,6 +3412,6 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 ### 16.124 hwnpu-image のモデルを models.yaml から選ぶ、-o なしで開く — 2026-11-10
 
 - models.yaml に種類 `image` (Anima-Turbo、Sana-Sprint 0.6B / 1.6B、Sana 600M、SANA 1.5 1.6B) と `depth` (DA3 の 4 つ、MoGe-2 の 3 つ) を足した。用途 `image` は Anima-Turbo、`depth` は DA3MONO-LARGE
-- `hwnpu-image generate -m sana` はファミリーなので、hwnpu-chat と同じくマシンのメモリで選ぶ (Sana-Sprint 0.6B が 8 GB、1.6B が 16 GB から)。固定のメモリはどれも 2.3 GiB で同じなので、境目は速さ (1.6B は 1.6 倍) と質の釣り合いで決めた。20 ステップの Sana はファミリー `sana-full`
+- `hwnpu-image generate -m sana` はファミリーなので、hwnpu-chat と同じくマシンのメモリで選ぶ (Sana-Sprint 0.6B が 8 GB、1.6B が 16 GB から)。固定のメモリはどれも 2.3 GiB で同じなので、境目は速さ (1.6B は 1.6 倍) と質の釣り合いで決めた。20 ステップの Sana はファミリー `sana-full`。メモリはタグでも明示できる (`sana:8g`、`8G`、`8GB`、`8 g`、表の列にない `12g` も、そのメモリのマシンの選び方)
 - 名前で選んだモデルは AMD の NPU では `~/models/NAME.amd-npu2` か `NAME-1024.amd-npu2` (小文字) を使う。ないときは、落とすリポジトリと `iron_*.py` のコマンドを示して止まる (書き出しを自動で作るのはまだ)。Mac / Intel の Anima は今までどおり自動で落として変換する。`/` や `.`、`~` を含む値は書き出しのディレクトリ
 - `-o` を省くと `image.png` (あれば `image (2).png`、…) に書き、OS のビューアで開く (macOS は open、Windows は rundll32 の FileProtocolHandler、ほかは xdg-open。DISPLAY も WAYLAND_DISPLAY もないときは開かない)
