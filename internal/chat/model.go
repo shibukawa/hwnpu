@@ -183,7 +183,8 @@ type Setup struct {
 	// Name is what the API calls the model (Model.Name), "" for the repository's name.
 	Name string
 	// Context is the longest prompt and answer together; 0 for the longest the model was trained
-	// for when it is split at its attention (Paged), else DefaultContext.
+	// for when it is split at its attention (Paged), else DefaultContext (an llm.Unpaged model's
+	// own, Qwen3's 4096).
 	Context int
 	// Paged is the chunk length of a model split at its attention (llm.Options.Paged): a step
 	// then costs in proportion to the tokens in the cache, and the cache's memory grows with the
@@ -356,6 +357,8 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		context = DefaultContext
 		if pm, ok := model.(llm.Paged); ok && chunk > 0 && pm.MaxContext() > 0 {
 			context = pm.MaxContext()
+		} else if u, ok := model.(llm.Unpaged); ok && chunk == 0 {
+			context = u.UnpagedContext()
 		}
 	}
 	if chunk > 0 {
@@ -643,11 +646,14 @@ func pruneCache(dir string, logf func(string, ...any)) {
 
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
 // none: the model must be Paged (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4), on any
-// NPU.
+// NPU, and an Unpaged one (Qwen3) is split only when Setup.Paged asks.
 func pagedChunk(model llm.Model, want int) int {
 	pm, ok := model.(llm.Paged)
 	if !ok || want < 0 || len(pm.PagedLayers()) == 0 {
 		return 0
+	}
+	if _, whole := model.(llm.Unpaged); whole && want == 0 {
+		return 0 // split only when told (Qwen3)
 	}
 	return cmp.Or(want, paged.DefaultChunk)
 }

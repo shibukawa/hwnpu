@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/milspec"
+	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
 // arg returns the operation's input called name: a bound value or an inline constant. ok is false when
@@ -136,12 +137,32 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		if r.err == nil {
 			out = &value{shape: x.shape, f: append([]float32(nil), x.f...)}
 		}
+	case "clip":
+		x := r.floats("x")
+		lo, hi := r.float("alpha", 0), r.float("beta", 0)
+		if r.err == nil {
+			out = &value{shape: x.shape, f: make([]float32, len(x.f))}
+			for j, v := range x.f {
+				out.f[j] = min(max(v, lo), hi)
+			}
+		}
+	case "cast": // between fp16 and fp32: the interpreter computes in fp32; to fp16 rounds
+		x := r.floats("x")
+		dt := r.str("dtype", "fp32")
+		if r.err == nil {
+			out = &value{shape: x.shape, f: append([]float32(nil), x.f...)}
+			if dt == "fp16" {
+				for j, v := range out.f {
+					out.f[j] = mlpackage.Float16Value(mlpackage.Float16Bits(v))
+				}
+			}
+		}
 	case "add", "sub", "mul", "real_div", "maximum", "minimum":
 		x, y := r.floats("x"), r.floats("y")
 		if r.err == nil {
 			out, r.err = broadcast(x, y, binaryOp(typ))
 		}
-	case "silu", "sigmoid", "relu", "tanh", "exp", "sqrt", "softplus", "abs":
+	case "silu", "sigmoid", "relu", "tanh", "exp", "sqrt", "softplus", "abs", "erf", "cos", "sin", "elu":
 		x := r.floats("x")
 		if r.err == nil {
 			out = unary(x, typ)
@@ -242,10 +263,14 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		mode := r.str("mode", "constant")
 		c := r.float("constant_val", 0)
 		if r.err == nil {
-			if mode != "constant" {
+			switch mode {
+			case "constant":
+				out, r.err = padConst(x, pad, c)
+			case "reflect", "replicate":
+				out, r.err = padEdges(x, pad, mode)
+			default:
 				return nil, fmt.Errorf("pad mode %q is not supported", mode)
 			}
-			out, r.err = padConst(x, pad, c)
 		}
 	case "concat":
 		a := op.GetInputs()["values"]
@@ -263,6 +288,45 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		}
 		if r.err == nil {
 			out, r.err = concat(xs, int(axis))
+		}
+	case "pow":
+		x, y := r.floats("x"), r.floats("y")
+		if r.err == nil {
+			out, r.err = broadcast(x, y, func(a, b float32) float32 { return float32(math.Pow(float64(a), float64(b))) })
+		}
+	case "conv_transpose":
+		x, w := r.floats("x"), r.floats("weight")
+		b := r.opt("bias")
+		st := r.ints("strides", 1, 1)
+		pad := r.ints("pad", 0, 0, 0, 0)
+		var shape []int32
+		if v := r.opt("output_shape"); v != nil {
+			for _, d := range v.f {
+				shape = append(shape, int32(d))
+			}
+			if v.i != nil {
+				shape = shape[:0]
+				for _, d := range v.i {
+					shape = append(shape, int32(d))
+				}
+			}
+		}
+		if r.err == nil {
+			out, r.err = convTranspose2d(x, w, b, st, pad, shape)
+		}
+	case "max_pool":
+		x := r.floats("x")
+		k, st := r.ints("kernel_sizes"), r.ints("strides", 1, 1)
+		padType := r.str("pad_type", "valid")
+		pad := r.ints("pad", 0, 0, 0, 0)
+		if r.err == nil {
+			if padType != "custom" && padType != "valid" {
+				return nil, fmt.Errorf("pad_type %q is not supported", padType)
+			}
+			if padType == "valid" {
+				pad = []int32{0, 0, 0, 0}
+			}
+			out, r.err = maxPool2d(x, k, st, pad)
 		}
 	case "conv":
 		x, w := r.floats("x"), r.floats("weight")
@@ -447,6 +511,16 @@ func unary(x *value, typ string) *value {
 		case "softplus":
 			// log(1 + exp(a)), without overflowing exp for large a
 			a = math.Max(a, 0) + math.Log1p(math.Exp(-math.Abs(a)))
+		case "erf":
+			a = math.Erf(a)
+		case "elu": // alpha 1
+			if a < 0 {
+				a = math.Expm1(a)
+			}
+		case "cos":
+			a = math.Cos(a)
+		case "sin":
+			a = math.Sin(a)
 		}
 		out.f[i] = float32(a)
 	}
@@ -931,6 +1005,55 @@ func padConst(x *value, pad []int32, c float32) (*value, error) {
 	return out, nil
 }
 
+// padEdges pads the last len(pad)/2 axes by reflection (the edge not repeated) or by repeating
+// the edge.
+func padEdges(x *value, pad []int32, mode string) (*value, error) {
+	rank := len(x.shape)
+	k := len(pad) / 2
+	if len(pad)%2 != 0 || k > rank {
+		return nil, fmt.Errorf("pad %v for shape %v", pad, x.shape)
+	}
+	shape := append([]int{}, x.shape...)
+	before := make([]int, rank)
+	for j := 0; j < k; j++ {
+		ax := rank - k + j
+		before[ax] = int(pad[2*j])
+		shape[ax] += int(pad[2*j]) + int(pad[2*j+1])
+	}
+	out := &value{shape: shape, f: make([]float32, numel(shape))}
+	xst := strides(x.shape)
+	idx := make([]int, rank)
+	for i := range out.f {
+		off := 0
+		for d := range rank {
+			j, n := idx[d]-before[d], x.shape[d]
+			if mode == "replicate" {
+				j = min(max(j, 0), n-1)
+			} else if n > 1 {
+				for j < 0 || j >= n {
+					if j < 0 {
+						j = -j
+					}
+					if j >= n {
+						j = 2*(n-1) - j
+					}
+				}
+			} else {
+				j = 0
+			}
+			off += j * xst[d]
+		}
+		out.f[i] = x.f[off]
+		for d := rank - 1; d >= 0; d-- {
+			if idx[d]++; idx[d] < shape[d] {
+				break
+			}
+			idx[d] = 0
+		}
+	}
+	return out, nil
+}
+
 func concat(xs []*value, a int) (*value, error) {
 	if len(xs) == 0 {
 		return nil, fmt.Errorf("nothing to concat")
@@ -1152,5 +1275,98 @@ func shiftScale(data, scale, offset *value) (*value, error) {
 		}
 		out.f[i] = v * scale.f[blocks[i]]
 	}
+	return out, nil
+}
+
+// maxPool2d is a 2 D max pool of x (n, c, h, w) with kernel k, strides st and pads (top, bottom,
+// left, right), the padding never chosen.
+func maxPool2d(x *value, k, st, pad []int32) (*value, error) {
+	if len(x.shape) != 4 || len(k) != 2 || len(st) != 2 || len(pad) != 4 {
+		return nil, fmt.Errorf("max_pool of %v with kernel %v, strides %v, pad %v", x.shape, k, st, pad)
+	}
+	n, c, h, w := x.shape[0], x.shape[1], x.shape[2], x.shape[3]
+	kh, kw, sh, sw := int(k[0]), int(k[1]), int(st[0]), int(st[1])
+	pt, pb, pl, pr := int(pad[0]), int(pad[1]), int(pad[2]), int(pad[3])
+	oh, ow := (h+pt+pb-kh)/sh+1, (w+pl+pr-kw)/sw+1
+	out := &value{shape: []int{n, c, oh, ow}, f: make([]float32, n*c*oh*ow)}
+	parallel(n*c, func(lo, hi int) {
+		for p := lo; p < hi; p++ {
+			src, dst := x.f[p*h*w:(p+1)*h*w], out.f[p*oh*ow:(p+1)*oh*ow]
+			for i := range oh {
+				for j := range ow {
+					m := float32(math.Inf(-1))
+					for a := range kh {
+						y := i*sh - pt + a
+						if y < 0 || y >= h {
+							continue
+						}
+						for b := range kw {
+							xx := j*sw - pl + b
+							if xx >= 0 && xx < w && src[y*w+xx] > m {
+								m = src[y*w+xx]
+							}
+						}
+					}
+					dst[i*ow+j] = m
+				}
+			}
+		}
+	})
+	return out, nil
+}
+
+// convTranspose2d is the transpose of a 2 D convolution (its gradient with respect to its input):
+// x (n, cin, h, w), weight (cin, cout, kh, kw); the output (n, cout, (h-1)*sh+kh, (w-1)*sw+kw)
+// less pad (top, bottom, left, right), or output_shape's height and width taken from the top
+// left.
+func convTranspose2d(x, w, bias *value, st, pad, outShape []int32) (*value, error) {
+	if len(x.shape) != 4 || len(w.shape) != 4 || w.shape[0] != x.shape[1] || len(st) != 2 || len(pad) != 4 {
+		return nil, fmt.Errorf("conv_transpose of %v by %v", x.shape, w.shape)
+	}
+	n, cin, h, wd := x.shape[0], x.shape[1], x.shape[2], x.shape[3]
+	cout, kh, kw := w.shape[1], w.shape[2], w.shape[3]
+	sh, sw := int(st[0]), int(st[1])
+	rh, rw := (h-1)*sh+kh, (wd-1)*sw+kw
+	pt, pl := int(pad[0]), int(pad[2])
+	oh, ow := rh-int(pad[0])-int(pad[1]), rw-int(pad[2])-int(pad[3])
+	if len(outShape) == 4 {
+		oh, ow = int(outShape[2]), int(outShape[3])
+	}
+	out := &value{shape: []int{n, cout, oh, ow}, f: make([]float32, n*cout*oh*ow)}
+	parallel(cout, func(lo, hi int) {
+		for o := lo; o < hi; o++ {
+			for b := range n {
+				dst := out.f[(b*cout+o)*oh*ow:][:oh*ow]
+				if bias != nil {
+					for i := range dst {
+						dst[i] = bias.f[o]
+					}
+				}
+				for c := range cin {
+					src := x.f[(b*cin+c)*h*wd:][:h*wd]
+					for a := range kh {
+						for e := range kw {
+							wv := w.f[((c*cout+o)*kh+a)*kw+e]
+							if wv == 0 {
+								continue
+							}
+							for i := range h {
+								y := i*sh + a - pt
+								if y < 0 || y >= oh {
+									continue
+								}
+								for j := range wd {
+									xx := j*sw + e - pl
+									if xx >= 0 && xx < ow {
+										dst[y*ow+xx] += wv * src[i*wd+j]
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	})
 	return out, nil
 }

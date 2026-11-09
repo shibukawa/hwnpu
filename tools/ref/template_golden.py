@@ -8,6 +8,10 @@ unless no_think, preserve_thinking with keep_thinking) and written with the prom
 The conversations are in the OpenAI form the server receives: a tool call's arguments are a JSON
 string, which is parsed into an object for the template, as the server does. Needs transformers
 and jinja2, not torch.
+
+--text-content joins the text parts of a content given as a list into a string first, as vLLM does
+for a template that takes content as a string (Qwen3's, which renders a list as nothing or fails
+on it), and as internal/chat's Content does.
 """
 import argparse
 import copy
@@ -148,6 +152,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model_dir")
     ap.add_argument("out")
+    ap.add_argument("--text-content", action="store_true", help="join a content's text parts into a string")
     a = ap.parse_args()
 
     from transformers import AutoTokenizer
@@ -157,6 +162,8 @@ def main():
     for c in CASES:
         msgs = copy.deepcopy(c["messages"])
         for m in msgs:
+            if a.text_content and isinstance(m.get("content"), list):
+                m["content"] = "".join(p["text"] for p in m["content"] if p.get("type") == "text")
             for tc in m.get("tool_calls") or []:
                 tc["function"]["arguments"] = json.loads(tc["function"]["arguments"])
         want = tok.apply_chat_template(

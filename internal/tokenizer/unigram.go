@@ -26,6 +26,9 @@ type Unigram struct {
 	after   []int32 // what the post-processor puts after a text
 	norm    *charsmap
 	space   string // Metaspace's replacement
+	// bytes are the <0xNN> pieces when an unknown character becomes its UTF-8 bytes
+	// (sentencepiece's byte fallback), or nil.
+	bytes []int32
 }
 
 // LoadUnigram reads a Unigram tokenizer.json.
@@ -192,10 +195,18 @@ func (u *Unigram) word(ids []int32, w string) []int32 {
 		}
 	}
 	var rev []int32
+	var ends []int
 	for j := n; j > 0; j = from[j] {
 		rev = append(rev, tok[j])
+		ends = append(ends, j)
 	}
 	for k := len(rev) - 1; k >= 0; k-- {
+		if rev[k] == u.unk && u.bytes != nil {
+			for _, c := range []byte(w[from[ends[k]]:ends[k]]) {
+				ids = append(ids, u.bytes[c])
+			}
+			continue
+		}
 		if rev[k] == u.unk && len(ids) > 0 && ids[len(ids)-1] == u.unk {
 			continue
 		}
@@ -221,6 +232,11 @@ func parseCharsmap(b64 string) (*charsmap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("precompiled charsmap: %w", err)
 	}
+	return charsmapFrom(raw)
+}
+
+// charsmapFrom reads a precompiled charsmap's bytes.
+func charsmapFrom(raw []byte) (*charsmap, error) {
 	if len(raw) < 4 {
 		return nil, errors.New("precompiled charsmap: too short")
 	}

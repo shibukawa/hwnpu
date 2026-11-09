@@ -85,6 +85,7 @@ type mass struct {
 // Chain is a loaded model in parts.
 type Chain struct {
 	dev   *hwnpu.Device
+	units string // GraphSource.Units of every part
 	gr    hwnpu.GraphRunner
 	tiers []llm.Tier
 	index int   // the tier loaded
@@ -111,7 +112,17 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
-	return open(ctx, dev, man, nil)
+	return open(ctx, dev, man, nil, "")
+}
+
+// OpenOn is Open with every part run on the units given (hwnpu.GraphSource.Units: "gpu", "cpu";
+// "" the Neural Engine).
+func OpenOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*Chain, error) {
+	man, err := llm.ReadManifest(path)
+	if err != nil {
+		return nil, err
+	}
+	return open(ctx, dev, man, nil, units)
 }
 
 // Share loads the model at path like Open, but binds its KV cache inputs (kv_*, win_*, st_*: llm.CacheInput) to the
@@ -129,15 +140,15 @@ func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Cha
 			shared[name] = b
 		}
 	}
-	return open(ctx, dev, man, shared)
+	return open(ctx, dev, man, shared, "")
 }
 
-func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[string]*hwnpu.Buffer) (*Chain, error) {
+func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[string]*hwnpu.Buffer, units string) (*Chain, error) {
 	gr, err := dev.Graph()
 	if err != nil {
 		return nil, err
 	}
-	c := &Chain{dev: dev, gr: gr, tiers: man.Tiered(), sharing: shared != nil}
+	c := &Chain{dev: dev, gr: gr, tiers: man.Tiered(), sharing: shared != nil, units: units}
 	c.meta, _ = llm.ReadMeta(man) // conversions from before the metadata have none
 	if c.cur, err = c.load(ctx, c.tiers[0].Parts, shared); err != nil {
 		return nil, err
@@ -186,7 +197,7 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 	a := &attention{dev: c.dev}
 	t.attn = a
 	var err error
-	if a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: man.Attention.Path}); err != nil {
+	if a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: man.Attention.Path, Units: c.units}); err != nil {
 		return fmt.Errorf("chain: the attention program (%s): %w", man.Attention.Path, err)
 	}
 	a.placement = a.g.Placement()
@@ -239,7 +250,7 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 func loadMass(ctx context.Context, c *Chain, path string) (*mass, error) {
 	ms := &mass{}
 	var err error
-	if ms.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path}); err != nil {
+	if ms.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units}); err != nil {
 		return nil, fmt.Errorf("chain: the mass program (%s): %w", path, err)
 	}
 	ms.placement = ms.g.Placement()
@@ -387,7 +398,7 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 	var err error
 	for i, lp := range list {
 		p := &Part{PartRecord: lp}
-		if p.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: lp.Path}); err != nil {
+		if p.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: lp.Path, Units: c.units}); err != nil {
 			t.close()
 			return nil, fmt.Errorf("chain: part %d (%s): %w", i, lp.Path, err)
 		}

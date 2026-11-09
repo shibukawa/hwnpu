@@ -98,7 +98,7 @@ Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`
 
 What helped:
 
-- Scale the norms' inputs by 1/64 (Gemma 4: KL 3.17 → 0.0004; PLaMo 3 too)
+- Scale the norms' inputs by 1/64 (Gemma 4: KL 3.17 → 0.0004; PLaMo 3 too). Not small inputs, though (the embeddings entering layer 0): their squares fall under fp16's range and give NaN (Qwen3-0.6B's embeddings reach about 0.1, 16.127). Always look at layer 0 with `-f16`
 - Shrink the last layer with head-scale (PLaMo-Embedding), `-post-scale` (LFM3, 1.4–2.7 % a layer)
 - Keep residuals at 1/32, and divide by each row's maximum before a norm (Anima; a fixed scale made subnormals)
 - Fill padding rows with the last token (Gemma 4's eps becomes 0 in fp16 and gives NaN)
@@ -261,7 +261,7 @@ Drafts from an MTP layer: measure 1, 2 and 3 drafts on both code and prose. Each
 
 ## 8. Long contexts
 
-- Split at the attention (`-paged`): the cost follows the length used. 262144 by default
+- Split at the attention (`-paged`): the cost follows the length used. 262144 by default. Split, though, every attention layer calls the Neural Engine twice: a model whose layers all attend (Qwen3-0.6B's 28) runs 2 to 4 times faster as one program (16.127, `llm.Unpaged`). Count the attention layers and measure both
 - Two-level attention (`-sparse`): from about 48K. Passkey tests (128K, 250K, and three at 10 / 50 / 90 % of a document)
 - Layers with state (GDN): one token at a time must match chunks of Q=64 (the form of `TestCachedMatchesFull`)
 

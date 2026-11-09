@@ -56,6 +56,12 @@ type Program struct {
 type Options struct {
 	// RoundF16 rounds every operation's result to fp16.
 	RoundF16 bool
+	// FlushSubnormals, with RoundF16, rounds fp16 subnormals (under 6.1e-5) to zero, as the
+	// Neural Engine may.
+	FlushSubnormals bool
+	// Trace, when set, is called with each operation's type, output name and largest absolute
+	// value (before RoundF16), to find what overflows fp16 (65504).
+	Trace func(typ, name string, maxAbs, rms float32)
 }
 
 // Load prepares the main function of prog. weights is the weight file the program's blob values
@@ -147,9 +153,27 @@ func (p *Program) Run(inputs map[string]Tensor, opts Options) (map[string]Tensor
 		if want := typeShape(o.GetType()); out.f != nil && !sameShape(want, out.shape) {
 			return nil, fmt.Errorf("milcpu: %s %s: computed shape %v, declared %v", op.GetType(), o.GetName(), out.shape, want)
 		}
+		if opts.Trace != nil && out.f != nil && op.GetType() != "const" {
+			var m float32
+			var ss float64
+			for _, x := range out.f {
+				ss += float64(x) * float64(x)
+				if x < 0 {
+					x = -x
+				}
+				if x > m || x != x {
+					m = x
+				}
+			}
+			opts.Trace(op.GetType(), o.GetName(), m, float32(math.Sqrt(ss/float64(max(1, len(out.f))))))
+		}
 		if opts.RoundF16 && out.f != nil && op.GetType() != "const" {
 			for j, x := range out.f {
-				out.f[j] = mlpackage.Float16Value(mlpackage.Float16Bits(x))
+				v := mlpackage.Float16Value(mlpackage.Float16Bits(x))
+				if opts.FlushSubnormals && v > -6.103515625e-05 && v < 6.103515625e-05 {
+					v = 0
+				}
+				out.f[j] = v
 			}
 		}
 		vals[o.GetName()] = out
