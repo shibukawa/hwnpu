@@ -1,5 +1,12 @@
 // hwnpu-tts speaks text with LFM3-Audio-2B on the Neural Engine and writes a WAV file (24 kHz).
 //
+//	hwnpu-tts -lang ja -o out.wav こんにちは            # -use speech: downloaded and converted when missing
+//	hwnpu-tts -list
+//
+// The first run downloads LFM3-Audio-2B into -dir (its download is shared with hwnpu-chat's
+// LFM3-Audio-2B) and converts the programs below by itself (internal/speech Prepare). Programs
+// converted by hand are given with -model, -text, -depth and -codec instead:
+//
 //	hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
 //	hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 64 -cache 2048 -hidden-out 1 -o DIR/tts-q64.mlpackage
 //	hwnpu-convert -arch lfm3-depthformer -config DIR/config.json -weights DIR/model.safetensors -format fp16 -o DIR/depth.mlpackage
@@ -22,11 +29,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/speech"
 )
 
 func main() {
-	model := flag.String("model", "", "directory of the checkpoint: config.json, model.safetensors, tokenizer.json, audio_tokenizer/config.json")
+	use := flag.String("use", "speech", "the model: a name, a use or a family of -list (speech, lfm3-audio-tts:2b), or a Hugging Face repository OWNER/NAME of an LFM3-Audio checkpoint")
+	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept (as hwnpu-chat's -dir)")
+	format := flag.String("format", "", "weight format of the text model's programs (default: the model's, 8 bit tables)")
+	list := flag.Bool("list", false, "list the speech models of the definitions and exit")
+	modelFiles := flag.String("models", "", chat.ModelsUsage)
+	model := flag.String("model", "", "with -text, -depth and -codec: directory of the checkpoint (config.json, model.safetensors, tokenizer.json, audio_tokenizer/config.json) of programs converted by hand")
 	text := flag.String("text", "", "the text model converted with -cache and -hidden-out 1, comma separated packages of different -seq")
 	depth := flag.String("depth", "", "the depthformer (hwnpu-convert -arch lfm3-depthformer)")
 	codec := flag.String("codec", "", "the codec decoder (hwnpu-convert on audio_tokenizer/, -arch lfm3-codec)")
@@ -38,7 +51,16 @@ func main() {
 	cpu := flag.Bool("cpu", false, "run on the CPU interpreter instead of the Neural Engine (slow)")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	flag.Parse()
-	if *model == "" || *text == "" || *depth == "" || *codec == "" || flag.NArg() == 0 {
+	if err := chat.LoadUserModels(*modelFiles, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-tts:", err)
+		os.Exit(2)
+	}
+	if *list {
+		chat.List(os.Stdout, *dir, chat.KindSpeech)
+		return
+	}
+	manual := *model != "" || *text != "" || *depth != "" || *codec != ""
+	if flag.NArg() == 0 || manual && (*model == "" || *text == "" || *depth == "" || *codec == "") {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -49,7 +71,19 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := run(ctx, speech.Config{Text: strings.Split(*text, ","), Depth: *depth, Codec: *codec, Dir: *model, CacheDir: *cacheDir, CPU: *cpu, Log: os.Stderr},
+	c := speech.Config{Text: strings.Split(*text, ","), Depth: *depth, Codec: *codec, Dir: *model}
+	if !manual {
+		m, err := chat.ResolveFor(*use, chat.KindSpeech, os.Stderr)
+		if err == nil {
+			c, err = speech.Prepare(ctx, speech.Setup{Dir: filepath.Join(*dir, m.DirName()), Repo: m.Source(), Format: *format, Log: os.Stderr})
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "hwnpu-tts:", err)
+			os.Exit(1)
+		}
+	}
+	c.CacheDir, c.CPU, c.Log = *cacheDir, *cpu, os.Stderr
+	if err := run(ctx, c,
 		speech.Request{Text: strings.Join(flag.Args(), " "), Language: *lang, Voice: *voice, Seed: *seed, MaxFrames: *maxFrames}, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-tts:", err)
 		os.Exit(1)

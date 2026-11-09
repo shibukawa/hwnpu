@@ -104,6 +104,15 @@ func route(model string, names, others []string, kind Kind, other string) (int, 
 			return i, 0, ""
 		}
 	}
+	// a family or a use (translate, plamo3translate:2b) names the model it picks here, as -use did
+	if m, _, ok, err := Pick(model, MachineMemory()); ok && err == nil {
+		for i, n := range names {
+			if strings.EqualFold(m.Name, n) {
+				return i, 0, ""
+			}
+		}
+		model = m.Name
+	}
 	for _, n := range others {
 		if strings.EqualFold(model, n) {
 			return -1, http.StatusBadRequest, fmt.Sprintf("%s is not a %s model: use %s", n, kind, other)

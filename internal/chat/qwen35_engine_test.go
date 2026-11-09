@@ -8,9 +8,9 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -105,7 +105,48 @@ func TestPrepareQwen35(t *testing.T) {
 			t.Errorf("%s: paged %d, cache %d, seq %d, %d parts", p, man.Paged, man.Cache, man.Seq, len(man.Parts))
 		}
 	}
-	if !Downloaded(dir) || !strings.HasSuffix(c.Weights, "model.safetensors") {
+	if !Downloaded(dir) || filepath.Base(c.Weights) != TablesFile {
 		t.Errorf("downloaded %v, weights %s", Downloaded(dir), c.Weights)
+	}
+	// the tables are the checkpoint's rows: the same as read from the checkpoint
+	a, model, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := llm.OpenWeights(filepath.Join(dir, "model.safetensors"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb, err := llm.OpenWeights(c.Weights, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tok := range []int32{0, 7, 47} {
+		x, err := llm.TokenRow(ck, model, tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		y, err := llm.TokenRow(tb, model, tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(x, y) {
+			t.Fatalf("token %d: the tables' row differs from the checkpoint's", tok)
+		}
+	}
+	ck.Close()
+	tb.Close()
+	// with the checkpoint gone and the repository not serving it, the converted model is ready
+	// all the same: nothing is downloaded or converted again
+	for _, f := range []string{"model.safetensors.index.json", "m-1.safetensors", "m-2.safetensors"} {
+		os.Remove(filepath.Join(dir, f))
+		delete(files, "/org/qwen/resolve/main/"+f)
+	}
+	c2, err := Prepare(context.Background(), Setup{Dir: dir, Repo: "org/qwen", Draft: 8, Backend: "coreml", Format: "fp16", Log: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c2.Packages, c.Packages) || c2.Weights != c.Weights {
+		t.Errorf("second Prepare: packages %q, weights %s", c2.Packages, c2.Weights)
 	}
 }

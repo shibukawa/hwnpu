@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
@@ -75,26 +76,34 @@ const (
 const mtpSeq = 8
 
 // mtpArch is the architecture of a model's multi-token prediction layer, "" for none: that of
-// the arch with -mtp, when the checkpoint has its tensors.
-func mtpArch(config, weights string, a *llm.Arch) string {
+// the arch with -mtp, when the checkpoint has its tensors. A program of the layer converted
+// before in pdir says it has them; else the checkpoint is downloaded to look (tables.go).
+func mtpArch(config string, a *llm.Arch, pdir string, checkpoint func() (string, error)) (string, error) {
 	name := a.Name + "-mtp"
 	ma, mm, err := llm.LoadConfig(config, name)
 	if err != nil {
-		return ""
+		return "", nil
+	}
+	if done, _ := filepath.Glob(filepath.Join(pdir, ma.Name+"*-last*.done")); len(done) > 0 {
+		return name, nil
+	}
+	weights, err := checkpoint()
+	if err != nil {
+		return "", err
 	}
 	w, err := llm.OpenWeights(weights, ma)
 	if err != nil {
-		return ""
+		return "", nil
 	}
 	defer w.Close()
 	for t := range mm.Tensors() {
 		if strings.HasPrefix(t, "mtp.") && strings.HasSuffix(t, "norm.weight") {
 			if _, _, err := w.Get(t); err != nil {
-				return ""
+				return "", nil
 			}
 		}
 	}
-	return name
+	return name, nil
 }
 
 // compileCacheBytes is about what the Neural Engine's own cache of compiled programs holds
@@ -168,6 +177,11 @@ func Tiers(s string) ([]int, error) {
 type Setup struct {
 	Dir  string // holds config.json, tokenizer.json, model.safetensors and the converted programs
 	Repo string // Hugging Face repository the missing checkpoint files come from
+	// Arch is the structure to convert the model as (llm.Lookup), "" for the one config.json
+	// says (Model.Arch: a distilled model whose model_type is a name of its own).
+	Arch string
+	// Name is what the API calls the model (Model.Name), "" for the repository's name.
+	Name string
 	// Context is the longest prompt and answer together; 0 for the longest the model was trained
 	// for when it is split at its attention (Paged), else DefaultContext.
 	Context int
@@ -279,8 +293,8 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err := fetch(ctx, s.Repo, "config.json", filepath.Join(s.Dir, "config.json"), s.Log); err != nil {
 		return Config{}, err
 	}
-	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: filepath.Base(s.Repo), Backend: cmp.Or(s.Backend, backend)}
-	a, model, err := llm.LoadConfig(c.ModelConfig, "")
+	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, backend)}
+	a, model, err := llm.LoadConfig(c.ModelConfig, s.Arch)
 	if err != nil {
 		return Config{}, err
 	}
@@ -289,9 +303,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			return Config{}, err
 		}
 	}
-	if err := FetchWeights(ctx, s.Repo, s.Dir, s.Log); err != nil {
-		return Config{}, err
-	}
+	// the checkpoint is downloaded only when a program or the tables are to be written from it:
+	// what was converted runs without it (tables.go)
+	checkpoint := sync.OnceValues(func() (string, error) {
+		return c.Weights, FetchWeights(ctx, s.Repo, s.Dir, s.Log)
+	})
 	// The name says what the program is: the format always, since a change of the defaults
 	// (LFM3 to lut6 and the grouped attention, 2026-11) must convert anew instead of loading
 	// what an earlier version wrote, and the attention where the architecture has the setting.
@@ -322,7 +338,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	var mtp string
 	params := map[string]string{}
 	if s.Draft > 1 && s.MTP != MTPOff && backend != llm.BackendIntel {
-		if mtp = mtpArch(c.ModelConfig, c.Weights, a); mtp != "" {
+		if mtp, err = mtpArch(c.ModelConfig, a, pdir, checkpoint); err != nil {
+			return Config{}, err
+		}
+		if mtp != "" {
 			kind += "-h"
 			params["hidden-out"] = "1"
 		}
@@ -430,7 +449,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				pp["state-rows"] = "1"
 			}
 			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s%s", pk, cache, p.seq, last, programExt(backend)))
-			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow, kvOnly: p.kvOnly}, s.Log)
+			if !converted(out) {
+				if _, err := checkpoint(); err != nil {
+					return Config{}, err
+				}
+			}
+			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow, kvOnly: p.kvOnly}, s.Log)
 			if err != nil {
 				return Config{}, err
 			}
@@ -458,6 +482,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			mkind += fmt.Sprintf("-p%d", chunk)
 		}
 		out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d-last%s", mkind, context, mtpSeq, programExt(backend)))
+		if !converted(out) {
+			if _, err := checkpoint(); err != nil {
+				return Config{}, err
+			}
+		}
 		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: mtp, format: s.Format, seq: mtpSeq, cache: context, paged: chunk, lastRow: true}, s.Log)
 		if err != nil {
 			return Config{}, err
@@ -476,11 +505,19 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			}
 		}
 		out := filepath.Join(pdir, fmt.Sprintf("%s%s-%s%s", e.arch, ea.Rev(), e.value, programExt(backend)))
+		if !converted(out) {
+			if _, err := checkpoint(); err != nil {
+				return Config{}, err
+			}
+		}
 		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: e.arch, format: "fp16", params: map[string]string{e.param: e.value}}, s.Log)
 		if err != nil {
 			return Config{}, err
 		}
 		*e.packages(&c) = []string{path}
+	}
+	if c.Weights, err = writeTables(s.Dir, a, model, checkpoint, s.Log); err != nil {
+		return Config{}, err
 	}
 	// A conversion reads the checkpoint into memory (2.4 GiB of PLaMo 3 Translate 2B left after
 	// it): give it back now rather than as Go's scavenger does, a little at a time.
@@ -725,8 +762,17 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	return path, os.WriteFile(done, []byte(path), 0o644)
 }
 
+// repoName is a repository's name: NAME of OWNER/NAME or OWNER/NAME@REVISION.
+func repoName(repo string) string {
+	repo, _, _ = strings.Cut(repo, "@")
+	return filepath.Base(repo)
+}
+
 // errNotFound is the error of fetch for a file the repository does not have.
 var errNotFound = errors.New("not in the repository")
+
+// NotFound reports whether err is Fetch's for a file the repository does not have.
+func NotFound(err error) bool { return errors.Is(err, errNotFound) }
 
 // FetchWeights downloads the checkpoint into dir: model.safetensors, or when the repository has
 // it in several files (Qwen3.5-4B), its index model.safetensors.index.json and the files it
@@ -782,11 +828,13 @@ func shards(index string) ([]string, error) {
 
 // fetch downloads a file of a Hugging Face repository to path unless it is there. A download cut
 // off goes on from where it stopped (path.part). HF_TOKEN, when set, is sent for gated models.
+// repo is OWNER/NAME, or OWNER/NAME@REVISION for a revision other than main (Model.Source).
 func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
-	url := hubURL + repo + "/resolve/main/" + name
+	repo, rev, _ := strings.Cut(repo, "@")
+	url := hubURL + repo + "/resolve/" + cmp.Or(rev, "main") + "/" + name
 	part := path + ".part"
 	var have int64
 	if fi, err := os.Stat(part); err == nil {

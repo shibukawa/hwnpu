@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -15,23 +17,57 @@ import (
 type Kind string
 
 const (
-	KindChat  Kind = "chat"      // generates text: the chat completions API
-	KindEmbed Kind = "embedding" // turns a text into a vector: the embeddings API
+	KindChat       Kind = "chat"       // generates text: the chat completions API
+	KindEmbed      Kind = "embedding"  // turns a text into a vector: the embeddings API
+	KindTranscribe Kind = "transcribe" // speech to text: hwnpu-transcribe
+	KindSpeech     Kind = "speech"     // text to speech: hwnpu-tts
+	KindDecision   Kind = "decision"   // answers about a state: hwnpu-systemone
 )
 
-// Model is a model hwnpu-chat runs.
+// Model is a model of the definitions (models.yaml).
 type Model struct {
 	Name     string // what -use and the API call it
 	Kind     Kind
 	Features []string // what it can do besides its kind, from Features
 	Repo     string   // the Hugging Face repository it is downloaded from
-	Bytes    float64  // the size of the download (0: unknown)
-	About    string
+	Revision string   // the repository's revision to download ("": main)
+	// Arch is the structure the definitions name (llm.Lookup), "" for the one config.json says.
+	Arch string
+	// Files are the definition files that wrote the model (ModelFiles).
+	Files []string
+	Bytes float64 // the size of the download (0: unknown)
+	About string
 	// NoThink is the model's own default of answering without thinking first, which -think
 	// given on the command line, reasoning_effort or enable_thinking override (Qwen3.5's 0.8B
 	// and 2B: their chat templates think only when asked, and the 0.8B thinks to the budget on
 	// simple questions, docs/design.md 16.99).
 	NoThink bool
+	// Family and Tag name the model as FAMILY:TAG (plamo3translate:2b). The family alone picks
+	// the tag for the machine's memory: the one of the largest Machine that the machine has.
+	Family, Tag string
+	// Machine is the least memory of a machine, in GB, that the model is recommended for when its
+	// family is named without a tag (MODEL.md's columns: 8, 16, 24, 32, 48, 64).
+	Machine int
+	// Memory is what the model takes running, in GB: its NPU buffers and the process after a short
+	// conversation (MODEL.md, "at start").
+	Memory float64
+}
+
+// DirName is the model's directory in the models' directory: its repository's name, so that
+// models of one repository (LFM3-Audio-2B and its speech) share the download.
+func (m Model) DirName() string {
+	if m.Repo == "" {
+		return m.Name
+	}
+	return path.Base(m.Repo)
+}
+
+// Source is the repository as fetch takes it: OWNER/NAME, or OWNER/NAME@REVISION when pinned.
+func (m Model) Source() string {
+	if m.Revision == "" {
+		return m.Repo
+	}
+	return m.Repo + "@" + m.Revision
 }
 
 // Features explains the features a model of the catalog can have. The names are those of
@@ -45,33 +81,9 @@ var Features = []struct{ Name, About string }{
 	{"translation", "translates the text of each user message (chat_template_kwargs target_lang, source_lang, form, context, glossary; -to in the terminal)"},
 }
 
-// Catalog lists the models hwnpu-chat knows, by name.
-var Catalog = []Model{
-	{Name: "LFM3-1.7B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "LiquidAI/LFM3-1.7B", Bytes: 3.5e9,
-		About: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"},
-	{Name: "LFM3-VL-2B", Kind: KindChat, Features: []string{"tools", "thinking", "vision"}, Repo: "LiquidAI/LFM3-VL-2B", Bytes: 3.8e9,
-		About: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"},
-	{Name: "LFM3-Audio-2B", Kind: KindChat, Features: []string{"tools", "thinking", "audio"}, Repo: "LiquidAI/LFM3-Audio-2B", Bytes: 4.0e9,
-		About: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-tts)"},
-	{Name: "LFM3-Omni-2B", Kind: KindChat, Features: []string{"tools", "thinking", "vision", "audio"}, Repo: "LiquidAI/LFM3-Omni-2B", Bytes: 4.3e9,
-		About: "Liquid AI's LFM3 with both encoders: images of 512x512 and clips up to 30 seconds, answers in text"},
-	{Name: "gemma-4-E2B-it", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "google/gemma-4-E2B-it", Bytes: 10.2e9,
-		About: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"},
-	{Name: "gemma-4-E4B-it", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "google/gemma-4-E4B-it", Bytes: 16.0e9,
-		About: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"},
-	{Name: "Qwen3.5-4B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-4B", Bytes: 9.3e9,
-		About: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 8 bit tables (6 bit ones lose too much) read 8 tokens per call; the download has the vision part too, which is not converted"},
-	{Name: "Qwen3.5-0.8B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-0.8B", Bytes: 1.77e9, NoThink: true,
-		About: "Qwen's smallest Qwen3.5, the 4B's structure in 0.8B: fast, but weak at facts; its text model in 8 bit tables, answering without thinking unless asked; the download has the vision part too, which is not converted"},
-	{Name: "Qwen3.5-2B", Kind: KindChat, Features: []string{"tools", "thinking"}, Repo: "Qwen/Qwen3.5-2B", Bytes: 4.57e9, NoThink: true,
-		About: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"},
-	{Name: "plamo-3-translate-2b", Kind: KindChat, Features: []string{"translation"}, Repo: "pfnet/plamo-3-translate-2b", Bytes: 5.76e9,
-		About: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"},
-	{Name: "plamo-3-translate-0.8b", Kind: KindChat, Features: []string{"translation"}, Repo: "pfnet/plamo-3-translate-0.8b", Bytes: 1.79e9,
-		About: "Preferred Networks' PLaMo 3 Translate 0.8B: the 2B's translation in a third of the memory, for small machines, in 8 bit tables"},
-	{Name: "plamo-embedding-1b", Kind: KindEmbed, Features: []string{"query"}, Repo: "pfnet/plamo-embedding-1b", Bytes: 2.1e9,
-		About: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"},
-}
+// Catalog lists the models hwnpu knows, by name, in the order of the definition files
+// (models.yaml, LoadModels).
+var Catalog []Model
 
 // Lookup finds a model of the catalog by its name or its repository, ignoring case.
 func Lookup(name string) (Model, bool) {
@@ -93,17 +105,23 @@ func ModelsDir() string {
 	return filepath.Join(d, "hwnpu", "models")
 }
 
-// Resolve returns the model a name of -use means: one of the catalog, or a Hugging Face
-// repository (OWNER/NAME) of an architecture hwnpu-chat runs, whose config.json it downloads to
-// root/NAME to find out what the model is for. What else such a model can do is not known.
+// Resolve returns the model a name of -use means: one of the catalog by its name; a family or a
+// category of the catalog, with a tag or picked for the machine's memory (Pick: plamo3translate,
+// plamo3translate:2b, translate); or a Hugging Face repository (OWNER/NAME) of an architecture
+// hwnpu-chat runs, whose config.json it downloads to root/NAME to find out what the model is for.
+// What else such a model can do is not known. Only the model picked is downloaded.
 func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, error) {
-	if m, ok := Lookup(name); ok {
-		return m, nil
+	m, ok, err := lookupFor(name, log)
+	if err != nil {
+		return Model{}, err
+	}
+	if ok {
+		return m, kindIs(m, KindChat, KindEmbed)
 	}
 	if strings.Count(name, "/") != 1 {
-		return Model{}, fmt.Errorf("chat: no model %q (-list shows them; a Hugging Face repository is written OWNER/NAME)", name)
+		return Model{}, fmt.Errorf("chat: no model %q (-list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME)", name)
 	}
-	m := Model{Name: filepath.Base(name), Repo: name}
+	m = Model{Name: filepath.Base(name), Repo: name}
 	dir := filepath.Join(root, m.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return m, err
@@ -127,10 +145,53 @@ func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, erro
 	return m, nil
 }
 
-// Downloaded reports whether the checkpoint of the model is in dir: model.safetensors, or the
-// index of one in several files and all the files it names.
+// lookupFor finds a model of the definitions a name means: by its name (or repository), or as
+// a family or a use (Pick, logged), each through the aliases. ok is false for none.
+func lookupFor(name string, log io.Writer) (Model, bool, error) {
+	if m, ok := Lookup(name); ok {
+		return Alias(m, log), true, nil
+	}
+	m, why, ok, err := Pick(name, MachineMemory())
+	if err != nil || !ok {
+		return Model{}, false, err
+	}
+	if log != nil {
+		fmt.Fprintf(log, "%s: %s, %s (about %.1f GB running)\n", name, m.Name, why, m.Memory)
+	}
+	return m, true, nil
+}
+
+// kindIs is nil when m is of one of kinds, else an error that names the command that runs it.
+func kindIs(m Model, ks ...Kind) error {
+	if slices.Contains(ks, m.Kind) {
+		return nil
+	}
+	return fmt.Errorf("chat: %s is a %s model, which %s runs", m.Name, m.Kind, kinds[m.Kind])
+}
+
+// ResolveFor returns the model a name means for the command that runs models of kind: one of
+// the definitions by its name, a use or a family (with a tag or picked for the machine's
+// memory), or a Hugging Face repository OWNER/NAME, taken to be of that kind.
+func ResolveFor(name string, kind Kind, log io.Writer) (Model, error) {
+	m, ok, err := lookupFor(name, log)
+	if err != nil {
+		return Model{}, err
+	}
+	if ok {
+		return m, kindIs(m, kind)
+	}
+	if strings.Count(name, "/") != 1 {
+		return Model{}, fmt.Errorf("chat: no model %q (-list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME)", name)
+	}
+	repo, rev, _ := strings.Cut(name, "@")
+	return Model{Name: path.Base(repo), Kind: kind, Repo: repo, Revision: rev}, nil
+}
+
+// Downloaded reports whether the model is in dir: its tables (TablesFile, written once its
+// programs are converted, which then run without the checkpoint), model.safetensors, or the
+// index of a checkpoint in several files and all the files it names.
 func Downloaded(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, "model.safetensors")); err == nil {
+	if exists(filepath.Join(dir, TablesFile)) || exists(filepath.Join(dir, "model.safetensors")) {
 		return true
 	}
 	files, err := shards(filepath.Join(dir, "model.safetensors.index.json"))

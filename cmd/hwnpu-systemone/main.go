@@ -2,6 +2,14 @@
 // d1-2B) on the Neural Engine: the System One API of llama.cpp's server (POST /v1/systemone),
 // served with -listen, or one request read from a file (or stdin) and answered on stdout.
 //
+//	hwnpu-systemone request.json                         # -use decision: d1-2B, downloaded and converted when missing
+//	hwnpu-systemone -use d1-omni -listen 127.0.0.1:8080
+//	hwnpu-systemone -list
+//
+// The first run downloads the model into -dir and converts its programs by itself
+// (internal/systemone Prepare: the model for prompts of -seq tokens, and the vision and audio
+// encoders the checkpoint has). Programs converted by hand are given with -model and -package:
+//
 //	hwnpu-convert -config d1-2B/config.json -weights d1-2B/model.safetensors -seq 512 -o d1-512.mlpackage
 //	hwnpu-systemone -model d1-2B -package d1-512.mlpackage request.json
 //	hwnpu-systemone -model d1-2B -package d1-512.mlpackage,d1-2048.mlpackage -listen 127.0.0.1:8080
@@ -39,14 +47,22 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/systemone"
 )
 
 func main() {
-	model := flag.String("model", "", "directory of the checkpoint: config.json, model.safetensors, tokenizer.json and calibration.json")
-	pkgs := flag.String("package", "", "the model converted by hwnpu-convert, comma separated: .mlpackage or out.parts.json with different -seq")
+	use := flag.String("use", "decision", "the model: a name, a use or a family of -list (decision, d1, d1-omni), or a Hugging Face repository OWNER/NAME of a d1 checkpoint")
+	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept (as hwnpu-chat's -dir)")
+	seq := flag.String("seq", "512", "prompt lengths of the programs converted, comma separated: a prompt runs on the shortest that holds it")
+	format := flag.String("format", "", "weight format of the d1 model's programs (default: lut8)")
+	list := flag.Bool("list", false, "list the decision models of the definitions and exit")
+	modelFiles := flag.String("models", "", chat.ModelsUsage)
+	model := flag.String("model", "", "with -package: directory of the checkpoint (config.json, model.safetensors, tokenizer.json and calibration.json) of programs converted by hand")
+	pkgs := flag.String("package", "", "the model converted by hwnpu-convert, comma separated: .mlpackage or out.parts.json with different -seq (default: converted from -use)")
 	config := flag.String("config", "", "config.json (default: in -model)")
 	weights := flag.String("weights", "", "checkpoint the embeddings and the label rows are read from: .safetensors or .gguf (default: in -model)")
 	tok := flag.String("tokenizer", "", "tokenizer.json (default: next to config.json)")
@@ -57,15 +73,17 @@ func main() {
 	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: questions about images")
 	aud := flag.String("audio", "", "the LFM3-Omni audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: d1-Omni's questions about audio and spoken questions")
 	flag.Parse()
-	if *pkgs == "" || *model == "" && (*config == "" || *weights == "") || flag.NArg() > 1 || *listen != "" && flag.NArg() > 0 {
-		flag.Usage()
+	if err := chat.LoadUserModels(*modelFiles, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, "hwnpu-systemone:", err)
 		os.Exit(2)
 	}
-	if *config == "" {
-		*config = filepath.Join(*model, "config.json")
+	if *list {
+		chat.List(os.Stdout, *dir, chat.KindDecision)
+		return
 	}
-	if *weights == "" {
-		*weights = filepath.Join(*model, "model.safetensors")
+	if *pkgs != "" && *model == "" && (*config == "" || *weights == "") || flag.NArg() > 1 || *listen != "" && flag.NArg() > 0 {
+		flag.Usage()
+		os.Exit(2)
 	}
 	if *cacheDir == "" {
 		if d, err := os.UserCacheDir(); err == nil {
@@ -74,8 +92,32 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	c := systemone.Config{Packages: strings.Split(*pkgs, ","), ModelConfig: *config, Weights: *weights,
-		Tokenizer: *tok, Calibration: *calib, CacheDir: *cacheDir, CPU: *cpu, Log: os.Stderr}
+	var c systemone.Config
+	if *pkgs != "" {
+		if *config == "" {
+			*config = filepath.Join(*model, "config.json")
+		}
+		if *weights == "" {
+			*weights = filepath.Join(*model, "model.safetensors")
+		}
+		c = systemone.Config{Packages: strings.Split(*pkgs, ","), ModelConfig: *config, Weights: *weights}
+	} else {
+		seqs, err := parseSeqs(*seq)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "hwnpu-systemone: -seq:", err)
+			os.Exit(2)
+		}
+		m, err := chat.ResolveFor(*use, chat.KindDecision, os.Stderr)
+		if err == nil {
+			c, err = systemone.Prepare(ctx, systemone.Setup{Dir: filepath.Join(*dir, m.DirName()), Repo: m.Source(), Seqs: seqs, Format: *format, Log: os.Stderr})
+			c.Name = m.Name
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "hwnpu-systemone:", err)
+			os.Exit(1)
+		}
+	}
+	c.Tokenizer, c.Calibration, c.CacheDir, c.CPU, c.Log = *tok, *calib, *cacheDir, *cpu, os.Stderr
 	if *vis != "" {
 		c.Vision = strings.Split(*vis, ",")
 	}
@@ -140,4 +182,17 @@ func serve(ctx context.Context, s *systemone.Server, addr string, maxTokens int)
 		return err
 	}
 	return nil
+}
+
+// parseSeqs reads -seq: positive numbers, comma separated.
+func parseSeqs(s string) ([]int, error) {
+	var out []int
+	for _, f := range strings.Split(s, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(f))
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("%q is not a positive number", f)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
