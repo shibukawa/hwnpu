@@ -15,6 +15,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/sfx"
 )
 
@@ -29,14 +30,14 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 	case prompt == "":
 		return fmt.Errorf("%s: a description of the sound is needed", m.Name)
 	case o.codes != "" || o.cont != "" || o.notes != "":
-		return fmt.Errorf("%s makes sound effects: -codes, -continue and -notes are for music", m.Name)
+		return fmt.Errorf("%s makes sound effects: --codes, --continue and --notes are for music", m.Name)
 	}
 	seconds := math.Round(o.duration.Seconds()*10) / 10
 	if seconds <= 0 || seconds > sfx.MaxSeconds {
-		return fmt.Errorf("-duration %v: more than 0, up to %ds", o.duration, sfx.MaxSeconds)
+		return fmt.Errorf("--duration %v: more than 0, up to %ds", o.duration, sfx.MaxSeconds)
 	}
 	if o.steps <= 0 {
-		return fmt.Errorf("-steps %d: at least 1", o.steps)
+		return fmt.Errorf("--steps %d: at least 1", o.steps)
 	}
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	spin := func(label string) func(result string) {
@@ -54,7 +55,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		}
 		defer d.Close()
 		if backend := llm.ProgramBackend(device); backend != llm.BackendCoreML {
-			return fmt.Errorf("%s: only Apple's Neural Engine runs MOSS-SoundEffect so far (-cpu runs it on the CPU)", device)
+			return fmt.Errorf("%s: only Apple's Neural Engine runs MOSS-SoundEffect so far (--cpu runs it on the CPU)", device)
 		}
 		dev = d
 	}
@@ -68,20 +69,46 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		return err
 	}
 	defer g.Close()
-	var off []string
-	note := func(name string, onNPU bool, _ time.Duration) {
-		if dev != nil && !onNPU {
+	// what Core ML puts off the NPU: programs it says run partly elsewhere (off), and those it
+	// could not tell about (unknown: MLComputePlan fails or times out while the Neural Engine is
+	// busy compiling, which is not a placement off the NPU)
+	var off, unknown []string
+	note := func(name string, p runner.Program, _ time.Duration) {
+		if dev == nil || p.OnNPU() {
+			return
+		}
+		pl, ok := p.(interface {
+			Placement() (known bool, ops []string, reason string)
+		})
+		if !ok {
 			off = append(off, name)
+			return
+		}
+		known, ops, reason := pl.Placement()
+		switch {
+		case !known:
+			unknown = append(unknown, fmt.Sprintf("%s (%s)", name, reason))
+		default:
+			off = append(off, fmt.Sprintf("%s: %s", name, strings.Join(ops, ", ")))
 		}
 	}
 	where := func() string {
 		switch {
 		case o.cpu:
 			return "on the CPU interpreter"
-		case len(off) == 0:
-			return "all on the NPU"
+		case len(off) > 0:
+			return "NOT all on the NPU"
+		case len(unknown) > 0:
+			return "placement not known"
 		}
-		return "NOT all on the NPU"
+		return "all on the NPU"
+	}
+	report := func() error {
+		for _, u := range unknown {
+			logf("  placement not known, going on: %s", u)
+		}
+		unknown = nil
+		return checkNPU(lw, o, off)
 	}
 	// the description first: the text encoder's programs are let go before the DiT's are loaded
 	t0 := time.Now()
@@ -92,7 +119,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		return err
 	}
 	done(fmt.Sprintf("%d tokens in %s, %s", len(ids), console.Duration(time.Since(t0)), where()))
-	if err := checkNPU(lw, o, off); err != nil {
+	if err := report(); err != nil {
 		return err
 	}
 	if len(ids) >= sfx.PromptRows {
@@ -106,7 +133,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		return err
 	}
 	done(fmt.Sprintf("in %s, %s", console.Duration(time.Since(t0)), where()))
-	if err := checkNPU(lw, o, off); err != nil {
+	if err := report(); err != nil {
 		return err
 	}
 
@@ -114,6 +141,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 	if seed == 0 {
 		seed = rand.Uint64()
 	}
+	logf("seed %d", seed)
 	bar := console.NewBar(lw, "generating")
 	t0 = time.Now()
 	samples, err := g.Generate(ctx, text, seconds, sfx.Options{Steps: o.steps, CFG: o.cfg, Shift: o.shift, Seed: seed,
@@ -125,7 +153,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		bar.Done("failed")
 		return err
 	}
-	bar.Done(fmt.Sprintf("%.1f s of sound in %s (%d steps, seed %d)", seconds, console.Duration(time.Since(t0)), o.steps, seed))
+	bar.Done(fmt.Sprintf("%.1f s of sound in %s (%d steps, %s a step)", seconds, console.Duration(time.Since(t0)), o.steps, console.Duration(time.Since(t0)/time.Duration(o.steps))))
 
 	// the same in both channels, at full gain (the music's WAV is at 0.5); faded out only when
 	// -fade is given, as a sound effect may end where it should

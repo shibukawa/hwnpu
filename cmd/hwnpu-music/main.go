@@ -1,30 +1,35 @@
-// hwnpu-music generates music with Magenta RealTime 2 small (google/magenta-realtime-2) on the
-// NPU, as a 48 kHz stereo WAV: in the style of texts or of audio, following a MIDI file's notes,
-// going on from a clip, as it is generated. With a sound effects model (-m sfx, or
-// moss-soundeffect: MOSS-SoundEffect v2.0, Apache-2.0) it makes a sound effect from a
-// description instead (sfx.go).
+// hwnpu-music makes music and sound effects on an NPU.
 //
-//	hwnpu-music "disco funk"                                  # plays through the speakers
-//	hwnpu-music -o out.wav -duration 10s "disco funk"
-//	hwnpu-music -o out.wav "jazz piano@2" "bossa nova@1"     # a mix of styles, weighted
-//	hwnpu-music -o out.wav song.wav                           # the style of a recording
-//	hwnpu-music -o out.wav -continue intro.wav "disco funk"   # the clip, then where it goes
-//	hwnpu-music -o out.wav -notes melody.mid "string quartet" # playing the MIDI file's notes
-//	hwnpu-music -duration 2m "lo-fi"                          # without -o: through the speakers as it comes
-//	hwnpu-music -play -o out.wav "lo-fi"                      # both
-//	hwnpu-music -o - -duration 2m "lo-fi" | ffplay -          # a WAV to stdout as it comes
-//	hwnpu-music -m sfx "A dog barking loudly in a park."      # a sound effect
-//	hwnpu-music -m moss-soundeffect:8gb -o rain.wav "Heavy rain on a tin roof"  # as on an 8 GB machine
+//	hwnpu-music generate "disco funk"                                    # plays through the speakers
+//	hwnpu-music generate -o out.wav --duration 10s "disco funk"
+//	hwnpu-music generate -o out.wav "jazz piano@2" "bossa nova@1"       # a mix of styles, weighted
+//	hwnpu-music generate -o out.wav song.wav                             # the style of a recording
+//	hwnpu-music generate -o out.wav --continue intro.wav "disco funk"    # the clip, then where it goes
+//	hwnpu-music generate -o out.wav --notes melody.mid "string quartet"  # playing the MIDI file's notes
+//	hwnpu-music generate --play -o out.wav "lo-fi"                       # both
+//	hwnpu-music generate -o - --duration 2m "lo-fi" | ffplay -           # a WAV to stdout as it comes
+//	hwnpu-music generate -m sfx "A dog barking loudly in a park."       # a sound effect
+//	hwnpu-music generate -m moss-soundeffect:8gb -o rain.wav "Heavy rain on a tin roof"
+//	hwnpu-music list
 //
+// --model takes a name, a family or a use of models.yaml (music, magenta-realtime-2; sfx,
+// moss-soundeffect): a family alone picks for the machine's memory as hwnpu-chat's -use, a tag
+// of memory (moss-soundeffect:8gb, 16G) for that machine's. Without -o, the sound plays.
+//
+// Music is Magenta RealTime 2 small (google/magenta-realtime-2): 48 kHz stereo in the style of
+// texts or of audio, following a MIDI file's notes, going on from a clip, as it is generated.
 // The model (about 1.7 GB; the audio side of the style 0.4 GB more) is downloaded and converted
-// the first time. The weights are CC-BY 4.0: credit "Magenta RealTime 2 by Google DeepMind" where
+// the first time. Its weights are CC-BY 4.0: credit "Magenta RealTime 2 by Google DeepMind" where
 // the music is used.
+//
+// Sound effects are MOSS-SoundEffect v2.0 (OpenMOSS-Team/MOSS-SoundEffect-v2.0, Apache-2.0): up
+// to 30 seconds of 48 kHz mono from an English or Chinese description (sfx.go).
 package main
 
 import (
 	"context"
 	"encoding/binary"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -32,9 +37,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -43,16 +51,68 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
 	"github.com/shibukawa/hwnpu/internal/music"
 	"github.com/shibukawa/hwnpu/internal/notes"
-	"github.com/shibukawa/hwnpu/internal/sfx"
 )
 
+type cli struct {
+	Generate GenerateCmd `cmd:"" help:"Make music from styles (Magenta RealTime 2), or a sound effect from a description (-m sfx: MOSS-SoundEffect v2.0)."`
+	List     ListCmd     `cmd:"" help:"List the music and sound effects models and what each use and family picks for a machine's memory."`
+}
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	var c cli
+	k := kong.Parse(&c,
+		kong.Name("hwnpu-music"),
+		kong.Description("Music and sound effects on an NPU."),
+		kong.UsageOnError(),
+		kong.BindTo(ctx, (*context.Context)(nil)))
+	k.FatalIfErrorf(k.Run())
+}
+
+// GenerateCmd is "hwnpu-music generate": music, or with a sound effects model a sound effect.
+type GenerateCmd struct {
+	Args     []string       `arg:"" optional:"" name:"STYLE|DESCRIPTION" help:"Music: texts or WAV files of the style, each with an optional weight after @ (\"jazz@2\"), mixed. Sound effects: the description."`
+	Model    string         `short:"m" default:"music" placeholder:"NAME" help:"The model: a name, a family or a use of models.yaml (music; sfx, moss-soundeffect; a family alone picks for the machine's memory, or for the memory a tag names: moss-soundeffect:8gb)."`
+	Out      string         `short:"o" placeholder:"FILE" help:"The WAV to write (-: stdout); without it the sound plays through the speakers."`
+	Play     bool           `help:"Play through the speakers (music: as it is generated) besides writing --out."`
+	Duration *time.Duration `placeholder:"10s" help:"How long: 10s, 2m, 1m30s (default 10s; music with --notes: the MIDI file's length; sound effects up to 30s)."`
+	Fade     *time.Duration `placeholder:"2s" help:"Fade out over the last part (music: 2s by default, 0 to stop where the generation does; sound effects: none by default)."`
+	Seed     uint64         `placeholder:"N" help:"The random seed (0: a new one)."`
+	Dir      string         `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir)."`
+	Cache    string         `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
+	CPU      bool           `name:"cpu" help:"Run the programs with the CPU interpreter instead of the NPU (slow)."`
+	OffNPU   bool           `name:"allow-off-npu" help:"Go on when Core ML puts part of a program off the NPU (on the GPU or the CPU; that has made a Mac sluggish and failed)."`
+
+	Codes       string  `group:"Music" placeholder:"C,..." help:"MusicCoCa's 12 codes of the style, comma separated, instead of texts or audio."`
+	Continue    string  `group:"Music" type:"existingfile" placeholder:"WAV" help:"A WAV to go on from: the music is the clip, then what follows it (its last 20 seconds count)."`
+	NewOnly     bool    `group:"Music" help:"With --continue, write what follows the clip alone."`
+	Notes       string  `group:"Music" type:"existingfile" placeholder:"MIDI" help:"A MIDI file whose notes the music plays (the drums' channel 10 left out)."`
+	Onsets      bool    `group:"Music" help:"With --notes, tell the notes' starts (otherwise the model decides where a held note starts again)."`
+	NoteWidth   int     `group:"Music" placeholder:"N" help:"With --notes, also say that the pitches within this many semitones of a sounding note are silent (127: all)."`
+	Drums       string  `group:"Music" enum:"auto,on,off" default:"auto" help:"Drums: auto (the model decides), on or off."`
+	Temperature float64 `group:"Music" default:"1.3" help:"Sampling temperature."`
+	TopK        int     `group:"Music" name:"top-k" default:"40" help:"Sample from the k most likely tokens."`
+	CFGStyle    float64 `group:"Music" name:"cfg-style" default:"3" help:"How strongly the style guides (-1 to 7)."`
+	CFGNotes    float64 `group:"Music" name:"cfg-notes" default:"5" help:"How strongly the notes guide (-1 to 7)."`
+	CFGDrums    float64 `group:"Music" name:"cfg-drums" default:"1" help:"How strongly the drums setting guides (-1 to 7)."`
+	Format      string  `group:"Music" placeholder:"FORMAT" help:"The language model's weight format (lut8 by default; fp16, lut6)."`
+	DecoderOn   string  `group:"Music" name:"decoder-on" enum:"npu,gpu,cpu" default:"npu" help:"Where SpectroStream's decoder and encoder run: npu, or gpu or cpu to compare."`
+
+	Steps      int     `group:"Sound effects" default:"100" help:"Flow-matching steps (each two calls of the DiT; fewer is faster and rougher)."`
+	CFG        float64 `group:"Sound effects" name:"cfg" default:"4" help:"How strongly the description guides (classifier-free guidance)."`
+	Shift      float64 `group:"Sound effects" default:"5" help:"The sigma schedule's shift."`
+	TextFormat string  `group:"Sound effects" placeholder:"FORMAT" help:"The text encoder's weight format, fp16 or lut8 (default: the model's, by its machine)."`
+	DitFormat  string  `group:"Sound effects" placeholder:"FORMAT" help:"The DiT's weight format, lut8 (default) or fp16."`
+}
+
+// options are GenerateCmd's values as the generation reads them.
 type options struct {
 	use, dir, cacheDir, format, out string
 	cpu, newOnly, offNPU, play      bool
-	outSet, playSet                 bool
 	decoderOn                       string
 	duration, fade                  time.Duration
-	durationSet                     bool
+	durationSet, fadeSet            bool
 	codes, cont, notes, drums       string
 	onsets                          bool
 	width                           int
@@ -60,106 +120,78 @@ type options struct {
 	topK                            int
 	guidance                        music.Guidance
 	seed                            uint64
-	fadeSet                         bool
 	// sound effects
 	steps                 int
 	cfg, shift            float64
 	textFormat, ditFormat string
 }
 
-func main() {
-	var o options
-	flag.StringVar(&o.use, "use", "music", "the model: a name, a use or a family of -list (sfx for sound effects; FAMILY:8gb picks the one for an 8 GB machine)")
-	flag.StringVar(&o.use, "m", "music", "the same as -use")
-	flag.StringVar(&o.dir, "dir", defaultDir(), "where the models are kept, each in a directory of its name")
-	flag.StringVar(&o.out, "o", "", "the WAV file to write (-: stdout); without -o and -play, the music plays")
-	flag.DurationVar(&o.fade, "fade", 2*time.Second, "fade the music out over its last part (0: stop where the generation does)")
-	flag.BoolVar(&o.play, "play", false, "play the music through the speakers as it is generated (the default without -o)")
-	flag.DurationVar(&o.duration, "duration", 10*time.Second, "how long the music is: 10s, 2m, 1m30s (with -notes, the MIDI file's length by default)")
-	flag.StringVar(&o.codes, "codes", "", "MusicCoCa's 12 codes of the style, comma separated, instead of texts or audio")
-	flag.StringVar(&o.cont, "continue", "", "a WAV file to go on from: the music is the clip, then what follows it (its last 20 seconds count)")
-	flag.BoolVar(&o.newOnly, "new-only", false, "with -continue, write what follows the clip alone")
-	flag.StringVar(&o.notes, "notes", "", "a MIDI file whose notes the music plays (the drums' channel 10 left out)")
-	flag.BoolVar(&o.onsets, "onsets", false, "with -notes, tell the notes' starts (otherwise the model decides where a held note starts again)")
-	flag.IntVar(&o.width, "note-width", 0, "with -notes, also say that the pitches within this many semitones of a sounding note are silent (127: all)")
-	flag.StringVar(&o.drums, "drums", "auto", "drums: auto (the model decides), on or off")
-	flag.Float64Var(&o.temperature, "temperature", 1.3, "sampling temperature")
-	flag.IntVar(&o.topK, "top-k", 40, "sample from the k most likely tokens")
-	flag.Float64Var(&o.guidance.Style, "cfg-style", music.DefaultGuidance.Style, "how strongly the style guides (-1 to 7)")
-	flag.Float64Var(&o.guidance.Notes, "cfg-notes", music.DefaultGuidance.Notes, "how strongly the notes guide (-1 to 7)")
-	flag.Float64Var(&o.guidance.Drums, "cfg-drums", music.DefaultGuidance.Drums, "how strongly the drums setting guides (-1 to 7)")
-	flag.Uint64Var(&o.seed, "seed", 0, "random seed (0: from the time)")
-	flag.IntVar(&o.steps, "steps", sfx.DefaultSteps, "sound effects: flow-matching steps (each two calls of the DiT; fewer is faster and rougher)")
-	flag.Float64Var(&o.cfg, "cfg", sfx.DefaultCFG, "sound effects: how strongly the description guides (classifier-free guidance)")
-	flag.Float64Var(&o.shift, "shift", sfx.DefaultShift, "sound effects: the sigma schedule's shift")
-	flag.StringVar(&o.textFormat, "text-format", "", "sound effects: the text encoder's weight format, fp16 or lut8 (default: the model's, by its machine)")
-	flag.StringVar(&o.ditFormat, "dit-format", "", "sound effects: the DiT's weight format, lut8 (default) or fp16")
-	flag.StringVar(&o.format, "format", "", "the language model's weight format (lut8 by default; fp16, lut6)")
-	flag.BoolVar(&o.cpu, "cpu", false, "run the programs on the CPU interpreter instead of the NPU")
-	flag.StringVar(&o.decoderOn, "decoder-on", "npu", "where SpectroStream's decoder and encoder run: npu, or gpu or cpu to compare")
-	flag.BoolVar(&o.offNPU, "allow-off-npu", false, "go on when Core ML puts part of a program off the NPU (on the GPU or the CPU; that has made a Mac sluggish and failed)")
-	flag.StringVar(&o.cacheDir, "cache", "", "compile cache (default: hwnpu in the user cache directory)")
-	list := flag.Bool("list", false, "list the music and sound effects models of the definitions and exit")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, `usage: hwnpu-music [flags] [STYLE...]
-       hwnpu-music -m sfx [flags] DESCRIPTION
-
-Music as a 48 kHz stereo WAV. Each STYLE is a text or a WAV file (its style), with an optional
-weight after @ ("jazz@2"); several are mixed. The weights are CC-BY 4.0: credit "Magenta
-RealTime 2 by Google DeepMind" where the music is used.
-
-With a sound effects model (-m sfx, moss-soundeffect, moss-soundeffect:8gb), a sound effect of
-up to 30 seconds from an English or Chinese description (MOSS-SoundEffect v2.0, Apache-2.0);
--steps, -cfg, -shift, -text-format and -dit-format are its.
-
-`)
-		flag.PrintDefaults()
+// Run makes the music or the sound effect.
+func (c *GenerateCmd) Run(ctx context.Context) error {
+	o := options{use: c.Model, dir: c.Dir, cacheDir: c.Cache, format: c.Format, out: c.Out,
+		cpu: c.CPU, newOnly: c.NewOnly, offNPU: c.OffNPU, play: c.Play || c.Out == "", decoderOn: c.DecoderOn,
+		duration: 10 * time.Second, fade: 2 * time.Second, codes: c.Codes, cont: c.Continue, notes: c.Notes, drums: c.Drums,
+		onsets: c.Onsets, width: c.NoteWidth, temperature: c.Temperature, topK: c.TopK,
+		guidance: music.Guidance{Style: c.CFGStyle, Notes: c.CFGNotes, Drums: c.CFGDrums}, seed: c.Seed,
+		steps: c.Steps, cfg: c.CFG, shift: c.Shift, textFormat: c.TextFormat, ditFormat: c.DitFormat}
+	if c.Duration != nil {
+		o.duration, o.durationSet = *c.Duration, true
 	}
-	flag.Parse()
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "o" {
-			o.outSet = true
-		}
-		if f.Name == "play" {
-			o.playSet = true
-		}
-		if f.Name == "duration" {
-			o.durationSet = true
-		}
-		if f.Name == "fade" {
-			o.fadeSet = true
-		}
-	})
-	if *list {
-		chat.List(os.Stdout, o.dir, chat.KindMusic, chat.KindSFX)
-		return
+	if c.Fade != nil {
+		o.fade, o.fadeSet = *c.Fade, true
 	}
-	if flag.NArg() == 0 && o.codes == "" && o.cont == "" {
-		flag.Usage()
-		os.Exit(2)
-	}
-	if !o.outSet && !o.playSet {
-		o.play = true // neither a file nor the speakers asked for: the speakers
+	if o.dir == "" {
+		o.dir = chat.ModelsDir()
 	}
 	if o.cacheDir == "" {
 		if d, err := os.UserCacheDir(); err == nil {
 			o.cacheDir = filepath.Join(d, "hwnpu")
 		}
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	if err := run(ctx, o, flag.Args()); err != nil {
-		fmt.Fprintln(os.Stderr, "hwnpu-music:", err)
-		os.Exit(1)
-	}
+	return run(ctx, o, c.Args)
 }
 
-func defaultDir() string {
-	d, err := os.UserCacheDir()
-	if err != nil {
-		return "models"
+// ListCmd is "hwnpu-music list": the music and sound effects models of the definitions
+// (models.yaml), whether they are downloaded, and what each use and family picks for each
+// machine's memory.
+type ListCmd struct {
+	Kind string `arg:"" optional:"" enum:"music,sfx," default:"" help:"Only music or sfx models."`
+	Dir  string `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir)."`
+}
+
+// Run lists the models.
+func (c *ListCmd) Run() error {
+	if err := chat.LoadUserModels("", os.Stderr); err != nil {
+		return err
 	}
-	return filepath.Join(d, "hwnpu", "models")
+	dir := c.Dir
+	if dir == "" {
+		dir = chat.ModelsDir()
+	}
+	kinds := []chat.Kind{chat.KindMusic, chat.KindSFX}
+	if c.Kind != "" {
+		kinds = []chat.Kind{chat.Kind(c.Kind)}
+	}
+	chat.List(os.Stdout, dir, kinds...)
+	return nil
+}
+
+// resolve is the model of the definitions --model means (music or sound effects); when there is
+// none, what there is is listed before the error.
+func resolve(name string, lw io.Writer) (chat.Model, error) {
+	if err := chat.LoadUserModels("", lw); err != nil {
+		return chat.Model{}, err
+	}
+	m, err := chat.ResolveForKinds(name, lw, chat.KindMusic, chat.KindSFX)
+	if e := (*chat.NoModelError)(nil); errors.As(err, &e) {
+		err = fmt.Errorf("no music or sound effects model, family or use %q (hwnpu-music list shows them)", name)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "no model %q; the music and sound effects models of the definitions:\n\n", name)
+		chat.List(os.Stderr, chat.ModelsDir(), chat.KindMusic, chat.KindSFX)
+		fmt.Fprintln(os.Stderr)
+	}
+	return m, err
 }
 
 // style is a STYLE argument: a text or a WAV file, and its weight.
@@ -198,7 +230,7 @@ func run(ctx context.Context, o options, args []string) error {
 	drums := map[string]int{"auto": music.DrumsMasked, "on": music.DrumsOn, "off": music.DrumsOff}
 	drum, ok := drums[o.drums]
 	if !ok {
-		return fmt.Errorf("-drums %q: auto, on or off", o.drums)
+		return fmt.Errorf("--drums %q: auto, on or off", o.drums)
 	}
 	// what goes on in gray (with a spinner or a bar on a terminal), where the music went as it is
 	lw := console.Log(os.Stderr)
@@ -210,12 +242,15 @@ func run(ctx context.Context, o options, args []string) error {
 			fmt.Fprintf(lw, " %s\n", result)
 		}
 	}
-	m, err := chat.ResolveForKinds(o.use, lw, chat.KindMusic, chat.KindSFX)
+	m, err := resolve(o.use, lw)
 	if err != nil {
 		return err
 	}
 	if m.Kind == chat.KindSFX {
 		return runSFX(ctx, o, m, args, lw)
+	}
+	if len(args) == 0 && o.codes == "" && o.cont == "" {
+		return errors.New("music wants a style: texts or WAV files, --codes or --continue")
 	}
 	backend := llm.BackendCoreML
 	var dev *hwnpu.Device
@@ -226,7 +261,7 @@ func run(ctx context.Context, o options, args []string) error {
 		}
 		defer dev.Close()
 		if backend = llm.ProgramBackend(device); backend != llm.BackendCoreML {
-			return fmt.Errorf("%s: only Apple's Neural Engine runs Magenta RealTime 2 so far (-cpu runs it on the CPU)", device)
+			return fmt.Errorf("%s: only Apple's Neural Engine runs Magenta RealTime 2 so far (--cpu runs it on the CPU)", device)
 		}
 	}
 	setup := music.Setup{Dir: filepath.Join(o.dir, m.DirName()), Repo: m.Source(), Format: o.format, Backend: backend, Log: lw, Encoder: o.cont != ""}
@@ -248,12 +283,12 @@ func run(ctx context.Context, o options, args []string) error {
 		for _, s := range strings.Split(o.codes, ",") {
 			c, err := strconv.Atoi(strings.TrimSpace(s))
 			if err != nil || c < 0 || c >= 1024 {
-				return fmt.Errorf("-codes %q: 12 codes from 0 to 1023", o.codes)
+				return fmt.Errorf("--codes %q: 12 codes from 0 to 1023", o.codes)
 			}
 			codes = append(codes, c)
 		}
 		if len(codes) != music.StyleCodes {
-			return fmt.Errorf("-codes has %d codes, not %d", len(codes), music.StyleCodes)
+			return fmt.Errorf("--codes has %d codes, not %d", len(codes), music.StyleCodes)
 		}
 	case len(styles) > 0:
 		t0 := time.Now()
@@ -316,7 +351,7 @@ func run(ctx context.Context, o options, args []string) error {
 			return err
 		}
 		done(fmt.Sprintf("in %s", console.Duration(time.Since(t0))))
-		logf("style %s: %v (-codes takes them)", strings.Join(names, " + "), codes)
+		logf("style %s: %v (--codes takes them)", strings.Join(names, " + "), codes)
 	default:
 		codes = make([]int, music.StyleCodes)
 		for i := range codes {
@@ -328,7 +363,7 @@ func run(ctx context.Context, o options, args []string) error {
 	var roll [][]int
 	// one frame more: the decoder's lookahead holds the last one back
 	if o.duration <= 0 {
-		return fmt.Errorf("-duration %v: more than 0", o.duration)
+		return fmt.Errorf("--duration %v: more than 0", o.duration)
 	}
 	frames := int(o.duration.Seconds()*music.FrameRate) + 1
 	if o.notes != "" {
@@ -355,7 +390,7 @@ func run(ctx context.Context, o options, args []string) error {
 	units := map[string]string{"npu": "", "gpu": "gpu", "cpu": "cpu"}
 	ss, ok := units[o.decoderOn]
 	if !ok {
-		return fmt.Errorf("-decoder-on %q: npu, gpu or cpu", o.decoderOn)
+		return fmt.Errorf("--decoder-on %q: npu, gpu or cpu", o.decoderOn)
 	}
 	done := spin("loading " + m.Name)
 	g, err := music.OpenOn(ctx, dev, p, ss)
@@ -371,6 +406,8 @@ func run(ctx context.Context, o options, args []string) error {
 		where = "all on the NPU"
 	case g.OnNPU():
 		where = "all on the NPU but " + strings.Join(g.Elsewhere(), ", ")
+	case !slices.ContainsFunc(g.Placement(), func(l string) bool { return !strings.Contains(l, "placement not known") }):
+		where = "placement not known"
 	default:
 		where = "NOT all on the NPU"
 	}
@@ -379,8 +416,9 @@ func run(ctx context.Context, o options, args []string) error {
 		return err
 	}
 	if o.seed == 0 {
-		o.seed = uint64(time.Now().UnixNano())
+		o.seed = rand.Uint64()
 	}
+	logf("seed %d", o.seed)
 	r := rand.New(rand.NewPCG(o.seed, o.seed^0x9e3779b97f4a7c15))
 	base := music.NewConditioning(codes, o.guidance, drum)
 	s := g.NewSession()
@@ -574,18 +612,26 @@ func (s *sink) emit(pcm []float32) error {
 	return nil
 }
 
-// checkNPU reports the programs not all on the NPU, and stops unless -allow-off-npu.
+// checkNPU reports the programs not all on the NPU, and stops unless --allow-off-npu. A program
+// whose placement Core ML could not tell (MLComputePlan fails or does not finish while the Neural
+// Engine is busy compiling) is reported and does not stop it.
 func checkNPU(lw io.Writer, o options, off []string) error {
-	if o.cpu || len(off) == 0 {
+	if o.cpu {
 		return nil
 	}
+	n := 0
 	for _, l := range off {
+		if strings.Contains(l, "placement not known") {
+			fmt.Fprintln(lw, "  going on:", l)
+			continue
+		}
 		fmt.Fprintln(lw, "  NOT all on the NPU:", l)
+		n++
 	}
-	if o.offNPU {
+	if n == 0 || o.offNPU {
 		return nil
 	}
-	return fmt.Errorf("%d programs are not all on the NPU, which has made a Mac sluggish and failed; -allow-off-npu goes on anyway", len(off))
+	return fmt.Errorf("%d programs are not all on the NPU, which has made a Mac sluggish and failed; --allow-off-npu goes on anyway", n)
 }
 
 // wavWriter writes a 16-bit stereo WAV as samples come, its sizes set at the end when the file

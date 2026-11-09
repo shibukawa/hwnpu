@@ -3545,7 +3545,7 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - `-play`: できたそばから既定の出力 (スピーカー) で鳴らす。`github.com/ebitengine/oto/v3` (v3.5.1。macOS は purego で cgo なし、Linux は PulseAudio を Go で、Windows も cgo なしでビルドできる)。1 秒たまってから鳴らし始め、生成は実時間の 1.5 倍なので途切れない。oto のミキサーは別のゴルーチンで読み、何もないときは 0 バイトを返す (1 ms 後にまた読む)。最後は鳴り終わるまで待ち、Ctrl+C で止まる。`-play` だけならファイルは書かない (`-o` を付ければ両方)。`-o` も `-play` もなければ `-play` (鳴らすだけ)
 - 終わりが「ぶつっ」と切れたので、最後の `-fade` (既定 2 秒) を出さずに持っておき、生成が終わったら 0 まで余弦で絞って書く (ファイルにもスピーカーにも)。`-fade 0` で前のとおり。スピーカーには最後に 0.25 秒の無音を足し、プレーヤーが読み終えてからも 0.3 秒待って閉じる (機器のバッファの分が切れないように)
 
-### 16.136 MOSS-SoundEffect v2.0 (効果音、hwnpu-sfx) — 2026-11-10
+### 16.136 MOSS-SoundEffect v2.0 (効果音、`hwnpu-music generate -m sfx`) — 2026-11-10
 
 - 選んだ理由: 効果音で Apache-2.0 か MIT のものを探し直した (small-models-survey.md の 1 節)
   - MMAudio は重みが MIT だが、文の特徴に使う Apple DFN5B-CLIP が研究専用の許諾 (Apple Machine Learning Research Model License) なので外した
@@ -3616,3 +3616,14 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
   - ステップ数を減らしたときの質 (`-steps`)
   - ftfy の fix_text は省いた (平文なら変わらない)
   - Intel と AMD
+
+### 16.137 hwnpu-music を hwnpu-image に合わせる: サブコマンドと kong、効果音は同じ generate でモデル違い、8 GB 向けはタグで — 2026-11-10
+
+- 動機: 効果音は別のコマンド `hwnpu-sfx` にしていたが、音楽とはモデルが違うだけで、出力 (WAV、スピーカー) も表示も同じ。8 GB 向けの形式も環境変数 (`HWNPU_MEMORY`) ではなく、モデルのセレクターで選びたい
+- `hwnpu-music generate [STYLE|DESCRIPTION...]` と `hwnpu-music list [music|sfx]` に分けた。引数は hwnpu-image (16.123) と同じ kong で、フラグは `--model` (`-m`)、`--out` (`-o`)、`--duration` など 2 本の `-`。ヘルプは共通、Music、Sound effects のグループに分けた。`hwnpu-sfx` は消した
+- `-m sfx` (用途、別名 sound-effects) か `-m moss-soundeffect` (ファミリー) で効果音になる (`chat.ResolveForKinds` で music と sfx の両方を受け、種類で分ける)。音楽だけのフラグ (`--codes`、`--continue`、`--notes`) を効果音に付けるとエラー
+- 8 GB と 16 GB は models.yaml の別のモデルにした: `MOSS-SoundEffect-v2.0` (タグ v2.0、machine 16、文の符号器 fp16) と `MOSS-SoundEffect-v2.0-lut8` (タグ v2.0-lut8、machine 8、`like` で同じリポジトリ)。形式は選ばれたモデルの machine から決める (`sfx.Setup.Machine`、`sfx.Formats`)。`moss-soundeffect:8g`、`:8GB`、`:8gb` は 8 GB のマシンの選び方 (今までのメモリのタグ)、タグなしはこのマシンのメモリ。`TestPickSoundEffect`
+- 表示を hwnpu-image にそろえた: 経過は灰色 (`console.Log`)、配置は「all on the NPU」が緑、`NOT all on the NPU` が赤 (`console.Highlight`)、書いたファイルの行だけ普通の色。seed は省くと `rand.Uint64` で引き、灰色で出す (#93 と同じ)
+- 効果音の WAV は音楽と同じ 48 kHz ステレオ (モノラルを両方のチャンネルに)、利得 1 (音楽の WAV は参照に合わせて 0.5)。終わりの `--fade` は、音楽は既定 2 秒、効果音は付けたときだけ
+- 配置が分からないのは NPU から外れたのとは別に扱う: 8 GB 向けの文の符号器が、コンパイルし直した直後に `NOT all on the NPU` で止まり、次の起動では全部 NPU だった。hwnpuinfo でも全部 NPU。Neural Engine がコンパイルで忙しい間に MLComputePlan が 2 分で終わらず (`placement.Verified` が false)、外れたことにされていたとみる。`runner` に `Placement()` (分からないときは理由、外れたときは演算の内訳) を足し、分からないプログラムは「placement not known, going on」と出して続ける。音楽の `checkNPU` も同じ
+

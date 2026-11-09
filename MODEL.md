@@ -60,11 +60,11 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 <td colspan="6"><b>RTMO-s</b> (about 0.23 GB)<br>the people in an image and their 17 keypoints in one pass (no person detector); about 0.1 s an image</td>
 </tr>
 <tr>
-<th>Music generation<br><sub>hwnpu-music</sub></th>
+<th>Music generation<br><sub>hwnpu-music generate</sub></th>
 <td colspan="6"><b>Magenta RealTime 2 small</b> (about 1.0 GB)<br>48 kHz stereo music in the style of texts or recordings, playing a MIDI file's notes or going on from a clip, streamed as it comes, about 1.4 times faster than real time; weights CC-BY 4.0 (credit "Magenta RealTime 2 by Google DeepMind" where the music is used)</td>
 </tr>
 <tr>
-<th>Sound effects<br><sub>hwnpu-sfx</sub></th>
+<th>Sound effects<br><sub>hwnpu-music generate -m sfx</sub></th>
 <td><b>MOSS-SoundEffect v2.0</b> (about 2.2 GB; the text encoder in lut8 with 5 layers in fp16)</td>
 <td colspan="5"><b>MOSS-SoundEffect v2.0</b> (about 2.3 GB; the text encoder in fp16)<br>up to 30 s of 48 kHz mono from an English or Chinese description; 10 s in about 4 minutes at the card's 100 steps on an M1 (<code>-steps 50</code>: half); Apache-2.0</td>
 </tr>

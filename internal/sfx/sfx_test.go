@@ -10,7 +10,7 @@ import (
 )
 
 // On the Neural Engine (HWNPU_SFX_DEVICE), the prepared programs (HWNPU_SFX_DIR, the model's
-// directory, prepared by hwnpu-sfx) generate the reference's sound from its noise in 4 steps
+// directory, prepared by hwnpu-music generate -m sfx) generate the reference's sound from its noise in 4 steps
 // (tools/ref/ref_moss_sfx.py run --steps 4 --seconds 10, HWNPU_SFX_REF; the prompt in
 // HWNPU_SFX_PROMPT).
 func TestGenerateOnDevice(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -81,6 +82,38 @@ func (p *devProgram) Output() []int               { return p.p.OutShape["y"] }
 func (p *devProgram) Metadata() map[string]string { return p.meta }
 func (p *devProgram) OnNPU() bool                 { return p.c.OnNPU() }
 func (p *devProgram) Close() error                { return p.c.Close() }
+
+// Placement is what Core ML says of where the program runs, when not all on the NPU: known is
+// false when it could not tell (MLComputePlan failed, or did not finish while the Neural Engine
+// was busy compiling), and off lists the operations it puts elsewhere ("3 reshape on the cpu").
+func (p *devProgram) Placement() (known bool, off []string, reason string) {
+	known = true
+	kinds := map[string]int{}
+	var order []string
+	for _, part := range p.c.Parts() {
+		pl := part.Placement
+		if !pl.Verified {
+			return false, nil, pl.Reason
+		}
+		for _, op := range pl.Ops {
+			t := op.Type
+			if strings.HasPrefix(t, "ios") {
+				if _, after, ok := strings.Cut(t, "."); ok {
+					t = after
+				}
+			}
+			k := t + " on the " + op.Device
+			if kinds[k] == 0 {
+				order = append(order, k)
+			}
+			kinds[k]++
+		}
+	}
+	for _, k := range order {
+		off = append(off, fmt.Sprintf("%d %s", kinds[k], k))
+	}
+	return known, off, ""
+}
 
 func (p *devProgram) Run(ctx context.Context, in map[string][]float32) ([]float32, error) {
 	for name, buf := range p.p.In {

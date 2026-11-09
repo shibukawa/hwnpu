@@ -60,11 +60,11 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 <td colspan="6"><b>RTMO-s</b> (約 0.23 GB)<br>画像の人と 17 の関節点を 1 回で (人の検出器は不要)。1 枚約 0.1 秒</td>
 </tr>
 <tr>
-<th>音楽生成<br><sub>hwnpu-music</sub></th>
+<th>音楽生成<br><sub>hwnpu-music generate</sub></th>
 <td colspan="6"><b>Magenta RealTime 2 small</b> (約 1.0 GB)<br>文や録音で指定した曲調の 48 kHz ステレオの音楽。MIDI の音符を弾く、録音の続きを作る、できたそばから流すこともできる。実時間の約 1.4 倍の速さ。重みは CC-BY 4.0 (使うときは「Magenta RealTime 2 by Google DeepMind」と表示)</td>
 </tr>
 <tr>
-<th>効果音<br><sub>hwnpu-sfx</sub></th>
+<th>効果音<br><sub>hwnpu-music generate -m sfx</sub></th>
 <td><b>MOSS-SoundEffect v2.0</b> (約 2.2 GB。文の符号器は lut8、5 層だけ fp16)</td>
 <td colspan="5"><b>MOSS-SoundEffect v2.0</b> (約 2.3 GB。文の符号器は fp16)<br>英語か中国語の説明から最長 30 秒の 48 kHz モノラルの効果音。M1 でカードの 100 ステップなら 10 秒に約 4 分 (<code>-steps 50</code> で半分)。Apache-2.0</td>
 </tr>

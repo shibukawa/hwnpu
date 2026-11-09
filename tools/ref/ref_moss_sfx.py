@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """MOSS-SoundEffect v2.0 (OpenMOSS-Team/MOSS-SoundEffect-v2.0) on the CPU in fp32: the reference
-hwnpu-sfx's NPU programs (internal/sfx) are checked against.
+the sound effects' NPU programs (internal/sfx, hwnpu-music generate -m sfx) are checked against.
 
 The modules are those of OpenMOSS/MOSS-TTS moss_soundeffect_v2 (Apache-2.0): the DAC VAE's
 (diffsynth/models/dac_vae.py, without audiotools), the Wan DiT's (wan_video_dit.py,

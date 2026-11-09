@@ -244,7 +244,7 @@ func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
 
 // Load loads the DiT's and the decoder's programs on the device (nil: the CPU interpreter).
 // loaded is called after each.
-func (g *Generator) Load(ctx context.Context, loaded func(name string, onNPU bool, took time.Duration)) error {
+func (g *Generator) Load(ctx context.Context, loaded func(name string, p runner.Program, took time.Duration)) error {
 	open := func(path string) (runner.Program, error) {
 		t0 := time.Now()
 		pr, err := runner.Open(ctx, g.dev, path)
@@ -253,7 +253,7 @@ func (g *Generator) Load(ctx context.Context, loaded func(name string, onNPU boo
 		}
 		g.progs = append(g.progs, pr)
 		if loaded != nil {
-			loaded(filepath.Base(path), pr.OnNPU(), time.Since(t0))
+			loaded(filepath.Base(path), pr, time.Since(t0))
 		}
 		return pr, nil
 	}
@@ -295,7 +295,7 @@ func (g *Generator) Close() error {
 
 // Encode is the text encoder's output for a prompt and a duration (Prompt): the text encoder's
 // parts are loaded, run and let go. loaded is called after each part.
-func (g *Generator) Encode(ctx context.Context, prompt string, seconds float64, loaded func(name string, onNPU bool, took time.Duration)) ([]float32, []int32, error) {
+func (g *Generator) Encode(ctx context.Context, prompt string, seconds float64, loaded func(name string, p runner.Program, took time.Duration)) ([]float32, []int32, error) {
 	var parts []Program
 	var progs []runner.Program
 	defer func() {
@@ -312,7 +312,7 @@ func (g *Generator) Encode(ctx context.Context, prompt string, seconds float64, 
 		progs = append(progs, pr)
 		parts = append(parts, pr)
 		if loaded != nil {
-			loaded(filepath.Base(path), pr.OnNPU(), time.Since(t0))
+			loaded(filepath.Base(path), pr, time.Since(t0))
 		}
 	}
 	e := NewTextEncoder(g.tok, g.textW, g.p.TextCfg, parts)
