@@ -23,6 +23,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -83,6 +84,9 @@ func main() {
 		}
 	}
 	c.CacheDir, c.CPU, c.Log = *cacheDir, *cpu, os.Stderr
+	if *seed == 0 {
+		*seed = rand.Uint64() // drawn here so that it can be told (-seed repeats the speech)
+	}
 	if err := run(ctx, c,
 		speech.Request{Text: strings.Join(flag.Args(), " "), Language: *lang, Voice: *voice, Seed: *seed, MaxFrames: *maxFrames}, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-tts:", err)
@@ -110,6 +114,6 @@ func run(ctx context.Context, c speech.Config, r speech.Request, out string) err
 		return err
 	}
 	secs := float64(len(pcm)) / float64(s.SampleRate())
-	fmt.Fprintf(os.Stderr, "%s: %d frames, %.2f s of audio in %.1f s\n", out, len(frames), secs, time.Since(t0).Seconds())
+	fmt.Fprintf(os.Stderr, "%s: %d frames, %.2f s of audio in %.1f s (seed %d)\n", out, len(frames), secs, time.Since(t0).Seconds(), r.Seed)
 	return f.Close()
 }
