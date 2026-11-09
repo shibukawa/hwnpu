@@ -191,8 +191,7 @@ categories:
       - {machine: 16, model: gemma-4-E2B-it}
       - {machine: 24, model: gemma-4-E4B-it}
   vision:
-    aliases: [image]
-    about: reads images
+    about: reads images (image generation is another use)
     picks:
       - {machine: 8, model: LFM3-VL-2B}
   audio:

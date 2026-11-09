@@ -11,7 +11,7 @@
 - 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
 - 確かめたこと: hwnpu-transcribe は M3 で表を書いて書き起こし、チェックポイントを退けても同じ結果。hwnpu-tts と hwnpu-systemone は、3 つのリポジトリの `config.json` を今の読み込みのコードで読み、取るファイルがあることまで (チェックポイントの変換と実行は、ディスクの空きのためまだ)
-- 残り: 用途の別名 `image` は今 `vision` (画像を読む) のもの。画像生成を用途に入れるときに名前を決め直す
+- 画像を読む用途は `vision` だけにし、`image` は別名にしない (画像生成の用途 `image` のために空けておく)
 
 
 モデルの選び方、取得元、NPU ごとのビルド設定を、コードから 1 つの YAML に移す。既定のファイルはバイナリに組み込み、利用者はユーザーフォルダに置いたファイルで上書きする。
