@@ -1,9 +1,16 @@
 // hwnpu-image runs image models on an NPU.
 //
-//	hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
-//	hwnpu-image generate -m ~/models/sana-sprint-0.6b-1024.amd-npu2 "a red fox in a snowy forest" -o fox.png
+//	hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"   # image.png, shown
+//	hwnpu-image generate -m sana "a red fox in a snowy forest" -o fox.png
 //	hwnpu-image depth photo.jpg                                  # photo.depth.png
-//	hwnpu-image depth -m ~/models/moge-2-vits.amd-npu2 --normal --raw photo.jpg
+//	hwnpu-image depth -m moge --normal --raw photo.jpg
+//
+// --model takes a name, a family or a use of models.yaml (image, anima, sana, sana:1.6b,
+// sana-full; depth, da3:small, da3metric, moge:vits): a family alone picks for the machine's
+// memory, as hwnpu-chat's -use. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
+// value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
+// image.png here (image (2).png, ... when taken) and shows it in the system's viewer.
+//
 //	hwnpu-image convert ~/models/Anima --backend coreml --size 1024 -m ~/models/anima-turbo-1024.coreml
 //
 // generate draws a picture from a prompt. With Anima (circlestone-labs/Anima), Qwen3-0.6B and
@@ -19,9 +26,8 @@
 // OpenVINO IR for --size; later runs load it. The first load also compiles it for the NPU
 // (minutes at 1024 x 1024), kept in --cache. convert makes such an export from a directory.
 //
-// --model names an export instead: on AMD's NPU, of tools/amd/iron_anima.py (see
-// docs/amd-npu-models.md; ~/models/anima-turbo-1024.amd-npu2 when no Apple or Intel NPU is
-// found), or of tools/amd/iron_sana.py: Sana or Sana-Sprint (NVlabs), a linear DiT with Gemma 2
+// On AMD's NPU, the exports are of tools/amd/iron_anima.py (see docs/amd-npu-models.md;
+// ~/models/anima-turbo-1024.amd-npu2) or of tools/amd/iron_sana.py: Sana or Sana-Sprint (NVlabs), a linear DiT with Gemma 2
 // 2B reading the prompt (internal/imagegen/sana). Sana-Sprint draws in 2 steps (--steps 1 to 4)
 // with the guidance scale embedded; Sana runs 20 steps with classifier-free guidance
 // (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU

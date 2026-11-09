@@ -392,6 +392,8 @@ var kinds = map[Kind]string{
 	KindTranscribe: "hwnpu-transcribe",
 	KindSpeech:     "hwnpu-tts",
 	KindDecision:   "hwnpu-systemone",
+	KindImage:      "hwnpu-image generate",
+	KindDepth:      "hwnpu-image depth",
 }
 
 // build makes the catalog, the categories and the aliases of what was merged.

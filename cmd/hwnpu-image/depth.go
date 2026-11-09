@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
@@ -38,7 +39,7 @@ import (
 // the cameras in cameras.json and with --ply the points in one frame.
 type DepthCmd struct {
 	Pictures []string `arg:"" type:"existingfile" help:"The pictures (with a multi-view export, exactly its views)."`
-	Model    string   `short:"m" placeholder:"EXPORT" default:"~/models/da3mono-large.amd-npu2" type:"path" help:"An export of tools/amd/iron_da3.py or tools/amd/iron_moge.py."`
+	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"depth" help:"The model: a name, a family or a use of models.yaml (depth: DA3MONO-LARGE; da3, da3:small, da3metric, moge, moge:vitl; a family alone picks for the machine's memory), run from ~/models/NAME.amd-npu2, or an export's directory (tools/amd/iron_da3.py, iron_moge.py; a multi-view one of iron_da3.py --views)."`
 	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory to write into (default: next to each picture)."`
 	Raw      bool     `help:"Also write the depth as raw float32 (NAME.depth.f32, at the export's size; MoGe-2 also NAME.points.f32)."`
 	Sky      bool     `help:"Also write the sky mask (NAME.sky.png); DA3-SMALL / BASE: the confidence (NAME.conf.png); MoGe-2: the mask (NAME.mask.png)."`
@@ -60,10 +61,24 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer dev.Close()
-	iron.ShareExport(c.Model, logf)
+	model := expandHome(c.Model)
+	if !isPath(c.Model) {
+		m, err := resolve(c.Model, chat.KindDepth)
+		if err != nil {
+			return err
+		}
+		tool := "tools/amd/iron_da3.py"
+		if m.Family == "moge" {
+			tool = "tools/amd/iron_moge.py"
+		}
+		if model, err = amdExport(m, tool); err != nil {
+			return err
+		}
+	}
+	iron.ShareExport(model, logf)
 	o := opts{dir: c.Out, raw: c.Raw, sky: c.Sky, keep: c.Keep, focal: c.Focal, fov: c.Fov, normal: c.Normal}
-	if depth.IsMultiExport(c.Model) {
-		m, err := depth.OpenMulti(ctx, dev, c.Model)
+	if depth.IsMultiExport(model) {
+		m, err := depth.OpenMulti(ctx, dev, model)
 		if err != nil {
 			return err
 		}
@@ -72,15 +87,15 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		m.Ref = c.Ref
 		return runMulti(ctx, m, c.Pictures, o, c.Ply, logf)
 	}
-	if moge.IsExport(c.Model) {
-		m, err := moge.Open(ctx, dev, c.Model)
+	if moge.IsExport(model) {
+		m, err := moge.Open(ctx, dev, model)
 		if err != nil {
 			return err
 		}
 		defer m.Close()
 		m.Logf = logf
 		m.FovX = c.Fov
-		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(c.Model), m.Sizes)
+		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(model), m.Sizes)
 		for _, path := range c.Pictures {
 			if err := runMoge(ctx, m, path, o, logf); err != nil {
 				return fmt.Errorf("%s: %w", path, err)
@@ -88,7 +103,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		}
 		return nil
 	}
-	e, err := depth.Open(ctx, dev, c.Model)
+	e, err := depth.Open(ctx, dev, model)
 	if err != nil {
 		return err
 	}
@@ -101,7 +116,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 			kind += " (relative without --focal or --fov)"
 		}
 	}
-	logf("%s: %s, sizes %v (%s)", filepath.Base(c.Model), kind, e.Sizes, console.Duration(time.Since(t0)))
+	logf("%s: %s, sizes %v (%s)", filepath.Base(model), kind, e.Sizes, console.Duration(time.Since(t0)))
 	for _, path := range c.Pictures {
 		if err := run(ctx, e, path, o, logf); err != nil {
 			return fmt.Errorf("%s: %w", path, err)

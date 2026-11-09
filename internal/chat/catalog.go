@@ -22,6 +22,8 @@ const (
 	KindTranscribe Kind = "transcribe" // speech to text: hwnpu-transcribe
 	KindSpeech     Kind = "speech"     // text to speech: hwnpu-tts
 	KindDecision   Kind = "decision"   // answers about a state: hwnpu-systemone
+	KindImage      Kind = "image"      // draws a picture from a prompt: hwnpu-image generate
+	KindDepth      Kind = "depth"      // the depth of a picture: hwnpu-image depth
 )
 
 // Model is a model of the definitions (models.yaml).

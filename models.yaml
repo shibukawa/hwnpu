@@ -7,7 +7,7 @@
 #   family, tag   FAMILY:TAG picks it (plamo3translate:2b); the family alone picks the tag of the
 #                 largest machine up to this machine's memory
 #   kind          chat, embedding (hwnpu-chat, hwnpu-agent), transcribe (hwnpu-transcribe),
-#                 speech (hwnpu-tts), decision (hwnpu-systemone)
+#                 speech (hwnpu-tts), decision (hwnpu-systemone), image, depth (hwnpu-image)
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory)
 #   arch          the structure, one of hwnpu-convert -archs (default: from config.json)
@@ -182,6 +182,117 @@ models:
     memory: 2.8
     about: "Liquid AI's d1-Omni-2B: d1 with an audio encoder, questions about images and clips and questions asked as a clip"
 
+  # hwnpu-image generate: on AMD's NPU the export ~/models/NAME.amd-npu2 (or NAME-1024.amd-npu2,
+  # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's and Intel's NPU Anima is
+  # downloaded and converted on its first run (Sana runs on AMD's NPU only)
+  Anima-Turbo:
+    family: anima
+    tag: turbo
+    kind: image
+    from: hf:circlestone-labs/Anima
+    machine: 8
+    memory: 4.1
+    bytes: 5.5e9
+    about: "Anima-Turbo (Cosmos-Predict2 2B, Qwen3-0.6B): 1024x1024 in 8 steps, Danbooru tags and natural language"
+  Sana-Sprint-0.6B:
+    family: sana
+    tag: 0.6b
+    kind: image
+    from: hf:Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers
+    machine: 8
+    memory: 2.3
+    bytes: 7.2e9
+    about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU"
+  Sana-Sprint-1.6B:
+    family: sana
+    tag: 1.6b
+    kind: image
+    from: hf:Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers
+    machine: 16
+    memory: 2.3
+    about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's NPU"
+  Sana-600M:
+    family: sana-full
+    tag: 0.6b
+    kind: image
+    from: hf:Efficient-Large-Model/Sana_600M_1024px_diffusers
+    machine: 8
+    memory: 2.3
+    about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's NPU"
+  SANA1.5-1.6B:
+    family: sana-full
+    tag: 1.6b
+    kind: image
+    from: hf:Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers
+    machine: 16
+    memory: 2.3
+    about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's NPU"
+  # hwnpu-image depth: the export ~/models/NAME.amd-npu2 (lower case) of tools/amd/iron_da3.py or
+  # iron_moge.py, AMD's NPU
+  DA3MONO-LARGE:
+    family: da3
+    tag: mono-large
+    kind: depth
+    from: hf:depth-anything/DA3MONO-LARGE
+    machine: 24
+    memory: 1.4
+    bytes: 1.4e9
+    about: "Depth Anything 3 Mono Large: relative depth and the sky"
+  DA3-BASE:
+    family: da3
+    tag: base
+    kind: depth
+    from: hf:depth-anything/DA3-BASE
+    machine: 16
+    memory: 0.75
+    bytes: 0.5e9
+    about: "Depth Anything 3 Base, as one view: relative depth and its confidence (iron_da3.py --views N: N pictures of a scene and their cameras)"
+  DA3-SMALL:
+    family: da3
+    tag: small
+    kind: depth
+    from: hf:depth-anything/DA3-SMALL
+    machine: 8
+    memory: 0.5
+    bytes: 0.14e9
+    about: "Depth Anything 3 Small, as one view: relative depth and its confidence"
+  DA3METRIC-LARGE:
+    family: da3metric
+    tag: large
+    kind: depth
+    from: hf:depth-anything/DA3METRIC-LARGE
+    machine: 8
+    memory: 1.4
+    bytes: 1.4e9
+    about: "Depth Anything 3 Metric Large: meters given the focal length (--focal or --fov), and the sky"
+  moge-2-vitl:
+    family: moge
+    tag: vitl
+    kind: depth
+    from: hf:Ruicheng/moge-2-vitl-normal
+    machine: 24
+    memory: 2.6
+    bytes: 1.3e9
+    about: "MoGe-2 ViT-L: metric depth without the focal length (solved), points, normals and a mask"
+  moge-2-vitb:
+    family: moge
+    tag: vitb
+    kind: depth
+    from: hf:Ruicheng/moge-2-vitb-normal
+    machine: 16
+    memory: 2.1
+    bytes: 0.4e9
+    about: "MoGe-2 ViT-B: metric depth, points, normals and a mask"
+  moge-2-vits:
+    family: moge
+    tag: vits
+    kind: depth
+    from: hf:Ruicheng/moge-2-vits-normal
+    machine: 8
+    memory: 1.9
+    bytes: 0.14e9
+    about: "MoGe-2 ViT-S: metric depth, points, normals and a mask"
+
 categories:
   chat:
     aliases: [code, agent]
@@ -225,3 +336,12 @@ categories:
     about: typed questions about a state (hwnpu-systemone)
     picks:
       - {machine: 8, model: d1-2B}
+  image:
+    aliases: [generate]
+    about: image generation (hwnpu-image generate)
+    picks:
+      - {machine: 8, model: Anima-Turbo}
+  depth:
+    about: depth estimation (hwnpu-image depth)
+    picks:
+      - {machine: 8, model: DA3MONO-LARGE}

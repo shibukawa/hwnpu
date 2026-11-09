@@ -21,12 +21,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
 
-// amdModel is the IRON export used when -model is not given and no Apple or Intel NPU is found.
-func amdModel() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "models", "anima-turbo-1024.amd-npu2")
-}
-
 // convertFlags are what an Anima export for Apple's or Intel's NPU is made with (generate's first
 // run, and convert).
 type convertFlags struct {
@@ -68,9 +62,9 @@ func (c *ConvertCmd) Run() error {
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima, Sana or Sana-Sprint.
 type GenerateCmd struct {
 	Prompt   string  `arg:"" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English)."`
-	Model    string  `short:"m" type:"path" placeholder:"EXPORT" help:"An export to run (AMD: of tools/amd/iron_anima.py or iron_sana.py); default: Anima's of --dir, downloaded and converted when missing."`
+	Model    string  `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (anima, sana, sana:1.6b, sana-full; a family alone picks for the machine's memory), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's and Intel's Anima is downloaded and converted into --dir on its first run."`
 	Dir      string  `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir): Anima's checkpoint and exports in Anima/."`
-	Out      string  `short:"o" default:"image.png" type:"path" help:"The PNG to write."`
+	Out      string  `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer)."`
 	Steps    int     `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Sana-Sprint 2, 1 to 4; Sana 20)."`
 	Negative string  `help:"Sana: the negative prompt of the classifier-free guidance (default empty)."`
 	Guidance float64 `placeholder:"SCALE" help:"Sana: the guidance scale (default 4.5; Sana-Sprint embeds it, Sana runs classifier-free guidance)."`
@@ -85,18 +79,65 @@ type GenerateCmd struct {
 	convertFlags
 }
 
-// Run draws the picture.
+// Run draws the picture into --out, or into a new image.png here which it then shows.
 func (c *GenerateCmd) Run(ctx context.Context) error {
+	show := c.Out == ""
+	if show {
+		c.Out = freeName("image.png")
+	}
+	model := expandHome(c.Model)
+	isAnima := false
+	if !isPath(c.Model) {
+		m, err := resolve(c.Model, chat.KindImage)
+		if err != nil {
+			return err
+		}
+		model, isAnima = "", m.Family == "anima"
+		if !isAnima { // Sana: AMD's NPU only
+			if model, err = amdExport(m, "tools/amd/iron_sana.py"); err != nil {
+				return err
+			}
+		} else if model, err = c.animaModel(ctx, m); err != nil {
+			return err
+		}
+	}
+	var err error
+	if sana.IsExport(model) {
+		err = runSana(ctx, sanaRun{model: model, prompt: c.Prompt, negative: c.Negative, out: c.Out, noise: c.Noise, latents: c.Latents,
+			steps: c.Steps, guidance: c.Guidance, seed: c.Seed, resident: c.Resident, dump: c.Dump})
+	} else {
+		err = c.anima(ctx, model)
+	}
+	if err == nil && show {
+		if e := openFile(c.Out); e != nil {
+			fmt.Fprintf(os.Stderr, "%s: not shown (%v)\n", c.Out, e)
+		}
+	}
+	return err
+}
+
+// animaModel is the Anima export m runs here: on AMD's NPU (no Apple or Intel NPU found, no
+// --backend) ~/models/NAME.amd-npu2 of tools/amd/iron_anima.py, "" otherwise (anima prepares
+// the one of --dir).
+func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, error) {
+	if c.CPU || c.Backend != "" {
+		return "", nil
+	}
+	if _, err := llm.ProgramFormat(ctx, ""); err == nil {
+		return "", nil // Apple's or Intel's NPU
+	}
+	return amdExport(m, "tools/amd/iron_anima.py")
+}
+
+// anima draws the picture with Anima: the export model, or "" for the one of --dir (downloaded
+// and converted when missing).
+func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	anima.ResidentDiT = c.Resident
 	o := c.options()
-	if c.Model != "" && sana.IsExport(c.Model) {
-		return runSana(ctx, sanaRun{model: c.Model, prompt: c.Prompt, negative: c.Negative, out: c.Out, noise: c.Noise, latents: c.Latents,
-			steps: c.Steps, guidance: c.Guidance, seed: c.Seed, resident: c.Resident, dump: c.Dump})
-	}
 	if c.Negative != "" || c.Guidance != 0 {
 		return errors.New("--negative and --guidance are for Sana (Anima-Turbo runs no classifier-free guidance)")
 	}
-	steps, model, cacheDir := c.Steps, c.Model, c.Cache
+	steps, cacheDir := c.Steps, c.Cache
 	if steps == 0 {
 		steps = 8
 	}
@@ -112,16 +153,12 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		if !c.CPU {
 			format, err = llm.ProgramFormat(ctx, c.Backend)
 		}
-		switch {
-		case err != nil && c.Backend == "" && isDir(amdModel()):
-			model = amdModel() // AMD's NPU: an export of tools/amd/iron_anima.py
-		case err != nil:
-			return fmt.Errorf("%w (on AMD's NPU, --model names an export of tools/amd/iron_anima.py)", err)
-		default:
-			o.Backend = format
-			if model, err = anima.Prepare(ctx, anima.Setup{Dir: filepath.Join(dir, "Anima"), ConvertOptions: o, Log: lw}); err != nil {
-				return err
-			}
+		if err != nil {
+			return err
+		}
+		o.Backend = format
+		if model, err = anima.Prepare(ctx, anima.Setup{Dir: filepath.Join(dir, "Anima"), ConvertOptions: o, Log: lw}); err != nil {
+			return err
 		}
 	}
 	t0 := time.Now()

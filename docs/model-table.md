@@ -330,7 +330,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 | hwnpu-transcribe | `-use OWNER/NAME` (既定 whisper-large-v3-turbo)。自動で落として変換 (`transcribe.Prepare`) | `-use` を同じ解決 (用途 `transcribe`、ファミリー `whisper`) に。kotoba-whisper (Apache-2.0) を日本語のタグに。表の書き出し (T5) と、チェックポイントを遅れて落とす仕組みを chat と揃える | 1 の続き |
 | hwnpu-tts | `-model DIR` に手で変換したものを渡す (CHAT.md 7 節の手順) | 自動の準備 (`speech.Prepare`: テキスト部、depthformer、コーデックの変換) を作り、`-use` に。T5 (テキストの埋め込み、depth の表) も。用途 `speech` | 3 のあと |
 | hwnpu-systemone | `-model DIR` に手で変換したもの | 自動の準備 (d1 の本体、視覚と音声のエンコーダ) と `-use`。T5 (埋め込み、ラベルの行)。用途 `decision` | 3 のあと |
-| hwnpu-image | `--model` (書き出し) または `--dir` の Anima を自動で | 別の画像モデルが入ってから (今は Anima だけで選ぶものがない)。そのとき用途 `image` | 後回し |
+| hwnpu-image | `-m` で名前、ファミリー (`sana`、`moge`)、用途 (`image`、`depth`)。AMD は `~/models/NAME.amd-npu2`、Mac / Intel の Anima は自動で落として変換 | AMD の書き出しを自動で作る (Python の iron_*.py) か取得する | 済み (2026-11-10、design.md 16.124) |
 | hwnpu-formats | `-use` で chat の名前 | chat と同じ解決になる。候補の形式を `builds` から取る (10.2 節で skill が使う) | 2 |
 | hwnpu-convert、hwnpu-check、hwnpu-generate | `-config`、`-weights`、`-package` でファイルを直に | 開発用なので、ファイルを直に渡す形は残す。hwnpu-convert には `-use NAME -npu NPU` を足し、`builds` で決まる設定で変換する (ビルドツールの土台) | 4 |
 
