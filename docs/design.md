@@ -3368,3 +3368,12 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - テスト: `TestPreparePrefill` (M1 の境目より小さい・大きい模型で 2 本と 1 本、警告)、`TestOneProgramsBeside` (一緒に読み込む分を M1 でだけ数える)、`TestBesideBytesMTP`、`TestPrepareEncoders` (塔の重みを数える)。境目の比べから一緒に読み込む分を外す改変、`neuralEngineHold` を使わない改変はどちらも落ちる
 - M1 (16 GB、macOS 27.2) で Qwen3.5-2B (lut6、MTP): 「2 programs would hold 2.64 GiB on the Neural Engine with the 0.40 GiB of the programs beside them, over the 2.8 GiB an M1 holds」で 1 本。全部 Neural Engine、Neural Engine が持つ量 0.89 GiB (読み込み直後。最初の呼び出しで載る分は含まない)、17 × 23 = 391 を 1 秒 34.5 トークン (114 の下書きのうち 62 採用)
 - 確かめていないこと: LFM3-VL / Audio / Omni を M1 で 1 本にしたときの生成と長いプロンプトの読み (別に計測中)、M1 Pro / Max / Ultra の境目、Q=8 と Q=128 を 1 つのパッケージの関数にして重みを共有できるか (できれば、どのチップでも 2 本の分が半分になる)
+
+### 16.119 AMD: Sana と Sana-Sprint (`iron_sana.py`、`internal/imagegen/sana`) — 2026-11-09
+
+- 動機: Anima より軽い画像生成の枠 (ライセンスは Apache 系)。Sana-Sprint は 2 ステップ、潜在が 32 分の 1 で 1024 × 1024 でもトークン 1024 個、自己注意は線形
+- 対応: Sana-Sprint 0.6B と 1.6B、Sana 600M、SANA 1.5 1.6B (1024 × 1024)。テキスト (Gemma 2 2B、q8)、caption、DiT、DC-AE の VAE の全部が NPU。CPU の参照 (`tools/ref/ref_sana.py`) と同じノイズから潜在のコサイン 0.997 / 0.963 / 0.983 / 0.984 (Sana 600M は CPU の bf16 でも 0.962)。1 枚 24 秒 / 70〜80 秒 / 32 秒 / 約 2 分、固定の最大 2.3 GiB。記録は amd-npu-models.md の 14 節
+- IRON に割り算がないので、線形注意の `N / D` は値の行に定数 c を混ぜて `[N, cD, 0…]` の行を作り、64 列の RMS 正規化で割る (14.2)
+- 見つけたこと: IRON の MHA はスコアを bf16 で持つ。Sana 600M の交差注意 (q と k の正規化なし) はスコアが約 1750 で行の中の差が数単位しかなく、条件つきの出力だけがずれて CFG で崩れた (潜在 0.79)。鍵から先頭の鍵を引いて (softmax は変わらない) 0.963。Anima の交差注意にも同じことが起きていないかは見ていない
+- 共有の変更: `internal/tokenizer` のバイトフォールバックは、Gemma 2 の語彙に `<0x09>` がなく (タブは普通のトークン) 読めなかった。文字そのものが語彙にあるバイトは `<0x..>` がなくてよいことにした (encode は文字を先に引くので使われない)。`TestTokens` (`HWNPU_SANA_TOKENIZER`) が HF の id と 3 つのプロンプト (日本語、絵文字、タブ) で一致
+- `hwnpu-image`: `-model` が Sana の書き出し (`model.json` と `caption/`) なら Sana で描く。`-steps` の既定はモデルごと (Anima 8、Sana-Sprint 2、Sana 20)、`-guidance` (既定 4.5)、`-noise` は Sana-Sprint ではステップ + 1 個

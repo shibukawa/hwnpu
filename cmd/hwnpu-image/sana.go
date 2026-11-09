@@ -1,0 +1,130 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"image/png"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/imagegen/sana"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
+)
+
+// sanaRun is what runSana takes from the command line.
+type sanaRun struct {
+	model, prompt, out, noise, latents string
+	steps                              int
+	guidance                           float64
+	seed                               uint64
+	resident                           bool
+	dump                               string
+}
+
+// runSana draws the picture with an export of tools/amd/iron_sana.py (Sana or Sana-Sprint) on
+// AMD's NPU.
+func runSana(ctx context.Context, r sanaRun) error {
+	lw := console.Log(os.Stderr)
+	live := console.Live(lw)
+	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
+	t0 := time.Now()
+	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+	if err != nil {
+		return err
+	}
+	defer dev.Close()
+	iron.ShareExport(r.model, logf)
+	p, err := sana.Open(ctx, dev, r.model)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	p.Logf = logf
+	p.ResidentDiT = r.resident
+	p.Dump = r.dump
+	m := p.Model
+	steps := r.steps
+	if steps == 0 {
+		steps = m.Steps
+	}
+	guidance := r.guidance
+	if guidance == 0 {
+		guidance = m.Guidance
+	}
+	logf("loaded %s (%dx%d) in %s", filepath.Base(r.model), p.Dit.Size, p.Dit.Size, console.Duration(time.Since(t0)))
+
+	cond, err := p.Encode(ctx, r.prompt)
+	if err != nil {
+		return err
+	}
+	var noises [][]float32
+	n := p.NoiseCount(steps)
+	if r.noise != "" {
+		x, err := readF32(r.noise)
+		if err != nil {
+			return err
+		}
+		size := len(x) / n
+		if size*n != len(x) || size != p.Dit.Latent*p.Dit.Grid()*p.Dit.Grid() {
+			return fmt.Errorf("hwnpu-image: %s: %d values for %d noises of %d", r.noise, len(x), n, p.Dit.Latent*p.Dit.Grid()*p.Dit.Grid())
+		}
+		for k := 0; k < n; k++ {
+			noises = append(noises, x[k*size:(k+1)*size])
+		}
+	} else {
+		s := r.seed
+		if s == 0 {
+			s = uint64(time.Now().UnixNano())
+		}
+		logf("seed %d", s)
+		noises = p.Noise(s, n)
+	}
+	bar := console.NewBar(lw, "denoising")
+	bar.Set(0, fmt.Sprintf("step 1/%d", steps))
+	x, err := p.Generate(ctx, cond, noises, steps, guidance, func(i, n int, d time.Duration) {
+		per := bar.Elapsed() / time.Duration(i+1)
+		bar.Set(float64(i+1)/float64(n), fmt.Sprintf("step %d/%d, %.1f s a step", min(i+2, n), n, per.Seconds()))
+		if !live {
+			logf("step %d/%d: %.2f s", i+1, n, d.Seconds())
+		}
+	})
+	if err != nil {
+		bar.Done("failed")
+		return err
+	}
+	bar.Done(fmt.Sprintf("%d steps in %s", steps, console.Duration(bar.Elapsed())))
+	if r.latents != "" {
+		if err := writeF32(r.latents, x); err != nil {
+			return err
+		}
+	}
+	bar = console.NewBar(lw, "decoding")
+	p.Stage = func(i, n int, d time.Duration) {
+		bar.Set(float64(i+1)/float64(n), fmt.Sprintf("VAE stage %d/%d", min(i+2, n), n))
+		if !live {
+			logf("vae stage %d: %.2f s", i, d.Seconds())
+		}
+	}
+	img, err := p.Decode(ctx, x)
+	if err != nil {
+		bar.Done("failed")
+		return err
+	}
+	bar.Done("in " + console.Duration(bar.Elapsed()))
+	f, err := os.Create(r.out)
+	if err != nil {
+		return err
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "%s: %s in all\n", r.out, console.Duration(time.Since(t0)))
+	return nil
+}

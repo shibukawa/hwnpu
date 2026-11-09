@@ -68,6 +68,12 @@ func parseFallback(raw []byte, f *file) (*Tokenizer, error) {
 	for b := 0; b < 256; b++ {
 		id, ok := t.vocab[fmt.Sprintf("<0x%02X>", b)]
 		if !ok {
+			// Gemma 2's vocabulary has "\t" and no <0x09>: a byte that is a character of
+			// the vocabulary never falls back, as encode looks the character up first
+			if c, single := t.vocab[string(rune(b))]; b < 0x80 && single {
+				fb.byteID[b] = c
+				continue
+			}
 			return nil, fmt.Errorf("byte fallback without the byte token <0x%02X>", b)
 		}
 		fb.byteID[b], fb.byteOf[id] = id, byte(b)

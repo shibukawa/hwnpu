@@ -17,6 +17,15 @@
 //
 //	hwnpu-image -convert ~/models/Anima -backend coreml -size 1024 -model ~/models/anima-turbo-1024.coreml
 //
+// On AMD's NPU, -model also takes an export of tools/amd/iron_sana.py: Sana or Sana-Sprint
+// (NVlabs), a linear DiT with Gemma 2 2B reading the prompt (internal/imagegen/sana). Sana-Sprint
+// draws in 2 steps (-steps 1 to 4) with the guidance scale embedded; Sana runs 20 steps with
+// classifier-free guidance (-guidance, 4.5 by default):
+//
+//	hwnpu-image -model ~/models/sana-sprint-0.6b-1024.amd-npu2 -prompt "a red fox in a snowy forest" -o fox.png
+//
+// -noise takes Sana-Sprint's steps+1 noises (a new one each step), each (32, H/32, W/32).
+//
 // -cpu runs a Core ML export with the CPU interpreter (slow; for checking without the NPU). Anima-Turbo wants 8 to 12 steps and no classifier-free guidance; this runs no negative
 // prompt. Anima reads Danbooru tags and natural language; its card recommends the prefix
 // "masterpiece, best quality, score_7, safe, ".
@@ -41,6 +50,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
+	"github.com/shibukawa/hwnpu/internal/imagegen/sana"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
@@ -56,7 +66,8 @@ func main() {
 	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept (as hwnpu-chat's -dir): Anima's checkpoint and exports in Anima/")
 	prompt := flag.String("prompt", "", "what to draw (Danbooru tags and natural language)")
 	out := flag.String("o", "anima.png", "the PNG to write")
-	steps := flag.Int("steps", 8, "Euler steps (Anima-Turbo: 8 to 12)")
+	steps := flag.Int("steps", 0, "steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Sana-Sprint 2, 1 to 4; Sana 20)")
+	guidance := flag.Float64("guidance", 0, "Sana: the guidance scale (default 4.5; Sana-Sprint embeds it, Sana runs classifier-free guidance)")
 	shift := flag.Float64("shift", 3.0, "the sigma schedule's shift (Anima's scheduler: 3)")
 	seed := flag.Uint64("seed", 0, "the noise's seed (0: from the time)")
 	noise := flag.String("noise", "", "the initial latents as raw float32 (16, H/8, W/8), in place of the seed's")
@@ -96,6 +107,17 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if *model != "" && sana.IsExport(*model) {
+		err := runSana(ctx, sanaRun{model: *model, prompt: *prompt, out: *out, noise: *noise, latents: *latents,
+			steps: *steps, guidance: *guidance, seed: *seed, resident: *resident, dump: *dump})
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if *steps == 0 {
+		*steps = 8
+	}
 	// what goes on in gray (with a spinner or a bar on a terminal), the picture's line as it is
 	lw := console.Log(os.Stderr)
 	live := console.Live(lw)
