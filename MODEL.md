@@ -8,6 +8,8 @@ Japanese: [MODEL.ja.md](MODEL.ja.md)
 
 The columns are the memory installed in the machine. The second header row is roughly what is left for models after the OS and everyday applications. NPU buffers are pinned and cannot be swapped out: going over that amount pushes other applications to swap.
 
+hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each use (`-use translate`, `-use chat`) runs the model of the machine's column, downloading only that one. A family picks the same way (`-use plamo3translate`, `-use gemma4`), and a tag chooses one whatever the memory, like a Docker image's: a model's (`-use plamo3translate:2b`, `-use chat:e4b`) or a column's (`-use chat:24g`, `-use plamo3translate:8g`: what a machine of that memory runs). `hwnpu-chat -list` shows what each name picks on the machine; `HWNPU_MEMORY=24` picks as a machine of 24 GB would. hwnpu-transcribe (`-use transcribe`), hwnpu-tts (`-use speech`) and hwnpu-systemone (`-use decision`) pick the same way. The table comes from [models.yaml](models.yaml) (its `categories` and the models' `machine`), which hwnpu embeds; a file of your own adds models, replaces a column's model or points a model to another (aliases), written as differences only: see [docs/model-table.md](docs/model-table.md).
+
 <table>
 <thead>
 <tr>
@@ -30,14 +32,14 @@ The columns are the memory installed in the machine. The second header row is ro
 </thead>
 <tbody>
 <tr>
-<th>Chat, coding<br><sub>hwnpu-chat, hwnpu-agent</sub></th>
+<th>Chat, coding<br><sub>hwnpu-chat, hwnpu-agent <code>-use chat</code></sub></th>
 <td><b>LFM3-1.7B</b> (2.2 GB)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.3 GB)<br>a size larger, 5B with its per-layer embeddings</td>
 <td><b>Gemma 4 E2B</b> (2.3 GB)<br>with a long context too (+0.8 GB at 131072)<br><b>Gemma 4 E4B</b> (4.0 GB)<br>for short conversations</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>with a long context too (+2.1 GB at 131072)</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>planned: Qwen3.6-35B-A3B (MoE, about 25 GB at 4 bits)</i></td>
 </tr>
 <tr>
-<th>Reading images<br><sub>hwnpu-chat (<code>image_url</code>, <code>/image</code>)</sub></th>
+<th>Reading images<br><sub>hwnpu-chat <code>-use vision</code> (<code>image_url</code>, <code>/image</code>)</sub></th>
 <td><b>LFM3-VL-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B with images and audio</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6 GB)</td>
 </tr>
@@ -46,12 +48,12 @@ The columns are the memory installed in the machine. The second header row is ro
 <td colspan="6"><b>Whisper large-v3-turbo</b> (about 1.9 GB)<br>99 languages, with timestamps, 30 seconds read in 0.6 s</td>
 </tr>
 <tr>
-<th>Reading audio (questions about it)<br><sub>hwnpu-chat (<code>input_audio</code>, <code>/audio</code>)</sub></th>
+<th>Reading audio (questions about it)<br><sub>hwnpu-chat <code>-use audio</code> (<code>input_audio</code>, <code>/audio</code>)</sub></th>
 <td><b>LFM3-Audio-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B with images and audio</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0 GB, images too)</td>
 </tr>
 <tr>
-<th>Translation<br><sub>hwnpu-chat <code>-use plamo-3-translate-2b</code>, <code>-use plamo-3-translate-0.8b</code></sub></th>
+<th>Translation<br><sub>hwnpu-chat <code>-use translate</code></sub></th>
 <td><b>PLaMo 3 Translate 0.8B</b> (about 2.4 GB)<br>3 times as fast as the 2B, translations differing from it by rewordings</td>
 <td colspan="5"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
 </tr>
@@ -65,7 +67,7 @@ The columns are the memory installed in the machine. The second header row is ro
 <td colspan="6"><b>LFM3-Audio-2B</b> (about 2.4 GB)</td>
 </tr>
 <tr>
-<th>Sentence embeddings, search<br><sub>hwnpu-chat <code>/v1/embeddings</code></sub></th>
+<th>Sentence embeddings, search<br><sub>hwnpu-chat <code>-use embedding</code> (<code>/v1/embeddings</code>)</sub></th>
 <td colspan="6"><b>PLaMo-Embedding-1B</b> (1.3 GB)</td>
 </tr>
 <tr>

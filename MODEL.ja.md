@@ -8,6 +8,8 @@ English: [MODEL.md](MODEL.md)
 
 列は機械に積んだメモリの量です。OS とふだんのアプリの分を引いて、モデルに使える量の目安を 2 行目に書きました。NPU のバッファは固定されたメモリで、スワップに逃がせません。目安を超えると、ほかのアプリがスワップに追い出されます。
 
+hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びます。用途の欄の名前 (`-use translate`、`-use chat`) で、機械のメモリの列のモデルを動かし、ダウンロードもそのモデルの分だけです。ファミリーの名前でも同じように選びます (`-use plamo3translate`、`-use gemma4`)。Docker のイメージのようにタグを付けると、メモリによらずそのモデルです。タグはモデルの大きさ (`-use plamo3translate:2b`、`-use chat:e4b`) か、表の列 (`-use chat:24g`、`-use plamo3translate:8g`。そのメモリの機械で動かすもの) です。この機械でどれが選ばれるかは `hwnpu-chat -list` に出ます。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。hwnpu-transcribe (`-use transcribe`)、hwnpu-tts (`-use speech`)、hwnpu-systemone (`-use decision`) も同じように選びます。表は [models.yaml](models.yaml) (`categories` と、各モデルの `machine`) から来ていて、hwnpu に組み込まれています。自分のファイルで、モデルを足す、列のモデルを替える、あるモデルを別のモデルに差し替える (エイリアス) ができます。書くのは差分だけです ([docs/model-table.md](docs/model-table.md))。
+
 <table>
 <thead>
 <tr>
@@ -30,14 +32,14 @@ English: [MODEL.md](MODEL.md)
 </thead>
 <tbody>
 <tr>
-<th>チャット、コーディング<br><sub>hwnpu-chat、hwnpu-agent</sub></th>
+<th>チャット、コーディング<br><sub>hwnpu-chat、hwnpu-agent <code>-use chat</code></sub></th>
 <td><b>LFM3-1.7B</b> (2.2 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル</td>
 <td><b>Gemma 4 E2B</b> (2.3 GB)<br>長い文脈 (131072 で +0.8 GB) も<br><b>Gemma 4 E4B</b> (4.0 GB)<br>短い会話なら</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>長い文脈 (131072 で +2.1 GB) も</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>予定: Qwen3.6-35B-A3B (MoE、4 ビットで約 25 GB)</i></td>
 </tr>
 <tr>
-<th>画像を読む<br><sub>hwnpu-chat (<code>image_url</code>、<code>/image</code>)</sub></th>
+<th>画像を読む<br><sub>hwnpu-chat <code>-use vision</code> (<code>image_url</code>、<code>/image</code>)</sub></th>
 <td><b>LFM3-VL-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6 GB)</td>
 </tr>
@@ -46,12 +48,12 @@ English: [MODEL.md](MODEL.md)
 <td colspan="6"><b>Whisper large-v3-turbo</b> (約 1.9 GB)<br>99 言語、タイムスタンプつき、30 秒を 0.6 秒で読む</td>
 </tr>
 <tr>
-<th>音声を読む (音声についての質問)<br><sub>hwnpu-chat (<code>input_audio</code>、<code>/audio</code>)</sub></th>
+<th>音声を読む (音声についての質問)<br><sub>hwnpu-chat <code>-use audio</code> (<code>input_audio</code>、<code>/audio</code>)</sub></th>
 <td><b>LFM3-Audio-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0 GB、画像も)</td>
 </tr>
 <tr>
-<th>翻訳<br><sub>hwnpu-chat <code>-use plamo-3-translate-2b</code>、<code>-use plamo-3-translate-0.8b</code></sub></th>
+<th>翻訳<br><sub>hwnpu-chat <code>-use translate</code></sub></th>
 <td><b>PLaMo 3 Translate 0.8B</b> (約 2.4 GB)<br>2B の 3 倍速、訳は 2B の言い換え程度の違い</td>
 <td colspan="5"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
 </tr>
@@ -65,7 +67,7 @@ English: [MODEL.md](MODEL.md)
 <td colspan="6"><b>LFM3-Audio-2B</b> (約 2.4 GB)</td>
 </tr>
 <tr>
-<th>文の埋め込み、検索<br><sub>hwnpu-chat <code>/v1/embeddings</code></sub></th>
+<th>文の埋め込み、検索<br><sub>hwnpu-chat <code>-use embedding</code> (<code>/v1/embeddings</code>)</sub></th>
 <td colspan="6"><b>PLaMo-Embedding-1B</b> (1.3 GB)</td>
 </tr>
 <tr>

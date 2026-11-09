@@ -34,6 +34,8 @@ go run ./cmd/hwnpu-chat -list
 | `audio` | ユーザーのメッセージの音声 (`input_audio`、WAV) を読む。対話では `/audio FILE.wav` |
 
 - ターミナルで動かすのは `-use` に指定した 1 つのモデルで、何をするかはモデルの用途で決まります。サーバーはいくつでも動かせます (例 `-use LFM3-1.7B,plamo-embedding-1b`)
+- 用途かファミリーの名前を書くと、機械のメモリに合うモデルを [MODEL.ja.md](MODEL.ja.md) の表のとおりに選びます。`-use translate` は 8 GB の機械で PLaMo 3 Translate 0.8B、16 GB 以上で 2B です。`-use chat` は 8 GB で LFM3-1.7B、16 GB で Gemma 4 E2B、24 GB 以上で E4B です。Docker のイメージのようにタグで決めることもできます。タグはモデルの大きさ (`-use plamo3translate:2b`、`-use gemma4:e4b`、`-use chat:e4b`) か、機械のメモリ、つまり MODEL.ja.md の表の列 (`-use chat:24g` は 24 GB の機械で動かすもの、`-use plamo3translate:8g`) です。用途は `chat` (`code`、`agent`)、`vision`、`audio`、`translate`、`embedding` (`embed`、`search`) です。ファミリーとタグ、この機械でどれが選ばれるかは `-list` に出ます。ダウンロードと変換は選ばれたモデルの分だけです。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。API のリクエストの `model` も同じ書き方ができます
+- モデル、用途、選ばれるモデルは、hwnpu に組み込まれた [models.yaml](models.yaml) から来ます。自分のファイル `~/.config/hwnpu/models.yaml` (Windows は `%LOCALAPPDATA%\hwnpu\models.yaml`。`HWNPU_MODELS` と `-models FILE` も) に差分だけを書くと、それに重ねて読みます。自分のモデル (`like:` で別のモデルの欄を引き継ぐ、`from: hf:OWNER/NAME@REVISION`)、用途の列 (`categories: translate: picks: [{machine: 8, model: ...}]`)、あるモデルが選ばれるところで別のモデルを動かすエイリアス (`aliases: plamo-3-translate-0.8b: my-distill`) が書けます。読んだファイルとエイリアスは `-list` に出ます (docs/model-table.md)
 - 名前の大文字と小文字は区別せず、一覧のリポジトリ名でも指定できます。一覧にない Hugging Face のリポジトリも `-use OWNER/NAME` で指定でき、hwnpu-chat が動かせる構造 (チャットは LFM3、埋め込みは PLaMo のエンコーダ) なら `config.json` から用途を判断します。認証の要るリポジトリは環境変数 `HF_TOKEN`
 
 ## 1. 対話する
@@ -109,7 +111,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 
 | フラグ | 既定 | |
 |---|---|---|
-| `-use NAMES` | `LFM3-1.7B` | 動かすモデルをカンマ区切りで: `-list` の名前かリポジトリ `OWNER/NAME`。ターミナルでは 1 つ |
+| `-use NAMES` | `LFM3-1.7B` | 動かすモデルをカンマ区切りで: `-list` の名前、用途やファミリー (`translate`、`plamo3translate`、`plamo3translate:2b`)、リポジトリ `OWNER/NAME`。ターミナルでは 1 つ |
 | `-list` | | モデルの一覧 (用途、大きさ、落としてあるか) を出して終わる |
 | `-listen ADDR` | なし | ターミナルの代わりに OpenAI 互換のサーバーを `ADDR` (例 `127.0.0.1:8080`) で開く (3 節) |
 | `-think` | `true` | 答える前に考えさせる |
@@ -258,7 +260,7 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 
 ### 音声で話す（LFM3-Audio-2B の TTS）
 
-`hwnpu-tts` が文章を読み上げて WAV（24 kHz）に書きます。テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.30）。
+`hwnpu-tts -lang ja -o out.wav こんにちは` が LFM3-Audio-2B (`-use speech`) で文章を読み上げて WAV（24 kHz）に書きます。初回にモデルをモデルのフォルダに落とし (hwnpu-chat の LFM3-Audio-2B と共有)、下のプログラムを 8 ビットの表で自分で変換し、読む表 (`speech-tables.safetensors`) を書くので、2 回目からはチェックポイントは要りません。自分で変換するときは、テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.30）。
 
 ```bash
 go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
