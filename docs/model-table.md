@@ -10,7 +10,10 @@
 - hwnpu-transcribe、hwnpu-tts、hwnpu-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。hwnpu-tts と hwnpu-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
 - 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
-- 確かめたこと: hwnpu-transcribe は M3 で表を書いて書き起こし、チェックポイントを退けても同じ結果。hwnpu-tts と hwnpu-systemone は、3 つのリポジトリの `config.json` を今の読み込みのコードで読み、取るファイルがあることまで (チェックポイントの変換と実行は、ディスクの空きのためまだ)
+- 確かめたこと (M3、2026-11-09):
+  - hwnpu-transcribe: 表を書いて書き起こし、チェックポイントを退けても同じ結果
+  - hwnpu-tts: 初回にダウンロード (4 GB、6 分半)、変換 4 本、表 (0.67 GB) まで自動で通った。「こんにちは」(1.6 秒) と「今日はいい天気ですね。散歩に行きましょう。」(5.0 秒を 3.3 秒で生成) を hwnpu-transcribe で書き起こすと、どちらも元の文。チェックポイント (本体とコーデック) を退けても読み上げ、読み込み 3.2 秒
+  - hwnpu-systemone: d1-2B の変換 (lut8、512 トークン、2 部分) と視覚エンコーダ、表 (0.52 GB) まで自動で通った。「二重に請求された、返事がない、怒っている」問い合わせに、担当 billing (0.98)、怒っているか 0.996、緊急度 1 (やや緊急、0.45)。チェックポイントを退けても同じ答え、読み込み 1.1 秒
 - 画像を読む用途は `vision` だけにし、`image` は別名にしない (画像生成の用途 `image` のために空けておく)
 
 
@@ -249,6 +252,26 @@ models:
 - **ユーザーのファイル**: 固定しない `from: hf:OWNER/NAME` も書ける (手元で試すとき)。そのときは初めて落としたときのコミットとハッシュを `source.json` に書き、以後はそれを使い続ける。上流が更新されても勝手には変わらない。新しくするのは `-update NAME` で頼んだときだけ。起動のログに「固定していない」と出す
 - **今ある手元のキャッシュ**: `source.json` のないモデルのフォルダは、初回に一度だけ手元のファイルの sha256 を計算し (10 GB で数十秒)、定義ファイルと合えばそのまま使う。合わなければ変換し直す
 - **path と s3**: コミットはないので `sha256` だけで固定する。書いていなければ、ユーザーの HF と同じく初回の値を `source.json` に記録する
+
+### 5.4 全体の探索順 (ミラー)
+
+モデルごとの `from` を書き換えなくても、全部のモデルを先に共有フォルダや S3 で探し、なければ Hugging Face から取れるようにする。社内の共有フォルダや S3 に HF の写しを置いておく使い方向け。
+
+```yaml
+sources:
+  team-share: {type: path, path: /Volumes/share/hf}
+  lab-s3: {type: s3, bucket: models, prefix: hf/, endpoint: http://rustfs.lab:9000, profile: rustfs}
+search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
+```
+
+- `from: hf:OWNER/NAME` のモデルは、`search` の順に `OWNER/NAME/` を探す (共有フォルダなら `/Volumes/share/hf/OWNER/NAME/`、S3 なら `s3://models/hf/OWNER/NAME/`)。最初に見つかったところから取る。`hf` が並びにあれば、最後に Hugging Face から
+- 置き方は HF のリポジトリと同じ並び (`config.json`、トークナイザー、safetensors)。リビジョンを固定したモデルは `OWNER/NAME@COMMIT/` を先に探す
+- 安全: ミラーから取ったファイルも、定義ファイルの sha256 (5.3 節) で確かめる。合わなければそのミラーを飛ばして次を探し、ログに出す。ミラーが古い版を持っていても、違う重みで変換することはない
+- ネイティブの変換済み (5.2 節) も同じ順に探す (`OWNER/NAME` の代わりに `prebuilt.from` の名前で)
+- `-offline` (11.3 節) では、`search` のうち `path` のものだけを見る
+- `search` から `hf` を外せば、Hugging Face に出ない (社内のミラーだけで動かす)
+- 書くのはユーザーのファイル (差分)。組み込みの `models.yaml` は `search` を書かない (既定の `[hf]`)
+- モデルごとの `from: team-share:NAME` (5 節) は、そのモデルだけ別のところから取るときに使い、`search` より優先する
 
 ## 6. ビルド設定の当てはめ方
 
