@@ -3378,9 +3378,10 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 共有の変更: `internal/tokenizer` のバイトフォールバックは、Gemma 2 の語彙に `<0x09>` がなく (タブは普通のトークン) 読めなかった。文字そのものが語彙にあるバイトは `<0x..>` がなくてよいことにした (encode は文字を先に引くので使われない)。`TestTokens` (`HWNPU_SANA_TOKENIZER`) が HF の id と 3 つのプロンプト (日本語、絵文字、タブ) で一致
 - `hwnpu-image`: `-model` が Sana の書き出し (`model.json` と `caption/`) なら Sana で描く。`-steps` の既定はモデルごと (Anima 8、Sana-Sprint 2、Sana 20)、`-guidance` (既定 4.5)、`-noise` は Sana-Sprint ではステップ + 1 個
 
-### 16.120 AMD: Depth Anything 3 の単眼の深度 (`iron_da3.py`、`hwnpu-depth`) — 2026-11-09
+### 16.120 AMD: Depth Anything 3 の深度 (`iron_da3.py`、`hwnpu-depth`) — 2026-11-09
 
-- 動機: Apache-2.0 の軽い画像の分析。DA3MONO-LARGE (0.33B、DINOv2 ViT-L と DPT) は DA3 の中で 1 枚の画像の深度に特化した版で、構造が Depth Anything V2 と同じ
-- 504 × 504 で 1 枚 1.0〜1.2 秒、固定の最大 1.39 GiB。公式の CPU (fp32) と深度のコサイン 0.9999。記録は amd-npu-models.md の 15 節
-- 新しく作った部品: 行を 16 の倍数に足した格子 (`Grid`)、ストライド 2 の 3 × 3、転置畳み込み (GEMM と画素への Copy)、双線形の拡大 (補間の行列の GEMM 2 回と転置の Copy)
-- `hwnpu-depth`: 画像ごとに NAME.depth.png (逆深度を 8 ビットに、元の大きさで)、`-raw` で float32、`-sky` で空。`internal/vision/depth` の `TestQuantile`、`TestSky`、`TestPatches`
+- 動機: Apache-2.0 の軽い画像の分析。DA3MONO-LARGE (0.33B、DINOv2 ViT-L と DPT) は 1 枚の深度に特化した版、DA3METRIC-LARGE は同じ構造でメートル、DA3-SMALL / BASE は複数視点の版を 1 枚として (深度と確信度)
+- 504 × 378 で LARGE 0.7 秒、SMALL 0.26 秒 (推定だけ)。固定の最大 0.49〜1.39 GiB。公式の CPU (fp32) と深度のコサイン 0.9993〜0.9999。記録は amd-npu-models.md の 15 節
+- 書き出しは縦横比ごとの大きさ (長辺 504 の 5 つ) を持ち、hwnpu-depth が近いものを選ぶ
+- 新しく作った部品: 行を 16 の倍数に足した格子 (`Grid`)、ストライド 2 の 3 × 3、転置畳み込み (GEMM と画素への Copy)、双線形の拡大 (補間の行列の GEMM 2 回と転置の Copy)、2 次元の RoPE (q と k の次元の並べ替え)、ヘッドのチャネルの 64 の倍数への埋め
+- `hwnpu-depth`: 画像ごとに NAME.depth.png (逆深度を 8 ビットに、元の大きさで)、`-raw` で float32、`-sky` で空か確信度、`-focal` / `-fov` でメートル (METRIC)。`internal/vision/depth` の `TestQuantile`、`TestSky`、`TestPatches`、`TestNearest`

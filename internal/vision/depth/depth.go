@@ -1,10 +1,11 @@
-// Package depth estimates a picture's depth on AMD's NPU with Depth Anything 3's monocular
-// model (depth-anything/DA3MONO-LARGE: DINOv2 ViT-L/14 and a DPT head), the graphs
-// tools/amd/iron_da3.py exports. The host resizes and normalizes the picture, cuts its 14 x 14
+// Package depth estimates a picture's depth on AMD's NPU with Depth Anything 3 (DA3MONO-LARGE
+// and DA3METRIC-LARGE: DINOv2 ViT-L/14 and a DPT head; DA3-SMALL and DA3-BASE on one picture:
+// ViT-S or B and DualDPT's depth and confidence), the graphs tools/amd/iron_da3.py exports. The host resizes and normalizes the picture, cuts its 14 x 14
 // patches, takes exp of the depth logit and sets the sky to the far depth.
 //
-// The depth is relative (larger is farther, up to an unknown scale), at the export's size
-// (504 x 504 by default; the picture is stretched to it).
+// The depth is relative (larger is farther, up to an unknown scale), or with DA3METRIC-LARGE
+// metric given the focal length (Result.Meters), at the export's size nearest the picture's
+// aspect (the longest side 504; the picture is stretched to it).
 package depth
 
 import (
@@ -24,7 +25,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
 
-// Config is model.json of an export (iron_da3.py).
+// Config is model.json of one size of an export (iron_da3.py): its directory's graphs.
 type Config struct {
 	Name   string    `json:"name"`
 	Kind   string    `json:"kind"`
@@ -40,76 +41,163 @@ type Config struct {
 	} `json:"config"`
 }
 
+// Export is model.json of an export: its sizes, each a directory WxH.
+type Export struct {
+	Name  string   `json:"name"`
+	Kind  string   `json:"kind"`
+	Sizes [][2]int `json:"sizes"`
+	// Metric: the depth times the focal length in pixels over MetricScale is meters
+	// (DA3METRIC-LARGE); else the depth is relative.
+	Metric      bool    `json:"metric"`
+	MetricScale float64 `json:"metric_scale"`
+	// Second is what the head's second output is: "sky" (DPT: DA3MONO, DA3METRIC) or
+	// "confidence" (DualDPT: DA3-SMALL, DA3-BASE).
+	Second string `json:"second"`
+}
+
 // patchIn is the patch embedding's input width (iron_da3.PE_IN): 3 x 14 x 14 values, padded.
 const patchIn = 640
 
 // SkyThreshold is DA3's: a pixel whose sky output is at least it is sky.
 const SkyThreshold = 0.3
 
-// IsExport reports whether dir is an export of tools/amd/iron_da3.py.
-func IsExport(dir string) bool {
+func readExport(dir string) (*Export, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "model.json"))
 	if err != nil {
-		return false
+		return nil, err
 	}
-	var c Config
-	return json.Unmarshal(b, &c) == nil && c.Kind == "depth"
+	var x Export
+	if err := json.Unmarshal(b, &x); err != nil {
+		return nil, fmt.Errorf("depth: %w", err)
+	}
+	if x.Kind != "depth" || len(x.Sizes) == 0 {
+		return nil, fmt.Errorf("depth: %s is not an export of tools/amd/iron_da3.py", dir)
+	}
+	return &x, nil
 }
 
-// Estimator is a loaded export, its graphs on the device.
+// IsExport reports whether dir is an export of tools/amd/iron_da3.py.
+func IsExport(dir string) bool {
+	_, err := readExport(dir)
+	return err == nil
+}
+
+// Estimator is a loaded export. One size's graphs are on the device at a time: the one nearest
+// the last picture's aspect.
 type Estimator struct {
-	Config
-	vit, head *iron.Graph
+	Export
+	dev *hwnpu.Device
+	dir string
+	cur *sized
 	// Logf, when set, is told what is done.
 	Logf func(format string, args ...any)
 }
 
-// Open loads the export in dir onto dev.
+// sized is one size's graphs.
+type sized struct {
+	Config
+	vit, head *iron.Graph
+}
+
+// Open reads the export in dir; a size's graphs are loaded onto dev for the first picture
+// that takes it.
 func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Estimator, error) {
-	b, err := os.ReadFile(filepath.Join(dir, "model.json"))
+	x, err := readExport(dir)
 	if err != nil {
 		return nil, err
 	}
-	e := &Estimator{}
-	if err := json.Unmarshal(b, &e.Config); err != nil {
-		return nil, fmt.Errorf("depth: %w", err)
-	}
-	if e.Kind != "depth" || e.Patch == 0 || e.Model.Width == 0 {
-		return nil, fmt.Errorf("depth: %s is not an export of tools/amd/iron_da3.py", dir)
-	}
-	if e.vit, err = iron.OpenGraph(ctx, dev, filepath.Join(dir, "vit")); err != nil {
-		return nil, err
-	}
-	if e.head, err = iron.OpenGraph(ctx, dev, filepath.Join(dir, "head")); err != nil {
-		e.vit.Close()
-		return nil, err
-	}
-	return e, nil
+	return &Estimator{Export: *x, dev: dev, dir: dir}, nil
 }
 
 // Close releases the device memory.
 func (e *Estimator) Close() error {
-	err := e.vit.Close()
-	if err2 := e.head.Close(); err == nil {
+	if e.cur == nil {
+		return nil
+	}
+	err := e.cur.close()
+	e.cur = nil
+	return err
+}
+
+func (s *sized) close() error {
+	err := s.vit.Close()
+	if err2 := s.head.Close(); err == nil {
 		err = err2
 	}
 	return err
 }
 
-// Size is the depth map's width and height (the export's).
-func (e *Estimator) Size() (int, int) { return e.Model.Width, e.Model.Height }
+// Nearest is the export's size nearest the aspect of a w x h picture (in log ratio).
+func (e *Estimator) Nearest(w, h int) (int, int) {
+	best, bw, bh := math.Inf(1), 0, 0
+	r := math.Log(float64(w) / float64(h))
+	for _, s := range e.Sizes {
+		if d := math.Abs(math.Log(float64(s[0])/float64(s[1])) - r); d < best {
+			best, bw, bh = d, s[0], s[1]
+		}
+	}
+	return bw, bh
+}
 
-// Result is a depth map and the sky's, row major at Size.
+// use loads the graphs of size w x h, releasing another's.
+func (e *Estimator) use(ctx context.Context, w, h int) (*sized, error) {
+	if e.cur != nil && e.cur.Model.Width == w && e.cur.Model.Height == h {
+		return e.cur, nil
+	}
+	if err := e.Close(); err != nil {
+		return nil, err
+	}
+	d := filepath.Join(e.dir, fmt.Sprintf("%dx%d", w, h))
+	b, err := os.ReadFile(filepath.Join(d, "model.json"))
+	if err != nil {
+		return nil, err
+	}
+	s := &sized{}
+	if err := json.Unmarshal(b, &s.Config); err != nil {
+		return nil, fmt.Errorf("depth: %w", err)
+	}
+	if s.Model.Width != w || s.Model.Height != h || s.Patch == 0 {
+		return nil, fmt.Errorf("depth: %s: not the graphs of %dx%d", d, w, h)
+	}
+	if s.vit, err = iron.OpenGraph(ctx, e.dev, filepath.Join(d, "vit")); err != nil {
+		return nil, err
+	}
+	if s.head, err = iron.OpenGraph(ctx, e.dev, filepath.Join(d, "head")); err != nil {
+		s.vit.Close()
+		return nil, err
+	}
+	e.cur = s
+	return s, nil
+}
+
+// Result is a depth map and the sky's or the confidence's, row major, at the size the picture
+// was stretched to.
 type Result struct {
 	W, H  int
-	Depth []float32 // relative; the sky set to the 99th percentile of the rest
-	Sky   []float32 // >= SkyThreshold is sky
+	Depth []float32 // with a sky output, the sky set to the 99th percentile of the rest
+	Sky   []float32 // >= SkyThreshold is sky (nil without a sky output)
+	Conf  []float32 // the confidence, exp + 1 (nil without one)
+	// Metric: Depth times the focal length in pixels at W x H, over MetricScale, is meters.
+	Metric      bool
+	MetricScale float64
+}
+
+// Meters converts a metric model's depth to meters in place, for a picture of ow x oh pixels
+// whose focal lengths in its own pixels are fx and fy: the focal length at W x H is the mean
+// of fx W / ow and fy H / oh (DA3's README: the mean of fx and fy).
+func (r *Result) Meters(fx, fy float64, ow, oh int) {
+	f := (fx*float64(r.W)/float64(ow) + fy*float64(r.H)/float64(oh)) / 2
+	k := float32(f / r.MetricScale)
+	for i := range r.Depth {
+		r.Depth[i] *= k
+	}
 }
 
 // Patches returns the ViT's input for img: row 0 zeros (the class token's), then each 14 x
-// 14 patch's normalized values (channel, row, column), the picture stretched to Size with
-// PIL's antialiased bicubic (the official processor takes OpenCV's cubic or area).
-func (e *Estimator) Patches(img image.Image) []float32 {
+// 14 patch's normalized values (channel, row, column), the picture stretched to the size with
+// PIL's antialiased bicubic (the official processor takes OpenCV's cubic or area, and keeps
+// the aspect: the export's sizes are near it).
+func (e *sized) Patches(img image.Image) []float32 {
 	W, H, P := e.Model.Width, e.Model.Height, e.Patch
 	px := lfm3vl.Resize(img, W, H, "bicubic")
 	gw, gh := W/P, H/P
@@ -130,43 +218,63 @@ func (e *Estimator) Patches(img image.Image) []float32 {
 	return out
 }
 
-// Estimate runs the ViT and the head on img.
+// Estimate runs the ViT and the head on img at the export's size nearest its aspect.
 func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, error) {
+	b := img.Bounds()
 	t0 := time.Now()
-	if err := e.vit.SetInput("patches", toBF16(e.Patches(img))); err != nil {
+	w, h := e.Nearest(b.Dx(), b.Dy())
+	s, err := e.use(ctx, w, h)
+	if err != nil {
+		return nil, err
+	}
+	tl := time.Now()
+	if err := s.vit.SetInput("patches", toBF16(s.Patches(img))); err != nil {
 		return nil, err
 	}
 	t1 := time.Now()
-	if err := e.vit.Run(ctx, map[string]int64{"nk": int64(e.Rows)}); err != nil {
+	if err := s.vit.Run(ctx, map[string]int64{"nk": int64(s.Rows)}); err != nil {
 		return nil, fmt.Errorf("depth: vit: %w", err)
 	}
-	for i, h := range e.vit.Outputs() {
-		f, err := e.vit.Output(h.Name)
+	for i, h := range s.vit.Outputs() {
+		f, err := s.vit.Output(h.Name)
 		if err != nil {
 			return nil, err
 		}
-		if err := e.head.SetInput(fmt.Sprintf("f%d", i), f); err != nil {
+		if err := s.head.SetInput(fmt.Sprintf("f%d", i), f); err != nil {
 			return nil, err
 		}
 	}
 	t2 := time.Now()
-	if err := e.head.Run(ctx, nil); err != nil {
+	if err := s.head.Run(ctx, nil); err != nil {
 		return nil, fmt.Errorf("depth: head: %w", err)
 	}
-	out, err := e.head.Output(e.head.Outputs()[0].Name)
+	out, err := s.head.Output(s.head.Outputs()[0].Name)
 	if err != nil {
 		return nil, err
 	}
 	t3 := time.Now()
-	W, H := e.Size()
-	r := &Result{W: W, H: H, Depth: make([]float32, W*H), Sky: make([]float32, W*H)}
+	W, H := s.Model.Width, s.Model.Height
+	r := &Result{W: W, H: H, Depth: make([]float32, W*H), Metric: e.Metric, MetricScale: e.MetricScale}
+	second := make([]float32, W*H)
 	for i := range r.Depth {
 		r.Depth[i] = float32(math.Exp(float64(fromBF16(binary.LittleEndian.Uint16(out[2*64*i:])))))
-		r.Sky[i] = max(0, fromBF16(binary.LittleEndian.Uint16(out[2*64*i+2:])))
+		second[i] = fromBF16(binary.LittleEndian.Uint16(out[2*64*i+2:]))
 	}
-	r.fillSky()
+	if e.Second == "confidence" {
+		for i, v := range second {
+			second[i] = float32(math.Exp(float64(v))) + 1
+		}
+		r.Conf = second
+	} else {
+		for i, v := range second {
+			second[i] = max(0, v)
+		}
+		r.Sky = second
+		r.fillSky()
+	}
 	if e.Logf != nil {
-		e.Logf("depth: input %.2f s, vit %.2f s, head %.2f s", t1.Sub(t0).Seconds(), t2.Sub(t1).Seconds(), t3.Sub(t2).Seconds())
+		e.Logf("depth: %dx%d, load %.2f s, input %.2f s, vit %.2f s, head %.2f s", W, H, tl.Sub(t0).Seconds(),
+			t1.Sub(tl).Seconds(), t2.Sub(t1).Seconds(), t3.Sub(t2).Seconds())
 	}
 	return r, nil
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Depth Anything 3 (DA3MONO-LARGE and the like: DINOv2 ViT and a DPT head) on the CPU with
+"""Depth Anything 3 (DA3MONO-LARGE, DA3METRIC-LARGE: DINOv2 ViT and a DPT head; DA3-SMALL and
+DA3-BASE on one picture: DualDPT's depth and confidence) on the CPU with
 the official modules: the reference hwnpu's NPU depth (cmd/hwnpu-depth, tools/amd/iron_da3.py)
 is checked against.
 
@@ -53,37 +54,44 @@ def main() -> int:
 
     from depth_anything_3.model.dinov2.dinov2 import DinoV2
     from depth_anything_3.model.dpt import DPT
+    from depth_anything_3.model.dualdpt import DualDPT
 
     cfg = json.loads((a.root / "config.json").read_text())["config"]
     net, head = dict(cfg["net"]), dict(cfg["head"])
     net.pop("__object__")
-    head.pop("__object__")
-    assert head.get("output_dim", 1) == 1 and net["alt_start"] == -1, "a mono model (DPT head) only"
+    kind = head.pop("__object__")["name"]
     bb = DinoV2(**net).eval()
-    dpt = DPT(**head).eval()
+    dpt = (DualDPT if kind == "DualDPT" else DPT)(**head).eval()
     sd = load_file(a.root / "model.safetensors")
     for m, p in ((bb, "model.backbone."), (dpt, "model.head.")):
         part = {k.removeprefix(p): v for k, v in sd.items() if k.startswith(p)}
-        m.load_state_dict(part, strict=True)
+        missing, unexpected = m.load_state_dict(part, strict=False)
+        # DualDPT's auxiliary (ray) head has levels the checkpoints leave out; depth needs none
+        assert not unexpected and all("_aux" in k for k in missing), (missing, unexpected)
     rec = {}
     img = load_image(a.image, a.width, a.height)
     rec["image"] = img
     x = torch.from_numpy(img).permute(2, 0, 1)[None, None]  # (1, 1, 3, h, w)
     vit = bb.pretrained
-    rec["pos_embed"] = vit.interpolate_pos_encoding(torch.zeros(1, 1 + (a.width // 14) * (a.height // 14), vit.embed_dim), a.width, a.height)[0].numpy()
+    rec["pos_embed"] = vit.interpolate_pos_encoding(torch.zeros(1, 1 + (a.width // 14) * (a.height // 14), vit.embed_dim), a.height, a.width)[0]  # DINOv2 calls the rows w.numpy()
     feats, _ = bb(x)
     rec["feats"] = np.stack([f[0][0, 0].numpy() for f in feats])  # (4, N, C)
     rec["cls"] = np.stack([f[1][0, 0].numpy() for f in feats])
     hooks = {}
     for name in ("layer1_rn", "layer2_rn", "layer3_rn", "layer4_rn", "refinenet4", "refinenet3", "refinenet2",
                  "refinenet1", "output_conv1", "output_conv2", "sky_output_conv2"):
+        if not hasattr(dpt.scratch, name):
+            continue
         getattr(dpt.scratch, name).register_forward_hook(lambda m, i, o, n=name: hooks.__setitem__(n, o[0].permute(1, 2, 0).numpy()))
     for i, r in enumerate(dpt.resize_layers):
         r.register_forward_hook(lambda m, i_, o, n=f"resize{i}": hooks.__setitem__(n, o[0].permute(1, 2, 0).numpy()))
     out = dpt(feats, a.height, a.width, patch_start_idx=0)
     rec.update(hooks)
     rec["depth"] = out["depth"][0, 0].numpy()
-    rec["sky"] = out["sky"][0, 0].numpy()
+    if "sky" in out:
+        rec["sky"] = out["sky"][0, 0].numpy()
+    if "depth_conf" in out:
+        rec["conf"] = out["depth_conf"][0, 0].numpy()
     a.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(a.out.with_suffix(".npz"), **rec)
     from PIL import Image
@@ -91,8 +99,8 @@ def main() -> int:
     d = 1 / rec["depth"]
     g = ((d - d.min()) / (d.max() - d.min()) * 255).round().astype(np.uint8)
     Image.fromarray(g).save(a.out.with_suffix(".png"))
-    print(f"{a.out.with_suffix('.png')}: {a.width}x{a.height}, depth {rec['depth'].min():.3f}..{rec['depth'].max():.3f}, "
-          f"sky {float((rec['sky'] > 0.3).mean()):.3f} of the pixels")
+    extra = f", sky {float((rec['sky'] > 0.3).mean()):.3f} of the pixels" if "sky" in rec else f", confidence {rec['conf'].mean():.2f}"
+    print(f"{a.out.with_suffix('.png')}: {a.width}x{a.height}, depth {rec['depth'].min():.3f}..{rec['depth'].max():.3f}{extra}")
     return 0
 
 

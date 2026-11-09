@@ -12,9 +12,12 @@ heads: depth (exp of the logit) and sky (ReLU). Two graphs, each exported by iro
         the four features (tokens, 1024), the class token's row first
   head  the DPT head: two channels of the image's pixels, depth's logit and sky's
 
-The size is fixed per export (the position embedding is interpolated to it, bicubic as
-DINOv2's). The host (internal/vision/depth) resizes and normalizes the image, cuts the
-patches, takes exp of the depth logit and writes the picture.
+The graphs are for one size (the position embedding is interpolated to it, bicubic as
+DINOv2's); an export holds a directory of them for each of several aspects (SIZES) and
+model.json lists them. The host (internal/vision/depth) takes the size nearest the picture's
+aspect, resizes and normalizes the picture, cuts the patches, takes exp of the depth logit and
+writes the picture. DA3METRIC-LARGE has the same structure: its depth times the focal length in
+pixels over 300 is meters.
 
 Convolutions are iron_anima's: a channel-last zero-padded grid (Grid here: rows of Wp pixels,
 Wp >= W + 1 and a multiple of 16, and rows to a multiple of 16), a GEMM over the im2col rows of
@@ -23,7 +26,7 @@ Wp >= W + 1 and a multiple of 16, and rows to a multiple of 16), a GEMM over the
 Bilinear resizes (align_corners) are two GEMMs with the interpolation matrices, the dense
 pixels transposed between them by a copy.
 
-  python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE OUT --width 504 --height 504
+  python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE OUT   # --sizes 504x504 504x378 ...
 
 See docs/amd-npu-models.md.
 """
@@ -80,6 +83,20 @@ class Config:
     features: int = 256
     out_channels: tuple = (256, 512, 1024, 1024)
     split: int = 6  # blocks a command runs
+    # DA3's any-view models (DA3-SMALL, DA3-BASE), run on one picture: from alt_start the odd
+    # blocks attend "globally" (over the views: here the same tokens, the RoPE positions of the
+    # patches all one), the camera token replaces the class token's row there; from
+    # qknorm_start per-head layer norms of q and k, from rope_start 2-D RoPE; cat_token: each
+    # feature is the last local block's output beside the normed one (2 hidden wide)
+    alt_start: int = -1
+    qknorm_start: int = -1
+    rope_start: int = -1
+    cat_token: bool = False
+    dual: bool = False  # the head is DualDPT (layer norm and UV embeddings; depth and confidence)
+
+    @property
+    def feat_dim(self) -> int:
+        return 2 * self.hidden if self.cat_token else self.hidden
 
     @property
     def gh(self) -> int:
@@ -102,12 +119,18 @@ class Config:
     def of(cls, root: Path, width: int, height: int) -> "Config":
         cfg = json.loads((root / "config.json").read_text())["config"]
         net, head = cfg["net"], cfg["head"]
-        if net["name"] != "vitl" or net.get("alt_start", -1) != -1 or head.get("output_dim", 1) != 1:
-            raise SystemExit(f"{root}: only DA3's mono ViT-L with a DPT head (DA3MONO-LARGE) is supported")
+        vit = {"vits": (384, 6, 12), "vitb": (768, 12, 12), "vitl": (1024, 16, 24)}.get(net["name"])
+        dual = head["__object__"]["name"] == "DualDPT"
+        if vit is None or (not dual and head["__object__"]["name"] != "DPT") or head.get("output_dim", 1) != (2 if dual else 1):
+            raise SystemExit(f"{root}: a DA3 of ViT-S, B or L with a DPT or DualDPT head is supported")
         if width % PATCH or height % PATCH:
             raise SystemExit(f"{width}x{height}: not whole {PATCH}-pixel patches")
-        return cls(width=width, height=height, out_layers=tuple(net["out_layers"]), features=head["features"],
-                   out_channels=tuple(head["out_channels"]))
+        E, H, L = vit
+        return cls(width=width, height=height, hidden=E, heads=H, layers=L, mlp=4 * E,
+                   out_layers=tuple(net["out_layers"]), features=head["features"],
+                   out_channels=tuple(head["out_channels"]), alt_start=net.get("alt_start", -1),
+                   qknorm_start=net.get("qknorm_start", -1), rope_start=net.get("rope_start", -1),
+                   cat_token=net.get("cat_token", False), dual=dual)
 
 
 # --- the ViT ----------------------------------------------------------------------------------
@@ -151,27 +174,70 @@ def pos_embed(w: Safetensors, c: Config) -> np.ndarray:
     return np.concatenate([pe[:1], out.reshape(-1, pe.shape[1])]).astype(np.float32)
 
 
+# 2-D RoPE (RotaryPositionEmbedding2D, frequency 100): a head's first 32 dims turn by the row,
+# the last 32 by the column, each half rotating its dim d with d + 16. IRON's RoPE turns dim j
+# with j + 32 (two halves of 64), so q and k's dims are reordered (ROPE_PERM, in the weights)
+# to put each pair 32 apart: new j is old ROPE_PERM[j].
+ROPE_PERM = np.concatenate([np.arange(0, 16), np.arange(32, 48), np.arange(16, 32), np.arange(48, 64)])
+
+
+def rope2d_table(c: Config, flat: bool) -> np.ndarray:
+    """The angles (tokens, 64), cos and sin interleaved (IRON's RoPE), for the reordered dims:
+    pair j < 16 turns by the row times 100^(-j/16), pair 16 + j by the column. The patches sit
+    at (row + 1, column + 1), the class (camera) token at (0, 0); ``flat``: every patch at (1,
+    1), as the global blocks' positions."""
+    inv = 1.0 / 100.0 ** (np.arange(0, 32, 2) / 32)
+    ys = np.repeat(np.arange(c.gh), c.gw) + 1
+    xs = np.tile(np.arange(c.gw), c.gh) + 1
+    if flat:
+        ys, xs = np.ones_like(ys), np.ones_like(xs)
+    pos = np.zeros((c.tokens, 2))
+    pos[1 : 1 + c.patches, 0], pos[1 : 1 + c.patches, 1] = ys, xs
+    a = np.concatenate([pos[:, :1] * inv, pos[:, 1:] * inv], axis=1)  # (tokens, 32)
+    out = np.empty((c.tokens, 64), np.float32)
+    out[:, ::2] = np.cos(a)
+    out[:, 1::2] = np.sin(a)
+    return out
+
+
 class VitBlock(iron.Graph):
-    """A DINOv2 block: layer norm, attention (16 heads of 64), layer scale; layer norm, GELU
-    MLP, layer scale (the layer scales folded into the output projections)."""
+    """A DINOv2 block: layer norm, attention (heads of 64; for DA3's any-view blocks per-head
+    layer norms of q and k and 2-D RoPE), layer scale; layer norm, GELU MLP, layer scale (the
+    layer scales folded into the output projections)."""
 
     def __init__(self, c: Config, w, i: int):
         E, M = c.hidden, c.mlp
         p = f"model.backbone.pretrained.blocks.{i}."
         self.c = c
+        self.qk_norm = c.qknorm_start != -1 and i >= c.qknorm_start
+        self.rope = c.rope_start != -1 and i >= c.rope_start
+        # (the reorder is on in every block of a model with RoPE: harmless before rope_start)
+        perm = c.rope_start != -1
         if w is None:
             for n, s in (("n1", (E,)), ("n1b", (E,)), ("n2", (E,)), ("n2b", (E,)), ("q", (E, E)), ("k", (E, E)),
                          ("v", (E, E)), ("qb", (E,)), ("kb", (E,)), ("vb", (E,)), ("o", (E, E)), ("ob", (E,)),
                          ("f1", (M, E)), ("f1b", (M,)), ("f2", (E, M)), ("f2b", (E,))):
                 setattr(self, n, iron.param(*s))
+            if self.qk_norm:
+                self.qn, self.qnb, self.kn, self.knb = (iron.param(64) for _ in range(4))
             return
         g = lambda n: f32(w[p + n])  # noqa: E731
         self.n1, self.n1b = iron.param(bf(g("norm1.weight"))), iron.param(bf(g("norm1.bias")))
         self.n2, self.n2b = iron.param(bf(g("norm2.weight"))), iron.param(bf(g("norm2.bias")))
         qkv, qkvb = g("attn.qkv.weight"), g("attn.qkv.bias")
+        H = c.heads
+        rows = np.concatenate([h * 64 + ROPE_PERM for h in range(H)]) if perm else np.arange(E)
         for j, n in enumerate("qkv"):
-            setattr(self, n, iron.param(bf(qkv[j * E : (j + 1) * E])))
-            setattr(self, n + "b", iron.param(bf(qkvb[j * E : (j + 1) * E])))
+            m, b = qkv[j * E : (j + 1) * E], qkvb[j * E : (j + 1) * E]
+            if n != "v":
+                m, b = m[rows], b[rows]
+            setattr(self, n, iron.param(bf(m)))
+            setattr(self, n + "b", iron.param(bf(b)))
+        if self.qk_norm:
+            dims = ROPE_PERM if perm else np.arange(64)
+            for n in ("q", "k"):
+                setattr(self, n + "n", iron.param(bf(g(f"attn.{n}_norm.weight")[dims])))
+                setattr(self, n + "nb", iron.param(bf(g(f"attn.{n}_norm.bias")[dims])))
         ls1, ls2 = g("ls1.gamma"), g("ls2.gamma")
         self.o = iron.param(bf(g("attn.proj.weight") * ls1[:, None]))
         self.ob = iron.param(bf(g("attn.proj.bias") * ls1))
@@ -179,7 +245,7 @@ class VitBlock(iron.Graph):
         self.f2 = iron.param(bf(g("mlp.fc2.weight") * ls2[:, None]))
         self.f2b = iron.param(bf(g("mlp.fc2.bias") * ls2))
 
-    def body(self, x, nk):
+    def body(self, x, nk, angles=None):
         c = self.c
         E, H = c.hidden, c.heads
         D = E // H
@@ -189,6 +255,12 @@ class VitBlock(iron.Graph):
         q = F.linear(h, self.q, self.qb, precision=P)
         k = F.linear(h, self.k, self.kb, precision=P)
         v = F.linear(h, self.v, self.vb, precision=P)
+        if self.qk_norm:
+            q = F.layer_norm(q.reshape(T * H, D), (D,), self.qn, self.qnb, eps=1e-5).reshape(T, E)
+            k = F.layer_norm(k.reshape(T * H, D), (D,), self.kn, self.knb, eps=1e-5).reshape(T, E)
+        if self.rope:
+            q = F.rope(q.reshape(T * H, D), angles).reshape(T, E)
+            k = F.rope(k.reshape(T * H, D), angles).reshape(T, E)
         o = MHA.step(q.reshape(T, H, D), k.reshape(T, H, D)[:nk], v.reshape(T, H, D)[:nk], heads_interleaved=True,
                      kv_interleaved=True, causal=False, d=D, num_pipelines=8)
         x = x + F.linear(o.reshape(T, E), self.o, self.ob, precision=P)
@@ -213,6 +285,7 @@ class Vit(iron.Graph):
         if w is None:
             self.pe, self.pos = iron.param(E, PE_IN), iron.param(c.tokens, E)
             self.norm, self.normb = iron.param(E), iron.param(E)
+            self.any_view(c, None)
             return
         pw = f32(w["model.backbone.pretrained.patch_embed.proj.weight"]).reshape(E, -1)
         full = np.zeros((E, PE_IN), np.float32)
@@ -226,17 +299,51 @@ class Vit(iron.Graph):
         self.pos = iron.param(bf(pos))
         self.norm = iron.param(bf(w["model.backbone.pretrained.norm.weight"]))
         self.normb = iron.param(bf(w["model.backbone.pretrained.norm.bias"]))
+        self.any_view(c, w)
+
+    def any_view(self, c: Config, w) -> None:
+        """DA3's any-view parts: the RoPE tables, the camera token's row, the feature states."""
+        if c.rope_start != -1:
+            self.angles = iron.param(bf(rope2d_table(c, False)))
+            self.angles_flat = iron.param(bf(rope2d_table(c, True)))
+        if c.alt_start != -1:
+            keep = np.ones((c.tokens, c.hidden), np.float32)
+            keep[0] = 0
+            cam = np.zeros((c.tokens, c.hidden), np.float32)
+            if w is not None:
+                cam[0] = f32(w["model.backbone.pretrained.camera_token"])[0, 0]  # the reference view's
+            self.keep, self.cam = iron.param(bf(keep)), iron.param(bf(cam))
+        if c.cat_token:
+            self.feats = [iron.state((c.tokens, 2 * c.hidden)) for _ in c.out_layers]
 
     def body(self, patches, *, nk: Scratchpad[np.int32]):
         c = self.c
+        E = c.hidden
         x = F.linear(patches, self.pe, precision=PREC.vit) + self.pos
         outs = []
+        local = x
         for i, b in enumerate(self.blocks):
             if i and i % c.split == 0:
                 command_boundary()
-            x = b(x, nk)
+            glob = c.alt_start != -1 and i >= c.alt_start and i % 2 == 1
+            if c.alt_start != -1 and i == c.alt_start:
+                x = x * self.keep + self.cam
+            angles = None
+            if b.rope:
+                angles = self.angles_flat if glob else self.angles
+            x = b(x, nk, angles)
+            if not glob:
+                local = x
             if i in c.out_layers:
-                outs.append(F.layer_norm(x, (c.hidden,), self.norm, self.normb, eps=1e-6))
+                n = F.layer_norm(x, (E,), self.norm, self.normb, eps=1e-6)
+                if not c.cat_token:
+                    outs.append(n)
+                    continue
+                st = self.feats[len(outs)]
+                T = c.tokens
+                Copy.step(local, st, dst=tap((T, 2 * E), 0, [T, E], [2 * E, 1]))
+                Copy.step(n, st, dst=tap((T, 2 * E), E, [T, E], [2 * E, 1]))
+                outs.append(Copy.step(st[0:T]))
         return tuple(outs)
 
 
@@ -299,9 +406,37 @@ def pad64(n: int) -> int:
     return -(-n // 64) * 64
 
 
+def uv_embed(pw: int, ph: int, C: int, aspect: float) -> np.ndarray:
+    """DualDPT's _add_pos_embed (create_uv_grid, position_grid_to_embed, ratio 0.1): (ph pw, C)."""
+    diag = math.sqrt(aspect * aspect + 1)
+    sx, sy = aspect / diag, 1 / diag
+    xs = np.linspace(-sx * (pw - 1) / pw, sx * (pw - 1) / pw, pw, dtype=np.float32)
+    ys = np.linspace(-sy * (ph - 1) / ph, sy * (ph - 1) / ph, ph, dtype=np.float32)
+    D = C // 2
+    omega = 1.0 / 100.0 ** (np.arange(D // 2, dtype=np.float32) / (D / 2.0))
+
+    def sincos(pos):
+        a = pos[:, None] * omega[None]
+        return np.concatenate([np.sin(a), np.cos(a)], axis=1)
+
+    u = np.tile(xs, ph)
+    v = np.repeat(ys, pw)
+    return (np.concatenate([sincos(u), sincos(v)], axis=1) * 0.1).astype(np.float32)
+
+
+def padded(x, *shape) -> np.ndarray:
+    """x zero-padded to shape (each axis at least as long)."""
+    x = np.asarray(x, np.float32)
+    out = np.zeros(shape, np.float32)
+    out[tuple(slice(0, n) for n in x.shape)] = x
+    return out
+
+
 class Head(iron.Graph):
-    """DPT's head on the four features: input ``f0``..``f3`` (tokens, hidden), the class
-    token's row first; output the image's pixels (H W, 64), channel 0 depth's logit, 1 sky's."""
+    """DPT's head (DualDPT's depth branch for DA3's any-view models) on the four features:
+    input ``f0``..``f3`` (tokens, feat_dim), the class token's row first; output the image's
+    pixels (H W, 64): channel 0 depth's logit, 1 sky's (DPT) or the confidence's (DualDPT).
+    Every channel count is padded with zeros to a multiple of 64 (the GEMMs' columns)."""
 
     def __init__(self, c: Config, w=None):
         self.c = c
@@ -309,50 +444,63 @@ class Head(iron.Graph):
         self._index = {}
         self.states = []
         self._cols = {}
-        self._dense = {}
         H, W = c.gh, c.gw
         Fe = c.features
         p = "model.head."
-        g = (lambda n: f32(w[p + n])) if w is not None else None
+        g = (lambda n: f32(w[p + n])) if w is not None else (lambda n: None)
+        z = w is None
         oc = c.out_channels
+        self.ocp = ocp = [pad64(x) for x in oc]
+        self.fp = Fp = pad64(Fe)
+        self.hp = hp = pad64(Fe // 2)
+        D = c.feat_dim
+        if c.dual:
+            self._param("norm", np.ones(D) if z else g("norm.weight"))
+            self._param("norm.b", np.zeros(D) if z else g("norm.bias"))
         for i in range(4):
-            self._param(f"proj{i}", g(f"projects.{i}.weight")[:, :, 0, 0] if g else np.zeros((oc[i], c.hidden)))
-            self._param(f"proj{i}.b", g(f"projects.{i}.bias") if g else np.zeros(oc[i]))
+            self._param(f"proj{i}", padded(np.zeros((oc[i], D)) if z else g(f"projects.{i}.weight")[:, :, 0, 0], ocp[i], D))
+            self._param(f"proj{i}.b", padded(np.zeros(oc[i]) if z else g(f"projects.{i}.bias"), ocp[i]))
+            if c.dual:
+                pe = np.zeros((c.tokens, ocp[i]), np.float32)
+                pe[1 : 1 + c.patches, : oc[i]] = uv_embed(W, H, oc[i], c.width / c.height)
+                self._param(f"pe{i}", pe)
         for i, k in ((0, 4), (1, 2)):
-            wt = g(f"resize_layers.{i}.weight") if g else np.zeros((oc[i], oc[i], k, k))  # (cin, cout, k, k)
-            self._param(f"up{i}", wt.transpose(2, 3, 1, 0).reshape(k * k * oc[i], oc[i]))  # rows (ky, kx, cout)
-            self._param(f"up{i}.b", np.tile(g(f"resize_layers.{i}.bias") if g else np.zeros(oc[i]), k * k))
-        self._conv3("down3", g("resize_layers.3.weight") if g else np.zeros((oc[3], oc[3], 3, 3)),
-                    g("resize_layers.3.bias") if g else np.zeros(oc[3]))
+            wt = np.zeros((oc[i], oc[i], k, k)) if z else g(f"resize_layers.{i}.weight")  # (cin, cout, k, k)
+            wt = padded(wt, ocp[i], ocp[i], k, k)
+            self._param(f"up{i}", wt.transpose(2, 3, 1, 0).reshape(k * k * ocp[i], ocp[i]))  # rows (ky, kx, cout)
+            self._param(f"up{i}.b", np.tile(padded(np.zeros(oc[i]) if z else g(f"resize_layers.{i}.bias"), ocp[i]), k * k))
+        self._conv3("down3", np.zeros((oc[3], oc[3], 3, 3)) if z else g("resize_layers.3.weight"),
+                    np.zeros(oc[3]) if z else g("resize_layers.3.bias"), ocp[3], ocp[3])
         for i in range(4):
-            self._conv3(f"rn{i}", g(f"scratch.layer{i + 1}_rn.weight") if g else np.zeros((Fe, oc[i], 3, 3)), None)
+            self._conv3(f"rn{i}", np.zeros((Fe, oc[i], 3, 3)) if z else g(f"scratch.layer{i + 1}_rn.weight"), None, Fp, ocp[i])
         for r in range(1, 5):
             for u in ((1, 2) if r < 4 else (2,)):
                 for j in (1, 2):
                     n = f"scratch.refinenet{r}.resConfUnit{u}.conv{j}"
-                    self._conv3(f"ref{r}.{u}.{j}", g(n + ".weight") if g else np.zeros((Fe, Fe, 3, 3)),
-                                g(n + ".bias") if g else np.zeros(Fe))
-            self._param(f"ref{r}.out", g(f"scratch.refinenet{r}.out_conv.weight")[:, :, 0, 0] if g else np.zeros((Fe, Fe)))
-            self._param(f"ref{r}.out.b", g(f"scratch.refinenet{r}.out_conv.bias") if g else np.zeros(Fe))
-        self._conv3("oc1", g("scratch.output_conv1.weight") if g else np.zeros((Fe // 2, Fe, 3, 3)),
-                    g("scratch.output_conv1.bias") if g else np.zeros(Fe // 2))
-        # the depth and the sky heads side by side: 3 x 3 to 32 + 32, ReLU, 1 x 1 to 2 (of 64)
-        if g:
-            w3 = np.concatenate([g("scratch.output_conv2.0.weight"), g("scratch.sky_output_conv2.0.weight")])
-            b3 = np.concatenate([g("scratch.output_conv2.0.bias"), g("scratch.sky_output_conv2.0.bias")])
-            w1 = np.zeros((64, 64), np.float32)
-            w1[0, :32] = g("scratch.output_conv2.2.weight")[0, :, 0, 0]
-            w1[1, 32:] = g("scratch.sky_output_conv2.2.weight")[0, :, 0, 0]
-            b1 = np.zeros(64, np.float32)
-            b1[0] = g("scratch.output_conv2.2.bias")[0]
-            b1[1] = g("scratch.sky_output_conv2.2.bias")[0]
-        else:
-            w3, b3, w1, b1 = np.zeros((64, Fe // 2, 3, 3)), np.zeros(64), np.zeros((64, 64)), np.zeros(64)
-        self._conv3("oc2", w3, b3)
+                    self._conv3(f"ref{r}.{u}.{j}", np.zeros((Fe, Fe, 3, 3)) if z else g(n + ".weight"),
+                                np.zeros(Fe) if z else g(n + ".bias"), Fp, Fp)
+            self._param(f"ref{r}.out", padded(np.zeros((Fe, Fe)) if z else g(f"scratch.refinenet{r}.out_conv.weight")[:, :, 0, 0], Fp, Fp))
+            self._param(f"ref{r}.out.b", padded(np.zeros(Fe) if z else g(f"scratch.refinenet{r}.out_conv.bias"), Fp))
+        self._conv3("oc1", np.zeros((Fe // 2, Fe, 3, 3)) if z else g("scratch.output_conv1.weight"),
+                    np.zeros(Fe // 2) if z else g("scratch.output_conv1.bias"), hp, Fp)
+        # output_conv2: 3 x 3 to 32, ReLU, 1 x 1; DPT's sky head beside it (32 more)
+        w3, b3 = np.zeros((64, hp, 3, 3), np.float32), np.zeros(64, np.float32)
+        w1, b1 = np.zeros((64, 64), np.float32), np.zeros(64, np.float32)
+        if not z:
+            w3[:32, : Fe // 2], b3[:32] = g("scratch.output_conv2.0.weight"), g("scratch.output_conv2.0.bias")
+            o = g("scratch.output_conv2.2.weight")[:, :, 0, 0]  # (1 or 2, 32)
+            w1[: o.shape[0], :32], b1[: o.shape[0]] = o, g("scratch.output_conv2.2.bias")
+            if not c.dual:
+                w3[32:, : Fe // 2], b3[32:] = g("scratch.sky_output_conv2.0.weight"), g("scratch.sky_output_conv2.0.bias")
+                w1[1, 32:] = g("scratch.sky_output_conv2.2.weight")[0, :, 0, 0]
+                b1[1] = g("scratch.sky_output_conv2.2.bias")[0]
+        self._conv3("oc2", w3, b3, 64, hp)
         self._param("oc2.1", w1)
         self._param("oc2.1.b", b1)
+        if c.dual:
+            self._param("pe_out", padded(uv_embed(c.width, c.height, Fe // 2, c.width / c.height), c.width * c.height, hp))
         # the interpolation matrices, padded to 64 rows and columns
-        self.sizes = [(H // 2, W // 2), (H, W), (2 * H, 2 * W), (4 * H, 4 * W), (8 * H, 8 * W), (c.height, c.width)]
+        self.sizes = [((H + 1) // 2, (W + 1) // 2), (H, W), (2 * H, 2 * W), (4 * H, 4 * W), (8 * H, 8 * W), (c.height, c.width)]
         for a, b in zip(self.sizes, self.sizes[1:]):
             for n_in, n_out in ((a[0], b[0]), (a[1], b[1])):
                 key = f"interp{n_out}x{n_in}"
@@ -368,11 +516,12 @@ class Head(iron.Graph):
     def w(self, name: str):
         return self.params[self._index[name]] if name in self._index else None
 
-    def _conv3(self, name: str, wt: np.ndarray, b) -> None:
-        co = wt.shape[0]
-        self._param(f"{name}.w", np.asarray(wt, np.float32).transpose(0, 2, 3, 1).reshape(co, -1))
+    def _conv3(self, name: str, wt: np.ndarray, b, cout: int, cin: int) -> None:
+        """A 3 x 3 convolution (cout, cin, 3, 3), its channels zero-padded, as an im2col matrix."""
+        wt = padded(wt, cout, cin, 3, 3)
+        self._param(f"{name}.w", wt.transpose(0, 2, 3, 1).reshape(cout, -1))
         if b is not None:
-            self._param(f"{name}.b", b)
+            self._param(f"{name}.b", padded(b, cout))
 
     def state(self, shape):
         s = iron.state(shape)
@@ -434,7 +583,7 @@ class Head(iron.Graph):
 
     def conv3_s2(self, x, g: Grid, name: str, cout: int):
         """The 3 x 3 convolution with stride 2 (padding 1): dense (H/2 W/2, cout)."""
-        Ho, Wo, C = g.H // 2, g.W // 2, g.C
+        Ho, Wo, C = (g.H + 1) // 2, (g.W + 1) // 2, g.C
         n = Ho * Wo
         m = -(-n // 256) * 256
         cs = self.cols(m, 9 * C)
@@ -496,12 +645,16 @@ class Head(iron.Graph):
 
     def body(self, f0, f1, f2, f3):
         c = self.c
-        H, W, Fe = c.gh, c.gw, c.features
-        oc = c.out_channels
+        H, W = c.gh, c.gw
+        oc, Fp, hp = self.ocp, self.fp, self.hp
         feats = []
         for i, f in enumerate((f0, f1, f2, f3)):
+            if c.dual:
+                f = F.layer_norm(f, (c.feat_dim,), self.w("norm"), self.w("norm.b"), eps=1e-5)
             # every token's row (whole 256 rows for the GEMMs); the patches' from row 1
             p = F.linear(f, self.w(f"proj{i}"), self.w(f"proj{i}.b"), precision=PREC.head)  # (tokens, oc)
+            if c.dual:
+                p = p + self.w(f"pe{i}")
             if i == 0:
                 feats.append(self.deconv(p, H, W, 0, 4, oc[0], first=1))
             elif i == 1:
@@ -512,9 +665,9 @@ class Head(iron.Graph):
             else:
                 g = Grid(H, W, oc[3])
                 d = self.conv3_s2(self.to_grid(p, g, first=1), g, "down3", oc[3])
-                g = Grid(H // 2, W // 2, oc[3])
+                g = Grid((H + 1) // 2, (W + 1) // 2, oc[3])
                 feats.append((self.to_grid(d, g), g))
-        rn = [self.conv3(x, g, f"rn{i}", Fe) for i, (x, g) in enumerate(feats)]
+        rn = [self.conv3(x, g, f"rn{i}", Fp) for i, (x, g) in enumerate(feats)]
         s = self.sizes
         d = self.refine(4, *rn[3], size=s[1])
         g = rn[2][1]
@@ -523,10 +676,12 @@ class Head(iron.Graph):
         d = self.refine(2, self.to_grid(d, g), g, lateral=rn[1], size=s[3])
         g = rn[0][1]
         d = self.refine(1, self.to_grid(d, g), g, lateral=rn[0], size=s[4])
-        g = Grid(*s[4], Fe)
-        x, g = self.conv3(self.to_grid(d, g), g, "oc1", Fe // 2)
-        d = self.resize(self.to_dense(x, g), g.H, g.W, c.height, c.width, Fe // 2)
-        g = Grid(c.height, c.width, Fe // 2)
+        g = Grid(*s[4], Fp)
+        x, g = self.conv3(self.to_grid(d, g), g, "oc1", hp)
+        d = self.resize(self.to_dense(x, g), g.H, g.W, c.height, c.width, hp)
+        if c.dual:
+            d = d + self.w("pe_out")
+        g = Grid(c.height, c.width, hp)
         x, g = self.conv3(self.to_grid(d, g), g, "oc2", 64, post=lambda y, r0: ReLU.step(y))
         return F.linear(self.to_dense(x, g), self.w("oc2.1"), self.w("oc2.1.b"), precision=PREC.head)
 
@@ -561,14 +716,28 @@ def export(root: Path, out: Path, c: Config, check: bool) -> None:
     if "head" in ARGS.only:
         t0 = time.time()
         g = Head(c, w)
-        cg = g.compile(**{f"f{i}": (c.tokens, c.hidden) for i in range(4)})
+        cg = g.compile(**{f"f{i}": (c.tokens, c.feat_dim) for i in range(4)})
         m = export_graph(cg, out / "head", "head", meta)
         print(f"head: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         if check:
             if feats is None:
-                feats = [rng.standard_normal((c.tokens, c.hidden)).astype(np.float32) for _ in range(4)]
+                feats = [rng.standard_normal((c.tokens, c.feat_dim)).astype(np.float32) for _ in range(4)]
             write_check(g, m, out / "head", {f"f{i}": bf(f) for i, f in enumerate(feats)})
     (out / "model.json").write_text(json.dumps(dict(name=root.name, kind="depth", **meta), indent=1) + "\n")
+
+
+# The sizes an export holds by default: the longest side 504 (the official process_res) and the
+# other rounded to 14, for 1:1, 4:3, 3:4, 16:9 and 9:16. hwnpu-depth takes the one nearest
+# the picture's aspect and stretches it to that.
+SIZES = ["504x504", "504x378", "378x504", "504x280", "280x504"]
+
+
+def model_kind(root: Path) -> dict:
+    """What hwnpu-depth reads of the model: metric depth (DA3METRIC: meters = focal in pixels
+    x depth / 300) or relative."""
+    name = json.loads((root / "config.json").read_text()).get("model_name", root.name).lower()
+    head = json.loads((root / "config.json").read_text())["config"]["head"]["__object__"]["name"]
+    return dict(metric="metric" in name, metric_scale=300.0, second="confidence" if head == "DualDPT" else "sky")
 
 
 ARGS = None
@@ -579,8 +748,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", type=Path, help="a DA3 mono repository (config.json, model.safetensors)")
     ap.add_argument("out", type=Path)
-    ap.add_argument("--width", type=int, default=504)
-    ap.add_argument("--height", type=int, default=504)
+    ap.add_argument("--sizes", nargs="*", default=SIZES, help="WxH (multiples of 14), each a directory of the export")
     ap.add_argument("--only", nargs="*", default=["vit", "head"])
     ap.add_argument("--random", action="store_true")
     ap.add_argument("--check", action="store_true")
@@ -588,9 +756,15 @@ def main(argv=None) -> int:
     ap.add_argument("--cols", type=int, default=8)
     ARGS = a = ap.parse_args(argv)
     bind_device(a.device, a.cols)
-    c = Config.of(a.root, a.width, a.height)
-    a.out.mkdir(parents=True, exist_ok=True)
-    export(a.root, a.out, c, a.check)
+    sizes = []
+    for wh in a.sizes:
+        width, height = (int(v) for v in wh.split("x"))
+        c = Config.of(a.root, width, height)
+        print(f"== {width}x{height}", flush=True)
+        export(a.root, a.out / wh, c, a.check)
+        sizes.append([width, height])
+    m = dict(name=a.root.name, kind="depth", sizes=sizes, **model_kind(a.root))
+    (a.out / "model.json").write_text(json.dumps(m, indent=1) + "\n")
     return 0
 
 

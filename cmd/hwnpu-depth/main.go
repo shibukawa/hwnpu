@@ -2,12 +2,17 @@
 // model (depth-anything/DA3MONO-LARGE, Apache-2.0), an export of tools/amd/iron_da3.py
 // (internal/vision/depth):
 //
-//	hwnpu-depth -model ~/models/da3mono-large-504.amd-npu2 photo.jpg
+//	hwnpu-depth -model ~/models/da3mono-large.amd-npu2 photo.jpg
 //
 // For each picture it writes NAME.depth.png next to it (or into -out): the inverse depth
 // (near is bright) normalized to 8 bits, at the picture's size. -raw also writes the depth as
-// raw float32 (NAME.depth.f32, the export's size, row major) and -sky the sky mask. The depth
-// is relative: larger is farther, up to an unknown scale.
+// raw float32 (NAME.depth.f32, row major, at the export's size it ran at, printed) and -sky the
+// sky mask. The export holds several sizes (the longest side 504) and the picture is stretched
+// to the one nearest its aspect.
+//
+// The depth is relative (larger is farther, up to an unknown scale), except with an export of
+// DA3METRIC-LARGE given the camera's focal length (-focal, in the picture's pixels) or
+// horizontal field of view (-fov, degrees): then it is meters, and -raw writes meters.
 package main
 
 import (
@@ -23,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,15 +40,17 @@ import (
 
 func defaultModel() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "models", "da3mono-large-504.amd-npu2")
+	return filepath.Join(home, "models", "da3mono-large.amd-npu2")
 }
 
 func main() {
 	model := flag.String("model", defaultModel(), "an export of tools/amd/iron_da3.py")
 	outDir := flag.String("out", "", "the directory to write into (default: next to each picture)")
 	raw := flag.Bool("raw", false, "also write the depth as raw float32 (NAME.depth.f32, the export's size)")
-	sky := flag.Bool("sky", false, "also write the sky mask (NAME.sky.png)")
+	sky := flag.Bool("sky", false, "also write the sky mask (NAME.sky.png), or with DA3-SMALL / BASE the confidence (NAME.conf.png)")
 	keep := flag.Bool("export-size", false, "write the picture at the export's size instead of the input's")
+	focal := flag.Float64("focal", 0, "a metric export: the focal length in the picture's pixels (fx = fy)")
+	fov := flag.Float64("fov", 0, "a metric export: the horizontal field of view in degrees, in place of -focal")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		log.Fatal("hwnpu-depth: give one or more pictures")
@@ -64,16 +72,30 @@ func main() {
 	}
 	defer e.Close()
 	e.Logf = logf
-	W, H := e.Size()
-	logf("loaded %s (%dx%d) in %s", filepath.Base(*model), W, H, console.Duration(time.Since(t0)))
+	kind := "relative depth"
+	if e.Metric {
+		kind = "metric depth"
+		if *focal == 0 && *fov == 0 {
+			kind += " (relative without -focal or -fov)"
+		}
+	}
+	logf("%s: %s, sizes %v (%s)", filepath.Base(*model), kind, e.Sizes, console.Duration(time.Since(t0)))
+	o := opts{dir: *outDir, raw: *raw, sky: *sky, keep: *keep, focal: *focal, fov: *fov}
 	for _, path := range flag.Args() {
-		if err := run(ctx, e, path, *outDir, *raw, *sky, *keep, logf); err != nil {
+		if err := run(ctx, e, path, o, logf); err != nil {
 			log.Fatalf("%s: %v", path, err)
 		}
 	}
 }
 
-func run(ctx context.Context, e *depth.Estimator, path, outDir string, raw, sky, keep bool, logf func(string, ...any)) error {
+type opts struct {
+	dir            string
+	raw, sky, keep bool
+	focal, fov     float64
+}
+
+func run(ctx context.Context, e *depth.Estimator, path string, o opts, logf func(string, ...any)) error {
+	outDir, raw, sky, keep := o.dir, o.raw, o.sky, o.keep
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -94,6 +116,17 @@ func run(ctx context.Context, e *depth.Estimator, path, outDir string, raw, sky,
 		dir = filepath.Dir(path)
 	}
 	ow, oh := img.Bounds().Dx(), img.Bounds().Dy()
+	metric := ""
+	if r.Metric && (o.focal > 0 || o.fov > 0) {
+		f := o.focal
+		if f == 0 {
+			f = float64(ow) / 2 / math.Tan(o.fov*math.Pi/360)
+		}
+		r.Meters(f, f, ow, oh)
+		c := r.Depth[(r.H/2)*r.W+r.W/2]
+		near := slices.Min(r.Depth)
+		metric = fmt.Sprintf(", %.2f m at the centre, %.2f m nearest", c, near)
+	}
 	if keep {
 		ow, oh = r.W, r.H
 	}
@@ -108,8 +141,14 @@ func run(ctx context.Context, e *depth.Estimator, path, outDir string, raw, sky,
 	if err := writeGray(out, g, ow, oh, lo, hi); err != nil {
 		return err
 	}
-	if sky {
+	if sky && r.Sky != nil {
 		if err := writeGray(filepath.Join(dir, base+".sky.png"), Bilinear(r.Sky, r.W, r.H, ow, oh), ow, oh, 0, 1); err != nil {
+			return err
+		}
+	}
+	if sky && r.Conf != nil { // the any-view models' confidence in place of the sky
+		lo, hi := slices.Min(r.Conf), slices.Max(r.Conf)
+		if err := writeGray(filepath.Join(dir, base+".conf.png"), Bilinear(r.Conf, r.W, r.H, ow, oh), ow, oh, lo, hi); err != nil {
 			return err
 		}
 	}
@@ -122,7 +161,7 @@ func run(ctx context.Context, e *depth.Estimator, path, outDir string, raw, sky,
 			return err
 		}
 	}
-	logf("%s: %dx%d in %s", out, ow, oh, console.Duration(time.Since(t0)))
+	logf("%s: %dx%d (ran at %dx%d) in %s%s", out, ow, oh, r.W, r.H, console.Duration(time.Since(t0)), metric)
 	return nil
 }
 

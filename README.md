@@ -191,14 +191,14 @@ Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana-Sprint 0.6B で約 24 秒 (�
 
 ### 深度推定 (Depth Anything 3)
 
-`go run ./cmd/hwnpu-depth` は、AMD の NPU で写真の深度を推定します。モデルは Depth Anything 3 の単眼の版 (depth-anything/DA3MONO-LARGE、Apache-2.0。DINOv2 ViT-L と DPT) です。画像ごとに `NAME.depth.png` (近いほど明るい) を書き、`-raw` で深度の float32、`-sky` で空の画像も書きます。深度は相対値です。
+`go run ./cmd/hwnpu-depth` は、AMD の NPU で写真の深度を推定します。モデルは Depth Anything 3 (Apache-2.0) の DA3MONO-LARGE (既定、相対の深度)、DA3METRIC-LARGE (`-fov` か `-focal` でメートル)、DA3-SMALL / BASE (軽い版、深度と確信度) です。画像ごとに `NAME.depth.png` (近いほど明るい) を書き、`-raw` で深度の float32、`-sky` で空 (SMALL / BASE は確信度) の画像も書きます。書き出しは縦横比ごとの大きさを持ち、画像に近いものを使います。
 
 ```bash
-python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE ~/models/da3mono-large-504.amd-npu2
+python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE ~/models/da3mono-large.amd-npu2
 go run ./cmd/hwnpu-depth photo.jpg
 ```
 
-Ryzen AI 9 365 で 1 枚 1〜1.2 秒 (504 × 504)、NPU に固定されるメモリは最大 1.4 GiB です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
+Ryzen AI 9 365 で 1 枚 0.7 秒 (LARGE、504 × 378)、SMALL は 0.26 秒、NPU に固定されるメモリは最大 1.4 GiB (SMALL 0.5 GiB) です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
 
 ## Apple での注意
 
