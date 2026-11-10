@@ -8,7 +8,7 @@ Japanese: [MODEL.ja.md](MODEL.ja.md)
 
 The columns are the memory installed in the machine. The second header row is roughly what is left for models after the OS and everyday applications. NPU buffers are pinned and cannot be swapped out: going over that amount pushes other applications to swap.
 
-hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under each use (`-m translate`, `-m chat`) runs the model of the machine's column, downloading only that one. A family picks the same way (`-m plamo3translate`, `-m gemma4`), and a tag chooses one whatever the memory, like a Docker image's: a model's (`-m plamo3translate:2b`, `-m chat:e4b`) or a column's (`-m chat:24g`, `-m plamo3translate:8g`: what a machine of that memory runs). `hwnpu-chat list` shows what each name picks on the machine; `HWNPU_MEMORY=24` picks as a machine of 24 GB would. hwnpu-transcribe (`-m transcribe`), hwnpu-tts (`-m speech`) and hwnpu-systemone (`-m decision`) pick the same way. The table comes from [models.yaml](models.yaml) (its `categories` and the models' `machine`), which hwnpu embeds; a file of your own adds models, replaces a column's model or points a model to another (aliases), written as differences only: see [docs/model-table.md](docs/model-table.md).
+hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under each use (`-m translate`, `-m chat`) runs the model of the machine's column, downloading only that one. A family picks the same way (`-m plamo3translate`, `-m gemma4`), and a tag chooses one whatever the memory, like a Docker image's: a model's (`-m plamo3translate:2b`, `-m chat:e4b`) or a column's (`-m chat:24g`, `-m plamo3translate:8g`: what a machine of that memory runs). `hwnpu-chat list` shows what each name picks on the machine; `HWNPU_MEMORY=24` picks as a machine of 24 GB would. hwnpu-audio transcribe (`-m transcribe`), hwnpu-audio tts (`-m speech`) and hwnpu-chat systemone (`-m decision`) pick the same way. The table comes from [models.yaml](models.yaml) (its `categories` and the models' `machine`), which hwnpu embeds; a file of your own adds models, replaces a column's model or points a model to another (aliases), written as differences only: see [docs/model-table.md](docs/model-table.md).
 
 <table>
 <thead>
@@ -44,27 +44,27 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <td colspan="5"><b>Gemma 4 E2B with images and audio</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6 GB)</td>
 </tr>
 <tr>
-<th>Transcription<br><sub>hwnpu-transcribe</sub></th>
+<th>Transcription<br><sub>hwnpu-audio transcribe</sub></th>
 <td colspan="6"><b>Whisper large-v3-turbo</b> (about 1.9 GB)<br>99 languages, with timestamps, 30 seconds read in 0.6 s</td>
 </tr>
 <tr>
-<th>Pitch (F0)<br><sub>hwnpu-pitch</sub></th>
+<th>Pitch (F0)<br><sub>hwnpu-audio pitch</sub></th>
 <td colspan="6"><b>SwiftF0</b> (about 0.06 GB)<br>the pitch of one voice or instrument every 16 ms, with a voicing confidence; 41 seconds in 0.24 s</td>
 </tr>
 <tr>
-<th>Notes (MIDI)<br><sub>hwnpu-notes</sub></th>
+<th>Notes (MIDI)<br><sub>hwnpu-audio notes</sub></th>
 <td colspan="6"><b>Basic Pitch</b> (about 0.07 GB)<br>any instrument, chords too, with pitch bends, as MIDI; 35 times real time</td>
 </tr>
 <tr>
-<th>People's poses<br><sub>hwnpu-pose</sub></th>
+<th>People's poses<br><sub>hwnpu-image pose</sub></th>
 <td colspan="6"><b>RTMO-s</b> (about 0.23 GB)<br>the people in an image and their 17 keypoints in one pass (no person detector); about 0.1 s an image</td>
 </tr>
 <tr>
-<th>Music generation<br><sub>hwnpu-music generate</sub></th>
+<th>Music generation<br><sub>hwnpu-audio generate</sub></th>
 <td colspan="6"><b>Magenta RealTime 2 small</b> (about 1.0 GB)<br>48 kHz stereo music in the style of texts or recordings, playing a MIDI file's notes or going on from a clip, streamed as it comes, about 1.4 times faster than real time; weights CC-BY 4.0 (credit "Magenta RealTime 2 by Google DeepMind" where the music is used)</td>
 </tr>
 <tr>
-<th>Sound effects<br><sub>hwnpu-music generate -m sfx</sub></th>
+<th>Sound effects<br><sub>hwnpu-audio generate -m sfx</sub></th>
 <td><b>MOSS-SoundEffect v2.0</b> (about 2.2 GB; the text encoder in lut8 with 5 layers in fp16)</td>
 <td colspan="5"><b>MOSS-SoundEffect v2.0</b> (about 2.3 GB; the text encoder in fp16)<br>up to 30 s of 48 kHz mono from an English or Chinese description; 10 s in about 4 minutes at the card's 100 steps on an M1 (<code>-steps 50</code>: half); Apache-2.0</td>
 </tr>
@@ -84,7 +84,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Sana-Sprint 0.6B</b> (2.3 GB, AMD only): lighter and faster, English prompts</td>
 </tr>
 <tr>
-<th>Speech<br><sub>hwnpu-tts</sub></th>
+<th>Speech<br><sub>hwnpu-audio tts</sub></th>
 <td colspan="6"><b>LFM3-Audio-2B</b> (about 2.4 GB)</td>
 </tr>
 <tr>
@@ -92,7 +92,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <td colspan="6"><b>PLaMo-Embedding-1B</b> (1.3 GB)</td>
 </tr>
 <tr>
-<th>Decisions on a state<br><sub>hwnpu-systemone</sub></th>
+<th>Decisions on a state<br><sub>hwnpu-chat systemone</sub></th>
 <td colspan="6"><b>d1-2B</b> (about 2.4 GB, images too)<br><b>d1-Omni-2B</b> (about 2.8 GB, images and audio)</td>
 </tr>
 <tr>

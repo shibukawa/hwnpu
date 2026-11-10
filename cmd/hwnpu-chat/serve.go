@@ -289,9 +289,9 @@ func showModels(w io.Writer, dir string, amd bool) {
 				return "exported on first run"
 			}
 			return "- (no form for AMD)"
-		}, chat.KindChat, chat.KindEmbed)
+		}, chat.KindChat, chat.KindEmbed, chat.KindDecision)
 	} else {
-		chat.List(w, dir, chat.KindChat, chat.KindEmbed)
+		chat.List(w, dir, chat.KindChat, chat.KindEmbed, chat.KindDecision)
 	}
 	fmt.Fprintln(w, "\nFeatures:")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)

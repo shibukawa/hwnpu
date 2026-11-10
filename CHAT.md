@@ -78,7 +78,7 @@ go run ./cmd/hwnpu-chat -m LFM3-VL-2B
 - In the terminal, `/image FILE question` sends an image and `/audio FILE.wav question` a clip; with a prompt on the command line, `--image FILE` and `--audio FILE.wav` (`hwnpu-chat -m LFM3-VL-2B --image photo.jpg "What is in it?"`). The server reads the `image_url` (data URLs) and `input_audio` (base64 WAV) parts of user messages
 - About 36 ms per token on the M3 with the grouped attention (the default since November 2026; 41 ms before), and about 70 ms while it describes a picture, where few of the speculative drafts come true. An image prompt of about 300 tokens reads in 0.7 seconds. Like LFM3-1.7B these models get no 4096 tier (section 2, `--tier`)
 - The text model is split at its full attention layers as LFM3-1.7B's is (`lfm3-lut8-grouped-p8192-c128000-q8.parts.json` and `-q128-last`, 7 parts each; the `-q64` of versions until November 6 can be deleted), with the model's longest context, 128000 tokens; its cache grows with the conversation by 12 KiB a token, to 1.46 GiB at 128000. On the M3 it is all on the Neural Engine, a second start loads in 1.4 and 4.2 seconds, and its answers on a picture, a sum and Mount Fuji's height were the whole model's (a context of 16320) token for token, at 24.0, 33.2 and 36.0 tokens/s (the whole model: 11.9, 26.7 and 29.4). It recalled a passphrase at the start of prompts of 16K, 64K and 120K tokens, read in 20, 171 and 497 seconds, generating at 25.2, 58.6 and 68.1 ms a token at those lengths. LFM3-Audio-2B and LFM3-Omni-2B run the same way (transcribing a clip, describing a picture) and recalled the passphrase at 120K (read in 525 and 512 seconds, a process footprint of 1.7 GB). 2026-11-04, sections 16.63 and 16.65 of docs/design.md. That was reading the whole cache; with the two-level attention (`--sparse`, the default) 120K reads in 431 seconds for VL, 516 for Audio and 501 for Omni (VL reading the whole cache the same day: 583), a call at that length takes 111 to 120 ms (179), and all three recalled the passphrase (2026-11-06, 16.65). The `lfm3-lut8-grouped-c16320-*` files of earlier versions are no longer read and can be deleted
-- Answers are text; LFM3-Audio's speech output is `hwnpu-tts` (section 5)
+- Answers are text; LFM3-Audio's speech output is `hwnpu-audio tts` (section 5)
 - Other image sizes or clip lengths: convert the encoders yourself and give them with `--package`, `--vision` and `--audio-encoder` (section 5)
 
 ### Gemma 4 E2B and E4B
@@ -262,7 +262,7 @@ go run ./cmd/hwnpu-chat --package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpack
 
 ### Audio (LFM3-Audio-2B)
 
-`-m LFM3-Audio-2B` (section 1) does all of this by itself. For other clip lengths, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `--audio-encoder`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-tts` below speaks a text (docs/design.md, 16.29 and 16.31).
+`-m LFM3-Audio-2B` (section 1) does all of this by itself. For other clip lengths, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `--audio-encoder`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-audio tts` below speaks a text (docs/design.md, 16.29 and 16.31).
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
@@ -270,7 +270,7 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 
 ### Speech (LFM3-Audio-2B TTS)
 
-`hwnpu-tts -lang en -o out.wav "Hello from the Neural Engine."` speaks a text into a WAV file (24 kHz) with LFM3-Audio-2B (`-use speech`): the first run downloads it into the models' directory (shared with hwnpu-chat's LFM3-Audio-2B), converts the programs below by itself, in 8 bit tables, and writes the tables it reads (`speech-tables.safetensors`), so that later runs need no checkpoint. To convert them yourself instead: convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.30).
+`hwnpu-audio tts --lang en -o out.wav "Hello from the Neural Engine."` speaks a text into a WAV file (24 kHz) with LFM3-Audio-2B (`-m speech`): the first run downloads it into the models' directory (shared with hwnpu-chat's LFM3-Audio-2B), converts the programs below by itself, in 8 bit tables, and writes the tables it reads (`speech-tables.safetensors`), so that later runs need no checkpoint. To convert them yourself instead: convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.30).
 
 ```bash
 go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
@@ -285,7 +285,7 @@ go run ./cmd/hwnpu-convert -codec-frames 64 -format fp16 -config DIR/audio_token
 ```
 
 ```bash
-go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.mlpackage -codec DIR/codec.mlpackage -lang en -o out.wav "Hello from the Neural Engine."
+go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.mlpackage --depth DIR/depth.mlpackage --codec DIR/codec.mlpackage --lang en -o out.wav "Hello from the Neural Engine."
 ```
 
 ## 6. Use it from OpenCode

@@ -10,6 +10,7 @@
 //	hwnpu-chat search -m plamo-embedding-1b           # search the texts typed by their embeddings
 //	hwnpu-chat serve -m LFM3-1.7B,plamo-embedding-1b  # the OpenAI compatible API
 //	hwnpu-chat opencode [-- opencode arguments]       # OpenCode on the server
+//	hwnpu-chat systemone request.json                 # d1-2B's decisions on a state (SystemOneCmd)
 //	hwnpu-chat list
 //
 // chat (the command when none is named) and agent take a prompt or a task on the command line,
@@ -48,7 +49,7 @@
 // /image FILE and /audio FILE.wav do; image_url and input_audio parts of the API's user messages
 // are read. With --package, --vision takes vision encoders converted by hwnpu-convert -arch
 // lfm3-vision (a package per image size) and --audio-encoder audio encoders (-arch
-// lfm3-audio-encoder, a package per clip length). Speech output is not supported (see hwnpu-tts).
+// lfm3-audio-encoder, a package per clip length). Speech output is not supported (see hwnpu-audio tts).
 //
 // agent is a coding agent: a chat model with four tools, read, edit, write and bash, in the loop
 // of Pi (pi.dev) written in Go on the same engine (see AgentCmd). opencode serves on a free port
@@ -66,12 +67,13 @@ import (
 )
 
 type cli struct {
-	Chat     ChatCmd     `cmd:"" default:"withargs" help:"Talk with a chat model, or answer the prompt given and exit (the command when none is named)."`
-	Agent    AgentCmd    `cmd:"" help:"A coding agent with read, edit, write and bash: run the task given, or take tasks in the terminal."`
-	Search   SearchCmd   `cmd:"" help:"Search the texts typed by their embeddings (an embedding model)."`
-	Serve    ServeCmd    `cmd:"" help:"Serve the OpenAI compatible API: chat completions and embeddings."`
-	OpenCode OpenCodeCmd `cmd:"" name:"opencode" help:"Serve the chat models and run OpenCode on them in this terminal."`
-	List     ListCmd     `cmd:"" help:"List the chat and embedding models, what each is for and whether it is downloaded."`
+	Chat      ChatCmd      `cmd:"" default:"withargs" help:"Talk with a chat model, or answer the prompt given and exit (the command when none is named)."`
+	Agent     AgentCmd     `cmd:"" help:"A coding agent with read, edit, write and bash: run the task given, or take tasks in the terminal."`
+	Search    SearchCmd    `cmd:"" help:"Search the texts typed by their embeddings (an embedding model)."`
+	Serve     ServeCmd     `cmd:"" help:"Serve the OpenAI compatible API: chat completions and embeddings."`
+	OpenCode  OpenCodeCmd  `cmd:"" name:"opencode" help:"Serve the chat models and run OpenCode on them in this terminal."`
+	SystemOne SystemOneCmd `cmd:"" name:"systemone" help:"Answer typed questions about a state with a d1 decision model: the System One API of llama.cpp's server (Apple's Neural Engine)."`
+	List      ListCmd      `cmd:"" help:"List the chat and embedding models, what each is for and whether it is downloaded."`
 }
 
 func main() {

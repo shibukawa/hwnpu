@@ -3651,3 +3651,13 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 残り: EfficientViT の線形注意がヘッドの数の倍の計算をしている (ブロック対角を密な積とマスクで)。深さ方向の畳み込みは要素ごとの 49 演算 (チャネルごとの係数で掛けて足す演算が IRON にない)
 - 否定のプロンプトつきでテキストのグラフを 1 回だけ読む (`sana.EncodeBoth`): Sana 600M のテキスト 3.3 → 2.5 秒、潜在はビット単位で同じ
 
+
+### 16.140 コマンドを用途の家族にまとめる: hwnpu-audio、hwnpu-chat systemone、hwnpu-image pose — 2026-11-10
+
+- hwnpu-music を hwnpu-audio に改名し、hwnpu-tts、hwnpu-transcribe、hwnpu-pitch、hwnpu-notes をそのサブコマンド (`tts`、`transcribe`、`pitch`、`notes`) にした。音楽と効果音は 16.137 のまま `generate` (`-m sfx`)。`list` は 6 種類 (music、sfx、speech、transcribe、pitch、notes)
+- hwnpu-systemone は `hwnpu-chat systemone`、hwnpu-pose は `hwnpu-image pose` に。古い名前は残していない (ラッパーなし)
+- フラグは kong の流儀に: `-use` → `-m/--model`、`-list` → 各家族の `list`、`-o` はそのまま、ほかは `--name`。手で変換したプログラムを渡すフラグは "Converted by hand" の組にまとめ、tts と systemone のチェックポイントの `-model DIR` は `--checkpoint DIR` に (`-m` とぶつかるため)。systemone の `-audio` は hwnpu-chat に合わせて `--audio-encoder`
+- pose の `-draw FILE` は face-detect に合わせて `--draw` (NAME.pose.png、`-o DIR` で置き場所)。notes の `--midi FILE` はそのまま (1 入力)
+- ログは灰色 (console.Log) で、読み込みの行に "all on the NPU" / "NOT all on the NPU" / "on the CPU interpreter"
+- 確かめたこと (AMD の機械、--cpu): `hwnpu-audio pitch` が 440 Hz の正弦波で 439.5 Hz、`hwnpu-audio notes --midi` が A4 (69) の 1 音、`hwnpu-image pose --draw` が動く。tts、transcribe、systemone は Neural Engine 用で、ここではヘルプと引数の検査だけ
+- 開発用で家族に入れていないもの: hwnpu-check (CPU のインタプリタで Hugging Face の参照と層ごとに照合)、hwnpu-formats (チャットモデルの重みの形式を NPU で比べる)、hwnpu-convert、hwnpu-generate、hwnpu-xclbin、hwnpuinfo、npuprobe、powerbench、report
