@@ -7,17 +7,17 @@
   its time and its memory, and goes on to the next one when it fails. At the end everything is in
   hwnpu-intel-<machine>-<time>.zip under %USERPROFILE%\hwnpu-intel-logs: send that file back.
 
-  Every command runs as "go run ./cmd/NAME ..." in the clone this script is in (-Repo to name
+  Every command runs as "go run ./cmd/NAME [SUBCOMMAND] ..." in the clone this script is in (-Repo to name
   another), so Go has to be on PATH. The commands are built once first (go build), so that the
   times of the tests are not the compiler's. The commit is written to system.txt.
 
   Levels (-Level):
-    quick     system information, hwnpuinfo, report, a small LFM3-1.7B chat (about 30 min)
+    quick     system information, hwnpu-dev info, hwnpu-dev report, a small LFM3-1.7B chat (about 30 min)
     standard  + LFM3-1.7B with its defaults, the same again from the compile cache, hwnpu-chat agent,
-              hwnpu-formats, PLaMo 3 Translate 0.8B, PLaMo-Embedding-1B, Gemma 4 E2B, Anima 512 x 512 in fp16 and int8
+              hwnpu-dev formats, PLaMo 3 Translate 0.8B, PLaMo-Embedding-1B, Gemma 4 E2B, Anima 512 x 512 in fp16 and int8
               (default; a few hours, about 25 GB of downloads the first time)
     full      + report with power policies low and performance, LFM3-VL-2B with an image,
-              LFM3-Audio-2B with a clip, Qwen3.5-0.8B, PLaMo 3 Translate 2B, Anima 1024 x 1024, npuprobe
+              LFM3-Audio-2B with a clip, Qwen3.5-0.8B, PLaMo 3 Translate 2B, Anima 1024 x 1024, hwnpu-dev probe
 
   A test that finished (exit code 0) is skipped when the script runs again with the same -Out,
   so it can be stopped with Ctrl-C and run again. -Rerun runs them all again.
@@ -134,7 +134,7 @@ function DirMB([string]$path) {
 # ---------------------------------------------------------------------------------------------
 # executables
 
-$Cmds = @("hwnpuinfo", "report", "npuprobe", "hwnpu-chat", "hwnpu-formats", "hwnpu-image")
+$Cmds = @("hwnpu-dev", "hwnpu-chat", "hwnpu-image")
 
 # Warm-Build builds every command once, so that go run only links them; a command that does not
 # build fails its tests with the compiler's errors in their logs.
@@ -245,11 +245,11 @@ $Translate = "今日は雨が降っているので、駅まで車で送っても
 $Anima = "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"
 
 $Tests = @(
-  (T @{ Name = "hwnpuinfo"; Level = 0; Exe = "hwnpuinfo"; Args = @(); Min = 5
+  (T @{ Name = "hwnpuinfo"; Level = 0; Exe = "hwnpu-dev"; Sub = "info"; Args = @(); Min = 5
         Note = "devices, driver, Level Zero version, graph extension" }),
-  (T @{ Name = "hwnpuinfo-trace"; Level = 0; Exe = "hwnpuinfo"; Args = @(); Min = 5; Env = @{ ZE_ENABLE_LOADER_DEBUG_TRACE = "1" }
+  (T @{ Name = "hwnpuinfo-trace"; Level = 0; Exe = "hwnpu-dev"; Sub = "info"; Args = @(); Min = 5; Env = @{ ZE_ENABLE_LOADER_DEBUG_TRACE = "1" }
         Note = "the same with the Level Zero loader's trace" }),
-  (T @{ Name = "report"; Level = 0; Exe = "report"; Min = 20
+  (T @{ Name = "report"; Level = 0; Exe = "hwnpu-dev"; Sub = "report"; Min = 20
         Args = @("-o", "{OUT}\report.md", "-json", "{OUT}\report.json")
         Note = "two OpenVINO IR models compiled strictly, checked against fp32, timed" }),
   (T @{ Name = "chat-small"; Level = 0; Exe = "hwnpu-chat"; Sub = "chat"; Min = 90; Stdin = $ChatPrompts
@@ -269,7 +269,7 @@ $Tests = @(
         Args = $Lfm + @("-C", "{AGENT}", "--tools", "read,write", "--yes", "--steps", "8", "--temp", "0",
                  "Read notes.txt and write the secret number it contains, and nothing else, to answer.txt.")
         Note = "hwnpu-chat agent calling its read and write tools (check 4); answer.txt should hold 7351" }),
-  (T @{ Name = "formats"; Level = 1; Exe = "hwnpu-formats"; Min = 180
+  (T @{ Name = "formats"; Level = 1; Exe = "hwnpu-dev"; Sub = "formats"; Min = 180
         Args = @("-backend", "intel", "-json", "{OUT}\formats.json")
         Note = "int8, int4-g128, int4 against fp16: time per call, next token, perplexity (check 5)" }),
   (T @{ Name = "translate-0.8b"; Level = 1; Exe = "hwnpu-chat"; Sub = "chat"; Min = 90; Stdin = $Translate
@@ -289,10 +289,10 @@ $Tests = @(
         Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "--dit-format", "int8", "--text-format", "int8", "-o", "{OUT}\anima-512-int8.png", $Anima)
         Note = "the same in int8 (half the memory of fp16): compare the image and the step's time" }),
 
-  (T @{ Name = "report-low"; Level = 2; Exe = "report"; Min = 20
+  (T @{ Name = "report-low"; Level = 2; Exe = "hwnpu-dev"; Sub = "report"; Min = 20
         Args = @("-power", "low", "-o", "{OUT}\report-low.md", "-json", "{OUT}\report-low.json")
         Note = "report with the power policy low" }),
-  (T @{ Name = "report-performance"; Level = 2; Exe = "report"; Min = 20
+  (T @{ Name = "report-performance"; Level = 2; Exe = "hwnpu-dev"; Sub = "report"; Min = 20
         Args = @("-power", "performance", "-o", "{OUT}\report-performance.md", "-json", "{OUT}\report-performance.json")
         Note = "report with the power policy performance" }),
   (T @{ Name = "chat-int4-g128"; Level = 2; Exe = "hwnpu-chat"; Sub = "chat"; Min = 90; Stdin = $ChatPrompts
@@ -313,7 +313,7 @@ $Tests = @(
   (T @{ Name = "image-1024"; Level = 2; Exe = "hwnpu-image"; Sub = "generate"; Min = 240
         Args = @("--backend", "intel", "-m", "anima", "--size", "1024", "--seed", "1", "-o", "{OUT}\anima-1024.png", $Anima)
         Note = "Anima-Turbo 1024 x 1024" }),
-  (T @{ Name = "npuprobe"; Level = 2; Exe = "npuprobe"; Min = 120; Args = @("-o", "{OUT}\npuprobe.md")
+  (T @{ Name = "npuprobe"; Level = 2; Exe = "hwnpu-dev"; Sub = "probe"; Min = 120; Args = @("-o", "{OUT}\npuprobe.md")
         Note = "speed of generated LLM shaped models, and the largest model the compiler takes (PROBE.md)" })
 )
 
@@ -422,7 +422,8 @@ function Run-Test($t) {
   # go run ./cmd/EXE [SUB] [--dir DIR] ARGS
   $argv = @("run", ("./cmd/" + $t.Exe))
   if ($t.PSObject.Properties["Sub"]) { $argv += $t.Sub }
-  if ($t.Exe -in @("hwnpu-chat", "hwnpu-formats", "hwnpu-image")) { $argv += $Common }
+  # the commands that take the models directory (hwnpu-dev formats keeps the std flag package, which reads --dir too)
+  if ($t.Exe -in @("hwnpu-chat", "hwnpu-image") -or ($t.Exe -eq "hwnpu-dev" -and $t.Sub -eq "formats")) { $argv += $Common }
   foreach ($a in $t.Args) { $argv += (Expand $a) }
   $cmdline = ($argv | ForEach-Object { Quote-Arg $_ }) -join " "
   $r.command = "go " + $cmdline
