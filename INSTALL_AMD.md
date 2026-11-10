@@ -197,6 +197,16 @@ go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o 
 
 Benchmarks of the data types and the DMA bandwidth on Strix Point, and the scripts behind them: [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) (Japanese), [tools/iron](tools/iron/README.md).
 
+### Models for hwnpu-chat
+
+hwnpu-chat runs exports of `tools/amd/iron_export_lm.py` (`~/models/NAME.amd-npu2-q4`). When a model's export is not there, its first run downloads the checkpoint and makes the export in IRON's environment from step 2, as models.yaml's `amd_export` says. Name that environment with `HWNPU_IRON_ENV`: its virtual environment's directory, or a script that sets it up (sourced by bash; for instance one that runs `source utils/env_setup.sh` and sets `AIE_XCLBINUTIL`). Without it, hwnpu-chat tries python3 on PATH, and stops with what to install when IRON cannot be imported.
+
+```bash
+HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "Hello"
+```
+
+An export made on one machine runs on another with the same NPU (copy the directory, or pass it to `-m`).
+
 ## 5. Using your own kernels
 
 ```go
@@ -229,7 +239,7 @@ AMD's NPU driver for Windows is reached only through XRT's C++ library, `xrt_cor
 3. Put `build\Release\xrtshim.dll` next to hwnpu's executables (or set `HWNPU_XRTSHIM` to it). hwnpu finds `xrt_coreutil.dll` in `System32\AMD` or the driver store; `HWNPU_XRT_CORE` names another.
 4. Build hwnpu for Windows (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`) and run `hwnpuinfo`: the NPU appears with the backend `xrt`.
 
-Models are exported on Linux (IRON and mlir-aie, see the README), and the exported directory is copied over: `hwnpu-chat -iron DIR` runs it the same way. What differs from Linux:
+Models are exported on Linux (IRON and mlir-aie, see the README), and the exported directory is copied over: `hwnpu-chat -m DIR` runs it the same way. What differs from Linux:
 
 - The power meter reads XRT's electrical info, when the driver reports the NPU's power there.
 - XRT allocates the control code. On Linux 7.0 its device heap holds 64 MiB, as hwnpu's own driver path does; Windows' may differ.

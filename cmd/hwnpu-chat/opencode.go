@@ -18,7 +18,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
-// Ports -opencode serves on: from 30000 up to the start of the ephemeral range macOS (and the
+// Ports opencode serves on: from 30000 up to the start of the ephemeral range macOS (and the
 // IANA) give to outgoing connections, so that the port neither collides with well-known services
 // nor is taken by a connection a moment later.
 const (
@@ -80,11 +80,11 @@ func openCodeConfig(baseURL string, models []openModel) ([]byte, error) {
 // The server's log goes to dir/server.log meanwhile. It returns OpenCode's exit code.
 func openCode(s *chat.Server, addr, dir, bin string, args []string) (int, error) {
 	if len(s.Chats) == 0 {
-		return 2, fmt.Errorf("-opencode needs a chat model (-use)")
+		return 2, fmt.Errorf("opencode needs a chat model (--model)")
 	}
 	path, err := exec.LookPath(bin)
 	if err != nil {
-		return 1, fmt.Errorf("%s not found; install OpenCode (https://opencode.ai) or name it with -opencode-bin: %w", bin, err)
+		return 1, fmt.Errorf("%s not found; install OpenCode (https://opencode.ai) or name it with --bin: %w", bin, err)
 	}
 	var l net.Listener
 	if addr == "" {
@@ -185,7 +185,7 @@ func openCodeArgs(model string, args []string) []string {
 	return append([]string{"-m", model}, args...)
 }
 
-// openCodeDir is where -opencode keeps the generated config and the server's log.
+// openCodeDir is where opencode keeps the generated config and the server's log.
 func openCodeDir(cacheDir string) string {
 	if cacheDir == "" {
 		cacheDir = os.TempDir()

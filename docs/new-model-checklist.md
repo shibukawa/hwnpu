@@ -150,7 +150,7 @@ What helped:
 | The verify version's control code beside the decode step's | The verify ELF (30 MB) and the decode ELF (26 MB) both stay in the device heap (64 MiB). When they do not fit, one is made at each call (`perCall`, 2 ms); a prompt chunk or a tower that does not fit drops both (`dropDecode`). Calling the GDN operator three times made it 47 MB, over the heap | 16.117 |
 | A graph's groups (`variants`, an image model's DiT) in one bank, read in turn (`iron.GraphOptions.SwapVariants`) | Anima's DiT, 7 groups: pinned 3445 → 1236 MiB, +2 % | 16.106 |
 | Big exports | Exporting Qwen3.6's 40 layers took 30 minutes at a peak RSS of 53.8 GB (of 60): do not run it beside other big jobs. /tmp is RAM (tmpfs): write test exports under `~/models`. Run long ones with `systemd-run --user` (so they are not killed with the session) | 16.91–16.92 |
-| The export's name | `~/models/NAME.amd-npu2-q4` (or `NAME.amd-npu2`): on a machine with only AMD's NPU, hwnpu-chat and hwnpu-agent pick it for `-use NAME` without `-iron` (#81) | — |
+| The export's name | `~/models/NAME.amd-npu2-q4` (or `NAME.amd-npu2`): on a machine with only AMD's NPU, hwnpu-chat (`chat`, `agent`, `serve`) picks it for a `-m NAME` that is not an export's directory (#81) | — |
 
 ### 4.2 Intel
 
@@ -187,7 +187,7 @@ Keep the format and raise accuracy by choosing the codes (levels) better. The fo
 | Order | Method | Tools | Example results | Notes |
 |---|---|---|---|---|
 | 1 | Rounding (RTN). q4nx picks the least error of 9 candidates | `iron_q4.quantize_fmt`, `palette.QuantizeBits` | Weight error 8.2 → 7.3 % | The baseline. The least weight error is not the least output error |
-| 2 | **GPTQ** (pushes each column's error onto the later columns, with H = E[xxᵀ]) | `tools/amd/q4_gptq.py` → AMD: `iron_export_lm.py --q4-codes`; Apple: `hwnpu-convert -codes`, `hwnpu-chat -codes` | NPU wiki-ja: E2B 0.221 → 0.081, E4B 0.083 → 0.049, LFM3 0.071 → 0.038, LFM3-VL 0.067 → 0.034, PLaMo 3 0.058 → 0.040. Anima's DiT q4: latent cosine 0.868 → 0.939 (q8 0.962) | Damp by **0.1** × the mean of H's diagonal (0.01 overfitted the calibration texts and made the GPL worse than rounding). Calibrate on general text (wikitext-2 and wiki40b-ja, 64 × 512 tokens); the repository's documents alone overfit too. Leave the BOS position out of H. Quantize the earlier layers before measuring the next ones (a few layers a pass) |
+| 2 | **GPTQ** (pushes each column's error onto the later columns, with H = E[xxᵀ]) | `tools/amd/q4_gptq.py` → AMD: `iron_export_lm.py --q4-codes`; Apple: `hwnpu-convert -codes`, `hwnpu-chat --codes` | NPU wiki-ja: E2B 0.221 → 0.081, E4B 0.083 → 0.049, LFM3 0.071 → 0.038, LFM3-VL 0.067 → 0.034, PLaMo 3 0.058 → 0.040. Anima's DiT q4: latent cosine 0.868 → 0.939 (q8 0.962) | Damp by **0.1** × the mean of H's diagonal (0.01 overfitted the calibration texts and made the GPL worse than rounding). Calibrate on general text (wikitext-2 and wiki40b-ja, 64 × 512 tokens); the repository's documents alone overfit too. Leave the BOS position out of H. Quantize the earlier layers before measuring the next ones (a few layers a pass) |
 | 3 | **Fitting the tables** (Apple's lutN): k-means weighted by E[x²] | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038, lut4 0.66 → 0.33 (through Go's converter) | Start from the uniform tables (starting from the k-means of least weight error gives the worst KL). The ANE check is in handoff-m3-gptq.md |
 | 4 | AWQ-style scales folded into the previous op | Not written | | model-fit.md T8, 2. When lut4 has to go lower |
 | — | One format up (AMD's q6) | `iron_export_lm.py --mlp q6`, `q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B GPL 0.34 → 0.044 | When calibration does not fix it. The GEMV takes about q8's time; the gain is memory (76 % of q8) |
@@ -255,7 +255,7 @@ Things to bring in next (they helped every model):
 - A monotonic operation after the output layer (the soft cap) goes to the host's sampling, so that the output layer is all on the Neural Engine (`llm.LogitSoftcap`, 16.113)
 - `HWNPU_PROFILE=1` breaks a step down (ms per part, per host attention and for reading the logits, with the memory the Neural Engine holds)
 
-Compare only pairs measured back to back under the same conditions (on the M3 swap, on AMD the power state, make numbers vary by up to 1.4×). On AMD, check first that no other process holds `/dev/accel` (`ls -l /proc/*/fd 2>/dev/null | grep accel`; a `hwnpu-chat -listen` left running counts): another user of the NPU made commands up to 50× slower. On a Mac, macOS's own services take the Neural Engine too: with `mediaanalysisd` (122 % CPU) and Apple Intelligence's inference running, every form fell to 0.7 tokens/s (16.112). Look at `top` before measuring and measure again when it settles.
+Compare only pairs measured back to back under the same conditions (on the M3 swap, on AMD the power state, make numbers vary by up to 1.4×). On AMD, check first that no other process holds `/dev/accel` (`ls -l /proc/*/fd 2>/dev/null | grep accel`; a `hwnpu-chat serve` left running counts): another user of the NPU made commands up to 50× slower. On a Mac, macOS's own services take the Neural Engine too: with `mediaanalysisd` (122 % CPU) and Apple Intelligence's inference running, every form fell to 0.7 tokens/s (16.112). Look at `top` before measuring and measure again when it settles.
 
 Drafts from an MTP layer: measure 1, 2 and 3 drafts on both code and prose. Each extra draft costs one call of the MTP layer with the output layer, and the third lost on Japanese (Qwen3.5-0.8B / 2B: 2 by default, 16.109). Bring back the state of layers whose state is replaced each step (GDN) on the host from the rows kept (`state-rows`), not by running them again: it helps prompt-lookup drafts too (26.1 → 32.1 tokens/s).
 
@@ -271,7 +271,7 @@ Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for wh
 
 | Use | How to check |
 |---|---|
-| Chat | 16.26's four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River), hwnpu-agent's task (does `go test` pass?). When a small model gets facts wrong, ask fp16 the same: if it errs alike, it is the model's limit, not the quantization or the port (Qwen3.5-0.8B, 16.99) |
+| Chat | 16.26's four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River), hwnpu-chat agent's task (does `go test` pass?). When a small model gets facts wrong, ask fp16 the same: if it errs alike, it is the model's limit, not the quantization or the port (Qwen3.5-0.8B, 16.99) |
 | Translation | Measure KL and agreement **on the translation's tokens only** (the source side is not predicted, so it scores high). How many of 44 texts are word for word the same as bf16. `hwnpu-formats` measures on chat text, so its perplexity means nothing for a translation model (28 thousand for PLaMo 3 Translate) |
 | Image descriptions, TTS | Compare the answers for the same images and audio. Run TTS output back through ASR |
 | Transcription | English: LibriSpeech's 73 validation clips (`hf-internal-testing/librispeech_asr_dummy`, with the truth); Japanese: 12 texts in four `say` voices. Count the clips word for word the same as HF fp32, and the WER / CER (16.115). Audio over 30 seconds too |
@@ -322,7 +322,7 @@ A command looks for a model in this order:
 2. **A distributed export** (later): only this NPU's subfolder, from Hugging Face ([prebuilt.md](prebuilt.md)). This waits until the export formats are stable, and does not exist yet
 3. **A conversion here**: download only the files the converter reads, check their sha256, convert, and write `.done`
    - Apple and Intel convert with the Go converters. The models to follow are Anima on the Mac and Intel (`anima.Prepare`) and hwnpu-chat's models (`chat.Prepare`)
-   - AMD runs the IRON exporters (`tools/amd/iron_*.py`) in the IRON environment (mlir-aie, Peano, Python). When that environment is missing, stop and say what to install (INSTALL_AMD.md). Do not fail silently or leave the steps to the user
+   - AMD runs the IRON exporters (`tools/amd/iron_*.py`) in the IRON environment (mlir-aie, Peano, Python). When that environment is missing, stop and say what to install (INSTALL_AMD.md). Do not fail silently or leave the steps to the user. hwnpu-chat does this (`chat.PrepareAMD`): models.yaml's `amd_export` holds the exporter's model and options, the exporters are built into hwnpu (`tools/amd/embed.go`), and IRON's environment is `HWNPU_IRON_ENV` or python3 on PATH
 4. **Not usable**: stop and say what is missing (no form for this NPU, no tools)
 
 - Download only the files the converter reads, never the whole repository. Some repositories hold both fp32 and fp16 copies (Sana 600M's repository is 16.5 GB, and 8.9 GB of it is needed)
@@ -341,10 +341,10 @@ A command looks for a model in this order:
 - **Values that differ by NPU**: the download, the memory and the placement can differ from one NPU to another
   - Anima takes 3.5 GB on AMD, and 4.1 GB is the value for the Mac
   - The download differs too: AMD now downloads the checkpoint and exports here, and it will download only an export once distribution starts
-  - When they differ, write a table by vendor, in the same form as `device` (`memory: {amd: 3.5, apple: 4.1}`). A single value applies to every NPU. A vendor the table leaves out takes its largest value. The DOWNLOAD and MEMORY columns of `-list` and `hwnpu-image list` show the values for this machine's NPU
+  - When they differ, write a table by vendor, in the same form as `device` (`memory: {amd: 3.5, apple: 4.1}`). A single value applies to every NPU. A vendor the table leaves out takes its largest value. The DOWNLOAD and MEMORY columns of `hwnpu-chat list` and `hwnpu-image list` show the values for this machine's NPU
 - **Uses pick by memory like their families**: give a use's `picks` the same steps as its family. The use `depth` listed only DA3MONO-LARGE, so an 8 GB machine got the model meant for 24 GB
 - **How to check**:
-  - Print `hwnpu-image list` (`-list` for hwnpu-chat) with `HWNPU_MEMORY=8`, `16` and `24`. Check that the use's column and the family's column pick the same model
+  - Print `hwnpu-image list` (`hwnpu-chat list`) with `HWNPU_MEMORY=8`, `16` and `24`. Check that the use's column and the family's column pick the same model
   - On each NPU, check that `list` shows the right size, memory and RUNS FROM. A model that falls back to the CPU must show the CPU
 
 An example script for the measurement (AMD):
@@ -393,10 +393,10 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 
 - Qwen3.6's prompt attention pipelines are not measured (it keeps 1)
 - AMD's checking of drafts (16.117): a GEMV of a few rows for q4 (Gemma 4, PLaMo 3, LFM3, Qwen3.5-4B and Qwen3.6 at 4 bits), Gemma 4's shared layers and ring caches, Qwen3.5's MTP layer as the drafter
-- Qwen3.5-2B at lut6: the KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), long contexts and the hwnpu-agent tasks
+- Qwen3.5-2B at lut6: the KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), long contexts and the hwnpu-chat agent tasks
 - Whisper: the formats on real recordings (noise, overlapping speakers)
 - Qwen3.5-4B's lut6 (2.97 GiB) on the M1 is just over its 2.8 GiB; 0.1–0.2 GiB less (the output layer at lut4, say) would let it run at full speed (16.109)
-- Apple's GPTQ codes: hwnpu-chat takes them with `-codes` and `-format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
+- Apple's GPTQ codes: hwnpu-chat takes them with `--codes` and `--format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
 - Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter)
 

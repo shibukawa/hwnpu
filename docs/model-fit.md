@@ -67,7 +67,7 @@ Neural Engine で 1 トークンにかかる時間は、実測ではほぼ次の
 
 ### T2. 重みなしの注意プログラムに分け、使っている塊だけ動かす (速さとメモリ)
 
-**実装済み** (2026-11-04、design.md 16.59): `hwnpu-convert -paged 8192`、hwnpu-chat と hwnpu-agent の LFM3 の既定。文脈は 262144。Mac での全体の計測はこれから。
+**実装済み** (2026-11-04、design.md 16.59): `hwnpu-convert -paged 8192`、hwnpu-chat と hwnpu-chat agent の LFM3 の既定。文脈は 262144。Mac での全体の計測はこれから。
 
 **Gemma 4 と Intel の NPU にも** (2026-11-04、design.md 16.63): Gemma 4 E2B は 8 部分、鍵と値を共有する層は元の層のキャッシュを読むので 1 トークン 6 KiB、文脈 131072。M3 で 81,691 トークンの合言葉を答え、その長さで 96.7 ms/token。分けない形と同じ答えで短い会話も速く、起動は毎回の 50〜100 秒から 2 秒に。LFM3-VL は文脈 128000。`-backend intel` も分けた IR を書く。
 

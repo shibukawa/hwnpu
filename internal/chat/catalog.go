@@ -72,6 +72,10 @@ type Model struct {
 	// the NPU's vendor (MemoryFor).
 	Memory   float64
 	MemoryBy PerVendor
+	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU when its
+	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
+	// NPU has no form of.
+	AMDExport []string
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that
@@ -225,7 +229,7 @@ func ResolveForKinds(name string, log io.Writer, kinds ...Kind) (Model, error) {
 type NoModelError struct{ Name string }
 
 func (e *NoModelError) Error() string {
-	return fmt.Sprintf("chat: no model %q (-list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME, a model of a source of the definitions SOURCE:NAME)", e.Name)
+	return fmt.Sprintf("chat: no model %q (hwnpu-chat list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME, a model of a source of the definitions SOURCE:NAME)", e.Name)
 }
 
 func errNoModel(name string) error { return &NoModelError{Name: name} }

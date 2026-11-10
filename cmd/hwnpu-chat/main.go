@@ -1,606 +1,95 @@
-// hwnpu-chat runs models on the Neural Engine by name: chat models (LFM3-1.7B) to talk with, and
-// embedding models (PLaMo-Embedding-1B) to turn texts into vectors for search. -list shows the
-// models it knows and what each is for; -use picks them. In the terminal, a chat model talks
-// and an embedding model searches the texts typed by their embeddings; with -listen, the OpenAI
-// compatible server serves the chat models with the chat completions API and the embedding
-// models with the embeddings API, a request going to the model it names.
+// hwnpu-chat runs language models on an NPU: chat models (LFM3-1.7B) to talk with or to work as a
+// coding agent, and embedding models (PLaMo-Embedding-1B) to turn texts into vectors for search.
 //
-//	hwnpu-chat
-//	hwnpu-chat -list
-//	hwnpu-chat -use plamo-embedding-1b
-//	hwnpu-chat -listen 127.0.0.1:8080 -use LFM3-1.7B,plamo-embedding-1b
-//	hwnpu-chat -opencode [opencode arguments]
+//	hwnpu-chat                                        # talk in the terminal
+//	hwnpu-chat "Say hello in one word"                # one answer on standard output, then exit
+//	hwnpu-chat -m translate "こんにちは"                 # PLaMo 3 Translate, size picked by memory
+//	hwnpu-chat -m LFM3-VL-2B --image photo.jpg "What is in it?"
+//	hwnpu-chat agent "fix the bug in the add function of main.go"
+//	hwnpu-chat agent -C ~/src/demo --yes "add a mul function"
+//	hwnpu-chat search -m plamo-embedding-1b           # search the texts typed by their embeddings
+//	hwnpu-chat serve -m LFM3-1.7B,plamo-embedding-1b  # the OpenAI compatible API
+//	hwnpu-chat opencode [-- opencode arguments]       # OpenCode on the server
+//	hwnpu-chat list
 //
-// A model lives in -dir/NAME (hwnpu/models/NAME in the user cache directory). The first run
-// downloads it from Hugging Face and converts it; later runs load what is there. A chat model is
-// converted twice with a KV cache of -context tokens, -draft (8) tokens per call to generate (a
-// token and the guesses after it, checked at once) and 64 to read prompts about 20 times faster;
-// the two share one cache, and a conversation reads only what is new since the last answer.
-// LFM3 is split at its full attention layers (-paged): hwnpu-chat attends over the cache in
-// chunks of 8192 itself, so that a step costs in proportion to the conversation and the cache's
-// memory grows with it, and the context is the model's longest, 262144 tokens. A model that is
-// not split, or -paged -1, costs in proportion to -context (16320) whatever the conversation
-// holds; with -tier (4096) its pair is converted for the shorter cache too, and a conversation
-// runs on the shortest cache that holds it, moving up as it grows. An embedding model is
-// converted once per length in -embed-seq, and a text runs on the shortest that holds it.
+// chat (the command when none is named) and agent take a prompt or a task on the command line,
+// answer it and exit; without one they take them in the terminal. What the user asked for (the
+// answer, the server's address) is printed as it is; what goes on (downloads, conversions,
+// loading) is logged in gray, with "all on the NPU" in green and "NOT all on the NPU" in red for
+// each program loaded.
 //
-// -package (or -embed-package) takes programs converted by hwnpu-convert instead, separated by
+// --model (-m) takes a name, a family or a use of models.yaml (LFM3-1.7B, chat, translate,
+// plamo3translate:2b; a family alone picks for the machine's memory), a Hugging Face repository
+// OWNER/NAME, or an export's directory (a value with a / or a leading . or ~: on AMD's NPU, one of
+// tools/amd/iron_export_lm.py). list shows the models.
+//
+// A model lives in --dir/NAME (hwnpu/models/NAME in the user cache directory). On Apple's Neural
+// Engine and Intel's NPU the first run downloads it from Hugging Face and converts it; later runs
+// load what is there. A chat model is converted twice with a KV cache of --context tokens,
+// --draft (8) tokens per call to generate (a token and the guesses after it, checked at once) and
+// 64 to read prompts about 20 times faster; the two share one cache, and a conversation reads
+// only what is new since the last answer. LFM3 is split at its full attention layers (--paged):
+// hwnpu-chat attends over the cache in chunks of 8192 itself, so that a step costs in proportion
+// to the conversation and the cache's memory grows with it, and the context is the model's
+// longest, 262144 tokens. A model that is not split, or --paged -1, costs in proportion to
+// --context (16320) whatever the conversation holds; with --tier (4096) its pair is converted for
+// the shorter cache too, and a conversation runs on the shortest cache that holds it, moving up
+// as it grows. An embedding model is converted once per length in --embed-seq, and a text runs on
+// the shortest that holds it. On AMD's NPU a name runs ~/models/NAME.amd-npu2-q4 (else
+// NAME.amd-npu2), exports of tools/amd/iron_export_lm.py (docs/amd-npu-models.md).
+//
+// --package (or --embed-package) takes programs converted by hwnpu-convert instead, separated by
 // commas: for a chat model with the same -cache and different -seq, for an embedding model with
 // different -seq.
 //
 // LFM3-VL-2B, LFM3-Audio-2B and LFM3-Omni-2B read images and audio: their first run also converts
 // the encoders of the checkpoint, the vision encoder for images of 512x512 and the audio encoder
-// for clips of up to 30 seconds. image_url parts of user messages are read, and in the terminal
-// /image FILE sends an image; input_audio parts (WAV) are read, and /audio FILE.wav sends a clip.
-// With -package, -vision takes vision encoders converted by hwnpu-convert -arch lfm3-vision (a
-// package per image size) and -audio audio encoders (-arch lfm3-audio-encoder, a package per clip
-// length). Speech output is not supported (see hwnpu-tts).
+// for clips of up to 30 seconds. --image and --audio send them with a prompt; in the terminal
+// /image FILE and /audio FILE.wav do; image_url and input_audio parts of the API's user messages
+// are read. With --package, --vision takes vision encoders converted by hwnpu-convert -arch
+// lfm3-vision (a package per image size) and --audio-encoder audio encoders (-arch
+// lfm3-audio-encoder, a package per clip length). Speech output is not supported (see hwnpu-tts).
 //
-// -opencode serves on a free port from 30000 (or -listen), writes an OpenCode config for the
-// server's chat models, and runs OpenCode on this terminal with the arguments after the flags;
-// when it exits, so does the server.
+// agent is a coding agent: a chat model with four tools, read, edit, write and bash, in the loop
+// of Pi (pi.dev) written in Go on the same engine (see AgentCmd). opencode serves on a free port
+// from 30000 (or --listen), writes an OpenCode config for the server's chat models, and runs
+// OpenCode on this terminal with the arguments after --; when it exits, so does the server.
 package main
 
 import (
-	"cmp"
 	"context"
-	"encoding/base64"
-	"errors"
-	"flag"
-	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"text/tabwriter"
-	"time"
 
+	"github.com/alecthomas/kong"
 	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm/decode"
-	"github.com/shibukawa/hwnpu/internal/mem"
 )
+
+type cli struct {
+	Chat     ChatCmd     `cmd:"" default:"withargs" help:"Talk with a chat model, or answer the prompt given and exit (the command when none is named)."`
+	Agent    AgentCmd    `cmd:"" help:"A coding agent with read, edit, write and bash: run the task given, or take tasks in the terminal."`
+	Search   SearchCmd   `cmd:"" help:"Search the texts typed by their embeddings (an embedding model)."`
+	Serve    ServeCmd    `cmd:"" help:"Serve the OpenAI compatible API: chat completions and embeddings."`
+	OpenCode OpenCodeCmd `cmd:"" name:"opencode" help:"Serve the chat models and run OpenCode on them in this terminal."`
+	List     ListCmd     `cmd:"" help:"List the chat and embedding models, what each is for and whether it is downloaded."`
+}
 
 func main() {
-	use := flag.String("use", "LFM3-1.7B", "models to run, comma separated: names that -list shows, uses or families picked for the machine's memory (translate, plamo3translate) or with a tag (plamo3translate:2b), or Hugging Face repositories OWNER/NAME; one in the terminal")
-	list := flag.Bool("list", false, "list the models and what each is for, and exit")
-	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing")
-	context_ := flag.Int("context", 0, "tokens of a prompt and its answer together; 0: the longest the model was trained for when it is split at its attention (-paged: 262144 for LFM3-1.7B and Qwen3.5, 131072 for Gemma 4, its cache growing with the conversation within a quarter of the memory), else 16320 (4096 for Qwen3, whose 28 layers of keys and values in one program fail past it; over 16320 a whole model's cache is in chunks of 16384, slower per token)")
-	paged := flag.Int("paged", 0, "split a chat model at its full attention layers and attend over the cache in chunks of this many tokens, so that a step costs in proportion to the conversation, not to -context: 0 for 8192 where the model allows it (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4, Qwen3.5; Qwen3 only when given one, -paged 1024 for its long context), -1 never (then -tier applies)")
-	sparse := flag.Bool("sparse", true, "past about 48K tokens of a model split at its attention (-paged), read 16384 keys of the cache exactly (32768 while reading a prompt), those of the 8-token buckets that weigh most, and every other bucket as its mean (two-level attention, a few times faster at 128K and over); false reads the whole cache on every call")
-	pkgs := flag.String("package", "", "chat programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq")
-	config := flag.String("config", "", "config.json of the chat model (default: in its directory)")
-	weights := flag.String("weights", "", "checkpoint the chat model's token embeddings are read from: .safetensors or .gguf (default: in its directory)")
-	tok := flag.String("tokenizer", "", "tokenizer.json of the chat model (default: next to config.json)")
-	embedSeq := flag.String("embed-seq", ints(chat.DefaultEmbedSeqs), "sequence lengths an embedding model is converted for, comma separated; the longest is the most tokens of a text")
-	embedPkgs := flag.String("embed-package", "", "embedding programs converted by hwnpu-convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)")
-	vis := flag.String("vision", "", "the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated: images in user messages (default: the 512x512 one a model of -list with vision converts)")
-	aud := flag.String("audio", "", "the LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated: audio in user messages (default: the 30 second one a model of -list with audio converts)")
-	backend := flag.String("backend", "", "the NPU to convert for and run on: coreml (Apple's Neural Engine), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)")
-	format := flag.String("format", "", "weight format of the chat model's programs: int8, int4, int4-g128 or fp16 on Intel's NPU, lut4, lut6, lut8, int4, int8 or fp16 on the Neural Engine (default: the model's for the NPU, int8 for LFM3 on Intel's NPU)")
-	codes := flag.String("codes", "", "directory of lookup tables chosen against the activations (tools/amd/q4_gptq.py --fmt-q4 lut6 ...) for the chat model's lutN weights; the programs are converted anew for them")
-	formatFor_ := flag.String("format-for", "", "comma separated SUBSTRING=FORMAT: another weight format for the chat model's tensors whose names contain SUBSTRING, e.g. per_layer=lut8 (the last match wins); the programs are converted anew for them")
-	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
-	promptDir := flag.String("prompt-cache", "", "keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)")
-	listen := flag.String("listen", "", "serve the OpenAI compatible API (chat completions for chat models, embeddings for embedding models) at this address instead of the terminal, e.g. 127.0.0.1:8080")
-	dump := flag.String("dump", "", "write each chat request, its prompt and the generated text to this directory (server)")
-	withOpenCode := flag.Bool("opencode", false, "serve on a free port from 30000 (or -listen) and run OpenCode on this terminal with the chat models; the arguments after the flags go to OpenCode")
-	openCodeBin := flag.String("opencode-bin", "opencode", "the OpenCode command (-opencode)")
-	think := flag.Bool("think", true, "let the model think (<think>) before it answers")
-	thinkBudget := flag.Int("think-budget", 1024, "most tokens the model thinks before it is made to answer (0: no limit); a small model may think for thousands")
-	tier := flag.String("tier", chat.DefaultTiers, "caches shorter than -context to run on while a conversation is short, comma separated (a step costs in proportion to the cache); empty or none for none, auto for 4096 with a model in 4 bit tables and none with 6 or 8 bits (four such programs overflow the Neural Engine's compile cache and every start compiles them again)")
-	draft := flag.Int("draft", 8, "tokens per call of the program that checks drafts (speculative decoding: tokens guessed from the prompt and the answer so far are checked in one call); 0 or 1 turns it off")
-	mtp := flag.String("mtp", chat.MTPAuto, "auto: drafts also from the checkpoint's multi-token prediction layer when it has one (Qwen3.5); off: from the prompt alone")
-	prefill := flag.String("prefill", chat.PrefillAuto, "a program of 64 tokens per call (128 for a model split at its attention) to read prompts beside the one that generates: auto (unless the two would not stay in the Neural Engine's compile cache of about 4 GiB, as Gemma 4 E4B's do not: then the one that generates reads the prompts, slower for long ones), on or off")
-	system := flag.String("system", "", "system message (chat)")
-	maxNew := flag.Int("n", 0, "most tokens of an answer (0: until the cache is full) (chat)")
-	temp := flag.Float64("temp", 0.1, "sampling temperature; 0 picks the most likely token")
-	topK := flag.Int("top-k", 50, "sample from the k most likely tokens")
-	topP := flag.Float64("top-p", 0, "sample from the most likely tokens up to this probability (0: off)")
-	rep := flag.Float64("rep", 1.05, "repetition penalty on the tokens of the answer (1: none)")
-	seed := flag.Uint64("seed", 0, "random seed of the sampling, the same for every answer (0: a new one for each answer, shown after it) (chat)")
-	to := flag.String("to", "", "the language a translation model (PLaMo 3 Translate) translates into, a lowercase code: en, ja, zh-hans, ko, ja(easy)... (default: English for a text with Japanese characters, else Japanese) (chat)")
-	from := flag.String("from", "", "the language of the texts a translation model translates (default: the model finds it) (chat)")
-	form := flag.String("form", "", "polite or plain: the style of a translation into Japanese (chat)")
-	ironDir := flag.String("iron", "", "run a model compiled by amd/IRON for AMD's NPU (tools/amd/iron_export_lm.py), this directory, in place of -use")
-	idle := flag.Duration("idle", 5*time.Minute, "with -iron, give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy")
-	modelFiles := flag.String("models", "", chat.ModelsUsage)
-	flag.Parse()
-	if err := chat.LoadUserModels(*modelFiles, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
-		os.Exit(2)
-	}
-	if flag.NArg() > 0 && !*withOpenCode {
-		flag.Usage()
-		os.Exit(2)
-	}
-	if *list {
-		showModels(os.Stdout, *dir)
-		return
-	}
-	seqs, err := parseInts(*embedSeq)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "hwnpu-chat: -embed-seq:", err)
-		os.Exit(2)
-	}
-	tiers, err := chat.Tiers(*tier)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "hwnpu-chat: -tier:", err)
-		os.Exit(2)
-	}
-	if *cacheDir == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			*cacheDir = filepath.Join(d, "hwnpu")
-		}
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if *ironDir == "" && *pkgs == "" {
-		if *ironDir, err = chat.AMDExport(ctx, *use, *backend); err != nil {
-			fail(err)
-		} else if *ironDir != "" {
-			fmt.Fprintf(os.Stderr, "hwnpu-chat: AMD's NPU: -iron %s\n", *ironDir)
-		}
-	}
-	var models []chat.Model
-	if *ironDir != "" {
-		models = []chat.Model{{Name: strings.TrimSuffix(filepath.Base(*ironDir), ".amd-npu2"), Kind: chat.KindChat}}
-	} else {
-		models, err = resolve(ctx, *use, *dir, *listen != "" || *withOpenCode)
-	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
-		os.Exit(2)
-	}
-	var chats []chat.Model
-	for _, m := range models {
-		if m.Kind == chat.KindChat {
-			chats = append(chats, m)
-		}
-	}
-	if len(chats) > 1 && (*pkgs != "" || *config != "" || *weights != "" || *tok != "" || *vis != "" || *aud != "") {
-		fail(errors.New("-package, -config, -weights, -tokenizer, -vision and -audio are for one chat model; -use names several"))
-	}
-	if len(models)-len(chats) > 1 && *embedPkgs != "" {
-		fail(errors.New("-embed-package is for one embedding model; -use names several"))
-	}
-
-	srv := &chat.Server{Think: *think, ThinkBudget: *thinkBudget, Defaults: chat.Sampling{Temperature: *temp, TopK: *topK, TopP: *topP, Repetition: *rep}, Log: console.Log(os.Stderr), Dump: *dump}
-	for _, m := range models {
-		md := filepath.Join(*dir, m.DirName())
-		switch m.Kind {
-		case chat.KindChat:
-			c := chat.Config{ModelConfig: *config, Weights: *weights}
-			if *ironDir != "" {
-				c = chat.Config{IRON: *ironDir, Name: m.Name}
-			} else if *pkgs != "" {
-				c.Packages, c.Name, c.Backend = strings.Split(*pkgs, ","), m.Name, *backend
-				if c.ModelConfig == "" {
-					c.ModelConfig = filepath.Join(md, "config.json")
-				}
-				if c.Weights == "" {
-					c.Weights = chat.WeightsIn(md)
-				}
-			} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name, Context: *context_, Paged: *paged, Draft: *draft, MTP: *mtp, Prefill: *prefill, Tiers: tiers, Backend: *backend, Format: *format, Codes: *codes, FormatFor: formatFor(*formatFor_), Log: console.Log(os.Stderr)}); err != nil {
-				fail(err)
-			}
-			c.Tokenizer, c.CacheDir, c.Log = *tok, *cacheDir, console.Log(os.Stderr)
-			c.PromptDir = chat.PromptStore(*promptDir, *cacheDir)
-			c.Dense = !*sparse
-			c.Idle = *idle
-			if *vis != "" {
-				c.Vision = strings.Split(*vis, ",")
-			}
-			if *aud != "" {
-				c.Audio = strings.Split(*aud, ",")
-			}
-			e, err := chat.Load(ctx, c)
-			if err != nil {
-				fail(err)
-			}
-			defer e.Close()
-			e.NoThink = m.NoThink && !flagGiven("think")
-			srv.Chats = append(srv.Chats, e)
-		case chat.KindEmbed:
-			var c chat.EmbedConfig
-			if *embedPkgs != "" {
-				c = chat.EmbedConfig{Packages: strings.Split(*embedPkgs, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: chat.WeightsIn(md), Name: m.Name, Backend: *backend}
-			} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Source(), Name: m.Name, Seqs: seqs, Backend: *backend, Log: console.Log(os.Stderr)}); err != nil {
-				fail(err)
-			}
-			c.CacheDir, c.Log = *cacheDir, console.Log(os.Stderr)
-			e, err := chat.LoadEmbedder(ctx, c)
-			if err != nil {
-				fail(err)
-			}
-			defer e.Close()
-			srv.Embedders = append(srv.Embedders, e)
-		}
-	}
-	switch {
-	case *withOpenCode:
-		stop()
-		code, err := openCode(srv, *listen, openCodeDir(*cacheDir), *openCodeBin, flag.Args())
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
-		}
-		for _, e := range srv.Chats {
-			e.Close()
-		}
-		for _, e := range srv.Embedders {
-			e.Close()
-		}
-		os.Exit(code)
-	case *listen != "":
-		err = serve(ctx, srv, *listen)
-	case len(srv.Chats) > 0:
-		stop() // Ctrl-C stops an answer, not the chat
-		err = talk(srv.Chats[0], *system, *think && !srv.Chats[0].NoThink, *thinkBudget, *maxNew, srv.Defaults, *seed, &chat.Translation{TargetLang: *to, SourceLang: *from, Form: *form})
-	default:
-		stop()
-		err = search(srv.Embedders[0])
-	}
-	if err != nil {
-		fail(err)
-	}
-}
-
-func fail(err error) {
-	fmt.Fprintln(os.Stderr, "hwnpu-chat:", err)
-	os.Exit(1)
-}
-
-// resolve reads -use: the models by name, each once. The terminal takes one.
-func resolve(ctx context.Context, use, dir string, server bool) ([]chat.Model, error) {
-	var models []chat.Model
-	seen := map[string]bool{}
-	for _, name := range strings.Split(use, ",") {
-		m, err := chat.Resolve(ctx, strings.TrimSpace(name), dir, console.Log(os.Stderr))
-		if err != nil {
-			return nil, err
-		}
-		if !seen[m.Name] {
-			seen[m.Name] = true
-			models = append(models, m)
-		}
-	}
-	if len(models) > 1 && !server {
-		return nil, fmt.Errorf("-use %s: the terminal runs one model; several need -listen", use)
-	}
-	return models, nil
-}
-
-// showModels writes the models of the definitions hwnpu-chat runs (chat.List) and what the
-// features mean.
-func showModels(w io.Writer, dir string) {
-	chat.List(w, dir, chat.KindChat, chat.KindEmbed)
-	fmt.Fprintln(w, "\nFeatures:")
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	for _, f := range chat.Features {
-		fmt.Fprintf(tw, "  %s\t%s\n", f.Name, f.About)
-	}
-	tw.Flush()
-	fmt.Fprintf(w, "\n-use takes names, comma separated (one in the terminal, any with -listen): a model's name, a use\n"+
-		"or a family (translate, plamo3translate), either with a tag (plamo3translate:2b, chat:e4b, chat:16g), or a\n"+
-		"Hugging Face repository OWNER/NAME of a supported architecture. The default is -use LFM3-1.7B.\n"+
-		"Requests may name a model the same ways. Only the model picked is downloaded.\n"+
-		"In the terminal, a chat model talks and an embedding model searches the texts typed; with -listen,\n"+
-		"chat models answer /v1/chat/completions and embedding models /v1/embeddings.\nModels are kept in %s.\n", dir)
-}
-
-func parseInts(s string) ([]int, error) {
-	var out []int
-	for _, f := range strings.Split(s, ",") {
-		n, err := strconv.Atoi(strings.TrimSpace(f))
-		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("%q is not a positive number", f)
-		}
-		out = append(out, n)
-	}
-	return out, nil
-}
-
-func ints(ns []int) string {
-	var s []string
-	for _, n := range ns {
-		s = append(s, strconv.Itoa(n))
-	}
-	return strings.Join(s, ",")
-}
-
-func serve(ctx context.Context, s *chat.Server, addr string) error {
-	srv := &http.Server{Addr: addr, Handler: s.Handler()}
-	go func() {
-		<-ctx.Done()
-		srv.Close()
-	}()
-	var what []string
-	for _, e := range s.Chats {
-		what = append(what, fmt.Sprintf("%s (chat, context %d tokens)", e.Name, e.Context()))
-	}
-	for _, e := range s.Embedders {
-		what = append(what, fmt.Sprintf("%s (embeddings, up to %d tokens)", e.Name, e.MaxTokens()))
-	}
-	console.Notef("serving %s at http://%s/v1\n", strings.Join(what, " and "), addr)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
-}
-
-const (
-	dim   = "\x1b[2m"
-	reset = "\x1b[0m"
-)
-
-// read prompts for and reads the next input with the line editor (a history on the arrows; a line
-// ending in \ continues on the next). It returns false at the end of the input.
-func read(ed *console.Editor) (string, bool) {
-	fmt.Println()
-	text, err := ed.Read("> ")
-	if err != nil {
-		return "", false
-	}
-	return strings.TrimSpace(text), true
-}
-
-// talk is the interactive chat.
-func talk(e *chat.Engine, system string, think bool, thinkBudget, maxNew int, s chat.Sampling, seed uint64, tr *chat.Translation) error {
-	var msgs []chat.Message
-	if system != "" {
-		msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
-	}
-	media := ""
-	if e.Images() {
-		media += "/image FILE [text] sends an image, "
-	}
-	if e.Audio() {
-		media += "/audio FILE.wav [text] sends a clip, "
-	}
-	translator := e.Template == chat.Plamo3
-	if translator {
-		to := tr.TargetLang
-		if to == "" {
-			to = "English for Japanese text, else Japanese"
-		}
-		media += fmt.Sprintf("each text is translated into %s, the earlier ones kept as its history; /to LANG changes the language and clears the history (/to alone: by the text), ", to)
-	}
-	console.Notef("%s/reset clears the conversation, /think on|off, /exit (or Ctrl-D) quits; Ctrl-C stops an answer, ↑ ↓ go through what was typed\n", media)
-	ed := console.NewEditor("chat")
-	for {
-		text, ok := read(ed)
-		if !ok {
-			return nil
-		}
-		switch {
-		case text == "":
-			continue
-		case text == "/exit" || text == "/quit":
-			return nil
-		case text == "/reset":
-			msgs = msgs[:0]
-			if system != "" {
-				msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
-			}
-			console.Notef("[conversation cleared]\n")
-			continue
-		case translator && (text == "/to" || strings.HasPrefix(text, "/to ")):
-			// the history's translations are labelled with the target language: start again
-			tr.TargetLang = strings.TrimSpace(strings.TrimPrefix(text, "/to"))
-			msgs = msgs[:0]
-			if system != "" {
-				msgs = append(msgs, chat.Message{Role: "system", Content: chat.Content{Text: system}})
-			}
-			console.Notef("[translating into %s; history cleared]\n", cmp.Or(tr.TargetLang, "the language by the text"))
-			continue
-		case strings.HasPrefix(text, "/think"):
-			think = strings.TrimSpace(strings.TrimPrefix(text, "/think")) != "off"
-			console.Notef("[thinking %v]\n", think)
-			continue
-		}
-		content := chat.Content{Text: text}
-		// /image FILE [text], /audio FILE.wav [text]: the image or the clip, then the text
-		for _, cmd := range []string{"/image ", "/audio "} {
-			rest, ok := strings.CutPrefix(text, cmd)
-			if !ok {
-				continue
-			}
-			file, after, _ := strings.Cut(strings.TrimSpace(rest), " ")
-			m, err := mediaFile(file, cmd == "/audio ")
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
-				content.Text = ""
-				break
-			}
-			content = chat.Content{Text: chat.MediaMarker + strings.TrimSpace(after), Media: []chat.Media{m}}
-		}
-		if content.Text == "" {
-			continue
-		}
-		msgs = append(msgs, chat.Message{Role: "user", Content: content})
-		prompt, thinking, err := e.Template.Render(msgs, nil, chat.Options{NoThink: !think, Translation: tr})
-		if err != nil {
-			if translator { // a language code or a text the template refuses
-				fmt.Fprintln(os.Stderr, "error:", err)
-				msgs = msgs[:len(msgs)-1]
-				continue
-			}
-			return err
-		}
-		var media []chat.Media
-		for _, m := range msgs {
-			media = append(media, m.Content.Media...)
-		}
-		ids, err := e.Tokens(context.Background(), prompt, media)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			msgs = msgs[:len(msgs)-1]
-			continue
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		var sent chat.Stream
-		var gen []int32
-		thought, answered := false, false
-		st, err := e.Generate(ctx, chat.Request{Prompt: ids, MaxTokens: maxNew, Sampling: s, Seed: seed, Think: e.ThinkLimit(thinkBudget, thinking)}, func(g []int32) (bool, error) {
-			gen = g
-			a := e.Template.Parse(e.Tok.Decode(g, false), thinking, nil, false)
-			dr, dc := sent.Next(a.Reasoning, a.Content)
-			if dr != "" {
-				fmt.Print(dim + dr + reset)
-				thought = true
-			}
-			if dc != "" {
-				if !answered && thought {
-					fmt.Print("\n\n")
-				}
-				fmt.Print(dc)
-				answered = true
-			}
-			return false, nil
-		})
-		stop()
-		fmt.Println()
-		if err != nil && !errors.Is(err, context.Canceled) {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			msgs = msgs[:len(msgs)-1]
-			continue
-		}
-		a := e.Template.Parse(e.Tok.Decode(gen, false), thinking, nil, true)
-		r := a.Reasoning
-		msgs = append(msgs, chat.Message{Role: "assistant", Content: chat.Content{Text: a.Content}, Reasoning: &r})
-		cut := ""
-		if st.ThinkCut {
-			cut = fmt.Sprintf("; thinking cut at %d tokens", thinkBudget)
-		}
-		if st.ThinkLooped {
-			cut = "; thinking cut going round in circles"
-		}
-		if st.Looped {
-			cut += "; stopped repeating itself"
-		}
-		if st.Drafted > 0 {
-			cut += fmt.Sprintf("; %d of %d drafts accepted", st.Accepted, st.Drafted)
-		}
-		if s.Temperature > 0 {
-			cut += fmt.Sprintf("; seed %d", st.Seed)
-		}
-		fmt.Fprintf(os.Stderr, "%s[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]%s\n", dim,
-			st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), cut, reset)
-		if os.Getenv("HWNPU_PROFILE") != "" {
-			decode.WriteProfile(os.Stderr)
-			if b, ok := mem.NPUWired(); ok {
-				fmt.Fprintf(os.Stderr, "profile: the Neural Engine holds %.2f GiB\n", float64(b)/(1<<30))
-			}
-		}
-	}
-}
-
-// mediaFile reads an image file as a data URL, or a WAV file as base64.
-func mediaFile(path string, isAudio bool) (chat.Media, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return chat.Media{}, err
-	}
-	if isAudio {
-		return chat.Media{Audio: true, Data: base64.StdEncoding.EncodeToString(raw)}, nil
-	}
-	mime := http.DetectContentType(raw)
-	if !strings.HasPrefix(mime, "image/") {
-		return chat.Media{}, fmt.Errorf("%s is %s, not an image", path, mime)
-	}
-	return chat.Media{Data: "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw)}, nil
-}
-
-// search is the interactive search by embeddings: each input is a document kept for searching,
-// and an input starting with ? is a query, which lists the documents most similar to it.
-func search(e *chat.Embedder) error {
-	type doc struct {
-		text string
-		v    []float32
-	}
-	var docs []doc
-	console.Notef("%s: %d dimensions, up to %d tokens a text. Each input is a document to search; ?TEXT searches them, /list shows them, /reset clears them, /exit (or Ctrl-D) quits\n",
-		e.Name, e.Dim(), e.MaxTokens())
-	ed := console.NewEditor("search")
-	for {
-		text, ok := read(ed)
-		if !ok {
-			return nil
-		}
-		query := false
-		switch {
-		case text == "":
-			continue
-		case text == "/exit" || text == "/quit":
-			return nil
-		case text == "/reset":
-			docs = docs[:0]
-			console.Notef("[documents cleared]\n")
-			continue
-		case text == "/list":
-			for i, d := range docs {
-				fmt.Printf("%3d  %s\n", i+1, oneLine(d.text))
-			}
-			continue
-		case strings.HasPrefix(text, "?") || strings.HasPrefix(text, "？"):
-			query = true
-			text = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "?"), "？"))
-		}
-		r, err := e.Embed(context.Background(), text, query, true)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			continue
-		}
-		cut := ""
-		if r.Truncated {
-			cut = fmt.Sprintf(", cut to %d", e.MaxTokens())
-		}
-		if !query {
-			docs = append(docs, doc{text, r.Vector})
-			fmt.Fprintf(os.Stderr, "%s[document %d: %d tokens%s in %.2fs]%s\n", dim, len(docs), r.Tokens, cut, r.Time.Seconds(), reset)
-			continue
-		}
-		if len(docs) == 0 {
-			console.Notef("[no documents yet: type some first]\n")
-			continue
-		}
-		order := make([]int, len(docs))
-		sim := make([]float64, len(docs))
-		for i, d := range docs {
-			order[i], sim[i] = i, chat.Cosine(r.Vector, d.v)
-		}
-		sort.SliceStable(order, func(a, b int) bool { return sim[order[a]] > sim[order[b]] })
-		for _, i := range order[:min(len(order), 10)] {
-			fmt.Printf("%.3f  %3d  %s\n", sim[i], i+1, oneLine(docs[i].text))
-		}
-		fmt.Fprintf(os.Stderr, "%s[query: %d tokens%s in %.2fs]%s\n", dim, r.Tokens, cut, r.Time.Seconds(), reset)
-	}
-}
-
-// oneLine shortens a text to one line of at most 60 characters for a list.
-func oneLine(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > 60 {
-		return string(r[:59]) + "…"
-	}
-	return s
-}
-
-// flagGiven reports whether the flag of that name was set on the command line.
-func flagGiven(name string) bool {
-	given := false
-	flag.Visit(func(f *flag.Flag) { given = given || f.Name == name })
-	return given
-}
-
-// formatFor splits -format-for into its SUBSTRING=FORMAT entries (chat.Setup.FormatFor).
-func formatFor(s string) []string {
-	if s == "" {
-		return nil
-	}
-	return strings.Split(s, ",")
+	var c cli
+	k := kong.Parse(&c,
+		kong.Name("hwnpu-chat"),
+		kong.Description("Language models on an NPU: chat, a coding agent, search by embeddings and the OpenAI compatible API."),
+		kong.UsageOnError(),
+		kong.Vars{
+			"models_usage": chat.ModelsUsage,
+			"tiers":        chat.DefaultTiers,
+			"embed_seqs":   ints(chat.DefaultEmbedSeqs),
+			"mtp":          chat.MTPAuto,
+			"prefill":      chat.PrefillAuto,
+		},
+		kong.BindTo(ctx, (*context.Context)(nil)),
+		kong.Bind(stop))
+	k.FatalIfErrorf(k.Run())
 }

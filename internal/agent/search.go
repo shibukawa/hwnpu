@@ -62,7 +62,7 @@ func clean(s string) string {
 var tagRe = regexp.MustCompile(`<[^>]*>`)
 
 // userAgent names the agent to the sites it asks, as Wikipedia's policy wants.
-const userAgent = "hwnpu-agent (https://github.com/shibukawa/hwnpu)"
+const userAgent = "hwnpu-chat-agent (https://github.com/shibukawa/hwnpu)"
 
 // get fetches a URL with the query and decodes its JSON answer into v.
 func get(ctx context.Context, client *http.Client, u string, q url.Values, header http.Header, v any) error {
