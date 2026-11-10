@@ -208,6 +208,9 @@ func markdown(rep *report) string {
 		}
 		sb.WriteString("\nThe weighted parts are the bench layers split into one more part than there are attention layers, every part loaded with the attention program at once. A step runs the parts one after another (weights alone), the attention of every layer over the used chunks with the host's merge (attention alone), or the two interleaved as a model split at its attention would run them: part, attention, part, … (interleaved). Each is the fastest of two rounds. ms per seam is what interleaving adds over the two apart, divided by the switches between a part and the attention; near 0, the Neural Engine keeps both kinds of program, and a reload would show as milliseconds.\n")
 	}
+	if len(rep.Cache) > 0 {
+		cacheMarkdown(&sb, rep.Cache)
+	}
 	if len(rep.Notes) > 0 {
 		sb.WriteString("\n")
 		for _, n := range rep.Notes {

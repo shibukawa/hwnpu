@@ -22,7 +22,7 @@ import (
 const childMode, childMark = "_measure", "npuprobe-result "
 
 type childSpec struct {
-	Kind       string        `json:"kind"` // try, several, split, chain, kv, attn or seam
+	Kind       string        `json:"kind"` // try, several, split, chain, kv, attn, seam or cache
 	Backend    string        `json:"backend"`
 	DeviceID   string        `json:"device_id"`
 	Format     string        `json:"format"`
@@ -34,6 +34,8 @@ type childSpec struct {
 	Layout     string        `json:"layout,omitempty"`      // split: files or functions; kv: the mode; attn: the form
 	Used       []int         `json:"used,omitempty"`        // attn, seam: used cache lengths of the passes
 	AttnLayers int           `json:"attn_layers,omitempty"` // seam: attention layers between the weighted parts
+	Paths      []string      `json:"paths,omitempty"`       // cache: the programs, in the order to load
+	CacheDir   string        `json:"cache_dir,omitempty"`   // hwnpu's compile cache (WithCacheDir), kept by the parent
 	MinRun     time.Duration `json:"min_run"`
 	Dir        string        `json:"dir"`
 	IdleW      float64       `json:"idle_w"`
@@ -59,9 +61,12 @@ func (p *prober) child(spec childSpec, out any) error {
 	spec.Backend, spec.DeviceID = p.dev.Info().Backend, p.dev.Info().ID
 	spec.MinRun, spec.Dir, spec.IdleW, spec.Meter = p.minRun, p.dir, p.idleW, p.meter
 	arg, _ := json.Marshal(spec)
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("executable: %w", err)
+	exe := p.exe
+	if exe == "" {
+		var err error
+		if exe, err = os.Executable(); err != nil {
+			return fmt.Errorf("executable: %w", err)
+		}
 	}
 	cmd := exec.CommandContext(p.ctx, exe, append(slices.Clone(ChildArgs), childMode, string(arg))...)
 	var stderr bytes.Buffer
@@ -122,7 +127,9 @@ func runChild(arg string) error {
 		return fmt.Errorf("device %s %s not found", spec.Backend, spec.DeviceID)
 	}
 	opts := []hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementPrefer)}
-	if spec.Layout == "functions" {
+	if spec.CacheDir != "" {
+		opts = append(opts, hwnpu.WithCacheDir(spec.CacheDir))
+	} else if spec.Layout == "functions" {
 		// Every part loads the same package; compile it once.
 		cache := filepath.Join(spec.Dir, "coreml-cache")
 		defer os.RemoveAll(cache)
@@ -152,6 +159,8 @@ func runChild(arg string) error {
 		rs = p.attn(spec.Layout, spec.Layers, max(spec.Tokens, 1), spec.N, spec.Used)
 	case "seam":
 		rs = p.seam(spec.Format, spec.Layers, spec.AttnLayers, max(spec.Tokens, 1), spec.Layout, spec.N, spec.Used)
+	case "cache":
+		rs = p.cacheLoads(spec.Format, spec.Layers, spec.Paths, spec.Layout, spec.N)
 	case "chain":
 		rs = p.chain(spec.Format, spec.Layers, spec.N, spec.Units)
 	default:

@@ -9,6 +9,7 @@
 //	go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe kv       # attention over a KV cache
 //	go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe attn     # attention per chunk of a cache
 //	go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe seam     # weighted parts and that attention interleaved
+//	go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe cache    # the Neural Engine's cache of compiled programs
 //
 // The models have the shape of LLM decoding (internal/probe): one token through Llama 3.2 1B
 // sized layers with random weights, so every call reads every weight once, as generating one
@@ -51,6 +52,20 @@
 // such a model. Alternating two programs with weights has cost a reload of the Neural Engine
 // (35 ms a call); a seam within one chain 0.1 ms.
 //
+// cache, run only when asked for (Core ML), measures the Neural Engine's own cache of compiled
+// programs: a program hwnpu's compile cache holds loads in 0.1 s when the Neural Engine's cache
+// hits and compiles again for seconds or minutes when it misses. A configuration writes N
+// programs of S GiB (-cache-sizes; N from -cache-totals) once, then loads them in order and runs
+// each once in a new process per round (-cache-rounds), keeping hwnpu's compile cache; a load at
+// or under -cache-hit is a hit. The report gives the hits of every round and the largest total
+// that stays warm for each size. -cache-hold open keeps every program open instead of closing
+// each before the next, -cache-order reverse reverses every other round (an LRU then hits more),
+// -cache-passes 2 loads again within each process, -cache-names runs rounds under other
+// executable names (copies of this one), and -cache-keep with -dir keeps the programs for a
+// later run, after a restart say (written again, a program is another one to the caches). The
+// probe holds the Neural Engine's lock (internal/llm) while it runs, so that other hwnpu
+// processes wait; anything else compiling for the Neural Engine spoils the times.
+//
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
 // while a model runs: near 0 when the NPU does the work, 1 or more when the CPU does.
@@ -74,6 +89,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/probe"
 )
 
@@ -101,6 +117,7 @@ type report struct {
 	Several   []result      `json:"several,omitempty"`
 	SeveralOf string        `json:"several_of,omitempty"`
 	Split     []splitResult `json:"split,omitempty"`
+	Cache     []cacheResult `json:"cache,omitempty"`
 	Notes     []string      `json:"notes,omitempty"`
 }
 
@@ -119,7 +136,7 @@ func Main() {
 	}
 	fs := flag.NewFlagSet("hwnpu-dev probe", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: hwnpu-dev probe [all|bench|limit|split|verify|kv|attn|seam] [flags]")
+		fmt.Fprintln(fs.Output(), "usage: hwnpu-dev probe [all|bench|limit|split|verify|kv|attn|seam|cache] [flags]")
 		fs.PrintDefaults()
 	}
 	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
@@ -146,11 +163,22 @@ func Main() {
 	seamForm := fs.String("seam-form", "grouped", "seam: form of the attention, grouped or tile")
 	seamChunk := fs.Int("seam-chunk", 8192, "seam: chunk length of the attention")
 	seamUsed := fs.String("seam-used", "8192,65536", "seam: used cache lengths, ascending")
+	cacheFormat := fs.String("cache-format", "fp16", "cache: weight format of the programs (fp16, int8, lut4)")
+	cacheSizes := fs.String("cache-sizes", "0.5,1", "cache: sizes of one program, GiB, comma separated (rounded to whole layers of 61 M weights)")
+	cacheTotals := fs.String("cache-totals", "1,2,3,4,5,6,8", "cache: totals of the programs of a configuration, GiB, comma separated (programs: total / size)")
+	cacheRounds := fs.Int("cache-rounds", 3, "cache: rounds per configuration, each a new process loading every program (the first round compiles them)")
+	cacheHold := fs.String("cache-hold", "close", "cache: close (each program closed before the next loads, as Sana's pipeline does) and open (all held until the round ends), comma separated")
+	cacheOrder := fs.String("cache-order", "same", "cache: same (every round in one order) and reverse (every other round reversed: an LRU then hits more), comma separated")
+	cachePasses := fs.Int("cache-passes", 1, "cache: passes over the programs within each round's process (2: also loading again in the same process)")
+	cacheNames := fs.String("cache-names", "", "cache: after the rounds, a round under each of these executable names (a copy of this one), each followed by a round under this name again")
+	cacheHit := fs.Duration("cache-hit", time.Second, "cache: a load and first call at or under this is a hit of the Neural Engine's cache")
+	cachePause := fs.Duration("cache-pause", 2*time.Second, "cache: pause between rounds")
+	cacheKeep := fs.Bool("cache-keep", false, "cache: keep the programs in -dir and reuse them in later runs (after a restart, say); a program written again is another program to the caches")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
 	fs.Parse(args)
-	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" && mode != "attn" && mode != "seam" {
+	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" && mode != "attn" && mode != "seam" && mode != "cache" {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -160,7 +188,15 @@ func Main() {
 	sp := splitOpts{layers: *splitLayers, parts: *parts, layout: *layout, ref: *ref, kvLayers: *kvLayers, kvCache: *kvCache, kvModes: *kvModes,
 		attnChunks: *attnChunks, attnTokens: *attnTokens, attnForms: *attnForms, attnUsed: *attnUsed, attnLayers: *attnLayers,
 		seamFormat: *seamFormat, seamLayers: *seamLayers, seamTokens: *seamTokens, seamForm: *seamForm, seamChunk: *seamChunk, seamUsed: *seamUsed}
-	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, *minRun, *work, *out); err != nil {
+	co := cacheOpts{format: *cacheFormat, rounds: *cacheRounds, holds: split(*cacheHold), orders: split(*cacheOrder), passes: *cachePasses,
+		names: split(*cacheNames), hit: *cacheHit, pause: *cachePause, keep: *cacheKeep}
+	if mode == "cache" {
+		if err := co.parse(*cacheSizes, *cacheTotals, *work); err != nil {
+			fmt.Fprintln(os.Stderr, "hwnpu-dev probe:", err)
+			os.Exit(2)
+		}
+	}
+	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, co, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-dev probe:", err)
 		os.Exit(1)
 	}
@@ -179,7 +215,7 @@ type splitOpts struct {
 	seamLayers, seamChunk                      int
 }
 
-func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, minRun time.Duration, work, out string) error {
+func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, co cacheOpts, minRun time.Duration, work, out string) error {
 	infos, err := hwnpu.Enumerate(ctx)
 	if err != nil {
 		return err
@@ -424,6 +460,17 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 			return errors.New("-attn-layers: at least 1")
 		}
 		p.seams(&rep, sp.seamFormat, sp.seamLayers, sp.attnLayers, tokens, sp.seamForm, sp.seamChunk, used, save)
+	}
+	if mode == "cache" {
+		if !p.coreml {
+			return errors.New("cache: the cache of compiled programs measured is the Neural Engine's (Core ML)")
+		}
+		// No other process compiling for the Neural Engine while the loads are timed: the
+		// children open the device without the lock, under this process's.
+		if err := llm.LockNPU(ctx); err != nil {
+			return err
+		}
+		p.caches(&rep, co, save)
 	}
 	if mode == "verify" {
 		// The formats the NPU runs: int4 never reaches the Neural Engine.
