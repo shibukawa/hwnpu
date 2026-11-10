@@ -20,7 +20,7 @@
 //
 // --model takes a name, a family or a use of models.yaml (music, magenta-realtime-2; sfx,
 // moss-soundeffect; speech; transcribe, whisper:large-v3-turbo; pitch; notes): a family alone
-// picks for the machine's memory as hwnpu-chat's -m, a tag of memory (moss-soundeffect:8gb, 16G)
+// picks for the machine's memory as hwnpu-chat's --model, a tag of memory (moss-soundeffect:8gb, 16G)
 // for that machine's. Each model is downloaded and converted the first time. Without -o, generate
 // plays the sound.
 //
@@ -101,7 +101,7 @@ type GenerateCmd struct {
 	Duration *time.Duration `placeholder:"10s" help:"How long: 10s, 2m, 1m30s (default 10s; music with --notes: the MIDI file's length; sound effects up to 30s)."`
 	Fade     *time.Duration `placeholder:"2s" help:"Fade out over the last part (music: 2s by default, 0 to stop where the generation does; sound effects: none by default)."`
 	Seed     uint64         `placeholder:"N" help:"The random seed (0: a new one)."`
-	Dir      string         `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir)."`
+	Dir      string         `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache    string         `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU      bool           `name:"cpu" help:"Run the programs with the CPU interpreter instead of the NPU (slow)."`
 	OffNPU   bool           `name:"allow-off-npu" help:"Go on when Core ML puts part of a program off the NPU (on the GPU or the CPU; that has made a Mac sluggish and failed)."`
@@ -178,7 +178,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 // machine's memory.
 type ListCmd struct {
 	Kind string `arg:"" optional:"" enum:"music,sfx,speech,transcribe,pitch,notes," default:"" help:"Only music, sfx, speech, transcribe, pitch or notes models."`
-	Dir  string `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir)."`
+	Dir  string `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 }
 
 // Run lists the models.

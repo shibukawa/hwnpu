@@ -64,6 +64,10 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Conversation marks keep only the ring slots in use (16.71) | | | | ○ 578 → 183 MB over 5 translations | | | | All |
 | Memory back to the OS after a conversion (16.71) | | | | ○ 2.4 GB → 154 MB right after startup | | | | All |
 | Cleaning up the `/dev/shm` left by OpenVINO (16.72) | | | | | ○ 8.4 GB a day | | | Intel / OpenVINO |
+| Apple: sigmoid and SiLU written with exp in ONNX programs (`ExpSigmoid`, 16.149) | △ RTMDet-s 6.6 → 9.3 ms an image | | | | | | ◎ RTMDet-s box 98 → 5.5 px, score 0.35 → 0.063 off ONNX Runtime | Apple |
+| Host resize without closures, rows on every core (16.149) | ◎ 37–55 → 5–7 ms a picture (RTMDet, RTMO, LFM3-VL) | | | | | | the same bytes | All |
+| Apple: PP-OCR's recognizer on the NPU (logits before the softmax, the 18710-wide output in two parts, the bias in the linear, fp16 read as it is, decoding during the next call) (16.149) | ◎ a page of 98 lines 1528 → 488 ms | | | | | | the same lines | Apple |
+| PP-OCR's recognizer at seven widths padded as PaddleOCR (16.149) | | | △ a program to compile for each width (5–20 s, once) | △ 425 MB at most | | | ○ the receipt 11 → 13 of 13 lines as PaddleOCR | All |
 
 ◎ large effect, ○ helps, △ small or with a cost, ✕ makes it worse
 

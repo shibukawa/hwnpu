@@ -60,6 +60,15 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <td colspan="6"><b>RTMO-s</b> (約 0.23 GB)<br>画像の人と 17 の関節点を 1 回で (人の検出器は不要)。1 枚約 0.1 秒</td>
 </tr>
 <tr>
+<th>物の検出<br><sub>hwnpu-image detect</sub></th>
+<td><b>RTMDet-s</b> (約 0.1 GB)<br>物の枠と COCO の 80 種類のラベル。M1 の Neural Engine で 1 枚 9 ms</td>
+<td colspan="5"><b>RTMDet-m</b> (約 0.2 GB)<br>より正確 (box AP 49.1、s は 44.6)。1 枚 18 ms</td>
+</tr>
+<tr>
+<th>文字 (OCR)<br><sub>hwnpu-image ocr</sub></th>
+<td colspan="6"><b>PP-OCRv6 small</b> (約 0.45 GB)<br>文字の行と枠と中身、50 言語 (日本語、中国語、英語など)。M1 で論文 1 ページ 98 行が 0.5 秒</td>
+</tr>
+<tr>
 <th>音楽生成<br><sub>hwnpu-audio generate</sub></th>
 <td colspan="6"><b>Magenta RealTime 2 small</b> (約 1.0 GB)<br>文や録音で指定した曲調の 48 kHz ステレオの音楽。MIDI の音符を弾く、録音の続きを作る、できたそばから流すこともできる。実時間の約 1.4 倍の速さ。重みは CC-BY 4.0 (使うときは「Magenta RealTime 2 by Google DeepMind」と表示)</td>
 </tr>
@@ -123,6 +132,8 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | SwiftF0 | 音高 (F0) | 約 0.06 GB (M1: プロセスの footprint 58 MB。重み 14K) | なし (30 秒ずつ) | M1 で実測 |
 | Basic Pitch | 音符 (MIDI) | 約 0.07 GB (M1: プロセスの footprint 75 MB。重み 36K) | なし (2 秒の窓ずつ) | M1 で実測 |
 | RTMO-s | 人の姿勢 | 約 0.23 GB (M1: プロセスの footprint 232 MB。重み 9.9M を fp16) | なし (1 枚ずつ) | M1 で実測 |
+| RTMDet-tiny / s / m | 物の検出 | 約 0.07 / 0.1 / 0.2 GB (M1: footprint 56 / 73 / 141 MB、Neural Engine に 11 / 21 / 56 MB) | なし (1 枚ずつ) | M1 で実測 |
+| PP-OCRv6 small | 文字 (OCR) | 約 0.45 GB (M1: footprint 最大 425 MB。認識器の 7 つの幅のプログラムを読み込んだとき) | なし (1 枚ずつ) | M1 で実測 |
 | Magenta RealTime 2 small | 音楽生成 | 約 1.0 GB (M1 の footprint: 文の曲調 0.97 GB、録音の曲調 0.55 GB、録音の続き 0.96 GB、符号を `-codes` で渡せば 0.42 GB) | なし (直前の 41 フレームの窓) | M1 で実測 |
 | MOSS-SoundEffect v2.0 | 効果音 | 約 2.3 GB (M1 の footprint の最大は文の符号器が fp16 で 2.34 GB、lut8 で 2.17 GB。文の符号器のプログラム、fp16 で 2.8 GB か lut8 で 1.7 GB を先に動かして手放し、次に DiT の 1.4 GB (lut8) と復号の 0.2 GB) | なし (30 秒の潜在をまとめて) | M1 で実測 |
 | Whisper large-v3-turbo | 文字起こし (長さの上限なし、30 秒ずつ) | 約 1.9 GB (M3: Neural Engine に 0.78 GiB とプロセスの 1.1 GB) | なし (30 秒ごとに 448 トークンまで) | M3 で実測 |

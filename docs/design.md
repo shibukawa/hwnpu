@@ -3821,3 +3821,42 @@ diffusers の fp32 (CPU) の参照と同じノイズから (DiT の重み q8 で
 - Sana-Sprint 0.6B と 1.6B は、2 ステップで速い (1024² で 12〜32 秒) が、絵の質が Sana よりかなり低かった。models.yaml から外し、SCM の刻み (`SCMTimesteps`)、guidance の埋め込み (時刻の埋め込みの `guidance_embedder`、`dit_in` の `gproj`)、ステップごとのノイズを消した
 - `iron_sana.py`、`ref_sana.py`、`hwnpu-image convert` は `guidance_embeds` のチェックポイントを、`sana.Open` は `sprint` の書き出しを、理由を添えて断る
 - 過去の記録 (16.119、16.138〜139、16.145) の Sana-Sprint の数字はそのまま残す
+
+### 16.149 物の検出 (RTMDet) と文字の読み取り (PP-OCRv6): `hwnpu-image detect`、`hwnpu-image ocr` — 2026-11-11
+
+- 動機: Google Cloud Vision の物の位置 (object localization) と OCR にあたるもの。汎用の視覚言語モデル (LFM3-VL) でも座標を文で書かせられるが、箱ごとに数十トークンを生成するので 1 枚数秒かかり、小さな物や多くの物を落とし、座標がずれる。専用の 1 段の検出器は 1 回の推論で全部の箱を出す (NPU で数 ms)。視覚言語モデルは、検出した箱の切り出しを説明させる後段に向く
+- モデル (どれも Apache-2.0、ONNX で配られるものを `internal/onnx` で):
+  - RTMDet-tiny / s / m (OpenMMLab MMDetection の COCO の重みを MMDeploy で書き出したもの、`bukuroo/RTMDet-ONNX`。box AP 41.1 / 44.6 / 49.1)。RTMO と同じ CSPNeXt の家族。8 GB は s、16 GB 以上は m
+  - PP-OCRv6 small (PaddlePaddle の `PP-OCRv6_small_det_onnx` と `PP-OCRv6_small_rec_onnx`)。認識器は 50 言語、辞書 18708 字 (仮名あり)。tiny の認識器は辞書 6904 字で仮名がない。2 つのリポジトリを読むので、models.yaml に `with: {detector: hf:...}` を足した (`chat.Model.With`、ハッシュは `detector/FILE`)
+- `internal/onnx` に足したもの: HardSigmoid (clip)、BatchNormalization (チャネルごとの積と和)、GlobalAveragePool (reduce_mean)、AveragePool (重み 1/(kh kw) の深さ方向の畳み込み)、ConvTranspose (核 = ストライドのとき 1 × 1 の畳み込みと `pixel_shuffle`。DA3 と同じ)、`auto_pad` の SAME_UPPER / SAME_LOWER、MatMul と定数の Add を bias つきの 1 つの linear に、`FlatRows` / `SplitFlat` (グラフなしで Flat の出力を分ける)
+- **Neural Engine の sigmoid と tanh はずれる**: RTMDet-s を CPU インタプリタ (fp32 でも fp16 の丸めでも) で動かすと ONNX Runtime と箱の差 7.5 px (スコア 0.1 以上のアンカー) で、重みだけ fp16 に丸めた ONNX Runtime と同じ。Neural Engine では 98 px、スコア 0.35 ずれ、物が 1 つ減った。途中の値を Neural Engine と CPU で比べると (`TestBisect`)、SiLU (Sigmoid × x、80 個) を通るたびに広がる: 最初の畳み込み 0.0011、3 つ目の SiLU の後 0.014、ステージ 2 の後 0.155、頭 0.108 (相対 RMS)。Sigmoid を `1 / (1 + exp(-x))`、SiLU を `x / (1 + exp(-x))` と書くと (`onnx.Program.ExpSigmoid`、blocks.SiLU と同じ形)、ステージ 2 の後 0.014、頭 0.014、箱 5.5 px、スコア 0.063 で、重みの丸めの分まで戻った。`0.5 x (1 + tanh(x / 2))` もずれる (スコア 0.30)。演算が 2 つ増えて、ネットワークは s で 6.6 → 9.3 ms、m で 12.2 → 18.2 ms。精度を取る。既定は切り (RTMO、YuNet、Basic Pitch のプログラムは変えない)、RTMDet と PP-OCR で入れた
+- RTMDet の切り口: 頭の畳み込み (段ごとのクラスの logit と箱の 4 つの距離、チャネルが先) まで NPU。グラフはその後でアンカーごとに並べ替え (Transpose)、sigmoid、箱の復号、上位 5000、クラスごとの NMS をする。ホストは logit が最小スコアの logit を超えるセルだけを復号する (sigmoid は単調なので、残る物は同じ)。Neural Engine には並べ替えがない
+- ホストの縮小 (`lfm3vl.ResizeRGB`、PIL と同じ双線形) が 1 枚 37〜55 ms でネットワークより重かった。画素ごとのクロージャをやめ、縦の段を行ごとに、行を CPU の数に分け、YCbCr の変換を直接 (`color.YCbCr.RGBA` と同じ整数の計算) にして 5〜7 ms。結果のバイトは前と同じ (`TestResizeRGBSameBytes` が前の書き方と比べる)。LFM3-VL、RTMO も速くなる
+- RTMDet の結果 (M1、800 × 533 と 800 × 800 の写真、20 回の平均):
+
+| | 1 枚 | ネットワーク | 縮小 | 箱 (ホスト) | footprint の最大 | Neural Engine |
+|---|---|---|---|---|---|---|
+| tiny | 13〜15 ms | 7.0 ms | 5〜7 ms | 0.8 ms | 56 MB | 11 MB |
+| s | 15〜17 ms | 9.3 ms | 5〜7 ms | 0.7 ms | 73 MB | 21 MB |
+| m | 24〜26 ms | 18.2 ms | 5〜7 ms | 0.9 ms | 141 MB | 56 MB |
+
+  - 照合 (`TestRTMDet`、s、football-match.jpg と city-streets.jpg): 全アンカーのスコアの差 0.063 / 0.042、箱 5.5 / 6.7 px (スコア 0.1 以上)。スコア 0.3 以上の物は ONNX Runtime と同じ (0.33 未満の境目の 1 つは出入りする)。`detect.Open` は ONNX を読み直していた (重みを float64 で、m で 529 MB) のをやめ、出力の大きさとストライドからクラスの数を出す
+- PP-OCR の形:
+  - 検出器は 960 × 960、1280 × 736、736 × 1280 のうち縮める割合が最も小さいもの。画像は左上に置き、残りは 0 (正規化の後)。M1 で 13 ms。PaddleOCR 3 の既定 (縮めずに 32 の倍数) と比べ、960 に縮めても論文 1 ページの 98 行のうち 94 行が同じ (CER 0.12 %)
+  - 認識器の出力 (8 行 × 160 ステップ × 18710 クラス) の softmax と、出力 y の identity が CPU に置かれた。18710 は Neural Engine の次元の上限 16384 を超え、その幅のテンソルを読む演算はどれも CPU になる。softmax の手前の logit を出力にし (確率は Decode が最大の値の周りだけで計算)、最後の linear を 9355 クラスずつ 2 つに分けて (…, 2, 9355) に積む (`onnx` の linear: プログラムの出力で幅が上限を超えるとき。並びは (…, 18710) と同じ)。bias の Add も linear に入れた。全部 NPU
+  - 出力は 1 回 24 MB (fp16) あり、float32 に変えるだけで 9.6 ms かかった。`runner.F16` で fp16 のまま受け取り、最大は fp16 のビットを整数として比べ (`sortKey`)、行の幅の中のステップだけを読み、確率は最大から 16 以内の値だけ float32 にする。読み取りは次の呼び出しの間に (出力を写して別の goroutine で)
+  - **認識器は行の後ろの 0 の幅で読み方が変わる**: SVTR の注意が幅全体を見るため。230 px の「SUB TOTAL」は 320 幅で正しく、640 幅では「SUBTOTAL」。PaddleOCR は 1 回の行をその中で最も広い行の幅にそろえる。初めは 320、640、1280 の 3 つの幅だった (1280 を超える行は縮め、レシートの 2 行が違った)。320、480、640、960、1280、1920、2560 (前の 1.5 倍まで) にし、幅でそろえた行を幅ごとに最大 8 行、5120 列まで 1 回に読む (1280 で 4 行、2560 で 2 行)。幅ごとのプログラムは初めて使うときに変換し、それぞれ初回のコンパイルに 5〜20 秒
+- PP-OCR の結果 (M1、3 回目からの平均):
+
+| | 行 | 前 (3 つの幅、softmax が CPU) | 後 | 内訳 (後) |
+|---|---|---|---|---|
+| 日本語の 4 行 (900 × 420) | 4 | 113 ms | 58 ms | 検出 13 ms、認識 30 ms (3 回) |
+| 論文 1 ページ (1224 × 1584) | 98 | 1528 ms | 488 ms | 検出 13 ms、箱 16 ms、切り出し 34 ms、認識 342 ms (30 回)、読み取りは重なる |
+| レシート (576 × 864) | 13 | 97 ms | 41 ms | 認識 18 ms (3 回) |
+
+  - PaddleOCR の手順を ONNX Runtime で動かした参照 (`tools/ref/ref_ppocr.py --fit 960x960`: cv2 の輪郭と最小の回転矩形、pyclipper の unclip、`get_rotate_crop_image`、1 回 6 行で最も広い行の幅、`tools/ref/compare_ocr.py`) と比べて、論文 93 / 98 行、レシート 13 / 13 行、日本語 3 / 4 行が一字一句同じ (CER 0.20 %、0、3.9 %)。違う行は数式の行、−と–、{βi}、全角と半角のコロンで、参照より正しいものもある (Entropv → Entropy、营 → 営)。NPU と CPU インタプリタは同じ行を出す (違いはホストの切り出しと幅)
+  - 「〜」(U+301C) は辞書にあるが、PaddleOCR の参照も読まない (モデルの読み方)
+  - 2 段組みの文書は、行が左右交互に並ぶ。PaddleOCR の `sorted_boxes` (上から、y の差 10 px 以内は左から) と同じ。段組みの解析 (PP-StructureV3 など) はない
+  - プロセスの footprint は最大 425 MB (7 つの幅のプログラムとその出力の 12〜24 MB の領域)
+- 組み合わせの値 (10 節): 入力は JPEG / PNG (RTMDet は 640 × 640 に収める、PP-OCR は検出器の 3 つの大きさ)、出力は JSON (箱、ラベル、文字列)。1 枚ずつで、流れ (streaming) はない。部品は RTMDet が 1 つ、PP-OCR が検出器 1 つと認識器の幅ごとに 7 つ (一緒に動く)
+- 確かめていないこと: 電力 (`hwnpu-dev powerbench` は sudo が要る。`sudo go run ./cmd/hwnpu-dev powerbench -one -model ~/Library/Caches/hwnpu/models/RTMDet-ONNX/rtmdet-rtmdet-s-coco-r1-fp16-640.mlpackage`)、Intel の NPU (OpenVINO IR に変換はするが実機は未確認)、AMD (書き出しなし。`--cpu` で CPU インタプリタ)、RTMDet-tiny と m の ONNX Runtime との照合 (s だけ。同じコードで物の数と箱は s とそろう)、PP-OCRv6 medium、180 度回った行 (文字の向きの分類器 PP-LCNet は入れていない)、縦書き、RTMO と YuNet に `ExpSigmoid` を入れたときの精度 (RTMO も SiLU の CSPNeXt なので良くなる見込み)

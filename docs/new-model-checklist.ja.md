@@ -2,7 +2,7 @@
 
 [English](new-model-checklist.md)
 
-作成: 2026-11-07、更新: 2026-11-11 (7.1 節の画像生成の速さ。PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
+作成: 2026-11-07、更新: 2026-11-10 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)、2026-11-11 (7.1 節の画像生成の速さ、RTMDet と PP-OCRv6 で見つけた ANE の sigmoid のずれ、16384 を超える幅、OCR の照合)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
 
 ## 方針: 速さより消費電力
 
@@ -86,6 +86,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - 最後の部分の `transpose` / `reshape` → 出力をトークン先に取る (`attn_ot_N`、PLaMo 3)。出力層の後の要素ごとの演算 (Gemma 4 のソフトキャップ) は、ホストのサンプリングで上位の値だけに掛ける (`-logits host`、`llm.LogitSoftcap`、16.113)
 - 1 行の部品、単独のプログラムの部品 → 8 行にする、隣の群に入れる (Anima、16.85)
 - `reduce_sum` → 行列積で和を取る (塊の注意、30 回中 30 回 ANE)
+- 1 つの軸が 16384 を超えるテンソルを読む演算はどれも CPU。出力 y の identity も。PP-OCR の 18710 クラスで softmax、bias の add、y が CPU になった。softmax の手前の logit を出し、bias は linear に入れ、幅の大きな出力の linear は分けて (…, 分けた数, n / 分けた数) に積む。並びは同じ (`internal/onnx`、16.149)
 
 ### 3.3 fp16 であふれないか
 
@@ -102,6 +103,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - 最後の層を head-scale で縮める (PLaMo-Embedding)、`-post-scale` (LFM3、1 層 1.4〜2.7 %)
 - 残差を 1/32 で持ち、正規化は行ごとの最大で割ってから (Anima。固定の倍率だと非正規数になる)
 - 詰め物の行を最後のトークンで埋める (Gemma 4 の eps が fp16 で 0 になって NaN)
+- ANE の `sigmoid` と `tanh` もずれる: x とその sigmoid の積で書いた SiLU が 80 個ある CNN (RTMDet の CSPNeXt) で、スコアが 0.35、箱が 98 px ずれた。CPU インタプリタの fp16 は重みの fp16 の分しかずれない。exp で書く (`onnx.Program.ExpSigmoid`、16.149)。どこでずれるかは、グラフの途中の値を 1 つずつ ANE と CPU インタプリタで比べて探す (`internal/vision/detect` の `TestBisect`)
 - ANE の `softplus` と `silu` は不正確 (softplus がある入力で 0、silu は裾で 1.4 % ずれる)。exp と log で書いた `builder.softplus`、`builder.silu` を使う。fp16 の正規の最小値 (6e-5) を下回る積は ANE で桁を失うので、大きくしてから後で割る (Qwen3.5 の GDN の出力、16.88)。CPU の `hwnpu-dev check` ではこれは見えないので、ANE と Core ML の CPU (`HWNPU_COREML_UNITS=cpu`) で位置ごとの KL を比べる
 
 ### 3.4 合格
@@ -310,6 +312,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 | 画像の説明、TTS | 同じ画像と音声で答えを並べる。TTS はもう一度 ASR に通す |
 | 音声の書き起こし | 英語は LibriSpeech の検証用 73 本 (`hf-internal-testing/librispeech_asr_dummy`、正解つき)、日本語は `say` の 4 つの声 × 12 文。HF fp32 と一字一句同じ本数と WER / CER (16.115)。30 秒を超える音声も |
 | 埋め込み | HF との cosine |
+| 物の検出、OCR | 物 (種類、スコア、箱) を ONNX Runtime と比べ、全アンカーのスコアと箱は重みだけ fp16 に丸めたグラフの差と比べる (`tools/ref/onnx_f16_weights.py`)。OCR は配布元の手順全体を参照として動かし (`tools/ref/ref_ppocr.py`)、一字一句同じ行を数える (`compare_ocr.py`)。ホストの部分 (箱、切り出し、幅) もネットワークと同じくらい文字を変える。幅全体に注意する認識器は、行の後ろの 0 が多いと読み方が変わる。配布元と同じように詰める (16.149) |
 | 画像生成 | 同じ雑音で画像を並べる。種によって構図が変わることがある (4 つに 1 つ)。少ないステップに蒸留したモデル (Sana-Sprint) は条件の小さな差を広げる: キャプションの 0.23 % の差で、1 枚の潜在のコサインが 0.965 まで動いた。1 枚の潜在のコサインでは、その前の部品 (テキストエンコーダ) の形を比べられない。部品そのものの float32 に対する誤差と、数枚のプロンプトの絵を並べて決める (16.138) |
 
 **実務の注意**:

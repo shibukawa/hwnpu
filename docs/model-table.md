@@ -12,6 +12,7 @@
 - 取得元 (`internal/chat/sources.go`): ユーザーのファイルの `sources` (`type: path` の共有フォルダ、`type: s3` を aws コマンドで。`endpoint`、`region`、`profile`、`no_sign`) と、全体の探索順 `search` (既定 `[hf]`、5.4 節)。`from: SOURCE:NAME` でモデルごとに名指し。`-use SOURCE:NAME` も。ファイルごとに `search` の順に探し、見つかった取得元を次のファイルから先に見る。共有フォルダはハードリンクを試してから写す。リビジョンを固定したモデルは `OWNER/NAME@REV/` を先に探す。`sha256` を書いたファイルは、どの取得元から取っても確かめ、違えば消して次の取得元へ。組み込みのファイルは `sources` と `search` を持たない。まだないもの: `copy: false` (写さずに読む)、オフライン (11.3 節)、ダウンロードしながらの sha256 の計算 (今は取ったあとに読み直す)
   - 確かめたこと: テスト (共有フォルダを先に、なければ HF。`hf` のない探索順は HF に出ない。sha256 の違う写しを飛ばす。固定したリビジョンのフォルダを先に。`SOURCE:NAME` のモデル。偽の aws で S3 の URL、endpoint、profile、no_sign と、ないもの。aws がないときのエラー)。sha256 の確認と探索順を壊すとテストが落ちる。M3 で、whisper-large-v3-turbo の写しを置いたフォルダだけを探索順にして (`search: [share]`)、空のモデルのフォルダから取得、変換、表、書き起こしまで通った (HF への通信なし)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
+- 2 つのリポジトリを読むモデル (OCR の検出器と認識器) は、`from` に主のリポジトリ、`with: {役割: hf:OWNER/NAME@REV}` にほかのリポジトリを書く (`Model.With`、2026-11-11)。`with` のリポジトリのファイルの `sha256` は `役割/ファイル名` のキーで書く。`like` は `with` を引き継ぐ
 - 確かめたこと (M3、2026-11-09):
   - hwnpu-transcribe: 表を書いて書き起こし、チェックポイントを退けても同じ結果
   - hwnpu-tts: 初回にダウンロード (4 GB、6 分半)、変換 4 本、表 (0.67 GB) まで自動で通った。「こんにちは」(1.6 秒) と「今日はいい天気ですね。散歩に行きましょう。」(5.0 秒を 3.3 秒で生成) を hwnpu-transcribe で書き起こすと、どちらも元の文。チェックポイント (本体とコーデック) を退けても読み上げ、読み込み 3.2 秒
@@ -111,6 +112,15 @@ models:
     bytes: 1.79e9
     memory: 2.4                        # 動かしたときのメモリ (GB)。MODEL.md の「開始時」
     about: "Preferred Networks' PLaMo 3 Translate 0.8B: ..."
+  PP-OCRv6-small:
+    family: ppocr
+    tag: small
+    kind: ocr
+    from: hf:PaddlePaddle/PP-OCRv6_small_rec_onnx@b8f84f0b...   # 認識器
+    with: {detector: "hf:PaddlePaddle/PP-OCRv6_small_det_onnx@28fe5895..."}   # ほかに読むリポジトリ (役割: hf:OWNER/NAME)
+    sha256:
+      inference.onnx: 5435fd74...
+      detector/inference.onnx: d73e0058...   # with のリポジトリのファイルは 役割/ファイル名
   # ...
 
 # 用途ごとのおすすめ (MODEL.md の行)。machine は MODEL.md の列 (GB)
@@ -302,7 +312,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 2. 同じ具体さなら、あとに書いたもの (ユーザーのファイルは既定のあと) が勝つ
 3. 欄ごとに決める。`apple-m1` の行が `prefill` だけを書けば、`format` は `apple` の行のまま
 
-`hwnpu-chat -explain NAME` で、決まった設定と、それぞれがどのファイルのどの行から来たかを出す。
+`hwnpu-chat explain NAME` (案) で、決まった設定と、それぞれがどのファイルのどの行から来たかを出す。
 
 コードに残すもの: Q (8、64、128)、最後の行だけ、`-kv`、`state-rows`、`hidden-out`、エンコーダの fp16。これらはモデルの構造と上の設定から決まる。
 
@@ -438,7 +448,7 @@ skill は最後に、どちらにするかを聞く。
 - 手元のキャッシュと、`path` の取得元 (共有フォルダ) だけを使う。HF と S3 は見ない
 - 選ぶとき (用途、ファミリーのタグ) は、手元に揃っているモデルだけを候補にする。揃っていなければ、何が足りないかと、つながる機械で準備するコマンドを出す
 - 固定 (5.3 節) は `source.json` の記録で確かめる。ネットを見ないので、上流の更新は気にしない
-- 準備だけをするコマンド: `hwnpu-chat -prepare NAME,...` (ダウンロードと変換をして終わる)。キャッシュのフォルダを写せば、つながらない機械でもそのまま動く (Apple の Neural Engine のコンパイルだけは向こうで起きる)
+- 準備だけをするコマンド: `hwnpu-chat prepare NAME,...` (案) (ダウンロードと変換をして終わる)。キャッシュのフォルダを写せば、つながらない機械でもそのまま動く (Apple の Neural Engine のコンパイルだけは向こうで起きる)
 - ネットにつながらないときに自動でオフラインに切り替えることはしない。黙って古いものを使わないため。つながらなければ、`-offline` を示してエラーにする
 
 ### 11.4 キャッシュの削除 (積極的に)

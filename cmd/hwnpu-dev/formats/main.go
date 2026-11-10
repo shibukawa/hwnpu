@@ -68,14 +68,14 @@ type result struct {
 
 func Main() {
 	use := flag.String("use", "LFM3-1.7B", "the chat model: a name that hwnpu-chat list shows, or a Hugging Face repository OWNER/NAME")
-	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept (as hwnpu-chat's -dir); the programs go in FORMATS/ of the model's program directory")
+	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept (as hwnpu-chat's --dir); the programs go in FORMATS/ of the model's program directory")
 	formats := flag.String("formats", "int8,int4-g128,int4", "weight formats to compare, comma separated")
 	ref := flag.String("ref", "fp16", "the reference format (\"none\": no reference, perplexity and time only)")
-	backend := flag.String("backend", "", "the NPU (as hwnpu-chat's -backend; default: HWNPU_BACKEND, else the NPU found)")
+	backend := flag.String("backend", "", "the NPU (as hwnpu-chat's --backend; default: HWNPU_BACKEND, else the NPU found)")
 	refBackend := flag.String("ref-backend", "", "where the reference runs (default: -backend), e.g. openvino to compute it on OpenVINO's CPU")
 	cache := flag.Int("cache", 4096, "KV cache of the programs (hwnpu-chat runs short conversations on 4096)")
 	seq := flag.Int("seq", 8, "tokens per call (hwnpu-chat and its agent generate with 8: a token and 7 drafts)")
-	cacheDir := flag.String("cache-dir", "", "compile cache (default: hwnpu in the user cache directory, as hwnpu-chat's -cache)")
+	cacheDir := flag.String("cache-dir", "", "compile cache (default: hwnpu in the user cache directory, as hwnpu-chat's --cache)")
 	jsonOut := flag.String("json", "", "also write the results to this file")
 	modelFiles := flag.String("models", "", chat.ModelsUsage)
 	flag.Parse()

@@ -7,10 +7,13 @@
 //	hwnpu-image depth -m moge --normal --raw photo.jpg
 //	hwnpu-image face-detect --draw photo.jpg                     # JSON lines, photo.faces.png
 //	hwnpu-image pose --draw photo.jpg                            # JSON lines, photo.pose.png
+//	hwnpu-image detect --draw photo.jpg                          # JSON lines, photo.objects.png
+//	hwnpu-image ocr --text scan.png                              # the lines of text
 //
 // --model takes a name, a family or a use of models.yaml (image, anima-turbo, anima, anima:base,
-// sana, sana:1.6b; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo): a family alone picks for the machine's
-// memory, as hwnpu-chat's -use. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
+// sana, sana:1.6b; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo;
+// detect, rtmdet:tiny; ocr, ppocr:medium): a family alone picks for the machine's memory, as
+// hwnpu-chat's --model. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
 // value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
 // image.png here (image (2).png, ... when taken) and shows it in the system's viewer.
 //
@@ -42,7 +45,7 @@
 //
 // depth estimates the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth
 // Anything 3 or MoGe-2 (see DepthCmd). face-detect (FaceDetectCmd) finds faces, pose (PoseCmd)
-// people's keypoints.
+// people's keypoints, detect (DetectCmd) objects and their labels, ocr (OCRCmd) lines of text.
 package main
 
 import (
@@ -58,6 +61,8 @@ type cli struct {
 	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's and Apple's NPU)."`
 	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; the CPU, AMD's or Apple's NPU)."`
 	Pose       PoseCmd       `cmd:"" help:"Find the people in pictures and their 17 keypoints (RTMO; Apple's Neural Engine, Intel's NPU)."`
+	Detect     DetectCmd     `cmd:"" help:"Find the objects in pictures: boxes and COCO's 80 labels (RTMDet; Apple's Neural Engine, Intel's NPU)."`
+	OCR        OCRCmd        `cmd:"" name:"ocr" help:"Read the text in pictures: lines, their boxes and text in 50 languages (PP-OCRv6; Apple's Neural Engine, Intel's NPU)."`
 	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export, or a Sana repository into a Core ML export."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 }
@@ -68,7 +73,7 @@ func main() {
 	var c cli
 	k := kong.Parse(&c,
 		kong.Name("hwnpu-image"),
-		kong.Description("Image models on an NPU: generation, depth, faces and poses."),
+		kong.Description("Image models on an NPU: generation, depth, faces, poses, objects and text."),
 		kong.UsageOnError(),
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	k.FatalIfErrorf(k.Run())

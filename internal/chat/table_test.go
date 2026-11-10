@@ -204,6 +204,8 @@ func TestUserErrors(t *testing.T) {
 		{"bad digest", "version: 1\nmodels:\n  LFM3-1.7B:\n    sha256: {config.json: abc}\n", "64 hex"},
 		{"bad feature", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: chat\n    features: [flying]\n", "flying"},
 		{"like nothing", "version: 1\nmodels:\n  x:\n    like: nothing\n", "no such model"},
+		{"with not hf", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: ocr\n    with: {detector: \"s3:a/b\"}\n", "not hf:OWNER/NAME"},
+		{"with escapes", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: ocr\n    with: {detector: \"hf:../b\"}\n", "not hf:OWNER/NAME"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := userFiles(t, tc.file)
@@ -215,6 +217,30 @@ func TestUserErrors(t *testing.T) {
 				t.Error("the built-in definitions are gone")
 			}
 		})
+	}
+}
+
+// The OCR models name their detector's repository in with, pinned, and its files' sha256 under
+// detector/; a model like another keeps its with.
+func TestWith(t *testing.T) {
+	if err := LoadModels(nil, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := Lookup("PP-OCRv6-small")
+	if !ok || m.Kind != KindOCR {
+		t.Fatalf("PP-OCRv6-small: %+v", m)
+	}
+	if d := m.With["detector"]; !strings.HasPrefix(d, "PaddlePaddle/PP-OCRv6_small_det_onnx@") {
+		t.Errorf("detector %q", d)
+	}
+	if len(m.SHA256["detector/inference.onnx"]) != 64 || len(m.SHA256["inference.onnx"]) != 64 {
+		t.Errorf("sha256 %v", m.SHA256)
+	}
+	if _, err := userFiles(t, "version: 1\nmodels:\n  my-ocr:\n    like: PP-OCRv6-small\n    tag: mine\n"); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := Lookup("my-ocr"); m.With["detector"] == "" {
+		t.Errorf("like: with %v", m.With)
 	}
 }
 

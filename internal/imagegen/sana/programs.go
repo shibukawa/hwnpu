@@ -111,9 +111,12 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 		err = fmt.Errorf("%s does not run on the NPU alone", name)
 	}
 	if bar != nil {
-		if err != nil {
+		switch {
+		case err != nil:
 			bar.Done("failed")
-		} else {
+		case e.dev != nil: // console.Log colors it green, as Anima's loads say it
+			bar.Done(console.Duration(bar.Elapsed()) + ", all on the NPU")
+		default:
 			bar.Done(console.Duration(bar.Elapsed()))
 		}
 	}
