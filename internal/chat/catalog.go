@@ -48,8 +48,10 @@ type Model struct {
 	Arch string
 	// Files are the definition files that wrote the model (ModelFiles).
 	Files []string
-	Bytes float64 // the size of the download (0: unknown)
-	About string
+	Bytes float64 // the size of the download (0: unknown), for a vendor BytesBy does not name (BytesFor)
+	// BytesBy is the size of the download by the NPU's vendor (PerVendor).
+	BytesBy PerVendor
+	About   string
 	// NoThink is the model's own default of answering without thinking first, which -think
 	// given on the command line, reasoning_effort or enable_thinking override (Qwen3.5's 0.8B
 	// and 2B: their chat templates think only when asked, and the 0.8B thinks to the budget on
@@ -66,8 +68,10 @@ type Model struct {
 	// family is named without a tag (MODEL.md's columns: 8, 16, 24, 32, 48, 64).
 	Machine int
 	// Memory is what the model takes running, in GB: its NPU buffers and the process after a short
-	// conversation (MODEL.md, "at start").
-	Memory float64
+	// conversation (MODEL.md, "at start"), for a vendor MemoryBy does not name. MemoryBy has it by
+	// the NPU's vendor (MemoryFor).
+	Memory   float64
+	MemoryBy PerVendor
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that
@@ -177,7 +181,7 @@ func lookupFor(name string, log io.Writer) (Model, bool, error) {
 		return Model{}, false, err
 	}
 	if log != nil {
-		fmt.Fprintf(log, "%s: %s, %s (about %.1f GB running)\n", name, m.Name, why, m.Memory)
+		fmt.Fprintf(log, "%s: %s, %s (about %.1f GB running)\n", name, m.Name, why, m.MemoryFor(HereVendor()))
 	}
 	return m, true, nil
 }

@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"github.com/goccy/go-yaml"
+
 	"strings"
 	"testing"
 )
@@ -157,5 +159,33 @@ func TestDeviceMerge(t *testing.T) {
 	merge(dst, &modelEntry{Device: &over})
 	if got := *dst.Device; got["amd"] != "npu" || got["apple"] != "npu" || base["amd"] != "cpu" {
 		t.Errorf("merged %v, base %v", got, base)
+	}
+}
+
+func TestPerVendor(t *testing.T) {
+	var e modelEntry
+	if err := yaml.UnmarshalWithOptions([]byte("memory: {amd: 3.5, apple: 4.1}\nbytes: 5.9e9\n"), &e, yaml.DisallowUnknownField()); err != nil {
+		t.Fatal(err)
+	}
+	for v, want := range map[string]float64{"amd": 3.5, "apple": 4.1, "intel": 4.1, "": 4.1} {
+		if got := e.Memory.For(v); got != want {
+			t.Errorf("memory for %q: %v, want %v", v, got, want)
+		}
+	}
+	if got := e.Bytes.For("amd"); got != 5.9e9 {
+		t.Errorf("bytes for amd: %v", got)
+	}
+	if err := yaml.Unmarshal([]byte("memory: {nvidia: 1}\n"), &e); err == nil {
+		t.Error("an unknown vendor was taken")
+	}
+	// a table over a number changes its vendors; a number over a table replaces it
+	dst := &modelEntry{Memory: &PerVendor{"": 4.1}}
+	merge(dst, &modelEntry{Memory: &PerVendor{"amd": 3.5}})
+	if m := *dst.Memory; m.For("amd") != 3.5 || m.For("apple") != 4.1 {
+		t.Errorf("table over a number: %v", m)
+	}
+	merge(dst, &modelEntry{Memory: &PerVendor{"": 2}})
+	if m := *dst.Memory; m.For("amd") != 2 || len(m) != 1 {
+		t.Errorf("number over a table: %v", m)
 	}
 }

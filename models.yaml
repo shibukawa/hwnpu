@@ -15,8 +15,12 @@
 #                 Models of one repository share its download (NAME's directory)
 #   arch          the structure, one of hwnpu-convert -archs (default: from config.json)
 #   machine       the least memory of a machine, in GB, the family recommends the model for
-#   memory        what the model takes running, in GB (MODEL.md, "at start")
-#   bytes         the size of the download
+#   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
+#                 buffers and the process's together over a run (docs/new-model-checklist.md 11.2)
+#   bytes         the size of the download (the files preparation fetches, GB of 10^9 bytes)
+#                 memory and bytes take one number, or a table by the NPU's vendor where they
+#                 differ (memory: {amd: 3.5, apple: 4.1}); a vendor the table leaves out takes its
+#                 largest
 #   features      what it can do besides its kind (hwnpu-chat -list explains them)
 #   no_think      answers without thinking unless asked (its chat template's own default)
 #   like          another model whose fields this one takes, except its tag
@@ -269,7 +273,8 @@ models:
     kind: image
     from: hf:circlestone-labs/Anima
     machine: 8
-    memory: 4.1
+    # AMD: the NPU's 2.4 GiB peak (the VAE's stages) and the process's 0.9 GiB, measured
+    memory: {amd: 3.5, apple: 4.1}
     bytes: 5.9e9
     about: "Anima-Turbo (Cosmos-Predict2 2B, Qwen3-0.6B): 1024x1024 in 8 steps, Danbooru tags and natural language"
   Sana-Sprint-0.6B:

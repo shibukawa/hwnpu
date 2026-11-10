@@ -341,7 +341,7 @@ A command looks for a model in this order:
 - **Values that differ by NPU**: the download, the memory and the placement can differ from one NPU to another
   - Anima takes 3.5 GB on AMD, and 4.1 GB is the value for the Mac
   - The download differs too: AMD now downloads the checkpoint and exports here, and it will download only an export once distribution starts
-  - When they differ, write a table by vendor, in the same form as `device` (`memory: {amd: 3.5, apple: 4.1}`). A single value applies to every NPU. Accepting this form in `memory` and `bytes` is work still to do (section 13)
+  - When they differ, write a table by vendor, in the same form as `device` (`memory: {amd: 3.5, apple: 4.1}`). A single value applies to every NPU. A vendor the table leaves out takes its largest value. The DOWNLOAD and MEMORY columns of `-list` and `hwnpu-image list` show the values for this machine's NPU
 - **Uses pick by memory like their families**: give a use's `picks` the same steps as its family. The use `depth` listed only DA3MONO-LARGE, so an 8 GB machine got the model meant for 24 GB
 - **How to check**:
   - Print `hwnpu-image list` (`-list` for hwnpu-chat) with `HWNPU_MEMORY=8`, `16` and `24`. Check that the use's column and the family's column pick the same model
@@ -398,6 +398,6 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Qwen3.5-4B's lut6 (2.97 GiB) on the M1 is just over its 2.8 GiB; 0.1–0.2 GiB less (the output layer at lut4, say) would let it run at full speed (16.109)
 - Apple's GPTQ codes: hwnpu-chat takes them with `-codes` and `-format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
-- Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter). `memory` and `bytes` by vendor (11.2). A memory column in `hwnpu-image list`
+- Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter)
 
 When results come in, update the tables in 5.3 and 5.4 and this section.
