@@ -44,3 +44,27 @@ func TestTokens(t *testing.T) {
 		}
 	}
 }
+
+// TestReadModelInfinity reads a scheduler_config.json with Python's -Infinity (Sana 600M's).
+func TestReadModelInfinity(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"transformer/config.json":         `{"guidance_embeds": false}`,
+		"scheduler/scheduler_config.json": `{"_class_name": "DPMSolverMultistepScheduler", "algorithm_type": "dpmsolver++", "flow_shift": 3.0, "lambda_min_clipped": -Infinity, "num_train_timesteps": 1000, "prediction_type": "flow_prediction", "solver_order": 2, "use_flow_sigmas": true}`,
+	} {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := readModel(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Sprint || m.Steps != 20 || m.FlowShift != 3 || m.TrainSteps != 1000 {
+		t.Errorf("%+v", m)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/sana/mil"
@@ -190,6 +191,9 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	return writeProgramManifest(out, m)
 }
 
+// nonFinite matches a JSON value Python writes for a non-finite number.
+var nonFinite = regexp.MustCompile(`(:\s*)-?(Infinity|NaN)\b`)
+
 // readModel is model.json of root: which Sana it is and its scheduler's settings (as
 // tools/amd/iron_sana.py's write_model).
 func readModel(root string) (Model, error) {
@@ -216,6 +220,9 @@ func readModel(root string) (Model, error) {
 	if b, err = os.ReadFile(filepath.Join(root, "scheduler", "scheduler_config.json")); err != nil {
 		return Model{}, err
 	}
+	// Python's json writes infinities as bare words (Sana 600M's "lambda_min_clipped": -Infinity),
+	// which no field read here holds
+	b = nonFinite.ReplaceAll(b, []byte("${1}0"))
 	if err := json.Unmarshal(b, &sc); err != nil {
 		return Model{}, err
 	}
