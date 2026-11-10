@@ -1,6 +1,7 @@
-// Package moge estimates a picture's metric geometry on AMD's NPU with MoGe-2
-// (Ruicheng/moge-2-vit{s,b,l}-normal, MIT): the graphs tools/amd/iron_moge.py exports (the
-// ViT, the neck and the points, normal and mask heads). The host stretches the picture to the
+// Package moge estimates a picture's metric geometry on an NPU with MoGe-2
+// (Ruicheng/moge-2-vit{s,b,l}-normal, MIT): on AMD's, the graphs tools/amd/iron_moge.py exports
+// (the ViT, the neck and the points, normal and mask heads); on Apple's Neural Engine, the Core
+// ML packages of internal/vision/moge/mil (Prepare). The host stretches the picture to the
 // export's size nearest its aspect, cuts the patches, and does MoGe's post-processing: the
 // heads' outputs resized to the picture, the points' z taken exp of (and xy times it), the mask
 // through a sigmoid, the normals normalized, the focal length and z shift solved on the point
@@ -30,6 +31,10 @@ type Export struct {
 	Kind   string   `json:"kind"` // "moge"
 	Sizes  [][2]int `json:"sizes"`
 	Tokens int      `json:"tokens"` // MoGe's num_tokens the sizes were made for
+	// Format is "coreml" for an export of Prepare (a size's programs in WxH/, converted from
+	// Checkpoint, model.pt, when a picture first takes the size).
+	Format     string `json:"format,omitempty"`
+	Checkpoint string `json:"checkpoint,omitempty"`
 }
 
 // sizeConfig is model.json of one size.
@@ -85,11 +90,15 @@ type sized struct {
 	sizeConfig
 	vit, neck *iron.Graph
 	heads     *iron.Graph // points, normal, mask: variants 0, 1, 2 read into one bank in turn
+	prog      *progSized
 }
 
 var headNames = [3]string{"points", "normal", "mask"}
 
 func (s *sized) close() error {
+	if s.prog != nil {
+		return s.prog.close()
+	}
 	var err error
 	for _, g := range []*iron.Graph{s.vit, s.neck, s.heads} {
 		if g != nil {
@@ -156,6 +165,9 @@ func (e *Estimator) use(ctx context.Context, w, h int) (*sized, error) {
 		return nil, err
 	}
 	d := filepath.Join(e.dir, fmt.Sprintf("%dx%d", w, h))
+	if e.Format == "coreml" {
+		return e.useProgram(ctx, d, w, h)
+	}
 	b, err := os.ReadFile(filepath.Join(d, "model.json"))
 	if err != nil {
 		return nil, err
@@ -204,6 +216,9 @@ func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, err
 	tl := time.Now()
 	// MoGe's encoder resizes bilinearly with antialias
 	px := lfm3vl.Resize(img, s.Width, s.Height, "bilinear")
+	if s.prog != nil {
+		return e.estimateProgram(ctx, s, px, ow, oh, t0, tl)
+	}
 	if err := s.vit.SetInput("patches", depth.ToBF16(depth.PatchRows(px, s.Width, s.Height, s.Patch, s.Tokens, s.Mean, s.Std))); err != nil {
 		return nil, err
 	}

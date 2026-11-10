@@ -14,16 +14,29 @@ const vitPrefix = "model.backbone.pretrained."
 // output (1, tokens, 4 FeatDim), the four features after the final norm side by side.
 func Vit(c Config) *Part {
 	return part("vit", func(g *graph) {
+		g.Output(VitFeatures(g, c, g.Input("patches", 1, c.Tokens(), PatchIn)))
+	})
+}
+
+// VitFeatures is Vit's body on the patches x: the four features side by side, or each layer of
+// c.OutLayers normed when CatToken and the any-view settings are off (MoGe-2 takes them as they
+// come, FeatList).
+func VitFeatures(g *graph, c Config, x *mlpackage.Var) *mlpackage.Var {
+	return g.Concat(-1, FeatList(g, c, x)...)
+}
+
+// FeatList is the features of c.OutLayers (as many as it holds) of the patches x.
+func FeatList(g *graph, c Config, x *mlpackage.Var) []*mlpackage.Var {
+	{
 		E, T := c.Hidden, c.Tokens()
-		x := g.Input("patches", 1, T, PatchIn)
-		pw := g.Get(vitPrefix+"patch_embed.proj.weight", E, 3, Patch, Patch)
+		pw := g.Get(c.prefix()+"patch_embed.proj.weight", E, 3, Patch, Patch)
 		wt := make([]float32, E*PatchIn)
 		for o := 0; o < E; o++ {
 			copy(wt[o*PatchIn:], pw[o*3*Patch*Patch:(o+1)*3*Patch*Patch])
 		}
-		pos := PosEmbed(g.Get(vitPrefix+"pos_embed"), E, c.GH(), c.GW())
-		bias := g.Get(vitPrefix + "patch_embed.proj.bias")
-		cls := g.Get(vitPrefix + "cls_token")
+		pos := PosEmbed(g.Get(c.prefix()+"pos_embed"), E, c.GH(), c.GW())
+		bias := g.Get(c.prefix() + "patch_embed.proj.bias")
+		cls := g.Get(c.prefix() + "cls_token")
 		for t := 0; t < T; t++ {
 			for j := 0; j < E; j++ {
 				if t == 0 {
@@ -49,7 +62,7 @@ func Vit(c Config) *Part {
 			glob := c.AltStart >= 0 && i >= c.AltStart && i%2 == 1
 			if c.AltStart >= 0 && i == c.AltStart {
 				// the reference view's camera token in the class token's row
-				cam := g.Get(vitPrefix + "camera_token")[:E]
+				cam := g.Get(c.prefix() + "camera_token")[:E]
 				x = g.Concat(1, g.F16s("camera", []int{1, 1, E}, cam), g.Slice(x, 1, 1, T))
 			}
 			var rope rope
@@ -69,16 +82,16 @@ func Vit(c Config) *Part {
 					continue
 				}
 				n := g.ScaledLayerNorm(x, 1e-6)
-				n = g.Add(g.Mul(n, g.F16s(fmt.Sprintf("norm_w_%d", i), []int{E}, g.Get(vitPrefix+"norm.weight", E))),
-					g.F16s(fmt.Sprintf("norm_b_%d", i), []int{E}, g.Get(vitPrefix+"norm.bias", E)))
+				n = g.Add(g.Mul(n, g.F16s(fmt.Sprintf("norm_w_%d", i), []int{E}, g.Get(c.prefix()+"norm.weight", E))),
+					g.F16s(fmt.Sprintf("norm_b_%d", i), []int{E}, g.Get(c.prefix()+"norm.bias", E)))
 				if c.CatToken {
 					n = g.Concat(-1, local, n)
 				}
 				feats = append(feats, n)
 			}
 		}
-		g.Output(g.Concat(-1, feats...))
-	})
+		return feats
+	}
 }
 
 // layerNorm is a layer norm over the last axis with the named weight and bias.
@@ -96,7 +109,7 @@ func layerNorm(g *graph, x *mlpackage.Var, p string, eps float64) *mlpackage.Var
 // block is a DINOv2 block: layer norm, attention (heads of 64; per-head layer norms of q and k
 // and 2-D RoPE from their starts), layer scale; layer norm, GELU MLP, layer scale.
 func block(g *graph, c Config, i int, x *mlpackage.Var, rope rope) *mlpackage.Var {
-	p := fmt.Sprintf("%sblocks.%d.", vitPrefix, i)
+	p := fmt.Sprintf("%sblocks.%d.", c.prefix(), i)
 	E, H, T := c.Hidden, c.Heads, x.Shape[1]
 	D := E / H
 	h := layerNorm(g, x, p+"norm1", 1e-6)

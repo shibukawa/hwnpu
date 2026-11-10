@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/safetensors"
@@ -40,7 +41,7 @@ type Config struct {
 	Hidden, Heads int
 	Layers        int // the blocks the ViT runs: up to the last feature's
 	MLP           int
-	OutLayers     [4]int
+	OutLayers     []int
 	Features      int
 	OutChannels   [4]int
 	// The any-view models' (DA3-SMALL, DA3-BASE) settings, -1 when off: from AltStart the odd
@@ -53,6 +54,16 @@ type Config struct {
 	// Dual: the head is DualDPT (a layer norm of the features, UV embeddings; depth and
 	// confidence); else DPT (depth and sky).
 	Dual bool
+	// Prefix is the backbone's weights' prefix ("model.backbone.pretrained." when empty;
+	// MoGe-2's "model.encoder.backbone.").
+	Prefix string
+}
+
+func (c Config) prefix() string {
+	if c.Prefix == "" {
+		return vitPrefix
+	}
+	return c.Prefix
 }
 
 // GH and GW are the patch grid's rows and columns.
@@ -120,9 +131,9 @@ func ReadConfig(root string, w, h int) (Config, error) {
 	}
 	c := Config{Width: w, Height: h, Hidden: v[0], Heads: v[1], MLP: 4 * v[0], Features: head.Features,
 		AltStart: net.AltStart, QKNormStart: net.QKNormStart, RopeStart: net.RopeStart, CatToken: net.CatToken, Dual: dual}
-	copy(c.OutLayers[:], net.OutLayers)
+	c.OutLayers = net.OutLayers
 	copy(c.OutChannels[:], head.OutChannels)
-	c.Layers = c.OutLayers[3] + 1
+	c.Layers = slices.Max(c.OutLayers) + 1
 	return c, nil
 }
 

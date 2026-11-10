@@ -25,7 +25,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/vision/moge"
 )
 
-// DepthCmd is "hwnpu-image depth": the depth of pictures on AMD's NPU with Depth Anything 3
+// DepthCmd is "hwnpu-image depth": the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth Anything 3
 // (depth-anything/DA3*, Apache-2.0; exports of tools/amd/iron_da3.py, internal/vision/depth) or
 // MoGe-2 (Ruicheng/moge-2-*-normal, MIT; exports of tools/amd/iron_moge.py, internal/vision/moge).
 //
@@ -69,7 +69,9 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		}
 		switch {
 		case apple && m.Family == "moge":
-			return fmt.Errorf("%s runs on AMD's NPU; on Apple's Neural Engine depth takes DA3 (da3, da3:small, da3metric)", m.Name)
+			if model, err = moge.Prepare(ctx, moge.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Log: lw}); err != nil {
+				return err
+			}
 		case apple:
 			if model, err = depth.Prepare(ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Log: lw}); err != nil {
 				return err
