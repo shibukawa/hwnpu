@@ -1,10 +1,15 @@
 package chat
 
 import (
+	"context"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strings"
+	"sync"
+
+	"github.com/shibukawa/hwnpu"
 )
 
 // Vendors are the NPU vendors a model's Device names (types.Vendor's names).
@@ -44,3 +49,73 @@ func ChooseDevice(m Model, vendor, flag string) (device, why string, err error) 
 	}
 	return "npu", "the default", nil
 }
+
+// PerVendor is a value by the vendor of the machine's NPU (Vendors); "" holds the one for the
+// vendors it does not name. A definition writes it as one number (every vendor) or as a table
+// of vendors (memory: {amd: 3.5, apple: 4.1}): what a model takes and downloads can differ by
+// NPU (Anima-Turbo: 3.5 GB on AMD's, 4.1 on Apple's).
+type PerVendor map[string]float64
+
+// For is the value for vendor: its own, else the one for every vendor, else the largest of the
+// table (a vendor it leaves out is not assumed to need less).
+func (p PerVendor) For(vendor string) float64 {
+	if v, ok := p[vendor]; ok {
+		return v
+	}
+	if v, ok := p[""]; ok {
+		return v
+	}
+	m := 0.0
+	for _, v := range p {
+		m = max(m, v)
+	}
+	return m
+}
+
+// UnmarshalYAML reads a number or a table of vendors.
+func (p *PerVendor) UnmarshalYAML(unmarshal func(any) error) error {
+	var one float64
+	if err := unmarshal(&one); err == nil {
+		*p = PerVendor{"": one}
+		return nil
+	}
+	var by map[string]float64
+	if err := unmarshal(&by); err != nil {
+		return fmt.Errorf("a number or a table of vendors (%s)", strings.Join(Vendors, ", "))
+	}
+	for v := range by {
+		if !slices.Contains(Vendors, v) {
+			return fmt.Errorf("vendor %q is not one of %s", v, strings.Join(Vendors, ", "))
+		}
+	}
+	*p = by
+	return nil
+}
+
+// over is p with q written over it: q's number replaces p, q's table changes the vendors it
+// names.
+func (p PerVendor) over(q PerVendor) PerVendor {
+	if _, one := q[""]; one || p == nil {
+		return maps.Clone(q)
+	}
+	r := maps.Clone(p)
+	maps.Copy(r, q)
+	return r
+}
+
+// MemoryFor is what m takes running on a machine whose NPU is vendor's, in GB (0: unknown).
+func (m Model) MemoryFor(vendor string) float64 { return m.MemoryBy.For(vendor) }
+
+// BytesFor is the size of m's download on a machine whose NPU is vendor's (0: unknown).
+func (m Model) BytesFor(vendor string) float64 { return m.BytesBy.For(vendor) }
+
+// HereVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.
+var HereVendor = sync.OnceValue(func() string {
+	infos, _ := hwnpu.Enumerate(context.Background())
+	for _, info := range infos {
+		if v := info.Vendor.String(); slices.Contains(Vendors, v) {
+			return v
+		}
+	}
+	return ""
+})

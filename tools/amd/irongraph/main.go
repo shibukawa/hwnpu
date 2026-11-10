@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
-	"syscall"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -170,13 +169,4 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("PASS")
-}
-
-// cpuTime is the process's user and system CPU time so far.
-func cpuTime() time.Duration {
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
-		return 0
-	}
-	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }

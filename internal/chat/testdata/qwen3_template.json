@@ -1,0 +1,418 @@
+[
+ {
+  "name": "plain",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Hi"
+   }
+  ],
+  "want": "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+ },
+ {
+  "name": "system thinking",
+  "messages": [
+   {
+    "role": "system",
+    "content": "  You are terse.\n"
+   },
+   {
+    "role": "user",
+    "content": "Hi "
+   }
+  ],
+  "want": "<|im_start|>system\n  You are terse.\n<|im_end|>\n<|im_start|>user\nHi <|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "turns with reasoning",
+  "messages": [
+   {
+    "role": "user",
+    "content": "What is 2+2?"
+   },
+   {
+    "role": "assistant",
+    "content": "<|channel>thought\nadd<channel|>4",
+    "reasoning_content": "Two and two."
+   },
+   {
+    "role": "user",
+    "content": "And 3+3?"
+   },
+   {
+    "role": "assistant",
+    "content": "6",
+    "reasoning_content": "Three and three."
+   }
+  ],
+  "want": "<|im_start|>user\nWhat is 2+2?<|im_end|>\n<|im_start|>assistant\n<|channel>thought\nadd<channel|>4<|im_end|>\n<|im_start|>user\nAnd 3+3?<|im_end|>\n<|im_start|>assistant\n<think>\nThree and three.\n</think>\n\n6<|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "tools",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "edit",
+     "description": "Edits files.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "edits": {
+        "type": "array",
+        "description": "The edits",
+        "items": {
+         "type": "object",
+         "properties": {
+          "path": {
+           "type": "string"
+          },
+          "Old": {
+           "type": "string"
+          },
+          "new": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "path",
+          "new"
+         ]
+        }
+       },
+       "options": {
+        "type": "object",
+        "properties": {
+         "dry_run": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "dry_run"
+        ]
+       },
+       "meta": {
+        "type": "object",
+        "owner": {
+         "type": "string"
+        }
+       },
+       "tags": {
+        "type": "array",
+        "items": {
+         "type": [
+          "string",
+          "null"
+         ]
+        }
+       }
+      },
+      "required": [
+       "edits"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo?"
+   }
+  ],
+  "want": "<|im_start|>system\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Gets the weather of a city.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\", \"description\": \"The city's name\"}, \"unit\": {\"type\": \"string\", \"enum\": [\"celsius\", \"fahrenheit\"]}, \"days\": {\"type\": \"integer\", \"description\": \"How many days\", \"nullable\": true}}, \"required\": [\"city\"]}}}\n{\"type\": \"function\", \"function\": {\"name\": \"edit\", \"description\": \"Edits files.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"edits\": {\"type\": \"array\", \"description\": \"The edits\", \"items\": {\"type\": \"object\", \"properties\": {\"path\": {\"type\": \"string\"}, \"Old\": {\"type\": \"string\"}, \"new\": {\"type\": \"string\"}}, \"required\": [\"path\", \"new\"]}}, \"options\": {\"type\": \"object\", \"properties\": {\"dry_run\": {\"type\": \"boolean\"}}, \"required\": [\"dry_run\"]}, \"meta\": {\"type\": \"object\", \"owner\": {\"type\": \"string\"}}, \"tags\": {\"type\": \"array\", \"items\": {\"type\": [\"string\", \"null\"]}}}, \"required\": [\"edits\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nWeather in Tokyo?<|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "call and responses",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo and Osaka?"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "reasoning_content": "Two cities.",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Tokyo\", \"days\": 2, \"unit\": \"celsius\"}"
+      }
+     },
+     {
+      "id": "c2",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Osaka\"}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "Sunny, 20 C"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c2",
+    "content": "Rain"
+   }
+  ],
+  "want": "<|im_start|>system\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Gets the weather of a city.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\", \"description\": \"The city's name\"}, \"unit\": {\"type\": \"string\", \"enum\": [\"celsius\", \"fahrenheit\"]}, \"days\": {\"type\": \"integer\", \"description\": \"How many days\", \"nullable\": true}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nWeather in Tokyo and Osaka?<|im_end|>\n<|im_start|>assistant\n<think>\nTwo cities.\n</think>\n\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Tokyo\", \"days\": 2, \"unit\": \"celsius\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Osaka\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nSunny, 20 C\n</tool_response>\n<tool_response>\nRain\n</tool_response><|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "call and responses without thinking",
+  "no_think": true,
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo?"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Tokyo\"}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "Sunny"
+   }
+  ],
+  "want": "<|im_start|>system\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Gets the weather of a city.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\", \"description\": \"The city's name\"}, \"unit\": {\"type\": \"string\", \"enum\": [\"celsius\", \"fahrenheit\"]}, \"days\": {\"type\": \"integer\", \"description\": \"How many days\", \"nullable\": true}}, \"required\": [\"city\"]}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call><|im_end|>\n<|im_start|>user\nWeather in Tokyo?<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Tokyo\"}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nSunny\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+ },
+ {
+  "name": "call pending",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me look.",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Kyoto\"}"
+      }
+     }
+    ]
+   }
+  ],
+  "want": "<|im_start|>user\nWeather?<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nLet me look.\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Kyoto\"}}\n</tool_call><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+ },
+ {
+  "name": "answer after a response and another question",
+  "keep_thinking": true,
+  "messages": [
+   {
+    "role": "system",
+    "content": [
+     {
+      "type": "text",
+      "text": "Be brief."
+     },
+     {
+      "type": "text",
+      "text": " Use tools. "
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Edit it"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "reasoning_content": "I will edit.",
+    "tool_calls": [
+     {
+      "id": "e1",
+      "type": "function",
+      "function": {
+       "name": "edit",
+       "arguments": "{\"edits\": [{\"path\": \"a.go\", \"new\": \"x := 1.0\", \"Old\": \"x := 1\"}], \"options\": {\"dry_run\": false}, \"count\": 3, \"ratio\": 0.5, \"big\": 1e20, \"none\": null, \"Zeta\": true, \"alpha\": [1, \"two\", {\"k\": \"v\"}]}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "e1",
+    "content": [
+     {
+      "type": "text",
+      "text": "done"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": "Edited a.go."
+   },
+   {
+    "role": "user",
+    "content": "Thanks"
+   }
+  ],
+  "want": "<|im_start|>system\nBe brief. Use tools. <|im_end|>\n<|im_start|>user\nEdit it<|im_end|>\n<|im_start|>assistant\n<tool_call>\n{\"name\": \"edit\", \"arguments\": {\"edits\": [{\"path\": \"a.go\", \"new\": \"x := 1.0\", \"Old\": \"x := 1\"}], \"options\": {\"dry_run\": false}, \"count\": 3, \"ratio\": 0.5, \"big\": 1e+20, \"none\": null, \"Zeta\": true, \"alpha\": [1, \"two\", {\"k\": \"v\"}]}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\ndone\n</tool_response><|im_end|>\n<|im_start|>assistant\nEdited a.go.<|im_end|>\n<|im_start|>user\nThanks<|im_end|>\n<|im_start|>assistant\n"
+ },
+ {
+  "name": "tool message by name",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Run it"
+   },
+   {
+    "role": "assistant",
+    "content": "Running.",
+    "tool_calls": [
+     {
+      "id": "r1",
+      "type": "function",
+      "function": {
+       "name": "run",
+       "arguments": "{}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "other",
+    "name": "runner",
+    "content": "ok"
+   },
+   {
+    "role": "assistant",
+    "content": "It ran."
+   }
+  ],
+  "want": "<|im_start|>user\nRun it<|im_end|>\n<|im_start|>assistant\nRunning.\n<tool_call>\n{\"name\": \"run\", \"arguments\": {}}\n</tool_call><|im_end|>\n<|im_start|>user\n<tool_response>\nok\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nIt ran.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+ }
+]

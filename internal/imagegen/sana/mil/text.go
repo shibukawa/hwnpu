@@ -81,7 +81,7 @@ func gemmaLayer(g *graph, c Gemma, i int, x, causal, cos, sin *mlpackage.Var) *m
 
 // geluTanh is the tanh approximation of GELU written as x sigmoid(2 sqrt(2/pi) (x + 0.044715
 // x^3)), with exp and real_div as blocks.SiLU: the Neural Engine's own gelu (TANH_APPROXIMATION)
-// moved Gemma 2's rows Sana keeps (design.md 16.127).
+// moved Gemma 2's rows Sana keeps (design.md 16.138).
 func geluTanh(g *graph, x *mlpackage.Var) *mlpackage.Var {
 	// u = -2 sqrt(2/pi) (x + 0.044715 x^3) = x (a + b x^2)
 	a := float32(-2 * math.Sqrt(2/math.Pi))

@@ -130,15 +130,15 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 
 // modelEntry is a model in a definition file: the fields it gives, nil for those it leaves.
 type modelEntry struct {
-	Family   *string   `yaml:"family"`
-	Tag      *string   `yaml:"tag"`
-	Kind     *string   `yaml:"kind"`
-	From     *string   `yaml:"from"`
-	Arch     *string   `yaml:"arch"`
-	Machine  *int      `yaml:"machine"`
-	Memory   *float64  `yaml:"memory"`
-	Bytes    *float64  `yaml:"bytes"`
-	Features *[]string `yaml:"features"`
+	Family   *string    `yaml:"family"`
+	Tag      *string    `yaml:"tag"`
+	Kind     *string    `yaml:"kind"`
+	From     *string    `yaml:"from"`
+	Arch     *string    `yaml:"arch"`
+	Machine  *int       `yaml:"machine"`
+	Memory   *PerVendor `yaml:"memory"`
+	Bytes    *PerVendor `yaml:"bytes"`
+	Features *[]string  `yaml:"features"`
 	// SHA256 pins the repository's files by name (config.json, model.safetensors, ...): a file
 	// fetched from any source must have it (docs/model-table.md 5.3).
 	SHA256  *map[string]string `yaml:"sha256"`
@@ -338,6 +338,13 @@ func (t *table) addModel(file, name string, e *modelEntry, builtin bool) error {
 
 // merge sets the fields of dst that src gives.
 func merge(dst, src *modelEntry) {
+	// memory and bytes: a table changes the vendors it names
+	for _, f := range []struct{ d, s **PerVendor }{{&dst.Memory, &src.Memory}, {&dst.Bytes, &src.Bytes}} {
+		if *f.s != nil && *f.d != nil {
+			m := (**f.d).over(**f.s)
+			defer func(d **PerVendor) { *d = &m }(f.d)
+		}
+	}
 	if src.Device != nil && dst.Device != nil {
 		m := maps.Clone(*dst.Device)
 		maps.Copy(m, *src.Device)
@@ -404,6 +411,11 @@ var kinds = map[Kind]string{
 	KindImage:      "hwnpu-image generate",
 	KindDepth:      "hwnpu-image depth",
 	KindFace:       "hwnpu-image face-detect",
+	KindPitch:      "hwnpu-pitch",
+	KindPose:       "hwnpu-pose",
+	KindNotes:      "hwnpu-notes",
+	KindMusic:      "hwnpu-music",
+	KindSFX:        "hwnpu-music",
 }
 
 // build makes the catalog, the categories and the aliases of what was merged.
@@ -546,10 +558,10 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 		m.Machine = *e.Machine
 	}
 	if e.Memory != nil {
-		m.Memory = *e.Memory
+		m.MemoryBy, m.Memory = maps.Clone(*e.Memory), e.Memory.For("")
 	}
 	if e.Bytes != nil {
-		m.Bytes = *e.Bytes
+		m.BytesBy, m.Bytes = maps.Clone(*e.Bytes), e.Bytes.For("")
 	}
 	if e.NoThink != nil {
 		m.NoThink = *e.NoThink

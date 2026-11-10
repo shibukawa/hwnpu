@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/sana"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
 
@@ -35,14 +36,19 @@ func runSana(ctx context.Context, r sanaRun) error {
 	t0 := time.Now()
 	programs := sana.IsProgramExport(r.model)
 	var dev *hwnpu.Device
-	if !r.cpu {
-		var opts []hwnpu.Option
-		if !programs {
-			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD))
-		} else if d := cacheDirOf(r.cache); d != "" {
-			opts = append(opts, hwnpu.WithCacheDir(d))
+	switch {
+	case r.cpu:
+	case programs:
+		// llm.OpenDevice takes the Neural Engine's lock (design.md 16.132): with another process
+		// compiling for it, a placement check of Gemma 2's programs took over 2 minutes
+		d, _, err := llm.OpenDevice(ctx, llm.BackendCoreML, cacheDirOf(r.cache))
+		if err != nil {
+			return err
 		}
-		d, err := hwnpu.Open(ctx, opts...)
+		defer d.Close()
+		dev = d
+	default:
+		d, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
 		if err != nil {
 			return err
 		}

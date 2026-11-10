@@ -265,13 +265,20 @@ func PlanPaged(m Model, opts Options, budget int64) ([]Part, error) {
 	pre, layers, post := EstimateBytes(m, opts)
 	n := len(layers)
 	cuts := pm.PagedLayers()
+	var out []Part
+	// layer 0's attention on the host (every layer of Qwen3's): a first part of no layers
+	// (NoLayers) outputs its inputs, the norm and the projections of layer 0
+	if len(cuts) > 0 && cuts[0] == 0 {
+		if opts.KVOnly {
+			return nil, fmt.Errorf("llm: -kv-only does not take a model whose layer 0's attention runs on the host")
+		}
+		out = append(out, Part{Start: 0, Layers: NoLayers})
+		cuts = cuts[1:]
+	}
 	bounds := []int{0}
 	for _, c := range cuts {
 		if c <= bounds[len(bounds)-1] || c >= n {
-			if c == 0 {
-				return nil, fmt.Errorf("llm: layer 0's attention cannot run on the host (-paged)")
-			}
-			return nil, fmt.Errorf("llm: the attention layers %v are not in order within %d layers", cuts, n)
+			return nil, fmt.Errorf("llm: the attention layers %v are not in order within %d layers", pm.PagedLayers(), n)
 		}
 		bounds = append(bounds, c)
 	}
@@ -279,7 +286,6 @@ func PlanPaged(m Model, opts Options, budget int64) ([]Part, error) {
 	cost := append([]int64(nil), layers...)
 	cost[0] += pre
 	cost[n-1] += post
-	var out []Part
 	for i := 0; i+1 < len(bounds); i++ {
 		a, b := bounds[i], bounds[i+1]
 		seg := cost[a:b]

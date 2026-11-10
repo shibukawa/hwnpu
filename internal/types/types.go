@@ -178,6 +178,10 @@ type GraphSource struct {
 	// empty means the default function. The functions share the package's weights, and each is
 	// loaded and placed as a model of its own.
 	Function string
+	// Units are where Core ML runs the graph: "" the Neural Engine (with the CPU), "gpu" the GPU
+	// (with the CPU) or "cpu" the CPU; for a graph that the Neural Engine of a chip cannot run.
+	// HWNPU_COREML_UNITS overrides it for every graph.
+	Units string
 }
 
 // OpPlacement is one operation that does not run on the NPU.

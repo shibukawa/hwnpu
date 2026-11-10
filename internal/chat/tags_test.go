@@ -1,6 +1,8 @@
 package chat
 
 import (
+	"github.com/goccy/go-yaml"
+
 	"strings"
 	"testing"
 )
@@ -116,7 +118,7 @@ func TestImageMemoryTags(t *testing.T) {
 	for name, want := range map[string]string{
 		"sana:8g": "Sana-Sprint-0.6B", "sana:8G": "Sana-Sprint-0.6B", "sana:8GB": "Sana-Sprint-0.6B", "sana:8 G": "Sana-Sprint-0.6B",
 		"sana:12g": "Sana-Sprint-0.6B", "sana:4g": "Sana-Sprint-0.6B", "sana:16G": "Sana-Sprint-1.6B", "sana:100g": "Sana-Sprint-1.6B",
-		"sana-full:8g": "Sana-600M", "moge:20g": "moge-2-vitb", "image:8g": "Anima-Turbo", "depth:64g": "DA3MONO-LARGE",
+		"sana-full:8g": "Sana-600M", "moge:20g": "moge-2-vitb", "image:8g": "Anima-Turbo", "depth:64g": "DA3MONO-LARGE", "depth:8g": "DA3-SMALL", "depth:16g": "DA3-BASE",
 	} {
 		m, _, ok, err := Pick(name, 59)
 		if !ok || err != nil || m.Name != want {
@@ -157,5 +159,33 @@ func TestDeviceMerge(t *testing.T) {
 	merge(dst, &modelEntry{Device: &over})
 	if got := *dst.Device; got["amd"] != "npu" || got["apple"] != "npu" || base["amd"] != "cpu" {
 		t.Errorf("merged %v, base %v", got, base)
+	}
+}
+
+func TestPerVendor(t *testing.T) {
+	var e modelEntry
+	if err := yaml.UnmarshalWithOptions([]byte("memory: {amd: 3.5, apple: 4.1}\nbytes: 5.9e9\n"), &e, yaml.DisallowUnknownField()); err != nil {
+		t.Fatal(err)
+	}
+	for v, want := range map[string]float64{"amd": 3.5, "apple": 4.1, "intel": 4.1, "": 4.1} {
+		if got := e.Memory.For(v); got != want {
+			t.Errorf("memory for %q: %v, want %v", v, got, want)
+		}
+	}
+	if got := e.Bytes.For("amd"); got != 5.9e9 {
+		t.Errorf("bytes for amd: %v", got)
+	}
+	if err := yaml.Unmarshal([]byte("memory: {nvidia: 1}\n"), &e); err == nil {
+		t.Error("an unknown vendor was taken")
+	}
+	// a table over a number changes its vendors; a number over a table replaces it
+	dst := &modelEntry{Memory: &PerVendor{"": 4.1}}
+	merge(dst, &modelEntry{Memory: &PerVendor{"amd": 3.5}})
+	if m := *dst.Memory; m.For("amd") != 3.5 || m.For("apple") != 4.1 {
+		t.Errorf("table over a number: %v", m)
+	}
+	merge(dst, &modelEntry{Memory: &PerVendor{"": 2}})
+	if m := *dst.Memory; m.For("amd") != 2 || len(m) != 1 {
+		t.Errorf("number over a table: %v", m)
 	}
 }

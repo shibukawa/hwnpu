@@ -543,7 +543,8 @@ models:
 
 - MODEL.md にすでにある (Anima の中)。重みも、Anima の正解の値も手元にある
 - Anima が使うのは base (`qwen_3_06b_base`)、チャットは instruct (`Qwen/Qwen3-0.6B`)。同じ構造で、テストの正解を 2 通り持てる
-- 用途の表 (MODEL.md のチャットの行) には入れない。同じ大きさなら Qwen3.5-0.8B の方が新しく、8 GB の枠はそちらで足りている。`qwen3:0.6b` としてファミリーのタグで選べるだけにし、蒸留モデル (Qwen3 を元にしたものが多い) の土台を確かめるのが目的
+- 用途の表 (`chat` の picks) には入れない。`qwen3:0.6b` としてファミリーのタグで選べるようにし、蒸留モデル (Qwen3 を元にしたものが多い) の土台を確かめるのが目的。MODEL.md の 8 GB の欄には、一番小さなダウンロードとして並べる
+- **入れた (2026-11-09、design.md 16.127)**: 型の名前は今は `qwen3` (`internal/llm/qwen3`)。全層が注意なので注意で分けると遅く、分けない 1 本 (文脈 4096、`llm.Unpaged`) が既定。Anima のテキストエンコーダをこの型に寄せること (2.) と AMD (3.) はまだ
 
 **会話の型: ChatML + JSON のツールの呼び出し (Hermes 式) を足す**。Qwen3 のツールの呼び出しは `<tool_call>{"name": ..., "arguments": ...}</tool_call>` の JSON で、Qwen3.5 の XML 式 (`<function=...>`) とは違う。同じ型を SmolLM などの ChatML の系統でも使う。Llama 3 と Mistral の型は、それぞれのモデルを受けるときに足す。Jinja の実行はしない (12 節)。
 

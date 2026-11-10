@@ -168,12 +168,15 @@ func (t *ISTFT) Flush() []float32 {
 }
 
 // WriteWAV writes samples in [-1, 1] as a 16 bit mono WAV file.
-func WriteWAV(w io.Writer, pcm []float32, rate int) error {
+func WriteWAV(w io.Writer, pcm []float32, rate int) error { return WriteWAVChannels(w, pcm, rate, 1) }
+
+// WriteWAVChannels writes interleaved samples in [-1, 1] of channels as a 16 bit WAV file.
+func WriteWAVChannels(w io.Writer, pcm []float32, rate, channels int) error {
 	var b bytes.Buffer
 	b.WriteString("RIFF")
 	binary.Write(&b, binary.LittleEndian, uint32(36+2*len(pcm)))
 	b.WriteString("WAVEfmt ")
-	for _, v := range []any{uint32(16), uint16(1), uint16(1), uint32(rate), uint32(2 * rate), uint16(2), uint16(16)} {
+	for _, v := range []any{uint32(16), uint16(1), uint16(channels), uint32(rate), uint32(2 * channels * rate), uint16(2 * channels), uint16(16)} {
 		binary.Write(&b, binary.LittleEndian, v)
 	}
 	b.WriteString("data")

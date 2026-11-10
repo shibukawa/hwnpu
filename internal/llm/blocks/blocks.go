@@ -98,6 +98,12 @@ func (g *Graph) Weight(name string, rows, cols int, scale float32) *mlpackage.Va
 	return g.matrix(name, name, g.Get(name, rows, cols), rows, cols, scale)
 }
 
+// Matrix adds the (rows, cols) values w as the matrix name in the chosen format: Weight for a
+// matrix the model lays out itself (a transposed Flax kernel).
+func (g *Graph) Matrix(name string, w []float32, rows, cols int) *mlpackage.Var {
+	return g.matrix(name, name, w, rows, cols, 1)
+}
+
 // WeightRows is Weight for rows [begin, end) of the named matrix of cols columns: one part of a
 // fused projection (PLaMo's qkv_proj and gate_up_proj). The constant is called name_begin_end.
 func (g *Graph) WeightRows(name string, begin, end, cols int, scale float32) *mlpackage.Var {

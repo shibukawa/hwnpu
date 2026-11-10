@@ -3412,7 +3412,7 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 
 ### 16.124 hwnpu-image のモデルを models.yaml から選ぶ、-o なしで開く — 2026-11-10
 
-- models.yaml に種類 `image` (Anima-Turbo、Sana-Sprint 0.6B / 1.6B、Sana 600M、SANA 1.5 1.6B) と `depth` (DA3 の 4 つ、MoGe-2 の 3 つ) を足した。用途 `image` は Anima-Turbo、`depth` は DA3MONO-LARGE
+- models.yaml に種類 `image` (Anima-Turbo、Sana-Sprint 0.6B / 1.6B、Sana 600M、SANA 1.5 1.6B) と `depth` (DA3 の 4 つ、MoGe-2 の 3 つ) を足した。用途 `image` は Anima-Turbo、`depth` は da3 と同じくメモリで (8 GB は DA3-SMALL、16 GB は DA3-BASE、24 GB 以上は DA3MONO-LARGE)
 - `hwnpu-image generate -m sana` はファミリーなので、hwnpu-chat と同じくマシンのメモリで選ぶ (Sana-Sprint 0.6B が 8 GB、1.6B が 16 GB から)。固定のメモリはどれも 2.3 GiB で同じなので、境目は速さ (1.6B は 1.6 倍) と質の釣り合いで決めた。20 ステップの Sana はファミリー `sana-full`。メモリはタグでも明示できる (`sana:8g`、`8G`、`8GB`、`8 g`、表の列にない `12g` も、そのメモリのマシンの選び方)
 - `hwnpu-image list [image|depth]`: hwnpu-chat の -list と同じ表 (`chat.ListHave`) で、ダウンロードの列の代わりに AMD の書き出し (`~/models/NAME.amd-npu2`)。`-m` の名前が合わないとき (`chat.NoModelError`) も、その種類の表を出してからエラーにする
 - 名前で選んだモデルは AMD の NPU では `~/models/NAME.amd-npu2` か `NAME-1024.amd-npu2` (小文字) を使う。ないときは、落とすリポジトリと `iron_*.py` のコマンドを示して止まる (書き出しを自動で作るのはまだ)。Mac / Intel の Anima は今までどおり自動で落として変換する。`/` や `.`、`~` を含む値は書き出しのディレクトリ
@@ -3434,7 +3434,200 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - `hwnpu-image list` の列を RUNS FROM に: このマシンで CPU に置くモデルは「CPU (ONNX Runtime)」、ほかは AMD の書き出し
 - Go のコマンドで 320 × 256: CPU 3.96 ms・10 mJ、NPU 30.5 ms・137 mJ。前処理が 11 ms かかっていたので、lfm3vl.RGB に速い道を足した (結果は color.Convert と同じ。テストで確かめる)
 
-### 16.127 Apple: Sana と Sana-Sprint を Neural Engine で (`internal/imagegen/sana/mil`、Core ML) — 2026-11-10
+### 16.127 Qwen3-0.6B: 密な Qwen3 (`qwen3`)、全層が注意のモデルは分けずに、チャットの型 `chat.Qwen3` — 2026-11-09
+
+- 動機: 8 GB の機械のチャットに、一番小さなダウンロード (1.5 GB) のモデルを足す。Qwen3-0.6B (Apache-2.0) は Anima のテキストエンコーダとして動いていたので、構造とトークナイザーは確かめてあった (16.68)。docs/model-table.md 12.2 節の `decoder` 型の最初の一歩でもある (名前は GGUF の `general.architecture` に合わせて `qwen3`。`llama` と `mistral` を受けるときに見直す)
+- 移植 (`internal/llm/qwen3`): RMS 正規化、Q と K のヘッドごとの正規化のあとに RoPE (θ = 1e6)、GQA (16 / 8 ヘッド、head_dim 128)、SwiGLU。出力の行列は埋め込みと共有 (`tie_word_embeddings`。チェックポイントの `lm_head.weight` は transformers が読み込みで置き換える写しなので読まない)。`rope_scaling`、窓、`attention_bias`、`full_attention` 以外の `layer_types` はエラー。transformers 5 の `rope_parameters` の `rope_theta` も読む
+- 照合: fp64 の正解との 1e-4 (共有あり・なし)、1 層ずつ、キャッシュつきの段の一致、部分に分けた形、注意で分けた形 (`TestPagedMatchesFull` など)。k_norm を外すとテストが 5 つ落ちる。実物の重み (`hwnpu-check`、32 トークン、チャットの型の文): fp32 で全層 0.0012 以下、KL 0.0000、32/32。fp16 も KL 0.0000、32/32。lut8 は KL 0.0139 (31/32)、lut6 は 0.2425 (23/32) なので lut8 を既定にした
+- fp16 の手当て: 残差は層 2 から最大 8141 になる (外れて大きい活性)。正規化は Gemma 4 と同じく入力を 1/64 にしてから二乗する。ただし層 0 の入口は埋め込み (最大 0.1 程度) なので、1/64 にすると二乗が fp16 の下に落ちて NaN になった (`hwnpu-check -f16` の層 0)。層 0 の入口の正規化だけ縮めない
+- 層 0 の注意もホストで (`llm.NoLayers`): `PlanPaged` は層 0 の注意で分けるのを断っていた。全層が注意のモデルのために、層を持たない最初の部分 (層 0 の正規化と射影だけで、`attn_q_0` と K / V を出す) を作るようにした。ほかのモデルの計画は変わらない
+- 分けない方が速い (`llm.Unpaged`): M1 (16 GB) で、8192 の塊に分けた形は 1 トークン約 400 ms (3 tokens/s)。内訳 (`HWNPU_PROFILE=1`) は部分 29 本がそれぞれ 3〜5 ms、ホストの注意 (塊 1 つを読むプログラム) が 28 回それぞれ約 10 ms。塊 1024 でも 5.9 tokens/s。分けない 1 本 (キャッシュをプログラムの中に) は 4096 で 11〜12 tokens/s で、答えは分けた形と一字一句同じ。ただし 8192 と 16320 のキャッシュはコンパイルと読み込みは通るが、予測で Core ML がエラーを返す (28 層の K と V で入力が 56 本、計 0.94 / 1.9 GB)。そこで `llm.Unpaged` (`UnpagedContext` 4096) を足し、hwnpu-chat は `-paged N` を与えたときだけ分ける。`-paged 1024` で文脈 32768
+- チャットの型 (`internal/chat/qwen3.go`): ChatML、Hermes 式の道具 (`<tools>` の JSON、`<tool_call>{"name": …, "arguments": {…}}</tool_call>`)、思考は最後の質問より後の回答だけ。引数は Python の `json.dumps` と同じに書く (`1e20` は `1e+20`)。テンプレートは思考ありでも `<|im_start|>assistant\n` で終わりモデルに `<think>` を書かせるが、Render は `<think>\n` まで書いて考えている途中から始める (Qwen3.5 と同じ扱いで、流す答えが分かれる)。jinja2 の 9 会話と一字一句一致 (`template_golden.py --text-content`: 部品の列の content を文字列にしてから描く。Qwen3 のテンプレートは列を描かないか落ちるため。vLLM も同じく文字列にする)
+- M1 での答え (温度 0、思考なし): 17 × 23 = 391 は正しく、富士山 (1,380 m)、『こころ』、信濃川は誤る。HF の fp32 でも同じように誤る (1,852 m、関山川) ので、移植や量子化ではなくモデルの限界。思考ありでは 17 × 23 を 802 トークン考えて 391
+- メモリと速さ (M1、2 回目の起動): 2 本の読み込み 0.4 s と 1.4 s、Neural Engine 1.16 GiB、プロセスの footprint 2.75 GB、生成 9.5〜12.4 tokens/s。初回のコンパイルは 1 本 30〜50 s (分けた形は 4 分 42 秒と 6 分 39 秒)
+- 用途の表 (models.yaml の `chat`) の 8 GB の列は LFM3-1.7B のまま。Qwen3-0.6B は `-use qwen3` (`qwen3:0.6b`) で選ぶ。MODEL.md の 8 GB の欄に並べた
+- 確かめていないこと: M2 以降と M3 の速さ、6144 などのキャッシュが通るか、プロセスの 2.75 GB の内訳 (2 本のプログラムがそれぞれ持つキャッシュの入出力の写しと見ている。`-prefill off` で減るか)、Intel の NPU、AMD の書き出し (`tools/amd/iron_anima.py` の `Qwen3Layer` を `iron_export_lm.py` から使う)、hwnpu-agent の課題
+
+### 16.128 SwiftF0 (音高、`internal/pitch`、`hwnpu-pitch`) — 2026-11-09
+
+- 何か: lars76/swift-f0 0.3.0 (MIT)。16 kHz の声や楽器 1 つの音高 (46.875〜2093.75 Hz の 95 候補) と有声の確からしさを 16 ms ごとに出す、14,386 パラメータの CNN。docs/small-models-survey.md の最初の候補
+- 配布の形: ONNX の 1 本だけ (GitHub と PyPI)。Hugging Face の `aaatmy/swift-f0-onnx` の `model.onnx` が公式の 0.3.0 とバイト単位で同じ (sha256 `6385e8c2…`) なので、models.yaml ではそのリビジョンと sha256 で固定し、`internal/pitch` も同じ sha256 を確かめる。ONNX は依存なしで読む (`onnx.go`: protowire で初期値だけ。グラフは読まず、層の並びは Go に書いた)
+- 分け方: 前段の 3 つの STFT (窓 1024 / 2048 / 512、ホップ 256、周期的な Hann、フィルタバンクで 128 帯、log(+1e-8)) はホストで float64 (`Features`、基数 2 の FFT)。CNN (12 チャンネル、6 つの残差ブロック、帯の方向の拡張 17〜48) を NPU のプログラム 1 本 (1896 フレーム = 1875 + 前 11 + 後 10)。ロジットから音高を出す最後 (最良の候補と両隣の softmax で log 周波数を平均) はホスト (`decode`)。`SwiftF0.detect` と同じく 1875 フレームの窓で区切る
+- 固定長のプログラムで短いクリップを正しく: グラフはどの畳み込みもクリップの端でゼロを詰める。プログラムは `mask` (クリップの外で 0) を各 ReLU の出力と入力に掛け、クリップの外を常にゼロにする。13 フレームのクリップを 24 フレームのプログラムで流しても、13 フレームのプログラムと同じ (`TestProgramMatchesReference`)。マスクを外すとテストが落ちる
+- Neural Engine: 拡張 17、27、40、48 の畳み込み (カーネル 7 / 5 / 3 × 1) を Core ML が CPU に置いた (M1、12 演算)。拡張 2 は NPU。そこで拡張の大きな畳み込みを、帯をタップごとにずらした k 本 (ずれた分はゼロ) をチャンネルに重ねた 1 回の 1×1 の畳み込みにした (`shifted`、数学的に同じ)。全 115 演算が NPU (`Revision` 3)
+- 照合 (`tools/ref/ref_swiftf0.py`: onnx の参照の評価器で公式のグラフを流す。onnxruntime は Python 3.15 の wheel がない。最後の GatherElements は評価器が受けないので numpy で書いた): 3 秒と 41.3 秒 (窓 2 つ、`fmin 80`、`fmax 1000`) の試験信号で、前段の差 0.0014 (振幅 e^-6 より上の帯。弱い帯ではグラフの float32 の DFT の丸めで 0.04)、ロジットの相対誤差 2e-4、有声 / 無声は全フレーム一致、音高の差は最大 0.11 cent (CPU の fp16)。NPU では 2581 フレームすべて一致、最大 0.23 cent、確からしさの差 0.0015
+- 速さとメモリ (M1): 41.3 秒を 0.24 秒 (169 倍速。前段を疎なフィルタバンクと前計算の回転因子にする前は 0.66 秒)、CPU のインタプリタでは 3.1 秒。プロセスの footprint 58 MB、読み込み 1.9 秒 (コンパイル済み)
+- 使い方: `hwnpu-pitch voice.wav` (CSV: 時刻、音高、確からしさ、有声、音量)、`-json`、`-fmin`、`-fmax`。models.yaml に種類 `pitch` (`hwnpu-pitch`) と用途 `pitch` (`f0`) を足した
+- 確かめていないこと: 実際の歌声と楽器 (試験信号だけ)、Intel の NPU、AMD (書き出しなし)、ストリーミング (`PitchStream`) と音符への区切り (`segment_notes`)
+
+### 16.129 ONNX だけで配られるモデル (`internal/onnx`)、RTMO (`hwnpu-pose`)、Basic Pitch (`hwnpu-notes`) — 2026-11-09
+
+- 動機: docs/small-models-survey.md の候補のうち、RTMO (姿勢) と Basic Pitch (音符) は ONNX でしか配られていない。どちらもグラフに静的な部分 (CNN、Transformer の encoder) と動的な部分 (TopK と NMS、人ごとの分類器。窓ごとの CQT) が混ざる。モデルごとに名前で手で移すより、ONNX を読んで静的な部分を MIL に下ろす共通の道具を作った
+- `internal/onnx`: 依存なしで ONNX を読む (protowire。ノード、属性、初期値、入出力)。ホストの評価器 (float64、numpy の放送。形の計算、TopK、NonMaxSuppression、Conv、Pad (定数と反射)、MatMul、Softmax、Reduce* など) と、静的な部分の MIL への下ろし (`Program`)。下ろすときは、形と定数だけから決まる値 (Shape、Gather、Concat の連鎖) をホストで畳み込み (Shape はプログラムの値の静的な形)、入力から計算する値だけをプログラムにする。Pow 2 は mul、Neg は mul -1、Clip は maximum と minimum、定数の行列との MatMul は linear。`Graph.Cut` は、指定した動的な演算とそれに依存するノードを尾部として、尾部が読む静的な側の値をプログラムの出力にする。尾部は `EvalShapes` で、プログラムの出力と畳み込んだ値と形から、グラフそのものをホストで評価する (元のグラフと同じ計算)
+- Neural Engine 向けの書き換え (M1 で CPU に落ちたものから): 窓 9 と 13 の max pool (ストライド 1) を窓 5 の連続に (同じ最大値)。形の違う出力の連結は、1 次元が 16384 を超えないよう、全出力の大きさの公約数を行数にした (1, 行, 幅) で (`Flat`)。最後の軸での連結は Basic Pitch で出力が崩れた (note の活性 59% ずれ、1 つか 2 つなら正しい) ので、Basic Pitch も `Flat` にした
+- milcpu に足した演算: erf、cos、sin、pow、max_pool、pad の reflect と replicate
+- **RTMO-s** (`Xenova/RTMO-s`、Transformers.js 向けの書き出し、Apache-2.0、9.9M): 640×640 に引き伸ばした RGB (0〜255) から、2000 アンカーの人のスコア、箱、姿勢の特徴 (256)、関節の見え方 (17) までが NPU (370 演算すべて)。TopK、NMS、選んだ人ごとの座標分類器 (DCC、GAU と sin / cos の位置埋め込み) はホストでグラフを評価。照合 (onnx の参照評価器、football-match.jpg): CPU インタプリタの fp16 で 4 出力の相対誤差 0.0004〜0.005、人 5 人 (スコア 0.3 以上は 4 人) と箱の差 1.6 px、見える関節点の差 3.4 px。重みだけ fp16 に丸めて fp32 で計算しても 3.4 px (重みの丸めそのもの)。M1 で 1 枚約 100 ms (縮小 55 ms、ネットワーク 9〜100 ms、ホスト 36〜43 ms)、footprint 232 MB
+- **Basic Pitch** (`nmp.onnx`、Apache-2.0、36K。Hugging Face のミラー `AEmotionStudio/basic-pitch-onnx-models` が公式とバイト単位で同じなので sha256 で固定): 22050 Hz の 2 秒の窓の CQT (サンプルの軸 43844 が 16384 を超える) と対数正規化はホストでグラフを評価、倍音の積み重ねと CNN を NPU。窓の切り方とつなぎ方 (30 フレームの重なり)、音符の組み立て (`output_to_notes_polyphonic`、推定した onset、melodia の手法、ピッチベンド) と MIDI の書き出しは basic-pitch の Python を Go に移した。照合 (`tools/ref/ref_basic_pitch.py`: 参照評価器と、basic-pitch の note_creation.py そのもの): 参照の活性から作る音符は完全に一致。CQT の相対誤差 1.0e-4、CPU の fp16 の活性 2.2e-4、5 秒の試験の旋律と和音の 10 音符が一致。Neural Engine では活性の相対誤差 2% で、音符は同じ 10 個 (誤検出の 1 つの終わりだけ違う)。5 秒を 0.14 秒 (35 倍速)、footprint 75 MB
+- 確かめていないこと: Basic Pitch の倍音の積み重ねの後の (3, 39) の畳み込みと ReLU が CPU に残る (核を幅 16 以下に分けても CPU。原因未詳)。RTMO-m / l (切り口は自動で決まるので同じコードで動く見込み)、実際の録音と写真、Intel の NPU、AMD (書き出しなし)、RTMO の画像の縮小 (55 ms) の高速化
+
+### 16.130 Magenta RealTime 2 small (音楽生成、`internal/music`、`internal/tflite`、`hwnpu-music`) — 2026-11-09
+
+- 何か: Google DeepMind の Magenta RealTime 2 (コード Apache-2.0、重み CC-BY 4.0。使うときは「Magenta RealTime 2 by Google DeepMind」と表示)。small は 230M。文で指定した曲調 (MusicCoCa の 12 の符号) から、SpectroStream の 12 段の RVQ の符号を 1 秒 25 フレームで生成し、48 kHz ステレオに復号する。`google/magenta-realtime-2` のリビジョンで固定 (チェックポイント 1.13 GB と MusicCoCa の TFLite 3 本、spm.model。計 1.7 GB)
+- 部品と置き場所:
+  - 時間方向の言語モデル (12 層、1024 次元、8 頭 × 128、FFN 4096 で gelu の tanh 近似とバイアス、RMSNorm を前後に、per_dim_scale、注意ごとに 1 つのシンクのキーと値 (ロジットはスケール前の query で)、自分と条件への注意とも直前 41 + 今の窓、位置埋め込みなし) を NPU のプログラム 1 本。キーと値は外のリングに持ち、新しい 1 フレーム分を出力で返す
+  - 深さ方向のデコーダ (2 層、768 次元、6 頭、1024→768 の写像、最後の LayerNorm、12294 のロジット、softcap 30) を NPU のプログラム 1 本。1 フレームに 12 回 (段ごと) 呼ぶ
+  - サンプリング (top-k 40、温度 1.3、Gumbel、その段の符号の範囲だけ) と条件 (144 チャンネル、+7。CFG の強さはビン分けした条件の符号で渡すので、バッチを 2 倍にしない) はホスト
+  - SpectroStream の復号 (時間に因果な 2 次元の畳み込みと転置畳み込み、ELU、チャンネルの分割は重み共有のバッチ 2、先読み 4 STFT フレーム) を NPU のプログラム 1 本 (25 フレーム + 前 16 フレーム)。iSTFT (窓 960、ホップ 480) はホスト
+  - MusicCoCa (文 → 曲調): 小文字にして SentencePiece の Unigram (`tokenizer.LoadSentencePieceUnigram`: spm.model を直接読む。nmt_nfkc の charsmap、byte fallback)、TFLite の文の符号器 → 写像 (ノイズは numpy の `RandomState(0).randn` を Go で再現、`LegacyNormal`) → L2 正規化 → RVQ。TFLite は `internal/tflite` (FlatBuffers を依存なしで読み、`internal/onnx` のグラフにする。WHILE の部分グラフ、SLICE、SIN、COS、CUMSUM など) でホストで評価
+- 照合 (MLX の参照を fp32 で流したもの、`mrt_lm_ref.py` と `mrt_ss_ref.py`、`mcc_ref.py`):
+  - SpectroStream の復号: STFT の相対誤差 1.4e-4 (先頭 7 フレームをマスクしても同じ)、音声 7e-4
+  - 言語モデル (CPU の fp16): 条件の埋め込み 7.8e-7、ロジットの最大誤差 1.2e-3、最も確からしい符号は 600/600 一致。bf16 の参照とは 5% ずれたので fp32 の参照にした
+  - NPU (温度 1.3 の分布の KL): lut8 で 0.0064 (最大の符号の一致 531/600)、fp16 で 0.0002 (588/600)。既定は lut8
+  - MusicCoCa: 文の符号器の相対誤差 2.8e-7、写像 1.3e-6、"disco funk" の 12 の符号が一致 (`TestStyle`)、トークンも 5 つの文 (日本語は byte fallback) で一致
+- 速さとメモリ (M1 16 GB): プログラムはすべて NPU。言語モデル 1 フレーム 22 ms (lut8。fp16 は 28 ms。実時間は 40 ms)、復号は 10 秒を 1.5 秒、合わせて 10 秒を 6.9 秒。MusicCoCa はホストで約 4 秒。読み込みは初回 14〜16 秒、コンパイル済みなら 0.3 秒 (コンパイルのキャッシュを既定で使う)
+- メモリ: 符号を `-style` で渡すと footprint 0.41 GB。文から作ると文の符号器の重み (196M 個) をホストの評価器が float64 で持つので 1.5 GB、Go の GC の既定 (GOGC 100) だと 3.4 GB まで膨らんだ。`Style` の間だけ GC を 10% にし、評価器が使い終えた中間値を捨てるようにして 2.0 GB。models.yaml の memory は 2.0
+- 使い方: `hwnpu-music -o out.wav -duration 30s "disco funk"`、`-style` (12 の符号)、`-temperature`、`-top-k`、`-cfg-style`、`-seed`、`-format` (lut8 / fp16)。models.yaml に種類と用途 `music` を足した
+- 確かめていないこと: 音の良し悪しは耳では確かめていない (スペクトログラムが MLX の参照と同じように見えること、符号と分布が一致することまで)。音声からの曲調 (MusicCoCa の音楽の符号器)、音符と打楽器の条件、続きの生成とストリーミング、MusicCoCa の文の符号器を NPU に (今は 4 秒と 2 GB)、Intel の NPU と AMD
+
+### 16.131 Magenta RT2 の続き: 曲調を NPU で、音声から曲調、音符と打楽器、続きの生成、ストリーミング — 2026-11-09
+
+- 16.130 の「確かめていないこと」のうち、歌声 (SoulX-Singer) 以外を入れた
+- **MusicCoCa の文の符号器を NPU に** (`textEncoderCut`): TFLite のグラフ (669 演算、ループなし) を `internal/onnx` の下ろしでプログラムにした。埋め込みの表引き (16000 × 768) はホスト (準備のときに fp16 の表 24 MB を書き出す)、注意の条件 (パディングに -2.38e38 を掛けて定数と比べる真偽値) は 1 - パディングとして入力に (準備のときにグラフで確かめる)。下ろしに足したもの: `Gelu`、`Rsqrt`、`Where` (条件を 0 と 1 の入力にして cond·a + (1 - cond)·b。最初の b + cond·(a - b) は、b がマスクの -3e4 のとき a - b が fp16 の刻み 16 に丸められ、Neural Engine で相対誤差 0.32 になった)、定数を fp16 の範囲に丸める (-2.38e38 が -inf になり 0 を掛けて NaN)、先頭が 1 の 3 次元の定数行列を linear に。CPU インタプリタで相対誤差 2.5e-4、"disco funk" の符号が参照と一致。ホストの float64 の重み 1.5 GB が要らなくなった
+- **音声から曲調** (`Styler.Audio`): 16 kHz モノラルを 10 秒ずつ、TFLite の前処理 (ホスト。足した演算: PAD、RFFT2D (基数 2 の FFT)、COMPLEX_ABS (複素数は F に実部と虚部を並べる型 Complex64)、計算した重みの FULLY_CONNECTED) と音楽の符号器 (NPU)、平均。音楽の符号器は WHILE で 12 層を回すので、`onnx.Graph.Unroll` を足した: 条件が定数の変数 (回数) だけで決まるループを本体の写しに展開し、回数を定数のまま伝えるので、層ごとの重みの切り出しが下ろすときに定数として畳まれる。入口のパッチ分け (6 次元の reshape。Core ML の reshape は 5 次元まで) はホストで、準備のときに arange を流して添字の表 (0.5 MB) を書き出す。CPU インタプリタで埋め込みの相対誤差 5.6e-4、8 秒の曲から 12 の符号が参照と完全に一致。ホストで TFLite を評価すると 10 秒あたり 19 秒かかっていた
+- **曲調の混ぜ合わせ**: 文と音声の埋め込みを重み付きで平均してから量子化 (`Mix`)。`hwnpu-music "jazz@2" song.wav`
+- **SpectroStream の符号器** (`Encoder`、続きの生成のため): ホストの STFT (窓 960、ホップ 480、周期的な Hann、reverse causal) と、符号器のプログラム (41 フレーム。左右のチャンネルを重み共有のバッチ 2 で encoder_0〜5、合わせて encoder_6、bottleneck、出力の 1×1)。semicausal の時間の詰め物 (k - s 前、s - 1 後)、平均プーリング (reshape と reduce_mean)、ストリーミング用の Delay は全体を流すときは何もしない。ホストで RVQ (12 段、最も近い符号を引いて次へ)。MLX の参照 (`mrt_enc_ref.py`) と、STFT の相対誤差 9e-7、埋め込み 2e-4、4 秒の 1200 の符号のうち 1187 が一致 (第 1 段は 100 / 100)。25 フレームずつ前 16 フレームを読む窓でも同じ 1187
+- **続きの生成** (`Session.Prefill`): 符号を強制して言語モデルに読ませる (C++ の実行系と同じく曲調はマスク)。12 層 × 41 の窓で届く最後の 500 フレーム (20 秒) まで。出力は元の音声のあとに続き (`-new-only` で続きだけ)。つなぎ目は前のチャンクから復号して逆 STFT の重なりをつなぐ
+- **音符と打楽器** (`PianoRoll`、`notes.ReadMIDI`): MIDI の音符をフレームごとのピアノロールの状態 (マスク、オフ、継続、始まり、オン) に。C++ の実行系の populate_condition_tokens と同じく、鳴っている音だけをマスクから外す (`-note-width` で周りの音高を「オフ」に)、`-onsets` で始まりを区別。打楽器のチャンネル 10 は除く。打楽器は `-drums auto|on|off`。CFG の強さ (`-cfg-notes` 既定 5、C++ の実行系の既定) は条件の符号として渡す (Python の generate と同じ。C++ の実行系はバッチを 3 倍にする本当の CFG)
+- **ストリーミング** (`Session`): 25 フレーム (1 秒) ごとに復号して音を返す。`-o -` で標準出力に WAV (大きさは未定の印) を流す (ファイルにも 1 秒ごとに書くので、途中で失敗してもそこまでの WAV が残る)。復号の先読み (1 フレーム) のため最後のフレームの音は次のフレームを待つので、`-duration` に 1 フレーム足して生成する
+- 直したこと: 曲の頭の 4 STFT フレーム (先読み) を、参照と同じく逆 STFT の前に落とすようにした (前は逆 STFT のあとで落としていたので、最初の 0.2 秒が参照と相対誤差 0.23 で違った。今は全体で 7.3e-4。`TestSessionAudioMatchesReference`)
+- Neural Engine について: 表引きを one-hot (128 × 16000) の入力と表の積にした版は、CPU インタプリタでは正しかったが、Neural Engine では最初の予測が約 100 秒で失敗し、その後はどのプロセスのどのプログラム (hwnpu-pitch の小さなものも) の予測も約 100 秒で失敗するようになった (M1。再起動なしで約 20 分後に戻った)。表引きはホストに戻した。新しい形のプログラムを Neural Engine で試すときは単独で試し、小さな既知のプログラムが動くことを確かめる
+- **resampy の kaiser_best** (`Resample`): magenta-rt は録音を resampy で 16 kHz (と 48 kHz) にする。Hann 窓の sinc (`lfm3audio.Resample`) とは 9.4% 違い、MusicCoCa の対数メルは 8 kHz 近くの差に敏感で、埋め込みが 42% 動いて符号が変わった。kaiser_best (零点 50、1 零点 8192 値、ロールオフ 0.91735、Kaiser の beta 12.98459。npz の表に 1.8e-12 で一致) と resampy の補間をそのまま移して、resampy との差 3e-10、録音の 12 の符号が参照と完全に一致
+- **曲調の混ぜ合わせの長さ**: MusicCoCa の音声の埋め込みは長さ約 28、文の埋め込み (写像の後で正規化) は 1 で、量子化は長さで符号が変わる (音声の埋め込みを 0.1 倍すると 12 のうち 4 つ違う)。単純な平均では音声だけになるので、向きを重みで平均し、長さを重みで平均した長さにした。1 つだけなら元のまま
+- Neural Engine (M1 16 GB) での実測: 文の符号器 4 ms (相対誤差 1.0e-3、"disco funk" の 12 の符号が参照と一致。文から符号まで写像と量子化をホストで 0.5 秒。前は 4.2 秒)、音楽の符号器 10 秒の録音あたり 23 ms (2.6e-3)、SpectroStream の符号器 4 秒で 1.85 秒 (うち STFT 0.45 秒と量子化がホスト。第 1 段の符号 99 / 100、全体 1002 / 1200 が参照と一致。CPU インタプリタは fp32 で計算するので 1187)。続きは 8 秒の録音を符号にして言語モデルに読ませるまで 7.5 秒、10 秒の生成は 6.8 秒 (実時間の 1.5 倍) で変わらない。footprint は符号を渡して 0.41 GB、録音の曲調 0.55 GB、文の曲調 0.96 GB (写像と量子化のホストの float64)、続き 0.95 GB。models.yaml の memory を 2.0 から 1.0 に
+- 音符への追従: ハ長調の音階 (0.5 秒ずつ 15 音) と最後の和音 (3 音) の MIDI を `-notes` で与え ("solo piano")、出力を Basic Pitch (`hwnpu-notes`) で書き起こすと、18 音のうち 15 が同じ音高 (17 が同じ音名) で鳴っていた。同じ文と種で `-notes` なしは 7 (10)
+- 確かめていないこと: 本当の CFG (バッチ 3 倍)、音の良し悪しを耳で、44.1 kHz などの録音の続き (resampy で 48 kHz にする道は通るが参照と並べていない)、Intel の NPU と AMD
+
+### 16.132 Neural Engine を使うプロセスは 1 つずつ (`llm.OpenDevice` のロック) — 2026-11-09
+
+- 起きたこと (M1 16 GB): Neural Engine を使う hwnpu のコマンドを 2 つ同時に起動すると OS が固まり、その後も hwnpu-chat が途中で止まり、Ctrl+C も kill -9 も効かないプロセスが残った。16.131 の one-hot の版でも、Neural Engine が固まると、どのプロセスの予測も返らず、プロセスは割り込めない状態のまま終わらなかった (約 20 分後に戻った)
+- 対策: `llm.OpenDevice` が Core ML のとき、ユーザーのキャッシュの `hwnpu/neural-engine.lock` に排他の flock を取り、プロセスが終わるまで持つ (カーネルがプロセスの終わりに外す。同じプロセスが何度開いても 1 回)。2 つ目のプロセスは「waiting for the Neural Engine: process N (hwnpu-music) is using it」と出して待ち、Ctrl+C で止められる。どうしても並べたいときは `HWNPU_NPU_LOCK=off`。全部のコマンドは `llm.OpenDevice` を通るので、これで全部に効く。Windows (flock がない) では何もしない
+- 確かめたこと: hwnpu-music の 10 秒の生成の途中で hwnpu-pitch を起動すると、待ってから実行した (どちらも正しい結果)。待っている間の Ctrl+C ですぐ終わり、hwnpu-music はそのまま終わった
+- 確かめていないこと: 2 つ同時で固まる原因そのもの (Neural Engine のメモリか、Core ML の予測の取り合いか)。Intel と AMD の NPU では 2 つ同時を試していない (ロックも Core ML のときだけ)
+- M2 の MacBook Air (`on the NPU: false`) で `hwnpu-music -seconds 60` が、言語モデルの 1500 / 1501 フレームのあと (最後にまとめて 60 秒を復号するところ) でマシン全体を重くし、Core ML の予測の失敗で終わった。M1 ではすべてのプログラムが NPU。手がかりを得るため、NPU に載らないプログラムごとに、NPU 以外に置かれた演算の種類と数を表示するようにした (`Generator.Placement`、`Styler.Placement`)。また復号を 1 秒ごとに生成と交互にし (前は `-stream` のときだけ)、WAV の大きさも書くたびに直すので、途中で失敗してもそこまでの WAV が残る。原因の演算はまだわからない
+- `-seconds` を `-duration` (Go の time.Duration: `10s`、`2m`、`1m30s`) にした
+- そのため、NPU に載らないプログラムがあると hwnpu-music はその内訳を出して止まるようにした (WAV を作る前)。`-allow-off-npu` で続ける。`-cpu` (CPU インタプリタ) は別
+- M2 での内訳は SpectroStream の復号のプログラムの 4 演算 (84 演算は NPU): `upsample_nearest_neighbor` 2 つ、`reshape` と `transpose` が 1 つずつ、どれも CPU。マスクをフレームから STFT のフレームに広げる upsample と、入力の (1, T, 256) を (1, 256, T, 1) にする並べ替えと見て、どちらもホストで作って入力にした (マスクは 1、2、4 倍の 3 つ、x はチャンネルを先に。出力もそのまま (2, 2, 4T, 480))。符号器も同じ形に。`ssRevision` を 2 にして変換し直す。M1 では精度 (STFT 1.4e-4、音声 7.3e-4、符号 1187 / 1200) も速さも同じ。M2 で全部 NPU に載るかは未確認
+
+### 16.133 SpectroStream を GPU の fp32 に (Neural Engine では復号が正しくなかった) — 2026-11-09 (16.134 で NPU に戻した)
+
+- 見つけたこと: 参照の符号を復号すると、Neural Engine の復号の音声は参照と相対誤差 0.80 (M1)、GPU の fp16 では NaN だった。CPU インタプリタ (内部は fp32) は 7e-4 で、これまでの照合はこちらだけだった (16.130 の「スペクトログラムが参照と同じように見える」は目で見ただけ)。milcpu に `Options.Trace` (演算ごとの絶対値の最大) を足して見ると、復号の残差の値が 3.7e4 から 1.2e7 まで育つ (出力は 1.4e4)。fp16 の上限 65504 を超え、ELU があるので尺度を変えて逃がすこともできない。M2 の Neural Engine で復号が約 100 秒で失敗し、マシンが重くなり日本語入力まで落ちたのも、M2 の側の分析 (ANECompilerService が CPU 97% で 93 秒、2.1 GB を書いた) と合わせて、このプログラムが Neural Engine に合っていなかったためと見ている
+- 対策: SpectroStream の復号と符号化のプログラムを、入出力は fp16 のまま中を fp32 に (入力を cast、重みは fp32、出力を fp16 に cast)。fp32 は Neural Engine では計算できないので、Core ML の GPU で動かす (`GraphSource.Units` を足し、`chain.OpenOn` でプログラムごとに。`HWNPU_COREML_UNITS` は全部に効くので使えない)。`-decoder-on gpu|cpu` (既定 GPU。CPU は少し遅く CPU の時間を 2 倍使う)。読み込みのときに無音で 1 回ずつ動かし、失敗を生成の途中ではなく最初に出す。`ssRevision` は 3。言語モデルと MusicCoCa の符号器はこれまでどおり Neural Engine (照合済み)
+- 精度: GPU で参照の符号の音声が相対誤差 5.0e-3 (出力の fp16 への丸め。CPU インタプリタも同じ 5.5e-3)、符号器は GPU で 1192 / 1200 の符号が参照と一致 (Neural Engine では 1002)
+- 速さ (M1): 復号は 10 秒あたり GPU 4.5 秒、CPU 5.3 秒。そのままでは生成が実時間の 0.9 倍になったので、復号 (GPU) を言語モデル (NPU) と並べて動かす (1 秒ごとに前の 1 秒を復号。`Session` の符号を mutex で守る。-race で確かめた)。30 秒を 21 秒 (実時間の 1.4 倍)
+- footprint (M1): 符号を渡して 0.68 GB、録音の曲調 0.83 GB、文の曲調 1.24 GB、続き 1.29 GB。models.yaml の memory を 1.3 に
+- 音符への追従を直した復号で測り直した: 18 音のうち 14 が同じ音高 (17 が同じ音名)、`-notes` なしは 5 (10)
+- 確かめていないこと: M2 で GPU の復号が動くか (Neural Engine に置かないので M2 で失敗した道は通らない見込み)、耳で聴くこと
+
+### 16.134 SpectroStream の復号を NPU に戻す: ブロックごとの尺度で fp16 に収める — 2026-11-09
+
+- 方針: このプロジェクトの目的は NPU で動かして電力を下げることなので、16.133 の GPU の fp32 はやめ、復号を Neural Engine のまま正しくする。GPU と CPU は `-decoder-on gpu|cpu` で比べるためだけに残す
+- 分析 (milcpu の `Options.Trace` に RMS を足した): 復号の値はブロックごとに最大 480 (入力から decoder_0)、9e3 (decoder_1)、1.1e5、2.8e5、8.3e5、1.3e7、1.4e7 (decoder_6) と育つが、1 つのブロックの中では最大が RMS の数百倍に収まる。fp16 は浮動小数点なので、ブロックごとに 2 のべき乗で割れば収まる
+- やり方 (`dgraph.scale`、`decoderScales`): ブロックの値を尺度 s で割った u で計算する。畳み込みは線形なのでバイアスを s で割るだけで正確、ELU は elu(s·u)/s = relu(u) + (exp(clip(s·u, -30, 0)) - 1)/s (Neural Engine の演算だけ)、ブロックの切り替えは 2 のべき乗の掛け算 (正確)。出力は STFT を 64 で割ったもので、ホストで掛け戻す。ブロックの和は ±60000 で飽和させ、想定より大きな音で inf と NaN にしない
+- 尺度の選び方: 大きすぎると、バイアスや ELU の負の側を割った値が fp16 の非正規数 (6.1e-5 未満) になる。Neural Engine はこれを 0 にするらしく、尺度を 8192 まで上げた最初の版は Neural Engine で参照と相対誤差 0.068 だった。milcpu に `FlushSubnormals` (RoundF16 と一緒に、非正規数を 0 に) を足して再現し (3.5e-2)、尺度を 1/8 にして (decoder_0 から 1、1、8、16、64、1024、1024、出力 64。参照の曲での最大は 1.8e4 で fp16 の上限の 3.7 分の 1) 5.7e-3 に。半分にすると最大 3.5e4、さらに半分で inf
+- 結果 (M1): Neural Engine の復号が参照の符号で相対誤差 6.8e-3 (16.130 からの版は 0.805 だった)。同じ種の 30 秒を GPU の fp32 と比べて 0.32%。30 秒を 19 秒 (実時間の 1.6 倍)、10 秒の復号は 2.0 秒 (GPU は 4.5 秒)。footprint 0.42 GB (符号)、0.55 GB (録音の曲調)、0.97 GB (文の曲調)、0.96 GB (続き)。models.yaml の memory を 1.0 に戻した。音符への追従は 14 / 18 (なしは 5)
+- 符号器: 値の最大が 1e4 を超えないので尺度は 1 のまま (Neural Engine の符号の一致 1002 / 1200 は細かい段の fp16 の丸めで、第 1 段は 99 / 100)
+- `ssRevision` は 4。読み込みのときの無音での試し実行は残す
+- 確かめていないこと: M2 で NPU の復号が動くか (16.132 の失敗はこの値のあふれと関係があると見ているが未確認)、参照の曲より大きな音 (飽和で歪む)、耳で聴くこと
+
+### 16.135 hwnpu-music の表示とスピーカーでの再生 — 2026-11-09
+
+- 表示を hwnpu-image と同じ `internal/console` に: 経過は灰色 (`console.Log`)、待ち (曲調を読む、プログラムの読み込み、続きの録音を読む、最後の再生) はスピナー、生成は進み具合の棒 (何秒のうち何秒、実時間の何倍)。読み込みの行の「all on the NPU」は緑、`NOT all on the NPU` は赤 (`console.Highlight`)。書いたファイルの行だけ通常の色。端末でなければ色も書き直しもしない
+- `-play`: できたそばから既定の出力 (スピーカー) で鳴らす。`github.com/ebitengine/oto/v3` (v3.5.1。macOS は purego で cgo なし、Linux は PulseAudio を Go で、Windows も cgo なしでビルドできる)。1 秒たまってから鳴らし始め、生成は実時間の 1.5 倍なので途切れない。oto のミキサーは別のゴルーチンで読み、何もないときは 0 バイトを返す (1 ms 後にまた読む)。最後は鳴り終わるまで待ち、Ctrl+C で止まる。`-play` だけならファイルは書かない (`-o` を付ければ両方)。`-o` も `-play` もなければ `-play` (鳴らすだけ)
+- 終わりが「ぶつっ」と切れたので、最後の `-fade` (既定 2 秒) を出さずに持っておき、生成が終わったら 0 まで余弦で絞って書く (ファイルにもスピーカーにも)。`-fade 0` で前のとおり。スピーカーには最後に 0.25 秒の無音を足し、プレーヤーが読み終えてからも 0.3 秒待って閉じる (機器のバッファの分が切れないように)
+
+### 16.136 MOSS-SoundEffect v2.0 (効果音、`hwnpu-music generate -m sfx`) — 2026-11-10
+
+- 選んだ理由: 効果音で Apache-2.0 か MIT のものを探し直した (small-models-survey.md の 1 節)
+  - MMAudio は重みが MIT だが、文の特徴に使う Apple DFN5B-CLIP が研究専用の許諾 (Apple Machine Learning Research Model License) なので外した
+  - MOSS-SoundEffect v2.0 (OpenMOSS、コードと重みが Apache-2.0) を 8 GB と 16 GB の両方に入れた。2 つの違いは文の符号器の形式だけ
+- 構造 (OpenMOSS/MOSS-TTS の moss_soundeffect_v2):
+  - 文の符号器は Qwen3-1.7B の最後の隠れ状態 (最後の norm の後)
+  - DiT は Wan 2.1 の 1.3B (30 ブロック、幅 1536、12 ヘッド、FFN 8960、交差注意は 512 行の文)
+  - VAE は DAC (潜在 128 チャネル、1 秒に 50、48 kHz モノラル。decoder_rates は 8 5 4 3 2)
+  - 生成は flow matching のオイラー法 (shift 5、カードの既定は 100 ステップ、CFG 4)
+  - 負のプロンプトは空文字なので、文脈はすべて 0 になる。文の符号器は要らない
+  - いつも 30 秒 (1500 フレーム) の潜在を消して、欲しい秒数だけを切り出す。プロンプトには「 duration: 10.0s」を付ける
+- PyTorch の .pth を Go で読む (`internal/torchzip`)
+  - torch.save の zip と pickle を、torch.save が書く opcode だけで読む。Python のクラスは作らない
+  - 対応したもの: `_rebuild_tensor_v2`、`_rebuild_parameter`、`OrderedDict`、ストライドとオフセット
+  - DAC の .pth は state_dict と metadata の dict で、weight norm は `weight_g` と `weight_v`。変換のときに g·v/|v| にまとめる
+- 参照は `tools/ref/ref_moss_sfx.py`。DAC、Wan DiT、スケジューラを torch と transformers だけで書き写した。サブコマンドは vae、text、run、hidden
+- DAC の復号 (5 段、すべて NPU、4 秒の音を 0.7 秒で。参照との相対誤差 0.93 %)
+  - Neural Engine は 1 次元 16384 までなので、段ごとに時間を区切って回す。区切りの前後には受容野より広い「のりしろ」を付け、ホストでつなぐ
+  - 畳み込みのゼロ詰めは、各畳み込みの入力にマスク (クリップの外は 0) を掛けて再現する。区切っても一続きのときと同じ値になる
+  - 最初は全段が NPU に載らなかった。分かった制約と対処:
+    - `sin` (Snake1d) が CPU に落ちる。`cos`、`floor`、`round`、`ceil`、`mod`、`floor_div`、`sign`、`cast` も同じ
+    - 代わりに、値 v の整数への丸めを fp16 で (v + 1536) - 1536 として作った。ただし 1536 は入力 `mg` で渡す必要がある (定数だと Core ML がこの足し引きを畳んで消す)
+    - その丸めで y = αx を π の倍数分戻し (π は 3.125 と残りに分ける)、sin を r/(π/2) の 9 次の級数で計算する。sin² の周期は π
+    - α が 1e-2 未満のチャネル (最初の DecoderBlock は最小 8e-6) は 1/α が fp16 を超えるので、αx²(1 - y²/3 + 2y⁴/45) で計算する
+    - `conv_transpose` は、ストライド 5 と 7 が CPU に落ちた。2048→1024 で k16 s8 のものは長さ 1536 で CPU に落ち、1024 なら NPU に載った (1 段目を 1024 にした)
+    - ストライド 8、4、3 の `conv_transpose` は NPU に載るが、値が参照から 22 %、45 %、4 % ずれた (M1。ストライド 2 は 0.3 %)
+    - ストライド 2 以外は多相に変えた (カーネル 2 の畳み込みで s·Cout チャネルを作り、reshape、transpose、reshape で時間に並べ替えて切り出す)。すべて NPU に載り、各段 0.14〜0.29 %
+    - これらの値のずれは、hwnpuinfo の配置を見ても、milcpu (`HWNPU_CPU_F16=1` でないと丸めの技が再現しない) でも分からない。段ごとに参照の入力を与え、実機で照合して見つけた
+- 文の符号器 (Qwen3-1.7B、`internal/llm/qwen3` を NoHead で使い、最後の norm はホスト。PromptRows 256 行、右詰めのパッドは因果注意なので前の行を変えない)
+  - 最初のトークンに、層 3 から最大 1.2e4 の massive activation が出る
+  - int8 では層 2 の down_proj の出力が NPU で inf になった。int8 はスケールを積和の後に掛けるので、途中の値があふれるとみられる。lut8 は先に fp16 の重みに戻すので問題ない
+  - 参照との相対誤差 (RMS) は次のとおり:
+
+    | 形式 | 誤差 | トークンごとのコサイン | 大きさ |
+    |---|---|---|---|
+    | fp16 | 0.66 % | 1.000 | 2.8 GB、4 部分 |
+    | lut8 | 10 % | 最初のトークン 0.943 | |
+    | lut8 + 層 0、1、2、26、27 を fp16 (`TextFP16`) | 4.9 % | 0.989 以上 | 1.7 GB |
+    | lut8 (kmeans-minmax) | 19 % | | |
+    | lut4 | 127 % | | |
+
+  - 16 GB 以上の機械は fp16、8 GB は lut8 + `TextFP16` にした (`sfx.Formats`)
+- DiT (5 ブロックずつ 6 プログラム、すべて NPU)
+  - 時刻の埋め込み、時刻の射影、各ブロックの scale_shift_table はホストが計算し、入力 `mod` (ブロックあたり 6 行と、頭の 2 行) で渡す
+  - RoPE は Wan では対 (2j, 2j+1) を回す。q と k の射影の行 (バイアスと RMSNorm の重みも) を並べ替え、blocks.ApplyRope の対 (j, j+64) にした。スコアは変わらない
+  - 残差の最大は 1.4e4 (最後のブロックの FFN) で、fp16 の上限の 4.6 分の 1 しかないので、1/4 に縮めて持つ (`DitScale`)
+  - 落とし穴: `DitScale` を型のない整数の定数にしたら `1/DitScale` が 0 になり、パッチの埋め込みと交差注意の出力が消えていた (速度が参照と 14 倍ずれた)。4.0 にして直した
+  - 参照の速度との相対誤差 (1 回の呼び出しの時間) は次のとおり。lut8 にした:
+
+    | 形式 | 誤差 | 1 回 | 大きさ |
+    |---|---|---|---|
+    | fp16 | 2.1 % | 1.65 s | 2.7 GB |
+    | lut8 | 2.7 % | 1.28 s | 1.4 GB |
+    | lut6 | 12.5 % | 1.15 s | |
+
+- 結果 (M1 16 GB)
+  - 4 ステップで参照と同じ雑音から作った音の波形のコサイン: 0.992 (16 GB の構成)、0.990 (8 GB の構成)
+  - 10 秒の音は 100 ステップで 4 分 16 秒 (1 ステップは 2 回の呼び出しで約 2.6 秒)、20 ステップで 52 秒
+  - 起動 (コンパイル済み): 文の符号器 2.6 秒、DiT と復号 2.7 秒
+  - 初回は変換が数秒、コンパイルが約 5 分
+  - 2 回目は一部をコンパイルし直した (26 秒と 1 分 13 秒)。3 回目からは 4 回続けて約 5 秒
+  - footprint の最大: 2.34 GB (文の符号器が fp16)、2.17 GB (lut8)
+  - 文の符号器のプログラムを先に動かして手放してから、DiT を読み込む
+- 確かめていないこと:
+  - 耳で聴くこと
+  - 8 GB の実機
+  - M2 での DAC の多相の変換
+  - ステップ数を減らしたときの質 (`-steps`)
+  - ftfy の fix_text は省いた (平文なら変わらない)
+  - Intel と AMD
+
+### 16.137 hwnpu-music を hwnpu-image に合わせる: サブコマンドと kong、効果音は同じ generate でモデル違い、8 GB 向けはタグで — 2026-11-10
+
+- 動機: 効果音は別のコマンド `hwnpu-sfx` にしていたが、音楽とはモデルが違うだけで、出力 (WAV、スピーカー) も表示も同じ。8 GB 向けの形式も環境変数 (`HWNPU_MEMORY`) ではなく、モデルのセレクターで選びたい
+- `hwnpu-music generate [STYLE|DESCRIPTION...]` と `hwnpu-music list [music|sfx]` に分けた。引数は hwnpu-image (16.123) と同じ kong で、フラグは `--model` (`-m`)、`--out` (`-o`)、`--duration` など 2 本の `-`。ヘルプは共通、Music、Sound effects のグループに分けた。`hwnpu-sfx` は消した
+- `-m sfx` (用途、別名 sound-effects) か `-m moss-soundeffect` (ファミリー) で効果音になる (`chat.ResolveForKinds` で music と sfx の両方を受け、種類で分ける)。音楽だけのフラグ (`--codes`、`--continue`、`--notes`) を効果音に付けるとエラー
+- 8 GB と 16 GB は models.yaml の別のモデルにした: `MOSS-SoundEffect-v2.0` (タグ v2.0、machine 16、文の符号器 fp16) と `MOSS-SoundEffect-v2.0-lut8` (タグ v2.0-lut8、machine 8、`like` で同じリポジトリ)。形式は選ばれたモデルの machine から決める (`sfx.Setup.Machine`、`sfx.Formats`)。`moss-soundeffect:8g`、`:8GB`、`:8gb` は 8 GB のマシンの選び方 (今までのメモリのタグ)、タグなしはこのマシンのメモリ。`TestPickSoundEffect`
+- 表示を hwnpu-image にそろえた: 経過は灰色 (`console.Log`)、配置は「all on the NPU」が緑、`NOT all on the NPU` が赤 (`console.Highlight`)、書いたファイルの行だけ普通の色。seed は省くと `rand.Uint64` で引き、灰色で出す (#93 と同じ)
+- 効果音の WAV は音楽と同じ 48 kHz ステレオ (モノラルを両方のチャンネルに)、利得 1 (音楽の WAV は参照に合わせて 0.5)。終わりの `--fade` は、音楽は既定 2 秒、効果音は付けたときだけ
+- 配置が分からないのは NPU から外れたのとは別に扱う: 8 GB 向けの文の符号器が、コンパイルし直した直後に `NOT all on the NPU` で止まり、次の起動では全部 NPU だった。hwnpuinfo でも全部 NPU。Neural Engine がコンパイルで忙しい間に MLComputePlan が 2 分で終わらず (`placement.Verified` が false)、外れたことにされていたとみる。`runner` に `Placement()` (分からないときは理由、外れたときは演算の内訳) を足し、分からないプログラムは「placement not known, going on」と出して続ける。音楽の `checkNPU` も同じ
+
+### 16.138 Apple: Sana と Sana-Sprint を Neural Engine で (`internal/imagegen/sana/mil`、Core ML) — 2026-11-10
 
 - AMD の 16.119 と同じ部品を MIL で書き、Core ML のパッケージにする (`hwnpu-image generate -m Sana-Sprint-0.6B`、`hwnpu-image convert REPO`)。Gemma 2 2B を 6 層ずつ 5 本 (int8、1 本 約 470 MB)、caption、DiT 4 ブロックずつ 7 本 (fp16)、final、VAE 13 段。時刻の埋め込みだけホスト (下)。初回に `sana.Prepare` がチェックポイントを `--dir/Sana` に落として変換し (10 秒)、Gemma 2 (`gemma-2-2b-it/`) と その書き出しは全 Sana で共有する (別の Sana の書き出しからハードリンク)
 - パイプライン (`internal/imagegen/sana`) はエンジンを 2 つに: IRON のグラフ (`ironEngine`、前の処理を移しただけ。bf16 → float32 → bf16 は可逆なので値は同じ) と Core ML (`progEngine`)。Anima の MIL の共通部分は `internal/imagegen/milpart` に移した (Anima の DiT の群、final、時刻、VAE の段の CPU インタプリタの出力が前とビット単位で同じ)

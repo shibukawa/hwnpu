@@ -2,7 +2,7 @@
 
 [日本語](new-model-checklist.ja.md)
 
-Written 2026-11-07, updated 2026-11-08 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B, Whisper large-v3-turbo, Qwen3.6-35B-A3B and checking drafts on AMD added). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
+Written 2026-11-07, updated 2026-11-10 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B, Whisper large-v3-turbo, Qwen3.6-35B-A3B and checking drafts on AMD added, and section 11 from preparing the image models through models.yaml). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
 
 ## Policy: power over speed
 
@@ -98,7 +98,7 @@ Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`
 
 What helped:
 
-- Scale the norms' inputs by 1/64 (Gemma 4: KL 3.17 → 0.0004; PLaMo 3 too)
+- Scale the norms' inputs by 1/64 (Gemma 4: KL 3.17 → 0.0004; PLaMo 3 too). Not small inputs, though (the embeddings entering layer 0): their squares fall under fp16's range and give NaN (Qwen3-0.6B's embeddings reach about 0.1, 16.127). Always look at layer 0 with `-f16`
 - Shrink the last layer with head-scale (PLaMo-Embedding), `-post-scale` (LFM3, 1.4–2.7 % a layer)
 - Keep residuals at 1/32, and divide by each row's maximum before a norm (Anima; a fixed scale made subnormals)
 - Fill padding rows with the last token (Gemma 4's eps becomes 0 in fp16 and gives NaN)
@@ -261,7 +261,7 @@ Drafts from an MTP layer: measure 1, 2 and 3 drafts on both code and prose. Each
 
 ## 8. Long contexts
 
-- Split at the attention (`-paged`): the cost follows the length used. 262144 by default
+- Split at the attention (`-paged`): the cost follows the length used. 262144 by default. Split, though, every attention layer calls the Neural Engine twice: a model whose layers all attend (Qwen3-0.6B's 28) runs 2 to 4 times faster as one program (16.127, `llm.Unpaged`). Count the attention layers and measure both
 - Two-level attention (`-sparse`): from about 48K. Passkey tests (128K, 250K, and three at 10 / 50 / 90 % of a document)
 - Layers with state (GDN): one token at a time must match chunks of Q=64 (the form of `TestCachedMatchesFull`)
 
@@ -310,11 +310,86 @@ Later, models will be chained, such as speech recognition → LLM → TTS, and r
 
 **Pass**: the values in the table above are written in the design.md section.
 
-## 11. Tried without effect (do not repeat)
+## 11. Running by name on every NPU (models.yaml and preparation)
+
+A model is not done when it runs from an export made by hand. Bringing it in also means putting it into models.yaml, so that a name, a family or a use gets it prepared and running on every NPU without manual steps.
+
+### 11.1 The order of preparation
+
+A command looks for a model in this order:
+
+1. **An export already here**: one converted before, with its `NAME.done` (written last). One that was cut off is made again
+2. **A distributed export** (later): only this NPU's subfolder, from Hugging Face ([prebuilt.md](prebuilt.md)). This waits until the export formats are stable, and does not exist yet
+3. **A conversion here**: download only the files the converter reads, check their sha256, convert, and write `.done`
+   - Apple and Intel convert with the Go converters. The models to follow are Anima on the Mac and Intel (`anima.Prepare`) and hwnpu-chat's models (`chat.Prepare`)
+   - AMD runs the IRON exporters (`tools/amd/iron_*.py`) in the IRON environment (mlir-aie, Peano, Python). When that environment is missing, stop and say what to install (INSTALL_AMD.md). Do not fail silently or leave the steps to the user
+4. **Not usable**: stop and say what is missing (no form for this NPU, no tools)
+
+- Download only the files the converter reads, never the whole repository. Some repositories hold both fp32 and fp16 copies (Sana 600M's repository is 16.5 GB, and 8.9 GB of it is needed)
+- When models of one family hold the same files, download them once and share them. All four Sana models hold the same Gemma 2 text encoder (5.2 GB)
+- A model with no form for this NPU falls back to where it can run (the CPU, for example) and says so. YuNet, for instance, runs on the CPU on Apple and Intel. Only an explicit `--device npu` is an error
+
+### 11.2 The values to write in models.yaml (measured, not estimated)
+
+| Field | What | How to measure | Pitfalls |
+|---|---|---|---|
+| `bytes` | The download | The sum of the files preparation downloads, from Hugging Face's API (`lfs.size` in `/api/models/OWNER/NAME/tree/main?recursive=true`) | A GB is 10⁹. `du -h` prints GiB: Sana-Sprint 0.6B's 7.7 GB was written as 7.2, and Anima's 5.9 GB as 5.5 |
+| `memory` | The peak while running | Sample every 0.1 s over one whole run, from loading to the end. On AMD, take the `Size` of the process's `/dev/accel/accel0` mappings (`smaps`) plus the RSS at the same moment. On a Mac, take `phys_footprint` and `mem.NPUWired` after one call | Take the peak of the whole run, not the value right after loading. Sana peaks in Gemma 2's text stage (2.3 GiB) and in the VAE (2.4 GiB, with two stages loaded at once by the prefetch). Its DiT takes only 0.37 GiB |
+| `machine` | The least memory of a machine the family recommends the model for | `memory` plus room for the OS and other applications | Keep models of the same size alike. DA3METRIC-LARGE (1.4 GB) has 8 and DA3MONO-LARGE (also 1.4 GB) has 24, which do not match |
+| `device` | Where it runs, by vendor (npu or cpu) | Compare the energy of one run (mJ) on the NPU and on the CPU (onnxruntime, 1 thread) | Small models lose on AMD's NPU (YuNet: 137 mJ on the NPU, 10 mJ on the CPU; each switch between operators costs about 250 µs). Do not carry one vendor's result over to another |
+
+- **Values that differ by NPU**: the download, the memory and the placement can differ from one NPU to another
+  - Anima takes 3.5 GB on AMD, and 4.1 GB is the value for the Mac
+  - The download differs too: AMD now downloads the checkpoint and exports here, and it will download only an export once distribution starts
+  - When they differ, write a table by vendor, in the same form as `device` (`memory: {amd: 3.5, apple: 4.1}`). A single value applies to every NPU. A vendor the table leaves out takes its largest value. The DOWNLOAD and MEMORY columns of `-list` and `hwnpu-image list` show the values for this machine's NPU
+- **Uses pick by memory like their families**: give a use's `picks` the same steps as its family. The use `depth` listed only DA3MONO-LARGE, so an 8 GB machine got the model meant for 24 GB
+- **How to check**:
+  - Print `hwnpu-image list` (`-list` for hwnpu-chat) with `HWNPU_MEMORY=8`, `16` and `24`. Check that the use's column and the family's column pick the same model
+  - On each NPU, check that `list` shows the right size, memory and RUNS FROM. A model that falls back to the CPU must show the CPU
+
+An example script for the measurement (AMD):
+
+```bash
+"$@" & pid=$!
+while kill -0 $pid 2>/dev/null; do
+  awk '/accel/{a=1;next} /^[0-9a-f]+-/{a=0} a&&/^Size:/{s+=$2} END{printf "%d ", s/1024}' /proc/$pid/smaps
+  awk '/VmRSS/{print int($2/1024)}' /proc/$pid/status    # the NPU and the RSS (MiB); memory is the peak of their sum
+  sleep 0.1
+done
+```
+
+### 11.3 Can AMD's export be done in Go?
+
+- Doing all of it in Go is hard. IRON turns a graph into MLIR, and mlir-aie and Peano (LLVM for the AIE cores) compile that into the xclbin and the ELF. Doing that in Go alone would mean rewriting these compilers
+- The compiled programs (`graph.elf`, the xclbin), though, depend only on the shapes. The weights are in separate banks (`bank_*.bin`, `embed.bin`). If the programs are distributed for each shape and Go writes the banks from the checkpoint, the user's machine needs no Python
+  - For that, each model's weight layout has to move to Go: the quantization to q8 or q4, the tile order, the im2col order of convolutions, and folds such as YuNet's convolution with its normalization
+- Until distribution (11.1, item 2) arrives, exports are made here with IRON
+- **The same shapes give the same programs, whatever the weights.** This was checked on the Sana exports on 2026-11-10
+  - The DiT blocks' `graph.elf` is byte for byte the same in Sana-Sprint 1.6B and SANA 1.5 1.6B
+  - The `graph.elf` of caption and of dit_out is the same in Sprint 0.6B and Sana 600M, and in Sprint 1.6B and SANA 1.5 1.6B
+  - dit_in differs in all four, because Sprint has a guidance embedding and so a different shape
+- **What the shape includes.** A change in any of these needs new programs:
+  - The structure's dimensions (layers, widths, heads)
+  - The picture sizes (Sana's sizes for each aspect, the nine sizes of DA3 and MoGe-2, YuNet's sizes)
+  - An LLM's context length and prompt chunk size
+  - The quantization format of each part (q4, q6, q8)
+  - The NPU's generation and its number of columns (NPU1, NPU2)
+  - The version of hwnpu's export format
+- **What the existing shapes cover**: fine-tunes of the same base, merged LoRAs and distilled models of the same structure, used at the distributed sizes and formats. They only need their banks written
+- **What the user's machine needs** (when Go writes the banks): what running needs today, with no compilers
+  - Linux: amdxdna (kernel 6.14 or later), the NPU's firmware, the memlock limit and access to `/dev/accel`
+  - Windows: AMD's NPU driver (`xrt_coreutil.dll`) and `xrtshim`
+  - Models placed on the CPU: the onnxruntime shared library
+  - Reading the checkpoints is done in Go. safetensors and ONNX can already be read. PyTorch's `.pt` (MoGe-2's `model.pt`, a pickle in a zip) is still to write
+- **Compiling without Python too** concerns only those who make new shapes and the CI that builds the distribution. Today's IRON (Python) can make those, so this is optional and has low priority
+  - What it still needs: mlir-aie (the C++ `aiecc`, `aie-opt`, `aie-translate`, `bootgen`; 853 MB as a wheel), Peano (`clang`, `llc` and `ld.lld` for AIE; 422 MB), and the kernels' sources with the AIE API headers. hwnpu-xclbin replaces xclbinutil
+  - What would move to Go: each IRON operator's design (the part that turns ObjectFIFOs, workers and the runtime sequence into MLIR) and `iron_graph.export_graph`
+
+## 12. Tried without effect (do not repeat)
 
 The gist of section 8 of [improvements.md](improvements.md): padding small models into batches for the ANE (slower than the CPU), fixing a small Qwen3.5's 4-bit MLP with GPTQ (the GPL stays broken; q6 instead), a faster GEMV from q6 (q8's time), getting past 1 GiB with multifunction (all on the CPU), the KV cache in MLState, an int8 KV cache, loading the next tier in the background, one Q=16 program, E4B at lut4, compressing the model, sparse attention on the top keys alone, AMD attention at 4 bits, a GEMV with one core per column, copying MoE experts, the DiT at `HIGH`, the DiT at q4 by default, q4nx prompts through bf16, RMSNorm with a fixed scale. Whisper's encoder LayerNorm divided by each row's maximum (the output did not change, 16.115), Whisper's encoder attention in chunks of queries (no faster).
 
-## 12. In progress (2026-11-08)
+## 13. In progress (2026-11-10)
 
 - Qwen3.6's prompt attention pipelines are not measured (it keeps 1)
 - AMD's checking of drafts (16.117): a GEMV of a few rows for q4 (Gemma 4, PLaMo 3, LFM3, Qwen3.5-4B and Qwen3.6 at 4 bits), Gemma 4's shared layers and ring caches, Qwen3.5's MTP layer as the drafter
@@ -322,5 +397,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Whisper: the formats on real recordings (noise, overlapping speakers)
 - Qwen3.5-4B's lut6 (2.97 GiB) on the M1 is just over its 2.8 GiB; 0.1–0.2 GiB less (the output layer at lut4, say) would let it run at full speed (16.109)
 - Apple's GPTQ codes: hwnpu-chat takes them with `-codes` and `-format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
+
+- Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter)
 
 When results come in, update the tables in 5.3 and 5.4 and this section.

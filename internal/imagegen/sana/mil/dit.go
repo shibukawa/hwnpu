@@ -9,7 +9,7 @@ import (
 
 // The linear attentions' keys are divided by these before their sums over the tokens, and each
 // query row (a head's 32 values at a token) by its largest value: N / D does not change, and the
-// sums stay within fp16. Measured in fp32 at 1024 x 1024 (design.md 16.127), the DiT's V^T K
+// sums stay within fp16. Measured in fp32 at 1024 x 1024 (design.md 16.138), the DiT's V^T K
 // reaches 2.1e4 and N 1.6e5, the VAE's 2.4e5 and 4.5e7.
 const (
 	DitKeyScale = 64
