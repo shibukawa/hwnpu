@@ -298,7 +298,7 @@ models:
     kind: image
     from: hf:Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers
     machine: 8
-    memory: 2.9
+    memory: 2.3
     bytes: 7.7e9
     about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU"
   Sana-Sprint-1.6B:
@@ -307,7 +307,7 @@ models:
     kind: image
     from: hf:Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers
     machine: 16
-    memory: 2.9
+    memory: 2.3
     bytes: 9.7e9
     about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's NPU"
   Sana-600M:
@@ -316,7 +316,7 @@ models:
     kind: image
     from: hf:Efficient-Large-Model/Sana_600M_1024px_diffusers
     machine: 8
-    memory: 2.9
+    memory: 2.3
     bytes: 8.9e9
     about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's NPU"
   SANA1.5-1.6B:
@@ -325,7 +325,7 @@ models:
     kind: image
     from: hf:Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers
     machine: 16
-    memory: 2.9
+    memory: 2.3
     bytes: 9.7e9
     about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's NPU"
   # hwnpu-image depth: the export ~/models/NAME.amd-npu2 (lower case) of tools/amd/iron_da3.py or

@@ -44,3 +44,29 @@ func TestTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestTextStart(t *testing.T) {
+	prefix := make([]int32, 208) // <bos> and the instruction
+	for i := range prefix {
+		prefix[i] = int32(i + 2)
+	}
+	prompt := append(append([]int32(nil), prefix[:207]...), 9001, 9002, 9003) // the last token merged with the prompt's
+	for _, c := range []struct {
+		name        string
+		ids         []int32
+		held, chunk int
+		want        int
+	}{
+		{"instruction", prompt, 192, 64, 192},
+		{"no held rows", prompt, 0, 64, 0},
+		{"negative prompt", []int32{2, 9001, 9002}, 192, 64, 0},
+		{"the instruction alone", prefix, 192, 64, 192},
+		{"shorter than a chunk", prefix[:50], 192, 64, 0},
+		{"a smaller chunk", prompt, 192, 32, 192},
+		{"held less than shared", prompt, 128, 64, 128},
+	} {
+		if got := textStart(c.ids, prefix, c.held, c.chunk); got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, got, c.want)
+		}
+	}
+}

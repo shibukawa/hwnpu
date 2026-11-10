@@ -57,18 +57,12 @@ func runSana(ctx context.Context, r sanaRun) error {
 	}
 	logf("loaded %s (%dx%d) in %s", filepath.Base(r.model), p.Dit.W(), p.Dit.H(), console.Duration(time.Since(t0)))
 
-	cond, err := p.Encode(ctx, r.prompt)
+	if r.negative != "" && m.Sprint {
+		return fmt.Errorf("Sana-Sprint runs no classifier-free guidance: --negative is for Sana")
+	}
+	cond, neg, err := p.EncodeBoth(ctx, r.prompt, r.negative)
 	if err != nil {
 		return err
-	}
-	var neg sana.Cond
-	if r.negative != "" {
-		if m.Sprint {
-			return fmt.Errorf("Sana-Sprint runs no classifier-free guidance: --negative is for Sana")
-		}
-		if neg, err = p.EncodeNegative(ctx, r.negative, cond); err != nil {
-			return err
-		}
 	}
 	var noises [][]float32
 	n := p.NoiseCount(steps)
