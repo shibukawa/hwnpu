@@ -134,7 +134,7 @@ func (e *progEngine) get(ctx context.Context, s *slot) (runner.Program, error) {
 		s.shown = true
 		if err == nil {
 			if retried && e.log != nil {
-				fmt.Fprintf(e.log, "  %s loaded\n", s.name)
+				fmt.Fprintf(e.log, "  %s loaded after making room\n", s.name)
 			}
 			s.p = p
 			return p, nil
@@ -147,7 +147,7 @@ func (e *progEngine) get(ctx context.Context, s *slot) (runner.Program, error) {
 			return nil, fmt.Errorf("%w (no other program loaded to make room)", err)
 		}
 		if e.log != nil {
-			fmt.Fprintf(e.log, "  the NPU's memory is full loading %s: %s unloaded, loaded again when it runs\n", s.name, v.name)
+			fmt.Fprintf(e.log, "  %s unloaded for %s (loaded again when it runs)\n", v.name, s.name)
 		}
 		e.unloaded++
 		v.p.Close()
@@ -237,6 +237,8 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Wri
 		p, err := openProgram(ctx, dev, dir, m.Backend, name)
 		if bar != nil {
 			switch {
+			case types.IsOutOfMemory(err):
+				bar.Done("does not fit in the NPU's memory beside the others: making room")
 			case err != nil:
 				bar.Done("failed")
 			case p.OnNPU():
