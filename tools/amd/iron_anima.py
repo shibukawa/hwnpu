@@ -50,6 +50,46 @@ import iron_mha  # noqa: E402
 PREFIX = "model.diffusion_model."
 
 
+def dit_prefix(path: Path) -> str:
+    """The diffusion model's tensor-name prefix: model.diffusion_model. (Turbo, Aesthetic) or
+    net. (anima-base-v1.0 and the previews); the names past it are the same."""
+    with open(path, "rb") as f:
+        (n,) = struct.unpack("<Q", f.read(8))
+        names = json.loads(f.read(n))
+    return "net." if any(k.startswith("net.") for k in names) else PREFIX
+
+
+def dit_weights(root: Path):
+    path = root / "diffusion_models" / ARGS.dit
+    return weights(path, dit_prefix(path))
+
+
+def empty_cond(dit) -> np.ndarray:
+    """The empty prompt's conditioning row (anima.EmptyCond in Go): diffusers runs an empty prompt
+    as one masked Qwen3 token, so the adapter's cross-attention (no biases, a zero source) adds
+    nothing and its self-attention over the one T5 row (</s>) is that row's value."""
+    def rms(x, w):
+        return x / np.sqrt(np.mean(x * x) + 1e-6) * w
+
+    def lin(w, x, b=None):
+        y = np.asarray(w, np.float64) @ x
+        return y if b is None else y + np.asarray(b, np.float64)
+
+    f = lambda n: np.asarray(dit[n], np.float64)  # noqa: E731
+    x = f("llm_adapter.embed.weight")[1]
+    i = 0
+    while f"llm_adapter.blocks.{i}.norm_self_attn.weight" in dit:
+        p = f"llm_adapter.blocks.{i}."
+        h = rms(x, f(p + "norm_self_attn.weight"))
+        x = x + lin(dit[p + "self_attn.o_proj.weight"], lin(dit[p + "self_attn.v_proj.weight"], h))
+        h = lin(dit[p + "mlp.0.weight"], rms(x, f(p + "norm_mlp.weight")), dit[p + "mlp.0.bias"])
+        h = 0.5 * h * (1 + np.vectorize(math.erf)(h / math.sqrt(2)))
+        x = x + lin(dit[p + "mlp.2.weight"], h, dit[p + "mlp.2.bias"])
+        i += 1
+    x = lin(dit["llm_adapter.out_proj.weight"], x, dit["llm_adapter.out_proj.bias"])
+    return rms(x, f("llm_adapter.norm.weight")).astype(np.float32)
+
+
 @dataclasses.dataclass
 class Precisions:
     """The matmuls' precision of each part (IRON's Precision; set from the command line).
@@ -591,7 +631,7 @@ class Text(iron.Graph):
 def export_text(root: Path, out: Path, check: bool) -> None:
     c = TextConfig()
     qwen = weights(root / "text_encoders" / "qwen_3_06b_base.safetensors", "model.")
-    dit = weights(root / "diffusion_models" / ARGS.dit, PREFIX)
+    dit = dit_weights(root)
     t0 = time.time()
     g = Text(c, qwen, dit)
     cg = g.compile(qx=(c.rows, c.hidden), tx=(c.rows, c.hidden))
@@ -604,6 +644,8 @@ def export_text(root: Path, out: Path, check: bool) -> None:
     shutil.copyfile(root / "diffusers" / "t5_tokenizer" / "tokenizer.json", out / "text" / "t5_tokenizer.json")
     (out / "text" / "qwen_embed.bin").write_bytes(bf(qwen["embed_tokens.weight"]).tobytes())
     (out / "text" / "t5_embed.bin").write_bytes(bf(dit["llm_adapter.embed.weight"]).tobytes())
+    # an empty negative prompt's conditioning, for classifier-free guidance (anima.EmptyCondFile)
+    (out / "text" / "empty_cond.bin").write_bytes(empty_cond(dit).astype("<f4").tobytes())
     if check:
         rng = np.random.default_rng(0)
         nq, nt = 37, 41
@@ -1071,9 +1113,11 @@ def timestep_sinusoid(t: float, dim: int) -> np.ndarray:
 
 
 def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
-    w = weights(root / "diffusion_models" / ARGS.dit, PREFIX)
+    w = dit_weights(root)
     rng = np.random.default_rng(0)
-    meta = dict(config=dataclasses.asdict(c), weights=dataclasses.asdict(DIT_FMT))
+    # checkpoint: the diffusion model, by which hwnpu-image picks Anima-Turbo's 8 steps without
+    # guidance or the others' 30 with it (anima.Pipeline.Distilled)
+    meta = dict(config=dataclasses.asdict(c), weights=dataclasses.asdict(DIT_FMT), checkpoint=ARGS.dit)
     # dit_in
     t0 = time.time()
     g = DitIn(c, w)

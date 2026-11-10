@@ -64,10 +64,10 @@ design.md 16 章の実装記録 (16.117 まで) と model-fit.md、intel-npu-mod
 | 会話の印はリングの使っている分だけ (16.71) | | | | ○ 翻訳 5 回で 578 → 183 MB | | | | 共通 |
 | 変換の後にメモリを OS に返す (16.71) | | | | ○ 起動直後 2.4 GB → 154 MB | | | | 共通 |
 | OpenVINO が残す `/dev/shm` を片付ける (16.72) | | | | | ○ 1 日 8.4 GB | | | Intel / OpenVINO |
-| Apple: ONNX のプログラムの sigmoid と SiLU を exp で書く (`ExpSigmoid`、16.148) | △ RTMDet-s 1 枚 6.6 → 9.3 ms | | | | | | ◎ RTMDet-s の ONNX Runtime との差 箱 98 → 5.5 px、スコア 0.35 → 0.063 | Apple |
-| ホストの縮小をクロージャなしに、行を全コアで (16.148) | ◎ 1 枚 37〜55 → 5〜7 ms (RTMDet、RTMO、LFM3-VL) | | | | | | バイト単位で同じ | 共通 |
-| Apple: PP-OCR の認識器を NPU に (softmax の手前の logit、18710 幅の出力を 2 つに、bias を linear に、fp16 のまま読む、読み取りを次の呼び出しの間に) (16.148) | ◎ 論文 1 ページ 98 行 1528 → 488 ms | | | | | | 同じ行 | Apple |
-| PP-OCR の認識器を 7 つの幅で、PaddleOCR と同じ詰め方に (16.148) | | | △ 幅ごとにプログラムのコンパイル (初回 5〜20 秒) | △ 最大 425 MB | | | ○ レシート 13 行中 PaddleOCR と同じ行 11 → 13 | 共通 |
+| Apple: ONNX のプログラムの sigmoid と SiLU を exp で書く (`ExpSigmoid`、16.149) | △ RTMDet-s 1 枚 6.6 → 9.3 ms | | | | | | ◎ RTMDet-s の ONNX Runtime との差 箱 98 → 5.5 px、スコア 0.35 → 0.063 | Apple |
+| ホストの縮小をクロージャなしに、行を全コアで (16.149) | ◎ 1 枚 37〜55 → 5〜7 ms (RTMDet、RTMO、LFM3-VL) | | | | | | バイト単位で同じ | 共通 |
+| Apple: PP-OCR の認識器を NPU に (softmax の手前の logit、18710 幅の出力を 2 つに、bias を linear に、fp16 のまま読む、読み取りを次の呼び出しの間に) (16.149) | ◎ 論文 1 ページ 98 行 1528 → 488 ms | | | | | | 同じ行 | Apple |
+| PP-OCR の認識器を 7 つの幅で、PaddleOCR と同じ詰め方に (16.149) | | | △ 幅ごとにプログラムのコンパイル (初回 5〜20 秒) | △ 最大 425 MB | | | ○ レシート 13 行中 PaddleOCR と同じ行 11 → 13 | 共通 |
 
 ◎ 大きく効く、○ 効く、△ 代償あり・小さい、✕ 悪化する
 
@@ -614,7 +614,7 @@ Apple / Intel (`hwnpu-image convert`):
 - AMD の固定メモリの残り (amd-npu-models.md 12 節):
   - VAE をタイルに分ける (DiT を 1 つの bank にした (16.106) ので、今は VAE の段が固定の最大)
 - Anima の残り:
-  - CFG (負のプロンプト)。Turbo でない Anima は 1 枚 10 分を超える見込み
+  - CFG (負のプロンプト) は 16.148 で済み (Anima-Aesthetic と Anima-Base、AMD の 1024² で 1 枚 4 分 40 秒)。Core ML と OpenVINO での実機の確認は未
   - ComfyUI のノードからの呼び出し
 - Qwen3.6-35B-A3B のプロンプトの残り (16.116、256 の塊 2.6 s): 専門家のコマンド (B、1.49 s) はカーネルの計算で決まる (重みを流すだけなら 1 層 8.4 + 4.4 ms のところ 19〜23 + 15〜17 ms。スカラーの MAC で mmul を使っていない。8 行ずつの bf16 の mmul は試して速くならなかった)、GDN と注意のコマンド (A、約 0.7 s。`GatedDeltaRule` が各行を 16 回受ける)、ホストの経路の選択 (1 層約 2.8 ms、ほとんどが x の 16 MB の写し)
 

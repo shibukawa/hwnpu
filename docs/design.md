@@ -3797,7 +3797,32 @@ diffusers の fp32 (CPU) の参照と同じノイズから (DiT の重み q8 で
 - 手元の 5 つの書き出し (bf16、q8、q6、q4 (GPTQ)、512) を作り直して置き換えた。DiT の書き出しは 40 秒前後、VAE は 1.5 分
 - 残り: 1 ステップ 4.6 秒 (1 ブロック約 165 ms) のうち注意は約 70 ms (自己注意 59 ms と交差注意)。次の律速は P·V のコア (bf16、1 呼び出し約 6 000 サイクル) と softmax の多項式の exp2。DiT の射影と MLP (bfp16 の GEMM) と正規化がブロックの残りの約 6 割
 
-### 16.148 物の検出 (RTMDet) と文字の読み取り (PP-OCRv6): `hwnpu-image detect`、`hwnpu-image ocr` — 2026-11-11
+### 16.148 Turbo でない Anima (Anima-Aesthetic、Anima-Base) と CFG、Sana-Sprint を外す、画像モデルの名前 — 2026-11-10
+
+**名前 (models.yaml)**
+
+- ファミリー `anima` は Turbo でない版にした: `anima` (`anima:aesthetic`) は Anima-Aesthetic v1.1、`anima:base` は Anima-Base v1.0。Turbo はファミリー `anima-turbo` (`Anima-Turbo`、タグ v1.1)。用途 `image` (`hwnpu-image generate` の既定) は速い Anima-Turbo のまま
+- Anima-Base は `machine: 0` (名前を明示したときだけ。ファミリーだけでは Aesthetic)
+- 新しい欄 `file`: 1 つのリポジトリにある複数のモデルのうち、そのモデルのチェックポイント。Anima の `split_files/diffusion_models/` の 3 つを選ぶ。hwnpu-image は `--dit` の既定にこれを使い、AMD の書き出しの案内にも `--dit` を出す
+- Sana は Sana 600M と SANA 1.5 1.6B だけにし、ファミリー `sana-full` を `sana` にした (`sana` は 8 GB で 600M、16 GB から 1.6B)
+
+**Turbo でない Anima** (amd-npu-models.md 11.6)
+
+- 重みは Turbo と同じ構造、同じ形 (685 本)。Base だけ名前の頭が `net.` (`model.diffusion_model.` でない) なので、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` で見分ける
+- CFG: `anima.Pipeline.Denoise` に負のプロンプトの条件づけとガイダンスの強さ。既定は書き出しの `checkpoint` (IRON の `dit_blocks` の meta、Core ML と OpenVINO の manifest の `dit`) で決め、turbo なら 8 ステップ CFG 1、ほかは 30 ステップ CFG 4 (モデルカードの 30〜50 と 4〜5)。記録のない前の書き出しは Turbo とみなす
+- エンジンの `velocity` は条件づけの列を取る。IRON は `dit_in` を 1 回、重みの組ごとに条件と無条件を続けて走らせる (重みの読み直しは 1 ステップ 7 回のまま)。512² で 1 ステップ 3.0 → 2.7 秒、潜在はビット単位で同じ。Core ML と OpenVINO も組ごとに両方を走らせる (メモリが足りずに読み直すプログラムを 1 ステップ 1 回に)
+- 空の負のプロンプト: diffusers の条件づけは重みだけで決まる 1 行 (マスクした Qwen3 のトークン 1 つ、`</s>` だけの T5。交差注意はバイアスがなく 0 を足す)。書き出しの `text/empty_cond.bin` に持たせた (`iron_anima.empty_cond`、`anima.EmptyCond`、どちらも diffusers とコサイン 1.0000)
+- `ref_anima.py --guidance --negative` (diffusers の ClassifierFreeGuidance、空のプロンプトの扱いも同じ)
+- 結果 (Ryzen AI 9 365、q8): 1024² の 30 ステップ CFG 4 で 1 枚 4 分 40 秒、4.8 kJ (Turbo は 44 秒、715 J)。固定の最大は Turbo と同じ 2409 MiB。512² の CPU fp32 の参照と同じノイズから潜在のコサイン 0.993、PSNR 27.4 dB (Turbo の 1024² 8 ステップは 0.947、17.6 dB)。CFG と 30 ステップで NPU の誤差が広がることはなかった
+- Core ML と OpenVINO の書き出しも `empty_cond.bin` と `dit` を書くが、Mac と Intel の実機では未確認
+
+**Sana-Sprint を外す**
+
+- Sana-Sprint 0.6B と 1.6B は、2 ステップで速い (1024² で 12〜32 秒) が、絵の質が Sana よりかなり低かった。models.yaml から外し、SCM の刻み (`SCMTimesteps`)、guidance の埋め込み (時刻の埋め込みの `guidance_embedder`、`dit_in` の `gproj`)、ステップごとのノイズを消した
+- `iron_sana.py`、`ref_sana.py`、`hwnpu-image convert` は `guidance_embeds` のチェックポイントを、`sana.Open` は `sprint` の書き出しを、理由を添えて断る
+- 過去の記録 (16.119、16.138〜139、16.145) の Sana-Sprint の数字はそのまま残す
+
+### 16.149 物の検出 (RTMDet) と文字の読み取り (PP-OCRv6): `hwnpu-image detect`、`hwnpu-image ocr` — 2026-11-11
 
 - 動機: Google Cloud Vision の物の位置 (object localization) と OCR にあたるもの。汎用の視覚言語モデル (LFM3-VL) でも座標を文で書かせられるが、箱ごとに数十トークンを生成するので 1 枚数秒かかり、小さな物や多くの物を落とし、座標がずれる。専用の 1 段の検出器は 1 回の推論で全部の箱を出す (NPU で数 ms)。視覚言語モデルは、検出した箱の切り出しを説明させる後段に向く
 - モデル (どれも Apache-2.0、ONNX で配られるものを `internal/onnx` で):

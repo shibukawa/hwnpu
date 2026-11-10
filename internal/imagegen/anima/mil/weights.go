@@ -19,8 +19,8 @@ import (
 )
 
 // Weights reads an Anima directory's checkpoints under one set of names: "dit." and the
-// diffusion model's names (model.diffusion_model. left out, the LLM adapter's llm_adapter.
-// among them), "qwen." and Qwen3-0.6B's (model. left out), "vae." and the diffusers VAE's.
+// diffusion model's names (model.diffusion_model., or net. in anima-base-v1.0 and the previews,
+// left out; the LLM adapter's llm_adapter. among them), "qwen." and Qwen3-0.6B's (model. left out), "vae." and the diffusers VAE's.
 type Weights struct {
 	files []source
 }
@@ -46,9 +46,24 @@ func OpenWeights(root, dit string) (*Weights, error) {
 			w.Close()
 			return nil, err
 		}
+		if s.prefix == "dit." {
+			s.strip = DitPrefix(f.Names())
+		}
 		w.files = append(w.files, source{s.prefix, s.strip, f, s.path})
 	}
 	return w, nil
+}
+
+// DitPrefix is the prefix of a diffusion model's tensor names: model.diffusion_model. (the
+// Turbo and Aesthetic files, as ComfyUI saves them) or net. (anima-base-v1.0 and the previews,
+// as Cosmos trains them); the names past it are the same.
+func DitPrefix(names []string) string {
+	for _, n := range names {
+		if strings.HasPrefix(n, "net.") {
+			return "net."
+		}
+	}
+	return "model.diffusion_model."
 }
 
 func (w *Weights) find(name string) (*source, string, error) {

@@ -2,7 +2,7 @@
 
 [日本語](new-model-checklist.ja.md)
 
-Written 2026-11-07, updated 2026-11-10 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B, Whisper large-v3-turbo, Qwen3.6-35B-A3B and checking drafts on AMD added, and section 11 from preparing the image models through models.yaml), 2026-11-11 (from RTMDet and PP-OCRv6: the ANE's sigmoid drift, axes past 16384, checking OCR). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
+Written 2026-11-07, updated 2026-11-10 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B, Whisper large-v3-turbo, Qwen3.6-35B-A3B and checking drafts on AMD added, and section 11 from preparing the image models through models.yaml), 2026-11-11 (7.1 on image generation's speed and the RTMDet and PP-OCRv6 findings: the ANE's sigmoid drift, axes past 16384, and checking OCR). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
 
 ## Policy: power over speed
 
@@ -86,7 +86,7 @@ Check that each part is `all on the NPU` with `hwnpu-dev info -model PART.mlpack
 - A `transpose` / `reshape` in the last part → take the output token-first (`attn_ot_N`, PLaMo 3). Elementwise operations after the output layer (Gemma 4's soft cap) → the host's sampling applies them to the top values only (`-logits host`, `llm.LogitSoftcap`, 16.113)
 - Parts with one row, and parts as programs of their own → 8 rows, or put into the neighbouring group (Anima, 16.85)
 - `reduce_sum` → sum with a matrix multiply (chunked attention: on the ANE 30 times of 30)
-- Any operation on a tensor wider than 16384 on an axis, even the identity that names the output y: PP-OCR's 18710 classes put the softmax, the bias's add and y on the CPU. Take the logits before the softmax, fold the bias into the linear, and split a wide output linear into parts stacked as (..., parts, n / parts), the same order (`internal/onnx`, 16.148)
+- Any operation on a tensor wider than 16384 on an axis, even the identity that names the output y: PP-OCR's 18710 classes put the softmax, the bias's add and y on the CPU. Take the logits before the softmax, fold the bias into the linear, and split a wide output linear into parts stacked as (..., parts, n / parts), the same order (`internal/onnx`, 16.149)
 
 ### 3.3 Does fp16 overflow?
 
@@ -103,7 +103,7 @@ What helped:
 - Shrink the last layer with head-scale (PLaMo-Embedding), `-post-scale` (LFM3, 1.4–2.7 % a layer)
 - Keep residuals at 1/32, and divide by each row's maximum before a norm (Anima; a fixed scale made subnormals)
 - Fill padding rows with the last token (Gemma 4's eps becomes 0 in fp16 and gives NaN)
-- The ANE's own `sigmoid` and `tanh` drift too: a CNN of 80 SiLUs written as x times its sigmoid (RTMDet's CSPNeXt) came out with a score 0.35 and a box 98 px off, while the CPU interpreter in fp16 was as close as fp16 weights allow. Write them with exp (`onnx.Program.ExpSigmoid`, 16.148). Find where a program drifts by comparing values of the graph on the ANE and on the CPU interpreter one at a time (`TestBisect` in `internal/vision/detect`)
+- The ANE's own `sigmoid` and `tanh` drift too: a CNN of 80 SiLUs written as x times its sigmoid (RTMDet's CSPNeXt) came out with a score 0.35 and a box 98 px off, while the CPU interpreter in fp16 was as close as fp16 weights allow. Write them with exp (`onnx.Program.ExpSigmoid`, 16.149). Find where a program drifts by comparing values of the graph on the ANE and on the CPU interpreter one at a time (`TestBisect` in `internal/vision/detect`)
 - The ANE's own `softplus` and `silu` are inaccurate (softplus returned 0 for some inputs; silu off by 1.4 % in its tail). Use `builder.softplus` and `builder.silu` (written with exp and log). Products below fp16's smallest normal (6e-5) lose digits on the ANE: scale them up and divide later (Qwen3.5's GDN output, 16.88). `hwnpu-dev check` on the CPU does not show these: compare the per-position KL on the ANE with Core ML's CPU (`HWNPU_COREML_UNITS=cpu`)
 
 ### 3.4 Pass
@@ -267,6 +267,34 @@ Compare only pairs measured back to back under the same conditions (on the M3 sw
 
 Drafts from an MTP layer: measure 1, 2 and 3 drafts on both code and prose. Each extra draft costs one call of the MTP layer with the output layer, and the third lost on Japanese (Qwen3.5-0.8B / 2B: 2 by default, 16.109). Bring back the state of layers whose state is replaced each step (GDN) on the host from the rows kept (`state-rows`), not by running them again: it helps prompt-lookup drafts too (26.1 → 32.1 tokens/s).
 
+### 7.1 Image generation (diffusion models)
+
+An image's time is the DiT's passes: steps × passes a step (2 with classifier-free guidance) × one pass. Anima-Aesthetic at 1024²: 30 × 2 × 4.55 s = 273 of 280 s; the text and the VAE take a few seconds. Cut the number of passes first, then a pass's time. Estimate a pass's work to see the room left: Anima's DiT is about 17 TFLOP a pass (28 blocks: the projections and MLP 481 GFLOP, attention 137 GFLOP a block), 3.8 TFLOPS at 4.55 s against the NPU's nominal 50 TOPS. Check every change from the same noise against the CPU float32 reference (the latent's cosine, the image's PSNR) and on a grid of seeds (compositions), as in section 9.
+
+Done (bring them in from the start):
+
+| Method | Lesson | Section |
+|---|---|---|
+| **CFG's two passes run per weight group** | When a group's weights are read into one bank in turn (`SwapVariants`), run the conditional and the unconditional pass back to back in each group, so the reads stay 7 a step. The timestep and patch embedding (`dit_in`) does not depend on the prompt and runs once. Anima 512²: 3.0 → 2.7 s a step, the same bits | 16.148 |
+| An empty negative prompt as a constant | diffusers runs an empty prompt as masked tokens, which a text graph cannot mask all of. What is left is one row computed from the weights alone, done at export (`text/empty_cond.bin`) | 16.148 |
+| Image attention in key blocks of 64, QK^T in bfp16 (`ImageMHA`) | mha.cc's fast softmax runs only at 64 keys; native bf16 mmul is ~24 MACs a cycle. 4096² × 16 × 128: 146 → 59 ms | 16.147 |
+| VAE convolutions on the grid (`GridGEMM`, phase upsampling) | Anima's VAE 9.3 → 5.2 s | 16.139, 16.147 |
+| The distilled model as the default | Anima-Turbo (8 steps, no CFG) is 44 s against Aesthetic's 4 min 40 s; the use `image` picks it | 16.148 |
+
+Not tried yet (estimates; measure them before adopting):
+
+| Method | Expected | Note |
+|---|---|---|
+| **A second-order multistep solver** (DPM++ 2M, UniPC for flow matching) instead of Euler | 30 → 20 steps, about −33 % | Host only (`sched.go`). Anima's scheduler is `FlowMatchEulerDiscrete` (shift 3). Compare against Euler at 30 steps, not only the reference |
+| **CFG in a limited interval** (Kynkäänniemi et al., 2024) | About −15–30 % | Skip the unconditional pass at the noisiest and the last steps. The paper reports the same or better quality |
+| Reusing a step's result (TeaCache, First-Block Cache) | 1.5–2× reported on other DiTs | Run the first block; when its residual changed less than a threshold, add the previous step's residual of the other blocks. Keeps a hidden grid a pass on the device (Anima 1024²: 4096 × 2048 bf16, 16 MiB). Details can break |
+| Work that is the same at every step, out of the loop | Small (Anima: the text's cross-attention keys and values, 28 × 2 × 512 × 1024 × 2048 a pass, 0.7 % of the work, and their calls) | Anima computes them in every block at every step (`iron_anima.py`'s `cross_attn.qkv`). Compute them once a prompt (and once for the negative) |
+| Same-shaped VAE stages in one graph (16.139) | Fewer loads (Sana: a stage slowed 0.76 → 1.1 s while the next loaded beside it); not measured on Anima | Anima's three `up_blocks.3` ResBlocks are still three stages (`vae_stages`). The VAE is 12 % of Turbo's 44 s |
+| P·V in bfp16 (`pv_bfp16`) | Self-attention 59 → 54 ms a block, about −3 % | Changes details more than QK^T alone (16.147) |
+| The projections' and MLP's GEMMs, the norms | 10–30 % a pass | About 5 TFLOPS now, the rest of a block (60 %). Kernel work |
+
+Without effect (do not do): the conditional and unconditional passes batched into one (the GEMMs already have 4096 rows), the GPU beside the NPU (the policy), the DiT at `HIGH` (section 12).
+
 ## 8. Long contexts
 
 - Split at the attention (`-paged`): the cost follows the length used. 262144 by default. Split, though, every attention layer calls the Neural Engine twice: a model whose layers all attend (Qwen3-0.6B's 28) runs 2 to 4 times faster as one program (16.127, `llm.Unpaged`). Count the attention layers and measure both
@@ -284,7 +312,7 @@ Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for wh
 | Image descriptions, TTS | Compare the answers for the same images and audio. Run TTS output back through ASR |
 | Transcription | English: LibriSpeech's 73 validation clips (`hf-internal-testing/librispeech_asr_dummy`, with the truth); Japanese: 12 texts in four `say` voices. Count the clips word for word the same as HF fp32, and the WER / CER (16.115). Audio over 30 seconds too |
 | Embeddings | Cosine against HF |
-| Detection, OCR | Compare the objects (class, score, box) with ONNX Runtime, and every anchor's score and box against the graph with only its weights rounded to fp16 (`tools/ref/onnx_f16_weights.py`). For OCR, run the vendor's whole pipeline as a reference (`tools/ref/ref_ppocr.py`) and count the lines read word for word the same (`compare_ocr.py`): the host's part (boxes, crops, widths) changes the text as much as the network. A recognizer that attends over the whole width reads a line differently with more padding after it: pad as the vendor does (16.148) |
+| Detection, OCR | Compare the objects (class, score, box) with ONNX Runtime, and every anchor's score and box against the graph with only its weights rounded to fp16 (`tools/ref/onnx_f16_weights.py`). For OCR, run the vendor's whole pipeline as a reference (`tools/ref/ref_ppocr.py`) and count the lines read word for word the same (`compare_ocr.py`): the host's part (boxes, crops, widths) changes the text as much as the network. A recognizer that attends over the whole width reads a line differently with more padding after it: pad as the vendor does (16.149) |
 | Image generation | Compare images from the same noise. The composition can change with some seeds (one in four). A distilled few-step model (Sana-Sprint) spreads small changes of its conditioning: a 0.23 % change of the caption moved one latent's cosine to 0.965, so one image's latent cosine cannot compare forms of a part before it. Judge such a part (the text encoder) by its own error against float32 and by a grid of several prompts' pictures (16.138) |
 
 **In practice**:
@@ -345,6 +373,7 @@ A command looks for a model in this order:
 | `bytes` | The download | The sum of the files preparation downloads, from Hugging Face's API (`lfs.size` in `/api/models/OWNER/NAME/tree/main?recursive=true`) | A GB is 10⁹. `du -h` prints GiB: Sana-Sprint 0.6B's 7.7 GB was written as 7.2, and Anima's 5.9 GB as 5.5 |
 | `memory` | The peak while running | Sample every 0.1 s over one whole run, from loading to the end. On AMD, take the `Size` of the process's `/dev/accel/accel0` mappings (`smaps`) plus the RSS at the same moment. On a Mac, take `phys_footprint` and `mem.NPUWired` after one call | Take the peak of the whole run, not the value right after loading. Sana peaks in Gemma 2's text stage (2.3 GiB) and in the VAE (2.4 GiB, with two stages loaded at once by the prefetch). Its DiT takes only 0.37 GiB |
 | `machine` | The least memory of a machine the family recommends the model for | `memory` plus room for the OS and other applications | Keep models of the same size alike. DA3METRIC-LARGE (1.4 GB) has 8 and DA3MONO-LARGE (also 1.4 GB) has 24, which do not match |
+| `file` | The model's checkpoint file, when one repository holds several models | The repository's file list | Anima's `split_files/diffusion_models/` holds Turbo, Aesthetic and Base (`anima-turbo-v1.1.safetensors` and so on). Their tensor names can differ in prefix (Base's are `net.`) |
 | `device` | Where it runs, by vendor (npu or cpu) | Compare the energy of one run (mJ) on the NPU and on the CPU (onnxruntime, 1 thread) | Small models lose on AMD's NPU (YuNet: 137 mJ on the NPU, 10 mJ on the CPU; each switch between operators costs about 250 µs). Do not carry one vendor's result over to another |
 
 - **Values that differ by NPU**: the download, the memory and the placement can differ from one NPU to another
@@ -407,6 +436,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Qwen3.5-4B's lut6 (2.97 GiB) on the M1 is just over its 2.8 GiB; 0.1–0.2 GiB less (the output layer at lut4, say) would let it run at full speed (16.109)
 - Apple's GPTQ codes: hwnpu-chat takes them with `--codes` and `--format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
+- Anima-Aesthetic's speed (4 min 40 s an image at 1024²): the untried items of 7.1, the solver and CFG in an interval first
 - Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter)
 
 When results come in, update the tables in 5.3 and 5.4 and this section.

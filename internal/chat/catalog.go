@@ -78,6 +78,9 @@ type Model struct {
 	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
 	// NPU has no form of.
 	AMDExport []string
+	// File is the model's checkpoint file in a repository that holds several models (Anima's
+	// diffusion models: anima-turbo-v1.1.safetensors), "" when the repository is the one model.
+	File string
 	// With are the other repositories the model reads, by role (an OCR's detector): OWNER/NAME
 	// or OWNER/NAME@REVISION as fetch takes them. Their files' sha256 are SHA256's ROLE/FILE.
 	With map[string]string

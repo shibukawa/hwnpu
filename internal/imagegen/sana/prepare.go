@@ -19,9 +19,9 @@ type Setup struct {
 	// Dir holds the checkpoints (a directory per repository, Gemma 2 in TextDir, shared by every
 	// Sana) and the exports.
 	Dir string
-	// Repo is the Hugging Face repository (Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers).
+	// Repo is the Hugging Face repository (Efficient-Large-Model/Sana_600M_1024px_diffusers).
 	Repo string
-	// Name names the export (Sana-Sprint-0.6B).
+	// Name names the export (Sana-600M).
 	Name string
 	ConvertOptions
 	Log io.Writer

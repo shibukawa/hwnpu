@@ -140,7 +140,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	m := &ProgramManifest{Backend: llm.BackendCoreML, Version: ExportVersion,
 		Formats: map[string]string{"text": o.TextFormat, "dit": o.DitFormat, "vae": "fp16"},
 		Dit: DitConfig{Width: o.Width, Height: o.Height, Hidden: dc.Hidden, Layers: dc.Layers, Latent: dc.Latent,
-			Guidance: dc.Guidance, GuidanceScale: dc.GuidanceScale, TextRows: mil.TextRows, Group: o.Group,
+			TextRows: mil.TextRows, Group: o.Group,
 			VAEScale: mil.VAEScale, Caption: dc.Caption},
 		Text: TextConfig{Rows: mil.TextLen, Hidden: gc.Hidden, Vocab: gc.Vocab}}
 	for _, gr := range groups {
@@ -155,7 +155,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	}
 	m.Time = TimeFile
 	if len(o.Only) == 0 || o.Only["time"] {
-		if err := writeTimeFile(filepath.Join(out, TimeFile), w, dc.Guidance); err != nil {
+		if err := writeTimeFile(filepath.Join(out, TimeFile), w); err != nil {
 			return err
 		}
 	}
@@ -210,7 +210,6 @@ func readModel(root string) (Model, error) {
 	var sc struct {
 		Class      string  `json:"_class_name"`
 		Prediction string  `json:"prediction_type"`
-		SigmaData  float64 `json:"sigma_data"`
 		Algorithm  string  `json:"algorithm_type"`
 		Order      int     `json:"solver_order"`
 		FlowSigmas bool    `json:"use_flow_sigmas"`
@@ -226,19 +225,15 @@ func readModel(root string) (Model, error) {
 	if err := json.Unmarshal(b, &sc); err != nil {
 		return Model{}, err
 	}
-	m := Model{Name: filepath.Base(root), Sprint: tc.Guidance, Guidance: 4.5}
+	m := Model{Name: filepath.Base(root), Guidance: 4.5}
 	if tc.Guidance {
-		if sc.Class != "SCMScheduler" || sc.Prediction != "trigflow" {
-			return m, fmt.Errorf("sana: scheduler %s (%s) is not Sana-Sprint's", sc.Class, sc.Prediction)
-		}
-		m.Steps, m.SigmaData, m.MaxT = 2, sc.SigmaData, 1.57080
-	} else {
-		if sc.Class != "DPMSolverMultistepScheduler" || sc.Prediction != "flow_prediction" || sc.Algorithm != "dpmsolver++" ||
-			sc.Order != 2 || !sc.FlowSigmas {
-			return m, fmt.Errorf("sana: scheduler %s (%s, %s, order %d) is not Sana's", sc.Class, sc.Prediction, sc.Algorithm, sc.Order)
-		}
-		m.Steps, m.FlowShift, m.TrainSteps = 20, sc.FlowShift, sc.Train
+		return m, mil.ErrSprint
 	}
+	if sc.Class != "DPMSolverMultistepScheduler" || sc.Prediction != "flow_prediction" || sc.Algorithm != "dpmsolver++" ||
+		sc.Order != 2 || !sc.FlowSigmas {
+		return m, fmt.Errorf("sana: scheduler %s (%s, %s, order %d) is not Sana's", sc.Class, sc.Prediction, sc.Algorithm, sc.Order)
+	}
+	m.Steps, m.FlowShift, m.TrainSteps = 20, sc.FlowShift, sc.Train
 	return m, nil
 }
 

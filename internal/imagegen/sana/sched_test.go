@@ -45,19 +45,3 @@ func TestDPM(t *testing.T) {
 		}
 	}
 }
-
-func TestSCM(t *testing.T) {
-	ts := SCMTimesteps(2, 1.5708)
-	if ts[0] != 1.5708 || ts[1] != 1.3 || ts[2] != 0 {
-		t.Errorf("SCMTimesteps(2) = %v", ts)
-	}
-	// diffusers' first step: st = sin(1.5708)/(cos+sin) = 1.0 (ref_sana.py's step 0)
-	_, st := SCMInput(1.5708)
-	if math.Abs(st-1) > 1e-5 {
-		t.Errorf("st = %v", st)
-	}
-	_, st = SCMInput(1.3)
-	if math.Abs(st-0.7827) > 1e-4 {
-		t.Errorf("st(1.3) = %v, want 0.7827", st)
-	}
-}

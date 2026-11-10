@@ -43,6 +43,9 @@ type ProgramManifest struct {
 	Blocks []string `json:"blocks"` // the DiT's groups of blocks, in order
 	Final  string   `json:"final"`
 	Vae    []string `json:"vae"` // the VAE's stages, in order
+	// Dit is the diffusion model's file the export was made from (ConvertOptions.Dit); empty
+	// in earlier exports, which were all of Anima-Turbo.
+	Dit string `json:"dit,omitempty"`
 }
 
 // IsProgramExport reports whether dir holds an export of hwnpu-image convert.
@@ -94,8 +97,9 @@ type progEngine struct {
 	vae      []string
 	open     func(ctx context.Context, name string, show bool) (runner.Program, error)
 	log      io.Writer
-	cond     []float32
 	textRows int
+	// checkpoint is the diffusion model of the export (ProgramManifest.Dit).
+	checkpoint string
 	// timeRows is the rows the time part takes (mil.TimeRows; 1 in earlier exports).
 	timeRows int
 
@@ -210,7 +214,7 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Wri
 	}
 	dc = DitConfig{Width: m.Width, Height: m.Height, Hidden: 2048, Layers: 28, TextDim: progHidden, TextTokens: progRows,
 		LatentChannels: 16, Patch: 2, VAEScale: 8, Group: 28 / max(1, len(m.Blocks))}
-	e := &progEngine{dit: dc, textRows: progRows, log: log}
+	e := &progEngine{dit: dc, textRows: progRows, log: log, checkpoint: m.Dit}
 	// the programs in the order they load, for "[3/19]"
 	total := 3 + len(m.Blocks) + len(m.Vae)
 	if m.Patch != "" {
@@ -337,12 +341,7 @@ func (e *progEngine) text(ctx context.Context, qx, tx []float32, nq, nt int) ([]
 	return e.run(ctx, e.textP, map[string][]float32{"qx": qx, "tx": tx, "qbias": bias(nq, e.textRows), "tbias": bias(nt, e.textRows)})
 }
 
-func (e *progEngine) setCond(cond []float32) error {
-	e.cond = cond
-	return nil
-}
-
-func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32) ([]float32, error) {
+func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32, conds [][]float32) ([][]float32, error) {
 	// the step's sinusoid in row 0, zeros in the rest; its embedding is row 0 of the output
 	tx := make([]float32, e.timeRows*len(tproj))
 	copy(tx, tproj)
@@ -357,12 +356,25 @@ func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32) ([]
 			return nil, fmt.Errorf("patch: %w", err)
 		}
 	}
+	// each group runs every conditioning before the next group: a group a program that is
+	// loaded again when the NPU's memory is short (Intel) loads once a step
+	xs := make([][]float32, len(conds))
+	for k := range xs {
+		xs[k] = x
+	}
 	for i, b := range e.blocks {
-		if x, err = e.run(ctx, b, map[string][]float32{"x": x, "t": t, "ctx": e.cond}); err != nil {
-			return nil, fmt.Errorf("blocks group %d: %w", i, err)
+		for k, cond := range conds {
+			if xs[k], err = e.run(ctx, b, map[string][]float32{"x": xs[k], "t": t, "ctx": cond}); err != nil {
+				return nil, fmt.Errorf("blocks group %d: %w", i, err)
+			}
 		}
 	}
-	return e.run(ctx, e.fin, map[string][]float32{"x": x, "t": t})
+	for k := range xs {
+		if xs[k], err = e.run(ctx, e.fin, map[string][]float32{"x": xs[k], "t": t}); err != nil {
+			return nil, err
+		}
+	}
+	return xs, nil
 }
 
 func (e *progEngine) hasVAE() bool { return len(e.vae) > 0 }

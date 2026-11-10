@@ -149,6 +149,9 @@ type modelEntry struct {
 	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU: its model
 	// and options (lfm3 --max-seq-len 12288 --q4), run when the export is not here.
 	AMDExport *string `yaml:"amd_export"`
+	// File is the model's checkpoint file in a repository that holds several models (Anima's
+	// split_files/diffusion_models/anima-turbo-v1.1.safetensors: the file's name).
+	File *string `yaml:"file"`
 	// With are the other repositories the model reads, by role (detector:
 	// hf:PaddlePaddle/PP-OCRv6_small_det_onnx@REV): each an hf:OWNER/NAME, pinned or not. Their
 	// files' sha256 are under ROLE/FILE.
@@ -515,7 +518,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out := *base
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, With: e.With})
+		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, File: e.File, With: e.With})
 	return &out, nil
 }
 
@@ -528,7 +531,7 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 		}
 		return *p
 	}
-	m.Family, m.Tag, m.About, m.Arch = get(e.Family), get(e.Tag), get(e.About), get(e.Arch)
+	m.Family, m.Tag, m.About, m.Arch, m.File = get(e.Family), get(e.Tag), get(e.About), get(e.Arch), get(e.File)
 	m.AMDExport = strings.Fields(get(e.AMDExport))
 	m.Kind = Kind(get(e.Kind))
 	if _, ok := kinds[m.Kind]; !ok {

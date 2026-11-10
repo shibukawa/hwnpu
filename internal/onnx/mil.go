@@ -33,7 +33,7 @@ type Program struct {
 	// ExpSigmoid writes Sigmoid as 1 / (1 + exp(-x)), and x times its sigmoid (SiLU) as
 	// x / (1 + exp(-x)), as blocks.SiLU: the Neural Engine's own sigmoid drifts a little, which
 	// a network of many SiLUs (RTMDet's CSPNeXt, 80 of them) gathers into a score 0.35 and a box
-	// 98 pixels off (docs/design.md 16.148). Off, Sigmoid is Core ML's (the earlier programs).
+	// 98 pixels off (docs/design.md 16.149). Off, Sigmoid is Core ML's (the earlier programs).
 	ExpSigmoid bool
 	// widths and folded are filled in by Build.
 	widths    []int

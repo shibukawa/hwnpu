@@ -42,8 +42,8 @@
 | SwiftF0 | ◎ 入れた。全部 NPU、41 秒を 0.24 秒、ONNX と有声 / 無声が全フレーム一致 | `hwnpu-pitch` | design.md 16.128 |
 | RTMO-s | ◎ 入れた。全部 NPU (尾部はホスト)、1 枚約 0.1 秒 | `hwnpu-pose` | design.md 16.129 |
 | Basic Pitch | ○ 入れた。参照と同じ音符、35 倍速。畳み込み 1 つと ReLU が CPU | `hwnpu-notes` | design.md 16.129 |
-| RTMDet-tiny / s / m | ◎ 入れた。全部 NPU (頭の畳み込みまで。箱の復号と NMS はホスト)、M1 で 1 枚 7 / 9 / 18 ms。ONNX Runtime と同じ物、箱の差は重みを fp16 に丸めた分 | `hwnpu-image detect` | design.md 16.148 |
-| PP-OCRv6 small | ◎ 入れた。検出器と認識器 (7 つの幅) が全部 NPU、論文 1 ページ 98 行が 0.5 秒。PaddleOCR の手順の参照と 93 / 98 行が同じ | `hwnpu-image ocr` | design.md 16.148 |
+| RTMDet-tiny / s / m | ◎ 入れた。全部 NPU (頭の畳み込みまで。箱の復号と NMS はホスト)、M1 で 1 枚 7 / 9 / 18 ms。ONNX Runtime と同じ物、箱の差は重みを fp16 に丸めた分 | `hwnpu-image detect` | design.md 16.149 |
+| PP-OCRv6 small | ◎ 入れた。検出器と認識器 (7 つの幅) が全部 NPU、論文 1 ページ 98 行が 0.5 秒。PaddleOCR の手順の参照と 93 / 98 行が同じ | `hwnpu-image ocr` | design.md 16.149 |
 | Magenta RealTime 2 small | ◎ 入れた。言語モデルと SpectroStream の復号と符号化、MusicCoCa の文と音楽の符号器がプログラム (NPU)。文と録音からの曲調 (参照と同じ符号)、混ぜ合わせ、MIDI の音符、打楽器、録音の続き、ストリーミング | `hwnpu-music generate` | design.md 16.130、16.131 |
 | MOSS-SoundEffect v2.0 | ◎ 入れた。文の符号器、DiT、DAC の復号がすべて NPU。16 GB 以上は文の符号器が fp16、8 GB は lut8 (5 層だけ fp16)。4 ステップで参照と同じ雑音からの波形のコサイン 0.99 | `hwnpu-music generate -m sfx` | design.md 16.136 |
 | SoulX-Singer | 未着手 (日本語の歌詞は受けない) | — | — |

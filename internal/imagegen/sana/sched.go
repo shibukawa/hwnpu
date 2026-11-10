@@ -4,27 +4,6 @@ import (
 	"math"
 )
 
-// SCMTimesteps are Sana-Sprint's TrigFlow times of steps SCM steps (diffusers' SCMScheduler):
-// max, 1.3, 0 for two steps (the pipeline's intermediate time), else steps+1 evenly from max
-// to 0.
-func SCMTimesteps(steps int, max float64) []float64 {
-	if steps == 2 {
-		return []float64{max, 1.3, 0}
-	}
-	t := make([]float64, steps+1)
-	for i := range t {
-		t[i] = max - max*float64(i)/float64(steps)
-	}
-	return t
-}
-
-// SCMInput is the factor the latents x take into the DiT at TrigFlow time s: (x / sigma_data)
-// times sqrt(st^2 + (1 - st)^2), and st, the time the DiT is told.
-func SCMInput(s float64) (scale, st float64) {
-	st = math.Sin(s) / (math.Cos(s) + math.Sin(s))
-	return math.Sqrt(st*st + (1-st)*(1-st)), st
-}
-
 // DPM is diffusers' DPMSolverMultistepScheduler as Sana's repositories set it: DPM-Solver++ of
 // order 2 (midpoint) on flow sigmas shifted by Shift, the final sigma 0 and the last step of
 // the first order.

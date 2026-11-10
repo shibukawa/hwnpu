@@ -291,10 +291,10 @@ $Tests = @(
         Args = @("resident", "-resident-run=false", "-resident-hold", "open", "-resident-max-gb", "8", "-o", "{OUT}\resident-load-only.md")
         Note = "the same held open without running any: tells a crash (0xc0000005) in running from one in loading" }),
   (T @{ Name = "image-512"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 180
-        Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "-o", "{OUT}\anima-512.png", $Anima)
+        Args = @("--backend", "intel", "-m", "anima-turbo", "--size", "512", "--seed", "1", "-o", "{OUT}\anima-512.png", $Anima)
         Note = "Anima-Turbo 512 x 512, 8 steps: downloads, converts to OpenVINO IR (fp16), draws" }),
   (T @{ Name = "image-512-int8"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 120
-        Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "--dit-format", "int8", "--text-format", "int8", "-o", "{OUT}\anima-512-int8.png", $Anima)
+        Args = @("--backend", "intel", "-m", "anima-turbo", "--size", "512", "--seed", "1", "--dit-format", "int8", "--text-format", "int8", "-o", "{OUT}\anima-512-int8.png", $Anima)
         Note = "the same in int8 (half the memory of fp16): compare the image and the step's time" }),
 
   (T @{ Name = "report-low"; Level = 2; Exe = "hwnpu-dev"; Sub = "report"; Min = 20
@@ -319,7 +319,7 @@ $Tests = @(
         Args = @("--backend", "intel", "-m", "plamo-3-translate-2b", "--temp", "0")
         Note = "PLaMo 3 Translate 2B, int8" }),
   (T @{ Name = "image-1024"; Level = 2; Exe = "hwnpu-image"; Sub = "generate"; Min = 240
-        Args = @("--backend", "intel", "-m", "anima", "--size", "1024", "--seed", "1", "-o", "{OUT}\anima-1024.png", $Anima)
+        Args = @("--backend", "intel", "-m", "anima-turbo", "--size", "1024", "--seed", "1", "-o", "{OUT}\anima-1024.png", $Anima)
         Note = "Anima-Turbo 1024 x 1024" }),
   (T @{ Name = "resident-int8"; Level = 2; Exe = "hwnpu-dev"; Sub = "probe"; Min = 60
         Args = @("resident", "-resident-formats", "int8", "-resident-hold", "open", "-resident-max-gb", "8", "-o", "{OUT}\resident-int8.md")

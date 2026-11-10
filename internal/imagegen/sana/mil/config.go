@@ -2,6 +2,7 @@ package mil
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,8 +30,6 @@ type Dit struct {
 	MLP           int // the GLUMBConv's hidden channels
 	Caption       int // the text's width (Gemma 2's hidden, 2304)
 	Latent        int // DC-AE's channels (32)
-	Guidance      bool
-	GuidanceScale float64
 	QKNorm        bool
 }
 
@@ -67,7 +66,6 @@ func ReadDit(root string, w, h int) (Dit, error) {
 		Patch        int      `json:"patch_size"`
 		Interp       *float64 `json:"interpolation_scale"`
 		Guidance     bool     `json:"guidance_embeds"`
-		GScale       float64  `json:"guidance_embeds_scale"`
 		QKNorm       *string  `json:"qk_norm"`
 		AttnBias     bool     `json:"attention_bias"`
 	}
@@ -75,6 +73,8 @@ func ReadDit(root string, w, h int) (Dit, error) {
 		return Dit{}, fmt.Errorf("sana: transformer/config.json: %w", err)
 	}
 	switch {
+	case cfg.Guidance:
+		return Dit{}, ErrSprint
 	case cfg.HeadDim != 32 || cfg.Patch > 1:
 		return Dit{}, fmt.Errorf("sana: heads of %d and patches of %d (32 and 1 supported)", cfg.HeadDim, cfg.Patch)
 	case cfg.Interp != nil:
@@ -87,14 +87,14 @@ func ReadDit(root string, w, h int) (Dit, error) {
 		return Dit{}, fmt.Errorf("sana: %dx%d is not in multiples of %d", w, h, VAEScale)
 	}
 	E := cfg.Heads * cfg.HeadDim
-	gs := cfg.GScale
-	if gs == 0 {
-		gs = 0.1
-	}
 	return Dit{Width: w, Height: h, Hidden: E, Heads: cfg.Heads, Layers: cfg.Layers, CrossHeads: cfg.CrossHeads,
 		CrossHeadDim: cfg.CrossHeadDim, MLP: int(cfg.MLPRatio * float64(E)), Caption: cfg.Caption, Latent: cfg.In,
-		Guidance: cfg.Guidance, GuidanceScale: gs, QKNorm: cfg.QKNorm != nil}, nil
+		QKNorm: cfg.QKNorm != nil}, nil
 }
+
+// ErrSprint is the error of a Sana-Sprint checkpoint (a DiT with the guidance embedded, SCM
+// steps), which hwnpu no longer runs: its pictures were far from Sana's (design.md 16.148).
+var ErrSprint = errors.New("sana: Sana-Sprint is not supported (its pictures were far below Sana's); use Sana_600M_1024px_diffusers or SANA1.5_1.6B_1024px_diffusers")
 
 // Gemma is Gemma 2's shape (text_encoder/config.json).
 type Gemma struct {
