@@ -113,13 +113,16 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	}
 	Catalog, Categories, Aliases, ModelFiles = catalog, categories, aliases, t.files
 	Sources, Search = t.sources, t.search
-	digests = map[string]map[string]string{}
+	digests, pinned = map[string]map[string]string{}, map[string][]pinnedFile{}
 	for _, m := range catalog {
 		for f, d := range m.SHA256 {
 			if digests[m.Source()] == nil {
 				digests[m.Source()] = map[string]string{}
 			}
 			digests[m.Source()][f] = d
+			if p := (pinnedFile{m.DirName(), f}); !slices.Contains(pinned[strings.ToLower(d)], p) {
+				pinned[strings.ToLower(d)] = append(pinned[strings.ToLower(d)], p)
+			}
 		}
 	}
 	foundMu.Lock()

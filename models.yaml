@@ -14,6 +14,9 @@
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory)
 #   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
+#   sha256        FILE: the SHA-256 of a file of the repository, checked from any source; a file
+#                 another model pins with the same SHA-256 and has downloaded is linked from its
+#                 directory instead of downloaded (Qwen3-1.7B and MOSS-SoundEffect's text encoder)
 #   machine       the least memory of a machine, in GB, the family recommends the model for
 #   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
 #                 buffers and the process's together over a run (docs/new-model-checklist.md 11.2)
@@ -156,11 +159,15 @@ models:
     features: [tools, thinking]
     about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts and with a context of 4096 (-paged 1024 for 32768, slower); in 8 bit tables, tool calls as JSON"
   Qwen3-1.7B:
-    # the same checkpoint (byte for byte) as MOSS-SoundEffect v2.0's text encoder
+    # the same checkpoint (byte for byte) as MOSS-SoundEffect v2.0's text encoder: the files of
+    # the same sha256 are linked from one's download into the other's (fetch)
     family: qwen3
     tag: 1.7b
     kind: chat
-    from: hf:Qwen/Qwen3-1.7B
+    from: hf:Qwen/Qwen3-1.7B@70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+    sha256:
+      model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
+      model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
     # M3: on 8 GB one program reads the prompts too, 1.63 GiB on the Neural Engine and the
     # process's 2.2 to 2.8 GB at its peak while loading (1.0 to 1.6 GB answering); a new prompt
     # of 1822 tokens in 16.8 s. From 16 GB a program of its own reads them (3.4 s): two of
@@ -344,6 +351,10 @@ models:
     # picks the text encoder's format (sfx.Formats): fp16 here, lut8 with 5 layers in fp16 in
     # the -lut8 one (moss-soundeffect:8g)
     from: hf:OpenMOSS-Team/MOSS-SoundEffect-v2.0@e35df4d82fbe87fcd5d14e5d100e349c0c3c076d
+    # the text encoder is Qwen3-1.7B's checkpoint: linked from its download when it is here
+    sha256:
+      text_encoder/model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
+      text_encoder/model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
     machine: 16
     memory: 2.3
     bytes: 1.15e10
