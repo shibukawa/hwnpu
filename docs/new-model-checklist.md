@@ -11,7 +11,7 @@ hwnpu's aim is to run on the NPU alone and use less power. Weigh methods in this
 - **When the total time is the same, keep the work on the NPU.** A form that gets a little faster by moving work to the CPU or the GPU (attention over a short context on the CPU, say) is not taken. The GPU is not used
 - **Read fewer bytes of weights.** Reading the weights is most of a token's energy, and reading less helps speed and power at once (fewer bits, no layers a prompt program does not need, MoE)
 - **Cut the waste on the NPU.** Programs that do not fit the NPU's memory and are loaded again, or one operation on the CPU that makes the NPU and the CPU take turns, use power even at the same speed
-- Measure power with `powerbench` as mJ per token (the Mac needs sudo). When it cannot be measured, compare the weight bytes read, the memory the NPU holds (`mem.NPUWired`) and the CPU use instead
+- Measure power with `hwnpu-dev powerbench` as mJ per token (the Mac needs sudo). When it cannot be measured, compare the weight bytes read, the memory the NPU holds (`mem.NPUWired`) and the CPU use instead
 
 The numbers come from chapter 16 of [design.md](design.md) (section numbers in parentheses), [improvements.md](improvements.md), [model-fit.md](model-fit.md) and [amd-npu-models.md](amd-npu-models.md). The steps and pass conditions for moving a structure to Go are in `.claude/skills/port-architecture` and are not repeated here.
 
@@ -47,19 +47,19 @@ Estimate from config.json alone, with the formula and criteria in sections 2 and
 
 ## 2. A correct structure (CPU)
 
-On top of the pass conditions of the `port-architecture` skill (1e-4 against an fp64 reference, one layer at a time matching all at once, breaking it to see the test fail, layer-by-layer checks with `hwnpu-check`), these were found later:
+On top of the pass conditions of the `port-architecture` skill (1e-4 against an fp64 reference, one layer at a time matching all at once, breaking it to see the test fail, layer-by-layer checks with `hwnpu-dev check`), these were found later:
 
 | What to check | Tools | Lesson |
 |---|---|---|
 | The downloaded checkpoint is intact | `sha256sum` against the `x-linked-etag` of HF's file | Big downloads here had sparse bit flips (LFM3-Audio and Omni: about 10 places of 2–6 bytes each). Neither random-weight checks nor value ranges show them. Fetch the bad pieces again (16.67) |
-| Compare **with a BOS** | `tools/ref/ref_logits.py`, `hwnpu-check`, `ironlm -forced -bos` | Without a BOS, LFM3's KL looks 4× worse and layer 0's activations become outliers (amd-npu-models.md section 13). Measure with the tokens the chat format actually puts first |
-| Check against the real weights | `hwnpu-check`, `iron_plamo3_check.py`; on AMD `ironlm -forced` + `tools/ref/forced_logits.py` | With random weights the NPU and the CPU reference disagree (Gemma 4, PLaMo 3): their logits are flat, and bf16 rounding and the bfp16 GEMMs spread layer by layer (16.107). Decide pass or fail with the real weights |
-| Check the real weights **of every size** | `hwnpu-check` | The same structure takes other paths through its config at other sizes (Qwen3.5-0.8B has as many value heads as key heads). Qwen3.5-4B was not checked against its real weights until 16.108. Check every size that goes into the catalog |
+| Compare **with a BOS** | `tools/ref/ref_logits.py`, `hwnpu-dev check`, `ironlm -forced -bos` | Without a BOS, LFM3's KL looks 4× worse and layer 0's activations become outliers (amd-npu-models.md section 13). Measure with the tokens the chat format actually puts first |
+| Check against the real weights | `hwnpu-dev check`, `iron_plamo3_check.py`; on AMD `ironlm -forced` + `tools/ref/forced_logits.py` | With random weights the NPU and the CPU reference disagree (Gemma 4, PLaMo 3): their logits are flat, and bf16 rounding and the bfp16 GEMMs spread layer by layer (16.107). Decide pass or fail with the real weights |
+| Check the real weights **of every size** | `hwnpu-dev check` | The same structure takes other paths through its config at other sizes (Qwen3.5-0.8B has as many value heads as key heads). Qwen3.5-4B was not checked against its real weights until 16.108. Check every size that goes into the catalog |
 | The tokenizer matches HF | `tools/ref/tokenizer_golden.py` | 0 mismatches over fixed texts plus thousands of random ones. Also check that the tests fail when ties (PLaMo), NFC and combining marks (Qwen3.5) or byte fallback (Gemma 4) are handled the other way |
 | The chat format matches jinja2 character for character | `tools/ref/template_golden.py` | Tool calls, thinking, dropping earlier thinking |
 | The chat format's defaults do not differ by size | The template and the model card | Qwen3.5-0.8B / 2B answer without thinking by default, 4B thinks. Made to think, the small ones ran on to the budget, so the catalog's `NoThink` follows the default (-think on the command line overrides it) |
 | Multimodal preprocessing | `resize_golden.py`, `mel_golden.py`, `whisper_mel_golden.py` | ±1 against PIL, 1e-4 against librosa |
-| Encoder-decoders (speech) | `tools/ref/ref_whisper.py`, `hwnpu-check` (the mel frames as input through `REF.x.bin`) | Check the encoder, the cross attention's keys and values and the decoder each on their own. For audio over 30 seconds, follow HF's windowing too (features over the whole clip, the next window from the timestamps): cut every 30 seconds, HF drops text as well |
+| Encoder-decoders (speech) | `tools/ref/ref_whisper.py`, `hwnpu-dev check` (the mel frames as input through `REF.x.bin`) | Check the encoder, the cross attention's keys and values and the decoder each on their own. For audio over 30 seconds, follow HF's windowing too (features over the whole clip, the next window from the timestamps): cut every 30 seconds, HF drops text as well |
 | Embedding models | `embed_golden.py` | Cosine 0.997 or more against HF |
 | Image generation | `tools/ref/ref_anima.py` | Latent cosine against diffusers' fp32, PSNR of the VAE |
 
@@ -80,7 +80,7 @@ On top of the pass conditions of the `port-architecture` skill (1e-4 against an 
 
 ### 3.2 Does all of it run on the NPU?
 
-Check that each part is `all on the NPU` with `hwnpuinfo -model PART.mlpackage`. What fell to the CPU before:
+Check that each part is `all on the NPU` with `hwnpu-dev info -model PART.mlpackage`. What fell to the CPU before:
 
 - Attention that copies K/V with `tile`, and the form with the queries as a matrix → `SDPAGrouped` (16.25, 16.39). The order alone changes the placement
 - A `transpose` / `reshape` in the last part → take the output token-first (`attn_ot_N`, PLaMo 3). Elementwise operations after the output layer (Gemma 4's soft cap) → the host's sampling applies them to the top values only (`-logits host`, `llm.LogitSoftcap`, 16.113)
@@ -89,12 +89,12 @@ Check that each part is `all on the NPU` with `hwnpuinfo -model PART.mlpackage`.
 
 ### 3.3 Does fp16 overflow?
 
-Check that each layer's relative RMS error is under 0.01 with `hwnpu-check -f16`. Layers that pass one at a time can still drift as a whole (Whisper: 0.0003 or less a layer, a cosine of 0.9978 for the whole). Look also at:
+Check that each layer's relative RMS error is under 0.01 with `hwnpu-dev check -f16`. Layers that pass one at a time can still drift as a whole (Whisper: 0.0003 or less a layer, a cosine of 0.9978 for the whole). Look also at:
 
 - The whole `-f16` run and the cosine **per position**, counting the positions of the speech or prompt apart from the padding's
 - Where massive activations (attention sinks) arise: the largest values of each layer of HF's hidden states (`REF.hidden.bin`). Whisper puts 300 at silent positions from layer 21
 - **Before hunting the cause, compare with HF run in fp16.** If it drifts as much, the port is not wrong (Whisper: HF's fp16 0.9978 too)
-- On the ANE and on Core ML's CPU, programs of the first N layers (`hwnpu-convert -layers N`) against HF's layers show where the drift starts (`TestEncoderOnDevice` in `internal/transcribe`). Whisper stays at 0.9996 or more through layer 20; at layer 21 which silent position becomes a sink varies. The CPU and the ANE drift as much (cosine 0.97) from HF as from each other, the speech positions hold, and the transcripts are HF's. A LayerNorm divided by each row's maximum changed nothing, so it is not an overflow
+- On the ANE and on Core ML's CPU, programs of the first N layers (`hwnpu-dev convert -layers N`) against HF's layers show where the drift starts (`TestEncoderOnDevice` in `internal/transcribe`). Whisper stays at 0.9996 or more through layer 20; at layer 21 which silent position becomes a sink varies. The CPU and the ANE drift as much (cosine 0.97) from HF as from each other, the speech positions hold, and the transcripts are HF's. A LayerNorm divided by each row's maximum changed nothing, so it is not an overflow
 
 What helped:
 
@@ -102,7 +102,7 @@ What helped:
 - Shrink the last layer with head-scale (PLaMo-Embedding), `-post-scale` (LFM3, 1.4–2.7 % a layer)
 - Keep residuals at 1/32, and divide by each row's maximum before a norm (Anima; a fixed scale made subnormals)
 - Fill padding rows with the last token (Gemma 4's eps becomes 0 in fp16 and gives NaN)
-- The ANE's own `softplus` and `silu` are inaccurate (softplus returned 0 for some inputs; silu off by 1.4 % in its tail). Use `builder.softplus` and `builder.silu` (written with exp and log). Products below fp16's smallest normal (6e-5) lose digits on the ANE: scale them up and divide later (Qwen3.5's GDN output, 16.88). `hwnpu-check` on the CPU does not show these: compare the per-position KL on the ANE with Core ML's CPU (`HWNPU_COREML_UNITS=cpu`)
+- The ANE's own `softplus` and `silu` are inaccurate (softplus returned 0 for some inputs; silu off by 1.4 % in its tail). Use `builder.softplus` and `builder.silu` (written with exp and log). Products below fp16's smallest normal (6e-5) lose digits on the ANE: scale them up and divide later (Qwen3.5's GDN output, 16.88). `hwnpu-dev check` on the CPU does not show these: compare the per-position KL on the ANE with Core ML's CPU (`HWNPU_COREML_UNITS=cpu`)
 
 ### 3.4 Pass
 
@@ -111,7 +111,7 @@ What helped:
 - Record the first compile time of each part. Qwen3.5's 128 tokens a call (GDN) took 13–15 minutes the first time (not solved)
 - On an M1, the parts' times in `HWNPU_PROFILE=1` hold steady from call to call. When the parts run in turn hold more than about 2.9 GiB, the same part varies and every call is 10× slower or more (a reload). On an M1, `-prefill auto` keeps one program when the two with the MTP layer's and the encoders' programs would hold over 2.8 GiB (16.118); a model whose program that generates holds over it alone (Qwen3.5-4B lut8, Gemma 4 E4B) gets a warning in the log (16.109, 16.112)
 - **A change to the graph that keeps the program's name raises `llm.Arch.Revision`** (the name takes `-rN`). Otherwise hwnpu-chat reuses programs converted before the change (the silu rewrite, lfm3 / plamo3 r1; the host soft cap, gemma4 r1; Anima's `ExportVersion`, 16.95, 16.113)
-- Record the KL and argmax of `hwnpu-check -package` (for each format, section 5)
+- Record the KL and argmax of `hwnpu-dev check -package` (for each format, section 5)
 
 ## 4. The AMD (IRON) and Intel forms
 
@@ -171,7 +171,7 @@ What helped:
 - **KL(reference ‖ quantized)**: mean, median, 95th percentile and top-1 agreement over 400 positions (the first 256 tokens read as a prompt, then one at a time), **with a BOS**
 - Five texts: the README (Japanese and English mixed), GPL-3 (**not used for calibration**, to catch overfitting), the evaluation part of wiki40b-ja, the test part of wikitext-2, and Go code. They live in `~/models/calib`
 - The reference is fp32 on the CPU (HF) or bf16 on the same NPU. Check that the quantized KL on the NPU matches the CPU estimate (LFM3 0.036 against 0.035; LFM3-VL the same way). If it does not, suspect the NPU's arithmetic (rounding, bfp16)
-- On Apple's Neural Engine: `hwnpu-generate -package P.parts.json -score REF,...` runs a program without a cache (`hwnpu-convert -seq 128`) over each reference's tokens (`ref_logits.py` / `ref_gemma4.py`) and prints the KL at every position (mean, median, largest), top-1 and cosine. The first tokens of a text weigh much (KL up to 8–13), so compare settings on the same texts only (16.114)
+- On Apple's Neural Engine: `hwnpu-dev generate -package P.parts.json -score REF,...` runs a program without a cache (`hwnpu-dev convert -seq 128`) over each reference's tokens (`ref_logits.py` / `ref_gemma4.py`) and prints the KL at every position (mean, median, largest), top-1 and cosine. The first tokens of a text weigh much (KL up to 8–13), so compare settings on the same texts only (16.114)
 - For image generation, instead of KL: the velocity's relative RMS error along the reference trajectory, and the cosine of the final latents of a free run (`tools/amd/anima_gptq.py`)
 
 ### 5.2 Sweep the bits per part on the CPU
@@ -193,7 +193,7 @@ Keep the format and raise accuracy by choosing the codes (levels) better. The fo
 | Order | Method | Tools | Example results | Notes |
 |---|---|---|---|---|
 | 1 | Rounding (RTN). q4nx picks the least error of 9 candidates | `iron_q4.quantize_fmt`, `palette.QuantizeBits` | Weight error 8.2 → 7.3 % | The baseline. The least weight error is not the least output error |
-| 2 | **GPTQ** (pushes each column's error onto the later columns, with H = E[xxᵀ]) | `tools/amd/q4_gptq.py` → AMD: `iron_export_lm.py --q4-codes`; Apple: `hwnpu-convert -codes`, `hwnpu-chat --codes` | NPU wiki-ja: E2B 0.221 → 0.081, E4B 0.083 → 0.049, LFM3 0.071 → 0.038, LFM3-VL 0.067 → 0.034, PLaMo 3 0.058 → 0.040. Anima's DiT q4: latent cosine 0.868 → 0.939 (q8 0.962) | Damp by **0.1** × the mean of H's diagonal (0.01 overfitted the calibration texts and made the GPL worse than rounding). Calibrate on general text (wikitext-2 and wiki40b-ja, 64 × 512 tokens); the repository's documents alone overfit too. Leave the BOS position out of H. Quantize the earlier layers before measuring the next ones (a few layers a pass) |
+| 2 | **GPTQ** (pushes each column's error onto the later columns, with H = E[xxᵀ]) | `tools/amd/q4_gptq.py` → AMD: `iron_export_lm.py --q4-codes`; Apple: `hwnpu-dev convert -codes`, `hwnpu-chat --codes` | NPU wiki-ja: E2B 0.221 → 0.081, E4B 0.083 → 0.049, LFM3 0.071 → 0.038, LFM3-VL 0.067 → 0.034, PLaMo 3 0.058 → 0.040. Anima's DiT q4: latent cosine 0.868 → 0.939 (q8 0.962) | Damp by **0.1** × the mean of H's diagonal (0.01 overfitted the calibration texts and made the GPL worse than rounding). Calibrate on general text (wikitext-2 and wiki40b-ja, 64 × 512 tokens); the repository's documents alone overfit too. Leave the BOS position out of H. Quantize the earlier layers before measuring the next ones (a few layers a pass) |
 | 3 | **Fitting the tables** (Apple's lutN): k-means weighted by E[x²] | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038, lut4 0.66 → 0.33 (through Go's converter) | Start from the uniform tables (starting from the k-means of least weight error gives the worst KL). The ANE check is in handoff-m3-gptq.md |
 | 4 | AWQ-style scales folded into the previous op | Not written | | model-fit.md T8, 2. When lut4 has to go lower |
 | — | One format up (AMD's q6) | `iron_export_lm.py --mlp q6`, `q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B GPL 0.34 → 0.044 | When calibration does not fix it. The GEMV takes about q8's time; the gain is memory (76 % of q8) |
@@ -215,16 +215,16 @@ Keep the format and raise accuracy by choosing the codes (levels) better. The fo
 | KL under 0.05 (against HF on the CPU) | port-architecture's guide. 4 bits can be the default |
 | KL 0.05–0.2 | Decide by the quality of the answers (section 9). The ANE's lut6 (LFM3 0.232) is here |
 | KL 1 or more | Not usable (lut4 LFM3 got 3 of 4 factual questions wrong) |
-| `hwnpu-formats`: the reference's next token 90% or more, and as many short questions right | Take the smaller one (Qwen3.5-2B's lut6: 92% of lut8's, 10 of 12 right in both. 16.115) |
+| `hwnpu-dev formats`: the reference's next token 90% or more, and as many short questions right | Take the smaller one (Qwen3.5-2B's lut6: 92% of lut8's, 10 of 12 right in both. 16.115) |
 | 85–90% likewise, or new mistakes in arithmetic or facts | Keep the next larger format (Qwen3.5-0.8B's lut6: 86% of fp16's, and 17 × 23 wrong) |
 | Under 80% likewise, or answers that repeat a phrase | Not usable (Qwen3.5's lut4: 60–76%, 5–6 of 12 answers repeating) |
 | Audio and image encoders | Decide by the error rates of the text (WER, CER). Whisper's lut6: WER 4.43% → 4.87%, CER 3.60% → 3.94%, so it stays lut8 |
 
 The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.65 / 3.49 ms). lut6's slowness was won back with `SDPAGrouped` (16.41).
 
-- Make fp16 the reference. When fp16 does not fit a part (0.97 GiB; Qwen3.5-2B's last layer with its output layer of a 248K vocabulary is 1.04 GiB), use lut8 (`hwnpu-formats -ref lut8`) and check lut8 itself by its KL against HF on the CPU
+- Make fp16 the reference. When fp16 does not fit a part (0.97 GiB; Qwen3.5-2B's last layer with its output layer of a 248K vocabulary is 1.04 GiB), use lut8 (`hwnpu-dev formats -ref lut8`) and check lut8 itself by its KL against HF on the CPU
 - On a short text, perplexity can be lower quantized (Qwen3.5's lut6). Compare by agreement with the reference
-- npuprobe's read speed per format is not the model's: on the M1, npuprobe reads int8 at 62 GB/s, but Gemma 4 E2B's parts read it at about 48 GB/s, so int8 was slower than lut6 by its extra bytes (16.112). Measure the real parts with `HWNPU_PROFILE=1` before choosing a format for speed
+- hwnpu-dev probe's read speed per format is not the model's: on the M1, hwnpu-dev probe reads int8 at 62 GB/s, but Gemma 4 E2B's parts read it at about 48 GB/s, so int8 was slower than lut6 by its extra bytes (16.112). Measure the real parts with `HWNPU_PROFILE=1` before choosing a format for speed
 - When a smaller format brings the two programs (8 tokens per call and the one for prompts) under the compile cache (about 3.5 GiB), `-prefill auto` goes from one program to two (Qwen3.5-2B at lut6). Measure the resident memory and the first compile again
 - The format may differ by size: within one architecture, decide it per checkpoint with `Formatter` (the config's `Format()`; LFM3 and its VL, Qwen3.5's 2B against the 0.8B and 4B)
 
@@ -233,7 +233,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 | What to measure | Tools | Lesson |
 |---|---|---|
 | AMD pinned memory (the rise of `Unevictable`) | `/proc/meminfo` (not in RSS), the banks in the export's `manifest.json` | Mostly weights and work areas. KV is under 5 % |
-| The Mac's `phys_footprint` and the memory the Neural Engine holds | `npuprobe split`, `hwnpu-chat`'s loading log, `HWNPU_PROFILE=1` | The weights are in the kernel's wired memory, read with `mem.NPUWired` (16.95). Programs Core ML has just compiled come onto it at their first call, not at loading (LFM3: 0.27 GiB after loading, 2.43 GiB after one call), so measure after one call. When two programs do not fit there, a part of generation is loaded again on every call (Gemma 4 on the M1, 16.112) |
+| The Mac's `phys_footprint` and the memory the Neural Engine holds | `hwnpu-dev probe split`, `hwnpu-chat`'s loading log, `HWNPU_PROFILE=1` | The weights are in the kernel's wired memory, read with `mem.NPUWired` (16.95). Programs Core ML has just compiled come onto it at their first call, not at loading (LFM3: 0.27 GiB after loading, 2.43 GiB after one call), so measure after one call. When two programs do not fit there, a part of generation is loaded again on every call (Gemma 4 on the M1, 16.112) |
 | Size of conversation marks | | Copy only the ring rows in use (`ringRows`, 578 → 183 MB) |
 | Right after a conversion | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
 | KV size and context | | Past 1/4 of physical memory, shrink by whole chunks |
@@ -248,9 +248,9 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 |---|---|
 | One call (Q=8, Q=64) | `TestCallTimes` (`HWNPU_CALL_PKGS`) |
 | One encoder call (the ANE and Core ML's CPU) | `TestEncoderOnDevice` (`HWNPU_WHISPER_UNITS`) |
-| Generation tokens/s, prompts, startup (the second) | `hwnpu-generate`, `hwnpu-chat`'s log |
-| Comparing formats | `hwnpu-formats` |
-| AMD GEMV, power | `tools/amd/gemvbench`, `powerbench` |
+| Generation tokens/s, prompts, startup (the second) | `hwnpu-dev generate`, `hwnpu-chat`'s log |
+| Comparing formats | `hwnpu-dev formats` |
+| AMD GEMV, power | `tools/amd/gemvbench`, `hwnpu-dev powerbench` |
 
 Things to bring in next (they helped every model):
 
@@ -278,7 +278,7 @@ Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for wh
 | Use | How to check |
 |---|---|
 | Chat | 16.26's four questions (Mt. Fuji, 17 × 23, *Kokoro*, the Shinano River), hwnpu-chat agent's task (does `go test` pass?). When a small model gets facts wrong, ask fp16 the same: if it errs alike, it is the model's limit, not the quantization or the port (Qwen3.5-0.8B, 16.99) |
-| Translation | Measure KL and agreement **on the translation's tokens only** (the source side is not predicted, so it scores high). How many of 44 texts are word for word the same as bf16. `hwnpu-formats` measures on chat text, so its perplexity means nothing for a translation model (28 thousand for PLaMo 3 Translate) |
+| Translation | Measure KL and agreement **on the translation's tokens only** (the source side is not predicted, so it scores high). How many of 44 texts are word for word the same as bf16. `hwnpu-dev formats` measures on chat text, so its perplexity means nothing for a translation model (28 thousand for PLaMo 3 Translate) |
 | Image descriptions, TTS | Compare the answers for the same images and audio. Run TTS output back through ASR |
 | Transcription | English: LibriSpeech's 73 validation clips (`hf-internal-testing/librispeech_asr_dummy`, with the truth); Japanese: 12 texts in four `say` voices. Count the clips word for word the same as HF fp32, and the WER / CER (16.115). Audio over 30 seconds too |
 | Embeddings | Cosine against HF |
@@ -289,7 +289,7 @@ Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for wh
 - fp16 programs for the comparison double the disk used. Remove a format's programs once compared
 - Core ML makes `~/Library/Caches/<process>/com.apple.e5rt.e5bundlecache` for every process, test binaries (`transcribe.test`) included, several GB each (6.2 GB from the Whisper comparison)
 - A stalled download never times out (`chat.fetch` does not detect stalls; kotoba-whisper stopped at 158 MB for an hour)
-- `hwnpu-formats` shows the weights of a single unsplit program as 0.00 GiB
+- `hwnpu-dev formats` shows the weights of a single unsplit program as 0.00 GiB
 
 **The record**:
 
@@ -388,7 +388,7 @@ done
   - Models placed on the CPU: the onnxruntime shared library
   - Reading the checkpoints is done in Go. safetensors and ONNX can already be read. PyTorch's `.pt` (MoGe-2's `model.pt`, a pickle in a zip) is still to write
 - **Compiling without Python too** concerns only those who make new shapes and the CI that builds the distribution. Today's IRON (Python) can make those, so this is optional and has low priority
-  - What it still needs: mlir-aie (the C++ `aiecc`, `aie-opt`, `aie-translate`, `bootgen`; 853 MB as a wheel), Peano (`clang`, `llc` and `ld.lld` for AIE; 422 MB), and the kernels' sources with the AIE API headers. hwnpu-xclbin replaces xclbinutil
+  - What it still needs: mlir-aie (the C++ `aiecc`, `aie-opt`, `aie-translate`, `bootgen`; 853 MB as a wheel), Peano (`clang`, `llc` and `ld.lld` for AIE; 422 MB), and the kernels' sources with the AIE API headers. hwnpu-dev xclbin replaces xclbinutil
   - What would move to Go: each IRON operator's design (the part that turns ObjectFIFOs, workers and the runtime sequence into MLIR) and `iron_graph.export_graph`
 
 ## 12. Tried without effect (do not repeat)

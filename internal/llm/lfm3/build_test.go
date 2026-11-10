@@ -96,7 +96,7 @@ func TestBuildTiny(t *testing.T) {
 	}
 }
 
-// The path hwnpu-convert takes (detecting the architecture from config.json and passing LFM3's
+// The path hwnpu-dev convert takes (detecting the architecture from config.json and passing LFM3's
 // settings as parameters) builds the same program as calling Build directly.
 func TestArch(t *testing.T) {
 	var cfg map[string]any
@@ -259,7 +259,7 @@ func TestPartsMatchWhole(t *testing.T) {
 	}
 }
 
-// writeParts writes the model split into n parts as hwnpu-convert does and returns the manifest.
+// writeParts writes the model split into n parts as hwnpu-dev convert does and returns the manifest.
 func writeParts(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options, n int) string {
 	t.Helper()
 	plan, err := llm.PlanSplit(cfg, opts, math.MaxInt64, n)

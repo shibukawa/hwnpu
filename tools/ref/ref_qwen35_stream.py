@@ -4,7 +4,7 @@ weights are read in fp32 just before it runs and dropped after it, so about one 
 embedding table are in memory at a time.
 
     python ref_qwen35_stream.py MODEL_DIR OUT_PREFIX [--seq 32] [--text "..."]
-        writes the files of ref_logits.py (for hwnpu-check)
+        writes the files of ref_logits.py (for hwnpu-dev check)
     python ref_qwen35_stream.py MODEL_DIR - --chat-file MSG.txt --generate 60
         greedy answer to the user message in MSG.txt (a chat without thinking), with a cache
     python ref_qwen35_stream.py MODEL_DIR - --nll-ids IDS.json

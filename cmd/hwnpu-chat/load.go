@@ -44,7 +44,7 @@ type convertFlags struct {
 	Context   int    `placeholder:"TOKENS" help:"Tokens of a prompt and its answer together; 0: the longest the model was trained for when it is split at its attention (--paged: 262144 for LFM3-1.7B and Qwen3.5, 131072 for Gemma 4, its cache growing with the conversation within a quarter of the memory), else 16320 (4096 for Qwen3, whose 28 layers of keys and values in one program fail past it; over 16320 a whole model's cache is in chunks of 16384, slower per token)."`
 	Paged     int    `placeholder:"TOKENS" help:"Split a chat model at its full attention layers and attend over the cache in chunks of this many tokens, so that a step costs in proportion to the conversation, not to --context: 0 for 8192 where the model allows it (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4, Qwen3.5; Qwen3 only when given one, --paged 1024 for its long context), -1 never (then --tier applies)."`
 	Sparse    bool   `default:"true" negatable:"" help:"Past about 48K tokens of a model split at its attention (--paged), read 16384 keys of the cache exactly (32768 while reading a prompt), those of the 8-token buckets that weigh most, and every other bucket as its mean (two-level attention, a few times faster at 128K and over); --no-sparse reads the whole cache on every call."`
-	Package   string `placeholder:"FILES" help:"Chat programs converted by hwnpu-convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq."`
+	Package   string `placeholder:"FILES" help:"Chat programs converted by hwnpu-dev convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq."`
 	Config    string `type:"path" placeholder:"FILE" help:"config.json of the chat model (default: in its directory)."`
 	Weights   string `type:"path" placeholder:"FILE" help:"Checkpoint the chat model's token embeddings are read from: .safetensors or .gguf (default: in its directory)."`
 	Tokenizer string `type:"path" placeholder:"FILE" help:"tokenizer.json of the chat model (default: next to config.json)."`
@@ -80,10 +80,10 @@ func (f samplingFlags) think(e *chat.Engine) bool {
 }
 
 // encoderFlags are the encoders of a chat model that reads images or audio, converted by
-// hwnpu-convert (with --package).
+// hwnpu-dev convert (with --package).
 type encoderFlags struct {
-	Vision       string `placeholder:"FILES" help:"The LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a package per image size, comma separated (default: the 512x512 one a model with vision converts)."`
-	AudioEncoder string `placeholder:"FILES" help:"The LFM3-Audio audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder, a package per clip length, comma separated (default: the 30 second one a model with audio converts)."`
+	Vision       string `placeholder:"FILES" help:"The LFM3-VL vision encoder converted by hwnpu-dev convert -arch lfm3-vision, a package per image size, comma separated (default: the 512x512 one a model with vision converts)."`
+	AudioEncoder string `placeholder:"FILES" help:"The LFM3-Audio audio encoder converted by hwnpu-dev convert -arch lfm3-audio-encoder, a package per clip length, comma separated (default: the 30 second one a model with audio converts)."`
 }
 
 // logw is where what goes on is written: standard error, in gray on a terminal, with the
@@ -180,7 +180,7 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 // embedFlags are how an embedding model is converted.
 type embedFlags struct {
 	EmbedSeq     string `default:"${embed_seqs}" placeholder:"N,..." help:"Sequence lengths an embedding model is converted for, comma separated; the longest is the most tokens of a text."`
-	EmbedPackage string `placeholder:"FILES" help:"Embedding programs converted by hwnpu-convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)."`
+	EmbedPackage string `placeholder:"FILES" help:"Embedding programs converted by hwnpu-dev convert instead, comma separated, with different -seq (config.json and the checkpoint in the model's directory)."`
 }
 
 // loadEmbedder makes ready and loads the embedding model m.

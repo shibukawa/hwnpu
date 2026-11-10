@@ -30,7 +30,7 @@ calibration texts and made an unseen one (the GPL) worse than rounding.
 
 --fmt-q4, --fmt-q8 and --head lutN do the same for Apple's lookup tables (internal/palette's
 Uniform tables of 16 rows): GPTQ chooses each weight's entry of its fixed table, and OUT/codes
-holds the indices and tables (KEY.idx, KEY.tab) that hwnpu-convert -codes reads.
+holds the indices and tables (KEY.idx, KEY.tab) that hwnpu-dev convert -codes reads.
 
 The calibration texts (CALIB) include general English and Japanese, in ~/models/calib:
 wikitext-2-raw-v1's train split (wikitext2-train.txt) and test split (wikitext2-test.txt, from
@@ -555,7 +555,7 @@ def main(argv=None) -> int:
         index[k] = dict(name=name, fmt=fmt, shape=list(lin.weight.shape))
 
     def put_lut(name, lin, fmt, idx, table):
-        """lutN for hwnpu-convert -codes (internal/palette.LoadCodes): the indices (rows, cols)
+        """lutN for hwnpu-dev convert -codes (internal/palette.LoadCodes): the indices (rows, cols)
         uint8 and the tables (rows / LUT_GROUP, 2^bits) float32 (fp16 values), raw."""
         codes_dir.mkdir(parents=True, exist_ok=True)
         k = key(lin.weight.detach().numpy())

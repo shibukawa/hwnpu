@@ -8,7 +8,7 @@
 |---|---|---|
 | ドライバの呼び出し (`internal/xdna`、`internal/backend/amd`) | xclbin と命令列の実行 (ERT_START_CU) が Ryzen AI 9 365 で動く | **full ELF** の実行 (3 節) |
 | 演算の実装 | なし。AMD には公開されたグラフ用コンパイラがない | カーネルとその並べ方。自分では書かない (2.3) |
-| 変換 (`hwnpu-convert`) | Core ML と OpenVINO IR を書く | AMD 向けの成果物 (5 節) |
+| 変換 (`hwnpu-dev convert`) | Core ML と OpenVINO IR を書く | AMD 向けの成果物 (5 節) |
 | 実行 (`chain`、`decode`) | `hwnpu.GraphRunner` と、ホストに置いた KV キャッシュが前提 | IRON の像を回す実行器 (6 節) |
 | チャット (`chat.Engine`) | `decode.Session` に直に依存 | Session の interface 化 (6.3) |
 | 実行の入口 | `WithBackend("coreml")` が 6 か所に固定 | 機械による選択 (Intel と共通) |
@@ -140,7 +140,7 @@ gemma-4-E2B-it.amd-npu2/
 
 - 道具: `tools/amd/iron_export.py` (開発者の機械で一度だけ)。IRON のアプリケーション (`iron.applications.gemma4` など) を、NPU のない機械でも `set_current_device(from_name("npu2", n_cols=8))` でコンパイルし、上の全てを書く。IRON と mlir-aie の版を固定し、manifest に記録する
 - 装置ごと: NPU2 (8 列、Strix、Strix Halo、Krackan) は full ELF。NPU1 (Phoenix、Hawk Point、4 列) は full ELF がないので、IRON と同じく「1 ステップごとの xclbin」で書き出す (`--device npu1 --cols 4`、design.md 16.57)。呼び出しごとの値は、mlir-aie が生成する命令列の C++ を命令列プログラムに直して持つ
-- `hwnpu-convert` には `-backend amd` を足さない (Go では作れないため)。`hwnpu-chat` のカタログに AMD の成果物の置き場所 (URL とハッシュ) を持つ
+- `hwnpu-dev convert` には `-backend amd` を足さない (Go では作れないため)。`hwnpu-chat` のカタログに AMD の成果物の置き場所 (URL とハッシュ) を持つ
 
 ## 6. 実行側
 
@@ -170,7 +170,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 
 ### 6.4 バックエンドの選択
 
-`WithBackend("coreml")` の 6 か所 (`chat/engine.go`、`chat/embed.go`、`systemone/model.go`、`speech/speech.go`、`hwnpu-generate`、`powerbench`) を、モデルの成果物の種類 (Core ML のパッケージ、OpenVINO IR、AMD の manifest) から決める。Intel の設計 (intel-npu-models.md 7.1) と同じ作業なので共通にする。
+`WithBackend("coreml")` の 6 か所 (`chat/engine.go`、`chat/embed.go`、`systemone/model.go`、`speech/speech.go`、`hwnpu-dev generate`、`hwnpu-dev powerbench`) を、モデルの成果物の種類 (Core ML のパッケージ、OpenVINO IR、AMD の manifest) から決める。Intel の設計 (intel-npu-models.md 7.1) と同じ作業なので共通にする。
 
 ## 7. モデルの順番
 
@@ -184,7 +184,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 |---|---|
 | コマンドの制限時間。amdxdna は既定 `tdr_timeout_ms=2000` で、約 4 秒動かないコマンドを打ち切る。IRON は 150000 を勧めるが、変えるには root が要る | プロンプトの塊を小さくして 1 コマンドを 2 秒以内に保つ。深い文脈での塊の時間を測ってから塊の大きさを決める |
 | IRON と mlir-aie の API が速く変わる | 版を固定し manifest に記録する。成果物を作り直すのは開発者だけ |
-| ドライバとファームウェアの版の違い (DKMS 版と標準カーネル、プロトコルの版) | `hwnpuinfo` に機能 (ELF の可否) を出す。ELF が使えない機械では AMD の LLM を使わない |
+| ドライバとファームウェアの版の違い (DKMS 版と標準カーネル、プロトコルの版) | `hwnpu-dev info` に機能 (ELF の可否) を出す。ELF が使えない機械では AMD の LLM を使わない |
 | メモリの固定。重みと KV キャッシュの BO は実行中に固定される | プロセスの RSS には出ない (12 節)。`ulimit -l` の案内を INSTALL_AMD に書く (この機械は unlimited) |
 | 書き出した重みの像が大きい | 元の bf16 と同じ大きさ。4 ビット (7 節の 3) で 4 分の 1 |
 
@@ -405,7 +405,7 @@ MLP (`w1`、`w3`、`w2`) と出力の行列を q4nx、全注意とスライデ�
 | すべて q4 | 0.060 / 0.191 | 90 % |
 | すべて q8 | 0.0004 / 0.002 | 99 % |
 
-文の先頭に `<|startoftext|>` (124894) を置かないと同じ既定で 0.139 になり、0 層目の MLP だけで 0.098 を占めた (BOS がないと最初のトークンが注意の溜まり場になって 0 層目の活性が外れ値になるらしい)。hwnpu はチャットの型で必ず置くので BOS ありが実際の値。以前の CPU での LFM3 の 4 ビットの測定 (`hwnpu-check`、24 トークン) も BOS の有無を確かめてから比べること。
+文の先頭に `<|startoftext|>` (124894) を置かないと同じ既定で 0.139 になり、0 層目の MLP だけで 0.098 を占めた (BOS がないと最初のトークンが注意の溜まり場になって 0 層目の活性が外れ値になるらしい)。hwnpu はチャットの型で必ず置くので BOS ありが実際の値。以前の CPU での LFM3 の 4 ビットの測定 (`hwnpu-dev check`、24 トークン) も BOS の有無を確かめてから比べること。
 
 Ryzen AI 9 365、文脈 12288、塊 2048 (ほかに NPU を使うものがない状態):
 

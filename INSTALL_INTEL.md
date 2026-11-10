@@ -2,7 +2,7 @@
 
 This guide prepares an Intel Core Ultra machine (Meteor Lake, Arrow Lake, Lunar Lake, Panther Lake, Wildcat Lake) so that hwnpu can use its NPU, and shows how to check the result.
 
-> **Status.** The Intel backend has been tested against a simulated Level Zero driver only, and hwnpu-chat and hwnpu-chat agent with the same programs on OpenVINO's CPU. Running `cmd/report` on real hardware (step 4) and the chat (step 6), and sending the results back, is the most useful help right now.
+> **Status.** The Intel backend has been tested against a simulated Level Zero driver only, and hwnpu-chat and hwnpu-chat agent with the same programs on OpenVINO's CPU. Running `hwnpu-dev report` on real hardware (step 4) and the chat (step 6), and sending the results back, is the most useful help right now.
 
 Japanese: [INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)
 
@@ -125,13 +125,13 @@ cd hwnpu
 On a machine without Go you can cross-compile the report on another machine and copy the single executable; the test models are embedded:
 
 ```bash
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o report.exe ./cmd/report
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o hwnpu-dev.exe ./cmd/hwnpu-dev
 ```
 
 ## 4. Check the installation
 
 ```bash
-go run ./cmd/hwnpuinfo
+go run ./cmd/hwnpu-dev info
 ```
 
 An Intel NPU appears with `backend: levelzero`. The `driver` line lists the Level Zero version, the driver version, the graph extension, the compiler version and whether the NPU command queue extension (turbo, workload type) is available.
@@ -139,7 +139,7 @@ An Intel NPU appears with `backend: levelzero`. The `driver` line lists the Leve
 Then run the report and keep the Markdown file:
 
 ```bash
-go run ./cmd/report -o report.md
+go run ./cmd/hwnpu-dev report -o report.md
 ```
 
 For each Intel NPU it compiles two OpenVINO IR models in strict mode, compares the results with fp32 references (the NPU computes in fp16, so small differences are expected), and measures latency.
@@ -147,20 +147,20 @@ For each Intel NPU it compiles two OpenVINO IR models in strict mode, compares t
 To compare power policies, run it twice. On Linux the package energy (RAPL) is readable by root only, so run these with `sudo` to get the energy columns:
 
 ```bash
-go run ./cmd/report -power low -o low.md
+go run ./cmd/hwnpu-dev report -power low -o low.md
 ```
 
 ```bash
-go run ./cmd/report -power performance -o performance.md
+go run ./cmd/hwnpu-dev report -power performance -o performance.md
 ```
 
 To measure the NPU with generated models, run the probe. It builds LLM decode shaped OpenVINO IR models in Go and measures 0.5 B and 1 B weights in fp16, int8 and int4 (`bench`; with energy per token when the RAPL counters are readable, as root on Linux). Then it grows the model in each format until the driver no longer builds it, bisects to the boundary, and loads several models just under it at once (`limit`). It needs no Python and no model files, takes from tens of minutes to an hour, and writes `npuprobe-<machine>-<time>.md`. It runs without cloning:
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
 ```
 
-Run `cmd/report` first: if the small models there fail, the probe will fail the same way. How to read the results: [PROBE.md](PROBE.md).
+Run `hwnpu-dev report` first: if the small models there fail, the probe will fail the same way. How to read the results: [PROBE.md](PROBE.md).
 
 ## 5. Preparing models
 
@@ -212,11 +212,11 @@ hwnpu-chat --paged -1 --tier none --context 4096
 2. Whether it answers questions correctly, and the tokens per second shown after each answer.
 3. Whether the defaults (`hwnpu-chat` alone) load, how long the compilation takes, and whether memory suffices.
 4. Whether `hwnpu-chat agent` calls its tools.
-5. The accuracy and speed of int8, int4-g128 and int4 with `hwnpu-formats` (next section).
+5. The accuracy and speed of int8, int4-g128 and int4 with `hwnpu-dev formats` (next section).
 
-### Comparing weight formats (hwnpu-formats)
+### Comparing weight formats (hwnpu-dev formats)
 
-`hwnpu-formats` converts the chat model in each format, loads it on the NPU, reads a fixed conversation (Japanese, and English with code) through it 8 tokens per call as hwnpu-chat generates, and prints:
+`hwnpu-dev formats` converts the chat model in each format, loads it on the NPU, reads a fixed conversation (Japanese, and English with code) through it 8 tokens per call as hwnpu-chat generates, and prints:
 
 | Column | Meaning |
 |---|---|
@@ -226,15 +226,15 @@ hwnpu-chat --paged -1 --tier none --context 4096
 | perplexity | Of the answers' tokens; lower is better, and comparable without a reference |
 
 ```bash
-go run ./cmd/hwnpu-formats                                    # int8, int4-g128 and int4 against fp16
-go run ./cmd/hwnpu-formats -formats int4-g128 -ref int8       # when fp16 does not fit the NPU
-go run ./cmd/hwnpu-formats -json formats.json                 # also write the results to a file
+go run ./cmd/hwnpu-dev formats                                    # int8, int4-g128 and int4 against fp16
+go run ./cmd/hwnpu-dev formats -formats int4-g128 -ref int8       # when fp16 does not fit the NPU
+go run ./cmd/hwnpu-dev formats -json formats.json                 # also write the results to a file
 ```
 
 The fp16 reference has 3.2 GiB of weights, which the NPU compiler may take long over or reject. Use `-ref int8` then (nearly the same as fp16), or, with OpenVINO installed, compute only the reference on the CPU:
 
 ```bash
-HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-formats -ref-backend openvino
+HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-dev formats -ref-backend openvino
 ```
 
 The programs stay in `intel/formats/` of the model's directory, so later runs skip the conversion and the compilation. On OpenVINO's CPU on Linux x86 (`-backend openvino`) the results were as below; the numbers from the NPU will decide Intel's default format.
@@ -270,6 +270,6 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 | `MAPPED_INFERENCE_VERSION is NOT compatible` | Driver, compiler and firmware are from different releases. Reinstall all packages of one release. |
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` is missing. Install it, or load precompiled blobs. |
 | `ZE_extension_graph version ... is not supported` | The driver is too old for hwnpu (graph extension 1.5 or later is needed). Update the driver. |
-| hwnpu-chat stops with `chain: part 0 has no output y` | The argument names the driver reports do not match the IR's. Please send the message and the output of `hwnpuinfo`. |
+| hwnpu-chat stops with `chain: part 0 has no output y` | The argument names the driver reports do not match the IR's. Please send the message and the output of `hwnpu-dev info`. |
 | hwnpu-chat runs out of memory while loading | `--tier none` halves the graphs; `--format int4-g128` halves the weights. |
 | Need more detail from Level Zero | Run with `ZE_ENABLE_LOADER_DEBUG_TRACE=1`. |

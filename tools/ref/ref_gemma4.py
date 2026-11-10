@@ -4,7 +4,7 @@
 
 MODEL_DIR holds config.json, the tokenizer and model.safetensors of google/gemma-4-E2B-it (or
 another Gemma 4 with per-layer embeddings). Writes what ref_logits.py writes, and the inputs a
-layer of the program takes besides the hidden state, for hwnpu-check to feed:
+layer of the program takes besides the hidden state, for hwnpu-dev check to feed:
 
     OUT_PREFIX.per_layer_inputs.bin   float32 (seq, layers * per-layer dim) each layer's input
                                       from the per-layer embeddings

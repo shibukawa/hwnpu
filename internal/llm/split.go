@@ -16,7 +16,7 @@ type Target struct {
 	// MaxBytes is the size of a model's weight file the NPU no longer accepts: a larger model is
 	// placed on the CPU as a whole.
 	MaxBytes int64
-	// Measured is false for a limit that is assumed and still to be measured with npuprobe limit.
+	// Measured is false for a limit that is assumed and still to be measured with hwnpu-dev probe limit.
 	Measured bool
 	Note     string
 	// Backend is the runtime of the device's NPU, as Options.Backend ("" for coreml).
@@ -25,14 +25,14 @@ type Target struct {
 
 // Targets are the known devices. The limit is per model, not on the total loaded; but on the M1
 // parts run one after another slow down about 12 times once they hold over about 2.9 GiB on the
-// Neural Engine together (npuprobe split, PROBE.md), which a split does not avoid. The M2 runs
+// Neural Engine together (hwnpu-dev probe split, PROBE.md), which a split does not avoid. The M2 runs
 // 3.62 GiB so, the M4 too.
 var Targets = []Target{
-	{Name: "m1", MaxBytes: 1 << 30, Measured: true, Note: "npuprobe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
-	{Name: "m2", MaxBytes: 1 << 30, Measured: true, Note: "npuprobe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
-	{Name: "m3", MaxBytes: 1 << 30, Measured: true, Note: "npuprobe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
+	{Name: "m1", MaxBytes: 1 << 30, Measured: true, Note: "hwnpu-dev probe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
+	{Name: "m2", MaxBytes: 1 << 30, Measured: true, Note: "hwnpu-dev probe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
+	{Name: "m3", MaxBytes: 1 << 30, Measured: true, Note: "hwnpu-dev probe limit: 0.99 GiB on the Neural Engine and 1.02 GiB not, in every format"},
 	{Name: "m4", MaxBytes: 2e9, Measured: true, Note: "2 GB (a 4 B model in lut4) on the Neural Engine"},
-	{Name: "intel", Backend: "intel", MaxBytes: 2 << 30, Note: "assumed; the NPU shares the system memory, so the driver compiler's time and memory are the likelier limit. To be measured with npuprobe limit"},
+	{Name: "intel", Backend: "intel", MaxBytes: 2 << 30, Note: "assumed; the NPU shares the system memory, so the driver compiler's time and memory are the likelier limit. To be measured with hwnpu-dev probe limit"},
 }
 
 // backendOf is a target's or Options' backend with the default filled in.
@@ -70,7 +70,7 @@ func LookupTargetFor(backend, name string) (Target, error) {
 		}
 		t.Note = "the smallest limit of the known devices"
 		if len(assumed) > 0 {
-			t.Note += "; the limits of " + strings.Join(assumed, " and ") + " are assumed, to be measured with npuprobe limit"
+			t.Note += "; the limits of " + strings.Join(assumed, " and ") + " are assumed, to be measured with hwnpu-dev probe limit"
 		}
 		return t, nil
 	}
@@ -89,7 +89,7 @@ func LookupTargetFor(backend, name string) (Target, error) {
 
 // NeuralEngineMaxDim is the largest size of one tensor dimension the Neural Engine takes: a model
 // with a longer axis, such as attention over a KV cache of 16384 tokens and the step's own,
-// has those operations placed on the CPU (M3, macOS 27.0.1, npuprobe kv).
+// has those operations placed on the CPU (M3, macOS 27.0.1, hwnpu-dev probe kv).
 const NeuralEngineMaxDim = 16384
 
 // A KV cache longer than CacheChunkOver is held in chunks of CacheChunkLen tokens (the last one

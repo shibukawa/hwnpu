@@ -331,12 +331,12 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 | hwnpu-tts | `-model DIR` に手で変換したものを渡す (CHAT.md 7 節の手順) | 自動の準備 (`speech.Prepare`: テキスト部、depthformer、コーデックの変換) を作り、`-use` に。T5 (テキストの埋め込み、depth の表) も。用途 `speech` | 3 のあと |
 | hwnpu-systemone | `-model DIR` に手で変換したもの | 自動の準備 (d1 の本体、視覚と音声のエンコーダ) と `-use`。T5 (埋め込み、ラベルの行)。用途 `decision` | 3 のあと |
 | hwnpu-image | `-m` で名前、ファミリー (`sana`、`moge`)、用途 (`image`、`depth`)。AMD は `~/models/NAME.amd-npu2`、Mac / Intel の Anima は自動で落として変換 | AMD の書き出しを自動で作る (Python の iron_*.py) か取得する | 済み (2026-11-10、design.md 16.124) |
-| hwnpu-formats | `-use` で chat の名前 | chat と同じ解決になる。候補の形式を `builds` から取る (10.2 節で skill が使う) | 2 |
-| hwnpu-convert、hwnpu-check、hwnpu-generate | `-config`、`-weights`、`-package` でファイルを直に | 開発用なので、ファイルを直に渡す形は残す。hwnpu-convert には `-use NAME -npu NPU` を足し、`builds` で決まる設定で変換する (ビルドツールの土台) | 4 |
+| hwnpu-dev formats | `-use` で chat の名前 | chat と同じ解決になる。候補の形式を `builds` から取る (10.2 節で skill が使う) | 2 |
+| hwnpu-dev convert、hwnpu-dev check、hwnpu-dev generate | `-config`、`-weights`、`-package` でファイルを直に | 開発用なので、ファイルを直に渡す形は残す。hwnpu-dev convert には `-use NAME -npu NPU` を足し、`builds` で決まる設定で変換する (ビルドツールの土台) | 4 |
 
 - hwnpu-tts と hwnpu-systemone は、今は実行時もチェックポイント (`model.safetensors`) を開く。T5 を入れるまでは、11.4 節のチェックポイントの削除の対象から外す
 - **MODEL.md の表**: `categories` と `models` の `memory` から作れる。`go test` で、MODEL.md の表と定義ファイルが食い違っていないかを確かめる (表の生成は後回し)
-- **hwnpu-convert**: 今は `Arch.Format` を既定にしている。同じ `builds` を読み、`-npu` で当てはめるようにする。`Arch.Format` と `Formatter` は最後に消す
+- **hwnpu-dev convert**: 今は `Arch.Format` を既定にしている。同じ `builds` を読み、`-npu` で当てはめるようにする。`Arch.Format` と `Formatter` は最後に消す
 - **配布 (docs/prebuilt.md)**: `prebuilt/models.yaml` の `targets` は、ここの `builds` で NPU ごとに決まる 1 組と同じものにする。`prebuilt/models.yaml` には、配るモデル、取得元のリビジョン、更新番号 `build` だけを残す
 - **AMD**: `amd-xdna2` の `format` (q4、q6) から書き出しの名前 (今の `NAME.amd-npu2-q4`) を決める。配布が入れば、取得元から落とす
 
@@ -348,7 +348,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 | 2 | `builds` と `npus` を入れ、2 節の既定を移す。AMD と Intel の世代を見分ける。`-explain` | `DefaultFormatFor`、`autoTiers`、`neuralEngineHold`、`-draft` の既定がルールになる |
 | 3 | `sources` (path、s3) と `like`、`source.json`、コミットと sha256 の固定 (5.3 節) | 蒸留モデル、共有フォルダ、S3。上流の更新で黙って変わらない |
 | 3.5 | 変換済みの並び (`hwnpu.json`) と `prebuilt` を読み、5.2 節の順で探す。`-prebuilt` | docs/prebuilt.md の配布が始まれば、ダウンロードと読み込みだけになる |
-| 4 | hwnpu-convert と配布の `targets` を同じルールに | 7 節 |
+| 4 | hwnpu-dev convert と配布の `targets` を同じルールに | 7 節 |
 | 4.5 | ロック、オフライン、キャッシュの削除、Windows の置き場所 (11 節)。hwnpu-tts と hwnpu-systemone の自動の準備と `-use` (7 節) | 1 段のあとならいつでも。ロックは 3 段 (取得元を足す) より前に |
 | 5 | ビルド・アップロードツール (`cmd/hwnpu-build`) | 9 節。aix1 の CI がこれを呼ぶ |
 | 6 | 定義ファイルを作る skill | 10 節。`-explain` (2 段) と `like` (3 段) が要る |
@@ -375,7 +375,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 |---|---|---|
 | アーキテクチャ | `llm.Detect` (`model_type`、`architectures`) | 新しい構造。port-architecture の skill で移植する |
 | config の設定 | `llm.LoadConfig` (知らない設定はエラーになる。例: 別の RoPE の拡張、別の注意の窓) | 設定を足すのも port-architecture の範囲 |
-| テンソル | `hwnpu-check` の `tensors: 0 missing, 0 mismatched` | 名前の付け方が違う (別の学習の道具で保存した、など) |
+| テンソル | `hwnpu-dev check` の `tensors: 0 missing, 0 mismatched` | 名前の付け方が違う (別の学習の道具で保存した、など) |
 | トークナイザー | `tokenizer.Load` が読めるか。今読めるのは BPE (GPT-2 式の ByteLevel、GPT-4 / Qwen3 / Qwen3.5 の区切り、byte fallback) と PLaMo の `tokenizer.jsonl` | SentencePiece の unigram、独自の正規化や前処理、Python のコードで実装したトークナイザー (`trust_remote_code`)。トークナイザーの実装を足す必要がある |
 | 会話の型 | 元のモデルの `chat_template` と同じか (`tokenizer_config.json` か `chat_template.jinja` を比べる)。hwnpu はアーキテクチャごとの型を Go で持つ (`chat.TemplateFor`) | 型が違えば、答えが崩れるか、ツールの呼び出しが読めない。違いを報告して止める |
 | 語彙 | 特別なトークン (BOS、EOS、`<think>`、ツールの呼び出しの印) が元のモデルと同じ id か | 違えば会話の型と同じ扱い |
@@ -386,7 +386,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 2. 大きさを数え (6.1 節)、既定の `builds` で何が選ばれるかを `-explain` で見る。元のモデルと同じファミリーと大きさなら、多くはそのまま当たる
 3. 候補の形式を、軽いものから順に測る
    - CPU: `q4_gptq.py --method rtn` で部分ごとのビット数を掃く (5.2 節)
-   - NPU: `hwnpu-formats` (参照との次のトークンの一致、KL、perplexity、1 回の時間)、Apple は `hwnpu-generate -score`
+   - NPU: `hwnpu-dev formats` (参照との次のトークンの一致、KL、perplexity、1 回の時間)、Apple は `hwnpu-dev generate -score`
    - 5 種の文で、校正に使わない GPL を必ず見る。蒸留モデルは元のモデルより量子化に弱いことがある (小さいモデルほど 4 ビットで崩れる)
 4. 届かなければ校正 (GPTQ、表の当てはめ) を試す (5.3 節)。符号の置き場所は `codes` に、取得元と同じ書き方で書く
 5. メモリ: 決めた形式で読み込み、Neural Engine が抱える分とプロセスの分を測る (6 節)。M1 の 2.8 GiB、コンパイルのキャッシュ 3.5 GiB を超えないか。超えるなら `prefill` か形式を変える
@@ -464,7 +464,7 @@ cache:
 ```
 
 - 消す前に、何をどれだけ消すかを 1 行ずつログに出す
-- `-keep-checkpoint` で、その実行だけ元のチェックポイントを残す。hwnpu-formats と skill は既定で残す
+- `-keep-checkpoint` で、その実行だけ元のチェックポイントを残す。hwnpu-dev formats と skill は既定で残す
 - `hwnpu-chat cache` で、モデルごとのディスクの使用量、最後に使った日時、消す候補を出す。`--clean` で今すぐ消す、`--rm NAME` でそのモデルを消す
 - 消さないもの: `~/models` の AMD の書き出し (利用者が作ったもの)、`path` の取得元 (`copy: false` で読んでいる共有フォルダ)、`--codes` (hwnpu-chat) に渡された符号のフォルダ
 
@@ -516,7 +516,7 @@ models:
     from: team-share:my-distill-1b
 ```
 
-- 型は今の `llm.Archs()` の一覧 (`hwnpu-convert -archs`): `lfm3`、`gemma4`、`qwen35`、`plamo3`、`bert`、`plamo`、`whisper`、エンコーダ類
+- 型は今の `llm.Archs()` の一覧 (`hwnpu-dev convert -archs`): `lfm3`、`gemma4`、`qwen35`、`plamo3`、`bert`、`plamo`、`whisper`、エンコーダ類
 - `arch` を書くのは、蒸留や独自の学習で `model_type` が元と違う名前になったとき (`MyDistillForCausalLM` など)。中身が同じ構造なら、型を名指しすれば通る。違う構造なら、型の `LoadConfig` が知らない設定でエラーにする (10.1 節)
 - 型の中身 (Gemma 4 の層ごとの埋め込み、Qwen3.5 の Gated DeltaNet、LFM3 の短い畳み込み、MoE の経路、Neural Engine 向けの書き換え) は定義ファイルに出さない。出すと組み合わせが爆発し、正しさを確かめられなくなる
 

@@ -7,7 +7,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
-// Chunk attention probe models (npuprobe attn): attention without weights over one chunk of a
+// Chunk attention probe models (hwnpu-dev probe attn): attention without weights over one chunk of a
 // KV cache, the program a model would call once per used chunk and layer when its layers are
 // split at the attention (docs/model-fit.md T2), so that a step costs in proportion to the tokens
 // used, not to the cache's capacity. The host merges the chunks (ChunkMerge).

@@ -13,7 +13,7 @@
 #                 a command's --device and HWNPU_DEVICE override it
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory)
-#   arch          the structure, one of hwnpu-convert -archs (default: from config.json)
+#   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
 #   machine       the least memory of a machine, in GB, the family recommends the model for
 #   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
 #                 buffers and the process's together over a run (docs/new-model-checklist.md 11.2)

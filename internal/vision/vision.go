@@ -1,5 +1,5 @@
 // Package vision turns images into LFM3-VL image embeddings for the text model's input, with
-// vision encoder programs converted by hwnpu-convert -arch lfm3-vision, one per image size (the
+// vision encoder programs converted by hwnpu-dev convert -arch lfm3-vision, one per image size (the
 // Neural Engine runs fixed shapes). An image is resized to the program whose aspect ratio is
 // closest to the size the checkpoint's image processor would give it (smart_resize), so its
 // embeddings match the reference exactly when that size has a program, and approximately

@@ -28,7 +28,7 @@ import (
 // encoders the checkpoint has). Programs converted by hand are given with --checkpoint and
 // --package:
 //
-//	hwnpu-convert -config d1-2B/config.json -weights d1-2B/model.safetensors -seq 512 -o d1-512.mlpackage
+//	hwnpu-dev convert -config d1-2B/config.json -weights d1-2B/model.safetensors -seq 512 -o d1-512.mlpackage
 //	hwnpu-chat systemone --checkpoint d1-2B --package d1-512.mlpackage request.json
 //	hwnpu-chat systemone --checkpoint d1-2B --package d1-512.mlpackage,d1-2048.mlpackage --listen 127.0.0.1:8080
 //
@@ -41,14 +41,14 @@ import (
 // d1-2B also answers about images (files, images, or image_url parts of a state made of chat
 // messages, as data URLs) with --vision, its vision encoder converted for one or more image sizes:
 //
-//	hwnpu-convert -arch lfm3-vision -image 512x512 -config d1-2B/config.json -weights d1-2B/model.safetensors -format fp16 -o vision-512x512.mlpackage
+//	hwnpu-dev convert -arch lfm3-vision -image 512x512 -config d1-2B/config.json -weights d1-2B/model.safetensors -format fp16 -o vision-512x512.mlpackage
 //
 // d1-Omni-2B answers about audio clips too (WAV: data:audio/ URLs in files, or input_audio parts
 // of the state), and questions asked as a clip (instructions {"type": "input_audio",
 // "input_audio": {"data": BASE64}}), with --audio-encoder, its audio encoder converted for one or
 // more clip lengths:
 //
-//	hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -config d1-Omni-2B/config.json -weights d1-Omni-2B/model.safetensors -format fp16 -o audio-30s.mlpackage
+//	hwnpu-dev convert -arch lfm3-audio-encoder -frames 3000 -config d1-Omni-2B/config.json -weights d1-Omni-2B/model.safetensors -format fp16 -o audio-30s.mlpackage
 type SystemOneCmd struct {
 	Request string `arg:"" optional:"" placeholder:"REQUEST.json" help:"The request to answer (- or none: standard input)."`
 	Model   string `short:"m" default:"decision" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (decision, d1, d1-omni), or a Hugging Face repository OWNER/NAME of a d1 checkpoint."`
@@ -61,13 +61,13 @@ type SystemOneCmd struct {
 	CPU     bool   `name:"cpu" help:"Run on the CPU interpreter instead of the Neural Engine (slow; for checking)."`
 
 	Checkpoint  string `group:"Converted by hand" type:"existingdir" placeholder:"DIR" help:"With --package: the checkpoint's directory (config.json, model.safetensors, tokenizer.json, calibration.json)."`
-	Package     string `group:"Converted by hand" placeholder:"PKG,..." help:"The model converted by hwnpu-convert, comma separated: .mlpackage or out.parts.json with different -seq."`
+	Package     string `group:"Converted by hand" placeholder:"PKG,..." help:"The model converted by hwnpu-dev convert, comma separated: .mlpackage or out.parts.json with different -seq."`
 	Config      string `group:"Converted by hand" type:"existingfile" placeholder:"FILE" help:"config.json (default: in --checkpoint)."`
 	Weights     string `group:"Converted by hand" type:"existingfile" placeholder:"FILE" help:"The checkpoint the embeddings and the label rows are read from: .safetensors or .gguf (default: in --checkpoint)."`
 	Tokenizer   string `group:"Converted by hand" type:"existingfile" placeholder:"FILE" help:"tokenizer.json (default: next to config.json)."`
 	Calibration string `group:"Converted by hand" type:"existingfile" placeholder:"FILE" help:"calibration.json (default: next to config.json)."`
-	Vision      string `group:"Converted by hand" placeholder:"PKG,..." help:"The vision encoder (hwnpu-convert -arch lfm3-vision), a package per image size, comma separated: questions about images."`
-	Audio       string `group:"Converted by hand" name:"audio-encoder" placeholder:"PKG,..." help:"The audio encoder (hwnpu-convert -arch lfm3-audio-encoder), a package per clip length, comma separated: d1-Omni's questions about audio and spoken questions."`
+	Vision      string `group:"Converted by hand" placeholder:"PKG,..." help:"The vision encoder (hwnpu-dev convert -arch lfm3-vision), a package per image size, comma separated: questions about images."`
+	Audio       string `group:"Converted by hand" name:"audio-encoder" placeholder:"PKG,..." help:"The audio encoder (hwnpu-dev convert -arch lfm3-audio-encoder), a package per clip length, comma separated: d1-Omni's questions about audio and spoken questions."`
 }
 
 // Run answers the request or serves.
