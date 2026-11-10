@@ -6,7 +6,7 @@
 
 - 直下の `models.yaml` (`hwnpu.ModelsYAML` で組み込み) から `chat.Catalog`、`chat.Categories`、`chat.Aliases` を作る (`internal/chat/table.go`)。`models`、`categories`、`aliases` と、モデルの `family`、`tag`、`kind`、`from` (`hf:` だけ、`@REVISION` 可)、`arch`、`machine`、`memory`、`bytes`、`features`、`no_think`、`about`、`like`、`remove`
 - ユーザーのファイル (`~/.config/hwnpu/models.yaml`、Windows は `%LOCALAPPDATA%\hwnpu\models.yaml`)、`HWNPU_MODELS`、`-models` を差分として重ねる。用途の `picks` は列ごと。版の扱いは 13 節のとおり (組み込みは厳しく、ユーザーの知らないモデルへの上書きと新しい版の知らないキーは警告)。`sources`、`npus`、`builds`、`cache` は、ユーザーのファイルにあれば「まだ読まない」と警告して飛ばす
-- `-list` (hwnpu-chat、hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
+- `hwnpu-chat list` と `-list` (hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
 - hwnpu-transcribe、hwnpu-tts、hwnpu-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。hwnpu-tts と hwnpu-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
 - 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
 - 取得元 (`internal/chat/sources.go`): ユーザーのファイルの `sources` (`type: path` の共有フォルダ、`type: s3` を aws コマンドで。`endpoint`、`region`、`profile`、`no_sign`) と、全体の探索順 `search` (既定 `[hf]`、5.4 節)。`from: SOURCE:NAME` でモデルごとに名指し。`-use SOURCE:NAME` も。ファイルごとに `search` の順に探し、見つかった取得元を次のファイルから先に見る。共有フォルダはハードリンクを試してから写す。リビジョンを固定したモデルは `OWNER/NAME@REV/` を先に探す。`sha256` を書いたファイルは、どの取得元から取っても確かめ、違えば消して次の取得元へ。組み込みのファイルは `sources` と `search` を持たない。まだないもの: `copy: false` (写さずに読む)、オフライン (11.3 節)、ダウンロードしながらの sha256 の計算 (今は取ったあとに読み直す)
@@ -37,7 +37,7 @@
 | 重みの形式 | `llm.Arch.Format`、`Formatter` (チェックポイントで変わるもの)、`Arch.IntelFormat`、`llm.IntelFormat` | Gemma 4 lut6、PLaMo 3 lut8、Qwen3.5 lut8 (2B だけ lut6)、LFM3 lut6 (多モーダルは lut8)、無指定は lut4。Intel は lut4 → int4、lut6 / lut8 → int8、LFM3 は int8 |
 | 文脈 | `Setup.Context` | 0: 分けられるモデルは学習時の最長、それ以外は 16320 |
 | 塊 | `Setup.Paged` | 分けられるモデルは 8192 |
-| 下書き | hwnpu-chat の `-draft` | 8 |
+| 下書き | hwnpu-chat の `--draft` | 8 |
 | プロンプト用のプログラム | `PrefillAuto`、`compileCacheBytes`、`neuralEngineHold` | コンパイルのキャッシュ 3.5 GiB を超えるなら持たない。M1 は 2.8 GiB |
 | 段階 | `autoTiers` | lut4 か Intel なら 4096、それ以外はなし |
 | MTP | `Setup.MTP` | auto |
@@ -49,7 +49,7 @@
 
 1. 組み込みの既定: リポジトリの直下の `models.yaml` (MODEL.md の隣。PR を出す人が見つけやすいように)。直下のパッケージ `hwnpu` が `go:embed` で組み込む
 2. ユーザー: macOS と Linux は `~/.config/hwnpu/models.yaml` (`$XDG_CONFIG_HOME` があればその下。macOS でも同じ場所にする。`os.UserConfigDir` の `~/Library/Application Support` は手で置くには深い)、Windows は `%LOCALAPPDATA%\hwnpu\models.yaml` (共有フォルダのドライブ文字や `aws` のプロファイルなど機械ごとの値が入るので、ローミングしない方に置く)
-3. 環境変数 `HWNPU_MODELS` (`:` 区切り、Windows では `;`) と、hwnpu-chat / hwnpu-agent の `-models FILE` (何度でも指定できる)
+3. 環境変数 `HWNPU_MODELS` (`:` 区切り、Windows では `;`) と、hwnpu-chat / hwnpu-chat agent の `--models FILE` (何度でも指定できる)
 
 重ね方: ユーザーのファイルには**差分だけ**を書き、既定と合成する。既定のファイルを写して直す必要はない。
 
@@ -326,7 +326,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 
 | コマンド | 今 | 要る作業 | 段 |
 |---|---|---|---|
-| hwnpu-chat、hwnpu-agent (埋め込みを含む) | `-use` で名前、用途、タグ。自動で落として変換 | 定義ファイルから読むだけ | 1 |
+| hwnpu-chat、hwnpu-chat agent (埋め込みを含む) | `-m` で名前、用途、タグ。自動で落として変換 | 定義ファイルから読むだけ | 1 |
 | hwnpu-transcribe | `-use OWNER/NAME` (既定 whisper-large-v3-turbo)。自動で落として変換 (`transcribe.Prepare`) | `-use` を同じ解決 (用途 `transcribe`、ファミリー `whisper`) に。kotoba-whisper (Apache-2.0) を日本語のタグに。表の書き出し (T5) と、チェックポイントを遅れて落とす仕組みを chat と揃える | 1 の続き |
 | hwnpu-tts | `-model DIR` に手で変換したものを渡す (CHAT.md 7 節の手順) | 自動の準備 (`speech.Prepare`: テキスト部、depthformer、コーデックの変換) を作り、`-use` に。T5 (テキストの埋め込み、depth の表) も。用途 `speech` | 3 のあと |
 | hwnpu-systemone | `-model DIR` に手で変換したもの | 自動の準備 (d1 の本体、視覚と音声のエンコーダ) と `-use`。T5 (埋め込み、ラベルの行)。用途 `decision` | 3 のあと |
@@ -465,8 +465,8 @@ cache:
 
 - 消す前に、何をどれだけ消すかを 1 行ずつログに出す
 - `-keep-checkpoint` で、その実行だけ元のチェックポイントを残す。hwnpu-formats と skill は既定で残す
-- `hwnpu-chat -cache` で、モデルごとのディスクの使用量、最後に使った日時、消す候補を出す。`-cache-clean` で今すぐ消す、`-rm NAME` でそのモデルを消す
-- 消さないもの: `~/models` の AMD の書き出し (利用者が作ったもの)、`path` の取得元 (`copy: false` で読んでいる共有フォルダ)、`-codes` に渡された符号のフォルダ
+- `hwnpu-chat cache` で、モデルごとのディスクの使用量、最後に使った日時、消す候補を出す。`--clean` で今すぐ消す、`--rm NAME` でそのモデルを消す
+- 消さないもの: `~/models` の AMD の書き出し (利用者が作ったもの)、`path` の取得元 (`copy: false` で読んでいる共有フォルダ)、`--codes` (hwnpu-chat) に渡された符号のフォルダ
 
 ## 12. モデル固有の情報: どこまで定義ファイルに来るか
 
@@ -497,7 +497,7 @@ cache:
 |---|---|---|
 | 1. 机上の見積もり | | 「10.1 節の確かめ (アーキテクチャ、トークナイザー、会話の型) が通れば、移植は要らず 5 節から」を足す |
 | 5.4 形式の決め方 | `Formatter` (config の `Format()`) で決める | `builds` の `size` のルールで決める (6.1 節) |
-| 5.3 校正 | `hwnpu-chat -codes` | `builds` の `codes` に、取得元と同じ書き方で |
+| 5.3 校正 | `hwnpu-chat --codes` | `builds` の `codes` に、取得元と同じ書き方で |
 | 4.1 AMD | `iron_export_lm.py` の引数 (`--mlp q6` など) を手で | `npu: amd-xdna2` の `builds` に書き、ビルドツールが渡す |
 | 9. 記録 | design.md と improvements | 加えて `models.yaml` (`size`、`memory`、コミットと sha256)。MODEL.md は定義ファイルと食い違えば `go test` が落ちる |
 | 新しい節 | | 「手元か PR か」(10.3 節) と、skill の使い方 |

@@ -18,7 +18,7 @@
 | 作業 | 理由 | 参照 |
 |---|---|---|
 | 埋め込みの表を変換時に書き出す (T5) **済み** (chat、埋め込み、hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) | 今は実行時もチェックポイントを開くので、配っても元の重み (LFM3 3.5 GB、Gemma 4 10.2 GB) を落とすことになる | model-fit.md T5、design.md 16.x |
-| hwnpu-chat が GPTQ の符号を使う **済み** (`-codes`、#77) | 配る形式は、校正済みのもの (lut6 の KL が ANE で −23〜35%) にしたい | handoff-m3-gptq.md、improvements.ja.md 11.5 |
+| hwnpu-chat が GPTQ の符号を使う **済み** (`--codes`、#77) | 配る形式は、校正済みのもの (lut6 の KL が ANE で −23〜35%) にしたい | handoff-m3-gptq.md、improvements.ja.md 11.5 |
 | 重みを 1 つにして実行時に組み立てる | Q=1 と Q=128 の `weight.bin`、AMD の版どうしのバンクの先頭は同じバイト。そのまま置くと 2 回落とす。配るのは 1 つにし、ローダーが clone / hardlink で組み立てる (`cache.ShareFiles` の逆向き) | design.md 16.64、16.79 |
 | 書き出し形式の版を manifest に | 今は「既定が変わったら変換し直す」ために、形式を名前に入れて区別している。配るものは版で互換性を判断する | 4 節 |
 

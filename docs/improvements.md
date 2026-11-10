@@ -472,7 +472,7 @@ AMD (`tools/amd/iron_plamo3.py`; written from IRON's building blocks alone):
 
 hwnpu-chat:
 - Translates each text typed and keeps the earlier pairs in the prompt as history
-- `-to`, `-from`, `-form` and `/to LANG` set the languages and style. The server also takes a `glossary`
+- `--to`, `--from`, `--form` and `/to LANG` set the languages and style. The server also takes a `glossary`
 - A terminal input line was added: history, line editing, two columns for wide characters, multi-line paste, colors
 
 **Anima-Turbo (image generation, `hwnpu-image`)** (16.68–69, 16.72, 16.78)
@@ -536,14 +536,14 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Gemma 4 E4B's default `-prefill` | With `-kv-only` (16.112) the two programs take 4.88 GiB (6.51 before), still over 3.5 GiB, so `auto` keeps one. `-prefill on` has not been measured since. Before, two programs read long prompts 7.5–8× faster, but every start took 135–165 s (one program: 86 s) and generation at 16K was a fifth slower. Switch by the prompt's length, or let `auto` weigh the length? | Start and round trips with `-prefill on` after `-kv-only` | 16.65, 16.83, 16.112 |
 | Gemma 4 E4B against the unsplit form | Skipped for lack of disk | | 16.65 |
 | Gemma 4 and the prompt store | Save and restore time and size with Gemma 4 E2B | Replay the same OpenCode request as 16.38 | 16.38 |
-| hwnpu-agent on Apple with Gemma 4 / Qwen3.5 | The templates support tools, but the agent tasks were not run (Gemma 4 E4B passed on AMD) | The tasks in CHAT.md section 7 | 16.35 |
+| `hwnpu-chat agent` on Apple with Gemma 4 / Qwen3.5 | The templates support tools, but the agent tasks were not run (Gemma 4 E4B passed on AMD) | The tasks in CHAT.md section 7 | 16.35 |
 | Qwen3.5-0.8B / 2B | 2B against HF (0.8B passes with the same code), 2B lut6's KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), passkeys over long contexts | `hwnpu-check`; the KL with the host's or another split | 16.99, 16.115 |
 | The rest of speculative decoding | Prompt lookup: acceptance at Q=4, in OpenCode's round trips (7.4K, long XML), against temperature 0. MTP drafts (16.109): 4B on the M3, the time to the first draft after a long prompt (up to 64 calls) | Replays with `-dump` | 16.36, 16.109 |
 | d1-Omni-2B differing from its README | The team answer is the opposite of the README's. HF's code reads up to 16 questions together, hwnpu one at a time. Not compared with HF | Compare with HF's code where torch is available | 16.31 |
 | LFM3-Audio's TTS | Does it sound the same as the reference (llama.cpp)? Only checked by transcribing it again with ASR | Compare audio decoded from the same codes with llama.cpp's server TTS | 16.30–31 |
 | Long texts with PLaMo-Embedding | Do the last layer's values grow further in the 1024-token program (is head-scale enough)? | Vary the texts in `TestANEPrecision` | 16.34 |
 | BERT family | `hwnpu-check` on real weights and placement on the ANE (only checked on the CPU for Intel) | | 16.11 |
-| GPTQ's lut6 tables in the answers | On the ANE the KL falls as on the CPU, all on the ANE, same speed (16.95). Whether the answers get better is not told by 12 questions (10/12 either way). lut4 + wkmeans not tried on the ANE. Gemma 4 E2B (16.114): KL on the ANE 1.02 → 0.56 (English), 12 questions 10 → 11 of 12; hwnpu-chat takes them with `-codes`, not by default (2.1 GB of codes to hand out) | More questions and hwnpu-agent's tasks with and without the codes; a way to hand out the codes | 16.87, 16.95, 16.114 |
+| GPTQ's lut6 tables in the answers | On the ANE the KL falls as on the CPU, all on the ANE, same speed (16.95). Whether the answers get better is not told by 12 questions (10/12 either way). lut4 + wkmeans not tried on the ANE. Gemma 4 E2B (16.114): KL on the ANE 1.02 → 0.56 (English), 12 questions 10 → 11 of 12; hwnpu-chat takes them with `--codes`, not by default (2.1 GB of codes to hand out) | More questions and hwnpu-agent's tasks with and without the codes; a way to hand out the codes | 16.87, 16.95, 16.114 |
 | Anima's remaining error against diffusers' fp32 | Latent cosine 0.67–0.98 over 3 prompts after the DiT's silu; the DiT in fp16 brings it only 0.006–0.025 closer (16.95). How much of the rest is the text's int8 is not measured | Swap the text encoder to fp16 | 16.85, 16.95 |
 | Anima above 1024×1024 | The smaller attention chunks for sizes past 1024 (`mil.DitQChunk`) are not measured, nor whether the VAE stages fit | Convert 1280×1280 and run | 16.85 |
 | Details of PLaMo 3's accuracy and speed | Placement and weight formats are checked. Translation quality and time for long documents are not measured in detail | Compare KL with fp16 on translation pairs | 16.71 |
@@ -599,13 +599,13 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 ### 11.5 Not yet written (for reference)
 
 - AWQ-style scales for lut4 (model-fit.md T8, 2). GPTQ choosing each weight's entry and k-means weighted with E[x²] fitting the tables are in since 16.87 (lut6 0.074 → 0.038 through Go's converter; lut4 2.7 → 0.33, still 4× lut6's rounding)
-- hwnpu-chat fetching GPTQ's codes and using them by default: it takes them with `-codes` (16.114, a `-gptq-HASH` in the package name); how to hand out the codes (Gemma 4 E2B 2.1 GB, 1 byte an index) is open
+- hwnpu-chat fetching GPTQ's codes and using them by default: it takes them with `--codes` (16.114, a `-gptq-HASH` in the package name); how to hand out the codes (Gemma 4 E2B 2.1 GB, 1 byte an index) is open
 - Writing the embedding tables at conversion so the checkpoint (LFM3 3.5 GB, Gemma 4 10.2 GB) is not opened at run time (T5)
 - Conversations set aside moved out of the process (to disk), halved with int8 (the rest of T4)
 - Changing the number of parts at run time (`MemoryBudget`, `Reshape`) (16.12)
 - A WordPiece tokenizer (to use the BERT family from hwnpu-chat)
 - Speculative decoding with a draft model (such as Qwen3.5's `mtp.` layers) (T9): Apple done (16.109); AMD not yet (the model's hidden states out and a version of the MTP layer)
-- Repairing hwnpu-agent's broken calls (output-parser)
+- Repairing `hwnpu-chat agent`'s broken calls (output-parser)
 - AMD: the rest of checking drafts (16.117): a GEMV of a few rows for q4 (Gemma 4, PLaMo 3, LFM3 at 4 bits), Gemma 4's shared layers (last row only) and ring caches, attention over the rows in one MHA, fewer copies of the states
 - The rest of AMD's pinned memory (amd-npu-models.md section 12):
   - Split the VAE into tiles (with the DiT in one bank (16.106), a VAE stage is now the largest)

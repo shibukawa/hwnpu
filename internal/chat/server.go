@@ -121,7 +121,7 @@ func route(model string, names, others []string, kind Kind, other string) (int, 
 	}
 	switch len(names) {
 	case 0:
-		return -1, http.StatusNotFound, fmt.Sprintf("no %s model is loaded: add one to -use (hwnpu-chat -list shows them)", kind)
+		return -1, http.StatusNotFound, fmt.Sprintf("no %s model is loaded: add one to --model (hwnpu-chat list shows them)", kind)
 	case 1:
 		return 0, 0, ""
 	}

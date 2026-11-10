@@ -2,7 +2,7 @@
 
 This guide prepares an Intel Core Ultra machine (Meteor Lake, Arrow Lake, Lunar Lake, Panther Lake, Wildcat Lake) so that hwnpu can use its NPU, and shows how to check the result.
 
-> **Status.** The Intel backend has been tested against a simulated Level Zero driver only, and hwnpu-chat and hwnpu-agent with the same programs on OpenVINO's CPU. Running `cmd/report` on real hardware (step 4) and the chat (step 6), and sending the results back, is the most useful help right now.
+> **Status.** The Intel backend has been tested against a simulated Level Zero driver only, and hwnpu-chat and hwnpu-chat agent with the same programs on OpenVINO's CPU. Running `cmd/report` on real hardware (step 4) and the chat (step 6), and sending the results back, is the most useful help right now.
 
 Japanese: [INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)
 
@@ -177,13 +177,13 @@ g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.xml"})
 
 A model with an operation the NPU compiler does not support fails with `hwnpu.ErrNotOnNPU`; the error lists the operations and includes the compiler log.
 
-## 6. hwnpu-chat and hwnpu-agent
+## 6. hwnpu-chat and hwnpu-chat agent
 
 The chat and the agent run on Intel's NPU with the same commands as on a Mac (not yet tried on the hardware; see "What to check" below).
 
 ```bash
 go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest              # talk in the terminal
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-agent@latest "summarize the README"
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest agent "summarize the README"
 ```
 
 The first run:
@@ -203,15 +203,15 @@ The first run:
 Starting small makes failures easier to tell apart:
 
 ```bash
-hwnpu-chat -paged -1 -tier none -context 4096
+hwnpu-chat --paged -1 --tier none --context 4096
 ```
 
 ### What to check
 
-1. Whether `hwnpu-chat -paged -1 -tier none -context 4096` gets to `ready:`. If it stops, please send the message (it includes the compiler's log).
+1. Whether `hwnpu-chat --paged -1 --tier none --context 4096` gets to `ready:`. If it stops, please send the message (it includes the compiler's log).
 2. Whether it answers questions correctly, and the tokens per second shown after each answer.
 3. Whether the defaults (`hwnpu-chat` alone) load, how long the compilation takes, and whether memory suffices.
-4. Whether `hwnpu-agent` calls its tools.
+4. Whether `hwnpu-chat agent` calls its tools.
 5. The accuracy and speed of int8, int4-g128 and int4 with `hwnpu-formats` (next section).
 
 ### Comparing weight formats (hwnpu-formats)
@@ -246,7 +246,7 @@ The programs stay in `intel/formats/` of the model's directory, so later runs sk
 | int4-g128 | 0.83 | 80% | 4.28 |
 | int4 | 0.81 | 76% | 4.89 |
 
-To use a format in hwnpu-chat and hwnpu-agent, pass it as `-format int4-g128`.
+To use a format in hwnpu-chat and hwnpu-chat agent, pass it as `--format int4-g128`.
 
 ### Telling problems apart with OpenVINO
 
@@ -254,7 +254,7 @@ When hwnpu's Level Zero path fails, running the same IR with OpenVINO tells whet
 
 ```bash
 python3 -m venv ~/ov && ~/ov/bin/pip install openvino numpy
-HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat -backend openvino -tier none -context 4096
+HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvino --tier none --context 4096
 ```
 
 `HWNPU_OV_DEVICE=NPU` runs on OpenVINO's NPU plugin, `CPU` (the default) on the CPU. On Windows, set `HWNPU_OV_PYTHON` to the path of `python.exe`.
@@ -271,5 +271,5 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat -backend openvino
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` is missing. Install it, or load precompiled blobs. |
 | `ZE_extension_graph version ... is not supported` | The driver is too old for hwnpu (graph extension 1.5 or later is needed). Update the driver. |
 | hwnpu-chat stops with `chain: part 0 has no output y` | The argument names the driver reports do not match the IR's. Please send the message and the output of `hwnpuinfo`. |
-| hwnpu-chat runs out of memory while loading | `-tier none` halves the graphs; `-format int4-g128` halves the weights. |
+| hwnpu-chat runs out of memory while loading | `--tier none` halves the graphs; `--format int4-g128` halves the weights. |
 | Need more detail from Level Zero | Run with `ZE_ENABLE_LOADER_DEBUG_TRACE=1`. |

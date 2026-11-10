@@ -150,7 +150,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 | 確かめる版とデコードの制御コード | 確かめる版の ELF (30 MB) とデコードの ELF (26 MB) を両方デバイスのヒープ (64 MiB) に置く。入らないときは呼び出しごとに作る (`perCall`、2 ms)。プロンプトの塊や塔が入らないときは両方を手放す (`dropDecode`)。GDN の演算子を 3 回呼んでいた版は 47 MB で入らなかった | 16.117 |
 | 画像生成などのグラフの組 (`variants`) は 1 つの bank で読み替える (`iron.GraphOptions.SwapVariants`) | Anima の DiT の 7 組で固定 3445 → 1236 MiB、+2 % | 16.106 |
 | 大きな書き出し | Qwen3.6 の 40 層の書き出しは 30 分、RSS の最大 53.8 GB (60 GB のうち): ほかの大きな仕事と並べない。/tmp は RAM (tmpfs) なので、試しの書き出しは `~/models` の下に。長いものは `systemd-run --user` で (セッションと一緒に殺されない) | 16.91〜16.92 |
-| 書き出しの名前 | `~/models/NAME.amd-npu2-q4` (なければ `NAME.amd-npu2`): AMD の NPU だけの機械では、hwnpu-chat と hwnpu-agent が `-iron` なしの `-use NAME` でこれを選ぶ (#81) | — |
+| 書き出しの名前 | `~/models/NAME.amd-npu2-q4` (なければ `NAME.amd-npu2`): AMD の NPU だけの機械では、hwnpu-chat (`chat`、`agent`、`serve`) が書き出しのディレクトリでない `-m NAME` でこれを選ぶ (#81) | — |
 
 ### 4.2 Intel
 
@@ -187,7 +187,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 | 順 | 方法 | 道具 | 結果の例 | 注意 |
 |---|---|---|---|---|
 | 1 | 丸め (RTN)。q4nx は 9 つの候補から最小の誤差を選ぶ | `iron_q4.quantize_fmt`、`palette.QuantizeBits` | 重みの誤差 8.2 → 7.3 % | 基準。重みの誤差が最小でも出力の誤差が最小とは限らない |
-| 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-convert -codes`、`hwnpu-chat -codes` | NPU の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、LFM3-VL 0.067 → 0.034、PLaMo 3 0.058 → 0.040。Anima の DiT の q4: 潜在の cosine 0.868 → 0.939 (q8 0.962) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
+| 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-convert -codes`、`hwnpu-chat --codes` | NPU の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、LFM3-VL 0.067 → 0.034、PLaMo 3 0.058 → 0.040。Anima の DiT の q4: 潜在の cosine 0.868 → 0.939 (q8 0.962) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
 | 3 | **表の当てはめ** (Apple の lutN): E[x²] で重み付けした k-means | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038、lut4 0.66 → 0.33 (Go の変換) | 一様な表から始める (重みの誤差が最小の k-means から始めると KL は最悪)。ANE での確認は handoff-m3-gptq.md |
 | 4 | AWQ 式のスケールの折り込み | 未実装 | | model-fit.md T8 の 2。lut4 をさらに下げたいとき |
 | — | 形式を 1 段上げる (AMD の q6) | `iron_export_lm.py --mlp q6`、`q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B の GPL 0.34 → 0.044 | 校正で直らないとき。GEMV は q8 とほぼ同じ時間で、得るのはメモリ (q8 の 76 %) |
@@ -255,7 +255,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - 出力層の後の単調な演算 (ソフトキャップ) はホストのサンプリングに回し、出力層まで全部 Neural Engine に (`llm.LogitSoftcap`、16.113)
 - 1 ステップの内訳は `HWNPU_PROFILE=1` (部分、ホストの注意、ロジットの読み出しごとの ms と、Neural Engine が抱えるメモリ)
 
-同じ条件で続けて測った組だけを比べる (M3 はスワップ、AMD は電源の状態で 1.4 倍ぶれる)。AMD では先に、ほかのプロセスが `/dev/accel` を開いていないか確かめる (`ls -l /proc/*/fd 2>/dev/null | grep accel`。置きっぱなしの `hwnpu-chat -listen` も): NPU のほかの使い手で、コマンドが最大 50 倍遅くなった。Mac では macOS 自身も Neural Engine を使う: `mediaanalysisd` (CPU 122%) と Apple Intelligence の推論が動いている間は、どの形も 0.7 tokens/s に落ちた (16.112)。測る前に `top` を見て、落ち着いてから測り直す。
+同じ条件で続けて測った組だけを比べる (M3 はスワップ、AMD は電源の状態で 1.4 倍ぶれる)。AMD では先に、ほかのプロセスが `/dev/accel` を開いていないか確かめる (`ls -l /proc/*/fd 2>/dev/null | grep accel`。置きっぱなしの `hwnpu-chat serve` も): NPU のほかの使い手で、コマンドが最大 50 倍遅くなった。Mac では macOS 自身も Neural Engine を使う: `mediaanalysisd` (CPU 122%) と Apple Intelligence の推論が動いている間は、どの形も 0.7 tokens/s に落ちた (16.112)。測る前に `top` を見て、落ち着いてから測り直す。
 
 MTP の層の下書き: 1 つ、2 つ、3 つを、コードと文の両方で測る。1 つ増やすごとに MTP の層と出力層の 1 回を払い、3 つ目は日本語で遅くなった (Qwen3.5-0.8B / 2B は既定 2、16.109)。ステップで状態が置き換わる層 (GDN) は、残した行から状態をホストで進める (`state-rows`)。本体で回し直さない。プロンプトからの推測の下書きにも効く (26.1 → 32.1 tokens/s)。
 
@@ -271,7 +271,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 
 | 用途 | 確かめ方 |
 |---|---|
-| チャット | 16.26 の 4 問 (富士山、17 × 23、『こころ』、信濃川)、hwnpu-agent の課題 (`go test` が通るか)。小さいモデルが事実を誤ったら、fp16 にも同じ問いをする。同じく誤るなら、量子化や移植ではなくモデルの限界 (Qwen3.5-0.8B、16.99) |
+| チャット | 16.26 の 4 問 (富士山、17 × 23、『こころ』、信濃川)、hwnpu-chat agent の課題 (`go test` が通るか)。小さいモデルが事実を誤ったら、fp16 にも同じ問いをする。同じく誤るなら、量子化や移植ではなくモデルの限界 (Qwen3.5-0.8B、16.99) |
 | 翻訳 | **訳文のトークンだけ**で KL と一致を測る (原文の側は予測しないので高く出る)。44 文で bf16 と一字一句同じ数。`hwnpu-formats` は問答の文で測るので、翻訳モデルのパープレキシティには意味がない (PLaMo 3 Translate で 2.8 万) |
 | 画像の説明、TTS | 同じ画像と音声で答えを並べる。TTS はもう一度 ASR に通す |
 | 音声の書き起こし | 英語は LibriSpeech の検証用 73 本 (`hf-internal-testing/librispeech_asr_dummy`、正解つき)、日本語は `say` の 4 つの声 × 12 文。HF fp32 と一字一句同じ本数と WER / CER (16.115)。30 秒を超える音声も |
@@ -322,7 +322,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 2. **配布された書き出し** (将来): Hugging Face から、その NPU のサブフォルダだけを落とす ([prebuilt.md](prebuilt.md))。書き出しの形式が安定してからにする。今はない
 3. **手元で変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換して `.done` を書く
    - Apple と Intel は、Go の変換器で変換する。手本は Mac と Intel の Anima (`anima.Prepare`) と、hwnpu-chat のモデル (`chat.Prepare`)
-   - AMD は、IRON の書き出しの道具 (`tools/amd/iron_*.py`) を IRON の環境 (mlir-aie、Peano、Python) で動かす。環境が見つからなければ、何を入れればよいか (INSTALL_AMD.md) を出して止める。黙って落ちたり、手順を利用者に丸投げしたりしない
+   - AMD は、IRON の書き出しの道具 (`tools/amd/iron_*.py`) を IRON の環境 (mlir-aie、Peano、Python) で動かす。環境が見つからなければ、何を入れればよいか (INSTALL_AMD.md) を出して止める。黙って落ちたり、手順を利用者に丸投げしたりしない。hwnpu-chat はこうしている (`chat.PrepareAMD`): models.yaml の `amd_export` に書き出しのモデルとオプション、書き出しのスクリプトは hwnpu に埋め込み (`tools/amd/embed.go`)、IRON の環境は `HWNPU_IRON_ENV` か PATH の python3
 4. **使えない**: 足りないもの (形がない、道具がない) を出して止める
 
 - 落とすのは、変換器が読むファイルだけにする。リポジトリをまるごと落とさない。fp32 と fp16 の両方を置いているリポジトリがある (Sana 600M はリポジトリが 16.5 GB で、要るのは 8.9 GB)
@@ -341,10 +341,10 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 - **NPU ごとに変わる値**: ダウンロードの大きさ、メモリ、置き場所は NPU によって変わる
   - Anima のメモリは、AMD では 3.5 GB、Mac 向けの値は 4.1 GB
   - ダウンロードも変わる。今の AMD はチェックポイントを落として手元で書き出すが、配布が始まれば書き出しを落とすだけになる
-  - 違うときは、`device` と同じ形で、ベンダーの表を書く (`memory: {amd: 3.5, apple: 4.1}`)。1 つの値なら全部の NPU に当てる。表に書かないベンダーは、表の中で一番大きな値を取る。`-list` と `hwnpu-image list` の DOWNLOAD と MEMORY の列は、この機械の NPU のベンダーの値
+  - 違うときは、`device` と同じ形で、ベンダーの表を書く (`memory: {amd: 3.5, apple: 4.1}`)。1 つの値なら全部の NPU に当てる。表に書かないベンダーは、表の中で一番大きな値を取る。`hwnpu-chat list` と `hwnpu-image list` の DOWNLOAD と MEMORY の列は、この機械の NPU のベンダーの値
 - **用途も、ファミリーと同じくメモリで選ぶ**: 用途の `picks` にも、ファミリーと同じ段を書く。用途 `depth` には DA3MONO-LARGE しか書いておらず、8 GB の機械でも 24 GB 向けのモデルが選ばれていた
 - **確かめ方**:
-  - `HWNPU_MEMORY=8`、`16`、`24` を付けて、`hwnpu-image list` (hwnpu-chat なら `-list`) を出す。用途とファミリーの列で、同じモデルが選ばれているかを見る
+  - `HWNPU_MEMORY=8`、`16`、`24` を付けて、`hwnpu-image list` (`hwnpu-chat list`) を出す。用途とファミリーの列で、同じモデルが選ばれているかを見る
   - 各 NPU で、`list` の大きさ、メモリ、どこで動くか (RUNS FROM) が正しいかを見る。CPU に落とすモデルは CPU と出ていなければならない
 
 測るときのスクリプトの例 (AMD):
@@ -393,10 +393,10 @@ done
 
 - Qwen3.6 のプロンプトの注意のパイプラインは未計測 (1 本のまま)
 - AMD の下書きの確認 (16.117): q4 の数行の GEMV (Gemma 4、PLaMo 3、LFM3、Qwen3.5-4B、Qwen3.6 の 4 ビット)、Gemma 4 の共有の層とリングのキャッシュ、Qwen3.5 の MTP の層を下書きに
-- Qwen3.5-2B の lut6: HF の bf16 との KL (fp16 の 2B が 1 部分に収まらないので、まだ lut8 との比較だけ)、長い文脈と hwnpu-agent の課題
+- Qwen3.5-2B の lut6: HF の bf16 との KL (fp16 の 2B が 1 部分に収まらないので、まだ lut8 との比較だけ)、長い文脈と hwnpu-chat agent の課題
 - Whisper: 実際の録音 (雑音、話者の重なり) での形式の比較
 - Qwen3.5-4B の lut6 (2.97 GiB) は M1 の 2.8 GiB をわずかに超える。0.1〜0.2 GiB 削れば (出力層だけ lut4 など) 全速で動く見込み (16.109)
-- Apple の GPTQ の符号: hwnpu-chat は `-codes` と `-format-for` で取るが既定ではない (符号の配り方が未定)。E4B は 16 GB の Mac では校正できない
+- Apple の GPTQ の符号: hwnpu-chat は `--codes` と `--format-for` で取るが既定ではない (符号の配り方が未定)。E4B は 16 GB の Mac では校正できない
 
 - hwnpu-image のモデル (Anima、Sana、DA3、MoGe-2、YuNet) を AMD で自動で準備する (11.1 節の 3。チェックポイントを落とし、IRON の書き出しを動かす)
 

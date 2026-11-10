@@ -149,10 +149,16 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 				return fmt.Errorf("iron: %s: %w", name, err)
 			}
 		}
+		// where it runs, as chat's other loads say it (console.Log colors it): the host steps
+		// (Qwen3.6's prompt experts, routed on the host) are work off the NPU
+		where := "all on the NPU"
+		if len(v.Host) > 0 {
+			where = fmt.Sprintf("%d steps on the host, NOT all on the NPU", len(v.Host))
+		}
 		if len(v.Steps) > 0 {
-			logf("%s: %d steps (an xclbin per step)", name, len(v.Steps))
+			logf("%s: %d steps (an xclbin per step), %s", name, len(v.Steps), where)
 		} else {
-			logf("%s: %d commands", name, len(v.Kernels))
+			logf("%s: %d commands, %s", name, len(v.Kernels), where)
 		}
 	}
 	if m.decode == nil { // without a prompt chunk, Prompt runs the decode step a token at a time

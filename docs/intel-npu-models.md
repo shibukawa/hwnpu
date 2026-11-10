@@ -292,7 +292,7 @@ P1 は以上で終わり。
 できたこと:
 
 - **バックエンドの選択** (`internal/llm/device.go`)。`llm.FindDevice`/`OpenDevice` が、`-backend` か `HWNPU_BACKEND` か、なければ見つかった NPU (Core ML、Level Zero の順) を開き、変換結果の種類 (`coreml` か `intel`) を返す。`llm.ProgramFormat` は、形式 (`coreml`/`intel`) を名指しされたら端末なしで答える (別の機械のための変換)。7 節の 6 か所のうち、`chat/engine.go`、`chat/embed.go`、`systemone`、`speech`、`hwnpu-generate` を置き換えた。`powerbench` は macOS の `powermetrics` を使う Mac 専用の道具なので Core ML のまま。
-- **hwnpu-chat・hwnpu-agent の初回変換** (`chat.Prepare`、`PrepareEmbedder`)。Intel では `<model>/intel/` に `.xml` で書き、名前に形式を入れる (`lfm3-int8-c4096-q8.xml`)。Core ML の変換結果の場所と名前は今まで通り。`-backend` と `-format` を足した。Intel では 1 トークンの段も 1 つのグラフにする (Core ML は 2 分割)。
+- **hwnpu-chat・hwnpu-chat agent の初回変換** (`chat.Prepare`、`PrepareEmbedder`)。Intel では `<model>/intel/` に `.xml` で書き、名前に形式を入れる (`lfm3-int8-c4096-q8.xml`)。Core ML の変換結果の場所と名前は今まで通り。`--backend` と `--format` を足した。Intel では 1 トークンの段も 1 つのグラフにする (Core ML は 2 分割)。
 - **`runner` のメタデータ**: manifest の `meta`、なければ IR の `rt_info` (`ovir.ReadRTInfo`) か mlpackage から読む (`llm.ReadMeta`)。画像・音声のエンコーダもこれで IR から読める。
 - **Level Zero の引数名** (10 節の未確定事項への備え)。ドライバの返す名前が IR の名前でなければ、debug 名、tensor 名 (`associated_tensor_names`) の順に IR の名前を探し、なければ IR の Parameter・Result の順番で対応させる (`levelzero.argNames`)。
 - **`openvino` バックエンド** (`internal/backend/openvino`、確認用)。IR を OpenVINO で動かす。Python のプロセス (`serve_ir.py`、埋め込み) とバッファをメモリマップしたファイルで共有し、Level Zero と同じ名前の規則で引数を返す。`-backend openvino` (または `HWNPU_BACKEND=openvino`) と `HWNPU_OV_PYTHON` で使う。`HWNPU_OV_DEVICE=NPU` にすると OpenVINO の NPU プラグインで動くので、実機で Level Zero の経路と比べられる。x86 の CPU では、圧縮した重みの MatMul で活性化を int8 に量子化する既定 (dynamic quantization) が誤差を 1% ほど足すので切っている (`tools/ov/run_ir.py` も同じ。これで `ovlower` と `plamo` の IR テストが x86 でも通るようになった)。
@@ -307,8 +307,8 @@ P1 は以上で終わり。
 | `lfm3vl`・`lfm3audio` の `TestIntelIR` | 画像・音声のエンコーダを Go の fp64 参照実装と比べる | 2e-4 |
 | `chat` の `TestPrepareEncoders` | `-backend intel` の Prepare が `intel/` に IR と `parts.json` を書く | 合格 |
 | `levelzero` の `TestArgNames` | 引数名の対応付け | 合格 |
-| hwnpu-chat (実物の LFM3-1.7B、`-backend openvino`) | 変換 (1 プログラム 10 秒ほど) → 読み込み → 対話 | 正しく答える。int4 で 37 トークン/秒 (20 コアの CPU) |
-| hwnpu-agent (同じ、既定の段 4096/16320、下書き 8) | `calc.go` のバグを直す課題 | ツールを呼び、ファイルを直した |
+| hwnpu-chat (実物の LFM3-1.7B、`--backend openvino`) | 変換 (1 プログラム 10 秒ほど) → 読み込み → 対話 | 正しく答える。int4 で 37 トークン/秒 (20 コアの CPU) |
+| hwnpu-chat agent (同じ、既定の段 4096/16320、下書き 8) | `calc.go` のバグを直す課題 | ツールを呼び、ファイルを直した |
 
 LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_LFM3_DIR`)。日本語と英語の 52 トークンを 1 トークンずつ読み、各位置で最も確からしい次のトークンが fp16 の IR と同じだった数と、ロジットの相対誤差:
 
@@ -345,6 +345,6 @@ LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_LFM3_D
 
 ### 注意の前後で分ける形 (2026-11-04、design.md 16.63)
 
-- `hwnpu-convert -paged` が `-backend intel` でも動く: 部分 (`out.partN.xml`) と、重みのない塊 1 つ分の注意 (`out.attn.xml`、MIL で組んで `ovlower` で下ろす)。hwnpu-chat と hwnpu-agent は LFM3 とその VL、Audio、Omni、Gemma 4 を Intel でもこの形で変換し、文脈はモデルの上限 (LFM3-1.7B は `lfm3-int8-grouped-p8192-c262144-q8.parts.json`)。分けない形は `-paged -1`
+- `hwnpu-convert -paged` が `-backend intel` でも動く: 部分 (`out.partN.xml`) と、重みのない塊 1 つ分の注意 (`out.attn.xml`、MIL で組んで `ovlower` で下ろす)。hwnpu-chat と hwnpu-chat agent は LFM3 とその VL、Audio、Omni、Gemma 4 を Intel でもこの形で変換し、文脈はモデルの上限 (LFM3-1.7B は `lfm3-int8-grouped-p8192-c262144-q8.parts.json`)。分けない形は `--paged -1`
 - 実行側は変えていない。塊ごとに k、v、mask を付け替えて呼ぶ。Level Zero の `Bind` は終わった要求の付け替えを許し、投入のたびにコマンドリストを記録し直す
 - OpenVINO の CPU で `lfm3` と `gemma4` の `TestIntelIRPaged` が通る (相対誤差 5.7e-4 と 2.8e-3)。NPU の実機では未確認: ドライバのコンパイラが注意のグラフ (塊 8192、fp16) を受け付けるか、呼び出しごとのコマンドリストの記録の費用 (1 ステップに全注意の層 × 使っている塊の数だけ呼ぶ)

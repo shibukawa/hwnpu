@@ -1,7 +1,7 @@
 // Package openvino runs OpenVINO IR (what hwnpu-convert -backend intel writes) with OpenVINO
 // itself, through a Python process (serve_ir.py, embedded) that shares the buffers with hwnpu as
 // files mapped in memory. It is for checking the Intel path without Intel's NPU: on OpenVINO's
-// CPU plugin, hwnpu-chat, hwnpu-agent and the tests run the same IR, by the same argument names,
+// CPU plugin, hwnpu-chat (chat, agent, serve) and the tests run the same IR, by the same argument names,
 // as on the NPU through Level Zero. With HWNPU_OV_DEVICE=NPU it runs on OpenVINO's NPU plugin
 // instead, to compare with the Level Zero backend on an Intel machine.
 //

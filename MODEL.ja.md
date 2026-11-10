@@ -8,7 +8,7 @@ English: [MODEL.md](MODEL.md)
 
 列は機械に積んだメモリの量です。OS とふだんのアプリの分を引いて、モデルに使える量の目安を 2 行目に書きました。NPU のバッファは固定されたメモリで、スワップに逃がせません。目安を超えると、ほかのアプリがスワップに追い出されます。
 
-hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びます。用途の欄の名前 (`-use translate`、`-use chat`) で、機械のメモリの列のモデルを動かし、ダウンロードもそのモデルの分だけです。ファミリーの名前でも同じように選びます (`-use plamo3translate`、`-use gemma4`)。Docker のイメージのようにタグを付けると、メモリによらずそのモデルです。タグはモデルの大きさ (`-use plamo3translate:2b`、`-use chat:e4b`) か、表の列 (`-use chat:24g`、`-use plamo3translate:8g`。そのメモリの機械で動かすもの) です。この機械でどれが選ばれるかは `hwnpu-chat -list` に出ます。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。hwnpu-transcribe (`-use transcribe`)、hwnpu-tts (`-use speech`)、hwnpu-systemone (`-use decision`) も同じように選びます。表は [models.yaml](models.yaml) (`categories` と、各モデルの `machine`) から来ていて、hwnpu に組み込まれています。自分のファイルで、モデルを足す、列のモデルを替える、あるモデルを別のモデルに差し替える (エイリアス) ができます。書くのは差分だけです ([docs/model-table.md](docs/model-table.md))。
+hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選びます。用途の欄の名前 (`-m translate`、`-m chat`) で、機械のメモリの列のモデルを動かし、ダウンロードもそのモデルの分だけです。ファミリーの名前でも同じように選びます (`-m plamo3translate`、`-m gemma4`)。Docker のイメージのようにタグを付けると、メモリによらずそのモデルです。タグはモデルの大きさ (`-m plamo3translate:2b`、`-m chat:e4b`) か、表の列 (`-m chat:24g`、`-m plamo3translate:8g`。そのメモリの機械で動かすもの) です。この機械でどれが選ばれるかは `hwnpu-chat list` に出ます。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。hwnpu-transcribe (`-m transcribe`)、hwnpu-tts (`-m speech`)、hwnpu-systemone (`-m decision`) も同じように選びます。表は [models.yaml](models.yaml) (`categories` と、各モデルの `machine`) から来ていて、hwnpu に組み込まれています。自分のファイルで、モデルを足す、列のモデルを替える、あるモデルを別のモデルに差し替える (エイリアス) ができます。書くのは差分だけです ([docs/model-table.md](docs/model-table.md))。
 
 <table>
 <thead>
@@ -32,14 +32,14 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 </thead>
 <tbody>
 <tr>
-<th>チャット、コーディング<br><sub>hwnpu-chat、hwnpu-agent <code>-use chat</code></sub></th>
-<td><b>LFM3-1.7B</b> (2.2 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル<br><b>Qwen3-0.6B</b> (<code>-use qwen3</code>、ダウンロード 1.5 GB)<br>一番小さなダウンロード。事実に弱く、文脈は 4096</td>
+<th>チャット、コーディング<br><sub>hwnpu-chat、hwnpu-chat agent <code>-m chat</code></sub></th>
+<td><b>LFM3-1.7B</b> (2.2 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル<br><b>Qwen3-0.6B</b> (<code>-m qwen3</code>、ダウンロード 1.5 GB)<br>一番小さなダウンロード。事実に弱く、文脈は 4096</td>
 <td><b>Gemma 4 E2B</b> (2.3 GB)<br>長い文脈 (131072 で +0.8 GB) も<br><b>Gemma 4 E4B</b> (4.0 GB)<br>短い会話なら</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>長い文脈 (131072 で +2.1 GB) も</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>予定: Qwen3.6-35B-A3B (MoE、4 ビットで約 25 GB)</i></td>
 </tr>
 <tr>
-<th>画像を読む<br><sub>hwnpu-chat <code>-use vision</code> (<code>image_url</code>、<code>/image</code>)</sub></th>
+<th>画像を読む<br><sub>hwnpu-chat <code>-m vision</code> (<code>image_url</code>、<code>/image</code>)</sub></th>
 <td><b>LFM3-VL-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6 GB)</td>
 </tr>
@@ -69,12 +69,12 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 <td colspan="5"><b>MOSS-SoundEffect v2.0</b> (約 2.3 GB。文の符号器は fp16)<br>英語か中国語の説明から最長 30 秒の 48 kHz モノラルの効果音。M1 でカードの 100 ステップなら 10 秒に約 4 分 (<code>-steps 50</code> で半分)。Apache-2.0</td>
 </tr>
 <tr>
-<th>音声を読む (音声についての質問)<br><sub>hwnpu-chat <code>-use audio</code> (<code>input_audio</code>、<code>/audio</code>)</sub></th>
+<th>音声を読む (音声についての質問)<br><sub>hwnpu-chat <code>-m audio</code> (<code>input_audio</code>、<code>/audio</code>)</sub></th>
 <td><b>LFM3-Audio-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0 GB、画像も)</td>
 </tr>
 <tr>
-<th>翻訳<br><sub>hwnpu-chat <code>-use translate</code></sub></th>
+<th>翻訳<br><sub>hwnpu-chat <code>-m translate</code></sub></th>
 <td><b>PLaMo 3 Translate 0.8B</b> (約 2.4 GB)<br>2B の 3 倍速、訳は 2B の言い換え程度の違い</td>
 <td colspan="5"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
 </tr>
@@ -88,7 +88,7 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 <td colspan="6"><b>LFM3-Audio-2B</b> (約 2.4 GB)</td>
 </tr>
 <tr>
-<th>文の埋め込み、検索<br><sub>hwnpu-chat <code>-use embedding</code> (<code>/v1/embeddings</code>)</sub></th>
+<th>文の埋め込み、検索<br><sub>hwnpu-chat <code>-m embedding</code> (<code>/v1/embeddings</code>)</sub></th>
 <td colspan="6"><b>PLaMo-Embedding-1B</b> (1.3 GB)</td>
 </tr>
 <tr>
@@ -96,7 +96,7 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 <td colspan="6"><b>d1-2B</b> (約 2.4 GB、画像も)<br><b>d1-Omni-2B</b> (約 2.8 GB、画像と音声)</td>
 </tr>
 <tr>
-<th>いくつも同時に<br><sub>hwnpu-chat <code>-listen -use A,B,…</code></sub></th>
+<th>いくつも同時に<br><sub>hwnpu-chat <code>serve -m A,B,…</code></sub></th>
 <td>1 つずつ</td>
 <td>Gemma 4 E2B + PLaMo-Embedding-1B (3.6 GB)<br>+ PLaMo 3 Translate 2B (6.3 GB)</td>
 <td>Gemma 4 E4B + PLaMo-Embedding-1B + PLaMo 3 Translate 2B (8.0 GB)</td>
@@ -107,7 +107,7 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 
 - 括弧の中は、起動して短い会話をしたときの想定のメモリです (次の節)。長い会話では KV キャッシュの分が増えます
 - 32 GB を超えても、今は大きなモデルがありません。メモリの多い機械では、上の表の組み合わせを同時に動かすか、長い文脈に使います
-- 小さな機械では、`-context` で文脈を短くすると KV キャッシュの分が減ります。hwnpu-chat は KV キャッシュが物理メモリの 4 分の 1 を超えるとき、文脈を自分で縮めます
+- 小さな機械では、`--context` で文脈を短くすると KV キャッシュの分が減ります。hwnpu-chat は KV キャッシュが物理メモリの 4 分の 1 を超えるとき、文脈を自分で縮めます
 
 ## モデルごとのメモリ
 

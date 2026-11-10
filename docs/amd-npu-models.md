@@ -1,6 +1,6 @@
 # 変換したモデルを AMD の NPU で動かす: 設計
 
-作成: 2026-11-03。**状態 (2026-11-04): 段階 A1〜A4 を実装し、Gemma 4 E2B が `hwnpu-chat -iron` と `hwnpu-agent -iron` で動いた (design.md 16.47〜16.51)。Windows 向けの XRT 経由のバックエンド (16.56) と、NPU1 向けの「1 ステップごとの xclbin」(16.57) も実装した。どちらも同じ経路をこの機械 (NPU2、Linux) で実機検証したが、Windows と NPU1 の実機では未検証。** 対象は `hwnpu-chat` と `hwnpu-agent` を AMD Ryzen AI の NPU (XDNA2、Strix Point 以降) で動かすこと。根拠は design.md 16.44 (実機での最初の確認) と 16.45 (GEMV と切り替えの測定)、それとこの文書の 2 節の測定。
+作成: 2026-11-03。**状態 (2026-11-04): 段階 A1〜A4 を実装し、Gemma 4 E2B が `hwnpu-chat -iron` と `hwnpu-agent -iron` (今は `hwnpu-chat -m DIR` と `hwnpu-chat agent -m DIR`) で動いた (design.md 16.47〜16.51)。Windows 向けの XRT 経由のバックエンド (16.56) と、NPU1 向けの「1 ステップごとの xclbin」(16.57) も実装した。どちらも同じ経路をこの機械 (NPU2、Linux) で実機検証したが、Windows と NPU1 の実機では未検証。** 対象は `hwnpu-chat` と `hwnpu-chat agent` を AMD Ryzen AI の NPU (XDNA2、Strix Point 以降) で動かすこと。根拠は design.md 16.44 (実機での最初の確認) と 16.45 (GEMV と切り替えの測定)、それとこの文書の 2 節の測定。
 
 ## 1. 現状
 
@@ -195,7 +195,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | A1 | full ELF の実行 (3 節) | IRON の ReLU → AXPY の `design.elf` を Go から実行し、CPU の計算と一致。`xdnasim` のテスト |
 | A2 | スクラッチパッドと複数コマンド | IRON の section-3 (呼び出しごとの長さ) と section-5 (引き継ぐ値) の例が Go で一致 |
 | A3 | エクスポートと実行器 | Gemma 4 E2B のデコードとプロンプトのロジットが、同じ機械の IRON (pyxrt) と許容誤差内で一致。トークン/秒を測る |
-| A4 | チャット | `hwnpu-chat` と `hwnpu-agent` が AMD で Gemma 4 E2B を使って応答する (E4B も、16.67) |
+| A4 | チャット | `hwnpu-chat` と `hwnpu-chat agent` が AMD で Gemma 4 E2B を使って応答する (E4B も、16.67) |
 | A5 | LFM3 | IRON のアプリケーションが Hugging Face のロジットと一致し、hwnpu-chat で動く (済み、16.66) |
 | A5b | LFM3 の多モーダル | LFM3-VL、LFM3-Audio、LFM3-Omni の塔が Hugging Face の出力と一致し (乱数の重み)、本物の重みで画像と音声に答える (済み、16.67) |
 | A6 | 4 ビット | q4nx の一般化とその精度 (KL) の測定 |
@@ -423,7 +423,7 @@ NPU の q4 の KL は CPU の見積もり (0.035) と同じで、NPU の計算 (
 
 実機での答え (貪欲、bf16 と q4 で同じ問い):
 
-- LFM3-1.7B: 「日本の首都は」に東京、17 × 23 に 391、富士山に 3,776 m、空が青い理由を 3 文で。どれも正しく、言い回しが少し違うだけ。hwnpu-agent は 16.66 の円の面積の課題で、ファイルを読み、`go test` を走らせ、`math.Pi * c.R * c.R` に直して通ることを確かめた (11 トークン/秒)
+- LFM3-1.7B: 「日本の首都は」に東京、17 × 23 に 391、富士山に 3,776 m、空が青い理由を 3 文で。どれも正しく、言い回しが少し違うだけ。hwnpu-chat agent は 16.66 の円の面積の課題で、ファイルを読み、`go test` を走らせ、`math.Pi * c.R * c.R` に直して通ることを確かめた (11 トークン/秒)
 - LFM3-VL-2B: 赤い円と青い四角の画像に「赤い楕円と青い四角形が写っています。」、「赤い図形は左右どちら」に「左」(bf16 と同じ)。デコード 8.7 → 11.3 トークン/秒、1.35 → 1.03 J/トークン。固定 4.12 → 2.00 GiB
 - LFM3-Audio-2B: `Front_Left.wav` に「front, left.」、`Rear_Right.wav` に「Rear, right」、speech-dispatcher の案内 (約 10 秒) の書き起こしは bf16 と読点 1 つと「/var/log」→「/var/logs」の 1 か所だけ違う。固定 4.14 → 2.03 GiB
 - LFM3-Omni-2B: 画像に「赤い円と青い四角」、2 つの音声に「Front, left.」「Rear, right.」(bf16 と同じ)。固定 4.51 → 2.39 GiB
@@ -574,7 +574,7 @@ q8 と同じブロックと並びで符号を 6 ビット (−31〜31) にした
 
 ### 下書きを確かめる版 (`--verify`、2026-11-08)
 
-`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。`hwnpu-chat -iron` はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。ロジットはデコードのステップとビット単位で同じなので、temp 0 の文は変わらない。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン (design.md の 16.117)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_IRON_DRAFTS=0` で使わない。
+`iron_export_lm.py ... --verify 3` は、3 トークン (次のトークンと下書き 2 つ) を 1 回で確かめる版 (`verify.elf`) を足す。全部の行のロジットを返し、各行の鍵と値と、行ごとの GDN の状態を書く。AMD の NPU の hwnpu-chat はこの版があればプロンプトからの下書きを確かめ、採用しなかった行の状態はホストが戻す (`iron.Model.Keep`)。ロジットはデコードのステップとビット単位で同じなので、temp 0 の文は変わらない。Qwen3.5-0.8B q6 で 1 回 1.27 ステップ、生成 82 → 62〜72 ms/トークン (design.md の 16.117)。今は Qwen3.5 (密)、q8 と q6 の射影だけ (q4 の数行の GEMV と、Gemma 4 / PLaMo 3 / LFM3 はまだ)。`HWNPU_IRON_DRAFTS=0` で使わない。
 
 #### Qwen3.6-35B-A3B (`tools/amd/qwen36_gptq.py`、2026-11-08)
 

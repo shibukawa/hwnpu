@@ -197,6 +197,16 @@ go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o 
 
 Strix Point でのデータ型ごとの性能と DMA の帯域、それを測ったスクリプトは [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) と [tools/iron](tools/iron/README.md) にあります。
 
+### hwnpu-chat のモデル
+
+hwnpu-chat は `tools/amd/iron_export_lm.py` の書き出し (`~/models/NAME.amd-npu2-q4`) を動かします。モデルの書き出しがなければ、初回にチェックポイントを落とし、手順 2 の IRON の環境で、models.yaml の `amd_export` のとおりに書き出します。その環境は `HWNPU_IRON_ENV` で渡します: 仮想環境のディレクトリか、環境を整えるスクリプト (bash で source するもの。`source utils/env_setup.sh` と `AIE_XCLBINUTIL` の設定をするものなど)。なければ PATH の python3 を試し、IRON を import できなければ、何を入れればよいかを言って止まります。
+
+```bash
+HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "こんにちは"
+```
+
+ある機械で作った書き出しは、同じ NPU のほかの機械でも動きます (ディレクトリを写すか、`-m` に渡す)。
+
 ## 5. 自分のカーネルを使う
 
 ```go
@@ -229,7 +239,7 @@ AMD の Windows 用 NPU ドライバは、ドライバが入れる XRT の C++ �
 3. `build\Release\xrtshim.dll` を hwnpu の実行ファイルと同じ場所に置きます（または `HWNPU_XRTSHIM` で場所を指定します）。`xrt_coreutil.dll` は `System32\AMD` かドライバストアから探します。別の場所なら `HWNPU_XRT_CORE` で指定します。
 4. hwnpu を Windows 向けにビルドし（`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`）、`hwnpuinfo` を実行します。バックエンド `xrt` の NPU が出れば使えます。
 
-モデルの書き出しは Linux で行い（IRON と mlir-aie。README を参照）、書き出したディレクトリを持っていきます。`hwnpu-chat -iron DIR` で同じように動きます。Linux との違いは次のとおりです。
+モデルの書き出しは Linux で行い（IRON と mlir-aie。README を参照）、書き出したディレクトリを持っていきます。`hwnpu-chat -m DIR` で同じように動きます。Linux との違いは次のとおりです。
 
 - 電力は、ドライバが XRT の electrical の情報に NPU の電力を出していればそれを読みます。
 - 制御コードの置き場は XRT が確保します。Linux 7.0 ではデバイスのヒープが 64 MiB で、hwnpu 自身のドライバ経路と同じです。Windows では違うかもしれません。
