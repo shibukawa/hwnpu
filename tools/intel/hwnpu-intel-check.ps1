@@ -287,6 +287,9 @@ $Tests = @(
   (T @{ Name = "resident"; Level = 1; Exe = "hwnpu-dev"; Sub = "probe"; Min = 60
         Args = @("resident", "-resident-max-gb", "8", "-o", "{OUT}\resident.md")
         Note = "how much the NPU holds at once: 0.25 GiB fp16 programs kept open until a load fails (Anima ran out at about 4.6 GB), whether closing one gives its memory back, and loading 8 GiB in turn" }),
+  (T @{ Name = "resident-load-only"; Level = 1; Exe = "hwnpu-dev"; Sub = "probe"; Min = 45
+        Args = @("resident", "-resident-run=false", "-resident-hold", "open", "-resident-max-gb", "8", "-o", "{OUT}\resident-load-only.md")
+        Note = "the same held open without running any: tells a crash (0xc0000005) in running from one in loading" }),
   (T @{ Name = "image-512"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 180
         Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "-o", "{OUT}\anima-512.png", $Anima)
         Note = "Anima-Turbo 512 x 512, 8 steps: downloads, converts to OpenVINO IR (fp16), draws" }),

@@ -187,6 +187,7 @@ func Main() {
 	residentFormats := fs.String("resident-formats", "fp16", "resident: weight formats of the programs, comma separated")
 	residentSize := fs.Float64("resident-size", 0.25, "resident: GiB of one program (rounded to whole layers of 61 M weights)")
 	residentMax := fs.Float64("resident-max-gb", 0, "resident: stop past this total, GiB (default: 60 % of the RAM, at most 16)")
+	residentRun := fs.Bool("resident-run", true, "resident: run each program after its load and all held ones at the end (false: load only)")
 	residentHold := fs.String("resident-hold", "open,close", "resident: open (every program kept until a load fails) and close (each closed before the next), comma separated")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
@@ -210,7 +211,7 @@ func Main() {
 			os.Exit(2)
 		}
 	}
-	ro := residentOpts{formats: split(*residentFormats), size: *residentSize, maxGiB: *residentMax, holds: split(*residentHold)}
+	ro := residentOpts{run: *residentRun, formats: split(*residentFormats), size: *residentSize, maxGiB: *residentMax, holds: split(*residentHold)}
 	if mode == "resident" {
 		if err := ro.check(); err != nil {
 			fmt.Fprintln(os.Stderr, "hwnpu-dev probe:", err)

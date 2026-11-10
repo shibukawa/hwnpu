@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -33,7 +34,7 @@ func (n *fakeNPU) load(int) (residentProgram, result) {
 
 func TestResidentOpen(t *testing.T) {
 	n := &fakeNPU{capacity: 5}
-	r := residentRun("fp16", 2, "open", 16<<10, n.load, func() bool { return false })
+	r := residentRun("fp16", 2, "open", 16<<10, true, n.load, func() bool { return false }, nil)
 	if r.Held != 5 || !r.OutOfMemory || len(r.Loads) != 6 {
 		t.Fatalf("held %d, out of memory %v, loads %d; want 5, true, 6", r.Held, r.OutOfMemory, len(r.Loads))
 	}
@@ -48,7 +49,7 @@ func TestResidentOpen(t *testing.T) {
 	}
 
 	leaky := &fakeNPU{capacity: 3, leaky: true}
-	r = residentRun("fp16", 2, "open", 16<<10, leaky.load, func() bool { return false })
+	r = residentRun("fp16", 2, "open", 16<<10, true, leaky.load, func() bool { return false }, nil)
 	if r.Retry == nil || r.Retry.Error == "" || !r.Retry.OutOfMemory {
 		t.Fatalf("a driver that keeps closed memory fails the retry: %+v", r.Retry)
 	}
@@ -62,11 +63,35 @@ func TestResidentOpen(t *testing.T) {
 func TestResidentClose(t *testing.T) {
 	n := &fakeNPU{capacity: 2}
 	// 2 layers of fp16 are 0.23 GiB: 1 GiB holds 4
-	r := residentRun("fp16", 2, "close", 1<<10, n.load, func() bool { return false })
+	r := residentRun("fp16", 2, "close", 1<<10, true, n.load, func() bool { return false }, nil)
 	if r.Stop != "max" || r.Held != 4 || r.Retry != nil {
 		t.Fatalf("stop %q, loaded %d, retry %v; want max, 4, none", r.Stop, r.Held, r.Retry)
 	}
 	if !strings.Contains(r.summary(), "loaded in turn") {
 		t.Errorf("summary %q", r.summary())
+	}
+}
+
+// TestResidentCrash: a child that dies keeps what it printed as it went.
+func TestResidentCrash(t *testing.T) {
+	n := &fakeNPU{capacity: 100}
+	var lines []string
+	emit := func(kind string, v any) {
+		if kind == "step" {
+			return
+		}
+		b, _ := json.Marshal(v)
+		lines = append(lines, kind+" "+string(b))
+	}
+	residentRun("fp16", 2, "open", 1<<10, true, n.load, func() bool { return false }, emit)
+	r := residentResult{Format: "fp16", Layers: 2, ProgramBytes: 2 * 61 << 20, Hold: "open", Error: "exit status 0xc0000005"}
+	r.fromProgress(lines[:3], "exit status 0xc0000005: program 3: running")
+	if !r.Crashed || r.Held != 3 || len(r.Loads) != 3 || !strings.Contains(r.summary(), "program 3: running") {
+		t.Fatalf("crashed %v, held %d, loads %d, summary %q", r.Crashed, r.Held, len(r.Loads), r.summary())
+	}
+	var sb strings.Builder
+	residentMarkdown(&sb, []residentResult{r})
+	if !strings.Contains(sb.String(), "**crashed**") {
+		t.Errorf("report:\n%s", sb.String())
 	}
 }

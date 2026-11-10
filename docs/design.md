@@ -3695,4 +3695,7 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - Windows ではプロセスの private メモリ (K32GetProcessMemoryInfo) を各読み込みの後に記録する。`maxRSS` も Windows で peak working set を返すようにした
 - 子プロセスの流れ (`residentRun`) は読み込みを差し替えられる形にし、偽の NPU (容量で OUT_OF_HOST_MEMORY、閉じても戻らないもの) でテストした。close の回で合計の上限で止まらない不具合をこのテストで直した
 - Intel の確認スクリプトに `resident` (standard、fp16、開いたままと閉じる、8 GiB まで) と `resident-int8` (full) を足し、probe の試験は stdout からもハイライトを拾う
-- 未実行: Intel の実機での結果はまだ
+- 実機の 1 回目: 開いたままの回の途中で、子プロセスが 0xc0000005 (アクセス違反。ドライバの中で落ちたらしい) で終わった。子が結果を最後にまとめて送る作りだったので、何本・何 GB まで載ったかが残らなかった
+  - 子は 1 本ごとに `npuprobe-progress` の行で結果を出し、親は子が落ちてもそこまでの分を報告に残す (crashed)。各段階 (読み込み、実行、閉じる) を stderr に書き、落ちた段階がエラーの最後の行に出る
+  - `-resident-run=false` は実行せずに読むだけ。スクリプトの `resident-load-only` (standard) で、実行で落ちるのか読み込みで落ちるのかを分ける
+  - メモリ不足がエラーでなくプロセスの異常終了になるなら、16.143 の Anima の読み直し (エラーを受けて閉じる) は効かない。そのときは、落ちる前の合計より手前で自分から閉じる (上限を決めておく) 形が要る

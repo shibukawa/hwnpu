@@ -1,8 +1,10 @@
 package probe
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 // held from one on what has been loaded.
 
 type residentOpts struct {
+	run     bool // run each program after its load (false: load only, to tell a crash in loading from one in running)
 	formats []string
 	size    float64 // GiB of one program
 	maxGiB  float64 // stop past this total
@@ -61,6 +64,7 @@ type residentResult struct {
 	OutOfMemory  bool           `json:"out_of_memory"`
 	Retry        *residentLoad  `json:"retry,omitempty"`   // open, after running out: the failed program again with the oldest closed
 	AllRun       string         `json:"all_run,omitempty"` // open: every held program run again after the last load: ok, or the error
+	Crashed      bool           `json:"crashed,omitempty"` // the child died (a crash in the driver): Loads are what it reported before
 	Error        string         `json:"error,omitempty"`
 }
 
@@ -88,8 +92,9 @@ func (p *prober) residents(rep *report, o residentOpts, save func()) {
 			max := int64(o.maxGiB * (1 << 30))
 			fmt.Printf("resident, %s programs of %.2f GiB, %s, up to %.1f GiB:\n", f, probe.GiB(probe.WeightBytes(f, layers)), hold, o.maxGiB)
 			var r residentResult
-			if err := p.child(childSpec{Kind: "resident", Format: f, Layers: layers, Layout: hold, N: int(max >> 20)}, &r); err != nil {
+			if err := p.child(childSpec{Kind: "resident", Format: f, Layers: layers, Layout: hold, N: int(max >> 20), Quick: !o.run}, &r); err != nil {
 				r = residentResult{Format: f, Layers: layers, ProgramBytes: probe.WeightBytes(f, layers), Hold: hold, MaxBytes: max, Error: err.Error()}
+				r.fromProgress(p.progress, err.Error())
 			}
 			for _, l := range r.Loads {
 				fmt.Printf("  %s\n", residentLine(l))
@@ -102,6 +107,32 @@ func (p *prober) residents(rep *report, o residentOpts, save func()) {
 			save()
 		}
 	}
+}
+
+// fromProgress fills what a child that died reported before: its loads, and how far it got.
+func (r *residentResult) fromProgress(lines []string, msg string) {
+	for _, line := range lines {
+		kind, data, _ := strings.Cut(line, " ")
+		var l residentLoad
+		if kind != "load" && kind != "retry" || json.Unmarshal([]byte(data), &l) != nil {
+			continue
+		}
+		if kind == "retry" {
+			r.Retry = &l
+			continue
+		}
+		r.Loads = append(r.Loads, l)
+		if l.Error == "" {
+			r.Held++
+			if r.Hold == "open" {
+				r.HeldBytes = l.HeldBytes
+			} else {
+				r.HeldBytes += r.ProgramBytes
+			}
+		}
+	}
+	r.Crashed = true
+	r.Stop = "the process died: " + msg
 }
 
 func residentLine(l residentLoad) string {
@@ -120,7 +151,7 @@ func residentLine(l residentLoad) string {
 
 // summary is what the result comes to, in a line.
 func (r residentResult) summary() string {
-	if r.Error != "" {
+	if r.Error != "" && !r.Crashed {
 		return "error: " + short(r.Error, 200)
 	}
 	verb := "held at once"
@@ -129,6 +160,8 @@ func (r residentResult) summary() string {
 	}
 	s := fmt.Sprintf("%d programs, %.2f GiB %s", r.Held, probe.GiB(r.HeldBytes), verb)
 	switch {
+	case r.Crashed:
+		s += ", then " + short(r.Stop, 200)
 	case r.Stop == "max":
 		s += fmt.Sprintf(", stopped at -resident-max-gb (%.1f GiB)", probe.GiB(r.MaxBytes))
 	case r.OutOfMemory:
@@ -164,7 +197,7 @@ func (lp loadedProgram) run() error { return lp.l.req.Run(lp.p.ctx) }
 func (lp loadedProgram) close()     { lp.l.close() }
 
 // resident is the child side.
-func (p *prober) resident(format string, layers int, hold string, maxMiB int) residentResult {
+func (p *prober) resident(format string, layers int, hold string, maxMiB int, run bool) residentResult {
 	load := func(i int) (residentProgram, result) {
 		var res result
 		l := p.load(format, layers, 1, "npu", uint64(5000+i), &res)
@@ -174,11 +207,23 @@ func (p *prober) resident(format string, layers int, hold string, maxMiB int) re
 		return loadedProgram{p, l}, res
 	}
 	stop := func() bool { return p.ctx.Err() != nil }
-	return residentRun(format, layers, hold, maxMiB, load, stop)
+	emit := func(kind string, v any) {
+		if kind == "step" {
+			fmt.Fprintln(os.Stderr, v) // the last of these says where a crash happened
+			return
+		}
+		progress(kind, v)
+	}
+	return residentRun(format, layers, hold, maxMiB, run, load, stop, emit)
 }
 
 // residentRun loads programs with load until one fails or the total passes maxMiB.
-func residentRun(format string, layers int, hold string, maxMiB int, loadProgram func(int) (residentProgram, result), stop func() bool) residentResult {
+// run false loads without running. emit (may be nil) is told each step as it starts ("step", a
+// string) and each load as it ends ("load", "retry": a residentLoad).
+func residentRun(format string, layers int, hold string, maxMiB int, run bool, loadProgram func(int) (residentProgram, result), stop func() bool, emit func(string, any)) residentResult {
+	if emit == nil {
+		emit = func(string, any) {}
+	}
 	r := residentResult{Format: format, Layers: layers, ProgramBytes: probe.WeightBytes(format, layers), Hold: hold, MaxBytes: int64(maxMiB) << 20}
 	var open []residentProgram
 	defer func() {
@@ -190,10 +235,12 @@ func residentRun(format string, layers int, hold string, maxMiB int, loadProgram
 	}()
 	held := int64(0)
 	load := func(i int) (residentProgram, residentLoad) {
+		emit("step", fmt.Sprintf("program %d: loading (%.2f GiB held with it)", i, probe.GiB(held+r.ProgramBytes)))
 		t := time.Now()
 		l, res := loadProgram(i)
 		rl := residentLoad{Program: i, HeldBytes: held + r.ProgramBytes, LoadS: time.Since(t).Seconds(), Error: res.Error}
-		if l != nil {
+		if l != nil && run {
+			emit("step", fmt.Sprintf("program %d: running", i))
 			t = time.Now()
 			if err := l.run(); err != nil {
 				rl.Error = "run: " + err.Error()
@@ -220,6 +267,7 @@ func residentRun(format string, layers int, hold string, maxMiB int, loadProgram
 			break
 		}
 		l, rl := load(i)
+		emit("load", rl)
 		r.Loads = append(r.Loads, rl)
 		if rl.Error != "" {
 			if l != nil {
@@ -228,10 +276,12 @@ func residentRun(format string, layers int, hold string, maxMiB int, loadProgram
 			r.Stop, r.OutOfMemory = rl.Error, rl.OutOfMemory
 			if hold == "open" && rl.OutOfMemory && len(open) > 0 {
 				// does closing one give its memory back?
+				emit("step", "closing the oldest program")
 				open[0].close()
 				open = open[1:]
 				held -= r.ProgramBytes
 				l, retry := load(i)
+				emit("retry", retry)
 				r.Retry = &retry
 				if l != nil {
 					if retry.Error == "" {
@@ -249,12 +299,14 @@ func residentRun(format string, layers int, hold string, maxMiB int, loadProgram
 			held += r.ProgramBytes
 			r.Held, r.HeldBytes = max(r.Held, len(open)), max(r.HeldBytes, held)
 		} else {
+			emit("step", fmt.Sprintf("program %d: closing", i))
 			l.close()
 			r.Held++
 			r.HeldBytes += r.ProgramBytes
 		}
 	}
-	if hold == "open" && len(open) > 0 {
+	if hold == "open" && len(open) > 0 && run {
+		emit("step", fmt.Sprintf("running all %d held programs again", len(open)))
 		r.AllRun = "ok"
 		for _, l := range open {
 			if err := l.run(); err != nil {
@@ -277,7 +329,10 @@ func residentMarkdown(sb *strings.Builder, rs []residentResult) {
 	sb.WriteString("| format | program | hold | programs | weights | stopped by | oldest closed, again | all run again | process memory at the end | error |\n|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, r := range rs {
 		stop := "max (" + fmt.Sprintf("%.1f GiB", probe.GiB(r.MaxBytes)) + ")"
-		if r.Stop != "max" {
+		if r.Crashed {
+			stop = "**crashed**: " + strings.ReplaceAll(short(r.Stop, 200), "|", "/")
+			r.Error = ""
+		} else if r.Stop != "max" {
 			stop = strings.ReplaceAll(short(r.Stop, 120), "|", "/")
 			if r.OutOfMemory {
 				stop = "out of memory: " + stop
