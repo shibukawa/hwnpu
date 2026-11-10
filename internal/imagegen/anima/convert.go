@@ -43,7 +43,10 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	if o.Backend != "coreml" && o.Backend != "intel" {
 		return fmt.Errorf("anima: backend %q is not coreml or intel", o.Backend)
 	}
-	if o.Group <= 0 || mil.DitLayers%o.Group != 0 {
+	if o.Group <= 0 {
+		o.Group = DefaultGroup(o.Backend, o.Width, o.Height)
+	}
+	if mil.DitLayers%o.Group != 0 {
 		return fmt.Errorf("anima: %d blocks are no whole groups of %d", mil.DitLayers, o.Group)
 	}
 	if o.Dit == "" {

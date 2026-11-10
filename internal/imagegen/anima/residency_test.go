@@ -135,7 +135,7 @@ func TestProgEngineTextMakesRoom(t *testing.T) {
 	if len(reloads) != 3 || reloads[0] != "text" { // + the VAE's stage
 		t.Fatalf("reloads %v", reloads)
 	}
-	if !strings.Contains(log.String(), "dit_blocks_24: text unloaded") {
+	if !strings.Contains(log.String(), "text unloaded for dit_blocks_24") {
 		t.Fatalf("log %q", log.String())
 	}
 }

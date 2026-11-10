@@ -36,3 +36,17 @@ func TestPrepareDone(t *testing.T) {
 		t.Fatalf("%q, %v; want %q", got, err, want)
 	}
 }
+
+func TestDefaultGroup(t *testing.T) {
+	for _, c := range []struct {
+		backend string
+		size    int
+		want    int
+	}{
+		{"coreml", 1024, 4}, {"intel", 512, 4}, {"intel", 768, 1}, {"intel", 1024, 1}, {"intel", 256, 4}, {"intel", 640, 2},
+	} {
+		if g := DefaultGroup(c.backend, c.size, c.size); g != c.want {
+			t.Errorf("%s %d: group %d, want %d", c.backend, c.size, g, c.want)
+		}
+	}
+}
