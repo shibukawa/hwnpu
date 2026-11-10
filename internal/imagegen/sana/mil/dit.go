@@ -117,13 +117,25 @@ func glumb(g *graph, h *mlpackage.Var, p string, ch, gh, gw int) *mlpackage.Var 
 	return g.Transpose(g.Reshape(f, 1, ch, n), 0, 2, 1)
 }
 
-// gluDepthwise is GLUMBConv's 3 x 3 depthwise convolution (path) of a (1, 2 ch, H, W) as two, one
-// for each half (the value and the gate): the M1's Neural Engine places a depthwise convolution
-// of 5760 channels on the CPU, and takes 4096.
+// maxDepthwise is the most channels of a depthwise convolution the M1's Neural Engine takes:
+// 5600 and 5760 are placed on the CPU, 4096 is not.
+const maxDepthwise = 4096
+
+// gluDepthwise is GLUMBConv's 3 x 3 depthwise convolution (path) of a (1, 2 ch, H, W) as the
+// value's half and the gate's, each in chunks of at most maxDepthwise channels.
 func gluDepthwise(g *graph, a *mlpackage.Var, path string, ch int) (v, gate *mlpackage.Var) {
 	w, b := g.Get(path+".weight", 2*ch, 1, 3, 3), g.Get(path+".bias", 2*ch)
 	half := func(j int) *mlpackage.Var {
-		return g.Conv2D(g.Slice(a, 1, j*ch, (j+1)*ch), fmt.Sprintf("%s.%d", path, j), w[j*ch*9:(j+1)*ch*9], b[j*ch:(j+1)*ch], ch, 3, ch)
+		n := (ch + maxDepthwise - 1) / maxDepthwise
+		var parts []*mlpackage.Var
+		for k := 0; k < n; k++ {
+			lo, hi := j*ch+k*ch/n, j*ch+(k+1)*ch/n
+			parts = append(parts, g.Conv2D(g.Slice(a, 1, lo, hi), fmt.Sprintf("%s.%d", path, lo), w[lo*9:hi*9], b[lo:hi], hi-lo, 3, hi-lo))
+		}
+		if len(parts) == 1 {
+			return parts[0]
+		}
+		return g.Concat(1, parts...)
 	}
 	return half(0), half(1)
 }
