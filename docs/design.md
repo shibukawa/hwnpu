@@ -3433,3 +3433,19 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - face-detect: AMD では既定で CPU (YuNet の ONNX は models.yaml の sha256 で固定して自動で取得)、`--device npu` で export。Apple と Intel では YuNet の NPU のグラフがまだないので CPU に落とし、その旨を出す (`--device npu` を明示したときはエラー)
 - `hwnpu-image list` の列を RUNS FROM に: このマシンで CPU に置くモデルは「CPU (ONNX Runtime)」、ほかは AMD の書き出し
 - Go のコマンドで 320 × 256: CPU 3.96 ms・10 mJ、NPU 30.5 ms・137 mJ。前処理が 11 ms かかっていたので、lfm3vl.RGB に速い道を足した (結果は color.Convert と同じ。テストで確かめる)
+
+### 16.127 Apple: Sana と Sana-Sprint を Neural Engine で (`internal/imagegen/sana/mil`、Core ML) — 2026-11-10
+
+- AMD の 16.119 と同じ部品を MIL で書き、Core ML のパッケージにする (`hwnpu-image generate -m Sana-Sprint-0.6B`、`hwnpu-image convert REPO`)。Gemma 2 2B を 6 層ずつ 5 本 (int8、1 本 約 470 MB)、caption、DiT 4 ブロックずつ 7 本 (fp16)、final、VAE 13 段。時刻の埋め込みだけホスト (下)。初回に `sana.Prepare` がチェックポイントを `--dir/Sana` に落として変換し (10 秒)、Gemma 2 (`gemma-2-2b-it/`) と その書き出しは全 Sana で共有する (別の Sana の書き出しからハードリンク)
+- パイプライン (`internal/imagegen/sana`) はエンジンを 2 つに: IRON のグラフ (`ironEngine`、前の処理を移しただけ。bf16 → float32 → bf16 は可逆なので値は同じ) と Core ML (`progEngine`)。Anima の MIL の共通部分は `internal/imagegen/milpart` に移した (Anima の DiT の群、final、時刻、VAE の段の CPU インタプリタの出力が前とビット単位で同じ)
+- fp16 の幅: diffusers の fp32 (M1 の CPU、1024 × 1024、`a cyberpunk cat ...`) で中間の最大を測った。残差は Gemma 2 で 4059、DiT で 1534、VAE で 1662 で、どれも尺度をかけずに収まる。あふれるのは線形注意の和: DiT の VᵀK は 2.1e4、N は 1.6e5、VAE (EfficientViT) は 2.4e5 と 4.5e7。分母の最小は 0.03。各ヘッドの q の行をその最大で割り (N / D は変わらない)、鍵を DiT で 1/64、VAE で 1/256 にしてから和を取る。分母は 1e-4 で下を切る (q がすべて 0 の行は N も 0)
+- M1 の Neural Engine で見つけたこと:
+  - 深さ方向の畳み込みは 4096 チャネルまで Neural Engine、5760 チャネル (GLUMBConv の 2 × 2880) は CPU。値とゲートの半分ずつの 2 つにした
+  - グループつきの int8 (`int8-g32`) は linear が CPU になる。Gemma 2 は行ごとの int8
+  - 時刻の埋め込み (正弦波 → 2 層 → 6 つの変調) を Neural Engine で走らせると出力が最大 1 % ずれ (CPU インタプリタの fp16 丸めでは 0.05 %)、全ブロックの変調に効いて DiT 1 回の出力のコサインが 0.9998 → 0.983 になった。1 行の計算 (1 ステップ 1100 万積和、数 ms) なので、重みを `time.safetensors` (float32) に書き出してホストで計算する
+  - Gemma 2 の GELU (tanh 近似) を Neural Engine の `gelu` で書くと、Sana が残す行が CPU より悪い (caption のコサイン 0.99962、CPU の fp32 は 0.99974)。silu と同じく `x / (1 + exp(-1.5958 (x + 0.044715 x³)))` と書くと 0.99973。fp16 の重みの Gemma 2 (3 層ずつ 9 本) は Neural Engine で 0.99925 で int8 より悪い
+  - 1 つの DiT の群だけを Neural Engine と CPU (fp32) で比べるとコサイン 0.999999 以上。差は時刻と Gemma 2 から来ていた
+- `MLComputePlan` の待ちを 2 分 → 10 分 (`internal/backend/coreml`)。ほかのプロセスが Neural Engine でコンパイルしている間、Gemma 2 の 1 本 (単独で 13 秒) が 2 分を超えて読み込みが失敗した
+- 結果 (M1 16 GB、Sana-Sprint 0.6B、1024 × 1024、2 ステップ、diffusers の fp32 と同じノイズ): caption のコサイン 0.9997、DiT 1 ステップ目 0.991 (参照の caption を与えると 0.9998)、潜在 0.9855、画像の PSNR 26.0 dB (AMD は 0.997、31.2 dB)。絵は構図も細部も同じ。手直しの前は潜在 0.972、22.7 dB
+- 時間 (キャッシュあり、ほかのセッションが同時に Neural Engine を使っている状態): 全体 3 分 9 秒、プロセスの最大 3.3 GB。計算は Gemma 2 約 5 秒、DiT 1 ステップ 0.4〜0.5 秒、VAE 6 秒で、残りはプログラムの読み込み (DiT 約 57 秒、VAE の段 0、1 で約 90 秒)。何もない状態から (変換とコンパイル) 8 分 29 秒、2 回目 3 分 53 秒、同じシードの PNG はビット単位で同じ
+- 残り: 読み込みを減らす (段をまとめる、DiT を残す、VAE の次の段を先に読む)。Sana-Sprint 1.6B、Sana 600M (q と k の正規化なし、鍵から先頭の鍵を引く道)、SANA 1.5 は Mac で確かめていない (1.6B の DiT は fp16 で 1 本 640 MB)。Intel (OpenVINO IR) は未対応。変換し直すとパッケージのバイトが変わる (`internal/mlpackage` の Manifest.json の UUID など) ので、コンパイルのキャッシュが効かず全部コンパイルし直しになる (全モデル共通)

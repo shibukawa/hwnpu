@@ -49,8 +49,8 @@ func VaeStages(w, h int) []VaeStage {
 // (the host clamps). The latents' mean and std (vae/config.json) go into the first stage.
 func Vae(w, h, i int, mean, std []float64, qchunk int) *Part {
 	st := VaeStages(w, h)[i]
-	return &Part{Name: fmt.Sprintf("vae_s%d", i), build: func(g *graph) {
-		x := g.input("x", 1, st.C, st.H, st.W)
+	return part(fmt.Sprintf("vae_s%d", i), func(g *graph) {
+		x := g.Input("x", 1, st.C, st.H, st.W)
 		for _, op := range st.Ops {
 			switch op.Kind {
 			case "in":
@@ -62,12 +62,12 @@ func Vae(w, h, i int, mean, std []float64, qchunk int) *Part {
 			case "up":
 				x = vaeUp(g, x, op.Path, op.Out)
 			case "head":
-				x = g.op("silu", map[string]any{"x": chanNorm(g, x, "vae.decoder.norm_out.gamma")}, x.Shape...)
+				x = g.Op("silu", map[string]any{"x": chanNorm(g, x, "vae.decoder.norm_out.gamma")}, x.Shape...)
 				x = conv(g, x, "vae.decoder.conv_out", 3)
 			}
 		}
-		g.output(x)
-	}}
+		g.Output(x)
+	})
 }
 
 // conv is a causal 3 x 3 x 3 convolution's last temporal tap (the frames before the first are
@@ -98,13 +98,7 @@ func conv(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 }
 
 func convConst(g *graph, x *mlpackage.Var, name string, wt, bias []float32, cout, k int) *mlpackage.Var {
-	cin, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
-	p := int32(k / 2)
-	inputs := map[string]any{
-		"x": x, "weight": g.F16s(name+".k", []int{cout, cin, k, k}, wt), "bias": g.F16s(name+".b", []int{cout}, bias),
-		"strides": g.B.Ints(1, 1), "pad_type": g.Str("custom"), "pad": g.B.Ints(p, p, p, p), "dilations": g.B.Ints(1, 1), "groups": g.B.ScalarI32(1),
-	}
-	return g.op("conv", inputs, 1, cout, H, W)
+	return g.Conv2D(x, name, wt, bias, cout, k, 1)
 }
 
 // chanNorm is the VAE's RMS_norm over the channels: x / ||x|| * sqrt(C) * gamma, which is x /
@@ -112,10 +106,10 @@ func convConst(g *graph, x *mlpackage.Var, name string, wt, bias []float32, cout
 func chanNorm(g *graph, x *mlpackage.Var, gamma string) *mlpackage.Var {
 	C, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
 	gm := g.F16s(gamma, []int{1, C, 1, 1}, g.Get(gamma))
-	sq := g.mul(x, x)
-	ms := g.op("reduce_mean", map[string]any{"x": sq, "axes": g.B.Ints(1), "keep_dims": g.B.ScalarBool(true)}, 1, 1, H, W)
-	r := g.op("rsqrt", map[string]any{"x": ms, "epsilon": g.B.ScalarF16(1e-6)}, 1, 1, H, W)
-	return g.mul(g.mul(x, r), gm)
+	sq := g.Mul(x, x)
+	ms := g.Op("reduce_mean", map[string]any{"x": sq, "axes": g.B.Ints(1), "keep_dims": g.B.ScalarBool(true)}, 1, 1, H, W)
+	r := g.Op("rsqrt", map[string]any{"x": ms, "epsilon": g.B.ScalarF16(1e-6)}, 1, 1, H, W)
+	return g.Mul(g.Mul(x, r), gm)
 }
 
 func vaeIn(g *graph, z *mlpackage.Var, mean, std []float64) *mlpackage.Var {
@@ -143,11 +137,11 @@ func vaeRes(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 	// the Neural Engine's own silu, unlike the DiT's (blocks.SiLU): written with exp and real_div,
 	// no image changed (PSNR within 0.04 dB of diffusers' fp32) and the VAE took 15 to 20 % longer
 	// (design.md 16.95)
-	a := g.op("silu", map[string]any{"x": chanNorm(g, x, path+".norm1.gamma")}, x.Shape...)
+	a := g.Op("silu", map[string]any{"x": chanNorm(g, x, path+".norm1.gamma")}, x.Shape...)
 	a = conv(g, a, path+".conv1", cout)
-	a = g.op("silu", map[string]any{"x": chanNorm(g, a, path+".norm2.gamma")}, a.Shape...)
+	a = g.Op("silu", map[string]any{"x": chanNorm(g, a, path+".norm2.gamma")}, a.Shape...)
 	a = conv(g, a, path+".conv2", cout)
-	return g.add(a, h)
+	return g.Add(a, h)
 }
 
 // vaeAttn is the middle attention: one head over the pixels, its q, k and v a 1 x 1
@@ -160,14 +154,14 @@ func vaeAttn(g *graph, x *mlpackage.Var, path string, qchunk int) *mlpackage.Var
 	qkvb := g.Get(path+".to_qkv.bias", 3*C)
 	part := func(j int) *mlpackage.Var {
 		y := convConst(g, h, fmt.Sprintf("%s.to_qkv.%d", path, j), qkvw[j*C*C:(j+1)*C*C], qkvb[j*C:(j+1)*C], C, 1)
-		return g.reshape(g.transpose(g.reshape(y, 1, C, n), 0, 2, 1), 1, 1, n, C) // (1, 1, pixels, C)
+		return g.Reshape(g.Transpose(g.Reshape(y, 1, C, n), 0, 2, 1), 1, 1, n, C) // (1, 1, pixels, C)
 	}
 	q, k, v := part(0), part(1), part(2)
-	o := g.attention(q, k, v, 1/math.Sqrt(float64(C)), nil, qchunk)
-	o = g.reshape(g.transpose(g.reshape(o, 1, n, C), 0, 2, 1), 1, C, H, W)
+	o := g.QChunkAttention(q, k, v, 1/math.Sqrt(float64(C)), nil, qchunk)
+	o = g.Reshape(g.Transpose(g.Reshape(o, 1, n, C), 0, 2, 1), 1, C, H, W)
 	pw := g.Get(path+".proj.weight", C, C, 1, 1)
 	o = convConst(g, o, path+".proj", pw, g.Get(path+".proj.bias", C), C, 1)
-	return g.add(x, o)
+	return g.Add(x, o)
 }
 
 // vaeUp is nearest 2x upsampling and the upsampler's 3 x 3 convolution. upsample_nearest_neighbor
@@ -175,7 +169,7 @@ func vaeAttn(g *graph, x *mlpackage.Var, path string, qchunk int) *mlpackage.Var
 // 1024 on M3: 412 ms against 1275 ms); OpenVINO IR lowers it to those.
 func vaeUp(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 	C, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
-	u := g.op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": g.B.ScalarI32(2),
+	u := g.Op("upsample_nearest_neighbor", map[string]any{"x": x, "scale_factor_height": g.B.ScalarI32(2),
 		"scale_factor_width": g.B.ScalarI32(2)}, 1, C, 2*H, 2*W)
 	return conv(g, u, path+".upsamplers.0.resample.1", cout)
 }

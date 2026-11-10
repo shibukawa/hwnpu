@@ -2,6 +2,7 @@ package coreml
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/ebitengine/purego/objc"
@@ -10,6 +11,11 @@ import (
 )
 
 const planMethod = "coreml-compute-plan"
+
+// planTimeout is how long the compute plan may take. A plan takes as long as loading the model;
+// on an M1 whose Neural Engine another process is compiling for, Gemma 2's programs of 470 MB
+// for Sana took over 2 minutes where they took 13 s alone (design.md 16.127).
+const planTimeout = 10 * time.Minute
 
 type planResult struct{ plan, err objc.ID }
 
@@ -39,8 +45,8 @@ func computePlacement(ctx context.Context, compiledURL, config objc.ID, function
 	case <-ctx.Done():
 		go func() { r := <-ch; _ = withPool(func() error { release(r.plan); release(r.err); return nil }) }()
 		return rep, ctx.Err()
-	case <-time.After(2 * time.Minute):
-		rep.Reason = "MLComputePlan did not finish within 2 minutes"
+	case <-time.After(planTimeout):
+		rep.Reason = fmt.Sprintf("MLComputePlan did not finish within %v", planTimeout)
 		return rep, nil
 	}
 

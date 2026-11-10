@@ -60,7 +60,7 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 <tr>
 <th>画像生成<br><sub>hwnpu-image</sub></th>
 <td>△ <b>Anima-Turbo</b> (4.1 GB)<br>ほかのアプリを閉じて</td>
-<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Sana-Sprint 0.6B</b> (2.3 GB、AMD のみ) 軽く速い。英語のプロンプト</td>
+<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Sana-Sprint 0.6B</b> (AMD 2.3 GB、Apple 3.3 GB) 軽く速い。英語のプロンプト</td>
 </tr>
 <tr>
 <th>読み上げ<br><sub>hwnpu-tts</sub></th>
@@ -108,6 +108,7 @@ hwnpu-chat と hwnpu-agent は、この表から自分でモデルを選びま�
 | MoGe-2 ViT-S / B / L (AMD) | メートルの深度、点群、法線 (hwnpu-image depth) | 1.9 GB (S)、2.1 GB (B)、2.6 GB (L) | なし | 実測 |
 | Depth Anything 3 Mono / Metric Large、Small、Base (AMD) | 深度推定 (hwnpu-image depth) | 1.4 GB (Large)、0.75 GB (Base)、0.5 GB (Small) | なし | 実測 |
 | Sana-Sprint 0.6B、Sana 600M、Sana-Sprint 1.6B、SANA 1.5 1.6B (1024 × 1024、AMD) | 画像生成 | 2.3 GB (テキストのグラフ。Gemma 2 は 8 ビット。DiT は 1 組ずつ、VAE は段ごとに読む) | なし | 実測 |
+| Sana-Sprint 0.6B (1024 × 1024、Apple) | 画像生成 | プロセス 3.3 GB (Gemma 2 は int8 の 5 本を走る間だけ。DiT は fp16、VAE は段ごと) | なし | 実測 (M1) |
 | Anima-Turbo (1024 × 1024) | 画像生成 | 1.9 GB (VAE の段の最大。DiT はブロックの重みを 1 組ずつ読む) | なし | 実測 |
 | LFM3-Audio-2B (読み上げ) | 読み上げ | 約 2.4 GB | 12 KiB/トークン | 重みから見込み |
 | d1-2B、d1-Omni-2B | 状態の判定 | 約 2.4 GB、約 2.8 GB | 短い入力のみ | 重みから見込み |

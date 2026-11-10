@@ -185,8 +185,9 @@ models:
     about: "Liquid AI's d1-Omni-2B: d1 with an audio encoder, questions about images and clips and questions asked as a clip"
 
   # hwnpu-image generate: on AMD's NPU the export ~/models/NAME.amd-npu2 (or NAME-1024.amd-npu2,
-  # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's and Intel's NPU Anima is
-  # downloaded and converted on its first run (Sana runs on AMD's NPU only)
+  # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's NPU Anima and Sana, on
+  # Intel's Anima, are downloaded and converted on their first run (Sana: only Sana-Sprint 0.6B
+  # checked on Apple's)
   Anima-Turbo:
     family: anima
     tag: turbo
@@ -204,7 +205,7 @@ models:
     machine: 8
     memory: 2.3
     bytes: 7.2e9
-    about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU"
+    about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU and Apple's Neural Engine"
   Sana-Sprint-1.6B:
     family: sana
     tag: 1.6b

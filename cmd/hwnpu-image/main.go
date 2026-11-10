@@ -29,7 +29,8 @@
 //
 // On AMD's NPU, the exports are of tools/amd/iron_anima.py (see docs/amd-npu-models.md;
 // ~/models/anima-turbo-1024.amd-npu2) or of tools/amd/iron_sana.py: Sana or Sana-Sprint (NVlabs), a linear DiT with Gemma 2
-// 2B reading the prompt (internal/imagegen/sana). Sana-Sprint draws in 2 steps (--steps 1 to 4)
+// 2B reading the prompt (internal/imagegen/sana). On Apple's Neural Engine, Sana is downloaded
+// into --dir/Sana and converted into Core ML packages on its first run, as Anima is. Sana-Sprint draws in 2 steps (--steps 1 to 4)
 // with the guidance scale embedded; Sana runs 20 steps with classifier-free guidance
 // (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU
 // interpreter (slow; for checking without the NPU).
@@ -50,7 +51,7 @@ type cli struct {
 	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Sana-Sprint)."`
 	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's NPU)."`
 	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; AMD's NPU)."`
-	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export."`
+	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export, or a Sana repository into a Core ML export."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 }
 

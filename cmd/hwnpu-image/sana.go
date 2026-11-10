@@ -21,24 +21,38 @@ type sanaRun struct {
 	steps                                        int
 	guidance                                     float64
 	seed                                         uint64
-	resident                                     bool
-	dump                                         string
+	resident, cpu                                bool
+	dump, cache                                  string
 }
 
-// runSana draws the picture with an export of tools/amd/iron_sana.py (Sana or Sana-Sprint) on
-// AMD's NPU.
+// runSana draws the picture with an export of Sana or Sana-Sprint: of tools/amd/iron_sana.py on
+// AMD's NPU, or of hwnpu-image convert (Core ML) on Apple's Neural Engine or, with cpu, the CPU
+// interpreter.
 func runSana(ctx context.Context, r sanaRun) error {
 	lw := console.Log(os.Stderr)
 	live := console.Live(lw)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-	if err != nil {
-		return err
+	programs := sana.IsProgramExport(r.model)
+	var dev *hwnpu.Device
+	if !r.cpu {
+		var opts []hwnpu.Option
+		if !programs {
+			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD))
+		} else if d := cacheDirOf(r.cache); d != "" {
+			opts = append(opts, hwnpu.WithCacheDir(d))
+		}
+		d, err := hwnpu.Open(ctx, opts...)
+		if err != nil {
+			return err
+		}
+		defer d.Close()
+		dev = d
 	}
-	defer dev.Close()
-	iron.ShareExport(r.model, logf)
-	p, err := sana.Open(ctx, dev, r.model)
+	if !programs {
+		iron.ShareExport(r.model, logf)
+	}
+	p, err := sana.Open(ctx, dev, r.model, lw)
 	if err != nil {
 		return err
 	}
