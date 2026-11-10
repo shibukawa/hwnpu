@@ -10,7 +10,8 @@ import (
 )
 
 // List writes the models of kinds (all for none) for -list: each model's name, tag, kind,
-// features, size, repository, whether it is downloaded to dir, and what it is; then what each use
+// features, download and memory running on this machine's NPU (models.yaml's bytes and memory
+// for its vendor), repository, whether it is downloaded to dir, and what it is; then what each use
 // and family of them picks on a machine of each of MODEL.md's columns; the aliases; and the
 // definition files read.
 func List(w io.Writer, dir string, ks ...Kind) {
@@ -27,7 +28,8 @@ func List(w io.Writer, dir string, ks ...Kind) {
 func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 	of := func(m Model) bool { return len(ks) == 0 || slices.Contains(ks, m.Kind) }
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "NAME\tTAG\tKIND\tFEATURES\tSIZE\tREPOSITORY\t%s\tABOUT\n", column)
+	vendor := HereVendor()
+	fmt.Fprintf(tw, "NAME\tTAG\tKIND\tFEATURES\tDOWNLOAD\tMEMORY\tREPOSITORY\t%s\tABOUT\n", column)
 	for _, m := range Catalog {
 		if !of(m) {
 			continue
@@ -37,14 +39,12 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 		if features == "" {
 			features = "-"
 		}
-		tag, size := "-", "-"
+		tag := "-"
 		if m.Tag != "" {
 			tag = m.Family + ":" + m.Tag
 		}
-		if m.Bytes > 0 {
-			size = fmt.Sprintf("%.1f GB", m.Bytes/1e9)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.Name, tag, m.Kind, features, size, m.Source(), got, m.About)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.Name, tag, m.Kind, features, inGB(m.BytesFor(vendor)/1e9), inGB(m.MemoryFor(vendor)),
+			m.Source(), got, m.About)
 	}
 	tw.Flush()
 	// MODEL.md's table: what each use and family picks on a machine of each column's memory
@@ -140,4 +140,17 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 	}
 	fmt.Fprintf(w, "\nModels from hf are looked for in: %s\n", strings.Join(srcs, ", "))
 	fmt.Fprintf(w, "Definitions: %s (yours: %s, %s, -models)\n", strings.Join(ModelFiles, ", "), UserModelsFile(), ModelsEnv)
+}
+
+// inGB writes n GB as "1.4 GB", "-" for 0 (unknown); under 0.1 GB, in MB.
+func inGB(n float64) string {
+	switch {
+	case n <= 0:
+		return "-"
+	case n < 0.01:
+		return fmt.Sprintf("%.1f MB", n*1e3)
+	case n < 0.1:
+		return fmt.Sprintf("%.0f MB", n*1e3)
+	}
+	return fmt.Sprintf("%.1f GB", n)
 }
