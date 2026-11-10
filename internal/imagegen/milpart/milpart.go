@@ -262,6 +262,12 @@ func (g *Graph) LinearConst(x *mlpackage.Var, name string, w []float32, out int,
 // Conv2D is a 2 D convolution of x (1, cin, H, W) with the fp16 weight wt (cout, cin/groups, k,
 // k) and the optional bias, zero padded to the same size, stride 1.
 func (g *Graph) Conv2D(x *mlpackage.Var, name string, wt, bias []float32, cout, k, groups int) *mlpackage.Var {
+	return g.Conv2DStride(x, name, wt, bias, cout, k, groups, 1)
+}
+
+// Conv2DStride is Conv2D with a stride: padded by k / 2 on each side, the output ceil(H /
+// stride) x ceil(W / stride) for an odd k.
+func (g *Graph) Conv2DStride(x *mlpackage.Var, name string, wt, bias []float32, cout, k, groups, stride int) *mlpackage.Var {
 	cin, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
 	if len(wt) != cout*cin/groups*k*k {
 		g.Fail("%s: %d weights for %d to %d channels, %d x %d in %d groups", name, len(wt), cin, cout, k, k, groups)
@@ -269,12 +275,13 @@ func (g *Graph) Conv2D(x *mlpackage.Var, name string, wt, bias []float32, cout, 
 	p := int32(k / 2)
 	inputs := map[string]any{
 		"x": x, "weight": g.F16s(name+".k", []int{cout, cin / groups, k, k}, wt),
-		"strides": g.B.Ints(1, 1), "pad_type": g.Str("custom"), "pad": g.B.Ints(p, p, p, p), "dilations": g.B.Ints(1, 1), "groups": g.B.ScalarI32(int32(groups)),
+		"strides": g.B.Ints(int32(stride), int32(stride)), "pad_type": g.Str("custom"), "pad": g.B.Ints(p, p, p, p), "dilations": g.B.Ints(1, 1), "groups": g.B.ScalarI32(int32(groups)),
 	}
 	if bias != nil {
 		inputs["bias"] = g.F16s(name+".b", []int{cout}, bias)
 	}
-	return g.Op("conv", inputs, 1, cout, H, W)
+	oh, ow := (H+2*int(p)-k)/stride+1, (W+2*int(p)-k)/stride+1
+	return g.Op("conv", inputs, 1, cout, oh, ow)
 }
 
 // InvFreq is RoPE's inverse frequencies of a head of dim at theta.

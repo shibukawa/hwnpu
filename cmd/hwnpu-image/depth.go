@@ -18,6 +18,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	"github.com/shibukawa/hwnpu/internal/vision/depth"
@@ -56,26 +57,49 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-	if err != nil {
-		return err
-	}
-	defer dev.Close()
 	model := expandHome(c.Model)
+	apple := false
+	if format, err := llm.ProgramFormat(ctx, ""); err == nil && format == llm.BackendCoreML {
+		apple = true
+	}
 	if !isPath(c.Model) {
 		m, err := resolve(c.Model, chat.KindDepth)
 		if err != nil {
 			return err
 		}
-		tool := "tools/amd/iron_da3.py"
-		if m.Family == "moge" {
-			tool = "tools/amd/iron_moge.py"
-		}
-		if model, err = amdExport(m, tool); err != nil {
-			return err
+		switch {
+		case apple && m.Family == "moge":
+			return fmt.Errorf("%s runs on AMD's NPU; on Apple's Neural Engine depth takes DA3 (da3, da3:small, da3metric)", m.Name)
+		case apple:
+			if model, err = depth.Prepare(ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Log: lw}); err != nil {
+				return err
+			}
+		default:
+			tool := "tools/amd/iron_da3.py"
+			if m.Family == "moge" {
+				tool = "tools/amd/iron_moge.py"
+			}
+			if model, err = amdExport(m, tool); err != nil {
+				return err
+			}
 		}
 	}
-	iron.ShareExport(model, logf)
+	var dev *hwnpu.Device
+	if apple {
+		d, _, err := llm.OpenDevice(ctx, llm.BackendCoreML, cacheDirOf(""), hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		if err != nil {
+			return err
+		}
+		dev = d
+	} else {
+		d, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		if err != nil {
+			return err
+		}
+		dev = d
+		iron.ShareExport(model, logf)
+	}
+	defer dev.Close()
 	o := opts{dir: c.Out, raw: c.Raw, sky: c.Sky, keep: c.Keep, focal: c.Focal, fov: c.Fov, normal: c.Normal}
 	if depth.IsMultiExport(model) {
 		m, err := depth.OpenMulti(ctx, dev, model)

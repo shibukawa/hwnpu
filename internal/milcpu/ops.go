@@ -242,6 +242,12 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		if r.err == nil {
 			out, r.err = tile(x, reps)
 		}
+	case "pixel_shuffle":
+		x := r.floats("x")
+		f := r.int("upscale_factor", 1)
+		if r.err == nil {
+			out, r.err = pixelShuffle(x, int(f))
+		}
 	case "upsample_nearest_neighbor":
 		x := r.floats("x")
 		sh, sw := r.int("scale_factor_height", 1), r.int("scale_factor_width", 1)
@@ -888,6 +894,33 @@ func tile(x *value, reps []int32) (*value, error) {
 				break
 			}
 			idx[d] = 0
+		}
+	}
+	return out, nil
+}
+
+// pixelShuffle is PyTorch's PixelShuffle of x (N, C f f, H, W): (N, C, H f, W f), output
+// channel c at (y f + i, x f + j) from input channel c f f + i f + j at (y, x).
+func pixelShuffle(x *value, f int) (*value, error) {
+	if len(x.shape) != 4 || f < 1 || x.shape[1]%(f*f) != 0 {
+		return nil, fmt.Errorf("pixel_shuffle of shape %v by %d", x.shape, f)
+	}
+	N, CF, H, W := x.shape[0], x.shape[1], x.shape[2], x.shape[3]
+	C := CF / (f * f)
+	out := &value{shape: []int{N, C, H * f, W * f}, f: make([]float32, len(x.f))}
+	for n := 0; n < N; n++ {
+		for c := 0; c < C; c++ {
+			for i := 0; i < f; i++ {
+				for j := 0; j < f; j++ {
+					src := x.f[((n*CF+c*f*f+i*f+j)*H)*W:][:H*W]
+					for y := 0; y < H; y++ {
+						dst := out.f[((n*C+c)*H*f+y*f+i)*W*f:]
+						for xx := 0; xx < W; xx++ {
+							dst[xx*f+j] = src[y*W+xx]
+						}
+					}
+				}
+			}
 		}
 	}
 	return out, nil
