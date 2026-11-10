@@ -3660,4 +3660,16 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
   - YuNet (`internal/vision/face`): ONNX のグラフを丸ごと `internal/onnx` の Program に (12 の出力を 1 つに)。640 × 480 で 1 枚 3.4 ms、OpenCV の FaceDetectorYN と箱と目印が 0.3 画素以内。`internal/onnx`: 数字で始まる初期値の名前 (YuNet の 420 など) を Core ML が受けないので `w_` を前に。Apple の既定は Neural Engine (models.yaml の device は AMD だけ cpu)
 - Gemma 2 の重みの形式 (3 つのプロンプト、画像まで): int8 0.985〜0.998 / 23〜31 dB、lut8 0.963〜0.992、lut6 (一様) 0.915〜0.966 / 18〜22 dB (構図は同じで細部と文字が変わる)、lut4 0.80〜0.83 (別の絵)。k-means の表は lut6 で悪化 (0.86〜0.92)、lut4 でわずかに良い (0.83〜0.91)。温まっていれば Gemma 2 はどの形式も約 2 秒で、速さは変わらない。既定は int8 のまま (`ConvertOptions.TextQuant` で量子化器を選べる)
 - hwnpu-image は Neural Engine のロック (16.132、`llm.OpenDevice`) を取る (Sana、depth、face-detect)。配置は厳密に (確かめられないときに理由を出す)
-- 残り: 読み込み (キャッシュがあっても DiT と VAE の最初の段で 1〜2 分)、Intel (OpenVINO IR) の Sana と深度、複数視点の DA3、変換し直すとパッケージのバイトが変わってコンパイルのキャッシュが効かないこと (`internal/mlpackage` の UUID、全モデル共通)
+- 複数の絵を 1 つのプロセスで (`hwnpu-image generate` にプロンプトを複数、`--keep-dit` で絵の間も DiT を載せたまま。Gemma 2 と VAE は毎回読む) と DiT の int8 (M1、1024 × 1024、3 つのプロンプトを 1 プロセスで、別のプロセスで 2 回ずつ。1 枚の時間):
+
+| | 合計 | --keep-dit (1 回目: 1, 2, 3 枚目 / 2 回目) | --no-keep-dit (1 回目 / 2 回目) | 潜在のコサイン、PSNR |
+|---|---|---|---|---|
+| Sprint 0.6B fp16 | 約 4 GB | 4m17s (コンパイル), 7.2, 7.0 s / 8.3, 6.8, 6.6 s | 8.1, 7.9, 8.1 s / 7.8, 8.0, 8.0 s | 0.985〜0.998、23〜31 dB |
+| Sprint 0.6B int8 | 約 3.4 GB | (コンパイル), 6.8, 6.4 s / 7.4, 6.3, 6.3 s | 7.3, 7.3, 7.2 s / 7.2, 7.3, 7.2 s | 0.980〜0.997、22〜30 dB |
+| Sprint 1.6B fp16 | 約 6 GB | 12m12s, 35 s, 9.2 s / 4m27s, 26 s, 9.2 s | 6m21s, 3m13s, 1m07s / 15, 16, 16 s | 0.990、26.9 dB |
+| Sprint 1.6B int8 | 約 4.4 GB | 11m41s, 2m09s, 7.8 s / 5m01s, 1m46s, 7.4 s | 3m10s, 5m09s, 4m21s / 4m21s, 4m38s, 11 s | 0.987、25.5 dB |
+
+  - 0.6B は、16 GB 溜まっていた古いコンパイル結果を消した後は、新しいプロセスでも 1 枚 7〜8 秒 (Gemma 2 約 2 秒、2 ステップ 1〜2.5 秒、VAE 約 3.5 秒)。前の 3〜4 分は、作り直しを重ねた古い版で Neural Engine のキャッシュが埋まっていたためと見ている。`--keep-dit` で 1 枚約 1 秒縮む
+  - 1.6B は fp16 でも int8 でも外れが続く: 再コンパイルの場所が回ごとに変わる (LRU で 4 GB 前後を超える、16.41 と合う)。`--keep-dit` なら 3 枚目から 7〜9 秒。int8 の DiT (合計 4.4 GB) でも収まらず、速さはほぼ変わらない。画質は少し下がる (0.6B で PSNR −0.8〜−1.6 dB)。既定は fp16 のまま
+  - 容量の計測は [handoff-ane-compile-cache.md](handoff-ane-compile-cache.md) で引き継いだ。1.6B は合計を 4 GB 未満に (Gemma 2 の lut6 と DiT の int8 で約 3.9 GB)、または常駐で 2 枚目以降を読まない形が要る
+- 残り: 1.6B の読み込み (上)、Intel (OpenVINO IR) の Sana と深度、複数視点の DA3、変換し直すとパッケージのバイトが変わってコンパイルのキャッシュが効かないこと (`internal/mlpackage` の UUID、全モデル共通)
