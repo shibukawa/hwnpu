@@ -13,7 +13,7 @@
 //	hwnpu-music list
 //
 // --model takes a name, a family or a use of models.yaml (music, magenta-realtime-2; sfx,
-// moss-soundeffect): a family alone picks for the machine's memory as hwnpu-chat's -use, a tag
+// moss-soundeffect): a family alone picks for the machine's memory as hwnpu-chat's --model, a tag
 // of memory (moss-soundeffect:8gb, 16G) for that machine's. Without -o, the sound plays.
 //
 // Music is Magenta RealTime 2 small (google/magenta-realtime-2): 48 kHz stereo in the style of
