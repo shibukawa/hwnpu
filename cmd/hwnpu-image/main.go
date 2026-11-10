@@ -5,9 +5,10 @@
 //	hwnpu-image depth photo.jpg                                  # photo.depth.png
 //	hwnpu-image depth -m moge --normal --raw photo.jpg
 //	hwnpu-image face-detect --draw photo.jpg                     # JSON lines, photo.faces.png
+//	hwnpu-image pose --draw photo.jpg                            # JSON lines, photo.pose.png
 //
 // --model takes a name, a family or a use of models.yaml (image, anima, sana, sana:1.6b,
-// sana-full; depth, da3:small, da3metric, moge:vits; face-detect, yunet): a family alone picks for the machine's
+// sana-full; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo): a family alone picks for the machine's
 // memory, as hwnpu-chat's -use. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
 // value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
 // image.png here (image (2).png, ... when taken) and shows it in the system's viewer.
@@ -35,7 +36,7 @@
 // interpreter (slow; for checking without the NPU).
 //
 // depth estimates the depth of pictures on AMD's NPU with Depth Anything 3 or MoGe-2 (see
-// DepthCmd).
+// DepthCmd). face-detect (FaceDetectCmd) finds faces, pose (PoseCmd) people's keypoints.
 package main
 
 import (
@@ -50,6 +51,7 @@ type cli struct {
 	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Sana-Sprint)."`
 	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's NPU)."`
 	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; AMD's NPU)."`
+	Pose       PoseCmd       `cmd:"" help:"Find the people in pictures and their 17 keypoints (RTMO; Apple's Neural Engine, Intel's NPU)."`
 	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 }
@@ -60,7 +62,7 @@ func main() {
 	var c cli
 	k := kong.Parse(&c,
 		kong.Name("hwnpu-image"),
-		kong.Description("Image models on an NPU: generation and depth."),
+		kong.Description("Image models on an NPU: generation, depth, faces and poses."),
 		kong.UsageOnError(),
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	k.FatalIfErrorf(k.Run())

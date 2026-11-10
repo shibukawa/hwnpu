@@ -19,17 +19,17 @@ type Kind string
 const (
 	KindChat       Kind = "chat"        // generates text: the chat completions API
 	KindEmbed      Kind = "embedding"   // turns a text into a vector: the embeddings API
-	KindTranscribe Kind = "transcribe"  // speech to text: hwnpu-transcribe
-	KindSpeech     Kind = "speech"      // text to speech: hwnpu-tts
-	KindDecision   Kind = "decision"    // answers about a state: hwnpu-systemone
+	KindTranscribe Kind = "transcribe"  // speech to text: hwnpu-audio transcribe
+	KindSpeech     Kind = "speech"      // text to speech: hwnpu-audio tts
+	KindDecision   Kind = "decision"    // answers about a state: hwnpu-chat systemone
 	KindImage      Kind = "image"       // draws a picture from a prompt: hwnpu-image generate
 	KindDepth      Kind = "depth"       // the depth of a picture: hwnpu-image depth
 	KindFace       Kind = "face-detect" // the faces in a picture: hwnpu-image face-detect
-	KindPitch      Kind = "pitch"       // the pitch of a voice or an instrument: hwnpu-pitch
-	KindPose       Kind = "pose"        // people's keypoints in an image: hwnpu-pose
-	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: hwnpu-notes
-	KindMusic      Kind = "music"       // music from a style: hwnpu-music
-	KindSFX        Kind = "sfx"         // sound effects from a text: hwnpu-music
+	KindPitch      Kind = "pitch"       // the pitch of a voice or an instrument: hwnpu-audio pitch
+	KindPose       Kind = "pose"        // people's keypoints in an image: hwnpu-image pose
+	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: hwnpu-audio notes
+	KindMusic      Kind = "music"       // music from a style: hwnpu-audio generate
+	KindSFX        Kind = "sfx"         // sound effects from a text: hwnpu-audio generate -m sfx
 )
 
 // Model is a model of the definitions (models.yaml).
@@ -205,7 +205,7 @@ func ResolveFor(name string, kind Kind, log io.Writer) (Model, error) {
 	return ResolveForKinds(name, log, kind)
 }
 
-// ResolveForKinds is ResolveFor for a command that runs models of several kinds (hwnpu-music:
+// ResolveForKinds is ResolveFor for a command that runs models of several kinds (hwnpu-audio:
 // music and sound effects); a repository is taken to be of the first.
 func ResolveForKinds(name string, log io.Writer, kinds ...Kind) (Model, error) {
 	kind := kinds[0]

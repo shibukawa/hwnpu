@@ -17,7 +17,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/whisper"
 )
 
-// DefaultRepo is the checkpoint hwnpu-transcribe uses when not told.
+// DefaultRepo is the checkpoint hwnpu-audio transcribe uses when not told.
 const DefaultRepo = "openai/whisper-large-v3-turbo"
 
 // Setup says what Prepare downloads and converts.

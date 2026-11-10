@@ -78,7 +78,7 @@ go run ./cmd/hwnpu-chat -m LFM3-VL-2B
 - 対話では `/image FILE 質問` で画像を、`/audio FILE.wav 質問` で音声を送れます。引数に質問を書くときは `--image FILE`、`--audio FILE.wav` です (`hwnpu-chat -m LFM3-VL-2B --image photo.jpg "何が写っている？"`)。サーバーはユーザーのメッセージの `image_url` (data URL) と `input_audio` (base64 の WAV) を読みます
 - M3 で grouped 注意 (2026 年 11 月からの既定) なら 1 トークン約 36 ms (以前は 41 ms)。画像の説明中は約 70 ms (投機的デコードの推測が当たらない)。約 300 トークンの画像つきプロンプトの読み込みは 0.7 秒。LFM3-1.7B と同じく 4096 の段階は付きません (2 節の `--tier`)
 - テキスト部は LFM3-1.7B と同じく全注意の層で分けて変換し (`lfm3-lut8-grouped-p8192-c128000-q8.parts.json` と `-q128-last`、7 部分ずつ。11 月 6 日までの `-q64` は消して構いません)、文脈はモデルの上限の 128000 トークンです。キャッシュは会話とともに 1 トークン 12 KiB ずつ増え、128000 で 1.46 GiB。M3 では全部が Neural Engine に載り、2 回目の起動は 1.4 秒と 4.2 秒で、画像の説明、計算、富士山の高さの答えは分けない形 (文脈 16320) と 1 トークンも違わず、生成は 24.0、33.2、36.0 tokens/s (分けない形は 11.9、26.7、29.4)。プロンプトの先頭に置いた合言葉は 16K、64K、120K トークンで正しく答え、読み込みは 20 秒、171 秒、497 秒、その長さでの生成は 25.2、58.6、68.1 ms/token。LFM3-Audio-2B と LFM3-Omni-2B も同じ形で動き (音声の書き起こし、画像の説明)、120K の合言葉を正しく答えました (読み込み 525 秒と 512 秒、プロセスのメモリ 1.7 GB)。2026 年 11 月 4 日、design.md の 16.63 と 16.65。これは全部の鍵を読んだときで、2 段の注意 (`--sparse`、既定) では 120K の読み込みが VL 431 秒、Audio 516 秒、Omni 501 秒 (同じ日の VL の全部を読む形は 583 秒)、その長さの 1 回の呼び出しは 111〜120 ms (同じく 179 ms) で、3 つとも合言葉を答えました (11 月 6 日、16.65)。それまでの `lfm3-lut8-grouped-c16320-*` はもう読まれないので消して構いません
-- 返答は文字です。LFM3-Audio の音声出力は `hwnpu-tts` (5 節)
+- 返答は文字です。LFM3-Audio の音声出力は `hwnpu-audio tts` (5 節)
 - ほかの画像の大きさやクリップの長さを使うには、エンコーダを自分で変換して `--package`、`--vision`、`--audio-encoder` で渡します (5 節)
 
 ### Gemma 4 E2B と E4B を使う
@@ -262,7 +262,7 @@ go run ./cmd/hwnpu-chat --package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpack
 
 ### 音声を読む（LFM3-Audio-2B）
 
-`-m LFM3-Audio-2B` (1 節) なら以下を自動で行います。ほかのクリップの長さを使うときは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`--audio-encoder` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います（docs/design.md の 16.29 と 16.31）。
+`-m LFM3-Audio-2B` (1 節) なら以下を自動で行います。ほかのクリップの長さを使うときは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`--audio-encoder` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-audio tts` で行います（docs/design.md の 16.29 と 16.31）。
 
 ```bash
 go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
@@ -270,7 +270,7 @@ go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -c
 
 ### 音声で話す（LFM3-Audio-2B の TTS）
 
-`hwnpu-tts -lang ja -o out.wav こんにちは` が LFM3-Audio-2B (`-use speech`) で文章を読み上げて WAV（24 kHz）に書きます。初回にモデルをモデルのフォルダに落とし (hwnpu-chat の LFM3-Audio-2B と共有)、下のプログラムを 8 ビットの表で自分で変換し、読む表 (`speech-tables.safetensors`) を書くので、2 回目からはチェックポイントは要りません。自分で変換するときは、テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.30）。
+`hwnpu-audio tts --lang ja -o out.wav こんにちは` が LFM3-Audio-2B (`-m speech`) で文章を読み上げて WAV（24 kHz）に書きます。初回にモデルをモデルのフォルダに落とし (hwnpu-chat の LFM3-Audio-2B と共有)、下のプログラムを 8 ビットの表で自分で変換し、読む表 (`speech-tables.safetensors`) を書くので、2 回目からはチェックポイントは要りません。自分で変換するときは、テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.30）。
 
 ```bash
 go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
@@ -285,7 +285,7 @@ go run ./cmd/hwnpu-convert -codec-frames 64 -format fp16 -config DIR/audio_token
 ```
 
 ```bash
-go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.mlpackage -codec DIR/codec.mlpackage -lang ja -o out.wav こんにちは
+go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.mlpackage --depth DIR/depth.mlpackage --codec DIR/codec.mlpackage --lang ja -o out.wav こんにちは
 ```
 
 ## 6. OpenCode から使う

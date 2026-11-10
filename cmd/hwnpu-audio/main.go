@@ -1,20 +1,28 @@
-// hwnpu-music makes music and sound effects on an NPU.
+// hwnpu-audio runs audio models on an NPU: music and sound effects made, speech spoken and
+// transcribed, and the pitch and the notes of recordings.
 //
-//	hwnpu-music generate "disco funk"                                    # plays through the speakers
-//	hwnpu-music generate -o out.wav --duration 10s "disco funk"
-//	hwnpu-music generate -o out.wav "jazz piano@2" "bossa nova@1"       # a mix of styles, weighted
-//	hwnpu-music generate -o out.wav song.wav                             # the style of a recording
-//	hwnpu-music generate -o out.wav --continue intro.wav "disco funk"    # the clip, then where it goes
-//	hwnpu-music generate -o out.wav --notes melody.mid "string quartet"  # playing the MIDI file's notes
-//	hwnpu-music generate --play -o out.wav "lo-fi"                       # both
-//	hwnpu-music generate -o - --duration 2m "lo-fi" | ffplay -           # a WAV to stdout as it comes
-//	hwnpu-music generate -m sfx "A dog barking loudly in a park."       # a sound effect
-//	hwnpu-music generate -m moss-soundeffect:8gb -o rain.wav "Heavy rain on a tin roof"
-//	hwnpu-music list
+//	hwnpu-audio generate "disco funk"                                    # music, played through the speakers
+//	hwnpu-audio generate -o out.wav --duration 10s "disco funk"
+//	hwnpu-audio generate -o out.wav "jazz piano@2" "bossa nova@1"       # a mix of styles, weighted
+//	hwnpu-audio generate -o out.wav song.wav                             # the style of a recording
+//	hwnpu-audio generate -o out.wav --continue intro.wav "disco funk"    # the clip, then where it goes
+//	hwnpu-audio generate -o out.wav --notes melody.mid "string quartet"  # playing the MIDI file's notes
+//	hwnpu-audio generate --play -o out.wav "lo-fi"                       # both
+//	hwnpu-audio generate -o - --duration 2m "lo-fi" | ffplay -           # a WAV to stdout as it comes
+//	hwnpu-audio generate -m sfx "A dog barking loudly in a park."       # a sound effect
+//	hwnpu-audio generate -m moss-soundeffect:8gb -o rain.wav "Heavy rain on a tin roof"
+//	hwnpu-audio tts --lang ja -o out.wav こんにちは                       # speech (LFM3-Audio-2B)
+//	hwnpu-audio transcribe speech.wav                                    # text (Whisper)
+//	hwnpu-audio transcribe -l ja --timestamps a.wav b.wav
+//	hwnpu-audio pitch voice.wav                                          # CSV: the pitch every 16 ms (SwiftF0)
+//	hwnpu-audio notes --midi song.mid song.wav                           # CSV and MIDI: the notes (Basic Pitch)
+//	hwnpu-audio list [music|sfx|speech|transcribe|pitch|notes]
 //
 // --model takes a name, a family or a use of models.yaml (music, magenta-realtime-2; sfx,
-// moss-soundeffect): a family alone picks for the machine's memory as hwnpu-chat's -use, a tag
-// of memory (moss-soundeffect:8gb, 16G) for that machine's. Without -o, the sound plays.
+// moss-soundeffect; speech; transcribe, whisper:large-v3-turbo; pitch; notes): a family alone
+// picks for the machine's memory as hwnpu-chat's -m, a tag of memory (moss-soundeffect:8gb, 16G)
+// for that machine's. Each model is downloaded and converted the first time. Without -o, generate
+// plays the sound.
 //
 // Music is Magenta RealTime 2 small (google/magenta-realtime-2): 48 kHz stereo in the style of
 // texts or of audio, following a MIDI file's notes, going on from a clip, as it is generated.
@@ -24,6 +32,9 @@
 //
 // Sound effects are MOSS-SoundEffect v2.0 (OpenMOSS-Team/MOSS-SoundEffect-v2.0, Apache-2.0): up
 // to 30 seconds of 48 kHz mono from an English or Chinese description (sfx.go).
+//
+// tts (TTSCmd), transcribe (TranscribeCmd), pitch (PitchCmd) and notes (NotesCmd) are described
+// at their commands.
 package main
 
 import (
@@ -54,8 +65,12 @@ import (
 )
 
 type cli struct {
-	Generate GenerateCmd `cmd:"" help:"Make music from styles (Magenta RealTime 2), or a sound effect from a description (-m sfx: MOSS-SoundEffect v2.0)."`
-	List     ListCmd     `cmd:"" help:"List the music and sound effects models and what each use and family picks for a machine's memory."`
+	Generate   GenerateCmd   `cmd:"" help:"Make music from styles (Magenta RealTime 2), or a sound effect from a description (-m sfx: MOSS-SoundEffect v2.0)."`
+	TTS        TTSCmd        `cmd:"" name:"tts" help:"Speak a text into a WAV file (LFM3-Audio-2B; Apple's Neural Engine)."`
+	Transcribe TranscribeCmd `cmd:"" help:"Turn speech in WAV files into text (Whisper)."`
+	Pitch      PitchCmd      `cmd:"" help:"The pitch (F0) of a voice or an instrument every 16 ms, as CSV (SwiftF0)."`
+	Notes      NotesCmd      `cmd:"" help:"The notes of music, as CSV and MIDI (Basic Pitch)."`
+	List       ListCmd       `cmd:"" help:"List the audio models, whether they are downloaded and what each use and family picks for a machine's memory."`
 }
 
 func main() {
@@ -63,14 +78,21 @@ func main() {
 	defer stop()
 	var c cli
 	k := kong.Parse(&c,
-		kong.Name("hwnpu-music"),
-		kong.Description("Music and sound effects on an NPU."),
+		kong.Name("hwnpu-audio"),
+		kong.Description("Audio models on an NPU: music, sound effects, speech, transcription, pitch and notes."),
 		kong.UsageOnError(),
+		kong.Vars{
+			"models_usage": chat.ModelsUsage,
+			"onset":        fmt.Sprint(notes.DefaultOptions.OnsetThreshold),
+			"frame":        fmt.Sprint(notes.DefaultOptions.FrameThreshold),
+			"min_note":     fmt.Sprint(notes.DefaultOptions.MinNoteMS),
+			"melodia":      fmt.Sprint(notes.DefaultOptions.Melodia),
+		},
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	k.FatalIfErrorf(k.Run())
 }
 
-// GenerateCmd is "hwnpu-music generate": music, or with a sound effects model a sound effect.
+// GenerateCmd is "hwnpu-audio generate": music, or with a sound effects model a sound effect.
 type GenerateCmd struct {
 	Args     []string       `arg:"" optional:"" name:"STYLE|DESCRIPTION" help:"Music: texts or WAV files of the style, each with an optional weight after @ (\"jazz@2\"), mixed. Sound effects: the description."`
 	Model    string         `short:"m" default:"music" placeholder:"NAME" help:"The model: a name, a family or a use of models.yaml (music; sfx, moss-soundeffect; a family alone picks for the machine's memory, or for the memory a tag names: moss-soundeffect:8gb)."`
@@ -151,11 +173,11 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	return run(ctx, o, c.Args)
 }
 
-// ListCmd is "hwnpu-music list": the music and sound effects models of the definitions
+// ListCmd is "hwnpu-audio list": the audio models of the definitions
 // (models.yaml), whether they are downloaded, and what each use and family picks for each
 // machine's memory.
 type ListCmd struct {
-	Kind string `arg:"" optional:"" enum:"music,sfx," default:"" help:"Only music or sfx models."`
+	Kind string `arg:"" optional:"" enum:"music,sfx,speech,transcribe,pitch,notes," default:"" help:"Only music, sfx, speech, transcribe, pitch or notes models."`
 	Dir  string `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir)."`
 }
 
@@ -168,7 +190,7 @@ func (c *ListCmd) Run() error {
 	if dir == "" {
 		dir = chat.ModelsDir()
 	}
-	kinds := []chat.Kind{chat.KindMusic, chat.KindSFX}
+	kinds := []chat.Kind{chat.KindMusic, chat.KindSFX, chat.KindSpeech, chat.KindTranscribe, chat.KindPitch, chat.KindNotes}
 	if c.Kind != "" {
 		kinds = []chat.Kind{chat.Kind(c.Kind)}
 	}
@@ -184,7 +206,7 @@ func resolve(name string, lw io.Writer) (chat.Model, error) {
 	}
 	m, err := chat.ResolveForKinds(name, lw, chat.KindMusic, chat.KindSFX)
 	if e := (*chat.NoModelError)(nil); errors.As(err, &e) {
-		err = fmt.Errorf("no music or sound effects model, family or use %q (hwnpu-music list shows them)", name)
+		err = fmt.Errorf("no music or sound effects model, family or use %q (hwnpu-audio list shows them)", name)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "no model %q; the music and sound effects models of the definitions:\n\n", name)
