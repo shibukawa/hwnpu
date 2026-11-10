@@ -2,7 +2,7 @@
 
 [English](new-model-checklist.md)
 
-作成: 2026-11-07、更新: 2026-11-08 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
+作成: 2026-11-07、更新: 2026-11-10 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
 
 ## 方針: 速さより消費電力
 
@@ -310,11 +310,86 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 
 **合格**: 上の表の値が design.md の節に書いてある。
 
-## 11. 試して効かなかったもの (繰り返さない)
+## 11. どの NPU でも名前で動くようにする (models.yaml と準備)
+
+手で書き出したものが動いた時点では、まだ終わりではない。models.yaml に入れ、名前、ファミリー、用途を渡せば、どの NPU でも手作業なしで準備されて動くところまでを、モデルを入れる作業に含める。
+
+### 11.1 準備の順
+
+コマンドは、モデルを次の順に探す。
+
+1. **手元にある書き出し**: 前に変換したもので、`NAME.done` (最後に書く) があるもの。途中で切れたものは作り直す
+2. **配布された書き出し** (将来): Hugging Face から、その NPU のサブフォルダだけを落とす ([prebuilt.md](prebuilt.md))。書き出しの形式が安定してからにする。今はない
+3. **手元で変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換して `.done` を書く
+   - Apple と Intel は、Go の変換器で変換する。手本は Mac と Intel の Anima (`anima.Prepare`) と、hwnpu-chat のモデル (`chat.Prepare`)
+   - AMD は、IRON の書き出しの道具 (`tools/amd/iron_*.py`) を IRON の環境 (mlir-aie、Peano、Python) で動かす。環境が見つからなければ、何を入れればよいか (INSTALL_AMD.md) を出して止める。黙って落ちたり、手順を利用者に丸投げしたりしない
+4. **使えない**: 足りないもの (形がない、道具がない) を出して止める
+
+- 落とすのは、変換器が読むファイルだけにする。リポジトリをまるごと落とさない。fp32 と fp16 の両方を置いているリポジトリがある (Sana 600M はリポジトリが 16.5 GB で、要るのは 8.9 GB)
+- 同じファミリーで同じファイルを持つモデルは、ファイルを 1 回だけ落として共有する。Sana の 4 つは、どれも同じ Gemma 2 のテキストエンコーダ (5.2 GB) を持っている
+- この NPU で動かす形がないモデルは、動ける所 (CPU など) に落とし、そのことを出す。たとえば、Apple と Intel の YuNet は CPU で動かす。`--device npu` を明示されたときだけはエラーにする
+
+### 11.2 models.yaml に書く値 (見積もりでなく測った値)
+
+| 項目 | 中身 | 測り方 | 落とし穴 |
+|---|---|---|---|
+| `bytes` | ダウンロードの大きさ | 準備で落とすファイルの合計。HF の API (`/api/models/OWNER/NAME/tree/main?recursive=true` の `lfs.size`) から取る | GB は 10⁹。`du -h` は GiB を出す。Sana-Sprint 0.6B は 7.7 GB を 7.2、Anima は 5.9 GB を 5.5 と書いていた |
+| `memory` | 動いている間の最大 | 1 回の生成 (読み込みから終わりまで) の間、0.1 秒ごとに測る。AMD はプロセスの `/dev/accel/accel0` の写像の `Size` (`smaps`) に、同じ時刻の RSS を足す。Mac は、1 回呼んでからの `phys_footprint` と `mem.NPUWired` | 読み込みの直後ではなく、全体の最大を取る。Sana は、Gemma 2 のテキストの段 (2.3 GiB) と VAE (先読みで 2 段が同時に載り、2.4 GiB) が最大になる。DiT は 0.37 GiB しか使わない |
+| `machine` | ファミリーがこのモデルを勧める、機械のメモリの下限 | `memory` に、OS とほかのアプリの分の余裕を見る | 同じ大きさのモデルどうしで揃える。DA3METRIC-LARGE (1.4 GB) は 8 で、DA3MONO-LARGE (同じ 1.4 GB) は 24 になっていて揃っていない |
+| `device` | ベンダーごとの置き場所 (npu か cpu) | NPU と CPU (onnxruntime、1 スレッド) で、1 回あたりのエネルギー (mJ) を比べる | 小さなモデルは、AMD では NPU が負ける (YuNet は NPU 137 mJ、CPU 10 mJ。演算の切り替えに 1 回約 250 µs かかる)。1 つのベンダーの結果をほかに当てはめない |
+
+- **NPU ごとに変わる値**: ダウンロードの大きさ、メモリ、置き場所は NPU によって変わる
+  - Anima のメモリは、AMD では 3.5 GB、Mac 向けの値は 4.1 GB
+  - ダウンロードも変わる。今の AMD はチェックポイントを落として手元で書き出すが、配布が始まれば書き出しを落とすだけになる
+  - 違うときは、`device` と同じ形で、ベンダーの表を書く (`memory: {amd: 3.5, apple: 4.1}`)。1 つの値なら全部の NPU に当てる。`memory` と `bytes` でこの形を書けるようにするのは、これからの作業 (13 節)
+- **用途も、ファミリーと同じくメモリで選ぶ**: 用途の `picks` にも、ファミリーと同じ段を書く。用途 `depth` には DA3MONO-LARGE しか書いておらず、8 GB の機械でも 24 GB 向けのモデルが選ばれていた
+- **確かめ方**:
+  - `HWNPU_MEMORY=8`、`16`、`24` を付けて、`hwnpu-image list` (hwnpu-chat なら `-list`) を出す。用途とファミリーの列で、同じモデルが選ばれているかを見る
+  - 各 NPU で、`list` の大きさ、メモリ、どこで動くか (RUNS FROM) が正しいかを見る。CPU に落とすモデルは CPU と出ていなければならない
+
+測るときのスクリプトの例 (AMD):
+
+```bash
+"$@" & pid=$!
+while kill -0 $pid 2>/dev/null; do
+  awk '/accel/{a=1;next} /^[0-9a-f]+-/{a=0} a&&/^Size:/{s+=$2} END{printf "%d ", s/1024}' /proc/$pid/smaps
+  awk '/VmRSS/{print int($2/1024)}' /proc/$pid/status    # NPU と RSS (MiB)。足したものの最大を memory に
+  sleep 0.1
+done
+```
+
+### 11.3 AMD の書き出しを Go にできるか
+
+- 全部を Go にするのは難しい。IRON はグラフを MLIR にし、mlir-aie と Peano (AIE のコアの LLVM) で xclbin と ELF にコンパイルする。Go だけでやるには、このコンパイラを作り直すことになる
+- ただし、コンパイルの結果 (`graph.elf`、xclbin) が決まるのは形からで、重みは別の bank (`bank_*.bin`、`embed.bin`) に入る。形ごとのプログラムを配り、bank は Go がチェックポイントから書く形にすれば、利用者の機械に Python は要らない
+  - そのためには、モデルごとの重みの並べ方 (q8 や q4 への量子化、タイルの並び、畳み込みの im2col の並び、YuNet のような畳み込みと正規化の融合) を Go に移す必要がある
+- 配布 (11.1 節の 2) が入るまでは、手元の IRON で書き出す
+- **重みが違っても形が同じなら、プログラムは同じ**。2026-11-10 に Sana の書き出しで確かめた
+  - DiT のブロックの `graph.elf` は、Sana-Sprint 1.6B と SANA 1.5 1.6B でバイト単位まで同じ
+  - caption と dit_out の `graph.elf` は、Sprint 0.6B と Sana 600M、Sprint 1.6B と SANA 1.5 1.6B で、それぞれ同じ
+  - dit_in は 4 つとも違う。Sprint にはガイダンスの埋め込みがあり、形が違うため
+- **「形」に入るもの**: どれか 1 つが変われば、新しいプログラムが要る
+  - 構造の寸法 (層の数、幅、ヘッドの数)
+  - 画像の大きさ (Sana の比率ごとの大きさ、DA3 と MoGe-2 の 9 つの大きさ、YuNet の大きさ)
+  - LLM の文脈の長さと、プロンプトの塊の大きさ
+  - 部分ごとの量子化の形式 (q4、q6、q8)
+  - NPU の世代と列の数 (NPU1、NPU2)
+  - hwnpu の書き出しの形式の版
+- **既存の形で済むもの**: 同じベースのファインチューン、LoRA をマージしたもの、同じ構造の蒸留モデルを、配っている大きさと形式で使う場合。bank を書くだけでよい
+- **利用者の機械に要るもの** (bank を Go で書く場合): 今の実行時と同じ。コンパイラは要らない
+  - Linux: amdxdna (6.14 以降のカーネル)、NPU のファームウェア、memlock の上限、`/dev/accel` の権限
+  - Windows: AMD の NPU ドライバ (`xrt_coreutil.dll`) と `xrtshim`
+  - CPU に置くモデル: onnxruntime の共有ライブラリ
+  - チェックポイントを読む部分は Go で書く。safetensors と ONNX はある。PyTorch の `.pt` (MoGe-2 の `model.pt`、zip の中の pickle) は、これから書く
+- **コンパイルも Python なしにするには**: 新しい形を作る人と、配布を作る CI だけの話。それも今の IRON (Python) で作れるので、必須ではなく、優先度は低い
+  - 残る依存: mlir-aie (`aiecc` の C++ 版、`aie-opt`、`aie-translate`、`bootgen`。wheel で 853 MB)、Peano (AIE の `clang`、`llc`、`ld.lld`。422 MB)、カーネルのソースと AIE API のヘッダ。xclbinutil は hwnpu-xclbin で代わる
+  - Go に移す部分: IRON の演算ごとの設計 (ObjectFIFO、ワーカー、実行の手順から MLIR を作るところ) と、`iron_graph.export_graph`
+
+## 12. 試して効かなかったもの (繰り返さない)
 
 [improvements.md](improvements.md) の 8 節の要点: 小さなモデルを詰め物で ANE に (CPU より遅い)、小さな Qwen3.5 の MLP の 4 ビットを GPTQ で直す (GPL は直らない、q6 にした)、q6 で GEMV を速くする (q8 と同じ時間)、multifunction で 1 GiB を越える (全部 CPU)、MLState の KV、int8 の KV、次の段階を裏で読み込む、Q=16 の 1 本、E4B の lut4、モデルの圧縮、上位の鍵だけの疎な注意、AMD の注意の 4 ビット、GEMV の 1 列 1 コア、MoE の専門家の写し、DiT の `HIGH`、DiT の q4 の既定化、q4nx のプロンプトを bf16 で、RMSNorm の固定の倍率。Whisper のエンコーダの LayerNorm を行ごとの最大で割る (出力が変わらなかった。16.115)、Whisper のエンコーダの注意を問い合わせで分ける (速くならない)。
 
-## 12. 今進めているもの (2026-11-08)
+## 13. 今進めているもの (2026-11-10)
 
 - Qwen3.6 のプロンプトの注意のパイプラインは未計測 (1 本のまま)
 - AMD の下書きの確認 (16.117): q4 の数行の GEMV (Gemma 4、PLaMo 3、LFM3、Qwen3.5-4B、Qwen3.6 の 4 ビット)、Gemma 4 の共有の層とリングのキャッシュ、Qwen3.5 の MTP の層を下書きに
@@ -322,5 +397,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 - Whisper: 実際の録音 (雑音、話者の重なり) での形式の比較
 - Qwen3.5-4B の lut6 (2.97 GiB) は M1 の 2.8 GiB をわずかに超える。0.1〜0.2 GiB 削れば (出力層だけ lut4 など) 全速で動く見込み (16.109)
 - Apple の GPTQ の符号: hwnpu-chat は `-codes` と `-format-for` で取るが既定ではない (符号の配り方が未定)。E4B は 16 GB の Mac では校正できない
+
+- hwnpu-image のモデル (Anima、Sana、DA3、MoGe-2、YuNet) を AMD で自動で準備する (11.1 節の 3。チェックポイントを落とし、IRON の書き出しを動かす)。`memory` と `bytes` をベンダーごとに (11.2 節)。`hwnpu-image list` にメモリの列を足す
 
 結果が出たら 5.3 節と 5.4 節の表と、この節を更新する。
