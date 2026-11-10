@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -74,30 +75,41 @@ func (c *ConvertCmd) Run() error {
 
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima, Sana or Sana-Sprint.
 type GenerateCmd struct {
-	Prompt   string  `arg:"" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English)."`
-	Model    string  `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (anima, sana, sana:1.6b, sana-full; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's (Anima and Sana) and Intel's (Anima) the model is downloaded and converted into --dir on its first run."`
-	Dir      string  `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir): the checkpoints and exports in Anima/ and Sana/."`
-	Out      string  `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer)."`
-	Steps    int     `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Sana-Sprint 2, 1 to 4; Sana 20)."`
-	Negative string  `help:"Sana: the negative prompt of the classifier-free guidance (default empty)."`
-	Guidance float64 `placeholder:"SCALE" help:"Sana: the guidance scale (default 4.5; Sana-Sprint embeds it, Sana runs classifier-free guidance)."`
-	Shift    float64 `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
-	Seed     uint64  `placeholder:"N" help:"The noise's seed (0: from the time)."`
-	Noise    string  `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana-Sprint: steps+1 of (32, H/32, W/32))."`
-	Latents  string  `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
-	Cache    string  `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
-	CPU      bool    `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU."`
-	Resident bool    `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
-	Dump     string  `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py or ref_sana.py."`
+	Prompts  []string `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana takes several: a picture each, the model loaded once."`
+	Model    string   `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (anima, sana, sana:1.6b, sana-full; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's (Anima and Sana) and Intel's (Anima) the model is downloaded and converted into --dir on its first run."`
+	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir): the checkpoints and exports in Anima/ and Sana/."`
+	Out      string   `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
+	KeepDiT  bool     `name:"keep-dit" default:"true" negatable:"" help:"Sana on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (Gemma 2 and the VAE are loaded for each)."`
+	Steps    int      `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Sana-Sprint 2, 1 to 4; Sana 20)."`
+	Negative string   `help:"Sana: the negative prompt of the classifier-free guidance (default empty)."`
+	Guidance float64  `placeholder:"SCALE" help:"Sana: the guidance scale (default 4.5; Sana-Sprint embeds it, Sana runs classifier-free guidance)."`
+	Shift    float64  `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
+	Seed     uint64   `placeholder:"N" help:"The noise's seed (0: from the time)."`
+	Noise    string   `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana-Sprint: steps+1 of (32, H/32, W/32))."`
+	Latents  string   `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
+	Cache    string   `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
+	CPU      bool     `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU."`
+	Resident bool     `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
+	Dump     string   `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py or ref_sana.py."`
 	convertFlags
 }
 
 // Run draws the picture into --out, or into a new image.png here which it then shows.
 func (c *GenerateCmd) Run(ctx context.Context) error {
 	show := c.Out == ""
-	if show {
-		c.Out = freeName("image.png")
+	var outs []string
+	for i := range c.Prompts {
+		switch {
+		case show:
+			outs = append(outs, freeName("image.png", outs...))
+		case len(c.Prompts) == 1:
+			outs = append(outs, c.Out)
+		default:
+			ext := filepath.Ext(c.Out)
+			outs = append(outs, fmt.Sprintf("%s-%d%s", strings.TrimSuffix(c.Out, ext), i+1, ext))
+		}
 	}
+	c.Out = outs[0]
 	model := expandHome(c.Model)
 	isAnima := false
 	if !isPath(c.Model) {
@@ -116,14 +128,18 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	}
 	var err error
 	if sana.IsExport(model) {
-		err = runSana(ctx, sanaRun{model: model, prompt: c.Prompt, negative: c.Negative, out: c.Out, noise: c.Noise, latents: c.Latents,
+		err = runSana(ctx, sanaRun{model: model, prompts: c.Prompts, outs: outs, keepDiT: c.KeepDiT, negative: c.Negative, noise: c.Noise, latents: c.Latents,
 			steps: c.Steps, guidance: c.Guidance, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache})
+	} else if len(c.Prompts) > 1 {
+		err = errors.New("Anima takes one prompt")
 	} else {
 		err = c.anima(ctx, model)
 	}
 	if err == nil && show {
-		if e := openFile(c.Out); e != nil {
-			fmt.Fprintf(os.Stderr, "%s: not shown (%v)\n", c.Out, e)
+		for _, o := range outs {
+			if e := openFile(o); e != nil {
+				fmt.Fprintf(os.Stderr, "%s: not shown (%v)\n", o, e)
+			}
 		}
 	}
 	return err
@@ -229,7 +245,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	p.Dump = c.Dump
 	logf("loaded %s (%dx%d) in %s", filepath.Base(model), p.Dit.Width, p.Dit.Height, console.Duration(time.Since(t0)))
 
-	cond, err := p.Encode(ctx, c.Prompt)
+	cond, err := p.Encode(ctx, c.Prompts[0])
 	if err != nil {
 		return err
 	}

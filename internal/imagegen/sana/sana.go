@@ -138,6 +138,9 @@ type Pipeline struct {
 	// ResidentDiT keeps every group's weights on the NPU instead of reading each group's
 	// into one bank before it runs.
 	ResidentDiT bool
+	// KeepDiT keeps the DiT on the device through Decode, for the next picture's steps (it is
+	// otherwise released before the VAE runs).
+	KeepDiT bool
 	// Logf, when set, is told what is done.
 	Logf func(format string, args ...any)
 	// Stage, when set, is told of each stage of the VAE as it ends.

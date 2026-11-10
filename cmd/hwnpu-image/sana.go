@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image/png"
+	"io"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -18,12 +19,15 @@ import (
 
 // sanaRun is what runSana takes from the command line.
 type sanaRun struct {
-	model, prompt, negative, out, noise, latents string
-	steps                                        int
-	guidance                                     float64
-	seed                                         uint64
-	resident, cpu                                bool
-	dump, cache                                  string
+	model, negative, noise, latents string
+	// prompts are drawn one after another into outs, the pipeline loaded once
+	prompts, outs []string
+	keepDiT       bool
+	steps         int
+	guidance      float64
+	seed          uint64
+	resident, cpu bool
+	dump, cache   string
 }
 
 // runSana draws the picture with an export of Sana or Sana-Sprint: of tools/amd/iron_sana.py on
@@ -31,7 +35,6 @@ type sanaRun struct {
 // interpreter.
 func runSana(ctx context.Context, r sanaRun) error {
 	lw := console.Log(os.Stderr)
-	live := console.Live(lw)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
 	programs := sana.IsProgramExport(r.model)
@@ -67,18 +70,42 @@ func runSana(ctx context.Context, r sanaRun) error {
 	p.Logf = logf
 	p.ResidentDiT = r.resident
 	p.Dump = r.dump
-	m := p.Model
 	steps := r.steps
 	if steps == 0 {
-		steps = m.Steps
+		steps = p.Model.Steps
 	}
 	guidance := r.guidance
 	if guidance == 0 {
-		guidance = m.Guidance
+		guidance = p.Model.Guidance
+	}
+	if r.noise != "" && len(r.prompts) > 1 {
+		return fmt.Errorf("--noise is for one prompt")
 	}
 	logf("loaded %s (%dx%d) in %s", filepath.Base(r.model), p.Dit.W(), p.Dit.H(), console.Duration(time.Since(t0)))
 
-	cond, err := p.Encode(ctx, r.prompt)
+	// with several pictures the DiT stays on the device between them (keepDiT): only Gemma 2
+	// and the VAE's stages are loaded for each
+	p.KeepDiT = r.keepDiT && len(r.prompts) > 1
+	for i, prompt := range r.prompts {
+		t1 := time.Now()
+		seed := r.seed
+		if seed != 0 {
+			seed += uint64(i)
+		}
+		if err := drawSana(ctx, p, r, prompt, r.outs[i], seed, steps, guidance, lw, logf); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "%s: %s (%s since the start)\n", r.outs[i], console.Duration(time.Since(t1)), console.Duration(time.Since(t0)))
+	}
+	return nil
+}
+
+// drawSana draws one picture of prompt into out with the loaded pipeline p.
+func drawSana(ctx context.Context, p *sana.Pipeline, r sanaRun, prompt, out string, seed uint64, steps int, guidance float64,
+	lw io.Writer, logf func(string, ...any)) error {
+	live := console.Live(lw)
+	m := p.Model
+	cond, err := p.Encode(ctx, prompt)
 	if err != nil {
 		return err
 	}
@@ -106,7 +133,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 			noises = append(noises, x[k*size:(k+1)*size])
 		}
 	} else {
-		s := r.seed
+		s := seed
 		if s == 0 {
 			s = rand.Uint64()
 		}
@@ -145,7 +172,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 		return err
 	}
 	bar.Done("in " + console.Duration(bar.Elapsed()))
-	f, err := os.Create(r.out)
+	f, err := os.Create(out)
 	if err != nil {
 		return err
 	}
@@ -153,9 +180,5 @@ func runSana(ctx context.Context, r sanaRun) error {
 		f.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "%s: %s in all\n", r.out, console.Duration(time.Since(t0)))
-	return nil
+	return f.Close()
 }

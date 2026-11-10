@@ -214,10 +214,12 @@ func pixel(v float32) uint8 {
 	return uint8(math.Round(x))
 }
 
-// Decode releases the DiT and decodes latents with the export's VAE.
+// Decode releases the DiT (unless KeepDiT) and decodes latents with the export's VAE.
 func (p *Pipeline) Decode(ctx context.Context, latents []float32) (*image.RGBA, error) {
-	if err := p.eng.closeDiT(); err != nil {
-		return nil, err
+	if !p.KeepDiT {
+		if err := p.eng.closeDiT(); err != nil {
+			return nil, err
+		}
 	}
 	return p.eng.decode(ctx, latents, p.Stage)
 }
