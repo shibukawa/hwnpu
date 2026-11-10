@@ -15,6 +15,8 @@ CPU 内蔵の NPU を cgo なしで Go から使うためのライブラリで�
 
 用途と機械のメモリの量ごとのおすすめのモデルは [MODEL.ja.md](MODEL.ja.md)（[English](MODEL.md)）に、各 NPU が扱えるデータ形式とモデルの用意の仕方は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)（[English](MODEL_ARCHITECTURE.md)）にあります。
 
+クラウドの AI API (Google Cloud、AWS、Azure、OpenAI) の機能のどれを hwnpu が代わりに受け持てるか、NPU ごとの対応状況とまだない機能は [CLOUD_AI_COMPATIBILITY.ja.md](CLOUD_AI_COMPATIBILITY.ja.md)（[English](CLOUD_AI_COMPATIBILITY.md)）にあります。
+
 導入手順は、Apple が [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md)（[English](INSTALL_APPLE.md)）、Intel が [INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)（[English](INSTALL_INTEL.md)）、AMD が [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)（[English](INSTALL_AMD.md)）にあります。
 
 設計は [docs/design.md](docs/design.md) にあります。
