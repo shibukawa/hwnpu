@@ -3699,3 +3699,14 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
   - 子は 1 本ごとに `npuprobe-progress` の行で結果を出し、親は子が落ちてもそこまでの分を報告に残す (crashed)。各段階 (読み込み、実行、閉じる) を stderr に書き、落ちた段階がエラーの最後の行に出る
   - `-resident-run=false` は実行せずに読むだけ。スクリプトの `resident-load-only` (standard) で、実行で落ちるのか読み込みで落ちるのかを分ける
   - メモリ不足がエラーでなくプロセスの異常終了になるなら、16.143 の Anima の読み直し (エラーを受けて閉じる) は効かない。そのときは、落ちる前の合計より手前で自分から閉じる (上限を決めておく) 形が要る
+
+### 16.145 `probe resident` で、エラーにならない追い出しも見る (順に回す時間、Neural Engine のメモリ) — 2026-11-10
+
+- 動機: M2 (16 GB、macOS 27.2) で `probe resident` が、開いたままでも閉じても 0.23 GiB × 42 本 (9.52 GiB) まで失敗なしで `-resident-max-gb` に達した。M4 と Intel (Core Ultra 5 135U) も 16 GB までエラーなし。ただし Apple では、Core ML は載りきらないものをエラーなしで追い出し、次の呼び出しで載せ直す。M1 の境目 (順に回す部分が約 2.9 GiB を超えると 12 倍遅い、16.118) はエラーでなく遅さで出た。16.144 の作りでは、実行は読み込んだ直後の 1 回 (載っていて当然、M2 で 0.008 s 一定) と、最後の全部の 1 回の成否だけで、追い出しが見えない。`held` も重みの足し算で、実際に持っている量ではない。M2 は読み込みが 1 本 1.8〜5.3 秒で、中身の違う合成プログラムは毎回 Neural Engine 向けにコンパイルされていた
+- 変更 (`cmd/hwnpu-dev/probe/resident.go`):
+  - `-resident-cycle` (既定、開いたままのときだけ): 各読み込みの後に、持っている全部を順に 2 周実行し、2 周目の 1 回の平均と最長を記録する (`cycle_ms`、`cycle_max_ms`)。それまでの最速の平均 (`base_ms`) の 2 倍を超え、かつ 0.5 ms 以上遅ければ遅い (`slow`)。遅くなる前の最大の合計を `fast_bytes`、最初に遅かった合計を `slow_bytes` に。3 回続けて遅ければ順に回すのはやめ (毎回全部の載せ直しになるため)、読み込みは続ける
+  - Apple では、最初の読み込みの前からの Neural Engine のドライバの wired メモリの増えた量 (`mem.NPUWired`) を、各読み込みと順に回した後に記録する (`npu_bytes`)
+  - `-resident-size` はカンマ区切りで複数 (Intel の確認スクリプトに `resident-large`: Anima の DiT の群と text の大きさの 0.57,1.2、開いたまま、8 GiB まで)。Intel で 0.23 GiB を 16 GB まで積めたので、Anima の 4.6 GB での失敗は合計でなく、1 本の大きさか本物のグラフの形によるかを分ける
+  - 報告の表に「full speed in turn」「slower from」、各読み込みに「in turn, ms a call」「slowest ms」「Neural Engine」の列
+- テスト: `TestResidentCycle` (エラーを出さず、最後に回した 4 本だけを速く持つ偽の NPU で、4 本まで速く 5 本から遅い、7 本の後は順に回さない、Neural Engine の量)。既存の偽の NPU (呼び出しは一瞬) では遅くならないことも確かめる
+- 確かめていないこと: 実機。M1 で 2.9 GiB あたりの `slower from` が出れば測り方が正しい。M2 と M4 の境目、Neural Engine の量が重みの足し算とどこで離れるか

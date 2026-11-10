@@ -15,7 +15,7 @@
     quick     system information, hwnpu-dev info, hwnpu-dev report, a small LFM3-1.7B chat (about 30 min)
     standard  + LFM3-1.7B with its defaults, the same again from the compile cache, hwnpu-chat agent,
               hwnpu-dev formats, PLaMo 3 Translate 0.8B, PLaMo-Embedding-1B, Gemma 4 E2B, what the NPU holds at once
-              (hwnpu-dev probe resident), Anima 512 x 512 in fp16 and int8
+              (hwnpu-dev probe resident, also with programs the size of Anima's), Anima 512 x 512 in fp16 and int8
               (default; a few hours, about 25 GB of downloads the first time)
     full      + report with power policies low and performance, LFM3-VL-2B with an image,
               LFM3-Audio-2B with a clip, Qwen3.5-0.8B, PLaMo 3 Translate 2B, Anima 1024 x 1024, resident in int8,
@@ -290,6 +290,9 @@ $Tests = @(
   (T @{ Name = "resident-load-only"; Level = 1; Exe = "hwnpu-dev"; Sub = "probe"; Min = 45
         Args = @("resident", "-resident-run=false", "-resident-hold", "open", "-resident-max-gb", "8", "-o", "{OUT}\resident-load-only.md")
         Note = "the same held open without running any: tells a crash (0xc0000005) in running from one in loading" }),
+  (T @{ Name = "resident-large"; Level = 1; Exe = "hwnpu-dev"; Sub = "probe"; Min = 60
+        Args = @("resident", "-resident-size", "0.57,1.2", "-resident-hold", "open", "-resident-max-gb", "8", "-o", "{OUT}\resident-large.md")
+        Note = "the same held open with programs the size of Anima's DiT groups (0.57 GB) and text encoder (1.2 GB): does the limit come with larger graphs" }),
   (T @{ Name = "image-512"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 180
         Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "-o", "{OUT}\anima-512.png", $Anima)
         Note = "Anima-Turbo 512 x 512, 8 steps: downloads, converts to OpenVINO IR (fp16), draws" }),
