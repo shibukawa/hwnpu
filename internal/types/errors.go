@@ -55,6 +55,17 @@ func (e *DriverError) Error() string {
 	return fmt.Sprintf("hwnpu %s: %s: %s (code %#x)", e.Backend, e.Op, e.Msg, e.Code)
 }
 
+// IsOutOfMemory reports whether err is a driver running out of the memory a graph is loaded into
+// (Level Zero's ERROR_OUT_OF_HOST_MEMORY or ERROR_OUT_OF_DEVICE_MEMORY): one that may load once
+// other graphs are closed.
+func IsOutOfMemory(err error) bool {
+	var d *DriverError
+	if errors.As(err, &d) {
+		return d.Code == 0x70000002 || d.Code == 0x70000003
+	}
+	return err != nil && (strings.Contains(err.Error(), "OUT_OF_HOST_MEMORY") || strings.Contains(err.Error(), "OUT_OF_DEVICE_MEMORY"))
+}
+
 // BuildError is a failed graph compilation with the compiler log.
 type BuildError struct {
 	Log string

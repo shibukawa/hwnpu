@@ -33,8 +33,49 @@ func machine() (cpu, model, osVersion string, ram int64) {
 	return os.Getenv("PROCESSOR_IDENTIFIER"), "", osVersion, ram
 }
 
-// maxRSS is not measured on Windows.
-func maxRSS() int64 { return 0 }
+// processMemoryCountersEx is PROCESS_MEMORY_COUNTERS_EX.
+type processMemoryCountersEx struct {
+	cb                         uint32
+	pageFaultCount             uint32
+	peakWorkingSetSize         uintptr
+	workingSetSize             uintptr
+	quotaPeakPagedPoolUsage    uintptr
+	quotaPagedPoolUsage        uintptr
+	quotaPeakNonPagedPoolUsage uintptr
+	quotaNonPagedPoolUsage     uintptr
+	pagefileUsage              uintptr
+	peakPagefileUsage          uintptr
+	privateUsage               uintptr
+}
+
+func processMemory() (processMemoryCountersEx, bool) {
+	var c processMemoryCountersEx
+	c.cb = uint32(unsafe.Sizeof(c))
+	h, err := syscall.GetCurrentProcess()
+	if err != nil {
+		return c, false
+	}
+	proc := syscall.NewLazyDLL("kernel32.dll").NewProc("K32GetProcessMemoryInfo")
+	r, _, _ := proc.Call(uintptr(h), uintptr(unsafe.Pointer(&c)), uintptr(c.cb))
+	return c, r != 0
+}
+
+// maxRSS is the peak working set on Windows.
+func maxRSS() int64 {
+	if c, ok := processMemory(); ok {
+		return int64(c.peakWorkingSetSize)
+	}
+	return 0
+}
+
+// privateBytes is the process's committed private memory now (where the NPU driver's copies of
+// the graphs show on Windows).
+func privateBytes() int64 {
+	if c, ok := processMemory(); ok {
+		return int64(c.privateUsage)
+	}
+	return 0
+}
 
 func cpuTime() time.Duration {
 	var c, e, k, u syscall.Filetime

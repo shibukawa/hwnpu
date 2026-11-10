@@ -17,6 +17,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/ovcpu"
+	"github.com/shibukawa/hwnpu/internal/types"
 )
 
 // ProgramKind is the kind of manifest.json of an export of hwnpu-image convert.
@@ -78,18 +79,121 @@ func WriteProgramManifest(dir string, m *ProgramManifest) error {
 
 // progEngine runs the programs of internal/imagegen/anima/mil, each a runner.Program (on the
 // Neural Engine or Intel's NPU, or the CPU interpreter): they take and give float32.
+//
+// The programs stay loaded while they fit. When one does not load for want of the memory graphs
+// are loaded into (Intel's NPU: ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's fp16 on a
+// Core Ultra 5 135U), others are closed until it does (get): first the text encoder, which runs
+// once a prompt, then the DiT's groups the most recently used first, so that of groups that run
+// in the same order every step, those that fit stay and one place takes the others in turn.
 type progEngine struct {
 	dit                     DitConfig
-	textP, time, patch, fin runner.Program
-	blocks                  []runner.Program
+	textP, time, patch, fin *slot
+	blocks                  []*slot
 	// vae is the VAE's stages; each is loaded only while it runs (at 1024 x 1024 their
 	// working memory is a few GB, as AMD's stages, 16.72)
 	vae      []string
 	open     func(ctx context.Context, name string, show bool) (runner.Program, error)
+	log      io.Writer
 	cond     []float32
 	textRows int
 	// timeRows is the rows the time part takes (mil.TimeRows; 1 in earlier exports).
 	timeRows int
+
+	tick     int64 // counts the uses, for slot.used
+	unloaded int   // programs closed for memory, to tell once
+}
+
+// slot is a program that may be closed for memory and loaded again.
+type slot struct {
+	name  string
+	kind  slotKind
+	p     runner.Program
+	used  int64 // e.tick at its last use
+	shown bool  // its loading was shown
+}
+
+type slotKind int
+
+const (
+	slotSmall slotKind = iota // the time, the patch and the final layer: kept
+	slotText                  // closed first: it runs once a prompt
+	slotBlock                 // a group of the DiT's blocks
+	slotStage                 // a stage of the VAE, closed after it runs
+)
+
+// get returns s's program, loading it when it is not loaded. A load that fails for memory closes
+// another program (victim) and tries again.
+func (e *progEngine) get(ctx context.Context, s *slot) (runner.Program, error) {
+	e.tick++
+	s.used = e.tick
+	if s.p != nil {
+		return s.p, nil
+	}
+	for retried := false; ; retried = true {
+		p, err := e.open(ctx, s.name, !s.shown)
+		s.shown = true
+		if err == nil {
+			if retried && e.log != nil {
+				fmt.Fprintf(e.log, "  %s loaded\n", s.name)
+			}
+			s.p = p
+			return p, nil
+		}
+		if !types.IsOutOfMemory(err) {
+			return nil, err
+		}
+		v := e.victim(s)
+		if v == nil {
+			return nil, fmt.Errorf("%w (no other program loaded to make room)", err)
+		}
+		if e.log != nil {
+			fmt.Fprintf(e.log, "  the NPU's memory is full loading %s: %s unloaded, loaded again when it runs\n", s.name, v.name)
+		}
+		e.unloaded++
+		v.p.Close()
+		v.p = nil
+	}
+}
+
+// victim is the loaded program to close to make room for s: the text encoder, else the DiT's
+// group used last, else the small part used last; nil when none is loaded.
+func (e *progEngine) victim(s *slot) *slot {
+	var best *slot
+	rank := func(k slotKind) int {
+		switch k {
+		case slotText:
+			return 2
+		case slotBlock:
+			return 1
+		}
+		return 0
+	}
+	for _, c := range e.slots() {
+		if c == s || c.p == nil || c.kind == slotStage {
+			continue
+		}
+		if best == nil || rank(c.kind) > rank(best.kind) || (rank(c.kind) == rank(best.kind) && c.used > best.used) {
+			best = c
+		}
+	}
+	return best
+}
+
+func (e *progEngine) slots() []*slot {
+	out := []*slot{e.textP, e.time, e.fin}
+	if e.patch != nil {
+		out = append(out, e.patch)
+	}
+	return append(out, e.blocks...)
+}
+
+// run gets s's program and runs it.
+func (e *progEngine) run(ctx context.Context, s *slot, in map[string][]float32) ([]float32, error) {
+	p, err := e.get(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	return p.Run(ctx, in)
 }
 
 const (
@@ -106,7 +210,7 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Wri
 	}
 	dc = DitConfig{Width: m.Width, Height: m.Height, Hidden: 2048, Layers: 28, TextDim: progHidden, TextTokens: progRows,
 		LatentChannels: 16, Patch: 2, VAEScale: 8, Group: 28 / max(1, len(m.Blocks))}
-	e := &progEngine{dit: dc, textRows: progRows}
+	e := &progEngine{dit: dc, textRows: progRows, log: log}
 	// the programs in the order they load, for "[3/19]"
 	total := 3 + len(m.Blocks) + len(m.Vae)
 	if m.Patch != "" {
@@ -147,37 +251,38 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Wri
 		e.close()
 		return nil, dc, tc, err
 	}
-	for _, x := range []struct {
-		p    *runner.Program
-		name string
-	}{{&e.textP, m.Text}, {&e.time, m.Time}, {&e.fin, m.Final}} {
-		if *x.p, err = open(ctx, x.name, true); err != nil {
-			return fail(err)
-		}
-	}
+	e.open = open
+	e.textP = &slot{name: m.Text, kind: slotText}
+	e.time = &slot{name: m.Time, kind: slotSmall}
+	e.fin = &slot{name: m.Final, kind: slotSmall}
 	if m.Patch != "" {
-		if e.patch, err = open(ctx, m.Patch, true); err != nil {
-			return fail(err)
-		}
+		e.patch = &slot{name: m.Patch, kind: slotSmall}
 	}
 	e.timeRows = max(1, m.TimeRows)
 	for _, name := range m.Blocks {
-		p, err := open(ctx, name, true)
-		if err != nil {
+		e.blocks = append(e.blocks, &slot{name: name, kind: slotBlock})
+	}
+	// everything is loaded now (and compiled into the cache the first time), so that a program
+	// that does not run on the NPU fails here and not after the denoising; one that does not fit
+	// beside the others closes some of them (get)
+	for _, s := range e.slots() {
+		if _, err := e.get(ctx, s); err != nil {
 			return fail(err)
 		}
-		e.blocks = append(e.blocks, p)
 	}
-	// the stages are checked (and compiled into the cache) now, so that a stage that does not
-	// run on the NPU fails here and not after the denoising; Decode loads them again
+	if e.unloaded > 0 && log != nil {
+		fmt.Fprintf(log, "  not all the programs fit on the NPU at once: %d were unloaded and load again as they run (an int8 export, --dit-format int8 --text-format int8, needs half the memory)\n", e.unloaded)
+	}
+	// the stages too; decode loads them again
 	for _, name := range m.Vae {
-		p, err := open(ctx, name, true)
+		s := &slot{name: name, kind: slotStage}
+		p, err := e.get(ctx, s)
 		if err != nil {
 			return fail(err)
 		}
 		p.Close()
 	}
-	e.vae, e.open = m.Vae, open
+	e.vae = m.Vae
 	return e, dc, tc, nil
 }
 
@@ -208,9 +313,10 @@ func openProgram(ctx context.Context, dev *hwnpu.Device, dir, backend, name stri
 
 func (e *progEngine) close() error {
 	var errs []error
-	for _, p := range append([]runner.Program{e.textP, e.time, e.patch, e.fin}, e.blocks...) {
-		if p != nil {
-			errs = append(errs, p.Close())
+	for _, s := range e.slots() {
+		if s != nil && s.p != nil {
+			errs = append(errs, s.p.Close())
+			s.p = nil
 		}
 	}
 	return errors.Join(errs...)
@@ -226,7 +332,7 @@ func bias(n, rows int) []float32 {
 }
 
 func (e *progEngine) text(ctx context.Context, qx, tx []float32, nq, nt int) ([]float32, error) {
-	return e.textP.Run(ctx, map[string][]float32{"qx": qx, "tx": tx, "qbias": bias(nq, e.textRows), "tbias": bias(nt, e.textRows)})
+	return e.run(ctx, e.textP, map[string][]float32{"qx": qx, "tx": tx, "qbias": bias(nq, e.textRows), "tbias": bias(nt, e.textRows)})
 }
 
 func (e *progEngine) setCond(cond []float32) error {
@@ -238,23 +344,23 @@ func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32) ([]
 	// the step's sinusoid in row 0, zeros in the rest; its embedding is row 0 of the output
 	tx := make([]float32, e.timeRows*len(tproj))
 	copy(tx, tproj)
-	t, err := e.time.Run(ctx, map[string][]float32{"x": tx})
+	t, err := e.run(ctx, e.time, map[string][]float32{"x": tx})
 	if err != nil {
 		return nil, fmt.Errorf("time: %w", err)
 	}
 	t = t[:len(t)/e.timeRows]
 	x := patches // the first group embeds them
 	if e.patch != nil {
-		if x, err = e.patch.Run(ctx, map[string][]float32{"x": patches}); err != nil {
+		if x, err = e.run(ctx, e.patch, map[string][]float32{"x": patches}); err != nil {
 			return nil, fmt.Errorf("patch: %w", err)
 		}
 	}
 	for i, b := range e.blocks {
-		if x, err = b.Run(ctx, map[string][]float32{"x": x, "t": t, "ctx": e.cond}); err != nil {
+		if x, err = e.run(ctx, b, map[string][]float32{"x": x, "t": t, "ctx": e.cond}); err != nil {
 			return nil, fmt.Errorf("blocks group %d: %w", i, err)
 		}
 	}
-	return e.fin.Run(ctx, map[string][]float32{"x": x, "t": t})
+	return e.run(ctx, e.fin, map[string][]float32{"x": x, "t": t})
 }
 
 func (e *progEngine) hasVAE() bool { return len(e.vae) > 0 }
@@ -264,7 +370,7 @@ func (e *progEngine) decode(ctx context.Context, latents []float32, stage StageF
 	x := latents
 	for i, name := range e.vae {
 		t0 := time.Now()
-		s, err := e.open(ctx, name, false)
+		s, err := e.get(ctx, &slot{name: name, kind: slotStage, shown: true})
 		if err != nil {
 			return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)
 		}

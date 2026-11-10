@@ -21,8 +21,18 @@ import (
 
 const childMode, childMark = "_measure", "npuprobe-result "
 
+// progressMark starts a line a child prints as it goes (resident), so that what it measured
+// before dying in the driver (0xc0000005 on Intel) is not lost.
+const progressMark = "npuprobe-progress "
+
+// progress prints one record of the child's progress at once.
+func progress(kind string, v any) {
+	b, _ := json.Marshal(v)
+	fmt.Fprintf(os.Stdout, "\n%s%s %s\n", progressMark, kind, b)
+}
+
 type childSpec struct {
-	Kind       string        `json:"kind"` // try, several, split, chain, kv, attn, seam or cache
+	Kind       string        `json:"kind"` // try, several, split, chain, kv, attn, seam, cache or resident
 	Backend    string        `json:"backend"`
 	DeviceID   string        `json:"device_id"`
 	Format     string        `json:"format"`
@@ -72,6 +82,12 @@ func (p *prober) child(spec childSpec, out any) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
+	p.progress = nil
+	for _, line := range strings.Split(string(stdout), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), progressMark); ok {
+			p.progress = append(p.progress, rest)
+		}
+	}
 	for _, line := range strings.Split(string(stdout), "\n") {
 		if rest, ok := strings.CutPrefix(line, childMark); ok {
 			if json.Unmarshal([]byte(rest), out) == nil {
@@ -159,6 +175,8 @@ func runChild(arg string) error {
 		rs = p.attn(spec.Layout, spec.Layers, max(spec.Tokens, 1), spec.N, spec.Used)
 	case "seam":
 		rs = p.seam(spec.Format, spec.Layers, spec.AttnLayers, max(spec.Tokens, 1), spec.Layout, spec.N, spec.Used)
+	case "resident":
+		rs = p.resident(spec.Format, spec.Layers, spec.Layout, spec.N, !spec.Quick)
 	case "cache":
 		rs = p.cacheLoads(spec.Format, spec.Layers, spec.Paths, spec.Layout, spec.N)
 	case "chain":
