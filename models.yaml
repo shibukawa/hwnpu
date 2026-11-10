@@ -280,8 +280,8 @@ models:
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
   # hwnpu-image generate: on AMD's NPU the export ~/models/NAME.amd-npu2 (or NAME-1024.amd-npu2,
-  # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's and Intel's NPU Anima is
-  # downloaded and converted on its first run (Sana runs on AMD's NPU only)
+  # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's NPU Anima and Sana, on
+  # Intel's Anima, are downloaded and converted on their first run
   Anima-Turbo:
     family: anima
     tag: turbo
@@ -298,38 +298,39 @@ models:
     kind: image
     from: hf:Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers
     machine: 8
-    memory: 2.3
+    memory: {amd: 2.3, apple: 3.3}
     bytes: 7.7e9
-    about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU"
+    about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU and Apple's Neural Engine"
   Sana-Sprint-1.6B:
     family: sana
     tag: 1.6b
     kind: image
     from: hf:Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers
     machine: 16
-    memory: 2.3
+    memory: {amd: 2.3, apple: 3.1}
     bytes: 9.7e9
-    about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's NPU"
+    about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's and Apple's NPU"
   Sana-600M:
     family: sana-full
     tag: 0.6b
     kind: image
     from: hf:Efficient-Large-Model/Sana_600M_1024px_diffusers
     machine: 8
-    memory: 2.3
+    memory: {amd: 2.3, apple: 3.3}
     bytes: 8.9e9
-    about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's NPU"
+    about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's and Apple's NPU"
   SANA1.5-1.6B:
     family: sana-full
     tag: 1.6b
     kind: image
     from: hf:Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers
     machine: 16
-    memory: 2.3
+    memory: {amd: 2.3, apple: 3.1}
     bytes: 9.7e9
-    about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's NPU"
-  # hwnpu-image depth: the export ~/models/NAME.amd-npu2 (lower case) of tools/amd/iron_da3.py or
-  # iron_moge.py, AMD's NPU
+    about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's and Apple's NPU"
+  # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
+  # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
+  # converted when a picture first takes it
   DA3MONO-LARGE:
     family: da3
     tag: mono-large

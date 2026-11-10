@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -39,22 +40,34 @@ func (f convertFlags) options() anima.ConvertOptions {
 		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}
 }
 
-// ConvertCmd is "hwnpu-image convert": an Anima directory into a Core ML or OpenVINO export.
+// ConvertCmd is "hwnpu-image convert": an Anima directory into a Core ML or OpenVINO export, or
+// a Sana repository into a Core ML export.
 type ConvertCmd struct {
-	Anima string `arg:"" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/)."`
+	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/), or a Sana repository of Efficient-Large-Model (transformer/, vae/, scheduler/)."`
 	Model string `short:"m" required:"" type:"path" placeholder:"EXPORT" help:"The export to write."`
+	Text  string `type:"existingdir" placeholder:"DIR" help:"Sana: the directory of Gemma 2's text_encoder/ and tokenizer/ (default: the repository)."`
 	convertFlags
 }
 
 // Run converts the checkpoint.
 func (c *ConvertCmd) Run() error {
-	o := c.options()
-	o.Backend = cmp.Or(o.Backend, llm.BackendCoreML)
-	text, dit := anima.Formats(o.Backend)
-	o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
 	t0 := time.Now()
-	if err := anima.Convert(c.Anima, c.Model, o, console.Log(os.Stderr)); err != nil {
-		return err
+	if isDir(filepath.Join(c.Anima, "transformer")) {
+		if c.Backend != "" && c.Backend != llm.BackendCoreML {
+			return fmt.Errorf("Sana converts for coreml only (--backend %s)", c.Backend)
+		}
+		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+		if err := sana.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
+			return err
+		}
+	} else {
+		o := c.options()
+		o.Backend = cmp.Or(o.Backend, llm.BackendCoreML)
+		text, dit := anima.Formats(o.Backend)
+		o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
+		if err := anima.Convert(c.Anima, c.Model, o, console.Log(os.Stderr)); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(os.Stderr, "%s: converted in %s\n", c.Model, console.Duration(time.Since(t0)))
 	return nil
@@ -62,30 +75,41 @@ func (c *ConvertCmd) Run() error {
 
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima, Sana or Sana-Sprint.
 type GenerateCmd struct {
-	Prompt   string  `arg:"" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English)."`
-	Model    string  `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (anima, sana, sana:1.6b, sana-full; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's and Intel's Anima is downloaded and converted into --dir on its first run."`
-	Dir      string  `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir): Anima's checkpoint and exports in Anima/."`
-	Out      string  `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer)."`
-	Steps    int     `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Sana-Sprint 2, 1 to 4; Sana 20)."`
-	Negative string  `help:"Sana: the negative prompt of the classifier-free guidance (default empty)."`
-	Guidance float64 `placeholder:"SCALE" help:"Sana: the guidance scale (default 4.5; Sana-Sprint embeds it, Sana runs classifier-free guidance)."`
-	Shift    float64 `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
-	Seed     uint64  `placeholder:"N" help:"The noise's seed (0: from the time)."`
-	Noise    string  `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana-Sprint: steps+1 of (32, H/32, W/32))."`
-	Latents  string  `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
-	Cache    string  `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
-	CPU      bool    `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU."`
-	Resident bool    `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
-	Dump     string  `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py or ref_sana.py."`
+	Prompts  []string `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana takes several: a picture each, the model loaded once."`
+	Model    string   `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (anima, sana, sana:1.6b, sana-full; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's (Anima and Sana) and Intel's (Anima) the model is downloaded and converted into --dir on its first run."`
+	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir): the checkpoints and exports in Anima/ and Sana/."`
+	Out      string   `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
+	KeepDiT  bool     `name:"keep-dit" default:"true" negatable:"" help:"Sana on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (Gemma 2 and the VAE are loaded for each)."`
+	Steps    int      `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Sana-Sprint 2, 1 to 4; Sana 20)."`
+	Negative string   `help:"Sana: the negative prompt of the classifier-free guidance (default empty)."`
+	Guidance float64  `placeholder:"SCALE" help:"Sana: the guidance scale (default 4.5; Sana-Sprint embeds it, Sana runs classifier-free guidance)."`
+	Shift    float64  `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
+	Seed     uint64   `placeholder:"N" help:"The noise's seed (0: from the time)."`
+	Noise    string   `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana-Sprint: steps+1 of (32, H/32, W/32))."`
+	Latents  string   `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
+	Cache    string   `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
+	CPU      bool     `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU."`
+	Resident bool     `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
+	Dump     string   `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py or ref_sana.py."`
 	convertFlags
 }
 
 // Run draws the picture into --out, or into a new image.png here which it then shows.
 func (c *GenerateCmd) Run(ctx context.Context) error {
 	show := c.Out == ""
-	if show {
-		c.Out = freeName("image.png")
+	var outs []string
+	for i := range c.Prompts {
+		switch {
+		case show:
+			outs = append(outs, freeName("image.png", outs...))
+		case len(c.Prompts) == 1:
+			outs = append(outs, c.Out)
+		default:
+			ext := filepath.Ext(c.Out)
+			outs = append(outs, fmt.Sprintf("%s-%d%s", strings.TrimSuffix(c.Out, ext), i+1, ext))
+		}
 	}
+	c.Out = outs[0]
 	model := expandHome(c.Model)
 	isAnima := false
 	if !isPath(c.Model) {
@@ -94,8 +118,8 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 			return err
 		}
 		model, isAnima = "", m.Family == "anima"
-		if !isAnima { // Sana: AMD's NPU only
-			if model, err = amdExport(m, "tools/amd/iron_sana.py"); err != nil {
+		if !isAnima {
+			if model, err = c.sanaModel(ctx, m); err != nil {
 				return err
 			}
 		} else if model, err = c.animaModel(ctx, m); err != nil {
@@ -104,17 +128,44 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	}
 	var err error
 	if sana.IsExport(model) {
-		err = runSana(ctx, sanaRun{model: model, prompt: c.Prompt, negative: c.Negative, out: c.Out, noise: c.Noise, latents: c.Latents,
-			steps: c.Steps, guidance: c.Guidance, seed: c.Seed, resident: c.Resident, dump: c.Dump})
+		err = runSana(ctx, sanaRun{model: model, prompts: c.Prompts, outs: outs, keepDiT: c.KeepDiT, negative: c.Negative, noise: c.Noise, latents: c.Latents,
+			steps: c.Steps, guidance: c.Guidance, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache})
+	} else if len(c.Prompts) > 1 {
+		err = errors.New("Anima takes one prompt")
 	} else {
 		err = c.anima(ctx, model)
 	}
 	if err == nil && show {
-		if e := openFile(c.Out); e != nil {
-			fmt.Fprintf(os.Stderr, "%s: not shown (%v)\n", c.Out, e)
+		for _, o := range outs {
+			if e := openFile(o); e != nil {
+				fmt.Fprintf(os.Stderr, "%s: not shown (%v)\n", o, e)
+			}
 		}
 	}
 	return err
+}
+
+// sanaModel is the Sana export m runs here: on Apple's Neural Engine (or with --cpu) the Core ML
+// export of --dir, downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2
+// of tools/amd/iron_sana.py.
+func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, error) {
+	format, err := llm.ProgramFormat(ctx, c.Backend)
+	switch {
+	case c.CPU || err == nil && format == llm.BackendCoreML:
+	case err == nil:
+		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
+	default:
+		return amdExport(m, "tools/amd/iron_sana.py")
+	}
+	if c.Size%32 != 0 {
+		return "", fmt.Errorf("--size %d: Sana's pictures are multiples of 32 pixels", c.Size)
+	}
+	o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group}
+	if c.TextFormat != "" || c.DitFormat != "" {
+		o.TextFormat, o.DitFormat = c.TextFormat, c.DitFormat
+	}
+	return sana.Prepare(ctx, sana.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Sana"), Repo: m.Repo, Name: m.Name,
+		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 
 // animaModel is the Anima export m runs here: on AMD's NPU (no Apple or Intel NPU found, no
@@ -166,12 +217,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	var dev *hwnpu.Device
 	if !c.CPU {
 		var opts []hwnpu.Option
-		if cacheDir == "" {
-			if d, err := os.UserCacheDir(); err == nil {
-				cacheDir = filepath.Join(d, "hwnpu")
-			}
-		}
-		if cacheDir != "" && cacheDir != "-" {
+		if cacheDir = cacheDirOf(cacheDir); cacheDir != "" {
 			// without it, Core ML compiles each package to a new temporary path and the Neural
 			// Engine's compiled bundles are never reused: every start compiled the whole DiT
 			// again (118 s at 512 x 512 on M3)
@@ -199,7 +245,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	p.Dump = c.Dump
 	logf("loaded %s (%dx%d) in %s", filepath.Base(model), p.Dit.Width, p.Dit.Height, console.Duration(time.Since(t0)))
 
-	cond, err := p.Encode(ctx, c.Prompt)
+	cond, err := p.Encode(ctx, c.Prompts[0])
 	if err != nil {
 		return err
 	}
@@ -263,6 +309,21 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	}
 	fmt.Fprintf(os.Stderr, "%s: %s in all\n", c.Out, console.Duration(time.Since(t0)))
 	return nil
+}
+
+// cacheDirOf is the compile cache of --cache: the user cache directory's hwnpu by default, "" for
+// "-".
+func cacheDirOf(flag string) string {
+	switch flag {
+	case "-":
+		return ""
+	case "":
+		if d, err := os.UserCacheDir(); err == nil {
+			return filepath.Join(d, "hwnpu")
+		}
+		return ""
+	}
+	return flag
 }
 
 func readF32(path string) ([]float32, error) {

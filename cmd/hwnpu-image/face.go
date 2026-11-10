@@ -16,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/vision/face"
 )
 
@@ -121,14 +122,31 @@ func (c *FaceDetectCmd) open(ctx context.Context, logf func(string, ...any)) (*f
 	if err != nil {
 		return nil, err
 	}
-	if device == "npu" && vendor != "amd" {
-		// only AMD's NPU has YuNet's graph (iron_yunet.py) yet
+	if device == "npu" && vendor != "amd" && vendor != "apple" {
+		// AMD's NPU has YuNet's graph (iron_yunet.py), Apple's the ONNX graph as Core ML
 		if c.Device == "npu" {
-			return nil, fmt.Errorf("%s runs on AMD's NPU only (this machine's NPU: %s); --device cpu runs it on the CPU", m.Name, orNone(vendor))
+			return nil, fmt.Errorf("%s runs on AMD's and Apple's NPU (this machine's NPU: %s); --device cpu runs it on the CPU", m.Name, orNone(vendor))
 		}
 		device, why = "cpu", fmt.Sprintf("no %s graph for this NPU (%s)", m.Name, orNone(vendor))
 	}
 	logf("%s on the %s (%s)", m.Name, device, why)
+	if device == "npu" && vendor == "apple" {
+		path, err := faceONNX(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+		dev, _, err := llm.OpenDevice(ctx, llm.BackendCoreML, cacheDirOf(""), hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		if err != nil {
+			return nil, err
+		}
+		d, err := face.OpenProgram(ctx, dev, path, filepath.Dir(path))
+		if err != nil {
+			dev.Close()
+			return nil, err
+		}
+		d.OnClose = func() { dev.Close() }
+		return d, nil
+	}
 	if device == "cpu" {
 		path, err := faceONNX(ctx, m)
 		if err != nil {

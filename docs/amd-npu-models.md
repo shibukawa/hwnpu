@@ -704,7 +704,7 @@ Sana はプロンプトの前に毎回同じ指示文 (diffusers の complex_hum
 
 - VAE は約 6.3 秒 (1 枚の時間の半分、14.7)。低い解像度の EfficientViT の段 (0〜3) が計 2.1 秒、1024² の ResBlock 3 つが 1.4 秒。EfficientViT の線形注意は、ヘッドごとのブロック対角の積を、全部のヘッドの密な行列積とマスクで計算していて、要る計算の H 倍 (64² で 32 倍) をしている。深さ方向の畳み込みは要素ごとの掛け算と足し算 (5 × 5 で 49 回) で、IRON の `axpy` は係数がスカラーだけなので 1 回にできない
 - 書き出しは 1 つの大きさ。大きさごとに書き出す (`hwnpu-image generate --model` はその書き出しの大きさで描く)
-- Mac と Intel (Core ML、OpenVINO) は未対応
+- Mac は 4 つの Sana を Core ML で (design.md 16.145)。Intel (OpenVINO) は未対応
 - Sana 1600M (1.0) は Sana 600M と同じ VAE 1.0、1.6B の DiT で、同じ手順で書き出せるはず (確かめていない)
 
 ## 15. 深度推定: Depth Anything 3 (`hwnpu-image depth`、2026-11-09)

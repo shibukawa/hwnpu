@@ -2,6 +2,8 @@ package coreml
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ebitengine/purego/objc"
@@ -11,12 +13,29 @@ import (
 
 const planMethod = "coreml-compute-plan"
 
+// planTimeout is how long the compute plan may take. A plan takes as long as loading the model;
+// on an M1 whose Neural Engine another process is compiling for, Gemma 2's programs of 470 MB
+// for Sana took over 2 minutes where they took 13 s alone (design.md 16.145).
+const planTimeout = 10 * time.Minute
+
 type planResult struct{ plan, err objc.ID }
 
 // computePlacement loads an MLComputePlan (macOS 14.4+) for the compiled model and lists the
 // ML Program operations whose preferred device is not the Neural Engine.
 // With a function name only that function is walked; otherwise all of them.
+//
+// A plan that fails to load is asked for once more: on an M1 Core ML now and then answers
+// "Failed to construct compute plan, internal failure" for a program whose plan the next try
+// (or the next process) builds (a DiT group of Sana, design.md 16.145).
 func computePlacement(ctx context.Context, compiledURL, config objc.ID, function string) (types.PlacementReport, error) {
+	rep, err := computePlacementOnce(ctx, compiledURL, config, function)
+	if err == nil && !rep.Verified && strings.Contains(rep.Reason, "load compute plan") {
+		rep, err = computePlacementOnce(ctx, compiledURL, config, function)
+	}
+	return rep, err
+}
+
+func computePlacementOnce(ctx context.Context, compiledURL, config objc.ID, function string) (types.PlacementReport, error) {
 	rep := types.PlacementReport{Method: planMethod}
 	if class("MLComputePlan") == 0 {
 		rep.Reason = "MLComputePlan is not available (requires macOS 14.4 or later)"
@@ -39,8 +58,8 @@ func computePlacement(ctx context.Context, compiledURL, config objc.ID, function
 	case <-ctx.Done():
 		go func() { r := <-ch; _ = withPool(func() error { release(r.plan); release(r.err); return nil }) }()
 		return rep, ctx.Err()
-	case <-time.After(2 * time.Minute):
-		rep.Reason = "MLComputePlan did not finish within 2 minutes"
+	case <-time.After(planTimeout):
+		rep.Reason = fmt.Sprintf("MLComputePlan did not finish within %v", planTimeout)
 		return rep, nil
 	}
 
