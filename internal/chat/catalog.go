@@ -74,6 +74,13 @@ type Model struct {
 	// the NPU's vendor (MemoryFor).
 	Memory   float64
 	MemoryBy PerVendor
+	// Run is how hwnpu-chat runs a chat model when its flags do not say (models.yaml's prefill,
+	// format, context and paged), on a machine of Machine GB.
+	Run Run
+	// Variants change Memory and Run on machines of more memory, by the least memory (GB) of each
+	// (models.yaml's variants): On is the model as a machine runs it. Lookup and Catalog have it
+	// as it is; Resolve, ResolveFor and Pick give it On the machine.
+	Variants map[int]Variant
 	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU when its
 	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
 	// NPU has no form of.
@@ -183,10 +190,11 @@ func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, erro
 }
 
 // lookupFor finds a model of the definitions a name means: by its name (or repository), or as
-// a family or a use (Pick, logged), each through the aliases. ok is false for none.
+// a family or a use (Pick, logged), each through the aliases, On the machine. ok is false for
+// none.
 func lookupFor(name string, log io.Writer) (Model, bool, error) {
 	if m, ok := Lookup(name); ok {
-		return Alias(m, log), true, nil
+		return Alias(m, log).On(MachineMemory()), true, nil
 	}
 	m, why, ok, err := Pick(name, MachineMemory())
 	if err != nil || !ok {

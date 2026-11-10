@@ -12,7 +12,7 @@ func parse(t *testing.T, args ...string) (*cli, string) {
 	t.Helper()
 	var c cli
 	p, err := kong.New(&c, kong.Vars{"models_usage": chat.ModelsUsage, "tiers": chat.DefaultTiers,
-		"embed_seqs": ints(chat.DefaultEmbedSeqs), "mtp": chat.MTPAuto, "prefill": chat.PrefillAuto})
+		"embed_seqs": ints(chat.DefaultEmbedSeqs), "mtp": chat.MTPAuto})
 	if err != nil {
 		t.Fatal(err)
 	}

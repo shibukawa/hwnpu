@@ -155,10 +155,17 @@ type modelEntry struct {
 	// With are the other repositories the model reads, by role (detector:
 	// hf:PaddlePaddle/PP-OCRv6_small_det_onnx@REV): each an hf:OWNER/NAME, pinned or not. Their
 	// files' sha256 are under ROLE/FILE.
-	With   *map[string]string `yaml:"with"`
-	About  *string            `yaml:"about"`
-	Like   string             `yaml:"like"`
-	Remove bool               `yaml:"remove"`
+	With *map[string]string `yaml:"with"`
+	// RunEntry is how hwnpu-chat runs a chat model when its flags do not say (prefill, format,
+	// context, paged), on a machine of machine GB.
+	RunEntry `yaml:",inline"`
+	// Variants change memory and how the model runs on machines of more memory, by the least
+	// memory in GB: {16: {memory: 7.6, prefill: auto}}. A file over another changes the
+	// variants it names and keeps the others.
+	Variants *map[int]*variantEntry `yaml:"variants"`
+	About    *string                `yaml:"about"`
+	Like     string                 `yaml:"like"`
+	Remove   bool                   `yaml:"remove"`
 }
 
 type pickEntry struct {
@@ -360,7 +367,17 @@ func merge(dst, src *modelEntry) {
 		maps.Copy(m, *src.Device)
 		defer func() { dst.Device = &m }()
 	}
-	d, s := reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem()
+	if src.Variants != nil && dst.Variants != nil {
+		m := maps.Clone(*dst.Variants)
+		maps.Copy(m, *src.Variants)
+		defer func() { dst.Variants = &m }()
+	}
+	mergeFields(reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem())
+}
+
+// mergeFields sets the fields of the struct d that s gives: pointers that are not nil, strings
+// that are not empty, and those of the structs within (RunEntry).
+func mergeFields(d, s reflect.Value) {
 	for i := range s.NumField() {
 		f := s.Field(i)
 		switch f.Kind() {
@@ -372,6 +389,8 @@ func merge(dst, src *modelEntry) {
 			if f.String() != "" {
 				d.Field(i).Set(f)
 			}
+		case reflect.Struct:
+			mergeFields(d.Field(i), f)
 		}
 	}
 }
@@ -518,7 +537,8 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out := *base
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, File: e.File, With: e.With})
+		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, File: e.File, With: e.With,
+		RunEntry: e.RunEntry, Variants: e.Variants})
 	return &out, nil
 }
 
@@ -609,6 +629,19 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 	}
 	if m.Tag != "" && m.Family == "" {
 		return m, fmt.Errorf("model %s: a tag needs a family", name)
+	}
+	run, err := toRun(e.RunEntry)
+	if err != nil {
+		return m, fmt.Errorf("model %s: %w", name, err)
+	}
+	if !run.zero() && m.Kind != KindChat {
+		return m, fmt.Errorf("model %s: prefill, format, context and paged are for chat models (hwnpu-chat)", name)
+	}
+	m.Run = run
+	if e.Variants != nil {
+		if m.Variants, err = toVariants(m, *e.Variants); err != nil {
+			return m, fmt.Errorf("model %s: %w", name, err)
+		}
 	}
 	return m, nil
 }
