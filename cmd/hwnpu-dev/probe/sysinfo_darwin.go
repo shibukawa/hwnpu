@@ -1,0 +1,37 @@
+package probe
+
+import (
+	"os/exec"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+func sysctl(name string) string {
+	out, _ := exec.Command("sysctl", "-n", name).Output()
+	return strings.TrimSpace(string(out))
+}
+
+func machine() (cpu, model, osVersion string, ram int64) {
+	ram, _ = strconv.ParseInt(sysctl("hw.memsize"), 10, 64)
+	ver, _ := exec.Command("sw_vers", "-productVersion").Output()
+	return sysctl("machdep.cpu.brand_string"), sysctl("hw.model"), "macOS " + strings.TrimSpace(string(ver)), ram
+}
+
+// maxRSS is the largest resident set this process has had, in bytes.
+func maxRSS() int64 {
+	var ru syscall.Rusage
+	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	return ru.Maxrss // bytes on macOS
+}
+
+// cpuTime is the CPU time this process has used, user and system.
+func cpuTime() time.Duration {
+	var ru syscall.Rusage
+	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+}
+
+// privateBytes is the resident memory's peak here (Windows gives the committed private memory now).
+func privateBytes() int64 { return maxRSS() }

@@ -44,3 +44,53 @@ func TestTokens(t *testing.T) {
 		}
 	}
 }
+
+// TestReadModelInfinity reads a scheduler_config.json with Python's -Infinity (Sana 600M's).
+func TestReadModelInfinity(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"transformer/config.json":         `{"guidance_embeds": false}`,
+		"scheduler/scheduler_config.json": `{"_class_name": "DPMSolverMultistepScheduler", "algorithm_type": "dpmsolver++", "flow_shift": 3.0, "lambda_min_clipped": -Infinity, "num_train_timesteps": 1000, "prediction_type": "flow_prediction", "solver_order": 2, "use_flow_sigmas": true}`,
+	} {
+		p := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := readModel(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Sprint || m.Steps != 20 || m.FlowShift != 3 || m.TrainSteps != 1000 {
+		t.Errorf("%+v", m)
+	}
+}
+
+func TestTextStart(t *testing.T) {
+	prefix := make([]int32, 208) // <bos> and the instruction
+	for i := range prefix {
+		prefix[i] = int32(i + 2)
+	}
+	prompt := append(append([]int32(nil), prefix[:207]...), 9001, 9002, 9003) // the last token merged with the prompt's
+	for _, c := range []struct {
+		name        string
+		ids         []int32
+		held, chunk int
+		want        int
+	}{
+		{"instruction", prompt, 192, 64, 192},
+		{"no held rows", prompt, 0, 64, 0},
+		{"negative prompt", []int32{2, 9001, 9002}, 192, 64, 0},
+		{"the instruction alone", prefix, 192, 64, 192},
+		{"shorter than a chunk", prefix[:50], 192, 64, 0},
+		{"a smaller chunk", prompt, 192, 32, 192},
+		{"held less than shared", prompt, 128, 64, 128},
+	} {
+		if got := textStart(c.ids, prefix, c.held, c.chunk); got != c.want {
+			t.Errorf("%s: %d, want %d", c.name, got, c.want)
+		}
+	}
+}

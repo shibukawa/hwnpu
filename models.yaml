@@ -6,14 +6,14 @@
 # models: NAME: what -m (hwnpu-chat, hwnpu-image), -use (the others) and the API call it.
 #   family, tag   FAMILY:TAG picks it (plamo3translate:2b); the family alone picks the tag of the
 #                 largest machine up to this machine's memory
-#   kind          chat, embedding (hwnpu-chat: chat, agent, search, serve), transcribe (hwnpu-transcribe),
-#                 speech (hwnpu-tts), decision (hwnpu-systemone), image, depth, face-detect (hwnpu-image),
-#                 pitch (hwnpu-pitch), pose (hwnpu-pose), notes (hwnpu-notes), music, sfx (hwnpu-music)
+#   kind          chat, embedding (hwnpu-chat: chat, agent, search, serve), transcribe (hwnpu-audio transcribe),
+#                 speech (hwnpu-audio tts), decision (hwnpu-chat systemone), image, depth, face-detect (hwnpu-image),
+#                 pitch (hwnpu-audio pitch), pose (hwnpu-image pose), notes (hwnpu-audio notes), music, sfx (hwnpu-audio generate)
 #   device        where it runs by the NPU's vendor (amd, apple, intel): npu (the default) or cpu;
 #                 a command's --device and HWNPU_DEVICE override it
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory)
-#   arch          the structure, one of hwnpu-convert -archs (default: from config.json)
+#   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
 #   machine       the least memory of a machine, in GB, the family recommends the model for
 #   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
 #                 buffers and the process's together over a run (docs/new-model-checklist.md 11.2)
@@ -68,7 +68,7 @@ models:
     bytes: 4.0e9
     features: [tools, thinking, audio]
     amd_export: lfm3audio --max-seq-len 12288 --q4
-    about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-tts)"
+    about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-audio tts)"
   LFM3-Omni-2B:
     family: lfm3-omni
     tag: 2b
@@ -264,7 +264,7 @@ models:
     tag: v2.0
     kind: sfx
     # OpenMOSS's MOSS-SoundEffect v2.0 (code and weights Apache-2.0): Qwen3-1.7B reads the
-    # prompt, a 1.3B Wan DiT denoises, the DAC VAE decodes; hwnpu-music runs it. The machine
+    # prompt, a 1.3B Wan DiT denoises, the DAC VAE decodes; hwnpu-audio runs it. The machine
     # picks the text encoder's format (sfx.Formats): fp16 here, lut8 with 5 layers in fp16 in
     # the -lut8 one (moss-soundeffect:8g)
     from: hf:OpenMOSS-Team/MOSS-SoundEffect-v2.0@e35df4d82fbe87fcd5d14e5d100e349c0c3c076d
@@ -280,8 +280,8 @@ models:
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
   # hwnpu-image generate: on AMD's NPU the export ~/models/NAME.amd-npu2 (or NAME-1024.amd-npu2,
-  # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's and Intel's NPU Anima is
-  # downloaded and converted on its first run (Sana runs on AMD's NPU only)
+  # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's NPU Anima and Sana, on
+  # Intel's Anima, are downloaded and converted on their first run
   Anima-Turbo:
     family: anima
     tag: turbo
@@ -298,38 +298,39 @@ models:
     kind: image
     from: hf:Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers
     machine: 8
-    memory: 2.9
+    memory: {amd: 2.3, apple: 3.3}
     bytes: 7.7e9
-    about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU"
+    about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU and Apple's Neural Engine"
   Sana-Sprint-1.6B:
     family: sana
     tag: 1.6b
     kind: image
     from: hf:Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers
     machine: 16
-    memory: 2.9
+    memory: {amd: 2.3, apple: 3.1}
     bytes: 9.7e9
-    about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's NPU"
+    about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's and Apple's NPU"
   Sana-600M:
     family: sana-full
     tag: 0.6b
     kind: image
     from: hf:Efficient-Large-Model/Sana_600M_1024px_diffusers
     machine: 8
-    memory: 2.9
+    memory: {amd: 2.3, apple: 3.3}
     bytes: 8.9e9
-    about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's NPU"
+    about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's and Apple's NPU"
   SANA1.5-1.6B:
     family: sana-full
     tag: 1.6b
     kind: image
     from: hf:Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers
     machine: 16
-    memory: 2.9
+    memory: {amd: 2.3, apple: 3.1}
     bytes: 9.7e9
-    about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's NPU"
-  # hwnpu-image depth: the export ~/models/NAME.amd-npu2 (lower case) of tools/amd/iron_da3.py or
-  # iron_moge.py, AMD's NPU
+    about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's and Apple's NPU"
+  # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
+  # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
+  # converted when a picture first takes it
   DA3MONO-LARGE:
     family: da3
     tag: mono-large
@@ -438,17 +439,17 @@ categories:
       - {machine: 8, model: plamo-embedding-1b}
   transcribe:
     aliases: [transcription, asr]
-    about: speech to text (hwnpu-transcribe)
+    about: speech to text (hwnpu-audio transcribe)
     picks:
       - {machine: 8, model: whisper-large-v3-turbo}
   speech:
     aliases: [tts]
-    about: text to speech (hwnpu-tts)
+    about: text to speech (hwnpu-audio tts)
     picks:
       - {machine: 8, model: LFM3-Audio-2B-TTS}
   decision:
     aliases: [systemone]
-    about: typed questions about a state (hwnpu-systemone)
+    about: typed questions about a state (hwnpu-chat systemone)
     picks:
       - {machine: 8, model: d1-2B}
   image:
@@ -468,27 +469,27 @@ categories:
       - {machine: 8, model: YuNet}
   pitch:
     aliases: [f0]
-    about: the pitch (F0) of a voice or an instrument (hwnpu-pitch)
+    about: the pitch (F0) of a voice or an instrument (hwnpu-audio pitch)
     picks:
       - {machine: 8, model: swift-f0}
   pose:
     aliases: [keypoints]
-    about: people and their 17 keypoints in an image (hwnpu-pose)
+    about: people and their 17 keypoints in an image (hwnpu-image pose)
     picks:
       - {machine: 8, model: RTMO-s}
   notes:
     aliases: [midi]
-    about: the notes of music, as MIDI (hwnpu-notes)
+    about: the notes of music, as MIDI (hwnpu-audio notes)
     picks:
       - {machine: 8, model: basic-pitch}
   music:
     aliases: [music-generation]
-    about: music from a text of its style (hwnpu-music)
+    about: music from a text of its style (hwnpu-audio generate)
     picks:
       - {machine: 8, model: magenta-realtime-2-small}
   sfx:
     aliases: [sound-effects, sound-effect]
-    about: sound effects from a text (hwnpu-music)
+    about: sound effects from a text (hwnpu-audio generate)
     picks:
       - {machine: 8, model: MOSS-SoundEffect-v2.0-lut8}
       - {machine: 16, model: MOSS-SoundEffect-v2.0}

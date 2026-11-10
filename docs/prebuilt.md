@@ -28,7 +28,7 @@
 
 | 対象 | 配るもの | 既定の例 | 照合 |
 |---|---|---|---|
-| `apple` | `.mlpackage` (分けない形。部分の数は実行時に決める (16.12)) | GPTQ lut6 か lut8 (LFM3 系は lut8)、最大の文脈、`-paged` の既定 | aix1: milcpu の KL。公開前に Mac の ANE で `hwnpu-check` (7 節) |
+| `apple` | `.mlpackage` (分けない形。部分の数は実行時に決める (16.12)) | GPTQ lut6 か lut8 (LFM3 系は lut8)、最大の文脈、`-paged` の既定 | aix1: milcpu の KL。公開前に Mac の ANE で `hwnpu-dev check` (7 節) |
 | `amd-npu2` | IRON の書き出し (ELF、xclbin、バンク、manifest) | q4 (GPTQ)、Anima の DiT は q8 | aix1 の NPU で `ironcheck` と KL |
 | `amd-npu1` | `--per-step` の書き出し | 同上 | 実機がないので「未確認」として staging まで |
 | `intel` | OpenVINO IR (`.xml` / `.bin`) | int8 | OpenVINO の CPU。実機の NPU で確かめるまで staging まで |
@@ -112,8 +112,8 @@ models:
 - ジョブの流れ (1 組ごと):
   1. 元のチェックポイントを取得する (`/srv/hwnpu-ci/cache/hf`、リビジョンを固定)。Gemma など gated のモデルは、トークンのアカウントで規約に同意しておく
   2. 校正 (GPTQ の符号)。元のリビジョンと校正の設定のハッシュでキャッシュし、変わらなければ飛ばす (数時間かかるので)
-  3. 変換、書き出し (`hwnpu-convert`、`iron_export_lm.py`)
-  4. 照合: `hwnpu-check` (milcpu)、`ironcheck` と NPU での KL、OpenVINO の CPU。決めた上限 (例: 既存の値の 1.2 倍) を超えたら失敗にする
+  3. 変換、書き出し (`hwnpu-dev convert`、`iron_export_lm.py`)
+  4. 照合: `hwnpu-dev check` (milcpu)、`ironcheck` と NPU での KL、OpenVINO の CPU。決めた上限 (例: 既存の値の 1.2 倍) を超えたら失敗にする
   5. 目録を作る (sha256、版、検証の結果)
   6. `hf upload --revision staging` (コミットの説明に `build` の番号と hwnpu のコミット)
 - `concurrency: group: aix1` で、同時に 1 ジョブだけ。NPU は 1 つで、メモリも校正と書き出しが重い (`CREATE_HWCTX` の `EINVAL` (improvements.ja.md 11.3) も避けられる)
@@ -133,7 +133,7 @@ models:
 
 ANE の配置と KL は Mac でしか測れない。順番:
 
-1. 当面: aix1 が `staging` に上げたものを M3 で手で `hwnpu-check` し、結果をモデルカードに書いてから `main` に進める
+1. 当面: aix1 が `staging` に上げたものを M3 で手で `hwnpu-dev check` し、結果をモデルカードに書いてから `main` に進める
 2. 後で: M3 を 2 台目の self-hosted runner (ラベル `macos-ane`) にし、`staging` に上がったら ANE の照合を回す。M3 は 16 GB でディスクが厳しく、e5 バンドルのキャッシュが溜まる (ジョブの終わりに `~/Library/Caches/<process>/com.apple.e5rt.e5bundlecache` を消す)
 
 ## 8. ライセンス

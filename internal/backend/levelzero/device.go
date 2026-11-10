@@ -318,7 +318,7 @@ func (d *device) runOnce(record func(list ze.Handle) error) error {
 }
 
 // argNames names the arguments as the IR does, which is what the callers bind by (the MIL names
-// hwnpu-convert keeps: x, y, kv_*, ...). The driver reports a name, a debug name and the tensor
+// hwnpu-dev convert keeps: x, y, kv_*, ...). The driver reports a name, a debug name and the tensor
 // names of each argument; which of them carries the IR's name depends on the driver and the
 // compiler, so the first that is a name of the IR wins. Failing all, the arguments are matched to
 // the IR's Parameters and Results in order, which is how the compiler numbers them when the model

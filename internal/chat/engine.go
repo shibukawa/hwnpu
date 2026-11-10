@@ -30,7 +30,7 @@ import (
 
 // Config says where the model is.
 type Config struct {
-	// Packages are the model converted with a KV cache (hwnpu-convert -cache), each an
+	// Packages are the model converted with a KV cache (hwnpu-dev convert -cache), each an
 	// .mlpackage or an out.parts.json, all with the same cache length and different tokens per
 	// call (-seq): one of 1 to generate and one of about 64 to read prompts fast. They share
 	// one cache.
@@ -52,11 +52,11 @@ type Config struct {
 	// like an earlier one (an agent's system message and tools) comes back from there instead
 	// of being read again after a restart (store).
 	PromptDir string
-	// Vision is the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a
+	// Vision is the LFM3-VL vision encoder converted by hwnpu-dev convert -arch lfm3-vision, a
 	// package per image size (internal/vision), for a model that reads images (LFM3-VL); none to
 	// take no images. Its config.json and image processor settings are next to ModelConfig.
 	Vision []string
-	// Audio is the LFM3-Audio (or LFM3-Omni) audio encoder converted by hwnpu-convert -arch
+	// Audio is the LFM3-Audio (or LFM3-Omni) audio encoder converted by hwnpu-dev convert -arch
 	// lfm3-audio-encoder, a package per clip length (internal/audio); none to take no audio.
 	Audio []string
 	// Log receives what loading does (nil for none).

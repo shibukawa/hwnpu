@@ -78,7 +78,7 @@ go run ./cmd/hwnpu-chat -m LFM3-VL-2B
 - 対話では `/image FILE 質問` で画像を、`/audio FILE.wav 質問` で音声を送れます。引数に質問を書くときは `--image FILE`、`--audio FILE.wav` です (`hwnpu-chat -m LFM3-VL-2B --image photo.jpg "何が写っている？"`)。サーバーはユーザーのメッセージの `image_url` (data URL) と `input_audio` (base64 の WAV) を読みます
 - M3 で grouped 注意 (2026 年 11 月からの既定) なら 1 トークン約 36 ms (以前は 41 ms)。画像の説明中は約 70 ms (投機的デコードの推測が当たらない)。約 300 トークンの画像つきプロンプトの読み込みは 0.7 秒。LFM3-1.7B と同じく 4096 の段階は付きません (2 節の `--tier`)
 - テキスト部は LFM3-1.7B と同じく全注意の層で分けて変換し (`lfm3-lut8-grouped-p8192-c128000-q8.parts.json` と `-q128-last`、7 部分ずつ。11 月 6 日までの `-q64` は消して構いません)、文脈はモデルの上限の 128000 トークンです。キャッシュは会話とともに 1 トークン 12 KiB ずつ増え、128000 で 1.46 GiB。M3 では全部が Neural Engine に載り、2 回目の起動は 1.4 秒と 4.2 秒で、画像の説明、計算、富士山の高さの答えは分けない形 (文脈 16320) と 1 トークンも違わず、生成は 24.0、33.2、36.0 tokens/s (分けない形は 11.9、26.7、29.4)。プロンプトの先頭に置いた合言葉は 16K、64K、120K トークンで正しく答え、読み込みは 20 秒、171 秒、497 秒、その長さでの生成は 25.2、58.6、68.1 ms/token。LFM3-Audio-2B と LFM3-Omni-2B も同じ形で動き (音声の書き起こし、画像の説明)、120K の合言葉を正しく答えました (読み込み 525 秒と 512 秒、プロセスのメモリ 1.7 GB)。2026 年 11 月 4 日、design.md の 16.63 と 16.65。これは全部の鍵を読んだときで、2 段の注意 (`--sparse`、既定) では 120K の読み込みが VL 431 秒、Audio 516 秒、Omni 501 秒 (同じ日の VL の全部を読む形は 583 秒)、その長さの 1 回の呼び出しは 111〜120 ms (同じく 179 ms) で、3 つとも合言葉を答えました (11 月 6 日、16.65)。それまでの `lfm3-lut8-grouped-c16320-*` はもう読まれないので消して構いません
-- 返答は文字です。LFM3-Audio の音声出力は `hwnpu-tts` (5 節)
+- 返答は文字です。LFM3-Audio の音声出力は `hwnpu-audio tts` (5 節)
 - ほかの画像の大きさやクリップの長さを使うには、エンコーダを自分で変換して `--package`、`--vision`、`--audio-encoder` で渡します (5 節)
 
 ### Gemma 4 E2B と E4B を使う
@@ -92,7 +92,7 @@ go run ./cmd/hwnpu-chat -m gemma-4-E2B-it
 - チャットの書式は Gemma 4 の `chat_template.jinja` を Go に移したもので、思考 (`<|think|>`、`reasoning_content` に返す) と道具の呼び出しに対応します
 - 層ごとの埋め込みの表 (4.7 GB) はホストに置き、トークンごとに 1 行 (17.5 KB) を読みます
 - 文脈はモデルの上限の 131072 トークンです。全注意の 7 層のうち 4 層は層 14 の鍵と値を使うので、hwnpu-chat が持つキャッシュは 3 層分で、1 トークン 6 KiB (131072 で 0.75 GiB) ずつ会話とともに増えます。M3 の実測 (design.md の 16.63): 短い質問の生成は 23.6〜36.0 tokens/s (分けない文脈 16320 のプログラムは同じ答えで 13.3〜28.2)。81,691 トークンのプロンプトを 299 秒 (273 tokens/s) で読み、先頭に置いた合言葉を正しく答え、その長さで 1 トークン 96.7 ms。そのときのプロセスのメモリ (footprint) は 1.1 GB。16K、64K、125K でも合言葉を正しく答え、読み込みは 27 秒、224 秒、709 秒、その長さでの生成は 23.9、82.4、119.5 ms/token、メモリは 0.7、1.2、2.4 GB。これは全部の鍵を読んだときで、2 段の注意 (`--sparse`、既定) では 64K と 125K の読み込みが 204 秒と 521 秒、生成が 73.9 と 92.4 ms/token で、どちらも正しく答えました (design.md の 16.65)
-- Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`--package` で自分で変換したものを使うときは `hwnpu-convert` の `-format` を省けば lut6 になります。詳細は docs/design.md の 16.25 と 16.26
+- Gemma 4 は 4 ビットの表 (lut4) では損失が大きく (富士山の高さや『こころ』の作者を誤る)、6 ビットを既定にしています。`--package` で自分で変換したものを使うときは `hwnpu-dev convert` の `-format` を省けば lut6 になります。詳細は docs/design.md の 16.25 と 16.26
 - `-m gemma-4-E4B-it` で一回り大きい E4B (ダウンロード 16.0 GB、幅 2560 の 42 層) を同じ手順で使えます。E2B より遅くなります。文脈は同じく 131072 で、キャッシュは 1 トークン 16 KiB (131072 で 2 GiB)。生成用と読み込み用のプログラム 2 本 (6.5 GiB) は Neural Engine のコンパイルのキャッシュ (約 4 GiB) に収まらないので、生成用の 1 本 (1 回 8 トークン) だけを変換して読み込み、プロンプトもそれで読みます (`--prefill auto`)。M3 で 2 回目からの起動は 4 秒ほど、短い質問の生成は 13〜16 tokens/s。代わりに長いプロンプトの読み込みは 2 本のときの 4.4 倍かかります (16K で 183 秒、2 本なら 42 秒)。`--prefill on` で 2 本にできますが、起動は毎回 80 秒前後、質問ごとに 1〜3 秒の切り替えがかかります。125K の合言葉は (2 本で) 正しく答えましたが、スワップが 14 GB に達しました (design.md の 16.65)。1 本で 2 段の注意 (既定) のときも 64K と 125K の合言葉を答え、その長さの 1 回の呼び出しは 217 ms と 276 ms ですが、読み込みは 21 分と 56 分かかります。16 GB の機械では E2B を勧めます。12B 以上の Gemma 4 は別のアーキテクチャで、hwnpu-chat では動きません
 
 ### PLaMo 3 Translate で訳す
@@ -140,10 +140,10 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 | `--paged N` | `0` | 全注意の層でモデルを分け、hwnpu-chat が持つキャッシュに対して N トークンの塊ごとに注意を計算する。1 ステップの費用が `--context` ではなく会話の長さに比例し、キャッシュのメモリも会話とともに増える (LFM3-1.7B で 1 トークン 12 KiB、262144 で 3 GiB。メモリの 4 分の 1 を超えるなら文脈を縮める)。`0` はモデルが許すとき 8192 (LFM3 とその VL、Audio、Omni、Gemma 4、Qwen3.5。Neural Engine でも Intel の NPU でも)、`-1` で分けない (そのとき `--tier` が効く) |
 | `--sparse` | `true` | 注意で分けたモデル (`--paged`) で会話が約 48K を超えたら、1 回の呼び出しで鍵 16384 (プロンプトを読むときは 32768) だけを正確に読み (その呼び出しにとって重い 8 トークンのバケット、最後の 512、最初の 4)、ほかのバケットは鍵と値の平均 1 つで読む。128K 以上で呼び出しが数分の 1 になる ([docs/design.md](docs/design.md) の 16.61)。`false` で毎回キャッシュ全体を読む |
 | `--dir DIR` | `~/Library/Caches/hwnpu/models` | モデルの置き場。モデルごとに `DIR/名前` にチェックポイントと変換したプログラムを置く |
-| `--package A,B` | なし | `hwnpu-convert` で自分で変換したチャットのプログラムを使う (5 節) |
+| `--package A,B` | なし | `hwnpu-dev convert` で自分で変換したチャットのプログラムを使う (5 節) |
 | `--dump DIR` | なし | サーバーで、要求、プロンプト、生成した文を要求ごとに保存する |
 | `--embed-seq A,B` | `128,1024` | 埋め込みモデルを変換する長さ。文はそれが収まる最も短いもので動き、最も長いものが 1 つの文の最大トークン数になる |
-| `--embed-package A,B` | なし | `hwnpu-convert` で自分で変換した埋め込みのプログラムを使う (エンコーダは `-seq` だけ)。`config.json` と `model.safetensors` はモデルの置き場に置く |
+| `--embed-package A,B` | なし | `hwnpu-dev convert` で自分で変換した埋め込みのプログラムを使う (エンコーダは `-seq` だけ)。`config.json` と `model.safetensors` はモデルの置き場に置く |
 
 `--think` から `--context` まで、`--package`、`--config`、`--weights`、`--tokenizer` はチャットのモデルの、`--embed-` で始まるものは埋め込みモデルのフラグです。`--package` とその仲間 (と `--embed-package`) は、`-m` にその用途のモデルが 1 つのときだけ使えます。
 
@@ -234,14 +234,14 @@ curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{"m
 
 ## 5. 自分で変換したプログラムを使う
 
-ほかの量子化やキャッシュの長さを試すときは、`hwnpu-convert` で同じキャッシュの長さのものを 2 つ変換し、`--package` にカンマで並べます。
+ほかの量子化やキャッシュの長さを試すときは、`hwnpu-dev convert` で同じキャッシュの長さのものを 2 つ変換し、`--package` にカンマで並べます。
 
 ```bash
-go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 1 -cache 16320 -parts 2 -o DIR/lfm3-16k-q1.mlpackage
+go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 1 -cache 16320 -parts 2 -o DIR/lfm3-16k-q1.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 64 -cache 16320 -o DIR/lfm3-16k-q64.mlpackage
+go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 64 -cache 16320 -o DIR/lfm3-16k-q64.mlpackage
 ```
 
 ```bash
@@ -253,7 +253,7 @@ go run ./cmd/hwnpu-chat --package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.ml
 `-m LFM3-VL-2B` (1 節) なら以下を自動で行います。ほかの画像の大きさを使うときは、テキスト部を上と同じに変換し、視覚エンコーダを `-arch lfm3-vision` で画像の大きさごとに変換します（Neural Engine は固定の形で動くため）。`--vision` にカンマで並べると、ユーザーのメッセージの `image_url`（data URL）を読みます。画像は、縦横比がいちばん近いプログラムの大きさに引き伸ばされます。対話では `/image FILE 質問` で画像を送れます（docs/design.md の 16.28 と 16.31）。
 
 ```bash
-go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
+go run ./cmd/hwnpu-dev convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
 ```
 
 ```bash
@@ -262,30 +262,30 @@ go run ./cmd/hwnpu-chat --package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpack
 
 ### 音声を読む（LFM3-Audio-2B）
 
-`-m LFM3-Audio-2B` (1 節) なら以下を自動で行います。ほかのクリップの長さを使うときは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`--audio-encoder` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-tts` で行います（docs/design.md の 16.29 と 16.31）。
+`-m LFM3-Audio-2B` (1 節) なら以下を自動で行います。ほかのクリップの長さを使うときは、テキスト部を上と同じに変換し、音声エンコーダを `-arch lfm3-audio-encoder` で変換します（`-frames` は受け付ける最長のメルフレーム数で、10 ms ごと。既定の 3000 は 30 秒）。`--audio-encoder` にカンマで並べると、ユーザーのメッセージの `input_audio`（base64 の WAV）を読みます。対話では `/audio FILE.wav 質問` で送れます。読めるのは WAV だけで、16 kHz 以外は変換します。返答は文字です。読み上げは下の `hwnpu-audio tts` で行います（docs/design.md の 16.29 と 16.31）。
 
 ```bash
-go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
+go run ./cmd/hwnpu-dev convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
 ```
 
 ### 音声で話す（LFM3-Audio-2B の TTS）
 
-`hwnpu-tts -lang ja -o out.wav こんにちは` が LFM3-Audio-2B (`-use speech`) で文章を読み上げて WAV（24 kHz）に書きます。初回にモデルをモデルのフォルダに落とし (hwnpu-chat の LFM3-Audio-2B と共有)、下のプログラムを 8 ビットの表で自分で変換し、読む表 (`speech-tables.safetensors`) を書くので、2 回目からはチェックポイントは要りません。自分で変換するときは、テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.30）。
+`hwnpu-audio tts --lang ja -o out.wav こんにちは` が LFM3-Audio-2B (`-m speech`) で文章を読み上げて WAV（24 kHz）に書きます。初回にモデルをモデルのフォルダに落とし (hwnpu-chat の LFM3-Audio-2B と共有)、下のプログラムを 8 ビットの表で自分で変換し、読む表 (`speech-tables.safetensors`) を書くので、2 回目からはチェックポイントは要りません。自分で変換するときは、テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.30）。
 
 ```bash
-go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
+go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-convert -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.mlpackage
+go run ./cmd/hwnpu-dev convert -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-convert -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.mlpackage
+go run ./cmd/hwnpu-dev convert -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.mlpackage -codec DIR/codec.mlpackage -lang ja -o out.wav こんにちは
+go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.mlpackage --depth DIR/depth.mlpackage --codec DIR/codec.mlpackage --lang ja -o out.wav こんにちは
 ```
 
 ## 6. OpenCode から使う

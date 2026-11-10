@@ -27,7 +27,7 @@ func pagedConfig() *Config {
 	return c
 }
 
-// convertPaged converts the model split at its attention with hwnpu-convert's code path.
+// convertPaged converts the model split at its attention with hwnpu-dev convert's code path.
 func convertPaged(t *testing.T, cfg *Config, w llm.Weights, q, cache, chunk int, attn string) *llm.Manifest {
 	t.Helper()
 	opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, Format: "fp16", Params: map[string]string{"post-scale": "1", "attn": attn}}
@@ -200,7 +200,7 @@ func cpuPaged(t *testing.T, man *llm.Manifest, allocated *int) decode.Program {
 	return p
 }
 
-// The two-level attention (decode.Sparse) runs through the programs hwnpu-convert writes, the
+// The two-level attention (decode.Sparse) runs through the programs hwnpu-dev convert writes, the
 // mass program among them, and past the length where it pays the logits stay near those of the
 // whole cache: buckets of 4 over chunks of 8, three chunks read exactly. A manifest converted
 // before the mass program gets it from AddMass.

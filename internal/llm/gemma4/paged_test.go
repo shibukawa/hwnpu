@@ -14,7 +14,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 )
 
-// convertPaged converts the model split at its attention with hwnpu-convert's code path, one
+// convertPaged converts the model split at its attention with hwnpu-dev convert's code path, one
 // program per number of tokens per call, and returns their manifests.
 func convertPaged(t *testing.T, c *Config, w llm.Weights, cache, chunk int, qs ...int) []string {
 	t.Helper()

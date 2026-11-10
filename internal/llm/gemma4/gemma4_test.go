@@ -438,7 +438,7 @@ func TestMatchesReference(t *testing.T) {
 
 // Each layer on its own, fed the reference's hidden state, per-layer inputs and shared keys and
 // values, gives the reference's next hidden state; so does the head after the last layer. This
-// is what hwnpu-check does with a real checkpoint.
+// is what hwnpu-dev check does with a real checkpoint.
 func TestLayerByLayer(t *testing.T) {
 	c := tinyConfig(t)
 	w := newWeights(c)

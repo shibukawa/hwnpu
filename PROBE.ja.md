@@ -8,17 +8,17 @@ English: [PROBE.md](PROBE.md)
 
 | 機械 | 1. 動くか | 2. 速さと大きさの上限 | 3. エネルギー |
 |---|---|---|---|
-| Apple シリコンの Mac | `cmd/report` | `cmd/npuprobe` | `cmd/powerbench -decode 8,16 -gpu`（sudo） |
-| Intel Core Ultra、Linux | `cmd/report` | `cmd/npuprobe` | root で動かした `cmd/npuprobe`（RAPL） |
-| Intel Core Ultra、Windows | `cmd/report` | `cmd/npuprobe` | 未対応 |
-| AMD Ryzen AI、Linux | `cmd/report` | 未対応。AMD バックエンドはモデルではなくカーネルを動かす | |
+| Apple シリコンの Mac | `hwnpu-dev report` | `hwnpu-dev probe` | `hwnpu-dev powerbench -decode 8,16 -gpu`（sudo） |
+| Intel Core Ultra、Linux | `hwnpu-dev report` | `hwnpu-dev probe` | root で動かした `hwnpu-dev probe`（RAPL） |
+| Intel Core Ultra、Windows | `hwnpu-dev report` | `hwnpu-dev probe` | 未対応 |
+| AMD Ryzen AI、Linux | `hwnpu-dev report` | 未対応。AMD バックエンドはモデルではなくカーネルを動かす | |
 
 先に機械の準備をしてください: [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md)、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)、[INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)。Go は 1.27 以降が要ります。古い `go` コマンドでも、既定の設定（`GOTOOLCHAIN=auto`）なら必要な版を自分でダウンロードします。
 
 ### 1. 動くか
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/report@latest -o report.md
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest report -o report.md
 ```
 
 見つかった NPU ごとに、埋め込みの小さなモデルをコンパイルし、結果を fp32 の参照値と比べ、時間を測ります。ここで失敗するなら、以下の手順も同じように失敗します。原因（ドライバ、ライブラリ、配置）はレポートに出ます。
@@ -26,7 +26,7 @@ go run github.com/shibukawa/hwnpu/cmd/report@latest -o report.md
 ### 2. 速さと大きさの上限
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
 ```
 
 40 分ほどかかり、今いるディレクトリに `npuprobe-<機種>-<日時>.md` と `.json` を書き出します。Ctrl-C で止めても、そこまでの結果は残ります。コマンド名のあとに `bench` か `limit` を付けると片方だけを行います。上限を超えるモデルを分けて動かす検証は `split` で行います（後述）。投機的デコードの検証にあたる計測（後述の verify）は、`verify` を付けたときだけ行います。
@@ -36,13 +36,13 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
 Apple でエネルギーを測るには `powermetrics` が要り、それには root が要ります。ツールが sudo のパスワードを一度だけ聞きます。
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/powerbench@latest -decode 8,16 -gpu -o power.md
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest powerbench -decode 8,16 -gpu -o power.md
 ```
 
-Linux の Intel では、npuprobe が RAPL のエネルギーカウンタを読めるときに読みます。それには root が要るので、コマンドをビルドしてから sudo で動かします。
+Linux の Intel では、hwnpu-dev probe が RAPL のエネルギーカウンタを読めるときに読みます。それには root が要るので、コマンドをビルドしてから sudo で動かします。
 
 ```bash
-GOBIN=$PWD go install github.com/shibukawa/hwnpu/cmd/npuprobe@latest
+GOBIN=$PWD go install github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
 ```
 
 ```bash
@@ -62,13 +62,13 @@ sudo ./npuprobe bench
 
 生成するコードは [internal/probe](internal/probe/model.go) にあります。Intel 用のモデルは、OpenVINO 2026.4 で読み込んで CPU で実行し、正しく動くことを確かめています。
 
-## npuprobe が測るもの
+## hwnpu-dev probe が測るもの
 
 **bench** は、8 層と 16 層を形式ごとに NPU で動かします。Apple では比較のため、Core ML の CPU と GPU でも動かします。各モデルは 2 回の空回しのあと、3 秒以上動かします。
 
 **limit** は、形式ごとにモデルを大きくし（2、4、8、12、16、24、32 … 層）、NPU から外れたら、NPU に載った最大と載らなかった最小の差が 1 層になるまで二分探索します。次に、境目のすぐ下の大きさのモデルを、外れた大きさの 2 倍を超えるだけ同時に読み込み、全部を読み込んだ状態でそれぞれをもう一度動かします。全部が NPU に載ったまま速さも変わらなければ、上限はモデル 1 つごとで、大きなネットワークは複数のモデルに分ければ載せられます。NPU から外れたモデルは CPU では非常に遅いことがあるので、1 回だけ動かします。
 
-**split** は、`npuprobe split` と指定したときだけ動きます。上限を超える大きさのモデル（既定は 64 層、lut4 で 1.8 GiB）を、NPU に載る大きさの部分（既定は 2 つと 4 つ）に分けます。前の部分の出力バッファを次の部分の入力にそのまま渡して、分けた LLM が 1 トークンを生成するときと同じ順に動かします。各層の重みは分け方によらず同じなので、部分を順に動かせば元のモデルと同じ計算になります。次の 3 点を確かめます。
+**split** は、`hwnpu-dev probe split` と指定したときだけ動きます。上限を超える大きさのモデル（既定は 64 層、lut4 で 1.8 GiB）を、NPU に載る大きさの部分（既定は 2 つと 4 つ）に分けます。前の部分の出力バッファを次の部分の入力にそのまま渡して、分けた LLM が 1 トークンを生成するときと同じ順に動かします。各層の重みは分け方によらず同じなので、部分を順に動かせば元のモデルと同じ計算になります。次の 3 点を確かめます。
 
 - 全部の部分を読み込んだ状態で、どの部分も NPU に載っているか
 - 1 トークンの時間（全部の部分を 1 回ずつ）と、各部分を単独で測った時間の合計の差。差が大きければ、部分を切り替えるたびに重みを読み込み直している
@@ -77,15 +77,19 @@ sudo ./npuprobe bench
 部分を動かしたプロセスの最大 RSS（常駐メモリの最大値）も記録します。Core ML や Neural Engine のシステム側のプロセスの分は含みません。`-layout functions` は、部分を別々のパッケージではなく 1 つのパッケージの関数として書き、関数を 1 つずつ別のモデルとして読み込みます。
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split
-go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -parts 2,3,4   # M4 など上限が 2 GiB の機械（3.7 GiB）
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe split
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe split -split-layers 128 -parts 2,3,4   # M4 など上限が 2 GiB の機械（3.7 GiB）
 ```
 
-**kv** は、`npuprobe kv` と指定したときだけ動きます。bench と同じ大きさの層（lut4）を 11 層並べて本物の注意を入れ、1 トークンを通します。KV キャッシュの容量（既定は 256、1024、4096 トークン）ごとに、キャッシュをホストのバッファとして入出力に渡す方式（`host`）と、Core ML の状態（MLState）に置く方式（`state`）を比べます。`-kv-cache`、`-kv-layers`、`-kv-modes` で変えられます。`-kv-modes host-mha` は、K/V を複製する代わりに 16 の問い合わせヘッドがそれぞれ K/V を持つ形（キャッシュは 4 倍）で、複製と読み出しの費用を切り分けます。`host-int8` は、キャッシュを int8 とトークンごとの fp16 のスケールで渡し、プログラムの中で fp16 に戻します（Core ML の仕様の版 10、macOS 26 以降）。`host-chunk` は、キャッシュを 16384 トークン以下の塊に分け、塊ごとに別の入力で渡します（`host-chunk8192` のように塊の長さも指定できます）。1 次元 16384 の上限を超える文脈を Neural Engine に載せる形です。
+**kv** は、`hwnpu-dev probe kv` と指定したときだけ動きます。bench と同じ大きさの層（lut4）を 11 層並べて本物の注意を入れ、1 トークンを通します。KV キャッシュの容量（既定は 256、1024、4096 トークン）ごとに、キャッシュをホストのバッファとして入出力に渡す方式（`host`）と、Core ML の状態（MLState）に置く方式（`state`）を比べます。`-kv-cache`、`-kv-layers`、`-kv-modes` で変えられます。`-kv-modes host-mha` は、K/V を複製する代わりに 16 の問い合わせヘッドがそれぞれ K/V を持つ形（キャッシュは 4 倍）で、複製と読み出しの費用を切り分けます。`host-int8` は、キャッシュを int8 とトークンごとの fp16 のスケールで渡し、プログラムの中で fp16 に戻します（Core ML の仕様の版 10、macOS 26 以降）。`host-chunk` は、キャッシュを 16384 トークン以下の塊に分け、塊ごとに別の入力で渡します（`host-chunk8192` のように塊の長さも指定できます）。1 次元 16384 の上限を超える文脈を Neural Engine に載せる形です。
 
-**attn** は、`npuprobe attn` と指定したときだけ動きます（Core ML のみ）。重みを持たない「キャッシュの 1 塊に対する注意」のプログラムを作ります。層を注意の前後で分けたモデルが、使っている塊ごと・層ごとに 1 回呼ぶ形です（docs/model-fit.md の T2）。このプログラムがどこに置かれるかを確かめ、1 塊を渡した 1 回の時間を測ります。仕事の少ない形（1 行で 1024 の塊など）は Core ML が CPU に置きますが、その場合も CPU での時間として続けて測ります。続けて、使ったトークン数（既定は 4096、16384、65536、262144）ごとに 1 ステップ分の注意を測ります。各層の塊をそれぞれ別のバッファに置き、出力はホストが float32 で合わせます。1 ステップの時間、そのうちの合わせる時間、プロセスの最大の常駐メモリを出すので、費用が容量ではなく使った長さに比例するか、多くのバッファを付け替える費用、入力の複製の有無が分かります。`-attn-chunks`（塊の長さ。既定 1024、2048、4096、8192、16384）、`-attn-tokens`（1 回の問い合わせの行。既定 1、8、64）、`-attn-forms`（`grouped` と `tile`。既定 `grouped`）、`-attn-used`、`-attn-layers`（既定 6、LFM3-1.7B の全注意の層の数）で変えられます。262144 では 6 層で 3 GiB のバッファを同時に持ちます。
+**attn** は、`hwnpu-dev probe attn` と指定したときだけ動きます（Core ML のみ）。重みを持たない「キャッシュの 1 塊に対する注意」のプログラムを作ります。層を注意の前後で分けたモデルが、使っている塊ごと・層ごとに 1 回呼ぶ形です（docs/model-fit.md の T2）。このプログラムがどこに置かれるかを確かめ、1 塊を渡した 1 回の時間を測ります。仕事の少ない形（1 行で 1024 の塊など）は Core ML が CPU に置きますが、その場合も CPU での時間として続けて測ります。続けて、使ったトークン数（既定は 4096、16384、65536、262144）ごとに 1 ステップ分の注意を測ります。各層の塊をそれぞれ別のバッファに置き、出力はホストが float32 で合わせます。1 ステップの時間、そのうちの合わせる時間、プロセスの最大の常駐メモリを出すので、費用が容量ではなく使った長さに比例するか、多くのバッファを付け替える費用、入力の複製の有無が分かります。`-attn-chunks`（塊の長さ。既定 1024、2048、4096、8192、16384）、`-attn-tokens`（1 回の問い合わせの行。既定 1、8、64）、`-attn-forms`（`grouped` と `tile`。既定 `grouped`）、`-attn-used`、`-attn-layers`（既定 6、LFM3-1.7B の全注意の層の数）で変えられます。262144 では 6 層で 3 GiB のバッファを同時に持ちます。
 
-**seam** は、`npuprobe seam` と指定したときだけ動きます（Core ML のみ）。注意の前後で分けたモデルを組み立てます。重みのある部分（既定は lut4 の 40 層、1.14 GiB で LFM3-1.7B の lut6 と同じくらい）を注意の層の数より 1 つ多く分け、その間に attn と同じ塊ごとの注意を挟み、全部を同時に読み込みます。1 ステップを、重みのある部分だけ、注意だけ、交互（部分、注意、部分、…）の 3 通りで測ります。交互が 2 つの和より余計にかかる分を切り替えの回数で割った値が、重みのあるプログラムとないプログラムの境目 1 つの費用です。重みのある 2 本を交互に呼ぶと Neural Engine の載せ直しで 1 回 35 ms かかったことがあり、1 本の鎖の中の境目は 0.1 ms でした。`-seam-layers`、`-seam-format`、`-seam-tokens`（既定 8 と 64）、`-seam-chunk`（既定 8192）、`-seam-used`（既定 8192 と 65536）、`-seam-form`、`-attn-layers` で変えられます。
+**seam** は、`hwnpu-dev probe seam` と指定したときだけ動きます（Core ML のみ）。注意の前後で分けたモデルを組み立てます。重みのある部分（既定は lut4 の 40 層、1.14 GiB で LFM3-1.7B の lut6 と同じくらい）を注意の層の数より 1 つ多く分け、その間に attn と同じ塊ごとの注意を挟み、全部を同時に読み込みます。1 ステップを、重みのある部分だけ、注意だけ、交互（部分、注意、部分、…）の 3 通りで測ります。交互が 2 つの和より余計にかかる分を切り替えの回数で割った値が、重みのあるプログラムとないプログラムの境目 1 つの費用です。重みのある 2 本を交互に呼ぶと Neural Engine の載せ直しで 1 回 35 ms かかったことがあり、1 本の鎖の中の境目は 0.1 ms でした。`-seam-layers`、`-seam-format`、`-seam-tokens`（既定 8 と 64）、`-seam-chunk`（既定 8192）、`-seam-used`（既定 8192 と 65536）、`-seam-form`、`-attn-layers` で変えられます。
+
+**cache** は、`hwnpu-dev probe cache` と指定したときだけ動きます（Core ML のみ）。Neural Engine 自身のコンパイル済みプログラムのキャッシュを測ります。hwnpu のコンパイルのキャッシュが当たっていても、ある回は 0.1 秒で読め、次の回は 1〜2 分コンパイルし直す原因です（[docs/handoff-ane-cache.md](docs/handoff-ane-cache.md)）。1 つの構成は S GiB のプログラム N 本（`-cache-sizes`、既定は fp16 の 0.5 と 1 GiB。N は `-cache-totals` の 1〜8 GiB から）を一度だけ書き、回（`-cache-rounds`、3）ごとに新しいプロセスで順に読んで 1 回ずつ実行します。hwnpu のコンパイルのキャッシュは残すので、読み込みと最初の呼び出しが `-cache-hit`（1 秒）以下なら当たりです。報告には各回の当たりの数、大きさごとの全部当たり続ける最大の合計、各回の後の `~/Library/Caches/NAME/com.apple.e5rt.e5bundlecache` の大きさが出ます。`-cache-hold open` は 1 本ずつ閉じずに全部を開いたままにし、`-cache-order reverse` は 1 回おきに逆順に読み（LRU なら当たりが増える）、`-cache-passes 2` は同じプロセスの中でもう一度読み、`-cache-names other` は other という名前の実行ファイルのコピーで 1 回（その後に元の名前で 1 回）足し、`-cache-keep` と `-dir` はプログラムを残して、再起動の後などの次の実行で使い回します。実行中は hwnpu の Neural Engine のロックを持ちます。Neural Engine を使うほかのプログラムは止めてください。既定では最大 8 GiB のプログラムを一時ディレクトリに書き、1 時間以上かかります。
+
+**resident** は、`hwnpu-dev probe resident` と指定したときだけ動きます（Intel と Apple）。NPU が一度にどれだけ持てるかを測ります。`-resident-size` GiB（既定は fp16 の 0.25 GiB）のプログラムを 1 本ずつ読んで開いたままにし、1 回ずつ実行します。読み込みが失敗するか `-resident-max-gb`（RAM の 60 %、最大 16）に達するまで続け、最後に持っている全部をもう一度実行します。メモリが足りなくなったら、一番古いものを閉じて、失敗したものをもう一度読みます。閉じればメモリが戻るかどうかで、hwnpu-image が Anima の部品を読み直す処理はこれを当てにしています。`-resident-hold close` は 1 本ずつ読んで実行して閉じるのを同じ合計まで続け、持っている量の上限か、読んだ量の上限かを分けます。`-resident-formats int8` で、上限が重みのバイト数で決まるかが分かり、`-resident-run=false` は実行せずに読むだけにします。子プロセスは 1 本ごとに結果を出すので、ドライバの中で落ちても（Intel の 0xc0000005）そこまでに載った分は報告に残ります。Intel の NPU（Core Ultra 5 135U）は、Anima の fp16 の部品を一度に約 4.6 GB 持ったところで ERROR_OUT_OF_HOST_MEMORY になりました。報告には各読み込みの時間と、Windows では各読み込みの後のプロセスの private メモリが出ます。
 
 **verify** は、bench と同じモデルを、1 回の呼び出しで K 個のトークン（既定は 1〜128）を通す形にして NPU で動かします。投機的デコードで、下書きした K 個のトークンを 1 回で確かめる呼び出しや、プロンプトをまとめて読む呼び出しと同じ形で、K に関係なく重みは 1 回ずつしか読みません。K を増やしても 1 回の時間がほとんど変わらないうちは重みの読み出しで頭打ちになっていて、K 個の確認が 1 トークンの生成とほぼ同じ時間で済みます。ある K を超えると計算が追いつかなくなり、時間は K に比例して伸びます。レポートには、そのときの計算の速さ（TFLOPS）と、NPU の計算と重みの読み出しの速さの比から求めた、重みを読む時間と計算の時間がつり合う K を出します。これが、投機的デコードで得られる速さの上限と、NPU を最もよく使えるプロンプトの区切りの目安です。注意はトークンごとの代わりの演算だけで、下書きのトークンどうしの注意は含みません。形式は NPU で動くもの（Apple は fp16、int8、lut4）です。
 
@@ -136,7 +140,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 上限はモデルごとです。0.91 GiB の fp16 のモデルを 3 つ（計 2.7 GiB）同時に読み込んでも、3 つとも Neural Engine に載り、どれも 1 回 45 ms と、1 つだけのときと同じ速さでした。
 - CPU に落ちた lut4 のモデルは極端に遅く、1.0〜1.4 GiB で 1 回 5〜13 秒かかりました。CPU では表を 4 倍の大きさの fp16 に展開するので、16 GB の機械ではメモリが足りなくなったためと考えられます。
 
-16 層（0.97 B）での速さとエネルギー。速さは `npuprobe bench`、エネルギーは同じ形のモデルでの `powerbench` です。
+16 層（0.97 B）での速さとエネルギー。速さは `hwnpu-dev probe bench`、エネルギーは同じ形のモデルでの `hwnpu-dev powerbench` です。
 
 | 形式 | 重み | 指定 | 置かれた先 | ms/token | tokens/s | 重み GB/s | CPU use | mJ/token |
 |---|---|---|---|---|---|---|---|---|
@@ -157,7 +161,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 1 B の fp16 は大きさの上限を超えるので、CPU で動きます。
 - CPU は読み出すバイト数ではなく計算で頭打ちになり、どの形式でも 1 トークン 30 ms 前後で、3.3〜3.7 コア分を使います。量子化が効くのは NPU と GPU だけです。
 
-上限を超えるモデルを分けて動かした結果（`npuprobe split`、lut4 の 64 層、1.81 GiB、3.9 B 個の重み。レポートは [npuprobe-m3-split.md](npu_profiles/npuprobe-m3-split.md)）:
+上限を超えるモデルを分けて動かした結果（`hwnpu-dev probe split`、lut4 の 64 層、1.81 GiB、3.9 B 個の重み。レポートは [npuprobe-m3-split.md](npu_profiles/npuprobe-m3-split.md)）:
 
 | 分け方 | 部分の大きさ | 置かれた先 | 部分ごとの ms/call | ms/token | 部分の時間の合計 | 重み GB/s | CPU use | 各部分のあとの GPU との誤差 |
 |---|---|---|---|---|---|---|---|---|
@@ -181,7 +185,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 1 GiB の上限は、読み込む関数ではなくパッケージ全体で数えられます。分けるときは部分ごとに別のパッケージにします。
 - 別々のパッケージでは、プロセスの最大メモリはおよそ 1 部分の重みの大きさです。分けるほど少なくなり、速さはほとんど変わりません。
 
-1 回の呼び出しで K 個のトークンを通した結果（`npuprobe verify -formats lut4 -layers 16`、lut4 で 0.97 B 個の重み）:
+1 回の呼び出しで K 個のトークンを通した結果（`hwnpu-dev probe verify -formats lut4 -layers 16`、lut4 で 0.97 B 個の重み）:
 
 | K | ms/call | × K=1 | ms/token | TFLOPS |
 |---|---|---|---|---|
@@ -195,11 +199,11 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - 64 トークンまでは、1 トークンとほぼ同じ時間で済みます。重みの読み出し（59 GB/s）で頭打ちになっているためです。1 トークンの生成で使う計算は 0.24 TFLOPS で、Neural Engine の計算能力の 2% 未満です。
 - 64 トークンで計算は 13.7 TFLOPS に達し、M3 の 18 TOPS（fp16）の 4 分の 3 です。この速さで計算すると、重みを 1 回読む時間で約 58 トークンを計算できます。
 - 128 トークンは 64 トークンの 2.7 倍の時間がかかり、1 トークンあたりでも 64 より遅くなります。上限を超えたら、128 ずつより 64 ずつに分けて流すほうが速くなります。
-- つまり、投機的デコードでは 1 トークンの時間で約 60 個の下書きを確かめられ、プロンプトは約 64 トークンずつ読むのが最も速くなります（重み 1 B で毎秒約 7,000 トークン）。`hwnpu-convert -seq` で変換した LFM3-1.7B も同じ傾向でした（1 トークンで 13.7 ms、48 で 15.2 ms、96 で 30.0 ms、11 TFLOPS）。
+- つまり、投機的デコードでは 1 トークンの時間で約 60 個の下書きを確かめられ、プロンプトは約 64 トークンずつ読むのが最も速くなります（重み 1 B で毎秒約 7,000 トークン）。`hwnpu-dev convert -seq` で変換した LFM3-1.7B も同じ傾向でした（1 トークンで 13.7 ms、48 で 15.2 ms、96 で 30.0 ms、11 TFLOPS）。
 
 ### Apple M2（MacBook Air、16 GB、macOS 27.2）
 
-既定の `npuprobe`（bench と limit。レポートは [npuprobe-m2.md](npu_profiles/npuprobe-m2.md)）。16 層（0.97 B）で、上の M3 と比べると:
+既定の `hwnpu-dev probe`（bench と limit。レポートは [npuprobe-m2.md](npu_profiles/npuprobe-m2.md)）。16 層（0.97 B）で、上の M3 と比べると:
 
 | 形式 | 重み | 指定 | M2 ms/token | M3 ms/token | M2 重み GB/s | M3 重み GB/s |
 |---|---|---|---|---|---|---|
@@ -212,10 +216,10 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 
 - 大きさの上限は M3 と層の数まで同じです。fp16 は 8 層（0.91 GiB）が Neural Engine に載り 9 層（1.02 GiB）は載らず、int8 は 17 層と 18 層、lut4 は 35 層（0.99 GiB）と 36 層です。0.91 GiB の fp16 のモデルを 3 つ同時に読み込んでも、3 つとも Neural Engine に載り、1 回 15〜16 ms と 1 つのときと同じでした。
 - lut4 は M3 と同じ速さなので、重みの読み出しで決まる生成もほぼ同じ速さのはずです。CPU は 2 割ほど遅くなります。
-- int8 と fp16 も全速で動きました。どの形式も重みを約 60 GB/s で読みます（0.49 B の fp16 で 15.9 ms）。M3 で全速だったのは lut4 だけです。違いは OS ではなくチップによります。M3 を M2 と同じ macOS 27.2（Core ML も同じ Build 26B123）にして `npuprobe bench` を測り直しても、Neural Engine の int8 は 16 層で 42.2 ms（23 GB/s）、fp16 は 8 層で 45.6 ms（21 GB/s）と 27.0.1 のときと変わらず、lut4 だけが 7.6 ms（64 GB/s）でした（レポートは [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)）。
+- int8 と fp16 も全速で動きました。どの形式も重みを約 60 GB/s で読みます（0.49 B の fp16 で 15.9 ms）。M3 で全速だったのは lut4 だけです。違いは OS ではなくチップによります。M3 を M2 と同じ macOS 27.2（Core ML も同じ Build 26B123）にして `hwnpu-dev probe bench` を測り直しても、Neural Engine の int8 は 16 層で 42.2 ms（23 GB/s）、fp16 は 8 層で 45.6 ms（21 GB/s）と 27.0.1 のときと変わらず、lut4 だけが 7.6 ms（64 GB/s）でした（レポートは [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)）。
 - 上限を超えて CPU に置かれた lut4 は、M3 と同じく極端に遅くなります（40 層で 1 回 6.3 秒、48 層で 17.7 秒）。
 - コンパイルは M3 より長くかかります（lut4 の 32 層で 25 秒）。
-- **M1 と違い、部分を順に回すときの合計の上限はありません**（`npuprobe split -formats lut4 -parts 8 -ref none -split-layers N`、2026-11-09。下の M1 の表と同じ大きさ。レポートは [96](npu_profiles/npuprobe-m2-split-96.md)、[100](npu_profiles/npuprobe-m2-split-100.md)、[104](npu_profiles/npuprobe-m2-split-104.md)、[128](npu_profiles/npuprobe-m2-split-128.md) 層）。3.62 GiB まで、全部を読み込んで順に回した時間は単独の合計どおりで、63 GB/s で読みます:
+- **M1 と違い、部分を順に回すときの合計の上限はありません**（`hwnpu-dev probe split -formats lut4 -parts 8 -ref none -split-layers N`、2026-11-09。下の M1 の表と同じ大きさ。レポートは [96](npu_profiles/npuprobe-m2-split-96.md)、[100](npu_profiles/npuprobe-m2-split-100.md)、[104](npu_profiles/npuprobe-m2-split-104.md)、[128](npu_profiles/npuprobe-m2-split-128.md) 層）。3.62 GiB まで、全部を読み込んで順に回した時間は単独の合計どおりで、63 GB/s で読みます:
 
 | 合計 | 部分 | Neural Engine が持つ量 | ms/token | 単独で回した時間の合計 | 重みの GB/s |
 |---|---|---|---|---|---|
@@ -228,7 +232,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 
 ### Apple M1（MacBook Pro 13 インチ、16 GB、macOS 27.2）
 
-既定の `npuprobe`（bench と limit。レポートは [npuprobe-m1.md](npu_profiles/npuprobe-m1.md)）。`cmd/report` は 4 つの確認がすべて通りました。16 層（0.97 B）で、上の M2 と M3 と比べると:
+既定の `hwnpu-dev probe`（bench と limit。レポートは [npuprobe-m1.md](npu_profiles/npuprobe-m1.md)）。`hwnpu-dev report` は 4 つの確認がすべて通りました。16 層（0.97 B）で、上の M2 と M3 と比べると:
 
 | 形式 | 重み | 指定 | M1 ms/token | M2 ms/token | M3 ms/token | M1 重み GB/s | M2 重み GB/s | M3 重み GB/s |
 |---|---|---|---|---|---|---|---|---|
@@ -239,14 +243,14 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 | lut4 | 0.45 GiB | GPU | 83.2 | 55.4 | 65.1 | 6 | 9 | 7 |
 | どの形式も | | CPU | 38 前後 | 35 前後 | 27〜30 | | | |
 
-- 大きさの上限は M2 や M3 と層の数まで同じです。fp16 は 8 層（0.91 GiB）が Neural Engine に載り 9 層（1.02 GiB）は載らず、int8 は 17 層と 18 層、lut4 は 35 層（0.99 GiB）と 36 層です。0.91 GiB の fp16 のモデルを 3 つ同時に読み込んでも、3 つとも Neural Engine に載り、1 回 15.4 ms と 1 つのときと同じでした。1 GiB 未満の部分（`hwnpu-convert` の既定の `-target any`）は、これまで測ったどのチップにも載ります。
+- 大きさの上限は M2 や M3 と層の数まで同じです。fp16 は 8 層（0.91 GiB）が Neural Engine に載り 9 層（1.02 GiB）は載らず、int8 は 17 層と 18 層、lut4 は 35 層（0.99 GiB）と 36 層です。0.91 GiB の fp16 のモデルを 3 つ同時に読み込んでも、3 つとも Neural Engine に載り、1 回 15.4 ms と 1 つのときと同じでした。1 GiB 未満の部分（`hwnpu-dev convert` の既定の `-target any`）は、これまで測ったどのチップにも載ります。
 - int8 と fp16 は M2 と同じく全速で動きます。重みを約 62 GB/s で読み（0.49 B の fp16 で 15.6 ms）、M1 のメモリ帯域（68 GB/s）の約 9 割です。3 つのチップのうち、これらが遅いのは M3 だけです。
 - M1 で遅いのは lut4 です。16 層で 44 GB/s、2 層から 35 層までどの大きさでも 39〜45 GB/s で、同じチップの int8 の 62 GB/s に届きません。足を引っ張っているのはメモリではなく、M1 の Neural Engine では 4 ビットの表を展開するのに手間がかかるようです。読むバイト数が半分なので 1 トークンあたりではそれでも最も速い形式ですが、int8 より 2 倍ではなく 1.4 倍速いだけです（11.0 ms と 15.7 ms）。
 - GPU は M2 や M3 より遅くなります（int4 で 14.8 ms と 8.5 ms、fp16 で 55 GB/s と 76〜79 GB/s）。そのため M1 では、Neural Engine の lut4 が GPU の int4 より速く、いちばん速い組み合わせです（11.0 ms と 14.8 ms）。M2 と M3 ではこの 2 つはほぼ同じでした。
 - CPU はどの形式でも 1 トークン 38 ms 前後で、約 5 コア分を使います。
 - 上限を超えて CPU に置かれた lut4 は遅くなりますが、M2 ほどではありません（36 層で 1 回 2.7 秒、40 層で 3.3 秒、48 層で 6.3 秒）。
 - コンパイルは M2 より短く済みます（lut4 の 32 層で 16.2 秒と 25 秒）。
-- **M1 には、部分を順に回すときの合計の上限もあります**（`npuprobe split -formats lut4 -parts 8 -ref none`、2026-11-08。レポートは [npuprobe-m1-split-104.md](npu_profiles/npuprobe-m1-split-104.md)）。重みが 2.83 GiB までは、全部の部分を読み込んで順に回しても、各部分を単独で回した時間の合計どおりです。2.95 GiB からは 1 トークンが約 12 倍かかり、呼び出しのたびに部分を載せ直しているように見えます。部分の数は関係ありません（2.95 GiB を 4 部分で 986 ms）。M4 は 3.62 GiB を 8 部分で全速で回します（下）。`npuprobe limit` の複数のモデル（0.99 GiB × 3）でこれが出なかったのは、1 つのモデルずつ続けて何度も呼んで測るためです:
+- **M1 には、部分を順に回すときの合計の上限もあります**（`hwnpu-dev probe split -formats lut4 -parts 8 -ref none`、2026-11-08。レポートは [npuprobe-m1-split-104.md](npu_profiles/npuprobe-m1-split-104.md)）。重みが 2.83 GiB までは、全部の部分を読み込んで順に回しても、各部分を単独で回した時間の合計どおりです。2.95 GiB からは 1 トークンが約 12 倍かかり、呼び出しのたびに部分を載せ直しているように見えます。部分の数は関係ありません（2.95 GiB を 4 部分で 986 ms）。M4 は 3.62 GiB を 8 部分で全速で回します（下）。`hwnpu-dev probe limit` の複数のモデル（0.99 GiB × 3）でこれが出なかったのは、1 つのモデルずつ続けて何度も呼んで測るためです:
 
 | 合計 | 部分 | Neural Engine が持つ量 | ms/token | 単独の合計 | 重み GB/s |
 |---|---|---|---|---|---|
@@ -263,7 +267,7 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 
 ### Apple M4
 
-上限を超えるモデルを分けて動かした結果（`npuprobe split -split-layers 128 -parts 2,4`、lut4 の 128 層、3.62 GiB、7.8 B 個の重み）:
+上限を超えるモデルを分けて動かした結果（`hwnpu-dev probe split -split-layers 128 -parts 2,4`、lut4 の 128 層、3.62 GiB、7.8 B 個の重み）:
 
 | 分け方 | 部分の大きさ | ms/token | 重み GB/s |
 |---|---|---|---|
@@ -272,12 +276,12 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 | 8 つ | 16 層、0.45 GiB | 59.4 | 66 |
 | 16 | 8 層、0.23 GiB | 60.6 | 64 |
 
-- 部分を 1 つ増やすごとに、1 トークンが約 0.15 ms 遅くなります（2 つから 16 にして 2.3 ms）。Core ML の呼び出し 1 回ごとの固定の費用です。1 GiB 未満に分けた 4 つなら 0.6 ms、1 トークンの 1% ほどです。部分が小さいほど割合は大きくなるので、上限に収まる最少の数に分けます（`hwnpu-convert` はそうします）。
+- 部分を 1 つ増やすごとに、1 トークンが約 0.15 ms 遅くなります（2 つから 16 にして 2.3 ms）。Core ML の呼び出し 1 回ごとの固定の費用です。1 GiB 未満に分けた 4 つなら 0.6 ms、1 トークンの 1% ほどです。部分が小さいほど割合は大きくなるので、上限に収まる最少の数に分けます（`hwnpu-dev convert` はそうします）。
 - 分け方は誤差に効きません。各部分のあとの誤差は 2 つでも 4 つでも同じでした。
-- そのため、M4 でも M3 と同じ 1 GiB 未満の部分（`hwnpu-convert` の既定の `-target any`）で動かして損はありません。全部の部分を同時に読み込みますが、読み込むときのプロセスの最大メモリはおよそ 1 部分の重みの大きさなので（M3 で 2 つなら 1.03 GiB、4 つなら 0.55 GiB。上の表）、メモリの少ない機械では細かく分ける意味があります。
+- そのため、M4 でも M3 と同じ 1 GiB 未満の部分（`hwnpu-dev convert` の既定の `-target any`）で動かして損はありません。全部の部分を同時に読み込みますが、読み込むときのプロセスの最大メモリはおよそ 1 部分の重みの大きさなので（M3 で 2 つなら 1.03 GiB、4 つなら 0.55 GiB。上の表）、メモリの少ない機械では細かく分ける意味があります。
 - Neural Engine が重みを読む速さは M3（65 GB/s）とほぼ同じです。
 
-### KV キャッシュ（Apple M3、`npuprobe kv`）
+### KV キャッシュ（Apple M3、`hwnpu-dev probe kv`）
 
 11 層、lut4、1 トークン、全部 Neural Engine（レポートは [npuprobe-m3-kv.md](npu_profiles/npuprobe-m3-kv.md)）:
 
@@ -295,15 +299,15 @@ go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest split -split-layers 128 -p
 - キャッシュを int8 にしても速くなりません（レポートは [npuprobe-m3-kv-int8.md](npu_profiles/npuprobe-m3-kv-int8.md)）。`host-int8` は全演算 Neural Engine に載り、メモリは半分ですが、1024 / 4096 / 8192 で 11.9 / 29.5 / 50.8 ms と、同じ実行の `host`（10.8 / 27.6 / 46.5 ms）より 1 割遅くなります。fp16 に戻す演算が容量全体にかかるためです。量子化はメモリのための手法です。
 - Neural Engine に載るテンソルの 1 次元の長さは 16384 までです（レポートは [npuprobe-m3-kv-limit.md](npu_profiles/npuprobe-m3-kv-limit.md)）。`-kv-layers 2` で、鍵の軸が 16384（キャッシュ 16383）なら全部 Neural Engine で 16.6 ms、16385（キャッシュ 16384）では注意の 39 演算が CPU に置かれて 117 ms でした。
 - キャッシュを塊に分けると、この上限を超えても Neural Engine に載ります（`-kv-layers 6`、LFM3-1.7B の全注意の層の数。レポートは [npuprobe-m3-kv-chunk.md](npu_profiles/npuprobe-m3-kv-chunk.md) と [npuprobe-m3-kv-chunk-long.md](npu_profiles/npuprobe-m3-kv-chunk-long.md)）。`host-chunk` は 4096 / 16320 / 32768 / 65536 で 13.2 / 43.4 / 84.0 / 201.6 ms と全部 Neural Engine で、分けない `host`（4096 / 16320 で 14.5 / 49.1 ms）より遅くなりません。塊は別々の入力にし、塊どうしは要素ごとの演算だけで合わせます。塊を 1 つのテンソルの軸に並べて軸方向に縮約する形や、各塊をその和の割合で重み付けする形は、2 塊から全演算が CPU に置かれました。
-- 塊ごとに重みなしの注意を呼び、ホストで合わせると、費用は容量ではなく使った長さに比例します（`npuprobe attn`、レポートは [npuprobe-m3-attn.md](npu_profiles/npuprobe-m3-attn.md)）。grouped、Q=8、塊 8192 の 6 層で、使った長さ 4096 / 16384 / 65536 / 262144 に対して 8.8 / 17.4 / 69.5 / 295.7 ms でした。塊ごとにバッファを付け替えても 1 回の時間は変わらず、最大の常駐メモリは KV のバイト数（262144 で 3 GiB）より 0.1 GiB ほど多いだけで、入力は複製されません。仕事の少ない形は Core ML が CPU に置きます（Q=1 は塊 8192 まで、Q=8 は 2048 まで）。Q=1 では CPU のほうが Neural Engine より 2 倍速くなりました（1K あたり 0.41 対 0.80 ms）。
+- 塊ごとに重みなしの注意を呼び、ホストで合わせると、費用は容量ではなく使った長さに比例します（`hwnpu-dev probe attn`、レポートは [npuprobe-m3-attn.md](npu_profiles/npuprobe-m3-attn.md)）。grouped、Q=8、塊 8192 の 6 層で、使った長さ 4096 / 16384 / 65536 / 262144 に対して 8.8 / 17.4 / 69.5 / 295.7 ms でした。塊ごとにバッファを付け替えても 1 回の時間は変わらず、最大の常駐メモリは KV のバイト数（262144 で 3 GiB）より 0.1 GiB ほど多いだけで、入力は複製されません。仕事の少ない形は Core ML が CPU に置きます（Q=1 は塊 8192 まで、Q=8 は 2048 まで）。Q=1 では CPU のほうが Neural Engine より 2 倍速くなりました（1K あたり 0.41 対 0.80 ms）。
 
 ### 求む結果
 
-M4 以降の Apple のチップ（1 GiB の上限はチップやメモリで変わるか）、Linux と Windows の Intel Core Ultra（Intel バックエンドはまだ実機で動いていない）、AMD Ryzen AI の `cmd/report`。`.md` のファイルを付けて issue を開いてください。
+M4 以降の Apple のチップ（1 GiB の上限はチップやメモリで変わるか）、Linux と Windows の Intel Core Ultra（Intel バックエンドはまだ実機で動いていない）、AMD Ryzen AI の `hwnpu-dev report`。`.md` のファイルを付けて issue を開いてください。
 
 ## この計測の限界
 
 - 重みが乱数なので、精度については何も分かりません。精度は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を参照してください。
 - KV キャッシュがありません。実際の生成では文脈に対する注意が加わりますが、文脈が短いうちは重みに比べて小さい量です。
 - Core ML の計算計画は配置の見積もりです。CPU use で裏付けを取ります。
-- `powerbench -decode` と npuprobe の Intel 向けの経路は、M3 以外の機械ではまだ動かしていません。
+- `hwnpu-dev powerbench -decode` と hwnpu-dev probe の Intel 向けの経路は、M3 以外の機械ではまだ動かしていません。

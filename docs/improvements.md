@@ -219,7 +219,7 @@ Most of the disk is weights and their copies: programs for 8 and 64 tokens per c
 | AMD: q4nx quantization choosing from 9 candidates (amd-npu-models.md section 13) | Plain min-max: weight error 8.2 % | 7.3 % | None; at export only |
 | AMD 4-bit KL by model | | LFM3 0.036 (92 % match), E4B 0.049, E2B 0.097, PLaMo 3 0.007–0.009 on its translations (36 of 44 the same as bf16) | LFM3 and translation hold up well at 4 bits. Measure LFM3 with a BOS (without it, it looks 4× worse) |
 | AMD: 4-bit codes chosen by GPTQ (16.87, `q4_gptq.py`, `--q4-codes`) | Each weight rounded to its nearest level: KL from the NPU's bf16 on E2B 0.120 (README), 0.221 (Japanese Wikipedia); LFM3 0.032, 0.071 | E2B 0.092, 0.081 (top-1 79 → 88 %); LFM3 0.017, 0.038. The GPL, not calibrated on: E2B 0.161 → 0.140, LFM3 0.110 → 0.092 | Same format, so speed and memory are unchanged. Calibration on the CPU before the export (E2B about 40 min, LFM3 about 25). With H damped by 0.01 instead of 0.1 it fitted the calibration texts and made the GPL worse than rounding. Also on the NPU, wiki-ja: E4B 0.083 → 0.049, LFM3-VL 0.067 → 0.034, Audio 0.046 → 0.022, Omni 0.048 → 0.024, PLaMo 3 0.058 → 0.040 (README and GPL mostly better too; Audio's GPL 0.154 → 0.161). LFM3's multimodal models have their own text weights, so each is calibrated (amd-npu-models.md 13, "continued") |
-| Apple: lut6 entries chosen by GPTQ (16.87, `hwnpu-convert -codes`) | LFM3 lut6: KL (CPU estimate) README 0.070, wiki40b-ja 0.112 | 0.027, 0.068. Through Go's converter 0.074 → 0.050 (top-1 105 → 111 of 128) | Same format and speed. On the M3's ANE (16.95, every projection with `--q8 gptq`): KL from PyTorch's fp32 against the chat's rounding English 0.322 → 0.247 (median 0.155 → 0.097), Japanese 0.054 → 0.035, as on Core ML's CPU; all on the ANE, same speed. 12 factual questions: 10 of 12 either way (GPTQ got Mount Fuji's height wrong). Fitting the tables too, by k-means weighted with E[x²] (`--lut-fit wkmeans`): lut6 0.050 → 0.038 through Go's converter (top-1 112 of 128); lut4 2.7 → 0.66 → 0.33, better but still 4× lut6's rounding. **Gemma 4 E2B on the M1** (16.114, calibrated on the 16 GB Mac with the tables read from the file, 87 min): on the ANE over 128 tokens English 1.02 → 0.56, Japanese 1.16 → 0.94 (median 0.25 → 0.08, 0.47 → 0.20; top-1 88 → 97, 82 → 92 of 128) with the `per_layer` projections the calibration leaves out at lut8 (+0.01 GiB); 12 questions 10 → 11 of 12; same speed. `hwnpu-chat -codes DIR -format-for per_layer=lut8` |
+| Apple: lut6 entries chosen by GPTQ (16.87, `hwnpu-dev convert -codes`) | LFM3 lut6: KL (CPU estimate) README 0.070, wiki40b-ja 0.112 | 0.027, 0.068. Through Go's converter 0.074 → 0.050 (top-1 105 → 111 of 128) | Same format and speed. On the M3's ANE (16.95, every projection with `--q8 gptq`): KL from PyTorch's fp32 against the chat's rounding English 0.322 → 0.247 (median 0.155 → 0.097), Japanese 0.054 → 0.035, as on Core ML's CPU; all on the ANE, same speed. 12 factual questions: 10 of 12 either way (GPTQ got Mount Fuji's height wrong). Fitting the tables too, by k-means weighted with E[x²] (`--lut-fit wkmeans`): lut6 0.050 → 0.038 through Go's converter (top-1 112 of 128); lut4 2.7 → 0.66 → 0.33, better but still 4× lut6's rounding. **Gemma 4 E2B on the M1** (16.114, calibrated on the 16 GB Mac with the tables read from the file, 87 min): on the ANE over 128 tokens English 1.02 → 0.56, Japanese 1.16 → 0.94 (median 0.25 → 0.08, 0.47 → 0.20; top-1 88 → 97, 82 → 92 of 128) with the `per_layer` projections the calibration leaves out at lut8 (+0.01 GiB); 12 questions 10 → 11 of 12; same speed. `hwnpu-chat -codes DIR -format-for per_layer=lut8` |
 | AMD: the cores' rounding to nearest even (16.78) | The cores start in floor mode, and each narrowing to bf16 pulls sums of inputs with a mean downward: Anima's DiT step-0 velocity error q8 0.088, q4 0.244 (bf16 0.025) | q8 0.031, q4 0.087 (the quantization alone on the CPU: 0.007, 0.092). Language models: E2B KL 0.097 → 0.093, LFM3 0.036 unchanged | None (one instruction a call). Takes effect when exported again |
 | AMD: Anima's DiT at q8 rather than q4 (16.78) | q4nx: latent cosine 0.777, the face and hands change. GPTQ (`anima_gptq.py`, 16.87) at 512×512 on the CPU: velocity error 0.123 → 0.071, latent cosine 0.868 → 0.939 (q8: 0.013, 0.962) | q8: 0.961 (bf16 0.966), nearly the same picture | 735 MiB more pinned than q4 |
 | Anima: `HIGHEST` for the text only (16.68) | All `MEDIUM` (bfp16): latent cosine 0.938 | 0.966 (bf16 on the CPU: 0.980) | Same time |
@@ -301,7 +301,7 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | Qwen3.5's embeddings on the host (16.104) | The head holds a quantized copy, so the bf16 table on the device was unused | 0.8B −0.47 GiB, 2B −0.95 GiB. Logits bit for bit the same. Qwen3.6 keeps it (its routing reads it) |
 | GDN columns in whole blocks of 64 rows (16.104) | Puts the fused projection of the Qwen3.5 with as many value heads as key heads (0.8B, 2B) on q8 / q4 | A column 772 → 776 channels (rows of zeros). 4B unchanged |
 | Anima's DiT in one bank (`iron.GraphOptions.SwapVariants`, 16.106) | One bank for the 7 groups, a group's weight image (304 MiB) read into it when it runs | Pinned 3445 → 1236 MiB, denoising +2 %, latents byte for byte the same. `-resident-dit` keeps all |
-| hwnpu-xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | Matrix multiply at 1–4 tenths of the peak (int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
+| hwnpu-dev xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | Matrix multiply at 1–4 tenths of the peak (int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
 
 ### 7.4 Common (any NPU, on the host)
 
@@ -410,7 +410,7 @@ In every format, the think budget (`-think-budget`) feeds in the closing mark th
 
 **LFM3-1.7B** (16.8, 16.13–17, 16.39–41, 16.59, 16.61, 16.66)
 - Structure: short convolutions (split into `taps` to avoid the error of the ANE's conv), 5 sliding layers with a window of 256 (rings), 6 full-attention layers, per-head gates, sandwich norms. `-post-scale` keeps the ANE's arithmetic error to 1.4–2.7% a layer
-- Checked against an independent fp64 reference (`reference_test.go`, 16.27) and with `hwnpu-check`. KL 0.232 with lut6
+- Checked against an independent fp64 reference (`reference_test.go`, 16.27) and with `hwnpu-dev check`. KL 0.232 with lut6
 - Default: lut6 + grouped attention, split into 7 parts at the attention, context 262144, two-level attention past 48K
 - Intel: int8 by default (with int4 the next token matches fp16 only 22/52)
 - AMD: IRON has no LFM3, so hwnpu wrote it from IRON's building blocks (`tools/amd/iron_lfm3.py`). KL 9e-7 against HF. The convolution state is copied at each chunk boundary, for rolling back to marks and for the prompt store
@@ -460,7 +460,7 @@ Apple / Intel (`internal/llm/plamo3`):
 - The shape is Gemma 4 without per-layer embeddings, KV sharing or the softcap. Norm inputs are scaled by 1/64
 - YaRN's concentration is not applied to cos and sin; its square scales the scores of the full-attention layers instead. Cached keys then carry no concentration, so the host's attention only applies a scale
 - Split at the 3 full-attention layers, context 262144 (7 KiB/token)
-- Checked: relative error 6.5e-5 against an fp64 reference. `hwnpu-check` argmax 31/31 (fp32)
+- Checked: relative error 6.5e-5 against an fp64 reference. `hwnpu-dev check` argmax 31/31 (fp32)
 - Weight formats (M3): with lut8 the next token matches fp16 98 % of the time, with lut6 89 %; lut4 is unusable (KL 1.91)
 - Default: one lut8 program (`-prefill auto`)
 
@@ -531,18 +531,18 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Slowness right after a long prefill | Why the first few calls after reading 256K take 1.29 s each (350 ms after) | | 16.59 |
 | The ANE's memory (the rest) | The weights' share is now read by `mem.NPUWired` (16.95, no root: 2.43 GiB for LFM3's two lut6 programs). The KV's and intermediate values' share, and the compile cache's, are not told apart | Compare after loading and while generating with a long context | 16.95, model-fit.md T10 |
 | The ANE's compile cache | Its size (about 4 GiB is an estimate; `-prefill auto` assumes 3.5 GiB, since Qwen3.5-2B's two programs of 3.56 GiB were compiled again at every start, 16.99) and location | Looking into aned (sudo) | 16.41, 16.99 |
-| Limits on the M4 and later | The M1 to the M3 are measured: 0.99 GiB a package. Only the M1 slows down 12× once the Neural Engine holds over 2.86 GiB of parts run in turn (16.109); the M2 runs 3.62 GiB at full speed (PROBE.md, 2026-11-09). An M4 ran 3.62 GiB in total, and parts of 1.8 GiB and more, at full speed. Whether a larger default per part (0.9 GiB now) pays on the M4 | `npuprobe limit` and `npuprobe split` on an M4 | 16.12, 16.109 |
+| Limits on the M4 and later | The M1 to the M3 are measured: 0.99 GiB a package. Only the M1 slows down 12× once the Neural Engine holds over 2.86 GiB of parts run in turn (16.109); the M2 runs 3.62 GiB at full speed (PROBE.md, 2026-11-09). An M4 ran 3.62 GiB in total, and parts of 1.8 GiB and more, at full speed. Whether a larger default per part (0.9 GiB now) pays on the M4 | `hwnpu-dev probe limit` and `hwnpu-dev probe split` on an M4 | 16.12, 16.109 |
 | Two programs on the M1 | Since 16.118, `-prefill auto` on an M1 keeps one program when the two with the programs loaded beside them (MTP, encoders) would hold over 2.8 GiB (Qwen3.5-2B lut6: 2.64 + 0.40 GiB → one). Not measured: how much faster LFM3-VL / Audio / Omni (3.26 GiB for two, plus the encoder) generate on the M1 with one, against how much slower they read long prompts | `HWNPU_PROFILE=1` with `-prefill auto` and `-prefill on` on the M1 | 16.109, 16.118 |
 | Gemma 4 E4B's default `-prefill` | With `-kv-only` (16.112) the two programs take 4.88 GiB (6.51 before), still over 3.5 GiB, so `auto` keeps one. `-prefill on` has not been measured since. Before, two programs read long prompts 7.5–8× faster, but every start took 135–165 s (one program: 86 s) and generation at 16K was a fifth slower. Switch by the prompt's length, or let `auto` weigh the length? | Start and round trips with `-prefill on` after `-kv-only` | 16.65, 16.83, 16.112 |
 | Gemma 4 E4B against the unsplit form | Skipped for lack of disk | | 16.65 |
 | Gemma 4 and the prompt store | Save and restore time and size with Gemma 4 E2B | Replay the same OpenCode request as 16.38 | 16.38 |
 | `hwnpu-chat agent` on Apple with Gemma 4 / Qwen3.5 | The templates support tools, but the agent tasks were not run (Gemma 4 E4B passed on AMD) | The tasks in CHAT.md section 7 | 16.35 |
-| Qwen3.5-0.8B / 2B | 2B against HF (0.8B passes with the same code), 2B lut6's KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), passkeys over long contexts | `hwnpu-check`; the KL with the host's or another split | 16.99, 16.115 |
+| Qwen3.5-0.8B / 2B | 2B against HF (0.8B passes with the same code), 2B lut6's KL against HF's bf16 (the 2B in fp16 does not fit a part, so so far only against lut8), passkeys over long contexts | `hwnpu-dev check`; the KL with the host's or another split | 16.99, 16.115 |
 | The rest of speculative decoding | Prompt lookup: acceptance at Q=4, in OpenCode's round trips (7.4K, long XML), against temperature 0. MTP drafts (16.109): 4B on the M3, the time to the first draft after a long prompt (up to 64 calls) | Replays with `-dump` | 16.36, 16.109 |
 | d1-Omni-2B differing from its README | The team answer is the opposite of the README's. HF's code reads up to 16 questions together, hwnpu one at a time. Not compared with HF | Compare with HF's code where torch is available | 16.31 |
 | LFM3-Audio's TTS | Does it sound the same as the reference (llama.cpp)? Only checked by transcribing it again with ASR | Compare audio decoded from the same codes with llama.cpp's server TTS | 16.30–31 |
 | Long texts with PLaMo-Embedding | Do the last layer's values grow further in the 1024-token program (is head-scale enough)? | Vary the texts in `TestANEPrecision` | 16.34 |
-| BERT family | `hwnpu-check` on real weights and placement on the ANE (only checked on the CPU for Intel) | | 16.11 |
+| BERT family | `hwnpu-dev check` on real weights and placement on the ANE (only checked on the CPU for Intel) | | 16.11 |
 | GPTQ's lut6 tables in the answers | On the ANE the KL falls as on the CPU, all on the ANE, same speed (16.95). Whether the answers get better is not told by 12 questions (10/12 either way). lut4 + wkmeans not tried on the ANE. Gemma 4 E2B (16.114): KL on the ANE 1.02 → 0.56 (English), 12 questions 10 → 11 of 12; hwnpu-chat takes them with `--codes`, not by default (2.1 GB of codes to hand out) | More questions and hwnpu-agent's tasks with and without the codes; a way to hand out the codes | 16.87, 16.95, 16.114 |
 | Anima's remaining error against diffusers' fp32 | Latent cosine 0.67–0.98 over 3 prompts after the DiT's silu; the DiT in fp16 brings it only 0.006–0.025 closer (16.95). How much of the rest is the text's int8 is not measured | Swap the text encoder to fp16 | 16.85, 16.95 |
 | Anima above 1024×1024 | The smaller attention chunks for sizes past 1024 (`mil.DitQChunk`) are not measured, nor whether the VAE stages fit | Convert 1280×1280 and run | 16.85 |
@@ -557,7 +557,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 |---|---|---|
 | Does the compiler accept it? | Whether the driver's compiler accepts LFM3-1.7B (int8, `-seq 8` and `64`) and the split form (attention graphs over chunks of 8192), and how long it compiles | intel-npu-models.md section 11 |
 | Argument names | Whether the names Level Zero returns map to the IR's names under `argNames`'s rules (if not, it stops with `chain: part 0 has no output y`) | Same |
-| Speed of the weight formats | The speed difference between int8 and int4-g128 (if int4-g128 is clearly faster, it is a candidate default). Measure with `hwnpu-formats` | Same |
+| Speed of the weight formats | The speed difference between int8 and int4-g128 (if int4-g128 is clearly faster, it is a candidate default). Measure with `hwnpu-dev formats` | Same |
 | Size limits | Is there a limit like Apple's 1 GiB? The 2 GiB of `-target intel` is a placeholder | 16.12, intel-npu-models.md P1 |
 | Cost of attention per chunk | The cost of re-recording command lists when each step calls "full-attention layers × chunks in use" times | intel-npu-models.md, the 16.63 section |
 | Memory | Whether there is enough with tiers, where the 4 graphs keep separate weights (6.4 GiB in int8) | intel-npu-models.md section 11 |
@@ -616,7 +616,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 
 ## 12. The speed ceiling and what software can still move (estimate of 2026-11-08)
 
-This section uses `npuprobe` on the M1, M2 and M3 (PROBE.md, `npu_profiles/`) and the AMD measurements (amd-xdna2-bench.md) to answer two questions: does a faster NPU make generation faster, and what can software still change? 12.2 is an estimate from public specs and has not been measured.
+This section uses `hwnpu-dev probe` on the M1, M2 and M3 (PROBE.md, `npu_profiles/`) and the AMD measurements (amd-xdna2-bench.md) to answer two questions: does a faster NPU make generation faster, and what can software still change? 12.2 is an estimate from public specs and has not been measured.
 
 ### 12.1 The ceiling is how fast the NPU reads DRAM
 
@@ -646,7 +646,7 @@ Generation of LFM3-1.7B (lut4, short context) compared with the M3. The NPU's sh
 | Snapdragon X2 Elite Extreme (228 GB/s) | 115–150 GB/s | 1.8–2.2× | Same as above | Same as above |
 
 - The M6's second engine helps generation only if a layer's matrices can be split into two programs called at the same time. That doubles the fixed cost per call
-- To check: run `npuprobe` on the new machine and read "weights GB/s" for lut4 at 16 layers. If it is about 64, generation is the same as the M3 and only prefill gains
+- To check: run `hwnpu-dev probe` on the new machine and read "weights GB/s" for lut4 at 16 layers. If it is about 64, generation is the same as the M3 and only prefill gains
 
 ### 12.3 What software can move
 

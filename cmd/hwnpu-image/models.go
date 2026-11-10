@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -49,10 +50,10 @@ func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	return m, err
 }
 
-// ListCmd is "hwnpu-image list": the image, depth and face-detect models of the definitions (models.yaml),
+// ListCmd is "hwnpu-image list": the image, depth, face-detect and pose models of the definitions (models.yaml),
 // whether their exports are here, and what each use and family picks for each machine's memory.
 type ListCmd struct {
-	Kind string `arg:"" optional:"" enum:"image,depth,face-detect," default:"" help:"Only image, depth or face-detect models."`
+	Kind string `arg:"" optional:"" enum:"image,depth,face-detect,pose," default:"" help:"Only image, depth, face-detect or pose models."`
 }
 
 // Run lists the models.
@@ -63,7 +64,7 @@ func (c *ListCmd) Run() error {
 	if c.Kind != "" {
 		listModels(os.Stdout, chat.Kind(c.Kind))
 	} else {
-		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace)
+		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose)
 	}
 	return nil
 }
@@ -76,6 +77,12 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 	chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
 		if d, _, err := chat.ChooseDevice(m, vendor, ""); err == nil && d == "cpu" {
 			return "CPU (ONNX Runtime)"
+		}
+		if m.Kind == chat.KindPose { // converted on the first run, for Core ML or OpenVINO
+			if vendor == "amd" {
+				return "- (--cpu: the CPU interpreter)"
+			}
+			return "converted on first run"
 		}
 		if d, err := amdExport(m, ""); err == nil {
 			return "~/models/" + filepath.Base(d)
@@ -101,16 +108,21 @@ func amdExport(m chat.Model, tool string) (string, error) {
 		tool, root, name, m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), name)
 }
 
-// freeName is the first of base, "stem (2).ext", "stem (3).ext", ... that does not exist.
-func freeName(base string) string {
-	if _, err := os.Lstat(base); errors.Is(err, os.ErrNotExist) {
+// freeName is the first of base, "stem (2).ext", "stem (3).ext", ... that does not exist and
+// is not one of taken (names given out already for this run).
+func freeName(base string, taken ...string) string {
+	free := func(p string) bool {
+		_, err := os.Lstat(p)
+		return errors.Is(err, os.ErrNotExist) && !slices.Contains(taken, p)
+	}
+	if free(base) {
 		return base
 	}
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 	for i := 2; ; i++ {
 		p := fmt.Sprintf("%s (%d)%s", stem, i, ext)
-		if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
+		if free(p) {
 			return p
 		}
 	}

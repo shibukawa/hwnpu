@@ -3627,3 +3627,172 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 効果音の WAV は音楽と同じ 48 kHz ステレオ (モノラルを両方のチャンネルに)、利得 1 (音楽の WAV は参照に合わせて 0.5)。終わりの `--fade` は、音楽は既定 2 秒、効果音は付けたときだけ
 - 配置が分からないのは NPU から外れたのとは別に扱う: 8 GB 向けの文の符号器が、コンパイルし直した直後に `NOT all on the NPU` で止まり、次の起動では全部 NPU だった。hwnpuinfo でも全部 NPU。Neural Engine がコンパイルで忙しい間に MLComputePlan が 2 分で終わらず (`placement.Verified` が false)、外れたことにされていたとみる。`runner` に `Placement()` (分からないときは理由、外れたときは演算の内訳) を足し、分からないプログラムは「placement not known, going on」と出して続ける。音楽の `checkNPU` も同じ
 
+### 16.138 Sana の Gemma 2: 指示文のキーと値を書き出しに持ち、続きを 64 行の塊で。射影は q6 — 2026-11-10
+
+- 動機: Sana のテキスト (Gemma 2 2B) は 1 枚 2.6 秒 (読み込み 1.0、計算 1.6)。毎回 512 行を計算していたが、そのうち指示文 (208 トークン) は毎回同じで、因果的な注意なので結果も同じ
+- 指示文を書き出しのときに numpy の float32 で通し (`iron_sana.Prefix`)、各層のキーと値の先頭 192 行をグラフの定数に、最後の隠れ状態を `prefix_out.bin` に持つ。グラフは 64 行の塊で、呼び出しごとの値は `start` だけ (キャッシュへの書き込み、RoPE の表、注意のキーの数がどれも `start` の一次式)。Go は指示文と一致する長さから `start` を決め (`sana.textStart`)、長いプロンプトは塊を続けて呼ぶ。否定のプロンプトは `start` 0 から同じグラフで
+- 呼び出しごとの行の数 (`x[:rows]`) で縛る形は、RMSNorm の回数 `ceil(rows / 8)` が一次式にならず書き出せなかった。IRON の lm と同じく固定の塊にした。MHA は 1 パイプライン 64 行なので、64 行の塊ではパイプライン 1 本
+- 精度: 残す行は CPU の fp32 (指示文とプロンプトを通して計算したもの) とコサイン 0.99983 以上 (q8)。前の形と同じかわずかによい (相対誤差 1.51 → 1.35 %)
+- 形式: 64 行では時間は形式でほとんど変わらない (CLI で q8 0.72、bf16 0.68、q6 0.70 秒)。後段の DiT につないで、CPU の参照 6 枚と同じノイズで比べ、q6 を既定にした (行の誤差 3.5 %、構図は参照と同じ。読み込み 1.0 → 0.76 秒、固定 2.3 → 1.7 GB)。q4 の丸めは行の誤差 15 % で構図が変わる
+- 評価の教訓: 2 ステップの Sana-Sprint は条件の小さな差を大きく広げる (キャプションの 0.23 % の差で潜在のコサイン 0.965)。1 枚の潜在のコサインでは形を比べられない。行の誤差 (CPU の fp32 に対する) と、数枚の絵の構図で決める
+- 結果: テキスト 2.6 → 1.9 秒 (計算 1.58 → 0.70 秒)。否定のプロンプトつきの Sana 600M はテキスト 5.7 → 3.3 秒。固定の最大は VAE の段 (2.4 GiB) で変わらず、テキストの段は 2.34 → 1.87 GiB。1 枚の時間の残りの大半は VAE (13 秒)
+- 残り: テキストのグラフを載せたままにする使い方 (サーバー) では、暖まった計算が bf16 で 257 ms (q6 494 ms) なので、形式を選び直す余地がある。否定のプロンプトがあるときにグラフを 2 回読み込む (1 回にまとめられる)
+
+### 16.139 Sana の VAE: 3 × 3 の畳み込みをタップごとの行列積に、同じ形の段をまとめる — 2026-11-10
+
+- 動機: Sana-Sprint 0.6B の 1 枚 20 秒のうち VAE が 13 秒。1024² × 128 チャネルの ResBlock の段 (1.15 秒) を演算ごとのコマンドに分けて測ると、im2col の写しが 63 % (6.8 GB/s。連続する長さ 768 バイトの細かい DMA)
+- タップごとの行列積: 格子 (チャネルが最後、行に Wp 画素) では各タップの入力が連続した行の範囲なので、写さずに行列積 (K = C) を 9 回して足す。段 1.15 → 0.76 秒。足し算 8 回 (塊あたり 7 ms) が残る: IRON の行列積の出口処理は活性化だけ。縦の 3 タップずつ写す形も概算したが、16 行あたり約 6 ms で同じ。偶奇で重みを変える拡大は im2col のまま (`--vae-conv im2col` で前の形)
+- 同じ形の段をまとめる (13 → 10 段): パイプラインでは次の段の読み込みと重なって実行が 0.76 → 1.1 秒になるので、読み込みの回数を減らす。格子の状態を使い回し (`free_grid`)、2 つ目以降の ResBlock は入力の格子に上書き (しないと固定の最大が格子 1 枚 260 MiB 分増えた)
+- 前の段を閉じる処理 (50〜136 ms) を次の段の実行と重ねた (`sana.VAE.Decode`)。単独では差がほとんど見えなかった
+- 拡大を低い解像度の 4 つの位相で (`--vae-up phase`): 最近傍の 2 倍の後の 3 × 3 を、出力の位相 (2y + py, 2x + px) ごとの低い解像度の 2 × 2 の畳み込み (核の行と列を位相ごとに足した重み) にし、出力の格子の 2 行おき 2 画素おきに写す。積は 4/9、拡大した格子 (1024² × 256 で 545 MB) が要らず、固定の最大が 2409 → 1960 MiB。偶奇で重みを変える拡大も位相の py ごとの重みで同じ形
+- 格子を行列積が直接読む (`tools/amd/iron_gridgemm.py` の `GridGEMM`): AIE のカーネルを書かず、IRON の `flm.ProjectionGEMM` を継承して A の DMA の並びだけを差し替えた。im2col の 1 行は縦のタップごとに格子の連続した 3C 要素なので、論理上の行の刻み C、K のタイル (3C) の刻み Wp·C の並びで読める (密な A と次元の数が同じ)。`sequence` の間だけ `TensorAccessPattern.full` を A の 7 次元の形のときに差し替える。C ≤ 170 は 9 タップで 1 回、大きい C は縦のタップごとに 3 回。拡大の位相 (2 × 2) も同じ。1024² の ResBlock 3 つ 2.7 → 1.4 秒。参照と許容誤差は、論理上の A を組み立てて計算する
+- VAE の線形注意を MEDIUM (bfp16) に: 指数を共有するのは K の方向の 8 要素だけで、定数の行 (c = 4096) は値の行と共有しない。絵は HIGHEST と 51.6 dB
+- 結果: VAE 12.3 → 6.3 秒、Sana-Sprint 0.6B の 1 枚 20 → 12 秒 (16.138 のテキストを含む)、Sana 600M 67〜70 → 59 秒。画素は前の VAE と 50〜54 dB で、CPU の参照 8 枚との PSNR は同じ。固定の最大 2409 → 1936 MiB (プロセスを足して 2.27 GB。models.yaml の memory 2.9 → 2.3)
+- 残り: EfficientViT の線形注意がヘッドの数の倍の計算をしている (ブロック対角を密な積とマスクで)。深さ方向の畳み込みは要素ごとの 49 演算 (チャネルごとの係数で掛けて足す演算が IRON にない)
+- 否定のプロンプトつきでテキストのグラフを 1 回だけ読む (`sana.EncodeBoth`): Sana 600M のテキスト 3.3 → 2.5 秒、潜在はビット単位で同じ
+
+
+### 16.140 コマンドを用途の家族にまとめる: hwnpu-audio、hwnpu-chat systemone、hwnpu-image pose — 2026-11-10
+
+- hwnpu-music を hwnpu-audio に改名し、hwnpu-tts、hwnpu-transcribe、hwnpu-pitch、hwnpu-notes をそのサブコマンド (`tts`、`transcribe`、`pitch`、`notes`) にした。音楽と効果音は 16.137 のまま `generate` (`-m sfx`)。`list` は 6 種類 (music、sfx、speech、transcribe、pitch、notes)
+- hwnpu-systemone は `hwnpu-chat systemone`、hwnpu-pose は `hwnpu-image pose` に。古い名前は残していない (ラッパーなし)
+- フラグは kong の流儀に: `-use` → `-m/--model`、`-list` → 各家族の `list`、`-o` はそのまま、ほかは `--name`。手で変換したプログラムを渡すフラグは "Converted by hand" の組にまとめ、tts と systemone のチェックポイントの `-model DIR` は `--checkpoint DIR` に (`-m` とぶつかるため)。systemone の `-audio` は hwnpu-chat に合わせて `--audio-encoder`
+- pose の `-draw FILE` は face-detect に合わせて `--draw` (NAME.pose.png、`-o DIR` で置き場所)。notes の `--midi FILE` はそのまま (1 入力)
+- ログは灰色 (console.Log) で、読み込みの行に "all on the NPU" / "NOT all on the NPU" / "on the CPU interpreter"
+- 確かめたこと (AMD の機械、--cpu): `hwnpu-audio pitch` が 440 Hz の正弦波で 439.5 Hz、`hwnpu-audio notes --midi` が A4 (69) の 1 音、`hwnpu-image pose --draw` が動く。tts、transcribe、systemone は Neural Engine 用で、ここではヘルプと引数の検査だけ
+- 開発用で家族に入れていないもの: hwnpu-check (CPU のインタプリタで Hugging Face の参照と層ごとに照合)、hwnpu-formats (チャットモデルの重みの形式を NPU で比べる)、hwnpu-convert、hwnpu-generate、hwnpu-xclbin、hwnpuinfo、npuprobe、powerbench、report
+
+### 16.141 開発用の道具を hwnpu-dev のサブコマンドに — 2026-11-10
+
+- hwnpu-check、hwnpu-convert、hwnpu-generate、hwnpu-formats、hwnpuinfo、npuprobe、powerbench、report、hwnpu-xclbin を `hwnpu-dev check|convert|generate|formats|info|probe|powerbench|report|xclbin` にした。各道具は `cmd/hwnpu-dev/NAME` のパッケージ (`main` を `Main` に) で、フラグは前のまま (std flag)。hwnpu-dev は kong の `passthrough:"all"` で、名前の後ろの引数 (`-h` も) をそのまま渡し、`os.Args` と `flag.CommandLine` を差し替えて `Main` を呼ぶ
+- npuprobe は自分を子プロセスで起動するので、`probe.ChildArgs` (`["probe"]`) を前に付ける
+- aiecc は `AIE_XCLBINUTIL` の実行ファイルをサブコマンドなしで呼ぶので、実行ファイルの名前が hwnpu-xclbin か xclbinutil なら xclbin として動く (`go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-dev`)
+- 文書の名前は書き換えた。この design.md、.knowledge、npu_profiles、docs/handoff-* は当時の記録なので古い名前のまま
+
+### 16.142 `hwnpu-dev probe cache`: Neural Engine のコンパイル済みキャッシュを測る — 2026-11-10
+
+- 動機: Sana の Mac (#99) で、hwnpu のキャッシュが当たっていても読み込みに 1〜2 分 (ANECompilerService)。システム側のキャッシュの容量、閉じ方、順、プロセス、実行ファイル名との関係を M1〜M4 で測る ([handoff-ane-cache.md](handoff-ane-cache.md))
+- 構成 = S GiB の合成プログラム N 本 (`internal/probe`、構成ごとに別の種)。一度だけ書き (バイトが変わると別物になるため)、回ごとに新しい子プロセスが順に読んで 1 回実行する。hwnpu のコンパイルのキャッシュ (`WithCacheDir`) は構成のディレクトリに残す。読み込みと最初の呼び出しが `-cache-hit` (1 秒) 以下で当たり
+- フラグ: `-cache-sizes` (0.5,1)、`-cache-totals` (1〜8)、`-cache-format` (fp16)、`-cache-rounds` (3)、`-cache-hold close,open`、`-cache-order same,reverse` (1 回おきに逆順)、`-cache-passes` (同じプロセスで読み直す)、`-cache-names` (実行ファイルのコピーの名前で 1 回、その後に元の名前で 1 回)、`-cache-keep` (`-dir` に残して再起動の後に使い回す)、`-cache-pause`
+- 報告: 構成ごとの各回の当たりの数と warm (2 回目以降すべて当たり。別名の回は入れない)、大きさ・載せ方・順ごとの warm の最大の合計と外れた最小の合計、各読み込みの秒数、各回の後の `~/Library/Caches/<名前>/com.apple.e5rt.e5bundlecache` と共有の方の大きさ
+- 親は `llm.LockNPU` (新しく公開) で Neural Engine のロックを持ち、ほかの hwnpu のプロセスを待たせる。子はロックなしで開く。子が自分を起動し直すときの実行ファイルを `prober.exe` で差し替えられるようにした
+- 未実行: Linux (AMD) の機械で書いたので、Mac での計測はまだ。ビルド (darwin/arm64) と、当たりの数え方と報告の単体テストだけ
+
+### 16.143 Intel の NPU の実機での一通りの確認と、Anima の部品が NPU のメモリに載りきらないとき — 2026-11-10
+
+- 機械: HP EliteBook 630 G11、Core Ultra 5 135U (Meteor Lake、NPU 3720)、32 GB、Windows 11 25H2、NPU ドライバ 32.0.100.5540 (Level Zero 1.16、ZE_extension_graph 1.18、コンパイラ 8.3)。`tools/intel/hwnpu-intel-check.ps1` でまとめて動かした
+- 通ったもの (全部 NPU、コンパイルはキャッシュから): report の 2 つ、LFM3-1.7B (`--paged=-1 --context 4096` と既定の 262144 の 7 部分の両方、17〜25 トークン/秒、下書きつき)、考える答え、`hwnpu-chat agent` の read と write (answer.txt に 7351)、PLaMo 3 Translate 0.8B (ja → en と en → ja、25〜31 トークン/秒)
+- hwnpu-formats (LFM3-1.7B、キャッシュ 4096、1 回 8 トークン): fp16 112.1 ms、int8 68.5 ms (次のトークンが fp16 と 99 %、パープレキシティ 4.57 / 4.56)、int4-g128 84.4 ms (76 %、6.13)、int4 37.9 ms (63 %、10.32)。Meteor Lake ではグループごとの int4 は int8 より遅く、行ごとの int4 は速いが精度が足りない。int8 の既定のままでよい
+- 失敗したのはネットワーク (社内のプロキシ) だけ: PLaMo-Embedding のダウンロードの切断、Gemma 4 と Anima の名前解決
+- Anima (512 × 512、text と DiT が fp16) は `dit_blocks_24.xml` で `pfnGraphInitialize: ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY`。その時点で載っていたのは text (約 1.2 GB) と DiT の 6 群 (各約 0.57 GB)、合わせて約 4.6 GB。グラフの重みはドライバが NPU から見えるメモリに置くので、その上限に当たったとみる (上限そのものは未測定。`hwnpu-dev probe` の limit の several で測れる)
+- 対処 (`anima.progEngine`): 部品を `slot` にし、読み込みがメモリ不足 (`types.IsOutOfMemory`: Level Zero の OUT_OF_HOST_MEMORY と OUT_OF_DEVICE_MEMORY) で失敗したら、ほかの部品を閉じて読み直す。閉じる順は、プロンプトごとに 1 回しか使わない text、次に DiT の群で最後に使ったもの (MRU)、最後に時刻・パッチ・最後の層。DiT の群は毎ステップ同じ順に回るので、MRU なら 7 群に 4 か所でもステップあたり 4 群の読み直しで済む (LRU では 7 群全部)。この機械の fp16 は text を閉じるだけで収まり、読み直しは 1 枚に text と 1 群の 2 回の見込み。VAE の段も同じ規則で場所を作る
+- 偽の NPU (`residency_test.go`) で確かめた: 全部載る、text を閉じれば載る、群が載りきらない、何も閉じられない (エラーに「no other program loaded」)。実機では未確認。int8 の書き出し (`--dit-format int8 --text-format int8`) は約半分なので、確認スクリプトに `image-512-int8` を足して fp16 と比べる
+
+### 16.144 `hwnpu-dev probe resident`: NPU が一度に持てる量 (Intel の OUT_OF_HOST_MEMORY) — 2026-11-10
+
+- 動機: Core Ultra 5 135U で Anima の fp16 が約 4.6 GB を持ったところで `ERROR_OUT_OF_HOST_MEMORY` (16.143)。読み込みの時間の問題 (Neural Engine のキャッシュ、16.142) とは別で、同時に持てる量の上限。16.143 の読み直し (閉じて読み直す) は、閉じればメモリが戻ることを当てにしている
+- 0.25 GiB (fp16 の 2 層) のプログラムを 1 本ずつ読んで開いたまま 1 回ずつ実行し、読み込みが失敗するか `-resident-max-gb` (RAM の 60 %、最大 16) まで続ける。最後に全部をもう一度実行する。メモリ不足 (`types.IsOutOfMemory`) で止まったら、一番古いものを閉じて失敗したものを読み直す (戻るか)。`-resident-hold close` は 1 本ずつ閉じて同じ合計まで (持っている量の上限か、読んだ量の上限か)。`-resident-formats int8` で、上限が重みのバイト数で決まるか
+- Windows ではプロセスの private メモリ (K32GetProcessMemoryInfo) を各読み込みの後に記録する。`maxRSS` も Windows で peak working set を返すようにした
+- 子プロセスの流れ (`residentRun`) は読み込みを差し替えられる形にし、偽の NPU (容量で OUT_OF_HOST_MEMORY、閉じても戻らないもの) でテストした。close の回で合計の上限で止まらない不具合をこのテストで直した
+- Intel の確認スクリプトに `resident` (standard、fp16、開いたままと閉じる、8 GiB まで) と `resident-int8` (full) を足し、probe の試験は stdout からもハイライトを拾う
+- 実機の 1 回目: 開いたままの回の途中で、子プロセスが 0xc0000005 (アクセス違反。ドライバの中で落ちたらしい) で終わった。子が結果を最後にまとめて送る作りだったので、何本・何 GB まで載ったかが残らなかった
+  - 子は 1 本ごとに `npuprobe-progress` の行で結果を出し、親は子が落ちてもそこまでの分を報告に残す (crashed)。各段階 (読み込み、実行、閉じる) を stderr に書き、落ちた段階がエラーの最後の行に出る
+  - `-resident-run=false` は実行せずに読むだけ。スクリプトの `resident-load-only` (standard) で、実行で落ちるのか読み込みで落ちるのかを分ける
+  - メモリ不足がエラーでなくプロセスの異常終了になるなら、16.143 の Anima の読み直し (エラーを受けて閉じる) は効かない。そのときは、落ちる前の合計より手前で自分から閉じる (上限を決めておく) 形が要る
+
+### 16.145 Apple: Sana と Sana-Sprint、深度推定 (DA3、MoGe-2)、顔検出 (YuNet) を Neural Engine で (Core ML) — 2026-11-10
+
+- AMD の 16.119 と同じ部品を MIL で書き、Core ML のパッケージにする (`hwnpu-image generate -m Sana-Sprint-0.6B`、`hwnpu-image convert REPO`)。Gemma 2 2B を 6 層ずつ 5 本 (int8、1 本 約 470 MB)、caption、DiT 4 ブロックずつ 7 本 (fp16)、final、VAE 13 段。時刻の埋め込みだけホスト (下)。初回に `sana.Prepare` がチェックポイントを `--dir/Sana` に落として変換し (10 秒)、Gemma 2 (`gemma-2-2b-it/`) と その書き出しは全 Sana で共有する (別の Sana の書き出しからハードリンク)
+- パイプライン (`internal/imagegen/sana`) はエンジンを 2 つに: IRON のグラフ (`ironEngine`、前の処理を移しただけ。bf16 → float32 → bf16 は可逆なので値は同じ) と Core ML (`progEngine`)。Anima の MIL の共通部分は `internal/imagegen/milpart` に移した (Anima の DiT の群、final、時刻、VAE の段の CPU インタプリタの出力が前とビット単位で同じ)
+- fp16 の幅: diffusers の fp32 (M1 の CPU、1024 × 1024、`a cyberpunk cat ...`) で中間の最大を測った。残差は Gemma 2 で 4059、DiT で 1534、VAE で 1662 で、どれも尺度をかけずに収まる。あふれるのは線形注意の和: DiT の VᵀK は 2.1e4、N は 1.6e5、VAE (EfficientViT) は 2.4e5 と 4.5e7。分母の最小は 0.03。各ヘッドの q の行をその最大で割り (N / D は変わらない)、鍵を DiT で 1/64、VAE で 1/256 にしてから和を取る。分母は 1e-4 で下を切る (q がすべて 0 の行は N も 0)
+- M1 の Neural Engine で見つけたこと:
+  - 深さ方向の畳み込みは 4096 チャネルまで Neural Engine、5760 チャネル (GLUMBConv の 2 × 2880) は CPU。値とゲートの半分ずつの 2 つにした
+  - グループつきの int8 (`int8-g32`) は linear が CPU になる。Gemma 2 は行ごとの int8
+  - 時刻の埋め込み (正弦波 → 2 層 → 6 つの変調) を Neural Engine で走らせると出力が最大 1 % ずれ (CPU インタプリタの fp16 丸めでは 0.05 %)、全ブロックの変調に効いて DiT 1 回の出力のコサインが 0.9998 → 0.983 になった。1 行の計算 (1 ステップ 1100 万積和、数 ms) なので、重みを `time.safetensors` (float32) に書き出してホストで計算する
+  - Gemma 2 の GELU (tanh 近似) を Neural Engine の `gelu` で書くと、Sana が残す行が CPU より悪い (caption のコサイン 0.99962、CPU の fp32 は 0.99974)。silu と同じく `x / (1 + exp(-1.5958 (x + 0.044715 x³)))` と書くと 0.99973。fp16 の重みの Gemma 2 (3 層ずつ 9 本) は Neural Engine で 0.99925 で int8 より悪い
+  - 1 つの DiT の群だけを Neural Engine と CPU (fp32) で比べるとコサイン 0.999999 以上。差は時刻と Gemma 2 から来ていた
+- `MLComputePlan` の待ちを 2 分 → 10 分 (`internal/backend/coreml`)。ほかのプロセスが Neural Engine でコンパイルしている間、Gemma 2 の 1 本 (単独で 13 秒) が 2 分を超えて読み込みが失敗した
+- 結果 (M1 16 GB、Sana-Sprint 0.6B、1024 × 1024、2 ステップ、diffusers の fp32 と同じノイズ): caption のコサイン 0.9997、DiT 1 ステップ目 0.991 (参照の caption を与えると 0.9998)、潜在 0.9855、画像の PSNR 26.0 dB (AMD は 0.997、31.2 dB)。絵は構図も細部も同じ。手直しの前は潜在 0.972、22.7 dB
+- 時間 (キャッシュあり、ほかのセッションが同時に Neural Engine を使っている状態): 全体 3 分 9 秒、プロセスの最大 3.3 GB。計算は Gemma 2 約 5 秒、DiT 1 ステップ 0.4〜0.5 秒、VAE 6 秒で、残りはプログラムの読み込み (DiT 約 57 秒、VAE の段 0、1 で約 90 秒)。何もない状態から (変換とコンパイル) 8 分 29 秒、2 回目 3 分 53 秒、同じシードの PNG はビット単位で同じ
+- 4 つの Sana の確かめ (diffusers の fp32 と同じノイズから。潜在のコサイン、画像の PSNR、括弧は AMD の 14.3):
+
+| | ステップ | 潜在 | PSNR |
+|---|---|---|---|
+| Sana-Sprint 0.6B | 2 | 0.986 (0.997) | 26.0 dB (31.2) |
+| Sana-Sprint 1.6B | 2 | 0.990 (0.983) | 27.0 dB (25.2) |
+| Sana 600M | 20 (CFG 4.5) | 0.998 (0.963) | 32.7 dB (20.0) |
+| SANA 1.5 1.6B | 20 (CFG 4.5) | 0.984 (0.984) | 22.6 dB (21.4) |
+
+  - Sana-Sprint 1.6B: GLUMBConv の深さ方向の畳み込みが 5600 チャネルで CPU に置かれた。4096 チャネルずつに分ける (`maxDepthwise`)
+  - Sana 600M: scheduler_config.json に Python の `-Infinity` があり Go の json が読めない。読む前に 0 に置き換える (読む項目ではない)
+  - SANA 1.5 (q と k の正規化 + CFG): 条件なし (caption の先頭の行だけ) が 1 ステップ目でコサイン 0.970、20 ステップで潜在 0.62 に崩れた。CPU インタプリタは fp32 でも fp16 の丸めでも 1.00000 で、Neural Engine の計算の問題。caption だけを CPU にすると直り、caption の先頭の行 (Gemma の `<bos>`) が Neural Engine で NaN になっていた。fp32 で caption の 2 つ目の線形の出力がその行で 3.8 万 (fp16 の上限 6.5 万の手前、ほかの Sana も 1.8〜2.8 万)。直後の RMS 正規化は尺度によらないので、線形の重みとバイアスを 1/64 に。条件なしが 1.00000、潜在 0.984。注意の softmax を最大を引いて書き直すことも試したが変わらなかった (戻した)。書き出しは v4
+  - `MLComputePlan` がときどき "Failed to construct compute plan, internal failure" を返し、次の試み (や次のプロセス) では作れる。1 回だけやり直す
+- 深度推定と顔検出も Apple の Neural Engine で (名前で、初回に取得と変換):
+  - Depth Anything 3 (`internal/vision/depth/mil`): ViT (DINOv2。any-view のカメラトークン、2 次元の RoPE、q と k の正規化、cat_token) と DPT / DualDPT の頭。転置畳み込み (核 = ストライド) は 1 x 1 と `pixel_shuffle` (milcpu に足した)、双線形の拡大は補間の行列の積。大きさ (iron_da3.py の 9 つ) は初めて使うときに変換 (数秒)。CPU インタプリタの fp32 で公式のモジュールと深度のコサイン 1.000000 (DA3MONO-LARGE は空の画素を除いて。空は DA3 と同じく遠い値で埋める)。Neural Engine で DA3-SMALL 1.000000 (ViT 0.07〜0.19 秒、頭 0.02 秒)、DA3MONO-LARGE 0.999993、空 0.9998 (ViT 0.43 秒、頭 0.06 秒)。DA3METRIC-LARGE と DA3-BASE は同じコードで走らせていない。複数視点 (`--views`) は AMD のみ
+  - MoGe-2 (`internal/vision/moge/mil`): ViT は depth/mil のもの (重みの接頭辞を Config に)、層の投影の和とクラストークンの行に尺度の頭の logit。首と 3 つの頭は 1 つのプログラム (端を複製する詰めは `pad` の replicate と詰めなしの畳み込み。Core ML は `pad_type` valid でも `pad` を求める)。model.pt は `internal/torchzip`、model_config の整数の型は問わない。ViT-S で公式と頭の出力のコサイン 0.99993 以上、尺度の logit 1.6885 (公式 1.6853)、1 枚 0.5 秒。ViT-B と L は走らせていない
+  - YuNet (`internal/vision/face`): ONNX のグラフを丸ごと `internal/onnx` の Program に (12 の出力を 1 つに)。640 × 480 で 1 枚 3.4 ms、OpenCV の FaceDetectorYN と箱と目印が 0.3 画素以内。`internal/onnx`: 数字で始まる初期値の名前 (YuNet の 420 など) を Core ML が受けないので `w_` を前に。Apple の既定は Neural Engine (models.yaml の device は AMD だけ cpu)
+- Gemma 2 の重みの形式 (3 つのプロンプト、画像まで): int8 0.985〜0.998 / 23〜31 dB、lut8 0.963〜0.992、lut6 (一様) 0.915〜0.966 / 18〜22 dB (構図は同じで細部と文字が変わる)、lut4 0.80〜0.83 (別の絵)。k-means の表は lut6 で悪化 (0.86〜0.92)、lut4 でわずかに良い (0.83〜0.91)。温まっていれば Gemma 2 はどの形式も約 2 秒で、速さは変わらない。既定は int8 のまま (`ConvertOptions.TextQuant` で量子化器を選べる)
+- hwnpu-image は Neural Engine のロック (16.132、`llm.OpenDevice`) を取る (Sana、depth、face-detect)。配置は厳密に (確かめられないときに理由を出す)
+- 複数の絵を 1 つのプロセスで (`hwnpu-image generate` にプロンプトを複数、`--keep-dit` で絵の間も DiT を載せたまま。Gemma 2 と VAE は毎回読む) と DiT の int8 (M1、1024 × 1024、3 つのプロンプトを 1 プロセスで、別のプロセスで 2 回ずつ。1 枚の時間):
+
+| | 合計 | --keep-dit (1 回目: 1, 2, 3 枚目 / 2 回目) | --no-keep-dit (1 回目 / 2 回目) | 潜在のコサイン、PSNR |
+|---|---|---|---|---|
+| Sprint 0.6B fp16 | 約 4 GB | 4m17s (コンパイル), 7.2, 7.0 s / 8.3, 6.8, 6.6 s | 8.1, 7.9, 8.1 s / 7.8, 8.0, 8.0 s | 0.985〜0.998、23〜31 dB |
+| Sprint 0.6B int8 | 約 3.4 GB | (コンパイル), 6.8, 6.4 s / 7.4, 6.3, 6.3 s | 7.3, 7.3, 7.2 s / 7.2, 7.3, 7.2 s | 0.980〜0.997、22〜30 dB |
+| Sprint 1.6B fp16 | 約 6 GB | 12m12s, 35 s, 9.2 s / 4m27s, 26 s, 9.2 s | 6m21s, 3m13s, 1m07s / 15, 16, 16 s | 0.990、26.9 dB |
+| Sprint 1.6B int8 | 約 4.4 GB | 11m41s, 2m09s, 7.8 s / 5m01s, 1m46s, 7.4 s | 3m10s, 5m09s, 4m21s / 4m21s, 4m38s, 11 s | 0.987、25.5 dB |
+
+  - 0.6B は、16 GB 溜まっていた古いコンパイル結果を消した後は、新しいプロセスでも 1 枚 7〜8 秒 (Gemma 2 約 2 秒、2 ステップ 1〜2.5 秒、VAE 約 3.5 秒)。前の 3〜4 分は、作り直しを重ねた古い版で Neural Engine のキャッシュが埋まっていたためと見ている。`--keep-dit` で 1 枚約 1 秒縮む
+  - 1.6B は fp16 でも int8 でも外れが続く: 再コンパイルの場所が回ごとに変わる (LRU で 4 GB 前後を超える、16.41 と合う)。`--keep-dit` なら 3 枚目から 7〜9 秒。int8 の DiT (合計 4.4 GB) でも収まらず、速さはほぼ変わらない。画質は少し下がる (0.6B で PSNR −0.8〜−1.6 dB)。既定は fp16 のまま
+  - 容量の計測は [handoff-ane-cache.md](handoff-ane-cache.md) で引き継いだ。1.6B は合計を 4 GB 未満に (Gemma 2 の lut6 と DiT の int8 で約 3.9 GB)、または常駐で 2 枚目以降を読まない形が要る
+- 残り: 1.6B の読み込み (上)、Intel (OpenVINO IR) の Sana と深度、複数視点の DA3、変換し直すとパッケージのバイトが変わってコンパイルのキャッシュが効かないこと (`internal/mlpackage` の UUID、全モデル共通)
+
+### 16.146 Anima の 1024 × 1024 を Intel の NPU で: 1 プログラムを DiT の 1 ブロックに (DEVICE_LOST) — 2026-11-10
+
+- Core Ultra 5 135U で `hwnpu-image generate` (1024 × 1024、fp16、1 プログラムに 4 ブロック) を動かすと、読み込みでは 16.143 の読み直しが初めて働き (dit_blocks_24 のために text と dit_blocks_20 を閉じた)、全部が載った。ところが最初のステップの最初の群で `zeFenceHostSynchronize: ZE_RESULT_ERROR_DEVICE_LOST`
+- 512 × 512 の 4 ブロックは 1 群 0.4 秒ほど (1 ステップ 2.8 秒 / 7 群)。1024 × 1024 はパッチが 4 倍 (4096)、注意は 16 倍なので、1 群で 2〜4 秒になる見込み。Windows は時間の上限 (TDR、既定 2 秒) を超えたジョブを止めてデバイスを失わせるので、それに当たったとみる (メモリがぎりぎりだったことが効いた可能性も残る)
+- 対処: `--group` の既定を 0 (自動) にし、`anima.DefaultGroup` で決める。Core ML は 4 のまま。Intel は 4 から半分ずつにして「ブロック数 × パッチ数」を 4096 (512 × 512 の 4 ブロック) 以下に: 512 で 4、640 で 2、768 と 1024 で 1。書き出しの名前に g が入るので、前の g4 の書き出しは使われず、作り直す。DEVICE_LOST のときは、群が 2 以上なら `--group` を半分にする案内をエラーに付ける (`types.IsDeviceLost`)
+- 確かめたこと (AMD の機械、OpenVINO 2026.4 の CPU): 512 × 512 int8 の g4 と g1 の書き出しで同じ種の絵を描き、見た目は同じ、潜在の差は相対 3.6 % (群の間の受け渡しの丸め)。1024 × 1024 の g1 の書き出しは 41 本で作れる。Intel の実機では未確認
+
+### 16.147 Anima を AMD の NPU で 70 → 44 秒: DiT の注意 (64 キーの塊、QK^T を bfp16) と VAE の格子のままの畳み込み — 2026-11-10
+
+1024 × 1024 の 1 枚が M2 の 45 秒、M3 の 40 秒に対して 70 秒 (ノイズ除去 58 秒、VAE 9.3 秒) だった。DiT の 1 ステップ 7.3 秒の大半が自己注意 (4096 × 4096、16 ヘッド × 128)。
+
+**注意 (`tools/amd/iron_mha.py`、`ImageMHA`)**
+
+- 単体 (4096 × 4096 × 16 × 128、因果なし、8 本) で 146 ms。B_q を 16 にすると 292 ms、32 で 146 ms で、時間は計算量でなく塊の大きさで決まっていた。B_q と B_kv を別々に動かすと (MHA の `key_block` を差し替えて) 時間は B_kv だけで決まる: 16 で約 280 ms、32 で 145 ms、64 で 103 ms (B_q 16〜64 で同じ)
+- 原因 1: mha.cc の速い softmax (`partial_softmax_rows`、8 行ずつ) は B_kv = 64 のときだけ通り、ほかは 1 行ずつの遅い道。d = 128 では B_q = B_kv = 64 がコアのメモリに入らないので、IRON は 32 × 32 を選び、softmax のコアが律速だった (ハードウェアのトレースで softmax のコアだけがロック待ちなし)。因果でも窓でもなければ、キーの塊は問い合わせの塊と同じでなくてよい (比べるのは mha.cc の因果の飛ばしだけ) ので、`ImageMHA` はキーを 64 ずつにする。B_q 32、P·V を 2 コア (`pv_cores=2`) で 146 → 103 ms、出力は元と同じ (参照とのコサイン 0.999983)
+- 原因 2: 次の律速は QK^T のコア。トレースで 1 呼び出し (32 × 128 × 64) 約 10 800 サイクル、1 サイクル 24 積和ほど。K の 8 × 8 のタイルの転置を内側のループから出して一度だけにしても同じだったので、転置ではなく AIE2P のネイティブ bf16 の mmul の速さ。bfp16 の模擬 (`emulate_bf16_mmul_with_bfp16`、`Precision.MEDIUM` の GEMM と同じ) では 1 400 サイクル。IRON の MHA は「P·V の bfp16 は 8 キーで指数を共有する。softmax が時間を決める」として積を bf16 にしているが、P·V を 2 コアにすると QK^T のオブジェクトは別になるので、QK^T だけを bfp16 にできる: 103 → 59 ms (コサイン 0.999936)。P·V も bfp16 (`pv_bfp16`) で 54 ms (0.999877)
+- AIE2P の exp2 命令 (`accurate_exp2` を切る) は 10 ms 速いが誤差が 4 倍 (コサイン 0.9991) なので使わない
+- IRON のコンパイルのキャッシュ (`~/.npu/cache`) は演算子のパラメータと生成関数で引くので、メソッドを外から差し替えただけでは前の ELF が使われる (同じ ELF が出て気づいた)。`qk_bfp16` と `pv_bfp16` は宣言したパラメータ (`param(array=True)`) にした
+- トレースの取り方: `iron.common.tracing.dump_traces` (pyxrt は `iron314.sh` の XRT で動く)。MHA の 8 本で P·V を 2 コアにすると、トレースの経路が足りず配置できない (32 チャネルに 33)。4 本で 1 本目のコアを見た
+- `iron_anima.py --dit-mha qk|qkpv|bf16` (既定 qk)。自己注意と交差注意 (4096 × 512 を 512 行ずつ) の両方
+
+**VAE (`iron_anima.py --vae-conv grid`、既定)**
+
+- Sana の 16.139 と同じ: 3 × 3 の畳み込みを `iron_gridgemm.GridGEMM` で格子のまま (im2col の写しなし)。3 C が 512 以下なら GEMM 1 つ、超えれば kernel の行ごとに 3 つを足す。拡大は 4 つの出力の位相をそれぞれ低い解像度の 2 × 2 の畳み込みで (`PHASE_TAPS`、拡大した格子を作らない)。格子の並びは Anima と Sana で同じなので、そのまま移せた
+- 同じ潜在から、im2col の VAE と格子の VAE の画像の PSNR は 50.5 dB (格子だけ)、52.7 dB (位相も)。VAE 9.3 → 5.2 秒
+
+**結果 (Ryzen AI 9 365、1024 × 1024、8 ステップ、`~/models/anima-turbo-1024.amd-npu2` は DiT の重み bf16)**
+
+| | 前 | 後 |
+|---|---|---|
+| ノイズ除去 | 58 秒 (7.3 秒/ステップ) | 36 秒 (4.6 秒/ステップ) |
+| VAE | 9.3 秒 | 5.2 秒 |
+| 1 枚 | 約 70 秒 | 約 44 秒 |
+| 1 枚の電力量 (amdgpu の PPT、パッケージ全体、0.1 秒ごとに積分) | 1003 J (平均 14.4 W) | 688 J (15.7 W) |
+| 固定されたメモリの最大 | 2409 MiB | 2409 MiB |
+| 512 × 512 | 20 秒 | 14 秒 (ノイズ除去 1.4 秒/ステップ、VAE 1.4 秒) |
+
+diffusers の fp32 (CPU) の参照と同じノイズから (DiT の重み q8 で比べる):
+
+| `--dit-mha` | 1 枚 | 最後の潜在のコサイン | 画像の PSNR |
+|---|---|---|---|
+| 前 (IRON の MHA) | 70 秒 | 0.961 | 18.6 dB |
+| bf16 (64 キー、積は bf16) | 56 秒 | 0.958 | — |
+| **qk (既定)** | **44 秒** | **0.947** | **17.6 dB** |
+| qkpv | 約 42 秒 | 0.930 | 17.2 dB |
+
+- qk はほかの 4 組 (少女、猫と窓辺、騎士、山と湖) でも構図、顔、背景は同じで、細部 (服のしわ、盾の模様) が違う程度。前の書き出し (DiT の重み bf16) との潜在のコサインは 0.954〜0.968 で、q8 の重みの差も含む。qkpv は胸元の形まで変わったので既定にしない
+- 手元の 5 つの書き出し (bf16、q8、q6、q4 (GPTQ)、512) を作り直して置き換えた。DiT の書き出しは 40 秒前後、VAE は 1.5 分
+- 残り: 1 ステップ 4.6 秒 (1 ブロック約 165 ms) のうち注意は約 70 ms (自己注意 59 ms と交差注意)。次の律速は P·V のコア (bf16、1 呼び出し約 6 000 サイクル) と softmax の多項式の exp2。DiT の射影と MLP (bfp16 の GEMM) と正規化がブロックの残りの約 6 割

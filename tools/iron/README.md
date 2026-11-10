@@ -31,7 +31,7 @@ iron/bin/pip install -r mlir-aie/utils/peano-requirements.txt
 ```
 
 ```bash
-go build -o ironbench ./tools/iron/ironbench && go build -o hwnpu-xclbin ./cmd/hwnpu-xclbin
+go build -o ironbench ./tools/iron/ironbench && go build -o hwnpu-xclbin ./cmd/hwnpu-dev
 ```
 
 Environment:

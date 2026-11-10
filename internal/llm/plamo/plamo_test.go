@@ -274,7 +274,7 @@ func relErr(got []float32, ref []float64) float64 {
 }
 
 // The program computes PlamoBiModel's last hidden state with and without padding, for multi
-// query and grouped query attention; layer by layer, as hwnpu-check runs it, gives the same.
+// query and grouped query attention; layer by layer, as hwnpu-dev check runs it, gives the same.
 func TestAgainstReference(t *testing.T) {
 	ids := []int32{1, 17, 5, 33, 9, 0, 21}
 	for _, c := range []struct {

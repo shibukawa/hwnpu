@@ -1,4 +1,4 @@
-// Package probe generates the models cmd/npuprobe and cmd/powerbench measure: LLM decode shaped
+// Package probe generates the models hwnpu-dev probe and hwnpu-dev powerbench measure: LLM decode shaped
 // graphs with random weights, as Core ML ML Programs or OpenVINO IR, without Python.
 package probe
 

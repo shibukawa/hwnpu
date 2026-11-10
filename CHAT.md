@@ -78,7 +78,7 @@ go run ./cmd/hwnpu-chat -m LFM3-VL-2B
 - In the terminal, `/image FILE question` sends an image and `/audio FILE.wav question` a clip; with a prompt on the command line, `--image FILE` and `--audio FILE.wav` (`hwnpu-chat -m LFM3-VL-2B --image photo.jpg "What is in it?"`). The server reads the `image_url` (data URLs) and `input_audio` (base64 WAV) parts of user messages
 - About 36 ms per token on the M3 with the grouped attention (the default since November 2026; 41 ms before), and about 70 ms while it describes a picture, where few of the speculative drafts come true. An image prompt of about 300 tokens reads in 0.7 seconds. Like LFM3-1.7B these models get no 4096 tier (section 2, `--tier`)
 - The text model is split at its full attention layers as LFM3-1.7B's is (`lfm3-lut8-grouped-p8192-c128000-q8.parts.json` and `-q128-last`, 7 parts each; the `-q64` of versions until November 6 can be deleted), with the model's longest context, 128000 tokens; its cache grows with the conversation by 12 KiB a token, to 1.46 GiB at 128000. On the M3 it is all on the Neural Engine, a second start loads in 1.4 and 4.2 seconds, and its answers on a picture, a sum and Mount Fuji's height were the whole model's (a context of 16320) token for token, at 24.0, 33.2 and 36.0 tokens/s (the whole model: 11.9, 26.7 and 29.4). It recalled a passphrase at the start of prompts of 16K, 64K and 120K tokens, read in 20, 171 and 497 seconds, generating at 25.2, 58.6 and 68.1 ms a token at those lengths. LFM3-Audio-2B and LFM3-Omni-2B run the same way (transcribing a clip, describing a picture) and recalled the passphrase at 120K (read in 525 and 512 seconds, a process footprint of 1.7 GB). 2026-11-04, sections 16.63 and 16.65 of docs/design.md. That was reading the whole cache; with the two-level attention (`--sparse`, the default) 120K reads in 431 seconds for VL, 516 for Audio and 501 for Omni (VL reading the whole cache the same day: 583), a call at that length takes 111 to 120 ms (179), and all three recalled the passphrase (2026-11-06, 16.65). The `lfm3-lut8-grouped-c16320-*` files of earlier versions are no longer read and can be deleted
-- Answers are text; LFM3-Audio's speech output is `hwnpu-tts` (section 5)
+- Answers are text; LFM3-Audio's speech output is `hwnpu-audio tts` (section 5)
 - Other image sizes or clip lengths: convert the encoders yourself and give them with `--package`, `--vision` and `--audio-encoder` (section 5)
 
 ### Gemma 4 E2B and E4B
@@ -92,7 +92,7 @@ go run ./cmd/hwnpu-chat -m gemma-4-E2B-it
 - The chat format is Gemma 4's `chat_template.jinja` in Go, with thinking (`<|think|>`, returned as `reasoning_content`) and tool calls
 - The per-layer embedding table (4.7 GB) stays on the host, which reads one row (17.5 KB) per token
 - The context is the model's longest, 131072 tokens. Of its 7 full attention layers, 4 use layer 14's keys and values, so the cache hwnpu-chat holds is 3 layers' and grows with the conversation by 6 KiB a token (0.75 GiB at 131072). Measured on the M3 (section 16.63 of docs/design.md): 23.6 to 36.0 tokens/s answering short questions (the whole model with a context of 16320: the same answers at 13.3 to 28.2); a prompt of 81,691 tokens read in 299 seconds (273 tokens/s), the passphrase at its start recalled, 96.7 ms a token at that length, with a process footprint of 1.1 GB. At 16K, 64K and 125K it recalled the passphrase too, reading in 27, 224 and 709 seconds and generating at 23.9, 82.4 and 119.5 ms a token, with 0.7, 1.2 and 2.4 GB of memory, reading the whole cache; with the two-level attention (`--sparse`, the default) 64K and 125K read in 204 and 521 seconds and generate at 73.9 and 92.4 ms a token, recalling the passphrase too (section 16.65 of docs/design.md)
-- 4 bit tables (lut4) cost Gemma 4 much more than LFM3 (it got Mount Fuji's height and the author of Kokoro wrong), so it converts with 6 bit tables by default; `hwnpu-convert` does too when `-format` is left out. See sections 16.25 and 16.26 of docs/design.md
+- 4 bit tables (lut4) cost Gemma 4 much more than LFM3 (it got Mount Fuji's height and the author of Kokoro wrong), so it converts with 6 bit tables by default; `hwnpu-dev convert` does too when `-format` is left out. See sections 16.25 and 16.26 of docs/design.md
 - `-m gemma-4-E4B-it` runs the larger E4B (16.0 GB download, 42 layers of width 2560) the same way, slower than E2B. Its context is 131072 too, its cache 16 KiB a token (2 GiB at 131072). Its two programs (generating and reading prompts, 6.5 GiB) would not stay in the Neural Engine's compile cache (about 4 GiB), so only the one that generates (8 tokens per call) is converted and loaded, and it reads the prompts too (`--prefill auto`). On the M3 later starts take about 4 seconds and short questions generate at 13 to 16 tokens/s, but a long prompt reads 4.4 times slower than with two (16K in 183 seconds against 42). `--prefill on` gives it the two, at about 80 seconds every start and 1 to 3 seconds of switching every question. It recalled the passphrase at 125K (with two), but swap reached 14 GB (section 16.65 of docs/design.md). With one and the two-level attention (the default) it recalled the passphrase at 64K and 125K too, a call taking 217 and 276 ms at those lengths, but the prompts read in 21 and 56 minutes. On a 16 GB machine, E2B is the better choice. The larger Gemma 4 sizes (12B and up) are another architecture, which hwnpu-chat does not run
 
 ### Translating with PLaMo 3 Translate
@@ -140,10 +140,10 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 | `--paged N` | `0` | split the model at its full attention layers and attend over the cache hwnpu-chat holds in chunks of N tokens: a step costs in proportion to the conversation, not to `--context`, and the cache's memory grows with it (12 KiB a token for LFM3-1.7B, 3 GiB at 262144; the context is cut when that would be over a quarter of the memory). `0` is 8192 where the model allows it (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4, Qwen3.5, on the Neural Engine and on Intel's NPU), `-1` never (then `--tier` applies) |
 | `--sparse` | `true` | past about 48K tokens of a model split at its attention (`--paged`), read in each call 16384 keys exactly (32768 while reading a prompt: those of the 8-token buckets that weigh most for the call, the last 512 and the first 4) and every other bucket as the mean of its keys and values: a few times fewer calls at 128K and over ([docs/design.md](docs/design.md) 16.61). `false` reads the whole cache on every call |
 | `--dir DIR` | `~/Library/Caches/hwnpu/models` | where the models are kept, each in `DIR/NAME` with its checkpoint and converted programs |
-| `--package A,B` | none | chat programs you converted with `hwnpu-convert` (section 5) |
+| `--package A,B` | none | chat programs you converted with `hwnpu-dev convert` (section 5) |
 | `--dump DIR` | none | with the server, save each request, its prompt and the generated text |
 | `--embed-seq A,B` | `128,1024` | lengths an embedding model is converted for; a text runs on the shortest that holds it, and the longest is the most tokens a text can have |
-| `--embed-package A,B` | none | embedding programs you converted with `hwnpu-convert` (encoders take `-seq` only), with `config.json` and `model.safetensors` in the model's directory |
+| `--embed-package A,B` | none | embedding programs you converted with `hwnpu-dev convert` (encoders take `-seq` only), with `config.json` and `model.safetensors` in the model's directory |
 
 The flags from `--think` to `--context`, `--package`, `--config`, `--weights` and `--tokenizer` are for chat models, the `--embed-` flags for embedding models. `--package` and its companions (and `--embed-package`) take one model of their kind in `-m`.
 
@@ -234,14 +234,14 @@ curl -s localhost:8080/v1/embeddings -H 'Content-Type: application/json' -d '{"m
 
 ## 5. Programs you converted
 
-To try another quantization or cache length, convert twice with `hwnpu-convert` with the same cache length, and list both in `--package`.
+To try another quantization or cache length, convert twice with `hwnpu-dev convert` with the same cache length, and list both in `--package`.
 
 ```bash
-go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 1 -cache 16320 -parts 2 -o DIR/lfm3-16k-q1.mlpackage
+go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 1 -cache 16320 -parts 2 -o DIR/lfm3-16k-q1.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 64 -cache 16320 -o DIR/lfm3-16k-q64.mlpackage
+go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -quant kmeans-minmax -seq 64 -cache 16320 -o DIR/lfm3-16k-q64.mlpackage
 ```
 
 ```bash
@@ -253,7 +253,7 @@ go run ./cmd/hwnpu-chat --package DIR/lfm3-16k-q1.parts.json,DIR/lfm3-16k-q64.ml
 `-m LFM3-VL-2B` (section 1) does all of this by itself. For other image sizes, convert the text model as above and the vision encoder with `-arch lfm3-vision`, once per image size (the Neural Engine runs fixed shapes). List them in `--vision`, comma separated, and the `image_url` parts (data URLs) of user messages are read. An image is stretched to the size of the program with the closest aspect ratio. In the terminal, `/image FILE question` sends an image (docs/design.md, 16.28 and 16.31).
 
 ```bash
-go run ./cmd/hwnpu-convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
+go run ./cmd/hwnpu-dev convert -arch lfm3-vision -image 512x512 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/vision-512x512.mlpackage
 ```
 
 ```bash
@@ -262,30 +262,30 @@ go run ./cmd/hwnpu-chat --package DIR/lfm3vl-q1.parts.json,DIR/lfm3vl-q64.mlpack
 
 ### Audio (LFM3-Audio-2B)
 
-`-m LFM3-Audio-2B` (section 1) does all of this by itself. For other clip lengths, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `--audio-encoder`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-tts` below speaks a text (docs/design.md, 16.29 and 16.31).
+`-m LFM3-Audio-2B` (section 1) does all of this by itself. For other clip lengths, convert the text model as above and the audio encoder with `-arch lfm3-audio-encoder` (`-frames` is the longest clip in mel frames of 10 ms; the default 3000 is 30 seconds). List the packages in `--audio-encoder`, comma separated, and the `input_audio` parts (base64 WAV) of user messages are read. In the terminal, `/audio FILE.wav question` sends a clip. Only WAV is read; other sample rates than 16 kHz are converted. Answers are text; `hwnpu-audio tts` below speaks a text (docs/design.md, 16.29 and 16.31).
 
 ```bash
-go run ./cmd/hwnpu-convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
+go run ./cmd/hwnpu-dev convert -arch lfm3-audio-encoder -frames 3000 -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/audio-30s.mlpackage
 ```
 
 ### Speech (LFM3-Audio-2B TTS)
 
-`hwnpu-tts -lang en -o out.wav "Hello from the Neural Engine."` speaks a text into a WAV file (24 kHz) with LFM3-Audio-2B (`-use speech`): the first run downloads it into the models' directory (shared with hwnpu-chat's LFM3-Audio-2B), converts the programs below by itself, in 8 bit tables, and writes the tables it reads (`speech-tables.safetensors`), so that later runs need no checkpoint. To convert them yourself instead: convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.30).
+`hwnpu-audio tts --lang en -o out.wav "Hello from the Neural Engine."` speaks a text into a WAV file (24 kHz) with LFM3-Audio-2B (`-m speech`): the first run downloads it into the models' directory (shared with hwnpu-chat's LFM3-Audio-2B), converts the programs below by itself, in 8 bit tables, and writes the tables it reads (`speech-tables.safetensors`), so that later runs need no checkpoint. To convert them yourself instead: convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.30).
 
 ```bash
-go run ./cmd/hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
+go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-convert -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.mlpackage
+go run ./cmd/hwnpu-dev convert -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-convert -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.mlpackage
+go run ./cmd/hwnpu-dev convert -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.mlpackage
 ```
 
 ```bash
-go run ./cmd/hwnpu-tts -model DIR -text DIR/tts-q1.mlpackage -depth DIR/depth.mlpackage -codec DIR/codec.mlpackage -lang en -o out.wav "Hello from the Neural Engine."
+go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.mlpackage --depth DIR/depth.mlpackage --codec DIR/codec.mlpackage --lang en -o out.wav "Hello from the Neural Engine."
 ```
 
 ## 6. Use it from OpenCode

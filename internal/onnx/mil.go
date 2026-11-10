@@ -120,7 +120,7 @@ func (p *Program) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (
 			if i > 0 {
 				name = p.Names[in.Name]
 				if name == "" {
-					name = nameRe.ReplaceAllString(in.Name, "_")
+					name = milName(in.Name)
 				}
 			}
 			v := b.Input(name, mlpackage.Float16, in.Shape...)
@@ -654,7 +654,18 @@ func (l *lowering) weight(name string, t *Tensor, shape []int) *mlpackage.Var {
 	for i, f := range t.F {
 		vals[i] = float32(f)
 	}
-	return l.F16s(nameRe.ReplaceAllString(name, "_"), shape, vals)
+	return l.F16s(milName(name), shape, vals)
+}
+
+// milName is an ONNX name as a MIL identifier: other characters than letters, digits and _ as
+// _, and w_ before a name that would start with a digit (YuNet's initializers are numbered: a
+// constant "420" is an invalid operation output name to Core ML).
+func milName(name string) string {
+	s := nameRe.ReplaceAllString(name, "_")
+	if s == "" || s[0] >= '0' && s[0] <= '9' {
+		s = "w_" + s
+	}
+	return s
 }
 
 func (l *lowering) conv(n *Node, in []val) {

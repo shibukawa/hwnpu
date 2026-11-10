@@ -32,7 +32,7 @@ const tinyProcessor = `{"image_mean": [0.5, 0.5, 0.5], "image_std": [0.5, 0.5, 0
 	"resample": 2, "size": {"shortest_edge": 256, "longest_edge": 1024}}`
 
 // writeTiny writes a tiny LFM3-VL checkpoint's config files to a directory and converts its
-// vision encoder for the given image sizes, as hwnpu-convert does; it returns the directory and
+// vision encoder for the given image sizes, as hwnpu-dev convert does; it returns the directory and
 // the packages.
 func writeTiny(t *testing.T, sizes ...string) (string, []string) {
 	t.Helper()

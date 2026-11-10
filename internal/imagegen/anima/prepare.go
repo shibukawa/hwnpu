@@ -48,6 +48,23 @@ func Formats(backend string) (text, dit string) {
 	return "fp16", "fp16"
 }
 
+// DefaultGroup is the DiT's blocks a program holds when none is asked for: 4, and on Intel's NPU
+// as many as keep a program's work near 4 blocks of 512 x 512 (1024 patches). Windows stops a job
+// on the NPU that runs past its time limit (TDR, 2 s by default) with ZE_RESULT_ERROR_DEVICE_LOST,
+// and a group of 4 blocks at 1024 x 1024 (4096 patches, attention 16 times the work) did on the
+// Core Ultra 5 135U (design.md 16.146): there it is 1.
+func DefaultGroup(backend string, width, height int) int {
+	g := 4
+	if backend != "intel" {
+		return g
+	}
+	patches := (width / 16) * (height / 16)
+	for g > 1 && g*patches > 4*1024 {
+		g /= 2
+	}
+	return g
+}
+
 // ExportName is the directory Prepare writes the export of o into, in Setup.Dir: what changes
 // the programs is in its name.
 func ExportName(o ConvertOptions) string {
@@ -74,6 +91,9 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	if o.DitFormat == "" {
 		o.DitFormat = dit
+	}
+	if o.Group <= 0 {
+		o.Group = DefaultGroup(o.Backend, o.Width, o.Height)
 	}
 	log := s.Log
 	if log == nil {

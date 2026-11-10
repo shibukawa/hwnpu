@@ -44,7 +44,7 @@ type Setup struct {
 // files are the checkpoint's files besides the weights; generation_config.json may be missing.
 var files = []string{"config.json", "tokenizer.json", "audio_tokenizer/config.json"}
 
-// Prepare downloads the checkpoint into s.Dir unless it is there, converts the programs hwnpu-tts
+// Prepare downloads the checkpoint into s.Dir unless it is there, converts the programs hwnpu-audio tts
 // runs unless they are (the text model with a KV cache and its final hidden state out, 1 and 64
 // tokens per call; the depthformer; the codec decoder of 64 frames per call), and writes the
 // tables the host reads. The checkpoint is downloaded only when something is converted or written

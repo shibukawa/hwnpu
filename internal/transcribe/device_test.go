@@ -35,7 +35,7 @@ func TestEncoderOnDevice(t *testing.T) {
 		t.Fatalf("%s.x.bin: %v", prefix, err)
 	}
 	want := ref.Logits
-	if l := os.Getenv("HWNPU_WHISPER_LAYER"); l != "" { // packages of the first N layers (hwnpu-convert -layers)
+	if l := os.Getenv("HWNPU_WHISPER_LAYER"); l != "" { // packages of the first N layers (hwnpu-dev convert -layers)
 		n, err := strconv.Atoi(l)
 		if err != nil {
 			t.Fatal(err)

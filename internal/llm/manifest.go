@@ -14,7 +14,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/ovlower"
 )
 
-// Manifest is out.parts.json, written by hwnpu-convert for a split model: the parts in the
+// Manifest is out.parts.json, written by hwnpu-dev convert for a split model: the parts in the
 // order they run, each part's y bound as the next part's x.
 type Manifest struct {
 	Model    string       `json:"model"`
@@ -25,7 +25,7 @@ type Manifest struct {
 	Target   string       `json:"target"`
 	MaxBytes int64        `json:"max_bytes"` // the target's limit on a part's weight file
 	Parts    []PartRecord `json:"parts,omitempty"`
-	// Tiers are the same model converted with KV caches of increasing length (hwnpu-convert
+	// Tiers are the same model converted with KV caches of increasing length (hwnpu-dev convert
 	// -cache a,b,c). A step costs in proportion to the cache's length, so a sequence starts on the
 	// shortest tier and moves to the next when it fills (internal/llm/chain). With tiers, Cache
 	// and Parts are empty.

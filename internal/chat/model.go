@@ -115,7 +115,7 @@ var compileCacheBytes int64 = 7 << 29 // 3.5 GiB
 // m1HoldBytes is what an M1's Neural Engine holds of the programs loaded together before every
 // call slows down about 12 times, as if parts were loaded again on each: lut4 parts holding 2.86
 // GiB ran at their own times added up, 2.97 GiB at 828 against 72 ms a token, whatever the number
-// of parts (npuprobe split, PROBE.md). The M2 (3.65 GiB at full speed), the M3 and the M4 have no
+// of parts (hwnpu-dev probe split, PROBE.md). The M2 (3.65 GiB at full speed), the M3 and the M4 have no
 // such limit below the compile cache, so the programs are the same files on every chip and an M1
 // only loads fewer of them: the one that generates reads the prompts too (onePrograms).
 const m1HoldBytes = 2867 << 20 // 2.8 GiB
@@ -661,7 +661,7 @@ func pagedChunk(model llm.Model, want int) int {
 // encoders are the programs of the multimodal checkpoints besides the text model, converted when
 // config.json has them: LFM3-VL's and LFM3-Omni's vision encoder for one image size (an image is
 // stretched to it), LFM3-Audio's and LFM3-Omni's audio encoder for clips of up to 30 seconds. They
-// stay in fp16 as hwnpu-convert's examples convert them (docs/design.md 16.28, 16.29); files are
+// stay in fp16 as hwnpu-dev convert's examples convert them (docs/design.md 16.28, 16.29); files are
 // what else of the repository they read.
 var encoders = []struct {
 	arch, param, value string

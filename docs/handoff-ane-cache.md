@@ -1,0 +1,162 @@
+# 引き継ぎ: Neural Engine のコンパイル済みキャッシュの限界を M1〜M4 で測る
+
+作成: 2026-11-10。Sana の Mac 対応 (#99、[design.md](design.md) 16.145) で、hwnpu のキャッシュがあっても読み込みに 1〜2 分かかる原因を調べた。その続きとして、システム側のキャッシュが何をどれだけ持つかを測ってほしい。
+
+測る道具は `hwnpu-dev probe cache` (旧 `cmd/npuprobe`。下の 5 節に動かし方)。
+
+## 1. 分かっていること
+
+### 1.1 「キャッシュがあるのに遅い」の正体
+
+hwnpu のキャッシュ (`--cache`、既定は `~/Library/Caches/hwnpu`) が持つのは次の 2 つ:
+
+- コンパイル済みの `.mlmodelc`
+- 配置の確認 (`MLComputePlan`) の結果
+
+これらは当たっている。遅いのはその先で、`MLModel` を読むときに Neural Engine 向けのコンパイル (`ANECompilerService`) がまた走っている。これがシステム側のキャッシュの外れ。
+
+M1 (16 GB、macOS 27.2) で、Sana-Sprint 0.6B の書き出しから 3 本 (`vae_s1`、`dit_blocks_0`、`vae_s0`) を、別々のプロセスで 3 回読んだ。それぞれ新しいプロセスで、`runner.Open` の時間を測った:
+
+| | vae_s1 | dit_blocks_0 | vae_s0 |
+|---|---|---|---|
+| 1 回目 | 129.2 秒 | 14.7 秒 | 10.6 秒 |
+| 2 回目 | 0.1 秒 | 0.1 秒 | 0.1 秒 |
+| 3 回目 | 0.1 秒 | 0.1 秒 | 0.1 秒 |
+
+当たれば 0.1 秒、外れればプログラムの大きさに応じて数十秒〜2 分。
+
+### 1.2 Sana のパイプラインでは毎回外れる
+
+`hwnpu-image generate -m Sana-Sprint-0.6B` は、1 枚に 26 本のプログラム (約 4 GB) を順に使う。読み込みは使う間だけで、すぐ閉じる:
+
+- Gemma 2: 5 本、計 2.2 GB (int8)。プロンプトを読む間だけ
+- caption
+- DiT: 7 本、計 1.2 GB (fp16)。ステップの間だけ
+- VAE: 13 段、計 0.6 GB。1 段ずつ
+
+同時に載っているのは多くても DiT の 7 本。それでも同じ書き出しを続けて 2 回走らせると、2 回目も DiT と VAE の最初の段で毎回 1〜2 分かかった (1 枚 3〜4 分のうち計算は約 10 秒)。
+
+1.6B の DiT は fp16 で 3.2 GB あり、合計は約 6 GB になる。SANA 1.5 1.6B は、キャッシュがあっても 1 枚 6 分 47 秒かかった。
+
+### 1.3 前の記録 (design.md 16.41、M3、LFM3)
+
+- 2 本 (2.4 GiB) は 2 回目から全部当たり (起動 3 秒)
+- 4 本 (4.8 GiB) は 4 回続けて起動しても毎回 3〜6 部分が外れた
+- lut4 の 4 本 (3.2 GiB) は落ち着くと全部当たり
+- lut4 の 2 部分 (0.8 GiB) は 1 回目 6.7 秒、2 回目 0.06 秒
+
+ここから「容量 3.2〜4.8 GiB の LRU (4 GiB か)。部分の数ではなく容量で決まる」と見ている。ただし M3 の LFM3 だけでの見立てで、ほかのチップとの違いは測っていない。
+
+### 1.4 キャッシュの置き場所 (分かった範囲)
+
+- `~/Library/Caches/<実行ファイル名>/com.apple.e5rt.e5bundlecache/<OS のビルド>/<ハッシュ>/`: 実行ファイルごとにある
+  - `hwnpu-image` には 16 GB 溜まっていた。書き出しを何度も作り直した残りで、削除済み
+- 1.1 の計測で使ったテスト (`zzload.test`) の同じ場所は 36 KB しかなかった。それでも 2 回目は 0.1 秒で当たったので、当たりを持っているのはこのディレクトリではない
+- `~/Library/Caches/com.apple.e5rt.e5bundlecache`: 11 MB
+- 16.41 の見立てでは、本体は `aned` 側 (sudo が要り未確認)。実行ファイル名で分かれるのか、プロセスをまたいで共有されるのかも、ちゃんと調べていない
+
+### 1.5 測るときの注意
+
+- **書き出しを作り直すと別物になる**: `internal/mlpackage` が Manifest.json に乱数の UUID を書くため、パッケージのバイトが変わり、hwnpu のキャッシュも Neural Engine のキャッシュも当たらなくなる。測るときは同じパッケージを使い回すこと
+- **ほかのプロセスに注意する**: ほかのプロセスが Neural Engine でコンパイルしていると、配置の確認が数分かかることがある (M1 で 2 分を超えた)。Neural Engine のロック (16.132、`llm.OpenDevice`) を取らないテストや他のツールが動いていないか確かめること
+- **実行ファイル名で分かれる可能性がある**: キャッシュが実行ファイル名で分かれるなら、`go test` (`<pkg>.test`) と `hwnpu-dev` と `hwnpu-image` で結果が違うかもしれない。1.4 の置き場所の謎と合わせて確かめる
+
+## 2. 測ってほしいこと
+
+M1〜M4 で `hwnpu-dev probe cache` を走らせ、`npu_profiles/npuprobe-<chip>-cache.md` と `.json` に残す。合成プログラムは `internal/probe` のもの (大きさと形式を選べる)。
+
+### 2.1 容量
+
+- 大きさ S のプログラムを N 本作り、順に読んで閉じる
+- 同じ並びを新しいプロセスで 2〜3 回繰り返し、各回の各本の読み込み時間から当たり (0.1 秒程度) と外れを数える
+- 合計 N × S を 1 GB から 8 GB 程度まで振り、全部当たり続ける最大の合計を求める
+- 次の 2 つで、容量がバイト数で決まるのか本数で決まるのかを分ける:
+  - 本数は同じで S だけ変える
+  - 合計は同じで本数だけ変える
+
+### 2.2 載せたまま / 閉じる
+
+同じ合計で次の 2 つを比べる:
+
+- 全部を開いたまま次を読む
+- 1 本ずつ閉じてから次を読む
+
+Sana は閉じる方なので、閉じても押し出されるなら、分割や外し方の工夫は効かないことになる。
+
+### 2.3 押し出され方
+
+- 容量を少し超える並びで、毎回同じ順に読む場合と、逆順に読む場合を比べる
+- LRU なら、同じ順に読むと先頭から外れ続け、逆順なら当たりが増えるはず
+- 一度当たった本が、ほかを読んだ後もどれだけ残るかも見る
+
+### 2.4 プロセスとの関係
+
+- 1 プロセスの中で読み直す場合と、プロセスをまたぐ場合で当たり方が同じか
+- 実行ファイル名を変えると (別の名前のバイナリにコピーして) 当たらなくなるか
+- 再起動後にも残るか (できれば)
+
+### 2.5 チップと OS
+
+M1、M2、M3、M4 (M4 は手元にあれば) で 2.1 を走らせる。2.2〜2.4 は 1 台 (M1 か M3) でよい。macOS のバージョンも記録する。
+
+## 3. 結果で決まること
+
+- **常駐で回避するか**
+  - 容量が小さく、閉じても押し出されるなら: 2 枚目以降を読み込まない常駐が要る。案は、`hwnpu-image` にプロンプトを複数受ける形を足すか、hwnpu-chat の serve のような常駐モードにすること
+  - 16 GB の機械では全部 (Sana 1.6B で約 6 GB) を載せたままにはしにくい。DiT だけ常駐させる案もある
+- **合計を減らすか**: 容量が 4 GB 前後なら、Sana 0.6B (約 4 GB) は少し減らせば収まる
+  - Gemma 2 の lut6 は 0.5 GB 減るが、絵が変わる (design.md 16.145 の比較)
+  - 1.6B の DiT を int8 にすると 3.2 → 1.6 GB (画質は未確認)
+- **読む順番を工夫するか**: LRU で、順番の工夫で当たりが増えるなら、パイプラインの読む順を変える
+- **ほかのモデル**: 同じ制約は、LFM3 (16.41) や Anima の複数の書き出しにも効いている。チップごとの容量が分かれば、`models.yaml` の選び方や `-tier auto` の判断にも使える
+
+## 4. 関係するコード
+
+- `internal/llm/runner`: `runner.Open` (1 本の読み込み)
+- `internal/llm/chain`: 部品の読み込みと配置の確認
+- `internal/backend/coreml/graph_darwin.go`: コンパイル済みキャッシュ (`compiledModel`)、配置のキャッシュ
+  - `HWNPU_COREML_TRACE=1` で読み込みの内訳が出る
+- `internal/backend/coreml/plan_darwin.go`: `MLComputePlan`
+  - 待ちは 10 分 (#99 で 2 分から延ばした)
+  - 内部の失敗は 1 回だけやり直す
+- `internal/mlpackage/package.go`: `uuid()`
+  - 書き出しのたびにバイトが変わる元。決まった値にすれば作り直してもキャッシュが当たるようになるはず。これも別の改修の候補
+- `cmd/hwnpu-dev/probe` (`cache.go`)、`internal/probe`: 合成プログラム、子プロセスでの計測 (`child.go`)、報告 (`report.go`)
+- `internal/imagegen/sana/programs.go`: Sana の読み込み順 (`progEngine`)
+
+## 5. 動かし方 (`hwnpu-dev probe cache`)
+
+1 つの構成は「S GiB のプログラム N 本」。プログラムは構成ごとに別物で、一度だけ書いて使い回す。回ごとに新しいプロセスがそれを順に読み、1 回ずつ実行する。hwnpu のコンパイルのキャッシュ (`.mlmodelc` と配置) は構成ごとのディレクトリに残すので、読み込みが長ければ Neural Engine のコンパイルのやり直し。読み込みと最初の呼び出しが `-cache-hit` (既定 1 秒) 以下なら当たり。実行中は hwnpu の Neural Engine のロックを持つ (子プロセスはロックなしで開く)。
+
+```bash
+# 2.1 容量 (全チップ): fp16 の 0.5 GiB と 1 GiB、合計 1〜8 GiB、各 3 回。1 時間以上かかる
+go run ./cmd/hwnpu-dev probe cache -o npu_profiles/npuprobe-m1-cache.md
+
+# 本数で決まるかを見るなら、小さいプログラムを足す (0.25 GiB の 16 本 = 4 GiB など)
+go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.25,0.5,1,2 -cache-totals 2,3,4,5,6
+
+# 2.2 載せたまま / 閉じる
+go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 3,4,5,6 -cache-hold close,open
+
+# 2.3 押し出され方: 容量を少し超える合計で、同じ順と 1 回おきの逆順。回を増やす
+go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 5 -cache-order same,reverse -cache-rounds 5
+
+# 2.4 プロセスの中での読み直しと実行ファイル名
+go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 2,5 -cache-passes 2 -cache-names hwnpu-image,other
+
+# 2.4 再起動の後: プログラムを -dir に残し、再起動してから同じ指定でもう一度 (1 回目から当たるか)
+go run ./cmd/hwnpu-dev probe cache -cache-sizes 0.5 -cache-totals 2 -dir ~/probe-cache -cache-keep
+```
+
+報告の見方:
+
+- 構成ごとの表に「各回の当たりの数」(例 `0/8, 8/8, 8/8`) と warm (2 回目以降が全部当たり) が出る。`-cache-names` の回は名前つきで出て、warm の判定には入れない
+- 「Largest total that stays warm」の行が、大きさ・載せ方・順ごとの容量 (warm の最大の合計と、外れた最小の合計)
+- 最後の表が各読み込みの秒数 (`*` が外れ、`[番号]` がプログラム) と、各回の後の `~/Library/Caches/<実行ファイル名>/com.apple.e5rt.e5bundlecache` と `~/Library/Caches/com.apple.e5rt.e5bundlecache` の大きさ
+
+注意:
+
+- `go run` の実行ファイル名は `hwnpu-dev`。`go build -o` で別の名前にすると、名前で分かれるかの比較にもなる
+- 既定の -dir は一時ディレクトリ。`-cache-keep` なしでは構成が終わるたびに消す。最大で合計 (8 GiB) の 2 倍ほどの空きが要る (パッケージと `.mlmodelc`)
+- `-cache-hold open` は合計の分だけメモリを使う。16 GB の機械では 8 GiB の構成を避ける (`-cache-totals` で絞る)
+- ほかに Neural Engine を使うもの (Xcode のプレビュー、写真の解析など) を止めてから。hwnpu の別のコマンドはロックで待つ

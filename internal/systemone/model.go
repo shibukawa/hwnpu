@@ -28,7 +28,7 @@ import (
 
 // Config says where the model is.
 type Config struct {
-	// Packages are the d1 model converted by hwnpu-convert, each an .mlpackage or an
+	// Packages are the d1 model converted by hwnpu-dev convert, each an .mlpackage or an
 	// out.parts.json, with different -seq: a prompt runs on the shortest that holds it.
 	Packages []string
 	// ModelConfig is config.json, Weights the checkpoint the token embeddings and the output
@@ -40,11 +40,11 @@ type Config struct {
 	// CPU runs the programs with the CPU interpreter (internal/milcpu) instead of the NPU: slow,
 	// for checking the answers on a machine without one.
 	CPU bool
-	// Vision are the LFM3-VL vision encoder converted by hwnpu-convert -arch lfm3-vision, a
+	// Vision are the LFM3-VL vision encoder converted by hwnpu-dev convert -arch lfm3-vision, a
 	// package per image size (internal/vision); none to take no images. Its config.json and
 	// image processor settings are the ones next to ModelConfig.
 	Vision []string
-	// Audio is the LFM3-Omni audio encoder converted by hwnpu-convert -arch lfm3-audio-encoder,
+	// Audio is the LFM3-Omni audio encoder converted by hwnpu-dev convert -arch lfm3-audio-encoder,
 	// a package per clip length (internal/audio), for d1-Omni; none to take no audio.
 	Audio []string
 	// Log receives what loading does (nil for none).

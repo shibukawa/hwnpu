@@ -4,7 +4,7 @@
                           [--table NAME=CHECKPOINT:TENSOR]
 
 REF_PREFIX is the path without extension (ref_bf16 -> ref_bf16.hidden.bin, ref_bf16.logits.bin);
-several are scored in turn with the model loaded once. A parts.json (hwnpu-convert's split of a
+several are scored in turn with the model loaded once. A parts.json (hwnpu-dev convert's split of a
 model without a cache, -seq N) runs its parts in order, each part's outputs bound to the inputs
 of the same name of the parts after it (y as the next x). Inputs other than x come from an
 earlier part, from REF_PREFIX.NAME.bin (ref_gemma4.py's), or, with --table, from the rows of a
@@ -15,8 +15,8 @@ With --layers N the package is a truncated model and its output is compared with
 after layer N; otherwise its logits are compared: relative RMS error, cosine, argmax agreement and
 the mean KL divergence of the reference distribution from the model's (and its median and
 largest over the positions). --units ane is Core ML's CPU_AND_NE: the Neural Engine where the
-program is placed on it (hwnpuinfo -model says where). Needs coremltools, numpy and macOS (and
-safetensors with --table); hwnpu-check -package does the same on any platform with the fp32 CPU
+program is placed on it (hwnpu-dev info -model says where). Needs coremltools, numpy and macOS (and
+safetensors with --table); hwnpu-dev check -package does the same on any platform with the fp32 CPU
 interpreter.
 """
 import argparse

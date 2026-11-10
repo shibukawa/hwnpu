@@ -33,6 +33,7 @@ import (
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/hwnpu/internal/types"
 )
 
 // DitConfig is the DiT's shape (iron_anima.DitConfig; for the Core ML and OpenVINO exports, the
@@ -289,6 +290,9 @@ func (p *Pipeline) Denoise(ctx context.Context, cond []float32, x []float32, sig
 		}
 		v, err := p.eng.velocity(ctx, patches, TimestepSinusoid(sigmas[i], c.Hidden))
 		if err != nil {
+			if types.IsDeviceLost(err) && p.Dit.Group > 1 {
+				return nil, fmt.Errorf("anima: step %d: %w (the driver stops a program that runs too long: an export of fewer blocks a program, --group %d, runs each in less time)", i, err, p.Dit.Group/2)
+			}
 			return nil, fmt.Errorf("anima: step %d: %w", i, err)
 		}
 		p.dump(fmt.Sprintf("v%d.bin", i), v)

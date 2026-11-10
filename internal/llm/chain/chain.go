@@ -1,4 +1,4 @@
-// Package chain runs a model written in parts (hwnpu-convert's out.parts.json) as one model: it
+// Package chain runs a model written in parts (hwnpu-dev convert's out.parts.json) as one model: it
 // loads every part, a package of its own, and binds the output buffer of each part as the input x
 // of the next, so that nothing is copied between them. An input named like an output of an
 // earlier part is bound to that output (Gemma 4's per-layer inputs and shared keys and values);
