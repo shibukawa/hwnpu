@@ -10,6 +10,7 @@
 //	go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe attn     # attention per chunk of a cache
 //	go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe seam     # weighted parts and that attention interleaved
 //	go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe cache    # the Neural Engine's cache of compiled programs
+//	go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe resident # how much the NPU holds at once
 //
 // The models have the shape of LLM decoding (internal/probe): one token through Llama 3.2 1B
 // sized layers with random weights, so every call reads every weight once, as generating one
@@ -66,6 +67,14 @@
 // probe holds the Neural Engine's lock (internal/llm) while it runs, so that other hwnpu
 // processes wait; anything else compiling for the Neural Engine spoils the times.
 //
+// resident, run only when asked for (Intel and Apple), measures how much the NPU holds at once:
+// programs of -resident-size GiB (0.25 of fp16 by default) loaded one after another and kept
+// open until a load fails or -resident-max-gb (60 % of the RAM, at most 16) is reached; after
+// running out of memory the oldest is closed and the failed one loaded again, which tells
+// whether closing a program gives its memory back (Anima's reloading counts on it). With
+// -resident-hold close each is closed before the next, up to the same total. Intel's NPU has
+// failed with ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's programs.
+//
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
 // while a model runs: near 0 when the NPU does the work, 1 or more when the CPU does.
@@ -94,31 +103,32 @@ import (
 )
 
 type report struct {
-	Date      string        `json:"date"`
-	CPU       string        `json:"cpu"`
-	Model     string        `json:"model"`
-	OS        string        `json:"os"`
-	RAMBytes  int64         `json:"ram_bytes"`
-	Device    string        `json:"device"`
-	Backend   string        `json:"backend"`
-	Driver    string        `json:"driver,omitempty"`
-	Firmware  string        `json:"firmware,omitempty"`
-	Version   string        `json:"hwnpu_version"`
-	Go        string        `json:"go"`
-	IdleW     float64       `json:"idle_w,omitempty"`
-	Meter     string        `json:"meter,omitempty"`
-	MaxBytes  int64         `json:"max_bytes"`
-	Bench     []result      `json:"bench,omitempty"`
-	Verify    []result      `json:"verify,omitempty"`
-	KV        []kvResult    `json:"kv,omitempty"`
-	Attn      []attnResult  `json:"attn,omitempty"`
-	Seam      []seamResult  `json:"seam,omitempty"`
-	Sweep     []result      `json:"sweep,omitempty"`
-	Several   []result      `json:"several,omitempty"`
-	SeveralOf string        `json:"several_of,omitempty"`
-	Split     []splitResult `json:"split,omitempty"`
-	Cache     []cacheResult `json:"cache,omitempty"`
-	Notes     []string      `json:"notes,omitempty"`
+	Date      string           `json:"date"`
+	CPU       string           `json:"cpu"`
+	Model     string           `json:"model"`
+	OS        string           `json:"os"`
+	RAMBytes  int64            `json:"ram_bytes"`
+	Device    string           `json:"device"`
+	Backend   string           `json:"backend"`
+	Driver    string           `json:"driver,omitempty"`
+	Firmware  string           `json:"firmware,omitempty"`
+	Version   string           `json:"hwnpu_version"`
+	Go        string           `json:"go"`
+	IdleW     float64          `json:"idle_w,omitempty"`
+	Meter     string           `json:"meter,omitempty"`
+	MaxBytes  int64            `json:"max_bytes"`
+	Bench     []result         `json:"bench,omitempty"`
+	Verify    []result         `json:"verify,omitempty"`
+	KV        []kvResult       `json:"kv,omitempty"`
+	Attn      []attnResult     `json:"attn,omitempty"`
+	Seam      []seamResult     `json:"seam,omitempty"`
+	Sweep     []result         `json:"sweep,omitempty"`
+	Several   []result         `json:"several,omitempty"`
+	SeveralOf string           `json:"several_of,omitempty"`
+	Split     []splitResult    `json:"split,omitempty"`
+	Cache     []cacheResult    `json:"cache,omitempty"`
+	Resident  []residentResult `json:"resident,omitempty"`
+	Notes     []string         `json:"notes,omitempty"`
 }
 
 func Main() {
@@ -136,7 +146,7 @@ func Main() {
 	}
 	fs := flag.NewFlagSet("hwnpu-dev probe", flag.ExitOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: hwnpu-dev probe [all|bench|limit|split|verify|kv|attn|seam|cache] [flags]")
+		fmt.Fprintln(fs.Output(), "usage: hwnpu-dev probe [all|bench|limit|split|verify|kv|attn|seam|cache|resident] [flags]")
 		fs.PrintDefaults()
 	}
 	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
@@ -174,11 +184,16 @@ func Main() {
 	cacheHit := fs.Duration("cache-hit", time.Second, "cache: a load and first call at or under this is a hit of the Neural Engine's cache")
 	cachePause := fs.Duration("cache-pause", 2*time.Second, "cache: pause between rounds")
 	cacheKeep := fs.Bool("cache-keep", false, "cache: keep the programs in -dir and reuse them in later runs (after a restart, say); a program written again is another program to the caches")
+	residentFormats := fs.String("resident-formats", "fp16", "resident: weight formats of the programs, comma separated")
+	residentSize := fs.Float64("resident-size", 0.25, "resident: GiB of one program (rounded to whole layers of 61 M weights)")
+	residentMax := fs.Float64("resident-max-gb", 0, "resident: stop past this total, GiB (default: 60 % of the RAM, at most 16)")
+	residentRun := fs.Bool("resident-run", true, "resident: run each program after its load and all held ones at the end (false: load only)")
+	residentHold := fs.String("resident-hold", "open,close", "resident: open (every program kept until a load fails) and close (each closed before the next), comma separated")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
 	fs.Parse(args)
-	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" && mode != "attn" && mode != "seam" && mode != "cache" {
+	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" && mode != "attn" && mode != "seam" && mode != "cache" && mode != "resident" {
 		fs.Usage()
 		os.Exit(2)
 	}
@@ -196,7 +211,14 @@ func Main() {
 			os.Exit(2)
 		}
 	}
-	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, co, *minRun, *work, *out); err != nil {
+	ro := residentOpts{run: *residentRun, formats: split(*residentFormats), size: *residentSize, maxGiB: *residentMax, holds: split(*residentHold)}
+	if mode == "resident" {
+		if err := ro.check(); err != nil {
+			fmt.Fprintln(os.Stderr, "hwnpu-dev probe:", err)
+			os.Exit(2)
+		}
+	}
+	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, co, ro, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-dev probe:", err)
 		os.Exit(1)
 	}
@@ -215,7 +237,7 @@ type splitOpts struct {
 	seamLayers, seamChunk                      int
 }
 
-func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, co cacheOpts, minRun time.Duration, work, out string) error {
+func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, co cacheOpts, ro residentOpts, minRun time.Duration, work, out string) error {
 	infos, err := hwnpu.Enumerate(ctx)
 	if err != nil {
 		return err
@@ -460,6 +482,20 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 			return errors.New("-attn-layers: at least 1")
 		}
 		p.seams(&rep, sp.seamFormat, sp.seamLayers, sp.attnLayers, tokens, sp.seamForm, sp.seamChunk, used, save)
+	}
+	if mode == "resident" {
+		for _, f := range ro.formats {
+			if !p.coreml && f == "lut4" || p.coreml && f == "int4" {
+				return fmt.Errorf("-resident-formats: %q does not run on the NPU of %s", f, info.Backend)
+			}
+		}
+		if ro.maxGiB == 0 {
+			ro.maxGiB = min(probe.GiB(rep.RAMBytes)*0.6, 16)
+			if ro.maxGiB == 0 {
+				ro.maxGiB = 8
+			}
+		}
+		p.residents(&rep, ro, save)
 	}
 	if mode == "cache" {
 		if !p.coreml {

@@ -13,7 +13,7 @@ import (
 // TimeFile is the export's file of the time embedding's weights (float32): the host computes it.
 // On the Neural Engine it came out up to 1 % off (the CPU interpreter in fp16: 0.05 %), and as
 // the six modulations of every block, one DiT call's output went from cosine 0.9999 to 0.983
-// with diffusers' fp32 (M1, design.md 16.143). It is one row: about 11 M multiply-adds a step.
+// with diffusers' fp32 (M1, design.md 16.145). It is one row: about 11 M multiply-adds a step.
 const TimeFile = "time.safetensors"
 
 // timeEmbed is the time embedding (and Sana-Sprint's guidance embedding) of the DiT on the host.

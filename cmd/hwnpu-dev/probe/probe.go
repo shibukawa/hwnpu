@@ -85,6 +85,8 @@ type prober struct {
 	idleW  float64 // meter power at rest, when the device has a meter
 	meter  bool
 	exe    string // the executable children run (default: this one)
+	// progress is what the last child printed as it went (kind and JSON), kept when it failed
+	progress []string
 }
 
 type loaded struct {

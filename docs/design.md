@@ -3678,7 +3678,29 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 親は `llm.LockNPU` (新しく公開) で Neural Engine のロックを持ち、ほかの hwnpu のプロセスを待たせる。子はロックなしで開く。子が自分を起動し直すときの実行ファイルを `prober.exe` で差し替えられるようにした
 - 未実行: Linux (AMD) の機械で書いたので、Mac での計測はまだ。ビルド (darwin/arm64) と、当たりの数え方と報告の単体テストだけ
 
-### 16.143 Apple: Sana と Sana-Sprint、深度推定 (DA3、MoGe-2)、顔検出 (YuNet) を Neural Engine で (Core ML) — 2026-11-10
+### 16.143 Intel の NPU の実機での一通りの確認と、Anima の部品が NPU のメモリに載りきらないとき — 2026-11-10
+
+- 機械: HP EliteBook 630 G11、Core Ultra 5 135U (Meteor Lake、NPU 3720)、32 GB、Windows 11 25H2、NPU ドライバ 32.0.100.5540 (Level Zero 1.16、ZE_extension_graph 1.18、コンパイラ 8.3)。`tools/intel/hwnpu-intel-check.ps1` でまとめて動かした
+- 通ったもの (全部 NPU、コンパイルはキャッシュから): report の 2 つ、LFM3-1.7B (`--paged=-1 --context 4096` と既定の 262144 の 7 部分の両方、17〜25 トークン/秒、下書きつき)、考える答え、`hwnpu-chat agent` の read と write (answer.txt に 7351)、PLaMo 3 Translate 0.8B (ja → en と en → ja、25〜31 トークン/秒)
+- hwnpu-formats (LFM3-1.7B、キャッシュ 4096、1 回 8 トークン): fp16 112.1 ms、int8 68.5 ms (次のトークンが fp16 と 99 %、パープレキシティ 4.57 / 4.56)、int4-g128 84.4 ms (76 %、6.13)、int4 37.9 ms (63 %、10.32)。Meteor Lake ではグループごとの int4 は int8 より遅く、行ごとの int4 は速いが精度が足りない。int8 の既定のままでよい
+- 失敗したのはネットワーク (社内のプロキシ) だけ: PLaMo-Embedding のダウンロードの切断、Gemma 4 と Anima の名前解決
+- Anima (512 × 512、text と DiT が fp16) は `dit_blocks_24.xml` で `pfnGraphInitialize: ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY`。その時点で載っていたのは text (約 1.2 GB) と DiT の 6 群 (各約 0.57 GB)、合わせて約 4.6 GB。グラフの重みはドライバが NPU から見えるメモリに置くので、その上限に当たったとみる (上限そのものは未測定。`hwnpu-dev probe` の limit の several で測れる)
+- 対処 (`anima.progEngine`): 部品を `slot` にし、読み込みがメモリ不足 (`types.IsOutOfMemory`: Level Zero の OUT_OF_HOST_MEMORY と OUT_OF_DEVICE_MEMORY) で失敗したら、ほかの部品を閉じて読み直す。閉じる順は、プロンプトごとに 1 回しか使わない text、次に DiT の群で最後に使ったもの (MRU)、最後に時刻・パッチ・最後の層。DiT の群は毎ステップ同じ順に回るので、MRU なら 7 群に 4 か所でもステップあたり 4 群の読み直しで済む (LRU では 7 群全部)。この機械の fp16 は text を閉じるだけで収まり、読み直しは 1 枚に text と 1 群の 2 回の見込み。VAE の段も同じ規則で場所を作る
+- 偽の NPU (`residency_test.go`) で確かめた: 全部載る、text を閉じれば載る、群が載りきらない、何も閉じられない (エラーに「no other program loaded」)。実機では未確認。int8 の書き出し (`--dit-format int8 --text-format int8`) は約半分なので、確認スクリプトに `image-512-int8` を足して fp16 と比べる
+
+### 16.144 `hwnpu-dev probe resident`: NPU が一度に持てる量 (Intel の OUT_OF_HOST_MEMORY) — 2026-11-10
+
+- 動機: Core Ultra 5 135U で Anima の fp16 が約 4.6 GB を持ったところで `ERROR_OUT_OF_HOST_MEMORY` (16.143)。読み込みの時間の問題 (Neural Engine のキャッシュ、16.142) とは別で、同時に持てる量の上限。16.143 の読み直し (閉じて読み直す) は、閉じればメモリが戻ることを当てにしている
+- 0.25 GiB (fp16 の 2 層) のプログラムを 1 本ずつ読んで開いたまま 1 回ずつ実行し、読み込みが失敗するか `-resident-max-gb` (RAM の 60 %、最大 16) まで続ける。最後に全部をもう一度実行する。メモリ不足 (`types.IsOutOfMemory`) で止まったら、一番古いものを閉じて失敗したものを読み直す (戻るか)。`-resident-hold close` は 1 本ずつ閉じて同じ合計まで (持っている量の上限か、読んだ量の上限か)。`-resident-formats int8` で、上限が重みのバイト数で決まるか
+- Windows ではプロセスの private メモリ (K32GetProcessMemoryInfo) を各読み込みの後に記録する。`maxRSS` も Windows で peak working set を返すようにした
+- 子プロセスの流れ (`residentRun`) は読み込みを差し替えられる形にし、偽の NPU (容量で OUT_OF_HOST_MEMORY、閉じても戻らないもの) でテストした。close の回で合計の上限で止まらない不具合をこのテストで直した
+- Intel の確認スクリプトに `resident` (standard、fp16、開いたままと閉じる、8 GiB まで) と `resident-int8` (full) を足し、probe の試験は stdout からもハイライトを拾う
+- 実機の 1 回目: 開いたままの回の途中で、子プロセスが 0xc0000005 (アクセス違反。ドライバの中で落ちたらしい) で終わった。子が結果を最後にまとめて送る作りだったので、何本・何 GB まで載ったかが残らなかった
+  - 子は 1 本ごとに `npuprobe-progress` の行で結果を出し、親は子が落ちてもそこまでの分を報告に残す (crashed)。各段階 (読み込み、実行、閉じる) を stderr に書き、落ちた段階がエラーの最後の行に出る
+  - `-resident-run=false` は実行せずに読むだけ。スクリプトの `resident-load-only` (standard) で、実行で落ちるのか読み込みで落ちるのかを分ける
+  - メモリ不足がエラーでなくプロセスの異常終了になるなら、16.143 の Anima の読み直し (エラーを受けて閉じる) は効かない。そのときは、落ちる前の合計より手前で自分から閉じる (上限を決めておく) 形が要る
+
+### 16.145 Apple: Sana と Sana-Sprint、深度推定 (DA3、MoGe-2)、顔検出 (YuNet) を Neural Engine で (Core ML) — 2026-11-10
 
 - AMD の 16.119 と同じ部品を MIL で書き、Core ML のパッケージにする (`hwnpu-image generate -m Sana-Sprint-0.6B`、`hwnpu-image convert REPO`)。Gemma 2 2B を 6 層ずつ 5 本 (int8、1 本 約 470 MB)、caption、DiT 4 ブロックずつ 7 本 (fp16)、final、VAE 13 段。時刻の埋め込みだけホスト (下)。初回に `sana.Prepare` がチェックポイントを `--dir/Sana` に落として変換し (10 秒)、Gemma 2 (`gemma-2-2b-it/`) と その書き出しは全 Sana で共有する (別の Sana の書き出しからハードリンク)
 - パイプライン (`internal/imagegen/sana`) はエンジンを 2 つに: IRON のグラフ (`ironEngine`、前の処理を移しただけ。bf16 → float32 → bf16 は可逆なので値は同じ) と Core ML (`progEngine`)。Anima の MIL の共通部分は `internal/imagegen/milpart` に移した (Anima の DiT の群、final、時刻、VAE の段の CPU インタプリタの出力が前とビット単位で同じ)
