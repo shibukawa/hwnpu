@@ -96,6 +96,16 @@ func candidates() []string {
 	return c
 }
 
+// Available reports whether ONNX Runtime's library loads (HWNPU_ONNXRUNTIME "none": never, to
+// run hwnpu's own CPU executor in its place).
+func Available() bool {
+	if os.Getenv("HWNPU_ONNXRUNTIME") == "none" {
+		return false
+	}
+	_, err := Load()
+	return err == nil
+}
+
 // Load loads ONNX Runtime once and makes its environment.
 func Load() (*Runtime, error) {
 	loadOnce.Do(func() { loaded, loadErr = load() })

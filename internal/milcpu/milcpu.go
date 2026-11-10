@@ -10,6 +10,9 @@
 package milcpu
 
 import (
+	"strings"
+	"sync"
+
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -50,6 +53,10 @@ type Program struct {
 	weights io.ReaderAt
 	// lastUse[name] is the index of the last operation reading name, to free values early.
 	lastUse map[string]int
+	// consts are the const operations' values, decoded on the first run (no operation writes
+	// into its inputs; rounding to fp16 in place leaves fp16 weights as they are)
+	consts []*value
+	mu     sync.Mutex
 }
 
 // Options change how Run computes.
@@ -81,6 +88,7 @@ func LoadFunction(prog *milspec.Program, name string, weights io.ReaderAt) (*Pro
 		return nil, fmt.Errorf("milcpu: no block for opset %s", fn.GetOpset())
 	}
 	p := &Program{fn: fn, ops: block.GetOperations(), outputs: block.GetOutputs(), weights: weights, lastUse: map[string]int{}}
+	p.consts = make([]*value, len(p.ops))
 	for i, op := range p.ops {
 		for _, arg := range op.GetInputs() {
 			for _, b := range arg.GetArguments() {
@@ -144,8 +152,16 @@ func (p *Program) Run(inputs map[string]Tensor, opts Options) (map[string]Tensor
 		}
 		vals[in.GetName()] = &value{shape: shape, f: t.Data}
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	for i, op := range p.ops {
-		out, err := p.eval(op, vals)
+		var out *value
+		var err error
+		if c := p.consts[i]; c != nil {
+			out = c
+		} else if out, err = p.eval(op, vals); err == nil && (op.GetType() == "const" || strings.HasPrefix(op.GetType(), "constexpr_")) {
+			p.consts[i] = out
+		}
 		if err != nil {
 			return nil, fmt.Errorf("milcpu: %s %s: %w", op.GetType(), opName(op), err)
 		}

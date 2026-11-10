@@ -30,6 +30,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
 )
 
 // Size is the image's size the model takes: images are stretched to it.
@@ -69,17 +70,8 @@ type Setup struct {
 // unless it is. It returns the model's and the program's paths.
 func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	model = filepath.Join(s.Dir, filepath.FromSlash(ModelFile))
-	if err := os.MkdirAll(filepath.Dir(model), 0o755); err != nil {
+	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
-	}
-	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, log); err != nil {
-		return "", "", err
-	}
-	if s.SHA256 != "" {
-		if err := checkSHA(model, s.SHA256); err != nil {
-			return "", "", err
-		}
 	}
 	ext := ".mlpackage"
 	if s.Backend == llm.BackendIntel {
@@ -118,6 +110,24 @@ func newProgram(g *onnx.Graph) *onnx.Program {
 	}
 	in := g.Inputs[0].Name
 	return &onnx.Program{G: g, Inputs: []onnx.ValueInfo{{Name: in, Shape: []int{1, 3, Size, Size}}}, Outputs: g.Cut(in, dynamic, outputs), Flat: true}
+}
+
+// Fetch downloads the ONNX export into s.Dir unless it is there, checks its sha256 and returns
+// its path: all the CPU (OpenCPU) needs.
+func Fetch(ctx context.Context, s Setup) (string, error) {
+	model := filepath.Join(s.Dir, filepath.FromSlash(ModelFile))
+	if err := os.MkdirAll(filepath.Dir(model), 0o755); err != nil {
+		return "", err
+	}
+	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+		return "", err
+	}
+	if s.SHA256 != "" {
+		if err := checkSHA(model, s.SHA256); err != nil {
+			return "", err
+		}
+	}
+	return model, nil
 }
 
 func checkSHA(path, want string) error {
@@ -163,6 +173,35 @@ func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Estim
 	if err != nil {
 		return nil, err
 	}
+	return newEstimator(g, p, prog, program)
+}
+
+// OpenCPU loads the ONNX file (Prepare's model) into ONNX Runtime on threads threads of the CPU
+// (0 or 1: the calling thread), the graph up to the program's outputs; the host's part is the
+// same.
+func OpenCPU(model string, threads int) (*Estimator, error) {
+	g, err := onnx.Load(model)
+	if err != nil {
+		return nil, err
+	}
+	p := newProgram(g)
+	b := mlpackage.NewBuilder("CoreML8", nil)
+	b.ImmediateLimit = math.MaxInt
+	if _, _, err := p.Build(b, nil, llm.Options{Format: "fp16"}); err != nil {
+		return nil, err
+	}
+	raw, err := onnxrt.ReadModel(model)
+	if err != nil {
+		return nil, err
+	}
+	prog, err := onnxrt.OpenProgram(raw, p, threads)
+	if err != nil {
+		return nil, err
+	}
+	return newEstimator(g, p, prog, model)
+}
+
+func newEstimator(g *onnx.Graph, p *onnx.Program, prog runner.Program, program string) (*Estimator, error) {
 	y := prog.Output()
 	total := 0
 	for _, w := range p.Widths() {

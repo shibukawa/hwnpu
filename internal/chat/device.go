@@ -119,3 +119,22 @@ var HereVendor = sync.OnceValue(func() string {
 	}
 	return ""
 })
+
+// ConvertedDevice is where m, a model hwnpu converts from ONNX for Core ML and OpenVINO (RTMDet,
+// RTMO, PP-OCR, SwiftF0, Basic Pitch), runs on a machine whose NPU is vendor's: ChooseDevice's
+// pick, except that an NPU with no converted form (AMD's, or none) runs it on the CPU with ONNX
+// Runtime unless --device npu (flag) asks for the NPU.
+func ConvertedDevice(m Model, vendor, flag string) (device, why string, err error) {
+	device, why, err = ChooseDevice(m, vendor, flag)
+	if err != nil {
+		return "", "", err
+	}
+	if device == "npu" && flag != "npu" && vendor != "apple" && vendor != "intel" {
+		v := vendor
+		if v == "" {
+			v = "none"
+		}
+		device, why = "cpu", fmt.Sprintf("no converted form of %s for this NPU (%s)", m.Name, v)
+	}
+	return device, why, nil
+}

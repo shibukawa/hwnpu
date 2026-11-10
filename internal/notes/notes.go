@@ -29,6 +29,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
 )
 
 // basic_pitch's constants.
@@ -96,17 +97,8 @@ type Setup struct {
 // returns the model's and the program's paths.
 func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
-	}
-	model = filepath.Join(s.Dir, ModelFile)
-	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, log); err != nil {
-		return "", "", err
-	}
-	if s.SHA256 != "" {
-		if err := checkSHA(model, s.SHA256); err != nil {
-			return "", "", err
-		}
 	}
 	ext := ".mlpackage"
 	if s.Backend == llm.BackendIntel {
@@ -139,6 +131,24 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	return model, program, os.WriteFile(done, nil, 0o644)
 }
 
+// Fetch downloads nmp.onnx unless it is there, checks its sha256 and returns its path: all the
+// CPU (OpenCPU) needs.
+func Fetch(ctx context.Context, s Setup) (string, error) {
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return "", err
+	}
+	model := filepath.Join(s.Dir, ModelFile)
+	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+		return "", err
+	}
+	if s.SHA256 != "" {
+		if err := checkSHA(model, s.SHA256); err != nil {
+			return "", err
+		}
+	}
+	return model, nil
+}
+
 func checkSHA(path, want string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -162,6 +172,8 @@ type Transcriber struct {
 	input string // the graph's input
 	cut   string
 	prog  runner.Program
+	// OnClose, when set, is called by Close (the device the program is on).
+	OnClose func()
 }
 
 // Open loads the graph and the program on dev (nil: the CPU interpreter).
@@ -187,6 +199,41 @@ func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Trans
 	if err != nil {
 		return nil, err
 	}
+	return newTranscriber(g, op, c, p, program)
+}
+
+// OpenCPU loads nmp.onnx (Fetch's model) into ONNX Runtime on threads threads of the CPU (0 or
+// 1: the calling thread), the graph from the CQT to the heads as the program has it; the host's
+// CQT is the same.
+func OpenCPU(model string, threads int) (*Transcriber, error) {
+	g, err := onnx.Load(model)
+	if err != nil {
+		return nil, err
+	}
+	if len(g.Inputs) != 1 {
+		return nil, fmt.Errorf("notes: %s has %d inputs", model, len(g.Inputs))
+	}
+	op, c, err := newProgram(g)
+	if err != nil {
+		return nil, err
+	}
+	b := mlpackage.NewBuilder("CoreML8", nil)
+	b.ImmediateLimit = math.MaxInt
+	if _, _, err := op.Build(b, nil, llm.Options{Format: "fp16"}); err != nil {
+		return nil, err
+	}
+	raw, err := onnxrt.ReadModel(model)
+	if err != nil {
+		return nil, err
+	}
+	p, err := onnxrt.OpenProgram(raw, op, threads)
+	if err != nil {
+		return nil, err
+	}
+	return newTranscriber(g, op, c, p, model)
+}
+
+func newTranscriber(g *onnx.Graph, op *onnx.Program, c string, p runner.Program, program string) (*Transcriber, error) {
 	total := 0
 	for _, w := range op.Widths() {
 		total += w
@@ -201,7 +248,14 @@ func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Trans
 // OnNPU reports whether the program runs all on the NPU.
 func (t *Transcriber) OnNPU() bool { return t.prog.OnNPU() }
 
-func (t *Transcriber) Close() error { return t.prog.Close() }
+// Close releases the program, then calls OnClose.
+func (t *Transcriber) Close() error {
+	err := t.prog.Close()
+	if t.OnClose != nil {
+		t.OnClose()
+	}
+	return err
+}
 
 // Spectrum is the graph's front end on the host: the normalized log CQT (172, 309) of a window
 // of WindowSamples.

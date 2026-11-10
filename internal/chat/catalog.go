@@ -29,6 +29,7 @@ const (
 	KindPose       Kind = "pose"        // people's keypoints in an image: hwnpu-image pose
 	KindDetect     Kind = "detect"      // the objects in an image, boxes and labels: hwnpu-image detect
 	KindOCR        Kind = "ocr"         // the text in an image, lines and boxes: hwnpu-image ocr
+	KindLabel      Kind = "label"       // labels of an image and embeddings of images and texts: hwnpu-image label, embed
 	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: hwnpu-audio notes
 	KindMusic      Kind = "music"       // music from a style: hwnpu-audio generate
 	KindSFX        Kind = "sfx"         // sound effects from a text: hwnpu-audio generate -m sfx

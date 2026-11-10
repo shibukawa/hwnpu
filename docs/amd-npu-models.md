@@ -890,3 +890,114 @@ OpenCV Zoo の YuNet (`face_detection_yunet_2023mar.onnx`、MIT、5.3 万パラ�
 - 入力の縮小は 2048 × 1150 から 640 × 359 で 190 ms (float64 の 2 回のフィルタ)。カメラの RGB をそのまま受ける道を作る
 - Mac (Core ML、CPU と Neural Engine) と Intel (OpenVINO の NPU) で同じ 320 × 256 を測り、device の既定を決める
 
+
+## 18. ラベル付けと画像の埋め込み: SigLIP 2 (`hwnpu-image label`、`embed`、2026-11-11)
+
+Google の SigLIP 2 (google/siglip2-base-patch16-224、siglip2-large-patch16-256、Apache-2.0、多言語) を AMD の NPU で動かす。画像と文を 1 つの空間に埋め込み、そのコサインを倍率 (exp(logit_scale)、約 110) と bias (約 −16.5) で変えた値の sigmoid が「その文が画像を表す」確率になる。候補のラベルを文 (既定は `this is a photo of {}.`) に入れれば、ゼロショットのラベル付けになる (Cloud Vision の LABEL_DETECTION、Rekognition DetectLabels にあたる)。ラベルごとに独立の確率 (softmax ではない) なので、合計は 1 にならず、複数のラベルが当てはまることも、どれも当てはまらないこともある。
+
+### 18.1 構成 (`tools/amd/iron_siglip2.py`)
+
+| グラフ | 中身 |
+|---|---|
+| `vision` | パッチの埋め込み (16 × 16 × 3 = 768 値を 1 行に。ホストが切る)、学習した位置埋め込み (畳み込みの bias を足しておく)、ブロック (LayerNorm、bias つきの q、k、v、MHA、出力の射影、LayerNorm、MLP)、最後の LayerNorm、注意のプーリング (学習した probe の問い合わせ。q は定数としてエクスポート時に計算し、全行に置く。k、v の射影、MHA、出力の射影、LayerNorm と MLP を足す)。行は 256 (Base 196 パッチ、Large 256 パッチ)、鍵は呼び出しごとの `nk` |
+| `text` | 8 つの文を 1 回に (64 トークン × 8 = 512 行)。トークンの埋め込みはホストが引く (256000 × hidden、bf16 の `text/embed.bin`)。位置埋め込み、ブロック (同じ形、注意はその文の 64 トークンだけ、マスクなし)、最後の LayerNorm、頭 (linear)。行は**トークンが先** (行 t × 8 + i が文 i のトークン t) で、ブロックの注意は 8 × heads 個の頭の 1 回の MHA になる (1 つのトークンの 8 つの文の行が、隣り合う頭に見える)。行 63 × 8 + i が文 i の埋め込み |
+
+ホスト (`internal/vision/siglip`) は、画像をモデルの大きさに引き伸ばし (PIL と同じ双線形、処理器と同じ)、[−1, 1] にし、パッチを切る。文は小文字にして (SigLIP 2 は小文字の文で学習した。Transformers のトークナイザは小文字にしない)、Gemma のトークナイザで 63 トークンまでに切り、`<eos>`、`<pad>` で 64 に埋める (Transformers の zero-shot パイプラインと同じ。注意のマスクなし)。トークナイザは既存の Gemma の BPE (`internal/tokenizer`) で、HF と同じ id になる。埋め込みを正規化し、確率を出す。ラベルの埋め込みはユーザーのキャッシュ (`hwnpu/siglip`) に置き、同じラベルの一覧は 1 回だけ計算する (既定の約 440 ラベルは Base で約 7 秒、Large で約 27 秒、2 回目からは 0)。
+
+### 18.2 精度: GELU と行列積の精度 (CPU の float32 の Transformers と比べる)
+
+最初の形 (tanh の GELU、MEDIUM の行列積) は、画像の埋め込みのコサインが 0.9988〜0.9995 で、HF を CPU で bf16 にしたもの (0.9999) より悪かった。IRON の参照 (CPU) は 0.9997 で、NPU と IRON の参照の差が大きい。6 層目の実際の活性 (HF の値) を 1 つの演算だけのグラフに入れて、演算ごとの誤差 (相対 RMS) を測った:
+
+| 演算 | NPU | IRON の参照 | bf16 の丸め |
+|---|---|---|---|
+| LayerNorm | 4.2e-3 | 4.2e-3 | 1.7e-3 |
+| linear (MEDIUM、bfp16) | 4.5e-3 | 2.7e-3 | 1.7e-3 |
+| linear (HIGHEST、bf16) | 2.7e-3 | 2.7e-3 | 1.7e-3 |
+| GELU (tanh) | **8.2e-3** | 8.2e-3 | 1.7e-3 |
+| GELU (erf、exact) を tanh の GELU と比べて | 3.0e-3 | | |
+| MHA | 4.6e-3 | 3.0e-3 | 1.7e-3 |
+
+- IRON の tanh の GELU (tanh を表で引く) は bf16 の丸めの 5 倍ずれる。IRON の参照もその表をまねているので、参照との照合では見えない。exact の GELU (`approximate="none"`) は、2 つの関数の差を含めても 3.0e-3。`--gelu erf` (既定)
+- IRON の参照は MEDIUM の bfp16 をまねない (HIGHEST と同じ値)。NPU の MEDIUM は 1.7 倍ずれる
+- 結果 (4 枚、10 の文):
+
+| 形 | 画像のコサイン | 文のコサイン | logit の差の平均 / 最大 |
+|---|---|---|---|
+| tanh、MEDIUM | 0.9988〜0.9995 | 0.9998〜0.9999 | 0.15 / 0.44 |
+| erf、MEDIUM | 0.9988〜0.9997 | 0.9998〜0.9999 | 0.13 / 0.29 |
+| tanh、HIGHEST | 0.9996〜0.9998 | 0.9999 | 0.10 / 0.30 |
+| **erf、HIGHEST (既定)** | **0.9998〜0.9999** | **0.99995** | **0.055 / 0.15** |
+| (HF を CPU で bf16) | 0.9999 | 0.99997 | |
+
+- 同じ画素 (224 × 224 にした PNG) での比較。Go の縮小を通すと 0.99976〜0.9999。Large (erf、HIGHEST) は画像 0.9998、文 0.9999、logit の差の平均 0.10
+- 既定の約 440 ラベルで、cats (COCO 39769)、蜂、狐、湖、スキーヤー、文字の画像の 1 位は kitten、bee、fox、lake、skiing、text (Base も Large も)。1 語のラベルの確率は小さい (0.01〜0.3)。ラベルの順は比べられるが、絶対の値は文の書き方で大きく変わる
+
+### 18.3 測定 (Ryzen AI 9 365)
+
+この測定の間、別の作業が NPU で Anima を回し続けていた。時間は 15 回の最小 (`irongraph`)。
+
+| | 画像 1 枚 | 文 8 つ (1 回) | 固定の最大 + RSS | 書き出し |
+|---|---|---|---|---|
+| Base (224 × 224) | 84 ms (MEDIUM なら 77) | 131 ms (MEDIUM なら 108) | 760 MiB (NPU 416、RSS 344) | 0.8 GB、30 秒 |
+| Large (256 × 256) | 353 ms | 491 ms | 1579 MiB (NPU 1261、RSS 318) | 1.9 GB、90 秒 |
+
+- 文を 16 ずつにすると 1 回 220 ms (1 つあたり 13.8 ms、8 つなら 16.4 ms)。候補の少ない呼び出しで損なので 8 のまま
+- Gemma のトークナイザ (tokenizer.json 34 MB) の読み込みが 1.8 秒。ラベルの埋め込みがキャッシュにあれば読まない
+
+### 18.4 手順
+
+```bash
+python tools/amd/iron_siglip2.py ~/models/siglip2-base-patch16-224 ~/models/siglip2-base-patch16-224.amd-npu2   # --precision MEDIUM --gelu tanh
+go run ./cmd/hwnpu-image label photo.jpg                       # 既定の約 440 ラベル
+go run ./cmd/hwnpu-image label -l "猫,犬,a red car" photo.jpg  # 候補を指定 (どの言語でも)
+go run ./cmd/hwnpu-image embed --compare a.jpg b.jpg -t "a cat on a sofa"
+```
+
+参照: `tools/ref/ref_siglip2.py` (Transformers、`--template` で同じ文に)。
+
+### 18.5 残り
+
+- so400m (hidden 1152、heads 16 で頭の次元 72) は MHA の 64 の倍数に合わない (128 に埋めるか、頭の並べ替え)。NaFlex (縦横比を保つ版) は Siglip2Model で、位置埋め込みの補間とマスクが要る
+- 不適切な画像の判定 (SafeSearch にあたる) は、同じ埋め込みのゼロショットで組めるが、評価のデータで閾値を決めていない
+- `/v1/embeddings` で画像を受ける口、パッチごとの特徴 (密な特徴) の出力
+- Apple と Intel の形
+
+## 19. ONNX のモデルを AMD の機械の CPU で (ONNX Runtime、2026-11-11)
+
+`internal/onnx` で Core ML と OpenVINO IR に変換する 5 つのモデル (RTMO、RTMDet、PP-OCRv6、SwiftF0、Basic Pitch) は、AMD の NPU の形がない。今までは `--cpu` (変換したプログラムを CPU インタプリタで) だけで、RTMDet-m が 1 枚 8.5 秒、OCR が 13 秒かかった。YuNet と同じく ONNX Runtime (`internal/onnxrt`) で CPU に置いた。
+
+- `onnxrt.Cut`: ONNX のグラフを、値から値までに切る (その間のノードだけ、入力と出力は float のテンソル)。`onnxrt.Program` は onnx.Program と同じ入力と出力 (Flat なら行ごとに並べる) を `runner.Program` として返すので、各モデルのホストの処理 (箱の復号、keypoint、CTC、音符) はそのまま。Basic Pitch はホストの CQT の後から、SwiftF0 はホストの特徴量の後から (窓をその長さで回すのでマスクが要らない) 切る
+- 置き場所は `chat.ConvertedDevice`: Apple と Intel は NPU、それ以外 (AMD、NPU なし) は CPU。`--device npu|cpu`、`HWNPU_DEVICE` で上書き。`hwnpu-image list` の RUNS FROM は AMD で `CPU (ONNX Runtime)`
+- 結果は CPU インタプリタと同じ (RTMDet-m の箱の差 0.1 px 未満、RTMO の点 0.02 px、OCR の 3 行が同じ、音符が同じ、音高の差 0.11 Hz)。時間 (1 スレッド、NPU は別の作業が使用中):
+
+| | ONNX Runtime | CPU インタプリタ |
+|---|---|---|
+| RTMDet-m (640 × 640) | 1.37 秒 | 8.5 秒 |
+| RTMDet-tiny (4 スレッド) | 0.17 秒 | |
+| RTMO-s | 0.45 秒 | 2.7 秒 |
+| PP-OCRv6 small (3 行) | 1.8 秒 | 13 秒 |
+| SwiftF0 (5 秒の音) | 0.07 秒 | 1.76 秒 |
+| Basic Pitch (5 秒の音) | 0.48 秒 | 1.4 秒 (CPU 時間 5.3 秒) |
+
+- RTMDet-m の 1 スレッド 1.4 秒 (39 GFLOP) は、NPU の汎用の経路 (CLOUD_AI_COMPATIBILITY.md 3 節の 3) で勝てる見込みのある大きさ。YuNet (0.1 GFLOP) とは違う
+
+### 19.1 外部依存なしの CPU: hwnpu の CPU 実行器を速く
+
+ONNX Runtime は別に入れる共有ライブラリで、実行時の外部依存になる。ないとき (`HWNPU_ONNXRUNTIME=none` でも) は、変換したプログラムを hwnpu の CPU 実行器 (`internal/milcpu`、`--cpu` と同じ) で動かす。これまでの milcpu は正しさの参照で、畳み込みが出力チャネル × 入力チャネル × タップ × 画素の素朴なループだった (RTMDet-m は 12 コアで 7.1 秒、CPU 時間 83 秒)。
+
+- `internal/sgemm`: GotoBLAS の形の float32 の行列積。B を 16 列、A を 6 行 (AVX-512 では 12 行) の帯に詰め、AVX2 と FMA (AVX-512) のアセンブリのカーネル。カーネル単体で 63.6 GFLOPS は、この CPU の負荷時のクロック 2.0 GHz での AVX2 の上限 (2 GHz × 32)。Strix Point の Zen 5 は AVX-512 も 256 ビット幅で速さは同じ (512 ビット幅の CPU のために残す)
+- 畳み込みは、各グループの重み (出力 × 入力 kh kw) と im2col の積。im2col は書き出さず、B を詰めるときに入力から直接読む (出力の行ごとの連続した区間をコピー)。1 × 1 は入力そのもの。深さ方向は今までのループで、ストライド 1 の行は axpy (AVX2) 1 回。linear と matmul も sgemm に
+- `internal/f32`: exp、sigmoid、SiLU (Cephes の expf、AVX2、2 ulp 以内)、erf (Abramowitz-Stegun 7.1.26、5e-7 以内)。要素ごとの二項演算は、ブロードキャストの次元をまとめて、型ごとのループで。定数 (重み) は最初の実行で読んだものを持つ
+- 置き場所: ONNX Runtime があればそれを、なければこの実行器を、`--threads` (既定 1) の goroutine で。出力は ONNX Runtime と同じ物、同じ点、同じ文字、同じ音符
+- 1 スレッドの時間 (NPU は別の作業が使用中):
+
+| | 前の milcpu | 今の milcpu | ONNX Runtime |
+|---|---|---|---|
+| RTMDet-m | 7.1 秒 (12 コア) | 2.25 秒 (4 スレッドで 1.0 秒) | 1.37 秒 |
+| RTMDet-tiny | | 0.70 秒 | |
+| RTMO-s | 2.7 秒 (12 コア) | 0.89 秒 | 0.45 秒 |
+| PP-OCRv6 small (3 行) | 13 秒 (12 コア) | 4.5 秒 (4 スレッドで 2.6 秒) | 1.8 秒 |
+| SwiftF0 (5 秒の音) | 1.76 秒 | 1.29 秒 | 0.07 秒 |
+| Basic Pitch (5 秒の音) | 1.4 秒 | 1.18 秒 (全体) | 0.84 秒 (全体) |
+
+- RTMDet-m の行列積は 1.37 秒で、上限の 90 % 近い。残りの差は ONNX Runtime の演算の融合 (畳み込みと活性化) とメモリの配置。SwiftF0 は NPU 用の 30 秒の固定長のプログラムを 5 秒の音にも回すので 6 倍の無駄 (ONNX Runtime はその長さで回す)。長さごとのプログラムにすれば縮む

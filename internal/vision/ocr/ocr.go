@@ -35,6 +35,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
 	"github.com/shibukawa/hwnpu/internal/vecops"
 	"github.com/shibukawa/hwnpu/internal/vision/detect"
 )
@@ -80,7 +81,11 @@ type Setup struct {
 	Dir      string
 	Det, Rec Source
 	Backend  string
-	Log      io.Writer
+	// CPU runs the ONNX files with ONNX Runtime on Threads threads of the CPU (0 or 1: the
+	// calling thread) instead of converting them.
+	CPU     bool
+	Threads int
+	Log     io.Writer
 }
 
 // Line is a line of text found: its box (four corners clockwise from the top left, in the
@@ -233,6 +238,9 @@ func (r *Reader) Close() error {
 // program converts (unless converted) and loads the program of model at the input shape, in
 // the repository's directory as NAME-rREV-fp16-SHAPE.
 func (r *Reader) program(ctx context.Context, src Source, model, name string, shape []int, describe string) (runner.Program, error) {
+	if r.s.CPU {
+		return r.cpuProgram(model, name, shape)
+	}
 	ext := ".mlpackage"
 	if r.s.Backend == llm.BackendIntel {
 		ext = ".xml"
@@ -278,6 +286,29 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 			}
 		}
 		r.Logf("loaded %s in %.1f s, %s", filepath.Base(path), time.Since(t0).Seconds(), where)
+	}
+	return p, nil
+}
+
+// cpuProgram loads model's graph at the input shape into ONNX Runtime, up to the program's
+// output.
+func (r *Reader) cpuProgram(model, name string, shape []int) (runner.Program, error) {
+	t0 := time.Now()
+	g, err := onnx.Load(model)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := onnxrt.ReadModel(model)
+	if err != nil {
+		return nil, err
+	}
+	p, err := onnxrt.OpenProgram(raw, NewProgram(g, shape), r.s.Threads)
+	if err != nil {
+		return nil, fmt.Errorf("ocr: %s: %w", name, err)
+	}
+	r.onNPU = false
+	if r.Logf != nil {
+		r.Logf("loaded %s %v in %.1f s, on the CPU (ONNX Runtime, %d threads)", name, shape, time.Since(t0).Seconds(), max(1, r.s.Threads))
 	}
 	return p, nil
 }

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,9 +29,10 @@ import (
 
 // DetectCmd is "hwnpu-image detect": the objects in pictures (COCO's 80 classes) with RTMDet
 // (OpenMMLab MMDetection, Apache-2.0; internal/vision/detect), on Apple's Neural Engine or
-// Intel's NPU (--cpu: the CPU interpreter). The model is downloaded and converted the first time.
-// The network up to its head runs on the NPU; decoding the boxes and suppressing the overlaps on
-// the host.
+// Intel's NPU, converted the first time, and elsewhere (AMD's NPU has no form of it yet) or with
+// --device cpu on the CPU, the ONNX file with ONNX Runtime (--cpu: the converted program on the
+// CPU interpreter, for checking a conversion). The network up to its head runs on the NPU;
+// decoding the boxes and suppressing the overlaps on the host.
 //
 // For each picture it prints one line of JSON: each object's box (x1, y1, x2, y2 in the
 // picture's pixels), label, class and score. With --draw it also writes NAME.objects.png.
@@ -43,7 +47,9 @@ type DetectCmd struct {
 	Repeat   int      `default:"1" help:"Run each picture this many times and report the mean time."`
 	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache    string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
-	CPU      bool     `name:"cpu" help:"Run the program on the CPU interpreter instead of the NPU."`
+	CPU      bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
+	Device   string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads  int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
 }
 
 // Run finds the objects of each picture.
@@ -62,27 +68,43 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dev, backend, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, "RTMDet")
-	if err != nil {
-		return err
-	}
-	defer closeDev()
-	defer npuHeld(logf)()
 	dir := c.Dir
 	if dir == "" {
 		dir = chat.ModelsDir()
 	}
-	_, program, err := detect.Prepare(ctx, detect.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), File: file, SHA256: m.SHA256[file], Backend: backend, Log: lw})
-	if err != nil {
-		return err
-	}
+	setup := detect.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), File: file, SHA256: m.SHA256[file], Log: lw}
+	var d *detect.Detector
 	t0 := time.Now()
-	d, err := detect.Open(ctx, dev, program)
-	if err != nil {
-		return err
+	ort, builtin := cpuRoute(ctx, m, c.Device, c.CPU, c.Threads, logf)
+	c.CPU = c.CPU || builtin
+	if ort {
+		model, err := detect.Fetch(ctx, setup)
+		if err != nil {
+			return err
+		}
+		if d, err = detect.OpenCPU(model, c.Threads); err != nil {
+			return err
+		}
+		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
+	} else {
+		dev, backend, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, "RTMDet")
+		if err != nil {
+			return err
+		}
+		defer closeDev()
+		defer npuHeld(logf)()
+		setup.Backend = backend
+		_, program, err := detect.Prepare(ctx, setup)
+		if err != nil {
+			return err
+		}
+		t0 = time.Now()
+		if d, err = detect.Open(ctx, dev, program); err != nil {
+			return err
+		}
+		logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
 	}
 	defer d.Close()
-	logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
 	d.Score, d.NMS = c.Score, c.NMS
 	keep := map[string]bool{}
 	for _, l := range c.Class {
@@ -155,6 +177,33 @@ func repeated(n int) string {
 	return fmt.Sprintf(", the mean of %d runs after the first", n-1)
 }
 
+// cpuRoute is where an ONNX model m runs (chat.ConvertedDevice) and logs it: ort, ONNX
+// Runtime on the CPU when its library is here; builtin, hwnpu's own CPU executor on the
+// converted program (internal/milcpu, on threads goroutines) when it is not, or with --cpu
+// (interp: all the cores); neither, the NPU.
+func cpuRoute(ctx context.Context, m chat.Model, flag string, interp bool, threads int, logf func(string, ...any)) (ort, builtin bool) {
+	if interp {
+		milcpu.Threads = 0
+		return false, true
+	}
+	device, why, err := chat.ConvertedDevice(m, chat.HereVendor(), flag)
+	if err != nil {
+		logf("%v; the NPU", err)
+		return false, false
+	}
+	if device != "cpu" {
+		logf("%s on the %s (%s)", m.Name, device, why)
+		return false, false
+	}
+	if onnxrt.Available() {
+		logf("%s on the CPU with ONNX Runtime (%s)", m.Name, why)
+		return true, false
+	}
+	milcpu.Threads = max(1, threads)
+	logf("%s on the CPU with hwnpu's own executor (%s; ONNX Runtime, faster, is not here: HWNPU_ONNXRUNTIME)", m.Name, why)
+	return false, true
+}
+
 // placement is where a loaded program runs, for the log.
 func placement(cpu, onNPU bool) string {
 	switch {
@@ -211,7 +260,7 @@ func openProgramDevice(ctx context.Context, cpu bool, cache, what string) (*hwnp
 	backend := llm.ProgramBackend(device)
 	if backend == "" {
 		dev.Close()
-		return nil, "", nil, fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (AMD's NPU has no %s export yet; --cpu runs it on the CPU)", device, what)
+		return nil, "", nil, fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--device cpu runs %s on the CPU)", device, what)
 	}
 	return dev, backend, func() { dev.Close() }, nil
 }
