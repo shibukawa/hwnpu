@@ -84,6 +84,7 @@ type prober struct {
 	minRun time.Duration
 	idleW  float64 // meter power at rest, when the device has a meter
 	meter  bool
+	exe    string // the executable children run (default: this one)
 }
 
 type loaded struct {

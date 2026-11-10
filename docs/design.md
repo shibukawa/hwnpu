@@ -3669,3 +3669,11 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - aiecc は `AIE_XCLBINUTIL` の実行ファイルをサブコマンドなしで呼ぶので、実行ファイルの名前が hwnpu-xclbin か xclbinutil なら xclbin として動く (`go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-dev`)
 - 文書の名前は書き換えた。この design.md、.knowledge、npu_profiles、docs/handoff-* は当時の記録なので古い名前のまま
 
+### 16.142 `hwnpu-dev probe cache`: Neural Engine のコンパイル済みキャッシュを測る — 2026-11-10
+
+- 動機: Sana の Mac (#99) で、hwnpu のキャッシュが当たっていても読み込みに 1〜2 分 (ANECompilerService)。システム側のキャッシュの容量、閉じ方、順、プロセス、実行ファイル名との関係を M1〜M4 で測る ([handoff-ane-cache.md](handoff-ane-cache.md))
+- 構成 = S GiB の合成プログラム N 本 (`internal/probe`、構成ごとに別の種)。一度だけ書き (バイトが変わると別物になるため)、回ごとに新しい子プロセスが順に読んで 1 回実行する。hwnpu のコンパイルのキャッシュ (`WithCacheDir`) は構成のディレクトリに残す。読み込みと最初の呼び出しが `-cache-hit` (1 秒) 以下で当たり
+- フラグ: `-cache-sizes` (0.5,1)、`-cache-totals` (1〜8)、`-cache-format` (fp16)、`-cache-rounds` (3)、`-cache-hold close,open`、`-cache-order same,reverse` (1 回おきに逆順)、`-cache-passes` (同じプロセスで読み直す)、`-cache-names` (実行ファイルのコピーの名前で 1 回、その後に元の名前で 1 回)、`-cache-keep` (`-dir` に残して再起動の後に使い回す)、`-cache-pause`
+- 報告: 構成ごとの各回の当たりの数と warm (2 回目以降すべて当たり。別名の回は入れない)、大きさ・載せ方・順ごとの warm の最大の合計と外れた最小の合計、各読み込みの秒数、各回の後の `~/Library/Caches/<名前>/com.apple.e5rt.e5bundlecache` と共有の方の大きさ
+- 親は `llm.LockNPU` (新しく公開) で Neural Engine のロックを持ち、ほかの hwnpu のプロセスを待たせる。子はロックなしで開く。子が自分を起動し直すときの実行ファイルを `prober.exe` で差し替えられるようにした
+- 未実行: Linux (AMD) の機械で書いたので、Mac での計測はまだ。ビルド (darwin/arm64) と、当たりの数え方と報告の単体テストだけ
