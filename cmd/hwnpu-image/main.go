@@ -35,7 +35,7 @@
 // (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU
 // interpreter (slow; for checking without the NPU).
 //
-// depth estimates the depth of pictures on AMD's NPU with Depth Anything 3 or MoGe-2 (see
+// depth estimates the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth Anything 3 or MoGe-2 (see
 // DepthCmd).
 package main
 
@@ -49,8 +49,8 @@ import (
 
 type cli struct {
 	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Sana-Sprint)."`
-	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's NPU)."`
-	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; AMD's NPU)."`
+	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's and Apple's NPU)."`
+	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; the CPU, AMD's or Apple's NPU)."`
 	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export, or a Sana repository into a Core ML export."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 }

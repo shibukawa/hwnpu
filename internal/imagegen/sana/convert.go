@@ -16,8 +16,8 @@ import (
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
 // again. 2: the time embedding on the host (TimeFile); 3: Gemma 2's GELU written with exp and
-// real_div (mil.Text).
-const ExportVersion = 3
+// real_div (mil.Text); 4: the caption's second linear scaled down (mil.Caption).
+const ExportVersion = 4
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {

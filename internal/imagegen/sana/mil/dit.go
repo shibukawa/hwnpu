@@ -16,6 +16,9 @@ const (
 	VaeKeyScale = 256
 )
 
+// captionScale divides the caption projection's second linear (Caption).
+const captionScale = 64
+
 // Caption is the caption projection (linear, tanh GELU, linear) and its RMS norm: input text (1,
 // TextRows, 2304), the rows of Gemma 2's last hidden state Sana keeps (zeros past them); output
 // (1, TextRows, hidden), the DiT's ctx.
@@ -24,7 +27,15 @@ func Caption(c Dit) *Part {
 		y := g.Input("text", 1, TextRows, c.Caption)
 		h := g.LinearBias(y, "dit.caption_projection.linear_1.weight", "dit.caption_projection.linear_1.bias", "", c.Hidden)
 		h = g.Activation(h, "gelu_pytorch_tanh")
-		h = g.LinearBias(h, "dit.caption_projection.linear_2.weight", "dit.caption_projection.linear_2.bias", "", c.Hidden)
+		// linear_2 times 1/captionScale: the norm after it does not change. The prompt's first row
+		// (Gemma's <bos>) reaches 3.8e4 there in SANA 1.5 (fp32), and on the Neural Engine it came
+		// out NaN, so that the unconditional call (that row alone) was off (design.md 16.138)
+		b2 := g.Get("dit.caption_projection.linear_2.bias", c.Hidden)
+		for i := range b2 {
+			b2[i] /= captionScale
+		}
+		h = g.LinearS(h, "dit.caption_projection.linear_2.weight", "", c.Hidden, 1.0/captionScale)
+		h = g.Add(h, g.F16s("dit.caption_projection.linear_2.bias", []int{c.Hidden}, b2))
 		g.Output(g.ScaledRMSNorm(h, "dit.caption_norm.weight", 1e-5))
 	})
 }
