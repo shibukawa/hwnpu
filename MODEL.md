@@ -60,6 +60,15 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <td colspan="6"><b>RTMO-s</b> (about 0.23 GB)<br>the people in an image and their 17 keypoints in one pass (no person detector); about 0.1 s an image</td>
 </tr>
 <tr>
+<th>Objects<br><sub>hwnpu-image detect</sub></th>
+<td><b>RTMDet-s</b> (about 0.1 GB)<br>boxes and COCO's 80 labels; 9 ms an image on the M1's Neural Engine</td>
+<td colspan="5"><b>RTMDet-m</b> (about 0.2 GB)<br>more accurate (49.1 box AP, s 44.6); 18 ms an image</td>
+</tr>
+<tr>
+<th>Text (OCR)<br><sub>hwnpu-image ocr</sub></th>
+<td colspan="6"><b>PP-OCRv6 small</b> (about 0.45 GB)<br>lines of text, their boxes and what they say, 50 languages (Japanese, Chinese, English, ...); a page of 98 lines in 0.5 s on an M1</td>
+</tr>
+<tr>
 <th>Music generation<br><sub>hwnpu-audio generate</sub></th>
 <td colspan="6"><b>Magenta RealTime 2 small</b> (about 1.0 GB)<br>48 kHz stereo music in the style of texts or recordings, playing a MIDI file's notes or going on from a clip, streamed as it comes, about 1.4 times faster than real time; weights CC-BY 4.0 (credit "Magenta RealTime 2 by Google DeepMind" where the music is used)</td>
 </tr>
@@ -123,6 +132,8 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | SwiftF0 | Pitch (F0) | about 0.06 GB (M1: a footprint of 58 MB; 14K weights) | none (30 seconds at a time) | measured on an M1 |
 | Basic Pitch | Notes (MIDI) | about 0.07 GB (M1: a footprint of 75 MB; 36K weights) | none (2 second windows) | measured on an M1 |
 | RTMO-s | People's poses | about 0.23 GB (M1: a footprint of 232 MB; 9.9M weights in fp16) | none (an image at a time) | measured on an M1 |
+| RTMDet-tiny / s / m | Objects | about 0.07 / 0.1 / 0.2 GB (M1: footprints of 56 / 73 / 141 MB, and 11 / 21 / 56 MB on the Neural Engine) | none (an image at a time) | measured on an M1 |
+| PP-OCRv6 small | Text (OCR) | about 0.45 GB (M1: a footprint of 425 MB at most, the recognizer's programs of seven widths loaded) | none (an image at a time) | measured on an M1 |
 | Magenta RealTime 2 small | Music generation | about 1.0 GB (M1 footprints: a text style 0.97 GB, a recording's style 0.55 GB, going on from a clip 0.96 GB, 0.42 GB with the codes given by `-codes`) | none (a window of the last 41 frames) | measured on an M1 |
 | MOSS-SoundEffect v2.0 | Sound effects | about 2.3 GB (M1: a peak footprint of 2.34 GB with the text encoder in fp16, 2.17 GB in lut8; the text encoder's programs, 2.8 GB in fp16 or 1.7 GB in lut8, run first and are let go, then the DiT's 1.4 GB in lut8 and the decoder's 0.2 GB) | none (30 seconds of latents at a time) | measured on an M1 |
 | Whisper large-v3-turbo | Transcription (any length, 30 seconds at a time) | about 1.9 GB (M3: 0.78 GiB on the Neural Engine and 1.1 GB of the process) | none (up to 448 tokens every 30 seconds) | measured on an M3 |
