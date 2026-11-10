@@ -66,6 +66,16 @@ func IsOutOfMemory(err error) bool {
 	return err != nil && (strings.Contains(err.Error(), "OUT_OF_HOST_MEMORY") || strings.Contains(err.Error(), "OUT_OF_DEVICE_MEMORY"))
 }
 
+// IsDeviceLost reports whether err is the NPU lost by the driver (Level Zero's DEVICE_LOST), as
+// Windows does to a job that runs past its time limit.
+func IsDeviceLost(err error) bool {
+	var d *DriverError
+	if errors.As(err, &d) {
+		return d.Code == 0x70000001
+	}
+	return err != nil && strings.Contains(err.Error(), "DEVICE_LOST")
+}
+
 // BuildError is a failed graph compilation with the compiler log.
 type BuildError struct {
 	Log string
