@@ -7,7 +7,7 @@
 // They run in fp16. Every norm first divides each row by its largest magnitude (milpart's
 // ScaledRMSNorm and ScaledLayerNorm), and the linear attentions' sums over the tokens are taken
 // of keys scaled down and of query rows divided by their largest value (the quotient does not
-// change), so that nothing overflows (design.md 16.138).
+// change), so that nothing overflows (design.md 16.143).
 package mil
 
 import (

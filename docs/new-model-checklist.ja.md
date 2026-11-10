@@ -11,7 +11,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - **合計の時間が同じなら、NPU に載せる**。CPU や GPU に移して少し速くなる形 (短い文脈の注意を CPU で計算するなど) は採らない。GPU は使わない
 - **読む重みのバイトを減らす**。1 トークンの電力の大半は重みの読み出しで、読む量を減らせば速さと電力の両方に効く (ビット数、プロンプト用のプログラムに要らない層を持たせない、MoE)
 - **NPU の上での無駄を減らす**。読み込んだプログラムが NPU のメモリに収まらず載せ直しが起きる形、1 つの演算だけ CPU に落ちて NPU と CPU を往復する形は、速さが同じでも電力を使う
-- 電力は `powerbench` で 1 トークンあたりの mJ を測る (Mac は sudo が要る)。測れないときは、読む重みのバイト、NPU が抱えるメモリ (`mem.NPUWired`)、CPU の使用率で代わりに比べる
+- 電力は `hwnpu-dev powerbench` で 1 トークンあたりの mJ を測る (Mac は sudo が要る)。測れないときは、読む重みのバイト、NPU が抱えるメモリ (`mem.NPUWired`)、CPU の使用率で代わりに比べる
 
 数値の出典は [design.md](design.md) の 16 章 (カッコ内の番号)、[improvements.md](improvements.md)、[model-fit.md](model-fit.md)、[amd-npu-models.md](amd-npu-models.md)。構造を Go に移す作業そのものの手順と合格条件は `.claude/skills/port-architecture` にあるので、ここでは繰り返さない。
 
@@ -47,19 +47,19 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 
 ## 2. 構造の正しさ (CPU)
 
-`port-architecture` スキルの合格条件 (fp64 の参照と 1e-4、1 層ずつとまとめての一致、壊して検出、`hwnpu-check` の層ごとの照合) に加え、今までに後から見つかったもの:
+`port-architecture` スキルの合格条件 (fp64 の参照と 1e-4、1 層ずつとまとめての一致、壊して検出、`hwnpu-dev check` の層ごとの照合) に加え、今までに後から見つかったもの:
 
 | 確かめること | 道具 | 教訓 |
 |---|---|---|
 | 落としたチェックポイントが壊れていない | HF のファイルの `x-linked-etag` と `sha256sum` を比べる | ここでは大きな落としものにまばらなビットの反転があった (LFM3-Audio と Omni でそれぞれ 10 か所ほど、2〜6 バイト)。乱数の重みの照合や値の範囲では見えない。壊れた部分を取り直す (16.67) |
-| **BOS を付けて**比べる | `tools/ref/ref_logits.py`、`hwnpu-check`、`ironlm -forced -bos` | LFM3 は BOS なしだと KL が 4 倍に見え、0 層目の活性が外れ値になる (amd-npu-models.md 13 節)。チャットの型で実際に付くトークンで測る |
-| 実物の重みで照合する | `hwnpu-check`、`iron_plamo3_check.py`、AMD は `ironlm -forced` + `tools/ref/forced_logits.py` | 乱数の重みでは NPU と CPU の参照が食い違う (Gemma 4、PLaMo 3)。乱数の重みはロジットが平らで、bf16 の丸めと bfp16 の GEMM の差が層ごとに広がるため (16.107)。合否は実物の重みで |
-| **大きさごとに**実物の重みで照合する | `hwnpu-check` | 同じ構造でも、大きさで config の通る道が変わる (Qwen3.5-0.8B は値のヘッドと鍵のヘッドが同じ数)。Qwen3.5-4B は 16.108 まで実物の重みで照合していなかった。目録に載せる大きさはどれも照合する |
+| **BOS を付けて**比べる | `tools/ref/ref_logits.py`、`hwnpu-dev check`、`ironlm -forced -bos` | LFM3 は BOS なしだと KL が 4 倍に見え、0 層目の活性が外れ値になる (amd-npu-models.md 13 節)。チャットの型で実際に付くトークンで測る |
+| 実物の重みで照合する | `hwnpu-dev check`、`iron_plamo3_check.py`、AMD は `ironlm -forced` + `tools/ref/forced_logits.py` | 乱数の重みでは NPU と CPU の参照が食い違う (Gemma 4、PLaMo 3)。乱数の重みはロジットが平らで、bf16 の丸めと bfp16 の GEMM の差が層ごとに広がるため (16.107)。合否は実物の重みで |
+| **大きさごとに**実物の重みで照合する | `hwnpu-dev check` | 同じ構造でも、大きさで config の通る道が変わる (Qwen3.5-0.8B は値のヘッドと鍵のヘッドが同じ数)。Qwen3.5-4B は 16.108 まで実物の重みで照合していなかった。目録に載せる大きさはどれも照合する |
 | トークナイザーが HF と一致する | `tools/ref/tokenizer_golden.py` | 固定の文 + 数千の乱数の文で 0 件の食い違い。同点の扱い (PLaMo)、NFC と結合文字 (Qwen3.5)、byte fallback (Gemma 4) を逆にしたらテストが落ちることも確かめる |
 | チャットの型が jinja2 と一字一句同じ | `tools/ref/template_golden.py` | 道具の呼び出し、考える部分の扱い、過去の考えの削除 |
 | チャットの型の既定が大きさで違わないか | テンプレートと model card | Qwen3.5 は 0.8B / 2B が既定で考えず、4B は考える。小さいモデルに考えさせると予算まで回り続けたので、目録の `NoThink` で既定を合わせた (-think を書けば上書き) |
 | 多モーダルの前処理 | `resize_golden.py`、`mel_golden.py`、`whisper_mel_golden.py` | PIL との ±1、librosa との 1e-4 |
-| エンコーダ・デコーダ (音声) | `tools/ref/ref_whisper.py`、`hwnpu-check` (mel を `REF.x.bin` で入力) | エンコーダ、交差注意の K/V、デコーダを別々に照合する。30 秒を超える音声は窓の切り方まで HF に従う (クリップ全体で特徴を作り、タイムスタンプで次の窓へ進む)。30 秒で機械的に切ると、HF でも文が抜ける |
+| エンコーダ・デコーダ (音声) | `tools/ref/ref_whisper.py`、`hwnpu-dev check` (mel を `REF.x.bin` で入力) | エンコーダ、交差注意の K/V、デコーダを別々に照合する。30 秒を超える音声は窓の切り方まで HF に従う (クリップ全体で特徴を作り、タイムスタンプで次の窓へ進む)。30 秒で機械的に切ると、HF でも文が抜ける |
 | 埋め込みモデル | `embed_golden.py` | HF との cosine 0.997 以上 |
 | 画像生成 | `tools/ref/ref_anima.py` | diffusers の fp32 と潜在の cosine、VAE の PSNR |
 
@@ -80,7 +80,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 
 ### 3.2 全部が NPU に載るか
 
-`hwnpuinfo -model PART.mlpackage` で各部分が `all on the NPU` か。今までに CPU に落ちたもの:
+`hwnpu-dev info -model PART.mlpackage` で各部分が `all on the NPU` か。今までに CPU に落ちたもの:
 
 - `tile` で K/V を写す注意の形、問い合わせを行列にした形 → `SDPAGrouped` (16.25, 16.39)。順番だけで配置が変わる
 - 最後の部分の `transpose` / `reshape` → 出力をトークン先に取る (`attn_ot_N`、PLaMo 3)。出力層の後の要素ごとの演算 (Gemma 4 のソフトキャップ) は、ホストのサンプリングで上位の値だけに掛ける (`-logits host`、`llm.LogitSoftcap`、16.113)
@@ -89,12 +89,12 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 
 ### 3.3 fp16 であふれないか
 
-`hwnpu-check -f16` で層ごとの相対 RMS が 0.01 未満か。ただし 1 層ずつが通っても全体では崩れることがある (Whisper は 1 層ずつ 0.0003 以下、全体ではコサイン 0.9978)。次も見る:
+`hwnpu-dev check -f16` で層ごとの相対 RMS が 0.01 未満か。ただし 1 層ずつが通っても全体では崩れることがある (Whisper は 1 層ずつ 0.0003 以下、全体ではコサイン 0.9978)。次も見る:
 
 - 全体の `-f16` と、**位置ごと**のコサイン。音声やプロンプトの位置と、詰め物の位置を分けて数える
 - 外れて大きい活性 (massive activation、注意の吸い込み先) がどの層で生まれるか。HF の隠れ状態 (`REF.hidden.bin`) の層ごとの最大で探す (Whisper は層 21 から無音の位置に 300)
 - **原因を追う前に、HF を fp16 で動かした値と比べる**。同じだけずれるなら移植の誤りではない (Whisper: HF の fp16 も 0.9978)
-- ANE と Core ML の CPU で、層の数を変えたプログラム (`hwnpu-convert -layers N`) を HF の各層と比べると、ずれの始まる層がわかる (`internal/transcribe` の `TestEncoderOnDevice`)。Whisper は層 20 まで 0.9996 以上で、層 21 で無音の位置のどれが吸い込み先になるかが揺れた。CPU も ANE も、互いに同じだけ (コサイン 0.97) ずれ、音声の位置は崩れず、書き起こしは HF と同じ。行ごとの最大で割る LayerNorm に変えても同じだったので、あふれではない
+- ANE と Core ML の CPU で、層の数を変えたプログラム (`hwnpu-dev convert -layers N`) を HF の各層と比べると、ずれの始まる層がわかる (`internal/transcribe` の `TestEncoderOnDevice`)。Whisper は層 20 まで 0.9996 以上で、層 21 で無音の位置のどれが吸い込み先になるかが揺れた。CPU も ANE も、互いに同じだけ (コサイン 0.97) ずれ、音声の位置は崩れず、書き起こしは HF と同じ。行ごとの最大で割る LayerNorm に変えても同じだったので、あふれではない
 
 効いた手当て:
 
@@ -102,7 +102,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - 最後の層を head-scale で縮める (PLaMo-Embedding)、`-post-scale` (LFM3、1 層 1.4〜2.7 %)
 - 残差を 1/32 で持ち、正規化は行ごとの最大で割ってから (Anima。固定の倍率だと非正規数になる)
 - 詰め物の行を最後のトークンで埋める (Gemma 4 の eps が fp16 で 0 になって NaN)
-- ANE の `softplus` と `silu` は不正確 (softplus がある入力で 0、silu は裾で 1.4 % ずれる)。exp と log で書いた `builder.softplus`、`builder.silu` を使う。fp16 の正規の最小値 (6e-5) を下回る積は ANE で桁を失うので、大きくしてから後で割る (Qwen3.5 の GDN の出力、16.88)。CPU の `hwnpu-check` ではこれは見えないので、ANE と Core ML の CPU (`HWNPU_COREML_UNITS=cpu`) で位置ごとの KL を比べる
+- ANE の `softplus` と `silu` は不正確 (softplus がある入力で 0、silu は裾で 1.4 % ずれる)。exp と log で書いた `builder.softplus`、`builder.silu` を使う。fp16 の正規の最小値 (6e-5) を下回る積は ANE で桁を失うので、大きくしてから後で割る (Qwen3.5 の GDN の出力、16.88)。CPU の `hwnpu-dev check` ではこれは見えないので、ANE と Core ML の CPU (`HWNPU_COREML_UNITS=cpu`) で位置ごとの KL を比べる
 
 ### 3.4 合格
 
@@ -111,7 +111,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - 初回のコンパイルの時間を部分ごとに記録する。Qwen3.5 の 128 トークン/回 (GDN) は初回 13〜15 分かかった (未解決)
 - M1 では、`HWNPU_PROFILE=1` の部分の時間が呼び出しごとにそろっている。順に回す部分の合計が約 2.9 GiB を超えると、同じ部分がばらつき、毎回 10 倍以上遅くなる (載せ直し)。M1 の `-prefill auto` は、2 本と MTP の層や塔のプログラムの合計が 2.8 GiB を超えると 1 本にする (16.118)。生成用 1 本だけで超えるモデル (Qwen3.5-4B の lut8、Gemma 4 E4B) は、ログに警告が出る (16.109、16.112)
 - **グラフを変えてもプログラムの名前が変わらないときは `llm.Arch.Revision` を上げる** (名前に `-rN` が付く)。上げないと hwnpu-chat は変更前に変換したプログラムを使い続ける (silu の書き換えで lfm3 / plamo3 が r1、ホストのソフトキャップで gemma4 が r1、Anima は `ExportVersion`、16.95、16.113)
-- `hwnpu-check -package` の KL と argmax を記録 (形式ごと、5 節)
+- `hwnpu-dev check -package` の KL と argmax を記録 (形式ごと、5 節)
 
 ## 4. AMD (IRON) と Intel の形
 
@@ -130,6 +130,12 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 | **プロンプトは塊の大きさのままで HF と照合する** (64、128、塊の大きさ、`iron_qwen35_check.py ref --tokens N --stream` を `EXPORT/check` に置いて `ironlm`) | 32 トークンの照合は 1 回で済む経路しか通らない。Qwen3.6 の MoE は 256 トークンの塊を何回かに分けると壊れていた (コサイン 0.578) | 16.110 |
 | ホストの手順が読む値はコマンドの間に上書きされうる | IRON の領域の割り当ては、ホストが読むことを使うことに数えない。同じコマンドを何回か回すなら、入力をホストから書き戻す (`moeRoute.hn`) | 16.110 |
 | 演算子の中で繰り返す計算を外に出す | GDN の演算子は行を値の列の組ごとに読み直し、そのたびに SiLU をかけ直していた (演算子の 3/4)。前で 1 回かけて 30 → 10 ms。MoE も回数ごとに全部の専門家の重みを読み直すので、行の上限を塊の大きさに (コアに入らなければ列の 4 コアで出力を分ける) | 16.111、16.116 |
+| **どのプロンプトも同じ前置きで始まる** (決まった指示文) | 前置きのキーと値を、書き出しのときに CPU の float32 で計算してグラフの定数に持ち、残りだけを呼び出しごとの `start` から固定の塊で計算する。Sana の Gemma 2 (指示文 208 トークン): 1.58 → 0.70 秒、行の精度は前と同じ (`iron_sana.Prefix`、`sana.textStart`) | 16.138 |
+| **3 × 3 の畳み込みをタップごとの行列積に** (チャネルが最後の格子) | 各タップの入力が格子の連続した行の範囲になるので、行列積 9 回の和で im2col の写しが要らない。Sana の VAE では im2col の写しが ResBlock の 63 % (6.8 GB/s、768 バイトずつ): 1.15 → 0.76 秒。こうした写しは、演算ごとにコマンドを分けた書き出し (`IRON_SANA_PROFILE=1`) を `HWNPU_IRON_TIMING=1` で測って見つける | 16.139 |
+| 同じ形の段を 1 つのグラフに | 次の段の読み込みが重なると、段の実行が 0.76 → 1.1 秒に遅くなった。同じ形の段 (Sana の 1024² の ResBlock 3 つ) をまとめて読み込みを減らす。格子の状態を使い回し、残差のブロックは入力に上書きする (しないと格子 1 枚 +260 MiB) | 16.139 |
+| 最近傍の 2 倍の後の 3 × 3 の畳み込み | 出力の位相ごとに、低い解像度の 2 × 2 の畳み込み (核の行と列を位相ごとに足す) 4 つにし、それぞれを出力の 2 行おき 2 画素おきに写す。積は 4/9 で、拡大した格子が要らない。Sana の VAE: 固定の最大 2409 → 1960 MiB | 16.139 |
+| **A をその場で読む行列積** (格子の上の畳み込み) | IRON の `flm.ProjectionGEMM` を継承し、A を読む DMA の並びだけを差し替える。im2col の 1 行は格子の連続した範囲で、論理上の行の刻み C (重なる)、K のタイルの刻み Wp·C。密な読み方と次元の数は同じで、刻みだけ違う (`iron_gridgemm.GridGEMM`)。写しも足し算もなく、1024² の ResBlock 3 つ 2.7 → 1.4 秒。タップの位置は全体の絵で確かめる (参照は同じ論理上の A を組み立てるので、位置の誤りは見つけられない) | 16.139 |
+| 呼び出しごとの行の数で縛る (`x[:rows]`) | 呼び出しごとの値から決まる語は、どれも 1 つの値の一次式でなければならない。8 コアの RMSNorm の回数 `ceil(rows / 8)` も、`start + rows` も表せない (`words without a form`)。IRON の lm と同じく、固定の塊と呼び出しごとの `start` 1 つにする。MHA は 1 パイプライン 64 行 (64 行の塊ならパイプライン 1 本)、`flm.ProjectionGEMM` (MEDIUM) は 256 行の倍数だけ | 16.138 |
 | ホストの手順はトークンごとに CPU に分ける | Qwen3.6 の合わせ 40 層 336 → 73 ms。トークンごとの和の順は変えない | 16.116 |
 | カーネルの落とし穴 | 長いベクトル (bf16 の 128、64 要素) の `filter_even` / `filter_odd` は 1 回約 29 万サイクル (32 要素どうしの `interleave_unzip` にする)。プログラムは 1 コア 16 KB (テンプレートの写しを増やすと越える。noinline の関数 1 つに)。bf16 の mmul のネイティブは 8×8×4 だけ | 16.116 |
 | full ELF で 1 本に | xclbin の切り替えは 1 回 0.46 ms | 16.45–50 |
@@ -165,7 +171,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - **KL(参照 ‖ 量子化)** の平均、中央値、95 %点、top-1 の一致。400 位置 (前の 256 トークンをプロンプトとして読ませ、その後を 1 つずつ)、**BOS あり**
 - 文は 5 種: README (日英の混在)、GPL-3 (**校正に使わない**。合いすぎの検出用)、wiki40b-ja の評価分、wikitext-2 の試験分、Go のコード。置き場は `~/models/calib`
 - 参照は fp32 の CPU (HF) か、同じ NPU の bf16。NPU の量子化の KL が CPU の見積もりと同じかを確かめる (LFM3 0.036 と 0.035、LFM3-VL も同じ傾向)。違えば NPU の計算 (丸め、bfp16) を疑う
-- Apple の Neural Engine の上: `hwnpu-generate -package P.parts.json -score REF,...` がキャッシュなしのプログラム (`hwnpu-convert -seq 128`) を参照 (`ref_logits.py` / `ref_gemma4.py`) のトークンで流し、全位置の KL (平均、中央値、最大)、最上位、コサインを出す。文の先頭の数トークンの KL が大きい (8〜13) ので、設定の比較は同じ文どうしで (16.114)
+- Apple の Neural Engine の上: `hwnpu-dev generate -package P.parts.json -score REF,...` がキャッシュなしのプログラム (`hwnpu-dev convert -seq 128`) を参照 (`ref_logits.py` / `ref_gemma4.py`) のトークンで流し、全位置の KL (平均、中央値、最大)、最上位、コサインを出す。文の先頭の数トークンの KL が大きい (8〜13) ので、設定の比較は同じ文どうしで (16.114)
 - 画像生成は KL の代わりに、参照の軌跡の上での速度の相対 RMS と、自由に走らせた最後の潜在の cosine (`tools/amd/anima_gptq.py`)
 
 ### 5.2 部分ごとのビット数を CPU で掃く
@@ -187,7 +193,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 | 順 | 方法 | 道具 | 結果の例 | 注意 |
 |---|---|---|---|---|
 | 1 | 丸め (RTN)。q4nx は 9 つの候補から最小の誤差を選ぶ | `iron_q4.quantize_fmt`、`palette.QuantizeBits` | 重みの誤差 8.2 → 7.3 % | 基準。重みの誤差が最小でも出力の誤差が最小とは限らない |
-| 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-convert -codes`、`hwnpu-chat --codes` | NPU の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、LFM3-VL 0.067 → 0.034、PLaMo 3 0.058 → 0.040。Anima の DiT の q4: 潜在の cosine 0.868 → 0.939 (q8 0.962) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
+| 2 | **GPTQ** (H = E[xxᵀ] で誤差を後ろの列に送る) | `tools/amd/q4_gptq.py` → AMD は `iron_export_lm.py --q4-codes`、Apple は `hwnpu-dev convert -codes`、`hwnpu-chat --codes` | NPU の wiki-ja: E2B 0.221 → 0.081、E4B 0.083 → 0.049、LFM3 0.071 → 0.038、LFM3-VL 0.067 → 0.034、PLaMo 3 0.058 → 0.040。Anima の DiT の q4: 潜在の cosine 0.868 → 0.939 (q8 0.962) | 減衰は H の対角の平均 × **0.1** (0.01 は校正の文に合いすぎ、GPL が丸めより悪くなった)。校正の文は一般の文 (wikitext-2 と wiki40b-ja、64 × 512 トークン)。リポジトリの文書だけでも合いすぎる。BOS の位置は H から外す。前の層を量子化してから次の層を測る (数層ずつのパス) |
 | 3 | **表の当てはめ** (Apple の lutN): E[x²] で重み付けした k-means | `q4_gptq.py --lut-fit wkmeans` | LFM3 lut6 0.050 → 0.038、lut4 0.66 → 0.33 (Go の変換) | 一様な表から始める (重みの誤差が最小の k-means から始めると KL は最悪)。ANE での確認は handoff-m3-gptq.md |
 | 4 | AWQ 式のスケールの折り込み | 未実装 | | model-fit.md T8 の 2。lut4 をさらに下げたいとき |
 | — | 形式を 1 段上げる (AMD の q6) | `iron_export_lm.py --mlp q6`、`q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B の GPL 0.34 → 0.044 | 校正で直らないとき。GEMV は q8 とほぼ同じ時間で、得るのはメモリ (q8 の 76 %) |
@@ -209,16 +215,16 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 | KL 0.05 未満 (CPU の HF との比較) | port-architecture の目安。4 ビットを既定にしてよい |
 | KL 0.05〜0.2 | 答えの質 (9 節) を見て決める。ANE の lut6 (LFM3 0.232) はここ |
 | KL 1 以上 | 使えない (lut4 の LFM3 は事実の質問 4 問中 3 問を誤った) |
-| `hwnpu-formats` で参照と同じ次のトークン 90% 以上、短い質問の正解が同じ数 | 小さい方にする (Qwen3.5-2B の lut6 は lut8 と 92%、12 問とも 10 問正解。16.115) |
+| `hwnpu-dev formats` で参照と同じ次のトークン 90% 以上、短い質問の正解が同じ数 | 小さい方にする (Qwen3.5-2B の lut6 は lut8 と 92%、12 問とも 10 問正解。16.115) |
 | 同じく 85〜90%、または計算や事実を新たに誤る | 1 つ上の形式のまま (Qwen3.5-0.8B の lut6 は fp16 と 86% で 17 × 23 を誤った) |
 | 同じく 80% 未満、または答えが同じ句の繰り返しになる | 使えない (Qwen3.5 の lut4 は 60〜76% で、12 問中 5〜6 問が繰り返し) |
 | 音声と画像のエンコーダ | 文字の誤り率 (WER、CER) で決める。Whisper の lut6 は WER 4.43% → 4.87%、CER 3.60% → 3.94% で、lut8 のまま |
 
 速さとの引き換えは、重みのバイトどおり (ANE の lut4 / lut6 / lut8 で 1.81 / 2.65 / 3.49 ms)。lut6 の遅さは `SDPAGrouped` で取り戻した (16.41)。
 
-- 参照は fp16 にする。fp16 が 1 部分 (0.97 GiB) に収まらないモデル (Qwen3.5-2B は最後の層と語彙 248K の出力層で 1.04 GiB) は lut8 を参照にして (`hwnpu-formats -ref lut8`)、lut8 自体は CPU の HF との KL で確かめる
+- 参照は fp16 にする。fp16 が 1 部分 (0.97 GiB) に収まらないモデル (Qwen3.5-2B は最後の層と語彙 248K の出力層で 1.04 GiB) は lut8 を参照にして (`hwnpu-dev formats -ref lut8`)、lut8 自体は CPU の HF との KL で確かめる
 - perplexity は短い文では量子化した方が低いことがある (Qwen3.5 の lut6)。参照との一致で比べる
-- npuprobe の形式ごとの読みの速さは、モデルの部分の速さとは限らない: M1 の npuprobe は int8 を 62 GB/s で読むが、Gemma 4 E2B の部分では約 48 GB/s で、int8 はバイトが多いぶん lut6 より遅かった (16.112)。速さで形式を選ぶ前に、実物の部分を `HWNPU_PROFILE=1` で測る
+- hwnpu-dev probe の形式ごとの読みの速さは、モデルの部分の速さとは限らない: M1 の hwnpu-dev probe は int8 を 62 GB/s で読むが、Gemma 4 E2B の部分では約 48 GB/s で、int8 はバイトが多いぶん lut6 より遅かった (16.112)。速さで形式を選ぶ前に、実物の部分を `HWNPU_PROFILE=1` で測る
 - 小さくした形式で 2 本 (8 トークン/回とプロンプト用) の合計がコンパイルのキャッシュ (約 3.5 GiB) に収まるようになると、`-prefill auto` が 1 本から 2 本に変わる (Qwen3.5-2B の lut6)。常駐のメモリと初回のコンパイルを測り直す
 - 形式はモデルの大きさで変わってよい: 同じアーキテクチャでも `Formatter` (config の `Format()`) でチェックポイントごとに決める (LFM3 と VL、Qwen3.5 の 2B と 0.8B / 4B)
 
@@ -227,7 +233,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 | 測るもの | 道具 | 教訓 |
 |---|---|---|
 | AMD の固定 (`Unevictable` の増え) | `/proc/meminfo` (RSS に出ない)、書き出しの `manifest.json` の bank の合計 | 大半は重みと作業域。KV は 5 % 未満 |
-| Mac の `phys_footprint` と Neural Engine が抱えるメモリ | `npuprobe split`、`hwnpu-chat` の読み込みのログ、`HWNPU_PROFILE=1` | 重みはカーネルの wired メモリにあり、`mem.NPUWired` で読める (16.95)。Core ML がその場でコンパイルしたプログラムは、読み込みではなく最初の呼び出しで載る (LFM3: 読み込み後 0.27 GiB、1 回呼んで 2.43 GiB) ので、1 回呼んでから測る。2 本のプログラムがそこに収まらないと、生成の部分が毎回載せ直される (M1 の Gemma 4、16.112) |
+| Mac の `phys_footprint` と Neural Engine が抱えるメモリ | `hwnpu-dev probe split`、`hwnpu-chat` の読み込みのログ、`HWNPU_PROFILE=1` | 重みはカーネルの wired メモリにあり、`mem.NPUWired` で読める (16.95)。Core ML がその場でコンパイルしたプログラムは、読み込みではなく最初の呼び出しで載る (LFM3: 読み込み後 0.27 GiB、1 回呼んで 2.43 GiB) ので、1 回呼んでから測る。2 本のプログラムがそこに収まらないと、生成の部分が毎回載せ直される (M1 の Gemma 4、16.112) |
 | 会話の印の大きさ | | 使っているリングの行だけ写す (`ringRows`、578 → 183 MB) |
 | 変換の直後 | | `debug.FreeOSMemory` (2.4 GB → 154 MB) |
 | KV の大きさと文脈 | | 物理メモリの 1/4 を超えたら塊単位で縮める |
@@ -242,9 +248,9 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 |---|---|
 | 1 回の呼び出し (Q=8、Q=64) | `TestCallTimes` (`HWNPU_CALL_PKGS`) |
 | エンコーダ 1 回 (ANE と Core ML の CPU) | `TestEncoderOnDevice` (`HWNPU_WHISPER_UNITS`) |
-| 生成の tokens/s、プロンプト、起動 (2 回目) | `hwnpu-generate`、`hwnpu-chat` のログ |
-| 形式ごとの比較 | `hwnpu-formats` |
-| AMD の GEMV、電力 | `tools/amd/gemvbench`、`powerbench` |
+| 生成の tokens/s、プロンプト、起動 (2 回目) | `hwnpu-dev generate`、`hwnpu-chat` のログ |
+| 形式ごとの比較 | `hwnpu-dev formats` |
+| AMD の GEMV、電力 | `tools/amd/gemvbench`、`hwnpu-dev powerbench` |
 
 続けて入れるもの (どのモデルにも効いた):
 
@@ -272,18 +278,18 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 | 用途 | 確かめ方 |
 |---|---|
 | チャット | 16.26 の 4 問 (富士山、17 × 23、『こころ』、信濃川)、hwnpu-chat agent の課題 (`go test` が通るか)。小さいモデルが事実を誤ったら、fp16 にも同じ問いをする。同じく誤るなら、量子化や移植ではなくモデルの限界 (Qwen3.5-0.8B、16.99) |
-| 翻訳 | **訳文のトークンだけ**で KL と一致を測る (原文の側は予測しないので高く出る)。44 文で bf16 と一字一句同じ数。`hwnpu-formats` は問答の文で測るので、翻訳モデルのパープレキシティには意味がない (PLaMo 3 Translate で 2.8 万) |
+| 翻訳 | **訳文のトークンだけ**で KL と一致を測る (原文の側は予測しないので高く出る)。44 文で bf16 と一字一句同じ数。`hwnpu-dev formats` は問答の文で測るので、翻訳モデルのパープレキシティには意味がない (PLaMo 3 Translate で 2.8 万) |
 | 画像の説明、TTS | 同じ画像と音声で答えを並べる。TTS はもう一度 ASR に通す |
 | 音声の書き起こし | 英語は LibriSpeech の検証用 73 本 (`hf-internal-testing/librispeech_asr_dummy`、正解つき)、日本語は `say` の 4 つの声 × 12 文。HF fp32 と一字一句同じ本数と WER / CER (16.115)。30 秒を超える音声も |
 | 埋め込み | HF との cosine |
-| 画像生成 | 同じ雑音で画像を並べる。種によって構図が変わることがある (4 つに 1 つ) |
+| 画像生成 | 同じ雑音で画像を並べる。種によって構図が変わることがある (4 つに 1 つ)。少ないステップに蒸留したモデル (Sana-Sprint) は条件の小さな差を広げる: キャプションの 0.23 % の差で、1 枚の潜在のコサインが 0.965 まで動いた。1 枚の潜在のコサインでは、その前の部品 (テキストエンコーダ) の形を比べられない。部品そのものの float32 に対する誤差と、数枚のプロンプトの絵を並べて決める (16.138) |
 
 **実務の注意**:
 
 - fp16 の比較用のプログラムでディスクが倍になる。比べ終えた形式のプログラムは消す
 - Core ML はプロセスごとに `~/Library/Caches/<プロセス名>/com.apple.e5rt.e5bundlecache` を作る。テスト (`transcribe.test` など) でも数 GB になる (Whisper の比較で 6.2 GB)
 - ダウンロードが止まっても時間切れにならない (`chat.fetch` に停滞の検出がない。kotoba-whisper が 158 MB で 1 時間止まった)
-- `hwnpu-formats` は、分けない 1 本のプログラムの重みを 0.00 GiB と表示する
+- `hwnpu-dev formats` は、分けない 1 本のプログラムの重みを 0.00 GiB と表示する
 
 **記録**:
 
@@ -382,7 +388,7 @@ done
   - CPU に置くモデル: onnxruntime の共有ライブラリ
   - チェックポイントを読む部分は Go で書く。safetensors と ONNX はある。PyTorch の `.pt` (MoGe-2 の `model.pt`、zip の中の pickle) は、これから書く
 - **コンパイルも Python なしにするには**: 新しい形を作る人と、配布を作る CI だけの話。それも今の IRON (Python) で作れるので、必須ではなく、優先度は低い
-  - 残る依存: mlir-aie (`aiecc` の C++ 版、`aie-opt`、`aie-translate`、`bootgen`。wheel で 853 MB)、Peano (AIE の `clang`、`llc`、`ld.lld`。422 MB)、カーネルのソースと AIE API のヘッダ。xclbinutil は hwnpu-xclbin で代わる
+  - 残る依存: mlir-aie (`aiecc` の C++ 版、`aie-opt`、`aie-translate`、`bootgen`。wheel で 853 MB)、Peano (AIE の `clang`、`llc`、`ld.lld`。422 MB)、カーネルのソースと AIE API のヘッダ。xclbinutil は hwnpu-dev xclbin で代わる
   - Go に移す部分: IRON の演算ごとの設計 (ObjectFIFO、ワーカー、実行の手順から MLIR を作るところ) と、`iron_graph.export_graph`
 
 ## 12. 試して効かなかったもの (繰り返さない)

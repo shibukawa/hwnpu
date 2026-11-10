@@ -464,7 +464,7 @@ func (g *Graph) SDPAGrouped(q, k, v *mlpackage.Var, scale float64, mask func() *
 // n, and the weighted values that times the largest value, in fp16. Holding the parts on an axis
 // of one tensor, or weighting each part by its share of the whole, put the whole program on the
 // CPU, and the sums taken by reduce_sum made the placement of 64 tokens per call change from one
-// compile to the next (M3, macOS 27.0.1; npuprobe kv -kv-modes host-chunk, TestChunkedSDPAOnNeuralEngine).
+// compile to the next (M3, macOS 27.0.1; hwnpu-dev probe kv -kv-modes host-chunk, TestChunkedSDPAOnNeuralEngine).
 func (g *Graph) ChunkedSDPA(q *mlpackage.Var, ks, vs, masks []*mlpackage.Var) *mlpackage.Var {
 	nh, s, hd := q.Shape[1], q.Shape[2], q.Shape[3]
 	rows := []int{1, nh, s, 1}

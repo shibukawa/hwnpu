@@ -2,7 +2,7 @@
 
 Intel Core Ultra（Meteor Lake、Arrow Lake、Lunar Lake、Panther Lake、Wildcat Lake）の NPU を hwnpu から使えるようにし、動作を確かめる手順です。
 
-> **現状。** Intel バックエンドは、Level Zero ドライバを模した偽のドライバでしか試していません。hwnpu-chat と hwnpu-chat agent は、同じプログラムを OpenVINO の CPU で動かして確かめました。実機で手順 4 の `cmd/report` と手順 6 のチャットを実行し、結果を送っていただけるのがいちばん助かります。
+> **現状。** Intel バックエンドは、Level Zero ドライバを模した偽のドライバでしか試していません。hwnpu-chat と hwnpu-chat agent は、同じプログラムを OpenVINO の CPU で動かして確かめました。実機で手順 4 の `hwnpu-dev report` と手順 6 のチャットを実行し、結果を送っていただけるのがいちばん助かります。
 
 English: [INSTALL_INTEL.md](INSTALL_INTEL.md)
 
@@ -125,13 +125,13 @@ cd hwnpu
 Go のない機械で試すときは、別の機械でクロスビルドした実行ファイルを持っていきます。テスト用のモデルは埋め込まれているので、ファイルは 1 つで済みます。
 
 ```bash
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o report.exe ./cmd/report
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o hwnpu-dev.exe ./cmd/hwnpu-dev
 ```
 
 ## 4. 動作を確かめる
 
 ```bash
-go run ./cmd/hwnpuinfo
+go run ./cmd/hwnpu-dev info
 ```
 
 Intel NPU が `backend: levelzero` として表示されます。`driver` の行には、Level Zero の版、ドライバの版、グラフ拡張、コンパイラの版、NPU 用コマンドキュー拡張（ターボやワークロード種別）の有無が出ます。
@@ -139,7 +139,7 @@ Intel NPU が `backend: levelzero` として表示されます。`driver` の行
 次に報告を作り、Markdown のファイルを保存します。
 
 ```bash
-go run ./cmd/report -o report.md
+go run ./cmd/hwnpu-dev report -o report.md
 ```
 
 Intel NPU ごとに、2 つの OpenVINO IR モデルを厳格モードでコンパイルし、結果を fp32 の参照値と比べ、実行時間を測ります。NPU は内部で fp16 を使うので、小さな誤差は想定どおりです。
@@ -147,20 +147,20 @@ Intel NPU ごとに、2 つの OpenVINO IR モデルを厳格モードでコン�
 電力ポリシーの効果を比べるときは、2 回実行します。Linux では CPU パッケージの電力量（RAPL）を root しか読めないので、電力量の欄を出すには `sudo` で実行してください。
 
 ```bash
-go run ./cmd/report -power low -o low.md
+go run ./cmd/hwnpu-dev report -power low -o low.md
 ```
 
 ```bash
-go run ./cmd/report -power performance -o performance.md
+go run ./cmd/hwnpu-dev report -power performance -o performance.md
 ```
 
-生成したモデルで NPU を測るには、npuprobe を使います。LLM の生成と同じ形の OpenVINO IR のモデルを Go で作り、0.5B と 1B の重みで fp16、int8、int4 の速さを測ります (`bench`。RAPL を読めるとき、つまり Linux で root のときは 1 トークンあたりのエネルギーも)。次に形式ごとにモデルを大きくしながら、ドライバがコンパイルできなくなる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込みます (`limit`)。Python もモデルのファイルも要りません。数十分から 1 時間ほどかかり、結果は `npuprobe-<機種>-<日時>.md` に書き出します。クローンしなくても動きます。
+生成したモデルで NPU を測るには、hwnpu-dev probe を使います。LLM の生成と同じ形の OpenVINO IR のモデルを Go で作り、0.5B と 1B の重みで fp16、int8、int4 の速さを測ります (`bench`。RAPL を読めるとき、つまり Linux で root のときは 1 トークンあたりのエネルギーも)。次に形式ごとにモデルを大きくしながら、ドライバがコンパイルできなくなる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込みます (`limit`)。Python もモデルのファイルも要りません。数十分から 1 時間ほどかかり、結果は `npuprobe-<機種>-<日時>.md` に書き出します。クローンしなくても動きます。
 
 ```bash
-go run github.com/shibukawa/hwnpu/cmd/npuprobe@latest
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
 ```
 
-先に `cmd/report` を動かしてください。そこで小さなモデルが失敗するなら、探索も同じように失敗します。結果の読み方は [PROBE.ja.md](PROBE.ja.md) にあります。
+先に `hwnpu-dev report` を動かしてください。そこで小さなモデルが失敗するなら、探索も同じように失敗します。結果の読み方は [PROBE.ja.md](PROBE.ja.md) にあります。
 
 ## 5. モデルの用意
 
@@ -212,11 +212,11 @@ hwnpu-chat --paged -1 --tier none --context 4096
 2. 質問に正しく答えるか。トークン/秒 (答えの後に表示) はいくつか。
 3. 既定の設定 (`hwnpu-chat` だけ) で読み込めるか、コンパイルにどれくらいかかるか、メモリは足りるか。
 4. `hwnpu-chat agent` がツールを呼べるか。
-5. `hwnpu-formats` で int8、int4-g128、int4 の精度と速さを比べる (下の節)。
+5. `hwnpu-dev formats` で int8、int4-g128、int4 の精度と速さを比べる (下の節)。
 
-### 重みの形式を比べる (hwnpu-formats)
+### 重みの形式を比べる (hwnpu-dev formats)
 
-`hwnpu-formats` は、チャットモデルを形式ごとに変換して NPU に載せ、決まった会話 (日本語と、英語とコード) を hwnpu-chat と同じ 1 回 8 トークンで読ませて、次の表を出します。
+`hwnpu-dev formats` は、チャットモデルを形式ごとに変換して NPU に載せ、決まった会話 (日本語と、英語とコード) を hwnpu-chat と同じ 1 回 8 トークンで読ませて、次の表を出します。
 
 | 列 | 意味 |
 |---|---|
@@ -226,15 +226,15 @@ hwnpu-chat --paged -1 --tier none --context 4096
 | perplexity | 答えの部分のパープレキシティ。低いほどよい。基準がなくても比べられる |
 
 ```bash
-go run ./cmd/hwnpu-formats                                    # int8、int4-g128、int4 を fp16 と比べる
-go run ./cmd/hwnpu-formats -formats int4-g128 -ref int8       # fp16 が NPU に載らないとき
-go run ./cmd/hwnpu-formats -json formats.json                 # 結果をファイルにも書く
+go run ./cmd/hwnpu-dev formats                                    # int8、int4-g128、int4 を fp16 と比べる
+go run ./cmd/hwnpu-dev formats -formats int4-g128 -ref int8       # fp16 が NPU に載らないとき
+go run ./cmd/hwnpu-dev formats -json formats.json                 # 結果をファイルにも書く
 ```
 
 基準の fp16 は重みが 3.2 GiB あり、NPU のコンパイルに時間がかかるか、失敗することがあります。そのときは `-ref int8` (fp16 とほぼ同じ) にするか、OpenVINO が入っていれば基準だけ CPU で計算します。
 
 ```bash
-HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-formats -ref-backend openvino
+HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-dev formats -ref-backend openvino
 ```
 
 変換結果はモデルのディレクトリの `intel/formats/` に残り、2 回目からは変換もコンパイルも省かれます。Linux x86 の OpenVINO CPU (`-backend openvino`) では次のようになりました。NPU での数字を送ってもらえると、Intel の既定の形式を決められます。
@@ -270,6 +270,6 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 | `MAPPED_INFERENCE_VERSION is NOT compatible` | ドライバ、コンパイラ、ファームウェアのリリースがずれている。1 つのリリースのパッケージをすべて入れ直す。 |
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` が入っていない。入れるか、コンパイル済みの blob を使う。 |
 | `ZE_extension_graph version ... is not supported` | ドライバが古い（グラフ拡張 1.5 以降が必要）。ドライバを更新する。 |
-| hwnpu-chat が `chain: part 0 has no output y` で止まる | ドライバが返す引数の名前が IR の名前と合わない。メッセージと `hwnpuinfo` の結果を送ってほしい。 |
+| hwnpu-chat が `chain: part 0 has no output y` で止まる | ドライバが返す引数の名前が IR の名前と合わない。メッセージと `hwnpu-dev info` の結果を送ってほしい。 |
 | hwnpu-chat の読み込み中にメモリが足りなくなる | `--tier none` でグラフを半分にする。`--format int4-g128` で重みを半分にする。 |
 | Level Zero の詳しい情報がほしい | `ZE_ENABLE_LOADER_DEBUG_TRACE=1` を付けて実行する。 |

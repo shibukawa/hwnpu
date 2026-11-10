@@ -2,7 +2,7 @@
 
 This guide prepares a Linux machine with an AMD Ryzen AI processor (XDNA NPU: Phoenix, Hawk Point, Strix Point, Krackan Point and later) so that hwnpu can use its NPU, builds a small test design, and shows how to check the result.
 
-> **Status.** On a Ryzen AI 9 365 (Strix Point, `npu4`, 8 columns) with the amdxdna driver of the stock Linux 7.0 kernel of Ubuntu 26.04 and firmware 1.1.2.64, `cmd/report` (step 4) passes every check, including the passthrough design built with mlir-aie v1.4.4 (2026-11-03). Phoenix and Hawk Point (`npu1`) are untested: hwnpu runs models exported for them as an xclbin per step, which works on the Ryzen AI 9 365 when exported that way for `npu2` (`--per-step`), but NPU1 itself has not run it. Reports from other machines are welcome.
+> **Status.** On a Ryzen AI 9 365 (Strix Point, `npu4`, 8 columns) with the amdxdna driver of the stock Linux 7.0 kernel of Ubuntu 26.04 and firmware 1.1.2.64, `hwnpu-dev report` (step 4) passes every check, including the passthrough design built with mlir-aie v1.4.4 (2026-11-03). Phoenix and Hawk Point (`npu1`) are untested: hwnpu runs models exported for them as an xclbin per step, which works on the Ryzen AI 9 365 when exported that way for `npu2` (`--per-step`), but NPU1 itself has not run it. Reports from other machines are welcome.
 
 Japanese: [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)
 
@@ -85,7 +85,7 @@ xrt-smi examine
 
 ## 2. Build a test design
 
-`cmd/report` runs the IRON example `passthrough_dmas`. It only copies a buffer with the NPU's DMA, so it needs no compiler for the AIE cores.
+`hwnpu-dev report` runs the IRON example `passthrough_dmas`. It only copies a buffer with the NPU's DMA, so it needs no compiler for the AIE cores.
 
 IRON requires **Python 3.12**. If your distribution ships another version, [uv](https://docs.astral.sh/uv/) installs it without root:
 
@@ -135,10 +135,10 @@ printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/root/usr/lib/x86_64-linux-gnu exec %s/root
 export AIE_XCLBINUTIL=~/xrt-debs/xclbinutil
 ```
 
-Or skip XRT entirely: hwnpu has a stand-in, `hwnpu-xclbin`, that takes the arguments aiecc passes to `xclbinutil`. Build it from the hwnpu checkout (step 3) and point aiecc at it:
+Or skip XRT entirely: hwnpu has a stand-in, `hwnpu-dev xclbin`, that takes the arguments aiecc passes to `xclbinutil`. Build it from the hwnpu checkout (step 3) and point aiecc at it:
 
 ```bash
-go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-xclbin
+go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-dev   # named hwnpu-xclbin (or xclbinutil), hwnpu-dev runs as xclbin
 ```
 
 ```bash
@@ -157,7 +157,7 @@ cd programming_examples/basic/passthrough_dmas
 python3 passthrough_dmas.py -d npu2 -n 4096 --xclbin-path=build/final.xclbin --insts-path=build/insts.bin
 ```
 
-The design copies 4096 int32 values (16384 bytes), which is the default of `cmd/report`. If you build it with another `-n`, pass `-bytes` to the report.
+The design copies 4096 int32 values (16384 bytes), which is the default of `hwnpu-dev report`. If you build it with another `-n`, pass `-bytes` to the report.
 
 ## 3. Get hwnpu
 
@@ -172,7 +172,7 @@ cd hwnpu
 ## 4. Check the installation
 
 ```bash
-go run ./cmd/hwnpuinfo
+go run ./cmd/hwnpu-dev info
 ```
 
 An AMD NPU appears with `backend: xdna`, its generation, the number of AIE columns, the AIE version and the firmware version.
@@ -180,7 +180,7 @@ An AMD NPU appears with `backend: xdna`, its generation, the number of AIE colum
 Run the report with the design from step 2:
 
 ```bash
-go run ./cmd/report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o report.md
+go run ./cmd/hwnpu-dev report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o report.md
 ```
 
 It checks buffer allocation and cache synchronization, an instruction buffer in the device heap, the power meter (the NPU's sensor, `QUERY_SENSORS`, exists only in AMD's DKMS driver; on the stock Linux 7.0 kernel hwnpu reads the package power the amdgpu driver reports, PPT, which needs no root and covers the whole APU), and then loads the design, runs it, checks that the output equals the input and measures latency and NPU energy. Without `-xclbin` the kernel check is skipped. If the kernel in your xclbin is not named `MLIR_AIE`, pass `-kernel NAME`.
@@ -188,11 +188,11 @@ It checks buffer allocation and cache synchronization, an instruction buffer in 
 To compare power policies (hardware context priority):
 
 ```bash
-go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power low -o low.md
+go run ./cmd/hwnpu-dev report -xclbin final.xclbin -insts insts.bin -power low -o low.md
 ```
 
 ```bash
-go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o performance.md
+go run ./cmd/hwnpu-dev report -xclbin final.xclbin -insts insts.bin -power performance -o performance.md
 ```
 
 Benchmarks of the data types and the DMA bandwidth on Strix Point, and the scripts behind them: [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) (Japanese), [tools/iron](tools/iron/README.md).
@@ -223,7 +223,7 @@ for _, a := range k.Args() { fmt.Println(a.Index, a.Name, a.Type, a.Buffer) }
 
 ## 6. Windows (untested)
 
-AMD's NPU driver for Windows is reached only through XRT's C++ library, `xrt_coreutil.dll`, which the driver installs. hwnpu has no cgo, so it calls XRT through **xrtshim** (`native/xrtshim`), a C library of its own, loaded at run time (the `xrt` backend, `internal/backend/amdxrt`). The same backend runs on Linux against the XRT packages, which is how it is tested: on the Ryzen AI 9 365 with XRT 2.21.75, it passes `cmd/report`'s passthrough design (an xclbin), IRON's full ELFs with per-call values, and Gemma 4 E2B with images and audio at the speed of the Linux driver (2026-11-04). On Windows it has not run yet: reports are welcome.
+AMD's NPU driver for Windows is reached only through XRT's C++ library, `xrt_coreutil.dll`, which the driver installs. hwnpu has no cgo, so it calls XRT through **xrtshim** (`native/xrtshim`), a C library of its own, loaded at run time (the `xrt` backend, `internal/backend/amdxrt`). The same backend runs on Linux against the XRT packages, which is how it is tested: on the Ryzen AI 9 365 with XRT 2.21.75, it passes `hwnpu-dev report`'s passthrough design (an xclbin), IRON's full ELFs with per-call values, and Gemma 4 E2B with images and audio at the speed of the Linux driver (2026-11-04). On Windows it has not run yet: reports are welcome.
 
 1. Install the NPU driver (Ryzen AI driver, from AMD). `C:\Windows\System32\AMD\xrt-smi.exe examine` should list the NPU. A full ELF (Gemma 4 E2B) needs a recent driver, whose XRT creates a hardware context from an ELF (`xrt::hw_context(device, xrt::elf)`; XRT 2.21 does).
 2. Build xrtshim with Visual Studio 2022 (C++ workload) and CMake, in a "Developer PowerShell for VS":
@@ -237,7 +237,7 @@ AMD's NPU driver for Windows is reached only through XRT's C++ library, `xrt_cor
 
    The XRT headers (2.21) are in `native/xrtshim/include`. If the driver's XRT is much older or newer, its C++ ABI may differ: take headers of its version from XRT's sources (`-DXRT_INCLUDE_DIR`).
 3. Put `build\Release\xrtshim.dll` next to hwnpu's executables (or set `HWNPU_XRTSHIM` to it). hwnpu finds `xrt_coreutil.dll` in `System32\AMD` or the driver store; `HWNPU_XRT_CORE` names another.
-4. Build hwnpu for Windows (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`) and run `hwnpuinfo`: the NPU appears with the backend `xrt`.
+4. Build hwnpu for Windows (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`) and run `hwnpu-dev info`: the NPU appears with the backend `xrt`.
 
 Models are exported on Linux (IRON and mlir-aie, see the README), and the exported directory is copied over: `hwnpu-chat -m DIR` runs it the same way. What differs from Linux:
 
@@ -250,7 +250,7 @@ On Linux, the `xrt` backend lists the NPU only with `HWNPU_BACKEND=xrt` (build t
 
 | Symptom | Cause and fix |
 |---|---|
-| No AMD device in `hwnpuinfo` | Check `ls /dev/accel/` and `sudo dmesg \| grep -i amdxdna`. The driver needs a kernel with `amdxdna` and matching firmware in `/usr/lib/firmware/amdnpu/`. |
+| No AMD device in `hwnpu-dev info` | Check `ls /dev/accel/` and `sudo dmesg \| grep -i amdxdna`. The driver needs a kernel with `amdxdna` and matching firmware in `/usr/lib/firmware/amdnpu/`. |
 | `permission denied ... add the user to the render group` | `sudo usermod -aG render $USER`, then log in again. |
 | `create device heap` fails | Another process may hold the NPU's resources, or the firmware failed to load (see `dmesg`). Raising the memlock limit (step 1) helps with `ENOMEM`. |
 | `no valid DPU kernel found in the xclbin` | The xclbin has no PDI for its kernel id; rebuild it for the right `--dev`. |

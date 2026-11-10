@@ -1,5 +1,5 @@
 // Package archs links in every supported architecture. Its import list is the whitelist of
-// models that hwnpu-convert handles; a new architecture is added here.
+// models that hwnpu-dev convert handles; a new architecture is added here.
 package archs
 
 import (

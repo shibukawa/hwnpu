@@ -145,7 +145,7 @@ func TestDecodeLatentsOnDevice(t *testing.T) {
 	}
 }
 
-// TestWriteStages writes the decoder's stages into HWNPU_SFX_WRITE (for hwnpuinfo -model).
+// TestWriteStages writes the decoder's stages into HWNPU_SFX_WRITE (for hwnpu-dev info -model).
 func TestWriteStages(t *testing.T) {
 	out := os.Getenv("HWNPU_SFX_WRITE")
 	dir := os.Getenv("HWNPU_SFX_DIR")

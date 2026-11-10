@@ -9,7 +9,7 @@ import (
 
 // The linear attentions' keys are divided by these before their sums over the tokens, and each
 // query row (a head's 32 values at a token) by its largest value: N / D does not change, and the
-// sums stay within fp16. Measured in fp32 at 1024 x 1024 (design.md 16.138), the DiT's V^T K
+// sums stay within fp16. Measured in fp32 at 1024 x 1024 (design.md 16.143), the DiT's V^T K
 // reaches 2.1e4 and N 1.6e5, the VAE's 2.4e5 and 4.5e7.
 const (
 	DitKeyScale = 64
@@ -29,7 +29,7 @@ func Caption(c Dit) *Part {
 		h = g.Activation(h, "gelu_pytorch_tanh")
 		// linear_2 times 1/captionScale: the norm after it does not change. The prompt's first row
 		// (Gemma's <bos>) reaches 3.8e4 there in SANA 1.5 (fp32), and on the Neural Engine it came
-		// out NaN, so that the unconditional call (that row alone) was off (design.md 16.138)
+		// out NaN, so that the unconditional call (that row alone) was off (design.md 16.143)
 		b2 := g.Get("dit.caption_projection.linear_2.bias", c.Hidden)
 		for i := range b2 {
 			b2[i] /= captionScale

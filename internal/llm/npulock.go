@@ -80,3 +80,8 @@ func lockNPU(ctx context.Context) error {
 	npuLock.f = f
 	return nil
 }
+
+// LockNPU takes the Neural Engine's lock as OpenDevice does, for a tool that opens the device
+// by other means (hwnpu-dev probe cache, whose measurements another process compiling for the
+// Neural Engine would spoil). It is held until the process ends.
+func LockNPU(ctx context.Context) error { return lockNPU(ctx) }

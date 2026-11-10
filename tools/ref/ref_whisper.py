@@ -4,7 +4,7 @@
 
 MODEL_DIR holds config.json, preprocessor_config.json, the tokenizer and model.safetensors
 (WhisperForConditionalGeneration). AUDIO is a 16 kHz mono WAV of up to 30 seconds. Runs on the
-CPU in float32 and writes, little endian and row major, in hwnpu-check's layout (tools/ref/
+CPU in float32 and writes, little endian and row major, in hwnpu-dev check's layout (tools/ref/
 ref_logits.py):
 
     OUT_PREFIX.enc.x.bin       float32 (1, 3000, mel bins)  the log mel frames, time major: the
@@ -126,7 +126,7 @@ def main():
     for h in hs:
         h.remove()
     # hidden[0] is the input of layer 0: the embeddings and the position embeddings, summed; the
-    # program's x is the token embeddings alone, which hwnpu-check looks up (REF.ids)
+    # program's x is the token embeddings alone, which hwnpu-dev check looks up (REF.ids)
     with torch.no_grad():
         emb = dec.embed_tokens(ids[None])[0]
     hidden[0] = emb * (cfg.d_model ** 0.5 if cfg.scale_embedding else 1)

@@ -8,7 +8,7 @@ English: [MODEL.md](MODEL.md)
 
 列は機械に積んだメモリの量です。OS とふだんのアプリの分を引いて、モデルに使える量の目安を 2 行目に書きました。NPU のバッファは固定されたメモリで、スワップに逃がせません。目安を超えると、ほかのアプリがスワップに追い出されます。
 
-hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選びます。用途の欄の名前 (`-m translate`、`-m chat`) で、機械のメモリの列のモデルを動かし、ダウンロードもそのモデルの分だけです。ファミリーの名前でも同じように選びます (`-m plamo3translate`、`-m gemma4`)。Docker のイメージのようにタグを付けると、メモリによらずそのモデルです。タグはモデルの大きさ (`-m plamo3translate:2b`、`-m chat:e4b`) か、表の列 (`-m chat:24g`、`-m plamo3translate:8g`。そのメモリの機械で動かすもの) です。この機械でどれが選ばれるかは `hwnpu-chat list` に出ます。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。hwnpu-transcribe (`-m transcribe`)、hwnpu-tts (`-m speech`)、hwnpu-systemone (`-m decision`) も同じように選びます。表は [models.yaml](models.yaml) (`categories` と、各モデルの `machine`) から来ていて、hwnpu に組み込まれています。自分のファイルで、モデルを足す、列のモデルを替える、あるモデルを別のモデルに差し替える (エイリアス) ができます。書くのは差分だけです ([docs/model-table.md](docs/model-table.md))。
+hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選びます。用途の欄の名前 (`-m translate`、`-m chat`) で、機械のメモリの列のモデルを動かし、ダウンロードもそのモデルの分だけです。ファミリーの名前でも同じように選びます (`-m plamo3translate`、`-m gemma4`)。Docker のイメージのようにタグを付けると、メモリによらずそのモデルです。タグはモデルの大きさ (`-m plamo3translate:2b`、`-m chat:e4b`) か、表の列 (`-m chat:24g`、`-m plamo3translate:8g`。そのメモリの機械で動かすもの) です。この機械でどれが選ばれるかは `hwnpu-chat list` に出ます。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。hwnpu-audio transcribe (`-m transcribe`)、hwnpu-audio tts (`-m speech`)、hwnpu-chat systemone (`-m decision`) も同じように選びます。表は [models.yaml](models.yaml) (`categories` と、各モデルの `machine`) から来ていて、hwnpu に組み込まれています。自分のファイルで、モデルを足す、列のモデルを替える、あるモデルを別のモデルに差し替える (エイリアス) ができます。書くのは差分だけです ([docs/model-table.md](docs/model-table.md))。
 
 <table>
 <thead>
@@ -44,27 +44,27 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <td colspan="5"><b>Gemma 4 E2B 画像と音声つき</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6 GB)</td>
 </tr>
 <tr>
-<th>文字起こし<br><sub>hwnpu-transcribe</sub></th>
+<th>文字起こし<br><sub>hwnpu-audio transcribe</sub></th>
 <td colspan="6"><b>Whisper large-v3-turbo</b> (約 1.9 GB)<br>99 言語、タイムスタンプつき、30 秒を 0.6 秒で読む</td>
 </tr>
 <tr>
-<th>音高 (F0)<br><sub>hwnpu-pitch</sub></th>
+<th>音高 (F0)<br><sub>hwnpu-audio pitch</sub></th>
 <td colspan="6"><b>SwiftF0</b> (約 0.06 GB)<br>声や楽器 1 つの音高を 16 ms ごとに、有声の確からしさつき。41 秒を 0.24 秒</td>
 </tr>
 <tr>
-<th>音符 (MIDI)<br><sub>hwnpu-notes</sub></th>
+<th>音符 (MIDI)<br><sub>hwnpu-audio notes</sub></th>
 <td colspan="6"><b>Basic Pitch</b> (約 0.07 GB)<br>どの楽器でも、和音も、ピッチベンドつきで MIDI に。実時間の 35 倍</td>
 </tr>
 <tr>
-<th>人の姿勢<br><sub>hwnpu-pose</sub></th>
+<th>人の姿勢<br><sub>hwnpu-image pose</sub></th>
 <td colspan="6"><b>RTMO-s</b> (約 0.23 GB)<br>画像の人と 17 の関節点を 1 回で (人の検出器は不要)。1 枚約 0.1 秒</td>
 </tr>
 <tr>
-<th>音楽生成<br><sub>hwnpu-music generate</sub></th>
+<th>音楽生成<br><sub>hwnpu-audio generate</sub></th>
 <td colspan="6"><b>Magenta RealTime 2 small</b> (約 1.0 GB)<br>文や録音で指定した曲調の 48 kHz ステレオの音楽。MIDI の音符を弾く、録音の続きを作る、できたそばから流すこともできる。実時間の約 1.4 倍の速さ。重みは CC-BY 4.0 (使うときは「Magenta RealTime 2 by Google DeepMind」と表示)</td>
 </tr>
 <tr>
-<th>効果音<br><sub>hwnpu-music generate -m sfx</sub></th>
+<th>効果音<br><sub>hwnpu-audio generate -m sfx</sub></th>
 <td><b>MOSS-SoundEffect v2.0</b> (約 2.2 GB。文の符号器は lut8、5 層だけ fp16)</td>
 <td colspan="5"><b>MOSS-SoundEffect v2.0</b> (約 2.3 GB。文の符号器は fp16)<br>英語か中国語の説明から最長 30 秒の 48 kHz モノラルの効果音。M1 でカードの 100 ステップなら 10 秒に約 4 分 (<code>-steps 50</code> で半分)。Apache-2.0</td>
 </tr>
@@ -81,10 +81,10 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <tr>
 <th>画像生成<br><sub>hwnpu-image</sub></th>
 <td>△ <b>Anima-Turbo</b> (4.1 GB)<br>ほかのアプリを閉じて</td>
-<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Sana-Sprint 0.6B</b> (AMD 2.9 GB、Apple 3.3 GB) 軽く速い。英語のプロンプト</td>
+<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Sana-Sprint 0.6B</b> (AMD 2.3 GB、Apple 3.3 GB) 軽く速い。英語のプロンプト</td>
 </tr>
 <tr>
-<th>読み上げ<br><sub>hwnpu-tts</sub></th>
+<th>読み上げ<br><sub>hwnpu-audio tts</sub></th>
 <td colspan="6"><b>LFM3-Audio-2B</b> (約 2.4 GB)</td>
 </tr>
 <tr>
@@ -92,7 +92,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <td colspan="6"><b>PLaMo-Embedding-1B</b> (1.3 GB)</td>
 </tr>
 <tr>
-<th>状態の判定<br><sub>hwnpu-systemone</sub></th>
+<th>状態の判定<br><sub>hwnpu-chat systemone</sub></th>
 <td colspan="6"><b>d1-2B</b> (約 2.4 GB、画像も)<br><b>d1-Omni-2B</b> (約 2.8 GB、画像と音声)</td>
 </tr>
 <tr>
@@ -133,7 +133,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | PLaMo-Embedding-1B | 文の埋め込み | 1.3 GB | なし | 重みから見込み |
 | MoGe-2 ViT-S / B / L (AMD) | メートルの深度、点群、法線 (hwnpu-image depth) | 1.9 GB (S)、2.1 GB (B)、2.6 GB (L) | なし | 実測 |
 | Depth Anything 3 Mono / Metric Large、Small、Base (AMD) | 深度推定 (hwnpu-image depth) | 1.4 GB (Large)、0.75 GB (Base)、0.5 GB (Small) | なし | 実測 |
-| Sana-Sprint 0.6B、Sana 600M、Sana-Sprint 1.6B、SANA 1.5 1.6B (1024 × 1024、AMD) | 画像生成 | 2.9 GB (NPU の最大 2.4 GB に、プロセスの 0.45 GB を足したもの。NPU の最大は、Gemma 2 を 8 ビットにしたテキストのグラフと、2 段が同時に載る VAE。DiT は 1 組ずつ読み、0.4 GB) | なし | 実測 |
+| Sana-Sprint 0.6B、Sana 600M、Sana-Sprint 1.6B、SANA 1.5 1.6B (1024 × 1024、AMD) | 画像生成 | 2.3 GB (NPU の最大 2.0 GB に、プロセスを足したもの。NPU の最大は 2 段が同時に載る VAE で、Gemma 2 を 6 ビットにしたテキストのグラフが次。DiT は 1 組ずつ読み、0.4 GB) | なし | 実測 |
 | Sana-Sprint 0.6B / 1.6B、Sana 600M、SANA 1.5 1.6B (1024 × 1024、Apple) | 画像生成 | プロセス 3.0〜3.3 GB (Gemma 2 は int8 の 5 本を走る間だけ。DiT は fp16、VAE は段ごと) | なし | 実測 (M1) |
 | DA3-SMALL、DA3MONO-LARGE、MoGe-2 ViT-S (Apple) | 深度推定 (hwnpu-image depth) | 1 つの大きさのプログラム (fp16)。縦横比ごとに初めて使うときに変換 | なし | 未測定 |
 | Anima-Turbo (1024 × 1024) | 画像生成 | 1.9 GB (VAE の段の最大。DiT はブロックの重みを 1 組ずつ読む) | なし | 実測 |

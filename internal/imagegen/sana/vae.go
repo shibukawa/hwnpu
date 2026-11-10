@@ -115,6 +115,19 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 		}()
 		return ch
 	}
+	// a stage's graph closes behind the next one's run (it takes up to 0.14 s); the load after
+	// that waits for it, so that two stages at most hold the device's memory
+	closing := make(chan struct{})
+	close(closing)
+	closeBehind := func(g *iron.Graph) {
+		done := make(chan struct{})
+		closing = done
+		go func() {
+			g.Close()
+			close(done)
+		}()
+	}
+	defer func() { <-closing }()
 	var out []byte
 	next := load(0)
 	cur := <-next
@@ -129,6 +142,7 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 		t0 := time.Now()
 		next = nil
 		if i+1 < len(v.stages) {
+			<-closing
 			next = load(i + 1)
 		}
 		fail := func(err error) (*image.RGBA, error) {
@@ -163,7 +177,7 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 				return fail(fmt.Errorf("the next stage's input (%d bytes) for %d bytes: %v", len(in), len(o), err))
 			}
 			copy(in, o)
-			cur.g.Close()
+			closeBehind(cur.g)
 			cur = n
 		}
 		if v.Stage != nil {

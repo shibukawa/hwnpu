@@ -29,7 +29,7 @@ type ProgramManifest struct {
 	Backend string `json:"backend"` // coreml or intel
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
-	// Formats are the weight formats of the parts (text, dit), as hwnpu-convert's -format.
+	// Formats are the weight formats of the parts (text, dit), as hwnpu-dev convert's -format.
 	Formats map[string]string `json:"formats"`
 	Text    string            `json:"text"`
 	Time    string            `json:"time"`

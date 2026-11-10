@@ -137,18 +137,45 @@ func (e *progEngine) once(ctx context.Context, name string, in map[string][]floa
 	return y, nil
 }
 
-func (e *progEngine) text(ctx context.Context, x []float32) ([]float32, error) {
+// textPart runs Gemma 2's programs in turn, each loaded only while it runs: at most one
+// group's weights are held (the five are 2.2 GB at int8).
+type textPart struct{ e *progEngine }
+
+func (t textPart) run(ctx context.Context, x []float32, start int) ([]float32, error) {
+	if start != 0 {
+		return nil, fmt.Errorf("sana: a Core ML export runs the prompt from its start, not %d", start)
+	}
 	var err error
-	for _, name := range e.m.TextParts {
-		if x, err = e.once(ctx, name, map[string][]float32{"x": x}); err != nil {
+	for _, name := range t.e.m.TextParts {
+		if x, err = t.e.once(ctx, name, map[string][]float32{"x": x}); err != nil {
 			return nil, err
 		}
 	}
 	return x, nil
 }
 
-func (e *progEngine) caption(ctx context.Context, y []float32) ([]float32, error) {
-	return e.once(ctx, e.m.Caption, map[string][]float32{"text": y})
+func (t textPart) close() error { return nil }
+
+func (e *progEngine) openText(ctx context.Context) (part, error) { return textPart{e}, nil }
+
+// programPart is one program as the pipeline's part.
+type programPart struct {
+	p     runner.Program
+	input string
+}
+
+func (pp programPart) run(ctx context.Context, in []float32, _ int) ([]float32, error) {
+	return pp.p.Run(ctx, map[string][]float32{pp.input: in})
+}
+
+func (pp programPart) close() error { return pp.p.Close() }
+
+func (e *progEngine) openCaption(ctx context.Context) (part, error) {
+	p, err := e.open(ctx, e.m.Caption)
+	if err != nil {
+		return nil, err
+	}
+	return programPart{p, "text"}, nil
 }
 
 func (e *progEngine) openDiT(ctx context.Context, _ bool) error {

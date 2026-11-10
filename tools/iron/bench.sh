@@ -11,7 +11,7 @@
 #
 # Prints one JSON line. Needs (see README.md): an mlir-aie venv on PATH, PEANO_INSTALL_DIR,
 # MLIR_AIE_SRC (an mlir-aie checkout of the same version), AIE_XCLBINUTIL (xclbinutil or
-# hwnpu-xclbin), IRONBENCH (the ironbench binary) and OUT (a directory for builds).
+# hwnpu-dev xclbin), IRONBENCH (the ironbench binary) and OUT (a directory for builds).
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 export PYTHONPATH=$here

@@ -94,7 +94,7 @@ func OnlyAMD(ctx context.Context, backend string) bool {
 
 // AMDExport is the export of the model use names (a name, a use or a family picked for the
 // machine's memory, logged to log, or a repository OWNER/NAME) that hwnpu-chat runs when the
-// only NPU is AMD's, which runs no programs of hwnpu-convert. It is "" when that is not so
+// only NPU is AMD's, which runs no programs of hwnpu-dev convert. It is "" when that is not so
 // (OnlyAMD). As the other NPUs' models are prepared on their first run, a model of the
 // definitions with amd_export and no export here is made ready by PrepareAMD: its checkpoint
 // downloaded into dir and exported with IRON.

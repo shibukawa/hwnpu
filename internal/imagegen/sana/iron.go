@@ -16,10 +16,11 @@ import (
 // ironEngine runs the graphs of tools/amd/iron_sana.py on AMD's NPU. They take and give bf16;
 // the values the pipeline hands over (bf16 that went through float32) come back bit for bit.
 type ironEngine struct {
-	dev *hwnpu.Device
-	dir string
-	dit DitConfig
-	vae *VAE
+	dev  *hwnpu.Device
+	dir  string
+	dit  DitConfig
+	text TextConfig
+	vae  *VAE
 
 	ditIn, ditBlocks, ditOut *iron.Graph // open while the steps run
 	ctxSet                   []float32   // the caption dit_blocks holds
@@ -63,42 +64,55 @@ func openIron(dev *hwnpu.Device, dir string) (*ironEngine, DitConfig, TextConfig
 	if tc, err = meta[TextConfig](mt); err != nil {
 		return nil, e.dit, tc, err
 	}
+	e.text = tc
 	if e.vae, err = OpenVAE(dev, filepath.Join(dir, "vae")); err != nil {
 		return nil, e.dit, tc, err
 	}
 	return e, e.dit, tc, nil
 }
 
-// run loads the graph name, runs it on the inputs (bf16) and returns its first output.
-func (e *ironEngine) run(ctx context.Context, name string, in map[string][]byte) ([]byte, error) {
+// graphPart is an IRON graph as the pipeline's part: bf16 in and out; with prefix, run passes
+// the call's start position (the text graph that holds the instruction's first rows).
+type graphPart struct {
+	g      *iron.Graph
+	input  string
+	prefix bool
+}
+
+func (e *ironEngine) open(ctx context.Context, name, input string, prefix bool) (part, error) {
 	g, err := iron.OpenGraph(ctx, e.dev, filepath.Join(e.dir, name))
 	if err != nil {
 		return nil, err
 	}
-	defer g.Close()
-	for k, v := range in {
-		if err := g.SetInput(k, v); err != nil {
-			return nil, err
-		}
-	}
-	if err := g.Run(ctx, nil); err != nil {
+	return &graphPart{g: g, input: input, prefix: prefix}, nil
+}
+
+func (gp *graphPart) run(ctx context.Context, in []float32, start int) ([]float32, error) {
+	if err := gp.g.SetInput(gp.input, toBF16(in)); err != nil {
 		return nil, err
 	}
-	out, err := g.Output(g.Outputs()[0].Name)
+	var values map[string]int64
+	if gp.prefix {
+		values = map[string]int64{"start": int64(start)}
+	}
+	if err := gp.g.Run(ctx, values); err != nil {
+		return nil, err
+	}
+	out, err := gp.g.Output(gp.g.Outputs()[0].Name)
 	if err != nil {
 		return nil, err
 	}
-	return append([]byte(nil), out...), nil
+	return fromBF16s(out), nil
 }
 
-func (e *ironEngine) text(ctx context.Context, x []float32) ([]float32, error) {
-	h, err := e.run(ctx, "text", map[string][]byte{"x": toBF16(x)})
-	return fromBF16s(h), err
+func (gp *graphPart) close() error { return gp.g.Close() }
+
+func (e *ironEngine) openText(ctx context.Context) (part, error) {
+	return e.open(ctx, "text", "x", e.text.Prefix > 0)
 }
 
-func (e *ironEngine) caption(ctx context.Context, y []float32) ([]float32, error) {
-	out, err := e.run(ctx, "caption", map[string][]byte{"y": toBF16(y)})
-	return fromBF16s(out), err
+func (e *ironEngine) openCaption(ctx context.Context) (part, error) {
+	return e.open(ctx, "caption", "y", false)
 }
 
 func (e *ironEngine) closeDiT() error {

@@ -1,4 +1,4 @@
-// Package fixtures embeds the small models hwnpu uses for tests and for cmd/report, so they are
+// Package fixtures embeds the small models hwnpu uses for tests and for hwnpu-dev report, so they are
 // available wherever the module is built. gen_models.py documents and regenerates them.
 package fixtures
 

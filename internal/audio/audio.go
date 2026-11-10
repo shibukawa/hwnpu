@@ -1,5 +1,5 @@
 // Package audio turns audio clips into LFM3-Audio / LFM3-Omni audio embeddings for the text
-// model's input, with audio encoder programs converted by hwnpu-convert -arch lfm3-audio-encoder,
+// model's input, with audio encoder programs converted by hwnpu-dev convert -arch lfm3-audio-encoder,
 // one per clip length (the Neural Engine runs fixed shapes). A clip runs on the shortest program
 // that holds it, its frames followed by zeros and masked, which gives the same embeddings as
 // encoding the clip alone.

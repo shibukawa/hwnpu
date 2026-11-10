@@ -2,7 +2,7 @@
 
 AMD Ryzen AI プロセッサ（XDNA NPU を積んだ Phoenix、Hawk Point、Strix Point、Krackan Point 以降）を載せた Linux 機で、hwnpu から NPU を使えるようにする手順です。小さなテスト用の設計をビルドし、動作を確かめるところまで扱います。
 
-> **現状。** Ryzen AI 9 365（Strix Point、`npu4`、8 列）、Ubuntu 26.04 の Linux 7.0 標準カーネルの amdxdna、ファームウェア 1.1.2.64 で、手順 4 の `cmd/report` が mlir-aie v1.4.4 の passthrough 設計を含めて全て通りました（2026-11-03）。Phoenix と Hawk Point（`npu1`）はまだ試していません。hwnpu は NPU1 向けに書き出したモデルを「1 ステップごとの xclbin」として動かします。同じ形で `npu2` 向けに書き出したもの（`--per-step`）は Ryzen AI 9 365 で動きましたが、NPU1 の実機では動かしていません。別の機械での報告を送っていただけると助かります。
+> **現状。** Ryzen AI 9 365（Strix Point、`npu4`、8 列）、Ubuntu 26.04 の Linux 7.0 標準カーネルの amdxdna、ファームウェア 1.1.2.64 で、手順 4 の `hwnpu-dev report` が mlir-aie v1.4.4 の passthrough 設計を含めて全て通りました（2026-11-03）。Phoenix と Hawk Point（`npu1`）はまだ試していません。hwnpu は NPU1 向けに書き出したモデルを「1 ステップごとの xclbin」として動かします。同じ形で `npu2` 向けに書き出したもの（`--per-step`）は Ryzen AI 9 365 で動きましたが、NPU1 の実機では動かしていません。別の機械での報告を送っていただけると助かります。
 
 English: [INSTALL_AMD.md](INSTALL_AMD.md)
 
@@ -85,7 +85,7 @@ xrt-smi examine
 
 ## 2. テスト用の設計をビルドする
 
-`cmd/report` は IRON のサンプル `passthrough_dmas` を実行します。このサンプルは NPU の DMA でバッファを写すだけなので、AIE コア用のコンパイラが要りません。
+`hwnpu-dev report` は IRON のサンプル `passthrough_dmas` を実行します。このサンプルは NPU の DMA でバッファを写すだけなので、AIE コア用のコンパイラが要りません。
 
 IRON は **Python 3.12** を必須にしています。ディストリビューションの Python が別の版なら、[uv](https://docs.astral.sh/uv/) で入れられます（root は不要）。
 
@@ -135,10 +135,10 @@ printf '#!/bin/sh\nLD_LIBRARY_PATH=%s/root/usr/lib/x86_64-linux-gnu exec %s/root
 export AIE_XCLBINUTIL=~/xrt-debs/xclbinutil
 ```
 
-XRT をまったく使わない方法もあります。hwnpu には、aiecc が `xclbinutil` に渡す引数を受け付ける代わりの道具 `hwnpu-xclbin` があります。hwnpu のチェックアウト（手順 3）でビルドし、aiecc に渡します。
+XRT をまったく使わない方法もあります。hwnpu には、aiecc が `xclbinutil` に渡す引数を受け付ける代わりの道具 `hwnpu-dev xclbin` があります。hwnpu のチェックアウト（手順 3）でビルドし、aiecc に渡します。
 
 ```bash
-go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-xclbin
+go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-dev   # hwnpu-xclbin（か xclbinutil）という名前の hwnpu-dev は xclbin として動く
 ```
 
 ```bash
@@ -157,7 +157,7 @@ cd programming_examples/basic/passthrough_dmas
 python3 passthrough_dmas.py -d npu2 -n 4096 --xclbin-path=build/final.xclbin --insts-path=build/insts.bin
 ```
 
-この設計は int32 を 4096 個（16384 バイト）写します。これは `cmd/report` の既定値と同じです。別の `-n` でビルドしたときは、報告プログラムに `-bytes` で大きさを渡してください。
+この設計は int32 を 4096 個（16384 バイト）写します。これは `hwnpu-dev report` の既定値と同じです。別の `-n` でビルドしたときは、報告プログラムに `-bytes` で大きさを渡してください。
 
 ## 3. hwnpu を取得する
 
@@ -172,7 +172,7 @@ cd hwnpu
 ## 4. 動作を確かめる
 
 ```bash
-go run ./cmd/hwnpuinfo
+go run ./cmd/hwnpu-dev info
 ```
 
 AMD の NPU が `backend: xdna` として表示されます。世代、AIE の列数、AIE の版、ファームウェアの版も表示されます。
@@ -180,7 +180,7 @@ AMD の NPU が `backend: xdna` として表示されます。世代、AIE の�
 手順 2 で作った設計を渡して、報告を作ります。
 
 ```bash
-go run ./cmd/report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o report.md
+go run ./cmd/hwnpu-dev report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o report.md
 ```
 
 最初に、バッファの確保とキャッシュの同期、デバイスヒープ上の命令列用バッファ、NPU の電力センサーを確かめます。NPU の電力センサー（`QUERY_SENSORS`）は AMD の DKMS 版のドライバにしかありません。Linux 7.0 の標準カーネルでは、amdgpu ドライバが出すパッケージ全体の電力（PPT、root 不要、APU 全体の値）を読みます。続いて設計を読み込んで実行し、出力が入力と一致するかを確かめ、実行時間と NPU の電力量を測ります。`-xclbin` を省くと、カーネルの確認は飛ばします。xclbin 内のカーネル名が `MLIR_AIE` でない場合は、`-kernel 名前` で指定してください。
@@ -188,11 +188,11 @@ go run ./cmd/report -xclbin /path/to/final.xclbin -insts /path/to/insts.bin -o r
 電力ポリシー（ハードウェアコンテキストの優先度）の効果を比べるときは、2 回実行します。
 
 ```bash
-go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power low -o low.md
+go run ./cmd/hwnpu-dev report -xclbin final.xclbin -insts insts.bin -power low -o low.md
 ```
 
 ```bash
-go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o performance.md
+go run ./cmd/hwnpu-dev report -xclbin final.xclbin -insts insts.bin -power performance -o performance.md
 ```
 
 Strix Point でのデータ型ごとの性能と DMA の帯域、それを測ったスクリプトは [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) と [tools/iron](tools/iron/README.md) にあります。
@@ -223,7 +223,7 @@ for _, a := range k.Args() { fmt.Println(a.Index, a.Name, a.Type, a.Buffer) }
 
 ## 6. Windows（未確認）
 
-AMD の Windows 用 NPU ドライバは、ドライバが入れる XRT の C++ ライブラリ `xrt_coreutil.dll` を通してしか使えません。hwnpu は cgo を使わないので、hwnpu 自身の C ライブラリ **xrtshim**（`native/xrtshim`）を実行時に読み込み、それを通して XRT を呼びます（`xrt` バックエンド、`internal/backend/amdxrt`）。同じバックエンドは Linux の XRT のパッケージでも動き、そこで確かめています。Ryzen AI 9 365 と XRT 2.21.75 で、`cmd/report` の passthrough 設計（xclbin）、呼び出しごとの値を持つ IRON の full ELF、画像と音声を含む Gemma 4 E2B が、Linux のドライバと同じ速さで動きました（2026-11-04）。Windows ではまだ動かしていません。報告を送っていただけると助かります。
+AMD の Windows 用 NPU ドライバは、ドライバが入れる XRT の C++ ライブラリ `xrt_coreutil.dll` を通してしか使えません。hwnpu は cgo を使わないので、hwnpu 自身の C ライブラリ **xrtshim**（`native/xrtshim`）を実行時に読み込み、それを通して XRT を呼びます（`xrt` バックエンド、`internal/backend/amdxrt`）。同じバックエンドは Linux の XRT のパッケージでも動き、そこで確かめています。Ryzen AI 9 365 と XRT 2.21.75 で、`hwnpu-dev report` の passthrough 設計（xclbin）、呼び出しごとの値を持つ IRON の full ELF、画像と音声を含む Gemma 4 E2B が、Linux のドライバと同じ速さで動きました（2026-11-04）。Windows ではまだ動かしていません。報告を送っていただけると助かります。
 
 1. NPU のドライバ（AMD の Ryzen AI ドライバ）を入れます。`C:\Windows\System32\AMD\xrt-smi.exe examine` で NPU が見えれば準備できています。full ELF（Gemma 4 E2B）には新しいドライバが要ります。ELF からハードウェアコンテキストを作れる XRT（`xrt::hw_context(device, xrt::elf)`。XRT 2.21 はできる）を含むものです。
 2. Visual Studio 2022（C++ のワークロード）と CMake で xrtshim をビルドします。「Developer PowerShell for VS」で次を実行します。
@@ -237,7 +237,7 @@ AMD の Windows 用 NPU ドライバは、ドライバが入れる XRT の C++ �
 
    XRT のヘッダ（2.21）は `native/xrtshim/include` にあります。ドライバの XRT の版が大きく違うと C++ の ABI が合わないことがあるので、その版のヘッダを XRT のソースから取って `-DXRT_INCLUDE_DIR` で渡してください。
 3. `build\Release\xrtshim.dll` を hwnpu の実行ファイルと同じ場所に置きます（または `HWNPU_XRTSHIM` で場所を指定します）。`xrt_coreutil.dll` は `System32\AMD` かドライバストアから探します。別の場所なら `HWNPU_XRT_CORE` で指定します。
-4. hwnpu を Windows 向けにビルドし（`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`）、`hwnpuinfo` を実行します。バックエンド `xrt` の NPU が出れば使えます。
+4. hwnpu を Windows 向けにビルドし（`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`）、`hwnpu-dev info` を実行します。バックエンド `xrt` の NPU が出れば使えます。
 
 モデルの書き出しは Linux で行い（IRON と mlir-aie。README を参照）、書き出したディレクトリを持っていきます。`hwnpu-chat -m DIR` で同じように動きます。Linux との違いは次のとおりです。
 
@@ -250,7 +250,7 @@ Linux では、`xrt` バックエンドは `HWNPU_BACKEND=xrt` のときだけ N
 
 | 症状 | 原因と対処 |
 |---|---|
-| `hwnpuinfo` に AMD のデバイスが出ない | `ls /dev/accel/` と `sudo dmesg \| grep -i amdxdna` を確かめる。`amdxdna` を含むカーネルと、版の合ったファームウェア（`/usr/lib/firmware/amdnpu/`）が必要。 |
+| `hwnpu-dev info` に AMD のデバイスが出ない | `ls /dev/accel/` と `sudo dmesg \| grep -i amdxdna` を確かめる。`amdxdna` を含むカーネルと、版の合ったファームウェア（`/usr/lib/firmware/amdnpu/`）が必要。 |
 | `permission denied ... add the user to the render group` | `sudo usermod -aG render $USER` を実行し、ログインし直す。 |
 | `create device heap` で失敗する | 別のプロセスが NPU の資源を使っているか、ファームウェアの読み込みに失敗している（`dmesg` を確認）。`ENOMEM` なら、固定できるメモリの上限を上げると直ることがある（手順 1）。 |
 | `no valid DPU kernel found in the xclbin` | xclbin にカーネル ID に対応する PDI がない。正しい `--dev` でビルドし直す。 |

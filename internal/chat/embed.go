@@ -94,7 +94,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 
 // EmbedConfig says where the embedding model is.
 type EmbedConfig struct {
-	// Packages are the model converted by hwnpu-convert (an .mlpackage or an out.parts.json),
+	// Packages are the model converted by hwnpu-dev convert (an .mlpackage or an out.parts.json),
 	// each with another sequence length (-seq).
 	Packages []string
 	// ModelConfig is config.json, Weights the checkpoint the token embeddings are read from,

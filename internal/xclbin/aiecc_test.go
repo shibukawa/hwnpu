@@ -63,7 +63,7 @@ func TestParseXclbinutilOutput(t *testing.T) {
 	}
 }
 
-// hwnpu-xclbin (SpecFromAiecc + Build) gives the same parse as xclbinutil from the same JSON.
+// hwnpu-dev xclbin (SpecFromAiecc + Build) gives the same parse as xclbinutil from the same JSON.
 func TestSpecFromAiecc(t *testing.T) {
 	spec, err := SpecFromAiecc(readFixture(t, "kernels_main.json"), readFixture(t, "partition_main.json"), func(path string) ([]byte, error) {
 		if filepath.Base(path) != "main.pdi" {

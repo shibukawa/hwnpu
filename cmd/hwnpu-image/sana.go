@@ -85,6 +85,9 @@ func runSana(ctx context.Context, r sanaRun) error {
 
 	// with several pictures the DiT stays on the device between them (keepDiT): only Gemma 2
 	// and the VAE's stages are loaded for each
+	if r.negative != "" && p.Model.Sprint {
+		return fmt.Errorf("Sana-Sprint runs no classifier-free guidance: --negative is for Sana")
+	}
 	p.KeepDiT = r.keepDiT && len(r.prompts) > 1
 	for i, prompt := range r.prompts {
 		t1 := time.Now()
@@ -104,19 +107,9 @@ func runSana(ctx context.Context, r sanaRun) error {
 func drawSana(ctx context.Context, p *sana.Pipeline, r sanaRun, prompt, out string, seed uint64, steps int, guidance float64,
 	lw io.Writer, logf func(string, ...any)) error {
 	live := console.Live(lw)
-	m := p.Model
-	cond, err := p.Encode(ctx, prompt)
+	cond, neg, err := p.EncodeBoth(ctx, prompt, r.negative)
 	if err != nil {
 		return err
-	}
-	var neg sana.Cond
-	if r.negative != "" {
-		if m.Sprint {
-			return fmt.Errorf("Sana-Sprint runs no classifier-free guidance: --negative is for Sana")
-		}
-		if neg, err = p.EncodeNegative(ctx, r.negative, cond); err != nil {
-			return err
-		}
 	}
 	var noises [][]float32
 	n := p.NoiseCount(steps)

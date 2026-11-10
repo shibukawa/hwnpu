@@ -150,8 +150,8 @@ type modelEntry struct {
 	// and options (lfm3 --max-seq-len 12288 --q4), run when the export is not here.
 	AMDExport *string `yaml:"amd_export"`
 	About     *string `yaml:"about"`
-	Like   string             `yaml:"like"`
-	Remove bool               `yaml:"remove"`
+	Like      string  `yaml:"like"`
+	Remove    bool    `yaml:"remove"`
 }
 
 type pickEntry struct {
@@ -408,17 +408,17 @@ func (t *table) addCategory(file, name string, e *categoryEntry, builtin bool) e
 var kinds = map[Kind]string{
 	KindChat:       "hwnpu-chat (chat, agent, serve)",
 	KindEmbed:      "hwnpu-chat (search, serve)",
-	KindTranscribe: "hwnpu-transcribe",
-	KindSpeech:     "hwnpu-tts",
-	KindDecision:   "hwnpu-systemone",
+	KindTranscribe: "hwnpu-audio transcribe",
+	KindSpeech:     "hwnpu-audio tts",
+	KindDecision:   "hwnpu-chat systemone",
 	KindImage:      "hwnpu-image generate",
 	KindDepth:      "hwnpu-image depth",
 	KindFace:       "hwnpu-image face-detect",
-	KindPitch:      "hwnpu-pitch",
-	KindPose:       "hwnpu-pose",
-	KindNotes:      "hwnpu-notes",
-	KindMusic:      "hwnpu-music",
-	KindSFX:        "hwnpu-music",
+	KindPitch:      "hwnpu-audio pitch",
+	KindPose:       "hwnpu-image pose",
+	KindNotes:      "hwnpu-audio notes",
+	KindMusic:      "hwnpu-audio generate",
+	KindSFX:        "hwnpu-audio generate -m sfx",
 }
 
 // build makes the catalog, the categories and the aliases of what was merged.
