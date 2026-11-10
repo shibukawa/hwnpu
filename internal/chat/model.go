@@ -130,7 +130,7 @@ var neuralEngineHold = func() int64 {
 	return 0
 }
 
-// DefaultTiers is the -tier of hwnpu-chat and hwnpu-agent: auto, a cache of 4096 to run on
+// DefaultTiers is the --tier of hwnpu-chat (chat, agent, serve): auto, a cache of 4096 to run on
 // while a conversation is short when the model is in 4 bit tables, none otherwise (TierAuto).
 const DefaultTiers = "auto"
 

@@ -8,7 +8,7 @@ Japanese: [MODEL.ja.md](MODEL.ja.md)
 
 The columns are the memory installed in the machine. The second header row is roughly what is left for models after the OS and everyday applications. NPU buffers are pinned and cannot be swapped out: going over that amount pushes other applications to swap.
 
-hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each use (`-use translate`, `-use chat`) runs the model of the machine's column, downloading only that one. A family picks the same way (`-use plamo3translate`, `-use gemma4`), and a tag chooses one whatever the memory, like a Docker image's: a model's (`-use plamo3translate:2b`, `-use chat:e4b`) or a column's (`-use chat:24g`, `-use plamo3translate:8g`: what a machine of that memory runs). `hwnpu-chat -list` shows what each name picks on the machine; `HWNPU_MEMORY=24` picks as a machine of 24 GB would. hwnpu-transcribe (`-use transcribe`), hwnpu-tts (`-use speech`) and hwnpu-systemone (`-use decision`) pick the same way. The table comes from [models.yaml](models.yaml) (its `categories` and the models' `machine`), which hwnpu embeds; a file of your own adds models, replaces a column's model or points a model to another (aliases), written as differences only: see [docs/model-table.md](docs/model-table.md).
+hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under each use (`-m translate`, `-m chat`) runs the model of the machine's column, downloading only that one. A family picks the same way (`-m plamo3translate`, `-m gemma4`), and a tag chooses one whatever the memory, like a Docker image's: a model's (`-m plamo3translate:2b`, `-m chat:e4b`) or a column's (`-m chat:24g`, `-m plamo3translate:8g`: what a machine of that memory runs). `hwnpu-chat list` shows what each name picks on the machine; `HWNPU_MEMORY=24` picks as a machine of 24 GB would. hwnpu-transcribe (`-m transcribe`), hwnpu-tts (`-m speech`) and hwnpu-systemone (`-m decision`) pick the same way. The table comes from [models.yaml](models.yaml) (its `categories` and the models' `machine`), which hwnpu embeds; a file of your own adds models, replaces a column's model or points a model to another (aliases), written as differences only: see [docs/model-table.md](docs/model-table.md).
 
 <table>
 <thead>
@@ -32,14 +32,14 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 </thead>
 <tbody>
 <tr>
-<th>Chat, coding<br><sub>hwnpu-chat, hwnpu-agent <code>-use chat</code></sub></th>
-<td><b>LFM3-1.7B</b> (2.2 GB)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.3 GB)<br>a size larger, 5B with its per-layer embeddings<br><b>Qwen3-0.6B</b> (<code>-use qwen3</code>, 1.5 GB download)<br>the smallest download, weak at facts, a context of 4096</td>
+<th>Chat, coding<br><sub>hwnpu-chat, hwnpu-chat agent <code>-m chat</code></sub></th>
+<td><b>LFM3-1.7B</b> (2.2 GB)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.3 GB)<br>a size larger, 5B with its per-layer embeddings<br><b>Qwen3-0.6B</b> (<code>-m qwen3</code>, 1.5 GB download)<br>the smallest download, weak at facts, a context of 4096</td>
 <td><b>Gemma 4 E2B</b> (2.3 GB)<br>with a long context too (+0.8 GB at 131072)<br><b>Gemma 4 E4B</b> (4.0 GB)<br>for short conversations</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>with a long context too (+2.1 GB at 131072)</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>planned: Qwen3.6-35B-A3B (MoE, about 25 GB at 4 bits)</i></td>
 </tr>
 <tr>
-<th>Reading images<br><sub>hwnpu-chat <code>-use vision</code> (<code>image_url</code>, <code>/image</code>)</sub></th>
+<th>Reading images<br><sub>hwnpu-chat <code>-m vision</code> (<code>image_url</code>, <code>/image</code>)</sub></th>
 <td><b>LFM3-VL-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B with images and audio</b> (3.4 GB)<br><b>LFM3-VL-2B</b> (2.6 GB)</td>
 </tr>
@@ -69,12 +69,12 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 <td colspan="5"><b>MOSS-SoundEffect v2.0</b> (about 2.3 GB; the text encoder in fp16)<br>up to 30 s of 48 kHz mono from an English or Chinese description; 10 s in about 4 minutes at the card's 100 steps on an M1 (<code>-steps 50</code>: half); Apache-2.0</td>
 </tr>
 <tr>
-<th>Reading audio (questions about it)<br><sub>hwnpu-chat <code>-use audio</code> (<code>input_audio</code>, <code>/audio</code>)</sub></th>
+<th>Reading audio (questions about it)<br><sub>hwnpu-chat <code>-m audio</code> (<code>input_audio</code>, <code>/audio</code>)</sub></th>
 <td><b>LFM3-Audio-2B</b> (2.6 GB)</td>
 <td colspan="5"><b>Gemma 4 E2B with images and audio</b> (3.4 GB)<br><b>LFM3-Omni-2B</b> (3.0 GB, images too)</td>
 </tr>
 <tr>
-<th>Translation<br><sub>hwnpu-chat <code>-use translate</code></sub></th>
+<th>Translation<br><sub>hwnpu-chat <code>-m translate</code></sub></th>
 <td><b>PLaMo 3 Translate 0.8B</b> (about 2.4 GB)<br>3 times as fast as the 2B, translations differing from it by rewordings</td>
 <td colspan="5"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
 </tr>
@@ -88,7 +88,7 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 <td colspan="6"><b>LFM3-Audio-2B</b> (about 2.4 GB)</td>
 </tr>
 <tr>
-<th>Sentence embeddings, search<br><sub>hwnpu-chat <code>-use embedding</code> (<code>/v1/embeddings</code>)</sub></th>
+<th>Sentence embeddings, search<br><sub>hwnpu-chat <code>-m embedding</code> (<code>/v1/embeddings</code>)</sub></th>
 <td colspan="6"><b>PLaMo-Embedding-1B</b> (1.3 GB)</td>
 </tr>
 <tr>
@@ -96,7 +96,7 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 <td colspan="6"><b>d1-2B</b> (about 2.4 GB, images too)<br><b>d1-Omni-2B</b> (about 2.8 GB, images and audio)</td>
 </tr>
 <tr>
-<th>Several at once<br><sub>hwnpu-chat <code>-listen -use A,B,…</code></sub></th>
+<th>Several at once<br><sub>hwnpu-chat <code>serve -m A,B,…</code></sub></th>
 <td>one at a time</td>
 <td>Gemma 4 E2B + PLaMo-Embedding-1B (3.6 GB)<br>+ PLaMo 3 Translate 2B (6.3 GB)</td>
 <td>Gemma 4 E4B + PLaMo-Embedding-1B + PLaMo 3 Translate 2B (8.0 GB)</td>
@@ -107,7 +107,7 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 
 - The figure in parentheses is the expected memory after starting and a short conversation (next section). Long conversations add the KV cache
 - Past 32 GB there is no larger model yet. A machine with more memory runs the combinations above at once, or long contexts
-- On a small machine, a shorter `-context` cuts the KV cache. hwnpu-chat shrinks the context itself when the KV cache would be over a quarter of the physical memory
+- On a small machine, a shorter `--context` cuts the KV cache. hwnpu-chat shrinks the context itself when the KV cache would be over a quarter of the physical memory
 
 ## Memory per model
 

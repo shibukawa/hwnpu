@@ -1,4 +1,4 @@
-// Package console is what hwnpu-chat, hwnpu-agent and hwnpu-image need of the terminal: logs in
+// Package console is what hwnpu-chat and hwnpu-image need of the terminal: logs in
 // gray, with whether a model is all on the NPU in green or red (Log), a spinner (Spin) and a line
 // of progress with a bar (Bar) for downloads, conversions, compiles and steps, and a line editor
 // with a history kept across runs (Editor). None of them colors, redraws or edits unless it talks

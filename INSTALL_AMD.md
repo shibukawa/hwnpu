@@ -229,7 +229,7 @@ AMD's NPU driver for Windows is reached only through XRT's C++ library, `xrt_cor
 3. Put `build\Release\xrtshim.dll` next to hwnpu's executables (or set `HWNPU_XRTSHIM` to it). hwnpu finds `xrt_coreutil.dll` in `System32\AMD` or the driver store; `HWNPU_XRT_CORE` names another.
 4. Build hwnpu for Windows (`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`) and run `hwnpuinfo`: the NPU appears with the backend `xrt`.
 
-Models are exported on Linux (IRON and mlir-aie, see the README), and the exported directory is copied over: `hwnpu-chat -iron DIR` runs it the same way. What differs from Linux:
+Models are exported on Linux (IRON and mlir-aie, see the README), and the exported directory is copied over: `hwnpu-chat -m DIR` runs it the same way. What differs from Linux:
 
 - The power meter reads XRT's electrical info, when the driver reports the NPU's power there.
 - XRT allocates the control code. On Linux 7.0 its device heap holds 64 MiB, as hwnpu's own driver path does; Windows' may differ.

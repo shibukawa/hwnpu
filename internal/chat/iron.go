@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -376,7 +377,7 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	if name == "" {
 		name = strings.TrimSuffix(filepath.Base(c.IRON), ".amd-npu2")
 	}
-	logf("loading %s onto AMD's NPU", name)
+	logf("loading %s onto AMD's NPU", shortPath(c.IRON))
 	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
 	if err != nil {
 		return nil, err
@@ -473,11 +474,12 @@ func (e *Engine) irMultimodal() *iron.Multimodal {
 	return e.ir.Manifest.Multimodal
 }
 
-// AMDExport is the IRON export hwnpu-chat and hwnpu-agent run when -iron is not given and the only
-// NPU is AMD's, which runs no programs of hwnpu-convert: ~/models/NAME.amd-npu2-q4, else NAME.amd-npu2, for the
-// model -use names. It is "" when a backend is named (backend or HWNPU_BACKEND), an Apple or
-// Intel NPU is found, or no AMD one.
-func AMDExport(ctx context.Context, use, backend string) (string, error) {
+// AMDExport is the IRON export hwnpu-chat runs when --model names no export and the only NPU
+// is AMD's, which runs no programs of hwnpu-convert: ~/models/NAME.amd-npu2-q4, else
+// NAME.amd-npu2, for the model use names (a name, a use or a family picked for the machine's
+// memory, logged to log, or a repository OWNER/NAME). It is "" when a backend is named (backend
+// or HWNPU_BACKEND), an Apple or Intel NPU is found, or no AMD one.
+func AMDExport(ctx context.Context, use, backend string, log io.Writer) (string, error) {
 	if backend != "" || strings.TrimSpace(os.Getenv(llm.BackendEnv)) != "" {
 		return "", nil
 	}
@@ -496,7 +498,10 @@ func AMDExport(ctx context.Context, use, backend string) (string, error) {
 	root := filepath.Join(home, "models")
 	name := strings.TrimSpace(use)
 	if strings.Contains(name, ",") {
-		return "", fmt.Errorf("-use %s: on AMD's NPU, one chat model runs at a time; -iron names its export (tools/amd/iron_export_lm.py)", use)
+		return "", fmt.Errorf("--model %s: on AMD's NPU, one chat model runs at a time", use)
+	}
+	if m, ok, err := lookupFor(name, log); err == nil && ok {
+		name = m.Name
 	}
 	name = filepath.Base(name) // OWNER/NAME
 	for _, suffix := range []string{".amd-npu2-q4", ".amd-npu2"} {
@@ -512,9 +517,21 @@ func AMDExport(ctx context.Context, use, backend string) (string, error) {
 			names = append(names, filepath.Base(d))
 		}
 	}
-	msg := fmt.Sprintf("AMD's NPU runs exports of tools/amd/iron_export_lm.py, and %s has none of %s (%s.amd-npu2-q4 or %s.amd-npu2); -iron names one", root, name, name, name)
+	msg := fmt.Sprintf("AMD's NPU runs exports of tools/amd/iron_export_lm.py, and %s has none of %s (%s.amd-npu2-q4 or %s.amd-npu2); --model takes an export's directory too", root, name, name, name)
 	if len(names) > 0 {
 		msg += ": " + strings.Join(names, ", ")
 	}
 	return "", errors.New(msg)
+}
+
+// shortPath is path with the home directory written ~ (for the logs).
+func shortPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if rel, err := filepath.Rel(home, path); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+		return filepath.Join("~", rel)
+	}
+	return path
 }

@@ -9,7 +9,7 @@ CPU 内蔵の NPU を cgo なしで Go から使うためのライブラリで�
 |---|---|---|
 | macOS (Apple Silicon) | Core ML (GPU を除外し、MLComputePlan で ANE 配置を検証) | M1 実装済み |
 | Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR のドライバ内コンパイル、コンパイル済み blob) | M2 実装済み。実機では未検証 |
-| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。Ryzen AI 9 365 (Strix Point、Linux 7.0) で IRON の設計と full ELF の実行、Gemma 4 E2B の hwnpu-chat / hwnpu-agent を確認 |
+| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。Ryzen AI 9 365 (Strix Point、Linux 7.0) で IRON の設計と full ELF の実行、Gemma 4 E2B の hwnpu-chat (chat / agent) を確認 |
 | Windows (AMD Ryzen AI) | XRT (hwnpu の C ライブラリ xrtshim を通す) | 実装済み。Windows では未検証。同じ経路を Linux の XRT 2.21 で確かめた (Gemma 4 E2B の画像と音声まで) |
 | WSL2 | なし | 非対応。WSL2 からは Intel と AMD のどちらの NPU も見えない |
 
@@ -100,11 +100,11 @@ IRON (amd/IRON) を開発者の機械でコンパイラとして一度だけ使�
 
 ```bash
 python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.amd-npu2 --max-seq-len 4096 --prefill-chunk 1024
-go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.amd-npu2
-go run ./cmd/hwnpu-agent -iron ~/models/gemma-4-E2B-it.amd-npu2 "README.md を要約して"
+go run ./cmd/hwnpu-chat -m ~/models/gemma-4-E2B-it.amd-npu2
+go run ./cmd/hwnpu-chat agent -m ~/models/gemma-4-E2B-it.amd-npu2 "README.md を要約して"
 ```
 
-Apple と Intel の NPU がなく AMD の NPU があるとき、`hwnpu-chat` と `hwnpu-agent` は `-iron` がなくても `-use` のモデル (既定 LFM3-1.7B) の書き出しを `~/models/NAME.amd-npu2-q4`、なければ `~/models/NAME.amd-npu2` から選びます (`go run ./cmd/hwnpu-chat -use gemma-4-E2B-it`)。
+Apple と Intel の NPU がなく AMD の NPU があるとき、`hwnpu-chat` (`chat`、`agent`、`serve`) は `-m` に書き出しのディレクトリを渡さなくても、`-m` のモデル (既定 LFM3-1.7B) の書き出しを `~/models/NAME.amd-npu2-q4`、なければ `~/models/NAME.amd-npu2` から選びます (`go run ./cmd/hwnpu-chat -m gemma-4-E2B-it`)。用途やファミリーもほかの NPU と同じくメモリで選びます (`-m translate`、`-m chat`)。読み込みでは書き出しの部分 (`decode`、`prompt`) ごとに `all on the NPU` (緑) か、ホストで動くステップがあれば `NOT all on the NPU` (赤) と出します。
 
 Gemma 4 E4B (gemma-4-E4B-it) も同じ `gemma4` で書き出します (文脈 4096、塊 1024。書き出しは 15 GB)。デコードは 1 秒に 3.6 トークン (E2B の約 6 割) で、位置 3072 からの 1024 トークンを 8.2 秒で読みます。
 
@@ -112,8 +112,8 @@ LFM3-1.7B は IRON にアプリケーションがないので、hwnpu の `tools
 
 ```bash
 python tools/amd/iron_export_lm.py lfm3 ~/.cache/hwnpu/models/LFM3-1.7B ~/models/LFM3-1.7B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
-go run ./cmd/hwnpu-chat -iron ~/models/LFM3-1.7B.amd-npu2-q4
-go run ./cmd/hwnpu-agent -iron ~/models/LFM3-1.7B.amd-npu2-q4 "go test を通して"
+go run ./cmd/hwnpu-chat -m ~/models/LFM3-1.7B.amd-npu2-q4
+go run ./cmd/hwnpu-chat agent -m ~/models/LFM3-1.7B.amd-npu2-q4 "go test を通して"
 ```
 
 LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B も同じく hwnpu の IRON アプリケーションで書き出します (`lfm3vl`、`lfm3audio`、`lfm3omni`)。LFM3-VL は画像を 512 × 512 に引き伸ばして読み (256 トークン)、LFM3-Audio は 41 秒までの音声を読みます (音声での返事は作りません)。LFM3-Omni はその両方です。`--q4` は本体だけを 4 ビットと 8 ビットにし (塔は bf16)、固定されるメモリは VL で 4.12 → 2.00 GiB、Audio で 4.14 → 2.03、Omni で 4.51 → 2.39 GiB になります。
@@ -122,33 +122,33 @@ LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B も同じく hwnpu の IRON アプリ�
 python tools/amd/iron_export_lm.py lfm3vl ~/models/LFM3-VL-2B ~/models/LFM3-VL-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
 python tools/amd/iron_export_lm.py lfm3audio ~/models/LFM3-Audio-2B ~/models/LFM3-Audio-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
 python tools/amd/iron_export_lm.py lfm3omni ~/models/LFM3-Omni-2B ~/models/LFM3-Omni-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
-go run ./cmd/hwnpu-chat -iron ~/models/LFM3-VL-2B.amd-npu2-q4 -listen 127.0.0.1:8080
+go run ./cmd/hwnpu-chat serve -m ~/models/LFM3-VL-2B.amd-npu2-q4 --listen 127.0.0.1:8080
 ```
 
 Gemma 4 E2B に画像と音声も読ませるときは、塔 (視覚と音声のエンコーダー) ごと書き出します (`gemma4mm`。1 回のプロンプトに画像 1 枚と音声 1 本まで)。OpenAI 互換 API の `image_url` (data URL) と `input_audio` (WAV) で渡します。
 
 ```bash
 python tools/amd/iron_export_lm.py gemma4mm ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.mm.amd-npu2 --max-seq-len 4096 --prefill-chunk 1024
-go run ./cmd/hwnpu-chat -iron ~/models/gemma-4-E2B-it.mm.amd-npu2 -listen 127.0.0.1:8080
+go run ./cmd/hwnpu-chat serve -m ~/models/gemma-4-E2B-it.mm.amd-npu2 --listen 127.0.0.1:8080
 ```
 
-NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` と `hwnpu-agent` は、`-iron` のモデルを要求が `-idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`-idle 0` で下ろしません。画像と音声つきの書き出しは、塔の重みを最初の画像か音声が来るまで載せないので (Gemma 4 E2B の 4 ビットで 2.82 → 1.83 GB、文だけの書き出しとの差は 51 MiB。最初の画像か音声で 0.7 秒。[docs/design.md](docs/design.md) の 16.81)、文だけで使うときも同じ書き出しで済みます。
+NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` (`chat`、`agent`、`serve`) は、AMD の NPU の書き出しを要求が `--idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`--idle 0` で下ろしません。画像と音声つきの書き出しは、塔の重みを最初の画像か音声が来るまで載せないので (Gemma 4 E2B の 4 ビットで 2.82 → 1.83 GB、文だけの書き出しとの差は 51 MiB。最初の画像か音声で 0.7 秒。[docs/design.md](docs/design.md) の 16.81)、文だけで使うときも同じ書き出しで済みます。
 
 同じモデルの書き出しを複数置くと (文だけと画像と音声つき、4 ビットと bf16 など)、同じファイルを持ちます (Gemma 4 E2B なら `ple.bin` の 4.4 GiB など)。モデルを置くディスクが Btrfs や XFS (reflink)、Windows の ReFS や Dev Drive のように写しを共有できるファイルシステムなら、hwnpu は書き出しを最初に読むときに、隣の書き出しと同じバイトのファイルとファイルの先頭をその写し (reflink) に置き換え、ディスクを 1 つ分しか使いません (Gemma 4 E2B の 2 つで 15.2 → 8.2 GiB。普通のファイルのまま)。ext4 と NTFS では何もしません ([docs/design.md](docs/design.md) の 16.79。Windows は実機では未確認)。
 
-Preferred Networks の翻訳モデル PLaMo 3 Translate 2B (pfnet/plamo-3-translate-2b) も、hwnpu の `tools/amd/iron_plamo3.py` で書き出します (`plamo3`)。hwnpu-chat は打った文を訳し (日本語を含む文は英語へ、ほかは日本語へ。`-to LANG` で訳す先、`-from` で原文の言語、`-form plain|polite` で日本語の文体)、それまでの対訳を履歴としてプロンプトに残します。OpenAI 互換 API では `chat_template_kwargs` の `target_lang`、`source_lang`、`form`、`context`、`glossary` (vLLM と同じ) で指定し、system メッセージは参考文脈 (`context`) になります。`--q4` で MLP と出力の行列を 4 ビット、注意を 8 ビット、埋め込みをホストに置くと、固定されるメモリが 5.96 から 2.16 GiB に、デコードが 1 秒に 7.3 から 11.6 トークンになり (Ryzen AI 9 365、位置 2600 付近)、訳文は 44 文中 36 文が bf16 と同じで、残りも正しい言い換えでした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。bf16 のままなら `--q4` を外します (デコードは 1 秒に 7.7 トークン、位置 8191 で 6.6。1024 トークンの塊は位置 0 から 2.2 秒、7168 から 10.5 秒)。Gemma 4 と LFM3 の書き出しにも `--q4` があります。
+Preferred Networks の翻訳モデル PLaMo 3 Translate 2B (pfnet/plamo-3-translate-2b) も、hwnpu の `tools/amd/iron_plamo3.py` で書き出します (`plamo3`)。hwnpu-chat は打った文を訳し (日本語を含む文は英語へ、ほかは日本語へ。`--to LANG` で訳す先、`--from` で原文の言語、`--form plain|polite` で日本語の文体)、それまでの対訳を履歴としてプロンプトに残します。OpenAI 互換 API では `chat_template_kwargs` の `target_lang`、`source_lang`、`form`、`context`、`glossary` (vLLM と同じ) で指定し、system メッセージは参考文脈 (`context`) になります。`--q4` で MLP と出力の行列を 4 ビット、注意を 8 ビット、埋め込みをホストに置くと、固定されるメモリが 5.96 から 2.16 GiB に、デコードが 1 秒に 7.3 から 11.6 トークンになり (Ryzen AI 9 365、位置 2600 付近)、訳文は 44 文中 36 文が bf16 と同じで、残りも正しい言い換えでした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。bf16 のままなら `--q4` を外します (デコードは 1 秒に 7.7 トークン、位置 8191 で 6.6。1024 トークンの塊は位置 0 から 2.2 秒、7168 から 10.5 秒)。Gemma 4 と LFM3 の書き出しにも `--q4` があります。
 
 ```bash
 python tools/amd/iron_export_lm.py plamo3 ~/models/plamo-3-translate-2b ~/models/plamo-3-translate-2b.amd-npu2-q4 --max-seq-len 8192 --prefill-chunk 1024 --q4
-go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2-q4
-go run ./cmd/hwnpu-chat -iron ~/models/plamo-3-translate-2b.amd-npu2-q4 -to zh-hans
+go run ./cmd/hwnpu-chat -m ~/models/plamo-3-translate-2b.amd-npu2-q4
+go run ./cmd/hwnpu-chat -m ~/models/plamo-3-translate-2b.amd-npu2-q4 --to zh-hans
 ```
 
 Qwen3.5 (0.8B、2B、4B) は hwnpu の `tools/amd/iron_qwen35.py` で書き出します (`qwen35`)。0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします (`--mlp q6 --head q6`。注意と GDN の射影は 8 ビット、埋め込みはホスト。固定されるメモリは 0.8B 1.04 GiB、2B 1.97 GiB)。`--verify 3` を足すと、次のトークンと推測 2 つを 1 回で確かめる版も書き出し、hwnpu-chat はプロンプトと答えからの推測を確かめながら生成します (投機的デコード。ロジットは 1 トークンずつと同じなので、温度 0 なら文も同じ)。Ryzen AI 9 365 の 0.8B で 1 トークン 82 ms が、コードで 72 ms、日本語の説明で 62 ms になりました ([docs/design.md](docs/design.md) の 16.117)。`HWNPU_IRON_DRAFTS=0` で推測を使いません。
 
 ```bash
 python tools/amd/iron_export_lm.py qwen35 ~/models/Qwen3.5-0.8B ~/models/Qwen3.5-0.8B.amd-npu2-q6 --q4 --mlp q6 --head q6 --verify 3
-go run ./cmd/hwnpu-chat -iron ~/models/Qwen3.5-0.8B.amd-npu2-q6
+go run ./cmd/hwnpu-chat -m ~/models/Qwen3.5-0.8B.amd-npu2-q6
 ```
 
 Phoenix と Hawk Point (NPU1) には full ELF がないので、`--device npu1 --cols 4` で書き出します。各版は IRON と同じく「1 ステップごとの xclbin」(Gemma 4 E2B のデコードで 1095 ステップ、xclbin は 2 個) になり、呼び出しごとの命令列は書き出しに含めたプログラムから hwnpu が作ります。NPU1 の実機では未検証です。同じ形の書き出しを `--per-step` で NPU2 向けに作ると Ryzen AI 9 365 で正しく動き、デコードは 1 秒に 2.6 トークンでした (full ELF の 6 の半分以下。1 トークンに 1095 回の投入が要るため)。NPU1 は、版ごとの xclbin (計 6 個) で、ハードウェアコンテキストの上限 6 を使い切ります。
@@ -252,7 +252,7 @@ go run ./cmd/report -o report.md
 
 macOS では `go run ./cmd/powerbench` で、Core ML モデルの呼び出し 1 回あたりのエネルギーを powermetrics で測れます。最初に sudo のパスワードを一度だけ聞きます。詳しくは [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を参照してください。
 
-`go run ./cmd/hwnpu-convert` は、Hugging Face のチェックポイント (safetensors か GGUF) を Python なしで Neural Engine 用の `.mlpackage` に変換します。対応するのは LFM3 (d1-2B などの判定モデルを含む)、LFM3-VL の視覚エンコーダ、LFM3-Audio / LFM3-Omni の音声エンコーダと音声出力、Gemma 4（gemma-4-E2B-it）、Qwen3.5（Qwen3.5-4B などのテキスト部分。CPU での照合のみ）、Qwen3（Qwen3-0.6B。`hwnpu-chat -use qwen3`）、BERT 系エンコーダ、PLaMo-Embedding-1B、PLaMo 3（PLaMo 3 Translate 2B。CPU と OpenVINO の CPU での照合のみ。`hwnpu-chat -use plamo-3-translate-2b` で翻訳）、Whisper（whisper-large-v3-turbo。音声エンコーダは `-arch whisper-encoder`、クロス注意のキーと値は `-arch whisper-cross`）で、移植の手順は `.claude/skills/port-architecture` にあります。元モデルの選び方と Neural Engine の制約は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) にまとめてあります。`go run ./cmd/hwnpu-check` は、変換したグラフを CPU で fp32 のまま実行し、Hugging Face の実装の参照 (`tools/ref/ref_logits.py`) と層ごとに照合します。Mac は要りません。`go run ./cmd/hwnpu-generate` は、変換した因果 LM で文章を生成します (トークナイザーも Go)。`-cache N` で変換すると KV キャッシュ付きになり、長い文章を書けます (M3 の LFM3-1.7B で、キャッシュ 1024 なら 1 トークン 20.6 ms)。`go run ./cmd/hwnpu-chat` は、引数なしで LFM3-1.7B を落として変換し、対話を始めます。使うモデルは `-use` に名前で指定し (`-use plamo-embedding-1b` なら PLaMo-Embedding-1B で文を埋め込んで検索)、選べるモデルと用途は `-list` で出ます。`-listen` で OpenAI 互換の API サーバーになり、`-use LFM3-1.7B,plamo-embedding-1b` ならチャット (`/v1/chat/completions`) と埋め込み (`/v1/embeddings`) を 1 つのサーバーで出します。`-opencode` は、サーバーを 30000 番台以降の空いたポートで開き、その設定で OpenCode を起動します。OpenCode のようなコーディングエージェントからも使えます。`go run ./cmd/hwnpu-agent "main.go の add のバグを直して"` は、同じモデルを HTTP なしで直接呼ぶ 4 道具 (read、edit、write、bash) のコーディングエージェントで、system prompt と道具の宣言は約 600 トークン (OpenCode は 7.4K) です。`-tools search -search-first` なら、知識をモデルに頼らず検索 (Wikipedia、Brave、SearXNG) して答えるアシスタントになります。手順は [CHAT.ja.md](CHAT.ja.md)（[English](CHAT.md)）にあります。Intel の NPU (Core Ultra) では、同じ hwnpu-chat と hwnpu-agent がモデルを OpenVINO IR に変換して動かします (実機では未確認。[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の 6 節)。`go run ./cmd/hwnpu-formats` は、重みの形式 (int8、int4-g128、int4) ごとの精度と速さを NPU の上で比べます。`go run ./cmd/hwnpu-systemone` は、d1-2B で状態についての型付きの質問 (選択、段階、真偽) に答えます。llama.cpp のサーバーと同じ `/v1/systemone` を提供します。`hwnpu-chat` と `hwnpu-systemone` は `-vision` で画像を、`-audio` で音声を読みます (LFM3-VL-2B、LFM3-Audio-2B、d1-2B、d1-Omni-2B)。`go run ./cmd/hwnpu-tts` は LFM3-Audio-2B で文章を読み上げます。hwnpu-tts と hwnpu-systemone も、初回にモデルを落として自分で変換します (`-use speech`、`-use decision`)。どのコマンドも、選べるモデルは組み込みの [models.yaml](models.yaml) から来ていて、自分のファイルで足したり差し替えたりできます ([docs/model-table.md](docs/model-table.md))。`go run ./cmd/hwnpu-pitch voice.wav` は SwiftF0 で声や楽器の音高を 16 ms ごとに、`go run ./cmd/hwnpu-notes song.wav -midi song.mid` は Basic Pitch で音符を MIDI に、`go run ./cmd/hwnpu-pose photo.jpg` は RTMO で画像の人と 17 の関節点を出します (どれも ONNX で配られるモデルで、`internal/onnx` が静的な部分を NPU のプログラムにします)。`go run ./cmd/hwnpu-music generate "disco funk"` は Magenta RealTime 2 small で、文で指定した曲調の 48 kHz ステレオの音楽を作り、そのままスピーカーで鳴らします (`-o out.wav` でファイルに) (録音の曲調 `song.wav`、曲調の混ぜ合わせ `"jazz@2" "bossa nova"`、MIDI の音符 `--notes melody.mid`、録音の続き `--continue intro.wav`、鳴らしながらファイルにも書く `--play -o out.wav`、標準出力に流す `-o -`) (M1 で実時間の約 1.4 倍の速さ。重みは CC-BY 4.0 なので、使うときは「Magenta RealTime 2 by Google DeepMind」と表示してください)。同じ `generate` に `-m sfx` を付けると MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作ります (`hwnpu-music generate -m sfx "A dog barking loudly in a park."`、`--duration 20s`、`--steps 50` で半分の時間)。文の符号器 (Qwen3-1.7B)、DiT (1.3B)、DAC の復号がすべて NPU で動き、M1 でカードの 100 ステップなら 10 秒の音に約 4 分です。マシンのメモリで、16 GB 以上は文の符号器が fp16 のモデル、8 GB は lut8 のモデルを選びます (`-m moss-soundeffect:8gb` や `:16G` で明示)。モデルの一覧は `hwnpu-music list`。`go run ./cmd/hwnpu-transcribe speech.wav` は Whisper large-v3-turbo で音声を書き起こします（初回にチェックポイントを落として変換。M3 で 30 秒の窓を 0.6 秒で読み、65 秒の日本語を 4 秒で書き起こしました。`-language ja`、`-translate`、`-timestamps`）。
+`go run ./cmd/hwnpu-convert` は、Hugging Face のチェックポイント (safetensors か GGUF) を Python なしで Neural Engine 用の `.mlpackage` に変換します。対応するのは LFM3 (d1-2B などの判定モデルを含む)、LFM3-VL の視覚エンコーダ、LFM3-Audio / LFM3-Omni の音声エンコーダと音声出力、Gemma 4（gemma-4-E2B-it）、Qwen3.5（Qwen3.5-4B などのテキスト部分。CPU での照合のみ）、Qwen3（Qwen3-0.6B。`hwnpu-chat -m qwen3`）、BERT 系エンコーダ、PLaMo-Embedding-1B、PLaMo 3（PLaMo 3 Translate 2B。CPU と OpenVINO の CPU での照合のみ。`hwnpu-chat -m plamo-3-translate-2b` で翻訳）、Whisper（whisper-large-v3-turbo。音声エンコーダは `-arch whisper-encoder`、クロス注意のキーと値は `-arch whisper-cross`）で、移植の手順は `.claude/skills/port-architecture` にあります。元モデルの選び方と Neural Engine の制約は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) にまとめてあります。`go run ./cmd/hwnpu-check` は、変換したグラフを CPU で fp32 のまま実行し、Hugging Face の実装の参照 (`tools/ref/ref_logits.py`) と層ごとに照合します。Mac は要りません。`go run ./cmd/hwnpu-generate` は、変換した因果 LM で文章を生成します (トークナイザーも Go)。`-cache N` で変換すると KV キャッシュ付きになり、長い文章を書けます (M3 の LFM3-1.7B で、キャッシュ 1024 なら 1 トークン 20.6 ms)。`go run ./cmd/hwnpu-chat` は、引数なしで LFM3-1.7B を落として変換し、対話を始めます。引数に質問を書くと答えて終わります (`hwnpu-chat "日本の首都は？"`。答えは標準出力、読み込みの様子は標準エラー出力に灰色で、NPU に全部載れば `all on the NPU` を緑、載らなければ赤で出します)。使うモデルは `-m` に名前で指定し、選べるモデルと用途は `hwnpu-chat list` で出ます。`hwnpu-chat search -m plamo-embedding-1b` なら PLaMo-Embedding-1B で文を埋め込んで検索します。`hwnpu-chat serve` で OpenAI 互換の API サーバーになり、`-m LFM3-1.7B,plamo-embedding-1b` ならチャット (`/v1/chat/completions`) と埋め込み (`/v1/embeddings`) を 1 つのサーバーで出します。`hwnpu-chat opencode` は、サーバーを 30000 番台以降の空いたポートで開き、その設定で OpenCode を起動します。OpenCode のようなコーディングエージェントからも使えます。`go run ./cmd/hwnpu-chat agent "main.go の add のバグを直して"` は、同じモデルを HTTP なしで直接呼ぶ 4 道具 (read、edit、write、bash) のコーディングエージェントで、system prompt と道具の宣言は約 600 トークン (OpenCode は 7.4K) です。`--tools search --search-first` なら、知識をモデルに頼らず検索 (Wikipedia、Brave、SearXNG) して答えるアシスタントになります。手順は [CHAT.ja.md](CHAT.ja.md)（[English](CHAT.md)）にあります。Intel の NPU (Core Ultra) では、同じ hwnpu-chat (`chat`、`agent`) がモデルを OpenVINO IR に変換して動かします (実機では未確認。[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の 6 節)。`go run ./cmd/hwnpu-formats` は、重みの形式 (int8、int4-g128、int4) ごとの精度と速さを NPU の上で比べます。`go run ./cmd/hwnpu-systemone` は、d1-2B で状態についての型付きの質問 (選択、段階、真偽) に答えます。llama.cpp のサーバーと同じ `/v1/systemone` を提供します。`hwnpu-chat` は `--vision` で画像を、`--audio-encoder` で音声を、`hwnpu-systemone` は `-vision` で画像を、`-audio` で音声を読みます (LFM3-VL-2B、LFM3-Audio-2B、d1-2B、d1-Omni-2B)。`go run ./cmd/hwnpu-tts` は LFM3-Audio-2B で文章を読み上げます。hwnpu-tts と hwnpu-systemone も、初回にモデルを落として自分で変換します (`-use speech`、`-use decision`)。どのコマンドも、選べるモデルは組み込みの [models.yaml](models.yaml) から来ていて、自分のファイルで足したり差し替えたりできます ([docs/model-table.md](docs/model-table.md))。`go run ./cmd/hwnpu-pitch voice.wav` は SwiftF0 で声や楽器の音高を 16 ms ごとに、`go run ./cmd/hwnpu-notes song.wav -midi song.mid` は Basic Pitch で音符を MIDI に、`go run ./cmd/hwnpu-pose photo.jpg` は RTMO で画像の人と 17 の関節点を出します (どれも ONNX で配られるモデルで、`internal/onnx` が静的な部分を NPU のプログラムにします)。`go run ./cmd/hwnpu-music generate "disco funk"` は Magenta RealTime 2 small で、文で指定した曲調の 48 kHz ステレオの音楽を作り、そのままスピーカーで鳴らします (`-o out.wav` でファイルに) (録音の曲調 `song.wav`、曲調の混ぜ合わせ `"jazz@2" "bossa nova"`、MIDI の音符 `--notes melody.mid`、録音の続き `--continue intro.wav`、鳴らしながらファイルにも書く `--play -o out.wav`、標準出力に流す `-o -`) (M1 で実時間の約 1.4 倍の速さ。重みは CC-BY 4.0 なので、使うときは「Magenta RealTime 2 by Google DeepMind」と表示してください)。同じ `generate` に `-m sfx` を付けると MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作ります (`hwnpu-music generate -m sfx "A dog barking loudly in a park."`、`--duration 20s`、`--steps 50` で半分の時間)。文の符号器 (Qwen3-1.7B)、DiT (1.3B)、DAC の復号がすべて NPU で動き、M1 でカードの 100 ステップなら 10 秒の音に約 4 分です。マシンのメモリで、16 GB 以上は文の符号器が fp16 のモデル、8 GB は lut8 のモデルを選びます (`-m moss-soundeffect:8gb` や `:16G` で明示)。モデルの一覧は `hwnpu-music list`。`go run ./cmd/hwnpu-transcribe speech.wav` は Whisper large-v3-turbo で音声を書き起こします（初回にチェックポイントを落として変換。M3 で 30 秒の窓を 0.6 秒で読み、65 秒の日本語を 4 秒で書き起こしました。`-language ja`、`-translate`、`-timestamps`）。
 
 `go run ./cmd/npuprobe` は、生成したモデルで NPU を測ります。LLM が 1 トークンを生成するのと同じ形のモデルを Go で作り、まず 0.5B と 1B の重みで形式ごと (Apple は fp16、int8、lut4、int4、Intel は fp16、int8、int4) の速さを測ります (`bench`)。次にモデルを大きくしながら NPU から外れる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込んで、上限がモデルごとか合計かを確かめます (`limit`)。Python もモデルのファイルも root も要らず、クローンしなくても次の 1 行で動きます。結果は `npuprobe-<機種>-<日時>.md` に書き出します。
 

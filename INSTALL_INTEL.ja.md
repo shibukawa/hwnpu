@@ -2,7 +2,7 @@
 
 Intel Core Ultra（Meteor Lake、Arrow Lake、Lunar Lake、Panther Lake、Wildcat Lake）の NPU を hwnpu から使えるようにし、動作を確かめる手順です。
 
-> **現状。** Intel バックエンドは、Level Zero ドライバを模した偽のドライバでしか試していません。hwnpu-chat と hwnpu-agent は、同じプログラムを OpenVINO の CPU で動かして確かめました。実機で手順 4 の `cmd/report` と手順 6 のチャットを実行し、結果を送っていただけるのがいちばん助かります。
+> **現状。** Intel バックエンドは、Level Zero ドライバを模した偽のドライバでしか試していません。hwnpu-chat と hwnpu-chat agent は、同じプログラムを OpenVINO の CPU で動かして確かめました。実機で手順 4 の `cmd/report` と手順 6 のチャットを実行し、結果を送っていただけるのがいちばん助かります。
 
 English: [INSTALL_INTEL.md](INSTALL_INTEL.md)
 
@@ -177,13 +177,13 @@ g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.xml"})
 
 NPU のコンパイラが対応しない演算を含むモデルは、`hwnpu.ErrNotOnNPU` で失敗します。エラーには、原因の演算とコンパイラのログが含まれます。
 
-## 6. hwnpu-chat と hwnpu-agent
+## 6. hwnpu-chat と hwnpu-chat agent
 
 Mac と同じコマンドで、チャットとエージェントが Intel NPU で動きます (実機での確認はまだです。下の「確かめてほしいこと」を参照)。
 
 ```bash
 go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest              # 端末で対話
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-agent@latest "README を要約して"
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-chat@latest agent "README を要約して"
 ```
 
 初回は次のことが起きます。
@@ -203,15 +203,15 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-agent@latest "README を要約して
 最初は小さく始めると切り分けやすいです。
 
 ```bash
-hwnpu-chat -paged -1 -tier none -context 4096
+hwnpu-chat --paged -1 --tier none --context 4096
 ```
 
 ### 確かめてほしいこと
 
-1. `hwnpu-chat -paged -1 -tier none -context 4096` が `ready:` まで進むか。止まったら、そのときのメッセージ (コンパイラのログを含む) をください。
+1. `hwnpu-chat --paged -1 --tier none --context 4096` が `ready:` まで進むか。止まったら、そのときのメッセージ (コンパイラのログを含む) をください。
 2. 質問に正しく答えるか。トークン/秒 (答えの後に表示) はいくつか。
 3. 既定の設定 (`hwnpu-chat` だけ) で読み込めるか、コンパイルにどれくらいかかるか、メモリは足りるか。
-4. `hwnpu-agent` がツールを呼べるか。
+4. `hwnpu-chat agent` がツールを呼べるか。
 5. `hwnpu-formats` で int8、int4-g128、int4 の精度と速さを比べる (下の節)。
 
 ### 重みの形式を比べる (hwnpu-formats)
@@ -246,7 +246,7 @@ HWNPU_OV_PYTHON=~/ov/bin/python go run ./cmd/hwnpu-formats -ref-backend openvino
 | int4-g128 | 0.83 | 80% | 4.28 |
 | int4 | 0.81 | 76% | 4.89 |
 
-形式を決めたら、hwnpu-chat と hwnpu-agent では `-format int4-g128` のように指定します。
+形式を決めたら、hwnpu-chat と hwnpu-chat agent では `--format int4-g128` のように指定します。
 
 ### OpenVINO で切り分ける
 
@@ -254,7 +254,7 @@ hwnpu の Level Zero の経路で失敗するとき、同じ IR を OpenVINO で
 
 ```bash
 python3 -m venv ~/ov && ~/ov/bin/pip install openvino numpy
-HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat -backend openvino -tier none -context 4096
+HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvino --tier none --context 4096
 ```
 
 `HWNPU_OV_DEVICE=NPU` は OpenVINO の NPU プラグイン、`CPU` (既定) は CPU で動かします。Windows では `HWNPU_OV_PYTHON` に `python.exe` のパスを指定します。
@@ -271,5 +271,5 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat -backend openvino
 | `the driver has no compiler for OpenVINO IR` | `intel-driver-compiler-npu` が入っていない。入れるか、コンパイル済みの blob を使う。 |
 | `ZE_extension_graph version ... is not supported` | ドライバが古い（グラフ拡張 1.5 以降が必要）。ドライバを更新する。 |
 | hwnpu-chat が `chain: part 0 has no output y` で止まる | ドライバが返す引数の名前が IR の名前と合わない。メッセージと `hwnpuinfo` の結果を送ってほしい。 |
-| hwnpu-chat の読み込み中にメモリが足りなくなる | `-tier none` でグラフを半分にする。`-format int4-g128` で重みを半分にする。 |
+| hwnpu-chat の読み込み中にメモリが足りなくなる | `--tier none` でグラフを半分にする。`--format int4-g128` で重みを半分にする。 |
 | Level Zero の詳しい情報がほしい | `ZE_ENABLE_LOADER_DEBUG_TRACE=1` を付けて実行する。 |

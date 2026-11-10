@@ -1,12 +1,12 @@
 # The models hwnpu knows, and the models each use recommends on a machine of each memory
 # (MODEL.md's table). hwnpu embeds this file; a file of your own adds to it and overrides it:
 # ~/.config/hwnpu/models.yaml (%LOCALAPPDATA%\hwnpu\models.yaml on Windows), HWNPU_MODELS, or
-# -models FILE. Write only what changes there. The design is docs/model-table.md.
+# --models FILE (hwnpu-chat; -models for the others). Write only what changes there. The design is docs/model-table.md.
 #
-# models: NAME: what -use and the API call it.
+# models: NAME: what -m (hwnpu-chat, hwnpu-image), -use (the others) and the API call it.
 #   family, tag   FAMILY:TAG picks it (plamo3translate:2b); the family alone picks the tag of the
 #                 largest machine up to this machine's memory
-#   kind          chat, embedding (hwnpu-chat, hwnpu-agent), transcribe (hwnpu-transcribe),
+#   kind          chat, embedding (hwnpu-chat: chat, agent, search, serve), transcribe (hwnpu-transcribe),
 #                 speech (hwnpu-tts), decision (hwnpu-systemone), image, depth, face-detect (hwnpu-image),
 #                 pitch (hwnpu-pitch), pose (hwnpu-pose), notes (hwnpu-notes), music, sfx (hwnpu-music)
 #   device        where it runs by the NPU's vendor (amd, apple, intel): npu (the default) or cpu;
@@ -21,14 +21,14 @@
 #                 memory and bytes take one number, or a table by the NPU's vendor where they
 #                 differ (memory: {amd: 3.5, apple: 4.1}); a vendor the table leaves out takes its
 #                 largest
-#   features      what it can do besides its kind (hwnpu-chat -list explains them)
+#   features      what it can do besides its kind (hwnpu-chat list explains them)
 #   no_think      answers without thinking unless asked (its chat template's own default)
 #   like          another model whose fields this one takes, except its tag
 #   remove        true: drop the model
-# categories: NAME: a use (-use translate). picks are MODEL.md's columns: the model a machine of
+# categories: NAME: a use (-m translate). picks are MODEL.md's columns: the model a machine of
 #   that much memory (GB) or more runs. A file of your own replaces a column's model, or drops it
 #   with remove: true.
-# aliases: NAME: OTHER runs OTHER wherever NAME is picked (a use, a family's tag, -use, a request).
+# aliases: NAME: OTHER runs OTHER wherever NAME is picked (a use, a family's tag, -m or -use, a request).
 version: 1
 
 models:

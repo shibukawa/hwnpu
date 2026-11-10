@@ -403,8 +403,8 @@ func (t *table) addCategory(file, name string, e *categoryEntry, builtin bool) e
 
 // kinds are the kinds a model may have, with the commands that run them.
 var kinds = map[Kind]string{
-	KindChat:       "hwnpu-chat, hwnpu-agent",
-	KindEmbed:      "hwnpu-chat",
+	KindChat:       "hwnpu-chat (chat, agent, serve)",
+	KindEmbed:      "hwnpu-chat (search, serve)",
 	KindTranscribe: "hwnpu-transcribe",
 	KindSpeech:     "hwnpu-tts",
 	KindDecision:   "hwnpu-systemone",
@@ -569,7 +569,7 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 	if e.Features != nil {
 		for _, f := range *e.Features {
 			if !slices.ContainsFunc(Features, func(k struct{ Name, About string }) bool { return k.Name == f }) {
-				return m, fmt.Errorf("model %s: feature %q is not one of hwnpu-chat -list's", name, f)
+				return m, fmt.Errorf("model %s: feature %q is not one of hwnpu-chat list's", name, f)
 			}
 		}
 		m.Features = slices.Clone(*e.Features)
