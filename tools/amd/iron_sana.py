@@ -11,9 +11,11 @@ runs 20 or so flow DPM-Solver steps with classifier-free guidance (two DiT calls
 
 The graphs, each exported by iron_graph.py into a directory of its own:
 
-  text        Gemma 2 2B over up to ``rows`` prompt tokens (their embedding rows times
-              sqrt(hidden), which the host looks up), causal, its last hidden state after the
-              final norm; shared by every Sana of a VAE generation (the same Gemma 2)
+  text        Gemma 2 2B, causal, its last hidden state after the final norm, on the prompt's
+              embedding rows times sqrt(hidden) (which the host looks up): the instruction's
+              first rows held as keys and values (Prefix), the rest in chunks of ``rows`` from
+              a per-call ``start`` (--no-prefix: every row in one call); shared by every Sana
+              of a VAE generation (the same Gemma 2)
   caption     the DiT's caption projection and norm of the selected 300 rows (padded to 512)
   dit_in      the patch embedding (a 1 x 1 convolution) and the timestep (and guidance)
               embedding and its six modulations
@@ -41,6 +43,7 @@ import argparse
 import dataclasses
 import json
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -69,13 +72,18 @@ class Precisions:
     dit: Precision = Precision.MEDIUM
     attn: Precision = Precision.HIGHEST
     vae: Precision = Precision.MEDIUM
+    # the VAE's linear attentions: bfp16 shares an exponent along K only, so the constant row
+    # (c = 4096) never shares one with the values; the pictures are those of HIGHEST (51.6 dB)
+    vae_attn: Precision = Precision.MEDIUM
 
 
 PREC = Precisions()
 
-# The text encoder's projections: "q8" (iron_q4's 8.5 bits a weight, dequantized to bf16 on the
-# device before each GEMM, which keeps PREC.text) or "bf16".
-TEXT_FMT = {"fmt": "q8"}
+# The text encoder's projections: "q6" (iron_q4's 6.5 bits a weight, dequantized to bf16 on the
+# device before each GEMM, which keeps PREC.text), "q8", "q4" or "bf16". q6 draws the pictures q8
+# does (its rows 3.5 % off float32's, q8's 1.4 %, design.md 16.138) in 1.7 GB to 2.3; q4's 15 %
+# changes the composition.
+TEXT_FMT = {"fmt": "q6"}
 
 
 def text_param(w):
@@ -189,15 +197,16 @@ def out_cols(w: np.ndarray, heads: int) -> np.ndarray:
     return out
 
 
-def linear_attention(q, kt, vt, k: LinearAttnConsts):
+def linear_attention(q, kt, vt, k: LinearAttnConsts, precision=None):
     """Each head's ``relu(q) (relu(K)^T V) / relu(q) . sum(relu(K))``, 64 columns to a head.
 
     ``q`` (n, 32 H) and ``kt`` (32 H, n) past their ReLU; ``vt`` (64 H, n), the values 64 rows
     to a head (value_rows), the constant rows added here.
     """
     n, H = q.shape[0], k.heads
-    w = F.linear(vt + k.const, kt, precision=PREC.attn)  # (64 H, 32 H): V^T K and c sum(K)
-    o = F.linear(q, w * k.mask, precision=PREC.attn)  # (n, 64 H): [N, c D, 0...] a head
+    P = precision or PREC.attn
+    w = F.linear(vt + k.const, kt, precision=P)  # (64 H, 32 H): V^T K and c sum(K)
+    o = F.linear(q, w * k.mask, precision=P)  # (n, 64 H): [N, c D, 0...] a head
     return F.rms_norm(o.reshape(n * H, 64), (64,), k.sel, 1e-30).reshape(n, 64 * H)
 
 
@@ -595,7 +604,9 @@ class Caption(iron.Graph):
 class TextConfig:
     """Gemma 2 2B (text_encoder/config.json)."""
 
-    rows: int = 512  # the instruction (about 210 tokens) and up to 298 of the prompt's
+    rows: int = 512  # the rows a call computes: the instruction and 298 of the prompt's (a chunk with a prefix)
+    prefix: int = 0  # the instruction's first rows held as keys and values (Prefix), whole chunks; 0 for none
+    cache: int = 0  # the positions the keys and values hold (with a prefix): the instruction and 298
     hidden: int = 2304
     layers: int = 26
     heads: int = 8
@@ -646,7 +657,11 @@ class GemmaLayer(iron.Graph):
         self.up = get("mlp.up_proj.weight", M, E)
         self.down = get("mlp.down_proj.weight", E, M)
 
-    def body(self, x, angles, pad):
+    def body(self, x, angles, pad, cache=None, prefix=None, start=None):
+        """The layer over x's rows. With a cache (keys, values ``(cache rows, kv_heads,
+        head_dim)``), x's rows are those from ``start``: the prefix's keys and values (the
+        instruction's, constant) are written first, x's after them from ``start``, and the
+        queries attend to the ``start + rows`` before them, causally."""
         c = self.c
         L, H, G, D = x.shape[0], c.heads, c.kv_heads, c.head_dim
         pads = {pad.shape[1]: pad}
@@ -655,8 +670,18 @@ class GemmaLayer(iron.Graph):
         k = text_linear(h, self.k, pads).reshape(L * G, D)
         v = text_linear(h, self.v, pads)
         q, k = F.rope(q, angles), F.rope(k, angles)
-        o = MHA.step(q.reshape(L, H, D), k.reshape(L, G, D), v.reshape(L, G, D),
-                     heads_interleaved=True, kv_interleaved=True, causal=True, d=D, scale=MHA_SCALE, num_pipelines=8)
+        if cache is None:
+            k_all, v_all = k.reshape(L, G, D), v.reshape(L, G, D)
+        else:
+            kc, vc = cache
+            for st, pre, new in ((kc, prefix[0], k), (vc, prefix[1], v)):
+                if pre is not None:
+                    st[0 : pre.shape[0]] = pre
+                st[start : start + L] = new.reshape(L, G, D)
+            k_all, v_all = kc[: start + L], vc[: start + L]
+        # a pipeline takes whole rounds of 64 queries
+        o = MHA.step(q.reshape(L, H, D), k_all, v_all, heads_interleaved=True, kv_interleaved=True, causal=True, d=D,
+                     scale=MHA_SCALE, num_pipelines=max(1, min(8, L // 64)))
         o = text_linear(o.reshape(L, H * D), self.o)
         x = x + F.rms_norm(o, (c.hidden,), self.post_attn, c.eps)
         h = F.rms_norm(x, (c.hidden,), self.pre_ff, c.eps)
@@ -667,23 +692,112 @@ class GemmaLayer(iron.Graph):
 
 class Text(iron.Graph):
     """Gemma 2 2B: input ``x`` (rows, hidden), the prompt's embedding rows times sqrt(hidden)
-    (zeros past them); output its last hidden state after the final norm, the same shape."""
+    (zeros past them); output its last hidden state after the final norm, the same shape.
 
-    def __init__(self, c: TextConfig, w=None):
+    With ``prefix`` (Prefix: the instruction's keys and values, from the CPU), the graph is a
+    chunk of ``rows`` positions from ``start`` (a multiple of rows): x holds the embedding rows
+    from ``start``, the keys and values of the positions before it are the prefix's (its first
+    ``c.prefix``) or the calls' before (the cache holds them while the graph is loaded), and the
+    rows past the prompt's are any (causal attention keeps them from the prompt's). Every
+    prompt begins with the instruction (Sana's) or <bos> (its negative prompt), whose rows
+    causal attention leaves the same whatever follows."""
+
+    def __init__(self, c: TextConfig, w=None, prefix=None):
         self.c = c
         self.layers = [GemmaLayer(c, w, i) for i in range(c.layers)]
         self.norm = iron.param(bf(f32(w["norm.weight"]) + 1)) if w is not None else iron.param(c.hidden)
-        self.angles = iron.param(bf(half_rope_table(c.rows, c.head_dim, c.theta)))
         # the hidden rows in zero-padded columns, for q8's 512-column blocks (text_linear)
         self.pad = iron.state((c.rows, -(-c.hidden // 512) * 512))
+        self.has_prefix = prefix is not None  # (its arrays are kept as params only)
+        if prefix is None:
+            self.angles = iron.param(bf(half_rope_table(c.rows, c.head_dim, c.theta)))
+            return
+        G, D, P = c.kv_heads, c.head_dim, c.prefix
+        # a weight, not a param: a handle while recording, which per-call values slice
+        self.angles = iron.weight(bf(half_rope_table(c.cache, c.head_dim, c.theta)))
+        self.caches = [(iron.state((c.cache, G, D)), iron.state((c.cache, G, D))) for _ in range(c.layers)]
+        self.pre = [(iron.param(bf(k[:P])), iron.param(bf(v[:P]))) for k, v in zip(prefix.keys, prefix.values)]
 
-    def body(self, x):
+    def body(self, x, *, start: Scratchpad[np.int32] = np.int32(0)):
         c = self.c
+        if not self.has_prefix:
+            for i, layer in enumerate(self.layers):
+                if i and i % c.split == 0:
+                    command_boundary()
+                x = layer(x, self.angles, self.pad)
+            return F.rms_norm(x, (c.hidden,), self.norm, c.eps)
+        angles = Copy.step(self.angles[start : start + c.rows])
         for i, layer in enumerate(self.layers):
             if i and i % c.split == 0:
                 command_boundary()
-            x = layer(x, self.angles, self.pad)
+            x = layer(x, angles, self.pad, self.caches[i], self.pre[i], start)
         return F.rms_norm(x, (c.hidden,), self.norm, c.eps)
+
+
+# The instruction diffusers' Sana pipelines put before the prompt (complex_human_instruction,
+# joined by new lines), as internal/imagegen/sana.Instruction.
+INSTRUCTION = "\n".join([
+    "Given a user prompt, generate an 'Enhanced prompt' that provides detailed visual descriptions suitable for image generation. Evaluate the level of detail in the user prompt:",
+    "- If the prompt is simple, focus on adding specifics about colors, shapes, sizes, textures, and spatial relationships to create vivid and concrete scenes.",
+    "- If the prompt is already detailed, refine and enhance the existing details slightly without overcomplicating.",
+    "Here are examples of how to transform or refine prompts:",
+    "- User Prompt: A cat sleeping -> Enhanced: A small, fluffy white cat curled up in a round shape, sleeping peacefully on a warm sunny windowsill, surrounded by pots of blooming red flowers.",
+    "- User Prompt: A busy city street -> Enhanced: A bustling city street scene at dusk, featuring glowing street lamps, a diverse crowd of people in colorful clothing, and a double-decker bus passing by towering glass skyscrapers.",
+    "Please generate only the enhanced description for the prompt below and avoid including any additional commentary or evaluations:",
+    "User Prompt: ",
+])
+
+
+@dataclasses.dataclass
+class Prefix:
+    """The instruction's rows through Gemma 2 in float32 on the CPU, as transformers runs it
+    (the attention's softcap too): each layer's keys (after RoPE) and values ``(P, kv_heads,
+    head_dim)`` and the last hidden states ``out`` ``(P, hidden)``, of the tokens ``ids``."""
+
+    ids: list
+    keys: list
+    values: list
+    out: np.ndarray
+
+    @staticmethod
+    def of(c: TextConfig, w, ids: list) -> "Prefix":
+        P, E, H, G, D = len(ids), c.hidden, c.heads, c.kv_heads, c.head_dim
+
+        def norm(x, name):
+            x = x / np.sqrt((x * x).mean(-1, keepdims=True) + c.eps)
+            return x * (1 + f32(w[name]))
+
+        inv = 1.0 / c.theta ** (np.arange(0, D, 2, dtype=np.float64) / D)
+        a = np.arange(P, dtype=np.float64)[:, None] * inv[None]
+        cos, sin = np.cos(np.concatenate([a, a], 1)), np.sin(np.concatenate([a, a], 1))
+
+        def rope(t):  # (P, heads, D), transformers' rotate_half
+            half = np.concatenate([-t[..., D // 2 :], t[..., : D // 2]], -1)
+            return (t * cos[:, None] + half * sin[:, None]).astype(np.float32)
+
+        x = f32(w["embed_tokens.weight"][ids]) * np.float32(math.sqrt(E))
+        mask = np.triu(np.full((P, P), -np.inf, np.float32), 1)
+        keys, values = [], []
+        for i in range(c.layers):
+            p = f"layers.{i}."
+            lin = lambda t, n: t @ f32(w[p + n]).T  # noqa: E731
+            h = norm(x, p + "input_layernorm.weight")
+            q = rope(lin(h, "self_attn.q_proj.weight").reshape(P, H, D))
+            k = rope(lin(h, "self_attn.k_proj.weight").reshape(P, G, D))
+            v = lin(h, "self_attn.v_proj.weight").reshape(P, G, D)
+            keys.append(k)
+            values.append(v)
+            kr, vr = np.repeat(k, H // G, 1), np.repeat(v, H // G, 1)
+            s = np.einsum("phd,qhd->hpq", q, kr) * np.float32(256**-0.5)  # query_pre_attn_scalar
+            s = np.tanh(s / 50) * 50 + mask  # attn_logit_softcapping
+            s = np.exp(s - s.max(-1, keepdims=True))
+            o = np.einsum("hpq,qhd->phd", s / s.sum(-1, keepdims=True), vr).reshape(P, H * D)
+            x = x + norm(lin(o, "self_attn.o_proj.weight"), p + "post_attention_layernorm.weight")
+            h = norm(x, p + "pre_feedforward_layernorm.weight")
+            g = lin(h, "mlp.gate_proj.weight")
+            g = 0.5 * g * (1 + np.tanh(math.sqrt(2 / math.pi) * (g + 0.044715 * g**3)))
+            x = x + norm(lin(g * lin(h, "mlp.up_proj.weight"), "mlp.down_proj.weight"), p + "post_feedforward_layernorm.weight")
+        return Prefix(list(ids), keys, values, norm(x, "norm.weight").astype(np.float32))
 
 
 # --- the VAE decoder (DC-AE) -------------------------------------------------------------------
@@ -738,15 +852,31 @@ class GridShape:
 
     def chunk(self, cin: int) -> int:
         """Image rows a convolution takes at once: a multiple of 16 dividing Hp, its im2col rows
-        (9 cin wide) at most 64 MiB."""
+        (9 cin wide) at most VAE_COLS_MIB."""
         best = 16
         for r in range(16, self.Hp + 1, 16):
-            if self.Hp % r == 0 and r * self.Wp * 9 * cin * 2 <= 64 << 20:
+            if self.Hp % r == 0 and r * self.Wp * 9 * cin * 2 <= VAE_COLS_MIB[0] << 20:
                 best = r
         return best
 
 
 VAE_C = [128, 256, 512, 512, 1024, 1024]  # decoder_block_out_channels
+VAE_COLS_MIB = [64]  # a convolution's im2col rows at most (--vae-cols-mib)
+# The 3 x 3 convolutions: "grid" (iron_gridgemm.GridGEMM reads the grid's rows in place, one GEMM
+# a convolution or a kernel row; the im2col copy took 63 % of a 1024 x 1024 ResBlock: three
+# ResBlocks 3.3 -> 1.4 s, design.md 16.139), "taps" (a GEMM a tap, summed) or "im2col" (--vae-conv)
+VAE_CONV = ["grid"]
+VAE_TAP_ROWS = 64  # image rows a tap's GEMM takes at once
+# The upsamplings: "phase" (four 2 x 2 convolutions at the low resolution, one an output phase)
+# or "grid" (the nearest 2x into a grid, then the 3 x 3 convolution) (--vae-up)
+VAE_UP = ["phase"]
+# IRON_SANA_PROFILE=1: a command an operation in the convolutions (HWNPU_IRON_TIMING times each)
+VAE_PROFILE = os.environ.get("IRON_SANA_PROFILE") == "1"
+
+
+def _profile_boundary() -> None:
+    if VAE_PROFILE:
+        command_boundary()
 VAE_VIT = 3  # the resolutions (from the lowest) of EfficientViT blocks
 
 
@@ -831,6 +961,8 @@ class VaeStage(iron.Graph):
         self.kmask = {}  # by (C, rows): the keys of the dense rows past the pixels, zeros
         self.padded = {}  # by (C, rows): states for the dense rows, zeros past the pixels
         self._cols = {}
+        self.free_grids = {}  # grid states given back, by shape (free_grid)
+        self.grid_of = {}  # the state of each grid view, by id
         H, W = g.H, g.W
         for op in ops:
             kind = op[0]
@@ -904,19 +1036,28 @@ class VaeStage(iron.Graph):
                 if cin == cout:
                     for c in range(cout):
                         wt[c, c, 1, 1] += 1
-                    self._conv3(f"{path}.up", wt, b, cin)
+                    by_row = [wt, wt]
                 else:
                     assert cin == 2 * cout, op
+                    by_row = []
                     for i in range(2):
                         wi = wt.copy()
                         for c in range(cout):
                             wi[c, 2 * c + i, 1, 1] += 1
-                        self._conv3(f"{path}.up{i}", wi, b, cin)
+                        by_row.append(wi)
+                if VAE_UP[0] == "phase":
+                    self._up_phases(f"{path}.up", by_row, b)
+                elif cin == cout:
+                    self._conv3(f"{path}.up", wt, b, cin, VAE_CONV[0] in ("taps", "grid"))
+                else:
+                    for i in range(2):
+                        self._conv3(f"{path}.up{i}", by_row[i], b, cin)
                 H, W = 2 * H, 2 * W
             elif kind == "res":
                 _, path, C = op
-                self._conv3(f"{path}.conv1", f32(w[f"{path}.conv1.weight"]), f32(w[f"{path}.conv1.bias"]), C)
-                self._conv3(f"{path}.conv2", f32(w[f"{path}.conv2.weight"]), None, C)
+                taps = VAE_CONV[0] in ("taps", "grid")
+                self._conv3(f"{path}.conv1", f32(w[f"{path}.conv1.weight"]), f32(w[f"{path}.conv1.bias"]), C, taps)
+                self._conv3(f"{path}.conv2", f32(w[f"{path}.conv2.weight"]), None, C, taps)
                 self._param(f"{path}.n", f32(w[f"{path}.norm.weight"]))
                 self._param(f"{path}.nb", f32(w[f"{path}.norm.bias"]))
             elif kind == "head":
@@ -927,7 +1068,7 @@ class VaeStage(iron.Graph):
                 full[:3] = wt
                 b = np.zeros(64, np.float32)
                 b[:3] = f32(w["decoder.conv_out.bias"])
-                self._conv3("head", full, b, wt.shape[1])
+                self._conv3("head", full, b, wt.shape[1], VAE_CONV[0] in ("taps", "grid"))
             else:
                 raise ValueError(op)
 
@@ -938,25 +1079,81 @@ class VaeStage(iron.Graph):
     def w(self, name: str):
         return self.params[self._index[name]] if name in self._index else None
 
-    def _conv3(self, name: str, wt: np.ndarray, b, cin_padded: int) -> None:
-        """A 3 x 3 convolution (cout, cin, 3, 3) as an im2col matrix (cout, dy 3 cin + dx cin + ci)."""
+    def _conv3(self, name: str, wt: np.ndarray, b, cin_padded: int, taps: bool = False) -> None:
+        """A 3 x 3 convolution (cout, cin, 3, 3) as an im2col matrix (cout, dy 3 cin + dx cin + ci),
+        or with ``taps`` as a matrix (cout, cin) a tap (``name.tDYDX``, conv3's tap GEMMs)."""
         co, ci = wt.shape[:2]
         full = np.zeros((co, cin_padded, 3, 3), np.float32)
         full[:, :ci] = wt
-        self._param(f"{name}.w", full.transpose(0, 2, 3, 1).reshape(co, -1))
+        im2col = full.transpose(0, 2, 3, 1).reshape(co, -1)
+        if taps and VAE_CONV[0] == "grid":
+            if 3 * cin_padded <= 512:  # one GEMM: k tiles of a kernel row (GridGEMM's k_tile <= 512)
+                self._param(f"{name}.g", im2col)
+            else:
+                for dy in range(3):
+                    self._param(f"{name}.g{dy}", im2col[:, dy * 3 * cin_padded : (dy + 1) * 3 * cin_padded])
+        elif taps:
+            for dy in range(3):
+                for dx in range(3):
+                    self._param(f"{name}.t{dy}{dx}", full[:, :, dy, dx])
+        else:
+            self._param(f"{name}.w", im2col)
         if b is not None:
             self._param(f"{name}.b", b)
+
+    # The rows (or columns) of a 3 x 3 kernel each low-resolution tap of an output phase takes,
+    # after a nearest 2x: phase 0 (an even output row) reads the low rows y - 1 (the kernel's
+    # top row) and y (its middle and bottom rows); phase 1 reads y (top and middle) and y + 1.
+    PHASE_TAPS = {0: ((-1, (0,)), (0, (1, 2))), 1: ((0, (0, 1)), (1, (2,)))}
+
+    def _up_phases(self, name: str, by_row: list, b) -> None:
+        """A nearest 2x and a 3 x 3 convolution as four 2 x 2 convolutions at the low resolution,
+        one an output phase (py, px): ``name.pPYPXAB`` (cout, cin) is the low tap (A, B) of
+        phase (py, px), the kernel's rows and columns it takes summed. ``by_row[py]`` is the
+        kernel of the output rows of parity py (the shortcut of an upsampling that halves the
+        channels differs by it)."""
+        cin = by_row[0].shape[1]
+        for py in range(2):
+            wt = by_row[py]
+            for px in range(2):
+                taps = [[sum(wt[:, :, dy, dx] for dy in rows for dx in cols) for _, cols in self.PHASE_TAPS[px]]
+                        for _, rows in self.PHASE_TAPS[py]]
+                if VAE_CONV[0] == "grid":
+                    # GridGEMM: a low row's two taps are two adjacent pixels, 2 cin contiguous
+                    rows2 = [np.concatenate(t, axis=1) for t in taps]  # (cout, 2 cin) a low row
+                    if 2 * cin <= 512:
+                        self._param(f"{name}.q{py}{px}", np.concatenate(rows2, axis=1))
+                    else:
+                        for a in range(2):
+                            self._param(f"{name}.q{py}{px}{a}", rows2[a])
+                else:
+                    for a in range(2):
+                        for bb in range(2):
+                            self._param(f"{name}.p{py}{px}{a}{bb}", taps[a][bb])
+        self._param(f"{name}.b", b)
 
     # --- grids ---
 
     def new_grid(self, g: GridShape):
+        """A grid's state: one given back (free_grid) of its shape, else a new one."""
+        free = self.free_grids.setdefault((g.rows, g.C), [])
+        if free:
+            return free.pop()
         s = iron.state((g.rows, g.C))
         self.states.append(s)
         return s
 
-    @staticmethod
-    def view(s):
-        return s[0 : s.shape[0]]
+    def free_grid(self, view) -> None:
+        """Give back the grid state of ``view`` (a view of new_grid's), read no more, for the
+        next grid of its shape: a stage of several blocks holds three grids, not two a block."""
+        s = self.grid_of.pop(id(view), None)
+        if s is not None:
+            self.free_grids.setdefault(tuple(s.shape), []).append(s)
+
+    def view(self, s):
+        v = s[0 : s.shape[0]]
+        self.grid_of[id(v)] = s
+        return v
 
     def interior_from(self, src, g: GridShape, dst, r0: int, R: int, step: int = 1) -> None:
         """Copy ``R`` image rows of ``src`` (band rows, R Wp of them) into the grid ``dst``'s
@@ -997,13 +1194,65 @@ class VaeStage(iron.Graph):
         self.states.append(s)
         return s
 
-    def conv3(self, x, g: GridShape, wname: str, cout: int, post=None, parity: bool = False):
-        """The 3 x 3 convolution of the grid x into a new grid of cout channels. ``post(y, r0,
-        R)`` (when given) takes each chunk's GEMM result (band rows) before it is copied in;
-        ``parity``: the even and the odd rows each with their own weight (wname + "0"/"1")."""
+    def conv3(self, x, g: GridShape, wname: str, cout: int, post=None, parity: bool = False, into=None):
+        """The 3 x 3 convolution of the grid x into a new grid of cout channels (or the grid
+        state ``into``). ``post(y, r0, R)`` (when given) takes each chunk's GEMM result (band
+        rows) before it is copied in; ``parity``: the even and the odd rows each with their own
+        weight (wname + "0"/"1")."""
         gout = GridShape(g.H, g.W, cout)
-        out = self.new_grid(gout)
+        out = self.new_grid(gout) if into is None else into
         Wp, C = g.Wp, g.C
+        grid_one, grid_rows = self.w(f"{wname}.g"), self.w(f"{wname}.g0")
+        if grid_one is not None or grid_rows is not None:
+            # the grid's rows read in place by the GEMM (iron_gridgemm.GridGEMM): no im2col copy,
+            # and one GEMM (or one a kernel row, summed) instead of nine
+            from iron.operators.flm.gemm.design import Epilogue
+            from iron_gridgemm import GridGEMM
+
+            R = max(r for r in range(16, min(VAE_TAP_ROWS, g.Hp) + 1, 16) if g.Hp % r == 0)
+            kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae)
+            for r0 in range(0, g.H, R):
+                n = R * Wp
+                if grid_one is not None:
+                    s0 = g.band + r0 * Wp - Wp - 1
+                    MA = n + 2 * Wp + 2
+                    y = GridGEMM.step(x[s0 : s0 + MA], grid_one, M=n, MA=MA, CA=C, k_stride=Wp * C, k_tile=3 * C, **kw)
+                else:
+                    y = None
+                    for dy in range(3):
+                        s0 = g.band + r0 * Wp + (dy - 1) * Wp - 1
+                        t = GridGEMM.step(x[s0 : s0 + n + 2], self.w(f"{wname}.g{dy}"), M=n, MA=n + 2, CA=C, **kw)
+                        y = t if y is None else y + t
+                if self.w(f"{wname}.b") is not None:
+                    y = y + self.w(f"{wname}.b")
+                _profile_boundary()
+                if post is not None:
+                    y = post(y, r0, R, 1)
+                    _profile_boundary()
+                self.interior_from(y, gout, out, r0, R)
+                command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
+            return self.view(out), gout
+        if self.w(f"{wname}.t00") is not None:
+            # a GEMM a tap: each tap's input rows are a run of the grid's (channel last, rows of
+            # Wp pixels), so no im2col copy (9 times the grid) is made; the 9 products are summed
+            R = max(r for r in range(16, min(VAE_TAP_ROWS, g.Hp) + 1, 16) if g.Hp % r == 0)
+            for r0 in range(0, g.H, R):
+                n = R * Wp
+                y = None
+                for dy in range(3):
+                    for dx in range(3):
+                        s0 = g.band + r0 * Wp + (dy - 1) * Wp + (dx - 1)
+                        t = F.linear(x[s0 : s0 + n], self.w(f"{wname}.t{dy}{dx}"),
+                                     self.w(f"{wname}.b") if y is None else None, precision=PREC.vae)
+                        _profile_boundary()
+                        y = t if y is None else y + t
+                        _profile_boundary()
+                if post is not None:
+                    y = post(y, r0, R, 1)
+                    _profile_boundary()
+                self.interior_from(y, gout, out, r0, R)
+                command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
+            return self.view(out), gout
         R = g.chunk(C)
         if parity:
             R = max(32, R) if g.Hp % max(32, R) == 0 else R
@@ -1023,11 +1272,15 @@ class VaeStage(iron.Graph):
                         Copy.step(x, cols, src=tap((g.rows, C), start + dy * Wp * C, [rows, Wp, 3, C], [step * Wp * C, C, C, 1]),
                                   dst=tap((n, 9 * C), dy * 3 * C, [n, 3, C], [9 * C, C, 1]))
                     cols = cols[0:n]
+                _profile_boundary()
                 name = wname + ("" if i is None else str(i))
                 y = F.linear(cols, self.w(f"{name}.w"), self.w(f"{name}.b"), precision=PREC.vae)
+                _profile_boundary()
                 if post is not None:
                     y = post(y, first, rows, step)
+                    _profile_boundary()
                 self.interior_from(y, gout, out, first, rows, step)
+                _profile_boundary()
         return self.view(out), gout
 
     # --- the blocks ---
@@ -1041,7 +1294,12 @@ class VaeStage(iron.Graph):
             h = F.rms_norm(y, (g.C,), self.w(f"{path}.n"), 1e-5) + self.w(f"{path}.nb")
             return h + x[s : s + rows * g.Wp]
 
-        return self.conv3(a, ga, f"{path}.conv2", g.C, post=post)
+        # into x's own grid when it is one of the stage's: a chunk reads x's rows (the residual)
+        # before it writes the same rows, and the convolution reads a, not x
+        own = self.grid_of.pop(id(x), None)
+        y, gy = self.conv3(a, ga, f"{path}.conv2", g.C, post=post, into=own)
+        self.free_grid(a)
+        return y, gy
 
     def dwconv(self, x, H: int, W: int, k: int, taps, bias=None):
         """``x`` (H W, C) dense through a depthwise convolution: the band (DwGrid's)."""
@@ -1065,28 +1323,39 @@ class VaeStage(iron.Graph):
         if mask is not None:
             kt = kt * mask
         vt = F.linear(p("vt"), xd, precision=P)
-        o1 = linear_attention(ReLU.step(q), kt, vt, k)
+        _profile_boundary()  # A: the projections
+        o1 = linear_attention(ReLU.step(q), kt, vt, k, PREC.vae_attn)
+        _profile_boundary()  # B: the linear attention
         # the multi-scale branch: 5 x 5 depthwise, then the grouped 1 x 1 (block diagonal)
         qm = band_dense(*self.dwconv(q, H, W, 5, p("ms_q_taps")), out=pads[0] if pads else None)
         km = band_dense(*self.dwconv(kk, H, W, 5, p("ms_k_taps")), out=pads[1] if pads else None)
+        _profile_boundary()  # C: two 5 x 5 depthwise
         ktm = ReLU.step(F.linear(p("ms_k"), km, precision=P))
         if mask is not None:
             ktm = ktm * mask
         vm = band_dense(*self.dwconv(v, H, W, 5, p("ms_v_taps")), out=pads[1] if pads else None)
-        o2 = linear_attention(ReLU.step(F.linear(qm, p("ms_q"), precision=P)), ktm, F.linear(p("ms_v"), vm, precision=P), k)
+        _profile_boundary()  # D: a 1 x 1 and a 5 x 5 depthwise
+        o2 = linear_attention(ReLU.step(F.linear(qm, p("ms_q"), precision=P)), ktm, F.linear(p("ms_v"), vm, precision=P), k,
+                              PREC.vae_attn)
         a = F.linear(o1, p("o1"), precision=P) + F.linear(o2, p("o2"), precision=P)
+        _profile_boundary()  # E: the multi-scale attention, the outputs
         x1 = xd + F.rms_norm(a, (C,), p("on"), 1e-5) + p("onb")
         # GLUMBConv
         ha = F.silu(F.linear(x1, p("ia"), p("iab"), precision=P))
         hg = F.silu(F.linear(x1, p("ig"), p("igb"), precision=P))
         ya, g3 = self.dwconv(ha, H, W, 3, p("da"), p("dab"))
+        _profile_boundary()  # F: the norm, the inverted 1 x 1s
         yg, _ = self.dwconv(hg, H, W, 3, p("dg"), p("dgb"))
+        _profile_boundary()  # G: two 3 x 3 depthwise
         f = band_dense(ya * F.silu(yg), g3, out=self.padded[(4 * C, n)][0] if pads else None)
         f = F.linear(f, p("pt"), precision=P)
         return x1 + F.rms_norm(f, (C,), p("fn"), 1e-5) + p("fnb")
 
     def up(self, x, g: GridShape, dense: bool, path: str, cin: int, cout: int):
         """Nearest 2x of x (a grid, or dense), then the convolution with the shortcut folded."""
+        if self.w(f"{path}.up.p0000") is not None or self.w(f"{path}.up.q00") is not None \
+                or self.w(f"{path}.up.q000") is not None:
+            return self.up_phases(x, g, dense, path, cout)
         gu = GridShape(2 * g.H, 2 * g.W, cin)
         u = self.new_grid(gu)
         for dy in range(2):
@@ -1095,9 +1364,57 @@ class VaeStage(iron.Graph):
                        tap((g.rows, cin), g.pixel(0, 0) * cin, [g.H, g.W, cin], [g.Wp * cin, cin, 1]))
                 Copy.step(x, u, src=src,
                           dst=tap((gu.rows, cin), gu.pixel(dy, dx) * cin, [g.H, g.W, cin], [2 * gu.Wp * cin, 2 * cin, 1]))
-        if cin == cout:
-            return self.conv3(self.view(u), gu, f"{path}.up", cout)
-        return self.conv3(self.view(u), gu, f"{path}.up", cout, parity=True)
+        vu = self.view(u)
+        y = self.conv3(vu, gu, f"{path}.up", cout, parity=cin != cout)
+        self.free_grid(vu)
+        return y
+
+    def up_phases(self, x, g: GridShape, dense: bool, path: str, cout: int):
+        """up() at the low resolution (_up_phases): for each output phase, the sum of four GEMMs
+        over runs of x's grid rows, copied into every other row and pixel of the output grid.
+        A quarter of the pixels each, 4 taps for 9: 4/9 of the products, and no upsampled grid."""
+        if dense:
+            x = self.dense_to_grid(x, g)
+        gout = GridShape(2 * g.H, 2 * g.W, cout)
+        out = self.new_grid(gout)
+        Wp = g.Wp
+        R = max(r for r in range(16, min(VAE_TAP_ROWS, g.Hp) + 1, 16) if g.Hp % r == 0)
+        for r0 in range(0, g.H, R):
+            n, rows = R * Wp, min(R, g.H - r0)
+            for py in range(2):
+                for px in range(2):
+                    y = None
+                    oy0, ox0 = self.PHASE_TAPS[py][0][0], self.PHASE_TAPS[px][0][0]
+                    one, C = self.w(f"{path}.up.q{py}{px}"), g.C
+                    if one is not None or self.w(f"{path}.up.q{py}{px}0") is not None:
+                        # the phase's taps read in place (GridGEMM): one GEMM, or one a low row
+                        from iron.operators.flm.gemm.design import Epilogue
+                        from iron_gridgemm import GridGEMM
+
+                        kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae)
+                        s0 = g.band + (r0 + oy0) * Wp + ox0
+                        if one is not None:
+                            MA = n + Wp + 2
+                            y = GridGEMM.step(x[s0 : s0 + MA], one, M=n, MA=MA, CA=C, k_stride=Wp * C, k_tile=2 * C, **kw)
+                        else:
+                            for a in range(2):
+                                t = GridGEMM.step(x[s0 + a * Wp : s0 + a * Wp + n + 2], self.w(f"{path}.up.q{py}{px}{a}"),
+                                                  M=n, MA=n + 2, CA=C, **kw)
+                                y = t if y is None else y + t
+                        y = y + self.w(f"{path}.up.b")
+                    else:
+                        for a, (oy, _) in enumerate(self.PHASE_TAPS[py]):
+                            for bb, (ox, _) in enumerate(self.PHASE_TAPS[px]):
+                                s0 = g.band + (r0 + oy) * Wp + ox
+                                t = F.linear(x[s0 : s0 + n], self.w(f"{path}.up.p{py}{px}{a}{bb}"),
+                                             self.w(f"{path}.up.b") if y is None else None, precision=PREC.vae)
+                                y = t if y is None else y + t
+                    Copy.step(y, out, src=tap((n, cout), cout, [rows, g.W, cout], [Wp * cout, cout, 1]),
+                              dst=tap((gout.rows, cout), gout.pixel(2 * r0 + py, px) * cout, [rows, g.W, cout],
+                                      [2 * gout.Wp * cout, 2 * cout, 1]))
+            command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
+        self.free_grid(x)
+        return self.view(out), gout
 
     def head(self, x, g: GridShape):
         """norm_out (weight and bias), ReLU, conv_out: the pixels (H W, 64), RGB first."""
@@ -1115,6 +1432,8 @@ class VaeStage(iron.Graph):
         dense = False
         for j, op in enumerate(self.ops):
             kind = op[0]
+            if j and kind in ("res", "vit") and self.ops[j - 1][0] == kind:
+                command_boundary()  # a block a command: the device heap, amdxdna's 2 s
             if kind == "in":
                 x, g = self.conv3(x, g, "conv_in", VAE_C[-1])
             elif kind == "vit":
@@ -1154,15 +1473,12 @@ def vae_stages(width: int, height: int) -> list[tuple[list, GridShape]]:
         ([("in",), vit(5, 0), vit(5, 1), vit(5, 2)], G(1, 64)),
         ([up(4), vit(4, 1), vit(4, 2), vit(4, 3)], G(1, 1024)),
         ([up(3), vit(3, 1)], G(2, 1024)),
-        ([vit(3, 2)], G(4, 512)),
-        ([vit(3, 3)], G(4, 512)),
+        ([vit(3, 2), vit(3, 3)], G(4, 512)),
         ([up(2), res(2, 1), res(2, 2), res(2, 3)], G(4, 512)),
         ([up(1), res(1, 1)], G(8, 512)),
         ([res(1, 2), res(1, 3)], G(16, 256)),
         ([up(0)], G(16, 256)),
-        ([res(0, 1)], G(32, 128)),
-        ([res(0, 2)], G(32, 128)),
-        ([res(0, 3)], G(32, 128)),
+        ([res(0, 1), res(0, 2), res(0, 3)], G(32, 128)),
         ([("head",)], G(32, 128)),
     ]
 
@@ -1211,10 +1527,25 @@ def export_text(root: Path, out: Path, check: bool) -> None:
     c = TextConfig()
     w = Sharded(root / "text_encoder", random=ARGS.random)
     t0 = time.time()
-    g = Text(c, w)
+    prefix = None
+    if not ARGS.no_prefix:
+        from tokenizers import Tokenizer
+
+        tok = Tokenizer.from_file(str(root / "tokenizer" / "tokenizer.json"))
+        ids = [tok.token_to_id("<bos>")] + tok.encode(INSTRUCTION, add_special_tokens=False).ids
+        prefix = Prefix.of(c, w, ids)
+        R = ARGS.text_chunk
+        c = dataclasses.replace(c, rows=R, prefix=(len(ids) - 1) // R * R, cache=-(-(len(ids) + 298) // 256) * 256)
+        print(f"text: the instruction's {len(ids)} rows on the CPU in {time.time() - t0:.0f} s", flush=True)
+    g = Text(c, w, prefix)
     cg = g.compile(x=(c.rows, c.hidden))
     d = out / "text"
-    m = export_graph(cg, d, "text", dict(config=dataclasses.asdict(c), weights=TEXT_FMT["fmt"]))
+    meta = dict(config=dataclasses.asdict(c), weights=TEXT_FMT["fmt"], precision=PREC.text.value)
+    if prefix is not None:
+        meta["prefix"] = prefix.ids
+    m = export_graph(cg, d, "text", meta)
+    if prefix is not None:
+        (d / "prefix_out.bin").write_bytes(bf(prefix.out).tobytes())
     print(f"text: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
     import shutil
 
@@ -1223,7 +1554,25 @@ def export_text(root: Path, out: Path, check: bool) -> None:
         e = w["embed_tokens.weight"]
         for s in range(0, e.shape[0], 16384):
             f.write(bf(e[s : s + 16384]).tobytes())
-    if check:
+    if check and prefix is not None:
+        # the instruction and 13 tokens after it, from the prefix's end in one chunk: against
+        # the whole sequence in float32 on the CPU (check/out_*.bin, zeros past the tokens)
+        rng = np.random.default_rng(0)
+        full = prefix.ids + [int(t) for t in rng.integers(1000, 200000, 13)]
+        P = c.prefix
+        n = len(full) - P
+        assert n <= c.rows, (n, c.rows)
+        want = np.zeros((c.rows, c.hidden), np.float32)
+        want[:n] = Prefix.of(c, w, full).out[P:]
+        x = np.zeros((c.rows, c.hidden), np.float32)
+        x[:n] = f32(w["embed_tokens.weight"][full[P:]]) * math.sqrt(c.hidden)
+        cd = d / "check"
+        cd.mkdir(exist_ok=True)
+        (cd / "in_x.bin").write_bytes(bf(x).tobytes())
+        (cd / "values.json").write_text(json.dumps(dict(start=P)) + "\n")
+        (cd / f"out_{m['graph']['outputs'][0]['name']}.bin").write_bytes(bf(want).tobytes())
+        (cd / "rows.txt").write_text(f"{n}\n")
+    elif check:
         rng = np.random.default_rng(0)
         x = np.zeros((c.rows, c.hidden), np.float32)
         n = 219
@@ -1318,8 +1667,20 @@ def main(argv=None) -> int:
     ap.add_argument("--dit-precision", default=PREC.dit.value, choices=[p.value for p in Precision],
                     help="the DiT's projections (high: the same pictures as medium, 2.5 times as slow)")
     ap.add_argument("--vae-precision", default=PREC.vae.value, choices=[p.value for p in Precision])
-    ap.add_argument("--text-format", default=TEXT_FMT["fmt"], choices=("q8", "bf16"),
-                    help="Gemma 2's projections: q8 (8.5 bits a weight, half the pinned memory) or bf16")
+    ap.add_argument("--vae-attn-precision", default=PREC.vae_attn.value, choices=[p.value for p in Precision],
+                    help="the VAE's linear attentions (their two products)")
+    ap.add_argument("--text-format", default=TEXT_FMT["fmt"], choices=("q8", "q6", "q4", "bf16"),
+                    help="Gemma 2's projections: q6 (6.5 bits a weight), q8, q4 (changes the pictures) or bf16")
+    ap.add_argument("--vae-conv", default=VAE_CONV[0], choices=("im2col", "taps", "grid"),
+                    help="vae: the 3 x 3 convolutions (but the upsamplings that halve the channels) as one GEMM over im2col rows or a GEMM a tap")
+    ap.add_argument("--vae-up", default=VAE_UP[0], choices=("phase", "grid"),
+                    help="vae: the upsamplings as four 2 x 2 convolutions at the low resolution, or the 2x grid and a 3 x 3")
+    ap.add_argument("--vae-cols-mib", type=int, default=VAE_COLS_MIB[0], help="vae: a convolution's im2col rows at most (MiB)")
+    ap.add_argument("--text-chunk", type=int, default=64, help="text with a prefix: the rows a call computes")
+    ap.add_argument("--no-prefix", action="store_true",
+                    help="text: compute the instruction's rows on every call (without its keys and values held)")
+    ap.add_argument("--text-precision", default=PREC.text.value, choices=[p.value for p in Precision],
+                    help="Gemma 2's matmuls (medium: bfp16 operands)")
     ap.add_argument("--one-group", action="store_true", help="dit_blocks: the first group's bank only (a test)")
     ap.add_argument("--layers", type=int, default=0, help="the DiT's blocks (a test of fewer)")
     ap.add_argument("--random", action="store_true", help="weights drawn at random in the checkpoint's shapes")
@@ -1335,6 +1696,11 @@ def main(argv=None) -> int:
         c = dataclasses.replace(c, layers=a.layers)
     PREC.dit = Precision(a.dit_precision)
     PREC.vae = Precision(a.vae_precision)
+    PREC.vae_attn = Precision(a.vae_attn_precision)
+    PREC.text = Precision(a.text_precision)
+    VAE_COLS_MIB[0] = a.vae_cols_mib
+    VAE_CONV[0] = a.vae_conv
+    VAE_UP[0] = a.vae_up
     a.out.mkdir(parents=True, exist_ok=True)
     write_model(a.root, a.out, c)
     if "text" in a.only:
