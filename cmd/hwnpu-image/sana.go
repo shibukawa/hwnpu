@@ -30,7 +30,7 @@ type sanaRun struct {
 	dump, cache   string
 }
 
-// runSana draws the picture with an export of Sana or Sana-Sprint: of tools/amd/iron_sana.py on
+// runSana draws the picture with an export of Sana: of tools/amd/iron_sana.py on
 // AMD's NPU, or of hwnpu-image convert (Core ML) on Apple's Neural Engine or, with cpu, the CPU
 // interpreter.
 func runSana(ctx context.Context, r sanaRun) error {
@@ -85,9 +85,6 @@ func runSana(ctx context.Context, r sanaRun) error {
 
 	// with several pictures the DiT stays on the device between them (keepDiT): only Gemma 2
 	// and the VAE's stages are loaded for each
-	if r.negative != "" && p.Model.Sprint {
-		return fmt.Errorf("Sana-Sprint runs no classifier-free guidance: --negative is for Sana")
-	}
 	p.KeepDiT = r.keepDiT && len(r.prompts) > 1
 	for i, prompt := range r.prompts {
 		t1 := time.Now()
@@ -111,19 +108,13 @@ func drawSana(ctx context.Context, p *sana.Pipeline, r sanaRun, prompt, out stri
 	if err != nil {
 		return err
 	}
-	var noises [][]float32
-	n := p.NoiseCount(steps)
+	var noise []float32
 	if r.noise != "" {
-		x, err := readF32(r.noise)
-		if err != nil {
+		if noise, err = readF32(r.noise); err != nil {
 			return err
 		}
-		size := len(x) / n
-		if size*n != len(x) || size != p.Dit.Latent*p.Dit.Tokens() {
-			return fmt.Errorf("%s: %d values for %d noises of %d", r.noise, len(x), n, p.Dit.Latent*p.Dit.Tokens())
-		}
-		for k := 0; k < n; k++ {
-			noises = append(noises, x[k*size:(k+1)*size])
+		if len(noise) != p.Dit.Latent*p.Dit.Tokens() {
+			return fmt.Errorf("%s: %d values for latents of %d", r.noise, len(noise), p.Dit.Latent*p.Dit.Tokens())
 		}
 	} else {
 		s := seed
@@ -131,11 +122,11 @@ func drawSana(ctx context.Context, p *sana.Pipeline, r sanaRun, prompt, out stri
 			s = rand.Uint64()
 		}
 		logf("seed %d", s)
-		noises = p.Noise(s, n)
+		noise = p.Noise(s)
 	}
 	bar := console.NewBar(lw, "denoising")
 	bar.Set(0, fmt.Sprintf("step 1/%d", steps))
-	x, err := p.Generate(ctx, cond, neg, noises, steps, guidance, func(i, n int, d time.Duration) {
+	x, err := p.Generate(ctx, cond, neg, noise, steps, guidance, func(i, n int, d time.Duration) {
 		per := bar.Elapsed() / time.Duration(i+1)
 		bar.Set(float64(i+1)/float64(n), fmt.Sprintf("step %d/%d, %.1f s a step", min(i+2, n), n, per.Seconds()))
 		if !live {

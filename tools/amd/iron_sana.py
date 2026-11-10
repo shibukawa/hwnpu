@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Sana and Sana-Sprint (NVlabs) on IRON: the graphs cmd/hwnpu-image runs on AMD's NPU.
+"""Sana (NVlabs: Sana 600M, SANA 1.5 1.6B) on IRON: the graphs cmd/hwnpu-image runs on AMD's NPU.
 
 An application of amd/IRON kept in hwnpu, as iron_anima.py is. Sana is a linear DiT: each block's
 self-attention is ReLU linear attention (no softmax, so its cost grows with the tokens, not
 their square), its cross-attention a softmax attention to the prompt, its MLP a gated 1 x 1,
 depthwise 3 x 3, 1 x 1 convolution (GLUMBConv) over the token grid. The prompt is read by Gemma
 2 2B, the latents are DC-AE's (32 channels, a 32nd of the image's sides: 1024 tokens at 1024 x
-1024). Sana-Sprint is distilled to 1 to 4 steps (SCM) with the guidance scale embedded; Sana
-runs 20 or so flow DPM-Solver steps with classifier-free guidance (two DiT calls a step).
+1024). Sana runs 20 or so flow DPM-Solver steps with classifier-free guidance (two DiT calls a
+step). Sana-Sprint (the guidance embedded, 1 to 4 SCM steps) is not supported: its pictures were
+far below Sana's (design.md 16.148).
 
 The graphs, each exported by iron_graph.py into a directory of its own:
 
@@ -17,8 +18,8 @@ The graphs, each exported by iron_graph.py into a directory of its own:
               a per-call ``start`` (--no-prefix: every row in one call); shared by every Sana
               of a VAE generation (the same Gemma 2)
   caption     the DiT's caption projection and norm of the selected 300 rows (padded to 512)
-  dit_in      the patch embedding (a 1 x 1 convolution) and the timestep (and guidance)
-              embedding and its six modulations
+  dit_in      the patch embedding (a 1 x 1 convolution) and the timestep embedding and its
+              six modulations
   dit_blocks  ``group`` blocks: one ELF, a bank image per group
   dit_out     the final modulated norm and projection to the 32 latent channels
   vae/s*      DC-AE's decoder in stages
@@ -34,7 +35,7 @@ product gives each head's row ``[N, c D, 0...]``; RMS-normalizing that row of 64
 ``8 N / (c D)`` to within ``(N / D)^2 / c^2`` (``c D`` dominates), which the norm's weight
 ``c / 8`` turns into ``N / D``. A head whose ``D`` is 0 gives 0, as the reference's eps does.
 
-  python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px OUT --size 1024   # or --width 1152 --height 896
+  python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers OUT --size 1024   # or --width 1152 --height 896
 
 See docs/amd-npu-models.md.
 """
@@ -227,8 +228,6 @@ class DitConfig:
     mlp: int = 2880
     caption: int = 2304
     latent: int = 32
-    guidance: bool = True
-    guidance_scale: float = 0.1  # guidance_embeds_scale: the guidance is embedded times it
     qk_norm: bool = True
     text_rows: int = 512  # the 300 rows Sana keeps of the prompt, padded
     group: int = 4
@@ -275,12 +274,13 @@ class DitConfig:
         E = cfg["num_attention_heads"] * cfg["attention_head_dim"]
         assert cfg["attention_head_dim"] == 32 and cfg.get("patch_size", 1) == 1, cfg
         assert cfg.get("interpolation_scale") is None, "a positional embedding is not supported"
+        if cfg.get("guidance_embeds"):
+            raise SystemExit("Sana-Sprint (guidance_embeds) is not supported: its pictures were far below Sana's")
         if width % 32 or height % 32:
             raise SystemExit(f"{width}x{height}: not multiples of 32 (DC-AE's)")
         return cls(width=width, height=height, hidden=E, heads=cfg["num_attention_heads"], layers=cfg["num_layers"],
                    cross_heads=cfg["num_cross_attention_heads"], cross_head_dim=cfg["cross_attention_head_dim"],
                    mlp=int(cfg["mlp_ratio"] * E), caption=cfg["caption_channels"], latent=cfg["in_channels"],
-                   guidance=bool(cfg.get("guidance_embeds")), guidance_scale=cfg.get("guidance_embeds_scale") or 0.1,
                    qk_norm=cfg.get("qk_norm") is not None, group=group)
 
 
@@ -522,8 +522,7 @@ class DitIn(iron.Graph):
     """The patch embedding and the timestep embedding.
 
     Inputs: ``patches`` (tokens, 32), the latents channel last; ``tproj`` (256), the
-    timestep's sinusoid (diffusers' Timesteps, cos first); ``gproj`` (256), the guidance's
-    (Sana-Sprint; zeros otherwise, unused). Outputs ``x`` (tokens, hidden), ``t6`` (6 hidden),
+    timestep's sinusoid (diffusers' Timesteps, cos first). Outputs ``x`` (tokens, hidden), ``t6`` (6 hidden),
     ``emb`` (hidden), the embedded timestep the final layer takes.
     """
 
@@ -538,18 +537,11 @@ class DitIn(iron.Graph):
             self.peb = iron.param(bf(w["patch_embed.proj.bias"]))
             self.lin = iron.param(bf(w["time_embed.linear.weight"]))
             self.linb = iron.param(bf(w["time_embed.linear.bias"]))
-        if c.guidance:
-            self.t = TimestepEmbedding(w, "time_embed.timestep_embedder.", E)
-            self.g = TimestepEmbedding(w, "time_embed.guidance_embedder.", E)
-        else:
-            self.t = TimestepEmbedding(w, "time_embed.emb.timestep_embedder.", E)
-            self.g = None
+        self.t = TimestepEmbedding(w, "time_embed.emb.timestep_embedder.", E)
 
-    def body(self, patches, tproj, gproj=None):
+    def body(self, patches, tproj):
         x = F.linear(patches, self.pe, self.peb, precision=PREC.dit)
         emb = self.t(tproj)
-        if self.g is not None:
-            emb = emb + self.g(gproj)
         t6 = F.linear(F.silu(emb), self.lin, self.linb, precision=PREC.dit)
         return x, t6, emb
 
@@ -1596,16 +1588,11 @@ def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
     if "dit_in" in ARGS.only:
         t0 = time.time()
         g = DitIn(c, w)
-        shapes = dict(patches=(n, c.latent), tproj=(256,))
-        if c.guidance:
-            shapes["gproj"] = (256,)
-        cg = g.compile(**shapes)
+        cg = g.compile(patches=(n, c.latent), tproj=(256,))
         m = export_graph(cg, out / "dit_in", "dit_in", meta)
         print(f"dit_in: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         if check:
             ins = dict(patches=bf(rng.standard_normal((n, c.latent))), tproj=bf(timestep_sinusoid(0.78)))
-            if c.guidance:
-                ins["gproj"] = bf(timestep_sinusoid(0.45))
             write_check(g, m, out / "dit_in", ins)
     if "dit_out" in ARGS.only:
         t0 = time.time()
@@ -1638,14 +1625,10 @@ def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
 def write_model(root: Path, out: Path, c: DitConfig) -> None:
     """model.json: which Sana the export is and its scheduler's settings (internal/imagegen/sana.Model)."""
     sc = json.loads((root / "scheduler" / "scheduler_config.json").read_text())
-    m = dict(name=root.name, sprint=c.guidance, guidance=4.5)
-    if c.guidance:
-        assert sc["_class_name"] == "SCMScheduler" and sc["prediction_type"] == "trigflow", sc
-        m.update(steps=2, sigma_data=sc["sigma_data"], max_timesteps=1.57080)
-    else:
-        assert sc["_class_name"] == "DPMSolverMultistepScheduler" and sc["prediction_type"] == "flow_prediction", sc
-        assert sc["algorithm_type"] == "dpmsolver++" and sc["solver_order"] == 2 and sc["use_flow_sigmas"], sc
-        m.update(steps=20, flow_shift=sc["flow_shift"], num_train_timesteps=sc["num_train_timesteps"])
+    m = dict(name=root.name, guidance=4.5)
+    assert sc["_class_name"] == "DPMSolverMultistepScheduler" and sc["prediction_type"] == "flow_prediction", sc
+    assert sc["algorithm_type"] == "dpmsolver++" and sc["solver_order"] == 2 and sc["use_flow_sigmas"], sc
+    m.update(steps=20, flow_shift=sc["flow_shift"], num_train_timesteps=sc["num_train_timesteps"])
     (out / "model.json").write_text(json.dumps(m, indent=1) + "\n")
 
 

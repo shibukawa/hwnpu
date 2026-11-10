@@ -16,37 +16,28 @@ import (
 // with diffusers' fp32 (M1, design.md 16.145). It is one row: about 11 M multiply-adds a step.
 const TimeFile = "time.safetensors"
 
-// timeEmbed is the time embedding (and Sana-Sprint's guidance embedding) of the DiT on the host.
+// timeEmbed is the time embedding of the DiT on the host.
 type timeEmbed struct {
 	E                int
 	t1, t1b, t2, t2b []float32 // the timestep's TimestepEmbedding
-	g1, g1b, g2, g2b []float32 // the guidance's (Sana-Sprint), nil otherwise
 	lin, linb        []float32 // the modulations (6 E, E)
 }
 
 // timeTensors are the names of the time embedding's weights in the checkpoint ("dit."), in the
 // order timeEmbed holds them.
-func timeTensors(guidance bool) []string {
+func timeTensors() []string {
 	p := "dit.time_embed.emb.timestep_embedder."
 	names := []string{}
-	if guidance {
-		p = "dit.time_embed.timestep_embedder."
-	}
 	for _, n := range []string{"linear_1.weight", "linear_1.bias", "linear_2.weight", "linear_2.bias"} {
 		names = append(names, p+n)
-	}
-	if guidance {
-		for _, n := range []string{"linear_1.weight", "linear_1.bias", "linear_2.weight", "linear_2.bias"} {
-			names = append(names, "dit.time_embed.guidance_embedder."+n)
-		}
 	}
 	return append(names, "dit.time_embed.linear.weight", "dit.time_embed.linear.bias")
 }
 
 // writeTimeFile writes the time embedding's weights to path as float32 under their names.
-func writeTimeFile(path string, w *mil.Weights, guidance bool) error {
+func writeTimeFile(path string, w *mil.Weights) error {
 	var outs []safetensors.Out
-	for _, n := range timeTensors(guidance) {
+	for _, n := range timeTensors() {
 		v, shape, err := w.Get(n)
 		if err != nil {
 			return err
@@ -60,14 +51,14 @@ func writeTimeFile(path string, w *mil.Weights, guidance bool) error {
 	return safetensors.Write(path, outs, nil)
 }
 
-func readTimeFile(path string, guidance bool, E int) (*timeEmbed, error) {
+func readTimeFile(path string, E int) (*timeEmbed, error) {
 	f, err := safetensors.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	var vs [][]float32
-	for _, n := range timeTensors(guidance) {
+	for _, n := range timeTensors() {
 		v, err := f.Float32(n)
 		if err != nil {
 			return nil, err
@@ -75,9 +66,6 @@ func readTimeFile(path string, guidance bool, E int) (*timeEmbed, error) {
 		vs = append(vs, v)
 	}
 	e := &timeEmbed{E: E, t1: vs[0], t1b: vs[1], t2: vs[2], t2b: vs[3]}
-	if guidance {
-		e.g1, e.g1b, e.g2, e.g2b = vs[4], vs[5], vs[6], vs[7]
-	}
 	e.lin, e.linb = vs[len(vs)-2], vs[len(vs)-1]
 	if len(e.t1) != E*256 || len(e.lin) != 6*E*E {
 		return nil, fmt.Errorf("sana: %s holds weights of %d and %d for a hidden width of %d", path, len(e.t1), len(e.lin), E)
@@ -108,15 +96,8 @@ func silu(x []float32) []float32 {
 	return out
 }
 
-// embed is the six modulations (6 E) and the embedded timestep (E) of the sinusoids tproj and
-// gproj (nil without guidance).
-func (e *timeEmbed) embed(tproj, gproj []float32) (t6, emb []float32) {
+// embed is the six modulations (6 E) and the embedded timestep (E) of the sinusoid tproj.
+func (e *timeEmbed) embed(tproj []float32) (t6, emb []float32) {
 	emb = linear(e.t2, e.t2b, silu(linear(e.t1, e.t1b, tproj)))
-	if e.g1 != nil {
-		g := linear(e.g2, e.g2b, silu(linear(e.g1, e.g1b, gproj)))
-		for i := range emb {
-			emb[i] += g[i]
-		}
-	}
 	return linear(e.lin, e.linb, silu(emb)), emb
 }

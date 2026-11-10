@@ -33,8 +33,9 @@ type ironEngine struct {
 	dir                      string
 	dit                      DitConfig
 	ditIn, ditBlocks, ditOut *iron.Graph // open while the steps run
-	cond                     []byte      // bf16, for the DiT when it opens
+	ctxSet                   []float32   // the conditioning dit_blocks holds
 	vae                      *VAE
+	checkpoint               string // the diffusion model of the export (dit_blocks' meta)
 }
 
 func meta[T any](m *iron.GraphManifest) (T, error) {
@@ -65,6 +66,13 @@ func openIron(ctx context.Context, dev *hwnpu.Device, dir string) (*ironEngine, 
 	if dc, err = meta[DitConfig](ms["dit_blocks"]); err != nil {
 		return fail(err)
 	}
+	var ck struct {
+		Checkpoint string `json:"checkpoint"`
+	}
+	if err := json.Unmarshal(ms["dit_blocks"].Meta, &ck); err != nil {
+		return fail(err)
+	}
+	e.checkpoint = ck.Checkpoint
 	if tc, err = meta[TextConfig](ms["text"]); err != nil {
 		return fail(err)
 	}
@@ -99,9 +107,6 @@ func (e *ironEngine) openDiT(ctx context.Context) error {
 	if e.ditBlocks != nil {
 		return nil
 	}
-	if e.cond == nil {
-		return errors.New("anima: the DiT runs without conditioning (setCond)")
-	}
 	for _, x := range []struct {
 		g    **iron.Graph
 		name string
@@ -113,10 +118,7 @@ func (e *ironEngine) openDiT(ctx context.Context) error {
 		}
 		*x.g = g
 	}
-	if err := e.ditBlocks.SetInput("ctx", e.cond); err != nil {
-		e.closeDiT()
-		return err
-	}
+	e.ctxSet = nil
 	return nil
 }
 
@@ -159,16 +161,10 @@ func (e *ironEngine) text(ctx context.Context, qx, tx []float32, nq, nt int) ([]
 	return fromBF16s(out), nil // a copy: the graph's memory goes with Close
 }
 
-func (e *ironEngine) setCond(cond []float32) error {
-	e.cond = toBF16(cond)
-	if e.ditBlocks != nil {
-		return e.ditBlocks.SetInput("ctx", e.cond)
-	}
-	return nil
-}
-
-// velocity runs dit_in, each group of dit_blocks and dit_out, loading the DiT on the first call.
-func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32) ([]float32, error) {
+// velocity runs dit_in once (it does not read the conditioning), each group of dit_blocks on
+// each conditioning before the next group's weights are read, and dit_out on each, loading the
+// DiT on the first call.
+func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32, conds [][]float32) ([][]float32, error) {
 	if err := e.openDiT(ctx); err != nil {
 		return nil, err
 	}
@@ -204,31 +200,49 @@ func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32) ([]
 			return nil, err
 		}
 	}
+	xs := make([][]byte, len(conds))
+	for k := range xs {
+		xs[k] = append([]byte(nil), x...) // Output's bytes are the graph's, which the next run writes
+	}
 	for g := 0; g < e.ditBlocks.Variants(); g++ {
 		if err := e.ditBlocks.Use(g); err != nil {
 			return nil, err
 		}
-		if err := e.ditBlocks.SetInput("x", x); err != nil {
+		for k, cond := range conds {
+			if len(e.ctxSet) == 0 || &e.ctxSet[0] != &cond[0] {
+				if err := e.ditBlocks.SetInput("ctx", toBF16(cond)); err != nil {
+					return nil, err
+				}
+				e.ctxSet = cond
+			}
+			if err := e.ditBlocks.SetInput("x", xs[k]); err != nil {
+				return nil, err
+			}
+			if err := e.ditBlocks.Run(ctx, nil); err != nil {
+				return nil, fmt.Errorf("blocks %d..%d: %w", g*e.dit.Group, (g+1)*e.dit.Group-1, err)
+			}
+			out, err := e.ditBlocks.Output(e.ditBlocks.Outputs()[0].Name)
+			if err != nil {
+				return nil, err
+			}
+			xs[k] = append(xs[k][:0], out...)
+		}
+	}
+	vs := make([][]float32, len(conds))
+	for k := range xs {
+		if err := e.ditOut.SetInput("x", xs[k]); err != nil {
 			return nil, err
 		}
-		if err := e.ditBlocks.Run(ctx, nil); err != nil {
-			return nil, fmt.Errorf("blocks %d..%d: %w", g*e.dit.Group, (g+1)*e.dit.Group-1, err)
-		}
-		if x, err = e.ditBlocks.Output(e.ditBlocks.Outputs()[0].Name); err != nil {
+		if err := e.ditOut.Run(ctx, nil); err != nil {
 			return nil, err
 		}
+		v, err := e.ditOut.Output(e.ditOut.Outputs()[0].Name)
+		if err != nil {
+			return nil, err
+		}
+		vs[k] = fromBF16s(v)
 	}
-	if err := e.ditOut.SetInput("x", x); err != nil {
-		return nil, err
-	}
-	if err := e.ditOut.Run(ctx, nil); err != nil {
-		return nil, err
-	}
-	v, err := e.ditOut.Output(e.ditOut.Outputs()[0].Name)
-	if err != nil {
-		return nil, err
-	}
-	return fromBF16s(v), nil
+	return vs, nil
 }
 
 func (e *ironEngine) hasVAE() bool { return e.vae != nil }

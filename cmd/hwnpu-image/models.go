@@ -104,8 +104,12 @@ func amdExport(m chat.Model, tool string) (string, error) {
 			return d, nil
 		}
 	}
-	return "", fmt.Errorf("AMD's NPU runs exports of %s, and %s has no %s.amd-npu2 for %s: download %s and run\n  python %s ~/models/%s ~/models/%s.amd-npu2\n(see docs/amd-npu-models.md)",
-		tool, root, name, m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), name)
+	file := ""
+	if m.File != "" {
+		file = " --dit " + m.File
+	}
+	return "", fmt.Errorf("AMD's NPU runs exports of %s, and %s has no %s.amd-npu2 for %s: download %s and run\n  python %s ~/models/%s ~/models/%s.amd-npu2%s\n(see docs/amd-npu-models.md)",
+		tool, root, name, m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), name, file)
 }
 
 // freeName is the first of base, "stem (2).ext", "stem (3).ext", ... that does not exist and

@@ -147,7 +147,7 @@ func (e *ironEngine) openDiT(ctx context.Context, resident bool) error {
 
 // velocity runs the DiT on patches (tokens x latent, channel last) once for each conditioning.
 // Each group of blocks runs every call before the next group's weights are read.
-func (e *ironEngine) velocity(ctx context.Context, patches, tproj, gproj []float32, conds []Cond) ([][]float32, error) {
+func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32, conds []Cond) ([][]float32, error) {
 	c := e.dit
 	n, L := c.Tokens(), c.Latent
 	padded := make([]float32, c.NTok()*L) // zeros past the tokens
@@ -158,11 +158,6 @@ func (e *ironEngine) velocity(ctx context.Context, patches, tproj, gproj []float
 	}
 	if err := g.SetInput("tproj", toBF16(tproj)); err != nil {
 		return nil, err
-	}
-	if c.Guidance {
-		if err := g.SetInput("gproj", toBF16(gproj)); err != nil {
-			return nil, err
-		}
 	}
 	if err := g.Run(ctx, nil); err != nil {
 		return nil, err

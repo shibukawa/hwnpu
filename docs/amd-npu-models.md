@@ -200,7 +200,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | A5b | LFM3 の多モーダル | LFM3-VL、LFM3-Audio、LFM3-Omni の塔が Hugging Face の出力と一致し (乱数の重み)、本物の重みで画像と音声に答える (済み、16.67) |
 | A6 | 4 ビット | q4nx の一般化とその精度 (KL) の測定 |
 | A7 | 画像生成 (Anima) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、11 節) |
-| A8 | 画像生成 (Sana、Sana-Sprint) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、14 節) |
+| A8 | 画像生成 (Sana。Sana-Sprint は 16.148 で外した) | テキスト、DiT、VAE が NPU で動き、diffusers の CPU の参照と同じ絵になる (済み、14 節) |
 | A9 | 深度推定 (Depth Anything 3) | ViT とヘッドが NPU で動き、公式の CPU の深度と一致する (済み、15 節) |
 
 ## 10. 開発環境 (root なし)
@@ -223,7 +223,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | DiT | Cosmos-Predict2 2B (28 ブロック、hidden 2048、16 ヘッド)。adaLN-zero の自己注意 (3 軸の RoPE)、テキストへの交差注意、GELU の MLP | `dit_in` (パッチの埋め込みと時刻の埋め込み)、`dit_blocks` (4 ブロック。1 つの ELF に重みのバンクが 7 組。ブロックの射影は 8 ビット (q8)、13 節)、`dit_out` |
 | VAE | Qwen-Image の VAE (Wan 2.1 のもの) の復号器を 1 フレームで。因果 3D 畳み込みは時間方向の最後のタップだけ、時間方向の拡大は通らない | `vae/s0`〜`s9` (段ごとに 1 つ) |
 
-ホスト (`internal/imagegen/anima`) がするのは、テンソルの計算でないもの: トークン化 (Qwen3 の BPE と T5 の Unigram、どちらも Go)、埋め込みの行の取り出し、時刻の正弦波、2 × 2 のパッチの並べ替え、flow matching の Euler のステップ (`x += (σ' − σ) v`)、ノイズ、PNG。Anima-Turbo は CFG 1 なので、負のプロンプトも 2 回目の DiT もない。
+ホスト (`internal/imagegen/anima`) がするのは、テンソルの計算でないもの: トークン化 (Qwen3 の BPE と T5 の Unigram、どちらも Go)、埋め込みの行の取り出し、時刻の正弦波、2 × 2 のパッチの並べ替え、flow matching の Euler のステップ (`x += (σ' − σ) v`)、ノイズ、PNG。Anima-Turbo は CFG 1 なので、負のプロンプトも 2 回目の DiT もない。Anima-Aesthetic と Anima-Base は CFG (11.6)。
 
 ### 11.2 決めたこと
 
@@ -273,10 +273,32 @@ DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`
 ### 11.5 残り
 
 - 速さ: 注意は 16.147 で 2.5 倍に (1 枚 70 → 44 秒)。残る律速は P·V のコア (bf16) と softmax の exp2 の多項式、DiT の射影と MLP の GEMM
-- CFG (負のプロンプト) は 1 ステップに DiT が 2 回で、Turbo でない Anima (30〜50 ステップ、CFG 4〜5) は 1 枚 10 分を超える見込み
 - ComfyUI のノードからの呼び出し (同じグラフを持つサーバー) は未実装
 - DiT をホストステップで分けると止まる原因
 - 512 × 512 は書き出せる (`--size 512`、2026-11-08): 1 枚 14 秒 (16.147 の前は 20 秒)、固定の最大 1111 MiB
+
+### 11.6 Turbo でない Anima: Anima-Aesthetic と Anima-Base (CFG、2026-11-10)
+
+`split_files/diffusion_models/` の `anima-aesthetic-v1.1.safetensors` (質の高い絵で調整したもの) と `anima-base-v1.0.safetensors` (調整前の基盤モデル) は、Turbo と同じ構造で同じ形の重み (685 本、bf16)。Base だけ名前の頭が `model.diffusion_model.` でなく `net.` (Cosmos の学習のままの名前) なので、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` は名前から頭を見分ける。グラフはそのまま、書き出しは `--dit` で選ぶ:
+
+```bash
+python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-npu2 --size 1024 --dit anima-aesthetic-v1.1.safetensors   # 2.5 分
+go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low quality"   # -m anima:base は Base
+```
+
+- **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。既定はモデルカードのとおり 30 ステップ、CFG 4。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1
+- **重みの組ごとに 2 回**: DiT は 4 ブロックの組の重みを 1 つのバンクに読み直して回す (12 節) ので、組ごとに条件と無条件を続けて走らせ、読み直しを 1 ステップ 7 回のまま にする (Sana と同じ)。`dit_in` (時刻とパッチの埋め込み) は条件によらないので 1 回。2 回を別々に回したときより 512 × 512 で 1 ステップ 3.0 → 2.7 秒、潜在はビット単位で同じ
+- **空の負のプロンプト**: diffusers は空のプロンプトを、マスクした Qwen3 のトークン 1 つで走らせる (隠れ状態は 0、T5 のトークンは `</s>` だけ)。アダプタの交差注意はバイアスがないので 0 の源では何も足さず、1 行の自己注意はその行の値。残りは重みだけで決まる 1 行の計算なので、書き出しが `text/empty_cond.bin` (float32 の 1 行) に持つ (テキストのグラフは Qwen3 のトークンを全部マスクできない)。`iron_anima.py` の `empty_cond` と Go の `anima.EmptyCond` は diffusers の値とコサイン 1.0000。この節より前の書き出しにはないので、空の負のプロンプトでは書き出し直しを求める
+
+結果 (Ryzen AI 9 365、Anima-Aesthetic v1.1、DiT の重み q8):
+
+| | 1 枚 | ノイズ除去 | 電力量 (パッケージ全体) | 固定の最大 |
+|---|---|---|---|---|
+| Anima-Turbo、1024²、8 ステップ | 44 秒 | 4.7 秒/ステップ | 715 J | 2409 MiB |
+| **Anima-Aesthetic、1024²、30 ステップ、CFG 4** | **4 分 40 秒** | 9.1 秒/ステップ | **4.8 kJ** | 2409 MiB |
+| Anima-Aesthetic、512²、30 ステップ、CFG 4 | 1 分 23 秒 | 2.7 秒/ステップ | | |
+
+diffusers の fp32 (CPU、13.5 分) と同じノイズから (512²、30 ステップ、CFG 4、空の負のプロンプト): 最後の潜在のコサイン **0.993**、画像の PSNR **27.4 dB**。Turbo の 1024² の 8 ステップ (0.947、17.6 dB、16.147) より近く、30 ステップと CFG で NPU の誤差 (bfp16 の QK^T、q8 の重み) が積み上がることはなかった。絵は構図、顔、背景まで同じ。Anima-Base (512²、`net.` の名前) も NPU で描けることを確かめた
 
 ## 12. メモリ: 固定されるバッファを減らす (2026-11-05)
 
@@ -604,7 +626,9 @@ NPU (Ryzen AI 9 365、`ironlm`、HF の bf16 のロジットとのコサイン�
 - 速さ、メモリは変わらない (デコード 5.7〜5.8 tok/s、書き出し 23 GB)
 
 
-## 14. 画像生成: Sana と Sana-Sprint (`hwnpu-image`、2026-11-09)
+## 14. 画像生成: Sana (`hwnpu-image`、2026-11-09)
+
+2026-11-10: Sana-Sprint (0.6B、1.6B) は、絵の質が Sana よりかなり低いので外した (design.md 16.148)。この節の Sana-Sprint の記録は経緯として残す。`iron_sana.py` と `hwnpu-image` は Sana-Sprint のチェックポイントと書き出しを断る。
 
 NVlabs の Sana (Efficient-Large-Model の `*_diffusers`、Apache-2.0。テキストエンコーダの Gemma 2 2B は Gemma の利用規約) を AMD の NPU だけで動かす。Anima より軽い枠: DC-AE の潜在は 32 チャネルで辺が 32 分の 1 なので、1024 × 1024 でもトークンは 1024 個 (Anima は 4096)、自己注意は ReLU の線形注意でトークン数の 2 乗にならない。Sana-Sprint は SCM で 1〜4 ステップに蒸留され、ガイダンスの強さを埋め込みで受ける (CFG なし)。
 
@@ -653,8 +677,8 @@ NVlabs の Sana (Efficient-Large-Model の `*_diffusers`、Apache-2.0。テキ�
 Efficient-Large-Model の diffusers のリポジトリをそのまま置く (`transformer/`、`vae/`、`text_encoder/`、`tokenizer/`、`scheduler/`)。Gemma 2 (`text_encoder/`、`tokenizer/`) はどのリポジトリも同じファイルなので、1 つを落としてほかはシンボリックリンクでよい。
 
 ```bash
-python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px ~/models/sana-sprint-0.6b-1024.amd-npu2
-go run ./cmd/hwnpu-image generate --model ~/models/sana-sprint-0.6b-1024.amd-npu2 "..." --seed 1 -o out.png
+python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/models/sana-600m-1024.amd-npu2
+go run ./cmd/hwnpu-image generate --model ~/models/sana-600m-1024.amd-npu2 "..." --seed 1 -o out.png
 ```
 
 `--only` で部品を選べる (`text caption dit_in dit_blocks dit_out vae`)。`--text-format q8` / `bf16` は Gemma 2 を q8 (固定 2.3 GiB) / bf16 (4.6 GiB) に、`--no-prefix` は指示文も毎回計算する前の形 (512 行) に (14.6)、`--dit-precision high` は DiT の射影を HIGH に (Sana 600M で絵は同じ、2.5 倍遅い)。確かめ方は Anima と同じ: `--check` と `go run ./tools/amd/irongraph DIR`、全体は `tools/ref/ref_sana.py` の `noise` を raw の float32 にして `--noise` に (Sana-Sprint はステップ + 1 個)、`--latents` で最後の潜在、`--dump DIR` で各ステップの DiT の出力とキャプション。

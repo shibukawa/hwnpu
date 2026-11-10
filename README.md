@@ -167,16 +167,23 @@ Ryzen AI 9 365 で、デコードは 1 秒に 5.5〜6 トークン、プロン�
 
 ### 画像生成 (Anima)
 
-`go run ./cmd/hwnpu-image` は、Anima (circlestone-labs/Anima、Cosmos-Predict2 2B の DiT と Qwen3-0.6B、Qwen-Image の VAE) でプロンプトから絵を描きます。テキストの符号化、DiT のステップ、VAE の復号はすべて NPU の上の IRON のグラフで、ホストはトークン化、埋め込みの行の取り出し、パッチの並べ替え、Euler のステップ、PNG を受け持ちます。書き出しは画像の大きさごとで、hwnpu の `tools/amd/iron_anima.py` が作ります (Anima-Turbo、1024 × 1024 で 4.0 GB。DiT のブロックの重みは 8 ビット)。
+`go run ./cmd/hwnpu-image` は、Anima (circlestone-labs/Anima、Cosmos-Predict2 2B の DiT と Qwen3-0.6B、Qwen-Image の VAE) でプロンプトから絵を描きます。テキストの符号化、DiT のステップ、VAE の復号はすべて NPU の上の IRON のグラフで、ホストはトークン化、埋め込みの行の取り出し、パッチの並べ替え、Euler のステップ、PNG を受け持ちます。書き出しは画像の大きさと拡散モデルごとで、hwnpu の `tools/amd/iron_anima.py` が作ります (1024 × 1024 で 4.0 GB。DiT のブロックの重みは 8 ビット)。
 
 ```bash
 python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2 --size 1024
 go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"
 ```
 
-`--model` (`-m`) を省くと Anima で、AMD の NPU では `~/models/anima-turbo-1024.amd-npu2` を使います。モデルは models.yaml の名前、ファミリー (`anima`、`sana`、`sana:1.6b`、`sana-full`)、書き出しのディレクトリのどれでも指定できます。ファミリーだけのときは、マシンのメモリで大きさを選びます (`sana` は 16 GB 以上で Sana-Sprint 1.6B、それ未満で 0.6B)。メモリは `-m sana:8g` (`8G`、`8GB`、表の列にない `12g` も可) のように明示でき、そのメモリのマシンで選ばれるものになります。`hwnpu-image list` (`list image`、`list depth`、`list face-detect`) が、モデル、AMD の書き出しの有無、ファミリーと用途がメモリごとに選ぶものを表で出します。`-m` に合うものがないときも同じ表を出します。名前で選んだモデルは `~/models/NAME.amd-npu2` (小文字、`-1024` 付きも) を探します。`-o` を省くと、今のディレクトリの `image.png` (あれば `image (2).png`、`image (3).png`、…) に書き、OS のビューア (macOS は open、Windows は関連付け、Linux は xdg-open) で開きます。
+Anima の拡散モデルは 3 つです。`-m` を省くと Anima-Turbo (`anima-turbo`) で、8 ステップ、CFG なしで描きます。`-m anima` は Anima-Aesthetic (質の高い絵で調整したもの)、`-m anima:base` は Anima-Base (調整前の基盤モデル。画風がいちばん素直で幅があり、LoRA はこれで学習します) です。この 2 つはモデルカードのとおり 30 ステップと CFG 4 (`--steps` は 30〜50、`--guidance` は 4〜5) で、1 ステップに DiT を 2 回走らせるので Turbo の約 6.5 倍の時間がかかります。負のプロンプトは `--negative` です (既定は空。モデルカードの勧めは `"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"` で、Aesthetic では score タグを入れない)。書き出しは `--dit` で拡散モデルを選びます。
 
-Ryzen AI 9 365 で、1024 × 1024 の 1 枚が 8 ステップで約 70 秒、NPU に固定されるメモリは最大 3.4 GiB です (読み込み 4 秒、テキスト 0.5 秒、DiT 1 ステップ 7.2 秒、VAE 7 秒)。`~/models/Anima` の置き方と、精度の測定は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 11 節にあります。
+```bash
+python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-npu2 --size 1024 --dit anima-aesthetic-v1.1.safetensors
+go run ./cmd/hwnpu-image generate -m anima "masterpiece, best quality, safe, 1girl, cherry blossoms" --negative "worst quality, low quality"
+```
+
+AMD の NPU では、`-m` の名前で `~/models/NAME.amd-npu2` (`anima-turbo-1024.amd-npu2`、`anima-aesthetic-1024.amd-npu2` など) を使います。モデルは models.yaml の名前、ファミリー (`anima-turbo`、`anima`、`anima:base`、`sana`、`sana:1.6b`)、書き出しのディレクトリのどれでも指定できます。ファミリーだけのときは、マシンのメモリで大きさを選びます (`sana` は 16 GB 以上で SANA 1.5 1.6B、それ未満で Sana 600M)。メモリは `-m sana:8g` (`8G`、`8GB`、表の列にない `12g` も可) のように明示でき、そのメモリのマシンで選ばれるものになります。`hwnpu-image list` (`list image`、`list depth`、`list face-detect`) が、モデル、AMD の書き出しの有無、ファミリーと用途がメモリごとに選ぶものを表で出します。`-m` に合うものがないときも同じ表を出します。名前で選んだモデルは `~/models/NAME.amd-npu2` (小文字、`-1024` 付きも) を探します。`-o` を省くと、今のディレクトリの `image.png` (あれば `image (2).png`、`image (3).png`、…) に書き、OS のビューア (macOS は open、Windows は関連付け、Linux は xdg-open) で開きます。
+
+Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Anima-Turbo の 8 ステップで約 44 秒 (DiT 1 ステップ 4.6 秒)、Anima-Aesthetic の 30 ステップ (CFG 4) で約 4 分 40 秒 (1 ステップ 9.1 秒、1 枚 4.8 kJ。Turbo は 715 J) です。NPU に固定されるメモリは最大 2.4 GiB (VAE の段) で、どのモデルでも同じです。`~/models/Anima` の置き方と、精度の測定は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 11 節にあります。
 
 Mac の Neural Engine と Intel の NPU では、hwnpu-chat と同じく、初回の起動でチェックポイントを Hugging Face から落とし (約 5.4 GB)、Go だけで Core ML のパッケージか OpenVINO IR に書き出します (Python は要りません)。置き場所は hwnpu-chat と同じユーザーのキャッシュディレクトリの `hwnpu/models/Anima` (`--dir`) で、書き出しは画像の大きさ (`--size`) と重みの形式ごとです。初回は読み込みのときに NPU 向けのコンパイルもあり、1024 × 1024 で数分かかります。
 
@@ -186,18 +193,18 @@ go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1gi
 
 M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。記録は [docs/design.md](docs/design.md) の 16.85 にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
 
-### 画像生成 (Sana、Sana-Sprint)
+### 画像生成 (Sana)
 
-AMD の NPU では、`hwnpu-image generate -m sana` で NVlabs の Sana (線形注意の DiT、Gemma 2 2B、DC-AE の VAE) の書き出しも渡せます。Anima より軽い枠で、Sana-Sprint は 2 ステップで描きます (ガイダンスは埋め込み)。Sana は 20 ステップと CFG です。書き出しは `tools/amd/iron_sana.py` が、Efficient-Large-Model の diffusers のリポジトリから作ります。
+AMD の NPU では、`hwnpu-image generate -m sana` で NVlabs の Sana (線形注意の DiT、Gemma 2 2B、DC-AE の VAE) の書き出しも渡せます。Sana 600M と SANA 1.5 1.6B で、20 ステップと CFG で描きます。書き出しは `tools/amd/iron_sana.py` が、Efficient-Large-Model の diffusers のリポジトリから作ります。2 ステップに蒸留した Sana-Sprint は、絵の質が Sana よりかなり低いので外しました ([docs/design.md](docs/design.md) の 16.148)。
 
 ```bash
-python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px ~/models/sana-sprint-0.6b-1024.amd-npu2
+python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/models/sana-600m-1024.amd-npu2
 go run ./cmd/hwnpu-image generate -m sana:0.6b "a watercolor painting of a red fox in a snowy birch forest"
 ```
 
-Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana-Sprint 0.6B で約 20 秒 (テキスト 3 秒、DiT 2 ステップ 2.8 秒、VAE 13 秒)、Sana 600M で 70〜80 秒、Sana-Sprint 1.6B で 32 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。`-m sana` は Sana-Sprint (メモリで 0.6B か 1.6B)、`-m sana-full` は 20 ステップの Sana 600M か SANA 1.5 1.6B です。Sana は `--negative` で負のプロンプトを付けられます。正方形以外は Sana のビンの大きさ (`iron_sana.py --width 1152 --height 896` など) で書き出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
+Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana 600M で約 60 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。`-m sana` はメモリで Sana 600M か SANA 1.5 1.6B を選びます。`--negative` で負のプロンプトを付けられます。正方形以外は Sana のビンの大きさ (`iron_sana.py --width 1152 --height 896` など) で書き出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
 
-Apple の Neural Engine では、`hwnpu-image generate -m sana "..."` などで 4 つの Sana (Sana-Sprint 0.6B / 1.6B、Sana 600M、SANA 1.5 1.6B) が動きます。Anima と同じく、初回にチェックポイント (約 7.7 GB) を `--dir/Sana` に落として Core ML のパッケージに変換し (10 秒)、各プログラムを Neural Engine 用にコンパイルします (初回は全体で約 8 分半)。M1 (16 GB) で、キャッシュのある 2 回目以降は 1 枚約 3〜4 分、プロセスのメモリは最大 3.3 GB です。計算は 10 秒ほどで、残りはプログラムの読み込みです。diffusers の fp32 と同じノイズからの潜在のコサインは Sana-Sprint 0.6B で 0.986 (画像の PSNR 26 dB)、1.6B で 0.990、Sana 600M で 0.998、SANA 1.5 で 0.984 です。Gemma 2 は int8、DiT と VAE は fp16 で、時刻の埋め込みだけホストで計算します。記録は [docs/design.md](docs/design.md) の 16.145 にあります。手で書き出すときは `hwnpu-image convert ~/models/Sana_Sprint_0.6B_1024px_diffusers -m OUT` (`--text` で Gemma 2 の置き場所) を使います。
+Apple の Neural Engine では、`hwnpu-image generate -m sana "..."` などで Sana 600M と SANA 1.5 1.6B が動きます。Anima と同じく、初回にチェックポイントを `--dir/Sana` に落として Core ML のパッケージに変換し (10 秒)、各プログラムを Neural Engine 用にコンパイルします (初回は全体で約 8 分半)。M1 (16 GB) で、キャッシュのある 2 回目以降は 1 枚約 3〜4 分、プロセスのメモリは最大 3.3 GB です。diffusers の fp32 と同じノイズからの潜在のコサインは Sana 600M で 0.998、SANA 1.5 で 0.984 です。Gemma 2 は int8、DiT と VAE は fp16 で、時刻の埋め込みだけホストで計算します。記録は [docs/design.md](docs/design.md) の 16.145 にあります。手で書き出すときは `hwnpu-image convert ~/models/Sana_600M_1024px_diffusers -m OUT` (`--text` で Gemma 2 の置き場所) を使います。
 
 ### 深度推定 (Depth Anything 3)
 
@@ -228,17 +235,6 @@ python tools/amd/iron_yunet.py ~/models/face_detection_yunet ~/models/yunet.amd-
 go run ./cmd/hwnpu-image face-detect --draw photo.jpg               # AMD: the CPU (ONNX Runtime)
 go run ./cmd/hwnpu-image face-detect --device npu photo.jpg          # AMD's NPU: the export above
 ```
-
-### 画像生成 (Sana、Sana-Sprint)
-
-AMD の NPU では、`hwnpu-image -model` に NVlabs の Sana (線形注意の DiT、Gemma 2 2B、DC-AE の VAE) の書き出しも渡せます。Anima より軽い枠で、Sana-Sprint は 2 ステップで描きます (ガイダンスは埋め込み)。Sana は 20 ステップと CFG です。書き出しは `tools/amd/iron_sana.py` が、Efficient-Large-Model の diffusers のリポジトリから作ります。
-
-```bash
-python tools/amd/iron_sana.py ~/models/Sana_Sprint_0.6B_1024px ~/models/sana-sprint-0.6b-1024.amd-npu2
-go run ./cmd/hwnpu-image -model ~/models/sana-sprint-0.6b-1024.amd-npu2 -prompt "a watercolor painting of a red fox in a snowy birch forest" -o fox.png
-```
-
-Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana-Sprint 0.6B で約 24 秒 (テキスト 3 秒、DiT 2 ステップ 2.8 秒、VAE 15 秒)、Sana 600M で 70〜80 秒、Sana-Sprint 1.6B で 32 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
 
 ## Apple での注意
 

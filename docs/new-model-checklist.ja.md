@@ -342,6 +342,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 | `bytes` | ダウンロードの大きさ | 準備で落とすファイルの合計。HF の API (`/api/models/OWNER/NAME/tree/main?recursive=true` の `lfs.size`) から取る | GB は 10⁹。`du -h` は GiB を出す。Sana-Sprint 0.6B は 7.7 GB を 7.2、Anima は 5.9 GB を 5.5 と書いていた |
 | `memory` | 動いている間の最大 | 1 回の生成 (読み込みから終わりまで) の間、0.1 秒ごとに測る。AMD はプロセスの `/dev/accel/accel0` の写像の `Size` (`smaps`) に、同じ時刻の RSS を足す。Mac は、1 回呼んでからの `phys_footprint` と `mem.NPUWired` | 読み込みの直後ではなく、全体の最大を取る。Sana は、Gemma 2 のテキストの段 (2.3 GiB) と VAE (先読みで 2 段が同時に載り、2.4 GiB) が最大になる。DiT は 0.37 GiB しか使わない |
 | `machine` | ファミリーがこのモデルを勧める、機械のメモリの下限 | `memory` に、OS とほかのアプリの分の余裕を見る | 同じ大きさのモデルどうしで揃える。DA3METRIC-LARGE (1.4 GB) は 8 で、DA3MONO-LARGE (同じ 1.4 GB) は 24 になっていて揃っていない |
+| `file` | 1 つのリポジトリに複数のモデルがあるとき、そのモデルのチェックポイントのファイル | リポジトリのファイルの一覧 | Anima は `split_files/diffusion_models/` に Turbo、Aesthetic、Base が並ぶ (`anima-turbo-v1.1.safetensors` など)。名前の頭が違うことがある (Base は `net.`) |
 | `device` | ベンダーごとの置き場所 (npu か cpu) | NPU と CPU (onnxruntime、1 スレッド) で、1 回あたりのエネルギー (mJ) を比べる | 小さなモデルは、AMD では NPU が負ける (YuNet は NPU 137 mJ、CPU 10 mJ。演算の切り替えに 1 回約 250 µs かかる)。1 つのベンダーの結果をほかに当てはめない |
 
 - **NPU ごとに変わる値**: ダウンロードの大きさ、メモリ、置き場所は NPU によって変わる

@@ -78,7 +78,7 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	// the parts in the order they are written, for "[3/19]"
 	total := 3 + mil.DitLayers/o.Group + len(mil.VaeStages(o.Width, o.Height))
 	written := 0
-	m := &ProgramManifest{Backend: o.Backend, Width: o.Width, Height: o.Height,
+	m := &ProgramManifest{Backend: o.Backend, Width: o.Width, Height: o.Height, Dit: o.Dit,
 		Formats: map[string]string{"text": o.TextFormat, "dit": o.DitFormat, "vae": "fp16"}}
 	write := func(kind string, p *mil.Part, format string) (string, error) {
 		name := p.Name + ext
@@ -131,8 +131,8 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	return WriteProgramManifest(out, m)
 }
 
-// writeTextFiles writes text/: the tokenizers and the embedding tables (bf16) the host reads
-// the prompt's rows from.
+// writeTextFiles writes text/: the tokenizers, the embedding tables (bf16) the host reads the
+// prompt's rows from and the empty prompt's conditioning (EmptyCondFile).
 func writeTextFiles(root, out string, w *mil.Weights) error {
 	for _, c := range []struct{ src, dst string }{
 		{filepath.Join(root, "diffusers", "tokenizer", "tokenizer.json"), "qwen_tokenizer.json"},
@@ -162,5 +162,9 @@ func writeTextFiles(root, out string, w *mil.Weights) error {
 			return err
 		}
 	}
-	return nil
+	row, err := EmptyCond(w)
+	if err != nil {
+		return err
+	}
+	return WriteEmptyCond(filepath.Join(out, "text"), row)
 }

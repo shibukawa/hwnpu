@@ -183,7 +183,7 @@ func (e *progEngine) openDiT(ctx context.Context, _ bool) error {
 		return nil
 	}
 	var err error
-	if e.time, err = readTimeFile(filepath.Join(e.dir, e.m.Time), e.m.Dit.Guidance, e.m.Dit.Hidden); err != nil {
+	if e.time, err = readTimeFile(filepath.Join(e.dir, e.m.Time), e.m.Dit.Hidden); err != nil {
 		return err
 	}
 	for _, name := range e.m.Blocks {
@@ -221,11 +221,8 @@ func cbias(n int) []float32 {
 	return b
 }
 
-func (e *progEngine) velocity(ctx context.Context, patches, tproj, gproj []float32, conds []Cond) ([][]float32, error) {
-	if !e.m.Dit.Guidance {
-		gproj = nil
-	}
-	t6, emb := e.time.embed(tproj, gproj)
+func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32, conds []Cond) ([][]float32, error) {
+	t6, emb := e.time.embed(tproj)
 	var err error
 	res := make([][]float32, len(conds))
 	for k, cd := range conds {

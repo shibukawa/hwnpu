@@ -283,51 +283,51 @@ models:
   # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's NPU Anima and Sana, on
   # Intel's Anima, are downloaded and converted on their first run
   Anima-Turbo:
-    family: anima
-    tag: turbo
+    family: anima-turbo
+    tag: v1.1
     kind: image
     from: hf:circlestone-labs/Anima
+    file: anima-turbo-v1.1.safetensors
     machine: 8
     # AMD: the NPU's 2.4 GiB peak (the VAE's stages) and the process's 0.9 GiB, measured
     memory: {amd: 3.5, apple: 4.1}
     bytes: 5.9e9
     about: "Anima-Turbo (Cosmos-Predict2 2B, Qwen3-0.6B): 1024x1024 in 8 steps, Danbooru tags and natural language"
-  Sana-Sprint-0.6B:
-    family: sana
-    tag: 0.6b
+  Anima-Aesthetic:
+    family: anima
+    tag: aesthetic
     kind: image
-    from: hf:Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers
+    from: hf:circlestone-labs/Anima
+    file: anima-aesthetic-v1.1.safetensors
     machine: 8
-    memory: {amd: 2.3, apple: 3.3}
-    bytes: 7.7e9
-    about: "NVlabs' Sana-Sprint 0.6B (Gemma 2 2B reads the prompt): 1024x1024 in 2 steps, English prompts; AMD's NPU and Apple's Neural Engine"
-  Sana-Sprint-1.6B:
-    family: sana
-    tag: 1.6b
-    kind: image
-    from: hf:Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers
-    machine: 16
-    memory: {amd: 2.3, apple: 3.1}
-    bytes: 9.7e9
-    about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's and Apple's NPU"
+    memory: {amd: 3.5, apple: 4.1}
+    bytes: 5.9e9
+    about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 30 steps with classifier-free guidance (--guidance, --negative), about 6.5 times Anima-Turbo's time"
+  Anima-Base:
+    like: Anima-Aesthetic
+    tag: base
+    file: anima-base-v1.0.safetensors
+    # named as anima:base: the family alone picks Anima-Aesthetic
+    machine: 0
+    about: "Anima-Base v1.0: the pretrained model, the most varied and plain in style (the one LoRAs are trained on), 30 steps with classifier-free guidance"
   Sana-600M:
-    family: sana-full
+    family: sana
     tag: 0.6b
     kind: image
     from: hf:Efficient-Large-Model/Sana_600M_1024px_diffusers
     machine: 8
     memory: {amd: 2.3, apple: 3.3}
     bytes: 8.9e9
-    about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's and Apple's NPU"
+    about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
   SANA1.5-1.6B:
-    family: sana-full
+    family: sana
     tag: 1.6b
     kind: image
     from: hf:Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers
     machine: 16
     memory: {amd: 2.3, apple: 3.1}
     bytes: 9.7e9
-    about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's and Apple's NPU"
+    about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
   # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
   # converted when a picture first takes it

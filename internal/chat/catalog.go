@@ -76,6 +76,9 @@ type Model struct {
 	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
 	// NPU has no form of.
 	AMDExport []string
+	// File is the model's checkpoint file in a repository that holds several models (Anima's
+	// diffusion models: anima-turbo-v1.1.safetensors), "" when the repository is the one model.
+	File string
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that

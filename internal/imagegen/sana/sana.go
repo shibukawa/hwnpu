@@ -1,5 +1,5 @@
-// Package sana runs Sana and Sana-Sprint (NVlabs, Efficient-Large-Model/*_diffusers), image
-// models, on an NPU: on AMD's, the graphs tools/amd/iron_sana.py exports; on Apple's Neural
+// Package sana runs Sana (NVlabs, Efficient-Large-Model/*_diffusers: Sana 600M, SANA 1.5 1.6B),
+// image models, on an NPU: on AMD's, the graphs tools/amd/iron_sana.py exports; on Apple's Neural
 // Engine, the Core ML packages of internal/imagegen/sana/mil (Convert, Prepare). The host does
 // what is not a tensor computation.
 //
@@ -11,13 +11,13 @@
 //  2. the text graph (Gemma 2): the last hidden state, of which Sana keeps the first row and
 //     the last 299 of the padded prompt (the pad rows masked), and the caption graph (the DiT's
 //     caption projection) on those 300 rows;
-//  3. from Gaussian noise, the steps: Sana-Sprint's SCM steps (1 to 4, the guidance scale
-//     embedded, a new noise each step) or Sana's flow DPM-Solver++ with classifier-free
-//     guidance (the DiT on the prompt and on the empty prompt: its one row, Gemma's first
-//     row, is the prompt's own, so the second call is the first row alone);
+//  3. from Gaussian noise, the steps: flow DPM-Solver++ with classifier-free guidance (the DiT
+//     on the prompt and on the empty prompt: its one row, Gemma's first row, is the prompt's
+//     own, so the second call is the first row alone);
 //  4. DC-AE's decoder on the latents.
 //
-// The export is for one image size (1024 x 1024 by default).
+// The export is for one image size (1024 x 1024 by default). Sana-Sprint (the guidance
+// embedded, SCM steps) is not supported: its pictures were far below Sana's (design.md 16.148).
 package sana
 
 import (
@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/imagegen/sana/mil"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
@@ -58,18 +59,16 @@ const MaxSequence = 300
 
 // DitConfig is the DiT's shape (iron_sana.DitConfig).
 type DitConfig struct {
-	Size          int     `json:"size"` // exports before width and height
-	Width         int     `json:"width"`
-	Height        int     `json:"height"`
-	Hidden        int     `json:"hidden"`
-	Layers        int     `json:"layers"`
-	Latent        int     `json:"latent"`
-	Guidance      bool    `json:"guidance"`
-	GuidanceScale float64 `json:"guidance_scale"`
-	TextRows      int     `json:"text_rows"`
-	Group         int     `json:"group"`
-	VAEScale      int     `json:"vae_scale"`
-	Caption       int     `json:"caption"`
+	Size     int `json:"size"` // exports before width and height
+	Width    int `json:"width"`
+	Height   int `json:"height"`
+	Hidden   int `json:"hidden"`
+	Layers   int `json:"layers"`
+	Latent   int `json:"latent"`
+	TextRows int `json:"text_rows"`
+	Group    int `json:"group"`
+	VAEScale int `json:"vae_scale"`
+	Caption  int `json:"caption"`
 }
 
 // Grid is the tokens down (and across).
@@ -116,14 +115,12 @@ type TextConfig struct {
 
 // Model is model.json of an export: which Sana it is and its scheduler's settings.
 type Model struct {
-	Name     string  `json:"name"`
+	Name string `json:"name"`
+	// Sprint marks an export of Sana-Sprint, which Open refuses (mil.ErrSprint).
 	Sprint   bool    `json:"sprint"`
 	Steps    int     `json:"steps"`    // the default
 	Guidance float64 `json:"guidance"` // the default
-	// Sana-Sprint (SCMScheduler)
-	SigmaData float64 `json:"sigma_data"`
-	MaxT      float64 `json:"max_timesteps"`
-	// Sana (DPMSolverMultistepScheduler)
+	// DPMSolverMultistepScheduler's
 	FlowShift  float64 `json:"flow_shift"`
 	TrainSteps int     `json:"num_train_timesteps"`
 }
@@ -188,9 +185,8 @@ type engine interface {
 	// openDiT loads the DiT for velocity; resident is ResidentDiT.
 	openDiT(ctx context.Context, resident bool) error
 	// velocity runs the DiT on the latents channel last (tokens x latent) at the timestep's
-	// sinusoid tproj (and the guidance's, gproj), once for each conditioning: the outputs,
-	// channel last.
-	velocity(ctx context.Context, patches, tproj, gproj []float32, conds []Cond) ([][]float32, error)
+	// sinusoid tproj, once for each conditioning: the outputs, channel last.
+	velocity(ctx context.Context, patches, tproj []float32, conds []Cond) ([][]float32, error)
 	// closeDiT releases the DiT.
 	closeDiT() error
 	// decode runs the VAE on the latents (latent, rows, columns), telling stage (when not
@@ -230,6 +226,9 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 	}
 	if err := json.Unmarshal(b, &p.Model); err != nil {
 		return fail(err)
+	}
+	if p.Model.Sprint {
+		return nil, mil.ErrSprint
 	}
 	if IsProgramExport(dir) {
 		var e *progEngine
@@ -485,36 +484,25 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 	return conds, nil
 }
 
-// Noise returns n Gaussian latents for seed, each (latent, rows, columns) channel major.
-func (p *Pipeline) Noise(seed uint64, n int) [][]float32 {
+// Noise returns Gaussian latents for seed, (latent, rows, columns) channel major.
+func (p *Pipeline) Noise(seed uint64) []float32 {
 	r := rand.New(rand.NewPCG(seed, 0x73616e61))
-	out := make([][]float32, n)
-	for k := range out {
-		out[k] = make([]float32, p.Dit.Latent*p.Dit.Tokens())
-		for i := range out[k] {
-			out[k][i] = float32(r.NormFloat64())
-		}
+	out := make([]float32, p.Dit.Latent*p.Dit.Tokens())
+	for i := range out {
+		out[i] = float32(r.NormFloat64())
 	}
 	return out
-}
-
-// NoiseCount is how many noises Generate takes for steps: Sana-Sprint draws a new one each step.
-func (p *Pipeline) NoiseCount(steps int) int {
-	if p.Model.Sprint {
-		return steps + 1
-	}
-	return 1
 }
 
 // StepFunc is told that step i (of n) took d.
 type StepFunc func(i, n int, d time.Duration)
 
-// Generate runs the steps from the noises (NoiseCount of them) under cond: the latents.
-// guidance is the guidance scale (Sana-Sprint: embedded; Sana: classifier-free, the DiT twice
-// a step, on neg (EncodeNegative) and on cond).
-func (p *Pipeline) Generate(ctx context.Context, cond, neg Cond, noises [][]float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
-	if len(noises) < p.NoiseCount(steps) {
-		return nil, fmt.Errorf("sana: %d noises for %d steps", len(noises), steps)
+// Generate runs the steps from the noise under cond: the latents. guidance is the
+// classifier-free guidance's scale: the DiT twice a step, on neg (EncodeNegative; the empty
+// prompt's when it is the zero Cond) and on cond.
+func (p *Pipeline) Generate(ctx context.Context, cond, neg Cond, noise []float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
+	if len(noise) != p.Dit.Latent*p.Dit.Tokens() {
+		return nil, fmt.Errorf("sana: %d noise values for latents of %d", len(noise), p.Dit.Latent*p.Dit.Tokens())
 	}
 	if cond.ctx == nil {
 		return nil, errors.New("sana: the DiT runs without a prompt (Encode)")
@@ -522,56 +510,10 @@ func (p *Pipeline) Generate(ctx context.Context, cond, neg Cond, noises [][]floa
 	if err := p.eng.openDiT(ctx, p.ResidentDiT); err != nil {
 		return nil, err
 	}
-	if p.Model.Sprint {
-		return p.sprint(ctx, cond, noises, steps, guidance, step)
-	}
 	if neg.ctx == nil {
 		neg = Cond{ctx: cond.ctx, Rows: 1}
 	}
-	return p.dpm(ctx, cond, neg, noises[0], steps, guidance, step)
-}
-
-func (p *Pipeline) sprint(ctx context.Context, cond Cond, noises [][]float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
-	m := p.Model
-	sd := float32(m.SigmaData)
-	T := SCMTimesteps(steps, m.MaxT)
-	x := make([]float32, len(noises[0]))
-	for i := range x {
-		x[i] = noises[0][i] * sd
-	}
-	gproj := TimestepSinusoid(guidance*p.Dit.GuidanceScale, 256)
-	in := make([]float32, len(x))
-	var x0 []float32
-	for i := 0; i < steps; i++ {
-		t0 := time.Now()
-		s, t := T[i], T[i+1]
-		scale, st := SCMInput(s)
-		for j := range x {
-			in[j] = x[j] / sd * float32(scale)
-		}
-		outs, err := p.velocity(ctx, in, TimestepSinusoid(st, 256), gproj, []Cond{cond})
-		if err != nil {
-			return nil, fmt.Errorf("sana: step %d: %w", i, err)
-		}
-		out := outs[0]
-		p.dump(fmt.Sprintf("out%d_0.bin", i), out)
-		a, b := float32(1-2*st), float32(1-2*st+2*st*st)
-		cs, ss := float32(math.Cos(s)), float32(math.Sin(s))
-		ct, stt := float32(math.Cos(t)), float32(math.Sin(t))
-		x0 = make([]float32, len(x))
-		for j := range x {
-			pred := (a*in[j] + b*out[j]) / float32(scale) * sd
-			x0[j] = cs*x[j] - ss*pred
-			x[j] = ct*x0[j] + stt*noises[i+1][j]*sd
-		}
-		if step != nil {
-			step(i, steps, time.Since(t0))
-		}
-	}
-	for j := range x0 {
-		x0[j] /= sd
-	}
-	return x0, nil
+	return p.dpm(ctx, cond, neg, noise, steps, guidance, step)
 }
 
 func (p *Pipeline) dpm(ctx context.Context, cond, neg Cond, noise []float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
@@ -580,7 +522,7 @@ func (p *Pipeline) dpm(ctx context.Context, cond, neg Cond, noise []float32, ste
 	x := append([]float32(nil), noise...)
 	for i := 0; i < steps; i++ {
 		t0 := time.Now()
-		outs, err := p.velocity(ctx, x, TimestepSinusoid(d.Timesteps[i], 256), nil, []Cond{neg, cond})
+		outs, err := p.velocity(ctx, x, TimestepSinusoid(d.Timesteps[i], 256), []Cond{neg, cond})
 		if err != nil {
 			return nil, fmt.Errorf("sana: step %d: %w", i, err)
 		}
@@ -613,9 +555,8 @@ func TimestepSinusoid(t float64, dim int) []float32 {
 }
 
 // velocity runs the DiT on the latents x (latent, rows, columns) at the timestep's sinusoid
-// tproj (and the guidance's, gproj), once for each conditioning in conds: the outputs, the
-// latents' layout.
-func (p *Pipeline) velocity(ctx context.Context, x []float32, tproj, gproj []float32, conds []Cond) ([][]float32, error) {
+// tproj, once for each conditioning in conds: the outputs, the latents' layout.
+func (p *Pipeline) velocity(ctx context.Context, x []float32, tproj []float32, conds []Cond) ([][]float32, error) {
 	n, L := p.Dit.Tokens(), p.Dit.Latent
 	patches := make([]float32, n*L)
 	for ch := 0; ch < L; ch++ {
@@ -623,7 +564,7 @@ func (p *Pipeline) velocity(ctx context.Context, x []float32, tproj, gproj []flo
 			patches[t*L+ch] = x[ch*n+t]
 		}
 	}
-	vs, err := p.eng.velocity(ctx, patches, tproj, gproj, conds)
+	vs, err := p.eng.velocity(ctx, patches, tproj, conds)
 	if err != nil {
 		return nil, err
 	}

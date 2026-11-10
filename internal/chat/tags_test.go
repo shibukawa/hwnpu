@@ -116,9 +116,9 @@ func TestRouteByFamily(t *testing.T) {
 // only MODEL.md's columns.
 func TestImageMemoryTags(t *testing.T) {
 	for name, want := range map[string]string{
-		"sana:8g": "Sana-Sprint-0.6B", "sana:8G": "Sana-Sprint-0.6B", "sana:8GB": "Sana-Sprint-0.6B", "sana:8 G": "Sana-Sprint-0.6B",
-		"sana:12g": "Sana-Sprint-0.6B", "sana:4g": "Sana-Sprint-0.6B", "sana:16G": "Sana-Sprint-1.6B", "sana:100g": "Sana-Sprint-1.6B",
-		"sana-full:8g": "Sana-600M", "moge:20g": "moge-2-vitb", "image:8g": "Anima-Turbo", "depth:64g": "DA3MONO-LARGE", "depth:8g": "DA3-SMALL", "depth:16g": "DA3-BASE",
+		"sana:8g": "Sana-600M", "sana:8G": "Sana-600M", "sana:8GB": "Sana-600M", "sana:8 G": "Sana-600M",
+		"sana:12g": "Sana-600M", "sana:4g": "Sana-600M", "sana:16G": "SANA1.5-1.6B", "sana:100g": "SANA1.5-1.6B",
+		"anima": "Anima-Aesthetic", "anima:64g": "Anima-Aesthetic", "anima:base": "Anima-Base", "anima-turbo": "Anima-Turbo", "moge:20g": "moge-2-vitb", "image:8g": "Anima-Turbo", "depth:64g": "DA3MONO-LARGE", "depth:8g": "DA3-SMALL", "depth:16g": "DA3-BASE",
 	} {
 		m, _, ok, err := Pick(name, 59)
 		if !ok || err != nil || m.Name != want {

@@ -99,7 +99,7 @@ func generate(t *testing.T, e *progEngine, steps int) {
 		t.Fatal(err)
 	}
 	for i := 0; i < steps; i++ {
-		if _, err := e.velocity(ctx, nil, []float32{0}); err != nil {
+		if _, err := e.velocity(ctx, nil, []float32{0}, [][]float32{nil}); err != nil {
 			t.Fatal(err)
 		}
 	}

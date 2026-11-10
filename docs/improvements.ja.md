@@ -610,7 +610,7 @@ Apple / Intel (`hwnpu-image convert`):
 - AMD の固定メモリの残り (amd-npu-models.md 12 節):
   - VAE をタイルに分ける (DiT を 1 つの bank にした (16.106) ので、今は VAE の段が固定の最大)
 - Anima の残り:
-  - CFG (負のプロンプト)。Turbo でない Anima は 1 枚 10 分を超える見込み
+  - CFG (負のプロンプト) は 16.148 で済み (Anima-Aesthetic と Anima-Base、AMD の 1024² で 1 枚 4 分 40 秒)。Core ML と OpenVINO での実機の確認は未
   - ComfyUI のノードからの呼び出し
 - Qwen3.6-35B-A3B のプロンプトの残り (16.116、256 の塊 2.6 s): 専門家のコマンド (B、1.49 s) はカーネルの計算で決まる (重みを流すだけなら 1 層 8.4 + 4.4 ms のところ 19〜23 + 15〜17 ms。スカラーの MAC で mmul を使っていない。8 行ずつの bf16 の mmul は試して速くならなかった)、GDN と注意のコマンド (A、約 0.7 s。`GatedDeltaRule` が各行を 16 回受ける)、ホストの経路の選択 (1 層約 2.8 ms、ほとんどが x の 16 MB の写し)
 

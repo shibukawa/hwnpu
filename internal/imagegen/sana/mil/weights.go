@@ -1,4 +1,4 @@
-// Package mil describes Sana and Sana-Sprint (NVlabs, Efficient-Large-Model/*_diffusers) as MIL
+// Package mil describes Sana (NVlabs, Efficient-Large-Model/*_diffusers) as MIL
 // programs, which hwnpu writes as Core ML packages for Apple's Neural Engine (llm.WritePart): the
 // parts of tools/amd/iron_sana.py's graphs, Gemma 2 2B in groups of layers, the caption
 // projection, the DiT's time embedding, groups of blocks and final layer, and DC-AE's decoder in
