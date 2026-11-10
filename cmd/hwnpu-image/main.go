@@ -9,7 +9,7 @@
 //
 // --model takes a name, a family or a use of models.yaml (image, anima, sana, sana:1.6b,
 // sana-full; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo): a family alone picks for the machine's
-// memory, as hwnpu-chat's -use. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
+// memory, as hwnpu-chat's --model. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
 // value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
 // image.png here (image (2).png, ... when taken) and shows it in the system's viewer.
 //
