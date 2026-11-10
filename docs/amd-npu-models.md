@@ -669,7 +669,7 @@ go run ./cmd/hwnpu-image generate --model ~/models/sana-sprint-0.6b-1024.amd-npu
 
 - VAE は実行だけで約 10 秒 (Sana-Sprint の時間の 6 割)。EfficientViT の段の深さ方向の畳み込みは要素ごとの演算 (5 × 5 で 49 回) が主
 - 書き出しは 1 つの大きさ。大きさごとに書き出す (`hwnpu-image generate --model` はその書き出しの大きさで描く)
-- Mac は Sana-Sprint 0.6B を Core ML で (design.md 16.138)。Intel (OpenVINO) は未対応
+- Mac は 4 つの Sana を Core ML で (design.md 16.138)。Intel (OpenVINO) は未対応
 - Sana 1600M (1.0) は Sana 600M と同じ VAE 1.0、1.6B の DiT で、同じ手順で書き出せるはず (確かめていない)
 
 ## 15. 深度推定: Depth Anything 3 (`hwnpu-image depth`、2026-11-09)

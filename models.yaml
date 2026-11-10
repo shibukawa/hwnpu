@@ -266,8 +266,7 @@ models:
 
   # hwnpu-image generate: on AMD's NPU the export ~/models/NAME.amd-npu2 (or NAME-1024.amd-npu2,
   # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's NPU Anima and Sana, on
-  # Intel's Anima, are downloaded and converted on their first run (Sana: only Sana-Sprint 0.6B
-  # checked on Apple's)
+  # Intel's Anima, are downloaded and converted on their first run
   Anima-Turbo:
     family: anima
     tag: turbo
@@ -293,9 +292,9 @@ models:
     kind: image
     from: hf:Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers
     machine: 16
-    memory: 2.9
+    memory: {amd: 2.9, apple: 3.1}
     bytes: 9.7e9
-    about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's NPU"
+    about: "Sana-Sprint 1.6B: nearer the prompt than 0.6B, 1.6 times as long; AMD's and Apple's NPU"
   Sana-600M:
     family: sana-full
     tag: 0.6b
@@ -304,7 +303,7 @@ models:
     machine: 8
     memory: 2.9
     bytes: 8.9e9
-    about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's NPU"
+    about: "Sana 600M: 20 steps with classifier-free guidance (--guidance, --negative); AMD's and Apple's NPU"
   SANA1.5-1.6B:
     family: sana-full
     tag: 1.6b
@@ -313,9 +312,10 @@ models:
     machine: 16
     memory: 2.9
     bytes: 9.7e9
-    about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's NPU"
-  # hwnpu-image depth: the export ~/models/NAME.amd-npu2 (lower case) of tools/amd/iron_da3.py or
-  # iron_moge.py, AMD's NPU
+    about: "SANA 1.5 1.6B: 20 steps with classifier-free guidance; AMD's and Apple's NPU"
+  # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
+  # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
+  # converted when a picture first takes it
   DA3MONO-LARGE:
     family: da3
     tag: mono-large

@@ -134,7 +134,8 @@ hwnpu-chat and hwnpu-agent pick from this table themselves: the name under each 
 | MoGe-2 ViT-S / B / L (AMD) | Metric depth, points, normals (hwnpu-image depth) | 1.9 GB (S), 2.1 GB (B), 2.6 GB (L) | none | measured |
 | Depth Anything 3 Mono / Metric Large, Small, Base (AMD) | Depth estimation (hwnpu-image depth) | 1.4 GB (Large), 0.75 GB (Base), 0.5 GB (Small) | none | measured |
 | Sana-Sprint 0.6B, Sana 600M, Sana-Sprint 1.6B, SANA 1.5 1.6B (1024 × 1024, AMD) | Image generation | 2.9 GB (the NPU's 2.4 GB peak, in the text graph with Gemma 2 in 8 bits and in the VAE with two stages loaded at once, plus the process's 0.45 GB; the DiT a group at a time, 0.4 GB) | none | measured |
-| Sana-Sprint 0.6B (1024 × 1024, Apple) | Image generation | 3.3 GB process (Gemma 2 int8 in 5 programs, loaded while it runs; the DiT fp16; the VAE a stage at a time) | none | measured (M1) |
+| Sana-Sprint 0.6B / 1.6B, Sana 600M, SANA 1.5 1.6B (1024 × 1024, Apple) | Image generation | 3.0–3.3 GB process (Gemma 2 int8 in 5 programs, loaded while it runs; the DiT fp16; the VAE a stage at a time) | none | measured (M1) |
+| DA3-SMALL, DA3MONO-LARGE, MoGe-2 ViT-S (Apple) | Depth estimation (hwnpu-image depth) | the programs of one size (fp16), converted for each aspect on first use | none | not measured |
 | Anima-Turbo (1024 × 1024) | Image generation | 1.9 GB (the VAE's largest stage; the DiT reads its blocks' weights a group at a time) | none | measured |
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |

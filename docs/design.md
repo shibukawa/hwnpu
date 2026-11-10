@@ -3627,7 +3627,7 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - 効果音の WAV は音楽と同じ 48 kHz ステレオ (モノラルを両方のチャンネルに)、利得 1 (音楽の WAV は参照に合わせて 0.5)。終わりの `--fade` は、音楽は既定 2 秒、効果音は付けたときだけ
 - 配置が分からないのは NPU から外れたのとは別に扱う: 8 GB 向けの文の符号器が、コンパイルし直した直後に `NOT all on the NPU` で止まり、次の起動では全部 NPU だった。hwnpuinfo でも全部 NPU。Neural Engine がコンパイルで忙しい間に MLComputePlan が 2 分で終わらず (`placement.Verified` が false)、外れたことにされていたとみる。`runner` に `Placement()` (分からないときは理由、外れたときは演算の内訳) を足し、分からないプログラムは「placement not known, going on」と出して続ける。音楽の `checkNPU` も同じ
 
-### 16.138 Apple: Sana と Sana-Sprint を Neural Engine で (`internal/imagegen/sana/mil`、Core ML) — 2026-11-10
+### 16.138 Apple: Sana と Sana-Sprint、深度推定 (DA3、MoGe-2)、顔検出 (YuNet) を Neural Engine で (Core ML) — 2026-11-10
 
 - AMD の 16.119 と同じ部品を MIL で書き、Core ML のパッケージにする (`hwnpu-image generate -m Sana-Sprint-0.6B`、`hwnpu-image convert REPO`)。Gemma 2 2B を 6 層ずつ 5 本 (int8、1 本 約 470 MB)、caption、DiT 4 ブロックずつ 7 本 (fp16)、final、VAE 13 段。時刻の埋め込みだけホスト (下)。初回に `sana.Prepare` がチェックポイントを `--dir/Sana` に落として変換し (10 秒)、Gemma 2 (`gemma-2-2b-it/`) と その書き出しは全 Sana で共有する (別の Sana の書き出しからハードリンク)
 - パイプライン (`internal/imagegen/sana`) はエンジンを 2 つに: IRON のグラフ (`ironEngine`、前の処理を移しただけ。bf16 → float32 → bf16 は可逆なので値は同じ) と Core ML (`progEngine`)。Anima の MIL の共通部分は `internal/imagegen/milpart` に移した (Anima の DiT の群、final、時刻、VAE の段の CPU インタプリタの出力が前とビット単位で同じ)
@@ -3641,4 +3641,23 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - `MLComputePlan` の待ちを 2 分 → 10 分 (`internal/backend/coreml`)。ほかのプロセスが Neural Engine でコンパイルしている間、Gemma 2 の 1 本 (単独で 13 秒) が 2 分を超えて読み込みが失敗した
 - 結果 (M1 16 GB、Sana-Sprint 0.6B、1024 × 1024、2 ステップ、diffusers の fp32 と同じノイズ): caption のコサイン 0.9997、DiT 1 ステップ目 0.991 (参照の caption を与えると 0.9998)、潜在 0.9855、画像の PSNR 26.0 dB (AMD は 0.997、31.2 dB)。絵は構図も細部も同じ。手直しの前は潜在 0.972、22.7 dB
 - 時間 (キャッシュあり、ほかのセッションが同時に Neural Engine を使っている状態): 全体 3 分 9 秒、プロセスの最大 3.3 GB。計算は Gemma 2 約 5 秒、DiT 1 ステップ 0.4〜0.5 秒、VAE 6 秒で、残りはプログラムの読み込み (DiT 約 57 秒、VAE の段 0、1 で約 90 秒)。何もない状態から (変換とコンパイル) 8 分 29 秒、2 回目 3 分 53 秒、同じシードの PNG はビット単位で同じ
-- 残り: 読み込みを減らす (段をまとめる、DiT を残す、VAE の次の段を先に読む)。Sana-Sprint 1.6B、Sana 600M (q と k の正規化なし、鍵から先頭の鍵を引く道)、SANA 1.5 は Mac で確かめていない (1.6B の DiT は fp16 で 1 本 640 MB)。Intel (OpenVINO IR) は未対応。変換し直すとパッケージのバイトが変わる (`internal/mlpackage` の Manifest.json の UUID など) ので、コンパイルのキャッシュが効かず全部コンパイルし直しになる (全モデル共通)
+- 4 つの Sana の確かめ (diffusers の fp32 と同じノイズから。潜在のコサイン、画像の PSNR、括弧は AMD の 14.3):
+
+| | ステップ | 潜在 | PSNR |
+|---|---|---|---|
+| Sana-Sprint 0.6B | 2 | 0.986 (0.997) | 26.0 dB (31.2) |
+| Sana-Sprint 1.6B | 2 | 0.990 (0.983) | 27.0 dB (25.2) |
+| Sana 600M | 20 (CFG 4.5) | 0.998 (0.963) | 32.7 dB (20.0) |
+| SANA 1.5 1.6B | 20 (CFG 4.5) | 0.984 (0.984) | 22.6 dB (21.4) |
+
+  - Sana-Sprint 1.6B: GLUMBConv の深さ方向の畳み込みが 5600 チャネルで CPU に置かれた。4096 チャネルずつに分ける (`maxDepthwise`)
+  - Sana 600M: scheduler_config.json に Python の `-Infinity` があり Go の json が読めない。読む前に 0 に置き換える (読む項目ではない)
+  - SANA 1.5 (q と k の正規化 + CFG): 条件なし (caption の先頭の行だけ) が 1 ステップ目でコサイン 0.970、20 ステップで潜在 0.62 に崩れた。CPU インタプリタは fp32 でも fp16 の丸めでも 1.00000 で、Neural Engine の計算の問題。caption だけを CPU にすると直り、caption の先頭の行 (Gemma の `<bos>`) が Neural Engine で NaN になっていた。fp32 で caption の 2 つ目の線形の出力がその行で 3.8 万 (fp16 の上限 6.5 万の手前、ほかの Sana も 1.8〜2.8 万)。直後の RMS 正規化は尺度によらないので、線形の重みとバイアスを 1/64 に。条件なしが 1.00000、潜在 0.984。注意の softmax を最大を引いて書き直すことも試したが変わらなかった (戻した)。書き出しは v4
+  - `MLComputePlan` がときどき "Failed to construct compute plan, internal failure" を返し、次の試み (や次のプロセス) では作れる。1 回だけやり直す
+- 深度推定と顔検出も Apple の Neural Engine で (名前で、初回に取得と変換):
+  - Depth Anything 3 (`internal/vision/depth/mil`): ViT (DINOv2。any-view のカメラトークン、2 次元の RoPE、q と k の正規化、cat_token) と DPT / DualDPT の頭。転置畳み込み (核 = ストライド) は 1 x 1 と `pixel_shuffle` (milcpu に足した)、双線形の拡大は補間の行列の積。大きさ (iron_da3.py の 9 つ) は初めて使うときに変換 (数秒)。CPU インタプリタの fp32 で公式のモジュールと深度のコサイン 1.000000 (DA3MONO-LARGE は空の画素を除いて。空は DA3 と同じく遠い値で埋める)。Neural Engine で DA3-SMALL 1.000000 (ViT 0.07〜0.19 秒、頭 0.02 秒)、DA3MONO-LARGE 0.999993、空 0.9998 (ViT 0.43 秒、頭 0.06 秒)。DA3METRIC-LARGE と DA3-BASE は同じコードで走らせていない。複数視点 (`--views`) は AMD のみ
+  - MoGe-2 (`internal/vision/moge/mil`): ViT は depth/mil のもの (重みの接頭辞を Config に)、層の投影の和とクラストークンの行に尺度の頭の logit。首と 3 つの頭は 1 つのプログラム (端を複製する詰めは `pad` の replicate と詰めなしの畳み込み。Core ML は `pad_type` valid でも `pad` を求める)。model.pt は `internal/torchzip`、model_config の整数の型は問わない。ViT-S で公式と頭の出力のコサイン 0.99993 以上、尺度の logit 1.6885 (公式 1.6853)、1 枚 0.5 秒。ViT-B と L は走らせていない
+  - YuNet (`internal/vision/face`): ONNX のグラフを丸ごと `internal/onnx` の Program に (12 の出力を 1 つに)。640 × 480 で 1 枚 3.4 ms、OpenCV の FaceDetectorYN と箱と目印が 0.3 画素以内。`internal/onnx`: 数字で始まる初期値の名前 (YuNet の 420 など) を Core ML が受けないので `w_` を前に。Apple の既定は Neural Engine (models.yaml の device は AMD だけ cpu)
+- Gemma 2 の重みの形式 (3 つのプロンプト、画像まで): int8 0.985〜0.998 / 23〜31 dB、lut8 0.963〜0.992、lut6 (一様) 0.915〜0.966 / 18〜22 dB (構図は同じで細部と文字が変わる)、lut4 0.80〜0.83 (別の絵)。k-means の表は lut6 で悪化 (0.86〜0.92)、lut4 でわずかに良い (0.83〜0.91)。温まっていれば Gemma 2 はどの形式も約 2 秒で、速さは変わらない。既定は int8 のまま (`ConvertOptions.TextQuant` で量子化器を選べる)
+- hwnpu-image は Neural Engine のロック (16.132、`llm.OpenDevice`) を取る (Sana、depth、face-detect)。配置は厳密に (確かめられないときに理由を出す)
+- 残り: 読み込み (キャッシュがあっても DiT と VAE の最初の段で 1〜2 分)、Intel (OpenVINO IR) の Sana と深度、複数視点の DA3、変換し直すとパッケージのバイトが変わってコンパイルのキャッシュが効かないこと (`internal/mlpackage` の UUID、全モデル共通)
