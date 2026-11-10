@@ -72,6 +72,10 @@ type Model struct {
 	// the NPU's vendor (MemoryFor).
 	Memory   float64
 	MemoryBy PerVendor
+	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU when its
+	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
+	// NPU has no form of.
+	AMDExport []string
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that

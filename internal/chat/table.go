@@ -146,7 +146,10 @@ type modelEntry struct {
 	// Device is where the model runs by the vendor of the machine's NPU (amd: cpu); a file
 	// over another changes the vendors it names and keeps the others.
 	Device *map[string]string `yaml:"device"`
-	About  *string            `yaml:"about"`
+	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU: its model
+	// and options (lfm3 --max-seq-len 12288 --q4), run when the export is not here.
+	AMDExport *string `yaml:"amd_export"`
+	About     *string `yaml:"about"`
 	Like   string             `yaml:"like"`
 	Remove bool               `yaml:"remove"`
 }
@@ -506,7 +509,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out := *base
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device})
+		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport})
 	return &out, nil
 }
 
@@ -520,6 +523,7 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 		return *p
 	}
 	m.Family, m.Tag, m.About, m.Arch = get(e.Family), get(e.Tag), get(e.About), get(e.Arch)
+	m.AMDExport = strings.Fields(get(e.AMDExport))
 	m.Kind = Kind(get(e.Kind))
 	if _, ok := kinds[m.Kind]; !ok {
 		var ks []string

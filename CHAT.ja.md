@@ -61,6 +61,7 @@ go run ./cmd/hwnpu-chat -m translate "桜が満開です。"
 - モデルはまず考えて (`<think>`、薄い色で表示) から答えます。`/think off` で考えずに答え、`/think on` で戻ります
 - `/reset` で会話を消し、`/exit` か Ctrl-D で終わります。Ctrl-C は答えを止めます。行末の `\` で次の行に続けます
 - 入力はシェルのように編集できます: ↑ ↓ (Ctrl-P、Ctrl-N) で前に打ったものを出し (`~/Library/Caches/hwnpu/history/chat` に 1000 件まで残り、次の起動でも出せる)、← → と Home、End、Ctrl-A、Ctrl-E、Ctrl-K、Ctrl-U、Ctrl-W が使えます。日本語は 2 桁幅で扱います。貼り付けた複数行はそのまま 1 つの入力になり、改行は `⏎` と表示します。入力中の Ctrl-C は行を消し、空の行での Ctrl-C は終了です
+- AMD の NPU では、書き出しが手元になければ、ほかの NPU と同じく初回に用意します: チェックポイントを落とし、IRON で書き出します (`tools/amd/iron_export_lm.py`、書き出し方は models.yaml の `amd_export`)。行き先は `~/models/NAME.amd-npu2-q4`。IRON の環境 (INSTALL_AMD.ja.md の 2) が要り、`HWNPU_IRON_ENV` (仮想環境か、それを整えるスクリプト) か PATH の python3 で探します。なければ、何を入れればよいかを言って止まります。`hwnpu-chat list` の RUNS FROM の列に、モデルごとの書き出しが出ます
 - 読み込みの表示や説明は灰色で出し、Neural Engine に全部載ったら `all on the NPU` を緑、載らなかったら `NOT all on the NPU` を赤で出します。端末でないときと `NO_COLOR` を設定したときは色を付けません (`hwnpu-chat agent` も同じ)。AMD の NPU でも書き出しの部分 (`decode`、`prompt`) ごとに `all on the NPU` と出し、ホストで動くステップ (Qwen3.6 のプロンプトの専門家) があれば `NOT all on the NPU` と出します
 - 答えは標準出力に、それ以外 (読み込み、考えた内容、統計) は標準エラー出力に出すので、`hwnpu-chat "..." > answer.txt` なら答えだけが残ります
 - 会話の 2 回目以降は、前回からの差分だけを読みます

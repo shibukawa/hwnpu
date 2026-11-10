@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -259,26 +260,39 @@ func oneLine(s string) string {
 }
 
 // ListCmd is "hwnpu-chat list": the chat and embedding models of the definitions (models.yaml),
-// whether they are downloaded, and what the features mean.
+// whether they are downloaded (on AMD's NPU: the export each runs from), and what the features
+// mean.
 type ListCmd struct {
 	Dir    string `type:"path" placeholder:"DIR" help:"Where the models are kept (default: hwnpu/models in the user cache directory)."`
 	Models string `placeholder:"FILES" help:"${models_usage}."`
 }
 
 // Run lists the models.
-func (c *ListCmd) Run() error {
+func (c *ListCmd) Run(ctx context.Context) error {
 	lf := loadFlags{Dir: c.Dir, Models: c.Models}
 	if err := lf.prepare(); err != nil {
 		return err
 	}
-	showModels(os.Stdout, lf.Dir)
+	showModels(os.Stdout, lf.Dir, chat.OnlyAMD(ctx, ""))
 	return nil
 }
 
 // showModels writes the models of the definitions hwnpu-chat runs (chat.List) and what the
 // features mean.
-func showModels(w io.Writer, dir string) {
-	chat.List(w, dir, chat.KindChat, chat.KindEmbed)
+func showModels(w io.Writer, dir string, amd bool) {
+	if amd { // what runs: the export here, or the one the first run makes
+		chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
+			if d := chat.FindAMDExport(m); d != "" {
+				return shortPath(d)
+			}
+			if len(m.AMDExport) > 0 {
+				return "exported on first run"
+			}
+			return "- (no form for AMD)"
+		}, chat.KindChat, chat.KindEmbed)
+	} else {
+		chat.List(w, dir, chat.KindChat, chat.KindEmbed)
+	}
 	fmt.Fprintln(w, "\nFeatures:")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, f := range chat.Features {
@@ -289,6 +303,16 @@ func showModels(w io.Writer, dir string) {
 		"tag (plamo3translate:2b, chat:e4b, chat:16g), or a Hugging Face repository OWNER/NAME of a supported\n"+
 		"architecture; serve takes several, comma separated. The default is LFM3-1.7B (search: embedding).\n"+
 		"Requests may name a model the same ways. Only the model picked is downloaded.\n"+
-		"On AMD's NPU a name runs ~/models/NAME.amd-npu2-q4 or NAME.amd-npu2 (tools/amd/iron_export_lm.py).\n"+
-		"Models are kept in %s.\n", dir)
+		"On AMD's NPU a name runs its export, ~/models/NAME.amd-npu2-q4 (-q6, or none for bf16); the first run\n"+
+		"downloads the checkpoint and makes it with IRON (tools/amd/iron_export_lm.py, %s, INSTALL_AMD.md).\n"+
+		"Models are kept in %s.\n", chat.IRONEnv, dir)
+}
+
+// shortPath is path with the home directory written ~.
+func shortPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" && strings.HasPrefix(path, home+string(filepath.Separator)) {
+		return "~" + path[len(home):]
+	}
+	return path
 }

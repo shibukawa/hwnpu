@@ -322,7 +322,7 @@ A command looks for a model in this order:
 2. **A distributed export** (later): only this NPU's subfolder, from Hugging Face ([prebuilt.md](prebuilt.md)). This waits until the export formats are stable, and does not exist yet
 3. **A conversion here**: download only the files the converter reads, check their sha256, convert, and write `.done`
    - Apple and Intel convert with the Go converters. The models to follow are Anima on the Mac and Intel (`anima.Prepare`) and hwnpu-chat's models (`chat.Prepare`)
-   - AMD runs the IRON exporters (`tools/amd/iron_*.py`) in the IRON environment (mlir-aie, Peano, Python). When that environment is missing, stop and say what to install (INSTALL_AMD.md). Do not fail silently or leave the steps to the user
+   - AMD runs the IRON exporters (`tools/amd/iron_*.py`) in the IRON environment (mlir-aie, Peano, Python). When that environment is missing, stop and say what to install (INSTALL_AMD.md). Do not fail silently or leave the steps to the user. hwnpu-chat does this (`chat.PrepareAMD`): models.yaml's `amd_export` holds the exporter's model and options, the exporters are built into hwnpu (`tools/amd/embed.go`), and IRON's environment is `HWNPU_IRON_ENV` or python3 on PATH
 4. **Not usable**: stop and say what is missing (no form for this NPU, no tools)
 
 - Download only the files the converter reads, never the whole repository. Some repositories hold both fp32 and fp16 copies (Sana 600M's repository is 16.5 GB, and 8.9 GB of it is needed)

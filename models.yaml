@@ -23,6 +23,10 @@
 #                 largest
 #   features      what it can do besides its kind (hwnpu-chat list explains them)
 #   no_think      answers without thinking unless asked (its chat template's own default)
+#   amd_export    how tools/amd/iron_export_lm.py exports it for AMD's NPU: its model and options.
+#                 Without an export here (~/models/NAME.amd-npu2, with -q4 or -q6 for --q4 and
+#                 --mlp q6), the first run downloads the checkpoint and runs it in IRON's
+#                 environment (HWNPU_IRON_ENV, INSTALL_AMD.md); a model without it has no form there
 #   like          another model whose fields this one takes, except its tag
 #   remove        true: drop the model
 # categories: NAME: a use (-m translate). picks are MODEL.md's columns: the model a machine of
@@ -41,6 +45,7 @@ models:
     memory: 2.2
     bytes: 3.5e9
     features: [tools, thinking]
+    amd_export: lfm3 --max-seq-len 12288 --q4
     about: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"
   LFM3-VL-2B:
     family: lfm3-vl
@@ -51,6 +56,7 @@ models:
     memory: 2.6
     bytes: 3.8e9
     features: [tools, thinking, vision]
+    amd_export: lfm3vl --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"
   LFM3-Audio-2B:
     family: lfm3-audio
@@ -61,6 +67,7 @@ models:
     memory: 2.6
     bytes: 4.0e9
     features: [tools, thinking, audio]
+    amd_export: lfm3audio --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-tts)"
   LFM3-Omni-2B:
     family: lfm3-omni
@@ -71,6 +78,7 @@ models:
     memory: 3.0
     bytes: 4.3e9
     features: [tools, thinking, vision, audio]
+    amd_export: lfm3omni --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with both encoders: images of 512x512 and clips up to 30 seconds, answers in text"
   gemma-4-E2B-it:
     family: gemma4
@@ -81,6 +89,7 @@ models:
     memory: 2.3
     bytes: 10.2e9
     features: [tools, thinking]
+    amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"
   gemma-4-E4B-it:
     family: gemma4
@@ -91,6 +100,7 @@ models:
     memory: 4.0
     bytes: 16.0e9
     features: [tools, thinking]
+    amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"
   Qwen3.5-4B:
     family: qwen3.5
@@ -101,6 +111,7 @@ models:
     memory: 4.2
     bytes: 9.3e9
     features: [tools, thinking]
+    amd_export: qwen35 --max-seq-len 4096 --q4
     about: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 8 bit tables (6 bit ones lose too much) read 8 tokens per call; the download has the vision part too, which is not converted"
   Qwen3.5-0.8B:
     family: qwen3.5
@@ -112,6 +123,7 @@ models:
     bytes: 1.77e9
     features: [tools, thinking]
     no_think: true
+    amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
     about: "Qwen's smallest Qwen3.5, the 4B's structure in 0.8B: fast, but weak at facts; its text model in 8 bit tables, answering without thinking unless asked; the download has the vision part too, which is not converted"
   Qwen3.5-2B:
     family: qwen3.5
@@ -123,6 +135,7 @@ models:
     bytes: 4.57e9
     features: [tools, thinking]
     no_think: true
+    amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
     about: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"
   Qwen3-0.6B:
     family: qwen3
@@ -143,6 +156,7 @@ models:
     memory: 2.7
     bytes: 5.76e9
     features: [translation]
+    amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"
   plamo-3-translate-0.8b:
     family: plamo3translate
@@ -153,6 +167,7 @@ models:
     memory: 2.4
     bytes: 1.79e9
     features: [translation]
+    amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 0.8B: the 2B's translation in a third of the memory, for small machines, in 8 bit tables"
   plamo-embedding-1b:
     family: plamo-embedding

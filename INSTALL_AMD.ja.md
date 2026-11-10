@@ -197,6 +197,16 @@ go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o 
 
 Strix Point でのデータ型ごとの性能と DMA の帯域、それを測ったスクリプトは [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) と [tools/iron](tools/iron/README.md) にあります。
 
+### hwnpu-chat のモデル
+
+hwnpu-chat は `tools/amd/iron_export_lm.py` の書き出し (`~/models/NAME.amd-npu2-q4`) を動かします。モデルの書き出しがなければ、初回にチェックポイントを落とし、手順 2 の IRON の環境で、models.yaml の `amd_export` のとおりに書き出します。その環境は `HWNPU_IRON_ENV` で渡します: 仮想環境のディレクトリか、環境を整えるスクリプト (bash で source するもの。`source utils/env_setup.sh` と `AIE_XCLBINUTIL` の設定をするものなど)。なければ PATH の python3 を試し、IRON を import できなければ、何を入れればよいかを言って止まります。
+
+```bash
+HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "こんにちは"
+```
+
+ある機械で作った書き出しは、同じ NPU のほかの機械でも動きます (ディレクトリを写すか、`-m` に渡す)。
+
 ## 5. 自分のカーネルを使う
 
 ```go

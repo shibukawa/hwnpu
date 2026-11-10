@@ -131,7 +131,7 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 		}
 	} else if cf.Package == "" {
 		var err error
-		if iron, err = chat.AMDExport(ctx, name, lf.Backend, logw()); err != nil {
+		if iron, err = chat.AMDExport(ctx, name, lf.Backend, lf.Dir, logw()); err != nil {
 			return loaded{}, err
 		}
 	}

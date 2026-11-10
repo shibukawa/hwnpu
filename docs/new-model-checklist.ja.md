@@ -322,7 +322,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 2. **配布された書き出し** (将来): Hugging Face から、その NPU のサブフォルダだけを落とす ([prebuilt.md](prebuilt.md))。書き出しの形式が安定してからにする。今はない
 3. **手元で変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換して `.done` を書く
    - Apple と Intel は、Go の変換器で変換する。手本は Mac と Intel の Anima (`anima.Prepare`) と、hwnpu-chat のモデル (`chat.Prepare`)
-   - AMD は、IRON の書き出しの道具 (`tools/amd/iron_*.py`) を IRON の環境 (mlir-aie、Peano、Python) で動かす。環境が見つからなければ、何を入れればよいか (INSTALL_AMD.md) を出して止める。黙って落ちたり、手順を利用者に丸投げしたりしない
+   - AMD は、IRON の書き出しの道具 (`tools/amd/iron_*.py`) を IRON の環境 (mlir-aie、Peano、Python) で動かす。環境が見つからなければ、何を入れればよいか (INSTALL_AMD.md) を出して止める。黙って落ちたり、手順を利用者に丸投げしたりしない。hwnpu-chat はこうしている (`chat.PrepareAMD`): models.yaml の `amd_export` に書き出しのモデルとオプション、書き出しのスクリプトは hwnpu に埋め込み (`tools/amd/embed.go`)、IRON の環境は `HWNPU_IRON_ENV` か PATH の python3
 4. **使えない**: 足りないもの (形がない、道具がない) を出して止める
 
 - 落とすのは、変換器が読むファイルだけにする。リポジトリをまるごと落とさない。fp32 と fp16 の両方を置いているリポジトリがある (Sana 600M はリポジトリが 16.5 GB で、要るのは 8.9 GB)

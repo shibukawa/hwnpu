@@ -197,6 +197,16 @@ go run ./cmd/report -xclbin final.xclbin -insts insts.bin -power performance -o 
 
 Benchmarks of the data types and the DMA bandwidth on Strix Point, and the scripts behind them: [docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md) (Japanese), [tools/iron](tools/iron/README.md).
 
+### Models for hwnpu-chat
+
+hwnpu-chat runs exports of `tools/amd/iron_export_lm.py` (`~/models/NAME.amd-npu2-q4`). When a model's export is not there, its first run downloads the checkpoint and makes the export in IRON's environment from step 2, as models.yaml's `amd_export` says. Name that environment with `HWNPU_IRON_ENV`: its virtual environment's directory, or a script that sets it up (sourced by bash; for instance one that runs `source utils/env_setup.sh` and sets `AIE_XCLBINUTIL`). Without it, hwnpu-chat tries python3 on PATH, and stops with what to install when IRON cannot be imported.
+
+```bash
+HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "Hello"
+```
+
+An export made on one machine runs on another with the same NPU (copy the directory, or pass it to `-m`).
+
 ## 5. Using your own kernels
 
 ```go
