@@ -25,6 +25,9 @@ type ConvertOptions struct {
 	// TextFormat and DitFormat are the weight formats of Gemma 2 and of the DiT (and the
 	// caption), as hwnpu-convert's -format: fp16, int8, lut8, lut6... The VAE's are fp16.
 	TextFormat, DitFormat string
+	// TextQuant is the quantizer of Gemma 2's lut formats, as hwnpu-convert's -quant (uniform,
+	// kmeans, kmeans-minmax; "" uniform).
+	TextQuant string
 	// Group is the DiT's blocks a program holds; TextGroup Gemma 2's layers.
 	Group, TextGroup int
 	// Only, when not empty, writes these parts alone (text, caption, time, blocks, final, vae).
@@ -116,13 +119,17 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	total := len(groups) + 2 + dc.Layers/o.Group + len(stages)
 	written := 0
 	write := func(kind string, p *mil.Part, format string) (string, error) {
+		opts := llm.Options{Backend: llm.BackendCoreML, Format: format}
+		if kind == "text" {
+			opts.Quant = o.TextQuant
+		}
 		name := p.Name + ".mlpackage"
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
 		written++
 		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		if _, err := llm.WritePart(filepath.Join(out, name), p, w, llm.Options{Backend: llm.BackendCoreML, Format: format}, nil); err != nil {
+		if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
 			bar.Done("failed")
 			return "", fmt.Errorf("sana: %s: %w", p.Name, err)
 		}

@@ -40,8 +40,9 @@ func runSana(ctx context.Context, r sanaRun) error {
 	case r.cpu:
 	case programs:
 		// llm.OpenDevice takes the Neural Engine's lock (design.md 16.132): with another process
-		// compiling for it, a placement check of Gemma 2's programs took over 2 minutes
-		d, _, err := llm.OpenDevice(ctx, llm.BackendCoreML, cacheDirOf(r.cache))
+		// compiling for it, a placement check of Gemma 2's programs took over 2 minutes. Strict,
+		// so that a program off the NPU, or one whose placement is not verified, says why
+		d, _, err := llm.OpenDevice(ctx, llm.BackendCoreML, cacheDirOf(r.cache), hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		if err != nil {
 			return err
 		}
