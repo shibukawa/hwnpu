@@ -116,10 +116,15 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	digests = map[string]map[string]string{}
 	for _, m := range catalog {
 		for f, d := range m.SHA256 {
-			if digests[m.Source()] == nil {
-				digests[m.Source()] = map[string]string{}
+			// ROLE/FILE is a file of the repository the model reads as ROLE (with)
+			repo := m.Source()
+			if role, rest, ok := strings.Cut(f, "/"); ok && m.With[role] != "" {
+				repo, f = m.With[role], rest
 			}
-			digests[m.Source()][f] = d
+			if digests[repo] == nil {
+				digests[repo] = map[string]string{}
+			}
+			digests[repo][f] = d
 		}
 	}
 	foundMu.Lock()
