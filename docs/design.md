@@ -3687,3 +3687,12 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - Anima (512 × 512、text と DiT が fp16) は `dit_blocks_24.xml` で `pfnGraphInitialize: ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY`。その時点で載っていたのは text (約 1.2 GB) と DiT の 6 群 (各約 0.57 GB)、合わせて約 4.6 GB。グラフの重みはドライバが NPU から見えるメモリに置くので、その上限に当たったとみる (上限そのものは未測定。`hwnpu-dev probe` の limit の several で測れる)
 - 対処 (`anima.progEngine`): 部品を `slot` にし、読み込みがメモリ不足 (`types.IsOutOfMemory`: Level Zero の OUT_OF_HOST_MEMORY と OUT_OF_DEVICE_MEMORY) で失敗したら、ほかの部品を閉じて読み直す。閉じる順は、プロンプトごとに 1 回しか使わない text、次に DiT の群で最後に使ったもの (MRU)、最後に時刻・パッチ・最後の層。DiT の群は毎ステップ同じ順に回るので、MRU なら 7 群に 4 か所でもステップあたり 4 群の読み直しで済む (LRU では 7 群全部)。この機械の fp16 は text を閉じるだけで収まり、読み直しは 1 枚に text と 1 群の 2 回の見込み。VAE の段も同じ規則で場所を作る
 - 偽の NPU (`residency_test.go`) で確かめた: 全部載る、text を閉じれば載る、群が載りきらない、何も閉じられない (エラーに「no other program loaded」)。実機では未確認。int8 の書き出し (`--dit-format int8 --text-format int8`) は約半分なので、確認スクリプトに `image-512-int8` を足して fp16 と比べる
+
+### 16.144 `hwnpu-dev probe resident`: NPU が一度に持てる量 (Intel の OUT_OF_HOST_MEMORY) — 2026-11-10
+
+- 動機: Core Ultra 5 135U で Anima の fp16 が約 4.6 GB を持ったところで `ERROR_OUT_OF_HOST_MEMORY` (16.143)。読み込みの時間の問題 (Neural Engine のキャッシュ、16.142) とは別で、同時に持てる量の上限。16.143 の読み直し (閉じて読み直す) は、閉じればメモリが戻ることを当てにしている
+- 0.25 GiB (fp16 の 2 層) のプログラムを 1 本ずつ読んで開いたまま 1 回ずつ実行し、読み込みが失敗するか `-resident-max-gb` (RAM の 60 %、最大 16) まで続ける。最後に全部をもう一度実行する。メモリ不足 (`types.IsOutOfMemory`) で止まったら、一番古いものを閉じて失敗したものを読み直す (戻るか)。`-resident-hold close` は 1 本ずつ閉じて同じ合計まで (持っている量の上限か、読んだ量の上限か)。`-resident-formats int8` で、上限が重みのバイト数で決まるか
+- Windows ではプロセスの private メモリ (K32GetProcessMemoryInfo) を各読み込みの後に記録する。`maxRSS` も Windows で peak working set を返すようにした
+- 子プロセスの流れ (`residentRun`) は読み込みを差し替えられる形にし、偽の NPU (容量で OUT_OF_HOST_MEMORY、閉じても戻らないもの) でテストした。close の回で合計の上限で止まらない不具合をこのテストで直した
+- Intel の確認スクリプトに `resident` (standard、fp16、開いたままと閉じる、8 GiB まで) と `resident-int8` (full) を足し、probe の試験は stdout からもハイライトを拾う
+- 未実行: Intel の実機での結果はまだ

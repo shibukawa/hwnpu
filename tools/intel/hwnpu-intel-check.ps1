@@ -14,10 +14,12 @@
   Levels (-Level):
     quick     system information, hwnpu-dev info, hwnpu-dev report, a small LFM3-1.7B chat (about 30 min)
     standard  + LFM3-1.7B with its defaults, the same again from the compile cache, hwnpu-chat agent,
-              hwnpu-dev formats, PLaMo 3 Translate 0.8B, PLaMo-Embedding-1B, Gemma 4 E2B, Anima 512 x 512 in fp16 and int8
+              hwnpu-dev formats, PLaMo 3 Translate 0.8B, PLaMo-Embedding-1B, Gemma 4 E2B, what the NPU holds at once
+              (hwnpu-dev probe resident), Anima 512 x 512 in fp16 and int8
               (default; a few hours, about 25 GB of downloads the first time)
     full      + report with power policies low and performance, LFM3-VL-2B with an image,
-              LFM3-Audio-2B with a clip, Qwen3.5-0.8B, PLaMo 3 Translate 2B, Anima 1024 x 1024, hwnpu-dev probe
+              LFM3-Audio-2B with a clip, Qwen3.5-0.8B, PLaMo 3 Translate 2B, Anima 1024 x 1024, resident in int8,
+              hwnpu-dev probe
 
   A test that finished (exit code 0) is skipped when the script runs again with the same -Out,
   so it can be stopped with Ctrl-C and run again. -Rerun runs them all again.
@@ -282,6 +284,9 @@ $Tests = @(
   (T @{ Name = "gemma-e2b"; Level = 1; Exe = "hwnpu-chat"; Sub = "chat"; Min = 150; Stdin = $ChatPrompts
         Args = @("--backend", "intel", "-m", "gemma-4-E2B-it") + $Short
         Note = "Gemma 4 E2B with its defaults" }),
+  (T @{ Name = "resident"; Level = 1; Exe = "hwnpu-dev"; Sub = "probe"; Min = 60
+        Args = @("resident", "-resident-max-gb", "8", "-o", "{OUT}\resident.md")
+        Note = "how much the NPU holds at once: 0.25 GiB fp16 programs kept open until a load fails (Anima ran out at about 4.6 GB), whether closing one gives its memory back, and loading 8 GiB in turn" }),
   (T @{ Name = "image-512"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 180
         Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "-o", "{OUT}\anima-512.png", $Anima)
         Note = "Anima-Turbo 512 x 512, 8 steps: downloads, converts to OpenVINO IR (fp16), draws" }),
@@ -313,6 +318,9 @@ $Tests = @(
   (T @{ Name = "image-1024"; Level = 2; Exe = "hwnpu-image"; Sub = "generate"; Min = 240
         Args = @("--backend", "intel", "-m", "anima", "--size", "1024", "--seed", "1", "-o", "{OUT}\anima-1024.png", $Anima)
         Note = "Anima-Turbo 1024 x 1024" }),
+  (T @{ Name = "resident-int8"; Level = 2; Exe = "hwnpu-dev"; Sub = "probe"; Min = 60
+        Args = @("resident", "-resident-formats", "int8", "-resident-hold", "open", "-resident-max-gb", "8", "-o", "{OUT}\resident-int8.md")
+        Note = "the same in int8: does the limit count the weights' bytes (twice as many programs) or the programs" }),
   (T @{ Name = "npuprobe"; Level = 2; Exe = "hwnpu-dev"; Sub = "probe"; Min = 120; Args = @("-o", "{OUT}\npuprobe.md")
         Note = "speed of generated LLM shaped models, and the largest model the compiler takes (PROBE.md)" })
 )
@@ -499,7 +507,9 @@ function Run-Test($t) {
   # lines worth reading at a glance
   $err = ""
   if (Test-Path $stderr) { $err = [System.IO.File]::ReadAllText($stderr, $Utf8) -replace $AnsiRe, "" }
-  $pick = @($err -split "`r?`n" | Where-Object { $_ -match "ready:|tokens/s|error|panic|fail|not on the NPU|ErrNotOnNPU|compil" } | Select-Object -Last 12)
+  # hwnpu-dev probe writes what it measured to standard output
+  if ($t.Exe -eq "hwnpu-dev" -and $t.Sub -eq "probe" -and (Test-Path $stdout)) { $err += "`n" + ([System.IO.File]::ReadAllText($stdout, $Utf8) -replace $AnsiRe, "") }
+  $pick = @($err -split "`r?`n" | Where-Object { $_ -match "ready:|tokens/s|error|panic|fail|not on the NPU|ErrNotOnNPU|compil|held at once|loaded in turn|oldest closed" } | Select-Object -Last 12)
   $r.highlights = $pick
   if ($name -eq "agent") {
     $ans = Join-Path $AgentDir "answer.txt"

@@ -32,3 +32,6 @@ func cpuTime() time.Duration {
 	syscall.Getrusage(syscall.RUSAGE_SELF, &ru)
 	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
+
+// privateBytes is the resident memory's peak here (Windows gives the committed private memory now).
+func privateBytes() int64 { return maxRSS() }

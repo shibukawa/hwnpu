@@ -22,7 +22,7 @@ import (
 const childMode, childMark = "_measure", "npuprobe-result "
 
 type childSpec struct {
-	Kind       string        `json:"kind"` // try, several, split, chain, kv, attn, seam or cache
+	Kind       string        `json:"kind"` // try, several, split, chain, kv, attn, seam, cache or resident
 	Backend    string        `json:"backend"`
 	DeviceID   string        `json:"device_id"`
 	Format     string        `json:"format"`
@@ -159,6 +159,8 @@ func runChild(arg string) error {
 		rs = p.attn(spec.Layout, spec.Layers, max(spec.Tokens, 1), spec.N, spec.Used)
 	case "seam":
 		rs = p.seam(spec.Format, spec.Layers, spec.AttnLayers, max(spec.Tokens, 1), spec.Layout, spec.N, spec.Used)
+	case "resident":
+		rs = p.resident(spec.Format, spec.Layers, spec.Layout, spec.N)
 	case "cache":
 		rs = p.cacheLoads(spec.Format, spec.Layers, spec.Paths, spec.Layout, spec.N)
 	case "chain":
