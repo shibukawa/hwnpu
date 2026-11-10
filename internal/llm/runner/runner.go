@@ -115,6 +115,39 @@ func (p *devProgram) Placement() (known bool, off []string, reason string) {
 	return known, off, ""
 }
 
+// F16 runs a program and gives its output y as it is, fp16 values (little-endian) until the
+// next run: for an output too large to convert all of (PP-OCR's 18710 classes at every step).
+// The CPU interpreter's float32 output is converted.
+func F16(ctx context.Context, p Program, in map[string][]float32) ([]byte, error) {
+	if d, ok := p.(*devProgram); ok {
+		if err := d.feed(ctx, in); err != nil {
+			return nil, err
+		}
+		if err := d.p.Run(); err != nil {
+			return nil, err
+		}
+		return d.p.Out["y"], nil
+	}
+	y, err := p.Run(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, 2*len(y))
+	hwnpu.EncodeF16(out, y)
+	return out, nil
+}
+
+func (p *devProgram) feed(ctx context.Context, in map[string][]float32) error {
+	for name, buf := range p.p.In {
+		v, ok := in[name]
+		if !ok || len(v) != count(p.p.InShape[name]) {
+			return fmt.Errorf("runner: input %s needs %v values, got %d", name, p.p.InShape[name], len(v))
+		}
+		hwnpu.EncodeF16(buf, v)
+	}
+	return ctx.Err()
+}
+
 func (p *devProgram) Run(ctx context.Context, in map[string][]float32) ([]float32, error) {
 	for name, buf := range p.p.In {
 		v, ok := in[name]

@@ -27,6 +27,8 @@ const (
 	KindFace       Kind = "face-detect" // the faces in a picture: hwnpu-image face-detect
 	KindPitch      Kind = "pitch"       // the pitch of a voice or an instrument: hwnpu-audio pitch
 	KindPose       Kind = "pose"        // people's keypoints in an image: hwnpu-image pose
+	KindDetect     Kind = "detect"      // the objects in an image, boxes and labels: hwnpu-image detect
+	KindOCR        Kind = "ocr"         // the text in an image, lines and boxes: hwnpu-image ocr
 	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: hwnpu-audio notes
 	KindMusic      Kind = "music"       // music from a style: hwnpu-audio generate
 	KindSFX        Kind = "sfx"         // sound effects from a text: hwnpu-audio generate -m sfx
@@ -76,6 +78,9 @@ type Model struct {
 	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
 	// NPU has no form of.
 	AMDExport []string
+	// With are the other repositories the model reads, by role (an OCR's detector): OWNER/NAME
+	// or OWNER/NAME@REVISION as fetch takes them. Their files' sha256 are SHA256's ROLE/FILE.
+	With map[string]string
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that

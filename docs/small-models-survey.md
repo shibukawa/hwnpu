@@ -27,6 +27,13 @@
 | 人の姿勢 (骨格) | **RTMO** (OpenMMLab MMPose、`Xenova/RTMO-s/m/l`) | 8.9M / 12.4M / 19.1M | Apache-2.0 / Apache-2.0 (OpenMMLab の配布、変換者の記載) | 1 段 (人の検出なしで、箱と 17 点を一度に)。CSPNeXt の CNN、640 × 640 | LFM3-VL の画像の前処理 (`resize_golden.py`) | ◎ 検出器が要らず、CNN で Neural Engine に向く。後処理 (NMS、点の復号) はホスト |
 | 〃 | ViTPose (`usyd-community/vitpose-base-simple` ほか) | base 85.9M (small から huge まで) | Apache-2.0 / Apache-2.0 | ViT + 簡単なヘッド。**人の箱が要る** (例は RT-DETR で検出してから) | LFM3-VL の視覚の塔 (ViT) | ○ transformers に `VitPoseForPoseEstimation` があり照合しやすい。ただし検出器 (RT-DETR など) も移植が要る |
 | 〃 | DWPose / RTMW (全身 133 点、顔と手も) | 未確認 (t / s / m / l) | Apache-2.0 (変換者の記載) | 2 段 (検出器 + RTMPose 系) | — | ○ 手や顔の点が要るとき。RTMO の後 |
+| 物の検出 (2026-11-11 に追加) | **RTMDet** (OpenMMLab MMDetection、MMDeploy の ONNX の書き出し `bukuroo/RTMDet-ONNX`) | tiny 4.8M / s 8.9M / m 24.7M | Apache-2.0 / Apache-2.0 | 1 段の CNN (CSPNeXt、RTMO と同じ家族)。640 × 640、COCO の 80 種類。NMS はグラフの尾部 | `internal/onnx`、RTMO の切り方 | ◎ 入れた (下) |
+| 〃 | YOLOX (OpenCV Zoo の `opencv/object_detection_yolox`) | s 約 9M | Apache-2.0 | 1 段の CNN | `internal/onnx` | ○ RTMDet より box AP が低い (S で 40.5 と 44.6) |
+| 〃 | RT-DETR / D-FINE (`PekingU/rtdetr_*`、`onnx-community/dfine_*-ONNX`) | 4M〜 | Apache-2.0 | CNN + Transformer のデコーダ。D-FINE は deformable attention (grid_sample) | — | △ grid_sample が Neural Engine に載るか未確認 |
+| 〃 | OWLv2、Grounding DINO (語彙を自由に) | 150M〜 | Apache-2.0 | ViT と文の符号器 | LFM3-VL の視覚の塔 | △ 重い。語彙を文で指定したいときに |
+| 〃 | Ultralytics YOLO | — | AGPL-3.0 | — | — | × ライセンス |
+| 文字 (OCR) | **PP-OCRv6** (PaddlePaddle の `PP-OCRv6_{tiny,small,medium}_{det,rec}_onnx`) | 認識器 small 5.2M (tiny 1.5M、medium 34.5M) | Apache-2.0 | 検出 DB (CNN、確率の地図) + 認識 (SVTR + CTC、50 言語) | `internal/onnx` | ◎ small を入れた (下)。tiny の認識器は仮名がなく日本語を読まない (辞書 6904 字) |
+| 〃 | PP-OCRv5 (OpenCV Zoo の `text_detection_ppocr` / `text_recognition_crnn` も) | mobile 約 5M | Apache-2.0 | 同じ形 | `internal/onnx` | ○ v6 の方が日本語が強い (JP 88.2 と 75.8) |
 
 ## 2. 進み具合 (2026-11-09)
 
@@ -35,6 +42,8 @@
 | SwiftF0 | ◎ 入れた。全部 NPU、41 秒を 0.24 秒、ONNX と有声 / 無声が全フレーム一致 | `hwnpu-pitch` | design.md 16.128 |
 | RTMO-s | ◎ 入れた。全部 NPU (尾部はホスト)、1 枚約 0.1 秒 | `hwnpu-pose` | design.md 16.129 |
 | Basic Pitch | ○ 入れた。参照と同じ音符、35 倍速。畳み込み 1 つと ReLU が CPU | `hwnpu-notes` | design.md 16.129 |
+| RTMDet-tiny / s / m | ◎ 入れた。全部 NPU (頭の畳み込みまで。箱の復号と NMS はホスト)、M1 で 1 枚 7 / 9 / 18 ms。ONNX Runtime と同じ物、箱の差は重みを fp16 に丸めた分 | `hwnpu-image detect` | design.md 16.148 |
+| PP-OCRv6 small | ◎ 入れた。検出器と認識器 (7 つの幅) が全部 NPU、論文 1 ページ 98 行が 0.5 秒。PaddleOCR の手順の参照と 93 / 98 行が同じ | `hwnpu-image ocr` | design.md 16.148 |
 | Magenta RealTime 2 small | ◎ 入れた。言語モデルと SpectroStream の復号と符号化、MusicCoCa の文と音楽の符号器がプログラム (NPU)。文と録音からの曲調 (参照と同じ符号)、混ぜ合わせ、MIDI の音符、打楽器、録音の続き、ストリーミング | `hwnpu-music generate` | design.md 16.130、16.131 |
 | MOSS-SoundEffect v2.0 | ◎ 入れた。文の符号器、DiT、DAC の復号がすべて NPU。16 GB 以上は文の符号器が fp16、8 GB は lut8 (5 層だけ fp16)。4 ステップで参照と同じ雑音からの波形のコサイン 0.99 | `hwnpu-music generate -m sfx` | design.md 16.136 |
 | SoulX-Singer | 未着手 (日本語の歌詞は受けない) | — | — |

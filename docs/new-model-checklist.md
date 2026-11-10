@@ -2,7 +2,7 @@
 
 [日本語](new-model-checklist.ja.md)
 
-Written 2026-11-07, updated 2026-11-10 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B, Whisper large-v3-turbo, Qwen3.6-35B-A3B and checking drafts on AMD added, and section 11 from preparing the image models through models.yaml). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
+Written 2026-11-07, updated 2026-11-10 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B, Whisper large-v3-turbo, Qwen3.6-35B-A3B and checking drafts on AMD added, and section 11 from preparing the image models through models.yaml), 2026-11-11 (from RTMDet and PP-OCRv6: the ANE's sigmoid drift, axes past 16384, checking OCR). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
 
 ## Policy: power over speed
 
@@ -86,6 +86,7 @@ Check that each part is `all on the NPU` with `hwnpu-dev info -model PART.mlpack
 - A `transpose` / `reshape` in the last part → take the output token-first (`attn_ot_N`, PLaMo 3). Elementwise operations after the output layer (Gemma 4's soft cap) → the host's sampling applies them to the top values only (`-logits host`, `llm.LogitSoftcap`, 16.113)
 - Parts with one row, and parts as programs of their own → 8 rows, or put into the neighbouring group (Anima, 16.85)
 - `reduce_sum` → sum with a matrix multiply (chunked attention: on the ANE 30 times of 30)
+- Any operation on a tensor wider than 16384 on an axis, even the identity that names the output y: PP-OCR's 18710 classes put the softmax, the bias's add and y on the CPU. Take the logits before the softmax, fold the bias into the linear, and split a wide output linear into parts stacked as (..., parts, n / parts), the same order (`internal/onnx`, 16.148)
 
 ### 3.3 Does fp16 overflow?
 
@@ -102,6 +103,7 @@ What helped:
 - Shrink the last layer with head-scale (PLaMo-Embedding), `-post-scale` (LFM3, 1.4–2.7 % a layer)
 - Keep residuals at 1/32, and divide by each row's maximum before a norm (Anima; a fixed scale made subnormals)
 - Fill padding rows with the last token (Gemma 4's eps becomes 0 in fp16 and gives NaN)
+- The ANE's own `sigmoid` and `tanh` drift too: a CNN of 80 SiLUs written as x times its sigmoid (RTMDet's CSPNeXt) came out with a score 0.35 and a box 98 px off, while the CPU interpreter in fp16 was as close as fp16 weights allow. Write them with exp (`onnx.Program.ExpSigmoid`, 16.148). Find where a program drifts by comparing values of the graph on the ANE and on the CPU interpreter one at a time (`TestBisect` in `internal/vision/detect`)
 - The ANE's own `softplus` and `silu` are inaccurate (softplus returned 0 for some inputs; silu off by 1.4 % in its tail). Use `builder.softplus` and `builder.silu` (written with exp and log). Products below fp16's smallest normal (6e-5) lose digits on the ANE: scale them up and divide later (Qwen3.5's GDN output, 16.88). `hwnpu-dev check` on the CPU does not show these: compare the per-position KL on the ANE with Core ML's CPU (`HWNPU_COREML_UNITS=cpu`)
 
 ### 3.4 Pass
@@ -282,6 +284,7 @@ Do not decide by KL alone. Put the model's answers next to bf16 (or fp16) for wh
 | Image descriptions, TTS | Compare the answers for the same images and audio. Run TTS output back through ASR |
 | Transcription | English: LibriSpeech's 73 validation clips (`hf-internal-testing/librispeech_asr_dummy`, with the truth); Japanese: 12 texts in four `say` voices. Count the clips word for word the same as HF fp32, and the WER / CER (16.115). Audio over 30 seconds too |
 | Embeddings | Cosine against HF |
+| Detection, OCR | Compare the objects (class, score, box) with ONNX Runtime, and every anchor's score and box against the graph with only its weights rounded to fp16 (`tools/ref/onnx_f16_weights.py`). For OCR, run the vendor's whole pipeline as a reference (`tools/ref/ref_ppocr.py`) and count the lines read word for word the same (`compare_ocr.py`): the host's part (boxes, crops, widths) changes the text as much as the network. A recognizer that attends over the whole width reads a line differently with more padding after it: pad as the vendor does (16.148) |
 | Image generation | Compare images from the same noise. The composition can change with some seeds (one in four). A distilled few-step model (Sana-Sprint) spreads small changes of its conditioning: a 0.23 % change of the caption moved one latent's cosine to 0.965, so one image's latent cosine cannot compare forms of a part before it. Judge such a part (the text encoder) by its own error against float32 and by a grid of several prompts' pictures (16.138) |
 
 **In practice**:

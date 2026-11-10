@@ -149,9 +149,13 @@ type modelEntry struct {
 	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU: its model
 	// and options (lfm3 --max-seq-len 12288 --q4), run when the export is not here.
 	AMDExport *string `yaml:"amd_export"`
-	About     *string `yaml:"about"`
-	Like      string  `yaml:"like"`
-	Remove    bool    `yaml:"remove"`
+	// With are the other repositories the model reads, by role (detector:
+	// hf:PaddlePaddle/PP-OCRv6_small_det_onnx@REV): each an hf:OWNER/NAME, pinned or not. Their
+	// files' sha256 are under ROLE/FILE.
+	With   *map[string]string `yaml:"with"`
+	About  *string            `yaml:"about"`
+	Like   string             `yaml:"like"`
+	Remove bool               `yaml:"remove"`
 }
 
 type pickEntry struct {
@@ -416,6 +420,8 @@ var kinds = map[Kind]string{
 	KindFace:       "hwnpu-image face-detect",
 	KindPitch:      "hwnpu-audio pitch",
 	KindPose:       "hwnpu-image pose",
+	KindDetect:     "hwnpu-image detect",
+	KindOCR:        "hwnpu-image ocr",
 	KindNotes:      "hwnpu-audio notes",
 	KindMusic:      "hwnpu-audio generate",
 	KindSFX:        "hwnpu-audio generate -m sfx",
@@ -509,7 +515,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out := *base
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport})
+		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, With: e.With})
 	return &out, nil
 }
 
@@ -586,6 +592,17 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 			}
 		}
 		m.Device = maps.Clone(*e.Device)
+	}
+	if e.With != nil {
+		m.With = map[string]string{}
+		for role, src := range *e.With {
+			repo, ok := strings.CutPrefix(src, "hf:")
+			r, _, _ := strings.Cut(repo, "@")
+			if !ok || role == "" || !safeName(role) || strings.Contains(role, "/") || strings.Count(r, "/") != 1 || !safeName(r) || strings.HasSuffix(r, "/") {
+				return m, fmt.Errorf("model %s: with %s: %q is not hf:OWNER/NAME", name, role, src)
+			}
+			m.With[role] = repo
+		}
 	}
 	if m.Tag != "" && m.Family == "" {
 		return m, fmt.Errorf("model %s: a tag needs a family", name)

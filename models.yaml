@@ -236,6 +236,56 @@ models:
     memory: 0.23
     bytes: 4.0e7
     about: "RTMO-s: the people in an image and their 17 COCO keypoints in one pass, without a person detector; 9.9M parameters, images stretched to 640x640"
+  # hwnpu-image detect: OpenMMLab MMDetection's RTMDet (Apache-2.0), MMDeploy's ONNX exports of
+  # its COCO weights in one repository; sha256 names the model's file
+  RTMDet-tiny:
+    family: rtmdet
+    tag: tiny
+    kind: detect
+    from: hf:bukuroo/RTMDet-ONNX@aa91dbccc283db36b2c250a1d91ba9518db553da
+    sha256: {rtmdet-tiny-coco.onnx: f25bab7abb4ccfba4f785b90e8bc1bf1dec432e8878a9ecef9a79e3f6f9a62a5}
+    machine: 8
+    # M1: a footprint of 56 MB and 11 MB on the Neural Engine; 7 ms a picture
+    memory: 0.07
+    bytes: 2.2e7
+    about: "RTMDet-tiny: the objects in an image, boxes and COCO's 80 labels (41.1 box AP); 4.8M parameters, images fit into 640x640"
+  RTMDet-s:
+    like: RTMDet-tiny
+    tag: s
+    sha256: {rtmdet-s-coco.onnx: 22de7e20d483e69b1ed202beafe1d237b0e1d99d7ddb7c3d4895fb1036c3384d}
+    machine: 8
+    # M1: 73 MB and 21 MB on the Neural Engine; 9 ms a picture
+    memory: 0.1
+    bytes: 4.0e7
+    about: "RTMDet-s: the objects in an image, boxes and COCO's 80 labels (44.6 box AP); 8.9M parameters, images fit into 640x640"
+  RTMDet-m:
+    like: RTMDet-tiny
+    tag: m
+    sha256: {rtmdet-m-coco.onnx: 07921f4ee8c477b00abfce3c3bfff53bbc528c41abfa0193f981afbafcff95d4}
+    machine: 16
+    # M1: 141 MB and 56 MB on the Neural Engine; 18 ms a picture
+    memory: 0.2
+    bytes: 1.1e8
+    about: "RTMDet-m: the objects in an image, boxes and COCO's 80 labels (49.1 box AP); 24.7M parameters, images fit into 640x640"
+  # hwnpu-image ocr: PaddleOCR's PP-OCRv6 (Apache-2.0), the ONNX files PaddlePaddle publishes: the
+  # recognizer's repository, and the detector's in with (its files' sha256 under detector/)
+  PP-OCRv6-small:
+    family: ppocr
+    tag: small
+    kind: ocr
+    from: hf:PaddlePaddle/PP-OCRv6_small_rec_onnx@b8f84f0b80c529de40b4fbb3544b84fa7233a513
+    with: {detector: "hf:PaddlePaddle/PP-OCRv6_small_det_onnx@28fe5895c24fd108c19eb3e8479f4ab385fbfc62"}
+    sha256:
+      inference.onnx: 5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634
+      inference.yml: ab078671bb49f06228eadccd34f1bb501e157f7a047095ffb943ba81512c77d1
+      detector/inference.onnx: d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e
+      detector/inference.yml: 193f435274bf9f0b5f71a929bbfbcf148282df7e633b34e7c373e8f44741b516
+    machine: 8
+    # M1: a footprint of 425 MB at most (the recognizer's programs of seven widths and their
+    # outputs, 12 to 24 MB each); a page of 98 lines in 0.5 s
+    memory: 0.45
+    bytes: 3.1e7
+    about: "PP-OCRv6 small: the lines of text in an image and what they say, 50 languages (Japanese, Chinese, English, ...); 5.2M parameters"
   basic-pitch:
     family: basic-pitch
     tag: icassp2022
@@ -477,6 +527,17 @@ categories:
     about: people and their 17 keypoints in an image (hwnpu-image pose)
     picks:
       - {machine: 8, model: RTMO-s}
+  detect:
+    aliases: [object-detect, objects]
+    about: the objects in an image, boxes and labels (hwnpu-image detect)
+    picks:
+      - {machine: 8, model: RTMDet-s}
+      - {machine: 16, model: RTMDet-m}
+  ocr:
+    aliases: [text]
+    about: the text in an image, its lines and boxes (hwnpu-image ocr)
+    picks:
+      - {machine: 8, model: PP-OCRv6-small}
   notes:
     aliases: [midi]
     about: the notes of music, as MIDI (hwnpu-audio notes)
