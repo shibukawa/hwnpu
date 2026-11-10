@@ -14,7 +14,7 @@
   Levels (-Level):
     quick     system information, hwnpuinfo, report, a small LFM3-1.7B chat (about 30 min)
     standard  + LFM3-1.7B with its defaults, the same again from the compile cache, hwnpu-chat agent,
-              hwnpu-formats, PLaMo 3 Translate 0.8B, PLaMo-Embedding-1B, Gemma 4 E2B, Anima 512 x 512
+              hwnpu-formats, PLaMo 3 Translate 0.8B, PLaMo-Embedding-1B, Gemma 4 E2B, Anima 512 x 512 in fp16 and int8
               (default; a few hours, about 25 GB of downloads the first time)
     full      + report with power policies low and performance, LFM3-VL-2B with an image,
               LFM3-Audio-2B with a clip, Qwen3.5-0.8B, PLaMo 3 Translate 2B, Anima 1024 x 1024, npuprobe
@@ -284,7 +284,10 @@ $Tests = @(
         Note = "Gemma 4 E2B with its defaults" }),
   (T @{ Name = "image-512"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 180
         Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "-o", "{OUT}\anima-512.png", $Anima)
-        Note = "Anima-Turbo 512 x 512, 8 steps: downloads, converts to OpenVINO IR, draws" }),
+        Note = "Anima-Turbo 512 x 512, 8 steps: downloads, converts to OpenVINO IR (fp16), draws" }),
+  (T @{ Name = "image-512-int8"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 120
+        Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "--dit-format", "int8", "--text-format", "int8", "-o", "{OUT}\anima-512-int8.png", $Anima)
+        Note = "the same in int8 (half the memory of fp16): compare the image and the step's time" }),
 
   (T @{ Name = "report-low"; Level = 2; Exe = "report"; Min = 20
         Args = @("-power", "low", "-o", "{OUT}\report-low.md", "-json", "{OUT}\report-low.json")

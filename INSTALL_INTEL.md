@@ -267,7 +267,7 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
 ```
 
-`-Level quick` (about 30 minutes) checks the device, `cmd/report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, hwnpu-agent, hwnpu-formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Anima at 1024 x 1024 and npuprobe. `-List` shows the tests, `-Only` and `-Skip` choose them.
+`-Level quick` (about 30 minutes) checks the device, `cmd/report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, hwnpu-chat agent, hwnpu-formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Anima at 1024 x 1024 and npuprobe. `-List` shows the tests, `-Only` and `-Skip` choose them.
 
 ## Troubleshooting
 
