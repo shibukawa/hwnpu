@@ -205,7 +205,7 @@ func convertPart(a *Arch, model Model, w Weights, path string, opts Options, log
 	start := time.Now()
 	stop := console.Spin(log, filepath.Base(path)) // a part takes up to a minute: show it goes on
 	rec, err := WritePart(path, model, w, opts, func(pkg *mlpackage.Package) {
-		pkg.Description = fmt.Sprintf("%s from %s, seq %d, %s (hwnpu-convert)", a.Title, w.Source(), opts.Seq, opts.Format)
+		pkg.Description = fmt.Sprintf("%s from %s, seq %d, %s (hwnpu-dev convert)", a.Title, w.Source(), opts.Seq, opts.Format)
 		if opts.Start > 0 || opts.Layers > 0 {
 			pkg.Description += fmt.Sprintf(", layers %d-%d", opts.Start, opts.Start+opts.Layers-1)
 		}
@@ -311,7 +311,7 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 		form = "tile"
 	}
 	apath := base + ".attn" + ext
-	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-convert)", a.Title, opts.Paged, opts.Seq, form)
+	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-dev convert)", a.Title, opts.Paged, opts.Seq, form)
 	var ins, outs []mlpackage.Feature
 	if intel {
 		_, ins, outs, err = writeIR(apath, &mlpackage.Package{Description: desc}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
@@ -343,7 +343,7 @@ func convertPaged(a *Arch, model Model, w Weights, out, targetName string, opts 
 // for Intel's NPU (ext .xml) base.mass.xml.
 func writeMass(base, ext string, sh paged.Shape, form string, seq, chunk int, title string) (*PartRecord, error) {
 	path := base + ".mass" + ext
-	desc := fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (hwnpu-convert)", title, chunk, seq, form)
+	desc := fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (hwnpu-dev convert)", title, chunk, seq, form)
 	var ins, outs []mlpackage.Feature
 	var err error
 	if ext == ".xml" {

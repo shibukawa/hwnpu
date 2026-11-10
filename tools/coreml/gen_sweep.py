@@ -6,10 +6,10 @@ Each model is a stack of BERT style encoder layers (multi head attention with 64
 
     python gen_sweep.py OUT_DIR             write tf_d{d}_s{seq}_l{layers}.mlpackage and sweep.json
     python gen_sweep.py OUT_DIR --report powerbench.json
-                                            join a powerbench -json result with sweep.json
+                                            join a hwnpu-dev powerbench -json result with sweep.json
 
 Measure with
-    go run ./cmd/powerbench -model 'OUT_DIR/*.mlpackage' -json powerbench.json
+    go run ./cmd/hwnpu-dev powerbench -model 'OUT_DIR/*.mlpackage' -json powerbench.json
 which runs every model on the Neural Engine and again on the CPU alone.
 Needs coremltools >= 8 and numpy.
 """
@@ -148,7 +148,7 @@ def report(out, bench):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("out")
-    ap.add_argument("--report", help="powerbench -json result to join with sweep.json")
+    ap.add_argument("--report", help="hwnpu-dev powerbench -json result to join with sweep.json")
     a = ap.parse_args()
     if a.report:
         report(a.out, a.report)

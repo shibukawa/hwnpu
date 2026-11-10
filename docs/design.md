@@ -3661,3 +3661,11 @@ Qwen3.8-Flash-Next (Qwen4 の構造の先行版、MTP 4B を持つ) の発表を
 - ログは灰色 (console.Log) で、読み込みの行に "all on the NPU" / "NOT all on the NPU" / "on the CPU interpreter"
 - 確かめたこと (AMD の機械、--cpu): `hwnpu-audio pitch` が 440 Hz の正弦波で 439.5 Hz、`hwnpu-audio notes --midi` が A4 (69) の 1 音、`hwnpu-image pose --draw` が動く。tts、transcribe、systemone は Neural Engine 用で、ここではヘルプと引数の検査だけ
 - 開発用で家族に入れていないもの: hwnpu-check (CPU のインタプリタで Hugging Face の参照と層ごとに照合)、hwnpu-formats (チャットモデルの重みの形式を NPU で比べる)、hwnpu-convert、hwnpu-generate、hwnpu-xclbin、hwnpuinfo、npuprobe、powerbench、report
+
+### 16.141 開発用の道具を hwnpu-dev のサブコマンドに — 2026-11-10
+
+- hwnpu-check、hwnpu-convert、hwnpu-generate、hwnpu-formats、hwnpuinfo、npuprobe、powerbench、report、hwnpu-xclbin を `hwnpu-dev check|convert|generate|formats|info|probe|powerbench|report|xclbin` にした。各道具は `cmd/hwnpu-dev/NAME` のパッケージ (`main` を `Main` に) で、フラグは前のまま (std flag)。hwnpu-dev は kong の `passthrough:"all"` で、名前の後ろの引数 (`-h` も) をそのまま渡し、`os.Args` と `flag.CommandLine` を差し替えて `Main` を呼ぶ
+- npuprobe は自分を子プロセスで起動するので、`probe.ChildArgs` (`["probe"]`) を前に付ける
+- aiecc は `AIE_XCLBINUTIL` の実行ファイルをサブコマンドなしで呼ぶので、実行ファイルの名前が hwnpu-xclbin か xclbinutil なら xclbin として動く (`go build -o ~/.local/bin/hwnpu-xclbin ./cmd/hwnpu-dev`)
+- 文書の名前は書き換えた。この design.md、.knowledge、npu_profiles、docs/handoff-* は当時の記録なので古い名前のまま
+

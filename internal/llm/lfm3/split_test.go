@@ -30,7 +30,7 @@ func weightFileBytes(t *testing.T, cfg *Config, w llm.Weights, opts llm.Options)
 	return info.Size()
 }
 
-// The size estimate that hwnpu-convert splits by matches the weight files the parts get, and a
+// The size estimate that hwnpu-dev convert splits by matches the weight files the parts get, and a
 // split covers every layer once with each part under its budget.
 func TestSplitSizes(t *testing.T) {
 	cfg := tinyConfig()

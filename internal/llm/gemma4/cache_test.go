@@ -14,7 +14,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
-// writeParts converts the model in n parts, as hwnpu-convert does, and returns the manifest.
+// writeParts converts the model in n parts, as hwnpu-dev convert does, and returns the manifest.
 func writeParts(t *testing.T, c *Config, w llm.Weights, opts llm.Options, n int) (string, []llm.Part) {
 	t.Helper()
 	plan, err := llm.PlanSplit(c, opts, math.MaxInt64, n)

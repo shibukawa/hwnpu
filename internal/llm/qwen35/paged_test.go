@@ -15,7 +15,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
-// convertPaged converts the model split at its attention with hwnpu-convert's code path.
+// convertPaged converts the model split at its attention with hwnpu-dev convert's code path.
 func convertPaged(t *testing.T, cfg *Config, w llm.Weights, q, cache, chunk int) *llm.Manifest {
 	t.Helper()
 	return convertPagedModel(t, cfg, w, q, cache, chunk)

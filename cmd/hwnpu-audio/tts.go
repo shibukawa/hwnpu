@@ -19,10 +19,10 @@ import (
 // hwnpu-chat's LFM3-Audio-2B) and converts the programs by itself (internal/speech Prepare).
 // Programs converted by hand are given with --checkpoint, --text, --depth and --codec instead:
 //
-//	hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
-//	hwnpu-convert -config DIR/config.json -weights DIR/model.safetensors -seq 64 -cache 2048 -hidden-out 1 -o DIR/tts-q64.mlpackage
-//	hwnpu-convert -arch lfm3-depthformer -config DIR/config.json -weights DIR/model.safetensors -format fp16 -o DIR/depth.mlpackage
-//	hwnpu-convert -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -codec-frames 64 -format fp16 -o DIR/codec.mlpackage
+//	hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
+//	hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -seq 64 -cache 2048 -hidden-out 1 -o DIR/tts-q64.mlpackage
+//	hwnpu-dev convert -arch lfm3-depthformer -config DIR/config.json -weights DIR/model.safetensors -format fp16 -o DIR/depth.mlpackage
+//	hwnpu-dev convert -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -codec-frames 64 -format fp16 -o DIR/codec.mlpackage
 //	hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.parts.json,DIR/tts-q64.mlpackage --depth DIR/depth.mlpackage --codec DIR/codec.mlpackage --lang ja -o out.wav こんにちは
 //
 // The text model is converted with a KV cache and -hidden-out 1 (it outputs its final hidden
@@ -44,8 +44,8 @@ type TTSCmd struct {
 
 	Checkpoint string `group:"Converted by hand" type:"existingdir" placeholder:"DIR" help:"The checkpoint's directory (config.json, model.safetensors, tokenizer.json, audio_tokenizer/config.json) of the programs below."`
 	TextModel  string `group:"Converted by hand" name:"text" placeholder:"PKG,..." help:"The text model converted with -cache and -hidden-out 1, packages of different -seq, comma separated."`
-	Depth      string `group:"Converted by hand" placeholder:"PKG" help:"The depthformer (hwnpu-convert -arch lfm3-depthformer)."`
-	Codec      string `group:"Converted by hand" placeholder:"PKG" help:"The codec decoder (hwnpu-convert on audio_tokenizer/, -arch lfm3-codec)."`
+	Depth      string `group:"Converted by hand" placeholder:"PKG" help:"The depthformer (hwnpu-dev convert -arch lfm3-depthformer)."`
+	Codec      string `group:"Converted by hand" placeholder:"PKG" help:"The codec decoder (hwnpu-dev convert on audio_tokenizer/, -arch lfm3-codec)."`
 }
 
 // Run speaks the text.

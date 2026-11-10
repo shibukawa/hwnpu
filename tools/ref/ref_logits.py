@@ -4,7 +4,7 @@
 
 MODEL_DIR holds config.json, the tokenizer and the checkpoint (and modeling_*.py for models
 that need trust_remote_code; symlinks to downloaded files are fine). Runs on the CPU in float32
-and writes, for readers without numpy (hwnpu-check and the Go tests), little endian and row major:
+and writes, for readers without numpy (hwnpu-dev check and the Go tests), little endian and row major:
 
     OUT_PREFIX.ids.bin     int32 (seq)                       token ids
     OUT_PREFIX.hidden.bin  float32 (layers + 1, seq, hidden) token embeddings, then each layer's output
@@ -116,7 +116,7 @@ def stack_hidden(captured, n):
 
 def save(prefix, ids, hs, logits, cfg, text, encoder, tok, extra=None):
     """Writes the reference files. extra holds more arrays by name, written as PREFIX.NAME.bin
-    (float32): the values of program inputs besides x that hwnpu-check feeds a layer."""
+    (float32): the values of program inputs besides x that hwnpu-dev check feeds a layer."""
     extra = extra or {}
     np.savez(prefix + ".npz", input_ids=ids[0].numpy().astype(np.int32), hidden=hs, logits=logits, **extra)
     for name, v in extra.items():

@@ -217,7 +217,7 @@ func (p *cpuProgram) Close() error {
 	return nil
 }
 
-// OpenSession loads a causal model converted with a KV cache (hwnpu-convert -cache), one or more
+// OpenSession loads a causal model converted with a KV cache (hwnpu-dev convert -cache), one or more
 // packages of the same cache length and different tokens per call, on dev (nil: the CPU
 // interpreter), and starts a decode session over them; the packages share one cache. Close the
 // returned closer after the session.

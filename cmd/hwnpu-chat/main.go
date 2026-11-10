@@ -39,7 +39,7 @@
 // the shortest that holds it. On AMD's NPU a name runs ~/models/NAME.amd-npu2-q4 (else
 // NAME.amd-npu2), exports of tools/amd/iron_export_lm.py (docs/amd-npu-models.md).
 //
-// --package (or --embed-package) takes programs converted by hwnpu-convert instead, separated by
+// --package (or --embed-package) takes programs converted by hwnpu-dev convert instead, separated by
 // commas: for a chat model with the same -cache and different -seq, for an embedding model with
 // different -seq.
 //
@@ -47,7 +47,7 @@
 // the encoders of the checkpoint, the vision encoder for images of 512x512 and the audio encoder
 // for clips of up to 30 seconds. --image and --audio send them with a prompt; in the terminal
 // /image FILE and /audio FILE.wav do; image_url and input_audio parts of the API's user messages
-// are read. With --package, --vision takes vision encoders converted by hwnpu-convert -arch
+// are read. With --package, --vision takes vision encoders converted by hwnpu-dev convert -arch
 // lfm3-vision (a package per image size) and --audio-encoder audio encoders (-arch
 // lfm3-audio-encoder, a package per clip length). Speech output is not supported (see hwnpu-audio tts).
 //

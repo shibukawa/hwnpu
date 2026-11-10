@@ -45,7 +45,7 @@ func TestKVOnNeuralEngine(t *testing.T) {
 // The chunk attention program of every form stays on the Neural Engine with 64 query rows, and
 // with one over a chunk of the longest length a dimension takes. With one row over 1024 keys
 // Core ML puts the whole program on the CPU (M3, macOS 27.0.1): too little work for the Neural
-// Engine by its estimate. That case is logged, not required; npuprobe attn maps the boundary.
+// Engine by its estimate. That case is logged, not required; hwnpu-dev probe attn maps the boundary.
 func TestChunkAttnOnNeuralEngine(t *testing.T) {
 	ctx := context.Background()
 	infos, err := coreml.Provider{}.Enumerate(ctx)

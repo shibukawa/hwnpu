@@ -11,7 +11,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/backend/openvino"
 )
 
-// The program formats hwnpu-convert writes (Options.Backend).
+// The program formats hwnpu-dev convert writes (Options.Backend).
 const (
 	BackendCoreML = "coreml" // .mlpackage, for the Neural Engine
 	BackendIntel  = "intel"  // OpenVINO IR, for Intel's NPU

@@ -21,7 +21,7 @@ formats:
     int4  linear symmetric int4, per block of 32 inputs (0.5 byte, macOS 15 and later)
 
 Writes dec_l{layers}_{format}.mlpackage and decode.json (parameters and bytes of weights per
-token). Measure with go run ./cmd/powerbench -one -gpu -model 'OUT_DIR/*.mlpackage', then
+token). Measure with go run ./cmd/hwnpu-dev powerbench -one -gpu -model 'OUT_DIR/*.mlpackage', then
 python gen_decode.py OUT_DIR --report powerbench.json.
 Needs coremltools >= 8 and numpy.
 """
@@ -148,7 +148,7 @@ if __name__ == "__main__":
     ap.add_argument("out")
     ap.add_argument("--layers", default="4,16")
     ap.add_argument("--formats", default="fp16,int8,lut4,int4")
-    ap.add_argument("--report", help="powerbench -json result to summarize")
+    ap.add_argument("--report", help="hwnpu-dev powerbench -json result to summarize")
     a = ap.parse_args()
     if a.report:
         report(a.out, a.report)

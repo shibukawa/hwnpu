@@ -108,7 +108,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	return c, nil
 }
 
-// convert writes one program with the converter's defaults (hwnpu-convert's), the lookup tables
+// convert writes one program with the converter's defaults (hwnpu-dev convert's), the lookup tables
 // fitted as hwnpu-chat fits them.
 func convert(config, weights, out string, a *llm.Arch, format string, o llm.Options, log io.Writer) (string, error) {
 	_, model, err := llm.LoadConfig(config, a.Name)
