@@ -89,7 +89,6 @@ func main() {
 			"tiers":        chat.DefaultTiers,
 			"embed_seqs":   ints(chat.DefaultEmbedSeqs),
 			"mtp":          chat.MTPAuto,
-			"prefill":      chat.PrefillAuto,
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Bind(stop))

@@ -244,3 +244,78 @@ search: [lab, hf]
 		t.Errorf("without aws: %v", err)
 	}
 }
+
+// TestSameFile checks that a pinned file another model of the same SHA-256 has in the models'
+// directory is linked from there instead of downloaded (MOSS-SoundEffect's text encoder is
+// Qwen3-1.7B), and that a copy that differs is not taken.
+func TestSameFile(t *testing.T) {
+	weights := "the weights"
+	n := hub(t, map[string]string{
+		"lab/chat-1b/resolve/main/model.safetensors":         weights,
+		"lab/sfx/resolve/abc/text_encoder/model.safetensors": weights,
+		"lab/other/resolve/main/model.safetensors":           "other weights",
+	})
+	if _, err := userFiles(t, fmt.Sprintf(`version: 1
+models:
+  chat-1b:
+    from: hf:lab/chat-1b
+    kind: chat
+    sha256: {model.safetensors: %[1]s}
+  sfx:
+    from: hf:lab/sfx@abc
+    kind: sfx
+    sha256: {text_encoder/model.safetensors: %[1]s}
+  other:
+    from: hf:lab/other
+    kind: chat
+    sha256: {model.safetensors: %[2]s}
+`, digest(weights), digest("other weights"))); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for _, d := range []string{"chat-1b", "other", "sfx/text_encoder"} { // as Prepare and sfx.Prepare make them
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chatFile := filepath.Join(root, "chat-1b", "model.safetensors")
+	if err := fetch(context.Background(), "lab/chat-1b", "model.safetensors", chatFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 1 {
+		t.Fatalf("%d requests for the first download", n.Load())
+	}
+	// the other model's file of the same SHA-256: linked, no request
+	sfxFile := filepath.Join(root, "sfx", "text_encoder", "model.safetensors")
+	var log strings.Builder
+	if err := fetch(context.Background(), "lab/sfx@abc", "text_encoder/model.safetensors", sfxFile, &log); err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 1 || read(t, sfxFile) != weights || !strings.Contains(log.String(), "linked model.safetensors from model.safetensors of chat-1b") {
+		t.Errorf("%d requests, log:\n%s", n.Load(), log.String())
+	}
+	a, _ := os.Stat(chatFile)
+	b, _ := os.Stat(sfxFile)
+	if !os.SameFile(a, b) {
+		t.Error("a copy, not a link")
+	}
+	// a model of another SHA-256 is downloaded
+	if err := fetch(context.Background(), "lab/other", "model.safetensors", filepath.Join(root, "other", "model.safetensors"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 2 {
+		t.Errorf("%d requests: other's file was not downloaded", n.Load())
+	}
+	// a file of the same name that was changed is not taken, and stays as it was
+	os.Remove(sfxFile)
+	if err := os.Remove(chatFile); err != nil {
+		t.Fatal(err)
+	}
+	put(t, chatFile, "changed")
+	if err := fetch(context.Background(), "lab/sfx@abc", "text_encoder/model.safetensors", sfxFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 3 || read(t, sfxFile) != weights || read(t, chatFile) != "changed" {
+		t.Errorf("%d requests, %q, %q", n.Load(), read(t, sfxFile), read(t, chatFile))
+	}
+}

@@ -374,6 +374,7 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | gemma-4-E4B-it | `gemma4` | 同上 | Gemma 4 | テキストのみ | ○ lut6、1 本 (`-prefill auto`) | 変換は可 | ○ q4 5.6 tok/s、3.53 GB、文脈 4096 |
 | Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | ○ `iron_export_lm.py qwen35 --q4`。32 層で 6.4 tok/s (16.94)、4.7 GB。HF と最上位のトークン 8/9 (同じ q4 のホストのグラフと同じ所で外れる、16.92) |
 | Qwen3-0.6B | `qwen3` (16.127) | Qwen3 の前分割 (Anima と同じ `tokenizer.json`) | Qwen3 | — | ○ lut8、注意で分けない 1 本 (文脈 4096、`llm.Unpaged`)、全部 ANE、M1 で 9.5〜12.4 tokens/s、Neural Engine 1.16 GiB + プロセス 2.75 GB。CPU の lut8 の KL 0.014 | 変換は可 (int8)、実機は未確認 | — (書き出しなし) |
+| Qwen3-1.7B | `qwen3` (16.150) | 同上 | Qwen3 | — | ○ lut8、注意で分けない 1 本 (文脈 4096)、全部 ANE、M3 で 13〜22 tokens/s。16 GB 未満は 1 本 (`prefill: off`、`variants`) で Neural Engine 1.63 GiB + プロセスの最大 2.2〜2.8 GB、16 GB からは 2 本で 3.26 GiB + 3.0〜4.1 GB。CPU の lut8 の KL 0.018 (32/32) | 変換は可 (int8)、実機は未確認 | — (書き出しなし) |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3、翻訳) | — | ○ lut8、1 本、文脈 262144。M3 で全部 ANE に載ることと重みの形式を確認 | 変換は可 (int8)。OpenVINO の CPU で訳せた | ◎ q4 11.6 tok/s、2.16 GiB、文脈 8192 |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |

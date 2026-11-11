@@ -538,7 +538,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 func onePrograms(model llm.Model, format, backend, prefill string, draft, tiers int, kvOnly bool, others int64) (bool, string) {
 	switch {
 	case prefill == PrefillOff:
-		return true, "-prefill off"
+		return true, "prefill off (--prefill, or the model's definition for this machine's memory)"
 	case prefill == PrefillOn || draft <= 1 || backend == llm.BackendIntel:
 		return false, "" // reading prompts one token per call would be far slower; the cache is the Neural Engine's
 	}
