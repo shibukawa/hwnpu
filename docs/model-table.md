@@ -179,7 +179,7 @@ builds:
 
 | type | 書き方 | 取り方 |
 |---|---|---|
-| `hf` (組み込み) | `from: hf:OWNER/NAME@COMMIT` (5.3 節) | 今の `fetch`。`HF_TOKEN` を使う |
+| `hf` (組み込み) | `from: hf:OWNER/NAME@COMMIT` (5.3 節) | 今の `fetch`。`HF_TOKEN`、`hf auth login` のトークン、なければ端末で OAuth のデバイスフロー (同意制リポジトリ、design.md 16.153) |
 | `path` | `from: team-share:plamo-distill-0.8b` | `path` の下のフォルダ。`copy: false` なら写さずに読む (NFS や SMB の共有フォルダ) |
 | `s3` | `from: lab-s3:plamo-distill-0.8b` | `aws s3 sync s3://BUCKET/PREFIX/plamo-distill-0.8b/ DIR` を呼ぶ |
 
