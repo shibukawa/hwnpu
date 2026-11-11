@@ -462,6 +462,7 @@ var kinds = map[Kind]string{
 	KindDetect:     "hwnpu-image detect",
 	KindOCR:        "hwnpu-image ocr",
 	KindLabel:      "hwnpu-image label, embed",
+	KindSegment:    "hwnpu-image segment",
 	KindNotes:      "hwnpu-audio notes",
 	KindMusic:      "hwnpu-audio generate",
 	KindSFX:        "hwnpu-audio generate -m sfx",

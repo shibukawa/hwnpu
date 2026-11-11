@@ -4107,3 +4107,29 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
 - diffusers の fp32 との照合は 1024² のオイラー法 30 ステップと CFG で CPU 1 枚約 1 時間かかるので見送った (Mac の Anima の部品は Turbo で照合済み、16.152)
 
 **Mac でできなかったこと**: 電力量 (`hwnpu-dev powerbench` は sudo が要る)。AMD の Sana の DiT の q8、交差注意のキーと値をステップの外へ、Anima の VAE の段をまとめる、AMD での CFG のステップの確認は別の作業で。
+### 16.161 RTMDet-m を AMD の NPU で: ONNX の CNN を IRON のグラフにする変換器 — 2026-11-11
+
+- 動機: 19 節 (amd-npu-models.md) で CPU に置いた ONNX の 5 つのモデルのうち、計算の大きい RTMDet-m (39 GMAC) は NPU で CPU に勝てる見込みがあった (YuNet は 0.1 GFLOP で負けた)。演算の切り替え (1 回約 250 µs) が時間を決めるので、畳み込み 1 つを行列積 1 回 (バイアスは 1 のチャネル、SiLU は行列積の後段) にする
+- `tools/amd/iron_onnxcnn.py` (amd-npu-models.md 21 節): 畳み込み、深さ方向、チャネル注意、SPPF の max pool、2 倍の拡大、足し算、連結。RTMDet-m の頭まで 150 ステップ、511 演算、13 コマンド
+- 結果: 1 枚 0.33 秒 (CPU の ONNX Runtime 1 スレッド 1.43 秒、hwnpu の CPU 実行器 2.25 秒)。検出は ONNX Runtime と同じ物、スコアの差 0.013 以内、枠の差 1.3〜7.6 px。固定されるメモリ 565 MiB
+- `hwnpu-image detect` は AMD の機械で、models.yaml の device が npu (RTMDet-m) なら書き出し (`~/models/rtmdet-m.amd-npu2`) を使い、なければ初回に IRON で作る (`chat.RunIRON` を `PrepareAMD` から切り出した)。IRON がなければ CPU
+- tiny と s は精度が足りない: BN を畳み込んだ重みとバイアスの和が出力の 50 倍ほどで打ち消し合う。NPU で 1 演算ずつ測ると、原因は MEDIUM の bfp16 (A と B の両方、8 個で指数を共有)、行列積の後段の SiLU (vtanh は |x| ≤ 0.5 で引数をそのまま返す)、s のほぼ定数のチャネル (bf16 の刻みより小さい変化)。チャネルの並べ替えなどで tiny のスコアの差は 0.2 → 0.07 になったが m が悪くなり、全部 HIGH の tiny は CPU より遅い (amd-npu-models.md 21.4)。models.yaml で AMD では CPU に
+- 電力 (balanced、PPT からアイドルを引く): 1 枚 NPU 0.325 秒・1.86 J、CPU の ONNX Runtime 1 スレッド 0.54 秒・8.2〜10.7 J、hwnpu の CPU 実行器 1.0 秒・16 J。NPU はエネルギーで 4.4〜5.8 分の 1
+- 直したことと残り: amd-npu-models.md 21.2、21.3
+
+### 16.162 RTMO-s を AMD の NPU で: Focus、Split、Transformer の層 (AIFI) を変換器に — 2026-11-11
+
+- 動機: CLOUD_AI_COMPATIBILITY.md の画像の順番で、RTMDet の次に ONNX の汎用の道に載るもの。RTMO-s の骨格は YOLOX 型で、首に Transformer の層が 1 つある
+- `iron_onnxcnn.py` に Focus (6 × 6、stride 2 の畳み込みに組み替え)、Split、group の畳み込み、AIFI (32 次元の頭を 64 に広げた IRON の MHA、LayerNorm、erf の GELU) を足した。頭の畳み込み (`ironcnn.LastConvs`) までを NPU、残りはホストの評価器
+- 精度: MEDIUM では関節のスコアが 0.13、確信の低い人の枠が 97 px ずれた。HIGH と SiLU の演算で、関節の位置 2 px、スコア 0.03 以内。1 枚 0.22 秒 (MEDIUM なら 0.15 秒)
+- 書き出しの読み書きと実行を `internal/vision/ironcnn` にまとめ、detect と pose で共有。`hwnpu-image pose` は AMD の機械で初回に書き出す (models.yaml の `device: {amd: npu}`)
+- 詳しくは amd-npu-models.md 22 節
+
+### 16.163 点や箱で指定する切り抜き (EfficientSAM): `hwnpu-image segment` — 2026-11-11
+
+- 動機: CLOUD_AI_COMPATIBILITY.md の画像の 2 番目。BiRefNet は deformable conv があるので、素の ViT の EfficientSAM から
+- 符号器 (1024 × 1024 の ViT と首) を `tools/amd/iron_efficientsam.py` で IRON のグラフ 1 つに (64 次元の頭なので IRON の MHA にそのまま載る)。初回に書き出す (models.yaml の `device: {amd: npu}`、`internal/vision/segment`)
+- 復号器 (プロンプトの符号化と mask の復号) は、作者の ONNX をホストの評価器で。評価器に If、ScatterND、ConvTranspose、InstanceNormalization、LayerNormalization、Resize (cubic まで) を足し、大きな行列積は sgemm の float32 に。ONNX の参照評価器と IoU の予測 1e-6、mask の符号は全画素で一致、1 回 0.6〜0.7 秒
+- 符号器の CPU の経路: ONNX Runtime があればそれ、なければ hwnpu の評価器 (Ti で 30 秒、外部依存なし)
+- 結果: Ti の符号器 0.34 秒、S 0.48 秒 (CPU の ONNX Runtime 1.9 秒と 4.5 秒)。NPU と CPU の mask の IoU 0.93〜1.0 (既定で書く一番スコアの高い mask は 0.989 以上)
+- 詳しくは amd-npu-models.md 23 節
