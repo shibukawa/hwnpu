@@ -3974,3 +3974,25 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
   - CFG を雑音の多いステップで外す (上の表)
 - **P·V の bfp16** (`--dit-mha qkpv`、16.147): 512² では注意が小さく速くならない。1024² で −5 %、電力量 −12 %、絵は同じ。既定 (`qk`) を変えるとすべての書き出しを作り直すことになり、16.147 では参照から細部が少し離れたので、まだ既定にしていない
 - 残り: 交差注意のキーと値をステップの外へ (演算の 0.7 %)、Anima の VAE の同じ形の段をまとめる (Turbo の 12 %)
+
+### 16.155 ダウンロード全体の残り時間と、最後の行の時間の内訳 (ダウンロード、変換・ロード・コンパイル、処理) — 2026-11-11
+
+ファイルは 1 つずつ落とす。並列にすると全部のバーが見えるが、各バーの残り時間は今の分け前の速さで計算するため、小さいファイルが終わって残りが速くなる分を見込めない。例: 4 GB と 1 GB を合わせて 100 MB/s で並列に落とすと、表示は 80 秒と 20 秒になる。実際は 50 秒で終わり、1 つずつ落としたときと同じになる。正しい待ち時間は、1 つずつのまま、全体の残りのバイト数と今の速さから出せる。
+
+- **大きさを先に集める** (`chat.Expect`、`internal/chat/plan.go`): まだないファイルの大きさを、8 本並列の HEAD で集める。Hugging Face の `resolve` は LFS や xet のファイルに CDN へのリダイレクト (302) を返し、その `Content-Length` はリダイレクトの本文の長さになる。そのためリダイレクトは追わず、`X-Linked-Size` を読む (小さいファイルの 307 にも付く)。path の取得元は stat で読む。s3 と、サインインの要るリポジトリは大きさがわからないので、合計から外す。`.part` は済んだ分として数える
+- **バー**: 一覧に入ったファイルは `1.20 / 4.00 GB, all 3.10 / 9.40 GB  85.3 MB/s, 1m26s left` と出る。残り時間は全体の残り ÷ 今のファイルの速さ。一覧のファイルが全部そろうと、次の `Expect` は 0 から数え直す
+- **呼ぶところ**: `FetchWeights` (分割された checkpoint の shard: チャット、文字起こし、TTS、systemone)、Anima、Sana、Magenta RealTime、MOSS-SoundEffect。config.json や index.json のように中身を見て初めて次のファイルが決まるもの、トークナイザーのような小さいファイルは一覧に入れない
+- **最後の行** (`console.Times`、`internal/console/phases.go`): `took 3m12s: downloading 2m40s, converting, loading and compiling 25s, running 6.2s`。ダウンロードがなければその項目は出さない
+  - 処理を始めるところでコマンドが `console.Running()` を呼ぶ。最後の行は、それを呼んだコマンドだけが出す。会話やサーバー (`hwnpu-chat` の対話、`serve`、`systemone --listen`) は出さない
+  - 処理の途中の変換・ロード・コンパイルは、準備の側に数える。そのため `iron.OpenGraphWith`、`runner.Open`、大きさごとに変換する深度推定 (DA3、MoGe-2)、OCR、YuNet、SigLIP の塔の読み込みが `console.Loading()` で囲んである。Sana と Anima が段ごとに読み込む時間もこれで準備の側に入る。別のモデルを読み込み直すコマンド (MOSS-SoundEffect、Magenta RealTime) は `console.Preparing()` で準備の側に戻す
+  - ダウンロードの時間は `fetch` の中で測る (重なったダウンロードは 1 回に数える)。サインインを待つ時間とハッシュの確認の時間も含む
+  - 準備と処理が重なる時間 (ロードと同時に走る処理) は、準備の側に数える。Core ML が最初の呼び出しで行うコンパイル、再生の時間 (`--play`) は処理の側に入る
+- **hwnpu-chat の読み込みのログ**: 分割したプログラムのバーは `.parts.json` の名前を出していた。そのため、Core ML のコンパイルの時間 (plamo-3-translate-8b の 5 部分で 37 秒) が JSON の処理に見えた (中身は 32 KB の部分の一覧で、読むのは一瞬)。バーはモデル名、時間、1 回に読むトークン数、部分の数、配置にした (`[1/2] Qwen3-0.6B 15s, 8 tokens per call, 1 part, all on the NPU`)。全部読み終えたら、hwnpu-image と同じく `loaded Qwen3-0.6B in 34s, 2 programs, all on the NPU` を出す。続けて、会話やサーバーにも、それまでの内訳 `ready after 35s: converting, loading and compiling 35s` を出す (`console.Prepared`)。Qwen3-0.6B の 2 回目の読み込みは 2.7 秒で、初回の時間のほとんどは Core ML の最初のコンパイル
+- **`HWNPU_PROFILE=1` をすべてのコマンドに** (`console.Profile`、`internal/console/profile.go`): これまでは hwnpu-chat が答えのたびに、デコードの 1 ステップの内訳と Neural Engine が抱えるメモリを出すだけだった。今は hwnpu-audio、hwnpu-image、hwnpu-chat、hwnpu-dev の最後に次を出す (`console.Done`、`console.WriteProfile`)
+  - ダウンロード 1 件ずつの時間、バイト数、速さ、`REPO@REV/FILE`
+  - 先に大きさを集めた時間
+  - プログラムの読み込み 1 件ずつの時間とパス。中で読み込んだものは字下げして、始まった順に並べる。読み込みを記録するのは `iron.OpenGraphWith`、`runner.Open`、`chain.Open` / `OpenOn` / `Share`、深度推定・MoGe-2 の大きさ、YuNet、OCR、SigLIP の塔。`runner.Open` の中の同じパスの `chain.Open` は 1 回に数える
+  - `decode.WriteProfile` (`console.OnProfile` で登録。チャット以外のコマンドの言語モデルにも出る)
+  - 詳細を消さない: チャットのバーは、プロファイルのときだけファイル名も残す (`[1/2] Qwen3-0.6B (qwen3-lut8-c4096-q8.mlpackage) 0.5s, 8 tokens per call, ...`)
+  - 実機: swift-f0 の初回の取得は、プロファイルで 1.68 秒、バーで 0.2 秒だった。差は最初のバイトまでの待ちで、curl でも Hub のリダイレクトまで 0.2 秒、CDN の最初のバイトまで 0.8 秒。バーは最初のバイトから始まるので、この待ちを含まない。DA3-BASE の深度推定では、処理の途中で 504x322 を読み込んだ 0.26 秒 (vit 0.19 秒、head 0.08 秒) が準備の側に入った
+- テスト: `TestExpect` (偽のハブ、302 と `X-Linked-Size`、200 と長さ、`.part` の続き、1 つずつ落としたときの合計)、`TestPhases` (重なったダウンロード、入れ子の Loading)、`TestProfile` (一覧、字下げ、同じパスの 2 重、リンクは載せない)。実機: swift-f0 の初回 `took 3.9s: downloading 1.8s, converting, loading and compiling 2.1s, running 0.1s`、2 回目 `took 0.1s: converting, loading and compiling 0.0s, running 0.1s`。Hub の HEAD で Qwen3-0.6B の model.safetensors (1503300328) と config.json (726)、Qwen3-4B の shard の大きさが返った

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	llmrunner "github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -64,6 +65,7 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	if r.prog != nil && r.w == W && r.h == H {
 		return nil
 	}
+	defer console.Loading(fmt.Sprintf("YuNet %dx%d in %s", W, H, r.dir))()
 	if err := r.close(); err != nil {
 		return err
 	}

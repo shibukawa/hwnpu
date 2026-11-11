@@ -75,6 +75,7 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer s.Close()
+	console.Running()
 	t0 := time.Now()
 	pcm, frames, err := s.Speak(ctx, speech.Request{Text: strings.Join(c.Text, " "), Language: c.Lang, Voice: c.Voice, Seed: seed, MaxFrames: c.MaxFrames})
 	if err != nil {

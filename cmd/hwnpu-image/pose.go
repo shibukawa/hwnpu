@@ -114,6 +114,7 @@ func (c *PoseCmd) Run(ctx context.Context) error {
 
 // estimate finds the people of each picture with e.
 func (c *PoseCmd) estimate(ctx context.Context, e *pose.Estimator, logf func(string, ...any)) error {
+	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	ms := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 	for _, p := range c.Pictures {

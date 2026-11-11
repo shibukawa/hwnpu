@@ -116,6 +116,7 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 			keep[k] = true
 		}
 	}
+	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for _, p := range c.Pictures {
 		img, err := readPicture(p)

@@ -83,6 +83,7 @@ func (c *PitchCmd) Run(ctx context.Context) error {
 		logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
 	}
 	defer d.Close()
+	console.Running()
 	for _, p := range c.Files {
 		raw, err := os.ReadFile(p)
 		if err != nil {

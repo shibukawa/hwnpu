@@ -25,6 +25,8 @@ import (
 
 	"github.com/alecthomas/kong"
 
+	"github.com/shibukawa/hwnpu/internal/console"
+
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/check"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/convert"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/formats"
@@ -72,6 +74,7 @@ func main() {
 		kong.Description("Tools for developing hwnpu: converting and checking models by hand, measuring NPUs, packaging xclbins."),
 		kong.UsageOnError())
 	k.FatalIfErrorf(k.Run())
+	console.WriteProfile(os.Stderr) // HWNPU_PROFILE's downloads and loads
 }
 
 // Run runs the tool the subcommand names with its arguments, as its own main did: it parses

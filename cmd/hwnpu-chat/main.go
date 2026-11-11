@@ -64,6 +64,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 type cli struct {
@@ -93,4 +94,5 @@ func main() {
 		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Bind(stop))
 	k.FatalIfErrorf(k.Run())
+	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
 }
