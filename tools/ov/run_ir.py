@@ -11,9 +11,14 @@ tests (HWNPU_OV_PYTHON names a Python with the openvino package).
 """
 import argparse
 import os
+import sys
 
 import numpy as np
-import openvino as ov
+
+# no telemetry: openvino_telemetry sends usage events from a child process (multiprocessing),
+# which outlives this one and fails once its script is removed; openvino falls back to its stub
+sys.modules["openvino_telemetry"] = None
+import openvino as ov  # noqa: E402
 
 
 def main():

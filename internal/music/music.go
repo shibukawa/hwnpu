@@ -117,15 +117,21 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 			return p, err
 		}
 	}
+	// Intel's NPU reads OpenVINO IR (kept in Dir/intel) and no lookup tables: lut8 is int8
+	dir, ext := s.Dir, ".mlpackage"
 	if s.Backend == llm.BackendIntel {
-		return p, fmt.Errorf("music: Intel's NPU is not supported yet")
+		format = llm.IntelFormat(format)
+		dir, ext = filepath.Join(s.Dir, "intel"), ".xml"
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return p, err
+		}
 	}
 	name := func(kind, f string) string {
-		return filepath.Join(s.Dir, fmt.Sprintf("mrt2-small-%s-r%d-%s.mlpackage", kind, Revision, f))
+		return filepath.Join(dir, fmt.Sprintf("mrt2-small-%s-r%d-%s%s", kind, Revision, f, ext))
 	}
 	p.Temporal, p.Depth = name("temporal", format), name("depth", format)
 	ssName := func(kind string) string {
-		return filepath.Join(s.Dir, fmt.Sprintf("mrt2-small-%s-t%d-r%d-fp16.mlpackage", kind, DecodeFrames+decodeContext, ssRevision))
+		return filepath.Join(dir, fmt.Sprintf("mrt2-small-%s-t%d-r%d-fp16%s", kind, DecodeFrames+decodeContext, ssRevision, ext))
 	}
 	p.Decoder = ssName("decoder")
 	if s.Text || s.AudioStyle {
@@ -133,13 +139,13 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	}
 	if s.Text {
 		p.TextEncoder, p.Mapper, p.SPM = at(TextFiles[0]), at(TextFiles[1]), at(TextFiles[3])
-		p.TextProgram = filepath.Join(s.Dir, fmt.Sprintf("mrt2-musiccoca-text-r%d-fp16.mlpackage", musicCoCaRevision))
-		p.TextTable = strings.TrimSuffix(p.TextProgram, ".mlpackage") + ".table"
+		p.TextProgram = filepath.Join(dir, fmt.Sprintf("mrt2-musiccoca-text-r%d-fp16%s", musicCoCaRevision, ext))
+		p.TextTable = strings.TrimSuffix(p.TextProgram, ext) + ".table"
 	}
 	if s.AudioStyle {
 		p.AudioPreprocessor, p.MusicEncoder = at(AudioStyleFiles[0]), at(AudioStyleFiles[1])
-		p.MusicProgram = filepath.Join(s.Dir, fmt.Sprintf("mrt2-musiccoca-music-r%d-fp16.mlpackage", musicCoCaRevision))
-		p.MusicPatches = strings.TrimSuffix(p.MusicProgram, ".mlpackage") + ".patches"
+		p.MusicProgram = filepath.Join(dir, fmt.Sprintf("mrt2-musiccoca-music-r%d-fp16%s", musicCoCaRevision, ext))
+		p.MusicPatches = strings.TrimSuffix(p.MusicProgram, ext) + ".patches"
 	}
 	if s.Encoder {
 		p.EncoderWeights = at(EncoderFiles[0])
@@ -199,7 +205,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 			return p, err
 		}
 		os.RemoveAll(c.path)
-		opts := llm.Options{Format: c.format}
+		opts := llm.Options{Format: c.format, Backend: s.Backend}
 		if c.format == "lut8" || c.format == "lut6" || c.format == "lut4" {
 			opts.Quant = "kmeans-minmax"
 		}

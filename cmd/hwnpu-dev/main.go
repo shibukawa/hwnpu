@@ -32,6 +32,7 @@ import (
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/formats"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/generate"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/info"
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/irdiff"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/powerbench"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/probe"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/report"
@@ -48,6 +49,7 @@ type cli struct {
 	Convert    tool `cmd:"" passthrough:"all" help:"Convert a Hugging Face checkpoint into a Core ML package or OpenVINO IR by hand (was hwnpu-convert)."`
 	Generate   tool `cmd:"" passthrough:"all" help:"Write text with a causal language model converted by convert (was hwnpu-generate)."`
 	Formats    tool `cmd:"" passthrough:"all" help:"Compare the weight formats of a chat model on the NPU: agreement, logits, perplexity, time (was hwnpu-formats)."`
+	Irdiff     tool `cmd:"" passthrough:"all" help:"Lower Core ML packages to OpenVINO IR and compare the CPU interpreter with OpenVINO's CPU on random inputs (Intel's path without its NPU)."`
 	Info       tool `cmd:"" passthrough:"all" help:"List the NPUs hwnpu can use, and where a model's operations would run (was hwnpuinfo)."`
 	Probe      tool `cmd:"" passthrough:"all" help:"Measure this machine's NPU with generated LLM-shaped models: speed, size limit, KV cache (was npuprobe)."`
 	Powerbench tool `cmd:"" passthrough:"all" help:"Measure the power Core ML models draw with macOS powermetrics (was powerbench)."`
@@ -57,7 +59,7 @@ type cli struct {
 
 var mains = map[string]func(){
 	"check": check.Main, "convert": convert.Main, "generate": generate.Main, "formats": formats.Main,
-	"info": info.Main, "probe": probe.Main, "powerbench": powerbench.Main, "report": report.Main,
+	"info": info.Main, "irdiff": irdiff.Main, "probe": probe.Main, "powerbench": powerbench.Main, "report": report.Main,
 	"xclbin": xclbin.Main,
 }
 

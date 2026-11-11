@@ -432,6 +432,22 @@ func (l *lowering) node(n *Node) {
 	case "Softmax":
 		a := axis(int(n.Int("axis", -1)), len(in[0].shape()))
 		out(l.op("softmax", map[string]any{"x": x(0), "axis": l.B.ScalarI32(int32(a))}, x(0).Shape...))
+	case "LayerNormalization":
+		// over the axes from axis to the last, scaled (and shifted) by constants of their shape
+		sh := in[0].shape()
+		a := axis(int(n.Int("axis", -1)), len(sh))
+		var axes []int
+		for i := a; i < len(sh); i++ {
+			axes = append(axes, i)
+		}
+		args := map[string]any{"x": x(0), "axes": l.ints(axes...), "epsilon": l.B.ScalarF16(float32(n.Float("epsilon", 1e-5)))}
+		if g := c(1); g != nil {
+			args["gamma"] = l.weight(n.In[1], g, sh[a:])
+		}
+		if b := c(2); b != nil {
+			args["beta"] = l.weight(n.In[2], b, sh[a:])
+		}
+		out(l.op("layer_norm", args, sh...))
 	case "HardSigmoid":
 		// max(0, min(1, alpha x + beta)): Core ML's sigmoid_hard, written with clip
 		v := l.op("mul", map[string]any{"x": x(0), "y": l.B.ScalarF16(float32(n.Float("alpha", 0.2)))}, x(0).Shape...)
@@ -1101,10 +1117,18 @@ func (l *lowering) gemm(n *Node, in []val) {
 }
 
 func (l *lowering) resize(n *Node, in []val) {
+	s := in[0].shape()
+	// to its own size (EfficientSAM's encoder resizes its input to 1024 x 1024, which the
+	// program's input already is), any mode: the input itself
+	same := len(in) > 3 && in[3].c != nil && slices.Equal(in[3].c.Ints(), s) ||
+		len(in) > 2 && in[2].c != nil && len(in[2].c.F) == len(s) && !slices.ContainsFunc(in[2].c.F, func(f float64) bool { return f != 1 })
+	if same {
+		l.vals[n.Out[0]] = in[0]
+		return
+	}
 	if mode := n.Str("mode", "nearest"); mode != "nearest" {
 		l.Fail("Resize %s: mode %s", n.Name, mode)
 	}
-	s := in[0].shape()
 	var sh, sw int
 	switch {
 	case len(in) > 3 && in[3].c != nil && len(in[3].c.F) == 4:

@@ -16,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/vision/segment"
 )
 
@@ -23,8 +24,8 @@ import (
 // Segment Anything does, with EfficientSAM (Meta's, Apache-2.0; internal/vision/segment). The
 // prompt is points in the thing (--point), out of it (--negative), or a box (--box), in the
 // picture's pixels. The image encoder runs on AMD's NPU (an export of
-// tools/amd/iron_efficientsam.py, made with IRON on the first run), elsewhere or with --device
-// cpu on the CPU (ONNX Runtime when its library is there, else hwnpu's evaluator: slow); the mask
+// tools/amd/iron_efficientsam.py, made with IRON on the first run), on Intel's NPU (its ONNX
+// file converted to OpenVINO IR on the first run), elsewhere or with --device cpu on the CPU (ONNX Runtime when its library is there, else hwnpu's evaluator: slow); the mask
 // decoder on the host.
 //
 // For each picture it prints one line of JSON: the mask's score (the IoU the decoder predicts),
@@ -90,6 +91,25 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 		}
 		defer dev.Close()
 		if sm, err = segment.OpenNPU(ctx, dev, export, dec); err != nil {
+			return err
+		}
+	} else if vendor := chat.HereVendor(); c.Device != "cpu" && (vendor == "intel" || vendor == "apple" && c.Device == "npu") {
+		// Intel's NPU runs the encoder converted from its ONNX file to OpenVINO IR; Apple's the
+		// same as Core ML only when asked (--device npu: not yet measured on the Neural Engine)
+		enc, dec, err := segment.Fetch(ctx, setup)
+		if err != nil {
+			return err
+		}
+		var opts []hwnpu.Option
+		if vendor == "apple" {
+			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		}
+		dev, backend, err := llm.OpenDevice(ctx, "", cacheDirOf(""), opts...)
+		if err != nil {
+			return err
+		}
+		defer dev.Close()
+		if sm, err = segment.OpenProgram(ctx, dev, backend, enc, dec, filepath.Dir(enc), lw); err != nil {
 			return err
 		}
 	} else {

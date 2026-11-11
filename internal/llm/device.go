@@ -22,12 +22,13 @@ const (
 const BackendEnv = "HWNPU_BACKEND"
 
 // ProgramBackend is the program format a device backend runs (Options.Backend): coreml for Core
-// ML, intel for Level Zero and OpenVINO; "" for a backend that runs neither.
+// ML, intel for Level Zero and OpenVINO; "" for a backend that runs neither. A program format
+// is its own (what OpenDevice returns), so that a caller may pass either.
 func ProgramBackend(device string) string {
 	switch device {
 	case "coreml":
 		return BackendCoreML
-	case "levelzero", "openvino":
+	case "levelzero", "openvino", BackendIntel:
 		return BackendIntel
 	}
 	return ""

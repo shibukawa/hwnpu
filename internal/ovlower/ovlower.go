@@ -367,6 +367,7 @@ var binaryOps = map[string]string{"add": "Add", "sub": "Subtract", "mul": "Multi
 var unaryOps = map[string][2]string{
 	"silu": {"Swish", "opset4"}, "sigmoid": {"Sigmoid", "opset1"}, "tanh": {"Tanh", "opset1"},
 	"exp": {"Exp", "opset1"}, "relu": {"Relu", "opset1"}, "sqrt": {"Sqrt", "opset1"}, "abs": {"Abs", "opset1"},
+	"cos": {"Cos", "opset1"}, "sin": {"Sin", "opset1"}, "erf": {"Erf", "opset1"}, "softplus": {"SoftPlus", "opset4"},
 }
 
 var reduceOps = map[string]string{"reduce_mean": "ReduceMean", "reduce_max": "ReduceMax", "reduce_sum": "ReduceSum"}
@@ -394,7 +395,7 @@ func (l *lowerer) op(op *milspec.Operation) {
 		}
 	case "add", "sub", "mul", "real_div", "maximum", "minimum":
 		set(b.NamedOp(binaryOps[typ], "opset1", name, numpy, elem, shape, l.in(op, "x"), l.in(op, "y")))
-	case "silu", "sigmoid", "tanh", "exp", "relu", "sqrt", "abs":
+	case "silu", "sigmoid", "tanh", "exp", "relu", "sqrt", "abs", "cos", "sin", "erf", "softplus":
 		u := unaryOps[typ]
 		set(b.NamedOp(u[0], u[1], name, nil, elem, shape, l.in(op, "x")))
 	case "log":
@@ -534,6 +535,23 @@ func (l *lowerer) op(op *milspec.Operation) {
 			y = b.NamedOp("Add", "opset1", name, numpy, elem, shape, y, l.in(op, "beta"))
 		}
 		set(y)
+	case "clip":
+		attrs := []string{"min", ftoa(l.float(op, "alpha", 0)), "max", ftoa(l.float(op, "beta", 0))}
+		set(b.NamedOp("Clamp", "opset1", name, attrs, elem, shape, l.in(op, "x")))
+	case "elu":
+		set(b.NamedOp("Elu", "opset1", name, []string{"alpha", ftoa(l.float(op, "alpha", 1))}, elem, shape, l.in(op, "x")))
+	case "pow":
+		set(b.NamedOp("Power", "opset1", name, numpy, elem, shape, l.in(op, "x"), l.in(op, "y")))
+	case "cast":
+		set(b.NamedOp("Convert", "opset1", name, []string{"destination_type", elem}, elem, shape, l.in(op, "x")))
+	case "pixel_shuffle":
+		// channel c f^2 + i f + j to (c, y f + i, x f + j): DepthToSpace's depth_first (CRD)
+		f := l.ints(op, "upscale_factor", 1)[0]
+		set(b.NamedOp("DepthToSpace", "opset1", name, []string{"mode", "depth_first", "block_size", itoa(f)}, elem, shape, l.in(op, "x")))
+	case "max_pool":
+		set(l.maxPool(op, name, elem, shape))
+	case "conv_transpose":
+		set(l.convTranspose(op, name, elem, shape))
 	case "conv":
 		set(l.conv(op, name, elem, shape))
 	case "constexpr_blockwise_shift_scale":
@@ -589,6 +607,95 @@ func (l *lowerer) conv(op *milspec.Operation, name, elem string, shape []int) ov
 		ws := append([]int{g, w.Shape[0] / g}, w.Shape[1:]...)
 		w = b.Op("Reshape", "opset1", []string{"special_zero", "false"}, w.Elem, ws, w, l.i64s(ints64(ws)...))
 	}
+	if !l.has(op, "bias") {
+		return b.NamedOp(typ, "opset1", name, attrs, elem, shape, x, w)
+	}
+	y := b.Op(typ, "opset1", attrs, elem, shape, x, w)
+	bias := l.in(op, "bias")
+	bs := make([]int, len(shape))
+	for i := range bs {
+		bs[i] = 1
+	}
+	bs[1] = shape[1]
+	bias = b.Op("Reshape", "opset1", []string{"special_zero", "false"}, bias.Elem, bs, bias, l.i64s(ints64(bs)...))
+	return b.NamedOp("Add", "opset1", name, numpy, elem, shape, y, bias)
+}
+
+// maxPool lowers a max pool: MaxPool with explicit pads (OpenVINO's padded values never win,
+// as MIL's).
+func (l *lowerer) maxPool(op *milspec.Operation, name, elem string, shape []int) ovir.Value {
+	x := l.in(op, "x")
+	spatial := len(x.Shape) - 2
+	ones := make([]int64, spatial)
+	for i := range ones {
+		ones[i] = 1
+	}
+	k, st := l.ints(op, "kernel_sizes"), l.ints(op, "strides", ones...)
+	pb, pe := make([]int64, spatial), make([]int64, spatial)
+	switch pt := l.str(op, "pad_type", "valid"); pt {
+	case "valid":
+	case "custom":
+		pad := l.ints(op, "pad")
+		if len(pad) != 2*spatial {
+			l.fail("max_pool %s: %d pads for %d spatial axes", opName(op), len(pad), spatial)
+		}
+		for i := range spatial {
+			pb[i], pe[i] = pad[2*i], pad[2*i+1]
+		}
+	default:
+		l.fail("max_pool %s: pad_type %q", opName(op), pt)
+	}
+	rounding := "floor"
+	if l.has(op, "ceil_mode") && l.boolean(op, "ceil_mode") {
+		rounding = "ceil"
+	}
+	attrs := []string{"strides", join(st), "pads_begin", join(pb), "pads_end", join(pe), "kernel", join(k), "rounding_type", rounding, "auto_pad", "explicit"}
+	return l.b.NamedOp("MaxPool", "opset1", name, attrs, elem, shape, x)
+}
+
+// convTranspose lowers a transposed convolution: ConvolutionBackpropData, the weight (Cin,
+// Cout, k...) as MIL lays it out. MIL's pads crop
+// the full output ((in - 1) s + (k - 1) d + 1); a crop past its end (a larger output, as with
+// output_shape) is OpenVINO's output_padding.
+func (l *lowerer) convTranspose(op *milspec.Operation, name, elem string, shape []int) ovir.Value {
+	b := l.b
+	x := l.in(op, "x")
+	w := l.in(op, "weight")
+	spatial := len(x.Shape) - 2
+	ones := make([]int64, spatial)
+	for i := range ones {
+		ones[i] = 1
+	}
+	st, dil := l.ints(op, "strides", ones...), l.ints(op, "dilations", ones...)
+	groups := l.ints(op, "groups", 1)[0]
+	pb := make([]int64, spatial)
+	switch pt := l.str(op, "pad_type", "valid"); pt {
+	case "valid":
+	case "custom":
+		pad := l.ints(op, "pad")
+		if len(pad) != 2*spatial {
+			l.fail("conv_transpose %s: %d pads for %d spatial axes", opName(op), len(pad), spatial)
+		}
+		for i := range spatial {
+			pb[i] = pad[2*i]
+		}
+	default:
+		l.fail("conv_transpose %s: pad_type %q", opName(op), pt)
+	}
+	pe, outPad := make([]int64, spatial), make([]int64, spatial)
+	for i := range spatial {
+		full := int64(x.Shape[2+i]-1)*st[i] + int64(w.Shape[2+i]-1)*dil[i] + 1
+		e := full - pb[i] - int64(shape[2+i])
+		if e < 0 {
+			outPad[i], e = -e, 0
+		}
+		pe[i] = e
+	}
+	attrs := []string{"strides", join(st), "dilations", join(dil), "pads_begin", join(pb), "pads_end", join(pe), "auto_pad", "explicit", "output_padding", join(outPad)}
+	if groups != 1 {
+		l.fail("conv_transpose %s: groups %d (only 1 is supported, as in milcpu)", opName(op), groups)
+	}
+	const typ = "ConvolutionBackpropData"
 	if !l.has(op, "bias") {
 		return b.NamedOp(typ, "opset1", name, attrs, elem, shape, x, w)
 	}
@@ -703,6 +810,8 @@ func mask(v []bool) string {
 }
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+func ftoa(v float32) string { return strconv.FormatFloat(float64(v), 'g', -1, 32) }
 
 func join(v []int64) string {
 	s := make([]string, len(v))

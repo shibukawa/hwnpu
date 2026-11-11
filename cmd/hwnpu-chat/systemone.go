@@ -13,6 +13,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/systemone"
 )
 
@@ -102,12 +103,18 @@ func (c *SystemOneCmd) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if cfg, err = systemone.Prepare(ctx, systemone.Setup{Dir: filepath.Join(lf.Dir, m.DirName()), Repo: m.Source(), Seqs: seqs, Format: c.Format, Log: lw}); err != nil {
+		backend := ""
+		if !c.CPU { // the CPU interpreter runs Core ML packages
+			if backend, err = llm.ProgramFormat(ctx, lf.Backend); err != nil {
+				return err
+			}
+		}
+		if cfg, err = systemone.Prepare(ctx, systemone.Setup{Dir: filepath.Join(lf.Dir, m.DirName()), Repo: m.Source(), Seqs: seqs, Format: c.Format, Backend: backend, Log: lw}); err != nil {
 			return err
 		}
 		cfg.Name = m.Name
 	}
-	cfg.Tokenizer, cfg.Calibration, cfg.CacheDir, cfg.CPU, cfg.Log = c.Tokenizer, c.Calibration, lf.Cache, c.CPU, lw
+	cfg.Tokenizer, cfg.Calibration, cfg.CacheDir, cfg.CPU, cfg.Log, cfg.Backend = c.Tokenizer, c.Calibration, lf.Cache, c.CPU, lw, lf.Backend
 	cfg.Vision, cfg.Audio = split(c.Vision), split(c.Audio)
 	m, err := systemone.Load(ctx, cfg)
 	if err != nil {

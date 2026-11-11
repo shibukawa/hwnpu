@@ -28,3 +28,17 @@ func TestFormatOf(t *testing.T) {
 		}
 	}
 }
+
+// ProgramBackend takes a device backend or the program format OpenDevice returns: the commands
+// pass the latter (hwnpu-image pose, detect, ocr, hwnpu-audio pitch, notes), which made "intel"
+// "" and every one of them refuse Intel's NPU.
+func TestProgramBackend(t *testing.T) {
+	for in, want := range map[string]string{
+		"coreml": BackendCoreML, "levelzero": BackendIntel, "openvino": BackendIntel, BackendIntel: BackendIntel,
+		"xdna": "", "": "",
+	} {
+		if got := ProgramBackend(in); got != want {
+			t.Errorf("ProgramBackend(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

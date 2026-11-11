@@ -84,7 +84,11 @@ type Setup struct {
 	Machine    int
 	TextFormat string // fp16 or lut8 (Formats by default)
 	DitFormat  string // lut8 or fp16
-	Log        io.Writer
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
+	// what the CPU interpreter runs) or OpenVINO IR for Intel's NPU, kept in Dir/intel, whose
+	// lut8 is int8 (llm.IntelFormat).
+	Backend string
+	Log     io.Writer
 }
 
 // Paths are the files and programs of a prepared model.
@@ -104,6 +108,10 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
 	text, dit := Formats(cmp.Or(s.Machine, chat.MachineMemory()))
 	text, dit = cmp.Or(s.TextFormat, text), cmp.Or(s.DitFormat, dit)
+	intel := s.Backend == llm.BackendIntel
+	if intel {
+		text, dit = llm.IntelFormat(text), llm.IntelFormat(dit)
+	}
 	p := Paths{Dir: s.Dir}
 	var want []chat.File
 	for _, f := range Files {
@@ -124,8 +132,15 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		return p, err
 	}
 	p.TextCfg = cfg
+	dir, ext := s.Dir, ".mlpackage"
+	if intel {
+		dir, ext = filepath.Join(s.Dir, "intel"), ".xml"
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return p, err
+		}
+	}
 	name := func(kind, format string) string {
-		return p.at(fmt.Sprintf("hwnpu-%s-r%d-%s.mlpackage", kind, Revision, format))
+		return filepath.Join(dir, fmt.Sprintf("hwnpu-%s-r%d-%s%s", kind, Revision, format, ext))
 	}
 	for i := range TextSplit(text) {
 		p.Text = append(p.Text, name(fmt.Sprintf("text-%d", i), text))
@@ -198,7 +213,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] converting %s", done, todo, filepath.Base(j.path)))
 		os.RemoveAll(j.path)
 		opts := j.opts
-		opts.Backend, opts.Format = llm.BackendCoreML, j.format
+		opts.Backend, opts.Format = cmp.Or(s.Backend, llm.BackendCoreML), j.format
 		if _, err := llm.WritePart(j.path, j.part, w, opts, nil); err != nil {
 			bar.Done("failed")
 			return p, err

@@ -4174,3 +4174,41 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
   - Core ML の int4 では出力層 (幅 107520 の `ios18.linear`) だけが CPU に置かれる (ほかの 670 演算は Neural Engine)。lut4 の同じ層は Neural Engine。Mac で int4 を使うことはないので、そのままにした
 - 確かめていないこと ([handoff-plamo3-8b.md](handoff-plamo3-8b.md)): M4 の速さとコンパイルのキャッシュ、M3 の lut8、M2 の lut8 の 2 回目以降の読み込み、AMD の書き出し (ピークのメモリ、コマンドの 2 秒、デバイスのヒープ)、HF の fp32 との照合 (KL。8B の実重みでの `hwnpu-dev check`、`-f16` の層ごとの誤差、`check -package` の KL も。訳が崩れないことしか見ていない)、GPTQ の符号と lut の表の当てはめ (`--lut-fit wkmeans`。8B の fp32 の校正は約 34 GB で 16 GB の Mac ではできない)、長い文脈 (パスキー、128K と 250K)、M2 と M3 のメモリの最大
 - 部品としての値 (16.94): 入力と出力は文 (PLaMo のトークナイザー)、常駐は 3.81 GiB (ANE、lut4)、2 回目の読み込み 3〜5 秒、KV は会話とともに 1 トークン 9 KiB (hwnpu-chat の表示、262144 で 2.25 GiB) と、窓 2048 のリング 28 層
+
+### 16.165 Intel の経路のなかったモデルを OpenVINO IR に: 変換と、OpenVINO の CPU での確認 — 2026-11-12
+
+Intel の NPU に向けた変換 (OpenVINO IR、`internal/ovlower`) がない、または壊れていたモデルを洗い出し、Go の変換器があるものはすべて IR を書けるようにした。Intel の実機はないので、確かめたのは「変換が通る」「IR が MIL と同じ値を出す」「コマンドが変換から結果まで通り、結果が Apple / AMD / CPU の経路と合う」まで。NPU のコンパイラが受け付けるか、速さ、メモリは未確認 (`tools/intel/hwnpu-intel-check.ps1` の full に足した)。
+
+- **確かめ方**: `HWNPU_BACKEND=openvino` で、コマンドは機械を Intel のものとして扱う (`chat.HereVendor`)。Intel 向けの IR を書き、OpenVINO の CPU プラグイン (`internal/backend/openvino`) で動かす。Intel の NPU の Level Zero との違いはコンパイラと実行の装置だけで、変換、引数の名前、ホストの処理は同じ。今までは `--backend` を持つ hwnpu-chat と Anima だけがこれで確かめられ、AMD の機械では hwnpu-image と hwnpu-audio が AMD の経路に入っていた
+- **見つかった不具合**: `llm.OpenDevice` の 2 番目の戻り値はプログラムの形式 (`intel`) なのに、pose、detect、ocr、pitch、notes はそれを `llm.ProgramBackend` にもう一度通し、`""` になって「Core ML も IR も動かない装置」として止まっていた。この 5 つは Intel の NPU では一度も動かなかったはず。`ProgramBackend` が形式名も受けるようにした (`TestProgramBackend`)
+- **ovlower に足した演算** (MIL → IR): `clip` → Clamp、`max_pool` → MaxPool (opset1、明示のパディング)、`pow` → Power、`pixel_shuffle` → DepthToSpace (`depth_first`、PyTorch の並び)、`conv_transpose` → ConvolutionBackpropData (MIL の切り落とし `pad` を pads_begin/end に、出力が全長より長い分は `output_padding` に。groups は milcpu と同じく 1 だけ)、`elu` → Elu、`cos`、`sin`、`erf`、`softplus`、`cast` → Convert。これで milcpu の演算は `read_state` (プローブだけ) を除いて全部下ろせる。`TestImageOps` が OpenVINO の CPU で milcpu と相対誤差 3e-4 以内
+  - RTMDet (clip)、RTMO と PP-OCR (max_pool)、DA3 と MoGe-2 (pixel_shuffle)、Magenta RT2 (conv_transpose、elu、clip)、MOSS の DAC (conv_transpose)、YuNet (pow) がこれを使う。ONNX の変換 (`internal/onnx`) を通るモデルは、今まで IR に下ろすと最初の未対応の演算で止まっていた
+- **新しく IR を書くようにしたもの**: どれも Core ML と同じ変換の関数に `Backend` を通しただけで、グラフは同じ。プログラムは `.xml` で、モデルのディレクトリの `intel/` (hwnpu-chat と同じ置き方) か、書き出しのディレクトリの拡張子 `.intel`
+  - hwnpu-image: face-detect (YuNet。今まで「AMD と Apple だけ」と断っていた)、depth (DA3、MoGe-2。`depth.Setup.Backend`、書き出しの `format: intel`)、generate の Sana (`sana.ConvertOptions.Backend`。`hwnpu-image convert --backend intel` も)、segment (EfficientSAM のエンコーダ。下)
+  - hwnpu-audio: transcribe (Whisper の 3 本)、tts (LFM3-Audio の文のモデル、depthformer、コーデック)、generate の Magenta RT2 (`music.WriteProgram` が IR も書く。`llm.WriteIR` を足した) と MOSS-SoundEffect
+  - hwnpu-chat systemone (d1。`systemone.Setup.Backend`、`--backend` を Load まで通す)。d1 のチェックポイントがこの機械になく、動かしていない
+- **重みの形式**: Intel の NPU は表 (lut) を読まないので、`llm.IntelFormat` で読み替える (lut8 → int8)。例外は SANA 1.5 1.6B の DiT: 行ごとの int8 で絵が崩れる (16.160) ので Intel では fp16 (`sana.FormatsFor`)。MOSS の文のモデルは lut8 と同じく 5 層を fp16 に残す (`sfx.TextOptions` が int8 も)
+- **EfficientSAM のエンコーダ**: 今までは AMD の NPU (IRON) か CPU だけ。ONNX のエンコーダを `internal/onnx` で MIL にするには、自分の大きさへの Resize (入力を 1024 × 1024 にする最初の段。プログラムの入力がもう 1024 × 1024 なので素通し) と LayerNormalization (MIL の layer_norm) が足りなかったので足した。ホストが ONNX と同じ双線形 (half_pixel) で 1024 × 1024 に引き伸ばしてから渡す (`segment.OpenProgram`)。Intel では既定で NPU、Apple では Neural Engine で未計測なので `--device npu` のときだけ
+- **新しい道具**: `hwnpu-dev irdiff A.mlpackage ...` は、Core ML のパッケージを IR に下ろし、同じ乱数の入力で milcpu と OpenVINO の CPU の出力を比べる。Core ML の経路しかないモデルの、下ろせない演算と値の食い違いを、Intel の経路を書く前に調べられる。OpenVINO の Python パッケージは `openvino_telemetry` が別プロセスで利用の記録を送り、そのプロセスが hwnpu の消した `serve_ir.py` を読みにいって失敗していた。`serve_ir.py` と `run_ir.py` はテレメトリのモジュールを読ませない (OpenVINO は自分のスタブに切り替える)
+- **テスト** (OpenVINO の CPU、`HWNPU_OV_PYTHON`): `qwen3`、`qwen35` (GDN、fp16 と int8)、`whisper` (エンコーダ、クロス、KV キャッシュ付きのデコーダ) の `TestIntelIR*` を足した。どれも MIL のキャッシュなしのプログラムと相対誤差 1e-3 以内。今までの lfm3、gemma4、lfm3vl、lfm3audio、plamo3、bert、plamo もそのまま通る
+- **実物のチェックポイントで、コマンドを `HWNPU_BACKEND=openvino` で** (Ryzen AI の機械の CPU。比べた相手は同じ入力の CPU の ONNX Runtime なし実行器、AMD の NPU、milcpu):
+
+| コマンド | モデル | 結果 |
+|---|---|---|
+| pose | RTMO-s | 人 1、箱とスコア 0.7085 が CPU と同じ、関節点も同じ |
+| detect | RTMDet-m | 物 2、箱が CPU と 0.1 ピクセル以内、スコア 0.3474 と 0.3476 |
+| ocr | PP-OCRv6 small | 2 行 "Hello Intel NPU 2026"、"OpenVINO IR check" が CPU と同じ |
+| pitch | SwiftF0 | 125 フレームの有声/無声が全部同じ、f0 の差 0.013 % 以内 |
+| notes | Basic Pitch | 音符が CPU と一字一句同じ |
+| face-detect | YuNet | 顔 3 と 1 が AMD の NPU と箱 ±1 ピクセル、スコア差 0.002 |
+| depth | DA3-SMALL | AMD の NPU と深度の相関 0.9994 (相対 RMS 2.4 %) |
+| depth | MoGe-2 ViT-S | AMD の NPU と深度の相関 0.9998、点 0.9995、視野 54.5° と 54.9° |
+| segment | EfficientSAM-S | AMD の NPU と同じマスク (面積 431、箱も同じ)、IoU の予測 0.882 と 0.883 |
+| chat | Qwen3.5-0.8B (int8) | 「日本の首都は？」に「東京です。」 |
+| tts → transcribe | LFM3-Audio-2B → Whisper large-v3-turbo (どちらも int8) | 読み上げた "Hello, this is a test of the Intel path." を Whisper がそのまま書き起こした |
+| generate | Magenta RT2 small | 文 "disco funk" のスタイルの 12 符号が CPU と同じ、4 秒の音楽 |
+| generate | Sana 600M 1024 × 1024 (int8) | 同じ種で AMD の NPU とほぼ同じ絵 (りんごと木の机) |
+| generate -m sfx | MOSS-SoundEffect v2.0 (文のモデルと DiT は int8) | 16 本を IR に変換 (11.5 GB のダウンロード)、20 ステップで 3 秒の音 (RMS 2400、NaN なし。1 ステップ 18 秒)。中身は耳で確かめていない |
+
+- **できなかったもの**: Chroma、Qwen-Image、SigLIP 2 (label)、FLUX は AMD の IRON のグラフ (Python) しかなく、Go の MIL のグラフがない。Intel (と Apple) で動かすには、その構造を `internal/llm/blocks` で組み直す移植が要る
+- 未確認 (実機が要る): NPU のコンパイラがこれらの演算 (DepthToSpace、ConvolutionBackpropData、Clamp、MaxPool、Elu など) と、大きなグラフ (Sana の Gemma 2 の 6 層 int8 で約 0.5 GB、EfficientSAM の 4096 トークンの注意) を受け付けるか、速さ、Core Ultra 5 135U のメモリ (Anima で 4.6 GB の上限、16.143) に Sana と MOSS が収まるか

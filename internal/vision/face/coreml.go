@@ -15,15 +15,16 @@ import (
 	"github.com/shibukawa/hwnpu/internal/onnx"
 )
 
-// ProgramRevision counts the changes to the Core ML programs OpenProgram writes that call for
+// ProgramRevision counts the changes to the programs OpenProgram writes that call for
 // converting them again.
 const ProgramRevision = 1
 
-// OpenProgram runs the ONNX file (face_detection_yunet_2023mar.onnx) as Core ML programs on dev
-// (Apple's Neural Engine; nil: the CPU interpreter): the whole graph, its 12 outputs (each
-// stride's cls, obj, bbox and kps) in one program per size, converted into dir when a picture
-// first takes the size. The sizes are CPUSizes'.
-func OpenProgram(ctx context.Context, dev *hwnpu.Device, path, dir string) (*Detector, error) {
+// OpenProgram runs the ONNX file (face_detection_yunet_2023mar.onnx) as programs of backend
+// (llm.Options.Backend: Core ML packages for Apple's Neural Engine, OpenVINO IR for Intel's NPU)
+// on dev (nil: the CPU interpreter, Core ML's): the whole graph, its 12 outputs (each stride's
+// cls, obj, bbox and kps) in one program per size, converted into dir when a picture first
+// takes the size. The sizes are CPUSizes'.
+func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, path, dir string) (*Detector, error) {
 	g, err := onnx.Load(path)
 	if err != nil {
 		return nil, err
@@ -32,13 +33,17 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, path, dir string) (*Det
 		return nil, fmt.Errorf("face: %s has %d inputs", path, len(g.Inputs))
 	}
 	x := Export{Name: "YuNet", Kind: "face-detect", Sizes: CPUSizes, Strides: []int{8, 16, 32}}
-	return newDetector(x, "npu", &programRunner{g: g, dev: dev, dir: dir, strides: x.Strides}), nil
+	if backend == "" {
+		backend = llm.BackendCoreML
+	}
+	return newDetector(x, "npu", &programRunner{g: g, dev: dev, backend: backend, dir: dir, strides: x.Strides}), nil
 }
 
 // programRunner runs a size's program, loaded for the first picture that takes it.
 type programRunner struct {
 	g       *onnx.Graph
 	dev     *hwnpu.Device
+	backend string
 	dir     string
 	strides []int
 	w, h    int
@@ -69,14 +74,18 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	if err := r.close(); err != nil {
 		return err
 	}
-	path := filepath.Join(r.dir, fmt.Sprintf("yunet-r%d-fp16-%dx%d.mlpackage", ProgramRevision, W, H))
+	ext := ".mlpackage"
+	if r.backend == llm.BackendIntel {
+		ext = ".xml"
+	}
+	path := filepath.Join(r.dir, fmt.Sprintf("yunet-r%d-fp16-%dx%d%s", ProgramRevision, W, H, ext))
 	p := r.program(W, H)
 	if _, err := os.Stat(path + ".done"); err != nil {
 		os.RemoveAll(path)
 		if err := os.MkdirAll(r.dir, 0o755); err != nil {
 			return err
 		}
-		_, err := llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: llm.BackendCoreML}, func(pkg *mlpackage.Package) {
+		_, err := llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.backend}, func(pkg *mlpackage.Package) {
 			pkg.Description = fmt.Sprintf("YuNet (face_detection_yunet_2023mar), %dx%d, fp16 (hwnpu)", W, H)
 		})
 		if err != nil {
@@ -97,7 +106,8 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	if err != nil {
 		return fmt.Errorf("face: %w", err)
 	}
-	if r.dev != nil && !prog.OnNPU() {
+	// OpenVINO's CPU plugin (the Intel path checked without Intel's NPU) is not the NPU
+	if r.dev != nil && !prog.OnNPU() && r.dev.Info().Backend != "openvino" {
 		prog.Close()
 		return fmt.Errorf("face: %s does not run on the NPU alone", filepath.Base(path))
 	}

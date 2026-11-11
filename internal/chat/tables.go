@@ -97,13 +97,31 @@ type Program struct {
 	Arch, Format string
 	Params       map[string]string
 	Seq, Cache   int
+	// Backend is the program format (llm.Options.Backend): Core ML (empty) or OpenVINO IR for
+	// Intel's NPU, which takes a lookup table format as its integer one (llm.IntelFormat).
+	Backend string
 }
 
-// ConvertProgram converts a program for the Neural Engine as Prepare does (the converter's
-// defaults, the tables fitted as for the chat models) unless it was converted to out, and
-// returns its path (an .mlpackage, or the parts.json of one split).
+// ConvertProgram converts a program for the Neural Engine (or Intel's NPU, p.Backend) as Prepare
+// does (the converter's defaults, the tables fitted as for the chat models) unless it was
+// converted to out, and returns its path (an .mlpackage or .xml, or the parts.json of one split).
 func ConvertProgram(ctx context.Context, config, weights, out string, p Program, log io.Writer) (string, error) {
-	return convert(ctx, config, weights, out, program{arch: p.Arch, format: p.Format, params: p.Params, seq: p.Seq, cache: p.Cache}, log)
+	format := p.Format
+	if p.Backend == llm.BackendIntel && format != "" {
+		format = llm.IntelFormat(format)
+	}
+	return convert(ctx, config, weights, out, program{backend: p.Backend, arch: p.Arch, format: format, params: p.Params, seq: p.Seq, cache: p.Cache}, log)
+}
+
+// ProgramFile is where a program named name for backend goes in a model's directory dir: an
+// .mlpackage next to the checkpoint for Core ML, an .xml in dir/intel for Intel's NPU (made
+// here), so that one directory serves both.
+func ProgramFile(dir, name, backend string) (string, error) {
+	d, err := programDir(dir, backend)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, name+programExt(backend)), nil
 }
 
 // converted reports whether convert finished writing out (its NAME.done is there).

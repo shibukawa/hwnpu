@@ -58,22 +58,27 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
 	model := expandHome(c.Model)
-	apple := false
-	if format, err := llm.ProgramFormat(ctx, ""); err == nil && format == llm.BackendCoreML {
-		apple = true
+	// Apple's Neural Engine and Intel's NPU run the programs Prepare converts (Core ML, OpenVINO
+	// IR); AMD's an export of IRON
+	backend := ""
+	if chat.HereVendor() != "amd" {
+		if format, err := llm.ProgramFormat(ctx, ""); err == nil {
+			backend = format
+		}
 	}
+	programs := backend != ""
 	if !isPath(c.Model) {
 		m, err := resolve(c.Model, chat.KindDepth)
 		if err != nil {
 			return err
 		}
 		switch {
-		case apple && m.Family == "moge":
-			if model, err = moge.Prepare(ctx, moge.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Log: lw}); err != nil {
+		case programs && m.Family == "moge":
+			if model, err = moge.Prepare(ctx, moge.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: backend, Log: lw}); err != nil {
 				return err
 			}
-		case apple:
-			if model, err = depth.Prepare(ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Log: lw}); err != nil {
+		case programs:
+			if model, err = depth.Prepare(ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: backend, Log: lw}); err != nil {
 				return err
 			}
 		default:
@@ -87,8 +92,12 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		}
 	}
 	var dev *hwnpu.Device
-	if apple {
-		d, _, err := llm.OpenDevice(ctx, llm.BackendCoreML, cacheDirOf(""), hwnpu.WithPlacement(hwnpu.PlacementStrict))
+	if programs {
+		var opts []hwnpu.Option
+		if backend == llm.BackendCoreML {
+			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		}
+		d, _, err := llm.OpenDevice(ctx, "", cacheDirOf(""), opts...)
 		if err != nil {
 			return err
 		}
