@@ -13,7 +13,8 @@
 //     a group at a time, and dit_out;
 //  3. the VAE's decoder on the latents.
 //
-// The export is for one image size. Classifier-free guidance (Chroma1-HD) is not supported yet.
+// The export is for one image size. Chroma1-HD (the full model, of which Flash bakes the guidance
+// in) runs classifier-free guidance with Generate's Sampling.
 package chroma
 
 import (
