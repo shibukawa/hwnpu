@@ -176,7 +176,7 @@ python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2
 go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"
 ```
 
-Anima の拡散モデルは 2 つです。`-m` を省くと Anima-Turbo (`anima-turbo`) で、8 ステップ、CFG なしで描きます。`-m anima` は Anima-Aesthetic (質の高い絵で調整したもの) で、CFG 4 (`--guidance`、モデルカードの勧めは 4〜5) で 1 ステップに DiT を 2 回走らせるので Turbo の約 4.5 倍の時間がかかります (ステップは下)。負のプロンプトは `--negative` です (既定は空。モデルカードの勧めは `"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"` で、Aesthetic では score タグを入れない)。書き出しは `--dit` で拡散モデルを選びます。
+Anima の拡散モデルは 2 つです。`-m` を省くと Anima-Turbo (`anima-turbo`) で、8 ステップ、CFG なしで描きます。`-m anima` は Anima-Aesthetic (質の高い絵で調整したもの) で、CFG 4 (`--guidance`、モデルカードの勧めは 4〜5) で 1 ステップに DiT を 2 回走らせるので Turbo の約 4.5 倍の時間がかかります (ステップは下)。負のプロンプトは `--negative` です (既定は空。モデルカードの勧めは `"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"` で、Aesthetic では score タグを入れない)。Turbo に `--guidance` なしで `--negative` を付けると、弱い CFG 1.5 で走ります (1 ステップに DiT を 2 回)。書き出しは `--dit` で拡散モデルを選びます。
 
 ```bash
 python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-npu2 --size 1024 --dit anima-aesthetic-v1.1.safetensors
