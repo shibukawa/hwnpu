@@ -196,7 +196,8 @@ Switch each part (attention projections, MLP, output matrix, convolutions, tower
 - **Attention projections at 8 bits**: a little over 10 % of the weights, yet at 4 bits they cause most of the error (E2B 0.097 → 0.229). Only +0.12 GB pinned
 - MLP and output matrix at 4 bits. The output matrix at 4 bits barely matters
 - Short convolutions at 8 bits (+0.01 at 4 bits)
-- Layers with sandwich norms (Gemma 4, PLaMo 3) are weak at 4 bits. With the ANE's tables, lut6 or more (Gemma 4 lut4 KL 2.54, PLaMo 3 1.91)
+- Layers with sandwich norms (Gemma 4, PLaMo 3) are weak at 4 bits. With the ANE's tables, lut6 or more (Gemma 4 lut4 KL 2.54, PLaMo 3 2B 1.91)
+- **A larger size of the same structure can take fewer bits**: PLaMo 3 Translate 8B in lut4 translated 13 of 20 sentences word for word as in lut8 and the rest as correct rewordings, where the 2B broke (16.164). Measure each size's formats again; do not carry a small size's verdict to a large one (`Formatter`)
 - A DiT at 8 bits on the ANE: per-row int8 held Sana 600M's pictures but broke SANA 1.5's, where lut8 held them (16.160). Try both and look at the pictures
 - lut8 for multimodal models' text parts, TTS, d1's judgments and embeddings (they broke down with lut4)
 - A distilled 8-step DiT is weak at 4 bits (q4nx: latent cosine 0.777). q8 is the default (q6 keeps the composition)

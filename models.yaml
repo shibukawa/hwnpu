@@ -39,6 +39,9 @@
 #                 Without an export here (~/models/NAME.amd-npu2, with -q4 or -q6 for --q4 and
 #                 --mlp q6), the first run downloads the checkpoint and runs it in IRON's
 #                 environment (HWNPU_IRON_ENV, INSTALL_AMD.md); a model without it has no form there
+#   not_on        chips (M1, M2, M3, M4, M5; an M1 Pro is an M1) a family or a use does not pick
+#                 the model on: the family's next is picked there (the 2B for PLaMo 3 Translate
+#                 8B on an M1); its name and FAMILY:TAG still run it
 #   like          another model whose fields this one takes, except its tag
 #   remove        true: drop the model
 # categories: NAME: a use (-m translate). picks are MODEL.md's columns: the model a machine of
@@ -181,6 +184,34 @@ models:
     bytes: 4.06e9
     features: [tools, thinking]
     about: "Qwen3-1.7B, the 0.6B's structure in 1.7B (byte for byte the text encoder of MOSS-SoundEffect): weak at Japanese facts as the 0.6B is; a context of 4096 (-paged 1024 for 32768, slower), in 8 bit tables, tool calls as JSON; below 16 GB one program, slower to read long prompts"
+  plamo-3-translate-8b:
+    # the 2B's structure in 8B (hidden 4096, 32 layers, 4 key and value heads). Apple: 4 bit
+    # tables (the architecture's Format for the 8B), 3.81 GiB on the Neural Engine and the
+    # process's 4.1 GB at its peak (M1), one program. Not picked on an M1, over the 2.8 GiB its
+    # Neural Engine runs at full speed (0.8 tokens/s; the 2B instead); an M2 9 to 10 tokens/s
+    # (35 to 41 s every start, its compile cache keeping part), an M3 10 to 11 (4 s). AMD: q4 (the MLP and output matrix q4nx, attention
+    # q8), estimated from the weights, not run. Intel: int4 by rows (Config.IntelFormat) in one
+    # program (prefill off; the Neural Engine has one anyway), 3.8 GiB under the about 4.6 GB a
+    # Core Ultra 5 135U's NPU held, where int8's 7.6 would not fit; not run, its precision not
+    # checked (docs/design.md 16.143, 16.164)
+    family: plamo3translate
+    tag: 8b
+    kind: chat
+    from: hf:pfnet/plamo-3-translate-8b@cc265d585980c39436db5b9c136cd6644f446807
+    # the shards' sha256 as Hugging Face's API gives them, checked against the download (M1)
+    sha256:
+      model-00001-of-00004.safetensors: 2bb697527d3003a96b699366c186e23efecf9af03d882cb2697290213a69a4c3
+      model-00002-of-00004.safetensors: 08ae648fc9834efd79266032e797bbc361113dc02d65006d6b49ef18387d2ef3
+      model-00003-of-00004.safetensors: 23ec2db0f3aae7982e50d20d7cd600e6d27bde217e4a761a1915196bc9cffc41
+      model-00004-of-00004.safetensors: 1bad10b23b66c221c4fb04106315faf6b6d401f9e2d72cb78947063cac1ceb77
+    machine: 16
+    not_on: [M1]
+    memory: {amd: 6.5, apple: 8.2}
+    prefill: off
+    bytes: 17.07e9
+    features: [translation]
+    amd_export: plamo3 --max-seq-len 8192 --q4
+    about: "Preferred Networks' PLaMo 3 Translate 8B: the 2B's translation from a model 3.5 times as large, in 4 bit tables (as good as 8 bit ones on it); 10 to 11 tokens/s on an M3; not picked on an M1 (its 3.8 GiB is over what an M1's Neural Engine runs at full speed: the 2B there); on Intel's NPU in int4, its precision not checked yet"
   plamo-3-translate-2b:
     family: plamo3translate
     tag: 2b
@@ -680,7 +711,7 @@ categories:
     about: translation
     picks:
       - {machine: 8, model: plamo-3-translate-0.8b}
-      - {machine: 16, model: plamo-3-translate-2b}
+      - {machine: 16, model: plamo-3-translate-8b}
   embedding:
     aliases: [embed, search]
     about: sentence embeddings, search

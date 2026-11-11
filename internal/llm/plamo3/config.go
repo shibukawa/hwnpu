@@ -124,6 +124,31 @@ func (c *Config) check() error {
 	return nil
 }
 
+// Format is the weight format of the checkpoint for the Neural Engine (llm.Formatter): 4 bit
+// tables for the 8B (hidden 4096) and larger, the architecture's lut8 for the smaller ones. The
+// 2B breaks in lut4 (KL 1.91 nats on the CPU), but the 8B in lut4 translated 13 of 20 sentences
+// word for word as in lut8 and the other 7 as correct rewordings, as did 4 paragraphs, in half the
+// memory (3.77 GiB against 7.58) and twice as fast (docs/design.md 16.164).
+func (c *Config) Format() string {
+	if c.HiddenSize >= 4096 {
+		return "lut4"
+	}
+	return ""
+}
+
+// IntelFormat is the weight format of the checkpoint for Intel's NPU (llm.IntelFormatter): int4
+// by rows for the 8B and larger, the architecture's int8 for the smaller ones. The 8B's int8
+// (7.6 GiB) is over the about 4.6 GB the NPU of a Core Ultra 5 135U held when it ran out of memory
+// (docs/design.md 16.143); its int4 (3.8 GiB, one program with models.yaml's prefill off) is
+// under it. Its precision is not measured: the 2B's int4 lost KL 0.72 nats, but the 8B kept its
+// translations in lut4, which loses the 2B more (16.164).
+func (c *Config) IntelFormat() string {
+	if c.HiddenSize >= 4096 {
+		return "int4"
+	}
+	return ""
+}
+
 // full reports whether layer i attends to the whole context (is_full_attn).
 func (c *Config) full(i int) bool { return (i+1)%c.Pattern == 0 }
 

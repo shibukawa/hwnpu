@@ -93,6 +93,10 @@ type Model struct {
 	// With are the other repositories the model reads, by role (an OCR's detector): OWNER/NAME
 	// or OWNER/NAME@REVISION as fetch takes them. Their files' sha256 are SHA256's ROLE/FILE.
 	With map[string]string
+	// NotOn are the chips (Chips) a family or a category does not pick the model on: it is too
+	// slow there (PLaMo 3 Translate 8B on an M1, over the 2.8 GiB its Neural Engine runs at full
+	// speed). Its name and FAMILY:TAG still run it.
+	NotOn []string
 	// License is the weights' license (models.yaml's license): its id, where it is, and whether
 	// the user accepts it before the first download or run (AcceptLicense).
 	License License
