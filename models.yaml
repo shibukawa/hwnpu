@@ -197,12 +197,18 @@ models:
     family: plamo3translate
     tag: 8b
     kind: chat
-    from: hf:pfnet/plamo-3-translate-8b
+    from: hf:pfnet/plamo-3-translate-8b@cc265d585980c39436db5b9c136cd6644f446807
+    # the shards' sha256 as Hugging Face's API gives them, checked against the download (M1)
+    sha256:
+      model-00001-of-00004.safetensors: 2bb697527d3003a96b699366c186e23efecf9af03d882cb2697290213a69a4c3
+      model-00002-of-00004.safetensors: 08ae648fc9834efd79266032e797bbc361113dc02d65006d6b49ef18387d2ef3
+      model-00003-of-00004.safetensors: 23ec2db0f3aae7982e50d20d7cd600e6d27bde217e4a761a1915196bc9cffc41
+      model-00004-of-00004.safetensors: 1bad10b23b66c221c4fb04106315faf6b6d401f9e2d72cb78947063cac1ceb77
     machine: 16
     not_on: [M1]
     memory: {amd: 6.5, apple: 8.2}
     prefill: off
-    bytes: 17.06e9
+    bytes: 17.07e9
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 8B: the 2B's translation from a model 3.5 times as large, in 4 bit tables (as good as 8 bit ones on it); 10 to 11 tokens/s on an M3; not picked on an M1 (its 3.8 GiB is over what an M1's Neural Engine runs at full speed: the 2B there); on Intel's NPU in int4, its precision not checked yet"
