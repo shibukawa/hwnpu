@@ -51,16 +51,19 @@ func TestExportName(t *testing.T) {
 }
 
 // TestShareText checks that an export of another size takes the text encoder's and the DiT text
-// pass's programs of a whole export of the same formats as hard links, and not of other formats.
+// pass's programs of a whole export of the same model and formats as hard links, not of other
+// formats, and that one of another model takes the text encoder's programs but its last group
+// (which ends with the DiT's txt_in) only.
 func TestShareText(t *testing.T) {
 	dir := t.TempDir()
 	o := ConvertOptions{Width: 512}
 	o.defaults()
 	from := filepath.Join(dir, ExportName("Qwen-Image-2.1-Turbo", o))
 	m := ProgramManifest{Kind: ProgramKind, Version: ExportVersion, Formats: map[string]string{"text": o.TextFormat, "text_quant": o.TextQuant,
-		"dit_text": o.DitTextFormat, "dit_quant": o.DitQuant}, Dit: DitConfig{Group: o.Group}, TextIn: []string{"text_0.mlpackage"},
-		DitText: []string{"dit_text_0.mlpackage"}}
-	for _, f := range []string{"text/embed.bin", "text_0.mlpackage/Data/weight.bin", "dit_text_0.mlpackage/Data/weight.bin"} {
+		"dit_text": o.DitTextFormat, "dit_quant": o.DitQuant}, Dit: DitConfig{Group: o.Group},
+		TextIn: []string{"text_0.mlpackage", "text_1.mlpackage"}, DitText: []string{"dit_text_0.mlpackage"}}
+	files := []string{"text/embed.bin", "text_0.mlpackage/Data/weight.bin", "text_1.mlpackage/Data/weight.bin", "dit_text_0.mlpackage/Data/weight.bin"}
+	for _, f := range files {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(from, f)), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -72,25 +75,49 @@ func TestShareText(t *testing.T) {
 	os.WriteFile(filepath.Join(from, "manifest.json"), b, 0o644)
 	o2 := ConvertOptions{Width: 1024}
 	o2.defaults()
-	if got := sharedExport(dir, o2); got != "" {
+	if got, _ := sharedExport(dir, "Qwen-Image-2.1-Turbo", o2); got != "" {
 		t.Fatalf("an export without .done shared: %s", got)
 	}
 	os.WriteFile(from+".done", nil, 0o644)
-	if got := sharedExport(dir, o2); got != from {
-		t.Fatalf("shared %q, want %q", got, from)
+	if got, same := sharedExport(dir, "Qwen-Image-2.1-Turbo", o2); got != from || !same {
+		t.Fatalf("shared %q (same %v), want %q of the same model", got, same, from)
 	}
 	o3 := o2
 	o3.DitTextFormat = "lut6"
-	if got := sharedExport(dir, o3); got != "" {
-		t.Fatalf("a text pass of another format shared: %s", got)
+	if got, same := sharedExport(dir, "Qwen-Image-2.1-Turbo", o3); got != from || same {
+		t.Fatalf("a text pass of another format: shared %q (same %v), want the text encoder's only", got, same)
+	}
+	o4 := o2
+	o4.TextFormat = "lut6"
+	if got, _ := sharedExport(dir, "Qwen-Image-2.1-Turbo", o4); got != "" {
+		t.Fatalf("a text encoder of another format shared: %s", got)
+	}
+	// the base model: Qwen-Image-2.1 is a prefix of the Turbo's name, and is not the same model
+	if got, same := sharedExport(dir, "Qwen-Image-2.1", o); got != from || same {
+		t.Fatalf("another model: shared %q (same %v), want the text encoder's only", got, same)
+	}
+	linked := func(out, f string) bool {
+		a, _ := os.Stat(filepath.Join(from, f))
+		c, err := os.Stat(filepath.Join(out, f))
+		return err == nil && os.SameFile(a, c)
 	}
 	out := filepath.Join(dir, "out")
-	if err := linkShared(from, out); err != nil {
+	if err := linkShared(from, out, true); err != nil {
 		t.Fatal(err)
 	}
-	a, _ := os.Stat(filepath.Join(from, "dit_text_0.mlpackage/Data/weight.bin"))
-	c, err := os.Stat(filepath.Join(out, "dit_text_0.mlpackage/Data/weight.bin"))
-	if err != nil || !os.SameFile(a, c) {
-		t.Fatalf("not linked: %v", err)
+	for _, f := range files {
+		if !linked(out, f) {
+			t.Errorf("same model: %s not linked", f)
+		}
+	}
+	other := filepath.Join(dir, "other")
+	if err := linkShared(from, other, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		want := f != "text_1.mlpackage/Data/weight.bin" && f != "dit_text_0.mlpackage/Data/weight.bin"
+		if linked(other, f) != want {
+			t.Errorf("another model: %s linked %v, want %v", f, !want, want)
+		}
 	}
 }
