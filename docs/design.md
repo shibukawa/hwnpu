@@ -4265,3 +4265,35 @@ Intel の NPU に向けた変換 (OpenVINO IR、`internal/ovlower`) がない、
 
 - **できなかったもの**: Chroma、SigLIP 2 (label)、FLUX は AMD の IRON のグラフ (Python) しかなく、Go の MIL のグラフがない。Intel (と Apple) で動かすには、その構造を `internal/llm/blocks` で組み直す移植が要る。Qwen-Image は 16.165 で Go のグラフ (Core ML) ができたが、IR を書くのはこの変更に入れていない
 - 未確認 (実機が要る): NPU のコンパイラがこれらの演算 (DepthToSpace、ConvolutionBackpropData、Clamp、MaxPool、Elu など) と、大きなグラフ (Sana の Gemma 2 の 6 層 int8 で約 0.5 GB、EfficientSAM の 4096 トークンの注意) を受け付けるか、速さ、Core Ultra 5 135U のメモリ (Anima で 4.6 GB の上限、16.143) に Sana と MOSS が収まるか
+### 16.167 Qwen-Image-2.1 の DiT の MLP を q6 に、Qwen-Image と Chroma1 の 1024² の電力量 — 2026-11-12
+
+- **部分ごとの形式を CPU で** (`tools/ref/qwenimage_quant.py`、new-model-checklist 5.1〜5.3): DiT を torch の float32 で 1 ブロックずつ (重みは pread で読み、次のブロックを先読み、無名のメモリ 2.5 GB 以下) 回し、iron_q4 の q8、q6、q4nx に丸めた重みで、8 ステップの教師強制の速度の誤差と、float32 と同じ雑音からの自由走行の潜在のコサインを測る。float の重みで `ref_qwenimage21.py` と 1e-6、q8 は NPU の q8 の潜在とコサイン 0.9997 / 0.9996 (NPU の誤差はほぼ q8 の丸めで説明できる)
+- 結果 (重みはブロックの射影のバイト、GB = 10⁹。コサインは狐 / 看板と、追加の 3 つの種):
+
+| 注意 / MLP | GB | 速度の誤差 | 自由走行のコサイン | 追加の種 |
+| q8 / q8 (前の既定) | 7.42 | 0.0048 / 0.0035 | 0.9983 / 1.0000 | 0.9997、0.9996、1.0000 |
+| q6 / q8 | 6.88 | 0.0103 / 0.0082 | 0.9942 / 0.9998 | 0.9996、0.9986、0.9951 |
+| **q8 / q6** | **6.21** | 0.0102 / 0.0084 | 0.9980 / 0.9998 | 0.9999、0.9965、0.9992 |
+| q8 / q4 | 5.30 | 0.0314 / 0.0265 | 0.9942 / 0.9988 | 0.9918、0.9964、0.9978 |
+| q8 / q4 GPTQ (別の 4 つのプロンプトで校正) | 5.30 | 0.0267 / 0.0227 | 0.9950 / 0.9980 | 0.9918、0.9888、0.9911 |
+| q4 / q4 | 4.36 | 0.0389 / 0.0349 | 0.9929 / 0.9973 | 0.9913、0.9719、0.9840 |
+
+  - 注意は 1 バイトあたりで敏感: q6 の誤差は MLP の q6 と同じほどで、減るのは 0.54 GB (MLP は 1.21 GB)。q4 の注意は看板の種で崩れる (0.97〜0.99)
+  - q4nx は Anima (0.777) よりずっと強いが、細部が動く (敏感な種で 18 dB、MLP の q4 でも 25〜29 dB)
+  - GPTQ は校正にないプロンプトで教師強制の誤差を 13〜15 % 下げるが、自由走行は 3 つの種のうち 2 つで丸めより悪く、看板の文字と色が変わった。評価するプロンプトで校正するとそのプロンプトだけよくなる (校正に合わせすぎ)。採らない
+  - 1 つの種のコサインはばらつく (狐の種 0 は q8 でも 0.9983)。教師強制の誤差と、いくつかの種で決めた
+- **採ったもの: 注意 q8、MLP q6** (`iron_qwenimage.py` の `--dit-attn` / `--dit-mlp`、`--dit` は両方を同じに)。デバイスのコードは同じ (iron_q4 の q6 は QDequant で bf16 にしてから MEDIUM の GEMM)。書き出し 15 → 14 GB
+- NPU (512²、Turbo、同じ雑音で 3 つのプロンプト × 2 つの種): float32 とのコサイン 0.9946〜0.9996 で 5 枚は q8 と同じ。京都の寺の種 1 だけ 0.9940 → 0.9762 で、寺の位置が少しずれるが構図、人物、紅葉は同じ。1 ステップ 3.5 秒は q8 と同じ。1024² の狐 0.9988 (q8 0.9989、q8 とは 0.9997)
+- **1024² の 1 枚の電力量** (AMD、amdgpu の PPT をパッケージ全体で積分、待機 6.8 W 込み、狐のプロンプト、既定の設定):
+
+| モデル | 設定 | 時間 | 電力量 | 平均電力 | 固定のメモリの増え |
+| Qwen-Image-2.1-Turbo | 8 ステップ | 119 秒 | 2.0 kJ | 17.0 W | 3189 MiB |
+| Qwen-Image-2.1 | オイラー法 40、CFG なし | 504 秒 | 9.3 kJ | 18.5 W | 3189 MiB |
+| Chroma1-Flash | Heun 8 (DiT 15 回) | 269 秒 | 4.7 kJ | 17.5 W | 4956 MiB |
+| Chroma1-HD | DPM 25、CFG 3 は σ ≥ 0.6 | 691 秒 | 12.6 kJ | 18.2 W | 4956 MiB |
+
+  - Anima-Turbo (688 J、16.148) と Anima-Aesthetic (3.8 kJ、16.154) と比べると、Qwen-Image-2.1-Turbo は 3 倍、Chroma1-Flash は 7 倍
+  - Chroma の固定のメモリの山は T5 (q8 の 5 GB を 1 つのグラフで) だった。下の項で組にした後の値: Chroma1-Flash 267 秒 4.6 kJ、Chroma1-HD 685 秒 12.1 kJ
+- **Chroma の T5 を組に** (`iron_chroma_parts.py` の `T5Config.group` 4、`--t5-group`): 24 層を 4 層ずつ 6 組、1 つの ELF に組ごとのバンクの像、1 つのバンクに順に読む (SwapVariants、Qwen-Image の文の符号器と同じ)。どの組のグラフも残差と最後の RMS norm の 2 つを出し、ホストは残差を次の組に渡し、最後の組の norm を使う (norm も NPU のまま)。プロンプトと負のプロンプトは組ごとに続けて回す。IRON の参照は 1 つのグラフと同じ値 (float32 の transformers と 0.999754)、NPU の潜在は前の書き出しとビットまで同じ (2 つのプロンプト)。1024² のピーク (NPU の割り当てと RSS) 5.9 GB → **4643 MiB**、T5 は 7.5〜9.4 → 4.2〜5 秒 (512² と 1024²)。models.yaml の memory を 4.6 に。一組だけでなく組の切り替えまで確かめるため irongraph に `-swap` (組 0 を回してから `-variant` の組を読む)
+- **Chroma の書き出しの手順**: `hwnpu-image` が示す `python tools/amd/iron_chroma.py ROOT OUT` は DiT しか書き出さず、T5 と VAE と tokenizer.json は手で足していた。iron_chroma.py が DiT の後に iron_chroma_parts.py (t5、vae) を別のプロセスで回すようにした (`--parts`)。Chroma1 のリポジトリには tokenizer.json がない (spiece.model だけ) ので、spiece.model (protobuf の wire 形式を直に読む。IRON の環境に sentencepiece と transformers はない) から Anima の t5_tokenizer.json と同じ形を書く (`t5_tokenizer_json`)。生成したものは Anima のものとすべての項目が同じ
+- 途中で、この機械のメモリのビット反転がまた出た (16.155 の頃と同じ): Go のビルドキャッシュが壊れてリンカが落ち、Btrfs のチェックサムが 1 ビット違うと読めないファイルが出て、同じ起動中に書いた書き出しにチェックサムに引っかからない 1 ビットの違いがあった。再起動の後は scrub に誤りがなく、写しも同じ (ディスクでなくメモリ)。その起動で書いた書き出しは作り直した

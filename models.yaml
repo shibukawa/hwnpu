@@ -471,8 +471,9 @@ models:
       transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 8dc761fbdf92b0abbc5a336dc717e6c682479792404ac2f9dbfc3b86e7760996
       vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
     machine: 16
-    # AMD: the peak of a 1024 x 1024 run, 5.6 GiB on the NPU and the process's 0.1 GiB, measured
-    memory: {amd: 5.9}
+    # AMD: the peak of a 1024 x 1024 run, the NPU's mappings and the process's RSS: 4643 MiB with
+    # T5 in groups of 4 layers (5.9 when T5's 5 GB was pinned at once; design.md 16.167)
+    memory: {amd: 4.6}
     # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here)
     bytes: 2.75e10
     about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU only; Apache-2.0"

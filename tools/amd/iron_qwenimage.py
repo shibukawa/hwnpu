@@ -87,10 +87,13 @@ PREC = Precisions()
 
 @dataclasses.dataclass
 class Formats:
-    """The weights' formats: the DiT's projections q8 (an 8-step distilled DiT is weak at 4 bits,
-    new-model-checklist 5.2), the text encoder's q6 (as Sana's Gemma 2)."""
+    """The weights' formats: the DiT's attention projections q8 and its MLP q6 (CPU study with
+    tools/ref/qwenimage_quant.py, design.md 16.167: MLP q6 keeps the pictures at 1.21 GB less, q6
+    attention costs as much error for 0.54 GB, q4nx drifts details with or without GPTQ), the text
+    encoder's q6 (as Sana's Gemma 2)."""
 
-    dit: str = "q8"
+    attn: str = "q8"
+    mlp: str = "q6"
     text: str = "q6"
     mha: str = "qk"  # the DiT's attention products (iron_anima.dit_attention)
 
@@ -220,16 +223,16 @@ class DitBlock(iron.Graph):
         p = f"transformer_blocks.{i}."
         perm = head_perm(c)
         g = lambda n: f32(w[p + n])  # noqa: E731
-        self.q = qparam(g("attn.to_q.weight")[perm], FMT.dit)
-        self.k = qparam(g("attn.to_k.weight")[perm], FMT.dit)
-        self.v = qparam(g("attn.to_v.weight"), FMT.dit)
-        self.o = qparam(g("attn.to_out.0.weight"), FMT.dit)
+        self.q = qparam(g("attn.to_q.weight")[perm], FMT.attn)
+        self.k = qparam(g("attn.to_k.weight")[perm], FMT.attn)
+        self.v = qparam(g("attn.to_v.weight"), FMT.attn)
+        self.o = qparam(g("attn.to_out.0.weight"), FMT.attn)
         within = perm[:D]
         self.qn = iron.param(bf(g("attn.norm_q.weight")[within]))
         self.kn = iron.param(bf(g("attn.norm_k.weight")[within]))
-        self.gate = qparam(g("img_mlp.gate_layer.weight"), FMT.dit)
-        self.up = qparam(g("img_mlp.proj.weight"), FMT.dit)
-        self.down = qparam(g("img_mlp.out.weight"), FMT.dit)
+        self.gate = qparam(g("img_mlp.gate_layer.weight"), FMT.mlp)
+        self.up = qparam(g("img_mlp.proj.weight"), FMT.mlp)
+        self.down = qparam(g("img_mlp.out.weight"), FMT.mlp)
 
     def qkv(self, x, m1, angles):
         """The modulated norm and the attention's q, k (normed, turned) and v of x's rows."""
@@ -857,7 +860,7 @@ def share_banks(m: dict, d: Path, blocks: Path):
 def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
     w = dit_checkpoint(root)
     rng = np.random.default_rng(0)
-    meta = dict(config=dataclasses.asdict(c), weights=FMT.dit, mha=FMT.mha)
+    meta = dict(config=dataclasses.asdict(c), weights=dict(attn=FMT.attn, mlp=FMT.mlp), mha=FMT.mha)
     mi = json.loads((root / "model_index.json").read_text())
     sched = json.loads((root / "scheduler" / "scheduler_config.json").read_text())
     E = c.hidden
@@ -930,7 +933,9 @@ def main(argv=None) -> int:
     ap.add_argument("--dit-parts", nargs="*", default=["dit_text", "dit_blocks"])
     ap.add_argument("--stages", type=int, nargs="*", help="the VAE's stages to export (default all)")
     ap.add_argument("--no-vae-merge", dest="vae_merge", action="store_false", help="the last block's two same-shaped residual blocks in stages of their own")
-    ap.add_argument("--dit", default=FMT.dit, choices=("bf16", "q8", "q6", "q4"), help="the DiT blocks' projections")
+    ap.add_argument("--dit", choices=("bf16", "q8", "q6", "q4"), help="the DiT blocks' projections, attention and MLP alike")
+    ap.add_argument("--dit-attn", default=FMT.attn, choices=("bf16", "q8", "q6", "q4"), help="the DiT blocks' attention projections")
+    ap.add_argument("--dit-mlp", default=FMT.mlp, choices=("bf16", "q8", "q6", "q4"), help="the DiT blocks' MLP")
     ap.add_argument("--text", default=FMT.text, choices=("bf16", "q8", "q6", "q4"), help="the text encoder's projections")
     ap.add_argument("--dit-mha", default=FMT.mha, choices=("qk", "qkpv", "bf16"))
     ap.add_argument("--one-group", action="store_true", help="the first group's bank only (a test)")
@@ -939,7 +944,8 @@ def main(argv=None) -> int:
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)
     ARGS = a = ap.parse_args(argv)
-    FMT.dit, FMT.text, FMT.mha = a.dit, a.text, a.dit_mha
+    FMT.attn, FMT.mlp = (a.dit, a.dit) if a.dit else (a.dit_attn, a.dit_mlp)
+    FMT.text, FMT.mha = a.text, a.dit_mha
     VAE_MERGE[0] = a.vae_merge
     iron_anima.DIT_FMT.mha = a.dit_mha
     iron_anima.PREC.vae = PREC.vae
