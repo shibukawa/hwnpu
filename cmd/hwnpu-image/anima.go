@@ -75,22 +75,24 @@ func (c *ConvertCmd) Run() error {
 
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
 type GenerateCmd struct {
-	Prompts  []string `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana takes several: a picture each, the model loaded once."`
-	Model    string   `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), anima:base, sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's (Anima and Sana) and Intel's (Anima) the model is downloaded and converted into --dir on its first run."`
-	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir): the checkpoints and exports in Anima/ and Sana/."`
-	Out      string   `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
-	KeepDiT  bool     `name:"keep-dit" default:"true" negatable:"" help:"Sana on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (Gemma 2 and the VAE are loaded for each)."`
-	Steps    int      `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Anima-Aesthetic and Anima-Base 30, 30 to 50; Sana 20)."`
-	Negative string   `help:"The negative prompt of the classifier-free guidance (default empty; Anima's model card recommends \"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration\", without the score tags for Anima-Aesthetic)."`
-	Guidance float64  `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none; Sana 4.5)."`
-	Shift    float64  `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
-	Seed     uint64   `placeholder:"N" help:"The noise's seed (0: from the time)."`
-	Noise    string   `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana: (32, H/32, W/32))."`
-	Latents  string   `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
-	Cache    string   `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
-	CPU      bool     `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU."`
-	Resident bool     `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
-	Dump     string   `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py or ref_sana.py."`
+	Prompts   []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana takes several: a picture each, the model loaded once."`
+	Model     string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), anima:base, sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's (Anima and Sana) and Intel's (Anima) the model is downloaded and converted into --dir on its first run."`
+	Dir       string    `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir): the checkpoints and exports in Anima/ and Sana/."`
+	Out       string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
+	KeepDiT   bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (Gemma 2 and the VAE are loaded for each)."`
+	Steps     int       `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Anima-Aesthetic and Anima-Base 25 with dpm2m, the model card's 30 to 50 with euler; Sana 20)."`
+	Negative  string    `help:"The negative prompt of the classifier-free guidance (default empty; Anima's model card recommends \"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration\", without the score tags for Anima-Aesthetic)."`
+	Guidance  float64   `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none; Sana 4.5)."`
+	Shift     float64   `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
+	Sampler   string    `placeholder:"NAME" help:"Anima: the solver, euler (Anima's scheduler; Anima-Turbo's default) or dpm2m (DPM-Solver++ 2M, the default with guidance: the same DiT runs a step, closer to many steps' result in fewer)."`
+	CFGSigmas []float64 `name:"cfg-sigmas" sep:"," placeholder:"LO,HI" help:"Anima: run the classifier-free guidance only at steps whose sigma is in [LO, HI] (1 is pure noise; default 0.6,1, and 0,1 for every step); the other steps run the DiT once."`
+	Seed      uint64    `placeholder:"N" help:"The noise's seed (0: from the time)."`
+	Noise     string    `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana: (32, H/32, W/32))."`
+	Latents   string    `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
+	Cache     string    `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
+	CPU       bool      `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU."`
+	Resident  bool      `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
+	Dump      string    `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py or ref_sana.py."`
 	convertFlags
 }
 
@@ -274,7 +276,26 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	sig := anima.Sigmas(steps, c.Shift)
 	bar := console.NewBar(lw, "denoising")
 	bar.Set(0, fmt.Sprintf("step 1/%d", steps))
-	x, err = p.Denoise(ctx, cond, uncond, guidance, x, sig, func(i int, d time.Duration) {
+	smp := p.DefaultSampling()
+	if c.Sampler != "" {
+		smp.Solver = c.Sampler
+	}
+	if len(c.CFGSigmas) > 0 {
+		if len(c.CFGSigmas) != 2 || uncond == nil {
+			return fmt.Errorf("--cfg-sigmas: give LO,HI, with a --guidance over 1")
+		}
+		smp.CFGMin, smp.CFGMax = c.CFGSigmas[0], c.CFGSigmas[1]
+	}
+	if uncond != nil && smp.CFGMax > 0 {
+		n := 0
+		for _, sg := range sig[:steps] {
+			if sg >= smp.CFGMin && sg <= smp.CFGMax {
+				n++
+			}
+		}
+		logf("%s, guidance at %d of %d steps (sigma %g to %g)", cmp.Or(smp.Solver, "euler"), n, steps, smp.CFGMin, smp.CFGMax)
+	}
+	x, err = p.Denoise(ctx, cond, uncond, guidance, x, sig, smp, func(i int, d time.Duration) {
 		per := bar.Elapsed() / time.Duration(i+1)
 		left := time.Duration(steps-i-1) * per
 		bar.Set(float64(i+1)/float64(steps), fmt.Sprintf("step %d/%d, %.1f s a step, %s left", min(i+2, steps), steps, per.Seconds(), console.Duration(left)))

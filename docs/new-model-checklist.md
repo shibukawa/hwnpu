@@ -280,21 +280,20 @@ Done (bring them in from the start):
 | An empty negative prompt as a constant | diffusers runs an empty prompt as masked tokens, which a text graph cannot mask all of. What is left is one row computed from the weights alone, done at export (`text/empty_cond.bin`) | 16.148 |
 | Image attention in key blocks of 64, QK^T in bfp16 (`ImageMHA`) | mha.cc's fast softmax runs only at 64 keys; native bf16 mmul is ~24 MACs a cycle. 4096² × 16 × 128: 146 → 59 ms | 16.147 |
 | VAE convolutions on the grid (`GridGEMM`, phase upsampling) | Anima's VAE 9.3 → 5.2 s | 16.139, 16.147 |
-| The distilled model as the default | Anima-Turbo (8 steps, no CFG) is 44 s against Aesthetic's 4 min 40 s; the use `image` picks it | 16.148 |
+| The distilled model as the default | Anima-Turbo (8 steps, no CFG) is 44 s against Aesthetic's 3 min 19 s; the use `image` picks it | 16.148 |
+| **A second-order multistep solver** (DPM-Solver++ 2M on the data prediction, `--sampler dpm2m`) | The same DiT call a step as Euler. 25 steps land nearer 100 Euler steps than 30 Euler steps (latent cosine 0.984 against 0.982, 6 pictures); 15 break details. Judge against many Euler steps, not only the model card's count | 16.154 |
+| **CFG at the noisier steps only** (`--cfg-sigmas 0.6,1`) | The steps under sigma 0.6 run the DiT once: the same pictures (0.998 against every step guided). Dropping it at the noisiest steps instead (as the paper also does) changed compositions and faded colours. With the solver: Anima-Aesthetic at 1024² 4 min 40 s → 3 min 19 s, 4.8 → 3.8 kJ (energy falls less than time: the mean power rose) | 16.154 |
 
 Not tried yet (estimates; measure them before adopting):
 
 | Method | Expected | Note |
 |---|---|---|
-| **A second-order multistep solver** (DPM++ 2M, UniPC for flow matching) instead of Euler | 30 → 20 steps, about −33 % | Host only (`sched.go`). Anima's scheduler is `FlowMatchEulerDiscrete` (shift 3). Compare against Euler at 30 steps, not only the reference |
-| **CFG in a limited interval** (Kynkäänniemi et al., 2024) | About −15–30 % | Skip the unconditional pass at the noisiest and the last steps. The paper reports the same or better quality |
-| Reusing a step's result (TeaCache, First-Block Cache) | 1.5–2× reported on other DiTs | Run the first block; when its residual changed less than a threshold, add the previous step's residual of the other blocks. Keeps a hidden grid a pass on the device (Anima 1024²: 4096 × 2048 bf16, 16 MiB). Details can break |
 | Work that is the same at every step, out of the loop | Small (Anima: the text's cross-attention keys and values, 28 × 2 × 512 × 1024 × 2048 a pass, 0.7 % of the work, and their calls) | Anima computes them in every block at every step (`iron_anima.py`'s `cross_attn.qkv`). Compute them once a prompt (and once for the negative) |
 | Same-shaped VAE stages in one graph (16.139) | Fewer loads (Sana: a stage slowed 0.76 → 1.1 s while the next loaded beside it); not measured on Anima | Anima's three `up_blocks.3` ResBlocks are still three stages (`vae_stages`). The VAE is 12 % of Turbo's 44 s |
-| P·V in bfp16 (`pv_bfp16`) | Self-attention 59 → 54 ms a block, about −3 % | Changes details more than QK^T alone (16.147) |
+| P·V in bfp16 (`--dit-mha qkpv`) | Measured (16.154): 1024² −5 % time, −12 % energy, the same picture (0.997); no faster at 512² | Every export must be made again to make it the default; 16.147 found details a little further from the reference |
 | The projections' and MLP's GEMMs, the norms | 10–30 % a pass | About 5 TFLOPS now, the rest of a block (60 %). Kernel work |
 
-Without effect (do not do): the conditional and unconditional passes batched into one (the GEMMs already have 4096 rows), the GPU beside the NPU (the policy), the DiT at `HIGH` (section 12).
+Without effect (do not do): the conditional and unconditional passes batched into one (the GEMMs already have 4096 rows), the GPU beside the NPU (the policy), the DiT at `HIGH` (section 12). Reusing the later block groups' residual from an earlier step (First-Block Cache at Anima's first group of 4 blocks, 16.154): reused for the conditional and unconditional passes apart, the guidance amplified the mismatch and colours faded; reused together, threshold 0.02 saved 12 % at 0.989 against the full run, 0.05 changed the person. CFG at the noisier steps only saves as much with less change. CFG dropped at the noisiest steps (compositions change).
 
 ## 8. Long contexts
 
@@ -437,7 +436,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Qwen3.5-4B's lut6 (2.97 GiB) on the M1 is just over its 2.8 GiB; 0.1–0.2 GiB less (the output layer at lut4, say) would let it run at full speed (16.109)
 - Apple's GPTQ codes: hwnpu-chat takes them with `--codes` and `--format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
-- Anima-Aesthetic's speed (4 min 40 s an image at 1024²): the untried items of 7.1, the solver and CFG in an interval first
+- Anima-Aesthetic's speed (3 min 19 s an image at 1024², 16.154): the rest of 7.1's untried items (the cross-attention's keys and values out of the loop, merging the VAE's stages, P·V in bfp16 by default); whether the power profile changes the NPU's speed (this machine has measured under power-saver)
 - Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter)
 
 When results come in, update the tables in 5.3 and 5.4 and this section.

@@ -10,14 +10,16 @@
 //     from the export's tables;
 //  2. the text graph (Qwen3, then the adapter): the conditioning, 512 rows of 1024;
 //  3. from Gaussian noise in the latent space (16 channels, an eighth of the image's sides), a
-//     flow-matching Euler step per sigma: the DiT (dit_in, the dit_blocks groups, dit_out)
-//     gives the velocity, x += (sigma_next - sigma) * v; with classifier-free guidance the DiT
-//     runs on the prompt's conditioning and on the negative prompt's, v = u + s (c - u);
+//     flow-matching step per sigma: the DiT (dit_in, the dit_blocks groups, dit_out) gives the
+//     velocity v, and Euler's x += (sigma_next - sigma) * v or DPM-Solver++ 2M (Sampling); with
+//     classifier-free guidance the DiT runs on the prompt's conditioning and on the negative
+//     prompt's, v = u + s (c - u), at the steps Sampling picks;
 //  4. the VAE decoder on the latents, unnormalized by the VAE's per-channel mean and std.
 //
 // The export is for one image size and one diffusion model: Anima-Turbo wants about 8 steps and
-// no classifier-free guidance (CFG 1); Anima-Aesthetic and Anima-Base 30 to 50 steps at CFG 4 to 5
-// (circlestone-labs/Anima's model card), each step the DiT twice.
+// no classifier-free guidance (CFG 1); Anima-Aesthetic and Anima-Base 30 to 50 Euler steps at CFG
+// 4 to 5 (circlestone-labs/Anima's model card), each step the DiT twice, or as many in fewer with
+// DPM-Solver++ 2M and the guidance at the noisier steps only (DefaultSampling).
 package anima
 
 import (
@@ -258,14 +260,25 @@ func (p *Pipeline) Distilled() bool {
 	return p.Checkpoint == "" || strings.Contains(strings.ToLower(p.Checkpoint), "turbo")
 }
 
-// DefaultSteps and DefaultGuidance are what the model card recommends for the export's model:
-// 8 steps without guidance for Anima-Turbo (8 to 12 at CFG 1); 30 steps at CFG 4 for the others
-// (30 to 50 at CFG 4 to 5).
+// DefaultSteps, DefaultGuidance and DefaultSampling are the export's model's: for Anima-Turbo the
+// model card's 8 Euler steps without guidance (8 to 12 at CFG 1); for the others CFG 4 (the card's
+// 4 to 5) with DPM-Solver++ 2M in 25 steps and the guidance only at sigmas from 0.6, which on
+// 512 x 512 lands nearer 100 Euler steps than the card's 30 Euler steps with the guidance at
+// every step (latent cosine 0.984 against 0.982 over 6 pictures, the same pictures) in 72 % of
+// the time (design.md 16.154).
 func (p *Pipeline) DefaultSteps() int {
 	if p.Distilled() {
 		return 8
 	}
-	return 30
+	return 25
+}
+
+// DefaultSampling is the solver and the steps that run the guidance; see DefaultSteps.
+func (p *Pipeline) DefaultSampling() Sampling {
+	if p.Distilled() {
+		return Sampling{Solver: "euler"}
+	}
+	return Sampling{Solver: "dpm2m", CFGMin: 0.6, CFGMax: 1}
 }
 
 // DefaultGuidance is the guidance scale (1: none); see DefaultSteps.
@@ -301,18 +314,40 @@ func (p *Pipeline) Noise(seed uint64) []float32 {
 	return out
 }
 
-// Denoise runs the Euler steps from the latents x (Noise's layout) under cond: the latents
-// after the last step. With uncond (the negative prompt's conditioning) and a guidance scale
-// other than 1, each step runs the DiT on both, v = u + guidance (c - u) (classifier-free
-// guidance, diffusers' ClassifierFreeGuidance); with uncond nil, once on cond. step, when set,
-// is told each step as it ends.
-func (p *Pipeline) Denoise(ctx context.Context, cond, uncond []float32, guidance float64, x []float32, sigmas []float64, step func(i int, d time.Duration)) ([]float32, error) {
+// Sampling is how Denoise steps: the solver, and the sigmas classifier-free guidance runs at.
+type Sampling struct {
+	// Solver is "euler" ("" too, diffusers' FlowMatchEulerDiscreteScheduler) or "dpm2m"
+	// (DPM-Solver++ 2M on the data prediction x - sigma v, as diffusers' DPMSolverMultistep with
+	// flow sigmas: the same DiT calls a step, second order from the third step).
+	Solver string
+	// CFGMin and CFGMax, when CFGMax > 0, bound the sigmas at which a step runs the guidance;
+	// the other steps run the DiT once, on cond (guidance in a limited interval, Kynkäänniemi et
+	// al. 2024).
+	CFGMin, CFGMax float64
+}
+
+// guided reports whether the step at sigma runs the guidance.
+func (s Sampling) guided(sigma float64) bool {
+	return s.CFGMax <= 0 || (sigma >= s.CFGMin && sigma <= s.CFGMax)
+}
+
+// Denoise runs the steps from the latents x (Noise's layout) under cond: the latents after the
+// last step. With uncond (the negative prompt's conditioning) and a guidance scale other than 1,
+// a step runs the DiT on both, v = u + guidance (c - u) (classifier-free guidance, diffusers'
+// ClassifierFreeGuidance); with uncond nil, once on cond. s picks the solver and the steps that
+// run the guidance. step, when set, is told each step as it ends.
+func (p *Pipeline) Denoise(ctx context.Context, cond, uncond []float32, guidance float64, x []float32, sigmas []float64, s Sampling, step func(i int, d time.Duration)) ([]float32, error) {
 	c := p.Dit
 	gh, gw := c.Grid()
 	h, w := c.LatentSize()
 	C := c.LatentChannels
 	if len(x) != C*h*w {
 		return nil, fmt.Errorf("anima: %d latent values for %dx%dx%d", len(x), C, h, w)
+	}
+	switch s.Solver {
+	case "", "euler", "dpm2m":
+	default:
+		return nil, fmt.Errorf("anima: no solver %q (euler, dpm2m)", s.Solver)
 	}
 	x = append([]float32(nil), x...)
 	if uncond != nil && len(uncond) != len(cond) {
@@ -324,6 +359,9 @@ func (p *Pipeline) Denoise(ctx context.Context, cond, uncond []float32, guidance
 	tokens := gh * gw
 	pd := C * c.Patch * c.Patch
 	patches := make([]float32, tokens*pd)
+	vl := make([]float32, len(x)) // the velocity in x's layout
+	var d0, d1 []float32          // dpm2m: this step's and the last step's data predictions
+	var hLast float64             // dpm2m: the last step's log-SNR step
 	for i := 0; i+1 < len(sigmas); i++ {
 		t0 := time.Now()
 		// patches: token py*gw+px, feature c*4 + dy*2 + dx
@@ -340,7 +378,11 @@ func (p *Pipeline) Denoise(ctx context.Context, cond, uncond []float32, guidance
 			}
 		}
 		tproj := TimestepSinusoid(sigmas[i], c.Hidden)
-		v, err := p.velocity(ctx, i, cond, uncond, guidance, patches, tproj)
+		u := uncond
+		if !s.guided(sigmas[i]) {
+			u = nil
+		}
+		v, err := p.velocity(ctx, i, cond, u, guidance, patches, tproj)
 		if err != nil {
 			if types.IsDeviceLost(err) && p.Dit.Group > 1 {
 				return nil, fmt.Errorf("anima: step %d: %w (the driver stops a program that runs too long: an export of fewer blocks a program, --group %d, runs each in less time)", i, err, p.Dit.Group/2)
@@ -349,17 +391,24 @@ func (p *Pipeline) Denoise(ctx context.Context, cond, uncond []float32, guidance
 		}
 		p.dump(fmt.Sprintf("v%d.bin", i), v)
 		// v: token py*gw+px, feature dy*32 + dx*16 + c
-		dt := float32(sigmas[i+1] - sigmas[i])
 		for py := 0; py < gh; py++ {
 			for px := 0; px < gw; px++ {
 				o := (py*gw + px) * pd
 				for dy := 0; dy < 2; dy++ {
 					for dx := 0; dx < 2; dx++ {
 						for ch := 0; ch < C; ch++ {
-							x[(ch*h+2*py+dy)*w+2*px+dx] += dt * v[o+dy*2*C+dx*C+ch]
+							vl[(ch*h+2*py+dy)*w+2*px+dx] = v[o+dy*2*C+dx*C+ch]
 						}
 					}
 				}
+			}
+		}
+		if s.Solver == "dpm2m" {
+			hLast = dpm2m(x, vl, &d0, &d1, sigmas[i], sigmas[i+1], hLast)
+		} else {
+			dt := float32(sigmas[i+1] - sigmas[i])
+			for j, vj := range vl {
+				x[j] += dt * vj
 			}
 		}
 		if step != nil {
@@ -367,6 +416,45 @@ func (p *Pipeline) Denoise(ctx context.Context, cond, uncond []float32, guidance
 		}
 	}
 	return x, nil
+}
+
+// dpm2m is one DPM-Solver++ 2M step of x from sigma s to t with the velocity v, in place: the data
+// prediction D0 = x - s v, and with the last step's (*d1, its log-SNR step hLast) the second order
+// D = (1 + 1/2r) D0 - (1/2r) D1, r = hLast / h; x = (t/s) x + (1 - t) (1 - e^-h) D, where the
+// log-SNR is log((1 - sigma) / sigma). It returns this step's h. The first step from sigma 1
+// (h infinite) and the last to 0 are first order (Euler's).
+func dpm2m(x, v []float32, d0, d1 *[]float32, s, t, hLast float64) float64 {
+	if *d0 == nil {
+		*d0 = make([]float32, len(x))
+	}
+	for j := range x {
+		(*d0)[j] = x[j] - float32(s)*v[j]
+	}
+	lam := func(sg float64) float64 { return math.Log((1 - sg) / sg) }
+	h := lam(t) - lam(s) // +Inf from s = 1 or to t = 0
+	if t == 0 {
+		copy(x, *d0)
+	} else {
+		eh := t * (1 - s) / ((1 - t) * s) // e^-h
+		a, b := float32(t/s), float32((1-t)*(1-eh))
+		k := 0.0 // 1 / 2r
+		if *d1 != nil && !math.IsInf(hLast, 0) && !math.IsInf(h, 0) {
+			k = h / (2 * hLast)
+		}
+		k0, k1 := float32(1+k), float32(-k)
+		for j := range x {
+			d := k0 * (*d0)[j]
+			if k != 0 {
+				d += k1 * (*d1)[j]
+			}
+			x[j] = a*x[j] + b*d
+		}
+	}
+	*d0, *d1 = *d1, *d0
+	if *d0 == nil {
+		*d0 = make([]float32, len(x))
+	}
+	return h
 }
 
 // velocity is the DiT's velocity at step i: on cond, or with uncond guided by guidance.
