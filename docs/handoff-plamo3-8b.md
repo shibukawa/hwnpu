@@ -92,7 +92,7 @@ hwnpu-chat -m plamo3translate:8b --temp 0 "The meeting has been rescheduled to n
 ```
 
 - 行ごとの int4 は Meteor Lake で int8 より速い (LFM3-1.7B で 37.9 ms と 68.5 ms、16.143 の hwnpu-formats)。グループごとの int4-g128 は int8 より遅いので使わない
-- 精度は未確認。2B の int4 は KL 0.72 で使えなかった (16.71) が、8B は lut4 でも訳を保った (16.155)。2.2 の 20 文 (`--format` は付けない) で、Mac の lut8 の訳と比べる。崩れるなら int4-g128 (遅いが精度は上) か、NPU から外すかを決める
+- 精度: M1 の Neural Engine で同じ int4 の重みを使うと、20 文は lut8 と 12/20 が同じで、残りは言い換えだった (16.155)。Intel では計算の精度が違うので、2.2 の 20 文 (`--format` は付けない) で、Mac の lut8 の訳と比べる。崩れるなら int4-g128 (遅いが精度は上) か、NPU から外すかを決める
 - 記録: 読み込みの成否と時間 (Windows の TDR の 2 秒に触れないか)、tok/s、NPU のメモリ。NPU のメモリが尽きるとエラーでなくプロセスが 0xc0000005 で落ちることがある (16.144)
 
 ## 5. 記録
