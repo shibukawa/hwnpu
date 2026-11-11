@@ -56,7 +56,7 @@ var Files = []File{
 // ExportName is the directory Prepare writes the export of name and o into: what changes the
 // programs is in it.
 func ExportName(name string, o ConvertOptions) string {
-	o.defaults()
+	o.defaults(name)
 	return fmt.Sprintf("%s-%dx%d-%s-%s-g%d-v%d.coreml", strings.ToLower(name), o.Width, o.Height, o.TextFormat, o.DitFormat, o.Group, ExportVersion)
 }
 
@@ -67,7 +67,7 @@ func ExportName(name string, o ConvertOptions) string {
 func Prepare(ctx context.Context, s Setup) (string, error) {
 	o := s.ConvertOptions
 	o.Only = nil
-	o.defaults()
+	o.defaults(s.Name)
 	log := s.Log
 	if log == nil {
 		log = io.Discard

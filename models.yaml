@@ -424,7 +424,7 @@ models:
       text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 8
-    # Apple: the process's peak footprint 3.87 GB (M1, design.md 16.152)
+    # Apple: the process's peak footprint 3.87 GB (M1, design.md 16.152; 3.87 too with the int8 DiT, 16.157)
     memory: {amd: 2.3, apple: 3.9}
     bytes: 8.9e9
     about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
@@ -445,8 +445,8 @@ models:
       text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 16
-    # Apple: the process's peak footprint 3.57 GB (M1, design.md 16.152)
-    memory: {amd: 2.3, apple: 3.6}
+    # Apple: the process's peak footprint 3.85 GB (M1, the lut8 DiT, design.md 16.157)
+    memory: {amd: 2.3, apple: 3.9}
     bytes: 9.7e9
     about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of

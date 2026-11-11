@@ -85,7 +85,7 @@ type GenerateCmd struct {
 	Guidance  float64   `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none, or 1.5 with a --negative; Sana 4.5)."`
 	Shift     float64   `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
 	Sampler   string    `placeholder:"NAME" help:"Anima: the solver, euler (Anima's scheduler; Anima-Turbo's default) or dpm2m (DPM-Solver++ 2M, the default with guidance: the same DiT runs a step, closer to many steps' result in fewer)."`
-	CFGSigmas []float64 `name:"cfg-sigmas" sep:"," placeholder:"LO,HI" help:"Anima: run the classifier-free guidance only at steps whose sigma is in [LO, HI] (1 is pure noise; default 0.6,1, and 0,1 for every step); the other steps run the DiT once."`
+	CFGSigmas []float64 `name:"cfg-sigmas" sep:"," placeholder:"LO,HI" help:"Run the classifier-free guidance only at steps whose sigma is in [LO, HI] (1 is pure noise; 0,1 for every step; default 0.6,1 for Anima and Sana); the other steps run the DiT once."`
 	Seed      uint64    `placeholder:"N" help:"The noise's seed (0: from the time)."`
 	Noise     string    `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana: (32, H/32, W/32))."`
 	Latents   string    `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
@@ -135,7 +135,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	var err error
 	if sana.IsExport(model) {
 		err = runSana(ctx, sanaRun{model: model, prompts: c.Prompts, outs: outs, keepDiT: c.KeepDiT, negative: c.Negative, noise: c.Noise, latents: c.Latents,
-			steps: c.Steps, guidance: c.Guidance, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache})
+			steps: c.Steps, guidance: c.Guidance, cfgSigmas: c.CFGSigmas, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache})
 	} else if len(c.Prompts) > 1 {
 		err = errors.New("Anima takes one prompt")
 	} else {
