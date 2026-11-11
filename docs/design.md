@@ -3886,4 +3886,5 @@ diffusers の fp32 (CPU) の参照と同じノイズから (DiT の重み q8 で
   - 1 回目は書き出し (Sana は ExportVersion 4、Anima は 3) を作り直したので変換とコンパイルで Sana 6m47s、Anima 18m14s。2 回目からはどちらも全部のプログラムが all on the NPU で当たる
   - models.yaml の Apple のメモリを測った値に直した: Sana-600M 3.3 → 3.9、SANA1.5-1.6B 3.1 → 3.6 (Anima の 4.1 は 3.92 GB で足りる)
   - 道具: 参照は `tools/ref/ref_sana.py` (torch 2.5.1、diffusers 0.33.1) と `tools/ref/ref_anima.py` (diffusers 0.42 以上が要り、python 3.9 では入らない。Homebrew の pytorch と python 3.15 に diffusers 0.42.1、transformers 5.22.2)。CPU で 1 枚 Sana 7〜8 分、Anima 約 10 分。NPUWired は `mem.NPUWired` を 0.1 秒ごとに読んだ最大 (Neural Engine の machine 全体の固定メモリ)
+- **低電力モードを切って測り直した** (M1、AC 電源、`pmset` の lowpowermode 0、新しいプロセスで 3 回、同じプロンプトと種): Sana-600M 19〜21 s (Gemma 2 2.2〜2.8 s、1 ステップ 0.65 s、VAE 3.4〜3.7 s)、Anima-Turbo 58〜59 s (1 ステップ 6.4〜6.5 s、VAE 2.6〜3.0 s)、SANA1.5-1.6B 1m10s〜1m12s (1 ステップ 2.5〜3.4 s、VAE 3.6〜3.7 s)。上の値と同じ。M3 では低電力モードで画像生成が半分の速さになったが、M1 のこの計測では差がない (上の計測のときに低電力モードが入っていたかは記録がない)
 - 確かめていないこと: Anima-Base (Turbo でない方、PR #109 で入った) の照合と Intel の NPU (どちらも別に)
