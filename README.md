@@ -249,7 +249,7 @@ go run ./cmd/hwnpu-image detect --draw photo.jpg                     # JSON line
 go run ./cmd/hwnpu-image ocr --text scan.png                         # the lines of text
 ```
 
-どちらも Apple の Neural Engine (と Intel の NPU、実機では未確認) で、初回にモデルを取ってきて変換します (OCR の認識器は行の幅ごとのプログラムを、その幅を初めて使うときに変換し、それぞれ初回のコンパイルに 5〜20 秒)。AMD の NPU の形はまだなく、AMD の機械では CPU で動きます (`pose`、`hwnpu-audio pitch`、`notes` も同じ)。何も入れなくても hwnpu の CPU 実行器で動き (1 スレッドで RTMDet-m 1 枚 2.3 秒、3 行の OCR 4.5 秒)、ONNX Runtime の共有ライブラリがあればそちらを使います (`HWNPU_ONNXRUNTIME` にパス。1.4 秒と 1.8 秒)。`--threads` で増やせます (docs/amd-npu-models.md 19 節)。座標と物の種類が要るときは、汎用の視覚言語モデル (LFM3-VL、`hwnpu-chat --image`) より、こちらが速く (1 枚数十 ms と数秒)、全部の物を拾い、座標が正確です。
+どちらも Apple の Neural Engine (と Intel の NPU、実機では未確認) で、初回にモデルを取ってきて変換します (OCR の認識器は行の幅ごとのプログラムを、その幅を初めて使うときに変換し、それぞれ初回のコンパイルに 5〜20 秒)。AMD の機械では、RTMDet-m と `pose` の RTMO-s は NPU で動きます (初回に IRON で書き出し、1 枚 0.33 秒と 0.22 秒。docs/amd-npu-models.md 21、22 節)。RTMDet の tiny と s、OCR は CPU で動きます (`hwnpu-audio pitch`、`notes` も同じ)。何も入れなくても hwnpu の CPU 実行器で動き (1 スレッドで RTMDet-m 1 枚 2.3 秒、3 行の OCR 4.5 秒)、ONNX Runtime の共有ライブラリがあればそちらを使います (`HWNPU_ONNXRUNTIME` にパス。1.4 秒と 1.8 秒)。`--threads` で増やせます (docs/amd-npu-models.md 19 節)。座標と物の種類が要るときは、汎用の視覚言語モデル (LFM3-VL、`hwnpu-chat --image`) より、こちらが速く (1 枚数十 ms と数秒)、全部の物を拾い、座標が正確です。
 
 ### ラベル付けと画像の埋め込み (SigLIP 2)
 
@@ -262,6 +262,17 @@ go run ./cmd/hwnpu-image embed --compare photo.jpg -t "a cat on a sofa"
 ```
 
 手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 18 節にあります。
+
+### 点や箱で指定する切り抜き (EfficientSAM)
+
+`go run ./cmd/hwnpu-image segment` は、Meta の EfficientSAM (Apache-2.0、Segment Anything のプロンプト) で、点 (`--point x,y`、外す点は `--negative`) か箱 (`--box x1,y1,x2,y2`) で指した物の mask を作ります。`NAME.mask.png` (物が白) と `NAME.cutout.png` (物の外が透明) を書き、スコア (予測した IoU)、面積、枠を JSON で出します。復号器の候補 3 つのうち一番スコアの高いものを、`--all` で 3 つとも書きます。画像の符号器 (1024 × 1024 の ViT) は AMD の NPU で動き (初回に IRON で書き出す)、それ以外の機械では CPU です (ONNX Runtime があればそれ、なければ hwnpu の評価器で遅い)。復号器はプロンプトごとにホストで動きます。マシンのメモリで Ti (8 GB) か S (16 GB 以上) を選びます。Ryzen AI 9 365 で、符号器が Ti 0.34 秒、S 0.48 秒、復号器が 0.6〜0.7 秒です。
+
+```bash
+go run ./cmd/hwnpu-image segment --box 280,40,500,385 photo.jpg   # photo.mask.png, photo.cutout.png
+go run ./cmd/hwnpu-image segment --point 390,200 --all photo.jpg
+```
+
+手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 23 節にあります。
 
 ## Apple での注意
 

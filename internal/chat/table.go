@@ -180,9 +180,11 @@ type modelEntry struct {
 	// memory in GB: {16: {memory: 7.6, prefill: auto}}. A file over another changes the
 	// variants it names and keeps the others.
 	Variants *map[int]*variantEntry `yaml:"variants"`
-	About    *string                `yaml:"about"`
-	Like     string                 `yaml:"like"`
-	Remove   bool                   `yaml:"remove"`
+	// NotOn are the chips (M1) a family or a category does not pick the model on.
+	NotOn  *[]string `yaml:"not_on"`
+	About  *string   `yaml:"about"`
+	Like   string    `yaml:"like"`
+	Remove bool      `yaml:"remove"`
 }
 
 type pickEntry struct {
@@ -462,6 +464,7 @@ var kinds = map[Kind]string{
 	KindDetect:     "hwnpu-image detect",
 	KindOCR:        "hwnpu-image ocr",
 	KindLabel:      "hwnpu-image label, embed",
+	KindSegment:    "hwnpu-image segment",
 	KindNotes:      "hwnpu-audio notes",
 	KindMusic:      "hwnpu-audio generate",
 	KindSFX:        "hwnpu-audio generate -m sfx",
@@ -556,7 +559,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
 		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, File: e.File, With: e.With,
-		License: e.License, RunEntry: e.RunEntry, Variants: e.Variants})
+		License: e.License, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
 	return &out, nil
 }
 
@@ -653,6 +656,14 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 	}
 	if m.Tag != "" && m.Family == "" {
 		return m, fmt.Errorf("model %s: a tag needs a family", name)
+	}
+	if e.NotOn != nil {
+		for _, c := range *e.NotOn {
+			if !slices.Contains(Chips, c) {
+				return m, fmt.Errorf("model %s: not_on %q is not one of %s", name, c, strings.Join(Chips, ", "))
+			}
+		}
+		m.NotOn = slices.Clone(*e.NotOn)
 	}
 	run, err := toRun(e.RunEntry)
 	if err != nil {

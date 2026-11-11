@@ -11,7 +11,7 @@ import (
 // TextScale is what Qwen3-VL-8B's residual stream is divided by in its programs: the host's
 // embedding rows and every layer's output projections are scaled down by it (the norms are scale
 // free). From layer 6 on one token's rows reach 13500 in float32 (an attention sink; design.md
-// 16.161): 3400 here, whose square a norm never takes (MaxScaled first).
+// 16.165): 3400 here, whose square a norm never takes (MaxScaled first).
 const TextScale = 4
 
 // TextGroup is Qwen3-VL-8B's language model's layers first..first+count-1 over TextLen positions,

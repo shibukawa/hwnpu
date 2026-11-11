@@ -91,7 +91,7 @@ func (e *progEngine) each(ctx context.Context, name string, f func(p runner.Prog
 
 // inTurn runs f with each of the programs names in order, each loaded just before and closed
 // after: one is held at a time. Loading the next while one runs did not save time (the Neural
-// Engine's compiles are mostly one at a time) and held two (design.md 16.161).
+// Engine's compiles are mostly one at a time) and held two (design.md 16.165).
 func (e *progEngine) inTurn(ctx context.Context, names []string, f func(i int, p runner.Program) error) error {
 	for i, name := range names {
 		p, err := e.open(ctx, name)
@@ -187,7 +187,7 @@ func (e *progEngine) encode(ctx context.Context, embed *os.File, ids [][]int32) 
 
 // openDiT loads the DiT's image blocks, held until closeDiT. One at a time: of 8 programs the
 // Neural Engine's cache had dropped (M3), four at once took 56 s against 71 s in a test, but 76 s
-// against 62 s in the pipeline, with a peak footprint of 7.4 GB against 4.5 (design.md 16.161).
+// against 62 s in the pipeline, with a peak footprint of 7.4 GB against 4.5 (design.md 16.165).
 func (e *progEngine) openDiT(ctx context.Context) error {
 	if e.blks != nil {
 		return nil

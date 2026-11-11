@@ -115,7 +115,7 @@ categories:
 	if p, _, _, _ := Pick("translate", 8); p.Name != "plamo-3-translate-2b" {
 		t.Errorf("translate on 8 GB: %s", p.Name)
 	}
-	if p, _, _, _ := Pick("translate", 16); p.Name != "plamo-3-translate-2b" {
+	if p, _, _, _ := Pick("translate", 16); p.Name != "plamo-3-translate-8b" {
 		t.Errorf("translate on 16 GB: %s", p.Name)
 	}
 	// the 24 GB column dropped: 16 GB's pick from there up
@@ -155,7 +155,7 @@ aliases:
 		t.Errorf("by name: %s, %v", m.Name, err)
 	}
 	// without a tag, the family does not pick it by itself
-	if m, _, _, _ := Pick("plamo3translate", 64); m.Name != "plamo-3-translate-2b" {
+	if m, _, _, _ := Pick("plamo3translate", 64); m.Name != "plamo-3-translate-8b" {
 		t.Errorf("plamo3translate on 64 GB: %s", m.Name)
 	}
 	if m, _, _, _ := Pick("plamo3translate:2b", 8); m.Name != "plamo-3-translate-2b" {

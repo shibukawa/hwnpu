@@ -49,7 +49,7 @@ type ConvertOptions struct {
 
 // DefaultFormats are the formats of the text encoder and the DiT: lut8 for Qwen3-VL-8B (run once a
 // prompt; 7 GB, read a group at a time), lut4 for the DiT (3.6 GB: its 8 groups are held through
-// the steps, under the Neural Engine's compile cache of about 4 GiB; design.md 16.161). Not int8:
+// the steps, under the Neural Engine's compile cache of about 4 GiB; design.md 16.165). Not int8:
 // the Neural Engine takes the product of a per-row int8 weight's codes before its scale, and the
 // attention sink's row (13000 out of layer 6's down_proj, 3300 at TextScale) passed fp16 there and
 // came out NaN; a table's weights are fp16 before the product.
@@ -58,12 +58,12 @@ const (
 	DefaultDitFormat  = "lut4"
 	// DefaultDitQuant fits each table to its rows' weights with their extremes kept: one group of
 	// the DiT's blocks on the first step's input came out 3.2 % off fp16 (relative RMS), uniform
-	// tables 4.9 %, k-means without the extremes 12.6 % (lut6 1.2 %, lut8 0.5 %; design.md 16.161)
+	// tables 4.9 %, k-means without the extremes 12.6 % (lut6 1.2 %, lut8 0.5 %; design.md 16.165)
 	DefaultDitQuant = "kmeans-minmax"
 	// DefaultDitTextFormat is the DiT's text pass's: its keys and values are what every step's image
 	// attends to. The fox at 512 x 512 against diffusers' float32 (the latents' cosine): text pass
 	// and image blocks lut4 0.965, text pass lut8 0.980, and the image blocks lut6 too 0.987 (3.2 s
-	// a step against 2.3 s, 5.1 GB held; design.md 16.161)
+	// a step against 2.3 s, 5.1 GB held; design.md 16.165)
 	DefaultDitTextFormat = "lut8"
 	DefaultTextQuant     = "uniform"
 )

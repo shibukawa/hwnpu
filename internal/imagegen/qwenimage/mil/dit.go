@@ -10,14 +10,14 @@ import (
 // DitScale is what the DiT's residual streams (the image's and the text's) are divided by in its
 // programs: img_in's output, txt_in's and the gates the host gives are scaled down by it (the norms
 // are scale free). Its largest value in float32 was about 9000 (512 x 512, the first step, text
-// and image rows, design.md 16.161): 1100 here, with room for other prompts and sizes.
+// and image rows, design.md 16.165): 1100 here, with room for other prompts and sizes.
 const DitScale = 8
 
 // maxScoreBytes is the largest fp16 score tensor (heads x queries x keys) the image attention makes
 // at once. Past about 64 MiB the Neural Engine runs q k^T and its softmax slower per score (M3,
 // design.md 16.85), but more chunks take longer to compile: a group of 4 blocks at 1024 x 1024 (M3,
 // lut4) in chunks of 128 queries (38 MB) compiled in 59 s and ran in 1.49 s, of 512 (151 MB) in 33
-// s and 1.57 s, all 4096 at once in 35 s and 2.2 s (design.md 16.161). The compile is paid again
+// s and 1.57 s, all 4096 at once in 35 s and 2.2 s (design.md 16.165). The compile is paid again
 // whenever the Neural Engine's cache has dropped the program.
 const maxScoreBytes = 160 << 20
 

@@ -83,6 +83,7 @@ type cli struct {
 	OCR        OCRCmd        `cmd:"" name:"ocr" help:"Read the text in pictures: lines, their boxes and text in 50 languages (PP-OCRv6; Apple's Neural Engine, Intel's NPU, the CPU)."`
 	Label      LabelCmd      `cmd:"" help:"Label pictures: the likeliest of candidate labels in any language, or of a list of common ones (SigLIP 2; AMD's NPU)."`
 	Embed      EmbedCmd      `cmd:"" help:"Embed pictures and texts in one space, for search and similarity (SigLIP 2; AMD's NPU)."`
+	Segment    SegmentCmd    `cmd:"" help:"Cut out the thing a point or a box picks in pictures: its mask and a transparent cutout (EfficientSAM; AMD's NPU, the CPU)."`
 	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export, or a Sana repository into a Core ML export."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 
@@ -95,7 +96,7 @@ func main() {
 	var c cli
 	k := kong.Parse(&c,
 		kong.Name("hwnpu-image"),
-		kong.Description("Image models on an NPU: generation, depth, faces, poses, objects and text."),
+		kong.Description("Image models on an NPU: generation, depth, faces, poses, objects, text, labels and cutouts."),
 		kong.UsageOnError(),
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	acceptLicenses = c.AcceptLicense

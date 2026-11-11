@@ -125,7 +125,7 @@ checklist で効いたものを、それぞれのモデルのどこに当てる�
 
 DiT の fp16 は 14–18 GB で、Neural Engine のコンパイルキャッシュ (実効 3.5 GiB、3.1) と 16 GB の Mac には大きすぎる。lut4 でも DiT だけで 3.6–4.5 GB。まず AMD だけで入れ、Mac は lut4 の分割で入るかを別に見積もる。
 
-2026-11-12: Qwen-Image-2.1-Turbo を Mac の Neural Engine に入れた (DiT の画像のブロック lut4、文の符号器と DiT の文のパス lut8。512² で 1 ステップ 2.2 秒、1024² で 16 秒。時間の大半はキャッシュを超えるプログラムの読み込み)。[design.md](design.md) 16.161。
+2026-11-12: Qwen-Image-2.1-Turbo を Mac の Neural Engine に入れた (DiT の画像のブロック lut4、文の符号器と DiT の文のパス lut8。512² で 1 ステップ 2.2 秒、1024² で 16 秒。時間の大半はキャッシュを超えるプログラムの読み込み)。[design.md](design.md) 16.165。
 
 ## 8. 決めること
 
