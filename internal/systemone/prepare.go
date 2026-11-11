@@ -30,9 +30,12 @@ type Setup struct {
 	// Seqs are the prompt lengths of the programs (none: DefaultSeqs).
 	Seqs []int
 	// Format is the weight format of the d1 model's programs (empty: lut8; the d1 models answer
-	// worse in 4 bit tables). The encoders stay in fp16.
+	// worse in 4 bit tables; int8 on Intel's NPU). The encoders stay in fp16.
 	Format string
-	Log    io.Writer
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
+	// what the CPU interpreter runs) or OpenVINO IR for Intel's NPU, kept in Dir/intel.
+	Backend string
+	Log     io.Writer
 }
 
 // Prepare downloads the d1 checkpoint into s.Dir unless it is there, converts its programs for
@@ -64,18 +67,24 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return filepath.Join(s.Dir, "model.safetensors"), chat.FetchWeights(ctx, s.Repo, s.Dir, log)
 	})
 	convert := func(name string, p chat.Program) (string, error) {
-		out := filepath.Join(s.Dir, name+".mlpackage")
+		out, err := chat.ProgramFile(s.Dir, name, s.Backend)
+		if err != nil {
+			return "", err
+		}
 		weights := ""
 		if !chat.Converted(out) {
-			var err error
 			if weights, err = checkpoint(); err != nil {
 				return "", err
 			}
 		}
+		p.Backend = s.Backend
 		return chat.ConvertProgram(ctx, config, weights, out, p, log)
 	}
 	c := Config{ModelConfig: config}
 	format := cmp.Or(s.Format, "lut8")
+	if s.Backend == llm.BackendIntel {
+		format = llm.IntelFormat(format)
+	}
 	seqs := slices.Clone(s.Seqs)
 	if len(seqs) == 0 {
 		seqs = slices.Clone(DefaultSeqs)

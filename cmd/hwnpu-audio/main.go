@@ -283,8 +283,8 @@ func run(ctx context.Context, o options, args []string) error {
 			return err
 		}
 		defer dev.Close()
-		if backend = llm.ProgramBackend(device); backend != llm.BackendCoreML {
-			return fmt.Errorf("%s: only Apple's Neural Engine runs Magenta RealTime 2 so far (--cpu runs it on the CPU)", device)
+		if backend = llm.ProgramBackend(device); backend == "" {
+			return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--cpu runs Magenta RealTime 2 on the CPU)", device)
 		}
 	}
 	setup := music.Setup{Dir: filepath.Join(o.dir, m.DirName()), Repo: m.Source(), Format: o.format, Backend: backend, Log: lw, Encoder: o.cont != ""}
@@ -416,6 +416,9 @@ func run(ctx context.Context, o options, args []string) error {
 	ss, ok := units[o.decoderOn]
 	if !ok {
 		return fmt.Errorf("--decoder-on %q: npu, gpu or cpu", o.decoderOn)
+	}
+	if ss != "" && backend != llm.BackendCoreML {
+		return fmt.Errorf("--decoder-on %s: Core ML's units, not Intel's NPU", o.decoderOn)
 	}
 	done := spin("loading " + m.Name)
 	g, err := music.OpenOn(ctx, dev, p, ss)

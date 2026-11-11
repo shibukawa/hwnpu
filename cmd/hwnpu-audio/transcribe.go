@@ -49,16 +49,16 @@ func (c *TranscribeCmd) Run(ctx context.Context) error {
 	}
 	s := transcribe.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Format: c.Format, Log: lw}
 	o := transcribe.Options{Language: c.Language, Translate: c.Translate, MaxTokens: c.MaxTokens}
-	cfg, err := transcribe.Prepare(ctx, s)
-	if err != nil {
-		return err
-	}
 	var dev *hwnpu.Device
 	if !c.CPU {
-		if dev, _, err = llm.OpenDevice(ctx, "", cacheDir(c.Cache)); err != nil {
+		if dev, s.Backend, err = llm.OpenDevice(ctx, "", cacheDir(c.Cache)); err != nil {
 			return err
 		}
 		defer dev.Close()
+	}
+	cfg, err := transcribe.Prepare(ctx, s)
+	if err != nil {
+		return err
 	}
 	wired0, wired := mem.NPUWired()
 	t0 := time.Now()

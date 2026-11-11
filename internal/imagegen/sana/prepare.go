@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 // Setup is what Prepare makes ready.
@@ -57,7 +58,15 @@ var Files = []File{
 // programs is in it.
 func ExportName(name string, o ConvertOptions) string {
 	o.defaults(name)
-	return fmt.Sprintf("%s-%dx%d-%s-%s-g%d-v%d.coreml", strings.ToLower(name), o.Width, o.Height, o.TextFormat, o.DitFormat, o.Group, ExportVersion)
+	return fmt.Sprintf("%s-%dx%d-%s-%s-g%d-v%d.%s", strings.ToLower(name), o.Width, o.Height, o.TextFormat, o.DitFormat, o.Group, ExportVersion, exportSuffix(o.Backend))
+}
+
+// exportSuffix is the extension of an export's directory for a program format.
+func exportSuffix(backend string) string {
+	if backend == llm.BackendIntel {
+		return "intel"
+	}
+	return "coreml"
 }
 
 // Prepare makes a Sana ready in s.Dir, as hwnpu-chat makes its models ready: it downloads the
@@ -121,10 +130,10 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	return out, os.WriteFile(out+".done", []byte(out), 0o644)
 }
 
-// textExport is a whole export in dir whose Gemma 2 programs are those o asks for (the text
-// format and ExportVersion), or "".
+// textExport is a whole export in dir whose Gemma 2 programs are those o asks for (the program
+// format, the text format and ExportVersion), or "".
 func textExport(dir string, o ConvertOptions) string {
-	done, _ := filepath.Glob(filepath.Join(dir, "*.coreml.done"))
+	done, _ := filepath.Glob(filepath.Join(dir, "*."+exportSuffix(o.Backend)+".done"))
 	for _, d := range done {
 		e := strings.TrimSuffix(d, ".done")
 		m, err := ReadProgramManifest(e)

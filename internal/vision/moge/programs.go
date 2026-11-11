@@ -48,13 +48,14 @@ func (p *progSized) close() error {
 	return err
 }
 
-// useProgram loads size w x h of a Core ML export, converting it first when it is missing.
+// useProgram loads size w x h of an export of Prepare (Core ML packages or OpenVINO IR),
+// converting it first when it is missing.
 func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized, error) {
 	if _, err := os.Stat(d + ".done"); err != nil {
 		if e.Logf != nil {
 			e.Logf("moge: converting %dx%d (the first picture of this aspect)", w, h)
 		}
-		if err := ConvertSize(e.Checkpoint, d, w/14, h/14); err != nil {
+		if err := ConvertSize(e.Checkpoint, d, w/14, h/14, e.Format); err != nil {
 			return nil, err
 		}
 	}
@@ -71,8 +72,9 @@ func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized,
 		name string
 	}{{&s.prog.vit, "vit"}, {&s.prog.dense, "dense"}} {
 		t0 := time.Now()
-		p, err := runner.Open(ctx, e.dev, filepath.Join(d, x.name+".mlpackage"))
-		if err == nil && e.dev != nil && !p.OnNPU() {
+		p, err := runner.Open(ctx, e.dev, filepath.Join(d, x.name+depth.ProgramExt(e.Format)))
+		// OpenVINO's CPU plugin (the Intel path checked without Intel's NPU) is not the NPU
+		if err == nil && e.dev != nil && !p.OnNPU() && e.dev.Info().Backend != "openvino" {
 			p.Close()
 			err = fmt.Errorf("%s does not run on the NPU alone", x.name)
 		}
@@ -121,8 +123,9 @@ func (e *Estimator) estimateProgram(ctx context.Context, s *sized, px []uint8, o
 }
 
 // ConvertSize writes the programs of the MoGe-2 checkpoint (model.pt) for bw x bh patches into
-// d (vit.mlpackage, dense.mlpackage, model.json); d.done, written last, says they are whole.
-func ConvertSize(checkpoint, d string, bw, bh int) error {
+// d in format ("coreml": vit.mlpackage and dense.mlpackage; "intel": vit.xml and dense.xml,
+// OpenVINO IR) and model.json; d.done, written last, says they are whole.
+func ConvertSize(checkpoint, d string, bw, bh int, format string) error {
 	wt, err := mil.OpenWeights(checkpoint)
 	if err != nil {
 		return err
@@ -139,7 +142,7 @@ func ConvertSize(checkpoint, d string, bw, bh int) error {
 		return err
 	}
 	for _, p := range []*milpart.Part{mil.Vit(c), mil.Dense(c)} {
-		if _, err := llm.WritePart(filepath.Join(d, p.Name+".mlpackage"), p, wt, llm.Options{Backend: llm.BackendCoreML, Format: "fp16"}, nil); err != nil {
+		if _, err := llm.WritePart(filepath.Join(d, p.Name+depth.ProgramExt(format)), p, wt, llm.Options{Backend: depth.ProgramBackend(format), Format: "fp16"}, nil); err != nil {
 			return fmt.Errorf("moge: %s: %w", p.Name, err)
 		}
 	}
@@ -161,10 +164,13 @@ type Setup struct {
 	Dir  string // the checkpoints (Dir/NAME) and the exports
 	Repo string // the Hugging Face repository (Ruicheng/moge-2-vits-normal)
 	Name string
-	Log  io.Writer
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default) or
+	// OpenVINO IR for Intel's NPU.
+	Backend string
+	Log     io.Writer
 }
 
-// Prepare makes a MoGe-2 ready for Apple's Neural Engine in s.Dir: it downloads model.pt when
+// Prepare makes a MoGe-2 ready for Apple's Neural Engine (or Intel's NPU, s.Backend) in s.Dir: it downloads model.pt when
 // missing and writes the export's model.json; each size is converted when a picture first takes
 // it.
 func Prepare(ctx context.Context, s Setup) (string, error) {
@@ -176,8 +182,9 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := chat.Fetch(ctx, s.Repo, "model.pt", pt, s.Log); err != nil {
 		return "", err
 	}
-	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.coreml", strings.ToLower(s.Name), ExportVersion))
-	x := Export{Name: s.Name, Kind: "moge", Tokens: Tokens, Format: "coreml", Checkpoint: pt}
+	format := depth.ExportFormat(s.Backend)
+	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
+	x := Export{Name: s.Name, Kind: "moge", Tokens: Tokens, Format: format, Checkpoint: pt}
 	for _, a := range Aspects {
 		bw, bh := BaseSize(Tokens, a)
 		x.Sizes = append(x.Sizes, [2]int{14 * bw, 14 * bh})

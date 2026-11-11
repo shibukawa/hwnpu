@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -45,8 +46,20 @@ func runSana(ctx context.Context, r sanaRun) error {
 	case programs:
 		// llm.OpenDevice takes the Neural Engine's lock (design.md 16.132): with another process
 		// compiling for it, a placement check of Gemma 2's programs took over 2 minutes. Strict,
-		// so that a program off the NPU, or one whose placement is not verified, says why
-		d, _, err := llm.OpenDevice(ctx, llm.BackendCoreML, cacheDirOf(r.cache), hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		// so that a program off the NPU, or one whose placement is not verified, says why. An
+		// export of OpenVINO IR runs on Intel's NPU (or OpenVINO, HWNPU_BACKEND=openvino)
+		m, err := sana.ReadProgramManifest(r.model)
+		if err != nil {
+			return err
+		}
+		name, opts := llm.BackendCoreML, []hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementStrict)}
+		if m.Backend == llm.BackendIntel {
+			name, opts = "", nil
+			if b := llm.ProgramBackend(strings.TrimSpace(os.Getenv(llm.BackendEnv))); b != llm.BackendIntel {
+				name = llm.BackendIntel
+			}
+		}
+		d, _, err := llm.OpenDevice(ctx, name, cacheDirOf(r.cache), opts...)
 		if err != nil {
 			return err
 		}

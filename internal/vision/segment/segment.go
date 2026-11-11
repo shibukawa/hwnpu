@@ -3,8 +3,9 @@
 // decoder (yunyangx/EfficientSAM, efficientsam_{ti,s}_{encoder,decoder}.onnx).
 //
 // The encoder (a ViT at 1024 x 1024) turns a picture into an embedding once: on AMD's NPU from an
-// export of tools/amd/iron_efficientsam.py, else on the CPU with ONNX Runtime when its library is
-// there, else with hwnpu's evaluator (internal/onnx; slow). The decoder turns the embedding and
+// export of tools/amd/iron_efficientsam.py, on Intel's NPU as OpenVINO IR converted from its ONNX
+// file (OpenProgram), else on the CPU with ONNX Runtime when its library is there, else with
+// hwnpu's evaluator (internal/onnx; slow). The decoder turns the embedding and
 // a prompt (points in or out of the thing, or a box) into three masks at the picture's size and
 // the IoU it predicts for each, on the host with hwnpu's evaluator, per prompt.
 package segment
@@ -27,6 +28,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
+	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/onnx"
 	"github.com/shibukawa/hwnpu/internal/onnxrt"
 )
@@ -100,10 +102,13 @@ type Model struct {
 	// Times are the last picture's resize and the encoder's run.
 	Times [2]time.Duration
 	dec   *onnx.Graph
-	npu   *iron.Graph   // the encoder on AMD's NPU
-	ort   *ort          // or on the CPU with ONNX Runtime
-	enc   *onnx.Graph   // or with hwnpu's evaluator
-	x     *exportConfig // the NPU export's model.json
+	npu   *iron.Graph    // the encoder on AMD's NPU
+	prog  runner.Program // or a program of OpenProgram (Apple's Neural Engine, Intel's NPU)
+	ort   *ort           // or on the CPU with ONNX Runtime
+	enc   *onnx.Graph    // or with hwnpu's evaluator
+	x     *exportConfig  // the NPU export's model.json
+	// progName is the program's file
+	progName string
 }
 
 type exportConfig struct {
@@ -177,6 +182,11 @@ func (m *Model) Where() string {
 	switch {
 	case m.npu != nil:
 		return "AMD's NPU"
+	case m.prog != nil:
+		if m.prog.OnNPU() {
+			return "the NPU (" + m.progName + ")"
+		}
+		return m.progName + ", NOT all on the NPU"
 	case m.ort != nil:
 		return "the CPU (ONNX Runtime)"
 	}
@@ -186,6 +196,9 @@ func (m *Model) Where() string {
 func (m *Model) Close() error {
 	if m.npu != nil {
 		return m.npu.Close()
+	}
+	if m.prog != nil {
+		return m.prog.Close()
 	}
 	if m.ort != nil {
 		return m.ort.s.Close()
@@ -296,6 +309,22 @@ func (m *Model) Embed(ctx context.Context, img image.Image) (*Embedding, error) 
 			for c := range 256 {
 				t.F[c*Grid*Grid+p] = float64(math.Float32frombits(uint32(binary.LittleEndian.Uint16(out[2*(p*256+c):])) << 16))
 			}
+		}
+		e.T = t
+		m.Times = [2]time.Duration{t1.Sub(t0), time.Since(t1)}
+	case m.prog != nil:
+		x := Resize(px, W, H, Size, Size)
+		t1 := time.Now()
+		y, err := m.prog.Run(ctx, map[string][]float32{"x": x})
+		if err != nil {
+			return nil, fmt.Errorf("segment: %w", err)
+		}
+		if len(y) != 256*Grid*Grid {
+			return nil, fmt.Errorf("segment: the encoder's program gives %d values, not (1, 256, %d, %d)", len(y), Grid, Grid)
+		}
+		t := &onnx.Tensor{Shape: []int{1, 256, Grid, Grid}, F: make([]float64, len(y)), Type: onnx.Float}
+		for i, v := range y {
+			t.F[i] = float64(v)
 		}
 		e.T = t
 		m.Times = [2]time.Duration{t1.Sub(t0), time.Since(t1)}

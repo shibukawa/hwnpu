@@ -175,6 +175,14 @@ func writeIRPart(path string, m Model, w Weights, opts Options, describe func(*m
 	return PartRecord{Path: path, Start: opts.Start, Layers: opts.Layers, WeightBytes: size, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}, nil
 }
 
+// WriteIR writes the program build makes as OpenVINO IR at path (.xml, and its .bin), with meta
+// in its rt_info, for a program that is not a Model (WritePart). It returns the size of the
+// weights.
+func WriteIR(path string, meta map[string]string, build func(*mlpackage.Builder) (ins, outs []mlpackage.Feature, err error)) (int64, error) {
+	size, _, _, err := writeIR(path, &mlpackage.Package{Metadata: meta}, build)
+	return size, err
+}
+
 // writeIR builds a program as MIL, its weights in a temporary weight file next to path, and
 // lowers it to OpenVINO IR (path, .xml, and its .bin), with the description and metadata of pkg
 // in its rt_info. It returns the size of the weights and the program's inputs and outputs.

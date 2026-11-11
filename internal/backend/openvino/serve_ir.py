@@ -20,7 +20,11 @@ import json
 import sys
 
 import numpy as np
-import openvino as ov
+
+# no telemetry: openvino_telemetry sends usage events from a child process (multiprocessing),
+# which outlives this one and fails once its script is removed; openvino falls back to its stub
+sys.modules["openvino_telemetry"] = None
+import openvino as ov  # noqa: E402
 
 DTYPES = {
     ov.Type.f16: "f16", ov.Type.f32: "f32", ov.Type.i32: "i32", ov.Type.i64: "i64",

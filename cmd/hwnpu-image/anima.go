@@ -42,8 +42,8 @@ func (f convertFlags) options() anima.ConvertOptions {
 		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}
 }
 
-// ConvertCmd is "hwnpu-image convert": an Anima directory into a Core ML or OpenVINO export, or
-// a Sana repository into a Core ML export.
+// ConvertCmd is "hwnpu-image convert": an Anima directory or a Sana repository into a Core ML or
+// OpenVINO export.
 type ConvertCmd struct {
 	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/), or a Sana repository of Efficient-Large-Model (transformer/, vae/, scheduler/)."`
 	Model string `short:"m" required:"" type:"path" placeholder:"EXPORT" help:"The export to write."`
@@ -63,10 +63,10 @@ func (c *ConvertCmd) Run() error {
 			return err
 		}
 	} else if isDir(filepath.Join(c.Anima, "transformer")) {
-		if c.Backend != "" && c.Backend != llm.BackendCoreML {
-			return fmt.Errorf("Sana converts for coreml only (--backend %s)", c.Backend)
+		if c.Backend != "" && c.Backend != llm.BackendCoreML && c.Backend != llm.BackendIntel {
+			return fmt.Errorf("Sana converts for coreml or intel (--backend %s)", c.Backend)
 		}
-		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat, Backend: c.Backend}
 		if err := sana.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func (c *ConvertCmd) Run() error {
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
 type GenerateCmd struct {
 	Prompts   []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana and Qwen-Image take several: a picture each, the model loaded once (Qwen-Image on Apple's Neural Engine: every prompt read first, then every picture's steps, then the decoding of all; its programs load in minutes, the steps in seconds)."`
-	Model     string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's (Anima and Sana) and Intel's (Anima) the model is downloaded and converted into --dir on its first run."`
+	Model     string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's and Intel's (Anima and Sana) the model is downloaded and converted into --dir on its first run."`
 	Dir       string    `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir): the checkpoints and exports in Anima/ and Sana/."`
 	Out       string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
 	KeepDiT   bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (Gemma 2 and the VAE are loaded for each)."`
@@ -174,21 +174,21 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 }
 
 // sanaModel is the Sana export m runs here: on Apple's Neural Engine (or with --cpu) the Core ML
-// export of --dir, downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2
+// export of --dir, on Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2
 // of tools/amd/iron_sana.py.
 func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, error) {
 	format, err := llm.ProgramFormat(ctx, c.Backend)
 	switch {
-	case c.CPU || err == nil && format == llm.BackendCoreML:
-	case err == nil:
-		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
+	case c.CPU: // the CPU interpreter runs Core ML exports
+		format = llm.BackendCoreML
+	case err == nil: // Apple's Neural Engine or Intel's NPU
 	default:
 		return amdExport(m, "tools/amd/iron_sana.py")
 	}
 	if c.Size%32 != 0 {
 		return "", fmt.Errorf("--size %d: Sana's pictures are multiples of 32 pixels", c.Size)
 	}
-	o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group}
+	o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, Backend: format}
 	if c.TextFormat != "" || c.DitFormat != "" {
 		o.TextFormat, o.DitFormat = c.TextFormat, c.DitFormat
 	}
