@@ -46,7 +46,9 @@
 // classifier-free guidance (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU
 // interpreter (slow; for checking without the NPU).
 //
-// On AMD's NPU, generate also runs Qwen-Image-2.1 (qwen-image: Qwen-Image-2.1-Turbo, 8 steps;
+// On AMD's NPU (and Qwen-Image-2.1-Turbo on Apple's Neural Engine, downloaded into --dir/Qwen-Image
+// and converted on its first run: internal/imagegen/qwenimage/mil), generate also runs
+// Qwen-Image-2.1 (qwen-image: Qwen-Image-2.1-Turbo, 8 steps;
 // qwen-image:2.1, 40 steps, guidance with --guidance and --negative; tools/amd/iron_qwenimage.py,
 // internal/imagegen/qwenimage) and Chroma1 (chroma: Chroma1-Flash, Heun's 8 steps; chroma:1-hd,
 // guidance 3 with DPM-Solver++ 2M 25 steps; tools/amd/iron_chroma.py, internal/imagegen/chroma).

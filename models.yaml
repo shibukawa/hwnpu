@@ -505,10 +505,11 @@ models:
     machine: 16
     # AMD: the peak of a 1024 x 1024 run, 3.1 GiB on the NPU (the VAE's stage 4; the text encoder's
     # layers and the DiT's blocks are read a group at a time into one bank) and the process's 1.0
-    # GiB, measured
-    memory: {amd: 4.2}
+    # GiB, measured. Apple: the process's peak footprint at 1024 x 1024 (M3; 4.5 GB at 512 x 512,
+    # design.md 16.165)
+    memory: {amd: 4.2, apple: 6.0}
     bytes: 3.25e10
-    about: "Qwen-Image-2.1-Turbo (7B single-stream DiT, Qwen3-VL-8B reads the prompt, RGBA VAE): 8 steps without guidance; AMD's NPU only; Qwen Research License (not commercial)"
+    about: "Qwen-Image-2.1-Turbo (7B single-stream DiT, Qwen3-VL-8B reads the prompt, RGBA VAE): 8 steps without guidance; AMD's and Apple's NPU (on Apple's, loading its 17 GB of programs takes most of the time: several prompts in one run); Qwen Research License (not commercial)"
   Qwen-Image-2.1:
     like: Qwen-Image-2.1-Turbo
     tag: "2.1"
@@ -520,7 +521,7 @@ models:
       vae/diffusion_pytorch_model.safetensors: a07a1b7c4ee2966a1b3bdc37de9b4f983d56937e46619f709a80b6e490675417
     # named as qwen-image:2.1: the family alone picks the Turbo
     machine: 0
-    about: "Qwen-Image-2.1 (base): 40 Euler steps, classifier-free guidance with --guidance and --negative (none by default, as its pipeline); AMD's NPU only; Qwen Research License (not commercial)"
+    about: "Qwen-Image-2.1 (base): 40 Euler steps, classifier-free guidance with --guidance and --negative (none by default, as its pipeline); AMD's NPU (Apple's not checked); Qwen Research License (not commercial)"
   Sana-600M:
     family: sana
     tag: 0.6b

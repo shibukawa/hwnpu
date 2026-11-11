@@ -1,6 +1,7 @@
-// Package qwenimage runs Qwen-Image-2.1 (Qwen/Qwen-Image-2.1-Turbo), an image model, on AMD's
-// NPU: the graphs tools/amd/iron_qwenimage.py exports. The host does what is not a tensor
-// computation.
+// Package qwenimage runs Qwen-Image-2.1 (Qwen/Qwen-Image-2.1-Turbo), an image model, on an NPU:
+// on AMD's, the graphs tools/amd/iron_qwenimage.py exports; on Apple's Neural Engine, the Core ML
+// packages of internal/imagegen/qwenimage/mil (Convert, Prepare). The host does what is not a
+// tensor computation.
 //
 // Qwen-Image-2.1 is a 7B single-stream DiT over one sequence, the prompt's rows and then the
 // image's, with Qwen3-VL-8B reading the prompt and a VAE of 64 latent channels at a 16th of the
@@ -28,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -103,8 +105,11 @@ type StageFunc = anima.StageFunc
 // StepFunc is told that step i (of n) took d.
 type StepFunc func(i, n int, d time.Duration)
 
-// IsExport reports whether dir is an export of tools/amd/iron_qwenimage.py.
+// IsExport reports whether dir is an export of tools/amd/iron_qwenimage.py or of Convert.
 func IsExport(dir string) bool {
+	if IsProgramExport(dir) {
+		return true
+	}
 	for _, p := range []string{"model.json", "dit_text/manifest.json", "dit_blocks/manifest.json"} {
 		if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
 			return false
@@ -126,6 +131,7 @@ type Pipeline struct {
 	template string   // with {} for the prompt
 	drop     int      // the template's system message's tokens, not the DiT's
 	vae      *anima.VAE
+	prog     *progEngine // a Core ML export's
 
 	// Logf, when set, is told what is done.
 	Logf func(format string, args ...any)
@@ -152,6 +158,13 @@ func meta[T any](dir string, field string) (T, *iron.GraphManifest, error) {
 
 // Open reads the export in dir; its graphs are loaded onto dev as they run.
 func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error) {
+	return OpenWith(ctx, dev, dir, nil)
+}
+
+// OpenWith is Open; an export of Convert (Core ML) runs its programs on dev's Neural Engine, or
+// with the CPU interpreter when dev is nil, and shows each program on log (when not nil) as it
+// loads (the first load compiles it).
+func OpenWith(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{dev: dev, dir: dir}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
@@ -163,6 +176,21 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error)
 	}
 	if err := json.Unmarshal(b, &p.Model); err != nil {
 		return fail(err)
+	}
+	if IsProgramExport(dir) {
+		if p.prog, err = openPrograms(dev, dir, log); err != nil {
+			return fail(err)
+		}
+		m := p.prog.m
+		p.Dit, p.Text, p.template, p.drop = m.Dit, m.Text, m.Template, m.Drop
+		td := filepath.Join(dir, "text")
+		if p.tok, err = tokenizer.Load(filepath.Join(td, "tokenizer.json")); err != nil {
+			return fail(err)
+		}
+		if p.embed, err = os.Open(filepath.Join(td, "embed.bin")); err != nil {
+			return fail(err)
+		}
+		return p, nil
 	}
 	if p.Dit, _, err = meta[DitConfig](filepath.Join(dir, "dit_blocks"), "config"); err != nil {
 		return fail(err)
@@ -195,10 +223,14 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error)
 	return p, nil
 }
 
-// Close releases what Open holds (no graph stays on the device between calls).
+// Close releases what Open holds (no graph stays on the device between calls; a Core ML export's
+// DiT is released).
 func (p *Pipeline) Close() error {
 	if p.embed != nil {
 		p.embed.Close()
+	}
+	if p.prog != nil {
+		return p.prog.closeDiT()
 	}
 	return nil
 }
@@ -219,10 +251,12 @@ func (p *Pipeline) Tokens(prompt string) []int32 {
 }
 
 // Cond is a prompt's conditioning: the text's keys and values of each group of the DiT's
-// blocks (bf16, group x TextRows rows of hidden each), and how many rows count.
+// blocks (bf16, group x TextRows rows of hidden each; a Core ML export's as float32 in ptk and ptv),
+// and how many rows count.
 type Cond struct {
-	tk, tv [][]byte
-	Rows   int
+	tk, tv   [][]byte
+	ptk, ptv [][]float32
+	Rows     int
 }
 
 // Encode runs the text graph and the DiT's text pass on the prompt.
@@ -250,6 +284,17 @@ func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, er
 		case T <= 0:
 			return nil, errors.New("qwenimage: no text rows")
 		}
+	}
+	if p.prog != nil {
+		conds, err := p.prog.encode(ctx, p.embed, ids)
+		if err != nil {
+			return nil, fmt.Errorf("qwenimage: %w", err)
+		}
+		for k := range prompts {
+			p.logf("text: %d tokens (%d rows for the DiT)", len(ids[k]), conds[k].Rows)
+		}
+		p.logf("the text in %.2f s", time.Since(t0).Seconds())
+		return conds, nil
 	}
 	tLoad := time.Now()
 	rows, err := p.text(ctx, ids)
@@ -546,7 +591,7 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 	if len(noise) != L*N {
 		return nil, fmt.Errorf("qwenimage: %d noise values for latents of %d", len(noise), L*N)
 	}
-	if len(cond.tk) == 0 {
+	if len(cond.tk) == 0 && len(cond.ptk) == 0 {
 		return nil, errors.New("qwenimage: the DiT runs without a prompt (Encode)")
 	}
 	switch smp.Solver {
@@ -559,6 +604,9 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 	}
 	if smp.Guidance != 1 && neg == nil {
 		return nil, errors.New("qwenimage: guidance without a negative prompt's conditioning")
+	}
+	if p.prog != nil {
+		return p.generatePrograms(ctx, cond, neg, noise, sigmas, smp, step)
 	}
 	open := func(name string, swap bool) (*iron.Graph, error) {
 		return iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, name), iron.GraphOptions{SwapVariants: swap, Barrier: true})
@@ -685,11 +733,45 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 	return res, nil
 }
 
-// Decode turns the latents (latent, rows, columns) into the picture (RGBA).
+// Decode turns the latents (latent, rows, columns) into the picture (RGBA). A Core ML export's DiT
+// is released first.
 func (p *Pipeline) Decode(ctx context.Context, latents []float32) (*image.RGBA, error) {
-	p.vae.Stage = p.Stage
-	return p.vae.Decode(ctx, latents)
+	imgs, err := p.DecodeAll(ctx, latents)
+	if err != nil {
+		return nil, err
+	}
+	return imgs[0], nil
 }
+
+// DecodeAll is Decode of several pictures' latents: a Core ML export runs each VAE stage on all of
+// them, so that each stage is loaded once.
+func (p *Pipeline) DecodeAll(ctx context.Context, latents ...[]float32) ([]*image.RGBA, error) {
+	if p.prog != nil {
+		if err := p.prog.closeDiT(); err != nil {
+			return nil, err
+		}
+		imgs, err := p.prog.decode(ctx, latents, p.Stage)
+		if err != nil {
+			return nil, fmt.Errorf("qwenimage: %w", err)
+		}
+		return imgs, nil
+	}
+	p.vae.Stage = p.Stage
+	var imgs []*image.RGBA
+	for _, l := range latents {
+		img, err := p.vae.Decode(ctx, l)
+		if err != nil {
+			return nil, err
+		}
+		imgs = append(imgs, img)
+	}
+	return imgs, nil
+}
+
+// Batched reports whether the pipeline is best run with every prompt's conditioning first, every
+// picture's steps next and the decoding of all last (EncodeAll, Generate, DecodeAll): a Core ML
+// export loads its programs for each phase, which takes longer than running them.
+func (p *Pipeline) Batched() bool { return p.prog != nil }
 
 // imagePositions are the image's rows' RoPE positions after a text of textLen rows (frame,
 // height, width): the frame at textLen, the height and width centred on zero (QwenImage21Rope).

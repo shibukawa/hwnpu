@@ -47,14 +47,22 @@ func (f convertFlags) options() anima.ConvertOptions {
 type ConvertCmd struct {
 	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/), or a Sana repository of Efficient-Large-Model (transformer/, vae/, scheduler/)."`
 	Model string `short:"m" required:"" type:"path" placeholder:"EXPORT" help:"The export to write."`
-	Text  string `type:"existingdir" placeholder:"DIR" help:"Sana: the directory of Gemma 2's text_encoder/ and tokenizer/ (default: the repository)."`
+	Text  string `type:"existingdir" placeholder:"DIR" help:"Sana: the directory of Gemma 2's text_encoder/ and tokenizer/; Qwen-Image-2.1: of Qwen3-VL-8B's text_encoder/ and processor/ (default: the repository)."`
 	convertFlags
 }
 
 // Run converts the checkpoint.
 func (c *ConvertCmd) Run() error {
 	t0 := time.Now()
-	if isDir(filepath.Join(c.Anima, "transformer")) {
+	if b, err := os.ReadFile(filepath.Join(c.Anima, "model_index.json")); err == nil && strings.Contains(string(b), "QwenImage21Pipeline") {
+		if c.Backend != "" && c.Backend != llm.BackendCoreML {
+			return fmt.Errorf("Qwen-Image converts for coreml only (--backend %s)", c.Backend)
+		}
+		o := qwenimage.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+		if err := qwenimage.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
+			return err
+		}
+	} else if isDir(filepath.Join(c.Anima, "transformer")) {
 		if c.Backend != "" && c.Backend != llm.BackendCoreML {
 			return fmt.Errorf("Sana converts for coreml only (--backend %s)", c.Backend)
 		}
@@ -77,7 +85,7 @@ func (c *ConvertCmd) Run() error {
 
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
 type GenerateCmd struct {
-	Prompts   []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana takes several: a picture each, the model loaded once."`
+	Prompts   []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana and Qwen-Image take several: a picture each, the model loaded once (Qwen-Image on Apple's Neural Engine: every prompt read first, then every picture's steps, then the decoding of all; its programs load in minutes, the steps in seconds)."`
 	Model     string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's (Anima and Sana) and Intel's (Anima) the model is downloaded and converted into --dir on its first run."`
 	Dir       string    `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir): the checkpoints and exports in Anima/ and Sana/."`
 	Out       string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
@@ -126,7 +134,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 				return err
 			}
 		} else if strings.HasPrefix(m.Family, "qwen-image") {
-			if model, err = amdExport(m, "tools/amd/iron_qwenimage.py"); err != nil {
+			if model, err = c.qwenImageModel(ctx, m); err != nil {
 				return err
 			}
 		} else if isAnima := strings.HasPrefix(m.Family, "anima"); !isAnima {
@@ -185,6 +193,26 @@ func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, erro
 		o.TextFormat, o.DitFormat = c.TextFormat, c.DitFormat
 	}
 	return sana.Prepare(ctx, sana.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Sana"), Repo: m.Repo, Name: m.Name,
+		ConvertOptions: o, Log: console.Log(os.Stderr)})
+}
+
+// qwenImageModel is the Qwen-Image-2.1 export m runs here: on Apple's Neural Engine (or with --cpu)
+// the Core ML export of --dir, downloaded and converted when missing; on AMD's NPU
+// ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
+func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string, error) {
+	format, err := llm.ProgramFormat(ctx, c.Backend)
+	switch {
+	case c.CPU || err == nil && format == llm.BackendCoreML:
+	case err == nil:
+		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
+	default:
+		return amdExport(m, "tools/amd/iron_qwenimage.py")
+	}
+	if c.Size%32 != 0 {
+		return "", fmt.Errorf("--size %d: Qwen-Image's pictures are multiples of 32 pixels", c.Size)
+	}
+	o := qwenimage.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+	return qwenimage.Prepare(ctx, qwenimage.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Qwen-Image"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 
