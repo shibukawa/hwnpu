@@ -4,7 +4,7 @@
 
 ## 1. ここまでの状態
 
-- 構造は 2B と同じ `plamo3` で、コードの変更は既定の形式だけ (8B は lut4、`plamo3.Config.Format`)。Intel は int8 (`plamo3.Arch.IntelFormat`)
+- 構造は 2B と同じ `plamo3` で、コードの変更は既定の形式だけ (8B は lut4、`plamo3.Config.Format`)。Intel は 8B が行ごとの int4 (`plamo3.Config.IntelFormat`、models.yaml の `prefill: off` で 1 本)、2B 以下は int8 (`plamo3.Arch.IntelFormat`)
 - M1 で確かめたこと: 変換 (5 部分、約 1 分)、全部 `all on the NPU`、初回のコンパイル 1 分 16 秒、2 回目以降 3〜5 秒、Neural Engine 3.81 GiB とプロセスの最大 4.1 GB、20 文と段落 4 つの訳 (lut8 と比べて崩れない)
 - M1 では 2.8 GiB を超えるので 0.8 トークン/秒。速さは測れていない
 - M2 (16 GB) で確かめたこと (16.155): 生成 9.4〜10.1 トークン/秒、2 回目以降の読み込み 35〜41 秒 (キャッシュに残るのは 1.2〜2.1 GiB だけ)、20 文は lut8 と 13/20 が同じで残りは言い換え。全部載った後も 1 回 106 ms (38 GiB/s 前後) で、生成の速さは 9〜10 トークン/秒のまま。lut8 は 6 トークン/秒前後 (lut4 の 1.55 倍遅い)。残り: lut8 の 2 回目以降の読み込み (急がない)
@@ -84,14 +84,14 @@ go run ./cmd/hwnpu-chat -m plamo3translate:8b "The meeting has been rescheduled 
 
 ## 4. Intel (Meteor Lake、Core Ultra 5 135U) — 1 時間ほど
 
-既定の int8 (7.6 GiB) は、Anima で `OUT_OF_HOST_MEMORY` になった約 4.6 GB (16.143) を超えるので載らない見込み。Intel では hwnpu-chat がプロンプト用と生成用の 2 本を持つので、さらに倍になる。4 ビットなら 1 本で約 3.8 GiB に収まるので、こちらを試す:
+8B の Intel の既定は行ごとの int4 で、1 本 (models.yaml の `prefill: off`) で約 3.8 GiB。int8 (7.6 GiB) は、Anima で `OUT_OF_HOST_MEMORY` になった約 4.6 GB (16.143) を超えるので使わない:
 
 ```sh
-hwnpu-chat -m plamo3translate:8b --format int4 --prefill off --temp 0 "The meeting has been rescheduled to next Monday."
+hwnpu-chat -m plamo3translate:8b --temp 0 "The meeting has been rescheduled to next Monday."
 ```
 
 - 行ごとの int4 は Meteor Lake で int8 より速い (LFM3-1.7B で 37.9 ms と 68.5 ms、16.143 の hwnpu-formats)。グループごとの int4-g128 は int8 より遅いので使わない
-- 2B の int4 は KL 0.72 で使えなかった (16.71) が、8B は lut4 でも訳を保った (16.155)。2.2 の 20 文で、Mac の lut8 の訳と比べる。崩れなければ `plamo3.Arch.IntelFormat` を大きさで分け (8B は int4)、Intel では 1 本にする
+- 精度は未確認。2B の int4 は KL 0.72 で使えなかった (16.71) が、8B は lut4 でも訳を保った (16.155)。2.2 の 20 文 (`--format` は付けない) で、Mac の lut8 の訳と比べる。崩れるなら int4-g128 (遅いが精度は上) か、NPU から外すかを決める
 - 記録: 読み込みの成否と時間 (Windows の TDR の 2 秒に触れないか)、tok/s、NPU のメモリ。NPU のメモリが尽きるとエラーでなくプロセスが 0xc0000005 で落ちることがある (16.144)
 
 ## 5. 記録

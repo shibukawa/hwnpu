@@ -23,8 +23,8 @@ var Arch = &llm.Arch{
 	// with it, which short texts to translate hardly feel (docs/design.md 16.71). The 8B takes
 	// lut4 (Config.Format).
 	Format: "lut8",
-	// int8 at every size: int4 loses the 2B (KL 0.72 nats on the CPU, int4-g128 0.32, int8
-	// 0.0025), and the 8B's lut4 would otherwise become int4 (llm.IntelFormat).
+	// int8 for the 2B and smaller: int4 loses the 2B (KL 0.72 nats on the CPU, int4-g128 0.32,
+	// int8 0.0025). The 8B takes int4 (Config.IntelFormat), its int8 not fitting the NPU.
 	IntelFormat: "int8",
 	LastRow:     true,
 	LoadConfig:  func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },

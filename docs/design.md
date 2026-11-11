@@ -4001,8 +4001,10 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
   - 長めの段落 4 つ (3 文ずつ、英 → 日 2、日 → 英 2): lut4 と lut8 で日 → 英はほぼ同じ (大文字 1 か所)、英 → 日は言い換え (「公共公園」→「公立公園」、「更新」→「アップデート」)
   - 2B の lut4 は CPU で KL 1.91 nats (argmax 15/31、16.71) で使えなかった。8B の lut4 は訳を保つ。量子化の誤差が 4096 の幅で平均される分、2B (2560) より効きにくいと見ている (KL は測っていない: この Mac に torch がなく、8B の fp32 は 34 GB)
   - 8B の lut8 と 0.8B の lut8 は 6/20 が同じで、8B のほうが的確 ("build time" を「製作時間」でなく「ビルド時間」、"rescheduled" を「再設定」でなく「延期」、"gently" を「さっくりと」でなく「優しく」)
-- 採ったもの: **8B の既定を lut4** に (`plamo3.Config.Format`: 隠れ層 4096 以上で lut4、それより小さい 2B と 0.8B は lut8 のまま)。プログラムの名前には形式が入るので、2B と 0.8B の変換はそのまま使われる。Intel は PLaMo 3 を大きさによらず int8 に (`Arch.IntelFormat`。lut4 の読み替えの int4 は 2B で KL 0.72)
+- 採ったもの: **8B の既定を lut4** に (`plamo3.Config.Format`: 隠れ層 4096 以上で lut4、それより小さい 2B と 0.8B は lut8 のまま)。プログラムの名前には形式が入るので、2B と 0.8B の変換はそのまま使われる。Intel は PLaMo 3 の 2B 以下を int8 に (`Arch.IntelFormat`。lut4 の読み替えの int4 は 2B で KL 0.72)。8B は下の Intel の項
 - models.yaml: `machine: 24` (`-m translate` と `-m plamo3translate` は 24 GB から 8B、16 GB は 2B のまま。M1 の 16 GB で選ばれると遅すぎるため)、メモリ Apple 8.2 GB (3.81 GiB + 4.1 GB)、AMD 6.5 GB (q4 の重みからの見積もり)、`amd_export: plamo3 --max-seq-len 8192 --q4`
-- Intel: int8 の 7.6 GiB は、Core Ultra 5 135U の NPU が Anima で `OUT_OF_HOST_MEMORY` になった約 4.6 GB (16.143) を超えるので、載らない見込み。さらに Intel では hwnpu-chat は 2 本を持つ (`onePrograms`) ので、2 倍になる。models.yaml の `device` には NPU から外す値がないので、説明にだけ書いた
+- Intel: int8 の 7.6 GiB は、Core Ultra 5 135U の NPU が Anima で `OUT_OF_HOST_MEMORY` になった約 4.6 GB (16.143) を超えるので、載らない見込み。さらに Intel では hwnpu-chat は 2 本を持つ (`onePrograms`) ので、2 倍になる
+  - 入らないよりはよいので、**8B の Intel の既定を行ごとの int4** にした (`llm.IntelFormatter` を足し、`plamo3.Config.IntelFormat` が隠れ層 4096 以上で int4。2B と 0.8B は `Arch.IntelFormat` の int8 のまま)。models.yaml に `prefill: off` を書き、Intel でも 1 本 (3.8 GiB) にする。Neural Engine はもともと 1 本 (`onePrograms`) なので変わらない (M1 で同じ lut4 のプログラムを 4.3 秒で読み、同じ訳)
+  - 行ごとの int4 は Meteor Lake で int8 より速い (LFM3-1.7B で 37.9 ms と 68.5 ms、16.143)。精度は測っていない: 2B の int4 は KL 0.72 で使えなかったが、8B は 2B をもっと崩す lut4 (KL 1.91) でも訳を保った。後で 20 文 (handoff の 4 節) で確かめる
 - 確かめていないこと ([handoff-plamo3-8b.md](handoff-plamo3-8b.md)): M3 と M4 の速さとコンパイルのキャッシュ、M2 の lut8 の 2 回目以降の読み込み、AMD の書き出し (ピークのメモリ、コマンドの 2 秒、デバイスのヒープ)、HF の fp32 との照合 (KL)、GPTQ の符号 (8B の fp32 の校正は約 34 GB で 16 GB の Mac ではできない)、長い文脈
 - 部品としての値 (16.94): 入力と出力は文 (PLaMo のトークナイザー)、常駐は 3.81 GiB (ANE、lut4)、2 回目の読み込み 3〜5 秒、KV は会話とともに 1 トークン 9 KiB (hwnpu-chat の表示、262144 で 2.25 GiB) と、窓 2048 のリング 28 層
