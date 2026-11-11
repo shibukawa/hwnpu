@@ -85,7 +85,8 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <tr>
 <th>Translation<br><sub>hwnpu-chat <code>-m translate</code></sub></th>
 <td><b>PLaMo 3 Translate 0.8B</b> (about 2.4 GB)<br>3 times as fast as the 2B, translations differing from it by rewordings</td>
-<td colspan="5"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
+<td><b>PLaMo 3 Translate 2B</b> (2.7 GB)<br><b>PLaMo 3 Translate 8B</b> (<code>-m plamo3translate:8b</code>, 8.2 GB on Apple): not on an M1 (0.8 tokens/s)</td>
+<td colspan="4"><b>PLaMo 3 Translate 8B</b> (8.2 GB on Apple, about 6.5 GB on AMD)<br>more apt wording than the 2B; on an M1 0.8 tokens/s, on other chips expected about 15<br><b>PLaMo 3 Translate 2B</b> (2.7 GB): faster</td>
 </tr>
 <tr>
 <th>Image generation<br><sub>hwnpu-image</sub></th>
@@ -140,6 +141,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | LFM3-Audio-2B | Audio (clips up to 30 seconds) | 2.6 GB | 12 KiB/token | measured |
 | LFM3-Omni-2B | Images and audio | 3.0 GB (2.2 GB until an image or audio arrives) | 12 KiB/token | measured |
 | PLaMo 3 Translate 2B | Translation | 2.7 GB | 7 KiB/token (1.75 GiB at 262144) | measured |
+| PLaMo 3 Translate 8B | Translation | about 8.2 GB on Apple (M1: 3.81 GiB on the Neural Engine in 4 bit tables and the process's 4.1 GB at its peak); about 6.5 GB on AMD (q4, estimated from the weights) | 9 KiB/token (2.25 GiB at 262144) | measured on an M1 (Apple); AMD not run |
 | PLaMo 3 Translate 0.8B | Translation | 1.0 GB (M3: 1.38 GiB on the Neural Engine and 1.0 GB of the process, about 2.4 GB) | 1 KiB/token (0.28 GiB at 262144) | measured (AMD and M3) |
 | PLaMo-Embedding-1B | Sentence embeddings | 1.3 GB | none | estimated from the weights |
 | MoGe-2 ViT-S / B / L (AMD) | Metric depth, points, normals (hwnpu-image depth) | 1.9 GB (S), 2.1 GB (B), 2.6 GB (L) | none | measured |

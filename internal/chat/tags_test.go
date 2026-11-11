@@ -40,6 +40,8 @@ func TestPick(t *testing.T) {
 		// memory tags: MODEL.md's columns, whatever this machine has
 		{"plamo3translate:8g", 64, "plamo-3-translate-0.8b"},
 		{"plamo3translate:16g", 8, "plamo-3-translate-2b"},
+		{"plamo3translate:24g", 8, "plamo-3-translate-8b"},
+		{"plamo3translate:8b", 8, "plamo-3-translate-8b"},
 		{"plamo3translate:4g", 64, "plamo-3-translate-0.8b"},
 		{"chat:16GB", 8, "gemma-4-E2B-it"},
 		{"chat:24g", 8, "gemma-4-E4B-it"},
@@ -59,7 +61,7 @@ func TestPick(t *testing.T) {
 	if _, _, ok, err := Pick("audio:2b", 16); !ok || err == nil || !strings.Contains(err.Error(), "lfm3-omni:2b") {
 		t.Errorf("a tag of two models of a category: %v, %v", ok, err)
 	}
-	if _, _, ok, err := Pick("plamo3translate:8b", 16); !ok || err == nil || !strings.Contains(err.Error(), "0.8b") {
+	if _, _, ok, err := Pick("plamo3translate:31b", 16); !ok || err == nil || !strings.Contains(err.Error(), "0.8b") {
 		t.Errorf("unknown tag: %v, %v", ok, err)
 	}
 }

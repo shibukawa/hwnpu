@@ -85,7 +85,8 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <tr>
 <th>翻訳<br><sub>hwnpu-chat <code>-m translate</code></sub></th>
 <td><b>PLaMo 3 Translate 0.8B</b> (約 2.4 GB)<br>2B の 3 倍速、訳は 2B の言い換え程度の違い</td>
-<td colspan="5"><b>PLaMo 3 Translate 2B</b> (2.7 GB)</td>
+<td><b>PLaMo 3 Translate 2B</b> (2.7 GB)<br><b>PLaMo 3 Translate 8B</b> (<code>-m plamo3translate:8b</code>、Apple で 8.2 GB): M1 では使えない (0.8 トークン/秒)</td>
+<td colspan="4"><b>PLaMo 3 Translate 8B</b> (Apple で 8.2 GB、AMD で約 6.5 GB)<br>訳語が 2B より的確。M1 では 0.8 トークン/秒、ほかのチップは 15 前後の見込み<br><b>PLaMo 3 Translate 2B</b> (2.7 GB): 速い</td>
 </tr>
 <tr>
 <th>画像生成<br><sub>hwnpu-image</sub></th>
@@ -140,6 +141,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | LFM3-Audio-2B | 音声 (1 本 30 秒まで) | 2.6 GB | 12 KiB/トークン | 実測 |
 | LFM3-Omni-2B | 画像と音声 | 3.0 GB (画像か音声が来るまでは 2.2 GB) | 12 KiB/トークン | 実測 |
 | PLaMo 3 Translate 2B | 翻訳 | 2.7 GB | 7 KiB/トークン (262144 で 1.75 GiB) | 実測 |
+| PLaMo 3 Translate 8B | 翻訳 | Apple で約 8.2 GB (M1: 4 ビットの表で Neural Engine に 3.81 GiB とプロセスの最大 4.1 GB)。AMD で約 6.5 GB (q4、重みからの見積もり) | 9 KiB/トークン (262144 で 2.25 GiB) | M1 で実測 (Apple)、AMD は未実行 |
 | PLaMo 3 Translate 0.8B | 翻訳 | 1.0 GB (M3: Neural Engine に 1.38 GiB とプロセスの 1.0 GB で約 2.4 GB) | 1 KiB/トークン (262144 で 0.28 GiB) | 実測 (AMD と M3) |
 | PLaMo-Embedding-1B | 文の埋め込み | 1.3 GB | なし | 重みから見込み |
 | MoGe-2 ViT-S / B / L (AMD) | メートルの深度、点群、法線 (hwnpu-image depth) | 1.9 GB (S)、2.1 GB (B)、2.6 GB (L) | なし | 実測 |

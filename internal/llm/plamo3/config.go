@@ -124,6 +124,18 @@ func (c *Config) check() error {
 	return nil
 }
 
+// Format is the weight format of the checkpoint for the Neural Engine (llm.Formatter): 4 bit
+// tables for the 8B (hidden 4096) and larger, the architecture's lut8 for the smaller ones. The
+// 2B breaks in lut4 (KL 1.91 nats on the CPU), but the 8B in lut4 translated 13 of 20 sentences
+// word for word as in lut8 and the other 7 as correct rewordings, as did 4 paragraphs, in half the
+// memory (3.77 GiB against 7.58) and twice as fast (docs/design.md 16.155).
+func (c *Config) Format() string {
+	if c.HiddenSize >= 4096 {
+		return "lut4"
+	}
+	return ""
+}
+
 // full reports whether layer i attends to the whole context (is_full_attn).
 func (c *Config) full(i int) bool { return (i+1)%c.Pattern == 0 }
 
