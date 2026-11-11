@@ -162,7 +162,7 @@ type Estimator struct {
 // an operator of its own (the GEMM epilogue's vtanh is a few ulps off near 0) and bf16's
 // products (HIGH) in place of bfp16's: at MEDIUM the keypoints' scores moved by up to 0.13 from
 // ONNX Runtime's and a doubtful person's box by 97 px, at HIGH by 0.03 and 6 px, the network
-// 0.15 s -> 0.22 s (docs/amd-npu-models.md 21)
+// 0.15 s -> 0.22 s (docs/amd-npu-models.md 22)
 var npuOptions = []string{"--mean", "0", "0", "0", "--std", "1", "1", "1", "--silu", "op", "--precision", "HIGH", "--dw-precision", "HIGH"}
 
 // ExportNPU makes the export of tools/amd/iron_onnxcnn.py of the ONNX file model in out with

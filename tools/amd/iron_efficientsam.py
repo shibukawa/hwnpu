@@ -17,7 +17,7 @@ what cmd/hwnpu-image segment runs on AMD's NPU. The prompt's mask decoder runs o
 
   python tools/amd/iron_efficientsam.py efficientsam_ti_encoder.onnx OUT [--check]
 
-See docs/amd-npu-models.md 22.
+See docs/amd-npu-models.md 23.
 """
 
 import argparse

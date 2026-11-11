@@ -268,7 +268,7 @@ models:
     sha256: {onnx/model.onnx: 1cd6a3517658903233e9ccb78666554862f57f0944b6886e2048093594aef4e7}
     # AMD's NPU: an export of tools/amd/iron_onnxcnn.py (its transformer layer included, at
     # HIGH), made on the first run; the people and keypoints of ONNX Runtime's within 2 px
-    # (docs/amd-npu-models.md 21)
+    # (docs/amd-npu-models.md 22)
     device: {amd: npu}
     machine: 8
     # AMD: 327 MiB pinned on the NPU and 215 MiB of the process (the ONNX graph for the host's part)
@@ -286,7 +286,7 @@ models:
     # AMD's NPU (tools/amd/iron_onnxcnn.py) holds RTMDet-m's objects, but tiny's and s's BN-folded
     # weights and biases cancel to outputs 50 times smaller, past MEDIUM's bfp16 (A and B) and the
     # GEMM's SiLU (vtanh): their scores moved by up to 0.2 and s lost objects; at HIGH tiny is
-    # slower than the CPU (docs/amd-npu-models.md 20.4). The CPU there
+    # slower than the CPU (docs/amd-npu-models.md 21.4). The CPU there
     device: {amd: cpu}
     machine: 8
     # M1: a footprint of 56 MB and 11 MB on the Neural Engine; 7 ms a picture

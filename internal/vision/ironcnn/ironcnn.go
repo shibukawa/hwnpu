@@ -2,7 +2,7 @@
 // ONNX graph (RTMDet, RTMO) up to some of its values as one IRON graph (a full ELF), its input a
 // picture's channels in a zero-padded grid and its outputs grids read back channels first. The
 // packages of the models (detect, pose) choose the values and run the rest of the graph on the
-// host. See docs/amd-npu-models.md 20.
+// host. See docs/amd-npu-models.md 21.
 package ironcnn
 
 import (

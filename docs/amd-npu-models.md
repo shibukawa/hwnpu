@@ -1038,11 +1038,11 @@ python tools/amd/iron_qwenimage.py ~/models/Qwen-Image-2.1-Turbo ~/models/qwen-i
 hwnpu-image generate -m qwen-image "A red fox sitting in a snowy forest at dawn, soft light"
 ~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/ref_qwenimage21.py ~/models/Qwen-Image-2.1-Turbo OUT --size 512   # 参照
 ```
-## 20. ONNX の CNN を IRON のグラフに: RTMDet (`tools/amd/iron_onnxcnn.py`、2026-11-11)
+## 21. ONNX の CNN を IRON のグラフに: RTMDet (`tools/amd/iron_onnxcnn.py`、2026-11-11)
 
 ONNX の畳み込みのネットワーク (RTMDet と RTMO の CSPNeXt) を読み、IRON のグラフ 1 つにする汎用の変換器。`hwnpu-image detect` は AMD の機械で、書き出し (`~/models/NAME.amd-npu2`) がなければ初回に IRON で作り (`chat.RunIRON`、hwnpu-chat の `PrepareAMD` と同じ仕組み)、NPU で動かす。IRON がなければ CPU (19 節)。
 
-### 20.1 形
+### 21.1 形
 
 - テンソルはどれも、P = 2 画素の 0 で囲んだチャネル後置きの格子 (`G`: 行 Wp 画素、画素 (y, x) は band + y Wp + P + x、チャネルは 64 の倍数に)。最後の 2 チャネルは「1 のチャネル」(画像の中で 16、パッドで 0)。畳み込みのバイアスはここに乗り、SiLU は行列積の後段 (Epilogue.SILU) で計算するので、畳み込み 1 つが行列積 1 回になる
 - 1 × 1: 格子の全部の行に行列積 1 回 (入力のパッドは 0 なので、出力のパッドも SiLU(0) = 0)
@@ -1055,15 +1055,15 @@ ONNX の畳み込みのネットワーク (RTMDet と RTMO の CSPNeXt) を読�
 - 箱の頭の exp とストライドはホスト (`detect.NPUOutputs` が ONNX から求め、書き出しの `heads.json` に残す)
 - 格子の状態は、値を最後に読んだあと同じ形の次の格子に回す (固定されるメモリ 1451 → 565 MiB)
 
-### 20.2 見つけて直したこと
+### 21.2 見つけて直したこと
 
 - **1 のチャネルの値のずれ**: silu(z) = 1 になる z を重みにすると、行列積の後段の SiLU と bf16 の丸めで値が層ごとに 1 ulp 落ち (0.996、0.988、…、0.918)、それに合わせたバイアスの重みが狂って、stage 2 の終わりで cos 0.904 になった。値を 16 にすると、silu(16) は bf16 で 16 で、0.4 % 以内のずれは丸めで 16 に戻るので、層を重ねても保たれる (足し算の後の 32 や 48 も次の層で 16)
 - **max pool の囲み**: −inf の代わりの −30000 では、b + ReLU(a − b) の a − b が bf16 で 128 刻みになり、右端と下端の画素が壊れた。−1 に
 - **深さ方向の bfp16**: 出力がそのチャネルだけを読むので、8 チャネルが指数を共有すると小さいチャネルの桁が落ちる。チャネルを大きさの順に並べ替えた (重みの入れ替えだけ。校正の画像の有無で結果は変わらなかった)。HIGH (bf16) の深さ方向は 1 つ 300 ms と遅い
-- **バイアスの bf16**: RTMDet-tiny と s は、BN を畳み込んだ重みとバイアスが大きく (バイアス最大 40)、出力は和の 1/50 ほどに打ち消し合う。バイアスを bf16 に丸めるだけで 1 × 1 の出力の cos が 0.9991 (IRON の参照で)。バイアスを上位と下位の 2 つの bf16 に分け、2 本の 1 のチャネルに乗せた (0.99945)。ただし MEDIUM の NPU では 2 本が bfp16 の同じ 8 個の組にあり、下位は 0 に潰れる (20.4)
-- 行列積の後段の SiLU は AIE2P の vtanh で計算する。RTMDet-m では表を引く SiLU の演算に替えても精度は変わらなかったが、0 の近くで数 ulp ずれる (20.4)
+- **バイアスの bf16**: RTMDet-tiny と s は、BN を畳み込んだ重みとバイアスが大きく (バイアス最大 40)、出力は和の 1/50 ほどに打ち消し合う。バイアスを bf16 に丸めるだけで 1 × 1 の出力の cos が 0.9991 (IRON の参照で)。バイアスを上位と下位の 2 つの bf16 に分け、2 本の 1 のチャネルに乗せた (0.99945)。ただし MEDIUM の NPU では 2 本が bfp16 の同じ 8 個の組にあり、下位は 0 に潰れる (21.4)
+- 行列積の後段の SiLU は AIE2P の vtanh で計算する。RTMDet-m では表を引く SiLU の演算に替えても精度は変わらなかったが、0 の近くで数 ulp ずれる (21.4)
 
-### 20.3 結果 (Ryzen AI 9 365。時間は power-saver、電力は balanced)
+### 21.3 結果 (Ryzen AI 9 365。時間は power-saver、電力は balanced)
 
 | | NPU と IRON の参照 (頭 6 つの cos) | 検出 (ONNX Runtime と、猫 5 つ、人 2 つ) | NPU の 1 枚 | CPU の 1 枚 (ONNX Runtime、1 スレッド) |
 |---|---|---|---|---|
@@ -1072,7 +1072,7 @@ ONNX の畳み込みのネットワーク (RTMDet と RTMO の CSPNeXt) を読�
 | RTMDet-tiny (HIGH) | 0.997〜0.9998 | スコアの差 0.03 以内 | 0.30 秒 | 0.21 秒 |
 | RTMDet-s | 0.977〜0.999 (IRON の参照と float32 でも 0.996) | 物が消える | | |
 
-- RTMDet-m は models.yaml で AMD の NPU (`device: {amd: npu}`)、tiny と s は CPU (`device: {amd: cpu}`)。tiny と s が NPU で崩れるわけと、試したことは 20.4
+- RTMDet-m は models.yaml で AMD の NPU (`device: {amd: npu}`)、tiny と s は CPU (`device: {amd: cpu}`)。tiny と s が NPU で崩れるわけと、試したことは 21.4
 - RTMDet-m のメモリ: NPU 565 MiB、プロセス 98 MiB。書き出し 177 MB、IRON のキャッシュがなければ数分 (あれば 20 秒)
 - 電力 (balanced: BIOS も Ubuntu も、CPU は最大 5.09 GHz。パッケージ電力 PPT から、各実行の前に 30 秒冷まして 8 秒測ったアイドルを引く。1 回と多数回の差で 1 枚あたり。2 回測った):
 
@@ -1085,7 +1085,7 @@ ONNX の畳み込みのネットワーク (RTMDet と RTMO の CSPNeXt) を読�
   NPU は ONNX Runtime より 1.65 倍速く、エネルギーは 4.4〜5.8 分の 1。balanced では CPU の 1 コアが 5 GHz まで上がって速くなる代わりに電力が大きい。power-saver (CPU 2.0 GHz) では ONNX Runtime が 1.32〜1.43 秒だった。その電力は、別のセッションの処理と重なって測れていない
 - RTMO は切り口が頭の後の復号 (MatMul、Gemm、LayerNorm 相当、Erf、Cos、Sin) まであるので、まだ載らない。頭の畳み込みで切ってホストで続けるか、演算を足す
 
-### 20.4 RTMDet-tiny と s が NPU で崩れるわけ (2026-11-11)
+### 21.4 RTMDet-tiny と s が NPU で崩れるわけ (2026-11-11)
 
 IRON の参照 (bf16) と float32 の差だけでは、NPU の誤差は説明できなかった。NPU で 1 演算ずつ測ると (単位行列との行列積、`~/models/onnxcnn-test/bfpq`)、原因は次の 3 つ:
 
@@ -1108,11 +1108,11 @@ IRON の参照 (bf16) と float32 の差だけでは、NPU の誤差は説明で
 - 重みを上位と下位に分けても効かない (誤差のほとんどは活性の bfp16 と SiLU)
 - tiny と s は CPU のまま。tiny は CPU で 1 枚 0.15〜0.19 秒 (混んだとき)、NPU は精度を合わせると速くならない。AMD で電力量を抑えるなら NPU の RTMDet-m (1.86 J)
 
-## 21. RTMO-s を AMD の NPU で (`iron_onnxcnn.py`、2026-11-11)
+## 22. RTMO-s を AMD の NPU で (`iron_onnxcnn.py`、2026-11-11)
 
 `hwnpu-image pose` は AMD の機械で、RTMO-s の画像から頭の畳み込みまでを NPU で動かす (初回に IRON で書き出す、`~/models/rtmo-s.amd-npu2`)。頭の後 (箱の復号、top-k、NMS、関節の座標の分類器) は今までどおりホストの評価器 (`onnx.Graph.EvalShapes`) で、渡すのは頭の畳み込みの出力 8 つ (40 × 40 と 20 × 20 の、スコア、箱、関節の見え方、姿勢の特徴)。書き出しの読み書きと実行は `internal/vision/ironcnn` (RTMDet と共有)。
 
-### 21.1 RTMO のために変換器に足したもの
+### 22.1 RTMO のために変換器に足したもの
 
 RTMO-s の骨格は YOLOX 型 (CSPDarknet) で、首に Transformer の層が 1 つある (AIFI、RT-DETR の HybridEncoder):
 
@@ -1121,9 +1121,9 @@ RTMO-s の骨格は YOLOX 型 (CSPDarknet) で、首に Transformer の層が 1 
 - **AIFI** (20 × 20 の 400 トークン): 格子からトークンの行 (512 行に 0 で埋める) へ写し、位置埋め込みを q と k に足し、8 頭の注意、出力の射影、残差と LayerNorm、erf の GELU の MLP、残差と LayerNorm、格子へ戻す。IRON の MHA は頭の次元が 64 の倍数だけなので、32 次元の頭を 0 で 64 に広げる (q と k の 0 はスコアを変えず、v の 0 は出力に 0 を出す)。尺度は MHA の `scale` に 1/√32。鍵は 400 行 (呼び出しごとの `nk`、model.json の `values`)。行列積は HIGHEST
 - numpy の参照は、ONNX の参照評価器と 8 つの頭で cos 1.000000
 
-### 21.2 精度と速さ (Ryzen AI 9 365、balanced。CPU は別の処理で混んでいた)
+### 22.2 精度と速さ (Ryzen AI 9 365、balanced。CPU は別の処理で混んでいた)
 
-入力は正規化しない 0〜255 の RGB。MEDIUM では、入口の層の画素と 1 のチャネルが bfp16 の同じ組に入り、1 が 0 か 2 に丸まる。20.4 の numpy の模擬で、頭の cos は後段の SiLU (vtanh) で 0.982、SiLU の演算で 0.992。
+入力は正規化しない 0〜255 の RGB。MEDIUM では、入口の層の画素と 1 のチャネルが bfp16 の同じ組に入り、1 が 0 か 2 に丸まる。21.4 の numpy の模擬で、頭の cos は後段の SiLU (vtanh) で 0.982、SiLU の演算で 0.992。
 
 | RTMO-s の書き出し | 人 (6 枚、10 人) | 見えている関節の位置 | 関節のスコア | 1 枚の NPU |
 |---|---|---|---|---|
@@ -1136,11 +1136,11 @@ RTMO-s の骨格は YOLOX 型 (CSPDarknet) で、首に Transformer の層が 1 
 - ホストの部分 (Go の評価器) は 1 枚 16〜60 ms
 - 電力量はまだ測っていない (CPU が別の処理で混んでいた)
 
-## 22. EfficientSAM の画像の符号器を AMD の NPU で (`tools/amd/iron_efficientsam.py`、2026-11-11)
+## 23. EfficientSAM の画像の符号器を AMD の NPU で (`tools/amd/iron_efficientsam.py`、2026-11-11)
 
 `hwnpu-image segment` (点や箱で指定する切り抜き) は、作者の ONNX の書き出し (yunyangx/EfficientSAM、`efficientsam_{ti,s}_{encoder,decoder}.onnx`、Apache-2.0) を使う。画像の符号器を NPU で動かし (初回に IRON で書き出す、`~/models/efficientsam-ti.amd-npu2`)、プロンプトの復号器はホストの評価器 (`internal/onnx`) でプロンプトごとに動かす。ほかの機械では符号器も CPU (ONNX Runtime があればそれ、なければ hwnpu の評価器、Ti で 30 秒)。
 
-### 22.1 形
+### 23.1 形
 
 - 入力: 画像を 1024 × 1024 に縮める (ONNX のグラフと同じ bilinear、half_pixel、antialias なし) のと、正規化、16 × 16 のパッチの行 (4096, 768) はホスト
 - パッチの埋め込み (行列積) に、バイアスと位置埋め込み (14 × 14 から 64 × 64 へ bicubic、a = −0.75。書き出しのときに numpy で ONNX の Resize と同じ計算) を足す
@@ -1149,11 +1149,11 @@ RTMO-s の骨格は YOLOX 型 (CSPDarknet) で、首に Transformer の層が 1 
 - 出力 (4096, 256) をホストで (1, 256, 64, 64) に並べ替え、復号器に渡す
 - numpy の参照は ONNX の参照評価器と cos 1.0 (最大の誤差 7e-7)
 
-### 22.2 復号器をホストで
+### 23.2 復号器をホストで
 
 Go の評価器に足した演算: If (枝が外の値を読む分を If の入力にする)、ScatterND、ConvTranspose (stride が核と同じなら行列積 1 回)、InstanceNormalization、LayerNormalization、Resize (nearest、linear、cubic)。ONNX の OneHot の 3 入力。大きな行列積 (積和 2^22 以上) は internal/sgemm の float32 で (ONNX Runtime と同じ精度)。ONNX の参照評価器と比べて、予測した IoU が 1e-6、mask の値が 1e-4 以内、符号は全画素で一致。1 回のプロンプトに 0.6〜0.7 秒 (float64 だけなら 2.6 秒)。
 
-### 22.3 結果 (Ryzen AI 9 365、balanced。CPU は別の処理で混んでいた)
+### 23.3 結果 (Ryzen AI 9 365、balanced。CPU は別の処理で混んでいた)
 
 | | 符号器 (NPU) | 符号器 (CPU、ONNX Runtime 1 スレッド) | 復号器 | メモリ (NPU、プロセス) | 書き出し |
 |---|---|---|---|---|---|
