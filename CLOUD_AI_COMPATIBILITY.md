@@ -43,7 +43,7 @@ The NPUs:
 | 〃 | 〃 | 〃 | Sana / Sana-Sprint | ◎ | — | ◎ |
 | Depth, points, normals | (no common cloud API) | `hwnpu-image depth` | Depth Anything 3, MoGe-2 | ○ (converted, not measured) | — | ◎ |
 | Faces (boxes and 5 landmarks) | Cloud Vision face detection, Rekognition DetectFaces, Azure Face, Apple Vision | `hwnpu-image face-detect` | YuNet | ○ (not measured) | — | CPU (it runs on the NPU, at 16–40× the CPU's energy; docs/amd-npu-models.md 17) |
-| People's poses (17 points) | Apple Vision's body pose, Video Intelligence's person detection | `hwnpu-image pose` | RTMO-s | ◎ | ○ | CPU |
+| People's poses (17 points) | Apple Vision's body pose, Video Intelligence's person detection | `hwnpu-image pose` | RTMO-s | ◎ | ○ | ◎ (exported on the first run, docs/amd-npu-models.md 21) |
 | Objects (boxes and labels) | Cloud Vision object localization, Rekognition DetectLabels, Azure object detection | `hwnpu-image detect` | RTMDet-tiny / s / m | ◎ | ○ | ◎ m (exported on the first run, docs/amd-npu-models.md 20); CPU for tiny and s |
 | Text (OCR) | Cloud Vision TEXT / DOCUMENT_TEXT_DETECTION, Textract, Azure Read, Apple Vision | `hwnpu-image ocr` | PP-OCRv6 small | ◎ | ○ | CPU |
 | Labels (zero-shot), image and text embeddings | Cloud Vision LABEL_DETECTION, Rekognition DetectLabels, Vertex's and Azure's multimodal embeddings, Apple Vision's classification and feature prints | `hwnpu-image label`, `hwnpu-image embed` | SigLIP 2 Base / Large | — | — | ◎ (docs/amd-npu-models.md 18) |
@@ -52,7 +52,7 @@ The NPUs:
 | Music | Vertex's Lyria | `hwnpu-audio generate` | Magenta RealTime 2 small | ◎ | — | — (`--cpu` only) |
 | Sound effects | ElevenLabs Sound Effects | `hwnpu-audio generate -m sfx` | MOSS-SoundEffect v2.0 | ◎ | — | — (`--cpu` only) |
 
-The five on AMD's CPU (poses, objects, OCR, pitch, notes) all come through `internal/onnx`, which lowers ONNX to MIL. That path writes Core ML and OpenVINO IR, not an AMD export. On AMD's machines they run on the CPU: with hwnpu's own CPU executor (no dependency; RTMDet-m 2.3 s an image on one thread), or with ONNX Runtime when its library is there (the ONNX file's same cut, `onnxrt.Cut`; 1.4 s) (docs/amd-npu-models.md 19). A general path from ONNX to an IRON graph would put all five on AMD's NPU at once. `tools/amd/iron_yunet.py` reads YuNet's ONNX, but lays its layers out by hand.
+The five on AMD's CPU (poses, objects, OCR, pitch, notes) all come through `internal/onnx`, which lowers ONNX to MIL. That path writes Core ML and OpenVINO IR, not an AMD export. On AMD's machines they run on the CPU: with hwnpu's own CPU executor (no dependency; RTMDet-m 2.3 s an image on one thread), or with ONNX Runtime when its library is there (the ONNX file's same cut, `onnxrt.Cut`; 1.4 s) (docs/amd-npu-models.md 19). `tools/amd/iron_onnxcnn.py` now turns a convolutional ONNX graph into an IRON graph: RTMDet-m and RTMO-s run on AMD's NPU from its exports, made on the first run (docs/amd-npu-models.md 20, 21). RTMDet-tiny and -s stay on the CPU (their sums cancel past bfp16, 20.4), as do OCR, pitch and notes.
 
 ## 2. What there is not yet
 
@@ -114,7 +114,7 @@ The order suggested for the image features on AMD:
 
 1. **SigLIP 2** (labels, image embeddings, unsafe images): a ViT, so DA3's parts carry over. This one model fills three rows of 2.1. Done for labels and embeddings (2026-11-11, docs/amd-npu-models.md 18); the five ONNX models of section 1 run on AMD's CPU with ONNX Runtime meanwhile (ibid. 19).
 2. **A SAM family encoder and BiRefNet** (cutouts): heavy backbones, mostly GEMMs. BiRefNet's deformable convs are in every decoder block (2.1), so start with EfficientSAM (a plain ViT-S / T at 1024 × 1024, Apache-2.0).
-3. **A general ONNX → IRON path**: this puts the five of section 1 (poses, objects, OCR, pitch, notes) on AMD, and RTMDet-Ins and the document layout with them. Compare each model's mJ on the NPU and the CPU, and leave the ones that lose at `device: {amd: cpu}` in models.yaml, as YuNet is.
+3. **A general ONNX → IRON path**: this puts the five of section 1 (poses, objects, OCR, pitch, notes) on AMD, and RTMDet-Ins and the document layout with them. Compare each model's mJ on the NPU and the CPU, and leave the ones that lose at `device: {amd: cpu}` in models.yaml, as YuNet is. Done for RTMDet-m and RTMO-s (`tools/amd/iron_onnxcnn.py`, 2026-11-11, docs/amd-npu-models.md 20, 21); RTMDet-tiny and -s lose (20.4).
 4. **Barcodes and tracking**: any NPU, any time.
 
 ## 4. Not checked

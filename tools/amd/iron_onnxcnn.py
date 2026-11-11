@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""A convolutional ONNX graph (RTMDet's and RTMO's CSPNeXt: convolutions with SiLU, depthwise
-5 x 5, channel attention, residual adds, concatenations) as one IRON graph: what
+"""A convolutional ONNX graph (RTMDet's CSPNeXt: convolutions with SiLU, depthwise 5 x 5,
+channel attention, residual adds, concatenations; RTMO's YOLOX backbone: a Focus, splits,
+grouped convolutions, and the transformer layer of its neck) as one IRON graph: what
 cmd/hwnpu-image runs on AMD's NPU in place of the CPU.
 
 Every tensor is a channel-last grid zero-padded by P pixels on each side (``G``): rows of Wp
@@ -13,13 +14,21 @@ convolution.
   k x k, stride 1  one GEMM reading the grid in place (iron_gridgemm.GridGEMM: k pixels of
                  C_p channels a k tile, k C_p <= 512), or with im2col copies (k of them), then
                  the interior copied into a new grid
-  depthwise      the same, with a block-diagonal weight (k k C_p wide)
-  stride 2       three im2col copies, the GEMM, the copy into the half-size grid
+  depthwise      the same, with a block-diagonal weight (k k C_p wide); grouped, likewise
+  stride 2       k im2col copies, the GEMM, the copy into the half-size grid; a kernel's taps
+                 from -(k - 1) // 2 (a Focus, Slices of every other pixel and a 3 x 3
+                 convolution: a 6 x 6 one of stride 2 on the picture, taps -2 to 3)
   add            the two grids' rows (their pads are zero)
   concat         copies of each input's channels and the ones channel
   attention      GlobalAveragePool, the 1 x 1 fc, HardSigmoid, Mul: a GEMM of a row of ones
                  (the sum), a GEMV (the fc with 1 / (H W) and HardSigmoid's alpha, beta
                  folded), a clamp to [0, 1] and a row-wise multiply
+  split          copies of the channels and the ones channel
+  silu           SiLU on a grid (after an add)
+  transformer    RTMO's AIFI on the smallest grid: its pixels as token rows (padded to 512),
+                 a position embedding for q and k, IRON's MHA (heads of 32 padded to 64),
+                 the output projection, layer norms, the MLP with the erf GELU; the tokens it
+                 attends over a per-call value (nk)
 
   python tools/amd/iron_onnxcnn.py MODEL.onnx OUT --size 640x640 --outputs NAME... [--check]
 
@@ -38,12 +47,13 @@ import numpy as np
 
 import iron
 import iron.functional as F
-from iron import Precision
+from iron import Precision, Scratchpad
 from iron.operators.clamp import Clamp
 from iron.operators.copy import Copy
 from iron.operators.flm import ProjectionGEMM
 from iron.operators.flm.gemm.design import Epilogue
 from iron.operators.gemm import GEMM
+from iron.operators.mha import MHA
 from iron.operators.relu import ReLU
 from iron.operators.silu import SiLU
 
@@ -62,6 +72,8 @@ PREC_DW = Precision.MEDIUM
 # RTMDet-tiny's heads 0.994 against IRON's reference), or "op", a SiLU operator after it (its
 # interpolated table, one operator more a convolution)
 SILU = "epilogue"
+# The transformer layer's GEMMs (a few hundred tokens: cheap)
+PREC_T = Precision.HIGHEST
 # The ones channel's value after every convolution: silu(16) is 16 to bf16's precision, and a
 # result off by under half an ulp (0.4 %) rounds back to 16, so the value holds layer after layer
 # (with silu(z) = 1 it fell one ulp a layer, 0.996, 0.988, ..., and the biases riding it with it)
@@ -69,7 +81,8 @@ ONE = 16.0
 
 
 def silu(x):
-    return x / (1 + np.exp(-x))
+    with np.errstate(over="ignore"):  # exp(-x) of a large negative x: inf, and x / inf is 0
+        return x / (1 + np.exp(-x))
 
 
 def cdiv(a, b):
@@ -190,9 +203,64 @@ def needed(nodes, outputs, stop):
     return [n for i, n in enumerate(nodes) if i in keep]
 
 
+def aifi(nodes, init, users, start):
+    """The transformer encoder layer RTMO's neck runs on its smallest grid (AIFI: tokens of the
+    grid start, plus a position embedding for q and k, multi-head attention, the output
+    projection, added and layer-normed; an MLP with the erf GELU, added and layer-normed; back
+    to a grid): its nodes (from those reading start to the Reshape back to (1, E, H, W)) and a
+    step ("aifi", start, y, params)."""
+    prod = {o: n for n in nodes for o in n["outs"]}
+    inside, work = [], [start]
+    seen = set()
+    end = None
+    while work:  # every node downstream of start up to the 4-D Reshape
+        v = work.pop()
+        for u in users.get(v, []):
+            if id(u) in seen:
+                continue
+            seen.add(id(u))
+            inside.append(u)
+            if u["op"] == "Reshape" and u["ins"][1] in init and len(init[u["ins"][1]]) == 4:
+                end = u
+                continue
+            work.extend(u["outs"])
+    assert end is not None, f"AIFI from {start}: no Reshape back to a grid"
+    order = {id(n): i for i, n in enumerate(nodes)}
+    inside.sort(key=lambda n: order[id(n)])
+    mm = [n for n in inside if n["op"] == "MatMul" and n["ins"][1] in init]
+    assert len(mm) == 5, [n["outs"] for n in mm]
+
+    def bias(n):  # the Add of an initializer after n
+        u = next(u for u in users[n["outs"][0]] if u["op"] == "Add")
+        return init[next(i for i in u["ins"] if i in init)]
+
+    gemm = next(n for n in inside if n["op"] == "Gemm")
+    assert gemm["a"].get("transB", 0) == 1
+    pos = next(init[i] for n in inside if n["op"] == "Add" for i in n["ins"] if i in init and init[i].ndim == 3)
+    lns = []
+    for n in inside:  # a layer norm's Div by the Sqrt, then Mul by gamma and Add of beta
+        if n["op"] == "Div" and n["ins"][1] in prod and prod[n["ins"][1]]["op"] == "Sqrt":
+            m = users[n["outs"][0]][0]
+            ad = users[m["outs"][0]][0]
+            eps = next(float(init[i].reshape(-1)[0]) for i in prod[prod[n["ins"][1]]["ins"][0]]["ins"] if i in init)
+            lns.append((next(init[i] for i in m["ins"] if i in init), next(init[i] for i in ad["ins"] if i in init), eps))
+    assert len(lns) == 2
+    heads = next(int(init[n["ins"][1]].reshape(-1)[0]) for n in inside if n["op"] == "Div" and n["ins"][1] in init and init[n["ins"][1]].size == 1 and float(init[n["ins"][1]].reshape(-1)[0]).is_integer())
+    assert any(n["op"] == "Erf" for n in inside)
+    E, H, W = (int(v) for v in init[end["ins"][1]][1:])
+    q, k, v, f1, f2 = mm
+    p = dict(E=E, H=H, W=W, heads=heads, pos=pos.reshape(-1, E), wq=init[q["ins"][1]], bq=bias(q), wk=init[k["ins"][1]], bk=bias(k),
+             wv=init[v["ins"][1]], bv=bias(v), wo=init[gemm["ins"][1]].T, bo=init[gemm["ins"][2]],
+             ln1=lns[0], w1=init[f1["ins"][1]], b1=bias(f1), w2=init[f2["ins"][1]], b2=bias(f2), ln2=lns[1])
+    assert p["pos"].shape == (H * W, E)
+    return inside, ("aifi", start, end["outs"][0], p)
+
+
 def plan(nodes, init, outputs, inp):
     """The nodes up to ``outputs`` as steps: ("conv", x, y, w, b, stride, group, act),
-    ("add", a, b, y), ("concat", [a, b], y), ("att", x, y, w, b, alpha, beta)."""
+    ("add", a, b, y), ("concat", [a, b], y), ("att", x, y, w, b, alpha, beta), ("pool", x, y,
+    k), ("up2", x, y), ("silu", x, y), ("slice", x, y, c0, c1), ("aifi", x, y, params). A
+    convolution's kernel spans (k - 1) // 2 pixels before the pixel and the rest after it."""
     nodes = needed(nodes, outputs, {inp})
     users = {}
     for n in nodes:
@@ -200,11 +268,56 @@ def plan(nodes, init, outputs, inp):
             users.setdefault(x, []).append(n)
     by_out = {n["outs"][0]: n for n in nodes}
     steps, done = [], set()
+    slices, s2d = {}, {}  # the input's Slices of every other pixel, and their Concat (a Focus)
     for n in nodes:
         if id(n) in done:
             continue
         op, ins, out = n["op"], n["ins"], n["outs"][0]
-        if op == "Conv":
+        if op == "Slice" and ins[0] == inp:
+            starts, axes, st = (init[i].astype(np.int64).tolist() for i in (ins[1], ins[3], ins[4]))
+            assert sorted(axes) == [2, 3] and st == [2, 2], (out, axes, st)
+            d = dict(zip(axes, starts))
+            slices[out] = (d[2], d[3])
+        elif op == "Concat" and ins[0] in slices:
+            assert all(i in slices for i in ins) and n["a"]["axis"] == 1
+            s2d[out] = [slices[i] for i in ins]
+        elif op == "Conv" and ins[0] in s2d:
+            # a 3 x 3 convolution of the space-to-depth of the input (YOLOX's Focus): a 6 x 6 one
+            # of stride 2 on the input, its taps from -2 to 3 pixels
+            a = n["a"]
+            w3 = init[ins[1]]
+            assert a["kernel_shape"] == [3, 3] and a.get("strides", [1, 1]) == [1, 1] and a.get("group", 1) == 1
+            C = w3.shape[1] // len(s2d[ins[0]])
+            w6 = np.zeros((w3.shape[0], C, 6, 6), np.float32)
+            for j, (qy, qx) in enumerate(s2d[ins[0]]):
+                for dy in range(3):
+                    for dx in range(3):
+                        w6[:, :, 2 * dy + qy, 2 * dx + qx] = w3[:, C * j : C * (j + 1), dy, dx]
+            us = users.get(out, [])
+            act = None
+            if len(us) == 2 and {u["op"] for u in us} == {"Sigmoid", "Mul"}:
+                sig = next(u for u in us if u["op"] == "Sigmoid")
+                mul = next(u for u in us if u["op"] == "Mul")
+                act, out = "silu", mul["outs"][0]
+                done.update((id(sig), id(mul)))
+            steps.append(("conv", inp, out, w6, init[ins[2]], 2, 1, act))
+        elif op in ("Shape", "Reshape"):  # a grid's tokens: RTMO's transformer layer
+            inside, st = aifi(nodes, init, users, ins[0])
+            done.update(id(m) for m in inside)
+            steps.append(st)
+        elif op == "Sigmoid":
+            mul = next((u for u in users.get(out, []) if u["op"] == "Mul" and set(u["ins"]) == {ins[0], out}), None)
+            assert mul is not None, f"Sigmoid {out} without its Mul (a SiLU)"
+            steps.append(("silu", ins[0], mul["outs"][0]))
+            done.add(id(mul))
+        elif op == "Split":
+            assert n["a"]["axis"] == 1
+            sizes = n["a"].get("split") or init[ins[1]].astype(int).tolist()
+            at = 0
+            for y, c in zip(n["outs"], sizes):
+                steps.append(("slice", ins[0], y, at, at + c))
+                at += c
+        elif op == "Conv":
             a = n["a"]
             k = a["kernel_shape"][0]
             assert a.get("pads", [0])[0] == k // 2 and a.get("dilations", [1, 1]) == [1, 1], a
@@ -255,11 +368,11 @@ def sort_depthwise(steps, stats):
     depthwise output reads its own channel alone)."""
     users = {}
     for j, st in enumerate(steps):
-        for v in (st[1:2] if st[0] in ("conv", "att", "pool", "up2") else st[1:3] if st[0] == "add" else st[1]):
+        for v in step_inputs(st):
             users.setdefault(v, []).append(j)
     by_out = {st[2] if st[0] != "add" else st[3]: j for j, st in enumerate(steps)}
     for j, st in enumerate(steps):
-        if st[0] != "conv" or st[6] == 1:
+        if st[0] != "conv" or st[6] == 1 or st[3].shape[1] != 1:  # depthwise ones alone
             continue
         x, y = st[1], st[2]
         p = by_out.get(x)
@@ -289,6 +402,7 @@ class CNN(iron.Graph):
         self.params, self._index, self.states, self._views = [], {}, [], set()
         self._free, self._state_of, self._kinds = {}, {}, {}  # states given back by kind and shape; a view's state; a state's kind
         self.steps, self.inp, self.outputs = steps, inp, outputs
+        self._aifi, self._nk = {}, None
         self.t = {inp: G(H, W, cin, 1.0, cin + 1 if cin + 1 <= 4 else cdiv(cin + 8, 64) * 64)}
         self.ops = 0
         for i, s in enumerate(steps):
@@ -305,17 +419,19 @@ class CNN(iron.Graph):
                 ones = ONE
                 go = G.of(Ho, Wo, cout, ones)
                 k = w.shape[2]
-                if group > 1:  # depthwise: a block-diagonal dense weight
-                    assert group == gi.C == cout and w.shape[1] == 1
+                if group > 1:  # grouped (depthwise: groups of 1): a block-diagonal dense weight
+                    ig, og = gi.C // group, cout // group
+                    assert ig * group == gi.C and og * group == cout and w.shape[1] == ig, (y, w.shape, gi.C)
                     d = np.zeros((cout, gi.C, k, k), np.float32)
-                    d[np.arange(cout), np.arange(cout)] = w[:, 0]
+                    for j in range(group):
+                        d[j * og : (j + 1) * og, j * ig : (j + 1) * ig] = w[j * og : (j + 1) * og]
                     w = d
                 full = np.zeros((go.Cp, gi.Cp, k, k), np.float32)
                 full[:cout, : gi.C] = w
                 # the bias in two bf16 parts on the two ones channels where the input has both (a
                 # bias of 40 rounded to bf16 is off by 0.08, as much as RTMDet-tiny's outputs
                 # after their cancellations: the cos of a 1 x 1 convolution 0.9991)
-                c = k // 2
+                c = (k - 1) // 2  # the tap of the pixel itself
                 hi = np.asarray(bf(b / gi.ones), np.float32)
                 full[:cout, gi.Cp - 1, c, c] = hi
                 if two_ones(gi):
@@ -351,6 +467,17 @@ class CNN(iron.Graph):
             elif kind == "up2":
                 gi = self.t[s[1]]
                 self.t[s[2]] = G.of(2 * gi.H, 2 * gi.W, gi.C, gi.ones)
+            elif kind == "silu":
+                gi = self.t[s[1]]
+                got = float(bf(np.array([silu(np.float64(gi.ones))], np.float32))[0])
+                assert got == gi.ones, (s[2], gi.ones, got)
+                self.t[s[2]] = gi
+            elif kind == "slice":
+                _, x, y, c0, c1 = s
+                self.t[y] = self.t[x].like(c1 - c0, self.t[x].ones)
+            elif kind == "aifi":
+                self._aifi_params(i, s)
+                self.t[s[2]] = self.t[s[1]]
             elif kind == "att":
                 _, x, y, w, b, alpha, beta = s
                 gi = self.t[x]
@@ -375,7 +502,85 @@ class CNN(iron.Graph):
         # the steps without their arrays (a graph holds no arrays but its params); a conv's
         # weight as its kernel size
         self.steps = [tuple(x.shape[2] if isinstance(x, np.ndarray) and x.ndim == 4 else x
-                            for x in st if not (isinstance(x, np.ndarray) and x.ndim != 4)) for st in steps]
+                            for x in st if not (isinstance(x, np.ndarray) and x.ndim != 4) and not isinstance(x, dict)) for st in steps]
+
+    # --- RTMO's transformer layer (AIFI) on the tokens of a grid ---
+
+    def _aifi_params(self, i, s):
+        """The layer's weights as params: q, k and v with each head's 32 values padded to 64
+        (IRON's MHA takes heads of multiples of 64; the zeros change no score and give zero
+        outputs), the output projection reading the padded heads, the MLP, the norms."""
+        p = s[3]
+        E, nh = p["E"], p["heads"]
+        D = E // nh
+        Dp = cdiv(D, 64) * 64
+        T = p["H"] * p["W"]
+        Tp = cdiv(T, 512) * 512
+        pos = np.zeros((Tp, E), np.float32)
+        pos[:T] = p["pos"]
+        self._param(f"s{i}.pos", pos)
+
+        def heads_out(w, b):  # (E, E) in x out -> (nh Dp, E) out x in, (nh Dp,)
+            wo, bo = np.zeros((nh, Dp, E), np.float32), np.zeros((nh, Dp), np.float32)
+            wo[:, :D] = w.T.reshape(nh, D, E)
+            bo[:, :D] = b.reshape(nh, D)
+            return wo.reshape(nh * Dp, E), bo.reshape(-1)
+
+        for n in "qkv":
+            w, b = heads_out(p["w" + n], p["b" + n])
+            self._param(f"s{i}.{n}", w)
+            self._param(f"s{i}.{n}b", b)
+        wo = np.zeros((E, nh, Dp), np.float32)
+        wo[:, :, :D] = p["wo"].T.reshape(E, nh, D)
+        self._param(f"s{i}.o", wo.reshape(E, nh * Dp))
+        self._param(f"s{i}.ob", p["bo"])
+        self._param(f"s{i}.f1", p["w1"].T)
+        self._param(f"s{i}.f1b", p["b1"])
+        self._param(f"s{i}.f2", p["w2"].T)
+        self._param(f"s{i}.f2b", p["b2"])
+        for j, (g, b, _) in enumerate((p["ln1"], p["ln2"])):
+            self._param(f"s{i}.n{j}", g)
+            self._param(f"s{i}.n{j}b", b)
+        self._aifi[i] = dict(E=E, nh=nh, D=D, Dp=Dp, T=T, Tp=Tp, eps=(p["ln1"][2], p["ln2"][2]))
+
+    def aifi(self, x, gi: G, i):
+        a = self._aifi[i]
+        E, nh, D, Dp, T, Tp = a["E"], a["nh"], a["D"], a["Dp"], a["T"], a["Tp"]
+        w = lambda n: self.w(f"s{i}.{n}")  # noqa: E731
+        C = gi.Cp
+        tok = self.state((Tp, E), "tokens")
+        Copy.step(x, tok, src=tap((gi.rows, C), gi.pixel(0, 0) * C, [gi.H, gi.W, E], [gi.Wp * C, C, 1]),
+                  dst=tap((Tp, E), 0, [gi.H, gi.W, E], [gi.W * E, E, 1]))
+        t = tok[0:Tp]
+        qk = t + w("pos")
+        q = F.linear(qk, w("q"), w("qb"), precision=PREC_T)
+        k = F.linear(qk, w("k"), w("kb"), precision=PREC_T)
+        v = F.linear(t, w("v"), w("vb"), precision=PREC_T)
+        o = MHA.step(q.reshape(Tp, nh, Dp), k.reshape(Tp, nh, Dp)[: self._nk], v.reshape(Tp, nh, Dp)[: self._nk],
+                     heads_interleaved=True, kv_interleaved=True, causal=False, d=Dp, scale=float(1 / math.sqrt(D)),
+                     num_pipelines=8)
+        h = t + F.linear(o.reshape(Tp, nh * Dp), w("o"), w("ob"), precision=PREC_T)
+        h = F.layer_norm(h, (E,), w("n0"), w("n0b"), eps=a["eps"][0])
+        m = F.linear(F.gelu(F.linear(h, w("f1"), w("f1b"), precision=PREC_T), approximate="none"), w("f2"), w("f2b"), precision=PREC_T)
+        h = F.layer_norm(h + m, (E,), w("n1"), w("n1b"), eps=a["eps"][1])
+        self.release(tok)
+        self.ops += 14
+        out = self.state((gi.rows, C))
+        Copy.step(h, out, src=tap((Tp, E), 0, [gi.H, gi.W, E], [gi.W * E, E, 1]),
+                  dst=tap((gi.rows, C), gi.pixel(0, 0) * C, [gi.H, gi.W, E], [gi.Wp * C, C, 1]))
+        # the ones channel with the zero before it
+        Copy.step(x, out, src=tap((gi.rows, C), C - 2, [gi.rows, 2], [C, 1]), dst=tap((gi.rows, C), C - 2, [gi.rows, 2], [C, 1]))
+        self.ops += 2
+        return self.view(out)
+
+    def slice(self, x, gi: G, go: G, c0):
+        out = self.state((go.rows, go.Cp))
+        Copy.step(x, out, src=tap((gi.rows, gi.Cp), c0, [gi.rows, go.C], [gi.Cp, 1]),
+                  dst=tap((go.rows, go.Cp), 0, [go.rows, go.C], [go.Cp, 1]))
+        Copy.step(x, out, src=tap((gi.rows, gi.Cp), gi.Cp - 2, [gi.rows, 2], [gi.Cp, 1]),
+                  dst=tap((go.rows, go.Cp), go.Cp - 2, [go.rows, 2], [go.Cp, 1]))
+        self.ops += 2
+        return self.view(out)
 
     def _param(self, name, x):
         self._index[name] = len(self.params)
@@ -434,7 +639,8 @@ class CNN(iron.Graph):
         W = self.w(f"s{i}")
         C, Wp = gi.Cp, gi.Wp
         if k == 1 and stride == 1:
-            return self.gemm(x, W, act)
+            return self.gemm(x, W, act, prec)
+        assert stride == 2 or k % 2, (y, k)
         h = k // 2
         if stride == 1:
             n = gi.Hc * Wp
@@ -455,17 +661,19 @@ class CNN(iron.Graph):
                 yv = self.gemm(cs[0 : cs.shape[0]], W, act, prec)
                 self.release(cs)
             return self.interior(yv, go, n)
-        # stride 2 (k 3): output (oy, ox)'s window row dy: pixels 2 ox - 1 .. 2 ox + 1 of row 2 oy - 1 + dy
-        assert stride == 2 and k == 3
+        # stride 2: output (oy, ox)'s window row dy: pixels 2 ox - p .. 2 ox - p + k - 1 of row
+        # 2 oy - p + dy, p = (k - 1) // 2 (k 6: RTMO's Focus, taps -2 to 3)
+        assert stride == 2 and (k - 1) // 2 <= P, (y, k)
+        pd = (k - 1) // 2
         Ho, Wo = go.H, go.W
         m = cdiv(Ho * Wo, 256) * 256
-        K = cdiv(9 * C, 64) * 64
+        K = cdiv(k * k * C, 64) * 64
         cs = self.state((m, K), "cols")
-        for dy in range(3):
-            Copy.step(x, cs, src=tap((gi.rows, C), gi.pixel(dy - 1, -1) * C, [Ho, Wo, 3 * C], [2 * Wp * C, 2 * C, 1]),
-                      dst=tap((m, K), dy * 3 * C, [Ho, Wo, 3 * C], [Wo * K, K, 1]))
+        for dy in range(k):
+            Copy.step(x, cs, src=tap((gi.rows, C), gi.pixel(dy - pd, -pd) * C, [Ho, Wo, k * C], [2 * Wp * C, 2 * C, 1]),
+                      dst=tap((m, K), dy * k * C, [Ho, Wo, k * C], [Wo * K, K, 1]))
             self.ops += 1
-        yv = self.gemm(cs[0 : cs.shape[0]], W, act)
+        yv = self.gemm(cs[0 : cs.shape[0]], W, act, prec)
         self.release(cs)
         out = self.state((go.rows, go.Cp))
         Co = go.Cp
@@ -605,6 +813,13 @@ class CNN(iron.Graph):
                 v[s[2]] = self.pool(pools[key], self.t[s[1]], s[3])
             elif kind == "up2":
                 v[s[2]] = self.up2(v[s[1]], self.t[s[1]], self.t[s[2]])
+            elif kind == "silu":
+                v[s[2]] = SiLU.step(v[s[1]])
+                self.ops += 1
+            elif kind == "slice":
+                v[s[2]] = self.slice(v[s[1]], self.t[s[1]], self.t[s[2]], s[3])
+            elif kind == "aifi":
+                v[s[2]] = self.aifi(v[s[1]], self.t[s[1]], i)
             for name in step_inputs(s):  # grids read no more go back
                 h = v.get(name)
                 if last.get(name) == i and name not in self.outputs and h is not None and id(h) in self._state_of:
@@ -615,15 +830,25 @@ class CNN(iron.Graph):
         return tuple(Copy.step(v[o]) if id(v[o]) in self._views else v[o] for o in self.outputs)
 
 
+class CNNTokens(CNN):
+    """A CNN with a transformer layer: per call ``nk``, the tokens its attention reads (the
+    grid's pixels; the query rows are padded to 512)."""
+
+    def body(self, x, *, nk: Scratchpad[np.int32]):
+        self._nk = nk
+        return CNN.body(self, x)
+
+
 # --- the reference: the ONNX steps in numpy -------------------------------------------------
 
 
 def conv_np(x, w, b, stride=1, group=1):
+    """A convolution as the steps have it: its taps from -(k - 1) // 2, the output H / stride."""
     Co, Cg, k, _ = w.shape
     Cin, H, W = x.shape
-    p = k // 2
-    xp = np.pad(x, ((0, 0), (p, p), (p, p)))
-    Ho, Wo = (H + 2 * p - k) // stride + 1, (W + 2 * p - k) // stride + 1
+    p = (k - 1) // 2
+    Ho, Wo = H // stride, W // stride
+    xp = np.pad(x, ((0, 0), (p, (Ho - 1) * stride + k - H - p), (p, (Wo - 1) * stride + k - W - p)))
     out = np.zeros((Co, Ho, Wo), np.float32)
     og = Co // group
     for gi in range(group):
@@ -633,6 +858,32 @@ def conv_np(x, w, b, stride=1, group=1):
                 patch = xs[:, ky : ky + stride * Ho : stride, kx : kx + stride * Wo : stride]
                 out[gi * og : (gi + 1) * og] += np.einsum("oc,chw->ohw", w[gi * og : (gi + 1) * og, :, ky, kx], patch)
     return out + b[:, None, None]
+
+
+def layer_norm(x, g, b, eps):
+    m = x.mean(axis=-1, keepdims=True)
+    d = x - m
+    return d / np.sqrt((d * d).mean(axis=-1, keepdims=True) + eps) * g + b
+
+
+def aifi_np(x, p):
+    """RTMO's transformer layer on a grid x (E, H, W)."""
+    from math import erf
+
+    E, nh = p["E"], p["heads"]
+    D = E // nh
+    t = x.reshape(E, -1).T.astype(np.float64)
+    qk = t + p["pos"]
+    q, k, v = qk @ p["wq"] + p["bq"], qk @ p["wk"] + p["bk"], t @ p["wv"] + p["bv"]
+    q, k, v = (a.reshape(-1, nh, D).transpose(1, 0, 2) for a in (q, k, v))
+    s = q @ k.transpose(0, 2, 1) / math.sqrt(D)
+    s = np.exp(s - s.max(axis=-1, keepdims=True))
+    o = ((s / s.sum(axis=-1, keepdims=True)) @ v).transpose(1, 0, 2).reshape(-1, E)
+    h = layer_norm(t + o @ p["wo"] + p["bo"], *p["ln1"])
+    f = h @ p["w1"] + p["b1"]
+    f = 0.5 * f * (1 + np.vectorize(erf)(f / math.sqrt(2)))
+    h = layer_norm(h + f @ p["w2"] + p["b2"], *p["ln2"])
+    return h.T.reshape(x.shape).astype(np.float32)
 
 
 def reference(steps, inp, img):
@@ -659,6 +910,12 @@ def reference(steps, inp, img):
             v[y] = out
         elif kind == "up2":
             v[s[2]] = v[s[1]].repeat(2, axis=1).repeat(2, axis=2)
+        elif kind == "silu":
+            v[s[2]] = silu(v[s[1]])
+        elif kind == "slice":
+            v[s[2]] = v[s[1]][s[3] : s[4]]
+        elif kind == "aifi":
+            v[s[2]] = aifi_np(v[s[1]], s[3])
         elif kind == "att":
             _, x, y, w, b, alpha, beta = s
             m = v[x].mean(axis=(1, 2))
@@ -726,10 +983,14 @@ def main(argv=None) -> int:
     calib = picture(a.calib, W, H, a.mean, a.std) if a.calib else np.random.default_rng(1).standard_normal((3, H, W)).astype(np.float32)
     steps = sort_depthwise(steps, channel_rms(steps, inp, calib))
     print(f"sorted the depthwise channels in {time.time() - t0:.0f} s", flush=True)
-    g = CNN(steps, inp, H, W, 3, a.outputs, shapes)
+    tokens = [st for st in steps if st[0] == "aifi"]
+    g = (CNNTokens if tokens else CNN)(steps, inp, H, W, 3, a.outputs, shapes)
     gi = g.t[inp]
     cg = g.compile(x=(gi.rows, gi.Cp))
-    meta = dict(width=W, height=H, P=P, input=dict(rows=gi.rows, cp=gi.Cp, wp=gi.Wp),
+    # the per-call values: the tokens a transformer layer attends over (one such layer)
+    values = dict(nk=tokens[0][3]["H"] * tokens[0][3]["W"]) if tokens else {}
+    assert len(tokens) <= 1
+    meta = dict(width=W, height=H, P=P, input=dict(rows=gi.rows, cp=gi.Cp, wp=gi.Wp), values=values,
                 outputs=[dict(name=o, C=t.C, Cp=t.Cp, H=t.H, W=t.W, wp=t.Wp, rows=t.rows, band=t.band) for o, t in g.shapes.items()])
     m = export_graph(cg, a.out, "cnn", meta)
     print(f"compiled in {time.time() - t0:.0f} s, {len(steps)} steps, {g.ops} operators; {m['graph']['plan']}", flush=True)
@@ -737,9 +998,9 @@ def main(argv=None) -> int:
     if a.check:
         img = picture(a.check_image, W, H, a.mean, a.std) if a.check_image else calib
         x = bf(to_grid(img, gi))
-        write_check(g, m, a.out, dict(x=x))
-        ref = reference(steps, inp, np.asarray(x, np.float32)[:, :3].reshape(-1)[:0].reshape(0) if False else from_grid(x, gi))
-        outs = g.reference(x)
+        write_check(g, m, a.out, dict(x=x), values)
+        ref = reference(steps, inp, from_grid(x, gi))
+        outs = g.reference(x, **values)
         outs = outs if isinstance(outs, (tuple, list)) else [outs]
         for o, y in zip(a.outputs, outs):
             got, want = from_grid(y, g.shapes[o]), ref[o]

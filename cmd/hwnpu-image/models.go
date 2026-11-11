@@ -94,7 +94,7 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 		if d, _, err := chat.ChooseDevice(m, vendor, ""); err == nil && d == "cpu" {
 			return "CPU"
 		}
-		if m.Kind == chat.KindDetect && vendor == "amd" { // an export of iron_onnxcnn.py, made on the first run
+		if (m.Kind == chat.KindDetect || m.Kind == chat.KindPose) && vendor == "amd" { // an export of iron_onnxcnn.py, made on the first run
 			if d, err := amdExport(m, ""); err == nil {
 				return "~/models/" + filepath.Base(d)
 			}

@@ -20,6 +20,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -31,6 +32,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/onnx"
 	"github.com/shibukawa/hwnpu/internal/onnxrt"
+	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
 )
 
 // Size is the image's size the model takes: images are stretched to it.
@@ -153,6 +155,55 @@ type Estimator struct {
 	g     *onnx.Graph
 	p     *onnx.Program
 	prog  runner.Program
+	npu   *ironcnn.Graph // an export of tools/amd/iron_onnxcnn.py on AMD's NPU, in place of prog
+}
+
+// npuOptions are iron_onnxcnn.py's options for RTMO: its pixels as they are (0 to 255), SiLU as
+// an operator of its own (the GEMM epilogue's vtanh is a few ulps off near 0) and bf16's
+// products (HIGH) in place of bfp16's: at MEDIUM the keypoints' scores moved by up to 0.13 from
+// ONNX Runtime's and a doubtful person's box by 97 px, at HIGH by 0.03 and 6 px, the network
+// 0.15 s -> 0.22 s (docs/amd-npu-models.md 21)
+var npuOptions = []string{"--mean", "0", "0", "0", "--std", "1", "1", "1", "--silu", "op", "--precision", "HIGH", "--dw-precision", "HIGH"}
+
+// ExportNPU makes the export of tools/amd/iron_onnxcnn.py of the ONNX file model in out with
+// IRON's python (chat.IRONPython): the network from the image to the head's convolutions
+// (ironcnn.LastConvs), its transformer layer included.
+func ExportNPU(ctx context.Context, python []string, name, model, out string, log io.Writer) error {
+	g, err := onnx.Load(model)
+	if err != nil {
+		return err
+	}
+	return ironcnn.Make(ctx, python, name, model, out, Size, ironcnn.LastConvs(g), npuOptions, log)
+}
+
+// OpenNPU loads an export of ExportNPU (dir) onto dev, and the ONNX file model for the host's
+// part: from the head's convolutions to the people.
+func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Estimator, error) {
+	g, err := onnx.Load(model)
+	if err != nil {
+		return nil, err
+	}
+	x, err := ironcnn.Read(dir)
+	if err != nil {
+		return nil, err
+	}
+	if x.Width != Size || x.Height != Size {
+		return nil, fmt.Errorf("pose: %s is for %dx%d, not %dx%d", dir, x.Width, x.Height, Size, Size)
+	}
+	want := ironcnn.LastConvs(g)
+	if len(want) != len(x.Outputs) {
+		return nil, fmt.Errorf("pose: %s gives %d values, not the %d of RTMO's head", dir, len(x.Outputs), len(want))
+	}
+	for _, o := range x.Outputs {
+		if !slices.Contains(want, o.Name) {
+			return nil, fmt.Errorf("pose: %s gives %s, not one of RTMO's head %v", dir, o.Name, want)
+		}
+	}
+	npu, err := ironcnn.Open(ctx, dev, dir)
+	if err != nil {
+		return nil, err
+	}
+	return &Estimator{g: g, npu: npu}, nil
 }
 
 // Open loads the graph and the program on dev (nil: the CPU interpreter).
@@ -215,9 +266,14 @@ func newEstimator(g *onnx.Graph, p *onnx.Program, prog runner.Program, program s
 }
 
 // OnNPU reports whether the program runs all on the NPU.
-func (e *Estimator) OnNPU() bool { return e.prog.OnNPU() }
+func (e *Estimator) OnNPU() bool { return e.npu != nil || e.prog.OnNPU() }
 
-func (e *Estimator) Close() error { return e.prog.Close() }
+func (e *Estimator) Close() error {
+	if e.npu != nil {
+		return e.npu.Close()
+	}
+	return e.prog.Close()
+}
 
 // Keypoint is a keypoint of a person, in the image's pixels, and its score (visible from about 0.3).
 type Keypoint struct {
@@ -248,22 +304,47 @@ func Pixels(img image.Image) []float32 {
 	return out
 }
 
+// network runs the network on x: the values the host's part of the graph is given, and the
+// static shapes it may read.
+func (e *Estimator) network(ctx context.Context, x []float32) (map[string]*onnx.Tensor, map[string][]int, error) {
+	if e.npu != nil {
+		planes, err := e.npu.Run(ctx, x)
+		if err != nil {
+			return nil, nil, err
+		}
+		given := map[string]*onnx.Tensor{}
+		for j, o := range e.npu.X.Outputs {
+			t := &onnx.Tensor{Shape: []int{1, o.C, o.H, o.W}, F: make([]float64, len(planes[j])), Type: onnx.Float}
+			for i, v := range planes[j] {
+				t.F[i] = float64(v)
+			}
+			given[o.Name] = t
+		}
+		return given, nil, nil
+	}
+	y, err := e.prog.Run(ctx, map[string][]float32{"x": x})
+	if err != nil {
+		return nil, nil, err
+	}
+	given := e.p.Split(y)
+	for k, v := range e.p.Folded() {
+		given[k] = v
+	}
+	return given, e.p.Shapes(), nil
+}
+
 // Estimate finds the people in an image, with a score of at least minScore.
 func (e *Estimator) Estimate(ctx context.Context, img image.Image, minScore float64) ([]Person, error) {
 	b := img.Bounds()
 	t0 := time.Now()
 	x := Pixels(img)
 	t1 := time.Now()
-	y, err := e.prog.Run(ctx, map[string][]float32{"x": x})
+	given, shapes, err := e.network(ctx, x)
 	if err != nil {
 		return nil, err
 	}
-	given := e.p.Split(y)
-	for k, v := range e.p.Folded() {
-		given[k] = v
-	}
 	t2 := time.Now()
-	out, err := e.g.EvalShapes(given, e.p.Shapes(), outputs)
+	out, err := e.g.EvalShapes(given, shapes, outputs)
 	if err != nil {
 		return nil, err
 	}

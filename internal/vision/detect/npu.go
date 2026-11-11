@@ -2,7 +2,6 @@ package detect
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,89 +10,9 @@ import (
 	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
 )
-
-// CNNExport is model.json of an export of tools/amd/iron_onnxcnn.py: the graph's input grid and
-// its outputs, each a channel-last grid zero-padded by P pixels (pixel (y, x) at row band + y
-// wp + P + x, Cp channels a row, the first C real).
-type CNNExport struct {
-	Kind   string `json:"kind"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-	P      int    `json:"P"`
-	Input  struct {
-		Rows int `json:"rows"`
-		Cp   int `json:"cp"`
-		Wp   int `json:"wp"`
-	} `json:"input"`
-	Outputs []CNNOutput `json:"outputs"`
-}
-
-// CNNOutput is one output grid of a CNNExport: the ONNX value it is and its layout.
-type CNNOutput struct {
-	Name string `json:"name"`
-	C    int    `json:"C"`
-	Cp   int    `json:"Cp"`
-	H    int    `json:"H"`
-	W    int    `json:"W"`
-	Wp   int    `json:"wp"`
-	Rows int    `json:"rows"`
-	Band int    `json:"band"`
-}
-
-// ReadCNNExport reads dir's model.json.
-func ReadCNNExport(dir string) (*CNNExport, error) {
-	b, err := os.ReadFile(filepath.Join(dir, "model.json"))
-	if err != nil {
-		return nil, err
-	}
-	var x CNNExport
-	if err := json.Unmarshal(b, &x); err != nil {
-		return nil, fmt.Errorf("detect: %s: %w", dir, err)
-	}
-	if x.Kind != "onnx-cnn" || len(x.Outputs) == 0 || x.Input.Cp != 4 {
-		return nil, fmt.Errorf("detect: %s is not an export of tools/amd/iron_onnxcnn.py of a picture's 3 channels", dir)
-	}
-	return &x, nil
-}
-
-// InputGrid is the graph's input of x (3, H, W, normalized: Pixels'): the input grid, bf16, its
-// fourth channel one inside the picture (the biases').
-func (x *CNNExport) InputGrid(px []float32) []byte {
-	W, H, P, Wp := x.Width, x.Height, x.P, x.Input.Wp
-	band := P*Wp + P
-	out := make([]byte, 2*x.Input.Rows*4)
-	one := bf16(1)
-	for y := range H {
-		for i := range W {
-			r := band + y*Wp + P + i
-			for c := range 3 {
-				binary.LittleEndian.PutUint16(out[2*(r*4+c):], bf16(px[(c*H+y)*W+i]))
-			}
-			binary.LittleEndian.PutUint16(out[2*(r*4+3):], one)
-		}
-	}
-	return out
-}
-
-// Planes are an output grid's real channels, channels first (C, H, W) in float32.
-func (o CNNOutput) Planes(b []byte, P int) []float32 {
-	out := make([]float32, o.C*o.H*o.W)
-	n := o.H * o.W
-	for y := range o.H {
-		for x := range o.W {
-			r := o.Band + y*o.Wp + P + x
-			row := b[2*r*o.Cp:]
-			for c := range o.C {
-				out[c*n+y*o.W+x] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(row[2*c:])) << 16)
-			}
-		}
-	}
-	return out
-}
 
 // NPUOutputs are the graph's values an export of tools/amd/iron_onnxcnn.py gives for the heads,
 // in HeadShapes' order (iron_onnxcnn.py --outputs): a class head's logits as they are (scale 0),
@@ -166,8 +85,7 @@ func ExportNPU(ctx context.Context, python []string, name, model, out string, lo
 	if err != nil {
 		return err
 	}
-	args := append([]string{model, chat.ExportOut, "--size", fmt.Sprintf("%dx%d", Size, Size), "--outputs"}, names...)
-	if err := chat.RunIRON(ctx, python, name, "iron_onnxcnn.py", args, out, log); err != nil {
+	if err := ironcnn.Make(ctx, python, name, model, out, Size, names, nil, log); err != nil {
 		return err
 	}
 	b, err := json.Marshal(headsJSON{names, scales})
@@ -181,8 +99,7 @@ func ExportNPU(ctx context.Context, python []string, name, model, out string, lo
 // HeadShapes' order: each head an export's output, the boxes through the graph's tail on the
 // host (exp, times the stride: what the export leaves out).
 type npuHeads struct {
-	x     *CNNExport
-	g     *iron.Graph
+	g     *ironcnn.Graph
 	order []int     // export output of each head (HeadShapes' order)
 	scale []float64 // a box head's stride (negative: after an Exp; 0: a class head, as it is)
 }
@@ -190,7 +107,7 @@ type npuHeads struct {
 // OpenNPU loads an export of tools/amd/iron_onnxcnn.py (dir) of the ONNX file model onto dev:
 // the heads of Heads, or the values before their Exp and Mul by the stride.
 func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Detector, error) {
-	x, err := ReadCNNExport(dir)
+	x, err := ironcnn.Read(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +118,7 @@ func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Detect
 	if err != nil {
 		return nil, err
 	}
-	h := &npuHeads{x: x, scale: scales}
+	h := &npuHeads{scale: scales}
 	at := map[string]int{}
 	for i, o := range x.Outputs {
 		at[o.Name] = i
@@ -228,28 +145,20 @@ func OpenNPU(ctx context.Context, dev *hwnpu.Device, dir, model string) (*Detect
 			return nil, fmt.Errorf("detect: output %s is %dx%dx%d, not the head's %v", o.Name, o.C, o.H, o.W, s)
 		}
 	}
-	if h.g, err = iron.OpenGraph(ctx, dev, dir); err != nil {
+	if h.g, err = ironcnn.Open(ctx, dev, dir); err != nil {
 		return nil, err
 	}
 	return &Detector{Score: 0.3, NMS: 0.65, Max: 300, Classes: classes, npu: h}, nil
 }
 
 func (h *npuHeads) run(ctx context.Context, x []float32) ([][]float32, error) {
-	g := h.g
-	if err := g.SetInput(g.Inputs()[0].Name, h.x.InputGrid(x)); err != nil {
-		return nil, err
-	}
-	if err := g.Run(ctx, nil); err != nil {
+	planes, err := h.g.Run(ctx, x)
+	if err != nil {
 		return nil, fmt.Errorf("detect: %w", err)
 	}
-	outs := g.Outputs()
 	heads := make([][]float32, len(h.order))
 	for k, j := range h.order {
-		b, err := g.Output(outs[j].Name)
-		if err != nil {
-			return nil, err
-		}
-		p := h.x.Outputs[j].Planes(b, h.x.P)
+		p := planes[j]
 		switch s := h.scale[k]; {
 		case s < 0:
 			for i, v := range p {
@@ -263,12 +172,4 @@ func (h *npuHeads) run(ctx context.Context, x []float32) ([][]float32, error) {
 		heads[k] = p
 	}
 	return heads, nil
-}
-
-func bf16(x float32) uint16 {
-	bits := math.Float32bits(x)
-	if bits&0x7fffffff > 0x7f800000 {
-		return uint16(bits>>16) | 0x40
-	}
-	return uint16((bits + 0x7fff + (bits>>16)&1) >> 16)
 }

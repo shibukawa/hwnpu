@@ -43,7 +43,7 @@
 | 〃 | 〃 | 〃 | Sana / Sana-Sprint | ◎ | — | ◎ |
 | 深度、点群、法線 | (クラウドに定番の API はない) | `hwnpu-image depth` | Depth Anything 3、MoGe-2 | ○ (変換はする、測っていない) | — | ◎ |
 | 顔の検出 (枠と 5 点) | Cloud Vision の顔検出、Rekognition DetectFaces、Azure Face、Apple Vision | `hwnpu-image face-detect` | YuNet | ○ (測っていない) | — | CPU (NPU でも動くが、エネルギーが CPU の 16〜40 倍。docs/amd-npu-models.md 17) |
-| 人の姿勢 (17 点) | Apple Vision の体の姿勢、Video Intelligence の人物検出 | `hwnpu-image pose` | RTMO-s | ◎ | ○ | CPU |
+| 人の姿勢 (17 点) | Apple Vision の体の姿勢、Video Intelligence の人物検出 | `hwnpu-image pose` | RTMO-s | ◎ | ○ | ◎ (初回に書き出す、docs/amd-npu-models.md 21) |
 | 物の検出 (枠とラベル) | Cloud Vision の物体の位置検出、Rekognition DetectLabels、Azure の物体検出 | `hwnpu-image detect` | RTMDet-tiny / s / m | ◎ | ○ | ◎ m (初回に書き出す、docs/amd-npu-models.md 20)。tiny と s は CPU |
 | 文字 (OCR) | Cloud Vision の TEXT / DOCUMENT_TEXT_DETECTION、Textract、Azure Read、Apple Vision | `hwnpu-image ocr` | PP-OCRv6 small | ◎ | ○ | CPU |
 | ラベル付け (ゼロショット)、画像と文の埋め込み | Cloud Vision の LABEL_DETECTION、Rekognition DetectLabels、Vertex と Azure のマルチモーダルの埋め込み、Apple Vision の分類と特徴量 | `hwnpu-image label`、`hwnpu-image embed` | SigLIP 2 Base / Large | — | — | ◎ (docs/amd-npu-models.md 18) |
@@ -52,7 +52,7 @@
 | 音楽生成 | Vertex の Lyria | `hwnpu-audio generate` | Magenta RealTime 2 small | ◎ | — | — (`--cpu` のみ) |
 | 効果音 | ElevenLabs Sound Effects | `hwnpu-audio generate -m sfx` | MOSS-SoundEffect v2.0 | ◎ | — | — (`--cpu` のみ) |
 
-AMD の「CPU」の 5 つ (姿勢、検出、OCR、音高、音符) は、どれも ONNX から `internal/onnx` で MIL に下ろす経路のモデルです。この経路は Core ML と OpenVINO IR を書きますが、AMD 向けには書き出しません。AMD の機械では CPU で動きます。hwnpu の CPU 実行器 (外部依存なし。RTMDet-m は 1 スレッドで 1 枚 2.3 秒) か、ONNX Runtime の共有ライブラリがあればそれ (ONNX のファイルの同じ切り口、`onnxrt.Cut`。1.4 秒) で (docs/amd-npu-models.md 19)。ONNX から IRON のグラフを組む汎用の経路を作れば (今の `tools/amd/iron_yunet.py` は YuNet の ONNX を読んで手で並べています)、5 つまとめて AMD に載せられます。
+AMD の「CPU」の 5 つ (姿勢、検出、OCR、音高、音符) は、どれも ONNX から `internal/onnx` で MIL に下ろす経路のモデルです。この経路は Core ML と OpenVINO IR を書きますが、AMD 向けには書き出しません。AMD の機械では CPU で動きます。hwnpu の CPU 実行器 (外部依存なし。RTMDet-m は 1 スレッドで 1 枚 2.3 秒) か、ONNX Runtime の共有ライブラリがあればそれ (ONNX のファイルの同じ切り口、`onnxrt.Cut`。1.4 秒) で (docs/amd-npu-models.md 19)。ONNX の畳み込みのグラフを IRON のグラフにする `tools/amd/iron_onnxcnn.py` ができ、RTMDet-m と RTMO-s はその書き出し (初回に作る) で AMD の NPU で動きます (docs/amd-npu-models.md 20、21)。RTMDet の tiny と s は CPU のまま (和の打ち消し合いが bfp16 を超える、20.4)、OCR、音高、音符も CPU です。
 
 ## 2. まだないもの
 
@@ -114,7 +114,7 @@ AMD には公開されたグラフ用のコンパイラがなく、モデルご�
 
 1. **SigLIP 2** (ラベル付け、画像の埋め込み、不適切な画像の判定): ViT なので DA3 の部品が使えます。これ 1 つで、2.1 の 3 つの項目が埋まります。ラベル付けと埋め込みはできました (2026-11-11、docs/amd-npu-models.md 18)。その間に、1 節の ONNX の 5 つは AMD の CPU で ONNX Runtime で動くようにしました (同 19)。
 2. **SAM 系の符号器と BiRefNet** (切り抜き): 骨格が重く GEMM が中心です。BiRefNet の deformable conv はデコーダのどのブロックにもある (2.1) ので、EfficientSAM (1024 × 1024 の素の ViT-S / T、Apache-2.0) から始めます。
-3. **ONNX → IRON の汎用の経路**: 1 節の 5 つ (姿勢、検出、OCR、音高、音符) と、RTMDet-Ins、文書のレイアウトが載ります。モデルごとに NPU と CPU の mJ を比べ、負けるものは models.yaml を `device: {amd: cpu}` のままにします (YuNet と同じ扱い)。
+3. **ONNX → IRON の汎用の経路**: 1 節の 5 つ (姿勢、検出、OCR、音高、音符) と、RTMDet-Ins、文書のレイアウトが載ります。モデルごとに NPU と CPU の mJ を比べ、負けるものは models.yaml を `device: {amd: cpu}` のままにします (YuNet と同じ扱い)。RTMDet-m と RTMO-s はできました (`tools/amd/iron_onnxcnn.py`、2026-11-11、docs/amd-npu-models.md 20、21)。RTMDet の tiny と s は負けました (20.4)。
 4. **バーコード、追跡**: チップによらないので、いつでも入れられます。
 
 ## 4. 確かめていないこと
