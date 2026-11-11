@@ -92,6 +92,9 @@ type Model struct {
 	// With are the other repositories the model reads, by role (an OCR's detector): OWNER/NAME
 	// or OWNER/NAME@REVISION as fetch takes them. Their files' sha256 are SHA256's ROLE/FILE.
 	With map[string]string
+	// License is the weights' license (models.yaml's license): its id, where it is, and whether
+	// the user accepts it before the first download or run (AcceptLicense).
+	License License
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that

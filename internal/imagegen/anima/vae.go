@@ -47,8 +47,17 @@ type VAE struct {
 	in     GridShape
 	Width  int
 	Height int
+	// Latent is the latents' channels (16: Anima's; 64: Qwen-Image-2.1's), Channels the
+	// picture's (3, RGB; 4, RGBA: Qwen-Image-2.1's): the manifest's latent and channels.
+	Latent, Channels int
 	// Stage, when set, is told of each stage as it ends.
 	Stage StageFunc
+	// PrefetchLimit, when not 0, loads a stage while the one before runs only when the two hold
+	// at most this many bytes on the device together (otherwise after it closes): the peak
+	// against a stage's load time. Qwen-Image-2.1's 1024 x 1024 stages 4 and 5 are 5.9 GiB
+	// together.
+	PrefetchLimit int64
+	sizes         []int64 // each stage's banks and arguments
 }
 
 // OpenVAE reads the stages' manifests in dir; Decode loads each stage onto dev as it runs.
@@ -62,6 +71,9 @@ func OpenVAE(ctx context.Context, dev *hwnpu.Device, dir string) (*VAE, error) {
 		Width  int `json:"width"`
 		Height int `json:"height"`
 		Pad    int `json:"pad"`
+		// Latent and Channels: 16 and 3 when the manifest leaves them out (Anima's exports)
+		Latent   int `json:"latent"`
+		Channels int `json:"channels"`
 	}
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, fmt.Errorf("anima: vae: %w", err)
@@ -69,7 +81,13 @@ func OpenVAE(ctx context.Context, dev *hwnpu.Device, dir string) (*VAE, error) {
 	if m.Stages == 0 {
 		return nil, errors.New("anima: vae: no stages")
 	}
-	v := &VAE{dev: dev, Width: m.Width, Height: m.Height}
+	v := &VAE{dev: dev, Width: m.Width, Height: m.Height, Latent: m.Latent, Channels: m.Channels}
+	if v.Latent == 0 {
+		v.Latent = 16
+	}
+	if v.Channels == 0 {
+		v.Channels = 3
+	}
 	for i := 0; i < m.Stages; i++ {
 		d := filepath.Join(dir, fmt.Sprintf("s%d", i))
 		gm, err := iron.ReadGraphManifest(d)
@@ -87,6 +105,16 @@ func OpenVAE(ctx context.Context, dev *hwnpu.Device, dir string) (*VAE, error) {
 			v.in.Pad = m.Pad
 		}
 		v.stages = append(v.stages, d)
+		var n int64
+		for _, b := range gm.Banks {
+			n += int64(b.Bytes)
+		}
+		for _, a := range gm.Graph.Arguments {
+			if _, ok := gm.Banks[a.Kind]; !ok {
+				n += int64(a.Bytes)
+			}
+		}
+		v.sizes = append(v.sizes, n)
 	}
 	return v, nil
 }
@@ -94,11 +122,11 @@ func OpenVAE(ctx context.Context, dev *hwnpu.Device, dir string) (*VAE, error) {
 // Close releases nothing: no stage stays on the device after Decode.
 func (v *VAE) Close() error { return nil }
 
-// Decode turns the DiT's latents (16, H/8, W/8), channel major, into the image.
+// Decode turns the DiT's latents (Latent, H/8, W/8 for Anima), channel major, into the image.
 func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error) {
 	g := v.in
 	h, w := g.H, g.W
-	const z = 16
+	z := v.Latent
 	if len(latents) != z*h*w {
 		return nil, fmt.Errorf("anima: vae: %d latent values for %dx%dx%d", len(latents), z, h, w)
 	}
@@ -129,7 +157,8 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 	for i := range v.stages {
 		t0 := time.Now()
 		next = nil
-		if i+1 < len(v.stages) {
+		early := v.PrefetchLimit == 0 || v.sizes[i]+v.sizes[i+min(1, len(v.sizes)-1-i)] <= v.PrefetchLimit
+		if i+1 < len(v.stages) && early {
 			next = load(i + 1)
 		}
 		fail := func(err error) (*image.RGBA, error) {
@@ -148,7 +177,21 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 		if err != nil {
 			return fail(err)
 		}
-		if next == nil {
+		if next == nil && i+1 < len(v.stages) { // the next stage after this one closes
+			o = append([]byte(nil), o...)
+			cur.g.Close()
+			if n := <-load(i + 1); n.err != nil {
+				return nil, fmt.Errorf("anima: vae stage %d: %w", i+1, n.err)
+			} else {
+				in, err := n.g.Input("x")
+				if err != nil || len(in) != len(o) {
+					n.g.Close()
+					return nil, fmt.Errorf("anima: vae stage %d: the input (%d bytes) for %d bytes: %v", i+1, len(in), len(o), err)
+				}
+				copy(in, o)
+				cur = n
+			}
+		} else if next == nil {
 			out = append([]byte(nil), o...)
 			cur.g.Close()
 		} else {
@@ -178,11 +221,16 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 	for y := 0; y < H; y++ {
 		for x := 0; x < W; x++ {
 			o := 2 * 64 * (y*W + x)
-			var px [3]uint8
-			for c := 0; c < 3; c++ {
+			px := [4]uint8{3: 255}
+			for c := 0; c < v.Channels; c++ {
 				px[c] = pixel(fromBF16(binary.LittleEndian.Uint16(out[o+2*c:])))
 			}
-			img.SetRGBA(x, y, color.RGBA{px[0], px[1], px[2], 255})
+			if v.Channels == 4 { // straight alpha into image.RGBA's premultiplied
+				for c := 0; c < 3; c++ {
+					px[c] = uint8((int(px[c])*int(px[3]) + 127) / 255)
+				}
+			}
+			img.SetRGBA(x, y, color.RGBA{px[0], px[1], px[2], px[3]})
 		}
 	}
 	return img, nil
@@ -199,7 +247,7 @@ func (v *VAE) writeLatents(s *iron.Graph, latents []float32) error {
 	for y := 0; y < g.H; y++ {
 		for x := 0; x < g.W; x++ {
 			o := 2 * g.Pixel(y, x) * g.C
-			for c := 0; c < 16; c++ {
+			for c := 0; c < v.Latent; c++ {
 				binary.LittleEndian.PutUint16(in[o+2*c:], bf16(latents[(c*g.H+y)*g.W+x]))
 			}
 		}

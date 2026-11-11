@@ -375,6 +375,9 @@ models:
     tag: v1.1
     kind: image
     from: hf:circlestone-labs/Anima
+    # the weights for non-commercial use only (the pictures may be used commercially): asked once
+    # before the first run (hwnpu-image --accept-license)
+    license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", accept: true}
     file: anima-turbo-v1.1.safetensors
     with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
     sha256:
@@ -394,6 +397,9 @@ models:
     tag: aesthetic
     kind: image
     from: hf:circlestone-labs/Anima
+    # the weights for non-commercial use only (the pictures may be used commercially): asked once
+    # before the first run (hwnpu-image --accept-license)
+    license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", accept: true}
     file: anima-aesthetic-v1.1.safetensors
     with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
     sha256:
@@ -422,6 +428,69 @@ models:
     # named as anima:base: the family alone picks Anima-Aesthetic
     machine: 0
     about: "Anima-Base v1.0: the pretrained model, the most varied and plain in style (the one LoRAs are trained on), 30 steps with classifier-free guidance"
+  Chroma1-Flash:
+    family: chroma
+    tag: 1-flash
+    kind: image
+    from: hf:lodestones/Chroma1-Flash
+    license: {id: apache-2.0, url: "https://huggingface.co/lodestones/Chroma1-Flash"}
+    sha256:
+      text_encoder/model-00001-of-00002.safetensors: ec87bffd1923e8b2774a6d240c922a41f6143081d52cf83b8fe39e9d838c893e
+      text_encoder/model-00002-of-00002.safetensors: a5640855b301fcdbceddfa90ae8066cd9414aff020552a201a255ecf2059da00
+      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: c759d67ca3ef50a9a1c242e3291c57f406646f226a95f43f66577996494986db
+      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 8dc761fbdf92b0abbc5a336dc717e6c682479792404ac2f9dbfc3b86e7760996
+      vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
+    machine: 16
+    # AMD: the peak of a 1024 x 1024 run, 5.6 GiB on the NPU and the process's 0.1 GiB, measured
+    memory: {amd: 5.9}
+    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here)
+    bytes: 2.75e10
+    about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU only; Apache-2.0"
+  Chroma1-HD:
+    like: Chroma1-Flash
+    tag: 1-hd
+    from: hf:lodestones/Chroma1-HD
+    sha256:
+      text_encoder/model-00001-of-00002.safetensors: ec87bffd1923e8b2774a6d240c922a41f6143081d52cf83b8fe39e9d838c893e
+      text_encoder/model-00002-of-00002.safetensors: a5640855b301fcdbceddfa90ae8066cd9414aff020552a201a255ecf2059da00
+      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 59f0b26eccaabb8301e4166e653f1bcdebd7c46a4a07b02fe33d7a2c46d78eba
+      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 65e6541afdabbb96568a3f8975eeef929f0a7e0eef3d2c4741b1bf911ac3a6d5
+      vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
+    # named as chroma:1-hd: the family alone picks Chroma1-Flash
+    machine: 0
+    about: "Chroma1-HD: the base model, classifier-free guidance 3 (--guidance, --negative) with DPM-Solver++ 2M 25 steps, guided at sigma >= 0.6; AMD's NPU only; Apache-2.0"
+  Qwen-Image-2.1-Turbo:
+    family: qwen-image
+    tag: 2.1-turbo
+    kind: image
+    from: hf:Qwen/Qwen-Image-2.1-Turbo
+    # research and evaluation only: asked once before the first run (hwnpu-image --accept-license)
+    license: {id: qwen-research, url: "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/main/LICENSE", terms: "research and evaluation only, not commercial use", accept: true}
+    sha256:
+      processor/tokenizer.json: be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506
+      text_encoder/model.safetensors: a1eee8233f3063466dd3b06e857b0a2cf13a77c543908374771d51a546beb2e0
+      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 6cccd922767f01694461bdcf1f34ea7b771f3442e4d5e338ea9aa55277431cc0
+      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 69f53ebb063d2f606bdaff7e22e0e2144f28d978d73dc75e6e4293fc5982eab5
+      vae/diffusion_pytorch_model.safetensors: 71879ffd5321e6d10c3c87513e2b474b1252efa7f3dec2969214a9bf06a6dd5c
+    machine: 16
+    # AMD: the peak of a 1024 x 1024 run, 3.1 GiB on the NPU (the VAE's stage 4; the text encoder's
+    # layers and the DiT's blocks are read a group at a time into one bank) and the process's 1.0
+    # GiB, measured
+    memory: {amd: 4.2}
+    bytes: 3.25e10
+    about: "Qwen-Image-2.1-Turbo (7B single-stream DiT, Qwen3-VL-8B reads the prompt, RGBA VAE): 8 steps without guidance; AMD's NPU only; Qwen Research License (not commercial)"
+  Qwen-Image-2.1:
+    like: Qwen-Image-2.1-Turbo
+    tag: "2.1"
+    from: hf:Qwen/Qwen-Image-2.1
+    sha256:
+      processor/tokenizer.json: be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506
+      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 9e6bc2d641e67bf277895ea8777141044a38f3edb7101bc469b2961dd7c36b4b
+      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 3aaf234dcbe128530479735854a346b5e3e66283b7c11db56f836bbd1c13ebaa
+      vae/diffusion_pytorch_model.safetensors: a07a1b7c4ee2966a1b3bdc37de9b4f983d56937e46619f709a80b6e490675417
+    # named as qwen-image:2.1: the family alone picks the Turbo
+    machine: 0
+    about: "Qwen-Image-2.1 (base): 40 Euler steps, classifier-free guidance with --guidance and --negative (none by default, as its pipeline); AMD's NPU only; Qwen Research License (not commercial)"
   Sana-600M:
     family: sana
     tag: 0.6b

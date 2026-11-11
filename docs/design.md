@@ -3974,3 +3974,50 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
   - CFG を雑音の多いステップで外す (上の表)
 - **P·V の bfp16** (`--dit-mha qkpv`、16.147): 512² では注意が小さく速くならない。1024² で −5 %、電力量 −12 %、絵は同じ。既定 (`qk`) を変えるとすべての書き出しを作り直すことになり、16.147 では参照から細部が少し離れたので、まだ既定にしていない
 - 残り: 交差注意のキーと値をステップの外へ (演算の 0.7 %)、Anima の VAE の同じ形の段をまとめる (Turbo の 12 %)
+
+### 16.155 Qwen-Image-2.1-Turbo を AMD の NPU で、ライセンスを初回に確かめる仕組み — 2026-11-11
+
+`Qwen/Qwen-Image-2.1-Turbo` (7.1B のシングルストリーム DiT、文を読むのは Qwen3-VL-8B、64 チャンネル・1/16 の RGBA の VAE、8 ステップ・CFG なし) を AMD の NPU に入れた。調べた中身は [image-models-survey-qwen-chroma.md](image-models-survey-qwen-chroma.md)。書き出しは `tools/amd/iron_qwenimage.py`、パイプラインは `internal/imagegen/qwenimage`、参照は `tools/ref/ref_qwenimage21.py`。詳しくは [amd-npu-models.md](amd-npu-models.md) 20 節。
+
+- **文の K/V を一度だけ**: 文の行は t = 0 で変調される (`causal_condition`) ので、各ブロックの K/V はステップに依らない。プロンプトごとに `dit_text` で一度だけ計算し、各ステップは画像の 4096 行 (1024²) だけを回して [画像の K、文の K] に注意する。文のパディングはキーの数 `nk` (呼び出しごと) で切る (画像を先に並べるので末尾になる)
+- **共有の変調を dit_in で**: 全ブロック共通の変調 (1 + scale、tanh gate) を 1 ステップ 1 回、tanh まで NPU で
+- 文: Qwen3-VL-8B の 36 層 (q6、HIGHEST) を 64 行ずつ、最後の層の norm の前の出力に DiT の txt_in まで同じグラフで。システム文の 14 トークンは捨てる。システム文は 1 チャンク (64) より短いので、Sana の前置きの K/V を持つ手 (16.138) は効かない
+- 正しさ (CPU の float32 の diffusers と同じ雑音から): 512² 狐 潜在のコサイン 0.9978 / PSNR 27.9 dB、512² 看板の文字 0.9995 / 31.3 dB (文字も同じ)、1024² 狐 0.9989 / 34.2 dB
+- 速さ (1024²): 1 枚 1 分 52 秒 (文 5.1 秒、DiT の文 2.2 秒、ステップ 12.0 秒 × 8、VAE 約 9 秒)。CPU が別の作業で混んでいたときは 2 分 17 秒 (14.6 秒/ステップ)。見積もり (Anima の 3.75 TFLOPS から 17.7 秒/ステップ) より速い。512² は 1 ステップ 3.4 秒
+- メモリ: ピーク 6.8 GB (NPU 6.1 GB、文の段の q6 の重み)
+- **DiT の重みを 1 回だけ持つ**: 最初は `dit_text` と `dit_blocks` が同じ q8 の重み (7 GB) を別々に持ち、書き出しが 22 GB だった。バンクの中身は 1 バイト目から違った。違いは `dit_text` の RoPE の表 (呼び出しごとに切り出すので `iron.weight`): これが重みの並びに入って配置がずれていた。RoPE をホストが渡す入力 (チャンクの 256 行) にすると、2 つのグラフの重みは同じものが同じ順に並び、バンクの像がバイトまで同じになる。書き出しは `dit_blocks` を先に作り、`dit_text` の最初の像が同じなら自分の像を消して、どの組も `../dit_blocks/` の像を指す (`share_banks`。違えば今までどおり自分で持つ)。書き出し 22 → **15 GB**、書き出しの時間も 7 組分短い。潜在は前とコサイン 1.0 (2 つのプロンプト)、時間も同じ
+- **2 回目の実行が止まる**: `dit_text` (呼び出しごとの位置に K/V を書く) と Chroma の approximator (6 コマンド) で、同じグラフの 2 回目の最初のコマンドが ERT_CMD_STATE_TIMEOUT。1 回目は正しい。言語モデルの stepBarrier と同じく、同じ ELF を別のハードウェアコンテキストに読んで空のコマンドを先に回すと止まらない (`iron.GraphOptions.Barrier`、irongraph `-barrier`)。qwenimage のグラフはすべてこれを使う
+- VAE: Wan 2.2 系の DupUp3D の近道 (入力のチャンネルを画素へ) は、チャンネルが同じなら最近傍、違えば位相ごとの選択の行列 (MEDIUM: HIGHEST の GEMM は N が 64 の倍数でないと作れない) で、位相の GEMM に足す。中央の注意 (1 頭 1152) は MHA に入らないので、QK^T・行のソフトマックス・P V^T (V の転置は単位行列の GEMM) の GEMM で
+- ライセンス: Qwen Research License は研究と評価だけ。models.yaml の `license` (`id`、`url`、`terms`、`accept`) で `accept: true` のモデルは、名前で選んだときに一度だけ端末で聞き、`~/.config/hwnpu/licenses.json` に残す。端末がなければ `--accept-license` か `HWNPU_ACCEPT_LICENSE=qwen-research` (後者はその回だけ) を求めて止まる (`chat.AcceptLicense`)
+- 残り: 文の 64 行が 1.4 秒 (q6 を毎チャンク展開)、文の段を SwapVariants にしてピークを下げる、Apple と Intel
+
+### 16.156 Chroma1-Flash を AMD の NPU で: T5 の相対位置のバイアス、GroupNorm を NPU で、diffusers のマスク — 2026-11-11
+
+`lodestones/Chroma1-Flash` (FLUX.1 schnell の DiT 8.9B、ブロックの変調は時刻だけから 344 行を作る FFN、T5-XXL、FLUX の VAE、Apache-2.0) を AMD の NPU に入れた。DiT は `tools/amd/iron_chroma.py` (FLUX の試作 t3-flux のブロックから)、T5 と VAE は `tools/amd/iron_chroma_parts.py`、パイプラインは `internal/imagegen/chroma`、参照は `tools/ref/ref_chroma.py` と `ref_chroma_parts.py`。
+
+- **T5 の相対位置のバイアス**: IRON の MHA にはバイアスがない (低ランクでもない)。8 頭ずつ、ブロック対角の K^T と V^T (射影の重みを GEMM の左に置いて頭ごとに連続に出す) で 1 回の GEMM に 8 頭の点数を並べ、バイアスは float32 の Softmax の足し算に定数 (全層で共有、64 MiB) で。パディングのマスクは点数の GEMM の縮約に入れる (K^T の 1 行に (mask − 1) × 16384、q の 1 列を 1)。q8、HIGHEST、GELU は erf (IRON の tanh GELU の表は最悪の行を 0.986 に)。NPU で 1 回 3.2 秒、プロンプトの行で float32 の transformers とコサイン 0.9997
+- **GroupNorm を NPU で**: 画素のチャンネルごとの和を 1 の塊との GEMM で、グループの平均を定数の GEMM で、平方根の逆数は RMSNorm 1 回 (グループの行のノルムと定数 c の行、eps を合わせると c の出力が 1/√(var + eps) に比例)。ホストの計算はない。512² の VAE 10 段、diffusers の float32 と PSNR 53.6 dB (CPU の参照)、NPU で各段コサイン 0.99986 以上
+- **diffusers の ChromaPipeline のマスク**: 文のマスクを float の 0/1 で渡し、ブロックが外積にして SDPA に渡す。float のマスクは点数に足されるので、プロンプトの組に +1 がつくだけでパディングにも注意が向く。Chroma はパディングを (1 つを残して) 隠して学習された (モデルカード) ので、NPU はキーの数 `nk` で切る。これと diffusers は最初の速度でコサイン 0.9886 (すべてのキーに注意させると 0.9984)。参照に同じマスク (`ref_chroma.py --mask keys`、SDPA をキーのマスクに直す) を使うと、最初の速度 0.99985、8 ステップの潜在 0.9988、PSNR 40.8 dB (512²、オイラー法)
+- 変調: approximator (5 層、5120) は 1 呼び出し 512 行 (344 + 0)。HIGHEST は K = 5120 で作れず (バッファ記述子) HIGH。RMSNorm の重み (幅 5120 > 4096) は次の線形の列に畳む。2 回目の実行が止まる (16.155 の Barrier で直る)
+- DiT: ダブル 19 は素数なので 1 ブロック 1 バンク、シングル 38 は 2 ブロック。行は [画像、文] の順 (文のパディングがキーの末尾に来る)。Heun 8 ステップ (DiT 15 回) が既定、`--sampler euler` で 8 回
+- 速さ (512²、CPU は別の作業で混んでいた): DiT 1 回 5.4 秒、1 枚 Heun 1 分 42 秒、オイラー法 50 秒。T5 は FLUX.1 schnell のと同じファイル (sha256) を共有し、トークナイザは Anima の t5_tokenizer.json (FLUX のは正規化が Sequence で Go が読めない。語彙と charsmap は同じ)
+- 1024²: VAE の段 6 (1024² × 256 チャンネルの GroupNorm) が 2 秒を超えた。DMA の繰り返しは 64 まで (列の塊の数を抑える)、転置の GEMM は N = 1M 画素で終わらない (262144 画素ずつのコマンドに)。1 枚 4 分 13 秒 (Heun 8 ステップ、29.9 秒/ステップ、VAE 8.9 秒)、ピーク 5.9 GB
+- 残り: CFG (Chroma1-HD)、1024² の参照との比較
+
+### 16.157 Qwen-Image-2.1 (蒸留なし) と Chroma1-HD の CFG、文の符号器を組ごとに、VAE の先読みに上限 — 2026-11-11
+
+- **CFG**: `hwnpu-image generate` の `--guidance`、`--negative`、`--sampler`、`--cfg-sigmas` を Qwen-Image にも (Chroma にも)。1 ステップの条件つきと条件なしは重みの組ごとに続けて回す (組の重みを読むのは 1 ステップ 1 回、16.148)。プロンプトと負のプロンプトは 1 回の読み込みでまとめて符号化する (`EncodeAll`)。Qwen-Image は負のプロンプトごとに文の K/V と画像の RoPE (フレームは文の長さ) とキーの数を持つ
+- 正しさ (512²、12 ステップ、CPU の float32 と同じ雑音): Qwen-Image-2.1 CFG 4、空の負のプロンプト 潜在のコサイン 0.9982 / PSNR 30.4 dB。Chroma1-HD CFG 3 0.9957 / 34.1 dB
+- **参照の誤り**: 最初 Chroma1-HD は 0.71 と合わなかった。`ref_chroma.py --mask keys` の SDPA の差し替えを T5 を回す前に入れていたので、T5 の SDPA の float のマスク (相対位置のバイアスとマスクの和) まで 0/−inf のキーのマスクに変わり、バイアスが消えていた。1 トークンの負のプロンプトでは DiT が見るパディングの行が大きくずれる。差し替えを T5 の後にして直した。NPU の T5 は transformers の float32 と、そのような短いプロンプトでも行 0 で 0.999995、パディングの行で 0.993
+- **解き方の既定** (NPU、512²、100 ステップのオイラー法と比べた潜在のコサイン / PSNR):
+
+| | Qwen-Image-2.1 (CFG なし、狐 / 看板) | Chroma1-HD (CFG 3、狐) | 時間 (Chroma) |
+|---|---|---|---|
+| オイラー法 40 (カードの既定) | 0.990 / 24.4 dB、0.998 / 28.6 dB | 0.972 / 24.8 dB | 7 分 19 秒 |
+| DPM-Solver++ 2M 25 | 0.973 / 20.2 dB、0.993 / 23.6 dB | 0.961 / 23.0 dB | 4 分 36 秒 |
+| DPM-Solver++ 2M 20 | 0.961、0.989 | | |
+| DPM-Solver++ 2M 25、CFG は σ ≥ 0.6 だけ | | 0.962 / 23.2 dB | **3 分 59 秒 (−45 %)** |
+
+  - Qwen-Image-2.1 はオイラー法 40 を既定のまま (DPM 25 は構図は同じだが細部が Anima より動く)。Chroma1-HD は DPM 25 + CFG σ ≥ 0.6 を既定に (model.json の `sampler`、`steps`、`cfg_sigmas`)。絵は 4 つとも見分けられない。σ ≥ 0.6 だけにしても変わらない (0.9624 と 0.9608) のは Anima と同じ。プロンプト 1 つの判断
+- **文の符号器を組ごとに読む**: Qwen3-VL-8B の 36 層を 4 層ずつ 9 組の 1 つの ELF にし、1 つのバンクに組を順に読む (SwapVariants)。文はプロンプトごとに 1 回なので重みを読むのは 1 回のまま。txt_in は別の小さなグラフ (`text_out`)、RoPE はホストの入力。5.6 GB の q6 を一度に固定しなくなり、512² のピーク 6.8 → **2.1 GB**、潜在は同じ (1.0)
+- **VAE の先読みに上限** (`anima.VAE.PrefetchLimit`、Qwen-Image と Chroma は 3 GiB): 段を前の段の実行中に読むのは、2 つで 3 GiB 以下のときだけ。1024² の Qwen-Image は段 4 と段 5 (計 5.9 GiB) を同時に持っていた。ピーク 6.4 → **4.2 GB**、VAE は 8.5 → 12 秒、画素は同じ

@@ -46,6 +46,14 @@
 // classifier-free guidance (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU
 // interpreter (slow; for checking without the NPU).
 //
+// On AMD's NPU, generate also runs Qwen-Image-2.1 (qwen-image: Qwen-Image-2.1-Turbo, 8 steps;
+// qwen-image:2.1, 40 steps, guidance with --guidance and --negative; tools/amd/iron_qwenimage.py,
+// internal/imagegen/qwenimage) and Chroma1 (chroma: Chroma1-Flash, Heun's 8 steps; chroma:1-hd,
+// guidance 3 with DPM-Solver++ 2M 25 steps; tools/amd/iron_chroma.py, internal/imagegen/chroma).
+// A model whose license restricts its use (Qwen-Image-2.1's research license, Anima's
+// non-commercial one) is asked once, on a terminal, before its first run; --accept-license (or
+// HWNPU_ACCEPT_LICENSE=ID) accepts it without asking.
+//
 // depth estimates the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth
 // Anything 3 or MoGe-2 (see DepthCmd). face-detect (FaceDetectCmd) finds faces, pose (PoseCmd)
 // people's keypoints, detect (DetectCmd) objects and their labels, ocr (OCRCmd) lines of text;
@@ -63,7 +71,7 @@ import (
 )
 
 type cli struct {
-	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana)."`
+	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Qwen-Image-2.1)."`
 	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's and Apple's NPU)."`
 	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; the CPU, AMD's or Apple's NPU)."`
 	Pose       PoseCmd       `cmd:"" help:"Find the people in pictures and their 17 keypoints (RTMO; Apple's Neural Engine, Intel's NPU, the CPU)."`
@@ -73,6 +81,8 @@ type cli struct {
 	Embed      EmbedCmd      `cmd:"" help:"Embed pictures and texts in one space, for search and similarity (SigLIP 2; AMD's NPU)."`
 	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export, or a Sana repository into a Core ML export."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
+
+	AcceptLicense bool `name:"accept-license" help:"Accept the license of a model whose license restricts its use (Qwen-Image-2.1: research only) without being asked; kept, as an answer of yes is."`
 }
 
 func main() {
@@ -84,5 +94,6 @@ func main() {
 		kong.Description("Image models on an NPU: generation, depth, faces, poses, objects and text."),
 		kong.UsageOnError(),
 		kong.BindTo(ctx, (*context.Context)(nil)))
+	acceptLicenses = c.AcceptLicense
 	k.FatalIfErrorf(k.Run())
 }

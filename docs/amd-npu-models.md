@@ -1005,3 +1005,36 @@ ONNX Runtime は別に入れる共有ライブラリで、実行時の外部依�
 | Basic Pitch (5 秒の音) | 1.4 秒 | 1.18 秒 (全体) | 0.84 秒 (全体) |
 
 - RTMDet-m の行列積は 1.37 秒で、上限の 90 % 近い。残りの差は ONNX Runtime の演算の融合 (畳み込みと活性化) とメモリの配置。SwiftF0 は NPU 用の 30 秒の固定長のプログラムを 5 秒の音にも回すので 6 倍の無駄 (ONNX Runtime はその長さで回す)。長さごとのプログラムにすれば縮む
+
+## 20. Qwen-Image-2.1-Turbo (`hwnpu-image generate -m qwen-image`、2026-11-11)
+
+design.md 16.155。研究用のライセンス (初回に確かめる)。
+
+### 20.1 構成 (`tools/amd/iron_qwenimage.py`)
+
+| グラフ | 中身 | 呼ぶ回数 |
+|---|---|---|
+| text | Qwen3-VL-8B の 36 層 (q6、HIGHEST)、64 行ずつ `start` から、最後に DiT の txt_in | プロンプトの 64 トークンごと |
+| dit_in | img_in と時刻の埋め込みから共有の変調、norm_out の scale | 1 ステップ 1 回 (と t = 0 で 1 回) |
+| dit_text | 4 ブロック (q8) × 8 組、文の行を 256 行ずつ、因果、t = 0 の変調。各ブロックの K/V を出す。重みのバンクは dit_blocks の像を指す (同じ配置) | プロンプトごとに 8 組 |
+| dit_blocks | 4 ブロック × 8 組 (1 つのバンクに順に読む)、画像の行、キーは [画像、文 `nk`] | 1 ステップ 8 組 |
+| dit_out | norm_out と proj_out | 1 ステップ 1 回 |
+| vae/s0..s7 | 中央、4 つの上げ (DupUp3D の近道つき)、最後の段 3 つ | 1 枚 1 回 |
+
+### 20.2 測定 (Ryzen AI 9 365)
+
+| | 512² | 1024² |
+|---|---|---|
+| 1 ステップ | 3.4 秒 | 12.0 秒 |
+| 1 枚 (8 ステップ) | 37 秒 | 1 分 52 秒 |
+| CPU の float32 との潜在のコサイン | 0.9978、0.9995 | 0.9989 |
+| ピークのメモリ | | 6.8 GB (NPU 6.1 GB) |
+| 書き出し | 15 GB | 15 GB |
+
+### 20.3 手順
+
+```
+python tools/amd/iron_qwenimage.py ~/models/Qwen-Image-2.1-Turbo ~/models/qwen-image-2.1-turbo.amd-npu2 --size 1024
+hwnpu-image generate -m qwen-image "A red fox sitting in a snowy forest at dawn, soft light"
+~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/ref_qwenimage21.py ~/models/Qwen-Image-2.1-Turbo OUT --size 512   # 参照
+```

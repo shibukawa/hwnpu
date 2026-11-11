@@ -15,6 +15,15 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
+// acceptLicenses is --accept-license.
+var acceptLicenses bool
+
+// isTerminal reports whether f is a terminal (a character device).
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
 // expandHome is path with a leading ~ made the home directory.
 func expandHome(path string) string {
 	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~"+string(filepath.Separator)) {
@@ -40,6 +49,13 @@ func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	m, err := chat.ResolveFor(name, kind, os.Stderr)
 	if e := (*chat.NoModelError)(nil); errors.As(err, &e) {
 		err = fmt.Errorf("no %s model, family or use %q (hwnpu-image list shows them)", kind, name)
+	}
+	if err == nil {
+		// a license that restricts the use: accepted once, before the first download or run
+		err = chat.AcceptLicense(m, acceptLicenses, isTerminal(os.Stdin) && isTerminal(os.Stderr), os.Stdin, os.Stderr)
+		if err != nil {
+			return m, err
+		}
 	}
 	if err != nil {
 		// what there is, then the error (kong prints it last)

@@ -502,3 +502,10 @@ func bf16(x float32) uint16 {
 }
 
 func fromBF16(h uint16) float32 { return math.Float32frombits(uint32(h) << 16) }
+
+// DPM2M is one DPM-Solver++ 2M step (dpm2m) for the other image pipelines: x in place from sigma
+// s to t with the velocity v, d0 and d1 its data predictions kept between steps (nil at first),
+// hLast the last step's log-SNR step (returned).
+func DPM2M(x, v []float32, d0, d1 *[]float32, s, t, hLast float64) float64 {
+	return dpm2m(x, v, d0, d1, s, t, hLast)
+}
