@@ -81,7 +81,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <tr>
 <th>Image generation<br><sub>hwnpu-image</sub></th>
 <td>△ <b>Anima-Turbo</b> (4.1 GB)<br>with other applications closed</td>
-<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>, the same memory): 30 steps with guidance, about 6.5 times as long<br><b>Sana 600M</b> (2.3 GB on AMD, 3.3 GB on Apple): lighter, English prompts</td>
+<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>, the same memory): 25 steps with guidance, about 4.5 times as long<br><b>Sana 600M</b> (2.3 GB on AMD, 3.3 GB on Apple): lighter, English prompts</td>
 </tr>
 <tr>
 <th>Speech<br><sub>hwnpu-audio tts</sub></th>

@@ -81,7 +81,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <tr>
 <th>画像生成<br><sub>hwnpu-image</sub></th>
 <td>△ <b>Anima-Turbo</b> (4.1 GB)<br>ほかのアプリを閉じて</td>
-<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>、メモリは同じ) 30 ステップと CFG で約 6.5 倍の時間<br><b>Sana 600M</b> (AMD 2.3 GB、Apple 3.3 GB) 軽い。英語のプロンプト</td>
+<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>、メモリは同じ) 25 ステップと CFG で約 4.5 倍の時間<br><b>Sana 600M</b> (AMD 2.3 GB、Apple 3.3 GB) 軽い。英語のプロンプト</td>
 </tr>
 <tr>
 <th>読み上げ<br><sub>hwnpu-audio tts</sub></th>

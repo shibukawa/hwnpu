@@ -1,7 +1,7 @@
 // hwnpu-image runs image models on an NPU.
 //
 //	hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"   # image.png, shown
-//	hwnpu-image generate -m anima "masterpiece, best quality, 1girl, cherry blossoms" -o girl.png   # Anima-Aesthetic, 30 steps
+//	hwnpu-image generate -m anima "masterpiece, best quality, 1girl, cherry blossoms" -o girl.png   # Anima-Aesthetic, 25 DPM-Solver++ steps
 //	hwnpu-image generate -m sana "a red fox in a snowy forest" -o fox.png
 //	hwnpu-image depth photo.jpg                                  # photo.depth.png
 //	hwnpu-image depth -m moge --normal --raw photo.jpg

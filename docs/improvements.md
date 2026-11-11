@@ -610,7 +610,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 - The rest of AMD's pinned memory (amd-npu-models.md section 12):
   - Split the VAE into tiles (with the DiT in one bank (16.106), a VAE stage is now the largest)
 - The rest of Anima:
-  - CFG (negative prompts) done in 16.148 (Anima-Aesthetic and Anima-Base, 4 min 40 s an image at 1024² on AMD); not yet checked on Core ML and OpenVINO devices
+  - CFG (negative prompts) done in 16.148 (Anima-Aesthetic and Anima-Base, 3 min 19 s an image at 1024² on AMD with DPM-Solver++ 2M in 25 steps and the guidance at the noisier steps only, 16.149; 4 min 40 s with the model card's 30 Euler steps); not yet checked on Core ML and OpenVINO devices
   - Calls from ComfyUI nodes
 - The rest of Qwen3.6-35B-A3B's prompt (16.116; a chunk of 256 2.6 s): the experts' command (B, 1.49 s) is bound by the kernel's arithmetic (streaming the weights alone takes 8.4 + 4.4 ms of 19–23 + 15–17 ms a layer; a scalar MAC, no mmul. bf16 mmul in groups of 8 rows was tried and was not faster), the GDN and attention command (A, about 0.7 s; `GatedDeltaRule` receives every row 16 times), the host's routing (about 2.8 ms a layer, mostly a 16 MB copy of x)
 

@@ -286,7 +286,7 @@ python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-
 go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low quality"   # -m anima:base は Base
 ```
 
-- **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。既定はモデルカードのとおり 30 ステップ、CFG 4。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1
+- **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。CFG 4 (モデルカードの 4〜5)。ステップはモデルカードではオイラー法の 30〜50 だが、既定は DPM-Solver++ 2M の 25 ステップで、CFG は σ が 0.6 以上のステップだけ (16.149、下の結果)。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1
 - **重みの組ごとに 2 回**: DiT は 4 ブロックの組の重みを 1 つのバンクに読み直して回す (12 節) ので、組ごとに条件と無条件を続けて走らせ、読み直しを 1 ステップ 7 回のまま にする (Sana と同じ)。`dit_in` (時刻とパッチの埋め込み) は条件によらないので 1 回。2 回を別々に回したときより 512 × 512 で 1 ステップ 3.0 → 2.7 秒、潜在はビット単位で同じ
 - **空の負のプロンプト**: diffusers は空のプロンプトを、マスクした Qwen3 のトークン 1 つで走らせる (隠れ状態は 0、T5 のトークンは `</s>` だけ)。アダプタの交差注意はバイアスがないので 0 の源では何も足さず、1 行の自己注意はその行の値。残りは重みだけで決まる 1 行の計算なので、書き出しが `text/empty_cond.bin` (float32 の 1 行) に持つ (テキストのグラフは Qwen3 のトークンを全部マスクできない)。`iron_anima.py` の `empty_cond` と Go の `anima.EmptyCond` は diffusers の値とコサイン 1.0000。この節より前の書き出しにはないので、空の負のプロンプトでは書き出し直しを求める
 
@@ -295,10 +295,14 @@ go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low 
 | | 1 枚 | ノイズ除去 | 電力量 (パッケージ全体) | 固定の最大 |
 |---|---|---|---|---|
 | Anima-Turbo、1024²、8 ステップ | 44 秒 | 4.7 秒/ステップ | 715 J | 2409 MiB |
-| **Anima-Aesthetic、1024²、30 ステップ、CFG 4** | **4 分 40 秒** | 9.1 秒/ステップ | **4.8 kJ** | 2409 MiB |
-| Anima-Aesthetic、512²、30 ステップ、CFG 4 | 1 分 23 秒 | 2.7 秒/ステップ | | |
+| Anima-Aesthetic、1024²、オイラー法 30 ステップ、CFG 4 (モデルカード) | 4 分 40 秒 | 9.1 秒/ステップ | 4.8 kJ | 2409 MiB |
+| **Anima-Aesthetic、1024²、DPM-Solver++ 2M 25 ステップ、CFG は σ ≥ 0.6 の 17 ステップ (既定、16.149)** | **3 分 19 秒** | 7.6 秒/ステップ | **3.8 kJ** | 2409 MiB |
+| Anima-Aesthetic、512²、オイラー法 30 ステップ、CFG 4 | 1 分 23 秒 | 2.5〜2.7 秒/ステップ | | |
+| Anima-Aesthetic、512²、既定 | 約 1 分 | 2.2 秒/ステップ | | |
 
 diffusers の fp32 (CPU、13.5 分) と同じノイズから (512²、30 ステップ、CFG 4、空の負のプロンプト): 最後の潜在のコサイン **0.993**、画像の PSNR **27.4 dB**。Turbo の 1024² の 8 ステップ (0.947、17.6 dB、16.147) より近く、30 ステップと CFG で NPU の誤差 (bfp16 の QK^T、q8 の重み) が積み上がることはなかった。絵は構図、顔、背景まで同じ。Anima-Base (512²、`net.` の名前) も NPU で描けることを確かめた
+
+**解き方と CFG のステップ (16.149)**: DiT を回す回数を減らした。DPM-Solver++ 2M (データの予測 x − σ v の 2 次の多段法、DiT の呼び出しはオイラー法と同じ 1 ステップ 1 回) は 25 ステップで、オイラー法の 100 ステップ (真値の代わり) に 30 ステップのオイラー法より近い (潜在のコサイン 0.984 と 0.982、512² の 6 枚)。CFG は σ が 0.6 より小さいステップで外しても絵は変わらない (オイラー法 30 ステップと 0.998)。合わせて 1024² で 1 枚 4 分 40 秒 → 3 分 19 秒、4.8 → 3.8 kJ。`--sampler euler --steps 30 --cfg-sigmas 0,1` でモデルカードのとおりに戻る
 
 ## 12. メモリ: 固定されるバッファを減らす (2026-11-05)
 
