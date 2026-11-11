@@ -247,7 +247,19 @@ go run ./cmd/hwnpu-image detect --draw photo.jpg                     # JSON line
 go run ./cmd/hwnpu-image ocr --text scan.png                         # the lines of text
 ```
 
-どちらも Apple の Neural Engine (と Intel の NPU、実機では未確認) で、初回にモデルを取ってきて変換します (OCR の認識器は行の幅ごとのプログラムを、その幅を初めて使うときに変換し、それぞれ初回のコンパイルに 5〜20 秒)。AMD の NPU の書き出しはまだなく、`--cpu` で CPU のインタプリタ (遅い) で動きます。座標と物の種類が要るときは、汎用の視覚言語モデル (LFM3-VL、`hwnpu-chat --image`) より、こちらが速く (1 枚数十 ms と数秒)、全部の物を拾い、座標が正確です。
+どちらも Apple の Neural Engine (と Intel の NPU、実機では未確認) で、初回にモデルを取ってきて変換します (OCR の認識器は行の幅ごとのプログラムを、その幅を初めて使うときに変換し、それぞれ初回のコンパイルに 5〜20 秒)。AMD の NPU の形はまだなく、AMD の機械では CPU で動きます (`pose`、`hwnpu-audio pitch`、`notes` も同じ)。何も入れなくても hwnpu の CPU 実行器で動き (1 スレッドで RTMDet-m 1 枚 2.3 秒、3 行の OCR 4.5 秒)、ONNX Runtime の共有ライブラリがあればそちらを使います (`HWNPU_ONNXRUNTIME` にパス。1.4 秒と 1.8 秒)。`--threads` で増やせます (docs/amd-npu-models.md 19 節)。座標と物の種類が要るときは、汎用の視覚言語モデル (LFM3-VL、`hwnpu-chat --image`) より、こちらが速く (1 枚数十 ms と数秒)、全部の物を拾い、座標が正確です。
+
+### ラベル付けと画像の埋め込み (SigLIP 2)
+
+`go run ./cmd/hwnpu-image label` は、Google の SigLIP 2 (Apache-2.0) で写真にラベルを付けます。候補 (`-l "猫,犬,a red car"`、`--labels-file`、どの言語でも) を `this is a photo of {}.` に入れ、その文が写真を表す確率をラベルごとに出します (ゼロショット。合計は 1 になりません)。候補を省くと、組み込みの約 440 の物、場所、画像の種類から選びます。`hwnpu-image embed` は写真と文 (`-t`) を同じ空間の埋め込みにし、`--compare` でそのコサインと確率を出します (画像の検索や似た画像の検索に)。AMD の NPU で動き、マシンのメモリで Base (8 GB、224 × 224) か Large (16 GB 以上、256 × 256) を選びます。Ryzen AI 9 365 で 1 枚 84 ms (Base)、文 8 つで 131 ms、Transformers (float32) との埋め込みのコサインは 0.9998 以上です。ラベルの埋め込みはユーザーのキャッシュに置き、同じ一覧は 1 回だけ計算します。
+
+```bash
+python tools/amd/iron_siglip2.py ~/models/siglip2-base-patch16-224 ~/models/siglip2-base-patch16-224.amd-npu2   # hf:google/siglip2-base-patch16-224
+go run ./cmd/hwnpu-image label photo.jpg                     # JSON lines: the likeliest labels
+go run ./cmd/hwnpu-image embed --compare photo.jpg -t "a cat on a sofa"
+```
+
+手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 18 節にあります。
 
 ### 画像生成 (Sana、Sana-Sprint)
 

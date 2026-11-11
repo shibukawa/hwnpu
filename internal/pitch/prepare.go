@@ -37,14 +37,7 @@ type Setup struct {
 // It returns the model's and the program's paths.
 func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
-		return "", "", err
-	}
-	model = filepath.Join(s.Dir, ModelFile)
-	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, log); err != nil {
-		return "", "", err
-	}
-	if err := checkSHA(model); err != nil {
+	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
 	}
 	ext := ".mlpackage"
@@ -74,6 +67,19 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	return model, program, os.WriteFile(done, nil, 0o644)
 }
 
+// Fetch downloads model.onnx into s.Dir unless it is there, checks that it is swift-f0 0.3.0's
+// and returns its path: all the CPU (OpenCPU) needs.
+func Fetch(ctx context.Context, s Setup) (string, error) {
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return "", err
+	}
+	model := filepath.Join(s.Dir, ModelFile)
+	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+		return "", err
+	}
+	return model, checkSHA(model)
+}
+
 func checkSHA(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -94,6 +100,7 @@ func checkSHA(path string) error {
 type Detector struct {
 	*Model
 	prog runner.Program
+	cpu  *cpuRunner // OpenCPU's, in place of prog
 }
 
 // Open loads the model and its program on dev (nil: the CPU interpreter).
@@ -114,13 +121,21 @@ func Open(ctx context.Context, dev *hwnpu.Device, model, program string) (*Detec
 }
 
 // OnNPU reports whether the program runs all on the NPU.
-func (d *Detector) OnNPU() bool { return d.prog.OnNPU() }
+func (d *Detector) OnNPU() bool { return d.prog != nil && d.prog.OnNPU() }
 
 // Pitch estimates the pitch of 16 kHz samples (Model.Detect) with the program.
 func (d *Detector) Pitch(ctx context.Context, x []float32, fmin, fmax float64) (Result, error) {
+	if d.cpu != nil {
+		return d.Detect(x, fmin, fmax, d.cpu.run)
+	}
 	return d.Detect(x, fmin, fmax, func(in, mask []float32) ([]float32, error) {
 		return d.prog.Run(ctx, map[string][]float32{"x": in, "mask": mask})
 	})
 }
 
-func (d *Detector) Close() error { return d.prog.Close() }
+func (d *Detector) Close() error {
+	if d.cpu != nil {
+		return d.cpu.s.Close()
+	}
+	return d.prog.Close()
+}

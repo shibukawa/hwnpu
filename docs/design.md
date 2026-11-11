@@ -3873,3 +3873,10 @@ diffusers の fp32 (CPU) の参照と同じノイズから (DiT の重み q8 で
 - MOSS-SoundEffect とダウンロードを共有する: リポジトリが違うので `Model.DirName` では共有されない。そこで、定義が `sha256` で固定したファイルを SHA-256 ごとにまとめ (`pinned`)、`fetch` は落とす前に同じ SHA-256 のファイルをほかのモデルのディレクトリに探して、ハードリンク (できなければ写し) にし、SHA-256 を確かめる (`sameFile`)。違えば消して取得元から。Qwen3-1.7B はリビジョン (`70d244cc…`) と 2 つのファイルの SHA-256 を、MOSS-SoundEffect は `text_encoder/` の 2 つを書いた。M3 で、Qwen3-1.7B を落としたあと MOSS-SoundEffect の `text_encoder/` を `chat.Fetch` で取ると 2 つともリンク (同じ inode、ディスクは増えない、SHA-256 の確認込みで 2.2 s)。逆向き (MOSS-SoundEffect だけがある) も同じ。テスト (`TestSameFile`) は、リンクして HF に問わないこと、別の SHA-256 は落とすこと、変えられた写しは使わず残すことを確かめ、`sameFile` を外すと落ちる
 - 答え (温度 0、思考なし): 17 × 23 = 391 は正しい。Go の文字列の反転 (rune で) は正しい。道具の呼び出し (`serve`、get_weather) は `{"city":"Tokyo"}` を JSON で返す。富士山 (1,644 m)、『こころ』(森鷗外)、日本一長い川 (琵琶湖) は誤る。HF の fp32 (transformers、貪欲) でも 1,689 m、琵琶湖と同じように誤るので、モデルの限界
 - 確かめていないこと: 読み込みのときのプロセスの最大の内訳、8 GB の実機 (`HWNPU_MEMORY=8` の M3 で確かめただけ)、Intel の NPU、AMD の書き出し、hwnpu-chat agent の課題
+
+### 16.151 ラベル付けと画像の埋め込み (SigLIP 2) を AMD の NPU で、ONNX の 5 つのモデルを AMD の機械の CPU で — 2026-11-11
+
+- 動機: CLOUD_AI_COMPATIBILITY.md の画像の順の 1 番目。Cloud Vision の LABEL_DETECTION とマルチモーダルの埋め込みにあたる。`hwnpu-image label` (候補のゼロショット、既定は組み込みの約 440 ラベル)、`hwnpu-image embed` (`--compare`)。models.yaml の用途 `label` (8 GB は siglip2-base-patch16-224、16 GB 以上は siglip2-large-patch16-256)
+- 形と精度は docs/amd-npu-models.md 18 節。文の塔はトークンが先の行で、8 つの文の注意を 1 回の MHA (8 × heads 個の頭) に。IRON の tanh の GELU は表で引くので bf16 の丸めの 5 倍ずれ (IRON の参照もまねるので照合では見えない)、exact の GELU に替えた。行列積を HIGHEST にして、画像の埋め込みのコサインが 0.9988 → 0.9998 (HF の bf16 と同じ程度)、時間は 9〜22 % 増
+- 同時に、`internal/onnx` で Core ML と OpenVINO に変換する 5 つ (RTMO、RTMDet、PP-OCRv6、SwiftF0、Basic Pitch) を、AMD の機械 (と NPU のない機械) では ONNX Runtime で CPU で動かす (`onnxrt.Cut`、`onnxrt.Program`、`chat.ConvertedDevice`)。今までは `--cpu` の CPU インタプリタだけで、RTMDet-m が 1 枚 8.5 秒だった (1.4 秒に)。docs/amd-npu-models.md 19 節
+- 実行時の外部依存をなくすため、ONNX Runtime がなければ hwnpu の CPU 実行器 (milcpu) で動かす。milcpu に行列積 (`internal/sgemm`、AVX2 / AVX-512 のカーネル、im2col を詰めながら) と SIMD の exp、sigmoid、SiLU、erf (`internal/f32`) を入れ、RTMDet-m を 1 スレッド 2.25 秒に (前は 12 コアで 7.1 秒、ONNX Runtime 1.37 秒)。19.1 節

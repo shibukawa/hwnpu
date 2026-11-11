@@ -8,7 +8,8 @@
 #                 largest machine up to this machine's memory
 #   kind          chat, embedding (hwnpu-chat: chat, agent, search, serve), transcribe (hwnpu-audio transcribe),
 #                 speech (hwnpu-audio tts), decision (hwnpu-chat systemone), image, depth, face-detect (hwnpu-image),
-#                 pitch (hwnpu-audio pitch), pose (hwnpu-image pose), notes (hwnpu-audio notes), music, sfx (hwnpu-audio generate)
+#                 pitch (hwnpu-audio pitch), pose (hwnpu-image pose), notes (hwnpu-audio notes), music, sfx (hwnpu-audio generate),
+#                 label (hwnpu-image label, embed)
 #   device        where it runs by the NPU's vendor (amd, apple, intel): npu (the default) or cpu;
 #                 a command's --device and HWNPU_DEVICE override it
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
@@ -495,6 +496,26 @@ models:
     memory: 0.03
     bytes: 0.23e6
     about: "YuNet (OpenCV Zoo, MIT): faces' boxes and five landmarks (eyes, nose, mouth corners)"
+  # hwnpu-image label and embed: on AMD's NPU the export ~/models/NAME.amd-npu2 of
+  # tools/amd/iron_siglip2.py (--precision HIGHEST); Apple's and Intel's NPU have no form yet
+  siglip2-base-patch16-224:
+    family: siglip2
+    tag: base
+    kind: label
+    from: hf:google/siglip2-base-patch16-224
+    machine: 8
+    memory: 0.8
+    bytes: 1.54e9
+    about: "SigLIP 2 Base (Google, Apache-2.0): zero-shot labels in any language and embeddings of pictures (224 x 224) and texts in one space"
+  siglip2-large-patch16-256:
+    family: siglip2
+    tag: large
+    kind: label
+    from: hf:google/siglip2-large-patch16-256
+    machine: 16
+    memory: 1.7
+    bytes: 3.57e9
+    about: "SigLIP 2 Large: the same at 256 x 256, closer labels and embeddings, about 3 times the work"
 
 categories:
   chat:
@@ -575,6 +596,12 @@ categories:
     about: the text in an image, its lines and boxes (hwnpu-image ocr)
     picks:
       - {machine: 8, model: PP-OCRv6-small}
+  label:
+    aliases: [labels, classify, zero-shot, image-embedding]
+    about: labels of an image from any candidates, embeddings of images and texts (hwnpu-image label, embed)
+    picks:
+      - {machine: 8, model: siglip2-base-patch16-224}
+      - {machine: 16, model: siglip2-large-patch16-256}
   notes:
     aliases: [midi]
     about: the notes of music, as MIDI (hwnpu-audio notes)

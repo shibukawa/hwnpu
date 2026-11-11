@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/vision/ocr"
@@ -17,9 +18,10 @@ import (
 
 // OCRCmd is "hwnpu-image ocr": the text in pictures with PaddleOCR's PP-OCRv6 (Apache-2.0;
 // internal/vision/ocr), a text detector and a recognizer of 50 languages (Japanese, Chinese,
-// English, ...), on Apple's Neural Engine or Intel's NPU (--cpu: the CPU interpreter). The models
-// are downloaded the first time, and each size of their programs converted the first time a
-// picture takes it.
+// English, ...), on Apple's Neural Engine or Intel's NPU, and elsewhere (AMD's NPU has no form of
+// them yet) or with --device cpu on the CPU with ONNX Runtime (--cpu: the converted programs on
+// the CPU interpreter). The models are downloaded the first time, and for an NPU each size of
+// their programs converted the first time a picture takes it.
 //
 // For each picture it prints one line of JSON: each line of text's box (four corners clockwise
 // from the top left, in the picture's pixels), text and score, in reading order. --text prints
@@ -35,7 +37,9 @@ type OCRCmd struct {
 	Repeat   int      `default:"1" help:"Run each picture this many times and report the mean time."`
 	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache    string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
-	CPU      bool     `name:"cpu" help:"Run the programs on the CPU interpreter instead of the NPU."`
+	CPU      bool     `name:"cpu" help:"Run the converted programs on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
+	Device   string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads  int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
 }
 
 // Run reads the text of each picture.
@@ -50,12 +54,19 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 	if det == "" {
 		return fmt.Errorf("%s: models.yaml gives no detector (with: {detector: hf:OWNER/NAME})", m.Name)
 	}
-	dev, backend, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, "PP-OCR")
-	if err != nil {
-		return err
+	cpu, builtin := cpuRoute(ctx, m, c.Device, c.CPU, c.Threads, logf)
+	c.CPU = c.CPU || builtin
+	var dev *hwnpu.Device
+	backend := ""
+	if !cpu {
+		d, b, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, "PP-OCR")
+		if err != nil {
+			return err
+		}
+		defer closeDev()
+		defer npuHeld(logf)()
+		dev, backend = d, b
 	}
-	defer closeDev()
-	defer npuHeld(logf)()
 	dir := c.Dir
 	if dir == "" {
 		dir = chat.ModelsDir()
@@ -68,7 +79,7 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 			recSHA[f] = d
 		}
 	}
-	r, err := ocr.Open(ctx, dev, ocr.Setup{Dir: dir, Det: ocr.Source{Repo: det, SHA256: detSHA}, Rec: ocr.Source{Repo: m.Source(), SHA256: recSHA}, Backend: backend, Log: lw})
+	r, err := ocr.Open(ctx, dev, ocr.Setup{Dir: dir, Det: ocr.Source{Repo: det, SHA256: detSHA}, Rec: ocr.Source{Repo: m.Source(), SHA256: recSHA}, Backend: backend, CPU: cpu, Threads: c.Threads, Log: lw})
 	if err != nil {
 		return err
 	}

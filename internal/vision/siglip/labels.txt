@@ -1,0 +1,457 @@
+# hwnpu-image label's labels when none are given: common things, places and kinds of picture,
+# one a line (the lines with # are left out). Written for hwnpu; --labels-file replaces them.
+# people
+person
+man
+woman
+child
+baby
+crowd
+face
+selfie
+portrait
+group photo
+smile
+hand
+# animals
+animal
+cat
+kitten
+dog
+puppy
+bird
+parrot
+owl
+eagle
+duck
+chicken
+penguin
+horse
+cow
+pig
+sheep
+goat
+rabbit
+hamster
+mouse
+squirrel
+fox
+wolf
+bear
+panda
+lion
+tiger
+leopard
+elephant
+giraffe
+zebra
+monkey
+deer
+camel
+kangaroo
+koala
+fish
+goldfish
+shark
+whale
+dolphin
+octopus
+crab
+turtle
+frog
+snake
+lizard
+insect
+butterfly
+bee
+spider
+ant
+ladybug
+dragonfly
+# plants and nature
+plant
+tree
+flower
+rose
+sunflower
+tulip
+cherry blossom
+grass
+leaf
+mushroom
+cactus
+forest
+jungle
+mountain
+hill
+volcano
+valley
+canyon
+desert
+beach
+ocean
+sea
+wave
+lake
+river
+waterfall
+pond
+island
+cave
+glacier
+snow
+ice
+rain
+cloud
+sky
+sunset
+sunrise
+night sky
+moon
+star
+rainbow
+lightning
+fog
+field
+farm
+garden
+park
+# places and buildings
+city
+street
+road
+highway
+bridge
+tunnel
+building
+skyscraper
+house
+apartment
+castle
+temple
+shrine
+church
+mosque
+tower
+lighthouse
+ruins
+monument
+statue
+fountain
+stadium
+airport
+train station
+harbor
+parking lot
+playground
+shop
+supermarket
+market
+restaurant
+cafe
+bar
+kitchen
+living room
+bedroom
+bathroom
+office
+classroom
+library
+hospital
+factory
+warehouse
+museum
+theater
+gym
+swimming pool
+hotel room
+stairs
+hallway
+window
+door
+roof
+wall
+fence
+# vehicles
+vehicle
+car
+taxi
+bus
+truck
+van
+motorcycle
+bicycle
+scooter
+train
+subway
+tram
+airplane
+helicopter
+boat
+ship
+sailboat
+canoe
+rocket
+tractor
+fire truck
+ambulance
+police car
+# food and drink
+food
+meal
+breakfast
+bread
+sandwich
+hamburger
+pizza
+pasta
+noodles
+ramen
+sushi
+rice
+curry
+soup
+salad
+steak
+fried chicken
+egg
+cheese
+fruit
+apple
+banana
+orange
+strawberry
+grapes
+watermelon
+lemon
+vegetable
+tomato
+carrot
+broccoli
+potato
+corn
+cake
+cookie
+chocolate
+ice cream
+donut
+candy
+coffee
+tea
+juice
+beer
+wine
+cocktail
+water bottle
+# things at home and at work
+furniture
+chair
+sofa
+table
+desk
+bed
+shelf
+bookshelf
+cabinet
+lamp
+clock
+mirror
+carpet
+curtain
+pillow
+blanket
+towel
+plate
+bowl
+cup
+mug
+glass
+bottle
+knife
+fork
+spoon
+chopsticks
+pot
+pan
+refrigerator
+microwave
+oven
+toaster
+washing machine
+vacuum cleaner
+sink
+toilet
+bathtub
+television
+remote control
+computer
+laptop
+keyboard
+computer mouse
+monitor
+smartphone
+tablet
+camera
+headphones
+speaker
+microphone
+printer
+cable
+battery
+light bulb
+fan
+air conditioner
+book
+notebook
+pen
+pencil
+scissors
+paper
+envelope
+box
+bag
+backpack
+suitcase
+handbag
+wallet
+key
+umbrella
+toy
+teddy bear
+doll
+balloon
+gift
+candle
+vase
+painting
+poster
+flag
+sign
+traffic light
+stop sign
+street lamp
+bench
+trash can
+tool
+hammer
+screwdriver
+ladder
+rope
+# clothing
+clothing
+shirt
+t-shirt
+dress
+skirt
+jacket
+coat
+sweater
+suit
+uniform
+jeans
+shorts
+shoes
+sneakers
+boots
+sandals
+hat
+cap
+helmet
+glasses
+sunglasses
+mask
+scarf
+tie
+gloves
+watch
+jewelry
+necklace
+ring
+kimono
+# sports and activities
+sport
+soccer
+baseball
+basketball
+tennis
+golf
+volleyball
+american football
+skiing
+snowboarding
+surfing
+skateboarding
+swimming
+running
+cycling
+hiking
+camping
+fishing
+climbing
+yoga
+dancing
+boxing
+martial arts
+concert
+party
+wedding
+festival
+fireworks
+parade
+meeting
+cooking
+reading
+writing
+studying
+shopping
+traveling
+playing music
+playing video games
+sleeping
+eating
+# music
+musical instrument
+guitar
+piano
+violin
+drum
+trumpet
+# kinds of picture
+photograph
+drawing
+sketch
+painting on canvas
+watercolor
+oil painting
+anime
+manga
+cartoon
+illustration
+comic
+3d render
+pixel art
+logo
+icon
+diagram
+chart
+graph
+map
+text
+document
+screenshot
+handwriting
+receipt
+menu
+calendar
+table of data
+code
+meme
+black and white photo
+close-up
+aerial view
+underwater photo
+night photo
+blurry photo
+x-ray
+microscope image
+satellite image

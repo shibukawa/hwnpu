@@ -447,6 +447,7 @@ var kinds = map[Kind]string{
 	KindPose:       "hwnpu-image pose",
 	KindDetect:     "hwnpu-image detect",
 	KindOCR:        "hwnpu-image ocr",
+	KindLabel:      "hwnpu-image label, embed",
 	KindNotes:      "hwnpu-audio notes",
 	KindMusic:      "hwnpu-audio generate",
 	KindSFX:        "hwnpu-audio generate -m sfx",
