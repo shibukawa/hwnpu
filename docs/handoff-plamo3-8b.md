@@ -1,4 +1,4 @@
-# 引き継ぎ: PLaMo 3 Translate 8B を M2〜M4 と AMD の NPU で確かめる
+# 引き継ぎ: PLaMo 3 Translate 8B を M2〜M4、AMD、Intel の NPU で確かめる
 
 作成: 2026-11-11。M1 (16 GB) で入れた PLaMo 3 Translate 8B (`plamo-3-translate-8b`、[design.md](design.md) の 16.155) の、M1 では測れなかったことの確認。
 
@@ -82,6 +82,18 @@ go run ./cmd/hwnpu-chat -m plamo3translate:8b "The meeting has been rescheduled 
 - **訳**: 2.2 の 20 文を q4 で。2B の q4 は bf16 と 36/44 が同じだった (16.76)
 - GPTQ (`q4_gptq.py plamo3`) は fp32 で約 34 GB。丸めで訳が保たれるなら要らない
 
-## 4. 記録
+## 4. Intel (Meteor Lake、Core Ultra 5 135U) — 1 時間ほど
+
+既定の int8 (7.6 GiB) は、Anima で `OUT_OF_HOST_MEMORY` になった約 4.6 GB (16.143) を超えるので載らない見込み。Intel では hwnpu-chat がプロンプト用と生成用の 2 本を持つので、さらに倍になる。4 ビットなら 1 本で約 3.8 GiB に収まるので、こちらを試す:
+
+```sh
+hwnpu-chat -m plamo3translate:8b --format int4 --prefill off --temp 0 "The meeting has been rescheduled to next Monday."
+```
+
+- 行ごとの int4 は Meteor Lake で int8 より速い (LFM3-1.7B で 37.9 ms と 68.5 ms、16.143 の hwnpu-formats)。グループごとの int4-g128 は int8 より遅いので使わない
+- 2B の int4 は KL 0.72 で使えなかった (16.71) が、8B は lut4 でも訳を保った (16.155)。2.2 の 20 文で、Mac の lut8 の訳と比べる。崩れなければ `plamo3.Arch.IntelFormat` を大きさで分け (8B は int4)、Intel では 1 本にする
+- 記録: 読み込みの成否と時間 (Windows の TDR の 2 秒に触れないか)、tok/s、NPU のメモリ。NPU のメモリが尽きるとエラーでなくプロセスが 0xc0000005 で落ちることがある (16.144)
+
+## 5. 記録
 
 - 結果は design.md の 16.155 に足す。速さとメモリは MODEL.md / MODEL.ja.md の表、models.yaml の `memory`、improvements.md / improvements.ja.md のモデルの表
