@@ -31,6 +31,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
+STREAM = False  # --stream: one layer's weights in memory at a time (stream_weights.py)
+STATS = []  # (layer, largest output magnitude) of the streamed layers, with --stream
+
 SYS_PROMPT = "Comprehend and analyze the provided prompt."
 TEMPLATE = (f"<|im_start|>system\n{SYS_PROMPT}<|im_end|>\n"
             "<|im_start|>user\n{}<|im_end|>\n"
@@ -53,7 +56,15 @@ def encode(root: Path, prompts: list, dtype):
 
     proc = AutoTokenizer.from_pretrained(root / "processor")
     drop = drop_count(proc)
-    te = Qwen3VLForConditionalGeneration.from_pretrained(root / "text_encoder", dtype=dtype).eval()
+    if STREAM:
+        from transformers import AutoConfig
+        from stream_weights import streamed
+
+        cfg = AutoConfig.from_pretrained(root / "text_encoder")
+        te = streamed(lambda: Qwen3VLForConditionalGeneration(cfg), root / "text_encoder",
+                      ["model.language_model.layers"], dtype, skip=("model.visual.", "lm_head."), stats=STATS)
+    else:
+        te = Qwen3VLForConditionalGeneration.from_pretrained(root / "text_encoder", dtype=dtype).eval()
     lm = te.model.language_model
     handle = lm.norm.register_forward_hook(lambda m, args, out: args[0])  # before the final norm
     res = []
@@ -61,8 +72,14 @@ def encode(root: Path, prompts: list, dtype):
         for p in prompts:
             p = p or " "  # Qwen has no bos: an empty prompt is a space
             t = proc(text=[TEMPLATE.format(p)], return_tensors="pt")
-            out = te(input_ids=t.input_ids, attention_mask=t.attention_mask, output_hidden_states=True)
-            h = out.hidden_states[-1][0].float()
+            # the language model alone: a text-only prompt's positions are the same on every
+            # M-RoPE axis, as Qwen3VLModel.get_rope_index gives them; the hook keeps the input of the
+            # final norm
+            kept = []
+            h2 = lm.norm.register_forward_hook(lambda m, args, out: kept.append(args[0]))
+            lm(input_ids=t.input_ids, attention_mask=t.attention_mask)
+            h2.remove()
+            h = kept[0][0].float()
             res.append((t.input_ids[0].numpy().astype(np.int32), h[drop:].numpy()))
     finally:
         handle.remove()
@@ -109,7 +126,13 @@ def main() -> int:
     ap.add_argument("--blocks", action="store_true", help="keep each block's output of the first step and the prefix K/V")
     ap.add_argument("--stop", type=int, default=0, help="run only this many steps, then decode")
     ap.add_argument("--text-only", action="store_true", help="only the text rows (OUT.npz), for --embeds later")
+    ap.add_argument("--stream", action="store_true", help="read each layer's weights just before it runs (a 16 GB machine)")
     a = ap.parse_args()
+    global STREAM
+    STREAM = a.stream
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from diffusers import AutoencoderKLQwenImage21, QwenImage21Transformer2DModel
     from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
 
@@ -133,12 +156,23 @@ def main() -> int:
             rec["neg_ids"], rec["neg_text"] = enc[1]
         rec["drop"] = np.int32(drop)
     print(f"text: {len(rec['ids'])} tokens, {len(rec['text'])} rows kept", flush=True)
+    if STATS:
+        rec["text_max"] = np.array([v for _, v in STATS], np.float32)
+        print("text layers' largest output:", " ".join(f"{v:.0f}" for _, v in STATS), flush=True)
+        STATS.clear()
     if a.text_only:
         a.out.parent.mkdir(parents=True, exist_ok=True)
         np.savez(a.out.with_suffix(".npz"), **rec)
         return 0
 
-    tr = QwenImage21Transformer2DModel.from_pretrained(a.root / "transformer", torch_dtype=dtype).eval()
+    if STREAM:
+        from stream_weights import streamed
+
+        tcfg = QwenImage21Transformer2DModel.load_config(a.root / "transformer")
+        tr = streamed(lambda: QwenImage21Transformer2DModel.from_config(tcfg), a.root / "transformer",
+                      ["transformer_blocks"], dtype, stats=STATS)
+    else:
+        tr = QwenImage21Transformer2DModel.from_pretrained(a.root / "transformer", torch_dtype=dtype).eval()
     g = torch.Generator().manual_seed(a.seed)
     noise = torch.from_numpy(np.load(a.noise)).float() if a.noise else torch.randn((64, gh, gw), generator=g)
     rec["noise"] = noise.numpy()
@@ -182,6 +216,10 @@ def main() -> int:
         vs.append(v[0].numpy())
         x = sched.step(v.to(dtype), t, x, return_dict=False)[0]
         print(f"step {i}: sigma {float(sched.sigmas[i]):.4f}", flush=True)
+        if STATS:
+            print("  blocks' largest output:", " ".join(f"{v:.0f}" for _, v in STATS), flush=True)
+            rec.setdefault("block_max", []).append([v for _, v in STATS])
+            STATS.clear()
     rec["dit_in"], rec["dit_out"] = np.stack(ins), np.stack(vs)
     lat = x[0].float().T.reshape(64, gh, gw)
     rec["latents"] = lat.numpy()

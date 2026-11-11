@@ -2,7 +2,7 @@
 
 [日本語](new-model-checklist.ja.md)
 
-Written 2026-11-07, updated 2026-11-10 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B, Whisper large-v3-turbo, Qwen3.6-35B-A3B and checking drafts on AMD added, and section 11 from preparing the image models through models.yaml), 2026-11-11 (7.1 on image generation's speed and the RTMDet and PP-OCRv6 findings: the ANE's sigmoid drift, axes past 16384, and checking OCR; then the image models checked against this page: 7.2's table, what Sana found on the ANE and on IRON that was missing here, and Sana's CFG steps, the Mac's CFG order and the 8-bit DiT). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
+Written 2026-11-07, updated 2026-11-12 (Qwen-Image-2.1-Turbo on the Mac: per-row int8 overflowing at an attention sink, loading programs past the compile cache, the image models' table), 2026-11-10 (what PLaMo 3 Translate 0.8B, Qwen3.5-0.8B / 2B, Whisper large-v3-turbo, Qwen3.6-35B-A3B and checking drafts on AMD added, and section 11 from preparing the image models through models.yaml), 2026-11-11 (7.1 on image generation's speed and the RTMDet and PP-OCRv6 findings: the ANE's sigmoid drift, axes past 16384, and checking OCR; then the image models checked against this page: 7.2's table, what Sana found on the ANE and on IRON that was missing here, and Sana's CFG steps, the Mac's CFG order and the 8-bit DiT). While bringing in LFM3 (VL / Audio / Omni, d1), Gemma 4 E2B / E4B, Qwen3.5-4B, PLaMo 3 Translate, PLaMo-Embedding and Anima, some problems were found only late, and some methods paid off. This page lists them **in the order to check them first**. Checking in this order from the start gives a form with little memory and good speed, without redoing the work.
 
 ## Policy: power over speed
 
@@ -111,6 +111,7 @@ What helped:
 - A computation of one row that every later layer takes (a diffusion model's timestep embedding, sinusoid → 2 linears → the modulations) drifted up to 1 % on the ANE and took one DiT pass's cosine from 0.9998 to 0.983. It is a few ms of work: compute it on the host in float32 (`time.safetensors`, Sana, 16.145)
 - Sums of linear attention (VᵀK, the numerator and the denominator) pass fp16's range though the residuals do not (Sana's DiT 1.6e5, its VAE's EfficientViT 4.5e7). Divide each head's query rows by their maximum (N / D is unchanged), scale the keys down before the sums (1/64, 1/256) and floor the denominator (16.145)
 - One row of a linear's output near fp16's limit (SANA 1.5's caption at the `<bos>` row: 38 000) became NaN on the ANE only, and the unconditional pass of CFG with it. When a norm follows, scale the linear's weight and bias by 1/64 (the norm does not depend on the scale). The CPU interpreter in fp16 did not show it: find such parts by moving one part at a time to the CPU (16.145)
+- **Per-row int8 weights overflow on a large output**: the Neural Engine takes the product of the int8 codes and applies the row's scale after it, so an output of 13000 (Qwen3-VL-8B's layer 6 down_proj at the attention sink's row, 3300 after a residual scale) passed fp16 on the way and came out NaN, while the same program on Core ML's CPU was right. A table format (lut8) turns its weights back into fp16 before the product and is right. Bisect such a part layer by layer against the CPU interpreter, counting non-finite values (`TestTextLayersBisect` in `internal/imagegen/qwenimage`, 16.161)
 
 ### 3.4 Pass
 
@@ -293,6 +294,7 @@ Done (bring them in from the start):
 | The distilled model as the default | Anima-Turbo (8 steps, no CFG) is 44 s against Aesthetic's 3 min 19 s; the use `image` picks it | 16.148 |
 | **A second-order multistep solver** (DPM-Solver++ 2M on the data prediction, `--sampler dpm2m`) | The same DiT call a step as Euler. 25 steps land nearer 100 Euler steps than 30 Euler steps (latent cosine 0.984 against 0.982, 6 pictures); 15 break details. Judge against many Euler steps, not only the model card's count | 16.154 |
 | **CFG at the noisier steps only** (`--cfg-sigmas 0.6,1`) | The steps under sigma 0.6 run the DiT once: the same pictures (0.998 against every step guided). Dropping it at the noisiest steps instead (as the paper also does) changed compositions and faded colours. With the solver: Anima-Aesthetic at 1024² 4 min 40 s → 3 min 19 s, 4.8 → 3.8 kJ (energy falls less than time: the mean power rose) | 16.154 |
+| **Every prompt at once on Core ML** (the text for all, the steps of all with the DiT held, each VAE stage over all the pictures) | When a model's programs are past the Neural Engine's compile cache (Qwen-Image-2.1: 17 GB against about 4 GiB), every run loads them again, 7 to 30 s each, which is most of a picture's time. Batching the prompts pays that once: 2 pictures in 5 m 02 s against 8 m 52 s one at a time. Loading the next program while one runs, or several at once, did not help (the compiles are mostly one at a time) and raised the footprint | 16.161 |
 | **The prompt's keys and values once a prompt** (a DiT whose text rows do not depend on the step) | Qwen-Image-2.1 modulates the text at t = 0 (`causal_condition`): its rows run through the blocks once a prompt (dit_text) and the steps run the image's rows only, attending to [own keys, the text's, cut by a per-call key count with the image first]. Check the model for such a flag before porting | 16.155 |
 
 Not tried yet (estimates; measure them before adopting):
@@ -310,25 +312,25 @@ Without effect (do not do): the conditional and unconditional passes batched int
 
 The items above and in sections 3–5 and 9, for each image model in models.yaml. ✓ done, ✗ not yet, — does not apply. Bring a new image model to the same row, and update this table when an item lands.
 
-| Item | Sana-600M | SANA1.5-1.6B | Anima-Turbo | Anima (Aesthetic, Base) |
-|---|---|---|---|---|
-| CFG's passes per weight group, AMD (`ironEngine.velocity`) | ✓ | ✓ | — (no CFG) | ✓ |
-| CFG's passes per weight group, Core ML / OpenVINO (`progEngine.velocity`) | ✓ (16.160) | ✓ (64 → 38 s of denoising, the same bits) | — | ✓ |
-| The empty negative without running the text encoder | ✓ (the caption's first row) | ✓ | — | ✓ (`empty_cond.bin`) |
-| A second-order solver | ✓ (the repository's DPM-Solver++ 2M, 20 steps; fewer steps not measured against many) | ✓ (the same) | — (Euler, 8 distilled steps) | ✓ (25 steps) |
-| CFG at the noisier steps only (`--cfg-sigmas`) | ✓ (σ ≥ 0.6, 14 of 20 steps; not checked on AMD) | ✓ (the same) | — | ✓ |
-| A fixed text prefix held in the export (AMD) | ✓ (`iron_sana.Prefix`) | ✓ | — (no instruction) | — |
-| The empty negative read in the same text call (`EncodeBoth`) | ✓ | ✓ | — | — |
-| Image attention in 64-key blocks, QK^T in bfp16 (AMD) | — (self-attention is linear); the cross-attention (IRON's MHA) not tried | — / not tried | ✓ | ✓ |
-| VAE on the grid (`GridGEMM`, phase upsampling, AMD) | ✓ | ✓ | ✓ | ✓ |
-| Same-shaped VAE stages in one graph (AMD) | ✓ | ✓ | ✗ | ✗ |
-| The cross-attention's keys and values out of the step loop | ✗ | ✗ | ✗ | ✗ |
-| Fewer bytes of DiT weights, AMD | ✗ (bf16; q8 not tried) | ✗ (bf16, the heaviest DiT) | ✓ (q8; GPTQ q4 measured, not adopted) | ✓ (q8) |
-| Fewer bytes of DiT weights, Mac | ✓ (int8, 16.160) | ✓ (lut8; its per-row int8 breaks the pictures) | ✓ (int8) | ✓ (int8) |
-| The memory the Neural Engine holds (`mem.NPUWired`) on the M1 (3.4) | ✓ (1.14 GiB at fp16, 0.60 at int8) | ✓ (2.98 GiB at fp16, 1.56 at lut8) | ✓ (2.62 GiB) | ✓ (2.62 GiB) |
-| Energy per image (J) | ✗ (the Mac's powerbench needs sudo) | ✗ | ✓ (AMD 688 J) | ✓ (AMD 3.8 kJ at 1024²) |
-| 3 prompts × 2 seeds against diffusers' fp32 (9), Mac | ✓ | ✗ (one picture: 0.984; the 16.160 changes were judged on 6 pictures against the Neural Engine's fp16) | ✓ | ✗ (not against diffusers; on the M1 4 min 30 s an image, the Neural Engine 2.62 GiB, the default against 30 Euler steps the same in 2 of 4, 16.160) |
-| Intel's NPU | ✗ (no form) | ✗ | ✗ (exports made; the hardware's run after the reload fix not checked) | ✗ (likewise) |
+| Item | Sana-600M | SANA1.5-1.6B | Anima-Turbo | Anima (Aesthetic, Base) | Qwen-Image-2.1-Turbo |
+|---|---|---|---|---|---|
+| CFG's passes per weight group, AMD (`ironEngine.velocity`) | ✓ | ✓ | — (no CFG) | ✓ | — (no CFG) |
+| CFG's passes per weight group, Core ML / OpenVINO (`progEngine.velocity`) | ✓ (16.160) | ✓ (64 → 38 s of denoising, the same bits) | — | ✓ | — |
+| The empty negative without running the text encoder | ✓ (the caption's first row) | ✓ | — | ✓ (`empty_cond.bin`) | — |
+| A second-order solver | ✓ (the repository's DPM-Solver++ 2M, 20 steps; fewer steps not measured against many) | ✓ (the same) | — (Euler, 8 distilled steps) | ✓ (25 steps) | — (Euler, 8 distilled steps) |
+| CFG at the noisier steps only (`--cfg-sigmas`) | ✓ (σ ≥ 0.6, 14 of 20 steps; not checked on AMD) | ✓ (the same) | — | ✓ | — |
+| A fixed text prefix held in the export (AMD) | ✓ (`iron_sana.Prefix`) | ✓ | — (no instruction) | — | — (the system message is shorter than a chunk, 16.155) |
+| The empty negative read in the same text call (`EncodeBoth`) | ✓ | ✓ | — | — | — |
+| Image attention in 64-key blocks, QK^T in bfp16 (AMD) | — (self-attention is linear); the cross-attention (IRON's MHA) not tried | — / not tried | ✓ | ✓ | ✓ |
+| VAE on the grid (`GridGEMM`, phase upsampling, AMD) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Same-shaped VAE stages in one graph (AMD) | ✓ | ✓ | ✗ | ✗ | ✓ (the last block's stages, 16.157) |
+| The cross-attention's keys and values out of the step loop | ✗ | ✗ | ✗ | ✗ | ✓ (the text's keys and values once a prompt, AMD and Mac, 16.155, 16.161) |
+| Fewer bytes of DiT weights, AMD | ✗ (bf16; q8 not tried) | ✗ (bf16, the heaviest DiT) | ✓ (q8; GPTQ q4 measured, not adopted) | ✓ (q8) | ✓ (q8) |
+| Fewer bytes of DiT weights, Mac | ✓ (int8, 16.160) | ✓ (lut8; its per-row int8 breaks the pictures) | ✓ (int8) | ✓ (int8) | ✓ (the image blocks lut4, the text pass and the text encoder lut8; per-row int8 gave NaN in the text encoder, 16.161) |
+| The memory the Neural Engine holds (`mem.NPUWired`) on the M1 (3.4) | ✓ (1.14 GiB at fp16, 0.60 at int8) | ✓ (2.98 GiB at fp16, 1.56 at lut8) | ✓ (2.62 GiB) | ✓ (2.62 GiB) | ✗ (not measured on the M1; on the M3 the footprint is 4.5 GB at 512², 6.0 GB at 1024²) |
+| Energy per image (J) | ✗ (the Mac's powerbench needs sudo) | ✗ | ✓ (AMD 688 J) | ✓ (AMD 3.8 kJ at 1024²) | ✗ |
+| 3 prompts × 2 seeds against diffusers' fp32 (9), Mac | ✓ | ✗ (one picture: 0.984; the 16.160 changes were judged on 6 pictures against the Neural Engine's fp16) | ✓ | ✗ (not against diffusers; on the M1 4 min 30 s an image, the Neural Engine 2.62 GiB, the default against 30 Euler steps the same in 2 of 4, 16.160) | ✓ (512², latents 0.935–0.981, the same compositions and the sign's lettering, 16.161) |
+| Intel's NPU | ✗ (no form) | ✗ | ✗ (exports made; the hardware's run after the reload fix not checked) | ✗ (likewise) | ✗ |
 
 The AMD cells are being done in separate work (q8 for Sana's DiT, the cross-attention's keys and values, Anima's VAE stages, Sana's CFG steps there); update them when it lands. Energy on the Mac and Intel remain.
 
