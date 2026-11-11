@@ -102,7 +102,7 @@ def main() -> int:
     ap.add_argument("--noise", type=Path, help="the initial latents (16, H/8, W/8) as float32 .npy, in place of the seed's")
     ap.add_argument("--stop", type=int, default=0, help="run only this many steps (0: all), then decode")
     ap.add_argument("--guidance", type=float, default=1.0,
-                    help="classifier-free guidance's scale (1: none, Anima-Turbo; Anima-Aesthetic and -Base 4 to 5)")
+                    help="classifier-free guidance's scale (1: none, Anima-Turbo; Anima-Aesthetic 4 to 5)")
     ap.add_argument("--negative", default="", help="the negative prompt of the guidance (default empty)")
     a = ap.parse_args()
     dtype = getattr(torch, a.dtype)

@@ -406,22 +406,7 @@ models:
     machine: 8
     memory: {amd: 3.5, apple: 4.1}
     bytes: 5.9e9
-    about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 30 steps with classifier-free guidance (--guidance, --negative), about 6.5 times Anima-Turbo's time"
-  Anima-Base:
-    like: Anima-Aesthetic
-    tag: base
-    file: anima-base-v1.0.safetensors
-    with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
-    sha256:
-      split_files/text_encoders/qwen_3_06b_base.safetensors: cd2a512003e2f9f3cd3c32a9c3573f820bb28c940f73c57b1ddaa983d9223eba
-      diffusers/vae/config.json: f9917414da358ab86f0f5b53975015d74fa4fc2973a7dc6a5b1bea5cf2592798
-      diffusers/vae/diffusion_pytorch_model.safetensors: 0c8bc8b758c649abef9ea407b95408389a3b2f610d0d10fcb054fe171d0a8344
-      diffusers/tokenizer/tokenizer.json: 476870a1f2fb6f6a2759a6ede2383bf9d5d738f17844563b65c91965b722ae09
-      diffusers/t5_tokenizer/tokenizer.json: 2432e8aa83414a69884a5cbd54a68f528c042d1f30780affbefcbb85091f022e
-      split_files/diffusion_models/anima-base-v1.0.safetensors: bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e
-    # named as anima:base: the family alone picks Anima-Aesthetic
-    machine: 0
-    about: "Anima-Base v1.0: the pretrained model, the most varied and plain in style (the one LoRAs are trained on), 30 steps with classifier-free guidance"
+    about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 25 DPM-Solver++ steps with classifier-free guidance (--guidance, --negative), about 4.5 times Anima-Turbo's time"
   Sana-600M:
     family: sana
     tag: 0.6b
