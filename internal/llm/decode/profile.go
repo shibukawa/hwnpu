@@ -3,10 +3,11 @@ package decode
 import (
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 // profile adds up where the steps of programs split at their attention spend their time, by
@@ -16,7 +17,10 @@ var profile = struct {
 	sync.Mutex
 	on    bool
 	steps map[int]*profSteps
-}{on: os.Getenv("HWNPU_PROFILE") != "", steps: map[int]*profSteps{}}
+}{on: console.Profile, steps: map[int]*profSteps{}}
+
+// the steps of the whole run go to the command's last lines too (console.WriteProfile)
+func init() { console.OnProfile(WriteProfile) }
 
 type profSteps struct {
 	n      int

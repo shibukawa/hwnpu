@@ -799,6 +799,11 @@ func FetchWeights(ctx context.Context, repo, dir string, log io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var want []File
+	for _, f := range files {
+		want = append(want, File{repo, f, filepath.Join(dir, f)})
+	}
+	Expect(ctx, want)
 	for _, f := range files {
 		if err := fetch(ctx, repo, f, filepath.Join(dir, f), log); err != nil {
 			return err
@@ -893,7 +898,7 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	if err != nil {
 		return err
 	}
-	pw := &progress{w: f, done: have, from: have, total: total,
+	pw := &progress{w: f, done: have, from: have, total: total, plan: planned(path),
 		bar: console.NewBar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), repo))}
 	_, err = io.Copy(pw, resp.Body)
 	if cerr := f.Close(); err == nil {
@@ -908,10 +913,12 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 }
 
 // progress writes through and shows how far a download is on its bar: the bytes, the speed and
-// the time left.
+// the time left. For a file of the files Expect looked up, the bytes and the time left are also
+// those of all of them still to come.
 type progress struct {
 	w                 io.Writer
 	done, from, total int64 // total < 0: not known
+	plan              *plannedFile
 	bar               *console.Bar
 	last              time.Time
 }
@@ -919,15 +926,25 @@ type progress struct {
 func (p *progress) Write(b []byte) (int, error) {
 	n, err := p.w.Write(b)
 	p.done += int64(n)
+	if p.plan != nil {
+		planWrote(p.plan, p.done)
+	}
 	if time.Since(p.last) >= 200*time.Millisecond {
 		p.last = time.Now()
 		frac := -1.0
 		detail := gb(p.done, p.total)
+		left := p.total - p.done
+		if p.plan != nil {
+			if done, total := planNow(); total > p.total {
+				detail += ", all " + gb(done, total)
+				left = total - done
+			}
+		}
 		if sec := p.bar.Elapsed().Seconds(); sec > 0.5 {
 			rate := float64(p.done-p.from) / sec
 			detail += fmt.Sprintf("  %.1f MB/s", rate/1e6)
 			if p.total > 0 && rate > 0 {
-				detail += ", " + console.Duration(time.Duration(float64(p.total-p.done)/rate*float64(time.Second))) + " left"
+				detail += ", " + console.Duration(time.Duration(float64(left)/rate*float64(time.Second))) + " left"
 			}
 		}
 		if p.total > 0 {

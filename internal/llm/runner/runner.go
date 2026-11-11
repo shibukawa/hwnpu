@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/chain"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
@@ -37,6 +38,7 @@ type Program interface {
 
 // Open loads the model at path on dev, or with the CPU interpreter when dev is nil.
 func Open(ctx context.Context, dev *hwnpu.Device, path string) (Program, error) {
+	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
 		return nil, err

@@ -123,6 +123,11 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", err
 	}
+	var want []chat.File
+	for _, f := range Files(o.Dit) {
+		want = append(want, chat.File{Repo: f.Repo, Name: f.Name, Path: filepath.Join(s.Dir, f.Path)})
+	}
+	chat.Expect(ctx, want)
 	for _, f := range Files(o.Dit) {
 		path := filepath.Join(s.Dir, f.Path)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

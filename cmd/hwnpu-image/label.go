@@ -66,6 +66,7 @@ func (c *LabelCmd) Run(ctx context.Context) error {
 	if !c.NoCache {
 		cache = siglipCache()
 	}
+	console.Running()
 	t0 := time.Now()
 	texts, err := m.CachedTexts(ctx, sentences, cache)
 	if err != nil {
@@ -162,6 +163,7 @@ func (c *EmbedCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer closeAll()
+	console.Running()
 	var imgs [][]float32
 	for _, p := range c.Pictures {
 		img, err := readPicture(p)

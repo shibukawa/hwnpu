@@ -4021,3 +4021,89 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
   - Qwen-Image-2.1 はオイラー法 40 を既定のまま (DPM 25 は構図は同じだが細部が Anima より動く)。Chroma1-HD は DPM 25 + CFG σ ≥ 0.6 を既定に (model.json の `sampler`、`steps`、`cfg_sigmas`)。絵は 4 つとも見分けられない。σ ≥ 0.6 だけにしても変わらない (0.9624 と 0.9608) のは Anima と同じ。プロンプト 1 つの判断
 - **文の符号器を組ごとに読む**: Qwen3-VL-8B の 36 層を 4 層ずつ 9 組の 1 つの ELF にし、1 つのバンクに組を順に読む (SwapVariants)。文はプロンプトごとに 1 回なので重みを読むのは 1 回のまま。txt_in は別の小さなグラフ (`text_out`)、RoPE はホストの入力。5.6 GB の q6 を一度に固定しなくなり、512² のピーク 6.8 → **2.1 GB**、潜在は同じ (1.0)
 - **VAE の先読みに上限** (`anima.VAE.PrefetchLimit`、Qwen-Image と Chroma は 3 GiB): 段を前の段の実行中に読むのは、2 つで 3 GiB 以下のときだけ。1024² の Qwen-Image は段 4 と段 5 (計 5.9 GiB) を同時に持っていた。ピーク 6.4 → **4.2 GB**、VAE は 8.5 → 12 秒、画素は同じ
+### 16.158 Anima-Base を models.yaml から外す — 2026-11-11
+
+- 16.148 で足した Anima-Base v1.0 (`anima:base`) を models.yaml から外した。`-m anima:base` は「family anima has no tag "base"」と断る (`TestImageMemoryTags`)
+- 理由: Base の取り柄は、調整前の基盤モデルで LoRA の学習のもとになること。hwnpu は LoRA を読み込まない (`internal/imagegen/anima/mil` の `ditLoRA` は adaLN の低ランクの層の幅で、LoRA の読み込みではない) ので、Base を走らせる場面がない。絵を描くなら、同じ構造、同じ時間の Anima-Aesthetic で足りる。Base は 512² で NPU で描けることを確かめただけで、参照との照合もしていなかった (16.152)
+- 残したもの: `circlestone-labs/Anima-Base-v1.0-Diffusers` のリポジトリ (VAE、トークナイザー、設定。Turbo と Aesthetic が使う)、名前の頭 `net.` の見分け (`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights`。プレビューのチェックポイントも `net.`)。`iron_anima.py --dit anima-base-v1.0.safetensors` の書き出しはディレクトリを `-m` に渡せば今も走る
+- 過去の記録 (16.148、16.152、16.154) の Anima-Base の記述はそのまま残す
+
+### 16.159 ダウンロード全体の残り時間と、最後の行の時間の内訳 (ダウンロード、変換・ロード・コンパイル、処理) — 2026-11-11
+
+ファイルは 1 つずつ落とす。並列にすると全部のバーが見えるが、各バーの残り時間は今の分け前の速さで計算するため、小さいファイルが終わって残りが速くなる分を見込めない。例: 4 GB と 1 GB を合わせて 100 MB/s で並列に落とすと、表示は 80 秒と 20 秒になる。実際は 50 秒で終わり、1 つずつ落としたときと同じになる。正しい待ち時間は、1 つずつのまま、全体の残りのバイト数と今の速さから出せる。
+
+- **大きさを先に集める** (`chat.Expect`、`internal/chat/plan.go`): まだないファイルの大きさを、8 本並列の HEAD で集める。Hugging Face の `resolve` は LFS や xet のファイルに CDN へのリダイレクト (302) を返し、その `Content-Length` はリダイレクトの本文の長さになる。そのためリダイレクトは追わず、`X-Linked-Size` を読む (小さいファイルの 307 にも付く)。path の取得元は stat で読む。s3 と、サインインの要るリポジトリは大きさがわからないので、合計から外す。`.part` は済んだ分として数える
+- **バー**: 一覧に入ったファイルは `1.20 / 4.00 GB, all 3.10 / 9.40 GB  85.3 MB/s, 1m26s left` と出る。残り時間は全体の残り ÷ 今のファイルの速さ。一覧のファイルが全部そろうと、次の `Expect` は 0 から数え直す
+- **呼ぶところ**: `FetchWeights` (分割された checkpoint の shard: チャット、文字起こし、TTS、systemone)、Anima、Sana、Magenta RealTime、MOSS-SoundEffect。config.json や index.json のように中身を見て初めて次のファイルが決まるもの、トークナイザーのような小さいファイルは一覧に入れない
+- **最後の行** (`console.Times`、`internal/console/phases.go`): `took 3m12s: downloading 2m40s, converting, loading and compiling 25s, running 6.2s`。ダウンロードがなければその項目は出さない
+  - 処理を始めるところでコマンドが `console.Running()` を呼ぶ。最後の行は、それを呼んだコマンドだけが出す。会話やサーバー (`hwnpu-chat` の対話、`serve`、`systemone --listen`) は出さない
+  - 処理の途中の変換・ロード・コンパイルは、準備の側に数える。そのため `iron.OpenGraphWith`、`runner.Open`、大きさごとに変換する深度推定 (DA3、MoGe-2)、OCR、YuNet、SigLIP の塔の読み込みが `console.Loading()` で囲んである。Sana と Anima が段ごとに読み込む時間もこれで準備の側に入る。別のモデルを読み込み直すコマンド (MOSS-SoundEffect、Magenta RealTime) は `console.Preparing()` で準備の側に戻す
+  - ダウンロードの時間は `fetch` の中で測る (重なったダウンロードは 1 回に数える)。サインインを待つ時間とハッシュの確認の時間も含む
+  - 準備と処理が重なる時間 (ロードと同時に走る処理) は、準備の側に数える。Core ML が最初の呼び出しで行うコンパイル、再生の時間 (`--play`) は処理の側に入る
+- **hwnpu-chat の読み込みのログ**: 分割したプログラムのバーは `.parts.json` の名前を出していた。そのため、Core ML のコンパイルの時間 (plamo-3-translate-8b の 5 部分で 37 秒) が JSON の処理に見えた (中身は 32 KB の部分の一覧で、読むのは一瞬)。バーはモデル名、時間、1 回に読むトークン数、部分の数、配置にした (`[1/2] Qwen3-0.6B 15s, 8 tokens per call, 1 part, all on the NPU`)。全部読み終えたら、hwnpu-image と同じく `loaded Qwen3-0.6B in 34s, 2 programs, all on the NPU` を出す。続けて、会話やサーバーにも、それまでの内訳 `ready after 35s: converting, loading and compiling 35s` を出す (`console.Prepared`)。Qwen3-0.6B の 2 回目の読み込みは 2.7 秒で、初回の時間のほとんどは Core ML の最初のコンパイル
+- **`HWNPU_PROFILE=1` をすべてのコマンドに** (`console.Profile`、`internal/console/profile.go`): これまでは hwnpu-chat が答えのたびに、デコードの 1 ステップの内訳と Neural Engine が抱えるメモリを出すだけだった。今は hwnpu-audio、hwnpu-image、hwnpu-chat、hwnpu-dev の最後に次を出す (`console.Done`、`console.WriteProfile`)
+  - ダウンロード 1 件ずつの時間、バイト数、速さ、`REPO@REV/FILE`
+  - 先に大きさを集めた時間
+  - プログラムの読み込み 1 件ずつの時間とパス。中で読み込んだものは字下げして、始まった順に並べる。読み込みを記録するのは `iron.OpenGraphWith`、`runner.Open`、`chain.Open` / `OpenOn` / `Share`、深度推定・MoGe-2 の大きさ、YuNet、OCR、SigLIP の塔。`runner.Open` の中の同じパスの `chain.Open` は 1 回に数える
+  - `decode.WriteProfile` (`console.OnProfile` で登録。チャット以外のコマンドの言語モデルにも出る)
+  - 詳細を消さない: チャットのバーは、プロファイルのときだけファイル名も残す (`[1/2] Qwen3-0.6B (qwen3-lut8-c4096-q8.mlpackage) 0.5s, 8 tokens per call, ...`)
+  - 実機: swift-f0 の初回の取得は、プロファイルで 1.68 秒、バーで 0.2 秒だった。差は最初のバイトまでの待ちで、curl でも Hub のリダイレクトまで 0.2 秒、CDN の最初のバイトまで 0.8 秒。バーは最初のバイトから始まるので、この待ちを含まない。DA3-BASE の深度推定では、処理の途中で 504x322 を読み込んだ 0.26 秒 (vit 0.19 秒、head 0.08 秒) が準備の側に入った
+- テスト: `TestExpect` (偽のハブ、302 と `X-Linked-Size`、200 と長さ、`.part` の続き、1 つずつ落としたときの合計)、`TestPhases` (重なったダウンロード、入れ子の Loading)、`TestProfile` (一覧、字下げ、同じパスの 2 重、リンクは載せない)。実機: swift-f0 の初回 `took 3.9s: downloading 1.8s, converting, loading and compiling 2.1s, running 0.1s`、2 回目 `took 0.1s: converting, loading and compiling 0.0s, running 0.1s`。Hub の HEAD で Qwen3-0.6B の model.safetensors (1503300328) と config.json (726)、Qwen3-4B の shard の大きさが返った
+
+### 16.160 Sana を new-model-checklist の 7.2 節にそろえる: CFG を雑音の多いステップだけに、Mac の CFG を組ごとに、DiT を 8 ビットに — 2026-11-11
+
+[new-model-checklist.md](new-model-checklist.md) の 7.2 節で画像のモデルごとに済んだ手法を並べると、Sana (600M、SANA 1.5) には Anima に入れた手がいくつか入っていなかった。M1 (16 GB、AC 電源、低電力モードなし、ほかに Neural Engine を使うプロセスなし) でできるものを入れた。AMD の分は別の作業で入れる。
+
+**測り方**: 1024 × 1024、3 プロンプト (人物、夜の街、風景) × 種 1、2 の 6 枚。比べる相手は同じ Neural Engine の、全部のステップで CFG をかけたもの (fp16 の DiT)。最後の潜在のコサインと画像の PSNR、絵を並べる。時間はキャッシュに当たる新しいプロセスで。NPUWired は `mem.NPUWired` を 0.1 秒ごとに読んだ最大、footprint は `/usr/bin/time -l` の peak memory footprint。
+
+**CFG を雑音の多いステップだけに** (`sana.Pipeline.CFGMin` / `CFGMax`、`DefaultCFGSigmas`、`--cfg-sigmas`): Anima の 16.154 と同じ。外したステップは DiT を条件つきで 1 回。Sana の 20 ステップ (shift 3) では σ ≥ 0.6 が 14 ステップ、σ ≥ 0.5 が 15、σ ≥ 0.8 が 9。
+
+| | ステップ (CFG のあるもの) | Sana 600M のノイズ除去 | 全ステップ CFG とのコサイン / PSNR (6 枚) | SANA 1.5 のコサイン | 絵 |
+|---|---|---|---|---|---|
+| 全ステップ (前) | 20 | 14 秒 | — | — | — |
+| σ ≥ 0.5 | 15 | 13 秒 | 0.9973〜0.9989 / 29〜34 dB | 0.9949〜0.9971 | 同じ |
+| **σ ≥ 0.6 (既定)** | 14 | 12 秒 | 0.9956〜0.9984 / 28〜33 dB | 0.9921〜0.9958 | 同じ |
+| σ ≥ 0.8 | 9 | 10 秒 | 0.972〜0.990 / 21〜24 dB | — | 風景で右の小さな舟が消える |
+
+- 既定は Anima と同じ σ ≥ 0.6。`--cfg-sigmas 0,1` で全ステップ。パイプラインは IRON と Core ML で共通なので AMD でも既定で効くが、AMD では未確認
+- SANA 1.5 は CFG を減らしてもノイズ除去が 38 → 37 秒しか縮まなかった。下の載せ直しが律速だったため (DiT を 8 ビットにした後は 1 ステップ 1.43 秒 → CFG なしのステップ 0.72 秒で、回数どおりに効く)
+
+**Mac でも CFG の 2 回を重みの組ごとに** (`progEngine.velocity`): 前は条件ごとに 7 群を全部回していた (1 ステップ 14 回の群の呼び出しが、条件なし → 条件つきで 7 群ずつ)。AMD (16.148) と Anima の Core ML と同じく、群ごとに 2 回続けて回す。
+
+| SANA 1.5 (fp16 の DiT、全ステップ CFG) | ノイズ除去 | 1 ステップ | NPUWired |
+|---|---|---|---|
+| 前の順 | 64 秒 | 2.45〜3.21 秒 (ばらつく) | 2.96〜3.08 GiB |
+| 群ごと | 38 秒 | 1.60〜1.84 秒 | 2.98〜3.06 GiB |
+
+- 絵はビット単位で同じ (潜在のコサイン 1.0000、PSNR ∞)。Neural Engine が抱えるのは約 3.0 GiB で、M1 の約 2.9 GiB (16.109、16.118) を超え、群が呼び出しのたびに載せ直されていた。群ごとに回すと載せ直しが 1 ステップ 1 回になる。16.152 の「1 ステップ 2.5〜3.4 秒」はこれ
+- Sana 600M (1.14 GiB) は変わらない (20 ステップ 14 秒)
+
+**DiT を 8 ビットに** (`sana.Formats`、モデルの名前で既定を決める):
+
+| | DiT | 1 枚 (ノイズ除去) | NPUWired | fp16 の DiT とのコサイン / PSNR | 絵 |
+|---|---|---|---|---|---|
+| Sana 600M | fp16 (前) | 18 秒 (12 秒) | 1.14 GiB | — | — |
+| Sana 600M | **int8 (既定)** | 17 秒 (11 秒) | 0.60 GiB | 0.964〜0.9997 / 22〜37 dB | 同じ |
+| SANA 1.5 | fp16 (前) | 43 秒 (37 秒) | 2.98 GiB | — | — |
+| SANA 1.5 | int8 | 33 秒 (27 秒) | 1.53 GiB | 0.58〜0.79 / 12〜14 dB | 崩れる (筆の跡のような模様) |
+| SANA 1.5 | **lut8 (既定)** | 31 秒 (25 秒) | 1.56 GiB | 0.991〜0.999 / 26〜35 dB | 同じ |
+
+(どれも σ ≥ 0.6 の既定の CFG)
+
+- SANA 1.5 の行ごとの int8 は全部の絵が崩れた。lut8 (256 段の表で量子化の段を重みに合わせる) は崩れない。原因は追っていない (外れ値の大きな行が int8 の刻みで潰れているとみる。q と k の正規化の前の射影など)。Sana-Sprint 1.6B の int8 (16.145) は 0.987 で崩れていなかったので、同じ 1.6B の構造でも SANA 1.5 の重みに限る
+- SANA 1.5 は NPUWired が M1 の上限の下に入り、載せ直しがなくなった。footprint の最大は 3.43〜3.85 GB で、models.yaml の Apple のメモリ 3.6 → 3.9
+- 書き出しの名前に形式が入る (`sana-600m-1024x1024-int8-int8-g4-v4`、`sana1.5-1.6b-1024x1024-int8-lut8-g4-v4`) ので、`ExportVersion` は上げない。初回は変換とコンパイル (600M 約 7 分、1.5 約 12 分)。前の fp16 の書き出し (`-int8-fp16-`) は使われなくなる
+- 時間の合計: Sana 600M 22 → 17 秒、SANA 1.5 70 秒 (16.152) → 31 秒
+
+**Anima-Aesthetic を M1 で** (16.148、16.154 の既定、AMD でしか測っていなかった): 1024 × 1024、int8 / int8 の書き出し (`anima-aesthetic-v1.1-1024x1024-int8-int8-g4-q512-v3`)、3 プロンプト × 2 つのノイズ。
+
+| | 1 枚 (2 回目から) | ノイズ除去 | 1 ステップ | NPUWired | footprint の最大 |
+|---|---|---|---|---|---|
+| **既定** (DPM-Solver++ 2M 25 ステップ、CFG は σ ≥ 0.6 の 17 ステップ) | 4m30s (6 枚とも) | 4m23s | CFG あり 12.5 s、なし 6.4 s | 2.62〜2.64 GiB | 3.72〜3.89 GB |
+| オイラー法 30 ステップ、全ステップ CFG (モデルカード) | 約 6m25s | 6m14s〜6m17s | 12.5 s | 2.61〜2.64 GiB | 3.82〜4.28 GB |
+
+- 初回 (取得、変換、コンパイル) 21m44s。テキスト 0.2 秒、VAE 2.8〜3.0 秒。Anima-Turbo (16.152、58 秒) の約 4.6 倍で、DiT 1 回は Turbo と同じ 6.3 秒
+- 既定とオイラー法 30 ステップの比べ (同じノイズ、4 組。残り 2 組は打ち切った): 少女と桜の 2 組は潜在のコサイン 0.981 / 0.987 で同じ絵。黒猫と窓辺の 2 組は 0.833 / 0.960 で、1 組は人物が、もう 1 組は猫の位置が変わった。AMD の 512² の 6 組 (オイラー法 30 と 0.982〜0.983) よりばらつくが、どちらが正しいかはこの比べでは決まらない (真値の代わりの多いステップのオイラー法や diffusers の fp32 とは比べていない)。既定はそのまま
+- diffusers の fp32 との照合は 1024² のオイラー法 30 ステップと CFG で CPU 1 枚約 1 時間かかるので見送った (Mac の Anima の部品は Turbo で照合済み、16.152)
+
+**Mac でできなかったこと**: 電力量 (`hwnpu-dev powerbench` は sudo が要る)。AMD の Sana の DiT の q8、交差注意のキーと値をステップの外へ、Anima の VAE の段をまとめる、AMD での CFG のステップの確認は別の作業で。

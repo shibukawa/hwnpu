@@ -17,7 +17,7 @@
 //  4. the VAE decoder on the latents, unnormalized by the VAE's per-channel mean and std.
 //
 // The export is for one image size and one diffusion model: Anima-Turbo wants about 8 steps and
-// no classifier-free guidance (CFG 1); Anima-Aesthetic and Anima-Base 30 to 50 Euler steps at CFG
+// no classifier-free guidance (CFG 1); Anima-Aesthetic 30 to 50 Euler steps at CFG
 // 4 to 5 (circlestone-labs/Anima's model card), each step the DiT twice, or as many in fewer with
 // DPM-Solver++ 2M and the guidance at the noisier steps only (DefaultSampling).
 package anima
