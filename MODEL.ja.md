@@ -147,7 +147,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | Sana 600M、SANA 1.5 1.6B (1024 × 1024、AMD) | 画像生成 | 2.3 GB (NPU の最大 2.0 GB に、プロセスを足したもの。NPU の最大は 2 段が同時に載る VAE で、Gemma 2 を 6 ビットにしたテキストのグラフが次。DiT は 1 組ずつ読み、0.4 GB) | なし | 実測 |
 | Sana 600M、SANA 1.5 1.6B (1024 × 1024、Apple) | 画像生成 | プロセス 3.0〜3.3 GB (Gemma 2 は int8 の 5 本を走る間だけ。DiT は fp16、VAE は段ごと) | なし | 実測 (M1) |
 | DA3-SMALL、DA3MONO-LARGE、MoGe-2 ViT-S (Apple) | 深度推定 (hwnpu-image depth) | 1 つの大きさのプログラム (fp16)。縦横比ごとに初めて使うときに変換 | なし | 未測定 |
-| Anima-Turbo、Anima-Aesthetic、Anima-Base (1024 × 1024) | 画像生成 | 1.9 GB (VAE の段の最大。DiT はブロックの重みを 1 組ずつ読む) | なし | 実測 |
+| Anima-Turbo、Anima-Aesthetic (1024 × 1024) | 画像生成 | 1.9 GB (VAE の段の最大。DiT はブロックの重みを 1 組ずつ読む) | なし | 実測 |
 | LFM3-Audio-2B (読み上げ) | 読み上げ | 約 2.4 GB | 12 KiB/トークン | 重みから見込み |
 | d1-2B、d1-Omni-2B | 状態の判定 | 約 2.4 GB、約 2.8 GB | 短い入力のみ | 重みから見込み |
 | Qwen3-0.6B | チャット (事実に弱い) | 約 3.9 GB (M1: Neural Engine に 8 ビットの表の 2 本で 1.16 GiB とプロセスの 2.75 GB。4096 のキャッシュはプログラムの中) | 112 KiB/トークン (4096 で 0.44 GiB。起動時から確保) | M1 で実測 |
