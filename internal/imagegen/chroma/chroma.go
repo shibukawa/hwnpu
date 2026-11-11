@@ -196,7 +196,11 @@ func (p *Pipeline) Encode(ctx context.Context, prompt string) (Cond, error) {
 }
 
 // EncodeAll is Encode of each prompt with each graph loaded once (a prompt and its negative
-// prompt: T5's 5 GB load is paid once).
+// prompt). An export with T5 in groups of layers (iron_chroma_parts.py's T5Config.group) holds one
+// ELF and a bank image per group, read into one bank in turn: every prompt runs a group before the
+// next is read, so each group's weights are read once and T5's 5 GB of q8 is never pinned at
+// once. Each group gives its residual (the next group's x) and the final norm of it (the last
+// group's is T5's output). An export of one graph gives the norm only.
 func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, error) {
 	t0 := time.Now()
 	R, E := p.C.TextRows, p.t5dim
@@ -204,11 +208,12 @@ func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, er
 	if _, err := p.embed.ReadAt(pad, 0); err != nil {
 		return nil, err
 	}
-	g, err := p.open(ctx, "t5", false)
+	g, err := p.open(ctx, "t5", true)
 	if err != nil {
 		return nil, err
 	}
-	hs := make([][]byte, len(prompts))
+	xs := make([][]byte, len(prompts))
+	masks := make([][]byte, len(prompts))
 	keys := make([]int, len(prompts))
 	for k, pr := range prompts {
 		ids := p.tok.Encode(pr)
@@ -228,18 +233,43 @@ func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, er
 				copy(x[2*i*E:], pad)
 			}
 		}
-		if err := run(ctx, g, map[string][]byte{"x": x, "mask": toBF16(mask)}, nil); err == nil {
-			hs[k], err = output(g, 0)
-		} else {
-			g.Close()
-			return nil, fmt.Errorf("chroma: t5: %w", err)
-		}
+		xs[k], masks[k] = x, toBF16(mask)
 		// the prompt's tokens and one pad (the pipeline's mask)
 		keys[k] = min(len(ids)+1, R)
 		if n, err := strconv.Atoi(os.Getenv("HWNPU_CHROMA_KEYS")); err == nil && n > 0 { // a test of the text's mask
 			keys[k] = min(n, R)
 		}
 		p.logf("text: %d tokens", len(ids))
+	}
+	groups := max(g.Variants(), 1)
+	if groups > 1 && len(g.Outputs()) != 2 {
+		g.Close()
+		return nil, fmt.Errorf("chroma: t5: %d groups but %d outputs (the residual and the norm)", groups, len(g.Outputs()))
+	}
+	hs := make([][]byte, len(prompts))
+	for gi := 0; gi < groups; gi++ {
+		if g.Variants() > 0 {
+			if err := g.Use(gi); err != nil {
+				g.Close()
+				return nil, err
+			}
+		}
+		for k := range prompts {
+			if err := run(ctx, g, map[string][]byte{"x": xs[k], "mask": masks[k]}, nil); err != nil {
+				g.Close()
+				return nil, fmt.Errorf("chroma: t5 group %d: %w", gi, err)
+			}
+			last := len(g.Outputs()) - 1 // the norm
+			if gi < groups-1 {
+				xs[k], err = output(g, 0) // the residual
+			} else {
+				hs[k], err = output(g, last)
+			}
+			if err != nil {
+				g.Close()
+				return nil, err
+			}
+		}
 	}
 	g.Close()
 	t1 := time.Now()

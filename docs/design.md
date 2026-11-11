@@ -4293,5 +4293,7 @@ Intel の NPU に向けた変換 (OpenVINO IR、`internal/ovlower`) がない、
 | Chroma1-HD | DPM 25、CFG 3 は σ ≥ 0.6 | 691 秒 | 12.6 kJ | 18.2 W | 4956 MiB |
 
   - Anima-Turbo (688 J、16.148) と Anima-Aesthetic (3.8 kJ、16.154) と比べると、Qwen-Image-2.1-Turbo は 3 倍、Chroma1-Flash は 7 倍
-  - Chroma の固定のメモリの山は T5 (q8 の 5 GB を 1 つのグラフで)。Qwen-Image の文の符号器のように組にすれば下がる見込み (new-model-checklist 7.2)
+  - Chroma の固定のメモリの山は T5 (q8 の 5 GB を 1 つのグラフで) だった。下の項で組にした後の値: Chroma1-Flash 267 秒 4.6 kJ、Chroma1-HD 685 秒 12.1 kJ
+- **Chroma の T5 を組に** (`iron_chroma_parts.py` の `T5Config.group` 4、`--t5-group`): 24 層を 4 層ずつ 6 組、1 つの ELF に組ごとのバンクの像、1 つのバンクに順に読む (SwapVariants、Qwen-Image の文の符号器と同じ)。どの組のグラフも残差と最後の RMS norm の 2 つを出し、ホストは残差を次の組に渡し、最後の組の norm を使う (norm も NPU のまま)。プロンプトと負のプロンプトは組ごとに続けて回す。IRON の参照は 1 つのグラフと同じ値 (float32 の transformers と 0.999754)、NPU の潜在は前の書き出しとビットまで同じ (2 つのプロンプト)。1024² のピーク (NPU の割り当てと RSS) 5.9 GB → **4643 MiB**、T5 は 7.5〜9.4 → 4.2〜5 秒 (512² と 1024²)。models.yaml の memory を 4.6 に。一組だけでなく組の切り替えまで確かめるため irongraph に `-swap` (組 0 を回してから `-variant` の組を読む)
+- **Chroma の書き出しの手順**: `hwnpu-image` が示す `python tools/amd/iron_chroma.py ROOT OUT` は DiT しか書き出さず、T5 と VAE と tokenizer.json は手で足していた。iron_chroma.py が DiT の後に iron_chroma_parts.py (t5、vae) を別のプロセスで回すようにした (`--parts`)。Chroma1 のリポジトリには tokenizer.json がない (spiece.model だけ) ので、spiece.model (protobuf の wire 形式を直に読む。IRON の環境に sentencepiece と transformers はない) から Anima の t5_tokenizer.json と同じ形を書く (`t5_tokenizer_json`)。生成したものは Anima のものとすべての項目が同じ
 - 途中で、この機械のメモリのビット反転がまた出た (16.155 の頃と同じ): Go のビルドキャッシュが壊れてリンカが落ち、Btrfs のチェックサムが 1 ビット違うと読めないファイルが出て、同じ起動中に書いた書き出しにチェックサムに引っかからない 1 ビットの違いがあった。再起動の後は scrub に誤りがなく、写しも同じ (ディスクでなくメモリ)。その起動で書いた書き出しは作り直した

@@ -118,7 +118,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import iron_anima  # noqa: E402
 import iron_qwenimage as qi  # noqa: E402
 import iron_sana  # noqa: E402
-from iron_anima import GridShape, bf, command_boundary, tap  # noqa: E402
+from iron_anima import GridShape, bf, command_boundary, tap, variant_bank  # noqa: E402
 from iron_graph import bind_device, export_graph, write_check  # noqa: E402
 
 HIGHEST = Precision.HIGHEST
@@ -150,6 +150,9 @@ class T5Config:
     vocab: int = 32128
     heads_per_group: int = 8  # heads a block-diagonal score GEMM takes
     split: int = 2  # layers a command runs
+    # layers a bank holds: the export is one ELF with a bank image per group, read into one bank
+    # in turn (SwapVariants) so the 5 GB of q8 weights are never pinned together (0: one graph)
+    group: int = 4
     # the FF's GELU: "none" (IRON's erf GELU: nearer float32's tanh GELU than IRON's tanh table,
     # whose error is 5 times bf16's rounding) or "tanh" (gelu_new, T5's own)
     gelu: str = "none"
@@ -296,12 +299,18 @@ class _T5States:
 
 class T5(iron.Graph):
     """T5-XXL's encoder over ``x`` (rows, hidden), the embedding rows, with ``mask`` (rows,) the
-    tokenizer's attention mask: the final RMS norm's rows (rows, hidden)."""
+    tokenizer's attention mask: the final RMS norm's rows (rows, hidden).
 
-    def __init__(self, c: T5Config, w=None, layers: int | None = None):
+    Grouped (``T5Config.group`` layers from ``first``): the group's residual and its final RMS
+    norm, two outputs, the same graph for every group (a bank image each): the host feeds the
+    residual to the next group and keeps the last group's norm. The norm of 512 rows costs little
+    and keeps the encoder all on the NPU, as one graph did."""
+
+    def __init__(self, c: T5Config, w=None, layers: int | None = None, first: int = 0):
         self.c = c
         n = c.layers if layers is None else layers
-        self.layers = [T5Layer(c, w, i) for i in range(n)]
+        self.grouped = layers is not None and c.group > 0
+        self.layers = [T5Layer(c, w, first + i) for i in range(n)]
         self.st = _T5States(c)
         L, HG = c.rows, c.heads_per_group
         if w is None:
@@ -333,12 +342,97 @@ class T5(iron.Graph):
                 command_boundary()
             x, xl = layer(x, xl, st, self.bias)
         if c.residual == "pair":
+            assert not self.grouped, "a grouped T5 carries a bf16 residual"
             x = x + xl
-        return F.rms_norm(x, (c.hidden,), self.norm, c.eps)
+        y = F.rms_norm(x, (c.hidden,), self.norm, c.eps)
+        return (x, y) if self.grouped else y
 
 
 def t5_checkpoint(root: Path, random: bool = False):
     return qi.Checkpoint(root / "text_encoder", random=random)
+
+
+def _proto_fields(b: bytes):
+    """A protobuf message's (field, wire type, value) in order: varints as int, fixed32 as bytes,
+    length-delimited as bytes (enough for SentencePiece's ModelProto)."""
+    i = 0
+    while i < len(b):
+        key, i = _varint(b, i)
+        f, t = key >> 3, key & 7
+        if t == 0:
+            v, i = _varint(b, i)
+        elif t == 1:
+            v, i = b[i : i + 8], i + 8
+        elif t == 2:
+            n, i = _varint(b, i)
+            v, i = b[i : i + n], i + n
+        elif t == 5:
+            v, i = b[i : i + 4], i + 4
+        else:
+            raise ValueError(f"protobuf wire type {t}")
+        yield f, t, v
+
+
+def _varint(b: bytes, i: int):
+    v = s = 0
+    while True:
+        c = b[i]
+        i += 1
+        v |= (c & 0x7F) << s
+        s += 7
+        if c < 0x80:
+            return v, i
+
+
+def t5_tokenizer_json(tok: Path) -> dict:
+    """tokenizers' T5 tokenizer.json from the repository's spiece.model and tokenizer_config.json,
+    for a repository without a tokenizer.json (Chroma1's): the Unigram's pieces and scores, the
+    normalizer's precompiled charsmap, the extra ids after the pieces (last to first, as
+    T5TokenizerFast), </s> after the text. The form of Anima's t5_tokenizer.json, which hwnpu's Go
+    tokenizer reads (FLUX.1's newer one has a normalizer Sequence it does not). Read with protobuf's
+    wire format: the IRON environment has no sentencepiece or transformers."""
+    import base64
+    import struct
+
+    vocab, charsmap, unk = [], b"", None
+    for f, _, v in _proto_fields((tok / "spiece.model").read_bytes()):
+        if f == 1:  # SentencePiece: piece, score, type
+            piece, score, kind = "", 0.0, 1
+            for g, _, u in _proto_fields(v):
+                if g == 1:
+                    piece = u.decode()
+                elif g == 2:
+                    score = struct.unpack("<f", u)[0]
+                elif g == 3:
+                    kind = u
+            if kind == 2:  # UNKNOWN
+                unk = len(vocab)
+            vocab.append([piece, score if kind == 1 else 0.0])
+        elif f == 3:  # NormalizerSpec
+            for g, _, u in _proto_fields(v):
+                if g == 2:
+                    charsmap = u
+    cfg = json.loads((tok / "tokenizer_config.json").read_text())
+    extra = int(cfg.get("extra_ids", 100))
+    vocab += [[f"<extra_id_{i}>", 0.0] for i in reversed(range(extra))]
+    special = dict(single_word=False, lstrip=False, rstrip=False, normalized=False, special=True)
+    added = [dict(id=i, content=vocab[i][0], **special) for i in range(3)]
+    added += [dict(id=i, content=vocab[i][0], **special) for i in range(len(vocab) - extra, len(vocab))]
+    meta = dict(type="Metaspace", replacement="\u2581", prepend_scheme="always", split=True)
+    eos = vocab.index(["</s>", 0.0])
+    return {
+        "version": "1.0", "truncation": None, "padding": None, "added_tokens": added,
+        "normalizer": dict(type="Precompiled", precompiled_charsmap=base64.b64encode(charsmap).decode()),
+        "pre_tokenizer": dict(type="Sequence", pretokenizers=[dict(type="WhitespaceSplit"), meta]),
+        "post_processor": dict(
+            type="TemplateProcessing",
+            single=[{"Sequence": dict(id="A", type_id=0)}, {"SpecialToken": dict(id="</s>", type_id=0)}],
+            pair=[{"Sequence": dict(id="A", type_id=0)}, {"SpecialToken": dict(id="</s>", type_id=0)},
+                  {"Sequence": dict(id="B", type_id=0)}, {"SpecialToken": dict(id="</s>", type_id=0)}],
+            special_tokens={"</s>": dict(id="</s>", ids=[eos], tokens=["</s>"])}),
+        "decoder": meta,
+        "model": dict(type="Unigram", unk_id=unk, vocab=vocab, byte_fallback=False),
+    }
 
 
 def export_t5(root: Path, out: Path, c: T5Config, check: bool, ref: Path | None, layers: int | None) -> None:
@@ -346,19 +440,34 @@ def export_t5(root: Path, out: Path, c: T5Config, check: bool, ref: Path | None,
     iron_sana.TEXT_FMT["fmt"] = ARGS.t5_format
     iron_sana.PREC.text = HIGHEST
     t0 = time.time()
-    g = T5(c, w, layers)
+    n = layers or c.layers
+    G = c.group if c.group and n % c.group == 0 else 0
+    if c.group and not G:
+        print(f"t5: {n} layers do not split into groups of {c.group}: one graph", flush=True)
+        c = dataclasses.replace(c, group=0)
+    g = T5(c, w, G or layers)
     print(f"t5: weights in {time.time() - t0:.0f} s", flush=True)
     cg = g.compile(x=(c.rows, c.hidden), mask=(c.rows,))
     d = out / "t5"
     meta = dict(config=dataclasses.asdict(c), weights=ARGS.t5_format, precision=HIGHEST.value,
-                layers=len(g.layers))
+                layers=n, groups=n // G if G else 1)
     m = export_graph(cg, d, "t5", meta)
     print(f"t5: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+    if G:
+        variants = [{k: b["image"] for k, b in m["banks"].items()}]
+        for i in range(1, n // G):
+            variants.append(variant_bank(cg, T5(c, w, G, i * G), d, f"bank_g{i}"))
+            print(f"t5: bank of layers {i * G}..{(i + 1) * G - 1}", flush=True)
+        m["variants"] = variants
+        (d / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     import shutil
 
-    for f in ("spiece.model", "tokenizer_config.json", "special_tokens_map.json", "added_tokens.json", "tokenizer.json"):
+    for f in ("spiece.model", "tokenizer_config.json", "special_tokens_map.json", "added_tokens.json"):
         if (root / "tokenizer" / f).exists():
             shutil.copyfile(root / "tokenizer" / f, d / f)
+    # the Go tokenizer reads tokenizer.json in the form t5_tokenizer_json writes (a repository's
+    # own may have a normalizer Sequence, FLUX.1's does)
+    (d / "tokenizer.json").write_text(json.dumps(t5_tokenizer_json(root / "tokenizer"), ensure_ascii=False))
     with open(d / "embed.bin", "wb") as f:
         e = w["shared.weight"]
         for s in range(0, e.shape[0], 4096):
@@ -367,7 +476,13 @@ def export_t5(root: Path, out: Path, c: T5Config, check: bool, ref: Path | None,
         z = np.load(ref)
         x, mask = bf(z["x"]), bf(z["mask"].astype(np.float32))
         t1 = time.time()
-        y = f32(g.reference(x, mask))
+        if G:  # the groups in turn, the last one's norm
+            h = x
+            for i in range(n // G):
+                h, y = (g if i == 0 else T5(c, w, G, i * G)).reference(h, mask)
+            y = f32(y)
+        else:
+            y = f32(g.reference(x, mask))
         n = int(z["mask"].sum())
         want = z["y"]
         keep = n + 1  # the prompt's rows and the first pad's, which the DiT reads
@@ -833,6 +948,7 @@ def main(argv=None) -> int:
     ap.add_argument("--t5-format", default="q8", choices=("bf16", "q8", "q6", "q4"))
     ap.add_argument("--t5-layers", type=int, default=0, help="the encoder's first N layers only (a test)")
     ap.add_argument("--t5-split", type=int, default=T5Config.split, help="T5 layers a command runs")
+    ap.add_argument("--t5-group", type=int, default=T5Config.group, help="T5 layers a bank holds, read in turn (0: one graph)")
     ap.add_argument("--t5-gelu", default=T5Config.gelu, choices=("tanh", "none"))
     ap.add_argument("--t5-bf16", nargs="*", default=list(T5Config.bf16), help="T5 projections kept bf16 (q k v o wi_0 wi_1 wo)")
     ap.add_argument("--t5-residual", default=T5Config.residual, choices=("pair", "bf16"))
@@ -850,7 +966,7 @@ def main(argv=None) -> int:
     bind_device(a.device, a.cols)
     a.out.mkdir(parents=True, exist_ok=True)
     if "t5" in a.only:
-        c = T5Config(split=a.t5_split, gelu=a.t5_gelu, residual=a.t5_residual, bf16=tuple(a.t5_bf16))
+        c = T5Config(split=a.t5_split, group=a.t5_group, gelu=a.t5_gelu, residual=a.t5_residual, bf16=tuple(a.t5_bf16))
         export_t5(a.root, a.out, c, a.check, a.ref_t5, a.t5_layers or None)
     if "vae" in a.only:
         export_vae(a.root, a.out, a.width or a.size, a.height or a.size, a.check, a.ref_vae, a.stages)

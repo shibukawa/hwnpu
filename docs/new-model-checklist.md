@@ -161,7 +161,7 @@ What helped:
 | **One weight bank for two graphs of the same blocks** (`share_banks`) | Qwen-Image's dit_text (the prompt's rows, once a prompt) and dit_blocks (the image's rows, every step) run the same blocks, but their banks differed from the first byte: dit_text held its RoPE table as an `iron.weight`, which shifted the layout. With the table as an input the bank images are byte for byte the same and dit_text points at dit_blocks' files: export 22 → 15 GB. Compare bank images before storing a second copy | 16.155 |
 | IRON's limits at image-model sizes | HIGHEST GEMMs need N a multiple of 64 and failed at K = 5120 (use HIGH, or MEDIUM for a selection GEMM). An RMSNorm weight wider than 4096 fails: fold it into the next linear's columns. A DMA loop counts at most 64. A transpose GEMM over 1M rows never finished: commands of 262144 rows | 16.155, 16.156 |
 | GroupNorm and a relative position bias without the host | GroupNorm: each channel's sums by a GEMM with a block of ones, the groups' means by a constant GEMM, 1/√(var + eps) as one RMSNorm (Chroma's FLUX VAE: PSNR 53.6 dB). T5's relative bias (IRON's MHA has none): 8 heads' scores in one GEMM with a block-diagonal K^T, the bias added in a float32 Softmax | 16.156 |
-| A large text encoder in groups (`SwapVariants`, as the DiT) | Qwen3-VL-8B (36 layers, q6) as 9 groups of 4 layers in one bank, read once a prompt: 512² peak 6.8 → 2.1 GB, the same latents | 16.157 |
+| A large text encoder in groups (`SwapVariants`, as the DiT) | Qwen3-VL-8B (36 layers, q6) as 9 groups of 4 layers in one bank, read once a prompt: 512² peak 6.8 → 2.1 GB, the same latents. Chroma's T5-XXL (6 groups; each gives its residual and the final norm, the host keeps the last group's norm): 1024² peak 5.9 → 4.5 GiB, the same bits. Check a group switch, not one group alone (`irongraph -swap -variant 1`) | 16.157, 16.167 |
 | Prompt chunks of 1024 | 20 % faster than 2048. At 256 the window layers become rings and cannot roll back | 16.54 |
 | At most 3 transfers queued on one shim channel | Queuing 16 without waiting hung the command, and two hangs in a row needed a reboot. Wait for the oldest before queuing more | 16.89 (PR #66) |
 | Each command under 2 s | Longer ones end in `ERT_CMD_STATE_TIMEOUT`. Split them at export (`SCRATCHPAD_WORDS`) | 16.65 |
@@ -343,33 +343,33 @@ The items above and in sections 3–5 and 9, for each image model in models.yaml
 | VAE on the grid (`GridGEMM`, phase upsampling, AMD) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Same-shaped VAE stages in one graph (AMD) | ✓ | ✓ | ✗ | ✗ | ✓ (the last block's stages, 16.157) |
 | The cross-attention's keys and values out of the step loop | ✗ | ✗ | ✗ | ✗ | ✓ (the text's keys and values once a prompt, AMD and Mac, 16.155, 16.165) |
-| Fewer bytes of DiT weights, AMD | ✗ (bf16; q8 not tried) | ✗ (bf16, the heaviest DiT) | ✓ (q8; GPTQ q4 measured, not adopted) | ✓ (q8) | ✓ (q8) |
+| Fewer bytes of DiT weights, AMD | ✗ (bf16; q8 not tried) | ✗ (bf16, the heaviest DiT) | ✓ (q8; GPTQ q4 measured, not adopted) | ✓ (q8) | ✓ (q8 attention, q6 MLP, 16.167) |
 | Fewer bytes of DiT weights, Mac | ✓ (int8, 16.160) | ✓ (lut8; its per-row int8 breaks the pictures) | ✓ (int8) | ✓ (int8) | ✓ (the image blocks lut4, the text pass and the text encoder lut8; per-row int8 gave NaN in the text encoder, 16.165) |
 | The memory the Neural Engine holds (`mem.NPUWired`) on the M1 (3.4) | ✓ (1.14 GiB at fp16, 0.60 at int8) | ✓ (2.98 GiB at fp16, 1.56 at lut8) | ✓ (2.62 GiB) | ✓ (2.62 GiB) | ✗ (not measured on the M1; on the M3 the footprint is 4.5 GB at 512², 6.0 GB at 1024²) |
-| Energy per image (J) | ✗ (the Mac's powerbench needs sudo) | ✗ | ✓ (AMD 688 J) | ✓ (AMD 3.8 kJ at 1024²) | ✗ |
+| Energy per image (J) | ✗ (the Mac's powerbench needs sudo) | ✗ | ✓ (AMD 688 J) | ✓ (AMD 3.8 kJ at 1024²) | ✓ (AMD 2.0 kJ at 1024², 119 s, 16.167) |
 | 3 prompts × 2 seeds against diffusers' fp32 (9), Mac | ✓ | ✗ (one picture: 0.984; the 16.160 changes were judged on 6 pictures against the Neural Engine's fp16) | ✓ | ✗ (not against diffusers; on the M1 4 min 30 s an image, the Neural Engine 2.62 GiB, the default against 30 Euler steps the same in 2 of 4, 16.160) | ✓ (512², latents 0.935–0.981, the same compositions and the sign's lettering, 16.165) |
 | Intel's NPU | ✗ (no form) | ✗ | ✗ (exports made; the hardware's run after the reload fix not checked) | ✗ (likewise) | ✗ |
 
-Qwen-Image-2.1 and Chroma1 (AMD only so far; 16.155–16.157, 16.167):
+Qwen-Image-2.1 (not distilled) and Chroma1, AMD only so far (Qwen-Image-2.1-Turbo is in the table above; 16.155–16.157, 16.167):
 
-| Item | Qwen-Image-2.1-Turbo | Qwen-Image-2.1 | Chroma1-Flash | Chroma1-HD |
-|---|---|---|---|---|
-| CFG's passes per weight group, AMD | — (no CFG) | ✓ (guidance only when asked, as diffusers) | — (no CFG) | ✓ |
-| CFG's passes per weight group, Core ML / OpenVINO | — | ✗ (no Mac or Intel form) | — | ✗ (likewise) |
-| The negative read in the same text load (`EncodeAll`) | — | ✓ (the empty prompt is a real one: the chat template's tokens) | — | ✓ |
-| A second-order solver | — (Euler, 8 distilled steps) | measured, not adopted (DPM 25 moved details: 0.973 against Euler 40's 0.990 to 100 steps) | ✓ (Heun, 8 steps) | ✓ (DPM-Solver++ 2M, 25 steps) |
-| CFG at the noisier steps only | — | ✗ (not measured) | — | ✓ (σ ≥ 0.6) |
-| A fixed text prefix held in the export | — (the system prompt is shorter than a 64-row chunk) | — (likewise) | — (no instruction) | — |
-| The prompt's keys and values out of the step loop | ✓ (dit_text, once a prompt) | ✓ | — (FLUX's text rows are modulated by the step) | — |
-| Image attention in 64-key blocks, QK^T in bfp16 | ✓ | ✓ | ✓ | ✓ |
-| VAE on the grid (`GridGEMM`, phase upsampling) | ✓ | ✓ | ✓ | ✓ |
-| Same-shaped VAE stages in one graph | ✓ | ✓ | ✗ | ✗ |
-| The text encoder in groups (`SwapVariants`) | ✓ | ✓ | ✗ (T5 in one graph: its 5 GB of q8 is the peak, 4956 MiB pinned) | ✗ |
-| Fewer bytes of DiT weights, AMD | ✓ (q8 attention, q6 MLP; q4 and GPTQ measured, not adopted) | ✓ (the same) | ✓ (q8; formats per part not swept) | ✓ (q8, likewise) |
-| Fewer bytes of DiT weights, Mac | ✗ (no form) | ✗ | ✗ | ✗ |
-| Energy per image at 1024² (AMD, package) | ✓ 2.0 kJ, 119 s | ✓ 9.3 kJ, 504 s (40 steps, no CFG) | ✓ 4.7 kJ, 269 s | ✓ 12.6 kJ, 691 s (CFG 3) |
-| 3 prompts × 2 seeds against diffusers' fp32 | ✓ (512², 0.976–0.9996 with MLP q6) | ✗ (one picture, CFG 4: 0.9982) | ✗ (one picture: 0.9988) | ✗ (one picture, CFG 3: 0.9957) |
-| Intel's NPU | ✗ | ✗ | ✗ | ✗ |
+| Item | Qwen-Image-2.1 | Chroma1-Flash | Chroma1-HD |
+|---|---|---|---|
+| CFG's passes per weight group, AMD | ✓ (guidance only when asked, as diffusers) | — (no CFG) | ✓ |
+| CFG's passes per weight group, Core ML / OpenVINO | ✗ (no Mac or Intel form) | — | ✗ (likewise) |
+| The negative read in the same text load (`EncodeAll`) | ✓ (the empty prompt is a real one: the chat template's tokens) | — | ✓ |
+| A second-order solver | measured, not adopted (DPM 25 moved details: 0.973 against Euler 40's 0.990 to 100 steps) | ✓ (Heun, 8 steps) | ✓ (DPM-Solver++ 2M, 25 steps) |
+| CFG at the noisier steps only | ✗ (not measured) | — | ✓ (σ ≥ 0.6) |
+| A fixed text prefix held in the export | — (the system prompt is shorter than a 64-row chunk) | — (no instruction) | — |
+| The prompt's keys and values out of the step loop | ✓ | — (FLUX's text rows are modulated by the step) | — |
+| Image attention in 64-key blocks, QK^T in bfp16 | ✓ | ✓ | ✓ |
+| VAE on the grid (`GridGEMM`, phase upsampling) | ✓ | ✓ | ✓ |
+| Same-shaped VAE stages in one graph | ✓ | ✗ | ✗ |
+| The text encoder in groups (`SwapVariants`) | ✓ | ✓ (T5, 6 groups of 4 layers: peak 5.9 → 4.5 GiB, the same latents) | ✓ |
+| Fewer bytes of DiT weights, AMD | ✓ (q8 attention, q6 MLP; q4 and GPTQ measured, not adopted) | ✓ (q8; formats per part not swept) | ✓ (q8, likewise) |
+| Fewer bytes of DiT weights, Mac | ✗ | ✗ | ✗ |
+| Energy per image at 1024² (AMD, package) | ✓ 9.3 kJ, 504 s (40 steps, no CFG) | ✓ 4.6 kJ, 267 s | ✓ 12.1 kJ, 685 s (CFG 3) |
+| 3 prompts × 2 seeds against diffusers' fp32 | ✗ (one picture, CFG 4: 0.9982) | ✗ (one picture: 0.9988) | ✗ (one picture, CFG 3: 0.9957) |
+| Intel's NPU | ✗ | ✗ | ✗ |
 
 The AMD cells are being done in separate work (q8 for Sana's DiT, the cross-attention's keys and values, Anima's VAE stages, Sana's CFG steps there); update them when it lands. Energy on the Mac and Intel remain.
 
@@ -516,7 +516,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Apple's GPTQ codes: hwnpu-chat takes them with `--codes` and `--format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
 - Anima-Aesthetic's speed (3 min 19 s an image at 1024², 16.154): the rest of 7.1's untried items (the cross-attention's keys and values out of the loop, merging the VAE's stages, P·V in bfp16 by default) (the power profile barely changes the NPU's speed: balanced is 2–3 % faster, 16.154)
-- Qwen-Image-2.1 and Chroma1 (7.2): Chroma's T5 in groups (its 5 GB is the peak), Chroma's DiT formats per part, CFG at the noisier steps for Qwen-Image-2.1, 3 prompts × 2 seeds for the three models without them, the Mac and Intel forms
+- Qwen-Image-2.1 and Chroma1 (7.2): Chroma's DiT formats per part, CFG at the noisier steps for Qwen-Image-2.1, 3 prompts × 2 seeds for the three models without them, the Mac and Intel forms
 - The image models' energy on the Mac (powerbench needs sudo) and on Intel (7.2)
 - Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter)
 
