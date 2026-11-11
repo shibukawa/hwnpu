@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/systemone"
 )
 
@@ -116,6 +117,7 @@ func (c *SystemOneCmd) Run(ctx context.Context) error {
 	if c.Listen != "" {
 		return serveSystemOne(ctx, &systemone.Server{M: m, Name: m.Name, Log: lw}, c.Listen, m.MaxTokens())
 	}
+	console.Running() // a server's or a conversation's times are not of the command's work
 	return answerSystemOne(ctx, m, c.Request)
 }
 

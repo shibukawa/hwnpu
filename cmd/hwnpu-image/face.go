@@ -57,6 +57,7 @@ func (c *FaceDetectCmd) Run(ctx context.Context) error {
 			return fmt.Errorf("--size %q: not WxH", c.Size)
 		}
 	}
+	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for _, p := range c.Pictures {
 		img, err := readPicture(p)

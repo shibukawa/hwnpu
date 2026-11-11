@@ -176,6 +176,7 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 	if err != nil {
 		return loaded{}, err
 	}
+	console.Prepared(logw())
 	e.NoThink = m.NoThink
 	return loaded{Engine: e, model: m}, nil
 }

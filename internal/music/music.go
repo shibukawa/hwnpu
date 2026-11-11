@@ -103,6 +103,11 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	format := cmp.Or(s.Format, "lut8")
 	at := func(f string) string { return filepath.Join(s.Dir, filepath.FromSlash(f)) }
 	p := Paths{Dir: s.Dir, Checkpoint: at(Files[0])}
+	var want []chat.File
+	for _, f := range s.files() {
+		want = append(want, chat.File{Repo: s.Repo, Name: f, Path: at(f)})
+	}
+	chat.Expect(ctx, want)
 	for _, f := range s.files() {
 		path := at(f)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

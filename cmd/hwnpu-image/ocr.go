@@ -90,6 +90,7 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 			return fmt.Errorf("--size %q: not WxH in multiples of 32", c.Size)
 		}
 	}
+	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for n, p := range c.Pictures {
 		img, err := readPicture(p)

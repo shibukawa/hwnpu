@@ -249,6 +249,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	p.Logf = logf
 	p.Dump = c.Dump
 	logf("loaded %s (%dx%d) in %s", filepath.Base(model), p.Dit.Width, p.Dit.Height, console.Duration(time.Since(t0)))
+	console.Running()
 
 	steps, guidance := cmp.Or(c.Steps, p.DefaultSteps()), cmp.Or(c.Guidance, p.DefaultGuidance())
 	if c.Negative != "" && guidance == 1 {

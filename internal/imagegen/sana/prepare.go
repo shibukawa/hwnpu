@@ -31,13 +31,16 @@ type Setup struct {
 // repository has the same weights and tokenizer (see Files).
 const TextDir = "gemma-2-2b-it"
 
+// File is a file of a Sana repository: Text, one of Gemma 2's.
+type File struct {
+	Name string
+	Text bool
+}
+
 // Files are the files of a Sana repository Prepare downloads (models.yaml pins their sha256).
 // Gemma 2's (Text) go to TextDir, downloaded once from the first Sana's repository: the other
 // repositories' copies differ only in config.json's metadata (_name_or_path, transformers_version).
-var Files = []struct {
-	Name string
-	Text bool
-}{
+var Files = []File{
 	{"transformer/config.json", false},
 	{"transformer/diffusion_pytorch_model.safetensors", false},
 	{"vae/config.json", false},
@@ -75,12 +78,19 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	root := filepath.Join(s.Dir, filepath.Base(s.Repo))
 	text := filepath.Join(s.Dir, TextDir)
-	for _, f := range Files {
-		dir := root
+	at := func(f File) string {
 		if f.Text {
-			dir = text
+			return filepath.Join(text, f.Name)
 		}
-		path := filepath.Join(dir, f.Name)
+		return filepath.Join(root, f.Name)
+	}
+	var want []chat.File
+	for _, f := range Files {
+		want = append(want, chat.File{Repo: s.Repo, Name: f.Name, Path: at(f)})
+	}
+	chat.Expect(ctx, want)
+	for _, f := range Files {
+		path := at(f)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return "", err
 		}

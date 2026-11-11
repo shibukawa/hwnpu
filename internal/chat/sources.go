@@ -161,19 +161,14 @@ func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	}
+	stop := console.Downloading(repo + "/" + name)
+	bytes := int64(-1) // linked from another model: no download
+	defer func() { stop(bytes) }()
 	if want, ok := digests[repo][name]; ok && sameFile(want, name, path, log) {
+		planFinish(path)
 		return nil
 	}
-	src, key := splitSource(repo)
-	order := []string{src}
-	if src == "" {
-		order = slices.Clone(Search)
-		foundMu.Lock()
-		if f, ok := found[repo]; ok {
-			order = append([]string{f}, slices.DeleteFunc(order, func(s string) bool { return s == f })...)
-		}
-		foundMu.Unlock()
-	}
+	order, key := sourceOrder(repo)
 	var errs []error
 	for _, sn := range order {
 		s := Sources[sn]
@@ -190,6 +185,10 @@ func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 		}
 		if err == nil {
 			if err = verify(repo, name, path); err == nil {
+				if fi, err := os.Stat(path); err == nil {
+					bytes = fi.Size()
+				}
+				planFinish(path)
 				foundMu.Lock()
 				found[repo] = sn
 				foundMu.Unlock()
@@ -209,6 +208,22 @@ func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 		return errors.Join(errs...)
 	}
 	return fmt.Errorf("chat: %s of %s is in none of the sources %s: %w", name, key, strings.Join(order, ", "), errNotFound)
+}
+
+// sourceOrder is the sources fetch looks in for a file of repo, in order, and the repository's
+// name in them.
+func sourceOrder(repo string) (order []string, key string) {
+	src, key := splitSource(repo)
+	if src != "" {
+		return []string{src}, key
+	}
+	order = slices.Clone(Search)
+	foundMu.Lock()
+	if f, ok := found[repo]; ok {
+		order = append([]string{f}, slices.DeleteFunc(order, func(s string) bool { return s == f })...)
+	}
+	foundMu.Unlock()
+	return order, key
 }
 
 // Pinned is the SHA-256 the definitions pin for a file of repo (as Fetch takes it), if any: a

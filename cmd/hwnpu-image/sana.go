@@ -82,6 +82,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 		return fmt.Errorf("--noise is for one prompt")
 	}
 	logf("loaded %s (%dx%d) in %s", filepath.Base(r.model), p.Dit.W(), p.Dit.H(), console.Duration(time.Since(t0)))
+	console.Running()
 
 	// with several pictures the DiT stays on the device between them (keepDiT): only Gemma 2
 	// and the VAE's stages are loaded for each

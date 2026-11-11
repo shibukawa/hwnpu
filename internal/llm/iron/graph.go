@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 // GraphManifest is manifest.json of a graph exported by tools/amd/iron_graph.py: one IRON graph
@@ -96,6 +97,7 @@ func OpenGraph(ctx context.Context, dev *hwnpu.Device, dir string) (*Graph, erro
 
 // OpenGraphWith is OpenGraph with options.
 func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt GraphOptions) (*Graph, error) {
+	defer console.Loading(dir)()
 	man, err := ReadGraphManifest(dir)
 	if err != nil {
 		return nil, err

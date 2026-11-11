@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
@@ -126,6 +127,7 @@ func (m *Model) load(ctx context.Context, g **iron.Graph, name string) error {
 	if *g != nil {
 		return nil
 	}
+	defer console.Loading(filepath.Join(m.dir, name))()
 	t0 := time.Now()
 	x, err := iron.OpenGraph(ctx, m.dev, filepath.Join(m.dir, name))
 	if err != nil {

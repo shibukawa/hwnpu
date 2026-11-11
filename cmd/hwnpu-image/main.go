@@ -60,6 +60,8 @@ import (
 	"os/signal"
 
 	"github.com/alecthomas/kong"
+
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 type cli struct {
@@ -85,4 +87,5 @@ func main() {
 		kong.UsageOnError(),
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	k.FatalIfErrorf(k.Run())
+	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
 }
