@@ -82,7 +82,7 @@ type GenerateCmd struct {
 	KeepDiT   bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (Gemma 2 and the VAE are loaded for each)."`
 	Steps     int       `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Anima-Aesthetic 25 with dpm2m, the model card's 30 to 50 with euler; Sana 20)."`
 	Negative  string    `help:"The negative prompt of the classifier-free guidance (default empty; Anima's model card recommends \"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration\", without the score tags for Anima-Aesthetic)."`
-	Guidance  float64   `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none; Sana 4.5)."`
+	Guidance  float64   `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none, or 1.5 with a --negative; Sana 4.5)."`
 	Shift     float64   `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
 	Sampler   string    `placeholder:"NAME" help:"Anima: the solver, euler (Anima's scheduler; Anima-Turbo's default) or dpm2m (DPM-Solver++ 2M, the default with guidance: the same DiT runs a step, closer to many steps' result in fewer)."`
 	CFGSigmas []float64 `name:"cfg-sigmas" sep:"," placeholder:"LO,HI" help:"Anima: run the classifier-free guidance only at steps whose sigma is in [LO, HI] (1 is pure noise; default 0.6,1, and 0,1 for every step); the other steps run the DiT once."`
@@ -187,6 +187,11 @@ func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, err
 	return amdExport(m, "tools/amd/iron_anima.py")
 }
 
+// turboNegativeGuidance is the guidance scale a --negative without --guidance gets on a model that
+// runs none by default (Anima-Turbo): weak, as a model distilled to run without guidance burns
+// at the 4 the others take.
+const turboNegativeGuidance = 1.5
+
 // anima draws the picture with Anima: the export model, or "" for the one of --dir (downloaded
 // and converted when missing).
 func (c *GenerateCmd) anima(ctx context.Context, model string) error {
@@ -247,7 +252,13 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 
 	steps, guidance := cmp.Or(c.Steps, p.DefaultSteps()), cmp.Or(c.Guidance, p.DefaultGuidance())
 	if c.Negative != "" && guidance == 1 {
-		return fmt.Errorf("--negative: %s runs no classifier-free guidance (--guidance 1); give a --guidance over 1 to use it", cmp.Or(p.Checkpoint, "Anima-Turbo"))
+		if c.Guidance != 0 {
+			return fmt.Errorf("--negative: --guidance 1 runs no classifier-free guidance; give a --guidance over 1 to use it")
+		}
+		// Anima-Turbo runs no guidance by default: a negative prompt asks for some, and a weak
+		// scale, as a distilled model burns at a strong one
+		guidance = turboNegativeGuidance
+		logf("--negative: %s runs no guidance by default, so --guidance %g (give --guidance to change it)", cmp.Or(p.Checkpoint, "Anima-Turbo"), guidance)
 	}
 	cond, err := p.Encode(ctx, c.Prompts[0])
 	if err != nil {
