@@ -227,16 +227,23 @@ func cbias(n int) []float32 {
 func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32, conds []Cond) ([][]float32, error) {
 	t6, emb := e.time.embed(tproj)
 	var err error
-	res := make([][]float32, len(conds))
+	// each group runs every conditioning before the next group, as on AMD (design.md 16.148):
+	// a group the Neural Engine has to load again (an M1 past about 2.9 GiB) loads once a step
+	xs := make([][]float32, len(conds))
+	bias := make([][]float32, len(conds))
 	for k, cd := range conds {
-		x := patches
-		bias := cbias(cd.Rows)
-		for i, b := range e.blks {
-			if x, err = b.Run(ctx, map[string][]float32{"x": x, "t6": t6, "ctx": cd.ctx, "cbias": bias}); err != nil {
+		xs[k], bias[k] = patches, cbias(cd.Rows)
+	}
+	for i, b := range e.blks {
+		for k, cd := range conds {
+			if xs[k], err = b.Run(ctx, map[string][]float32{"x": xs[k], "t6": t6, "ctx": cd.ctx, "cbias": bias[k]}); err != nil {
 				return nil, fmt.Errorf("blocks group %d: %w", i, err)
 			}
 		}
-		if res[k], err = e.fin.Run(ctx, map[string][]float32{"x": x, "emb": emb}); err != nil {
+	}
+	res := make([][]float32, len(conds))
+	for k := range conds {
+		if res[k], err = e.fin.Run(ctx, map[string][]float32{"x": xs[k], "emb": emb}); err != nil {
 			return nil, fmt.Errorf("dit_final: %w", err)
 		}
 	}

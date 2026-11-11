@@ -90,7 +90,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <tr>
 <th>Image generation<br><sub>hwnpu-image</sub></th>
 <td>△ <b>Anima-Turbo</b> (4.1 GB)<br>with other applications closed</td>
-<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>, the same memory): 25 steps with guidance, about 4.5 times as long<br><b>Sana 600M</b> (2.3 GB on AMD, 3.3 GB on Apple): lighter, English prompts</td>
+<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>, the same memory): 25 steps with guidance, about 4.5 times as long (M1: about 4 min 30 s, Anima-Turbo about 58 s)<br><b>Sana 600M</b> (2.3 GB on AMD, 3.9 GB on Apple): English prompts; the fastest on Apple's Neural Engine (M1: about 17 s, Anima-Turbo about 58 s)<br><b>SANA 1.5 1.6B</b> (<code>-m sana:1.6b</code>, 16 GB and up): nearer the prompt, about 31 s on the M1</td>
 </tr>
 <tr>
 <th>Speech<br><sub>hwnpu-audio tts</sub></th>
@@ -145,7 +145,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | MoGe-2 ViT-S / B / L (AMD) | Metric depth, points, normals (hwnpu-image depth) | 1.9 GB (S), 2.1 GB (B), 2.6 GB (L) | none | measured |
 | Depth Anything 3 Mono / Metric Large, Small, Base (AMD) | Depth estimation (hwnpu-image depth) | 1.4 GB (Large), 0.75 GB (Base), 0.5 GB (Small) | none | measured |
 | Sana 600M, SANA 1.5 1.6B (1024 × 1024, AMD) | Image generation | 2.3 GB (the NPU's 2.0 GB peak, in the VAE with two stages loaded at once, and the text graph with Gemma 2 in 6 bits next, and the process; the DiT a group at a time, 0.4 GB) | none | measured |
-| Sana 600M, SANA 1.5 1.6B (1024 × 1024, Apple) | Image generation | 3.0–3.3 GB process (Gemma 2 int8 in 5 programs, loaded while it runs; the DiT fp16; the VAE a stage at a time) | none | measured (M1) |
+| Sana 600M, SANA 1.5 1.6B (1024 × 1024, Apple) | Image generation | 3.9 GB process at its peak (Gemma 2 int8 in 5 programs, loaded while it runs; the DiT int8 (600M) or lut8 (1.5), 0.60 / 1.56 GiB on the Neural Engine; the VAE a stage at a time) | none | measured (M1) |
 | DA3-SMALL, DA3MONO-LARGE, MoGe-2 ViT-S (Apple) | Depth estimation (hwnpu-image depth) | the programs of one size (fp16), converted for each aspect on first use | none | not measured |
 | Anima-Turbo, Anima-Aesthetic (1024 × 1024) | Image generation | 1.9 GB (the VAE's largest stage; the DiT reads its blocks' weights a group at a time) | none | measured |
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |

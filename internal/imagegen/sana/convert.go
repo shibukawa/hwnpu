@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/sana/mil"
@@ -35,12 +36,25 @@ type ConvertOptions struct {
 	Only map[string]bool
 }
 
-// Formats are the default weight formats of Gemma 2 and the DiT: int8 for Gemma 2 (its 5.2 GB
-// at fp16 would be a dozen programs; int8 is near fp16, design.md 16.85), fp16 for the DiT.
-func Formats() (text, dit string) { return "int8", "fp16" }
+// Formats are the default weight formats of Gemma 2 and the DiT of the Sana name (a models.yaml
+// name or the repository's): int8 for Gemma 2 (its 5.2 GB at fp16 would be a dozen programs;
+// int8 is near fp16, design.md 16.85). The DiT at 8 bits draws the same pictures in half the
+// Neural Engine's memory (design.md 16.157): int8 for Sana 600M (1.14 -> 0.60 GiB on the M1),
+// lut8 for SANA 1.5 1.6B, whose per-row int8 breaks the pictures (2.98 -> 1.56 GiB, under the
+// M1's 2.9: 43 -> 31 s an image). Others keep fp16.
+func Formats(name string) (text, dit string) {
+	switch n := strings.ToLower(name); {
+	case strings.Contains(n, "600m"):
+		return "int8", "int8"
+	case strings.Contains(n, "1.6b"):
+		return "int8", "lut8"
+	}
+	return "int8", "fp16"
+}
 
-func (o *ConvertOptions) defaults() {
-	text, dit := Formats()
+// defaults fills what o leaves out for the Sana name (Formats).
+func (o *ConvertOptions) defaults(name string) {
+	text, dit := Formats(name)
 	if o.TextFormat == "" {
 		o.TextFormat = text
 	}
@@ -70,7 +84,7 @@ func (o *ConvertOptions) defaults() {
 // programs, text/ (the tokenizer and the embedding table, bf16, as the IRON export's), model.json
 // and manifest.json.
 func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
-	o.defaults()
+	o.defaults(filepath.Base(root))
 	if log == nil {
 		log = io.Discard
 	}

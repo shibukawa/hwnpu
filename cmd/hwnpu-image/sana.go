@@ -25,6 +25,7 @@ type sanaRun struct {
 	keepDiT       bool
 	steps         int
 	guidance      float64
+	cfgSigmas     []float64 // LO, HI: the steps that run the guidance (nil: the pipeline's)
 	seed          uint64
 	resident, cpu bool
 	dump, cache   string
@@ -77,6 +78,21 @@ func runSana(ctx context.Context, r sanaRun) error {
 	guidance := r.guidance
 	if guidance == 0 {
 		guidance = p.Model.Guidance
+	}
+	if len(r.cfgSigmas) > 0 {
+		if len(r.cfgSigmas) != 2 {
+			return fmt.Errorf("--cfg-sigmas: give LO,HI")
+		}
+		p.CFGMin, p.CFGMax = r.cfgSigmas[0], r.cfgSigmas[1]
+	}
+	if guidance != 1 && p.CFGMax > 0 {
+		n := 0
+		for _, sg := range p.Sigmas(steps)[:steps] {
+			if p.Guided(sg) {
+				n++
+			}
+		}
+		logf("guidance %g at %d of %d steps (sigma %g to %g)", guidance, n, steps, p.CFGMin, p.CFGMax)
 	}
 	if r.noise != "" && len(r.prompts) > 1 {
 		return fmt.Errorf("--noise is for one prompt")

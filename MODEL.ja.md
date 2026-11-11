@@ -90,7 +90,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <tr>
 <th>画像生成<br><sub>hwnpu-image</sub></th>
 <td>△ <b>Anima-Turbo</b> (4.1 GB)<br>ほかのアプリを閉じて</td>
-<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>、メモリは同じ) 25 ステップと CFG で約 4.5 倍の時間<br><b>Sana 600M</b> (AMD 2.3 GB、Apple 3.3 GB) 軽い。英語のプロンプト</td>
+<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>、メモリは同じ) 25 ステップと CFG で約 4.5 倍の時間 (M1 で約 4 分 30 秒、Anima-Turbo は約 58 秒)<br><b>Sana 600M</b> (AMD 2.3 GB、Apple 3.9 GB) 英語のプロンプト。Apple の Neural Engine ではいちばん速い (M1 で約 17 秒、Anima-Turbo は約 58 秒)<br><b>SANA 1.5 1.6B</b> (<code>-m sana:1.6b</code>、16 GB から) プロンプトにより忠実。M1 で約 31 秒</td>
 </tr>
 <tr>
 <th>読み上げ<br><sub>hwnpu-audio tts</sub></th>
@@ -145,7 +145,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | MoGe-2 ViT-S / B / L (AMD) | メートルの深度、点群、法線 (hwnpu-image depth) | 1.9 GB (S)、2.1 GB (B)、2.6 GB (L) | なし | 実測 |
 | Depth Anything 3 Mono / Metric Large、Small、Base (AMD) | 深度推定 (hwnpu-image depth) | 1.4 GB (Large)、0.75 GB (Base)、0.5 GB (Small) | なし | 実測 |
 | Sana 600M、SANA 1.5 1.6B (1024 × 1024、AMD) | 画像生成 | 2.3 GB (NPU の最大 2.0 GB に、プロセスを足したもの。NPU の最大は 2 段が同時に載る VAE で、Gemma 2 を 6 ビットにしたテキストのグラフが次。DiT は 1 組ずつ読み、0.4 GB) | なし | 実測 |
-| Sana 600M、SANA 1.5 1.6B (1024 × 1024、Apple) | 画像生成 | プロセス 3.0〜3.3 GB (Gemma 2 は int8 の 5 本を走る間だけ。DiT は fp16、VAE は段ごと) | なし | 実測 (M1) |
+| Sana 600M、SANA 1.5 1.6B (1024 × 1024、Apple) | 画像生成 | プロセスの最大 3.9 GB (Gemma 2 は int8 の 5 本を走る間だけ。DiT は int8 (600M) か lut8 (1.5) で、Neural Engine に 0.60 / 1.56 GiB。VAE は段ごと) | なし | 実測 (M1) |
 | DA3-SMALL、DA3MONO-LARGE、MoGe-2 ViT-S (Apple) | 深度推定 (hwnpu-image depth) | 1 つの大きさのプログラム (fp16)。縦横比ごとに初めて使うときに変換 | なし | 未測定 |
 | Anima-Turbo、Anima-Aesthetic (1024 × 1024) | 画像生成 | 1.9 GB (VAE の段の最大。DiT はブロックの重みを 1 組ずつ読む) | なし | 実測 |
 | LFM3-Audio-2B (読み上げ) | 読み上げ | 約 2.4 GB | 12 KiB/トークン | 重みから見込み |
