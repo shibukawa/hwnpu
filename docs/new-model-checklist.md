@@ -117,7 +117,7 @@ What helped:
 - Every part is `all on the NPU`
 - The second and **third** starts take a few seconds (the parts stay in the compile cache). In the split form (`-paged`), Gemma 4 went from 98 s to 1.9 s. The second alone misses two programs that evict each other (16.99)
 - Record the first compile time of each part. Qwen3.5's 128 tokens a call (GDN) took 13–15 minutes the first time (not solved)
-- On an M1, the parts' times in `HWNPU_PROFILE=1` hold steady from call to call. When the parts run in turn hold more than about 2.9 GiB, the same part varies and every call is 10× slower or more (a reload). On an M1, `-prefill auto` keeps one program when the two with the MTP layer's and the encoders' programs would hold over 2.8 GiB (16.118); a model whose program that generates holds over it alone (Qwen3.5-4B lut8, Gemma 4 E4B) gets a warning in the log (16.109, 16.112). Parts run in turn in the wrong order hit it too: SANA 1.5 (3.0 GiB) ran each conditioning through all DiT groups, and each step took 2.5–3.2 s against 1.6 s per group (16.157)
+- On an M1, the parts' times in `HWNPU_PROFILE=1` hold steady from call to call. When the parts run in turn hold more than about 2.9 GiB, the same part varies and every call is 10× slower or more (a reload). On an M1, `-prefill auto` keeps one program when the two with the MTP layer's and the encoders' programs would hold over 2.8 GiB (16.118); a model whose program that generates holds over it alone (Qwen3.5-4B lut8, Gemma 4 E4B) gets a warning in the log (16.109, 16.112). Parts run in turn in the wrong order hit it too: SANA 1.5 (3.0 GiB) ran each conditioning through all DiT groups, and each step took 2.5–3.2 s against 1.6 s per group (16.160)
 - **A change to the graph that keeps the program's name raises `llm.Arch.Revision`** (the name takes `-rN`). Otherwise hwnpu-chat reuses programs converted before the change (the silu rewrite, lfm3 / plamo3 r1; the host soft cap, gemma4 r1; Anima's `ExportVersion`, 16.95, 16.113)
 - Record the KL and argmax of `hwnpu-dev check -package` (for each format, section 5)
 - `MLComputePlan` waits up to 10 minutes (one Gemma 2 part of 13 s alone took over 2 minutes while another process compiled), and its occasional "Failed to construct compute plan, internal failure" is retried once (`internal/backend/coreml`, 16.145)
@@ -150,6 +150,7 @@ What helped:
 | **Check each operator against float32 with real activations**, not only against IRON's reference | IRON's reference copies its kernels: the tanh GELU's table (5× bf16's rounding) and nothing of MEDIUM's bfp16 show only against float32. Feed one layer's activations from HF into a graph of one operator and compare the relative RMS with bf16's rounding of the same values. SigLIP 2: the exact GELU in place of the tanh one and HIGHEST GEMMs took the embeddings' cosine from 0.9988 to 0.9998 | amd-npu-models.md 18.2 |
 | **IRON's MHA keeps the scores in bf16** | Large scores with small differences within a row lose them (Sana 600M's cross-attention, without q and k norms: about 1750, a step of 8). Only the conditional pass drifted, and CFG's 4.5 spread it (latent cosine 0.79). Subtract the first key from every key (the softmax is unchanged): 0.963. Look at the largest score of each attention against float32 (Anima's is 8 and needs nothing) | 16.119, 16.122 |
 | One full ELF | Switching xclbins costs 0.46 ms each | 16.45–50 |
+| **A graph whose second run hangs** (`iron.GraphOptions.Barrier`) | Qwen-Image-2.1's dit_text (keys and values written at a per-call position) and Chroma's approximator (6 commands) ran right once, then the next run's first command timed out. An empty command in a context of its own (the ELF loaded again) before each run fixes it, as the language models' stepBarrier. Check every graph with `irongraph -runs 3`, not one run | 16.155 |
 | Prompt chunks of 1024 | 20 % faster than 2048. At 256 the window layers become rings and cannot roll back | 16.54 |
 | At most 3 transfers queued on one shim channel | Queuing 16 without waiting hung the command, and two hangs in a row needed a reboot. Wait for the oldest before queuing more | 16.89 (PR #66) |
 | Each command under 2 s | Longer ones end in `ERT_CMD_STATE_TIMEOUT`. Split them at export (`SCRATCHPAD_WORDS`) | 16.65 |
@@ -193,7 +194,7 @@ Switch each part (attention projections, MLP, output matrix, convolutions, tower
 - MLP and output matrix at 4 bits. The output matrix at 4 bits barely matters
 - Short convolutions at 8 bits (+0.01 at 4 bits)
 - Layers with sandwich norms (Gemma 4, PLaMo 3) are weak at 4 bits. With the ANE's tables, lut6 or more (Gemma 4 lut4 KL 2.54, PLaMo 3 1.91)
-- A DiT at 8 bits on the ANE: per-row int8 held Sana 600M's pictures but broke SANA 1.5's, where lut8 held them (16.157). Try both and look at the pictures
+- A DiT at 8 bits on the ANE: per-row int8 held Sana 600M's pictures but broke SANA 1.5's, where lut8 held them (16.160). Try both and look at the pictures
 - lut8 for multimodal models' text parts, TTS, d1's judgments and embeddings (they broke down with lut4)
 - A distilled 8-step DiT is weak at 4 bits (q4nx: latent cosine 0.777). q8 is the default (q6 keeps the composition)
 - **A small model's (2B or less) MLP can break at 4 bits**: Qwen3.5-0.8B README 0.055 but GPL 0.34 (0.30 with GPTQ). AMD's q6 (6.5 bits, `--mlp q6 --head q6`) gives 0.044. Always look at the GPL. 4B makes 0.042 at q4 and stays at q4
@@ -292,6 +293,7 @@ Done (bring them in from the start):
 | The distilled model as the default | Anima-Turbo (8 steps, no CFG) is 44 s against Aesthetic's 3 min 19 s; the use `image` picks it | 16.148 |
 | **A second-order multistep solver** (DPM-Solver++ 2M on the data prediction, `--sampler dpm2m`) | The same DiT call a step as Euler. 25 steps land nearer 100 Euler steps than 30 Euler steps (latent cosine 0.984 against 0.982, 6 pictures); 15 break details. Judge against many Euler steps, not only the model card's count | 16.154 |
 | **CFG at the noisier steps only** (`--cfg-sigmas 0.6,1`) | The steps under sigma 0.6 run the DiT once: the same pictures (0.998 against every step guided). Dropping it at the noisiest steps instead (as the paper also does) changed compositions and faded colours. With the solver: Anima-Aesthetic at 1024² 4 min 40 s → 3 min 19 s, 4.8 → 3.8 kJ (energy falls less than time: the mean power rose) | 16.154 |
+| **The prompt's keys and values once a prompt** (a DiT whose text rows do not depend on the step) | Qwen-Image-2.1 modulates the text at t = 0 (`causal_condition`): its rows run through the blocks once a prompt (dit_text) and the steps run the image's rows only, attending to [own keys, the text's, cut by a per-call key count with the image first]. Check the model for such a flag before porting | 16.155 |
 
 Not tried yet (estimates; measure them before adopting):
 
@@ -311,7 +313,7 @@ The items above and in sections 3–5 and 9, for each image model in models.yaml
 | Item | Sana-600M | SANA1.5-1.6B | Anima-Turbo | Anima (Aesthetic, Base) |
 |---|---|---|---|---|
 | CFG's passes per weight group, AMD (`ironEngine.velocity`) | ✓ | ✓ | — (no CFG) | ✓ |
-| CFG's passes per weight group, Core ML / OpenVINO (`progEngine.velocity`) | ✓ (16.157) | ✓ (64 → 38 s of denoising, the same bits) | — | ✓ |
+| CFG's passes per weight group, Core ML / OpenVINO (`progEngine.velocity`) | ✓ (16.160) | ✓ (64 → 38 s of denoising, the same bits) | — | ✓ |
 | The empty negative without running the text encoder | ✓ (the caption's first row) | ✓ | — | ✓ (`empty_cond.bin`) |
 | A second-order solver | ✓ (the repository's DPM-Solver++ 2M, 20 steps; fewer steps not measured against many) | ✓ (the same) | — (Euler, 8 distilled steps) | ✓ (25 steps) |
 | CFG at the noisier steps only (`--cfg-sigmas`) | ✓ (σ ≥ 0.6, 14 of 20 steps; not checked on AMD) | ✓ (the same) | — | ✓ |
@@ -322,10 +324,10 @@ The items above and in sections 3–5 and 9, for each image model in models.yaml
 | Same-shaped VAE stages in one graph (AMD) | ✓ | ✓ | ✗ | ✗ |
 | The cross-attention's keys and values out of the step loop | ✗ | ✗ | ✗ | ✗ |
 | Fewer bytes of DiT weights, AMD | ✗ (bf16; q8 not tried) | ✗ (bf16, the heaviest DiT) | ✓ (q8; GPTQ q4 measured, not adopted) | ✓ (q8) |
-| Fewer bytes of DiT weights, Mac | ✓ (int8, 16.157) | ✓ (lut8; its per-row int8 breaks the pictures) | ✓ (int8) | ✓ (int8) |
+| Fewer bytes of DiT weights, Mac | ✓ (int8, 16.160) | ✓ (lut8; its per-row int8 breaks the pictures) | ✓ (int8) | ✓ (int8) |
 | The memory the Neural Engine holds (`mem.NPUWired`) on the M1 (3.4) | ✓ (1.14 GiB at fp16, 0.60 at int8) | ✓ (2.98 GiB at fp16, 1.56 at lut8) | ✓ (2.62 GiB) | ✓ (2.62 GiB) |
 | Energy per image (J) | ✗ (the Mac's powerbench needs sudo) | ✗ | ✓ (AMD 688 J) | ✓ (AMD 3.8 kJ at 1024²) |
-| 3 prompts × 2 seeds against diffusers' fp32 (9), Mac | ✓ | ✗ (one picture: 0.984; the 16.157 changes were judged on 6 pictures against the Neural Engine's fp16) | ✓ | ✗ (not against diffusers; on the M1 4 min 30 s an image, the Neural Engine 2.62 GiB, the default against 30 Euler steps the same in 2 of 4, 16.157) |
+| 3 prompts × 2 seeds against diffusers' fp32 (9), Mac | ✓ | ✗ (one picture: 0.984; the 16.160 changes were judged on 6 pictures against the Neural Engine's fp16) | ✓ | ✗ (not against diffusers; on the M1 4 min 30 s an image, the Neural Engine 2.62 GiB, the default against 30 Euler steps the same in 2 of 4, 16.160) |
 | Intel's NPU | ✗ (no form) | ✗ | ✗ (exports made; the hardware's run after the reload fix not checked) | ✗ (likewise) |
 
 The AMD cells are being done in separate work (q8 for Sana's DiT, the cross-attention's keys and values, Anima's VAE stages, Sana's CFG steps there); update them when it lands. Energy on the Mac and Intel remain.

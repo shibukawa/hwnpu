@@ -125,7 +125,7 @@ func TestImageMemoryTags(t *testing.T) {
 			t.Errorf("Pick(%q) = %s, %v, %v; want %s", name, m.Name, ok, err, want)
 		}
 	}
-	// Anima-Base was dropped (design.md 16.155): its tag no longer resolves
+	// Anima-Base was dropped (design.md 16.158): its tag no longer resolves
 	if _, _, _, err := Pick("anima:base", 59); err == nil {
 		t.Error("Pick(anima:base) resolved")
 	}

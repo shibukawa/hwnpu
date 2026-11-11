@@ -39,7 +39,7 @@ type ConvertOptions struct {
 // Formats are the default weight formats of Gemma 2 and the DiT of the Sana name (a models.yaml
 // name or the repository's): int8 for Gemma 2 (its 5.2 GB at fp16 would be a dozen programs;
 // int8 is near fp16, design.md 16.85). The DiT at 8 bits draws the same pictures in half the
-// Neural Engine's memory (design.md 16.157): int8 for Sana 600M (1.14 -> 0.60 GiB on the M1),
+// Neural Engine's memory (design.md 16.160): int8 for Sana 600M (1.14 -> 0.60 GiB on the M1),
 // lut8 for SANA 1.5 1.6B, whose per-row int8 breaks the pictures (2.98 -> 1.56 GiB, under the
 // M1's 2.9: 43 -> 31 s an image). Others keep fp16.
 func Formats(name string) (text, dit string) {

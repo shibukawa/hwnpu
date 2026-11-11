@@ -523,7 +523,7 @@ func (p *Pipeline) Generate(ctx context.Context, cond, neg Cond, noise []float32
 
 // DefaultCFGSigmas are the sigmas whose steps run the guidance by default: 14 of the 20 steps.
 // Against every step guided, 3 prompts x 2 seeds at 1024 x 1024 on the M1 drew the same pictures
-// (Sana 600M's latents 0.996-0.998); from 0.8 a small object went missing (design.md 16.157).
+// (Sana 600M's latents 0.996-0.998); from 0.8 a small object went missing (design.md 16.160).
 var DefaultCFGSigmas = [2]float64{0.6, 1}
 
 // Guided reports whether the step at sigma runs the guidance (CFGMin, CFGMax).

@@ -18,6 +18,8 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
+	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
+	"github.com/shibukawa/hwnpu/internal/imagegen/qwenimage"
 	"github.com/shibukawa/hwnpu/internal/imagegen/sana"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
@@ -119,7 +121,15 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 			return err
 		}
 		model = ""
-		if isAnima := strings.HasPrefix(m.Family, "anima"); !isAnima {
+		if strings.HasPrefix(m.Family, "chroma") {
+			if model, err = amdExport(m, "tools/amd/iron_chroma.py"); err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(m.Family, "qwen-image") {
+			if model, err = amdExport(m, "tools/amd/iron_qwenimage.py"); err != nil {
+				return err
+			}
+		} else if isAnima := strings.HasPrefix(m.Family, "anima"); !isAnima {
 			if model, err = c.sanaModel(ctx, m); err != nil {
 				return err
 			}
@@ -133,7 +143,11 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		}
 	}
 	var err error
-	if sana.IsExport(model) {
+	if chroma.IsExport(model) {
+		err = c.chroma(ctx, model, outs)
+	} else if qwenimage.IsExport(model) {
+		err = c.qwenImage(ctx, model, outs)
+	} else if sana.IsExport(model) {
 		err = runSana(ctx, sanaRun{model: model, prompts: c.Prompts, outs: outs, keepDiT: c.KeepDiT, negative: c.Negative, noise: c.Noise, latents: c.Latents,
 			steps: c.Steps, guidance: c.Guidance, cfgSigmas: c.CFGSigmas, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache})
 	} else if len(c.Prompts) > 1 {

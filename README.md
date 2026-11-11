@@ -193,7 +193,7 @@ Mac の Neural Engine と Intel の NPU では、hwnpu-chat と同じく、初�
 go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
 ```
 
-M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 58 秒、Anima-Aesthetic が約 4 分 30 秒 (DiT 1 回 6.3 秒、Neural Engine に 2.6 GiB、プロセスの最大 3.9 GB) です。記録は [docs/design.md](docs/design.md) の 16.85、16.152、16.157 にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
+M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 58 秒、Anima-Aesthetic が約 4 分 30 秒 (DiT 1 回 6.3 秒、Neural Engine に 2.6 GiB、プロセスの最大 3.9 GB) です。記録は [docs/design.md](docs/design.md) の 16.85、16.152、16.160 にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
 
 ### 画像生成 (Sana)
 
@@ -208,7 +208,7 @@ go run ./cmd/hwnpu-image generate -m sana:0.6b "a watercolor painting of a red f
 
 Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana 600M で約 60 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。`-m sana` はメモリで Sana 600M か SANA 1.5 1.6B を選びます。`--negative` で負のプロンプトを付けられます。正方形以外は Sana のビンの大きさ (`iron_sana.py --width 1152 --height 896` など) で書き出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
 
-Apple の Neural Engine では、`hwnpu-image generate -m sana "..."` などで Sana 600M と SANA 1.5 1.6B が動きます。Anima と同じく、初回にチェックポイントを `--dir/Sana` に落として Core ML のパッケージに変換し (10 秒)、各プログラムを Neural Engine 用にコンパイルします (初回は全体で約 8 分半)。M1 (16 GB) で、キャッシュのある 2 回目以降は 1 枚 Sana 600M が約 17 秒、SANA 1.5 が約 31 秒、プロセスのメモリは最大 3.9 GB です。diffusers の fp32 と同じノイズからの潜在のコサインは Sana 600M で 0.998、SANA 1.5 で 0.984 です (fp16 の DiT で全ステップ CFG のとき)。Gemma 2 は int8、DiT は Sana 600M が int8、SANA 1.5 が lut8、VAE は fp16 で、時刻の埋め込みだけホストで計算します。CFG は雑音の多い 14 ステップだけにかけます (`--cfg-sigmas 0,1` で全ステップ)。記録は [docs/design.md](docs/design.md) の 16.145 と 16.157 にあります。手で書き出すときは `hwnpu-image convert ~/models/Sana_600M_1024px_diffusers -m OUT` (`--text` で Gemma 2 の置き場所) を使います。
+Apple の Neural Engine では、`hwnpu-image generate -m sana "..."` などで Sana 600M と SANA 1.5 1.6B が動きます。Anima と同じく、初回にチェックポイントを `--dir/Sana` に落として Core ML のパッケージに変換し (10 秒)、各プログラムを Neural Engine 用にコンパイルします (初回は全体で約 8 分半)。M1 (16 GB) で、キャッシュのある 2 回目以降は 1 枚 Sana 600M が約 17 秒、SANA 1.5 が約 31 秒、プロセスのメモリは最大 3.9 GB です。diffusers の fp32 と同じノイズからの潜在のコサインは Sana 600M で 0.998、SANA 1.5 で 0.984 です (fp16 の DiT で全ステップ CFG のとき)。Gemma 2 は int8、DiT は Sana 600M が int8、SANA 1.5 が lut8、VAE は fp16 で、時刻の埋め込みだけホストで計算します。CFG は雑音の多い 14 ステップだけにかけます (`--cfg-sigmas 0,1` で全ステップ)。記録は [docs/design.md](docs/design.md) の 16.145 と 16.160 にあります。手で書き出すときは `hwnpu-image convert ~/models/Sana_600M_1024px_diffusers -m OUT` (`--text` で Gemma 2 の置き場所) を使います。
 
 ### 深度推定 (Depth Anything 3)
 
