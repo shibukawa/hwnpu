@@ -38,6 +38,10 @@ type Meta struct {
 	DType      string `json:"dtype"`
 	// Output is "logits" (causal language models) or "hidden" (encoders).
 	Output string `json:"output"`
+	// From is the first of the tokens a model generated after its prompt, 0 for none: a
+	// reference that hwnpu-dev generate -write-ref wrote from a converted model's own answer, so
+	// that another format is scored on the answer's tokens apart from the prompt's.
+	From int `json:"from,omitempty"`
 }
 
 // LoadRef reads PREFIX.ids.bin, PREFIX.hidden.bin, PREFIX.logits.bin (little endian, row major)
