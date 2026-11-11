@@ -223,7 +223,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | DiT | Cosmos-Predict2 2B (28 ブロック、hidden 2048、16 ヘッド)。adaLN-zero の自己注意 (3 軸の RoPE)、テキストへの交差注意、GELU の MLP | `dit_in` (パッチの埋め込みと時刻の埋め込み)、`dit_blocks` (4 ブロック。1 つの ELF に重みのバンクが 7 組。ブロックの射影は 8 ビット (q8)、13 節)、`dit_out` |
 | VAE | Qwen-Image の VAE (Wan 2.1 のもの) の復号器を 1 フレームで。因果 3D 畳み込みは時間方向の最後のタップだけ、時間方向の拡大は通らない | `vae/s0`〜`s9` (段ごとに 1 つ) |
 
-ホスト (`internal/imagegen/anima`) がするのは、テンソルの計算でないもの: トークン化 (Qwen3 の BPE と T5 の Unigram、どちらも Go)、埋め込みの行の取り出し、時刻の正弦波、2 × 2 のパッチの並べ替え、flow matching の Euler のステップ (`x += (σ' − σ) v`)、ノイズ、PNG。Anima-Turbo は CFG 1 なので、負のプロンプトも 2 回目の DiT もない。Anima-Aesthetic と Anima-Base は CFG (11.6)。
+ホスト (`internal/imagegen/anima`) がするのは、テンソルの計算でないもの: トークン化 (Qwen3 の BPE と T5 の Unigram、どちらも Go)、埋め込みの行の取り出し、時刻の正弦波、2 × 2 のパッチの並べ替え、flow matching の Euler のステップ (`x += (σ' − σ) v`)、ノイズ、PNG。Anima-Turbo は CFG 1 なので、負のプロンプトも 2 回目の DiT もない。Anima-Aesthetic は CFG (11.6)。
 
 ### 11.2 決めたこと
 
@@ -277,13 +277,13 @@ DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`
 - DiT をホストステップで分けると止まる原因
 - 512 × 512 は書き出せる (`--size 512`、2026-11-08): 1 枚 14 秒 (16.147 の前は 20 秒)、固定の最大 1111 MiB
 
-### 11.6 Turbo でない Anima: Anima-Aesthetic と Anima-Base (CFG、2026-11-10)
+### 11.6 Turbo でない Anima: Anima-Aesthetic (CFG、2026-11-10)
 
-`split_files/diffusion_models/` の `anima-aesthetic-v1.1.safetensors` (質の高い絵で調整したもの) と `anima-base-v1.0.safetensors` (調整前の基盤モデル) は、Turbo と同じ構造で同じ形の重み (685 本、bf16)。Base だけ名前の頭が `model.diffusion_model.` でなく `net.` (Cosmos の学習のままの名前) なので、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` は名前から頭を見分ける。グラフはそのまま、書き出しは `--dit` で選ぶ:
+`split_files/diffusion_models/` の `anima-aesthetic-v1.1.safetensors` (質の高い絵で調整したもの) と `anima-base-v1.0.safetensors` (調整前の基盤モデル) は、Turbo と同じ構造で同じ形の重み (685 本、bf16)。Base だけ名前の頭が `model.diffusion_model.` でなく `net.` (Cosmos の学習のままの名前) なので、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` は名前から頭を見分ける。グラフはそのまま、書き出しは `--dit` で選ぶ。Anima-Base は models.yaml から外した (LoRA を読み込まない hwnpu では Aesthetic で足りる、design.md 16.155) が、`--dit anima-base-v1.0.safetensors` の書き出しは今も作れる:
 
 ```bash
 python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-npu2 --size 1024 --dit anima-aesthetic-v1.1.safetensors   # 2.5 分
-go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low quality"   # -m anima:base は Base
+go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low quality"
 ```
 
 - **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。CFG 4 (モデルカードの 4〜5)。ステップはモデルカードではオイラー法の 30〜50 だが、既定は DPM-Solver++ 2M の 25 ステップで、CFG は σ が 0.6 以上のステップだけ (16.154、下の結果)。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1

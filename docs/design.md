@@ -3974,3 +3974,10 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
   - CFG を雑音の多いステップで外す (上の表)
 - **P·V の bfp16** (`--dit-mha qkpv`、16.147): 512² では注意が小さく速くならない。1024² で −5 %、電力量 −12 %、絵は同じ。既定 (`qk`) を変えるとすべての書き出しを作り直すことになり、16.147 では参照から細部が少し離れたので、まだ既定にしていない
 - 残り: 交差注意のキーと値をステップの外へ (演算の 0.7 %)、Anima の VAE の同じ形の段をまとめる (Turbo の 12 %)
+
+### 16.155 Anima-Base を models.yaml から外す — 2026-11-11
+
+- 16.148 で足した Anima-Base v1.0 (`anima:base`) を models.yaml から外した。`-m anima:base` は「family anima has no tag "base"」と断る (`TestImageMemoryTags`)
+- 理由: Base の取り柄は、調整前の基盤モデルで LoRA の学習のもとになること。hwnpu は LoRA を読み込まない (`internal/imagegen/anima/mil` の `ditLoRA` は adaLN の低ランクの層の幅で、LoRA の読み込みではない) ので、Base を走らせる場面がない。絵を描くなら、同じ構造、同じ時間の Anima-Aesthetic で足りる。Base は 512² で NPU で描けることを確かめただけで、参照との照合もしていなかった (16.152)
+- 残したもの: `circlestone-labs/Anima-Base-v1.0-Diffusers` のリポジトリ (VAE、トークナイザー、設定。Turbo と Aesthetic が使う)、名前の頭 `net.` の見分け (`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights`。プレビューのチェックポイントも `net.`)。`iron_anima.py --dit anima-base-v1.0.safetensors` の書き出しはディレクトリを `-m` に渡せば今も走る
+- 過去の記録 (16.148、16.152、16.154) の Anima-Base の記述はそのまま残す

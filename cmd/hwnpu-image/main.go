@@ -13,8 +13,8 @@
 //	hwnpu-image label -l "a cat,a dog,猫" photo.jpg               # zero-shot, any candidates, any language
 //	hwnpu-image embed --compare photo.jpg -t "a red car"         # cosine and probability of a text and a picture
 //
-// --model takes a name, a family or a use of models.yaml (image, anima-turbo, anima, anima:base,
-// sana, sana:1.6b; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo;
+// --model takes a name, a family or a use of models.yaml (image, anima-turbo, anima, sana,
+// sana:1.6b; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo;
 // detect, rtmdet:tiny; ocr, ppocr:medium; label, siglip2:large): a family alone picks for the
 // machine's memory, as hwnpu-chat's --model. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
 // value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
@@ -27,8 +27,8 @@
 // flow-matching Euler steps and the Qwen-Image VAE decodes them, all on the NPU; the host
 // tokenizes, looks up the embedding rows, patches the latents and writes the PNG. Anima-Turbo
 // (the image use's model, anima-turbo) wants 8 to 12 steps and no classifier-free guidance;
-// Anima-Aesthetic (anima) and Anima-Base (anima:base) 30 to 50 steps with the guidance at 4 to 5
-// (--guidance, --negative), the DiT twice a step: about 6.5 times Anima-Turbo's time. Anima reads
+// Anima-Aesthetic (anima) 25 DPM-Solver++ steps with the guidance at 4 to 5 (--guidance,
+// --negative), the DiT twice a step at the noisier ones: about 4.5 times Anima-Turbo's time. Anima reads
 // Danbooru tags and natural language; its card recommends the prefix "masterpiece, best
 // quality, score_7, safe, " (without score_7 for Anima-Aesthetic).
 //
