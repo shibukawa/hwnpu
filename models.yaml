@@ -8,12 +8,16 @@
 #                 largest machine up to this machine's memory
 #   kind          chat, embedding (hwnpu-chat: chat, agent, search, serve), transcribe (hwnpu-audio transcribe),
 #                 speech (hwnpu-audio tts), decision (hwnpu-chat systemone), image, depth, face-detect (hwnpu-image),
-#                 pitch (hwnpu-audio pitch), pose (hwnpu-image pose), notes (hwnpu-audio notes), music, sfx (hwnpu-audio generate)
+#                 pitch (hwnpu-audio pitch), pose (hwnpu-image pose), notes (hwnpu-audio notes), music, sfx (hwnpu-audio generate),
+#                 label (hwnpu-image label, embed)
 #   device        where it runs by the NPU's vendor (amd, apple, intel): npu (the default) or cpu;
 #                 a command's --device and HWNPU_DEVICE override it
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory)
 #   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
+#   sha256        FILE: the SHA-256 of a file of the repository, checked from any source; a file
+#                 another model pins with the same SHA-256 and has downloaded is linked from its
+#                 directory instead of downloaded (Qwen3-1.7B and MOSS-SoundEffect's text encoder)
 #   machine       the least memory of a machine, in GB, the family recommends the model for
 #   memory        what the model takes running, in GB (MODEL.md, "at start"): the peak of the NPU's
 #                 buffers and the process's together over a run (docs/new-model-checklist.md 11.2)
@@ -23,6 +27,14 @@
 #                 largest
 #   features      what it can do besides its kind (hwnpu-chat list explains them)
 #   no_think      answers without thinking unless asked (its chat template's own default)
+#   prefill, format, context, paged
+#                 how hwnpu-chat runs a chat model when its flags (--prefill, --format, --context,
+#                 --paged) do not say: auto, on or off; a weight format (lut8); tokens; a chunk of
+#                 tokens or -1
+#   variants      the model on machines of more memory than machine, by the least memory in GB:
+#                 each changes the memory and the four above that it gives, on machines of that
+#                 much or more (variants: {16: {memory: 7.6, prefill: auto}}); a file of your own
+#                 changes the variants it names
 #   amd_export    how tools/amd/iron_export_lm.py exports it for AMD's NPU: its model and options.
 #                 Without an export here (~/models/NAME.amd-npu2, with -q4 or -q6 for --q4 and
 #                 --mlp q6), the first run downloads the checkpoint and runs it in IRON's
@@ -147,6 +159,28 @@ models:
     bytes: 1.52e9
     features: [tools, thinking]
     about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts and with a context of 4096 (-paged 1024 for 32768, slower); in 8 bit tables, tool calls as JSON"
+  Qwen3-1.7B:
+    # the same checkpoint (byte for byte) as MOSS-SoundEffect v2.0's text encoder: the files of
+    # the same sha256 are linked from one's download into the other's (fetch)
+    family: qwen3
+    tag: 1.7b
+    kind: chat
+    from: hf:Qwen/Qwen3-1.7B@70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+    sha256:
+      model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
+      model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
+    # M3: on 8 GB one program reads the prompts too, 1.63 GiB on the Neural Engine and the
+    # process's 2.2 to 2.8 GB at its peak while loading (1.0 to 1.6 GB answering); a new prompt
+    # of 1822 tokens in 16.8 s. From 16 GB a program of its own reads them (3.4 s): two of
+    # 1.63 GiB and the process's 3.0 to 4.1 GB at its peak (1.5 to 2.1 GB answering)
+    machine: 8
+    memory: 4.5
+    prefill: off
+    variants:
+      16: {memory: 7.6, prefill: auto}
+    bytes: 4.06e9
+    features: [tools, thinking]
+    about: "Qwen3-1.7B, the 0.6B's structure in 1.7B (byte for byte the text encoder of MOSS-SoundEffect): weak at Japanese facts as the 0.6B is; a context of 4096 (-paged 1024 for 32768, slower), in 8 bit tables, tool calls as JSON; below 16 GB one program, slower to read long prompts"
   plamo-3-translate-2b:
     family: plamo3translate
     tag: 2b
@@ -318,6 +352,10 @@ models:
     # picks the text encoder's format (sfx.Formats): fp16 here, lut8 with 5 layers in fp16 in
     # the -lut8 one (moss-soundeffect:8g)
     from: hf:OpenMOSS-Team/MOSS-SoundEffect-v2.0@e35df4d82fbe87fcd5d14e5d100e349c0c3c076d
+    # the text encoder is Qwen3-1.7B's checkpoint: linked from its download when it is here
+    sha256:
+      text_encoder/model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
+      text_encoder/model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
     machine: 16
     memory: 2.3
     bytes: 1.15e10
@@ -401,7 +439,7 @@ models:
       text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 8
-    # Apple: the process's peak footprint 3.87 GB (M1, design.md 16.150)
+    # Apple: the process's peak footprint 3.87 GB (M1, design.md 16.152)
     memory: {amd: 2.3, apple: 3.9}
     bytes: 8.9e9
     about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
@@ -422,7 +460,7 @@ models:
       text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 16
-    # Apple: the process's peak footprint 3.57 GB (M1, design.md 16.150)
+    # Apple: the process's peak footprint 3.57 GB (M1, design.md 16.152)
     memory: {amd: 2.3, apple: 3.6}
     bytes: 9.7e9
     about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
@@ -506,6 +544,26 @@ models:
     memory: 0.03
     bytes: 0.23e6
     about: "YuNet (OpenCV Zoo, MIT): faces' boxes and five landmarks (eyes, nose, mouth corners)"
+  # hwnpu-image label and embed: on AMD's NPU the export ~/models/NAME.amd-npu2 of
+  # tools/amd/iron_siglip2.py (--precision HIGHEST); Apple's and Intel's NPU have no form yet
+  siglip2-base-patch16-224:
+    family: siglip2
+    tag: base
+    kind: label
+    from: hf:google/siglip2-base-patch16-224
+    machine: 8
+    memory: 0.8
+    bytes: 1.54e9
+    about: "SigLIP 2 Base (Google, Apache-2.0): zero-shot labels in any language and embeddings of pictures (224 x 224) and texts in one space"
+  siglip2-large-patch16-256:
+    family: siglip2
+    tag: large
+    kind: label
+    from: hf:google/siglip2-large-patch16-256
+    machine: 16
+    memory: 1.7
+    bytes: 3.57e9
+    about: "SigLIP 2 Large: the same at 256 x 256, closer labels and embeddings, about 3 times the work"
 
 categories:
   chat:
@@ -586,6 +644,12 @@ categories:
     about: the text in an image, its lines and boxes (hwnpu-image ocr)
     picks:
       - {machine: 8, model: PP-OCRv6-small}
+  label:
+    aliases: [labels, classify, zero-shot, image-embedding]
+    about: labels of an image from any candidates, embeddings of images and texts (hwnpu-image label, embed)
+    picks:
+      - {machine: 8, model: siglip2-base-patch16-224}
+      - {machine: 16, model: siglip2-large-patch16-256}
   notes:
     aliases: [midi]
     about: the notes of music, as MIDI (hwnpu-audio notes)

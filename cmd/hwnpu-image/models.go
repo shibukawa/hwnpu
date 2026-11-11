@@ -50,10 +50,10 @@ func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	return m, err
 }
 
-// ListCmd is "hwnpu-image list": the image, depth, face-detect, pose, detect and ocr models of the definitions (models.yaml),
+// ListCmd is "hwnpu-image list": the image, depth, face-detect, pose, detect, ocr and label models of the definitions (models.yaml),
 // whether their exports are here, and what each use and family picks for each machine's memory.
 type ListCmd struct {
-	Kind string `arg:"" optional:"" enum:"image,depth,face-detect,pose,detect,ocr," default:"" help:"Only image, depth, face-detect, pose, detect or ocr models."`
+	Kind string `arg:"" optional:"" enum:"image,depth,face-detect,pose,detect,ocr,label," default:"" help:"Only image, depth, face-detect, pose, detect, ocr or label models."`
 }
 
 // Run lists the models.
@@ -64,7 +64,7 @@ func (c *ListCmd) Run() error {
 	if c.Kind != "" {
 		listModels(os.Stdout, chat.Kind(c.Kind))
 	} else {
-		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR)
+		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel)
 	}
 	return nil
 }
@@ -79,8 +79,8 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 			return "CPU (ONNX Runtime)"
 		}
 		if m.Kind == chat.KindPose || m.Kind == chat.KindDetect || m.Kind == chat.KindOCR { // converted on the first run, for Core ML or OpenVINO
-			if vendor == "amd" {
-				return "- (--cpu: the CPU interpreter)"
+			if d, _, err := chat.ConvertedDevice(m, vendor, ""); err == nil && d == "cpu" {
+				return "CPU (ONNX Runtime)"
 			}
 			return "converted on first run"
 		}

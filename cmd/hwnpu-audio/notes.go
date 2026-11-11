@@ -20,7 +20,8 @@ import (
 // NotesCmd is "hwnpu-audio notes": the notes of music in WAV files with Basic Pitch
 // (spotify/basic-pitch), as CSV or JSON on stdout and optionally a MIDI file. The model (230
 // KB) is downloaded and converted the first time. The constant-Q transform runs on the host, the
-// network on the NPU, the making of notes on the host.
+// network on the NPU (Apple's, Intel's; elsewhere or with --device cpu the ONNX file's network
+// with ONNX Runtime on the CPU), the making of notes on the host.
 type NotesCmd struct {
 	Files   []string `arg:"" type:"existingfile" name:"FILE.wav" help:"The WAV files (any rate; resampled to 22050 Hz, channels averaged)."`
 	Model   string   `short:"m" default:"notes" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (notes, basic-pitch)."`
@@ -34,7 +35,9 @@ type NotesCmd struct {
 	Melodia bool     `default:"${melodia}" negatable:"" help:"Also take notes from the strong activations left without an onset (basic-pitch's melodia trick)."`
 	Dir     string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache   string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
-	CPU     bool     `name:"cpu" help:"Run the program on the CPU interpreter instead of the NPU."`
+	CPU     bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
+	Device  string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
 }
 
 // Run writes the notes of each file.
@@ -48,29 +51,66 @@ func (c *NotesCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	setup := notes.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), SHA256: m.SHA256[notes.ModelFile], Log: lw}
+	var tr *notes.Transcriber
+	t0 := time.Now()
+	ort, builtin := cpuRoute(m, c.Device, c.CPU, c.Threads, logf)
+	c.CPU = c.CPU || builtin
+	if ort {
+		model, err := notes.Fetch(ctx, setup)
+		if err != nil {
+			return err
+		}
+		if tr, err = notes.OpenCPU(model, c.Threads); err != nil {
+			return err
+		}
+		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
+	} else if tr, err = c.openConverted(ctx, m, setup, logf); err != nil {
+		return err
+	}
+	defer tr.Close()
+	return c.transcribe(ctx, tr, logf)
+}
+
+// openConverted loads Basic Pitch's converted program on the NPU (or the CPU interpreter).
+func (c *NotesCmd) openConverted(ctx context.Context, m chat.Model, setup notes.Setup, logf func(string, ...any)) (*notes.Transcriber, error) {
 	backend := llm.BackendCoreML
 	var dev *hwnpu.Device
 	if !c.CPU {
-		var device string
-		if dev, device, err = llm.OpenDevice(ctx, "", cacheDir(c.Cache)); err != nil {
-			return err
+		d, device, err := llm.OpenDevice(ctx, "", cacheDir(c.Cache))
+		if err != nil {
+			return nil, err
 		}
-		defer dev.Close()
 		if backend = llm.ProgramBackend(device); backend == "" {
-			return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (AMD's NPU has no Basic Pitch export yet; --cpu runs it on the CPU)", device)
+			d.Close()
+			return nil, fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--device cpu runs it on the CPU)", device)
+		}
+		dev = d
+	}
+	closeDev := func() {
+		if dev != nil {
+			dev.Close()
 		}
 	}
-	model, program, err := notes.Prepare(ctx, notes.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), SHA256: m.SHA256[notes.ModelFile], Backend: backend, Log: lw})
+	setup.Backend = backend
+	model, program, err := notes.Prepare(ctx, setup)
 	if err != nil {
-		return err
+		closeDev()
+		return nil, err
 	}
 	t0 := time.Now()
 	tr, err := notes.Open(ctx, dev, model, program)
 	if err != nil {
-		return err
+		closeDev()
+		return nil, err
 	}
-	defer tr.Close()
+	tr.OnClose = closeDev
 	logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, tr.OnNPU()))
+	return tr, nil
+}
+
+// transcribe writes the notes of each file with tr.
+func (c *NotesCmd) transcribe(ctx context.Context, tr *notes.Transcriber, logf func(string, ...any)) error {
 	o := notes.DefaultOptions
 	o.OnsetThreshold, o.FrameThreshold, o.MinNoteMS, o.MinHz, o.MaxHz, o.Melodia = c.Onset, c.Frame, c.MinNote, c.FMin, c.FMax, c.Melodia
 	for _, p := range c.Files {

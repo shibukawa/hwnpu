@@ -66,6 +66,10 @@ var (
 	// digests are the SHA-256 of the files of the models the definitions pin (sha256), by the
 	// model's Source() and the file's name.
 	digests = map[string]map[string]string{}
+	// pinned are the files the definitions pin, by their SHA-256 (lower case): where each is in
+	// the models' directory, so that a file two models share (MOSS-SoundEffect's text encoder is
+	// Qwen3-1.7B) is downloaded once (sameFile).
+	pinned = map[string][]pinnedFile{}
 
 	// found remembers the source a repository's first file came from, to take the rest from
 	// there too.
@@ -143,12 +147,21 @@ func safeName(name string) bool {
 	return !slices.Contains(strings.Split(name, "/"), "..")
 }
 
+// pinnedFile is a file of a model the definitions pin: its model's directory (Model.DirName) and
+// its name in the repository.
+type pinnedFile struct{ dir, name string }
+
 // fetch puts a file of a model's repository at path unless it is there. repo is Model.Source():
 // OWNER/NAME or OWNER/NAME@REVISION from hf, looked for in Search in order (the source the
 // repository's first file came from first), or SOURCE:NAME from that source alone. A file the
-// definitions pin (sha256) is checked; one that differs is removed and the next source tried.
+// definitions pin (sha256) is checked; one that differs is removed and the next source tried. A
+// pinned file another model of the same SHA-256 has in the models' directory is linked from there
+// first (sameFile).
 func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if want, ok := digests[repo][name]; ok && sameFile(want, name, path, log) {
 		return nil
 	}
 	src, key := splitSource(repo)
@@ -211,6 +224,14 @@ func verify(repo, name, path string) error {
 	if !ok {
 		return nil
 	}
+	if err := hasDigest(path, want); err != nil {
+		return fmt.Errorf("chat: %s of %s: %w", name, repo, err)
+	}
+	return nil
+}
+
+// hasDigest checks that the file at path has the SHA-256 want.
+func hasDigest(path, want string) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -221,9 +242,84 @@ func verify(repo, name, path string) error {
 		return err
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); !strings.EqualFold(got, want) {
-		return fmt.Errorf("chat: %s of %s has SHA-256 %s, not the %s of the definitions", name, repo, got, want)
+		return fmt.Errorf("SHA-256 %s, not the %s of the definitions", got, want)
 	}
 	return nil
+}
+
+// sameFile puts at path (the file name of a model's directory in the models' directory) the file
+// of the SHA-256 want another model has there, linked (or copied where links fail), and reports
+// whether it did. A copy that does not have the SHA-256 is removed and the next looked at.
+func sameFile(want, name, path string, log io.Writer) bool {
+	dir, ok := strings.CutSuffix(filepath.Clean(path), string(filepath.Separator)+filepath.Clean(filepath.FromSlash(name)))
+	if !ok {
+		return false // not NAME's place in a model's directory: no models' directory to look in
+	}
+	root := filepath.Dir(dir)
+	for _, f := range pinned[strings.ToLower(want)] {
+		src := filepath.Join(root, f.dir, filepath.FromSlash(f.name))
+		if filepath.Clean(src) == filepath.Clean(path) {
+			continue
+		}
+		if fi, err := os.Stat(src); err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		label := fmt.Sprintf("%s of %s (the same SHA-256)", f.name, f.dir)
+		if err := linkOrCopy(src, path, label, log); err != nil {
+			if log != nil {
+				fmt.Fprintf(log, "%s: %v\n", label, err)
+			}
+			continue
+		}
+		if err := hasDigest(path, want); err != nil {
+			os.Remove(path)
+			if log != nil {
+				fmt.Fprintf(log, "%s: %v\n", label, err)
+			}
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// linkOrCopy puts src at dst: a hard link where the folders allow it, else a copy (through
+// dst.part). what names src in the log.
+func linkOrCopy(src, dst, what string, log io.Writer) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if os.Link(src, dst) == nil {
+		if log != nil {
+			fmt.Fprintf(log, "linked %s from %s\n", filepath.Base(dst), what)
+		}
+		return nil
+	}
+	fi, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	part := dst + ".part"
+	out, err := os.Create(part)
+	if err != nil {
+		return err
+	}
+	pw := &progress{w: out, total: fi.Size(), bar: console.NewBar(log, fmt.Sprintf("copying %s from %s", filepath.Base(dst), what))}
+	_, err = io.Copy(pw, in)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(part)
+		return fmt.Errorf("chat: copying %s: %w", src, err)
+	}
+	pw.bar.Done(fmt.Sprintf("%s to %s", gb(pw.done, -1), filepath.Dir(dst)))
+	return os.Rename(part, dst)
 }
 
 // fetchPath copies a file of a path source's model: Path/NAME/FILE, or for a model from hf
@@ -245,36 +341,7 @@ func fetchPath(s Source, key, name, dst string, log io.Writer) error {
 		if err != nil || fi.IsDir() {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
-		}
-		if os.Link(src, dst) == nil {
-			if log != nil {
-				fmt.Fprintf(log, "linked %s from %s\n", name, s)
-			}
-			return nil
-		}
-		in, err := os.Open(src)
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		part := dst + ".part"
-		out, err := os.Create(part)
-		if err != nil {
-			return err
-		}
-		pw := &progress{w: out, total: fi.Size(), bar: console.NewBar(log, fmt.Sprintf("copying %s from %s", path.Base(name), s.Name))}
-		_, err = io.Copy(pw, in)
-		if cerr := out.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
-			os.Remove(part)
-			return fmt.Errorf("chat: copying %s: %w", src, err)
-		}
-		pw.bar.Done(fmt.Sprintf("%s to %s", gb(pw.done, -1), filepath.Dir(dst)))
-		return os.Rename(part, dst)
+		return linkOrCopy(src, dst, s.String(), log)
 	}
 	return fmt.Errorf("chat: %s: %s/%s: %w", s.Name, key, name, errNotFound)
 }

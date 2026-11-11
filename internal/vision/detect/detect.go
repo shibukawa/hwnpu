@@ -36,6 +36,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/onnx"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
 )
 
 // Size is the picture's size the model takes.
@@ -81,17 +82,8 @@ type Setup struct {
 // unless it is. It returns the model's and the program's paths.
 func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	model = filepath.Join(s.Dir, filepath.FromSlash(s.File))
-	if err := os.MkdirAll(filepath.Dir(model), 0o755); err != nil {
+	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
-	}
-	if err := chat.Fetch(ctx, s.Repo, s.File, model, log); err != nil {
-		return "", "", err
-	}
-	if s.SHA256 != "" {
-		if err := CheckSHA(model, s.SHA256); err != nil {
-			return "", "", err
-		}
 	}
 	ext := ".mlpackage"
 	if s.Backend == llm.BackendIntel {
@@ -123,6 +115,24 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	}
 	bar.Done(console.Duration(bar.Elapsed()))
 	return model, program, os.WriteFile(program+".done", nil, 0o644)
+}
+
+// Fetch downloads the ONNX file into s.Dir unless it is there, checks its sha256 and returns its
+// path: all the CPU (OpenCPU) needs.
+func Fetch(ctx context.Context, s Setup) (string, error) {
+	model := filepath.Join(s.Dir, filepath.FromSlash(s.File))
+	if err := os.MkdirAll(filepath.Dir(model), 0o755); err != nil {
+		return "", err
+	}
+	if err := chat.Fetch(ctx, s.Repo, s.File, model, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+		return "", err
+	}
+	if s.SHA256 != "" {
+		if err := CheckSHA(model, s.SHA256); err != nil {
+			return "", err
+		}
+	}
+	return model, nil
 }
 
 // CheckSHA checks a file's sha256.
@@ -252,6 +262,32 @@ func Open(ctx context.Context, dev *hwnpu.Device, program string) (*Detector, er
 	if err != nil {
 		return nil, err
 	}
+	return newDetector(prog, program)
+}
+
+// OpenCPU loads the ONNX file (Prepare's model) into ONNX Runtime on threads threads of the CPU
+// (0 or 1: the calling thread), the graph up to the heads as the program has it.
+func OpenCPU(model string, threads int) (*Detector, error) {
+	g, err := onnx.Load(model)
+	if err != nil {
+		return nil, err
+	}
+	p, err := NewProgram(g)
+	if err != nil {
+		return nil, err
+	}
+	b, err := onnxrt.ReadModel(model)
+	if err != nil {
+		return nil, err
+	}
+	prog, err := onnxrt.OpenProgram(b, p, threads)
+	if err != nil {
+		return nil, err
+	}
+	return newDetector(prog, model)
+}
+
+func newDetector(prog runner.Program, program string) (*Detector, error) {
 	y := prog.Output()
 	total := onnx.Len(y)
 	if len(y) != 3 || total%cells() != 0 || total/cells() <= 4 {

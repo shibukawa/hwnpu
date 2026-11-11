@@ -46,12 +46,13 @@ The NPUs:
 | People's poses (17 points) | Apple Vision's body pose, Video Intelligence's person detection | `hwnpu-image pose` | RTMO-s | ◎ | ○ | CPU |
 | Objects (boxes and labels) | Cloud Vision object localization, Rekognition DetectLabels, Azure object detection | `hwnpu-image detect` | RTMDet-tiny / s / m | ◎ | ○ | CPU |
 | Text (OCR) | Cloud Vision TEXT / DOCUMENT_TEXT_DETECTION, Textract, Azure Read, Apple Vision | `hwnpu-image ocr` | PP-OCRv6 small | ◎ | ○ | CPU |
+| Labels (zero-shot), image and text embeddings | Cloud Vision LABEL_DETECTION, Rekognition DetectLabels, Vertex's and Azure's multimodal embeddings, Apple Vision's classification and feature prints | `hwnpu-image label`, `hwnpu-image embed` | SigLIP 2 Base / Large | — | — | ◎ (docs/amd-npu-models.md 18) |
 | Pitch (F0) | (none) | `hwnpu-audio pitch` | SwiftF0 | ◎ | ○ | CPU |
 | Notes (MIDI) | (none) | `hwnpu-audio notes` | Basic Pitch | ◎ | ○ | CPU |
 | Music | Vertex's Lyria | `hwnpu-audio generate` | Magenta RealTime 2 small | ◎ | — | — (`--cpu` only) |
 | Sound effects | ElevenLabs Sound Effects | `hwnpu-audio generate -m sfx` | MOSS-SoundEffect v2.0 | ◎ | — | — (`--cpu` only) |
 
-The five on AMD's CPU (poses, objects, OCR, pitch, notes) all come through `internal/onnx`, which lowers ONNX to MIL. That path writes Core ML and OpenVINO IR, not an AMD export. A general path from ONNX to an IRON graph would put all five on AMD at once. `tools/amd/iron_yunet.py` reads YuNet's ONNX, but lays its layers out by hand.
+The five on AMD's CPU (poses, objects, OCR, pitch, notes) all come through `internal/onnx`, which lowers ONNX to MIL. That path writes Core ML and OpenVINO IR, not an AMD export. On AMD's machines they run on the CPU: with hwnpu's own CPU executor (no dependency; RTMDet-m 2.3 s an image on one thread), or with ONNX Runtime when its library is there (the ONNX file's same cut, `onnxrt.Cut`; 1.4 s) (docs/amd-npu-models.md 19). A general path from ONNX to an IRON graph would put all five on AMD's NPU at once. `tools/amd/iron_yunet.py` reads YuNet's ONNX, but lays its layers out by hand.
 
 ## 2. What there is not yet
 
@@ -59,13 +60,12 @@ The five on AMD's CPU (poses, objects, OCR, pitch, notes) all come through `inte
 
 | Feature | In the cloud | Candidates (license) | hwnpu (a plan) | On AMD |
 |---|---|---|---|---|
-| **Labels (zero-shot) and image embeddings** | Cloud Vision LABEL_DETECTION, Rekognition DetectLabels, Vertex's and Azure's multimodal embeddings, Apple Vision's classification and feature prints | SigLIP 2 (Apache-2.0, many languages), LINE's Japanese CLIP (Apache-2.0) | `hwnpu-image label`, `hwnpu-image embed`; later `/v1/embeddings` takes images | ◎ fits: a ViT, mostly GEMMs; DA3's and MoGe-2's ViT parts carry over |
 | **Object masks** (instance segmentation) | Apple Vision's foreground instance masks, Vertex AutoML | RTMDet-Ins (Apache-2.0) | `hwnpu-image detect --mask` | △ a small CNN of many ops, which may lose to the CPU as YuNet does; measure after the general ONNX → IRON path |
-| **Background removal**, subject cutouts | Apple's subject lifting, remove.bg | BiRefNet / BiRefNet_lite (MIT); RMBG-2.0 is non-commercial and out | `hwnpu-image cutout` (a transparent PNG) | ○ the Swin backbone is mostly GEMMs; how to run the decoder's deformable conv is still to check |
+| **Background removal**, subject cutouts | Apple's subject lifting, remove.bg | BiRefNet / BiRefNet_lite (MIT); RMBG-2.0 is non-commercial and out | `hwnpu-image cutout` (a transparent PNG) | △ the Swin backbone is mostly GEMMs, but every decoder block's ASPPDeformable (BiRefNet_lite's config too) runs torchvision's deform_conv2d: each tap samples the map bilinearly at offsets the network computes, a gather with no fixed grid. It needs a host step between commands or a dense rewrite |
 | Cutouts from a point or a box | Meta's SAM | SAM 2, EfficientSAM (Apache-2.0) | `hwnpu-image segment --point x,y` / `--box` | ○ the image encoder is a ViT; the light decoder can run on the CPU per prompt |
 | **Document layout, tables, page and line orientation** | Document AI, Textract AnalyzeDocument, Azure Document Intelligence Layout | PP-DocLayout, SLANet, PP-LCNet orientation (Apache-2.0) | `hwnpu-image ocr --layout` / `--table`; orientation fixed by itself | △ CNNs; after the general path, as the masks |
 | Face comparison (the same person?) | Rekognition CompareFaces / SearchFaces, Azure Face Verify | SFace (OpenCV Zoo, Apache-2.0); insightface's weights are non-commercial and out | `hwnpu-image face-detect --embed`, `face-compare` | CPU, likely (a small CNN) |
-| Unsafe images | Cloud Vision SafeSearch, Rekognition DetectModerationLabels, Azure Content Safety | Falconsai/nsfw_image_detection (Apache-2.0, accuracy to check), or SigLIP 2 zero-shot | `hwnpu-image moderate` | ◎ fits (a ViT) |
+| Unsafe images | Cloud Vision SafeSearch, Rekognition DetectModerationLabels, Azure Content Safety | Falconsai/nsfw_image_detection (Apache-2.0, accuracy to check), or SigLIP 2 zero-shot | `hwnpu-image moderate` | ◎ fits (a ViT); SigLIP 2 runs (`hwnpu-image label` with such labels), thresholds not chosen on data yet |
 | Upscaling | Vertex Imagen's upscale | Real-ESRGAN (BSD-3) | `hwnpu-image upscale` | ○ convolutions over large maps, large im2col GEMMs |
 | Erasing (inpainting) | Vertex Imagen's editing | LaMa (Apache-2.0) | `hwnpu-image erase --mask` | △ it has FFTs, to be written as DFT matmuls (on Apple too) |
 | Barcodes, QR | Apple Vision, ML Kit | gozxing (Apache-2.0, Go; not deep learning) | `hwnpu-image barcode` | Any (the host) |
@@ -112,8 +112,8 @@ AMD has no public graph compiler; each model's IRON graph is built in Python (`t
 
 The order suggested for the image features on AMD:
 
-1. **SigLIP 2** (labels, image embeddings, unsafe images): a ViT, so DA3's parts carry over. This one model fills three rows of 2.1.
-2. **A SAM family encoder and BiRefNet** (cutouts): heavy backbones, mostly GEMMs. Look at BiRefNet's deformable conv first.
+1. **SigLIP 2** (labels, image embeddings, unsafe images): a ViT, so DA3's parts carry over. This one model fills three rows of 2.1. Done for labels and embeddings (2026-11-11, docs/amd-npu-models.md 18); the five ONNX models of section 1 run on AMD's CPU with ONNX Runtime meanwhile (ibid. 19).
+2. **A SAM family encoder and BiRefNet** (cutouts): heavy backbones, mostly GEMMs. BiRefNet's deformable convs are in every decoder block (2.1), so start with EfficientSAM (a plain ViT-S / T at 1024 × 1024, Apache-2.0).
 3. **A general ONNX → IRON path**: this puts the five of section 1 (poses, objects, OCR, pitch, notes) on AMD, and RTMDet-Ins and the document layout with them. Compare each model's mJ on the NPU and the CPU, and leave the ones that lose at `device: {amd: cpu}` in models.yaml, as YuNet is.
 4. **Barcodes and tracking**: any NPU, any time.
 

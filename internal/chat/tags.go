@@ -109,15 +109,22 @@ func byName(name string) Model {
 // Pick finds the model a name of a family or a category means on a machine of machine GB:
 // FAMILY, FAMILY:TAG, CATEGORY or CATEGORY:TAG. A tag is a model's (2b, e4b) or a machine's
 // memory (8g, 16gb: the pick of a machine of that memory, MODEL.md's column). Without a tag, it is the model of the largest
-// Machine up to the machine's memory (the smallest when none fits). why says how it was picked.
-// ok is false when the name is not a family or a category.
+// Machine up to the machine's memory (the smallest when none fits). The model is On the machine
+// (of the tag's memory for a tag of memory). why says how it was picked. ok is false when the
+// name is not a family or a category.
 func Pick(name string, machine int) (m Model, why string, ok bool, err error) {
+	if _, tag, tagged := strings.Cut(name, ":"); tagged {
+		if gb, isMemory := MemoryTag(tag); isMemory {
+			machine = gb
+		}
+	}
 	m, why, ok, err = pickModel(name, machine)
 	if ok && err == nil {
 		if to, aliased := Aliases[m.Name]; aliased {
 			why += fmt.Sprintf(", which runs %s (alias)", to)
 			m = byName(to)
 		}
+		m = m.On(machine)
 	}
 	return m, why, ok, err
 }
@@ -175,7 +182,10 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 		}
 		return Model{}, "", true, fmt.Errorf("chat: %s:%s is any of %s: name the family", base, tag, strings.Join(names, ", "))
 	}
-	// the largest column the machine has; among models of one column the larger
+	// the largest column the machine has; among models of one column the larger on this machine
+	for i := range cands {
+		cands[i] = cands[i].On(machine)
+	}
 	best, found := cands[0], false
 	for _, c := range cands {
 		if c.Machine > machine {
