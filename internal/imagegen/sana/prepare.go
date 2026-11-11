@@ -28,8 +28,27 @@ type Setup struct {
 }
 
 // TextDir is the directory of Dir that holds Gemma 2 (text_encoder/ and tokenizer/): every Sana
-// repository has the same files.
+// repository has the same weights and tokenizer (see Files).
 const TextDir = "gemma-2-2b-it"
+
+// Files are the files of a Sana repository Prepare downloads (models.yaml pins their sha256).
+// Gemma 2's (Text) go to TextDir, downloaded once from the first Sana's repository: the other
+// repositories' copies differ only in config.json's metadata (_name_or_path, transformers_version).
+var Files = []struct {
+	Name string
+	Text bool
+}{
+	{"transformer/config.json", false},
+	{"transformer/diffusion_pytorch_model.safetensors", false},
+	{"vae/config.json", false},
+	{"vae/diffusion_pytorch_model.safetensors", false},
+	{"scheduler/scheduler_config.json", false},
+	{"text_encoder/config.json", true},
+	{"text_encoder/model.safetensors.index.json", true},
+	{"text_encoder/model-00001-of-00002.safetensors", true},
+	{"text_encoder/model-00002-of-00002.safetensors", true},
+	{"tokenizer/tokenizer.json", true},
+}
 
 // ExportName is the directory Prepare writes the export of name and o into: what changes the
 // programs is in it.
@@ -56,23 +75,16 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	root := filepath.Join(s.Dir, filepath.Base(s.Repo))
 	text := filepath.Join(s.Dir, TextDir)
-	for _, f := range []struct{ dir, name string }{
-		{root, "transformer/config.json"},
-		{root, "transformer/diffusion_pytorch_model.safetensors"},
-		{root, "vae/config.json"},
-		{root, "vae/diffusion_pytorch_model.safetensors"},
-		{root, "scheduler/scheduler_config.json"},
-		{text, "text_encoder/config.json"},
-		{text, "text_encoder/model.safetensors.index.json"},
-		{text, "text_encoder/model-00001-of-00002.safetensors"},
-		{text, "text_encoder/model-00002-of-00002.safetensors"},
-		{text, "tokenizer/tokenizer.json"},
-	} {
-		path := filepath.Join(f.dir, f.name)
+	for _, f := range Files {
+		dir := root
+		if f.Text {
+			dir = text
+		}
+		path := filepath.Join(dir, f.Name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return "", err
 		}
-		if err := chat.Fetch(ctx, s.Repo, f.name, path, log); err != nil {
+		if err := chat.Fetch(ctx, s.Repo, f.Name, path, log); err != nil {
 			return "", err
 		}
 	}

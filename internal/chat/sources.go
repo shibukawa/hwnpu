@@ -211,6 +211,13 @@ func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
 	return fmt.Errorf("chat: %s of %s is in none of the sources %s: %w", name, key, strings.Join(order, ", "), errNotFound)
 }
 
+// Pinned is the SHA-256 the definitions pin for a file of repo (as Fetch takes it), if any: a
+// download of it is checked against it.
+func Pinned(repo, name string) (string, bool) {
+	d, ok := digests[repo][name]
+	return d, ok
+}
+
 // verify checks a fetched file against the SHA-256 the definitions pin for it, if any.
 func verify(repo, name, path string) error {
 	want, ok := digests[repo][name]

@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -116,11 +117,21 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	digests, pinned = map[string]map[string]string{}, map[string][]pinnedFile{}
 	for _, m := range catalog {
 		for f, d := range m.SHA256 {
-			if digests[m.Source()] == nil {
-				digests[m.Source()] = map[string]string{}
+			// ROLE/FILE is a file of the repository the model reads as ROLE (with)
+			repo := m.Source()
+			if role, rest, ok := strings.Cut(f, "/"); ok && m.With[role] != "" {
+				repo, f = m.With[role], rest
 			}
-			digests[m.Source()][f] = d
-			if p := (pinnedFile{m.DirName(), f}); !slices.Contains(pinned[strings.ToLower(d)], p) {
+			if digests[repo] == nil {
+				digests[repo] = map[string]string{}
+			}
+			digests[repo][f] = d
+			dir := m.DirName()
+			if repo != m.Source() {
+				r, _, _ := strings.Cut(repo, "@")
+				dir = path.Base(r)
+			}
+			if p := (pinnedFile{dir, f}); !slices.Contains(pinned[strings.ToLower(d)], p) {
 				pinned[strings.ToLower(d)] = append(pinned[strings.ToLower(d)], p)
 			}
 		}

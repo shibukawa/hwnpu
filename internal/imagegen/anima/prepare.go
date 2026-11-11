@@ -27,6 +27,22 @@ const (
 	RepoDiffusers = "circlestone-labs/Anima-Base-v1.0-Diffusers"
 )
 
+// File is a file Prepare downloads: Name of the Hugging Face repository Repo, at Path in Dir.
+type File struct{ Repo, Name, Path string }
+
+// Files are the files Prepare downloads for the diffusion model dit (models.yaml pins their
+// sha256: the split files under the model's repository, the Diffusers ones under diffusers/).
+func Files(dit string) []File {
+	return []File{
+		{RepoSplit, "split_files/diffusion_models/" + dit, "diffusion_models/" + dit},
+		{RepoSplit, "split_files/text_encoders/qwen_3_06b_base.safetensors", "text_encoders/qwen_3_06b_base.safetensors"},
+		{RepoDiffusers, "vae/config.json", "diffusers/vae/config.json"},
+		{RepoDiffusers, "vae/diffusion_pytorch_model.safetensors", "diffusers/vae/diffusion_pytorch_model.safetensors"},
+		{RepoDiffusers, "tokenizer/tokenizer.json", "diffusers/tokenizer/tokenizer.json"},
+		{RepoDiffusers, "t5_tokenizer/tokenizer.json", "diffusers/t5_tokenizer/tokenizer.json"},
+	}
+}
+
 // Setup is what Prepare makes ready.
 type Setup struct {
 	// Dir holds the checkpoint in Convert's layout (diffusion_models/, text_encoders/,
@@ -107,19 +123,12 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", err
 	}
-	for _, f := range []struct{ repo, name, path string }{
-		{RepoSplit, "split_files/diffusion_models/" + o.Dit, "diffusion_models/" + o.Dit},
-		{RepoSplit, "split_files/text_encoders/qwen_3_06b_base.safetensors", "text_encoders/qwen_3_06b_base.safetensors"},
-		{RepoDiffusers, "vae/config.json", "diffusers/vae/config.json"},
-		{RepoDiffusers, "vae/diffusion_pytorch_model.safetensors", "diffusers/vae/diffusion_pytorch_model.safetensors"},
-		{RepoDiffusers, "tokenizer/tokenizer.json", "diffusers/tokenizer/tokenizer.json"},
-		{RepoDiffusers, "t5_tokenizer/tokenizer.json", "diffusers/t5_tokenizer/tokenizer.json"},
-	} {
-		path := filepath.Join(s.Dir, f.path)
+	for _, f := range Files(o.Dit) {
+		path := filepath.Join(s.Dir, f.Path)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return "", err
 		}
-		if err := chat.Fetch(ctx, f.repo, f.name, path, log); err != nil {
+		if err := chat.Fetch(ctx, f.Repo, f.Name, path, log); err != nil {
 			return "", err
 		}
 	}
