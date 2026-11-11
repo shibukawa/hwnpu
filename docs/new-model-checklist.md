@@ -62,6 +62,7 @@ On top of the pass conditions of the `port-architecture` skill (1e-4 against an 
 | Encoder-decoders (speech) | `tools/ref/ref_whisper.py`, `hwnpu-dev check` (the mel frames as input through `REF.x.bin`) | Check the encoder, the cross attention's keys and values and the decoder each on their own. For audio over 30 seconds, follow HF's windowing too (features over the whole clip, the next window from the timestamps): cut every 30 seconds, HF drops text as well |
 | Embedding models | `embed_golden.py` | Cosine 0.997 or more against HF |
 | Image generation | `tools/ref/ref_anima.py`, `tools/ref/compare_image.py` | Latent cosine against diffusers' fp32, PSNR of the VAE. A model bigger than a 16 GB Mac's memory in float32 (Qwen-Image-2.1's 20B DiT, its 8B text encoder) runs with its repeated layers' weights read just before each layer and dropped after (`tools/ref/stream_weights.py`, `ref_qwenimage21.py --stream`): about 5 minutes a 512² picture, 30 or more at 1024² (16.165) |
+| **How the reference pipeline masks** | `tools/ref/ref_chroma.py --mask keys` | diffusers' ChromaPipeline passes its text mask as float 0/1, which SDPA adds to the scores: the pads are not hidden, though Chroma was trained with them hidden. The NPU's correct masking looked wrong (first velocity 0.9886) until the reference masked keys (0.99985). Patch only the part meant: the same SDPA patch installed before T5 also replaced T5's relative-bias mask (Chroma1-HD 0.71). Read how the reference applies its masks before blaming the NPU (16.156, 16.157) |
 
 ## 3. Does it fit on the Mac's Neural Engine?
 
@@ -157,6 +158,10 @@ What helped:
 | A max pool's pads in bf16 | b + ReLU(a - b) with -30000 for -inf rounds a - b to steps of 128: pad with a value just below the input's least (-1 after SiLU) | amd-npu-models.md 21.2 |
 | One full ELF | Switching xclbins costs 0.46 ms each | 16.45–50 |
 | **A graph whose second run hangs** (`iron.GraphOptions.Barrier`) | Qwen-Image-2.1's dit_text (keys and values written at a per-call position) and Chroma's approximator (6 commands) ran right once, then the next run's first command timed out. An empty command in a context of its own (the ELF loaded again) before each run fixes it, as the language models' stepBarrier. Check every graph with `irongraph -runs 3`, not one run | 16.155 |
+| **One weight bank for two graphs of the same blocks** (`share_banks`) | Qwen-Image's dit_text (the prompt's rows, once a prompt) and dit_blocks (the image's rows, every step) run the same blocks, but their banks differed from the first byte: dit_text held its RoPE table as an `iron.weight`, which shifted the layout. With the table as an input the bank images are byte for byte the same and dit_text points at dit_blocks' files: export 22 → 15 GB. Compare bank images before storing a second copy | 16.155 |
+| IRON's limits at image-model sizes | HIGHEST GEMMs need N a multiple of 64 and failed at K = 5120 (use HIGH, or MEDIUM for a selection GEMM). An RMSNorm weight wider than 4096 fails: fold it into the next linear's columns. A DMA loop counts at most 64. A transpose GEMM over 1M rows never finished: commands of 262144 rows | 16.155, 16.156 |
+| GroupNorm and a relative position bias without the host | GroupNorm: each channel's sums by a GEMM with a block of ones, the groups' means by a constant GEMM, 1/√(var + eps) as one RMSNorm (Chroma's FLUX VAE: PSNR 53.6 dB). T5's relative bias (IRON's MHA has none): 8 heads' scores in one GEMM with a block-diagonal K^T, the bias added in a float32 Softmax | 16.156 |
+| A large text encoder in groups (`SwapVariants`, as the DiT) | Qwen3-VL-8B (36 layers, q6) as 9 groups of 4 layers in one bank, read once a prompt: 512² peak 6.8 → 2.1 GB, the same latents | 16.157 |
 | Prompt chunks of 1024 | 20 % faster than 2048. At 256 the window layers become rings and cannot roll back | 16.54 |
 | At most 3 transfers queued on one shim channel | Queuing 16 without waiting hung the command, and two hangs in a row needed a reboot. Wait for the oldest before queuing more | 16.89 (PR #66) |
 | Each command under 2 s | Longer ones end in `ERT_CMD_STATE_TIMEOUT`. Split them at export (`SCRATCHPAD_WORDS`) | 16.65 |
@@ -206,6 +211,7 @@ Switch each part (attention projections, MLP, output matrix, convolutions, tower
 - A distilled 8-step DiT is weak at 4 bits (q4nx: latent cosine 0.777). q8 is the default (q6 keeps the composition)
 - **A large DiT can hold at 4 bits**: Qwen-Image-2.1-Turbo (20B, 8 distilled steps) at lut4 with k-means-minmax tables gave 0.935–0.981 on 6 pictures, the same compositions and lettering (lut6 0.987 at 40 % more time). Measure a block group's relative RMS error against fp16 on real inputs first (uniform 4.9 %, k-means 12.6 %, k-means-minmax 3.2 %, lut6 1.2 %, lut8 0.5 %; some projections alone at lut8 4.1–4.8 %: the error was in all of them). The per-row int8 overflow of 3.3 counts against int8 in large models (16.165)
 - **A pass run once a prompt can take a format up for free**: it is not held while the steps run, so it adds nothing to what the Neural Engine holds (Qwen-Image-2.1's DiT over the text rows at lut8: 0.965 → 0.980, the step's time the same)
+- **A large DiT's MLP at 6 bits, its attention projections at 8** (Qwen-Image-2.1's 7B DiT, `tools/ref/qwenimage_quant.py`, 16.167): MLP q6 keeps the pictures at 1.21 GB less (free-run cosine 0.9965–0.9999 over 5 seeds on the CPU; on the NPU 0.976–0.9996 over 6 pictures, the compositions unchanged). q6 attention costs as much error for 0.54 GB. q4nx anywhere drifts details (18–29 dB), though this DiT takes it far better than Anima's (0.99 against 0.777). Judge on the teacher-forced velocity error and several seeds: one seed's cosine is noisy (q8 itself scored 0.9983 on one seed, 0.9997 on another)
 - **A small model's (2B or less) MLP can break at 4 bits**: Qwen3.5-0.8B README 0.055 but GPL 0.34 (0.30 with GPTQ). AMD's q6 (6.5 bits, `--mlp q6 --head q6`) gives 0.044. Always look at the GPL. 4B makes 0.042 at q4 and stays at q4
 
 ### 5.3 Try the calibration methods in order
@@ -222,6 +228,8 @@ Keep the format and raise accuracy by choosing the codes (levels) better. The fo
 | — | One format up (AMD's q6) | `iron_export_lm.py --mlp q6`, `q4_gptq.py --fmt-q4 q6` | Qwen3.5-0.8B GPL 0.34 → 0.044 | When calibration does not fix it. The GEMV takes about q8's time; the gain is memory (76 % of q8) |
 
 **Whether to adopt it**: the GPL, not used for calibration, must not get worse than rounding. For LFM3-Audio GPTQ leaves only the GPL unchanged (0.154 → 0.161), but the other four texts drop by half or more, so it was adopted. A multimodal model's text part is often trained again (LFM3-VL / Audio / Omni): calibrate each, do not reuse the base model's codes. If a text gets worse, raise the damping (0.3 was tried) or add calibration text.
+
+**For a DiT, judge GPTQ on free runs from other seeds**: Qwen-Image-2.1's MLP q4 with GPTQ calibrated on four other prompts cut the teacher-forced velocity error by 13–15 % on held-out prompts, but its free runs were worse than rounding on 2 of 3 seeds (0.9888 against 0.9964) and changed a sign's lettering. Calibrated on the evaluated prompt itself it helped only that prompt. Not adopted (16.167).
 
 **Cost of calibration**: fp32 on the CPU, 25–60 minutes for 2B models, 2.4 hours for E4B (over 30 GB in fp32; running two side by side ran out of memory). On Linux, run it with `systemd-run --user` (so it is not killed with the session). **A 16 GB Mac** calibrates Gemma 4 E2B with its embedding tables read from the file (`q4_gptq.py`'s `lean`, about 9 GB): 87 minutes on an M1 with 4 threads, slowed by swap in its second half. The calibration texts come from `tools/amd/calib_data.py`; PyTorch from Homebrew (16.114).
 
@@ -262,6 +270,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 | KV size and context | | Past 1/4 of physical memory, shrink by whole chunks |
 | Copies of the states at chunk boundaries (AMD) | `manifest.json`'s banks | Layers with state (GDN) keep a frame for each chunk boundary, so pinned memory grows with the context (Qwen3.6 at 4096: 0.33 → 1.1 GB) and shrinks with bigger chunks (Qwen3.5-2B 256 → 512: 2014 → 1862 MiB). The verify version keeps every row's states too (Qwen3.5-0.8B 2 × 20 MB) |
 | Disk | `cache.Clone` | Share identical files (the Q=8 and Q=64 `weight.bin`, the common start of exports). Nothing is shared on ext4. Parts that do not depend on the picture's size (Qwen-Image-2.1's text encoder and DiT text pass, 13 GB) are hard-linked from a finished export of another size with the same formats (`qwenimage.sharedExport`, 16.165) |
+| The VAE's prefetch of the next stage (AMD) | `anima.VAE.PrefetchLimit` | Loading the next stage while one runs held Qwen-Image's 1024² stages 4 and 5 (5.9 GiB) at once. Prefetch only when the two fit 3 GiB: peak 6.4 → 4.2 GB, the VAE 8.5 → 12 s, the same pixels (16.157) |
 
 **Pass**: enough numbers to add a row to the table in [improvements.md](improvements.md) 5.1.
 
@@ -340,6 +349,27 @@ The items above and in sections 3–5 and 9, for each image model in models.yaml
 | Energy per image (J) | ✗ (the Mac's powerbench needs sudo) | ✗ | ✓ (AMD 688 J) | ✓ (AMD 3.8 kJ at 1024²) | ✗ |
 | 3 prompts × 2 seeds against diffusers' fp32 (9), Mac | ✓ | ✗ (one picture: 0.984; the 16.160 changes were judged on 6 pictures against the Neural Engine's fp16) | ✓ | ✗ (not against diffusers; on the M1 4 min 30 s an image, the Neural Engine 2.62 GiB, the default against 30 Euler steps the same in 2 of 4, 16.160) | ✓ (512², latents 0.935–0.981, the same compositions and the sign's lettering, 16.165) |
 | Intel's NPU | ✗ (no form) | ✗ | ✗ (exports made; the hardware's run after the reload fix not checked) | ✗ (likewise) | ✗ |
+
+Qwen-Image-2.1 and Chroma1 (AMD only so far; 16.155–16.157, 16.167):
+
+| Item | Qwen-Image-2.1-Turbo | Qwen-Image-2.1 | Chroma1-Flash | Chroma1-HD |
+|---|---|---|---|---|
+| CFG's passes per weight group, AMD | — (no CFG) | ✓ (guidance only when asked, as diffusers) | — (no CFG) | ✓ |
+| CFG's passes per weight group, Core ML / OpenVINO | — | ✗ (no Mac or Intel form) | — | ✗ (likewise) |
+| The negative read in the same text load (`EncodeAll`) | — | ✓ (the empty prompt is a real one: the chat template's tokens) | — | ✓ |
+| A second-order solver | — (Euler, 8 distilled steps) | measured, not adopted (DPM 25 moved details: 0.973 against Euler 40's 0.990 to 100 steps) | ✓ (Heun, 8 steps) | ✓ (DPM-Solver++ 2M, 25 steps) |
+| CFG at the noisier steps only | — | ✗ (not measured) | — | ✓ (σ ≥ 0.6) |
+| A fixed text prefix held in the export | — (the system prompt is shorter than a 64-row chunk) | — (likewise) | — (no instruction) | — |
+| The prompt's keys and values out of the step loop | ✓ (dit_text, once a prompt) | ✓ | — (FLUX's text rows are modulated by the step) | — |
+| Image attention in 64-key blocks, QK^T in bfp16 | ✓ | ✓ | ✓ | ✓ |
+| VAE on the grid (`GridGEMM`, phase upsampling) | ✓ | ✓ | ✓ | ✓ |
+| Same-shaped VAE stages in one graph | ✓ | ✓ | ✗ | ✗ |
+| The text encoder in groups (`SwapVariants`) | ✓ | ✓ | ✗ (T5 in one graph: its 5 GB of q8 is the peak, 4956 MiB pinned) | ✗ |
+| Fewer bytes of DiT weights, AMD | ✓ (q8 attention, q6 MLP; q4 and GPTQ measured, not adopted) | ✓ (the same) | ✓ (q8; formats per part not swept) | ✓ (q8, likewise) |
+| Fewer bytes of DiT weights, Mac | ✗ (no form) | ✗ | ✗ | ✗ |
+| Energy per image at 1024² (AMD, package) | ✓ 2.0 kJ, 119 s | ✓ 9.3 kJ, 504 s (40 steps, no CFG) | ✓ 4.7 kJ, 269 s | ✓ 12.6 kJ, 691 s (CFG 3) |
+| 3 prompts × 2 seeds against diffusers' fp32 | ✓ (512², 0.976–0.9996 with MLP q6) | ✗ (one picture, CFG 4: 0.9982) | ✗ (one picture: 0.9988) | ✗ (one picture, CFG 3: 0.9957) |
+| Intel's NPU | ✗ | ✗ | ✗ | ✗ |
 
 The AMD cells are being done in separate work (q8 for Sana's DiT, the cross-attention's keys and values, Anima's VAE stages, Sana's CFG steps there); update them when it lands. Energy on the Mac and Intel remain.
 
@@ -424,6 +454,7 @@ A command looks for a model in this order:
 | `file` | The model's checkpoint file, when one repository holds several models | The repository's file list | Anima's `split_files/diffusion_models/` holds Turbo, Aesthetic and Base (`anima-turbo-v1.1.safetensors` and so on). Their tensor names can differ in prefix (Base's are `net.`) |
 | `device` | Where it runs, by vendor (npu or cpu) | Compare the energy of one run (mJ) on the NPU and on the CPU (onnxruntime, 1 thread) | Small models lose on AMD's NPU (YuNet: 137 mJ on the NPU, 10 mJ on the CPU; each switch between operators costs about 250 µs). Do not carry one vendor's result over to another |
 
+- **Licenses to accept**: a research or non-commercial license (Qwen Research, Anima's CircleStone Labs) goes in models.yaml as `license: {id, url, terms, accept: true}`. The first use by name asks once on a terminal and keeps the answer in `~/.config/hwnpu/licenses.json`; without a terminal it stops and asks for `--accept-license` or `HWNPU_ACCEPT_LICENSE=ID` (`chat.AcceptLicense`, 16.155)
 - **Values that differ by NPU**: the download, the memory and the placement can differ from one NPU to another
   - Anima takes 3.5 GB on AMD, and 4.1 GB is the value for the Mac
   - The download differs too: AMD now downloads the checkpoint and exports here, and it will download only an export once distribution starts
@@ -485,6 +516,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Apple's GPTQ codes: hwnpu-chat takes them with `--codes` and `--format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
 - Anima-Aesthetic's speed (3 min 19 s an image at 1024², 16.154): the rest of 7.1's untried items (the cross-attention's keys and values out of the loop, merging the VAE's stages, P·V in bfp16 by default) (the power profile barely changes the NPU's speed: balanced is 2–3 % faster, 16.154)
+- Qwen-Image-2.1 and Chroma1 (7.2): Chroma's T5 in groups (its 5 GB is the peak), Chroma's DiT formats per part, CFG at the noisier steps for Qwen-Image-2.1, 3 prompts × 2 seeds for the three models without them, the Mac and Intel forms
 - The image models' energy on the Mac (powerbench needs sudo) and on Intel (7.2)
 - Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter)
 
