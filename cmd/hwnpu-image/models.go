@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/shibukawa/hwnpu"
 	"io"
 	"os"
 	"os/exec"
@@ -112,8 +113,24 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 		if d, err := amdExport(m, ""); err == nil {
 			return "~/models/" + filepath.Base(d)
 		}
+		if m.Kind == chat.KindImage && coremlImage(m.Family, vendor) {
+			return "converted on first run"
+		}
 		return "-"
 	}, kinds...)
+}
+
+// coremlImage reports whether the image family converts for this machine's NPU (vendor, as
+// hwnpu.Vendor's String) on its first run: Anima on Apple's and Intel's, Sana and Qwen-Image on
+// Apple's.
+func coremlImage(family, vendor string) bool {
+	switch v := strings.ToLower(vendor); {
+	case strings.HasPrefix(family, "anima"):
+		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
+	case strings.HasPrefix(family, "sana"), strings.HasPrefix(family, "qwen-image"):
+		return v == strings.ToLower(hwnpu.VendorApple.String())
+	}
+	return false
 }
 
 // amdExport is the export of model m on AMD's NPU: ~/models/NAME.amd-npu2 or

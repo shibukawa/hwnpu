@@ -4175,7 +4175,60 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
 - 確かめていないこと ([handoff-plamo3-8b.md](handoff-plamo3-8b.md)): M4 の速さとコンパイルのキャッシュ、M3 の lut8、M2 の lut8 の 2 回目以降の読み込み、AMD の書き出し (ピークのメモリ、コマンドの 2 秒、デバイスのヒープ)、HF の fp32 との照合 (KL。8B の実重みでの `hwnpu-dev check`、`-f16` の層ごとの誤差、`check -package` の KL も。訳が崩れないことしか見ていない)、GPTQ の符号と lut の表の当てはめ (`--lut-fit wkmeans`。8B の fp32 の校正は約 34 GB で 16 GB の Mac ではできない)、長い文脈 (パスキー、128K と 250K)、M2 と M3 のメモリの最大
 - 部品としての値 (16.94): 入力と出力は文 (PLaMo のトークナイザー)、常駐は 3.81 GiB (ANE、lut4)、2 回目の読み込み 3〜5 秒、KV は会話とともに 1 トークン 9 KiB (hwnpu-chat の表示、262144 で 2.25 GiB) と、窓 2048 のリング 28 層
 
-### 16.165 Intel の経路のなかったモデルを OpenVINO IR に: 変換と、OpenVINO の CPU での確認 — 2026-11-12
+
+### 16.165 Qwen-Image-2.1-Turbo を Mac の Neural Engine で: DiT は lut4、文の符号器と DiT の文のパスは lut8 — 2026-11-12
+
+16.155 で AMD に入れた Qwen-Image-2.1-Turbo を Apple の Neural Engine (Core ML) に。`internal/imagegen/qwenimage/mil` (MIL のプログラム) と `qwenimage.Convert` / `Prepare` (取得と変換)、`progEngine` (実行)。`hwnpu-image generate -m qwen-image` は Mac では `--dir/Qwen-Image` に取得して変換する。M3 16 GB、macOS 27.2 で測った。
+
+**プログラム** (どれも全部 Neural Engine):
+
+| 部品 | 中身 | 形式 | 大きさ | 読むとき |
+|---|---|---|---|---|
+| text_N (9) | Qwen3-VL-8B の 4 層ずつ、512 行、因果。最後の組は DiT の txt_in まで | lut8 | 6.7 GB | プロンプトごとに 1 つずつ |
+| dit_text_N (8) | DiT の 4 ブロックずつを文の 512 行に、t = 0 の変調、因果。行と各ブロックの K/V を 1 つの出力に並べる | lut8 (k-means-minmax) | 6.6 GB | プロンプトごとに 1 つずつ |
+| dit_blocks_N (8) | 画像の行だけの 4 ブロックずつ。[自分の K、文の K] に注意し、文のパディングは `kbias` で隠す。最初の組に img_in、最後の組に norm_out と proj_out (小さい部品だけのプログラムは CPU に落ちる) | lut4 (k-means-minmax) | 3.4 GB | ステップの間ずっと |
+| vae_sN (7) | 中段、上げのブロック 4 つ、最後のブロックを 2 段。DupUp3D の近道は 0/1 の 1 × 1 畳み込み (+ pixel_shuffle) | fp16 | 0.5 GB | 段ごとに |
+
+- 時刻の埋め込みと共有の変調 (100 M の積和) はホストの float32 (`time.safetensors`、bf16)。3.3 節の「1 行の計算は ANE でずれる」
+- RoPE は Qwen-Image の組 (2i, 2i+1) を ApplyRope の (i, i+64) に合わせて q と k の行を頭の中で並べ替える (`headPerm`、AMD の head_perm と同じ)。画像の RoPE は文の長さで変わるのでホストの入力
+- 残差は DiT を 1/8、文の符号器を 1/4 で持つ (`DitScale`、`TextScale`)。float32 の参照で DiT の最大は 9000 (文の行)、文の符号器は層 6 から 13500 (最初の `<|im_start|>` の行の注意の吸い込み)
+- 画像の注意のクエリの塊: 1024² で 4 ブロック 128 クエリずつ (38 MB) はコンパイル 59 秒・1 回 1.49 秒、512 (151 MB) は 33 秒・1.57 秒、全部は 35 秒・2.2 秒。コンパイルは Neural Engine のキャッシュが落とすたびにかかるので 512 (`maxScoreBytes` 160 MiB)。512² は塊なし
+- 書き出し 15 GB (512²)。文の 2 つの部品は画像の大きさに依らないので、別の大きさの書き出しはハードリンクで共有する (`sharedExport`、Sana の Gemma 2 と同じ)
+
+**参照**: torch のない Mac で float32 の参照を作るため、`tools/ref/stream_weights.py` (meta デバイスで組み、繰り返しの層の重みを実行の直前に読んで後で捨てるフック) と `ref_qwenimage21.py --stream` を足した。7B と 8B の float32 が数 GB で回る (512² の 1 枚 約 5 分)。各層の出力の最大も出す。`tools/ref/compare_image.py` は潜在のコサインと PSNR。
+
+**文の符号器の行ごとの int8 は注意の吸い込みで NaN**: 最初の形 (文 int8) は参照と潜在のコサイン 0.698 で、狐が灰色になった。CPU のインタプリタでは同じ int8 のプログラムが文の行 0.9995 なので、グラフでなく Neural Engine。組ごと、層ごとに CPU と比べると、層 6 だけ 1744 個の非有限の値 (行 0)。層 6 の down_proj は行 0 で 13120 を出す (入力は 6409 で fp16 に収まる)。Neural Engine は行ごとの int8 の重みで符号のままの積和を取って最後に行の尺度を掛けるとみられ、その途中が fp16 を超える。lut8 (表を fp16 の重みに戻してから積和) では非有限なし、各行 0.9996 以上。SANA 1.5 の int8 の DiT が崩れたこと (16.160、原因は追っていなかった) も同じかもしれない (未確認)
+
+**形式** (512² の狐、同じノイズの diffusers の float32 との潜在のコサイン / PSNR):
+
+| 文の符号器 | DiT の文のパス | DiT の画像 | コサイン / PSNR | 1 ステップ |
+|---|---|---|---|---|
+| int8 | lut4 (一様) | lut4 (一様) | 0.698 / 11.1 dB (色が違う) | 2.2 秒 |
+| lut8 | lut4 (k-means-minmax) | lut4 (k-means-minmax) | 0.965 / 21.1 dB | 2.3 秒 |
+| **lut8** | **lut8** | **lut4 (既定)** | **0.980 / 22.5 dB** | 2.3 秒 |
+| lut8 | lut8 | lut6 | 0.987 / 23.0 dB | 3.2 秒 |
+
+- 4 ブロックの組 1 つを fp16 と比べた相対 RMS 誤差 (最初のステップの実の入力): lut4 一様 4.9 %、k-means 12.6 %、**k-means-minmax 3.2 %**、lut6 1.2 %、lut8 0.5 %。一部の射影だけ lut8 にしても 4.1〜4.8 % (誤差は全部の射影に広がっている)
+- DiT の lut4 の 0.969 (最初のステップの速度) は CPU のインタプリタでも 0.969 で、fp16 のずれではなく量子化
+- 文のパスはプロンプトごとに 1 回でステップの間は持たないので lut8 にしても Neural Engine が持つ量は増えない。画像の lut6 は 5.1 GB で 40 % 遅く、コンパイルのキャッシュを超えるので `--dit-format lut6` に残した
+- 3 プロンプト (狐、「OPEN 24 HOURS」の看板、雨の夜の街) × 2 種、512²: 0.935〜0.981 / 13.9〜23.8 dB。6 枚とも構図は参照と同じで、看板の文字も同じ。看板の 2 枚 (0.935、0.945) は看板の位置が少しずれた
+
+**速さ**:
+
+| | 512² | 1024² |
+|---|---|---|
+| 1 ステップ (計算) | 2.2 秒 | 16 秒 (4 ブロックの組 1.57 秒 × 8 + ホスト) |
+| 初回 (変換とコンパイル込み) | 5〜6 分 (変換 68 秒) | 11〜12 分 |
+| 2 回目から 1 枚 | 4 分 26 秒 | 7 分 08 秒 |
+| footprint の最大 | 4.5 GB | 6.0 GB |
+
+- **時間の大半は読み込み**: プログラムの合計 17 GB が Neural Engine のコンパイル済みキャッシュ (約 4 GiB、16.41) を超えるので、2 回目でもほぼ全部が外れる (1 本 7〜12 秒、1024² の DiT は 17〜32 秒)。512² の計算は 1 枚 約 20 秒
+- **複数のプロンプトを 1 回で**: Core ML の書き出しでは、全部のプロンプトを先に符号化し (文の部品を読むのは 1 回)、DiT を持ったまま全部のステップ、VAE は段ごとに全部の絵 (`Pipeline.Batched`、`DecodeAll`)。2 枚が 5 分 02 秒 (別々なら 8 分 52 秒)
+- 効かなかった: 次のプログラムを今のものの実行中に読む、DiT を 4 本同時に読む。単独の試験では 4 本同時が 71 → 56 秒だったが、パイプラインでは 62 → 76 秒、footprint 4.5 → 7.4 GB で戻した (Neural Engine のコンパイルはほぼ 1 本ずつ)
+
+**残り**: Qwen-Image-2.1 (蒸留なし、CFG) の Mac での確認 (コードは CFG の 2 パスを組ごとに回す形)、1024² の参照との照合 (ストリームの参照で 1 枚 30 分以上)、`mem.NPUWired` の値、電力量。ディスク: 取得 32 GB + 書き出し 15 GB + コンパイルのキャッシュ (`~/Library/Caches/hwnpu-image/com.apple.e5rt.e5bundlecache` が数 GB ずつ増える)
+
+### 16.166 Intel の経路のなかったモデルを OpenVINO IR に: 変換と、OpenVINO の CPU での確認 — 2026-11-12
 
 Intel の NPU に向けた変換 (OpenVINO IR、`internal/ovlower`) がない、または壊れていたモデルを洗い出し、Go の変換器があるものはすべて IR を書けるようにした。Intel の実機はないので、確かめたのは「変換が通る」「IR が MIL と同じ値を出す」「コマンドが変換から結果まで通り、結果が Apple / AMD / CPU の経路と合う」まで。NPU のコンパイラが受け付けるか、速さ、メモリは未確認 (`tools/intel/hwnpu-intel-check.ps1` の full に足した)。
 
@@ -4210,5 +4263,5 @@ Intel の NPU に向けた変換 (OpenVINO IR、`internal/ovlower`) がない、
 | generate | Sana 600M 1024 × 1024 (int8) | 同じ種で AMD の NPU とほぼ同じ絵 (りんごと木の机) |
 | generate -m sfx | MOSS-SoundEffect v2.0 (文のモデルと DiT は int8) | 16 本を IR に変換 (11.5 GB のダウンロード)、20 ステップで 3 秒の音 (RMS 2400、NaN なし。1 ステップ 18 秒)。中身は耳で確かめていない |
 
-- **できなかったもの**: Chroma、Qwen-Image、SigLIP 2 (label)、FLUX は AMD の IRON のグラフ (Python) しかなく、Go の MIL のグラフがない。Intel (と Apple) で動かすには、その構造を `internal/llm/blocks` で組み直す移植が要る
+- **できなかったもの**: Chroma、SigLIP 2 (label)、FLUX は AMD の IRON のグラフ (Python) しかなく、Go の MIL のグラフがない。Intel (と Apple) で動かすには、その構造を `internal/llm/blocks` で組み直す移植が要る。Qwen-Image は 16.165 で Go のグラフ (Core ML) ができたが、IR を書くのはこの変更に入れていない
 - 未確認 (実機が要る): NPU のコンパイラがこれらの演算 (DepthToSpace、ConvolutionBackpropData、Clamp、MaxPool、Elu など) と、大きなグラフ (Sana の Gemma 2 の 6 層 int8 で約 0.5 GB、EfficientSAM の 4096 トークンの注意) を受け付けるか、速さ、Core Ultra 5 135U のメモリ (Anima で 4.6 GB の上限、16.143) に Sana と MOSS が収まるか
