@@ -2,6 +2,8 @@
 
 2026-11-11。移植はまだしていない。[new-model-checklist.md](new-model-checklist.md) の 1 節 (紙の上の見積もり) と、最初から入れる最適化 (4.1、5、6、7.1、11) を、二つのモデルの構造に当てはめた。時間は Anima の実測 (DiT 17 TFLOP が 1 パス 4.55 s、約 3.75 TFLOPS) からの見積もり。Chroma の DiT は FLUX.1 schnell の試作 (worktree `t3-flux`、`tools/amd/iron_flux.py`) で測った 1 パス約 20 s と合っている。
 
+> 用語: Qwen-Image-2.1 と Chroma1-HD は蒸留していない本体 (そのまま使える公開モデル)。Turbo と Flash はそれを少ないステップ・CFG なしに蒸留した版。Anima-Base のような「学習途中のベース」ではない (Chroma1-HD は作者が微調整の土台としても勧めている)。
+
 ## 1. 二つのモデル
 
 | | Qwen-Image-2.1 (+ Turbo) | Chroma1-HD (+ Flash) |
@@ -14,7 +16,7 @@
 | 画像トークン | VAE が 1/16、パッチなし: 1024² で 64 × 64 = 4096 | VAE が 1/8 + 2 × 2 パッチ: 1024² で 4096 + テキスト 512 |
 | 注意 | ブロック因果: テキストは因果、画像ブロックの中は双方向。生成する画像はテキスト全部と自分を見る | 結合の双方向 (テキストのパディングはキーから外す) |
 | VAE | 新しい `AutoencoderKLQwenImage21` (Wan 2.2 系、RMS 正規化、z 64 チャンネル、RGBA の 4 チャンネル)。デコーダの幅 144 × [8, 8, 8, 4, 2, 1] | FLUX の AutoencoderKL (16 チャンネル、GroupNorm) |
-| 既定のサンプリング | Base: 40 ステップ、CFG なし (`true_cfg_scale` 1、負のプロンプトを渡したときだけ)。Turbo: 8 ステップ、シグマの表がチェックポイントにある、CFG なし | HD: 40 ステップ、CFG 3.0、README の負のプロンプト。Flash: CFG を焼き込んだ版 (README に推奨の設定がない。要確認) |
+| 既定のサンプリング | 本体: 40 ステップ、CFG なし (`true_cfg_scale` 1、負のプロンプトを渡したときだけ)。Turbo: 8 ステップ、シグマの表がチェックポイントにある、CFG なし | HD: 40 ステップ、CFG 3.0、README の負のプロンプト。Flash: CFG を焼き込んだ版 (README に推奨の設定がない。要確認) |
 | 公式の解像度 | 2048² 前後 (4 MP、7 つの縦横比) | 1024² 前後 |
 
 公式の高速化が Qwen-Image-2.1 にもう入っている: `causal_condition` でテキストのトークンは t = 0 で変調され、ステップに依らない。最初のステップでテキストの K/V を層ごとに取り (`kv_cache_mode="extract"`)、以降のステップは生成する画像の 4096 行だけを計算する。これは checklist 7.1 の「ステップごとに同じ仕事をループの外へ」(Anima では未着手) を、モデルの側が保証している形。
@@ -23,8 +25,8 @@
 
 | | 新たに落とすもの | 共有できるもの |
 |---|---|---|
-| Qwen-Image-2.1-Turbo | DiT 14.2 GB (bf16)、テキスト 17.5 GB、VAE 0.68 GB (bf16)、processor 約 16 MB: **約 32.4 GB** | テキストは Qwen3-VL-8B-Instruct と同じ重み (層 10 の down_proj、層 35 の o_proj、埋め込み、視覚の層 0 の先頭 4 MB の sha256 が三つのリポジトリで一致)。Base とも共有 |
-| Qwen-Image-2.1 (Base) | DiT 14.2 GB だけ (Turbo の DiT とは別の重み) | テキスト、VAE (Base の VAE は fp32 1.35 GB。Turbo の bf16 と値が同じかは未確認) |
+| Qwen-Image-2.1-Turbo | DiT 14.2 GB (bf16)、テキスト 17.5 GB、VAE 0.68 GB (bf16)、processor 約 16 MB: **約 32.4 GB** | テキストは Qwen3-VL-8B-Instruct と同じ重み (層 10 の down_proj、層 35 の o_proj、埋め込み、視覚の層 0 の先頭 4 MB の sha256 が三つのリポジトリで一致)。本体とも共有 |
+| Qwen-Image-2.1 (本体、蒸留なし) | DiT 14.2 GB だけ (Turbo の DiT とは別の重み) | テキスト、VAE (本体の VAE は fp32 1.35 GB。Turbo の bf16 と値が同じかは未確認) |
 | Chroma1-HD | DiT 17.8 GB (`transformer/` の 2 つのシャード) だけ。`Chroma1-HD.safetensors` (同じ 17.8 GB の 1 ファイル版) は落とさない | **T5 と VAE は FLUX.1 schnell のものとバイト単位で同じ** (sha256 を手元の `~/models/FLUX.1-schnell` と照合済み)。Flash とも同じ |
 | Chroma1-Flash | DiT 17.8 GB | 同上 |
 
@@ -50,14 +52,14 @@
 |---|---|---|
 | Qwen-Image-2.1-Turbo、8 ステップ | 8 | 8 × 18 + VAE 15 + テキスト 2 ≈ **2.7 分** (Anima-Turbo の 44 s の約 3.6 倍) |
 | 同、768² | 8 | 約 1.5 分 |
-| Qwen-Image-2.1 Base、DPM-Solver++ 2M 25 ステップ、CFG なし | 25 | 約 8 分 |
+| Qwen-Image-2.1 (本体)、DPM-Solver++ 2M 25 ステップ、CFG なし | 25 | 約 8 分 |
 | Chroma1-HD、公式 (40 ステップ、CFG) | 80 | 約 27 分 |
 | Chroma1-HD、DPM-Solver++ 2M 25 ステップ + CFG を σ ≥ 0.6 だけ | 約 42 (shift 3 なのでステップの 2/3 が σ ≥ 0.6) | 約 14 分 |
 | Chroma1-Flash (CFG なし、ステップ数は要確認) | ステップ数 | 16 ステップなら約 5.5 分 |
 
 ImageMHA は FLUX の試作で注意が 1 ブロックの 191 / 342 ms だったところを 2.5 倍ほど速くするので、両方の DiT は上の 0.7 倍ほどになりうる (要測定)。
 
-**向いている順**: Qwen-Image-2.1-Turbo (パスあたりの仕事が少なく、テキストの分を毎ステップ計算しない、8 ステップで CFG なし) > Chroma1-Flash > Qwen-Image-2.1 Base > Chroma1-HD。
+**向いている順**: Qwen-Image-2.1-Turbo (パスあたりの仕事が少なく、テキストの分を毎ステップ計算しない、8 ステップで CFG なし) > Chroma1-Flash > Qwen-Image-2.1 (本体) > Chroma1-HD。
 
 ## 4. メモリ (checklist 6、10)
 
@@ -82,8 +84,8 @@ checklist で効いたものを、それぞれのモデルのどこに当てる�
 | 画像の注意を 64 キーのブロック、QK^T を bfp16 (`ImageMHA`、7.1、16.147) | Qwen: 4096 行のクエリ × (テキスト + 4096) キー。Chroma: 4608 × 4608 |
 | プロンプトの MHA を 8 パイプライン (4.1、16.107) | `iron_mha.attention` は行が 512 の倍数でないと 4 パイプラインに落ちる (t3-flux)。Chroma の 4608 = 9 × 512、Qwen はテキストを 256 行単位に詰め、4096 + 256k にする |
 | CFG の二つのパスをグループごとに続けて (7.1、16.148) | SwapVariants で読む回数を 1 ステップ 8 グループのままにする |
-| DPM-Solver++ 2M (`--sampler dpm2m`、16.154) | Base と HD。Turbo はチェックポイントのシグマの表に従う (他の表は公式に評価されていない) |
-| CFG を雑音の多いステップだけ (`--cfg-sigmas 0.6,1`) | Chroma1-HD (CFG が既定)。Qwen Base は既定で CFG なし |
+| DPM-Solver++ 2M (`--sampler dpm2m`、16.154) | Qwen-Image-2.1 (本体) と Chroma1-HD。Turbo はチェックポイントのシグマの表に従う (他の表は公式に評価されていない) |
+| CFG を雑音の多いステップだけ (`--cfg-sigmas 0.6,1`) | Chroma1-HD (CFG が既定)。Qwen-Image-2.1 (本体) は既定で CFG なし |
 | 蒸留した版を既定に (7.1) | `qwen-image` は Turbo、`chroma` は Flash を既定の候補に (Flash の品質と設定を見てから決める) |
 | 固定の負のプロンプトを定数に (16.148 の `empty_cond.bin`) | Chroma: README の負のプロンプト (または空) の T5 出力をエクスポートで計算して持つ。Qwen は CFG を使うときだけ |
 | VAE の 3 × 3 畳み込みを格子の上の GEMM (`GridGEMM`)、最近傍 2 倍 + 畳み込みを位相の 4 つの 2 × 2 (4.1、16.139) | Qwen の VAE は `nearest-exact` の 2 倍 + 3 × 3 の 4 段 (+ DupUp の近道) なので、そのまま当てはまる。同じ形の段を一つのグラフに |
@@ -118,7 +120,7 @@ checklist で効いたものを、それぞれのモデルのどこに当てる�
 - **Qwen のテキストの隠れ状態は最終の RMSNorm の前**。transformers 5.x (ref-venv は 5.22.1) は `hidden_states[-1]` を正規化した後のものにする。パイプラインはフックで戻しているが、自前の参照スクリプトでも同じにしないと、信号の 3 分の 1 が違うものと比べることになる
 - Qwen のテキストは BOS がない。空のプロンプトは " " に置き換える (パイプラインの通り)
 - IRON の MHA は点数を bf16 で持つ: Sana 600M のクロス注意で点数が約 1750 になり CFG がずれた (キーの行 0 を引いて直した、16.119)。Qwen の [テキスト + 画像] のキーでも点数の大きさを先に見る
-- 1024² は Qwen-Image-2.1 の公式の解像度 (2048² 前後) の 4 分の 1。Base の動的な shift (mu) はトークン数で変わる。1024² と 768² の絵を CPU の float32 で公式の 2048² と並べ、使える解像度を先に決める
+- 1024² は Qwen-Image-2.1 の公式の解像度 (2048² 前後) の 4 分の 1。本体の動的な shift (mu) はトークン数で変わる。1024² と 768² の絵を CPU の float32 で公式の 2048² と並べ、使える解像度を先に決める
 - 3 プロンプト × 2 種の絵を参照と並べる (9)。Turbo は 8 ステップの蒸留なので、潜在の cos より絵の並びで判断する (Anima-Turbo 0.876–0.948)
 
 ## 7. Apple と Intel
