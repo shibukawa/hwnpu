@@ -238,6 +238,7 @@ func (r *Reader) Close() error {
 // program converts (unless converted) and loads the program of model at the input shape, in
 // the repository's directory as NAME-rREV-fp16-SHAPE.
 func (r *Reader) program(ctx context.Context, src Source, model, name string, shape []int, describe string) (runner.Program, error) {
+	defer console.Loading(fmt.Sprintf("%s %v (%s)", describe, shape, model))()
 	if r.s.CPU {
 		return r.cpuProgram(model, name, shape)
 	}

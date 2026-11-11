@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
 )
@@ -108,6 +109,7 @@ type preload struct {
 // Open loads the model at path on dev: a manifest of parts (out.parts.json), whose first tier is
 // loaded when it has several, or a single package.
 func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
+	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
 		return nil, err
@@ -118,6 +120,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 // OpenOn is Open with every part run on the units given (hwnpu.GraphSource.Units: "gpu", "cpu";
 // "" the Neural Engine).
 func OpenOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*Chain, error) {
+	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
 		return nil, err
@@ -130,6 +133,7 @@ func OpenOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*Chain,
 // (decode.Session.Add): the same model converted with another number of tokens per call. The
 // buffers stay c's; close the new chain before c, and do not Grow either chain while they share.
 func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
+	defer console.Loading(path)()
 	man, err := llm.ReadManifest(path)
 	if err != nil {
 		return nil, err

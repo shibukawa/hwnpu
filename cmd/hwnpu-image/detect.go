@@ -1,9 +1,6 @@
 package main
 
 import (
-	"github.com/shibukawa/hwnpu/internal/milcpu"
-	"github.com/shibukawa/hwnpu/internal/onnxrt"
-
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,7 +21,10 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mem"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
 	"github.com/shibukawa/hwnpu/internal/vision/detect"
+	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
 )
 
 // DetectCmd is "hwnpu-image detect": the objects in pictures (COCO's 80 classes) with RTMDet
@@ -75,6 +75,26 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 	setup := detect.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), File: file, SHA256: m.SHA256[file], Log: lw}
 	var d *detect.Detector
 	t0 := time.Now()
+	fetch := func() (string, error) { return detect.Fetch(ctx, setup) }
+	if export := amdCNNExport(ctx, m, c.Device, c.CPU, logf, fetch, func(python []string, model, dir string) error {
+		return detect.ExportNPU(ctx, python, m.Name, model, dir, lw)
+	}); export != "" {
+		model, err := detect.Fetch(ctx, setup)
+		if err != nil {
+			return err
+		}
+		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		if err != nil {
+			return err
+		}
+		defer dev.Close()
+		if d, err = detect.OpenNPU(ctx, dev, export, model); err != nil {
+			return err
+		}
+		logf("loaded %s in %.1f s, on AMD's NPU (%s)", m.Name, time.Since(t0).Seconds(), filepath.Base(export))
+		defer d.Close()
+		return c.detect(ctx, d, logf)
+	}
 	ort, builtin := cpuRoute(ctx, m, c.Device, c.CPU, c.Threads, logf)
 	c.CPU = c.CPU || builtin
 	if ort {
@@ -105,6 +125,11 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 		logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
 	}
 	defer d.Close()
+	return c.detect(ctx, d, logf)
+}
+
+// detect finds the objects of each picture with d.
+func (c *DetectCmd) detect(ctx context.Context, d *detect.Detector, logf func(string, ...any)) error {
 	d.Score, d.NMS = c.Score, c.NMS
 	keep := map[string]bool{}
 	for _, l := range c.Class {
@@ -116,6 +141,7 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 			keep[k] = true
 		}
 	}
+	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for _, p := range c.Pictures {
 		img, err := readPicture(p)
@@ -175,6 +201,44 @@ func repeated(n int) string {
 		return ""
 	}
 	return fmt.Sprintf(", the mean of %d runs after the first", n-1)
+}
+
+// amdCNNExport is the export of tools/amd/iron_onnxcnn.py that model m runs from on AMD's NPU
+// (ironcnn.Dir: ~/models/NAME.amd-npu2), made on the first run with IRON when it is not there
+// (minutes): fetch downloads the ONNX file, export makes the export of it in dir. It is "" where
+// m runs elsewhere: another NPU, --cpu, --device cpu (or models.yaml's device for AMD,
+// HWNPU_DEVICE), or no IRON to make the export with (then the CPU, said in the log).
+func amdCNNExport(ctx context.Context, m chat.Model, flag string, interp bool, logf func(string, ...any), fetch func() (string, error), export func(python []string, model, dir string) error) string {
+	return amdFirstRunExport(ctx, m, flag, interp, logf, func(dir string) error { _, err := ironcnn.Read(dir); return err }, fetch, export)
+}
+
+// amdFirstRunExport is amdCNNExport for any tool's export: have says whether dir holds one.
+func amdFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bool, logf func(string, ...any), have func(dir string) error, fetch func() (string, error), export func(python []string, model, dir string) error) string {
+	if interp || chat.HereVendor() != "amd" {
+		return ""
+	}
+	if device, _, err := chat.ChooseDevice(m, "amd", flag); err != nil || device != "npu" {
+		return ""
+	}
+	dir := ironcnn.Dir(m.Name)
+	if have(dir) == nil {
+		return dir
+	}
+	// none here: made as hwnpu-chat makes its models' (chat.PrepareAMD), with IRON
+	python, err := chat.IRONPython(ctx)
+	if err != nil {
+		logf("%s: no export for AMD's NPU in %s, and making one needs IRON (%v; INSTALL_AMD.md, %s): the CPU", m.Name, dir, err, chat.IRONEnv)
+		return ""
+	}
+	model, err := fetch()
+	if err == nil {
+		err = export(python, model, dir)
+	}
+	if err != nil {
+		logf("%s: %v; the CPU", m.Name, err)
+		return ""
+	}
+	return dir
 }
 
 // cpuRoute is where an ONNX model m runs (chat.ConvertedDevice) and logs it: ort, ONNX

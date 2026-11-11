@@ -149,6 +149,11 @@ type Pipeline struct {
 	// KeepDiT keeps the DiT on the device through Decode, for the next picture's steps (it is
 	// otherwise released before the VAE runs).
 	KeepDiT bool
+	// CFGMin and CFGMax, when CFGMax > 0, bound the sigmas at which a step runs the guidance;
+	// the other steps run the DiT once, on the prompt (guidance in a limited interval,
+	// Kynkäänniemi et al. 2024; Anima's anima.Sampling). Open sets DefaultCFGSigmas; CFGMax 0
+	// guides every step.
+	CFGMin, CFGMax float64
 	// Logf, when set, is told what is done.
 	Logf func(format string, args ...any)
 	// Stage, when set, is told of each stage of the VAE as it ends.
@@ -215,7 +220,7 @@ func IsExport(dir string) bool { return isIronExport(dir) || IsProgramExport(dir
 // programs with the CPU interpreter when dev is nil). log, when not nil, is shown each program of
 // a Core ML export as it loads (the first load compiles it for the NPU).
 func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
-	p := &Pipeline{}
+	p := &Pipeline{CFGMin: DefaultCFGSigmas[0], CFGMax: DefaultCFGSigmas[1]}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
 		return nil, fmt.Errorf("sana: %w", err)
@@ -516,22 +521,49 @@ func (p *Pipeline) Generate(ctx context.Context, cond, neg Cond, noise []float32
 	return p.dpm(ctx, cond, neg, noise, steps, guidance, step)
 }
 
+// DefaultCFGSigmas are the sigmas whose steps run the guidance by default: 14 of the 20 steps.
+// Against every step guided, 3 prompts x 2 seeds at 1024 x 1024 on the M1 drew the same pictures
+// (Sana 600M's latents 0.996-0.998); from 0.8 a small object went missing (design.md 16.160).
+var DefaultCFGSigmas = [2]float64{0.6, 1}
+
+// Guided reports whether the step at sigma runs the guidance (CFGMin, CFGMax).
+func (p *Pipeline) Guided(sigma float64) bool {
+	return p.CFGMax <= 0 || (sigma >= p.CFGMin && sigma <= p.CFGMax)
+}
+
+// Sigmas are the scheduler's sigmas of steps steps (steps+1, the last 0).
+func (p *Pipeline) Sigmas(steps int) []float64 {
+	return NewDPM(steps, p.Model.FlowShift, p.Model.TrainSteps).Sigmas
+}
+
 func (p *Pipeline) dpm(ctx context.Context, cond, neg Cond, noise []float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
 	m := p.Model
 	d := NewDPM(steps, m.FlowShift, m.TrainSteps)
 	x := append([]float32(nil), noise...)
 	for i := 0; i < steps; i++ {
 		t0 := time.Now()
-		outs, err := p.velocity(ctx, x, TimestepSinusoid(d.Timesteps[i], 256), []Cond{neg, cond})
-		if err != nil {
-			return nil, fmt.Errorf("sana: step %d: %w", i, err)
-		}
-		u, c := outs[0], outs[1]
-		p.dump(fmt.Sprintf("out%d_0.bin", i), u)
-		p.dump(fmt.Sprintf("out%d_1.bin", i), c)
-		v := make([]float32, len(x))
-		for j := range v {
-			v[j] = u[j] + float32(guidance)*(c[j]-u[j])
+		tproj := TimestepSinusoid(d.Timesteps[i], 256)
+		var v []float32
+		if guidance == 1 || !p.Guided(d.Sigmas[i]) {
+			// the DiT once, on the prompt: u + 1 (c - u) is c
+			outs, err := p.velocity(ctx, x, tproj, []Cond{cond})
+			if err != nil {
+				return nil, fmt.Errorf("sana: step %d: %w", i, err)
+			}
+			v = outs[0]
+			p.dump(fmt.Sprintf("out%d_1.bin", i), v)
+		} else {
+			outs, err := p.velocity(ctx, x, tproj, []Cond{neg, cond})
+			if err != nil {
+				return nil, fmt.Errorf("sana: step %d: %w", i, err)
+			}
+			u, c := outs[0], outs[1]
+			p.dump(fmt.Sprintf("out%d_0.bin", i), u)
+			p.dump(fmt.Sprintf("out%d_1.bin", i), c)
+			v = make([]float32, len(x))
+			for j := range v {
+				v[j] = u[j] + float32(guidance)*(c[j]-u[j])
+			}
 		}
 		x = d.Step(i, v, x)
 		if step != nil {

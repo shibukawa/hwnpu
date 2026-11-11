@@ -3976,7 +3976,166 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
 - **P·V の bfp16** (`--dit-mha qkpv`、16.147): 512² では注意が小さく速くならない。1024² で −5 %、電力量 −12 %、絵は同じ。既定 (`qk`) を変えるとすべての書き出しを作り直すことになり、16.147 では参照から細部が少し離れたので、まだ既定にしていない
 - 残り: 交差注意のキーと値をステップの外へ (演算の 0.7 %)、Anima の VAE の同じ形の段をまとめる (Turbo の 12 %)
 
-### 16.155 PLaMo 3 Translate 8B (`plamo-3-translate-8b`): 8B は 4 ビットの表で — 2026-11-11
+### 16.155 Qwen-Image-2.1-Turbo を AMD の NPU で、ライセンスを初回に確かめる仕組み — 2026-11-11
+
+`Qwen/Qwen-Image-2.1-Turbo` (7.1B のシングルストリーム DiT、文を読むのは Qwen3-VL-8B、64 チャンネル・1/16 の RGBA の VAE、8 ステップ・CFG なし) を AMD の NPU に入れた。調べた中身は [image-models-survey-qwen-chroma.md](image-models-survey-qwen-chroma.md)。書き出しは `tools/amd/iron_qwenimage.py`、パイプラインは `internal/imagegen/qwenimage`、参照は `tools/ref/ref_qwenimage21.py`。詳しくは [amd-npu-models.md](amd-npu-models.md) 20 節。
+
+- **文の K/V を一度だけ**: 文の行は t = 0 で変調される (`causal_condition`) ので、各ブロックの K/V はステップに依らない。プロンプトごとに `dit_text` で一度だけ計算し、各ステップは画像の 4096 行 (1024²) だけを回して [画像の K、文の K] に注意する。文のパディングはキーの数 `nk` (呼び出しごと) で切る (画像を先に並べるので末尾になる)
+- **共有の変調を dit_in で**: 全ブロック共通の変調 (1 + scale、tanh gate) を 1 ステップ 1 回、tanh まで NPU で
+- 文: Qwen3-VL-8B の 36 層 (q6、HIGHEST) を 64 行ずつ、最後の層の norm の前の出力に DiT の txt_in まで同じグラフで。システム文の 14 トークンは捨てる。システム文は 1 チャンク (64) より短いので、Sana の前置きの K/V を持つ手 (16.138) は効かない
+- 正しさ (CPU の float32 の diffusers と同じ雑音から): 512² 狐 潜在のコサイン 0.9978 / PSNR 27.9 dB、512² 看板の文字 0.9995 / 31.3 dB (文字も同じ)、1024² 狐 0.9989 / 34.2 dB
+- 速さ (1024²): 1 枚 1 分 52 秒 (文 5.1 秒、DiT の文 2.2 秒、ステップ 12.0 秒 × 8、VAE 約 9 秒)。CPU が別の作業で混んでいたときは 2 分 17 秒 (14.6 秒/ステップ)。見積もり (Anima の 3.75 TFLOPS から 17.7 秒/ステップ) より速い。512² は 1 ステップ 3.4 秒
+- メモリ: ピーク 6.8 GB (NPU 6.1 GB、文の段の q6 の重み)
+- **DiT の重みを 1 回だけ持つ**: 最初は `dit_text` と `dit_blocks` が同じ q8 の重み (7 GB) を別々に持ち、書き出しが 22 GB だった。バンクの中身は 1 バイト目から違った。違いは `dit_text` の RoPE の表 (呼び出しごとに切り出すので `iron.weight`): これが重みの並びに入って配置がずれていた。RoPE をホストが渡す入力 (チャンクの 256 行) にすると、2 つのグラフの重みは同じものが同じ順に並び、バンクの像がバイトまで同じになる。書き出しは `dit_blocks` を先に作り、`dit_text` の最初の像が同じなら自分の像を消して、どの組も `../dit_blocks/` の像を指す (`share_banks`。違えば今までどおり自分で持つ)。書き出し 22 → **15 GB**、書き出しの時間も 7 組分短い。潜在は前とコサイン 1.0 (2 つのプロンプト)、時間も同じ
+- **2 回目の実行が止まる**: `dit_text` (呼び出しごとの位置に K/V を書く) と Chroma の approximator (6 コマンド) で、同じグラフの 2 回目の最初のコマンドが ERT_CMD_STATE_TIMEOUT。1 回目は正しい。言語モデルの stepBarrier と同じく、同じ ELF を別のハードウェアコンテキストに読んで空のコマンドを先に回すと止まらない (`iron.GraphOptions.Barrier`、irongraph `-barrier`)。qwenimage のグラフはすべてこれを使う
+- VAE: Wan 2.2 系の DupUp3D の近道 (入力のチャンネルを画素へ) は、チャンネルが同じなら最近傍、違えば位相ごとの選択の行列 (MEDIUM: HIGHEST の GEMM は N が 64 の倍数でないと作れない) で、位相の GEMM に足す。中央の注意 (1 頭 1152) は MHA に入らないので、QK^T・行のソフトマックス・P V^T (V の転置は単位行列の GEMM) の GEMM で
+- ライセンス: Qwen Research License は研究と評価だけ。models.yaml の `license` (`id`、`url`、`terms`、`accept`) で `accept: true` のモデルは、名前で選んだときに一度だけ端末で聞き、`~/.config/hwnpu/licenses.json` に残す。端末がなければ `--accept-license` か `HWNPU_ACCEPT_LICENSE=qwen-research` (後者はその回だけ) を求めて止まる (`chat.AcceptLicense`)
+- 残り: 文の 64 行が 1.4 秒 (q6 を毎チャンク展開)、文の段を SwapVariants にしてピークを下げる、Apple と Intel
+
+### 16.156 Chroma1-Flash を AMD の NPU で: T5 の相対位置のバイアス、GroupNorm を NPU で、diffusers のマスク — 2026-11-11
+
+`lodestones/Chroma1-Flash` (FLUX.1 schnell の DiT 8.9B、ブロックの変調は時刻だけから 344 行を作る FFN、T5-XXL、FLUX の VAE、Apache-2.0) を AMD の NPU に入れた。DiT は `tools/amd/iron_chroma.py` (FLUX の試作 t3-flux のブロックから)、T5 と VAE は `tools/amd/iron_chroma_parts.py`、パイプラインは `internal/imagegen/chroma`、参照は `tools/ref/ref_chroma.py` と `ref_chroma_parts.py`。
+
+- **T5 の相対位置のバイアス**: IRON の MHA にはバイアスがない (低ランクでもない)。8 頭ずつ、ブロック対角の K^T と V^T (射影の重みを GEMM の左に置いて頭ごとに連続に出す) で 1 回の GEMM に 8 頭の点数を並べ、バイアスは float32 の Softmax の足し算に定数 (全層で共有、64 MiB) で。パディングのマスクは点数の GEMM の縮約に入れる (K^T の 1 行に (mask − 1) × 16384、q の 1 列を 1)。q8、HIGHEST、GELU は erf (IRON の tanh GELU の表は最悪の行を 0.986 に)。NPU で 1 回 3.2 秒、プロンプトの行で float32 の transformers とコサイン 0.9997
+- **GroupNorm を NPU で**: 画素のチャンネルごとの和を 1 の塊との GEMM で、グループの平均を定数の GEMM で、平方根の逆数は RMSNorm 1 回 (グループの行のノルムと定数 c の行、eps を合わせると c の出力が 1/√(var + eps) に比例)。ホストの計算はない。512² の VAE 10 段、diffusers の float32 と PSNR 53.6 dB (CPU の参照)、NPU で各段コサイン 0.99986 以上
+- **diffusers の ChromaPipeline のマスク**: 文のマスクを float の 0/1 で渡し、ブロックが外積にして SDPA に渡す。float のマスクは点数に足されるので、プロンプトの組に +1 がつくだけでパディングにも注意が向く。Chroma はパディングを (1 つを残して) 隠して学習された (モデルカード) ので、NPU はキーの数 `nk` で切る。これと diffusers は最初の速度でコサイン 0.9886 (すべてのキーに注意させると 0.9984)。参照に同じマスク (`ref_chroma.py --mask keys`、SDPA をキーのマスクに直す) を使うと、最初の速度 0.99985、8 ステップの潜在 0.9988、PSNR 40.8 dB (512²、オイラー法)
+- 変調: approximator (5 層、5120) は 1 呼び出し 512 行 (344 + 0)。HIGHEST は K = 5120 で作れず (バッファ記述子) HIGH。RMSNorm の重み (幅 5120 > 4096) は次の線形の列に畳む。2 回目の実行が止まる (16.155 の Barrier で直る)
+- DiT: ダブル 19 は素数なので 1 ブロック 1 バンク、シングル 38 は 2 ブロック。行は [画像、文] の順 (文のパディングがキーの末尾に来る)。Heun 8 ステップ (DiT 15 回) が既定、`--sampler euler` で 8 回
+- 速さ (512²、CPU は別の作業で混んでいた): DiT 1 回 5.4 秒、1 枚 Heun 1 分 42 秒、オイラー法 50 秒。T5 は FLUX.1 schnell のと同じファイル (sha256) を共有し、トークナイザは Anima の t5_tokenizer.json (FLUX のは正規化が Sequence で Go が読めない。語彙と charsmap は同じ)
+- 1024²: VAE の段 6 (1024² × 256 チャンネルの GroupNorm) が 2 秒を超えた。DMA の繰り返しは 64 まで (列の塊の数を抑える)、転置の GEMM は N = 1M 画素で終わらない (262144 画素ずつのコマンドに)。1 枚 4 分 13 秒 (Heun 8 ステップ、29.9 秒/ステップ、VAE 8.9 秒)、ピーク 5.9 GB
+- 残り: CFG (Chroma1-HD)、1024² の参照との比較
+
+### 16.157 Qwen-Image-2.1 (蒸留なし) と Chroma1-HD の CFG、文の符号器を組ごとに、VAE の先読みに上限 — 2026-11-11
+
+- **CFG**: `hwnpu-image generate` の `--guidance`、`--negative`、`--sampler`、`--cfg-sigmas` を Qwen-Image にも (Chroma にも)。1 ステップの条件つきと条件なしは重みの組ごとに続けて回す (組の重みを読むのは 1 ステップ 1 回、16.148)。プロンプトと負のプロンプトは 1 回の読み込みでまとめて符号化する (`EncodeAll`)。Qwen-Image は負のプロンプトごとに文の K/V と画像の RoPE (フレームは文の長さ) とキーの数を持つ
+- 正しさ (512²、12 ステップ、CPU の float32 と同じ雑音): Qwen-Image-2.1 CFG 4、空の負のプロンプト 潜在のコサイン 0.9982 / PSNR 30.4 dB。Chroma1-HD CFG 3 0.9957 / 34.1 dB
+- **参照の誤り**: 最初 Chroma1-HD は 0.71 と合わなかった。`ref_chroma.py --mask keys` の SDPA の差し替えを T5 を回す前に入れていたので、T5 の SDPA の float のマスク (相対位置のバイアスとマスクの和) まで 0/−inf のキーのマスクに変わり、バイアスが消えていた。1 トークンの負のプロンプトでは DiT が見るパディングの行が大きくずれる。差し替えを T5 の後にして直した。NPU の T5 は transformers の float32 と、そのような短いプロンプトでも行 0 で 0.999995、パディングの行で 0.993
+- **解き方の既定** (NPU、512²、100 ステップのオイラー法と比べた潜在のコサイン / PSNR):
+
+| | Qwen-Image-2.1 (CFG なし、狐 / 看板) | Chroma1-HD (CFG 3、狐) | 時間 (Chroma) |
+|---|---|---|---|
+| オイラー法 40 (カードの既定) | 0.990 / 24.4 dB、0.998 / 28.6 dB | 0.972 / 24.8 dB | 7 分 19 秒 |
+| DPM-Solver++ 2M 25 | 0.973 / 20.2 dB、0.993 / 23.6 dB | 0.961 / 23.0 dB | 4 分 36 秒 |
+| DPM-Solver++ 2M 20 | 0.961、0.989 | | |
+| DPM-Solver++ 2M 25、CFG は σ ≥ 0.6 だけ | | 0.962 / 23.2 dB | **3 分 59 秒 (−45 %)** |
+
+  - Qwen-Image-2.1 はオイラー法 40 を既定のまま (DPM 25 は構図は同じだが細部が Anima より動く)。Chroma1-HD は DPM 25 + CFG σ ≥ 0.6 を既定に (model.json の `sampler`、`steps`、`cfg_sigmas`)。絵は 4 つとも見分けられない。σ ≥ 0.6 だけにしても変わらない (0.9624 と 0.9608) のは Anima と同じ。プロンプト 1 つの判断
+- **文の符号器を組ごとに読む**: Qwen3-VL-8B の 36 層を 4 層ずつ 9 組の 1 つの ELF にし、1 つのバンクに組を順に読む (SwapVariants)。文はプロンプトごとに 1 回なので重みを読むのは 1 回のまま。txt_in は別の小さなグラフ (`text_out`)、RoPE はホストの入力。5.6 GB の q6 を一度に固定しなくなり、512² のピーク 6.8 → **2.1 GB**、潜在は同じ (1.0)
+- **VAE の先読みに上限** (`anima.VAE.PrefetchLimit`、Qwen-Image と Chroma は 3 GiB): 段を前の段の実行中に読むのは、2 つで 3 GiB 以下のときだけ。1024² の Qwen-Image は段 4 と段 5 (計 5.9 GiB) を同時に持っていた。ピーク 6.4 → **4.2 GB**、VAE は 8.5 → 12 秒、画素は同じ
+### 16.158 Anima-Base を models.yaml から外す — 2026-11-11
+
+- 16.148 で足した Anima-Base v1.0 (`anima:base`) を models.yaml から外した。`-m anima:base` は「family anima has no tag "base"」と断る (`TestImageMemoryTags`)
+- 理由: Base の取り柄は、調整前の基盤モデルで LoRA の学習のもとになること。hwnpu は LoRA を読み込まない (`internal/imagegen/anima/mil` の `ditLoRA` は adaLN の低ランクの層の幅で、LoRA の読み込みではない) ので、Base を走らせる場面がない。絵を描くなら、同じ構造、同じ時間の Anima-Aesthetic で足りる。Base は 512² で NPU で描けることを確かめただけで、参照との照合もしていなかった (16.152)
+- 残したもの: `circlestone-labs/Anima-Base-v1.0-Diffusers` のリポジトリ (VAE、トークナイザー、設定。Turbo と Aesthetic が使う)、名前の頭 `net.` の見分け (`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights`。プレビューのチェックポイントも `net.`)。`iron_anima.py --dit anima-base-v1.0.safetensors` の書き出しはディレクトリを `-m` に渡せば今も走る
+- 過去の記録 (16.148、16.152、16.154) の Anima-Base の記述はそのまま残す
+
+### 16.159 ダウンロード全体の残り時間と、最後の行の時間の内訳 (ダウンロード、変換・ロード・コンパイル、処理) — 2026-11-11
+
+ファイルは 1 つずつ落とす。並列にすると全部のバーが見えるが、各バーの残り時間は今の分け前の速さで計算するため、小さいファイルが終わって残りが速くなる分を見込めない。例: 4 GB と 1 GB を合わせて 100 MB/s で並列に落とすと、表示は 80 秒と 20 秒になる。実際は 50 秒で終わり、1 つずつ落としたときと同じになる。正しい待ち時間は、1 つずつのまま、全体の残りのバイト数と今の速さから出せる。
+
+- **大きさを先に集める** (`chat.Expect`、`internal/chat/plan.go`): まだないファイルの大きさを、8 本並列の HEAD で集める。Hugging Face の `resolve` は LFS や xet のファイルに CDN へのリダイレクト (302) を返し、その `Content-Length` はリダイレクトの本文の長さになる。そのためリダイレクトは追わず、`X-Linked-Size` を読む (小さいファイルの 307 にも付く)。path の取得元は stat で読む。s3 と、サインインの要るリポジトリは大きさがわからないので、合計から外す。`.part` は済んだ分として数える
+- **バー**: 一覧に入ったファイルは `1.20 / 4.00 GB, all 3.10 / 9.40 GB  85.3 MB/s, 1m26s left` と出る。残り時間は全体の残り ÷ 今のファイルの速さ。一覧のファイルが全部そろうと、次の `Expect` は 0 から数え直す
+- **呼ぶところ**: `FetchWeights` (分割された checkpoint の shard: チャット、文字起こし、TTS、systemone)、Anima、Sana、Magenta RealTime、MOSS-SoundEffect。config.json や index.json のように中身を見て初めて次のファイルが決まるもの、トークナイザーのような小さいファイルは一覧に入れない
+- **最後の行** (`console.Times`、`internal/console/phases.go`): `took 3m12s: downloading 2m40s, converting, loading and compiling 25s, running 6.2s`。ダウンロードがなければその項目は出さない
+  - 処理を始めるところでコマンドが `console.Running()` を呼ぶ。最後の行は、それを呼んだコマンドだけが出す。会話やサーバー (`hwnpu-chat` の対話、`serve`、`systemone --listen`) は出さない
+  - 処理の途中の変換・ロード・コンパイルは、準備の側に数える。そのため `iron.OpenGraphWith`、`runner.Open`、大きさごとに変換する深度推定 (DA3、MoGe-2)、OCR、YuNet、SigLIP の塔の読み込みが `console.Loading()` で囲んである。Sana と Anima が段ごとに読み込む時間もこれで準備の側に入る。別のモデルを読み込み直すコマンド (MOSS-SoundEffect、Magenta RealTime) は `console.Preparing()` で準備の側に戻す
+  - ダウンロードの時間は `fetch` の中で測る (重なったダウンロードは 1 回に数える)。サインインを待つ時間とハッシュの確認の時間も含む
+  - 準備と処理が重なる時間 (ロードと同時に走る処理) は、準備の側に数える。Core ML が最初の呼び出しで行うコンパイル、再生の時間 (`--play`) は処理の側に入る
+- **hwnpu-chat の読み込みのログ**: 分割したプログラムのバーは `.parts.json` の名前を出していた。そのため、Core ML のコンパイルの時間 (plamo-3-translate-8b の 5 部分で 37 秒) が JSON の処理に見えた (中身は 32 KB の部分の一覧で、読むのは一瞬)。バーはモデル名、時間、1 回に読むトークン数、部分の数、配置にした (`[1/2] Qwen3-0.6B 15s, 8 tokens per call, 1 part, all on the NPU`)。全部読み終えたら、hwnpu-image と同じく `loaded Qwen3-0.6B in 34s, 2 programs, all on the NPU` を出す。続けて、会話やサーバーにも、それまでの内訳 `ready after 35s: converting, loading and compiling 35s` を出す (`console.Prepared`)。Qwen3-0.6B の 2 回目の読み込みは 2.7 秒で、初回の時間のほとんどは Core ML の最初のコンパイル
+- **`HWNPU_PROFILE=1` をすべてのコマンドに** (`console.Profile`、`internal/console/profile.go`): これまでは hwnpu-chat が答えのたびに、デコードの 1 ステップの内訳と Neural Engine が抱えるメモリを出すだけだった。今は hwnpu-audio、hwnpu-image、hwnpu-chat、hwnpu-dev の最後に次を出す (`console.Done`、`console.WriteProfile`)
+  - ダウンロード 1 件ずつの時間、バイト数、速さ、`REPO@REV/FILE`
+  - 先に大きさを集めた時間
+  - プログラムの読み込み 1 件ずつの時間とパス。中で読み込んだものは字下げして、始まった順に並べる。読み込みを記録するのは `iron.OpenGraphWith`、`runner.Open`、`chain.Open` / `OpenOn` / `Share`、深度推定・MoGe-2 の大きさ、YuNet、OCR、SigLIP の塔。`runner.Open` の中の同じパスの `chain.Open` は 1 回に数える
+  - `decode.WriteProfile` (`console.OnProfile` で登録。チャット以外のコマンドの言語モデルにも出る)
+  - 詳細を消さない: チャットのバーは、プロファイルのときだけファイル名も残す (`[1/2] Qwen3-0.6B (qwen3-lut8-c4096-q8.mlpackage) 0.5s, 8 tokens per call, ...`)
+  - 実機: swift-f0 の初回の取得は、プロファイルで 1.68 秒、バーで 0.2 秒だった。差は最初のバイトまでの待ちで、curl でも Hub のリダイレクトまで 0.2 秒、CDN の最初のバイトまで 0.8 秒。バーは最初のバイトから始まるので、この待ちを含まない。DA3-BASE の深度推定では、処理の途中で 504x322 を読み込んだ 0.26 秒 (vit 0.19 秒、head 0.08 秒) が準備の側に入った
+- テスト: `TestExpect` (偽のハブ、302 と `X-Linked-Size`、200 と長さ、`.part` の続き、1 つずつ落としたときの合計)、`TestPhases` (重なったダウンロード、入れ子の Loading)、`TestProfile` (一覧、字下げ、同じパスの 2 重、リンクは載せない)。実機: swift-f0 の初回 `took 3.9s: downloading 1.8s, converting, loading and compiling 2.1s, running 0.1s`、2 回目 `took 0.1s: converting, loading and compiling 0.0s, running 0.1s`。Hub の HEAD で Qwen3-0.6B の model.safetensors (1503300328) と config.json (726)、Qwen3-4B の shard の大きさが返った
+
+### 16.160 Sana を new-model-checklist の 7.2 節にそろえる: CFG を雑音の多いステップだけに、Mac の CFG を組ごとに、DiT を 8 ビットに — 2026-11-11
+
+[new-model-checklist.md](new-model-checklist.md) の 7.2 節で画像のモデルごとに済んだ手法を並べると、Sana (600M、SANA 1.5) には Anima に入れた手がいくつか入っていなかった。M1 (16 GB、AC 電源、低電力モードなし、ほかに Neural Engine を使うプロセスなし) でできるものを入れた。AMD の分は別の作業で入れる。
+
+**測り方**: 1024 × 1024、3 プロンプト (人物、夜の街、風景) × 種 1、2 の 6 枚。比べる相手は同じ Neural Engine の、全部のステップで CFG をかけたもの (fp16 の DiT)。最後の潜在のコサインと画像の PSNR、絵を並べる。時間はキャッシュに当たる新しいプロセスで。NPUWired は `mem.NPUWired` を 0.1 秒ごとに読んだ最大、footprint は `/usr/bin/time -l` の peak memory footprint。
+
+**CFG を雑音の多いステップだけに** (`sana.Pipeline.CFGMin` / `CFGMax`、`DefaultCFGSigmas`、`--cfg-sigmas`): Anima の 16.154 と同じ。外したステップは DiT を条件つきで 1 回。Sana の 20 ステップ (shift 3) では σ ≥ 0.6 が 14 ステップ、σ ≥ 0.5 が 15、σ ≥ 0.8 が 9。
+
+| | ステップ (CFG のあるもの) | Sana 600M のノイズ除去 | 全ステップ CFG とのコサイン / PSNR (6 枚) | SANA 1.5 のコサイン | 絵 |
+|---|---|---|---|---|---|
+| 全ステップ (前) | 20 | 14 秒 | — | — | — |
+| σ ≥ 0.5 | 15 | 13 秒 | 0.9973〜0.9989 / 29〜34 dB | 0.9949〜0.9971 | 同じ |
+| **σ ≥ 0.6 (既定)** | 14 | 12 秒 | 0.9956〜0.9984 / 28〜33 dB | 0.9921〜0.9958 | 同じ |
+| σ ≥ 0.8 | 9 | 10 秒 | 0.972〜0.990 / 21〜24 dB | — | 風景で右の小さな舟が消える |
+
+- 既定は Anima と同じ σ ≥ 0.6。`--cfg-sigmas 0,1` で全ステップ。パイプラインは IRON と Core ML で共通なので AMD でも既定で効くが、AMD では未確認
+- SANA 1.5 は CFG を減らしてもノイズ除去が 38 → 37 秒しか縮まなかった。下の載せ直しが律速だったため (DiT を 8 ビットにした後は 1 ステップ 1.43 秒 → CFG なしのステップ 0.72 秒で、回数どおりに効く)
+
+**Mac でも CFG の 2 回を重みの組ごとに** (`progEngine.velocity`): 前は条件ごとに 7 群を全部回していた (1 ステップ 14 回の群の呼び出しが、条件なし → 条件つきで 7 群ずつ)。AMD (16.148) と Anima の Core ML と同じく、群ごとに 2 回続けて回す。
+
+| SANA 1.5 (fp16 の DiT、全ステップ CFG) | ノイズ除去 | 1 ステップ | NPUWired |
+|---|---|---|---|
+| 前の順 | 64 秒 | 2.45〜3.21 秒 (ばらつく) | 2.96〜3.08 GiB |
+| 群ごと | 38 秒 | 1.60〜1.84 秒 | 2.98〜3.06 GiB |
+
+- 絵はビット単位で同じ (潜在のコサイン 1.0000、PSNR ∞)。Neural Engine が抱えるのは約 3.0 GiB で、M1 の約 2.9 GiB (16.109、16.118) を超え、群が呼び出しのたびに載せ直されていた。群ごとに回すと載せ直しが 1 ステップ 1 回になる。16.152 の「1 ステップ 2.5〜3.4 秒」はこれ
+- Sana 600M (1.14 GiB) は変わらない (20 ステップ 14 秒)
+
+**DiT を 8 ビットに** (`sana.Formats`、モデルの名前で既定を決める):
+
+| | DiT | 1 枚 (ノイズ除去) | NPUWired | fp16 の DiT とのコサイン / PSNR | 絵 |
+|---|---|---|---|---|---|
+| Sana 600M | fp16 (前) | 18 秒 (12 秒) | 1.14 GiB | — | — |
+| Sana 600M | **int8 (既定)** | 17 秒 (11 秒) | 0.60 GiB | 0.964〜0.9997 / 22〜37 dB | 同じ |
+| SANA 1.5 | fp16 (前) | 43 秒 (37 秒) | 2.98 GiB | — | — |
+| SANA 1.5 | int8 | 33 秒 (27 秒) | 1.53 GiB | 0.58〜0.79 / 12〜14 dB | 崩れる (筆の跡のような模様) |
+| SANA 1.5 | **lut8 (既定)** | 31 秒 (25 秒) | 1.56 GiB | 0.991〜0.999 / 26〜35 dB | 同じ |
+
+(どれも σ ≥ 0.6 の既定の CFG)
+
+- SANA 1.5 の行ごとの int8 は全部の絵が崩れた。lut8 (256 段の表で量子化の段を重みに合わせる) は崩れない。原因は追っていない (外れ値の大きな行が int8 の刻みで潰れているとみる。q と k の正規化の前の射影など)。Sana-Sprint 1.6B の int8 (16.145) は 0.987 で崩れていなかったので、同じ 1.6B の構造でも SANA 1.5 の重みに限る
+- SANA 1.5 は NPUWired が M1 の上限の下に入り、載せ直しがなくなった。footprint の最大は 3.43〜3.85 GB で、models.yaml の Apple のメモリ 3.6 → 3.9
+- 書き出しの名前に形式が入る (`sana-600m-1024x1024-int8-int8-g4-v4`、`sana1.5-1.6b-1024x1024-int8-lut8-g4-v4`) ので、`ExportVersion` は上げない。初回は変換とコンパイル (600M 約 7 分、1.5 約 12 分)。前の fp16 の書き出し (`-int8-fp16-`) は使われなくなる
+- 時間の合計: Sana 600M 22 → 17 秒、SANA 1.5 70 秒 (16.152) → 31 秒
+
+**Anima-Aesthetic を M1 で** (16.148、16.154 の既定、AMD でしか測っていなかった): 1024 × 1024、int8 / int8 の書き出し (`anima-aesthetic-v1.1-1024x1024-int8-int8-g4-q512-v3`)、3 プロンプト × 2 つのノイズ。
+
+| | 1 枚 (2 回目から) | ノイズ除去 | 1 ステップ | NPUWired | footprint の最大 |
+|---|---|---|---|---|---|
+| **既定** (DPM-Solver++ 2M 25 ステップ、CFG は σ ≥ 0.6 の 17 ステップ) | 4m30s (6 枚とも) | 4m23s | CFG あり 12.5 s、なし 6.4 s | 2.62〜2.64 GiB | 3.72〜3.89 GB |
+| オイラー法 30 ステップ、全ステップ CFG (モデルカード) | 約 6m25s | 6m14s〜6m17s | 12.5 s | 2.61〜2.64 GiB | 3.82〜4.28 GB |
+
+- 初回 (取得、変換、コンパイル) 21m44s。テキスト 0.2 秒、VAE 2.8〜3.0 秒。Anima-Turbo (16.152、58 秒) の約 4.6 倍で、DiT 1 回は Turbo と同じ 6.3 秒
+- 既定とオイラー法 30 ステップの比べ (同じノイズ、4 組。残り 2 組は打ち切った): 少女と桜の 2 組は潜在のコサイン 0.981 / 0.987 で同じ絵。黒猫と窓辺の 2 組は 0.833 / 0.960 で、1 組は人物が、もう 1 組は猫の位置が変わった。AMD の 512² の 6 組 (オイラー法 30 と 0.982〜0.983) よりばらつくが、どちらが正しいかはこの比べでは決まらない (真値の代わりの多いステップのオイラー法や diffusers の fp32 とは比べていない)。既定はそのまま
+- diffusers の fp32 との照合は 1024² のオイラー法 30 ステップと CFG で CPU 1 枚約 1 時間かかるので見送った (Mac の Anima の部品は Turbo で照合済み、16.152)
+
+**Mac でできなかったこと**: 電力量 (`hwnpu-dev powerbench` は sudo が要る)。AMD の Sana の DiT の q8、交差注意のキーと値をステップの外へ、Anima の VAE の段をまとめる、AMD での CFG のステップの確認は別の作業で。
+### 16.161 RTMDet-m を AMD の NPU で: ONNX の CNN を IRON のグラフにする変換器 — 2026-11-11
+
+- 動機: 19 節 (amd-npu-models.md) で CPU に置いた ONNX の 5 つのモデルのうち、計算の大きい RTMDet-m (39 GMAC) は NPU で CPU に勝てる見込みがあった (YuNet は 0.1 GFLOP で負けた)。演算の切り替え (1 回約 250 µs) が時間を決めるので、畳み込み 1 つを行列積 1 回 (バイアスは 1 のチャネル、SiLU は行列積の後段) にする
+- `tools/amd/iron_onnxcnn.py` (amd-npu-models.md 21 節): 畳み込み、深さ方向、チャネル注意、SPPF の max pool、2 倍の拡大、足し算、連結。RTMDet-m の頭まで 150 ステップ、511 演算、13 コマンド
+- 結果: 1 枚 0.33 秒 (CPU の ONNX Runtime 1 スレッド 1.43 秒、hwnpu の CPU 実行器 2.25 秒)。検出は ONNX Runtime と同じ物、スコアの差 0.013 以内、枠の差 1.3〜7.6 px。固定されるメモリ 565 MiB
+- `hwnpu-image detect` は AMD の機械で、models.yaml の device が npu (RTMDet-m) なら書き出し (`~/models/rtmdet-m.amd-npu2`) を使い、なければ初回に IRON で作る (`chat.RunIRON` を `PrepareAMD` から切り出した)。IRON がなければ CPU
+- tiny と s は精度が足りない: BN を畳み込んだ重みとバイアスの和が出力の 50 倍ほどで打ち消し合う。NPU で 1 演算ずつ測ると、原因は MEDIUM の bfp16 (A と B の両方、8 個で指数を共有)、行列積の後段の SiLU (vtanh は |x| ≤ 0.5 で引数をそのまま返す)、s のほぼ定数のチャネル (bf16 の刻みより小さい変化)。チャネルの並べ替えなどで tiny のスコアの差は 0.2 → 0.07 になったが m が悪くなり、全部 HIGH の tiny は CPU より遅い (amd-npu-models.md 21.4)。models.yaml で AMD では CPU に
+- 電力 (balanced、PPT からアイドルを引く): 1 枚 NPU 0.325 秒・1.86 J、CPU の ONNX Runtime 1 スレッド 0.54 秒・8.2〜10.7 J、hwnpu の CPU 実行器 1.0 秒・16 J。NPU はエネルギーで 4.4〜5.8 分の 1
+- 直したことと残り: amd-npu-models.md 21.2、21.3
+
+### 16.162 RTMO-s を AMD の NPU で: Focus、Split、Transformer の層 (AIFI) を変換器に — 2026-11-11
+
+- 動機: CLOUD_AI_COMPATIBILITY.md の画像の順番で、RTMDet の次に ONNX の汎用の道に載るもの。RTMO-s の骨格は YOLOX 型で、首に Transformer の層が 1 つある
+- `iron_onnxcnn.py` に Focus (6 × 6、stride 2 の畳み込みに組み替え)、Split、group の畳み込み、AIFI (32 次元の頭を 64 に広げた IRON の MHA、LayerNorm、erf の GELU) を足した。頭の畳み込み (`ironcnn.LastConvs`) までを NPU、残りはホストの評価器
+- 精度: MEDIUM では関節のスコアが 0.13、確信の低い人の枠が 97 px ずれた。HIGH と SiLU の演算で、関節の位置 2 px、スコア 0.03 以内。1 枚 0.22 秒 (MEDIUM なら 0.15 秒)
+- 書き出しの読み書きと実行を `internal/vision/ironcnn` にまとめ、detect と pose で共有。`hwnpu-image pose` は AMD の機械で初回に書き出す (models.yaml の `device: {amd: npu}`)
+- 詳しくは amd-npu-models.md 22 節
+
+### 16.163 点や箱で指定する切り抜き (EfficientSAM): `hwnpu-image segment` — 2026-11-11
+
+- 動機: CLOUD_AI_COMPATIBILITY.md の画像の 2 番目。BiRefNet は deformable conv があるので、素の ViT の EfficientSAM から
+- 符号器 (1024 × 1024 の ViT と首) を `tools/amd/iron_efficientsam.py` で IRON のグラフ 1 つに (64 次元の頭なので IRON の MHA にそのまま載る)。初回に書き出す (models.yaml の `device: {amd: npu}`、`internal/vision/segment`)
+- 復号器 (プロンプトの符号化と mask の復号) は、作者の ONNX をホストの評価器で。評価器に If、ScatterND、ConvTranspose、InstanceNormalization、LayerNormalization、Resize (cubic まで) を足し、大きな行列積は sgemm の float32 に。ONNX の参照評価器と IoU の予測 1e-6、mask の符号は全画素で一致、1 回 0.6〜0.7 秒
+- 符号器の CPU の経路: ONNX Runtime があればそれ、なければ hwnpu の評価器 (Ti で 30 秒、外部依存なし)
+- 結果: Ti の符号器 0.34 秒、S 0.48 秒 (CPU の ONNX Runtime 1.9 秒と 4.5 秒)。NPU と CPU の mask の IoU 0.93〜1.0 (既定で書く一番スコアの高い mask は 0.989 以上)
+- 詳しくは amd-npu-models.md 23 節
+
+### 16.164 PLaMo 3 Translate 8B (`plamo-3-translate-8b`): 8B は 4 ビットの表で — 2026-11-11
 
 - pfnet/plamo-3-translate-8b は 2B と同じ `Plamo3ForCausalLM` で、大きさだけが違う (隠れ層 4096、中間 16384、32 層、注意のヘッド 32 に KV ヘッド 4、語彙 107520、出力の行列は埋め込みと別、全注意は 7、15、23、31)。トークナイザーとテンプレートも同じなので、`internal/llm/plamo3` は config から形を決め、変換はそのまま通った。ダウンロードは 17.1 GB
 - 見積もり (`llm.EstimateBytes`): Neural Engine の重みは lut8 7.58 GiB、lut6 5.66、lut4 3.77。どれも M1 が全速で動かせる 2.8 GiB (PROBE.md) を超える。2 本 (8 トークンと 128 トークン) は 2 倍になるので、hwnpu-chat は 1 本 (`onePrograms`)。読み込みの前に M1 での遅さを警告する (前からある `neuralEngineHold` の警告)

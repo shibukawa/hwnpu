@@ -111,6 +111,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		defer m.Close()
 		m.Logf = logf
 		m.Ref = c.Ref
+		console.Running()
 		return runMulti(ctx, m, c.Pictures, o, c.Ply, logf)
 	}
 	if moge.IsExport(model) {
@@ -122,6 +123,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		m.Logf = logf
 		m.FovX = c.Fov
 		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(model), m.Sizes)
+		console.Running()
 		for _, path := range c.Pictures {
 			if err := runMoge(ctx, m, path, o, logf); err != nil {
 				return fmt.Errorf("%s: %w", path, err)
@@ -143,6 +145,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		}
 	}
 	logf("%s: %s, sizes %v (%s)", filepath.Base(model), kind, e.Sizes, console.Duration(time.Since(t0)))
+	console.Running()
 	for _, path := range c.Pictures {
 		if err := run(ctx, e, path, o, logf); err != nil {
 			return fmt.Errorf("%s: %w", path, err)

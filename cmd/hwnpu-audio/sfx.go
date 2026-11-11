@@ -111,6 +111,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		return checkNPU(lw, o, off)
 	}
 	// the description first: the text encoder's programs are let go before the DiT's are loaded
+	console.Running()
 	t0 := time.Now()
 	done := spin("reading the description")
 	text, ids, err := g.Encode(ctx, prompt, seconds, note)
@@ -125,6 +126,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 	if len(ids) >= sfx.PromptRows {
 		logf("  the description is cut at %d tokens", sfx.PromptRows)
 	}
+	console.Preparing()
 	t0 = time.Now()
 	off = nil
 	done = spin(fmt.Sprintf("loading %s (%s)", m.Name, p))
@@ -142,6 +144,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		seed = rand.Uint64()
 	}
 	logf("seed %d", seed)
+	console.Running()
 	bar := console.NewBar(lw, "generating")
 	t0 = time.Now()
 	samples, err := g.Generate(ctx, text, seconds, sfx.Options{Steps: o.steps, CFG: o.cfg, Shift: o.shift, Seed: seed,

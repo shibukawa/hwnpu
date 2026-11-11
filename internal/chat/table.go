@@ -170,6 +170,9 @@ type modelEntry struct {
 	// hf:PaddlePaddle/PP-OCRv6_small_det_onnx@REV): each an hf:OWNER/NAME, pinned or not. Their
 	// files' sha256 are under ROLE/FILE.
 	With *map[string]string `yaml:"with"`
+	// License is the weights' license; with accept, the user accepts it once before the model
+	// is first downloaded or run (AcceptLicense).
+	License *License `yaml:"license"`
 	// RunEntry is how hwnpu-chat runs a chat model when its flags do not say (prefill, format,
 	// context, paged), on a machine of machine GB.
 	RunEntry `yaml:",inline"`
@@ -461,6 +464,7 @@ var kinds = map[Kind]string{
 	KindDetect:     "hwnpu-image detect",
 	KindOCR:        "hwnpu-image ocr",
 	KindLabel:      "hwnpu-image label, embed",
+	KindSegment:    "hwnpu-image segment",
 	KindNotes:      "hwnpu-audio notes",
 	KindMusic:      "hwnpu-audio generate",
 	KindSFX:        "hwnpu-audio generate -m sfx",
@@ -555,7 +559,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
 		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, File: e.File, With: e.With,
-		RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
+		License: e.License, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
 	return &out, nil
 }
 
@@ -570,6 +574,12 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 	}
 	m.Family, m.Tag, m.About, m.Arch, m.File = get(e.Family), get(e.Tag), get(e.About), get(e.Arch), get(e.File)
 	m.AMDExport = strings.Fields(get(e.AMDExport))
+	if e.License != nil {
+		m.License = *e.License
+		if m.License.ID == "" || m.License.Accept && m.License.URL == "" {
+			return m, fmt.Errorf("model %s: a license needs its id (and a url to accept it)", name)
+		}
+	}
 	m.Kind = Kind(get(e.Kind))
 	if _, ok := kinds[m.Kind]; !ok {
 		var ks []string

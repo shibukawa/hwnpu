@@ -69,6 +69,7 @@ func (c *NotesCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer tr.Close()
+	console.Running()
 	return c.transcribe(ctx, tr, logf)
 }
 

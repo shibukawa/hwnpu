@@ -68,6 +68,7 @@ func (c *TranscribeCmd) Run(ctx context.Context) error {
 	}
 	defer t.Close()
 	logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, t.OnNPU()))
+	console.Running()
 	for _, p := range c.Files {
 		raw, err := os.ReadFile(p)
 		if err != nil {

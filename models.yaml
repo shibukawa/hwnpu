@@ -193,7 +193,7 @@ models:
     # q8), estimated from the weights, not run. Intel: int4 by rows (Config.IntelFormat) in one
     # program (prefill off; the Neural Engine has one anyway), 3.8 GiB under the about 4.6 GB a
     # Core Ultra 5 135U's NPU held, where int8's 7.6 would not fit; not run, its precision not
-    # checked (docs/design.md 16.143, 16.155)
+    # checked (docs/design.md 16.143, 16.164)
     family: plamo3translate
     tag: 8b
     kind: chat
@@ -297,8 +297,13 @@ models:
     # OpenMMLab MMPose's RTMO-s (Apache-2.0), the ONNX export Transformers.js reads
     from: hf:Xenova/RTMO-s@d8c526187f341d287753831c9c8b1ecc4855bba1
     sha256: {onnx/model.onnx: 1cd6a3517658903233e9ccb78666554862f57f0944b6886e2048093594aef4e7}
+    # AMD's NPU: an export of tools/amd/iron_onnxcnn.py (its transformer layer included, at
+    # HIGH), made on the first run; the people and keypoints of ONNX Runtime's within 2 px
+    # (docs/amd-npu-models.md 22)
+    device: {amd: npu}
     machine: 8
-    memory: 0.23
+    # AMD: 327 MiB pinned on the NPU and 215 MiB of the process (the ONNX graph for the host's part)
+    memory: {amd: 0.55, apple: 0.23}
     bytes: 4.0e7
     about: "RTMO-s: the people in an image and their 17 COCO keypoints in one pass, without a person detector; 9.9M parameters, images stretched to 640x640"
   # hwnpu-image detect: OpenMMLab MMDetection's RTMDet (Apache-2.0), MMDeploy's ONNX exports of
@@ -309,6 +314,11 @@ models:
     kind: detect
     from: hf:bukuroo/RTMDet-ONNX@aa91dbccc283db36b2c250a1d91ba9518db553da
     sha256: {rtmdet-tiny-coco.onnx: f25bab7abb4ccfba4f785b90e8bc1bf1dec432e8878a9ecef9a79e3f6f9a62a5}
+    # AMD's NPU (tools/amd/iron_onnxcnn.py) holds RTMDet-m's objects, but tiny's and s's BN-folded
+    # weights and biases cancel to outputs 50 times smaller, past MEDIUM's bfp16 (A and B) and the
+    # GEMM's SiLU (vtanh): their scores moved by up to 0.2 and s lost objects; at HIGH tiny is
+    # slower than the CPU (docs/amd-npu-models.md 21.4). The CPU there
+    device: {amd: cpu}
     machine: 8
     # M1: a footprint of 56 MB and 11 MB on the Neural Engine; 7 ms a picture
     memory: 0.07
@@ -327,9 +337,13 @@ models:
     like: RTMDet-tiny
     tag: m
     sha256: {rtmdet-m-coco.onnx: 07921f4ee8c477b00abfce3c3bfff53bbc528c41abfa0193f981afbafcff95d4}
+    # AMD's NPU: exported with IRON on the first run (~/models/rtmdet-m.amd-npu2), 0.33 s and 1.9 J
+    # a picture where the CPU (ONNX Runtime, 1 thread, balanced) takes 0.54 s and 8 to 11 J
+    device: {amd: npu}
     machine: 16
-    # M1: 141 MB and 56 MB on the Neural Engine; 18 ms a picture
-    memory: 0.2
+    # M1: 141 MB and 56 MB on the Neural Engine; 18 ms a picture. AMD: 565 MiB on the NPU, 98 MiB
+    # the process
+    memory: {amd: 0.7, apple: 0.2}
     bytes: 1.1e8
     about: "RTMDet-m: the objects in an image, boxes and COCO's 80 labels (49.1 box AP); 24.7M parameters, images fit into 640x640"
   # hwnpu-image ocr: PaddleOCR's PP-OCRv6 (Apache-2.0), the ONNX files PaddlePaddle publishes: the
@@ -406,6 +420,9 @@ models:
     tag: v1.1
     kind: image
     from: hf:circlestone-labs/Anima
+    # the weights for non-commercial use only (the pictures may be used commercially): asked once
+    # before the first run (hwnpu-image --accept-license)
+    license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", accept: true}
     file: anima-turbo-v1.1.safetensors
     with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
     sha256:
@@ -425,6 +442,9 @@ models:
     tag: aesthetic
     kind: image
     from: hf:circlestone-labs/Anima
+    # the weights for non-commercial use only (the pictures may be used commercially): asked once
+    # before the first run (hwnpu-image --accept-license)
+    license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", accept: true}
     file: anima-aesthetic-v1.1.safetensors
     with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
     sha256:
@@ -437,22 +457,70 @@ models:
     machine: 8
     memory: {amd: 3.5, apple: 4.1}
     bytes: 5.9e9
-    about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 30 steps with classifier-free guidance (--guidance, --negative), about 6.5 times Anima-Turbo's time"
-  Anima-Base:
-    like: Anima-Aesthetic
-    tag: base
-    file: anima-base-v1.0.safetensors
-    with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
+    about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 25 DPM-Solver++ steps with classifier-free guidance (--guidance, --negative), about 4.5 times Anima-Turbo's time"
+  Chroma1-Flash:
+    family: chroma
+    tag: 1-flash
+    kind: image
+    from: hf:lodestones/Chroma1-Flash
+    license: {id: apache-2.0, url: "https://huggingface.co/lodestones/Chroma1-Flash"}
     sha256:
-      split_files/text_encoders/qwen_3_06b_base.safetensors: cd2a512003e2f9f3cd3c32a9c3573f820bb28c940f73c57b1ddaa983d9223eba
-      diffusers/vae/config.json: f9917414da358ab86f0f5b53975015d74fa4fc2973a7dc6a5b1bea5cf2592798
-      diffusers/vae/diffusion_pytorch_model.safetensors: 0c8bc8b758c649abef9ea407b95408389a3b2f610d0d10fcb054fe171d0a8344
-      diffusers/tokenizer/tokenizer.json: 476870a1f2fb6f6a2759a6ede2383bf9d5d738f17844563b65c91965b722ae09
-      diffusers/t5_tokenizer/tokenizer.json: 2432e8aa83414a69884a5cbd54a68f528c042d1f30780affbefcbb85091f022e
-      split_files/diffusion_models/anima-base-v1.0.safetensors: bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e
-    # named as anima:base: the family alone picks Anima-Aesthetic
+      text_encoder/model-00001-of-00002.safetensors: ec87bffd1923e8b2774a6d240c922a41f6143081d52cf83b8fe39e9d838c893e
+      text_encoder/model-00002-of-00002.safetensors: a5640855b301fcdbceddfa90ae8066cd9414aff020552a201a255ecf2059da00
+      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: c759d67ca3ef50a9a1c242e3291c57f406646f226a95f43f66577996494986db
+      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 8dc761fbdf92b0abbc5a336dc717e6c682479792404ac2f9dbfc3b86e7760996
+      vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
+    machine: 16
+    # AMD: the peak of a 1024 x 1024 run, 5.6 GiB on the NPU and the process's 0.1 GiB, measured
+    memory: {amd: 5.9}
+    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here)
+    bytes: 2.75e10
+    about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU only; Apache-2.0"
+  Chroma1-HD:
+    like: Chroma1-Flash
+    tag: 1-hd
+    from: hf:lodestones/Chroma1-HD
+    sha256:
+      text_encoder/model-00001-of-00002.safetensors: ec87bffd1923e8b2774a6d240c922a41f6143081d52cf83b8fe39e9d838c893e
+      text_encoder/model-00002-of-00002.safetensors: a5640855b301fcdbceddfa90ae8066cd9414aff020552a201a255ecf2059da00
+      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 59f0b26eccaabb8301e4166e653f1bcdebd7c46a4a07b02fe33d7a2c46d78eba
+      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 65e6541afdabbb96568a3f8975eeef929f0a7e0eef3d2c4741b1bf911ac3a6d5
+      vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
+    # named as chroma:1-hd: the family alone picks Chroma1-Flash
     machine: 0
-    about: "Anima-Base v1.0: the pretrained model, the most varied and plain in style (the one LoRAs are trained on), 30 steps with classifier-free guidance"
+    about: "Chroma1-HD: the base model, classifier-free guidance 3 (--guidance, --negative) with DPM-Solver++ 2M 25 steps, guided at sigma >= 0.6; AMD's NPU only; Apache-2.0"
+  Qwen-Image-2.1-Turbo:
+    family: qwen-image
+    tag: 2.1-turbo
+    kind: image
+    from: hf:Qwen/Qwen-Image-2.1-Turbo
+    # research and evaluation only: asked once before the first run (hwnpu-image --accept-license)
+    license: {id: qwen-research, url: "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/main/LICENSE", terms: "research and evaluation only, not commercial use", accept: true}
+    sha256:
+      processor/tokenizer.json: be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506
+      text_encoder/model.safetensors: a1eee8233f3063466dd3b06e857b0a2cf13a77c543908374771d51a546beb2e0
+      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 6cccd922767f01694461bdcf1f34ea7b771f3442e4d5e338ea9aa55277431cc0
+      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 69f53ebb063d2f606bdaff7e22e0e2144f28d978d73dc75e6e4293fc5982eab5
+      vae/diffusion_pytorch_model.safetensors: 71879ffd5321e6d10c3c87513e2b474b1252efa7f3dec2969214a9bf06a6dd5c
+    machine: 16
+    # AMD: the peak of a 1024 x 1024 run, 3.1 GiB on the NPU (the VAE's stage 4; the text encoder's
+    # layers and the DiT's blocks are read a group at a time into one bank) and the process's 1.0
+    # GiB, measured
+    memory: {amd: 4.2}
+    bytes: 3.25e10
+    about: "Qwen-Image-2.1-Turbo (7B single-stream DiT, Qwen3-VL-8B reads the prompt, RGBA VAE): 8 steps without guidance; AMD's NPU only; Qwen Research License (not commercial)"
+  Qwen-Image-2.1:
+    like: Qwen-Image-2.1-Turbo
+    tag: "2.1"
+    from: hf:Qwen/Qwen-Image-2.1
+    sha256:
+      processor/tokenizer.json: be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506
+      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 9e6bc2d641e67bf277895ea8777141044a38f3edb7101bc469b2961dd7c36b4b
+      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 3aaf234dcbe128530479735854a346b5e3e66283b7c11db56f836bbd1c13ebaa
+      vae/diffusion_pytorch_model.safetensors: a07a1b7c4ee2966a1b3bdc37de9b4f983d56937e46619f709a80b6e490675417
+    # named as qwen-image:2.1: the family alone picks the Turbo
+    machine: 0
+    about: "Qwen-Image-2.1 (base): 40 Euler steps, classifier-free guidance with --guidance and --negative (none by default, as its pipeline); AMD's NPU only; Qwen Research License (not commercial)"
   Sana-600M:
     family: sana
     tag: 0.6b
@@ -470,7 +538,7 @@ models:
       text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 8
-    # Apple: the process's peak footprint 3.87 GB (M1, design.md 16.152)
+    # Apple: the process's peak footprint 3.87 GB (M1, design.md 16.152; 3.87 too with the int8 DiT, 16.160)
     memory: {amd: 2.3, apple: 3.9}
     bytes: 8.9e9
     about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
@@ -491,8 +559,8 @@ models:
       text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 16
-    # Apple: the process's peak footprint 3.57 GB (M1, design.md 16.152)
-    memory: {amd: 2.3, apple: 3.6}
+    # Apple: the process's peak footprint 3.85 GB (M1, the lut8 DiT, design.md 16.160)
+    memory: {amd: 2.3, apple: 3.9}
     bytes: 9.7e9
     about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
@@ -595,6 +663,31 @@ models:
     memory: 1.7
     bytes: 3.57e9
     about: "SigLIP 2 Large: the same at 256 x 256, closer labels and embeddings, about 3 times the work"
+  # hwnpu-image segment: EfficientSAM (Meta's, Apache-2.0), the authors' ONNX exports of its
+  # image encoder and its prompt's mask decoder; sha256 names each file. The encoder runs on
+  # AMD's NPU from an export of tools/amd/iron_efficientsam.py made on the first run, elsewhere
+  # on the CPU (ONNX Runtime, else hwnpu's evaluator); the decoder on the host, per prompt
+  EfficientSAM-Ti:
+    family: efficientsam
+    tag: ti
+    kind: segment
+    from: hf:yunyangx/EfficientSAM@1cf49585c39567bfc49e991ab8eb31f491ad4877
+    sha256: {efficientsam_ti_encoder.onnx: 84ed466ffcc5c1f8d08409bc34a23bb364ab2c15e402cb12d4335a42be0e0951, efficientsam_ti_decoder.onnx: a62f8fa5ea080447c0689418d69e58f1e83e0b7adf9c142e2bd9bcc8045c0b11}
+    device: {amd: npu}
+    machine: 8
+    # AMD: 118 MiB pinned on the NPU and 274 MiB of the process (the decoder in float64)
+    memory: 0.4
+    bytes: 4.14e7
+    about: "EfficientSAM-Ti: the mask of the thing a point or a box picks in a picture (Segment Anything's prompts); a ViT-Tiny at 1024 x 1024, 10M parameters"
+  EfficientSAM-S:
+    like: EfficientSAM-Ti
+    tag: s
+    sha256: {efficientsam_s_encoder.onnx: 3eea4544db4647570ca5bea8ab6bbe057f2fc767ad089c14b8f67f482a2493ed, efficientsam_s_decoder.onnx: d40a537f617c8ced3b2034b6971bc16cc291c49d3d80f740a394cdb78f0e1d06}
+    machine: 16
+    # AMD: 158 MiB on the NPU and 267 MiB of the process
+    memory: 0.45
+    bytes: 1.06e8
+    about: "EfficientSAM-S: the same with a ViT-Small, closer masks, about 3 times the work"
 
 categories:
   chat:
@@ -681,6 +774,12 @@ categories:
     picks:
       - {machine: 8, model: siglip2-base-patch16-224}
       - {machine: 16, model: siglip2-large-patch16-256}
+  segment:
+    aliases: [sam, cutout-point]
+    about: the mask of the thing a point or a box picks in a picture (hwnpu-image segment)
+    picks:
+      - {machine: 8, model: EfficientSAM-Ti}
+      - {machine: 16, model: EfficientSAM-S}
   notes:
     aliases: [midi]
     about: the notes of music, as MIDI (hwnpu-audio notes)

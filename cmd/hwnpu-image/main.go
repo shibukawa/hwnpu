@@ -13,8 +13,8 @@
 //	hwnpu-image label -l "a cat,a dog,猫" photo.jpg               # zero-shot, any candidates, any language
 //	hwnpu-image embed --compare photo.jpg -t "a red car"         # cosine and probability of a text and a picture
 //
-// --model takes a name, a family or a use of models.yaml (image, anima-turbo, anima, anima:base,
-// sana, sana:1.6b; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo;
+// --model takes a name, a family or a use of models.yaml (image, anima-turbo, anima, sana,
+// sana:1.6b; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo;
 // detect, rtmdet:tiny; ocr, ppocr:medium; label, siglip2:large): a family alone picks for the
 // machine's memory, as hwnpu-chat's --model. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
 // value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
@@ -27,8 +27,8 @@
 // flow-matching Euler steps and the Qwen-Image VAE decodes them, all on the NPU; the host
 // tokenizes, looks up the embedding rows, patches the latents and writes the PNG. Anima-Turbo
 // (the image use's model, anima-turbo) wants 8 to 12 steps and no classifier-free guidance;
-// Anima-Aesthetic (anima) and Anima-Base (anima:base) 30 to 50 steps with the guidance at 4 to 5
-// (--guidance, --negative), the DiT twice a step: about 6.5 times Anima-Turbo's time. Anima reads
+// Anima-Aesthetic (anima) 25 DPM-Solver++ steps with the guidance at 4 to 5 (--guidance,
+// --negative), the DiT twice a step at the noisier ones: about 4.5 times Anima-Turbo's time. Anima reads
 // Danbooru tags and natural language; its card recommends the prefix "masterpiece, best
 // quality, score_7, safe, " (without score_7 for Anima-Aesthetic).
 //
@@ -46,6 +46,14 @@
 // classifier-free guidance (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU
 // interpreter (slow; for checking without the NPU).
 //
+// On AMD's NPU, generate also runs Qwen-Image-2.1 (qwen-image: Qwen-Image-2.1-Turbo, 8 steps;
+// qwen-image:2.1, 40 steps, guidance with --guidance and --negative; tools/amd/iron_qwenimage.py,
+// internal/imagegen/qwenimage) and Chroma1 (chroma: Chroma1-Flash, Heun's 8 steps; chroma:1-hd,
+// guidance 3 with DPM-Solver++ 2M 25 steps; tools/amd/iron_chroma.py, internal/imagegen/chroma).
+// A model whose license restricts its use (Qwen-Image-2.1's research license, Anima's
+// non-commercial one) is asked once, on a terminal, before its first run; --accept-license (or
+// HWNPU_ACCEPT_LICENSE=ID) accepts it without asking.
+//
 // depth estimates the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth
 // Anything 3 or MoGe-2 (see DepthCmd). face-detect (FaceDetectCmd) finds faces, pose (PoseCmd)
 // people's keypoints, detect (DetectCmd) objects and their labels, ocr (OCRCmd) lines of text;
@@ -60,10 +68,12 @@ import (
 	"os/signal"
 
 	"github.com/alecthomas/kong"
+
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 type cli struct {
-	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana)."`
+	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Qwen-Image-2.1)."`
 	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's and Apple's NPU)."`
 	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; the CPU, AMD's or Apple's NPU)."`
 	Pose       PoseCmd       `cmd:"" help:"Find the people in pictures and their 17 keypoints (RTMO; Apple's Neural Engine, Intel's NPU, the CPU)."`
@@ -71,8 +81,11 @@ type cli struct {
 	OCR        OCRCmd        `cmd:"" name:"ocr" help:"Read the text in pictures: lines, their boxes and text in 50 languages (PP-OCRv6; Apple's Neural Engine, Intel's NPU, the CPU)."`
 	Label      LabelCmd      `cmd:"" help:"Label pictures: the likeliest of candidate labels in any language, or of a list of common ones (SigLIP 2; AMD's NPU)."`
 	Embed      EmbedCmd      `cmd:"" help:"Embed pictures and texts in one space, for search and similarity (SigLIP 2; AMD's NPU)."`
+	Segment    SegmentCmd    `cmd:"" help:"Cut out the thing a point or a box picks in pictures: its mask and a transparent cutout (EfficientSAM; AMD's NPU, the CPU)."`
 	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export, or a Sana repository into a Core ML export."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
+
+	AcceptLicense bool `name:"accept-license" help:"Accept the license of a model whose license restricts its use (Qwen-Image-2.1: research only) without being asked; kept, as an answer of yes is."`
 }
 
 func main() {
@@ -81,8 +94,10 @@ func main() {
 	var c cli
 	k := kong.Parse(&c,
 		kong.Name("hwnpu-image"),
-		kong.Description("Image models on an NPU: generation, depth, faces, poses, objects and text."),
+		kong.Description("Image models on an NPU: generation, depth, faces, poses, objects, text, labels and cutouts."),
 		kong.UsageOnError(),
 		kong.BindTo(ctx, (*context.Context)(nil)))
+	acceptLicenses = c.AcceptLicense
 	k.FatalIfErrorf(k.Run())
+	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
 }

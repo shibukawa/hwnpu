@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
@@ -182,6 +183,7 @@ func (e *Estimator) use(ctx context.Context, w, h int) (*sized, error) {
 	if e.cur != nil && e.cur.Model.Width == w && e.cur.Model.Height == h {
 		return e.cur, nil
 	}
+	defer console.Loading(filepath.Join(e.dir, fmt.Sprintf("%dx%d", w, h)))()
 	if err := e.Close(); err != nil {
 		return nil, err
 	}

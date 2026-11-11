@@ -17,7 +17,7 @@
 //  4. the VAE decoder on the latents, unnormalized by the VAE's per-channel mean and std.
 //
 // The export is for one image size and one diffusion model: Anima-Turbo wants about 8 steps and
-// no classifier-free guidance (CFG 1); Anima-Aesthetic and Anima-Base 30 to 50 Euler steps at CFG
+// no classifier-free guidance (CFG 1); Anima-Aesthetic 30 to 50 Euler steps at CFG
 // 4 to 5 (circlestone-labs/Anima's model card), each step the DiT twice, or as many in fewer with
 // DPM-Solver++ 2M and the guidance at the noisier steps only (DefaultSampling).
 package anima
@@ -502,3 +502,10 @@ func bf16(x float32) uint16 {
 }
 
 func fromBF16(h uint16) float32 { return math.Float32frombits(uint32(h) << 16) }
+
+// DPM2M is one DPM-Solver++ 2M step (dpm2m) for the other image pipelines: x in place from sigma
+// s to t with the velocity v, d0 and d1 its data predictions kept between steps (nil at first),
+// hLast the last step's log-SNR step (returned).
+func DPM2M(x, v []float32, d0, d1 *[]float32, s, t, hLast float64) float64 {
+	return dpm2m(x, v, d0, d1, s, t, hLast)
+}

@@ -30,6 +30,7 @@ const (
 	KindDetect     Kind = "detect"      // the objects in an image, boxes and labels: hwnpu-image detect
 	KindOCR        Kind = "ocr"         // the text in an image, lines and boxes: hwnpu-image ocr
 	KindLabel      Kind = "label"       // labels of an image and embeddings of images and texts: hwnpu-image label, embed
+	KindSegment    Kind = "segment"     // the mask of a thing a point or a box picks: hwnpu-image segment
 	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: hwnpu-audio notes
 	KindMusic      Kind = "music"       // music from a style: hwnpu-audio generate
 	KindSFX        Kind = "sfx"         // sound effects from a text: hwnpu-audio generate -m sfx
@@ -96,6 +97,9 @@ type Model struct {
 	// slow there (PLaMo 3 Translate 8B on an M1, over the 2.8 GiB its Neural Engine runs at full
 	// speed). Its name and FAMILY:TAG still run it.
 	NotOn []string
+	// License is the weights' license (models.yaml's license): its id, where it is, and whether
+	// the user accepts it before the first download or run (AcceptLicense).
+	License License
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that

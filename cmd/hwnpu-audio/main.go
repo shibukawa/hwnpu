@@ -90,6 +90,7 @@ func main() {
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	k.FatalIfErrorf(k.Run())
+	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
 }
 
 // GenerateCmd is "hwnpu-audio generate": music, or with a sound effects model a sound effect.
@@ -325,6 +326,7 @@ func run(ctx context.Context, o options, args []string) error {
 			st.Close()
 			return err
 		}
+		console.Running()
 		var embs [][]float32
 		var weights []float64
 		var names []string
@@ -408,6 +410,7 @@ func run(ctx context.Context, o options, args []string) error {
 		logf("notes: %d of %s (%.1f s)", len(ns), o.notes, end)
 	}
 
+	console.Preparing()
 	t0 := time.Now()
 	units := map[string]string{"npu": "", "gpu": "gpu", "cpu": "cpu"}
 	ss, ok := units[o.decoderOn]
@@ -437,6 +440,7 @@ func run(ctx context.Context, o options, args []string) error {
 	if err := checkNPU(lw, o, g.Placement()); err != nil {
 		return err
 	}
+	console.Running()
 	if o.seed == 0 {
 		o.seed = rand.Uint64()
 	}

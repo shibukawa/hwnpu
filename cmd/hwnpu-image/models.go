@@ -15,6 +15,15 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
+// acceptLicenses is --accept-license.
+var acceptLicenses bool
+
+// isTerminal reports whether f is a terminal (a character device).
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
 // expandHome is path with a leading ~ made the home directory.
 func expandHome(path string) string {
 	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~"+string(filepath.Separator)) {
@@ -41,6 +50,13 @@ func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	if e := (*chat.NoModelError)(nil); errors.As(err, &e) {
 		err = fmt.Errorf("no %s model, family or use %q (hwnpu-image list shows them)", kind, name)
 	}
+	if err == nil {
+		// a license that restricts the use: accepted once, before the first download or run
+		err = chat.AcceptLicense(m, acceptLicenses, isTerminal(os.Stdin) && isTerminal(os.Stderr), os.Stdin, os.Stderr)
+		if err != nil {
+			return m, err
+		}
+	}
 	if err != nil {
 		// what there is, then the error (kong prints it last)
 		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, name, kind)
@@ -64,7 +80,7 @@ func (c *ListCmd) Run() error {
 	if c.Kind != "" {
 		listModels(os.Stdout, chat.Kind(c.Kind))
 	} else {
-		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel)
+		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel, chat.KindSegment)
 	}
 	return nil
 }
@@ -76,11 +92,20 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 	vendor := npuVendor(context.Background())
 	chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
 		if d, _, err := chat.ChooseDevice(m, vendor, ""); err == nil && d == "cpu" {
-			return "CPU (ONNX Runtime)"
+			return "CPU"
+		}
+		if (m.Kind == chat.KindDetect || m.Kind == chat.KindPose || m.Kind == chat.KindSegment) && vendor == "amd" { // an export of iron_onnxcnn.py or iron_efficientsam.py, made on the first run
+			if d, err := amdExport(m, ""); err == nil {
+				return "~/models/" + filepath.Base(d)
+			}
+			return "exported on first run (IRON)"
+		}
+		if m.Kind == chat.KindSegment { // the encoder has no Core ML or OpenVINO form yet
+			return "CPU"
 		}
 		if m.Kind == chat.KindPose || m.Kind == chat.KindDetect || m.Kind == chat.KindOCR { // converted on the first run, for Core ML or OpenVINO
 			if d, _, err := chat.ConvertedDevice(m, vendor, ""); err == nil && d == "cpu" {
-				return "CPU (ONNX Runtime)"
+				return "CPU"
 			}
 			return "converted on first run"
 		}

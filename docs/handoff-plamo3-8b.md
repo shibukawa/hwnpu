@@ -1,15 +1,15 @@
 # 引き継ぎ: PLaMo 3 Translate 8B を M2〜M4、AMD、Intel の NPU で確かめる
 
-作成: 2026-11-11。M1 (16 GB) で入れた PLaMo 3 Translate 8B (`plamo-3-translate-8b`、[design.md](design.md) の 16.155) の、M1 では測れなかったことの確認。
+作成: 2026-11-11。M1 (16 GB) で入れた PLaMo 3 Translate 8B (`plamo-3-translate-8b`、[design.md](design.md) の 16.164) の、M1 では測れなかったことの確認。
 
 ## 1. ここまでの状態
 
 - 構造は 2B と同じ `plamo3` で、コードの変更は既定の形式だけ (8B は lut4、`plamo3.Config.Format`)。Intel は 8B が行ごとの int4 (`plamo3.Config.IntelFormat`、models.yaml の `prefill: off` で 1 本)、2B 以下は int8 (`plamo3.Arch.IntelFormat`)
 - M1 で確かめたこと: 変換 (5 部分、約 1 分)、全部 `all on the NPU`、初回のコンパイル 1 分 16 秒、2 回目以降 3〜5 秒、Neural Engine 3.81 GiB とプロセスの最大 4.1 GB、20 文と段落 4 つの訳 (lut8 と比べて崩れない)
 - M1 では 2.8 GiB を超えるので 0.8 トークン/秒。速さは測れていない
-- M2 (16 GB) で確かめたこと (16.155): 生成 9.4〜10.1 トークン/秒、2 回目以降の読み込み 35〜41 秒 (キャッシュに残るのは 1.2〜2.1 GiB だけ)、20 文は lut8 と 13/20 が同じで残りは言い換え。全部載った後も 1 回 106 ms (38 GiB/s 前後) で、生成の速さは 9〜10 トークン/秒のまま。lut8 は 6 トークン/秒前後 (lut4 の 1.55 倍遅い)。残り: lut8 の 2 回目以降の読み込み (急がない)
-- M3 (16 GB) で確かめたこと (16.155): 2 回目以降の読み込み 3.6〜4.6 秒 (キャッシュに全部残る)、生成 10.4〜10.9 トークン/秒
-- 比べた文: 16.155 の 20 文 (英 → 日 10、日 → 英 10) と段落 4 つ。下の 2.2 にそのまま置いた
+- M2 (16 GB) で確かめたこと (16.164): 生成 9.4〜10.1 トークン/秒、2 回目以降の読み込み 35〜41 秒 (キャッシュに残るのは 1.2〜2.1 GiB だけ)、20 文は lut8 と 13/20 が同じで残りは言い換え。全部載った後も 1 回 106 ms (38 GiB/s 前後) で、生成の速さは 9〜10 トークン/秒のまま。lut8 は 6 トークン/秒前後 (lut4 の 1.55 倍遅い)。残り: lut8 の 2 回目以降の読み込み (急がない)
+- M3 (16 GB) で確かめたこと (16.164): 2 回目以降の読み込み 3.6〜4.6 秒 (キャッシュに全部残る)、生成 10.4〜10.9 トークン/秒
+- 比べた文: 16.164 の 20 文 (英 → 日 10、日 → 英 10) と段落 4 つ。下の 2.2 にそのまま置いた
 
 ## 2. Mac (M2、M3、M4) — 30 分ほど
 
@@ -62,7 +62,7 @@ diff <(grep '^> .' /tmp/out-lut4.txt) <(grep '^> .' /tmp/out-lut8.txt)
 
 ### 2.3 16 GB の M2 以降で 8B を勧めるか — 済み
 
-M2 (9〜10 トークン/秒) と M3 (10〜11、読み込み 4 秒) の結果で、`machine: 16` にした。M1 は models.yaml の `not_on: [M1]` で外し、2B を選ぶ (16.155 の「チップ」)。M4 で測ったら 16.155 に足す。
+M2 (9〜10 トークン/秒) と M3 (10〜11、読み込み 4 秒) の結果で、`machine: 16` にした。M1 は models.yaml の `not_on: [M1]` で外し、2B を選ぶ (16.164 の「チップ」)。M4 で測ったら 16.164 に足す。
 
 ## 3. AMD (Ryzen AI、IRON の環境) — 1〜2 時間
 
@@ -92,9 +92,9 @@ hwnpu-chat -m plamo3translate:8b --temp 0 "The meeting has been rescheduled to n
 ```
 
 - 行ごとの int4 は Meteor Lake で int8 より速い (LFM3-1.7B で 37.9 ms と 68.5 ms、16.143 の hwnpu-formats)。グループごとの int4-g128 は int8 より遅いので使わない
-- 精度: M1 の Neural Engine で同じ int4 の重みを使うと、20 文は lut8 と 12/20 が同じで、残りは言い換えだった (16.155)。Intel では計算の精度が違うので、2.2 の 20 文 (`--format` は付けない) で、Mac の lut8 の訳と比べる。崩れるなら int4-g128 (遅いが精度は上) か、NPU から外すかを決める
+- 精度: M1 の Neural Engine で同じ int4 の重みを使うと、20 文は lut8 と 12/20 が同じで、残りは言い換えだった (16.164)。Intel では計算の精度が違うので、2.2 の 20 文 (`--format` は付けない) で、Mac の lut8 の訳と比べる。崩れるなら int4-g128 (遅いが精度は上) か、NPU から外すかを決める
 - 記録: 読み込みの成否と時間 (Windows の TDR の 2 秒に触れないか)、tok/s、NPU のメモリ。NPU のメモリが尽きるとエラーでなくプロセスが 0xc0000005 で落ちることがある (16.144)
 
 ## 5. 記録
 
-- 結果は design.md の 16.155 に足す。速さとメモリは MODEL.md / MODEL.ja.md の表、models.yaml の `memory`、improvements.md / improvements.ja.md のモデルの表
+- 結果は design.md の 16.164 に足す。速さとメモリは MODEL.md / MODEL.ja.md の表、models.yaml の `memory`、improvements.md / improvements.ja.md のモデルの表

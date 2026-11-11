@@ -105,6 +105,11 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	text, dit := Formats(cmp.Or(s.Machine, chat.MachineMemory()))
 	text, dit = cmp.Or(s.TextFormat, text), cmp.Or(s.DitFormat, dit)
 	p := Paths{Dir: s.Dir}
+	var want []chat.File
+	for _, f := range Files {
+		want = append(want, chat.File{Repo: s.Repo, Name: f, Path: p.at(f)})
+	}
+	chat.Expect(ctx, want)
 	for _, f := range Files {
 		path := p.at(f)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
