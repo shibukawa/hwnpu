@@ -62,7 +62,7 @@ AMD の「CPU」の 5 つ (姿勢、検出、OCR、音高、音符) は、どれ
 |---|---|---|---|---|
 | **物のマスク** (インスタンスのセグメンテーション) | Apple Vision の前景のインスタンスのマスク、Vertex AutoML | RTMDet-Ins (Apache-2.0) | `hwnpu-image detect --mask` | △ 小さな CNN で演算が多い。YuNet と同じく CPU に負けるおそれがある。汎用の ONNX → IRON を作ってから測る |
 | **背景の除去**、被写体の切り抜き | Apple の被写体の切り抜き、remove.bg | BiRefNet / BiRefNet_lite (MIT)。RMBG-2.0 は非商用なので使えない | `hwnpu-image cutout` (透明な PNG) | △ 骨格 (Swin) は GEMM が中心だが、デコーダのどのブロックにも ASPPDeformable があり (BiRefNet_lite の設定も)、torchvision の deform_conv2d を使う。タップごとに、ネットワークが計算したずれの位置を双線形で読むので、決まった格子のない gather になる。コマンドの間のホストの処理か、密な書き直しが要る |
-| 点や箱で指定する切り抜き | Meta SAM | SAM 2、EfficientSAM (Apache-2.0) | `hwnpu-image segment --point x,y` / `--box` | ○ 画像の符号器は ViT で向く。軽いデコーダはプロンプトごとに CPU でもよい |
+| 点や箱で指定する切り抜き | Meta SAM | SAM 2、EfficientSAM (Apache-2.0) | `hwnpu-image segment --point x,y` / `--box` | ◎ EfficientSAM-Ti / S: 符号器は AMD の NPU (初回に書き出す)、復号器はプロンプトごとにホスト。ほかの機械では CPU (docs/amd-npu-models.md 22) |
 | **文書のレイアウト、表、ページと行の向き** | Document AI、Textract AnalyzeDocument、Azure Document Intelligence の Layout | PP-DocLayout、SLANet、PP-LCNet の向き判定 (Apache-2.0) | `hwnpu-image ocr --layout` / `--table`。向きは自動で直す | △ CNN。物のマスクと同じく、汎用の経路の後に |
 | 顔の照合 (同じ人か) | Rekognition CompareFaces / SearchFaces、Azure Face Verify | SFace (OpenCV Zoo、Apache-2.0)。insightface の重みは非商用なので使えない | `hwnpu-image face-detect --embed`、`face-compare` | CPU の見込み (小さな CNN) |
 | 不適切な画像の判定 | Cloud Vision の SafeSearch、Rekognition DetectModerationLabels、Azure Content Safety | Falconsai/nsfw_image_detection (Apache-2.0、精度は要確認)、または SigLIP 2 のゼロショット | `hwnpu-image moderate` | ◎ 向く (ViT)。SigLIP 2 は動く (そのラベルで `hwnpu-image label`)。閾値はまだデータで決めていない |
@@ -113,7 +113,7 @@ AMD には公開されたグラフ用のコンパイラがなく、モデルご�
 画像の項目を AMD から進めるなら、次の順を勧めます。
 
 1. **SigLIP 2** (ラベル付け、画像の埋め込み、不適切な画像の判定): ViT なので DA3 の部品が使えます。これ 1 つで、2.1 の 3 つの項目が埋まります。ラベル付けと埋め込みはできました (2026-11-11、docs/amd-npu-models.md 18)。その間に、1 節の ONNX の 5 つは AMD の CPU で ONNX Runtime で動くようにしました (同 19)。
-2. **SAM 系の符号器と BiRefNet** (切り抜き): 骨格が重く GEMM が中心です。BiRefNet の deformable conv はデコーダのどのブロックにもある (2.1) ので、EfficientSAM (1024 × 1024 の素の ViT-S / T、Apache-2.0) から始めます。
+2. **SAM 系の符号器と BiRefNet** (切り抜き): 骨格が重く GEMM が中心です。BiRefNet の deformable conv はデコーダのどのブロックにもある (2.1) ので、EfficientSAM (1024 × 1024 の素の ViT-S / T、Apache-2.0) から始めます。EfficientSAM はできました (`hwnpu-image segment`、2026-11-11、docs/amd-npu-models.md 22)。次は BiRefNet です。
 3. **ONNX → IRON の汎用の経路**: 1 節の 5 つ (姿勢、検出、OCR、音高、音符) と、RTMDet-Ins、文書のレイアウトが載ります。モデルごとに NPU と CPU の mJ を比べ、負けるものは models.yaml を `device: {amd: cpu}` のままにします (YuNet と同じ扱い)。RTMDet-m と RTMO-s はできました (`tools/amd/iron_onnxcnn.py`、2026-11-11、docs/amd-npu-models.md 20、21)。RTMDet の tiny と s は負けました (20.4)。
 4. **バーコード、追跡**: チップによらないので、いつでも入れられます。
 

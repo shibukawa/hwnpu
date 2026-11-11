@@ -632,6 +632,31 @@ models:
     memory: 1.7
     bytes: 3.57e9
     about: "SigLIP 2 Large: the same at 256 x 256, closer labels and embeddings, about 3 times the work"
+  # hwnpu-image segment: EfficientSAM (Meta's, Apache-2.0), the authors' ONNX exports of its
+  # image encoder and its prompt's mask decoder; sha256 names each file. The encoder runs on
+  # AMD's NPU from an export of tools/amd/iron_efficientsam.py made on the first run, elsewhere
+  # on the CPU (ONNX Runtime, else hwnpu's evaluator); the decoder on the host, per prompt
+  EfficientSAM-Ti:
+    family: efficientsam
+    tag: ti
+    kind: segment
+    from: hf:yunyangx/EfficientSAM@1cf49585c39567bfc49e991ab8eb31f491ad4877
+    sha256: {efficientsam_ti_encoder.onnx: 84ed466ffcc5c1f8d08409bc34a23bb364ab2c15e402cb12d4335a42be0e0951, efficientsam_ti_decoder.onnx: a62f8fa5ea080447c0689418d69e58f1e83e0b7adf9c142e2bd9bcc8045c0b11}
+    device: {amd: npu}
+    machine: 8
+    # AMD: 118 MiB pinned on the NPU and 274 MiB of the process (the decoder in float64)
+    memory: 0.4
+    bytes: 4.14e7
+    about: "EfficientSAM-Ti: the mask of the thing a point or a box picks in a picture (Segment Anything's prompts); a ViT-Tiny at 1024 x 1024, 10M parameters"
+  EfficientSAM-S:
+    like: EfficientSAM-Ti
+    tag: s
+    sha256: {efficientsam_s_encoder.onnx: 3eea4544db4647570ca5bea8ab6bbe057f2fc767ad089c14b8f67f482a2493ed, efficientsam_s_decoder.onnx: d40a537f617c8ced3b2034b6971bc16cc291c49d3d80f740a394cdb78f0e1d06}
+    machine: 16
+    # AMD: 158 MiB on the NPU and 267 MiB of the process
+    memory: 0.45
+    bytes: 1.06e8
+    about: "EfficientSAM-S: the same with a ViT-Small, closer masks, about 3 times the work"
 
 categories:
   chat:
@@ -718,6 +743,12 @@ categories:
     picks:
       - {machine: 8, model: siglip2-base-patch16-224}
       - {machine: 16, model: siglip2-large-patch16-256}
+  segment:
+    aliases: [sam, cutout-point]
+    about: the mask of the thing a point or a box picks in a picture (hwnpu-image segment)
+    picks:
+      - {machine: 8, model: EfficientSAM-Ti}
+      - {machine: 16, model: EfficientSAM-S}
   notes:
     aliases: [midi]
     about: the notes of music, as MIDI (hwnpu-audio notes)

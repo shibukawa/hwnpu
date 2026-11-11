@@ -5,6 +5,8 @@ import (
 	"math"
 	"slices"
 	"sort"
+
+	"github.com/shibukawa/hwnpu/internal/sgemm"
 )
 
 // Needed returns the nodes of g that the outputs depend on, in the graph's (topological) order,
@@ -32,8 +34,10 @@ func (g *Graph) needed(outputs []string, stop map[string]bool, shapes map[string
 		}
 		need[i] = true
 		n := g.Nodes[i]
-		if _, known := shapes[n.In[0]]; n.Op == "Shape" && known {
-			return
+		if n.Op == "Shape" && len(n.In) > 0 {
+			if _, known := shapes[n.In[0]]; known {
+				return
+			}
 		}
 		for _, in := range n.In {
 			if in != "" {
@@ -86,9 +90,11 @@ func (g *Graph) EvalShapes(given map[string]*Tensor, shapes map[string][]int, ou
 		keep[o] = true
 	}
 	for k, n := range nodes {
-		if shape, ok := shapes[n.In[0]]; n.Op == "Shape" && ok {
-			if _, have := vals[n.In[0]]; !have {
-				vals[n.In[0]] = &Tensor{Shape: shape, Type: Float} // its shape alone: Shape reads nothing else
+		if n.Op == "Shape" && len(n.In) > 0 {
+			if shape, ok := shapes[n.In[0]]; ok {
+				if _, have := vals[n.In[0]]; !have {
+					vals[n.In[0]] = &Tensor{Shape: shape, Type: Float} // its shape alone: Shape reads nothing else
+				}
 			}
 		}
 		ins := make([]*Tensor, len(n.In))
@@ -102,7 +108,13 @@ func (g *Graph) EvalShapes(given map[string]*Tensor, shapes map[string][]int, ou
 			}
 			ins[i] = v
 		}
-		outs, err := EvalNode(n, ins)
+		var outs []*Tensor
+		var err error
+		if n.Op == "If" {
+			outs, err = evalIf(n, ins)
+		} else {
+			outs, err = EvalNode(n, ins)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("onnx: %s %s: %w", n.Op, n.Name, err)
 		}
@@ -592,7 +604,12 @@ func EvalNode(n *Node, in []*Tensor) ([]*Tensor, error) {
 		return []*Tensor{argmax(t, a, false)}, nil
 	case "OneHot":
 		depth := int(in[1].F[0])
-		on, off := in[2].F[0], in[3].F[0]
+		var on, off float64
+		if len(in) == 3 { // ONNX: values [off, on]
+			off, on = in[2].F[0], in[2].F[1]
+		} else { // TFLite: on, off
+			on, off = in[2].F[0], in[3].F[0]
+		}
 		idx := in[0]
 		a := axis(int(n.Int("axis", -1)), len(idx.Shape)+1)
 		shape := slices.Insert(slices.Clone(idx.Shape), a, depth)
@@ -659,6 +676,16 @@ func EvalNode(n *Node, in []*Tensor) ([]*Tensor, error) {
 			}
 		}
 		return []*Tensor{slice(in[0], b, e, st)}, nil
+	case "ScatterND":
+		return one(scatterND(in[0], in[1], in[2], n.Str("reduction", "none")))
+	case "ConvTranspose":
+		return one(convTranspose(n, in[0], in[1], arg(2)))
+	case "InstanceNormalization":
+		return []*Tensor{instanceNorm(in[0], in[1], in[2], n.Float("epsilon", 1e-5))}, nil
+	case "LayerNormalization":
+		return one(layerNorm(in[0], in[1], arg(2), int(n.Int("axis", -1)), n.Float("epsilon", 1e-5)))
+	case "Resize":
+		return one(resize(n, in[0], arg(2), arg(3)))
 	case "Pad":
 		pads := n.IntList("pads")
 		if t := arg(1); t != nil {
@@ -900,6 +927,10 @@ func matmul(a, b *Tensor) (*Tensor, error) {
 	out := &Tensor{Shape: shape, F: make([]float64, Len(shape)), Type: a.Type}
 	for bi := range Len(batch) {
 		pa, pb, po := a.F[ia[bi]*m*k:], b.F[ib[bi]*k*nn:], out.F[bi*m*nn:]
+		if m*k*nn >= bigMatMul {
+			matmul32(m, k, nn, pa, pb, po)
+			continue
+		}
 		for i := range m {
 			for kk := range k {
 				x := pa[i*k+kk]
@@ -924,6 +955,25 @@ func matmul(a, b *Tensor) (*Tensor, error) {
 		out.Shape = append(slices.Clone(batch), m)
 	}
 	return out, nil
+}
+
+// bigMatMul is the products (m k n) from which matmul multiplies in float32 with internal/sgemm
+// (as ONNX Runtime does) in place of float64 loops: EfficientSAM's mask decoder 1.4 -> 0.7 s.
+const bigMatMul = 1 << 22
+
+// matmul32 is c (m x n) = a (m x k) b (k x n), row major, through float32.
+func matmul32(m, k, n int, a, b, c []float64) {
+	a32, b32, c32 := make([]float32, m*k), make([]float32, k*n), make([]float32, m*n)
+	for i := range a32 {
+		a32[i] = float32(a[i])
+	}
+	for i := range b32 {
+		b32[i] = float32(b[i])
+	}
+	sgemm.MulAdd(m, n, k, sgemm.A{Data: a32, Stride: k}, sgemm.Matrix{Data: b32, Stride: n, N: n}, c32, n, 1)
+	for i, v := range c32 {
+		c[i] = float64(v)
+	}
 }
 
 func softmax(t *Tensor, a int) *Tensor {

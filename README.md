@@ -263,6 +263,17 @@ go run ./cmd/hwnpu-image embed --compare photo.jpg -t "a cat on a sofa"
 
 手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 18 節にあります。
 
+### 点や箱で指定する切り抜き (EfficientSAM)
+
+`go run ./cmd/hwnpu-image segment` は、Meta の EfficientSAM (Apache-2.0、Segment Anything のプロンプト) で、点 (`--point x,y`、外す点は `--negative`) か箱 (`--box x1,y1,x2,y2`) で指した物の mask を作ります。`NAME.mask.png` (物が白) と `NAME.cutout.png` (物の外が透明) を書き、スコア (予測した IoU)、面積、枠を JSON で出します。復号器の候補 3 つのうち一番スコアの高いものを、`--all` で 3 つとも書きます。画像の符号器 (1024 × 1024 の ViT) は AMD の NPU で動き (初回に IRON で書き出す)、それ以外の機械では CPU です (ONNX Runtime があればそれ、なければ hwnpu の評価器で遅い)。復号器はプロンプトごとにホストで動きます。マシンのメモリで Ti (8 GB) か S (16 GB 以上) を選びます。Ryzen AI 9 365 で、符号器が Ti 0.34 秒、S 0.48 秒、復号器が 0.6〜0.7 秒です。
+
+```bash
+go run ./cmd/hwnpu-image segment --box 280,40,500,385 photo.jpg   # photo.mask.png, photo.cutout.png
+go run ./cmd/hwnpu-image segment --point 390,200 --all photo.jpg
+```
+
+手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 22 節にあります。
+
 ## Apple での注意
 
 - Core ML は「Neural Engine だけ」を指定できません。hwnpu は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません

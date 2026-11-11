@@ -4124,3 +4124,12 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
 - 精度: MEDIUM では関節のスコアが 0.13、確信の低い人の枠が 97 px ずれた。HIGH と SiLU の演算で、関節の位置 2 px、スコア 0.03 以内。1 枚 0.22 秒 (MEDIUM なら 0.15 秒)
 - 書き出しの読み書きと実行を `internal/vision/ironcnn` にまとめ、detect と pose で共有。`hwnpu-image pose` は AMD の機械で初回に書き出す (models.yaml の `device: {amd: npu}`)
 - 詳しくは amd-npu-models.md 21 節
+
+### 16.160 点や箱で指定する切り抜き (EfficientSAM): `hwnpu-image segment` — 2026-11-11
+
+- 動機: CLOUD_AI_COMPATIBILITY.md の画像の 2 番目。BiRefNet は deformable conv があるので、素の ViT の EfficientSAM から
+- 符号器 (1024 × 1024 の ViT と首) を `tools/amd/iron_efficientsam.py` で IRON のグラフ 1 つに (64 次元の頭なので IRON の MHA にそのまま載る)。初回に書き出す (models.yaml の `device: {amd: npu}`、`internal/vision/segment`)
+- 復号器 (プロンプトの符号化と mask の復号) は、作者の ONNX をホストの評価器で。評価器に If、ScatterND、ConvTranspose、InstanceNormalization、LayerNormalization、Resize (cubic まで) を足し、大きな行列積は sgemm の float32 に。ONNX の参照評価器と IoU の予測 1e-6、mask の符号は全画素で一致、1 回 0.6〜0.7 秒
+- 符号器の CPU の経路: ONNX Runtime があればそれ、なければ hwnpu の評価器 (Ti で 30 秒、外部依存なし)
+- 結果: Ti の符号器 0.34 秒、S 0.48 秒 (CPU の ONNX Runtime 1.9 秒と 4.5 秒)。NPU と CPU の mask の IoU 0.93〜1.0 (既定で書く一番スコアの高い mask は 0.989 以上)
+- 詳しくは amd-npu-models.md 22 節

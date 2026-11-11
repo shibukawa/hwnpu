@@ -1135,3 +1135,32 @@ RTMO-s の骨格は YOLOX 型 (CSPDarknet) で、首に Transformer の層が 1 
 - メモリ: NPU 327 MiB、プロセス 215 MiB (ホストの部分に ONNX のグラフを読む)
 - ホストの部分 (Go の評価器) は 1 枚 16〜60 ms
 - 電力量はまだ測っていない (CPU が別の処理で混んでいた)
+
+## 22. EfficientSAM の画像の符号器を AMD の NPU で (`tools/amd/iron_efficientsam.py`、2026-11-11)
+
+`hwnpu-image segment` (点や箱で指定する切り抜き) は、作者の ONNX の書き出し (yunyangx/EfficientSAM、`efficientsam_{ti,s}_{encoder,decoder}.onnx`、Apache-2.0) を使う。画像の符号器を NPU で動かし (初回に IRON で書き出す、`~/models/efficientsam-ti.amd-npu2`)、プロンプトの復号器はホストの評価器 (`internal/onnx`) でプロンプトごとに動かす。ほかの機械では符号器も CPU (ONNX Runtime があればそれ、なければ hwnpu の評価器、Ti で 30 秒)。
+
+### 22.1 形
+
+- 入力: 画像を 1024 × 1024 に縮める (ONNX のグラフと同じ bilinear、half_pixel、antialias なし) のと、正規化、16 × 16 のパッチの行 (4096, 768) はホスト
+- パッチの埋め込み (行列積) に、バイアスと位置埋め込み (14 × 14 から 64 × 64 へ bicubic、a = −0.75。書き出しのときに numpy で ONNX の Resize と同じ計算) を足す
+- 前置きの LayerNorm の層 12 (Ti: 192 次元、64 次元の頭 3 つ。S: 384 次元、6 つ)。注意は IRON の MHA で 4096 トークン全部、GELU は erf、行列積は HIGHEST
+- 首: 1 × 1 (行列積)、チャネル方向の LayerNorm、3 × 3 (1 画素の 0 で囲んだ格子への写し、im2col の写し 3 回、行列積)、LayerNorm
+- 出力 (4096, 256) をホストで (1, 256, 64, 64) に並べ替え、復号器に渡す
+- numpy の参照は ONNX の参照評価器と cos 1.0 (最大の誤差 7e-7)
+
+### 22.2 復号器をホストで
+
+Go の評価器に足した演算: If (枝が外の値を読む分を If の入力にする)、ScatterND、ConvTranspose (stride が核と同じなら行列積 1 回)、InstanceNormalization、LayerNormalization、Resize (nearest、linear、cubic)。ONNX の OneHot の 3 入力。大きな行列積 (積和 2^22 以上) は internal/sgemm の float32 で (ONNX Runtime と同じ精度)。ONNX の参照評価器と比べて、予測した IoU が 1e-6、mask の値が 1e-4 以内、符号は全画素で一致。1 回のプロンプトに 0.6〜0.7 秒 (float64 だけなら 2.6 秒)。
+
+### 22.3 結果 (Ryzen AI 9 365、balanced。CPU は別の処理で混んでいた)
+
+| | 符号器 (NPU) | 符号器 (CPU、ONNX Runtime 1 スレッド) | 復号器 | メモリ (NPU、プロセス) | 書き出し |
+|---|---|---|---|---|---|
+| Ti | 0.34 秒、7 コマンド | 1.9 秒 | 0.6〜0.7 秒 | 118 MiB、274 MiB | 26 MB、5 秒 |
+| S | 0.48 秒 | 4.5 秒 | 0.6 秒 | 158 MiB、267 MiB | 65 MB、11 秒 |
+
+- NPU の符号器と IRON の参照の cos 0.99992、参照と float32 の cos 0.99988
+- 3 枚の写真と 5 つのプロンプト (点 4 つ、箱 1 つ) の 15 の mask で、NPU と CPU (ONNX Runtime) の mask の IoU は 0.93〜1.0 (10 は 0.99 以上。0.95 未満の 2 つはスコア 0.28 と 0.37 の候補)、スコアの差は 0.01 以内。既定で書く一番スコアの高い mask は、5 つとも IoU 0.989 以上
+- 電力量はまだ測っていない
+

@@ -209,6 +209,11 @@ func repeated(n int) string {
 // m runs elsewhere: another NPU, --cpu, --device cpu (or models.yaml's device for AMD,
 // HWNPU_DEVICE), or no IRON to make the export with (then the CPU, said in the log).
 func amdCNNExport(ctx context.Context, m chat.Model, flag string, interp bool, logf func(string, ...any), fetch func() (string, error), export func(python []string, model, dir string) error) string {
+	return amdFirstRunExport(ctx, m, flag, interp, logf, func(dir string) error { _, err := ironcnn.Read(dir); return err }, fetch, export)
+}
+
+// amdFirstRunExport is amdCNNExport for any tool's export: have says whether dir holds one.
+func amdFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bool, logf func(string, ...any), have func(dir string) error, fetch func() (string, error), export func(python []string, model, dir string) error) string {
 	if interp || chat.HereVendor() != "amd" {
 		return ""
 	}
@@ -216,7 +221,7 @@ func amdCNNExport(ctx context.Context, m chat.Model, flag string, interp bool, l
 		return ""
 	}
 	dir := ironcnn.Dir(m.Name)
-	if _, err := ironcnn.Read(dir); err == nil {
+	if have(dir) == nil {
 		return dir
 	}
 	// none here: made as hwnpu-chat makes its models' (chat.PrepareAMD), with IRON
