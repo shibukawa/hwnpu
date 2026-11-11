@@ -833,8 +833,9 @@ func shards(index string) ([]string, error) {
 }
 
 // fetchHF downloads a file of a Hugging Face repository to path (fetch). A download cut off goes
-// on from where it stopped (path.part). HF_TOKEN, when set, is sent for gated models. repo is
-// OWNER/NAME, or OWNER/NAME@REVISION for a revision other than main.
+// on from where it stopped (path.part). A gated model's repository (401, 403) goes through gate:
+// a token (hfToken), signing in, agreeing to the terms. repo is OWNER/NAME, or
+// OWNER/NAME@REVISION for a revision other than main.
 func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error {
 	repo, rev, _ := strings.Cut(repo, "@")
 	url := hubURL + repo + "/resolve/" + cmp.Or(rev, "main") + "/" + name
@@ -843,19 +844,34 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	if fi, err := os.Stat(part); err == nil {
 		have = fi.Size()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	if tok := os.Getenv("HF_TOKEN"); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
-	if have > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
+	var resp *http.Response
+	for try := 0; ; try++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		tok := hfToken()
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		if have > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		if (resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden) || try == 4 ||
+			!isGated(ctx, repo) {
+			break
+		}
+		resp.Body.Close()
+		if log == nil {
+			log = io.Discard
+		}
+		if err := gate(ctx, repo, resp.StatusCode, tok, log); err != nil {
+			return err
+		}
 	}
 	defer resp.Body.Close()
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC

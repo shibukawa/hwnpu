@@ -3908,3 +3908,15 @@ diffusers の fp32 (CPU) の参照と同じノイズから (DiT の重み q8 で
   - 道具: 参照は `tools/ref/ref_sana.py` (torch 2.5.1、diffusers 0.33.1) と `tools/ref/ref_anima.py` (diffusers 0.42 以上が要り、python 3.9 では入らない。Homebrew の pytorch と python 3.15 に diffusers 0.42.1、transformers 5.22.2)。CPU で 1 枚 Sana 7〜8 分、Anima 約 10 分。NPUWired は `mem.NPUWired` を 0.1 秒ごとに読んだ最大 (Neural Engine の machine 全体の固定メモリ)
 - **低電力モードを切って測り直した** (M1、AC 電源、`pmset` の lowpowermode 0、新しいプロセスで 3 回、同じプロンプトと種): Sana-600M 19〜21 s (Gemma 2 2.2〜2.8 s、1 ステップ 0.65 s、VAE 3.4〜3.7 s)、Anima-Turbo 58〜59 s (1 ステップ 6.4〜6.5 s、VAE 2.6〜3.0 s)、SANA1.5-1.6B 1m10s〜1m12s (1 ステップ 2.5〜3.4 s、VAE 3.6〜3.7 s)。上の値と同じ。M3 では低電力モードで画像生成が半分の速さになったが、M1 のこの計測では差がない (上の計測のときに低電力モードが入っていたかは記録がない)
 - 確かめていないこと: Anima-Base (Turbo でない方、PR #109 で入った) の照合と Intel の NPU (どちらも別に)
+
+### 16.153 同意の要るリポジトリ (gated) のダウンロード: Hugging Face の OAuth のデバイスフロー — 2026-11-11
+
+FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同意しないと落とせない (`gated: auto`、トークンなしの `resolve` は 401、同意していないアカウントのトークンは 403)。これまでの `fetchHF` は `HF_TOKEN` を送るだけで、401 はそのまま「downloading ...: 401」で止まっていた。
+
+- トークンの順: `HF_TOKEN`、huggingface_hub のトークンファイル (`HF_TOKEN_PATH`、`$HF_HOME/token`、`~/.cache/huggingface/token`: `hf auth login` が書く場所、読むだけ)、このプロセスでサインインしたもの (`internal/chat/hfauth.go`)
+- 401 で、API (`/api/models/OWNER/NAME`、トークンなし) が `gated` と言い、端末に人がいれば、OAuth 2.0 のデバイスフロー (RFC 8628) で Hugging Face にサインインする。hwnpu の公開 OAuth アプリ (`hfClientID`、秘密鍵なし、`HWNPU_HF_CLIENT_ID` で差し替え) のスコープは `openid` と `gated-repos` だけ: 同意済みの公開の同意制リポジトリを読めるだけで、非公開のリポジトリもプロフィールも読めない。表示したコードを https://hf.co/oauth/device に入れて承認すると、`/oauth/token` をポーリングしてトークンを得る。SSH 越しでも、ブラウザのない機械でも使える
+- トークンは保存しない (プロセスのメモリだけ)。アプリのトークンの寿命は 15 分 (ファイルのダウンロードだけなので最短にした) で、34 GB を 6 MB/s で落とすと途中で切れるので、401 に一緒にもらった refresh token で黙って取り直す (メモリだけ)。取り直せなければもう一度サインイン
+- 403 (アカウントが未同意): リポジトリのページを示し、同意して Enter で再試行
+- 端末がないとき (`hwnpu-chat serve`、スクリプト): 対話せず、同意のページと `HF_TOKEN` の作り方を書いたエラー
+- API が `gated` と言わない 401 (存在しない名前や非公開のリポジトリも、トークンなしでは 401) は今までどおりのエラーで、サインインしない
+- 実機: FLUX.1-schnell の `model_index.json` でサインインからダウンロード、refresh token での取り直しまで確かめた (2026-11-11)。単体テストは偽のハブ (`hfauth_test.go`) で 401 → サインイン → 403 → Enter → ダウンロード、refresh、端末なし、同意制でない 401
