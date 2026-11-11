@@ -3860,3 +3860,30 @@ diffusers の fp32 (CPU) の参照と同じノイズから (DiT の重み q8 で
   - プロセスの footprint は最大 425 MB (7 つの幅のプログラムとその出力の 12〜24 MB の領域)
 - 組み合わせの値 (10 節): 入力は JPEG / PNG (RTMDet は 640 × 640 に収める、PP-OCR は検出器の 3 つの大きさ)、出力は JSON (箱、ラベル、文字列)。1 枚ずつで、流れ (streaming) はない。部品は RTMDet が 1 つ、PP-OCR が検出器 1 つと認識器の幅ごとに 7 つ (一緒に動く)
 - 確かめていないこと: 電力 (`hwnpu-dev powerbench` は sudo が要る。`sudo go run ./cmd/hwnpu-dev powerbench -one -model ~/Library/Caches/hwnpu/models/RTMDet-ONNX/rtmdet-rtmdet-s-coco-r1-fp16-640.mlpackage`)、Intel の NPU (OpenVINO IR に変換はするが実機は未確認)、AMD (書き出しなし。`--cpu` で CPU インタプリタ)、RTMDet-tiny と m の ONNX Runtime との照合 (s だけ。同じコードで物の数と箱は s とそろう)、PP-OCRv6 medium、180 度回った行 (文字の向きの分類器 PP-LCNet は入れていない)、縦書き、RTMO と YuNet に `ExpSigmoid` を入れたときの精度 (RTMO も SiLU の CSPNeXt なので良くなる見込み)
+
+### 16.150 Sana と Anima の確認の残り: ダウンロードの sha256、SANA 1.5 の起動、複数の種、Mac の Anima-Turbo と diffusers — 2026-11-11
+
+- **ダウンロードの sha256**: Sana (600M、SANA 1.5) と Anima (Turbo、Aesthetic、Base) が取るファイルをすべて models.yaml の `sha256:` に固定した。取得のときに `chat.Fetch` が確かめる (前からある手元のファイルは確かめ直さない)。Anima は 2 つのリポジトリを読むので `with: {diffusers: hf:circlestone-labs/Anima-Base-v1.0-Diffusers}` を足し、そちらのファイルは `diffusers/FILE` と書く (16.149 の `with` と同じ。`chat.Pinned` で引く)。取るファイルの一覧は `sana.Files` と `anima.Files` にまとめ、`TestFilesPinned` がどれも固定されているかを確かめる。Sana の Gemma 2 は最初の Sana のリポジトリから 1 回だけ取る。ほかのリポジトリの写しは `text_encoder/config.json` のメタデータ (`_name_or_path`、`transformers_version`) だけが違うので、ハッシュはリポジトリごとに持つ
+- **SANA 1.5 の起動** (M1 16 GB、ほかのセッションが Neural Engine を使っていない状態、新しいプロセスで続けて 3 回):
+
+| Gemma 2 | 1 回目 | 2 回目 | 3 回目 | Gemma 2 の時間 | footprint の最大 |
+|---|---|---|---|---|---|
+| int8 (既定、5 本) | 7m10s (再コンパイル) | 1m12s | 1m13s | 2.5 s | 3.55〜3.57 GB |
+| fp16 (3 層ずつ 9 本) | 14m46s | 1m21s | 1m21s | 10.5〜11.2 s | 最大 3.85 GB |
+
+  - 2 回目からは読み込みがどれも 2.4 秒以下で、Neural Engine のキャッシュに当たる。1 回目は直前に作った fp16 の書き出しが押し出したもの (DiT の塊が 1 つ 51〜53 秒、VAE の s1 が 1m20s)。16.145 の「1.6B は外れが続く」と 11/10 の 6m47s は、ほかのセッションが同時に Neural Engine でコンパイルしていたことと、書き出しを作り直して互いに押し出していたことによる。合計 (Gemma 2 int8 約 2.2 GB、DiT fp16 約 3.2 GB、VAE) は 4 GiB を大きく超えるが当たる。M2 の合成プログラムでの「本数で決まる容量」([handoff-ane-cache.md](handoff-ane-cache.md) 1.7) は、M1 の SANA 1.5 には当てはまらない
+  - Gemma 2 の fp16 は 4 倍遅く、当たるかどうかも変わらないので採らない。int8 のまま
+  - 1 ステップ 2.5〜3.4 秒、20 ステップで約 66 秒
+- **複数の種** (M1、1024 × 1024、3 プロンプト × 種 1、2、diffusers の fp32 を CPU で作り、同じノイズから Neural Engine で):
+
+| | 潜在のコサイン | PSNR (dB) | 1 枚 (2 回目から) | NPUWired の最大 | footprint の最大 |
+|---|---|---|---|---|---|
+| Sana-600M (既定、int8 / fp16) | 0.989〜0.9998 (中央値 0.998) | 22.5〜38.7 | 21〜22 s (20 ステップ 14 s) | 1.14 GiB | 3.87 GB |
+| Anima-Turbo (int8 / int8) | 0.876〜0.948 (中央値 0.914) | 12.9〜20.4 | 58〜59 s (8 ステップ、1 ステップ 6.5 s) | 2.62 GiB | 3.92 GB |
+
+  - 12 組とも構図 (人物の数と位置、窓と猫、騎士の向き、看板の文字) は参照と同じ。違うのは細部だけ (Anima の p2 種 1 で猫の毛色と姿勢が少し違う)。Sana のいちばん低い 1 組 (和室の水彩、種 2) も構図は同じ
+  - Anima-Turbo は 16.85 の M3 の照合 (int8、0.672〜0.977、14.1〜25.8 dB) の範囲で、PR #109 の後も Mac の Anima-Turbo は diffusers から離れていない。8 ステップに蒸留したモデルは小さな違いを広げる (16.138 の Sana-Sprint と同じ)
+  - 1 回目は書き出し (Sana は ExportVersion 4、Anima は 3) を作り直したので変換とコンパイルで Sana 6m47s、Anima 18m14s。2 回目からはどちらも全部のプログラムが all on the NPU で当たる
+  - models.yaml の Apple のメモリを測った値に直した: Sana-600M 3.3 → 3.9、SANA1.5-1.6B 3.1 → 3.6 (Anima の 4.1 は 3.92 GB で足りる)
+  - 道具: 参照は `tools/ref/ref_sana.py` (torch 2.5.1、diffusers 0.33.1) と `tools/ref/ref_anima.py` (diffusers 0.42 以上が要り、python 3.9 では入らない。Homebrew の pytorch と python 3.15 に diffusers 0.42.1、transformers 5.22.2)。CPU で 1 枚 Sana 7〜8 分、Anima 約 10 分。NPUWired は `mem.NPUWired` を 0.1 秒ごとに読んだ最大 (Neural Engine の machine 全体の固定メモリ)
+- 確かめていないこと: Anima-Base (Turbo でない方、PR #109 で入った) の照合と Intel の NPU (どちらも別に)
