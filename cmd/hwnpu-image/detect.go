@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/onnxrt"
+	"io"
 
 	"context"
 	"encoding/json"
@@ -75,6 +76,23 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 	setup := detect.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), File: file, SHA256: m.SHA256[file], Log: lw}
 	var d *detect.Detector
 	t0 := time.Now()
+	if export := amdCNNExport(ctx, m, setup, c.Device, c.CPU, lw, logf); export != "" {
+		model, err := detect.Fetch(ctx, setup)
+		if err != nil {
+			return err
+		}
+		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		if err != nil {
+			return err
+		}
+		defer dev.Close()
+		if d, err = detect.OpenNPU(ctx, dev, export, model); err != nil {
+			return err
+		}
+		logf("loaded %s in %.1f s, on AMD's NPU (%s)", m.Name, time.Since(t0).Seconds(), filepath.Base(export))
+		defer d.Close()
+		return c.detect(ctx, d, logf)
+	}
 	ort, builtin := cpuRoute(ctx, m, c.Device, c.CPU, c.Threads, logf)
 	c.CPU = c.CPU || builtin
 	if ort {
@@ -105,6 +123,11 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 		logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
 	}
 	defer d.Close()
+	return c.detect(ctx, d, logf)
+}
+
+// detect finds the objects of each picture with d.
+func (c *DetectCmd) detect(ctx context.Context, d *detect.Detector, logf func(string, ...any)) error {
 	d.Score, d.NMS = c.Score, c.NMS
 	keep := map[string]bool{}
 	for _, l := range c.Class {
@@ -176,6 +199,40 @@ func repeated(n int) string {
 		return ""
 	}
 	return fmt.Sprintf(", the mean of %d runs after the first", n-1)
+}
+
+// amdCNNExport is the export of tools/amd/iron_onnxcnn.py that model m runs from on AMD's NPU
+// (~/models/NAME.amd-npu2, NAME in lower case), made on the first run with IRON when it is not
+// there (minutes; the ONNX file downloaded as setup says). It is "" where m runs elsewhere:
+// another NPU, --cpu, --device cpu (or models.yaml's device for AMD, HWNPU_DEVICE), or no IRON
+// to make the export with (then the CPU, said in the log).
+func amdCNNExport(ctx context.Context, m chat.Model, setup detect.Setup, flag string, interp bool, log io.Writer, logf func(string, ...any)) string {
+	if interp || chat.HereVendor() != "amd" {
+		return ""
+	}
+	if device, _, err := chat.ChooseDevice(m, "amd", flag); err != nil || device != "npu" {
+		return ""
+	}
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, "models", strings.ToLower(m.Name)+".amd-npu2")
+	if _, err := detect.ReadCNNExport(dir); err == nil {
+		return dir
+	}
+	// none here: made as hwnpu-chat makes its models' (chat.PrepareAMD), with IRON
+	python, err := chat.IRONPython(ctx)
+	if err != nil {
+		logf("%s: no export for AMD's NPU in %s, and making one needs IRON (%v; INSTALL_AMD.md, %s): the CPU", m.Name, dir, err, chat.IRONEnv)
+		return ""
+	}
+	model, err := detect.Fetch(ctx, setup)
+	if err == nil {
+		err = detect.ExportNPU(ctx, python, m.Name, model, dir, log)
+	}
+	if err != nil {
+		logf("%s: %v; the CPU", m.Name, err)
+		return ""
+	}
+	return dir
 }
 
 // cpuRoute is where an ONNX model m runs (chat.ConvertedDevice) and logs it: ort, ONNX

@@ -234,6 +234,7 @@ type Detector struct {
 	// Times are the last picture's: resizing, the program, decoding and suppressing.
 	Times [3]time.Duration
 	prog  runner.Program
+	npu   *npuHeads // an export of tools/amd/iron_onnxcnn.py on AMD's NPU, in place of prog
 }
 
 // cells is the head's cells over every stride.
@@ -305,9 +306,14 @@ func newDetector(prog runner.Program, program string) (*Detector, error) {
 }
 
 // OnNPU reports whether the program runs all on the NPU.
-func (d *Detector) OnNPU() bool { return d.prog.OnNPU() }
+func (d *Detector) OnNPU() bool { return d.npu != nil || d.prog.OnNPU() }
 
-func (d *Detector) Close() error { return d.prog.Close() }
+func (d *Detector) Close() error {
+	if d.npu != nil {
+		return d.npu.g.Close()
+	}
+	return d.prog.Close()
+}
 
 // Pixels are a picture as the model reads it: scaled by scale to fit Size x Size (PIL's
 // bilinear filter), at the top left, gray 114 past it, normalized by Mean and Std, channels
@@ -351,12 +357,22 @@ func (d *Detector) Detect(ctx context.Context, img image.Image) ([]Object, error
 	t0 := time.Now()
 	x, scale := Pixels(img)
 	t1 := time.Now()
-	y, err := d.prog.Run(ctx, map[string][]float32{"x": x})
-	if err != nil {
-		return nil, err
+	var heads [][]float32
+	if d.npu != nil {
+		h, err := d.npu.run(ctx, x)
+		if err != nil {
+			return nil, err
+		}
+		heads = h
+	} else {
+		y, err := d.prog.Run(ctx, map[string][]float32{"x": x})
+		if err != nil {
+			return nil, err
+		}
+		heads = onnx.SplitFlat(y, HeadShapes(len(d.Classes)))
 	}
 	t2 := time.Now()
-	objs := d.Decode(onnx.SplitFlat(y, HeadShapes(len(d.Classes))))
+	objs := d.Decode(heads)
 	b := img.Bounds()
 	for i := range objs {
 		for j := range 4 {

@@ -44,7 +44,7 @@
 | 深度、点群、法線 | (クラウドに定番の API はない) | `hwnpu-image depth` | Depth Anything 3、MoGe-2 | ○ (変換はする、測っていない) | — | ◎ |
 | 顔の検出 (枠と 5 点) | Cloud Vision の顔検出、Rekognition DetectFaces、Azure Face、Apple Vision | `hwnpu-image face-detect` | YuNet | ○ (測っていない) | — | CPU (NPU でも動くが、エネルギーが CPU の 16〜40 倍。docs/amd-npu-models.md 17) |
 | 人の姿勢 (17 点) | Apple Vision の体の姿勢、Video Intelligence の人物検出 | `hwnpu-image pose` | RTMO-s | ◎ | ○ | CPU |
-| 物の検出 (枠とラベル) | Cloud Vision の物体の位置検出、Rekognition DetectLabels、Azure の物体検出 | `hwnpu-image detect` | RTMDet-tiny / s / m | ◎ | ○ | CPU |
+| 物の検出 (枠とラベル) | Cloud Vision の物体の位置検出、Rekognition DetectLabels、Azure の物体検出 | `hwnpu-image detect` | RTMDet-tiny / s / m | ◎ | ○ | ◎ m (初回に書き出す、docs/amd-npu-models.md 20)。tiny と s は CPU |
 | 文字 (OCR) | Cloud Vision の TEXT / DOCUMENT_TEXT_DETECTION、Textract、Azure Read、Apple Vision | `hwnpu-image ocr` | PP-OCRv6 small | ◎ | ○ | CPU |
 | ラベル付け (ゼロショット)、画像と文の埋め込み | Cloud Vision の LABEL_DETECTION、Rekognition DetectLabels、Vertex と Azure のマルチモーダルの埋め込み、Apple Vision の分類と特徴量 | `hwnpu-image label`、`hwnpu-image embed` | SigLIP 2 Base / Large | — | — | ◎ (docs/amd-npu-models.md 18) |
 | 音高 (F0) | (なし) | `hwnpu-audio pitch` | SwiftF0 | ◎ | ○ | CPU |

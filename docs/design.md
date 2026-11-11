@@ -4107,3 +4107,12 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
 - diffusers の fp32 との照合は 1024² のオイラー法 30 ステップと CFG で CPU 1 枚約 1 時間かかるので見送った (Mac の Anima の部品は Turbo で照合済み、16.152)
 
 **Mac でできなかったこと**: 電力量 (`hwnpu-dev powerbench` は sudo が要る)。AMD の Sana の DiT の q8、交差注意のキーと値をステップの外へ、Anima の VAE の段をまとめる、AMD での CFG のステップの確認は別の作業で。
+### 16.158 RTMDet-m を AMD の NPU で: ONNX の CNN を IRON のグラフにする変換器 — 2026-11-11
+
+- 動機: 19 節 (amd-npu-models.md) で CPU に置いた ONNX の 5 つのモデルのうち、計算の大きい RTMDet-m (39 GMAC) は NPU で CPU に勝てる見込みがあった (YuNet は 0.1 GFLOP で負けた)。演算の切り替え (1 回約 250 µs) が時間を決めるので、畳み込み 1 つを行列積 1 回 (バイアスは 1 のチャネル、SiLU は行列積の後段) にする
+- `tools/amd/iron_onnxcnn.py` (amd-npu-models.md 20 節): 畳み込み、深さ方向、チャネル注意、SPPF の max pool、2 倍の拡大、足し算、連結。RTMDet-m の頭まで 150 ステップ、511 演算、13 コマンド
+- 結果: 1 枚 0.33 秒 (CPU の ONNX Runtime 1 スレッド 1.43 秒、hwnpu の CPU 実行器 2.25 秒)。検出は ONNX Runtime と同じ物、スコアの差 0.013 以内、枠の差 1.3〜7.6 px。固定されるメモリ 565 MiB
+- `hwnpu-image detect` は AMD の機械で、models.yaml の device が npu (RTMDet-m) なら書き出し (`~/models/rtmdet-m.amd-npu2`) を使い、なければ初回に IRON で作る (`chat.RunIRON` を `PrepareAMD` から切り出した)。IRON がなければ CPU
+- tiny と s は bf16 が足りない: BN を畳み込んだ重みとバイアスの和が出力の 50 倍ほどで打ち消し合い、IRON の参照 (bf16) と float32 でも s の箱の頭の cos が 0.996。バイアスを 2 つの bf16 に分けても、重みの丸めが残る。models.yaml で AMD では CPU に
+- 電力 (balanced、PPT からアイドルを引く): 1 枚 NPU 0.325 秒・1.86 J、CPU の ONNX Runtime 1 スレッド 0.54 秒・8.2〜10.7 J、hwnpu の CPU 実行器 1.0 秒・16 J。NPU はエネルギーで 4.4〜5.8 分の 1
+- 直したことと残り: amd-npu-models.md 20.2、20.3

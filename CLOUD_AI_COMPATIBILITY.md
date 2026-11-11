@@ -44,7 +44,7 @@ The NPUs:
 | Depth, points, normals | (no common cloud API) | `hwnpu-image depth` | Depth Anything 3, MoGe-2 | ○ (converted, not measured) | — | ◎ |
 | Faces (boxes and 5 landmarks) | Cloud Vision face detection, Rekognition DetectFaces, Azure Face, Apple Vision | `hwnpu-image face-detect` | YuNet | ○ (not measured) | — | CPU (it runs on the NPU, at 16–40× the CPU's energy; docs/amd-npu-models.md 17) |
 | People's poses (17 points) | Apple Vision's body pose, Video Intelligence's person detection | `hwnpu-image pose` | RTMO-s | ◎ | ○ | CPU |
-| Objects (boxes and labels) | Cloud Vision object localization, Rekognition DetectLabels, Azure object detection | `hwnpu-image detect` | RTMDet-tiny / s / m | ◎ | ○ | CPU |
+| Objects (boxes and labels) | Cloud Vision object localization, Rekognition DetectLabels, Azure object detection | `hwnpu-image detect` | RTMDet-tiny / s / m | ◎ | ○ | ◎ m (exported on the first run, docs/amd-npu-models.md 20); CPU for tiny and s |
 | Text (OCR) | Cloud Vision TEXT / DOCUMENT_TEXT_DETECTION, Textract, Azure Read, Apple Vision | `hwnpu-image ocr` | PP-OCRv6 small | ◎ | ○ | CPU |
 | Labels (zero-shot), image and text embeddings | Cloud Vision LABEL_DETECTION, Rekognition DetectLabels, Vertex's and Azure's multimodal embeddings, Apple Vision's classification and feature prints | `hwnpu-image label`, `hwnpu-image embed` | SigLIP 2 Base / Large | — | — | ◎ (docs/amd-npu-models.md 18) |
 | Pitch (F0) | (none) | `hwnpu-audio pitch` | SwiftF0 | ◎ | ○ | CPU |

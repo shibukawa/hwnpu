@@ -278,6 +278,10 @@ models:
     kind: detect
     from: hf:bukuroo/RTMDet-ONNX@aa91dbccc283db36b2c250a1d91ba9518db553da
     sha256: {rtmdet-tiny-coco.onnx: f25bab7abb4ccfba4f785b90e8bc1bf1dec432e8878a9ecef9a79e3f6f9a62a5}
+    # AMD's NPU (tools/amd/iron_onnxcnn.py) holds RTMDet-m's objects, but tiny's and s's BN-folded
+    # weights and biases cancel to outputs 50 times smaller, past bf16's precision: their scores
+    # moved by up to 0.2 and objects were lost (docs/amd-npu-models.md 20). The CPU there
+    device: {amd: cpu}
     machine: 8
     # M1: a footprint of 56 MB and 11 MB on the Neural Engine; 7 ms a picture
     memory: 0.07
@@ -296,9 +300,13 @@ models:
     like: RTMDet-tiny
     tag: m
     sha256: {rtmdet-m-coco.onnx: 07921f4ee8c477b00abfce3c3bfff53bbc528c41abfa0193f981afbafcff95d4}
+    # AMD's NPU: exported with IRON on the first run (~/models/rtmdet-m.amd-npu2), 0.33 s and 1.9 J
+    # a picture where the CPU (ONNX Runtime, 1 thread, balanced) takes 0.54 s and 8 to 11 J
+    device: {amd: npu}
     machine: 16
-    # M1: 141 MB and 56 MB on the Neural Engine; 18 ms a picture
-    memory: 0.2
+    # M1: 141 MB and 56 MB on the Neural Engine; 18 ms a picture. AMD: 565 MiB on the NPU, 98 MiB
+    # the process
+    memory: {amd: 0.7, apple: 0.2}
     bytes: 1.1e8
     about: "RTMDet-m: the objects in an image, boxes and COCO's 80 labels (49.1 box AP); 24.7M parameters, images fit into 640x640"
   # hwnpu-image ocr: PaddleOCR's PP-OCRv6 (Apache-2.0), the ONNX files PaddlePaddle publishes: the

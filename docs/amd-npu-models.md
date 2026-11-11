@@ -1038,3 +1038,49 @@ python tools/amd/iron_qwenimage.py ~/models/Qwen-Image-2.1-Turbo ~/models/qwen-i
 hwnpu-image generate -m qwen-image "A red fox sitting in a snowy forest at dawn, soft light"
 ~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/ref_qwenimage21.py ~/models/Qwen-Image-2.1-Turbo OUT --size 512   # 参照
 ```
+## 20. ONNX の CNN を IRON のグラフに: RTMDet (`tools/amd/iron_onnxcnn.py`、2026-11-11)
+
+ONNX の畳み込みのネットワーク (RTMDet と RTMO の CSPNeXt) を読み、IRON のグラフ 1 つにする汎用の変換器。`hwnpu-image detect` は AMD の機械で、書き出し (`~/models/NAME.amd-npu2`) がなければ初回に IRON で作り (`chat.RunIRON`、hwnpu-chat の `PrepareAMD` と同じ仕組み)、NPU で動かす。IRON がなければ CPU (19 節)。
+
+### 20.1 形
+
+- テンソルはどれも、P = 2 画素の 0 で囲んだチャネル後置きの格子 (`G`: 行 Wp 画素、画素 (y, x) は band + y Wp + P + x、チャネルは 64 の倍数に)。最後の 2 チャネルは「1 のチャネル」(画像の中で 16、パッドで 0)。畳み込みのバイアスはここに乗り、SiLU は行列積の後段 (Epilogue.SILU) で計算するので、畳み込み 1 つが行列積 1 回になる
+- 1 × 1: 格子の全部の行に行列積 1 回 (入力のパッドは 0 なので、出力のパッドも SiLU(0) = 0)
+- k × k、ストライド 1: 格子をそのまま読む行列積 (`iron_gridgemm.GridGEMM`、k C_p ≤ 512) か im2col の写し (行ごとに k 回) と行列積、そのあと内側を新しい格子に写す。深さ方向はブロック対角の重みで同じく
+- ストライド 2: im2col の写し 3 回、行列積、半分の大きさの格子への写し
+- 足し算は格子の行どうし (パッドは 0)、連結は各入力のチャネルと 1 のチャネルの写し
+- チャネル注意 (GlobalAveragePool、1 × 1、HardSigmoid、Mul): 1 の行との行列積で和を取り、GEMV (1/(H W) と HardSigmoid の係数を入れた fc)、[0, 1] の clamp、行ごとの掛け算。1 のチャネルの係数は bf16 で切り上げ、clamp でちょうど 1 にする
+- max pool (SPPF の 5、9、13): 倍々 (2、4、8) の窓の最大を組み合わせる。max(a, b) = b + ReLU(a − b)。パッドは −1 (SiLU の最小 −0.278 より下)
+- 2 倍の拡大 (最近傍): 4 つの位相の写し
+- 箱の頭の exp とストライドはホスト (`detect.NPUOutputs` が ONNX から求め、書き出しの `heads.json` に残す)
+- 格子の状態は、値を最後に読んだあと同じ形の次の格子に回す (固定されるメモリ 1451 → 565 MiB)
+
+### 20.2 見つけて直したこと
+
+- **1 のチャネルの値のずれ**: silu(z) = 1 になる z を重みにすると、行列積の後段の SiLU と bf16 の丸めで値が層ごとに 1 ulp 落ち (0.996、0.988、…、0.918)、それに合わせたバイアスの重みが狂って、stage 2 の終わりで cos 0.904 になった。値を 16 にすると、silu(16) は bf16 で 16 で、0.4 % 以内のずれは丸めで 16 に戻るので、層を重ねても保たれる (足し算の後の 32 や 48 も次の層で 16)
+- **max pool の囲み**: −inf の代わりの −30000 では、b + ReLU(a − b) の a − b が bf16 で 128 刻みになり、右端と下端の画素が壊れた。−1 に
+- **深さ方向の bfp16**: 出力がそのチャネルだけを読むので、8 チャネルが指数を共有すると小さいチャネルの桁が落ちる。チャネルを大きさの順に並べ替えた (重みの入れ替えだけ。校正の画像の有無で結果は変わらなかった)。HIGH (bf16) の深さ方向は 1 つ 300 ms と遅い
+- **バイアスの bf16**: RTMDet-tiny と s は、BN を畳み込んだ重みとバイアスが大きく (バイアス最大 40)、出力は和の 1/50 ほどに打ち消し合う。バイアスを bf16 に丸めるだけで 1 × 1 の出力の cos が 0.9991。バイアスを上位と下位の 2 つの bf16 に分け、2 本の 1 のチャネルに乗せた (0.99945)
+- 行列積の後段の SiLU は AIE2P の vtanh で計算するが、表を引く SiLU の演算に替えても精度は変わらなかった
+
+### 20.3 結果 (Ryzen AI 9 365。時間は power-saver、電力は balanced)
+
+| | NPU と IRON の参照 (頭 6 つの cos) | 検出 (ONNX Runtime と、猫 5 つ、人 2 つ) | NPU の 1 枚 | CPU の 1 枚 (ONNX Runtime、1 スレッド) |
+|---|---|---|---|---|
+| RTMDet-m | 0.99976〜0.99999 | 同じ物、スコアの差 0.013 以内、枠の差 1.3〜7.6 px | 0.33 秒 (511 演算、13 コマンド) | 1.43 秒 (power-saver)、0.54 秒 (balanced) |
+| RTMDet-tiny (MEDIUM) | 0.995〜0.9997 | スコアの差 0.2 まで | 0.14 秒 | 0.21 秒 |
+| RTMDet-tiny (HIGH) | 0.997〜0.9998 | スコアの差 0.03 以内 | 0.30 秒 | 0.21 秒 |
+| RTMDet-s | 0.977〜0.999 (IRON の参照と float32 でも 0.996) | 物が消える | | |
+
+- RTMDet-m は models.yaml で AMD の NPU (`device: {amd: npu}`)、tiny と s は CPU (`device: {amd: cpu}`)。tiny と s を NPU に載せるには、重みも 2 つの bf16 に分ける (行列積が 2 回) 必要がある
+- RTMDet-m のメモリ: NPU 565 MiB、プロセス 98 MiB。書き出し 177 MB、IRON のキャッシュがなければ数分 (あれば 20 秒)
+- 電力 (balanced: BIOS も Ubuntu も、CPU は最大 5.09 GHz。パッケージ電力 PPT から、各実行の前に 30 秒冷まして 8 秒測ったアイドルを引く。1 回と多数回の差で 1 枚あたり。2 回測った):
+
+| RTMDet-m、1 枚 | 時間 | アイドルからの増加 | エネルギー |
+|---|---|---|---|
+| NPU | 0.325 秒 | 5.7 W | **1.86 J** (1.855、1.865) |
+| CPU、ONNX Runtime、1 スレッド | 0.54 秒 | 15〜20 W | 8.2〜10.7 J |
+| CPU、hwnpu の CPU 実行器、1 スレッド | 1.0 秒 | 16 W | 15.9〜16.6 J |
+
+  NPU は ONNX Runtime より 1.65 倍速く、エネルギーは 4.4〜5.8 分の 1。balanced では CPU の 1 コアが 5 GHz まで上がって速くなる代わりに電力が大きい。power-saver (CPU 2.0 GHz) では ONNX Runtime が 1.32〜1.43 秒だった。その電力は、別のセッションの処理と重なって測れていない
+- RTMO は切り口が頭の後の復号 (MatMul、Gemm、LayerNorm 相当、Erf、Cos、Sin) まであるので、まだ載らない。頭の畳み込みで切ってホストで続けるか、演算を足す
