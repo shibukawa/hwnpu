@@ -3990,6 +3990,10 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
   - 7.58 GiB の lut8 でも 2 回目の読み込みは 10 秒で、コンパイルのキャッシュに残った (ほかのプロセスが Neural Engine を使っていない間)。16.41 の「約 4 GiB」は、M1 のこの形には当てはまらなかった。lut4 を読んだ後の lut8 は 25 秒 (一部が外れた)
   - 遅さは重みの量どおり: lut8 と lut4 で 2 倍。M1 で 2.8 GiB を超えると全部の呼び出しが遅くなる (16.109) ので、M1 では lut4 でも実用にならない。M2〜M4 は限度がない (PROBE.md) ので、lut4 の 3.77 GiB を 63 GB/s で読めば 1 トークン約 65 ms (15 トークン/秒) の見込み。未計測
   - プロセスの footprint の最大は lut8 で 3.3 GB、lut4 で 4.1 GB (読み込みの間)。変換を含む初回は 3.4 GB で、チェックポイント (17 GB) をメモリに読み切らない (`safetensors` はテンソルごとに読む)
+- **M2** (MacBook Air M2 16 GB、lut4、2026-11-11。M1 と M3 も 16 GB): 変換は 1 部分 7〜8 秒、初回のコンパイル 1 分 09 秒。2 回目以降の読み込みは **35〜41 秒**で、M1 (3〜5 秒) と違いコンパイルのキャッシュに一部しか残らない。読み込み直後に Neural Engine が持つのは 2.10 GiB と 1.20 GiB で、それぞれ part3〜5 と part4〜5 の大きさにちょうど合う (残る部分の数が回ごとに変わる)。生成は **9.4〜10.1 トークン/秒** (M1 の 12 倍)、プロンプト 25 トークンは 0.8〜1.5 秒
+  - `HWNPU_PROFILE=1` (q=8、12 回の平均、1 回 195.6 ms): part0 50.9 ms (0.79 GiB、16 GiB/s)、part1 48.0、part2 49.8 (0.89 GiB、18〜19 GiB/s)、part3 26.1 (0.89 GiB、34 GiB/s)、part4 7.0 (0.31 GiB、44 GiB/s)、注意 4 つで 13.8 ms。遅い 3 つはこの起動でコンパイルし直した部分で、最初の呼び出しで Neural Engine に載る時間 (3 つで 0.9 秒前後) が平均に入ったとみている。全部が part3 並みなら 1 回約 125 ms。2 文目の速さで確かめていない
+  - キャッシュに残る量はメモリ (どれも 16 GB) でなくチップか OS で違う: M1 は lut8 の 7.58 GiB まで残り、M2 は 1.2〜2.1 GiB、M3 は約 4 GiB (16.39)
+  - 20 文 (lut4 と lut8): 13/20 が同じで M1 と同じ数。違う 7 文も言い換えだけ (「できないんです」と「できません」、"rescheduled for" と "moved to"、"I will" と "I'll" など)。M2 でも lut4 で訳は保たれる
 - **形式** (2B が崩れた lut4 を試したのは、大きいモデルほど丸めに強いと見たため): 16.98 と同じ形の 20 文 (英 → 日 10、日 → 英 10、1 文ごとに `/reset`、`-temp 0`) を、lut8 を基準に比べた (fp16 は 15 GiB で Neural Engine に載らない。2B の lut8 は fp16 と次のトークンが 98 % 同じ)
   - lut6: 18/20 が lut8 と一字一句同じ。違う 2 文は「お持ちください」→「持って行ってください」と助詞 1 つ
   - lut4: 13/20 が同じ。違う 7 文もすべて正しい言い換え (「休館です」→「休館しています」、"moved to" → "rescheduled for"、"I'll" → "I will" など)
@@ -3999,5 +4003,5 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
 - 採ったもの: **8B の既定を lut4** に (`plamo3.Config.Format`: 隠れ層 4096 以上で lut4、それより小さい 2B と 0.8B は lut8 のまま)。プログラムの名前には形式が入るので、2B と 0.8B の変換はそのまま使われる。Intel は PLaMo 3 を大きさによらず int8 に (`Arch.IntelFormat`。lut4 の読み替えの int4 は 2B で KL 0.72)
 - models.yaml: `machine: 24` (`-m translate` と `-m plamo3translate` は 24 GB から 8B、16 GB は 2B のまま。M1 の 16 GB で選ばれると遅すぎるため)、メモリ Apple 8.2 GB (3.81 GiB + 4.1 GB)、AMD 6.5 GB (q4 の重みからの見積もり)、`amd_export: plamo3 --max-seq-len 8192 --q4`
 - Intel: int8 の 7.6 GiB は、Core Ultra 5 135U の NPU が Anima で `OUT_OF_HOST_MEMORY` になった約 4.6 GB (16.143) を超えるので、載らない見込み。さらに Intel では hwnpu-chat は 2 本を持つ (`onePrograms`) ので、2 倍になる。models.yaml の `device` には NPU から外す値がないので、説明にだけ書いた
-- 確かめていないこと ([handoff-plamo3-8b.md](handoff-plamo3-8b.md)): M2〜M4 の速さとコンパイルのキャッシュ、AMD の書き出し (ピークのメモリ、コマンドの 2 秒、デバイスのヒープ)、HF の fp32 との照合 (KL)、GPTQ の符号 (8B の fp32 の校正は約 34 GB で 16 GB の Mac ではできない)、長い文脈
+- 確かめていないこと ([handoff-plamo3-8b.md](handoff-plamo3-8b.md)): M3 と M4 の速さとコンパイルのキャッシュ、M2 の 2 文目以降の速さと lut8 の速さ、AMD の書き出し (ピークのメモリ、コマンドの 2 秒、デバイスのヒープ)、HF の fp32 との照合 (KL)、GPTQ の符号 (8B の fp32 の校正は約 34 GB で 16 GB の Mac ではできない)、長い文脈
 - 部品としての値 (16.94): 入力と出力は文 (PLaMo のトークナイザー)、常駐は 3.81 GiB (ANE、lut4)、2 回目の読み込み 3〜5 秒、KV は会話とともに 1 トークン 9 KiB (hwnpu-chat の表示、262144 で 2.25 GiB) と、窓 2048 のリング 28 層
