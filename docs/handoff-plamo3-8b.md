@@ -60,9 +60,9 @@ diff <(grep '^> .' /tmp/out-lut4.txt) <(grep '^> .' /tmp/out-lut8.txt)
 - M1 の結果: 13/20 が同じ、違う 7 文は言い換え。違う文の数が大きく増えたり、誤訳 (数字、否定、固有名詞の取り違え) が出たら、design.md に書いて lut6 を試す
 - lut8 の変換は 7.6 GB 増える。比べたら `~/Library/Caches/hwnpu/models/plamo-3-translate-8b/plamo3-r1-lut8-*` を消す
 
-### 2.3 16 GB の M2 以降で 8B を勧めるか
+### 2.3 16 GB の M2 以降で 8B を勧めるか — 済み
 
-M2 以降で 15 トークン/秒前後が出て、メモリ (Neural Engine 3.8 GiB + プロセス 4 GB 前後) がほかのアプリと並べて足りるなら、`machine` を 16 にすることを考える。ただし M1 の 16 GB でも `-m translate` が 8B を選ぶようになる (チップで選ぶ仕組みはない) ので、その対策と一緒に決める。
+M2 (9〜10 トークン/秒) と M3 (10〜11、読み込み 4 秒) の結果で、`machine: 16` にした。M1 は models.yaml の `not_on: [M1]` で外し、2B を選ぶ (16.155 の「チップ」)。M4 で測ったら 16.155 に足す。
 
 ## 3. AMD (Ryzen AI、IRON の環境) — 1〜2 時間
 

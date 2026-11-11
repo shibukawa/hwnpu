@@ -115,7 +115,7 @@ categories:
 	if p, _, _, _ := Pick("translate", 8); p.Name != "plamo-3-translate-2b" {
 		t.Errorf("translate on 8 GB: %s", p.Name)
 	}
-	if p, _, _, _ := Pick("translate", 16); p.Name != "plamo-3-translate-2b" {
+	if p, _, _, _ := Pick("translate", 16); p.Name != "plamo-3-translate-8b" {
 		t.Errorf("translate on 16 GB: %s", p.Name)
 	}
 	// the 24 GB column dropped: 16 GB's pick from there up

@@ -2936,6 +2936,7 @@ Qwen3.6-35B-A3B の 1 トークン (q4nx、今の部品のまま) の見積も�
 - 訳文で比べる (new-model-checklist 9 節。英 → 日 10 文と日 → 英 10 文、1 文ごとに `/reset`、`-temp 0`): 0.8B の lut8 は 0.8B の fp16 と **20/20** 一字一句同じ。lut6 は 16/20 (違う 4 文は「予定が入っている」→「予定がある」などの正しい言い換え)。0.8B の lut8 と 2B の lut8 では 8/20 が同じで、残り 12 文もどれも正しい訳の言い換え (「開館し」→「オープンし」、"take an umbrella with you" → "bring an umbrella" など)。既定は lut8 のまま
 - MODEL.md: 8 GB の列の翻訳を 0.8B に、16 GB 以上は 2B と並べた
 - 確かめていないこと: Hugging Face の fp32 との照合 (`hwnpu-check`。この Mac に torch がない。構造は 2B と同じで、2B は照合済み)、AMD (`iron_export_lm.py plamo3`) と Intel、GPTQ の符号、長い文脈の passkey
+- **チップ** (M2 と M3 の結果を受けて): 16 GB で 8B を勧めると M1 の 16 GB でも選ばれて 0.8 トークン/秒になるので、models.yaml に `not_on` (チップの一覧: M1〜M5。M1 Pro などは M1) を足した。ファミリーと用途はそのチップではそのモデルを選ばず、ファミリーの次 (8B なら 2B) を選ぶ。用途の列が外されたモデルのときも、同じファミリーのその列までで一番大きいもの (`notOnHere`)。名前と `FAMILY:TAG` (`plamo3translate:8b`) は今までどおり動かす。チップは `machdep.cpu.brand_string` (`chipName`)。8B は `machine: 16`、`not_on: [M1]`、用途 translate の 16 GB の列を 8B に (24 GB の列はなくした)。M2 は起動のたびに 35〜41 秒かかるが、生成は M3 と同じなので外していない (`not_on: [M1, M2]` で外せる)
 - 部品としての値 (16.94): 入力と出力は文 (PLaMo のトークナイザー、53 言語)、常駐は 1.38 GiB (ANE) で 2 回目の読み込み 2.6 秒、ストリーミングで出せる、最初のトークンまで 33 トークンのプロンプトで 0.1 秒
 
 ### 16.99 Qwen3.5-0.8B と 2B (`Qwen3.5-0.8B`、`Qwen3.5-2B`)、Qwen3.5 と PLaMo 3 のロジットを最後の行だけ (`LastRow`)、小さいモデルは既定で考えない (`Model.NoThink`) — 2026-11-07
@@ -4003,7 +4004,7 @@ FLUX.1 [schnell] (Apache-2.0) は Hugging Face のページで利用条件に同
   - 2B の lut4 は CPU で KL 1.91 nats (argmax 15/31、16.71) で使えなかった。8B の lut4 は訳を保つ。量子化の誤差が 4096 の幅で平均される分、2B (2560) より効きにくいと見ている (KL は測っていない: この Mac に torch がなく、8B の fp32 は 34 GB)
   - 8B の lut8 と 0.8B の lut8 は 6/20 が同じで、8B のほうが的確 ("build time" を「製作時間」でなく「ビルド時間」、"rescheduled" を「再設定」でなく「延期」、"gently" を「さっくりと」でなく「優しく」)
 - 採ったもの: **8B の既定を lut4** に (`plamo3.Config.Format`: 隠れ層 4096 以上で lut4、それより小さい 2B と 0.8B は lut8 のまま)。プログラムの名前には形式が入るので、2B と 0.8B の変換はそのまま使われる。Intel は PLaMo 3 の 2B 以下を int8 に (`Arch.IntelFormat`。lut4 の読み替えの int4 は 2B で KL 0.72)。8B は下の Intel の項
-- models.yaml: `machine: 24` (`-m translate` と `-m plamo3translate` は 24 GB から 8B、16 GB は 2B のまま。M1 の 16 GB で選ばれると遅すぎるため)、メモリ Apple 8.2 GB (3.81 GiB + 4.1 GB)、AMD 6.5 GB (q4 の重みからの見積もり)、`amd_export: plamo3 --max-seq-len 8192 --q4`
+- models.yaml: `machine: 16` と `not_on: [M1]` (下の「チップ」)、メモリ Apple 8.2 GB (3.81 GiB + 4.1 GB)、AMD 6.5 GB (q4 の重みからの見積もり)、`amd_export: plamo3 --max-seq-len 8192 --q4`
 - Intel: int8 の 7.6 GiB は、Core Ultra 5 135U の NPU が Anima で `OUT_OF_HOST_MEMORY` になった約 4.6 GB (16.143) を超えるので、載らない見込み。さらに Intel では hwnpu-chat は 2 本を持つ (`onePrograms`) ので、2 倍になる
   - 入らないよりはよいので、**8B の Intel の既定を行ごとの int4** にした (`llm.IntelFormatter` を足し、`plamo3.Config.IntelFormat` が隠れ層 4096 以上で int4。2B と 0.8B は `Arch.IntelFormat` の int8 のまま)。models.yaml に `prefill: off` を書き、Intel でも 1 本 (3.8 GiB) にする。Neural Engine はもともと 1 本 (`onePrograms`) なので変わらない (M1 で同じ lut4 のプログラムを 4.3 秒で読み、同じ訳)
   - 行ごとの int4 は Meteor Lake で int8 より速い (LFM3-1.7B で 37.9 ms と 68.5 ms、16.143)。精度は測っていない: 2B の int4 は KL 0.72 で使えなかったが、8B は 2B をもっと崩す lut4 (KL 1.91) でも訳を保った。後で 20 文 (handoff の 4 節) で確かめる

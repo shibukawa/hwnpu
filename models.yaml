@@ -39,6 +39,9 @@
 #                 Without an export here (~/models/NAME.amd-npu2, with -q4 or -q6 for --q4 and
 #                 --mlp q6), the first run downloads the checkpoint and runs it in IRON's
 #                 environment (HWNPU_IRON_ENV, INSTALL_AMD.md); a model without it has no form there
+#   not_on        chips (M1, M2, M3, M4, M5; an M1 Pro is an M1) a family or a use does not pick
+#                 the model on: the family's next is picked there (the 2B for PLaMo 3 Translate
+#                 8B on an M1); its name and FAMILY:TAG still run it
 #   like          another model whose fields this one takes, except its tag
 #   remove        true: drop the model
 # categories: NAME: a use (-m translate). picks are MODEL.md's columns: the model a machine of
@@ -184,8 +187,9 @@ models:
   plamo-3-translate-8b:
     # the 2B's structure in 8B (hidden 4096, 32 layers, 4 key and value heads). Apple: 4 bit
     # tables (the architecture's Format for the 8B), 3.81 GiB on the Neural Engine and the
-    # process's 4.1 GB at its peak (M1), one program; over the 2.8 GiB an M1 runs at full speed
-    # (0.8 tokens/s there; an M2 9 to 10). AMD: q4 (the MLP and output matrix q4nx, attention
+    # process's 4.1 GB at its peak (M1), one program. Not picked on an M1, over the 2.8 GiB its
+    # Neural Engine runs at full speed (0.8 tokens/s; the 2B instead); an M2 9 to 10 tokens/s
+    # (35 to 41 s every start, its compile cache keeping part), an M3 10 to 11 (4 s). AMD: q4 (the MLP and output matrix q4nx, attention
     # q8), estimated from the weights, not run. Intel: int4 by rows (Config.IntelFormat) in one
     # program (prefill off; the Neural Engine has one anyway), 3.8 GiB under the about 4.6 GB a
     # Core Ultra 5 135U's NPU held, where int8's 7.6 would not fit; not run, its precision not
@@ -194,13 +198,14 @@ models:
     tag: 8b
     kind: chat
     from: hf:pfnet/plamo-3-translate-8b
-    machine: 24
+    machine: 16
+    not_on: [M1]
     memory: {amd: 6.5, apple: 8.2}
     prefill: off
     bytes: 17.06e9
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
-    about: "Preferred Networks' PLaMo 3 Translate 8B: the 2B's translation from a model 3.5 times as large, in 4 bit tables (as good as 8 bit ones on it); slow on an M1 (its 3.8 GiB is over what an M1's Neural Engine runs at full speed); on Intel's NPU in int4, its precision not checked yet"
+    about: "Preferred Networks' PLaMo 3 Translate 8B: the 2B's translation from a model 3.5 times as large, in 4 bit tables (as good as 8 bit ones on it); 10 to 11 tokens/s on an M3; not picked on an M1 (its 3.8 GiB is over what an M1's Neural Engine runs at full speed: the 2B there); on Intel's NPU in int4, its precision not checked yet"
   plamo-3-translate-2b:
     family: plamo3translate
     tag: 2b
@@ -607,8 +612,7 @@ categories:
     about: translation
     picks:
       - {machine: 8, model: plamo-3-translate-0.8b}
-      - {machine: 16, model: plamo-3-translate-2b}
-      - {machine: 24, model: plamo-3-translate-8b}
+      - {machine: 16, model: plamo-3-translate-8b}
   embedding:
     aliases: [embed, search]
     about: sentence embeddings, search

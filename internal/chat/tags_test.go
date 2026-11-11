@@ -13,13 +13,13 @@ func TestPick(t *testing.T) {
 		machine int
 		want    string
 	}{
-		{"plamo3translate", 16, "plamo-3-translate-2b"},
+		{"plamo3translate", 16, "plamo-3-translate-8b"}, // not on an M1 (TestPickNotOn)
 		{"plamo3translate", 8, "plamo-3-translate-0.8b"},
 		{"plamo3translate", 4, "plamo-3-translate-0.8b"},
 		{"PLaMo-3-Translate", 4, "plamo-3-translate-0.8b"}, // folded: case, '-'
 		{"plamo3translate:2B", 4, "plamo-3-translate-2b"},  // a tag wins over the memory
 		{"plamo3translate:0.8b", 64, "plamo-3-translate-0.8b"},
-		{"translate", 16, "plamo-3-translate-2b"},
+		{"translate", 16, "plamo-3-translate-8b"},
 		{"translate:0.8b", 16, "plamo-3-translate-0.8b"},
 		{"translation", 4, "plamo-3-translate-0.8b"},
 		{"chat", 8, "LFM3-1.7B"},
@@ -39,7 +39,7 @@ func TestPick(t *testing.T) {
 		{"qwen35:4b", 16, "Qwen3.5-4B"},
 		// memory tags: MODEL.md's columns, whatever this machine has
 		{"plamo3translate:8g", 64, "plamo-3-translate-0.8b"},
-		{"plamo3translate:16g", 8, "plamo-3-translate-2b"},
+		{"plamo3translate:16g", 8, "plamo-3-translate-8b"},
 		{"plamo3translate:24g", 8, "plamo-3-translate-8b"},
 		{"plamo3translate:8b", 8, "plamo-3-translate-8b"},
 		{"plamo3translate:4g", 64, "plamo-3-translate-0.8b"},
@@ -101,12 +101,12 @@ func TestMachineMemory(t *testing.T) {
 
 func TestRouteByFamily(t *testing.T) {
 	t.Setenv(MemoryEnv, "16")
-	names := []string{"LFM3-1.7B", "plamo-3-translate-2b"}
+	names := []string{"LFM3-1.7B", "plamo-3-translate-8b"}
 	if i, _, msg := route("translate", names, nil, KindChat, ""); i != 1 {
 		t.Errorf("translate: %d %s", i, msg)
 	}
-	if i, _, msg := route("plamo3translate:2b", names, nil, KindChat, ""); i != 1 {
-		t.Errorf("plamo3translate:2b: %d %s", i, msg)
+	if i, _, msg := route("plamo3translate:8b", names, nil, KindChat, ""); i != 1 {
+		t.Errorf("plamo3translate:8b: %d %s", i, msg)
 	}
 	if i, _, _ := route("plamo3translate:0.8b", names, nil, KindChat, ""); i != -1 {
 		t.Errorf("a tag not loaded routed to %d", i)
