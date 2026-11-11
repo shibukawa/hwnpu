@@ -436,7 +436,7 @@ The gist of section 8 of [improvements.md](improvements.md): padding small model
 - Qwen3.5-4B's lut6 (2.97 GiB) on the M1 is just over its 2.8 GiB; 0.1–0.2 GiB less (the output layer at lut4, say) would let it run at full speed (16.109)
 - Apple's GPTQ codes: hwnpu-chat takes them with `--codes` and `--format-for`, not by default (how to hand out the codes is open). E4B does not fit a 16 GB Mac to calibrate
 
-- Anima-Aesthetic's speed (3 min 19 s an image at 1024², 16.154): the rest of 7.1's untried items (the cross-attention's keys and values out of the loop, merging the VAE's stages, P·V in bfp16 by default); whether the power profile changes the NPU's speed (this machine has measured under power-saver)
+- Anima-Aesthetic's speed (3 min 19 s an image at 1024², 16.154): the rest of 7.1's untried items (the cross-attention's keys and values out of the loop, merging the VAE's stages, P·V in bfp16 by default) (the power profile barely changes the NPU's speed: balanced is 2–3 % faster, 16.154)
 - Preparing hwnpu-image's models (Anima, Sana, DA3, MoGe-2, YuNet) on AMD by themselves (11.1, item 3: download the checkpoint and run the IRON exporter)
 
 When results come in, update the tables in 5.3 and 5.4 and this section.
