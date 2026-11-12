@@ -283,6 +283,7 @@ The trade with speed follows the weight bytes (ANE lut4 / lut6 / lut8: 1.81 / 2.
 | Generation tokens/s, prompts, startup (the second) | `hwnpu-dev generate`, `hwnpu-chat`'s log |
 | Comparing formats | `hwnpu-dev formats` |
 | AMD GEMV, power | `tools/amd/gemvbench`, `hwnpu-dev powerbench` |
+| **One run's energy by phase** (AMD) | `HWNPU_ENERGY=10 hwnpu-image ...` (any of hwnpu-image, chat, audio): the idle power first, then the package's joules while converting, loading and compiling and while running, each also above idle, under the last line's times. Reading a group's weights in turn (`SwapVariants`) counts as loading (16.168) |
 
 Things to bring in next (they helped every model):
 

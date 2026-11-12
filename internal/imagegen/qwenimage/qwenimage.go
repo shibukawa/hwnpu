@@ -296,7 +296,6 @@ func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, er
 		p.logf("the text in %.2f s", time.Since(t0).Seconds())
 		return conds, nil
 	}
-	tLoad := time.Now()
 	rows, err := p.text(ctx, ids)
 	if err != nil {
 		return nil, err
@@ -309,7 +308,7 @@ func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, er
 	for k := range prompts {
 		p.logf("text: %d tokens (%d rows for the DiT)", len(ids[k]), conds[k].Rows)
 	}
-	p.logf("Qwen3-VL-8B %.2f s (loading %.2f s), the DiT's text pass %.2f s", t1.Sub(t0).Seconds(), tLoad.Sub(t0).Seconds(), time.Since(t1).Seconds())
+	p.logf("the text in %.2f s: Qwen3-VL-8B %.2f s, the DiT's text pass %.2f s", time.Since(t0).Seconds(), t1.Sub(t0).Seconds(), time.Since(t1).Seconds())
 	return conds, nil
 }
 

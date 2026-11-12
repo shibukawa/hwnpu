@@ -54,6 +54,7 @@ func (c *GenerateCmd) qwenImage(ctx context.Context, model string, outs []string
 	p.Logf = logf
 	p.ResidentDiT = c.Resident
 	logf("loaded %s (%dx%d) in %s", filepath.Base(model), p.Dit.Width, p.Dit.Height, console.Duration(time.Since(t0)))
+	console.Running()
 	sig := p.Sigmas(c.Steps)
 	steps := len(sig) - 1
 	// Turbo: its eight sigmas, no guidance. The base checkpoint: 40 steps, guidance only when

@@ -289,7 +289,7 @@ func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, er
 		}
 		conds[k] = Cond{ctx: out, Keys: keys[k]}
 	}
-	p.logf("T5-XXL %.2f s, the projection %.2f s", t1.Sub(t0).Seconds(), time.Since(t1).Seconds())
+	p.logf("the text in %.2f s: T5-XXL %.2f s, the projection %.2f s", time.Since(t0).Seconds(), t1.Sub(t0).Seconds(), time.Since(t1).Seconds())
 	return conds, nil
 }
 

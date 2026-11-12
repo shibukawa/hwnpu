@@ -226,6 +226,9 @@ func (g *Graph) Use(i int) error {
 	if i == g.cur {
 		return nil
 	}
+	var read int64
+	done := console.Reading() // preparing, in the times and HWNPU_ENERGY's energy
+	defer func() { done(read) }()
 	for kind, b := range g.Manifest.Banks {
 		name := b.Image
 		if s, ok := g.Manifest.Variants[i][kind]; ok {
@@ -244,6 +247,7 @@ func (g *Graph) Use(i int) error {
 			g.cur = -1
 			return err
 		}
+		read += int64(n)
 	}
 	g.cur = i
 	return nil

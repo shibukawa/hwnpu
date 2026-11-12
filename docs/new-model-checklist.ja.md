@@ -283,6 +283,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 | 生成の tokens/s、プロンプト、起動 (2 回目) | `hwnpu-dev generate`、`hwnpu-chat` のログ |
 | 形式ごとの比較 | `hwnpu-dev formats` |
 | AMD の GEMV、電力 | `tools/amd/gemvbench`、`hwnpu-dev powerbench` |
+| **1 回の実行の電力量を段階ごとに** (AMD) | `HWNPU_ENERGY=10 hwnpu-image ...` (hwnpu-image、chat、audio のどれでも): 先に待機電力を測り、最後の行の時間の下に、変換・読み込み・コンパイルの間と実行の間のパッケージの電力量と、それぞれ待機を引いた値を出す。組の重みを順に読む (`SwapVariants`) のは読み込みに数える (16.168) |
 
 続けて入れるもの (どのモデルにも効いた):
 

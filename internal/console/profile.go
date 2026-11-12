@@ -92,6 +92,11 @@ func WriteProfile(w io.Writer) {
 	case load > 0:
 		fmt.Fprintf(w, "profile: programs loaded in %s (outermost loads)\n", Duration(load))
 	}
+	reads.mu.Lock()
+	if reads.n > 0 {
+		fmt.Fprintf(w, "profile: weights read again %d times, %s in %s (groups read into one bank in turn)\n", reads.n, gb(reads.bytes), Duration(reads.d))
+	}
+	reads.mu.Unlock()
 	for _, f := range writers {
 		f(w)
 	}
