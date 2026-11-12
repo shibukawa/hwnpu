@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ import (
 // the most likely first.
 type LabelCmd struct {
 	Pictures   []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
-	Model      string   `short:"m" placeholder:"NAME|EXPORT" default:"label" help:"The model: a name, a family or a use of models.yaml (label: siglip2), run from ~/models/NAME.amd-npu2, or an export's directory (tools/amd/iron_siglip2.py)."`
+	Model      string   `short:"m" placeholder:"NAME|EXPORT" default:"label" help:"The model: a name, a family or a use of models.yaml (label: siglip2), run from NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models), or an export's directory (tools/amd/iron_siglip2.py)."`
 	Labels     []string `short:"l" placeholder:"LABEL" help:"The candidate labels (any language; separated by commas)."`
 	LabelsFile string   `type:"existingfile" placeholder:"FILE" help:"The candidate labels, one a line (# starts a comment)."`
 	Template   string   `default:"this is a photo of {}." help:"The sentence each label is put in, {} the label (\"{}\": the label alone)."`
@@ -275,9 +276,5 @@ func openSiglip(ctx context.Context, model string, logf func(string, ...any)) (*
 
 // siglipCache is where label embeddings are kept: hwnpu/siglip in the user cache directory.
 func siglipCache() string {
-	d, err := os.UserCacheDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(d, "hwnpu", "siglip")
+	return hcache.Sub("siglip")
 }

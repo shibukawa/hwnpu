@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"math"
 	"os"
@@ -52,11 +53,15 @@ type Output struct {
 	Band int    `json:"band"`
 }
 
-// Dir is where the export of a model of models.yaml is kept: ~/models/NAME.amd-npu2, NAME in
-// lower case (as hwnpu-chat's AMD exports).
+// Dir is where the export of a model of models.yaml is kept: NAME.amd-npu2 (NAME in lower case,
+// as hwnpu-chat's AMD exports) in entries/amd-xdna2 under cache.Root, or in ~/models where one
+// was made before (cache.ExportRoots); a new one goes to the first.
 func Dir(name string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "models", strings.ToLower(name)+".amd-npu2")
+	n := strings.ToLower(name) + ".amd-npu2"
+	if d := cache.FindExport(n, func(d string) bool { _, err := os.Stat(filepath.Join(d, "model.json")); return err == nil }); d != "" {
+		return d
+	}
+	return filepath.Join(cache.Entries(cache.AMDTarget), n)
 }
 
 // Read reads dir's model.json.

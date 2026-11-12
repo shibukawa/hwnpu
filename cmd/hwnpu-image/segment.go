@@ -78,7 +78,7 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 	var sm *segment.Model
 	fetchEnc := func() (string, error) { e, _, err := segment.Fetch(ctx, setup); return e, err }
 	have := func(dir string) error { _, err := os.Stat(filepath.Join(dir, "model.json")); return err }
-	if export := amdFirstRunExport(ctx, m, c.Device, false, logf, have, fetchEnc, func(python []string, model, dir string) error {
+	if export := amdFirstRunExport(ctx, m, c.Device, false, logf, have, "iron_efficientsam.py", segment.ExportVersion, fetchEnc, func(python []string, model, dir string) error {
 		return segment.ExportNPU(ctx, python, m.Name, model, dir, lw)
 	}); export != "" {
 		_, dec, err := segment.Fetch(ctx, setup)
