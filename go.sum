@@ -18,6 +18,8 @@ github.com/jfreymuth/pulse v0.1.3 h1:bc5TdxiB8E+2INnFjFWWgyfgXtz2IyNNNCX+Wt/ZD14
 github.com/jfreymuth/pulse v0.1.3/go.mod h1:cpYspI6YljhkUf1WLXLLDmeaaPFc3CnGLjDZf9dZ4no=
 github.com/shibukawa/tinygodriver v1.3.8 h1:FLB1iWJImSfyN4QfRZcL1l1IaInxZGMttnpKWElaMVk=
 github.com/shibukawa/tinygodriver v1.3.8/go.mod h1:wCcrdtPHO4kv68Jt8SgI/Zm4wuh9D6Qcokdc0kID/U4=
+github.com/shibukawa/tinygodriver v1.3.9 h1:K+3lNMkZlZy6PS+SqJkgLQ2aWlIP2DB/xAYxgQTm93o=
+github.com/shibukawa/tinygodriver v1.3.9/go.mod h1:wCcrdtPHO4kv68Jt8SgI/Zm4wuh9D6Qcokdc0kID/U4=
 golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
 golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 golang.org/x/text v0.43.0 h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc=

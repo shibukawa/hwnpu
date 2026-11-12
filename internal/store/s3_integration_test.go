@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -14,25 +15,31 @@ import (
 )
 
 // TestS3Server runs the S3 store against a real server (RustFS: docs/cache-sharing.md 7.2), when
-// HWNPU_S3_TEST_ENDPOINT names it (with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY); the bucket
-// hwnpu-test is made there if missing.
+// HWNPU_S3_TEST_ENDPOINT names it (with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY). The bucket
+// is HWNPU_S3_TEST_BUCKET, which must be there (Cloudflare R2: region auto), or hwnpu-test, made
+// if missing; the region is HWNPU_S3_TEST_REGION, else us-east-1.
 func TestS3Server(t *testing.T) {
 	ep := os.Getenv("HWNPU_S3_TEST_ENDPOINT")
 	if ep == "" {
 		t.Skip("HWNPU_S3_TEST_ENDPOINT is not set")
 	}
 	ctx := context.Background()
-	c, err := s3.New(s3.WithEndpoint(ep), s3.WithRegion("us-east-1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := c.CreateBucket(ctx, "hwnpu-test"); err != nil && !errors.Is(err, s3.ErrBucketExists) && !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") {
-		t.Fatal(err)
+	region := cmp.Or(os.Getenv("HWNPU_S3_TEST_REGION"), "us-east-1")
+	bucket := os.Getenv("HWNPU_S3_TEST_BUCKET")
+	if bucket == "" {
+		bucket = "hwnpu-test"
+		c, err := s3.New(s3.WithEndpoint(ep), s3.WithRegion(region))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.CreateBucket(ctx, bucket); err != nil && !errors.Is(err, s3.ErrBucketExists) && !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") {
+			t.Fatal(err)
+		}
 	}
 	old := partSize
 	partSize = 5 << 20 // S3's least part
 	t.Cleanup(func() { partSize = old })
-	st, err := OpenS3(S3Config{Name: "rustfs", Bucket: "hwnpu-test", Prefix: "it", Endpoint: ep})
+	st, err := OpenS3(S3Config{Name: "s3-test", Bucket: bucket, Prefix: "hwnpu-it/", Endpoint: ep, Region: region})
 	if err != nil {
 		t.Fatal(err)
 	}
