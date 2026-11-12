@@ -4297,3 +4297,23 @@ Intel の NPU に向けた変換 (OpenVINO IR、`internal/ovlower`) がない、
 - **Chroma の T5 を組に** (`iron_chroma_parts.py` の `T5Config.group` 4、`--t5-group`): 24 層を 4 層ずつ 6 組、1 つの ELF に組ごとのバンクの像、1 つのバンクに順に読む (SwapVariants、Qwen-Image の文の符号器と同じ)。どの組のグラフも残差と最後の RMS norm の 2 つを出し、ホストは残差を次の組に渡し、最後の組の norm を使う (norm も NPU のまま)。プロンプトと負のプロンプトは組ごとに続けて回す。IRON の参照は 1 つのグラフと同じ値 (float32 の transformers と 0.999754)、NPU の潜在は前の書き出しとビットまで同じ (2 つのプロンプト)。1024² のピーク (NPU の割り当てと RSS) 5.9 GB → **4643 MiB**、T5 は 7.5〜9.4 → 4.2〜5 秒 (512² と 1024²)。models.yaml の memory を 4.6 に。一組だけでなく組の切り替えまで確かめるため irongraph に `-swap` (組 0 を回してから `-variant` の組を読む)
 - **Chroma の書き出しの手順**: `hwnpu-image` が示す `python tools/amd/iron_chroma.py ROOT OUT` は DiT しか書き出さず、T5 と VAE と tokenizer.json は手で足していた。iron_chroma.py が DiT の後に iron_chroma_parts.py (t5、vae) を別のプロセスで回すようにした (`--parts`)。Chroma1 のリポジトリには tokenizer.json がない (spiece.model だけ) ので、spiece.model (protobuf の wire 形式を直に読む。IRON の環境に sentencepiece と transformers はない) から Anima の t5_tokenizer.json と同じ形を書く (`t5_tokenizer_json`)。生成したものは Anima のものとすべての項目が同じ
 - 途中で、この機械のメモリのビット反転がまた出た (16.155 の頃と同じ): Go のビルドキャッシュが壊れてリンカが落ち、Btrfs のチェックサムが 1 ビット違うと読めないファイルが出て、同じ起動中に書いた書き出しにチェックサムに引っかからない 1 ビットの違いがあった。再起動の後は scrub に誤りがなく、写しも同じ (ディスクでなくメモリ)。その起動で書いた書き出しは作り直した
+
+### 16.168 1 回の実行の電力量を段階ごとに (`HWNPU_ENERGY`)、組の重みの読み直しを準備に数える — 2026-11-12
+
+- **`HWNPU_ENERGY`** (値は待機を測る秒数、数でなければ 5): コマンドの最初に待機電力を測り、そのあと段階 (変換・読み込み・コンパイルと、実行) が変わるたびにパッケージの電力量を分ける。最後の行の時間 (`took ...`) の下に、各段階の電力量と、待機電力 × その段階の時間を引いた値を出す (`console.MeasureEnergy`、`energyLine`)。計は 50 ms ごとの台形の積分 (`power.Integrator`)、源は amdgpu の PPT (パッケージ全体: CPU、GPU、NPU。NPU だけのセンサーは Linux 7.0 の amdxdna にない)。待機を測る秒は時間に数えない。今は AMD の APU の Linux だけ (`power.PackagePower`)。hwnpu-image、hwnpu-chat、hwnpu-audio の main で呼ぶ
+- **組の重みの読み直しを準備に**: SwapVariants で 1 つのバンクに組を順に読む `iron.Graph.Use` は、時間と電力量で準備に数える (`console.Reading`)。プロファイルには 1 行ずつでなく回数、バイト、時間を 1 行で (`profile: weights read again N times, ...`)。グラフの読み込み (`console.Loading`) と同じく、実行の途中の読み込みも準備
+- Qwen-Image と Chroma のコマンドは `console.Running()` を呼んでいなかった (最後の `took ...` の行が出なかった)。ほかの画像のコマンドと同じく `loaded ...` の後に呼ぶ。文の符号器の行も `the text in X s: ...` にそろえた (Qwen-Image の AMD の `loading` は字句解析の時間で、いつも 0 だった)
+- 1024² の 1 枚 (狐のプロンプト、種 1、既定の設定、各回の前に 20 秒休み、待機 10 秒):
+
+| モデル | 時間 (準備 / 実行) | 電力量 (準備 / 実行) | 待機を引いた電力量 (準備 / 実行) | 組の読み直し |
+|---|---|---|---|---|
+| Anima-Turbo | 46 秒 (9.6 / 36) | 698 J (121 / 577) | 56 J / 329 J | 55 回 30.5 GB 4.2 秒 |
+| Anima-Aesthetic | 3 分 18 秒 (11 / 186) | 3.23 kJ (158 / 3.07 k) | 79 J / 1.82 kJ | 174 回 55.5 GB 6.3 秒 |
+| Qwen-Image-2.1-Turbo | 1 分 59 秒 (17 / 102) | 2.03 kJ (224 / 1.80 k) | 99 J / 1.07 kJ | 78 回 59.3 GB 9.6 秒 |
+| Qwen-Image-2.1 | 8 分 22 秒 (36 / 466) | 8.99 kJ (567 / 8.43 k) | 316 J / 5.25 kJ | 334 回 258 GB 28 秒 |
+| Chroma1-Flash | 4 分 22 秒 (23 / 238) | 4.45 kJ (345 / 4.10 k) | 182 J / 2.49 kJ | 573 回 142 GB 14 秒 |
+| Chroma1-HD | 11 分 20 秒 (32 / 648) | 11.89 kJ (493 / 11.39 k) | 277 J / 7.02 kJ | 953 回 234 GB 22 秒 |
+
+  - 待機は 6.7〜7.1 W。実行中の待機の分は全体の 4 割前後 (Qwen-Image-2.1-Turbo の実行 1.80 kJ のうち 0.73 kJ)
+  - 準備は全体の 3〜8 %: グラフの読み込み 4.5〜8.8 秒と、組の重みの読み直し (ページキャッシュから、10〜18 GB/s)。読み直しはステップごとなので、ステップの多いモデルほど増える (Chroma1-HD 953 回)。ResidentDiT (組を全部置く) ならこれは消えるが、固定のメモリが組の数だけ増える (16.106)
+  - 16.167 の表 (bench.sh) と同じ全体の値 (Qwen-Image-2.1-Turbo 2.02 と 2.03 kJ、Chroma1-HD 12.1 と 11.9 kJ)。ファイルはどれもページキャッシュにある状態 (冷えた状態は sudo で drop_caches が要る)

@@ -36,6 +36,7 @@ func (c *GenerateCmd) chroma(ctx context.Context, model string, outs []string) e
 	defer p.Close()
 	p.Logf = logf
 	logf("loaded %s (%dx%d) in %s", filepath.Base(model), p.C.Width, p.C.Height, console.Duration(time.Since(t0)))
+	console.Running()
 	sig := p.Sigmas(c.Steps)
 	steps := len(sig) - 1
 	// the export's defaults: Chroma1-Flash Heun's 8 steps without guidance, Chroma1-HD 40 steps
