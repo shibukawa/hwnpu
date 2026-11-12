@@ -11,7 +11,7 @@ func TestSigmas(t *testing.T) {
 	if got := turbo.Sigmas(0); len(got) != 4 || got[0] != 1 || got[1] != 0.9 || got[2] != 0.5 || got[3] != 0 {
 		t.Errorf("Turbo's sigmas: %v", got)
 	}
-	// the base checkpoint: a linear grid, the dynamic shift and the terminal stretched to 0.02
+	// the full model (not distilled): a linear grid, the dynamic shift and the terminal stretched to 0.02
 	term := 0.02
 	base := &Pipeline{Dit: DitConfig{Width: 1024, Height: 1024, VAEScale: 16},
 		Model: Model{Scheduler: Scheduler{Shift: 1, Dynamic: true, BaseSeq: 256, MaxSeq: 8192, BaseShift: 0.5, MaxShift: 0.9, ShiftTerminal: &term}}}
