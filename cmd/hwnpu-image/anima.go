@@ -28,7 +28,7 @@ import (
 // convertFlags are what an Anima export for Apple's or Intel's NPU is made with (generate's first
 // run, and convert).
 type convertFlags struct {
-	Backend    string `help:"The program format: coreml (Apple's Neural Engine) or intel (Intel's NPU); default: the NPU found (convert: coreml)."`
+	Backend    string `help:"The program format: coreml (Apple's Neural Engine), coreai (the same programs on Core AI, macOS 27) or intel (Intel's NPU); default: HWNPU_BACKEND, else the NPU found (convert: coreml)."`
 	Size       int    `default:"1024" help:"The image's width and height in pixels, a multiple of 16 (an export each)."`
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
 	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Core ML; int8 on Intel; default int8 on Core ML, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
@@ -55,7 +55,7 @@ type ConvertCmd struct {
 func (c *ConvertCmd) Run() error {
 	t0 := time.Now()
 	if b, err := os.ReadFile(filepath.Join(c.Anima, "model_index.json")); err == nil && strings.Contains(string(b), "QwenImage21Pipeline") {
-		if c.Backend != "" && c.Backend != llm.BackendCoreML {
+		if c.Backend != "" && llm.ProgramBackend(c.Backend) != llm.BackendCoreML {
 			return fmt.Errorf("Qwen-Image converts for coreml only (--backend %s)", c.Backend)
 		}
 		o := qwenimage.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
@@ -272,6 +272,8 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		}
 		if !anima.IsProgramExport(model) {
 			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD)) // IRON graphs
+		} else if b := llm.DeviceBackend(c.Backend); b != "" {
+			opts = append(opts, hwnpu.WithBackend(b)) // coreai: the Core ML export on Core AI
 		}
 		d, err := hwnpu.Open(ctx, opts...)
 		if err != nil {

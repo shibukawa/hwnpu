@@ -1,0 +1,118 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"math/rand"
+	"path/filepath"
+	"time"
+
+	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/backend"
+	"github.com/shibukawa/hwnpu/internal/backend/coreai"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/hwnpu/internal/types"
+)
+
+// run loads each package with the Core AI backend (lowering it), runs it on random inputs
+// (normal, times scale) and compares its outputs with the CPU interpreter's (milcpu, fp16
+// rounding): the cosine and the relative RMS error, and whether it is all on the Neural Engine.
+func run(pkgs []string, cacheDir string, scale float64, cpu bool) error {
+	ctx := context.Background()
+	dev, err := coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{CacheDir: cacheDir})
+	if err != nil {
+		return err
+	}
+	for _, p := range pkgs {
+		name := filepath.Base(p)
+		t := time.Now()
+		g, err := dev.Compile(ctx, types.GraphSource{Path: p})
+		if err != nil {
+			fmt.Printf("%-24s FAIL %v\n", name, err)
+			continue
+		}
+		load := time.Since(t)
+		rng := rand.New(rand.NewSource(1))
+		req, _ := g.NewRequest()
+		in := map[string]milcpu.Tensor{}
+		var outs []types.ArgInfo
+		var bufs []backend.Buffer
+		for _, a := range g.Args() {
+			b, err := dev.AllocBuffer(a.Bytes, types.BufferKind(0))
+			if err != nil {
+				return err
+			}
+			bufs = append(bufs, b)
+			req.Bind(a.Index, b)
+			if a.Kind == types.ArgInput {
+				n := a.Bytes / 2
+				f := make([]float32, n)
+				for i := range f {
+					f[i] = float32(rng.NormFloat64() * scale)
+				}
+				hwnpu.EncodeF16(b.Bytes(), f)
+				hwnpu.DecodeF16(f, b.Bytes()) // the values the device sees
+				in[a.Name] = milcpu.Tensor{Shape: a.Dims, Data: f}
+			} else {
+				outs = append(outs, a)
+			}
+		}
+		t = time.Now()
+		f, err := req.Submit()
+		if err == nil {
+			err = f.Wait(ctx)
+		}
+		call := time.Since(t)
+		if err != nil {
+			fmt.Printf("%-24s FAIL run: %v\n", name, err)
+			g.Close()
+			continue
+		}
+		t = time.Now()
+		f, _ = req.Submit()
+		f.Wait(ctx)
+		call2 := time.Since(t)
+		on := g.Placement().OnNPU()
+		line := fmt.Sprintf("%-24s load %6.2fs call %.3fs/%.3fs ane=%v cached=%v", name, load.Seconds(), call.Seconds(), call2.Seconds(), on, g.Cached())
+		if cpu {
+			prog, closer, err := milcpu.OpenPackage(p)
+			if err != nil {
+				return err
+			}
+			want, err := prog.Run(in, milcpu.Options{RoundF16: true})
+			closer.Close()
+			if err != nil {
+				return err
+			}
+			for _, o := range outs {
+				got := make([]float32, o.Bytes/2)
+				hwnpu.DecodeF16(got, bufs[o.Index].Bytes())
+				cos, rel, bad := compare(got, want[o.Name].Data)
+				line += fmt.Sprintf(" | %s cos %.6f rel %.4f nonfinite %d", o.Name, cos, rel, bad)
+			}
+		}
+		fmt.Println(line)
+		g.Close()
+		for _, b := range bufs {
+			b.Close()
+		}
+	}
+	return nil
+}
+
+func compare(got, want []float32) (cos, rel float64, bad int) {
+	var dot, ng, nw, diff float64
+	for i := range got {
+		g, w := float64(got[i]), float64(want[i])
+		if math.IsNaN(g) || math.IsInf(g, 0) {
+			bad++
+			continue
+		}
+		dot += g * w
+		ng += g * g
+		nw += w * w
+		diff += (g - w) * (g - w)
+	}
+	return dot / math.Sqrt(ng*nw), math.Sqrt(diff / nw), bad
+}
