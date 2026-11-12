@@ -199,13 +199,15 @@ AWS SDK (aws-sdk-go-v2) は重いので使わない。`aws` CLI を呼ぶ今の�
 
 - 依存: 標準ライブラリと tinygodriver の中の小さなパッケージだけ (`cloud/aws`、`internal/cloudhttp`、`internal/hmacsha256`、`encoding/simdhex`)。モジュールは 1 つで go.mod の require は多いが、リンクされるのは使うパッケージだけ
 - 使う操作: `Get` / `GetRange` (続きから落とす)、`Head` (エントリの有無)、`Put`、マルチパートの 4 つ、`List` (gc と ls)
-- 設定の欄は `endpoint` (`WithEndpoint`)、`region` (`WithRegion`)、`path_style` (`WithPathStyle`。既定は amazonaws.com なら仮想ホスト形式、それ以外はパス形式なので、rustfs や MinIO で `~/.aws/config` に `addressing_style` を書く手順は要らなくなる)。大きなファイルは `WithUnsignedPayload` で、本体を読み込まずに送る
+- 設定の欄は `endpoint` (`WithEndpoint`)、`region` (`WithRegion`)、`path_style` (`WithPathStyle`。既定は amazonaws.com なら仮想ホスト形式、それ以外はパス形式なので、RustFS で `~/.aws/config` に `addressing_style` を書く手順は要らなくなる)。大きなファイルは `WithUnsignedPayload` で、本体を読み込まずに送る
 - tinygodriver が持たないものを hwnpu の側で足す:
   - 認証: tinygodriver は静的な値と環境変数 (`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`AWS_REGION`、`AWS_ENDPOINT_URL_S3`) だけ。`profile` は、hwnpu が `~/.aws/credentials` と `~/.aws/config` のその節の静的な鍵 (`aws_access_key_id`、`aws_secret_access_key`、`aws_session_token`、`region`、`endpoint_url`) だけを読んで渡す。SSO とインスタンスのメタデータは持たない。SSO の利用者は `eval "$(aws configure export-credentials --profile X --format env)"` で環境変数にしてから使う (docs に書く)
   - マルチパート: `Put` は 1 回の要求 (上限 5 GiB) で、分割は自分でする。64 MiB を超えるファイルは 64 MiB の部分に分けて上げ (IRON のバンクには数 GB のものがある)、失敗したら必ず `AbortMultipartUpload`。途中で止まった分は gc が `List` で探して消す
   - 再試行: 5xx、接続の切断、`SlowDown` は指数的に待って 3 回まで。ダウンロードは `GetRange` で続きから
   - `no_sign` (署名なしの公開バケット): tinygodriver で鍵なしの要求が送れるかを確かめる。送れなければ、公開バケットは `https://` の取得元 (HTTP の GET) として読む
-- 確かめること: rustfs と MinIO で、5 GiB を超えるファイルのマルチパート、`GetRange` の続き、パス形式。AWS の S3 で仮想ホスト形式と、ほかのリージョンへのリダイレクト
+- 確かめたこと (2026-11-13、RustFS 1.0.5 を手元で): 部分に分けた送り (5 MiB の部分で 12 MiB)、空のファイル (tinygodriver は長さ 0 の本体を Content-Length なしで送り 411 になるので、本体なしで送る)、`GetRange` の続き、一覧、削除、パス形式 (`internal/store` の `TestS3Server`、`HWNPU_S3_TEST_ENDPOINT` を与えたときだけ)。Qwen3.5-0.8B の書き出し (1.57 GB) を `push` (10 秒) し、空の根で IRON なしに層から取って NPU で答えた (準備 4.4 秒)
+- 確かめること: AWS の S3 で仮想ホスト形式と、ほかのリージョンへのリダイレクト。Cloudflare R2 (region は `auto`)
+- MinIO は対象にしない (保守が終わった)。S3 互換のサーバーの確認は RustFS で
 
 ### 7.3 手元の置き場所
 

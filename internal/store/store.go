@@ -1,5 +1,5 @@
 // Package store reads and writes the places files are shared through (docs/cache-sharing.md 7):
-// a folder (a shared one: NFS, SMB, an external disk) or S3 (any endpoint: AWS, rustfs, MinIO,
+// a folder (a shared one: NFS, SMB, an external disk) or S3 (any endpoint: AWS, RustFS, Cloudflare R2,
 // through tinygodriver's storage/s3, without the AWS SDK or the aws command). A Store holds
 // objects by key, a slash-separated path; the layers (layer.go) keep in it the blobs of files by
 // their SHA-256, the entries of what was converted, and the index of the checkpoints' files.

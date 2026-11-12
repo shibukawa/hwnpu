@@ -21,7 +21,7 @@ import (
 type S3Config struct {
 	Name           string
 	Bucket, Prefix string
-	// Endpoint is the server's URL (rustfs, MinIO: http://host:9000); "" for AWS's of Region
+	// Endpoint is the server's URL (RustFS: http://host:9000; Cloudflare R2: https://ACCOUNT.r2.cloudflarestorage.com); "" for AWS's of Region
 	// (or AWS_ENDPOINT_URL_S3, AWS_ENDPOINT_URL).
 	Endpoint string
 	// Region signs the requests: Region, else the profile's, AWS_REGION, AWS_DEFAULT_REGION,
@@ -334,6 +334,9 @@ func (s *S3) Put(ctx context.Context, key, src string) error {
 		return err
 	}
 	size := fi.Size()
+	if size == 0 {
+		return s.Write(ctx, key, nil)
+	}
 	if size <= partSize {
 		return retry(ctx, func() error {
 			_, err := s.client.Put(ctx, s.cfg.Bucket, k, io.NewSectionReader(f, 0, size), s3.WithContentLength(size))
@@ -380,7 +383,13 @@ func (s *S3) Write(ctx context.Context, key string, b []byte) error {
 		return err
 	}
 	return retry(ctx, func() error {
-		_, err := s.client.Put(ctx, s.cfg.Bucket, k, bytes.NewReader(b), s3.WithContentLength(int64(len(b))))
+		// an empty object goes without a body: tinygodriver sends an empty reader with no
+		// Content-Length (chunked), which servers refuse (411)
+		var body io.Reader
+		if len(b) > 0 {
+			body = bytes.NewReader(b)
+		}
+		_, err := s.client.Put(ctx, s.cfg.Bucket, k, body, s3.WithContentLength(int64(len(b))))
 		return err
 	})
 }

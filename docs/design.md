@@ -4345,5 +4345,6 @@ docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
 - **S3** (`store.S3`): tinygodriver の `storage/s3` に。取得元の `type: s3` も `aws` コマンドから移した。鍵は環境変数か、`profile` の `~/.aws/credentials` と `~/.aws/config` の静的な鍵だけ (SSO は `aws configure export-credentials --format env` で環境変数に)。64 MiB を超えるファイルは 64 MiB の部分で上げ、失敗したら中止を送る。5xx、`SlowDown`、切断は 3 回まで。`no_sign` は署名のない GET。`path_style` を足した
 - **`hwnpu-dev cache`**: `layers` (根と層、何が決めたか)、`ls` (層のエントリ)、`push MODEL` (手元の書き出しを `write` の層へ。`entry.json` がなければ今の道具の指紋で作る)、`verify DIR [--sums]`、`flush` (裏の仕事を終える)
 - 確かめたこと: テスト (フォルダと偽の S3 の読み書き、部分に分けた送り、続きからのダウンロード、署名なし、プロファイル、エントリの往復と変わった blob、コミットと sha256 での取得、裏の仕事の残り、層を通したダウンロードで HF からの GET が 0、gated を写さない、書き出しを 1 回作って別の根で作らずに取る)。この機械で: Qwen3.5-0.8B の q6 の書き出し (1.57 GB) を `push` で共有フォルダの層へ (3.5 秒)、HOME とキャッシュの根を空にし `HWNPU_IRON_ENV` を存在しない場所にした hwnpu-chat が、層から 3.5 秒で取って NPU で答えた (チェックポイントは落とさない)
-- 未確認: 本物の S3 (rustfs、MinIO、AWS) での読み書き。Windows のロックの実機
+- RustFS 1.0.5 (手元) で (2026-11-13): `TestS3Server` (`HWNPU_S3_TEST_ENDPOINT`) が部分に分けた送り、空のファイル、続き、一覧、削除で通った。空のファイルは tinygodriver が長さ 0 の本体を Content-Length なしで送り 411 になったので、本体なしで送る。Qwen3.5-0.8B の書き出しを RustFS の層に `push` (1.57 GB、10 秒)、空の根と IRON なしの hwnpu-chat が層から取って答えた (準備 4.4 秒)
+- 未確認: AWS の S3 と Cloudflare R2。Windows のロックの実機。MinIO は対象にしない (保守が終わった)
 - 残り: 画像のモデルの書き出し (`amdFirstRunExport` の CNN、Anima などの手で作る書き出し) は層に載せていない (書き出しの引数が Go のコードの中にあり、指紋に入れられないため)。Core ML と OpenVINO のプログラム (チャットの変換) のエントリ化と、計画と作るの分離 (cache-sharing.md 8 節)、HF の配布物を読む層と Actions (同 9 節) は次

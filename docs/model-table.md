@@ -186,7 +186,7 @@ builds:
 S3 は `aws` コマンド (v2) に任せる。認証、リージョン、再試行、マルチパートを自前で持たないため。 (docs/cache-sharing.md 7.2 節で改めた: tinygodriver の `storage/s3` に移した。下の 3 行は aws コマンドのころのもの)
 
 - `endpoint` は `--endpoint-url`、`profile` は `--profile`、`region` は `--region`、`no_sign` は `--no-sign-request` で渡す。ほかは `aws` の通常の設定 (`AWS_*` の環境変数、`~/.aws/config`) がそのまま効く
-- rustfs や MinIO のようにパス形式のアドレスが要る実装は、`~/.aws/config` のそのプロファイルに `s3 = addressing_style = path` を書く (`aws` にコマンドラインの指定がないため)。docs に手順を書く
+- RustFS のようにパス形式のアドレスが要る実装は、`~/.aws/config` のそのプロファイルに `s3 = addressing_style = path` を書く (`aws` にコマンドラインの指定がないため)。docs に手順を書く
 - `aws` が見つからないときは、`from` に S3 を使っているモデルを選んだときだけ、入れ方と一緒にエラーを出す
 - 取るのは、HF のリポジトリと同じ並び (`config.json`、トークナイザー、safetensors) か、変換済みの並び (`hwnpu.json` があるもの、docs/prebuilt.md 4 節)。`hwnpu.json` があれば変換済みとして読む
 

@@ -21,7 +21,7 @@ import (
 )
 
 // Where the files of the models come from (docs/model-table.md 5): Hugging Face (the source
-// "hf", always there), shared folders (path) and S3 (s3, any endpoint: rustfs, MinIO; read with
+// "hf", always there), shared folders (path) and S3 (s3, any endpoint: AWS, RustFS, Cloudflare R2; read with
 // internal/store, not the aws command). A model's from names its source; a model from hf is looked for in the sources
 // of Search in order, so that a mirror of Hugging Face is read first.
 
@@ -36,7 +36,7 @@ type Source struct {
 	// search, Path/OWNER/NAME, or Path/OWNER/NAME@REVISION first when pinned).
 	Path string
 	// The bucket and the prefix of an s3 source, and how it is reached: the endpoint (for
-	// rustfs, MinIO and the like), the region, the profile of ~/.aws/credentials and
+	// RustFS, Cloudflare R2 and the like), the region, the profile of ~/.aws/credentials and
 	// ~/.aws/config whose static keys sign, path_style (nil: paths except on AWS's endpoints),
 	// and no_sign for a public bucket (shared.S3Config).
 	Bucket, Prefix, Endpoint, Region, Profile string
