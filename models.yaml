@@ -465,31 +465,45 @@ models:
     from: hf:lodestones/Chroma1-Flash
     license: {id: apache-2.0, url: "https://huggingface.co/lodestones/Chroma1-Flash"}
     sha256:
+      scheduler/scheduler_config.json: f7682ce6d9f1b12dcb8394c653ede50a0f7c724a5acd0a68f2bfb9f88756cd81
+      text_encoder/config.json: a5052c13f27780d720c78338cb51235395aabb2ed65813dbf6b305727727fb62
+      text_encoder/model.safetensors.index.json: c5809e56de8e23807f2a901d63a55d42773419080a072458da93c250e4436eac
       text_encoder/model-00001-of-00002.safetensors: ec87bffd1923e8b2774a6d240c922a41f6143081d52cf83b8fe39e9d838c893e
       text_encoder/model-00002-of-00002.safetensors: a5640855b301fcdbceddfa90ae8066cd9414aff020552a201a255ecf2059da00
+      transformer/config.json: 668b5652e1feeb73a7ac10ae98e4443350ff16a9b68570d8839971de4b16a877
+      transformer/diffusion_pytorch_model.safetensors.index.json: bc392d3de12793adafca3a1a8330097ffd3aca8d306b856dc5f71a3cbd573bd3
       transformer/diffusion_pytorch_model-00001-of-00002.safetensors: c759d67ca3ef50a9a1c242e3291c57f406646f226a95f43f66577996494986db
       transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 8dc761fbdf92b0abbc5a336dc717e6c682479792404ac2f9dbfc3b86e7760996
+      vae/config.json: d6f331696996196bb26517bafed04033bff2586d5042d18f6c21f48e8c04d666
       vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
     machine: 16
     # AMD: the peak of a 1024 x 1024 run, the NPU's mappings and the process's RSS: 4643 MiB with
-    # T5 in groups of 4 layers (5.9 when T5's 5 GB was pinned at once; design.md 16.167)
-    memory: {amd: 4.6}
+    # T5 in groups of 4 layers (5.9 when T5's 5 GB was pinned at once; design.md 16.167).
+    # Apple: the process's footprint at 1024 x 1024 (4.3 GB); the Neural Engine holds 6.9 GiB more
+    # (the DiT, design.md 16.170)
+    memory: {amd: 4.6, apple: 4.3}
     # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here)
     bytes: 2.75e10
-    about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU only; Apache-2.0"
+    about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU and Apple's Neural Engine (about 9.5 min at 1024 x 1024 on an M1); Apache-2.0"
   Chroma1-HD:
     like: Chroma1-Flash
     tag: 1-hd
     from: hf:lodestones/Chroma1-HD
     sha256:
+      scheduler/scheduler_config.json: 5420bd572b9a520774c50d79a8bb511f73bf58e691c2a38e4763435625cea197
+      text_encoder/config.json: a5052c13f27780d720c78338cb51235395aabb2ed65813dbf6b305727727fb62
+      text_encoder/model.safetensors.index.json: c5809e56de8e23807f2a901d63a55d42773419080a072458da93c250e4436eac
       text_encoder/model-00001-of-00002.safetensors: ec87bffd1923e8b2774a6d240c922a41f6143081d52cf83b8fe39e9d838c893e
       text_encoder/model-00002-of-00002.safetensors: a5640855b301fcdbceddfa90ae8066cd9414aff020552a201a255ecf2059da00
+      transformer/config.json: ccd21d38e4f3f2e745118d1e6604c51078067e346f7eeccfc03a4e1e64f5a6d6
+      transformer/diffusion_pytorch_model.safetensors.index.json: bc392d3de12793adafca3a1a8330097ffd3aca8d306b856dc5f71a3cbd573bd3
       transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 59f0b26eccaabb8301e4166e653f1bcdebd7c46a4a07b02fe33d7a2c46d78eba
       transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 65e6541afdabbb96568a3f8975eeef929f0a7e0eef3d2c4741b1bf911ac3a6d5
+      vae/config.json: e423b4a9e49572574de14faf263494416bc757e1bdd62645cfade7284a912565
       vae/diffusion_pytorch_model.safetensors: f5b59a26851551b67ae1fe58d32e76486e1e812def4696a4bea97f16604d40a3
     # named as chroma:1-hd: the family alone picks Chroma1-Flash
     machine: 0
-    about: "Chroma1-HD: the base model, classifier-free guidance 3 (--guidance, --negative) with DPM-Solver++ 2M 25 steps, guided at sigma >= 0.6; AMD's NPU only; Apache-2.0"
+    about: "Chroma1-HD: the undistilled full model (Flash bakes its guidance in), classifier-free guidance 3 (--guidance, --negative) with DPM-Solver++ 2M 25 steps, guided at sigma >= 0.6; AMD's NPU and Apple's Neural Engine; Apache-2.0"
   Qwen-Image-2.1-Turbo:
     family: qwen-image
     tag: 2.1-turbo
@@ -522,7 +536,7 @@ models:
       vae/diffusion_pytorch_model.safetensors: a07a1b7c4ee2966a1b3bdc37de9b4f983d56937e46619f709a80b6e490675417
     # named as qwen-image:2.1: the family alone picks the Turbo
     machine: 0
-    about: "Qwen-Image-2.1 (base): 40 Euler steps, classifier-free guidance with --guidance and --negative (none by default, as its pipeline); AMD's and Apple's NPU; Qwen Research License (not commercial)"
+    about: "Qwen-Image-2.1, the undistilled full model (Turbo is its 8-step distillation): 40 Euler steps, classifier-free guidance with --guidance and --negative (none by default, as its pipeline); AMD's and Apple's NPU; Qwen Research License (not commercial)"
   Sana-600M:
     family: sana
     tag: 0.6b

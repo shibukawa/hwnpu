@@ -1,38 +1,40 @@
-// Package chroma runs Chroma1 (lodestones/Chroma1-Flash), an image model, on AMD's NPU: the
-// graphs tools/amd/iron_chroma.py (the DiT) and iron_chroma_parts.py (T5-XXL and the VAE) export.
+// Package chroma runs Chroma1 (lodestones/Chroma1-Flash, Chroma1-HD), an image model, on an NPU:
+// on AMD's, the graphs tools/amd/iron_chroma.py (the DiT) and iron_chroma_parts.py (T5-XXL and the
+// VAE) export (ironEngine); on Apple's Neural Engine, the Core ML packages of
+// internal/imagegen/chroma/mil that Convert writes (progEngine).
 //
 // Chroma is FLUX.1 schnell's DiT (19 double-stream and 38 single-stream blocks) whose blocks'
 // modulations come from one FFN of the timestep (the approximator: 344 rows), with T5-XXL reading
 // the prompt (512 rows, the pads masked past the prompt and one pad) and FLUX's VAE. A picture is:
 //
-//  1. the prompt's T5 tokens (</s> last), their embedding rows, the t5 graph and the ctx graph
-//     (context_embedder);
+//  1. the prompt's T5 tokens (</s> last), their embedding rows, T5 and context_embedder: the DiT's
+//     text rows;
 //  2. from Gaussian noise, flow-matching steps (Heun by default: Chroma1-Flash's 8 steps, the DiT
 //     twice a step but the last): each DiT call the approximator's rows of its timestep (mods),
-//     the latents' patches (dit_in), the double and single blocks over [image rows, text rows],
-//     a group at a time, and dit_out;
+//     the latents' patches embedded, the double and single blocks over [image rows, text rows],
+//     a group at a time, and the final norm and projection; with classifier-free guidance
+//     (Chroma1-HD) the DiT runs the negative prompt's rows too, in each group after the prompt's;
 //  3. the VAE's decoder on the latents.
 //
-// The export is for one image size. Classifier-free guidance (Chroma1-HD) is not supported yet.
+// The export is for one image size. Chroma1-HD (the undistilled full model; Flash bakes its guidance
+// in) runs classifier-free guidance with Generate's Sampling.
 package chroma
 
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"math"
 	"math/rand/v2"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
-	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
@@ -68,15 +70,9 @@ func (c Config) Rows() int { return c.Tokens() + c.TextRows }
 // StepFunc is told that step i (of n) took d.
 type StepFunc func(i, n int, d time.Duration)
 
-// IsExport reports whether dir is an export of tools/amd/iron_chroma.py.
-func IsExport(dir string) bool {
-	for _, p := range []string{"doubles/manifest.json", "singles/manifest.json", "mods/manifest.json", "t5/manifest.json"} {
-		if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
-			return false
-		}
-	}
-	return true
-}
+// IsExport reports whether dir is an export of Chroma: of tools/amd/iron_chroma.py, or of
+// Convert.
+func IsExport(dir string) bool { return isIronExport(dir) || IsProgramExport(dir) }
 
 // Model is model.json of an export: the checkpoint, its scheduler's shift and its defaults.
 type Model struct {
@@ -91,82 +87,97 @@ type Model struct {
 	CFGSigmas []float64 `json:"cfg_sigmas"`
 }
 
+// engine runs the parts of an export.
+type engine interface {
+	// encode gives each prompt's text rows from its T5 tokens' embedding rows x (TextRows x the
+	// T5's width, the pad's row past the tokens) and the tokens' count n (</s> included).
+	encode(ctx context.Context, xs [][]float32, ns []int) ([]Cond, error)
+	// openDiT loads the DiT for the steps, which run at sigmas.
+	openDiT(ctx context.Context, sigmas []float64) error
+	// velocity runs the DiT on the latents x (tokens x 64) at sigma for each conditioning, back
+	// to back in each group of blocks: the velocities.
+	velocity(ctx context.Context, conds []Cond, x []float32, sigma float64) ([][]float32, error)
+	closeDiT() error
+	// decode runs the VAE on the latents (16, H/8, W/8).
+	decode(ctx context.Context, z []float32, stage anima.StageFunc) (*image.RGBA, error)
+	close() error
+}
+
 // Pipeline is a loaded export.
 type Pipeline struct {
 	C     Config
 	Model Model
-	dev   *hwnpu.Device
-	dir   string
+	eng   engine
 	tok   *tokenizer.Unigram
 	embed *os.File // T5's bf16 rows
 	t5dim int
-	vae   *anima.VAE
+	// embedScale multiplies the embedding rows (the Core ML programs take them divided by
+	// mil.T5Scale)
+	embedScale float32
 
+	// KeepDiT keeps the DiT loaded after Generate, for the next picture's steps (Close
+	// releases it).
+	KeepDiT bool
 	// Logf, when set, is told what is done.
 	Logf func(format string, args ...any)
 	// Stage, when set, is told of each stage of the VAE as it ends.
 	Stage anima.StageFunc
 }
 
-// Open reads the export in dir.
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error) {
-	p := &Pipeline{dev: dev, dir: dir}
+// Open reads the export in dir: on AMD's NPU an export of tools/amd/iron_chroma.py, on Apple's
+// Neural Engine (or, with dev nil, the CPU interpreter) one of Convert. log, when not nil, is
+// shown each Core ML program as it loads (the first load compiles it for the NPU).
+func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
+	p := &Pipeline{embedScale: 1}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
 		return nil, fmt.Errorf("chroma: %w", err)
 	}
-	m, err := iron.ReadGraphManifest(filepath.Join(dir, "doubles"))
-	if err != nil {
-		return fail(err)
-	}
-	var x struct {
-		Config Config `json:"config"`
-	}
-	if err := json.Unmarshal(m.Meta, &x); err != nil {
-		return fail(err)
-	}
-	p.C = x.Config
-	p.Model = Model{Name: "Chroma1-Flash", Steps: 8, Guidance: 1, Sampler: "heun"}
-	if b, err := os.ReadFile(filepath.Join(dir, "model.json")); err == nil {
-		if err := json.Unmarshal(b, &p.Model); err != nil {
-			return fail(err)
+	var err error
+	var td string
+	if IsProgramExport(dir) {
+		var e *progEngine
+		e, err = openPrograms(dev, dir, log, &p.C, &p.Model, p.logf)
+		if e != nil {
+			p.eng = e
+			p.t5dim = e.m.T5.Hidden
+			p.embedScale = e.m.EmbedScale
+			td = e.textDir()
+		}
+	} else {
+		if dev == nil {
+			return fail(errors.New("an IRON export runs on AMD's NPU only"))
+		}
+		var e *ironEngine
+		e, err = openIron(ctx, dev, dir, &p.C, &p.Model, p.logf)
+		if e != nil {
+			p.eng = e
+			p.t5dim = e.t5dim
+			td = e.textDir()
 		}
 	}
-	tm, err := iron.ReadGraphManifest(filepath.Join(dir, "t5"))
 	if err != nil {
 		return fail(err)
 	}
-	var t struct {
-		Config struct {
-			Hidden int `json:"hidden"`
-			Rows   int `json:"rows"`
-		} `json:"config"`
-	}
-	if err := json.Unmarshal(tm.Meta, &t); err != nil || t.Config.Rows != p.C.TextRows {
-		return fail(fmt.Errorf("t5: %d rows for the DiT's %d (%v)", t.Config.Rows, p.C.TextRows, err))
-	}
-	p.t5dim = t.Config.Hidden
-	if p.tok, err = tokenizer.LoadUnigram(filepath.Join(dir, "t5", "tokenizer.json")); err != nil {
+	if p.tok, err = tokenizer.LoadUnigram(td + "/tokenizer.json"); err != nil {
 		return fail(err)
 	}
-	if p.embed, err = os.Open(filepath.Join(dir, "t5", "embed.bin")); err != nil {
+	if p.embed, err = os.Open(td + "/embed.bin"); err != nil {
 		return fail(err)
 	}
-	if p.vae, err = anima.OpenVAE(ctx, dev, filepath.Join(dir, "vae")); err != nil {
-		return fail(err)
-	}
-	// a stage loads beside the one before only when they hold 3 GiB or less together: the 1024 x
-	// 1024 VAE's last stages (2 to 3 GiB each) would otherwise set the run's peak
-	p.vae.PrefetchLimit = 3 << 30
 	return p, nil
 }
 
 // Close releases what Open holds.
 func (p *Pipeline) Close() error {
+	var err error
+	if p.eng != nil {
+		err = p.eng.close()
+	}
 	if p.embed != nil {
 		p.embed.Close()
 	}
-	return nil
+	return err
 }
 
 func (p *Pipeline) logf(format string, args ...any) {
@@ -175,14 +186,11 @@ func (p *Pipeline) logf(format string, args ...any) {
 	}
 }
 
-func (p *Pipeline) open(ctx context.Context, name string, swap bool) (*iron.Graph, error) {
-	return iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, name), iron.GraphOptions{SwapVariants: swap, Barrier: true})
-}
-
-// Cond is a prompt's conditioning: the DiT's text rows (bf16, TextRows x hidden) and the keys
-// they give (the prompt's tokens and one pad).
+// Cond is a prompt's conditioning: the DiT's text rows (TextRows x hidden; IRON's bf16, the
+// programs' float32) and the keys they give (the prompt's tokens and one pad).
 type Cond struct {
 	ctx  []byte
+	rows []float32
 	Keys int
 }
 
@@ -195,116 +203,59 @@ func (p *Pipeline) Encode(ctx context.Context, prompt string) (Cond, error) {
 	return c[0], nil
 }
 
-// EncodeAll is Encode of each prompt with each graph loaded once (a prompt and its negative
-// prompt). An export with T5 in groups of layers (iron_chroma_parts.py's T5Config.group) holds one
-// ELF and a bank image per group, read into one bank in turn: every prompt runs a group before the
-// next is read, so each group's weights are read once and T5's 5 GB of q8 is never pinned at
-// once. Each group gives its residual (the next group's x) and the final norm of it (the last
-// group's is T5's output). An export of one graph gives the norm only.
+// EncodeAll is Encode of each prompt with each part loaded once (a prompt and its negative
+// prompt: T5's load is paid once).
 func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, error) {
-	t0 := time.Now()
 	R, E := p.C.TextRows, p.t5dim
-	pad := make([]byte, 2*E) // T5's <pad>, token 0's row
-	if _, err := p.embed.ReadAt(pad, 0); err != nil {
-		return nil, err
+	row := func(id int) ([]float32, error) {
+		b := make([]byte, 2*E)
+		if _, err := p.embed.ReadAt(b, int64(id)*int64(2*E)); err != nil {
+			return nil, err
+		}
+		v := fromBF16s(b)
+		for i := range v {
+			v[i] *= p.embedScale
+		}
+		return v, nil
 	}
-	g, err := p.open(ctx, "t5", true)
+	pad, err := row(0) // T5's <pad>
 	if err != nil {
 		return nil, err
 	}
-	xs := make([][]byte, len(prompts))
-	masks := make([][]byte, len(prompts))
-	keys := make([]int, len(prompts))
+	xs := make([][]float32, len(prompts))
+	ns := make([]int, len(prompts))
 	for k, pr := range prompts {
 		ids := p.tok.Encode(pr)
 		if len(ids) > R { // transformers truncates the text and keeps </s> last
 			ids = append(ids[:R-1], ids[len(ids)-1])
 		}
-		x := make([]byte, 2*R*E)
-		mask := make([]float32, R)
+		x := make([]float32, R*E)
 		for i := 0; i < R; i++ {
 			if i < len(ids) {
-				if _, err := p.embed.ReadAt(x[2*i*E:2*(i+1)*E], int64(ids[i])*int64(2*E)); err != nil {
-					g.Close()
+				r, err := row(int(ids[i]))
+				if err != nil {
 					return nil, err
 				}
-				mask[i] = 1
+				copy(x[i*E:], r)
 			} else {
-				copy(x[2*i*E:], pad)
+				copy(x[i*E:], pad)
 			}
 		}
-		xs[k], masks[k] = x, toBF16(mask)
-		// the prompt's tokens and one pad (the pipeline's mask)
-		keys[k] = min(len(ids)+1, R)
-		if n, err := strconv.Atoi(os.Getenv("HWNPU_CHROMA_KEYS")); err == nil && n > 0 { // a test of the text's mask
-			keys[k] = min(n, R)
-		}
+		xs[k], ns[k] = x, len(ids)
 		p.logf("text: %d tokens", len(ids))
 	}
-	groups := max(g.Variants(), 1)
-	if groups > 1 && len(g.Outputs()) != 2 {
-		g.Close()
-		return nil, fmt.Errorf("chroma: t5: %d groups but %d outputs (the residual and the norm)", groups, len(g.Outputs()))
-	}
-	hs := make([][]byte, len(prompts))
-	for gi := 0; gi < groups; gi++ {
-		if g.Variants() > 0 {
-			if err := g.Use(gi); err != nil {
-				g.Close()
-				return nil, err
-			}
-		}
-		for k := range prompts {
-			if err := run(ctx, g, map[string][]byte{"x": xs[k], "mask": masks[k]}, nil); err != nil {
-				g.Close()
-				return nil, fmt.Errorf("chroma: t5 group %d: %w", gi, err)
-			}
-			last := len(g.Outputs()) - 1 // the norm
-			if gi < groups-1 {
-				xs[k], err = output(g, 0) // the residual
-			} else {
-				hs[k], err = output(g, last)
-			}
-			if err != nil {
-				g.Close()
-				return nil, err
-			}
-		}
-	}
-	g.Close()
-	t1 := time.Now()
-	c, err := p.open(ctx, "ctx", false)
+	conds, err := p.eng.encode(ctx, xs, ns)
 	if err != nil {
 		return nil, err
 	}
-	defer c.Close()
-	conds := make([]Cond, len(prompts))
-	for k := range prompts {
-		if err := run(ctx, c, map[string][]byte{"x": hs[k]}, nil); err != nil {
-			return nil, err
+	for k := range conds {
+		// the prompt's tokens and one pad (the pipeline's mask)
+		conds[k].Keys = min(ns[k]+1, R)
+		if n, err := strconv.Atoi(os.Getenv("HWNPU_CHROMA_KEYS")); err == nil && n > 0 { // a test of the text's mask
+			conds[k].Keys = min(n, R)
 		}
-		out, err := output(c, 0)
-		if err != nil {
-			return nil, err
-		}
-		conds[k] = Cond{ctx: out, Keys: keys[k]}
 	}
-	p.logf("the text in %.2f s: T5-XXL %.2f s, the projection %.2f s", time.Since(t0).Seconds(), t1.Sub(t0).Seconds(), time.Since(t1).Seconds())
 	return conds, nil
-}
-
-func run(ctx context.Context, g *iron.Graph, in map[string][]byte, values map[string]int64) error {
-	for k, v := range in {
-		if err := g.SetInput(k, v); err != nil {
-			return err
-		}
-	}
-	return g.Run(ctx, values)
-}
-
-func output(g *iron.Graph, i int) ([]byte, error) {
-	b, err := g.Output(g.Outputs()[i].Name)
-	return append([]byte(nil), b...), err
 }
 
 // Sigmas are the steps' sigmas and the terminal 0: the pipeline's linear grid (Chroma1-Flash's
@@ -344,27 +295,14 @@ func (p *Pipeline) Noise(seed uint64) []float32 {
 	return out
 }
 
-// dit holds the DiT's graphs while the steps run.
-type dit struct {
-	mods, in, doubles, singles, out *iron.Graph
-}
-
-func (d *dit) close() {
-	for _, g := range []*iron.Graph{d.mods, d.in, d.doubles, d.singles, d.out} {
-		if g != nil {
-			g.Close()
-		}
-	}
-}
-
-// modInput is the approximator's input of timestep t (1000 sigma): each row the timestep's
-// sinusoid (16), a zero guidance's (16) and its own index's (32, of 1000 k), zeros past the mods.
-func (p *Pipeline) modInput(t float64) []float32 {
-	c := p.C
-	x := make([]float32, c.ModRows*c.ApproxIn)
+// ModInput is the approximator's input of timestep t (1000 sigma): rows rows of in values (64),
+// each of the first mods rows the timestep's sinusoid (16), a zero guidance's (16) and its own
+// index's (32, of 1000 k), zeros past them.
+func ModInput(t float64, mods, rows, in int) []float32 {
+	x := make([]float32, rows*in)
 	ts, g := sinusoid(t, 16), sinusoid(0, 16)
-	for k := 0; k < c.Mods; k++ {
-		row := x[k*c.ApproxIn:]
+	for k := 0; k < mods; k++ {
+		row := x[k*in:]
 		copy(row, ts)
 		copy(row[16:], g)
 		copy(row[32:], sinusoid(1000*float64(k), 32))
@@ -372,85 +310,8 @@ func (p *Pipeline) modInput(t float64) []float32 {
 	return x
 }
 
-// velocity runs the DiT on the latents x (tokens x 64) at sigma for each conditioning, back to
-// back in each group of blocks (the weights read once): the velocities.
-func (p *Pipeline) velocity(ctx context.Context, d *dit, conds []Cond, x []float32, sigma float64) ([][]float32, error) {
-	c := p.C
-	E, N := c.Hidden, c.Tokens()
-	if err := run(ctx, d.mods, map[string][]byte{"x": toBF16(p.modInput(1000 * sigma))}, nil); err != nil {
-		return nil, err
-	}
-	mods, err := output(d.mods, 0)
-	if err != nil {
-		return nil, err
-	}
-	row := func(k int) []byte { return mods[2*k*E : 2*(k+1)*E] }
-	if err := run(ctx, d.in, map[string][]byte{"x": toBF16(x)}, nil); err != nil {
-		return nil, err
-	}
-	img, err := output(d.in, 0)
-	if err != nil {
-		return nil, err
-	}
-	hs := make([][]byte, len(conds))
-	for k, cd := range conds {
-		hs[k] = append(append([]byte(nil), img...), cd.ctx...) // [image rows, text rows]
-	}
-	blocks := func(g *iron.Graph, group, nmods int, rows func(b int) []int, out int, what string) error {
-		for gi := 0; gi < g.Variants(); gi++ {
-			var m []byte
-			for j := 0; j < group; j++ {
-				for _, r := range rows(gi*group + j) {
-					m = append(m, row(r)...)
-				}
-			}
-			if err := g.Use(gi); err != nil {
-				return err
-			}
-			for k, cd := range conds {
-				if err := run(ctx, g, map[string][]byte{"x": hs[k], "mods": m}, map[string]int64{"nk": int64(N + cd.Keys)}); err != nil {
-					return fmt.Errorf("%s group %d: %w", what, gi, err)
-				}
-				o := out
-				if o < 0 {
-					o = len(g.Outputs()) - 1
-				}
-				if hs[k], err = output(g, o); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-	err = blocks(d.doubles, c.DoubleGroup, 12, func(b int) []int {
-		var r []int // the image's rows, then the text's
-		for i := 0; i < 6; i++ {
-			r = append(r, 3*c.Singles+6*b+i)
-		}
-		for i := 0; i < 6; i++ {
-			r = append(r, 3*c.Singles+6*c.Doubles+6*b+i)
-		}
-		return r
-	}, -1, "double blocks")
-	if err == nil {
-		err = blocks(d.singles, c.SingleGroup, 3, func(b int) []int { return []int{3 * b, 3*b + 1, 3*b + 2} }, 0, "single blocks")
-	}
-	if err != nil {
-		return nil, err
-	}
-	last := c.Mods - 2
-	vs := make([][]float32, len(conds))
-	for k := range conds {
-		if err := run(ctx, d.out, map[string][]byte{"x": hs[k][:2*N*E], "shift": row(last), "scale": row(last + 1)}, nil); err != nil {
-			return nil, err
-		}
-		v, err := output(d.out, 0)
-		if err != nil {
-			return nil, err
-		}
-		vs[k] = fromBF16s(v)
-	}
-	return vs, nil
+func (p *Pipeline) modInput(t float64) []float32 {
+	return ModInput(t, p.C.Mods, p.C.ModRows, p.C.ApproxIn)
 }
 
 // Sampling is how Generate steps: the solver ("heun", "euler" or "dpm2m": DPM-Solver++ 2M,
@@ -474,7 +335,7 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 	if len(noise) != c.Tokens()*c.Latent {
 		return nil, fmt.Errorf("chroma: %d noise values for latents of %d", len(noise), c.Tokens()*c.Latent)
 	}
-	if cond.ctx == nil {
+	if cond.ctx == nil && cond.rows == nil {
 		return nil, errors.New("chroma: the DiT runs without a prompt (Encode)")
 	}
 	switch smp.Solver {
@@ -488,24 +349,27 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 	if smp.Guidance != 1 && neg == nil {
 		return nil, errors.New("chroma: guidance without a negative prompt's conditioning")
 	}
-	var d dit
-	defer d.close()
-	var err error
-	for _, x := range []struct {
-		g    **iron.Graph
-		name string
-		swap bool
-	}{{&d.mods, "mods", false}, {&d.in, "dit_in", false}, {&d.doubles, "doubles", true}, {&d.singles, "singles", true}, {&d.out, "dit_out", false}} {
-		if *x.g, err = p.open(ctx, x.name, x.swap); err != nil {
-			return nil, err
+	n := len(sigmas) - 1
+	// the sigmas the DiT runs at: each step's, and Heun's next but the last
+	var at []float64
+	for i := 0; i < n; i++ {
+		at = append(at, sigmas[i])
+		if smp.Solver == "heun" && sigmas[i+1] != 0 {
+			at = append(at, sigmas[i+1])
 		}
+	}
+	if err := p.eng.openDiT(ctx, at); err != nil {
+		return nil, err
+	}
+	if !p.KeepDiT {
+		defer p.eng.closeDiT()
 	}
 	vel := func(x []float32, sigma float64) ([]float32, error) {
 		conds := []Cond{cond}
 		if smp.guided(sigma) {
 			conds = append(conds, *neg)
 		}
-		vs, err := p.velocity(ctx, &d, conds, x, sigma)
+		vs, err := p.eng.velocity(ctx, conds, x, sigma)
 		if err != nil {
 			return nil, err
 		}
@@ -519,7 +383,6 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 		return v, nil
 	}
 	x := append([]float32(nil), noise...)
-	n := len(sigmas) - 1
 	var d0, d1 []float32
 	var hLast float64
 	for i := 0; i < n; i++ {
@@ -556,15 +419,14 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 	return x, nil
 }
 
-// Decode turns the latents (Noise's layout) into the picture.
-func (p *Pipeline) Decode(ctx context.Context, x []float32) (*image.RGBA, error) {
-	c := p.C
-	gh, gw := c.GH(), c.GW()
+// Unpack is the packed latents (Noise's layout) as the VAE takes them, (16, H/8, W/8): FLUX's
+// _unpack_latents.
+func Unpack(x []float32, gh, gw, latent int) []float32 {
 	H, W := 2*gh, 2*gw
-	z := make([]float32, 16*H*W) // (16, H/8, W/8): FLUX's _unpack_latents
+	z := make([]float32, 16*H*W)
 	for py := 0; py < gh; py++ {
 		for px := 0; px < gw; px++ {
-			t := (py*gw + px) * c.Latent
+			t := (py*gw + px) * latent
 			for ch := 0; ch < 16; ch++ {
 				for dy := 0; dy < 2; dy++ {
 					for dx := 0; dx < 2; dx++ {
@@ -574,8 +436,13 @@ func (p *Pipeline) Decode(ctx context.Context, x []float32) (*image.RGBA, error)
 			}
 		}
 	}
-	p.vae.Stage = p.Stage
-	return p.vae.Decode(ctx, z)
+	return z
+}
+
+// Decode turns the latents (Noise's layout) into the picture.
+func (p *Pipeline) Decode(ctx context.Context, x []float32) (*image.RGBA, error) {
+	c := p.C
+	return p.eng.decode(ctx, Unpack(x, c.GH(), c.GW(), c.Latent), p.Stage)
 }
 
 // sinusoid is diffusers' get_timestep_embedding(t, dim, flip_sin_to_cos=True,
