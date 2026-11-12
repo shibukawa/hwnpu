@@ -158,6 +158,10 @@ type Estimator struct {
 	npu   *ironcnn.Graph // an export of tools/amd/iron_onnxcnn.py on AMD's NPU, in place of prog
 }
 
+// ExportVersion is the version of ExportNPU's exports (a key of the shared layers: chat.PinnedRecipe),
+// bumped by hand when what it passes iron_onnxcnn.py (npuOptions, the outputs) changes.
+const ExportVersion = 1
+
 // npuOptions are iron_onnxcnn.py's options for RTMO: its pixels as they are (0 to 255), SiLU as
 // an operator of its own (the GEMM epilogue's vtanh is a few ulps off near 0) and bf16's
 // products (HIGH) in place of bfp16's: at MEDIUM the keypoints' scores moved by up to 0.13 from

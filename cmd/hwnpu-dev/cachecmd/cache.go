@@ -16,7 +16,11 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/pose"
 	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/hwnpu/internal/vision/detect"
+	"github.com/shibukawa/hwnpu/internal/vision/ironcnn"
+	"github.com/shibukawa/hwnpu/internal/vision/segment"
 )
 
 // Cmd is hwnpu-dev cache.
@@ -28,6 +32,7 @@ type Cmd struct {
 	Push   PushCmd   `cmd:"" help:"Put exports for AMD's NPU that are here in the layers that are written (with entry.json, made for them when missing)."`
 	Verify VerifyCmd `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
 	Flush  FlushCmd  `cmd:"" help:"Do the work the background left in the queue (what goes in the layers) and wait for it."`
+	GC     GCCmd     `cmd:"" name:"gc" help:"Remove entries from a shared layer (by model, kind, key or age) and the blobs only they named; with --orphans the blobs nothing names too. Shows what would go unless --apply."`
 }
 
 // Vars are kong's variables of the command.
@@ -105,7 +110,7 @@ func (l LsCmd) Run(c *Cmd) error {
 
 // PushCmd is hwnpu-dev cache push.
 type PushCmd struct {
-	Model []string `arg:"" help:"Models of the definitions (their exports for AMD's NPU, made by amd_export) to put in the layers."`
+	Model []string `arg:"" help:"Models of the definitions (their exports for AMD's NPU: made by amd_export, or on the first run of hwnpu-image detect, pose, segment) to put in the layers."`
 }
 
 func (p PushCmd) Run(c *Cmd) error {
@@ -127,6 +132,12 @@ func (p PushCmd) Run(c *Cmd) error {
 		m, ok := chat.Lookup(name)
 		if !ok {
 			return fmt.Errorf("%s is not a model of the definitions", name)
+		}
+		if tool, version, ok := firstRunExport(m); ok {
+			if err := pushFirstRun(ctx, writes, m, tool, version); err != nil {
+				return err
+			}
+			continue
 		}
 		dir := chat.AMDExportDir(m)
 		if dir == "" {
@@ -165,6 +176,115 @@ func (p PushCmd) Run(c *Cmd) error {
 		}
 	}
 	return nil
+}
+
+// firstRunExport is the script and the version of the export hwnpu-image makes of m on its
+// first run on AMD's NPU, if it makes one.
+func firstRunExport(m chat.Model) (tool string, version int, ok bool) {
+	switch m.Kind {
+	case chat.KindDetect:
+		return "iron_onnxcnn.py", detect.ExportVersion, true
+	case chat.KindPose:
+		return "iron_onnxcnn.py", pose.ExportVersion, true
+	case chat.KindSegment:
+		return "iron_efficientsam.py", segment.ExportVersion, true
+	}
+	return "", 0, false
+}
+
+// pushFirstRun puts the export of a first run (ironcnn.Dir) in the layers writes.
+func pushFirstRun(ctx context.Context, writes []shared.Layer, m chat.Model, tool string, version int) error {
+	dir := ironcnn.Dir(m.Name)
+	if _, err := os.Stat(filepath.Join(dir, "model.json")); err != nil {
+		return fmt.Errorf("%s: no export %s here (made by its first run on AMD's NPU)", m.Name, filepath.Base(dir))
+	}
+	recipe := chat.PinnedRecipe(m, tool, version)
+	if recipe == nil {
+		return fmt.Errorf("%s: the definitions pin none of its files (sha256)", m.Name)
+	}
+	kind := chat.ExportKind(tool)
+	recipe["kind"] = kind
+	key := shared.Fingerprint(recipe)
+	e, err := shared.ReadEntry(dir)
+	if err != nil || e.Key != key {
+		fmt.Fprintf(os.Stderr, "%s: describing %s (the SHA-256 of its files)\n", m.Name, dir)
+		if e, err = shared.Describe(dir, shared.Entry{Key: key, Kind: kind, Scope: shared.ScopePortable, Model: m.Name, Target: cache.AMDTarget,
+			Recipe: recipe, MadeBy: map[string]string{"note": "described by hwnpu-dev cache push"}}); err != nil {
+			return err
+		}
+	}
+	for _, l := range writes {
+		fmt.Fprintf(os.Stderr, "%s: putting %.2f GB in %s\n", m.Name, float64(e.Bytes())/1e9, l)
+		if err := shared.PutEntry(ctx, l, dir); err != nil {
+			return fmt.Errorf("%s: %s: %w", m.Name, l, err)
+		}
+	}
+	return nil
+}
+
+// GCCmd is hwnpu-dev cache gc.
+type GCCmd struct {
+	Layer     int      `arg:"" help:"The layer's number in hwnpu-dev cache layers."`
+	Model     []string `help:"Remove the entries of these models." placeholder:"NAME"`
+	Kind      []string `help:"Remove the entries of these kinds (iron-lm, iron-onnxcnn...)." placeholder:"KIND"`
+	Key       []string `help:"Remove the entries whose key starts with these (as hwnpu-dev cache ls shows it)." placeholder:"KEY"`
+	OlderThan int      `name:"older-than" help:"Remove the entries made more than this many days ago." placeholder:"DAYS"`
+	Orphans   bool     `help:"Remove the blobs no entry and no file of a checkpoint names too (not while anything writes to the layer: what is being put there is named last)."`
+	Apply     bool     `help:"Remove them (without it, only show what would go)."`
+}
+
+func (g GCCmd) Run(c *Cmd) error {
+	if err := load(c); err != nil {
+		return err
+	}
+	ctx, stop := signalContext()
+	defer stop()
+	ls := shared.Layers()
+	if g.Layer < 1 || g.Layer > len(ls) {
+		return fmt.Errorf("no layer %d: hwnpu-dev cache layers shows %d", g.Layer, len(ls))
+	}
+	if len(g.Model) == 0 && len(g.Kind) == 0 && len(g.Key) == 0 && g.OlderThan == 0 && !g.Orphans {
+		return errors.New("say what to remove: --model, --kind, --key, --older-than or --orphans")
+	}
+	l := ls[g.Layer-1]
+	before := time.Now().AddDate(0, 0, -g.OlderThan)
+	drop := func(e shared.Entry) bool {
+		for _, m := range g.Model {
+			if strings.EqualFold(e.Model, m) {
+				return true
+			}
+		}
+		for _, k := range g.Kind {
+			if e.Kind == k {
+				return true
+			}
+		}
+		for _, k := range g.Key {
+			if k != "" && strings.HasPrefix(e.Key, k) {
+				return true
+			}
+		}
+		return g.OlderThan > 0 && e.Made.Before(before)
+	}
+	plan, err := shared.PlanGC(ctx, l, drop, g.Orphans)
+	if err != nil {
+		return err
+	}
+	for _, e := range plan.Entries {
+		fmt.Printf("entry %s %s %s %.2f GB %s\n", e.Kind, e.Model, e.Key[:12], float64(e.Bytes())/1e9, e.Made.Local().Format(time.DateTime))
+	}
+	verb := "would remove"
+	if g.Apply {
+		verb = "removing"
+	}
+	fmt.Printf("%s: %s %d entries and %d blobs (%.2f GB)\n", l, verb, len(plan.Entries), len(plan.Blobs), float64(plan.Bytes)/1e9)
+	if !g.Apply {
+		if len(plan.Entries)+len(plan.Blobs) > 0 {
+			fmt.Println("(--apply removes them)")
+		}
+		return nil
+	}
+	return plan.Apply(ctx, l)
 }
 
 // VerifyCmd is hwnpu-dev cache verify.
