@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -110,12 +111,17 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.RemoveAll(out); err != nil {
 		return "", err
 	}
-	if from := sharedExport(s.Dir, o); from != "" {
-		if err := linkShared(from, out); err != nil {
+	if from, same := sharedExport(s.Dir, s.Name, o); from != "" {
+		if err := linkShared(from, out, same); err != nil {
 			return "", err
 		}
-		o.Only = map[string]bool{"blocks": true, "time": true, "vae": true}
-		fmt.Fprintf(log, "the text encoder's and the DiT's text pass's programs from %s\n", filepath.Base(from))
+		if same {
+			o.Only = map[string]bool{"blocks": true, "time": true, "vae": true}
+			fmt.Fprintf(log, "the text encoder's and the DiT's text pass's programs from %s\n", filepath.Base(from))
+		} else {
+			o.Only = map[string]bool{"text_in": true, "dit_text": true, "blocks": true, "time": true, "vae": true}
+			fmt.Fprintf(log, "the text encoder's programs but its last group's from %s\n", filepath.Base(from))
+		}
 	}
 	fmt.Fprintf(log, "converting %s (%dx%d, text %s, DiT %s); this takes a few minutes\n", filepath.Base(out), o.Width, o.Height, o.TextFormat, o.DitFormat)
 	t0 := time.Now()
@@ -127,30 +133,56 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	return out, os.WriteFile(out+".done", []byte(out), 0o644)
 }
 
-// sharedExport is a whole export in dir whose text encoder's and DiT text pass's programs are those
-// o asks for (they do not depend on the picture's size), or "".
-func sharedExport(dir string, o ConvertOptions) string {
+// sharedExport is a whole export in dir whose text encoder's programs are those o asks for (they do
+// not depend on the picture's size), or "". same says it is of the same model, name, so that its
+// DiT's text pass and the text encoder's last group (which ends with the DiT's txt_in) are this
+// one's too; one of another model (Qwen-Image-2.1 and its Turbo hold the same Qwen3-VL-8B) shares
+// the text encoder's other groups only. One of the same model is taken first.
+func sharedExport(dir, name string, o ConvertOptions) (from string, same bool) {
 	done, _ := filepath.Glob(filepath.Join(dir, "*.coreml.done"))
 	for _, d := range done {
 		e := strings.TrimSuffix(d, ".done")
 		m, err := ReadProgramManifest(e)
-		if err == nil && m.Version == ExportVersion && m.Formats["text"] == o.TextFormat && m.Formats["text_quant"] == o.TextQuant &&
-			m.Formats["dit_text"] == o.DitTextFormat && m.Formats["dit_quant"] == o.DitQuant && m.Dit.Group == o.Group &&
-			len(m.TextIn) > 0 && len(m.DitText) > 0 {
-			return e
+		if err != nil || m.Version != ExportVersion || m.Formats["text"] != o.TextFormat || m.Formats["text_quant"] != o.TextQuant ||
+			len(m.TextIn) == 0 || len(m.DitText) == 0 {
+			continue
 		}
+		if exportModel(e) == strings.ToLower(name) && m.Formats["dit_text"] == o.DitTextFormat && m.Formats["dit_quant"] == o.DitQuant &&
+			m.Dit.Group == o.Group {
+			return e, true
+		}
+		if from == "" {
+			from = e
+		}
+	}
+	return from, false
+}
+
+var exportSize = regexp.MustCompile(`-[0-9]+x[0-9]+-`)
+
+// exportModel is the model an export directory of ExportName is of (qwen-image-2.1-turbo).
+func exportModel(dir string) string {
+	b := filepath.Base(dir)
+	if i := exportSize.FindStringIndex(b); i != nil {
+		return b[:i[0]]
 	}
 	return ""
 }
 
-// linkShared hard links text/ and the programs of the text encoder and of the DiT's text pass of
-// the export from into out.
-func linkShared(from, out string) error {
+// linkShared hard links text/ and the text encoder's programs of the export from into out; with
+// same, its last group and the DiT's text pass too (sharedExport).
+func linkShared(from, out string, same bool) error {
 	m, err := ReadProgramManifest(from)
 	if err != nil {
 		return err
 	}
-	for _, sub := range append(append([]string{"text"}, m.TextIn...), m.DitText...) {
+	subs := append([]string{"text"}, m.TextIn...)
+	if same {
+		subs = append(subs, m.DitText...)
+	} else {
+		subs = subs[:len(subs)-1]
+	}
+	for _, sub := range subs {
 		src := filepath.Join(from, sub)
 		err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {

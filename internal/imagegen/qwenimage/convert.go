@@ -43,7 +43,8 @@ type ConvertOptions struct {
 	Group, TextGroup int
 	// QChunk is the image attention's queries a chunk (0: mil.QChunk's).
 	QChunk int
-	// Only, when not empty, writes these parts alone (text, dit_text, blocks, time, vae).
+	// Only, when not empty, writes these parts alone (text, text_in: the text encoder's last group,
+	// with the DiT's txt_in; dit_text, blocks, time, vae).
 	Only map[string]bool
 }
 
@@ -196,7 +197,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	written := 0
 	write := func(kind string, p *mil.Part, format string) (string, error) {
 		quant := o.DitQuant
-		if kind == "text" {
+		if kind == "text" || kind == "text_in" {
 			quant = o.TextQuant
 		}
 		name := p.Name + ".mlpackage"
@@ -223,7 +224,11 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		Text:     TextConfig{Rows: mil.TextLen, Cache: mil.TextLen, Hidden: tc.Hidden, Vocab: tc.Vocab, HeadDim: tc.HeadDim, Theta: tc.Theta},
 		Template: Template, Drop: drop, Time: TimeFile}
 	for i, gr := range textGroups {
-		name, err := write("text", mil.TextGroup(tc, dc, gr[0], gr[1], i == len(textGroups)-1), o.TextFormat)
+		kind := "text"
+		if i == len(textGroups)-1 {
+			kind = "text_in" // ends with the DiT's txt_in: of the model, not of Qwen3-VL-8B alone
+		}
+		name, err := write(kind, mil.TextGroup(tc, dc, gr[0], gr[1], i == len(textGroups)-1), o.TextFormat)
 		if err != nil {
 			return err
 		}
