@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"image"
 	"image/color"
 	"image/draw"
@@ -204,7 +205,7 @@ func repeated(n int) string {
 }
 
 // amdCNNExport is the export of tools/amd/iron_onnxcnn.py that model m runs from on AMD's NPU
-// (ironcnn.Dir: ~/models/NAME.amd-npu2), made on the first run with IRON when it is not there
+// (ironcnn.Dir: NAME.amd-npu2 in the cache's entries/amd-xdna2, or ~/models), made on the first run with IRON when it is not there
 // (minutes): fetch downloads the ONNX file, export makes the export of it in dir. It is "" where
 // m runs elsewhere: another NPU, --cpu, --device cpu (or models.yaml's device for AMD,
 // HWNPU_DEVICE), or no IRON to make the export with (then the CPU, said in the log).
@@ -313,9 +314,7 @@ func openProgramDevice(ctx context.Context, cpu bool, cache, what string) (*hwnp
 		return nil, llm.BackendCoreML, func() {}, nil
 	}
 	if cache == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			cache = filepath.Join(d, "hwnpu")
-		}
+		cache = hcache.Root()
 	}
 	dev, device, err := llm.OpenDevice(ctx, "", cache)
 	if err != nil {

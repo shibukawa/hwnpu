@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path"
@@ -148,14 +149,10 @@ func Lookup(name string) (Model, bool) {
 	return Model{}, false
 }
 
-// ModelsDir is where models are kept when not told: hwnpu/models in the user cache directory.
+// ModelsDir is where models are kept when not told: models under cache.Root.
 // Each model has a directory of its name there.
 func ModelsDir() string {
-	d, err := os.UserCacheDir()
-	if err != nil {
-		d = os.TempDir()
-	}
-	return filepath.Join(d, "hwnpu", "models")
+	return cache.Sub("models")
 }
 
 // Resolve returns the model a name of -use means: one of the catalog by its name; a family or a

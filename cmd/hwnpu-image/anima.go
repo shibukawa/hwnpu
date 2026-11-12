@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"image/png"
 	"math"
 	"math/rand/v2"
@@ -86,7 +87,7 @@ func (c *ConvertCmd) Run() error {
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
 type GenerateCmd struct {
 	Prompts   []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana and Qwen-Image take several: a picture each, the model loaded once (Qwen-Image on Apple's Neural Engine: every prompt read first, then every picture's steps, then the decoding of all; its programs load in minutes, the steps in seconds)."`
-	Model     string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's and Intel's (Anima and Sana) the model is downloaded and converted into --dir on its first run."`
+	Model     string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models); on Apple's and Intel's (Anima and Sana) the model is downloaded and converted into --dir on its first run."`
 	Dir       string    `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir): the checkpoints and exports in Anima/ and Sana/."`
 	Out       string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
 	KeepDiT   bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (Gemma 2 and the VAE are loaded for each)."`
@@ -402,10 +403,7 @@ func cacheDirOf(flag string) string {
 	case "-":
 		return ""
 	case "":
-		if d, err := os.UserCacheDir(); err == nil {
-			return filepath.Join(d, "hwnpu")
-		}
-		return ""
+		return hcache.Root()
 	}
 	return flag
 }

@@ -21,6 +21,13 @@ func userFiles(t *testing.T, contents ...string) (string, error) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	t.Setenv(ModelsEnv, "")
+	t.Setenv(LayersEnv, "")
+	if os.Getenv("HWNPU_CACHE") == "" {
+		t.Setenv("HWNPU_CACHE", t.TempDir())
+	}
+	oldSystem := SystemModelsFile
+	SystemModelsFile = func() string { return "" }
+	t.Cleanup(func() { SystemModelsFile = oldSystem })
 	t.Cleanup(func() {
 		if err := LoadModels(nil, false, nil); err != nil {
 			t.Fatal(err)
@@ -199,7 +206,6 @@ func TestUserErrors(t *testing.T) {
 		{"unknown source", "version: 1\nmodels:\n  x:\n    from: s3:bucket/x\n    kind: chat\n", "not SOURCE:NAME"},
 		{"search unknown", "version: 1\nsearch: [mirror, hf]\n", "no source \"mirror\""},
 		{"source type", "version: 1\nsources:\n  m: {type: ftp}\n", "not path or s3"},
-		{"source option", "version: 1\nsources:\n  m: {type: s3, bucket: \"--exec\"}\n", "starts with -"},
 		{"source escapes", "version: 1\nsources:\n  m: {type: path, path: /tmp}\nmodels:\n  x:\n    from: m:../etc\n    kind: chat\n", "inside the source"},
 		{"bad digest", "version: 1\nmodels:\n  LFM3-1.7B:\n    sha256: {config.json: abc}\n", "64 hex"},
 		{"bad feature", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: chat\n    features: [flying]\n", "flying"},

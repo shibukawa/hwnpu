@@ -303,9 +303,10 @@ func showModels(w io.Writer, dir string, amd bool) {
 		"tag (plamo3translate:2b, chat:e4b, chat:16g), or a Hugging Face repository OWNER/NAME of a supported\n"+
 		"architecture; serve takes several, comma separated. The default is LFM3-1.7B (search: embedding).\n"+
 		"Requests may name a model the same ways. Only the model picked is downloaded.\n"+
-		"On AMD's NPU a name runs its export, ~/models/NAME.amd-npu2-q4 (-q6, or none for bf16); the first run\n"+
-		"downloads the checkpoint and makes it with IRON (tools/amd/iron_export_lm.py, %s, INSTALL_AMD.md).\n"+
-		"Models are kept in %s.\n", chat.IRONEnv, dir)
+		"On AMD's NPU a name runs its export, NAME.amd-npu2-q4 (-q6, or none for bf16) in %s or ~/models;\n"+
+		"the first run takes it from the shared layers (hwnpu-dev cache layers), else downloads the checkpoint\n"+
+		"and makes it with IRON (tools/amd/iron_export_lm.py, %s, INSTALL_AMD.md).\n"+
+		"Models are kept in %s.\n", shortPath(chat.AMDRoot()), chat.IRONEnv, dir)
 }
 
 // shortPath is path with the home directory written ~.

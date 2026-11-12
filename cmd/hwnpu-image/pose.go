@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"image"
 	"image/color"
 	"image/draw"
@@ -54,9 +55,7 @@ func (c *PoseCmd) Run(ctx context.Context) error {
 	}
 	cache := c.Cache
 	if cache == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			cache = filepath.Join(d, "hwnpu")
-		}
+		cache = hcache.Root()
 	}
 	dir := c.Dir
 	if dir == "" {

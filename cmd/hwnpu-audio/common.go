@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/onnxrt"
 
@@ -9,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
@@ -22,10 +22,7 @@ func cacheDir(dir string) string {
 	if dir != "" {
 		return dir
 	}
-	if d, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(d, "hwnpu")
-	}
-	return ""
+	return cache.Root()
 }
 
 // placement is how a log line says where a model runs.

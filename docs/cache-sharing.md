@@ -1,6 +1,16 @@
 # 変換済みのモデルの配布と、キャッシュの共有 (設計案)
 
-作成: 2026-11-12。状態: 設計案 (未実装)。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
+作成: 2026-11-12。状態: P0、P1 の層とフォルダ、P2 の S3、AMD のチャットのモデルの書き出しの共有を実装 (0 節、design.md 16.169)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
+
+## 0. 実装したもの (2026-11-12)
+
+- 根を 1 つに (`cache.Root`、`HWNPU_CACHE`)。AMD の書き出しは `entries/amd-xdna2/` に作り、`~/models` は読むだけ。IRON の JIT のキャッシュは `iron/` (`~/.npu/cache` を最初の書き出しの前に移し、リンクを残す)。組み込みの IRON の道具は `tools/`。まだ移していないもの: `models/` (チェックポイントと Core ML、OpenVINO のプログラム) を `src/` と `entries/` に分けること
+- `.done` を相対パスに、ダウンロード・変換・書き出しのロック、HF の続きのダウンロードの `If-Range`
+- 層 (7 節): フォルダと S3 (tinygodriver、7.2 節)、`write` と `fill` と `fill_gated` と `scopes`、組織のファイル (`/etc/hwnpu/models.yaml` など)、`HWNPU_CACHE_LAYERS`、`HWNPU_CACHE_WRITE=0` (7.4 節)。後のファイルの `cache.layers` は並びごと置き換える (層ごとの差分ではない)
+- 元のチェックポイントのフォワードプロキシ (7.1 節): 定義の sha256、HF の HEAD の `X-Linked-Etag`、コミットの索引の順で層を探す
+- エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具の hash)。版 (`version`、5 節の lock) はまだない
+- `hwnpu-dev cache layers|ls|push|verify|flush`
+- 次: 画像のモデルの書き出し、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)、`cache gc`
 
 ## 1. 目的
 
