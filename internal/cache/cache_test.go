@@ -68,3 +68,24 @@ func TestTreeDigest(t *testing.T) {
 		t.Fatal("copy differs")
 	}
 }
+
+func TestTreeDigestSymlink(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"a", "b"} {
+		if err := os.MkdirAll(filepath.Join(dir, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, n, "f"), []byte(n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(dir, n), filepath.Join(dir, n+".link")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, _ := TreeDigest(filepath.Join(dir, "a"))
+	al, _ := TreeDigest(filepath.Join(dir, "a.link"))
+	bl, _ := TreeDigest(filepath.Join(dir, "b.link"))
+	if string(a) != string(al) || string(al) == string(bl) {
+		t.Error("a linked tree is not hashed as its target")
+	}
+}
