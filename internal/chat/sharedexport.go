@@ -109,3 +109,27 @@ func ExportRecipe(ctx context.Context, m Model, tool string, args []string) map[
 	}
 	return r
 }
+
+// PinnedRecipe is ExportRecipe for a model whose files the definitions pin all of (sha256: the
+// ONNX models), made by tool with arguments hwnpu works out in Go: version is the export's
+// version there, bumped by hand when what hwnpu passes the tool changes. nil when nothing is
+// pinned.
+func PinnedRecipe(m Model, tool string, version int) map[string]string {
+	hash, err := amdtools.Hash()
+	if len(m.SHA256) == 0 || err != nil {
+		return nil
+	}
+	base, _, _ := strings.Cut(m.Repo, "@")
+	r := map[string]string{"model": m.Name, "target": cache.AMDTarget, "source": base,
+		"tool": tool, "version": fmt.Sprint(version), "tools": hash}
+	for f, d := range m.SHA256 {
+		r["sha256:"+f] = strings.ToLower(d)
+	}
+	return r
+}
+
+// ExportKind is the kind of entry of an export of tools/amd's script tool: iron_onnxcnn.py,
+// iron-onnxcnn.
+func ExportKind(tool string) string {
+	return "iron-" + strings.TrimSuffix(strings.TrimPrefix(tool, "iron_"), ".py")
+}

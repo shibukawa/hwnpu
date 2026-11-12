@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -270,5 +271,56 @@ func TestQueue(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(cache.Sub("work", "queue.log")); !strings.Contains(string(b), "no layer") {
 		t.Errorf("log: %s", b)
+	}
+}
+
+func TestGC(t *testing.T) {
+	ctx := context.Background()
+	l := Layer{Store: Dir{Name: "t", Root: t.TempDir()}}
+	mk := func(model, body string) Entry {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "shared"), []byte("same in both"), 0o644)
+		os.WriteFile(filepath.Join(d, "own"), []byte(body), 0o644)
+		e, err := Describe(d, Entry{Kind: "k", Scope: ScopePortable, Model: model, Recipe: map[string]string{"model": model}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := PutEntry(ctx, l, d); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	a, b := mk("a", "a's own"), mk("b", "b's own")
+	up := filepath.Join(t.TempDir(), "w")
+	os.WriteFile(up, []byte("a checkpoint's file"), 0o644)
+	if err := PutUpstream(ctx, l, "o/r", "c0ffee", "w", up, ""); err != nil {
+		t.Fatal(err)
+	}
+	orphan := filepath.Join(t.TempDir(), "x")
+	os.WriteFile(orphan, []byte("nothing names it"), 0o644)
+	sum, _ := FileSHA256(orphan)
+	if err := putBlob(ctx, l.Store, sum, orphan, 16); err != nil {
+		t.Fatal(err)
+	}
+	g, err := PlanGC(ctx, l, func(e Entry) bool { return e.Model == "a" }, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Entries) != 1 || g.Entries[0].Key != a.Key || len(g.Blobs) != 1 || g.Bytes != int64(len("a's own")) {
+		t.Fatalf("plan: %+v", g)
+	}
+	if err := g.Apply(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "b")
+	if _, err := FetchEntry(ctx, []Layer{l}, ScopePortable, "k", b.Key, dst, nil); err != nil {
+		t.Fatalf("b after gc: %v", err)
+	}
+	if _, err := FetchEntry(ctx, []Layer{l}, ScopePortable, "k", a.Key, dst+"2", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a after gc: %v", err)
+	}
+	g, _ = PlanGC(ctx, l, func(Entry) bool { return false }, true)
+	if len(g.Entries) != 0 || len(g.Blobs) != 1 || g.Blobs[0] != sum {
+		t.Fatalf("orphans: %+v", g)
 	}
 }

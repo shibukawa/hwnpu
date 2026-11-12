@@ -1,6 +1,6 @@
 # 変換済みのモデルの配布と、キャッシュの共有 (設計案)
 
-作成: 2026-11-12。状態: P0、P1 の層とフォルダ、P2 の S3、AMD のチャットのモデルの書き出しの共有を実装 (0 節、design.md 16.169)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
+作成: 2026-11-12。状態: P0、P1 の層とフォルダと gc、P2 の S3、AMD のチャットのモデルと初回に作る画像のモデルの書き出しの共有を実装 (0 節、design.md 16.169)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
 
 ## 0. 実装したもの (2026-11-12)
 
@@ -9,8 +9,9 @@
 - 層 (7 節): フォルダと S3 (tinygodriver、7.2 節)、`write` と `fill` と `fill_gated` と `scopes`、組織のファイル (`/etc/hwnpu/models.yaml` など)、`HWNPU_CACHE_LAYERS`、`HWNPU_CACHE_WRITE=0` (7.4 節)。後のファイルの `cache.layers` は並びごと置き換える (層ごとの差分ではない)
 - 元のチェックポイントのフォワードプロキシ (7.1 節): 定義の sha256、HF の HEAD の `X-Linked-Etag`、コミットの索引の順で層を探す
 - エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具の hash)。版 (`version`、5 節の lock) はまだない
-- `hwnpu-dev cache layers|ls|push|verify|flush`
-- 次: 画像のモデルの書き出し、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)、`cache gc`
+- hwnpu-image detect、pose、segment が初回に作る AMD の書き出しも層に (鍵は定義の sha256、道具の hash、Go の側の手で上げる版: `chat.PinnedRecipe`)
+- `hwnpu-dev cache layers|ls|push|verify|flush|gc`。`gc` は層のエントリを選んで消し、それだけが名指していた blob も消す (`--orphans` で誰も名指さない blob も、`--apply` で実際に)。途中で止まった S3 のマルチパートは、バケットのライフサイクルの規則で中止させる
+- 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)
 
 ## 1. 目的
 
@@ -202,7 +203,7 @@ AWS SDK (aws-sdk-go-v2) は重いので使わない。`aws` CLI を呼ぶ今の�
 - 設定の欄は `endpoint` (`WithEndpoint`)、`region` (`WithRegion`)、`path_style` (`WithPathStyle`。既定は amazonaws.com なら仮想ホスト形式、それ以外はパス形式なので、RustFS で `~/.aws/config` に `addressing_style` を書く手順は要らなくなる)。大きなファイルは `WithUnsignedPayload` で、本体を読み込まずに送る
 - tinygodriver が持たないものを hwnpu の側で足す:
   - 認証: tinygodriver は静的な値と環境変数 (`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`AWS_REGION`、`AWS_ENDPOINT_URL_S3`) だけ。`profile` は、hwnpu が `~/.aws/credentials` と `~/.aws/config` のその節の静的な鍵 (`aws_access_key_id`、`aws_secret_access_key`、`aws_session_token`、`region`、`endpoint_url`) だけを読んで渡す。SSO とインスタンスのメタデータは持たない。SSO の利用者は `eval "$(aws configure export-credentials --profile X --format env)"` で環境変数にしてから使う (docs に書く)
-  - マルチパート: `Put` は 1 回の要求 (上限 5 GiB) で、分割は自分でする。64 MiB を超えるファイルは 64 MiB の部分に分けて上げ (IRON のバンクには数 GB のものがある)、失敗したら必ず `AbortMultipartUpload`。途中で止まった分は gc が `List` で探して消す
+  - マルチパート: `Put` は 1 回の要求 (上限 5 GiB) で、分割は自分でする。64 MiB を超えるファイルは 64 MiB の部分に分けて上げ (IRON のバンクには数 GB のものがある)、失敗したら必ず `AbortMultipartUpload`。途中で止まった分は、tinygodriver に一覧の操作がないので、バケットのライフサイクルの規則 (未完了のマルチパートを N 日で中止) に任せる
   - 再試行: 5xx、接続の切断、`SlowDown` は指数的に待って 3 回まで。ダウンロードは `GetRange` で続きから
   - `no_sign` (署名なしの公開バケット): tinygodriver で鍵なしの要求が送れるかを確かめる。送れなければ、公開バケットは `https://` の取得元 (HTTP の GET) として読む
 - 確かめたこと (2026-11-13、RustFS 1.0.5 を手元で): 部分に分けた送り (5 MiB の部分で 12 MiB)、空のファイル (tinygodriver v1.3.8 は長さ 0 の本体を chunked で送り 411 になった。v1.3.9 で直った)、`GetRange` の続き、一覧、削除、パス形式 (`internal/store` の `TestS3Server`、`HWNPU_S3_TEST_ENDPOINT` を与えたときだけ)。Qwen3.5-0.8B の書き出し (1.57 GB) を `push` (10 秒) し、空の根で IRON なしに層から取って NPU で答えた (準備 4.4 秒)
