@@ -32,7 +32,7 @@ type Export struct {
 	Kind   string   `json:"kind"` // "moge"
 	Sizes  [][2]int `json:"sizes"`
 	Tokens int      `json:"tokens"` // MoGe's num_tokens the sizes were made for
-	// Format is "coreml" for an export of Prepare (a size's programs in WxH/, converted from
+	// Format is "coreml" (or "intel", OpenVINO IR) for an export of Prepare (a size's programs in WxH/, converted from
 	// Checkpoint, model.pt, when a picture first takes the size).
 	Format     string `json:"format,omitempty"`
 	Checkpoint string `json:"checkpoint,omitempty"`
@@ -167,7 +167,7 @@ func (e *Estimator) use(ctx context.Context, w, h int) (*sized, error) {
 		return nil, err
 	}
 	d := filepath.Join(e.dir, fmt.Sprintf("%dx%d", w, h))
-	if e.Format == "coreml" {
+	if e.Format == "coreml" || e.Format == "intel" {
 		return e.useProgram(ctx, d, w, h)
 	}
 	b, err := os.ReadFile(filepath.Join(d, "model.json"))

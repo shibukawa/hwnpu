@@ -28,7 +28,7 @@ import (
 // convertFlags are what an Anima export for Apple's or Intel's NPU is made with (generate's first
 // run, and convert).
 type convertFlags struct {
-	Backend    string `help:"The program format: coreml (Apple's Neural Engine) or intel (Intel's NPU); default: the NPU found (convert: coreml)."`
+	Backend    string `help:"The program format: coreml (Apple's Neural Engine), coreai (the same programs on Core AI, macOS 27) or intel (Intel's NPU); default: HWNPU_BACKEND, else the NPU found (convert: coreml)."`
 	Size       int    `default:"1024" help:"The image's width and height in pixels, a multiple of 16 (an export each)."`
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
 	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Core ML; int8 on Intel; default int8 on Core ML, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
@@ -42,23 +42,63 @@ func (f convertFlags) options() anima.ConvertOptions {
 		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}
 }
 
-// ConvertCmd is "hwnpu-image convert": an Anima directory into a Core ML or OpenVINO export, or
-// a Sana repository into a Core ML export.
+// ConvertCmd is "hwnpu-image convert": an Anima directory or a Sana repository into a Core ML or
+// OpenVINO export.
 type ConvertCmd struct {
 	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/), or a Sana repository of Efficient-Large-Model (transformer/, vae/, scheduler/)."`
 	Model string `short:"m" required:"" type:"path" placeholder:"EXPORT" help:"The export to write."`
-	Text  string `type:"existingdir" placeholder:"DIR" help:"Sana: the directory of Gemma 2's text_encoder/ and tokenizer/ (default: the repository)."`
+	Text  string `type:"existingdir" placeholder:"DIR" help:"Sana: the directory of Gemma 2's text_encoder/ and tokenizer/; Qwen-Image-2.1: of Qwen3-VL-8B's text_encoder/ and processor/; Chroma: of T5's text_encoder/ and the VAE's vae/ (default: the repository)."`
+	// Chroma's
+	Tokenizer     string   `type:"existingfile" placeholder:"FILE" help:"Chroma: T5's tokenizer.json (Anima's t5_tokenizer/tokenizer.json: Chroma's repository has only spiece.model)."`
+	TextRows      int      `name:"text-rows" help:"Chroma: the text's rows (default 512, its pipeline's; fewer cut longer prompts)."`
+	Only          string   `placeholder:"PARTS" help:"Chroma: write these parts alone (text, mods, doubles, singles, vae), comma separated."`
+	DitFormatFor  []string `name:"dit-format-for" sep:"," placeholder:"PART=FORMAT" help:"Chroma: weight formats of the DiT's weights whose names hold PART (proj_mlp=lut4)."`
+	TextFormatFor []string `name:"text-format-for" sep:"," placeholder:"PART=FORMAT" help:"Chroma: weight formats of T5's weights whose names hold PART (wo=fp16)."`
+	DitQuant      string   `name:"dit-quant" placeholder:"NAME" help:"Chroma: the quantizer of the DiT's lut formats (uniform, kmeans, kmeans-minmax)."`
+	LinkFrom      []string `name:"link-from" sep:"," type:"path" placeholder:"EXPORT" help:"Chroma: exports to hard link the parts that come out the same from (T5's programs, the VAE's of the same size): compiled once for all of them."`
 	convertFlags
 }
 
 // Run converts the checkpoint.
 func (c *ConvertCmd) Run() error {
 	t0 := time.Now()
-	if isDir(filepath.Join(c.Anima, "transformer")) {
-		if c.Backend != "" && c.Backend != llm.BackendCoreML {
-			return fmt.Errorf("Sana converts for coreml only (--backend %s)", c.Backend)
+	if chroma.IsRepository(c.Anima) {
+		if c.Backend != "" && llm.ProgramBackend(c.Backend) != llm.BackendCoreML {
+			return fmt.Errorf("Chroma converts for coreml only (--backend %s)", c.Backend)
 		}
-		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+		o := chroma.ConvertOptions{Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat,
+			Tokenizer: c.Tokenizer, TextRows: c.TextRows}
+		if c.Only != "" {
+			o.Only = map[string]bool{}
+			for _, k := range strings.Split(c.Only, ",") {
+				o.Only[k] = true
+			}
+		}
+		if len(c.DitFormatFor) > 0 {
+			o.DitFormatFor = c.DitFormatFor
+		}
+		o.LinkFrom = c.LinkFrom
+		o.DitQuant = c.DitQuant
+		o.TextFormatFor = c.TextFormatFor
+		if c.Group > 0 { // single blocks a program; a double block weighs two
+			o.SingleGroup, o.DoubleGroup = c.Group, max(1, c.Group/2)
+		}
+		if err := chroma.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
+			return err
+		}
+	} else if b, err := os.ReadFile(filepath.Join(c.Anima, "model_index.json")); err == nil && strings.Contains(string(b), "QwenImage21Pipeline") {
+		if c.Backend != "" && llm.ProgramBackend(c.Backend) != llm.BackendCoreML {
+			return fmt.Errorf("Qwen-Image converts for coreml only (--backend %s)", c.Backend)
+		}
+		o := qwenimage.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+		if err := qwenimage.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
+			return err
+		}
+	} else if isDir(filepath.Join(c.Anima, "transformer")) {
+		if c.Backend != "" && c.Backend != llm.BackendCoreML && c.Backend != llm.BackendIntel {
+			return fmt.Errorf("Sana converts for coreml or intel (--backend %s)", c.Backend)
+		}
+		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat, Backend: c.Backend}
 		if err := sana.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
 			return err
 		}
@@ -77,11 +117,11 @@ func (c *ConvertCmd) Run() error {
 
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
 type GenerateCmd struct {
-	Prompts   []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana takes several: a picture each, the model loaded once."`
-	Model     string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's (Anima and Sana) and Intel's (Anima) the model is downloaded and converted into --dir on its first run."`
+	Prompts   []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana and Qwen-Image take several: a picture each, the model loaded once (Qwen-Image on Apple's Neural Engine: every prompt read first, then every picture's steps, then the decoding of all; its programs load in minutes, the steps in seconds)."`
+	Model     string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs ~/models/NAME.amd-npu2; on Apple's and Intel's (Anima and Sana) the model is downloaded and converted into --dir on its first run."`
 	Dir       string    `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir): the checkpoints and exports in Anima/ and Sana/."`
 	Out       string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
-	KeepDiT   bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (Gemma 2 and the VAE are loaded for each)."`
+	KeepDiT   bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana and Chroma on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (the text encoder and the VAE are loaded for each)."`
 	Steps     int       `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Anima-Aesthetic 25 with dpm2m, the model card's 30 to 50 with euler; Sana 20)."`
 	Negative  string    `help:"The negative prompt of the classifier-free guidance (default empty; Anima's model card recommends \"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration\", without the score tags for Anima-Aesthetic)."`
 	Guidance  float64   `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none, or 1.5 with a --negative; Sana 4.5)."`
@@ -122,11 +162,11 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		}
 		model = ""
 		if strings.HasPrefix(m.Family, "chroma") {
-			if model, err = amdExport(m, "tools/amd/iron_chroma.py"); err != nil {
+			if model, err = c.chromaModel(ctx, m); err != nil {
 				return err
 			}
 		} else if strings.HasPrefix(m.Family, "qwen-image") {
-			if model, err = amdExport(m, "tools/amd/iron_qwenimage.py"); err != nil {
+			if model, err = c.qwenImageModel(ctx, m); err != nil {
 				return err
 			}
 		} else if isAnima := strings.HasPrefix(m.Family, "anima"); !isAnima {
@@ -166,25 +206,45 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 }
 
 // sanaModel is the Sana export m runs here: on Apple's Neural Engine (or with --cpu) the Core ML
-// export of --dir, downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2
+// export of --dir, on Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2
 // of tools/amd/iron_sana.py.
 func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, error) {
 	format, err := llm.ProgramFormat(ctx, c.Backend)
 	switch {
-	case c.CPU || err == nil && format == llm.BackendCoreML:
-	case err == nil:
-		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
+	case c.CPU: // the CPU interpreter runs Core ML exports
+		format = llm.BackendCoreML
+	case err == nil: // Apple's Neural Engine or Intel's NPU
 	default:
 		return amdExport(m, "tools/amd/iron_sana.py")
 	}
 	if c.Size%32 != 0 {
 		return "", fmt.Errorf("--size %d: Sana's pictures are multiples of 32 pixels", c.Size)
 	}
-	o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group}
+	o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, Backend: format}
 	if c.TextFormat != "" || c.DitFormat != "" {
 		o.TextFormat, o.DitFormat = c.TextFormat, c.DitFormat
 	}
 	return sana.Prepare(ctx, sana.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Sana"), Repo: m.Repo, Name: m.Name,
+		ConvertOptions: o, Log: console.Log(os.Stderr)})
+}
+
+// qwenImageModel is the Qwen-Image-2.1 export m runs here: on Apple's Neural Engine (or with --cpu)
+// the Core ML export of --dir, downloaded and converted when missing; on AMD's NPU
+// ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
+func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string, error) {
+	format, err := llm.ProgramFormat(ctx, c.Backend)
+	switch {
+	case c.CPU || err == nil && format == llm.BackendCoreML:
+	case err == nil:
+		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
+	default:
+		return amdExport(m, "tools/amd/iron_qwenimage.py")
+	}
+	if c.Size%32 != 0 {
+		return "", fmt.Errorf("--size %d: Qwen-Image's pictures are multiples of 32 pixels", c.Size)
+	}
+	o := qwenimage.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+	return qwenimage.Prepare(ctx, qwenimage.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Qwen-Image"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 
@@ -244,6 +304,8 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		}
 		if !anima.IsProgramExport(model) {
 			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD)) // IRON graphs
+		} else if b := llm.DeviceBackend(c.Backend); b != "" {
+			opts = append(opts, hwnpu.WithBackend(b)) // coreai: the Core ML export on Core AI
 		}
 		d, err := hwnpu.Open(ctx, opts...)
 		if err != nil {

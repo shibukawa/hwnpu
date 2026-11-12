@@ -127,6 +127,8 @@ checklist で効いたものを、それぞれのモデルのどこに当てる�
 
 DiT の fp16 は 14–18 GB で、Neural Engine のコンパイルキャッシュ (実効 3.5 GiB、3.1) と 16 GB の Mac には大きすぎる。lut4 でも DiT だけで 3.6–4.5 GB。まず AMD だけで入れ、Mac は lut4 の分割で入るかを別に見積もる。
 
+2026-11-12: Qwen-Image-2.1-Turbo を Mac の Neural Engine に入れた (DiT の画像のブロック lut4、文の符号器と DiT の文のパス lut8。512² で 1 ステップ 2.2 秒、1024² で 16 秒。時間の大半はキャッシュを超えるプログラムの読み込み)。[design.md](design.md) 16.165。
+
 ## 8. 決めること
 
 1. **Qwen-Image-2.1 のライセンス**: Qwen Research License で非商用だけ。model-table.md 13 節は「研究用のライセンスのモデルは足さない」としている (ただし Anima も CircleStone の非商用ライセンスで入っている)。入れるなら `license` に書き、配布 (prebuilt.md) は外す。Apache-2.0 の Qwen-Image (20B) と Qwen-Image-2512 (20B) は DiT が約 3 倍で、1024² の 1 パスが 1 分近くになる

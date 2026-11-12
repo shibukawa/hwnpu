@@ -82,6 +82,10 @@ mlpackage.Builder (MIL の演算列 + 重みの blob)
 | `const` | 全部 | `Const` | |
 | `constexpr_blockwise_shift_scale` | 新しい重み形式 (5 節) | `Const(i4/i8)` → `Convert(f16)` → `Multiply(scale)` | |
 | `constexpr_lut_to_dense` | `lut4/6/8` | **対応しない** | 「Intel では `-format int4` か `int8` を使う」というエラーにする |
+| `clip` `elu` `pow` `cos` `sin` `erf` `softplus` `cast` | ONNX の変換 (`internal/onnx`)、Magenta RT2、MOSS | `Clamp` `Elu` `Power` `Cos` `Sin` `Erf` (opset1)、`SoftPlus` (opset4)、`Convert` | 2026-11-12 に追加 (design.md 16.166) |
+| `max_pool` | RTMO、PP-OCR (ONNX) | `MaxPool` (opset1、明示のパディング) | |
+| `pixel_shuffle` | DA3、MoGe-2、ONNX の変換 | `DepthToSpace` (opset1、`depth_first`) | |
+| `conv_transpose` | Magenta RT2、MOSS の DAC | `ConvolutionBackpropData` (opset1) | MIL の `pad` は全長からの切り落とし。出力が全長より長い分は `output_padding`。groups は 1 だけ (milcpu と同じ) |
 | `read_state` `write_state` | LLM では未使用 | 対応しない | |
 
 入力 (`Parameter`) と出力の型は fp16 のまま。KV キャッシュの入出力 (`kv_NAME`、`kv_NAME_new`、`win_NAME`) も同じ規則で訳す。
@@ -348,3 +352,9 @@ LFM3-1.7B の重みの形式 (`lfm3` の `TestIntelIRCheckpoint`、`HWNPU_LFM3_D
 - `hwnpu-dev convert -paged` が `-backend intel` でも動く: 部分 (`out.partN.xml`) と、重みのない塊 1 つ分の注意 (`out.attn.xml`、MIL で組んで `ovlower` で下ろす)。hwnpu-chat と hwnpu-chat agent は LFM3 とその VL、Audio、Omni、Gemma 4 を Intel でもこの形で変換し、文脈はモデルの上限 (LFM3-1.7B は `lfm3-int8-grouped-p8192-c262144-q8.parts.json`)。分けない形は `--paged -1`
 - 実行側は変えていない。塊ごとに k、v、mask を付け替えて呼ぶ。Level Zero の `Bind` は終わった要求の付け替えを許し、投入のたびにコマンドリストを記録し直す
 - OpenVINO の CPU で `lfm3` と `gemma4` の `TestIntelIRPaged` が通る (相対誤差 5.7e-4 と 2.8e-3)。NPU の実機では未確認: ドライバのコンパイラが注意のグラフ (塊 8192、fp16) を受け付けるか、呼び出しごとのコマンドリストの記録の費用 (1 ステップに全注意の層 × 使っている塊の数だけ呼ぶ)
+
+### hwnpu-chat 以外のモデル (2026-11-12、design.md 16.166)
+
+- 足りなかった演算 (上の表の `clip` から `conv_transpose`) を ovlower に足し、Go の変換器を持つモデルはすべて IR を書くようにした: Whisper、LFM3-Audio の読み上げ、d1 (systemone)、Magenta RT2、MOSS-SoundEffect、Sana、DA3、MoGe-2、YuNet、EfficientSAM のエンコーダ (ONNX から)。pose、detect、ocr、pitch、notes は IR を書く道はあったが、装置の判定の不具合 (`llm.ProgramBackend`) で Intel では止まっていた
+- `HWNPU_BACKEND=openvino` で hwnpu-image と hwnpu-audio も Intel の経路に入る。Intel の NPU のない機械で、変換から結果までを OpenVINO の CPU で確かめた (表は design.md 16.166)。`hwnpu-dev irdiff` は Core ML のパッケージを IR に下ろして milcpu と比べる
+- AMD の IRON のグラフしかないもの (Chroma、SigLIP 2、FLUX) は対象外 (Go への移植が要る)。Qwen-Image は同じ日に Mac の Core ML の経路ができた (design.md 16.165) が、IR はまだ書かない

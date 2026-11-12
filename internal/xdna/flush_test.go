@@ -1,3 +1,7 @@
+//go:build amd64
+
+// The test flushes with CLFLUSH (flush_amd64.go); elsewhere FlushCPU does nothing.
+
 package xdna
 
 import "testing"

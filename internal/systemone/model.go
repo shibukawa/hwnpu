@@ -37,6 +37,9 @@ type Config struct {
 	ModelConfig, Weights, Tokenizer, Calibration string
 	// CacheDir is the compile cache ("" for none).
 	CacheDir string
+	// Backend picks the device as llm.OpenDevice does (empty: HWNPU_BACKEND, else the NPU
+	// found).
+	Backend string
 	// CPU runs the programs with the CPU interpreter (internal/milcpu) instead of the NPU: slow,
 	// for checking the answers on a machine without one.
 	CPU bool
@@ -117,7 +120,7 @@ func Load(ctx context.Context, c Config) (*Model, error) {
 		return nil, err
 	}
 	if !c.CPU {
-		if m.dev, _, err = llm.OpenDevice(ctx, "", c.CacheDir); err != nil { // HWNPU_BACKEND, else the NPU found
+		if m.dev, _, err = llm.OpenDevice(ctx, c.Backend, c.CacheDir); err != nil { // HWNPU_BACKEND, else the NPU found
 			m.Close()
 			return nil, err
 		}

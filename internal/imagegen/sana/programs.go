@@ -22,7 +22,7 @@ import (
 const ProgramKind = "sana-programs"
 
 // ProgramManifest is manifest.json of an export of Convert: the shapes and the programs (Core ML
-// packages) by part, relative to the export's directory.
+// packages, or OpenVINO IR with Backend intel) by part, relative to the export's directory.
 type ProgramManifest struct {
 	Kind    string `json:"kind"`
 	Backend string `json:"backend"`
@@ -106,7 +106,8 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 		bar = console.NewBar(e.log, "  loading "+name)
 	}
 	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
-	if err == nil && e.dev != nil && !p.OnNPU() {
+	// OpenVINO's CPU plugin (the Intel path checked without Intel's NPU) is not the NPU
+	if err == nil && e.dev != nil && !p.OnNPU() && e.dev.Info().Backend != "openvino" {
 		p.Close()
 		err = fmt.Errorf("%s does not run on the NPU alone", name)
 	}
@@ -114,6 +115,8 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 		switch {
 		case err != nil:
 			bar.Done("failed")
+		case e.dev != nil && e.dev.Info().Backend == "openvino":
+			bar.Done(console.Duration(bar.Elapsed()) + ", on " + e.dev.Info().Name)
 		case e.dev != nil: // console.Log colors it green, as Anima's loads say it
 			bar.Done(console.Duration(bar.Elapsed()) + ", all on the NPU")
 		default:

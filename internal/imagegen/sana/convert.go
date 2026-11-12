@@ -34,6 +34,9 @@ type ConvertOptions struct {
 	Group, TextGroup int
 	// Only, when not empty, writes these parts alone (text, caption, time, blocks, final, vae).
 	Only map[string]bool
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default) or
+	// OpenVINO IR for Intel's NPU.
+	Backend string
 }
 
 // Formats are the default weight formats of Gemma 2 and the DiT of the Sana name (a models.yaml
@@ -52,9 +55,23 @@ func Formats(name string) (text, dit string) {
 	return "int8", "fp16"
 }
 
-// defaults fills what o leaves out for the Sana name (Formats).
+// FormatsFor is Formats for a program format (llm.Options.Backend). Intel's NPU reads no lookup
+// tables: SANA 1.5 1.6B's DiT, whose per-row int8 breaks the pictures, stays in fp16 there
+// (the NPU shares the system's memory).
+func FormatsFor(name, backend string) (text, dit string) {
+	text, dit = Formats(name)
+	if backend == llm.BackendIntel && strings.HasPrefix(dit, "lut") {
+		dit = "fp16"
+	}
+	return text, dit
+}
+
+// defaults fills what o leaves out for the Sana name (FormatsFor).
 func (o *ConvertOptions) defaults(name string) {
-	text, dit := Formats(name)
+	if o.Backend == "" {
+		o.Backend = llm.BackendCoreML
+	}
+	text, dit := FormatsFor(name, o.Backend)
 	if o.TextFormat == "" {
 		o.TextFormat = text
 	}
@@ -79,7 +96,7 @@ func (o *ConvertOptions) defaults(name string) {
 	}
 }
 
-// Convert writes a Core ML export of the Sana repository root (transformer/, vae/,
+// Convert writes a Core ML (or OpenVINO IR, o.Backend) export of the Sana repository root (transformer/, vae/,
 // scheduler/; Gemma 2's text_encoder/ and tokenizer/ in text, which may be root) into out: the
 // programs, text/ (the tokenizer and the embedding table, bf16, as the IRON export's), model.json
 // and manifest.json.
@@ -134,11 +151,14 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	total := len(groups) + 2 + dc.Layers/o.Group + len(stages)
 	written := 0
 	write := func(kind string, p *mil.Part, format string) (string, error) {
-		opts := llm.Options{Backend: llm.BackendCoreML, Format: format}
+		opts := llm.Options{Backend: o.Backend, Format: format}
 		if kind == "text" {
 			opts.Quant = o.TextQuant
 		}
 		name := p.Name + ".mlpackage"
+		if o.Backend == llm.BackendIntel {
+			name = p.Name + ".xml"
+		}
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
@@ -151,7 +171,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
 		return name, nil
 	}
-	m := &ProgramManifest{Backend: llm.BackendCoreML, Version: ExportVersion,
+	m := &ProgramManifest{Backend: o.Backend, Version: ExportVersion,
 		Formats: map[string]string{"text": o.TextFormat, "dit": o.DitFormat, "vae": "fp16"},
 		Dit: DitConfig{Width: o.Width, Height: o.Height, Hidden: dc.Hidden, Layers: dc.Layers, Latent: dc.Latent,
 			TextRows: mil.TextRows, Group: o.Group,

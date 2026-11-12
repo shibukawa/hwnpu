@@ -20,10 +20,14 @@ var Arch = &llm.Arch{
 	// positions with lut8, 89% with lut6, for 8% more time per call (57.8 ms against 53.7); lut4
 	// is unusable (KL 1.91 nats on the CPU). The two programs of lut8 (4.9 GiB) are over the Neural
 	// Engine's compile cache, so hwnpu-chat keeps the one that generates and reads the prompts
-	// with it, which short texts to translate hardly feel (docs/design.md 16.71).
-	Format:     "lut8",
-	LastRow:    true,
-	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	// with it, which short texts to translate hardly feel (docs/design.md 16.71). The 8B takes
+	// lut4 (Config.Format).
+	Format: "lut8",
+	// int8 for the 2B and smaller: int4 loses the 2B (KL 0.72 nats on the CPU, int4-g128 0.32,
+	// int8 0.0025). The 8B takes int4 (Config.IntelFormat), its int8 not fitting the NPU.
+	IntelFormat: "int8",
+	LastRow:     true,
+	LoadConfig:  func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }
 
 func init() { llm.Register(Arch) }

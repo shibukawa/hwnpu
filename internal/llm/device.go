@@ -22,12 +22,13 @@ const (
 const BackendEnv = "HWNPU_BACKEND"
 
 // ProgramBackend is the program format a device backend runs (Options.Backend): coreml for Core
-// ML, intel for Level Zero and OpenVINO; "" for a backend that runs neither.
+// ML, intel for Level Zero and OpenVINO; "" for a backend that runs neither. A program format
+// is its own (what OpenDevice returns), so that a caller may pass either.
 func ProgramBackend(device string) string {
 	switch device {
-	case "coreml":
+	case "coreml", "coreai":
 		return BackendCoreML
-	case "levelzero", "openvino":
+	case "levelzero", "openvino", BackendIntel:
 		return BackendIntel
 	}
 	return ""
@@ -41,10 +42,10 @@ func deviceBackends(name string) ([]string, error) {
 		return []string{"coreml", "levelzero", "openvino"}, nil
 	case BackendIntel:
 		return []string{"levelzero", "openvino"}, nil
-	case "coreml", "levelzero", "openvino":
+	case "coreml", "coreai", "levelzero", "openvino":
 		return []string{name}, nil
 	}
-	return nil, fmt.Errorf("llm: unknown backend %q (coreml, intel, levelzero or openvino)", name)
+	return nil, fmt.Errorf("llm: unknown backend %q (coreml, coreai, intel, levelzero or openvino)", name)
 }
 
 // FindDevice finds the device a converted model runs on: the one of the backend named (a device
@@ -89,7 +90,7 @@ func ProgramFormat(ctx context.Context, name string) (string, error) {
 	switch name {
 	case BackendCoreML, BackendIntel:
 		return name, nil
-	case "levelzero", "openvino":
+	case "levelzero", "openvino", "coreai":
 		return ProgramBackend(name), nil
 	}
 	_, backend, err := FindDevice(ctx, name)
@@ -105,7 +106,7 @@ func OpenDevice(ctx context.Context, name, cacheDir string, opts ...hwnpu.Option
 	if err != nil {
 		return nil, "", err
 	}
-	if backend == "coreml" {
+	if backend == BackendCoreML { // Core ML's and Core AI's devices: the Neural Engine
 		if err := lockNPU(ctx); err != nil {
 			return nil, "", err
 		}
@@ -121,11 +122,28 @@ func OpenDevice(ctx context.Context, name, cacheDir string, opts ...hwnpu.Option
 	return dev, backend, nil
 }
 
+// DeviceBackend is the device backend a command names (its --backend, else HWNPU_BACKEND) when it
+// names one rather than a program format ("" otherwise): for opening that device, as coreai
+// runs Core ML's programs on Core AI.
+func DeviceBackend(name string) string {
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv(BackendEnv))
+	}
+	switch name {
+	case "coreml", "coreai", "levelzero", "openvino":
+		return name
+	}
+	return ""
+}
+
 // DeviceName is what logs call the device: the Neural Engine or the device's own name.
 func DeviceName(dev *hwnpu.Device) string {
 	info := dev.Info()
-	if info.Backend == "coreml" {
+	switch info.Backend {
+	case "coreml":
 		return "the Neural Engine"
+	case "coreai":
+		return "the Neural Engine (Core AI)"
 	}
 	return info.Name
 }

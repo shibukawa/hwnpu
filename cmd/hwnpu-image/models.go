@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/shibukawa/hwnpu"
 	"io"
 	"os"
 	"os/exec"
@@ -80,7 +81,7 @@ func (c *ListCmd) Run() error {
 	if c.Kind != "" {
 		listModels(os.Stdout, chat.Kind(c.Kind))
 	} else {
-		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel)
+		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel, chat.KindSegment)
 	}
 	return nil
 }
@@ -92,19 +93,44 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 	vendor := npuVendor(context.Background())
 	chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
 		if d, _, err := chat.ChooseDevice(m, vendor, ""); err == nil && d == "cpu" {
-			return "CPU (ONNX Runtime)"
+			return "CPU"
+		}
+		if (m.Kind == chat.KindDetect || m.Kind == chat.KindPose || m.Kind == chat.KindSegment) && vendor == "amd" { // an export of iron_onnxcnn.py or iron_efficientsam.py, made on the first run
+			if d, err := amdExport(m, ""); err == nil {
+				return "~/models/" + filepath.Base(d)
+			}
+			return "exported on first run (IRON)"
+		}
+		if m.Kind == chat.KindSegment { // the encoder has no Core ML or OpenVINO form yet
+			return "CPU"
 		}
 		if m.Kind == chat.KindPose || m.Kind == chat.KindDetect || m.Kind == chat.KindOCR { // converted on the first run, for Core ML or OpenVINO
 			if d, _, err := chat.ConvertedDevice(m, vendor, ""); err == nil && d == "cpu" {
-				return "CPU (ONNX Runtime)"
+				return "CPU"
 			}
 			return "converted on first run"
 		}
 		if d, err := amdExport(m, ""); err == nil {
 			return "~/models/" + filepath.Base(d)
 		}
+		if m.Kind == chat.KindImage && coremlImage(m.Family, vendor) {
+			return "converted on first run"
+		}
 		return "-"
 	}, kinds...)
+}
+
+// coremlImage reports whether the image family converts for this machine's NPU (vendor, as
+// hwnpu.Vendor's String) on its first run: Anima on Apple's and Intel's, Sana and Qwen-Image on
+// Apple's.
+func coremlImage(family, vendor string) bool {
+	switch v := strings.ToLower(vendor); {
+	case strings.HasPrefix(family, "anima"):
+		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
+	case strings.HasPrefix(family, "sana"), strings.HasPrefix(family, "qwen-image"):
+		return v == strings.ToLower(hwnpu.VendorApple.String())
+	}
+	return false
 }
 
 // amdExport is the export of model m on AMD's NPU: ~/models/NAME.amd-npu2 or

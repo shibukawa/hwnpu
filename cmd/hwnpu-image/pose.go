@@ -22,11 +22,12 @@ import (
 )
 
 // PoseCmd is "hwnpu-image pose": the people in pictures and their 17 COCO keypoints with RTMO
-// (OpenMMLab MMPose), on Apple's Neural Engine or Intel's NPU, converted the first time, and
-// elsewhere (AMD's NPU has no form of it yet) or with --device cpu on the CPU with ONNX Runtime
-// (--cpu: the converted program on the CPU interpreter). The network up to the head's outputs for
-// every anchor runs on the NPU; top-k, non-maximum suppression and each person's keypoint
-// classifier on the host.
+// (OpenMMLab MMPose), on Apple's Neural Engine or Intel's NPU, converted the first time, on AMD's
+// NPU from an export of tools/amd/iron_onnxcnn.py (made with IRON on the first run), and
+// elsewhere or with --device cpu on the CPU with ONNX Runtime (--cpu: the converted program on
+// the CPU interpreter). The network up to the head's outputs for every anchor runs on the NPU
+// (on AMD's, up to the head's convolutions); top-k, non-maximum suppression and each person's
+// keypoint classifier on the host.
 //
 // For each picture it prints one line of JSON: each person's box, score and keypoints in the
 // picture's pixels. With --draw it also writes NAME.pose.png with them and the skeleton drawn.
@@ -62,6 +63,28 @@ func (c *PoseCmd) Run(ctx context.Context) error {
 		dir = chat.ModelsDir()
 	}
 	setup := pose.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), SHA256: m.SHA256[pose.ModelFile], Log: lw}
+	fetch := func() (string, error) { return pose.Fetch(ctx, setup) }
+	if export := amdCNNExport(ctx, m, c.Device, c.CPU, logf, fetch, func(python []string, model, dir string) error {
+		return pose.ExportNPU(ctx, python, m.Name, model, dir, lw)
+	}); export != "" {
+		model, err := fetch()
+		if err != nil {
+			return err
+		}
+		t0 := time.Now()
+		dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		if err != nil {
+			return err
+		}
+		defer dev.Close()
+		e, err := pose.OpenNPU(ctx, dev, export, model)
+		if err != nil {
+			return err
+		}
+		defer e.Close()
+		logf("loaded %s in %.1f s, on AMD's NPU (%s)", m.Name, time.Since(t0).Seconds(), filepath.Base(export))
+		return c.estimate(ctx, e, logf)
+	}
 	ort, builtin := cpuRoute(ctx, m, c.Device, c.CPU, c.Threads, logf)
 	c.CPU = c.CPU || builtin
 	if ort {

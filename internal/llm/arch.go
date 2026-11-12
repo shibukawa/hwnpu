@@ -65,6 +65,12 @@ type Formatter interface {
 	Format() string
 }
 
+// IntelFormatter is a Model whose weight format for Intel's NPU, when none is given, depends on
+// the checkpoint; an empty IntelFormat takes the architecture's.
+type IntelFormatter interface {
+	IntelFormat() string
+}
+
 // DefaultFormat is the weight format to use for m when none is given.
 func (a *Arch) DefaultFormat(m Model) string {
 	if f, ok := m.(Formatter); ok && f.Format() != "" {
@@ -80,6 +86,9 @@ func (a *Arch) DefaultFormat(m Model) string {
 func (a *Arch) DefaultFormatFor(m Model, backend string) string {
 	if backend != "intel" {
 		return a.DefaultFormat(m)
+	}
+	if f, ok := m.(IntelFormatter); ok && f.IntelFormat() != "" {
+		return f.IntelFormat()
 	}
 	if a.IntelFormat != "" {
 		return a.IntelFormat

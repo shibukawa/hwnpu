@@ -259,6 +259,8 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 
 `HWNPU_OV_DEVICE=NPU` runs on OpenVINO's NPU plugin, `CPU` (the default) on the CPU. On Windows, set `HWNPU_OV_PYTHON` to the path of `python.exe`.
 
+The commands without `--backend` (hwnpu-image, hwnpu-audio) run on OpenVINO the same way with the environment variable `HWNPU_BACKEND=openvino`. The commands then take the machine for an Intel one and hand what they convert for Intel's NPU (OpenVINO IR) to OpenVINO, so the Intel path can be checked from the conversion to the result on a machine without Intel's NPU (an AMD one, say).
+
 ## 7. All the checks at once (Windows)
 
 `tools/intel/hwnpu-intel-check.ps1` (PowerShell 5.1) runs steps 4 and 6 and more in one go, each with `go run` in the clone and a time limit, and packs the logs into a zip under `%USERPROFILE%\hwnpu-intel-logs`: the machine and the driver, each command's output, its time and memory. A test that fails does not stop the others, and running it again with the same `-Out` skips the tests that passed.
@@ -267,7 +269,7 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
 ```
 
-`-Level quick` (about 30 minutes) checks the device, `hwnpu-dev report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, hwnpu-chat agent, hwnpu-dev formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Anima at 1024 x 1024 and hwnpu-dev probe. `-List` shows the tests, `-Only` and `-Skip` choose them.
+`-Level quick` (about 30 minutes) checks the device, `hwnpu-dev report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, hwnpu-chat agent, hwnpu-dev formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Qwen3, Anima at 1024 x 1024, hwnpu-dev probe and the models not yet run on an Intel machine (OCR, RTMDet, RTMO, YuNet, DA3, MoGe-2, SwiftF0, Basic Pitch, Whisper, LFM3-Audio's speech, Magenta RealTime 2, Sana 600M, MOSS-SoundEffect: about 25 GB more of downloads, 17 GB less with `-Skip sana,sfx`). `-List` shows the tests, `-Only` and `-Skip` choose them.
 
 ## Troubleshooting
 

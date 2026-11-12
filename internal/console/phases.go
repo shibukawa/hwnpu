@@ -45,6 +45,7 @@ func change(f func()) {
 	now := time.Now()
 	i := phaseNow()
 	p.wall[i] += now.Sub(p.since)
+	energyChange(i)
 	if p.active > 0 {
 		p.dl[i] += now.Sub(p.dlSince)
 	}
@@ -85,6 +86,33 @@ func Loading(what string) (done func()) {
 			}
 		})
 	}
+}
+
+// Reading counts the time until done as preparing, as Loading does, for weights read again
+// while the work goes on (a pipeline whose groups of layers are read into one bank in turn:
+// iron.GraphOptions.SwapVariants, every step), without a line each in the profile: the profile
+// tells their count, bytes (done's, the bytes read) and time once.
+func Reading() (done func(bytes int64)) {
+	change(func() { phases.loading++ })
+	start := time.Now()
+	var once sync.Once
+	return func(bytes int64) {
+		once.Do(func() {
+			change(func() { phases.loading-- })
+			reads.mu.Lock()
+			reads.n++
+			reads.bytes += bytes
+			reads.d += time.Since(start)
+			reads.mu.Unlock()
+		})
+	}
+}
+
+var reads struct {
+	mu    sync.Mutex
+	n     int
+	bytes int64
+	d     time.Duration
 }
 
 // Downloading counts the time until stop as downloading. what (REPOSITORY/FILE) names it in the
@@ -135,6 +163,9 @@ func Times(w io.Writer) {
 	}
 	line += "converting, loading and compiling " + Duration(prep) + ", running " + Duration(run)
 	fmt.Fprintln(w, line)
+	if e := energyLine(dl+prep, run); e != "" {
+		fmt.Fprintln(w, e)
+	}
 }
 
 // Done writes the command's last lines: Times, and the profile with HWNPU_PROFILE.

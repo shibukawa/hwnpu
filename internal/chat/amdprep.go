@@ -179,29 +179,50 @@ func PrepareAMD(ctx context.Context, m Model, dir string, log io.Writer) (string
 			return "", err
 		}
 	}
+	args := append([]string{m.AMDExport[0], ck, ExportOut}, m.AMDExport[1:]...)
+	if err := RunIRON(ctx, python, m.Name, "iron_export_lm.py", args, out, log); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// ExportOut stands in RunIRON's args for the directory the exporter writes.
+const ExportOut = "{out}"
+
+// RunIRON runs one of hwnpu's IRON exporters (tools/amd, built into hwnpu) in IRON's
+// environment (python, of IRONPython): script with args, ExportOut the export's directory,
+// made beside out (out.part, its log out.log) and renamed to out when whole, out.done written
+// last. The exporter's latest line follows a bar on log.
+func RunIRON(ctx context.Context, python []string, name, script string, args []string, out string, log io.Writer) error {
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		return "", err
+		return err
 	}
 	tools, err := amdtools.Extract(filepath.Join(cache, "hwnpu"))
 	if err != nil {
-		return "", err
+		return err
 	}
 	part, logPath := out+".part", out+".log"
 	os.RemoveAll(part) // cut off before: made again
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		return "", err
+		return err
 	}
 	lf, err := os.Create(logPath)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer lf.Close()
-	args := append(append(slices.Clone(python[1:]), filepath.Join(tools, "iron_export_lm.py"), m.AMDExport[0], ck, part), m.AMDExport[1:]...)
-	cmd := exec.CommandContext(ctx, python[0], args...)
+	all := append(slices.Clone(python[1:]), filepath.Join(tools, script))
+	for _, a := range args {
+		if a == ExportOut {
+			a = part
+		}
+		all = append(all, a)
+	}
+	cmd := exec.CommandContext(ctx, python[0], all...)
 	cmd.Dir = tools
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
-	bar := console.NewBar(log, fmt.Sprintf("exporting %s for AMD's NPU with IRON", m.Name))
+	bar := console.NewBar(log, fmt.Sprintf("exporting %s for AMD's NPU with IRON", name))
 	last := &lastLine{w: lf}
 	cmd.Stdout, cmd.Stderr = last, last
 	stop := make(chan struct{})
@@ -222,19 +243,23 @@ func PrepareAMD(ctx context.Context, m Model, dir string, log io.Writer) (string
 	if err != nil {
 		bar.Done("failed")
 		os.RemoveAll(part)
-		return "", fmt.Errorf("exporting %s for AMD's NPU failed (%v); the end of %s:\n%s", m.Name, err, logPath, tail(logPath, 15))
+		return fmt.Errorf("exporting %s for AMD's NPU failed (%v); the end of %s:\n%s", name, err, logPath, tail(logPath, 15))
 	}
 	os.RemoveAll(out) // one without its manifest: cut off by hand
 	if err := os.Rename(part, out); err != nil {
 		bar.Done("failed")
-		return "", err
+		return err
 	}
 	if err := os.WriteFile(out+".done", nil, 0o644); err != nil {
-		return "", err
+		return err
 	}
 	bar.Done(fmt.Sprintf("in %s to %s", console.Duration(bar.Elapsed()), shortPath(out)))
-	return out, nil
+	return nil
 }
+
+// IRONPython is the command that runs Python in IRON's environment (IRONEnv, else python3 on
+// PATH), checked by importing IRON and mlir-aie.
+func IRONPython(ctx context.Context) ([]string, error) { return ironPython(ctx) }
 
 // ironPython is the command that runs Python in IRON's environment (IRONEnv, else python3 on
 // PATH), checked by importing IRON and mlir-aie.

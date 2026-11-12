@@ -386,7 +386,8 @@ def main(argv=None) -> int:
     ap.add_argument("root", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--size", type=int, default=1024)
-    ap.add_argument("--parts", nargs="*", default=["mods", "dit_in", "ctx", "dit_out", "doubles", "singles"])
+    ap.add_argument("--parts", nargs="*", default=["mods", "dit_in", "ctx", "dit_out", "doubles", "singles", "t5", "vae"],
+                    help="graphs to export: the DiT's, and t5 and vae (tools/amd/iron_chroma_parts.py, run after the DiT)")
     ap.add_argument("--proj", default=FMT.proj, choices=("bf16", "q8", "q6", "q4"))
     ap.add_argument("--one-group", action="store_true")
     ap.add_argument("--random", action="store_true")
@@ -404,6 +405,15 @@ def main(argv=None) -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     export_dit(a.root, a.out, c, a.check)
     write_model(a.root, a.out)
+    rest = [p for p in ("t5", "vae") if p in a.parts]
+    if rest:  # in a process of its own: the parts' module sets IRON's formats and precisions its way
+        import subprocess
+
+        cmd = [sys.executable, str(Path(__file__).with_name("iron_chroma_parts.py")), str(a.root), str(a.out),
+               "--size", str(a.size), "--only", *rest, "--device", a.device, "--cols", str(a.cols)]
+        if a.check:
+            cmd.append("--check")
+        subprocess.run(cmd, check=True)
     return 0
 
 

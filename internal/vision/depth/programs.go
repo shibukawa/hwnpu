@@ -39,13 +39,14 @@ func (p *progSized) close() error {
 	return err
 }
 
-// useProgram loads size w x h of a Core ML export, converting it first when it is missing.
+// useProgram loads size w x h of an export of Prepare (Core ML packages or OpenVINO IR),
+// converting it first when it is missing.
 func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized, error) {
 	if _, err := os.Stat(d + ".done"); err != nil {
 		if e.Logf != nil {
 			e.Logf("depth: converting %dx%d (the first picture of this aspect)", w, h)
 		}
-		if err := ConvertSize(e.Checkpoint, d, w, h); err != nil {
+		if err := ConvertSize(e.Checkpoint, d, w, h, e.Format); err != nil {
 			return nil, err
 		}
 	}
@@ -62,8 +63,9 @@ func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized,
 		name string
 	}{{&s.prog.vit, "vit"}, {&s.prog.head, "head"}} {
 		t0 := time.Now()
-		p, err := runner.Open(ctx, e.dev, filepath.Join(d, x.name+".mlpackage"))
-		if err == nil && e.dev != nil && !p.OnNPU() {
+		p, err := runner.Open(ctx, e.dev, filepath.Join(d, x.name+ProgramExt(e.Format)))
+		// OpenVINO's CPU plugin (the Intel path checked without Intel's NPU) is not the NPU
+		if err == nil && e.dev != nil && !p.OnNPU() && e.dev.Info().Backend != "openvino" {
 			p.Close()
 			err = fmt.Errorf("%s does not run on the NPU alone", x.name)
 		}
@@ -106,9 +108,9 @@ func (e *Estimator) estimateProgram(ctx context.Context, s *sized, img image.Ima
 }
 
 // ConvertSize writes the programs of the DA3 checkpoint root (config.json, model.safetensors)
-// for w x h pixels into d (vit.mlpackage, head.mlpackage, model.json); d.done, written last,
-// says they are whole.
-func ConvertSize(root, d string, w, h int) error {
+// for w x h pixels into d in format ("coreml": vit.mlpackage and head.mlpackage; "intel": vit.xml
+// and head.xml, OpenVINO IR) and model.json; d.done, written last, says they are whole.
+func ConvertSize(root, d string, w, h int, format string) error {
 	c, err := mil.ReadConfig(root, w, h)
 	if err != nil {
 		return err
@@ -125,7 +127,7 @@ func ConvertSize(root, d string, w, h int) error {
 		return err
 	}
 	for _, p := range []*mil.Part{mil.Vit(c), mil.Head(c)} {
-		if _, err := llm.WritePart(filepath.Join(d, p.Name+".mlpackage"), p, wt, llm.Options{Backend: llm.BackendCoreML, Format: "fp16"}, nil); err != nil {
+		if _, err := llm.WritePart(filepath.Join(d, p.Name+ProgramExt(format)), p, wt, llm.Options{Backend: ProgramBackend(format), Format: "fp16"}, nil); err != nil {
 			return fmt.Errorf("depth: %s: %w", p.Name, err)
 		}
 	}
@@ -147,10 +149,13 @@ type Setup struct {
 	Dir  string // the checkpoints (Dir/NAME) and the exports
 	Repo string // the Hugging Face repository (depth-anything/DA3MONO-LARGE)
 	Name string
-	Log  io.Writer
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default) or
+	// OpenVINO IR for Intel's NPU.
+	Backend string
+	Log     io.Writer
 }
 
-// Prepare makes a DA3 ready for Apple's Neural Engine in s.Dir, as hwnpu-chat makes its models
+// Prepare makes a DA3 ready for Apple's Neural Engine (or Intel's NPU, s.Backend) in s.Dir, as hwnpu-chat makes its models
 // ready: it downloads the checkpoint when missing and writes the export's model.json; each size
 // is converted when a picture first takes it (seconds; its first load compiles it).
 func Prepare(ctx context.Context, s Setup) (string, error) {
@@ -168,9 +173,10 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.coreml", strings.ToLower(s.Name), ExportVersion))
+	format := ExportFormat(s.Backend)
+	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	x := Export{Name: s.Name, Kind: "depth", Metric: strings.Contains(strings.ToLower(s.Name), "metric"), MetricScale: 300,
-		Second: "sky", Format: "coreml", Checkpoint: root, Version: ExportVersion}
+		Second: "sky", Format: format, Checkpoint: root, Version: ExportVersion}
 	if c.Dual {
 		x.Second = "confidence"
 	}
@@ -185,4 +191,29 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	return out, os.WriteFile(filepath.Join(out, "model.json"), append(b, '\n'), 0o644)
+}
+
+// ExportFormat is an export's Format for a program format (llm.Options.Backend): "intel" for
+// OpenVINO IR, else "coreml".
+func ExportFormat(backend string) string {
+	if backend == llm.BackendIntel {
+		return "intel"
+	}
+	return "coreml"
+}
+
+// ProgramExt is the file name extension of a program of an export's Format.
+func ProgramExt(format string) string {
+	if format == "intel" {
+		return ".xml"
+	}
+	return ".mlpackage"
+}
+
+// ProgramBackend is the program format (llm.Options.Backend) of an export's Format.
+func ProgramBackend(format string) string {
+	if format == "intel" {
+		return llm.BackendIntel
+	}
+	return llm.BackendCoreML
 }

@@ -183,7 +183,7 @@ builds:
 | `path` | `from: team-share:plamo-distill-0.8b` | `path` の下のフォルダ。`copy: false` なら写さずに読む (NFS や SMB の共有フォルダ) |
 | `s3` | `from: lab-s3:plamo-distill-0.8b` | `aws s3 sync s3://BUCKET/PREFIX/plamo-distill-0.8b/ DIR` を呼ぶ |
 
-S3 は `aws` コマンド (v2) に任せる。認証、リージョン、再試行、マルチパートを自前で持たないため。
+S3 は `aws` コマンド (v2) に任せる。認証、リージョン、再試行、マルチパートを自前で持たないため。 (docs/cache-sharing.md 7.2 節で改める: tinygodriver の `storage/s3` に移す)
 
 - `endpoint` は `--endpoint-url`、`profile` は `--profile`、`region` は `--region`、`no_sign` は `--no-sign-request` で渡す。ほかは `aws` の通常の設定 (`AWS_*` の環境変数、`~/.aws/config`) がそのまま効く
 - rustfs や MinIO のようにパス形式のアドレスが要る実装は、`~/.aws/config` のそのプロファイルに `s3 = addressing_style = path` を書く (`aws` にコマンドラインの指定がないため)。docs に手順を書く
@@ -220,6 +220,8 @@ aliases:
 取得元が変わったときに、前の取得元で変換したプログラムを読まないように、モデルのフォルダに `source.json` (取得元、コミット、ファイルごとの sha256、取った日時) を書く。違えば変換し直す (5.3 節)。
 
 ### 5.2 どこから持ってくるか (読み込みの順)
+
+変換済みの配布とキャッシュの層は docs/cache-sharing.md (2026-11-12) にまとめ直した。この節の `prebuilt` の書き方は、そちらの 4 節 (モデル × 対象の版) が正。
 
 モデルには取得元を 2 つ書ける。
 
@@ -481,7 +483,7 @@ skill は最後に、どちらにするかを聞く。
 
 | 消すもの | いつ |
 |---|---|
-| 元のチェックポイント (safetensors) | 今の設定のプログラムと表 (`tables.safetensors`) が揃ったら、すぐ。`config.json`、トークナイザー、`source.json` は残す。変換し直すときは固定どおりのものを落とし直す |
+| 元のチェックポイント (safetensors) | (docs/cache-sharing.md 8.1 節で改めた: 手元で作ったときは元も残し、長く使っていないときと上限のときだけ消す) 今の設定のプログラムと表 (`tables.safetensors`) が揃ったら、すぐ。`config.json`、トークナイザー、`source.json` は残す。変換し直すときは固定どおりのものを落とし直す |
 | 前の設定、前の `format_version`、前のハッシュのプログラム | 準備の終わりに。今の `gemma4-lut6-c16320-*` のような古い名前もここで消える |
 | 前に配布物を落とした分と、手元で変換した分の重複 | 配布物に切り替わったら、手元で変換した方を消す |
 | 長く使っていないモデル | `cache.unused_days` (既定 30 日) 使っていなければ、フォルダごと消す。消しても次に頼めば落とし直す |

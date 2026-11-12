@@ -55,7 +55,7 @@ type Export struct {
 	// Second is what the head's second output is: "sky" (DPT: DA3MONO, DA3METRIC) or
 	// "confidence" (DualDPT: DA3-SMALL, DA3-BASE).
 	Second string `json:"second"`
-	// Format is "coreml" for an export of Prepare (a size's programs in WxH/, converted from
+	// Format is "coreml" (or "intel", OpenVINO IR) for an export of Prepare (a size's programs in WxH/, converted from
 	// Checkpoint when a picture first takes the size), "" for one of tools/amd/iron_da3.py.
 	Format     string `json:"format,omitempty"`
 	Checkpoint string `json:"checkpoint,omitempty"`
@@ -188,7 +188,7 @@ func (e *Estimator) use(ctx context.Context, w, h int) (*sized, error) {
 		return nil, err
 	}
 	d := filepath.Join(e.dir, fmt.Sprintf("%dx%d", w, h))
-	if e.Format == "coreml" {
+	if e.Format == "coreml" || e.Format == "intel" {
 		return e.useProgram(ctx, d, w, h)
 	}
 	b, err := os.ReadFile(filepath.Join(d, "model.json"))
