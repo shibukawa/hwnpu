@@ -1,18 +1,21 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/backend/coreml"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
@@ -25,6 +28,12 @@ import (
 // with milcpu running ref, the package it was lowered from. With coreML the packages run on Core ML instead, to tell Core AI's errors from the program's.
 func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls int, ref string) error {
 	ctx := context.Background()
+	// one hwnpu process on the Neural Engine at a time, as the commands (llm.OpenDevice)
+	if coreML || !coreai.OnCPU() {
+		if err := llm.LockNPU(ctx); err != nil {
+			return err
+		}
+	}
 	if os.Getenv("AICHECK_ENUMERATE") != "" { // as the commands do: every backend's devices first
 		if _, err := hwnpu.Enumerate(ctx); err != nil {
 			return err
@@ -100,7 +109,16 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			if err != nil {
 				return err
 			}
-			want, err := prog.Run(in, milcpu.Options{RoundF16: true})
+			var cut []string // the output of HWNPU_AILOWER_CUT: a value inside the package
+			for _, o := range outs {
+				cut = append(cut, o.Name)
+			}
+			inside := map[string][]float32{}
+			want, err := prog.Run(in, milcpu.Options{RoundF16: true, Value: func(name string, data []float32) {
+				if slices.Contains(cut, name) {
+					inside[name] = slices.Clone(data)
+				}
+			}})
 			closer.Close()
 			if err != nil {
 				return err
@@ -108,7 +126,14 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			for _, o := range outs {
 				got := make([]float32, o.Bytes/2)
 				hwnpu.DecodeF16(got, bufs[o.Index].Bytes())
-				cos, rel, bad := compare(got, want[o.Name].Data)
+				w, ok := want[o.Name]
+				if !ok {
+					w.Data = inside[o.Name]
+				}
+				cos, rel, bad := compare(got, w.Data)
+				if os.Getenv("AICHECK_WORST") != "" {
+					worst(got, w.Data, o.Dims)
+				}
 				line += fmt.Sprintf(" | %s cos %.6f rel %.4f nonfinite %d", o.Name, cos, rel, bad)
 			}
 		}
@@ -135,4 +160,31 @@ func compare(got, want []float32) (cos, rel float64, bad int) {
 		diff += (g - w) * (g - w)
 	}
 	return dot / math.Sqrt(ng*nw), math.Sqrt(diff / nw), bad
+}
+
+// worst prints the 12 elements that differ most (AICHECK_WORST): their index, position and
+// values. They show where the values are large as much as where the error is: PP-OCR's sat in
+// the last column while every column was off (design.md 16.183).
+func worst(got, want []float32, dims []int) {
+	type e struct {
+		i int
+		d float64
+	}
+	var es []e
+	for i := range got {
+		es = append(es, e{i, math.Abs(float64(got[i] - want[i]))})
+	}
+	slices.SortFunc(es, func(a, b e) int { return cmp.Compare(b.d, a.d) })
+	for _, x := range es[:min(12, len(es))] {
+		fmt.Printf("  [%d] dims %v: got %g want %g\n", x.i, unravel(x.i, dims), got[x.i], want[x.i])
+	}
+}
+
+func unravel(i int, dims []int) []int {
+	out := make([]int, len(dims))
+	for k := len(dims) - 1; k >= 0; k-- {
+		out[k] = i % dims[k]
+		i /= dims[k]
+	}
+	return out
 }

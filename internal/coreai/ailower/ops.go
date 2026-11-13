@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"math"
+	"os"
 	"slices"
 
 	"github.com/shibukawa/hwnpu/internal/coreai/mlirbc"
@@ -41,6 +42,16 @@ func (l *lowerer) op(op *milspec.Operation) {
 		l.vals[out] = v
 	}
 	switch {
+	case typ == "real_div" && l.scalarConst(op, "y") && os.Getenv("HWNPU_AILOWER_DIVIDE") == "":
+		// x / c as x times 1 / c: on the Neural Engine, Core AI's divide_v1 by a constant came
+		// out as about c x plus an offset a channel in PP-OCR's detector (the exact gelu's x /
+		// sqrt 2 after a depthwise 3 x 3 and a 1 x 1: twice the value, 0.05 the detector's
+		// cosine), though not on its CPU or GPU, nor in a program of those three operations
+		// alone (design.md 16.182, 16.183). HWNPU_AILOWER_DIVIDE=1 keeps divide_v1, for
+		// looking into it
+		x := l.in(op, "x")
+		set(l.binary("mul_v1", x, l.scalar(x.elem, 1/l.float(op, "y", 1)), oshape))
+		return
 	case binaryOps[typ] != "":
 		set(l.binary(binaryOps[typ], l.in(op, "x"), l.in(op, "y"), oshape))
 		return
@@ -70,6 +81,12 @@ func (l *lowerer) op(op *milspec.Operation) {
 		x := l.in(op, "x")
 		e := l.emit("exp_v1", x.elem, x.shape, nil, x)
 		set(l.emit("log_v1", x.elem, x.shape, nil, l.binary("add_v1", e, l.scalar(x.elem, 1), x.shape)))
+	case "elu": // x above 0, alpha (exp(x) - 1) below: max(x, 0) + alpha (exp(min(x, 0)) - 1)
+		x := l.in(op, "x")
+		zero := l.scalar(x.elem, 0)
+		e := l.emit("exp_v1", x.elem, x.shape, nil, l.binary("minimum_v1", x, zero, x.shape))
+		neg := l.binary("mul_v1", l.binary("sub_v1", e, l.scalar(x.elem, 1), x.shape), l.scalar(x.elem, l.float(op, "alpha", 1)), x.shape)
+		set(l.binary("add_v1", l.binary("maximum_v1", x, zero, x.shape), neg, x.shape))
 	case "gelu":
 		set(l.gelu(l.in(op, "x"), l.str(op, "mode", "EXACT")))
 	case "clip":
@@ -136,13 +153,14 @@ func (l *lowerer) op(op *milspec.Operation) {
 		set(l.reshape(y, []int{n, co, h * r, w * r}))
 	case "pad":
 		x := l.in(op, "x")
-		if m := l.str(op, "mode", "constant"); m != "constant" {
+		m := l.str(op, "mode", "constant")
+		if m != "constant" && m != "replicate" && m != "reflect" {
 			l.fail("pad %s: mode %s", out, m)
 		}
 		pads := l.ints(op, "pad")
 		full := make([]int, 2*len(x.shape))
 		copy(full[len(full)-len(pads):], pads)
-		set(l.pad(x, full, l.float(op, "constant_val", 0)))
+		set(l.padMode(x, full, l.float(op, "constant_val", 0), m))
 	case "layer_norm":
 		set(l.layerNorm(op))
 	case "cast":
@@ -159,6 +177,10 @@ func (l *lowerer) op(op *milspec.Operation) {
 		set(l.emit("cast_v1", elem, x.shape, nil, x))
 	case "conv":
 		set(l.conv(op, oshape))
+	case "max_pool":
+		set(l.maxPool(op, oshape))
+	case "conv_transpose":
+		set(l.convTranspose(op, oshape))
 	case "constexpr_lut_to_dense":
 		set(l.lutToDense(op, oshape))
 	case "constexpr_blockwise_shift_scale":
@@ -166,6 +188,24 @@ func (l *lowerer) op(op *milspec.Operation) {
 	default:
 		l.fail("operation %s (%s) is not supported", typ, out)
 	}
+}
+
+// scalarConst reports whether op's input key is a constant float scalar.
+func (l *lowerer) scalarConst(op *milspec.Operation, key string) bool {
+	a := op.GetInputs()[key]
+	if a == nil || len(a.GetArguments()) != 1 {
+		return false
+	}
+	b := a.GetArguments()[0]
+	c := b.GetValue()
+	if n := b.GetName(); n != "" {
+		c = l.consts[l.resolve(n)]
+	}
+	if c == nil {
+		return false
+	}
+	elem, _, raw := l.decode(c)
+	return elem == "float16" && len(raw) == 2 || elem == "float32" && len(raw) == 4
 }
 
 func (l *lowerer) axis(a, rank int) int {
@@ -467,7 +507,11 @@ func putF32(b []byte, f float32) {
 }
 
 // pad pads x by pads (before and after of each axis), with v.
-func (l *lowerer) pad(x val, pads []int, v float32) val {
+func (l *lowerer) pad(x val, pads []int, v float32) val { return l.padMode(x, pads, v, "constant") }
+
+// padMode pads x by pads in mode: constant (v), replicate (the border's element) or reflect
+// (mirrored about the border, MIL's and Core AI's alike).
+func (l *lowerer) padMode(x val, pads []int, v float32, mode string) val {
 	shape := slices.Clone(x.shape)
 	any := false
 	for i := range shape {
@@ -477,7 +521,7 @@ func (l *lowerer) pad(x val, pads []int, v float32) val {
 	if !any {
 		return x
 	}
-	return l.emit("pad_v1", x.elem, shape, []mlirbc.Prop{l.prop("#aicode.padding_mode_v1<constant>")}, x, l.u32s(pads...), l.scalar(x.elem, v))
+	return l.emit("pad_v1", x.elem, shape, []mlirbc.Prop{l.prop("#aicode.padding_mode_v1<" + mode + ">")}, x, l.u32s(pads...), l.scalar(x.elem, v))
 }
 
 // layerNorm is (x - mean) / sqrt(var + eps) gamma + beta over axes.
@@ -511,28 +555,7 @@ func (l *lowerer) conv(op *milspec.Operation, oshape []int) val {
 	strides := l.ints(op, "strides", 1, 1)
 	dil := l.ints(op, "dilations", 1, 1)
 	groups := l.ints(op, "groups", 1)[0]
-	kh, kw := w.shape[2], w.shape[3]
-	var pads []int // top, bottom, left, right
-	switch t := l.str(op, "pad_type", "valid"); t {
-	case "valid":
-		pads = []int{0, 0, 0, 0}
-	case "custom":
-		pads = l.ints(op, "pad", 0, 0, 0, 0)
-	case "same", "same_lower":
-		pads = make([]int, 4)
-		for i, k := range []int{kh, kw} {
-			in := x.shape[2+i]
-			outd := (in + strides[i] - 1) / strides[i]
-			total := max((outd-1)*strides[i]+(k-1)*dil[i]+1-in, 0)
-			lo := total / 2
-			if t == "same_lower" {
-				lo = total - total/2
-			}
-			pads[2*i], pads[2*i+1] = lo, total-lo
-		}
-	default:
-		l.fail("conv %s: pad_type %s", opName(op), t)
-	}
+	pads := l.spatialPads(op, x, []int{w.shape[2], w.shape[3]}, strides, dil)
 	x = l.pad(x, []int{0, 0, 0, 0, pads[0], pads[1], pads[2], pads[3]}, 0)
 	y := l.emit("conv2d_v1", x.elem, oshape, nil, x, w, l.u32s(strides...), l.u32s(dil...), l.u32(groups))
 	if l.has(op, "bias") {
@@ -540,6 +563,115 @@ func (l *lowerer) conv(op *milspec.Operation, oshape []int) val {
 		y = l.binary("add_v1", y, l.reshape(b, []int{1, b.shape[0], 1, 1}), oshape)
 	}
 	return y
+}
+
+// convTranspose is a 2 D transposed convolution: conv_transpose2d_v1 (x, the weight (Cin,
+// Cout / groups, kh, kw) as MIL's, the strides, its padding, the dilations, output_pad, groups)
+// without padding, then MIL's pads (top, bottom, left, right; negative past the end) as a crop
+// to the output's shape (zeros where it reaches past the full output), then the bias.
+func (l *lowerer) convTranspose(op *milspec.Operation, oshape []int) val {
+	x := l.in(op, "x")
+	w := l.in(op, "weight")
+	if len(x.shape) != 4 || len(oshape) != 4 {
+		l.fail("conv_transpose %s: rank %d (2 D only)", opName(op), len(x.shape))
+	}
+	strides := l.ints(op, "strides", 1, 1)
+	dil := l.ints(op, "dilations", 1, 1)
+	groups := l.ints(op, "groups", 1)[0]
+	pads := []int{0, 0, 0, 0}
+	switch t := l.str(op, "pad_type", "valid"); t {
+	case "valid":
+	case "custom":
+		pads = l.ints(op, "pad", 0, 0, 0, 0)
+	default:
+		l.fail("conv_transpose %s: pad_type %s", opName(op), t)
+	}
+	full := []int{x.shape[0], w.shape[1] * groups, 0, 0}
+	for i := range 2 {
+		full[2+i] = (x.shape[2+i]-1)*strides[i] + dil[i]*(w.shape[2+i]-1) + 1
+	}
+	y := l.emit("conv_transpose2d_v1", x.elem, full, nil, x, w, l.u32s(strides...), l.u32s(0, 0), l.u32s(dil...), l.u32s(0, 0), l.u32(groups))
+	// the output's rows [top, top + H) of the full output's: a pad before a negative top, a
+	// slice of what lies inside, a pad past the full output's end
+	before, after := make([]int, 8), make([]int, 8)
+	begin, end := []int{0, 0, 0, 0}, slices.Clone(full)
+	for i := range 2 {
+		lo, hi := pads[2*i], pads[2*i]+oshape[2+i]
+		if lo < 0 {
+			before[2*(2+i)] = -lo
+			lo = 0
+		}
+		if hi > full[2+i] {
+			after[2*(2+i)+1] = hi - full[2+i]
+			hi = full[2+i]
+		}
+		begin[2+i], end[2+i] = lo, hi
+	}
+	if !slices.Equal(begin, []int{0, 0, 0, 0}) || !slices.Equal(end, full) {
+		shape := slices.Clone(full)
+		for i := range 2 {
+			shape[2+i] = end[2+i] - begin[2+i]
+		}
+		y = l.emit("slice_v1", y.elem, shape, nil, y, l.i32s(begin...), l.i32s(end...), l.i32s(1, 1, 1, 1))
+	}
+	y = l.pad(l.pad(y, before, 0), after, 0)
+	if l.has(op, "bias") {
+		b := l.in(op, "bias")
+		y = l.binary("add_v1", y, l.reshape(b, []int{1, b.shape[0], 1, 1}), oshape)
+	}
+	if !slices.Equal(y.shape, oshape) {
+		l.fail("conv_transpose %s: lowered to %v, MIL says %v", opName(op), y.shape, oshape)
+	}
+	return y
+}
+
+// spatialPads are a 2 D window's pads (top, bottom, left, right) by MIL's pad_type, for the
+// kernel k, strides and dilations of a conv or a pool of x (N, C, H, W).
+func (l *lowerer) spatialPads(op *milspec.Operation, x val, k, strides, dil []int) []int {
+	switch t := l.str(op, "pad_type", "valid"); t {
+	case "valid":
+		return []int{0, 0, 0, 0}
+	case "custom":
+		return l.ints(op, "pad", 0, 0, 0, 0)
+	case "same", "same_lower":
+		pads := make([]int, 4)
+		for i := range 2 {
+			in := x.shape[2+i]
+			outd := (in + strides[i] - 1) / strides[i]
+			total := max((outd-1)*strides[i]+(k[i]-1)*dil[i]+1-in, 0)
+			lo := total / 2
+			if t == "same_lower" {
+				lo = total - total/2
+			}
+			pads[2*i], pads[2*i+1] = lo, total-lo
+		}
+		return pads
+	default:
+		l.fail("%s %s: pad_type %s", op.GetType(), opName(op), t)
+	}
+	return nil
+}
+
+// maxPool is a 2 D max pool, as coreai-torch writes it: the padding by pad_v1 with -inf (the
+// pool itself takes none), then max_pool_2d_v1 (x, the kernel, the strides, the dilations,
+// ceil_mode).
+func (l *lowerer) maxPool(op *milspec.Operation, oshape []int) val {
+	x := l.in(op, "x")
+	if len(x.shape) != 4 {
+		l.fail("max_pool %s: rank %d (2 D only)", opName(op), len(x.shape))
+	}
+	k := l.ints(op, "kernel_sizes")
+	strides := l.ints(op, "strides", 1, 1)
+	if len(k) != 2 || len(strides) != 2 {
+		l.fail("max_pool %s: kernel %v, strides %v", opName(op), k, strides)
+	}
+	pads := l.spatialPads(op, x, k, strides, []int{1, 1})
+	x = l.pad(x, []int{0, 0, 0, 0, pads[0], pads[1], pads[2], pads[3]}, float32(math.Inf(-1)))
+	ceil := byte(0)
+	if l.boolean(op, "ceil_mode") {
+		ceil = 1
+	}
+	return l.emit("max_pool_2d_v1", x.elem, oshape, nil, x, l.u32s(k...), l.u32s(strides...), l.u32s(1, 1), l.constRaw("bool", nil, []byte{ceil}))
 }
 
 // lutToDense is the lookup table weight: indices (rows x cols, packed) and the tables (shape

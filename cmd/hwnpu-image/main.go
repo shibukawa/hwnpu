@@ -62,8 +62,12 @@
 // Anything 3 or MoGe-2 (see DepthCmd). face-detect (FaceDetectCmd) finds faces, pose (PoseCmd)
 // people's keypoints, detect (DetectCmd) objects and their labels, ocr (OCRCmd) lines of text;
 // on AMD's NPU, which has no form of RTMO, RTMDet and PP-OCR yet, these three run on the CPU
-// with ONNX Runtime. label (LabelCmd) and embed (EmbedCmd) run SigLIP 2 on AMD's NPU: labels
-// from any candidates, and embeddings of pictures and texts in one space.
+// with ONNX Runtime. label (LabelCmd) and embed (EmbedCmd) run SigLIP 2 on AMD's NPU and on
+// Apple's Neural Engine (downloaded and converted into Core ML packages on the first run): labels
+// from any candidates, and embeddings of pictures and texts in one space. On Apple's Neural Engine
+// depth, face-detect, pose, detect, ocr, segment, label and embed take --backend coreai (or HWNPU_BACKEND=coreai)
+// to run the same converted programs on Core AI (macOS 27), which keeps them compiled in its own
+// cache: their second start loads in about 0.1 s.
 package main
 
 import (
@@ -83,9 +87,9 @@ type cli struct {
 	Pose       PoseCmd       `cmd:"" help:"Find the people in pictures and their 17 keypoints (RTMO; Apple's Neural Engine, Intel's NPU, the CPU)."`
 	Detect     DetectCmd     `cmd:"" help:"Find the objects in pictures: boxes and COCO's 80 labels (RTMDet; Apple's Neural Engine, Intel's NPU, the CPU)."`
 	OCR        OCRCmd        `cmd:"" name:"ocr" help:"Read the text in pictures: lines, their boxes and text in 50 languages (PP-OCRv6; Apple's Neural Engine, Intel's NPU, the CPU)."`
-	Label      LabelCmd      `cmd:"" help:"Label pictures: the likeliest of candidate labels in any language, or of a list of common ones (SigLIP 2; AMD's NPU)."`
-	Embed      EmbedCmd      `cmd:"" help:"Embed pictures and texts in one space, for search and similarity (SigLIP 2; AMD's NPU)."`
-	Segment    SegmentCmd    `cmd:"" help:"Cut out the thing a point or a box picks in pictures: its mask and a transparent cutout (EfficientSAM; AMD's NPU, the CPU)."`
+	Label      LabelCmd      `cmd:"" help:"Label pictures: the likeliest of candidate labels in any language, or of a list of common ones (SigLIP 2; AMD's NPU, Apple's Neural Engine)."`
+	Embed      EmbedCmd      `cmd:"" help:"Embed pictures and texts in one space, for search and similarity (SigLIP 2; AMD's NPU, Apple's Neural Engine)."`
+	Segment    SegmentCmd    `cmd:"" help:"Cut out the thing a point or a box picks in pictures: its mask and a transparent cutout (EfficientSAM; AMD's NPU, Apple's Neural Engine, Intel's NPU, the CPU)."`
 	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export, or a Sana or Chroma repository into a Core ML export."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 

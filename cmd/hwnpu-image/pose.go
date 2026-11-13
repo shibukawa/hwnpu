@@ -33,16 +33,17 @@ import (
 // For each picture it prints one line of JSON: each person's box, score and keypoints in the
 // picture's pixels. With --draw it also writes NAME.pose.png with them and the skeleton drawn.
 type PoseCmd struct {
-	Pictures []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
-	Model    string   `short:"m" default:"pose" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (pose, rtmo, rtmo:s)."`
-	Score    float64  `default:"0.3" help:"The least score of a person to report."`
-	Draw     bool     `help:"Also write NAME.pose.png: the picture with the boxes, keypoints and skeletons."`
-	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
-	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
-	Cache    string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
-	CPU      bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
-	Device   string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
-	Threads  int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
+	Pictures    []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
+	Model       string   `short:"m" default:"pose" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (pose, rtmo, rtmo:s)."`
+	Score       float64  `default:"0.3" help:"The least score of a person to report."`
+	Draw        bool     `help:"Also write NAME.pose.png: the picture with the boxes, keypoints and skeletons."`
+	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
+	Dir         string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
+	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
+	CPU         bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
+	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads     int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
+	backendFlag `embed:""`
 }
 
 // Run finds the people of each picture.
@@ -104,7 +105,7 @@ func (c *PoseCmd) Run(ctx context.Context) error {
 	var dev *hwnpu.Device
 	if !c.CPU {
 		var device string
-		if dev, device, err = llm.OpenDevice(ctx, "", cache); err != nil {
+		if dev, device, err = llm.OpenDevice(ctx, c.Backend, cache); err != nil {
 			return err
 		}
 		defer dev.Close()

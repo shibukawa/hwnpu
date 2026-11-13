@@ -2,7 +2,7 @@
 
 [English](new-model-checklist.md)
 
-作成: 2026-11-07、更新: 2026-11-12 (Qwen-Image-2.1-Turbo を Mac で: 注意の吸い込みで行ごとの int8 があふれること、コンパイルのキャッシュを超えるプログラムの読み込み、画像のモデルの表。続けて、その移植でしたがここになかったもの: k-means-minmax の lut4 の表、プロンプトに 1 回のパスを 1 段上の形式に、大きな DiT の lut4、コンパイルの時間と比べた問い合わせの塊、参照の最大から決める残差の倍率、別の大きさの書き出しとの部品の共有、16 GB の Mac での float32 のストリームの参照)、2026-11-10 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)、2026-11-11 (7.1 節の画像生成の速さ、RTMDet と PP-OCRv6 で見つけた ANE の sigmoid のずれ、16384 を超える幅、OCR の照合。続けて画像のモデルをこの手順と突き合わせた 7.2 節の表と、Sana で ANE と IRON で見つけてここになかったもの、Sana の CFG のステップ、Mac の CFG の順、8 ビットの DiT)、2026-11-12 (Mac の Chroma1: 変調を σ ごとに一度、ANE の int8 の積和と小さな積、コンパイルのキャッシュの大きさ)、2026-11-13 (AMD の gpt-oss-20b: チェックポイントの 4 ビットの形のまま、注意の sink、8 列に割り切れない隠れ次元、プロンプトの専門家に bf16 の行列演算器、DMA の 1023 語、IRON のコンパイルのキャッシュと入っているカーネル)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
+作成: 2026-11-07、更新: 2026-11-14 (3.5: Core AI での確かめ方。画像を読むモデルを Core AI に載せたときのもの)、2026-11-12 (Qwen-Image-2.1-Turbo を Mac で: 注意の吸い込みで行ごとの int8 があふれること、コンパイルのキャッシュを超えるプログラムの読み込み、画像のモデルの表。続けて、その移植でしたがここになかったもの: k-means-minmax の lut4 の表、プロンプトに 1 回のパスを 1 段上の形式に、大きな DiT の lut4、コンパイルの時間と比べた問い合わせの塊、参照の最大から決める残差の倍率、別の大きさの書き出しとの部品の共有、16 GB の Mac での float32 のストリームの参照)、2026-11-10 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)、2026-11-11 (7.1 節の画像生成の速さ、RTMDet と PP-OCRv6 で見つけた ANE の sigmoid のずれ、16384 を超える幅、OCR の照合。続けて画像のモデルをこの手順と突き合わせた 7.2 節の表と、Sana で ANE と IRON で見つけてここになかったもの、Sana の CFG のステップ、Mac の CFG の順、8 ビットの DiT)、2026-11-12 (Mac の Chroma1: 変調を σ ごとに一度、ANE の int8 の積和と小さな積、コンパイルのキャッシュの大きさ)、2026-11-13 (AMD の gpt-oss-20b: チェックポイントの 4 ビットの形のまま、注意の sink、8 列に割り切れない隠れ次元、プロンプトの専門家に bf16 の行列演算器、DMA の 1023 語、IRON のコンパイルのキャッシュと入っているカーネル)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
 
 ## 方針: 速さより消費電力
 
@@ -134,6 +134,17 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - **グラフを変えてもプログラムの名前が変わらないときは `llm.Arch.Revision` を上げる** (名前に `-rN` が付く)。上げないと hwnpu-chat は変更前に変換したプログラムを使い続ける (silu の書き換えで lfm3 / plamo3 が r1、ホストのソフトキャップで gemma4 が r1、Anima は `ExportVersion`、16.95、16.113)
 - `hwnpu-dev check -package` の KL と argmax を記録 (形式ごと、5 節)
 - `MLComputePlan` の待ちは 10 分まで (ほかのプロセスがコンパイルしている間、単独 13 秒の Gemma 2 の 1 本が 2 分を超えた)。ときどき返る "Failed to construct compute plan, internal failure" は 1 回やり直す (`internal/backend/coreml`、16.145)
+
+### 3.5 Core AI (macOS 27)
+
+同じ `.mlpackage` を Core AI でも動かす (`--backend coreai`)。`internal/coreai/ailower` が MIL を Core AI のバイトコードに下ろす。Core ML で 3.1〜3.4 を通った部品も、ここで通らないことがあるので、Core AI でも確かめる (16.169、16.182):
+
+- **どの演算にも下ろし方が要る**。`aicheck lower OUT PKG` は下ろし方のない最初の演算で止まる (画像のモデルの ONNX のグラフは `max_pool`、続いて `conv_transpose` と replicate の `pad` で止まった)。新しく書くときは coreai-torch の書き方に合わせる: 小さな torch のモジュールを coreai-torch で変換し (`uv run --offline --prerelease=allow --python 3.13 --with coreai-torch==0.4.3 --with torch`、uv のキャッシュから)、プログラムを表示し、バイトコードを `tools/coreai/bcdump` で読む。演算の引数の順は coreai-core の `_coreai_ops_gen.py` にある
+- **どの部品も、Core AI と Core ML の両方で CPU のインタプリタと比べる**: 乱数の入力で `aicheck run -cpu PKG...` と `aicheck run -cpu -coreml PKG...`。全部 Neural Engine に載った部品が Core AI でだけ誤ることがある: PP-OCR の検出器はコサイン 0.05 (Core ML 0.9999) で、RTMDet、RTMO、YuNet、DA3、MoGe-2 は正しかった
+- **演算を `HWNPU_AILOWER_CUT=N aicheck run -cpu PKG` で探す** (先頭の N 個の演算で切ったプログラムを、その演算の milcpu の値とコサインで比べる。`AICHECK_WORST=1` で差の大きい要素を表示)。そのうえで、誤差の大きさだけでなく中身を見る。差の大きい要素だけで決めない: PP-OCR では、深さ方向の 3 × 3 と 1 × 1 の後の厳密な GELU の `x / sqrt 2` が誤っていた。最初は「最後の列だけ」と読んだ (差の大きい 12 個がそこに並んだ。値の大きい列だっただけ) が、全部の列とチャンネルがずれていた。割る前の値と結果をチャンネルごとに直線で当てはめると、正しい 0.7071 u に対して 1.42 u + d で、Neural Engine は割るところで掛けていた。この 3 つの演算だけのプログラムでは正しかったので、本物の部品で確かめる。Core AI の定数による `divide_v1` は、逆数との積に書くようにした (`HWNPU_AILOWER_DIVIDE=1` で割り算のまま下ろす。調べるとき用)
+- **起動は両方のキャッシュが当たる状態で比べる**: それぞれを 1 回走らせた直後に、新しいプロセスで 3 回ずつ。画像を読むモデルはどちらも同じほどで起動する (1 コマンド 0.05〜0.9 秒)。ここでの最初の比較は、Core AI の 2 回目 (0.07〜0.45 秒) と、最後に走らせてから 1 時間たち、間にほかのモデルを動かした Core ML (1〜16 秒、コンパイルし直した) を並べていて、Core ML のキャッシュの外れを Core AI の速さと読み違えた。Core AI で変わるのは、キャッシュがディスクが減るまでプログラムを持ち続けること (Core ML は約 4 GiB、3.1)。初回のコンパイルはどちらも数秒から 22 秒
+- **下ろし方の誤りと Neural Engine の誤りを `HWNPU_COREAI_UNITS=cpu` で分ける** (Core AI の CPU だけで動かす。`aicheck run -cpu` と `internal/backend/coreai` のテストで使える。Neural Engine を使わないので、ほかのプロセスがコンパイルしている間に新しい下ろし方を確かめるのにも使える)。PP-OCR の割り算は CPU でも GPU でも正しかった: 誤りは Neural Engine のもの。落とし穴が 1 つ: Core AI の CPU は、和が fp16 の範囲を超える `reduce_mean` があふれる (平均 −1.37 の 57600 要素が −inf。和を fp16 に戻してから 1 / n を掛けるため)。Neural Engine と GPU は正しい。また CPU のインタプリタは、実装してある範囲でしか参照にならない: `elu` は alpha 1 だけ
+- `aicheck run` と `probe` は、コマンドと同じく Neural Engine のロックを取る (`llm.LockNPU`)。2 つのプロセスが同時に使うと Mac が固まったことがあり、ほかのプロセスのコンパイルは時間の計測も乱す
 
 ## 4. AMD (IRON) と Intel の形
 

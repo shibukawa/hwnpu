@@ -95,6 +95,16 @@ Neural Engine がモデルに求めること:
 - **LLM のチェックポイントは hwnpu-dev convert（Go だけ、Python 不要）で。** `go run ./cmd/hwnpu-dev convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` が、既知の構造について `config.json` からグラフを組み立て、重みを 4 ビットの表引きにします。今は LFM3 に対応しています。Llama や Qwen 系は `internal/llm` に構造の定義を足せば対応できます。元のチェックポイントの選び方と Neural Engine が受け付ける形式は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) にまとめてあります。
 - **それ以外は coremltools（Python）で。** どんなグラフでも受ける汎用の変換器は hwnpu の範囲外なので、対応する LLM の構造ではないモデル（MiniLM のようなエンコーダ、画像モデルなど）は、PyTorch から `ct.convert(..., convert_to="mlprogram", compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS14)` と固定の入力形状で変換します。`tools/coreml/convert_minilm.py` と `tools/coreml/gen_sweep.py` が、ベンチマーク用に書いた実例です。
 
+## 5. Core AI で動かす (macOS 27、選べる)
+
+macOS 27 には Core ML のほかに Core AI があります。hwnpu は同じ変換済みのモデル (`.mlpackage`) を Go で Core AI のプログラムに下ろして、Neural Engine で動かせます。既定は Core ML のままで、`--backend coreai` か `HWNPU_BACKEND=coreai` で選びます。追加で入れるものはありません。
+
+- **使えるコマンド**: `hwnpu-chat` の全部、`hwnpu-image` の generate (Anima、Chroma)、ocr、detect、pose、face-detect、depth、segment、label、embed。`hwnpu-audio` は `HWNPU_BACKEND=coreai` で pitch と generate (Magenta RealTime 2) を確かめました (ほかは未確認)
+- **結果と速さ**: Core ML と同じです (同じ文、同じ物や文字、埋め込みや深さのコサイン 0.9999 以上、1 回の呼び出しは ±10 % 以内)
+- **違い**: コンパイルした結果の持ち方です。Core ML のキャッシュは約 4 GiB で、それを超えると 2 回目以降もコンパイルし直します (大きな画像生成のモデルで数分〜数十分)。Core AI は自分のキャッシュ (`~/Library/Caches/coreai-cache`) に、ディスクが減るまで持ち続けます。両方のキャッシュが当たっていれば起動は同じです
+- **費用**: 重みがディスクに 3 回分置かれます (変換した `.mlpackage`、下ろした `.aimodel`、Core AI のキャッシュ)。空きが約 15 GB を切ると macOS がキャッシュを消し、次の起動でコンパイルし直します
+- 記録は [docs/design.md](docs/design.md) の 16.169〜16.183、まとめは [docs/improvements.ja.md](docs/improvements.ja.md) の 7.5 節にあります
+
 ## 困ったとき
 
 | 症状 | 原因と対処 |

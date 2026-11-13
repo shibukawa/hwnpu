@@ -69,6 +69,9 @@ type Options struct {
 	// Trace, when set, is called with each operation's type, output name and largest absolute
 	// value (before RoundF16), to find what overflows fp16 (65504).
 	Trace func(typ, name string, maxAbs, rms float32)
+	// Value, when set, is called with each operation's output name and values (after
+	// RoundF16), to compare a value inside the program (aicheck's HWNPU_AILOWER_CUT).
+	Value func(name string, data []float32)
 }
 
 // Load prepares the main function of prog. weights is the weight file the program's blob values
@@ -191,6 +194,9 @@ func (p *Program) Run(inputs map[string]Tensor, opts Options) (map[string]Tensor
 				}
 				out.f[j] = v
 			}
+		}
+		if opts.Value != nil && out.f != nil && op.GetType() != "const" {
+			opts.Value(o.GetName(), out.f)
 		}
 		vals[o.GetName()] = out
 		for _, arg := range op.GetInputs() {

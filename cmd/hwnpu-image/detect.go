@@ -39,19 +39,20 @@ import (
 // For each picture it prints one line of JSON: each object's box (x1, y1, x2, y2 in the
 // picture's pixels), label, class and score. With --draw it also writes NAME.objects.png.
 type DetectCmd struct {
-	Pictures []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
-	Model    string   `short:"m" default:"detect" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (detect, rtmdet, rtmdet:tiny)."`
-	Score    float32  `default:"0.3" help:"The least score of an object to report."`
-	NMS      float32  `name:"nms" default:"0.65" help:"The overlap (intersection over union) above which the lower of two objects of a class goes."`
-	Class    []string `placeholder:"LABEL" help:"Only these classes (person,car,...; hwnpu-image detect --class help lists them)."`
-	Draw     bool     `help:"Also write NAME.objects.png: the picture with the boxes."`
-	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
-	Repeat   int      `default:"1" help:"Run each picture this many times and report the mean time."`
-	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
-	Cache    string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
-	CPU      bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
-	Device   string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
-	Threads  int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
+	Pictures    []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
+	Model       string   `short:"m" default:"detect" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (detect, rtmdet, rtmdet:tiny)."`
+	Score       float32  `default:"0.3" help:"The least score of an object to report."`
+	NMS         float32  `name:"nms" default:"0.65" help:"The overlap (intersection over union) above which the lower of two objects of a class goes."`
+	Class       []string `placeholder:"LABEL" help:"Only these classes (person,car,...; hwnpu-image detect --class help lists them)."`
+	Draw        bool     `help:"Also write NAME.objects.png: the picture with the boxes."`
+	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
+	Repeat      int      `default:"1" help:"Run each picture this many times and report the mean time."`
+	Dir         string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
+	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
+	CPU         bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
+	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads     int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
+	backendFlag `embed:""`
 }
 
 // Run finds the objects of each picture.
@@ -109,7 +110,7 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 		}
 		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
 	} else {
-		dev, backend, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, "RTMDet")
+		dev, backend, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, c.Backend, "RTMDet")
 		if err != nil {
 			return err
 		}
@@ -323,15 +324,16 @@ func onlyFile(m chat.Model, ext string) (string, error) {
 }
 
 // openProgramDevice opens the NPU for converted programs (Core ML or OpenVINO IR), or none for
-// the CPU interpreter. what names the model for the error on an NPU that runs neither.
-func openProgramDevice(ctx context.Context, cpu bool, cache, what string) (*hwnpu.Device, string, func(), error) {
+// the CPU interpreter: the device backend named (--backend, "": HWNPU_BACKEND or the NPU found).
+// what names the model for the error on an NPU that runs neither.
+func openProgramDevice(ctx context.Context, cpu bool, cache, name, what string) (*hwnpu.Device, string, func(), error) {
 	if cpu {
 		return nil, llm.BackendCoreML, func() {}, nil
 	}
 	if cache == "" {
 		cache = hcache.Root()
 	}
-	dev, device, err := llm.OpenDevice(ctx, "", cache)
+	dev, device, err := llm.OpenDevice(ctx, name, cache)
 	if err != nil {
 		return nil, "", nil, err
 	}

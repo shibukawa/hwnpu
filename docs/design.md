@@ -4979,3 +4979,118 @@ main との取り込みで: 書き出しの `main.mlirb` を Core AI がキャ�
 - `models.yaml` の `processor/tokenizer.json` の SHA-256 が Turbo のものになっていた。このリポジトリのものは `ByteLevel` の `trim_offsets` とデコーダーの旗だけが違い、トークンは同じ
 - このブランチの初めの shim が `.persistent` で `~/Library/Application Support/coreai-cache` に置いたエントリーがあると、Core AI はそこから読み、`~/Library/Caches/coreai-cache` を見る `placement` が確かめられずに止まる。今のコードはそこに書かないので、そのフォルダを消せばよい
 
+### 16.182 画像を読むモデル (PP-OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、EfficientSAM) を Core AI で — 2026-11-14
+
+画像生成のほかの、画像を読むモデルを `--backend coreai` (16.169) で動かした。変換は Core ML と同じ `.mlpackage` で、`ailower` で Core AI のプログラムに下ろす。M3 (16 GB、macOS 27.2)。SigLIP 2 (label、embed) は Mac の形がなかったので、16.183 で足した。
+
+**直したこと**
+- **`--backend`**: `hwnpu-image` の ocr、detect、pose、face-detect、depth、segment に足した (`coreml`、`coreai`、`intel` など。既定は `HWNPU_BACKEND`、なければ見つかった NPU)。これまでも `HWNPU_BACKEND=coreai` は効いていたが、フラグがなかった
+- **`max_pool`**: ONNX のグラフ (PP-OCR、RTMDet、RTMO、YuNet) は 5 つとも `max_pool` で下ろせなかった。coreai-torch の書き方 (uv のキャッシュの coreai-torch 0.4.3 で小さな torch のモジュールを変換し、`bcdump` で読んだ) に合わせ、`pad_v1` (-inf) のあとの `primitive.max_pool_2d_v1` (x、窓、歩幅、膨張、ceil_mode の bool のスカラー。properties なし) にした
+- **`conv_transpose`** (DA3 と MoGe-2 の頭): `primitive.conv_transpose2d_v1` (x、重み (Cin, Cout / groups, kh, kw) は MIL と同じ、歩幅、padding、膨張、output_pad、groups)。MIL の pad は上下左右で別々で負 (出力の端の先) もあるので、padding 0 で全体を出し、`slice_v1` で切り取り、端の先は 0 で `pad_v1` し、そのあと bias を足す
+- **`pad` の replicate と reflect** (MoGe-2 の頭): `#aicode.padding_mode_v1<replicate>` / `<reflect>` をそのまま渡す
+- **定数による割り算を逆数との積に**: PP-OCR の検出器は、全部 Neural Engine に載りながら `milcpu` とのコサインが 0.05 (認識器 −0.42。Core ML は 0.9999 と 0.9995) だった。`HWNPU_AILOWER_CUT` で切って比べると、深さ方向の 3 × 3 のあと 1 × 1 の出力 (`conv_96`) はコサイン 0.999999 で、次の厳密な GELU の `x / sqrt 2` (`real_div_98`) で 0.984 (相対 RMS 1.12) に落ちた。値は正しい値の約 2 倍 (全体がずれる。16.183)。`divide_v1` を `x × (1 / c)` にすると 0.999999、検出器の出力 0.999932 になった。この 3 つの演算だけのプログラム (240 × 240、48 → 96 チャンネル) では再現しなかった。定数で割る MIL を書くのは ONNX からのグラフ (`internal/onnx`) だけで、チャットのモデルや画像生成のプログラムのバイトコードは変わらない (Core AI のキャッシュはそのまま)
+- **`aicheck run -cpu` の `HWNPU_AILOWER_CUT`**: 切った演算の値を milcpu から取り (`milcpu.Options.Value`)、コサインで比べる (これまでは出力の名前がなく比べられなかった)。`AICHECK_WORST=1` で差の大きい要素とその位置を表示する
+- テスト: `internal/coreai/ailower` の `TestImageOps` (どの OS でも、下ろした演算の名前)、`internal/backend/coreai` の `TestImageOps` (Core AI で max_pool 3 種、conv_transpose の切り取りと端の先、DPT の 2 × 2、pixel_shuffle、erf、relu、clip、pad の replicate と reflect を milcpu と比べる)。切り取りの位置を壊すと失敗するのを確かめた
+
+**部品** (`aicheck run -cpu`、乱数の入力、milcpu とのコサイン。どれも `mps.fullyPlacedOnANE`)
+
+| 部品 | Core AI | Core ML | 1 回の呼び出し Core AI / Core ML | Core AI の初回のコンパイル |
+|---|---|---|---|---|
+| PP-OCR 検出器 960² / 1280×736 | 0.999932 / 0.999896 | 0.999903 | 13.0 / 9.7 ms | 11〜16 秒 |
+| PP-OCR 認識器 8×320 … 5×960 | 0.99974〜0.99988 | 0.99948 (8×320) | 5.1 / 4.0 ms (8×320) | 16〜22 秒 (幅の違う 4 本は関数 4 つの 1 本、16.177) |
+| RTMDet-m 640 | 0.999936 | 0.999948 | 10.2 / 13.5 ms | 12 秒 |
+| RTMO-s 640 | 0.999999 | 0.999936 | 8.0 / 4.9 ms | 36〜38 秒 |
+| YuNet 640×480 | 0.999998 | 0.999999 | 1.2 / 0.9 ms | 1.6 秒 |
+| DA3-BASE 504² vit / head | 0.999991 / 0.999998 | 同じ | 106 / 103 ms、16.1 / 13.2 ms | 2.5 秒 / 0.4 秒 |
+
+**コマンド** (`hwnpu-image ... --backend`、同じ絵)
+
+| | 結果 (Core AI と Core ML) | 1 枚 Core AI / Core ML | 起動から終わりまで、新しいプロセスで 3 回 Core ML / Core AI |
+|---|---|---|---|
+| ocr (看板、3 行の日英の文) | 文字は全部同じ、スコアの差 0.0002 以下、箱の差 1.15 px 以下 | 24〜31 / 20〜25 ms | 0.23、0.21、0.21 / 0.20、0.17、0.18 秒 |
+| detect (RTMDet-m、夜の通り) | 7 つ、同じラベル、スコアの差 0.0004 以下、箱の差 0.06 px 以下 | 15〜17 / 18 ms | 0.20、0.17、0.17 / 0.17、0.14、0.14 秒 |
+| pose (RTMO-s) | 2 人、人のスコア 0.4966 と 0.4849 (Core ML 0.4910 と 0.4834) | 87〜88 / 86 ms (うちホストの後処理 70 ms) | 0.20、0.19、0.19 / 0.19、0.17、0.17 秒 |
+| face-detect (YuNet、`--device npu`、老人の肖像 512²) | 顔 1 つ、スコア 0.923 (Core ML 0.921)、箱の差 0.2 px 以下、目鼻口の 5 点の差 0.1 px 以下 | 4.2〜4.4 / 4.0 ms | 0.06、0.06、0.06 / 0.05、0.05、0.05 秒 |
+| depth (DA3-BASE、狐) | 深さのコサイン 1.000000 | 0.3 秒 | 0.47、0.36、0.36 / 0.42、0.32、0.31 秒 |
+| depth (MoGe-2 ViT-S) | 深さ 0.999999、点 0.999998、中心 3.87 m (Core ML 3.89 m)、画角 45.2° (45.1°) | 0.3 秒 | 0.51、0.43、0.44 / 0.47、0.41、0.41 秒 |
+| segment (EfficientSAM-S、`--device npu`、狐の 1 点) | 面積 55920 (Core ML 55915)、スコア 0.9457 (0.9456) | 0.72 秒 (符号器 0.43 / 0.36、復号器は CPU で 0.28。16.183) | 0.84、0.80、0.84 / 0.89、0.85、0.94 秒 |
+
+- **起動は、両方のキャッシュが当たっていれば同じ** (上の表。それぞれを 1 回走らせた直後に、新しいプロセスで 3 回ずつ。Core AI が 0.01〜0.05 秒短い程度)。最初に測ったときは、Core AI の 2 回目 (0.07〜0.45 秒) に対して Core ML は 1〜16 秒かかった (OCR 13.3 秒、RTMDet 6.2 秒、DA3 15.6 秒)。これは最後に Core ML で走らせてから約 1 時間たち、間にほかのモデル (Qwen-Image など) を動かした後で、Core ML が Neural Engine 向けにコンパイルし直した時間だった。これを Core AI の速さと読むのは誤りで、違いはキャッシュの持ち方にある: Core ML のコンパイルのキャッシュは約 4 GiB で外れ (16.41、16.173)、Core AI は自分のキャッシュにディスクが減るまで持つ (16.174)
+- Core AI の初回のコンパイルは部品の表のとおり (1.6〜38 秒)。ほかに MoGe-2 の頭 21 秒、EfficientSAM の符号器 22 秒
+- 1 回の呼び出しは、小さい CNN (PP-OCR、RTMO) で Core AI が 1〜3 ms 遅い。RTMDet は速い。DA3 の ViT は同じ
+- Neural Engine の持つ量 (`mem.NPUWired` の増え) は OCR 27 → 40 MB、RTMDet 56 → 89 MB で、Core AI が多い
+- 1 回目と 2 回目の出力は、どのコマンドもバイト単位で同じ
+
+残り: 16.183 に。
+
+### 16.183 16.182 の残りの解消: SigLIP 2 を Mac で、起動の測り直し、割り算の調査、EfficientSAM の復号器、音声のモデル — 2026-11-14
+
+16.182 の残りを M3 (16 GB、macOS 27.2) で片付けた。Neural Engine は別のプロセス (Qwen-Image-2.1 の Core AI 向けのコンパイル) と排他ロックで交互に使った。
+
+**1. SigLIP 2 (`hwnpu-image label`、`embed`) を Apple の Neural Engine で**
+
+これまで AMD の NPU (IRON の書き出し) だけだった。ホスト側 (前処理、トークナイザ、埋め込みの表、正規化、確率) は `internal/vision/siglip` にあったので、足したのは 2 つの塔の MIL と準備の経路。
+
+- `internal/vision/siglip/mil`: `tools/amd/iron_siglip2.py` と同じ 2 つのグラフを milpart で。`Vision` (パッチの線形、位置、ブロック、最後の層ノルム、注意でまとめる頭) と `Text` (位置、ブロック、最後のトークンの行の層ノルムと頭の線形)
+  - 層ノルムは行を最大値で割ってから (`ScaledLayerNorm`)、tanh の GELU は exp で書く (Sana の `geluTanh`。Neural Engine の gelu は不正確、16.145)
+  - 頭の問い合わせ (学習済みの probe の射影) は定数にし、8 行に並べる (1 行だけの部品は Neural Engine から外れる、16.85)。出力の 0 行目が絵の埋め込み
+  - 文は 1 回に 8 つ (`ProgramLabels`)。(8, 64, hidden) を (1, 8 × heads, 64, d) にして、注意を 1 回の SDPA にする (文ごとの頭を横に並べる。AMD のグラフと同じ考え)。1 回に満たない分は最初の文の写しで埋める (ゼロの行は fp16 の層ノルムで 0 / 0 になる)
+- `siglip.Prepare`: 初回に `config.json`、`tokenizer.json`、`model.safetensors` を落とし、Go で `NAME-v1.coreml` に変換する (`vision.mlpackage`、`text.mlpackage`、`text/tokenizer.json`、`text/embed.bin`、`model.json`)。どちらの塔も fp16 の 1 本。トークンの埋め込みの表 (256000 行) はホストが引くので fp16 のファイルにする。変換は base 1.9 秒、large 3.5 秒
+- `hwnpu-image label` / `embed`: Apple では `Prepare` の書き出しを開く。`--backend coreai` と `--cpu` (CPU のインタプリタ) を足した。AMD の経路は変えていない。Intel はまだ (OpenVINO IR に下ろすだけなら同じ MIL から書けるが、確かめていない)
+- テスト (`mil_test.go`): 乱数の重みの小さな SigLIP 2 (2 層ずつ) を safetensors に書き、MIL を CPU のインタプリタで動かして、Transformers の `modeling_siglip.py` から別に書いた float64 の参照 (行を割らない層ノルム、tanh の GELU、probe の射影もその場で、文は 1 つずつ) と比べる。コサイン 0.99999 以上。頭の問い合わせを 5 % ずらす、最後のトークンを 1 つずらす、で失敗するのを確かめた。`TestReadConfig` は base (既定値だけの config.json) と large、受け付けない形 (NaFlex、77 トークン、ほかの活性化)
+
+**結果** (狐、看板、夜の通り、日本語の文の 4 枚と、英語と日本語の 11 文。Transformers 5.22 の float32 と、正規化した埋め込みのコサイン)
+
+| | base (224²、768 次元) | large (256²、1024 次元) |
+|---|---|---|
+| 書き出し | vision 176 MB、text 164 MB、埋め込みの表 393 MB | 601 MB、579 MB、524 MB |
+| CPU のインタプリタ | 画像 0.99997〜0.999998、文 1.000000 | 画像 0.999998 以上、文 1.000000 |
+| Core ML (Neural Engine) | 画像 0.99996 以上、文 0.999994 以上 | 画像 0.99992 以上、文 0.999995 以上 |
+| Core AI (Neural Engine) | 画像 0.99996 以上、文 0.999992 以上 | 画像 0.99986 以上、文 0.999993 以上 |
+| 確率の差の最大 | 0.007 (0.767 と 0.760) | 0.0002 |
+| 初回の読み込み Core ML / Core AI | 6.0 + 6.8 秒 / 6.5 + 7.4 秒 | 14.9 + 18.0 秒 / 19.4 + 30.8 秒 (Core AI は下ろす時間を含む) |
+
+- どちらの塔も、Core ML でも Core AI でも全部 Neural Engine に載った
+- 絵と文の対応は参照と同じ (「a red fox in the snow」0.81、「a sign that says open 24 hours」0.9994、「a city street at night in the rain」0.76、日本語の「雪の中のキツネ」0.011。ほかは 0.001 未満)
+- 速さ (2 回目以降): base は 1 枚 7.3〜7.9 ms (うち Neural Engine 6.1〜6.6 ms)、既定の 444 ラベルの埋め込みが 1.7〜2.0 秒 (56 回の呼び出し、8 文で 15〜17 ms。一覧ごとに 1 回で、あとはキャッシュから読む)。large は 1 枚 33〜36 ms、444 ラベル 4.0〜4.8 秒 (8 文で 47〜59 ms)。AMD (Ryzen AI 9 365) は base の 1 枚 84 ms、8 文 131 ms
+- 起動 (ラベル 4 つ、新しいプロセスで 3 回): Core ML 0.16〜0.17 秒 (外れた回は 1.1 秒)、Core AI 0.14〜0.16 秒
+- メモリ (444 ラベルを埋め込む実行、`/usr/bin/time -l` の peak memory footprint と `mem.NPUWired` の増え): base はプロセス 0.41〜0.45 GB と Neural Engine 357 MB (Core ML)、476 MB (Core AI)。large は 1.78〜1.79 GB と 1240 MB、1556 MB。ラベルの埋め込みがキャッシュにあり絵だけのときは、base 0.25 GB と 219 MB、large 0.70 GB と 746 MB (Core AI)。models.yaml の `memory` は Apple を 0.9 GB と 3.3 GB にした (AMD は 0.8 と 1.7)
+
+**2. 起動の測り直し** (16.182 の表はこの値)
+
+最初の計測を「2 回目の起動は Core ML 1〜16 秒、Core AI 0.07〜0.45 秒」と読んだのは誤りだった。Core ML の値は、キャッシュから外れてコンパイルし直した回のものだった。それぞれを 1 回走らせた直後に新しいプロセスで 3 回ずつ測ると、どのコマンドもほぼ同じで、Core AI が 0.01〜0.05 秒短い程度 (16.182 の表)。Core AI で変わるのはキャッシュの持ち方 (ディスクが減るまで持つ) で、当たっているときの速さではない。new-model-checklist の 3.5 に、起動は両方のキャッシュが当たる状態で比べると書いた。
+
+**3. 顔の写る絵で YuNet** (16.182 の表に入れた): Qwen-Image で描いた老人の肖像 (512²) で、Core ML も Core AI も顔を 1 つ見つけた (スコア 0.921 と 0.923、箱の差 0.2 px 以下、5 点の差 0.1 px 以下)。
+
+**4. ONNX 由来の音声のモデル** (定数で割るのを積にした変更は `internal/onnx` を通るグラフ全部に効くので、画像以外も確かめた)
+
+| | Core ML と Core AI | 配置 |
+|---|---|---|
+| pitch (SwiftF0、`say` の日本語 4 秒) | 257 フレームの音高がどれも同じ (差 0.0 Hz)。CPU のインタプリタとは有声の 156 フレームで 0.01 Hz 以内 | どちらも全部 Neural Engine |
+| notes (Basic Pitch、同じ音) | 音符 8 つの始まり、終わり、高さが同じ | どちらも一部が Neural Engine の外 (前から。Apple の既定は CPU) |
+| generate (Magenta RealTime 2 small) の MusicCoCa の文の符号器 | 「jazz piano trio」のスタイルの符号 12 個が同じ | 全部 Neural Engine |
+
+- Magenta RealTime 2 は Core AI では、文の符号器の先の SpectroStream の復号器が `elu` で下ろせず止まっていた (今回の変更とは別の、前からの不足)。`elu` を `max(x, 0) + alpha (exp(min(x, 0)) − 1)` で足した
+- `elu` を足すと、Core AI で音楽を最後まで作れた (4 秒、種 5): 4 つの部品とも全部 Neural Engine、milcpu とのコサインは文の符号器 0.999999、復号器 0.999998 (Core ML は 0.999998 と 0.99984)、時間のモデルと深さのモデルは 0.999998 以上。生成は実時間の 1.9〜2.1 倍で Core ML と同じ。2 回の出力の WAV はバイト単位で同じ。初回の読み込みは 54 秒、2 回目は 0.2 秒
+
+**5. 定数による割り算の誤りの調査** (16.182 の回避はそのまま)
+
+- **Neural Engine の経路だけ**: PP-OCR の検出器を誤りの出る演算で切ったプログラム (`HWNPU_AILOWER_CUT=133`) を、割り算のまま (`HWNPU_AILOWER_DIVIDE=1`) と積にしたものの 2 通りで下ろし、Core AI の CPU と GPU で動かした。CPU では 2 つが一致し (相対 RMS 0.0009)、GPU でも一致した (どちらも積の版の CPU と相対 0.66 ずれるが、これは下の CPU の側の誤り)。割り算が誤るのは Neural Engine に載ったときだけ
+- Neural Engine でも直接比べた: 割り算のままの版は、積の版 (GPU) と相対 RMS 1.13。積の版は Neural Engine と GPU で 0.0015、GPU の 2 つは 0.0005
+- **誤りは全体にある** (最初は「最後の列だけ」と読んだ。差の絶対値の大きい順に 12 個を見て、値の大きい端の列が並んだのをそう読んだもので、誤り)。列ごと、行ごとの相対誤差は 1.04〜1.14 でどこも同じほど、96 チャンネル全部がずれる
+- **割る代わりに掛けている**: 割る前の値 u (`conv_96` の出力) との関係をチャンネルごとに直線で当てはめると、積の版は 0.7070 u + 0.0000 (正しい。残差 0.02 %)、割り算の版は 1.40〜1.44 u + d (d はチャンネルごとに −0.41〜+0.29、残差 8 %)。√2 で割るはずが √2 倍になり、チャンネルごとのずれが付く。畳み込みの直後の「定数で割る」を畳み込みの重みとバイアスに畳み込むところで、向きを誤っているとみる (バイアスの分は別の倍率)。認識器では最初の割り算 (`HWNPU_AILOWER_CUT=109`) は正しく (コサイン 0.999998)、誤るのは一部だけ。16.182 の 3 つの演算だけのプログラムで再現しなかった理由は分かっていない
+- **見つかった別のこと: Core AI の CPU では、大きな `reduce_mean` があふれる**。CPU と GPU を先頭から切って比べると、SE ブロックの `reduce_mean` (240 × 240 = 57600 要素) の出力で、CPU は平均 −1.37 のチャンネルが −inf になった (GPU は −1.3682)。`ailower` の縮約は、和を fp32 でとって fp16 に戻し、そのあと 1 / n を掛ける。和 (−1.37 × 57600 = −78800) が fp16 の範囲 (65504) を超える。Neural Engine と GPU は正しい値を出す (Neural Engine は milcpu と一致、16.182)。hwnpu は Neural Engine を指定するので実害はないが、Core AI の CPU で比べるときは、平均の絶対値が 65504 / n を超える縮約に注意する。直すには縮約の書き方を変えることになり、チャットのモデルを含む全部のプログラムのバイト列 (`main.hash`) が変わって Core AI のキャッシュが作り直しになるので、今は直さない
+- **`HWNPU_COREAI_UNITS=cpu`** (`internal/backend/coreai`): プログラムを Core AI の CPU だけで動かす (シムの `cpuOnly`。Core ML の `HWNPU_COREML_UNITS` と同じ形)。下ろし方の誤りと Neural Engine の誤りを分けるのに使う。Neural Engine を使わないので、ほかのプロセスが使っている間も確かめられる (`aicheck run` はこのときロックを取らない)。`elu` はこれで確かめた (テストが milcpu の alpha 1 固定と食い違うのを見つけた)
+
+**6. EfficientSAM の復号器** (CPU、1 回 1.06 秒 → 0.28 秒)
+
+復号器はプロンプトごとにホストの評価器 (`internal/onnx`) で動く (If や ScatterND があり、点の数で形が変わる。16.163)。Neural Engine には載せず、ホストの側を速くした。
+
+- **arm64 の sgemm のカーネル** (`internal/sgemm/kernel_arm64.s`): amd64 には AVX2 と AVX-512 のカーネルがあったが、arm64 は Go のループだった。NEON で 6 行 × 16 列 (和を V0〜V23、b の 16 値を V24〜V27、a の 6 値を V28 と V29 に置き、`fmla` の要素指定で 1 ステップ 24 命令)。Go のアセンブラが知らない命令は手で符号化し、clang の出力と照らした。M3 の 1 スレッドで 106 GFLOPS (`BenchmarkMulAdd`)。復号器の行列積が 0.57 秒 → 0.05 秒。CPU のインタプリタ (`milcpu`、`--cpu`) の畳み込みと線形も同じカーネルを使う
+- **要素ごとの 2 項演算の添字の表をやめる** (`onnx.binop`): ブロードキャストのたびに出力の全要素の添字の表を 2 つ作っていた (復号器の時間の 1/3)。片方が出力と同じ形で、もう片方がその末尾の軸の繰り返し (スカラー、最後の軸のバイアスなど) のときは表なしで回す。それ以外は前のまま。`TestBinopRepeats` で表を使う計算と同じになるのを確かめる
+- 復号器 1.06 → 0.43 (カーネル) → 0.28 秒 (表)。`hwnpu-image segment` の 1 枚は 1.5 → 0.72 秒 (符号器 0.43 秒は Neural Engine)
+- **Apple では符号器の既定を Neural Engine に** (これまでは `--device npu` のときだけで、既定は CPU だった。models.yaml は変えず、`segment` の経路の判定を `chat.ChooseDevice` に。`--device cpu` か `HWNPU_DEVICE=cpu` で CPU)。符号器は S が 0.35 秒 (Core ML)、0.43 秒 (Core AI)、Ti が 0.15 秒、0.19 秒で、どちらも全部 Neural Engine。ONNX Runtime のない Mac の CPU (hwnpu の評価器) では S 32.6 秒、Ti 16.1 秒。mask は CPU のものと IoU 0.9994 (S)、0.9986 (Ti)、スコアは Neural Engine 0.9456 と CPU 0.9463 (S)、0.8822 と 0.8881 (Ti)。プロセスの footprint は 0.22〜0.27 GB。初回のコンパイルは Ti 13 秒、S 22 秒。電力量は測っていない (時間は ONNX Runtime の CPU の数秒に対して 0.2〜0.4 秒)
+
+**7. `aicheck run` と `probe` が Neural Engine のロックを取る** (`llm.LockNPU`): これまで取っておらず、ほかの hwnpu のプロセスと同時に Neural Engine を使えた (2 つ同時だと Mac が固まったことがある、16.132)。
+
+残り: M1 と M2 (docs/handoff-coreai-vision.md。M1 では EfficientSAM の符号器の注意が 64 MiB を超える)。SigLIP 2 の Intel。MOSS-SoundEffect (sfx)、Whisper、tts を Core AI で (試していない)。割り算の誤りが 3 つの演算だけでは再現しない理由。Core AI の CPU での `reduce_mean` のあふれ。EfficientSAM と SigLIP 2 の電力量。

@@ -30,16 +30,17 @@ import (
 // landmarks (the right eye, the left eye, the nose tip, the mouth's right and left corners) in
 // the picture's pixels. With --draw it also writes NAME.faces.png with them drawn.
 type FaceDetectCmd struct {
-	Pictures []string `arg:"" type:"existingfile" help:"The pictures."`
-	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"face-detect" help:"The model: a name, a family or a use of models.yaml (face-detect: YuNet), an export's directory (tools/amd/iron_yunet.py, the NPU) or an ONNX file (the CPU)."`
-	Device   string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
-	Threads  int      `default:"1" help:"The CPU's threads (1: the least CPU time and energy)."`
-	Size     string   `placeholder:"WxH" help:"The export's size to run at (default: the one the picture is scaled down least to fit)."`
-	Score    float32  `default:"0.9" help:"The least score a face is kept with."`
-	NMS      float32  `name:"nms" default:"0.3" help:"The overlap (intersection over union) above which the lower of two faces goes."`
-	Draw     bool     `help:"Also write NAME.faces.png: the picture with the boxes and landmarks."`
-	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
-	Repeat   int      `default:"1" help:"Run each picture this many times and report the mean time (a measure of a camera's frames)."`
+	Pictures    []string `arg:"" type:"existingfile" help:"The pictures."`
+	Model       string   `short:"m" placeholder:"NAME|EXPORT" default:"face-detect" help:"The model: a name, a family or a use of models.yaml (face-detect: YuNet), an export's directory (tools/amd/iron_yunet.py, the NPU) or an ONNX file (the CPU)."`
+	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads     int      `default:"1" help:"The CPU's threads (1: the least CPU time and energy)."`
+	Size        string   `placeholder:"WxH" help:"The export's size to run at (default: the one the picture is scaled down least to fit)."`
+	Score       float32  `default:"0.9" help:"The least score a face is kept with."`
+	NMS         float32  `name:"nms" default:"0.3" help:"The overlap (intersection over union) above which the lower of two faces goes."`
+	Draw        bool     `help:"Also write NAME.faces.png: the picture with the boxes and landmarks."`
+	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
+	Repeat      int      `default:"1" help:"Run each picture this many times and report the mean time (a measure of a camera's frames)."`
+	backendFlag `embed:""`
 }
 
 // Run finds the faces of each picture.
@@ -141,7 +142,7 @@ func (c *FaceDetectCmd) open(ctx context.Context, logf func(string, ...any)) (*f
 		if vendor == "apple" {
 			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		}
-		dev, backend, err := llm.OpenDevice(ctx, "", cacheDirOf(""), opts...)
+		dev, backend, err := llm.OpenDevice(ctx, c.Backend, cacheDirOf(""), opts...)
 		if err != nil {
 			return nil, err
 		}
