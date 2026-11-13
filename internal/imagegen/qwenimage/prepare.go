@@ -14,6 +14,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/imagegen/qwenimage/mil"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
@@ -54,6 +55,45 @@ var Files = []File{
 	{"text_encoder/config.json", true},
 	{"text_encoder/model.safetensors", true},
 	{"processor/tokenizer.json", true},
+}
+
+// textWeights is the text encoder's checkpoint: one file (Qwen-Image-2.1-Turbo) or the shards of
+// its index (Qwen-Image-2.1). TextDir holds either, whichever repository put it there.
+const textWeights = "text_encoder/model.safetensors"
+
+// fetchSharded puts the checkpoint name of repo at path, or when the repository has it in
+// several files, its index (path.index.json) and the files it names beside it. Shards already
+// there (of another repository's download) are kept.
+func fetchSharded(ctx context.Context, repo, name, path string, log io.Writer) error {
+	index := path + ".index.json"
+	if _, err := os.Stat(index); err != nil {
+		err := chat.Fetch(ctx, repo, name, path, log)
+		if err == nil || !chat.NotFound(err) {
+			return err
+		}
+		if err := chat.Fetch(ctx, repo, name+".index.json", index, log); err != nil {
+			return err
+		}
+	}
+	files, err := mil.Shards(filepath.Dir(path), strings.TrimSuffix(filepath.Base(path), ".safetensors"))
+	if err != nil {
+		return err
+	}
+	if len(files) == 1 && files[0] == path {
+		return nil // the one file, there
+	}
+	dir := filepath.Dir(name)
+	var want []chat.File
+	for _, f := range files {
+		want = append(want, chat.File{Repo: repo, Name: dir + "/" + filepath.Base(f), Path: f})
+	}
+	chat.Expect(ctx, want)
+	for _, f := range want {
+		if err := chat.Fetch(ctx, repo, f.Name, f.Path, log); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ExportName is the directory Prepare writes the export of name and o into: what changes the
@@ -103,7 +143,11 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return "", err
 		}
-		if err := chat.Fetch(ctx, s.Repo, f.Name, path, log); err != nil {
+		fetch := chat.Fetch
+		if f.Name == textWeights {
+			fetch = fetchSharded
+		}
+		if err := fetch(ctx, s.Repo, f.Name, path, log); err != nil {
 			return "", err
 		}
 	}

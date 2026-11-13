@@ -38,7 +38,7 @@ func OpenWeights(root, text string) (*Weights, error) {
 		dirs = append(dirs, dir{"text.", "model.language_model.", filepath.Join(text, "text_encoder"), "model"})
 	}
 	for _, d := range dirs {
-		paths, err := shards(d.dir, d.file)
+		paths, err := Shards(d.dir, d.file)
 		if err != nil {
 			w.Close()
 			return nil, err
@@ -55,9 +55,9 @@ func OpenWeights(root, text string) (*Weights, error) {
 	return w, nil
 }
 
-// shards are the safetensors files of dir: base.safetensors, or those of
+// Shards are the safetensors files of dir: base.safetensors, or those of
 // base.safetensors.index.json.
-func shards(dir, base string) ([]string, error) {
+func Shards(dir, base string) ([]string, error) {
 	one := filepath.Join(dir, base+".safetensors")
 	if _, err := os.Stat(one); err == nil {
 		return []string{one}, nil

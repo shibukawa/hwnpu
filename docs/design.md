@@ -4816,3 +4816,9 @@ main との取り込みで: 書き出しの `main.mlirb` を Core AI がキャ�
 - **swap**: 終わった直後の使用は 9.9 GB (lut8 + lut4 のときは 10.2 GB)。走らせている間の山は測っていない
 - 1 本目の関数を開いたときに 2 つの関数がまとめてコンパイルされる。2 本目は読み込みだけ
 
+**蒸留なしの Qwen-Image-2.1** (`qwen-image:2.1`、同じ lut6 共有、M3、1024²、ユキヒョウ、シード 9、40 ステップ、ガイダンスなし): 1 ステップ 18.6 秒 (40 ステップで 12 分 25 秒)、絵は Turbo よりも岩や毛の細部と構図 (体の全体、背景の岩) がよい。書き出しは 78 秒 (テキストの符号器は Turbo の書き出しからリンク、最後のグループだけ書く)。取り込むのに 2 つ直した:
+
+- このリポジトリはテキストの符号器を 4 つのファイル (`model-0000N-of-00004.safetensors` と索引、17.5 GB) で持つ (Turbo は 1 つ)。`Prepare` は 1 つが無ければ索引とそれが指すファイルを落とす (`fetchSharded`)。`Qwen3-VL-8B/` にはどちらかが入る
+- `models.yaml` の `processor/tokenizer.json` の SHA-256 が Turbo のものになっていた。このリポジトリのものは `ByteLevel` の `trim_offsets` とデコーダーの旗だけが違い、トークンは同じ
+- このブランチの初めの shim が `.persistent` で `~/Library/Application Support/coreai-cache` に置いたエントリーがあると、Core AI はそこから読み、`~/Library/Caches/coreai-cache` を見る `placement` が確かめられずに止まる。今のコードはそこに書かないので、そのフォルダを消せばよい
+
