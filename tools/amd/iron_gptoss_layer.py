@@ -78,6 +78,7 @@ PROG = 256  # the routing's program as bf16 (4 int32 a word)
 PH_E, PH_Q, PH_A, PH_O, PH_R, PH_T, PH_H = 1, 2, 4, 8, 16, 32, 64
 KINDS = {PH_E: (1, 2), PH_Q: (3,), PH_A: (4,), PH_O: (5,), PH_R: (6,), PH_T: (7,), PH_H: (8,)}  # gptoss_layer.cc's
 HB, HKB = 5120, 12  # the head's q4 block (32 out-features by 256 in-features), its k-blocks
+ATTN = int(os.environ.get("GPTOSS_ATTN", "1"))  # GptOssStep.att (0: the attention and exponential before 2026-11-14)
 
 
 def router_table(w, bias):
@@ -221,7 +222,7 @@ def step_operator():
     st_t = np.ndarray[(1024,), np.dtype[np.float32]]  # gptoss_layer.cc's gl_state (and room)
     cnt_t = np.ndarray[(12,), np.dtype[np.int32]]  # the phase's counts, the core's column and place
 
-    def kernels(eps: float, rope_rows: int, houts: int, lane: int, core: int):
+    def kernels(eps: float, rope_rows: int, houts: int, lane: int, core: int, att: int):
         """The core's kernels: the attention on cores 0 and 1, the router on column 0, the routing
         on its last core (a core's program holds what it runs: 16 KB)."""
         kdir = Path(config.aie_kernels_dir())
@@ -230,13 +231,13 @@ def step_operator():
             ["ROUTE"] if (lane, core) == (0, CORES - 1) else [])
         flags = [f"-DMX_K={KD}", f"-DMX_KT={KT}", f"-DMX_XE={IPAD}", f"-DMX_W={XN + R}",
                  f"-DGL_EPS={float(eps)!r}f", f"-DGL_ROPE_ROWS={rope_rows}", f"-DGL_HOUTS={houts}",
-                 *(f"-DGL_{p}=1" for p in parts)]
+                 f"-DGL_ATTN={att}", *(f"-DGL_{p}=1" for p in parts)]
         tag = "_".join(p.lower() for p in parts) or "base"
         flags.append(f"-DGL_TAG={tag}")
         common = dict(source_file=str(here / "gptoss_layer.cc"),
                       include_dirs=[str(here), str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
                       compile_flags=flags,
-                      object_file_name=f"gptoss_layer_{tag}_{rope_rows}_{houts}_{abs(hash(float(eps))) % 10**8}.o")
+                      object_file_name=f"gptoss_layer_{tag}_{rope_rows}_{houts}_{att}_{abs(hash(float(eps))) % 10**8}.o")
         f = lambda name, args: ExternalFunction(f"{tag}_{name}", arg_types=args, **common)  # noqa: E731
         i32 = np.int32
         return [f("gl_plan", [cnt_t, i32, i32, i32, i32]), f("gl_begin", [x_t, st_t, cnt_t]),
@@ -263,6 +264,9 @@ def step_operator():
         eps: float = param(array=True)
         rope_rows: int = param(default=4608, array=True)
         form: int = param(default=1, array=True)
+        # the attention and the exponential (gptoss_layer.cc's GL_ATTN): 1 the values' sums as
+        # broadcast macs and the short exponential, 0 as before them, 9 the transfers alone
+        att: int = param(default=ATTN, array=True)
         phases: int = param(default=PH_E)  # the step's phases: its sequence, not the array's
         sliding: bool = param(default=False)  # A: the layer's attention reads its window's keys
         picked: int = param(default=-1, repr=False)  # E: the reference's experts (iron_moeprobe.PICKED's key)
@@ -374,7 +378,7 @@ def step_operator():
                     place = Buffer(initial_value=np.array([0, 0, 0, 0, 0, 0, i, j, 0, 0, 0, 0], np.int32))
                     workers.append(Worker(core, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), rtp,
                                                  Buffer(st_t), place,
-                                                 *kernels(self.eps, self.rope_rows, self.hrows // (2 * HKB) // n, i, j)]))
+                                                 *kernels(self.eps, self.rope_rows, self.hrows // (2 * HKB) // n, i, j, self.att)]))
             for name in ("Wg", "Wd", "Wq", "Wo", "Wr", "Wh"):
                 getattr(self, name).bind([f.prod() for f in w_l3])
             for name in ("h", "nwe", "nwq", "nwr", "ang", "sinks", "rw", "prog"):
