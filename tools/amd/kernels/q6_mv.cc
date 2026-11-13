@@ -162,3 +162,6 @@ void q6_dequant(const uint8_t *block, bf16 *out, int32_t h) {
 }
 
 } // extern "C"
+
+#define MV_FMT q6
+#include "mv_add.h"

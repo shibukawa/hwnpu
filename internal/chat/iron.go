@@ -354,6 +354,8 @@ func archOf(model string) (string, error) {
 		return "plamo3", nil
 	case "Qwen35", "Qwen35Moe":
 		return "qwen35", nil
+	case "GptOss":
+		return "gptoss", nil
 	}
 	return "", fmt.Errorf("chat: no chat format for the IRON model %s", model)
 }
@@ -428,7 +430,7 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 		}
 	}
 	e.turnStart = -1
-	for _, t := range []string{"<|im_start|>", "<start_of_turn>"} {
+	for _, t := range []string{"<|im_start|>", "<start_of_turn>", "<|start|>"} {
 		if id, ok := e.Tok.ID(t); ok {
 			e.turnStart = id
 			break

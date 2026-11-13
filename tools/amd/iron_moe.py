@@ -67,7 +67,8 @@ def route_operator():
         experts: int = param(default=256, array=True)
         top: int = param(default=8, array=True)
         slots: int = param(default=SLOTS, array=True)
-        words: int = param(derive=lambda op: 4 * op.slots, repr=False)
+        bias: bool = param(default=False, array=True)  # the router's bias after the program's words (bf16)
+        words: int = param(derive=lambda op: 4 * op.slots + (op.experts // 2 if op.bias else 0), repr=False)
         wv: int = param(default=WV, init=False, repr=False)
         picked: int = param(default=-1, repr=False)  # PICKED's key on the host
 
@@ -84,7 +85,8 @@ def route_operator():
                 source_file=str(here / "moe_route.cc"),
                 include_dirs=[str(kdir), config.cxx_header_path()],
                 compile_flags=[f"-DROUTE_EXPERTS={self.experts}", f"-DROUTE_TOP={self.top}",
-                               f"-DROUTE_SLOTS={self.slots}", f"-DROUTE_W={self.wv}"],
+                               f"-DROUTE_SLOTS={self.slots}", f"-DROUTE_W={self.wv}",
+                               f"-DROUTE_BIAS={int(bool(self.bias))}"],
                 arg_types=[self.logits.obj_type, self.program.obj_type, self.w.obj_type, self.image.obj_type],
             )
             fl, fp = ObjectFifo(self.logits.obj_type, depth=1), ObjectFifo(self.program.obj_type, depth=1)
@@ -117,10 +119,15 @@ def route_operator():
             return self.top * self.experts
 
         def reference(self, logits, program):
+            if self.bias:
+                b = np.asarray(program, np.int32).reshape(-1)[4 * self.slots :].view(bfloat16).astype(np.float32)
+                lg = np.asarray(logits, np.float32).reshape(-1).copy()
+                lg[: self.experts] = (lg[: self.experts] + b[: self.experts]).astype(bfloat16)
+                logits = lg
             ids, w = route_reference(logits, self.experts, self.top)
             if self.picked >= 0:
                 iron_moeprobe.PICKED[self.picked] = [int(i) for i in ids]
-            p = np.asarray(program, np.int64).reshape(self.slots, 4)
+            p = np.asarray(program, np.int64).reshape(-1)[: 4 * self.slots].reshape(self.slots, 4)
             img = np.where(p[:, 0] < 0, p[:, 2], ids[np.clip(p[:, 0], 0, self.top - 1)] * p[:, 1] + p[:, 2])
             img = (img << p[:, 3]).astype(np.int32)
             return w, img

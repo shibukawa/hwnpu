@@ -9,6 +9,11 @@ The conversations are in the OpenAI form the server receives: a tool call's argu
 string, which is parsed into an object for the template, as the server does. Needs transformers
 and jinja2, not torch.
 
+--harmony renders gpt-oss's harmony template: a message's reasoning_content goes in as its
+thinking (the template's name for it), no_think as reasoning_effort "low" (else "medium"), the
+date is fixed at --date, and HARMONY_CASES (defaults, arrays, a final answer after a call) are
+added.
+
 --text-content joins the text parts of a content given as a list into a string first, as vLLM does
 for a template that takes content as a string (Qwen3's, which renders a list as nothing or fails
 on it), and as internal/chat's Content does.
@@ -147,21 +152,76 @@ CASES = [
     },
 ]
 
+SEARCH = {
+    "type": "function",
+    "function": {
+        "name": "search",
+        "description": "Searches the web.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "topn": {"type": "number", "description": "Results", "default": 10},
+                "sites": {"type": "array", "items": {"type": "string"}},
+                "scores": {"type": "array", "items": {"type": "integer"}, "nullable": True},
+                "mode": {"type": "string", "enum": ["fast", "deep"], "default": "fast"},
+                "safe": {"type": "boolean", "default": True},
+                "note": {"type": "string", "nullable": True},
+            },
+            "required": ["query"],
+        },
+    },
+}
+NOARGS = {"type": "function", "function": {"name": "now", "description": "The time.", "parameters": {"type": "object", "properties": {}}}}
+
+HARMONY_CASES = [
+    {"name": "harmony: tools with defaults", "tools": [SEARCH, NOARGS], "messages": [
+        {"role": "system", "content": "Answer in Japanese."}, {"role": "user", "content": "東京の天気"}]},
+    {"name": "harmony: answer after a call", "tools": [SEARCH], "messages": [
+        {"role": "user", "content": "Find hwnpu"},
+        {"role": "assistant", "content": "", "reasoning_content": "Search it.",
+         "tool_calls": [{"id": "s1", "type": "function", "function": {"name": "search", "arguments": '{"query": "hwnpu \\"npu\\"", "topn": 3}'}}]},
+        {"role": "tool", "tool_call_id": "s1", "content": "{\"hits\": [\"github.com/shibukawa/hwnpu\"]}\nline 2"},
+        {"role": "assistant", "content": "It is on GitHub.", "reasoning_content": "Found."},
+        {"role": "user", "content": "Thanks!"},
+    ]},
+]
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model_dir")
     ap.add_argument("out")
     ap.add_argument("--text-content", action="store_true", help="join a content's text parts into a string")
+    ap.add_argument("--harmony", action="store_true", help="gpt-oss's template (module docstring)")
+    ap.add_argument("--date", default="2026-11-13", help="--harmony: the date strftime_now gives")
     a = ap.parse_args()
+    cases = CASES + (HARMONY_CASES if a.harmony else [])
+    if a.harmony:
+        import datetime as dt
+
+        import transformers.utils.chat_template_utils as ctu
+
+        fixed = dt.datetime.fromisoformat(a.date)
+
+        class Fixed(dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed
+
+        ctu.datetime = Fixed
 
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(a.model_dir)
     out = []
-    for c in CASES:
+    for c in cases:
         msgs = copy.deepcopy(c["messages"])
         for m in msgs:
+            if a.harmony and "reasoning_content" in m:
+                m["thinking"] = m.pop("reasoning_content")
+            if a.harmony and m.get("content") is None:
+                m["content"] = ""  # the template fails on null (an "in" test); the server reads it as ""
             if a.text_content and isinstance(m.get("content"), list):
                 m["content"] = "".join(p["text"] for p in m["content"] if p.get("type") == "text")
             for tc in m.get("tool_calls") or []:
@@ -173,6 +233,7 @@ def main():
             add_generation_prompt=True,
             enable_thinking=not c.get("no_think", False),
             preserve_thinking=c.get("keep_thinking", False),
+            **({"reasoning_effort": "low" if c.get("no_think") else "medium"} if a.harmony else {}),
         )
         out.append({**c, "want": want})
     with open(a.out, "w", encoding="utf-8") as f:
