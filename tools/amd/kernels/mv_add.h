@@ -35,3 +35,30 @@ extern "C" void MV_ADD_NAME(MV_FMT)(float *acc, const bf16 *xa, int32_t cb, int3
   zero_256<float, OUT>(acc);
 }
 #endif
+
+// The end of a gated GEMV (iron_q4.py's QGEMVGlu): the gate's and the up's accumulators of the
+// same out-features (a column block of each, read in turn from the interleaved table), y =
+// silu(g) u, then both back to zero. silu by exp in float32 (exp_f32): AIE2P's vtanh returns
+// its argument for |x| <= 0.5.
+#ifdef Q_GLU
+#include "common/exp_f32.h"
+#define MV_GLU_CAT(a, b) a##b
+#define MV_GLU_NAME(f) MV_GLU_CAT(f, _mv_end_glu)
+
+extern "C" void MV_GLU_NAME(MV_FMT)(float *g, float *u, bf16 *y) {
+  aie::set_rounding(aie::rounding_mode::conv_even);
+  const auto one = aie::broadcast<float, 16>(1.0f);
+  for (int i = 0; i < OUT; i += 16) {
+    aie::vector<float, 16> gv = aie::load_v<16>(g + i);
+    aie::accum<accfloat, 16> z;
+    z.from_vector(aie::mul(gv, -1.0f).template to_vector<float>());  // aie::neg of floats does not lower
+    aie::vector<float, 16> e = exp_f32<16>(z).template to_vector<float>();
+    aie::vector<float, 16> s = aie::inv(aie::add(e, one));
+    aie::vector<float, 16> a = aie::mul(gv, s).template to_vector<float>();
+    aie::store_v(g + i, aie::mul(a, aie::load_v<16>(u + i)).template to_vector<float>());
+  }
+  narrow_to_bf16<OUT>(y, g);
+  zero_256<float, OUT>(g);
+  zero_256<float, OUT>(u);
+}
+#endif

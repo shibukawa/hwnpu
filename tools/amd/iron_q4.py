@@ -1119,3 +1119,237 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# --- a gated MLP's gate and up as one table (decode: one operator) ---------------------------
+
+# Glu tables made by glu_param: by id of the param, (the param, out-features I, in-features, format).
+_GLU: dict[int, tuple[object, int, int, str]] = {}
+
+
+def glu_table(gate, up) -> np.ndarray:
+    """gate (I, K) and up (I, K) as one (2 I, K) weight, their column blocks of 64 out-features
+    alternating (gate first): QGEMVGlu reads a gate block and the up block of the same
+    out-features in turn; a prompt chunk's or a rows GEMV's reads one of the two (parity)."""
+    gate, up = np.asarray(gate, np.float32), np.asarray(up, np.float32)
+    I, K = gate.shape
+    if I % CB:
+        raise ValueError(f"glu_table: {I} out-features are not whole column blocks of {CB}")
+    return np.stack([gate.reshape(I // CB, CB, K), up.reshape(I // CB, CB, K)], 1).reshape(2 * I, K)
+
+
+def glu_param(gate, up, fmt: str):
+    """An iron.param of glu_table(gate, up) in fmt, known to glu_linear and glu_part."""
+    import iron
+
+    I, K = np.shape(gate)
+    p = iron.param(quantize_fmt(glu_table(gate, up), fmt).reshape(-1))
+    _GLU[id(p)] = (p, I, K, fmt)
+    return p
+
+
+def _cb_chunk(cb_bytes: int) -> int:
+    """The bytes of a DMA run within a column block's bytes: whole words, at most 1023 of them."""
+    for m in range(1, cb_bytes + 1):
+        c = cb_bytes // m
+        if cb_bytes % m == 0 and c % 4 == 0 and c <= 4 * 1023:
+            return c
+    raise ValueError(f"no run of a column block of {cb_bytes} bytes fits a DMA dimension")
+
+
+_GLU_OPS: dict = {}
+
+
+def glu_operators():
+    """QGEMVGlu (one row: y = silu(G x) * (U x) from a glu_table) and the parity-select forms of
+    QDequant and QGEMVRows (the gate's or the up's column blocks of a glu_table: a prompt chunk's
+    and a rows GEMV's, the table read once, no second copy)."""
+    if _GLU_OPS:
+        return _GLU_OPS
+    import aie.dialects.index as index
+    from aie.dialects.aie import T
+    from aie.helpers.taplib import TensorAccessPattern
+    from aie.iron import Buffer, In, ObjectFifo, Out, Worker
+    from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
+    from aie.iron.kernel import ExternalFunction
+    from aie.utils import config
+    from aie.utils.compile.jit.params import param, tunable, widths
+    from aie.utils.verify import Tolerance
+
+    from iron.common import Built, Operator
+
+    class QGEMVGlu(Operator):
+        """``y = silu(G x) * (U x)``: G and U a glu_table's (I out-features), one row of x. Each
+        column takes I / columns out-features: for each of its column blocks the gate's 64 rows
+        then the up's, a core's 32 of each held until both have passed (kernels/mv_add.h)."""
+
+        fmt: str = param(array=True)
+        blocks: int = param(array=True)  # the table's: 2 I / 64 * K / 256 * 2
+        K: int = param(array=True)
+        N: int = param(derive=lambda op: op.blocks * CB // (2 * op.K // K_TILE) // 2, array=True)
+        cores: int = param(default=2, array=True)
+        block_bytes: int = param(derive=lambda op: FORMATS[op.fmt], array=True)
+        num_aie_columns: int = tunable(domain=widths)
+
+        W = In(blocks, block_bytes, dtype=np.uint8, obj_shape=(cores, block_bytes), per=(num_aie_columns,))
+        x = In(K, obj_shape=(K,), per=(num_aie_columns,), replicate=True)
+        y = Out(N, obj_shape=(CB,), per=(num_aie_columns,))
+
+        def resolve(self, dev):
+            cbs = self.N // CB
+            cols = self.resolve_columns(dev, self.num_aie_columns, fits=lambda c: cbs % c == 0)
+            return self.replace(num_aie_columns=cols)
+
+        def build(self) -> Built:
+            K, n, cores, B = self.K, self.num_aie_columns, self.cores, self.block_bytes
+            pairs, kbs, out = self.N // CB // n, K // K_TILE, CB // cores
+            kdir = Path(config.aie_kernels_dir())
+            here = Path(__file__).resolve().parent / "kernels"
+            x_t = np.ndarray[(K,), np.dtype[bfloat16]]
+            acc_t = np.ndarray[(out,), np.dtype[np.float32]]
+            y_t = np.ndarray[(out,), np.dtype[bfloat16]]
+            blk_t = np.ndarray[(B,), np.dtype[np.uint8]]
+            sums_t = np.ndarray[(K // GROUP,), np.dtype[bfloat16]]
+            common = dict(source_file=str(here / f"{self.fmt}_mv.cc"),
+                          include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
+                          compile_flags=[f"-D{self.fmt.upper()}_K={K}", f"-DQ_OUT={out}", "-DQ_GLU=1"],
+                          object_file_name=f"{self.fmt}_mv_glu_{K}_{out}.o")
+            begin = ExternalFunction(f"{self.fmt}_mv_begin", arg_types=[x_t, sums_t, acc_t], **common)
+            block = ExternalFunction(f"{self.fmt}_mv_block", arg_types=[blk_t, x_t, sums_t, acc_t, np.int32, np.int32],
+                                     **common)
+            end = ExternalFunction(f"{self.fmt}_mv_end_glu", arg_types=[acc_t, acc_t, y_t], **common)
+            w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+            x_l3 = [ObjectFifo(self.x.obj_type, depth=1) for _ in range(n)]
+            y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
+            if cores == 1:
+                w_l1, x_l1, y_l1 = [[f] for f in w_l3], x_l3, [[f] for f in y_l3]
+            else:
+                w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], tile=AnyMemTile) for f in w_l3]
+                x_l1 = [f.cons().forward(obj_type=self.x.obj_type, tile=AnyMemTile) for f in x_l3]
+                y_l1 = [f.prod().join([0, out], obj_types=[y_t, y_t], depths=[2, 2], tile=AnyMemTile)
+                        for f in y_l3]
+
+            def core(w_f, x_f, y_f, sums, g, u, begin, block, end):
+                x = x_f.acquire(1)
+                begin(x, sums, g)
+                begin(x, sums, u)
+                for _ in range_(pairs):
+                    for acc in (g, u):
+                        for kb in range_(kbs):
+                            kb32 = index.casts(T.i32(), kb)
+                            for h in range(2 if cores == 1 else 1):
+                                w = w_f.acquire(1)
+                                block(w, x, sums, acc, kb32, h)
+                                w_f.release(1)
+                    y = y_f.acquire(1)
+                    end(g, u, y)
+                    y_f.release(1)
+                x_f.release(1)
+
+            workers = [Worker(core, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), Buffer(sums_t),
+                                     Buffer(acc_t), Buffer(acc_t), begin, block, end])
+                       for i in range(n) for j in range(cores)]
+            self.W.bind([f.prod() for f in w_l3])
+            self.x.bind([f.prod() for f in x_l3])
+            self.y.bind([f.cons() for f in y_l3])
+            return Built(workers, [])
+
+        def ops(self) -> int:
+            return 4 * self.N * self.K
+
+        def reference(self, W, x):
+            w = dequantize_fmt(W, 2 * self.N, self.K, self.fmt).astype(np.float64)
+            w = w.reshape(self.N // CB, 2, CB, self.K)
+            x = np.asarray(x, np.float64)
+            g = w[:, 0].reshape(self.N, self.K) @ x
+            u = w[:, 1].reshape(self.N, self.K) @ x
+            return (g / (1 + np.exp(-g)) * u).astype(bfloat16)
+
+        def tolerance(self) -> Tolerance:
+            return Tolerance.relative(0.05, 1e-2, note="partial sums narrowed to bf16 before the scale")
+
+    QGEMV, QDequant = operators()
+    Rows = rows_operator()
+
+    def select(base):
+        """``base`` (QDequant, QGEMVRows) over the gate's (parity 0) or the up's (1) column blocks of
+        a glu_table: its W the whole table, read every other column block."""
+
+        def sequence(self, rt):
+            n, B, K = self.num_aie_columns, self.block_bytes, self.K
+            cb_bytes = 2 * (K // K_TILE) * B
+            cbs = self.N // CB // n
+            c = _cb_chunk(cb_bytes)
+            total = 2 * self.blocks * B
+            taps = [(lane, TensorAccessPattern((total,), (2 * lane * cbs + self.parity) * cb_bytes,
+                                               [cbs, cb_bytes // c, c], [2 * cb_bytes, c, 1]), None, None)
+                    for lane in range(n)]
+            w = self.W
+            made = w.transfers
+            w.transfers = lambda: taps
+            try:
+                return base.sequence(self, rt)
+            finally:
+                w.transfers = made
+
+        def reference(self, W, *rest):
+            t = dequantize_fmt(W, 2 * self.N, self.K, self.fmt).reshape(self.N // CB, 2, CB, self.K)
+            half = t[:, self.parity].reshape(self.N, self.K)
+            q = quantize_fmt(half, self.fmt)  # exact: the same values in the same groups
+            return base.reference(self, q, *rest)
+
+        cores = getattr(base, "cores", None)
+        shape = (base.cores, base.block_bytes) if cores is not None and not isinstance(cores, int) else (1, base.block_bytes)
+        body = dict(
+            parity=param(default=0, array=True),
+            tblocks=param(derive=lambda op: 2 * op.blocks, array=True, repr=False),
+            sequence=sequence, reference=reference,
+            __annotations__={"parity": int, "tblocks": int},
+        )
+        body["W"] = In(body["tblocks"], base.block_bytes, dtype=np.uint8, obj_shape=shape, per=(base.num_aie_columns,))
+        return type(base.__name__, (base,), body)
+
+    _GLU_OPS.update(glu=QGEMVGlu, dequant=select(QDequant), rows=select(Rows))
+    return _GLU_OPS
+
+
+def glu_linear(x, gu):
+    """silu(x G^T) * (x U^T) for a glu_param: one row through QGEMVGlu; a few rows (a call
+    checking drafts) or a prompt chunk through the gate's and the up's column blocks in turn."""
+    p, I, K, fmt = _GLU[id(gu)]
+    ops = glu_operators()
+    one_row = len(x.shape) == 1 or x.shape[0] == 1
+    q = gu.reshape(-1, FORMATS[fmt])
+    if one_row:
+        y = ops["glu"].step(q, x.reshape(K), fmt=fmt)
+        return y if len(x.shape) == 1 else y.reshape(1, I)
+    import iron.functional as F
+    from iron import Precision
+
+    def part(parity):
+        if x.shape[0] <= ROWS_GEMV and fmt in ("q6", "q8"):
+            R = x.shape[0]
+            return ops["rows"].step(q, x.reshape(R * K), fmt=fmt, K=K, rows=R, parity=parity, blocks=q.shape[0] // 2)
+        w = ops["dequant"].step(q, fmt=fmt, K=K, parity=parity, blocks=q.shape[0] // 2)
+        return _BASE["linear"](x, w, precision=Precision.MEDIUM)
+
+    return F.silu(part(0)) * part(1)
+
+
+def install_glu() -> None:
+    """Make iron.lm's GatedMLP run glu_linear on a ``gu`` table (glu_param) where it holds one."""
+    from iron.lm.blocks import GatedMLP
+
+    base = GatedMLP.body
+    if getattr(base, "hwnpu_glu", False):
+        return
+
+    def body(self, x):
+        gu = getattr(self, "gu", None)
+        if gu is None:
+            return base(self, x)
+        return self.down_proj(glu_linear(x, gu))
+
+    body.hwnpu_glu = True
+    GatedMLP.body = body

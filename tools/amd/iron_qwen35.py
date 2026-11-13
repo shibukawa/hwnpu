@@ -75,6 +75,10 @@ def install_dense() -> None:
     packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, DENSE_SCRATCHPAD_WORDS)
 
 
+# A q6 or q8 dense MLP's gate and up as one table (iron_q4's glu_param): the decode step runs them
+# as one operator (QGEMVGlu) in place of two GEMVs, a SiLU and a product.
+FUSE_GLU = True
+
 # install()'s formats (iron_q4's), by part: the mixers' projections (Gated DeltaNet's and the
 # attention's), a dense MLP's, the head. Empty: all bf16.
 QUANT: dict[str, str] = {}
@@ -449,7 +453,17 @@ class Qwen35(CausalLM):
                     q(lin, "weight", fmts["attn"])
                 q(a, "gate", fmts["attn"])
             if not isinstance(layer.mlp, SparseMoe):
-                for lin in (layer.mlp.gate_proj, layer.mlp.up_proj, layer.mlp.down_proj):
+                mlp = layer.mlp
+                if fmts["mlp"] in ("q6", "q8") and FUSE_GLU:
+                    # gate and up as one table: the decode step's one operator (iron_q4's QGEMVGlu)
+                    # in place of two GEMVs, a SiLU and a product; the others read it in parts
+                    iron_q4.install_glu()
+                    mlp.gu = iron_q4.glu_param(np.asarray(mlp.gate_proj.weight, np.float32),
+                                               np.asarray(mlp.up_proj.weight, np.float32), fmts["mlp"])
+                    mlp.gate_proj = mlp.up_proj = None
+                    q(mlp.down_proj, "weight", fmts["mlp"])
+                    continue
+                for lin in (mlp.gate_proj, mlp.up_proj, mlp.down_proj):
                     q(lin, "weight", fmts["mlp"])
             else:  # the prompt chunk's shared expert
                 for lin in layer.mlp.shared:
