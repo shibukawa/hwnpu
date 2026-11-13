@@ -46,6 +46,8 @@ IPAD = 3072  # an expert's gate-up out-features (2880 and 192 of zeros): 96 bloc
 NPAD = 3072  # the residual's width (48 column blocks of 64: whole on 8 columns)
 WV = 16  # MoERoute's routing weights (iron_moe.WV)
 NOCOMPUTE = os.environ.get("MX4_NOCOMPUTE") == "1"
+FASTDECODE = os.environ.get("MX4_FASTDECODE") == "1"  # a measurement: the prompt's kernels skip decoding the codes
+BFP = os.environ.get("MX4_BFP", "1") == "1"  # the prompt's products on bfp16 (mac_8x8_8x8T, 16.178): the activations rounded to 8-bit mantissas; 0 the bf16 mmul
 WDEPTH = int(os.environ.get("MX4_WDEPTH", "2"))  # the decode step's weight objects held in a memtile
 LIMIT, ALPHA = 7.0, 1.702
 FP4 = np.array([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6], np.float32)
@@ -806,8 +808,9 @@ def group_operators():
         here = Path(__file__).resolve().parent / "kernels"
         common = dict(source_file=str(here / "moe_mx4_rows.cc"),
                       include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
-                      compile_flags=[f"-DMX_KT={KT}", f"-DMX_CAP={CAP}", f"-DMX_SB={SB}"] + (["-DMX_NOCOMPUTE=1"] if NOCOMPUTE else []),
-                      object_file_name=f"moe_mx4_rows_mm_{KT}_{CAP}_{SB}{'_nc' if NOCOMPUTE else ''}.o")
+                      compile_flags=[f"-DMX_KT={KT}", f"-DMX_CAP={CAP}", f"-DMX_SB={SB}"] + (["-DMX_NOCOMPUTE=1"] if NOCOMPUTE else [])
+                      + (["-DMX_FASTDECODE=1"] if FASTDECODE else []) + (["-DMX_BFP=1"] if BFP else []),
+                      object_file_name=f"moe_mx4_rows_mm_{KT}_{CAP}_{SB}{'_nc' if NOCOMPUTE else ''}{'_fd' if FASTDECODE else ''}{'_bfp' if BFP else ''}.o")
         f = lambda name, args: ExternalFunction(name, arg_types=args, **common)  # noqa: E731
         i32 = np.int32
         return dict(
@@ -834,8 +837,9 @@ def group_operators():
         XS: int = param(derive=lambda op: EXPERTS * op.K * CAP, array=True)
         AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
         CN: int = param(default=SB * KT, array=True)
-        form: int = param(default=3, array=True)  # 3: the matrix unit a strip at a time (moe_mx4_rows.cc's mx4_rows_mm)
+        form: int = param(default=6 if BFP else 3, array=True)  # 3: the bf16 mmul a strip at a time; 6: bfp16 (MX_BFP)
         nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
+        fastdecode: bool = param(default=FASTDECODE, array=True)  # a measurement's build (MX4_FASTDECODE)
         num_aie_columns: int = tunable(domain=widths)
 
         W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
@@ -937,8 +941,9 @@ def group_operators():
         AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
         YN: int = param(derive=lambda op: EXPERTS * CAP * op.N, array=True)
         CN: int = param(default=SB * KT, array=True)
-        form: int = param(default=3, array=True)  # 3: the matrix unit a strip at a time (moe_mx4_rows.cc's mx4_rows_mm)
+        form: int = param(default=6 if BFP else 3, array=True)  # 3: the bf16 mmul a strip at a time; 6: bfp16 (MX_BFP)
         nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
+        fastdecode: bool = param(default=FASTDECODE, array=True)  # a measurement's build (MX4_FASTDECODE)
         num_aie_columns: int = tunable(domain=widths)
 
         W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
@@ -1037,6 +1042,8 @@ def _check_group(a) -> int:
     dn = np.concatenate([down_table(*random_expert(rng, HIDDEN, INTER)) for _ in range(EXPERTS)])
     counts = rng.integers(0, CAP + 1, EXPERTS)
     counts[:3] = (0, CAP, 1)
+    if os.environ.get("MX4_COUNTS") == "chunk":  # a measurement: a 256-token chunk's 1024 rows, about 32 an expert
+        counts = np.minimum(rng.multinomial(1024, rng.dirichlet(np.full(EXPERTS, 3.0))), CAP)
 
     class G(iron.Graph):
         def __init__(self):

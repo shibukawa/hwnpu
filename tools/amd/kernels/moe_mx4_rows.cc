@@ -121,6 +121,7 @@ static inline aie::vector<bf16, 64> scale_rep(aie::vector<bf16, PR> sc) {
 }
 
 // noinline: inlined in both of block2's calls the gate-up core's program passed its 16 KB
+#ifndef MX_BFP
 __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16 *x, float *acc) {
 #ifdef MX_NOCOMPUTE
   return; // a measurement: the transfers alone
@@ -138,6 +139,10 @@ __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16
       c[g][1] = MM();
     }
     for (int j = 0; j < KT / 8; j++) {
+#ifdef MX_FASTDECODE // a measurement: the codes' bytes taken as bf16 as they are (wrong values), no decoding
+      const bf16 *raw = reinterpret_cast<const bf16 *>(A->codes) + ((s * (KT / 8) + j) % 39) * 64;
+      auto [b0, b1] = aie::interleave_unzip(aie::load_v<64>(raw), aie::load_v<64>(raw + 64), 8);
+#else
       aie::vector<int8_t, 8 * PR> v = mx4_codes(A, s * (KT / 8) + j);
       aie::accum<accfloat, 8 * PR> f;
       f.from_vector(aie::to_float(v, 0));
@@ -147,6 +152,7 @@ __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16
       aie::vector<bf16, 64> w1 = aie::mul(w.template extract<64>(1), sc).template to_vector<bf16>();
       // [k][16 m] to two [k][8 m] tiles: the 8-wide chunks alternate between them
       auto [b0, b1] = aie::interleave_unzip(w0, w1, 8);
+#endif
 #pragma clang loop unroll(full)
       for (int g = 0; g < G; g++) {
         const bf16 *xr = x + (4 * g) * KT + 8 * j;
@@ -172,6 +178,75 @@ __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16
     }
   }
 }
+
+#endif // MX_BFP
+
+#ifdef MX_BFP
+// The same on AIE2P's native float matrix instruction, bfp16 (mac_8x8_8x8T: 8 rows by 8 in-features
+// by 8 out-features, 512 products; the bf16 mmul above is emulated with broadcast macs, about 32
+// products a cycle). A k-step's 8 in-features of the 8 rows are converted to bfp16ebs8 (an exponent
+// shared by each row's 8: the activations rounded to 8-bit mantissas, as AMD's own prefill GEMMs),
+// and each 8 out-features' tile of the weights is built exactly: a tile's 8 values sharing an
+// exponent are an out-feature's 8 in-features, inside one MXFP4 group (q4nx_dequant.cc's order:
+// the nibbles' 8 k of 16 n, n 0-7 in the even words, transposed to n * 8 + k).
+// A tile built directly (bfp16ebs8 is {v64int8 mantissa, v8int8 exponent}, a value mantissa *
+// 2^(exponent - 133), aie.utils.bfp): the mantissas the codes' v = 2 e2m1 (-12 .. 12, exact), the
+// exponent of out-feature n its group's E + 5 (v 2^(E - 128) = v 2^(E + 5 - 133)). No float work.
+static inline v64bfp16ebs8 mx4_tile(aie::vector<uint32_t, 16> w, int half, uint64_t exps8) {
+  aie::vector<uint32_t, 16> h = ::shuffle(w, w, T32_16x2_lo + half);
+  aie::vector<uint4, 64> q = h.template extract<8>(0).template cast_to<uint4>();
+  aie::vector<uint8_t, 64> c = aie::unpack(q); // [k][n]
+  aie::vector<int8_t, 64> m = aie::vector_cast<int8_t>(aie::bit_and(uint8_t(7), c));
+  // 2 m and 4 m by adds (an int8 upshift goes through the accumulators)
+  aie::vector<int8_t, 64> d = aie::add(m, m);
+  aie::vector<int8_t, 64> m2 = aie::sub(d, int8_t(4));
+  aie::vector<int8_t, 64> m4 = aie::sub(aie::add(d, d), int8_t(16));
+  aie::vector<int8_t, 64> v = aie::max(m, aie::max(m2, m4));
+  v = aie::select(v, aie::neg(v), aie::ge(c, uint8_t(8)));
+  aie::vector<int8_t, 64> vt = aie::transpose(v, 8, 8); // [n][k]: an exponent's 8 values one n's
+  v64bfp16ebs8 t;
+  t.mantissa = vt;
+  t.exponent = __builtin_bit_cast(v8int8, exps8 + 0x0505050505050505ull);
+  return t;
+}
+
+__attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16 *x, float *acc) {
+#ifdef MX_NOCOMPUTE
+  return; // a measurement: the transfers alone
+#endif
+  static_assert(SB == 8, "a row tile of 8");
+  aie::accum<accfloat, 64> c0 = aie::zeros<accfloat, 64>(), c1 = c0, c2 = c0, c3 = c0;
+  const uint32_t *codes = reinterpret_cast<const uint32_t *>(A->codes);
+  for (int j = 0; j < KT / 8; j++) {
+    const bf16 *xr = x + 8 * j;
+    aie::vector<bf16, 64> a = aie::concat(
+        aie::concat(aie::load_v<8>(xr), aie::load_v<8>(xr + KT), aie::load_v<8>(xr + 2 * KT), aie::load_v<8>(xr + 3 * KT)),
+        aie::concat(aie::load_v<8>(xr + 4 * KT), aie::load_v<8>(xr + 5 * KT), aie::load_v<8>(xr + 6 * KT),
+                    aie::load_v<8>(xr + 7 * KT)));
+    aie::accum<accfloat, 64> af;
+    af.from_vector(a);
+    aie::block_vector<bfp16ebs8, 64> ab = af.template to_vector<bfp16ebs8>();
+    const uint64_t *ex = reinterpret_cast<const uint64_t *>(A->exps + (j / 4) * MT); // n 8 t .. 8 t + 7
+    // strip 0 (n 0-15) and strip 1 (n 16-31): 8 k of 16 n a 512-bit load each
+    aie::vector<uint32_t, 16> w0 = aie::load_v<16>(codes + j * 16);
+    aie::vector<uint32_t, 16> w1 = aie::load_v<16>(codes + (KT / 8 + j) * 16);
+    c0 = mac_8x8_8x8T(ab, mx4_tile(w0, 0, ex[0]), c0);
+    c1 = mac_8x8_8x8T(ab, mx4_tile(w0, 1, ex[1]), c1);
+    c2 = mac_8x8_8x8T(ab, mx4_tile(w1, 0, ex[2]), c2);
+    c3 = mac_8x8_8x8T(ab, mx4_tile(w1, 1, ex[3]), c3);
+  }
+  // C lanes m * 8 + n: row m's 8 out-features of the tile
+  aie::vector<float, 64> v[4] = {c0.template to_vector<float>(), c1.template to_vector<float>(),
+                                 c2.template to_vector<float>(), c3.template to_vector<float>()};
+#pragma clang loop unroll(disable)
+  for (int r = 0; r < 8; r++) {
+    float *dst = acc + r * MT;
+#pragma clang loop unroll(full)
+    for (int t = 0; t < 4; t++)
+      aie::store_v(dst + 8 * t, aie::add(aie::load_v<8>(dst + 8 * t), v[t].template extract<8>(r)));
+  }
+}
+#endif
 
 extern "C" {
 
