@@ -35,9 +35,10 @@ var Targets = []Target{
 	{Name: "intel", Backend: "intel", MaxBytes: 2 << 30, Note: "assumed; the NPU shares the system memory, so the driver compiler's time and memory are the likelier limit. To be measured with hwnpu-dev probe limit"},
 }
 
-// backendOf is a target's or Options' backend with the default filled in.
+// backendOf is a target's or Options' backend with the default filled in: Core AI's programs run
+// on the Neural Engine, as Core ML's.
 func backendOf(b string) string {
-	if b == "" {
+	if b == "" || b == BackendCoreAI {
 		return "coreml"
 	}
 	return b

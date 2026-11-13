@@ -83,7 +83,7 @@ type Config struct {
 // extension of a package, an IR or a list of parts.
 func programName(path string) string {
 	name := filepath.Base(path)
-	for _, ext := range []string{".parts.json", ".mlpackage", ".xml"} {
+	for _, ext := range []string{".parts.json", ".mlpackage", ".aimodel", ".xml"} {
 		name = strings.TrimSuffix(name, ext)
 	}
 	return name

@@ -5161,3 +5161,27 @@ M3 の Core ML の 2 回目は、512² で 4 分 26 秒、1024² で 7 分 08 �
 残り: M1 の Core ML との比較。M3 での確かめ (VAE の広い段の失敗と DiT の持ち方は M1 で見たもの。タイルにしても M3 の Core ML で遅くならないか)。古い書き出しの部品が隣のフォルダに残ると兄弟として拾われる (版の違う書き出しはまとめない方がよい。外れる組になってもほどけるので、壊れはしない)。
 
 注: ここで動かしたのは Core ML の書き出し (`….coreml`) を Core AI で。16.180、16.181 の `coreai` の書き出し (DiT を lut6 の関数 2 つの `.aimodel` に) は、この節のあとで main に入った。VAE のタイル (`mil.VaePart` の入力) と DiT の入れ替え (`swapDiT`、`dev.Info().Backend == "coreai"` のとき) は `coreai` の書き出しにもそのまま効く (書き出しの版は 2) が、M1 では確かめていない。
+
+### 16.185 `hwnpu-chat` の Core AI を書き出しの形式 (`coreai`) に: 同じ層の部品を関数 2 つの `.aimodel` に — 2026-11-14
+
+16.172 と 16.173 の `hwnpu-chat --backend coreai` は、Core ML の書き出し (`.mlpackage`) を読むときに Core AI のプログラムに下ろしていた。重みがディスクに 3 回置かれる (16.173)。そこで 16.180 の画像のモデルと同じく、チェックポイントから `.aimodel` を直接書く。`--backend` の既定 (Core ML) と Core ML の経路はそのまま残す (既定を Core AI にして Core ML を外すのは、Qwen3.5-4B と gemma-4-E4B-it を別の機械で確かめてから)。
+
+- **`llm.ConvertAI`**: 1 つのモデルの複数のプログラム (同じ重みで `Options` だけ違う: 1 回に読むトークン数、最後の行だけのロジット、キャッシュだけ書く `KVOnly`、`state-rows`) を Core AI 向けに書く。どれも `Convert` と同じように分ける (`PlanPaged`、`PlanSplit`)。そのうえで、同じ層から始まる部品を 1 本の `.aimodel` の関数にする (`WriteAIFunctions`)。`base.partK.aimodel` が `#q8` と `#q128-last` を持ち、プログラムごとの `OUT.parts.json` が `PATH#NAME` を並べる (`Backend: coreai` と `Meta` 入り)。注意で分けたモデルの重みのない 2 本 (`OUT.attn.aimodel`、`OUT.mass.aimodel`) はプログラムごとに書く。始まりの同じ部品をまとめるので、`KVOnly` の短い部品 (Gemma 4) も、生成側の部品と同じ 1 本に入る。層のない部品 (`NoLayers`、Qwen3 を分けたとき) は別にする
+- **`Convert` の `coreai`**: 1 部品なら `out.aimodel`。分けるときは `ConvertAI` に 1 つのプログラム (`#main`) を渡す。段 (tiers) は取らない。`LookupTargetFor` は `coreai` を Neural Engine の限度で引く
+- **`chat.Prepare`**: `llm.NativeFormat` で形式を決める (`--backend coreai` か `HWNPU_BACKEND=coreai` で `coreai`)。書き出しはモデルのディレクトリの `coreai/`。キャッシュの長さごとに、生成と読み取りのプログラムを `convertShared` で一緒に書く。`.aimodel` の名前には中のプログラムを全部入れる (`…-c262144-q8-q128-last.part1.aimodel`)。`--draft` を変えて別の組で書き直しても、前の組が指すファイルを上書きしない。multi-token prediction の層と符号器は 1 本ずつ (`convert`、`.aimodel`)。`PrepareEmbedder` は 128 と 1024 の 2 本を関数 2 つの 1 本にする。`hwnpu-chat systemone` (d1) も `NativeFormat` で `coreai/` に書く
+
+**結果** (M3 16 GB、macOS 27.2、貪欲法)
+
+| モデル | 書き出し | 1 回目の準備 | 2 回目の準備 | Neural Engine | 生成 |
+|---|---|---|---|---|---|
+| LFM3-1.7B (lut6、7 部品) | 20 秒、1.2 GB (関数 2 つの 7 本) | 1 分 30 秒 (コンパイル 1 分 10 秒) | 0.4 秒 | 1.32 GiB | 36.5 トークン/s |
+| Qwen3-0.6B (lut8、1 本) | 8 秒、0.58 GiB | 38 秒 | 0.2 秒 | 0.59 GiB | 19.4〜20.1 |
+| Qwen3.5-0.8B (lut8、`-sr` と MTP) | 10 秒 + MTP 2 秒 | 8 分 58 秒 (コンパイル 8 分 37 秒) | 0.5 秒 | 0.78 GiB | 40.8 |
+| PLaMo-Embedding-1B (lut8、128 と 1024) | 13 秒、0.90 GiB (関数 2 つの 1 本) | 39 秒 (コンパイル) | — | — | 1 文 0.04 秒 |
+
+- どの部品も Neural Engine に全部載った。答えは筋が通る (LFM3「日本の首都は東京です。」、PLaMo-Embedding は問い 2 つとも正しい文書が 1 位)。Qwen3-0.6B と Qwen3.5-0.8B の 2 回目は 1 回目とトークン単位で同じ
+- LFM3-1.7B の Neural Engine の 1.32 GiB は、16.177 の `.mlpackage` をまとめて下ろす形 (1.34 GiB) と同じで、重みは 1 回分。モデルのディレクトリの書き出しは 1.2 GB (Core ML の `.mlpackage` 2 本と、下ろした `.aimodel` はなくなる)。Core AI のキャッシュは 3 つのチャットのモデルで約 3 GB 増えた
+- `TestConvertAIOnNeuralEngine`: 小さな LFM3 を 1 トークンと 4 トークン (最後の行だけ) の関数 2 つにして Core AI の Neural Engine で動かした。Core ML の書き出しを CPU のインタプリタで動かしたものとの相対誤差は最大 0.011 (24 トークン、1 と 4 を混ぜる)
+- Qwen3.5-0.8B の 1 回目のコンパイルは M1 の Core AI (16.173、5 分 9 秒) より長い。`.mlpackage` を下ろす形と同じバイトコードか (関数 2 つのとき) は確かめていない
+
+残り ([handoff-coreai-chat.md](handoff-coreai-chat.md)): Qwen3.5-4B と gemma-4-E4B-it (ディスクの余裕のある機械で)。M3 の空きが 12 GB まで減ったので、gemma-4-E2B-it (`KVOnly` の部品が生成側の部品と 1 本になる経路)、LFM3-VL、Audio、Omni (符号器)、Qwen3.5-2B、Qwen3-1.7B、PLaMo 3 Translate、d1 は試していない。そのあと既定を Core AI にし、`hwnpu-chat` から Core ML を外す。

@@ -106,7 +106,7 @@ func Load(ctx context.Context, c Config) (*Model, error) {
 	}
 	m := &Model{Name: c.Name, cfg: cfg, emb: map[int32][]float32{}, heads: map[int32][]float32{}}
 	if m.Name == "" {
-		m.Name = strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage")
+		m.Name = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(filepath.Base(c.Packages[0]), ".parts.json"), ".mlpackage"), ".aimodel")
 	}
 	if m.temperature, err = LoadCalibration(c.Calibration); err != nil {
 		return nil, err

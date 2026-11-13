@@ -103,6 +103,7 @@ macOS 27 has Core AI beside Core ML. hwnpu lowers the same converted models (`.m
 - **Results and speed**: as Core ML's (the same answers, objects and text; cosines of 0.9999 or more for embeddings and depth; a call within ±10 %)
 - **The difference** is how the compiled programs are kept. Core ML's cache holds about 4 GiB, and past it programs compile again at later starts too (minutes to tens of minutes for the large image generators). Core AI keeps them in its own cache (`~/Library/Caches/coreai-cache`) until the disk runs low. With both caches warm the starts are the same
 - **The cost**: the weights are on the disk three times (the converted `.mlpackage`, the lowered `.aimodel`, Core AI's cache). Below about 15 GB free, macOS removes the caches and the next start compiles again
+- **hwnpu-chat** converts Core AI's own programs from the checkpoint instead (`.aimodel` in the model's `coreai` directory, no `.mlpackage`): the programs of 8 and 128 tokens per call are functions of one, so their weights are on the disk, in Core AI's cache and on the Neural Engine once (LFM3-1.7B: 1.2 GB written, 1.32 GiB on the Neural Engine, a second start in 0.4 seconds on an M3; docs/design.md 16.185)
 - The record is design.md 16.169–16.183 ([docs/design.md](docs/design.md)); the summary is section 7.5 of [docs/improvements.md](docs/improvements.md)
 
 ## Troubleshooting
