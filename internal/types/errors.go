@@ -56,14 +56,24 @@ func (e *DriverError) Error() string {
 }
 
 // IsOutOfMemory reports whether err is a driver running out of the memory a graph is loaded into
-// (Level Zero's ERROR_OUT_OF_HOST_MEMORY or ERROR_OUT_OF_DEVICE_MEMORY): one that may load once
-// other graphs are closed.
+// (Level Zero's ERROR_OUT_OF_HOST_MEMORY or ERROR_OUT_OF_DEVICE_MEMORY, or Intel's driver compiler
+// failing with C++'s std::bad_alloc, "bad allocation", when the graphs already loaded hold the
+// memory): one that may load once other graphs are closed.
 func IsOutOfMemory(err error) bool {
-	var d *DriverError
-	if errors.As(err, &d) {
-		return d.Code == 0x70000002 || d.Code == 0x70000003
+	if err == nil {
+		return false
 	}
-	return err != nil && (strings.Contains(err.Error(), "OUT_OF_HOST_MEMORY") || strings.Contains(err.Error(), "OUT_OF_DEVICE_MEMORY"))
+	var d *DriverError
+	if errors.As(err, &d) && (d.Code == 0x70000002 || d.Code == 0x70000003) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, s := range []string{"out_of_host_memory", "out_of_device_memory", "bad allocation", "bad_alloc"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsDeviceLost reports whether err is the NPU lost by the driver (Level Zero's DEVICE_LOST), as
