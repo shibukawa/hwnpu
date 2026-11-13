@@ -28,7 +28,6 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/types"
@@ -47,6 +46,8 @@ var (
 	caiClose func(h uintptr)
 	caiNames func(h uintptr, which int32) *byte
 	caiRun   func(h uintptr, ins, outs *uintptr, err **byte) int32
+	// caiForget deletes Core AI's cache entries of an asset; nil with a shim from before it
+	caiForget func(path *byte)
 )
 
 // kindNeuralEngine is the shim's specialization: prefer the Neural Engine.
@@ -87,6 +88,9 @@ func load() error {
 		purego.RegisterLibFunc(&caiClose, h, "cai_close")
 		purego.RegisterLibFunc(&caiNames, h, "cai_names")
 		purego.RegisterLibFunc(&caiRun, h, "cai_run")
+		if _, err := purego.Dlsym(h, "cai_forget"); err == nil {
+			purego.RegisterLibFunc(&caiForget, h, "cai_forget")
+		}
 	})
 	return loadErr
 }
@@ -171,44 +175,23 @@ func (b *buffer) Close() error {
 	return err
 }
 
-// asset is the Core AI program of the package at path: lowered once into the compile cache (or a
-// temporary directory without one), with its bytecode's hash.
-func (d *device) asset(path string) (dir string, cached bool, owned string, err error) {
-	if strings.EqualFold(filepath.Ext(path), ".aimodel") {
-		return path, true, "", nil
+// asset is the Core AI program of the package at path and its function: lowered once into the
+// compile cache, with the packages beside it of the same weights (resolve), or alone into a
+// temporary directory without a cache.
+func (d *device) asset(path string) (dir, fn string, cached bool, owned string, err error) {
+	if d.opts.CacheDir != "" {
+		dir, fn, cached, err = resolve(d.opts.CacheDir, path)
+		return dir, fn, cached, "", err
 	}
-	lower := func(dst string) error {
-		p, err := ailower.LowerPackage(path)
-		if err != nil {
-			return err
-		}
-		return p.WriteAsset(dst)
-	}
-	if d.opts.CacheDir == "" {
-		tmp, err := os.MkdirTemp("", "hwnpu-coreai-*.aimodel")
-		if err != nil {
-			return "", false, "", err
-		}
-		if err := lower(tmp); err != nil {
-			os.RemoveAll(tmp)
-			return "", false, "", err
-		}
-		return tmp, false, tmp, nil
-	}
-	digest, err := cache.TreeDigest(path)
+	tmp, err := os.MkdirTemp("", "hwnpu-coreai-*.aimodel")
 	if err != nil {
-		return "", false, "", fmt.Errorf("coreai: %w", err)
+		return "", "", false, "", err
 	}
-	key := cache.Key([]byte("hwnpu-coreai-v1"), digest, []byte(ailower.Producer))
-	if p, ok := cache.Lookup(d.opts.CacheDir, key, ".aimodel"); ok {
-		return p, true, "", nil
+	if err := lowerOne(path, tmp); err != nil {
+		os.RemoveAll(tmp)
+		return "", "", false, "", err
 	}
-	p, err := cache.Store(d.opts.CacheDir, key, ".aimodel", lower)
-	if err != nil {
-		return "", false, "", err
-	}
-	cache.SetSource(d.opts.CacheDir, key, path)
-	return p, false, "", nil
+	return tmp, "main", false, tmp, nil
 }
 
 type graph struct {
@@ -228,10 +211,13 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	if src.Function != "" || src.Units != "" {
 		return nil, fmt.Errorf("coreai: functions and compute units are not supported: %w", types.ErrUnsupported)
 	}
-	path, fn := splitFunction(src.Path)
-	dir, cached, owned, err := d.asset(path)
-	if err != nil {
-		return nil, err
+	dir, fn := splitFunction(src.Path)
+	cached, owned := true, ""
+	if !strings.EqualFold(filepath.Ext(dir), ".aimodel") {
+		var err error
+		if dir, fn, cached, owned, err = d.asset(dir); err != nil {
+			return nil, err
+		}
 	}
 	g := &graph{cached: cached, owned: owned}
 	var retried int32
