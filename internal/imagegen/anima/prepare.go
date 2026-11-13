@@ -1,6 +1,7 @@
 package anima
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"github.com/shibukawa/hwnpu/internal/cache"
@@ -56,10 +57,11 @@ type Setup struct {
 }
 
 // Formats are the default weight formats of the text and the DiT for a backend: int8 for both on
-// Core ML (the text's 1.0 GB at fp16 is over a program's limit, and the DiT is as fast at int8 as
-// at fp16 and nearer it than lut8, design.md 16.85); fp16 on Intel's NPU.
+// Core ML and Core AI (the text's 1.0 GB at fp16 is over a Core ML program's limit, and the DiT is
+// as fast at int8 as at fp16 and nearer it than lut8, design.md 16.85; Core AI ran these, 16.169);
+// fp16 on Intel's NPU.
 func Formats(backend string) (text, dit string) {
-	if backend == "coreml" {
+	if backend == "coreml" || backend == "coreai" {
 		return "int8", "int8"
 	}
 	return "fp16", "fp16"
@@ -85,12 +87,8 @@ func DefaultGroup(backend string, width, height int) int {
 // ExportName is the directory Prepare writes the export of o into, in Setup.Dir: what changes
 // the programs is in its name.
 func ExportName(o ConvertOptions) string {
-	ext := ".coreml"
-	if o.Backend == "intel" {
-		ext = ".intel"
-	}
-	return fmt.Sprintf("%s-%dx%d-%s-%s-g%d-q%d-v%d%s", strings.TrimSuffix(o.Dit, ".safetensors"), o.Width, o.Height,
-		o.TextFormat, o.DitFormat, o.Group, o.QChunk, ExportVersion, ext)
+	return fmt.Sprintf("%s-%dx%d-%s-%s-g%d-q%d-v%d.%s", strings.TrimSuffix(o.Dit, ".safetensors"), o.Width, o.Height,
+		o.TextFormat, o.DitFormat, o.Group, o.QChunk, ExportVersion, cmp.Or(o.Backend, "coreml"))
 }
 
 // Prepare makes Anima ready in s.Dir, as hwnpu-chat makes its models ready: it downloads the

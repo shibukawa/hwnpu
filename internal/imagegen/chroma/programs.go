@@ -55,6 +55,15 @@ type ProgramManifest struct {
 	Vae     []string `json:"vae"`     // the VAE's stages, in order
 }
 
+// ExportFormat is the program format of the export dir (its manifest's backend), "" for none.
+func ExportFormat(dir string) string {
+	m, err := ReadProgramManifest(dir)
+	if err != nil {
+		return ""
+	}
+	return m.Backend
+}
+
 // IsProgramExport reports whether dir holds an export of Convert.
 func IsProgramExport(dir string) bool {
 	_, err := ReadProgramManifest(dir)

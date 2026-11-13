@@ -27,7 +27,7 @@ const ProgramKind = "anima-programs"
 // packages, or OpenVINO IR .xml) by part, relative to the export's directory.
 type ProgramManifest struct {
 	Kind    string `json:"kind"`
-	Backend string `json:"backend"` // coreml or intel
+	Backend string `json:"backend"` // coreml, coreai or intel
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
 	// Formats are the weight formats of the parts (text, dit), as hwnpu-dev convert's -format.

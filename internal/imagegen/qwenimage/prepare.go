@@ -3,7 +3,6 @@ package qwenimage
 import (
 	"context"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"io/fs"
 	"os"
@@ -13,7 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/imagegen/qwenimage/mil"
+	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 // Setup is what Prepare makes ready.
@@ -55,6 +57,45 @@ var Files = []File{
 	{"processor/tokenizer.json", true},
 }
 
+// textWeights is the text encoder's checkpoint: one file (Qwen-Image-2.1-Turbo) or the shards of
+// its index (Qwen-Image-2.1). TextDir holds either, whichever repository put it there.
+const textWeights = "text_encoder/model.safetensors"
+
+// fetchSharded puts the checkpoint name of repo at path, or when the repository has it in
+// several files, its index (path.index.json) and the files it names beside it. Shards already
+// there (of another repository's download) are kept.
+func fetchSharded(ctx context.Context, repo, name, path string, log io.Writer) error {
+	index := path + ".index.json"
+	if _, err := os.Stat(index); err != nil {
+		err := chat.Fetch(ctx, repo, name, path, log)
+		if err == nil || !chat.NotFound(err) {
+			return err
+		}
+		if err := chat.Fetch(ctx, repo, name+".index.json", index, log); err != nil {
+			return err
+		}
+	}
+	files, err := mil.Shards(filepath.Dir(path), strings.TrimSuffix(filepath.Base(path), ".safetensors"))
+	if err != nil {
+		return err
+	}
+	if len(files) == 1 && files[0] == path {
+		return nil // the one file, there
+	}
+	dir := filepath.Dir(name)
+	var want []chat.File
+	for _, f := range files {
+		want = append(want, chat.File{Repo: repo, Name: dir + "/" + filepath.Base(f), Path: f})
+	}
+	chat.Expect(ctx, want)
+	for _, f := range want {
+		if err := chat.Fetch(ctx, repo, f.Name, f.Path, log); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ExportName is the directory Prepare writes the export of name and o into: what changes the
 // programs is in it.
 func ExportName(name string, o ConvertOptions) string {
@@ -65,8 +106,8 @@ func ExportName(name string, o ConvertOptions) string {
 		}
 		return format + "-" + map[string]string{"kmeans": "km", "kmeans-minmax": "kmm"}[quant]
 	}
-	return fmt.Sprintf("%s-%dx%d-%s-%s-%s-g%d-v%d.coreml", strings.ToLower(name), o.Width, o.Height, q(o.TextFormat, o.TextQuant),
-		q(o.DitTextFormat, o.DitQuant), q(o.DitFormat, o.DitQuant), o.Group, ExportVersion)
+	return fmt.Sprintf("%s-%dx%d-%s-%s-%s-g%d-v%d.%s", strings.ToLower(name), o.Width, o.Height, q(o.TextFormat, o.TextQuant),
+		q(o.DitTextFormat, o.DitQuant), q(o.DitFormat, o.DitQuant), o.Group, ExportVersion, o.Backend)
 }
 
 // Prepare makes a Qwen-Image-2.1 ready in s.Dir as hwnpu-chat makes its models ready: it downloads
@@ -102,7 +143,11 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return "", err
 		}
-		if err := chat.Fetch(ctx, s.Repo, f.Name, path, log); err != nil {
+		fetch := chat.Fetch
+		if f.Name == textWeights {
+			fetch = fetchSharded
+		}
+		if err := fetch(ctx, s.Repo, f.Name, path, log); err != nil {
 			return "", err
 		}
 	}
@@ -113,15 +158,18 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	if from, same := sharedExport(s.Dir, s.Name, o); from != "" {
-		if err := linkShared(from, out, same); err != nil {
+		if err := linkShared(from, out, same, same && !o.SharedDit()); err != nil {
 			return "", err
 		}
-		if same {
+		if same && !o.SharedDit() {
 			o.Only = map[string]bool{"blocks": true, "time": true, "vae": true}
 			fmt.Fprintf(log, "the text encoder's and the DiT's text pass's programs from %s\n", filepath.Base(from))
 		} else {
 			o.Only = map[string]bool{"text_in": true, "dit_text": true, "blocks": true, "time": true, "vae": true}
-			fmt.Fprintf(log, "the text encoder's programs but its last group's from %s\n", filepath.Base(from))
+			if same { // its DiT's text pass is one program with its blocks (SharedDit): written again
+				delete(o.Only, "text_in")
+			}
+			fmt.Fprintf(log, "the text encoder's programs from %s\n", filepath.Base(from))
 		}
 	}
 	fmt.Fprintf(log, "converting %s (%dx%d, text %s, DiT %s); this takes a few minutes\n", filepath.Base(out), o.Width, o.Height, o.TextFormat, o.DitFormat)
@@ -140,7 +188,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 // one's too; one of another model (Qwen-Image-2.1 and its Turbo hold the same Qwen3-VL-8B) shares
 // the text encoder's other groups only. One of the same model is taken first.
 func sharedExport(dir, name string, o ConvertOptions) (from string, same bool) {
-	done, _ := filepath.Glob(filepath.Join(dir, "*.coreml.done"))
+	done, _ := filepath.Glob(filepath.Join(dir, "*."+o.Backend+".done"))
 	for _, d := range done {
 		e := strings.TrimSuffix(d, ".done")
 		m, err := ReadProgramManifest(e)
@@ -171,17 +219,23 @@ func exportModel(dir string) string {
 }
 
 // linkShared hard links text/ and the text encoder's programs of the export from into out; with
-// same, its last group and the DiT's text pass too (sharedExport).
-func linkShared(from, out string, same bool) error {
+// last, its last group too (an export of the same model, sharedExport); with ditText, the DiT's
+// text pass too (not when it is one program with the blocks, SharedDit).
+func linkShared(from, out string, last, ditText bool) error {
 	m, err := ReadProgramManifest(from)
 	if err != nil {
 		return err
 	}
 	subs := append([]string{"text"}, m.TextIn...)
-	if same {
-		subs = append(subs, m.DitText...)
-	} else {
+	if !last {
 		subs = subs[:len(subs)-1]
+	}
+	if ditText {
+		for _, d := range m.DitText {
+			if p, fn := llm.SplitFunction(d); fn == "" {
+				subs = append(subs, p)
+			} // one program with its blocks (SharedDit): not this export's
+		}
 	}
 	for _, sub := range subs {
 		src := filepath.Join(from, sub)

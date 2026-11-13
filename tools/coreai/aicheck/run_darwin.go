@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -24,6 +25,11 @@ import (
 // with milcpu running ref, the package it was lowered from. With coreML the packages run on Core ML instead, to tell Core AI's errors from the program's.
 func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls int, ref string) error {
 	ctx := context.Background()
+	if os.Getenv("AICHECK_ENUMERATE") != "" { // as the commands do: every backend's devices first
+		if _, err := hwnpu.Enumerate(ctx); err != nil {
+			return err
+		}
+	}
 	var prov backend.Provider = coreai.Provider{}
 	if coreML {
 		prov = coreml.Provider{}
