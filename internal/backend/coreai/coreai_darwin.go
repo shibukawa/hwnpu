@@ -384,6 +384,14 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 				fmt.Fprintf(os.Stderr, "coreai: %s fell back from the Neural Engine with %.1f GB of disk free: the Neural Engine's compiler needs a few GB per program\n", filepath.Base(src.Path), float64(free)/1e9)
 			}
 		}
+		if fn != "main" && stored != "" {
+			// a function of a group off the Neural Engine, maybe for another member's (ungroup):
+			// lowered alone, and loaded as the first time
+			if ok, err := ungroup(d.opts.CacheDir, path); err == nil && ok {
+				g.Close()
+				return d.Compile(ctx, src)
+			}
+		}
 	}
 	return g, nil
 }

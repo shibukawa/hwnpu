@@ -521,3 +521,74 @@ func TestParallelLoad(t *testing.T) {
 		}
 	}
 }
+
+// TestTiledVae runs each tiled VAE stage of an export (HWNPU_QWENIMAGE_EXPORT) on its tiles and
+// the same stage of an export of the same size without tiles (HWNPU_QWENIMAGE_UNTILED, an export
+// of version 1) whole, on Core ML, from the same input: the tiles give what the whole stage gives.
+func TestTiledVae(t *testing.T) {
+	dir, whole := os.Getenv("HWNPU_QWENIMAGE_EXPORT"), os.Getenv("HWNPU_QWENIMAGE_UNTILED")
+	if dir == "" || whole == "" {
+		t.Skip("HWNPU_QWENIMAGE_EXPORT and HWNPU_QWENIMAGE_UNTILED not set")
+	}
+	ctx := context.Background()
+	if infos, err := (coreml.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
+		t.Skip("no Neural Engine")
+	}
+	m, err := ReadProgramManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, _ := os.UserCacheDir()
+	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreml"), hwnpu.WithPlacement(hwnpu.PlacementStrict), hwnpu.WithCacheDir(filepath.Join(cache, "hwnpu")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dev.Close()
+	n := 0
+	for i, tl := range m.VaeTiles {
+		if !tl.tiled() {
+			continue
+		}
+		n++
+		x := make([]float32, tl.C*tl.H*tl.W)
+		for j := range x { // smooth, as a decoder's activations: a few cycles across the picture
+			r, c := j/tl.W%tl.H, j%tl.W
+			x[j] = float32(math.Sin(float64(r)*0.21+float64(j/(tl.H*tl.W))) * math.Cos(float64(c)*0.17))
+		}
+		run := func(path string, tiled bool) []float32 {
+			p, err := runner.Open(ctx, dev, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer p.Close()
+			var y []float32
+			if tiled {
+				y, err = runTiled(ctx, p, x, tl)
+			} else {
+				y, err = p.Run(ctx, map[string][]float32{"x": x})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			return y
+		}
+		t0 := time.Now()
+		a := run(filepath.Join(whole, m.Vae[i]), false)
+		ta := time.Since(t0)
+		t0 = time.Now()
+		b := run(filepath.Join(dir, m.Vae[i]), true)
+		tb := time.Since(t0)
+		var worst float64
+		for j := range a {
+			worst = max(worst, math.Abs(float64(a[j]-b[j])))
+		}
+		t.Logf("%s: %dx%d tiles of %dx%d: cosine %.6f, largest difference %.4g (whole %s, tiles %s, with the loads)",
+			m.Vae[i], tl.Rows.N, tl.Cols.N, tl.Rows.Window(), tl.Cols.Window(), cosine(a, b), worst, ta.Round(time.Millisecond), tb.Round(time.Millisecond))
+		if c := cosine(a, b); c < 0.9999 {
+			t.Errorf("%s: cosine %.6f", m.Vae[i], c)
+		}
+	}
+	if n == 0 {
+		t.Errorf("%s: no tiled stage", dir)
+	}
+}

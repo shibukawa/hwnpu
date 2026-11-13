@@ -110,6 +110,9 @@ func TestVaeStages(t *testing.T) {
 		if s.C != C || s.H != H || s.W != W {
 			t.Fatalf("stage %d takes (%d, %d, %d), the one before gives (%d, %d, %d)", i, s.C, s.H, s.W, C, H, W)
 		}
+		if s.Rows.N <= 1 && s.Rows.Window() != H || s.Cols.N <= 1 && s.Cols.Window() != W {
+			t.Errorf("stage %d: a window of %d x %d for (%d, %d) untiled", i, s.Rows.Window(), s.Cols.Window(), H, W)
+		}
 		for _, op := range s.Ops {
 			switch op.Kind {
 			case "in", "res", "head":
@@ -143,6 +146,50 @@ func TestQChunk(t *testing.T) {
 		c.Width, c.Height = tc.size, tc.size
 		if got := QChunk(c, 0); got != tc.want {
 			t.Errorf("%d: %d queries a chunk, want %d", tc.size, got, tc.want)
+		}
+	}
+}
+
+// TestVaeTiles checks which stages are tiled (Qwen-Image-2.1's VAE: 1152 channels at 64 x 64 and
+// more) and that the tiles cover the input once, each far enough from its window's inner edges.
+func TestVaeTiles(t *testing.T) {
+	// Qwen-Image-2.1's: up blocks of 1152 to 1152 channels (stages 1 and 2), then 1152 to 576
+	v := Vae{Base: 144, Mult: []int{1, 2, 4, 8, 8}, Res: 2, TDown: []bool{false, true, true, true}, Z: 64, Out: 4}
+	if s := VaeStages(v, 512, 512); len(s) != 7 || s[2].C != 1152 || s[2].H != 64 || s[3].C != 1152 || s[3].width() != 576 {
+		t.Fatalf("stages %d, the third (%d, %d, %d)", len(s), s[2].C, s[2].H, s[2].W)
+	}
+	want := map[[2]int][]int{ // size, stage: tiles of an axis (1 not tiled)
+		{512, 1}: {1}, {512, 2}: {2}, {512, 3}: {1},
+		{1024, 1}: {2}, {1024, 2}: {4}, {1024, 3}: {1},
+		{832, 1}: {2}, // 52 x 52: two of 26 and a halo of 7
+		{832, 2}: {4}, // 104 x 104: four of 26 and a halo of 14
+	}
+	for k, n := range want {
+		s := VaeStages(v, k[0], k[0])[k[1]]
+		if s.Rows.N != n[0] && !(n[0] == 1 && s.Rows.N == 0) || s.Rows != s.Cols {
+			t.Errorf("%d^2 stage %d: tiles %+v x %+v, want %d an axis", k[0], k[1], s.Rows, s.Cols, n[0])
+		}
+		if s.Rows.N > 1 && (s.Rows.Window() > wideWindow || s.width() <= wideChannels) {
+			t.Errorf("%d^2 stage %d: a window of %d for %d channels", k[0], k[1], s.Rows.Window(), s.C)
+		}
+	}
+	for _, tl := range []Tiling{{2, 64, 32, 7}, {4, 128, 32, 14}, {3, 50, 17, 14}, {2, 52, 26, 7}} {
+		r := tl.Halo
+		if tl.N > 2 {
+			r = tl.Halo / 2
+		}
+		next := 0
+		for i, w := range tl.Windows() {
+			if w.Start < 0 || w.Start+tl.Window() > tl.Size || w.Start+w.Off != next || w.Len <= 0 {
+				t.Fatalf("%+v: window %d %+v, the tile should start at %d", tl, i, w, next)
+			}
+			if w.Start > 0 && w.Off < r || w.Start+tl.Window() < tl.Size && tl.Window()-w.Off-w.Len < r {
+				t.Errorf("%+v: window %d %+v: a tile nearer than %d to an inner edge", tl, i, w, r)
+			}
+			next += w.Len
+		}
+		if next != tl.Size {
+			t.Errorf("%+v: the tiles cover %d", tl, next)
 		}
 	}
 }

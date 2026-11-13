@@ -24,6 +24,7 @@ import (
 // Neural Engine (or the CPU interpreter). The text encoder's groups and the DiT's text pass are
 // loaded one at a time while a prompt is read, each VAE stage while it runs, and the DiT's image
 // blocks from the first step to the decoding: at most the DiT's weights are held (3.6 GB at lut4).
+// On Core AI the DiT's groups are loaded in turn as well (swapDiT).
 type progEngine struct {
 	m    *ProgramManifest
 	dir  string
@@ -31,6 +32,12 @@ type progEngine struct {
 	log  io.Writer
 	time *timeEmbed
 	blks []runner.Program
+	// swapDiT loads each group of the DiT's image blocks for each step, runs it and closes it,
+	// rather than holding them all (Core AI: a group loads from Core AI's cache in 20 ms). On M1,
+	// Core AI fails to run the eight groups held at once (5.2 GiB on the Neural Engine) rather than
+	// evicting them as Core ML does, runs a group in 0.95 s with four held and in 0.41 s alone
+	// (design.md 16.184). ready says openDiT checked them.
+	swapDiT, ready bool
 }
 
 func openPrograms(dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, error) {
@@ -41,7 +48,7 @@ func openPrograms(dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, er
 	if m.Version != ExportVersion {
 		return nil, fmt.Errorf("%s is of layout %d, this hwnpu reads %d: convert it again", dir, m.Version, ExportVersion)
 	}
-	e := &progEngine{m: m, dir: dir, dev: dev, log: log}
+	e := &progEngine{m: m, dir: dir, dev: dev, log: log, swapDiT: dev != nil && dev.Info().Backend == "coreai"}
 	if e.time, err = readTimeFile(filepath.Join(dir, m.Time), m.Dit.Hidden); err != nil {
 		return nil, err
 	}
@@ -55,11 +62,7 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	if e.log != nil {
 		bar = console.NewBar(e.log, "  loading "+name)
 	}
-	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
-	if err == nil && e.dev != nil && !p.OnNPU() {
-		p.Close()
-		err = fmt.Errorf("%s does not run on the NPU alone", name)
-	}
+	p, err := e.load(ctx, name)
 	if bar != nil {
 		switch {
 		case err != nil:
@@ -74,6 +77,16 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	return p, nil
+}
+
+// load is open without a line: the program on the device unless it is nil, on the NPU alone.
+func (e *progEngine) load(ctx context.Context, name string) (runner.Program, error) {
+	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
+	if err == nil && e.dev != nil && !p.OnNPU() {
+		p.Close()
+		err = fmt.Errorf("%s does not run on the NPU alone", name)
+	}
+	return p, err
 }
 
 // each loads the program name, runs f with it and closes it.
@@ -189,7 +202,18 @@ func (e *progEngine) encode(ctx context.Context, embed *os.File, ids [][]int32) 
 // Neural Engine's cache had dropped (M3), four at once took 56 s against 71 s in a test, but 76 s
 // against 62 s in the pipeline, with a peak footprint of 7.4 GB against 4.5 (design.md 16.165).
 func (e *progEngine) openDiT(ctx context.Context) error {
-	if e.blks != nil {
+	if e.blks != nil || e.ready {
+		return nil
+	}
+	if e.swapDiT { // each loaded once here (the first load compiles it), then for each step
+		for _, name := range e.m.Blocks {
+			p, err := e.open(ctx, name)
+			if err != nil {
+				return err
+			}
+			p.Close()
+		}
+		e.ready = true
 		return nil
 	}
 	for _, name := range e.m.Blocks {
@@ -204,6 +228,7 @@ func (e *progEngine) openDiT(ctx context.Context) error {
 }
 
 func (e *progEngine) closeDiT() error {
+	e.ready = false
 	var errs []error
 	for _, p := range e.blks {
 		errs = append(errs, p.Close())
@@ -236,18 +261,33 @@ func (e *progEngine) velocity(ctx context.Context, x []float32, sigma float64, c
 	for k := range xs {
 		xs[k] = x
 	}
-	for gi, b := range e.blks {
+	for gi, name := range e.m.Blocks {
+		var b runner.Program
+		if e.swapDiT {
+			var err error
+			if b, err = e.load(ctx, name); err != nil {
+				return nil, fmt.Errorf("%s: %w", name, err)
+			}
+		} else {
+			b = e.blks[gi]
+		}
 		for k, cd := range conds {
 			in := map[string][]float32{"x": xs[k], "mod": mod, "cos": ins[k].cos, "sin": ins[k].sin,
 				"tk": cd.ptk[gi], "tv": cd.ptv[gi], "kbias": ins[k].kbias}
-			if gi == len(e.blks)-1 {
+			if gi == len(e.m.Blocks)-1 {
 				in["scale"] = scale
 			}
 			y, err := b.Run(ctx, in)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", e.m.Blocks[gi], err)
+				if e.swapDiT {
+					b.Close()
+				}
+				return nil, fmt.Errorf("%s: %w", name, err)
 			}
 			xs[k] = y
+		}
+		if e.swapDiT {
+			b.Close()
 		}
 	}
 	return xs, nil
@@ -260,7 +300,13 @@ func (e *progEngine) decode(ctx context.Context, latents [][]float32, stage Stag
 	t0 := time.Now()
 	err := e.inTurn(ctx, e.m.Vae, func(i int, p runner.Program) error {
 		for k := range xs {
-			y, err := p.Run(ctx, map[string][]float32{"x": xs[k]})
+			var y []float32
+			var err error
+			if i < len(e.m.VaeTiles) && e.m.VaeTiles[i].tiled() {
+				y, err = runTiled(ctx, p, xs[k], e.m.VaeTiles[i])
+			} else {
+				y, err = p.Run(ctx, map[string][]float32{"x": xs[k]})
+			}
 			if err != nil {
 				return fmt.Errorf("vae stage %d: %w", i, err)
 			}
@@ -370,4 +416,41 @@ func (p *Pipeline) generatePrograms(ctx context.Context, cond Cond, neg *Cond, n
 		}
 	}
 	return res, nil
+}
+
+// runTiled runs the program of a tiled VAE stage on each window of its input x (C, H, W) and puts
+// the tiles of the outputs together: (OutC, Scale H, Scale W). A window's output beyond its tile
+// is dropped (its edge inside the input was zero padded).
+func runTiled(ctx context.Context, p runner.Program, x []float32, t VaeTiling) ([]float32, error) {
+	if len(x) != t.C*t.H*t.W {
+		return nil, fmt.Errorf("%d values for a (%d, %d, %d) input", len(x), t.C, t.H, t.W)
+	}
+	wh, ww := t.Rows.Window(), t.Cols.Window()
+	s, H, W := t.Scale, t.H, t.W
+	oh, ow := s*wh, s*ww
+	out := make([]float32, t.OutC*s*H*s*W)
+	win := make([]float32, t.C*wh*ww)
+	for _, r := range t.Rows.Windows() {
+		for _, c := range t.Cols.Windows() {
+			for ch := 0; ch < t.C; ch++ {
+				for y := 0; y < wh; y++ {
+					copy(win[(ch*wh+y)*ww:(ch*wh+y+1)*ww], x[(ch*H+r.Start+y)*W+c.Start:])
+				}
+			}
+			y, err := p.Run(ctx, map[string][]float32{"x": win})
+			if err != nil {
+				return nil, err
+			}
+			if len(y) != t.OutC*oh*ow {
+				return nil, fmt.Errorf("a tile of %d values, want (%d, %d, %d)", len(y), t.OutC, oh, ow)
+			}
+			for ch := 0; ch < t.OutC; ch++ {
+				for yy := 0; yy < s*r.Len; yy++ {
+					src := y[(ch*oh+s*r.Off+yy)*ow+s*c.Off:][:s*c.Len]
+					copy(out[(ch*s*H+s*(r.Start+r.Off)+yy)*s*W+s*(c.Start+c.Off):], src)
+				}
+			}
+		}
+	}
+	return out, nil
 }
