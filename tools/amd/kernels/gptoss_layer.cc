@@ -33,8 +33,8 @@
 //       q4nx table as it is (blocks of 32 out-features by 256 in-features, 5120 bytes: a weight
 //       block's start), cores 0 and 1 the even k-blocks of a column block's halves, cores 2 and 3
 //       the odd ones: each sends its partial sums (bf16), which the host adds
-//   R   the router's logits (GL_ROUTER cores: column 0's last two): bf16 blocks of 80
-//       in-features on hn, each core its k-blocks' partial sums, out as float32 (the column's
+//   R   the router's logits (GL_ROUTER cores: every column's last two): bf16 blocks of 80
+//       in-features on hn, each core its k-blocks' partial sums, out as float32 (a column's
 //       other cores take blocks of nothing and send zeros)
 //   T   the routing (GL_ROUTE core): the partial sums added, the top 4 and their softmax
 //       (moe_route.cc's), out the next command's scratchpad words and the weights
@@ -264,8 +264,9 @@ constexpr int GL_AH = 4;         // A: heads a core
 constexpr int GL_SINK = 13312;   // A: the column's sinks in x's first object (after its q, repeated)
 constexpr int GL_TS = 2 * GL_D;  // A: a token's key and value
 constexpr int GL_RKT = 80;       // R: in-features a block
-constexpr int GL_RKB = 20;       // R: blocks a core (39 k-blocks and one of zeros on two cores)
-constexpr int GL_PROG = 256;     // T: the program's words in x's object (after the partial sums)
+constexpr int GL_RKB = 3;        // R: blocks a core (39 k-blocks and 9 of zeros on every column's last two cores)
+constexpr int GL_COLS = 8;       // the columns
+constexpr int GL_PROG = 2048;    // T: the program's words in x's object (after every column's partial sums)
 constexpr int GL_FED = 8;        // T: the scratchpad words routed (the experts' offsets)
 
 // Every array a vector is loaded from starts on 64 bytes (a load takes the address's upper bits).
@@ -514,7 +515,7 @@ GL_COLD void GL_FN(gl_plan)(int32_t *cnt, int32_t ph, int32_t kinds, int32_t nto
       {5120 / MT / 8 / GL_CORES, GL_QK / GL_QKT, 1, 0, 0},                    // Q
       {0, 0, 0, 2 * GL_AH, 0},                                                // A: a head's 64 in two objects
       {GL_OUTS, (GL_OK + GL_QKT - 1) / GL_QKT, 1, 0, 0},                      // O
-      {1, GL_RKB, 2, 0, 1},                                                   // R: 32 partial sums as float32
+      {1, GL_RKB, 2, 0, 0},                                                   // R: 32 partial sums as float32
       {0, 0, 0, 2, 1},                                                        // T: the words, the weights
       {GL_HOUTS, GL_HK / GL_HKT / 2, 1, 0, 0},                                // H: half the k-blocks a core
   };
@@ -574,13 +575,17 @@ GL_COLD void GL_FN(gl_begin)(bf16 *x, float *state, const int32_t *cnt) {
 #endif
 #ifdef GL_ROUTE
   else if (kind == K_T) {
-    // each core's partial sums (two objects: [object][core][16 float32]) added, then routed
+    // each column's last two cores' partial sums ([column][object][core][16 float32]) added, then
+    // routed
     alignas(64) float logit[32];
     const float *part = reinterpret_cast<const float *>(x);
     for (int q = 0; q < 2; q++) {
-      aie::vector<float, 16> v = aie::load_v<16>(part + q * 64);
-      for (int c = 1; c < GL_CORES; c++)
-        v = aie::add(v, aie::load_v<16>(part + q * 64 + c * 16));
+      aie::vector<float, 16> v = aie::zeros<float, 16>();
+#pragma clang loop unroll(disable)
+      for (int l = 0; l < GL_COLS; l++) {
+        const float *pl = part + (2 * l + q) * GL_CORES * 16;
+        v = aie::add(v, aie::add(aie::load_v<16>(pl + 2 * 16), aie::load_v<16>(pl + 3 * 16)));
+      }
       aie::store_v(logit + 16 * q, v);
     }
     gl_route(logit, reinterpret_cast<const int32_t *>(x + GL_PROG), st->res + 16,
@@ -612,11 +617,11 @@ void GL_FN(gl_block)(const uint8_t *block, const bf16 *x, float *state, const in
     return;
   }
 #ifdef GL_ROUTER
-  if (kind == K_R) { // the core's k-blocks 2 b + (core - 2)
+  if (kind == K_R) { // the core's k-blocks 2 (8 b + column) + (core - 2)
     const rt_blk_t *A = reinterpret_cast<const rt_blk_t *>(block);
     if (b == 0)
       gl_bias(A->bias, st->acc);
-    const bf16 *xk = x + GL_RKT * (2 * b + cnt[7] - 2);
+    const bf16 *xk = x + GL_RKT * (2 * (GL_COLS * b + cnt[6]) + cnt[7] - 2);
     aie::accum<accfloat, 16> a0, a1;
     a0.from_vector(aie::load_v<16>(st->acc));
     a1.from_vector(aie::load_v<16>(st->acc + 16));

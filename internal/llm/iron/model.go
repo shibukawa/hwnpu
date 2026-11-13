@@ -39,6 +39,8 @@ type Model struct {
 	kv       []kvCache // caches, found once
 	joins    []kvJoin  // the layers whose decode step keeps keys and values in one array (rows.go)
 	stepped  [2]int    // the positions [from, to) decode steps wrote into those arrays alone
+	rings    bool      // some of those arrays are rings of the last positions (a sliding layer's window)
+	ringAt   int       // the rings hold the positions before it
 	// xclbins are the programs of the versions packaged as an xclbin per step, by file.
 	xclbins map[string]*hwnpu.Program
 	dir     string            // the export's directory
@@ -177,6 +179,7 @@ func (m *Model) load(ctx context.Context, dev *hwnpu.Device) error {
 		}
 	}
 	m.released = false
+	m.stepped, m.ringAt = [2]int{}, -1 // nothing of a sequence is in the arrays read just now
 	return nil
 }
 
@@ -556,6 +559,9 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		return nil, err
 	}
 	if len(v.runs) > 1 {
+		if err := m.ringsTo(position); err != nil { // a sequence gone back: the rings' rows again
+			return nil, err
+		}
 		// (a version on one resident array says it needs none: there the barrier's change of
 		// hardware context puts the array's whole configuration back, 2.4 ms a step.
 		// HWNPU_IRON_BARRIER=1 or 0 overrides the manifest, to measure.)
@@ -571,7 +577,9 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		if err := m.runCommands(ctx, v, values); err != nil {
 			return nil, err
 		}
-		m.stepAt(position)
+		if err := m.stepAt(position); err != nil {
+			return nil, err
+		}
 		return m.logits(v)
 	}
 	if err := writeWords(v.run.Scratchpad(), v.m.Kernels[0].Parameters, values); err != nil {

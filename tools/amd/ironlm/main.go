@@ -500,13 +500,17 @@ func teacher(ctx context.Context, m *iron.Model, path, tokPath string, bos int32
 		log.Fatal(err)
 	}
 	write(logits)
+	var steps time.Duration // the decode steps alone (not the prompt, not the logits' writing)
 	for p := split; p < len(ids)-1; p++ {
+		t := time.Now()
 		if logits, err = m.Step(ctx, ids[p], p); err != nil {
 			log.Fatal(err)
 		}
+		steps += time.Since(t)
 		write(logits)
 	}
-	log.Printf("%d tokens: %d prompt, %d fed, %d rows of %d logits in %.1f s", len(ids), split, len(ids)-1-split, len(ids)-split, len(logits), time.Since(t0).Seconds())
+	fed := len(ids) - 1 - split
+	log.Printf("%d tokens: %d prompt, %d fed, %d rows of %d logits in %.1f s (a decode step %.2f ms)", len(ids), split, fed, len(ids)-split, len(logits), time.Since(t0).Seconds(), steps.Seconds()*1000/float64(fed))
 	ids32 := make([]byte, 4*len(ids))
 	for i, id := range ids {
 		binary.LittleEndian.PutUint32(ids32[4*i:], uint32(id))
