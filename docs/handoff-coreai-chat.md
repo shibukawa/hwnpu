@@ -32,7 +32,7 @@ for m in d1-2B d1-Omni-2B; do /tmp/hwnpu-chat systemone -m $m --backend coreai <
 
 - 期待: どれも `all on the NPU` で、`converting …-q8-q128-last` の行のあとに `2 programs in N Core AI programs` が出る。2 回目の `ready after` は数秒以内
 - 期待: 書き出しはモデルのディレクトリの `coreai/` だけに増え、その大きさは重みの 1 回分ほど。Core AI のキャッシュ (`~/Library/Caches/coreai-cache/<OS>/hwnpu-chat/`) の増え方も 1 回分
-- **gemma-4-E2B-it と E4B**: 読み取りのプログラムはキャッシュだけ書く (`-kv`、`q128-kv`)。その短い部品は、始まりの層が同じ生成側の部品と 1 本になる。この経路は M3 で動かしていない。`aicheck` か答えが崩れていないかで確かめる
+- **gemma-4-E2B-it と E4B**: 読み取りのプログラムはキャッシュだけ書く (`-kv`、`q128-kv`)。E2B ではその 3 部品が生成側の最初の 3 部品と同じ層で、関数 2 つの 1 本になる。M3 では小さな Gemma 4 で Neural Engine で確かめた (`TestConvertAIKVOnlyOnNeuralEngine`)。実物で、長めのプロンプト (128 トークンを超える) を読ませて答えが崩れないかを見る
 - **Qwen3.5-4B**: 8 ビットの表で、16 GB の機械では重い。生成の速さと、`the Neural Engine holds … GiB` を記録する
 - Core ML (`--backend coreml`) と答えを比べられるなら比べる。16.173 では、貪欲法の文が数十トークン目から分かれることがあった (fp16 の丸めの違い)
 
