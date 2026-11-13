@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sync"
+	"time"
 )
 
 // HostStep is a host step of a version that hwnpu runs itself, before command Command
@@ -349,6 +351,7 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 		if err := m.writeRegion(v, route.Writes[0], p.counts); err != nil {
 			return err
 		}
+		t0 := time.Now()
 		if p.copies != nil {
 			if err := m.writeCopies(v, route.Writes[1], rt.hn, p.copies); err != nil {
 				return err
@@ -356,15 +359,21 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 		} else if err := m.writeRegion(v, route.Writes[1], p.xs); err != nil {
 			return err
 		}
+		t1 := time.Now()
 		if err := run(); err != nil {
 			return err
 		}
+		t2 := time.Now()
 		if p.slotRows != nil {
 			y, err := m.readSlots(v, yr, p.slotRows, p.cap, K)
 			if err != nil {
 				return err
 			}
 			rt.outs = append(rt.outs, y)
+			if os.Getenv("HWNPU_IRON_TIMING") != "" {
+				fmt.Fprintf(os.Stderr, "moe pass: x %.1f ms, run %.1f ms, y %.1f ms\n", t1.Sub(t0).Seconds()*1000,
+					t2.Sub(t1).Seconds()*1000, time.Since(t2).Seconds()*1000)
+			}
 			continue
 		}
 		y, err := m.readRegion(v, yr, min(yr.Bytes, 2*p.outRows*K)) // the real rows; the padding rows' are zero
