@@ -128,3 +128,62 @@ func TestResolveGroups(t *testing.T) {
 		t.Errorf("after the group was removed: %s (cached %v, %v), lowered together %d times", a, cached, err, len(manys))
 	}
 }
+
+// The exports of an image model for other sizes have the same weights in packages of the same
+// name, in the directories beside each other (Anima's): they go together, and an export made
+// later joins them in a larger group that replaces the smaller one.
+func TestResolveExports(t *testing.T) {
+	t.Setenv("HWNPU_CACHE", t.TempDir())
+	model, cdir := t.TempDir(), t.TempDir()
+	saveOne, saveMany, saveForget := lowerOne, lowerMany, forget
+	t.Cleanup(func() { lowerOne, lowerMany, forget = saveOne, saveMany, saveForget })
+	var groups [][]string
+	var forgot []string
+	lowerOne = func(pkg, dst string) error { return os.MkdirAll(dst, 0o755) }
+	lowerMany = func(pkgs, names []string, dst string) error {
+		groups = append(groups, pkgs)
+		return os.MkdirAll(dst, 0o755)
+	}
+	forget = func(p string) { forgot = append(forgot, p) }
+	dit := [][]byte{fill(groupMin, 1, 2), fill(groupMin/2, 3), fill(groupMin/4, 4)}
+	export := func(size string) string {
+		d := filepath.Join(model, "anima-turbo-"+size+".coreml")
+		os.MkdirAll(d, 0o755)
+		fakePackage(t, d, "vae_s0", "vae "+size, fill(groupMin, 9, 9)) // its own weights in every export but the same
+		return fakePackage(t, d, "dit_blocks_0", "dit "+size, dit...)
+	}
+	a, b := export("1024x1024"), export("832x1216")
+	other := fakePackage(t, filepath.Join(model, "anima-aesthetic-1024x1024.coreml"), "dit_blocks_0", "aesthetic", fill(groupMin, 5, 6), fill(groupMin/2, 7), fill(groupMin/4, 8))
+
+	ga, fa, _, err := resolve(cdir, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gb, fb, cached, err := resolve(cdir, b); err != nil || gb != ga || fb == fa || !cached || len(groups) != 1 || len(groups[0]) != 2 {
+		t.Fatalf("two sizes: %s#%s and %s#%s (cached %v, %v), lowered together %v", ga, fa, gb, fb, cached, err, groups)
+	}
+	if g, fn, _, err := resolve(cdir, other); err != nil || g == ga || fn != "main" {
+		t.Errorf("another checkpoint's DiT: %s#%s (%v), want an asset of its own", g, fn, err)
+	}
+
+	c := export("1216x832")
+	gc, _, cached, err := resolve(cdir, c)
+	if err != nil || cached || gc == ga || len(groups) != 2 || len(groups[1]) != 3 {
+		t.Fatalf("a third size: %s (cached %v, %v), lowered together %v, want the three in a new group", gc, cached, err, groups)
+	}
+	if exists(ga) || len(forgot) == 0 || forgot[len(forgot)-1] != ga {
+		t.Errorf("the group of two: still there %v, forgotten %v", exists(ga), forgot)
+	}
+	for _, p := range []string{a, b} {
+		if g, _, cached, err := resolve(cdir, p); err != nil || g != gc || !cached {
+			t.Errorf("%s after the third size: %s (cached %v, %v), want %s", p, g, cached, err, gc)
+		}
+		s, _ := digestOf(p)
+		if src, ok := cache.Source(cdir, singleKey(s)); !ok || src != p {
+			t.Errorf("%s: its record's source %q (%v)", p, src, ok)
+		}
+	}
+	if len(groups) != 2 {
+		t.Errorf("lowered together %d times, want 2", len(groups))
+	}
+}

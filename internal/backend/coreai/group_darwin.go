@@ -52,7 +52,7 @@ type record struct {
 
 // groupRule is the version of how siblings are found (siblings): a record of another rule is
 // looked at again, so that a package found alone before can join a group.
-const groupRule = 2
+const groupRule = 3
 
 // The lowering, replaced by tests.
 var (
@@ -254,9 +254,37 @@ func sameWeights(w string, mine []blob, other string) (bool, error) {
 	return true, nil
 }
 
-// siblings are pkg and the packages beside it (in its directory) with its largest weights
-// (sameWeights) that are not in a group yet, by their digests, without two of the same contents.
-func siblings(dir, pkg string, sum []byte) ([]member, error) {
+// candidates are the packages that may have pkg's weights: those in its directory (a chat
+// model's programs for 8 and 128 tokens, an embedder's) and those of its name in the directories
+// beside it (the exports of an image model for other sizes, or of another checkpoint with the
+// same text encoder: Anima's).
+func candidates(pkg string) []string {
+	var out []string
+	dir := filepath.Dir(pkg)
+	if des, err := os.ReadDir(dir); err == nil {
+		for _, de := range des {
+			if p := filepath.Join(dir, de.Name()); p != pkg && strings.EqualFold(filepath.Ext(p), ".mlpackage") {
+				out = append(out, p)
+			}
+		}
+	}
+	parent := filepath.Dir(dir)
+	if des, err := os.ReadDir(parent); err == nil && parent != dir {
+		for _, de := range des {
+			if d := filepath.Join(parent, de.Name()); d != dir && de.IsDir() {
+				if p := filepath.Join(d, filepath.Base(pkg)); exists(p) {
+					out = append(out, p)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// siblings are pkg and the candidates with its largest weights (sameWeights), by their digests,
+// without two of the same contents. A sibling in a group already brings it along: a package that
+// joins makes a larger group, which replaces that one (resolve).
+func siblings(pkg string, sum []byte) ([]member, error) {
 	own := []member{{pkg, sum}}
 	w := weightFile(pkg)
 	fi, err := os.Stat(w)
@@ -267,16 +295,8 @@ func siblings(dir, pkg string, sum []byte) ([]member, error) {
 	if err != nil || len(mine) == 0 {
 		return own, nil // not a weight file this reads: alone, as before
 	}
-	des, err := os.ReadDir(filepath.Dir(pkg))
-	if err != nil {
-		return own, nil
-	}
 	seen := map[string]bool{hex.EncodeToString(sum): true}
-	for _, de := range des {
-		other := filepath.Join(filepath.Dir(pkg), de.Name())
-		if other == pkg || !strings.EqualFold(filepath.Ext(other), ".mlpackage") {
-			continue
-		}
+	for _, other := range candidates(pkg) {
 		if ofi, err := os.Stat(weightFile(other)); err != nil || ofi.Size() < groupMin {
 			continue
 		}
@@ -289,9 +309,6 @@ func siblings(dir, pkg string, sum []byte) ([]member, error) {
 		}
 		if seen[hex.EncodeToString(osum)] {
 			continue
-		}
-		if _, r, ok := readRecord(dir, singleKey(osum)); ok && r.Function != "main" {
-			continue // in a group already
 		}
 		seen[hex.EncodeToString(osum)] = true
 		own = append(own, member{other, osum})
@@ -313,7 +330,8 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 	if a, r, ok := readRecord(dir, key); ok {
 		return a, r.Function, true, nil
 	}
-	unlock, err := cache.Lock(context.Background(), "coreai-group:"+filepath.Dir(pkg), "the Core AI programs of "+filepath.Dir(pkg), nil)
+	// the siblings may be in the directories beside pkg's (candidates)
+	unlock, err := cache.Lock(context.Background(), "coreai-group:"+filepath.Dir(filepath.Dir(pkg)), "the Core AI programs of "+filepath.Dir(pkg), nil)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -321,7 +339,7 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 	if a, r, ok := readRecord(dir, key); ok {
 		return a, r.Function, true, nil
 	}
-	members, err := siblings(dir, pkg, sum)
+	members, err := siblings(pkg, sum)
 	if err != nil {
 		return "", "", false, fmt.Errorf("coreai: %w", err)
 	}
@@ -352,16 +370,30 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 		}
 	}
 	cache.SetSource(dir, gkey, members[0].path)
+	// the assets the members ran as before (alone, or in a smaller group): this one holds their
+	// weights now. A package of such a group that is not a member here finds its asset gone and
+	// is resolved again.
+	old, keys := map[string]bool{}, map[string]bool{}
 	for _, m := range members {
 		k := singleKey(m.sum)
+		keys[k] = true
+		if p := cache.Path(dir, k, ".aimodel"); exists(p) {
+			old[p] = true
+		}
+		if prev, _, ok := readRecord(dir, k); ok {
+			old[prev] = true
+		}
 		cache.SetSource(dir, k, m.path)
 		if err := writeRecord(dir, k, record{Asset: gkey + ".aimodel", Function: functionName(m.sum), Rule: groupRule}); err != nil {
 			return "", "", false, err
 		}
-		// the package's program lowered alone before: the group's holds its weights now
-		if old := cache.Path(dir, k, ".aimodel"); exists(old) {
-			forget(old)
-			os.RemoveAll(old)
+	}
+	delete(old, a)
+	for p := range old {
+		forget(p)
+		os.RemoveAll(p)
+		if k := strings.TrimSuffix(filepath.Base(p), ".aimodel"); !keys[k] {
+			os.Remove(cache.Path(dir, k, ".src")) // a group's; a member's own is its record's too
 		}
 	}
 	return a, functionName(sum), ok, nil
