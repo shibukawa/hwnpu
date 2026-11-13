@@ -307,6 +307,13 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | GDN columns in whole blocks of 64 rows (16.104) | Puts the fused projection of the Qwen3.5 with as many value heads as key heads (0.8B, 2B) on q8 / q4 | A column 772 → 776 channels (rows of zeros). 4B unchanged |
 | Anima's DiT in one bank (`iron.GraphOptions.SwapVariants`, 16.106) | One bank for the 7 groups, a group's weight image (304 MiB) read into it when it runs | Pinned 3445 → 1236 MiB, denoising +2 %, latents byte for byte the same. `-resident-dit` keeps all |
 | hwnpu-dev xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | Matrix multiply at 1–4 tenths of the peak (int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
+| A checkpoint's own 4 bits kept (mx4, `iron_gptoss_moe.py`, 16.178) | gpt-oss's MXFP4 experts read as they are: e2m1 nibbles decoded in the kernel (sign × max(m, 2m − 4, 4m − 16)), the group's exponent byte as the scale. 4.3 bits a weight, no error | Rounding them again to q4nx added 6.6 % weight error and took KL 2–3× up. q6 also holds them exactly, at 6.5 bits |
+| Attention sinks in IRON's MHA (`iron_sinks.py`, 16.178) | gpt-oss's learned logit per head: its term added to the softmax's running sum before the last division, on the P×V cores | No work added, the KV cache as without sinks. Cosine 0.999988 against the formula, sinks of 6 included |
+| Fewer operators in the decode step (16.178) | A projection's bias and the block's residual added in its GEMV as the output leaves (`QGEMVAdd`, `kernels/mv_add.h`); a gated MLP's gate and up as one table and one operator (`QGEMVGlu`); q and k one RoPE; a router's bias in MoERoute | Qwen3.5-0.8B 87 → 73 ms, gpt-oss 97.5 → 89.5 ms; one table, no second copy of the weights. Generation is bound by the count of operators (80–150 µs each) |
+| A MoE layer's experts in one operator (`MX4Experts`, 16.178) | Gate-up and down as two phases of one operator: one set of core programs, one weight stream, the activations round-tripping through DRAM in between; down's weights queued before the gate-up ends | Each operator carried about 0.4 ms of its streams' start and end: the experts 2.16 → 1.84 ms a layer, with the exponent-byte scales 1.81; gpt-oss 89.5 → 80.5 ms/token |
+| A prompt's experts through AIE2P's bf16 matrix unit (`kernels/moe_mx4_rows.cc`, 16.178) | `mac_4x8_8x8` (256 products an instruction against the vector mac's 16): a k-step's codes decoded and scaled once, 4 rows a tile; a strip of 16 out-features at a time, so that only 2 G accumulators are live | 773 → 462 ms a pass with the vector mac; 4 cores a column 241 ms; a strip at a time: 256 tokens of 2 layers 571 → 488 ms |
+| Telling transfers from compute (`MX4_NOCOMPUTE=1`, 16.178) | Build the operator's kernels with the products skipped and time the transfers alone | gpt-oss's decode experts were DMA-bound (2.05 of 2.16 ms), its prompt experts compute-bound (38 of 237 ms). The disassembly (`llvm-objdump`) then showed where: the codes' decoding, 5000 of a call's 5500 cycles |
+| A hidden size off the 8 columns padded (16.178) | gpt-oss's 2880 (45 blocks of 64) carried as 3072 with zeros; a norm's weight times sqrt(2880 / 3072), its eps times 2880 / 3072 | The GEMVs take all 8 columns and in-features in multiples of 512, with the same outputs |
 
 ### 7.4 Common (any NPU, on the host)
 
@@ -341,6 +348,12 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | RMSNorm with a fixed scale (Anima, fp16) | Squares of rows without large values become subnormals. Replaced by dividing by each row's maximum | 16.69 |
 | Apple: faster self-attention for Anima | Core ML's `scaled_dot_product_attention` 110 ms (101 now), the scale on q 103, heads in groups 96–118, channels first 122. Heads 2 × queries 256: 90 ms, but 84 s to compile 4 attentions. Without the row max 87 ms, but fp16 overflows (bounds from the norms' weights reach 221) | 16.85 |
 | Apple: Anima's DiT at lut8 | As fast as int8 but further from fp16 (latent cosine 0.858 against 0.902) | 16.85 |
+| AMD gpt-oss: the experts re-rounded to q4nx | Weight error 6.6 %, KL 2–3× (README 0.052 → 0.135). Kept as MXFP4 (mx4) | 16.178 |
+| AMD gpt-oss: GPTQ on the attention's q8 too | Four texts better, wiki-ja 0.027 → 0.066 (three positions at KL 1.6–2.9). The head alone by GPTQ: all five better | 16.178 |
+| AMD gpt-oss: sinks seeded into the softmax's running maximum | Every score's exponent far below zero, where the device's exp2 is up to twice too high: outputs 1.5× at a sink of 6. Added at the division instead | 16.178 |
+| AMD gpt-oss: decode experts on 2 cores a column | Transfers alone faster (1.78 against 2.05 ms), but compute-bound with the products (2.39 ms). 4 cores kept | 16.178 |
+| AMD gpt-oss: deeper weight buffers in the memtile (3, 4) | Ran out of the channel's 24 descriptors in aiecc | 16.178 |
+| AMD gpt-oss: prompt experts at 64 rows a pass, 16 an object | Fewer decodes a row, but 3 passes where 128 rows take 1–2: 256 tokens of 2 layers 571 → 714 ms. 128 and 8 with a strip at a time: 488 ms | 16.178 |
 
 ## 9. Caveats when combining (costs)
 
@@ -674,3 +687,16 @@ Tokens/s ≈ read bandwidth ÷ bytes read per token × tokens advanced per read 
 | (For reference) Another reader | Use the DRAM bandwidth the ANE leaves (100 − 64 GB/s on the M3) from the CPU, for example drafting on the CPU and checking on the ANE | Not tried. Using the GPU is a non-goal | Whether syncing pays off is not measured | — |
 
 Expected (M3, LFM3-1.7B, lut4, short context; rough): 19–21 ms now (about 48 tokens/s) → 15–16 ms after trimming the fixed cost and attention (about 60–65 tokens/s; the weight floor is 13.4 ms, about 75) → about 80–90 tokens/s effective with speculative decoding. The default lut6 reads 1.5× the weight bytes, so its weight term is that much larger.
+
+### 12.4 What AMD's work of 2026-11-13 may bring to Apple and Intel (not tried)
+
+gpt-oss-20b on AMD (16.178) took generation from 97.5 to 80.5 ms and Qwen3.5-0.8B's from 87 to 73 ms by cutting operators and their fixed costs. Core ML and OpenVINO compile a whole program and fuse elementwise work into it themselves, so most of it has no counterpart there. What may carry over, in the order worth trying:
+
+| Technique | Apple (Neural Engine) | Intel (NPU) | Why |
+|---|---|---|---|
+| A gated MLP's gate and up as one linear (one matrix of 2 I rows, the glu after it) | Worth a measurement | Worth a measurement | One wider matrix multiply in place of two: fewer kernels inside the program and longer runs of weights. hwnpu's `blocks` builds them as two linears. Rows up to 16384 on the ANE (2 I of the chat models fits) |
+| A checkpoint's own quantization kept (MXFP4, a power-of-two scale per 32 in-features) | Not exact: the ANE's tables are per 16 rows, not per 32 in-features | Worth checking: OpenVINO has f4e2m1 with f8e8m0 scales; whether the NPU plugin runs them is not known | Rounding again costs accuracy (gpt-oss: KL 2–3×) |
+| Fewer bytes for scales (a byte of exponent, larger groups) | — (Core ML's formats are fixed) | int4 with larger groups (now int8 by default) | Scales are 6 % of a 4-bit weight's bytes at groups of 32 in bf16 |
+| Telling transfers from compute | `hwnpu-dev probe` already reads weights alone; a part's time against its weight bytes says the same | The same with OpenVINO's profiling | Decides whether fewer bytes or less compute is the lever |
+| Attention sinks (a model that has them) | Easy in MIL: one column of the sink's logit concatenated to the scores before the softmax, dropped after | The same in the IR | gpt-oss itself does not run there (its routing), a dense model with sinks would |
+| Biases and residuals in the linear | Not needed: Core ML folds them | Not needed: OpenVINO fuses them | AMD's gain came from removing operators IRON runs one by one |
