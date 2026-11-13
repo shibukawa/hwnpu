@@ -4514,3 +4514,33 @@ docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
 - **8B (lut4)** も M1 で試した (自動では選ばれないので `--format lut4` で変換): 生成はどちらも 0.8 トークン/s、2 回目の読み込みは Core AI 4.3 秒、Core ML 24 秒。訳 (段落、1 文、4 文の英日・日英) は一字一句同じ。部品はすべて Neural Engine に載り、`milcpu` とのコサインの最小は 0.984 (part1 の kv_v_7) で Core ML も 0.9839 なので lut4 と乱数の入力のせい。遅いのは M1 の Neural Engine が常駐 2.8 GiB を超えると約 12 倍遅くなるためで Core AI でも同じ。lut4 より小さい形式はない (lut3 は MIL では書けるが未実装で、質も落ちる見込み)
 
 残り: 8B の速さは M2 と M3 で。電力量。Core AI のキャッシュに重みが複製される分のディスク (`hwnpu-chat` の 0.8B と 2B で 3.9 GB、重みの 3.8 GiB とほぼ同じ)。そのキャッシュは実行ファイルの名前ごとなので、`aicheck` や `go test` (chat.test) の分は別に持つ。
+
+### 16.173 チャットのモデル (Qwen3、Qwen3.5、Gemma 4、LFM3) を Core AI で — 2026-11-13
+
+16.172 に続けて、`hwnpu-chat` のチャットのモデルを `--backend coreai` で動かした (Qwen3.5-4B と gemma-4-E4B-it はまだ)。変換は Core ML と同じで、HF から落としたチェックポイントを Go で `.mlpackage` にし、それを `ailower` で Core AI のプログラムに下ろす。`ailower` にも shim にも手を入れずに全部通り、どの部品も Neural Engine に載った。どのモデルの MIL も `ailower` の演算の範囲に収まっている (linear、matmul、softmax、gelu、constexpr_lut_to_dense など)。
+
+直したのは 1 つで、Core AI とは関係がない。`hwnpu-chat` は `--vision` と `--audio-encoder` を指定しないと、Prepare が変換した符号器を空で上書きしていた (`cmd/hwnpu-chat/load.go`、#97 から)。そのため LFM3-VL、Audio、Omni は Core ML でも画像と音声を読めず、`this model was loaded without a vision encoder` になっていた。指定があるときだけ上書きする。
+
+**結果** (M1 16 GB、macOS 27.2。貪欲法 `--temp 0`、生成の速さは 2 回目以降)
+
+| モデル (形式) | 生成 Core ML / Core AI | 2 回目の準備 Core ML / Core AI | 1 回目の準備 Core ML / Core AI | 一致 |
+|---|---|---|---|---|
+| Qwen3-0.6B (lut8) | 8.6 / 8.4 トークン/s | 19 秒 / 2.3 秒 | 47 秒 / 45 秒 | 33 トークン目から分かれる |
+| Qwen3.5-0.8B (lut8、128 の読み取り) | 24.6〜25.3 / 25.3〜27.0 | 12 分 54 秒 / 2.3 秒 | 27 分 45 秒 / 5 分 9 秒 | 20 トークン目あたりから分かれる |
+| Qwen3.5-2B (lut6、1 本) | 20.9〜21.2 / 20.0〜21.0 | 59 秒 / 1.6 秒 | 2 分 15 秒 / 1 分 20 秒 | 一字一句同じ |
+| gemma-4-E2B-it (lut6) | 24.1〜24.7 / 24.0〜24.5 | 1 分 8 秒 / 2.7 秒 | 2 分 11 秒 / 1 分 17 秒 | 同じ (考える部分を含む 400 トークン) |
+| LFM3-1.7B (lut6) | 35.7〜36.3 / 35.2〜35.5 | 57 秒 / 4.5 秒 | 12 分 49 秒 / 1 分 24 秒 | 同じ (249 トークン) |
+| LFM3-VL-2B (lut8、画像) | 28.4 / 26.2 | 5.5 秒 / 3.2 秒 | 53 秒 / 4 分 4 秒 | 同じ |
+| LFM3-Audio-2B (lut8、音声) | 25.0 / 24.7 | 3.9 秒 / 3.8 秒 | 43 秒 / 51 秒 | 1 文目 (「日本の首都は東京」) は同じ、そのあと分かれる |
+| LFM3-Omni-2B (lut8、画像と音声) | 22.5 / 22.4 | 8.6〜22 秒 / 4.5〜5.5 秒 | 1 分 27 秒 / 1 分 17 秒 | 画像も音声も同じ |
+
+- **準備** は読み込みとコンパイル (`ready after`) の時間。1 回目は、Qwen3-0.6B と Qwen3.5-0.8B 以外は Core AI を先に動かしたので、Core AI の側に Go の変換 (数十秒) が入る。LFM3-VL-2B の Core ML の本体は、直す前の実行でコンパイル済みだった
+- **2 回目の準備**: Core AI は 1.6〜5.5 秒でどのモデルもほぼ一定。Core ML は Neural Engine のコンパイルのキャッシュ (約 4 GiB、ディスクが少ないと消される) から外れた部品をコンパイルし直すので、何を前に動かしたかで 4 秒から 13 分まで変わる。Qwen3.5-0.8B の 128 トークンの部品は Core ML のコンパイルが 1 回 26 分かかり、2 回目も 12 分かかった (Core AI は初回 5 分、2 回目 0.7 秒)
+- **配置**: Qwen3.5 の 2B の本体と、0.8B と 2B の multi-token prediction の部品は、Core ML では一部が Neural Engine から外れる (`NOT all on the NPU`)。Core AI では全部載る
+- **生成の速さ**はほぼ同じで、違いは ±10 % 以内。LFM3-VL-2B だけ Core AI が 8 % 遅い
+- **精度**: `aicheck run -cpu` (乱数の入力で `milcpu` と比べる) で Core AI と Core ML の誤差は同じだった。Qwen3-0.6B の 8 トークンの部品で、y のコサインは Core AI 0.99975、Core ML 0.99983。Qwen3.5-0.8B の部品と MTP はどちらも 0.999997 以上。LFM3-Audio の音声の符号器 (fp16) は Core AI 0.9947、Core ML 0.9942。貪欲法の文が途中で分かれるのは、fp16 の丸めの違いで僅差のトークンが入れ替わるため
+- 画像は計算機のアイコン (512²)、音声は `say -v Kyoko` の「日本の首都はどこですか。一文で答えてください。」(16 kHz)
+
+**ディスク**: Core AI の経路では、重みがディスクに 3 回置かれる。変換した `.mlpackage`、hwnpu のキャッシュの下ろした `.aimodel`、Core AI 自身のキャッシュ (`~/Library/Caches/coreai-cache/<OS>/hwnpu-chat/`) の 3 か所。今回の 8 モデルで Core AI のキャッシュは 7.6 GB から 23 GB に増えた。この M1 はディスクの空きが 12〜50 GB しかなく、試すために、試作の Core AI のキャッシュ、使わない古い変換、Chroma の重みを消した。
+
+残り: Qwen3.5-4B と gemma-4-E4B-it (落とすのが 16 GB、ディスクが要る)。`.aimodel` は Core AI のキャッシュに入ったあとも要るのか (要らなければ重みが 1 回分減る)。M2 と M3。電力量。
