@@ -39,6 +39,9 @@ private func options(_ kind: Int32) -> SpecializationOptions {
     }
 }
 
+/// A flag of cai_open's kind: fail rather than delete the cache entries and load again.
+private let noRetry: Int32 = 0x100
+
 @_cdecl("cai_arch")
 public func cai_arch() -> UnsafeMutablePointer<CChar> { cstr(AIModel.deviceArchitectureName) }
 
@@ -48,7 +51,8 @@ public func cai_free(_ p: UnsafeMutablePointer<CChar>?) { free(p) }
 /// Loads the .aimodel at path and its function main, or the function NAME of PATH#NAME (a program
 /// with several, whose weights they share). Core AI's cache sometimes keeps an entry
 /// whose function then fails to load at once (_GenericObjCError 0) and never recompiles: the
-/// entries of the model are deleted and it is loaded again (*retried set to 1).
+/// entries of the model are deleted and it is loaded again (*retried set to 1), unless kind has
+/// noRetry (an asset whose bytecode is cut, which loads only from its entry: parsing it aborts).
 @_cdecl("cai_open")
 public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: UnsafeMutablePointer<Int32>,
                      _ errOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> UnsafeMutableRawPointer? {
@@ -59,7 +63,7 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
         file = String(file[..<i])
     }
     let url = URL(fileURLWithPath: file)
-    let o = options(kind)
+    let o = options(kind & 0xff)
     retried.pointee = 0
     func once() -> Result<Fn, any Error> {
         let r = block { () async throws -> AIModel in try await AIModel(contentsOf: url, options: o) }
@@ -77,7 +81,7 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
         }
     }
     var r = once()
-    if case .failure = r {
+    if case .failure = r, kind & noRetry == 0 {
         try? AIModelCache.default.deleteEntries(for: url)
         retried.pointee = 1
         r = once()

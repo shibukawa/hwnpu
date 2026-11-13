@@ -146,7 +146,17 @@ func readRecord(dir, key string) (asset string, r record, ok bool) {
 		return "", r, false
 	}
 	asset, ok = cache.Lookup(dir, strings.TrimSuffix(r.Asset, ".aimodel"), ".aimodel")
-	return asset, r, ok
+	return asset, r, ok && usable(asset)
+}
+
+// usable reports whether a stored asset can be opened: not one whose bytecode was cut
+// (DropBytecodeEnv) after Core AI's entry went away, which is removed to be lowered again.
+func usable(asset string) bool {
+	if isCut(asset) && !hasEntry(asset) {
+		os.RemoveAll(asset)
+		return false
+	}
+	return true
 }
 
 func writeRecord(dir, key string, r record) error {
@@ -345,7 +355,7 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 	}
 	if len(members) == 1 {
 		a, ok := cache.Lookup(dir, key, ".aimodel")
-		if !ok {
+		if ok = ok && usable(a); !ok {
 			if a, err = cache.Store(dir, key, ".aimodel", func(tmp string) error { return lowerOne(pkg, tmp) }); err != nil {
 				return "", "", false, err
 			}
@@ -364,7 +374,7 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 	}
 	gkey := cache.Key(parts...)
 	a, ok := cache.Lookup(dir, gkey, ".aimodel")
-	if !ok {
+	if ok = ok && usable(a); !ok {
 		if a, err = cache.Store(dir, gkey, ".aimodel", func(tmp string) error { return lowerMany(paths, names, tmp) }); err != nil {
 			return "", "", false, err
 		}

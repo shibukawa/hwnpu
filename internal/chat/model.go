@@ -529,7 +529,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 // sharesWeights reports whether the programs of a model run on the device backend (Config.Backend)
 // share their weights on the Neural Engine: on Core AI the programs of one model's weights are
 // functions of one program (internal/backend/coreai), which the Neural Engine holds once
-// (LFM3-1.7B's two: 1.34 GiB against 2.56 GiB lowered apart, docs/design.md 16.175).
+// (LFM3-1.7B's two: 1.34 GiB against 2.56 GiB lowered apart, docs/design.md 16.177).
 func sharesWeights(device string) bool { return device == "coreai" }
 
 // heldBytes is what a model's programs hold on the Neural Engine: tiers of the one that generates

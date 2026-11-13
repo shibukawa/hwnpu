@@ -187,3 +187,38 @@ func TestResolveExports(t *testing.T) {
 		t.Errorf("lowered together %d times, want 2", len(groups))
 	}
 }
+
+// A group whose bytecode was cut (DropBytecodeEnv) and whose Core AI entry is gone is lowered
+// again, not opened (parsing a cut bytecode aborts).
+func TestResolveCutGroup(t *testing.T) {
+	t.Setenv("HWNPU_CACHE", t.TempDir())
+	model, cdir := t.TempDir(), t.TempDir()
+	saveOne, saveMany, saveForget := lowerOne, lowerMany, forget
+	t.Cleanup(func() { lowerOne, lowerMany, forget = saveOne, saveMany, saveForget })
+	lowered := 0
+	lowerOne = func(pkg, dst string) error { return os.MkdirAll(dst, 0o755) }
+	lowerMany = func(pkgs, names []string, dst string) error {
+		lowered++
+		os.MkdirAll(dst, 0o755)
+		os.WriteFile(filepath.Join(dst, "main.hash"), []byte("no such entry"), 0o644)
+		return os.WriteFile(filepath.Join(dst, "main.mlirb"), []byte("bytecode"), 0o644)
+	}
+	forget = func(string) {}
+	w := [][]byte{fill(groupMin, 1, 2), fill(groupMin/2, 3), fill(groupMin/4, 4)}
+	a := fakePackage(t, model, "q8", "q8", w...)
+	fakePackage(t, model, "q128", "q128", w...)
+	g, _, _, err := resolve(cdir, a)
+	if err != nil || lowered != 1 {
+		t.Fatalf("group: %s (%v), lowered %d", g, err, lowered)
+	}
+	if g2, _, cached, err := resolve(cdir, a); err != nil || !cached || lowered != 1 {
+		t.Fatalf("whole: %s (cached %v, %v), lowered %d, want it opened", g2, cached, err, lowered)
+	}
+	if err := os.WriteFile(filepath.Join(g, "main.mlirb"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g2, _, cached, err := resolve(cdir, a)
+	if err != nil || cached || lowered != 2 || isCut(g2) {
+		t.Errorf("cut without an entry: %s (cached %v, cut %v, %v), lowered %d, want it lowered again", g2, cached, isCut(g2), err, lowered)
+	}
+}
