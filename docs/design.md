@@ -4544,3 +4544,36 @@ docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
 **ディスク**: Core AI の経路では、重みがディスクに 3 回置かれる。変換した `.mlpackage`、hwnpu のキャッシュの下ろした `.aimodel`、Core AI 自身のキャッシュ (`~/Library/Caches/coreai-cache/<OS>/hwnpu-chat/`) の 3 か所。今回の 8 モデルで Core AI のキャッシュは 7.6 GB から 23 GB に増えた。この M1 はディスクの空きが 12〜50 GB しかなく、試すために、試作の Core AI のキャッシュ、使わない古い変換、Chroma の重みを消した。
 
 残り: Qwen3.5-4B と gemma-4-E4B-it (落とすのが 16 GB、ディスクが要る)。`.aimodel` は Core AI のキャッシュに入ったあとも要るのか (要らなければ重みが 1 回分減る)。M2 と M3。電力量。
+
+### 16.174 `.aimodel` を配って動かすための検証: キャッシュの鍵と方針、重みの共有 — 2026-11-13
+
+変換済みのモデルを Hugging Face に置き、Apple では `.aimodel` を落として動かす形 (docs/cache-sharing.md の 10 節) を考えて、M1 (macOS 27.2) で確かめた。題材は LFM3-1.7B。今は Core AI で動かすときも、`.mlpackage` (8 トークンと 128 トークンの 2 本、各 1.24 GiB、APFS の複製で実質 1 本分)、hwnpu のキャッシュの下ろした `.aimodel` (2.43 GiB)、Core AI のキャッシュ (約 2.5 GiB) と、重みを 5 回分持っている。
+
+**Core AI のキャッシュの鍵**: `main.hash` (`main.mlirb` の sha256) だけで決まる。`.aimodel` を別の場所に写しても 0.02 秒で読め、キャッシュに入ったあとは `main.mlirb` を消しても、同じ大きさのゼロにしても読めて、答えも同じ (`aicheck run -cpu -ref`、`milcpu` とのコサイン 1.000000)。`main.hash` を変えると読めない。キャッシュのフォルダは OS のビルド (`26B123`) と実行ファイルの名前ごとなので、OS を更新したときや別の実行ファイルでは `main.mlirb` からもう一度コンパイルする。
+
+**キャッシュの方針** (`AIModelCache.Policy`、SDK の CoreAIDelegates): 消す条件は `storagePressure` (1) と `sourceAssetChangedOrDeleted` (2)。`AIModel(contentsOf:)` が使う既定は両方 (3) で、エントリは `~/Library/Caches/coreai-cache/` に置かれる。`.persistent` は消さない (0) で、`AIModel.specialize(contentsOf:options:cache:cachePolicy:)` で入れると `~/Library/Application Support/coreai-cache/` に置かれる。`AIModel(contentsOf:)` はどちらのエントリも使う (`main.mlirb` のない写しが 0.02 秒で読める)。
+- 16.173 で、空きが 12 GiB まで減ったあと、LFM3-1.7B のエントリ (12 時台に作った分) の一部が消えて、次の読み込みでコンパイルし直しになった (48 秒)。それより古い PLaMo のエントリは残っていたので、使っていない順ではない。ディスクが足りないときの掃除と見ている (ログには何も出ていなかった)
+- 元の `.aimodel` を消しても、どちらの方針でも 30 秒の間はエントリが残った (掃除は後から裏で行われるらしい。確かめていない)
+- そのコンパイルし直しの途中で、part6 が 1 回 `nilError` で失敗した (121 秒)。もう一度走らせたら通った
+
+**重みの共有** (`ailower.LowerFunctions`、`aicheck merge`): 1 本の `.aimodel` に `graph_v1` を名前を変えて 2 つ入れ、同じバイトの重みの資源は 1 回だけ書く。LFM3-1.7B の part2 (8 トークンと 128 トークン、重みは同じ 179 MB) で:
+- `.aimodel` は 176 MB で、1 本分と同じ (2 本なら 352 MB)
+- Core AI のキャッシュのエントリも 1 つで 192 MB (`resources.bin` が 1 つ。別々なら 176 MB と 191 MB)
+- 両方の関数とも全部 Neural Engine に載り、`milcpu` とのコサイン 1.000000。初回のコンパイルは 2 つの関数で 7.6 秒
+- shim は `PROGRAM.aimodel#NAME` で関数 NAME を開く。入出力は関数ごとに `hwnpu-io-NAME.json`。Core AI のキャッシュの delegate のフォルダは関数によらず `main-this-delegates` で、配置は manifest の `Entry Function Attributes` の、その関数のエントリの `mps.fullyPlacedOnANE` で見る
+- 1 本だけ下ろすときのバイト列は前と同じ (`main.hash` が変わらず、作った `.aimodel` のキャッシュはそのまま使える)
+
+**2 回目の準備の内訳**: 今は読み込みのたびに `.mlpackage` の中身を全部読んで sha256 をとり、hwnpu のキャッシュの `.aimodel` を探す鍵にしている (`cache.TreeDigest`)。LFM3-1.7B の 18 個 (2.4 GiB) で 2.9〜3.9 秒かかり、準備の 4.5 秒のほとんどがこれ。`.aimodel` を直接読めば、準備は 1 秒ほどになる見込み。
+
+**ここから考えた形** (LFM3-1.7B):
+
+| | 落とす量 | 手元に要る量 |
+|---|---|---|
+| 今 (元のチェックポイントから変換) | 3.5 GB | 約 10 GB |
+| 関数 2 つの `.aimodel` を配る、`main.mlirb` を残す | 約 1.8 GB (`.aimodel` 1.24 GiB、表 0.52 GB、ほか) | 約 3.2 GB (落としたもの 1.9 GB と Core AI のキャッシュ 1.3 GB) |
+| 同じで、`.persistent` に入れてから `main.mlirb` を消す | 同じ | 約 1.9 GB (表など 0.6 GB と Core AI のキャッシュ 1.3 GB)。OS を更新したら `main.mlirb` を落とし直す |
+
+- 一緒に配るもの: `tables.safetensors` (埋め込みを CPU で引く)、`parts.json`、`attn` と `mass` の小さな `.mlpackage` (ホストの CPU で `milcpu` が動かす)、`tokenizer.json`、`config.json`
+- 要る手直し: `parts.json` が `.aimodel#NAME` を指せるようにする、runner が出力の形を `.mlpackage` ではなく `hwnpu-io-*.json` から読む、`.aimodel` をモデルのフォルダに置く (掃除の対象にせず、ハッシュもとらない)。`.persistent` にするなら、モデルを消すときに hwnpu が Core AI のエントリも消す (`AIModelCache.deleteEntries(for:)`)
+
+残り: M2 と M3、OS の版を越えて同じ `.aimodel` が読めるか。チャットのモデル全体 (7 つの部品 × 2) を関数 2 つの `.aimodel` で動かす。`sourceAssetChangedOrDeleted` がいつ効くか。
