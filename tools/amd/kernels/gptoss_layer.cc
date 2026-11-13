@@ -191,62 +191,118 @@ struct gl_state {
   alignas(64) float tot[GL_OUTS][MT];
   alignas(64) bf16 res[GL_R]; // the column's slice of the residual; T: the words and the weights out
   alignas(64) bf16 w[32];     // E2: the routing weights
-  // A: the core's heads' q (times 1 / sqrt(D)), sink, and softmax state
-  alignas(64) bf16 q[GL_AH][GL_D];
-  alignas(64) float o[GL_AH][GL_D];
-  float sink[GL_AH], m[GL_AH], l[GL_AH];
+  // A: the core's 4 heads' q (times 1 / sqrt(D)) as tiles of 8 in-features ([tile][k][head]), the
+  // weighted values as tiles of 8 of a head's 64 ([tile][head][8]); a head's sink, running
+  // maximum and sum as 16 lanes of period 4 (lane 4 t + head: no scalar float work, which is
+  // long code on a core), and 1 / the sum for the output ([head][8])
+  alignas(64) bf16 qt[GL_D / 8][GL_AH * 8];
+  alignas(64) float o2[GL_D / 8][GL_AH * 8];
+  alignas(64) float sink[16];
+  alignas(64) float m[16];
+  alignas(64) float l[16];
+  alignas(64) float inv[GL_AH * 8];
 };
 static_assert(sizeof(gl_state) <= 4096, "iron_gptoss_layer.py's st_t");
 
 #ifdef GL_ATT
+// 8 rows of 8 values (rows stride elements apart) as one vector, [row][8].
+static inline aie::vector<bf16, 64> gl_tile(const bf16 *p, int stride) {
+  return aie::concat(aie::concat(aie::load_v<8>(p), aie::load_v<8>(p + stride), aie::load_v<8>(p + 2 * stride),
+                                 aie::load_v<8>(p + 3 * stride)),
+                     aie::concat(aie::load_v<8>(p + 4 * stride), aie::load_v<8>(p + 5 * stride),
+                                 aie::load_v<8>(p + 6 * stride), aie::load_v<8>(p + 7 * stride)));
+}
+
+// The lanes 4 t + head a token of an 8-token tile takes part with: t below n as they are
+// (min with a large number), the others out of the softmax.
+struct gl_mask_t {
+  float v[9][GL_AH * 8];
+};
+constexpr gl_mask_t gl_masks() {
+  gl_mask_t m{};
+  for (int n = 0; n <= 8; n++)
+    for (int i = 0; i < GL_AH * 8; i++)
+      m.v[n][i] = i / GL_AH < n ? 3.0e38f : -1.0e30f;
+  return m;
+}
+alignas(64) static const gl_mask_t GL_MASK = gl_masks();
+
+// 16 lanes of period 4 from v's lanes folded by 4: each head's largest (or sum) of its lanes.
+template <bool Max>
+static inline aie::vector<float, 16> gl_heads(aie::vector<float, 16> v) {
+  aie::vector<float, 4> r = v.template extract<4>(0);
+#pragma clang loop unroll(full)
+  for (int i = 1; i < 4; i++)
+    r = Max ? aie::max(r, v.template extract<4>(i)) : aie::add(r, v.template extract<4>(i));
+  aie::vector<float, 8> r8 = aie::concat(r, r);
+  return aie::concat(r8, r8);
+}
+
+// Lanes of period 4 (4 t + head) as [head][8].
+static inline aie::vector<float, 32> gl_rows(aie::vector<float, 16> v) {
+  return aie::transpose(aie::concat(v, v), 8, 4);
+}
+
+// out [8 tokens][4 heads] = the scores of 8 tokens: their keys' tiles [token][8 k] (kv, 8 k
+// further each step) times q's [8 k][head].
+__attribute__((noinline)) static void gl_scores(const bf16 *qt, const bf16 *kv, float *out) {
+  aie::mmul<8, 8, 4, bfloat16, bfloat16> c;
+#pragma clang loop unroll(disable)
+  for (int ks = 0; ks < GL_D / 8; ks++)
+    c.mac(gl_tile(kv + 8 * ks, GL_TS), aie::load_v<GL_AH * 8>(qt + GL_AH * 8 * ks));
+  aie::store_v(out, c.template to_vector<float>());
+}
+
+// out [4 heads][8 d] = the sum over the object's tiles of p's [head][8 tokens] times the values'
+// [token][8 d] (kv, 8 tokens further each step).
+__attribute__((noinline)) static void gl_values(const bf16 *p, const bf16 *kv, float *out) {
+  aie::mmul<4, 8, 8, bfloat16, bfloat16> c;
+#pragma clang loop unroll(disable)
+  for (int tt = 0; tt < GL_TOK / 8; tt++)
+    c.mac(aie::load_v<GL_AH * 8>(p + GL_AH * 8 * tt), gl_tile(kv + 8 * tt * GL_TS, GL_TS));
+  aie::store_v(out, c.template to_vector<float>());
+}
+
 // An object's first n (of 128) tokens' keys and values (kv: [token][key 64, value 64]) into the
-// core's heads' softmax. Built for size (loops kept, no unrolling): it is a few microseconds an
-// object either way.
-GL_COLD static void gl_attend(const bf16 *kv, gl_state *st, int n) {
-  alignas(64) float s[GL_AH][GL_TOK];
-  alignas(64) float p[GL_TOK];
+// core's 4 heads' softmax, 8 tokens at a time as matrix products (the bf16 mmul; no sum across
+// a vector's lanes a token): a dot product a token and a head with its sum took 62 us an
+// object, 12 ms a token at 2000 tokens of context.
+static void gl_attend(const bf16 *kv, gl_state *st, int n) {
+  constexpr int TILES = GL_TOK / 8, L = GL_AH * 8;
+  alignas(64) float s[TILES][L];
+  alignas(64) bf16 pb[TILES][L];
+  alignas(64) float add[L];
+  aie::vector<float, L> top = aie::broadcast<float, L>(-1.0e30f);
 #pragma clang loop unroll(disable)
-  for (int t = 0; t < GL_TOK; t++) {
-    const bf16 *k = kv + t * GL_TS;
-#pragma clang loop unroll(disable)
-    for (int j = 0; j < GL_AH; j++) {
-      const bf16 *q = st->q[j];
-      aie::accum<accfloat, 16> a = aie::zeros<accfloat, 16>();
-#pragma clang loop unroll(disable)
-      for (int i = 0; i < GL_D; i += 16)
-        a = aie::mac(a, aie::load_v<16>(k + i), aie::load_v<16>(q + i));
-      s[j][t] = t < n ? aie::reduce_add(a.template to_vector<float>()) : -1.0e30f;
-    }
+  for (int tt = 0; tt < TILES; tt++) {
+    gl_scores(st->qt[0], kv + 8 * tt * GL_TS, s[tt]);
+    const int left = n - 8 * tt;
+    aie::vector<float, L> v = aie::min(aie::load_v<L>(s[tt]), aie::load_v<L>(GL_MASK.v[left < 0 ? 0 : left > 8 ? 8 : left]));
+    aie::store_v(s[tt], v);
+    top = aie::max(top, v);
   }
+  const aie::vector<float, 16> old = aie::load_v<16>(st->m);
+  const aie::vector<float, 16> m =
+      aie::max(old, gl_heads<true>(aie::max(top.template extract<16>(0), top.template extract<16>(1))));
+  const aie::vector<float, 16> d = gl_exp(aie::sub(old, m)); // the old terms at the new maximum
+  aie::store_v(st->m, m);
+  aie::vector<float, 16> sum = aie::zeros<float, 16>();
 #pragma clang loop unroll(disable)
-  for (int j = 0; j < GL_AH; j++) {
-    aie::vector<float, 16> mx = aie::load_v<16>(s[j]);
+  for (int tt = 0; tt < TILES; tt++) {
+    aie::vector<float, 16> e0 = gl_exp(aie::sub(aie::load_v<16>(s[tt]), m));
+    aie::vector<float, 16> e1 = gl_exp(aie::sub(aie::load_v<16>(s[tt] + 16), m));
+    sum = aie::add(sum, aie::add(e0, e1));
+    aie::accum<accfloat, L> a;
+    a.from_vector(aie::concat(e0, e1));
+    aie::store_v(pb[tt], aie::transpose(a.template to_vector<bf16>(), 8, 4)); // [token][head] to [head][token]
+  }
+  aie::store_v(st->l, aie::add(aie::mul(aie::load_v<16>(st->l), d).template to_vector<float>(), gl_heads<false>(sum)));
+  const aie::vector<float, L> drow = gl_rows(d);
 #pragma clang loop unroll(disable)
-    for (int i = 16; i < GL_TOK; i += 16)
-      mx = aie::max(mx, aie::load_v<16>(s[j] + i));
-    const float top = aie::reduce_max(mx);
-    const float m = top > st->m[j] ? top : st->m[j];
-    const aie::vector<float, 16> mv = aie::broadcast<float, 16>(m);
-    const float d = gl_exp(aie::broadcast<float, 16>(st->m[j] - m)).get(0); // the old terms at the new maximum
-    aie::vector<float, 16> sum = aie::zeros<float, 16>();
-#pragma clang loop unroll(disable)
-    for (int i = 0; i < GL_TOK; i += 16) {
-      aie::vector<float, 16> e = gl_exp(aie::sub(aie::load_v<16>(s[j] + i), mv));
-      aie::store_v(p + i, e);
-      sum = aie::add(sum, e);
-    }
-    st->m[j] = m;
-    st->l[j] = st->l[j] * d + aie::reduce_add(sum);
-    float *o = st->o[j];
-#pragma clang loop unroll(disable)
-    for (int i = 0; i < GL_D; i += 16) { // 16 of the head's values at a time, over the tokens
-      aie::accum<accfloat, 16> a;
-      a.from_vector(aie::mul(aie::load_v<16>(o + i), d).template to_vector<float>());
-#pragma clang loop unroll(disable)
-      for (int t = 0; t < n; t++)
-        a = aie::mac(a, aie::load_v<16>(kv + t * GL_TS + GL_D + i), bf16(p[t]));
-      aie::store_v(o + i, a.template to_vector<float>());
-    }
+  for (int ds = 0; ds < GL_D / 8; ds++) {
+    gl_values(pb[0], kv + GL_D + 8 * ds, add);
+    aie::vector<float, L> o = aie::mul(aie::load_v<L>(st->o2[ds]), drow).template to_vector<float>();
+    aie::store_v(st->o2[ds], aie::add(o, aie::load_v<L>(add)));
   }
 }
 #endif
@@ -359,16 +415,21 @@ GL_COLD void GL_FN(gl_begin)(bf16 *x, float *state, const int32_t *cnt) {
   }
 #ifdef GL_ATT
   else if (kind == K_A) {
-    const int h0 = GL_AH * cnt[7]; // the core's first head of the column's 8
-    for (int j = 0; j < GL_AH; j++) {
-      for (int i = 0; i < GL_D; i += 16)
-        aie::store_v(st->q[j] + i,
-                     aie::mul(aie::load_v<16>(x + (h0 + j) * GL_D + i), bf16(0.125f)).template to_vector<bf16>());
-      st->sink[j] = float(x[GL_SINK + h0 + j]);
-      st->m[j] = -1.0e30f;
-      st->l[j] = 0.0f;
-      zero_256<float, GL_D>(st->o[j]);
+    const bf16 *q = x + GL_AH * cnt[7] * GL_D; // the core's first head of the column's 8
+    for (int ks = 0; ks < GL_D / 8; ks++) { // q's tile [head][8 k] as [k][head]
+      aie::vector<bf16, GL_AH * 8> t = aie::concat(aie::load_v<8>(q + 8 * ks), aie::load_v<8>(q + GL_D + 8 * ks),
+                                                   aie::load_v<8>(q + 2 * GL_D + 8 * ks), aie::load_v<8>(q + 3 * GL_D + 8 * ks));
+      aie::store_v(st->qt[ks], aie::transpose(aie::mul(t, bf16(0.125f)).template to_vector<bf16>(), 4, 8));
     }
+    aie::accum<accfloat, 16> sk;
+    sk.from_vector(aie::load_unaligned_v<16>(x + GL_SINK + GL_AH * cnt[7]));
+    const aie::vector<float, 4> s4 = sk.template to_vector<float>().template extract<4>(0);
+    const aie::vector<float, 8> s8 = aie::concat(s4, s4);
+    aie::store_v(st->sink, aie::concat(s8, s8));
+    aie::store_v(st->m, aie::broadcast<float, 16>(-1.0e30f));
+    aie::store_v(st->l, aie::zeros<float, 16>());
+    for (int ds = 0; ds < GL_D / 8; ds++)
+      zero_256<float, GL_AH * 8>(st->o2[ds]);
   }
 #endif
 #ifdef GL_ROUTE
@@ -493,19 +554,18 @@ GL_COLD void GL_FN(gl_tail)(float *state, const int32_t *cnt, int32_t q, bf16 *y
   }
 #ifdef GL_ATT
   if (kind == K_A) {
+    if (q == 0) { // 1 / (l + exp(sink - m)) at the larger of m and the sink, a head's 8 lanes
+      const aie::vector<float, 16> m = aie::load_v<16>(st->m), sk = aie::load_v<16>(st->sink);
+      const aie::vector<float, 16> top = aie::max(m, sk);
+      const aie::vector<float, 16> t0 = gl_exp(aie::sub(m, top)), t1 = gl_exp(aie::sub(sk, top));
+      const aie::vector<float, 16> sum = aie::add(aie::mul(aie::load_v<16>(st->l), t0).template to_vector<float>(), t1);
+      aie::store_v(st->inv, gl_rows(aie::mul(t0, aie::inv(sum)).template to_vector<float>()));
+    }
     const int j = q >> 1;
-    const float m = st->m[j] > st->sink[j] ? st->m[j] : st->sink[j];
-    alignas(64) float t[16];
-    for (int i = 0; i < 16; i++)
-      t[i] = -100.0f;
-    t[0] = st->m[j] - m;
-    t[1] = st->sink[j] - m;
-    aie::store_v(t, gl_exp(aie::load_v<16>(t)));
-    const float inv = t[0] / (st->l[j] * t[0] + t[1]);
     alignas(64) float out[MT];
-    const float *o = st->o[j] + MT * (q & 1);
-    aie::store_v(out, aie::mul(aie::load_v<16>(o), inv).template to_vector<float>());
-    aie::store_v(out + 16, aie::mul(aie::load_v<16>(o + 16), inv).template to_vector<float>());
+    for (int i = 0; i < 4; i++) // the half's 4 tiles of the head's values
+      aie::store_v(out + 8 * i, aie::mul(aie::load_v<8>(st->o2[4 * (q & 1) + i] + 8 * j), aie::load_v<8>(st->inv + 8 * j))
+                                    .template to_vector<float>());
     narrow_to_bf16<MT>(y, out);
     return;
   }
