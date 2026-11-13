@@ -1,7 +1,7 @@
 """gpt-oss's decode step as the phases of one array (GptOssStep), configured once.
 
 An operator of its own is loaded again every time it follows another one: about 45 us and 1.2 us
-a KB of its cores' programs (design.md 16.178), about 25 of a token's 79 ms. A full ELF of one
+a KB of its cores' programs (design.md 16.179), about 25 of a token's 79 ms. A full ELF of one
 array is loaded once: the firmware skips the load of what it holds (iron_gptoss_moe.py's check
 with MX4_SINGLE: the experts alone 1.15 ms a command where they follow another operator at 1.78).
 So a layer's operators become phases of one core program on one array, the experts' (4 cores a

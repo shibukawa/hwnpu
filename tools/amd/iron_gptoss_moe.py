@@ -47,7 +47,7 @@ NPAD = 3072  # the residual's width (48 column blocks of 64: whole on 8 columns)
 WV = 16  # MoERoute's routing weights (iron_moe.WV)
 NOCOMPUTE = os.environ.get("MX4_NOCOMPUTE") == "1"
 FASTDECODE = os.environ.get("MX4_FASTDECODE") == "1"  # a measurement: the prompt's kernels skip decoding the codes
-BFP = os.environ.get("MX4_BFP", "1") == "1"  # the prompt's products on bfp16 (mac_8x8_8x8T, 16.178): the activations rounded to 8-bit mantissas; 0 the bf16 mmul
+BFP = os.environ.get("MX4_BFP", "1") == "1"  # the prompt's products on bfp16 (mac_8x8_8x8T, 16.179): the activations rounded to 8-bit mantissas; 0 the bf16 mmul
 WDEPTH = int(os.environ.get("MX4_WDEPTH", "2"))  # the decode step's weight objects held in a memtile
 LIMIT, ALPHA = 7.0, 1.702
 FP4 = np.array([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0.0, -0.5, -1, -1.5, -2, -3, -4, -6], np.float32)
