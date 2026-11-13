@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -40,10 +41,8 @@ type Editor struct {
 func NewEditor(name string) *Editor {
 	e := &Editor{in: bufio.NewReader(os.Stdin), out: os.Stdout, edit: Terminal(os.Stdin) && Terminal(os.Stdout), cols: func() int { return columns(os.Stdout) }}
 	if name != "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			e.file = filepath.Join(d, "hwnpu", "history", name)
-			e.history = readHistory(e.file)
-		}
+		e.file = cache.Sub("history", name)
+		e.history = readHistory(e.file)
 	}
 	return e
 }

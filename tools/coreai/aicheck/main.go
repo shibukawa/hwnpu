@@ -2,7 +2,7 @@
 // checks them.
 //
 //	go run ./tools/coreai/aicheck ops PKG...      the MIL operation types of the packages
-//	go run ./tools/coreai/aicheck run [-cache DIR] [-scale S] [-cpu] PKG...
+//	go run ./tools/coreai/aicheck run [-cache DIR] [-scale S] [-cpu] [-coreml] [-calls N] PKG...
 //	                                               load on Core AI, run, compare with milcpu
 package main
 
@@ -34,8 +34,10 @@ func main() {
 		cache := fs.String("cache", "", "the compile cache (default: none, lowered each time)")
 		scale := fs.Float64("scale", 0.5, "the inputs' standard deviation")
 		cpu := fs.Bool("cpu", false, "compare with the CPU interpreter")
+		coreML := fs.Bool("coreml", false, "run on Core ML instead (its errors against milcpu)")
+		calls := fs.Int("calls", 1, "calls after the first, timed together")
 		fs.Parse(os.Args[2:])
-		err = run(fs.Args(), *cache, *scale, *cpu)
+		err = run(fs.Args(), *cache, *scale, *cpu, *coreML, *calls)
 	default:
 		err = fmt.Errorf("unknown command %s", os.Args[1])
 	}

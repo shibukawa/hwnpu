@@ -19,7 +19,8 @@
 //  4. the VAE's decoder on the latents.
 //
 // The export is for one image size (1024 x 1024 by default). Classifier-free guidance (Qwen-Image
-// 2.1's base checkpoint with a negative prompt) is not supported yet.
+// 2.1, the full model of which Turbo is the distillation, with a negative prompt) runs with
+// Generate's Sampling.
 package qwenimage
 
 import (

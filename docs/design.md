@@ -4469,7 +4469,83 @@ Core ML の Neural Engine のキャッシュは約 4 GiB で、それを超え�
 
 **できていないこと**: 電力量 (powerbench は sudo)。1024² の DiT 1 回の 35 秒の中身 (CFG の 2 回目が 23 秒で済む理由)。
 
-### 16.171 Core AI の書き出し (`coreai`) を safetensors から直接、Neural Engine のコンパイル結果は Core AI のキャッシュの外 — 2026-11-13
+### 16.171 キャッシュの根を 1 つに、共有の層 (共有フォルダと S3) と AMD の書き出しの共有 — 2026-11-12
+
+docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
+
+- **根** (`cache.Root`): OS のローミングしないキャッシュのフォルダの下の `hwnpu` (`HWNPU_CACHE` で移せる)。各コマンドがばらばらに `os.UserCacheDir()` を引いていた 13 か所をこれに。AMD の書き出しは `entries/amd-xdna2/NAME.amd-npu2*` に作り、`~/models` は読むだけ (`cache.ExportRoots`)。組み込みの IRON の道具は `tools/`。IRON の JIT のキャッシュは `iron/` (`NPU_CACHE_HOME` を書き出しに渡す)。`~/.npu/cache` は最初の書き出しの前に `iron/` へ名前を変えて移し、元の場所にリンクを残す (この機械では 52 GB が一瞬で移った)
+- **`.done` を相対パスに** (`cache.WriteDone`、`ReadDone`): チャットの変換、書き起こし、Anima、Sana、Qwen-Image、hwnpu-dev formats。前の hwnpu の絶対パスは、その場所がなければ印の隣の同じ名前を読む
+- **ロック** (`cache.Lock`): `locks/` のファイルを flock (Windows は LockFileEx) で。ダウンロード (ファイルごと)、チャットの変換 (プログラムごと)、IRON の書き出し (書き出しごと)。待った側は、つかめたときに相手が作ったものを見つける
+- **HF の続きのダウンロードに `If-Range`**: 落とし始めの ETag を `NAME.part.etag` に残し、続きはその版のときだけ。ETag のない前の hwnpu の `.part` は今までどおり続ける。応答の `X-Repo-Commit` (リダイレクトの前の応答も見る) を、層に置くときのコミットとして覚える
+- **共有の層** (`internal/store`): `Store` (フォルダ `Dir` と `S3`) の上に、blob (`blobs/sha256/AB/SHA`)、エントリ (`entries/KIND/KEY.json`)、チェックポイントのファイルの索引 (`upstream/OWNER/NAME@COMMIT/FILE.json`)。blob が先、名指すものが最後。取るときは sha256 を確かめ、違えば次の層へ
+  - 設定: 定義ファイルの `cache.layers` (`use`、`write`、`fill`、`fill_gated`、`scopes`。後のファイルが並びごと置き換える)、機械の定義ファイル (`/etc/hwnpu/models.yaml`、macOS は `/Library/Application Support/hwnpu/models.yaml`、Windows は `%ProgramData%\hwnpu\models.yaml`。組み込みとユーザーの間)、`HWNPU_CACHE_LAYERS` (並びを置き換える。`off`)、`HWNPU_CACHE_WRITE=0` (読むだけ)
+  - **元のチェックポイントのフォワードプロキシ** (`fill`): `fetch` は HF の前に層を見る。定義の sha256、なければ HF への HEAD の `X-Linked-Etag` (LFS のファイル) で blob を、どちらもなければコミットの索引で探す。HF から落としたものは裏で層に置く (sha256 も裏で計算)。gated のリポジトリとライセンスを尋ねるモデルは `fill_gated` の層にだけ
+  - **AMD の書き出しの共有** (`chat.SharedExport`): 鍵はモデル、元のコミット、定義の sha256、`amd_export` の引数、組み込みの道具の hash の指紋 (`chat.ExportRecipe`)。層にあれば IRON なしで取り、なければ作って `entry.json` を書き、`write` の層へ裏で置く。前の層で当たったものは手前の `fill` の層へ。コミットが分からない (固定しておらず HF に届かない) ときは層を使わない
+  - 裏の仕事は `work/queue/` に書いてから行い、終われば消す。切れたら次の起動で続ける。失敗は `work/queue.log` に書き、実行は止めない
+- **S3** (`store.S3`): tinygodriver の `storage/s3` に。取得元の `type: s3` も `aws` コマンドから移した。鍵は環境変数か、`profile` の `~/.aws/credentials` と `~/.aws/config` の静的な鍵だけ (SSO は `aws configure export-credentials --format env` で環境変数に)。64 MiB を超えるファイルは 64 MiB の部分で上げ、失敗したら中止を送る。5xx、`SlowDown`、切断は 3 回まで。`no_sign` は署名のない GET。`path_style` を足した
+- **`hwnpu-dev cache`**: `layers` (根と層、何が決めたか)、`ls` (層のエントリ)、`push MODEL` (手元の書き出しを `write` の層へ。`entry.json` がなければ今の道具の指紋で作る)、`verify DIR [--sums]`、`flush` (裏の仕事を終える)
+- 確かめたこと: テスト (フォルダと偽の S3 の読み書き、部分に分けた送り、続きからのダウンロード、署名なし、プロファイル、エントリの往復と変わった blob、コミットと sha256 での取得、裏の仕事の残り、層を通したダウンロードで HF からの GET が 0、gated を写さない、書き出しを 1 回作って別の根で作らずに取る)。この機械で: Qwen3.5-0.8B の q6 の書き出し (1.57 GB) を `push` で共有フォルダの層へ (3.5 秒)、HOME とキャッシュの根を空にし `HWNPU_IRON_ENV` を存在しない場所にした hwnpu-chat が、層から 3.5 秒で取って NPU で答えた (チェックポイントは落とさない)
+- RustFS 1.0.5 (手元) で (2026-11-13): `TestS3Server` (`HWNPU_S3_TEST_ENDPOINT`) が部分に分けた送り、空のファイル、続き、一覧、削除で通った。空のファイルは tinygodriver v1.3.8 が長さ 0 の本体を chunked で送り 411 になった (v1.3.9 で直り、hwnpu の回避は外した)。Qwen3.5-0.8B の書き出しを RustFS の層に `push` (1.57 GB、10 秒)、空の根と IRON なしの hwnpu-chat が層から取って答えた (準備 4.4 秒)
+- Cloudflare R2 (`region: auto`) でも `TestS3Server` が通り、push (1.57 GB、119 秒) と層からの chat (準備 54 秒) ができた。無料枠は 10 GB なので小さなものだけ置く
+- 未確認: AWS の S3。Windows のロックの実機。MinIO は対象にしない (保守が終わった)
+- **初回に作る画像の書き出しも層に** (2026-11-13、`amdFirstRunExport`): hwnpu-image detect、pose、segment (RTMDet、RTMO、EfficientSAM) の書き出しは、手元になければ層を見て、なければ IRON で作って `write` の層へ。層にあれば IRON のない機械でも NPU で動く。鍵は `chat.PinnedRecipe`: 定義の sha256 (ONNX のモデルはファイルを全部固定している)、道具の名前と hash、Go の側の版 (`detect.ExportVersion`、`pose.ExportVersion`、`segment.ExportVersion`)。道具に渡す引数は Go が ONNX から決めるので、引数そのものは鍵に入れず、渡し方を変えたら版を手で上げる (cache-sharing.md 3 節の方針)。エントリの種類は `iron-onnxcnn` と `iron-efficientsam` (`chat.ExportKind`)。`hwnpu-dev cache push` もこの 3 種を受ける。この機械で: RTMO-s、RTMDet-m、EfficientSAM-Ti を共有フォルダの層に push し、空の HOME とキャッシュの根、IRON なしで、3 つとも層から 0.1〜0.2 秒で取って NPU で動いた
+- **`hwnpu-dev cache gc N`** (`store.PlanGC`): 層 N から、`--model`、`--kind`、`--key` (先頭)、`--older-than DAYS` で選んだエントリと、それだけが名指していた blob を消す。`--orphans` で、どのエントリにもチェックポイントの索引にも名指されない blob も (書き込み中の層では使わない: 置いている途中のものは名指すものが最後に書かれる)。`--apply` がなければ、消すものを出すだけ。エントリを先に消し、blob を後に。共有フォルダの層と RustFS で確かめた。途中で止まったマルチパートは tinygodriver に一覧の操作がないので、バケットのライフサイクルの規則 (「未完了のマルチパートを N 日で中止」) に任せる
+- 残り: Anima などの手で作る画像の書き出し (道具の引数を Go が持たない。HF の配布物で配る)。Core ML と OpenVINO のプログラム (チャットの変換) のエントリ化と、計画と作るの分離 (cache-sharing.md 8 節)、HF の配布物を読む層と Actions (同 9 節) は次
+
+### 16.172 PLaMo (3 Translate と Embedding) を Core AI で: 経路の直しと、入力の配列の使い回し — 2026-11-13
+
+16.169 の Core AI のバックエンドで PLaMo 3 Translate (0.8B、2B) と PLaMo-Embedding-1B を動かした。下ろし方 (`ailower`) は手を入れずに通り、どの部品も Neural Engine に載った。直したのは 2 つ。
+
+- **経路**: `hwnpu-chat` は `HWNPU_BACKEND=coreai` でも Core ML で動いていた。`chat.Prepare` と `PrepareEmbedder` が Config.Backend をプログラムの形式 (`coreml`) で埋め、`OpenDevice` がそれで Core ML の端末を開くため。`llm.DeviceBackend` (指定された端末のバックエンド) を先に見る。`HereVendor` も `coreai` を apple に。`--backend coreai` は `hwnpu-chat` のどのコマンドでも使え、変換されるのは Core ML と同じ `.mlpackage` (同じディレクトリを共有する)
+- **1 回の呼び出しの手間** (shim): 入力の `NDArray` を毎回作ってコピーしていたので、0.8B の生成は Core ML の 35 トークン/s に対して 25 だった (M1)。Core AI は一度使った配列を速く動かす: 0.8B の part1 (入力 7 MiB) で、毎回新しい配列 10.0 ms、同じ配列 7.2 ms、呼び出し側のバッファの view (`NDArray.RawView(bytes:)`、`outputViews`) 10.7 ms、IOSurface の view 8.3 ms。そこで入力の配列はプログラムごとに初回に作り、毎回それに memcpy する (7.7 ms、Core ML 7.8 ms)。プログラムの呼び出しは 1 本ずつ (graph.mu) なので配列を共有してよい
+
+**結果** (M1、macOS 27.2、2 回目以降)
+
+| モデル | Core ML | Core AI | 一致 |
+|---|---|---|---|
+| PLaMo 3 Translate 0.8B (lut8) | 生成 35〜42 トークン/s、読み込み 1.5 秒 | 38〜44 トークン/s、1.3〜1.5 秒 | 訳は一字一句同じ (2 文、3 文の段落) |
+| PLaMo 3 Translate 2B (lut8) | 11.7 トークン/s、9.4 秒 | 11.7 トークン/s、10 秒 | 一字一句同じ |
+| PLaMo-Embedding-1B (lut8、128 と 1024) | 1 文 48 ms | 48 ms | Core ML とのコサイン 0.99995〜0.99999 (8 文) |
+
+- 初回の読み込み (Core AI のコンパイル) は 0.8B が 33 秒、2B が 29 秒、Embedding が 1 分 20 秒で、Core ML (40 秒、38 秒、1 分 51 秒) より短い
+- `aicheck run -cpu` で 0.8B の部品を `milcpu` と比べた: 8 トークンの部品はコサイン 0.9989 以上。128 トークンの part1 は 0.92 まで下がるが、Core ML でも同じ入力で同じ値 (0.9179 と 0.9175) で、乱数の入力 (マスクなど) のせい
+- `aicheck run` に `-coreml` (同じ部品を Core ML で、誤りが Core AI のものかを分ける) と `-calls N` (2 回目以降の N 回の平均) を足した
+
+- **8B (lut4)** も M1 で試した (自動では選ばれないので `--format lut4` で変換): 生成はどちらも 0.8 トークン/s、2 回目の読み込みは Core AI 4.3 秒、Core ML 24 秒。訳 (段落、1 文、4 文の英日・日英) は一字一句同じ。部品はすべて Neural Engine に載り、`milcpu` とのコサインの最小は 0.984 (part1 の kv_v_7) で Core ML も 0.9839 なので lut4 と乱数の入力のせい。遅いのは M1 の Neural Engine が常駐 2.8 GiB を超えると約 12 倍遅くなるためで Core AI でも同じ。lut4 より小さい形式はない (lut3 は MIL では書けるが未実装で、質も落ちる見込み)
+
+残り: 8B の速さは M2 と M3 で。電力量。Core AI のキャッシュに重みが複製される分のディスク (`hwnpu-chat` の 0.8B と 2B で 3.9 GB、重みの 3.8 GiB とほぼ同じ)。そのキャッシュは実行ファイルの名前ごとなので、`aicheck` や `go test` (chat.test) の分は別に持つ。
+
+### 16.173 チャットのモデル (Qwen3、Qwen3.5、Gemma 4、LFM3) を Core AI で — 2026-11-13
+
+16.172 に続けて、`hwnpu-chat` のチャットのモデルを `--backend coreai` で動かした (Qwen3.5-4B と gemma-4-E4B-it はまだ)。変換は Core ML と同じで、HF から落としたチェックポイントを Go で `.mlpackage` にし、それを `ailower` で Core AI のプログラムに下ろす。`ailower` にも shim にも手を入れずに全部通り、どの部品も Neural Engine に載った。どのモデルの MIL も `ailower` の演算の範囲に収まっている (linear、matmul、softmax、gelu、constexpr_lut_to_dense など)。
+
+直したのは 1 つで、Core AI とは関係がない。`hwnpu-chat` は `--vision` と `--audio-encoder` を指定しないと、Prepare が変換した符号器を空で上書きしていた (`cmd/hwnpu-chat/load.go`、#97 から)。そのため LFM3-VL、Audio、Omni は Core ML でも画像と音声を読めず、`this model was loaded without a vision encoder` になっていた。指定があるときだけ上書きする。
+
+**結果** (M1 16 GB、macOS 27.2。貪欲法 `--temp 0`、生成の速さは 2 回目以降)
+
+| モデル (形式) | 生成 Core ML / Core AI | 2 回目の準備 Core ML / Core AI | 1 回目の準備 Core ML / Core AI | 一致 |
+|---|---|---|---|---|
+| Qwen3-0.6B (lut8) | 8.6 / 8.4 トークン/s | 19 秒 / 2.3 秒 | 47 秒 / 45 秒 | 33 トークン目から分かれる |
+| Qwen3.5-0.8B (lut8、128 の読み取り) | 24.6〜25.3 / 25.3〜27.0 | 12 分 54 秒 / 2.3 秒 | 27 分 45 秒 / 5 分 9 秒 | 20 トークン目あたりから分かれる |
+| Qwen3.5-2B (lut6、1 本) | 20.9〜21.2 / 20.0〜21.0 | 59 秒 / 1.6 秒 | 2 分 15 秒 / 1 分 20 秒 | 一字一句同じ |
+| gemma-4-E2B-it (lut6) | 24.1〜24.7 / 24.0〜24.5 | 1 分 8 秒 / 2.7 秒 | 2 分 11 秒 / 1 分 17 秒 | 同じ (考える部分を含む 400 トークン) |
+| LFM3-1.7B (lut6) | 35.7〜36.3 / 35.2〜35.5 | 57 秒 / 4.5 秒 | 12 分 49 秒 / 1 分 24 秒 | 同じ (249 トークン) |
+| LFM3-VL-2B (lut8、画像) | 28.4 / 26.2 | 5.5 秒 / 3.2 秒 | 53 秒 / 4 分 4 秒 | 同じ |
+| LFM3-Audio-2B (lut8、音声) | 25.0 / 24.7 | 3.9 秒 / 3.8 秒 | 43 秒 / 51 秒 | 1 文目 (「日本の首都は東京」) は同じ、そのあと分かれる |
+| LFM3-Omni-2B (lut8、画像と音声) | 22.5 / 22.4 | 8.6〜22 秒 / 4.5〜5.5 秒 | 1 分 27 秒 / 1 分 17 秒 | 画像も音声も同じ |
+
+- **準備** は読み込みとコンパイル (`ready after`) の時間。1 回目は、Qwen3-0.6B と Qwen3.5-0.8B 以外は Core AI を先に動かしたので、Core AI の側に Go の変換 (数十秒) が入る。LFM3-VL-2B の Core ML の本体は、直す前の実行でコンパイル済みだった
+- **2 回目の準備**: Core AI は 1.6〜5.5 秒でどのモデルもほぼ一定。Core ML は Neural Engine のコンパイルのキャッシュ (約 4 GiB、ディスクが少ないと消される) から外れた部品をコンパイルし直すので、何を前に動かしたかで 4 秒から 13 分まで変わる。Qwen3.5-0.8B の 128 トークンの部品は Core ML のコンパイルが 1 回 26 分かかり、2 回目も 12 分かかった (Core AI は初回 5 分、2 回目 0.7 秒)
+- **配置**: Qwen3.5 の 2B の本体と、0.8B と 2B の multi-token prediction の部品は、Core ML では一部が Neural Engine から外れる (`NOT all on the NPU`)。Core AI では全部載る
+- **生成の速さ**はほぼ同じで、違いは ±10 % 以内。LFM3-VL-2B だけ Core AI が 8 % 遅い
+- **精度**: `aicheck run -cpu` (乱数の入力で `milcpu` と比べる) で Core AI と Core ML の誤差は同じだった。Qwen3-0.6B の 8 トークンの部品で、y のコサインは Core AI 0.99975、Core ML 0.99983。Qwen3.5-0.8B の部品と MTP はどちらも 0.999997 以上。LFM3-Audio の音声の符号器 (fp16) は Core AI 0.9947、Core ML 0.9942。貪欲法の文が途中で分かれるのは、fp16 の丸めの違いで僅差のトークンが入れ替わるため
+- 画像は計算機のアイコン (512²)、音声は `say -v Kyoko` の「日本の首都はどこですか。一文で答えてください。」(16 kHz)
+
+**ディスク**: Core AI の経路では、重みがディスクに 3 回置かれる。変換した `.mlpackage`、hwnpu のキャッシュの下ろした `.aimodel`、Core AI 自身のキャッシュ (`~/Library/Caches/coreai-cache/<OS>/hwnpu-chat/`) の 3 か所。今回の 8 モデルで Core AI のキャッシュは 7.6 GB から 23 GB に増えた。この M1 はディスクの空きが 12〜50 GB しかなく、試すために、試作の Core AI のキャッシュ、使わない古い変換、Chroma の重みを消した。
+
+残り: Qwen3.5-4B と gemma-4-E4B-it (落とすのが 16 GB、ディスクが要る)。`.aimodel` は Core AI のキャッシュに入ったあとも要るのか (要らなければ重みが 1 回分減る)。M2 と M3。電力量。
+
+### 16.175 Core AI の書き出し (`coreai`) を safetensors から直接、Neural Engine のコンパイル結果は Core AI のキャッシュの外 — 2026-11-13
 
 16.169 は Core ML の書き出し (`.mlpackage`) を読むときに Core AI のプログラムに下ろしていた。これは 16.8 (中間の形式を置かず、ソースから各 NPU の形式を直接) に反し、Core ML の書き出しの分のディスクと変換の時間が余計にかかる。そこで Core AI を書き出しの形式の一つ (`coreai`) にした。
 

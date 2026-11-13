@@ -42,6 +42,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"math"
 	"math/rand/v2"
@@ -168,9 +169,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		o.dir = chat.ModelsDir()
 	}
 	if o.cacheDir == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			o.cacheDir = filepath.Join(d, "hwnpu")
-		}
+		o.cacheDir = cache.Root()
 	}
 	return run(ctx, o, c.Args)
 }

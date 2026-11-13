@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -92,8 +93,8 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 		out := filepath.Join(dir, name+ext)
 		done := strings.TrimSuffix(out, ext) + ".done"
-		if b, err := os.ReadFile(done); err == nil {
-			*p.path = string(b)
+		if path, ok := cache.ReadDone(done); ok {
+			*p.path = path
 			continue
 		}
 		weights, err := checkpoint()
@@ -104,7 +105,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
-		if err := os.WriteFile(done, []byte(path), 0o644); err != nil {
+		if err := cache.WriteDone(done, path); err != nil {
 			return Config{}, err
 		}
 		*p.path = path

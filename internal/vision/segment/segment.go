@@ -91,6 +91,10 @@ func checkSHA(path, want string) error {
 	return nil
 }
 
+// ExportVersion is the version of ExportNPU's exports (a key of the shared layers: chat.PinnedRecipe),
+// bumped by hand when what it passes iron_efficientsam.py changes.
+const ExportVersion = 1
+
 // ExportNPU makes the export of tools/amd/iron_efficientsam.py of the encoder's ONNX file in out
 // with IRON's python (chat.IRONPython).
 func ExportNPU(ctx context.Context, python []string, name, encoder, out string, log io.Writer) error {

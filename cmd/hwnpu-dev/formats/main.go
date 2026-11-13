@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"math"
 	"os"
@@ -84,9 +85,7 @@ func Main() {
 		os.Exit(2)
 	}
 	if *cacheDir == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			*cacheDir = filepath.Join(d, "hwnpu")
-		}
+		*cacheDir = hcache.Root()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -318,8 +317,8 @@ func convert(a *llm.Arch, model llm.Model, w llm.Weights, md, program, format st
 	}
 	name := fmt.Sprintf("%s-%s-c%d-q%d", a.Name, format, cache, seq)
 	done := filepath.Join(dir, name+".done")
-	if b, err := os.ReadFile(done); err == nil {
-		return string(b), nil
+	if p, ok := hcache.ReadDone(done); ok {
+		return p, nil
 	}
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 	var opts llm.Options
@@ -337,7 +336,7 @@ func convert(a *llm.Arch, model llm.Model, w llm.Weights, md, program, format st
 	if err != nil {
 		return "", err
 	}
-	return path, os.WriteFile(done, []byte(path), 0o644)
+	return path, hcache.WriteDone(done, path)
 }
 
 func report(out io.Writer, model, program, ref string, cache, seq int, results []result) {

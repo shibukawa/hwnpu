@@ -16,7 +16,8 @@
 //     (Chroma1-HD) the DiT runs the negative prompt's rows too, in each group after the prompt's;
 //  3. the VAE's decoder on the latents.
 //
-// The export is for one image size.
+// The export is for one image size. Chroma1-HD (the undistilled full model; Flash bakes its guidance
+// in) runs classifier-free guidance with Generate's Sampling.
 package chroma
 
 import (

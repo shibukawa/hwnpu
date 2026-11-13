@@ -60,7 +60,7 @@ func (c *GenerateCmd) qwenImage(ctx context.Context, model string, outs []string
 	console.Running()
 	sig := p.Sigmas(c.Steps)
 	steps := len(sig) - 1
-	// Turbo: its eight sigmas, no guidance. The base checkpoint: 40 steps, guidance only when
+	// Turbo: its eight sigmas, no guidance. The full model (Qwen-Image-2.1): 40 steps, guidance only when
 	// asked (the pipeline's true_cfg_scale 1 by default), as diffusers runs it
 	smp := qwenimage.Sampling{Solver: c.Sampler, Guidance: c.Guidance}
 	if smp.Guidance == 0 {

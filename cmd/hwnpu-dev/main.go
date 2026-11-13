@@ -10,6 +10,7 @@
 //	hwnpu-dev probe bench
 //	hwnpu-dev powerbench -decode 8,16
 //	hwnpu-dev report -o report.md
+//	hwnpu-dev cache layers                   # the cache's root and the shared layers
 //	hwnpu-dev xclbin ...                     # xclbinutil's arguments, as aiecc passes them
 //	hwnpu-dev check -h                       # each tool's flags
 //
@@ -27,6 +28,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/console"
 
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/cachecmd"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/check"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/convert"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/formats"
@@ -45,16 +47,17 @@ type tool struct {
 }
 
 type cli struct {
-	Check      tool `cmd:"" passthrough:"all" help:"Compare a conversion with the Hugging Face reference layer by layer, on the CPU interpreter (was hwnpu-check)."`
-	Convert    tool `cmd:"" passthrough:"all" help:"Convert a Hugging Face checkpoint into a Core ML package or OpenVINO IR by hand (was hwnpu-convert)."`
-	Generate   tool `cmd:"" passthrough:"all" help:"Write text with a causal language model converted by convert (was hwnpu-generate)."`
-	Formats    tool `cmd:"" passthrough:"all" help:"Compare the weight formats of a chat model on the NPU: agreement, logits, perplexity, time (was hwnpu-formats)."`
-	Irdiff     tool `cmd:"" passthrough:"all" help:"Lower Core ML packages to OpenVINO IR and compare the CPU interpreter with OpenVINO's CPU on random inputs (Intel's path without its NPU)."`
-	Info       tool `cmd:"" passthrough:"all" help:"List the NPUs hwnpu can use, and where a model's operations would run (was hwnpuinfo)."`
-	Probe      tool `cmd:"" passthrough:"all" help:"Measure this machine's NPU with generated LLM-shaped models: speed, size limit, KV cache (was npuprobe)."`
-	Powerbench tool `cmd:"" passthrough:"all" help:"Measure the power Core ML models draw with macOS powermetrics (was powerbench)."`
-	Report     tool `cmd:"" passthrough:"all" help:"Check every NPU with bundled test models and print a report for an issue (was report)."`
-	Xclbin     tool `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
+	Check      tool         `cmd:"" passthrough:"all" help:"Compare a conversion with the Hugging Face reference layer by layer, on the CPU interpreter (was hwnpu-check)."`
+	Convert    tool         `cmd:"" passthrough:"all" help:"Convert a Hugging Face checkpoint into a Core ML package or OpenVINO IR by hand (was hwnpu-convert)."`
+	Generate   tool         `cmd:"" passthrough:"all" help:"Write text with a causal language model converted by convert (was hwnpu-generate)."`
+	Formats    tool         `cmd:"" passthrough:"all" help:"Compare the weight formats of a chat model on the NPU: agreement, logits, perplexity, time (was hwnpu-formats)."`
+	Irdiff     tool         `cmd:"" passthrough:"all" help:"Lower Core ML packages to OpenVINO IR and compare the CPU interpreter with OpenVINO's CPU on random inputs (Intel's path without its NPU)."`
+	Info       tool         `cmd:"" passthrough:"all" help:"List the NPUs hwnpu can use, and where a model's operations would run (was hwnpuinfo)."`
+	Probe      tool         `cmd:"" passthrough:"all" help:"Measure this machine's NPU with generated LLM-shaped models: speed, size limit, KV cache (was npuprobe)."`
+	Powerbench tool         `cmd:"" passthrough:"all" help:"Measure the power Core ML models draw with macOS powermetrics (was powerbench)."`
+	Report     tool         `cmd:"" passthrough:"all" help:"Check every NPU with bundled test models and print a report for an issue (was report)."`
+	Xclbin     tool         `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
+	Cache      cachecmd.Cmd `cmd:"" help:"The cache's root and the shared layers (docs/cache-sharing.md): show them, list and put exports, check entries, finish the background work."`
 }
 
 var mains = map[string]func(){
@@ -74,6 +77,7 @@ func main() {
 	k := kong.Parse(&c,
 		kong.Name("hwnpu-dev"),
 		kong.Description("Tools for developing hwnpu: converting and checking models by hand, measuring NPUs, packaging xclbins."),
+		kong.Vars(cachecmd.Vars),
 		kong.UsageOnError())
 	k.FatalIfErrorf(k.Run())
 	console.WriteProfile(os.Stderr) // HWNPU_PROFILE's downloads and loads

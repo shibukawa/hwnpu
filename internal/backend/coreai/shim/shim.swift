@@ -13,6 +13,10 @@ private struct Fn {
     var fn: InferenceFunction
     var inputs: [String]
     var outputs: [String]
+    /// The input arrays, made on the first run and filled again on each: Core AI runs arrays it
+    /// has seen before faster (M1: PLaMo 3 Translate 0.8B's first part 7.2 ms against 10.0 with
+    /// new arrays, 10.7 with views of the caller's buffers).
+    var feed: [String: NDArray]? = nil
 }
 
 /// Blocks on an async body (purego calls on a Go thread).
@@ -182,24 +186,33 @@ private func copyStrided(_ d: UnsafeMutableRawPointer, _ p: UnsafeMutableRawPoin
 }
 
 /// Runs the function on the inputs ins (dense row major buffers in the order of cai_names 0)
-/// into outs (in the order of cai_names 1). Returns 0, or 1 with *errOut set.
+/// into outs (in the order of cai_names 1). Returns 0, or 1 with *errOut set. Calls on one
+/// handle must not overlap (the caller holds a lock per program).
 @_cdecl("cai_run")
 public func cai_run(_ h: UnsafeMutableRawPointer, _ ins: UnsafePointer<UnsafeMutableRawPointer?>, _ outs: UnsafePointer<UnsafeMutableRawPointer?>,
                     _ errOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> Int32 {
-    let f = h.assumingMemoryBound(to: Fn.self).pointee
-    var feed: [String: NDArray] = [:]
-    for (i, name) in f.inputs.enumerated() {
-        guard case .ndArray(let d)? = f.fn.descriptor.inputDescriptor(of: name) else {
-            errOut.pointee = cstr("input \(name) is not an array"); return 1
+    let fp = h.assumingMemoryBound(to: Fn.self)
+    if fp.pointee.feed == nil {
+        var feed: [String: NDArray] = [:]
+        for name in fp.pointee.inputs {
+            guard case .ndArray(let d)? = fp.pointee.fn.descriptor.inputDescriptor(of: name) else {
+                errOut.pointee = cstr("input \(name) is not an array"); return 1
+            }
+            feed[name] = NDArray(shape: d.shape, scalarType: d.scalarType)
         }
-        var a = NDArray(shape: d.shape, scalarType: d.scalarType)
-        let elem = scalarBytes(d.scalarType)
+        fp.pointee.feed = feed
+    }
+    var feed = fp.pointee.feed! // moved out while it is written, so that it is not copied
+    fp.pointee.feed = nil
+    for (i, name) in fp.pointee.inputs.enumerated() {
         let src = ins[i]!
-        a.mutableRawView().withUnsafeMutableBytes { p, shape, strides in
+        let elem = scalarBytes(feed[name]!.scalarType)
+        feed[name]!.mutableRawView().withUnsafeMutableBytes { p, shape, strides in
             copyStrided(src, p, ints(shape), ints(strides), elem, toArray: true)
         }
-        feed[name] = a
     }
+    fp.pointee.feed = feed
+    let f = fp.pointee
     nonisolated(unsafe) let input = feed
     let fn = f.fn
     nonisolated(unsafe) var failure: String?

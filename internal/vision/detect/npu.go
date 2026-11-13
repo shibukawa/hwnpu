@@ -74,6 +74,10 @@ func readHeads(dir, model string) ([]string, []float64, error) {
 	return NPUOutputs(g)
 }
 
+// ExportVersion is the version of ExportNPU's exports (a key of the shared layers: chat.PinnedRecipe),
+// bumped by hand when what it passes iron_onnxcnn.py or writes beside its export changes.
+const ExportVersion = 1
+
 // ExportNPU makes the export of tools/amd/iron_onnxcnn.py of the ONNX file model in out, with
 // IRON's python (chat.IRONPython): its heads (NPUOutputs) at Size x Size.
 func ExportNPU(ctx context.Context, python []string, name, model, out string, log io.Writer) error {

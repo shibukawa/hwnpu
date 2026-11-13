@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"image"
 	"image/color"
 	"image/draw"
@@ -54,9 +55,7 @@ func (c *PoseCmd) Run(ctx context.Context) error {
 	}
 	cache := c.Cache
 	if cache == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			cache = filepath.Join(d, "hwnpu")
-		}
+		cache = hcache.Root()
 	}
 	dir := c.Dir
 	if dir == "" {
@@ -64,7 +63,7 @@ func (c *PoseCmd) Run(ctx context.Context) error {
 	}
 	setup := pose.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), SHA256: m.SHA256[pose.ModelFile], Log: lw}
 	fetch := func() (string, error) { return pose.Fetch(ctx, setup) }
-	if export := amdCNNExport(ctx, m, c.Device, c.CPU, logf, fetch, func(python []string, model, dir string) error {
+	if export := amdCNNExport(ctx, m, c.Device, c.CPU, logf, pose.ExportVersion, fetch, func(python []string, model, dir string) error {
 		return pose.ExportNPU(ctx, python, m.Name, model, dir, lw)
 	}); export != "" {
 		model, err := fetch()

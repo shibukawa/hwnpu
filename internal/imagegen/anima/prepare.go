@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -150,5 +151,5 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	fmt.Fprintf(log, "converted in %.0f s\n", time.Since(t0).Seconds())
 	// what is left of the checkpoints read goes back to the OS before the programs load
 	debug.FreeOSMemory()
-	return out, os.WriteFile(done, []byte(out), 0o644)
+	return out, cache.WriteDone(done, out)
 }

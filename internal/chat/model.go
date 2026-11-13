@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -210,8 +211,8 @@ type Setup struct {
 	// step costs in proportion to the cache, whatever it holds.
 	Tiers []int
 	// Backend picks the device the programs are converted for and run on (llm.FindDevice): a
-	// device backend (coreml, levelzero, openvino) or a program format (coreml, intel); empty for
-	// HWNPU_BACKEND or the NPU found.
+	// device backend (coreml, coreai, levelzero, openvino) or a program format (coreml, intel);
+	// empty for HWNPU_BACKEND or the NPU found. coreai runs the Core ML programs on Core AI.
 	Backend string
 	// Format is the weight format of the chat model's programs (llm.Options.Format); empty for the
 	// architecture's for the backend (llm.Arch.DefaultFormatFor). The encoders stay in fp16.
@@ -294,7 +295,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err := fetch(ctx, s.Repo, "config.json", filepath.Join(s.Dir, "config.json"), s.Log); err != nil {
 		return Config{}, err
 	}
-	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, backend)}
+	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, llm.DeviceBackend(""), backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, s.Arch)
 	if err != nil {
 		return Config{}, err
@@ -700,12 +701,20 @@ func codesHash(dir string) (string, error) {
 }
 
 // convert writes the program of the model (config.json and the checkpoint) unless it is there,
-// and returns its path. NAME.done, written last, holds the path, so that a conversion cut off is
+// and returns its path. NAME.done, written last, holds the path (relative to it, cache.WriteDone), so that a conversion cut off is
 // done again.
 func convert(ctx context.Context, config, weights, out string, p program, log io.Writer) (string, error) {
 	done := strings.TrimSuffix(out, filepath.Ext(out)) + ".done"
-	if b, err := os.ReadFile(done); err == nil {
-		return string(b), nil
+	if p, ok := cache.ReadDone(done); ok {
+		return p, nil
+	}
+	unlock, err := cache.Lock(ctx, out, filepath.Base(out), log)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if p, ok := cache.ReadDone(done); ok { // another process converted it meanwhile
+		return p, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -765,7 +774,7 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	if codes != nil && log != nil {
 		fmt.Fprintf(log, "-codes: %d weights took the chosen tables (%d in %s)\n", codes.Hits()-hits, codes.Len(), p.codes)
 	}
-	return path, os.WriteFile(done, []byte(path), 0o644)
+	return path, cache.WriteDone(done, path)
 }
 
 // repoName is a repository's name: NAME of OWNER/NAME or OWNER/NAME@REVISION.
@@ -849,6 +858,10 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	if fi, err := os.Stat(part); err == nil {
 		have = fi.Size()
 	}
+	// the version of the file the part is of (its ETag): the rest is asked for only if the file
+	// is still that one (If-Range), else the whole file comes again. A part of an earlier hwnpu,
+	// with no ETag kept, goes on as before
+	etag, _ := os.ReadFile(part + ".etag")
 	var resp *http.Response
 	for try := 0; ; try++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -861,6 +874,9 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 		}
 		if have > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
+			if len(etag) > 0 {
+				req.Header.Set("If-Range", string(etag))
+			}
 		}
 		resp, err = http.DefaultClient.Do(req)
 		if err != nil {
@@ -894,6 +910,12 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	if resp.ContentLength >= 0 {
 		total = have + resp.ContentLength
 	}
+	noteCommit(repo, rev, resp)
+	if e := resp.Header.Get("ETag"); e != "" && !strings.HasPrefix(e, "W/") {
+		os.WriteFile(part+".etag", []byte(e), 0o644)
+	} else {
+		os.Remove(part + ".etag")
+	}
 	f, err := os.OpenFile(part, flags, 0o644)
 	if err != nil {
 		return err
@@ -909,7 +931,47 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 		return fmt.Errorf("chat: downloading %s: %w (run again to go on)", name, err)
 	}
 	pw.bar.Done(fmt.Sprintf("%s in %s to %s", gb(pw.done, -1), console.Duration(pw.bar.Elapsed()), filepath.Dir(path)))
+	os.Remove(part + ".etag")
 	return os.Rename(part, path)
+}
+
+// commits are the commits Hugging Face served the repositories' files of a revision from
+// (X-Repo-Commit), by OWNER/NAME@REVISION: what a copy of a file is put under in a shared layer
+// (docs/cache-sharing.md 7.1), never a branch's name.
+var (
+	commitsMu sync.Mutex
+	commits   = map[string]string{}
+)
+
+var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// noteCommit keeps the commit a response of the hub (or one it redirected from) names.
+func noteCommit(repo, rev string, resp *http.Response) {
+	for r := resp; r != nil; {
+		if c := r.Header.Get("X-Repo-Commit"); commitRE.MatchString(c) {
+			commitsMu.Lock()
+			commits[repo+"@"+cmp.Or(rev, "main")] = c
+			commitsMu.Unlock()
+			return
+		}
+		if r.Request == nil {
+			return
+		}
+		r = r.Request.Response
+	}
+}
+
+// servedCommit is the commit noteCommit kept for repo (OWNER/NAME or OWNER/NAME@REVISION): the
+// revision itself when it is a commit.
+func servedCommit(repo string) (string, bool) {
+	base, rev, _ := strings.Cut(repo, "@")
+	if commitRE.MatchString(rev) {
+		return rev, true
+	}
+	commitsMu.Lock()
+	defer commitsMu.Unlock()
+	c, ok := commits[base+"@"+cmp.Or(rev, "main")]
+	return c, ok
 }
 
 // progress writes through and shows how far a download is on its bar: the bytes, the speed and

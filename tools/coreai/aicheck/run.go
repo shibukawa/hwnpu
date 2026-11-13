@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/backend/coreai"
+	"github.com/shibukawa/hwnpu/internal/backend/coreml"
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/types"
 )
@@ -19,14 +20,20 @@ import (
 // run loads each package with the Core AI backend (lowering it), runs it on random inputs
 // (normal, times scale) and compares its outputs with the CPU interpreter's (milcpu, fp16
 // rounding): the cosine and the relative RMS error, and whether it is all on the Neural Engine.
-func run(pkgs []string, cacheDir string, scale float64, cpu bool) error {
+//
+// The second time is the mean of calls more calls. With coreML the packages run on Core ML instead, to tell Core AI's errors from the program's.
+func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls int) error {
 	ctx := context.Background()
 	if os.Getenv("AICHECK_ENUMERATE") != "" { // as the commands do: every backend's devices first
 		if _, err := hwnpu.Enumerate(ctx); err != nil {
 			return err
 		}
 	}
-	dev, err := coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{CacheDir: cacheDir})
+	var prov backend.Provider = coreai.Provider{}
+	if coreML {
+		prov = coreml.Provider{}
+	}
+	dev, err := prov.Open(ctx, types.DeviceInfo{}, backend.Options{CacheDir: cacheDir})
 	if err != nil {
 		return err
 	}
@@ -76,11 +83,13 @@ func run(pkgs []string, cacheDir string, scale float64, cpu bool) error {
 			continue
 		}
 		t = time.Now()
-		f, _ = req.Submit()
-		f.Wait(ctx)
-		call2 := time.Since(t)
+		for range max(calls, 1) {
+			f, _ = req.Submit()
+			f.Wait(ctx)
+		}
+		call2 := time.Since(t) / time.Duration(max(calls, 1))
 		on := g.Placement().OnNPU()
-		line := fmt.Sprintf("%-24s load %6.2fs call %.3fs/%.3fs ane=%v cached=%v", name, load.Seconds(), call.Seconds(), call2.Seconds(), on, g.Cached())
+		line := fmt.Sprintf("%-24s load %6.2fs call %.2fms/%.2fms ane=%v cached=%v", name, load.Seconds(), float64(call.Microseconds())/1e3, float64(call2.Microseconds())/1e3, on, g.Cached())
 		if cpu {
 			prog, closer, err := milcpu.OpenPackage(p)
 			if err != nil {
