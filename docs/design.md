@@ -4545,6 +4545,77 @@ docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
 
 残り: Qwen3.5-4B と gemma-4-E4B-it (落とすのが 16 GB、ディスクが要る)。`.aimodel` は Core AI のキャッシュに入ったあとも要るのか (要らなければ重みが 1 回分減る)。M2 と M3。電力量。
 
+### 16.174 `.aimodel` を配って動かすための調査: 容量、キャッシュの鍵と方針、重みの共有 — 2026-11-13
+
+変換済みのモデルを Hugging Face に置き、Apple では `.aimodel` を落として動かす形 (docs/cache-sharing.md の 10 節) を考えて調べた。M1 (macOS 27.2)、題材は LFM3-1.7B (lut6、8 トークンと 128 トークンの 2 本、それぞれ 7 つの部品)。
+
+**決めたこと**
+- 配るのは、8 トークンと 128 トークンを関数 2 つにまとめた `.aimodel` (重みは 1 本分) と、実行に要る小さなファイル
+- `.aimodel` (`main.mlirb`) は手元に残すのを既定にする。Core AI のキャッシュに入ったあとは消しても動くが、キャッシュが消えたとき (ディスクが足りないときの掃除、OS の更新) に落とし直しになるので、消すのは容量に困ったときの最終手段のオプションにする
+
+#### 今の容量 (元のチェックポイントから手元で変換する形)
+
+| | ファイル | 大きさ |
+|---|---|---|
+| HF から落とす | `model.safetensors` (変換し直すときだけ使う) | 3.46 GB |
+| | `tokenizer.json`、`config.json` | 18 MB |
+| 手元で変換する | `tables.safetensors` (埋め込みの表、CPU で引く) | 0.52 GB |
+| | `.mlpackage` 8 トークン、128 トークン | 各 1.24 GiB (重みは同じバイトで APFS の複製、実質 1 本分) |
+| 実行のとき (Core ML) | hwnpu のコンパイルのキャッシュ (`.mlmodelc`) | 2.43 GiB (ほかに OS の Neural Engine のキャッシュ、測っていない) |
+| 実行のとき (Core AI) | hwnpu のキャッシュの下ろした `.aimodel` | 2.43 GiB |
+| | Core AI のキャッシュ (`coreai-cache/26B123/hwnpu-chat/`) | 約 2.5 GiB |
+
+Core AI で動かすと全部で約 10 GB で、重みを 5 回分持っている (`.mlpackage` で 1 回、`.aimodel` で 2 回、Core AI のキャッシュで 2 回)。変換し終えたら `model.safetensors` は消せる。
+
+#### 実行のときに読んでいるもの
+
+- NPU の部品の `.mlpackage`: Core AI でも毎回読む。(1) 中身を全部読んで sha256 をとり、hwnpu のキャッシュの `.aimodel` を探す鍵にする (`cache.TreeDigest`)。(2) 出力の形を読む (`runner.go` の `outputShapes`)。(3) 元が消えると、30 日の掃除 (`cache.Prune`) で対応する `.aimodel` も消える
+- `attn` と `mass` の `.mlpackage` (28 KB ほど): ホストの CPU で `milcpu` が動かす (キャッシュの上の注意)
+- `parts.json` (分け方と注意の層)、`tables.safetensors`、`tokenizer.json`、`config.json`
+- (1) の sha256 は LFM3-1.7B の 18 個 (2.4 GiB) で 2.9〜3.9 秒かかり、2 回目の準備 4.5 秒のほとんどがこれ。`.aimodel` を直接読めば準備は 1 秒ほどになる見込み
+
+#### Core AI のキャッシュの鍵
+
+- `main.hash` (`main.mlirb` の sha256) だけで決まる。`.aimodel` を別の場所に写しても 0.02 秒で読める
+- キャッシュに入ったあとは、`main.mlirb` を消しても、同じ大きさのゼロにしても読めて、答えも同じ (`aicheck run -cpu -ref`、`milcpu` とのコサイン 1.000000)。`main.hash` を変えると読めない
+- キャッシュのフォルダは OS のビルド (`26B123`) と実行ファイルの名前ごと。OS を更新したときや別の実行ファイル (`aicheck`、`chat.test`) では、`main.mlirb` からもう一度コンパイルする
+
+#### Core AI のキャッシュの方針 (`AIModelCache.Policy`、SDK の CoreAIDelegates)
+
+| 方針 | 消す条件 | 置き場所 | 入れ方 |
+|---|---|---|---|
+| 既定 | `storagePressure` (1) と `sourceAssetChangedOrDeleted` (2) | `~/Library/Caches/coreai-cache/` | `AIModel(contentsOf:)` (今の shim) |
+| `.persistent` | なし (0) | `~/Library/Application Support/coreai-cache/` | `AIModel.specialize(contentsOf:options:cache:cachePolicy:)` |
+
+- `AIModel(contentsOf:)` はどちらのエントリも使う (`main.mlirb` のない写しでも 0.02 秒で読める)
+- 16.173 で空きが 12 GiB まで減ったあと、LFM3-1.7B のエントリ (12 時台に作った分) の一部が消え、次の読み込みでコンパイルし直しになった (48 秒)。それより古い PLaMo のエントリは残っていたので、使っていない順ではない。`storagePressure` の掃除と見ている (ログには何も出ていなかった)
+- 元の `.aimodel` を消しても、どちらの方針でも 30 秒の間はエントリが残った。`sourceAssetChangedOrDeleted` がいつ効くかはわからない
+- コンパイルし直しの途中で、part6 が 1 回 `nilError` で失敗した (121 秒)。もう一度走らせたら通った
+- `.persistent` にすれば掃除でのコンパイルし直しはなくなるが、モデルを消すときに hwnpu が Core AI のエントリも消す (`AIModelCache.deleteEntries(for:)`) ことになる。採るかはまだ決めていない
+
+#### 重みの共有: 関数 2 つの `.aimodel`
+
+`ailower.LowerFunctions` (`aicheck merge OUT.aimodel f8=PKG f128=PKG`) は、1 本の `.aimodel` に `graph_v1` を名前を変えて 2 つ入れ、同じバイトの重みの資源は 1 回だけ書く。LFM3-1.7B の part2 (8 トークンと 128 トークン、重みは同じ 179 MB) で:
+- `.aimodel` は 176 MB で、1 本分と同じ (別々なら 352 MB)
+- Core AI のキャッシュのエントリも 1 つで 192 MB (`resources.bin` が 1 つ。別々なら 176 MB と 191 MB)
+- 両方の関数とも全部 Neural Engine に載り、`milcpu` とのコサイン 1.000000。初回のコンパイルは 2 つの関数で 7.6 秒
+- shim は `PROGRAM.aimodel#NAME` で関数 NAME を開く。入出力は関数ごとに `hwnpu-io-NAME.json`。Core AI のキャッシュの delegate のフォルダは関数によらず `main-this-delegates` で、配置は manifest の `Entry Function Attributes` の、その関数のエントリの `mps.fullyPlacedOnANE` で見る
+- 1 本だけ下ろすときのバイト列は前と同じ (`main.hash` が変わらず、作った `.aimodel` のキャッシュはそのまま使える)
+
+#### 配る形 (LFM3-1.7B の見積もり)
+
+| | 落とす量 | 手元に要る量 |
+|---|---|---|
+| 今 (元のチェックポイントから変換) | 3.5 GB | 約 10 GB |
+| 関数 2 つの `.aimodel` を配る (既定) | 約 1.8 GB (`.aimodel` 1.24 GiB、表 0.52 GB、ほか) | 約 3.2 GB (落としたもの 1.9 GB と Core AI のキャッシュ 1.3 GB) |
+| 同じで、`.aimodel` を消す (最終手段のオプション) | 同じ | 約 1.9 GB (表など 0.6 GB と Core AI のキャッシュ 1.3 GB)。キャッシュが消えたら `.aimodel` を落とし直す |
+
+- 一緒に配るもの: `tables.safetensors`、`parts.json`、`attn` と `mass` の小さな `.mlpackage`、`tokenizer.json`、`config.json`
+- 要る手直し: `parts.json` が `.aimodel#NAME` を指せるようにする。runner が出力の形を `.mlpackage` ではなく `hwnpu-io-*.json` から読む。`.aimodel` をモデルのフォルダに置く (hwnpu のキャッシュの掃除の対象にせず、sha256 もとらない)
+- `.aimodel` を消すオプションは、Core AI のキャッシュにあることを確かめてから消し、読み込みに失敗したら落とし直して読み直す
+
+残り: チャットのモデル全体 (7 つの部品 × 2) を関数 2 つの `.aimodel` で動かす。M2 と M3。OS の版を越えて同じ `.aimodel` が読めるか。`.persistent` を採るか。
+
 ### 16.175 Core AI の書き出し (`coreai`) を safetensors から直接、Neural Engine のコンパイル結果は Core AI のキャッシュの外 — 2026-11-13
 
 16.169 は Core ML の書き出し (`.mlpackage`) を読むときに Core AI のプログラムに下ろしていた。これは 16.8 (中間の形式を置かず、ソースから各 NPU の形式を直接) に反し、Core ML の書き出しの分のディスクと変換の時間が余計にかかる。そこで Core AI を書き出しの形式の一つ (`coreai`) にした。

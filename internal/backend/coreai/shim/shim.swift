@@ -50,7 +50,8 @@ public func cai_arch() -> UnsafeMutablePointer<CChar> { cstr(AIModel.deviceArchi
 @_cdecl("cai_free")
 public func cai_free(_ p: UnsafeMutablePointer<CChar>?) { free(p) }
 
-/// Loads the .aimodel at path and its function main. Core AI's cache sometimes keeps an entry
+/// Loads the .aimodel at path and its function main, or the function NAME of PATH#NAME (a program
+/// with several, whose weights they share). Core AI's cache sometimes keeps an entry
 /// whose function then fails to load at once (_GenericObjCError 0) and never recompiles: the
 /// entries of the model are deleted and it is loaded again (*retried set to 1, *errOut the first
 /// attempt's error). With cachedOnly in
@@ -59,7 +60,13 @@ public func cai_free(_ p: UnsafeMutablePointer<CChar>?) { free(p) }
 @_cdecl("cai_open")
 public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: UnsafeMutablePointer<Int32>,
                      _ errOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> UnsafeMutableRawPointer? {
-    let url = URL(fileURLWithPath: String(cString: path))
+    var file = String(cString: path)
+    var name = "main"
+    if let i = file.lastIndex(of: "#"), file[..<i].hasSuffix(".aimodel") {
+        name = String(file[file.index(after: i)...])
+        file = String(file[..<i])
+    }
+    let url = URL(fileURLWithPath: file)
     let o = options(kind)
     let lookup = kind & cachedOnly != 0
     retried.pointee = 0
@@ -83,8 +90,8 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
         case .failure(let e): return .failure(e)
         case .success(let m):
             do {
-                guard let f = try m.loadFunction(named: "main") else {
-                    return .failure(NSError(domain: "hwnpu", code: 1, userInfo: [NSLocalizedDescriptionKey: "no function main"]))
+                guard let f = try m.loadFunction(named: name) else {
+                    return .failure(NSError(domain: "hwnpu", code: 1, userInfo: [NSLocalizedDescriptionKey: "no function \(name)"]))
                 }
                 return .success(Fn(model: m, fn: f, inputs: f.descriptor.inputNames, outputs: f.descriptor.outputNames))
             } catch {
