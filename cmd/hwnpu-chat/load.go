@@ -18,7 +18,7 @@ import (
 // loadFlags are where the models are and how they are made ready, for every command that runs one.
 type loadFlags struct {
 	Dir         string        `type:"path" placeholder:"DIR" help:"Where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing (default: hwnpu/models in the user cache directory)."`
-	Backend     string        `help:"The NPU to convert for and run on: coreml (Apple's Neural Engine), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)."`
+	Backend     string        `help:"The NPU to convert for and run on: coreml (Apple's Neural Engine), coreai (the same programs on Core AI, macOS 27), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)."`
 	Cache       string        `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	PromptCache string        `placeholder:"DIR" help:"Keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)."`
 	Idle        time.Duration `default:"5m" help:"AMD's NPU: give the NPU's memory back after this long without a request and load the model again for the next one (0: never); the conversation goes on from the host's copy."`

@@ -4468,3 +4468,26 @@ Core ML の Neural Engine のキャッシュは約 4 GiB で、それを超え�
 | Chroma1-HD | 21 分 58 秒 | 21 分 36 秒 | 9.2 秒 | 7.8 GiB | 4.33 GB |
 
 **できていないこと**: 電力量 (powerbench は sudo)。1024² の DiT 1 回の 35 秒の中身 (CFG の 2 回目が 23 秒で済む理由)。
+
+### 16.171 PLaMo (3 Translate と Embedding) を Core AI で: 経路の直しと、入力の配列の使い回し — 2026-11-13
+
+16.169 の Core AI のバックエンドで PLaMo 3 Translate (0.8B、2B) と PLaMo-Embedding-1B を動かした。下ろし方 (`ailower`) は手を入れずに通り、どの部品も Neural Engine に載った。直したのは 2 つ。
+
+- **経路**: `hwnpu-chat` は `HWNPU_BACKEND=coreai` でも Core ML で動いていた。`chat.Prepare` と `PrepareEmbedder` が Config.Backend をプログラムの形式 (`coreml`) で埋め、`OpenDevice` がそれで Core ML の端末を開くため。`llm.DeviceBackend` (指定された端末のバックエンド) を先に見る。`HereVendor` も `coreai` を apple に。`--backend coreai` は `hwnpu-chat` のどのコマンドでも使え、変換されるのは Core ML と同じ `.mlpackage` (同じディレクトリを共有する)
+- **1 回の呼び出しの手間** (shim): 入力の `NDArray` を毎回作ってコピーしていたので、0.8B の生成は Core ML の 35 トークン/s に対して 25 だった (M1)。Core AI は一度使った配列を速く動かす: 0.8B の part1 (入力 7 MiB) で、毎回新しい配列 10.0 ms、同じ配列 7.2 ms、呼び出し側のバッファの view (`NDArray.RawView(bytes:)`、`outputViews`) 10.7 ms、IOSurface の view 8.3 ms。そこで入力の配列はプログラムごとに初回に作り、毎回それに memcpy する (7.7 ms、Core ML 7.8 ms)。プログラムの呼び出しは 1 本ずつ (graph.mu) なので配列を共有してよい
+
+**結果** (M1、macOS 27.2、2 回目以降)
+
+| モデル | Core ML | Core AI | 一致 |
+|---|---|---|---|
+| PLaMo 3 Translate 0.8B (lut8) | 生成 35〜42 トークン/s、読み込み 1.5 秒 | 38〜44 トークン/s、1.3〜1.5 秒 | 訳は一字一句同じ (2 文、3 文の段落) |
+| PLaMo 3 Translate 2B (lut8) | 11.7 トークン/s、9.4 秒 | 11.7 トークン/s、10 秒 | 一字一句同じ |
+| PLaMo-Embedding-1B (lut8、128 と 1024) | 1 文 48 ms | 48 ms | Core ML とのコサイン 0.99995〜0.99999 (8 文) |
+
+- 初回の読み込み (Core AI のコンパイル) は 0.8B が 33 秒、2B が 29 秒、Embedding が 1 分 20 秒で、Core ML (40 秒、38 秒、1 分 51 秒) より短い
+- `aicheck run -cpu` で 0.8B の部品を `milcpu` と比べた: 8 トークンの部品はコサイン 0.9989 以上。128 トークンの part1 は 0.92 まで下がるが、Core ML でも同じ入力で同じ値 (0.9179 と 0.9175) で、乱数の入力 (マスクなど) のせい
+- `aicheck run` に `-coreml` (同じ部品を Core ML で、誤りが Core AI のものかを分ける) と `-calls N` (2 回目以降の N 回の平均) を足した
+
+- **8B (lut4)** も M1 で試した (自動では選ばれないので `--format lut4` で変換): 生成はどちらも 0.8 トークン/s、2 回目の読み込みは Core AI 4.3 秒、Core ML 24 秒。訳 (段落、1 文、4 文の英日・日英) は一字一句同じ。部品はすべて Neural Engine に載り、`milcpu` とのコサインの最小は 0.984 (part1 の kv_v_7) で Core ML も 0.9839 なので lut4 と乱数の入力のせい。遅いのは M1 の Neural Engine が常駐 2.8 GiB を超えると約 12 倍遅くなるためで Core AI でも同じ。lut4 より小さい形式はない (lut3 は MIL では書けるが未実装で、質も落ちる見込み)
+
+残り: 8B の速さは M2 と M3 で。電力量。Core AI のキャッシュに重みが複製される分のディスク (`hwnpu-chat` の 0.8B と 2B で 3.9 GB、重みの 3.8 GiB とほぼ同じ)。そのキャッシュは実行ファイルの名前ごとなので、`aicheck` や `go test` (chat.test) の分は別に持つ。

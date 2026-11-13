@@ -210,8 +210,8 @@ type Setup struct {
 	// step costs in proportion to the cache, whatever it holds.
 	Tiers []int
 	// Backend picks the device the programs are converted for and run on (llm.FindDevice): a
-	// device backend (coreml, levelzero, openvino) or a program format (coreml, intel); empty for
-	// HWNPU_BACKEND or the NPU found.
+	// device backend (coreml, coreai, levelzero, openvino) or a program format (coreml, intel);
+	// empty for HWNPU_BACKEND or the NPU found. coreai runs the Core ML programs on Core AI.
 	Backend string
 	// Format is the weight format of the chat model's programs (llm.Options.Format); empty for the
 	// architecture's for the backend (llm.Arch.DefaultFormatFor). The encoders stay in fp16.
@@ -294,7 +294,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err := fetch(ctx, s.Repo, "config.json", filepath.Join(s.Dir, "config.json"), s.Log); err != nil {
 		return Config{}, err
 	}
-	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, backend)}
+	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, llm.DeviceBackend(""), backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, s.Arch)
 	if err != nil {
 		return Config{}, err

@@ -504,6 +504,8 @@ func compileNote(dev *hwnpu.Device) string {
 	switch dev.Info().Backend {
 	case "coreml":
 		return "Core ML compiles them the first time"
+	case "coreai":
+		return "Core AI compiles them the first time, several minutes for a large model; its cache keeps them"
 	case "levelzero":
 		return "the driver compiles them the first time, which can take several minutes for a large model; the compile cache keeps them"
 	}
