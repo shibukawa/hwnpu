@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
+	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/ovir"
 	"github.com/shibukawa/hwnpu/internal/ovlower"
@@ -190,6 +192,84 @@ func writeAIPart(path string, m Model, w Weights, opts Options, describe func(*m
 func WriteAI(path string, meta map[string]string, build func(*mlpackage.Builder) (ins, outs []mlpackage.Feature, err error)) (int64, error) {
 	size, _, _, err := writeAI(path, meta, build)
 	return size, err
+}
+
+// AIFunction is a function of a Core AI program with several (WriteAIFunctions): its name and the
+// part it is, built as WritePart builds one.
+type AIFunction struct {
+	Name    string
+	Model   Model
+	Options Options
+}
+
+// WriteAIFunctions writes the parts fns as one Core AI program at path (.aimodel), a function of
+// each name. Weights of the same bytes (the same layers in the same format) are written once, in
+// the program and in Core AI's cache: a DiT's text pass and its image blocks over the same layers
+// take one copy of them. The records are the functions', PATH#NAME (as the Core AI backend opens
+// them), each with the program's size.
+func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, error) {
+	base := strings.TrimSuffix(path, filepath.Ext(path))
+	var mfns []*milspec.Function
+	var readers []io.ReaderAt
+	var recs []PartRecord
+	for _, f := range fns {
+		tmp := base + "." + f.Name + ".milblob.tmp"
+		blobs, err := mlpackage.NewBlobWriter(tmp)
+		if err != nil {
+			return nil, err
+		}
+		defer os.Remove(tmp)
+		b := mlpackage.NewBuilder("CoreML8", blobs)
+		ins, outs, err := buildPart(b, f.Model, w, f.Options)
+		if err != nil {
+			blobs.Close()
+			return nil, fmt.Errorf("%s: %w", f.Name, err)
+		}
+		var vars []*mlpackage.Var
+		for _, o := range outs {
+			vars = append(vars, &mlpackage.Var{Name: o.Name})
+		}
+		fn := b.Function(vars...)
+		if err := blobs.Close(); err != nil {
+			return nil, err
+		}
+		r, err := os.Open(tmp)
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close()
+		mfns, readers = append(mfns, fn), append(readers, r)
+		recs = append(recs, PartRecord{Path: path + "#" + f.Name, Start: f.Options.Start, Layers: f.Options.Layers,
+			Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)})
+	}
+	names := make([]string, len(fns))
+	for i, f := range fns {
+		names[i] = f.Name
+	}
+	prog, err := ailower.LowerMany(mfns, readers, names)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return nil, err
+	}
+	if err := prog.WriteAsset(path); err != nil {
+		return nil, err
+	}
+	for i := range recs {
+		recs[i].WeightBytes = int64(len(prog.Bytecode))
+	}
+	return recs, nil
+}
+
+// SplitFunction splits a program's path PATH.aimodel#NAME (a function of a Core AI program with
+// several, WriteAIFunctions) into the program's path and the function's name, or returns path and
+// "" for any other.
+func SplitFunction(path string) (string, string) {
+	if i := strings.LastIndexByte(path, '#'); i > 0 && strings.EqualFold(filepath.Ext(path[:i]), ".aimodel") && i+1 < len(path) {
+		return path[:i], path[i+1:]
+	}
+	return path, ""
 }
 
 // MetaFile is the file of a Core AI program hwnpu writes that holds its metadata (as a Core ML
@@ -384,7 +464,7 @@ func ReadMeta(m *Manifest) (map[string]string, error) {
 	if len(parts) == 0 {
 		return nil, errors.New("llm: no parts")
 	}
-	path := parts[0].Path
+	path, _ := SplitFunction(parts[0].Path)
 	if strings.EqualFold(filepath.Ext(path), ".xml") {
 		raw, err := os.ReadFile(path)
 		if err != nil {

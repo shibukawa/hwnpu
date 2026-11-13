@@ -4631,4 +4631,30 @@ Core AI で動かすと全部で約 10 GB で、重みを 5 回分持ってい�
 - Qwen-Image の 32 本を Core AI で保つには、書き出し 18 GB と Core AI のエントリー約 17 GB に加えて、aned の側に 30 GB 前後が要る見込み。空きが足りないと、前の部品を追い出しながら毎回コンパイルし直しになる (1 本 10〜20 秒)
 - `HWNPU_COREAI_DEBUG=1` は、エントリーがあって読めずにコンパイルし直したとき (`the cached entry failed (…), compiled again`) と、キャッシュだけで読めなかったときを出す。GPU に落ちたエントリーは消し (次に読むときにまたコンパイル)、空きが 10 GiB 未満なら理由を警告する
 
-**できていないこと**: Qwen-Image の 1 枚を Core AI で最後まで (ディスク待ち)。aned 側の量の直接の確認。書き出しの `main.mlirb` と Core AI のエントリーで重みが 2 重になる分 (`docs/cache-sharing.md` で扱う)。Chroma1-Flash の `coreai` (ランダムな重みでは全部の部品が Neural Engine に載った、`tools/coreai/chromafake`)。
+**Qwen-Image-2.1-Turbo の 1 枚** (M3 16 GB、1024²、テキスト lut8、DiT のテキストの段 lut8、ブロック lut4、2 回):
+
+| | 1 回目 | 2 回目 |
+|---|---|---|
+| テキストの 29 本の読み込み | 1 本 10〜14 秒 (11 本はエントリーが読めずに作り直し、2 本だけ当たった) | 1 本 0.2〜0.4 秒 |
+| テキストの計算 | 181 秒 | 7.9 秒 |
+| DiT のブロック 8 本の読み込み | 1 本 2 分 9 秒〜2 分 41 秒 (コンパイル) | 1 本 0.1〜0.4 秒 |
+| 1 ステップ | 13〜22 秒 (平均 16 秒) | (下のとおり止めた) |
+
+- 1 回目は空き 44.9 GB から始めて 0.3 GB まで減り、VAE の段 0 が Neural Engine のコンパイラーの `Failed to allocate memory for file backing` で GPU に落ちて止まった。この 1 回で Core AI のエントリーが 7.6 GB、purgeable が約 18 GB 増えた
+- 2 回目は全部の部品がキャッシュに当たった (作り直しは 0)。それでもステップの途中で空きが 1 GB を切った: swap が伸びた (16 GB の M3 で DiT の 8 本を持つと、ほかのアプリが swap に出る。swap のファイルは使い終わってもすぐには消えない)
+- 1 枚 (2 回目) は、キャッシュに当たれば約 3 分の見込み (テキスト 8 秒、8 ステップ約 2 分 10 秒、VAE)。まだ通していない
+
+**できていないこと**: Qwen-Image の 1 枚を Core AI で最後まで (ディスクと swap の余裕が要る)。aned 側の量の直接の確認。書き出しの `main.mlirb` と Core AI のエントリーで重みが 2 重になる分 (`docs/cache-sharing.md` で扱う)。Chroma1-Flash の `coreai` (ランダムな重みでは全部の部品が Neural Engine に載った、`tools/coreai/chromafake`)。
+
+### 16.176 Qwen-Image の DiT のテキストの段と画像の段を 1 本の `.aimodel` に (Core AI、lut6) — 2026-11-13
+
+16.174 の関数 2 つの `.aimodel` (同じバイトの重みを 1 回だけ持つ) を、Qwen-Image の DiT に使った。Qwen-Image-2.1 の DiT のブロックは、テキストの行と画像の行に同じ重みを使う (`mil.TextBlocks` と `mil.Blocks` は同じ `blk(i).qkv` と `rest`)。グループの切れ目もそろっているので、グループごとに `dit_N.aimodel` を 1 本書き、テキストの段を関数 `text`、画像の段を関数 `blocks` にする。manifest は `dit_N.aimodel#text` と `dit_N.aimodel#blocks` を指す。
+
+- **形式をそろえる**: Core ML の既定はテキストの段 lut8、ブロック lut4 で、重みのバイトが違う。Core AI では両方 lut6 (k-means-minmax) を既定にした (`DefaultCoreAIDitFormat`、`ConvertOptions.SharedDit`)。16.165 の 512² の狐で、テキストの段 lut8 とブロック lut6 の組み合わせは diffusers の float32 とのコサイン 0.987 (今の lut8 + lut4 は 0.980)。テキストの段も lut6 にしたときの値と、1024² のステップの速さはまだ測っていない
+- **容量** (1024²、見積もり): DiT は今の 10 GB (テキストの段 6.7 GB + ブロック 3.3 GB) から約 5 GB になる。書き出しと Core AI のキャッシュの両方で減るので、合わせて約 10 GB。ただし、ステップの間に持つブロックは 3.3 → 5 GB に増える
+- **書き方** (`llm.WriteAIFunctions`、`ailower.LowerMany`): 関数ごとに MIL を組み、まとめて下ろす。小さな DiT (隠れ 256、2 層、乱数の重み、lut6) で、2 本別々より重みの分 (約 1.6 MB) だけ小さく (`TestSharedDitProgram`)、M3 で両方の関数とも Neural Engine に載り、`milcpu` とのコサイン 1.000000。2 本目の関数の読み込みは 0.01 秒 (Core AI のエントリーは 1 つ)
+- **準備** (`Prepare`): 同じモデルの別の大きさの書き出しから、テキストの段はリンクしない (ブロックと 1 本なので)。テキストの符号器は最後のグループまでリンクする
+- `llm.ReadMeta` と `llm.SplitFunction` は `PATH.aimodel#NAME` を読む
+
+残り: Qwen-Image の元の重みを落とし直して (30 GB) lut6 の書き出しを作り、画質 (テキストの段も lut6 で) と 1024² の速さと swap を M3 で測る。
+

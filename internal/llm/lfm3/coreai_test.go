@@ -2,6 +2,7 @@ package lfm3
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,5 +55,65 @@ func TestCoreAIPartMatchesPackage(t *testing.T) {
 		if err != nil || len(ins) != len(want.Inputs) || len(outs) != len(want.Outputs) {
 			t.Errorf("%s: inputs %v outputs %v (%v), want %v %v", format, ins, outs, err, want.Inputs, want.Outputs)
 		}
+	}
+}
+
+// Two functions of the same weights (WriteAIFunctions: here two sequence lengths, in Qwen-Image a
+// DiT's text pass and its image blocks) keep them once: the program is the two programs apart
+// less one copy of the weights, and each function's inputs and outputs are its own.
+func TestCoreAIFunctionsShareWeights(t *testing.T) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	dir := t.TempDir()
+	opts := llm.Options{Seq: 8, Format: "lut4", Backend: llm.BackendCoreAI}
+	long := opts
+	long.Seq = 16
+	size := func(asset string) int64 {
+		st, err := os.Stat(filepath.Join(asset, "main.mlirb"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+	var apart int64
+	for i, o := range []llm.Options{opts, long} {
+		asset := filepath.Join(dir, fmt.Sprintf("apart%d.aimodel", i))
+		if _, err := llm.WritePart(asset, cfg, w, o, nil); err != nil {
+			t.Fatal(err)
+		}
+		apart += size(asset)
+	}
+	pkg := filepath.Join(dir, "m.mlpackage")
+	coreml := opts
+	coreml.Backend = llm.BackendCoreML
+	if _, err := llm.WritePart(pkg, cfg, w, coreml, nil); err != nil {
+		t.Fatal(err)
+	}
+	wb, err := os.Stat(filepath.Join(pkg, "Data", "com.apple.CoreML", "weights", "weight.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	two := filepath.Join(dir, "two.aimodel")
+	recs, err := llm.WriteAIFunctions(two, w, []llm.AIFunction{{Name: "f8", Model: cfg, Options: opts}, {Name: "f16", Model: cfg, Options: long}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved := apart - size(two); saved < wb.Size()*9/10 {
+		t.Errorf("two functions take %d bytes, apart %d: %d saved of %d bytes of weights", size(two), apart, saved, wb.Size())
+	}
+	if len(recs) != 2 || recs[0].Path != two+"#f8" || recs[1].Path != two+"#f16" {
+		t.Fatalf("records %+v", recs)
+	}
+	for i, fn := range []string{"f8", "f16"} {
+		ins, _, err := ailower.ReadFunctionIO(two, fn)
+		if err != nil || len(ins) != len(recs[i].Inputs) {
+			t.Fatalf("%s: inputs %v (%v), want %v", fn, ins, err, recs[i].Inputs)
+		}
+		if p, f := llm.SplitFunction(recs[i].Path); p != two || f != fn {
+			t.Errorf("SplitFunction(%s) = %s, %s", recs[i].Path, p, f)
+		}
+	}
+	if _, err := llm.ReadMeta(&llm.Manifest{Parts: []llm.PartRecord{{Path: two + "#f8"}}}); err != nil {
+		t.Errorf("ReadMeta of a function: %v", err)
 	}
 }

@@ -70,7 +70,20 @@ const (
 	// a step against 2.3 s, 5.1 GB held; design.md 16.165)
 	DefaultDitTextFormat = "lut8"
 	DefaultTextQuant     = "uniform"
+	// DefaultCoreAIDitFormat is the DiT's, its text pass's too, on Core AI: one format for both, so
+	// that a group's two passes are one program with their weights once (SharedDit). lut6 between
+	// the text pass's lut8 and the blocks' lut4 on Core ML (the fox at 512 x 512: text pass lut8
+	// and blocks lut6 0.987; design.md 16.165, 16.176)
+	DefaultCoreAIDitFormat = "lut6"
 )
+
+// SharedDit reports whether o writes each group of the DiT's blocks as one Core AI program with
+// two functions, text (the text pass) and blocks (the image blocks), over the same weights written
+// once (llm.WriteAIFunctions): on Core AI with the text pass in the DiT's format.
+func (o ConvertOptions) SharedDit() bool {
+	o.defaults()
+	return o.Backend == llm.BackendCoreAI && o.DitTextFormat == o.DitFormat
+}
 
 func (o *ConvertOptions) defaults() {
 	if o.Backend == "" {
@@ -81,9 +94,15 @@ func (o *ConvertOptions) defaults() {
 	}
 	if o.DitFormat == "" {
 		o.DitFormat = DefaultDitFormat
+		if o.Backend == llm.BackendCoreAI {
+			o.DitFormat = DefaultCoreAIDitFormat
+		}
 	}
 	if o.DitTextFormat == "" {
 		o.DitTextFormat = DefaultDitTextFormat
+		if o.Backend == llm.BackendCoreAI {
+			o.DitTextFormat = o.DitFormat // one copy of the DiT's weights (SharedDit)
+		}
 	}
 	if o.DitQuant == "" {
 		o.DitQuant = DefaultDitQuant
@@ -218,6 +237,9 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	ditGroups := mil.Groups(dc.Layers, o.Group)
 	stages := mil.VaeStages(vc, o.Width, o.Height)
 	total := len(textGroups) + 2*len(ditGroups) + len(stages)
+	if o.SharedDit() {
+		total -= len(ditGroups)
+	}
 	written := 0
 	write := func(kind string, p *mil.Part, format string) (string, error) {
 		quant := o.DitQuant
@@ -258,19 +280,44 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		}
 		m.TextIn = append(m.TextIn, name)
 	}
-	for _, gr := range ditGroups {
-		name, err := write("dit_text", mil.TextBlocks(dc, gr[0], gr[1]), o.DitTextFormat)
-		if err != nil {
-			return err
+	if o.SharedDit() {
+		for i, gr := range ditGroups {
+			name := fmt.Sprintf("dit_%d", gr[0]) + ProgramExt(o.Backend)
+			m.DitText = append(m.DitText, name+"#text")
+			m.Blocks = append(m.Blocks, name+"#blocks")
+			if len(o.Only) > 0 && !o.Only["dit_text"] && !o.Only["blocks"] {
+				continue
+			}
+			written++
+			bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
+			opts := llm.Options{Backend: o.Backend, Format: o.DitFormat}
+			if strings.HasPrefix(o.DitFormat, "lut") {
+				opts.Quant = o.DitQuant
+			}
+			_, err := llm.WriteAIFunctions(filepath.Join(out, name), w, []llm.AIFunction{
+				{Name: "text", Model: mil.TextBlocks(dc, gr[0], gr[1]), Options: opts},
+				{Name: "blocks", Model: mil.Blocks(dc, gr[0], gr[1], qchunk, i == len(ditGroups)-1), Options: opts}})
+			if err != nil {
+				bar.Done("failed")
+				return fmt.Errorf("qwenimage: %s: %w", name, err)
+			}
+			bar.Done(fmt.Sprintf("%s, %s, text pass and blocks", console.Duration(bar.Elapsed()), o.DitFormat))
 		}
-		m.DitText = append(m.DitText, name)
-	}
-	for i, gr := range ditGroups {
-		name, err := write("blocks", mil.Blocks(dc, gr[0], gr[1], qchunk, i == len(ditGroups)-1), o.DitFormat)
-		if err != nil {
-			return err
+	} else {
+		for _, gr := range ditGroups {
+			name, err := write("dit_text", mil.TextBlocks(dc, gr[0], gr[1]), o.DitTextFormat)
+			if err != nil {
+				return err
+			}
+			m.DitText = append(m.DitText, name)
 		}
-		m.Blocks = append(m.Blocks, name)
+		for i, gr := range ditGroups {
+			name, err := write("blocks", mil.Blocks(dc, gr[0], gr[1], qchunk, i == len(ditGroups)-1), o.DitFormat)
+			if err != nil {
+				return err
+			}
+			m.Blocks = append(m.Blocks, name)
+		}
 	}
 	if len(o.Only) == 0 || o.Only["time"] {
 		if err := writeTimeFile(filepath.Join(out, TimeFile), w); err != nil {

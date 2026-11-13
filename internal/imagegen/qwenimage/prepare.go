@@ -3,7 +3,6 @@ package qwenimage
 import (
 	"context"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"io/fs"
 	"os"
@@ -13,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 // Setup is what Prepare makes ready.
@@ -113,15 +114,18 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	if from, same := sharedExport(s.Dir, s.Name, o); from != "" {
-		if err := linkShared(from, out, same); err != nil {
+		if err := linkShared(from, out, same, same && !o.SharedDit()); err != nil {
 			return "", err
 		}
-		if same {
+		if same && !o.SharedDit() {
 			o.Only = map[string]bool{"blocks": true, "time": true, "vae": true}
 			fmt.Fprintf(log, "the text encoder's and the DiT's text pass's programs from %s\n", filepath.Base(from))
 		} else {
 			o.Only = map[string]bool{"text_in": true, "dit_text": true, "blocks": true, "time": true, "vae": true}
-			fmt.Fprintf(log, "the text encoder's programs but its last group's from %s\n", filepath.Base(from))
+			if same { // its DiT's text pass is one program with its blocks (SharedDit): written again
+				delete(o.Only, "text_in")
+			}
+			fmt.Fprintf(log, "the text encoder's programs from %s\n", filepath.Base(from))
 		}
 	}
 	fmt.Fprintf(log, "converting %s (%dx%d, text %s, DiT %s); this takes a few minutes\n", filepath.Base(out), o.Width, o.Height, o.TextFormat, o.DitFormat)
@@ -171,17 +175,23 @@ func exportModel(dir string) string {
 }
 
 // linkShared hard links text/ and the text encoder's programs of the export from into out; with
-// same, its last group and the DiT's text pass too (sharedExport).
-func linkShared(from, out string, same bool) error {
+// last, its last group too (an export of the same model, sharedExport); with ditText, the DiT's
+// text pass too (not when it is one program with the blocks, SharedDit).
+func linkShared(from, out string, last, ditText bool) error {
 	m, err := ReadProgramManifest(from)
 	if err != nil {
 		return err
 	}
 	subs := append([]string{"text"}, m.TextIn...)
-	if same {
-		subs = append(subs, m.DitText...)
-	} else {
+	if !last {
 		subs = subs[:len(subs)-1]
+	}
+	if ditText {
+		for _, d := range m.DitText {
+			if p, fn := llm.SplitFunction(d); fn == "" {
+				subs = append(subs, p)
+			} // one program with its blocks (SharedDit): not this export's
+		}
 	}
 	for _, sub := range subs {
 		src := filepath.Join(from, sub)

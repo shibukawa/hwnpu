@@ -17,6 +17,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -82,24 +83,58 @@ func LowerFunctions(pkgs, names []string) (*Program, error) {
 	if len(pkgs) != len(names) || len(pkgs) == 0 {
 		return nil, fmt.Errorf("ailower: %d packages and %d names", len(pkgs), len(names))
 	}
-	w, blobs := newWriter(), map[[32]byte]string{}
-	p := &Program{Functions: map[string]IO{}}
-	var graphs []graph
+	fns := make([]*milspec.Function, len(pkgs))
+	weights := make([]io.ReaderAt, len(pkgs))
 	for i, dir := range pkgs {
-		if _, dup := p.Functions[names[i]]; dup {
-			return nil, fmt.Errorf("ailower: function %s twice", names[i])
-		}
-		fn, weights, closer, err := openPackage(dir)
+		fn, w, closer, err := openPackage(dir)
 		if err != nil {
 			return nil, err
 		}
-		l := newLowerer(w, blobs, weights)
-		io, g, err := l.lower(fn, fn.GetBlockSpecializations()[fn.GetOpset()], names[i])
 		if closer != nil {
-			closer.Close()
+			defer closer.Close()
 		}
+		fns[i], weights[i] = fn, w
+	}
+	p, err := LowerMany(fns, weights, names)
+	if err != nil {
+		var se *funcError
+		if errors.As(err, &se) {
+			return nil, fmt.Errorf("%s: %w", filepath.Base(pkgs[se.i]), se.err)
+		}
+	}
+	return p, err
+}
+
+type funcError struct {
+	i   int
+	err error
+}
+
+func (e *funcError) Error() string { return e.err.Error() }
+func (e *funcError) Unwrap() error { return e.err }
+
+// LowerMany lowers the MIL functions fns, the blob values of fns[i] pointing into weights[i], into
+// one program with a function of each name (names[i] for fns[i]). Weights of the same bytes are
+// written once: two passes over the same layers (a DiT's text pass and its image blocks) keep
+// them once in the program and in Core AI's cache.
+func LowerMany(fns []*milspec.Function, weights []io.ReaderAt, names []string) (*Program, error) {
+	if len(fns) != len(names) || len(fns) != len(weights) || len(fns) == 0 {
+		return nil, fmt.Errorf("ailower: %d functions, %d weights and %d names", len(fns), len(weights), len(names))
+	}
+	w, blobs := newWriter(), map[[32]byte]string{}
+	p := &Program{Functions: map[string]IO{}}
+	var graphs []graph
+	for i, fn := range fns {
+		if _, dup := p.Functions[names[i]]; dup {
+			return nil, fmt.Errorf("ailower: function %s twice", names[i])
+		}
+		block := fn.GetBlockSpecializations()[fn.GetOpset()]
+		if block == nil {
+			return nil, &funcError{i, fmt.Errorf("ailower: the function has no block for opset %q", fn.GetOpset())}
+		}
+		io, g, err := newLowerer(w, blobs, weights[i]).lower(fn, block, names[i])
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", filepath.Base(dir), err)
+			return nil, &funcError{i, err}
 		}
 		p.Functions[names[i]] = io
 		graphs = append(graphs, g)
