@@ -37,10 +37,19 @@ constexpr int CAP = MX_CAP;
 constexpr int SB = MX_SB;
 
 struct mx4_blk_t {
-  bf16 scales[MT * KT / 32];
+  uint8_t exps[MT * KT / 32]; // each group's MXFP4 exponent (exp_scales)
   uint8_t codes[MT * KT / 2];
   bf16 bias[MT];
 };
+
+// A group's scale 2^(E - 128) from its MXFP4 exponent byte E (the block's exps): bf16's exponent
+// field E - 1, no mantissa. 16 at a time (a strip's out-features of a group).
+static inline aie::vector<bf16, 16> exp_scales(const uint8_t *p) {
+  aie::vector<uint8_t, 16> e = aie::load_v<16>(p);
+  aie::vector<uint16_t, 16> w = aie::unpack(e);
+  w = aie::upshift(aie::sub(w, uint16_t(1)), 7);
+  return aie::vector_cast<bf16>(w);
+}
 
 static inline aie::vector<int8_t, 8 * PR> mx4_codes(const mx4_blk_t *A, int u) {
   aie::vector<uint4, 8 * PR> c4 =
@@ -61,7 +70,7 @@ static inline void mx4_rows(const mx4_blk_t *A, const bf16 *x, float *acc, int b
   for (int row = 0; row < MT; row += PR) {
     uint32_t scale_offset = row;
     for (int sub = 0; sub < KT / 32; sub++) {
-      aie::vector<bf16, PR> a_scales = aie::load_v<PR>(A->scales + scale_offset);
+      aie::vector<bf16, PR> a_scales = exp_scales(A->exps + scale_offset);
       scale_offset += MT;
       aie::vector<bf16, PR * 8> a_bf16[4];
 #pragma clang loop unroll(full)
@@ -128,7 +137,7 @@ __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16
       aie::accum<accfloat, 8 * PR> f;
       f.from_vector(aie::to_float(v, 0));
       aie::vector<bf16, 8 * PR> w = f.template to_vector<bf16>();
-      aie::vector<bf16, 64> sc = scale_rep(aie::load_v<PR>(A->scales + (j / 4) * MT + s * PR));
+      aie::vector<bf16, 64> sc = scale_rep(exp_scales(A->exps + (j / 4) * MT + s * PR));
       aie::vector<bf16, 64> w0 = aie::mul(w.template extract<64>(0), sc).template to_vector<bf16>();
       aie::vector<bf16, 64> w1 = aie::mul(w.template extract<64>(1), sc).template to_vector<bf16>();
       // [k][16 m] to two [k][8 m] tiles: the 8-wide chunks alternate between them

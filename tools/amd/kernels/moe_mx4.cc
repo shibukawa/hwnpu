@@ -3,13 +3,13 @@
 // The experts of a gpt-oss decode step (tools/amd/iron_gptoss_moe.py) on mx4, the
 // checkpoint's MXFP4 kept exactly: a block holds 32 out-features by MX_KT in-features,
 //
-//   scales[MX_KT / 32][32]  bf16, 2^(E - 128) of the group's MXFP4 exponent E
+//   exps[MX_KT / 32][32]   uint8, each group's MXFP4 exponent E: the scale 2^(E - 128)
 //   codes[32 / 16][MX_KT][16]  e2m1 nibbles (q4nx's strips: 16 out-features each,
 //                              column-major, element 2 i in the low half of byte i)
 //   bias[32]               bf16, the out-features' bias (the first k-block's; zero after)
 //
 // so w = scale * v, v = 2 * e2m1 = sign * max(m, 2 m - 4, 4 m - 16) for the magnitude
-// code m (0 1 2 3 4 6 8 12): exact in bf16 and in the products. 4.55 bits a weight.
+// code m (0 1 2 3 4 6 8 12): exact in bf16 and in the products. 4.3 bits a weight.
 //
 //   gate and up: acc = bias, acc += W x over the k-blocks; y = (clamp(u, -7, 7) + 1) *
 //     g' sigmoid(1.702 g'), g' = min(g, 7) (mx4_glu)
@@ -43,12 +43,21 @@ constexpr int PR = 16;
 static_assert(KT % 32 == 0 && K % KT == 0, "K whole k-blocks of whole groups");
 
 struct mx4_blk_t {
-  bf16 scales[MT * KT / 32];
+  uint8_t exps[MT * KT / 32]; // each group's MXFP4 exponent (exp_scales)
   uint8_t codes[MT * KT / 2];
   bf16 bias[MT];
 };
 
 // The 128 codes of unit u (8 in-features of a strip's 16 out-features) as v, -12..12.
+// A group's scale 2^(E - 128) from its MXFP4 exponent byte E (the block's exps): bf16's exponent
+// field E - 1, no mantissa. 16 at a time (a strip's out-features of a group).
+static inline aie::vector<bf16, 16> exp_scales(const uint8_t *p) {
+  aie::vector<uint8_t, 16> e = aie::load_v<16>(p);
+  aie::vector<uint16_t, 16> w = aie::unpack(e);
+  w = aie::upshift(aie::sub(w, uint16_t(1)), 7);
+  return aie::vector_cast<bf16>(w);
+}
+
 static inline aie::vector<int8_t, 8 * PR> mx4_codes(const mx4_blk_t *A, int u) {
   aie::vector<uint4, 8 * PR> c4 =
       aie::load_v<8 * PR>(reinterpret_cast<const uint4 *>(A->codes + u * 4 * PR));
@@ -63,6 +72,9 @@ static inline aie::vector<int8_t, 8 * PR> mx4_codes(const mx4_blk_t *A, int u) {
 
 // c[0:MT] += dequantize(A) * B[0:KT].
 static inline void mx4_accumulate(const mx4_blk_t *A, const bf16 *B, float *c) {
+#ifdef MX_NOCOMPUTE
+  return; // a measurement: the transfers alone
+#endif
   int u = 0;
   AIE_LOOP_RANGE(MT / PR, MT / PR)
   for (int row = 0; row < MT; row += PR) {
@@ -74,7 +86,7 @@ static inline void mx4_accumulate(const mx4_blk_t *A, const bf16 *B, float *c) {
     for (int sub = 0; sub < KT / 32; sub++) {
       aie::vector<bf16, 32> b_col = aie::load_v<32>(it_B);
       it_B += 32;
-      aie::vector<bf16, PR> a_scales = aie::load_v<PR>(A->scales + scale_offset);
+      aie::vector<bf16, PR> a_scales = exp_scales(A->exps + scale_offset);
       scale_offset += MT;
       aie::vector<bf16, PR * 8> a_bf16[4];
 #pragma clang loop unroll(full)

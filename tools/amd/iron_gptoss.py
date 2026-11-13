@@ -311,12 +311,13 @@ class GptOssMoe(iron.Graph):
                               picked=self.index, bias=True)
         call.feedback.append((self.index, image.name))
         iron.on_host(lambda: None)  # command B: the experts, at the offsets the image holds
-        GU, D = moe_operators()
+        GU, D, EX = moe_operators()
         e = call.experts[self.index]
-        y = GU.step(self.gu, hn.reshape(HP), rows=self.gu.shape[0], picked=self.index,
-                    **{f"e{i}": e[i] * self.gu_bytes for i in range(self.top)})
-        out = D.step(self.dn, y, h.reshape(HP), w, rows=self.dn.shape[0], picked=self.index,
-                     **{f"e{i}": e[i] * self.dn_bytes for i in range(self.top)})
+        # MX4Experts: the gate-up and the down in one operator (their streams' start and end once)
+        y = EX.step(self.gu, self.dn, hn.reshape(HP), h.reshape(HP), w, grows=self.gu.shape[0], drows=self.dn.shape[0],
+                    picked=self.index, **{f"e{i}": e[i] * self.gu_bytes for i in range(self.top)},
+                    **{f"d{i}": e[i] * self.dn_bytes for i in range(self.top)})
+        out = y[moe.TOP * moe.IPAD :]
         iron.on_host(lambda: None)
         return out.reshape(1, HP)
 
