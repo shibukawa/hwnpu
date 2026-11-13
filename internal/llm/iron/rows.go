@@ -21,8 +21,31 @@ func (m *Model) caches() ([]kvCache, error) {
 	}
 	L := m.Manifest.Config.MaxSeqLen
 	var out []kvCache
-	for name, p := range m.decode.m.Buffers {
-		if !strings.Contains(name, ".cache.") {
+	joined := map[string]*kvJoin{}
+	// by name over every version (a decode step on one array of keys and values, joinKV's, does
+	// not name the keys and values a prompt chunk writes): placed alike where several name it
+	placed := map[string]Placement{}
+	for _, v := range []*version{m.decode, m.prompt, m.placed, m.verify} {
+		if v == nil {
+			continue
+		}
+		for name, p := range v.m.Buffers {
+			if !strings.Contains(name, ".cache.") {
+				continue
+			}
+			if q, ok := placed[name]; ok && q != p {
+				return nil, fmt.Errorf("iron: cache %s is placed differently by a prompt chunk", name)
+			}
+			placed[name] = p
+		}
+	}
+	for name, p := range placed {
+		if prefix, ok := strings.CutSuffix(name, ".kv"); ok {
+			// the decode step's own copy of the layer's keys and values (joinKV): not a cache
+			// of the sequence's state, which keys and values hold
+			j := &kvJoin{}
+			j.kv = kvCache{name: name, p: p}
+			joined[prefix] = j
 			continue
 		}
 		rows := L
@@ -32,19 +55,101 @@ func (m *Model) caches() ([]kvCache, error) {
 		if p.Bytes%rows != 0 {
 			return nil, fmt.Errorf("iron: cache %s of %d bytes is no whole rows of %d positions", name, p.Bytes, rows)
 		}
-		for _, v := range []*version{m.prompt, m.placed, m.verify} {
-			if v == nil {
-				continue
-			}
-			if q, ok := v.m.Buffers[name]; !ok || q != p {
-				return nil, fmt.Errorf("iron: cache %s is placed differently by a prompt chunk", name)
-			}
-		}
 		out = append(out, kvCache{name, p, p.Bytes / rows})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	m.joins = nil
+	for prefix, j := range joined {
+		for _, c := range out {
+			switch c.name {
+			case prefix + ".keys":
+				j.keys = c
+			case prefix + ".values":
+				j.values = c
+			}
+		}
+		if j.keys.row == 0 || j.keys.row != j.values.row || j.kv.p.Bytes%(2*j.keys.row) != 0 ||
+			j.kv.p.Bytes/(2*j.keys.row) < j.keys.p.Bytes/j.keys.row {
+			return nil, fmt.Errorf("iron: %s.kv is no rows of its keys and values", prefix)
+		}
+		j.kv.row = 2 * j.keys.row
+		m.joins = append(m.joins, *j)
+	}
 	m.kv = out
 	return out, nil
+}
+
+// kvJoin is a layer's keys and values, and the decode step's array of both (kv: a row the
+// position's keys then its values, which tools/amd/iron_gptoss_layer.py's attention reads a
+// group's key and value of together). A prompt chunk writes keys and values, a decode step kv:
+// joinKV copies a chunk's rows into kv after it, splitKV a decode step's rows back before
+// anything reads keys and values (a prompt chunk, ExportRows).
+type kvJoin struct {
+	kv, keys, values kvCache
+}
+
+// joinKV copies positions [from, to) of every joined layer's keys and values into its kv.
+func (m *Model) joinKV(from, to int) error {
+	if _, err := m.caches(); err != nil || len(m.joins) == 0 || to <= from {
+		return err
+	}
+	for _, j := range m.joins {
+		kb, vb, jb := m.buffer(m.decode, j.keys.p.Argument), m.buffer(m.decode, j.values.p.Argument), m.buffer(m.decode, j.kv.p.Argument)
+		r := j.keys.row
+		if err := kb.SyncFromDevice(j.keys.p.Offset+from*r, (to-from)*r); err != nil {
+			return err
+		}
+		if err := vb.SyncFromDevice(j.values.p.Offset+from*r, (to-from)*r); err != nil {
+			return err
+		}
+		k, v, dst := kb.Bytes()[j.keys.p.Offset:], vb.Bytes()[j.values.p.Offset:], jb.Bytes()[j.kv.p.Offset:]
+		for p := from; p < to; p++ {
+			copy(dst[2*p*r:(2*p+1)*r], k[p*r:(p+1)*r])
+			copy(dst[(2*p+1)*r:(2*p+2)*r], v[p*r:(p+1)*r])
+		}
+		if err := jb.SyncToDevice(j.kv.p.Offset+2*from*r, 2*(to-from)*r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// splitKV copies the rows the decode steps wrote (m.stepped) from every kv back into its keys
+// and values.
+func (m *Model) splitKV() error {
+	from, to := m.stepped[0], m.stepped[1]
+	m.stepped = [2]int{}
+	if _, err := m.caches(); err != nil || len(m.joins) == 0 || to <= from {
+		return err
+	}
+	for _, j := range m.joins {
+		kb, vb, jb := m.buffer(m.decode, j.keys.p.Argument), m.buffer(m.decode, j.values.p.Argument), m.buffer(m.decode, j.kv.p.Argument)
+		r := j.keys.row
+		if err := jb.SyncFromDevice(j.kv.p.Offset+2*from*r, 2*(to-from)*r); err != nil {
+			return err
+		}
+		k, v, src := kb.Bytes()[j.keys.p.Offset:], vb.Bytes()[j.values.p.Offset:], jb.Bytes()[j.kv.p.Offset:]
+		for p := from; p < to; p++ {
+			copy(k[p*r:(p+1)*r], src[2*p*r:(2*p+1)*r])
+			copy(v[p*r:(p+1)*r], src[(2*p+1)*r:(2*p+2)*r])
+		}
+		if err := kb.SyncToDevice(j.keys.p.Offset+from*r, (to-from)*r); err != nil {
+			return err
+		}
+		if err := vb.SyncToDevice(j.values.p.Offset+from*r, (to-from)*r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stepAt notes that a decode step wrote position's row of the joined layers' kv.
+func (m *Model) stepAt(position int) {
+	if m.stepped[1] <= m.stepped[0] {
+		m.stepped = [2]int{position, position + 1}
+		return
+	}
+	m.stepped[0], m.stepped[1] = min(m.stepped[0], position), max(m.stepped[1], position+1)
 }
 
 // RowBytes is the bytes of the KV caches' rows of one position.
@@ -73,6 +178,9 @@ func (m *Model) ExportRows(from, to int) ([]byte, error) {
 	}
 	if from < 0 || to < from || to > m.Manifest.Config.MaxSeqLen {
 		return nil, fmt.Errorf("iron: rows [%d, %d) of %d positions", from, to, m.Manifest.Config.MaxSeqLen)
+	}
+	if err := m.splitKV(); err != nil {
+		return nil, err
 	}
 	rb := m.RowBytes()
 	out := make([]byte, (to-from)*rb)
@@ -120,7 +228,7 @@ func (m *Model) ImportRows(from int, rows []byte) error {
 		}
 		o += c.row
 	}
-	return nil
+	return m.joinKV(from, from+n)
 }
 
 // Resumable reports whether a sequence can go back to any position: the state is the KV caches

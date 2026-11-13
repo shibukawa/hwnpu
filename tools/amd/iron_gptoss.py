@@ -61,6 +61,9 @@ QUANT: dict[str, str] = {}
 # q's and k's rows in interleaved pairs (RoPE of Meta's form in the prompt chunk too; q and k
 # turned alike, the scores are the same)
 FUSE_QKV = os.environ.get("GPTOSS_FUSE_QKV", "1") == "1"
+# The decode step's layers as phases of one array (iron_gptoss_layer.py's GptOssStep): configured
+# once, where an operator of its own is loaded again each time it follows another
+RESIDENT = os.environ.get("GPTOSS_RESIDENT", "1") == "1"
 
 
 def install(attn: str = "q8", head: str = "q4") -> None:
@@ -220,6 +223,17 @@ class SinkAttention(Attention):
         self.qkv.weight = iron.param(np.ascontiguousarray(w.astype(dt)))
         self.qkv.bias = iron.param(np.ascontiguousarray(b.astype(np.asarray(self.qkv.bias).dtype)))
         self.interleaved = True
+        if RESIDENT:
+            # GptOssStep's tables: the same weights (as the q8 the prompt chunk reads) in its
+            # blocks; o_proj's in-features in the order the attention's cores send them
+            import iron_gptoss_layer as gl
+
+            self.qkv_x = iron.param(gl.q8x_table(w, b))
+            ow = np.asarray(self.o_proj.weight, np.float32)
+            op = np.empty_like(ow)
+            op[:, gl.att_order()] = ow
+            self.o_x = iron.param(gl.q8x_table(op, np.asarray(self.o_proj.bias, np.float32)))
+            self.sinks_x = iron.param(np.asarray(self.sink_values, np.float32).astype(bfloat16))
 
     def rotate(self, x, angles):
         if not self.interleaved:
@@ -274,6 +288,18 @@ class SinkCache(KVCache):
     IRON's and iron_window's forms step are the sink classes while it attends)."""
 
     sinks: tuple | None = None
+    kv = None
+
+    def __init__(self, c, window=None):
+        super().__init__(c, window)
+        if RESIDENT:
+            # The decode step's array of the layer's keys and values (GptOssStep reads a group's
+            # key and value of a row together; IRON's operators take no such view of one array, so
+            # the prompt chunk keeps keys and values, and hwnpu copies a chunk's rows here and a
+            # decode step's back: internal/llm/iron's joinKV and splitKV). A chunk of rows more
+            # than the context: the attention's objects reach past the call's row
+            _, G, D = self.keys.shape
+            self.kv = iron.state((c.max_seq_len + c.prefill_chunk, 2, G, D))
 
     def attend(self, call, q, k, v, scale=None):
         import iron_window
@@ -338,6 +364,11 @@ class GptOssMoe(iron.Graph):
         program = np.zeros(4 * iron_moe.SLOTS + self.n // 2, np.int32)
         program[4 * iron_moe.SLOTS :] = np.ascontiguousarray(b[: self.n]).view(np.int32)
         self.program = iron.param(program)
+        if RESIDENT:
+            import iron_gptoss_layer as gl
+
+            self.router_x = iron.param(gl.router_table(np.asarray(w, np.float32)[: self.n], np.asarray(b, np.float32)[: self.n]))
+            self.prog_x = iron.param(np.zeros(gl.PROG, bfloat16))  # the routing's program (program_rows)
         self.router = self.experts = None
 
     def body(self, hn, h, call):
@@ -507,6 +538,7 @@ class GptOss(CausalLM):
             self.lm_head.weight = iron.param(np.ascontiguousarray(np.pad(head, ((0, rows - head.shape[0]), (0, 0)))))
         if QUANT:
             self.quantize(QUANT)
+        self._rw0 = iron.param(np.zeros(16, bfloat16))  # GptOssStep's first command's routing weights: unread
         self.embed_on_host()
 
     def quantize(self, fmts: dict) -> None:
@@ -599,12 +631,107 @@ class GptOss(CausalLM):
         finally:
             causal.Call = made
 
+    def forward(self, x, call):
+        if call.prompt or not (RESIDENT and QUANT and FUSE_QKV):
+            return super().forward(x, call)
+        return self.resident(x, call)
+
+    def resident(self, x, call):
+        """The decode step on GptOssStep's array (iron_gptoss_layer.py): a command a layer
+        boundary, the experts of the layer before (their offsets the command's scratchpad words,
+        written by that layer's routing) then the layer's attention and routing."""
+        import iron_gptoss_layer as gl
+
+        gl.unexpanded_loads()
+        Step = gl.step_operator()
+        c, layers = self.config, self.layers
+        L, top = len(layers), c.num_experts_per_tok
+        call.embeddings = x
+        for rope in (layer.rope for layer in layers):
+            if rope is not None and rope not in call.ropes:
+                call.ropes[rope] = rope.rows(call)
+        pos, ROW = call.position, gl.ROW
+        h, rw = x.reshape(HP), self._rw0
+        ye = None
+        for l in range(L + 1):
+            prev, cur = layers[max(l - 1, 0)], layers[min(l, L - 1)]
+            a, m, pm = cur.self_attn, cur.mlp, prev.mlp
+            phases = (gl.PH_E if l > 0 else 0) | (gl.PH_Q | gl.PH_A | gl.PH_O | gl.PH_R | gl.PH_T if l < L else 0)
+            sliding = cur.cache.window is not None
+            n = gl.objects(pos)
+            if sliding:  # the window's rows: the 127 before the call's and its own
+                n = iron.clamp(n, hi=-(-(cur.cache.window + 1) // gl.TOK))
+            values = dict(kw=pos * ROW, ntok=pos + 1, nslide=iron.clamp(pos + 1, hi=c.window + 1), nkv1=n - 1)
+            if sliding:
+                values["kfirst"] = iron.clamp(pos * ROW - cur.cache.window * ROW, lo=0)
+            if l > 0:
+                e = call.experts[l - 1]
+                values.update({f"e{i}": e[i] * pm.gu_bytes for i in range(top)})
+                values.update({f"d{i}": e[i] * pm.dn_bytes for i in range(top)})
+            angles = call.ropes[cur.rope]
+            _, ye, _, _, yo, _, yw, image, _ = Step.step(
+                pm.gu, pm.dn, a.qkv_x, a.o_x, m.router_x, h, prev.post_attention_layernorm.weight,
+                cur.input_layernorm.weight, cur.post_attention_layernorm.weight, angles[0].reshape(gl.D), a.sinks_x,
+                rw, m.prog_x, cur.cache.kv.reshape(int(np.prod(cur.cache.kv.shape))), grows=pm.gu.shape[0], drows=pm.dn.shape[0],
+                qrows=a.qkv_x.shape[0], orows=a.o_x.shape[0], kvn=int(np.prod(cur.cache.kv.shape)), eps=c.eps,
+                phases=phases, sliding=sliding, picked=l - 1, routed=l if l < L else -1,
+                fed_at=self.fed_at(l), **values)
+            if l < L:
+                call.feedback.append((l, image.name))
+                iron.on_host(lambda: None)  # the next command's words are this one's routing's
+            h, rw = yo, yw
+        out = ye[gl.TOP * moe.IPAD :].reshape(1, HP)
+        return self.draw(self.head(out), call)
+
+    def fed_at(self, l: int) -> int:
+        """The first word layer l's routing writes of the next command's scratchpad: after the
+        words that command's cores and attention read first (the last command has no attention:
+        one word fewer). resident_rows checks it against the compiled commands."""
+        import iron_gptoss_layer as gl
+
+        return gl.FED_AT - (1 if l + 1 >= len(self.layers) else 0)
+
     def program_rows(self, kernels) -> list:
         """As iron_qwen35.Qwen35Moe.program_rows: each layer's MoERoute program from the decode
         step's commands; the manifest's ``fed``."""
+        if RESIDENT and QUANT and FUSE_QKV:
+            return self.resident_rows(kernels)
         from iron_qwen35 import Qwen35Moe
 
         return Qwen35Moe.program_rows(self, kernels)
+
+    def resident_rows(self, kernels) -> list:
+        """Each layer's routing's program (GptOssStep's T) from the decode step's commands: the
+        command reading layer l's experts' offsets takes them as its first words (id * scale +
+        bias each), which the routing writes; its other words are the host's."""
+        import iron_gptoss_layer as gl
+
+        images = dict(self._fed)
+        fed = []
+        for layer in self.layers:
+            l, m = layer.mlp.index, layer.mlp
+            found = [(k, kern["parameters"]) for k, kern in enumerate(kernels)
+                     if any((p.get("form") or {}).get("value", "").startswith(f"e{l}_") for p in kern["parameters"])]
+            if len(found) != 1:
+                raise SystemExit(f"layer {l}: {len(found)} commands read its experts' offsets")
+            k, words = found[0]
+            prog = np.zeros((gl.PROG // 8, 4), np.int32)
+            prog[:, 0] = -1
+            routed = [p for p in words if (p.get("form") or {}).get("value", "").startswith(f"e{l}_")]
+            at = self.fed_at(l)
+            if sorted(p["index"] for p in routed) != list(range(at, at + gl.FED)):
+                raise SystemExit(f"layer {l}: command {k}'s routed words are at {sorted(p['index'] for p in routed)}, "
+                                 f"not {gl.FED} from {at} (GptOss.fed_at)")
+            for p in routed:
+                f = p["form"]
+                plain = (f["down"], f["mul"], f["add"], f["post"], f["lo"], f["hi"], f["mod"]) == (0, 1, 0, 0, None, None, None)
+                if not plain:
+                    raise SystemExit(f"layer {l}: {p['name']} is {f}, not id * scale + bias")
+                prog[p["index"] - at] = (int(f["value"].split("_")[1]), f["scale"], f["bias"],
+                                                2 if p["kind"] == "core" else 0)
+            np.asarray(m.prog_x).view(np.int32)[:] = prog.reshape(-1)
+            fed.append(dict(command=k, buffer=images[l], words=gl.FED, first=at))
+        return fed
 
 
 def moe_class(base, layers: int, top: int = 4):

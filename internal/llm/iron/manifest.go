@@ -158,6 +158,9 @@ type Fed struct {
 	Command int    `json:"command"`
 	Buffer  string `json:"buffer"`
 	Words   int    `json:"words"`
+	// First is the first of the Words words the device writes (0: the scratchpad's first); the
+	// command's other words, if it reads any, are the host's
+	First int `json:"first,omitempty"`
 }
 
 // Step is one dispatch of an xclbin per step: a kernel of an xclbin, its instruction stream

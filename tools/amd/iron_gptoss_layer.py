@@ -63,7 +63,8 @@ ATT = H * D  # the heads' outputs
 ATTB = 2 * ATT  # as the attention's cores write them: a column's 512, then as much unused
 QN = 5120  # q, k and v's out-features
 SLOTS = 32  # a command's scratchpad words
-FED = 8  # of them, the words the routing writes (the experts' offsets, the command's first)
+FED = 8  # of them, the words the routing writes (the experts' offsets)
+FED_AT = 3  # their first word in a command of every phase: after the tokens read, a sliding layer's, the row
 PROG = 256  # the routing's program as bf16 (4 int32 a word)
 PH_E, PH_Q, PH_A, PH_O, PH_R, PH_T = 1, 2, 4, 8, 16, 32
 KINDS = {PH_E: (1, 2), PH_Q: (3,), PH_A: (4,), PH_O: (5,), PH_R: (6,), PH_T: (7,)}  # gptoss_layer.cc's
@@ -174,7 +175,8 @@ def unexpanded_loads() -> None:
 
     def unexpanded(self, seq):
         init(self, seq)
-        self.expands = False
+        if any(type(d.op).__name__ == "GptOssStep" for d in self.designs.values()):
+            self.expands = False
 
     compose.Composition.__init__ = unexpanded
     compose.Composition._hwnpu_unexpanded = True
@@ -261,7 +263,9 @@ def step_operator():
         form: int = param(default=1, array=True)
         phases: int = param(default=PH_E)  # the step's phases: its sequence, not the array's
         sliding: bool = param(default=False)  # A: the layer's attention reads its window's keys
-        picked: int = param(default=-1, repr=False)
+        picked: int = param(default=-1, repr=False)  # E: the reference's experts (iron_moeprobe.PICKED's key)
+        routed: int = param(default=-1, repr=False)  # T: the key the reference's routing is kept under
+        fed_at: int = param(default=FED_AT)  # T: the first of the next command's words the routing writes
         num_aie_columns: int = tunable(domain=widths)
 
         Wg = In(grows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
@@ -508,7 +512,7 @@ def step_operator():
         def _route(self):  # column 0: its last core's two objects, the words then the weights
             lead = (CORES - 1) * MT  # the other cores' part of an object
             ds = [self.yj.drain(TAP((PROG,), 0, [lead], [1]), lane=0, wait=True, managed=False),
-                  self.image.drain(TAP((2 * SLOTS,), 0, [2 * FED], [1]), lane=0, wait=True, managed=False),
+                  self.image.drain(TAP((2 * SLOTS,), 2 * self.fed_at, [2 * FED], [1]), lane=0, wait=True, managed=False),
                   self.yj.drain(TAP((PROG,), lead, [MT - 2 * FED + lead], [1]), lane=0, wait=True, managed=False),
                   self.yw.drain(TAP((WV,), 0, [WV], [1]), lane=0, wait=True, managed=False),
                   self.yj.drain(TAP((PROG,), 2 * lead + MT - 2 * FED, [MT - WV], [1]), lane=0, wait=True, managed=False)]
@@ -580,9 +584,9 @@ def step_operator():
                 yw[:TOP] = (e / e.sum()).astype(bfloat16)
                 p = np.asarray(prog).view(np.int32).reshape(-1, 4)[:FED].astype(np.int64)
                 words = np.where(p[:, 0] < 0, p[:, 2], ids[np.clip(p[:, 0], 0, TOP - 1)] * p[:, 1] + p[:, 2]) << p[:, 3]
-                image[: 2 * FED] = words.astype(np.int32).view(bfloat16)
-                if self.picked >= 0:
-                    iron_moeprobe.PICKED[self.picked] = [int(i) for i in ids]
+                image[2 * self.fed_at : 2 * (self.fed_at + FED)] = words.astype(np.int32).view(bfloat16)
+                if self.routed >= 0:
+                    iron_moeprobe.PICKED[self.routed] = [int(i) for i in ids]
             return cache, ye, yq, ya, yo, yr, yw, image, yj
 
         def tolerance(self) -> Tolerance:

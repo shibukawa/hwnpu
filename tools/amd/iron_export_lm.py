@@ -724,7 +724,8 @@ def export(model, versions, out: Path) -> dict:
         # The KV caches' rows (positions), by buffer: max_seq_len, or more for iron_window's
         # sliding layers (a prompt chunk's rows past the context). A position's row is its bytes
         # over these.
-        cache_rows=_cache_rows(model, vm["decode"]["buffers"]),
+        # every version's (gpt-oss's decode step names its own array, not the keys and values)
+        cache_rows=_cache_rows(model, {n: b for v in vm.values() for n, b in v["buffers"].items()}),
         banks={k: dict(bytes=int(n), image=images.get(k)) for k, n in banks.items()},
         versions=vm,
     )
