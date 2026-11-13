@@ -31,6 +31,9 @@
 #ifndef ROUTE_W
 #define ROUTE_W 16
 #endif
+#ifndef ROUTE_BIAS
+#define ROUTE_BIAS 0
+#endif
 
 static_assert(ROUTE_TOP < 16 && ROUTE_W >= ROUTE_TOP + 1, "moe_route: up to 15 chosen");
 static_assert(ROUTE_EXPERTS % 32 == 0, "moe_route: experts in whole vectors of 32");
@@ -51,8 +54,16 @@ extern "C" void moe_route(const bfloat16 *restrict logits,
   // lower index).
   constexpr int N = 32;
   using vec = aie::vector<bfloat16, N>;
+#if ROUTE_BIAS
+  // the router's bias (gpt-oss's), as bf16 after the program's words: added here, not by an
+  // operator of its own; the logits are the GEMV's bf16, the sum rounded to bf16 as an add's
+  const bfloat16 *bias = reinterpret_cast<const bfloat16 *>(program + 4 * ROUTE_SLOTS);
+  for (int i = 0; i < ROUTE_EXPERTS; i += N)
+    aie::store_v(lv + i, aie::add(aie::load_v<N>(logits + i), aie::load_v<N>(bias + i)));
+#else
   for (int i = 0; i < ROUTE_EXPERTS; i += N)
     aie::store_v(lv + i, aie::load_v<N>(logits + i));
+#endif
   for (int k = 0; k < ROUTE_TOP; k++) {
     vec m = aie::load_v<N>(lv);
     for (int i = N; i < ROUTE_EXPERTS; i += N)

@@ -57,14 +57,22 @@ const (
 	//
 	//	's|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+
 	gpt2
+	// o200k is o200k_harmony's (gpt-oss): letter runs split at case, a contraction joined to the
+	// run, numbers in threes, and '/' after a run of other characters:
+	//
+	//	[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|
+	//	[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|
+	//	\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+
+	o200k
 )
 
 // The pre-tokenizer patterns Load accepts. They are applied by split, not by a regular expression:
 // Go's regexp has no lookahead for \s+(?!\S).
 var patterns = map[string]style{
-	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`:        gpt4,
-	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`: qwen35,
-	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`:             qwen2,
+	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`:                                                                                                                                                                gpt4,
+	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`:                                                                                                                                                         qwen35,
+	`(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+`:                                                                                                                                                                     qwen2,
+	`[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+`: o200k,
 }
 
 type file struct {
@@ -148,7 +156,7 @@ func parse(raw []byte) (*Tokenizer, error) {
 	if pt.Type != "Sequence" || len(pt.Pretokenizers) != 2 ||
 		pt.Pretokenizers[0].Type != "Split" || pt.Pretokenizers[0].Behavior != "Isolated" || pt.Pretokenizers[0].Invert || !knownPattern(pt.Pretokenizers[0].Pattern.Regex) ||
 		pt.Pretokenizers[1].Type != "ByteLevel" || pt.Pretokenizers[1].AddPrefix || pt.Pretokenizers[1].UseRegex {
-		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4, Qwen3 or Qwen3.5 pattern, isolated) then ByteLevel without prefix space")
+		return nil, fmt.Errorf("pre-tokenizer is not supported; only Split (the GPT-4, Qwen3, Qwen3.5 or o200k pattern, isolated) then ByteLevel without prefix space")
 	}
 	t := newTokenizer(&f)
 	t.style, t.nfc = patterns[pt.Pretokenizers[0].Pattern.Regex], nfc
@@ -433,6 +441,101 @@ func isS(r rune) bool  { return unicode.IsSpace(r) }
 func isNL(r rune) bool { return r == '\r' || r == '\n' }
 func isM(r rune) bool  { return unicode.IsMark(r) }
 
+// o200k's two letter classes: [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}] and [\p{Ll}\p{Lm}\p{Lo}\p{M}].
+func isUpperish(r rune) bool {
+	return unicode.In(r, unicode.Lu, unicode.Lt, unicode.Lm, unicode.Lo, unicode.M)
+}
+func isLowerish(r rune) bool { return unicode.In(r, unicode.Ll, unicode.Lm, unicode.Lo, unicode.M) }
+
+// contraction returns the length of (?i:'s|'t|'re|'ve|'m|'ll|'d) at j, or 0.
+func contraction(rs []rune, j int) int {
+	if j >= len(rs) || rs[j] != '\'' {
+		return 0
+	}
+	for _, c := range []string{"s", "t", "re", "ve", "m", "ll", "d"} {
+		if len(rs)-j > len(c) && strings.EqualFold(string(rs[j+1:j+1+len(c)]), c) {
+			return 1 + len(c)
+		}
+	}
+	return 0
+}
+
+// matchO200k is match for o200k's pattern (the style's comment), each alternative tried in
+// order with a backtracking regular expression's choices: the optional first character taken
+// first, the upper run as long as the lower run after it still has a character.
+func matchO200k(rs []rune, i int) int {
+	prefix := func(r rune) bool { return !isNL(r) && !isL(r) && !isN(r) }
+	run := func(j int, f func(rune) bool) int {
+		k := j
+		for k < len(rs) && f(rs[k]) {
+			k++
+		}
+		return k
+	}
+	// first: [U]*[Lw]+ from j, or -1. U* gives back characters until one starts the Lw run.
+	first := func(j int) int {
+		for u := run(j, isUpperish); u >= j; u-- {
+			if u < len(rs) && isLowerish(rs[u]) {
+				e := run(u, isLowerish)
+				return e + contraction(rs, e)
+			}
+		}
+		return -1
+	}
+	// second: [U]+[Lw]* from j, or -1.
+	second := func(j int) int {
+		u := run(j, isUpperish)
+		if u == j {
+			return -1
+		}
+		e := run(u, isLowerish)
+		return e + contraction(rs, e)
+	}
+	for _, alt := range []func(int) int{first, second} {
+		if prefix(rs[i]) && i+1 < len(rs) {
+			if e := alt(i + 1); e >= 0 {
+				return e - i
+			}
+		}
+		if e := alt(i); e >= 0 {
+			return e - i
+		}
+	}
+	// \p{N}{1,3}
+	if isN(rs[i]) {
+		k := i
+		for k < len(rs) && k-i < 3 && isN(rs[k]) {
+			k++
+		}
+		return k - i
+	}
+	// ' ?[^\s\p{L}\p{N}]+[\r\n/]*'
+	other := func(r rune) bool { return !isS(r) && !isL(r) && !isN(r) }
+	j := i
+	if rs[j] == ' ' && j+1 < len(rs) && other(rs[j+1]) {
+		j++
+	}
+	if other(rs[j]) {
+		j = run(j, other)
+		j = run(j, func(r rune) bool { return isNL(r) || r == '/' })
+		return j - i
+	}
+	// The remaining alternatives start with whitespace, as the GPT-4 pattern's.
+	end := run(i, isS)
+	if end == i {
+		return 1
+	}
+	for k := end - 1; k >= i; k-- {
+		if isNL(rs[k]) {
+			return k + 1 - i
+		}
+	}
+	if end == len(rs) || end-1 == i {
+		return end - i
+	}
+	return end - 1 - i
+}
+
 func knownPattern(p string) bool {
 	_, ok := patterns[p]
 	return ok
@@ -442,6 +545,9 @@ func knownPattern(p string) bool {
 func match(rs []rune, i int, st style) int {
 	if st == gpt2 {
 		return matchGPT2(rs, i)
+	}
+	if st == o200k {
+		return matchO200k(rs, i)
 	}
 	// the letters of the second alternative: \p{L}, or [\p{L}\p{M}] in Qwen3.5's
 	letter := isL

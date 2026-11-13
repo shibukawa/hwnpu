@@ -161,3 +161,6 @@ void q8_dequant(const uint8_t *block, bf16 *out, int32_t h) {
 MV_ROWS_CALLS(q8, q8_block, q8_codes)
 
 } // extern "C"
+
+#define MV_FMT q8
+#include "mv_add.h"

@@ -60,6 +60,8 @@ MODELS = {
     "qwen35": ("iron_qwen35", "Qwen35"),
     # Qwen3.6-35B-A3B (qwen3_5_moe): Qwen3.5 with experts routed on the device (iron_moe.py).
     "qwen35moe": ("iron_qwen35", "Qwen35Moe"),
+    # gpt-oss (openai/gpt-oss-20b): sink attention and MXFP4 experts kept exact (iron_gptoss.py).
+    "gptoss": ("iron_gptoss", "GptOss"),
 }
 
 
@@ -722,7 +724,8 @@ def export(model, versions, out: Path) -> dict:
         # The KV caches' rows (positions), by buffer: max_seq_len, or more for iron_window's
         # sliding layers (a prompt chunk's rows past the context). A position's row is its bytes
         # over these.
-        cache_rows=_cache_rows(model, vm["decode"]["buffers"]),
+        # every version's (gpt-oss's decode step names its own array, not the keys and values)
+        cache_rows=_cache_rows(model, {n: b for v in vm.values() for n, b in v["buffers"].items()}),
         banks={k: dict(bytes=int(n), image=images.get(k)) for k, n in banks.items()},
         versions=vm,
     )
@@ -933,6 +936,11 @@ def main(argv=None) -> int:
         import iron_qwen35
 
         iron_qwen35.install(attn=a.attn, mlp=a.mlp, head=a.head)
+    elif a.model == "gptoss":
+        import iron_gptoss
+
+        # the experts are mx4 (the checkpoint's MXFP4) whatever --q4 says
+        iron_gptoss.install(attn=a.attn, head=a.head)
     elif a.q4:
         raise SystemExit(f"--q4: not built for {a.model}")
     if a.model == "qwen35":
@@ -940,7 +948,7 @@ def main(argv=None) -> int:
 
         iron_qwen35.install_dense()
     if a.q4_codes:
-        if not a.q4:
+        if not a.q4 and a.model != "gptoss":  # gpt-oss's parts are quantized without --q4
             raise SystemExit("--q4-codes: with --q4")
         import iron_q4
 
@@ -991,7 +999,12 @@ def main(argv=None) -> int:
     c = model.text.config if hasattr(model, "towers") else model.config
     _CONFIG.update(max_seq_len=int(c.max_seq_len), prefill_chunk=int(c.prefill_chunk), vocab_size=int(c.vocab_size))
     versions = compile_versions(model, full_elf=False if a.per_step else None)
-    m = export(model, versions, a.out)
+    try:
+        m = export(model, versions, a.out)
+    except getattr(model, "Recompile", ()) as again:  # gpt-oss: its routing's words are placed by the lowering
+        print(f"compiling again: {again}")
+        versions = compile_versions(model, full_elf=False if a.per_step else None)
+        m = export(model, versions, a.out)
     # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
     for name in ("tokenizer.json", "tokenizer.jsonl", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json",
                  "processor_config.json"):
