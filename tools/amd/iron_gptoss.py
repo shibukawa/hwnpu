@@ -26,6 +26,7 @@ logits cut back to 201088.
 import dataclasses
 import functools
 import math
+import os
 import sys
 from pathlib import Path
 
@@ -56,6 +57,10 @@ HEAD_ROWS = 512  # the head's rows a multiple of this: 64-row blocks whole on 8 
 
 # install()'s formats (iron_q4's): the attention's projections and the head. Empty: bf16.
 QUANT: dict[str, str] = {}
+# The decode step's q, k, v in one operator with the input norm and RoPE (iron_q4's QGEMVQKV):
+# q's and k's rows in interleaved pairs (RoPE of Meta's form in the prompt chunk too; q and k
+# turned alike, the scores are the same)
+FUSE_QKV = os.environ.get("GPTOSS_FUSE_QKV", "1") == "1"
 
 
 def install(attn: str = "q8", head: str = "q4") -> None:
@@ -196,11 +201,46 @@ class SinkAttention(Attention):
         self.qkv.weight = iron.param(np.ascontiguousarray(np.concatenate(ws)))
         self.qkv.bias = iron.param(np.ascontiguousarray(np.concatenate(bs)))
         self.sink_values = tuple(float(s) for s in np.asarray(self.sinks, np.float32))
+        self.interleaved = False
         self.q_proj = self.k_proj = self.v_proj = None
         self.sinks = None
         self.residual = None  # the decode step's residual, which o_proj's GEMV adds (GptOssLayer)
 
+    def fold(self) -> None:
+        """q's and k's rows of each head into interleaved pairs (d and d + D / 2 next to each
+        other): QGEMVQKV's table (a q8 code's scale is a row's, so the codes are the same)."""
+        H, G, D = self.heads, self.groups, self.head_dim
+        w = np.asarray(self.qkv.weight, np.float32)
+        b = np.asarray(self.qkv.bias, np.float32).copy()
+        perm = np.arange(D).reshape(2, D // 2).T.reshape(-1)  # 0, D/2, 1, D/2 + 1, ...
+        rows = np.concatenate([h * D + perm for h in range(H + G)])
+        w[: (H + G) * D] = w[rows]
+        b[: (H + G) * D] = b[rows]
+        dt = np.asarray(self.qkv.weight).dtype
+        self.qkv.weight = iron.param(np.ascontiguousarray(w.astype(dt)))
+        self.qkv.bias = iron.param(np.ascontiguousarray(b.astype(np.asarray(self.qkv.bias).dtype)))
+        self.interleaved = True
+
+    def rotate(self, x, angles):
+        if not self.interleaved:
+            return super().rotate(x, angles)
+        from iron.operators.rope import RoPE
+
+        return RoPE.step(x, angles, two_halves=False)
+
     def body(self, x, cache, call, angles=None):
+        if x.shape[0] == 1 and self.residual is not None and angles is not None and QUANT and self.interleaved:
+            # x the layer's input (not normed): QGEMVQKV norms it, adds the bias and turns q and k
+            import iron_q4
+
+            H, G, D = self.heads, self.groups, self.head_dim
+            y = iron_q4.qkv_linear(x, self.qkv.weight, self.qkv.bias, angles[0], self.norm_weight, (H + G) * D,
+                                   self.config.eps).reshape(1, sum(self.widths))
+            q = y[:, : H * D].reshape(1, H, D)
+            k = y[:, H * D : (H + G) * D].reshape(1, G, D)
+            v = y[:, (H + G) * D :].reshape(1, G, D)
+            o = cache.attend(call, q, k, v, scale=self.scaling)
+            return iron_q4.linear_add(o, self.o_proj.weight, self.o_proj.bias, self.residual)
         if x.shape[0] != 1 or self.residual is None or angles is None or not QUANT:
             return super().body(x, cache, call, angles)
         # The decode step in fewer operators: q, k, v one GEMV with its bias added in it; q's and
@@ -338,8 +378,12 @@ class GptOssMoe(iron.Graph):
         iron.on_host(MoEHost("moe_route_mx4", self.index, self.n, self.top, C, moe), logits, moe.hn,
                      writes=(moe.counts, moe.xs))
         GU, D = group_operators()
-        a = GU.step(self.gu, moe.counts, moe.xs, rows=self.gu.shape[0])
-        y = D.step(self.dn, moe.counts, a, rows=self.dn.shape[0])
+        # each slot's expert (the graph's slot<i>, which hwnpu's route sets each pass): its tables' offsets
+        slots = call.slots  # the overflow slots' (slot e < 32 is expert e's)
+        a = GU.step(self.gu, moe.counts, moe.xs, rows=self.gu.shape[0],
+                    **{f"w{i}": s * self.gu_bytes for i, s in slots.items()})
+        y = D.step(self.dn, moe.counts, a, rows=self.dn.shape[0],
+                   **{f"w{i}": s * self.dn_bytes for i, s in slots.items()})
         iron.on_host(MoEHost("moe_combine", self.index, self.n, self.top, C, moe), moe.h, y,
                      writes=(moe.out,))
         return moe.out[: call.rows]
@@ -356,7 +400,7 @@ class MoEStates:
 
     def __init__(self, C: int):
         self.counts = iron.state((moe.SB * moe.KT,), bfloat16, name="moe_counts")
-        self.xs = iron.state((moe.EXPERTS * moe.HIDDEN * moe.CAP,), bfloat16, name="moe_xs")
+        self.xs = iron.state((moe.SLOTS * moe.HIDDEN * moe.CAP,), bfloat16, name="moe_xs")
         self.out = iron.state((C, HP), bfloat16, name="moe_out")
         self.h = iron.state((C, HP), bfloat16, name="moe_h")
         self.hn = iron.state((C, HP), bfloat16, name="moe_hn")  # the experts' input, for route
@@ -370,7 +414,8 @@ class MoEHost:
     def __init__(self, kind: str, layer: int, experts: int, top: int, C: int, states: MoEStates):
         self.kind, self.layer, self.experts, self.top, self.C, self.states = kind, layer, experts, top, C, states
         self.hwnpu = dict(kind=kind, layer=layer, experts=experts, top=top, cap=moe.CAP, tokens=C,
-                          in_features=moe.HIDDEN, kt=moe.KT)
+                          in_features=moe.HIDDEN, kt=moe.KT, slots=moe.SLOTS,
+                          slot_values=[""] * moe.EXPERTS + [f"slot{i}" for i in range(moe.EXPERTS, moe.SLOTS)])
 
     def __call__(self, *args):
         getattr(self, self.kind)(*args)
@@ -383,19 +428,21 @@ class MoEHost:
         v = np.take_along_axis(lg, ids, 1)
         w = np.exp(v - v[:, :1])
         w = (w / w.sum(1, keepdims=True)).astype(bfloat16).astype(np.float32)
-        if np.bincount(ids.reshape(-1), minlength=self.experts).max() > moe.CAP:
-            raise NotImplementedError("the host reference runs one pass (hwnpu splits the chunk)")
-        rows = np.zeros((self.experts, moe.CAP, moe.HIDDEN), bfloat16)
-        cnt = np.zeros(self.experts, np.int32)
+        # one pass's slots (the reference's: hwnpu's route splits a chunk needing more into passes)
+        plan = moe.plan_slots(np.bincount(ids.reshape(-1), minlength=self.experts))
+        rows = np.zeros((moe.SLOTS, moe.CAP, moe.HIDDEN), bfloat16)
+        seen = np.zeros(self.experts, np.int64)
         slot = np.zeros((n, self.top), np.int64)
+        where = {(e, r): s for s, (e, r, c) in enumerate(plan) if c}  # (expert, first row) -> slot
         for t in range(n):
             for k in range(self.top):
                 e = ids[t, k]
-                rows[e, cnt[e]] = x[t]
-                slot[t, k] = e * moe.CAP + cnt[e]
-                cnt[e] += 1
-        counts[:] = moe.counts_object(cnt)
-        xs[:] = moe.stream_x(rows, cnt).reshape(-1)
+                s, r = where[(e, seen[e] // moe.CAP * moe.CAP)], seen[e] % moe.CAP
+                rows[s, r] = x[t]
+                slot[t, k] = s * moe.CAP + r
+                seen[e] += 1
+        counts[:] = moe.counts_object([c for _, _, c in plan])
+        xs[:] = moe.stream_x(rows).reshape(-1)
         self.states.plans[self.layer] = (slot, w)
 
     def moe_combine(self, h, y, out):
@@ -425,12 +472,17 @@ class GptOssLayer(DecoderLayer):
     def load_state_dict(self, tree, *, path: str = "") -> None:
         super().load_state_dict(tree, path=path)
         self.cache.sinks = self.self_attn.sink_values
+        if FUSE_QKV and QUANT:
+            self.self_attn.fold()
+            self.self_attn.norm_weight = self.input_layernorm.weight
 
     def body(self, x, call):
         decode = not call.prompt and x.shape[0] == 1 and bool(QUANT)
         # the decode step: the residual added in o_proj's GEMV (SinkAttention.body)
         self.self_attn.residual = x if decode else None
-        h = self.mix(self.input_layernorm(x), call)
+        # QGEMVQKV norms the decode step's input itself
+        fused = decode and self.self_attn.interleaved
+        h = self.mix(x if fused else self.input_layernorm(x), call)
         self.self_attn.residual = None
         if not decode:
             h = x + h
@@ -524,13 +576,14 @@ class GptOss(CausalLM):
     def moe_body(self, values, **standard):
         top = self.config.num_experts_per_tok
         experts = [[values[f"e{l}_{i}"] for i in range(top)] for l in range(self.config.num_hidden_layers)]
+        slots = {i: values[f"slot{i}"] for i in range(moe.EXPERTS, moe.SLOTS)}
         import iron.lm.causal as causal
 
         made = causal.Call
 
         def call(**kw):
             c = made(**kw)
-            c.experts, c.feedback = experts, self._fed
+            c.experts, c.feedback, c.slots = experts, self._fed, slots
             if c.prompt:
                 if getattr(self, "_moe", None) is None:
                     self._moe = MoEStates(self.config.prefill_chunk)
@@ -558,7 +611,7 @@ def moe_class(base, layers: int, top: int = 4):
     """``base`` whose body takes the ``top`` offsets of each of ``layers`` layers as scratchpad values."""
     from iron import Carried, Scratchpad
 
-    names = [f"e{l}_{i}" for l in range(layers) for i in range(top)]
+    names = [f"e{l}_{i}" for l in range(layers) for i in range(top)] + [f"slot{i}" for i in range(moe.EXPERTS, moe.SLOTS)]
     params = ", ".join(f"{n}: Scratchpad[np.int32] = np.int32(0)" for n in names)
     src = (
         "def body(self, ids=None, *, token: Carried[np.int32], position: Carried[np.int32], "

@@ -246,6 +246,73 @@ __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16
       aie::store_v(dst + 8 * t, aie::add(aie::load_v<8>(dst + 8 * t), v[t].template extract<8>(r)));
   }
 }
+
+// A block decoded once into tiles (DEC_BYTES: the 160 tiles' mantissas, then their exponents),
+// then used by each of a slot's objects of rows (mx4_rows_mm_dec): a block's 160 tile builds once
+// rather than once per 8 rows.
+constexpr int TILES = (KT / 8) * 4;
+constexpr int GROUPS = KT / 32;                     // a group's 4 k-steps share their tiles' exponents
+constexpr int DEC_BYTES = TILES * 64 + GROUPS * 4 * 8; // mantissas, then each (group, tile)'s exponents
+
+static inline void mx4_decode(const mx4_blk_t *A, int8_t *dec) {
+  const uint32_t *codes = reinterpret_cast<const uint32_t *>(A->codes);
+  uint64_t *ex = reinterpret_cast<uint64_t *>(dec + TILES * 64);
+  for (int j = 0; j < KT / 8; j++) {
+    const uint64_t *e8 = reinterpret_cast<const uint64_t *>(A->exps + (j / 4) * MT);
+    aie::vector<uint32_t, 16> w0 = aie::load_v<16>(codes + j * 16);
+    aie::vector<uint32_t, 16> w1 = aie::load_v<16>(codes + (KT / 8 + j) * 16);
+    v64bfp16ebs8 t0 = mx4_tile(w0, 0, e8[0]), t1 = mx4_tile(w0, 1, e8[1]);
+    v64bfp16ebs8 t2 = mx4_tile(w1, 0, e8[2]), t3 = mx4_tile(w1, 1, e8[3]);
+    int8_t *m = dec + j * 4 * 64;
+    aie::store_v(m, aie::vector<int8_t, 64>(t0.mantissa));
+    aie::store_v(m + 64, aie::vector<int8_t, 64>(t1.mantissa));
+    aie::store_v(m + 128, aie::vector<int8_t, 64>(t2.mantissa));
+    aie::store_v(m + 192, aie::vector<int8_t, 64>(t3.mantissa));
+    if (j % 4 == 0) {
+      ex[j] = __builtin_bit_cast(uint64_t, t0.exponent); // (j / 4) * 4 + t
+      ex[j + 1] = __builtin_bit_cast(uint64_t, t1.exponent);
+      ex[j + 2] = __builtin_bit_cast(uint64_t, t2.exponent);
+      ex[j + 3] = __builtin_bit_cast(uint64_t, t3.exponent);
+    }
+  }
+}
+
+static inline v64bfp16ebs8 dec_tile(const int8_t *dec, int j, int t) {
+  v64bfp16ebs8 b;
+  b.mantissa = aie::load_v<64>(dec + (4 * j + t) * 64);
+  b.exponent = __builtin_bit_cast(v8int8, reinterpret_cast<const uint64_t *>(dec + TILES * 64)[(j / 4) * 4 + t]);
+  return b;
+}
+
+__attribute__((noinline)) static void mx4_rows_mm_dec(const int8_t *dec, const bf16 *x, float *acc) {
+#ifdef MX_NOCOMPUTE
+  return;
+#endif
+  aie::accum<accfloat, 64> c0 = aie::zeros<accfloat, 64>(), c1 = c0, c2 = c0, c3 = c0;
+  for (int j = 0; j < KT / 8; j++) {
+    const bf16 *xr = x + 8 * j;
+    aie::vector<bf16, 64> a = aie::concat(
+        aie::concat(aie::load_v<8>(xr), aie::load_v<8>(xr + KT), aie::load_v<8>(xr + 2 * KT), aie::load_v<8>(xr + 3 * KT)),
+        aie::concat(aie::load_v<8>(xr + 4 * KT), aie::load_v<8>(xr + 5 * KT), aie::load_v<8>(xr + 6 * KT),
+                    aie::load_v<8>(xr + 7 * KT)));
+    aie::accum<accfloat, 64> af;
+    af.from_vector(a);
+    aie::block_vector<bfp16ebs8, 64> ab = af.template to_vector<bfp16ebs8>();
+    c0 = mac_8x8_8x8T(ab, dec_tile(dec, j, 0), c0);
+    c1 = mac_8x8_8x8T(ab, dec_tile(dec, j, 1), c1);
+    c2 = mac_8x8_8x8T(ab, dec_tile(dec, j, 2), c2);
+    c3 = mac_8x8_8x8T(ab, dec_tile(dec, j, 3), c3);
+  }
+  aie::vector<float, 64> v[4] = {c0.template to_vector<float>(), c1.template to_vector<float>(),
+                                 c2.template to_vector<float>(), c3.template to_vector<float>()};
+#pragma clang loop unroll(disable)
+  for (int r = 0; r < 8; r++) {
+    float *dst = acc + r * MT;
+#pragma clang loop unroll(full)
+    for (int t = 0; t < 4; t++)
+      aie::store_v(dst + 8 * t, aie::add(aie::load_v<8>(dst + 8 * t), v[t].template extract<8>(r)));
+  }
+}
 #endif
 
 extern "C" {
@@ -288,6 +355,38 @@ void mx4_rows_block2(const uint8_t *g, const uint8_t *u, const bf16 *x, float *a
   mx4_rows_block(g, x, ag, counts, e, b);
   mx4_rows_block(u, x, au, counts, e, b);
 }
+
+#ifdef MX_BFP
+// The decoded forms: dec (one block, DEC_BYTES) or dec2 (gate then up), skipped for an empty slot.
+void mx4_rows_dec(const uint8_t *block, int8_t *dec, const int32_t *counts, int32_t e) {
+  if (counts[e] > 0)
+    mx4_decode(reinterpret_cast<const mx4_blk_t *>(block), dec);
+}
+
+void mx4_rows_dec2(const uint8_t *g, const uint8_t *u, int8_t *dec, const int32_t *counts, int32_t e) {
+  if (counts[e] > 0) {
+    mx4_decode(reinterpret_cast<const mx4_blk_t *>(g), dec);
+    mx4_decode(reinterpret_cast<const mx4_blk_t *>(u), dec + DEC_BYTES);
+  }
+}
+
+void mx4_rows_blockd(const int8_t *dec, const bf16 *x, float *acc, const int32_t *counts, int32_t e, int32_t b) {
+  aie::set_rounding(aie::rounding_mode::conv_even);
+  const int lo = b * SB;
+  if (counts[e] > lo)
+    mx4_rows_mm_dec(dec, x, acc + lo * MT);
+}
+
+void mx4_rows_block2d(const int8_t *dec, const bf16 *x, float *ag, float *au, const int32_t *counts, int32_t e,
+                      int32_t b) {
+  aie::set_rounding(aie::rounding_mode::conv_even);
+  const int lo = b * SB;
+  if (counts[e] > lo) {
+    mx4_rows_mm_dec(dec, x, ag + lo * MT);
+    mx4_rows_mm_dec(dec + DEC_BYTES, x, au + lo * MT);
+  }
+}
+#endif
 
 // gpt-oss's glu of 16 gate and up values: (clamp(u, -L, L) + 1) g' / (1 + exp(-1.702 g')).
 static inline aie::vector<bf16, 16> glu16(aie::vector<float, 16> gv, aie::vector<float, 16> uv) {

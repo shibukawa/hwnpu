@@ -841,7 +841,7 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 			return nil, fmt.Errorf("iron: layer %d's moe_route without a moe_combine", route.Layer)
 		}
 		tm := time.Now()
-		if err := m.runMoECommand(ctx, v, routes[route.Layer], route, combine, runOnce); err != nil {
+		if err := m.runMoECommand(ctx, v, routes[route.Layer], route, combine, runOnce, values); err != nil {
 			return nil, err
 		}
 		if timing {

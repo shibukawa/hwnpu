@@ -644,6 +644,147 @@ def add_operator(adds: int):
     return cls
 
 
+_QKV_OPS = {}
+
+
+def qkv_operator():
+    """QGEMVQKV: a fused q, k, v projection for one row (kernels/mv_add.h's Q_QKV), ``y =
+    rope(s W x + b)``: the input RMSNorm folded in (its weight in W's columns, s = 1 / sqrt(mean
+    (x^2) + eps) from x on each core), the bias added and the first ``rope_rows`` rows (q's and
+    k's, their table in interleaved pairs) turned by RoPE with the call's angles (cos and sin
+    interleaved, a head's 64), which ride on x's channel after the bias. One operator for the
+    norm, the GEMV, the bias and RoPE."""
+    if "op" in _QKV_OPS:
+        return _QKV_OPS["op"]
+    import aie.dialects.index as index
+    from aie.dialects.aie import T
+    from aie.helpers.taplib import TensorAccessPattern
+    from aie.iron import Buffer, In, ObjectFifo, Worker
+    from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
+    from aie.iron.kernel import ExternalFunction
+    from aie.utils import config
+    from aie.utils.compile.jit.params import param
+
+    Add = add_operator(1)
+    QGEMV, _ = operators()
+    D = 64  # a head's angles: the rows of a column block
+
+    body = dict(
+        rope_rows=param(array=True),
+        eps=param(array=True),
+        ang=In(D, obj_shape=(D,), per=(QGEMV.num_aie_columns,), replicate=True),
+        gw=In(QGEMV.K, obj_shape=(QGEMV.K,), per=(QGEMV.num_aie_columns,), replicate=True),
+    )
+    body["__annotations__"] = {"rope_rows": int, "eps": float}
+
+    def build(self):
+        K, n, cores, B = self.K, self.num_aie_columns, self.cores, self.block_bytes
+        if cores != 2:
+            raise ValueError("QGEMVQKV: two cores a column (a core's 32 out-features of a head)")
+        cbs, kbs, out, R = self.N // CB // n, K // K_TILE, CB // cores, self.N // n
+        kdir = Path(config.aie_kernels_dir())
+        here = Path(__file__).resolve().parent / "kernels"
+        xa_t = np.ndarray[(K + R + D + K,), np.dtype[bfloat16]]  # x, the bias, the angles, the norm's weight
+        y_t = np.ndarray[(out,), np.dtype[bfloat16]]
+        acc_t = np.ndarray[(out,), np.dtype[np.float32]]
+        blk_t = np.ndarray[(B,), np.dtype[np.uint8]]
+        sums_t = np.ndarray[(K // GROUP,), np.dtype[bfloat16]]
+        flags = [f"-D{self.fmt.upper()}_K={K}", f"-DQ_OUT={out}", "-DQ_QKV=1", f"-DQ_R={R}",
+                 f"-DQ_ROPE_ROWS={self.rope_rows}", f"-DQ_EPS={float(self.eps)!r}f"]
+        common = dict(source_file=str(here / f"{self.fmt}_mv.cc"),
+                      include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
+                      compile_flags=flags,
+                      object_file_name=f"{self.fmt}_mv_qkvg_{K}_{out}_{R}_{self.rope_rows}_{abs(hash(self.eps)) % 10**8}.o")
+        begin = ExternalFunction(f"{self.fmt}_mv_begin_norm", arg_types=[xa_t, sums_t, acc_t], **common)
+        block = ExternalFunction(f"{self.fmt}_mv_block", arg_types=[blk_t, xa_t, sums_t, acc_t, np.int32, np.int32],
+                                 **common)
+        end = ExternalFunction(f"{self.fmt}_mv_end_qkv",
+                               arg_types=[acc_t, xa_t, np.int32, np.int32, np.int32, y_t], **common)
+        w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+        x_l3 = [ObjectFifo(xa_t, depth=1) for _ in range(n)]
+        y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
+        w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], tile=AnyMemTile) for f in w_l3]
+        x_l1 = [f.cons().forward(obj_type=xa_t, tile=AnyMemTile) for f in x_l3]
+        y_l1 = [f.prod().join([0, out], obj_types=[y_t, y_t], depths=[2, 2], tile=AnyMemTile) for f in y_l3]
+
+        def core(w_f, x_f, y_f, sums, acc, begin, block, end, half, lane):
+            x = x_f.acquire(1)
+            begin(x, sums, acc)
+            for cb in range_(cbs):
+                cb32 = index.casts(T.i32(), cb)
+                for kb in range_(kbs):
+                    kb32 = index.casts(T.i32(), kb)
+                    w = w_f.acquire(1)
+                    block(w, x, sums, acc, kb32, 0)  # a core's own half of the block (the split's)
+                    w_f.release(1)
+                y = y_f.acquire(1)
+                end(acc, x, cb32, half, lane, y)
+                y_f.release(1)
+            x_f.release(1)
+
+        workers = [
+            Worker(lambda w_f, x_f, y_f, sm, a, b, bl, e, half=j, lane=i: core(w_f, x_f, y_f, sm, a, b, bl, e, half, lane),
+                   [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), Buffer(sums_t), Buffer(acc_t),
+                    begin, block, end])
+            for i in range(n) for j in range(cores)
+        ]
+        self.W.bind([f.prod() for f in w_l3])
+        for name in ("x", "a1", "ang", "gw"):
+            getattr(self, name).bind([f.prod() for f in x_l3])
+        self.y.bind([f.cons() for f in y_l3])
+        from iron.common import Built
+
+        return Built(workers, [])
+
+    def sequence(self, rt):
+        n, N, K = self.num_aie_columns, self.N, self.K
+        R = N // n
+        drains = [self.y.drain(tap, lane=lane, wait=True, managed=False) for lane, tap, _, _ in self.y.transfers()]
+        for lane in range(n):
+            self.x.fill(TensorAccessPattern((K,), 0, [K], [1]), lane=lane, managed=False)
+            self.a1.fill(TensorAccessPattern((N,), lane * R, [R], [1]), lane=lane, managed=False)
+            self.ang.fill(TensorAccessPattern((D,), 0, [D], [1]), lane=lane, managed=False)
+            self.gw.fill(TensorAccessPattern((K,), 0, [K], [1]), lane=lane, managed=False)
+        for lane, tap, _, _ in self.W.transfers():
+            self.W.fill(tap, lane=lane, managed=False)
+        for d in drains:
+            d.await_()
+
+    def reference(self, W, x, a1, ang, gw):
+        w = dequantize_fmt(W, self.N, self.K, self.fmt).astype(np.float64)
+        xv = np.asarray(x, np.float64)
+        s = 1 / np.sqrt(np.mean(xv * xv) + float(self.eps))
+        xn = (xv * np.asarray(gw, np.float64) * s).astype(bfloat16).astype(np.float64)
+        y = w @ xn + np.asarray(a1, np.float64).reshape(-1)
+        t = np.asarray(ang, np.float64).reshape(-1)
+        c, sn = t[0::2], t[1::2]
+        r = y[: self.rope_rows].reshape(-1, D // 2, 2)
+        a, b = r[..., 0].copy(), r[..., 1].copy()
+        r[..., 0], r[..., 1] = a * c - b * sn, a * sn + b * c
+        y[: self.rope_rows] = r.reshape(-1)
+        return y.astype(bfloat16)
+
+    body.update(build=build, sequence=sequence, reference=reference, __doc__=qkv_operator.__doc__)
+    cls = type("QGEMV", (Add,), body)
+    _QKV_OPS["op"] = cls
+    return cls
+
+
+def qkv_linear(x, weight, bias, angles, norm_weight, rope_rows: int, eps: float):
+    """QGEMVQKV on one row of x (the layer's input, not normed), the norm's weight and a q_param
+    weight (q and k in interleaved pairs)."""
+    entry = _Q4.get(id(weight))
+    if entry is None or entry[0] is not weight:
+        raise ValueError("qkv_linear: the weight is not a q_param")
+    _, n, k, fmt = entry
+    op = qkv_operator()
+    given = dict(W=weight.reshape(-1, FORMATS[fmt]), x=x.reshape(k), a1=bias.reshape(n), ang=angles.reshape(64),
+                 gw=norm_weight.reshape(k))
+    names = [m.name for m in op.declaration.members if m.name in given]
+    return op.step(*(given[nm] for nm in names), fmt=fmt, cores=2, rope_rows=rope_rows, eps=eps)
+
+
 def _rows_operator():
     """QGEMVRows: QGEMV's ``Y = X W.T`` for a few rows of X (a call checking drafts), q8 or q6,
     one or two cores a column as QGEMV's. The weights stream once and multiply every row
@@ -1062,7 +1203,13 @@ def _check(args) -> int:
         def __init__(self):
             self.q = iron.param(q.reshape(-1))
 
-        def body(self, x, a1=None, a2=None, *, rows: Scratchpad[np.int32] = np.int32(0)):
+        def body(self, x, a1=None, a2=None, ang=None, gw=None, *, rows: Scratchpad[np.int32] = np.int32(0)):
+            if args.qkv:
+                ang, gw = (a2, ang) if gw is None else (ang, gw)
+                op = qkv_operator()
+                given = dict(W=self.q.reshape(-1, FORMATS[fmt]), x=x, a1=a1, ang=ang, gw=gw)
+                names = [m.name for m in op.declaration.members if m.name in given]
+                return op.step(*(given[nm] for nm in names), fmt=fmt, cores=2, rope_rows=args.qkv, eps=1e-5)
             if args.adds:
                 return q_linear(x, self.q, n, k, fmt, args.cores, adds=tuple(a for a in (a1, a2) if a is not None))
             if args.gemv_rows:
@@ -1072,7 +1219,19 @@ def _check(args) -> int:
                 return q_linear(x[:rows], self.q, n, k, fmt, args.cores)
             return q_linear(x, self.q, n, k, fmt, args.cores)
 
-        def reference(self, x, a1=None, a2=None, rows=0):
+        def reference(self, x, a1=None, a2=None, ang=None, gw=None, rows=0):
+            if args.qkv:
+                ang, gw = (a2, ang) if gw is None else (ang, gw)  # the inputs in order: x, a1, ang, gw
+                x = np.asarray(x, np.float64)
+                sc = 1 / np.sqrt(np.mean(x * x) + 1e-5)
+                xn = (x * np.asarray(gw, np.float64) * sc).astype(bfloat16).astype(np.float64)
+                y = deq.astype(np.float64) @ xn + np.asarray(a1, np.float64)
+                t = np.asarray(ang, np.float64)
+                r = y[: args.qkv].reshape(-1, 32, 2)
+                a, b = r[..., 0].copy(), r[..., 1].copy()
+                r[..., 0], r[..., 1] = a * t[0::2] - b * t[1::2], a * t[1::2] + b * t[0::2]
+                y[: args.qkv] = r.reshape(-1)
+                return y.astype(bfloat16)
             x = np.asarray(x, np.float64)
             y = x @ deq.astype(np.float64).T
             for a in (a1, a2):
@@ -1085,12 +1244,18 @@ def _check(args) -> int:
 
     g = G()
     shape = (args.gemv_rows, k) if args.gemv_rows else (k,) if args.rows == 0 else (args.rows, k)
-    add_names = [f"a{i + 1}" for i in range(args.adds)]
-    cg = g.compile(x=shape, **{a: (n,) for a in add_names})
+    add_names = [f"a{i + 1}" for i in range(1 if args.qkv else args.adds)]
+    cg = g.compile(x=shape, **{a: (n,) for a in add_names}, **(dict(ang=(64,), gw=(k,)) if args.qkv else {}))
     m = export_graph(cg, args.out, "qlinear", dict(n=n, k=k, fmt=fmt))
     # a mean in x shows a rounding bias that zero-mean inputs average away
     x = (rng.standard_normal(shape) + args.x_mean).astype(bfloat16)
     inputs = dict(x=x, **{a: rng.standard_normal(n).astype(bfloat16) for a in add_names})
+    if args.qkv:
+        th = rng.uniform(-np.pi, np.pi, 32)
+        ang = np.empty(64, np.float32)
+        ang[0::2], ang[1::2] = np.cos(th), np.sin(th)
+        inputs["ang"] = ang.astype(bfloat16)
+        inputs["gw"] = (1 + 0.3 * rng.standard_normal(k)).astype(bfloat16)
     write_check(g, m, args.out, inputs, dict(rows=args.valid or args.rows) if args.rows and not args.gemv_rows else None)
     print(f"{args.out}: {fmt} {n} x {k}, {q.nbytes >> 10} KiB of weights")
     return 0
@@ -1109,6 +1274,7 @@ def main(argv=None) -> int:
     c.add_argument("--gemv-rows", type=int, default=0, help="rows of x through QGEMVRows (a call checking drafts; q8)")
     c.add_argument("--valid", type=int, default=0, help="rows the call bounds x to (default all)")
     c.add_argument("--adds", type=int, default=0, help="vectors added in the GEMV (QGEMVAdd: 1 or 2)")
+    c.add_argument("--qkv", type=int, default=0, help="QGEMVQKV: the rows turned by RoPE (the norm and a bias too)")
     c.add_argument("--x-mean", type=float, default=0.0, help="the mean of x's random values")
     c.add_argument("--prefill", choices=("bfp16", "bf16"), default=PREFILL["q4"], help="q4nx's prompt path (q_linear)")
     a = ap.parse_args(argv)

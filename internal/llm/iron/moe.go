@@ -28,6 +28,11 @@ type HostStep struct {
 	// HIDDEN, KT)
 	InFeatures int      `json:"in_features,omitempty"`
 	KT         int      `json:"kt,omitempty"`
+	// moe_route_mx4 by slots (iron_gptoss_moe's SLOTS): a pass's Slots slots of up to Cap rows,
+	// slot e < Experts expert e's first Cap rows, the others an expert's further rows, slot i's
+	// expert the graph's value SlotValues[i] ("" for a fixed slot); none, a slot an expert
+	Slots      int      `json:"slots,omitempty"`
+	SlotValues []string `json:"slot_values,omitempty"`
 	Reads      []Region `json:"reads"`
 	Writes  []Region `json:"writes"`
 }
@@ -72,7 +77,18 @@ type moePass struct {
 	// outRows: the rows of the experts' output read after the pass (rows, or every expert's Cap
 	// rows where the output is by expert, moe_route_mx4)
 	outRows int
+	// values: the graph's values the pass sets (moe_route_mx4 by slots: each slot's expert)
+	values map[string]int64
+	// moe_route_mx4: x written as row copies into its region (xs nil: the slots' rows past their
+	// counts are not read), and only each slot's rows of the output read back
+	copies   []rowCopy
+	slotRows []int
+	cap      int
 }
+
+// rowCopy is one k-block of one choice's row of x: bytes src.. of the chunk's rows to dst.. of
+// x's stream, n bytes.
+type rowCopy struct{ dst, src, n int }
 
 func (m *Model) region(v *version, r Region) ([]byte, error) {
 	buf := m.buffer(v, r.Argument)
@@ -318,10 +334,13 @@ func (m *Model) moeHostCombine(v *version, h *HostStep, rt *moeRoute, n int) err
 
 // runMoECommand runs command k of v (an experts' command after a moe_route) once a pass: the
 // pass's counts and x written first, its output (combine's second read) copied out after.
-func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, route, combine *HostStep, run func() error) error {
+func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, route, combine *HostStep, run func() error, values map[string]int64) error {
 	yr := combine.Reads[1]
 	K := combine.Reads[0].Shape[1]
 	for i, p := range rt.passes {
+		for k, x := range p.values {
+			values[k] = x
+		}
 		if i > 0 { // the last pass's y lies over the shared expert's input
 			if err := m.writeRegion(v, route.Reads[1], rt.hn); err != nil {
 				return err
@@ -330,11 +349,23 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 		if err := m.writeRegion(v, route.Writes[0], p.counts); err != nil {
 			return err
 		}
-		if err := m.writeRegion(v, route.Writes[1], p.xs); err != nil {
+		if p.copies != nil {
+			if err := m.writeCopies(v, route.Writes[1], rt.hn, p.copies); err != nil {
+				return err
+			}
+		} else if err := m.writeRegion(v, route.Writes[1], p.xs); err != nil {
 			return err
 		}
 		if err := run(); err != nil {
 			return err
+		}
+		if p.slotRows != nil {
+			y, err := m.readSlots(v, yr, p.slotRows, p.cap, K)
+			if err != nil {
+				return err
+			}
+			rt.outs = append(rt.outs, y)
+			continue
 		}
 		y, err := m.readRegion(v, yr, min(yr.Bytes, 2*p.outRows*K)) // the real rows; the padding rows' are zero
 		if err != nil {
@@ -343,6 +374,50 @@ func (m *Model) runMoECommand(ctx context.Context, v *version, rt *moeRoute, rou
 		rt.outs = append(rt.outs, append([]byte(nil), y...))
 	}
 	return nil
+}
+
+// writeCopies writes x's rows into r's region in place (the other rows left as they are: past a
+// slot's count, the kernels do not use them), then the region's touched span to the device.
+func (m *Model) writeCopies(v *version, r Region, rows []byte, copies []rowCopy) error {
+	b, err := m.region(v, r)
+	if err != nil {
+		return err
+	}
+	lo, hi := len(b), 0
+	for _, c := range copies {
+		if c.dst+c.n > len(b) || c.src+c.n > len(rows) {
+			return fmt.Errorf("iron: a row of x past %s", r.Name)
+		}
+		copy(b[c.dst:c.dst+c.n], rows[c.src:c.src+c.n])
+		lo, hi = min(lo, c.dst), max(hi, c.dst+c.n)
+	}
+	if hi <= lo {
+		return nil
+	}
+	return m.buffer(v, r.Argument).SyncToDevice(r.Offset+lo, hi-lo)
+}
+
+// readSlots copies out each slot's rows of the experts' output r (slots of cap rows of k bf16),
+// the rows past a slot's count left zero.
+func (m *Model) readSlots(v *version, r Region, rows []int, cap, k int) ([]byte, error) {
+	out := make([]byte, 2*len(rows)*cap*k)
+	for s, c := range rows {
+		if c == 0 {
+			continue
+		}
+		at := 2 * s * cap * k
+		if at+2*c*k > r.Bytes {
+			return nil, fmt.Errorf("iron: slot %d past %s", s, r.Name)
+		}
+		sub := r
+		sub.Offset, sub.Bytes = r.Offset+at, 2*c*k
+		b, err := m.viewRegion(v, sub, 2*c*k)
+		if err != nil {
+			return nil, err
+		}
+		copy(out[at:], b)
+	}
+	return out, nil
 }
 
 // moeHostRouteMX4 runs a moe_route_mx4 step over the chunk's first n rows: each token's top of
@@ -357,7 +432,7 @@ func (m *Model) moeHostRouteMX4(v *version, h *HostStep, n int) (*moeRoute, erro
 	lg, hn := h.Reads[0], h.Reads[1]
 	C, L, K, E, top, cap := h.Tokens, lg.Shape[1], hn.Shape[1], h.Experts, h.Top, h.Cap
 	in, kt := h.InFeatures, h.KT
-	if n > C || E > L || in > K || h.Writes[0].Bytes < 4*E || h.Writes[1].Bytes < 2*E*in*cap {
+	if n > C || E > L || in > K {
 		return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d rows of %d, %d experts of %d logits, %d of %d in-features", h.Layer, n, C, E, L, in, K)
 	}
 	logits, err := m.readRegion(v, lg, 2*n*L)
@@ -390,16 +465,48 @@ func (m *Model) moeHostRouteMX4(v *version, h *HostStep, n int) (*moeRoute, erro
 		}
 	}
 	// Passes: each token into the first pass where its experts have room (any pass: combine
-	// finds each choice's row), a new pass where none has. Every pass streams all the experts'
-	// weights again, so fewer is faster: in order, a 256-token chunk took 3 passes at Cap 64.
+	// finds each choice's row), a new pass where none has. Every pass streams the weights again,
+	// so fewer is faster: in order, a 256-token chunk took 3 passes at Cap 64 an expert. By slots,
+	// an expert's rows take ceil(rows / Cap) slots of the pass's Slots.
+	S := E
+	if h.Slots > 0 {
+		S = h.Slots
+		if len(h.SlotValues) != S {
+			return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots, %d slot values", h.Layer, S, len(h.SlotValues))
+		}
+	}
+	if h.Writes[0].Bytes < 4*S || h.Writes[1].Bytes < 2*S*in*cap {
+		return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots of %d rows past its counts and x", h.Layer, S, cap)
+	}
+	if h.Slots > 0 && S < E {
+		return nil, fmt.Errorf("iron: moe_route_mx4 of layer %d: %d slots for %d experts", h.Layer, S, E)
+	}
+	need := func(cnt []int) int { // the slots cnt takes: an expert's fixed one, and one each further Cap rows
+		n := E
+		for _, c := range cnt {
+			if c > cap {
+				n += (c - 1) / cap
+			}
+		}
+		return n
+	}
 	var passTokens [][]int
 	var passCnt [][]int
+	trial := make([]int, E)
 	for t := 0; t < n; t++ {
 		p := -1
 		for q := range passTokens {
+			copy(trial, passCnt[q])
 			fits := true
-			for k := 0; k < top && fits; k++ {
-				fits = passCnt[q][ids[t*top+k]] < cap
+			for k := 0; k < top; k++ {
+				trial[ids[t*top+k]]++
+			}
+			if h.Slots == 0 {
+				for k := 0; k < top && fits; k++ {
+					fits = trial[ids[t*top+k]] <= cap
+				}
+			} else {
+				fits = need(trial) <= S
 			}
 			if fits {
 				p = q
@@ -417,24 +524,47 @@ func (m *Model) moeHostRouteMX4(v *version, h *HostStep, n int) (*moeRoute, erro
 	}
 	kbs := in / kt
 	for p, tokens := range passTokens {
-		ps := moePass{counts: make([]byte, h.Writes[0].Bytes), xs: make([]byte, 2*E*in*cap),
-			rows: top * len(tokens), outRows: E * cap}
+		ps := moePass{counts: make([]byte, h.Writes[0].Bytes), rows: top * len(tokens), outRows: S * cap, cap: cap}
+		// expert ex's first Cap rows in slot ex, its further ones from slot over[ex] on
+		over := make([]int, E)
+		slotExpert, slotRows := make([]int, S), make([]int, S)
+		next := E
+		for ex, c := range passCnt[p] {
+			slotExpert[ex], slotRows[ex] = ex, min(cap, c)
+			over[ex] = next
+			for r := cap; r < c; r += cap {
+				slotExpert[next], slotRows[next] = ex, min(cap, c-r)
+				next++
+			}
+		}
+		if h.Slots > 0 {
+			ps.values = make(map[string]int64, S)
+			for i, name := range h.SlotValues {
+				if name != "" {
+					ps.values[name] = int64(slotExpert[i])
+				}
+			}
+		}
 		at := make([]int, E)
 		for _, t := range tokens {
 			for k := 0; k < top; k++ {
 				c := t*top + k
 				ex := int(ids[c])
-				r := at[ex]
+				sl, r := ex, at[ex]%cap
+				if q := at[ex] / cap; q > 0 {
+					sl = over[ex] + q - 1
+				}
 				at[ex]++
-				rt.pass[c], rt.row[c] = int32(p), int32(ex*cap+r)
+				rt.pass[c], rt.row[c] = int32(p), int32(sl*cap+r)
 				for kb := 0; kb < kbs; kb++ {
-					dst := ((ex*kbs+kb)*cap + r) * kt
-					copy(ps.xs[2*dst:2*(dst+kt)], rows[2*(t*K+kb*kt):2*(t*K+(kb+1)*kt)])
+					dst := ((sl*kbs+kb)*cap + r) * kt
+					ps.copies = append(ps.copies, rowCopy{dst: 2 * dst, src: 2 * (t*K + kb*kt), n: 2 * kt})
 				}
 			}
 		}
-		for ex, c := range at {
-			ps.counts[4*ex], ps.counts[4*ex+1], ps.counts[4*ex+2], ps.counts[4*ex+3] = byte(c), byte(c>>8), byte(c>>16), byte(c>>24)
+		ps.slotRows = slotRows
+		for sl, c := range slotRows {
+			ps.counts[4*sl], ps.counts[4*sl+1], ps.counts[4*sl+2], ps.counts[4*sl+3] = byte(c), byte(c>>8), byte(c>>16), byte(c>>24)
 		}
 		rt.passes = append(rt.passes, ps)
 	}

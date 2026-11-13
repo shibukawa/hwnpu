@@ -725,52 +725,91 @@ def _check(a) -> int:
 
 # --- a prompt chunk's experts: every expert's weights once a pass ---------------------------
 
-CAP = int(os.environ.get("MX4_CAP", "128"))  # an expert's rows a pass (the host splits a chunk into passes past it)
-SB = int(os.environ.get("MX4_SB", "8"))  # rows an object of x (a core holds CAP rows' accumulators of a gate and an up block)
-GROUPS = EXPERTS // TOP  # a prompt runs the experts 4 at a time on the decode step's columns
-COUNT_WORDS = 32  # the counts' int32 words, the first object of the x channel
+CAP = int(os.environ.get("MX4_CAP", "56"))  # a slot's rows (a core holds CAP rows' accumulators of a gate and an up block, and a decoded pair: 64 does not fit)
+SB = int(os.environ.get("MX4_SB", "8"))  # rows an object of x
+# A pass runs SLOTS slots of up to CAP rows: slot e < EXPERTS expert e's first CAP rows, the
+# others an expert's further rows (its weights at a per-call offset, the graph's slot<i>; a
+# command's scratchpad holds 32 words, so not every slot can take one). x and the activations
+# stream a slot's CAP rows whatever its count, so CAP near a chunk's rows an expert (256 tokens:
+# about 32) is what they cost; the overflow slots are the weights read again.
+SLOTS = int(os.environ.get("MX4_SLOTS", "40"))
+GROUPS = SLOTS // TOP  # a prompt runs the slots 4 at a time on the decode step's columns
+COUNT_WORDS = 64  # the counts' int32 words (a slot's rows), the first object of the x channel
+assert SLOTS % TOP == 0 and SLOTS <= COUNT_WORDS
+
+
+def plan_slots(counts):
+    """The slots of one pass for each expert's rows ``counts``: (expert, first row, rows) of each
+    slot, expert e's first CAP rows in slot e, its further ones in the overflow slots in turn, the
+    unused ones (0, 0, 0) (hwnpu's moeHostRouteMX4 plans the same way)."""
+    counts = [int(c) for c in counts]
+    out = [(e, 0, min(CAP, c)) for e, c in enumerate(counts)]
+    for e, c in enumerate(counts):
+        for r in range(CAP, c, CAP):
+            out.append((e, r, min(CAP, c - r)))
+    if len(out) > SLOTS:
+        raise NotImplementedError(f"{len(out)} slots of {SLOTS} (hwnpu splits the chunk into passes)")
+    return out + [(0, 0, 0)] * (SLOTS - len(out))
 
 
 def counts_object(counts):
-    """The x channel's first object: each expert's rows (int32), zeros after (SB x KT bf16)."""
+    """The x channel's first object: each slot's rows (int32), zeros after (SB x KT bf16)."""
     o = np.zeros(SB * KT * 2, np.uint8)
     o[: 4 * len(counts)] = np.asarray(counts, np.int32).view(np.uint8)
     return o.view(bfloat16)
 
 
-def stream_x(rows, counts, K=HIDDEN):
-    """MX4GroupGateUp's x: by expert, by k-block, its CAP rows (``rows`` (E, CAP, K), those past
-    its count anything) of KT in-features: (E, K / KT, CAP, KT) bf16."""
-    r = np.asarray(rows).reshape(EXPERTS, CAP, K // KT, KT)
+def stream_x(rows, K=HIDDEN):
+    """MX4GroupGateUp's x: by slot, by k-block, its CAP rows (``rows`` (SLOTS, CAP, K), those past
+    its count anything) of KT in-features: (SLOTS, K / KT, CAP, KT) bf16."""
+    r = np.asarray(rows).reshape(SLOTS, CAP, K // KT, KT)
     return np.ascontiguousarray(r.transpose(0, 2, 1, 3))
 
 
-def group_reference_gate_up(gu, counts, xs, K=HIDDEN):
-    """MX4GroupGateUp's output (E, CAP, IPAD) of tables gu (bytes, E experts), counts and xs."""
+def group_reference_gate_up(gu, experts, counts, xs, K=HIDDEN):
+    """MX4GroupGateUp's output (SLOTS, CAP, IPAD) of tables gu (bytes, EXPERTS experts), each slot's
+    expert and rows, and xs."""
     eb = gu.size // EXPERTS
-    x = np.asarray(xs, np.float64).reshape(EXPERTS, K // KT, CAP, KT).transpose(0, 2, 1, 3).reshape(EXPERTS, CAP, K)
-    out = np.zeros((EXPERTS, CAP, IPAD), np.float64)
-    for e in range(EXPERTS):
-        n = int(counts[e])
+    x = np.asarray(xs, np.float64).reshape(SLOTS, K // KT, CAP, KT).transpose(0, 2, 1, 3).reshape(SLOTS, CAP, K)
+    out = np.zeros((SLOTS, CAP, IPAD), np.float64)
+    for s in range(SLOTS):
+        n, e = int(counts[s]), int(experts[s])
         if n == 0:
             continue
         gw, uw, gb, ub = unpack_gate_up(gu[e * eb : (e + 1) * eb], K)
-        out[e, :n] = glu(x[e, :n] @ gw.T + gb, x[e, :n] @ uw.T + ub)
+        out[s, :n] = glu(x[s, :n] @ gw.T + gb, x[s, :n] @ uw.T + ub)
     return out
 
 
-def group_reference_down(dn, counts, a, K=INTER):
-    """MX4GroupDown's output (E, CAP, NPAD) of tables dn, counts and the activations a (E, CAP, IPAD)."""
+def group_reference_down(dn, experts, counts, a, K=INTER):
+    """MX4GroupDown's output (SLOTS, CAP, NPAD) of tables dn, each slot's expert and rows, and the
+    activations a (SLOTS, CAP, IPAD)."""
     eb = dn.size // EXPERTS
-    a = np.asarray(a, np.float64).reshape(EXPERTS, CAP, IPAD)
-    out = np.zeros((EXPERTS, CAP, NPAD), np.float64)
-    for e in range(EXPERTS):
-        n = int(counts[e])
+    a = np.asarray(a, np.float64).reshape(SLOTS, CAP, IPAD)
+    out = np.zeros((SLOTS, CAP, NPAD), np.float64)
+    for s in range(SLOTS):
+        n, e = int(counts[s]), int(experts[s])
         if n == 0:
             continue
         d, b = unpack_down(dn[e * eb : (e + 1) * eb], K)
-        out[e, :n] = a[e, :n, :K] @ d.T + b
+        out[s, :n] = a[s, :n, :K] @ d.T + b
     return out
+
+
+def _slot_values(ns):
+    """The overflow slots' per-call offsets w<EXPERTS> .. w<SLOTS - 1> into a class body's namespace."""
+    from aie.utils.compile.jit.params import per_call
+
+    for i in range(EXPERTS, SLOTS):
+        ns[f"w{i}"] = per_call(derive=lambda op: 0)
+
+
+def _slot_value(op, s):
+    """Slot s's per-call offset, or None (a fixed slot, or the value not given per call)."""
+    if s < EXPERTS:
+        return None
+    v = op.value(f"w{s}")
+    return v if v.per_call else None
 
 
 def group_operators():
@@ -802,6 +841,9 @@ def group_operators():
     half_t = np.ndarray[(MT,), np.dtype[bfloat16]]
     acc_t = np.ndarray[(CAP * MT,), np.dtype[np.float32]]
     cnt_t = np.ndarray[(COUNT_WORDS,), np.dtype[np.int32]]
+    DEC = (KT // 8) * 4 * 64 + (KT // 32) * 4 * 8  # a block's bfp16 tiles (moe_mx4_rows.cc's DEC_BYTES)
+    dec_t = np.ndarray[(DEC,), np.dtype[np.int8]]
+    dec2_t = np.ndarray[(2 * DEC,), np.dtype[np.int8]]
 
     def kernels():
         kdir = Path(config.aie_kernels_dir())
@@ -820,6 +862,10 @@ def group_operators():
             block2=f("mx4_rows_block2", [blk_t, blk_t, obj_t, acc_t, acc_t, cnt_t, i32, i32]),
             glu=f("mx4_rows_glu", [acc_t, acc_t, cnt_t, i32, i32, half_t]),
             out=f("mx4_rows_out", [acc_t, cnt_t, i32, i32, half_t]),
+            **(dict(dec=f("mx4_rows_dec", [blk_t, dec_t, cnt_t, i32]),
+                    dec2=f("mx4_rows_dec2", [blk_t, blk_t, dec2_t, cnt_t, i32]),
+                    blockd=f("mx4_rows_blockd", [dec_t, obj_t, acc_t, cnt_t, i32, i32]),
+                    block2d=f("mx4_rows_block2d", [dec2_t, obj_t, acc_t, acc_t, cnt_t, i32, i32])) if BFP else {}),
         )
 
     def i32(v):
@@ -834,10 +880,10 @@ def group_operators():
         rows: int = param(array=True)  # blocks in the table
         K: int = param(default=HIDDEN, array=True)
         I: int = param(default=IPAD, array=True)
-        XS: int = param(derive=lambda op: EXPERTS * op.K * CAP, array=True)
-        AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
+        XS: int = param(derive=lambda op: SLOTS * op.K * CAP, array=True)
+        AN: int = param(derive=lambda op: SLOTS * CAP * op.I, array=True)
         CN: int = param(default=SB * KT, array=True)
-        form: int = param(default=6 if BFP else 3, array=True)  # 3: the bf16 mmul a strip at a time; 6: bfp16 (MX_BFP)
+        form: int = param(default=8 if BFP else 3, array=True)  # 3: the bf16 mmul a strip at a time; 8: bfp16 (MX_BFP), a block decoded once a slot
         nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
         fastdecode: bool = param(default=FASTDECODE, array=True)  # a measurement's build (MX4_FASTDECODE)
         num_aie_columns: int = tunable(domain=widths)
@@ -846,6 +892,7 @@ def group_operators():
         counts = In(CN, obj_shape=(SB * KT,), per=(num_aie_columns,), replicate=True)
         xs = In(XS, obj_shape=(SB * KT,), per=(num_aie_columns,), replicate=True)
         a = Out(AN, obj_shape=(CB,), per=(num_aie_columns,))
+        _slot_values(locals())
 
         def resolve(self, dev):
             return self.replace(num_aie_columns=2 * TOP)
@@ -864,7 +911,8 @@ def group_operators():
             y_l3 = [ObjectFifo(self.a.obj_type, depth=2) for _ in range(n)]
             y_l1 = [f.prod().join([MT * c for c in range(CORES)], obj_types=[half_t] * CORES, depths=[2] * CORES, tile=AnyMemTile) for f in y_l3]
 
-            def core(w_f, x_f, y_f, g, u, cnt, j, counts, init, block2, glu_k):
+            def core(w_f, x_f, y_f, g, u, cnt, j, counts, init, block2, glu_k, dec=None, dec2=None, block2d=None):
+                # dec: the decoded pair's buffer; dec2, block2d: the kernels (BFP)
                 c = x_f.acquire(1)
                 counts(c, cnt, COUNT_WORDS)
                 x_f.release(1)
@@ -876,11 +924,18 @@ def group_operators():
                             if kb == 0:
                                 init(bl[0], g, cnt, e)
                                 init(bl[1], u, cnt, e)
+                            if BFP:  # the pair decoded once, its blocks freed for the next pair's
+                                dec2(bl[0], bl[1], dec, cnt, e)
+                                w_f.release(2)
                             for b in range_(CAP // SB):
                                 x = x_f.acquire(1)
-                                block2(bl[0], bl[1], x, g, u, cnt, e, i32(b))
+                                if BFP:
+                                    block2d(dec, x, g, u, cnt, e, i32(b))
+                                else:
+                                    block2(bl[0], bl[1], x, g, u, cnt, e, i32(b))
                                 x_f.release(1)
-                            w_f.release(2)
+                            if not BFP:
+                                w_f.release(2)
                         for r in range_(CAP):
                             y = y_f.acquire(1)
                             glu_k(g, u, cnt, e, i32(r), y)
@@ -889,11 +944,12 @@ def group_operators():
             workers = []
             for i in range(n):
                 for c in range(CORES):
+                    extra = [Buffer(dec2_t), k["dec2"], k["block2d"]] if BFP else []
                     workers.append(Worker(
-                        lambda w_f, x_f, y_f, g, u, cnt, a1, a2, a3, a4, j=i // 2: core(
-                            w_f, x_f, y_f, g, u, cnt, j, a1, a2, a3, a4),
+                        lambda w_f, x_f, y_f, g, u, cnt, a1, a2, a3, a4, *bfp, j=i // 2: core(
+                            w_f, x_f, y_f, g, u, cnt, j, a1, a2, a3, a4, *bfp),
                         [w_l1[i][c].cons(), x_l1[i].cons(), y_l1[i][c].prod(), Buffer(acc_t), Buffer(acc_t),
-                         Buffer(cnt_t), k["counts"], k["init"], k["block2"], k["glu"]]))
+                         Buffer(cnt_t), k["counts"], k["init"], k["block2"], k["glu"], *extra]))
             self.W.bind([f.prod() for f in w_l3])
             self.counts.bind([f.prod() for f in x_l3])
             self.xs.bind([f.prod() for f in x_l3])
@@ -909,21 +965,26 @@ def group_operators():
                 tg = TaskGroup()
                 for l in range(n):
                     j, h = l // 2, l % 2
-                    e = TOP * grp + j
+                    e = TOP * grp + j  # the slot: its expert's weights at w<e> (else expert e % EXPERTS)
+                    v = _slot_value(self, e)
+                    at = h * eb // 2 if v is not None else (e % EXPERTS) * eb + h * eb // 2
                     if grp == 0:
                         self.counts.fill(TAP((self.CN,), 0, [self.CN], [1]), lane=l, group=tg)
-                    self.W.fill(TAP((total,), e * eb + h * eb // 2, [eb // 2], [1]), lane=l, group=tg)
+                    self.W.fill(TAP((total,), at, [eb // 2], [1]), lane=l, group=tg, offset_parameter=v)
                     self.xs.fill(TAP((self.XS,), e * K * CAP, [K * CAP], [1]).repeat(per), lane=l, group=tg)
                     self.a.drain(TAP((self.AN,), e * CAP * I + h * CB, [per, CAP, CB], [2 * CB, I, 1]),
                                  lane=l, group=tg, wait=True)
                 tg.finish()
 
         def ops(self) -> int:
-            return 2 * 2 * EXPERTS * CAP * self.I * self.K
+            return 2 * 2 * SLOTS * CAP * self.I * self.K
 
-        def reference(self, W, counts, xs):
-            cnt = np.asarray(counts).view(np.int32)[:EXPERTS] if np.asarray(counts).dtype != np.int32 else counts
-            out = group_reference_gate_up(np.asarray(W, np.uint8).reshape(-1), cnt, xs, self.K)
+        def reference(self, W, counts, xs, **w):
+            cnt = np.asarray(counts).view(np.int32)[:SLOTS]
+            W = np.asarray(W, np.uint8).reshape(-1)
+            eb = W.size // EXPERTS
+            ex = [int(w.get(f"w{s}", (s % EXPERTS) * eb)) // eb for s in range(SLOTS)]
+            out = group_reference_gate_up(W, ex, cnt, xs, self.K)
             return out.astype(bfloat16).reshape(-1)
 
         def tolerance(self) -> Tolerance:
@@ -938,10 +999,10 @@ def group_operators():
         I: int = param(default=IPAD, array=True)
         K: int = param(default=INTER, array=True)
         N: int = param(default=NPAD, array=True)
-        AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
-        YN: int = param(derive=lambda op: EXPERTS * CAP * op.N, array=True)
+        AN: int = param(derive=lambda op: SLOTS * CAP * op.I, array=True)
+        YN: int = param(derive=lambda op: SLOTS * CAP * op.N, array=True)
         CN: int = param(default=SB * KT, array=True)
-        form: int = param(default=6 if BFP else 3, array=True)  # 3: the bf16 mmul a strip at a time; 6: bfp16 (MX_BFP)
+        form: int = param(default=8 if BFP else 3, array=True)  # 3: the bf16 mmul a strip at a time; 8: bfp16 (MX_BFP), a block decoded once a slot
         nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
         fastdecode: bool = param(default=FASTDECODE, array=True)  # a measurement's build (MX4_FASTDECODE)
         num_aie_columns: int = tunable(domain=widths)
@@ -950,6 +1011,7 @@ def group_operators():
         counts = In(CN, obj_shape=(SB * KT,), per=(num_aie_columns,), replicate=True)
         a = In(AN, obj_shape=(SB * KT,), per=(num_aie_columns,), replicate=True)
         y = Out(YN, obj_shape=(CB,), per=(num_aie_columns,))
+        _slot_values(locals())
 
         def resolve(self, dev):
             return self.replace(num_aie_columns=8)
@@ -968,22 +1030,29 @@ def group_operators():
             y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
             y_l1 = [f.prod().join([MT * c for c in range(CORES)], obj_types=[half_t] * CORES, depths=[2] * CORES, tile=AnyMemTile) for f in y_l3]
 
-            def core(w_f, x_f, y_f, acc, cnt, counts, init, block, out):
+            def core(w_f, x_f, y_f, acc, cnt, counts, init, block, out, dec=None, dec_k=None, blockd=None):
                 c = x_f.acquire(1)
                 counts(c, cnt, COUNT_WORDS)
                 x_f.release(1)
-                for e in range_(EXPERTS):
+                for e in range_(SLOTS):
                     e32 = i32(e)
                     for _ in range_(outs):
                         for kb in range(kbs):
                             blk = w_f.acquire(1)
                             if kb == 0:
                                 init(blk, acc, cnt, e32)
+                            if BFP:  # the block decoded once, freed for the next
+                                dec_k(blk, dec, cnt, e32)
+                                w_f.release(1)
                             for b in range_(CAP // SB):
                                 x = x_f.acquire(1)
-                                block(blk, x, acc, cnt, e32, i32(b))
+                                if BFP:
+                                    blockd(dec, x, acc, cnt, e32, i32(b))
+                                else:
+                                    block(blk, x, acc, cnt, e32, i32(b))
                                 x_f.release(1)
-                            w_f.release(1)
+                            if not BFP:
+                                w_f.release(1)
                         for r in range_(CAP):
                             y = y_f.acquire(1)
                             out(acc, cnt, e32, i32(r), y)
@@ -992,8 +1061,9 @@ def group_operators():
             workers = []
             for i in range(n):
                 for c in range(CORES):
+                    extra = [Buffer(dec_t), k["dec"], k["blockd"]] if BFP else []
                     workers.append(Worker(core, [w_l1[i][c].cons(), x_l1[i].cons(), y_l1[i][c].prod(), Buffer(acc_t),
-                                                 Buffer(cnt_t), k["counts"], k["init"], k["block"], k["out"]]))
+                                                 Buffer(cnt_t), k["counts"], k["init"], k["block"], k["out"], *extra]))
             self.W.bind([f.prod() for f in w_l3])
             self.counts.bind([f.prod() for f in x_l3])
             self.a.bind([f.prod() for f in x_l3])
@@ -1006,23 +1076,28 @@ def group_operators():
             eb = self.expert_bytes()
             run, R = eb // n, N // n
             total = self.rows * BLOCK
-            for e in range(EXPERTS):
+            for e in range(SLOTS):
                 tg = TaskGroup()
+                v = _slot_value(self, e)
+                at = 0 if v is not None else (e % EXPERTS) * eb
                 for l in range(n):
                     if e == 0:
                         self.counts.fill(TAP((self.CN,), 0, [self.CN], [1]), lane=l, group=tg)
-                    self.W.fill(TAP((total,), e * eb + l * run, [run], [1]), lane=l, group=tg)
+                    self.W.fill(TAP((total,), at + l * run, [run], [1]), lane=l, group=tg, offset_parameter=v)
                     self.a.fill(TAP((self.AN,), e * CAP * I, [kbs, CAP, KT], [KT, I, 1]).repeat(outs), lane=l, group=tg)
                     self.y.drain(TAP((self.YN,), e * CAP * N + l * R, [outs, CAP, CB], [CB, N, 1]), lane=l,
                                  group=tg, wait=True)
                 tg.finish()
 
         def ops(self) -> int:
-            return 2 * EXPERTS * CAP * self.N * self.K
+            return 2 * SLOTS * CAP * self.N * self.K
 
-        def reference(self, W, counts, a):
-            cnt = np.asarray(counts).view(np.int32)[:EXPERTS]
-            out = group_reference_down(np.asarray(W, np.uint8).reshape(-1), cnt, a, self.K)
+        def reference(self, W, counts, a, **w):
+            cnt = np.asarray(counts).view(np.int32)[:SLOTS]
+            W = np.asarray(W, np.uint8).reshape(-1)
+            eb = W.size // EXPERTS
+            ex = [int(w.get(f"w{s}", (s % EXPERTS) * eb)) // eb for s in range(SLOTS)]
+            out = group_reference_down(W, ex, cnt, a, self.K)
             return out.astype(bfloat16).reshape(-1)
 
         def tolerance(self) -> Tolerance:
@@ -1040,10 +1115,14 @@ def _check_group(a) -> int:
     rng = np.random.default_rng(a.seed)
     gu = np.concatenate([gate_up_table(*random_expert(rng, 2 * INTER, HIDDEN)) for _ in range(EXPERTS)])
     dn = np.concatenate([down_table(*random_expert(rng, HIDDEN, INTER)) for _ in range(EXPERTS)])
-    counts = rng.integers(0, CAP + 1, EXPERTS)
+    # each slot's rows (its expert the slot's index mod EXPERTS: the operators' offsets without
+    # per-call values)
+    counts = rng.integers(0, CAP + 1, SLOTS)
     counts[:3] = (0, CAP, 1)
     if os.environ.get("MX4_COUNTS") == "chunk":  # a measurement: a 256-token chunk's 1024 rows, about 32 an expert
-        counts = np.minimum(rng.multinomial(1024, rng.dirichlet(np.full(EXPERTS, 3.0))), CAP)
+        plan = plan_slots(rng.multinomial(1024, rng.dirichlet(np.full(EXPERTS, 3.0))))
+        counts = np.array([c for _, _, c in plan])
+    experts = [s % EXPERTS for s in range(SLOTS)]
 
     class G(iron.Graph):
         def __init__(self):
@@ -1052,18 +1131,22 @@ def _check_group(a) -> int:
 
         def body(self, counts, xs):
             act = GU.step(self.gu, counts, xs, rows=self.gu.shape[0])
+            if os.environ.get("MX4_ONLY") == "gu":  # a measurement: the gate-up alone
+                return act
             return D.step(self.dn, counts, act, rows=self.dn.shape[0])
 
         def reference(self, cw, xs):
-            c = np.asarray(cw).view(np.int32)[:EXPERTS]
-            act = group_reference_gate_up(gu, c, xs).astype(bfloat16)
-            return group_reference_down(dn, c, act).astype(bfloat16).reshape(-1)
+            c = np.asarray(cw).view(np.int32)[:SLOTS]
+            act = group_reference_gate_up(gu, experts, c, xs).astype(bfloat16)
+            if os.environ.get("MX4_ONLY") == "gu":
+                return act.reshape(-1)
+            return group_reference_down(dn, experts, c, act).astype(bfloat16).reshape(-1)
 
     g = G()
-    cg = g.compile(counts=(SB * KT,), xs=(EXPERTS * HIDDEN * CAP,))
+    cg = g.compile(counts=(SB * KT,), xs=(SLOTS * HIDDEN * CAP,))
     m = export_graph(cg, a.out, "mx4group", dict(cap=CAP))
-    rows = (rng.standard_normal((EXPERTS, CAP, HIDDEN)) * 0.5).astype(bfloat16)
-    write_check(g, m, a.out, dict(counts=counts_object(counts), xs=stream_x(rows, counts).reshape(-1)))
+    rows = (rng.standard_normal((SLOTS, CAP, HIDDEN)) * 0.5).astype(bfloat16)
+    write_check(g, m, a.out, dict(counts=counts_object(counts), xs=stream_x(rows).reshape(-1)))
     print(f"{a.out}: MX4GroupGateUp + MX4GroupDown, counts {counts.tolist()}")
     return 0
 
