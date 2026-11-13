@@ -198,6 +198,23 @@ class SinkAttention(Attention):
         self.sink_values = tuple(float(s) for s in np.asarray(self.sinks, np.float32))
         self.q_proj = self.k_proj = self.v_proj = None
         self.sinks = None
+        self.residual = None  # the decode step's residual, which o_proj's GEMV adds (GptOssLayer)
+
+    def body(self, x, cache, call, angles=None):
+        if x.shape[0] != 1 or self.residual is None or angles is None or not QUANT:
+            return super().body(x, cache, call, angles)
+        # The decode step in fewer operators: q, k, v one GEMV with its bias added in it; q's and
+        # k's 72 rows one RoPE (they are next to each other in its output); o_proj's GEMV adding
+        # its bias and the residual (iron_q4's QGEMVAdd)
+        import iron_q4
+
+        H, G, D = self.heads, self.groups, self.head_dim
+        y = self.qkv(x).reshape(1, sum(self.widths))
+        qk = F.rope(y[:, : (H + G) * D].reshape(H + G, D), angles[0])
+        q, k = qk[:H], qk[H:]
+        v = y[:, (H + G) * D :].reshape(1, G, D)
+        o = cache.attend(call, q.reshape(1, H, D), k.reshape(1, G, D), v, scale=self.scaling)
+        return iron_q4.linear_add(o, self.o_proj.weight, self.o_proj.bias, self.residual)
 
     def project(self, x, **gemv) -> list:
         n = 1 if len(x.shape) == 1 else x.shape[0]
@@ -277,17 +294,21 @@ class GptOssMoe(iron.Graph):
         b = np.zeros(rows, bfloat16)
         b[: self.n] = np.asarray(self.router.bias)
         self.router_w, self.router_b = iron.param(w), iron.param(b)
-        self.program = iron.param(np.zeros(4 * iron_moe.SLOTS, np.int32))
+        # MoERoute's program, then the router's bias (bf16) for the decode step's MoERoute to add
+        program = np.zeros(4 * iron_moe.SLOTS + self.n // 2, np.int32)
+        program[4 * iron_moe.SLOTS :] = np.ascontiguousarray(b[: self.n]).view(np.int32)
+        self.program = iron.param(program)
         self.router = self.experts = None
 
     def body(self, hn, h, call):
         if call.prompt:
             return self.prompt_body(hn, h, call)
         Route = iron_moe.route_operator()
-        logits = F.linear(hn, self.router_w, self.router_b, precision=self.precision)
+        # the router's bias added in MoERoute (an add the fewer)
+        logits = F.linear(hn, self.router_w, precision=self.precision)
         n = self.router_w.shape[0]
         w, image = Route.step(logits.reshape(n), self.program, n=n, experts=self.n, top=self.top,
-                              picked=self.index)
+                              picked=self.index, bias=True)
         call.feedback.append((self.index, image.name))
         iron.on_host(lambda: None)  # command B: the experts, at the offsets the image holds
         GU, D = moe_operators()
@@ -405,7 +426,13 @@ class GptOssLayer(DecoderLayer):
         self.cache.sinks = self.self_attn.sink_values
 
     def body(self, x, call):
-        h = x + self.mix(self.input_layernorm(x), call)
+        decode = not call.prompt and x.shape[0] == 1 and bool(QUANT)
+        # the decode step: the residual added in o_proj's GEMV (SinkAttention.body)
+        self.self_attn.residual = x if decode else None
+        h = self.mix(self.input_layernorm(x), call)
+        self.self_attn.residual = None
+        if not decode:
+            h = x + h
         return self.mlp(self.post_attention_layernorm(h), h, call)
 
 

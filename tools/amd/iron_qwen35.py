@@ -337,6 +337,21 @@ class Qwen35Layer(DecoderLayer):
             return self.linear_attn(h, call)
         return super().mix(h, call)
 
+    def body(self, x, call):
+        # A decode step's two residuals added in the blocks' last projections' GEMVs (iron_q4's
+        # into_linear: out_proj or o_proj, and down_proj), not by adds of their own
+        if call.prompt or x.shape[0] != 1 or not QUANT or iron_verify.is_rows(x):
+            return super().body(x, call)
+        import iron_q4
+
+        last = self.linear_attn.out_proj if self.linear_attn is not None else self.self_attn.o_proj
+        with iron_q4.into_linear(last, x) as st:
+            y = self.mix(self.input_layernorm(x), call)
+        h = y if st["used"] else x + y
+        with iron_q4.into_linear(self.mlp.down_proj, h) as st:
+            y = self.mlp(self.post_attention_layernorm(h))
+        return y if st["used"] else h + y
+
 
 class Qwen35(CausalLM):
     """Qwen3.5 on ``config``'s shape and a checkpoint's ``weights``."""
@@ -680,7 +695,7 @@ class Qwen35Moe(Qwen35):
                     raise SystemExit(f"layer {l}: {p['name']} at {p['index']} is {f}, not id * scale + bias")
                 prog[p["index"]] = (int(f["value"].split("_")[1]), f["scale"], f["bias"],
                                     2 if p["kind"] == "core" else 0)
-            np.asarray(m.program).reshape(-1)[:] = prog.reshape(-1)
+            np.asarray(m.program).reshape(-1)[: prog.size] = prog.reshape(-1)  # gpt-oss: its bias after
             fed.append(dict(command=k, buffer=images[l], words=len(words)))
         return fed
 

@@ -517,6 +517,133 @@ def _operators():
     return QGEMV, QDequant
 
 
+_ADD_OPS: dict = {}
+
+
+def add_operator(adds: int):
+    """QGEMVAdd: QGEMV whose output has ``adds`` vectors (1 or 2: a bias, a residual) added as it
+    leaves the cores (kernels/mv_add.h), ``y = W x + a1 (+ a2)``: one operator in place of the GEMV
+    and an add a vector. Each vector's slice of a column's out-features rides on x's channel after
+    x (a core has two input channels), x's object K + adds * N / columns long."""
+    if adds in _ADD_OPS:
+        return _ADD_OPS[adds]
+    import aie.dialects.index as index
+    from aie.dialects.aie import T
+    from aie.helpers.taplib import TensorAccessPattern
+    from aie.iron import Buffer, In, ObjectFifo, Worker
+    from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
+    from aie.iron.kernel import ExternalFunction
+    from aie.utils import config
+    from aie.utils.compile.jit.params import param
+
+    QGEMV, _ = operators()
+
+    # The vectors' objects are the column's slices; the sequence fills them itself (their
+    # declared object a column block's, a shape known before the columns are)
+    body = dict(
+        adds=param(default=adds, array=True),
+        a1=In(QGEMV.N, obj_shape=(CB,), per=(QGEMV.num_aie_columns,)),
+    )
+    if adds == 2:
+        body["a2"] = In(QGEMV.N, obj_shape=(CB,), per=(QGEMV.num_aie_columns,))
+    body["__annotations__"] = {"adds": int}
+
+    def build(self):
+        K, n, cores, B = self.K, self.num_aie_columns, self.cores, self.block_bytes
+        cbs = self.N // CB // n
+        kbs = K // K_TILE
+        out = CB // cores
+        R = self.N // n
+        kdir = Path(config.aie_kernels_dir())
+        here = Path(__file__).resolve().parent / "kernels"
+        xa_t = np.ndarray[(K + adds * R,), np.dtype[bfloat16]]
+        y_t = np.ndarray[(out,), np.dtype[bfloat16]]
+        acc_t = np.ndarray[(out,), np.dtype[np.float32]]
+        blk_t = np.ndarray[(B,), np.dtype[np.uint8]]
+        sums_t = np.ndarray[(K // GROUP,), np.dtype[bfloat16]]
+        # one object of the three calls (begin and block read x's first K)
+        common = dict(source_file=str(here / f"{self.fmt}_mv.cc"),
+                      include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
+                      compile_flags=[f"-D{self.fmt.upper()}_K={K}", f"-DQ_OUT={out}", f"-DQ_ADDS={adds}",
+                                     f"-DQ_R={R}"],
+                      object_file_name=f"{self.fmt}_mv_add{adds}_{K}_{out}_{R}.o")
+        begin = ExternalFunction(f"{self.fmt}_mv_begin", arg_types=[xa_t, sums_t, acc_t], **common)
+        block = ExternalFunction(f"{self.fmt}_mv_block", arg_types=[blk_t, xa_t, sums_t, acc_t, np.int32, np.int32],
+                                 **common)
+        end_add = ExternalFunction(f"{self.fmt}_mv_end_add", arg_types=[acc_t, xa_t, np.int32, np.int32, y_t],
+                                   **common)
+        w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+        x_l3 = [ObjectFifo(xa_t, depth=1) for _ in range(n)]
+        y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
+        if cores == 1:
+            w_l1, x_l1, y_l1 = [[f] for f in w_l3], x_l3, [[f] for f in y_l3]
+        else:
+            w_l1 = [f.cons().split([0, B], obj_types=[blk_t, blk_t], tile=AnyMemTile) for f in w_l3]
+            x_l1 = [f.cons().forward(obj_type=xa_t, tile=AnyMemTile) for f in x_l3]
+            y_l1 = [f.prod().join([0, out], obj_types=[y_t, y_t], depths=[2, 2], tile=AnyMemTile) for f in y_l3]
+        sums = [[Buffer(sums_t) for _ in range(cores)] for _ in range(n)]
+        accs = [[Buffer(acc_t) for _ in range(cores)] for _ in range(n)]
+
+        def core(w_f, x_f, y_f, sums, acc, begin, block, end_add, half):
+            x = x_f.acquire(1)
+            begin(x, sums, acc)
+            for cb in range_(cbs):
+                cb32 = index.casts(T.i32(), cb)
+                for kb in range_(kbs):
+                    kb32 = index.casts(T.i32(), kb)
+                    for h in range(2 if cores == 1 else 1):
+                        w = w_f.acquire(1)
+                        block(w, x, sums, acc, kb32, h)
+                        w_f.release(1)
+                y = y_f.acquire(1)
+                end_add(acc, x, cb32, half, y)
+                y_f.release(1)
+            x_f.release(1)
+
+        workers = [
+            Worker(lambda w_f, x_f, y_f, s, a, b, bl, e, half=(j if cores > 1 else 0): core(
+                w_f, x_f, y_f, s, a, b, bl, e, half),
+                   [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), sums[i][j], accs[i][j],
+                    begin, block, end_add])
+            for i in range(n) for j in range(cores)
+        ]
+        self.W.bind([f.prod() for f in w_l3])
+        for name in ("x", "a1", "a2")[: 2 + (adds == 2)]:
+            getattr(self, name).bind([f.prod() for f in x_l3])
+        self.y.bind([f.cons() for f in y_l3])
+        from iron.common import Built
+
+        return Built(workers, [])
+
+    def sequence(self, rt):
+        n, N, K = self.num_aie_columns, self.N, self.K
+        R = N // n
+        drains = [d for d in (self.y.drain(tap, lane=lane, wait=True, managed=False)
+                              for lane, tap, _, _ in self.y.transfers())]
+        for lane in range(n):
+            self.x.fill(TensorAccessPattern((K,), 0, [K], [1]), lane=lane, managed=False)
+            for name in ("a1", "a2")[:adds]:
+                getattr(self, name).fill(TensorAccessPattern((N,), lane * R, [R], [1]), lane=lane, managed=False)
+        for lane, tap, _, _ in self.W.transfers():
+            self.W.fill(tap, lane=lane, managed=False)
+        for d in drains:
+            d.await_()
+
+    def reference(self, W, x, a1, a2=None):
+        w = dequantize_fmt(W, self.N, self.K, self.fmt)
+        y = w.astype(np.float64) @ np.asarray(x, np.float64) + np.asarray(a1, np.float64).reshape(-1)
+        if a2 is not None:
+            y = y + np.asarray(a2, np.float64).reshape(-1)
+        return y.astype(bfloat16)
+
+    body.update(build=build, sequence=sequence, reference=reference,
+                __doc__=add_operator.__doc__)
+    cls = type("QGEMV", (QGEMV,), body)
+    _ADD_OPS[adds] = cls
+    return cls
+
+
 def _rows_operator():
     """QGEMVRows: QGEMV's ``Y = X W.T`` for a few rows of X (a call checking drafts), q8 or q6,
     one or two cores a column as QGEMV's. The weights stream once and multiply every row
@@ -668,7 +795,7 @@ def operators():
     return _OPS
 
 
-def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2):
+def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2, adds=()):
     """``x @ W.T`` for x (k,), (1, k) or (rows, k) and q, W's blocks in fmt as a 1-D iron.param.
 
     One row runs QGEMV on the blocks. Several (a prompt chunk) dequantize them on the device:
@@ -683,8 +810,18 @@ def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2):
     QGEMV, QDequant = operators()
     one_row = len(x.shape) == 1 or x.shape[0] == 1
     if one_row:
-        y = QGEMV.step(q.reshape(-1, FORMATS[fmt]), x.reshape(k), fmt=fmt, cores=cores)
+        if adds:  # vectors added as the output leaves (QGEMVAdd: a bias, a residual)
+            op = add_operator(len(adds))
+            # in the operator's own order of operands (the subclass's vectors come first)
+            given = dict(W=q.reshape(-1, FORMATS[fmt]), x=x.reshape(k),
+                         **{f"a{i + 1}": a.reshape(n) for i, a in enumerate(adds)})
+            names = [m.name for m in op.declaration.members if m.name in given]
+            y = op.step(*(given[nm] for nm in names), fmt=fmt, cores=cores)
+        else:
+            y = QGEMV.step(q.reshape(-1, FORMATS[fmt]), x.reshape(k), fmt=fmt, cores=cores)
         return y if len(x.shape) == 1 else y.reshape(1, n)
+    if adds:
+        raise ValueError("q_linear: vectors to add are for one row (a prompt chunk adds them itself)")
     from iron import Precision
 
     if x.shape[0] <= ROWS_GEMV and fmt in ("q6", "q8"):
@@ -747,6 +884,9 @@ def install_linear() -> None:
         entry = _Q4.get(id(weight))
         if entry is None or entry[0] is not weight:
             return base(x, weight, bias, precision=precision, **gemv)
+        one_row = len(x.shape) == 1 or x.shape[0] == 1
+        if bias is not None and one_row and FUSE_BIAS["on"]:
+            return q_linear(x, weight, entry[1], entry[2], entry[3], adds=(bias,))
         y = q_linear(x, weight, entry[1], entry[2], entry[3])
         if bias is None:
             return y
@@ -756,7 +896,64 @@ def install_linear() -> None:
     linear.hwnpu_q4 = True
     F.linear = linear
     _install_split()
+    _install_residual()
     _fix_bfp_fits()
+
+
+# Whether a one-row linear's bias is added in its GEMV (QGEMVAdd) rather than by an add after it.
+FUSE_BIAS = {"on": True}
+
+import contextlib  # noqa: E402
+import contextvars  # noqa: E402
+
+# A residual the next one-row call of a given Linear adds in its GEMV (into_linear).
+_RESIDUAL: contextvars.ContextVar = contextvars.ContextVar("iron_q4_residual", default=None)
+
+
+@contextlib.contextmanager
+def into_linear(linear, residual):
+    """Inside, ``linear``'s one-row call (a decode step's) on a q_param weight adds ``residual`` in
+    its GEMV (QGEMVAdd, with its bias if it has one); ``state["used"]`` says whether it did, so
+    the caller adds it itself if not (a layer's last projection: o_proj, out_proj, down_proj)."""
+    state = {"linear": linear, "residual": residual, "used": False}
+    token = _RESIDUAL.set(state)
+    try:
+        yield state
+    finally:
+        _RESIDUAL.reset(token)
+
+
+def _install_residual() -> None:
+    """Make iron.lm's Linear.body take into_linear's residual."""
+    from iron.lm.blocks import Linear
+
+    base = Linear.body
+    if getattr(base, "hwnpu_residual", False):
+        return
+
+    def body(self, x):
+        st = _RESIDUAL.get()
+        one_row = len(x.shape) == 1 or x.shape[0] == 1
+        entry = _Q4.get(id(self.weight))
+        if (st is not None and st["linear"] is self and not st["used"] and one_row and entry is not None
+                and entry[0] is self.weight):
+            st["used"] = True
+            r = st["residual"]
+            return linear_add(x, self.weight, self.bias, r.reshape(r.shape[-1]) if len(r.shape) > 1 else r).reshape(
+                *x.shape[:-1], entry[1])
+        return base(self, x)
+
+    body.hwnpu_residual = True
+    Linear.body = body
+
+
+def linear_add(x, weight, *adds):
+    """``x @ W.T + adds...`` for one row of x and a q_param weight, the vectors (a bias, a
+    residual, up to two) added in the GEMV (QGEMVAdd)."""
+    entry = _Q4.get(id(weight))
+    if entry is None or entry[0] is not weight:
+        raise ValueError("linear_add: the weight is not a q_param")
+    return q_linear(x, weight, entry[1], entry[2], entry[3], adds=tuple(a for a in adds if a is not None))
 
 
 def q_rows(q, begin: int, end: int, k: int, fmt: str):
@@ -865,7 +1062,9 @@ def _check(args) -> int:
         def __init__(self):
             self.q = iron.param(q.reshape(-1))
 
-        def body(self, x, *, rows: Scratchpad[np.int32] = np.int32(0)):
+        def body(self, x, a1=None, a2=None, *, rows: Scratchpad[np.int32] = np.int32(0)):
+            if args.adds:
+                return q_linear(x, self.q, n, k, fmt, args.cores, adds=tuple(a for a in (a1, a2) if a is not None))
             if args.gemv_rows:
                 return rows_operator().step(self.q.reshape(-1, FORMATS[fmt]), x.reshape(args.gemv_rows * k), fmt=fmt, K=k,
                                             rows=args.gemv_rows, cores=args.cores)  # (rows, n)
@@ -873,20 +1072,26 @@ def _check(args) -> int:
                 return q_linear(x[:rows], self.q, n, k, fmt, args.cores)
             return q_linear(x, self.q, n, k, fmt, args.cores)
 
-        def reference(self, x, rows=0):
+        def reference(self, x, a1=None, a2=None, rows=0):
             x = np.asarray(x, np.float64)
-            y = (x @ deq.astype(np.float64).T).astype(bfloat16)
+            y = x @ deq.astype(np.float64).T
+            for a in (a1, a2):
+                if a is not None:
+                    y = y + np.asarray(a, np.float64)
+            y = y.astype(bfloat16)
             if rows:
                 y[rows:] = 0
             return y
 
     g = G()
     shape = (args.gemv_rows, k) if args.gemv_rows else (k,) if args.rows == 0 else (args.rows, k)
-    cg = g.compile(x=shape)
+    add_names = [f"a{i + 1}" for i in range(args.adds)]
+    cg = g.compile(x=shape, **{a: (n,) for a in add_names})
     m = export_graph(cg, args.out, "qlinear", dict(n=n, k=k, fmt=fmt))
     # a mean in x shows a rounding bias that zero-mean inputs average away
     x = (rng.standard_normal(shape) + args.x_mean).astype(bfloat16)
-    write_check(g, m, args.out, dict(x=x), dict(rows=args.valid or args.rows) if args.rows and not args.gemv_rows else None)
+    inputs = dict(x=x, **{a: rng.standard_normal(n).astype(bfloat16) for a in add_names})
+    write_check(g, m, args.out, inputs, dict(rows=args.valid or args.rows) if args.rows and not args.gemv_rows else None)
     print(f"{args.out}: {fmt} {n} x {k}, {q.nbytes >> 10} KiB of weights")
     return 0
 
@@ -903,6 +1108,7 @@ def main(argv=None) -> int:
     c.add_argument("--rows", type=int, default=0, help="rows of x (0: one, (k,)): several run the prefill path")
     c.add_argument("--gemv-rows", type=int, default=0, help="rows of x through QGEMVRows (a call checking drafts; q8)")
     c.add_argument("--valid", type=int, default=0, help="rows the call bounds x to (default all)")
+    c.add_argument("--adds", type=int, default=0, help="vectors added in the GEMV (QGEMVAdd: 1 or 2)")
     c.add_argument("--x-mean", type=float, default=0.0, help="the mean of x's random values")
     c.add_argument("--prefill", choices=("bfp16", "bf16"), default=PREFILL["q4"], help="q4nx's prompt path (q_linear)")
     a = ap.parse_args(argv)
