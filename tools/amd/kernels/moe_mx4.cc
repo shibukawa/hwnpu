@@ -116,6 +116,7 @@ static inline void mx4_accumulate(const mx4_blk_t *A, const bf16 *B, float *c) {
   }
 }
 
+#ifndef MX_NO_ENTRIES // gptoss_layer.cc includes the block's code alone
 extern "C" {
 
 // acc = the block's bias (its first k-block's), as floats.
@@ -195,3 +196,4 @@ void mx4_end_add(float *tot, const bf16 *x, int32_t off, bf16 *y) {
 }
 
 } // extern "C"
+#endif // MX_NO_ENTRIES
