@@ -4740,7 +4740,7 @@ Anima (M1、`--backend coreai`、8 ステップ、シード 1。Turbo 1024²、a
 
 残り: Qwen-Image (1024² と 512²) と Chroma (16.176 で Core AI に。512² と 1024² の DiT を手で関数 2 つにして 922 MB) は、このマシンに大きさ 2 つの書き出しがなく、自動でのまとまり方を確かめていない (仕組みは Anima と同じ)。16.176 の重みを捨てるオプション (`HWNPU_COREAI_DROP_BYTECODE`) は、まとめた `.aimodel` にもそのまま効く。空にした `.aimodel` の Core AI の項目が消えていたら、記録を読むときに消してまとめ直す (`usable`)
 
-### 16.176 gpt-oss-20b を AMD の NPU で: MXFP4 のままの専門家 (mx4)、注意の sink、プロンプトの専門家を行列演算器で — 2026-11-13
+### 16.178 gpt-oss-20b を AMD の NPU で: MXFP4 のままの専門家 (mx4)、注意の sink、プロンプトの専門家を行列演算器で — 2026-11-13
 
 openai/gpt-oss-20b (`gpt_oss`、21B、トークンあたり 3.6B) を AMD の NPU (Ryzen AI 9 365) に入れた。docs/new-model-checklist.md の順に進めた。Mac の Neural Engine は MoE の経路 (gather) が載らないので形を作らない (3 章は対象外)。Intel も作らない。
 
