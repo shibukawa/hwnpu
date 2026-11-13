@@ -60,6 +60,8 @@ MODELS = {
     "qwen35": ("iron_qwen35", "Qwen35"),
     # Qwen3.6-35B-A3B (qwen3_5_moe): Qwen3.5 with experts routed on the device (iron_moe.py).
     "qwen35moe": ("iron_qwen35", "Qwen35Moe"),
+    # gpt-oss (openai/gpt-oss-20b): sink attention and MXFP4 experts kept exact (iron_gptoss.py).
+    "gptoss": ("iron_gptoss", "GptOss"),
 }
 
 
@@ -933,6 +935,11 @@ def main(argv=None) -> int:
         import iron_qwen35
 
         iron_qwen35.install(attn=a.attn, mlp=a.mlp, head=a.head)
+    elif a.model == "gptoss":
+        import iron_gptoss
+
+        # the experts are mx4 (the checkpoint's MXFP4) whatever --q4 says
+        iron_gptoss.install(attn=a.attn, head=a.head)
     elif a.q4:
         raise SystemExit(f"--q4: not built for {a.model}")
     if a.model == "qwen35":
@@ -972,7 +979,7 @@ def main(argv=None) -> int:
     if a.command_per_step:  # last: it overrides the cuts the installs above make
         install_command_per_step(a.out)
     model = Model.from_checkpoint(a.checkpoint, random_weights=a.random_weights, max_seq_len=a.max_seq_len)
-    pipelines = a.mha_pipelines if a.mha_pipelines is not None else (1 if a.model == "qwen35moe" else 8)
+    pipelines = a.mha_pipelines if a.mha_pipelines is not None else (1 if a.model in ("qwen35moe", "gptoss") else 8)
     if pipelines > 1:
         prompt_attention_profile(model, pipelines)
     if a.q4_codes:
