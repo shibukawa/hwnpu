@@ -40,7 +40,7 @@ import (
 // the cameras in cameras.json and with --ply the points in one frame.
 type DepthCmd struct {
 	Pictures []string `arg:"" type:"existingfile" help:"The pictures (with a multi-view export, exactly its views)."`
-	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"depth" help:"The model: a name, a family or a use of models.yaml (depth: DA3-SMALL, DA3-BASE or DA3MONO-LARGE by the memory, as da3; da3, da3:small, da3metric, moge, moge:vitl; a family alone picks for the machine's memory, or for the memory a tag names: moge:8g), run from ~/models/NAME.amd-npu2, or an export's directory (tools/amd/iron_da3.py, iron_moge.py; a multi-view one of iron_da3.py --views)."`
+	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"depth" help:"The model: a name, a family or a use of models.yaml (depth: DA3-SMALL, DA3-BASE or DA3MONO-LARGE by the memory, as da3; da3, da3:small, da3metric, moge, moge:vitl; a family alone picks for the machine's memory, or for the memory a tag names: moge:8g), run from NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models), or an export's directory (tools/amd/iron_da3.py, iron_moge.py; a multi-view one of iron_da3.py --views)."`
 	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory to write into (default: next to each picture)."`
 	Raw      bool     `help:"Also write the depth as raw float32 (NAME.depth.f32, at the export's size; MoGe-2 also NAME.points.f32)."`
 	Sky      bool     `help:"Also write the sky mask (NAME.sky.png); DA3-SMALL / BASE: the confidence (NAME.conf.png); MoGe-2: the mask (NAME.mask.png)."`

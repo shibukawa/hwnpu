@@ -3,6 +3,7 @@ package sana
 import (
 	"context"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"io/fs"
 	"os"
@@ -127,7 +128,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	fmt.Fprintf(log, "converted in %.0f s\n", time.Since(t0).Seconds())
 	debug.FreeOSMemory()
-	return out, os.WriteFile(out+".done", []byte(out), 0o644)
+	return out, cache.WriteDone(out+".done", out)
 }
 
 // textExport is a whole export in dir whose Gemma 2 programs are those o asks for (the program

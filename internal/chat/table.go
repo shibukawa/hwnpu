@@ -16,6 +16,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/shibukawa/hwnpu"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 // The definitions of the models (docs/model-table.md): hwnpu's models.yaml, embedded, and files
@@ -26,7 +27,7 @@ import (
 const ModelsEnv = "HWNPU_MODELS"
 
 // ModelsUsage is the usage of the -models flag of the commands that pick models.
-const ModelsUsage = "definition files read over the built-in models.yaml and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
+const ModelsUsage = "definition files read over the built-in models.yaml, the machine's (/etc/hwnpu/models.yaml) and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
 
 // LoadUserModels is LoadModels of the user's files and those of -models (comma separated), with
 // warnings to log.
@@ -85,6 +86,9 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	}
 	if user {
 		var paths []string
+		if p := SystemModelsFile(); p != "" && exists(p) {
+			paths = append(paths, p)
+		}
 		if p := UserModelsFile(); p != "" && exists(p) {
 			paths = append(paths, p)
 		}
@@ -112,8 +116,15 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var layers []shared.Layer
+	if user {
+		if layers, err = buildLayers(t.layers, t.layersFile, t.sources, t.warn); err != nil {
+			return err
+		}
+	}
 	Catalog, Categories, Aliases, ModelFiles = catalog, categories, aliases, t.files
 	Sources, Search = t.sources, t.search
+	shared.SetLayers(layers)
 	digests, pinned = map[string]map[string]string{}, map[string][]pinnedFile{}
 	for _, m := range catalog {
 		for f, d := range m.SHA256 {
@@ -200,8 +211,9 @@ type categoryEntry struct {
 	Remove  bool        `yaml:"remove"`
 }
 
-// tableFile is a definition file. NPUs, Builds and Cache are designed (docs/model-table.md) but
-// not read yet: a file that has them gets a warning.
+// tableFile is a definition file. NPUs and Builds are designed (docs/model-table.md) but not
+// read yet: a file that has them gets a warning. Of Cache, the layers are read
+// (docs/cache-sharing.md 7).
 type tableFile struct {
 	Version    int                       `yaml:"version"`
 	Models     map[string]*modelEntry    `yaml:"models"`
@@ -211,7 +223,7 @@ type tableFile struct {
 	Search     *[]string                 `yaml:"search"`
 	NPUs       any                       `yaml:"npus"`
 	Builds     any                       `yaml:"builds"`
-	Cache      any                       `yaml:"cache"`
+	Cache      *cacheEntry               `yaml:"cache"`
 }
 
 // order is a file's models and categories in the order written (maps lose it).
@@ -248,6 +260,8 @@ type table struct {
 	sources    map[string]Source
 	search     []string
 	searchFile string
+	layers     []layerEntry
+	layersFile string
 }
 
 func newTable(log io.Writer) *table {
@@ -308,7 +322,18 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 		}
 		t.search, t.searchFile = slices.Clone(*f.Search), name
 	}
-	for key, v := range map[string]any{"npus": f.NPUs, "builds": f.Builds, "cache": f.Cache} {
+	if f.Cache != nil {
+		if builtin {
+			return fmt.Errorf("chat: %s: cache is the machine's and the user's to set", name)
+		}
+		if f.Cache.Layers != nil {
+			t.layers, t.layersFile = slices.Clone(*f.Cache.Layers), name
+		}
+		if f.Cache.Prebuilt != nil {
+			t.warn(name, "cache.prebuilt is not read by this version of hwnpu yet (docs/cache-sharing.md); skipped")
+		}
+	}
+	for key, v := range map[string]any{"npus": f.NPUs, "builds": f.Builds} {
 		if v != nil {
 			if builtin {
 				return fmt.Errorf("chat: %s: %s is not read yet", name, key)

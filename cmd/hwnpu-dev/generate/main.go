@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -91,9 +92,7 @@ func Main() {
 		}
 	}
 	if *cacheDir == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			*cacheDir = filepath.Join(d, "hwnpu")
-		}
+		*cacheDir = cache.Root()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()

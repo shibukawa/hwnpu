@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,9 +33,7 @@ func (f *loadFlags) prepare() error {
 	}
 	f.Dir = cmp.Or(f.Dir, chat.ModelsDir())
 	if f.Cache == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			f.Cache = filepath.Join(d, "hwnpu")
-		}
+		f.Cache = cache.Root()
 	}
 	return nil
 }

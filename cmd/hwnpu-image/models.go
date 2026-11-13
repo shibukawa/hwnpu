@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/shibukawa/hwnpu"
+	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"os/exec"
@@ -97,7 +98,7 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 		}
 		if (m.Kind == chat.KindDetect || m.Kind == chat.KindPose || m.Kind == chat.KindSegment) && vendor == "amd" { // an export of iron_onnxcnn.py or iron_efficientsam.py, made on the first run
 			if d, err := amdExport(m, ""); err == nil {
-				return "~/models/" + filepath.Base(d)
+				return shortHome(d)
 			}
 			return "exported on first run (IRON)"
 		}
@@ -111,7 +112,7 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 			return "converted on first run"
 		}
 		if d, err := amdExport(m, ""); err == nil {
-			return "~/models/" + filepath.Base(d)
+			return shortHome(d)
 		}
 		if m.Kind == chat.KindImage && coremlImage(m.Family, vendor) {
 			return "converted on first run"
@@ -133,16 +134,15 @@ func coremlImage(family, vendor string) bool {
 	return false
 }
 
-// amdExport is the export of model m on AMD's NPU: ~/models/NAME.amd-npu2 or
-// NAME-1024.amd-npu2, NAME in lower case (what tools/amd/iron_*.py are told to write). tool is
-// the script that writes it, for the error when there is none.
+// amdExport is the export of model m on AMD's NPU: NAME.amd-npu2 or NAME-1024.amd-npu2, NAME
+// in lower case (what tools/amd/iron_*.py are told to write), in entries/amd-xdna2 under the
+// cache's root or in ~/models (hcache.ExportRoots). tool is the script that writes it, for the
+// error when there is none.
 func amdExport(m chat.Model, tool string) (string, error) {
-	home, _ := os.UserHomeDir()
-	root := filepath.Join(home, "models")
+	root := hcache.LegacyExports()
 	name := strings.ToLower(m.Name)
 	for _, n := range []string{name, name + "-1024"} {
-		d := filepath.Join(root, n+".amd-npu2")
-		if isDir(d) {
+		if d := hcache.FindExport(n+".amd-npu2", isDir); d != "" {
 			return d, nil
 		}
 	}
@@ -152,6 +152,16 @@ func amdExport(m chat.Model, tool string) (string, error) {
 	}
 	return "", fmt.Errorf("AMD's NPU runs exports of %s, and %s has no %s.amd-npu2 for %s: download %s and run\n  python %s ~/models/%s ~/models/%s.amd-npu2%s\n(see docs/amd-npu-models.md)",
 		tool, root, name, m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), name, file)
+}
+
+// shortHome is path with the home directory written ~.
+func shortHome(path string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, path); err == nil && filepath.IsLocal(rel) {
+			return "~/" + filepath.ToSlash(rel)
+		}
+	}
+	return path
 }
 
 // freeName is the first of base, "stem (2).ext", "stem (3).ext", ... that does not exist and

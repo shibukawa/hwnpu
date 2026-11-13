@@ -4469,7 +4469,30 @@ Core ML の Neural Engine のキャッシュは約 4 GiB で、それを超え�
 
 **できていないこと**: 電力量 (powerbench は sudo)。1024² の DiT 1 回の 35 秒の中身 (CFG の 2 回目が 23 秒で済む理由)。
 
-### 16.171 PLaMo (3 Translate と Embedding) を Core AI で: 経路の直しと、入力の配列の使い回し — 2026-11-13
+### 16.171 キャッシュの根を 1 つに、共有の層 (共有フォルダと S3) と AMD の書き出しの共有 — 2026-11-12
+
+docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
+
+- **根** (`cache.Root`): OS のローミングしないキャッシュのフォルダの下の `hwnpu` (`HWNPU_CACHE` で移せる)。各コマンドがばらばらに `os.UserCacheDir()` を引いていた 13 か所をこれに。AMD の書き出しは `entries/amd-xdna2/NAME.amd-npu2*` に作り、`~/models` は読むだけ (`cache.ExportRoots`)。組み込みの IRON の道具は `tools/`。IRON の JIT のキャッシュは `iron/` (`NPU_CACHE_HOME` を書き出しに渡す)。`~/.npu/cache` は最初の書き出しの前に `iron/` へ名前を変えて移し、元の場所にリンクを残す (この機械では 52 GB が一瞬で移った)
+- **`.done` を相対パスに** (`cache.WriteDone`、`ReadDone`): チャットの変換、書き起こし、Anima、Sana、Qwen-Image、hwnpu-dev formats。前の hwnpu の絶対パスは、その場所がなければ印の隣の同じ名前を読む
+- **ロック** (`cache.Lock`): `locks/` のファイルを flock (Windows は LockFileEx) で。ダウンロード (ファイルごと)、チャットの変換 (プログラムごと)、IRON の書き出し (書き出しごと)。待った側は、つかめたときに相手が作ったものを見つける
+- **HF の続きのダウンロードに `If-Range`**: 落とし始めの ETag を `NAME.part.etag` に残し、続きはその版のときだけ。ETag のない前の hwnpu の `.part` は今までどおり続ける。応答の `X-Repo-Commit` (リダイレクトの前の応答も見る) を、層に置くときのコミットとして覚える
+- **共有の層** (`internal/store`): `Store` (フォルダ `Dir` と `S3`) の上に、blob (`blobs/sha256/AB/SHA`)、エントリ (`entries/KIND/KEY.json`)、チェックポイントのファイルの索引 (`upstream/OWNER/NAME@COMMIT/FILE.json`)。blob が先、名指すものが最後。取るときは sha256 を確かめ、違えば次の層へ
+  - 設定: 定義ファイルの `cache.layers` (`use`、`write`、`fill`、`fill_gated`、`scopes`。後のファイルが並びごと置き換える)、機械の定義ファイル (`/etc/hwnpu/models.yaml`、macOS は `/Library/Application Support/hwnpu/models.yaml`、Windows は `%ProgramData%\hwnpu\models.yaml`。組み込みとユーザーの間)、`HWNPU_CACHE_LAYERS` (並びを置き換える。`off`)、`HWNPU_CACHE_WRITE=0` (読むだけ)
+  - **元のチェックポイントのフォワードプロキシ** (`fill`): `fetch` は HF の前に層を見る。定義の sha256、なければ HF への HEAD の `X-Linked-Etag` (LFS のファイル) で blob を、どちらもなければコミットの索引で探す。HF から落としたものは裏で層に置く (sha256 も裏で計算)。gated のリポジトリとライセンスを尋ねるモデルは `fill_gated` の層にだけ
+  - **AMD の書き出しの共有** (`chat.SharedExport`): 鍵はモデル、元のコミット、定義の sha256、`amd_export` の引数、組み込みの道具の hash の指紋 (`chat.ExportRecipe`)。層にあれば IRON なしで取り、なければ作って `entry.json` を書き、`write` の層へ裏で置く。前の層で当たったものは手前の `fill` の層へ。コミットが分からない (固定しておらず HF に届かない) ときは層を使わない
+  - 裏の仕事は `work/queue/` に書いてから行い、終われば消す。切れたら次の起動で続ける。失敗は `work/queue.log` に書き、実行は止めない
+- **S3** (`store.S3`): tinygodriver の `storage/s3` に。取得元の `type: s3` も `aws` コマンドから移した。鍵は環境変数か、`profile` の `~/.aws/credentials` と `~/.aws/config` の静的な鍵だけ (SSO は `aws configure export-credentials --format env` で環境変数に)。64 MiB を超えるファイルは 64 MiB の部分で上げ、失敗したら中止を送る。5xx、`SlowDown`、切断は 3 回まで。`no_sign` は署名のない GET。`path_style` を足した
+- **`hwnpu-dev cache`**: `layers` (根と層、何が決めたか)、`ls` (層のエントリ)、`push MODEL` (手元の書き出しを `write` の層へ。`entry.json` がなければ今の道具の指紋で作る)、`verify DIR [--sums]`、`flush` (裏の仕事を終える)
+- 確かめたこと: テスト (フォルダと偽の S3 の読み書き、部分に分けた送り、続きからのダウンロード、署名なし、プロファイル、エントリの往復と変わった blob、コミットと sha256 での取得、裏の仕事の残り、層を通したダウンロードで HF からの GET が 0、gated を写さない、書き出しを 1 回作って別の根で作らずに取る)。この機械で: Qwen3.5-0.8B の q6 の書き出し (1.57 GB) を `push` で共有フォルダの層へ (3.5 秒)、HOME とキャッシュの根を空にし `HWNPU_IRON_ENV` を存在しない場所にした hwnpu-chat が、層から 3.5 秒で取って NPU で答えた (チェックポイントは落とさない)
+- RustFS 1.0.5 (手元) で (2026-11-13): `TestS3Server` (`HWNPU_S3_TEST_ENDPOINT`) が部分に分けた送り、空のファイル、続き、一覧、削除で通った。空のファイルは tinygodriver v1.3.8 が長さ 0 の本体を chunked で送り 411 になった (v1.3.9 で直り、hwnpu の回避は外した)。Qwen3.5-0.8B の書き出しを RustFS の層に `push` (1.57 GB、10 秒)、空の根と IRON なしの hwnpu-chat が層から取って答えた (準備 4.4 秒)
+- Cloudflare R2 (`region: auto`) でも `TestS3Server` が通り、push (1.57 GB、119 秒) と層からの chat (準備 54 秒) ができた。無料枠は 10 GB なので小さなものだけ置く
+- 未確認: AWS の S3。Windows のロックの実機。MinIO は対象にしない (保守が終わった)
+- **初回に作る画像の書き出しも層に** (2026-11-13、`amdFirstRunExport`): hwnpu-image detect、pose、segment (RTMDet、RTMO、EfficientSAM) の書き出しは、手元になければ層を見て、なければ IRON で作って `write` の層へ。層にあれば IRON のない機械でも NPU で動く。鍵は `chat.PinnedRecipe`: 定義の sha256 (ONNX のモデルはファイルを全部固定している)、道具の名前と hash、Go の側の版 (`detect.ExportVersion`、`pose.ExportVersion`、`segment.ExportVersion`)。道具に渡す引数は Go が ONNX から決めるので、引数そのものは鍵に入れず、渡し方を変えたら版を手で上げる (cache-sharing.md 3 節の方針)。エントリの種類は `iron-onnxcnn` と `iron-efficientsam` (`chat.ExportKind`)。`hwnpu-dev cache push` もこの 3 種を受ける。この機械で: RTMO-s、RTMDet-m、EfficientSAM-Ti を共有フォルダの層に push し、空の HOME とキャッシュの根、IRON なしで、3 つとも層から 0.1〜0.2 秒で取って NPU で動いた
+- **`hwnpu-dev cache gc N`** (`store.PlanGC`): 層 N から、`--model`、`--kind`、`--key` (先頭)、`--older-than DAYS` で選んだエントリと、それだけが名指していた blob を消す。`--orphans` で、どのエントリにもチェックポイントの索引にも名指されない blob も (書き込み中の層では使わない: 置いている途中のものは名指すものが最後に書かれる)。`--apply` がなければ、消すものを出すだけ。エントリを先に消し、blob を後に。共有フォルダの層と RustFS で確かめた。途中で止まったマルチパートは tinygodriver に一覧の操作がないので、バケットのライフサイクルの規則 (「未完了のマルチパートを N 日で中止」) に任せる
+- 残り: Anima などの手で作る画像の書き出し (道具の引数を Go が持たない。HF の配布物で配る)。Core ML と OpenVINO のプログラム (チャットの変換) のエントリ化と、計画と作るの分離 (cache-sharing.md 8 節)、HF の配布物を読む層と Actions (同 9 節) は次
+
+### 16.172 PLaMo (3 Translate と Embedding) を Core AI で: 経路の直しと、入力の配列の使い回し — 2026-11-13
 
 16.169 の Core AI のバックエンドで PLaMo 3 Translate (0.8B、2B) と PLaMo-Embedding-1B を動かした。下ろし方 (`ailower`) は手を入れずに通り、どの部品も Neural Engine に載った。直したのは 2 つ。
 
