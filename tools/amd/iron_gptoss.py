@@ -683,13 +683,17 @@ class GptOss(CausalLM):
         out = ye[gl.TOP * moe.IPAD :].reshape(1, HP)
         return self.draw(self.head(out), call)
 
+    class Recompile(Exception):
+        """The versions are to be compiled again (resident_rows found where the routed words are)."""
+
     def fed_at(self, l: int) -> int:
-        """The first word layer l's routing writes of the next command's scratchpad: after the
-        words that command's cores and attention read first (the last command has no attention:
-        one word fewer). resident_rows checks it against the compiled commands."""
+        """The first word layer l's routing writes of the next command's scratchpad: IRON places
+        them after the words the command shares with others, as many as its phases read, so the
+        place is known once compiled. A guess first; resident_rows keeps what the compiled
+        commands show and asks for the versions again (iron_export_lm.py)."""
         import iron_gptoss_layer as gl
 
-        return gl.FED_AT - (1 if l + 1 >= len(self.layers) else 0)
+        return getattr(self, "_fed_first", {}).get(l, gl.FED_AT)
 
     def program_rows(self, kernels) -> list:
         """As iron_qwen35.Qwen35Moe.program_rows: each layer's MoERoute program from the decode
@@ -707,7 +711,7 @@ class GptOss(CausalLM):
         import iron_gptoss_layer as gl
 
         images = dict(self._fed)
-        fed = []
+        fed, moved = [], {}
         for layer in self.layers:
             l, m = layer.mlp.index, layer.mlp
             found = [(k, kern["parameters"]) for k, kern in enumerate(kernels)
@@ -719,9 +723,12 @@ class GptOss(CausalLM):
             prog[:, 0] = -1
             routed = [p for p in words if (p.get("form") or {}).get("value", "").startswith(f"e{l}_")]
             at = self.fed_at(l)
-            if sorted(p["index"] for p in routed) != list(range(at, at + gl.FED)):
-                raise SystemExit(f"layer {l}: command {k}'s routed words are at {sorted(p['index'] for p in routed)}, "
-                                 f"not {gl.FED} from {at} (GptOss.fed_at)")
+            have = sorted(p["index"] for p in routed)
+            if have != list(range(have[0], have[0] + gl.FED)):
+                raise SystemExit(f"layer {l}: command {k}'s routed words are at {have}, not {gl.FED} in a row")
+            if have[0] != at:
+                moved[l] = have[0]
+                continue
             for p in routed:
                 f = p["form"]
                 plain = (f["down"], f["mul"], f["add"], f["post"], f["lo"], f["hi"], f["mod"]) == (0, 1, 0, 0, None, None, None)
@@ -731,6 +738,11 @@ class GptOss(CausalLM):
                                                 2 if p["kind"] == "core" else 0)
             np.asarray(m.prog_x).view(np.int32)[:] = prog.reshape(-1)
             fed.append(dict(command=k, buffer=images[l], words=gl.FED, first=at))
+        if moved:
+            if getattr(self, "_fed_first", None):
+                raise SystemExit(f"the routed words moved again: {moved}")
+            self._fed_first = moved
+            raise self.Recompile(f"the routed words' places: {moved}")
         return fed
 
 

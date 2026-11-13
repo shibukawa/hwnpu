@@ -25,9 +25,9 @@
 //       block's bias: 5504 bytes too), the q and k rows turned by RoPE (interleaved pairs)
 //   A   the attention of the column's 8 heads (one key-value group) over the cache's keys and
 //       values (one array: a row its 8 groups' keys, then their values): x's first object the
-//       heads' q and sinks, then objects of 108 rows' key and value of the group (the first 96
-//       new each object); a softmax kept as a running maximum, sum and weighted values (GL_ATT
-//       cores: 4 heads each on cores 0 and 1)
+//       heads' q and sinks, then objects of 128 rows' key and value of the group; a softmax
+//       kept as a running maximum, sum and weighted values (GL_ATT cores: 4 heads each on
+//       cores 0 and 1)
 //   O   o_proj: q8x blocks on the heads' outputs, out acc + residual
 //   R   the router's logits (GL_ROUTER cores: column 0's last two): bf16 blocks of 80
 //       in-features on hn, each core its k-blocks' partial sums, out as float32 (the column's
@@ -173,7 +173,7 @@ constexpr int GL_OUTS = 3;       // a core's out-blocks of the residual (3072 / 
 constexpr int GL_CORES = 4;
 constexpr int GL_XN = 4 * 3072;  // E2: the residual's slice after the four experts' activations
 constexpr int GL_KBE = K / KT;   // the experts' k-blocks (K is their in-features)
-constexpr int GL_TOK = 96;       // A: tokens an object brings (it holds 108: a key and a value of 64 each)
+constexpr int GL_TOK = 128;      // A: tokens an object (a key and a value of 64 each)
 constexpr int GL_D = 64;         // the head dimension
 constexpr int GL_AH = 4;         // A: heads a core
 constexpr int GL_SINK = 13312;   // A: the column's sinks in x's first object (after its q, repeated)
@@ -199,7 +199,7 @@ struct gl_state {
 static_assert(sizeof(gl_state) <= 4096, "iron_gptoss_layer.py's st_t");
 
 #ifdef GL_ATT
-// An object's first n (of 96) tokens' keys and values (kv: [token][key 64, value 64]) into the
+// An object's first n (of 128) tokens' keys and values (kv: [token][key 64, value 64]) into the
 // core's heads' softmax. Built for size (loops kept, no unrolling): it is a few microseconds an
 // object either way.
 GL_COLD static void gl_attend(const bf16 *kv, gl_state *st, int n) {
@@ -471,7 +471,7 @@ GL_COLD void GL_FN(gl_emit)(float *state, const bf16 *x, const int32_t *cnt, int
   }
 }
 
-// A: object b of the group's keys and values (its first 96 tokens new).
+// A: object b of the group's keys and values.
 void GL_FN(gl_xblock)(const bf16 *xb, float *state, const int32_t *cnt, int32_t b) {
 #ifdef GL_ATT
   aie::set_rounding(aie::rounding_mode::conv_even);

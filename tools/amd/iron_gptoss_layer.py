@@ -13,8 +13,8 @@ the order a command runs them:
   Q  the q, k, v projection with the input RMSNorm, the bias and RoPE (iron_q4's QGEMVQKV); k
      and v go into the caches' rows of the call's position
   A  the attention over the cache (one array: a row its 8 groups' keys, then their values;
-     iron_window's position-indexed rows), a column a key-value group: objects of 108 rows' key
-     and value of the group on x's stream (96 rows further each), with the heads' sinks
+     iron_window's position-indexed rows), a column a key-value group: objects of 128 rows' key
+     and value of the group on x's stream, with the heads' sinks
   O  o_proj with its bias and the residual
   R  the router's logits on RMSNorm(h) (column 0)
   T  the routing: the top 4, their weights, and the next command's scratchpad words (the
@@ -53,8 +53,8 @@ CORES, COLS = moe.CORES, 8
 BLOCK, MT, TOP, WV = moe.BLOCK, moe.MT, moe.TOP, moe.WV
 HP = 3072  # the residual stream (padded)
 D, G, H = 64, 8, 64  # the head dimension, the key-value groups, the heads
-TOK, WIN = 96, 108  # the attention: tokens an object brings, tokens it holds (a key and a value each)
-XO = WIN * 2 * D  # x's object: 13824 (the experts' need 12688)
+TOK = 128  # the attention: tokens an object (a key and a value each); a descriptor runs 64 times: 8192 rows
+XO = TOK * 2 * D  # x's object: 16384 (the experts' need 12688)
 ROW = 2 * G * D  # a cache row: the groups' keys, then their values
 NW_AT, ANG_AT, RES_AT, SINK_AT = 6144, 9216, 12288, 13312  # kernels/gptoss_layer.cc's GL_NW, GL_ANG, GL_RES, GL_SINK
 QKT = 160  # q8x's in-features a block
@@ -189,9 +189,8 @@ def kinds_of(phases: int) -> list:
 
 
 def objects(position):
-    """The attention's objects of position + 1 tokens (ceil of them by 96) as a graph expression
-    of a per-call position: a multiply and a shift (exact to 1300 objects)."""
-    return (position * 43691 + TOK * 43691) // 4194304
+    """The attention's objects of position + 1 tokens, as a graph expression of a per-call position."""
+    return (position + TOK) // TOK
 
 
 @functools.cache
@@ -420,7 +419,7 @@ def step_operator():
             for l in range(n):  # h, the norm's weight (at NW_AT), and h's start to the object's end
                 self._twice(self.h, l)
                 self._twice(self.nwe, l)
-                self.h.fill(TAP((HP,), 0, [XO - 4 * HP], [1]), lane=l, managed=False)
+                self.h.fill(TAP((HP,), 0, [(XO - 4 * HP) // 1024, 1024], [0, 1]), lane=l, managed=False)
             for l in range(n):
                 e, hf = l // 2, l % 2
                 self.Wg.fill(TAP((gtotal,), hf * geb // 2, [geb // 2], [1]), lane=l,
@@ -472,7 +471,7 @@ def step_operator():
 
         def _att(self):
             n = self.num_aie_columns
-            nmax = (self.kvn // ROW - WIN) // TOK + 1  # objects whose rows are in the cache
+            nmax = min(self.kvn // ROW // TOK, 64)  # objects in the cache, a descriptor's runs at most
             first = bound(self, "kfirst")
             drains = [self.ya.drain(TAP((ATTB,), l * 1024, [8, 2, 64], [64, 512, 1]), lane=l, wait=True, managed=False)
                       for l in range(n)]
@@ -480,8 +479,8 @@ def step_operator():
                 self.h.fill(TAP((QN,), l * 512, [SINK_AT // 512, 512], [0, 1]), lane=l, source=self.yq, managed=False)
                 self.sinks.fill(TAP((H,), l * 8, [(XO - SINK_AT) // 8, 8], [0, 1]), lane=l, managed=False)
             for l in range(n):
-                # an object of x: 108 rows' key and value of the group, from 96 rows further each
-                self.h.fill(TAP((self.kvn,), l * D, [nmax, WIN, 2, D], [TOK * ROW, ROW, G * D, 1]), lane=l,
+                # an object of x: 128 rows' key and value of the group
+                self.h.fill(TAP((self.kvn,), l * D, [nmax, TOK, 2, D], [TOK * ROW, ROW, G * D, 1]), lane=l,
                             source=self.KV, offset_parameter=first, repeat_parameter=bound(self, "nkv1"),
                             managed=False)
             for d in drains:
@@ -505,7 +504,7 @@ def step_operator():
             d = self.yr.drain(TAP((PROG,), 0, [2 * CB], [1]), lane=0, wait=True, managed=False)
             self._twice(self.h, 0, source=self.yo)
             self._twice(self.nwr, 0)
-            self.h.fill(TAP((HP,), 0, [XO - 4 * HP], [1]), lane=0, source=self.yo, managed=False)
+            self.h.fill(TAP((HP,), 0, [(XO - 4 * HP) // 1024, 1024], [0, 1]), lane=0, source=self.yo, managed=False)
             self.Wr.fill(TAP((RKB * BLOCK,), 0, [RKB * BLOCK], [1]), lane=0, managed=False)
             d.await_()
 
@@ -625,7 +624,7 @@ def _check(a) -> int:
 
         def step(self, phases, h, nw, ang, sinks, rw, prog, es, position):
             n1 = position + 1
-            n = iron.clamp(objects(position), hi=2) if a.sliding else objects(position)
+            n = iron.clamp(objects(position), hi=1) if a.sliding else objects(position)
             slide = dict(nkv1=n - 1, **(dict(kfirst=iron.clamp(position * ROW - 127 * ROW, lo=0)) if a.sliding else {}))
             return Step.step(self.gu, self.dn, self.wq, self.wo, self.wr, h, nw, nw, nw, ang, sinks, rw, prog,
                              self.KV, grows=self.gu.shape[0], drows=self.dn.shape[0], qrows=self.wq.shape[0],

@@ -999,7 +999,12 @@ def main(argv=None) -> int:
     c = model.text.config if hasattr(model, "towers") else model.config
     _CONFIG.update(max_seq_len=int(c.max_seq_len), prefill_chunk=int(c.prefill_chunk), vocab_size=int(c.vocab_size))
     versions = compile_versions(model, full_elf=False if a.per_step else None)
-    m = export(model, versions, a.out)
+    try:
+        m = export(model, versions, a.out)
+    except getattr(model, "Recompile", ()) as again:  # gpt-oss: its routing's words are placed by the lowering
+        print(f"compiling again: {again}")
+        versions = compile_versions(model, full_elf=False if a.per_step else None)
+        m = export(model, versions, a.out)
     # What hwnpu-chat reads beside the model: the tokenizer and the chat format.
     for name in ("tokenizer.json", "tokenizer.jsonl", "tokenizer_config.json", "config.json", "chat_template.jinja", "generation_config.json",
                  "processor_config.json"):
