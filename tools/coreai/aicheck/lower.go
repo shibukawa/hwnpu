@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
 )
@@ -36,4 +37,26 @@ func baseName(p string) string {
 		p = p[:n]
 	}
 	return p
+}
+
+// merge lowers the packages into one program OUT (an .aimodel) with a function of each name
+// (NAME=PKG...), sharing the weights of the same bytes (ailower.LowerFunctions).
+func merge(out string, args []string) error {
+	var pkgs, names []string
+	for _, a := range args {
+		name, pkg, ok := strings.Cut(a, "=")
+		if !ok {
+			return fmt.Errorf("merge: %q is not NAME=PKG", a)
+		}
+		names, pkgs = append(names, name), append(pkgs, pkg)
+	}
+	prog, err := ailower.LowerFunctions(pkgs, names)
+	if err != nil {
+		return err
+	}
+	if err := prog.WriteAsset(out); err != nil {
+		return err
+	}
+	fmt.Printf("%s: %d bytes, functions %v\n", out, len(prog.Bytecode), names)
+	return nil
 }

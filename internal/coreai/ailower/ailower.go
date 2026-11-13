@@ -47,12 +47,19 @@ type Feature struct {
 	Shape []int
 }
 
-// Program is a lowered program.
+// Program is a lowered program: its bytecode and the inputs and outputs of its function main, or
+// of each of its functions (LowerFunctions).
 type Program struct {
 	Bytecode []byte
 	Inputs   []Feature
 	Outputs  []Feature
+	// Functions are the inputs and outputs of each function by name when there are several
+	// (LowerFunctions); nil for one function, main.
+	Functions map[string]IO
 }
+
+// IO is the inputs and outputs of a function.
+type IO struct{ Inputs, Outputs []Feature }
 
 // Lower lowers the MIL function fn, whose blob values point into weights (weight.bin).
 func Lower(fn *milspec.Function, weights io.ReaderAt) (*Program, error) {
@@ -60,6 +67,51 @@ func Lower(fn *milspec.Function, weights io.ReaderAt) (*Program, error) {
 	if block == nil {
 		return nil, fmt.Errorf("ailower: the function has no block for opset %q", fn.GetOpset())
 	}
+	l := newLowerer(newWriter(), map[[32]byte]string{}, weights)
+	io, graph, err := l.lower(fn, block, "main")
+	if err != nil {
+		return nil, err
+	}
+	return &Program{Bytecode: l.asset(graph), Inputs: io.Inputs, Outputs: io.Outputs}, nil
+}
+
+// LowerFunctions lowers the main functions of several .mlpackages into one program with a function
+// of each name (names[i] for pkgs[i]). Weights of the same bytes are written once, so that programs
+// of one model for different sequence lengths share them.
+func LowerFunctions(pkgs, names []string) (*Program, error) {
+	if len(pkgs) != len(names) || len(pkgs) == 0 {
+		return nil, fmt.Errorf("ailower: %d packages and %d names", len(pkgs), len(names))
+	}
+	w, blobs := newWriter(), map[[32]byte]string{}
+	p := &Program{Functions: map[string]IO{}}
+	var graphs []graph
+	for i, dir := range pkgs {
+		if _, dup := p.Functions[names[i]]; dup {
+			return nil, fmt.Errorf("ailower: function %s twice", names[i])
+		}
+		fn, weights, closer, err := openPackage(dir)
+		if err != nil {
+			return nil, err
+		}
+		l := newLowerer(w, blobs, weights)
+		io, g, err := l.lower(fn, fn.GetBlockSpecializations()[fn.GetOpset()], names[i])
+		if closer != nil {
+			closer.Close()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", filepath.Base(dir), err)
+		}
+		p.Functions[names[i]] = io
+		graphs = append(graphs, g)
+		if names[i] == "main" {
+			p.Inputs, p.Outputs = io.Inputs, io.Outputs
+		}
+	}
+	p.Bytecode = newLowerer(w, blobs, nil).asset(graphs...)
+	return p, nil
+}
+
+func newWriter() *mlirbc.Writer {
 	w := mlirbc.NewWriter(Producer, map[string][]byte{"aicode": {0x05}})
 	if os.Getenv("HWNPU_AILOWER_TRACE") != "" {
 		w.Trace = func(id int, name string, operands, results []int) {
@@ -73,38 +125,55 @@ func Lower(fn *milspec.Function, weights io.ReaderAt) (*Program, error) {
 			fmt.Fprintf(os.Stderr, "op_id %d %s (%s) -> (%s)\n", id, name, strings.Join(o, ", "), strings.Join(r, ", "))
 		}
 	}
-	l := &lowerer{
-		w:       w,
-		weights: weights,
-		vals:    map[string]val{},
-		consts:  map[string]*milspec.Value{},
-		alias:   map[string]string{},
+	return w
+}
+
+func newLowerer(w *mlirbc.Writer, blobs map[[32]byte]string, weights io.ReaderAt) *lowerer {
+	return &lowerer{
+		w:        w,
+		weights:  weights,
+		vals:     map[string]val{},
+		consts:   map[string]*milspec.Value{},
+		alias:    map[string]string{},
+		blobKeys: blobs,
 	}
-	return l.lower(fn, block)
+}
+
+// openPackage reads an .mlpackage's main function and opens its weights (nil without any).
+func openPackage(dir string) (*milspec.Function, io.ReaderAt, io.Closer, error) {
+	m, err := mlpackage.ReadModel(dir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	prog := m.GetMlProgram()
+	if prog == nil {
+		return nil, nil, nil, fmt.Errorf("ailower: %s is not an ML Program", dir)
+	}
+	fn := prog.GetFunctions()["main"]
+	if fn == nil {
+		return nil, nil, nil, fmt.Errorf("ailower: %s has no main function", dir)
+	}
+	if fn.GetBlockSpecializations()[fn.GetOpset()] == nil {
+		return nil, nil, nil, fmt.Errorf("ailower: %s: the function has no block for opset %q", dir, fn.GetOpset())
+	}
+	f, err := os.Open(filepath.Join(dir, "Data", "com.apple.CoreML", "weights", "weight.bin"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fn, nil, nil, nil
+		}
+		return nil, nil, nil, err
+	}
+	return fn, f, f, nil
 }
 
 // LowerPackage lowers an .mlpackage's main function.
 func LowerPackage(dir string) (*Program, error) {
-	m, err := mlpackage.ReadModel(dir)
+	fn, weights, closer, err := openPackage(dir)
 	if err != nil {
 		return nil, err
 	}
-	prog := m.GetMlProgram()
-	if prog == nil {
-		return nil, fmt.Errorf("ailower: %s is not an ML Program", dir)
-	}
-	fn := prog.GetFunctions()["main"]
-	if fn == nil {
-		return nil, fmt.Errorf("ailower: %s has no main function", dir)
-	}
-	f, err := os.Open(filepath.Join(dir, "Data", "com.apple.CoreML", "weights", "weight.bin"))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	var weights io.ReaderAt
-	if f != nil {
-		defer f.Close()
-		weights = f
+	if closer != nil {
+		defer closer.Close()
 	}
 	p, err := Lower(fn, weights)
 	if err != nil {
@@ -125,7 +194,18 @@ func (p *Program) WriteAsset(dir string) error {
 	if err != nil {
 		return err
 	}
-	for name, b := range map[string][]byte{"main.mlirb": p.Bytecode, "main.hash": sum[:], "metadata.json": []byte(meta), IOFile: io} {
+	files := map[string][]byte{"main.mlirb": p.Bytecode, "main.hash": sum[:], "metadata.json": []byte(meta)}
+	if p.Functions == nil {
+		files[IOFile] = io
+	}
+	for name, f := range p.Functions {
+		b, err := json.MarshalIndent(f, "", "  ")
+		if err != nil {
+			return err
+		}
+		files[ioFile(name)] = b
+	}
+	for name, b := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
 			return err
 		}
@@ -136,9 +216,22 @@ func (p *Program) WriteAsset(dir string) error {
 // IOFile is the file of an asset hwnpu writes that names its inputs and outputs (ReadIO).
 const IOFile = "hwnpu-io.json"
 
+// ioFile is the file of a function's inputs and outputs: IOFile for main, hwnpu-io-NAME.json for
+// the functions of a program with several (LowerFunctions).
+func ioFile(fn string) string {
+	if fn == "" || fn == "main" {
+		return IOFile
+	}
+	return "hwnpu-io-" + fn + ".json"
+}
+
 // ReadIO reads the inputs and outputs of an asset written by WriteAsset.
-func ReadIO(dir string) (inputs, outputs []Feature, err error) {
-	b, err := os.ReadFile(filepath.Join(dir, IOFile))
+func ReadIO(dir string) (inputs, outputs []Feature, err error) { return ReadFunctionIO(dir, "main") }
+
+// ReadFunctionIO reads the inputs and outputs of the function fn of an asset written by
+// WriteAsset ("" or main: of its function main).
+func ReadFunctionIO(dir, fn string) (inputs, outputs []Feature, err error) {
+	b, err := os.ReadFile(filepath.Join(dir, ioFile(fn)))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -168,7 +261,9 @@ type lowerer struct {
 	vals    map[string]val
 	consts  map[string]*milspec.Value
 	alias   map[string]string
-	blobs   int
+	// blobKeys are the resources written so far by the sha256 of their bytes, shared by the
+	// lowerers of one program's functions: a weight is written once
+	blobKeys map[[32]byte]string
 }
 
 type lowerError struct{ err error }
@@ -177,7 +272,14 @@ func (l *lowerer) fail(format string, args ...any) {
 	panic(lowerError{fmt.Errorf("ailower: "+format, args...)})
 }
 
-func (l *lowerer) lower(fn *milspec.Function, block *milspec.Block) (p *Program, err error) {
+// graph is a lowered function: its graph_v1's properties and body.
+type graph struct {
+	props []mlirbc.Prop
+	body  *mlirbc.BlockW
+}
+
+// lower lowers the function fn as a graph named name.
+func (l *lowerer) lower(fn *milspec.Function, block *milspec.Block, name string) (p IO, gr graph, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if e, ok := r.(lowerError); ok {
@@ -187,7 +289,6 @@ func (l *lowerer) lower(fn *milspec.Function, block *milspec.Block) (p *Program,
 			panic(r)
 		}
 	}()
-	p = &Program{}
 	var argTypes []int
 	var argNames []string
 	var ins []val
@@ -252,14 +353,21 @@ func (l *lowerer) lower(fn *milspec.Function, block *milspec.Block) (p *Program,
 	// isPrivate, name, noInline, paramDecls, resAttrs
 	gp := []mlirbc.Prop{l.prop(names(argNames)), absent, zero1,
 		l.prop("#aicode.serialization.type<!aicode.function_v1<(operands " + strings.Join(inTypes, ", ") + ") -> (results " + strings.Join(outTypes, ", ") + ")>>"),
-		zero1, l.prop(`#aicode.serialization.string<"main">`), zero1, l.prop("#aicode.serialization.array<>"), l.prop(names(outNames))}
+		zero1, l.prop(fmt.Sprintf("#aicode.serialization.string<%q>", name)), zero1, l.prop("#aicode.serialization.array<>"), l.prop(names(outNames))}
+	return p, graph{gp, g}, nil
+}
+
+// asset is the bytecode of the serialization asset holding the graphs.
+func (l *lowerer) asset(graphs ...graph) []byte {
 	asset, _ := l.w.NewBlock()
-	asset.Op("aicode.dataflow.graph_v1", gp, nil, nil, g)
+	for _, g := range graphs {
+		asset.Op("aicode.dataflow.graph_v1", g.props, nil, nil, g.body)
+	}
 	top, _ := l.w.NewBlock()
 	ver := l.w.Attr("aicode", fmt.Sprintf("#aicode.serialization.integer<(32bit unsigned) %d>", assetVersion))
+	absent := mlirbc.Prop{Attr: -1, Optional: true}
 	top.Op("aicode.serialization.asset", []mlirbc.Prop{absent, {Attr: ver, Optional: true}}, nil, nil, asset)
-	p.Bytecode = l.w.Bytes(top)
-	return p, nil
+	return l.w.Bytes(top)
 }
 
 func (l *lowerer) prop(text string) mlirbc.Prop { return mlirbc.Prop{Attr: l.w.Attr("aicode", text)} }
@@ -345,9 +453,13 @@ func (l *lowerer) constRaw(elem string, shape []int, raw []byte) val {
 	case len(raw) <= inlineBytes:
 		text = fmt.Sprintf("#aicode.serialization.dense_elements<[splat = false] %q>", base64.StdEncoding.EncodeToString(raw))
 	default:
-		key := fmt.Sprintf("hwnpu_%d", l.blobs)
-		l.blobs++
-		l.w.Blob("aicode", key, 16, raw)
+		sum := sha256.Sum256(raw)
+		key, ok := l.blobKeys[sum]
+		if !ok {
+			key = fmt.Sprintf("hwnpu_%d", len(l.blobKeys))
+			l.blobKeys[sum] = key
+			l.w.Blob("aicode", key, 16, raw)
+		}
 		text = "#aicode.serialization.dense_resource<" + key + ">"
 	}
 	return l.emit("constant_v1", elem, shape, []mlirbc.Prop{l.prop(text)})
