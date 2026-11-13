@@ -18,6 +18,12 @@ A block is 32 out-features by KT = 320 in-features (2880 = 9 k-blocks, no paddin
 
     python tools/amd/iron_gptoss_moe.py check OUT     # a graph of both, random mx4 experts
     go run ./tools/amd/irongraph OUT
+
+MX4Experts runs the two as one operator (the decode step's form). For measuring: MX4_FUSED=1 makes
+check's graph MX4Experts, MX4_ONLY=gu or down one of the two, MX4_NOCOMPUTE=1 builds kernels that
+skip their products (the transfers alone), MX4_CORES (cores a column, 4; the tables' layout too),
+MX4_WDEPTH (the decode step's weight objects a memtile holds, 2), MX4_SB (rows an object of the
+prompt's x, 8).
 """
 
 import argparse
@@ -718,7 +724,7 @@ def _check(a) -> int:
 # --- a prompt chunk's experts: every expert's weights once a pass ---------------------------
 
 CAP = 128  # an expert's rows a pass (the host splits a chunk into passes past it)
-SB = 8  # rows an object of x (a core holds CAP rows' accumulators of a gate and an up block)
+SB = int(os.environ.get("MX4_SB", "8"))  # rows an object of x (a core holds CAP rows' accumulators of a gate and an up block)
 GROUPS = EXPERTS // TOP  # a prompt runs the experts 4 at a time on the decode step's columns
 COUNT_WORDS = 32  # the counts' int32 words, the first object of the x channel
 
@@ -800,8 +806,8 @@ def group_operators():
         here = Path(__file__).resolve().parent / "kernels"
         common = dict(source_file=str(here / "moe_mx4_rows.cc"),
                       include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
-                      compile_flags=[f"-DMX_KT={KT}", f"-DMX_CAP={CAP}", f"-DMX_SB={SB}"],
-                      object_file_name=f"moe_mx4_rows_mm_{KT}_{CAP}_{SB}.o")
+                      compile_flags=[f"-DMX_KT={KT}", f"-DMX_CAP={CAP}", f"-DMX_SB={SB}"] + (["-DMX_NOCOMPUTE=1"] if NOCOMPUTE else []),
+                      object_file_name=f"moe_mx4_rows_mm_{KT}_{CAP}_{SB}{'_nc' if NOCOMPUTE else ''}.o")
         f = lambda name, args: ExternalFunction(name, arg_types=args, **common)  # noqa: E731
         i32 = np.int32
         return dict(
@@ -829,6 +835,7 @@ def group_operators():
         AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
         CN: int = param(default=SB * KT, array=True)
         form: int = param(default=2, array=True)  # 2: the matrix unit (moe_mx4_rows.cc's mx4_rows_mm)
+        nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
         num_aie_columns: int = tunable(domain=widths)
 
         W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
@@ -931,6 +938,7 @@ def group_operators():
         YN: int = param(derive=lambda op: EXPERTS * CAP * op.N, array=True)
         CN: int = param(default=SB * KT, array=True)
         form: int = param(default=2, array=True)  # 2: the matrix unit (moe_mx4_rows.cc's mx4_rows_mm)
+        nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
         num_aie_columns: int = tunable(domain=widths)
 
         W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))

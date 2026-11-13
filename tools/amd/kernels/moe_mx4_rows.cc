@@ -122,6 +122,9 @@ static inline aie::vector<bf16, 64> scale_rep(aie::vector<bf16, PR> sc) {
 
 // noinline: inlined in both of block2's calls the gate-up core's program passed its 16 KB
 __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16 *x, float *acc) {
+#ifdef MX_NOCOMPUTE
+  return; // a measurement: the transfers alone
+#endif
   static_assert(SB % 4 == 0, "rows in tiles of 4");
   constexpr int G = SB / 4; // row tiles an object
   MM c[G][4];
