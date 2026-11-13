@@ -168,8 +168,13 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 	c.PromptDir = promptDir
 	c.Dense = !cf.Sparse
 	c.Idle = lf.Idle
-	if ef != nil {
-		c.Vision, c.Audio = split(ef.Vision), split(ef.AudioEncoder)
+	// the flags override the encoders Prepare converted (a model with vision or audio); without
+	// them those stay
+	if ef != nil && ef.Vision != "" {
+		c.Vision = split(ef.Vision)
+	}
+	if ef != nil && ef.AudioEncoder != "" {
+		c.Audio = split(ef.AudioEncoder)
 	}
 	e, err := chat.Load(ctx, c)
 	if err != nil {
