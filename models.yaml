@@ -158,8 +158,8 @@ models:
     kind: chat
     from: hf:openai/gpt-oss-20b
     machine: 32
-    memory: 14.5
-    bytes: 13.8e9
+    memory: 15.5
+    bytes: 15.0e9
     features: [tools, thinking]
     amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256
     about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): AMD's NPU only, its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention at 8 bits; it always reasons first (the low effort with no_think)"
