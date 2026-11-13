@@ -723,7 +723,7 @@ def _check(a) -> int:
 
 # --- a prompt chunk's experts: every expert's weights once a pass ---------------------------
 
-CAP = 128  # an expert's rows a pass (the host splits a chunk into passes past it)
+CAP = int(os.environ.get("MX4_CAP", "128"))  # an expert's rows a pass (the host splits a chunk into passes past it)
 SB = int(os.environ.get("MX4_SB", "8"))  # rows an object of x (a core holds CAP rows' accumulators of a gate and an up block)
 GROUPS = EXPERTS // TOP  # a prompt runs the experts 4 at a time on the decode step's columns
 COUNT_WORDS = 32  # the counts' int32 words, the first object of the x channel
@@ -834,7 +834,7 @@ def group_operators():
         XS: int = param(derive=lambda op: EXPERTS * op.K * CAP, array=True)
         AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
         CN: int = param(default=SB * KT, array=True)
-        form: int = param(default=2, array=True)  # 2: the matrix unit (moe_mx4_rows.cc's mx4_rows_mm)
+        form: int = param(default=3, array=True)  # 3: the matrix unit a strip at a time (moe_mx4_rows.cc's mx4_rows_mm)
         nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
         num_aie_columns: int = tunable(domain=widths)
 
@@ -937,7 +937,7 @@ def group_operators():
         AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
         YN: int = param(derive=lambda op: EXPERTS * CAP * op.N, array=True)
         CN: int = param(default=SB * KT, array=True)
-        form: int = param(default=2, array=True)  # 2: the matrix unit (moe_mx4_rows.cc's mx4_rows_mm)
+        form: int = param(default=3, array=True)  # 3: the matrix unit a strip at a time (moe_mx4_rows.cc's mx4_rows_mm)
         nocompute: bool = param(default=NOCOMPUTE, array=True)  # a measurement's build (MX4_NOCOMPUTE)
         num_aie_columns: int = tunable(domain=widths)
 

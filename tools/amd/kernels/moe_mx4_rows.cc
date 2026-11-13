@@ -127,15 +127,17 @@ __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16
 #endif
   static_assert(SB % 4 == 0, "rows in tiles of 4");
   constexpr int G = SB / 4; // row tiles an object
-  MM c[G][4];
+  // A strip (16 out-features: two 8-wide tiles) at a time, so that a unit of codes is decoded
+  // once for all SB rows and only 2 G accumulators are live (with all four tiles at once, 8 rows
+  // an object, decoding took about 5000 of a call's 5500 cycles and the tiles went to the stack)
+  for (int s = 0; s < 2; s++) {
+    MM c[G][2];
 #pragma clang loop unroll(full)
-  for (int g = 0; g < G; g++)
-#pragma clang loop unroll(full)
-    for (int t = 0; t < 4; t++)
-      c[g][t] = MM();
-  for (int j = 0; j < KT / 8; j++) {
-    aie::vector<bf16, 64> b[4];
-    for (int s = 0; s < 2; s++) {
+    for (int g = 0; g < G; g++) {
+      c[g][0] = MM();
+      c[g][1] = MM();
+    }
+    for (int j = 0; j < KT / 8; j++) {
       aie::vector<int8_t, 8 * PR> v = mx4_codes(A, s * (KT / 8) + j);
       aie::accum<accfloat, 8 * PR> f;
       f.from_vector(aie::to_float(v, 0));
@@ -144,32 +146,28 @@ __attribute__((noinline)) static void mx4_rows_mm(const mx4_blk_t *A, const bf16
       aie::vector<bf16, 64> w0 = aie::mul(w.template extract<64>(0), sc).template to_vector<bf16>();
       aie::vector<bf16, 64> w1 = aie::mul(w.template extract<64>(1), sc).template to_vector<bf16>();
       // [k][16 m] to two [k][8 m] tiles: the 8-wide chunks alternate between them
-      auto [lo, hi] = aie::interleave_unzip(w0, w1, 8);
-      b[2 * s] = lo;
-      b[2 * s + 1] = hi;
+      auto [b0, b1] = aie::interleave_unzip(w0, w1, 8);
+#pragma clang loop unroll(full)
+      for (int g = 0; g < G; g++) {
+        const bf16 *xr = x + (4 * g) * KT + 8 * j;
+        aie::vector<bf16, 32> a = aie::concat(aie::load_v<8>(xr), aie::load_v<8>(xr + KT),
+                                              aie::load_v<8>(xr + 2 * KT), aie::load_v<8>(xr + 3 * KT));
+        c[g][0].mac(a, b0);
+        c[g][1].mac(a, b1);
+      }
     }
+    // C tile [4 rows][8 out-features] of out-features 16 s + 8 t into acc's rows
 #pragma clang loop unroll(full)
     for (int g = 0; g < G; g++) {
-      const bf16 *xr = x + (4 * g) * KT + 8 * j;
-      aie::vector<bf16, 32> a = aie::concat(aie::load_v<8>(xr), aie::load_v<8>(xr + KT),
-                                            aie::load_v<8>(xr + 2 * KT), aie::load_v<8>(xr + 3 * KT));
 #pragma clang loop unroll(full)
-      for (int t = 0; t < 4; t++)
-        c[g][t].mac(a, b[t]);
-    }
-  }
-  // C tile [4 rows][8 out-features] of out-features 8 t (t = 2 strip + half) into acc's rows
-  // (rolled: unrolled, the gate-up core's program passed its 16 KB)
-#pragma clang loop unroll(full)
-  for (int g = 0; g < G; g++) {
-#pragma clang loop unroll(full)
-    for (int t = 0; t < 4; t++) {
-      aie::vector<float, 32> v = c[g][t].template to_vector<float>();
-      const int out = (t / 2) * PR + (t % 2) * 8;
+      for (int t = 0; t < 2; t++) {
+        aie::vector<float, 32> v = c[g][t].template to_vector<float>();
+        const int out = s * PR + t * 8;
 #pragma clang loop unroll(disable)
-      for (int r = 0; r < 4; r++) {
-        float *dst = acc + (4 * g + r) * MT + out;
-        aie::store_v(dst, aie::add(aie::load_v<8>(dst), v.template extract<8>(r)));
+        for (int r = 0; r < 4; r++) {
+          float *dst = acc + (4 * g + r) * MT + out;
+          aie::store_v(dst, aie::add(aie::load_v<8>(dst), v.template extract<8>(r)));
+        }
       }
     }
   }
