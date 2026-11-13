@@ -148,6 +148,13 @@ type Version struct {
 	// Fed are the commands whose scratchpad the device writes (Qwen3.6's experts, routed on
 	// the device: tools/amd/iron_moe.py), each a buffer of the feedback argument.
 	Fed []Fed `json:"fed"`
+	// LogitParts, where not 0, is the rows of a block of the output: it holds each block's
+	// logits as two partial sums ([block][2][LogitParts] bf16), which are to be added
+	// (tools/amd/iron_gptoss_layer.py's head: two halves of the cores take half the in-features).
+	LogitParts int `json:"logit_parts,omitempty"`
+	// NoStepBarrier: the decode step runs without Model.stepBarrier (checked at export for
+	// the model: gpt-oss on its one array).
+	NoStepBarrier bool `json:"no_step_barrier,omitempty"`
 	// Host are the host steps hwnpu runs between the commands (Qwen3.6's prompt experts: moe.go).
 	Host []HostStep `json:"host"`
 }
@@ -158,6 +165,9 @@ type Fed struct {
 	Command int    `json:"command"`
 	Buffer  string `json:"buffer"`
 	Words   int    `json:"words"`
+	// First is the first of the Words words the device writes (0: the scratchpad's first); the
+	// command's other words, if it reads any, are the host's
+	First int `json:"first,omitempty"`
 }
 
 // Step is one dispatch of an xclbin per step: a kernel of an xclbin, its instruction stream

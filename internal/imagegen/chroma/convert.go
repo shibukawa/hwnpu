@@ -1,6 +1,7 @@
 package chroma
 
 import (
+	"cmp"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,9 @@ const ExportVersion = 1
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
+	// Backend is the program format: coreml (Core ML packages, the default) or coreai (Core AI
+	// programs, written from the checkpoint without a Core ML package).
+	Backend string
 	// Width and Height are the picture's size in pixels, multiples of 16.
 	Width, Height int
 	// TextFormat and DitFormat are the weight formats of T5 (default lut8, with TextFormatFor wo=fp16) and of the DiT
@@ -54,6 +58,9 @@ type ConvertOptions struct {
 
 // defaults fills what o leaves out.
 func (o *ConvertOptions) defaults() {
+	if o.Backend == "" {
+		o.Backend = llm.BackendCoreML
+	}
 	if o.TextFormat == "" {
 		// lut8 with wo, the FF's output projection whose inputs carry T5's outliers, at fp16
 		// (5.5 GB against fp16's 9.5): the same pictures as fp16 (latent cosine 0.996 to 0.999 to
@@ -92,10 +99,19 @@ func (o *ConvertOptions) defaults() {
 	}
 }
 
-// Convert writes a Core ML export of the Chroma repository root (transformer/, scheduler/; T5's
-// text_encoder/ and the VAE's vae/ in shared, which may be root) into out: the programs, text/
-// (the tokenizer and T5's embedding table, bf16, as the IRON export's), model.json and
-// manifest.json.
+// ProgramExt is the extension of a program of the format backend: .aimodel for coreai, else
+// .mlpackage.
+func ProgramExt(backend string) string {
+	if backend == llm.BackendCoreAI {
+		return ".aimodel"
+	}
+	return ".mlpackage"
+}
+
+// Convert writes an export (Core ML's, or Core AI's for o.Backend coreai) of the Chroma
+// repository root (transformer/, scheduler/; T5's text_encoder/ and the VAE's vae/ in shared,
+// which may be root) into out: the programs, text/ (the tokenizer and T5's embedding table,
+// bf16, as the IRON export's), model.json and manifest.json.
 func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 	o.defaults()
 	if log == nil {
@@ -129,13 +145,14 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 	written := 0
 	name := filepath.Base(root)
 	from := linkSources(o.LinkFrom, name, o, dc)
-	lastText := fmt.Sprintf("text_%d.mlpackage", texts[len(texts)-1][0])
+	ext := ProgramExt(o.Backend)
+	lastText := fmt.Sprintf("text_%d%s", texts[len(texts)-1][0], ext)
 	write := func(kind string, p *mil.Part, format string, rules []string) (string, error) {
-		opts := llm.Options{Backend: llm.BackendCoreML, Format: format, FormatFor: rules}
+		opts := llm.Options{Backend: o.Backend, Format: format, FormatFor: rules}
 		if kind == "doubles" || kind == "singles" {
 			opts.Quant = o.DitQuant
 		}
-		name := p.Name + ".mlpackage"
+		name := p.Name + ext
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
@@ -155,7 +172,7 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
 		return name, nil
 	}
-	m := &ProgramManifest{Backend: llm.BackendCoreML, Version: ExportVersion,
+	m := &ProgramManifest{Backend: o.Backend, Version: ExportVersion,
 		Formats:    map[string]string{"t5": o.t5Formats(), "dit": o.ditFormats(), "vae": "fp16"},
 		EmbedScale: 1.0 / mil.T5Scale,
 		Dit: Config{Width: o.Width, Height: o.Height, TextRows: dc.TextRows, Hidden: dc.Hidden, Latent: dc.Latent, T5: tc.Hidden,
@@ -333,7 +350,7 @@ func linkSources(dirs []string, name string, o ConvertOptions, dc mil.Dit) linkF
 	var f linkFrom
 	for _, d := range dirs {
 		m, err := ReadProgramManifest(d)
-		if err != nil || m.Version != ExportVersion {
+		if err != nil || m.Version != ExportVersion || cmp.Or(m.Backend, llm.BackendCoreML) != cmp.Or(o.Backend, llm.BackendCoreML) {
 			continue
 		}
 		var md struct {

@@ -1,0 +1,590 @@
+[
+ {
+  "name": "plain",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Hi"
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: low\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>user<|message|>Hi<|end|><|start|>assistant"
+ },
+ {
+  "name": "system thinking",
+  "messages": [
+   {
+    "role": "system",
+    "content": "  You are terse.\n"
+   },
+   {
+    "role": "user",
+    "content": "Hi "
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>developer<|message|># Instructions\n\n  You are terse.\n\n\n<|end|><|start|>user<|message|>Hi <|end|><|start|>assistant"
+ },
+ {
+  "name": "turns with reasoning",
+  "messages": [
+   {
+    "role": "user",
+    "content": "What is 2+2?"
+   },
+   {
+    "role": "assistant",
+    "content": "<|channel>thought\nadd<channel|>4",
+    "reasoning_content": "Two and two."
+   },
+   {
+    "role": "user",
+    "content": "And 3+3?"
+   },
+   {
+    "role": "assistant",
+    "content": "6",
+    "reasoning_content": "Three and three."
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>user<|message|>What is 2+2?<|end|><|start|>assistant<|channel|>final<|message|><|channel>thought\nadd<channel|>4<|end|><|start|>user<|message|>And 3+3?<|end|><|start|>assistant<|channel|>final<|message|>6<|end|><|start|>assistant"
+ },
+ {
+  "name": "tools",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "edit",
+     "description": "Edits files.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "edits": {
+        "type": "array",
+        "description": "The edits",
+        "items": {
+         "type": "object",
+         "properties": {
+          "path": {
+           "type": "string"
+          },
+          "Old": {
+           "type": "string"
+          },
+          "new": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "path",
+          "new"
+         ]
+        }
+       },
+       "options": {
+        "type": "object",
+        "properties": {
+         "dry_run": {
+          "type": "boolean"
+         }
+        },
+        "required": [
+         "dry_run"
+        ]
+       },
+       "meta": {
+        "type": "object",
+        "owner": {
+         "type": "string"
+        }
+       },
+       "tags": {
+        "type": "array",
+        "items": {
+         "type": [
+          "string",
+          "null"
+         ]
+        }
+       }
+      },
+      "required": [
+       "edits"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo?"
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.\nCalls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Tools\n\n## functions\n\nnamespace functions {\n\n// Gets the weather of a city.\ntype get_weather = (_: {\n// The city's name\ncity: string,\nunit?: \"celsius\" | \"fahrenheit\",\n// How many days\ndays?: number,\n}) => any;\n\n// Edits files.\ntype edit = (_: {\n// The edits\nedits: any[],\noptions?: {\ndry_run: \n                boolean},\nmeta?: object,\ntags?: string | null[],\n}) => any;\n\n} // namespace functions<|end|><|start|>user<|message|>Weather in Tokyo?<|end|><|start|>assistant"
+ },
+ {
+  "name": "call and responses",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo and Osaka?"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "reasoning_content": "Two cities.",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Tokyo\", \"days\": 2, \"unit\": \"celsius\"}"
+      }
+     },
+     {
+      "id": "c2",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Osaka\"}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "Sunny, 20 C"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c2",
+    "content": "Rain"
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.\nCalls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Tools\n\n## functions\n\nnamespace functions {\n\n// Gets the weather of a city.\ntype get_weather = (_: {\n// The city's name\ncity: string,\nunit?: \"celsius\" | \"fahrenheit\",\n// How many days\ndays?: number,\n}) => any;\n\n} // namespace functions<|end|><|start|>user<|message|>Weather in Tokyo and Osaka?<|end|><|start|>assistant<|channel|>analysis<|message|>Two cities.<|end|><|start|>assistant to=functions.get_weather<|channel|>commentary json<|message|>{\"city\": \"Tokyo\", \"days\": 2, \"unit\": \"celsius\"}<|call|><|start|>functions.get_weather to=assistant<|channel|>commentary<|message|>\"Sunny, 20 C\"<|end|><|start|>functions.get_weather to=assistant<|channel|>commentary<|message|>\"Rain\"<|end|><|start|>assistant"
+ },
+ {
+  "name": "call and responses without thinking",
+  "no_think": true,
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Gets the weather of a city.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string",
+        "description": "The city's name"
+       },
+       "unit": {
+        "type": "string",
+        "enum": [
+         "celsius",
+         "fahrenheit"
+        ]
+       },
+       "days": {
+        "type": "integer",
+        "description": "How many days",
+        "nullable": true
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather in Tokyo?"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Tokyo\"}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "content": "Sunny"
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: low\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.\nCalls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Tools\n\n## functions\n\nnamespace functions {\n\n// Gets the weather of a city.\ntype get_weather = (_: {\n// The city's name\ncity: string,\nunit?: \"celsius\" | \"fahrenheit\",\n// How many days\ndays?: number,\n}) => any;\n\n} // namespace functions<|end|><|start|>user<|message|>Weather in Tokyo?<|end|><|start|>assistant to=functions.get_weather<|channel|>commentary json<|message|>{\"city\": \"Tokyo\"}<|call|><|start|>functions.get_weather to=assistant<|channel|>commentary<|message|>\"Sunny\"<|end|><|start|>assistant"
+ },
+ {
+  "name": "call pending",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Weather?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me look.",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "arguments": "{\"city\": \"Kyoto\"}"
+      }
+     }
+    ]
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: low\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>user<|message|>Weather?<|end|><|start|>assistant<|channel|>analysis<|message|>Let me look.<|end|><|start|>assistant to=functions.get_weather<|channel|>commentary json<|message|>{\"city\": \"Kyoto\"}<|call|><|start|>assistant"
+ },
+ {
+  "name": "answer after a response and another question",
+  "keep_thinking": true,
+  "messages": [
+   {
+    "role": "system",
+    "content": [
+     {
+      "type": "text",
+      "text": "Be brief."
+     },
+     {
+      "type": "text",
+      "text": " Use tools. "
+     }
+    ]
+   },
+   {
+    "role": "user",
+    "content": [
+     {
+      "type": "text",
+      "text": "Edit it"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "reasoning_content": "I will edit.",
+    "tool_calls": [
+     {
+      "id": "e1",
+      "type": "function",
+      "function": {
+       "name": "edit",
+       "arguments": "{\"edits\": [{\"path\": \"a.go\", \"new\": \"x := 1.0\", \"Old\": \"x := 1\"}], \"options\": {\"dry_run\": false}, \"count\": 3, \"ratio\": 0.5, \"big\": 1e20, \"none\": null, \"Zeta\": true, \"alpha\": [1, \"two\", {\"k\": \"v\"}]}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "e1",
+    "content": [
+     {
+      "type": "text",
+      "text": "done"
+     }
+    ]
+   },
+   {
+    "role": "assistant",
+    "content": "Edited a.go."
+   },
+   {
+    "role": "user",
+    "content": "Thanks"
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>developer<|message|># Instructions\n\nBe brief. Use tools. \n\n<|end|><|start|>user<|message|>Edit it<|end|><|start|>assistant to=functions.edit<|channel|>commentary json<|message|>{\"edits\": [{\"path\": \"a.go\", \"new\": \"x := 1.0\", \"Old\": \"x := 1\"}], \"options\": {\"dry_run\": false}, \"count\": 3, \"ratio\": 0.5, \"big\": 1e+20, \"none\": null, \"Zeta\": true, \"alpha\": [1, \"two\", {\"k\": \"v\"}]}<|call|><|start|>functions.edit to=assistant<|channel|>commentary<|message|>\"done\"<|end|><|start|>assistant<|channel|>final<|message|>Edited a.go.<|end|><|start|>user<|message|>Thanks<|end|><|start|>assistant"
+ },
+ {
+  "name": "tool message by name",
+  "no_think": true,
+  "messages": [
+   {
+    "role": "user",
+    "content": "Run it"
+   },
+   {
+    "role": "assistant",
+    "content": "Running.",
+    "tool_calls": [
+     {
+      "id": "r1",
+      "type": "function",
+      "function": {
+       "name": "run",
+       "arguments": "{}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "other",
+    "name": "runner",
+    "content": "ok"
+   },
+   {
+    "role": "assistant",
+    "content": "It ran."
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: low\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|><|start|>user<|message|>Run it<|end|><|start|>assistant to=functions.run<|channel|>commentary json<|message|>{}<|call|><|start|>functions.run to=assistant<|channel|>commentary<|message|>\"ok\"<|end|><|start|>assistant<|channel|>final<|message|>It ran.<|end|><|start|>assistant"
+ },
+ {
+  "name": "harmony: tools with defaults",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "search",
+     "description": "Searches the web.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       },
+       "topn": {
+        "type": "number",
+        "description": "Results",
+        "default": 10
+       },
+       "sites": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "scores": {
+        "type": "array",
+        "items": {
+         "type": "integer"
+        },
+        "nullable": true
+       },
+       "mode": {
+        "type": "string",
+        "enum": [
+         "fast",
+         "deep"
+        ],
+        "default": "fast"
+       },
+       "safe": {
+        "type": "boolean",
+        "default": true
+       },
+       "note": {
+        "type": "string",
+        "nullable": true
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "now",
+     "description": "The time.",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "system",
+    "content": "Answer in Japanese."
+   },
+   {
+    "role": "user",
+    "content": "東京の天気"
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.\nCalls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Instructions\n\nAnswer in Japanese.\n\n# Tools\n\n## functions\n\nnamespace functions {\n\n// Searches the web.\ntype search = (_: {\nquery: string,\n// Results\ntopn?: number, // default: 10,\nsites?: string[],\nscores?: number[] | null,\nmode?: \"fast\" | \"deep\", // default: fast,\nsafe?: boolean, // default: true,\nnote?: string | null,\n}) => any;\n\n// The time.\ntype now = () => any;\n\n} // namespace functions<|end|><|start|>user<|message|>東京の天気<|end|><|start|>assistant"
+ },
+ {
+  "name": "harmony: answer after a call",
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "search",
+     "description": "Searches the web.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       },
+       "topn": {
+        "type": "number",
+        "description": "Results",
+        "default": 10
+       },
+       "sites": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "scores": {
+        "type": "array",
+        "items": {
+         "type": "integer"
+        },
+        "nullable": true
+       },
+       "mode": {
+        "type": "string",
+        "enum": [
+         "fast",
+         "deep"
+        ],
+        "default": "fast"
+       },
+       "safe": {
+        "type": "boolean",
+        "default": true
+       },
+       "note": {
+        "type": "string",
+        "nullable": true
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   }
+  ],
+  "messages": [
+   {
+    "role": "user",
+    "content": "Find hwnpu"
+   },
+   {
+    "role": "assistant",
+    "content": "",
+    "reasoning_content": "Search it.",
+    "tool_calls": [
+     {
+      "id": "s1",
+      "type": "function",
+      "function": {
+       "name": "search",
+       "arguments": "{\"query\": \"hwnpu \\\"npu\\\"\", \"topn\": 3}"
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "s1",
+    "content": "{\"hits\": [\"github.com/shibukawa/hwnpu\"]}\nline 2"
+   },
+   {
+    "role": "assistant",
+    "content": "It is on GitHub.",
+    "reasoning_content": "Found."
+   },
+   {
+    "role": "user",
+    "content": "Thanks!"
+   }
+  ],
+  "want": "<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\nKnowledge cutoff: 2024-06\nCurrent date: 2026-11-13\n\nReasoning: medium\n\n# Valid channels: analysis, commentary, final. Channel must be included for every message.\nCalls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Tools\n\n## functions\n\nnamespace functions {\n\n// Searches the web.\ntype search = (_: {\nquery: string,\n// Results\ntopn?: number, // default: 10,\nsites?: string[],\nscores?: number[] | null,\nmode?: \"fast\" | \"deep\", // default: fast,\nsafe?: boolean, // default: true,\nnote?: string | null,\n}) => any;\n\n} // namespace functions<|end|><|start|>user<|message|>Find hwnpu<|end|><|start|>assistant to=functions.search<|channel|>commentary json<|message|>{\"query\": \"hwnpu \\\"npu\\\"\", \"topn\": 3}<|call|><|start|>functions.search to=assistant<|channel|>commentary<|message|>\"{\\\"hits\\\": [\\\"github.com/shibukawa/hwnpu\\\"]}\\nline 2\"<|end|><|start|>assistant<|channel|>final<|message|>It is on GitHub.<|end|><|start|>user<|message|>Thanks!<|end|><|start|>assistant"
+ }
+]

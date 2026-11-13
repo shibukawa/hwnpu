@@ -24,25 +24,27 @@ import (
 // Segment Anything does, with EfficientSAM (Meta's, Apache-2.0; internal/vision/segment). The
 // prompt is points in the thing (--point), out of it (--negative), or a box (--box), in the
 // picture's pixels. The image encoder runs on AMD's NPU (an export of
-// tools/amd/iron_efficientsam.py, made with IRON on the first run), on Intel's NPU (its ONNX
-// file converted to OpenVINO IR on the first run), elsewhere or with --device cpu on the CPU (ONNX Runtime when its library is there, else hwnpu's evaluator: slow); the mask
-// decoder on the host.
+// tools/amd/iron_efficientsam.py, made with IRON on the first run), on Apple's Neural Engine and
+// Intel's NPU (its ONNX file converted to a Core ML package or OpenVINO IR on the first run),
+// elsewhere or with --device cpu on the CPU (ONNX Runtime when its library is there, else
+// hwnpu's evaluator: slow); the mask decoder on the host.
 //
 // For each picture it prints one line of JSON: the mask's score (the IoU the decoder predicts),
 // its area and box, and the files it wrote: NAME.mask.png (white on the thing) and
 // NAME.cutout.png (the picture, transparent off the thing). The decoder gives three candidates,
 // from the whole thing to a part; the best scored is kept, all three with --all.
 type SegmentCmd struct {
-	Pictures []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
-	Model    string   `short:"m" default:"segment" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (segment, efficientsam, efficientsam:s)."`
-	Point    []string `short:"p" sep:"none" placeholder:"X,Y" help:"A point on the thing, in the picture's pixels (repeatable)."`
-	Negative []string `sep:"none" placeholder:"X,Y" help:"A point off the thing (repeatable)."`
-	Box      string   `placeholder:"X1,Y1,X2,Y2" help:"A box around the thing."`
-	All      bool     `help:"Write all three candidate masks (NAME.mask0.png ...) instead of the best scored."`
-	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"Where to write the masks (default: next to each picture)."`
-	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
-	Device   string   `enum:",npu,cpu" default:"" help:"Where to run the encoder: npu or cpu (default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
-	Threads  int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
+	Pictures    []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
+	Model       string   `short:"m" default:"segment" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (segment, efficientsam, efficientsam:s)."`
+	Point       []string `short:"p" sep:"none" placeholder:"X,Y" help:"A point on the thing, in the picture's pixels (repeatable)."`
+	Negative    []string `sep:"none" placeholder:"X,Y" help:"A point off the thing (repeatable)."`
+	Box         string   `placeholder:"X1,Y1,X2,Y2" help:"A box around the thing."`
+	All         bool     `help:"Write all three candidate masks (NAME.mask0.png ...) instead of the best scored."`
+	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"Where to write the masks (default: next to each picture)."`
+	Dir         string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
+	Device      string   `enum:",npu,cpu" default:"" help:"Where to run the encoder: npu or cpu (default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads     int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
+	backendFlag `embed:""`
 }
 
 // Run cuts out the prompt's thing in each picture.
@@ -93,9 +95,10 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 		if sm, err = segment.OpenNPU(ctx, dev, export, dec); err != nil {
 			return err
 		}
-	} else if vendor := chat.HereVendor(); c.Device != "cpu" && (vendor == "intel" || vendor == "apple" && c.Device == "npu") {
-		// Intel's NPU runs the encoder converted from its ONNX file to OpenVINO IR; Apple's the
-		// same as Core ML only when asked (--device npu: not yet measured on the Neural Engine)
+	} else if vendor := chat.HereVendor(); programDevice(m, vendor, c.Device) {
+		// Intel's NPU runs the encoder converted from its ONNX file to OpenVINO IR, Apple's
+		// Neural Engine the same as a Core ML package (M3: 0.4 s where hwnpu's evaluator takes
+		// 33 s, the mask's IoU with the CPU's 0.9994; design.md 16.183)
 		enc, dec, err := segment.Fetch(ctx, setup)
 		if err != nil {
 			return err
@@ -104,7 +107,7 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 		if vendor == "apple" {
 			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		}
-		dev, backend, err := llm.OpenDevice(ctx, "", cacheDirOf(""), opts...)
+		dev, backend, err := llm.OpenDevice(ctx, c.Backend, cacheDirOf(""), opts...)
 		if err != nil {
 			return err
 		}
@@ -262,4 +265,14 @@ func writeMask(maskPath, cutoutPath string, img image.Image, k *segment.Mask) er
 		}
 	}
 	return nil
+}
+
+// programDevice reports whether the encoder runs as a converted program on this machine's NPU
+// (vendor): on Apple's and Intel's, unless --device (flag), HWNPU_DEVICE or models.yaml says cpu.
+func programDevice(m chat.Model, vendor, flag string) bool {
+	if vendor != "apple" && vendor != "intel" {
+		return false
+	}
+	d, _, err := chat.ChooseDevice(m, vendor, flag)
+	return err == nil && d == "npu"
 }

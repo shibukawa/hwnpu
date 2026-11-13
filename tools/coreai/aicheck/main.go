@@ -7,7 +7,11 @@
 //	go run ./tools/coreai/aicheck merge OUT.aimodel NAME=PKG...
 //	                                               one program with a function of each package, the weights shared
 //
-// run takes an .aimodel too, and PROGRAM.aimodel#NAME for its function NAME.
+// run takes an .aimodel too, and PROGRAM.aimodel#NAME for its function NAME. With
+// HWNPU_AILOWER_CUT=N, -cpu compares the cut program's output with milcpu's value of that
+// operation; AICHECK_WORST=1 also prints the elements that differ most. HWNPU_COREAI_UNITS=cpu
+// runs on Core AI's CPU (a lowering's errors apart from the Neural Engine's, and without its
+// lock); HWNPU_AILOWER_DIVIDE=1 keeps a division by a constant as divide_v1.
 package main
 
 import (

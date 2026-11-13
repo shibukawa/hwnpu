@@ -15,8 +15,8 @@ import (
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
-	// Backend is "coreml" (Core ML packages for Apple's Neural Engine) or "intel" (OpenVINO IR
-	// for Intel's NPU).
+	// Backend is "coreml" (Core ML packages for Apple's Neural Engine), "coreai" (Core AI programs
+	// for it, macOS 27) or "intel" (OpenVINO IR for Intel's NPU).
 	Backend string
 	// Width and Height are the image's size in pixels, multiples of 16.
 	Width, Height int
@@ -40,8 +40,8 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	if o.Width%16 != 0 || o.Height%16 != 0 || o.Width <= 0 || o.Height <= 0 {
 		return fmt.Errorf("anima: %dx%d is no whole 16-pixel patches", o.Width, o.Height)
 	}
-	if o.Backend != "coreml" && o.Backend != "intel" {
-		return fmt.Errorf("anima: backend %q is not coreml or intel", o.Backend)
+	if o.Backend != llm.BackendCoreML && o.Backend != llm.BackendCoreAI && o.Backend != llm.BackendIntel {
+		return fmt.Errorf("anima: backend %q is not coreml, coreai or intel", o.Backend)
 	}
 	if o.Group <= 0 {
 		o.Group = DefaultGroup(o.Backend, o.Width, o.Height)
@@ -60,10 +60,7 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	if err := os.MkdirAll(filepath.Join(out, "text"), 0o755); err != nil {
 		return err
 	}
-	ext := ".mlpackage"
-	if o.Backend == "intel" {
-		ext = ".xml"
-	}
+	ext := map[string]string{llm.BackendCoreML: ".mlpackage", llm.BackendCoreAI: ".aimodel", llm.BackendIntel: ".xml"}[o.Backend]
 	var vcfg struct {
 		Mean []float64 `json:"latents_mean"`
 		Std  []float64 `json:"latents_std"`

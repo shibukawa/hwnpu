@@ -36,6 +36,8 @@ type Model struct {
 	vision   *version  // the vision tower, or nil
 	audio    *version  // the audio tower, or nil
 	kv       []kvCache // caches, found once
+	joins    []kvJoin  // the layers whose decode step keeps keys and values in one array (rows.go)
+	stepped  [2]int    // the positions [from, to) decode steps wrote into those arrays alone
 	// xclbins are the programs of the versions packaged as an xclbin per step, by file.
 	xclbins map[string]*hwnpu.Program
 	dir     string            // the export's directory
@@ -498,11 +500,20 @@ func (m *Model) logits(v *version) ([]float32, error) {
 	if err := buf.SyncFromDevice(o.Offset, o.Bytes); err != nil {
 		return nil, err
 	}
+	b := buf.Bytes()[o.Offset:]
+	at := func(i int) float32 { return math.Float32frombits(uint32(binary.LittleEndian.Uint16(b[2*i:])) << 16) }
+	if p := v.m.LogitParts; p > 0 { // two partial sums a row: [block][2][p]
+		out := make([]float32, min(o.Bytes/4, m.Manifest.Config.VocabSize))
+		for i := range out {
+			j := i/p*2*p + i%p
+			out[i] = at(j) + at(j+p)
+		}
+		return out, nil
+	}
 	n := min(o.Bytes/2, m.Manifest.Config.VocabSize)
 	out := make([]float32, n)
-	b := buf.Bytes()[o.Offset:]
 	for i := range out {
-		out[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(b[2*i:])) << 16)
+		out[i] = at(i)
 	}
 	return out, nil
 }
@@ -541,12 +552,22 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		return nil, err
 	}
 	if len(v.runs) > 1 {
-		if err := m.stepBarrier(ctx); err != nil {
-			return nil, err
+		// (a version on one resident array says it needs none: there the barrier's change of
+		// hardware context puts the array's whole configuration back, 2.4 ms a step.
+		// HWNPU_IRON_BARRIER=1 or 0 overrides the manifest, to measure.)
+		barrier := !v.m.NoStepBarrier
+		if e := os.Getenv("HWNPU_IRON_BARRIER"); e != "" {
+			barrier = e != "0"
+		}
+		if barrier {
+			if err := m.stepBarrier(ctx); err != nil {
+				return nil, err
+			}
 		}
 		if err := m.runCommands(ctx, v, values); err != nil {
 			return nil, err
 		}
+		m.stepAt(position)
 		return m.logits(v)
 	}
 	if err := writeWords(v.run.Scratchpad(), v.m.Kernels[0].Parameters, values); err != nil {
@@ -597,7 +618,8 @@ func (m *Model) decodeRuns() error {
 		if !ok || p.Argument != "feedback" || 4*f.Words > p.Bytes {
 			return fail(fmt.Errorf("iron: decode command %d is fed from %s, not a buffer of the feedback argument", k, f.Buffer))
 		}
-		if err := run.UseScratchpad(m.buffer(v, "feedback"), p.Offset, 4*f.Words); err != nil {
+		// the whole buffer: the device writes its first Words words, the host the command's others
+		if err := run.UseScratchpad(m.buffer(v, "feedback"), p.Offset, max(4*f.Words, p.Bytes)); err != nil {
 			return fail(fmt.Errorf("iron: decode command %d: %w", k, err))
 		}
 	}
@@ -609,16 +631,40 @@ func (m *Model) decodeRuns() error {
 // device does not feed, then all submitted before the first wait (a hardware context runs its
 // commands in order, so a fed command reads what the one before it wrote).
 func (m *Model) runCommands(ctx context.Context, v *version, values map[string]int64) error {
-	fed := map[int]bool{}
+	// a fed command's Words words from First are the device's (the command before writes them:
+	// the host must leave them alone); its others, if it has any, the host's
+	fed := map[int]Fed{}
 	for _, f := range v.m.Fed {
-		fed[f.Command] = true
+		fed[f.Command] = f
 	}
 	var fences []hwnpu.Fence
 	var err error
+	// The host's words of the fed commands, into their scratchpads (buffers of the feedback
+	// argument) before any command runs: a host write of a word shares a cache line with the
+	// device's words, which a command running meanwhile would write under it.
+	for k, f := range fed {
+		var params []Param
+		for _, p := range v.m.Kernels[k].Parameters {
+			if p.Index < f.First || p.Index >= f.First+f.Words {
+				params = append(params, p)
+			}
+		}
+		if len(params) == 0 {
+			continue
+		}
+		p := v.m.Buffers[f.Buffer]
+		buf := m.buffer(v, "feedback")
+		if err := writeWords(buf.Bytes()[p.Offset:p.Offset+p.Bytes], params, values); err != nil {
+			return err
+		}
+		if err := buf.SyncToDevice(p.Offset, p.Bytes); err != nil {
+			return err
+		}
+	}
 	// HWNPU_IRON_TIMING: each command waited for and timed alone
 	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
 	for k, run := range v.runs {
-		if !fed[k] {
+		if _, ok := fed[k]; !ok {
 			if err = writeWords(run.Scratchpad(), v.m.Kernels[k].Parameters, values); err != nil {
 				break
 			}
@@ -719,6 +765,9 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 	}
 	rows := len(ids)
 	timing := os.Getenv("HWNPU_IRON_TIMING") != ""
+	if err := m.splitKV(); err != nil { // the decode steps' rows into the keys and values the chunk reads
+		return nil, err
+	}
 	tHost := time.Now()
 	values, err := m.complete(v, callValues(ids[rows-1], start+rows-1, start, rows))
 	if err != nil {
@@ -808,8 +857,12 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 			}
 			th := time.Now()
 			switch h.Kind {
-			case "moe_route":
-				rt, err := m.moeHostRoute(v, h, rows)
+			case "moe_route", "moe_route_mx4":
+				plan := m.moeHostRoute
+				if h.Kind == "moe_route_mx4" {
+					plan = m.moeHostRouteMX4
+				}
+				rt, err := plan(v, h, rows)
 				if err != nil {
 					return nil, err
 				}
@@ -837,7 +890,7 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 			return nil, fmt.Errorf("iron: layer %d's moe_route without a moe_combine", route.Layer)
 		}
 		tm := time.Now()
-		if err := m.runMoECommand(ctx, v, routes[route.Layer], route, combine, runOnce); err != nil {
+		if err := m.runMoECommand(ctx, v, routes[route.Layer], route, combine, runOnce, values); err != nil {
 			return nil, err
 		}
 		if timing {
@@ -845,6 +898,9 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 		}
 	}
 	if err := m.convPairsOut(v, start, rows); err != nil {
+		return nil, err
+	}
+	if err := m.joinKV(start, start+rows); err != nil { // the chunk's rows into the decode step's arrays
 		return nil, err
 	}
 	tLogits := time.Now()

@@ -75,6 +75,10 @@ def install_dense() -> None:
     packaging.SCRATCHPAD_WORDS = min(packaging.SCRATCHPAD_WORDS, DENSE_SCRATCHPAD_WORDS)
 
 
+# A q6 or q8 dense MLP's gate and up as one table (iron_q4's glu_param): the decode step runs them
+# as one operator (QGEMVGlu) in place of two GEMVs, a SiLU and a product.
+FUSE_GLU = True
+
 # install()'s formats (iron_q4's), by part: the mixers' projections (Gated DeltaNet's and the
 # attention's), a dense MLP's, the head. Empty: all bf16.
 QUANT: dict[str, str] = {}
@@ -337,6 +341,21 @@ class Qwen35Layer(DecoderLayer):
             return self.linear_attn(h, call)
         return super().mix(h, call)
 
+    def body(self, x, call):
+        # A decode step's two residuals added in the blocks' last projections' GEMVs (iron_q4's
+        # into_linear: out_proj or o_proj, and down_proj), not by adds of their own
+        if call.prompt or x.shape[0] != 1 or not QUANT or iron_verify.is_rows(x):
+            return super().body(x, call)
+        import iron_q4
+
+        last = self.linear_attn.out_proj if self.linear_attn is not None else self.self_attn.o_proj
+        with iron_q4.into_linear(last, x) as st:
+            y = self.mix(self.input_layernorm(x), call)
+        h = y if st["used"] else x + y
+        with iron_q4.into_linear(self.mlp.down_proj, h) as st:
+            y = self.mlp(self.post_attention_layernorm(h))
+        return y if st["used"] else h + y
+
 
 class Qwen35(CausalLM):
     """Qwen3.5 on ``config``'s shape and a checkpoint's ``weights``."""
@@ -434,7 +453,17 @@ class Qwen35(CausalLM):
                     q(lin, "weight", fmts["attn"])
                 q(a, "gate", fmts["attn"])
             if not isinstance(layer.mlp, SparseMoe):
-                for lin in (layer.mlp.gate_proj, layer.mlp.up_proj, layer.mlp.down_proj):
+                mlp = layer.mlp
+                if fmts["mlp"] in ("q6", "q8") and FUSE_GLU:
+                    # gate and up as one table: the decode step's one operator (iron_q4's QGEMVGlu)
+                    # in place of two GEMVs, a SiLU and a product; the others read it in parts
+                    iron_q4.install_glu()
+                    mlp.gu = iron_q4.glu_param(np.asarray(mlp.gate_proj.weight, np.float32),
+                                               np.asarray(mlp.up_proj.weight, np.float32), fmts["mlp"])
+                    mlp.gate_proj = mlp.up_proj = None
+                    q(mlp.down_proj, "weight", fmts["mlp"])
+                    continue
+                for lin in (mlp.gate_proj, mlp.up_proj, mlp.down_proj):
                     q(lin, "weight", fmts["mlp"])
             else:  # the prompt chunk's shared expert
                 for lin in layer.mlp.shared:
@@ -680,7 +709,7 @@ class Qwen35Moe(Qwen35):
                     raise SystemExit(f"layer {l}: {p['name']} at {p['index']} is {f}, not id * scale + bias")
                 prog[p["index"]] = (int(f["value"].split("_")[1]), f["scale"], f["bias"],
                                     2 if p["kind"] == "core" else 0)
-            np.asarray(m.program).reshape(-1)[:] = prog.reshape(-1)
+            np.asarray(m.program).reshape(-1)[: prog.size] = prog.reshape(-1)  # gpt-oss: its bias after
             fed.append(dict(command=k, buffer=images[l], words=len(words)))
         return fed
 

@@ -39,17 +39,18 @@ import (
 // of DA3-SMALL / BASE with --views N takes N pictures of one scene together: one scale for all,
 // the cameras in cameras.json and with --ply the points in one frame.
 type DepthCmd struct {
-	Pictures []string `arg:"" type:"existingfile" help:"The pictures (with a multi-view export, exactly its views)."`
-	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"depth" help:"The model: a name, a family or a use of models.yaml (depth: DA3-SMALL, DA3-BASE or DA3MONO-LARGE by the memory, as da3; da3, da3:small, da3metric, moge, moge:vitl; a family alone picks for the machine's memory, or for the memory a tag names: moge:8g), run from NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models), or an export's directory (tools/amd/iron_da3.py, iron_moge.py; a multi-view one of iron_da3.py --views)."`
-	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory to write into (default: next to each picture)."`
-	Raw      bool     `help:"Also write the depth as raw float32 (NAME.depth.f32, at the export's size; MoGe-2 also NAME.points.f32)."`
-	Sky      bool     `help:"Also write the sky mask (NAME.sky.png); DA3-SMALL / BASE: the confidence (NAME.conf.png); MoGe-2: the mask (NAME.mask.png)."`
-	Normal   bool     `help:"MoGe-2: also write the normals (NAME.normal.png, (n + 1) / 2 as RGB)."`
-	Keep     bool     `name:"export-size" help:"Write the pictures at the export's size instead of the input's."`
-	Focal    float64  `placeholder:"PIXELS" help:"DA3METRIC-LARGE: the focal length in the picture's pixels (fx = fy), for meters."`
-	Fov      float64  `placeholder:"DEGREES" help:"The horizontal field of view in degrees, in place of --focal (MoGe-2: given, not solved)."`
-	Ref      int      `default:"-1" help:"A multi-view export: the reference view's index (default: chosen as DA3 does)."`
-	Ply      string   `type:"path" placeholder:"FILE" help:"A multi-view export: also write the views' points in one frame as a PLY file."`
+	Pictures    []string `arg:"" type:"existingfile" help:"The pictures (with a multi-view export, exactly its views)."`
+	Model       string   `short:"m" placeholder:"NAME|EXPORT" default:"depth" help:"The model: a name, a family or a use of models.yaml (depth: DA3-SMALL, DA3-BASE or DA3MONO-LARGE by the memory, as da3; da3, da3:small, da3metric, moge, moge:vitl; a family alone picks for the machine's memory, or for the memory a tag names: moge:8g), run from NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models), or an export's directory (tools/amd/iron_da3.py, iron_moge.py; a multi-view one of iron_da3.py --views)."`
+	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory to write into (default: next to each picture)."`
+	Raw         bool     `help:"Also write the depth as raw float32 (NAME.depth.f32, at the export's size; MoGe-2 also NAME.points.f32)."`
+	Sky         bool     `help:"Also write the sky mask (NAME.sky.png); DA3-SMALL / BASE: the confidence (NAME.conf.png); MoGe-2: the mask (NAME.mask.png)."`
+	Normal      bool     `help:"MoGe-2: also write the normals (NAME.normal.png, (n + 1) / 2 as RGB)."`
+	Keep        bool     `name:"export-size" help:"Write the pictures at the export's size instead of the input's."`
+	Focal       float64  `placeholder:"PIXELS" help:"DA3METRIC-LARGE: the focal length in the picture's pixels (fx = fy), for meters."`
+	Fov         float64  `placeholder:"DEGREES" help:"The horizontal field of view in degrees, in place of --focal (MoGe-2: given, not solved)."`
+	Ref         int      `default:"-1" help:"A multi-view export: the reference view's index (default: chosen as DA3 does)."`
+	Ply         string   `type:"path" placeholder:"FILE" help:"A multi-view export: also write the views' points in one frame as a PLY file."`
+	backendFlag `embed:""`
 }
 
 // Run estimates the depth of each picture.
@@ -62,7 +63,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	// IR); AMD's an export of IRON
 	backend := ""
 	if chat.HereVendor() != "amd" {
-		if format, err := llm.ProgramFormat(ctx, ""); err == nil {
+		if format, err := llm.ProgramFormat(ctx, c.Backend); err == nil {
 			backend = format
 		}
 	}
@@ -97,7 +98,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		if backend == llm.BackendCoreML {
 			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		}
-		d, _, err := llm.OpenDevice(ctx, "", cacheDirOf(""), opts...)
+		d, _, err := llm.OpenDevice(ctx, c.Backend, cacheDirOf(""), opts...)
 		if err != nil {
 			return err
 		}

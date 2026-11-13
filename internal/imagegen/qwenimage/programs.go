@@ -36,7 +36,7 @@ type progEngine struct {
 	// rather than holding them all (Core AI: a group loads from Core AI's cache in 20 ms). On M1,
 	// Core AI fails to run the eight groups held at once (5.2 GiB on the Neural Engine) rather than
 	// evicting them as Core ML does, runs a group in 0.95 s with four held and in 0.41 s alone
-	// (design.md 16.178). ready says openDiT checked them.
+	// (design.md 16.184). ready says openDiT checked them.
 	swapDiT, ready bool
 }
 

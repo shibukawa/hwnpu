@@ -1,7 +1,8 @@
-// Package siglip runs SigLIP 2 (google/siglip2-*, Apache-2.0) on AMD's NPU: embeddings of
-// pictures and texts in one space, and zero-shot labels (the sigmoid of their scaled cosine).
-// The graphs are tools/amd/iron_siglip2.py's: the vision tower and its attention pooling head,
-// and the text tower on Labels texts a call. The host resizes and scales the picture, cuts its
+// Package siglip runs SigLIP 2 (google/siglip2-*, Apache-2.0) on AMD's NPU and Apple's Neural
+// Engine: embeddings of pictures and texts in one space, and zero-shot labels (the sigmoid of
+// their scaled cosine). The graphs are tools/amd/iron_siglip2.py's, or on Apple's the same as
+// Core ML packages (Prepare, internal/vision/siglip/mil): the vision tower and its attention
+// pooling head, and the text tower on Labels texts a call. The host resizes and scales the picture, cuts its
 // patches, lowercases and tokenizes the texts (Gemma's tokenizer, <eos>, padded to 64), looks
 // up the token embedding rows, normalizes the embeddings and takes the logits.
 package siglip
@@ -23,13 +24,17 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
 // Export is model.json of an export of tools/amd/iron_siglip2.py.
 type Export struct {
-	Name       string    `json:"name"`
-	Kind       string    `json:"kind"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Format is FormatCoreML for an export of Prepare (Core ML packages), "" for IRON's graphs.
+	Format     string    `json:"format,omitempty"`
+	Version    int       `json:"version,omitempty"`
 	LogitScale float64   `json:"logit_scale"` // exp of the checkpoint's logit_scale
 	LogitBias  float64   `json:"logit_bias"`
 	Mean       []float32 `json:"mean"`
@@ -67,7 +72,7 @@ func ReadExport(dir string) (*Export, error) {
 		return nil, fmt.Errorf("siglip: %w", err)
 	}
 	if x.Kind != "siglip" || x.Labels == 0 || x.TextLen == 0 || x.Config.Patch == 0 {
-		return nil, fmt.Errorf("siglip: %s is not an export of tools/amd/iron_siglip2.py", dir)
+		return nil, fmt.Errorf("siglip: %s is not an export of tools/amd/iron_siglip2.py or of Prepare", dir)
 	}
 	return &x, nil
 }
@@ -84,6 +89,7 @@ type Model struct {
 	dev          *hwnpu.Device
 	dir          string
 	vision, text *iron.Graph
+	prog         programs // the towers of an export of Prepare (Format coreml)
 	tok          *tokenizer.Tokenizer
 	embed        *os.File
 	mu           sync.Mutex
@@ -93,7 +99,8 @@ type Model struct {
 	Logf func(format string, args ...any)
 }
 
-// Open reads the export in dir.
+// Open reads the export in dir: IRON's graphs for AMD's NPU dev, or the Core ML packages of
+// Prepare for dev (nil: the CPU interpreter).
 func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Model, error) {
 	x, err := ReadExport(dir)
 	if err != nil {
@@ -105,6 +112,14 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Model, error) {
 // Close releases the device memory and the files.
 func (m *Model) Close() error {
 	var err error
+	for _, p := range []*runner.Program{&m.prog.vision, &m.prog.text} {
+		if *p != nil {
+			if e := (*p).Close(); err == nil {
+				err = e
+			}
+			*p = nil
+		}
+	}
 	for _, g := range []**iron.Graph{&m.vision, &m.text} {
 		if *g != nil {
 			if e := (*g).Close(); err == nil {
@@ -168,6 +183,9 @@ func (m *Model) PatchRows(img image.Image) []float32 {
 func (m *Model) Image(ctx context.Context, img image.Image) ([]float32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.Format == FormatCoreML {
+		return m.imageProgram(ctx, img)
+	}
 	if err := m.load(ctx, &m.vision, "vision"); err != nil {
 		return nil, err
 	}
@@ -229,6 +247,9 @@ func (m *Model) openText() error {
 func (m *Model) Texts(ctx context.Context, texts []string) ([][]float32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.Format == FormatCoreML {
+		return m.textsProgram(ctx, texts)
+	}
 	if err := m.load(ctx, &m.text, "text"); err != nil {
 		return nil, err
 	}

@@ -19,12 +19,14 @@ import (
 )
 
 // chromaModel is the Chroma export m runs here: on Apple's Neural Engine (or with --cpu) the
-// Core ML export of --dir, downloaded and converted when missing; on AMD's NPU
-// ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py.
+// Core ML export of --dir (Core AI's with --backend coreai), downloaded and converted when
+// missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py.
 func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, error) {
-	format, err := llm.ProgramFormat(ctx, c.Backend)
+	format, err := llm.NativeFormat(ctx, c.Backend)
 	switch {
-	case c.CPU || err == nil && format == llm.BackendCoreML:
+	case c.CPU: // the CPU interpreter runs Core ML exports
+		format = llm.BackendCoreML
+	case err == nil && llm.AppleFormat(format):
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	default:
@@ -33,14 +35,14 @@ func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, er
 	if c.Size%16 != 0 {
 		return "", fmt.Errorf("--size %d: Chroma's pictures are multiples of 16 pixels", c.Size)
 	}
-	o := chroma.ConvertOptions{Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+	o := chroma.ConvertOptions{Backend: format, Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
 	return chroma.Prepare(ctx, chroma.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Chroma"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 
 // chroma draws the pictures with an export of Chroma: of tools/amd/iron_chroma.py on AMD's NPU,
-// or of hwnpu-image convert (Core ML) on Apple's Neural Engine (on Core ML, or Core AI with
-// --backend coreai) or, with --cpu, the CPU
+// or of hwnpu-image convert on Apple's Neural Engine (Core ML's, or Core AI's with --backend
+// coreai) or, with --cpu, the CPU
 // interpreter (Chroma1-Flash: Heun's 8 steps by default, no classifier-free guidance).
 func (c *GenerateCmd) chroma(ctx context.Context, model string, outs []string) error {
 	lw := console.Log(os.Stderr)
@@ -53,8 +55,8 @@ func (c *GenerateCmd) chroma(ctx context.Context, model string, outs []string) e
 	case c.CPU:
 	case programs:
 		// strict, so that a program off the NPU, or one whose placement is not verified, says why;
-		// coreai runs the Core ML export on Core AI
-		d, _, err := llm.OpenDevice(ctx, cmp.Or(llm.DeviceBackend(c.Backend), llm.BackendCoreML), cacheDirOf(c.Cache),
+		// a Core AI export on Core AI
+		d, _, err := llm.OpenDevice(ctx, llm.ExportDevice(chroma.ExportFormat(model), c.Backend), cacheDirOf(c.Cache),
 			hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		if err != nil {
 			return err

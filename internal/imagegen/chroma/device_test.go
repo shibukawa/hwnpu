@@ -1,6 +1,7 @@
 package chroma
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -19,7 +20,7 @@ import (
 // The tests here check a Core ML export's programs on the Neural Engine against the float32
 // references tools/ref/ref_chroma_parts.py and ref_chroma_lean.py write, as raw float32 files
 // (NAME.f32) in HWNPU_CHROMA_REF. HWNPU_CHROMA_EXPORT is the export; HWNPU_CHROMA_CPU=1 runs the
-// CPU interpreter instead of the device.
+// CPU interpreter instead of the device, HWNPU_BACKEND=coreai Core AI instead of Core ML.
 
 func refDir(t *testing.T) (export, ref string) {
 	export, ref = os.Getenv("HWNPU_CHROMA_EXPORT"), os.Getenv("HWNPU_CHROMA_REF")
@@ -50,7 +51,9 @@ func testDevice(t *testing.T) *hwnpu.Device {
 	if d, err := os.UserCacheDir(); err == nil {
 		cache = filepath.Join(d, "hwnpu")
 	}
-	dev, _, err := llm.OpenDevice(context.Background(), llm.BackendCoreML, cache, hwnpu.WithPlacement(hwnpu.PlacementStrict))
+	// HWNPU_BACKEND=coreai runs the programs on Core AI
+	dev, _, err := llm.OpenDevice(context.Background(), cmp.Or(llm.DeviceBackend(""), llm.BackendCoreML), cache,
+		hwnpu.WithPlacement(hwnpu.PlacementStrict))
 	if err != nil {
 		t.Skip(err)
 	}

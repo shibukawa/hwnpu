@@ -148,6 +148,8 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | Sana 600M、SANA 1.5 1.6B (1024 × 1024、AMD) | 画像生成 | 2.3 GB (NPU の最大 2.0 GB に、プロセスを足したもの。NPU の最大は 2 段が同時に載る VAE で、Gemma 2 を 6 ビットにしたテキストのグラフが次。DiT は 1 組ずつ読み、0.4 GB) | なし | 実測 |
 | Sana 600M、SANA 1.5 1.6B (1024 × 1024、Apple) | 画像生成 | プロセスの最大 3.9 GB (Gemma 2 は int8 の 5 本を走る間だけ。DiT は int8 (600M) か lut8 (1.5) で、Neural Engine に 0.60 / 1.56 GiB。VAE は段ごと) | なし | 実測 (M1) |
 | DA3-SMALL、DA3MONO-LARGE、MoGe-2 ViT-S (Apple) | 深度推定 (hwnpu-image depth) | 1 つの大きさのプログラム (fp16)。縦横比ごとに初めて使うときに変換 | なし | 未測定 |
+| SigLIP 2 Base / Large (Apple) | ラベル付け、画像と文の埋め込み (hwnpu-image label、embed) | 約 0.9 / 3.3 GB (M3: プロセスの footprint 最大 0.45 / 1.8 GB と、Neural Engine に 0.36 / 1.24 GB。Core AI では 0.48 / 1.56 GB) | なし (1 枚、文 8 つずつ) | M3 で実測 |
+| EfficientSAM-Ti / S (Apple) | 点や箱で指定する切り抜き (hwnpu-image segment) | プロセスの footprint 約 0.22 / 0.25 GB (M3。符号器は Neural Engine、復号器は CPU) | なし (1 枚ずつ) | M3 で実測 |
 | Anima-Turbo、Anima-Aesthetic (1024 × 1024) | 画像生成 | 1.9 GB (VAE の段の最大。DiT はブロックの重みを 1 組ずつ読む) | なし | 実測 |
 | LFM3-Audio-2B (読み上げ) | 読み上げ | 約 2.4 GB | 12 KiB/トークン | 重みから見込み |
 | d1-2B、d1-Omni-2B | 状態の判定 | 約 2.4 GB、約 2.8 GB | 短い入力のみ | 重みから見込み |
@@ -156,6 +158,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | Qwen3.5-0.8B | チャット (日本語の事実に弱い) | 1.5 GB (MLP は 6 ビット。M3: Neural Engine に 1.47 GiB とプロセスの 1.1 GB で約 2.6 GB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M3) |
 | Qwen3.5-2B | チャット、コード | 2.4 GB (MLP は 6 ビット。M3: Neural Engine に 6 ビットの表の 2 本で 2.67 GiB とプロセスの 1.5 GB で約 4.2 GB。`-prefill off` で 1.32 GiB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M3) |
 | Qwen3.5-4B | チャット、コード | 約 4.2 GB (8 ビットの重み 3.9 GiB) | 32 KiB/トークン (262144 で 8 GiB。16 GB では 114688 トークン) | M3 の Neural Engine で動作を確認。メモリは重みから見込み |
+| gpt-oss-20b (AMD だけ) | チャット、コード、推論 | 14.5 GB (NPU に 13.0 GiB を固定: 専門家は MXFP4 のまま、注意は 8 ビット、出力層は 4 ビット) | 48 KiB/トークン (8192 で 0.38 GiB) | Ryzen AI 9 365 で測定 |
 | Qwen3.6-35B-A3B (予定) | チャット、コード | 約 25 GB | — | 4 ビットの重みからの見込み。移植していない |
 
 - 重みは 4 ビットと 8 ビットを混ぜた形です (MLP と出力の行列が 4 ビット、注意の射影が 8 ビット。画像生成は DiT が 8 ビット)。Qwen3.5-0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします

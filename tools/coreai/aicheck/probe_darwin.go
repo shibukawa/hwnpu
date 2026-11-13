@@ -85,7 +85,7 @@ var probes = map[string]func(g *milpart.Graph){
 		x := g.Input("x", 1, 256, 8, 64)
 		g.Output(g.Transpose(x, 0, 2, 1, 3))
 	},
-	// Qwen-Image's VAE on M1 (design.md 16.178): the Neural Engine's compiler fails ("Allocation
+	// Qwen-Image's VAE on M1 (design.md 16.184): the Neural Engine's compiler fails ("Allocation
 	// failure for L2-dep pair") on the norm over 1152 channels of 64 x 64, not on 768 x 64 x 64,
 	// 1152 x 48 x 48 or 576 x 96 x 96, nor on the convolution alone
 	"conv1152_64_neg":      conv3(1152, 64, "neg"),
@@ -154,6 +154,9 @@ func int8Linear(out, in, colBlock int) func(g *milpart.Graph) {
 
 func probe(names []string, keep bool) error {
 	ctx := context.Background()
+	if err := llm.LockNPU(ctx); err != nil {
+		return err
+	}
 	dev, err := coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{})
 	if err != nil {
 		return err

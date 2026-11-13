@@ -148,6 +148,8 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | Sana 600M, SANA 1.5 1.6B (1024 × 1024, AMD) | Image generation | 2.3 GB (the NPU's 2.0 GB peak, in the VAE with two stages loaded at once, and the text graph with Gemma 2 in 6 bits next, and the process; the DiT a group at a time, 0.4 GB) | none | measured |
 | Sana 600M, SANA 1.5 1.6B (1024 × 1024, Apple) | Image generation | 3.9 GB process at its peak (Gemma 2 int8 in 5 programs, loaded while it runs; the DiT int8 (600M) or lut8 (1.5), 0.60 / 1.56 GiB on the Neural Engine; the VAE a stage at a time) | none | measured (M1) |
 | DA3-SMALL, DA3MONO-LARGE, MoGe-2 ViT-S (Apple) | Depth estimation (hwnpu-image depth) | the programs of one size (fp16), converted for each aspect on first use | none | not measured |
+| SigLIP 2 Base / Large (Apple) | Labels, embeddings of pictures and texts (hwnpu-image label, embed) | About 0.9 / 3.3 GB (M3: a footprint of 0.45 / 1.8 GB at most, and 0.36 / 1.24 GB on the Neural Engine; 0.48 / 1.56 GB with Core AI) | none (a picture, 8 texts at a time) | Measured on an M3 |
+| EfficientSAM-Ti / S (Apple) | The cutout a point or a box picks (hwnpu-image segment) | A footprint of about 0.22 / 0.25 GB (M3; the encoder on the Neural Engine, the decoder on the CPU) | none (a picture at a time) | Measured on an M3 |
 | Anima-Turbo, Anima-Aesthetic (1024 × 1024) | Image generation | 1.9 GB (the VAE's largest stage; the DiT reads its blocks' weights a group at a time) | none | measured |
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |
@@ -156,6 +158,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | Qwen3.5-0.8B | Chat (weak at Japanese facts) | 1.5 GB (6-bit MLP; M3: 1.47 GiB on the Neural Engine and 1.1 GB of the process, about 2.6 GB) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and M3) |
 | Qwen3.5-2B | Chat, code | 2.4 GB (6-bit MLP; M3: 2.67 GiB on the Neural Engine in two programs of 6 bit tables and 1.5 GB of the process, about 4.2 GB; 1.32 GiB with `-prefill off`) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and M3) |
 | Qwen3.5-4B | Chat, code | about 4.2 GB (3.9 GiB of 8 bit weights) | 32 KiB/token (8 GiB at 262144; 114688 tokens on 16 GB) | runs on an M3's Neural Engine; memory estimated from the weights |
+| gpt-oss-20b (AMD only) | Chat, code, reasoning | 14.5 GB (13.0 GiB pinned for the NPU: MXFP4 experts as they are, 8-bit attention, 4-bit head) | 48 KiB/token (0.38 GiB at its 8192) | measured on a Ryzen AI 9 365 |
 | Qwen3.6-35B-A3B (planned) | Chat, code | about 25 GB | — | estimated from 4-bit weights; not ported |
 
 - The weights mix 4 and 8 bits (the MLP and output matrices at 4 bits, the attention projections at 8; for image generation, the DiT at 8 bits). Qwen3.5-0.8B and 2B fall apart on long English text at 4 bits, so their MLP and output matrices are at 6 bits

@@ -48,6 +48,17 @@ func TestExportName(t *testing.T) {
 	if got := ExportName("Qwen-Image-2.1-Turbo", ConvertOptions{Width: 1024, DitFormat: "lut6"}); !strings.Contains(got, "1024x1024-lut8-lut8-kmm-lut6-kmm") {
 		t.Errorf("%s", got)
 	}
+	// Core AI: the DiT and its text pass lut6, one program a group (SharedDit)
+	ai := ConvertOptions{Width: 1024, Backend: "coreai"}
+	if got, want := ExportName("Qwen-Image-2.1-Turbo", ai), "qwen-image-2.1-turbo-1024x1024-lut8-lut6-kmm-lut6-kmm-g4-v2.coreai"; got != want {
+		t.Errorf("%s, want %s", got, want)
+	}
+	if !ai.SharedDit() {
+		t.Error("Core AI's defaults: the DiT's passes not shared")
+	}
+	if (ConvertOptions{Backend: "coreai", DitTextFormat: "lut8"}).SharedDit() || (ConvertOptions{DitTextFormat: "lut4"}).SharedDit() {
+		t.Error("shared with another text pass format, or on Core ML")
+	}
 }
 
 // TestShareText checks that an export of another size takes the text encoder's and the DiT text
@@ -102,7 +113,7 @@ func TestShareText(t *testing.T) {
 		return err == nil && os.SameFile(a, c)
 	}
 	out := filepath.Join(dir, "out")
-	if err := linkShared(from, out, true); err != nil {
+	if err := linkShared(from, out, true, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range files {
@@ -111,13 +122,25 @@ func TestShareText(t *testing.T) {
 		}
 	}
 	other := filepath.Join(dir, "other")
-	if err := linkShared(from, other, false); err != nil {
+	if err := linkShared(from, other, false, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range files {
 		want := f != "text_1.mlpackage/Data/weight.bin" && f != "dit_text_0.mlpackage/Data/weight.bin"
 		if linked(other, f) != want {
 			t.Errorf("another model: %s linked %v, want %v", f, !want, want)
+		}
+	}
+	// the text pass is one program with the blocks (SharedDit): the text encoder only, its last
+	// group too
+	shared := filepath.Join(dir, "shared")
+	if err := linkShared(from, shared, true, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		want := f != "dit_text_0.mlpackage/Data/weight.bin"
+		if linked(shared, f) != want {
+			t.Errorf("shared DiT: %s linked %v, want %v", f, !want, want)
 		}
 	}
 }

@@ -17,7 +17,7 @@ import (
 // TestUngroupOnDevice loads, on Core AI (HWNPU_COREAI_DEVICE=1, M1), two exports' package of the
 // same weights: Qwen-Image's VAE norm and convolution of 1152 channels at 32 x 32, which runs on
 // the Neural Engine, and at 64 x 64, which the Neural Engine's compiler fails on (design.md
-// 16.178). Lowered together, the first would be off the Neural Engine too: the group is taken
+// 16.184). Lowered together, the first would be off the Neural Engine too: the group is taken
 // apart and the first runs on it alone.
 func TestUngroupOnDevice(t *testing.T) {
 	if os.Getenv("HWNPU_COREAI_DEVICE") != "1" {

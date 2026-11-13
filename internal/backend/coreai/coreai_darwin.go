@@ -51,8 +51,24 @@ var (
 	caiForget func(path *byte)
 )
 
-// kindNeuralEngine is the shim's specialization: prefer the Neural Engine.
-const kindNeuralEngine = 2
+// kindNeuralEngine is the shim's specialization: prefer the Neural Engine. kindCPU: the CPU alone.
+const (
+	kindCPU          = 1
+	kindNeuralEngine = 2
+)
+
+// UnitsEnv names the environment variable that moves the programs off the Neural Engine, for
+// telling a lowering's errors from the Neural Engine's (and checking a lowering while another
+// process has the Neural Engine): "cpu" runs them on Core AI's CPU alone. As Core ML's
+// HWNPU_COREML_UNITS. A reduce_mean whose sum passes fp16's range (a mean over 57600 values
+// above 1.1) overflows there, where the Neural Engine and the GPU are right (design.md 16.183).
+const UnitsEnv = "HWNPU_COREAI_UNITS"
+
+// OnCPU reports whether UnitsEnv asks for the CPU.
+func OnCPU() bool { return os.Getenv(UnitsEnv) == "cpu" }
+
+// lowDisk is the free disk below which a program off the Neural Engine is put down to it.
+const lowDisk = 10 << 30
 
 // kindNoRetry is a flag of the shim's kind: on a failure, do not delete Core AI's cache entries
 // and load again (an asset whose bytecode is cut, which would make Core AI parse nothing and
@@ -298,6 +314,9 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	g := &graph{cached: cached, owned: owned}
 	open := func() string {
 		kind := int32(kindNeuralEngine)
+		if OnCPU() {
+			kind = kindCPU
+		}
 		if isCut(dir) {
 			kind |= kindNoRetry
 		}
@@ -310,6 +329,14 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		g.h = caiOpen(cString(name), kind, &retried, &e)
 		if g.h == 0 {
 			return goString(e)
+		}
+		if retried == 1 {
+			// Core AI had an entry that failed to load (aned purged its compiled program when the
+			// disk ran short): dropped and compiled again; e is the first attempt's error
+			msg := goString(e)
+			if os.Getenv("HWNPU_COREAI_DEBUG") != "" {
+				fmt.Fprintf(os.Stderr, "coreai: %s: the cached entry failed (%s), compiled again\n", filepath.Base(src.Path), msg)
+			}
 		}
 		return ""
 	}
@@ -335,22 +362,39 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		g.Close()
 		return nil, err
 	}
-	g.placement = placement(dir, fn)
-	if fn != "main" && stored != "" && offNeuralEngine(g.placement) {
-		// a function of a group off the Neural Engine, maybe for another member's (ungroup):
-		// lowered alone, and loaded as the first time
-		if ok, err := ungroup(d.opts.CacheDir, path); err != nil || !ok {
-			return g, nil
+	var offNPU []string
+	g.placement, offNPU = placement(dir, fn)
+	if OnCPU() { // the cache's entry may be another run's, for the Neural Engine
+		g.placement = types.PlacementReport{Method: UnitsEnv, Verified: true, Ops: []types.OpPlacement{{Name: "program", Type: "program", Device: "cpu"}}}
+		offNPU = nil
+	}
+	if len(offNPU) > 0 {
+		// Core AI caches a program that the Neural Engine's compiler failed on (out of disk or
+		// memory: "Failed to allocate memory for file backing") as it fell back, on the GPU, and
+		// would keep it there: dropped, the next load compiles it again
+		for _, e := range offNPU {
+			os.RemoveAll(filepath.Dir(filepath.Dir(e)))
 		}
-		g.Close()
-		return d.Compile(ctx, src)
+		// the Neural Engine's compiled program lives apart from Core AI's entry (aned's cache, a
+		// few GB per large program, purged first when the disk fills): short of disk, every load
+		// compiles again and falls to the GPU
+		var st syscall.Statfs_t
+		if syscall.Statfs(dir, &st) == nil {
+			if free := st.Bavail * uint64(st.Bsize); free < lowDisk {
+				fmt.Fprintf(os.Stderr, "coreai: %s fell back from the Neural Engine with %.1f GB of disk free: the Neural Engine's compiler needs a few GB per program\n", filepath.Base(src.Path), float64(free)/1e9)
+			}
+		}
+		if fn != "main" && stored != "" {
+			// a function of a group off the Neural Engine, maybe for another member's (ungroup):
+			// lowered alone, and loaded as the first time
+			if ok, err := ungroup(d.opts.CacheDir, path); err == nil && ok {
+				g.Close()
+				return d.Compile(ctx, src)
+			}
+		}
 	}
 	return g, nil
 }
-
-// offNeuralEngine reports whether a placement checked says something of the program runs
-// elsewhere than on the Neural Engine (not one that could not be checked).
-func offNeuralEngine(rep types.PlacementReport) bool { return rep.Verified && len(rep.Ops) > 0 }
 
 // splitFunction splits PROGRAM.aimodel#NAME, the function NAME of a program with several
 // (ailower.LowerFunctions), into the program's path and NAME; main for any other path.
@@ -429,31 +473,32 @@ func (g *graph) Close() error {
 }
 
 // placement reads Core AI's cache entry of the program: its MPSGraph delegate's manifest says
-// whether everything of the function fn runs on the Neural Engine.
-func placement(dir, fn string) types.PlacementReport {
+// whether everything of the function fn runs on the Neural Engine. When nothing says so, it
+// returns the entries (model.aimodelx) whose program is off the Neural Engine too.
+func placement(dir, fn string) (types.PlacementReport, []string) {
 	rep := types.PlacementReport{Method: "coreai-cache-manifest"}
 	hash, err := os.ReadFile(filepath.Join(dir, "main.hash"))
 	if err != nil {
 		rep.Reason = err.Error()
-		return rep
+		return rep, nil
 	}
 	home, _ := os.UserHomeDir()
 	pattern := filepath.Join(home, "Library", "Caches", "coreai-cache", "*", "*", hex.EncodeToString(hash), "*", "model.aimodelx")
 	entries, _ := filepath.Glob(pattern)
 	if len(entries) == 0 {
 		rep.Reason = "no Core AI cache entry for the program"
-		return rep
+		return rep, nil
 	}
 	rep.Verified = true
 	for _, e := range entries {
 		// the delegates are named after main.mlirb, whatever functions it has
 		m, err := os.ReadFile(filepath.Join(e, "main-this-delegates", "MPSGraph", "mpsExecutable.mpsgraphpackage", "manifest.plist"))
 		if err == nil && fullyPlaced(m, fn) {
-			return rep
+			return rep, nil
 		}
 	}
 	rep.Ops = []types.OpPlacement{{Name: "program", Type: "program", Device: "gpu"}}
-	return rep
+	return rep, entries
 }
 
 // entryKey is a key of the manifest's Entry Function Attributes: a function's name, a 22

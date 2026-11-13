@@ -28,6 +28,9 @@ const (
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
+	// Backend is the program format: coreml (Core ML packages, the default) or coreai (Core AI
+	// programs, written from the checkpoint without a Core ML package).
+	Backend string
 	// Width and Height are the picture's size in pixels, multiples of 32.
 	Width, Height int
 	// TextFormat and DitFormat are the weight formats of Qwen3-VL-8B and of the DiT's blocks, as
@@ -67,17 +70,39 @@ const (
 	// a step against 2.3 s, 5.1 GB held; design.md 16.165)
 	DefaultDitTextFormat = "lut8"
 	DefaultTextQuant     = "uniform"
+	// DefaultCoreAIDitFormat is the DiT's, its text pass's too, on Core AI: one format for both, so
+	// that a group's two passes are one program with their weights once (SharedDit). lut6 between
+	// the text pass's lut8 and the blocks' lut4 on Core ML (the fox at 512 x 512: text pass lut8
+	// and blocks lut6 0.987; design.md 16.165, 16.181)
+	DefaultCoreAIDitFormat = "lut6"
 )
 
+// SharedDit reports whether o writes each group of the DiT's blocks as one Core AI program with
+// two functions, text (the text pass) and blocks (the image blocks), over the same weights written
+// once (llm.WriteAIFunctions): on Core AI with the text pass in the DiT's format.
+func (o ConvertOptions) SharedDit() bool {
+	o.defaults()
+	return o.Backend == llm.BackendCoreAI && o.DitTextFormat == o.DitFormat
+}
+
 func (o *ConvertOptions) defaults() {
+	if o.Backend == "" {
+		o.Backend = llm.BackendCoreML
+	}
 	if o.TextFormat == "" {
 		o.TextFormat = DefaultTextFormat
 	}
 	if o.DitFormat == "" {
 		o.DitFormat = DefaultDitFormat
+		if o.Backend == llm.BackendCoreAI {
+			o.DitFormat = DefaultCoreAIDitFormat
+		}
 	}
 	if o.DitTextFormat == "" {
 		o.DitTextFormat = DefaultDitTextFormat
+		if o.Backend == llm.BackendCoreAI {
+			o.DitTextFormat = o.DitFormat // one copy of the DiT's weights (SharedDit)
+		}
 	}
 	if o.DitQuant == "" {
 		o.DitQuant = DefaultDitQuant
@@ -109,7 +134,7 @@ func (o *ConvertOptions) defaults() {
 const ProgramKind = "qwenimage-programs"
 
 // ProgramManifest is manifest.json of an export of Convert: the shapes and the programs (Core ML
-// packages) by part, relative to the export's directory.
+// packages, or Core AI programs for Backend coreai) by part, relative to the export's directory.
 type ProgramManifest struct {
 	Kind    string            `json:"kind"`
 	Backend string            `json:"backend"`
@@ -140,6 +165,24 @@ type VaeTiling struct {
 
 // tiled reports whether the stage runs on tiles.
 func (t VaeTiling) tiled() bool { return t.Rows.N > 1 || t.Cols.N > 1 }
+
+// ProgramExt is the extension of a program of the format backend: .aimodel for coreai, else
+// .mlpackage.
+func ProgramExt(backend string) string {
+	if backend == llm.BackendCoreAI {
+		return ".aimodel"
+	}
+	return ".mlpackage"
+}
+
+// ExportFormat is the program format of the export dir (its manifest's backend), "" for none.
+func ExportFormat(dir string) string {
+	m, err := ReadProgramManifest(dir)
+	if err != nil {
+		return ""
+	}
+	return m.Backend
+}
 
 // IsProgramExport reports whether dir holds an export of Convert.
 func IsProgramExport(dir string) bool {
@@ -208,19 +251,22 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	ditGroups := mil.Groups(dc.Layers, o.Group)
 	stages := mil.VaeStages(vc, o.Width, o.Height)
 	total := len(textGroups) + 2*len(ditGroups) + len(stages)
+	if o.SharedDit() {
+		total -= len(ditGroups)
+	}
 	written := 0
 	write := func(kind string, p *mil.Part, format string) (string, error) {
 		quant := o.DitQuant
 		if kind == "text" || kind == "text_in" {
 			quant = o.TextQuant
 		}
-		name := p.Name + ".mlpackage"
+		name := p.Name + ProgramExt(o.Backend)
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
 		written++
 		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		opts := llm.Options{Backend: llm.BackendCoreML, Format: format}
+		opts := llm.Options{Backend: o.Backend, Format: format}
 		if strings.HasPrefix(format, "lut") {
 			opts.Quant = quant
 		}
@@ -231,7 +277,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
 		return name, nil
 	}
-	m := &ProgramManifest{Kind: ProgramKind, Backend: llm.BackendCoreML, Version: ExportVersion,
+	m := &ProgramManifest{Kind: ProgramKind, Backend: o.Backend, Version: ExportVersion,
 		Formats: map[string]string{"text": o.TextFormat, "dit": o.DitFormat, "dit_text": o.DitTextFormat, "vae": "fp16", "text_quant": o.TextQuant, "dit_quant": o.DitQuant},
 		Dit: DitConfig{Width: o.Width, Height: o.Height, Hidden: dc.Hidden, Heads: dc.Heads, HeadDim: dc.HeadDim, Layers: dc.Layers,
 			Latent: dc.Latent, Axes: dc.Axes[:], Theta: dc.Theta, Group: o.Group, TextRows: mil.TextRows, VAEScale: mil.VAEScale},
@@ -248,19 +294,44 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		}
 		m.TextIn = append(m.TextIn, name)
 	}
-	for _, gr := range ditGroups {
-		name, err := write("dit_text", mil.TextBlocks(dc, gr[0], gr[1]), o.DitTextFormat)
-		if err != nil {
-			return err
+	if o.SharedDit() {
+		for i, gr := range ditGroups {
+			name := fmt.Sprintf("dit_%d", gr[0]) + ProgramExt(o.Backend)
+			m.DitText = append(m.DitText, name+"#text")
+			m.Blocks = append(m.Blocks, name+"#blocks")
+			if len(o.Only) > 0 && !o.Only["dit_text"] && !o.Only["blocks"] {
+				continue
+			}
+			written++
+			bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
+			opts := llm.Options{Backend: o.Backend, Format: o.DitFormat}
+			if strings.HasPrefix(o.DitFormat, "lut") {
+				opts.Quant = o.DitQuant
+			}
+			_, err := llm.WriteAIFunctions(filepath.Join(out, name), w, []llm.AIFunction{
+				{Name: "text", Model: mil.TextBlocks(dc, gr[0], gr[1]), Options: opts},
+				{Name: "blocks", Model: mil.Blocks(dc, gr[0], gr[1], qchunk, i == len(ditGroups)-1), Options: opts}})
+			if err != nil {
+				bar.Done("failed")
+				return fmt.Errorf("qwenimage: %s: %w", name, err)
+			}
+			bar.Done(fmt.Sprintf("%s, %s, text pass and blocks", console.Duration(bar.Elapsed()), o.DitFormat))
 		}
-		m.DitText = append(m.DitText, name)
-	}
-	for i, gr := range ditGroups {
-		name, err := write("blocks", mil.Blocks(dc, gr[0], gr[1], qchunk, i == len(ditGroups)-1), o.DitFormat)
-		if err != nil {
-			return err
+	} else {
+		for _, gr := range ditGroups {
+			name, err := write("dit_text", mil.TextBlocks(dc, gr[0], gr[1]), o.DitTextFormat)
+			if err != nil {
+				return err
+			}
+			m.DitText = append(m.DitText, name)
 		}
-		m.Blocks = append(m.Blocks, name)
+		for i, gr := range ditGroups {
+			name, err := write("blocks", mil.Blocks(dc, gr[0], gr[1], qchunk, i == len(ditGroups)-1), o.DitFormat)
+			if err != nil {
+				return err
+			}
+			m.Blocks = append(m.Blocks, name)
+		}
 	}
 	if len(o.Only) == 0 || o.Only["time"] {
 		if err := writeTimeFile(filepath.Join(out, TimeFile), w); err != nil {

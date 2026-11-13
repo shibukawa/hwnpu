@@ -27,19 +27,20 @@ import (
 // from the top left, in the picture's pixels), text and score, in reading order. --text prints
 // the text alone, a line for each. With --draw it also writes NAME.text.png with the boxes.
 type OCRCmd struct {
-	Pictures []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
-	Model    string   `short:"m" default:"ocr" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (ocr, ppocr, ppocr:small)."`
-	Text     bool     `help:"Print the text alone: its lines, a blank line between pictures."`
-	Size     string   `placeholder:"WxH" help:"The detector's size, multiples of 32 (default: of 960x960, 1280x736 and 736x1280 the one the picture is scaled down least to fit). Larger finds smaller text."`
-	MinScore float32  `default:"0.5" help:"The least recognition score of a line to report."`
-	Draw     bool     `help:"Also write NAME.text.png: the picture with the lines' boxes."`
-	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
-	Repeat   int      `default:"1" help:"Run each picture this many times and report the mean time."`
-	Dir      string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
-	Cache    string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
-	CPU      bool     `name:"cpu" help:"Run the converted programs on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
-	Device   string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
-	Threads  int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
+	Pictures    []string `arg:"" type:"existingfile" help:"The pictures (JPEG or PNG)."`
+	Model       string   `short:"m" default:"ocr" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (ocr, ppocr, ppocr:small)."`
+	Text        bool     `help:"Print the text alone: its lines, a blank line between pictures."`
+	Size        string   `placeholder:"WxH" help:"The detector's size, multiples of 32 (default: of 960x960, 1280x736 and 736x1280 the one the picture is scaled down least to fit). Larger finds smaller text."`
+	MinScore    float32  `default:"0.5" help:"The least recognition score of a line to report."`
+	Draw        bool     `help:"Also write NAME.text.png: the picture with the lines' boxes."`
+	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
+	Repeat      int      `default:"1" help:"Run each picture this many times and report the mean time."`
+	Dir         string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
+	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
+	CPU         bool     `name:"cpu" help:"Run the converted programs on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
+	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads     int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
+	backendFlag `embed:""`
 }
 
 // Run reads the text of each picture.
@@ -59,7 +60,7 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 	var dev *hwnpu.Device
 	backend := ""
 	if !cpu {
-		d, b, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, "PP-OCR")
+		d, b, closeDev, err := openProgramDevice(ctx, c.CPU, c.Cache, c.Backend, "PP-OCR")
 		if err != nil {
 			return err
 		}

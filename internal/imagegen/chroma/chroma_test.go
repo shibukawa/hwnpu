@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/imagegen/chroma/mil"
+	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 func TestShiftedSigmas(t *testing.T) {
@@ -74,6 +75,11 @@ func TestLinkSources(t *testing.T) {
 	f = linkSources([]string{hd1024, flash512}, "Chroma1-HD", ConvertOptions{Width: 512, Height: 512, TextFormat: "fp16", DitFormat: "lut8"}, mil.Dit{TextRows: 512})
 	if f.text != hd1024 || f.model != hd1024 || f.vae != flash512 {
 		t.Errorf("sources %+v", f)
+	}
+	// nothing from an export of another program format (Core AI's)
+	if f := linkSources([]string{hd1024}, "Chroma1-HD", ConvertOptions{Backend: llm.BackendCoreAI, Width: 1024, Height: 1024,
+		TextFormat: "fp16", DitFormat: "lut8"}, mil.Dit{TextRows: 512}); f != (linkFrom{}) {
+		t.Errorf("a Core AI export links from a Core ML one: %+v", f)
 	}
 	// the last T5 program only from the same model
 	if src := (linkFrom{text: flash512}).part("text", "text_0.mlpackage", true); src != "" {

@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
+	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/ovir"
 	"github.com/shibukawa/hwnpu/internal/ovlower"
@@ -109,10 +112,13 @@ func markSoftcap(pkg *mlpackage.Package, m Model, opts Options) {
 // outputs of its own layers. A Cached model is built with BuildCached also without a cache, so
 // that a part keeps the outputs a later part takes by name (internal/llm/chain). describe fills
 // in the package's description and metadata. With opts.Backend "intel" the part is OpenVINO IR:
-// path is its .xml.
+// path is its .xml. With "coreai" it is a Core AI program: path is its .aimodel.
 func WritePart(path string, m Model, w Weights, opts Options, describe func(*mlpackage.Package)) (PartRecord, error) {
-	if opts.Backend == "intel" {
+	switch opts.Backend {
+	case BackendIntel:
 		return writeIRPart(path, m, w, opts, describe)
+	case BackendCoreAI:
+		return writeAIPart(path, m, w, opts, describe)
 	}
 	pkg, err := mlpackage.Create(path)
 	if err != nil {
@@ -155,6 +161,172 @@ func buildPart(b *mlpackage.Builder, m Model, w Weights, opts Options) (ins, out
 		return nil, nil, err
 	}
 	return ins, []mlpackage.Feature{y}, nil
+}
+
+// writeAIPart is WritePart for Core AI: the program is built as MIL, its weights in a temporary
+// weight file next to path, and lowered to a Core AI program (internal/coreai/ailower) at path
+// (.aimodel), the weights in its bytecode. No Core ML package is written. The description and
+// metadata that describe fills in go into the asset's MetaFile.
+func writeAIPart(path string, m Model, w Weights, opts Options, describe func(*mlpackage.Package)) (PartRecord, error) {
+	pkg := &mlpackage.Package{Metadata: map[string]string{}}
+	if describe != nil {
+		describe(pkg)
+	}
+	markSoftcap(pkg, m, opts)
+	size, ins, outs, err := writeAI(path, pkg.Metadata, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
+		return buildPart(b, m, w, opts)
+	})
+	if err == nil && pkg.Description != "" {
+		pkg.Metadata[MetaDescription] = pkg.Description
+		err = writeAIMeta(path, pkg.Metadata)
+	}
+	if err != nil {
+		return PartRecord{}, err
+	}
+	return PartRecord{Path: path, Start: opts.Start, Layers: opts.Layers, WeightBytes: size, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}, nil
+}
+
+// WriteAI writes the program build makes as a Core AI program at path (.aimodel), with meta in
+// its MetaFile, for a program that is not a Model (WritePart). It returns the size of the
+// bytecode.
+func WriteAI(path string, meta map[string]string, build func(*mlpackage.Builder) (ins, outs []mlpackage.Feature, err error)) (int64, error) {
+	size, _, _, err := writeAI(path, meta, build)
+	return size, err
+}
+
+// AIFunction is a function of a Core AI program with several (WriteAIFunctions): its name and the
+// part it is, built as WritePart builds one.
+type AIFunction struct {
+	Name    string
+	Model   Model
+	Options Options
+}
+
+// WriteAIFunctions writes the parts fns as one Core AI program at path (.aimodel), a function of
+// each name. Weights of the same bytes (the same layers in the same format) are written once, in
+// the program and in Core AI's cache: a DiT's text pass and its image blocks over the same layers
+// take one copy of them. The records are the functions', PATH#NAME (as the Core AI backend opens
+// them), each with the program's size.
+func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, error) {
+	base := strings.TrimSuffix(path, filepath.Ext(path))
+	var mfns []*milspec.Function
+	var readers []io.ReaderAt
+	var recs []PartRecord
+	for _, f := range fns {
+		tmp := base + "." + f.Name + ".milblob.tmp"
+		blobs, err := mlpackage.NewBlobWriter(tmp)
+		if err != nil {
+			return nil, err
+		}
+		defer os.Remove(tmp)
+		b := mlpackage.NewBuilder("CoreML8", blobs)
+		ins, outs, err := buildPart(b, f.Model, w, f.Options)
+		if err != nil {
+			blobs.Close()
+			return nil, fmt.Errorf("%s: %w", f.Name, err)
+		}
+		var vars []*mlpackage.Var
+		for _, o := range outs {
+			vars = append(vars, &mlpackage.Var{Name: o.Name})
+		}
+		fn := b.Function(vars...)
+		if err := blobs.Close(); err != nil {
+			return nil, err
+		}
+		r, err := os.Open(tmp)
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close()
+		mfns, readers = append(mfns, fn), append(readers, r)
+		recs = append(recs, PartRecord{Path: path + "#" + f.Name, Start: f.Options.Start, Layers: f.Options.Layers,
+			Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)})
+	}
+	names := make([]string, len(fns))
+	for i, f := range fns {
+		names[i] = f.Name
+	}
+	prog, err := ailower.LowerMany(mfns, readers, names)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return nil, err
+	}
+	if err := prog.WriteAsset(path); err != nil {
+		return nil, err
+	}
+	for i := range recs {
+		recs[i].WeightBytes = int64(len(prog.Bytecode))
+	}
+	return recs, nil
+}
+
+// SplitFunction splits a program's path PATH.aimodel#NAME (a function of a Core AI program with
+// several, WriteAIFunctions) into the program's path and the function's name, or returns path and
+// "" for any other.
+func SplitFunction(path string) (string, string) {
+	if i := strings.LastIndexByte(path, '#'); i > 0 && strings.EqualFold(filepath.Ext(path[:i]), ".aimodel") && i+1 < len(path) {
+		return path[:i], path[i+1:]
+	}
+	return path, ""
+}
+
+// MetaFile is the file of a Core AI program hwnpu writes that holds its metadata (as a Core ML
+// package's user-defined metadata, ReadMeta).
+const MetaFile = "hwnpu-meta.json"
+
+func writeAIMeta(path string, meta map[string]string) error {
+	if len(meta) == 0 {
+		return nil
+	}
+	b, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(path, MetaFile), append(b, '\n'), 0o644)
+}
+
+func writeAI(path string, meta map[string]string, build func(*mlpackage.Builder) (ins, outs []mlpackage.Feature, err error)) (int64, []mlpackage.Feature, []mlpackage.Feature, error) {
+	tmp := strings.TrimSuffix(path, filepath.Ext(path)) + ".milblob.tmp"
+	blobs, err := mlpackage.NewBlobWriter(tmp)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer os.Remove(tmp)
+	b := mlpackage.NewBuilder("CoreML8", blobs)
+	ins, outs, err := build(b)
+	if err != nil {
+		blobs.Close()
+		return 0, nil, nil, err
+	}
+	var vars []*mlpackage.Var
+	for _, f := range outs {
+		vars = append(vars, &mlpackage.Var{Name: f.Name})
+	}
+	fn := b.Function(vars...)
+	if err := blobs.Close(); err != nil {
+		return 0, nil, nil, err
+	}
+	f, err := os.Open(tmp)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer f.Close()
+	prog, err := ailower.Lower(fn, f)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return 0, nil, nil, err
+	}
+	if err := prog.WriteAsset(path); err != nil {
+		return 0, nil, nil, err
+	}
+	if err := writeAIMeta(path, meta); err != nil {
+		return 0, nil, nil, err
+	}
+	return int64(len(prog.Bytecode)), ins, outs, nil
 }
 
 // writeIRPart is WritePart for Intel's NPU: the program is built as MIL, its weights in a
@@ -292,7 +464,7 @@ func ReadMeta(m *Manifest) (map[string]string, error) {
 	if len(parts) == 0 {
 		return nil, errors.New("llm: no parts")
 	}
-	path := parts[0].Path
+	path, _ := SplitFunction(parts[0].Path)
 	if strings.EqualFold(filepath.Ext(path), ".xml") {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -309,6 +481,17 @@ func ReadMeta(m *Manifest) (map[string]string, error) {
 			}
 		}
 		return meta, nil
+	}
+	if strings.EqualFold(filepath.Ext(path), ".aimodel") {
+		meta := map[string]string{}
+		raw, err := os.ReadFile(filepath.Join(path, MetaFile))
+		if errors.Is(err, os.ErrNotExist) {
+			return meta, nil
+		}
+		if err == nil {
+			err = json.Unmarshal(raw, &meta)
+		}
+		return meta, err
 	}
 	pkg, err := mlpackage.ReadModel(path)
 	if err != nil {

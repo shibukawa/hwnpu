@@ -122,7 +122,7 @@ func (t Tiling) Window() int {
 // Engine's compiler fails on the up blocks of 1152 to 1152 channels at 64 x 64 and 128 x 128
 // ("Allocation failure for L2-dep pair"; the GPU then), but takes them at 32 x 32, the one of 1152
 // to 576 channels at 256 x 256, and the norm and a convolution of 1152 channels at 48 x 48 or of
-// 768 at 64 x 64 (design.md 16.178).
+// 768 at 64 x 64 (design.md 16.184).
 const (
 	wideChannels = 768
 	wideWindow   = 48

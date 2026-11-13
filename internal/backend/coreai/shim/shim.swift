@@ -51,7 +51,8 @@ public func cai_free(_ p: UnsafeMutablePointer<CChar>?) { free(p) }
 /// Loads the .aimodel at path and its function main, or the function NAME of PATH#NAME (a program
 /// with several, whose weights they share). Core AI's cache sometimes keeps an entry
 /// whose function then fails to load at once (_GenericObjCError 0) and never recompiles: the
-/// entries of the model are deleted and it is loaded again (*retried set to 1), unless kind has
+/// entries of the model are deleted and it is loaded again (*retried set to 1, *errOut the first
+/// attempt's error), unless kind has
 /// noRetry (an asset whose bytecode is cut, which loads only from its entry: parsing it aborts).
 @_cdecl("cai_open")
 public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: UnsafeMutablePointer<Int32>,
@@ -81,10 +82,12 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
         }
     }
     var r = once()
-    if case .failure = r, kind & noRetry == 0 {
+    if case .failure(let e) = r, kind & noRetry == 0 {
         try? AIModelCache.default.deleteEntries(for: url)
         retried.pointee = 1
         r = once()
+        // loaded the second time: *errOut is the first attempt's error (the caller frees it)
+        if case .success = r { errOut.pointee = cstr(String(describing: e)) }
     }
     switch r {
     case .success(let f):
