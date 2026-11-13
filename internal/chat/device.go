@@ -112,7 +112,7 @@ func (m Model) BytesFor(vendor string) float64 { return m.BytesBy.For(vendor) }
 
 // HereVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.
 // HWNPU_BACKEND naming a backend of Intel's programs (intel, levelzero, openvino) makes it
-// "intel", and coreml "apple": with openvino, a machine without Intel's NPU runs the commands'
+// "intel", and coreml or coreai "apple": with openvino, a machine without Intel's NPU runs the commands'
 // Intel path on OpenVINO's CPU, the IR it converts included.
 var HereVendor = sync.OnceValue(hereVendor)
 
@@ -120,7 +120,7 @@ func hereVendor() string {
 	switch b := strings.TrimSpace(os.Getenv(llm.BackendEnv)); {
 	case b == llm.BackendIntel || llm.ProgramBackend(b) == llm.BackendIntel:
 		return "intel"
-	case b == llm.BackendCoreML:
+	case llm.ProgramBackend(b) == llm.BackendCoreML: // coreml, coreai
 		return "apple"
 	}
 	infos, _ := hwnpu.Enumerate(context.Background())
