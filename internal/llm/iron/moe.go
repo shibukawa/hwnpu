@@ -19,24 +19,24 @@ import (
 // in iron_gptoss_moe's layout (moeHostRouteMX4), and moe_combine without a shared expert (two
 // reads).
 type HostStep struct {
-	Command int      `json:"command"`
-	Kind    string   `json:"kind"`
-	Layer   int      `json:"layer"`
-	Experts int      `json:"experts"`
-	Top     int      `json:"top"`
-	Cap     int      `json:"cap"`
-	Tokens  int      `json:"tokens"`
+	Command int    `json:"command"`
+	Kind    string `json:"kind"`
+	Layer   int    `json:"layer"`
+	Experts int    `json:"experts"`
+	Top     int    `json:"top"`
+	Cap     int    `json:"cap"`
+	Tokens  int    `json:"tokens"`
 	// moe_route_mx4: the in-features of x's stream and of its k-blocks (iron_gptoss_moe's
 	// HIDDEN, KT)
-	InFeatures int      `json:"in_features,omitempty"`
-	KT         int      `json:"kt,omitempty"`
+	InFeatures int `json:"in_features,omitempty"`
+	KT         int `json:"kt,omitempty"`
 	// moe_route_mx4 by slots (iron_gptoss_moe's SLOTS): a pass's Slots slots of up to Cap rows,
 	// slot e < Experts expert e's first Cap rows, the others an expert's further rows, slot i's
 	// expert the graph's value SlotValues[i] ("" for a fixed slot); none, a slot an expert
 	Slots      int      `json:"slots,omitempty"`
 	SlotValues []string `json:"slot_values,omitempty"`
 	Reads      []Region `json:"reads"`
-	Writes  []Region `json:"writes"`
+	Writes     []Region `json:"writes"`
 }
 
 // Region is a buffer's place in an argument, and the tensor it holds.

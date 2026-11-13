@@ -568,6 +568,8 @@ class GptOss(CausalLM):
     def lookup(self, ids):
         shape = getattr(ids, "shape", ())
         if len(shape) == 0:
+            if RESIDENT and QUANT and FUSE_QKV:  # GptOssStep reads the row where the host puts it
+                return self.embed_rows[:1]
             return Copy.step(self.embed_rows[:1])
         bound = getattr(ids, "valid", None) or {}
         return Copy.step(self.embed_rows[: bound[0]] if 0 in bound else self.embed_rows[: shape[0]])
@@ -647,41 +649,48 @@ class GptOss(CausalLM):
         c, layers = self.config, self.layers
         L, top = len(layers), c.num_experts_per_tok
         call.embeddings = x
-        for rope in (layer.rope for layer in layers):
-            if rope is not None and rope not in call.ropes:
-                call.ropes[rope] = rope.rows(call)
         pos, ROW = call.position, gl.ROW
         h, rw = x.reshape(HP), self._rw0
         ye = None
         for l in range(L + 1):
             prev, cur = layers[max(l - 1, 0)], layers[min(l, L - 1)]
             a, m, pm = cur.self_attn, cur.mlp, prev.mlp
-            phases = (gl.PH_E if l > 0 else 0) | (gl.PH_Q | gl.PH_A | gl.PH_O | gl.PH_R | gl.PH_T if l < L else 0)
+            # the last command: the last layer's experts, then the head (its norm's weight in the
+            # place of the input norm's)
+            phases = (gl.PH_E if l > 0 else 0) | (gl.PH_Q | gl.PH_A | gl.PH_O | gl.PH_R | gl.PH_T if l < L else gl.PH_H)
+            head = self.lm_head.weight.reshape(-1, gl.HB)
             sliding = cur.cache.window is not None
             n = gl.objects(pos)
             if sliding:  # the window's rows: the 127 before the call's and its own
                 n = iron.clamp(n, hi=-(-(cur.cache.window + 1) // gl.TOK))
-            values = dict(kw=pos * ROW, ntok=pos + 1, nslide=iron.clamp(pos + 1, hi=c.window + 1), nkv1=n - 1)
+            values = dict(kw=pos * ROW, apos=pos * gl.D, ntok=pos + 1, nslide=iron.clamp(pos + 1, hi=c.window + 1),
+                          nkv1=n - 1)
             if sliding:
                 values["kfirst"] = iron.clamp(pos * ROW - cur.cache.window * ROW, lo=0)
             if l > 0:
                 e = call.experts[l - 1]
                 values.update({f"e{i}": e[i] * pm.gu_bytes for i in range(top)})
                 values.update({f"d{i}": e[i] * pm.dn_bytes for i in range(top)})
-            angles = call.ropes[cur.rope]
-            _, ye, _, _, yo, _, yw, image, _ = Step.step(
-                pm.gu, pm.dn, a.qkv_x, a.o_x, m.router_x, h, prev.post_attention_layernorm.weight,
-                cur.input_layernorm.weight, cur.post_attention_layernorm.weight, angles[0].reshape(gl.D), a.sinks_x,
+            table = cur.rope.table  # the call's row of the angles is read from the table itself
+            _, ye, _, _, yo, _, yw, image, _, yh = Step.step(
+                pm.gu, pm.dn, a.qkv_x, a.o_x, m.router_x, head, h, prev.post_attention_layernorm.weight,
+                cur.input_layernorm.weight if l < L else self.model.norm.weight,
+                cur.post_attention_layernorm.weight, table.reshape(int(np.prod(table.shape))), a.sinks_x,
                 rw, m.prog_x, cur.cache.kv.reshape(int(np.prod(cur.cache.kv.shape))), grows=pm.gu.shape[0], drows=pm.dn.shape[0],
-                qrows=a.qkv_x.shape[0], orows=a.o_x.shape[0], kvn=int(np.prod(cur.cache.kv.shape)), eps=c.eps,
+                qrows=a.qkv_x.shape[0], orows=a.o_x.shape[0], hrows=head.shape[0], angn=int(np.prod(table.shape)),
+                kvn=int(np.prod(cur.cache.kv.shape)), eps=c.eps,
                 phases=phases, sliding=sliding, picked=l - 1, routed=l if l < L else -1,
                 fed_at=self.fed_at(l), **values)
             if l < L:
                 call.feedback.append((l, image.name))
                 iron.on_host(lambda: None)  # the next command's words are this one's routing's
             h, rw = yo, yw
-        out = ye[gl.TOP * moe.IPAD :].reshape(1, HP)
-        return self.draw(self.head(out), call)
+        # the logits as GptOssStep's head sends them: two partial sums a row, which hwnpu adds
+        self.hwnpu_logit_parts = 2 * gl.MT
+        # one array a step, loaded once: hwnpu's barrier before a step (another hardware context,
+        # which puts the array's configuration back: 2.4 ms a step) is not needed (design.md)
+        self.hwnpu_no_step_barrier = True
+        return self.draw(yh, call)
 
     class Recompile(Exception):
         """The versions are to be compiled again (resident_rows found where the routed words are)."""

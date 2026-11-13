@@ -29,6 +29,10 @@
 //       kept as a running maximum, sum and weighted values (GL_ATT cores: 4 heads each on
 //       cores 0 and 1)
 //   O   o_proj: q8x blocks on the heads' outputs, out acc + residual
+//   H   the output head (the last command, after the last layer's experts): RMSNorm, then the
+//       q4nx table as it is (blocks of 32 out-features by 256 in-features, 5120 bytes: a weight
+//       block's start), cores 0 and 1 the even k-blocks of a column block's halves, cores 2 and 3
+//       the odd ones: each sends its partial sums (bf16), which the host adds
 //   R   the router's logits (GL_ROUTER cores: column 0's last two): bf16 blocks of 80
 //       in-features on hn, each core its k-blocks' partial sums, out as float32 (the column's
 //       other cores take blocks of nothing and send zeros)
@@ -65,46 +69,59 @@ struct q8x_blk_t {
 };
 static_assert(sizeof(q8x_blk_t) == sizeof(mx4_blk_t), "one weight object for every phase");
 
-// q8_mv.cc's q8_accumulate at 160 in-features a block.
-__attribute__((noinline)) static void q8x_accumulate(const q8x_blk_t *A, const bf16 *B, float *c) {
-  const int8_t *qs_ptr = A->qs;
+// acc += a block's 32 rows times B, a group of 32 in-features at a time (q8_mv.cc's q8_accumulate
+// and q4nx.h's q4nx_accumulate as one loop: a core's program holds one). q8x: int8 codes (128 a
+// load), the partial sum in two bf16 parts times the scales. q4 (mins given): 4-bit codes (64
+// bytes a load), the partial sum as one bf16 times the scales, and the group's minimum times
+// the sum of its in-features (sums).
+__attribute__((noinline)) static void gl_accumulate(const bf16 *scales, const bf16 *mins, const uint8_t *codes,
+                                                    const bf16 *B, const bf16 *sums, float *c, int groups) {
+  const bool q4 = mins != nullptr;
   for (int row = 0; row < MT; row += PR) {
     aie::accum<accfloat, PR> c_accum;
     c_accum.from_vector(aie::load_v<PR>(c + row));
     const bf16 *it_B = B;
-    uint32_t scale_offset = row;
-    for (int sub = 0; sub < GL_QKT / 32; sub++) {
-      aie::vector<bf16, 32> b_col = aie::load_v<32>(it_B);
-      it_B += 32;
-      aie::vector<bf16, PR> a_scales = aie::load_v<PR>(A->scales + scale_offset);
-      scale_offset += MT;
-      aie::vector<bf16, PR * 8> a_bf16[4];
-#pragma clang loop unroll(full)
+#pragma clang loop unroll(disable)
+    for (int sub = 0; sub < groups; sub++) {
+      aie::vector<bf16, PR> a_scales = aie::load_v<PR>(scales + sub * MT + row);
+      // 8 in-features of the 16 rows a step: one copy of the code (a core's program is short of room)
+      aie::accum<accfloat, PR> t = aie::zeros<accfloat, PR>();
+#pragma clang loop unroll(disable)
       for (int sv = 0; sv < 4; sv++) {
-        aie::vector<int8_t, PR * 8> a = aie::load_v<PR * 8>(qs_ptr);
-        qs_ptr += PR * 8;
         aie::accum<accfloat, PR * 8> acc;
-        acc.from_vector(aie::to_float(a, 0));
-        a_bf16[sv] = acc.template to_vector<bf16>();
-      }
-      aie::accum<accfloat, PR> t = aie::mul(a_bf16[0].extract<PR>(0), b_col.get(0));
-#pragma clang loop unroll(full)
-      for (int sv = 0; sv < 4; sv++) {
-#pragma clang loop unroll(full)
-        for (int cc = 0; cc < 8; cc++) {
-          if (sv == 0 && cc == 0)
-            continue;
-          t = aie::mac(t, a_bf16[sv].extract<PR>(cc), b_col.get(sv * 8 + cc));
+        if (q4) {
+          acc.from_vector(aie::to_float(aie::load_v<PR * 8>(reinterpret_cast<const uint4 *>(codes)), 0));
+          codes += PR * 4;
+        } else {
+          acc.from_vector(aie::to_float(aie::load_v<PR * 8>(reinterpret_cast<const int8_t *>(codes)), 0));
+          codes += PR * 8;
         }
+        const aie::vector<bf16, PR * 8> a = acc.template to_vector<bf16>();
+        const aie::vector<bf16, 8> b8 = aie::load_v<8>(it_B); // (a vector's part by a running index is not it)
+        it_B += 8;
+#pragma clang loop unroll(full)
+        for (int cc = 0; cc < 8; cc++)
+          t = aie::mac(t, a.template extract<PR>(cc), b8.get(cc));
       }
       aie::vector<bf16, PR> hi = t.template to_vector<bf16>();
-      aie::vector<bf16, PR> lo = aie::mac(t, hi, bf16(-1.0f)).template to_vector<bf16>();
       c_accum = aie::mac(c_accum, hi, a_scales);
-      c_accum = aie::mac(c_accum, lo, a_scales);
+      if (q4) {
+        c_accum = aie::mac(c_accum, aie::load_v<PR>(mins + sub * MT + row), sums[sub]);
+      } else {
+        aie::vector<bf16, PR> lo = aie::mac(t, hi, bf16(-1.0f)).template to_vector<bf16>();
+        c_accum = aie::mac(c_accum, lo, a_scales);
+      }
     }
     aie::store_v(c + row, c_accum.template to_vector<float>());
   }
 }
+
+constexpr int GL_HKT = 256; // the head's in-features a block (iron_q4's q4)
+struct q4x_blk_t {          // q4nx.h's q4nx_block<32, 256>, a weight block's first 5120 bytes
+  bf16 scales[GL_HKT / 32 * MT];
+  bf16 mins[GL_HKT / 32 * MT];
+  uint8_t qs[MT * GL_HKT / 2];
+};
 
 static inline void gl_norm(bf16 *x) {
   aie::accum<accfloat, 16> ss = aie::zeros<accfloat, 16>();
@@ -168,7 +185,11 @@ static inline void gl_add_out(float *acc, const bf16 *r, bf16 *y) {
   narrow_to_bf16<MT>(y, acc);
 }
 
-enum { K_E1 = 1, K_E2 = 2, K_Q = 3, K_A = 4, K_O = 5, K_R = 6, K_T = 7 };
+enum { K_E1 = 1, K_E2 = 2, K_Q = 3, K_A = 4, K_O = 5, K_R = 6, K_T = 7, K_H = 8 };
+#ifndef GL_HOUTS
+#define GL_HOUTS 393             // H: a column's column blocks of the head (201216 / 64 / 8)
+#endif
+constexpr int GL_HK = 3072;      // H: its in-features
 constexpr int GL_OUTS = 3;       // a core's out-blocks of the residual (3072 / 32 / 8 columns / 4 cores)
 constexpr int GL_CORES = 4;
 constexpr int GL_XN = 4 * 3072;  // E2: the residual's slice after the four experts' activations
@@ -191,7 +212,7 @@ struct gl_state {
   alignas(64) float tot[GL_OUTS][MT];
   alignas(64) bf16 res[GL_R]; // the column's slice of the residual; T: the words and the weights out
   alignas(64) bf16 w[32];     // E2: the routing weights
-  // A: the core's 4 heads' q (times 1 / sqrt(D)) as tiles of 8 in-features ([tile][k][head]), the
+  // A: the core's 4 heads' q (times 1 / sqrt(D)) as tiles of 8 in-features ([tile][head][k]), the
   // weighted values as tiles of 8 of a head's 64 ([tile][head][8]); a head's sink, running
   // maximum and sum as 16 lanes of period 4 (lane 4 t + head: no scalar float work, which is
   // long code on a core), and 1 / the sum for the output ([head][8])
@@ -201,6 +222,7 @@ struct gl_state {
   alignas(64) float m[16];
   alignas(64) float l[16];
   alignas(64) float inv[GL_AH * 8];
+  alignas(64) bf16 sums[GL_HK / 32]; // H: each 32 in-features' sum
 };
 static_assert(sizeof(gl_state) <= 4096, "iron_gptoss_layer.py's st_t");
 
@@ -243,23 +265,18 @@ static inline aie::vector<float, 32> gl_rows(aie::vector<float, 16> v) {
   return aie::transpose(aie::concat(v, v), 8, 4);
 }
 
-// out [8 tokens][4 heads] = the scores of 8 tokens: their keys' tiles [token][8 k] (kv, 8 k
-// further each step) times q's [8 k][head].
-__attribute__((noinline)) static void gl_scores(const bf16 *qt, const bf16 *kv, float *out) {
-  aie::mmul<8, 8, 4, bfloat16, bfloat16> c;
-#pragma clang loop unroll(disable)
-  for (int ks = 0; ks < GL_D / 8; ks++)
-    c.mac(gl_tile(kv + 8 * ks, GL_TS), aie::load_v<GL_AH * 8>(qt + GL_AH * 8 * ks));
-  aie::store_v(out, c.template to_vector<float>());
-}
-
-// out [4 heads][8 d] = the sum over the object's tiles of p's [head][8 tokens] times the values'
-// [token][8 d] (kv, 8 tokens further each step).
-__attribute__((noinline)) static void gl_values(const bf16 *p, const bf16 *kv, float *out) {
+// out [4][8] = the sum over steps of a's tile [4][8] (32 bf16, 32 further each step) times kv's
+// tile of 8 rows of 8 (tstep further each step; turned to [8 values][8 rows] where turn): the one
+// copy of the matrix product (-Os on the whole file fit too, and gave wrong numbers). The scores
+// of 8 tokens: q's tiles [head][8 k] times the keys' [token][8 k] turned, over the 8 steps of k.
+// The values' sums: p's tiles [head][8 tokens] times the values' [token][8 d], over the tiles.
+__attribute__((noinline)) static void gl_mm(const bf16 *a, const bf16 *kv, int tstep, int steps, bool turn, float *out) {
   aie::mmul<4, 8, 8, bfloat16, bfloat16> c;
 #pragma clang loop unroll(disable)
-  for (int tt = 0; tt < GL_TOK / 8; tt++)
-    c.mac(aie::load_v<GL_AH * 8>(p + GL_AH * 8 * tt), gl_tile(kv + 8 * tt * GL_TS, GL_TS));
+  for (int i = 0; i < steps; i++) {
+    aie::vector<bf16, 64> t = gl_tile(kv + i * tstep, GL_TS);
+    c.mac(aie::load_v<GL_AH * 8>(a + i * GL_AH * 8), turn ? aie::transpose(t, 8, 8) : t);
+  }
   aie::store_v(out, c.template to_vector<float>());
 }
 
@@ -267,7 +284,7 @@ __attribute__((noinline)) static void gl_values(const bf16 *p, const bf16 *kv, f
 // core's 4 heads' softmax, 8 tokens at a time as matrix products (the bf16 mmul; no sum across
 // a vector's lanes a token): a dot product a token and a head with its sum took 62 us an
 // object, 12 ms a token at 2000 tokens of context.
-static void gl_attend(const bf16 *kv, gl_state *st, int n) {
+GL_COLD static void gl_attend(const bf16 *kv, gl_state *st, int n) {
   constexpr int TILES = GL_TOK / 8, L = GL_AH * 8;
   alignas(64) float s[TILES][L];
   alignas(64) bf16 pb[TILES][L];
@@ -275,9 +292,10 @@ static void gl_attend(const bf16 *kv, gl_state *st, int n) {
   aie::vector<float, L> top = aie::broadcast<float, L>(-1.0e30f);
 #pragma clang loop unroll(disable)
   for (int tt = 0; tt < TILES; tt++) {
-    gl_scores(st->qt[0], kv + 8 * tt * GL_TS, s[tt]);
+    gl_mm(st->qt[0], kv + 8 * tt * GL_TS, 8, GL_D / 8, true, s[tt]); // [head][token]
     const int left = n - 8 * tt;
-    aie::vector<float, L> v = aie::min(aie::load_v<L>(s[tt]), aie::load_v<L>(GL_MASK.v[left < 0 ? 0 : left > 8 ? 8 : left]));
+    aie::vector<float, L> v = aie::min(aie::transpose(aie::load_v<L>(s[tt]), 4, 8), // to [token][head]
+                                       aie::load_v<L>(GL_MASK.v[left < 0 ? 0 : left > 8 ? 8 : left]));
     aie::store_v(s[tt], v);
     top = aie::max(top, v);
   }
@@ -300,7 +318,7 @@ static void gl_attend(const bf16 *kv, gl_state *st, int n) {
   const aie::vector<float, L> drow = gl_rows(d);
 #pragma clang loop unroll(disable)
   for (int ds = 0; ds < GL_D / 8; ds++) {
-    gl_values(pb[0], kv + GL_D + 8 * ds, add);
+    gl_mm(pb[0], kv + GL_D + 8 * ds, 8 * GL_TS, TILES, false, add);
     aie::vector<float, L> o = aie::mul(aie::load_v<L>(st->o2[ds]), drow).template to_vector<float>();
     aie::store_v(st->o2[ds], aie::add(o, aie::load_v<L>(add)));
   }
@@ -371,7 +389,7 @@ extern "C" {
 GL_COLD void GL_FN(gl_plan)(int32_t *cnt, int32_t ph, int32_t kinds, int32_t ntok, int32_t nslide) {
   // by kind: out-blocks, weight blocks an out-block, objects out an out-block, objects out at
   // the end, whether column 0's alone (a table: an if a kind costs the program more)
-  static const uint8_t plan[8][5] = {
+  static const int16_t plan[9][5] = {
       {0, 0, 0, 0, 0},
       {3072 / MT / (2 * GL_CORES), 2 * GL_KBE, 1, 0, 0},                     // E1: gate-up pairs a core
       {4 * GL_OUTS, GL_KBE, 0, GL_OUTS, 0},                                   // E2: each expert's out-blocks
@@ -380,9 +398,10 @@ GL_COLD void GL_FN(gl_plan)(int32_t *cnt, int32_t ph, int32_t kinds, int32_t nto
       {GL_OUTS, (GL_OK + GL_QKT - 1) / GL_QKT, 1, 0, 0},                      // O
       {1, GL_RKB, 2, 0, 1},                                                   // R: 32 partial sums as float32
       {0, 0, 0, 2, 1},                                                        // T: the words, the weights
+      {GL_HOUTS, GL_HK / GL_HKT / 2, 1, 0, 0},                                // H: half the k-blocks a core
   };
-  const int kind = (kinds >> (4 * ph)) & 7;
-  const uint8_t *p = plan[kind];
+  const int kind = (kinds >> (4 * ph)) & 15;
+  const int16_t *p = plan[kind];
   const int n = (kinds >> 28) & 1 ? nslide : ntok;
   cnt[0] = kind;
   cnt[1] = p[0];
@@ -398,8 +417,11 @@ GL_COLD void GL_FN(gl_begin)(bf16 *x, float *state, const int32_t *cnt) {
   aie::set_rounding(aie::rounding_mode::conv_even);
   gl_state *st = reinterpret_cast<gl_state *>(state);
   const int kind = cnt[0];
-  if (kind == K_E1 || kind == K_Q || kind == K_R) {
+  if (kind == K_E1 || kind == K_Q || kind == K_R || kind == K_H) {
     gl_norm(x);
+    if (kind == K_H)
+      for (int g = 0; g < GL_HK / 32; g++)
+        st->sums[g] = bf16(aie::reduce_add(aie::load_v<32>(x + 32 * g)));
   } else if (kind == K_E2 || kind == K_O) {
     const bf16 *r = x + (kind == K_E2 ? GL_XN : GL_RES);
     for (int i = 0; i < GL_R; i += 32)
@@ -416,10 +438,10 @@ GL_COLD void GL_FN(gl_begin)(bf16 *x, float *state, const int32_t *cnt) {
 #ifdef GL_ATT
   else if (kind == K_A) {
     const bf16 *q = x + GL_AH * cnt[7] * GL_D; // the core's first head of the column's 8
-    for (int ks = 0; ks < GL_D / 8; ks++) { // q's tile [head][8 k] as [k][head]
+    for (int ks = 0; ks < GL_D / 8; ks++) { // q's tile [head][8 k]
       aie::vector<bf16, GL_AH * 8> t = aie::concat(aie::load_v<8>(q + 8 * ks), aie::load_v<8>(q + GL_D + 8 * ks),
                                                    aie::load_v<8>(q + 2 * GL_D + 8 * ks), aie::load_v<8>(q + 3 * GL_D + 8 * ks));
-      aie::store_v(st->qt[ks], aie::transpose(aie::mul(t, bf16(0.125f)).template to_vector<bf16>(), 4, 8));
+      aie::store_v(st->qt[ks], aie::mul(t, bf16(0.125f)).template to_vector<bf16>());
     }
     aie::accum<accfloat, 16> sk;
     sk.from_vector(aie::load_unaligned_v<16>(x + GL_SINK + GL_AH * cnt[7]));
@@ -492,10 +514,19 @@ void GL_FN(gl_block)(const uint8_t *block, const bf16 *x, float *state, const in
   if (kind == K_R)
     return;
 #endif
+  if (kind == K_H) { // the core's k-blocks 2 b + core / 2 of the out-features' half core % 2
+    const q4x_blk_t *A = reinterpret_cast<const q4x_blk_t *>(block);
+    if (b == 0)
+      zero_256<float, MT>(st->acc);
+    const int kb = 2 * b + (cnt[7] >> 1);
+    gl_accumulate(A->scales, A->mins, A->qs, x + GL_HKT * kb, st->sums + (GL_HKT / 32) * kb, st->acc, GL_HKT / 32);
+    return;
+  }
   const q8x_blk_t *A = reinterpret_cast<const q8x_blk_t *>(block);
   if (b == 0)
     gl_bias(A->bias, st->acc);
-  q8x_accumulate(A, x + GL_QKT * b, st->acc);
+  gl_accumulate(A->scales, nullptr, reinterpret_cast<const uint8_t *>(A->qs), x + GL_QKT * b, nullptr, st->acc,
+                GL_QKT / 32);
 }
 
 GL_COLD void GL_FN(gl_emit)(float *state, const bf16 *x, const int32_t *cnt, int32_t o, int32_t q, bf16 *y) {
@@ -516,7 +547,7 @@ GL_COLD void GL_FN(gl_emit)(float *state, const bf16 *x, const int32_t *cnt, int
     // of frequency p of the head's half (row0 / 32) % 2
     float *acc = st->acc;
     const int row0 = cnt[6] * (5120 / 8) + cnt[7] * MT + 128 * o;
-    if (row0 < GL_ROPE_ROWS) {
+    if (kind == K_Q && row0 < GL_ROPE_ROWS) { // (H: the head's partial sums as they are)
       aie::accum<accfloat, 32> ta;
       ta.from_vector(aie::load_v<32>(x + GL_ANG + ((row0 >> 5) & 1) * 32));
       aie::vector<float, 32> t = ta.template to_vector<float>();
