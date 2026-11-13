@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,7 +14,9 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/f32"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // errReleased is a call to a model that Release left without its device memory.
@@ -45,7 +46,8 @@ type Model struct {
 	// hostTables are the tables kept on the host (HostTable), filled before each call
 	hostTables []*hostTable
 	logf       func(string, ...any)
-	released   bool // by Release: nothing on the device until Reload
+	released   bool      // by Release: nothing on the device until Reload
+	parts      []float32 // logits: the partial sums of a row, decoded (kept between steps)
 }
 
 type version struct {
@@ -500,21 +502,23 @@ func (m *Model) logits(v *version) ([]float32, error) {
 	if err := buf.SyncFromDevice(o.Offset, o.Bytes); err != nil {
 		return nil, err
 	}
-	b := buf.Bytes()[o.Offset:]
-	at := func(i int) float32 { return math.Float32frombits(uint32(binary.LittleEndian.Uint16(b[2*i:])) << 16) }
+	b := buf.Bytes()[o.Offset : o.Offset+o.Bytes]
 	if p := v.m.LogitParts; p > 0 { // two partial sums a row: [block][2][p]
+		if len(m.parts) < o.Bytes/2 {
+			m.parts = make([]float32, o.Bytes/2)
+		}
+		parts := m.parts[:o.Bytes/2]
+		vecops.BF16ToF32(parts, b)
 		out := make([]float32, min(o.Bytes/4, m.Manifest.Config.VocabSize))
-		for i := range out {
-			j := i/p*2*p + i%p
-			out[i] = at(j) + at(j+p)
+		for i := 0; i < len(out); i += p {
+			row := out[i:min(i+p, len(out))]
+			copy(row, parts[2*i:])
+			f32.Axpy(row, 1, parts[2*i+p:2*i+p+len(row)])
 		}
 		return out, nil
 	}
-	n := min(o.Bytes/2, m.Manifest.Config.VocabSize)
-	out := make([]float32, n)
-	for i := range out {
-		out[i] = at(i)
-	}
+	out := make([]float32, min(o.Bytes/2, m.Manifest.Config.VocabSize))
+	vecops.BF16ToF32(out, b)
 	return out, nil
 }
 

@@ -5,6 +5,8 @@ import (
 	"math"
 	"math/rand/v2"
 	"sort"
+
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // Sampling chooses the next token from the logits.
@@ -125,12 +127,24 @@ func topK(logits []float32, k int) []int {
 		return idx
 	}
 	h := &minHeap{l: logits}
-	for i := range logits {
-		if len(h.idx) < k {
-			heap.Push(h, i)
-		} else if logits[i] > logits[h.idx[0]] {
-			h.idx[0] = i
-			heap.Fix(h, 0)
+	for i := range k {
+		heap.Push(h, i)
+	}
+	// least is the smallest of the k kept. Nearly every logit is below it, so a block whose
+	// largest is not above it is passed over whole (vecops.MinMax: a vector loop).
+	least := logits[h.idx[0]]
+	const block = 256
+	for at := k; at < len(logits); at += block {
+		end := min(at+block, len(logits))
+		if _, hi, ok := vecops.MinMax(logits[at:end]); ok && hi <= least {
+			continue
+		}
+		for i := at; i < end; i++ {
+			if logits[i] > least {
+				h.idx[0] = i
+				heap.Fix(h, 0)
+				least = logits[h.idx[0]]
+			}
 		}
 	}
 	idx := h.idx
