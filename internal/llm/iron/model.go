@@ -808,8 +808,12 @@ func (m *Model) chunkOn(ctx context.Context, v *version, ids []int32, start int,
 			}
 			th := time.Now()
 			switch h.Kind {
-			case "moe_route":
-				rt, err := m.moeHostRoute(v, h, rows)
+			case "moe_route", "moe_route_mx4":
+				plan := m.moeHostRoute
+				if h.Kind == "moe_route_mx4" {
+					plan = m.moeHostRouteMX4
+				}
+				rt, err := plan(v, h, rows)
 				if err != nil {
 					return nil, err
 				}

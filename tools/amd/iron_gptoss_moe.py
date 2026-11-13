@@ -34,7 +34,8 @@ KT, MT, PR, GROUP = 320, 32, 16, 32
 BLOCK = 2 * MT * KT // GROUP + MT * KT // 2 + 2 * MT  # 5824
 TOP, EXPERTS = 4, 32
 HIDDEN, INTER = 2880, 2880
-IPAD = 2944  # an expert's gate-up out-features: 92 blocks, 23 for each of its 4 cores
+CORES = 4  # cores a column (the memtile splits each object of the weights between them)
+IPAD = 3072  # an expert's gate-up out-features (2880 and 192 of zeros): 96 blocks, 12 for each of its 8 cores
 NPAD = 3072  # the residual's width (48 column blocks of 64: whole on 8 columns)
 WV = 16  # MoERoute's routing weights (iron_moe.WV)
 LIMIT, ALPHA = 7.0, 1.702
@@ -91,13 +92,14 @@ def gate_up_table(codes, exps, bias):
 
     g, u = part(slice(0, None, 2)), part(slice(1, None, 2))
     nb, kb = g.shape[:2]
-    per = nb // 4
-    out = np.empty((2, per, 2, kb, 2, BLOCK), np.uint8)  # [half][s][g/u][kb][core]
+    q = 2 * CORES  # an expert's cores (two columns)
+    per = nb // q
+    out = np.empty((2, per, kb, 2, CORES, BLOCK), np.uint8)  # [half][s][kb][g/u][core]
     for h in range(2):
-        for c in range(2):
-            idx = np.arange(per) * 4 + 2 * h + c
-            out[h, :, 0, :, c] = g[idx]
-            out[h, :, 1, :, c] = u[idx]
+        for c in range(CORES):
+            idx = np.arange(per) * q + CORES * h + c
+            out[h, :, :, 0, c] = g[idx]
+            out[h, :, :, 1, c] = u[idx]
     return out.reshape(-1)
 
 
@@ -111,37 +113,40 @@ def down_table(codes, exps, bias):
     b = np.concatenate([bias, np.zeros(pad, np.float32)])
     d = blocks(c, e, b)  # (96, 9, BLOCK)
     kb = d.shape[1]
-    out = np.empty((8, 6, kb, 2, BLOCK), np.uint8)  # [column][j][kb][core]
+    outs = 12 // CORES  # out-blocks a core
+    out = np.empty((8, outs, kb, CORES, BLOCK), np.uint8)  # [column][j][kb][core]
     for l in range(8):
-        for j in range(6):
-            for c_ in range(2):
-                out[l, j, :, c_] = d[12 * l + 2 * j + c_]
+        for j in range(outs):
+            for c_ in range(CORES):
+                out[l, j, :, c_] = d[12 * l + CORES * j + c_]
     return out.reshape(-1)
 
 
 def unpack_gate_up(t, K=HIDDEN):
     """The (gate (IPAD, K), up, gate bias, up bias) float32 of gate_up_table's bytes."""
     kb = K // KT
-    per = IPAD // MT // 4
-    t = np.asarray(t, np.uint8).reshape(2, per, 2, kb, 2, BLOCK)
+    q = 2 * CORES
+    per = IPAD // MT // q
+    t = np.asarray(t, np.uint8).reshape(2, per, kb, 2, CORES, BLOCK)
     g = np.empty((IPAD // MT, kb, BLOCK), np.uint8)
     u = np.empty_like(g)
     for h in range(2):
-        for c in range(2):
-            idx = np.arange(per) * 4 + 2 * h + c
-            g[idx], u[idx] = t[h, :, 0, :, c], t[h, :, 1, :, c]
+        for c in range(CORES):
+            idx = np.arange(per) * q + CORES * h + c
+            g[idx], u[idx] = t[h, :, :, 0, c], t[h, :, :, 1, c]
     (gw, gb), (uw, ub) = dequantize(g), dequantize(u)
     return gw, uw, gb, ub
 
 
 def unpack_down(t, K=INTER):
     kb = K // KT
-    t = np.asarray(t, np.uint8).reshape(8, 6, kb, 2, BLOCK)
+    outs = 12 // CORES
+    t = np.asarray(t, np.uint8).reshape(8, outs, kb, CORES, BLOCK)
     d = np.empty((NPAD // MT, kb, BLOCK), np.uint8)
     for l in range(8):
-        for j in range(6):
-            for c in range(2):
-                d[12 * l + 2 * j + c] = t[l, j, :, c]
+        for j in range(outs):
+            for c in range(CORES):
+                d[12 * l + CORES * j + c] = t[l, j, :, c]
     return dequantize(d)
 
 
@@ -168,7 +173,7 @@ def operators():
 
     import iron_moeprobe
 
-    CB = 2 * MT
+    CB = CORES * MT  # a column's out-features an object of y
     blk_t = np.ndarray[(BLOCK,), np.dtype[np.uint8]]
     half_t = np.ndarray[(MT,), np.dtype[bfloat16]]
     acc_t = np.ndarray[(MT,), np.dtype[np.float32]]
@@ -210,7 +215,7 @@ def operators():
         picked: int = param(default=-1, repr=False)
         num_aie_columns: int = tunable(domain=widths)
 
-        W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(2, BLOCK), per=(num_aie_columns,))
+        W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
         x = In(XK, obj_shape=(K,), per=(num_aie_columns,), replicate=True)
         y = Out(YN, obj_shape=(CB,), per=(num_aie_columns,))
         e0 = per_call(derive=lambda op: 0)
@@ -222,7 +227,7 @@ def operators():
             return self.replace(num_aie_columns=2 * TOP)
 
         def per_core(self) -> int:
-            return self.I // MT // 4
+            return self.I // MT // (2 * CORES)
 
         def expert_bytes(self) -> int:
             return 2 * (self.I // MT) * (self.K // KT) * BLOCK
@@ -233,26 +238,30 @@ def operators():
             k = kernels(K, K)
             w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
             y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
-            w_l1 = [f.cons().split([0, BLOCK], obj_types=[blk_t, blk_t], tile=AnyMemTile) for f in w_l3]
+            w_l1 = [f.cons().split([BLOCK * c for c in range(CORES)], obj_types=[blk_t] * CORES, depths=[3] * CORES, tile=AnyMemTile)
+                    for f in w_l3]
             x_t = np.ndarray[(K,), np.dtype[bfloat16]]
             x_l3 = [ObjectFifo(x_t, depth=1) for _ in range(n)]
             x_l1 = [f.cons().forward(obj_type=x_t, tile=AnyMemTile) for f in x_l3]
-            y_l1 = [f.prod().join([0, MT], obj_types=[half_t, half_t], depths=[2, 2], tile=AnyMemTile)
+            y_l1 = [f.prod().join([MT * c for c in range(CORES)], obj_types=[half_t] * CORES, depths=[2] * CORES, tile=AnyMemTile)
                     for f in y_l3]
 
             def core(w_f, x_f, y_f, g, u, init, block, glu_k):
+                # a k-block's gate block, then its up block (gate_up_table's order)
                 x = x_f.acquire(1)
                 for _ in range_(per):
-                    for acc in (g, u):
-                        blk = w_f.acquire(1)
-                        init(blk, acc)
-                        block(blk, x, acc, 0)
-                        w_f.release(1)
-                        for kb in range_(1, kbs):
-                            kb32 = index.casts(T.i32(), kb)
-                            blk = w_f.acquire(1)
-                            block(blk, x, acc, kb32)
-                            w_f.release(1)
+                    bl = w_f.acquire(2)
+                    init(bl[0], g)
+                    init(bl[1], u)
+                    block(bl[0], x, g, 0)
+                    block(bl[1], x, u, 0)
+                    w_f.release(2)
+                    for kb in range_(1, kbs):
+                        kb32 = index.casts(T.i32(), kb)
+                        bl = w_f.acquire(2)
+                        block(bl[0], x, g, kb32)
+                        block(bl[1], x, u, kb32)
+                        w_f.release(2)
                     y = y_f.acquire(1)
                     glu_k(g, u, y)
                     y_f.release(1)
@@ -260,7 +269,7 @@ def operators():
 
             workers = []
             for i in range(n):
-                for j in range(2):
+                for j in range(CORES):
                     g, u = Buffer(acc_t), Buffer(acc_t)
                     workers.append(Worker(core, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), g, u,
                                                  k["init"], k["block"], k["glu"]]))
@@ -276,7 +285,7 @@ def operators():
             drains = []
             for l in range(n):
                 e, h = l // 2, l % 2
-                drains.append(self.y.drain(TAP((YN,), e * I + 2 * h * MT, [per, CB], [4 * MT, 1]), lane=l,
+                drains.append(self.y.drain(TAP((YN,), e * I + h * CB, [per, CB], [2 * CB, 1]), lane=l,
                                            wait=True, managed=False))
             for l in range(n):
                 self.x.fill(TAP((self.XK,), 0, [K], [1]), lane=l, managed=False)
@@ -317,7 +326,7 @@ def operators():
         picked: int = param(default=-1, repr=False)
         num_aie_columns: int = tunable(domain=widths)
 
-        W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(2, BLOCK), per=(num_aie_columns,))
+        W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
         x = In(XN, obj_shape=(XN,), per=(num_aie_columns,), replicate=True)
         r = In(N, obj_shape=(R,), per=(num_aie_columns,))
         w = In(WV, obj_shape=(WV,), per=(num_aie_columns,), replicate=True)
@@ -336,16 +345,16 @@ def operators():
         def build(self) -> Built:
             n, I, K = self.num_aie_columns, self.I, self.K
             kbs, R, XN = K // KT, self.R, self.XN
-            outs = self.N // MT // n // 2  # out-blocks a core
+            outs = self.N // MT // n // CORES  # out-blocks a core
             obj = XN + R + WV
             k = kernels(obj, K, xe=I, w_at=XN + R)
             w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
             y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
-            w_l1 = [f.cons().split([0, BLOCK], obj_types=[blk_t, blk_t], tile=AnyMemTile) for f in w_l3]
+            w_l1 = [f.cons().split([BLOCK * c for c in range(CORES)], obj_types=[blk_t] * CORES, tile=AnyMemTile) for f in w_l3]
             x_t = np.ndarray[(obj,), np.dtype[bfloat16]]
             x_l3 = [ObjectFifo(x_t, depth=1) for _ in range(n)]
             x_l1 = [f.cons().forward(obj_type=x_t, tile=AnyMemTile) for f in x_l3]
-            y_l1 = [f.prod().join([0, MT], obj_types=[half_t, half_t], depths=[2, 2], tile=AnyMemTile)
+            y_l1 = [f.prod().join([MT * c for c in range(CORES)], obj_types=[half_t] * CORES, depths=[2] * CORES, tile=AnyMemTile)
                     for f in y_l3]
 
             def core(w_f, x_f, y_f, acc, tots, c, init, block_e, zero, fold, end_add):
@@ -367,13 +376,13 @@ def operators():
                         fold(acc, t, x, e32)
                 for j, t in enumerate(tots):
                     y = y_f.acquire(1)
-                    end_add(t, x, XN + (2 * j + c) * MT, y)
+                    end_add(t, x, XN + (CORES * j + c) * MT, y)
                     y_f.release(1)
                 x_f.release(1)
 
             workers = []
             for i in range(n):
-                for j in range(2):
+                for j in range(CORES):
                     acc = Buffer(acc_t)
                     tots = [Buffer(acc_t) for _ in range(outs)]
                     workers.append(Worker(
@@ -485,6 +494,344 @@ def _check(a) -> int:
     return 0
 
 
+# --- a prompt chunk's experts: every expert's weights once a pass ---------------------------
+
+CAP = 128  # an expert's rows a pass (the host splits a chunk into passes past it)
+SB = 8  # rows an object of x (a core holds CAP rows' accumulators of a gate and an up block)
+GROUPS = EXPERTS // TOP  # a prompt runs the experts 4 at a time on the decode step's columns
+COUNT_WORDS = 32  # the counts' int32 words, the first object of the x channel
+
+
+def counts_object(counts):
+    """The x channel's first object: each expert's rows (int32), zeros after (SB x KT bf16)."""
+    o = np.zeros(SB * KT * 2, np.uint8)
+    o[: 4 * len(counts)] = np.asarray(counts, np.int32).view(np.uint8)
+    return o.view(bfloat16)
+
+
+def stream_x(rows, counts, K=HIDDEN):
+    """MX4GroupGateUp's x: by expert, by k-block, its CAP rows (``rows`` (E, CAP, K), those past
+    its count anything) of KT in-features: (E, K / KT, CAP, KT) bf16."""
+    r = np.asarray(rows).reshape(EXPERTS, CAP, K // KT, KT)
+    return np.ascontiguousarray(r.transpose(0, 2, 1, 3))
+
+
+def group_reference_gate_up(gu, counts, xs, K=HIDDEN):
+    """MX4GroupGateUp's output (E, CAP, IPAD) of tables gu (bytes, E experts), counts and xs."""
+    eb = gu.size // EXPERTS
+    x = np.asarray(xs, np.float64).reshape(EXPERTS, K // KT, CAP, KT).transpose(0, 2, 1, 3).reshape(EXPERTS, CAP, K)
+    out = np.zeros((EXPERTS, CAP, IPAD), np.float64)
+    for e in range(EXPERTS):
+        n = int(counts[e])
+        if n == 0:
+            continue
+        gw, uw, gb, ub = unpack_gate_up(gu[e * eb : (e + 1) * eb], K)
+        out[e, :n] = glu(x[e, :n] @ gw.T + gb, x[e, :n] @ uw.T + ub)
+    return out
+
+
+def group_reference_down(dn, counts, a, K=INTER):
+    """MX4GroupDown's output (E, CAP, NPAD) of tables dn, counts and the activations a (E, CAP, IPAD)."""
+    eb = dn.size // EXPERTS
+    a = np.asarray(a, np.float64).reshape(EXPERTS, CAP, IPAD)
+    out = np.zeros((EXPERTS, CAP, NPAD), np.float64)
+    for e in range(EXPERTS):
+        n = int(counts[e])
+        if n == 0:
+            continue
+        d, b = unpack_down(dn[e * eb : (e + 1) * eb], K)
+        out[e, :n] = a[e, :n, :K] @ d.T + b
+    return out
+
+
+def group_operators():
+    """MX4GroupGateUp and MX4GroupDown: a prompt chunk's experts (moe_mx4_rows.cc), on the decode
+    step's tables read in the order the rows need (no second copy of the weights).
+
+    MX4GroupGateUp runs the experts 4 at a time, expert 4 g + j on columns 2 j and 2 j + 1 (the
+    decode step's halves): each core's 23 out-block pairs, gate and up a k-block at a time (the
+    table's order, the decode step's too), every row of the expert through each as
+    it passes, its x the expert's rows a k-block at a time (stream_x, read again for each pair).
+    MX4GroupDown runs the experts one after another, each column its 12 out-blocks of all 32."""
+    import aie.dialects.arith as arith
+    import aie.dialects.index as index
+    from aie.dialects.aie import T
+    from aie.helpers.taplib import TensorAccessPattern as TAP
+    from aie.iron import Buffer, In, ObjectFifo, Out, TaskGroup, Worker
+    from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
+    from aie.iron.kernel import ExternalFunction
+    from aie.utils import config
+    from aie.utils.compile.jit.params import param, tunable, widths
+    from aie.utils.verify import Tolerance
+
+    from iron.common import Built, Operator
+
+    CB = CORES * MT  # a column's out-features an object of y
+    blk_t = np.ndarray[(BLOCK,), np.dtype[np.uint8]]
+    obj_t = np.ndarray[(SB * KT,), np.dtype[bfloat16]]
+    half_t = np.ndarray[(MT,), np.dtype[bfloat16]]
+    acc_t = np.ndarray[(CAP * MT,), np.dtype[np.float32]]
+    cnt_t = np.ndarray[(COUNT_WORDS,), np.dtype[np.int32]]
+
+    def kernels():
+        kdir = Path(config.aie_kernels_dir())
+        here = Path(__file__).resolve().parent / "kernels"
+        common = dict(source_file=str(here / "moe_mx4_rows.cc"),
+                      include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
+                      compile_flags=[f"-DMX_KT={KT}", f"-DMX_CAP={CAP}", f"-DMX_SB={SB}"],
+                      object_file_name=f"moe_mx4_rows_mm_{KT}_{CAP}_{SB}.o")
+        f = lambda name, args: ExternalFunction(name, arg_types=args, **common)  # noqa: E731
+        i32 = np.int32
+        return dict(
+            counts=f("mx4_rows_counts", [obj_t, cnt_t, i32]),
+            init=f("mx4_rows_init", [blk_t, acc_t, cnt_t, i32]),
+            block=f("mx4_rows_block", [blk_t, obj_t, acc_t, cnt_t, i32, i32]),
+            block2=f("mx4_rows_block2", [blk_t, blk_t, obj_t, acc_t, acc_t, cnt_t, i32, i32]),
+            glu=f("mx4_rows_glu", [acc_t, acc_t, cnt_t, i32, i32, half_t]),
+            out=f("mx4_rows_out", [acc_t, cnt_t, i32, i32, half_t]),
+        )
+
+    def i32(v):
+        return index.casts(T.i32(), v)
+
+    class MX4GroupGateUp(Operator):
+        """``a[e, r] = glu(G_e x[e, r] + g_e, U_e x[e, r] + u_e)`` for each expert's rows below
+        its count (group_operators)."""
+
+        aiecc_flags: ClassVar[tuple[str, ...]] = ("--reclaim-runtime-bds",)
+
+        rows: int = param(array=True)  # blocks in the table
+        K: int = param(default=HIDDEN, array=True)
+        I: int = param(default=IPAD, array=True)
+        XS: int = param(derive=lambda op: EXPERTS * op.K * CAP, array=True)
+        AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
+        CN: int = param(default=SB * KT, array=True)
+        form: int = param(default=2, array=True)  # 2: the matrix unit (moe_mx4_rows.cc's mx4_rows_mm)
+        num_aie_columns: int = tunable(domain=widths)
+
+        W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
+        counts = In(CN, obj_shape=(SB * KT,), per=(num_aie_columns,), replicate=True)
+        xs = In(XS, obj_shape=(SB * KT,), per=(num_aie_columns,), replicate=True)
+        a = Out(AN, obj_shape=(CB,), per=(num_aie_columns,))
+
+        def resolve(self, dev):
+            return self.replace(num_aie_columns=2 * TOP)
+
+        def expert_bytes(self) -> int:
+            return 2 * (self.I // MT) * (self.K // KT) * BLOCK
+
+        def build(self) -> Built:
+            n, kbs = self.num_aie_columns, self.K // KT
+            per = self.I // MT // (2 * CORES)
+            k = kernels()
+            w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+            w_l1 = [f.cons().split([BLOCK * c for c in range(CORES)], obj_types=[blk_t] * CORES, depths=[2] * CORES, tile=AnyMemTile) for f in w_l3]
+            x_l3 = [ObjectFifo(obj_t, depth=2) for _ in range(n)]
+            x_l1 = [f.cons().forward(obj_type=obj_t, depth=2, tile=AnyMemTile) for f in x_l3]
+            y_l3 = [ObjectFifo(self.a.obj_type, depth=2) for _ in range(n)]
+            y_l1 = [f.prod().join([MT * c for c in range(CORES)], obj_types=[half_t] * CORES, depths=[2] * CORES, tile=AnyMemTile) for f in y_l3]
+
+            def core(w_f, x_f, y_f, g, u, cnt, j, counts, init, block2, glu_k):
+                c = x_f.acquire(1)
+                counts(c, cnt, COUNT_WORDS)
+                x_f.release(1)
+                for grp in range_(GROUPS):
+                    e = arith.addi(arith.muli(i32(grp), arith.constant(T.i32(), TOP)), arith.constant(T.i32(), j))
+                    for _ in range_(per):
+                        for kb in range(kbs):
+                            bl = w_f.acquire(2)
+                            if kb == 0:
+                                init(bl[0], g, cnt, e)
+                                init(bl[1], u, cnt, e)
+                            for b in range_(CAP // SB):
+                                x = x_f.acquire(1)
+                                block2(bl[0], bl[1], x, g, u, cnt, e, i32(b))
+                                x_f.release(1)
+                            w_f.release(2)
+                        for r in range_(CAP):
+                            y = y_f.acquire(1)
+                            glu_k(g, u, cnt, e, i32(r), y)
+                            y_f.release(1)
+
+            workers = []
+            for i in range(n):
+                for c in range(CORES):
+                    workers.append(Worker(
+                        lambda w_f, x_f, y_f, g, u, cnt, a1, a2, a3, a4, j=i // 2: core(
+                            w_f, x_f, y_f, g, u, cnt, j, a1, a2, a3, a4),
+                        [w_l1[i][c].cons(), x_l1[i].cons(), y_l1[i][c].prod(), Buffer(acc_t), Buffer(acc_t),
+                         Buffer(cnt_t), k["counts"], k["init"], k["block2"], k["glu"]]))
+            self.W.bind([f.prod() for f in w_l3])
+            self.counts.bind([f.prod() for f in x_l3])
+            self.xs.bind([f.prod() for f in x_l3])
+            self.a.bind([f.cons() for f in y_l3])
+            return Built(workers, [])
+
+        def sequence(self, rt):
+            n, K, I = self.num_aie_columns, self.K, self.I
+            kbs, per = K // KT, I // MT // (2 * CORES)
+            eb = self.expert_bytes()
+            total, B = self.rows * BLOCK, BLOCK
+            for grp in range(GROUPS):
+                tg = TaskGroup()
+                for l in range(n):
+                    j, h = l // 2, l % 2
+                    e = TOP * grp + j
+                    if grp == 0:
+                        self.counts.fill(TAP((self.CN,), 0, [self.CN], [1]), lane=l, group=tg)
+                    self.W.fill(TAP((total,), e * eb + h * eb // 2, [eb // 2], [1]), lane=l, group=tg)
+                    self.xs.fill(TAP((self.XS,), e * K * CAP, [K * CAP], [1]).repeat(per), lane=l, group=tg)
+                    self.a.drain(TAP((self.AN,), e * CAP * I + h * CB, [per, CAP, CB], [2 * CB, I, 1]),
+                                 lane=l, group=tg, wait=True)
+                tg.finish()
+
+        def ops(self) -> int:
+            return 2 * 2 * EXPERTS * CAP * self.I * self.K
+
+        def reference(self, W, counts, xs):
+            cnt = np.asarray(counts).view(np.int32)[:EXPERTS] if np.asarray(counts).dtype != np.int32 else counts
+            out = group_reference_gate_up(np.asarray(W, np.uint8).reshape(-1), cnt, xs, self.K)
+            return out.astype(bfloat16).reshape(-1)
+
+        def tolerance(self) -> Tolerance:
+            return Tolerance.relative(0.02, 1e-2, note="mx4 partial sums in two bf16 parts, exp_f32")
+
+    class MX4GroupDown(Operator):
+        """``y[e, r] = D_e a[e, r] + d_e`` for each expert's rows below its count (group_operators)."""
+
+        aiecc_flags: ClassVar[tuple[str, ...]] = ("--reclaim-runtime-bds",)
+
+        rows: int = param(array=True)
+        I: int = param(default=IPAD, array=True)
+        K: int = param(default=INTER, array=True)
+        N: int = param(default=NPAD, array=True)
+        AN: int = param(derive=lambda op: EXPERTS * CAP * op.I, array=True)
+        YN: int = param(derive=lambda op: EXPERTS * CAP * op.N, array=True)
+        CN: int = param(default=SB * KT, array=True)
+        form: int = param(default=2, array=True)  # 2: the matrix unit (moe_mx4_rows.cc's mx4_rows_mm)
+        num_aie_columns: int = tunable(domain=widths)
+
+        W = In(rows, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
+        counts = In(CN, obj_shape=(SB * KT,), per=(num_aie_columns,), replicate=True)
+        a = In(AN, obj_shape=(SB * KT,), per=(num_aie_columns,), replicate=True)
+        y = Out(YN, obj_shape=(CB,), per=(num_aie_columns,))
+
+        def resolve(self, dev):
+            return self.replace(num_aie_columns=8)
+
+        def expert_bytes(self) -> int:
+            return (self.N // MT) * (self.K // KT) * BLOCK
+
+        def build(self) -> Built:
+            n, kbs = self.num_aie_columns, self.K // KT
+            outs = self.N // MT // n // CORES
+            k = kernels()
+            w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+            w_l1 = [f.cons().split([BLOCK * c for c in range(CORES)], obj_types=[blk_t] * CORES, depths=[2] * CORES, tile=AnyMemTile) for f in w_l3]
+            x_l3 = [ObjectFifo(obj_t, depth=2) for _ in range(n)]
+            x_l1 = [f.cons().forward(obj_type=obj_t, depth=2, tile=AnyMemTile) for f in x_l3]
+            y_l3 = [ObjectFifo(self.y.obj_type, depth=2) for _ in range(n)]
+            y_l1 = [f.prod().join([MT * c for c in range(CORES)], obj_types=[half_t] * CORES, depths=[2] * CORES, tile=AnyMemTile) for f in y_l3]
+
+            def core(w_f, x_f, y_f, acc, cnt, counts, init, block, out):
+                c = x_f.acquire(1)
+                counts(c, cnt, COUNT_WORDS)
+                x_f.release(1)
+                for e in range_(EXPERTS):
+                    e32 = i32(e)
+                    for _ in range_(outs):
+                        for kb in range(kbs):
+                            blk = w_f.acquire(1)
+                            if kb == 0:
+                                init(blk, acc, cnt, e32)
+                            for b in range_(CAP // SB):
+                                x = x_f.acquire(1)
+                                block(blk, x, acc, cnt, e32, i32(b))
+                                x_f.release(1)
+                            w_f.release(1)
+                        for r in range_(CAP):
+                            y = y_f.acquire(1)
+                            out(acc, cnt, e32, i32(r), y)
+                            y_f.release(1)
+
+            workers = []
+            for i in range(n):
+                for c in range(CORES):
+                    workers.append(Worker(core, [w_l1[i][c].cons(), x_l1[i].cons(), y_l1[i][c].prod(), Buffer(acc_t),
+                                                 Buffer(cnt_t), k["counts"], k["init"], k["block"], k["out"]]))
+            self.W.bind([f.prod() for f in w_l3])
+            self.counts.bind([f.prod() for f in x_l3])
+            self.a.bind([f.prod() for f in x_l3])
+            self.y.bind([f.cons() for f in y_l3])
+            return Built(workers, [])
+
+        def sequence(self, rt):
+            n, K, I, N = self.num_aie_columns, self.K, self.I, self.N
+            kbs, outs = K // KT, N // MT // n // CORES
+            eb = self.expert_bytes()
+            run, R = eb // n, N // n
+            total = self.rows * BLOCK
+            for e in range(EXPERTS):
+                tg = TaskGroup()
+                for l in range(n):
+                    if e == 0:
+                        self.counts.fill(TAP((self.CN,), 0, [self.CN], [1]), lane=l, group=tg)
+                    self.W.fill(TAP((total,), e * eb + l * run, [run], [1]), lane=l, group=tg)
+                    self.a.fill(TAP((self.AN,), e * CAP * I, [kbs, CAP, KT], [KT, I, 1]).repeat(outs), lane=l, group=tg)
+                    self.y.drain(TAP((self.YN,), e * CAP * N + l * R, [outs, CAP, CB], [CB, N, 1]), lane=l,
+                                 group=tg, wait=True)
+                tg.finish()
+
+        def ops(self) -> int:
+            return 2 * EXPERTS * CAP * self.N * self.K
+
+        def reference(self, W, counts, a):
+            cnt = np.asarray(counts).view(np.int32)[:EXPERTS]
+            out = group_reference_down(np.asarray(W, np.uint8).reshape(-1), cnt, a, self.K)
+            return out.astype(bfloat16).reshape(-1)
+
+        def tolerance(self) -> Tolerance:
+            return Tolerance.relative(0.02, 1e-2, note="mx4 partial sums in two bf16 parts")
+
+    return MX4GroupGateUp, MX4GroupDown
+
+
+def _check_group(a) -> int:
+    import iron
+    from iron_graph import bind_device, export_graph, write_check
+
+    bind_device("npu2", 8)
+    GU, D = group_operators()
+    rng = np.random.default_rng(a.seed)
+    gu = np.concatenate([gate_up_table(*random_expert(rng, 2 * INTER, HIDDEN)) for _ in range(EXPERTS)])
+    dn = np.concatenate([down_table(*random_expert(rng, HIDDEN, INTER)) for _ in range(EXPERTS)])
+    counts = rng.integers(0, CAP + 1, EXPERTS)
+    counts[:3] = (0, CAP, 1)
+
+    class G(iron.Graph):
+        def __init__(self):
+            self.gu = iron.param(gu.reshape(-1, BLOCK))
+            self.dn = iron.param(dn.reshape(-1, BLOCK))
+
+        def body(self, counts, xs):
+            act = GU.step(self.gu, counts, xs, rows=self.gu.shape[0])
+            return D.step(self.dn, counts, act, rows=self.dn.shape[0])
+
+        def reference(self, cw, xs):
+            c = np.asarray(cw).view(np.int32)[:EXPERTS]
+            act = group_reference_gate_up(gu, c, xs).astype(bfloat16)
+            return group_reference_down(dn, c, act).astype(bfloat16).reshape(-1)
+
+    g = G()
+    cg = g.compile(counts=(SB * KT,), xs=(EXPERTS * HIDDEN * CAP,))
+    m = export_graph(cg, a.out, "mx4group", dict(cap=CAP))
+    rows = (rng.standard_normal((EXPERTS, CAP, HIDDEN)) * 0.5).astype(bfloat16)
+    write_check(g, m, a.out, dict(counts=counts_object(counts), xs=stream_x(rows, counts).reshape(-1)))
+    print(f"{a.out}: MX4GroupGateUp + MX4GroupDown, counts {counts.tolist()}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -492,8 +839,11 @@ def main(argv=None) -> int:
     c.add_argument("out", type=Path)
     c.add_argument("--experts", type=int, default=6)
     c.add_argument("--seed", type=int, default=3)
+    gc = sub.add_parser("check-group", help="export a graph of MX4GroupGateUp and MX4GroupDown and its check")
+    gc.add_argument("out", type=Path)
+    gc.add_argument("--seed", type=int, default=4)
     a = ap.parse_args(argv)
-    return _check(a)
+    return _check_group(a) if a.cmd == "check-group" else _check(a)
 
 
 if __name__ == "__main__":

@@ -979,7 +979,7 @@ def main(argv=None) -> int:
     if a.command_per_step:  # last: it overrides the cuts the installs above make
         install_command_per_step(a.out)
     model = Model.from_checkpoint(a.checkpoint, random_weights=a.random_weights, max_seq_len=a.max_seq_len)
-    pipelines = a.mha_pipelines if a.mha_pipelines is not None else (1 if a.model in ("qwen35moe", "gptoss") else 8)
+    pipelines = a.mha_pipelines if a.mha_pipelines is not None else (1 if a.model == "qwen35moe" else 8)
     if pipelines > 1:
         prompt_attention_profile(model, pipelines)
     if a.q4_codes:

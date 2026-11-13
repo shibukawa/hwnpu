@@ -13,7 +13,8 @@ against it in tools/ref/ref_gptoss.py):
   each expert's gate and up (interleaved rows in the checkpoint), gate clamped at 7, up to
   [-7, 7], ``(up + 1) * gate * sigmoid(1.702 gate)``, down with its bias. The experts stay MXFP4
   exactly (iron_gptoss_moe.py's mx4); routed on the device in the decode step (iron_moe's
-  MoERoute, as Qwen3.6): a layer is two commands.
+  MoERoute, as Qwen3.6: a layer is two commands), on the host in a prompt chunk (MoEHost, and
+  iron_gptoss_moe's group operators streaming every expert's weights once a pass).
 
 The residual is carried 3072 wide (2880 and 192 zeros): 48 column blocks of 64 divide over the 8
 columns and the quantized GEMVs take in-features in multiples of 512. Each RMSNorm's mean is over
@@ -199,12 +200,14 @@ class SinkAttention(Attention):
         self.sinks = None
 
     def project(self, x, **gemv) -> list:
-        y = self.qkv(x)
         n = 1 if len(x.shape) == 1 else x.shape[0]
-        y = y.reshape(n, sum(self.widths))
+        if n > 1:  # a prompt chunk: a GEMM a run of the weight's rows (iron_q4's Linear.split)
+            return self.qkv.split(x, *self.widths)
+        # the decode step: one GEMV and one bias add, the output cut
+        y = self.qkv(x).reshape(1, sum(self.widths))
         out, end = [], 0
         for w in self.widths:
-            out.append(Copy.step(y[:, end : end + w]) if n > 1 else y[:, end : end + w])
+            out.append(y[:, end : end + w])
             end += w
         return out
 
@@ -279,7 +282,7 @@ class GptOssMoe(iron.Graph):
 
     def body(self, hn, h, call):
         if call.prompt:
-            raise NotImplementedError("gpt-oss's prompt chunk is not built: the decode step runs a prompt")
+            return self.prompt_body(hn, h, call)
         Route = iron_moe.route_operator()
         logits = F.linear(hn, self.router_w, self.router_b, precision=self.precision)
         n = self.router_w.shape[0]
@@ -295,6 +298,93 @@ class GptOssMoe(iron.Graph):
                      **{f"e{i}": e[i] * self.dn_bytes for i in range(self.top)})
         iron.on_host(lambda: None)
         return out.reshape(1, HP)
+
+    def prompt_body(self, hn, h, call):
+        """A prompt chunk's experts, routed on the host: the router's logits on the device; the
+        host's route (moe_route_mx4: the counts and x's stream); MX4GroupGateUp and MX4GroupDown
+        over every expert's rows; the host's combine into ``call.moe.out`` (the residual plus each
+        choice's weight times its expert's output row).
+
+        IRON's arena does not count a host step's reads as uses: what the host reads is the step's
+        last output or a state (h is copied into one)."""
+        moe, (C, _) = call.moe, hn.shape
+        Copy.step(h, moe.h)
+        # hn into a state as well: its last device use is the router's, so the arena may put the
+        # logits (or what follows) over it before the host reads it (24 layers: cosine 0.98)
+        Copy.step(hn, moe.hn)
+        logits = F.linear(moe.hn, self.router_w, self.router_b, precision=self.precision)
+        iron.on_host(MoEHost("moe_route_mx4", self.index, self.n, self.top, C, moe), logits, moe.hn,
+                     writes=(moe.counts, moe.xs))
+        GU, D = group_operators()
+        a = GU.step(self.gu, moe.counts, moe.xs, rows=self.gu.shape[0])
+        y = D.step(self.dn, moe.counts, a, rows=self.dn.shape[0])
+        iron.on_host(MoEHost("moe_combine", self.index, self.n, self.top, C, moe), moe.h, y,
+                     writes=(moe.out,))
+        return moe.out[: call.rows]
+
+
+@functools.cache
+def group_operators():
+    return moe.group_operators()
+
+
+class MoEStates:
+    """A prompt chunk's states the host writes for every layer's experts (one set: the layers run
+    in turn): the counts and x's stream (route), the layer's output (combine), the residual."""
+
+    def __init__(self, C: int):
+        self.counts = iron.state((moe.SB * moe.KT,), bfloat16, name="moe_counts")
+        self.xs = iron.state((moe.EXPERTS * moe.HIDDEN * moe.CAP,), bfloat16, name="moe_xs")
+        self.out = iron.state((C, HP), bfloat16, name="moe_out")
+        self.h = iron.state((C, HP), bfloat16, name="moe_h")
+        self.hn = iron.state((C, HP), bfloat16, name="moe_hn")  # the experts' input, for route
+        self.plans = {}
+
+
+class MoEHost:
+    """A host step of a prompt chunk's experts: ``hwnpu`` names it for hwnpu (which runs its own
+    in Go: internal/llm/iron's moeHostRouteMX4 and moeHostCombine); called, the reference's."""
+
+    def __init__(self, kind: str, layer: int, experts: int, top: int, C: int, states: MoEStates):
+        self.kind, self.layer, self.experts, self.top, self.C, self.states = kind, layer, experts, top, C, states
+        self.hwnpu = dict(kind=kind, layer=layer, experts=experts, top=top, cap=moe.CAP, tokens=C,
+                          in_features=moe.HIDDEN, kt=moe.KT)
+
+    def __call__(self, *args):
+        getattr(self, self.kind)(*args)
+
+    def moe_route_mx4(self, logits, hn, counts, xs):
+        lg = np.asarray(logits, np.float32)
+        x = np.asarray(hn)[:, : moe.HIDDEN]
+        n = lg.shape[0]
+        ids = np.argsort(-lg[:, : self.experts], axis=1, kind="stable")[:, : self.top]
+        v = np.take_along_axis(lg, ids, 1)
+        w = np.exp(v - v[:, :1])
+        w = (w / w.sum(1, keepdims=True)).astype(bfloat16).astype(np.float32)
+        if np.bincount(ids.reshape(-1), minlength=self.experts).max() > moe.CAP:
+            raise NotImplementedError("the host reference runs one pass (hwnpu splits the chunk)")
+        rows = np.zeros((self.experts, moe.CAP, moe.HIDDEN), bfloat16)
+        cnt = np.zeros(self.experts, np.int32)
+        slot = np.zeros((n, self.top), np.int64)
+        for t in range(n):
+            for k in range(self.top):
+                e = ids[t, k]
+                rows[e, cnt[e]] = x[t]
+                slot[t, k] = e * moe.CAP + cnt[e]
+                cnt[e] += 1
+        counts[:] = moe.counts_object(cnt)
+        xs[:] = moe.stream_x(rows, cnt).reshape(-1)
+        self.states.plans[self.layer] = (slot, w)
+
+    def moe_combine(self, h, y, out):
+        slot, w = self.states.plans.pop(self.layer)
+        n = len(slot)
+        yy = np.asarray(y, np.float32).reshape(-1, HP)
+        acc = np.asarray(h, np.float32)[:n].copy()
+        for k in range(self.top):
+            acc += w[:, k : k + 1] * yy[slot[:, k]]
+        out[:n] = acc.astype(bfloat16)
+        out[n:] = 0
 
 
 @functools.cache
@@ -320,8 +410,8 @@ class GptOssLayer(DecoderLayer):
 
 
 class GptOss(CausalLM):
-    """gpt-oss on ``config``'s shape and a checkpoint's ``weights`` (module docstring): a decode
-    step only, its body taking each layer's chosen experts' offsets (``e<layer>_<i>``), which
+    """gpt-oss on ``config``'s shape and a checkpoint's ``weights`` (module docstring): the decode
+    step and a prompt chunk (its experts routed on the host), the body taking each layer's chosen experts' offsets (``e<layer>_<i>``), which
     command B's scratchpad gets from the layer's MoERoute (``hwnpu_fed``)."""
 
     config = GptOssConfig
@@ -384,15 +474,15 @@ class GptOss(CausalLM):
         layers = cls.default_config(weights_file(path)).num_hidden_layers
         return moe_class(cls, layers).from_checkpoint(path, **kwargs)
 
-    def shapes(self):
-        return [{}]  # the decode step alone
-
     def draw(self, logits, call):
         # no draw on the device (its commands end at host steps); hwnpu draws from the logits
         return logits, iron.carry(token=call.token + 0, position=call.position + 1)
 
     @functools.wraps(CausalLM.body)
     def body(self, ids=None, **values):
+        if ids is not None:
+            # a version's input must be read, and no table is left to gather from (iron_hostple)
+            Copy.step(ids, dtype=np.int32)
         return super().body(ids, **values)
 
     def record(self, **shapes):
@@ -413,10 +503,17 @@ class GptOss(CausalLM):
         def call(**kw):
             c = made(**kw)
             c.experts, c.feedback = experts, self._fed
+            if c.prompt:
+                if getattr(self, "_moe", None) is None:
+                    self._moe = MoEStates(self.config.prefill_chunk)
+                c.moe = self._moe
             return c
 
         causal.Call = call
         try:
+            if standard.get("ids") is not None:
+                # a version's input must be read, and no table is left to gather from (iron_hostple)
+                Copy.step(standard["ids"], dtype=np.int32)
             return CausalLM.body(self, **standard)
         finally:
             causal.Call = made
