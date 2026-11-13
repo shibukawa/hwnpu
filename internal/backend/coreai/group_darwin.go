@@ -13,6 +13,11 @@ package coreai
 // and the function it runs as (KEY.aifn), so that a later load hashes only its own package. A
 // package without such siblings is lowered alone as before and keeps its entry. An entry of a
 // package lowered alone before is replaced by the group's (with Core AI's cache entry of it).
+//
+// Core AI compiles every function of an asset together, and one function the Neural Engine's
+// compiler fails on puts the others off it too (Qwen-Image's VAE stage at 1024 x 1024 on M1 took
+// the one at 512 x 512 to the GPU, 30 -> 109 ms). A group whose function does not run entirely on
+// the Neural Engine is taken apart (ungroup): its members are lowered alone and kept alone.
 
 import (
 	"context"
@@ -48,6 +53,9 @@ type record struct {
 	Asset    string `json:"asset"`
 	Function string `json:"function"`
 	Rule     int    `json:"rule"`
+	// Alone keeps the package out of groups: a group of it did not run entirely on the Neural
+	// Engine (ungroup).
+	Alone bool `json:"alone,omitempty"`
 }
 
 // groupRule is the version of how siblings are found (siblings): a record of another rule is
@@ -137,16 +145,30 @@ func digestOf(pkg string) ([]byte, error) {
 
 // readRecord returns the record of key whose asset is in the cache, marking both used.
 func readRecord(dir, key string) (asset string, r record, ok bool) {
-	p, ok := cache.Lookup(dir, key, recordSuffix)
-	if !ok {
-		return "", r, false
-	}
-	b, err := os.ReadFile(p)
-	if err != nil || json.Unmarshal(b, &r) != nil || r.Rule != groupRule || r.Function == "" || !strings.HasSuffix(r.Asset, ".aimodel") {
+	if r, ok = rawRecord(dir, key); !ok {
 		return "", r, false
 	}
 	asset, ok = cache.Lookup(dir, strings.TrimSuffix(r.Asset, ".aimodel"), ".aimodel")
 	return asset, r, ok && usable(asset)
+}
+
+// rawRecord returns the record of key of this rule, whether or not its asset is in the cache.
+func rawRecord(dir, key string) (r record, ok bool) {
+	p, ok := cache.Lookup(dir, key, recordSuffix)
+	if !ok {
+		return r, false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || json.Unmarshal(b, &r) != nil || r.Rule != groupRule || r.Function == "" || !strings.HasSuffix(r.Asset, ".aimodel") {
+		return r, false
+	}
+	return r, true
+}
+
+// alone reports whether the package of the digest sum is kept out of groups (record.Alone).
+func alone(dir string, sum []byte) bool {
+	r, ok := rawRecord(dir, singleKey(sum))
+	return ok && r.Alone
 }
 
 // usable reports whether a stored asset can be opened: not one whose bytecode was cut
@@ -292,9 +314,9 @@ func candidates(pkg string) []string {
 }
 
 // siblings are pkg and the candidates with its largest weights (sameWeights), by their digests,
-// without two of the same contents. A sibling in a group already brings it along: a package that
-// joins makes a larger group, which replaces that one (resolve).
-func siblings(pkg string, sum []byte) ([]member, error) {
+// without two of the same contents or one kept alone (record.Alone). A sibling in a group already
+// brings it along: a package that joins makes a larger group, which replaces that one (resolve).
+func siblings(dir, pkg string, sum []byte) ([]member, error) {
 	own := []member{{pkg, sum}}
 	w := weightFile(pkg)
 	fi, err := os.Stat(w)
@@ -317,7 +339,7 @@ func siblings(pkg string, sum []byte) ([]member, error) {
 		if err != nil {
 			return nil, err
 		}
-		if seen[hex.EncodeToString(osum)] {
+		if seen[hex.EncodeToString(osum)] || alone(dir, osum) {
 			continue
 		}
 		seen[hex.EncodeToString(osum)] = true
@@ -349,9 +371,12 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 	if a, r, ok := readRecord(dir, key); ok {
 		return a, r.Function, true, nil
 	}
-	members, err := siblings(pkg, sum)
-	if err != nil {
-		return "", "", false, fmt.Errorf("coreai: %w", err)
+	kept := alone(dir, sum)
+	members := []member{{pkg, sum}}
+	if !kept {
+		if members, err = siblings(dir, pkg, sum); err != nil {
+			return "", "", false, fmt.Errorf("coreai: %w", err)
+		}
 	}
 	if len(members) == 1 {
 		a, ok := cache.Lookup(dir, key, ".aimodel")
@@ -361,7 +386,7 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 			}
 		}
 		cache.SetSource(dir, key, pkg)
-		writeRecord(dir, key, record{Asset: key + ".aimodel", Function: "main", Rule: groupRule})
+		writeRecord(dir, key, record{Asset: key + ".aimodel", Function: "main", Rule: groupRule, Alone: kept})
 		return a, "main", ok, nil
 	}
 	sort.Slice(members, func(i, j int) bool { return hex.EncodeToString(members[i].sum) < hex.EncodeToString(members[j].sum) })
@@ -407,6 +432,46 @@ func resolve(dir, pkg string) (asset, fn string, cached bool, err error) {
 		}
 	}
 	return a, functionName(sum), ok, nil
+}
+
+// ungroup takes apart the group the package pkg runs in (its program not entirely on the Neural
+// Engine): every member's record says it is kept alone, and the group's asset goes (with Core AI's
+// entry of it), so that each member is lowered alone when it is loaded next. It reports whether
+// pkg was in a group.
+func ungroup(dir, pkg string) (bool, error) {
+	if abs, err := filepath.Abs(pkg); err == nil {
+		pkg = abs
+	}
+	sum, err := digestOf(pkg)
+	if err != nil {
+		return false, fmt.Errorf("coreai: %w", err)
+	}
+	unlock, err := cache.Lock(context.Background(), "coreai-group:"+filepath.Dir(filepath.Dir(pkg)), "the Core AI programs of "+filepath.Dir(pkg), nil)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	r, ok := rawRecord(dir, singleKey(sum))
+	if !ok || r.Function == "main" {
+		return false, nil
+	}
+	// the members: every record of the group's asset
+	recs, _ := filepath.Glob(filepath.Join(dir, "*"+recordSuffix))
+	for _, p := range recs {
+		k := strings.TrimSuffix(filepath.Base(p), recordSuffix)
+		if m, ok := rawRecord(dir, k); ok && m.Asset == r.Asset {
+			if err := writeRecord(dir, k, record{Asset: k + ".aimodel", Function: "main", Rule: groupRule, Alone: true}); err != nil {
+				return false, err
+			}
+		}
+	}
+	gkey := strings.TrimSuffix(r.Asset, ".aimodel")
+	if a := cache.Path(dir, gkey, ".aimodel"); exists(a) {
+		forget(a)
+		os.RemoveAll(a)
+	}
+	os.Remove(cache.Path(dir, gkey, ".src"))
+	return true, nil
 }
 
 // functionName is the function of a package in a group: by its digest, so that it does not

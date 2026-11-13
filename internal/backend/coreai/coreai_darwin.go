@@ -336,8 +336,21 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		return nil, err
 	}
 	g.placement = placement(dir, fn)
+	if fn != "main" && stored != "" && offNeuralEngine(g.placement) {
+		// a function of a group off the Neural Engine, maybe for another member's (ungroup):
+		// lowered alone, and loaded as the first time
+		if ok, err := ungroup(d.opts.CacheDir, path); err != nil || !ok {
+			return g, nil
+		}
+		g.Close()
+		return d.Compile(ctx, src)
+	}
 	return g, nil
 }
+
+// offNeuralEngine reports whether a placement checked says something of the program runs
+// elsewhere than on the Neural Engine (not one that could not be checked).
+func offNeuralEngine(rep types.PlacementReport) bool { return rep.Verified && len(rep.Ops) > 0 }
 
 // splitFunction splits PROGRAM.aimodel#NAME, the function NAME of a program with several
 // (ailower.LowerFunctions), into the program's path and NAME; main for any other path.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"image"
@@ -18,7 +19,8 @@ import (
 )
 
 // qwenImage draws the pictures with an export of tools/amd/iron_qwenimage.py on AMD's NPU, or of
-// qwenimage.Convert (Core ML) on Apple's Neural Engine or, with --cpu, the CPU interpreter
+// qwenimage.Convert (Core ML) on Apple's Neural Engine (on Core ML, or Core AI with --backend
+// coreai) or, with --cpu, the CPU interpreter
 // (Qwen-Image-2.1-Turbo: the checkpoint's eight steps, no classifier-free guidance).
 func (c *GenerateCmd) qwenImage(ctx context.Context, model string, outs []string) error {
 	lw := console.Log(os.Stderr)
@@ -30,8 +32,10 @@ func (c *GenerateCmd) qwenImage(ctx context.Context, model string, outs []string
 	switch {
 	case c.CPU:
 	case programs:
-		// strict, so that a program off the NPU, or one whose placement is not verified, says why
-		d, _, err := llm.OpenDevice(ctx, llm.BackendCoreML, cacheDirOf(c.Cache), hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		// strict, so that a program off the NPU, or one whose placement is not verified, says why;
+		// coreai runs the Core ML export on Core AI
+		d, _, err := llm.OpenDevice(ctx, cmp.Or(llm.DeviceBackend(c.Backend), llm.BackendCoreML), cacheDirOf(c.Cache),
+			hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		if err != nil {
 			return err
 		}

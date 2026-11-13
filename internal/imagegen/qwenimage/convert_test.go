@@ -42,7 +42,7 @@ func TestConvertParts(t *testing.T) {
 // pass lut8 and its image blocks lut4 (k-means with the extremes kept).
 func TestExportName(t *testing.T) {
 	got := ExportName("Qwen-Image-2.1-Turbo", ConvertOptions{Width: 512})
-	if want := "qwen-image-2.1-turbo-512x512-lut8-lut8-kmm-lut4-kmm-g4-v1.coreml"; got != want {
+	if want := "qwen-image-2.1-turbo-512x512-lut8-lut8-kmm-lut4-kmm-g4-v2.coreml"; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
 	if got := ExportName("Qwen-Image-2.1-Turbo", ConvertOptions{Width: 1024, DitFormat: "lut6"}); !strings.Contains(got, "1024x1024-lut8-lut8-kmm-lut6-kmm") {

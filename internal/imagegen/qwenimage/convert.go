@@ -16,8 +16,8 @@ import (
 )
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
-// again.
-const ExportVersion = 1
+// again. 2: the VAE's stages of 1152 channels at 64 x 64 and more run on tiles (VaeTiles).
+const ExportVersion = 2
 
 // SysPrompt and Template are QwenImage21Pipeline's prompt template (prompt_template_t2i): the system
 // message's tokens are dropped from the DiT's text rows.
@@ -125,7 +125,21 @@ type ProgramManifest struct {
 	Blocks   []string `json:"blocks"`     // the DiT's image blocks; the first embeds, the last gives the velocity
 	Time     string   `json:"time"`
 	Vae      []string `json:"vae"`
+	// VaeTiles are the VAE's stages' tilings, by Vae's index: a stage of Rows.N > 1 or Cols.N > 1
+	// runs its program on each window of its input (mil.VaeStage).
+	VaeTiles []VaeTiling `json:"vae_tiles,omitempty"`
 }
+
+// VaeTiling is how a VAE stage runs: its input (C, H, W), its output OutC channels Scale times
+// larger, and the tiles of its rows and columns.
+type VaeTiling struct {
+	C, H, W     int
+	OutC, Scale int
+	Rows, Cols  mil.Tiling
+}
+
+// tiled reports whether the stage runs on tiles.
+func (t VaeTiling) tiled() bool { return t.Rows.N > 1 || t.Cols.N > 1 }
 
 // IsProgramExport reports whether dir holds an export of Convert.
 func IsProgramExport(dir string) bool {
@@ -259,6 +273,8 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 			return err
 		}
 		m.Vae = append(m.Vae, name)
+		st := stages[i]
+		m.VaeTiles = append(m.VaeTiles, VaeTiling{C: st.C, H: st.H, W: st.W, OutC: st.OutC(), Scale: st.Scale(), Rows: st.Rows, Cols: st.Cols})
 	}
 	if len(o.Only) == 0 || o.Only["text"] {
 		if err := writeTextFiles(text, out, w, tc); err != nil {

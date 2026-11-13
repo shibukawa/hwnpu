@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/backend/coreai"
@@ -84,6 +85,50 @@ var probes = map[string]func(g *milpart.Graph){
 		x := g.Input("x", 1, 256, 8, 64)
 		g.Output(g.Transpose(x, 0, 2, 1, 3))
 	},
+	// Qwen-Image's VAE on M1 (design.md 16.178): the Neural Engine's compiler fails ("Allocation
+	// failure for L2-dep pair") on the norm over 1152 channels of 64 x 64, not on 768 x 64 x 64,
+	// 1152 x 48 x 48 or 576 x 96 x 96, nor on the convolution alone
+	"conv1152_64_neg":      conv3(1152, 64, "neg"),
+	"norm1152_64":          conv3(1152, 64, "norm noconv"),
+	"norm_conv1152_64_neg": conv3(1152, 64, "norm neg"),
+	"norm_conv1152_48_neg": conv3(1152, 48, "norm neg"),
+	"norm_conv768_64_neg":  conv3(768, 64, "norm neg"),
+	"norm_conv576_96_neg":  conv3(576, 96, "norm neg"),
+}
+
+// conv3 is a 3 x 3 convolution of c channels over hw x hw, after SiLU (tail "pre ...") or after
+// MaxScaled over the channels and SiLU ("norm ..."; "norm noconv" without the convolution), then
+// the rest of tail: "" nothing, neg (times -1), max (MaxScaled over the channels) or silu.
+func conv3(c, hw int, tail string) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		x := g.Input("x", 1, c, hw, hw)
+		switch {
+		case strings.HasPrefix(tail, "pre"):
+			x = g.SiLU(x)
+		case strings.HasPrefix(tail, "norm"):
+			x = g.SiLU(g.MaxScaled(x, 1))
+		}
+		tail = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(tail, "pre"), "norm"))
+		if tail == "noconv" {
+			g.Output(x)
+			return
+		}
+		w := make([]float32, c*c*9)
+		for i := range w {
+			w[i] = float32(rand.NormFloat64() / 100)
+		}
+		bias := make([]float32, c)
+		y := g.Conv2D(x, "w", w, bias, c, 3, 1)
+		switch tail {
+		case "neg":
+			y = g.Scale(y, -1)
+		case "max":
+			y = g.MaxScaled(y, 1)
+		case "silu":
+			y = g.SiLU(y)
+		}
+		g.Output(y)
+	}
 }
 
 // int8Linear is a linear of an int8 weight (out x in) with a scale per block of colBlock columns

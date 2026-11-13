@@ -222,3 +222,59 @@ func TestResolveCutGroup(t *testing.T) {
 		t.Errorf("cut without an entry: %s (cached %v, cut %v, %v), lowered %d, want it lowered again", g2, cached, isCut(g2), err, lowered)
 	}
 }
+
+// A group off the Neural Engine is taken apart (ungroup): its members are lowered alone and stay
+// alone, also when the other is loaded first afterwards or an export made later has their weights
+// (Qwen-Image's VAE stage at 1024 x 1024 put the one at 512 x 512 off the Neural Engine).
+func TestUngroup(t *testing.T) {
+	t.Setenv("HWNPU_CACHE", t.TempDir())
+	model, cdir := t.TempDir(), t.TempDir()
+	saveOne, saveMany, saveForget := lowerOne, lowerMany, forget
+	t.Cleanup(func() { lowerOne, lowerMany, forget = saveOne, saveMany, saveForget })
+	var ones []string
+	var groups [][]string
+	var forgot []string
+	lowerOne = func(pkg, dst string) error { ones = append(ones, pkg); return os.MkdirAll(dst, 0o755) }
+	lowerMany = func(pkgs, names []string, dst string) error {
+		groups = append(groups, pkgs)
+		return os.MkdirAll(dst, 0o755)
+	}
+	forget = func(p string) { forgot = append(forgot, p) }
+	w := [][]byte{fill(groupMin, 1, 2), fill(groupMin/2, 3), fill(groupMin/4, 4)}
+	export := func(size string) string {
+		d := filepath.Join(model, "qwen-image-"+size+".coreml")
+		os.MkdirAll(d, 0o755)
+		return fakePackage(t, d, "vae_s1", "vae "+size, w...)
+	}
+	small, large := export("512x512"), export("1024x1024")
+	g, fn, _, err := resolve(cdir, small)
+	if err != nil || fn == "main" || len(groups) != 1 {
+		t.Fatalf("before: %s#%s (%v), lowered together %v", g, fn, err, groups)
+	}
+	if ok, err := ungroup(cdir, small); err != nil || !ok {
+		t.Fatalf("ungroup: %v, %v", ok, err)
+	}
+	if exists(g) || len(forgot) != 1 || forgot[0] != g {
+		t.Errorf("the group's asset: still there %v, forgotten %v", exists(g), forgot)
+	}
+	// the other member first: alone too
+	for _, p := range []string{large, small} {
+		a, fn, cached, err := resolve(cdir, p)
+		if err != nil || fn != "main" || cached || a == g {
+			t.Errorf("%s after ungroup: %s#%s (cached %v, %v), want it lowered alone", p, a, fn, cached, err)
+		}
+		if a2, fn2, cached, err := resolve(cdir, p); err != nil || a2 != a || fn2 != "main" || !cached {
+			t.Errorf("%s again: %s#%s (cached %v, %v), want %s", p, a2, fn2, cached, err, a)
+		}
+	}
+	if ok, err := ungroup(cdir, small); err != nil || ok {
+		t.Errorf("ungroup alone: %v, %v, want nothing to do", ok, err)
+	}
+	// a later export of the same weights: none of the two kept alone joins it
+	if a, fn, _, err := resolve(cdir, export("768x768")); err != nil || fn != "main" || len(groups) != 1 {
+		t.Errorf("a later size: %s#%s (%v), lowered together %v, want it alone", a, fn, err, groups)
+	}
+	if len(ones) != 3 {
+		t.Errorf("lowered alone %d times, want 3", len(ones))
+	}
+}
