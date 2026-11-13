@@ -504,9 +504,43 @@ func TestOneProgramsBeside(t *testing.T) {
 		{gen + read - 1, 0, true},
 	} {
 		neuralEngineHold = func() int64 { return c.hold }
-		if one, why := onePrograms(model, "lut4", "coreml", PrefillAuto, 8, 1, false, c.others); one != c.one {
+		if one, why := onePrograms(model, "lut4", "coreml", PrefillAuto, 8, 1, false, false, c.others); one != c.one {
 			t.Errorf("holding %d with %d beside: one program %v (%s), want %v", c.hold, c.others, one, why, c.one)
 		}
+	}
+}
+
+// On Core AI the program that reads prompts shares the weights of the one that generates on the
+// Neural Engine (sharesWeights): an M1 that holds too little for two programs on Core ML keeps both,
+// and what they hold is counted once.
+func TestOneProgramsShared(t *testing.T) {
+	cfg, err := lfm3.ParseConfig([]byte(`{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var model llm.Model = cfg
+	gen, read := programBytes(model, "lut4", false)
+	defer func(n int64) { compileCacheBytes = n }(compileCacheBytes)
+	defer func(f func() int64) { neuralEngineHold = f }(neuralEngineHold)
+	compileCacheBytes = gen // over the compile cache too
+	neuralEngineHold = func() int64 { return gen + read - 1 }
+	if one, _ := onePrograms(model, "lut4", "coreml", PrefillAuto, 8, 2, false, false, 0); !one {
+		t.Error("Core ML: two tiers of two programs over an M1's hold and the compile cache, want one program")
+	}
+	if one, why := onePrograms(model, "lut4", "coreml", PrefillAuto, 8, 2, false, true, 0); one {
+		t.Errorf("Core AI: one program (%s), want both: they share their weights", why)
+	}
+	if one, _ := onePrograms(model, "lut4", "coreml", PrefillOff, 8, 1, false, true, 0); !one {
+		t.Error("Core AI with -prefill off: want one program")
+	}
+	if h := heldBytes(gen, read, 2, false, true); h != gen {
+		t.Errorf("Core AI holds %d, want the weights once (%d)", h, gen)
+	}
+	if h := heldBytes(gen, read, 2, false, false); h != 2*(gen+read) {
+		t.Errorf("Core ML holds %d, want %d", h, 2*(gen+read))
+	}
+	if !sharesWeights("coreai") || sharesWeights("coreml") || sharesWeights("") {
+		t.Error("only Core AI shares the weights")
 	}
 }
 

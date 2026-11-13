@@ -421,7 +421,8 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if hold > 0 && backend != llm.BackendIntel {
 		others = besideBytes(c.ModelConfig, mtp, s.Format, backend)
 	}
-	one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(caches)+1, pre.kvOnly, others)
+	shared := sharesWeights(c.Backend)
+	one, why := onePrograms(model, format, backend, s.Prefill, s.Draft, len(caches)+1, pre.kvOnly, shared, others)
 	if one {
 		progs = progs[:1]
 		if s.Log != nil {
@@ -429,11 +430,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 	}
 	if gen, read := programBytes(model, format, pre.kvOnly); hold > 0 && backend != llm.BackendIntel && s.Log != nil {
-		held := int64(len(caches)+1)*gen + others
-		if !one {
-			held += int64(len(caches)+1) * read
-		}
-		if held > hold {
+		if held := heldBytes(gen, read, len(caches)+1, one, shared) + others; held > hold {
 			fmt.Fprintf(s.Log, "%s's programs hold %.2f GiB on the Neural Engine, over the %.1f GiB an M1 holds before every call slows down about 12 times: expect it to be slow on this machine (a smaller -format holds less)\n", c.Name, float64(held)/(1<<30), float64(hold)/(1<<30))
 		}
 	}
@@ -529,22 +526,44 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	return c, nil
 }
 
+// sharesWeights reports whether the programs of a model run on the device backend (Config.Backend)
+// share their weights on the Neural Engine: on Core AI the programs of one model's weights are
+// functions of one program (internal/backend/coreai), which the Neural Engine holds once
+// (LFM3-1.7B's two: 1.34 GiB against 2.56 GiB lowered apart, docs/design.md 16.177).
+func sharesWeights(device string) bool { return device == "coreai" }
+
+// heldBytes is what a model's programs hold on the Neural Engine: tiers of the one that generates
+// (gen bytes) and, unless one, of the one that reads prompts (read); once gen when they share
+// their weights (the one that reads prompts has a part of the other's: sharesWeights).
+func heldBytes(gen, read int64, tiers int, one, shared bool) int64 {
+	if shared {
+		return gen
+	}
+	held := int64(tiers) * gen
+	if !one {
+		held += int64(tiers) * read
+	}
+	return held
+}
+
 // onePrograms decides Setup.Prefill: whether the program that generates (of draft tokens per
 // call) reads the prompts too, instead of a pair of programs for each of tiers cache lengths, and
 // why. The one that reads prompts has the model's weights in format, or with kvOnly those of the
 // layers that write the caches (llm.Options.KVOnly). Two are too many when they would not stay
 // in the Neural Engine's compile cache (compileCacheBytes), or, with the others loaded beside
 // them (bytes of weights), would hold more than the machine's Neural Engine holds before it slows
-// down (neuralEngineHold, an M1's).
-func onePrograms(model llm.Model, format, backend, prefill string, draft, tiers int, kvOnly bool, others int64) (bool, string) {
+// down (neuralEngineHold, an M1's). Programs that share their weights (shared, sharesWeights)
+// hold no more for the one that reads prompts, and Core AI keeps what it compiles in a cache of
+// its own on the disk: they are never too many.
+func onePrograms(model llm.Model, format, backend, prefill string, draft, tiers int, kvOnly, shared bool, others int64) (bool, string) {
 	switch {
 	case prefill == PrefillOff:
 		return true, "prefill off (--prefill, or the model's definition for this machine's memory)"
-	case prefill == PrefillOn || draft <= 1 || backend == llm.BackendIntel:
+	case prefill == PrefillOn || draft <= 1 || backend == llm.BackendIntel || shared:
 		return false, "" // reading prompts one token per call would be far slower; the cache is the Neural Engine's
 	}
 	gen, read := programBytes(model, format, kvOnly)
-	total := int64(tiers) * (gen + read)
+	total := heldBytes(gen, read, tiers, false, false)
 	if hold := neuralEngineHold(); hold > 0 && total+others > hold {
 		why := fmt.Sprintf("%d programs would hold %.2f GiB on the Neural Engine", 2*tiers, float64(total)/(1<<30))
 		if others > 0 {

@@ -97,6 +97,13 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
     }
 }
 
+/// Deletes Core AI's cache entries of the .aimodel at path (before hwnpu removes it: an asset
+/// replaced by one that holds several programs' weights once).
+@_cdecl("cai_forget")
+public func cai_forget(_ path: UnsafePointer<CChar>) {
+    try? AIModelCache.default.deleteEntries(for: URL(fileURLWithPath: String(cString: path)))
+}
+
 @_cdecl("cai_close")
 public func cai_close(_ h: UnsafeMutableRawPointer) {
     let p = h.assumingMemoryBound(to: Fn.self)
