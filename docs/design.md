@@ -4616,3 +4616,14 @@ Core AI で動かすと全部で約 10 GB で、重みを 5 回分持ってい�
 - `.aimodel` を消すオプションは、Core AI のキャッシュにあることを確かめてから消し、読み込みに失敗したら落とし直して読み直す
 
 残り: チャットのモデル全体 (7 つの部品 × 2) を関数 2 つの `.aimodel` で動かす。M2 と M3。OS の版を越えて同じ `.aimodel` が読めるか。`.persistent` を採るか。
+
+### 16.175 `probe resident` で、エラーにならない追い出しも見る (順に回す時間、Neural Engine のメモリ) — 2026-11-13
+
+- 動機: M2 (16 GB、macOS 27.2) で `probe resident` が、開いたままでも閉じても 0.23 GiB × 42 本 (9.52 GiB) まで失敗なしで `-resident-max-gb` に達した。M4 と Intel (Core Ultra 5 135U) も 16 GB までエラーなし。ただし Apple では、Core ML は載りきらないものをエラーなしで追い出し、次の呼び出しで載せ直す。M1 の境目 (順に回す部分が約 2.9 GiB を超えると 12 倍遅い、16.118) はエラーでなく遅さで出た。16.144 の作りでは、実行は読み込んだ直後の 1 回 (載っていて当然、M2 で 0.008 s 一定) と、最後の全部の 1 回の成否だけで、追い出しが見えない。`held` も重みの足し算で、実際に持っている量ではない。M2 は読み込みが 1 本 1.8〜5.3 秒で、中身の違う合成プログラムは毎回 Neural Engine 向けにコンパイルされていた
+- 変更 (`cmd/hwnpu-dev/probe/resident.go`):
+  - `-resident-cycle` (既定、開いたままのときだけ): 各読み込みの後に、持っている全部を順に 2 周実行し、2 周目の 1 回の平均と最長を記録する (`cycle_ms`、`cycle_max_ms`)。それまでの最速の平均 (`base_ms`) の 2 倍を超え、かつ 0.5 ms 以上遅ければ遅い (`slow`)。遅くなる前の最大の合計を `fast_bytes`、最初に遅かった合計を `slow_bytes` に。3 回続けて遅ければ順に回すのはやめ (毎回全部の載せ直しになるため)、読み込みは続ける
+  - Apple では、最初の読み込みの前からの Neural Engine のドライバの wired メモリの増えた量 (`mem.NPUWired`) を、各読み込みと順に回した後に記録する (`npu_bytes`)
+  - `-resident-size` はカンマ区切りで複数 (Intel の確認スクリプトに `resident-large`: Anima の DiT の群と text の大きさの 0.57,1.2、開いたまま、8 GiB まで)。Intel で 0.23 GiB を 16 GB まで積めたので、Anima の 4.6 GB での失敗は合計でなく、1 本の大きさか本物のグラフの形によるかを分ける
+  - 報告の表に「full speed in turn」「slower from」、各読み込みに「in turn, ms a call」「slowest ms」「Neural Engine」の列
+- テスト: `TestResidentCycle` (エラーを出さず、最後に回した 4 本だけを速く持つ偽の NPU で、4 本まで速く 5 本から遅い、7 本の後は順に回さない、Neural Engine の量)。既存の偽の NPU (呼び出しは一瞬) では遅くならないことも確かめる
+- 確かめていないこと: 実機。M1 で 2.9 GiB あたりの `slower from` が出れば測り方が正しい。M2 と M4 の境目、Neural Engine の量が重みの足し算とどこで離れるか

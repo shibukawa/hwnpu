@@ -40,6 +40,7 @@ type childSpec struct {
 	Tokens     int           `json:"tokens"` // 0 means 1
 	Units      string        `json:"units"`
 	Quick      bool          `json:"quick"`
+	Cycle      bool          `json:"cycle,omitempty"` // resident: run every held program in turn after each load
 	N          int           `json:"n"`
 	Layout     string        `json:"layout,omitempty"`      // split: files or functions; kv: the mode; attn: the form
 	Used       []int         `json:"used,omitempty"`        // attn, seam: used cache lengths of the passes
@@ -176,7 +177,7 @@ func runChild(arg string) error {
 	case "seam":
 		rs = p.seam(spec.Format, spec.Layers, spec.AttnLayers, max(spec.Tokens, 1), spec.Layout, spec.N, spec.Used)
 	case "resident":
-		rs = p.resident(spec.Format, spec.Layers, spec.Layout, spec.N, !spec.Quick)
+		rs = p.resident(spec.Format, spec.Layers, spec.Layout, spec.N, !spec.Quick, spec.Cycle)
 	case "cache":
 		rs = p.cacheLoads(spec.Format, spec.Layers, spec.Paths, spec.Layout, spec.N)
 	case "chain":
