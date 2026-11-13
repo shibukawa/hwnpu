@@ -694,6 +694,8 @@ def _check(a) -> int:
     wh = iron_q4.quantize(rng.standard_normal((HN, HP)).astype(np.float32) * 0.05).reshape(-1, HB)
     picked = [int(v) for v in rng.choice(E, TOP, replace=False)]
     eps, rows, pos = 1e-5, a.rows, a.position
+    # --first: the first command's phases, to time a part of a layer (the check then fails)
+    first = sum(dict(Q=PH_Q, A=PH_A, O=PH_O, R=PH_R, T=PH_T)[c] for c in a.first)
 
     class Gr(iron.Graph):
         def __init__(self):
@@ -720,9 +722,9 @@ def _check(a) -> int:
             es = [e0, e1, e2, e3]
             if kv0 is not None:  # the cache's rows before the call's (a copy: another operator, loaded as a whole)
                 self.KV[:] = kv0
-            _, _, _, ya, yo, _, yw, image, _, _ = self.step(PH_Q | PH_A | PH_O | PH_R | PH_T, h, nw, ang, sinks, rw,
-                                                               prog, es, position)
-            iron.on_host(lambda: None)
+            _, _, _, ya, yo, _, yw, image, _, _ = self.step(first, h, nw, ang, sinks, rw, prog, es, position)
+            if not a.one:
+                iron.on_host(lambda: None)
             out = self.step(PH_E | PH_H, yo, nw, ang, sinks, rw, prog, es, position)  # the last command: the head too
             return ya, yw, image, out[1], out[9]
 
@@ -782,6 +784,8 @@ def main(argv=None) -> int:
     c.add_argument("--sliding", action="store_true", help="a sliding layer's attention (the last 128 rows)")
     c.add_argument("--empty", action="store_true", help="the caches as they are (zeros): no copy into them, for timing")
     c.add_argument("--expanded", action="store_true", help="IRON's expanded loads (the array loaded each command)")
+    c.add_argument("--one", action="store_true", help="both steps one command (no host step between: timing)")
+    c.add_argument("--first", default="QAORT", help="the first command's phases (fewer: timing only)")
     a = ap.parse_args(argv)
     return _check(a)
 
