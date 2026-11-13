@@ -293,11 +293,16 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	for _, pkgs := range tiers {
 		total += len(pkgs)
 	}
+	t0, allOnNPU := time.Now(), true
 	for _, pkgs := range tiers {
 		var t tier
 		for i, pkg := range pkgs {
 			loaded++
-			bar := console.NewBar(c.Log, fmt.Sprintf("  [%d/%d] %s", loaded, total, filepath.Base(pkg)))
+			label := name
+			if console.Profile {
+				label += " (" + filepath.Base(pkg) + ")" // the file, which the profile keeps
+			}
+			bar := console.NewBar(c.Log, fmt.Sprintf("  [%d/%d] %s", loaded, total, label))
 			var ch *chain.Chain
 			if i == 0 {
 				ch, err = chain.Open(ctx, e.dev, pkg)
@@ -314,13 +319,19 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			t.progs = append(t.progs, ch.Program(context.Background()))
 			where := "all on the NPU"
 			if !ch.OnNPU() {
-				where = "NOT all on the NPU"
+				where, allOnNPU = "NOT all on the NPU", false
 			}
 			parts := "1 part"
 			if n := len(ch.Parts()); n > 1 {
 				parts = fmt.Sprintf("%d parts", n)
 			}
-			bar.Done(fmt.Sprintf("%s, %s, %s", console.Duration(bar.Elapsed()), parts, where))
+			// the file of a program split in parts is only the list of them: the tokens per
+			// call tell the programs apart
+			perCall := ""
+			if x := t.progs[len(t.progs)-1].InShape["x"]; len(x) > 1 {
+				perCall = fmt.Sprintf("%d tokens per call, ", x[1])
+			}
+			bar.Done(fmt.Sprintf("%s, %s%s, %s", console.Duration(bar.Elapsed()), perCall, parts, where))
 		}
 		s, err := t.session(cm)
 		if err != nil {
@@ -348,6 +359,15 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		e.Close()
 		return nil, err
 	}
+	where := "all on the NPU"
+	if !allOnNPU {
+		where = "NOT all on the NPU"
+	}
+	programs := "1 program"
+	if total > 1 {
+		programs = fmt.Sprintf("%d programs", total)
+	}
+	logf("loaded %s in %s, %s, %s", name, console.Duration(time.Since(t0)), programs, where)
 	paged := ""
 	if ds, ok := e.sess.(*decode.Session); ok && ds.Paged() > 0 {
 		paged = e.fitMemory(ds, mem.Physical(), logf)
@@ -484,6 +504,8 @@ func compileNote(dev *hwnpu.Device) string {
 	switch dev.Info().Backend {
 	case "coreml":
 		return "Core ML compiles them the first time"
+	case "coreai":
+		return "Core AI compiles them the first time, several minutes for a large model; its cache keeps them"
 	case "levelzero":
 		return "the driver compiles them the first time, which can take several minutes for a large model; the compile cache keeps them"
 	}

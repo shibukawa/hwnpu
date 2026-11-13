@@ -52,7 +52,9 @@ func main() {
 	variant := flag.Int("variant", 0, "the bank variant to run (the check is variant 0's)")
 	tol := flag.Float64("tol", 0.03, "tolerance of the largest error relative to the output's largest magnitude")
 	keep := flag.Bool("keep", false, "keep each command's run (iron.GraphOptions.KeepRuns)")
+	barrier := flag.Bool("barrier", false, "an empty command in a context of its own before each run (iron.GraphOptions.Barrier)")
 	cpuprofile := flag.String("cpuprofile", "", "write the runs' CPU profile (go tool pprof) to this file")
+	swap := flag.Bool("swap", false, "one set of banks, the variant read into them (iron.GraphOptions.SwapVariants); with -variant N > 0, variant 0 runs once first")
 	pin := flag.Float64("pin", 0, "GiB of device buffers to allocate, fill and keep before loading the graph (a test of large pinned memory)")
 	flag.Parse()
 	dir := flag.Arg(0)
@@ -81,12 +83,17 @@ func main() {
 		fmt.Printf("pinned %.1f GiB\n", *pin)
 	}
 	t0 := time.Now()
-	g, err := iron.OpenGraphWith(ctx, dev, dir, iron.GraphOptions{KeepRuns: *keep})
+	g, err := iron.OpenGraphWith(ctx, dev, dir, iron.GraphOptions{KeepRuns: *keep, Barrier: *barrier, SwapVariants: *swap})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer g.Close()
 	fmt.Printf("%s: %d commands, %d variants, loaded in %.1f s\n", g.Manifest.Name, len(g.Manifest.Graph.Kernels), g.Variants(), time.Since(t0).Seconds())
+	if *swap && *variant > 0 { // variant 0 runs first, as a pipeline swaps groups after running one
+		if err := g.Run(ctx, nil); err != nil {
+			log.Fatal(err)
+		}
+	}
 	if err := g.Use(*variant); err != nil {
 		log.Fatal(err)
 	}
@@ -106,7 +113,12 @@ func main() {
 		}
 	}
 	per := make([]time.Duration, len(g.Manifest.Graph.Kernels))
-	g.Timing = func(k int, d time.Duration) { per[k] += d }
+	g.Timing = func(k int, d time.Duration) {
+		per[k] += d
+		if os.Getenv("IRONGRAPH_EACH") != "" {
+			fmt.Fprintf(os.Stderr, "command %d: %v\n", k, d)
+		}
+	}
 	if *cpuprofile != "" {
 		f, err := os.Create(*cpuprofile)
 		if err != nil {

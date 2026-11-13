@@ -77,7 +77,9 @@ type Attr struct {
 	T      *Tensor
 	Floats []float64
 	Ints   []int64
-	// Kind is AttributeProto.type: 1 FLOAT, 2 INT, 3 STRING, 4 TENSOR, 6 FLOATS, 7 INTS.
+	// G is a graph attribute's (If's branches).
+	G *Graph
+	// Kind is AttributeProto.type: 1 FLOAT, 2 INT, 3 STRING, 4 TENSOR, 5 GRAPH, 6 FLOATS, 7 INTS.
 	Kind int
 }
 
@@ -86,7 +88,9 @@ type Node struct {
 	Op, Name, Domain string
 	In, Out          []string
 	Attrs            map[string]Attr
-	// Graphs are the subgraphs of a loop (While: its condition and its body).
+	// Graphs are the subgraphs of a loop (While: its condition and its body) or of an If (its
+	// then and else branches; the outer values they read are the If's inputs after the
+	// condition).
 	Graphs []*Graph
 }
 
@@ -193,7 +197,15 @@ func Parse(raw []byte) (*Graph, error) {
 	if graph == nil {
 		return nil, fmt.Errorf("no graph")
 	}
-	err = each(graph, func(num protowire.Number, typ protowire.Type, b []byte, v uint64) error {
+	if err := parseGraph(graph, g); err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// parseGraph reads a GraphProto into g.
+func parseGraph(graph []byte, g *Graph) error {
+	err := each(graph, func(num protowire.Number, typ protowire.Type, b []byte, v uint64) error {
 		if typ != protowire.BytesType {
 			return nil
 		}
@@ -224,7 +236,7 @@ func Parse(raw []byte) (*Graph, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	// initializers may also be listed as inputs (older exporters)
 	inputs := g.Inputs[:0]
@@ -234,7 +246,40 @@ func Parse(raw []byte) (*Graph, error) {
 		}
 	}
 	g.Inputs = inputs
-	return g, nil
+	return nil
+}
+
+// outer are the values a graph's nodes read that neither its nodes, its initializers nor its
+// inputs give: a branch's reads of the graph around it.
+func (g *Graph) outer() []string {
+	have := map[string]bool{"": true}
+	for k := range g.Init {
+		have[k] = true
+	}
+	for _, in := range g.Inputs {
+		have[in.Name] = true
+	}
+	var out []string
+	for _, n := range g.Nodes {
+		for _, x := range n.In {
+			if !have[x] {
+				have[x] = true
+				out = append(out, x)
+			}
+		}
+		for _, sub := range n.Graphs {
+			for _, x := range sub.outer() {
+				if !have[x] {
+					have[x] = true
+					out = append(out, x)
+				}
+			}
+		}
+		for _, o := range n.Out {
+			have[o] = true
+		}
+	}
+	return out
 }
 
 // each calls f with every field of a message: the bytes of a length-delimited field, the value
@@ -296,6 +341,22 @@ func parseNode(msg []byte) (*Node, error) {
 		}
 		return nil
 	})
+	if err == nil && n.Op == "If" {
+		th, el := n.Attrs["then_branch"].G, n.Attrs["else_branch"].G
+		if th == nil || el == nil {
+			return nil, fmt.Errorf("If %s without its branches", n.Name)
+		}
+		n.Graphs = []*Graph{th, el}
+		seen := map[string]bool{}
+		for _, b := range n.Graphs {
+			for _, x := range b.outer() {
+				if !seen[x] {
+					seen[x] = true
+					n.In = append(n.In, x)
+				}
+			}
+		}
+	}
 	return n, err
 }
 
@@ -318,6 +379,9 @@ func parseAttr(msg []byte) (string, Attr, error) {
 				return err
 			}
 			a.T = t
+		case 6:
+			a.G = &Graph{Init: map[string]*Tensor{}}
+			return parseGraph(b, a.G)
 		case 7: // floats, packed or one by one
 			if typ == protowire.BytesType {
 				for i := 0; i+4 <= len(b); i += 4 {

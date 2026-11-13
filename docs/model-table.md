@@ -9,14 +9,17 @@
 - `hwnpu-chat list` と `-list` (hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
 - hwnpu-transcribe、hwnpu-tts、hwnpu-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。hwnpu-tts と hwnpu-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
 - 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
-- 取得元 (`internal/chat/sources.go`): ユーザーのファイルの `sources` (`type: path` の共有フォルダ、`type: s3` を aws コマンドで。`endpoint`、`region`、`profile`、`no_sign`) と、全体の探索順 `search` (既定 `[hf]`、5.4 節)。`from: SOURCE:NAME` でモデルごとに名指し。`-use SOURCE:NAME` も。ファイルごとに `search` の順に探し、見つかった取得元を次のファイルから先に見る。共有フォルダはハードリンクを試してから写す。リビジョンを固定したモデルは `OWNER/NAME@REV/` を先に探す。`sha256` を書いたファイルは、どの取得元から取っても確かめ、違えば消して次の取得元へ。組み込みのファイルは `sources` と `search` を持たない。まだないもの: `copy: false` (写さずに読む)、オフライン (11.3 節)、ダウンロードしながらの sha256 の計算 (今は取ったあとに読み直す)
+- 取得元 (`internal/chat/sources.go`): ユーザーのファイルの `sources` (`type: path` の共有フォルダ、`type: s3`。`endpoint`、`region`、`profile`、`path_style`、`no_sign`。2026-11-12 から aws コマンドでなく tinygodriver の `storage/s3`、docs/cache-sharing.md 7.2 節) と、全体の探索順 `search` (既定 `[hf]`、5.4 節)。`from: SOURCE:NAME` でモデルごとに名指し。`-use SOURCE:NAME` も。ファイルごとに `search` の順に探し、見つかった取得元を次のファイルから先に見る。共有フォルダはハードリンクを試してから写す。リビジョンを固定したモデルは `OWNER/NAME@REV/` を先に探す。`sha256` を書いたファイルは、どの取得元から取っても確かめ、違えば消して次の取得元へ。組み込みのファイルは `sources` と `search` を持たない。まだないもの: `copy: false` (写さずに読む)、オフライン (11.3 節)、ダウンロードしながらの sha256 の計算 (今は取ったあとに読み直す)
   - 確かめたこと: テスト (共有フォルダを先に、なければ HF。`hf` のない探索順は HF に出ない。sha256 の違う写しを飛ばす。固定したリビジョンのフォルダを先に。`SOURCE:NAME` のモデル。偽の aws で S3 の URL、endpoint、profile、no_sign と、ないもの。aws がないときのエラー)。sha256 の確認と探索順を壊すとテストが落ちる。M3 で、whisper-large-v3-turbo の写しを置いたフォルダだけを探索順にして (`search: [share]`)、空のモデルのフォルダから取得、変換、表、書き起こしまで通った (HF への通信なし)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
+- 別のリポジトリでも、同じ SHA-256 を `sha256` に書いたファイルは 1 度だけ落とす (2026-11-11): `fetch` は落とす前に、同じ SHA-256 のファイルをモデルの置き場所のほかのモデルのディレクトリに探し、あればハードリンク (できなければ写し) にして SHA-256 を確かめる。違えば消して取得元から。Qwen3-1.7B の 2 つのファイルと MOSS-SoundEffect v2.0 の `text_encoder/` (4.1 GB)
+- 2 つのリポジトリを読むモデル (OCR の検出器と認識器) は、`from` に主のリポジトリ、`with: {役割: hf:OWNER/NAME@REV}` にほかのリポジトリを書く (`Model.With`、2026-11-11)。`with` のリポジトリのファイルの `sha256` は `役割/ファイル名` のキーで書く。`like` は `with` を引き継ぐ
 - 確かめたこと (M3、2026-11-09):
   - hwnpu-transcribe: 表を書いて書き起こし、チェックポイントを退けても同じ結果
   - hwnpu-tts: 初回にダウンロード (4 GB、6 分半)、変換 4 本、表 (0.67 GB) まで自動で通った。「こんにちは」(1.6 秒) と「今日はいい天気ですね。散歩に行きましょう。」(5.0 秒を 3.3 秒で生成) を hwnpu-transcribe で書き起こすと、どちらも元の文。チェックポイント (本体とコーデック) を退けても読み上げ、読み込み 3.2 秒
   - hwnpu-systemone: d1-2B の変換 (lut8、512 トークン、2 部分) と視覚エンコーダ、表 (0.52 GB) まで自動で通った。「二重に請求された、返事がない、怒っている」問い合わせに、担当 billing (0.98)、怒っているか 0.996、緊急度 1 (やや緊急、0.45)。チェックポイントを退けても同じ答え、読み込み 1.1 秒
 - 画像を読む用途は `vision` だけにし、`image` は別名にしない (画像生成の用途 `image` のために空けておく)
+- チャットのモデルの動かし方 (`prefill`、`format`、`context`、`paged`) と、機械のメモリごとの違い (`variants`) (2026-11-11、6.2 節)。hwnpu-chat のフラグ (`--prefill` など) を与えなければ、モデルのこの欄が既定になる
 
 
 モデルの選び方、取得元、NPU ごとのビルド設定を、コードから 1 つの YAML に移す。既定のファイルはバイナリに組み込み、利用者はユーザーフォルダに置いたファイルで上書きする。
@@ -111,6 +114,15 @@ models:
     bytes: 1.79e9
     memory: 2.4                        # 動かしたときのメモリ (GB)。MODEL.md の「開始時」
     about: "Preferred Networks' PLaMo 3 Translate 0.8B: ..."
+  PP-OCRv6-small:
+    family: ppocr
+    tag: small
+    kind: ocr
+    from: hf:PaddlePaddle/PP-OCRv6_small_rec_onnx@b8f84f0b...   # 認識器
+    with: {detector: "hf:PaddlePaddle/PP-OCRv6_small_det_onnx@28fe5895..."}   # ほかに読むリポジトリ (役割: hf:OWNER/NAME)
+    sha256:
+      inference.onnx: 5435fd74...
+      detector/inference.onnx: d73e0058...   # with のリポジトリのファイルは 役割/ファイル名
   # ...
 
 # 用途ごとのおすすめ (MODEL.md の行)。machine は MODEL.md の列 (GB)
@@ -167,14 +179,14 @@ builds:
 
 | type | 書き方 | 取り方 |
 |---|---|---|
-| `hf` (組み込み) | `from: hf:OWNER/NAME@COMMIT` (5.3 節) | 今の `fetch`。`HF_TOKEN` を使う |
+| `hf` (組み込み) | `from: hf:OWNER/NAME@COMMIT` (5.3 節) | 今の `fetch`。`HF_TOKEN`、`hf auth login` のトークン、なければ端末で OAuth のデバイスフロー (同意制リポジトリ、design.md 16.153) |
 | `path` | `from: team-share:plamo-distill-0.8b` | `path` の下のフォルダ。`copy: false` なら写さずに読む (NFS や SMB の共有フォルダ) |
 | `s3` | `from: lab-s3:plamo-distill-0.8b` | `aws s3 sync s3://BUCKET/PREFIX/plamo-distill-0.8b/ DIR` を呼ぶ |
 
-S3 は `aws` コマンド (v2) に任せる。認証、リージョン、再試行、マルチパートを自前で持たないため。
+S3 は `aws` コマンド (v2) に任せる。認証、リージョン、再試行、マルチパートを自前で持たないため。 (docs/cache-sharing.md 7.2 節で改めた: tinygodriver の `storage/s3` に移した。下の 3 行は aws コマンドのころのもの)
 
 - `endpoint` は `--endpoint-url`、`profile` は `--profile`、`region` は `--region`、`no_sign` は `--no-sign-request` で渡す。ほかは `aws` の通常の設定 (`AWS_*` の環境変数、`~/.aws/config`) がそのまま効く
-- rustfs や MinIO のようにパス形式のアドレスが要る実装は、`~/.aws/config` のそのプロファイルに `s3 = addressing_style = path` を書く (`aws` にコマンドラインの指定がないため)。docs に手順を書く
+- RustFS のようにパス形式のアドレスが要る実装は、`~/.aws/config` のそのプロファイルに `s3 = addressing_style = path` を書く (`aws` にコマンドラインの指定がないため)。docs に手順を書く
 - `aws` が見つからないときは、`from` に S3 を使っているモデルを選んだときだけ、入れ方と一緒にエラーを出す
 - 取るのは、HF のリポジトリと同じ並び (`config.json`、トークナイザー、safetensors) か、変換済みの並び (`hwnpu.json` があるもの、docs/prebuilt.md 4 節)。`hwnpu.json` があれば変換済みとして読む
 
@@ -208,6 +220,8 @@ aliases:
 取得元が変わったときに、前の取得元で変換したプログラムを読まないように、モデルのフォルダに `source.json` (取得元、コミット、ファイルごとの sha256、取った日時) を書く。違えば変換し直す (5.3 節)。
 
 ### 5.2 どこから持ってくるか (読み込みの順)
+
+変換済みの配布とキャッシュの層は docs/cache-sharing.md (2026-11-12) にまとめ直した。この節の `prebuilt` の書き方は、そちらの 4 節 (モデル × 対象の版) が正。
 
 モデルには取得元を 2 つ書ける。
 
@@ -302,7 +316,7 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 2. 同じ具体さなら、あとに書いたもの (ユーザーのファイルは既定のあと) が勝つ
 3. 欄ごとに決める。`apple-m1` の行が `prefill` だけを書けば、`format` は `apple` の行のまま
 
-`hwnpu-chat -explain NAME` で、決まった設定と、それぞれがどのファイルのどの行から来たかを出す。
+`hwnpu-chat explain NAME` (案) で、決まった設定と、それぞれがどのファイルのどの行から来たかを出す。
 
 コードに残すもの: Q (8、64、128)、最後の行だけ、`-kv`、`state-rows`、`hidden-out`、エンコーダの fp16。これらはモデルの構造と上の設定から決まる。
 
@@ -319,6 +333,26 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 - **当てはめ**: `size: 2` は 2 の前後 1 割 (1.8〜2.2)。`"<=2"`、`">4"`、`"1-3"` は範囲。どれも数えた値と書いた値のどちらでも同じに扱う
 
 コードにある大きさの判断 (`qwen35.Config.Format` の「hidden が 2048 なら lut6」) は、この `size` のルールに移す。
+
+### 6.2 機械のメモリごとの違い (variants、実装済み)
+
+`builds` は NPU とモデルで決める。それとは別に、同じモデルを**機械のメモリ**で動かし分けたいことがある。Qwen3-1.7B は、プロンプトを読むプログラムを別に持つと Neural Engine に 3.26 GiB とプロセスの最大 4.1 GB で約 7.6 GB になり、8 GB の機械には重い。生成のプログラムにプロンプトも読ませれば 1.63 GiB と 2.8 GB の約 4.5 GB で載る (新しいプロンプトを読むのは約 5 倍遅い)。そこで、モデルの欄に動かし方を書き、`variants` に、より大きなメモリの機械での差分を書く:
+
+```yaml
+  Qwen3-1.7B:
+    machine: 8          # この欄は 8 GB の機械のもの
+    memory: 4.5
+    prefill: off
+    variants:
+      16: {memory: 7.6, prefill: auto}   # 16 GB 以上
+```
+
+- 動かし方の欄は `prefill` (auto、on、off)、`format` (重みの形式)、`context` (トークン)、`paged` (塊のトークン、-1 は分けない)。hwnpu-chat の同じ名前のフラグの既定になり、フラグを与えればフラグが勝つ。チャットのモデルだけが持てる
+- `variants` のキーは機械のメモリ (GB)。機械が持つ最大のキーの差分を 1 つだけ、モデルの欄の上に重ねる (16 と 32 があれば、32 GB の機械では 32 の差分だけ)。差分が書けるのは `memory` と動かし方の 4 つで、書いた欄だけが変わる。キーは `machine` より大きくなければならない (`machine` の欄がモデル自身)
+- どの機械の差分か: 名前で選んだとき (`-m Qwen3-1.7B`) はこの機械のメモリ (`HWNPU_MEMORY` で上書き)、ファミリーと用途では選ぶときの機械 (`qwen3:16g` なら 16 GB)。ファミリーで同じ列の候補を比べる `memory` も、その機械の差分のもの (8 GB で、Qwen3-0.6B の 3.9 GB と Qwen3-1.7B の 4.5 GB から 1.7B)
+- `hwnpu-chat list` の MEMORY はこの機械の差分のもの。`chat.Lookup` と `chat.Catalog` は差分を当てる前のモデル、`Model.On(machine)` が当てたもの
+- ユーザーのファイルは、名前を書いた差分だけを替え、ほかは残す (`device` と同じ)。`like` は動かし方と差分を引き継ぐ
+- `builds` (6 節) を実装するときは、`builds` の欄がモデルの欄と差分より先に来る (NPU ごとの事情の方が具体的)。今は NPU で分ける必要がない (Qwen3-1.7B は Apple だけ)
 
 ## 7. ほかの部分とのつながり
 
@@ -438,7 +472,7 @@ skill は最後に、どちらにするかを聞く。
 - 手元のキャッシュと、`path` の取得元 (共有フォルダ) だけを使う。HF と S3 は見ない
 - 選ぶとき (用途、ファミリーのタグ) は、手元に揃っているモデルだけを候補にする。揃っていなければ、何が足りないかと、つながる機械で準備するコマンドを出す
 - 固定 (5.3 節) は `source.json` の記録で確かめる。ネットを見ないので、上流の更新は気にしない
-- 準備だけをするコマンド: `hwnpu-chat -prepare NAME,...` (ダウンロードと変換をして終わる)。キャッシュのフォルダを写せば、つながらない機械でもそのまま動く (Apple の Neural Engine のコンパイルだけは向こうで起きる)
+- 準備だけをするコマンド: `hwnpu-chat prepare NAME,...` (案) (ダウンロードと変換をして終わる)。キャッシュのフォルダを写せば、つながらない機械でもそのまま動く (Apple の Neural Engine のコンパイルだけは向こうで起きる)
 - ネットにつながらないときに自動でオフラインに切り替えることはしない。黙って古いものを使わないため。つながらなければ、`-offline` を示してエラーにする
 
 ### 11.4 キャッシュの削除 (積極的に)
@@ -449,7 +483,7 @@ skill は最後に、どちらにするかを聞く。
 
 | 消すもの | いつ |
 |---|---|
-| 元のチェックポイント (safetensors) | 今の設定のプログラムと表 (`tables.safetensors`) が揃ったら、すぐ。`config.json`、トークナイザー、`source.json` は残す。変換し直すときは固定どおりのものを落とし直す |
+| 元のチェックポイント (safetensors) | (docs/cache-sharing.md 8.1 節で改めた: 手元で作ったときは元も残し、長く使っていないときと上限のときだけ消す) 今の設定のプログラムと表 (`tables.safetensors`) が揃ったら、すぐ。`config.json`、トークナイザー、`source.json` は残す。変換し直すときは固定どおりのものを落とし直す |
 | 前の設定、前の `format_version`、前のハッシュのプログラム | 準備の終わりに。今の `gemma4-lut6-c16320-*` のような古い名前もここで消える |
 | 前に配布物を落とした分と、手元で変換した分の重複 | 配布物に切り替わったら、手元で変換した方を消す |
 | 長く使っていないモデル | `cache.unused_days` (既定 30 日) 使っていなければ、フォルダごと消す。消しても次に頼めば落とし直す |

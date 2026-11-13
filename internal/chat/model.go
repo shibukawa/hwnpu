@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -210,8 +211,8 @@ type Setup struct {
 	// step costs in proportion to the cache, whatever it holds.
 	Tiers []int
 	// Backend picks the device the programs are converted for and run on (llm.FindDevice): a
-	// device backend (coreml, levelzero, openvino) or a program format (coreml, intel); empty for
-	// HWNPU_BACKEND or the NPU found.
+	// device backend (coreml, coreai, levelzero, openvino) or a program format (coreml, intel);
+	// empty for HWNPU_BACKEND or the NPU found. coreai runs the Core ML programs on Core AI.
 	Backend string
 	// Format is the weight format of the chat model's programs (llm.Options.Format); empty for the
 	// architecture's for the backend (llm.Arch.DefaultFormatFor). The encoders stay in fp16.
@@ -294,7 +295,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err := fetch(ctx, s.Repo, "config.json", filepath.Join(s.Dir, "config.json"), s.Log); err != nil {
 		return Config{}, err
 	}
-	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, backend)}
+	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, llm.DeviceBackend(""), backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, s.Arch)
 	if err != nil {
 		return Config{}, err
@@ -538,7 +539,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 func onePrograms(model llm.Model, format, backend, prefill string, draft, tiers int, kvOnly bool, others int64) (bool, string) {
 	switch {
 	case prefill == PrefillOff:
-		return true, "-prefill off"
+		return true, "prefill off (--prefill, or the model's definition for this machine's memory)"
 	case prefill == PrefillOn || draft <= 1 || backend == llm.BackendIntel:
 		return false, "" // reading prompts one token per call would be far slower; the cache is the Neural Engine's
 	}
@@ -700,12 +701,20 @@ func codesHash(dir string) (string, error) {
 }
 
 // convert writes the program of the model (config.json and the checkpoint) unless it is there,
-// and returns its path. NAME.done, written last, holds the path, so that a conversion cut off is
+// and returns its path. NAME.done, written last, holds the path (relative to it, cache.WriteDone), so that a conversion cut off is
 // done again.
 func convert(ctx context.Context, config, weights, out string, p program, log io.Writer) (string, error) {
 	done := strings.TrimSuffix(out, filepath.Ext(out)) + ".done"
-	if b, err := os.ReadFile(done); err == nil {
-		return string(b), nil
+	if p, ok := cache.ReadDone(done); ok {
+		return p, nil
+	}
+	unlock, err := cache.Lock(ctx, out, filepath.Base(out), log)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	if p, ok := cache.ReadDone(done); ok { // another process converted it meanwhile
+		return p, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -765,7 +774,7 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 	if codes != nil && log != nil {
 		fmt.Fprintf(log, "-codes: %d weights took the chosen tables (%d in %s)\n", codes.Hits()-hits, codes.Len(), p.codes)
 	}
-	return path, os.WriteFile(done, []byte(path), 0o644)
+	return path, cache.WriteDone(done, path)
 }
 
 // repoName is a repository's name: NAME of OWNER/NAME or OWNER/NAME@REVISION.
@@ -799,6 +808,11 @@ func FetchWeights(ctx context.Context, repo, dir string, log io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var want []File
+	for _, f := range files {
+		want = append(want, File{repo, f, filepath.Join(dir, f)})
+	}
+	Expect(ctx, want)
 	for _, f := range files {
 		if err := fetch(ctx, repo, f, filepath.Join(dir, f), log); err != nil {
 			return err
@@ -833,8 +847,9 @@ func shards(index string) ([]string, error) {
 }
 
 // fetchHF downloads a file of a Hugging Face repository to path (fetch). A download cut off goes
-// on from where it stopped (path.part). HF_TOKEN, when set, is sent for gated models. repo is
-// OWNER/NAME, or OWNER/NAME@REVISION for a revision other than main.
+// on from where it stopped (path.part). A gated model's repository (401, 403) goes through gate:
+// a token (hfToken), signing in, agreeing to the terms. repo is OWNER/NAME, or
+// OWNER/NAME@REVISION for a revision other than main.
 func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error {
 	repo, rev, _ := strings.Cut(repo, "@")
 	url := hubURL + repo + "/resolve/" + cmp.Or(rev, "main") + "/" + name
@@ -843,19 +858,41 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	if fi, err := os.Stat(part); err == nil {
 		have = fi.Size()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	if tok := os.Getenv("HF_TOKEN"); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
-	if have > 0 {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
+	// the version of the file the part is of (its ETag): the rest is asked for only if the file
+	// is still that one (If-Range), else the whole file comes again. A part of an earlier hwnpu,
+	// with no ETag kept, goes on as before
+	etag, _ := os.ReadFile(part + ".etag")
+	var resp *http.Response
+	for try := 0; ; try++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		tok := hfToken()
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		if have > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
+			if len(etag) > 0 {
+				req.Header.Set("If-Range", string(etag))
+			}
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		if (resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden) || try == 4 ||
+			!isGated(ctx, repo) {
+			break
+		}
+		resp.Body.Close()
+		if log == nil {
+			log = io.Discard
+		}
+		if err := gate(ctx, repo, resp.StatusCode, tok, log); err != nil {
+			return err
+		}
 	}
 	defer resp.Body.Close()
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
@@ -873,11 +910,17 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	if resp.ContentLength >= 0 {
 		total = have + resp.ContentLength
 	}
+	noteCommit(repo, rev, resp)
+	if e := resp.Header.Get("ETag"); e != "" && !strings.HasPrefix(e, "W/") {
+		os.WriteFile(part+".etag", []byte(e), 0o644)
+	} else {
+		os.Remove(part + ".etag")
+	}
 	f, err := os.OpenFile(part, flags, 0o644)
 	if err != nil {
 		return err
 	}
-	pw := &progress{w: f, done: have, from: have, total: total,
+	pw := &progress{w: f, done: have, from: have, total: total, plan: planned(path),
 		bar: console.NewBar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), repo))}
 	_, err = io.Copy(pw, resp.Body)
 	if cerr := f.Close(); err == nil {
@@ -888,14 +931,56 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 		return fmt.Errorf("chat: downloading %s: %w (run again to go on)", name, err)
 	}
 	pw.bar.Done(fmt.Sprintf("%s in %s to %s", gb(pw.done, -1), console.Duration(pw.bar.Elapsed()), filepath.Dir(path)))
+	os.Remove(part + ".etag")
 	return os.Rename(part, path)
 }
 
+// commits are the commits Hugging Face served the repositories' files of a revision from
+// (X-Repo-Commit), by OWNER/NAME@REVISION: what a copy of a file is put under in a shared layer
+// (docs/cache-sharing.md 7.1), never a branch's name.
+var (
+	commitsMu sync.Mutex
+	commits   = map[string]string{}
+)
+
+var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// noteCommit keeps the commit a response of the hub (or one it redirected from) names.
+func noteCommit(repo, rev string, resp *http.Response) {
+	for r := resp; r != nil; {
+		if c := r.Header.Get("X-Repo-Commit"); commitRE.MatchString(c) {
+			commitsMu.Lock()
+			commits[repo+"@"+cmp.Or(rev, "main")] = c
+			commitsMu.Unlock()
+			return
+		}
+		if r.Request == nil {
+			return
+		}
+		r = r.Request.Response
+	}
+}
+
+// servedCommit is the commit noteCommit kept for repo (OWNER/NAME or OWNER/NAME@REVISION): the
+// revision itself when it is a commit.
+func servedCommit(repo string) (string, bool) {
+	base, rev, _ := strings.Cut(repo, "@")
+	if commitRE.MatchString(rev) {
+		return rev, true
+	}
+	commitsMu.Lock()
+	defer commitsMu.Unlock()
+	c, ok := commits[base+"@"+cmp.Or(rev, "main")]
+	return c, ok
+}
+
 // progress writes through and shows how far a download is on its bar: the bytes, the speed and
-// the time left.
+// the time left. For a file of the files Expect looked up, the bytes and the time left are also
+// those of all of them still to come.
 type progress struct {
 	w                 io.Writer
 	done, from, total int64 // total < 0: not known
+	plan              *plannedFile
 	bar               *console.Bar
 	last              time.Time
 }
@@ -903,15 +988,25 @@ type progress struct {
 func (p *progress) Write(b []byte) (int, error) {
 	n, err := p.w.Write(b)
 	p.done += int64(n)
+	if p.plan != nil {
+		planWrote(p.plan, p.done)
+	}
 	if time.Since(p.last) >= 200*time.Millisecond {
 		p.last = time.Now()
 		frac := -1.0
 		detail := gb(p.done, p.total)
+		left := p.total - p.done
+		if p.plan != nil {
+			if done, total := planNow(); total > p.total {
+				detail += ", all " + gb(done, total)
+				left = total - done
+			}
+		}
 		if sec := p.bar.Elapsed().Seconds(); sec > 0.5 {
 			rate := float64(p.done-p.from) / sec
 			detail += fmt.Sprintf("  %.1f MB/s", rate/1e6)
 			if p.total > 0 && rate > 0 {
-				detail += ", " + console.Duration(time.Duration(float64(p.total-p.done)/rate*float64(time.Second))) + " left"
+				detail += ", " + console.Duration(time.Duration(float64(left)/rate*float64(time.Second))) + " left"
 			}
 		}
 		if p.total > 0 {

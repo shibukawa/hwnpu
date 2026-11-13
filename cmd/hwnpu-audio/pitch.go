@@ -19,7 +19,9 @@ import (
 // PitchCmd is "hwnpu-audio pitch": the pitch (F0) of a voice or an instrument in WAV files with
 // SwiftF0 (lars76/swift-f0), a pitch and a voicing confidence every 16 ms, as CSV or JSON on
 // stdout. The model (140 KB) is downloaded and its program converted the first time. The front
-// end (the three spectrograms) and the decoding of the logits run on the host; the CNN on the NPU.
+// end (the three spectrograms) and the decoding of the logits run on the host; the CNN on the NPU
+// (Apple's, Intel's; elsewhere or with --device cpu the ONNX file's CNN with ONNX Runtime on the
+// CPU).
 type PitchCmd struct {
 	Files     []string `arg:"" type:"existingfile" name:"FILE.wav" help:"The WAV files (any rate; resampled to 16 kHz, channels averaged)."`
 	Model     string   `short:"m" default:"pitch" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (pitch, swiftf0)."`
@@ -29,7 +31,9 @@ type PitchCmd struct {
 	Threshold float64  `default:"0.5" help:"The confidence at and over which a frame is voiced."`
 	Dir       string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache     string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
-	CPU       bool     `name:"cpu" help:"Run the program on the CPU interpreter instead of the NPU."`
+	CPU       bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
+	Device    string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
+	Threads   int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
 }
 
 // Run writes the pitch of each file.
@@ -40,29 +44,46 @@ func (c *PitchCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	backend := llm.BackendCoreML
-	var dev *hwnpu.Device
-	if !c.CPU {
-		var device string
-		if dev, device, err = llm.OpenDevice(ctx, "", cacheDir(c.Cache)); err != nil {
+	setup := pitch.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Log: lw}
+	var d *pitch.Detector
+	t0 := time.Now()
+	ort, builtin := cpuRoute(m, c.Device, c.CPU, c.Threads, logf)
+	c.CPU = c.CPU || builtin
+	if ort {
+		model, err := pitch.Fetch(ctx, setup)
+		if err != nil {
 			return err
 		}
-		defer dev.Close()
-		if backend = llm.ProgramBackend(device); backend == "" {
-			return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (AMD's NPU has no SwiftF0 export yet; --cpu runs it on the CPU)", device)
+		if d, err = pitch.OpenCPU(model, c.Threads); err != nil {
+			return err
 		}
-	}
-	model, program, err := pitch.Prepare(ctx, pitch.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Backend: backend, Log: lw})
-	if err != nil {
-		return err
-	}
-	t0 := time.Now()
-	d, err := pitch.Open(ctx, dev, model, program)
-	if err != nil {
-		return err
+		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
+	} else {
+		backend := llm.BackendCoreML
+		var dev *hwnpu.Device
+		if !c.CPU {
+			var device string
+			if dev, device, err = llm.OpenDevice(ctx, "", cacheDir(c.Cache)); err != nil {
+				return err
+			}
+			defer dev.Close()
+			if backend = llm.ProgramBackend(device); backend == "" {
+				return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--device cpu runs it on the CPU)", device)
+			}
+		}
+		setup.Backend = backend
+		model, program, err := pitch.Prepare(ctx, setup)
+		if err != nil {
+			return err
+		}
+		t0 = time.Now()
+		if d, err = pitch.Open(ctx, dev, model, program); err != nil {
+			return err
+		}
+		logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
 	}
 	defer d.Close()
-	logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, d.OnNPU()))
+	console.Running()
 	for _, p := range c.Files {
 		raw, err := os.ReadFile(p)
 		if err != nil {

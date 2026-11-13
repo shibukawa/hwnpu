@@ -16,17 +16,28 @@
 // its logits are from the reference's at every position: the mean and median KL(ref || model),
 // argmax agreement and cosine. It measures the loss of a conversion on the NPU itself (fp16
 // computation and quantization), where hwnpu-dev check -package measures it on the fp32 interpreter.
+//
+// -write-ref PREFIX, with a model without a cache, writes the prompt and the answer it generated
+// as such a reference: their tokens and its own logits at every position, in fp32, and the first
+// token of the answer (Meta.From). Another format scored on it (-score PREFIX) is then measured
+// on the answer's tokens apart, which for a translation model are what matters: its prompt is a
+// text it does not predict (docs/new-model-checklist.md 9). The reference is a converted model,
+// not Hugging Face's: for a model too large to run in fp32 here (PLaMo 3 Translate 8B, 34 GB).
 package generate
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"math"
 	"math/rand/v2"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,6 +77,7 @@ func Main() {
 	preload := flag.String("preload", "all", "with cache tiers: all loads every tier before generating (a tier takes 6 to 30 s to load and slows generation while it loads); a fraction 0 to 1 loads the next tier in the background once the cache is that full")
 	cacheDir := flag.String("cache", "", "compile cache (default: hwnpu in the user cache directory)")
 	score := flag.String("score", "", "comma separated reference prefixes (tools/ref/ref_logits.py): score the logits of a model without a cache on their tokens instead of generating")
+	writeRef := flag.String("write-ref", "", "with a model without a cache: write the prompt and the answer as a reference with this prefix (PREFIX.ids.bin, PREFIX.logits.bin, PREFIX.json), for -score of another format")
 	flag.Parse()
 	if *pkg == "" || *config == "" || *weights == "" || *prompt == "" && *score == "" {
 		flag.Usage()
@@ -80,9 +92,7 @@ func Main() {
 		}
 	}
 	if *cacheDir == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			*cacheDir = filepath.Join(d, "hwnpu")
-		}
+		*cacheDir = cache.Root()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -96,13 +106,13 @@ func Main() {
 			preloadAt = v
 		}
 	}
-	if err := run(ctx, *pkg, *config, *weights, *tok, *system, *prompt, *score, *raw, *special, *maxNew, *cacheDir, preloadAt, s); err != nil {
+	if err := run(ctx, *pkg, *config, *weights, *tok, *system, *prompt, *score, *writeRef, *raw, *special, *maxNew, *cacheDir, preloadAt, s); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-dev generate:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt, score string, raw, special bool, maxNew int, cacheDir string, preloadAt float64, s sampling) error {
+func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt, score, writeRef string, raw, special bool, maxNew int, cacheDir string, preloadAt float64, s sampling) error {
 	a, model, err := llm.LoadConfig(config, "")
 	if err != nil {
 		return err
@@ -177,8 +187,8 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt, sco
 		return e, err
 	}
 	if hasCache(c) {
-		if score != "" {
-			return fmt.Errorf("-score takes a model without a cache (hwnpu-dev convert -seq N); %s has one", pkg)
+		if score != "" || writeRef != "" {
+			return fmt.Errorf("-score and -write-ref take a model without a cache (hwnpu-dev convert -seq N); %s has one", pkg)
 		}
 		cm, ok := model.(llm.Cached)
 		if !ok {
@@ -264,6 +274,22 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt, sco
 			if err != nil {
 				return err
 			}
+			if from := ref.Meta.From; from > 0 && from < n {
+				// the positions that predict the answer's tokens: from-1 to n-2
+				ans := slices.Clone(kls[from-1 : n-1])
+				agree := 0
+				for i := from - 1; i < n-1; i++ {
+					if argmaxOf(got[i*vocab:(i+1)*vocab]) == argmaxOf(ref.Logits[i*vocab:(i+1)*vocab]) {
+						agree++
+					}
+				}
+				mean := 0.0
+				for _, k := range ans {
+					mean += k
+				}
+				sort.Float64s(ans)
+				fmt.Printf("%s: the answer's %d tokens: KL mean %.4f, median %.4f, largest %.3f; argmax %d/%d\n", filepath.Base(prefix), len(ans), mean/float64(len(ans)), ans[len(ans)/2], ans[len(ans)-1], agree, len(ans))
+			}
 			sort.Float64s(kls)
 			fmt.Printf("%s: KL mean %.4f, median %.4f, largest %.3f; argmax %d/%d; cosine %.5f\n", filepath.Base(prefix), st.KL, kls[n/2], kls[n-1], st.Agree, st.N, st.Cosine)
 		}
@@ -299,6 +325,17 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt, sco
 			total += d
 		}
 		if stops[next] {
+			if writeRef != "" && len(ids)+1 < seq {
+				// the reference includes the token that ends the answer
+				gen = append(gen, next)
+				ids = append(ids, next)
+				if err := write(len(ids)-1, next); err != nil {
+					return err
+				}
+				for _, in := range inputs {
+					in.b.SyncToDevice(2*(len(ids)-1)*in.width, 2*in.width)
+				}
+			}
 			break
 		}
 		gen = append(gen, next)
@@ -333,7 +370,62 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt, sco
 		ms := float64(total.Microseconds()) / 1000 / float64(len(gen)-1)
 		fmt.Fprintf(os.Stderr, "%d tokens; first %.0f ms, then %.1f ms/token (%.1f tokens/s), window %d\n", len(gen), float64(first.Microseconds())/1000, ms, 1000/ms, seq)
 	}
+	if writeRef != "" {
+		return writeReference(ctx, c, y, writeRef, ids, len(ids)-len(gen), vocab, softcap, slid)
+	}
 	return nil
+}
+
+// writeReference writes ids (a prompt and, from from on, the answer generated after it) and the
+// model's logits over them as a reference of check.LoadRef: one more run of the program, whose
+// input already holds every token. The answer's last token is the one that ended it, when one
+// did (it was written into the input, not printed).
+func writeReference(ctx context.Context, c *chain.Chain, y *hwnpu.Buffer, prefix string, ids []int32, from, vocab int, softcap float64, slid bool) error {
+	if slid {
+		return fmt.Errorf("-write-ref: the window was full and dropped tokens; convert with a larger -seq")
+	}
+	if err := c.Run(ctx); err != nil {
+		return err
+	}
+	n := len(ids)
+	y.SyncFromDevice(0, 2*n*vocab)
+	logits := make([]float32, n*vocab)
+	hwnpu.DecodeF16(logits, y.Bytes()[:2*n*vocab])
+	for i := range n {
+		llm.Softcap(logits[i*vocab:(i+1)*vocab], softcap)
+	}
+	idb := make([]byte, 4*n)
+	for i, t := range ids {
+		binary.LittleEndian.PutUint32(idb[4*i:], uint32(t))
+	}
+	lb := make([]byte, 4*len(logits))
+	for i, v := range logits {
+		binary.LittleEndian.PutUint32(lb[4*i:], math.Float32bits(v))
+	}
+	meta, err := json.Marshal(check.Meta{Seq: n, VocabSize: vocab, DType: "the converted model's", Output: "logits", From: from})
+	if err != nil {
+		return err
+	}
+	for _, f := range []struct {
+		name string
+		b    []byte
+	}{{".ids.bin", idb}, {".logits.bin", lb}, {".hidden.bin", nil}, {".json", meta}} {
+		if err := os.WriteFile(prefix+f.name, f.b, 0o644); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s: %d tokens, the answer's from %d\n", prefix, n, from)
+	return nil
+}
+
+func argmaxOf(v []float32) int {
+	best := 0
+	for i, x := range v {
+		if x > v[best] {
+			best = i
+		}
+	}
+	return best
 }
 
 // pick chooses the next token from the logits at the last position.

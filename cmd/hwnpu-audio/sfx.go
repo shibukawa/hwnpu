@@ -48,19 +48,20 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		}
 	}
 	var dev *hwnpu.Device
+	backend := llm.BackendCoreML // what the CPU interpreter runs
 	if !o.cpu {
 		d, device, err := llm.OpenDevice(ctx, "", o.cacheDir)
 		if err != nil {
 			return err
 		}
 		defer d.Close()
-		if backend := llm.ProgramBackend(device); backend != llm.BackendCoreML {
-			return fmt.Errorf("%s: only Apple's Neural Engine runs MOSS-SoundEffect so far (--cpu runs it on the CPU)", device)
+		if backend = llm.ProgramBackend(device); backend == "" {
+			return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--cpu runs MOSS-SoundEffect on the CPU)", device)
 		}
 		dev = d
 	}
 	p, err := sfx.Prepare(ctx, sfx.Setup{Dir: filepath.Join(o.dir, m.DirName()), Repo: m.Source(), Machine: m.Machine,
-		TextFormat: o.textFormat, DitFormat: o.ditFormat, Log: lw})
+		TextFormat: o.textFormat, DitFormat: o.ditFormat, Backend: backend, Log: lw})
 	if err != nil {
 		return err
 	}
@@ -111,6 +112,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		return checkNPU(lw, o, off)
 	}
 	// the description first: the text encoder's programs are let go before the DiT's are loaded
+	console.Running()
 	t0 := time.Now()
 	done := spin("reading the description")
 	text, ids, err := g.Encode(ctx, prompt, seconds, note)
@@ -125,6 +127,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 	if len(ids) >= sfx.PromptRows {
 		logf("  the description is cut at %d tokens", sfx.PromptRows)
 	}
+	console.Preparing()
 	t0 = time.Now()
 	off = nil
 	done = spin(fmt.Sprintf("loading %s (%s)", m.Name, p))
@@ -142,6 +145,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		seed = rand.Uint64()
 	}
 	logf("seed %d", seed)
+	console.Running()
 	bar := console.NewBar(lw, "generating")
 	t0 = time.Now()
 	samples, err := g.Generate(ctx, text, seconds, sfx.Options{Steps: o.steps, CFG: o.cfg, Shift: o.shift, Seed: seed,

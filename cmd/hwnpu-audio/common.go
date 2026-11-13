@@ -1,12 +1,15 @@
 package main
 
 import (
+	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/hwnpu/internal/onnxrt"
+
 	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
@@ -19,13 +22,37 @@ func cacheDir(dir string) string {
 	if dir != "" {
 		return dir
 	}
-	if d, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(d, "hwnpu")
-	}
-	return ""
+	return cache.Root()
 }
 
 // placement is how a log line says where a model runs.
+// cpuRoute is where an ONNX model m runs (chat.ConvertedDevice) and logs it: ort, ONNX
+// Runtime on the CPU when its library is here; builtin, hwnpu's own CPU executor on the
+// converted program (internal/milcpu, on threads goroutines) when it is not, or with --cpu
+// (interp: all the cores); neither, the NPU.
+func cpuRoute(m chat.Model, flag string, interp bool, threads int, logf func(string, ...any)) (ort, builtin bool) {
+	if interp {
+		milcpu.Threads = 0
+		return false, true
+	}
+	device, why, err := chat.ConvertedDevice(m, chat.HereVendor(), flag)
+	if err != nil {
+		logf("%v; the NPU", err)
+		return false, false
+	}
+	if device != "cpu" {
+		logf("%s on the %s (%s)", m.Name, device, why)
+		return false, false
+	}
+	if onnxrt.Available() {
+		logf("%s on the CPU with ONNX Runtime (%s)", m.Name, why)
+		return true, false
+	}
+	milcpu.Threads = max(1, threads)
+	logf("%s on the CPU with hwnpu's own executor (%s; ONNX Runtime, faster, is not here: HWNPU_ONNXRUNTIME)", m.Name, why)
+	return false, true
+}
+
 func placement(cpu, onNPU bool) string {
 	switch {
 	case cpu:

@@ -189,9 +189,14 @@ func (d *device) compiledModel(path string) (compiled string, cached bool, owned
 		})
 		key = cache.Key([]byte("hwnpu-coreml-v1"), digest, []byte(osVersion))
 		if p, ok := cache.Lookup(d.opts.CacheDir, key, ".mlmodelc"); ok {
-			if _, recorded := cache.Source(d.opts.CacheDir, key); !recorded {
+			if src, recorded := cache.Source(d.opts.CacheDir, key); !recorded {
 				// stored before entries recorded their source: share its weights now, once
 				shareWeights(p, path)
+				cache.SetSource(d.opts.CacheDir, key, path)
+			} else if _, err := os.Stat(src); err != nil {
+				// the recorded source is gone, but this package has the same bytes (a hard link of
+				// it, chroma.ConvertOptions.LinkFrom): record this one, or cache.Prune would take the
+				// entry as unused, and the Neural Engine's compiled bundle with it (design.md 16.170)
 				cache.SetSource(d.opts.CacheDir, key, path)
 			}
 			return p, true, "", key, nil

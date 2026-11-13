@@ -18,13 +18,14 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 	"github.com/shibukawa/hwnpu/internal/vision/depth"
 	"github.com/shibukawa/hwnpu/internal/vision/moge"
 )
 
-// DepthCmd is "hwnpu-image depth": the depth of pictures on AMD's NPU with Depth Anything 3
+// DepthCmd is "hwnpu-image depth": the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth Anything 3
 // (depth-anything/DA3*, Apache-2.0; exports of tools/amd/iron_da3.py, internal/vision/depth) or
 // MoGe-2 (Ruicheng/moge-2-*-normal, MIT; exports of tools/amd/iron_moge.py, internal/vision/moge).
 //
@@ -39,7 +40,7 @@ import (
 // the cameras in cameras.json and with --ply the points in one frame.
 type DepthCmd struct {
 	Pictures []string `arg:"" type:"existingfile" help:"The pictures (with a multi-view export, exactly its views)."`
-	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"depth" help:"The model: a name, a family or a use of models.yaml (depth: DA3-SMALL, DA3-BASE or DA3MONO-LARGE by the memory, as da3; da3, da3:small, da3metric, moge, moge:vitl; a family alone picks for the machine's memory, or for the memory a tag names: moge:8g), run from ~/models/NAME.amd-npu2, or an export's directory (tools/amd/iron_da3.py, iron_moge.py; a multi-view one of iron_da3.py --views)."`
+	Model    string   `short:"m" placeholder:"NAME|EXPORT" default:"depth" help:"The model: a name, a family or a use of models.yaml (depth: DA3-SMALL, DA3-BASE or DA3MONO-LARGE by the memory, as da3; da3, da3:small, da3metric, moge, moge:vitl; a family alone picks for the machine's memory, or for the memory a tag names: moge:8g), run from NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models), or an export's directory (tools/amd/iron_da3.py, iron_moge.py; a multi-view one of iron_da3.py --views)."`
 	Out      string   `short:"o" type:"path" placeholder:"DIR" help:"The directory to write into (default: next to each picture)."`
 	Raw      bool     `help:"Also write the depth as raw float32 (NAME.depth.f32, at the export's size; MoGe-2 also NAME.points.f32)."`
 	Sky      bool     `help:"Also write the sky mask (NAME.sky.png); DA3-SMALL / BASE: the confidence (NAME.conf.png); MoGe-2: the mask (NAME.mask.png)."`
@@ -56,26 +57,60 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
-	dev, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
-	if err != nil {
-		return err
-	}
-	defer dev.Close()
 	model := expandHome(c.Model)
+	// Apple's Neural Engine and Intel's NPU run the programs Prepare converts (Core ML, OpenVINO
+	// IR); AMD's an export of IRON
+	backend := ""
+	if chat.HereVendor() != "amd" {
+		if format, err := llm.ProgramFormat(ctx, ""); err == nil {
+			backend = format
+		}
+	}
+	programs := backend != ""
 	if !isPath(c.Model) {
 		m, err := resolve(c.Model, chat.KindDepth)
 		if err != nil {
 			return err
 		}
-		tool := "tools/amd/iron_da3.py"
-		if m.Family == "moge" {
-			tool = "tools/amd/iron_moge.py"
-		}
-		if model, err = amdExport(m, tool); err != nil {
-			return err
+		switch {
+		case programs && m.Family == "moge":
+			if model, err = moge.Prepare(ctx, moge.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: backend, Log: lw}); err != nil {
+				return err
+			}
+		case programs:
+			if model, err = depth.Prepare(ctx, depth.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: backend, Log: lw}); err != nil {
+				return err
+			}
+		default:
+			tool := "tools/amd/iron_da3.py"
+			if m.Family == "moge" {
+				tool = "tools/amd/iron_moge.py"
+			}
+			if model, err = amdExport(m, tool); err != nil {
+				return err
+			}
 		}
 	}
-	iron.ShareExport(model, logf)
+	var dev *hwnpu.Device
+	if programs {
+		var opts []hwnpu.Option
+		if backend == llm.BackendCoreML {
+			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		}
+		d, _, err := llm.OpenDevice(ctx, "", cacheDirOf(""), opts...)
+		if err != nil {
+			return err
+		}
+		dev = d
+	} else {
+		d, err := hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD))
+		if err != nil {
+			return err
+		}
+		dev = d
+		iron.ShareExport(model, logf)
+	}
+	defer dev.Close()
 	o := opts{dir: c.Out, raw: c.Raw, sky: c.Sky, keep: c.Keep, focal: c.Focal, fov: c.Fov, normal: c.Normal}
 	if depth.IsMultiExport(model) {
 		m, err := depth.OpenMulti(ctx, dev, model)
@@ -85,6 +120,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		defer m.Close()
 		m.Logf = logf
 		m.Ref = c.Ref
+		console.Running()
 		return runMulti(ctx, m, c.Pictures, o, c.Ply, logf)
 	}
 	if moge.IsExport(model) {
@@ -96,6 +132,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		m.Logf = logf
 		m.FovX = c.Fov
 		logf("%s: MoGe-2, metric depth, sizes %v", filepath.Base(model), m.Sizes)
+		console.Running()
 		for _, path := range c.Pictures {
 			if err := runMoge(ctx, m, path, o, logf); err != nil {
 				return fmt.Errorf("%s: %w", path, err)
@@ -117,6 +154,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		}
 	}
 	logf("%s: %s, sizes %v (%s)", filepath.Base(model), kind, e.Sizes, console.Duration(time.Since(t0)))
+	console.Running()
 	for _, path := range c.Pictures {
 		if err := run(ctx, e, path, o, logf); err != nil {
 			return fmt.Errorf("%s: %w", path, err)

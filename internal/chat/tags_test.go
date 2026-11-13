@@ -13,13 +13,13 @@ func TestPick(t *testing.T) {
 		machine int
 		want    string
 	}{
-		{"plamo3translate", 16, "plamo-3-translate-2b"},
+		{"plamo3translate", 16, "plamo-3-translate-8b"}, // not on an M1 (TestPickNotOn)
 		{"plamo3translate", 8, "plamo-3-translate-0.8b"},
 		{"plamo3translate", 4, "plamo-3-translate-0.8b"},
 		{"PLaMo-3-Translate", 4, "plamo-3-translate-0.8b"}, // folded: case, '-'
 		{"plamo3translate:2B", 4, "plamo-3-translate-2b"},  // a tag wins over the memory
 		{"plamo3translate:0.8b", 64, "plamo-3-translate-0.8b"},
-		{"translate", 16, "plamo-3-translate-2b"},
+		{"translate", 16, "plamo-3-translate-8b"},
 		{"translate:0.8b", 16, "plamo-3-translate-0.8b"},
 		{"translation", 4, "plamo-3-translate-0.8b"},
 		{"chat", 8, "LFM3-1.7B"},
@@ -39,7 +39,9 @@ func TestPick(t *testing.T) {
 		{"qwen35:4b", 16, "Qwen3.5-4B"},
 		// memory tags: MODEL.md's columns, whatever this machine has
 		{"plamo3translate:8g", 64, "plamo-3-translate-0.8b"},
-		{"plamo3translate:16g", 8, "plamo-3-translate-2b"},
+		{"plamo3translate:16g", 8, "plamo-3-translate-8b"},
+		{"plamo3translate:24g", 8, "plamo-3-translate-8b"},
+		{"plamo3translate:8b", 8, "plamo-3-translate-8b"},
 		{"plamo3translate:4g", 64, "plamo-3-translate-0.8b"},
 		{"chat:16GB", 8, "gemma-4-E2B-it"},
 		{"chat:24g", 8, "gemma-4-E4B-it"},
@@ -59,7 +61,7 @@ func TestPick(t *testing.T) {
 	if _, _, ok, err := Pick("audio:2b", 16); !ok || err == nil || !strings.Contains(err.Error(), "lfm3-omni:2b") {
 		t.Errorf("a tag of two models of a category: %v, %v", ok, err)
 	}
-	if _, _, ok, err := Pick("plamo3translate:8b", 16); !ok || err == nil || !strings.Contains(err.Error(), "0.8b") {
+	if _, _, ok, err := Pick("plamo3translate:31b", 16); !ok || err == nil || !strings.Contains(err.Error(), "0.8b") {
 		t.Errorf("unknown tag: %v, %v", ok, err)
 	}
 }
@@ -99,12 +101,12 @@ func TestMachineMemory(t *testing.T) {
 
 func TestRouteByFamily(t *testing.T) {
 	t.Setenv(MemoryEnv, "16")
-	names := []string{"LFM3-1.7B", "plamo-3-translate-2b"}
+	names := []string{"LFM3-1.7B", "plamo-3-translate-8b"}
 	if i, _, msg := route("translate", names, nil, KindChat, ""); i != 1 {
 		t.Errorf("translate: %d %s", i, msg)
 	}
-	if i, _, msg := route("plamo3translate:2b", names, nil, KindChat, ""); i != 1 {
-		t.Errorf("plamo3translate:2b: %d %s", i, msg)
+	if i, _, msg := route("plamo3translate:8b", names, nil, KindChat, ""); i != 1 {
+		t.Errorf("plamo3translate:8b: %d %s", i, msg)
 	}
 	if i, _, _ := route("plamo3translate:0.8b", names, nil, KindChat, ""); i != -1 {
 		t.Errorf("a tag not loaded routed to %d", i)
@@ -116,14 +118,18 @@ func TestRouteByFamily(t *testing.T) {
 // only MODEL.md's columns.
 func TestImageMemoryTags(t *testing.T) {
 	for name, want := range map[string]string{
-		"sana:8g": "Sana-Sprint-0.6B", "sana:8G": "Sana-Sprint-0.6B", "sana:8GB": "Sana-Sprint-0.6B", "sana:8 G": "Sana-Sprint-0.6B",
-		"sana:12g": "Sana-Sprint-0.6B", "sana:4g": "Sana-Sprint-0.6B", "sana:16G": "Sana-Sprint-1.6B", "sana:100g": "Sana-Sprint-1.6B",
-		"sana-full:8g": "Sana-600M", "moge:20g": "moge-2-vitb", "image:8g": "Anima-Turbo", "depth:64g": "DA3MONO-LARGE", "depth:8g": "DA3-SMALL", "depth:16g": "DA3-BASE",
+		"sana:8g": "Sana-600M", "sana:8G": "Sana-600M", "sana:8GB": "Sana-600M", "sana:8 G": "Sana-600M",
+		"sana:12g": "Sana-600M", "sana:4g": "Sana-600M", "sana:16G": "SANA1.5-1.6B", "sana:100g": "SANA1.5-1.6B",
+		"anima": "Anima-Aesthetic", "anima:64g": "Anima-Aesthetic", "anima:aesthetic": "Anima-Aesthetic", "anima-turbo": "Anima-Turbo", "moge:20g": "moge-2-vitb", "image:8g": "Anima-Turbo", "depth:64g": "DA3MONO-LARGE", "depth:8g": "DA3-SMALL", "depth:16g": "DA3-BASE",
 	} {
 		m, _, ok, err := Pick(name, 59)
 		if !ok || err != nil || m.Name != want {
 			t.Errorf("Pick(%q) = %s, %v, %v; want %s", name, m.Name, ok, err, want)
 		}
+	}
+	// Anima-Base was dropped (design.md 16.158): its tag no longer resolves
+	if _, _, _, err := Pick("anima:base", 59); err == nil {
+		t.Error("Pick(anima:base) resolved")
 	}
 }
 

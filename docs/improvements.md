@@ -64,6 +64,10 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Conversation marks keep only the ring slots in use (16.71) | | | | ○ 578 → 183 MB over 5 translations | | | | All |
 | Memory back to the OS after a conversion (16.71) | | | | ○ 2.4 GB → 154 MB right after startup | | | | All |
 | Cleaning up the `/dev/shm` left by OpenVINO (16.72) | | | | | ○ 8.4 GB a day | | | Intel / OpenVINO |
+| Apple: sigmoid and SiLU written with exp in ONNX programs (`ExpSigmoid`, 16.149) | △ RTMDet-s 6.6 → 9.3 ms an image | | | | | | ◎ RTMDet-s box 98 → 5.5 px, score 0.35 → 0.063 off ONNX Runtime | Apple |
+| Host resize without closures, rows on every core (16.149) | ◎ 37–55 → 5–7 ms a picture (RTMDet, RTMO, LFM3-VL) | | | | | | the same bytes | All |
+| Apple: PP-OCR's recognizer on the NPU (logits before the softmax, the 18710-wide output in two parts, the bias in the linear, fp16 read as it is, decoding during the next call) (16.149) | ◎ a page of 98 lines 1528 → 488 ms | | | | | | the same lines | Apple |
+| PP-OCR's recognizer at seven widths padded as PaddleOCR (16.149) | | | △ a program to compile for each width (5–20 s, once) | △ 425 MB at most | | | ○ the receipt 11 → 13 of 13 lines as PaddleOCR | All |
 
 ◎ large effect, ○ helps, △ small or with a cost, ✕ makes it worse
 
@@ -370,7 +374,9 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | gemma-4-E4B-it | `gemma4` | Same | Gemma 4 | Text only | ○ lut6, one program (`-prefill auto`) | Converts | ○ q4 5.6 tok/s, 3.53 GB, context 4096 |
 | Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen's split rules | Qwen3.5 | Text only (the vision tower is not converted) | ◎ lut8, one program (Q=8), all on the ANE, KL 0.005–0.007, about 8 tokens/s | Converts (int8) | ○ `iron_export_lm.py qwen35 --q4`. 32 layers at 6.4 tok/s (16.94), 4.7 GB. Top token 8/9 against HF (the host graph at the same q4 misses the same one, 16.92) |
 | Qwen3-0.6B | `qwen3` (16.127) | Qwen3's pre-tokenizer (the `tokenizer.json` Anima reads) | Qwen3 | — | ○ lut8, one program not split at its attention (context 4096, `llm.Unpaged`), all on the ANE, 9.5–12.4 tokens/s on an M1, 1.16 GiB on the Neural Engine + 2.75 GB of the process. KL 0.014 for lut8 on the CPU | Converts (int8), not run on the NPU | — (no export) |
+| Qwen3-1.7B | `qwen3` (16.150) | Same | Qwen3 | — | ○ lut8, one program not split at its attention (context 4096), all on the ANE, 13–22 tokens/s on an M3; below 16 GB one program (`prefill: off`, `variants`), 1.63 GiB on the Neural Engine + 2.2–2.8 GB of the process at its peak; from 16 GB two, 3.26 GiB + 3.0–4.1 GB. KL 0.018 for lut8 on the CPU (32/32) | Converts (int8), not run on the NPU | — (no export) |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3, translation) | — | ○ lut8, one program, context 262144. Checked on an M3 that all of it is on the ANE, and the weight formats | Converts (int8). Translates on OpenVINO's CPU | ◎ q4 11.6 tok/s, 2.16 GiB, context 8192 |
+| plamo-3-translate-8b | `plamo3` (16.164) | Same | Same | — | ○ lut4 (the 8B only, `Config.Format`), one program of 5 parts, all on the ANE, 3.81 GiB + the process's 4.1 GB at its peak; 0.8 tokens/s on an M1 (over its 2.8 GiB). 13/20 sentences word for word as lut8, the rest rewordings | int4 (by rows, the 8B only, `Config.IntelFormat`), one program (prefill off), 3.8 GiB; int8 (7.6 GiB) is over what a Meteor Lake NPU held. Not run, precision not checked | ? `iron_export_lm.py plamo3 --q4` not tried (docs/handoff-plamo3-8b.md) |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (embedding API) | — | ◎ lut8 + head-scale | Converts (int8) | — |
 | BERT family (all-MiniLM-L6-v2 and so on) | `bert` | **Not implemented** (WordPiece) | — | — | Converts only (lut8) | Converts only (int8) | — |
 | Anima-Turbo (image generation) | `internal/imagegen/anima` (built from one MIL description) | Qwen3 BPE + T5 Unigram | — (`hwnpu-image`) | Images out | ◎ M3: 1024×1024, 8 steps in about 40 s, 3.8 GB (int8) | △ Converts. Checked on OpenVINO's CPU | ◎ 1024×1024, 8 steps in about 68 s, 3.4 GiB pinned (DiT at 8 bits) |
@@ -610,7 +616,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 - The rest of AMD's pinned memory (amd-npu-models.md section 12):
   - Split the VAE into tiles (with the DiT in one bank (16.106), a VAE stage is now the largest)
 - The rest of Anima:
-  - CFG (negative prompts). A non-Turbo Anima is expected to take over 10 minutes an image
+  - CFG (negative prompts) done in 16.148 (Anima-Aesthetic, 3 min 19 s an image at 1024² on AMD with DPM-Solver++ 2M in 25 steps and the guidance at the noisier steps only, 16.154; 4 min 40 s with the model card's 30 Euler steps); not yet checked on Core ML and OpenVINO devices
   - Calls from ComfyUI nodes
 - The rest of Qwen3.6-35B-A3B's prompt (16.116; a chunk of 256 2.6 s): the experts' command (B, 1.49 s) is bound by the kernel's arithmetic (streaming the weights alone takes 8.4 + 4.4 ms of 19–23 + 15–17 ms a layer; a scalar MAC, no mmul. bf16 mmul in groups of 8 rows was tried and was not faster), the GDN and attention command (A, about 0.7 s; `GatedDeltaRule` receives every row 16 times), the host's routing (about 2.8 ms a layer, mostly a 16 MB copy of x)
 

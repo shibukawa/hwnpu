@@ -11,6 +11,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/speech"
 )
 
@@ -61,7 +62,13 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if cfg, err = speech.Prepare(ctx, speech.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Format: c.Format, Log: lw}); err != nil {
+		backend := ""
+		if !c.CPU { // the CPU interpreter runs Core ML packages
+			if backend, err = llm.ProgramFormat(ctx, ""); err != nil {
+				return err
+			}
+		}
+		if cfg, err = speech.Prepare(ctx, speech.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Format: c.Format, Backend: backend, Log: lw}); err != nil {
 			return err
 		}
 	}
@@ -75,6 +82,7 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 		return err
 	}
 	defer s.Close()
+	console.Running()
 	t0 := time.Now()
 	pcm, frames, err := s.Speak(ctx, speech.Request{Text: strings.Join(c.Text, " "), Language: c.Lang, Voice: c.Voice, Seed: seed, MaxFrames: c.MaxFrames})
 	if err != nil {

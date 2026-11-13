@@ -10,12 +10,16 @@
 //     from the export's tables;
 //  2. the text graph (Qwen3, then the adapter): the conditioning, 512 rows of 1024;
 //  3. from Gaussian noise in the latent space (16 channels, an eighth of the image's sides), a
-//     flow-matching Euler step per sigma: the DiT (dit_in, the dit_blocks groups, dit_out)
-//     gives the velocity, x += (sigma_next - sigma) * v;
+//     flow-matching step per sigma: the DiT (dit_in, the dit_blocks groups, dit_out) gives the
+//     velocity v, and Euler's x += (sigma_next - sigma) * v or DPM-Solver++ 2M (Sampling); with
+//     classifier-free guidance the DiT runs on the prompt's conditioning and on the negative
+//     prompt's, v = u + s (c - u), at the steps Sampling picks;
 //  4. the VAE decoder on the latents, unnormalized by the VAE's per-channel mean and std.
 //
-// The export is for one image size; Anima-Turbo wants about 8 steps and no classifier-free
-// guidance (CFG 1), which is all this package runs.
+// The export is for one image size and one diffusion model: Anima-Turbo wants about 8 steps and
+// no classifier-free guidance (CFG 1); Anima-Aesthetic 30 to 50 Euler steps at CFG
+// 4 to 5 (circlestone-labs/Anima's model card), each step the DiT twice, or as many in fewer with
+// DPM-Solver++ 2M and the guidance at the noisier steps only (DefaultSampling).
 package anima
 
 import (
@@ -29,10 +33,12 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
+	"github.com/shibukawa/hwnpu/internal/types"
 )
 
 // DitConfig is the DiT's shape (iron_anima.DitConfig; for the Core ML and OpenVINO exports, the
@@ -73,11 +79,10 @@ type engine interface {
 	// text runs the text encoder and the adapter on the embedding rows qx and tx (Text.Rows of
 	// Text.Hidden each, zeros past nq and nt): the conditioning, the same shape.
 	text(ctx context.Context, qx, tx []float32, nq, nt int) ([]float32, error)
-	// setCond gives the DiT the conditioning of the next velocity calls.
-	setCond(cond []float32) error
 	// velocity runs the DiT on the patches (tokens x 64, c * 4 + dy * 2 + dx) at the timestep
-	// whose sinusoid is tproj: each patch's velocity (tokens x 64, dy * 32 + dx * 16 + c).
-	velocity(ctx context.Context, patches, tproj []float32) ([]float32, error)
+	// whose sinusoid is tproj under each conditioning of conds: each patch's velocity (tokens x
+	// 64, dy * 32 + dx * 16 + c) for each.
+	velocity(ctx context.Context, patches, tproj []float32, conds [][]float32) ([][]float32, error)
 	// decode runs the VAE on the latents (16, h, w), telling stage (when not nil) of each stage
 	// as it ends; nil when the export has no VAE.
 	decode(ctx context.Context, latents []float32, stage StageFunc) (*image.RGBA, error)
@@ -89,6 +94,11 @@ type engine interface {
 type Pipeline struct {
 	Dit  DitConfig
 	Text TextConfig
+	// Checkpoint is the diffusion model the export was made from (anima-turbo-v1.1.safetensors),
+	// "" for exports made before it was written down, which are all Anima-Turbo's.
+	Checkpoint string
+
+	dir string
 
 	eng                engine
 	qwen               *tokenizer.Tokenizer
@@ -126,7 +136,7 @@ type StageFunc func(i, n int, d time.Duration)
 // log, when not nil, is shown each program of an export of hwnpu-image convert as it loads (on a
 // terminal, a line with a spinner: the first load compiles it for the NPU, minutes at 1024 x 1024).
 func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
-	p := &Pipeline{}
+	p := &Pipeline{dir: dir}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
 		return nil, fmt.Errorf("anima: %w", err)
@@ -136,7 +146,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 		var pe *progEngine
 		pe, p.Dit, p.Text, err = openPrograms(ctx, dev, dir, log)
 		if pe != nil {
-			p.eng = pe
+			p.eng, p.Checkpoint = pe, pe.checkpoint
 		}
 	} else {
 		if dev == nil {
@@ -145,7 +155,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 		var ie *ironEngine
 		ie, p.Dit, p.Text, err = openIron(ctx, dev, dir)
 		if ie != nil {
-			p.eng = ie
+			p.eng, p.Checkpoint = ie, ie.checkpoint
 		}
 	}
 	if err != nil {
@@ -230,6 +240,55 @@ func (p *Pipeline) Encode(ctx context.Context, prompt string) ([]float32, error)
 	return cond, nil
 }
 
+// EncodeNegative is the negative prompt's conditioning for classifier-free guidance: Encode's,
+// or for an empty prompt the export's EmptyCondFile (as diffusers runs an empty prompt).
+func (p *Pipeline) EncodeNegative(ctx context.Context, prompt string) ([]float32, error) {
+	if strings.TrimSpace(prompt) != "" {
+		return p.Encode(ctx, prompt)
+	}
+	cond, err := p.emptyCond()
+	if err != nil {
+		return nil, err
+	}
+	p.dump("uncond.bin", cond)
+	return cond, nil
+}
+
+// Distilled reports whether the export's diffusion model is Anima-Turbo, distilled to run
+// without classifier-free guidance in few steps.
+func (p *Pipeline) Distilled() bool {
+	return p.Checkpoint == "" || strings.Contains(strings.ToLower(p.Checkpoint), "turbo")
+}
+
+// DefaultSteps, DefaultGuidance and DefaultSampling are the export's model's: for Anima-Turbo the
+// model card's 8 Euler steps without guidance (8 to 12 at CFG 1); for the others CFG 4 (the card's
+// 4 to 5) with DPM-Solver++ 2M in 25 steps and the guidance only at sigmas from 0.6, which on
+// 512 x 512 lands nearer 100 Euler steps than the card's 30 Euler steps with the guidance at
+// every step (latent cosine 0.984 against 0.982 over 6 pictures, the same pictures) in 72 % of
+// the time (design.md 16.154).
+func (p *Pipeline) DefaultSteps() int {
+	if p.Distilled() {
+		return 8
+	}
+	return 25
+}
+
+// DefaultSampling is the solver and the steps that run the guidance; see DefaultSteps.
+func (p *Pipeline) DefaultSampling() Sampling {
+	if p.Distilled() {
+		return Sampling{Solver: "euler"}
+	}
+	return Sampling{Solver: "dpm2m", CFGMin: 0.6, CFGMax: 1}
+}
+
+// DefaultGuidance is the guidance scale (1: none); see DefaultSteps.
+func (p *Pipeline) DefaultGuidance() float64 {
+	if p.Distilled() {
+		return 1
+	}
+	return 4
+}
+
 // Sigmas are the flow-matching sigmas of steps Euler steps: linspace(1, 1/steps) shifted by
 // shift (FlowMatchEulerDiscreteScheduler's shift, 3 for Anima), then 0.
 func Sigmas(steps int, shift float64) []float64 {
@@ -255,9 +314,29 @@ func (p *Pipeline) Noise(seed uint64) []float32 {
 	return out
 }
 
-// Denoise runs the Euler steps from the latents x (Noise's layout) under cond: the latents
-// after the last step. step, when set, is told each step as it ends.
-func (p *Pipeline) Denoise(ctx context.Context, cond []float32, x []float32, sigmas []float64, step func(i int, d time.Duration)) ([]float32, error) {
+// Sampling is how Denoise steps: the solver, and the sigmas classifier-free guidance runs at.
+type Sampling struct {
+	// Solver is "euler" ("" too, diffusers' FlowMatchEulerDiscreteScheduler) or "dpm2m"
+	// (DPM-Solver++ 2M on the data prediction x - sigma v, as diffusers' DPMSolverMultistep with
+	// flow sigmas: the same DiT calls a step, second order from the third step).
+	Solver string
+	// CFGMin and CFGMax, when CFGMax > 0, bound the sigmas at which a step runs the guidance;
+	// the other steps run the DiT once, on cond (guidance in a limited interval, Kynkäänniemi et
+	// al. 2024).
+	CFGMin, CFGMax float64
+}
+
+// guided reports whether the step at sigma runs the guidance.
+func (s Sampling) guided(sigma float64) bool {
+	return s.CFGMax <= 0 || (sigma >= s.CFGMin && sigma <= s.CFGMax)
+}
+
+// Denoise runs the steps from the latents x (Noise's layout) under cond: the latents after the
+// last step. With uncond (the negative prompt's conditioning) and a guidance scale other than 1,
+// a step runs the DiT on both, v = u + guidance (c - u) (classifier-free guidance, diffusers'
+// ClassifierFreeGuidance); with uncond nil, once on cond. s picks the solver and the steps that
+// run the guidance. step, when set, is told each step as it ends.
+func (p *Pipeline) Denoise(ctx context.Context, cond, uncond []float32, guidance float64, x []float32, sigmas []float64, s Sampling, step func(i int, d time.Duration)) ([]float32, error) {
 	c := p.Dit
 	gh, gw := c.Grid()
 	h, w := c.LatentSize()
@@ -265,13 +344,24 @@ func (p *Pipeline) Denoise(ctx context.Context, cond []float32, x []float32, sig
 	if len(x) != C*h*w {
 		return nil, fmt.Errorf("anima: %d latent values for %dx%dx%d", len(x), C, h, w)
 	}
+	switch s.Solver {
+	case "", "euler", "dpm2m":
+	default:
+		return nil, fmt.Errorf("anima: no solver %q (euler, dpm2m)", s.Solver)
+	}
 	x = append([]float32(nil), x...)
-	if err := p.eng.setCond(cond); err != nil {
-		return nil, err
+	if uncond != nil && len(uncond) != len(cond) {
+		return nil, fmt.Errorf("anima: the negative prompt's conditioning has %d values, the prompt's %d", len(uncond), len(cond))
+	}
+	if guidance == 1 {
+		uncond = nil
 	}
 	tokens := gh * gw
 	pd := C * c.Patch * c.Patch
 	patches := make([]float32, tokens*pd)
+	vl := make([]float32, len(x)) // the velocity in x's layout
+	var d0, d1 []float32          // dpm2m: this step's and the last step's data predictions
+	var hLast float64             // dpm2m: the last step's log-SNR step
 	for i := 0; i+1 < len(sigmas); i++ {
 		t0 := time.Now()
 		// patches: token py*gw+px, feature c*4 + dy*2 + dx
@@ -287,23 +377,38 @@ func (p *Pipeline) Denoise(ctx context.Context, cond []float32, x []float32, sig
 				}
 			}
 		}
-		v, err := p.eng.velocity(ctx, patches, TimestepSinusoid(sigmas[i], c.Hidden))
+		tproj := TimestepSinusoid(sigmas[i], c.Hidden)
+		u := uncond
+		if !s.guided(sigmas[i]) {
+			u = nil
+		}
+		v, err := p.velocity(ctx, i, cond, u, guidance, patches, tproj)
 		if err != nil {
+			if types.IsDeviceLost(err) && p.Dit.Group > 1 {
+				return nil, fmt.Errorf("anima: step %d: %w (the driver stops a program that runs too long: an export of fewer blocks a program, --group %d, runs each in less time)", i, err, p.Dit.Group/2)
+			}
 			return nil, fmt.Errorf("anima: step %d: %w", i, err)
 		}
 		p.dump(fmt.Sprintf("v%d.bin", i), v)
 		// v: token py*gw+px, feature dy*32 + dx*16 + c
-		dt := float32(sigmas[i+1] - sigmas[i])
 		for py := 0; py < gh; py++ {
 			for px := 0; px < gw; px++ {
 				o := (py*gw + px) * pd
 				for dy := 0; dy < 2; dy++ {
 					for dx := 0; dx < 2; dx++ {
 						for ch := 0; ch < C; ch++ {
-							x[(ch*h+2*py+dy)*w+2*px+dx] += dt * v[o+dy*2*C+dx*C+ch]
+							vl[(ch*h+2*py+dy)*w+2*px+dx] = v[o+dy*2*C+dx*C+ch]
 						}
 					}
 				}
+			}
+		}
+		if s.Solver == "dpm2m" {
+			hLast = dpm2m(x, vl, &d0, &d1, sigmas[i], sigmas[i+1], hLast)
+		} else {
+			dt := float32(sigmas[i+1] - sigmas[i])
+			for j, vj := range vl {
+				x[j] += dt * vj
 			}
 		}
 		if step != nil {
@@ -311,6 +416,67 @@ func (p *Pipeline) Denoise(ctx context.Context, cond []float32, x []float32, sig
 		}
 	}
 	return x, nil
+}
+
+// dpm2m is one DPM-Solver++ 2M step of x from sigma s to t with the velocity v, in place: the data
+// prediction D0 = x - s v, and with the last step's (*d1, its log-SNR step hLast) the second order
+// D = (1 + 1/2r) D0 - (1/2r) D1, r = hLast / h; x = (t/s) x + (1 - t) (1 - e^-h) D, where the
+// log-SNR is log((1 - sigma) / sigma). It returns this step's h. The first step from sigma 1
+// (h infinite) and the last to 0 are first order (Euler's).
+func dpm2m(x, v []float32, d0, d1 *[]float32, s, t, hLast float64) float64 {
+	if *d0 == nil {
+		*d0 = make([]float32, len(x))
+	}
+	for j := range x {
+		(*d0)[j] = x[j] - float32(s)*v[j]
+	}
+	lam := func(sg float64) float64 { return math.Log((1 - sg) / sg) }
+	h := lam(t) - lam(s) // +Inf from s = 1 or to t = 0
+	if t == 0 {
+		copy(x, *d0)
+	} else {
+		eh := t * (1 - s) / ((1 - t) * s) // e^-h
+		a, b := float32(t/s), float32((1-t)*(1-eh))
+		k := 0.0 // 1 / 2r
+		if *d1 != nil && !math.IsInf(hLast, 0) && !math.IsInf(h, 0) {
+			k = h / (2 * hLast)
+		}
+		k0, k1 := float32(1+k), float32(-k)
+		for j := range x {
+			d := k0 * (*d0)[j]
+			if k != 0 {
+				d += k1 * (*d1)[j]
+			}
+			x[j] = a*x[j] + b*d
+		}
+	}
+	*d0, *d1 = *d1, *d0
+	if *d0 == nil {
+		*d0 = make([]float32, len(x))
+	}
+	return h
+}
+
+// velocity is the DiT's velocity at step i: on cond, or with uncond guided by guidance.
+func (p *Pipeline) velocity(ctx context.Context, i int, cond, uncond []float32, guidance float64, patches, tproj []float32) ([]float32, error) {
+	conds := [][]float32{cond}
+	if uncond != nil {
+		conds = append(conds, uncond)
+	}
+	vs, err := p.eng.velocity(ctx, patches, tproj, conds)
+	if err != nil || uncond == nil {
+		if err != nil {
+			return nil, err
+		}
+		return vs[0], nil
+	}
+	v, u := vs[0], vs[1]
+	p.dump(fmt.Sprintf("u%d.bin", i), u)
+	g := float32(guidance)
+	for j := range v {
+		v[j] = u[j] + g*(v[j]-u[j])
+	}
+	return v, nil
 }
 
 // TimestepSinusoid is diffusers' Timesteps(dim, flip_sin_to_cos=True, downscale_freq_shift=0) of
@@ -336,3 +502,10 @@ func bf16(x float32) uint16 {
 }
 
 func fromBF16(h uint16) float32 { return math.Float32frombits(uint32(h) << 16) }
+
+// DPM2M is one DPM-Solver++ 2M step (dpm2m) for the other image pipelines: x in place from sigma
+// s to t with the velocity v, d0 and d1 its data predictions kept between steps (nil at first),
+// hLast the last step's log-SNR step (returned).
+func DPM2M(x, v []float32, d0, d1 *[]float32, s, t, hLast float64) float64 {
+	return dpm2m(x, v, d0, d1, s, t, hLast)
+}

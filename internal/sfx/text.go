@@ -27,10 +27,11 @@ const qwenLayers = 28
 // in lut8, for 0.3 GB more (1.7 GB; fp16 2.8 GB, 0.7 % off).
 var TextFP16 = []string{"layers.0.=fp16", "layers.1.=fp16", "layers.2.=fp16", "layers.26.=fp16", "layers.27.=fp16"}
 
-// TextOptions are the text encoder's weight options in a format.
+// TextOptions are the text encoder's weight options in a format: lut8 (and int8, Intel's 8 bits)
+// keeps TextFP16's layers in fp16.
 func TextOptions(format string) llm.Options {
 	o := llm.Options{Format: format}
-	if format == "lut8" {
+	if format == "lut8" || format == "int8" {
 		o.FormatFor = TextFP16
 	}
 	return o

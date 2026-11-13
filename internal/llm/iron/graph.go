@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 // GraphManifest is manifest.json of a graph exported by tools/amd/iron_graph.py: one IRON graph
@@ -68,6 +70,10 @@ type Graph struct {
 	// keep (GraphOptions.KeepRuns): each command's run, made by the first Run
 	keep bool
 	runs []*hwnpu.Run
+	// barrier (GraphOptions.Barrier): the ELF loaded again and its empty command
+	barrier     bool
+	barrierProg *hwnpu.Program
+	barrierRun  *hwnpu.Run
 	// Timing, when set, is told each command's run time.
 	Timing func(command int, run time.Duration)
 }
@@ -87,6 +93,12 @@ type GraphOptions struct {
 	// allocates, copies and flushes the control code: YuNet at 320 x 256 took 1.6 ms of the
 	// host's CPU a call, kept 1.1 ms (the rest is the submission and the wait in the kernel).
 	KeepRuns bool
+	// Barrier runs an empty command in a hardware context of its own (the ELF loaded a second
+	// time) before each Run, as the language models' stepBarrier. Without it, a graph whose
+	// commands write a state at a per-call position (Qwen-Image-2.1's dit_text: each chunk's
+	// keys and values into the causal cache from start) hung the next Run's first command
+	// (ERT_CMD_STATE_TIMEOUT); the first Run is always right.
+	Barrier bool
 }
 
 // OpenGraph loads the graph exported in dir onto dev.
@@ -96,11 +108,12 @@ func OpenGraph(ctx context.Context, dev *hwnpu.Device, dir string) (*Graph, erro
 
 // OpenGraphWith is OpenGraph with options.
 func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt GraphOptions) (*Graph, error) {
+	defer console.Loading(dir)()
 	man, err := ReadGraphManifest(dir)
 	if err != nil {
 		return nil, err
 	}
-	g := &Graph{Manifest: man, dev: dev, dir: dir, keep: opt.KeepRuns}
+	g := &Graph{Manifest: man, dev: dev, dir: dir, keep: opt.KeepRuns, barrier: opt.Barrier}
 	fail := func(err error) (*Graph, error) {
 		g.Close()
 		return nil, fmt.Errorf("iron: %s: %w", man.Name, err)
@@ -168,6 +181,14 @@ func (g *Graph) Close() error {
 		}
 	}
 	g.runs = nil
+	if g.barrierRun != nil {
+		errs = append(errs, g.barrierRun.Close())
+		g.barrierRun = nil
+	}
+	if g.barrierProg != nil {
+		errs = append(errs, g.barrierProg.Close())
+		g.barrierProg = nil
+	}
 	if v := g.v; v != nil {
 		for _, b := range v.args {
 			errs = append(errs, b.Close())
@@ -205,6 +226,9 @@ func (g *Graph) Use(i int) error {
 	if i == g.cur {
 		return nil
 	}
+	var read int64
+	done := console.Reading() // preparing, in the times and HWNPU_ENERGY's energy
+	defer func() { done(read) }()
 	for kind, b := range g.Manifest.Banks {
 		name := b.Image
 		if s, ok := g.Manifest.Variants[i][kind]; ok {
@@ -223,6 +247,7 @@ func (g *Graph) Use(i int) error {
 			g.cur = -1
 			return err
 		}
+		read += int64(n)
 	}
 	g.cur = i
 	return nil
@@ -301,6 +326,11 @@ func (g *Graph) Output(name string) ([]byte, error) {
 // Run syncs the inputs to the device and runs every command with the per-call values.
 func (g *Graph) Run(ctx context.Context, values map[string]int64) error {
 	v := g.v
+	if g.barrier {
+		if err := g.runBarrier(ctx); err != nil {
+			return err
+		}
+	}
 	for _, h := range v.m.Inputs {
 		if err := g.buffer(h.Argument).SyncToDevice(h.Offset, h.Bytes); err != nil {
 			return err
@@ -365,6 +395,53 @@ func (g *Graph) Run(ctx context.Context, values map[string]int64) error {
 		if err != nil {
 			return fmt.Errorf("iron: %s: command %d: %w", g.Manifest.Name, k, err)
 		}
+	}
+	return nil
+}
+
+// runBarrier runs the empty command of the graph's ELF loaded a second time (GraphOptions.Barrier).
+func (g *Graph) runBarrier(ctx context.Context) error {
+	if g.barrierRun == nil {
+		if g.barrierProg == nil {
+			kr, err := g.dev.Kernel()
+			if err != nil {
+				return err
+			}
+			if g.barrierProg, err = kr.Load(ctx, hwnpu.ProgramSource{Path: filepath.Join(g.dir, g.v.m.ELF)}); err != nil {
+				return fmt.Errorf("iron: %s: the barrier: %w", g.Manifest.Name, err)
+			}
+		}
+		name := ""
+		for _, k := range g.barrierProg.Kernels() {
+			if strings.HasSuffix(k, ":aiecc_empty") {
+				name = k
+				break
+			}
+		}
+		if name == "" {
+			return fmt.Errorf("iron: %s: the barrier: the ELF has no empty instance", g.Manifest.Name)
+		}
+		kern, err := g.barrierProg.Kernel(name)
+		if err != nil {
+			return err
+		}
+		run, err := kern.NewRun()
+		if err != nil {
+			return err
+		}
+		for _, a := range g.v.m.Arguments {
+			if a.Index < len(kern.Args()) {
+				run.SetBuffer(a.Index, g.buffer(a.Kind))
+			}
+		}
+		if err := run.Err(); err != nil {
+			run.Close()
+			return fmt.Errorf("iron: %s: the barrier: %w", g.Manifest.Name, err)
+		}
+		g.barrierRun = run
+	}
+	if err := g.barrierRun.Run(ctx); err != nil {
+		return fmt.Errorf("iron: %s: the barrier: %w", g.Manifest.Name, err)
 	}
 	return nil
 }

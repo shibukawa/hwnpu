@@ -45,8 +45,49 @@ from iron.operators.mha import MHA
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from iron_graph import bind_device, export_graph, trim_zeros, write_check  # noqa: E402
+import iron_mha  # noqa: E402
 
 PREFIX = "model.diffusion_model."
+
+
+def dit_prefix(path: Path) -> str:
+    """The diffusion model's tensor-name prefix: model.diffusion_model. (Turbo, Aesthetic) or
+    net. (anima-base-v1.0 and the previews); the names past it are the same."""
+    with open(path, "rb") as f:
+        (n,) = struct.unpack("<Q", f.read(8))
+        names = json.loads(f.read(n))
+    return "net." if any(k.startswith("net.") for k in names) else PREFIX
+
+
+def dit_weights(root: Path):
+    path = root / "diffusion_models" / ARGS.dit
+    return weights(path, dit_prefix(path))
+
+
+def empty_cond(dit) -> np.ndarray:
+    """The empty prompt's conditioning row (anima.EmptyCond in Go): diffusers runs an empty prompt
+    as one masked Qwen3 token, so the adapter's cross-attention (no biases, a zero source) adds
+    nothing and its self-attention over the one T5 row (</s>) is that row's value."""
+    def rms(x, w):
+        return x / np.sqrt(np.mean(x * x) + 1e-6) * w
+
+    def lin(w, x, b=None):
+        y = np.asarray(w, np.float64) @ x
+        return y if b is None else y + np.asarray(b, np.float64)
+
+    f = lambda n: np.asarray(dit[n], np.float64)  # noqa: E731
+    x = f("llm_adapter.embed.weight")[1]
+    i = 0
+    while f"llm_adapter.blocks.{i}.norm_self_attn.weight" in dit:
+        p = f"llm_adapter.blocks.{i}."
+        h = rms(x, f(p + "norm_self_attn.weight"))
+        x = x + lin(dit[p + "self_attn.o_proj.weight"], lin(dit[p + "self_attn.v_proj.weight"], h))
+        h = lin(dit[p + "mlp.0.weight"], rms(x, f(p + "norm_mlp.weight")), dit[p + "mlp.0.bias"])
+        h = 0.5 * h * (1 + np.vectorize(math.erf)(h / math.sqrt(2)))
+        x = x + lin(dit[p + "mlp.2.weight"], h, dit[p + "mlp.2.bias"])
+        i += 1
+    x = lin(dit["llm_adapter.out_proj.weight"], x, dit["llm_adapter.out_proj.bias"])
+    return rms(x, f("llm_adapter.norm.weight")).astype(np.float32)
 
 
 @dataclasses.dataclass
@@ -82,6 +123,9 @@ class DitFormats:
 
     attn: str = "q8"
     mlp: str = "q8"
+    # The attention's products (dit_attention): "qk" (QK^T through bfp16), "qkpv" (and P*V) or
+    # "bf16" (both bf16, as IRON's MHA)
+    mha: str = "qk"
 
 
 DIT_FMT = DitFormats()
@@ -253,6 +297,14 @@ class AdaLN(iron.Graph):
         return [m[i * self.E : (i + 1) * self.E] for i in range(n)]
 
 
+def dit_attention(q, k, v):
+    """The DiT's attention of (rows, heads, 128) q, k, v: iron_mha.ImageMHA, 64-key blocks, with
+    QK^T through bfp16 (``--dit-mha qk``), P*V too (``qkpv``) or both bf16 (``bf16``: IRON's MHA's
+    products, 1.7x as long as qk; design.md 16.147)."""
+    m = DIT_FMT.mha
+    return iron_mha.attention(q, k, v, d=q.shape[-1], qk_bfp16=m != "bf16", pv_bfp16=m == "qkpv")
+
+
 class DitBlock(iron.Graph):
     """A Cosmos-Predict2 block: adaLN-zero self-attention (RoPE), cross-attention, GELU MLP."""
 
@@ -286,8 +338,7 @@ class DitBlock(iron.Graph):
         q, k, v = self.self_attn.qkv(h, h, n, n)
         q, k = F.rope(q, angles), F.rope(k, angles)
         H, D = c.heads, c.head_dim
-        o = MHA.step(q.reshape(n, H, D), k.reshape(n, H, D), v.reshape(n, H, D),
-                     heads_interleaved=True, kv_interleaved=True, causal=False, num_pipelines=8)
+        o = dit_attention(q.reshape(n, H, D), k.reshape(n, H, D), v.reshape(n, H, D))
         x = x + self.self_attn.out(o.reshape(n, E)) * gate
         # cross-attention over the text: MHA takes no more queries than keys, so 512 rows a call
         shift, scale, gate = self.ada[1].rows(act, temb, 3)
@@ -297,8 +348,7 @@ class DitBlock(iron.Graph):
         q, k, v = q.reshape(n, H, D), k.reshape(L, H, D), v.reshape(L, H, D)
         o = self.scratch
         for s in range(0, n, L):
-            o[s : s + L] = MHA.step(q[s : s + L], k, v, heads_interleaved=True, kv_interleaved=True,
-                                    causal=False, num_pipelines=8).reshape(L, E)
+            o[s : s + L] = dit_attention(q[s : s + L], k, v).reshape(L, E)
         x = x + self.cross_attn.out(o) * gate
         # MLP
         shift, scale, gate = self.ada[2].rows(act, temb, 3)
@@ -581,7 +631,7 @@ class Text(iron.Graph):
 def export_text(root: Path, out: Path, check: bool) -> None:
     c = TextConfig()
     qwen = weights(root / "text_encoders" / "qwen_3_06b_base.safetensors", "model.")
-    dit = weights(root / "diffusion_models" / ARGS.dit, PREFIX)
+    dit = dit_weights(root)
     t0 = time.time()
     g = Text(c, qwen, dit)
     cg = g.compile(qx=(c.rows, c.hidden), tx=(c.rows, c.hidden))
@@ -594,6 +644,8 @@ def export_text(root: Path, out: Path, check: bool) -> None:
     shutil.copyfile(root / "diffusers" / "t5_tokenizer" / "tokenizer.json", out / "text" / "t5_tokenizer.json")
     (out / "text" / "qwen_embed.bin").write_bytes(bf(qwen["embed_tokens.weight"]).tobytes())
     (out / "text" / "t5_embed.bin").write_bytes(bf(dit["llm_adapter.embed.weight"]).tobytes())
+    # an empty negative prompt's conditioning, for classifier-free guidance (anima.EmptyCondFile)
+    (out / "text" / "empty_cond.bin").write_bytes(empty_cond(dit).astype("<f4").tobytes())
     if check:
         rng = np.random.default_rng(0)
         nq, nt = 37, 41
@@ -617,6 +669,11 @@ def export_text(root: Path, out: Path, check: bool) -> None:
 # SiLU keep zeros zero. Wp is a multiple of 16 so a chunk's rows are whole 256-row GEMM tiles.
 
 VAE_PAD = 16
+# The 3 x 3 convolutions (--vae-conv): "grid" (iron_gridgemm.GridGEMM reads the grid's rows in
+# place: one GEMM a convolution, or one a kernel row summed, as iron_sana's; design.md 16.147) or
+# "im2col" (a Copy gathers each pixel's 3 x 3 neighbours into rows 9 C wide, then one GEMM)
+VAE_CONV = ["grid"]
+VAE_TAP_ROWS = 64  # image rows a GridGEMM takes at once
 
 
 @dataclasses.dataclass(frozen=True)
@@ -716,14 +773,17 @@ class VaeStage(iron.Graph):
             elif kind == "up":
                 _, path, cin, cout = op
                 wt = np.asarray(w[f"{path}.upsamplers.0.resample.1.weight"], np.float32)  # (cout, cin, 3, 3)
-                self._param(f"{path}.up.w", wt.transpose(0, 2, 3, 1).reshape(wt.shape[0], -1))
+                if VAE_CONV[0] == "grid":
+                    self._up_phases(f"{path}.up", wt)
+                else:
+                    self._conv_weight(f"{path}.up", wt.transpose(0, 2, 3, 1).reshape(wt.shape[0], -1))
                 self._param(f"{path}.up.b", np.asarray(w[f"{path}.upsamplers.0.resample.1.bias"], np.float32))
             elif kind == "head":
                 self._param("head.norm", np.asarray(w["decoder.norm_out.gamma"], np.float32).reshape(-1))
                 wt = np.asarray(w["decoder.conv_out.weight"], np.float32)[:, :, 2]  # (3, 96, 3, 3)
                 full = np.zeros((64,) + wt.shape[1:], np.float32)
                 full[:3] = wt
-                self._param("head.w", full.transpose(0, 2, 3, 1).reshape(64, -1))
+                self._conv_weight("head", full.transpose(0, 2, 3, 1).reshape(64, -1))
                 b = np.zeros(64, np.float32)
                 b[:3] = np.asarray(w["decoder.conv_out.bias"], np.float32)
                 self._param("head.b", b)
@@ -737,15 +797,54 @@ class VaeStage(iron.Graph):
     def w(self, name: str):
         return self.params[self._index[name]]
 
+    def has(self, name: str) -> bool:
+        return name in self._index
+
     def _conv3(self, name: str, w: Safetensors, path: str, cin_padded: int) -> None:
-        """A causal 3 x 3 x 3 convolution's last temporal tap as an im2col matrix
-        (cout, dy * 3 * cin + dx * cin + ci), its input channels zero-padded to cin_padded."""
+        """A causal 3 x 3 x 3 convolution's last temporal tap (_conv_weight), its input channels
+        zero-padded to cin_padded."""
         wt = np.asarray(w[f"{path}.weight"], np.float32)[:, :, 2]  # (cout, cin, 3, 3)
         co, ci = wt.shape[:2]
         full = np.zeros((co, cin_padded, 3, 3), np.float32)
         full[:, :ci] = wt
-        self._param(f"{name}.w", full.transpose(0, 2, 3, 1).reshape(co, -1))
+        self._conv_weight(name, full.transpose(0, 2, 3, 1).reshape(co, -1))
         self._param(f"{name}.b", np.asarray(w[f"{path}.bias"], np.float32))
+
+    # The rows (or columns) of a 3 x 3 kernel each low-resolution tap of an output phase takes,
+    # after a nearest 2x: phase 0 (an even output row) reads the low rows y - 1 (the kernel's
+    # top row) and y (its middle and bottom rows); phase 1 reads y (top and middle) and y + 1.
+    PHASE_TAPS = {0: ((-1, (0,)), (0, (1, 2))), 1: ((0, (0, 1)), (1, (2,)))}
+
+    def _up_phases(self, name: str, wt: np.ndarray) -> None:
+        """A nearest 2x and the 3 x 3 convolution wt (cout, cin, 3, 3) as four 2 x 2
+        convolutions at the low resolution, one an output phase (py, px), for GridGEMM (as
+        iron_sana's): a low row's two taps are two adjacent pixels, 2 cin contiguous, so
+        ``name.qPYPX`` (cout, a 4 cin) is one GEMM, or ``name.qPYPXA`` (cout, 2 cin) one a low row
+        where 2 cin passes GridGEMM's k tile of 512."""
+        cin = wt.shape[1]
+        for py in range(2):
+            for px in range(2):
+                taps = [[sum(wt[:, :, dy, dx] for dy in rows for dx in cols) for _, cols in self.PHASE_TAPS[px]]
+                        for _, rows in self.PHASE_TAPS[py]]
+                rows2 = [np.concatenate(t, axis=1) for t in taps]
+                if 2 * cin <= 512:
+                    self._param(f"{name}.q{py}{px}", np.concatenate(rows2, axis=1))
+                else:
+                    for a in range(2):
+                        self._param(f"{name}.q{py}{px}{a}", rows2[a])
+
+    def _conv_weight(self, name: str, im2col: np.ndarray) -> None:
+        """A 3 x 3 convolution's (cout, dy 3 cin + dx cin + ci) matrix: ``name.w`` (im2col), or
+        for GridGEMM ``name.g`` (one GEMM, while a kernel row's 3 cin fits its k tile of 512) or
+        ``name.g0``..``g2`` (a kernel row each)."""
+        three = im2col.shape[1] // 3
+        if VAE_CONV[0] != "grid":
+            self._param(f"{name}.w", im2col)
+        elif three <= 512:
+            self._param(f"{name}.g", im2col)
+        else:
+            for dy in range(3):
+                self._param(f"{name}.g{dy}", im2col[:, dy * three : (dy + 1) * three])
 
     # --- the operations on grids (inside body) ---
 
@@ -772,8 +871,33 @@ class VaeStage(iron.Graph):
         """The 3 x 3 convolution of the grid x (channels g.C) into a new grid (or out)."""
         gout = GridShape(g.H, g.W, cout)
         out = self.new_grid(gout) if out is None else out
-        R = g.chunk(g.C)
         Wp, C = g.Wp, g.C
+        if self.has(f"{wname}.g") or self.has(f"{wname}.g0"):
+            # the grid's rows read in place by the GEMM (iron_gridgemm.GridGEMM): no im2col
+            # copy (9 times the grid, 6.8 GB/s), one GEMM or one a kernel row
+            from iron.operators.flm.gemm.design import Epilogue
+            from iron_gridgemm import GridGEMM
+
+            R = max(r for r in range(16, min(VAE_TAP_ROWS, g.H) + 1, 16) if g.H % r == 0)
+            kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae)
+            for r0 in range(0, g.H, R):
+                n = R * Wp
+                if self.has(f"{wname}.g"):
+                    s0 = g.band + r0 * Wp - Wp - 1
+                    MA = n + 2 * Wp + 2
+                    y = GridGEMM.step(x[s0 : s0 + MA], self.w(f"{wname}.g"), M=n, MA=MA, CA=C,
+                                      k_stride=Wp * C, k_tile=3 * C, **kw)
+                else:
+                    y = None
+                    for dy in range(3):
+                        s0 = g.band + r0 * Wp + (dy - 1) * Wp - 1
+                        t = GridGEMM.step(x[s0 : s0 + n + 2], self.w(f"{wname}.g{dy}"), M=n, MA=n + 2, CA=C, **kw)
+                        y = t if y is None else y + t
+                y = y + self.w(f"{wname}.b")
+                self.interior_from(y, gout, out, r0, R)
+                command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
+            return self.view(out), gout
+        R = g.chunk(g.C)
         for r0 in range(0, g.H, R):
             n = R * Wp
             cols = Copy.step(x, src=tap((g.rows, C), (g.band + r0 * Wp - Wp - 1) * C,
@@ -819,6 +943,8 @@ class VaeStage(iron.Graph):
 
     def up(self, x, g: GridShape, path: str, cout: int):
         """Nearest 2x (each pixel to a 2 x 2 block), then the 3 x 3 convolution to cout."""
+        if self.has(f"{path}.up.q00") or self.has(f"{path}.up.q000"):
+            return self.up_phases(x, g, path, cout)
         gu = GridShape(2 * g.H, 2 * g.W, g.C)
         u = self.new_grid(gu)
         C = g.C
@@ -828,6 +954,42 @@ class VaeStage(iron.Graph):
                           src=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W, C], [g.Wp * C, C, 1]),
                           dst=tap((gu.rows, C), gu.pixel(dy, dx) * C, [g.H, g.W, C], [2 * gu.Wp * C, 2 * C, 1]))
         return self.conv3(self.view(u), gu, f"{path}.up", cout)
+
+    def up_phases(self, x, g: GridShape, path: str, cout: int):
+        """up() at the low resolution (_up_phases): for each output phase, one GEMM (or one a
+        low row, summed) over runs of x's grid rows read in place, copied into every other row
+        and pixel of the output grid. 4/9 of the products, and no upsampled grid (as iron_sana's)."""
+        from iron.operators.flm.gemm.design import Epilogue
+        from iron_gridgemm import GridGEMM
+
+        gout = GridShape(2 * g.H, 2 * g.W, cout)
+        out = self.new_grid(gout)
+        Wp, C = g.Wp, g.C
+        kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae)
+        R = max(r for r in range(16, min(VAE_TAP_ROWS, g.H) + 1, 16) if g.H % r == 0)
+        for r0 in range(0, g.H, R):
+            n = R * Wp
+            for py in range(2):
+                for px in range(2):
+                    oy0, ox0 = self.PHASE_TAPS[py][0][0], self.PHASE_TAPS[px][0][0]
+                    s0 = g.band + (r0 + oy0) * Wp + ox0
+                    if self.has(f"{path}.up.q{py}{px}"):
+                        MA = n + Wp + 2
+                        y = GridGEMM.step(x[s0 : s0 + MA], self.w(f"{path}.up.q{py}{px}"), M=n, MA=MA, CA=C,
+                                          k_stride=Wp * C, k_tile=2 * C, **kw)
+                    else:
+                        y = None
+                        for a in range(2):
+                            t = GridGEMM.step(x[s0 + a * Wp : s0 + a * Wp + n + 2], self.w(f"{path}.up.q{py}{px}{a}"),
+                                              M=n, MA=n + 2, CA=C, **kw)
+                            y = t if y is None else y + t
+                    y = y + self.w(f"{path}.up.b")
+                    # logical row i is the output of the low pixel band + r0 Wp + i: row 1 is (r0, 0)
+                    Copy.step(y, out, src=tap((n, cout), cout, [R, g.W, cout], [Wp * cout, cout, 1]),
+                              dst=tap((gout.rows, cout), gout.pixel(2 * r0 + py, px) * cout, [R, g.W, cout],
+                                      [2 * gout.Wp * cout, 2 * cout, 1]))
+            command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
+        return self.view(out), gout
 
     def body(self, x):
         g = self.g_in
@@ -951,9 +1113,11 @@ def timestep_sinusoid(t: float, dim: int) -> np.ndarray:
 
 
 def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
-    w = weights(root / "diffusion_models" / ARGS.dit, PREFIX)
+    w = dit_weights(root)
     rng = np.random.default_rng(0)
-    meta = dict(config=dataclasses.asdict(c), weights=dataclasses.asdict(DIT_FMT))
+    # checkpoint: the diffusion model, by which hwnpu-image picks Anima-Turbo's 8 steps without
+    # guidance or the others' 30 with it (anima.Pipeline.Distilled)
+    meta = dict(config=dataclasses.asdict(c), weights=dataclasses.asdict(DIT_FMT), checkpoint=ARGS.dit)
     # dit_in
     t0 = time.time()
     g = DitIn(c, w)
@@ -1017,6 +1181,10 @@ def main(argv=None) -> int:
                     help="the DiT blocks' attention projections: q8 (8.5 bits a weight), q6 (6.5 bits), q4 (q4nx, 5 bits) or bf16")
     ap.add_argument("--dit-mlp", default=DIT_FMT.mlp, choices=("bf16", "q8", "q6", "q4"),
                     help="the DiT blocks' MLP: q8, q6, q4 or bf16")
+    ap.add_argument("--vae-conv", default=VAE_CONV[0], choices=("grid", "im2col"),
+                    help="the VAE's 3 x 3 convolutions: GridGEMM on the grid in place (grid) or an im2col copy")
+    ap.add_argument("--dit-mha", default=DIT_FMT.mha, choices=("qk", "qkpv", "bf16"),
+                    help="the DiT's attention products: QK^T through bfp16 (qk), P*V too (qkpv), or both bf16")
     ap.add_argument("--q4-codes", type=Path, default=None,
                     help="codes tools/amd/anima_gptq.py chose (OUT/codes) for the DiT's q4 and q8 projections, "
                          "in place of rounding them")
@@ -1026,7 +1194,8 @@ def main(argv=None) -> int:
     ap.add_argument("--cols", type=int, default=8)
     ARGS = a = ap.parse_args(argv)
     PREC.text, PREC.dit, PREC.vae = Precision(a.text_precision), Precision(a.dit_precision), Precision(a.vae_precision)
-    DIT_FMT.attn, DIT_FMT.mlp = a.dit_attn, a.dit_mlp
+    DIT_FMT.attn, DIT_FMT.mlp, DIT_FMT.mha = a.dit_attn, a.dit_mlp, a.dit_mha
+    VAE_CONV[0] = a.vae_conv
     if (a.dit_attn, a.dit_mlp) != ("bf16", "bf16"):
         import iron_q4
 

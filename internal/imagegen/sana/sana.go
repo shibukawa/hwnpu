@@ -1,6 +1,7 @@
-// Package sana runs Sana and Sana-Sprint (NVlabs, Efficient-Large-Model/*_diffusers), image
-// models, on AMD's NPU: the graphs tools/amd/iron_sana.py exports. The host does what is not a
-// tensor computation.
+// Package sana runs Sana (NVlabs, Efficient-Large-Model/*_diffusers: Sana 600M, SANA 1.5 1.6B),
+// image models, on an NPU: on AMD's, the graphs tools/amd/iron_sana.py exports; on Apple's Neural
+// Engine, the Core ML packages of internal/imagegen/sana/mil (Convert, Prepare). The host does
+// what is not a tensor computation.
 //
 // Sana is a linear DiT (0.6B or 1.6B) over DC-AE's latents, 32 channels at a 32nd of the
 // image's sides, with Gemma 2 2B reading the prompt. A picture is:
@@ -10,13 +11,13 @@
 //  2. the text graph (Gemma 2): the last hidden state, of which Sana keeps the first row and
 //     the last 299 of the padded prompt (the pad rows masked), and the caption graph (the DiT's
 //     caption projection) on those 300 rows;
-//  3. from Gaussian noise, the steps: Sana-Sprint's SCM steps (1 to 4, the guidance scale
-//     embedded, a new noise each step) or Sana's flow DPM-Solver++ with classifier-free
-//     guidance (the DiT on the prompt and on the empty prompt: its one row, Gemma's first
-//     row, is the prompt's own, so the second call is the first row alone);
+//  3. from Gaussian noise, the steps: flow DPM-Solver++ with classifier-free guidance (the DiT
+//     on the prompt and on the empty prompt: its one row, Gemma's first row, is the prompt's
+//     own, so the second call is the first row alone);
 //  4. DC-AE's decoder on the latents.
 //
-// The export is for one image size (1024 x 1024 by default).
+// The export is for one image size (1024 x 1024 by default). Sana-Sprint (the guidance
+// embedded, SCM steps) is not supported: its pictures were far below Sana's (design.md 16.148).
 package sana
 
 import (
@@ -25,6 +26,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"io"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -33,6 +36,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/imagegen/sana/mil"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
@@ -55,18 +59,16 @@ const MaxSequence = 300
 
 // DitConfig is the DiT's shape (iron_sana.DitConfig).
 type DitConfig struct {
-	Size          int     `json:"size"` // exports before width and height
-	Width         int     `json:"width"`
-	Height        int     `json:"height"`
-	Hidden        int     `json:"hidden"`
-	Layers        int     `json:"layers"`
-	Latent        int     `json:"latent"`
-	Guidance      bool    `json:"guidance"`
-	GuidanceScale float64 `json:"guidance_scale"`
-	TextRows      int     `json:"text_rows"`
-	Group         int     `json:"group"`
-	VAEScale      int     `json:"vae_scale"`
-	Caption       int     `json:"caption"`
+	Size     int `json:"size"` // exports before width and height
+	Width    int `json:"width"`
+	Height   int `json:"height"`
+	Hidden   int `json:"hidden"`
+	Layers   int `json:"layers"`
+	Latent   int `json:"latent"`
+	TextRows int `json:"text_rows"`
+	Group    int `json:"group"`
+	VAEScale int `json:"vae_scale"`
+	Caption  int `json:"caption"`
 }
 
 // Grid is the tokens down (and across).
@@ -113,14 +115,12 @@ type TextConfig struct {
 
 // Model is model.json of an export: which Sana it is and its scheduler's settings.
 type Model struct {
-	Name     string  `json:"name"`
+	Name string `json:"name"`
+	// Sprint marks an export of Sana-Sprint, which Open refuses (mil.ErrSprint).
 	Sprint   bool    `json:"sprint"`
 	Steps    int     `json:"steps"`    // the default
 	Guidance float64 `json:"guidance"` // the default
-	// Sana-Sprint (SCMScheduler)
-	SigmaData float64 `json:"sigma_data"`
-	MaxT      float64 `json:"max_timesteps"`
-	// Sana (DPMSolverMultistepScheduler)
+	// DPMSolverMultistepScheduler's
 	FlowShift  float64 `json:"flow_shift"`
 	TrainSteps int     `json:"num_train_timesteps"`
 }
@@ -138,19 +138,22 @@ type Pipeline struct {
 	prefixOut []byte
 	Model     Model
 
-	dev   *hwnpu.Device
-	dir   string
+	eng   engine
 	tok   *tokenizer.Tokenizer
 	embed *os.File // bf16 rows of Text.Hidden
 	bos   int32
-	vae   *VAE
-
-	ditIn, ditBlocks, ditOut *iron.Graph // open while the steps run
-	ctxSet                   []byte      // the caption dit_blocks holds
 
 	// ResidentDiT keeps every group's weights on the NPU instead of reading each group's
 	// into one bank before it runs.
 	ResidentDiT bool
+	// KeepDiT keeps the DiT on the device through Decode, for the next picture's steps (it is
+	// otherwise released before the VAE runs).
+	KeepDiT bool
+	// CFGMin and CFGMax, when CFGMax > 0, bound the sigmas at which a step runs the guidance;
+	// the other steps run the DiT once, on the prompt (guidance in a limited interval,
+	// Kynkäänniemi et al. 2024; Anima's anima.Sampling). Open sets DefaultCFGSigmas; CFGMax 0
+	// guides every step.
+	CFGMin, CFGMax float64
 	// Logf, when set, is told what is done.
 	Logf func(format string, args ...any)
 	// Stage, when set, is told of each stage of the VAE as it ends.
@@ -174,34 +177,50 @@ func (p *Pipeline) dump(name string, xs []float32) {
 	}
 }
 
-// Cond is a prompt's conditioning: the caption (bf16, TextRows x hidden) and how many of its
-// rows count.
+// engine runs the models of an export: the IRON graphs on AMD's NPU (ironEngine), or the
+// Core ML programs Convert writes (progEngine).
+type engine interface {
+	// openText loads Gemma 2: its run takes x (Text.Rows x Text.Hidden: the embedding rows
+	// times sqrt(hidden), zeros past them) at position start (0 without Text.Prefix) and gives
+	// the last hidden state, the same shape.
+	openText(ctx context.Context) (part, error)
+	// openCaption loads the caption projection: its run takes y (Dit.TextRows x Dit.Caption)
+	// and gives the DiT's ctx (Dit.TextRows x Dit.Hidden).
+	openCaption(ctx context.Context) (part, error)
+	// openDiT loads the DiT for velocity; resident is ResidentDiT.
+	openDiT(ctx context.Context, resident bool) error
+	// velocity runs the DiT on the latents channel last (tokens x latent) at the timestep's
+	// sinusoid tproj, once for each conditioning: the outputs, channel last.
+	velocity(ctx context.Context, patches, tproj []float32, conds []Cond) ([][]float32, error)
+	// closeDiT releases the DiT.
+	closeDiT() error
+	// decode runs the VAE on the latents (latent, rows, columns), telling stage (when not
+	// nil) of each stage as it ends.
+	decode(ctx context.Context, latents []float32, stage StageFunc) (*image.RGBA, error)
+	close() error
+}
+
+// part is a loaded graph or program the pipeline runs more than once.
+type part interface {
+	run(ctx context.Context, in []float32, start int) ([]float32, error)
+	close() error
+}
+
+// Cond is a prompt's conditioning: the caption (TextRows x hidden) and how many of its rows
+// count.
 type Cond struct {
-	ctx  []byte
+	ctx  []float32
 	Rows int // the rows of the caption that count (the rest masked)
 }
 
-func meta[T any](m *iron.GraphManifest) (T, error) {
-	var x struct {
-		Config T `json:"config"`
-	}
-	err := json.Unmarshal(m.Meta, &x)
-	return x.Config, err
-}
+// IsExport reports whether dir is an export of Sana: of tools/amd/iron_sana.py, or of Convert.
+func IsExport(dir string) bool { return isIronExport(dir) || IsProgramExport(dir) }
 
-// IsExport reports whether dir is an export of tools/amd/iron_sana.py.
-func IsExport(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, "model.json"))
-	if err != nil {
-		return false
-	}
-	_, err = os.Stat(filepath.Join(dir, "caption", "manifest.json"))
-	return err == nil
-}
-
-// Open reads the export in dir; its graphs are loaded onto dev as they run.
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error) {
-	p := &Pipeline{dev: dev, dir: dir}
+// Open reads the export in dir; its graphs or programs are loaded onto dev as they run (Core ML
+// programs with the CPU interpreter when dev is nil). log, when not nil, is shown each program of
+// a Core ML export as it loads (the first load compiles it for the NPU).
+func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
+	p := &Pipeline{CFGMin: DefaultCFGSigmas[0], CFGMax: DefaultCFGSigmas[1]}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
 		return nil, fmt.Errorf("sana: %w", err)
@@ -213,25 +232,35 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error)
 	if err := json.Unmarshal(b, &p.Model); err != nil {
 		return fail(err)
 	}
-	mb, err := iron.ReadGraphManifest(filepath.Join(dir, "dit_blocks"))
+	if p.Model.Sprint {
+		return nil, mil.ErrSprint
+	}
+	if IsProgramExport(dir) {
+		var e *progEngine
+		e, p.Dit, p.Text, err = openPrograms(dev, dir, log)
+		if e != nil {
+			p.eng = e
+		}
+	} else {
+		if dev == nil {
+			return fail(errors.New("an IRON export runs on AMD's NPU only"))
+		}
+		var e *ironEngine
+		e, p.Dit, p.Text, err = openIron(dev, dir)
+		if e != nil {
+			p.eng = e
+		}
+	}
 	if err != nil {
 		return fail(err)
-	}
-	if p.Dit, err = meta[DitConfig](mb); err != nil {
-		return fail(err)
-	}
-	if n, v := p.Dit.Layers/p.Dit.Group, max(1, len(mb.Variants)); v != n {
-		return fail(fmt.Errorf("dit_blocks holds %d groups, the DiT %d", v, n))
 	}
 	td := filepath.Join(dir, "text")
-	mt, err := iron.ReadGraphManifest(td)
-	if err != nil {
-		return fail(err)
-	}
-	if p.Text, err = meta[TextConfig](mt); err != nil {
-		return fail(err)
-	}
 	if p.Text.Prefix > 0 {
+		// an IRON export whose text graph holds the instruction's first rows (iron_sana's Prefix)
+		mt, err := iron.ReadGraphManifest(td)
+		if err != nil {
+			return fail(err)
+		}
 		var x struct {
 			Prefix []int32 `json:"prefix"`
 		}
@@ -257,15 +286,15 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error)
 	if p.embed, err = os.Open(filepath.Join(td, "embed.bin")); err != nil {
 		return fail(err)
 	}
-	if p.vae, err = OpenVAE(dev, filepath.Join(dir, "vae")); err != nil {
-		return fail(err)
-	}
 	return p, nil
 }
 
 // Close releases the device memory.
 func (p *Pipeline) Close() error {
-	err := p.closeDiT()
+	var err error
+	if p.eng != nil {
+		err = p.eng.close()
+	}
 	if p.embed != nil {
 		p.embed.Close()
 	}
@@ -347,7 +376,7 @@ type textPrompt struct {
 	instruction bool
 }
 
-// encode runs Gemma 2 on each prompt, then the caption projection on each, loading each graph
+// encode runs Gemma 2 on each prompt, then the caption projection on each, loading each part
 // once.
 func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, error) {
 	t0 := time.Now()
@@ -356,7 +385,7 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 		ids          []int32
 		total, start int
 		keep         int
-		y            []byte // the rows Sana keeps, for the caption
+		y            []float32 // the rows Sana keeps, for the caption
 	}
 	runs := make([]run, len(prompts))
 	for k, tp := range prompts {
@@ -371,28 +400,29 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 		}
 		runs[k] = run{ids: ids, total: total, start: start}
 	}
-	g, err := iron.OpenGraph(ctx, p.dev, filepath.Join(p.dir, "text"))
+	text, err := p.eng.openText(ctx)
 	if err != nil {
 		return nil, err
 	}
 	closed := false
 	closeText := func() {
 		if !closed {
-			g.Close() // before the caption's graph loads
+			text.close() // before the caption loads
 			closed = true
 		}
 	}
 	defer closeText()
 	tLoad := time.Now()
-	x := make([]byte, 2*R*E)
+	x := make([]float32, R*E)
 	row := make([]byte, 2*E)
 	norm := float32(math.Sqrt(float64(E)))
 	for k := range runs {
 		r := &runs[k]
 		ids, start := r.ids, r.start
-		// the embedding rows times sqrt(hidden) (Gemma's normalizer, 48 in bf16), a chunk at a
-		// time from start (one call of every row without a prefix)
-		h := make([]byte, 0, 2*(len(ids)-start+R)*E)
+		// the embedding rows times sqrt(hidden) (Gemma's normalizer, 48 in bf16, rounded to
+		// bf16 as the reference's embedding), a chunk at a time from start (one call of every
+		// row without a prefix)
+		var h []float32
 		for at := start; at < len(ids); at += R {
 			clear(x)
 			for i, id := range ids[at:min(at+R, len(ids))] {
@@ -400,68 +430,51 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 					return nil, err
 				}
 				for j := 0; j < E; j++ {
-					v := fromBF16(binary.LittleEndian.Uint16(row[2*j:])) * norm
-					binary.LittleEndian.PutUint16(x[2*(i*E+j):], bf16(v))
+					x[i*E+j] = fromBF16(bf16(fromBF16(binary.LittleEndian.Uint16(row[2*j:])) * norm))
 				}
 			}
-			if err := g.SetInput("x", x); err != nil {
-				return nil, err
-			}
-			var values map[string]int64
-			if p.Text.Prefix > 0 {
-				values = map[string]int64{"start": int64(at)}
-			}
-			if err := g.Run(ctx, values); err != nil {
-				return nil, err
-			}
-			out, err := g.Output(g.Outputs()[0].Name)
+			out, err := text.run(ctx, x, at)
 			if err != nil {
 				return nil, err
 			}
 			h = append(h, out...)
 		}
 		// hidden is row i's last hidden state: the prefix's below start, the graph's from it
-		hidden := func(i int) []byte {
+		hidden := func(i int) []float32 {
 			if i < start {
-				return p.prefixOut[2*i*E : 2*(i+1)*E]
+				return fromBF16s(p.prefixOut[2*i*E : 2*(i+1)*E])
 			}
-			return h[2*(i-start)*E : 2*(i-start+1)*E]
+			return h[(i-start)*E : (i-start+1)*E]
 		}
 		// the rows Sana keeps: the first and the last 299 of the padded length, of which those
 		// before len(ids) count (a prefix: the first, then a run)
 		first := r.total - (MaxSequence - 1)
 		r.keep = 1 + max(0, len(ids)-first)
-		r.y = make([]byte, 2*p.Dit.TextRows*C)
-		copy(r.y[:2*C], hidden(0))
+		r.y = make([]float32, p.Dit.TextRows*C)
+		copy(r.y[:C], hidden(0))
 		for j := 1; j < r.keep; j++ {
-			copy(r.y[2*j*C:2*(j+1)*C], hidden(first+j-1))
+			copy(r.y[j*C:(j+1)*C], hidden(first+j-1))
 		}
 	}
 	closeText()
 	t1 := time.Now()
-	cg, err := iron.OpenGraph(ctx, p.dev, filepath.Join(p.dir, "caption"))
+	cap, err := p.eng.openCaption(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer cg.Close()
+	defer cap.close()
 	conds := make([]Cond, len(runs))
 	for k, r := range runs {
-		if err := cg.SetInput("y", r.y); err != nil {
-			return nil, err
-		}
-		if err := cg.Run(ctx, nil); err != nil {
-			return nil, err
-		}
-		out, err := cg.Output(cg.Outputs()[0].Name)
+		out, err := cap.run(ctx, r.y, 0)
 		if err != nil {
 			return nil, err
 		}
-		conds[k] = Cond{ctx: append([]byte(nil), out...), Rows: r.keep}
+		conds[k] = Cond{ctx: out, Rows: r.keep}
 		if prompts[k].instruction {
-			p.dump("gemma.bin", fromBF16s(r.y))
-			p.dump("cond.bin", fromBF16s(out))
+			p.dump("gemma.bin", r.y)
+			p.dump("cond.bin", out)
 		} else {
-			p.dump("gemma_neg.bin", fromBF16s(r.y))
+			p.dump("gemma_neg.bin", r.y)
 		}
 	}
 	for k, r := range runs {
@@ -476,90 +489,51 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 	return conds, nil
 }
 
-// Noise returns n Gaussian latents for seed, each (latent, rows, columns) channel major.
-func (p *Pipeline) Noise(seed uint64, n int) [][]float32 {
+// Noise returns Gaussian latents for seed, (latent, rows, columns) channel major.
+func (p *Pipeline) Noise(seed uint64) []float32 {
 	r := rand.New(rand.NewPCG(seed, 0x73616e61))
-	out := make([][]float32, n)
-	for k := range out {
-		out[k] = make([]float32, p.Dit.Latent*p.Dit.Tokens())
-		for i := range out[k] {
-			out[k][i] = float32(r.NormFloat64())
-		}
+	out := make([]float32, p.Dit.Latent*p.Dit.Tokens())
+	for i := range out {
+		out[i] = float32(r.NormFloat64())
 	}
 	return out
-}
-
-// NoiseCount is how many noises Generate takes for steps: Sana-Sprint draws a new one each step.
-func (p *Pipeline) NoiseCount(steps int) int {
-	if p.Model.Sprint {
-		return steps + 1
-	}
-	return 1
 }
 
 // StepFunc is told that step i (of n) took d.
 type StepFunc func(i, n int, d time.Duration)
 
-// Generate runs the steps from the noises (NoiseCount of them) under cond: the latents.
-// guidance is the guidance scale (Sana-Sprint: embedded; Sana: classifier-free, the DiT twice
-// a step, on neg (EncodeNegative) and on cond).
-func (p *Pipeline) Generate(ctx context.Context, cond, neg Cond, noises [][]float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
-	if len(noises) < p.NoiseCount(steps) {
-		return nil, fmt.Errorf("sana: %d noises for %d steps", len(noises), steps)
+// Generate runs the steps from the noise under cond: the latents. guidance is the
+// classifier-free guidance's scale: the DiT twice a step, on neg (EncodeNegative; the empty
+// prompt's when it is the zero Cond) and on cond.
+func (p *Pipeline) Generate(ctx context.Context, cond, neg Cond, noise []float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
+	if len(noise) != p.Dit.Latent*p.Dit.Tokens() {
+		return nil, fmt.Errorf("sana: %d noise values for latents of %d", len(noise), p.Dit.Latent*p.Dit.Tokens())
 	}
-	if err := p.openDiT(ctx); err != nil {
+	if cond.ctx == nil {
+		return nil, errors.New("sana: the DiT runs without a prompt (Encode)")
+	}
+	if err := p.eng.openDiT(ctx, p.ResidentDiT); err != nil {
 		return nil, err
-	}
-	if p.Model.Sprint {
-		return p.sprint(ctx, cond, noises, steps, guidance, step)
 	}
 	if neg.ctx == nil {
 		neg = Cond{ctx: cond.ctx, Rows: 1}
 	}
-	return p.dpm(ctx, cond, neg, noises[0], steps, guidance, step)
+	return p.dpm(ctx, cond, neg, noise, steps, guidance, step)
 }
 
-func (p *Pipeline) sprint(ctx context.Context, cond Cond, noises [][]float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
-	m := p.Model
-	sd := float32(m.SigmaData)
-	T := SCMTimesteps(steps, m.MaxT)
-	x := make([]float32, len(noises[0]))
-	for i := range x {
-		x[i] = noises[0][i] * sd
-	}
-	gproj := TimestepSinusoid(guidance*p.Dit.GuidanceScale, 256)
-	in := make([]float32, len(x))
-	var x0 []float32
-	for i := 0; i < steps; i++ {
-		t0 := time.Now()
-		s, t := T[i], T[i+1]
-		scale, st := SCMInput(s)
-		for j := range x {
-			in[j] = x[j] / sd * float32(scale)
-		}
-		outs, err := p.velocity(ctx, in, TimestepSinusoid(st, 256), gproj, []Cond{cond})
-		if err != nil {
-			return nil, fmt.Errorf("sana: step %d: %w", i, err)
-		}
-		out := outs[0]
-		p.dump(fmt.Sprintf("out%d_0.bin", i), out)
-		a, b := float32(1-2*st), float32(1-2*st+2*st*st)
-		cs, ss := float32(math.Cos(s)), float32(math.Sin(s))
-		ct, stt := float32(math.Cos(t)), float32(math.Sin(t))
-		x0 = make([]float32, len(x))
-		for j := range x {
-			pred := (a*in[j] + b*out[j]) / float32(scale) * sd
-			x0[j] = cs*x[j] - ss*pred
-			x[j] = ct*x0[j] + stt*noises[i+1][j]*sd
-		}
-		if step != nil {
-			step(i, steps, time.Since(t0))
-		}
-	}
-	for j := range x0 {
-		x0[j] /= sd
-	}
-	return x0, nil
+// DefaultCFGSigmas are the sigmas whose steps run the guidance by default: 14 of the 20 steps.
+// Against every step guided, 3 prompts x 2 seeds at 1024 x 1024 on the M1 drew the same pictures
+// (Sana 600M's latents 0.996-0.998); from 0.8 a small object went missing (design.md 16.160).
+var DefaultCFGSigmas = [2]float64{0.6, 1}
+
+// Guided reports whether the step at sigma runs the guidance (CFGMin, CFGMax).
+func (p *Pipeline) Guided(sigma float64) bool {
+	return p.CFGMax <= 0 || (sigma >= p.CFGMin && sigma <= p.CFGMax)
+}
+
+// Sigmas are the scheduler's sigmas of steps steps (steps+1, the last 0).
+func (p *Pipeline) Sigmas(steps int) []float64 {
+	return NewDPM(steps, p.Model.FlowShift, p.Model.TrainSteps).Sigmas
 }
 
 func (p *Pipeline) dpm(ctx context.Context, cond, neg Cond, noise []float32, steps int, guidance float64, step StepFunc) ([]float32, error) {
@@ -568,16 +542,28 @@ func (p *Pipeline) dpm(ctx context.Context, cond, neg Cond, noise []float32, ste
 	x := append([]float32(nil), noise...)
 	for i := 0; i < steps; i++ {
 		t0 := time.Now()
-		outs, err := p.velocity(ctx, x, TimestepSinusoid(d.Timesteps[i], 256), nil, []Cond{neg, cond})
-		if err != nil {
-			return nil, fmt.Errorf("sana: step %d: %w", i, err)
-		}
-		u, c := outs[0], outs[1]
-		p.dump(fmt.Sprintf("out%d_0.bin", i), u)
-		p.dump(fmt.Sprintf("out%d_1.bin", i), c)
-		v := make([]float32, len(x))
-		for j := range v {
-			v[j] = u[j] + float32(guidance)*(c[j]-u[j])
+		tproj := TimestepSinusoid(d.Timesteps[i], 256)
+		var v []float32
+		if guidance == 1 || !p.Guided(d.Sigmas[i]) {
+			// the DiT once, on the prompt: u + 1 (c - u) is c
+			outs, err := p.velocity(ctx, x, tproj, []Cond{cond})
+			if err != nil {
+				return nil, fmt.Errorf("sana: step %d: %w", i, err)
+			}
+			v = outs[0]
+			p.dump(fmt.Sprintf("out%d_1.bin", i), v)
+		} else {
+			outs, err := p.velocity(ctx, x, tproj, []Cond{neg, cond})
+			if err != nil {
+				return nil, fmt.Errorf("sana: step %d: %w", i, err)
+			}
+			u, c := outs[0], outs[1]
+			p.dump(fmt.Sprintf("out%d_0.bin", i), u)
+			p.dump(fmt.Sprintf("out%d_1.bin", i), c)
+			v = make([]float32, len(x))
+			for j := range v {
+				v[j] = u[j] + float32(guidance)*(c[j]-u[j])
+			}
 		}
 		x = d.Step(i, v, x)
 		if step != nil {
@@ -600,133 +586,26 @@ func TimestepSinusoid(t float64, dim int) []float32 {
 	return out
 }
 
-func (p *Pipeline) closeDiT() error {
-	var errs []error
-	for _, g := range []**iron.Graph{&p.ditIn, &p.ditBlocks, &p.ditOut} {
-		if *g != nil {
-			errs = append(errs, (*g).Close())
-			*g = nil
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func (p *Pipeline) openDiT(ctx context.Context) error {
-	if p.ditBlocks != nil {
-		return nil
-	}
-	for _, x := range []struct {
-		g    **iron.Graph
-		name string
-	}{{&p.ditIn, "dit_in"}, {&p.ditBlocks, "dit_blocks"}, {&p.ditOut, "dit_out"}} {
-		g, err := iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, x.name), iron.GraphOptions{SwapVariants: !p.ResidentDiT})
-		if err != nil {
-			p.closeDiT()
-			return err
-		}
-		*x.g = g
-	}
-	p.ctxSet = nil
-	return nil
-}
-
-// velocity runs the DiT on the latents x (latent, grid, grid) at the timestep's sinusoid tproj
-// (and the guidance's, gproj), once for each conditioning in conds: the outputs, the latents'
-// layout. Each group of blocks runs every call before the next group's weights are read.
-func (p *Pipeline) velocity(ctx context.Context, x []float32, tproj, gproj []float32, conds []Cond) ([][]float32, error) {
-	rows := conds
-	c := p.Dit
-	n := c.Tokens()
-	L := c.Latent
-	patches := make([]float32, c.NTok()*L) // zeros past the tokens
+// velocity runs the DiT on the latents x (latent, rows, columns) at the timestep's sinusoid
+// tproj, once for each conditioning in conds: the outputs, the latents' layout.
+func (p *Pipeline) velocity(ctx context.Context, x []float32, tproj []float32, conds []Cond) ([][]float32, error) {
+	n, L := p.Dit.Tokens(), p.Dit.Latent
+	patches := make([]float32, n*L)
 	for ch := 0; ch < L; ch++ {
 		for t := 0; t < n; t++ {
 			patches[t*L+ch] = x[ch*n+t]
 		}
 	}
-	g := p.ditIn
-	if err := g.SetInput("patches", toBF16(patches)); err != nil {
-		return nil, err
-	}
-	if err := g.SetInput("tproj", toBF16(tproj)); err != nil {
-		return nil, err
-	}
-	if c.Guidance {
-		if err := g.SetInput("gproj", toBF16(gproj)); err != nil {
-			return nil, err
-		}
-	}
-	if err := g.Run(ctx, nil); err != nil {
-		return nil, err
-	}
-	outs := g.Outputs() // x, t6, emb
-	h, err := g.Output(outs[0].Name)
+	vs, err := p.eng.velocity(ctx, patches, tproj, conds)
 	if err != nil {
 		return nil, err
 	}
-	t6, err := g.Output(outs[1].Name)
-	if err != nil {
-		return nil, err
-	}
-	emb, err := g.Output(outs[2].Name)
-	if err != nil {
-		return nil, err
-	}
-	hs := make([][]byte, len(rows))
-	for k := range hs {
-		hs[k] = append([]byte(nil), h...)
-	}
-	b := p.ditBlocks
-	if err := b.SetInput("t6", t6); err != nil {
-		return nil, err
-	}
-	if err := p.ditOut.SetInput("emb", emb); err != nil {
-		return nil, err
-	}
-	for gi := 0; gi < b.Variants(); gi++ {
-		if err := b.Use(gi); err != nil {
-			return nil, err
-		}
-		for k, cd := range conds {
-			if cd.ctx == nil {
-				return nil, errors.New("sana: the DiT runs without a prompt (Encode)")
-			}
-			if len(p.ctxSet) == 0 || &cd.ctx[0] != &p.ctxSet[0] {
-				if err := b.SetInput("ctx", cd.ctx); err != nil {
-					return nil, err
-				}
-				p.ctxSet = cd.ctx
-			}
-			if err := b.SetInput("x", hs[k]); err != nil {
-				return nil, err
-			}
-			if err := b.Run(ctx, map[string]int64{"nk": int64(cd.Rows)}); err != nil {
-				return nil, fmt.Errorf("blocks %d..%d: %w", gi*c.Group, (gi+1)*c.Group-1, err)
-			}
-			o, err := b.Output(b.Outputs()[0].Name)
-			if err != nil {
-				return nil, err
-			}
-			hs[k] = append(hs[k][:0], o...)
-		}
-	}
-	res := make([][]float32, len(rows))
-	for k := range rows {
-		if err := p.ditOut.SetInput("x", hs[k]); err != nil {
-			return nil, err
-		}
-		if err := p.ditOut.Run(ctx, nil); err != nil {
-			return nil, err
-		}
-		v, err := p.ditOut.Output(p.ditOut.Outputs()[0].Name)
-		if err != nil {
-			return nil, err
-		}
-		vs := fromBF16s(v)
+	res := make([][]float32, len(vs))
+	for k, v := range vs {
 		out := make([]float32, n*L)
 		for ch := 0; ch < L; ch++ {
 			for t := 0; t < n; t++ {
-				out[ch*n+t] = vs[t*L+ch]
+				out[ch*n+t] = v[t*L+ch]
 			}
 		}
 		res[k] = out

@@ -64,6 +64,10 @@ design.md 16 章の実装記録 (16.117 まで) と model-fit.md、intel-npu-mod
 | 会話の印はリングの使っている分だけ (16.71) | | | | ○ 翻訳 5 回で 578 → 183 MB | | | | 共通 |
 | 変換の後にメモリを OS に返す (16.71) | | | | ○ 起動直後 2.4 GB → 154 MB | | | | 共通 |
 | OpenVINO が残す `/dev/shm` を片付ける (16.72) | | | | | ○ 1 日 8.4 GB | | | Intel / OpenVINO |
+| Apple: ONNX のプログラムの sigmoid と SiLU を exp で書く (`ExpSigmoid`、16.149) | △ RTMDet-s 1 枚 6.6 → 9.3 ms | | | | | | ◎ RTMDet-s の ONNX Runtime との差 箱 98 → 5.5 px、スコア 0.35 → 0.063 | Apple |
+| ホストの縮小をクロージャなしに、行を全コアで (16.149) | ◎ 1 枚 37〜55 → 5〜7 ms (RTMDet、RTMO、LFM3-VL) | | | | | | バイト単位で同じ | 共通 |
+| Apple: PP-OCR の認識器を NPU に (softmax の手前の logit、18710 幅の出力を 2 つに、bias を linear に、fp16 のまま読む、読み取りを次の呼び出しの間に) (16.149) | ◎ 論文 1 ページ 98 行 1528 → 488 ms | | | | | | 同じ行 | Apple |
+| PP-OCR の認識器を 7 つの幅で、PaddleOCR と同じ詰め方に (16.149) | | | △ 幅ごとにプログラムのコンパイル (初回 5〜20 秒) | △ 最大 425 MB | | | ○ レシート 13 行中 PaddleOCR と同じ行 11 → 13 | 共通 |
 
 ◎ 大きく効く、○ 効く、△ 代償あり・小さい、✕ 悪化する
 
@@ -370,7 +374,9 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | gemma-4-E4B-it | `gemma4` | 同上 | Gemma 4 | テキストのみ | ○ lut6、1 本 (`-prefill auto`) | 変換は可 | ○ q4 5.6 tok/s、3.53 GB、文脈 4096 |
 | Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | ○ `iron_export_lm.py qwen35 --q4`。32 層で 6.4 tok/s (16.94)、4.7 GB。HF と最上位のトークン 8/9 (同じ q4 のホストのグラフと同じ所で外れる、16.92) |
 | Qwen3-0.6B | `qwen3` (16.127) | Qwen3 の前分割 (Anima と同じ `tokenizer.json`) | Qwen3 | — | ○ lut8、注意で分けない 1 本 (文脈 4096、`llm.Unpaged`)、全部 ANE、M1 で 9.5〜12.4 tokens/s、Neural Engine 1.16 GiB + プロセス 2.75 GB。CPU の lut8 の KL 0.014 | 変換は可 (int8)、実機は未確認 | — (書き出しなし) |
+| Qwen3-1.7B | `qwen3` (16.150) | 同上 | Qwen3 | — | ○ lut8、注意で分けない 1 本 (文脈 4096)、全部 ANE、M3 で 13〜22 tokens/s。16 GB 未満は 1 本 (`prefill: off`、`variants`) で Neural Engine 1.63 GiB + プロセスの最大 2.2〜2.8 GB、16 GB からは 2 本で 3.26 GiB + 3.0〜4.1 GB。CPU の lut8 の KL 0.018 (32/32) | 変換は可 (int8)、実機は未確認 | — (書き出しなし) |
 | plamo-3-translate-2b | `plamo3` | PLaMo (`tokenizer.jsonl`) | PLaMo 3 (PFML3、翻訳) | — | ○ lut8、1 本、文脈 262144。M3 で全部 ANE に載ることと重みの形式を確認 | 変換は可 (int8)。OpenVINO の CPU で訳せた | ◎ q4 11.6 tok/s、2.16 GiB、文脈 8192 |
+| plamo-3-translate-8b | `plamo3` (16.164) | 同上 | 同上 | — | ○ lut4 (8B だけ、`Config.Format`)、5 部分の 1 本、全部 ANE、3.81 GiB + プロセスの最大 4.1 GB。M1 では 0.8 tokens/s (2.8 GiB を超える)。20 文のうち 13 文が lut8 と一字一句同じ、残りは言い換え | int4 (行ごと、8B だけ、`Config.IntelFormat`)、1 本 (prefill off) で 3.8 GiB。int8 (7.6 GiB) は Meteor Lake の NPU が持てた量を超える。未実行、精度は未確認 | ? `iron_export_lm.py plamo3 --q4` は未実行 (docs/handoff-plamo3-8b.md) |
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
 | Anima-Turbo (画像生成) | `internal/imagegen/anima` (MIL の 1 つの記述から作る) | Qwen3 の BPE + T5 の Unigram | — (`hwnpu-image`) | 画像を出力 | ◎ M3 で 1024×1024 の 8 ステップ約 40 s、3.8 GB (int8) | △ 変換は可。OpenVINO の CPU で照合済み | ◎ 1024×1024 で 8 ステップ約 68 s、固定 3.4 GiB (DiT は 8 ビット) |
@@ -610,7 +616,7 @@ Apple / Intel (`hwnpu-image convert`):
 - AMD の固定メモリの残り (amd-npu-models.md 12 節):
   - VAE をタイルに分ける (DiT を 1 つの bank にした (16.106) ので、今は VAE の段が固定の最大)
 - Anima の残り:
-  - CFG (負のプロンプト)。Turbo でない Anima は 1 枚 10 分を超える見込み
+  - CFG (負のプロンプト) は 16.148 で済み (Anima-Aesthetic、AMD の 1024² で 1 枚 3 分 19 秒。DPM-Solver++ 2M の 25 ステップと、CFG を雑音の多いステップだけに、16.154。モデルカードのオイラー法 30 ステップでは 4 分 40 秒)。Core ML と OpenVINO での実機の確認は未
   - ComfyUI のノードからの呼び出し
 - Qwen3.6-35B-A3B のプロンプトの残り (16.116、256 の塊 2.6 s): 専門家のコマンド (B、1.49 s) はカーネルの計算で決まる (重みを流すだけなら 1 層 8.4 + 4.4 ms のところ 19〜23 + 15〜17 ms。スカラーの MAC で mmul を使っていない。8 行ずつの bf16 の mmul は試して速くならなかった)、GDN と注意のコマンド (A、約 0.7 s。`GatedDeltaRule` が各行を 16 回受ける)、ホストの経路の選択 (1 層約 2.8 ms、ほとんどが x の 16 MB の写し)
 

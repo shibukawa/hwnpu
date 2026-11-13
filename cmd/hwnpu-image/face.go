@@ -16,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/vision/face"
 )
 
@@ -56,6 +57,7 @@ func (c *FaceDetectCmd) Run(ctx context.Context) error {
 			return fmt.Errorf("--size %q: not WxH", c.Size)
 		}
 	}
+	console.Running()
 	enc := json.NewEncoder(os.Stdout)
 	for _, p := range c.Pictures {
 		img, err := readPicture(p)
@@ -121,14 +123,36 @@ func (c *FaceDetectCmd) open(ctx context.Context, logf func(string, ...any)) (*f
 	if err != nil {
 		return nil, err
 	}
-	if device == "npu" && vendor != "amd" {
-		// only AMD's NPU has YuNet's graph (iron_yunet.py) yet
+	if device == "npu" && vendor != "amd" && vendor != "apple" && vendor != "intel" {
+		// AMD's NPU has YuNet's graph (iron_yunet.py), Apple's and Intel's the ONNX graph as
+		// Core ML and OpenVINO IR
 		if c.Device == "npu" {
-			return nil, fmt.Errorf("%s runs on AMD's NPU only (this machine's NPU: %s); --device cpu runs it on the CPU", m.Name, orNone(vendor))
+			return nil, fmt.Errorf("%s runs on AMD's, Apple's and Intel's NPU (this machine's NPU: %s); --device cpu runs it on the CPU", m.Name, orNone(vendor))
 		}
 		device, why = "cpu", fmt.Sprintf("no %s graph for this NPU (%s)", m.Name, orNone(vendor))
 	}
 	logf("%s on the %s (%s)", m.Name, device, why)
+	if device == "npu" && (vendor == "apple" || vendor == "intel") {
+		path, err := faceONNX(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+		var opts []hwnpu.Option
+		if vendor == "apple" {
+			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
+		}
+		dev, backend, err := llm.OpenDevice(ctx, "", cacheDirOf(""), opts...)
+		if err != nil {
+			return nil, err
+		}
+		d, err := face.OpenProgram(ctx, dev, backend, path, filepath.Dir(path))
+		if err != nil {
+			dev.Close()
+			return nil, err
+		}
+		d.OnClose = func() { dev.Close() }
+		return d, nil
+	}
 	if device == "cpu" {
 		path, err := faceONNX(ctx, m)
 		if err != nil {
@@ -181,15 +205,9 @@ func fileExists(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-// npuVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.
-func npuVendor(ctx context.Context) string {
-	dev, err := hwnpu.Open(ctx)
-	if err != nil {
-		return ""
-	}
-	defer dev.Close()
-	return dev.Info().Vendor.String()
-}
+// npuVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one
+// (chat.HereVendor: HWNPU_BACKEND=openvino is an Intel machine).
+func npuVendor(context.Context) string { return chat.HereVendor() }
 
 func orNone(v string) string {
 	if v == "" {

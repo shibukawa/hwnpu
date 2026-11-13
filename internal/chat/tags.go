@@ -109,17 +109,45 @@ func byName(name string) Model {
 // Pick finds the model a name of a family or a category means on a machine of machine GB:
 // FAMILY, FAMILY:TAG, CATEGORY or CATEGORY:TAG. A tag is a model's (2b, e4b) or a machine's
 // memory (8g, 16gb: the pick of a machine of that memory, MODEL.md's column). Without a tag, it is the model of the largest
-// Machine up to the machine's memory (the smallest when none fits). why says how it was picked.
-// ok is false when the name is not a family or a category.
+// Machine up to the machine's memory (the smallest when none fits). The model is On the machine
+// (of the tag's memory for a tag of memory). why says how it was picked. ok is false when the
+// name is not a family or a category.
 func Pick(name string, machine int) (m Model, why string, ok bool, err error) {
+	if _, tag, tagged := strings.Cut(name, ":"); tagged {
+		if gb, isMemory := MemoryTag(tag); isMemory {
+			machine = gb
+		}
+	}
 	m, why, ok, err = pickModel(name, machine)
 	if ok && err == nil {
 		if to, aliased := Aliases[m.Name]; aliased {
 			why += fmt.Sprintf(", which runs %s (alias)", to)
 			m = byName(to)
 		}
+		m = m.On(machine)
 	}
 	return m, why, ok, err
+}
+
+// notOnHere is, when m is not picked on this machine's chip (Model.NotOn), the model of its
+// family that a machine of machine GB picks instead, with ok; Model{} when it has none. m
+// itself, ok false, when m is picked here.
+func notOnHere(m Model, machine int) (alt Model, ok bool) {
+	chip := chipName()
+	if chip == "" || !slices.Contains(m.NotOn, chip) {
+		return m, false
+	}
+	found := false
+	for _, c := range Catalog {
+		if m.Family == "" || c.Family != m.Family || c.Tag == "" || c.Machine > machine || slices.Contains(c.NotOn, chip) {
+			continue
+		}
+		c = c.On(machine)
+		if !found || c.Machine > alt.Machine || c.Machine == alt.Machine && c.Memory > alt.Memory {
+			alt, found = c, true
+		}
+	}
+	return alt, found
 }
 
 func pickModel(name string, machine int) (m Model, why string, ok bool, err error) {
@@ -132,6 +160,11 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 			kind, base = "category", c.Name
 			for _, p := range c.Picks {
 				m := byName(p.Model)
+				if alt, ok := notOnHere(m, p.Machine); ok {
+					m = alt // the column's model is not picked on this chip: its family's next
+				} else if alt.Name == "" {
+					continue
+				}
 				m.Machine = p.Machine // the category's column, not the family's
 				cands = append(cands, m)
 			}
@@ -175,10 +208,19 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 		}
 		return Model{}, "", true, fmt.Errorf("chat: %s:%s is any of %s: name the family", base, tag, strings.Join(names, ", "))
 	}
-	// the largest column the machine has; among models of one column the larger
+	// the largest column the machine has; among models of one column the larger on this machine
+	for i := range cands {
+		cands[i] = cands[i].On(machine)
+	}
 	best, found := cands[0], false
+	chip := chipName()
+	var skipped []string
 	for _, c := range cands {
 		if c.Machine > machine {
+			continue
+		}
+		if chip != "" && slices.Contains(c.NotOn, chip) {
+			skipped = append(skipped, base+":"+c.Tag)
 			continue
 		}
 		if !found || c.Machine > best.Machine || c.Machine == best.Machine && c.Memory > best.Memory {
@@ -190,6 +232,9 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 		return best, fmt.Sprintf("%s on a machine of %d GB: %s:%s, the smallest (none is recommended below %d GB)", base, machine, base, best.Tag, best.Machine), true, nil
 	}
 	why = fmt.Sprintf("%s on a machine of %d GB: %s:%s", base, machine, base, best.Tag)
+	if len(skipped) > 0 {
+		why += fmt.Sprintf(", not %s on an %s", strings.Join(skipped, ", "), chip)
+	}
 	var others []string
 	for _, c := range cands {
 		if c.Name != best.Name {

@@ -99,7 +99,7 @@ func generate(t *testing.T, e *progEngine, steps int) {
 		t.Fatal(err)
 	}
 	for i := 0; i < steps; i++ {
-		if _, err := e.velocity(ctx, nil, []float32{0}); err != nil {
+		if _, err := e.velocity(ctx, nil, []float32{0}, [][]float32{nil}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -135,7 +135,7 @@ func TestProgEngineTextMakesRoom(t *testing.T) {
 	if len(reloads) != 3 || reloads[0] != "text" { // + the VAE's stage
 		t.Fatalf("reloads %v", reloads)
 	}
-	if !strings.Contains(log.String(), "dit_blocks_24: text unloaded") {
+	if !strings.Contains(log.String(), "text unloaded for dit_blocks_24") {
 		t.Fatalf("log %q", log.String())
 	}
 }

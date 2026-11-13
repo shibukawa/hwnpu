@@ -318,3 +318,40 @@ func TestOutputNames(t *testing.T) {
 		t.Errorf("lut4 weights: %v, expected an error that points to int4", err)
 	}
 }
+
+// The operations of the ONNX graphs (internal/onnx), the codecs (internal/music, internal/sfx)
+// and the depth heads (internal/vision): clip, elu, pow, cos, sin, erf, softplus, cast,
+// pixel_shuffle, max_pool and conv_transpose (also with a crop past the end).
+func TestImageOps(t *testing.T) {
+	p := newProgram(t)
+	b := p.b
+	sh := []int{1, 8, 6, 6}
+	x := p.input("x", -2, 2, sh...)
+	z := p.input("z", 0.5, 2, sh...)
+	h := p.op("clip", map[string]any{"x": x, "alpha": b.ScalarF16(-1), "beta": b.ScalarF16(1.5)}, sh...)
+	h = p.op("add", map[string]any{"x": h, "y": p.op("elu", map[string]any{"x": x, "alpha": b.ScalarF16(1)}, sh...)}, sh...)
+	h = p.op("add", map[string]any{"x": h, "y": p.op("pow", map[string]any{"x": z, "y": b.ScalarF16(1.5)}, sh...)}, sh...)
+	for _, u := range []string{"cos", "sin", "erf", "softplus"} {
+		h = p.op("add", map[string]any{"x": h, "y": p.op(u, map[string]any{"x": x}, sh...)}, sh...)
+	}
+	c := b.Op("cast", map[string]any{"x": h, "dtype": b.Str("c", "fp32")}, mlpackage.Float32, sh...)
+	h = b.Op("cast", map[string]any{"x": c, "dtype": b.Str("c", "fp16")}, f16, sh...)
+	ps := p.op("pixel_shuffle", map[string]any{"x": h, "upscale_factor": b.ScalarI32(2)}, 1, 2, 12, 12)
+	mp := p.op("max_pool", map[string]any{"x": ps, "kernel_sizes": b.Ints(3, 3), "strides": b.Ints(2, 2),
+		"pad_type": b.Str("c", "custom"), "pad": b.Ints(1, 1, 1, 1), "ceil_mode": b.ScalarBool(false)}, 1, 2, 6, 6)
+	mp5 := p.op("max_pool", map[string]any{"x": ps, "kernel_sizes": b.Ints(5, 5), "strides": b.Ints(1, 1),
+		"pad_type": b.Str("c", "custom"), "pad": b.Ints(2, 2, 2, 2), "ceil_mode": b.ScalarBool(false)}, 1, 2, 12, 12)
+	// (Cin 2, Cout 3, 3, 4), stride (2, 3), cropping 1 at the top and left, 2 past the bottom's end
+	w := p.consts("w", -0.5, 0.5, 2, 3, 3, 4)
+	bias := p.consts("bias", -0.5, 0.5, 3)
+	ct := p.op("conv_transpose", map[string]any{"x": mp, "weight": w, "bias": bias, "strides": b.Ints(2, 3),
+		"pad_type": b.Str("c", "custom"), "pad": b.Ints(1, -2, 1, 0), "dilations": b.Ints(1, 1), "groups": b.ScalarI32(1)}, 1, 3, 14, 18)
+	// as a 1-D codec's upsampling (1, C, 1, T)
+	row := p.op("slice_by_index", map[string]any{"x": mp, "begin": b.Ints(0, 0, 2, 0), "end": b.Ints(1, 2, 3, 6)}, 1, 2, 1, 6)
+	wg := p.consts("wg", -0.5, 0.5, 2, 4, 1, 4)
+	cg := p.op("conv_transpose", map[string]any{"x": row, "weight": wg, "strides": b.Ints(1, 2),
+		"pad_type": b.Str("c", "custom"), "pad": b.Ints(0, 0, 1, 1), "dilations": b.Ints(1, 1), "groups": b.ScalarI32(1)}, 1, 4, 1, 12)
+	p.check(b.NamedOp("identity", "ct", map[string]any{"x": ct}, f16, 1, 3, 14, 18),
+		b.NamedOp("identity", "cg", map[string]any{"x": cg}, f16, 1, 4, 1, 12),
+		b.NamedOp("identity", "mp5", map[string]any{"x": mp5}, f16, 1, 2, 12, 12))
+}

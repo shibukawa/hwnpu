@@ -4,15 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/shibukawa/hwnpu"
+	hcache "github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
+
+// acceptLicenses is --accept-license.
+var acceptLicenses bool
+
+// isTerminal reports whether f is a terminal (a character device).
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
 
 // expandHome is path with a leading ~ made the home directory.
 func expandHome(path string) string {
@@ -40,6 +52,13 @@ func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	if e := (*chat.NoModelError)(nil); errors.As(err, &e) {
 		err = fmt.Errorf("no %s model, family or use %q (hwnpu-image list shows them)", kind, name)
 	}
+	if err == nil {
+		// a license that restricts the use: accepted once, before the first download or run
+		err = chat.AcceptLicense(m, acceptLicenses, isTerminal(os.Stdin) && isTerminal(os.Stderr), os.Stdin, os.Stderr)
+		if err != nil {
+			return m, err
+		}
+	}
 	if err != nil {
 		// what there is, then the error (kong prints it last)
 		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, name, kind)
@@ -49,10 +68,10 @@ func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	return m, err
 }
 
-// ListCmd is "hwnpu-image list": the image, depth, face-detect and pose models of the definitions (models.yaml),
+// ListCmd is "hwnpu-image list": the image, depth, face-detect, pose, detect, ocr and label models of the definitions (models.yaml),
 // whether their exports are here, and what each use and family picks for each machine's memory.
 type ListCmd struct {
-	Kind string `arg:"" optional:"" enum:"image,depth,face-detect,pose," default:"" help:"Only image, depth, face-detect or pose models."`
+	Kind string `arg:"" optional:"" enum:"image,depth,face-detect,pose,detect,ocr,label," default:"" help:"Only image, depth, face-detect, pose, detect, ocr or label models."`
 }
 
 // Run lists the models.
@@ -63,7 +82,7 @@ func (c *ListCmd) Run() error {
 	if c.Kind != "" {
 		listModels(os.Stdout, chat.Kind(c.Kind))
 	} else {
-		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose)
+		listModels(os.Stdout, chat.KindImage, chat.KindDepth, chat.KindFace, chat.KindPose, chat.KindDetect, chat.KindOCR, chat.KindLabel, chat.KindSegment)
 	}
 	return nil
 }
@@ -75,48 +94,91 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 	vendor := npuVendor(context.Background())
 	chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
 		if d, _, err := chat.ChooseDevice(m, vendor, ""); err == nil && d == "cpu" {
-			return "CPU (ONNX Runtime)"
+			return "CPU"
 		}
-		if m.Kind == chat.KindPose { // converted on the first run, for Core ML or OpenVINO
-			if vendor == "amd" {
-				return "- (--cpu: the CPU interpreter)"
+		if (m.Kind == chat.KindDetect || m.Kind == chat.KindPose || m.Kind == chat.KindSegment) && vendor == "amd" { // an export of iron_onnxcnn.py or iron_efficientsam.py, made on the first run
+			if d, err := amdExport(m, ""); err == nil {
+				return shortHome(d)
+			}
+			return "exported on first run (IRON)"
+		}
+		if m.Kind == chat.KindSegment { // the encoder has no Core ML or OpenVINO form yet
+			return "CPU"
+		}
+		if m.Kind == chat.KindPose || m.Kind == chat.KindDetect || m.Kind == chat.KindOCR { // converted on the first run, for Core ML or OpenVINO
+			if d, _, err := chat.ConvertedDevice(m, vendor, ""); err == nil && d == "cpu" {
+				return "CPU"
 			}
 			return "converted on first run"
 		}
 		if d, err := amdExport(m, ""); err == nil {
-			return "~/models/" + filepath.Base(d)
+			return shortHome(d)
+		}
+		if m.Kind == chat.KindImage && coremlImage(m.Family, vendor) {
+			return "converted on first run"
 		}
 		return "-"
 	}, kinds...)
 }
 
-// amdExport is the export of model m on AMD's NPU: ~/models/NAME.amd-npu2 or
-// NAME-1024.amd-npu2, NAME in lower case (what tools/amd/iron_*.py are told to write). tool is
-// the script that writes it, for the error when there is none.
+// coremlImage reports whether the image family converts for this machine's NPU (vendor, as
+// hwnpu.Vendor's String) on its first run: Anima on Apple's and Intel's, Sana and Qwen-Image on
+// Apple's.
+func coremlImage(family, vendor string) bool {
+	switch v := strings.ToLower(vendor); {
+	case strings.HasPrefix(family, "anima"):
+		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
+	case strings.HasPrefix(family, "sana"), strings.HasPrefix(family, "qwen-image"):
+		return v == strings.ToLower(hwnpu.VendorApple.String())
+	}
+	return false
+}
+
+// amdExport is the export of model m on AMD's NPU: NAME.amd-npu2 or NAME-1024.amd-npu2, NAME
+// in lower case (what tools/amd/iron_*.py are told to write), in entries/amd-xdna2 under the
+// cache's root or in ~/models (hcache.ExportRoots). tool is the script that writes it, for the
+// error when there is none.
 func amdExport(m chat.Model, tool string) (string, error) {
-	home, _ := os.UserHomeDir()
-	root := filepath.Join(home, "models")
+	root := hcache.LegacyExports()
 	name := strings.ToLower(m.Name)
 	for _, n := range []string{name, name + "-1024"} {
-		d := filepath.Join(root, n+".amd-npu2")
-		if isDir(d) {
+		if d := hcache.FindExport(n+".amd-npu2", isDir); d != "" {
 			return d, nil
 		}
 	}
-	return "", fmt.Errorf("AMD's NPU runs exports of %s, and %s has no %s.amd-npu2 for %s: download %s and run\n  python %s ~/models/%s ~/models/%s.amd-npu2\n(see docs/amd-npu-models.md)",
-		tool, root, name, m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), name)
+	file := ""
+	if m.File != "" {
+		file = " --dit " + m.File
+	}
+	return "", fmt.Errorf("AMD's NPU runs exports of %s, and %s has no %s.amd-npu2 for %s: download %s and run\n  python %s ~/models/%s ~/models/%s.amd-npu2%s\n(see docs/amd-npu-models.md)",
+		tool, root, name, m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), name, file)
 }
 
-// freeName is the first of base, "stem (2).ext", "stem (3).ext", ... that does not exist.
-func freeName(base string) string {
-	if _, err := os.Lstat(base); errors.Is(err, os.ErrNotExist) {
+// shortHome is path with the home directory written ~.
+func shortHome(path string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, path); err == nil && filepath.IsLocal(rel) {
+			return "~/" + filepath.ToSlash(rel)
+		}
+	}
+	return path
+}
+
+// freeName is the first of base, "stem (2).ext", "stem (3).ext", ... that does not exist and
+// is not one of taken (names given out already for this run).
+func freeName(base string, taken ...string) string {
+	free := func(p string) bool {
+		_, err := os.Lstat(p)
+		return errors.Is(err, os.ErrNotExist) && !slices.Contains(taken, p)
+	}
+	if free(base) {
 		return base
 	}
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 	for i := 2; ; i++ {
 		p := fmt.Sprintf("%s (%d)%s", stem, i, ext)
-		if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
+		if free(p) {
 			return p
 		}
 	}

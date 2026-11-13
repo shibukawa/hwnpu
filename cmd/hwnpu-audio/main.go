@@ -20,7 +20,7 @@
 //
 // --model takes a name, a family or a use of models.yaml (music, magenta-realtime-2; sfx,
 // moss-soundeffect; speech; transcribe, whisper:large-v3-turbo; pitch; notes): a family alone
-// picks for the machine's memory as hwnpu-chat's -m, a tag of memory (moss-soundeffect:8gb, 16G)
+// picks for the machine's memory as hwnpu-chat's --model, a tag of memory (moss-soundeffect:8gb, 16G)
 // for that machine's. Each model is downloaded and converted the first time. Without -o, generate
 // plays the sound.
 //
@@ -42,6 +42,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"math"
 	"math/rand/v2"
@@ -89,7 +90,9 @@ func main() {
 			"melodia":      fmt.Sprint(notes.DefaultOptions.Melodia),
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)))
+	console.MeasureEnergy(console.Log(os.Stderr)) // HWNPU_ENERGY: the idle power, then each phase's energy in the last lines
 	k.FatalIfErrorf(k.Run())
+	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
 }
 
 // GenerateCmd is "hwnpu-audio generate": music, or with a sound effects model a sound effect.
@@ -101,7 +104,7 @@ type GenerateCmd struct {
 	Duration *time.Duration `placeholder:"10s" help:"How long: 10s, 2m, 1m30s (default 10s; music with --notes: the MIDI file's length; sound effects up to 30s)."`
 	Fade     *time.Duration `placeholder:"2s" help:"Fade out over the last part (music: 2s by default, 0 to stop where the generation does; sound effects: none by default)."`
 	Seed     uint64         `placeholder:"N" help:"The random seed (0: a new one)."`
-	Dir      string         `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir)."`
+	Dir      string         `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache    string         `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU      bool           `name:"cpu" help:"Run the programs with the CPU interpreter instead of the NPU (slow)."`
 	OffNPU   bool           `name:"allow-off-npu" help:"Go on when Core ML puts part of a program off the NPU (on the GPU or the CPU; that has made a Mac sluggish and failed)."`
@@ -166,9 +169,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		o.dir = chat.ModelsDir()
 	}
 	if o.cacheDir == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			o.cacheDir = filepath.Join(d, "hwnpu")
-		}
+		o.cacheDir = cache.Root()
 	}
 	return run(ctx, o, c.Args)
 }
@@ -178,7 +179,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 // machine's memory.
 type ListCmd struct {
 	Kind string `arg:"" optional:"" enum:"music,sfx,speech,transcribe,pitch,notes," default:"" help:"Only music, sfx, speech, transcribe, pitch or notes models."`
-	Dir  string `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's -dir)."`
+	Dir  string `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 }
 
 // Run lists the models.
@@ -282,8 +283,8 @@ func run(ctx context.Context, o options, args []string) error {
 			return err
 		}
 		defer dev.Close()
-		if backend = llm.ProgramBackend(device); backend != llm.BackendCoreML {
-			return fmt.Errorf("%s: only Apple's Neural Engine runs Magenta RealTime 2 so far (--cpu runs it on the CPU)", device)
+		if backend = llm.ProgramBackend(device); backend == "" {
+			return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--cpu runs Magenta RealTime 2 on the CPU)", device)
 		}
 	}
 	setup := music.Setup{Dir: filepath.Join(o.dir, m.DirName()), Repo: m.Source(), Format: o.format, Backend: backend, Log: lw, Encoder: o.cont != ""}
@@ -325,6 +326,7 @@ func run(ctx context.Context, o options, args []string) error {
 			st.Close()
 			return err
 		}
+		console.Running()
 		var embs [][]float32
 		var weights []float64
 		var names []string
@@ -408,11 +410,15 @@ func run(ctx context.Context, o options, args []string) error {
 		logf("notes: %d of %s (%.1f s)", len(ns), o.notes, end)
 	}
 
+	console.Preparing()
 	t0 := time.Now()
 	units := map[string]string{"npu": "", "gpu": "gpu", "cpu": "cpu"}
 	ss, ok := units[o.decoderOn]
 	if !ok {
 		return fmt.Errorf("--decoder-on %q: npu, gpu or cpu", o.decoderOn)
+	}
+	if ss != "" && backend != llm.BackendCoreML {
+		return fmt.Errorf("--decoder-on %s: Core ML's units, not Intel's NPU", o.decoderOn)
 	}
 	done := spin("loading " + m.Name)
 	g, err := music.OpenOn(ctx, dev, p, ss)
@@ -437,6 +443,7 @@ func run(ctx context.Context, o options, args []string) error {
 	if err := checkNPU(lw, o, g.Placement()); err != nil {
 		return err
 	}
+	console.Running()
 	if o.seed == 0 {
 		o.seed = rand.Uint64()
 	}

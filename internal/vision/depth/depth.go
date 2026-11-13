@@ -1,6 +1,7 @@
-// Package depth estimates a picture's depth on AMD's NPU with Depth Anything 3 (DA3MONO-LARGE
+// Package depth estimates a picture's depth on an NPU with Depth Anything 3 (DA3MONO-LARGE
 // and DA3METRIC-LARGE: DINOv2 ViT-L/14 and a DPT head; DA3-SMALL and DA3-BASE on one picture:
-// ViT-S or B and DualDPT's depth and confidence), the graphs tools/amd/iron_da3.py exports. The host resizes and normalizes the picture, cuts its 14 x 14
+// ViT-S or B and DualDPT's depth and confidence): on AMD's, the graphs tools/amd/iron_da3.py
+// exports; on Apple's Neural Engine, the Core ML packages of internal/vision/depth/mil (Prepare). The host resizes and normalizes the picture, cuts its 14 x 14
 // patches, takes exp of the depth logit and sets the sky to the far depth.
 //
 // The depth is relative (larger is farther, up to an unknown scale), or with DA3METRIC-LARGE
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3vl"
 )
@@ -53,6 +55,11 @@ type Export struct {
 	// Second is what the head's second output is: "sky" (DPT: DA3MONO, DA3METRIC) or
 	// "confidence" (DualDPT: DA3-SMALL, DA3-BASE).
 	Second string `json:"second"`
+	// Format is "coreml" (or "intel", OpenVINO IR) for an export of Prepare (a size's programs in WxH/, converted from
+	// Checkpoint when a picture first takes the size), "" for one of tools/amd/iron_da3.py.
+	Format     string `json:"format,omitempty"`
+	Checkpoint string `json:"checkpoint,omitempty"`
+	Version    int    `json:"version,omitempty"`
 }
 
 // patchIn is the patch embedding's input width (iron_da3.PE_IN): 3 x 14 x 14 values, padded.
@@ -93,10 +100,11 @@ type Estimator struct {
 	Logf func(format string, args ...any)
 }
 
-// sized is one size's graphs.
+// sized is one size's graphs or programs.
 type sized struct {
 	Config
 	vit, head *iron.Graph
+	prog      *progSized
 }
 
 // Open reads the export in dir; a size's graphs are loaded onto dev for the first picture
@@ -120,6 +128,9 @@ func (e *Estimator) Close() error {
 }
 
 func (s *sized) close() error {
+	if s.prog != nil {
+		return s.prog.close()
+	}
 	err := s.vit.Close()
 	if err2 := s.head.Close(); err == nil {
 		err = err2
@@ -172,10 +183,14 @@ func (e *Estimator) use(ctx context.Context, w, h int) (*sized, error) {
 	if e.cur != nil && e.cur.Model.Width == w && e.cur.Model.Height == h {
 		return e.cur, nil
 	}
+	defer console.Loading(filepath.Join(e.dir, fmt.Sprintf("%dx%d", w, h)))()
 	if err := e.Close(); err != nil {
 		return nil, err
 	}
 	d := filepath.Join(e.dir, fmt.Sprintf("%dx%d", w, h))
+	if e.Format == "coreml" || e.Format == "intel" {
+		return e.useProgram(ctx, d, w, h)
+	}
 	b, err := os.ReadFile(filepath.Join(d, "model.json"))
 	if err != nil {
 		return nil, err
@@ -262,6 +277,9 @@ func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, err
 		return nil, err
 	}
 	tl := time.Now()
+	if s.prog != nil {
+		return e.estimateProgram(ctx, s, img, t0, tl)
+	}
 	if err := s.vit.SetInput("patches", toBF16(s.Patches(img))); err != nil {
 		return nil, err
 	}
@@ -288,11 +306,25 @@ func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, err
 	}
 	t3 := time.Now()
 	W, H := s.Model.Width, s.Model.Height
-	r := &Result{W: W, H: H, Depth: make([]float32, W*H), Metric: e.Metric, MetricScale: e.MetricScale}
-	second := make([]float32, W*H)
-	for i := range r.Depth {
-		r.Depth[i] = float32(math.Exp(float64(fromBF16(binary.LittleEndian.Uint16(out[2*64*i:])))))
+	logit, second := make([]float32, W*H), make([]float32, W*H)
+	for i := range logit {
+		logit[i] = fromBF16(binary.LittleEndian.Uint16(out[2*64*i:]))
 		second[i] = fromBF16(binary.LittleEndian.Uint16(out[2*64*i+2:]))
+	}
+	r := e.result(W, H, logit, second)
+	if e.Logf != nil {
+		e.Logf("depth: %dx%d, load %.2f s, input %.2f s, vit %.2f s, head %.2f s", W, H, tl.Sub(t0).Seconds(),
+			t1.Sub(tl).Seconds(), t2.Sub(t1).Seconds(), t3.Sub(t2).Seconds())
+	}
+	return r, nil
+}
+
+// result is the Result of the head's two outputs: depth's logit and the second (the sky's, or
+// the confidence's logit).
+func (e *Estimator) result(W, H int, logit, second []float32) *Result {
+	r := &Result{W: W, H: H, Depth: make([]float32, W*H), Metric: e.Metric, MetricScale: e.MetricScale}
+	for i, v := range logit {
+		r.Depth[i] = float32(math.Exp(float64(v)))
 	}
 	if e.Second == "confidence" {
 		for i, v := range second {
@@ -306,11 +338,7 @@ func (e *Estimator) Estimate(ctx context.Context, img image.Image) (*Result, err
 		r.Sky = second
 		r.fillSky()
 	}
-	if e.Logf != nil {
-		e.Logf("depth: %dx%d, load %.2f s, input %.2f s, vit %.2f s, head %.2f s", W, H, tl.Sub(t0).Seconds(),
-			t1.Sub(tl).Seconds(), t2.Sub(t1).Seconds(), t3.Sub(t2).Seconds())
-	}
-	return r, nil
+	return r
 }
 
 // fillSky sets the sky's depth to the 99th percentile of the rest (DA3's

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path"
@@ -27,6 +28,10 @@ const (
 	KindFace       Kind = "face-detect" // the faces in a picture: hwnpu-image face-detect
 	KindPitch      Kind = "pitch"       // the pitch of a voice or an instrument: hwnpu-audio pitch
 	KindPose       Kind = "pose"        // people's keypoints in an image: hwnpu-image pose
+	KindDetect     Kind = "detect"      // the objects in an image, boxes and labels: hwnpu-image detect
+	KindOCR        Kind = "ocr"         // the text in an image, lines and boxes: hwnpu-image ocr
+	KindLabel      Kind = "label"       // labels of an image and embeddings of images and texts: hwnpu-image label, embed
+	KindSegment    Kind = "segment"     // the mask of a thing a point or a box picks: hwnpu-image segment
 	KindNotes      Kind = "notes"       // the notes of audio, as MIDI: hwnpu-audio notes
 	KindMusic      Kind = "music"       // music from a style: hwnpu-audio generate
 	KindSFX        Kind = "sfx"         // sound effects from a text: hwnpu-audio generate -m sfx
@@ -72,10 +77,30 @@ type Model struct {
 	// the NPU's vendor (MemoryFor).
 	Memory   float64
 	MemoryBy PerVendor
+	// Run is how hwnpu-chat runs a chat model when its flags do not say (models.yaml's prefill,
+	// format, context and paged), on a machine of Machine GB.
+	Run Run
+	// Variants change Memory and Run on machines of more memory, by the least memory (GB) of each
+	// (models.yaml's variants): On is the model as a machine runs it. Lookup and Catalog have it
+	// as it is; Resolve, ResolveFor and Pick give it On the machine.
+	Variants map[int]Variant
 	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU when its
 	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
 	// NPU has no form of.
 	AMDExport []string
+	// File is the model's checkpoint file in a repository that holds several models (Anima's
+	// diffusion models: anima-turbo-v1.1.safetensors), "" when the repository is the one model.
+	File string
+	// With are the other repositories the model reads, by role (an OCR's detector): OWNER/NAME
+	// or OWNER/NAME@REVISION as fetch takes them. Their files' sha256 are SHA256's ROLE/FILE.
+	With map[string]string
+	// NotOn are the chips (Chips) a family or a category does not pick the model on: it is too
+	// slow there (PLaMo 3 Translate 8B on an M1, over the 2.8 GiB its Neural Engine runs at full
+	// speed). Its name and FAMILY:TAG still run it.
+	NotOn []string
+	// License is the weights' license (models.yaml's license): its id, where it is, and whether
+	// the user accepts it before the first download or run (AcceptLicense).
+	License License
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that
@@ -124,14 +149,10 @@ func Lookup(name string) (Model, bool) {
 	return Model{}, false
 }
 
-// ModelsDir is where models are kept when not told: hwnpu/models in the user cache directory.
+// ModelsDir is where models are kept when not told: models under cache.Root.
 // Each model has a directory of its name there.
 func ModelsDir() string {
-	d, err := os.UserCacheDir()
-	if err != nil {
-		d = os.TempDir()
-	}
-	return filepath.Join(d, "hwnpu", "models")
+	return cache.Sub("models")
 }
 
 // Resolve returns the model a name of -use means: one of the catalog by its name; a family or a
@@ -175,10 +196,11 @@ func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, erro
 }
 
 // lookupFor finds a model of the definitions a name means: by its name (or repository), or as
-// a family or a use (Pick, logged), each through the aliases. ok is false for none.
+// a family or a use (Pick, logged), each through the aliases, On the machine. ok is false for
+// none.
 func lookupFor(name string, log io.Writer) (Model, bool, error) {
 	if m, ok := Lookup(name); ok {
-		return Alias(m, log), true, nil
+		return Alias(m, log).On(MachineMemory()), true, nil
 	}
 	m, why, ok, err := Pick(name, MachineMemory())
 	if err != nil || !ok {

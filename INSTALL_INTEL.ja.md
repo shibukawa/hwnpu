@@ -259,6 +259,8 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 
 `HWNPU_OV_DEVICE=NPU` は OpenVINO の NPU プラグイン、`CPU` (既定) は CPU で動かします。Windows では `HWNPU_OV_PYTHON` に `python.exe` のパスを指定します。
 
+`--backend` のないコマンド (hwnpu-image、hwnpu-audio) も、環境変数 `HWNPU_BACKEND=openvino` で同じように OpenVINO で動きます。このときコマンドは機械を Intel のものとして扱い、Intel の NPU に向けた変換 (OpenVINO IR) をそのまま OpenVINO に渡すので、Intel の NPU のない機械 (AMD の機械など) でも Intel の経路を変換から結果まで確かめられます。
+
 ## 7. まとめて確かめる (Windows)
 
 `tools/intel/hwnpu-intel-check.ps1` (PowerShell 5.1) は、手順 4 と 6 などをクローンの中の `go run` で時間の上限をつけて順に動かし、ログを `%USERPROFILE%\hwnpu-intel-logs` の zip にまとめます。中身は機種とドライバ、各コマンドの出力、時間、メモリです。失敗したテストがあっても次に進み、同じ `-Out` で再実行すると成功したテストは飛ばします。
@@ -267,7 +269,7 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
 ```
 
-`-Level quick` (30 分ほど) はデバイス、`hwnpu-dev report`、小さな LFM3-1.7B のチャット。`standard` (既定。数時間、初回は 25 GB ほどのダウンロード) は、LFM3-1.7B の既定の設定、hwnpu-chat agent、hwnpu-dev formats、PLaMo 3 Translate、PLaMo-Embedding、Gemma 4 E2B、512 × 512 の Anima を足します。`full` はさらにチャットへの画像と音声、Qwen3.5、1024 × 1024 の Anima、hwnpu-dev probe。`-List` でテストの一覧、`-Only` と `-Skip` で選べます。
+`-Level quick` (30 分ほど) はデバイス、`hwnpu-dev report`、小さな LFM3-1.7B のチャット。`standard` (既定。数時間、初回は 25 GB ほどのダウンロード) は、LFM3-1.7B の既定の設定、hwnpu-chat agent、hwnpu-dev formats、PLaMo 3 Translate、PLaMo-Embedding、Gemma 4 E2B、512 × 512 の Anima を足します。`full` はさらにチャットへの画像と音声、Qwen3.5、Qwen3、1024 × 1024 の Anima、hwnpu-dev probe と、Intel の実機ではまだ動かしていないモデル (OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、SwiftF0、Basic Pitch、Whisper、LFM3-Audio の読み上げ、Magenta RealTime 2、Sana 600M、MOSS-SoundEffect。ダウンロードは 25 GB ほど増え、`-Skip sana,sfx` で 17 GB 減ります)。`-List` でテストの一覧、`-Only` と `-Skip` で選べます。
 
 ## うまくいかないとき
 

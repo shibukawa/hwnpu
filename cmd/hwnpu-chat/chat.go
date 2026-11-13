@@ -56,6 +56,7 @@ func (c *ChatCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if c.Prompt == "" {
 		return t.talk(c.System)
 	}
+	console.Running() // the times of a conversation in the terminal are not told
 	content := chat.Content{Text: c.Prompt}
 	for _, f := range c.Image {
 		m, err := mediaFile(f, false)
@@ -171,7 +172,7 @@ func (t *talker) answer(content chat.Content) error {
 	}
 	console.Notef("[prompt %d tokens, %d new in %.1fs; %d tokens at %.1f tokens/s%s]\n",
 		st.Prompt, st.Prompt-st.Reused, st.Prefill.Seconds(), st.Generated, float64(st.Generated)/max(st.Decode.Seconds(), 1e-9), cut)
-	if os.Getenv("HWNPU_PROFILE") != "" {
+	if console.Profile {
 		decode.WriteProfile(os.Stderr)
 		if b, ok := mem.NPUWired(); ok {
 			fmt.Fprintf(os.Stderr, "profile: the Neural Engine holds %.2f GiB\n", float64(b)/(1<<30))

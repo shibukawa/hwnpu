@@ -18,8 +18,11 @@
               (hwnpu-dev probe resident, also with programs the size of Anima's), Anima 512 x 512 in fp16 and int8
               (default; a few hours, about 25 GB of downloads the first time)
     full      + report with power policies low and performance, LFM3-VL-2B with an image,
-              LFM3-Audio-2B with a clip, Qwen3.5-0.8B, PLaMo 3 Translate 2B, Anima 1024 x 1024, resident in int8,
-              hwnpu-dev probe
+              LFM3-Audio-2B with a clip, Qwen3.5-0.8B, Qwen3-0.6B, PLaMo 3 Translate 2B, Anima 1024 x 1024,
+              resident in int8, hwnpu-dev probe, and the models first converted to OpenVINO IR in
+              2026-11 (checked only on OpenVINO's CPU before): OCR, RTMDet, RTMO, YuNet, DA3, MoGe-2,
+              SwiftF0, Basic Pitch, Whisper, LFM3-Audio TTS, Magenta RealTime 2, Sana 600M and
+              MOSS-SoundEffect (about 25 GB more of downloads; -Skip sana,sfx leaves out 17 GB of them)
 
   A test that finished (exit code 0) is skipped when the script runs again with the same -Out,
   so it can be stopped with Ctrl-C and run again. -Rerun runs them all again.
@@ -136,7 +139,7 @@ function DirMB([string]$path) {
 # ---------------------------------------------------------------------------------------------
 # executables
 
-$Cmds = @("hwnpu-dev", "hwnpu-chat", "hwnpu-image")
+$Cmds = @("hwnpu-dev", "hwnpu-chat", "hwnpu-image", "hwnpu-audio")
 
 # Warm-Build builds every command once, so that go run only links them; a command that does not
 # build fails its tests with the compiler's errors in their logs.
@@ -294,10 +297,10 @@ $Tests = @(
         Args = @("resident", "-resident-size", "0.57,1.2", "-resident-hold", "open", "-resident-max-gb", "8", "-o", "{OUT}\resident-large.md")
         Note = "the same held open with programs the size of Anima's DiT groups (0.57 GB) and text encoder (1.2 GB): does the limit come with larger graphs" }),
   (T @{ Name = "image-512"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 180
-        Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "-o", "{OUT}\anima-512.png", $Anima)
+        Args = @("--backend", "intel", "-m", "anima-turbo", "--size", "512", "--seed", "1", "-o", "{OUT}\anima-512.png", $Anima)
         Note = "Anima-Turbo 512 x 512, 8 steps: downloads, converts to OpenVINO IR (fp16), draws" }),
   (T @{ Name = "image-512-int8"; Level = 1; Exe = "hwnpu-image"; Sub = "generate"; Min = 120
-        Args = @("--backend", "intel", "-m", "anima", "--size", "512", "--seed", "1", "--dit-format", "int8", "--text-format", "int8", "-o", "{OUT}\anima-512-int8.png", $Anima)
+        Args = @("--backend", "intel", "-m", "anima-turbo", "--size", "512", "--seed", "1", "--dit-format", "int8", "--text-format", "int8", "-o", "{OUT}\anima-512-int8.png", $Anima)
         Note = "the same in int8 (half the memory of fp16): compare the image and the step's time" }),
 
   (T @{ Name = "report-low"; Level = 2; Exe = "hwnpu-dev"; Sub = "report"; Min = 20
@@ -317,18 +320,61 @@ $Tests = @(
         Note = "LFM3-Audio-2B: the clip's text is in inputs\clip.txt" }),
   (T @{ Name = "qwen35-0.8b"; Level = 2; Exe = "hwnpu-chat"; Sub = "chat"; Min = 90; Stdin = $ChatPrompts
         Args = @("--backend", "intel", "-m", "Qwen3.5-0.8B", "--temp", "0", "-n", "256")
-        Note = "Qwen3.5-0.8B (gated delta layers; not lowered to OpenVINO IR before, may fail)" }),
+        Note = "Qwen3.5-0.8B (gated delta layers; checked on OpenVINO's CPU only)" }),
   (T @{ Name = "translate-2b"; Level = 2; Exe = "hwnpu-chat"; Sub = "chat"; Min = 120; Stdin = $Translate
         Args = @("--backend", "intel", "-m", "plamo-3-translate-2b", "--temp", "0")
         Note = "PLaMo 3 Translate 2B, int8" }),
   (T @{ Name = "image-1024"; Level = 2; Exe = "hwnpu-image"; Sub = "generate"; Min = 240
-        Args = @("--backend", "intel", "-m", "anima", "--size", "1024", "--seed", "1", "-o", "{OUT}\anima-1024.png", $Anima)
+        Args = @("--backend", "intel", "-m", "anima-turbo", "--size", "1024", "--seed", "1", "-o", "{OUT}\anima-1024.png", $Anima)
         Note = "Anima-Turbo 1024 x 1024" }),
   (T @{ Name = "resident-int8"; Level = 2; Exe = "hwnpu-dev"; Sub = "probe"; Min = 60
         Args = @("resident", "-resident-formats", "int8", "-resident-hold", "open", "-resident-max-gb", "8", "-o", "{OUT}\resident-int8.md")
         Note = "the same in int8: does the limit count the weights' bytes (twice as many programs) or the programs" }),
   (T @{ Name = "npuprobe"; Level = 2; Exe = "hwnpu-dev"; Sub = "probe"; Min = 120; Args = @("-o", "{OUT}\npuprobe.md")
-        Note = "speed of generated LLM shaped models, and the largest model the compiler takes (PROBE.md)" })
+        Note = "speed of generated LLM shaped models, and the largest model the compiler takes (PROBE.md)" }),
+  # converted to OpenVINO IR since 2026-11-12, checked on OpenVINO's CPU only (HWNPU_BACKEND=openvino)
+  (T @{ Name = "qwen3-0.6b"; Level = 2; Exe = "hwnpu-chat"; Sub = "chat"; Min = 90; Stdin = $ChatPrompts
+        Args = @("--backend", "intel", "-m", "Qwen3-0.6B") + $Short
+        Note = "Qwen3-0.6B, int8, split at its attention" }),
+  (T @{ Name = "ocr"; Level = 2; Exe = "hwnpu-image"; Sub = "ocr"; Min = 30; Needs = "image"
+        Args = @("--device", "npu", "{INPUTS}\shapes.png")
+        Note = "PP-OCRv6 small on the NPU (max_pool, clip lowered): the line NPU 42" }),
+  (T @{ Name = "detect"; Level = 2; Exe = "hwnpu-image"; Sub = "detect"; Min = 30; Needs = "image"
+        Args = @("--device", "npu", "-m", "RTMDet-m", "{INPUTS}\shapes.png")
+        Note = "RTMDet-m on the NPU: converts and runs (the test image holds no COCO objects)" }),
+  (T @{ Name = "pose"; Level = 2; Exe = "hwnpu-image"; Sub = "pose"; Min = 30; Needs = "image"
+        Args = @("--device", "npu", "{INPUTS}\shapes.png")
+        Note = "RTMO-s on the NPU: converts and runs (no people in the test image)" }),
+  (T @{ Name = "face"; Level = 2; Exe = "hwnpu-image"; Sub = "face-detect"; Min = 30; Needs = "image"; NoDir = $true
+        Args = @("--device", "npu", "{INPUTS}\shapes.png")
+        Note = "YuNet on the NPU: converts and runs (no faces in the test image)" }),
+  (T @{ Name = "depth-da3"; Level = 2; Exe = "hwnpu-image"; Sub = "depth"; Min = 45; Needs = "image"; NoDir = $true
+        Args = @("-m", "DA3-SMALL", "--raw", "-o", "{OUT}\depth-da3", "{INPUTS}\shapes.png")
+        Note = "Depth Anything 3 small (pixel_shuffle lowered): depth-da3\shapes.depth.png" }),
+  (T @{ Name = "depth-moge"; Level = 2; Exe = "hwnpu-image"; Sub = "depth"; Min = 45; Needs = "image"; NoDir = $true
+        Args = @("-m", "moge-2-vits", "-o", "{OUT}\depth-moge", "{INPUTS}\shapes.png")
+        Note = "MoGe-2 ViT-S: depth-moge\shapes.depth.png" }),
+  (T @{ Name = "pitch"; Level = 2; Exe = "hwnpu-audio"; Sub = "pitch"; Min = 20; Needs = "clip"
+        Args = @("--device", "npu", "{INPUTS}\clip.wav")
+        Note = "SwiftF0 on the NPU: the pitch of the clip every 16 ms" }),
+  (T @{ Name = "notes"; Level = 2; Exe = "hwnpu-audio"; Sub = "notes"; Min = 20; Needs = "clip"
+        Args = @("--device", "npu", "{INPUTS}\clip.wav")
+        Note = "Basic Pitch on the NPU: the clip's notes" }),
+  (T @{ Name = "transcribe"; Level = 2; Exe = "hwnpu-audio"; Sub = "transcribe"; Min = 60; Needs = "clip"
+        Args = @("{INPUTS}\clip.wav")
+        Note = "Whisper large-v3-turbo, int8 (1.6 GB download): the text of inputs\clip.txt" }),
+  (T @{ Name = "tts"; Level = 2; Exe = "hwnpu-audio"; Sub = "tts"; Min = 60
+        Args = @("-o", "{OUT}\tts.wav", "--seed", "1", "The meeting moves to Thursday at three in the afternoon.")
+        Note = "LFM3-Audio-2B speaking (int8, shares the audio test's download): listen to tts.wav" }),
+  (T @{ Name = "music"; Level = 2; Exe = "hwnpu-audio"; Sub = "generate"; Min = 60
+        Args = @("--duration", "5s", "--seed", "1", "-o", "{OUT}\music.wav", "disco funk")
+        Note = "Magenta RealTime 2 small (conv_transpose, elu lowered): 5 s of music.wav" }),
+  (T @{ Name = "sana"; Level = 2; Exe = "hwnpu-image"; Sub = "generate"; Min = 240
+        Args = @("--backend", "intel", "-m", "Sana-600M", "--size", "512", "--seed", "1", "-o", "{OUT}\sana-512.png", "a red apple on a wooden table, photo")
+        Note = "Sana 600M 512 x 512 (about 6 GB download): Gemma 2 and the DiT in int8" }),
+  (T @{ Name = "sfx"; Level = 2; Exe = "hwnpu-audio"; Sub = "generate"; Min = 240
+        Args = @("-m", "sfx", "--duration", "5s", "--steps", "20", "--seed", "1", "-o", "{OUT}\sfx.wav", "A dog barking loudly in a park.")
+        Note = "MOSS-SoundEffect v2.0 (11.5 GB download): the text encoder and the DiT in int8, 20 steps" })
 )
 
 $LevelNum = @{ quick = 0; standard = 1; full = 2 }[$Level]
@@ -437,7 +483,9 @@ function Run-Test($t) {
   $argv = @("run", ("./cmd/" + $t.Exe))
   if ($t.PSObject.Properties["Sub"]) { $argv += $t.Sub }
   # the commands that take the models directory (hwnpu-dev formats keeps the std flag package, which reads --dir too)
-  if ($t.Exe -in @("hwnpu-chat", "hwnpu-image") -or ($t.Exe -eq "hwnpu-dev" -and $t.Sub -eq "formats")) { $argv += $Common }
+  # (hwnpu-image depth and face-detect keep theirs in hwnpu's own models directory: NoDir)
+  $noDir = $t.PSObject.Properties["NoDir"] -and $t.NoDir
+  if (-not $noDir -and ($t.Exe -in @("hwnpu-chat", "hwnpu-image", "hwnpu-audio") -or ($t.Exe -eq "hwnpu-dev" -and $t.Sub -eq "formats"))) { $argv += $Common }
   foreach ($a in $t.Args) { $argv += (Expand $a) }
   $cmdline = ($argv | ForEach-Object { Quote-Arg $_ }) -join " "
   $r.command = "go " + $cmdline

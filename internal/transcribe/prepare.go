@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -25,16 +26,20 @@ type Setup struct {
 	// Dir is where the checkpoint and the programs are kept; Repo is the Hugging Face repository
 	// it is downloaded from when it is not there.
 	Dir, Repo string
-	// Format is the weight format of the programs (empty: the architectures', lut8).
+	// Format is the weight format of the programs (empty: the architectures', lut8; int8 on
+	// Intel's NPU, which reads no lookup tables).
 	Format string
-	Log    io.Writer
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
+	// what the CPU interpreter runs) or OpenVINO IR for Intel's NPU, kept in Dir/intel.
+	Backend string
+	Log     io.Writer
 }
 
 // files are the checkpoint's files besides the weights.
 var files = []string{"config.json", "generation_config.json", "tokenizer.json"}
 
 // Prepare downloads the checkpoint into s.Dir unless it is there, and converts its three
-// programs for the Neural Engine unless they are: the encoder (whisper-encoder), the cross
+// programs for the Neural Engine (or Intel's NPU, s.Backend) unless they are: the encoder (whisper-encoder), the cross
 // program (whisper-cross) and the decoder with a KV cache of every position it takes, one token
 // per call.
 func Prepare(ctx context.Context, s Setup) (Config, error) {
@@ -57,6 +62,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return Config{}, err
 	}
 	c := Config{Dir: s.Dir}
+	intel := s.Backend == llm.BackendIntel
 	// the checkpoint is downloaded only to convert a program or write the tables from it: what
 	// was converted runs without it
 	checkpoint := sync.OnceValues(func() (string, error) {
@@ -72,14 +78,23 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		{whisper.Arch, llm.Options{Seq: 1, Cache: wc.TargetPositions}, &c.Decoder},
 	} {
 		format := cmp.Or(s.Format, p.arch.Format)
+		dir, ext := s.Dir, ".mlpackage"
+		if intel {
+			format = llm.IntelFormat(format)
+			dir, ext = filepath.Join(s.Dir, "intel"), ".xml"
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return Config{}, err
+			}
+		}
+		p.opts.Backend = s.Backend
 		name := p.arch.Name + p.arch.Rev() + "-" + format
 		if p.opts.Cache > 0 {
 			name += fmt.Sprintf("-c%d-q%d", p.opts.Cache, p.opts.Seq)
 		}
-		out := filepath.Join(s.Dir, name+".mlpackage")
-		done := strings.TrimSuffix(out, ".mlpackage") + ".done"
-		if b, err := os.ReadFile(done); err == nil {
-			*p.path = string(b)
+		out := filepath.Join(dir, name+ext)
+		done := strings.TrimSuffix(out, ext) + ".done"
+		if path, ok := cache.ReadDone(done); ok {
+			*p.path = path
 			continue
 		}
 		weights, err := checkpoint()
@@ -90,7 +105,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
-		if err := os.WriteFile(done, []byte(path), 0o644); err != nil {
+		if err := cache.WriteDone(done, path); err != nil {
 			return Config{}, err
 		}
 		*p.path = path
@@ -127,10 +142,14 @@ func convert(config, weights, out string, a *llm.Arch, format string, o llm.Opti
 		return "", err
 	}
 	set()
-	opts.Format, opts.Seq, opts.Cache = format, o.Seq, o.Cache
+	opts.Format, opts.Seq, opts.Cache, opts.Backend = format, o.Seq, o.Cache, o.Backend
 	if strings.HasPrefix(format, "lut") {
 		opts.Quant = "kmeans-minmax"
 	}
-	fmt.Fprintf(log, "converting %s for the Neural Engine (%s); this takes a minute\n", filepath.Base(out), format)
+	target := "the Neural Engine"
+	if o.Backend == llm.BackendIntel {
+		target = "Intel's NPU"
+	}
+	fmt.Fprintf(log, "converting %s for %s (%s); this takes a minute\n", filepath.Base(out), target, format)
 	return llm.Convert(a, model, w, out, "any", 0, opts, log)
 }

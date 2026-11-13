@@ -64,6 +64,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 type cli struct {
@@ -89,9 +90,10 @@ func main() {
 			"tiers":        chat.DefaultTiers,
 			"embed_seqs":   ints(chat.DefaultEmbedSeqs),
 			"mtp":          chat.MTPAuto,
-			"prefill":      chat.PrefillAuto,
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Bind(stop))
+	console.MeasureEnergy(console.Log(os.Stderr)) // HWNPU_ENERGY: the idle power, then each phase's energy in the last lines
 	k.FatalIfErrorf(k.Run())
+	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
 }

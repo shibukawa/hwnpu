@@ -29,8 +29,13 @@ func Key(parts ...[]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// TreeDigest hashes the relative paths and contents of every regular file under root.
+// TreeDigest hashes the relative paths and contents of every regular file under root. A root that
+// is a symbolic link is read where it points: WalkDir does not follow it, and every linked package
+// hashed as an empty tree, one compiled model for all of them.
 func TreeDigest(root string) ([]byte, error) {
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
 	var files []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

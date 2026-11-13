@@ -3,6 +3,7 @@ package anima
 import (
 	"context"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,6 +28,22 @@ const (
 	RepoDiffusers = "circlestone-labs/Anima-Base-v1.0-Diffusers"
 )
 
+// File is a file Prepare downloads: Name of the Hugging Face repository Repo, at Path in Dir.
+type File struct{ Repo, Name, Path string }
+
+// Files are the files Prepare downloads for the diffusion model dit (models.yaml pins their
+// sha256: the split files under the model's repository, the Diffusers ones under diffusers/).
+func Files(dit string) []File {
+	return []File{
+		{RepoSplit, "split_files/diffusion_models/" + dit, "diffusion_models/" + dit},
+		{RepoSplit, "split_files/text_encoders/qwen_3_06b_base.safetensors", "text_encoders/qwen_3_06b_base.safetensors"},
+		{RepoDiffusers, "vae/config.json", "diffusers/vae/config.json"},
+		{RepoDiffusers, "vae/diffusion_pytorch_model.safetensors", "diffusers/vae/diffusion_pytorch_model.safetensors"},
+		{RepoDiffusers, "tokenizer/tokenizer.json", "diffusers/tokenizer/tokenizer.json"},
+		{RepoDiffusers, "t5_tokenizer/tokenizer.json", "diffusers/t5_tokenizer/tokenizer.json"},
+	}
+}
+
 // Setup is what Prepare makes ready.
 type Setup struct {
 	// Dir holds the checkpoint in Convert's layout (diffusion_models/, text_encoders/,
@@ -46,6 +63,23 @@ func Formats(backend string) (text, dit string) {
 		return "int8", "int8"
 	}
 	return "fp16", "fp16"
+}
+
+// DefaultGroup is the DiT's blocks a program holds when none is asked for: 4, and on Intel's NPU
+// as many as keep a program's work near 4 blocks of 512 x 512 (1024 patches). Windows stops a job
+// on the NPU that runs past its time limit (TDR, 2 s by default) with ZE_RESULT_ERROR_DEVICE_LOST,
+// and a group of 4 blocks at 1024 x 1024 (4096 patches, attention 16 times the work) did on the
+// Core Ultra 5 135U (design.md 16.146): there it is 1.
+func DefaultGroup(backend string, width, height int) int {
+	g := 4
+	if backend != "intel" {
+		return g
+	}
+	patches := (width / 16) * (height / 16)
+	for g > 1 && g*patches > 4*1024 {
+		g /= 2
+	}
+	return g
 }
 
 // ExportName is the directory Prepare writes the export of o into, in Setup.Dir: what changes
@@ -75,6 +109,9 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if o.DitFormat == "" {
 		o.DitFormat = dit
 	}
+	if o.Group <= 0 {
+		o.Group = DefaultGroup(o.Backend, o.Width, o.Height)
+	}
 	log := s.Log
 	if log == nil {
 		log = io.Discard
@@ -87,19 +124,17 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", err
 	}
-	for _, f := range []struct{ repo, name, path string }{
-		{RepoSplit, "split_files/diffusion_models/" + o.Dit, "diffusion_models/" + o.Dit},
-		{RepoSplit, "split_files/text_encoders/qwen_3_06b_base.safetensors", "text_encoders/qwen_3_06b_base.safetensors"},
-		{RepoDiffusers, "vae/config.json", "diffusers/vae/config.json"},
-		{RepoDiffusers, "vae/diffusion_pytorch_model.safetensors", "diffusers/vae/diffusion_pytorch_model.safetensors"},
-		{RepoDiffusers, "tokenizer/tokenizer.json", "diffusers/tokenizer/tokenizer.json"},
-		{RepoDiffusers, "t5_tokenizer/tokenizer.json", "diffusers/t5_tokenizer/tokenizer.json"},
-	} {
-		path := filepath.Join(s.Dir, f.path)
+	var want []chat.File
+	for _, f := range Files(o.Dit) {
+		want = append(want, chat.File{Repo: f.Repo, Name: f.Name, Path: filepath.Join(s.Dir, f.Path)})
+	}
+	chat.Expect(ctx, want)
+	for _, f := range Files(o.Dit) {
+		path := filepath.Join(s.Dir, f.Path)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return "", err
 		}
-		if err := chat.Fetch(ctx, f.repo, f.name, path, log); err != nil {
+		if err := chat.Fetch(ctx, f.Repo, f.Name, path, log); err != nil {
 			return "", err
 		}
 	}
@@ -118,5 +153,5 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	fmt.Fprintf(log, "converted in %.0f s\n", time.Since(t0).Seconds())
 	// what is left of the checkpoints read goes back to the OS before the programs load
 	debug.FreeOSMemory()
-	return out, os.WriteFile(done, []byte(out), 0o644)
+	return out, cache.WriteDone(done, out)
 }

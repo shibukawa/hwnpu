@@ -406,3 +406,21 @@ func TestParseConfigRejects(t *testing.T) {
 		t.Error("a tied model reads lm_head")
 	}
 }
+
+// The 8B takes 4 bit tables on the Neural Engine and the smaller sizes the architecture's 8 bit
+// ones; on Intel's NPU the 8B takes int4 (its int8 does not fit) and the smaller sizes int8, int4
+// breaking the 2B.
+func TestDefaultFormat(t *testing.T) {
+	for _, c := range []struct {
+		hidden        int
+		coreml, intel string
+	}{{1536, "lut8", "int8"}, {2560, "lut8", "int8"}, {4096, "lut4", "int4"}} {
+		m := &Config{HiddenSize: c.hidden}
+		if got := Arch.DefaultFormatFor(m, "coreml"); got != c.coreml {
+			t.Errorf("hidden %d: %s for the Neural Engine, want %s", c.hidden, got, c.coreml)
+		}
+		if got := Arch.DefaultFormatFor(m, "intel"); got != c.intel {
+			t.Errorf("hidden %d: %s for Intel's NPU, want %s", c.hidden, got, c.intel)
+		}
+	}
+}

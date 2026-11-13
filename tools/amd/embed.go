@@ -15,9 +15,9 @@ import (
 //go:embed *.py kernels
 var files embed.FS
 
-// Extract writes the exporters into a directory of dir named by their hash (once: a directory
-// there is complete, as it is renamed into place after writing) and returns it.
-func Extract(dir string) (string, error) {
+// Hash is the SHA-256 of the exporters (their paths and contents), in hex: what an export made
+// with them is made with (a key of the shared layers, internal/store).
+func Hash() (string, error) {
 	h := sha256.New()
 	err := fs.WalkDir(files, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -28,10 +28,17 @@ func Extract(dir string) (string, error) {
 		h.Write(b)
 		return err
 	})
+	return hex.EncodeToString(h.Sum(nil)), err
+}
+
+// Extract writes the exporters into a directory of dir named by their hash (once: a directory
+// there is complete, as it is renamed into place after writing) and returns it.
+func Extract(dir string) (string, error) {
+	hash, err := Hash()
 	if err != nil {
 		return "", err
 	}
-	out := filepath.Join(dir, "amd-tools-"+hex.EncodeToString(h.Sum(nil))[:12])
+	out := filepath.Join(dir, "amd-tools-"+hash[:12])
 	if _, err := os.Stat(out); err == nil {
 		return out, nil
 	}

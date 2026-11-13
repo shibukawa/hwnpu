@@ -38,7 +38,11 @@ type Setup struct {
 	Format string
 	// Cache is the text model's KV cache (0: DefaultCache).
 	Cache int
-	Log   io.Writer
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
+	// what the CPU interpreter runs) or OpenVINO IR for Intel's NPU, kept in Dir/intel and with
+	// the text model's lookup tables as integers (llm.IntelFormat).
+	Backend string
+	Log     io.Writer
 }
 
 // files are the checkpoint's files besides the weights; generation_config.json may be missing.
@@ -80,7 +84,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return p, chat.Fetch(ctx, s.Repo, "audio_tokenizer/model.safetensors", p, log)
 	})
 	cache := cmp.Or(s.Cache, DefaultCache)
-	format := cmp.Or(s.Format, a.DefaultFormat(tm))
+	format := cmp.Or(s.Format, a.DefaultFormatFor(tm, s.Backend))
+	if s.Backend == llm.BackendIntel {
+		format = llm.IntelFormat(format)
+	}
 	c := Config{Dir: s.Dir}
 	type prog struct {
 		config  string
@@ -90,17 +97,20 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	text := func(seq int) prog {
 		return prog{config, checkpoint, fmt.Sprintf("tts-%s%s-%s-c%d-q%d", a.Name, a.Rev(), format, cache, seq),
-			chat.Program{Arch: lfm3.Arch.Name, Format: format, Seq: seq, Cache: cache, Params: map[string]string{"hidden-out": "1"}}}
+			chat.Program{Arch: lfm3.Arch.Name, Format: format, Seq: seq, Cache: cache, Params: map[string]string{"hidden-out": "1"}, Backend: s.Backend}}
 	}
 	depth, codec := lfm3gen.DepthArch, lfm3gen.CodecArch
 	progs := []prog{
 		text(1), text(64),
-		{config, checkpoint, "tts-" + depth.Name + depth.Rev() + "-fp16", chat.Program{Arch: depth.Name, Format: "fp16"}},
-		{codecConfig, codecWeights, "tts-" + codec.Name + codec.Rev() + "-fp16-f64", chat.Program{Arch: codec.Name, Format: "fp16", Params: map[string]string{"codec-frames": "64"}}},
+		{config, checkpoint, "tts-" + depth.Name + depth.Rev() + "-fp16", chat.Program{Arch: depth.Name, Format: "fp16", Backend: s.Backend}},
+		{codecConfig, codecWeights, "tts-" + codec.Name + codec.Rev() + "-fp16-f64", chat.Program{Arch: codec.Name, Format: "fp16", Params: map[string]string{"codec-frames": "64"}, Backend: s.Backend}},
 	}
 	var paths []string
 	for _, p := range progs {
-		out := filepath.Join(s.Dir, p.name+".mlpackage")
+		out, err := chat.ProgramFile(s.Dir, p.name, s.Backend)
+		if err != nil {
+			return Config{}, err
+		}
 		weights := ""
 		if !chat.Converted(out) {
 			if weights, err = p.weights(); err != nil {

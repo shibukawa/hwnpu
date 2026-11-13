@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,11 +25,7 @@ var npuLock struct {
 }
 
 func npuLockPath() string {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		dir = os.TempDir()
-	}
-	return filepath.Join(dir, "hwnpu", "neural-engine.lock")
+	return cache.Sub("neural-engine.lock")
 }
 
 // lockNPU takes the lock unless this process has it, waiting until ctx ends.

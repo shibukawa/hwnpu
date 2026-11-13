@@ -6,8 +6,10 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/shibukawa/hwnpu/internal/f32"
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
+	"github.com/shibukawa/hwnpu/internal/sgemm"
 )
 
 // arg returns the operation's input called name: a bound value or an inline constant. ok is false when
@@ -160,7 +162,7 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 	case "add", "sub", "mul", "real_div", "maximum", "minimum":
 		x, y := r.floats("x"), r.floats("y")
 		if r.err == nil {
-			out, r.err = broadcast(x, y, binaryOp(typ))
+			out, r.err = elementBinary(x, y, typ)
 		}
 	case "silu", "sigmoid", "relu", "tanh", "exp", "sqrt", "softplus", "abs", "erf", "cos", "sin", "elu":
 		x := r.floats("x")
@@ -241,6 +243,12 @@ func (p *Program) eval(op *milspec.Operation, vals map[string]*value) (*value, e
 		reps := r.ints("reps")
 		if r.err == nil {
 			out, r.err = tile(x, reps)
+		}
+	case "pixel_shuffle":
+		x := r.floats("x")
+		f := r.int("upscale_factor", 1)
+		if r.err == nil {
+			out, r.err = pixelShuffle(x, int(f))
 		}
 	case "upsample_nearest_neighbor":
 		x := r.floats("x")
@@ -393,6 +401,9 @@ func axis(a, rank int) (int, error) {
 // parallel runs f over [0, n) in chunks on all CPUs.
 func parallel(n int, f func(lo, hi int)) {
 	workers := runtime.GOMAXPROCS(0)
+	if Threads > 0 {
+		workers = Threads
+	}
 	if workers > n {
 		workers = n
 	}
@@ -491,40 +502,258 @@ func broadcast(x, y *value, f func(a, b float32) float32) (*value, error) {
 
 func unary(x *value, typ string) *value {
 	out := &value{shape: x.shape, f: make([]float32, len(x.f))}
-	for i, v := range x.f {
-		a := float64(v)
-		switch typ {
-		case "silu":
-			a = a / (1 + math.Exp(-a))
-		case "sigmoid":
-			a = 1 / (1 + math.Exp(-a))
-		case "relu":
-			a = math.Max(a, 0)
-		case "tanh":
-			a = math.Tanh(a)
-		case "exp":
-			a = math.Exp(a)
-		case "sqrt":
-			a = math.Sqrt(a)
-		case "abs":
-			a = math.Abs(a)
-		case "softplus":
-			// log(1 + exp(a)), without overflowing exp for large a
-			a = math.Max(a, 0) + math.Log1p(math.Exp(-math.Abs(a)))
-		case "erf":
-			a = math.Erf(a)
-		case "elu": // alpha 1
-			if a < 0 {
-				a = math.Expm1(a)
+	var fn func(float64) float64
+	switch typ {
+	case "silu":
+		elementwise(len(x.f), func(lo, hi int) { f32.SiLU(out.f[lo:hi], x.f[lo:hi]) })
+		return out
+	case "sigmoid":
+		elementwise(len(x.f), func(lo, hi int) { f32.Sigmoid(out.f[lo:hi], x.f[lo:hi]) })
+		return out
+	case "exp":
+		elementwise(len(x.f), func(lo, hi int) { f32.Exp(out.f[lo:hi], x.f[lo:hi]) })
+		return out
+	case "relu":
+		elementwise(len(x.f), func(lo, hi int) {
+			for i, v := range x.f[lo:hi] {
+				out.f[lo+i] = max(v, 0)
 			}
-		case "cos":
-			a = math.Cos(a)
-		case "sin":
-			a = math.Sin(a)
+		})
+		return out
+	case "tanh":
+		fn = math.Tanh
+	case "sqrt":
+		fn = math.Sqrt
+	case "abs":
+		fn = math.Abs
+	case "softplus":
+		// log(1 + exp(a)), without overflowing exp for large a
+		fn = func(a float64) float64 { return math.Max(a, 0) + math.Log1p(math.Exp(-math.Abs(a))) }
+	case "erf":
+		elementwise(len(x.f), func(lo, hi int) { f32.Erf(out.f[lo:hi], x.f[lo:hi]) })
+		return out
+	case "elu": // alpha 1
+		fn = func(a float64) float64 {
+			if a < 0 {
+				return math.Expm1(a)
+			}
+			return a
 		}
-		out.f[i] = float32(a)
+	case "cos":
+		fn = math.Cos
+	case "sin":
+		fn = math.Sin
+	default:
+		fn = func(a float64) float64 { return a }
 	}
+	elementwise(len(x.f), func(lo, hi int) {
+		for i, v := range x.f[lo:hi] {
+			out.f[lo+i] = float32(fn(float64(v)))
+		}
+	})
 	return out
+}
+
+// elementwise runs f over n elements, in parts on Threads goroutines when n is large.
+func elementwise(n int, f func(lo, hi int)) {
+	if Threads == 1 || n < 1<<16 {
+		f(0, n)
+		return
+	}
+	parallel(n, f)
+}
+
+// elementBinary is an elementwise add, sub, mul, real_div, maximum or minimum of x and y broadcast
+// (numpy's rules): the dimensions collapsed into runs where each operand moves by one or not
+// at all, and a typed loop over each run.
+func elementBinary(x, y *value, typ string) (*value, error) {
+	rank := max(len(x.shape), len(y.shape))
+	shape := make([]int, rank)
+	xs, ys := make([]int, rank), make([]int, rank)
+	xst, yst := strides(x.shape), strides(y.shape)
+	for i := 0; i < rank; i++ {
+		xd, yd := 1, 1
+		if j := i - (rank - len(x.shape)); j >= 0 {
+			xd = x.shape[j]
+			if xd != 1 {
+				xs[i] = xst[j]
+			}
+		}
+		if j := i - (rank - len(y.shape)); j >= 0 {
+			yd = y.shape[j]
+			if yd != 1 {
+				ys[i] = yst[j]
+			}
+		}
+		switch {
+		case xd == yd || yd == 1:
+			shape[i] = xd
+		case xd == 1:
+			shape[i] = yd
+		default:
+			return nil, fmt.Errorf("shapes %v and %v do not broadcast", x.shape, y.shape)
+		}
+	}
+	n := numel(shape)
+	out := &value{shape: shape, f: make([]float32, n)}
+	if rank == 0 {
+		out.shape = nil
+	}
+	// collapse: dims d-1 and d merge when each operand's stride at d-1 is its stride at d times
+	// shape[d] (or both zero)
+	var cs, cx, cy []int
+	for d := 0; d < rank; d++ {
+		if shape[d] == 1 {
+			continue
+		}
+		if k := len(cs) - 1; k >= 0 && cx[k] == xs[d]*shape[d] && cy[k] == ys[d]*shape[d] {
+			cs[k] *= shape[d]
+			cx[k], cy[k] = xs[d], ys[d]
+			continue
+		}
+		cs, cx, cy = append(cs, shape[d]), append(cx, xs[d]), append(cy, ys[d])
+	}
+	if len(cs) == 0 {
+		cs, cx, cy = []int{1}, []int{1}, []int{1}
+	}
+	last := len(cs) - 1
+	inner, ix, iy := cs[last], cx[last], cy[last]
+	if (ix != 0 && ix != 1) || (iy != 0 && iy != 1) {
+		inner, ix, iy = 1, 0, 0 // a run of one: the general walk
+		cs, cx, cy = append(cs, 1), append(cx, 0), append(cy, 0)
+		last++
+	}
+	kernel := binaryRun(typ, ix, iy)
+	outer := n / inner
+	elementwise(outer*max(1, inner/64), func(lo, hi int) {
+		scale := max(1, inner/64)
+		lo, hi = lo/scale, (hi+scale-1)/scale
+		if lo >= outer {
+			return
+		}
+		hi = min(hi, outer)
+		// the operands' offsets of run lo
+		idx := make([]int, last)
+		r := lo
+		xo, yo := 0, 0
+		for d := last - 1; d >= 0; d-- {
+			idx[d] = r % cs[d]
+			r /= cs[d]
+			xo += idx[d] * cx[d]
+			yo += idx[d] * cy[d]
+		}
+		for run := lo; run < hi; run++ {
+			kernel(out.f[run*inner:(run+1)*inner], x.f[xo:], y.f[yo:])
+			for d := last - 1; d >= 0; d-- {
+				idx[d]++
+				xo += cx[d]
+				yo += cy[d]
+				if idx[d] < cs[d] {
+					break
+				}
+				xo -= cx[d] * idx[d]
+				yo -= cy[d] * idx[d]
+				idx[d] = 0
+			}
+		}
+	})
+	return out, nil
+}
+
+// binaryRun is a loop of op over a run: o[i] = op(x[i ix], y[i iy]), ix and iy 0 or 1.
+func binaryRun(typ string, ix, iy int) func(o, x, y []float32) {
+	f := binaryOp(typ)
+	switch {
+	case ix == 1 && iy == 1:
+		switch typ {
+		case "add":
+			return func(o, x, y []float32) {
+				x, y = x[:len(o)], y[:len(o)]
+				for i := range o {
+					o[i] = x[i] + y[i]
+				}
+			}
+		case "mul":
+			return func(o, x, y []float32) {
+				x, y = x[:len(o)], y[:len(o)]
+				for i := range o {
+					o[i] = x[i] * y[i]
+				}
+			}
+		case "real_div":
+			return func(o, x, y []float32) {
+				x, y = x[:len(o)], y[:len(o)]
+				for i := range o {
+					o[i] = x[i] / y[i]
+				}
+			}
+		}
+		return func(o, x, y []float32) {
+			x, y = x[:len(o)], y[:len(o)]
+			for i := range o {
+				o[i] = f(x[i], y[i])
+			}
+		}
+	case ix == 1:
+		switch typ {
+		case "add":
+			return func(o, x, y []float32) {
+				b := y[0]
+				for i, v := range x[:len(o)] {
+					o[i] = v + b
+				}
+			}
+		case "mul":
+			return func(o, x, y []float32) {
+				b := y[0]
+				for i, v := range x[:len(o)] {
+					o[i] = v * b
+				}
+			}
+		}
+		return func(o, x, y []float32) {
+			b := y[0]
+			for i, v := range x[:len(o)] {
+				o[i] = f(v, b)
+			}
+		}
+	case iy == 1:
+		switch typ {
+		case "add":
+			return func(o, x, y []float32) {
+				a := x[0]
+				for i, v := range y[:len(o)] {
+					o[i] = a + v
+				}
+			}
+		case "mul":
+			return func(o, x, y []float32) {
+				a := x[0]
+				for i, v := range y[:len(o)] {
+					o[i] = a * v
+				}
+			}
+		case "real_div":
+			return func(o, x, y []float32) {
+				a := x[0]
+				for i, v := range y[:len(o)] {
+					o[i] = a / v
+				}
+			}
+		}
+		return func(o, x, y []float32) {
+			a := x[0]
+			for i, v := range y[:len(o)] {
+				o[i] = f(a, v)
+			}
+		}
+	}
+	return func(o, x, y []float32) {
+		v := f(x[0], y[0])
+		for i := range o {
+			o[i] = v
+		}
+	}
 }
 
 func gelu(x *value, mode string) (*value, error) {
@@ -716,18 +945,12 @@ func linear(x, w, bias *value) (*value, error) {
 	m := len(x.f) / k
 	shape := append(append([]int{}, x.shape[:len(x.shape)-1]...), n)
 	out := &value{shape: shape, f: make([]float32, m*n)}
-	parallel(n, func(lo, hi int) {
-		for j := lo; j < hi; j++ {
-			wr := w.f[j*k : (j+1)*k]
-			var b float32
-			if bias != nil {
-				b = bias.f[j]
-			}
-			for i := 0; i < m; i++ {
-				out.f[i*n+j] = dot(x.f[i*k:(i+1)*k], wr) + b
-			}
+	if bias != nil {
+		for i := 0; i < m; i++ {
+			copy(out.f[i*n:(i+1)*n], bias.f[:n])
 		}
-	})
+	}
+	sgemm.MulAdd(m, n, k, sgemm.A{Data: x.f, Stride: k}, sgemm.Transposed{Data: w.f, Stride: k, N: n}, out.f, n, Threads)
 	return out, nil
 }
 
@@ -763,36 +986,21 @@ func matmul(x, y *value, tx, ty bool) (*value, error) {
 	}
 	yi, _ := broadcast(xb, yb, func(_, b float32) float32 { return b })
 	batch := len(xi.f)
-	// row major copies so that every product is a dot product of contiguous rows
-	xm := func(bi int) []float32 {
-		a := x.f[bi*m*k : (bi+1)*m*k]
-		if !tx {
-			return a
-		}
-		return transpose2(a, k, m)
-	}
-	ym := func(bi int) []float32 {
-		a := y.f[bi*k*n : (bi+1)*k*n]
-		if ty {
-			return a
-		}
-		return transpose2(a, k, n)
-	}
 	shape := append(append([]int{}, xi.shape...), m, n)
 	out := &value{shape: shape, f: make([]float32, batch*m*n)}
-	parallel(batch*m, func(lo, hi int) {
-		lastB := -1
-		var a, bt []float32
-		for r := lo; r < hi; r++ {
-			bi, i := r/m, r%m
-			if bi != lastB {
-				a, bt, lastB = xm(int(xi.f[bi])), ym(int(yi.f[bi])), bi
-			}
-			for j := 0; j < n; j++ {
-				out.f[(bi*m+i)*n+j] = dot(a[i*k:(i+1)*k], bt[j*k:(j+1)*k])
-			}
+	for bi := 0; bi < batch; bi++ {
+		xb, yb := int(xi.f[bi]), int(yi.f[bi])
+		a := sgemm.A{Data: x.f[xb*m*k : (xb+1)*m*k], Stride: k}
+		if tx { // x is (k, m)
+			a = sgemm.A{Data: a.Data, Stride: m, Trans: true}
 		}
-	})
+		yd := y.f[yb*k*n : (yb+1)*k*n]
+		var b sgemm.Source = sgemm.Matrix{Data: yd, Stride: n, N: n}
+		if ty { // y is (n, k)
+			b = sgemm.Transposed{Data: yd, Stride: k, N: n}
+		}
+		sgemm.MulAdd(m, n, k, a, b, out.f[bi*m*n:(bi+1)*m*n], n, Threads)
+	}
 	return out, nil
 }
 
@@ -888,6 +1096,33 @@ func tile(x *value, reps []int32) (*value, error) {
 				break
 			}
 			idx[d] = 0
+		}
+	}
+	return out, nil
+}
+
+// pixelShuffle is PyTorch's PixelShuffle of x (N, C f f, H, W): (N, C, H f, W f), output
+// channel c at (y f + i, x f + j) from input channel c f f + i f + j at (y, x).
+func pixelShuffle(x *value, f int) (*value, error) {
+	if len(x.shape) != 4 || f < 1 || x.shape[1]%(f*f) != 0 {
+		return nil, fmt.Errorf("pixel_shuffle of shape %v by %d", x.shape, f)
+	}
+	N, CF, H, W := x.shape[0], x.shape[1], x.shape[2], x.shape[3]
+	C := CF / (f * f)
+	out := &value{shape: []int{N, C, H * f, W * f}, f: make([]float32, len(x.f))}
+	for n := 0; n < N; n++ {
+		for c := 0; c < C; c++ {
+			for i := 0; i < f; i++ {
+				for j := 0; j < f; j++ {
+					src := x.f[((n*CF+c*f*f+i*f+j)*H)*W:][:H*W]
+					for y := 0; y < H; y++ {
+						dst := out.f[((n*C+c)*H*f+y*f+i)*W*f:]
+						for xx := 0; xx < W; xx++ {
+							dst[xx*f+j] = src[y*W+xx]
+						}
+					}
+				}
+			}
 		}
 	}
 	return out, nil
@@ -1165,12 +1400,97 @@ func conv2d(x, w, bias *value, stride, dil []int32, padType string, pad []int32,
 	ow := (iw+pl+pr-dw*(kw-1)-1)/sw + 1
 	out := &value{shape: []int{n, cout, oh, ow}, f: make([]float32, n*cout*oh*ow)}
 	perGroup := cout / groups
-	parallel(cout, func(lo, hi int) {
-		for oc := lo; oc < hi; oc++ {
-			conv2dChannel(x, w, bias, out, oc, oc/perGroup, n, cin, cg, ih, iw, kh, kw, oh, ow, sh, sw, dh, dw, pt, pl)
+	if cg == 1 && perGroup == 1 {
+		// depthwise: a product of one row a channel, the direct loop
+		parallel(cout, func(lo, hi int) {
+			for oc := lo; oc < hi; oc++ {
+				conv2dChannel(x, w, bias, out, oc, oc/perGroup, n, cin, cg, ih, iw, kh, kw, oh, ow, sh, sw, dh, dw, pt, pl)
+			}
+		})
+		return out, nil
+	}
+	// each group's output (perGroup x oh ow) = weight (perGroup x cg kh kw) times the im2col of
+	// its input channels, packed straight from x
+	K, N := cg*kh*kw, oh*ow
+	for b := 0; b < n; b++ {
+		for g := 0; g < groups; g++ {
+			o := out.f[(b*cout+g*perGroup)*N:][:perGroup*N]
+			if bias != nil {
+				for oc := range perGroup {
+					v := bias.f[g*perGroup+oc]
+					row := o[oc*N : (oc+1)*N]
+					for i := range row {
+						row[i] = v
+					}
+				}
+			}
+			xg := x.f[(b*cin+g*cg)*ih*iw:][:cg*ih*iw]
+			var src sgemm.Source
+			if kh == 1 && kw == 1 && sh == 1 && sw == 1 && pt == 0 && pl == 0 && oh == ih && ow == iw {
+				src = sgemm.Matrix{Data: xg, Stride: N, N: N}
+			} else {
+				src = &im2col{x: xg, ih: ih, iw: iw, kh: kh, kw: kw, oh: oh, ow: ow, sh: sh, sw: sw, dh: dh, dw: dw, pt: pt, pl: pl}
+			}
+			wg := sgemm.A{Data: w.f[g*perGroup*K:][:perGroup*K], Stride: K}
+			sgemm.MulAdd(perGroup, N, K, wg, src, o, N, Threads)
 		}
-	})
+	}
 	return out, nil
+}
+
+// Threads is how many goroutines a product (a convolution's, a linear's, a matmul's) takes: 0
+// for GOMAXPROCS.
+var Threads int
+
+// im2col is a convolution's im2col matrix (cin kh kw x oh ow) of one image's channels x, read
+// by sgemm as it packs: row (c, ky, kx), column (y, x) is x[c][y sh + ky dh - pt][x sw + kx dw
+// - pl], zero outside.
+type im2col struct {
+	x                                              []float32
+	ih, iw, kh, kw, oh, ow, sh, sw, dh, dw, pt, pl int
+}
+
+func (m *im2col) Pack(dst []float32, k0, kc, j0, nc int) {
+	n := m.oh * m.ow
+	for p := 0; p*sgemm.NR < nc; p++ {
+		d := dst[p*kc*sgemm.NR:][:kc*sgemm.NR]
+		c0 := j0 + p*sgemm.NR
+		w := min(sgemm.NR, n-c0)
+		for kk := range kc {
+			k := k0 + kk
+			c, ky, kx := k/(m.kh*m.kw), k/m.kw%m.kh, k%m.kw
+			plane := m.x[c*m.ih*m.iw:][:m.ih*m.iw]
+			o := d[kk*sgemm.NR : kk*sgemm.NR+sgemm.NR]
+			// the panel's columns in runs of one output row
+			for j := 0; j < w; {
+				col := c0 + j
+				y, xx := col/m.ow, col%m.ow
+				run := min(w-j, m.ow-xx)
+				seg := o[j : j+run]
+				sy := y*m.sh + ky*m.dh - m.pt
+				if sy < 0 || sy >= m.ih {
+					clear(seg)
+					j += run
+					continue
+				}
+				row := plane[sy*m.iw : (sy+1)*m.iw]
+				sx := xx*m.sw + kx*m.dw - m.pl
+				if m.sw == 1 && sx >= 0 && sx+run <= m.iw {
+					copy(seg, row[sx:sx+run])
+				} else {
+					for i := range seg {
+						if s := sx + i*m.sw; s >= 0 && s < m.iw {
+							seg[i] = row[s]
+						} else {
+							seg[i] = 0
+						}
+					}
+				}
+				j += run
+			}
+			clear(o[w:])
+		}
+	}
 }
 
 // conv2dChannel computes output channel oc of conv2d, of group g.
@@ -1198,6 +1518,15 @@ func conv2dChannel(x, w, bias, out *value, oc, g, n, cin, cg, ih, iw, kh, kw, oh
 								continue
 							}
 							row, orow := xp[sy*iw:][:iw], o[y*ow:][:ow]
+							if sw == 1 {
+								// the columns whose source is inside the row, one axpy
+								off := kx*dw - pl
+								x0, x1 := max(0, -off), min(ow, iw-off)
+								if x0 < x1 {
+									f32.Axpy(orow[x0:x1], wv, row[x0+off:x1+off])
+								}
+								continue
+							}
 							for xx := 0; xx < ow; xx++ {
 								if sx := xx*sw + kx*dw - pl; sx >= 0 && sx < iw {
 									orow[xx] += wv * row[sx]

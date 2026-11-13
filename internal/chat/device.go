@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 // Vendors are the NPU vendors a model's Device names (types.Vendor's names).
@@ -110,7 +111,18 @@ func (m Model) MemoryFor(vendor string) float64 { return m.MemoryBy.For(vendor) 
 func (m Model) BytesFor(vendor string) float64 { return m.BytesBy.For(vendor) }
 
 // HereVendor is the vendor of this machine's NPU ("amd", "apple", "intel"), "" without one.
-var HereVendor = sync.OnceValue(func() string {
+// HWNPU_BACKEND naming a backend of Intel's programs (intel, levelzero, openvino) makes it
+// "intel", and coreml or coreai "apple": with openvino, a machine without Intel's NPU runs the commands'
+// Intel path on OpenVINO's CPU, the IR it converts included.
+var HereVendor = sync.OnceValue(hereVendor)
+
+func hereVendor() string {
+	switch b := strings.TrimSpace(os.Getenv(llm.BackendEnv)); {
+	case b == llm.BackendIntel || llm.ProgramBackend(b) == llm.BackendIntel:
+		return "intel"
+	case llm.ProgramBackend(b) == llm.BackendCoreML: // coreml, coreai
+		return "apple"
+	}
 	infos, _ := hwnpu.Enumerate(context.Background())
 	for _, info := range infos {
 		if v := info.Vendor.String(); slices.Contains(Vendors, v) {
@@ -118,4 +130,23 @@ var HereVendor = sync.OnceValue(func() string {
 		}
 	}
 	return ""
-})
+}
+
+// ConvertedDevice is where m, a model hwnpu converts from ONNX for Core ML and OpenVINO (RTMDet,
+// RTMO, PP-OCR, SwiftF0, Basic Pitch), runs on a machine whose NPU is vendor's: ChooseDevice's
+// pick, except that an NPU with no converted form (AMD's, or none) runs it on the CPU with ONNX
+// Runtime unless --device npu (flag) asks for the NPU.
+func ConvertedDevice(m Model, vendor, flag string) (device, why string, err error) {
+	device, why, err = ChooseDevice(m, vendor, flag)
+	if err != nil {
+		return "", "", err
+	}
+	if device == "npu" && flag != "npu" && vendor != "apple" && vendor != "intel" {
+		v := vendor
+		if v == "" {
+			v = "none"
+		}
+		device, why = "cpu", fmt.Sprintf("no converted form of %s for this NPU (%s)", m.Name, v)
+	}
+	return device, why, nil
+}

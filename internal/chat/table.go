@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"github.com/goccy/go-yaml"
 
 	"github.com/shibukawa/hwnpu"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 // The definitions of the models (docs/model-table.md): hwnpu's models.yaml, embedded, and files
@@ -25,7 +27,7 @@ import (
 const ModelsEnv = "HWNPU_MODELS"
 
 // ModelsUsage is the usage of the -models flag of the commands that pick models.
-const ModelsUsage = "definition files read over the built-in models.yaml and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
+const ModelsUsage = "definition files read over the built-in models.yaml, the machine's (/etc/hwnpu/models.yaml) and yours (~/.config/hwnpu/models.yaml, %LOCALAPPDATA%\\hwnpu\\models.yaml on Windows, HWNPU_MODELS), comma separated: models, uses and aliases of your own (docs/model-table.md)"
 
 // LoadUserModels is LoadModels of the user's files and those of -models (comma separated), with
 // warnings to log.
@@ -84,6 +86,9 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	}
 	if user {
 		var paths []string
+		if p := SystemModelsFile(); p != "" && exists(p) {
+			paths = append(paths, p)
+		}
 		if p := UserModelsFile(); p != "" && exists(p) {
 			paths = append(paths, p)
 		}
@@ -111,15 +116,35 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var layers []shared.Layer
+	if user {
+		if layers, err = buildLayers(t.layers, t.layersFile, t.sources, t.warn); err != nil {
+			return err
+		}
+	}
 	Catalog, Categories, Aliases, ModelFiles = catalog, categories, aliases, t.files
 	Sources, Search = t.sources, t.search
-	digests = map[string]map[string]string{}
+	shared.SetLayers(layers)
+	digests, pinned = map[string]map[string]string{}, map[string][]pinnedFile{}
 	for _, m := range catalog {
 		for f, d := range m.SHA256 {
-			if digests[m.Source()] == nil {
-				digests[m.Source()] = map[string]string{}
+			// ROLE/FILE is a file of the repository the model reads as ROLE (with)
+			repo := m.Source()
+			if role, rest, ok := strings.Cut(f, "/"); ok && m.With[role] != "" {
+				repo, f = m.With[role], rest
 			}
-			digests[m.Source()][f] = d
+			if digests[repo] == nil {
+				digests[repo] = map[string]string{}
+			}
+			digests[repo][f] = d
+			dir := m.DirName()
+			if repo != m.Source() {
+				r, _, _ := strings.Cut(repo, "@")
+				dir = path.Base(r)
+			}
+			if p := (pinnedFile{dir, f}); !slices.Contains(pinned[strings.ToLower(d)], p) {
+				pinned[strings.ToLower(d)] = append(pinned[strings.ToLower(d)], p)
+			}
 		}
 	}
 	foundMu.Lock()
@@ -149,9 +174,28 @@ type modelEntry struct {
 	// AMDExport is how tools/amd/iron_export_lm.py exports the model for AMD's NPU: its model
 	// and options (lfm3 --max-seq-len 12288 --q4), run when the export is not here.
 	AMDExport *string `yaml:"amd_export"`
-	About     *string `yaml:"about"`
-	Like      string  `yaml:"like"`
-	Remove    bool    `yaml:"remove"`
+	// File is the model's checkpoint file in a repository that holds several models (Anima's
+	// split_files/diffusion_models/anima-turbo-v1.1.safetensors: the file's name).
+	File *string `yaml:"file"`
+	// With are the other repositories the model reads, by role (detector:
+	// hf:PaddlePaddle/PP-OCRv6_small_det_onnx@REV): each an hf:OWNER/NAME, pinned or not. Their
+	// files' sha256 are under ROLE/FILE.
+	With *map[string]string `yaml:"with"`
+	// License is the weights' license; with accept, the user accepts it once before the model
+	// is first downloaded or run (AcceptLicense).
+	License *License `yaml:"license"`
+	// RunEntry is how hwnpu-chat runs a chat model when its flags do not say (prefill, format,
+	// context, paged), on a machine of machine GB.
+	RunEntry `yaml:",inline"`
+	// Variants change memory and how the model runs on machines of more memory, by the least
+	// memory in GB: {16: {memory: 7.6, prefill: auto}}. A file over another changes the
+	// variants it names and keeps the others.
+	Variants *map[int]*variantEntry `yaml:"variants"`
+	// NotOn are the chips (M1) a family or a category does not pick the model on.
+	NotOn  *[]string `yaml:"not_on"`
+	About  *string   `yaml:"about"`
+	Like   string    `yaml:"like"`
+	Remove bool      `yaml:"remove"`
 }
 
 type pickEntry struct {
@@ -167,8 +211,9 @@ type categoryEntry struct {
 	Remove  bool        `yaml:"remove"`
 }
 
-// tableFile is a definition file. NPUs, Builds and Cache are designed (docs/model-table.md) but
-// not read yet: a file that has them gets a warning.
+// tableFile is a definition file. NPUs and Builds are designed (docs/model-table.md) but not
+// read yet: a file that has them gets a warning. Of Cache, the layers are read
+// (docs/cache-sharing.md 7).
 type tableFile struct {
 	Version    int                       `yaml:"version"`
 	Models     map[string]*modelEntry    `yaml:"models"`
@@ -178,7 +223,7 @@ type tableFile struct {
 	Search     *[]string                 `yaml:"search"`
 	NPUs       any                       `yaml:"npus"`
 	Builds     any                       `yaml:"builds"`
-	Cache      any                       `yaml:"cache"`
+	Cache      *cacheEntry               `yaml:"cache"`
 }
 
 // order is a file's models and categories in the order written (maps lose it).
@@ -215,6 +260,8 @@ type table struct {
 	sources    map[string]Source
 	search     []string
 	searchFile string
+	layers     []layerEntry
+	layersFile string
 }
 
 func newTable(log io.Writer) *table {
@@ -275,7 +322,18 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 		}
 		t.search, t.searchFile = slices.Clone(*f.Search), name
 	}
-	for key, v := range map[string]any{"npus": f.NPUs, "builds": f.Builds, "cache": f.Cache} {
+	if f.Cache != nil {
+		if builtin {
+			return fmt.Errorf("chat: %s: cache is the machine's and the user's to set", name)
+		}
+		if f.Cache.Layers != nil {
+			t.layers, t.layersFile = slices.Clone(*f.Cache.Layers), name
+		}
+		if f.Cache.Prebuilt != nil {
+			t.warn(name, "cache.prebuilt is not read by this version of hwnpu yet (docs/cache-sharing.md); skipped")
+		}
+	}
+	for key, v := range map[string]any{"npus": f.NPUs, "builds": f.Builds} {
 		if v != nil {
 			if builtin {
 				return fmt.Errorf("chat: %s: %s is not read yet", name, key)
@@ -353,7 +411,17 @@ func merge(dst, src *modelEntry) {
 		maps.Copy(m, *src.Device)
 		defer func() { dst.Device = &m }()
 	}
-	d, s := reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem()
+	if src.Variants != nil && dst.Variants != nil {
+		m := maps.Clone(*dst.Variants)
+		maps.Copy(m, *src.Variants)
+		defer func() { dst.Variants = &m }()
+	}
+	mergeFields(reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem())
+}
+
+// mergeFields sets the fields of the struct d that s gives: pointers that are not nil, strings
+// that are not empty, and those of the structs within (RunEntry).
+func mergeFields(d, s reflect.Value) {
 	for i := range s.NumField() {
 		f := s.Field(i)
 		switch f.Kind() {
@@ -365,6 +433,8 @@ func merge(dst, src *modelEntry) {
 			if f.String() != "" {
 				d.Field(i).Set(f)
 			}
+		case reflect.Struct:
+			mergeFields(d.Field(i), f)
 		}
 	}
 }
@@ -416,6 +486,10 @@ var kinds = map[Kind]string{
 	KindFace:       "hwnpu-image face-detect",
 	KindPitch:      "hwnpu-audio pitch",
 	KindPose:       "hwnpu-image pose",
+	KindDetect:     "hwnpu-image detect",
+	KindOCR:        "hwnpu-image ocr",
+	KindLabel:      "hwnpu-image label, embed",
+	KindSegment:    "hwnpu-image segment",
 	KindNotes:      "hwnpu-audio notes",
 	KindMusic:      "hwnpu-audio generate",
 	KindSFX:        "hwnpu-audio generate -m sfx",
@@ -509,7 +583,8 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out := *base
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
-		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport})
+		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, File: e.File, With: e.With,
+		License: e.License, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
 	return &out, nil
 }
 
@@ -522,8 +597,14 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 		}
 		return *p
 	}
-	m.Family, m.Tag, m.About, m.Arch = get(e.Family), get(e.Tag), get(e.About), get(e.Arch)
+	m.Family, m.Tag, m.About, m.Arch, m.File = get(e.Family), get(e.Tag), get(e.About), get(e.Arch), get(e.File)
 	m.AMDExport = strings.Fields(get(e.AMDExport))
+	if e.License != nil {
+		m.License = *e.License
+		if m.License.ID == "" || m.License.Accept && m.License.URL == "" {
+			return m, fmt.Errorf("model %s: a license needs its id (and a url to accept it)", name)
+		}
+	}
 	m.Kind = Kind(get(e.Kind))
 	if _, ok := kinds[m.Kind]; !ok {
 		var ks []string
@@ -587,8 +668,40 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 		}
 		m.Device = maps.Clone(*e.Device)
 	}
+	if e.With != nil {
+		m.With = map[string]string{}
+		for role, src := range *e.With {
+			repo, ok := strings.CutPrefix(src, "hf:")
+			r, _, _ := strings.Cut(repo, "@")
+			if !ok || role == "" || !safeName(role) || strings.Contains(role, "/") || strings.Count(r, "/") != 1 || !safeName(r) || strings.HasSuffix(r, "/") {
+				return m, fmt.Errorf("model %s: with %s: %q is not hf:OWNER/NAME", name, role, src)
+			}
+			m.With[role] = repo
+		}
+	}
 	if m.Tag != "" && m.Family == "" {
 		return m, fmt.Errorf("model %s: a tag needs a family", name)
+	}
+	if e.NotOn != nil {
+		for _, c := range *e.NotOn {
+			if !slices.Contains(Chips, c) {
+				return m, fmt.Errorf("model %s: not_on %q is not one of %s", name, c, strings.Join(Chips, ", "))
+			}
+		}
+		m.NotOn = slices.Clone(*e.NotOn)
+	}
+	run, err := toRun(e.RunEntry)
+	if err != nil {
+		return m, fmt.Errorf("model %s: %w", name, err)
+	}
+	if !run.zero() && m.Kind != KindChat {
+		return m, fmt.Errorf("model %s: prefill, format, context and paged are for chat models (hwnpu-chat)", name)
+	}
+	m.Run = run
+	if e.Variants != nil {
+		if m.Variants, err = toVariants(m, *e.Variants); err != nil {
+			return m, fmt.Errorf("model %s: %w", name, err)
+		}
 	}
 	return m, nil
 }

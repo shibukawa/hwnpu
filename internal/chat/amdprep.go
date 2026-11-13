@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 	amdtools "github.com/shibukawa/hwnpu/tools/amd"
 )
 
@@ -25,11 +27,10 @@ import (
 // INSTALL_AMD.md's). Without it, python3 on PATH is tried.
 const IRONEnv = "HWNPU_IRON_ENV"
 
-// AMDRoot is where the exports for AMD's NPU are: ~/models (NAME.amd-npu2, NAME.amd-npu2-q4).
-func AMDRoot() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "models")
-}
+// AMDRoot is where the exports for AMD's NPU hwnpu makes go: entries/amd-xdna2 under cache.Root
+// (NAME.amd-npu2, NAME.amd-npu2-q4). They are looked for there and then in ~/models, where
+// exports were kept before and the exporters run by hand write (cache.ExportRoots).
+func AMDRoot() string { return cache.Entries(cache.AMDTarget) }
 
 // amdSuffix is the suffix of the export's directory iron_export_lm.py's options make: -q4 for
 // --q4, -q6 when the MLP is in 6 bits (--mlp q6), none in bf16.
@@ -62,12 +63,15 @@ func isExport(dir string) bool {
 // FindAMDExport is the export of model m here: the one its amd_export makes, else
 // NAME.amd-npu2-q4, else NAME.amd-npu2 (exports made by hand); "" when there is none.
 func FindAMDExport(m Model) string {
-	cands := []string{AMDExportDir(m)}
-	for _, suffix := range []string{".amd-npu2-q4", ".amd-npu2"} {
-		cands = append(cands, filepath.Join(AMDRoot(), m.Name+suffix))
+	var names []string
+	if d := AMDExportDir(m); d != "" {
+		names = append(names, filepath.Base(d))
 	}
-	for _, d := range cands {
-		if d != "" && isExport(d) {
+	for _, suffix := range []string{".amd-npu2-q4", ".amd-npu2"} {
+		names = append(names, m.Name+suffix)
+	}
+	for _, n := range names {
+		if d := cache.FindExport(n, isExport); d != "" {
 			return d
 		}
 	}
@@ -120,7 +124,7 @@ func AMDExport(ctx context.Context, use, backend, dir string, log io.Writer) (st
 	}
 	if len(m.AMDExport) == 0 {
 		msg := fmt.Sprintf("%s has no form for AMD's NPU: hwnpu has no recipe of tools/amd/iron_export_lm.py for it (amd_export in models.yaml), and %s has no %s.amd-npu2-q4 or %s.amd-npu2; --model takes an export's directory too",
-			m.Name, AMDRoot(), m.Name, m.Name)
+			m.Name, strings.Join(cache.ExportRoots(), " or "), m.Name, m.Name)
 		if names := amdExports(); len(names) > 0 {
 			msg += ". The exports here: " + strings.Join(names, ", ")
 		}
@@ -129,13 +133,15 @@ func AMDExport(ctx context.Context, use, backend, dir string, log io.Writer) (st
 	return PrepareAMD(ctx, m, dir, log)
 }
 
-// amdExports are the names of the exports in AMDRoot.
+// amdExports are the names of the exports in cache.ExportRoots.
 func amdExports() []string {
-	found, _ := filepath.Glob(filepath.Join(AMDRoot(), "*.amd-npu2*"))
 	var names []string
-	for _, d := range found {
-		if isExport(d) {
-			names = append(names, filepath.Base(d))
+	for _, r := range cache.ExportRoots() {
+		found, _ := filepath.Glob(filepath.Join(r, "*.amd-npu2*"))
+		for _, d := range found {
+			if isExport(d) && !slices.Contains(names, filepath.Base(d)) {
+				names = append(names, filepath.Base(d))
+			}
 		}
 	}
 	return names
@@ -147,7 +153,8 @@ var checkpointFiles = []string{"tokenizer.json", "tokenizer.jsonl", "tokenizer_c
 	"chat_template.jinja", "generation_config.json", "processor_config.json", "preprocessor_config.json"}
 
 // PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as models.yaml's amd_export
-// says: it checks that IRON's environment is there (IRONEnv), downloads the checkpoint into
+// says: from the shared layers when one has it (SharedExport), else it checks that IRON's
+// environment is there (IRONEnv), downloads the checkpoint into
 // dir/NAME (only the files the exporter reads), and runs tools/amd/iron_export_lm.py (the copy
 // built into hwnpu) in that environment into DIR.part, renamed to the export when it is done.
 // Its output goes to DIR.log. A cut-off export is made again.
@@ -158,50 +165,93 @@ func PrepareAMD(ctx context.Context, m Model, dir string, log io.Writer) (string
 		}
 	}
 	out := AMDExportDir(m)
-	python, err := ironPython(ctx)
-	if err != nil {
-		return "", fmt.Errorf("%s has no export for AMD's NPU here (%s), and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or copy an export made elsewhere to %s",
-			m.Name, out, err, IRONEnv, out)
+	// the shared layers first: a machine without IRON runs an export made elsewhere (no layers:
+	// the hub is not asked for the commit)
+	var recipe map[string]string
+	if len(shared.Layers()) > 0 {
+		recipe = ExportRecipe(ctx, m, "iron_export_lm.py", m.AMDExport)
 	}
+	err := SharedExport(ctx, "iron-lm", recipe, out, log, func() error {
+		python, err := ironPython(ctx)
+		if err != nil {
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the shared layers, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or copy an export made elsewhere to %s",
+				m.Name, out, err, IRONEnv, out)
+		}
+		return exportAMD(ctx, python, m, dir, out, logf, log)
+	})
+	if err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+// exportAMD downloads model m's checkpoint into dir and exports it with IRON into out.
+func exportAMD(ctx context.Context, python []string, m Model, dir, out string, logf func(string, ...any), log io.Writer) error {
 	logf("%s: no export for AMD's NPU here; downloading the checkpoint and exporting it with IRON (%s)", m.Name, strings.Join(m.AMDExport, " "))
 	ck := filepath.Join(dir, m.DirName())
 	if err := os.MkdirAll(ck, 0o755); err != nil {
-		return "", err
+		return err
 	}
 	if err := fetch(ctx, m.Source(), "config.json", filepath.Join(ck, "config.json"), log); err != nil {
-		return "", err
+		return err
 	}
 	if err := FetchWeights(ctx, m.Source(), ck, log); err != nil {
-		return "", err
+		return err
 	}
 	for _, f := range checkpointFiles {
 		if err := fetch(ctx, m.Source(), f, filepath.Join(ck, f), io.Discard); err != nil && !NotFound(err) {
-			return "", err
+			return err
 		}
 	}
-	cache, err := os.UserCacheDir()
+	args := append([]string{m.AMDExport[0], ck, ExportOut}, m.AMDExport[1:]...)
+	return RunIRON(ctx, python, m.Name, "iron_export_lm.py", args, out, log)
+}
+
+// ExportOut stands in RunIRON's args for the directory the exporter writes.
+const ExportOut = "{out}"
+
+// RunIRON runs one of hwnpu's IRON exporters (tools/amd, built into hwnpu) in IRON's
+// environment (python, of IRONPython): script with args, ExportOut the export's directory,
+// made beside out (out.part, its log out.log) and renamed to out when whole, out.done written
+// last. The exporter's latest line follows a bar on log.
+func RunIRON(ctx context.Context, python []string, name, script string, args []string, out string, log io.Writer) error {
+	tools, err := amdtools.Extract(cache.Sub("tools"))
 	if err != nil {
-		return "", err
+		return err
 	}
-	tools, err := amdtools.Extract(filepath.Join(cache, "hwnpu"))
+	unlock, err := cache.Lock(ctx, out, "the export "+filepath.Base(out), log)
 	if err != nil {
-		return "", err
+		return err
+	}
+	defer unlock()
+	if _, err := os.Stat(out + ".done"); err == nil {
+		return nil // another process made it meanwhile
 	}
 	part, logPath := out+".part", out+".log"
 	os.RemoveAll(part) // cut off before: made again
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		return "", err
+		return err
 	}
 	lf, err := os.Create(logPath)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer lf.Close()
-	args := append(append(slices.Clone(python[1:]), filepath.Join(tools, "iron_export_lm.py"), m.AMDExport[0], ck, part), m.AMDExport[1:]...)
-	cmd := exec.CommandContext(ctx, python[0], args...)
+	all := append(slices.Clone(python[1:]), filepath.Join(tools, script))
+	for _, a := range args {
+		if a == ExportOut {
+			a = part
+		}
+		all = append(all, a)
+	}
+	cmd := exec.CommandContext(ctx, python[0], all...)
 	cmd.Dir = tools
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
-	bar := console.NewBar(log, fmt.Sprintf("exporting %s for AMD's NPU with IRON", m.Name))
+	if os.Getenv(ironCacheEnv) == "" {
+		moveIRONCache()
+		cmd.Env = append(cmd.Env, ironCacheEnv+"="+IRONCache())
+	}
+	bar := console.NewBar(log, fmt.Sprintf("exporting %s for AMD's NPU with IRON", name))
 	last := &lastLine{w: lf}
 	cmd.Stdout, cmd.Stderr = last, last
 	stop := make(chan struct{})
@@ -222,19 +272,66 @@ func PrepareAMD(ctx context.Context, m Model, dir string, log io.Writer) (string
 	if err != nil {
 		bar.Done("failed")
 		os.RemoveAll(part)
-		return "", fmt.Errorf("exporting %s for AMD's NPU failed (%v); the end of %s:\n%s", m.Name, err, logPath, tail(logPath, 15))
+		return fmt.Errorf("exporting %s for AMD's NPU failed (%v); the end of %s:\n%s", name, err, logPath, tail(logPath, 15))
 	}
 	os.RemoveAll(out) // one without its manifest: cut off by hand
 	if err := os.Rename(part, out); err != nil {
 		bar.Done("failed")
-		return "", err
+		return err
 	}
 	if err := os.WriteFile(out+".done", nil, 0o644); err != nil {
-		return "", err
+		return err
 	}
 	bar.Done(fmt.Sprintf("in %s to %s", console.Duration(bar.Elapsed()), shortPath(out)))
-	return out, nil
+	return nil
 }
+
+// ironCacheEnv is where IRON (mlir-aie's python/utils/compile) keeps the kernels it compiled.
+const ironCacheEnv = "NPU_CACHE_HOME"
+
+// IRONCache is IRON's cache of compiled kernels the exporters run with: iron under cache.Root,
+// unless NPU_CACHE_HOME says. IRON's own default, ~/.npu/cache, is moved there before the first
+// export (moveIRONCache: a rename on the same file system; tens of GB on a machine that has
+// exported much) and left a link to it, so that IRON run by hand shares it.
+func IRONCache() string {
+	if d := os.Getenv(ironCacheEnv); d != "" {
+		return d
+	}
+	return cache.Sub("iron")
+}
+
+// moveIRONCache moves IRON's own cache to IRONCache once (IRONCache), before an exporter runs.
+func moveIRONCache() {
+	if os.Getenv(ironCacheEnv) != "" {
+		return
+	}
+	dir := IRONCache()
+	ironCacheOnce.Do(func() {
+		if _, err := os.Lstat(dir); err == nil {
+			return
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return
+		}
+		old := filepath.Join(home, ".npu", "cache")
+		if fi, err := os.Lstat(old); err != nil || !fi.IsDir() {
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+			return
+		}
+		if os.Rename(old, dir) == nil {
+			os.Symlink(dir, old)
+		}
+	})
+}
+
+var ironCacheOnce sync.Once
+
+// IRONPython is the command that runs Python in IRON's environment (IRONEnv, else python3 on
+// PATH), checked by importing IRON and mlir-aie.
+func IRONPython(ctx context.Context) ([]string, error) { return ironPython(ctx) }
 
 // ironPython is the command that runs Python in IRON's environment (IRONEnv, else python3 on
 // PATH), checked by importing IRON and mlir-aie.

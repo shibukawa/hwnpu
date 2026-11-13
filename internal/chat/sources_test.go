@@ -5,11 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/store/s3fake"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -188,33 +188,16 @@ models:
 // TestS3Source checks an s3 source through a fake aws command: the URL, the endpoint, the
 // profile and no_sign it is given, and a missing object as not found.
 func TestS3Source(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake aws command is a shell script")
-	}
-	root := t.TempDir() // the bucket's contents
-	put(t, filepath.Join(root, "models", "hf", "LiquidAI", "LFM3-1.7B", "config.json"), "from s3")
-	bin := t.TempDir()
-	argsLog := filepath.Join(bin, "args")
-	script := fmt.Sprintf(`#!/bin/sh
-echo "$@" >> %q
-while [ "$1" != "--" ]; do shift; done
-src=$(echo "$2" | sed 's|^s3://|%s/|')
-if [ ! -f "$src" ]; then echo "fatal error: An error occurred (404) when calling the HeadObject operation: Not Found" >&2; exit 1; fi
-cp "$src" "$3"
-`, argsLog, root)
-	put(t, filepath.Join(bin, "aws"), script)
-	if err := os.Chmod(filepath.Join(bin, "aws"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	old := awsCommand
-	awsCommand = filepath.Join(bin, "aws")
-	t.Cleanup(func() { awsCommand = old })
+	srv := s3fake.New(t)
+	srv.Put("models", "hf/LiquidAI/LFM3-1.7B/config.json", []byte("from s3"))
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_PROFILE", "")
 	n := hub(t, nil)
-	if _, err := userFiles(t, `version: 1
+	if _, err := userFiles(t, fmt.Sprintf(`version: 1
 sources:
-  lab: {type: s3, bucket: models, prefix: hf, endpoint: "http://rustfs.lab:9000", profile: rustfs, no_sign: true}
+  lab: {type: s3, bucket: models, prefix: hf, endpoint: %q, no_sign: true}
 search: [lab, hf]
-`); err != nil {
+`, srv.URL)); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -224,23 +207,99 @@ search: [lab, hf]
 	if got := read(t, filepath.Join(dir, "config.json")); got != "from s3" || n.Load() != 0 {
 		t.Errorf("config.json %q, %d requests to the hub", got, n.Load())
 	}
-	args := read(t, argsLog)
-	for _, want := range []string{"s3 cp", "--endpoint-url http://rustfs.lab:9000", "--profile rustfs", "--no-sign-request", "s3://models/hf/LiquidAI/LFM3-1.7B/config.json"} {
-		if !strings.Contains(args, want) {
-			t.Errorf("aws was not given %q: %s", want, args)
-		}
-	}
 	err := fetch(context.Background(), "LiquidAI/LFM3-1.7B", "tokenizer.json", filepath.Join(dir, "tokenizer.json"), nil)
 	if !NotFound(err) {
 		t.Errorf("a missing object: %v", err)
 	}
-	if !strings.Contains(read(t, argsLog), "tokenizer.json") {
+	if srv.Requests["GET"] < 2 {
 		t.Error("the bucket was not asked for tokenizer.json")
 	}
-	// no aws command: an error that says so, not a silent fall back
-	awsCommand = filepath.Join(bin, "no-such-aws")
+	// signed with the profile's keys: no keys is an error that says so, not a silent fall back
+	if _, err := userFiles(t, fmt.Sprintf(`version: 1
+sources:
+  lab: {type: s3, bucket: models, prefix: hf, endpoint: %q, profile: none}
+search: [lab]
+`, srv.URL)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
 	err = fetch(context.Background(), "LiquidAI/LFM3-1.7B", "generation_config.json", filepath.Join(dir, "g.json"), nil)
-	if err == nil || !strings.Contains(err.Error(), "AWS CLI") {
-		t.Errorf("without aws: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no keys") {
+		t.Errorf("without keys: %v", err)
+	}
+}
+
+// TestSameFile checks that a pinned file another model of the same SHA-256 has in the models'
+// directory is linked from there instead of downloaded (MOSS-SoundEffect's text encoder is
+// Qwen3-1.7B), and that a copy that differs is not taken.
+func TestSameFile(t *testing.T) {
+	weights := "the weights"
+	n := hub(t, map[string]string{
+		"lab/chat-1b/resolve/main/model.safetensors":         weights,
+		"lab/sfx/resolve/abc/text_encoder/model.safetensors": weights,
+		"lab/other/resolve/main/model.safetensors":           "other weights",
+	})
+	if _, err := userFiles(t, fmt.Sprintf(`version: 1
+models:
+  chat-1b:
+    from: hf:lab/chat-1b
+    kind: chat
+    sha256: {model.safetensors: %[1]s}
+  sfx:
+    from: hf:lab/sfx@abc
+    kind: sfx
+    sha256: {text_encoder/model.safetensors: %[1]s}
+  other:
+    from: hf:lab/other
+    kind: chat
+    sha256: {model.safetensors: %[2]s}
+`, digest(weights), digest("other weights"))); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	for _, d := range []string{"chat-1b", "other", "sfx/text_encoder"} { // as Prepare and sfx.Prepare make them
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chatFile := filepath.Join(root, "chat-1b", "model.safetensors")
+	if err := fetch(context.Background(), "lab/chat-1b", "model.safetensors", chatFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 1 {
+		t.Fatalf("%d requests for the first download", n.Load())
+	}
+	// the other model's file of the same SHA-256: linked, no request
+	sfxFile := filepath.Join(root, "sfx", "text_encoder", "model.safetensors")
+	var log strings.Builder
+	if err := fetch(context.Background(), "lab/sfx@abc", "text_encoder/model.safetensors", sfxFile, &log); err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 1 || read(t, sfxFile) != weights || !strings.Contains(log.String(), "linked model.safetensors from model.safetensors of chat-1b") {
+		t.Errorf("%d requests, log:\n%s", n.Load(), log.String())
+	}
+	a, _ := os.Stat(chatFile)
+	b, _ := os.Stat(sfxFile)
+	if !os.SameFile(a, b) {
+		t.Error("a copy, not a link")
+	}
+	// a model of another SHA-256 is downloaded
+	if err := fetch(context.Background(), "lab/other", "model.safetensors", filepath.Join(root, "other", "model.safetensors"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 2 {
+		t.Errorf("%d requests: other's file was not downloaded", n.Load())
+	}
+	// a file of the same name that was changed is not taken, and stays as it was
+	os.Remove(sfxFile)
+	if err := os.Remove(chatFile); err != nil {
+		t.Fatal(err)
+	}
+	put(t, chatFile, "changed")
+	if err := fetch(context.Background(), "lab/sfx@abc", "text_encoder/model.safetensors", sfxFile, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n.Load() != 3 || read(t, sfxFile) != weights || read(t, chatFile) != "changed" {
+		t.Errorf("%d requests, %q, %q", n.Load(), read(t, sfxFile), read(t, chatFile))
 	}
 }

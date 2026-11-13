@@ -11,7 +11,7 @@ import (
 
 // List writes the models of kinds (all for none) for -list: each model's name, tag, kind,
 // features, download and memory running on this machine's NPU (models.yaml's bytes and memory
-// for its vendor), repository, whether it is downloaded to dir, and what it is; then what each use
+// for its vendor, of the variant for its memory), repository, whether it is downloaded to dir, and what it is; then what each use
 // and family of them picks on a machine of each of MODEL.md's columns; the aliases; and the
 // definition files read.
 func List(w io.Writer, dir string, ks ...Kind) {
@@ -29,6 +29,7 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 	of := func(m Model) bool { return len(ks) == 0 || slices.Contains(ks, m.Kind) }
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	vendor := HereVendor()
+	machine := MachineMemory()
 	fmt.Fprintf(tw, "NAME\tTAG\tKIND\tFEATURES\tDOWNLOAD\tMEMORY\tREPOSITORY\t%s\tABOUT\n", column)
 	for _, m := range Catalog {
 		if !of(m) {
@@ -43,12 +44,11 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 		if m.Tag != "" {
 			tag = m.Family + ":" + m.Tag
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.Name, tag, m.Kind, features, inGB(m.BytesFor(vendor)/1e9), inGB(m.MemoryFor(vendor)),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", m.Name, tag, m.Kind, features, inGB(m.BytesFor(vendor)/1e9), inGB(m.On(machine).MemoryFor(vendor)),
 			m.Source(), got, m.About)
 	}
 	tw.Flush()
 	// MODEL.md's table: what each use and family picks on a machine of each column's memory
-	machine := MachineMemory()
 	// the tags' examples: plamo3translate:2b, else a family of these kinds with more than one tag
 	family, tag := "plamo3translate", "2b"
 	if !slices.ContainsFunc(Catalog, func(m Model) bool { return of(m) && m.Family == family }) {

@@ -50,7 +50,9 @@ def load(root: Path, dit_file: str, dtype):
     from transformers import AutoTokenizer, Qwen3Config, Qwen3Model
 
     d = root / "diffusers"
-    sd = {k.removeprefix(PREFIX): v for k, v in load_file(root / "diffusion_models" / dit_file).items()}
+    raw = load_file(root / "diffusion_models" / dit_file)
+    prefix = "net." if any(k.startswith("net.") for k in raw) else PREFIX  # anima-base-v1.0, the previews
+    sd = {k.removeprefix(prefix): v for k, v in raw.items()}
     adapter = {k.removeprefix("llm_adapter."): v for k, v in sd.items() if k.startswith("llm_adapter.")}
     adapter = {k.replace("mlp.0.", "mlp.0.").replace("mlp.2.", "mlp.2."): v for k, v in adapter.items()}
     dit = convert_cosmos_transformer_checkpoint_to_diffusers({k: v for k, v in sd.items() if not k.startswith("llm_adapter.")})
@@ -99,21 +101,36 @@ def main() -> int:
     ap.add_argument("--dtype", default="float32", choices=("float32", "bfloat16"))
     ap.add_argument("--noise", type=Path, help="the initial latents (16, H/8, W/8) as float32 .npy, in place of the seed's")
     ap.add_argument("--stop", type=int, default=0, help="run only this many steps (0: all), then decode")
+    ap.add_argument("--guidance", type=float, default=1.0,
+                    help="classifier-free guidance's scale (1: none, Anima-Turbo; Anima-Aesthetic 4 to 5)")
+    ap.add_argument("--negative", default="", help="the negative prompt of the guidance (default empty)")
     a = ap.parse_args()
     dtype = getattr(torch, a.dtype)
     W, H = a.width or a.size, a.height or a.size
     tok, t5, qwen, tc, tr, vae = load(a.root, a.dit, dtype)
     rec = {}
 
-    q = tok([a.prompt], return_tensors="pt")
-    rec["qwen_ids"] = q.input_ids[0].numpy().astype(np.int32)
-    hidden = qwen(input_ids=q.input_ids, attention_mask=q.attention_mask).last_hidden_state
+    def encode(prompt: str):
+        """AnimaTextEncoderStep and the conditioner: an empty prompt is one masked Qwen3 token."""
+        q = tok([prompt], return_tensors="pt", padding="longest", max_length=512, truncation=True)
+        ids, mask = q.input_ids, q.attention_mask
+        if ids.shape[-1] == 0:
+            ids, mask = ids.new_zeros((1, 1)), mask.new_zeros((1, 1))
+        hidden = qwen(input_ids=ids, attention_mask=mask).last_hidden_state * mask.unsqueeze(-1).to(dtype)
+        t = t5([prompt], return_tensors="pt", padding="longest", max_length=512, truncation=True)
+        c = tc(source_hidden_states=hidden, target_input_ids=t.input_ids,
+               target_attention_mask=t.attention_mask, source_attention_mask=mask)
+        return ids, hidden, t.input_ids, c
+
+    ids, hidden, t5_ids, cond = encode(a.prompt)
+    rec["qwen_ids"] = ids[0].numpy().astype(np.int32)
     rec["qwen_hidden"] = hidden[0].float().numpy()
-    t = t5([a.prompt], return_tensors="pt")
-    rec["t5_ids"] = t.input_ids[0].numpy().astype(np.int32)
-    cond = tc(source_hidden_states=hidden, target_input_ids=t.input_ids,
-              target_attention_mask=t.attention_mask, source_attention_mask=q.attention_mask)
+    rec["t5_ids"] = t5_ids[0].numpy().astype(np.int32)
     rec["cond"] = cond[0].float().numpy()
+    uncond = None
+    if a.guidance != 1:
+        uncond = encode(a.negative)[3]
+        rec["uncond"] = uncond[0].float().numpy()
 
     if a.noise is not None:
         noise = torch.from_numpy(np.load(a.noise)).reshape(1, 16, 1, H // 8, W // 8)
@@ -128,8 +145,14 @@ def main() -> int:
     vs = []
     steps = a.stop or a.steps
     for i in range(steps):
-        v = tr(hidden_states=x.to(dtype), timestep=torch.tensor([sig[i]], dtype=dtype),
-               encoder_hidden_states=cond.to(dtype), padding_mask=pad, return_dict=False)[0].float()
+        def dit(c):
+            return tr(hidden_states=x.to(dtype), timestep=torch.tensor([sig[i]], dtype=dtype),
+                      encoder_hidden_states=c.to(dtype), padding_mask=pad, return_dict=False)[0].float()
+
+        v = dit(cond)
+        if uncond is not None:  # diffusers' ClassifierFreeGuidance
+            u = dit(uncond)
+            v = u + a.guidance * (v - u)
         vs.append(v[0, :, 0].numpy())
         x = x + (sig[i + 1] - sig[i]) * v
         print(f"step {i}: sigma {sig[i]:.4f} -> {sig[i + 1]:.4f}, |v| {v.abs().mean():.4f}", flush=True)
