@@ -102,7 +102,10 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 			}
 			return "exported on first run (IRON)"
 		}
-		if m.Kind == chat.KindSegment { // the encoder has no Core ML or OpenVINO form yet
+		if m.Kind == chat.KindSegment { // the encoder: converted on Apple's and Intel's, else the CPU
+			if programDevice(m, vendor, "") {
+				return "converted on first run"
+			}
 			return "CPU"
 		}
 		if m.Kind == chat.KindPose || m.Kind == chat.KindDetect || m.Kind == chat.KindOCR { // converted on the first run, for Core ML or OpenVINO
@@ -113,6 +116,9 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 		}
 		if d, err := amdExport(m, ""); err == nil {
 			return shortHome(d)
+		}
+		if m.Kind == chat.KindLabel && strings.EqualFold(vendor, hwnpu.VendorApple.String()) { // siglip.Prepare
+			return "converted on first run"
 		}
 		if m.Kind == chat.KindImage && coremlImage(m.Family, vendor) {
 			return "converted on first run"

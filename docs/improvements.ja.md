@@ -2,7 +2,7 @@
 
 [English](improvements.md)
 
-design.md 16 章の実装記録 (16.117 まで) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md、handoff-m3-gptq.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。 7.5 節と「Core AI」の行は、macOS 27 の Core AI のバックエンド (16.169〜16.178) で、断りがなければ M1 と M2 (16 GB、macOS 27.2) で測った。
+design.md 16 章の実装記録 (16.117 まで) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md、handoff-m3-gptq.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。 7.5 節と「Core AI」の行は、macOS 27 の Core AI のバックエンド (16.169〜16.183) で、断りがなければ M1 と M2 (16 GB、macOS 27.2) で測った (16.182 と 16.183 は M3)。
 
 - 「生成」= 1 トークンを作る速さ (ms/token か tokens/s)
 - 「prefill」= プロンプトを読む速さ (最初の応答までの時間)
@@ -68,6 +68,8 @@ design.md 16 章の実装記録 (16.117 まで) と model-fit.md、intel-npu-mod
 | Core AI: プロンプトを読むプログラムも持つ (重みを 1 回分と数える、16.177) | | ◎ 2.3〜3.2 倍 (Qwen3.5-2B、LFM3-VL / Audio / Omni、PLaMo 3 2B) | △ +1〜3.6 s | △ +0.1〜0.14 GiB | | | 変わらない | Apple (Core AI) |
 | Core AI: コンパイルの後に `.aimodel` の重みを捨てる (`HWNPU_COREAI_DROP_BYTECODE=1`、オプション、16.176) | | | ○ Chroma の DiT の組 6.5 → 0.5 s | | ○ Chroma1-Flash 512² の hwnpu のキャッシュ 28 → 15 GB | | 変わらない | Apple (Core AI)。△ 項目が消されると下ろし直し (配る `.aimodel` なら落とし直し) |
 | Apple: Chroma1-Flash を Core AI で (16.176) | ○ M2 の 1024² が 1 枚 6 分 58 秒 (M1 の Core ML は 9 分 17 秒) | | △ 1024² の初回は 1 時間 | DiT を持つ間 8.15 GiB | | | Core ML との潜在のコサイン 0.9976、PSNR 35.4 dB | Apple (Core AI) |
+| Apple: 画像を読むモデルを Core AI で (PP-OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、EfficientSAM。16.182、16.183) | 変わらない (1 回 ±3 ms) | | 両方のキャッシュが当たっていれば変わらない (1 コマンド 0.05〜0.9 s、3 回ずつ)。Core AI はプログラムを持ち続け、Core ML は約 4 GiB のキャッシュから外れた分をコンパイルし直す (1〜16 s のことがあった)。初回は 1 部品 0.2〜38 s | △ Neural Engine の持つ量が少し多い (RTMDet 56 → 89 MB) | | | OCR の文字、物、人、顔は Core ML と同じ。深さのコサイン 0.999999〜1.000000 (M3) | Apple (Core AI) |
+| Apple: SigLIP 2 (`hwnpu-image label`、`embed`) を Neural Engine で。初回に Go で変換 (16.183) | base は 1 枚 7.3〜7.9 ms、8 文 15〜17 ms。large は 33〜36 ms と 47〜59 ms (M3。AMD は base 84 ms と 131 ms) | | 初回の読み込み 13 s (base)、33 s (large) | base はプロセス 0.45 GB と Neural Engine 0.36〜0.48 GB、large は 1.8 GB と 1.2〜1.6 GB | 書き出し 0.73 GB (base)、1.7 GB (large) | | Transformers との埋め込みのコサインは、画像 0.99996 (base) と 0.9999 (large)、文 0.99999。Core ML でも Core AI でも | Apple |
 | 会話の印はリングの使っている分だけ (16.71) | | | | ○ 翻訳 5 回で 578 → 183 MB | | | | 共通 |
 | 変換の後にメモリを OS に返す (16.71) | | | | ○ 起動直後 2.4 GB → 154 MB | | | | 共通 |
 | OpenVINO が残す `/dev/shm` を片付ける (16.72) | | | | | ○ 1 日 8.4 GB | | | Intel / OpenVINO |
@@ -339,6 +341,8 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 
 同じファイルのディスクの上での共有 (`cache.Clone`、16.64 と 16.79) は NPU ではなくファイルシステムで決まる: macOS の APFS では clonefile、Linux の Btrfs や XFS などでは FICLONE と FICLONERANGE、Windows の ReFS と Dev Drive ではブロッククローン。Apple のプログラムとコンパイルした写し、Intel の IR (8 トークンと 64 トークンのプログラムの `.bin`)、AMD の書き出しが対象。ext4、tmpfs、NTFS では何もしない。ファイルの先頭の共有ができないのは macOS だけ。
 
+ホストの CPU のコード (16.183): 行列積 (`internal/sgemm`) に、amd64 の AVX2 と AVX-512 に加えて arm64 の NEON のカーネルを足した (M3 の 1 スレッドで 106 GFLOPS。EfficientSAM の復号器では Go のループが約 10 倍かかっていた)。CPU のインタプリタ (`milcpu`、`--cpu`) と ONNX の評価器が共に使う。評価器の要素ごとの演算は、よくあるブロードキャストでは添字の表を作らない。プロンプトごとにホストで動く EfficientSAM の復号器は 1.06 秒 → 0.28 秒 (`hwnpu-image segment` は 1 枚 1.5 → 0.72 秒)。
+
 ### 7.5 Apple: Core AI (macOS 27)
 
 Core AI は端末向けに専用化した結果を自分のキャッシュに持つ。鍵は `main.hash` (`main.mlirb` の sha256) だけで、OS のビルドと実行ファイルの名前ごとに分かれる。Core ML のコンパイルのキャッシュのような約 4 GiB の上限はなく、1 本のプログラムは M3 で 2.5〜3 GiB まで持てる (Core ML は 1 GiB)。
@@ -353,6 +357,8 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | `aicheck run -cpu` / `-coreml` / `-calls`、`probe`、`HWNPU_AILOWER_CUT`、`HWNPU_AILOWER_TRACE` (16.169、16.172) | Core AI がプロセスごと落とす前に、Neural Engine から外れる演算を探す | 先頭の N 個の演算で二分探索 |
 | 1 本の `.aimodel` に関数をまとめる (`ailower.LowerFunctions`、`PROGRAM.aimodel#NAME`、16.174)、それを自動で (16.177) | ディスクと Neural Engine のメモリ | 部品ごとに `KEY.aifn` を記録し、2 回目からは自分の部品だけハッシュする。関数の名前は中身のダイジェストから (機械によらず同じ)。3 つ目の大きさが来たら大きいまとまりを作り直し、小さいまとまりは消す |
 | 空の `.aimodel` は項目があるときだけ開く (`hasEntry`、`kindNoRetry`、16.176) | 空の `main.mlirb` を Core AI が解析すると、プロセスごと落ちる (LLVM の `cannot unwrap empty odiec_module_t`) | `main-this.odix` が空でないファイルであること。なければ下ろし直す。shim は空にしたものを消して読み直さず、Go の側で下ろし直す |
+| `max_pool`、`conv_transpose` (MIL の pad で切り取る)、`pad` の replicate と reflect、定数による割り算を積に (16.182) | 画像のモデルの ONNX のグラフと深さの頭 | PP-OCR の検出器は Core AI でだけコサイン 0.05: 定数による `divide_v1` が、Neural Engine で掛け算になった (約 c 倍とチャンネルごとのずれ)。`HWNPU_AILOWER_CUT` は切った演算の milcpu の値とコサインで比べるように |
+| `HWNPU_COREAI_UNITS=cpu`、`HWNPU_AILOWER_DIVIDE=1`、`aicheck` が Neural Engine のロックを取る、`elu` (16.183) | 下ろし方の誤りと Neural Engine の誤りを、Neural Engine を使わずに分ける | 割り算の誤りは Neural Engine だけ (Core AI の CPU と GPU は積と一致)。Core AI の CPU は、和が fp16 を超える `reduce_mean` (平均 −1.37 の 57600 要素) があふれる: 和を fp16 に戻してから 1 / n を掛けるため。Magenta RealTime 2 の復号器は `elu` で止まっていた |
 
 ## 8. 試して効かなかったもの・採らなかったもの
 

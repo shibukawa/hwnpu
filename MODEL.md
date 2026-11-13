@@ -148,6 +148,8 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | Sana 600M, SANA 1.5 1.6B (1024 × 1024, AMD) | Image generation | 2.3 GB (the NPU's 2.0 GB peak, in the VAE with two stages loaded at once, and the text graph with Gemma 2 in 6 bits next, and the process; the DiT a group at a time, 0.4 GB) | none | measured |
 | Sana 600M, SANA 1.5 1.6B (1024 × 1024, Apple) | Image generation | 3.9 GB process at its peak (Gemma 2 int8 in 5 programs, loaded while it runs; the DiT int8 (600M) or lut8 (1.5), 0.60 / 1.56 GiB on the Neural Engine; the VAE a stage at a time) | none | measured (M1) |
 | DA3-SMALL, DA3MONO-LARGE, MoGe-2 ViT-S (Apple) | Depth estimation (hwnpu-image depth) | the programs of one size (fp16), converted for each aspect on first use | none | not measured |
+| SigLIP 2 Base / Large (Apple) | Labels, embeddings of pictures and texts (hwnpu-image label, embed) | About 0.9 / 3.3 GB (M3: a footprint of 0.45 / 1.8 GB at most, and 0.36 / 1.24 GB on the Neural Engine; 0.48 / 1.56 GB with Core AI) | none (a picture, 8 texts at a time) | Measured on an M3 |
+| EfficientSAM-Ti / S (Apple) | The cutout a point or a box picks (hwnpu-image segment) | A footprint of about 0.22 / 0.25 GB (M3; the encoder on the Neural Engine, the decoder on the CPU) | none (a picture at a time) | Measured on an M3 |
 | Anima-Turbo, Anima-Aesthetic (1024 × 1024) | Image generation | 1.9 GB (the VAE's largest stage; the DiT reads its blocks' weights a group at a time) | none | measured |
 | LFM3-Audio-2B (speech) | Speech | about 2.4 GB | 12 KiB/token | estimated from the weights |
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |

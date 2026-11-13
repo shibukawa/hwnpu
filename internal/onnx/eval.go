@@ -207,12 +207,53 @@ func binop(a, b *Tensor, typ int, f func(x, y float64) float64) (*Tensor, error)
 	if err != nil {
 		return nil, err
 	}
-	ia, ib := index(a.Shape, shape), index(b.Shape, shape)
 	out := &Tensor{Shape: shape, F: make([]float64, Len(shape)), Type: typ}
-	for k := range out.F {
-		out.F[k] = f(a.F[ia[k]], b.F[ib[k]])
+	// without a table of indices where an operand is the result's shape, or repeats whole (a
+	// scalar, a bias over the last axes): the tables were a third of EfficientSAM's decoder
+	ma, mb := repeats(a.Shape, shape), repeats(b.Shape, shape)
+	switch {
+	case ma == len(out.F) && mb == len(out.F):
+		for k := range out.F {
+			out.F[k] = f(a.F[k], b.F[k])
+		}
+	case ma == len(out.F) && mb > 0:
+		for k := 0; k < len(out.F); k += mb {
+			for j, y := range b.F[:mb] {
+				out.F[k+j] = f(a.F[k+j], y)
+			}
+		}
+	case mb == len(out.F) && ma > 0:
+		for k := 0; k < len(out.F); k += ma {
+			for j, x := range a.F[:ma] {
+				out.F[k+j] = f(x, b.F[k+j])
+			}
+		}
+	default:
+		ia, ib := index(a.Shape, shape), index(b.Shape, shape)
+		for k := range out.F {
+			out.F[k] = f(a.F[ia[k]], b.F[ib[k]])
+		}
 	}
 	return out, nil
+}
+
+// repeats is the length of x when x broadcast to out is x repeated whole, one copy after another
+// (x is out's last axes, any axes before them 1 or absent; out itself counts), else 0.
+func repeats(x, out []int) int {
+	n := 1
+	i, j := len(x)-1, len(out)-1
+	for ; i >= 0 && x[i] == out[j]; i, j = i-1, j-1 {
+		n *= x[i]
+	}
+	for ; i >= 0; i-- {
+		if x[i] != 1 {
+			return 0
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return n
 }
 
 func unary(a *Tensor, f func(x float64) float64) *Tensor {

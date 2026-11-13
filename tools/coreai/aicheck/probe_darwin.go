@@ -109,6 +109,9 @@ func int8Linear(out, in, colBlock int) func(g *milpart.Graph) {
 
 func probe(names []string, keep bool) error {
 	ctx := context.Background()
+	if err := llm.LockNPU(ctx); err != nil {
+		return err
+	}
 	dev, err := coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{})
 	if err != nil {
 		return err

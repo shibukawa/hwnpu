@@ -95,6 +95,16 @@ The intended path is `hwnpu-dev convert`, in Go, from the bf16 checkpoint; corem
 - **LLM checkpoints with hwnpu-dev convert** (Go only, no Python). `go run ./cmd/hwnpu-dev convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` builds the graph from `config.json` for a known architecture and palettizes the weights to 4 bit. It knows LFM3 so far; other architectures (Llama, Qwen) need their structure added in `internal/llm`. How to choose the source checkpoint and what the Neural Engine accepts are described in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
 - **Anything else with coremltools** (Python). A generic converter that accepts arbitrary graphs is out of hwnpu's scope, so models that are not a supported LLM architecture (encoders such as MiniLM, vision models) are converted from PyTorch with `ct.convert(..., convert_to="mlprogram", compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS14)` and fixed input shapes. `tools/coreml/convert_minilm.py` and `tools/coreml/gen_sweep.py` are worked examples, written for the benchmarks.
 
+## 5. Running on Core AI (macOS 27, optional)
+
+macOS 27 has Core AI beside Core ML. hwnpu lowers the same converted models (`.mlpackage`) to Core AI programs in Go and runs them on the Neural Engine. Core ML stays the default; `--backend coreai` or `HWNPU_BACKEND=coreai` picks Core AI. Nothing more to install.
+
+- **Commands**: all of `hwnpu-chat`; `hwnpu-image`'s generate (Anima, Chroma), ocr, detect, pose, face-detect, depth, segment, label and embed. Of `hwnpu-audio`, pitch and generate (Magenta RealTime 2) were checked with `HWNPU_BACKEND=coreai` (the others were not)
+- **Results and speed**: as Core ML's (the same answers, objects and text; cosines of 0.9999 or more for embeddings and depth; a call within ±10 %)
+- **The difference** is how the compiled programs are kept. Core ML's cache holds about 4 GiB, and past it programs compile again at later starts too (minutes to tens of minutes for the large image generators). Core AI keeps them in its own cache (`~/Library/Caches/coreai-cache`) until the disk runs low. With both caches warm the starts are the same
+- **The cost**: the weights are on the disk three times (the converted `.mlpackage`, the lowered `.aimodel`, Core AI's cache). Below about 15 GB free, macOS removes the caches and the next start compiles again
+- The record is design.md 16.169–16.183 ([docs/design.md](docs/design.md)); the summary is section 7.5 of [docs/improvements.md](docs/improvements.md)
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |

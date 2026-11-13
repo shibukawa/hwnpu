@@ -51,8 +51,21 @@ var (
 	caiForget func(path *byte)
 )
 
-// kindNeuralEngine is the shim's specialization: prefer the Neural Engine.
-const kindNeuralEngine = 2
+// kindNeuralEngine is the shim's specialization: prefer the Neural Engine. kindCPU: the CPU alone.
+const (
+	kindCPU          = 1
+	kindNeuralEngine = 2
+)
+
+// UnitsEnv names the environment variable that moves the programs off the Neural Engine, for
+// telling a lowering's errors from the Neural Engine's (and checking a lowering while another
+// process has the Neural Engine): "cpu" runs them on Core AI's CPU alone. As Core ML's
+// HWNPU_COREML_UNITS. A reduce_mean whose sum passes fp16's range (a mean over 57600 values
+// above 1.1) overflows there, where the Neural Engine and the GPU are right (design.md 16.183).
+const UnitsEnv = "HWNPU_COREAI_UNITS"
+
+// OnCPU reports whether UnitsEnv asks for the CPU.
+func OnCPU() bool { return os.Getenv(UnitsEnv) == "cpu" }
 
 // lowDisk is the free disk below which a program off the Neural Engine is put down to it.
 const lowDisk = 10 << 30
@@ -301,6 +314,9 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	g := &graph{cached: cached, owned: owned}
 	open := func() string {
 		kind := int32(kindNeuralEngine)
+		if OnCPU() {
+			kind = kindCPU
+		}
 		if isCut(dir) {
 			kind |= kindNoRetry
 		}
@@ -348,6 +364,10 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	}
 	var offNPU []string
 	g.placement, offNPU = placement(dir, fn)
+	if OnCPU() { // the cache's entry may be another run's, for the Neural Engine
+		g.placement = types.PlacementReport{Method: UnitsEnv, Verified: true, Ops: []types.OpPlacement{{Name: "program", Type: "program", Device: "cpu"}}}
+		offNPU = nil
+	}
 	if len(offNPU) > 0 {
 		// Core AI caches a program that the Neural Engine's compiler failed on (out of disk or
 		// memory: "Failed to allocate memory for file backing") as it fell back, on the GPU, and

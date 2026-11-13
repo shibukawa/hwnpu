@@ -672,14 +672,18 @@ models:
     bytes: 0.23e6
     about: "YuNet (OpenCV Zoo, MIT): faces' boxes and five landmarks (eyes, nose, mouth corners)"
   # hwnpu-image label and embed: on AMD's NPU the export ~/models/NAME.amd-npu2 of
-  # tools/amd/iron_siglip2.py (--precision HIGHEST); Apple's and Intel's NPU have no form yet
+  # tools/amd/iron_siglip2.py (--precision HIGHEST); on Apple's Neural Engine the checkpoint is
+  # downloaded and converted on the first run (internal/vision/siglip, fp16; design.md 16.183);
+  # Intel's NPU has no form yet
   siglip2-base-patch16-224:
     family: siglip2
     tag: base
     kind: label
     from: hf:google/siglip2-base-patch16-224
     machine: 8
-    memory: 0.8
+    # M3: 0.45 GB of the process at most (embedding the 444 default labels) and 0.36 GB on the
+    # Neural Engine (Core AI: 0.48)
+    memory: {amd: 0.8, apple: 0.9}
     bytes: 1.54e9
     about: "SigLIP 2 Base (Google, Apache-2.0): zero-shot labels in any language and embeddings of pictures (224 x 224) and texts in one space"
   siglip2-large-patch16-256:
@@ -688,13 +692,16 @@ models:
     kind: label
     from: hf:google/siglip2-large-patch16-256
     machine: 16
-    memory: 1.7
+    # M3: 1.8 GB of the process and 1.24 GB on the Neural Engine (Core AI: 1.56)
+    memory: {amd: 1.7, apple: 3.3}
     bytes: 3.57e9
     about: "SigLIP 2 Large: the same at 256 x 256, closer labels and embeddings, about 3 times the work"
   # hwnpu-image segment: EfficientSAM (Meta's, Apache-2.0), the authors' ONNX exports of its
   # image encoder and its prompt's mask decoder; sha256 names each file. The encoder runs on
-  # AMD's NPU from an export of tools/amd/iron_efficientsam.py made on the first run, elsewhere
-  # on the CPU (ONNX Runtime, else hwnpu's evaluator); the decoder on the host, per prompt
+  # AMD's NPU from an export of tools/amd/iron_efficientsam.py made on the first run, on Apple's
+  # Neural Engine and Intel's NPU converted from its ONNX file on the first run (M3: 0.4 s for S,
+  # all on the Neural Engine; design.md 16.183), elsewhere on the CPU (ONNX Runtime, else hwnpu's
+  # evaluator); the decoder on the host, per prompt
   EfficientSAM-Ti:
     family: efficientsam
     tag: ti
