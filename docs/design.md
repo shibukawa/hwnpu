@@ -4468,3 +4468,20 @@ Core ML の Neural Engine のキャッシュは約 4 GiB で、それを超え�
 | Chroma1-HD | 21 分 58 秒 | 21 分 36 秒 | 9.2 秒 | 7.8 GiB | 4.33 GB |
 
 **できていないこと**: 電力量 (powerbench は sudo)。1024² の DiT 1 回の 35 秒の中身 (CFG の 2 回目が 23 秒で済む理由)。
+
+### 16.171 Core AI の書き出し (`coreai`) を safetensors から直接、Neural Engine のコンパイル結果は Core AI のキャッシュの外 — 2026-11-13
+
+16.169 は Core ML の書き出し (`.mlpackage`) を読むときに Core AI のプログラムに下ろしていた。これは 16.8 (中間の形式を置かず、ソースから各 NPU の形式を直接) に反し、Core ML の書き出しの分のディスクと変換の時間が余計にかかる。そこで Core AI を書き出しの形式の一つ (`coreai`) にした。
+
+- **`llm.WritePart` の `BackendCoreAI`**: MIL を組んで `ailower.Lower` で `.aimodel` を直接書く (`writeAI`)。入出力は `hwnpu-io.json`、説明などのメタデータは `hwnpu-meta.json` (`llm.MetaFile`、`ReadMeta` が読む)。できるバイトコードは `.mlpackage` を下ろしたものとバイト単位で同じ (`TestCoreAIPartMatchesPackage`、fp16 と lut4)。Core AI のキャッシュは `main.hash` で引くので、二つの経路でエントリーを共有する
+- **どのモデルが使うか**: `llm.NativeFormat` が `coreai` を返すのは、Core AI 向けに変換するモデル (Qwen-Image、Chroma、Anima) だけ。`ProgramBackend("coreai")` は `coreml` のままで、チャットや音声などはこれまで通り Core ML の書き出しを Core AI で動かす。書き出しの名前は `….coreai` (Qwen-Image、Chroma、Anima)、`chroma.linkSources` は形式の違う書き出しからリンクしない
+- **Qwen-Image-2.1-Turbo** (M3、1024²): ソースから `.coreai` へ 102 秒、32 本 18 GB
+
+**Core AI のキャッシュ** (shim): `AIModel.specialize(…, cachePolicy: .persistent)` で `~/Library/Application Support/coreai-cache/<OS>/<実行ファイル名>/<main.hash>/<ID>/model.aimodelx` に置く (既定のポリシーは元の `.aimodel` が変わるか消えるとエントリーを捨てる)。キーは `main.hash` と全エントリー共通の ID だけで、元のパスも実行ファイルの中身も入らない (別の場所の同じバイトコードでも、ビルドし直した実行ファイルでも当たる)。エントリーの大きさは重みとほぼ同じ (text の部品で 742 MB、`main.mlirb` は 778 MB)
+
+**Neural Engine のコンパイル結果は別にある**: 1 本のコンパイルで空きが 2.4 GB 減り、Core AI のエントリーはそのうち 0.8 GB。残り (text の部品で約 1.6 GB) は見える場所になく、`/Library/Caches/com.apple.aned` (SIP で sudo でも読めない) と見られる。時間を置くと空きが戻る (purgeable)。ディスクが詰まるとここが先に消され、Core AI のエントリーは残ったまま読めなくなる (`specialize` が `_GenericObjCError.nilError`)。shim はエントリーを消してコンパイルし直し、空きが無ければ Neural Engine のコンパイラーが失敗して GPU に落ちる。空き 5.7 GB で新しい部品を 2 本コンパイルしたあと、キャッシュ済みの 5 本のうち 3 本がこうなった。16.169 の「エントリーが壊れる」もこれと見られる (多くコンパイルしたあとにまとまって起きた)
+
+- Qwen-Image の 32 本を Core AI で保つには、書き出し 18 GB と Core AI のエントリー約 17 GB に加えて、aned の側に 30 GB 前後が要る見込み。空きが足りないと、前の部品を追い出しながら毎回コンパイルし直しになる (1 本 10〜20 秒)
+- `HWNPU_COREAI_DEBUG=1` は、エントリーがあって読めずにコンパイルし直したとき (`the cached entry failed (…), compiled again`) と、キャッシュだけで読めなかったときを出す。GPU に落ちたエントリーは消し (次に読むときにまたコンパイル)、空きが 10 GiB 未満なら理由を警告する
+
+**できていないこと**: Qwen-Image の 1 枚を Core AI で最後まで (ディスク待ち)。aned 側の量の直接の確認。書き出しの `main.mlirb` と Core AI のエントリーで重みが 2 重になる分 (`docs/cache-sharing.md` で扱う)。Chroma1-Flash の `coreai` (ランダムな重みでは全部の部品が Neural Engine に載った、`tools/coreai/chromafake`)。

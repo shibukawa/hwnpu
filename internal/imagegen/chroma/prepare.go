@@ -66,7 +66,7 @@ func ExportName(name string, o ConvertOptions) string {
 	if o.TextRows != 512 {
 		s += fmt.Sprintf("-t%d", o.TextRows)
 	}
-	return fmt.Sprintf("%s-v%d.coreml", s, ExportVersion)
+	return fmt.Sprintf("%s-v%d.%s", s, ExportVersion, o.Backend)
 }
 
 // Prepare makes a Chroma ready in s.Dir, as hwnpu-chat makes its models ready: it downloads the
@@ -116,7 +116,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	o.Tokenizer = tok
 	// the parts another export here holds the same: T5's programs (every size, Flash and HD
 	// but the last group), the VAE's (the same size)
-	done, _ := filepath.Glob(filepath.Join(s.Dir, "*.coreml.done"))
+	done, _ := filepath.Glob(filepath.Join(s.Dir, "*."+o.Backend+".done"))
 	for _, d := range done {
 		o.LinkFrom = append(o.LinkFrom, strings.TrimSuffix(d, ".done"))
 	}

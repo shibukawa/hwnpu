@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -20,6 +21,11 @@ import (
 // rounding): the cosine and the relative RMS error, and whether it is all on the Neural Engine.
 func run(pkgs []string, cacheDir string, scale float64, cpu bool) error {
 	ctx := context.Background()
+	if os.Getenv("AICHECK_ENUMERATE") != "" { // as the commands do: every backend's devices first
+		if _, err := hwnpu.Enumerate(ctx); err != nil {
+			return err
+		}
+	}
 	dev, err := coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{CacheDir: cacheDir})
 	if err != nil {
 		return err

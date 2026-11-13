@@ -15,6 +15,10 @@ import (
 const (
 	BackendCoreML = "coreml" // .mlpackage, for the Neural Engine
 	BackendIntel  = "intel"  // OpenVINO IR, for Intel's NPU
+	// BackendCoreAI is Core AI's programs (.aimodel, macOS 27), for the Neural Engine, written
+	// from the checkpoint as the others. Only the models that convert for it take it (NativeFormat);
+	// the others run their Core ML export on Core AI (ProgramBackend("coreai") is coreml).
+	BackendCoreAI = "coreai"
 )
 
 // BackendEnv names the environment variable that picks the device to run on when a command is not
@@ -135,6 +139,31 @@ func DeviceBackend(name string) string {
 	}
 	return ""
 }
+
+// NativeFormat is ProgramFormat for a model that converts for Core AI too: coreai when the
+// device named (name, else HWNPU_BACKEND) is Core AI's, ProgramFormat's otherwise.
+func NativeFormat(ctx context.Context, name string) (string, error) {
+	if DeviceBackend(name) == BackendCoreAI {
+		return BackendCoreAI, nil
+	}
+	return ProgramFormat(ctx, name)
+}
+
+// ExportDevice is the device backend to open for an export of the program format: Core AI's for
+// a coreai export, else the device a command names (name, else HWNPU_BACKEND: coreai runs a Core ML
+// export on Core AI), else Core ML's.
+func ExportDevice(format, name string) string {
+	if format == BackendCoreAI {
+		return BackendCoreAI
+	}
+	if b := DeviceBackend(name); b != "" {
+		return b
+	}
+	return BackendCoreML
+}
+
+// AppleFormat reports whether a program format runs on Apple's Neural Engine (coreml, coreai).
+func AppleFormat(format string) bool { return format == BackendCoreML || format == BackendCoreAI }
 
 // DeviceName is what logs call the device: the Neural Engine or the device's own name.
 func DeviceName(dev *hwnpu.Device) string {

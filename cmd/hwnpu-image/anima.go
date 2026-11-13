@@ -28,7 +28,7 @@ import (
 // convertFlags are what an Anima export for Apple's or Intel's NPU is made with (generate's first
 // run, and convert).
 type convertFlags struct {
-	Backend    string `help:"The program format: coreml (Apple's Neural Engine), coreai (the same programs on Core AI, macOS 27) or intel (Intel's NPU); default: HWNPU_BACKEND, else the NPU found (convert: coreml)."`
+	Backend    string `help:"The program format: coreml (Apple's Neural Engine through Core ML), coreai (through Core AI, macOS 27: Anima, Chroma and Qwen-Image convert for it) or intel (Intel's NPU); default: HWNPU_BACKEND, else the NPU found (convert: coreml)."`
 	Size       int    `default:"1024" help:"The image's width and height in pixels, a multiple of 16 (an export each)."`
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
 	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Core ML; int8 on Intel; default int8 on Core ML, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
@@ -63,10 +63,11 @@ type ConvertCmd struct {
 func (c *ConvertCmd) Run() error {
 	t0 := time.Now()
 	if chroma.IsRepository(c.Anima) {
-		if c.Backend != "" && llm.ProgramBackend(c.Backend) != llm.BackendCoreML {
-			return fmt.Errorf("Chroma converts for coreml only (--backend %s)", c.Backend)
+		backend, err := appleFormat("Chroma", c.Backend)
+		if err != nil {
+			return err
 		}
-		o := chroma.ConvertOptions{Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat,
+		o := chroma.ConvertOptions{Backend: backend, Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat,
 			Tokenizer: c.Tokenizer, TextRows: c.TextRows}
 		if c.Only != "" {
 			o.Only = map[string]bool{}
@@ -87,10 +88,11 @@ func (c *ConvertCmd) Run() error {
 			return err
 		}
 	} else if b, err := os.ReadFile(filepath.Join(c.Anima, "model_index.json")); err == nil && strings.Contains(string(b), "QwenImage21Pipeline") {
-		if c.Backend != "" && llm.ProgramBackend(c.Backend) != llm.BackendCoreML {
-			return fmt.Errorf("Qwen-Image converts for coreml only (--backend %s)", c.Backend)
+		backend, err := appleFormat("Qwen-Image", c.Backend)
+		if err != nil {
+			return err
 		}
-		o := qwenimage.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+		o := qwenimage.ConvertOptions{Backend: backend, Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
 		if err := qwenimage.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
 			return err
 		}
@@ -113,6 +115,18 @@ func (c *ConvertCmd) Run() error {
 	}
 	fmt.Fprintf(os.Stderr, "%s: converted in %s\n", c.Model, console.Duration(time.Since(t0)))
 	return nil
+}
+
+// appleFormat is the program format --backend names for a model that converts for Apple's Neural
+// Engine alone: coreml (the default) or coreai.
+func appleFormat(model, backend string) (string, error) {
+	switch backend {
+	case "", llm.BackendCoreML:
+		return llm.BackendCoreML, nil
+	case llm.BackendCoreAI:
+		return llm.BackendCoreAI, nil
+	}
+	return "", fmt.Errorf("%s converts for coreml or coreai (--backend %s)", model, backend)
 }
 
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
@@ -229,12 +243,14 @@ func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, erro
 }
 
 // qwenImageModel is the Qwen-Image-2.1 export m runs here: on Apple's Neural Engine (or with --cpu)
-// the Core ML export of --dir, downloaded and converted when missing; on AMD's NPU
-// ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
+// the Core ML export of --dir (Core AI's with --backend coreai), downloaded and converted when
+// missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
 func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string, error) {
-	format, err := llm.ProgramFormat(ctx, c.Backend)
+	format, err := llm.NativeFormat(ctx, c.Backend)
 	switch {
-	case c.CPU || err == nil && format == llm.BackendCoreML:
+	case c.CPU: // the CPU interpreter runs Core ML exports
+		format = llm.BackendCoreML
+	case err == nil && llm.AppleFormat(format):
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	default:
@@ -243,7 +259,7 @@ func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string,
 	if c.Size%32 != 0 {
 		return "", fmt.Errorf("--size %d: Qwen-Image's pictures are multiples of 32 pixels", c.Size)
 	}
-	o := qwenimage.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+	o := qwenimage.ConvertOptions{Backend: format, Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
 	return qwenimage.Prepare(ctx, qwenimage.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Qwen-Image"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
@@ -282,7 +298,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		format := llm.BackendCoreML // the CPU interpreter runs Core ML exports
 		var err error
 		if !c.CPU {
-			format, err = llm.ProgramFormat(ctx, c.Backend)
+			format, err = llm.NativeFormat(ctx, c.Backend)
 		}
 		if err != nil {
 			return err
@@ -304,8 +320,11 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		}
 		if !anima.IsProgramExport(model) {
 			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD)) // IRON graphs
+		} else if m, err := anima.ReadProgramManifest(model); err == nil && llm.AppleFormat(m.Backend) {
+			// a Core AI export on Core AI; a Core ML one on Core ML, or on Core AI when asked
+			opts = append(opts, hwnpu.WithBackend(llm.ExportDevice(m.Backend, c.Backend)))
 		} else if b := llm.DeviceBackend(c.Backend); b != "" {
-			opts = append(opts, hwnpu.WithBackend(b)) // coreai: the Core ML export on Core AI
+			opts = append(opts, hwnpu.WithBackend(b))
 		}
 		d, err := hwnpu.Open(ctx, opts...)
 		if err != nil {

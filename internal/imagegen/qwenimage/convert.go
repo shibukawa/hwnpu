@@ -28,6 +28,9 @@ const (
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
+	// Backend is the program format: coreml (Core ML packages, the default) or coreai (Core AI
+	// programs, written from the checkpoint without a Core ML package).
+	Backend string
 	// Width and Height are the picture's size in pixels, multiples of 32.
 	Width, Height int
 	// TextFormat and DitFormat are the weight formats of Qwen3-VL-8B and of the DiT's blocks, as
@@ -70,6 +73,9 @@ const (
 )
 
 func (o *ConvertOptions) defaults() {
+	if o.Backend == "" {
+		o.Backend = llm.BackendCoreML
+	}
 	if o.TextFormat == "" {
 		o.TextFormat = DefaultTextFormat
 	}
@@ -109,7 +115,7 @@ func (o *ConvertOptions) defaults() {
 const ProgramKind = "qwenimage-programs"
 
 // ProgramManifest is manifest.json of an export of Convert: the shapes and the programs (Core ML
-// packages) by part, relative to the export's directory.
+// packages, or Core AI programs for Backend coreai) by part, relative to the export's directory.
 type ProgramManifest struct {
 	Kind    string            `json:"kind"`
 	Backend string            `json:"backend"`
@@ -125,6 +131,24 @@ type ProgramManifest struct {
 	Blocks   []string `json:"blocks"`     // the DiT's image blocks; the first embeds, the last gives the velocity
 	Time     string   `json:"time"`
 	Vae      []string `json:"vae"`
+}
+
+// ProgramExt is the extension of a program of the format backend: .aimodel for coreai, else
+// .mlpackage.
+func ProgramExt(backend string) string {
+	if backend == llm.BackendCoreAI {
+		return ".aimodel"
+	}
+	return ".mlpackage"
+}
+
+// ExportFormat is the program format of the export dir (its manifest's backend), "" for none.
+func ExportFormat(dir string) string {
+	m, err := ReadProgramManifest(dir)
+	if err != nil {
+		return ""
+	}
+	return m.Backend
 }
 
 // IsProgramExport reports whether dir holds an export of Convert.
@@ -200,13 +224,13 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		if kind == "text" || kind == "text_in" {
 			quant = o.TextQuant
 		}
-		name := p.Name + ".mlpackage"
+		name := p.Name + ProgramExt(o.Backend)
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
 		written++
 		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		opts := llm.Options{Backend: llm.BackendCoreML, Format: format}
+		opts := llm.Options{Backend: o.Backend, Format: format}
 		if strings.HasPrefix(format, "lut") {
 			opts.Quant = quant
 		}
@@ -217,7 +241,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
 		return name, nil
 	}
-	m := &ProgramManifest{Kind: ProgramKind, Backend: llm.BackendCoreML, Version: ExportVersion,
+	m := &ProgramManifest{Kind: ProgramKind, Backend: o.Backend, Version: ExportVersion,
 		Formats: map[string]string{"text": o.TextFormat, "dit": o.DitFormat, "dit_text": o.DitTextFormat, "vae": "fp16", "text_quant": o.TextQuant, "dit_quant": o.DitQuant},
 		Dit: DitConfig{Width: o.Width, Height: o.Height, Hidden: dc.Hidden, Heads: dc.Heads, HeadDim: dc.HeadDim, Layers: dc.Layers,
 			Latent: dc.Latent, Axes: dc.Axes[:], Theta: dc.Theta, Group: o.Group, TextRows: mil.TextRows, VAEScale: mil.VAEScale},

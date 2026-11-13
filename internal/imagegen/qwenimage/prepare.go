@@ -64,8 +64,8 @@ func ExportName(name string, o ConvertOptions) string {
 		}
 		return format + "-" + map[string]string{"kmeans": "km", "kmeans-minmax": "kmm"}[quant]
 	}
-	return fmt.Sprintf("%s-%dx%d-%s-%s-%s-g%d-v%d.coreml", strings.ToLower(name), o.Width, o.Height, q(o.TextFormat, o.TextQuant),
-		q(o.DitTextFormat, o.DitQuant), q(o.DitFormat, o.DitQuant), o.Group, ExportVersion)
+	return fmt.Sprintf("%s-%dx%d-%s-%s-%s-g%d-v%d.%s", strings.ToLower(name), o.Width, o.Height, q(o.TextFormat, o.TextQuant),
+		q(o.DitTextFormat, o.DitQuant), q(o.DitFormat, o.DitQuant), o.Group, ExportVersion, o.Backend)
 }
 
 // Prepare makes a Qwen-Image-2.1 ready in s.Dir as hwnpu-chat makes its models ready: it downloads
@@ -139,7 +139,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 // one's too; one of another model (Qwen-Image-2.1 and its Turbo hold the same Qwen3-VL-8B) shares
 // the text encoder's other groups only. One of the same model is taken first.
 func sharedExport(dir, name string, o ConvertOptions) (from string, same bool) {
-	done, _ := filepath.Glob(filepath.Join(dir, "*.coreml.done"))
+	done, _ := filepath.Glob(filepath.Join(dir, "*."+o.Backend+".done"))
 	for _, d := range done {
 		e := strings.TrimSuffix(d, ".done")
 		m, err := ReadProgramManifest(e)

@@ -27,8 +27,13 @@ private func block<T>(_ f: @escaping @Sendable () async throws -> T) -> Result<T
     return r
 }
 
+/// cai_open's kind with this bit loads from Core AI's cache alone (AIModelCache.model(for:)):
+/// for an asset whose bytecode hwnpu has emptied once Core AI cached it, which Core AI cannot
+/// compile (LLVM aborts the process on the empty bytecode).
+private let cachedOnly: Int32 = 0x10
+
 private func options(_ kind: Int32) -> SpecializationOptions {
-    switch kind {
+    switch kind & 0xf {
     case 1: return .cpuOnly
     case 2: return SpecializationOptions(preferredComputeUnitKind: .neuralEngine)
     default: return .default
@@ -43,15 +48,33 @@ public func cai_free(_ p: UnsafeMutablePointer<CChar>?) { free(p) }
 
 /// Loads the .aimodel at path and its function main. Core AI's cache sometimes keeps an entry
 /// whose function then fails to load at once (_GenericObjCError 0) and never recompiles: the
-/// entries of the model are deleted and it is loaded again (*retried set to 1).
+/// entries of the model are deleted and it is loaded again (*retried set to 1, *errOut the first
+/// attempt's error). With cachedOnly in
+/// kind the model is only looked up in the cache: missing, or failing to load (its entries are
+/// then deleted), it returns nil with *retried set to 2, and the caller writes the bytecode again.
 @_cdecl("cai_open")
 public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: UnsafeMutablePointer<Int32>,
                      _ errOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> UnsafeMutableRawPointer? {
     let url = URL(fileURLWithPath: String(cString: path))
     let o = options(kind)
+    let lookup = kind & cachedOnly != 0
     retried.pointee = 0
     func once() -> Result<Fn, any Error> {
-        let r = block { () async throws -> AIModel in try await AIModel(contentsOf: url, options: o) }
+        let r: Result<AIModel, any Error>
+        if lookup {
+            do {
+                guard let m = try AIModelCache.default.model(for: url, options: o) else {
+                    return .failure(NSError(domain: "hwnpu", code: 2, userInfo: [NSLocalizedDescriptionKey: "not in Core AI's cache"]))
+                }
+                r = .success(m)
+            } catch {
+                r = .failure(error)
+            }
+        } else {
+            // persistent: the default policy drops an entry once its asset changes (hwnpu empties the
+            // bytecode, emptyBytecode) or the disk fills, and the entry is then compiled again
+            r = block { () async throws -> AIModel in try await AIModel.specialize(contentsOf: url, options: o, cachePolicy: .persistent) }
+        }
         switch r {
         case .failure(let e): return .failure(e)
         case .success(let m):
@@ -66,10 +89,19 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
         }
     }
     var r = once()
-    if case .failure = r {
+    if case .failure(let e) = r {
+        if lookup {
+            // not there: keep the cache as it is; there but failing: delete it
+            if (e as NSError).domain != "hwnpu" { try? AIModelCache.default.deleteEntries(for: url) }
+            retried.pointee = 2
+            errOut.pointee = cstr(String(describing: e))
+            return nil
+        }
         try? AIModelCache.default.deleteEntries(for: url)
         retried.pointee = 1
         r = once()
+        // loaded the second time: *errOut is the first attempt's error (the caller frees it)
+        if case .success = r { errOut.pointee = cstr(String(describing: e)) }
     }
     switch r {
     case .success(let f):
