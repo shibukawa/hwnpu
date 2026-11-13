@@ -500,11 +500,20 @@ func (m *Model) logits(v *version) ([]float32, error) {
 	if err := buf.SyncFromDevice(o.Offset, o.Bytes); err != nil {
 		return nil, err
 	}
+	b := buf.Bytes()[o.Offset:]
+	at := func(i int) float32 { return math.Float32frombits(uint32(binary.LittleEndian.Uint16(b[2*i:])) << 16) }
+	if p := v.m.LogitParts; p > 0 { // two partial sums a row: [block][2][p]
+		out := make([]float32, min(o.Bytes/4, m.Manifest.Config.VocabSize))
+		for i := range out {
+			j := i/p*2*p + i%p
+			out[i] = at(j) + at(j+p)
+		}
+		return out, nil
+	}
 	n := min(o.Bytes/2, m.Manifest.Config.VocabSize)
 	out := make([]float32, n)
-	b := buf.Bytes()[o.Offset:]
 	for i := range out {
-		out[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(b[2*i:])) << 16)
+		out[i] = at(i)
 	}
 	return out, nil
 }
@@ -543,8 +552,17 @@ func (m *Model) Step(ctx context.Context, token int32, position int) ([]float32,
 		return nil, err
 	}
 	if len(v.runs) > 1 {
-		if err := m.stepBarrier(ctx); err != nil {
-			return nil, err
+		// (a version on one resident array says it needs none: there the barrier's change of
+		// hardware context puts the array's whole configuration back, 2.4 ms a step.
+		// HWNPU_IRON_BARRIER=1 or 0 overrides the manifest, to measure.)
+		barrier := !v.m.NoStepBarrier
+		if e := os.Getenv("HWNPU_IRON_BARRIER"); e != "" {
+			barrier = e != "0"
+		}
+		if barrier {
+			if err := m.stepBarrier(ctx); err != nil {
+				return nil, err
+			}
 		}
 		if err := m.runCommands(ctx, v, values); err != nil {
 			return nil, err

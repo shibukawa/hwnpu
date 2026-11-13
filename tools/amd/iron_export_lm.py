@@ -615,6 +615,14 @@ def export(model, versions, out: Path) -> dict:
         # Qwen35Moe: the commands whose scratchpad the device writes (iron_moe.py), and the
         # routing programs that write them, known once the lowering has placed their words.
         vm["decode"]["fed"] = model.program_rows(vm["decode"]["kernels"])
+    if getattr(model, "hwnpu_logit_parts", 0):
+        # gpt-oss's decode step (iron_gptoss_layer.py's head): the logits are [column block][even
+        # k-blocks' sum, odd ones'][that many rows], which hwnpu adds
+        vm["decode"]["logit_parts"] = int(model.hwnpu_logit_parts)
+    if getattr(model, "hwnpu_no_step_barrier", False):
+        # a decode step on one resident array: no empty command in a second hardware context
+        # before it (hwnpu's stepBarrier, which there puts the whole array back)
+        vm["decode"]["no_step_barrier"] = True
     images = write_banks(versions, banks, out)
     write_steps(files, out)
     for n in range(1, 3 * c.prefill_chunk, max(1, c.prefill_chunk // 3)):
