@@ -224,15 +224,12 @@ class SinkAttention(Attention):
         self.qkv.bias = iron.param(np.ascontiguousarray(b.astype(np.asarray(self.qkv.bias).dtype)))
         self.interleaved = True
         if RESIDENT:
-            # GptOssStep's tables: the same weights (as the q8 the prompt chunk reads) in its
-            # blocks; o_proj's in-features in the order the attention's cores send them
+            # GptOssStep's tables: the same weights (as the q8 the prompt chunk reads) in its blocks
             import iron_gptoss_layer as gl
 
             self.qkv_x = iron.param(gl.q8x_table(w, b))
-            ow = np.asarray(self.o_proj.weight, np.float32)
-            op = np.empty_like(ow)
-            op[:, gl.att_order()] = ow
-            self.o_x = iron.param(gl.q8x_table(op, np.asarray(self.o_proj.bias, np.float32)))
+            self.o_x = iron.param(gl.q8x_table(np.asarray(self.o_proj.weight, np.float32),
+                                               np.asarray(self.o_proj.bias, np.float32)))
             self.sinks_x = iron.param(np.asarray(self.sink_values, np.float32).astype(bfloat16))
 
     def rotate(self, x, angles):
@@ -270,8 +267,26 @@ class SinkAttention(Attention):
         o = cache.attend(call, q.reshape(1, H, D), k.reshape(1, G, D), v, scale=self.scaling)
         return iron_q4.linear_add(o, self.o_proj.weight, self.o_proj.bias, self.residual)
 
+    def tables(self) -> bool:
+        """Whether the projections' weights are GptOssStep's q8x tables alone (fold): a prompt
+        chunk dequantizes those (no q8 copy of the same codes for it)."""
+        return getattr(self, "qkv_x", None) is not None
+
+    def dequantized(self, table, k: int):
+        import iron_gptoss_layer as gl
+
+        return gl.dequant_operator().step(table, K=k)[0]
+
     def project(self, x, **gemv) -> list:
         n = 1 if len(x.shape) == 1 else x.shape[0]
+        if n > 1 and self.tables():
+            # a prompt chunk on the decode step's table: its bf16 weight once, a GEMM a run of rows
+            w = self.dequantized(self.qkv_x, x.shape[-1])
+            out, end = [], 0
+            for r in self.widths:
+                out.append(F.linear(x, w[end : end + r], self.qkv.bias[end : end + r], precision=Precision.MEDIUM))
+                end += r
+            return out
         if n > 1:  # a prompt chunk: a GEMM a run of the weight's rows (iron_q4's Linear.split)
             return self.qkv.split(x, *self.widths)
         # the decode step: one GEMV and one bias add, the output cut
@@ -281,6 +296,13 @@ class SinkAttention(Attention):
             out.append(y[:, end : end + w])
             end += w
         return out
+
+
+    def output(self, o, x):
+        if o.shape[0] > 1 and self.tables():  # a prompt chunk: o_proj from the decode step's table
+            w = self.dequantized(self.o_x, o.shape[-1])
+            return F.linear(o, w, self.o_proj.bias, precision=Precision.MEDIUM)
+        return super().output(o, x)
 
 
 class SinkCache(KVCache):
@@ -550,6 +572,12 @@ class GptOss(CausalLM):
 
         for layer in self.layers:
             a = layer.self_attn
+            if a.tables():
+                # GptOssStep's q8x tables are these weights (the prompt chunk dequantizes them):
+                # no q8 tables, and nothing left of the float weights
+                for lin in (a.qkv, a.o_proj):
+                    lin.weight = iron.param(np.zeros((1, 1), bfloat16))
+                continue
             q(a.qkv, "weight", fmts["attn"])
             q(a.o_proj, "weight", fmts["attn"])
         q(self.lm_head, "weight", fmts["head"])

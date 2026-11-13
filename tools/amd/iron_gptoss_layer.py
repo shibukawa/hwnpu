@@ -33,11 +33,14 @@ a step passes anything of the right shape for those its phases do not use.
 
 The projections' weights are q8x: iron_q4's q8 codes and scales (the same values as the prompt
 chunk's table) in blocks of 32 out-features by 160 in-features with the block's bias, 5504 bytes
-as an mx4 block, in the order the cores take them ([column][out-block][k-block][core]). o_proj's
-in-features are in the order the attention's outputs leave the cores (att_order). The router's
-are bf16 blocks of 32 by 80.
+as an mx4 block, in the order the cores take them ([column][out-block][k-block][core]). The
+router's are bf16 blocks of 32 by 80.
 
     python tools/amd/iron_gptoss_layer.py check OUT   # a graph of the phases, random weights
+    python tools/amd/iron_gptoss_layer.py dequant OUT   # Q8XDequant: a q8x table to its bf16 weight
+
+Q8XDequant gives a prompt chunk's GEMM the bf16 weight of a q8x table, so the projections' weights
+are held once (no q8 table of the same codes for the prompt).
     go run ./tools/amd/irongraph OUT
 """
 
@@ -75,17 +78,6 @@ PROG = 256  # the routing's program as bf16 (4 int32 a word)
 PH_E, PH_Q, PH_A, PH_O, PH_R, PH_T, PH_H = 1, 2, 4, 8, 16, 32, 64
 KINDS = {PH_E: (1, 2), PH_Q: (3,), PH_A: (4,), PH_O: (5,), PH_R: (6,), PH_T: (7,), PH_H: (8,)}  # gptoss_layer.cc's
 HB, HKB = 5120, 12  # the head's q4 block (32 out-features by 256 in-features), its k-blocks
-
-
-def att_order():
-    """The heads' outputs' place in o_proj's x: value d of head h (ATT) at att_order()[h * 64 + d].
-    Column g's cores 0 and 1 hold heads 8 g + 4 c + j and send each in two objects of 32."""
-    at = np.empty(ATT, np.int64)
-    for h in range(H):
-        g, c, j = h // 8, (h % 8) // 4, h % 4
-        for d in range(D):
-            at[h * D + d] = g * 512 + (2 * j + d // 32) * 64 + c * 32 + d % 32
-    return at
 
 
 def router_table(w, bias):
@@ -295,7 +287,7 @@ def step_operator():
         KV = InOut(kvn, obj_shape=(CB,), per=(num_aie_columns,))  # the layer's cache (Q writes the call's row, A reads)
         ye = Out(YE, obj_shape=(CB,), per=(num_aie_columns,))  # E: the activations, then the layer's output
         yq = Out(QN, obj_shape=(CB,), per=(num_aie_columns,))  # Q: q (k and v where the caches are not written)
-        ya = Out(ATTB, obj_shape=(CB,), per=(num_aie_columns,))  # A: the heads' outputs (att_order)
+        ya = Out(ATTB, obj_shape=(CB,), per=(num_aie_columns,))  # A: the heads' outputs (a column's 512, then unused)
         yo = Out(HP, obj_shape=(CB,), per=(num_aie_columns,))  # O: the residual after the attention
         yr = Out(PROG, obj_shape=(CB,), per=(num_aie_columns,))  # R: the logits' partial sums (float32)
         yw = Out(WV, obj_shape=(CB,), per=(num_aie_columns,))  # T: the routing weights
@@ -491,7 +483,10 @@ def step_operator():
             n = self.num_aie_columns
             nmax = min(self.kvn // ROW // TOK, 64)  # objects in the cache, a descriptor's runs at most
             first = bound(self, "kfirst")
-            drains = [self.ya.drain(TAP((ATTB,), l * 1024, [8, 2, 64], [64, 512, 1]), lane=l, wait=True, managed=False)
+            # a column's cores 0 and 1 hold heads 8 g + 4 c + j and send each in two objects of 32
+            # (object 2 j + d // 32 of core c): head by head into the column's 512, the other
+            # cores' (nothing) after them
+            drains = [self.ya.drain(TAP((ATTB,), l * 1024, [8, CORES, 32], [32, 256, 1]), lane=l, wait=True, managed=False)
                       for l in range(n)]
             for l in range(n):  # the column's heads' q (to SINK_AT), their sinks
                 self.h.fill(TAP((QN,), l * 512, [SINK_AT // 512, 512], [0, 1]), lane=l, source=self.yq, managed=False)
@@ -634,7 +629,7 @@ def step_operator():
                     p = np.exp(s - s.max())
                     o[hd] = (p[:-1] / p.sum()) @ vals[:, hd // 8]
                 real = np.zeros(ATT)
-                real[att_order()] = o.reshape(-1)
+                real[:] = o.reshape(-1)
                 ya = np.concatenate([np.concatenate([real[g * 512 : (g + 1) * 512], np.zeros(512)]) for g in range(G)]).astype(bfloat16)
             if ph & PH_O:
                 w, b = q8x_dequant(Wo, HP, ATT)
@@ -669,6 +664,163 @@ def step_operator():
 
     K_ = K
     return GptOssStep
+
+
+_DEQUANT: list = []
+
+
+def dequant_operator():
+    """Q8XDequant, defined on first use (IRON's modules load only in its environment)."""
+    if _DEQUANT:
+        return _DEQUANT[0]
+    from aie.helpers.taplib import TensorAccessPattern as TAP
+    from aie.iron import In, ObjectFifo, Out, Worker
+    from aie.iron.controlflow import range_
+    from aie.iron.device import AnyMemTile
+    from aie.iron.kernel import ExternalFunction
+    from aie.utils import config
+    from aie.utils.compile.jit.params import param, tunable, widths
+    from aie.utils.verify import Tolerance
+
+    from iron.common import Built, Operator
+
+    blk_t = np.ndarray[(BLOCK,), np.dtype[np.uint8]]
+    tile_t = np.ndarray[(MT * QKT,), np.dtype[bfloat16]]
+
+    class Q8XDequant(Operator):
+        """q8x_table's blocks to the (N, K) bf16 weight (rounded to nearest even) for a prompt
+        chunk's GEMM: the decode step's table read in its own order (a column's blocks split
+        among its 4 cores), each block 32 rows of 160 in-features written into the weight. The
+        last k-block's in-features past K go to ``junk`` (its rows of K's last in-features first
+        in the core's object, then what is left of the object)."""
+
+        blocks: int = param(array=True)
+        K: int = param(array=True)
+        N: int = param(derive=lambda op: op.blocks // (-(-op.K // QKT)) * MT, array=True)
+        num_aie_columns: int = tunable(domain=widths)
+
+        W = In(blocks, BLOCK, dtype=np.uint8, obj_shape=(CORES, BLOCK), per=(num_aie_columns,))
+        w = Out(N, K, obj_shape=(CORES * MT * QKT,), per=(num_aie_columns,))
+        junk = Out(MT * QKT, obj_shape=(CORES * MT * QKT,), per=(num_aie_columns,))
+
+        def validate(self):
+            if self.K % 32 or self.N % (COLS * CORES * MT):
+                raise ValueError(f"Q8XDequant: ({self.N}, {self.K}) is no q8x table's weight")
+
+        def resolve(self, dev):
+            return self.replace(num_aie_columns=COLS)
+
+        def build(self) -> Built:
+            n = self.num_aie_columns
+            kb = -(-self.K // QKT)
+            last = self.K - (kb - 1) * QKT  # the last k-block's in-features
+            per = self.N // MT // n // CORES  # a core's out-blocks
+            kdir = Path(config.aie_kernels_dir())
+            here = Path(__file__).resolve().parent / "kernels"
+            deq = ExternalFunction("q8x_dequant", source_file=str(here / "q8x_dequant.cc"),
+                                   arg_types=[blk_t, tile_t, np.int32],
+                                   include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
+                                   object_file_name="q8x_dequant.o")
+            w_l3 = [ObjectFifo(self.W.obj_type, depth=2) for _ in range(n)]
+            w_l1 = [f.cons().split([BLOCK * c for c in range(CORES)], obj_types=[blk_t] * CORES,
+                                   depths=[2] * CORES, tile=AnyMemTile) for f in w_l3]
+            y_l3 = [ObjectFifo(self.w.obj_type, depth=2) for _ in range(n)]
+            y_l1 = [f.prod().join([MT * QKT * c for c in range(CORES)], obj_types=[tile_t] * CORES,
+                                  depths=[1] * CORES, tile=AnyMemTile) for f in y_l3]
+
+            def core(w_f, y_f, deq):
+                def one(width):
+                    blk = w_f.acquire(1)
+                    y = y_f.acquire(1)
+                    deq(blk, y, width)
+                    w_f.release(1)
+                    y_f.release(1)
+
+                for _ in range_(per):
+                    for _ in range_(kb - 1):
+                        one(QKT)
+                    one(last)
+
+            workers = [Worker(core, [w_l1[i][j].cons(), y_l1[i][j].prod(), deq]) for i in range(n) for j in range(CORES)]
+            self.W.bind([f.prod() for f in w_l3])
+            for name in ("w", "junk"):
+                getattr(self, name).bind([f.cons() for f in y_l3])
+            return Built(workers, [])
+
+        def sequence(self, rt):
+            n, N, K = self.num_aie_columns, self.N, self.K
+            kb = -(-K // QKT)
+            last = K - (kb - 1) * QKT
+            per = N // MT // n // CORES
+            rows = CORES * MT  # an out-block's rows of a column (its 4 cores')
+            # a lane's stream: an out-block's k-blocks, each the 4 cores' 32 rows of 160
+            taps = []
+            for l in range(n):
+                mine = []
+                for o in range(per):
+                    base = (l * per + o) * rows
+                    if kb > 1:
+                        mine.append((self.w, TAP((N * K,), base * K, [kb - 1, rows, QKT], [QKT, K, 1])))
+                    for c in range(CORES):
+                        mine.append((self.w, TAP((N * K,), (base + c * MT) * K + (kb - 1) * QKT, [MT, last], [K, 1])))
+                        if last < QKT:
+                            mine.append((self.junk, TAP((MT * QKT,), 0, [MT * (QKT - last)], [1])))
+                taps.append(mine)
+            run = self.blocks * BLOCK // n
+            for l in range(n):
+                self.W.fill(TAP((self.blocks * BLOCK,), l * run, [run], [1]), lane=l, managed=False)
+            # at most 3 of a channel's descriptors waiting (GptOssStep's head)
+            waves = []
+            for k in range(len(taps[0])):
+                if k >= 3:
+                    for d in waves[k - 3]:
+                        d.await_()
+                waves.append([t[k][0].drain(t[k][1], lane=l, wait=True, managed=False) for l, t in enumerate(taps)])
+            for wv in waves[-3:]:
+                for d in wv:
+                    d.await_()
+
+        def ops(self) -> int:
+            return self.N * self.K
+
+        def reference(self, W):
+            w, _ = q8x_dequant(W, self.N, self.K)
+            return w.astype(bfloat16), np.zeros(MT * QKT, bfloat16)
+
+        def tolerance(self) -> Tolerance:
+            return Tolerance.relative(0.01, 1e-3, note="a product rounded to bf16")
+
+    _DEQUANT.append(Q8XDequant)
+    return Q8XDequant
+
+
+def _check_dequant(a) -> int:
+    import iron
+    from iron_graph import bind_device, export_graph, write_check
+
+    bind_device("npu2", 8)
+    Deq = dequant_operator()
+    rng = np.random.default_rng(a.seed)
+    N, K = a.n, a.k
+    table = q8x_table(rng.standard_normal((N, K)).astype(np.float32) * 0.05, rng.standard_normal(N) * 0.1)
+
+    class Gr(iron.Graph):
+        def __init__(self):
+            self.t = iron.param(table)
+
+        def body(self):
+            w, _ = Deq.step(self.t, K=K)
+            return w
+
+        def reference(self):
+            return Deq(blocks=table.shape[0], K=K).reference(table)[0]
+
+    g = Gr()
+    cg = g.compile()
+    m = export_graph(cg, a.out, "q8x_dequant", {})
+    write_check(g, m, a.out, {}, {})
+    print(f"{a.out}: Q8XDequant ({N}, {K})")
+    return 0
 
 
 def _check(a) -> int:
@@ -786,8 +938,13 @@ def main(argv=None) -> int:
     c.add_argument("--expanded", action="store_true", help="IRON's expanded loads (the array loaded each command)")
     c.add_argument("--one", action="store_true", help="both steps one command (no host step between: timing)")
     c.add_argument("--first", default="QAORT", help="the first command's phases (fewer: timing only)")
+    d = sub.add_parser("dequant", help="Q8XDequant's graph and its check files")
+    d.add_argument("out", type=Path)
+    d.add_argument("--n", type=int, default=QN)
+    d.add_argument("--k", type=int, default=HP)
+    d.add_argument("--seed", type=int, default=5)
     a = ap.parse_args(argv)
-    return _check(a)
+    return _check_dequant(a) if a.cmd == "dequant" else _check(a)
 
 
 if __name__ == "__main__":
