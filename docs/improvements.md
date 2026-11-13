@@ -2,7 +2,7 @@
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.117), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections.
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.117), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections. Section 7.5 and the rows marked "Core AI" add the Core AI backend of macOS 27 (16.169–16.178), measured on an M1 and an M2 (16 GB, macOS 27.2) unless noted.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -61,6 +61,12 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | Apple: Anima's attention 512 queries at a time (16.85) | ○ a step 7.0 → 4.5 s (1024×1024) | | | | | | unchanged | Apple |
 | Apple: Anima's VAE with `upsample_nearest_neighbor`, loaded one stage at a time (16.85) | ◎ VAE 14.5 → 3.7 s | | | ◎ 6.9 → 3.8 GB | | | stage 5 rel. error 4.8e-4 | Apple |
 | Apple: Anima at int8 by default (16.85) | ○ a step 4.5 → 4.2 s | | ○ | ○ | ○ export 4.6 → 2.8 GB | | △ latent cosine 0.902 against fp16 (lut8 0.858); with the DiT's silu fixed (16.95), fp16 is only 0.006–0.025 nearer diffusers' fp32 | Apple |
+| Apple: Core AI backend (`--backend coreai`, macOS 27) (16.169, 16.173) | unchanged (±10 %) | | ◎ second start 1.6–5.5 s for every chat model (Core ML: 4 s to 13 min, when parts fall out of its ~4 GiB cache); Qwen-Image prototype 46 s an image (Core ML 4 min 26 s) | | △ the weights on the disk three times (below) | | unchanged (Qwen3.5-2B, Gemma 4 E2B, LFM3 word for word; Anima's latent cosine 0.971 against Core ML) | Apple (macOS 27) |
+| Core AI: each program's input arrays made once and filled by memcpy (16.172) | ○ PLaMo 3 0.8B 25 → 38–44 tok/s (Core ML 35–42) | | | | | | unchanged | Apple (Core AI) |
+| Core AI: parts with the same weights in one `.aimodel` of several functions (16.177, 16.178) | ○ LFM3-1.7B +13 % | | △ the first compile pays every function | ◎ the Neural Engine holds the weights once: LFM3-1.7B 2.56 → 1.34 GiB | ◎ chat models about 9.3 GiB, Anima 3.0 GiB; Chroma1-Flash's 512² beside 1024² adds 49 MB instead of about 17 GB | | bit for bit the same (Anima and Chroma images, greedy answers) | Apple (Core AI) |
+| Core AI: the prompt program kept (weights counted once, 16.177) | | ◎ 2.3–3.2× (Qwen3.5-2B, LFM3-VL / Audio / Omni, PLaMo 3 2B) | △ +1–3.6 s | △ +0.1–0.14 GiB | | | unchanged | Apple (Core AI) |
+| Core AI: dropping the `.aimodel`'s weights once compiled (`HWNPU_COREAI_DROP_BYTECODE=1`, opt-in, 16.176) | | | ○ Chroma's DiT group 6.5 → 0.5 s | | ○ Chroma1-Flash 512²: hwnpu's cache 28 → 15 GB | | unchanged | Apple (Core AI). △ a purged entry means lowering again (or a download, for distributed `.aimodel`s) |
+| Apple: Chroma1-Flash on Core AI (16.176) | ○ M2 1024² 6 min 58 s an image (M1 on Core ML: 9 min 17 s) | | △ first run 1 hour at 1024² | DiT held 8.15 GiB | | | latent cosine 0.9976, PSNR 35.4 dB against Core ML | Apple (Core AI) |
 | Conversation marks keep only the ring slots in use (16.71) | | | | ○ 578 → 183 MB over 5 translations | | | | All |
 | Memory back to the OS after a conversion (16.71) | | | | ○ 2.4 GB → 154 MB right after startup | | | | All |
 | Cleaning up the `/dev/shm` left by OpenVINO (16.72) | | | | | ○ 8.4 GB a day | | | Intel / OpenVINO |
@@ -206,6 +212,10 @@ Most of the disk is weights and their copies: programs for 8 and 64 tokens per c
 | **Cost**: the prompt store (16.38, 16.52) | About 145 MB a sequence (Apple), 51 MB an entry (AMD) | |
 | Towers loaded only when used (16.81) | A text-only export need not be kept beside the one with images and audio (Gemma 4 E2B 4-bit: 7.0 GB) | It costs 51 MiB more pinned than the text export. Unlike sharing (16.79), it needs no Btrfs or XFS |
 | **Cost**: AMD exports are whole files per variant | Each `-q4`, `.mm`, context or chunk size is a new directory | Shared where the file system clones (above), whole files and common starts; bytes that differ in the middle of a file are not |
+| **Cost**: Core AI holds the weights three times (16.173, 16.176) | The `.mlpackage`, hwnpu's lowered `.aimodel`, and Core AI's own cache (`~/Library/Caches/coreai-cache/<OS build>/<executable>/<main.hash>/`). Chroma1-Flash: 14 + 14 + 14–17 GB, 73 GB with its checkpoints | Below about 15 GiB free, macOS purged `~/Library/Caches` — Core AI's entries and hwnpu's cache root with them. Delete the checkpoints once converted |
+| Core AI: one `.aimodel` of several functions (16.174, 16.177, 16.178) | LFM3-1.7B `.aimodel` 2.43 → 1.22 GiB, Core AI's cache 2.53 → 1.32 GiB; Anima 7.36 → 4.32 GiB; Chroma1-Flash 512² + 1024²: +31 MB `.aimodel`, +18 MB Core AI | Siblings: the packages in the same directory, and of the same name in the exports beside it, that have the 3 largest weight blobs of the same bytes. `LowerFunctions` writes a blob of the same bytes once |
+| Core AI: dropping the bytecode (`HWNPU_COREAI_DROP_BYTECODE=1`) (16.176) | Chroma1-Flash 512²: hwnpu's cache 28 → 15 GB | Opt-in: the default keeps the `.aimodel` (16.174), as a purged entry needs it to compile again |
+| Distributing `.aimodel`s instead of checkpoints (estimate, 16.174, 16.176) | LFM3-1.7B: 3.5 GB to download and about 10 GB on the disk → 1.8 GB and 3.2 GB. Chroma1-Flash: 27.5 → about 14 GB, about 73 → 28 GB | No conversion and no checkpoints. Not implemented (the runner has to read `.aimodel#NAME` and `hwnpu-io-*.json`) |
 
 ## 6. Accuracy
 
@@ -313,6 +323,21 @@ Prompt reuse and the prompt store, speculative decoding (Apple / Intel, AMD's Qw
 
 Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on the file system, not the NPU: clonefile on macOS's APFS, FICLONE and FICLONERANGE on Linux's Btrfs, XFS and others, block cloning on Windows' ReFS and Dev Drive. It covers Apple's programs and compiled copies, Intel's IR (`.bin` of the programs for 8 and 64 tokens) and AMD's exports. Nothing happens on ext4, tmpfs or NTFS. Only macOS cannot share the start of a file.
 
+### 7.5 Apple: Core AI (macOS 27)
+
+Core AI keeps what it specialized for the device in its own cache, keyed only by `main.hash` (the sha256 of `main.mlirb`), for each OS build and executable name. It has no ~4 GiB limit like Core ML's compile cache, and one program may hold 2.5–3 GiB on an M3 (Core ML: 1 GiB).
+
+| Change | What it helps | Numbers |
+|---|---|---|
+| Lowering MIL to Core AI's bytecode in Go (`internal/coreai/mlirbc`, `ailower`, 16.169) | No Python, no Xcode toolchain; the same `.mlpackage` as Core ML | Written to match coreai-core's output, read back with `tools/coreai/bcdump` |
+| What Core AI needs to keep a program on the Neural Engine (16.169) | Placement | Core AI's own debug locations (also on block arguments); reductions as the composite `reduce_*_v1` around `primitive.reduce_v1`; matmul as the composite `broadcasting_batch_matmul_v1` (bare ops with int8 weights move the whole program off); softmax as `exp(x − max) × reciprocal(sum)`; binary ops on equal shapes, widened with `broadcast_in_dims` |
+| The Swift shim loaded with purego (`libcaishim.dylib`, go:embed) | `CGO_ENABLED=0` stays | Placement read from the MPSGraph manifest's `mps.fullyPlacedOnANE` |
+| Input arrays made once per program (16.172) | Generation | A new `NDArray` each call 10.0 ms, the same one 7.2 ms (PLaMo 3 0.8B's part1) |
+| A broken cache entry deleted and loaded again (16.169) | Loads that pass yet fail in `loadFunction` (`_GenericObjCError 0`) | Once per entry |
+| `aicheck run -cpu` / `-coreml` / `-calls`, `probe`, `HWNPU_AILOWER_CUT`, `HWNPU_AILOWER_TRACE` (16.169, 16.172) | Finding the op that leaves the Neural Engine before Core AI aborts the process | Bisects by the first N ops |
+| Functions in one `.aimodel` (`ailower.LowerFunctions`, `PROGRAM.aimodel#NAME`, 16.174) and found automatically (16.177) | Disk and the Neural Engine's memory | Records `KEY.aifn` per package, so later loads hash only their own package; the function's name is from its digest (the same on every machine). A third size makes a larger group, which replaces the smaller one |
+| An empty `.aimodel` opened only with its entry there (`hasEntry`, `kindNoRetry`, 16.176) | Core AI parsing an empty `main.mlirb` aborts the process (LLVM: `cannot unwrap empty odiec_module_t`) | `main-this.odix` must be a non-empty file; otherwise lower again. The shim does not delete and reload a cut asset; Go lowers again instead |
+
 ## 8. Tried without effect, or not adopted
 
 | Tried | Result | Section |
@@ -340,6 +365,10 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 | RMSNorm with a fixed scale (Anima, fp16) | Squares of rows without large values become subnormals. Replaced by dividing by each row's maximum | 16.69 |
 | Apple: faster self-attention for Anima | Core ML's `scaled_dot_product_attention` 110 ms (101 now), the scale on q 103, heads in groups 96–118, channels first 122. Heads 2 × queries 256: 90 ms, but 84 s to compile 4 attentions. Without the row max 87 ms, but fp16 overflows (bounds from the norms' weights reach 221) | 16.85 |
 | Apple: Anima's DiT at lut8 | As fast as int8 but further from fp16 (latent cosine 0.858 against 0.902) | 16.85 |
+| Core AI: `.aimodelc` (`coreai-build compile`) | First load 5–10× slower than `.aimodel` (26–77 s for 0.5 GiB on an M3), weights still copied into Core AI's cache, and kept per architecture | 16.169 |
+| Core AI: siblings by the whole weight file | PLaMo-Embedding's 128 and 1024 differ by a 458 KB table and did not group; the 3 largest blobs are compared instead | 16.177 |
+| Chroma1-Flash: 512² as a preview of 1024² | With the 1024² noise averaged down to 512², the composition matched in about 1 of 3 seeds; starting 1024² from the 512² latent stretched (hires fix) showed a grid of the token spacing. A preview was not needed | 16.176 |
+| Chroma's DiT at lut6 or int8 | lut6: the same picture but not faster at 1024² (saves 1.7 GB of disk). int8: stripes (PSNR 23.7 dB), the Neural Engine's int8 sums overflow fp16 | 16.170 |
 
 ## 9. Caveats when combining (costs)
 
@@ -356,6 +385,9 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 - **The chunk barrier** (16.84): every prompt chunk first runs an empty command in the decode step's hardware context (0.3–0.5 ms a chunk). Without it, exports with the windowed attention hang on their second chunk. Exports with an xclbin per step (NPU1) run none
 - **PLaMo 3 as one lut8 program**: short texts are fast, but long documents are read about 10× slower (`-format lut6` gives two programs at lower accuracy)
 - **Sharing on the disk depends on the file system**: ext4, the default of Ubuntu, Debian and many others, cannot share, so each copy takes its full size there. Fedora and openSUSE default to Btrfs. Put the models on Btrfs or XFS to share (on Windows, a Dev Drive). Whole files and the common start of files of one name are shared; bytes after a difference are kept separately
+- **Core AI's first run**: every part is compiled once, and a group of several functions compiles all of them. Chroma1-Flash took 12 min 45 s at 512², 59 min 44 s at 1024², and 1 h 14 min for the 512² that joined the 1024² (after which 1024² loaded in about 1 s a part)
+- **Core AI's cache is per OS build and executable name**: after an OS update, or from `aicheck` or `go test`, programs compile again from `main.mlirb`. macOS removes entries when the disk runs low (`storagePressure`, seen at 11–20 GB free), so the next start compiles again
+- **Converting needs room**: converting Chroma1-Flash's 512² beside the 1024² export with its checkpoints took the M2 down to 16 GB free, just above where macOS purges `~/Library/Caches`
 
 ## 10. Support for each model
 
@@ -518,6 +550,11 @@ Apple / Intel (`hwnpu-image convert`):
 **BERT family** (16.11)
 - The structure is ported and converts (lut8 / int8), but without a WordPiece tokenizer it cannot be used from `hwnpu-chat`
 
+**Chroma1-Flash** (16.156, 16.170, 16.176, 16.178)
+- Apple (Core ML, M1): T5 in groups of 3 layers at lut8 with `wo` in fp16, the DiT at lut8, the VAE in 10 stages. fp16 pitfalls: an integer division of untyped constants (`1/64 = 0`), subnormals after dividing by the row's maximum, scales folded into weights leaving products below fp16's normal range, int8 sums overflowing on the Neural Engine (lut8 does not), and Core ML folding constant factors back into weights. 512²: 2 min 06 s an image, 1024² about 9 min 30 s
+- Core AI (M2): all 29 parts on the Neural Engine without changing the lowering. 512² 1 min 36–48 s, 1024² 6 min 58 s an image. The 512² and 1024² programs of the DiT, the approximator and the larger VAE stages share one `.aimodel` each (16.178)
+- AMD: 512² 1 min 42 s, 1024² 4 min 13 s (Heun 8 steps) (16.156)
+
 ## 11. Not yet verified
 
 Collected from what the records call "not yet checked", "not measured" or "estimated". The items are split into "implemented, waiting for a check on hardware" and "cause unknown", with how to check them where there is a way. Features not yet written (T8's activation-aware quantization, changing the split at run time and so on) are listed briefly in 11.5.
@@ -554,6 +591,8 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Anima above 1024×1024 | The smaller attention chunks for sizes past 1024 (`mil.DitQChunk`) are not measured, nor whether the VAE stages fit | Convert 1280×1280 and run | 16.85 |
 | Details of PLaMo 3's accuracy and speed | Placement and weight formats are checked. Translation quality and time for long documents are not measured in detail | Compare KL with fp16 on translation pairs | 16.71 |
 | Why macOS memory seemed to shrink with use | The guess is that macOS compressed the rings, which are mostly zeros | Measure the footprint on an M3 after the mark fix (`ringRows`) | 16.71 |
+| Core AI: distributing `.aimodel`s | The runner reading `PATH.aimodel#NAME` and output shapes from `hwnpu-io-*.json` instead of the `.mlpackage`; whether one `.aimodel` loads across OS versions; whether to use `.persistent` (no purges, but hwnpu would delete its entries) | Download one, run it on another machine and OS build | 16.174, 16.177 |
+| Core AI on other models and chips | Chroma1-HD, Qwen-Image's grouping of 512² and 1024², Qwen3.5-4B and Gemma 4 E4B; the M3 for chat models; Chroma's warm Core ML run on the M2 (for a like-for-like comparison) | Run with `--backend coreai` | 16.173, 16.176, 16.177 |
 
 ### 11.2 Intel (NPU)
 
