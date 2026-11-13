@@ -20,8 +20,9 @@ import (
 // (normal, times scale) and compares its outputs with the CPU interpreter's (milcpu, fp16
 // rounding): the cosine and the relative RMS error, and whether it is all on the Neural Engine.
 //
-// The second time is the mean of calls more calls. With coreML the packages run on Core ML instead, to tell Core AI's errors from the program's.
-func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls int) error {
+// The second time is the mean of calls more calls. An .aimodel runs as it is; -cpu then compares it
+// with milcpu running ref, the package it was lowered from. With coreML the packages run on Core ML instead, to tell Core AI's errors from the program's.
+func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls int, ref string) error {
 	ctx := context.Background()
 	var prov backend.Provider = coreai.Provider{}
 	if coreML {
@@ -85,7 +86,11 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 		on := g.Placement().OnNPU()
 		line := fmt.Sprintf("%-24s load %6.2fs call %.2fms/%.2fms ane=%v cached=%v", name, load.Seconds(), float64(call.Microseconds())/1e3, float64(call2.Microseconds())/1e3, on, g.Cached())
 		if cpu {
-			prog, closer, err := milcpu.OpenPackage(p)
+			src := p
+			if ref != "" {
+				src = ref // p is an .aimodel lowered from ref
+			}
+			prog, closer, err := milcpu.OpenPackage(src)
 			if err != nil {
 				return err
 			}

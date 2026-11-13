@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -227,31 +228,45 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	if src.Function != "" || src.Units != "" {
 		return nil, fmt.Errorf("coreai: functions and compute units are not supported: %w", types.ErrUnsupported)
 	}
-	dir, cached, owned, err := d.asset(src.Path)
+	path, fn := splitFunction(src.Path)
+	dir, cached, owned, err := d.asset(path)
 	if err != nil {
 		return nil, err
 	}
 	g := &graph{cached: cached, owned: owned}
 	var retried int32
 	var e *byte
-	g.h = caiOpen(cString(dir), kindNeuralEngine, &retried, &e)
+	open := dir
+	if fn != "main" {
+		open += "#" + fn
+	}
+	g.h = caiOpen(cString(open), kindNeuralEngine, &retried, &e)
 	if g.h == 0 {
 		msg := goString(e)
 		g.Close()
 		return nil, fmt.Errorf("coreai: load %s: %s", src.Path, msg)
 	}
-	if err := g.describe(dir); err != nil {
+	if err := g.describe(dir, fn); err != nil {
 		g.Close()
 		return nil, err
 	}
-	g.placement = placement(dir)
+	g.placement = placement(dir, fn)
 	return g, nil
+}
+
+// splitFunction splits PROGRAM.aimodel#NAME, the function NAME of a program with several
+// (ailower.LowerFunctions), into the program's path and NAME; main for any other path.
+func splitFunction(path string) (string, string) {
+	if i := strings.LastIndexByte(path, '#'); i > 0 && strings.EqualFold(filepath.Ext(path[:i]), ".aimodel") && i+1 < len(path) {
+		return path[:i], path[i+1:]
+	}
+	return path, "main"
 }
 
 // describe makes the arguments, inputs then outputs each sorted by name (as the Core ML
 // backend), from the program's features.
-func (g *graph) describe(dir string) error {
-	ins, outs, err := ailower.ReadIO(dir)
+func (g *graph) describe(dir, fn string) error {
+	ins, outs, err := ailower.ReadFunctionIO(dir, fn)
 	if err != nil {
 		return fmt.Errorf("coreai: %w", err)
 	}
@@ -316,8 +331,8 @@ func (g *graph) Close() error {
 }
 
 // placement reads Core AI's cache entry of the program: its MPSGraph delegate's manifest says
-// whether everything runs on the Neural Engine.
-func placement(dir string) types.PlacementReport {
+// whether everything of the function fn runs on the Neural Engine.
+func placement(dir, fn string) types.PlacementReport {
 	rep := types.PlacementReport{Method: "coreai-cache-manifest"}
 	hash, err := os.ReadFile(filepath.Join(dir, "main.hash"))
 	if err != nil {
@@ -333,13 +348,34 @@ func placement(dir string) types.PlacementReport {
 	}
 	rep.Verified = true
 	for _, e := range entries {
+		// the delegates are named after main.mlirb, whatever functions it has
 		m, err := os.ReadFile(filepath.Join(e, "main-this-delegates", "MPSGraph", "mpsExecutable.mpsgraphpackage", "manifest.plist"))
-		if err == nil && bytes.Contains(m, []byte("mps.fullyPlacedOnANE")) {
+		if err == nil && fullyPlaced(m, fn) {
 			return rep
 		}
 	}
 	rep.Ops = []types.OpPlacement{{Name: "program", Type: "program", Device: "gpu"}}
 	return rep
+}
+
+// entryKey is a key of the manifest's Entry Function Attributes: a function's name, a 22
+// character hash and a number (f8_Sfb_LWKqZ7kLACNxv16tNg_1).
+var entryKey = regexp.MustCompile(`<key>[A-Za-z0-9_]+_[A-Za-z0-9_-]{22}_[0-9]+</key>`)
+
+// fullyPlaced reports whether the manifest marks the function fn fully placed on the Neural
+// Engine: mps.fullyPlacedOnANE between its entry's key and the next entry's. A manifest without
+// such an entry is fully placed when it has the mark anywhere (as with one function).
+func fullyPlaced(manifest []byte, fn string) bool {
+	const mark = "mps.fullyPlacedOnANE"
+	start := regexp.MustCompile(`<key>` + regexp.QuoteMeta(fn) + `_[A-Za-z0-9_-]{22}_[0-9]+</key>`).FindIndex(manifest)
+	if start == nil {
+		return bytes.Contains(manifest, []byte(mark))
+	}
+	rest := manifest[start[1]:]
+	if next := entryKey.FindIndex(rest); next != nil {
+		rest = rest[:next[0]]
+	}
+	return bytes.Contains(rest, []byte(mark))
 }
 
 type request struct {
