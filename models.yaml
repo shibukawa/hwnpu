@@ -152,6 +152,17 @@ models:
     no_think: true
     amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
     about: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"
+  gpt-oss-20b:
+    family: gpt-oss
+    tag: 20b
+    kind: chat
+    from: hf:openai/gpt-oss-20b
+    machine: 32
+    memory: 14.5
+    bytes: 13.8e9
+    features: [tools, thinking]
+    amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256
+    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): AMD's NPU only, its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention at 8 bits; it always reasons first (the low effort with no_think)"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b

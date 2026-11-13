@@ -947,7 +947,7 @@ def main(argv=None) -> int:
 
         iron_qwen35.install_dense()
     if a.q4_codes:
-        if not a.q4:
+        if not a.q4 and a.model != "gptoss":  # gpt-oss's parts are quantized without --q4
             raise SystemExit("--q4-codes: with --q4")
         import iron_q4
 
