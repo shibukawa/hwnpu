@@ -2,7 +2,7 @@
 
 [English](improvements.md)
 
-design.md 16 章の実装記録 (16.117 まで) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md、handoff-m3-gptq.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。
+design.md 16 章の実装記録 (16.117 まで) と model-fit.md、intel-npu-models.md、amd-npu-models.md (11〜13 節)、amd-xdna2-bench.md、handoff-anima-mac-intel.md、handoff-m3-gptq.md から、入れた改善策を「何に効いたか」で並べ直したもの。数値は記録された実測値で、断りがなければ **Apple M3 (16 GB) の Neural Engine (ANE)**、モデルは LFM3-1.7B。AMD の数値は Ryzen AI 9 365 (Strix Point)。カッコ内の番号は design.md の節。 7.5 節と「Core AI」の行は、macOS 27 の Core AI のバックエンド (16.169〜16.178) で、断りがなければ M1 と M2 (16 GB、macOS 27.2) で測った。
 
 - 「生成」= 1 トークンを作る速さ (ms/token か tokens/s)
 - 「prefill」= プロンプトを読む速さ (最初の応答までの時間)
@@ -61,6 +61,12 @@ design.md 16 章の実装記録 (16.117 まで) と model-fit.md、intel-npu-mod
 | Apple: Anima の注意を 512 クエリずつ (16.85) | ○ 1 ステップ 7.0 → 4.5 s (1024×1024) | | | | | | 変わらない | Apple |
 | Apple: Anima の VAE を `upsample_nearest_neighbor` に、段ごとに読む (16.85) | ◎ VAE 14.5 → 3.7 s | | | ◎ 6.9 → 3.8 GB | | | 段 5 の相対誤差 4.8e-4 | Apple |
 | Apple: Anima の既定を int8 に (16.85) | ○ 1 ステップ 4.5 → 4.2 s | | ○ | ○ | ○ 書き出し 4.6 → 2.8 GB | | △ fp16 との潜在のコサイン 0.902 (lut8 は 0.858)。DiT の silu を直した後 (16.95) は、fp16 は diffusers の fp32 に 0.006〜0.025 近いだけ | Apple |
+| Apple: Core AI のバックエンド (`--backend coreai`、macOS 27) (16.169、16.173) | 変わらない (±10 %) | | ◎ 2 回目の準備がどのチャットのモデルも 1.6〜5.5 s (Core ML は約 4 GiB のキャッシュから外れると 4 s〜13 分)。Qwen-Image の試作は 1 枚 46 s (Core ML 4 分 26 秒) | | △ 重みをディスクに 3 回 (下) | | 変わらない (Qwen3.5-2B、Gemma 4 E2B、LFM3 は一字一句同じ。Anima は Core ML との潜在のコサイン 0.971) | Apple (macOS 27) |
+| Core AI: 入力の配列をプログラムごとに 1 回作り、memcpy で詰める (16.172) | ○ PLaMo 3 0.8B 25 → 38〜44 tok/s (Core ML 35〜42) | | | | | | 変わらない | Apple (Core AI) |
+| Core AI: 重みの同じ部品を関数をまとめた 1 本の `.aimodel` に (16.177、16.178) | ○ LFM3-1.7B +13 % | | △ 初回のコンパイルで全部の関数を払う | ◎ Neural Engine が重みを 1 回分だけ持つ: LFM3-1.7B 2.56 → 1.34 GiB | ◎ チャットのモデルで約 9.3 GiB、Anima 3.0 GiB。Chroma1-Flash の 1024² に 512² を足して増えたのは 49 MB (別々なら約 17 GB) | | ビット単位で同じ (Anima と Chroma の絵、貪欲法の答え) | Apple (Core AI) |
+| Core AI: プロンプトを読むプログラムも持つ (重みを 1 回分と数える、16.177) | | ◎ 2.3〜3.2 倍 (Qwen3.5-2B、LFM3-VL / Audio / Omni、PLaMo 3 2B) | △ +1〜3.6 s | △ +0.1〜0.14 GiB | | | 変わらない | Apple (Core AI) |
+| Core AI: コンパイルの後に `.aimodel` の重みを捨てる (`HWNPU_COREAI_DROP_BYTECODE=1`、オプション、16.176) | | | ○ Chroma の DiT の組 6.5 → 0.5 s | | ○ Chroma1-Flash 512² の hwnpu のキャッシュ 28 → 15 GB | | 変わらない | Apple (Core AI)。△ 項目が消されると下ろし直し (配る `.aimodel` なら落とし直し) |
+| Apple: Chroma1-Flash を Core AI で (16.176) | ○ M2 の 1024² が 1 枚 6 分 58 秒 (M1 の Core ML は 9 分 17 秒) | | △ 1024² の初回は 1 時間 | DiT を持つ間 8.15 GiB | | | Core ML との潜在のコサイン 0.9976、PSNR 35.4 dB | Apple (Core AI) |
 | 会話の印はリングの使っている分だけ (16.71) | | | | ○ 翻訳 5 回で 578 → 183 MB | | | | 共通 |
 | 変換の後にメモリを OS に返す (16.71) | | | | ○ 起動直後 2.4 GB → 154 MB | | | | 共通 |
 | OpenVINO が残す `/dev/shm` を片付ける (16.72) | | | | | ○ 1 日 8.4 GB | | | Intel / OpenVINO |
@@ -206,6 +212,10 @@ GEMV 単体の改善:
 | **代償**: プロンプトストア (16.38, 16.52) | 1 系列約 145 MB (Apple)、1 項目 51 MB (AMD) | |
 | 塔は使うときだけ読む (16.81) | 画像と音声つきの書き出しの隣に、文だけの書き出しを置かなくてよい (Gemma 4 E2B の 4 ビットで 7.0 GB) | 固定されるメモリは文だけの書き出しより 51 MiB 多いだけ。共有 (16.79) と違い、Btrfs や XFS は要らない |
 | **代償**: AMD の書き出しは版ごとにまるごと | `-q4`、`.mm`、文脈や塊の大きさごとに別のディレクトリ | 写しを共有できるファイルシステムなら共有する (上)。まるごと同じファイルと共通の先頭まで。ファイルの途中で違えば、その後ろは別に持つ |
+| **代償**: Core AI は重みを 3 回持つ (16.173、16.176) | `.mlpackage`、hwnpu の下ろした `.aimodel`、Core AI 自身のキャッシュ (`~/Library/Caches/coreai-cache/<OS のビルド>/<実行ファイル>/<main.hash>/`)。Chroma1-Flash で 14 + 14 + 14〜17 GB、チェックポイント込みで 73 GB | 空きが約 15 GiB を切ると macOS が `~/Library/Caches` を掃除し、Core AI の項目も hwnpu のキャッシュの根も消えた。変換したらチェックポイントを消す |
+| Core AI: 関数をまとめた 1 本の `.aimodel` (16.174、16.177、16.178) | LFM3-1.7B の `.aimodel` 2.43 → 1.22 GiB、Core AI のキャッシュ 2.53 → 1.32 GiB。Anima 7.36 → 4.32 GiB。Chroma1-Flash の 512² + 1024² で `.aimodel` +31 MB、Core AI +18 MB | 兄弟は、同じフォルダの、または隣の書き出しの同じ名前の `.mlpackage` のうち、大きい順 3 つの重みの blob が同じバイトのもの。`LowerFunctions` は同じバイトの blob を 1 回だけ書く |
+| Core AI: バイトコードを捨てる (`HWNPU_COREAI_DROP_BYTECODE=1`) (16.176) | Chroma1-Flash 512² の hwnpu のキャッシュ 28 → 15 GB | オプション。既定は `.aimodel` を残す (16.174)。項目が消されたときのコンパイルし直しに要るため |
+| チェックポイントでなく `.aimodel` を配る (見積もり、16.174、16.176) | LFM3-1.7B: 落とす量 3.5 GB、手元 約 10 GB → 1.8 GB、3.2 GB。Chroma1-Flash: 27.5 → 約 14 GB、約 73 → 28 GB | 変換もチェックポイントもいらない。未実装 (runner が `.aimodel#NAME` と `hwnpu-io-*.json` を読む手直しが要る) |
 
 ## 6. 精度 (賢さ)
 
@@ -313,6 +323,21 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 
 同じファイルのディスクの上での共有 (`cache.Clone`、16.64 と 16.79) は NPU ではなくファイルシステムで決まる: macOS の APFS では clonefile、Linux の Btrfs や XFS などでは FICLONE と FICLONERANGE、Windows の ReFS と Dev Drive ではブロッククローン。Apple のプログラムとコンパイルした写し、Intel の IR (8 トークンと 64 トークンのプログラムの `.bin`)、AMD の書き出しが対象。ext4、tmpfs、NTFS では何もしない。ファイルの先頭の共有ができないのは macOS だけ。
 
+### 7.5 Apple: Core AI (macOS 27)
+
+Core AI は端末向けに専用化した結果を自分のキャッシュに持つ。鍵は `main.hash` (`main.mlirb` の sha256) だけで、OS のビルドと実行ファイルの名前ごとに分かれる。Core ML のコンパイルのキャッシュのような約 4 GiB の上限はなく、1 本のプログラムは M3 で 2.5〜3 GiB まで持てる (Core ML は 1 GiB)。
+
+| 工夫 | 効くところ | 数値など |
+|---|---|---|
+| MIL を Go で Core AI のバイトコードに下ろす (`internal/coreai/mlirbc`、`ailower`、16.169) | Python も Xcode のツールチェーンも要らない。Core ML と同じ `.mlpackage` | coreai-core の出力に合わせて書き、`tools/coreai/bcdump` で読み戻して確かめた |
+| Core AI でプログラムを Neural Engine に載せるための書き方 (16.169) | 配置 | 位置は Core AI 自身の debuginfo (ブロックの引数にも)。縮約は `primitive.reduce_v1` を包む複合の `reduce_*_v1`。行列の積は複合の `broadcasting_batch_matmul_v1` (基本の演算を外に並べると、int8 の重みでプログラム全体が外れる)。softmax は `exp(x − max) × reciprocal(sum)`。2 項演算は同じ形どうしで、広げるのは `broadcast_in_dims` |
+| Swift の shim を purego で読む (`libcaishim.dylib`、go:embed) | `CGO_ENABLED=0` のまま | 配置は MPSGraph の manifest の `mps.fullyPlacedOnANE` で見る |
+| 入力の配列をプログラムごとに 1 回作る (16.172) | 生成 | 毎回新しい `NDArray` 10.0 ms、同じもの 7.2 ms (PLaMo 3 0.8B の part1) |
+| 壊れたキャッシュの項目は消して読み直す (16.169) | 読み込みは通って `loadFunction` が失敗する (`_GenericObjCError 0`) とき | 項目ごとに 1 回 |
+| `aicheck run -cpu` / `-coreml` / `-calls`、`probe`、`HWNPU_AILOWER_CUT`、`HWNPU_AILOWER_TRACE` (16.169、16.172) | Core AI がプロセスごと落とす前に、Neural Engine から外れる演算を探す | 先頭の N 個の演算で二分探索 |
+| 1 本の `.aimodel` に関数をまとめる (`ailower.LowerFunctions`、`PROGRAM.aimodel#NAME`、16.174)、それを自動で (16.177) | ディスクと Neural Engine のメモリ | 部品ごとに `KEY.aifn` を記録し、2 回目からは自分の部品だけハッシュする。関数の名前は中身のダイジェストから (機械によらず同じ)。3 つ目の大きさが来たら大きいまとまりを作り直し、小さいまとまりは消す |
+| 空の `.aimodel` は項目があるときだけ開く (`hasEntry`、`kindNoRetry`、16.176) | 空の `main.mlirb` を Core AI が解析すると、プロセスごと落ちる (LLVM の `cannot unwrap empty odiec_module_t`) | `main-this.odix` が空でないファイルであること。なければ下ろし直す。shim は空にしたものを消して読み直さず、Go の側で下ろし直す |
+
 ## 8. 試して効かなかったもの・採らなかったもの
 
 | 試したこと | 結果 | 節 |
@@ -340,6 +365,10 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 | 固定の倍率で RMSNorm (Anima、fp16) | 大きな値のない行の 2 乗が非正規数になる。行ごとの最大値で割る形にした | 16.69 |
 | Apple: Anima の自己注意を速くする | Core ML の `scaled_dot_product_attention` 110 ms (今の形は 101)、尺度を q に 103、ヘッドで分ける 96〜118、チャンネルを先に 122。ヘッド 2 × クエリ 256 は 90 ms だが、注意 4 回のコンパイルに 84 s。行の最大を引かないと 87 ms だが fp16 があふれる (norm の重みからの上限は最大 221) | 16.85 |
 | Apple: Anima の DiT を lut8 に | int8 と同じ速さで、fp16 から遠い (潜在のコサイン 0.858 と 0.902) | 16.85 |
+| Core AI: `.aimodelc` (`coreai-build compile`) | 初回の読み込みが `.aimodel` の 5〜10 倍遅く (M3 で 0.5 GiB に 26〜77 秒)、Core AI のキャッシュにやはり重みが複製され、アーキテクチャごとに重みを持つ | 16.169 |
+| Core AI: 兄弟を重みのファイル全体で見る | PLaMo-Embedding の 128 と 1024 は 458 KB の表の差でまとまらなかった。大きい順 3 つの blob で比べる形に | 16.177 |
+| Chroma1-Flash: 512² を 1024² の下見に | 1024² のノイズを 512² に平均しても、構図が揃うのは 3 つの種に 1 つほど。512² の潜在を引き伸ばして 1024² を途中から回す形 (hires fix) は、トークンの間隔の格子が出た。下見の用途は要らなかった | 16.176 |
+| Chroma の DiT を lut6 や int8 に | lut6 は同じ絵だが 1024² でも速くならない (ディスクが 1.7 GB 減るだけ)。int8 は縞が出る (PSNR 23.7 dB、Neural Engine の int8 の積和が fp16 を超える) | 16.170 |
 
 ## 9. 組み合わせの注意 (代償)
 
@@ -356,6 +385,9 @@ ANE の制約 (1 パッケージ 1 GiB、1 次元 16384、16 行ごとの表だ�
 - **塊の前の空のコマンド** (16.84): プロンプトの塊ごとに、まずデコードのハードウェアコンテキストで空のコマンドを走らせる (塊あたり 0.3〜0.5 ms)。窓の形の注意の書き出しは、これがないと 2 つ目の塊で止まる。xclbin をステップごとに持つ書き出し (NPU1) では走らない
 - **PLaMo 3 の lut8 の 1 本**: 短い文は速いが、長い文書は約 10 倍遅く読む (`-format lut6` で 2 本にすると精度が下がる)
 - **ディスクの共有はファイルシステム次第**: Ubuntu や Debian などの既定の ext4 は共有できないので、写しはそれぞれ丸ごとの大きさを取る (Fedora と openSUSE の既定は Btrfs)。共有したいならモデルを Btrfs か XFS に置く (Windows なら Dev Drive)。共有するのはまるごと同じファイルと、同じ名前のファイルの共通の先頭で、違うところから後ろは別に持つ
+- **Core AI の初回**: どの部品も 1 回コンパイルし、関数をまとめた組は全部の関数をコンパイルする。Chroma1-Flash は 512² で 12 分 45 秒、1024² で 59 分 44 秒、1024² に 512² を足した回で 1 時間 14 分 (その後の 1024² は部品 1 本の読み込みが約 1 秒)
+- **Core AI のキャッシュは OS のビルドと実行ファイルの名前ごと**: OS を更新したとき、`aicheck` や `go test` から動かしたときは、`main.mlirb` からコンパイルし直す。ディスクが少ないと macOS が項目を消す (`storagePressure`、空き 11〜20 GB で見た) ので、次の起動でまたコンパイルする
+- **変換には空きが要る**: Chroma1-Flash の 512² をチェックポイントごと 1024² の書き出しの隣で変換したら、M2 の空きが 16 GB まで減った。macOS が `~/Library/Caches` を掃除する境目のすぐ上
 
 ## 10. モデルごとの対応
 
@@ -518,6 +550,11 @@ Apple / Intel (`hwnpu-image convert`):
 **BERT 系** (16.11)
 - 構造の移植と変換 (lut8 / int8) はできるが、WordPiece のトークナイザーがないので `hwnpu-chat` からは使えない
 
+**Chroma1-Flash** (16.156、16.170、16.176、16.178)
+- Apple (Core ML、M1): T5 は 3 層ずつの lut8 で `wo` だけ fp16、DiT は lut8、VAE は 10 段。fp16 の落とし穴: 型なし定数の整数の割り算 (`1/64 = 0`)、行の最大値で割った後の非正規化数、重みに畳んだ縮尺で積が fp16 の正規化の範囲を下回る、Neural Engine の int8 の積和のあふれ (lut8 では出ない)、Core ML が定数倍を重みに畳み直す。512² は 1 枚 2 分 06 秒、1024² は約 9 分 30 秒
+- Core AI (M2): 下ろし方を変えずに 29 部品すべて Neural Engine に。512² は 1 枚 1 分 36〜48 秒、1024² は 6 分 58 秒。DiT、approximator、VAE の大きい段は、512² と 1024² のプログラムがそれぞれ 1 本の `.aimodel` を共有する (16.178)
+- AMD: 512² は 1 分 42 秒、1024² は 4 分 13 秒 (Heun 8 ステップ) (16.156)
+
 ## 11. 未検証のもの
 
 記録に「未確認」「未計測」「見込み」とあるものを集めた。「実装済みで実機の確認が残っているもの」と「原因が分かっていないもの」に分け、確かめ方の当てがあれば書いた。まだ書いていない機能 (T8 の活性を見た量子化、実行時の分割の付け替えなど) は 11.5 に短く並べた。
@@ -554,6 +591,8 @@ Apple / Intel (`hwnpu-image convert`):
 | 1024×1024 より大きな Anima | 1024 を超える大きさで注意の塊を小さくした形 (`mil.DitQChunk`) の速さと、VAE の段が収まるかは測っていない | 1280×1280 を書き出して動かす | 16.85 |
 | PLaMo 3 の精度と速さの詳細 | 配置と重みの形式は確認済み。翻訳の質と長い文書の時間は詳しく測っていない | 翻訳の対で fp16 と KL を比べる | 16.71 |
 | macOS のメモリが使うほど減って見えた理由 | 0 の多いリングを macOS が圧縮していた、という見立て | 印の修正 (`ringRows`) の後に M3 で footprint を測る | 16.71 |
+| Core AI: `.aimodel` を配る | runner が `PATH.aimodel#NAME` を読み、出力の形を `.mlpackage` でなく `hwnpu-io-*.json` から読む形。1 本の `.aimodel` が OS の版を越えて読めるか。`.persistent` を採るか (掃除で消えないが、hwnpu が項目を消すことになる) | 落とした `.aimodel` を別の機械と OS のビルドで動かす | 16.174、16.177 |
+| ほかのモデルとチップの Core AI | Chroma1-HD、Qwen-Image の 512² と 1024² のまとまり方、Qwen3.5-4B と Gemma 4 E4B。チャットのモデルの M3。M2 での Chroma の Core ML の 2 回目 (同じ機械での比較) | `--backend coreai` で動かす | 16.173、16.176、16.177 |
 
 ### 11.2 Intel (NPU)
 
