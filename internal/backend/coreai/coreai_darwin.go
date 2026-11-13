@@ -29,7 +29,6 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/shibukawa/hwnpu/internal/backend"
-	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/types"
@@ -48,16 +47,20 @@ var (
 	caiClose func(h uintptr)
 	caiNames func(h uintptr, which int32) *byte
 	caiRun   func(h uintptr, ins, outs *uintptr, err **byte) int32
+	// caiForget deletes Core AI's cache entries of an asset; nil with a shim from before it
+	caiForget func(path *byte)
 )
 
-// kindNeuralEngine is the shim's specialization: prefer the Neural Engine. kindCachedOnly loads
-// from Core AI's cache alone, failing when the program is not there.
-const (
-	kindNeuralEngine = 2
-	kindCachedOnly   = 0x10
-	// lowDisk is the free disk below which a program off the Neural Engine is put down to it
-	lowDisk = 10 << 30
-)
+// kindNeuralEngine is the shim's specialization: prefer the Neural Engine.
+const kindNeuralEngine = 2
+
+// lowDisk is the free disk below which a program off the Neural Engine is put down to it.
+const lowDisk = 10 << 30
+
+// kindNoRetry is a flag of the shim's kind: on a failure, do not delete Core AI's cache entries
+// and load again (an asset whose bytecode is cut, which would make Core AI parse nothing and
+// abort).
+const kindNoRetry = 0x100
 
 func load() error {
 	loadOnce.Do(func() {
@@ -94,6 +97,9 @@ func load() error {
 		purego.RegisterLibFunc(&caiClose, h, "cai_close")
 		purego.RegisterLibFunc(&caiNames, h, "cai_names")
 		purego.RegisterLibFunc(&caiRun, h, "cai_run")
+		if _, err := purego.Dlsym(h, "cai_forget"); err == nil {
+			purego.RegisterLibFunc(&caiForget, h, "cai_forget")
+		}
 	})
 	return loadErr
 }
@@ -178,92 +184,88 @@ func (b *buffer) Close() error {
 	return err
 }
 
-// asset is the Core AI program of the package at path: lowered once into the compile cache (or a
-// temporary directory without one), with its bytecode's hash. ours marks an asset of the compile
-// cache, whose bytecode Compile empties once Core AI has cached the program (emptyBytecode).
-type asset struct {
-	dir    string
-	cached bool
-	ours   bool
-	owned  string // a temporary directory to remove on Close
-}
-
-func lowerInto(path, dst string) error {
-	p, err := ailower.LowerPackage(path)
+// asset is the Core AI program of the package at path and its function: lowered once into the
+// compile cache, with the packages beside it of the same weights (resolve), or alone into a
+// temporary directory without a cache. stored is the cache's entry (the asset, "" in a temporary
+// directory): what Compile may cut.
+func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored string, err error) {
+	if d.opts.CacheDir != "" {
+		dir, fn, cached, err = resolve(d.opts.CacheDir, path)
+		return dir, fn, cached, "", dir, err
+	}
+	tmp, err := os.MkdirTemp("", "hwnpu-coreai-*.aimodel")
 	if err != nil {
-		return err
+		return "", "", false, "", "", err
 	}
-	return p.WriteAsset(dst)
+	if err := lowerOne(path, tmp); err != nil {
+		os.RemoveAll(tmp)
+		return "", "", false, "", "", err
+	}
+	return tmp, "main", false, tmp, "", nil
 }
 
-func (d *device) asset(path string) (asset, error) {
-	if strings.EqualFold(filepath.Ext(path), ".aimodel") {
-		return asset{dir: path, cached: true}, nil
+// DropBytecodeEnv set to 1 cuts the bytecode of the compile cache's assets once Core AI's cache
+// holds their programs: the last resort when the disk runs short (design.md 16.174 keeps them by
+// default). The bytecode holds the weights, and Core AI's entry holds them again; Core AI loads a
+// program from its entry by main.hash alone (Chroma1-Flash at 512 x 512: the compile cache 28 ->
+// 15 GB, a DiT group loaded in 0.5 s rather than 6.5 s). When the entry is gone, the program is
+// lowered again from its package, and Core AI compiles it as the first time.
+const DropBytecodeEnv = "HWNPU_COREAI_DROP_BYTECODE"
+
+// Parsing a cut bytecode aborts the process, so a cut asset (whether cut now or before) is opened
+// only while its entry is there (hasEntry), with kindNoRetry; otherwise it is lowered again.
+
+// isCut reports whether the asset's bytecode was cut.
+func isCut(dir string) bool {
+	fi, err := os.Stat(filepath.Join(dir, "main.mlirb"))
+	return err == nil && fi.Size() == 0
+}
+
+// hasEntry reports whether Core AI's cache holds the program of the asset at dir for this
+// process: its entries are under the OS's build and the executable's name
+// (~/Library/Caches/coreai-cache/26B123/hwnpu-image/HASH/DEVICE/model.aimodelx). An entry
+// without main-this.odix makes Core AI compile the bytecode again (and abort on a cut one); one
+// without its delegates fails to load, and is lowered again. Anything it cannot read says no.
+func hasEntry(dir string) bool {
+	hash, err := os.ReadFile(filepath.Join(dir, "main.hash"))
+	if err != nil {
+		return false
 	}
-	if d.opts.CacheDir == "" {
-		tmp, err := os.MkdirTemp("", "hwnpu-coreai-*.aimodel")
-		if err != nil {
-			return asset{}, err
+	build, err := syscall.Sysctl("kern.osversion")
+	if err != nil || build == "" {
+		return false
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	entries, _ := filepath.Glob(filepath.Join(home, "Library", "Caches", "coreai-cache", build, filepath.Base(exe), hex.EncodeToString(hash), "*", "model.aimodelx", "main-this.odix"))
+	for _, e := range entries {
+		if fi, err := os.Stat(e); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+			return true
 		}
-		if err := lowerInto(path, tmp); err != nil {
-			os.RemoveAll(tmp)
-			return asset{}, err
-		}
-		return asset{dir: tmp, owned: tmp}, nil
 	}
-	digest, err := cache.TreeDigest(path)
-	if err != nil {
-		return asset{}, fmt.Errorf("coreai: %w", err)
-	}
-	key := cache.Key([]byte("hwnpu-coreai-v1"), digest, []byte(ailower.Producer))
-	if p, ok := cache.Lookup(d.opts.CacheDir, key, ".aimodel"); ok {
-		return asset{dir: p, cached: true, ours: true}, nil
-	}
-	p, err := cache.Store(d.opts.CacheDir, key, ".aimodel", func(dst string) error { return lowerInto(path, dst) })
-	if err != nil {
-		return asset{}, err
-	}
-	cache.SetSource(d.opts.CacheDir, key, path)
-	return asset{dir: p, ours: true}, nil
+	return false
 }
 
-// bytecodeFile is the asset's program, which holds the weights.
-const bytecodeFile = "main.mlirb"
-
-// emptied reports whether the asset's bytecode was emptied (emptyBytecode).
-func emptied(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, bytecodeFile))
-	return err == nil && info.Size() == 0
-}
-
-// emptyBytecode empties the asset's bytecode once Core AI has cached the program: Core AI keys
-// its cache by main.hash and reads the cached program alone, so the weights are not kept three
-// times (the package, the asset, Core AI's cache: 17 GB each for Qwen-Image). The file is
-// replaced, not truncated, so that a program loaded from it keeps its bytes.
-func emptyBytecode(dir string) error {
-	tmp := filepath.Join(dir, bytecodeFile+".tmp")
+// cut cuts the asset's bytecode once Core AI's cache holds its program. The file is replaced, not
+// truncated: Core AI may still map the old one.
+func cut(dir string) error {
+	if isCut(dir) || !hasEntry(dir) {
+		return nil
+	}
+	p := filepath.Join(dir, "main.mlirb")
+	tmp := p + ".cut"
 	if err := os.WriteFile(tmp, nil, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(dir, bytecodeFile))
-}
-
-// relower writes the asset of an emptied bytecode again, from the package at path.
-func relower(path, dir string) error {
-	tmp := dir + ".relower.tmp"
-	os.RemoveAll(tmp)
-	defer os.RemoveAll(tmp)
-	if err := lowerInto(path, tmp); err != nil {
+	if err := os.Rename(tmp, p); err != nil {
+		os.Remove(tmp)
 		return err
-	}
-	ents, err := os.ReadDir(tmp)
-	if err != nil {
-		return err
-	}
-	for _, e := range ents {
-		if err := os.Rename(filepath.Join(tmp, e.Name()), filepath.Join(dir, e.Name())); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -286,67 +288,71 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		return nil, fmt.Errorf("coreai: functions and compute units are not supported: %w", types.ErrUnsupported)
 	}
 	path, fn := splitFunction(src.Path)
-	a, err := d.asset(path)
-	if err != nil {
-		return nil, err
-	}
-	dir := a.dir
-	g := &graph{cached: a.cached, owned: a.owned}
-	var retried int32
-	var e *byte
-	open := dir
-	if fn != "main" {
-		open += "#" + fn
-	}
-	stub := a.ours && emptied(dir)
-	if stub {
-		// Core AI's cache alone: without its entry (another OS, another executable, a purge)
-		// the bytecode is written again and compiled
-		g.h = caiOpen(cString(open), kindNeuralEngine|kindCachedOnly, &retried, &e)
-		if g.h == 0 {
-			msg := goString(e)
-			if os.Getenv("HWNPU_COREAI_DEBUG") != "" {
-				fmt.Fprintf(os.Stderr, "coreai: %s: not from Core AI's cache (%d): %s\n", filepath.Base(src.Path), retried, msg)
-			}
-			if err := relower(path, dir); err != nil {
-				return nil, fmt.Errorf("coreai: lower %s again: %w", path, err)
-			}
-			stub, g.cached = false, false
+	dir, cached, owned, stored := path, true, "", ""
+	if !strings.EqualFold(filepath.Ext(path), ".aimodel") {
+		var err error
+		if dir, fn, cached, owned, stored, err = d.asset(path); err != nil {
+			return nil, err
 		}
 	}
-	if g.h == 0 {
-		g.h = caiOpen(cString(open), kindNeuralEngine, &retried, &e)
-		if g.h != 0 && retried == 1 {
-			// Core AI had an entry that failed to load: dropped and compiled again
+	if stored == "" && isCut(dir) && !hasEntry(dir) {
+		return nil, fmt.Errorf("coreai: %s: the bytecode was cut and Core AI's cache entry is gone: lower the package again", src.Path)
+	}
+	g := &graph{cached: cached, owned: owned}
+	open := func() string {
+		kind := int32(kindNeuralEngine)
+		if isCut(dir) {
+			kind |= kindNoRetry
+		}
+		name := dir
+		if fn != "main" {
+			name += "#" + fn
+		}
+		var retried int32
+		var e *byte
+		g.h = caiOpen(cString(name), kind, &retried, &e)
+		if g.h == 0 {
+			return goString(e)
+		}
+		if retried == 1 {
+			// Core AI had an entry that failed to load (aned purged its compiled program when the
+			// disk ran short): dropped and compiled again; e is the first attempt's error
 			msg := goString(e)
-			e = nil
 			if os.Getenv("HWNPU_COREAI_DEBUG") != "" {
 				fmt.Fprintf(os.Stderr, "coreai: %s: the cached entry failed (%s), compiled again\n", filepath.Base(src.Path), msg)
 			}
 		}
+		return ""
+	}
+	msg := open()
+	if g.h == 0 && stored != "" && isCut(stored) {
+		// the entry would not load: lowered again, and loaded as the first time
+		if os.RemoveAll(stored) == nil {
+			var err error
+			if dir, fn, g.cached, _, stored, err = d.asset(path); err != nil {
+				return nil, err
+			}
+			msg = open()
+		}
 	}
 	if g.h == 0 {
-		msg := goString(e)
 		g.Close()
 		return nil, fmt.Errorf("coreai: load %s: %s", src.Path, msg)
 	}
-	if a.ours && !stub && os.Getenv("HWNPU_COREAI_KEEP_BYTECODE") == "" {
-		if err := emptyBytecode(dir); err != nil {
-			g.Close()
-			return nil, fmt.Errorf("coreai: %w", err)
-		}
+	if stored != "" && os.Getenv(DropBytecodeEnv) == "1" {
+		cut(stored) // best effort: an asset left whole only takes more disk
 	}
 	if err := g.describe(dir, fn); err != nil {
 		g.Close()
 		return nil, err
 	}
-	var entries []string
-	g.placement, entries = placement(dir, fn)
-	if g.placement.Verified && !g.placement.OnNPU() {
+	var offNPU []string
+	g.placement, offNPU = placement(dir, fn)
+	if len(offNPU) > 0 {
 		// Core AI caches a program that the Neural Engine's compiler failed on (out of disk or
 		// memory: "Failed to allocate memory for file backing") as it fell back, on the GPU, and
-		// the persistent cache would keep it there: dropped, the next load compiles it again
-		for _, e := range entries {
+		// would keep it there: dropped, the next load compiles it again
+		for _, e := range offNPU {
 			os.RemoveAll(filepath.Dir(filepath.Dir(e)))
 		}
 		// the Neural Engine's compiled program lives apart from Core AI's entry (aned's cache, a
@@ -439,8 +445,8 @@ func (g *graph) Close() error {
 }
 
 // placement reads Core AI's cache entry of the program: its MPSGraph delegate's manifest says
-// whether everything of the function fn runs on the Neural Engine. It returns the entries too
-// (model.aimodelx).
+// whether everything of the function fn runs on the Neural Engine. When nothing says so, it
+// returns the entries (model.aimodelx) whose program is off the Neural Engine too.
 func placement(dir, fn string) (types.PlacementReport, []string) {
 	rep := types.PlacementReport{Method: "coreai-cache-manifest"}
 	hash, err := os.ReadFile(filepath.Join(dir, "main.hash"))
@@ -449,13 +455,8 @@ func placement(dir, fn string) (types.PlacementReport, []string) {
 		return rep, nil
 	}
 	home, _ := os.UserHomeDir()
-	// the default cache (Library/Caches) and the persistent one (Library/Application Support,
-	// where the shim specializes)
-	var entries []string
-	for _, root := range []string{filepath.Join(home, "Library", "Application Support"), filepath.Join(home, "Library", "Caches")} {
-		e, _ := filepath.Glob(filepath.Join(root, "coreai-cache", "*", "*", hex.EncodeToString(hash), "*", "model.aimodelx"))
-		entries = append(entries, e...)
-	}
+	pattern := filepath.Join(home, "Library", "Caches", "coreai-cache", "*", "*", hex.EncodeToString(hash), "*", "model.aimodelx")
+	entries, _ := filepath.Glob(pattern)
 	if len(entries) == 0 {
 		rep.Reason = "no Core AI cache entry for the program"
 		return rep, nil
@@ -465,7 +466,7 @@ func placement(dir, fn string) (types.PlacementReport, []string) {
 		// the delegates are named after main.mlirb, whatever functions it has
 		m, err := os.ReadFile(filepath.Join(e, "main-this-delegates", "MPSGraph", "mpsExecutable.mpsgraphpackage", "manifest.plist"))
 		if err == nil && fullyPlaced(m, fn) {
-			return rep, entries
+			return rep, nil
 		}
 	}
 	rep.Ops = []types.OpPlacement{{Name: "program", Type: "program", Device: "gpu"}}

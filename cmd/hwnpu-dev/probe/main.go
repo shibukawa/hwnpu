@@ -73,7 +73,9 @@
 // running out of memory the oldest is closed and the failed one loaded again, which tells
 // whether closing a program gives its memory back (Anima's reloading counts on it). With
 // -resident-hold close each is closed before the next, up to the same total. Intel's NPU has
-// failed with ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's programs.
+// failed with ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's programs. Apple's evicts
+// without an error, so with -resident-cycle (the default) every held program also runs in turn
+// after each load, timed: where those calls slow down is the most it keeps at once.
 //
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
@@ -185,7 +187,8 @@ func Main() {
 	cachePause := fs.Duration("cache-pause", 2*time.Second, "cache: pause between rounds")
 	cacheKeep := fs.Bool("cache-keep", false, "cache: keep the programs in -dir and reuse them in later runs (after a restart, say); a program written again is another program to the caches")
 	residentFormats := fs.String("resident-formats", "fp16", "resident: weight formats of the programs, comma separated")
-	residentSize := fs.Float64("resident-size", 0.25, "resident: GiB of one program (rounded to whole layers of 61 M weights)")
+	residentSize := fs.String("resident-size", "0.25", "resident: GiB of one program (rounded to whole layers of 61 M weights), comma separated for several runs")
+	residentCycle := fs.Bool("resident-cycle", true, "resident: with open, after each load run every held program in turn and time it (where the NPU starts evicting without an error, as Apple's does)")
 	residentMax := fs.Float64("resident-max-gb", 0, "resident: stop past this total, GiB (default: 60 % of the RAM, at most 16)")
 	residentRun := fs.Bool("resident-run", true, "resident: run each program after its load and all held ones at the end (false: load only)")
 	residentHold := fs.String("resident-hold", "open,close", "resident: open (every program kept until a load fails) and close (each closed before the next), comma separated")
@@ -211,9 +214,20 @@ func Main() {
 			os.Exit(2)
 		}
 	}
-	ro := residentOpts{run: *residentRun, formats: split(*residentFormats), size: *residentSize, maxGiB: *residentMax, holds: split(*residentHold)}
+	ro := residentOpts{run: *residentRun, cycle: *residentCycle, formats: split(*residentFormats), maxGiB: *residentMax, holds: split(*residentHold)}
 	if mode == "resident" {
-		if err := ro.check(); err != nil {
+		err := error(nil)
+		for _, z := range split(*residentSize) {
+			var f float64
+			if _, e := fmt.Sscan(z, &f); e != nil && err == nil {
+				err = fmt.Errorf("-resident-size: %q is not a number", z)
+			}
+			ro.sizes = append(ro.sizes, f)
+		}
+		if err == nil {
+			err = ro.check()
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "hwnpu-dev probe:", err)
 			os.Exit(2)
 		}

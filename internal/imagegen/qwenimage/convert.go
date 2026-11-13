@@ -73,7 +73,7 @@ const (
 	// DefaultCoreAIDitFormat is the DiT's, its text pass's too, on Core AI: one format for both, so
 	// that a group's two passes are one program with their weights once (SharedDit). lut6 between
 	// the text pass's lut8 and the blocks' lut4 on Core ML (the fox at 512 x 512: text pass lut8
-	// and blocks lut6 0.987; design.md 16.165, 16.176)
+	// and blocks lut6 0.987; design.md 16.165, 16.180)
 	DefaultCoreAIDitFormat = "lut6"
 )
 
