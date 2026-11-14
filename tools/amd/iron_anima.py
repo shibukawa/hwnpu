@@ -137,6 +137,10 @@ class DitFormats:
     # kernel, correctly rounded) or "tanh" (IRON's tanh kernel: bf16 inner terms changed the
     # pictures)
     gelu: str = "even"
+    # The cross-attention: "trim" (one call of every patch over the prompt's text rows, a
+    # per-call word nt; the zero rows past them counted in the softmax, iron_mha's zero_keys:
+    # design.md 16.204) or "chunks" (512 patches a call over all 512 rows, before 16.204)
+    cross: str = "trim"
 
 
 DIT_FMT = DitFormats()
@@ -308,12 +312,14 @@ class AdaLN(iron.Graph):
         return [m[i * self.E : (i + 1) * self.E] for i in range(n)]
 
 
-def dit_attention(q, k, v):
+def dit_attention(q, k, v, zero_keys: int = 0):
     """The DiT's attention of (rows, heads, 128) q, k, v: iron_mha.ImageMHA, 64-key blocks, with
     QK^T through bfp16 (``--dit-mha qk``), P*V too (``qkpv``) or both bf16 (``bf16``: IRON's MHA's
-    products, 1.7x as long as qk; design.md 16.147)."""
+    products, 1.7x as long as qk; design.md 16.147). ``zero_keys``: k and v bounded, standing for
+    that many rows, zeros past the bound (iron_mha.attention)."""
     m = DIT_FMT.mha
-    return iron_mha.attention(q, k, v, d=q.shape[-1], qk_bfp16=m != "bf16", pv_bfp16=m == "qkpv")
+    return iron_mha.attention(q, k, v, d=q.shape[-1], qk_bfp16=m != "bf16", pv_bfp16=m == "qkpv",
+                              zero_keys=zero_keys)
 
 
 def dit_gelu(x):
@@ -348,7 +354,7 @@ class DitBlock(iron.Graph):
         for a, name in zip(self.ada, ("self_attn", "cross_attn", "mlp")):
             a.load(w, f"{p}.adaln_modulation_{name}")
 
-    def body(self, x, act, temb, ctx, angles, one):
+    def body(self, x, act, temb, ctx, angles, one, nt=None):
         c = self.c
         E = c.hidden
         n = x.shape[0]
@@ -360,15 +366,21 @@ class DitBlock(iron.Graph):
         H, D = c.heads, c.head_dim
         o = dit_attention(q.reshape(n, H, D), k.reshape(n, H, D), v.reshape(n, H, D))
         x = x + self.self_attn.out(o.reshape(n, E)) * gate
-        # cross-attention over the text: MHA takes no more queries than keys, so 512 rows a call
+        # cross-attention over the text. The rows past the prompt's nt are zeros (the host
+        # zeroes them), so are their keys and values: "trim" attends the nt rows in one call and
+        # counts the others' e^0 in the softmax. "chunks": IRON's MHA takes no more queries than
+        # keys, so 512 rows a call over all 512
         shift, scale, gate = self.ada[1].rows(act, temb, 3)
         h = F.layer_norm(x, (E,), weight=scale + one, eps=1e-6) + shift
         L = ctx.shape[0]
         q, k, v = self.cross_attn.qkv(h, ctx, n, L)
         q, k, v = q.reshape(n, H, D), k.reshape(L, H, D), v.reshape(L, H, D)
-        o = self.scratch
-        for s in range(0, n, L):
-            o[s : s + L] = dit_attention(q[s : s + L], k, v).reshape(L, E)
+        if nt is not None:
+            o = dit_attention(q, k[:nt], v[:nt], zero_keys=L).reshape(n, E)
+        else:
+            o = self.scratch
+            for s in range(0, n, L):
+                o[s : s + L] = dit_attention(q[s : s + L], k, v).reshape(L, E)
         x = x + self.cross_attn.out(o) * gate
         # MLP
         shift, scale, gate = self.ada[2].rows(act, temb, 3)
@@ -415,7 +427,8 @@ class DitBlocks(iron.Graph):
 
     Inputs: ``x`` (tokens, hidden); ``temb`` (3 * hidden), t_embedder's output; ``et``
     (hidden), the timestep's sinusoid RMS-normed (``t_embedding_norm``); ``ctx`` (512, 1024),
-    the adapter's text embeddings.
+    the adapter's text embeddings, zeros past the prompt's rows. Per call (``--dit-cross trim``):
+    ``nt``, ctx's rows before those zeros (1 to 512).
     """
 
     def __init__(self, c: DitConfig, first: int = 0, w: Safetensors | None = None):
@@ -428,13 +441,14 @@ class DitBlocks(iron.Graph):
         self.angles = iron.param(bf(rope_table(c)))
         self.one = iron.param(bf(np.ones(c.hidden)))
 
-    def body(self, x, temb, et, ctx):
+    def body(self, x, temb, et, ctx, *, nt: Scratchpad[np.int32]):
         # One command: a host step between the blocks (command_boundary) hangs the first
         # command on the NPU (ERT_CMD_STATE_TIMEOUT), seen 2026-11-05; four blocks are 20 MiB
         # of control code and about 1 s at 1024 x 1024.
         act = F.silu(et)
+        rows = nt if DIT_FMT.cross == "trim" else None
         for b in self.blocks:
-            x = b(x, act, temb, ctx, self.angles, self.one)
+            x = b(x, act, temb, ctx, self.angles, self.one, rows)
         return x
 
 
@@ -1174,10 +1188,13 @@ def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
     m["variants"] = variants
     (d / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     if check:
+        nt = 77
+        ctx = rng.standard_normal((c.text_tokens, c.text_dim))
+        ctx[nt:] = 0
         write_check(g, m, d, dict(x=bf(rng.standard_normal((c.tokens, c.hidden))),
                                   temb=bf(rng.standard_normal(3 * c.hidden) * 0.5),
                                   et=bf(rng.standard_normal(c.hidden)),
-                                  ctx=bf(rng.standard_normal((c.text_tokens, c.text_dim)))))
+                                  ctx=bf(ctx)), dict(nt=nt))
 
 
 ARGS = None
@@ -1206,6 +1223,9 @@ def main(argv=None) -> int:
                     help="the VAE's 3 x 3 convolutions: GridGEMM on the grid in place (grid) or an im2col copy")
     ap.add_argument("--dit-mha", default=DIT_FMT.mha, choices=("qk", "qkpv", "bf16"),
                     help="the DiT's attention products: QK^T through bfp16 (qk), P*V too (qkpv), or both bf16")
+    ap.add_argument("--dit-cross", default=DIT_FMT.cross, choices=("trim", "chunks"),
+                    help="the DiT's cross-attention: one call over the prompt's text rows, the zero rows "
+                         "counted (trim), or 512 patches a call over all 512 rows (chunks)")
     ap.add_argument("--dit-gelu", default=DIT_FMT.gelu, choices=("even", "erf", "tanh"),
                     help="the DiT MLP's GELU: the tanh form with its argument in float32 (even), exact (erf), or IRON's tanh kernel")
     ap.add_argument("--q4-codes", type=Path, default=None,
@@ -1218,6 +1238,7 @@ def main(argv=None) -> int:
     ARGS = a = ap.parse_args(argv)
     PREC.text, PREC.dit, PREC.vae = Precision(a.text_precision), Precision(a.dit_precision), Precision(a.vae_precision)
     DIT_FMT.attn, DIT_FMT.mlp, DIT_FMT.mha, DIT_FMT.gelu = a.dit_attn, a.dit_mlp, a.dit_mha, a.dit_gelu
+    DIT_FMT.cross = a.dit_cross
     VAE_CONV[0] = a.vae_conv
     if (a.dit_attn, a.dit_mlp) != ("bf16", "bf16"):
         import iron_q4
