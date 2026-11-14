@@ -82,7 +82,12 @@ func (e *ironEngine) textDir() string { return filepath.Join(e.dir, "t5") }
 func (e *ironEngine) close() error { return e.closeDiT() }
 
 func (e *ironEngine) open(ctx context.Context, name string, swap bool) (*iron.Graph, error) {
-	return iron.OpenGraphWith(ctx, e.dev, filepath.Join(e.dir, name), iron.GraphOptions{SwapVariants: swap, Barrier: true})
+	return e.openWith(ctx, name, swap, false)
+}
+
+// openWith is open with iron.GraphOptions.Prefetch (anima.PrefetchFits decides).
+func (e *ironEngine) openWith(ctx context.Context, name string, swap, prefetch bool) (*iron.Graph, error) {
+	return iron.OpenGraphWith(ctx, e.dev, filepath.Join(e.dir, name), iron.GraphOptions{SwapVariants: swap, Prefetch: prefetch, Barrier: true})
 }
 
 // encode runs T5 on each prompt. An export with T5 in groups of layers (iron_chroma_parts.py's
@@ -93,7 +98,7 @@ func (e *ironEngine) open(ctx context.Context, name string, swap bool) (*iron.Gr
 func (e *ironEngine) encode(ctx context.Context, xs [][]float32, ns []int) ([]Cond, error) {
 	t0 := time.Now()
 	R := e.C.TextRows
-	g, err := e.open(ctx, "t5", true)
+	g, err := e.openWith(ctx, "t5", true, anima.PrefetchFits(e.vae, e.dir, []string{"t5"}, "t5"))
 	if err != nil {
 		return nil, err
 	}
@@ -188,12 +193,14 @@ func (d *dit) close() {
 func (e *ironEngine) openDiT(ctx context.Context, _ []float64) error {
 	d := &dit{}
 	var err error
+	stage := []string{"mods", "dit_in", "doubles", "singles", "dit_out"}
+	prefetch := anima.PrefetchFits(e.vae, e.dir, stage, "doubles", "singles")
 	for _, x := range []struct {
 		g    **iron.Graph
 		name string
 		swap bool
 	}{{&d.mods, "mods", false}, {&d.in, "dit_in", false}, {&d.doubles, "doubles", true}, {&d.singles, "singles", true}, {&d.out, "dit_out", false}} {
-		if *x.g, err = e.open(ctx, x.name, x.swap); err != nil {
+		if *x.g, err = e.openWith(ctx, x.name, x.swap, prefetch && x.swap); err != nil {
 			d.close()
 			return err
 		}

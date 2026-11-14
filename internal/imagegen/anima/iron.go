@@ -107,11 +107,12 @@ func (e *ironEngine) openDiT(ctx context.Context) error {
 	if e.ditBlocks != nil {
 		return nil
 	}
+	prefetch := !ResidentDiT && PrefetchFits(e.vae, e.dir, []string{"dit_in", "dit_blocks", "dit_out"}, "dit_blocks")
 	for _, x := range []struct {
 		g    **iron.Graph
 		name string
 	}{{&e.ditIn, "dit_in"}, {&e.ditBlocks, "dit_blocks"}, {&e.ditOut, "dit_out"}} {
-		g, err := iron.OpenGraphWith(ctx, e.dev, filepath.Join(e.dir, x.name), iron.GraphOptions{SwapVariants: !ResidentDiT})
+		g, err := iron.OpenGraphWith(ctx, e.dev, filepath.Join(e.dir, x.name), iron.GraphOptions{SwapVariants: !ResidentDiT, Prefetch: prefetch})
 		if err != nil {
 			e.closeDiT()
 			return err

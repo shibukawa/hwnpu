@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -117,6 +118,40 @@ func OpenVAE(ctx context.Context, dev *hwnpu.Device, dir string) (*VAE, error) {
 		v.sizes = append(v.sizes, n)
 	}
 	return v, nil
+}
+
+// Peak is the most Decode pins at once: a stage, with the next one beside it where
+// PrefetchLimit lets it load early.
+func (v *VAE) Peak() int64 {
+	var peak int64
+	for i, n := range v.sizes {
+		if i+1 < len(v.sizes) && (v.PrefetchLimit == 0 || n+v.sizes[i+1] <= v.PrefetchLimit) {
+			n += v.sizes[i+1]
+		}
+		peak = max(peak, n)
+	}
+	return peak
+}
+
+// PrefetchFits says whether the swapped graphs among the graphs in dirs (open together, under
+// root) may keep a second set of banks (iron.GraphOptions.Prefetch) without the stage pinning
+// more than the VAE's peak: a run's peak is then unchanged. Off when iron.Prefetch is.
+func PrefetchFits(v *VAE, root string, dirs []string, swapped ...string) bool {
+	if !iron.Prefetch || v == nil {
+		return false
+	}
+	var total int64
+	for _, d := range dirs {
+		pinned, banks, err := iron.PinnedBytes(filepath.Join(root, d))
+		if err != nil {
+			return false
+		}
+		total += pinned
+		if slices.Contains(swapped, d) {
+			total += banks
+		}
+	}
+	return total <= v.Peak()
 }
 
 // Close releases nothing: no stage stays on the device after Decode.
