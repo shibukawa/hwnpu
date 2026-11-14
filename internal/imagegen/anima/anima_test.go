@@ -55,3 +55,18 @@ func TestGridShape(t *testing.T) {
 		}
 	}
 }
+
+func TestCondRows(t *testing.T) {
+	c := make([]float32, 4*3)
+	if n := condRows(c, 3); n != 1 {
+		t.Fatalf("all zeros: %d rows, want 1", n)
+	}
+	c[1*3+2] = 0.5
+	if n := condRows(c, 3); n != 2 {
+		t.Fatalf("%d rows, want 2", n)
+	}
+	c[3*3] = -1
+	if n := condRows(c, 3); n != 4 {
+		t.Fatalf("%d rows, want 4", n)
+	}
+}
