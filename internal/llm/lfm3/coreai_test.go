@@ -3,6 +3,7 @@ package lfm3
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -115,5 +116,80 @@ func TestCoreAIFunctionsShareWeights(t *testing.T) {
 	}
 	if _, err := llm.ReadMeta(&llm.Manifest{Parts: []llm.PartRecord{{Path: two + "#f8"}}}); err != nil {
 		t.Errorf("ReadMeta of a function: %v", err)
+	}
+}
+
+// The programs of one model converted for Core AI together (llm.ConvertAI: one that generates and
+// one that reads prompts with the last row alone, split at the attention) share a Core AI program
+// for each part, a function each, and each has its own manifest with its programs without
+// weights; a manifest read back names files that are there.
+func TestConvertAISharesParts(t *testing.T) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	dir := t.TempDir()
+	opts := llm.Options{Seq: 8, Cache: 256, Paged: 64, Format: "lut4", Params: map[string]string{}}
+	pre := opts
+	pre.Seq, pre.LastRow = 16, true
+	base := filepath.Join(dir, "m-c256")
+	paths, err := llm.ConvertAI(Arch, cfg, w, base+"-q8-q16-last", "none", []llm.AIProgram{
+		{Out: base + "-q8", Name: "q8", Options: opts},
+		{Out: base + "-q16-last", Name: "q16-last", Options: pre},
+	}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths %v", paths)
+	}
+	var files [2][]string
+	for i, p := range paths {
+		man, err := llm.ReadManifest(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if man.Backend != llm.BackendCoreAI || man.Paged != 64 || man.Attention == nil || man.Mass == nil || man.Meta[llm.MetaArch] != Arch.Name {
+			t.Errorf("%s: %+v", p, man)
+		}
+		if len(man.Parts) != 2 {
+			t.Fatalf("%s: %d parts, want 2 (split at layer 1)", p, len(man.Parts))
+		}
+		for _, part := range man.Parts {
+			asset, fn := llm.SplitFunction(part.Path)
+			if fn != []string{"q8", "q16-last"}[i] {
+				t.Errorf("%s: function %q", part.Path, fn)
+			}
+			if _, err := os.Stat(filepath.Join(asset, "main.mlirb")); err != nil {
+				t.Error(err)
+			}
+			files[i] = append(files[i], asset)
+		}
+		for _, r := range []*llm.PartRecord{man.Attention, man.Mass} {
+			if _, err := os.Stat(filepath.Join(r.Path, "main.mlirb")); err != nil {
+				t.Error(err)
+			}
+		}
+		if meta, err := llm.ReadMeta(man); err != nil || meta[llm.MetaFormat] != "lut4" {
+			t.Errorf("%s: metadata %v (%v)", p, meta, err)
+		}
+	}
+	if fmt.Sprint(files[0]) != fmt.Sprint(files[1]) {
+		t.Errorf("the programs' parts are in different files: %v and %v", files[0], files[1])
+	}
+}
+
+// Convert for Core AI writes a program of one part as one .aimodel, not a manifest.
+func TestConvertAIOnePart(t *testing.T) {
+	cfg := tinyConfig()
+	w := llm.NewSynthetic(cfg)
+	out := filepath.Join(t.TempDir(), "m.aimodel")
+	path, err := llm.Convert(Arch, cfg, w, out, "none", 0, llm.Options{Seq: 8, Format: "fp16", Backend: llm.BackendCoreAI, Params: map[string]string{}}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != out {
+		t.Fatalf("path %s, want %s", path, out)
+	}
+	if _, err := os.Stat(filepath.Join(out, "main.mlirb")); err != nil {
+		t.Fatal(err)
 	}
 }

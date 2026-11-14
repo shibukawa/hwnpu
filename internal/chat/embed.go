@@ -47,7 +47,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return EmbedConfig{}, err
 	}
-	backend, err := llm.ProgramFormat(ctx, s.Backend)
+	backend, err := llm.NativeFormat(ctx, s.Backend)
 	if err != nil {
 		return EmbedConfig{}, err
 	}
@@ -72,18 +72,40 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	checkpoint := sync.OnceValues(func() (string, error) {
 		return c.Weights, fetch(ctx, s.Repo, "model.safetensors", c.Weights, s.Log)
 	})
+	var outs, names []string
+	var ps []program
+	missing := false
+	base := filepath.Join(pdir, fmt.Sprintf("embed%s-%s", a.Rev(), format))
 	for _, seq := range s.Seqs {
-		out := filepath.Join(pdir, fmt.Sprintf("embed%s-%s-s%d%s", a.Rev(), format, seq, programExt(backend)))
-		if !converted(out) {
-			if _, err := checkpoint(); err != nil {
-				return EmbedConfig{}, err
-			}
+		out := filepath.Join(pdir, fmt.Sprintf("embed%s-%s-s%d", a.Rev(), format, seq))
+		if backend != llm.BackendCoreAI { // Core AI's are checked by their export below
+			missing = missing || !converted(out+programExt(backend))
 		}
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, seq: seq, format: format}, s.Log)
-		if err != nil {
+		name := fmt.Sprintf("s%d", seq)
+		outs, names, base = append(outs, out), append(names, name), base+"-"+name
+		ps = append(ps, program{backend: backend, seq: seq, format: format})
+	}
+	if backend == llm.BackendCoreAI {
+		missing = !converted(base + programExt(backend))
+	}
+	if missing {
+		if _, err := checkpoint(); err != nil {
 			return EmbedConfig{}, err
 		}
-		c.Packages = append(c.Packages, path)
+	}
+	if backend == llm.BackendCoreAI {
+		// the lengths as the functions of one Core AI program, the weights once
+		if c.Packages, err = convertShared(ctx, c.ModelConfig, c.Weights, base, names, ps, s.Log); err != nil {
+			return EmbedConfig{}, err
+		}
+	} else {
+		for i, p := range ps {
+			path, err := convert(ctx, c.ModelConfig, c.Weights, outs[i]+programExt(backend), p, s.Log)
+			if err != nil {
+				return EmbedConfig{}, err
+			}
+			c.Packages = append(c.Packages, path)
+		}
 	}
 	shareOnce(pdir, s.Log)
 	if c.Weights, err = writeTables(s.Dir, a, model, checkpoint, s.Log); err != nil {

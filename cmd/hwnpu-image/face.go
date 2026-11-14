@@ -16,7 +16,6 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/vision/face"
 )
 
@@ -142,7 +141,7 @@ func (c *FaceDetectCmd) open(ctx context.Context, logf func(string, ...any)) (*f
 		if vendor == "apple" {
 			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		}
-		dev, backend, err := llm.OpenDevice(ctx, c.Backend, cacheDirOf(""), opts...)
+		dev, backend, err := openImageDevice(ctx, c.Backend, cacheDirOf(""), opts...)
 		if err != nil {
 			return nil, err
 		}

@@ -126,5 +126,5 @@ func ProgramFile(dir, name, backend string) (string, error) {
 
 // converted reports whether convert finished writing out (its NAME.done is there).
 func converted(out string) bool {
-	return exists(out[:len(out)-len(filepath.Ext(out))] + ".done")
+	return exists(doneFile(out))
 }

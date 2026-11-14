@@ -106,12 +106,17 @@ func chanNorm(g *graph, x *mlpackage.Var, path string) *mlpackage.Var {
 	return g.Add(g.Mul(g.Mul(xs, r), gm), bt)
 }
 
-// repeatChannels is x (1, C, H, W) with each channel repeated r times (repeat_interleave).
+// repeatChannels is x (1, C, H, W) with each channel repeated r times (repeat_interleave), as a
+// 1 x 1 convolution of 0/1 weights (exact in fp16): written with tile, the first stage at 1024 x
+// 1024 (32 x 32 latents) failed the Neural Engine's compiler on Core AI ("empty reset layer
+// candidates in SS cost model") once the q/k/v convolution followed it (design.md 16.189).
 func repeatChannels(g *graph, x *mlpackage.Var, r int) *mlpackage.Var {
-	C, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
-	t := g.Reshape(x, 1, C, 1, H*W)
-	t = g.Op("tile", map[string]any{"x": t, "reps": g.B.Ints(1, 1, int32(r), 1)}, 1, C, r, H*W)
-	return g.Reshape(t, 1, C*r, H, W)
+	C := x.Shape[1]
+	w := make([]float32, C*r*C)
+	for o := 0; o < C*r; o++ {
+		w[o*C+o/r] = 1
+	}
+	return g.Conv2D(x, "vae.decoder.repeat", w, nil, C*r, 1, 1)
 }
 
 func vaeIn(g *graph, z *mlpackage.Var, scaling float64) *mlpackage.Var {

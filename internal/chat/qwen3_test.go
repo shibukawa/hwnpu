@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/llm/qwen3"
 )
 
@@ -108,13 +112,41 @@ func TestQwen3NotPagedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := pagedChunk(m, 0); got != 0 {
+	if got := pagedChunk(m, 0, llm.BackendCoreML); got != 0 {
 		t.Errorf("pagedChunk(qwen3, 0) = %d, want 0 (whole)", got)
 	}
-	if got := pagedChunk(m, 1024); got != 1024 {
+	if got := pagedChunk(m, 1024, llm.BackendCoreML); got != 1024 {
 		t.Errorf("pagedChunk(qwen3, 1024) = %d, want 1024", got)
+	}
+	if got := pagedChunk(m, 0, llm.BackendCoreAI); got != paged.DefaultChunk {
+		t.Errorf("pagedChunk(qwen3, 0) on Core AI = %d, want %d", got, paged.DefaultChunk)
 	}
 	if got := m.UnpagedContext(); got != 4096 {
 		t.Errorf("UnpagedContext %d, want 4096", got)
+	}
+}
+
+// The whole program's cache is the longest whose keys and values a layer take at most 4 MiB:
+// 1024 for Qwen3-0.6B (8 kv heads of 128), 2048 for LFM3-1.7B (8 of 64), none for a model whose
+// weights twice are over what the Neural Engine holds for them.
+func TestWholeTiers(t *testing.T) {
+	q, err := qwen3.ParseConfig([]byte(`{"model_type": "qwen3", "num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 8, "head_dim": 128, "hidden_size": 1024, "max_position_embeddings": 40960}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := wholeTiers(q, 600<<20); !slices.Equal(got, []int{1024}) {
+		t.Errorf("Qwen3-0.6B: %v, want [1024]", got)
+	}
+	if got := wholeTiers(q, 2<<30); got != nil {
+		t.Errorf("weights of 2 GiB: %v, want none", got)
+	}
+	l, err := lfm3.ParseConfig([]byte(tinyLFM3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sh := l.PagedShape()
+	want := []int{min(4096, (4<<20)/(4*sh.KVHeads*sh.HeadDim)/512*512)}
+	if got := wholeTiers(l, 1<<20); !slices.Equal(got, want) {
+		t.Errorf("tiny LFM3 (%d kv heads of %d): %v, want %v", sh.KVHeads, sh.HeadDim, got, want)
 	}
 }

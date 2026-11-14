@@ -17,8 +17,10 @@ import (
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
 // again. 2: the time embedding on the host (TimeFile); 3: Gemma 2's GELU written with exp and
-// real_div (mil.Text); 4: the caption's second linear scaled down (mil.Caption).
-const ExportVersion = 4
+// real_div (mil.Text); 4: the caption's second linear scaled down (mil.Caption); 5: the
+// cross-attention's keys and values once a prompt (mil.Caption gives them, mil.Blocks takes
+// them), Core AI's exports of several sizes (Sizes), the VAE's channel repeat as a convolution.
+const ExportVersion = 5
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
@@ -34,10 +36,55 @@ type ConvertOptions struct {
 	Group, TextGroup int
 	// Only, when not empty, writes these parts alone (text, caption, time, blocks, final, vae).
 	Only map[string]bool
-	// Backend is the program format (llm.Options.Backend): Core ML packages (the default) or
-	// OpenVINO IR for Intel's NPU.
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default), Core
+	// AI programs (coreai) or OpenVINO IR for Intel's NPU.
 	Backend string
+	// Sizes are the picture sizes (width, height) a Core AI export holds, each part that depends on
+	// the size one program with a function each (llm.WriteAIFunctions: the weights once). Empty:
+	// DefaultSizes when Width x Height is one of them, else Width x Height alone. The other
+	// formats hold Width x Height alone.
+	Sizes [][2]int
 }
+
+// DefaultSizes are the sizes of a Core AI export by default: 512 x 512 and 1024 x 1024, one
+// export for both (the parts of the one not drawn are never loaded; their functions share the
+// weights' bytes with the other's).
+var DefaultSizes = [][2]int{{512, 512}, {1024, 1024}}
+
+// sizes is what o's export holds (after defaults).
+func (o ConvertOptions) sizes() [][2]int {
+	if o.Backend != llm.BackendCoreAI {
+		return [][2]int{{o.Width, o.Height}}
+	}
+	if len(o.Sizes) > 0 {
+		return o.Sizes
+	}
+	for _, s := range DefaultSizes {
+		if s == [2]int{o.Width, o.Height} {
+			return DefaultSizes
+		}
+	}
+	return [][2]int{{o.Width, o.Height}}
+}
+
+// SizeFunction is the function of a Core AI program of several sizes that runs at w x h.
+func SizeFunction(w, h int) string { return fmt.Sprintf("s%dx%d", w, h) }
+
+// ProgramExt is the extension of a program of the format backend.
+func ProgramExt(backend string) string {
+	switch backend {
+	case llm.BackendIntel:
+		return ".xml"
+	case llm.BackendCoreAI:
+		return ".aimodel"
+	}
+	return ".mlpackage"
+}
+
+// CaptionFormat is the caption program's weight format: it runs once a prompt and is closed
+// before the steps, so its keys' and values' projections cost the steps nothing and take fp16
+// (new-model-checklist 5.2: a pass run once a prompt takes a format up for free).
+const CaptionFormat = "fp16"
 
 // Formats are the default weight formats of Gemma 2 and the DiT of the Sana name (a models.yaml
 // name or the repository's): int8 for Gemma 2 (its 5.2 GB at fp16 would be a dozen programs;
@@ -96,14 +143,22 @@ func (o *ConvertOptions) defaults(name string) {
 	}
 }
 
-// Convert writes a Core ML (or OpenVINO IR, o.Backend) export of the Sana repository root (transformer/, vae/,
-// scheduler/; Gemma 2's text_encoder/ and tokenizer/ in text, which may be root) into out: the
-// programs, text/ (the tokenizer and the embedding table, bf16, as the IRON export's), model.json
-// and manifest.json.
+// Convert writes a Core ML (or Core AI's, or OpenVINO IR, o.Backend) export of the Sana
+// repository root (transformer/, vae/, scheduler/; Gemma 2's text_encoder/ and tokenizer/ in
+// text, which may be root) into out: the programs, text/ (the tokenizer and the embedding table,
+// bf16, as the IRON export's), model.json and manifest.json.
 func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	o.defaults(filepath.Base(root))
 	if log == nil {
 		log = io.Discard
+	}
+	sizes := o.sizes()
+	dcs := make([]mil.Dit, len(sizes))
+	for i, sz := range sizes {
+		var err error
+		if dcs[i], err = mil.ReadDit(root, sz[0], sz[1]); err != nil {
+			return err
+		}
 	}
 	dc, err := mil.ReadDit(root, o.Width, o.Height)
 	if err != nil {
@@ -148,31 +203,58 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	}
 	groups := mil.TextGroups(gc.Layers, o.TextGroup)
 	stages := mil.VaeStages(o.Width, o.Height)
-	total := len(groups) + 2 + dc.Layers/o.Group + len(stages)
-	written := 0
-	write := func(kind string, p *mil.Part, format string) (string, error) {
+	// the programs are written side by side once all are listed (jobs.Run)
+	jobs := console.NewJobs(log)
+	ext := ProgramExt(o.Backend)
+	opts := func(kind, format string) llm.Options {
 		opts := llm.Options{Backend: o.Backend, Format: format}
 		if kind == "text" {
 			opts.Quant = o.TextQuant
 		}
-		name := p.Name + ".mlpackage"
-		if o.Backend == llm.BackendIntel {
-			name = p.Name + ".xml"
-		}
+		return opts
+	}
+	write := func(kind string, p *mil.Part, format string) (string, error) {
+		name := p.Name + ext
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
-		written++
-		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
-			bar.Done("failed")
-			return "", fmt.Errorf("sana: %s: %w", p.Name, err)
-		}
-		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
+		jobs.Add(name, func() (string, error) {
+			if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts(kind, format), nil); err != nil {
+				return "", fmt.Errorf("sana: %s: %w", p.Name, err)
+			}
+			return format, nil
+		})
 		return name, nil
 	}
+	// writeSized writes the part of each size (part(dc)): one program as write does for one size,
+	// else a Core AI program with a function each (SizeFunction), the weights once. The names are
+	// the manifest's, one a size.
+	writeSized := func(kind string, part func(c mil.Dit) *mil.Part, format string) ([]string, error) {
+		if len(sizes) == 1 {
+			name, err := write(kind, part(dcs[0]), format)
+			return []string{name}, err
+		}
+		name := part(dcs[0]).Name + ext
+		var names []string
+		var fns []llm.AIFunction
+		for i, sz := range sizes {
+			f := SizeFunction(sz[0], sz[1])
+			names = append(names, name+"#"+f)
+			fns = append(fns, llm.AIFunction{Name: f, Model: part(dcs[i]), Options: opts(kind, format)})
+		}
+		if len(o.Only) > 0 && !o.Only[kind] {
+			return names, nil
+		}
+		jobs.Add(name, func() (string, error) {
+			if _, err := llm.WriteAIFunctions(filepath.Join(out, name), w, fns); err != nil {
+				return "", fmt.Errorf("sana: %s: %w", name, err)
+			}
+			return fmt.Sprintf("%s, %d sizes", format, len(sizes)), nil
+		})
+		return names, nil
+	}
 	m := &ProgramManifest{Backend: o.Backend, Version: ExportVersion,
-		Formats: map[string]string{"text": o.TextFormat, "dit": o.DitFormat, "vae": "fp16"},
+		Formats: map[string]string{"text": o.TextFormat, "caption": CaptionFormat, "dit": o.DitFormat, "vae": "fp16"},
 		Dit: DitConfig{Width: o.Width, Height: o.Height, Hidden: dc.Hidden, Layers: dc.Layers, Latent: dc.Latent,
 			TextRows: mil.TextRows, Group: o.Group,
 			VAEScale: mil.VAEScale, Caption: dc.Caption},
@@ -184,7 +266,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		}
 		m.TextParts = append(m.TextParts, name)
 	}
-	if m.Caption, err = write("caption", mil.Caption(dc), o.DitFormat); err != nil {
+	if m.Caption, err = write("caption", mil.Caption(dc), CaptionFormat); err != nil {
 		return err
 	}
 	m.Time = TimeFile
@@ -193,22 +275,46 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 			return err
 		}
 	}
+	sized := make([]SizeParts, len(sizes))
+	for i, sz := range sizes {
+		sized[i] = SizeParts{Width: sz[0], Height: sz[1]}
+	}
 	for first := 0; first < dc.Layers; first += o.Group {
-		name, err := write("blocks", mil.Blocks(dc, first, o.Group), o.DitFormat)
+		names, err := writeSized("blocks", func(c mil.Dit) *mil.Part { return mil.Blocks(c, first, o.Group) }, o.DitFormat)
 		if err != nil {
 			return err
 		}
-		m.Blocks = append(m.Blocks, name)
+		for i := range sized {
+			sized[i].Blocks = append(sized[i].Blocks, names[i])
+		}
 	}
-	if m.Final, err = write("final", mil.Final(dc), o.DitFormat); err != nil {
+	names, err := writeSized("final", mil.Final, o.DitFormat)
+	if err != nil {
 		return err
 	}
-	for i := range stages {
-		name, err := write("vae", mil.Vae(o.Width, o.Height, i, vcfg.Scaling), "fp16")
+	for i := range sized {
+		sized[i].Final = names[i]
+	}
+	for s := range stages {
+		names, err := writeSized("vae", func(c mil.Dit) *mil.Part { return mil.Vae(c.Width, c.Height, s, vcfg.Scaling) }, "fp16")
 		if err != nil {
 			return err
 		}
-		m.Vae = append(m.Vae, name)
+		for i := range sized {
+			sized[i].Vae = append(sized[i].Vae, names[i])
+		}
+	}
+	for _, sp := range sized {
+		if sp.Width == o.Width && sp.Height == o.Height {
+			m.Blocks, m.Final, m.Vae = sp.Blocks, sp.Final, sp.Vae
+		}
+	}
+	if len(sized) > 1 {
+		m.Sizes = sized
+	}
+	// a job takes up to about 2 GB (Gemma 2's layers, the 1.6B DiT's groups)
+	if err := jobs.Run(2 << 30); err != nil {
+		return err
 	}
 	if len(o.Only) == 0 || o.Only["text"] {
 		if err := writeTextFiles(text, out, w, gc); err != nil {

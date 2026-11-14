@@ -223,9 +223,11 @@ type Paged interface {
 // Unpaged is a Paged model that runs faster in one piece, with its cache in the program, than
 // split at its attention: every layer of Qwen3 attends, so a split model calls the Neural Engine
 // twice a layer (on an M1, Qwen3-0.6B generates 11 to 12 tokens/s whole with a cache of 4096,
-// 5.9 split in chunks of 1024 and 3 in chunks of 8192). hwnpu-chat splits it only when told
-// (-paged N), and gives it a cache of UnpagedContext tokens otherwise: the longest whole program
-// Core ML runs (Qwen3-0.6B's 28 layers of keys and values fail to predict from 8192).
+// 5.9 split in chunks of 1024 and 3 in chunks of 8192, with Core ML). hwnpu-chat splits it only
+// when told (-paged N), and gives it a cache of UnpagedContext tokens otherwise: the longest
+// whole program Core ML runs (Qwen3-0.6B's 28 layers of keys and values fail to predict from
+// 8192). With Core AI it splits it anyway: on an M3, Qwen3-0.6B generates 19 tokens/s whole and
+// 36 split, its attention over chunks of 1024 while the conversation fits (docs/design.md 16.187).
 type Unpaged interface {
 	UnpagedContext() int
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -254,8 +254,8 @@ type siglipFlags struct {
 }
 
 // openSiglip loads SigLIP 2 for --model: on AMD's NPU its export of tools/amd/iron_siglip2.py,
-// on Apple's Neural Engine the Core ML packages siglip.Prepare converts on the first run (the
-// checkpoint downloaded), or an export's directory of either. The closer releases it and the
+// on Apple's Neural Engine the Core AI programs siglip.Prepare converts on the first run (the
+// checkpoint downloaded; with --cpu the Core ML packages the CPU interpreter runs), or an export's directory of either. The closer releases it and the
 // device.
 func openSiglip(ctx context.Context, model string, f siglipFlags, lw io.Writer, logf func(string, ...any)) (*siglip.Model, func(), error) {
 	dir := expandHome(model)
@@ -268,11 +268,13 @@ func openSiglip(ctx context.Context, model string, f siglipFlags, lw io.Writer, 
 		if f.CPU {
 			format = llm.BackendCoreML // what the CPU interpreter runs
 		} else if chat.HereVendor() != "amd" || f.Backend != "" {
-			format, _ = llm.ProgramFormat(ctx, f.Backend)
+			if format, err = imageFormat(ctx, f.Backend); err != nil && runtime.GOOS == "darwin" {
+				return nil, nil, err
+			}
 		}
 		switch format {
-		case llm.BackendCoreML:
-			if dir, err = siglip.Prepare(ctx, siglip.Setup{Dir: chat.ModelsDir(), Repo: m.Source(), Name: m.Name, Log: lw}); err != nil {
+		case llm.BackendCoreML, llm.BackendCoreAI:
+			if dir, err = siglip.Prepare(ctx, siglip.Setup{Dir: chat.ModelsDir(), Repo: m.Source(), Name: m.Name, Format: format, Log: lw}); err != nil {
 				return nil, nil, err
 			}
 		case "":
@@ -289,9 +291,9 @@ func openSiglip(ctx context.Context, model string, f siglipFlags, lw io.Writer, 
 	}
 	var dev *hwnpu.Device
 	switch {
-	case x.Format == siglip.FormatCoreML && f.CPU:
-	case x.Format == siglip.FormatCoreML:
-		d, _, err := llm.OpenDevice(ctx, cmp.Or(llm.DeviceBackend(f.Backend), llm.BackendCoreML), cacheDirOf(""), hwnpu.WithPlacement(hwnpu.PlacementStrict))
+	case siglip.IsProgramFormat(x.Format) && f.CPU:
+	case siglip.IsProgramFormat(x.Format):
+		d, _, err := llm.OpenDevice(ctx, exportDevice(x.Format, f.Backend), cacheDirOf(""), hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		if err != nil {
 			return nil, nil, err
 		}

@@ -55,9 +55,10 @@ type tier struct {
 	stages  [][]*Part // the parts between two attention layers
 	attend  []int     // the layer attended after each stage but the last
 	attn    *attention
-	paged   int  // the chunk length
-	context int  // the longest sequence (the manifest's Cache)
-	kvOnly  bool // the parts write the caches and output no logits (llm.Manifest.KVOnly)
+	smaller []*attention // over shorter chunks, shortest first (llm.Manifest.Smaller)
+	paged   int          // the chunk length
+	context int          // the longest sequence (the manifest's Cache)
+	kvOnly  bool         // the parts write the caches and output no logits (llm.Manifest.KVOnly)
 }
 
 // attention is the loaded program without weights that attends over one chunk of the cache.
@@ -70,6 +71,7 @@ type attention struct {
 	dev        *hwnpu.Device
 	placement  hwnpu.PlacementReport
 	mass       *mass // the two-level attention's, nil when the manifest has none
+	chunk      int   // of a shorter chunk's (llm.Manifest.Smaller); 0 for the manifest's Paged
 }
 
 // mass is the loaded program without weights that weighs a chunk of bucket summaries for the
@@ -198,15 +200,48 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 		}
 		t.stages = append(t.stages, cur)
 	}
+	a, err := loadAttention(ctx, c, man.Attention.Path)
+	if a != nil {
+		t.attn = a
+	}
+	if err != nil {
+		return err
+	}
+	for _, r := range man.Smaller {
+		// a shorter chunk's program the NPU does not take all of is left out: the host's
+		// cache stays in the next chunk that has one (decode.Program.Smaller)
+		sa, err := loadAttention(ctx, c, r.Path)
+		if err == nil && !sa.placement.OnNPU() {
+			err = fmt.Errorf("not all on the NPU")
+		}
+		if err != nil {
+			if sa != nil {
+				sa.close()
+			}
+			continue
+		}
+		sa.chunk = r.Chunk()
+		t.smaller = append(t.smaller, sa)
+	}
+	if man.Mass != nil {
+		if a.mass, err = loadMass(ctx, c, man.Mass.Path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loadAttention loads an attention program without weights over one chunk of the cache. On an
+// error it returns what it loaded, to close.
+func loadAttention(ctx context.Context, c *Chain, path string) (*attention, error) {
 	a := &attention{dev: c.dev}
-	t.attn = a
 	var err error
-	if a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: man.Attention.Path, Units: c.units}); err != nil {
-		return fmt.Errorf("chain: the attention program (%s): %w", man.Attention.Path, err)
+	if a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units}); err != nil {
+		return a, fmt.Errorf("chain: the attention program (%s): %w", path, err)
 	}
 	a.placement = a.g.Placement()
 	if a.req, err = a.g.NewRequest(); err != nil {
-		return err
+		return a, err
 	}
 	for _, arg := range a.g.Args() {
 		switch arg.Name {
@@ -222,11 +257,11 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 		}
 		b, err := c.dev.AllocBuffer(arg.Bytes)
 		if err != nil {
-			return err
+			return a, err
 		}
 		a.bufs = append(a.bufs, b)
 		if err := a.req.Bind(arg.Index, b); err != nil {
-			return err
+			return a, err
 		}
 		switch arg.Name {
 		case "q":
@@ -240,14 +275,9 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 		}
 	}
 	if a.q == nil || a.o == nil || a.m == nil || a.l == nil {
-		return fmt.Errorf("chain: the attention program does not have q, o, m and l")
+		return a, fmt.Errorf("chain: the attention program does not have q, o, m and l")
 	}
-	if man.Mass != nil {
-		if a.mass, err = loadMass(ctx, c, man.Mass.Path); err != nil {
-			return err
-		}
-	}
-	return nil
+	return a, nil
 }
 
 // loadMass loads the mass program of the two-level attention.
@@ -484,6 +514,10 @@ func (t *tier) close() {
 		t.attn.close()
 		t.attn = nil
 	}
+	for _, a := range t.smaller {
+		a.close()
+	}
+	t.smaller = nil
 	for _, p := range t.parts {
 		if p.req != nil {
 			p.req.Close()
@@ -518,6 +552,9 @@ func (t *tier) program(ctx context.Context) decode.Program {
 	}
 	if t.attn != nil {
 		p.Attend, p.Context, p.Attn, p.NoLogits = t.attend, t.context, t.attn.program(ctx, t.paged), t.kvOnly
+		for _, a := range t.smaller {
+			p.Smaller = append(p.Smaller, a.program(ctx, a.chunk))
+		}
 		p.RunPart = func(i int) error {
 			for _, part := range t.stages[i] {
 				for _, b := range part.ins {
@@ -593,6 +630,19 @@ func (c *Chain) HasMass() bool { return c.cur.attn != nil && c.cur.attn.mass != 
 
 // Paged is the chunk length of a model split at its attention, 0 for another.
 func (c *Chain) Paged() int { return c.cur.paged }
+
+// Chunks is the chunk lengths a model split at its attention attends over, shortest first: those
+// of the shorter chunks' programs that loaded on the NPU (llm.Manifest.Smaller), then Paged.
+func (c *Chain) Chunks() []int {
+	var cs []int
+	for _, a := range c.cur.smaller {
+		cs = append(cs, a.chunk)
+	}
+	if c.cur.paged > 0 {
+		cs = append(cs, c.cur.paged)
+	}
+	return cs
+}
 
 // Run runs the parts in order.
 func (c *Chain) Run(ctx context.Context) error { return c.cur.run(ctx) }

@@ -101,16 +101,15 @@ func (c *PoseCmd) Run(ctx context.Context) error {
 		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
 		return c.estimate(ctx, e, logf)
 	}
-	backend := llm.BackendCoreML
+	backend := llm.BackendCoreML // what the CPU interpreter runs
 	var dev *hwnpu.Device
 	if !c.CPU {
-		var device string
-		if dev, device, err = llm.OpenDevice(ctx, c.Backend, cache); err != nil {
+		if dev, backend, err = openImageDevice(ctx, c.Backend, cache); err != nil {
 			return err
 		}
 		defer dev.Close()
-		if backend = llm.ProgramBackend(device); backend == "" {
-			return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--device cpu runs it on the CPU)", device)
+		if backend == "" {
+			return fmt.Errorf("%s runs neither Core AI programs nor OpenVINO IR (--device cpu runs it on the CPU)", dev.Info().Backend)
 		}
 	}
 	setup.Backend = backend

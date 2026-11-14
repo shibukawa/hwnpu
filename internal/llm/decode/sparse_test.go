@@ -99,19 +99,22 @@ func dec(b []byte) []float32 {
 }
 
 // fakeAttention is the attention program (and the mass program) in Go, its outputs in fp16.
-func fakeAttention(q int, mass bool) *Attention {
-	a := &Attention{Chunk: fChunk, Q: make([]byte, 2*fH*q*fD), O: make([]byte, 2*fH*q*fD), M: make([]byte, 2*fH*q), L: make([]byte, 2*fH*q)}
+func fakeAttention(q int, mass bool) *Attention { return fakeAttentionOf(q, fChunk, mass) }
+
+// fakeAttentionOf is fakeAttention over chunks of chunk positions (with a mass program: fChunk).
+func fakeAttentionOf(q, chunk int, mass bool) *Attention {
+	a := &Attention{Chunk: chunk, Q: make([]byte, 2*fH*q*fD), O: make([]byte, 2*fH*q*fD), M: make([]byte, 2*fH*q), L: make([]byte, 2*fH*q)}
 	a.NewBuf = func(n int) (Buf, error) { return cpuBuf(make([]byte, n)), nil }
 	scale := 1 / math.Sqrt(fD)
 	scores := func(qs, ks, mask []float32, h, t int) []float64 {
 		g := h / (fH / fG)
-		sc := make([]float64, fChunk)
-		for c := range fChunk {
+		sc := make([]float64, chunk)
+		for c := range chunk {
 			var dot float64
 			for i := range fD {
-				dot += float64(qs[(h*q+t)*fD+i]) * float64(ks[(g*fChunk+c)*fD+i])
+				dot += float64(qs[(h*q+t)*fD+i]) * float64(ks[(g*chunk+c)*fD+i])
 			}
-			sc[c] = dot*scale + float64(mask[t*fChunk+c])
+			sc[c] = dot*scale + float64(mask[t*chunk+c])
 		}
 		return sc
 	}
@@ -129,7 +132,7 @@ func fakeAttention(q int, mass bool) *Attention {
 					e := math.Exp(s - top)
 					sum += e
 					for i := range fD {
-						acc[i] += e * float64(vs[(g*fChunk+c)*fD+i])
+						acc[i] += e * float64(vs[(g*chunk+c)*fD+i])
 					}
 				}
 				for i := range fD {

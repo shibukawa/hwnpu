@@ -108,7 +108,7 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 			}
 			return "CPU"
 		}
-		if m.Kind == chat.KindPose || m.Kind == chat.KindDetect || m.Kind == chat.KindOCR { // converted on the first run, for Core ML or OpenVINO
+		if m.Kind == chat.KindPose || m.Kind == chat.KindDetect || m.Kind == chat.KindOCR { // converted on the first run, for Core AI or OpenVINO
 			if d, _, err := chat.ConvertedDevice(m, vendor, ""); err == nil && d == "cpu" {
 				return "CPU"
 			}
@@ -120,21 +120,21 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 		if m.Kind == chat.KindLabel && strings.EqualFold(vendor, hwnpu.VendorApple.String()) { // siglip.Prepare
 			return "converted on first run"
 		}
-		if m.Kind == chat.KindImage && coremlImage(m.Family, vendor) {
+		if m.Kind == chat.KindImage && convertedImage(m.Family, vendor) {
 			return "converted on first run"
 		}
 		return "-"
 	}, kinds...)
 }
 
-// coremlImage reports whether the image family converts for this machine's NPU (vendor, as
-// hwnpu.Vendor's String) on its first run: Anima on Apple's and Intel's, Sana and Qwen-Image on
-// Apple's.
-func coremlImage(family, vendor string) bool {
+// convertedImage reports whether the image family converts for this machine's NPU (vendor, as
+// hwnpu.Vendor's String) on its first run: Anima and Sana on Apple's (Core AI) and Intel's,
+// Qwen-Image and Chroma on Apple's.
+func convertedImage(family, vendor string) bool {
 	switch v := strings.ToLower(vendor); {
-	case strings.HasPrefix(family, "anima"):
+	case strings.HasPrefix(family, "anima"), strings.HasPrefix(family, "sana"):
 		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
-	case strings.HasPrefix(family, "sana"), strings.HasPrefix(family, "qwen-image"):
+	case strings.HasPrefix(family, "qwen-image"), strings.HasPrefix(family, "chroma"):
 		return v == strings.ToLower(hwnpu.VendorApple.String())
 	}
 	return false

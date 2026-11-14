@@ -33,7 +33,8 @@ type Setup struct {
 	// worse in 4 bit tables; int8 on Intel's NPU). The encoders stay in fp16.
 	Format string
 	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
-	// what the CPU interpreter runs) or OpenVINO IR for Intel's NPU, kept in Dir/intel.
+	// what the CPU interpreter runs), OpenVINO IR for Intel's NPU, kept in Dir/intel, or Core AI's
+	// programs (.aimodel), kept in Dir/coreai.
 	Backend string
 	Log     io.Writer
 }

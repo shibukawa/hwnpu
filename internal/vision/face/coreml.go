@@ -74,10 +74,7 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	if err := r.close(); err != nil {
 		return err
 	}
-	ext := ".mlpackage"
-	if r.backend == llm.BackendIntel {
-		ext = ".xml"
-	}
+	ext := llm.ProgramExt(r.backend) // .aimodel, .mlpackage or .xml
 	path := filepath.Join(r.dir, fmt.Sprintf("yunet-r%d-fp16-%dx%d%s", ProgramRevision, W, H, ext))
 	p := r.program(W, H)
 	if _, err := os.Stat(path + ".done"); err != nil {

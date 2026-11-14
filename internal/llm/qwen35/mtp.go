@@ -102,6 +102,11 @@ func (c *MTP) Build(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins 
 // BuildCached writes the program with its state held by the host (llm.Cached): the KV cache of
 // layer 1, kv_k_1 and kv_v_1, and the inputs of Config.StepInputs.
 func (c *MTP) BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error) {
+	if len(opts.HeadRows) > 0 {
+		// the drafts of a part of the vocabulary (llm.Options.HeadRows): the model checks each,
+		// so a token outside it only goes undrafted
+		w = llm.SelectRows(w, c.Head(), opts.HeadRows)
+	}
 	return buildCached(b, c.Config, w, opts, true, false)
 }
 

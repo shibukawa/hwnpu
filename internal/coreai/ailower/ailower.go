@@ -12,6 +12,7 @@
 package ailower
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -52,8 +53,10 @@ type Feature struct {
 // of each of its functions (LowerFunctions).
 type Program struct {
 	Bytecode []byte
-	Inputs   []Feature
-	Outputs  []Feature
+	// Size is the bytecode's length (WriteMany writes it without holding it: Bytecode is nil)
+	Size    int64
+	Inputs  []Feature
+	Outputs []Feature
 	// Functions are the inputs and outputs of each function by name when there are several
 	// (LowerFunctions); nil for one function, main.
 	Functions map[string]IO
@@ -73,7 +76,7 @@ func Lower(fn *milspec.Function, weights io.ReaderAt) (*Program, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Program{Bytecode: l.asset(graph), Inputs: io.Inputs, Outputs: io.Outputs}, nil
+	return &Program{Bytecode: l.w.Bytes(l.asset(graph)), Inputs: io.Inputs, Outputs: io.Outputs}, nil
 }
 
 // LowerFunctions lowers the main functions of several .mlpackages into one program with a function
@@ -118,23 +121,90 @@ func (e *funcError) Unwrap() error { return e.err }
 // written once: two passes over the same layers (a DiT's text pass and its image blocks) keep
 // them once in the program and in Core AI's cache.
 func LowerMany(fns []*milspec.Function, weights []io.ReaderAt, names []string) (*Program, error) {
-	if len(fns) != len(names) || len(fns) != len(weights) || len(fns) == 0 {
-		return nil, fmt.Errorf("ailower: %d functions, %d weights and %d names", len(fns), len(weights), len(names))
+	w := newWriter()
+	p, top, err := lowerMany(w, fns, weights, names)
+	if err != nil {
+		return nil, err
 	}
-	w, blobs := newWriter(), map[[32]byte]string{}
+	p.Bytecode = w.Bytes(top)
+	return p, nil
+}
+
+// SpillKeep is the weights' bytes WriteMany holds in memory before it writes them to its file: a
+// program under it is written as from memory, a larger one takes this much (written to the disk
+// past it, the file is read back as the program is written: 54 s against 61 s from memory for
+// Qwen-Image-2.1 Turbo six at a time on a RAM disk, but 88 s against 65 s on a full Btrfs disk).
+var SpillKeep int64 = 512 << 20
+
+// WriteMany lowers fns as LowerMany does and writes the program at dir as WriteAsset does, with
+// its weights past SpillKeep held in a file next to dir (dir.blobs.tmp, removed) until the
+// bytecode is written from it: the program is in memory up to SpillKeep, then a weight only while
+// it is lowered. lowered, when not
+// nil, is called once the weights have all been read, before the program is written: the caller
+// can remove the weight files then, so that a program takes two files of its size on the disk
+// at a time, not three. The Program has no Bytecode; Size is its length.
+func WriteMany(dir string, fns []*milspec.Function, weights []io.ReaderAt, names []string, lowered func() error) (*Program, error) {
+	return writeMany(dir, fns, weights, names, false, lowered)
+}
+
+// WriteOne is WriteMany for one function, main, as Lower lowers it (the asset of one function: no
+// file of each function's inputs and outputs).
+func WriteOne(dir string, fn *milspec.Function, weights io.ReaderAt, lowered func() error) (*Program, error) {
+	p, err := writeMany(dir, []*milspec.Function{fn}, []io.ReaderAt{weights}, []string{"main"}, true, lowered)
+	var se *funcError
+	if errors.As(err, &se) {
+		return nil, se.err
+	}
+	return p, err
+}
+
+func writeMany(dir string, fns []*milspec.Function, weights []io.ReaderAt, names []string, one bool, lowered func() error) (*Program, error) {
+	spill, err := os.Create(strings.TrimSuffix(dir, string(filepath.Separator)) + ".blobs.tmp")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(spill.Name())
+	defer spill.Close()
+	w := newWriter()
+	w.Spill(spill, SpillKeep)
+	p, top, err := lowerMany(w, fns, weights, names)
+	if err != nil {
+		return nil, err
+	}
+	if one {
+		p.Functions = nil
+	}
+	if lowered != nil {
+		if err := lowered(); err != nil {
+			return nil, err
+		}
+	}
+	if err := p.writeAsset(dir, func(dst io.Writer) (int64, error) { return w.WriteTo(dst, top) }); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// lowerMany is LowerMany into w, returning the program without its bytecode and the top block
+// that w writes as it.
+func lowerMany(w *mlirbc.Writer, fns []*milspec.Function, weights []io.ReaderAt, names []string) (*Program, *mlirbc.BlockW, error) {
+	if len(fns) != len(names) || len(fns) != len(weights) || len(fns) == 0 {
+		return nil, nil, fmt.Errorf("ailower: %d functions, %d weights and %d names", len(fns), len(weights), len(names))
+	}
+	blobs := map[[32]byte]string{}
 	p := &Program{Functions: map[string]IO{}}
 	var graphs []graph
 	for i, fn := range fns {
 		if _, dup := p.Functions[names[i]]; dup {
-			return nil, fmt.Errorf("ailower: function %s twice", names[i])
+			return nil, nil, fmt.Errorf("ailower: function %s twice", names[i])
 		}
 		block := fn.GetBlockSpecializations()[fn.GetOpset()]
 		if block == nil {
-			return nil, &funcError{i, fmt.Errorf("ailower: the function has no block for opset %q", fn.GetOpset())}
+			return nil, nil, &funcError{i, fmt.Errorf("ailower: the function has no block for opset %q", fn.GetOpset())}
 		}
 		io, g, err := newLowerer(w, blobs, weights[i]).lower(fn, block, names[i])
 		if err != nil {
-			return nil, &funcError{i, err}
+			return nil, nil, &funcError{i, err}
 		}
 		p.Functions[names[i]] = io
 		graphs = append(graphs, g)
@@ -142,8 +212,7 @@ func LowerMany(fns []*milspec.Function, weights []io.ReaderAt, names []string) (
 			p.Inputs, p.Outputs = io.Inputs, io.Outputs
 		}
 	}
-	p.Bytecode = newLowerer(w, blobs, nil).asset(graphs...)
-	return p, nil
+	return p, newLowerer(w, blobs, nil).asset(graphs...), nil
 }
 
 func newWriter() *mlirbc.Writer {
@@ -220,16 +289,40 @@ func LowerPackage(dir string) (*Program, error) {
 // WriteAsset writes the program as an .aimodel directory (main.mlirb, main.hash,
 // metadata.json) at dir.
 func (p *Program) WriteAsset(dir string) error {
+	return p.writeAsset(dir, func(dst io.Writer) (int64, error) {
+		n, err := dst.Write(p.Bytecode)
+		return int64(n), err
+	})
+}
+
+// writeAsset is WriteAsset with main.mlirb's bytes from write, its hash taken as they are written.
+func (p *Program) writeAsset(dir string, write func(io.Writer) (int64, error)) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	sum := sha256.Sum256(p.Bytecode)
+	f, err := os.Create(filepath.Join(dir, "main.mlirb"))
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	bw := bufio.NewWriterSize(io.MultiWriter(f, h), 1<<20)
+	n, err := write(bw)
+	if err == nil {
+		err = bw.Flush()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	p.Size = n
 	meta := fmt.Sprintf("{\n  \"assetVersion\" : \"2.0\",\n  \"producer\" : %q,\n  \"creationDate\" : %q\n}", Producer, time.Now().UTC().Format("20060102T150405Z"))
 	io, err := json.MarshalIndent(struct{ Inputs, Outputs []Feature }{p.Inputs, p.Outputs}, "", "  ")
 	if err != nil {
 		return err
 	}
-	files := map[string][]byte{"main.mlirb": p.Bytecode, "main.hash": sum[:], "metadata.json": []byte(meta)}
+	files := map[string][]byte{"main.hash": h.Sum(nil), "metadata.json": []byte(meta)}
 	if p.Functions == nil {
 		files[IOFile] = io
 	}
@@ -321,6 +414,10 @@ func (l *lowerer) lower(fn *milspec.Function, block *milspec.Block, name string)
 				err = e.err
 				return
 			}
+			if e := mlirbc.SpillError(r); e != nil {
+				err = e
+				return
+			}
 			panic(r)
 		}
 	}()
@@ -393,7 +490,7 @@ func (l *lowerer) lower(fn *milspec.Function, block *milspec.Block, name string)
 }
 
 // asset is the bytecode of the serialization asset holding the graphs.
-func (l *lowerer) asset(graphs ...graph) []byte {
+func (l *lowerer) asset(graphs ...graph) *mlirbc.BlockW {
 	asset, _ := l.w.NewBlock()
 	for _, g := range graphs {
 		asset.Op("aicode.dataflow.graph_v1", g.props, nil, nil, g.body)
@@ -402,7 +499,7 @@ func (l *lowerer) asset(graphs ...graph) []byte {
 	ver := l.w.Attr("aicode", fmt.Sprintf("#aicode.serialization.integer<(32bit unsigned) %d>", assetVersion))
 	absent := mlirbc.Prop{Attr: -1, Optional: true}
 	top.Op("aicode.serialization.asset", []mlirbc.Prop{absent, {Attr: ver, Optional: true}}, nil, nil, asset)
-	return l.w.Bytes(top)
+	return top
 }
 
 func (l *lowerer) prop(text string) mlirbc.Prop { return mlirbc.Prop{Attr: l.w.Attr("aicode", text)} }

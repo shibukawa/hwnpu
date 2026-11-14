@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,10 +28,15 @@ func Convert(a *Arch, model Model, w Weights, out, targetName string, nParts int
 // ConvertTiers is Convert with the model written once per KV cache length in caches (increasing),
 // as the tiers of out.parts.json: out.cN.mlpackage or out.cN.partK.mlpackage for each. A step
 // costs in proportion to the cache's length, so a sequence runs on the shortest tier and moves up
-// as it grows (internal/llm/chain). With one length it is Convert.
+// as it grows (internal/llm/chain). With one length it is Convert. For Core AI (opts.Backend
+// "coreai") the program is out.aimodel, or split, ConvertAI's of one program: out.parts.json
+// listing out.partK.aimodel#main; it takes no tiers.
 func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nParts int, caches []int, opts Options, log io.Writer) (string, error) {
 	if len(caches) == 0 {
 		caches = []int{opts.Cache}
+	}
+	if opts.Backend == BackendCoreAI {
+		return convertAIOne(a, model, w, out, targetName, nParts, caches, opts, log)
 	}
 	if opts.LastRow && (!a.LastRow || caches[0] <= 0) {
 		return "", fmt.Errorf("llm: %s cannot build the output layer for the last row alone (-last-row needs an architecture that has it and -cache)", a.Name)
@@ -197,6 +203,45 @@ func checkIntelFormats(o Options) error {
 		}
 	}
 	return nil
+}
+
+// convertAIOne is ConvertTiers for Core AI: one program, a .aimodel when it is one part, else
+// ConvertAI's.
+func convertAIOne(a *Arch, model Model, w Weights, out, targetName string, nParts int, caches []int, opts Options, log io.Writer) (string, error) {
+	if len(caches) > 1 {
+		return "", fmt.Errorf("llm: Core AI's programs take one cache length, not tiers %v", caches)
+	}
+	opts.Cache = caches[0]
+	base := strings.TrimSuffix(strings.TrimSuffix(out, ".aimodel"), ".parts.json")
+	if opts.Paged == 0 && opts.Start == 0 && opts.Layers == 0 && nParts <= 1 {
+		plan := []Part{{}}
+		if targetName != "none" {
+			target, err := LookupTargetFor(BackendCoreAI, targetName)
+			if err != nil {
+				return "", err
+			}
+			if plan, err = PlanSplit(model, opts, int64(SplitMargin*float64(target.MaxBytes)), nParts); err != nil {
+				return "", err
+			}
+		}
+		if len(plan) == 1 {
+			if opts.LastRow && (!a.LastRow || opts.Cache <= 0) {
+				return "", fmt.Errorf("llm: %s cannot build the output layer for the last row alone (-last-row needs an architecture that has it and -cache)", a.Name)
+			}
+			if _, err := convertPart(a, model, w, base+".aimodel", opts, log); err != nil {
+				return "", err
+			}
+			return base + ".aimodel", nil
+		}
+	}
+	if opts.Start != 0 || opts.Layers != 0 {
+		return "", fmt.Errorf("llm: Core AI's programs are converted whole (no -start or -layers)")
+	}
+	paths, err := ConvertAI(a, model, w, base, targetName, []AIProgram{{Out: base, Name: "main", Parts: nParts, Options: opts}}, log)
+	if err != nil {
+		return "", err
+	}
+	return paths[0], nil
 }
 
 // convertPart writes one program to path, its weights shared with an identical program's next to
@@ -393,4 +438,88 @@ func AddMass(path, form string, scale float64) error {
 		return err
 	}
 	return WriteManifest(path, man)
+}
+
+// AddSmaller adds attention programs over shorter chunks (Manifest.Smaller) to a model split at
+// its attention: over chunks of from, 2 from, 4 from... below its Paged that divide it and hold a
+// step of its Seq tokens. A call costs a fixed part and a part in proportion to its chunk, so the
+// host attends over the shortest that covers the sequence (decode.Program.Smaller). They have no
+// weights, so they are written from the attention program's shape next to it, as AddMass writes
+// the mass program, in the attention's form with the model's score scale, for the manifest's
+// backend. A from of 0 removes them. It does nothing when the manifest has them already, or is
+// not split at its attention.
+func AddSmaller(path, form string, scale float64, from int) error {
+	man, err := ReadManifest(path)
+	if err != nil {
+		return err
+	}
+	if man.Paged == 0 || man.Attention == nil {
+		return nil
+	}
+	var q, k []int
+	for _, in := range man.Attention.Inputs {
+		switch in.Name {
+		case "q":
+			q = in.Shape
+		case "k":
+			k = in.Shape
+		}
+	}
+	if len(q) != 4 || len(k) != 4 {
+		return fmt.Errorf("llm: %s: the attention program has no q and k of 4 dimensions", path)
+	}
+	var want, have []int
+	for c := from; from > 0 && c < man.Paged; c *= 2 {
+		if c >= q[2] && man.Paged%c == 0 {
+			want = append(want, c)
+		}
+	}
+	for _, r := range man.Smaller {
+		have = append(have, r.Chunk())
+	}
+	if slices.Equal(want, have) {
+		return nil
+	}
+	for _, r := range man.Smaller {
+		os.RemoveAll(r.Path)
+	}
+	man.Smaller = nil
+	base := strings.TrimSuffix(path, ".parts.json")
+	sh := paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3], Scale: scale}
+	for _, c := range want {
+		rec, err := writeAttention(fmt.Sprintf("%s.attn%d", base, c), man.Backend, sh, form, q[2], c, man.Model)
+		if err != nil {
+			return err
+		}
+		man.Smaller = append(man.Smaller, *rec)
+	}
+	return WriteManifest(path, man)
+}
+
+// writeAttention writes the attention program without weights over a chunk of chunk positions
+// for seq query rows, stem with the backend's extension: a package for Core ML, IR for Intel's
+// NPU, a Core AI program.
+func writeAttention(stem, backend string, sh paged.Shape, form string, seq, chunk int, title string) (*PartRecord, error) {
+	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-dev convert)", title, chunk, seq, form)
+	build := func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
+		return paged.Build(b, sh, form, seq, chunk)
+	}
+	var path string
+	var ins, outs []mlpackage.Feature
+	var err error
+	switch backend {
+	case BackendCoreAI:
+		path = stem + ".aimodel"
+		_, ins, outs, err = writeAI(path, map[string]string{MetaDescription: desc}, build)
+	case BackendIntel:
+		path = stem + ".xml"
+		_, ins, outs, err = writeIR(path, &mlpackage.Package{Description: desc}, build)
+	default:
+		path = stem + ".mlpackage"
+		ins, outs, err = paged.Write(path, sh, form, seq, chunk, desc)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &PartRecord{Path: path, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}, nil
 }

@@ -257,8 +257,28 @@ func (p *cpuProgram) Close() error {
 // interpreter), and starts a decode session over them; the packages share one cache. Close the
 // returned closer after the session.
 func OpenSession(ctx context.Context, dev *hwnpu.Device, paths []string, m llm.Cached) (*decode.Session, io.Closer, error) {
+	progs, closers, err := OpenPrograms(ctx, dev, paths)
+	if err != nil {
+		return nil, nil, err
+	}
+	sess, err := decode.New(progs[0], m)
+	for i := 1; err == nil && i < len(progs); i++ {
+		if err = sess.Add(progs[i]); err != nil {
+			err = fmt.Errorf("runner: %s: %w", paths[i], err)
+		}
+	}
+	if err != nil {
+		closers.Close()
+		return nil, nil, err
+	}
+	return sess, closers, nil
+}
+
+// OpenPrograms loads the programs of OpenSession without a session: a tier a session moves to
+// (decode.Session.Migrate, then Add for the others).
+func OpenPrograms(ctx context.Context, dev *hwnpu.Device, paths []string) ([]decode.Program, io.Closer, error) {
 	var closers multiCloser
-	var sess *decode.Session
+	var progs []decode.Program
 	var first *chain.Chain
 	var shared map[string][]byte
 	for i, path := range paths {
@@ -295,18 +315,9 @@ func OpenSession(ctx context.Context, dev *hwnpu.Device, paths []string, m llm.C
 				}
 			}
 		}
-		var err error
-		if i == 0 {
-			sess, err = decode.New(p, m)
-		} else {
-			err = sess.Add(p)
-		}
-		if err != nil {
-			closers.Close()
-			return nil, nil, fmt.Errorf("runner: %s: %w", path, err)
-		}
+		progs = append(progs, p)
 	}
-	return sess, closers, nil
+	return progs, closers, nil
 }
 
 type multiCloser []io.Closer
@@ -447,6 +458,15 @@ func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer
 			}
 			closers = append(closers, c)
 			a.Mass = ms
+		}
+		for _, r := range man.Smaller {
+			sa, c, err := attentionCPU(r.Path, r.Chunk())
+			if err != nil {
+				closers.Close()
+				return decode.Program{}, nil, err
+			}
+			closers = append(closers, c)
+			p.Smaller = append(p.Smaller, sa)
 		}
 		p.Run, p.Attn, p.Context, p.NoLogits = nil, a, man.Cache, man.KVOnly
 		p.RunPart = func(i int) error { return run(stages[i]) }

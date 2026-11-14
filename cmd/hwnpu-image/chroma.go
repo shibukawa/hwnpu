@@ -18,11 +18,10 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
 
-// chromaModel is the Chroma export m runs here: on Apple's Neural Engine (or with --cpu) the
-// Core ML export of --dir (Core AI's with --backend coreai), downloaded and converted when
-// missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py.
+// chromaModel is the Chroma export m runs here: on Apple's Neural Engine the Core AI export of
+// --dir (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py.
 func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, error) {
-	format, err := llm.NativeFormat(ctx, c.Backend)
+	format, err := imageFormat(ctx, c.Backend)
 	switch {
 	case c.CPU: // the CPU interpreter runs Core ML exports
 		format = llm.BackendCoreML
@@ -30,7 +29,7 @@ func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, er
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	default:
-		return amdExport(m, "tools/amd/iron_chroma.py")
+		return amdOr(err, m, "tools/amd/iron_chroma.py")
 	}
 	if c.Size%16 != 0 {
 		return "", fmt.Errorf("--size %d: Chroma's pictures are multiples of 16 pixels", c.Size)
@@ -41,8 +40,7 @@ func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, er
 }
 
 // chroma draws the pictures with an export of Chroma: of tools/amd/iron_chroma.py on AMD's NPU,
-// or of hwnpu-image convert on Apple's Neural Engine (Core ML's, or Core AI's with --backend
-// coreai) or, with --cpu, the CPU
+// or of hwnpu-image convert on Apple's Neural Engine (Core AI's) or, with --cpu, the CPU
 // interpreter (Chroma1-Flash: Heun's 8 steps by default, no classifier-free guidance).
 func (c *GenerateCmd) chroma(ctx context.Context, model string, outs []string) error {
 	lw := console.Log(os.Stderr)
@@ -56,7 +54,7 @@ func (c *GenerateCmd) chroma(ctx context.Context, model string, outs []string) e
 	case programs:
 		// strict, so that a program off the NPU, or one whose placement is not verified, says why;
 		// a Core AI export on Core AI
-		d, _, err := llm.OpenDevice(ctx, llm.ExportDevice(chroma.ExportFormat(model), c.Backend), cacheDirOf(c.Cache),
+		d, _, err := llm.OpenDevice(ctx, exportDevice(chroma.ExportFormat(model), c.Backend), cacheDirOf(c.Cache),
 			hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		if err != nil {
 			return err
