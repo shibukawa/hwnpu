@@ -5470,3 +5470,35 @@ exp(G_t − G_j) は使うところでは 1 以下。対角より上は min(·, 
 **gemma-4-E4B-it に残りはない**: 部品は約 61 GB/s で天井、1 ステップ約 64 ms は重みの下限 (3.5 GB ÷ 62 GB/s ≈ 56 ms) と注意 (短い塊で 1 層 0.6 ms)。
 
 この日の Qwen3.5-4B (M2、Core AI): チェックポイントから書き出した最初の形 (短い塊の注意も 16.192、16.193 もなし) の 15.9 → **20.5〜21.9 トークン/秒**、プロンプト 2041 トークン 7.8 → 4.0 秒。
+
+### 16.194 変換の部品を並べて書く (コア数とメモリまで)、Core AI の書き出しは重みを全部メモリに持たない — 2026-11-14
+
+Hugging Face のチェックポイントから `.aimodel` (Core AI) などに変換するとき、部品 (プログラム) を 1 つずつ書いていた。部品の変換は 1 スレッドの処理 (MIL を組み、重みを量子化し、Core AI に下ろす) で、部品どうしは独立している。
+
+**並べて書く** (`console.Jobs`): Anima、Sana、Chroma、Qwen-Image の変換と `llm.ConvertAI` (hwnpu-chat と hwnpu-dev convert の Core AI) は、部品を全部並べてから一度に書く。並べる数は CPU のコア数と、使えるメモリ (Linux は MemAvailable、ほかは物理メモリの半分) の 3/4 を部品 1 つの見積もりで割った数の小さい方 (`console.Workers`)。`HWNPU_JOBS=N` で数を決める (`1` で前と同じ 1 つずつ)。チェックポイントは `ReadAt` で読むので部品どうしで共有できる。書き出しのファイルの並び、manifest は前と同じ。
+
+表示は端末なら数行: 全体のバー (`6/24 14s, 6 at a time`) と、書いている部品ごとに 1 行 (名前と秒)。全部終わったら消える (20 部品で 20 行にならない)。失敗した部品の行は残り、まだ始めていない部品は始めない。端末でなければ、部品が終わるごとに `[ 7/24] 名前 秒, 形式` を 1 行。
+
+**Core AI の書き出しのメモリ**: 部品 1 つ (Qwen-Image の DiT の組、出力 629 MB) を書くピークはヒープ 2.55 GiB、RSS 3.0 GB だった。重みは MIL を組むときに一時ファイル (`.milblob.tmp`) へ流しているが、`ailower` が下ろすときに全部読み戻して持ち (626 MB)、`mlirbc.Writer.Bytes` がファイル全体を 1 つの `[]byte` に組み立てていた (もう 1 回分、append で最大 2 倍)。
+
+- `mlirbc.Writer.Spill(f, keep)`: 重み (resource の blob) を `keep` バイトまではメモリに、その先は一時ファイル (`NAME.aimodel.blobs.tmp`) に書いて位置だけ持つ
+- `mlirbc.Writer.WriteTo`: resource の節はファイルの最後にあるので、前の節を書いてから blob を一時ファイルから順に流す。節の長さは blob の頭と詰め物を先に並べて求める。`Bytes` は `WriteTo` を使う (結果は同じ)
+- `ailower.WriteMany` / `WriteOne`: 下ろして `.aimodel` を書く。`main.hash` は書きながら。下ろし終わったら呼び出し側が `.milblob.tmp` を消す (`lowered`)。消さないと実行中の部品 1 つがディスクに部品 3 つ分を持ち、20 並べたら空き 25 GB のディスクが埋まった
+- `ailower.SpillKeep` は 512 MiB: 全部を一時ファイルにすると、ほぼ埋まった Btrfs (空き 9〜34 GB) では書いて読み戻す分だけ遅くなった。RAM ディスクでは全部を一時ファイルにしても前より速い
+
+**結果** (Ryzen AI、20 コア、59 GB、Qwen-Image-2.1 Turbo、coreai、lut6、続けて走らせた組で比べる)
+
+| | 時間 | ピークの RSS |
+|---|---|---|
+| 前 (1 つずつ、全部メモリ) | 2 分 16 秒 | 4.0 GB |
+| 6 並べ、全部メモリ | 65 秒 | 20 GB |
+| 6 並べ、重みを全部一時ファイル | 88 秒 (RAM ディスクで 54 秒、全部メモリは 61 秒) | 3.0 GB |
+| 6 並べ、512 MiB まではメモリ | 56 秒 | 5.4 GB |
+| **既定 (コアとメモリで決まる数)** | **50 秒** | **13.5 GB** |
+| 1 つずつ、重みを全部一時ファイル | 2 分 11 秒 | 0.86 GB |
+
+- ほか (全部メモリの版で): Anima-Turbo 1024 24 → 12 秒 (20 並べ)、Chroma1-Flash 512 2 分 21 秒 → 1 分 2 秒、Qwen3.5-0.8B の 6 部品 (hwnpu-dev convert) 5.7 → 2.1 秒
+- どれも 1 つずつ書いたものとバイト単位で同じ (metadata.json の creationDate を除く)。Sana は Gemma 2 が手元になく実物では試していない
+- 部品 1 つの見積もり: Anima 1 GiB、Sana 2 GiB、Chroma と Qwen-Image 2 GiB、`llm.ConvertAI` 4 GiB。16 GB の Mac (物理の半分の 3/4 = 6 GB) で Qwen-Image は 3 並べになる (全部メモリの見積もり 6 GiB では 1 つずつだった)。Mac では測っていない
+- Intel の OpenVINO IR (`ovlower`) はもとから定数を `.bin` に書きながら進む。AMD は Python の IRON の書き出し (チェックポイントは `np.memmap`、重みのイメージは `open_memmap`) で、ここは変えていない
+- 効果音 (`internal/sfx`) は重みを遅れて読み、部品ごとに `.done` を書くので、今回は並べていない

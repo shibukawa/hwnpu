@@ -100,6 +100,7 @@ The intended path is `hwnpu-dev convert`, in Go, from the bf16 checkpoint; corem
 macOS 27 has Core AI beside Core ML. Nothing more to install.
 
 - **`hwnpu-chat` and `hwnpu-image` run on Core AI alone** and need macOS 27 on a Mac (`--backend` has no `coreml`; `HWNPU_BACKEND=coreml`, which the other commands take, means Core AI for them). They convert their models for Core AI (`.aimodel`, written from the checkpoints in Go) and do not use Core ML; `hwnpu-image --cpu` still runs a Core ML export with the CPU interpreter, for checking without the NPU. A Mac on macOS 26 or earlier gets an error that says so
+- **Converting** writes a model's programs side by side, as many as the CPU's cores and the free memory allow (`HWNPU_JOBS=N` sets the number, `1` one at a time); on a terminal it shows a bar and a line for each program being written, erased when all are done
 - **The other commands** keep Core ML as the default; `--backend coreai` or `HWNPU_BACKEND=coreai` runs their converted models (`.mlpackage`, lowered to Core AI programs in Go) on Core AI
 
 - **Commands**: all of `hwnpu-chat`; `hwnpu-image`'s generate (Anima, Chroma, Qwen-Image, Sana: Sana's export holds 512 x 512 and 1024 x 1024 in one), ocr, detect, pose, face-detect, depth, segment, label and embed. Of `hwnpu-audio`, pitch and generate (Magenta RealTime 2) were checked with `HWNPU_BACKEND=coreai` (the others were not)

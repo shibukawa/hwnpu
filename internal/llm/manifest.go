@@ -227,6 +227,7 @@ func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, e
 	base := strings.TrimSuffix(path, filepath.Ext(path))
 	var mfns []*milspec.Function
 	var readers []io.ReaderAt
+	var files []*os.File // the readers, removed once the program is lowered
 	var recs []PartRecord
 	for _, f := range fns {
 		tmp := base + "." + f.Name + ".milblob.tmp"
@@ -254,7 +255,7 @@ func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, e
 			return nil, err
 		}
 		defer r.Close()
-		mfns, readers = append(mfns, fn), append(readers, r)
+		mfns, readers, files = append(mfns, fn), append(readers, r), append(files, r)
 		recs = append(recs, PartRecord{Path: path + "#" + f.Name, Start: f.Options.Start, Layers: f.Options.Layers,
 			Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)})
 	}
@@ -262,20 +263,30 @@ func WriteAIFunctions(path string, w Weights, fns []AIFunction) ([]PartRecord, e
 	for i, f := range fns {
 		names[i] = f.Name
 	}
-	prog, err := ailower.LowerMany(mfns, readers, names)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
-	}
 	if err := os.RemoveAll(path); err != nil {
 		return nil, err
 	}
-	if err := prog.WriteAsset(path); err != nil {
-		return nil, err
+	// written as it is lowered, its weights through a file: not held in memory
+	prog, err := ailower.WriteMany(path, mfns, readers, names, func() error { return removeFiles(files...) })
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
 	for i := range recs {
-		recs[i].WeightBytes = int64(len(prog.Bytecode))
+		recs[i].WeightBytes = prog.Size
 	}
 	return recs, nil
+}
+
+// removeFiles closes and removes the files (MIL weight files a Core AI program is lowered from):
+// the disk they take is free before the program is written.
+func removeFiles(files ...*os.File) error {
+	for _, f := range files {
+		f.Close()
+		if err := os.Remove(f.Name()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // SplitFunction splits a program's path PATH.aimodel#NAME (a function of a Core AI program with
@@ -329,20 +340,18 @@ func writeAI(path string, meta map[string]string, build func(*mlpackage.Builder)
 		return 0, nil, nil, err
 	}
 	defer f.Close()
-	prog, err := ailower.Lower(fn, f)
-	if err != nil {
-		return 0, nil, nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
-	}
 	if err := os.RemoveAll(path); err != nil {
 		return 0, nil, nil, err
 	}
-	if err := prog.WriteAsset(path); err != nil {
-		return 0, nil, nil, err
+	// written as it is lowered, its weights through a file: not held in memory
+	prog, err := ailower.WriteOne(path, fn, f, func() error { return removeFiles(f) })
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 	}
 	if err := writeAIMeta(path, meta); err != nil {
 		return 0, nil, nil, err
 	}
-	return int64(len(prog.Bytecode)), ins, outs, nil
+	return prog.Size, ins, outs, nil
 }
 
 // writeIRPart is WritePart for Intel's NPU: the program is built as MIL, its weights in a

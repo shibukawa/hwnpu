@@ -72,9 +72,8 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	if err := json.Unmarshal(raw, &vcfg); err != nil || len(vcfg.Mean) != 16 || len(vcfg.Std) != 16 {
 		return fmt.Errorf("anima: vae/config.json has no 16 latents_mean and latents_std")
 	}
-	// the parts in the order they are written, for "[3/19]"
-	total := 3 + mil.DitLayers/o.Group + len(mil.VaeStages(o.Width, o.Height))
-	written := 0
+	// the programs are written side by side once all are listed (jobs.Run)
+	jobs := console.NewJobs(log)
 	m := &ProgramManifest{Backend: o.Backend, Width: o.Width, Height: o.Height, Dit: o.Dit,
 		Formats: map[string]string{"text": o.TextFormat, "dit": o.DitFormat, "vae": "fp16"}}
 	write := func(kind string, p *mil.Part, format string) (string, error) {
@@ -82,14 +81,13 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
-		written++
-		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		opts := llm.Options{Backend: o.Backend, Format: format}
-		if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
-			bar.Done("failed")
-			return "", fmt.Errorf("anima: %s: %w", p.Name, err)
-		}
-		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
+		jobs.Add(name, func() (string, error) {
+			opts := llm.Options{Backend: o.Backend, Format: format}
+			if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
+				return "", fmt.Errorf("anima: %s: %w", p.Name, err)
+			}
+			return format, nil
+		})
 		return name, nil
 	}
 	if m.Text, err = write("text", mil.Text(), o.TextFormat); err != nil {
@@ -119,6 +117,10 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 			return err
 		}
 		m.Vae = append(m.Vae, name)
+	}
+	// a job takes up to 0.4 GB at 20 at a time (Anima Turbo at 1024 x 1024: 6.7 GB in all)
+	if err := jobs.Run(1 << 30); err != nil {
+		return err
 	}
 	if len(o.Only) == 0 || o.Only["text"] {
 		if err := writeTextFiles(root, out, w); err != nil {
