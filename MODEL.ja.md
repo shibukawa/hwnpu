@@ -90,7 +90,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <tr>
 <th>画像生成<br><sub>hwnpu-image</sub></th>
 <td>△ <b>Anima-Turbo</b> (4.1 GB)<br>ほかのアプリを閉じて</td>
-<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>、メモリは同じ) 25 ステップと CFG で約 4.5 倍の時間 (M1 で約 4 分 30 秒、Anima-Turbo は約 58 秒)<br><b>Sana 600M</b> (AMD 2.3 GB、Apple 3.9 GB) 英語のプロンプト。Apple の Neural Engine ではいちばん速い (M1 で約 17 秒、Anima-Turbo は約 58 秒)<br><b>SANA 1.5 1.6B</b> (<code>-m sana:1.6b</code>、16 GB から) プロンプトにより忠実。M1 で約 31 秒</td>
+<td colspan="5"><b>Anima-Turbo</b> 1024 × 1024 (4.1 GB)<br><b>Anima-Aesthetic</b> (<code>-m anima</code>、メモリは同じ) 25 ステップと CFG で約 4.5 倍の時間 (M1 で約 3 分 55 秒、Anima-Turbo は約 48 秒)<br><b>Sana 600M</b> (AMD 2.3 GB、Apple 3.9 GB) 英語のプロンプト。Apple の Neural Engine ではいちばん速い (M1 で約 17 秒、Anima-Turbo は約 48 秒)<br><b>SANA 1.5 1.6B</b> (<code>-m sana:1.6b</code>、16 GB から) プロンプトにより忠実。M1 で約 31 秒</td>
 </tr>
 <tr>
 <th>読み上げ<br><sub>hwnpu-audio tts</sub></th>

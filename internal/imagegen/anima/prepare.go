@@ -19,8 +19,11 @@ import (
 // ExportVersion is the layout of the programs Convert writes. Prepare names its exports by it,
 // so that an export of an earlier layout is not loaded by a later hwnpu: 2 is the time part of
 // mil.TimeRows rows and the patch embedding in the first group of blocks (design.md 16.85); 3 the
-// silu of the DiT and the text written with exp and real_div (blocks.SiLU, design.md 16.95).
-const ExportVersion = 3
+// silu of the DiT and the text written with exp and real_div (blocks.SiLU, design.md 16.95); 4
+// the DiT's attention scale in the queries' norm, no multiply over the scores, its blocks' norms
+// scaled with abs (milpart.AbsScaled; design.md 16.201) and its attentions a head at a time
+// (milpart.HeadAttention; design.md 16.202).
+const ExportVersion = 4
 
 // The Hugging Face repositories Prepare downloads from: the official split files (the diffusion
 // model and Qwen3-0.6B) and, of the Diffusers version, what Convert reads besides (the VAE and

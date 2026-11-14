@@ -30,7 +30,7 @@ On the Mac's Neural Engine and Intel's NPU, as with hwnpu-chat, the first run do
 go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
 ```
 
-On the Neural Engine of an M3 (16 GB), a 1024 × 1024 picture takes about 40 seconds in 8 steps, with at most 3.8 GB of process memory (3 seconds to load, 4.2 to 4.4 seconds a DiT step, 3.7 seconds for the VAE; the default weights are int8 for both the text and the DiT). On an M1 (16 GB), Anima-Turbo takes about 58 seconds a picture and Anima-Aesthetic about 4 minutes 30 seconds (6.3 seconds a DiT run, 2.6 GiB on the Neural Engine, at most 3.9 GB for the process). The records are in sections 16.85, 16.152 and 16.160 of [docs/design.md](docs/design.md). Intel's NPU is untested ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md)). To export by hand, use `hwnpu-image convert DIR --model OUT` (DIR laid out as `~/models/Anima`).
+On the Neural Engine of an M3 (16 GB), a 1024 × 1024 picture takes about 40 seconds in 8 steps, with at most 3.8 GB of process memory (3 seconds to load, 4.2 to 4.4 seconds a DiT step, 3.7 seconds for the VAE; the default weights are int8 for both the text and the DiT). On an M1 (16 GB), Anima-Turbo takes about 48 seconds a picture and Anima-Aesthetic about 3 minutes 55 seconds (5.6 seconds a DiT run; 2.6 GiB on the Neural Engine and at most 3.9 GB for the process as measured before 16.201). The records are in sections 16.85, 16.152, 16.160, 16.201 and 16.202 of [docs/design.md](docs/design.md). Intel's NPU is untested ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md)). To export by hand, use `hwnpu-image convert DIR --model OUT` (DIR laid out as `~/models/Anima`).
 
 ## Image generation (Sana)
 
