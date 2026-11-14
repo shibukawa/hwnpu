@@ -1,345 +1,58 @@
 # hwnpu
 
-CPU 内蔵の NPU を cgo なしで Go から使うためのライブラリです。軽量モデルを低消費電力で動かすことを目的にしています。
+[日本語](README.ja.md)
 
-- 既定の厳格モードでは、NPU だけで完結しないモデルを実行前にエラーにします。CPU や GPU への黙ったフォールバックはしません
-- 依存は [purego](https://github.com/ebitengine/purego) と golang.org/x/sys だけです
+Commands, written in Go without cgo, that run the NPU built into the CPU (a Go library is planned). The aim is to run small models on little power.
 
-| プラットフォーム | バックエンド | 状態 |
+- In the default strict mode, a model that does not run on the NPU alone is an error before it runs. Nothing falls back to the CPU or the GPU silently
+- The only dependencies are [purego](https://github.com/ebitengine/purego) and golang.org/x/sys. The user's machine needs no Python
+
+| Platform | Backend | Status |
 |---|---|---|
-| macOS (Apple Silicon) | Core ML (GPU を除外し、MLComputePlan で ANE 配置を検証) | M1 実装済み |
-| Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR のドライバ内コンパイル、コンパイル済み blob) | M2 実装済み。実機では未検証 |
-| Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の xclbin を実行) | M4 実装済み。Ryzen AI 9 365 (Strix Point、Linux 7.0) で IRON の設計と full ELF の実行、Gemma 4 E2B の hwnpu-chat (chat / agent) を確認 |
-| Windows (AMD Ryzen AI) | XRT (hwnpu の C ライブラリ xrtshim を通す) | 実装済み。Windows では未検証。同じ経路を Linux の XRT 2.21 で確かめた (Gemma 4 E2B の画像と音声まで) |
-| WSL2 | なし | 非対応。WSL2 からは Intel と AMD のどちらの NPU も見えない |
+| macOS (Apple Silicon) | Core ML (and Core AI on macOS 27) | Done. Checked on M1 and M3 |
+| Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR) | Done. Only some models run on the hardware so far |
+| Linux (AMD Ryzen AI) | amdxdna ioctl (exports from IRON / mlir-aie) | Done. Checked on a Ryzen AI 9 365 (Strix Point) |
+| Windows (AMD Ryzen AI) | XRT (xrtshim) | Done. Untested on Windows |
+| WSL2 | none | Not supported (the NPU is not visible) |
 
-用途と機械のメモリの量ごとのおすすめのモデルは [MODEL.ja.md](MODEL.ja.md)（[English](MODEL.md)）に、各 NPU が扱えるデータ形式とモデルの用意の仕方は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md)（[English](MODEL_ARCHITECTURE.md)）にあります。
-
-クラウドの AI API (Google Cloud、AWS、Azure、OpenAI) の機能のどれを hwnpu が代わりに受け持てるか、NPU ごとの対応状況とまだない機能は [CLOUD_AI_COMPATIBILITY.ja.md](CLOUD_AI_COMPATIBILITY.ja.md)（[English](CLOUD_AI_COMPATIBILITY.md)）にあります。
-
-導入手順は、Apple が [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md)（[English](INSTALL_APPLE.md)）、Intel が [INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)（[English](INSTALL_INTEL.md)）、AMD が [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)（[English](INSTALL_AMD.md)）にあります。
-
-設計は [docs/design.md](docs/design.md) にあります。
-
-## 使い方
-
-```go
-dev, err := hwnpu.Open(ctx)
-if err != nil { ... }
-defer dev.Close()
-
-gr, _ := dev.Graph()
-g, err := gr.Compile(ctx, hwnpu.GraphSource{Path: "model.mlpackage"})
-if errors.Is(err, hwnpu.ErrNotOnNPU) {
-	// err は *hwnpu.PlacementError。NPU 以外に置かれた演算が Report.Ops に入っている
-}
-defer g.Close()
-
-in, _ := g.Arg("x")
-out, _ := g.Arg("y")
-x, _ := dev.AllocBuffer(in.Bytes)
-y, _ := dev.AllocBuffer(out.Bytes)
-hwnpu.EncodeF16(x.Bytes(), input)
-
-req, _ := g.NewRequest()
-req.BindName("x", x)
-req.BindName("y", y)
-err = req.Run(ctx)
-hwnpu.DecodeF16(result, y.Bytes())
-```
-
-## 電力とキャッシュ
-
-```go
-dev, err := hwnpu.Open(ctx,
-	hwnpu.WithPowerPolicy(hwnpu.PowerLow), // Intel: 低優先度 + バックグラウンド
-	hwnpu.WithCacheDir(cacheDir),          // コンパイル結果を保存して再利用
-)
-
-before, err := dev.PowerSample() // 電力量を読めないデバイスでは ErrUnsupported
-// ... 推論 ...
-after, _ := dev.PowerSample()
-fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" は CPU パッケージ全体
-```
-
-- 電力ポリシーは、`CapPowerControl` のあるデバイスでだけ効きます。Core ML には電力の設定がありません
-- Intel の電力量は Linux の RAPL で読みます。NPU 単体ではなく CPU パッケージ全体の値で、通常は root 権限が必要です
-- キャッシュのキーにはモデル、ビルドフラグ、ドライバとコンパイラ (Apple は macOS) の版が入るので、どれかが変わると作り直します
-
-## AMD での使い方
-
-AMD の NPU は、モデルではなく IRON / mlir-aie でビルドしたカーネル (xclbin と命令列) を実行します。
-
-```go
-kr, err := dev.Kernel() // AMD 以外では ErrUnsupported
-prog, err := kr.Load(ctx, hwnpu.ProgramSource{Path: "final.xclbin"})
-k, err := prog.Kernel("MLIR_AIE")
-
-instr, _ := dev.AllocBuffer(len(insts), hwnpu.WithBufferKind(hwnpu.BufferInstructions))
-in, _ := dev.AllocBuffer(n)
-out, _ := dev.AllocBuffer(n)
-copy(instr.Bytes(), insts)
-instr.SyncToDevice(0, len(insts)) // AMD の NPU はキャッシュ非コヒーレント
-in.SyncToDevice(0, n)
-
-run, _ := k.NewRun()
-err = run.SetUint64(0, 3).SetBuffer(1, instr).SetUint32(2, uint32(len(insts)/4)).
-	SetBuffer(3, in).SetBuffer(4, tmp).SetBuffer(5, out).
-	Run(ctx)
-out.SyncFromDevice(0, n)
-```
-
-- 引数の番号、オフセット、型は xclbin のメタデータから読みます (`k.Args()`)
-- `/dev/accel/accelN` に読み書きできる権限 (`render` グループ) が必要です。Linux 6.14 以降のカーネル (amdxdna) を前提にしています
-- 電力ポリシーはハードウェアコンテキストの優先度 (QoS) に反映します。デバイス全体の電力モードは root 専用なので変更しません
-- 電力は NPU のセンサー値 (瞬間値) を、なければ amdgpu ドライバが出すパッケージ全体の電力 (PPT、root 不要) を読みます。最初の `PowerSample` から 50 ms ごとに読んで積分し、電力量にします。NPU のセンサーは AMD の DKMS 版のドライバにしかなく、Linux 7.0 の標準カーネルではパッケージ全体の値になります (`Scope` が `package`)
-
-Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.elf`、グラフ全体を 1 つのハードウェアコンテキストと 1 つのコマンドで流すもの) も読み込めます。カーネル名は `main:sequence` の形で、引数はすべてバッファです。呼び出しごとの値は `run.Scratchpad()` に書きます。
-
-### LLM (Gemma 4 E2B / E4B、LFM3 とその多モーダル、PLaMo 3 Translate、Qwen3.5) を AMD の NPU で
-
-IRON (amd/IRON) を開発者の機械でコンパイラとして一度だけ使い、`tools/amd/iron_export_lm.py` で書き出したものを hwnpu が Go だけで動かします (利用者の機械に Python も XRT も要りません)。
+## Try it
 
 ```bash
-python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.amd-npu2 --max-seq-len 4096 --prefill-chunk 1024
-go run ./cmd/hwnpu-chat -m ~/models/gemma-4-E2B-it.amd-npu2
-go run ./cmd/hwnpu-chat agent -m ~/models/gemma-4-E2B-it.amd-npu2 "README.md を要約して"
+go run ./cmd/hwnpu-chat "What is the capital of Japan?"   # the first run downloads the model and converts it for the NPU
+go run ./cmd/hwnpu-chat list                               # the models, and which one this machine picks
+go run ./cmd/hwnpu-dev report -o report.md                 # check that hwnpu runs this machine's NPU
 ```
 
-Apple と Intel の NPU がなく AMD の NPU があるとき、`hwnpu-chat` (`chat`、`agent`、`serve`) は `-m` に書き出しのディレクトリを渡さなくても、`-m` のモデル (既定 LFM3-1.7B) の書き出しを `~/models/NAME.amd-npu2-q4`、なければ `~/models/NAME.amd-npu2` から選びます (`go run ./cmd/hwnpu-chat -m gemma-4-E2B-it`)。用途やファミリーもほかの NPU と同じくメモリで選びます (`-m translate`、`-m chat`)。読み込みでは書き出しの部分 (`decode`、`prompt`) ごとに `all on the NPU` (緑) か、ホストで動くステップがあれば `NOT all on the NPU` (赤) と出します。
+Setup: [Apple](INSTALL_APPLE.md), [Intel](INSTALL_INTEL.md), [AMD](INSTALL_AMD.md).
 
-書き出しがなければ、ほかの NPU で初回にモデルを落として変換するのと同じく、初回にチェックポイントを `~/.cache/hwnpu/models/NAME` に落とし (書き出しが読むファイルだけ)、IRON で `~/models/NAME.amd-npu2-q4` (Qwen3.5 の 0.8B と 2B は `-q6`) に書き出してから動かします。書き出し方は models.yaml の `amd_export` に書いてあります (`lfm3 --max-seq-len 12288 --q4` など)。書き出しには IRON の環境 (mlir-aie、Peano、Python 3.12。[INSTALL_AMD.ja.md](INSTALL_AMD.ja.md) の 2) が要り、`HWNPU_IRON_ENV` にその仮想環境か、それを整えるスクリプト (bash で source するもの) を渡します (なければ PATH の python3)。環境がなければ、何を入れればよいかを言って止まります。書き出しの出力は `~/models/NAME.amd-npu2-q4.log` に残ります。`amd_export` のないモデル (Qwen3-0.6B、埋め込みのモデル) は AMD の NPU では動きません (`hwnpu-chat list` の RUNS FROM の列)。
+## Commands
 
-```bash
-HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat -m translate "桜が満開です。"
-```
+| Command | What it does | Guide |
+|---|---|---|
+| `hwnpu-chat` | Chat, translation, a coding agent (`agent`), an OpenAI compatible server (`serve`), embedding search (`search`), typed judgments (`systemone`) | [CHAT.md](CHAT.md); AMD: [USAGE_LLM_AMD.md](USAGE_LLM_AMD.md) |
+| `hwnpu-image` | Image generation (Anima, Sana, Chroma1), depth, faces, objects, poses, text (OCR), labels, cutouts | [USAGE_IMAGE.md](USAGE_IMAGE.md) |
+| `hwnpu-audio` | Music and sound effects, speech, transcription, pitch, notes | [USAGE_AUDIO.md](USAGE_AUDIO.md) |
+| `hwnpu-dev` | Checks, NPU measurements (`probe`), model conversion and comparison | [USAGE_DEV.md](USAGE_DEV.md), [PROBE.md](PROBE.md) |
 
-Gemma 4 E4B (gemma-4-E4B-it) も同じ `gemma4` で書き出します (文脈 4096、塊 1024。書き出しは 15 GB)。デコードは 1 秒に 3.6 トークン (E2B の約 6 割) で、位置 3072 からの 1024 トークンを 8.2 秒で読みます。
+`-m` takes a model's name (`-m gemma-4-E2B-it`), a family (`-m gemma4`) or a use (`-m translate`); a family or a use picks the model that fits the machine's memory. The models come from the embedded [models.yaml](models.yaml), and a file of your own adds or replaces them ([docs/model-table.md](docs/model-table.md)).
 
-LFM3-1.7B は IRON にアプリケーションがないので、hwnpu の `tools/amd/iron_lfm3.py` を使います (`lfm3`)。畳み込みの層の状態は、プロンプトの塊の境ごとに残り、hwnpu はその位置の分を印に写して巻き戻します。文脈 12288、塊 2048 まではスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。`--q4` で MLP と出力の行列を 4 ビット、注意と短い畳み込みの射影を 8 ビット、埋め込みをホストに置くと、Ryzen AI 9 365 で固定されるメモリが 3.75 から 1.64 GiB に、デコードが 1 秒に 8.7 から 11.2 トークン (1 トークン 1.34 → 1.05 J) になり、bf16 との KL は 0.036 nats (最上位の一致 92 %) でした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。プロンプトの速さは変わらず、先頭の 2048 トークンを 2.4 秒、位置 10240 からの 2048 トークンを 12.5 秒で読みます (注意が窓の外も含めて文脈の全体を読むため)。bf16 のままなら `--q4` を外します。
+## As a library (planned)
 
-```bash
-python tools/amd/iron_export_lm.py lfm3 ~/.cache/hwnpu/models/LFM3-1.7B ~/models/LFM3-1.7B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
-go run ./cmd/hwnpu-chat -m ~/models/LFM3-1.7B.amd-npu2-q4
-go run ./cmd/hwnpu-chat agent -m ~/models/LFM3-1.7B.amd-npu2-q4 "go test を通して"
-```
+The Go library API is planned and not settled yet. Its current shape is in [USAGE_LIBRARY.md](USAGE_LIBRARY.md).
 
-LFM3-VL-2B、LFM3-Audio-2B、LFM3-Omni-2B も同じく hwnpu の IRON アプリケーションで書き出します (`lfm3vl`、`lfm3audio`、`lfm3omni`)。LFM3-VL は画像を 512 × 512 に引き伸ばして読み (256 トークン)、LFM3-Audio は 41 秒までの音声を読みます (音声での返事は作りません)。LFM3-Omni はその両方です。`--q4` は本体だけを 4 ビットと 8 ビットにし (塔は bf16)、固定されるメモリは VL で 4.12 → 2.00 GiB、Audio で 4.14 → 2.03、Omni で 4.51 → 2.39 GiB になります。
+## Documents
 
-```bash
-python tools/amd/iron_export_lm.py lfm3vl ~/models/LFM3-VL-2B ~/models/LFM3-VL-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
-python tools/amd/iron_export_lm.py lfm3audio ~/models/LFM3-Audio-2B ~/models/LFM3-Audio-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
-python tools/amd/iron_export_lm.py lfm3omni ~/models/LFM3-Omni-2B ~/models/LFM3-Omni-2B.amd-npu2-q4 --max-seq-len 12288 --prefill-chunk 2048 --q4
-go run ./cmd/hwnpu-chat serve -m ~/models/LFM3-VL-2B.amd-npu2-q4 --listen 127.0.0.1:8080
-```
+- [MODEL.md](MODEL.md): the recommended model for each use and amount of memory
+- [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md): the data types each NPU computes in, and how models are prepared
+- [CLOUD_AI_COMPATIBILITY.md](CLOUD_AI_COMPATIBILITY.md): which features of cloud AI APIs hwnpu can take over
+- [docs/design.md](docs/design.md): design notes and measurements (Japanese)
 
-Gemma 4 E2B に画像と音声も読ませるときは、塔 (視覚と音声のエンコーダー) ごと書き出します (`gemma4mm`。1 回のプロンプトに画像 1 枚と音声 1 本まで)。OpenAI 互換 API の `image_url` (data URL) と `input_audio` (WAV) で渡します。
-
-```bash
-python tools/amd/iron_export_lm.py gemma4mm ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.mm.amd-npu2 --max-seq-len 4096 --prefill-chunk 1024
-go run ./cmd/hwnpu-chat serve -m ~/models/gemma-4-E2B-it.mm.amd-npu2 --listen 127.0.0.1:8080
-```
-
-NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` (`chat`、`agent`、`serve`) は、AMD の NPU の書き出しを要求が `--idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`--idle 0` で下ろしません。画像と音声つきの書き出しは、塔の重みを最初の画像か音声が来るまで載せないので (Gemma 4 E2B の 4 ビットで 2.82 → 1.83 GB、文だけの書き出しとの差は 51 MiB。最初の画像か音声で 0.7 秒。[docs/design.md](docs/design.md) の 16.81)、文だけで使うときも同じ書き出しで済みます。
-
-同じモデルの書き出しを複数置くと (文だけと画像と音声つき、4 ビットと bf16 など)、同じファイルを持ちます (Gemma 4 E2B なら `ple.bin` の 4.4 GiB など)。モデルを置くディスクが Btrfs や XFS (reflink)、Windows の ReFS や Dev Drive のように写しを共有できるファイルシステムなら、hwnpu は書き出しを最初に読むときに、隣の書き出しと同じバイトのファイルとファイルの先頭をその写し (reflink) に置き換え、ディスクを 1 つ分しか使いません (Gemma 4 E2B の 2 つで 15.2 → 8.2 GiB。普通のファイルのまま)。ext4 と NTFS では何もしません ([docs/design.md](docs/design.md) の 16.79。Windows は実機では未確認)。
-
-Preferred Networks の翻訳モデル PLaMo 3 Translate 2B (pfnet/plamo-3-translate-2b) も、hwnpu の `tools/amd/iron_plamo3.py` で書き出します (`plamo3`)。hwnpu-chat は打った文を訳し (日本語を含む文は英語へ、ほかは日本語へ。`--to LANG` で訳す先、`--from` で原文の言語、`--form plain|polite` で日本語の文体)、それまでの対訳を履歴としてプロンプトに残します。OpenAI 互換 API では `chat_template_kwargs` の `target_lang`、`source_lang`、`form`、`context`、`glossary` (vLLM と同じ) で指定し、system メッセージは参考文脈 (`context`) になります。`--q4` で MLP と出力の行列を 4 ビット、注意を 8 ビット、埋め込みをホストに置くと、固定されるメモリが 5.96 から 2.16 GiB に、デコードが 1 秒に 7.3 から 11.6 トークンになり (Ryzen AI 9 365、位置 2600 付近)、訳文は 44 文中 36 文が bf16 と同じで、残りも正しい言い換えでした ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 13 節)。bf16 のままなら `--q4` を外します (デコードは 1 秒に 7.7 トークン、位置 8191 で 6.6。1024 トークンの塊は位置 0 から 2.2 秒、7168 から 10.5 秒)。Gemma 4 と LFM3 の書き出しにも `--q4` があります。
-
-```bash
-python tools/amd/iron_export_lm.py plamo3 ~/models/plamo-3-translate-2b ~/models/plamo-3-translate-2b.amd-npu2-q4 --max-seq-len 8192 --prefill-chunk 1024 --q4
-go run ./cmd/hwnpu-chat -m ~/models/plamo-3-translate-2b.amd-npu2-q4
-go run ./cmd/hwnpu-chat -m ~/models/plamo-3-translate-2b.amd-npu2-q4 --to zh-hans
-```
-
-Qwen3.5 (0.8B、2B、4B) は hwnpu の `tools/amd/iron_qwen35.py` で書き出します (`qwen35`)。0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします (`--mlp q6 --head q6`。注意と GDN の射影は 8 ビット、埋め込みはホスト。固定されるメモリは 0.8B 1.04 GiB、2B 1.97 GiB)。`--verify 3` を足すと、次のトークンと推測 2 つを 1 回で確かめる版も書き出し、hwnpu-chat はプロンプトと答えからの推測を確かめながら生成します (投機的デコード。ロジットは 1 トークンずつと同じなので、温度 0 なら文も同じ)。Ryzen AI 9 365 の 0.8B で 1 トークン 82 ms が、コードで 72 ms、日本語の説明で 62 ms になりました ([docs/design.md](docs/design.md) の 16.117)。`HWNPU_IRON_DRAFTS=0` で推測を使いません。
-
-```bash
-python tools/amd/iron_export_lm.py qwen35 ~/models/Qwen3.5-0.8B ~/models/Qwen3.5-0.8B.amd-npu2-q6 --q4 --mlp q6 --head q6 --verify 3
-go run ./cmd/hwnpu-chat -m ~/models/Qwen3.5-0.8B.amd-npu2-q6
-```
-
-Phoenix と Hawk Point (NPU1) には full ELF がないので、`--device npu1 --cols 4` で書き出します。各版は IRON と同じく「1 ステップごとの xclbin」(Gemma 4 E2B のデコードで 1095 ステップ、xclbin は 2 個) になり、呼び出しごとの命令列は書き出しに含めたプログラムから hwnpu が作ります。NPU1 の実機では未検証です。同じ形の書き出しを `--per-step` で NPU2 向けに作ると Ryzen AI 9 365 で正しく動き、デコードは 1 秒に 2.6 トークンでした (full ELF の 6 の半分以下。1 トークンに 1095 回の投入が要るため)。NPU1 は、版ごとの xclbin (計 6 個) で、ハードウェアコンテキストの上限 6 を使い切ります。
-
-```bash
-python tools/amd/iron_export_lm.py gemma4 ~/models/gemma-4-E2B-it ~/models/gemma-4-E2B-it.amd-npu1 --max-seq-len 4096 --prefill-chunk 1024 --device npu1 --cols 4
-```
-
-Ryzen AI 9 365 で、デコードは 1 秒に 5.5〜6 トークン、プロンプトは 1 秒に 260 トークン前後です (bf16 の重み)。プロンプトの塊は 1024 トークンが速く (IRON の既定の 2048 より 2 割)、4096 トークンの文脈でもスライディング窓の層がリングにならないので、巻き戻しと prompt store が使えます。仕組みと制約は [docs/amd-npu-models.md](docs/amd-npu-models.md) にあります。
-
-### 画像生成 (Anima)
-
-`go run ./cmd/hwnpu-image` は、Anima (circlestone-labs/Anima、Cosmos-Predict2 2B の DiT と Qwen3-0.6B、Qwen-Image の VAE) でプロンプトから絵を描きます。テキストの符号化、DiT のステップ、VAE の復号はすべて NPU の上の IRON のグラフで、ホストはトークン化、埋め込みの行の取り出し、パッチの並べ替え、Euler のステップ、PNG を受け持ちます。書き出しは画像の大きさと拡散モデルごとで、hwnpu の `tools/amd/iron_anima.py` が作ります (1024 × 1024 で 4.0 GB。DiT のブロックの重みは 8 ビット)。
-
-```bash
-python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2 --size 1024
-go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"
-```
-
-Anima の拡散モデルは 2 つです。`-m` を省くと Anima-Turbo (`anima-turbo`) で、8 ステップ、CFG なしで描きます。`-m anima` は Anima-Aesthetic (質の高い絵で調整したもの) で、CFG 4 (`--guidance`、モデルカードの勧めは 4〜5) です。既定は DPM-Solver++ 2M の 25 ステップ、CFG は雑音の多い 17 ステップだけです (`--sampler euler --steps 30 --cfg-sigmas 0,1` でモデルカードのとおり 30 ステップ全部に CFG)。DiT を 1 枚に 42 回走らせるので Turbo の約 4.5 倍の時間がかかります。負のプロンプトは `--negative` です (既定は空。モデルカードの勧めは `"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"` で、Aesthetic では score タグを入れない)。Turbo に `--guidance` なしで `--negative` を付けると、弱い CFG 1.5 で走ります (1 ステップに DiT を 2 回)。書き出しは `--dit` で拡散モデルを選びます。
-
-```bash
-python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-npu2 --size 1024 --dit anima-aesthetic-v1.1.safetensors
-go run ./cmd/hwnpu-image generate -m anima "masterpiece, best quality, safe, 1girl, cherry blossoms" --negative "worst quality, low quality"
-```
-
-AMD の NPU では、`-m` の名前で `~/models/NAME.amd-npu2` (`anima-turbo-1024.amd-npu2`、`anima-aesthetic-1024.amd-npu2` など) を使います。モデルは models.yaml の名前、ファミリー (`anima-turbo`、`anima`、`sana`、`sana:1.6b`)、書き出しのディレクトリのどれでも指定できます。ファミリーだけのときは、マシンのメモリで大きさを選びます (`sana` は 16 GB 以上で SANA 1.5 1.6B、それ未満で Sana 600M)。メモリは `-m sana:8g` (`8G`、`8GB`、表の列にない `12g` も可) のように明示でき、そのメモリのマシンで選ばれるものになります。`hwnpu-image list` (`list image`、`list depth`、`list face-detect`) が、モデル、AMD の書き出しの有無、ファミリーと用途がメモリごとに選ぶものを表で出します。`-m` に合うものがないときも同じ表を出します。名前で選んだモデルは `~/models/NAME.amd-npu2` (小文字、`-1024` 付きも) を探します。`-o` を省くと、今のディレクトリの `image.png` (あれば `image (2).png`、`image (3).png`、…) に書き、OS のビューア (macOS は open、Windows は関連付け、Linux は xdg-open) で開きます。
-
-Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Anima-Turbo の 8 ステップで約 44 秒 (DiT 1 ステップ 4.6 秒)、Anima-Aesthetic (CFG 4) で約 3 分 20 秒 (1 枚 3.8 kJ。Turbo は 715 J) です。Anima-Aesthetic は、モデルカードのオイラー法 30 ステップの代わりに DPM-Solver++ 2M の 25 ステップで、CFG は雑音の多いステップだけにかけます (絵は同じで、30 ステップのときは 4 分 40 秒、4.8 kJ。`--sampler euler --steps 30 --cfg-sigmas 0,1` で戻せます)。NPU に固定されるメモリは最大 2.4 GiB (VAE の段) で、どのモデルでも同じです。`~/models/Anima` の置き方と、精度の測定は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 11 節にあります。
-
-Mac の Neural Engine と Intel の NPU では、hwnpu-chat と同じく、初回の起動でチェックポイントを Hugging Face から落とし (約 5.4 GB)、Go だけで Core ML のパッケージか OpenVINO IR に書き出します (Python は要りません)。置き場所は hwnpu-chat と同じユーザーのキャッシュディレクトリの `hwnpu/models/Anima` (`--dir`) で、書き出しは画像の大きさ (`--size`) と重みの形式ごとです。初回は読み込みのときに NPU 向けのコンパイルもあり、1024 × 1024 で数分かかります。
-
-```bash
-go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
-```
-
-M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 58 秒、Anima-Aesthetic が約 4 分 30 秒 (DiT 1 回 6.3 秒、Neural Engine に 2.6 GiB、プロセスの最大 3.9 GB) です。記録は [docs/design.md](docs/design.md) の 16.85、16.152、16.160 にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
-
-### 画像生成 (Sana)
-
-`hwnpu-image generate -m sana` は NVlabs の Sana (線形注意の DiT、Gemma 2 2B、DC-AE の VAE) で描きます。Sana 600M と SANA 1.5 1.6B で、20 ステップと CFG (雑音の多い 14 ステップだけ) です。英語のプロンプト向けで、Mac の Neural Engine では画像生成のモデルでいちばん速く (M1 で Sana 600M 約 17 秒、SANA 1.5 約 31 秒、Anima-Turbo は約 58 秒)、Neural Engine が抱えるメモリも少なくて済みます (0.6 / 1.6 GiB、Anima-Turbo は 2.6 GiB)。
-
-AMD の NPU では書き出しを渡します。書き出しは `tools/amd/iron_sana.py` が、Efficient-Large-Model の diffusers のリポジトリから作ります。2 ステップに蒸留した Sana-Sprint は、絵の質が Sana よりかなり低いので外しました ([docs/design.md](docs/design.md) の 16.148)。
-
-```bash
-python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/models/sana-600m-1024.amd-npu2
-go run ./cmd/hwnpu-image generate -m sana:0.6b "a watercolor painting of a red fox in a snowy birch forest"
-```
-
-Ryzen AI 9 365 で、1024 × 1024 の 1 枚が Sana 600M で約 60 秒、SANA 1.5 1.6B で約 2 分です。NPU に固定されるメモリは最大 2.3 GiB です (Gemma 2 の 8 ビットの重み)。英語のプロンプトが前提です。`-m sana` はメモリで Sana 600M か SANA 1.5 1.6B を選びます。`--negative` で負のプロンプトを付けられます。正方形以外は Sana のビンの大きさ (`iron_sana.py --width 1152 --height 896` など) で書き出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 14 節にあります。ライセンスは DiT と VAE が Apache-2.0 と MIT、Gemma 2 は Gemma の利用規約です。
-
-Apple の Neural Engine では、`hwnpu-image generate -m sana "..."` などで Sana 600M と SANA 1.5 1.6B が動きます。Anima と同じく、初回にチェックポイントを `--dir/Sana` に落として Core ML のパッケージに変換し (10 秒)、各プログラムを Neural Engine 用にコンパイルします (初回は全体で約 8 分半)。M1 (16 GB) で、キャッシュのある 2 回目以降は 1 枚 Sana 600M が約 17 秒、SANA 1.5 が約 31 秒、プロセスのメモリは最大 3.9 GB です。diffusers の fp32 と同じノイズからの潜在のコサインは Sana 600M で 0.998、SANA 1.5 で 0.984 です (fp16 の DiT で全ステップ CFG のとき)。Gemma 2 は int8、DiT は Sana 600M が int8、SANA 1.5 が lut8、VAE は fp16 で、時刻の埋め込みだけホストで計算します。CFG は雑音の多い 14 ステップだけにかけます (`--cfg-sigmas 0,1` で全ステップ)。記録は [docs/design.md](docs/design.md) の 16.145 と 16.160 にあります。手で書き出すときは `hwnpu-image convert ~/models/Sana_600M_1024px_diffusers -m OUT` (`--text` で Gemma 2 の置き場所) を使います。 Intel の NPU (実機では未確認) では同じ手順で OpenVINO IR に変換します (`--backend intel`)。表を読まないので、SANA 1.5 の DiT は fp16 です。
-
-### 画像生成 (Chroma1)
-
-`hwnpu-image generate -m chroma` は lodestones の Chroma1 (FLUX.1 schnell の 8.9B の DiT、T5-XXL、FLUX の VAE、Apache-2.0) で描きます。`chroma` は Chroma1-Flash (Heun 8 ステップ、CFG なし)、`chroma:1-hd` は蒸留していない Chroma1-HD (CFG 3、DPM-Solver++ 2M 25 ステップで、CFG は雑音の多いステップだけ) です。
-
-AMD の NPU では `tools/amd/iron_chroma.py` の書き出しを使います ([docs/amd-npu-models.md](docs/amd-npu-models.md))。Apple の Neural Engine では、初回にチェックポイント (27.5 GB) を `--dir/Chroma` に落とし、Go だけで Core ML のパッケージに変換して (約 1 分)、Neural Engine 用にコンパイルします。T5-XXL は lut8 (外れ値を出す FF の出力の射影だけ fp16) で 3 層ずつ読んで閉じ、DiT は lut8、VAE は fp16 で、全部が Neural Engine に載ります。M1 (16 GB) で、2 回目からの 1 枚は Chroma1-Flash の 512 × 512 で約 2 分、1024 × 1024 で約 9 分半、Chroma1-HD の 1024 × 1024 で約 22 分です (初回は Neural Engine 用のコンパイルが約 1 時間半。HD は Flash の書き出しから T5 と VAE を共有します)。DiT の重み (8.3 GiB) を Neural Engine に固定したまま回すので、16 GB 以上の Mac が要ります。CPU の float32 と同じノイズからの潜在のコサインは 0.987〜0.997 (3 プロンプト × 2 種、512²) で、絵は同じです。記録は [docs/design.md](docs/design.md) の 16.170 にあります。手で書き出すときは `hwnpu-image convert ~/models/Chroma1-Flash -m OUT --tokenizer T5_TOKENIZER.json` (T5 と VAE が別の場所なら `--text`) を使います。
-
-### 深度推定 (Depth Anything 3)
-
-`go run ./cmd/hwnpu-image depth` は、AMD の NPU か Apple の Neural Engine (Intel の NPU も。実機では未確認) で写真の深度を推定します。モデルは Depth Anything 3 (Apache-2.0) の DA3MONO-LARGE (既定、相対の深度)、DA3METRIC-LARGE (`--fov` か `--focal` でメートル)、DA3-SMALL / BASE (軽い版、深度と確信度) です。画像ごとに `NAME.depth.png` (近いほど明るい) を書き、`--raw` で深度の float32、`--sky` で空 (SMALL / BASE は確信度) の画像も書きます。書き出しは縦横比ごとの大きさを持ち、画像に近いものを使います。`-m` は generate と同じく名前かファミリー (`da3:small`、`da3metric`、`moge`、`moge:vits`) か書き出しのディレクトリです。既定の用途 `depth` はメモリで選び、8 GB は DA3-SMALL、16 GB は DA3-BASE、24 GB 以上は DA3MONO-LARGE です (`depth:24g` や `-m DA3MONO-LARGE` で大きい方も)。
-
-```bash
-python tools/amd/iron_da3.py ~/models/DA3MONO-LARGE ~/models/da3mono-large.amd-npu2
-go run ./cmd/hwnpu-image depth photo.jpg
-```
-
-Ryzen AI 9 365 で 1 枚 0.7 秒 (LARGE、504 × 378)、SMALL は 0.26 秒、NPU に固定されるメモリは最大 1.4 GiB (SMALL 0.5 GiB) です。DA3-SMALL / BASE を `--views 3` で書き出すと、同じ場面の 3 枚を同時に推定して、1 つの尺度の深度とカメラの位置 (`cameras.json`)、点群 (`--ply`) を出します。手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 15 節にあります。
-
-Apple の Neural Engine では、名前だけで動きます (`hwnpu-image depth -m da3:small photo.jpg`、`-m moge:vits`)。初回にチェックポイントを取ってきて、縦横比ごとの大きさは初めて使うときに変換します (数秒、その大きさの最初の読み込みでコンパイル)。M1 で 504 × 504 の 1 枚が DA3-SMALL 0.2 秒、DA3MONO-LARGE 0.5 秒、MoGe-2 ViT-S (700 × 700) 0.5 秒で、公式のモジュールとの深度のコサインは 0.99999 以上です。`--views` (複数視点) は AMD だけです。記録は [docs/design.md](docs/design.md) の 16.145 にあります。
-
-MoGe-2 (Ruicheng/moge-2-vit{s,b,l}-normal、MIT) の書き出し (`tools/amd/iron_moge.py`) を渡すと、焦点距離を知らなくてもメートル単位の深度、点群 (`--raw`)、法線 (`--normal`)、有効な画素のマスク (`--sky`) を出します。812 × 602 で 1 枚 2.7〜3.6 秒です (16 節)。
-
-```bash
-python tools/amd/iron_moge.py ~/models/moge-2-vits-normal ~/models/moge-2-vits.amd-npu2
-go run ./cmd/hwnpu-image depth -m moge:vits --normal photo.jpg
-```
-
-`go run ./cmd/hwnpu-image face-detect` は、写真の顔を探します (YuNet、OpenCV Zoo、MIT)。画像ごとに 1 行の JSON で、顔の枠 (x, y, w, h)、スコア、5 点 (右目、左目、鼻先、口の右端と左端) を出します。`--draw` で枠と点を描いた `NAME.faces.png` も書きます。大きさは 320×256 と 640×480 で、画像を縮める割合が最も小さいものを使います (`--size` で固定)。結果は OpenCV の FaceDetectorYN と一致します。
-
-どこで動かすかは、models.yaml の `device` が NPU のベンダーごとに決めます。YuNet は AMD では CPU、Apple では Neural Engine です (ONNX のグラフをそのまま Core ML に変換、640×480 で 1 枚 3.4 ms)。AMD の NPU では、この小さなモデルの演算ごとの切り替えが重く、320×256 で 1 枚 30 ms・137 mJ かかるのに対し、CPU では 4 ms・10 mJ だからです (docs/amd-npu-models.md 17 節)。CPU では ONNX Runtime の共有ライブラリを使います。[リリース](https://github.com/microsoft/onnxruntime/releases)の `lib/libonnxruntime.so` を置いて、`HWNPU_ONNXRUNTIME` にそのパスを入れてください (システムにあればそれを使います)。ONNX のファイルは自動で取ってきます。`--device npu|cpu` か `HWNPU_DEVICE` で、置き場所を上書きできます (ゲームなどで CPU を空けたいときは `--device npu`)。`hwnpu-image list` の RUNS FROM の列に、このマシンでの置き場所が出ます。
-
-```bash
-python tools/amd/iron_yunet.py ~/models/face_detection_yunet ~/models/yunet.amd-npu2   # hf:opencv/face_detection_yunet
-go run ./cmd/hwnpu-image face-detect --draw photo.jpg               # AMD: the CPU (ONNX Runtime)
-go run ./cmd/hwnpu-image face-detect --device npu photo.jpg          # AMD's NPU: the export above
-```
-
-`go run ./cmd/hwnpu-image detect` は、写真の物を探します (RTMDet、OpenMMLab MMDetection、Apache-2.0)。COCO の 80 種類 (人、車、自転車、信号、犬、カップ…) について、画像ごとに 1 行の JSON で、枠 (x1, y1, x2, y2)、ラベル、スコアを出します。`--draw` で枠を描いた `NAME.objects.png`、`--class person,car` で種類を絞れます。マシンのメモリで RTMDet-s (8 GB) か RTMDet-m (16 GB 以上) を選びます (`-m rtmdet:tiny` で明示)。M1 の Neural Engine で 1 枚 15〜26 ms (ネットワーク 7〜18 ms、全部 NPU)。
-
-`go run ./cmd/hwnpu-image ocr` は、画像の文字を読みます (PaddleOCR の PP-OCRv6 small、Apache-2.0。日本語、中国語、英語など 50 言語)。行ごとに、四隅の座標、文字、スコアを JSON で出します。`--text` で文字だけ、`--draw` で行の枠を描いた `NAME.text.png` も書きます。文字の検出と認識の 2 つのネットワークが NPU で動き、M1 でレシート 13 行が 40 ms、論文 1 ページ (98 行) が 0.5 秒です。PaddleOCR の手順を ONNX Runtime で動かしたものと、ページの 98 行のうち 93 行が一字一句同じでした (文字誤り率 0.2 %)。検出器の大きさは 960×960、1280×736、736×1280 から選びます (`--size` で変えられ、大きいほど小さな文字を拾います)。
-
-```bash
-go run ./cmd/hwnpu-image detect --draw photo.jpg                     # JSON lines, photo.objects.png
-go run ./cmd/hwnpu-image ocr --text scan.png                         # the lines of text
-```
-
-どちらも Apple の Neural Engine (と Intel の NPU、実機では未確認) で、初回にモデルを取ってきて変換します (OCR の認識器は行の幅ごとのプログラムを、その幅を初めて使うときに変換し、それぞれ初回のコンパイルに 5〜20 秒)。AMD の機械では、RTMDet-m と `pose` の RTMO-s は NPU で動きます (初回に IRON で書き出し、1 枚 0.33 秒と 0.22 秒。docs/amd-npu-models.md 21、22 節)。RTMDet の tiny と s、OCR は CPU で動きます (`hwnpu-audio pitch`、`notes` も同じ)。何も入れなくても hwnpu の CPU 実行器で動き (1 スレッドで RTMDet-m 1 枚 2.3 秒、3 行の OCR 4.5 秒)、ONNX Runtime の共有ライブラリがあればそちらを使います (`HWNPU_ONNXRUNTIME` にパス。1.4 秒と 1.8 秒)。`--threads` で増やせます (docs/amd-npu-models.md 19 節)。座標と物の種類が要るときは、汎用の視覚言語モデル (LFM3-VL、`hwnpu-chat --image`) より、こちらが速く (1 枚数十 ms と数秒)、全部の物を拾い、座標が正確です。
-
-### ラベル付けと画像の埋め込み (SigLIP 2)
-
-`go run ./cmd/hwnpu-image label` は、Google の SigLIP 2 (Apache-2.0) で写真にラベルを付けます。候補 (`-l "猫,犬,a red car"`、`--labels-file`、どの言語でも) を `this is a photo of {}.` に入れ、その文が写真を表す確率をラベルごとに出します (ゼロショット。合計は 1 になりません)。候補を省くと、組み込みの約 440 の物、場所、画像の種類から選びます。`hwnpu-image embed` は写真と文 (`-t`) を同じ空間の埋め込みにし、`--compare` でそのコサインと確率を出します (画像の検索や似た画像の検索に)。AMD の NPU と Apple の Neural Engine で動き、マシンのメモリで Base (8 GB、224 × 224) か Large (16 GB 以上、256 × 256) を選びます。Ryzen AI 9 365 で 1 枚 84 ms (Base)、文 8 つで 131 ms、Transformers (float32) との埋め込みのコサインは 0.9998 以上です。Apple では初回にチェックポイントを取ってきて Go で変換します (Base 1.5 GB、Large 3.6 GB。変換は数秒、最初の読み込みでコンパイルに 13〜33 秒)。M3 で Base は 1 枚 7 ms、文 8 つで 16 ms (既定の 444 ラベルの埋め込みは最初の 1 回だけ 2 秒)、Large は 35 ms と 53 ms で、Transformers との埋め込みのコサインは画像 0.9998 以上、文 0.99999 以上です。ラベルの埋め込みはユーザーのキャッシュに置き、同じ一覧は 1 回だけ計算します。
-
-```bash
-python tools/amd/iron_siglip2.py ~/models/siglip2-base-patch16-224 ~/models/siglip2-base-patch16-224.amd-npu2   # AMD だけ。hf:google/siglip2-base-patch16-224
-go run ./cmd/hwnpu-image label photo.jpg                     # JSON lines: the likeliest labels
-go run ./cmd/hwnpu-image embed --compare photo.jpg -t "a cat on a sofa"
-```
-
-AMD の手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 18 節、Apple の記録は [docs/design.md](docs/design.md) の 16.183 にあります。
-
-### 点や箱で指定する切り抜き (EfficientSAM)
-
-`go run ./cmd/hwnpu-image segment` は、Meta の EfficientSAM (Apache-2.0、Segment Anything のプロンプト) で、点 (`--point x,y`、外す点は `--negative`) か箱 (`--box x1,y1,x2,y2`) で指した物の mask を作ります。`NAME.mask.png` (物が白) と `NAME.cutout.png` (物の外が透明) を書き、スコア (予測した IoU)、面積、枠を JSON で出します。復号器の候補 3 つのうち一番スコアの高いものを、`--all` で 3 つとも書きます。画像の符号器 (1024 × 1024 の ViT) は AMD の NPU (初回に IRON で書き出す)、Apple の Neural Engine、Intel の NPU (初回に ONNX から変換。Intel は実機では未確認) で動き、それ以外の機械や `--device cpu` では CPU です (ONNX Runtime があればそれ、なければ hwnpu の評価器で遅い)。復号器はプロンプトごとにホストで動きます。マシンのメモリで Ti (8 GB) か S (16 GB 以上) を選びます。Ryzen AI 9 365 で、符号器が Ti 0.34 秒、S 0.48 秒、復号器が 0.6〜0.7 秒です。M3 では S の符号器が 0.4 秒、復号器が 0.3 秒で、mask は CPU のものと IoU 0.9994 です。
-
-```bash
-go run ./cmd/hwnpu-image segment --box 280,40,500,385 photo.jpg   # photo.mask.png, photo.cutout.png
-go run ./cmd/hwnpu-image segment --point 390,200 --all photo.jpg
-```
-
-手順と精度は [docs/amd-npu-models.md](docs/amd-npu-models.md) の 23 節にあります。
-
-## Apple での注意
-
-- Core ML は「Neural Engine だけ」を指定できません。hwnpu は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません
-- Neural Engine は fp16 前提です。fp32 のモデルや小さすぎるモデルは CPU に置かれます。coremltools で fp16 の ML Program に変換してください
-- 小さすぎるモデルは、`tools/coreml/ane_pad.py` でバッチ方向にパディングすると Neural Engine に載せられます。ただし小さなモデルでは遅くなることがあるので、詳しくは [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を読んでから使ってください
-- macOS 27 では、同じ変換済みのモデルを Core AI でも動かせます (`--backend coreai` か `HWNPU_BACKEND=coreai`。既定は Core ML)。結果と速さは同じで、違いはコンパイルした結果をディスクが減るまで持ち続けることです (Core ML は約 4 GiB を超えると 2 回目以降もコンパイルし直します)。使えるコマンドと費用は [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md) の 5 節にあります
-
-## 動作確認レポート
-
-手元の NPU で hwnpu が動くかを確かめ、結果をそのまま貼り付けられる Markdown で出力します。テスト用モデルはプログラムに埋め込んであるので、リポジトリのどこから実行しても動きます。
-
-```bash
-go run ./cmd/hwnpu-dev report -o report.md
-```
-
-- 見つかったデバイスごとに、そのバックエンド向けのモデルを厳格モードでコンパイルし、推論結果を fp32 の参照値と比べ、実行時間を測ります
-- Level Zero loader の読み込み結果も載るので、Intel NPU が見つからないときの原因が分かります
-- `-json report.json` で JSON も出力します。`-n` で計測の回数を、`-power low` などで電力ポリシーを、`-cache DIR` でコンパイルキャッシュを指定できます
-- AMD では `-xclbin final.xclbin -insts insts.bin` を渡すと、mlir-aie の `programming_examples/basic/passthrough_dmas` をビルドした設計を実行して出力を照合します (引数の並びは opcode, instr, ninstr, 入力, 未使用, 出力)
-- 失敗があると終了コード 2、NPU が見つからないと 1 で終わります
-
-macOS では `go run ./cmd/hwnpu-dev powerbench` で、Core ML モデルの呼び出し 1 回あたりのエネルギーを powermetrics で測れます。最初に sudo のパスワードを一度だけ聞きます。詳しくは [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を参照してください。
-
-`go run ./cmd/hwnpu-dev convert` は、Hugging Face のチェックポイント (safetensors か GGUF) を Python なしで Neural Engine 用の `.mlpackage` に変換します。対応するのは LFM3 (d1-2B などの判定モデルを含む)、LFM3-VL の視覚エンコーダ、LFM3-Audio / LFM3-Omni の音声エンコーダと音声出力、Gemma 4（gemma-4-E2B-it）、Qwen3.5（Qwen3.5-4B などのテキスト部分。CPU での照合のみ）、Qwen3（Qwen3-0.6B と 1.7B。`hwnpu-chat -m qwen3`）、BERT 系エンコーダ、PLaMo-Embedding-1B、PLaMo 3（PLaMo 3 Translate 2B。CPU と OpenVINO の CPU での照合のみ。`hwnpu-chat -m plamo-3-translate-2b` で翻訳）、Whisper（whisper-large-v3-turbo。音声エンコーダは `-arch whisper-encoder`、クロス注意のキーと値は `-arch whisper-cross`）で、移植の手順は `.claude/skills/port-architecture` にあります。元モデルの選び方と Neural Engine の制約は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) にまとめてあります。`go run ./cmd/hwnpu-dev check` は、変換したグラフを CPU で fp32 のまま実行し、Hugging Face の実装の参照 (`tools/ref/ref_logits.py`) と層ごとに照合します。Mac は要りません。`go run ./cmd/hwnpu-dev generate` は、変換した因果 LM で文章を生成します (トークナイザーも Go)。`-cache N` で変換すると KV キャッシュ付きになり、長い文章を書けます (M3 の LFM3-1.7B で、キャッシュ 1024 なら 1 トークン 20.6 ms)。`go run ./cmd/hwnpu-chat` は、引数なしで LFM3-1.7B を落として変換し、対話を始めます。引数に質問を書くと答えて終わります (`hwnpu-chat "日本の首都は？"`。答えは標準出力、読み込みの様子は標準エラー出力に灰色で、NPU に全部載れば `all on the NPU` を緑、載らなければ赤で出します)。使うモデルは `-m` に名前で指定し、選べるモデルと用途は `hwnpu-chat list` で出ます。`hwnpu-chat search -m plamo-embedding-1b` なら PLaMo-Embedding-1B で文を埋め込んで検索します。`hwnpu-chat serve` で OpenAI 互換の API サーバーになり、`-m LFM3-1.7B,plamo-embedding-1b` ならチャット (`/v1/chat/completions`) と埋め込み (`/v1/embeddings`) を 1 つのサーバーで出します。`hwnpu-chat opencode` は、サーバーを 30000 番台以降の空いたポートで開き、その設定で OpenCode を起動します。OpenCode のようなコーディングエージェントからも使えます。`go run ./cmd/hwnpu-chat agent "main.go の add のバグを直して"` は、同じモデルを HTTP なしで直接呼ぶ 4 道具 (read、edit、write、bash) のコーディングエージェントで、system prompt と道具の宣言は約 600 トークン (OpenCode は 7.4K) です。`--tools search --search-first` なら、知識をモデルに頼らず検索 (Wikipedia、Brave、SearXNG) して答えるアシスタントになります。手順は [CHAT.ja.md](CHAT.ja.md)（[English](CHAT.md)）にあります。Intel の NPU (Core Ultra) では、同じ hwnpu-chat (`chat`、`agent`) がモデルを OpenVINO IR に変換して動かします (実機では未確認。[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の 6 節)。`go run ./cmd/hwnpu-dev formats` は、重みの形式 (int8、int4-g128、int4) ごとの精度と速さを NPU の上で比べます。`hwnpu-chat systemone` は、d1-2B で状態についての型付きの質問 (選択、段階、真偽) に答えます。llama.cpp のサーバーと同じ `/v1/systemone` を提供します。`hwnpu-chat` は `--vision` で画像を、`--audio-encoder` で音声を、`hwnpu-chat systemone` は `--vision` で画像を、`--audio-encoder` で音声を読みます (LFM3-VL-2B、LFM3-Audio-2B、d1-2B、d1-Omni-2B)。`go run ./cmd/hwnpu-audio tts` は LFM3-Audio-2B で文章を読み上げます。tts と systemone も、初回にモデルを落として自分で変換します (`-m speech`、`-m decision`)。どのコマンドも、選べるモデルは組み込みの [models.yaml](models.yaml) から来ていて、自分のファイルで足したり差し替えたりできます ([docs/model-table.md](docs/model-table.md))。`go run ./cmd/hwnpu-audio pitch voice.wav` は SwiftF0 で声や楽器の音高を 16 ms ごとに、`go run ./cmd/hwnpu-audio notes --midi song.mid song.wav` は Basic Pitch で音符を MIDI に、`go run ./cmd/hwnpu-image pose photo.jpg` は RTMO で画像の人と 17 の関節点を、`hwnpu-image detect` は RTMDet で物の枠とラベルを、`hwnpu-image ocr` は PP-OCRv6 で文字を出します (どれも ONNX で配られるモデルで、`internal/onnx` が静的な部分を NPU のプログラムにします)。`go run ./cmd/hwnpu-audio generate "disco funk"` は Magenta RealTime 2 small で、文で指定した曲調の 48 kHz ステレオの音楽を作り、そのままスピーカーで鳴らします (`-o out.wav` でファイルに) (録音の曲調 `song.wav`、曲調の混ぜ合わせ `"jazz@2" "bossa nova"`、MIDI の音符 `--notes melody.mid`、録音の続き `--continue intro.wav`、鳴らしながらファイルにも書く `--play -o out.wav`、標準出力に流す `-o -`) (M1 で実時間の約 1.4 倍の速さ。重みは CC-BY 4.0 なので、使うときは「Magenta RealTime 2 by Google DeepMind」と表示してください)。同じ `generate` に `-m sfx` を付けると MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作ります (`hwnpu-audio generate -m sfx "A dog barking loudly in a park."`、`--duration 20s`、`--steps 50` で半分の時間)。文の符号器 (Qwen3-1.7B)、DiT (1.3B)、DAC の復号がすべて NPU で動き、M1 でカードの 100 ステップなら 10 秒の音に約 4 分です。マシンのメモリで、16 GB 以上は文の符号器が fp16 のモデル、8 GB は lut8 のモデルを選びます (`-m moss-soundeffect:8gb` や `:16G` で明示)。モデルの一覧は `hwnpu-audio list`。`go run ./cmd/hwnpu-audio transcribe speech.wav` は Whisper large-v3-turbo で音声を書き起こします（初回にチェックポイントを落として変換。M3 で 30 秒の窓を 0.6 秒で読み、65 秒の日本語を 4 秒で書き起こしました。`-l ja`、`--translate`、`--timestamps`）。
-
-`go run ./cmd/hwnpu-dev probe` は、生成したモデルで NPU を測ります。LLM が 1 トークンを生成するのと同じ形のモデルを Go で作り、まず 0.5B と 1B の重みで形式ごと (Apple は fp16、int8、lut4、int4、Intel は fp16、int8、int4) の速さを測ります (`bench`)。次にモデルを大きくしながら NPU から外れる境目を二分探索で絞り、境目のすぐ下のモデルを複数同時に読み込んで、上限がモデルごとか合計かを確かめます (`limit`)。Python もモデルのファイルも root も要らず、クローンしなくても次の 1 行で動きます。結果は `npuprobe-<機種>-<日時>.md` に書き出します。
-
-```bash
-go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
-```
-
-`bench` か `limit` を付けると片方だけを行います。Apple で 1 トークンあたりのエネルギーも測るには `go run ./cmd/hwnpu-dev powerbench -decode 8,16 -gpu` を使います (sudo が要ります)。機種ごとの手順、結果の読み方、これまでの結果は [PROBE.ja.md](PROBE.ja.md) にまとめてあります。
-
-Go の入っていない Windows 機で試すときは、Go のある機械でビルドした実行ファイルを持っていきます。
-
-```bash
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o hwnpu-dev.exe ./cmd/hwnpu-dev
-```
-
-## 診断
-
-```bash
-go run ./cmd/hwnpu-dev info -model internal/fixtures/coreml/linear_relu_fp16.mlpackage
-```
-
-## Intel での注意
-
-- Intel NPU ドライバ (`intel-level-zero-npu`、`intel-driver-compiler-npu`、`intel-fw-npu`) と Level Zero loader (`libze1`) が必要です。loader の場所は環境変数 `HWNPU_ZE_LOADER` で指定することもできます
-- Linux では `/dev/accel/accel0` に読み書きできる権限 (`render` グループ) が必要です
-- `GraphSource{Path: "model.xml"}` で OpenVINO IR (隣の `.bin` も読みます) を、`GraphSource{Blob: ...}` でコンパイル済み blob を渡せます。コンパイラに渡す追加のオプションは `BuildFlags` に `--config KEY="VALUE"` の形で書きます
-- NPU コンパイラが対応しない演算を含むモデルは、配置方針にかかわらず `ErrNotOnNPU` になり、原因の演算とビルドログが返ります
-- Intel の NPU に向けて OpenVINO IR に変換するのは、hwnpu-chat のモデル (LFM3 とその VL・Audio・d1、Gemma 4、Qwen3.5、Qwen3、PLaMo 3、PLaMo-Embedding)、Anima、Sana、`hwnpu-audio` の transcribe (Whisper)、tts、generate (Magenta RealTime 2、MOSS-SoundEffect)、pitch、notes、`hwnpu-image` の depth (DA3、MoGe-2)、face-detect (YuNet)、segment (EfficientSAM のエンコーダ)、detect、pose、ocr です。Chroma、SigLIP 2 (label)、Qwen-Image は AMD の NPU と Apple の Neural Engine だけです (Intel はまだ)。実機で動かしたのは LFM3、PLaMo 3 Translate、PLaMo-Embedding、Anima だけで、ほかは OpenVINO の CPU (`HWNPU_BACKEND=openvino`、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の「OpenVINO で切り分ける」) で変換から結果までを確かめた段階です ([docs/design.md](docs/design.md) 16.166)
-
-## テスト
+## Tests
 
 ```bash
 CGO_ENABLED=0 go test ./...
 ```
 
-- C コンパイラ (`cc`) があれば、テストは偽の Level Zero ドライバ (`testdata/zemock`) をビルドして Intel バックエンドを確かめます
-- テスト用モデルは `internal/fixtures` にあり、`gen_models.py` で再生成できます (numpy と、Core ML 分は coremltools が必要です)
-- Level Zero の構造体の基準値は `testdata/abi/levelzero_abi.c`、amdxdna と xclbin と ERT の基準値は `testdata/abi/xdna_abi.c` で再生成できます
-- AMD のバックエンドは、Linux の amdxdna ドライバの振る舞いを模した Go 製の偽ドライバ (`internal/xdna/xdnasim`) でテストします
+## License
+
+[Apache-2.0](LICENSE). Model weights follow their own licenses.

@@ -316,16 +316,16 @@ def kl_stats(ref, q):
     return dict(mean=float(kl.mean()), median=float(np.median(kl)), p95=float(np.percentile(kl, 95)), top1=top)
 
 
-# new-model-checklist 5.1's texts: the README (not here: it is hwnpu's), GPL-3, wiki40b-ja,
+# new-model-checklist 5.1's texts: the README (frozen, like the Go code, in testdata/texts), GPL-3, wiki40b-ja,
 # wikitext-2, Go code
 def texts(length):
     root = HERE.parents[1]
     out = {}
-    readme = (root / "README.md").read_text(encoding="utf-8")
+    readme = (root / "testdata/texts/readme.md").read_text(encoding="utf-8")
     out["readme"] = readme
-    for name, path in (("gpl", root / "LICENSE"), ("wiki-ja", Path.home() / "models/calib/wiki40b-ja-eval.txt"),
+    for name, path in (("gpl", root / "testdata/texts/GPL-3"), ("wiki-ja", Path.home() / "models/calib/wiki40b-ja-eval.txt"),
                        ("wikitext", Path.home() / "models/calib/wikitext2-test.txt"),
-                       ("go", root / "internal/chat/engine.go")):
+                       ("go", root / "testdata/texts/engine.go")):
         if path.exists():
             out[name] = path.read_text(encoding="utf-8")
     return out

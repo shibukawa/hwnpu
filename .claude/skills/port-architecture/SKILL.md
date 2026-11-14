@@ -94,7 +94,7 @@ fp16 の素直なグラフが参照と合ってから入れます。書き換え
 ### 8. ドキュメント
 
 - docs/design.md に節を足す：何を移したか、合格条件の数値、未確認の点
-- MODEL_ARCHITECTURE.md と MODEL_ARCHITECTURE.ja.md の対応アーキテクチャ、README.md の一覧、MODEL.md と MODEL.ja.md のおすすめとメモリの表を更新する
+- MODEL_ARCHITECTURE.md と MODEL_ARCHITECTURE.ja.md の対応アーキテクチャ、README.md と README.ja.md のコマンドの表、USAGE_*.md (日英) の該当する節、MODEL.md と MODEL.ja.md のおすすめとメモリの表を更新する
 
 ## 間違えやすい点
 

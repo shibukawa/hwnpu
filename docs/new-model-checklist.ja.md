@@ -220,7 +220,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 ### 5.1 測り方を揃える
 
 - **KL(参照 ‖ 量子化)** の平均、中央値、95 %点、top-1 の一致。400 位置 (前の 256 トークンをプロンプトとして読ませ、その後を 1 つずつ)、**BOS あり**
-- 文は 5 種: README (日英の混在)、GPL-3 (**校正に使わない**。合いすぎの検出用)、wiki40b-ja の評価分、wikitext-2 の試験分、Go のコード。置き場は `~/models/calib`
+- 文は 5 種: README (日英の混在。README と Go のコードは書き換わるので、2026-11-14 の版を `testdata/texts` に固定した (`readme.md`、`GPL-3`、`model.go`。校正に使う repo の文書と Go も同じ所)。`ironlm -forced` などにもこれを渡す)、GPL-3 (**校正に使わない**。合いすぎの検出用)、wiki40b-ja の評価分、wikitext-2 の試験分、Go のコード。置き場は `~/models/calib`
 - 参照は fp32 の CPU (HF) か、同じ NPU の bf16。NPU の量子化の KL が CPU の見積もりと同じかを確かめる (LFM3 0.036 と 0.035、LFM3-VL も同じ傾向)。違えば NPU の計算 (丸め、bfp16) を疑う
 - Apple の Neural Engine の上: `hwnpu-dev generate -package P.parts.json -score REF,...` がキャッシュなしのプログラム (`hwnpu-dev convert -seq 128`) を参照 (`ref_logits.py` / `ref_gemma4.py`) のトークンで流し、全位置の KL (平均、中央値、最大)、最上位、コサインを出す。文の先頭の数トークンの KL が大きい (8〜13) ので、設定の比較は同じ文どうしで (16.114)
 - 画像生成は KL の代わりに、参照の軌跡の上での速度の相対 RMS と、自由に走らせた最後の潜在の cosine (`tools/amd/anima_gptq.py`)
