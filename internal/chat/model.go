@@ -192,6 +192,11 @@ type Setup struct {
 	// conversation, so the context can be the model's longest. 0 for paged.DefaultChunk when the
 	// model can be split, PagedOff for never. A model split at its attention has no tiers.
 	Paged int
+	// Shortest is the shortest chunk of the attention programs besides Paged's (llm.AddSmaller):
+	// the host holds the cache in the shortest that covers the conversation, 1024, 2048, 4096...
+	// up to Paged, as a call costs a fixed part and a part in proportion to its chunk. 0 for the
+	// backend's (shortestChunk), PagedOff for none.
+	Shortest int
 	// Draft makes the program that generates take this many tokens per call instead of 1, for
 	// checking the drafts of speculative decoding (Engine.Draft); 0 or 1 for none. It is one
 	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
@@ -489,7 +494,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			for _, path := range pkgs {
 				// a conversion from before the two-level attention gets its mass program, which
 				// has no weights, instead of being converted again
-				if err := llm.AddMass(path, cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape().Scale); err != nil {
+				form, scale := cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape().Scale
+				if err := llm.AddMass(path, form, scale); err != nil {
+					return Config{}, err
+				}
+				// the attention over shorter chunks, also without weights
+				if err := llm.AddSmaller(path, form, scale, shortestChunk(backend, s.Shortest)); err != nil {
 					return Config{}, err
 				}
 			}
@@ -688,6 +698,27 @@ func pruneCache(dir string, logf func(string, ...any)) {
 	if n, bytes, err := cache.Prune(dir, cacheAge); err == nil && n > 0 {
 		logf("compile cache: removed %d entries not used any more (%.2f GiB)", n, float64(bytes)/(1<<30))
 	}
+}
+
+// shortestChunk is the shortest chunk of the attention programs of a model split at its attention
+// besides its own (Setup.Shortest; llm.AddSmaller), 0 for none: want, else the backend's. On an
+// M3's Neural Engine with Core AI and LFM3-1.7B, a call over a chunk of 1024 took 0.50 ms a
+// layer, 2048 0.63, 4096 0.93 and 8192 1.49: a conversation of 150 tokens went from 44.1 to 53.7
+// tokens a second. Core ML puts the attention of 8 tokens a call over chunks under 4096 on the
+// CPU (the chain leaves such a program out), so it starts at 4096: 42.4 to 47.9. Intel's NPU is
+// not measured (docs/design.md 16.186).
+func shortestChunk(backend string, want int) int {
+	switch {
+	case want == PagedOff:
+		return 0
+	case want > 0:
+		return want
+	case backend == llm.BackendCoreAI:
+		return 1024
+	case backend == "" || backend == llm.BackendCoreML:
+		return 4096
+	}
+	return 0
 }
 
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for

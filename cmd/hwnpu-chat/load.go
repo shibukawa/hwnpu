@@ -42,6 +42,7 @@ func (f *loadFlags) prepare() error {
 type convertFlags struct {
 	Context   int    `placeholder:"TOKENS" help:"Tokens of a prompt and its answer together; 0: the model's definition (models.yaml's context), else the longest the model was trained for when it is split at its attention (--paged: 262144 for LFM3-1.7B and Qwen3.5, 131072 for Gemma 4, its cache growing with the conversation within a quarter of the memory), else 16320 (4096 for Qwen3, whose 28 layers of keys and values in one program fail past it; over 16320 a whole model's cache is in chunks of 16384, slower per token)."`
 	Paged     int    `placeholder:"TOKENS" help:"Split a chat model at its full attention layers and attend over the cache in chunks of this many tokens, so that a step costs in proportion to the conversation, not to --context: 0 for the model's definition (models.yaml's paged), else 8192 where the model allows it (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4, Qwen3.5; Qwen3 only when given one, --paged 1024 for its long context), -1 never (then --tier applies)."`
+	Shortest  int    `placeholder:"TOKENS" help:"With --paged, also attention programs over chunks of this many tokens and twice as many... below --paged, and hold the cache in the shortest that covers the conversation (a call over a chunk of 1024 costs a third of one over 8192): 0 for the backend's (1024 on coreai, 4096 on coreml, whose Neural Engine leaves the attention of shorter chunks to the CPU, none on intel), -1 none."`
 	Sparse    bool   `default:"true" negatable:"" help:"Past about 48K tokens of a model split at its attention (--paged), read 16384 keys of the cache exactly (32768 while reading a prompt), those of the 8-token buckets that weigh most, and every other bucket as its mean (two-level attention, a few times faster at 128K and over); --no-sparse reads the whole cache on every call."`
 	Package   string `placeholder:"FILES" help:"Chat programs converted by hwnpu-dev convert instead, comma separated: .mlpackage, .xml (Intel) or out.parts.json, with the same -cache and different -seq."`
 	Config    string `type:"path" placeholder:"FILE" help:"config.json of the chat model (default: in its directory)."`
@@ -159,7 +160,7 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name,
 		// the flags, else the model's definition (models.yaml's prefill, format, context and
 		// paged, of the variant for this machine's memory)
-		Context: cmp.Or(cf.Context, m.Run.Context), Paged: cmp.Or(cf.Paged, m.Run.Paged), Prefill: cmp.Or(cf.Prefill, m.Run.Prefill),
+		Context: cmp.Or(cf.Context, m.Run.Context), Paged: cmp.Or(cf.Paged, m.Run.Paged), Shortest: cf.Shortest, Prefill: cmp.Or(cf.Prefill, m.Run.Prefill),
 		Format: cmp.Or(cf.Format, m.Run.Format), Draft: cf.Draft, MTP: cf.MTP, Tiers: tiers, Backend: lf.Backend, Codes: cf.Codes,
 		FormatFor: split(cf.FormatFor), Log: logw()}); err != nil {
 		return loaded{}, err

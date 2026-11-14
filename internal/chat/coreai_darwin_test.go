@@ -77,3 +77,23 @@ func TestConvertAIOnNeuralEngine(t *testing.T) {
 	}
 	t.Logf("worst relative error %.2g over %d tokens", worst, pos)
 }
+
+// The attention over shorter chunks (llm.AddSmaller) as Core AI programs on the Neural Engine
+// gives the logits of the programs without them there.
+func TestShorterChunksOnNeuralEngine(t *testing.T) {
+	ctx := context.Background()
+	if infos, err := (coreai.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
+		t.Skip("no Core AI")
+	}
+	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreai"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dev.Close() })
+	cfg, w, sess, ref := shorterSessions(t, dev, llm.BackendCoreAI)
+	worst := checkShorter(t, cfg, w, sess, ref)
+	if worst > 3e-2 {
+		t.Errorf("relative error %g against the programs without them", worst)
+	}
+	t.Logf("worst relative error %.2g (Core AI, the Neural Engine)", worst)
+}

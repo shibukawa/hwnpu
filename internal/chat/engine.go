@@ -331,8 +331,12 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			if x := t.progs[len(t.progs)-1].InShape["x"]; len(x) > 1 {
 				perCall = fmt.Sprintf("%d tokens per call, ", x[1])
 			}
+			if cs := ch.Chunks(); len(cs) > 1 {
+				parts += fmt.Sprintf(", attention over chunks of %d to %d", cs[0], cs[len(cs)-1])
+			}
 			bar.Done(fmt.Sprintf("%s, %s%s, %s", console.Duration(bar.Elapsed()), perCall, parts, where))
 		}
+		commonSmaller(t.progs)
 		s, err := t.session(cm)
 		if err != nil {
 			t.close()
@@ -541,6 +545,21 @@ func (t *tier) session(cm llm.Cached) (*decode.Session, error) {
 		}
 	}
 	return s, nil
+}
+
+// commonSmaller keeps the attention programs over shorter chunks (decode.Program.Smaller) that
+// every program of a tier has: the chain leaves out one the NPU does not take all of, and the
+// programs of one session must attend over the same chunks.
+func commonSmaller(progs []decode.Program) {
+	count := map[int]int{}
+	for _, p := range progs {
+		for _, a := range p.Smaller {
+			count[a.Chunk]++
+		}
+	}
+	for i := range progs {
+		progs[i].Smaller = slices.DeleteFunc(slices.Clone(progs[i].Smaller), func(a *decode.Attention) bool { return count[a.Chunk] < len(progs) })
+	}
 }
 
 func (t *tier) close() {

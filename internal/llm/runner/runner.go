@@ -448,6 +448,15 @@ func cachedCPU(path string, shared map[string][]byte) (decode.Program, io.Closer
 			closers = append(closers, c)
 			a.Mass = ms
 		}
+		for _, r := range man.Smaller {
+			sa, c, err := attentionCPU(r.Path, r.Chunk())
+			if err != nil {
+				closers.Close()
+				return decode.Program{}, nil, err
+			}
+			closers = append(closers, c)
+			p.Smaller = append(p.Smaller, sa)
+		}
 		p.Run, p.Attn, p.Context, p.NoLogits = nil, a, man.Cache, man.KVOnly
 		p.RunPart = func(i int) error { return run(stages[i]) }
 	}

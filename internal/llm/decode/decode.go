@@ -41,6 +41,14 @@ type Program struct {
 	RunPart func(i int) error
 	Attend  []int
 	Attn    *Attention
+	// Smaller are attention programs over shorter chunks than Attn's, shortest first, each
+	// chunk dividing the next's and Attn's. The session holds its cache in the shortest chunk
+	// that covers the sequence and moves the rows into the next as the sequence passes it: a call
+	// costs a fixed part and a part in proportion to its chunk (on an M3's Neural Engine, with
+	// LFM3-1.7B, 0.50 ms a layer over 1024 positions, 0.63 over 2048, 0.93 over 4096, 1.49 over
+	// 8192), so one chunk that just covers the sequence costs less than one longer and than
+	// several shorter. The two-level attention runs on Attn alone.
+	Smaller []*Attention
 	Context int
 	// NoLogits marks a program that only reads tokens into the caches (llm.Options.KVOnly): its
 	// y is not logits, and a step on it returns none. Its last part computes the keys and values
@@ -92,6 +100,7 @@ type Session struct {
 	// of a program split at its attention: the chunks of each long cache the session holds,
 	// by the cache's output (kv_NAME_new), allocated as the sequence reaches them
 	chunks map[string][]Buf
+	chunk  int     // the positions of those chunks now (Program.Smaller)
 	sparse *sparse // the two-level attention (SetSparse), nil when off
 
 	softcap float64 // the soft cap the host applies to the program's logits, 0 for none
@@ -136,6 +145,7 @@ type step struct {
 	// of a program split at its attention: the masks of the step's chunks and the merge
 	merge *paged.Merge
 	zero  Buf          // a mask that hides nothing, for the chunks before the step
+	chunk int          // the positions of the masks' chunks (setChunk)
 	masks map[int]Buf  // by chunk, those the step's tokens fall in
 	spare []Buf        // allocated masks not in use this step
 	o     [3][]float32 // the attention's outputs o, m, l, decoded
@@ -174,6 +184,12 @@ func New(p Program, m llm.Cached) (*Session, error) {
 			return nil, fmt.Errorf("decode: the program is split at its attention, the model cannot be")
 		}
 		s.chunks = map[string][]Buf{}
+		s.chunk = s.chunkFor(0)
+		for i := range s.kv {
+			if s.kv[i].chunk > 0 {
+				s.kv[i].chunk = s.chunk
+			}
+		}
 		if err := s.progs[0].checkPaged(s); err != nil {
 			return nil, err
 		}
@@ -190,6 +206,20 @@ func (st *step) checkPaged(s *Session) error {
 	}
 	if p.Attn.Chunk < st.q {
 		return fmt.Errorf("decode: chunks of %d for %d tokens per step", p.Attn.Chunk, st.q)
+	}
+	for i, a := range p.Smaller {
+		next := p.Attn
+		if i+1 < len(p.Smaller) {
+			next = p.Smaller[i+1]
+		}
+		switch {
+		case a == nil || a.Run == nil:
+			return fmt.Errorf("decode: attention program %d of the shorter chunks is missing", i)
+		case a.Chunk < st.q || a.Chunk >= next.Chunk || next.Chunk%a.Chunk != 0:
+			return fmt.Errorf("decode: a shorter chunk of %d before %d, for %d tokens per step: each must divide the next and hold a step", a.Chunk, next.Chunk, st.q)
+		case len(a.Q) != len(p.Attn.Q) || len(a.O) != len(p.Attn.O) || len(a.M) != len(p.Attn.M) || len(a.L) != len(p.Attn.L):
+			return fmt.Errorf("decode: the attention program over chunks of %d does not take the queries of the one over %d", a.Chunk, p.Attn.Chunk)
+		}
 	}
 	var heads, d int
 	one := false
@@ -232,10 +262,118 @@ func (st *step) checkPaged(s *Session) error {
 	st.merge = paged.NewMerge(heads*st.q, d)
 	st.o = [3][]float32{make([]float32, heads*st.q*d), make([]float32, heads*st.q), make([]float32, heads*st.q)}
 	st.res = make([]float32, heads*st.q*d)
-	st.masks = map[int]Buf{}
+	return st.setChunk(s.chunk)
+}
+
+// setChunk makes the step's masks for chunks of c positions.
+func (st *step) setChunk(c int) error {
+	for _, b := range append(append([]Buf{st.zero}, st.spare...), slices.Collect(maps.Values(st.masks))...) {
+		if b != nil {
+			b.Close()
+		}
+	}
+	st.spare, st.masks, st.zero, st.chunk = nil, map[int]Buf{}, nil, c
 	var err error
-	st.zero, err = p.Attn.NewBuf(2 * st.q * p.Attn.Chunk)
+	st.zero, err = st.p.Attn.NewBuf(2 * st.q * c)
 	return err
+}
+
+// attention is the program's attention program over chunks of c positions.
+func (p Program) attention(c int) *Attention {
+	for _, a := range p.Smaller {
+		if a.Chunk == c {
+			return a
+		}
+	}
+	return p.Attn
+}
+
+// chunkFor is the shortest chunk of the session's attention programs that holds n positions, or
+// the longest.
+func (s *Session) chunkFor(n int) int {
+	p := s.progs[0].p
+	for _, a := range p.Smaller {
+		if a.Chunk >= n {
+			return a.Chunk
+		}
+	}
+	return p.Attn.Chunk
+}
+
+// fit moves the cache the session holds into the shortest chunk of its attention programs
+// (Program.Smaller) that holds the sequence's n positions, before a step or rows written up to
+// n: a longer one as the sequence grows, a shorter one after it went back (Reset, Rewind,
+// Truncate). The rows keep their positions; when the chunks get shorter only those before n
+// move, which are all a step after it reads.
+func (s *Session) fit(n int) error {
+	if s.chunks == nil {
+		return nil
+	}
+	want := s.chunkFor(n)
+	if want == s.chunk {
+		return nil
+	}
+	for i := range s.kv {
+		c := &s.kv[i]
+		if c.chunk == 0 {
+			continue
+		}
+		old := s.chunks[c.out]
+		end := len(old) * c.chunk // every row held, into longer chunks
+		if want < c.chunk {
+			end = min(end, n) // within the first chunk
+		}
+		var moved []Buf
+		row := 2 * c.d
+		for pos := 0; pos < end; {
+			j, k := pos/c.chunk, pos/want
+			run := min(c.chunk-pos%c.chunk, want-pos%want, end-pos)
+			if j < len(old) && old[j] != nil {
+				for len(moved) <= k {
+					moved = append(moved, nil)
+				}
+				if moved[k] == nil {
+					b, err := s.progs[0].p.Attn.NewBuf(2 * c.heads * want * c.d)
+					if err != nil {
+						return fmt.Errorf("decode: a chunk of the cache: %w", err)
+					}
+					moved[k] = b
+				}
+				src, dst := old[j].Bytes(), moved[k].Bytes()
+				so, do := pos%c.chunk, pos%want
+				for h := range c.heads {
+					copy(dst[(h*want+do)*row:(h*want+do+run)*row], src[(h*c.chunk+so)*row:(h*c.chunk+so+run)*row])
+				}
+			}
+			pos += run
+		}
+		for _, b := range old {
+			if b != nil {
+				b.Close()
+			}
+		}
+		s.chunks[c.out] = moved
+		c.chunk = want
+	}
+	return s.setChunk(want)
+}
+
+// setChunk records the chunk of the cache the session holds and makes its steps' masks for it.
+func (s *Session) setChunk(c int) error {
+	s.chunk = c
+	for i := range s.kv {
+		if s.kv[i].chunk > 0 {
+			s.kv[i].chunk = c
+		}
+	}
+	for i := range s.progs {
+		if s.progs[i].p.RunPart != nil {
+			if err := s.progs[i].setChunk(c); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // kvLayer is the layer whose cache the attention of layer attends over (llm.Paged.PagedKV).
@@ -400,8 +538,13 @@ func (s *Session) Add(p Program) error {
 		return fmt.Errorf("decode: one program is split at its attention and the other is not")
 	}
 	if p.RunPart != nil {
-		if p.Attn == nil || p.Attn.Chunk != first.Attn.Chunk || p.Context != first.Context {
+		if p.Attn == nil || p.Attn.Chunk != first.Attn.Chunk || p.Context != first.Context || len(p.Smaller) != len(first.Smaller) {
 			return fmt.Errorf("decode: the programs split at their attention hold different caches")
+		}
+		for i, a := range p.Smaller {
+			if a == nil || a.Chunk != first.Smaller[i].Chunk {
+				return fmt.Errorf("decode: the programs split at their attention attend over different chunks")
+			}
 		}
 		for _, c := range s.kv {
 			if c.chunk > 0 && !slices.Equal(p.OutShape[c.out], []int{1, c.heads, x[1], c.d}) {
@@ -657,7 +800,8 @@ func (s *Session) Limit(n int) error {
 }
 
 // Reset empties the cache. The chunks a session split at its attention holds stay allocated:
-// their rows past the position are masked.
+// their rows past the position are masked (the next step moves them into the shortest chunk
+// that holds the sequence, Program.Smaller).
 func (s *Session) Reset() {
 	for name, b := range s.progs[0].p.In {
 		if cacheInput(name) {
@@ -929,8 +1073,11 @@ func (s *Session) run(emb [][]float32, each bool) (p Program, q int, err error) 
 // that the attention over the cache covers the step's tokens too; keep does not write them again.
 func (s *Session) runPaged(st *step, valid int) error {
 	p, q := st.p, st.q
-	att := p.Attn
 	rows := min(q, s.t-s.pos) // rows that fit in the cache
+	if err := s.fit(s.pos + rows); err != nil {
+		return err
+	}
+	att := p.attention(s.chunk)
 	used := (s.pos + rows + att.Chunk - 1) / att.Chunk
 	if err := st.stepMasks(s.pos, q, used); err != nil {
 		return err
@@ -975,7 +1122,7 @@ func (s *Session) runPaged(st *step, valid int) error {
 			continue
 		}
 		copy(att.Q, p.Out[fmt.Sprintf("attn_q_%d", layer)])
-		if s.sparse != nil {
+		if s.sparse != nil && att == p.Attn {
 			done, err := s.attendSparse(st, layer, kc, vc, s.pos, rows, min(valid, rows), used)
 			if err != nil {
 				return err
@@ -1053,7 +1200,7 @@ func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, mas
 	if sm == st || sm.p.RunPart == nil {
 		return fmt.Errorf("decode: layer %d attends for the last token alone, and no program of fewer tokens per step runs it", layer)
 	}
-	a := sm.p.Attn
+	a := sm.p.attention(s.chunk)
 	pos := s.pos + valid - 1
 	used := pos/a.Chunk + 1 // the chunks the token sees
 	if !*masks {
@@ -1069,7 +1216,7 @@ func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, mas
 		copy(a.Q[2*h*sm.q*d:2*(h*sm.q+1)*d], q[2*h*d:2*(h+1)*d])
 	}
 	done := false
-	if s.sparse != nil {
+	if s.sparse != nil && a == sm.p.Attn {
 		var err error
 		if done, err = s.attendSparse(sm, layer, kc, vc, pos, 1, 1, used); err != nil {
 			return err
@@ -1124,7 +1271,7 @@ func putAttnOut(p Program, layer int, res []float32) {
 // stepMasks makes the masks of the chunks the step's q tokens from pos fall in: query t (position
 // pos+t) sees the positions up to its own. The chunks before them are wholly seen (zero).
 func (st *step) stepMasks(pos, q, used int) error {
-	c := st.p.Attn.Chunk
+	c := st.chunk
 	for j, b := range st.masks {
 		st.spare = append(st.spare, b)
 		delete(st.masks, j)
@@ -1362,6 +1509,9 @@ func (s *Session) ImportRows(from int, rows []byte) error {
 	n := len(rows) / rb
 	if from < 0 || from+n > s.t {
 		return fmt.Errorf("decode: rows %d to %d of a cache of %d", from, from+n, s.t)
+	}
+	if err := s.fit(max(from+n, s.pos)); err != nil {
+		return err
 	}
 	s.sparseTouch(from)
 	off := 0
