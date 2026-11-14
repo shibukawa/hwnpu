@@ -17,6 +17,19 @@ type DarwinInfo struct {
 	Processes []DarwinANEProcess `json:"processes,omitempty"`
 	// IOReport has the ANE's power, memory traffic and interrupts over Options.SampleInterval.
 	IOReport *DarwinIOReport `json:"ioreport,omitempty"`
+	// Services are the system's ANE processes (aned, aneuserd, ANECompilerService), running
+	// or not; a busy ANECompilerService is a model compiling for the ANE.
+	Services []DarwinANEService `json:"services,omitempty"`
+	// ThermalPressure is com.apple.system.thermalpressurelevel: nominal, moderate, heavy,
+	// trapping or sleeping. Past nominal the OS slows the chip, the ANE included.
+	ThermalPressure string `json:"thermal_pressure,omitempty"`
+	// LowPowerMode is Low Power Mode (com.apple.system.lowpowermode).
+	LowPowerMode *bool `json:"low_power_mode,omitempty"`
+	// Drivers are the loaded ANE kexts.
+	Drivers []DarwinKext `json:"drivers,omitempty"`
+	// Framework is AppleNeuralEngine.framework's version.plist (the user-space side that Core
+	// ML and Core AI go through).
+	Framework map[string]string `json:"framework,omitempty"`
 	// ANEClasses are the I/O Registry classes found whose name contains "ANE".
 	ANEClasses []string `json:"ane_classes,omitempty"`
 	// ANE are the I/O Registry objects of those classes, with properties and children.
@@ -106,8 +119,15 @@ type DarwinIOReport struct {
 	ANEWriteBytesPerSec float64 `json:"ane_write_bytes_per_sec"`
 	// ANEInterruptsPerSec is the ANE driver's interrupts ("Interrupt Statistics (by index)"/
 	// "ane 0"); a program that finishes raises one.
-	ANEInterruptsPerSec float64                 `json:"ane_interrupts_per_sec"`
-	Channels            []DarwinIOReportChannel `json:"channels,omitempty"`
+	ANEInterruptsPerSec float64 `json:"ane_interrupts_per_sec"`
+	// SoCPowerW is the average power of every power domain of the chip ("PMP"/"Energy
+	// Counters": ECPU, PCPU, GPU, ANE, DRAM, DISP, …; "Energy Model/…" from that group, left
+	// out when 0, as all of it is on M1), to put the ANE beside the CPU and the GPU.
+	SoCPowerW map[string]float64 `json:"soc_power_w,omitempty"`
+	// DRAMBytesPerSec is the DRAM traffic of every client of the memory controllers ("AMC
+	// Stats"/"Perf Counters": "ANE RD", "GFX RD", "PCPU WR", …).
+	DRAMBytesPerSec map[string]float64      `json:"dram_bytes_per_sec,omitempty"`
+	Channels        []DarwinIOReportChannel `json:"channels,omitempty"`
 }
 
 type DarwinIOReportChannel struct {
@@ -125,4 +145,16 @@ type DarwinIOReportChannel struct {
 type DarwinIOReportState struct {
 	Name      string `json:"name"`
 	Residency int64  `json:"residency"`
+}
+
+type DarwinANEService struct {
+	PID  int    `json:"pid"`
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type DarwinKext struct {
+	Path     string `json:"path"`
+	BundleID string `json:"bundle_id"`
+	Version  string `json:"version,omitempty"`
 }

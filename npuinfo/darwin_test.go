@@ -44,6 +44,18 @@ func TestDarwinGet(t *testing.T) {
 			energy = true
 		}
 	}
+	if d.IOReport.SoCPowerW["ANE"] == 0 && d.IOReport.SoCPowerW["CPU Energy"] == 0 && len(d.IOReport.SoCPowerW) == 0 {
+		t.Errorf("no SoC power domains")
+	}
+	if len(d.Services) == 0 {
+		t.Errorf("no ANE services (aned)")
+	}
+	if len(d.Drivers) == 0 || d.Drivers[0].Version == "" {
+		t.Errorf("drivers %+v", d.Drivers)
+	}
+	if d.ThermalPressure == "" || d.LowPowerMode == nil {
+		t.Errorf("thermal pressure %q, low power mode %v", d.ThermalPressure, d.LowPowerMode)
+	}
 	if !energy {
 		t.Errorf("no ANE energy channel in %d channels", len(d.IOReport.Channels))
 	}

@@ -24,6 +24,13 @@ func collect(ctx context.Context, opts Options, info *Info) error {
 	di.Version, _ = syscall.Sysctl("kern.osproductversion")
 	guard("ioreg", info, func() error { return darwinANE(ctx, di) })
 	di.Device = aneDevice(di.ANE)
+	guard("drivers", info, func() error { return darwinDrivers(di) })
+	guard("services", info, func() error {
+		sv, err := darwinServices()
+		di.Services = sv
+		return err
+	})
+	guard("power state", info, func() error { darwinPowerState(di); return nil })
 	guard("processes", info, func() error {
 		p, err := darwinProcesses(di.Clients)
 		di.Processes = p

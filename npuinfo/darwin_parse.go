@@ -368,3 +368,67 @@ func plistInt(v any) int {
 	}
 	return 0
 }
+
+// isSoCChannel picks the channels that put the ANE beside the rest of the chip: the energy of
+// every power domain and the DRAM traffic of every client.
+func isSoCChannel(group, subgroup, name string) bool {
+	switch {
+	case group == "PMP" && subgroup == "Energy Counters":
+		return true
+	case group == "Energy Model":
+		return !strings.Contains(name, "DTL") // per-core details
+	case group == "AMC Stats" && subgroup == "Perf Counters":
+		return true
+	}
+	return false
+}
+
+// addSoC adds a SoC channel's change to SoCPowerW (as W) or DRAMBytesPerSec. Energy Model
+// keys are prefixed, since its domains overlap PMP's.
+func (r *DarwinIOReport) addSoC(group, name, unit string, v int64) {
+	if r.Seconds <= 0 {
+		return
+	}
+	name = strings.TrimSpace(name)
+	switch group {
+	case "PMP", "Energy Model":
+		j, ok := energyJoules(v, unit)
+		if !ok {
+			return
+		}
+		if group == "Energy Model" {
+			if v == 0 {
+				return // M1 has the channels but leaves them at 0
+			}
+			name = "Energy Model/" + name
+		}
+		if r.SoCPowerW == nil {
+			r.SoCPowerW = map[string]float64{}
+		}
+		r.SoCPowerW[name] = j / r.Seconds
+	case "AMC Stats":
+		if strings.TrimSpace(unit) != "B" {
+			return
+		}
+		if r.DRAMBytesPerSec == nil {
+			r.DRAMBytesPerSec = map[string]float64{}
+		}
+		r.DRAMBytesPerSec[name] = float64(v) / r.Seconds
+	}
+}
+
+// thermalPressureNames are the levels of com.apple.system.thermalpressurelevel
+// (OSThermalNotification.h).
+var thermalPressureNames = map[uint64]string{0: "nominal", 1: "moderate", 2: "heavy", 3: "trapping", 4: "sleeping"}
+
+// aneKextVersion reads a kext's Info.plist.
+func aneKextVersion(r io.Reader) (id, version string, ok bool) {
+	v, err := parsePlist(r)
+	if err != nil {
+		return "", "", false
+	}
+	m, _ := v.(map[string]any)
+	id, _ = m["CFBundleIdentifier"].(string)
+	version, _ = m["CFBundleVersion"].(string)
+	return id, version, id != ""
+}

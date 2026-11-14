@@ -303,3 +303,28 @@ func TestANEDevice(t *testing.T) {
 		t.Fatal("found a device without DeviceProperties")
 	}
 }
+
+func TestDarwinIOReportAddSoC(t *testing.T) {
+	r := &DarwinIOReport{Seconds: 0.5}
+	r.addSoC("PMP", "GPU", "mJ", 500)
+	r.addSoC("Energy Model", "GPU Energy", "nJ", 0)
+	r.addSoC("Energy Model", "CPU Energy", "mJ", 250)
+	r.addSoC("AMC Stats", "ANE RD", "B", 1e9)
+	r.addSoC("AMC Stats", "ANE RD x", "events", 7)
+	if len(r.SoCPowerW) != 2 || r.SoCPowerW["GPU"] != 1 || r.SoCPowerW["Energy Model/CPU Energy"] != 0.5 ||
+		len(r.DRAMBytesPerSec) != 1 || r.DRAMBytesPerSec["ANE RD"] != 2e9 {
+		t.Fatalf("got %v %v", r.SoCPowerW, r.DRAMBytesPerSec)
+	}
+	if !isSoCChannel("PMP", "Energy Counters", "DRAM") || isSoCChannel("Energy Model", "", "PCPUDTL00") || isSoCChannel("PMP", "Bandwidth", "ANE RD") {
+		t.Fatal("isSoCChannel")
+	}
+}
+
+func TestANEKextVersion(t *testing.T) {
+	id, v, ok := aneKextVersion(strings.NewReader(`<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.apple.driver.AppleH11ANEInterface</string>
+<key>CFBundleVersion</key><string>10.102.3</string></dict></plist>`))
+	if !ok || id != "com.apple.driver.AppleH11ANEInterface" || v != "10.102.3" {
+		t.Fatalf("got %q %q %v", id, v, ok)
+	}
+}

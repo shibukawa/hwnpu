@@ -192,10 +192,14 @@ func darwinIOReport(ctx context.Context, interval time.Duration) (*DarwinIORepor
 			Name:     c.goString(ccall(l.ChannelGetName, ch)),
 			Unit:     c.goString(ccall(l.ChannelGetUnitLabel, ch)),
 		}
+		format := int32(ccall(l.ChannelGetFormat, ch))
+		if format == iorFormatSimple && isSoCChannel(e.Group, e.SubGroup, e.Name) {
+			rep.addSoC(e.Group, e.Name, e.Unit, int64(ccall(l.SimpleGetIntegerValue, ch, 0, 0)))
+		}
 		if !isANEChannel(e.Group, e.SubGroup, e.Name) {
 			continue
 		}
-		switch int32(ccall(l.ChannelGetFormat, ch)) {
+		switch format {
 		case iorFormatSimple:
 			e.Format = "simple"
 			v := int64(ccall(l.SimpleGetIntegerValue, ch, 0, 0))
