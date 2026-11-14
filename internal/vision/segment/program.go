@@ -41,10 +41,7 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 	if err != nil {
 		return nil, err
 	}
-	ext := ".mlpackage"
-	if backend == llm.BackendIntel {
-		ext = ".xml"
-	}
+	ext := llm.ProgramExt(backend) // .aimodel, .mlpackage or .xml
 	stem := strings.TrimSuffix(filepath.Base(encoder), filepath.Ext(encoder))
 	path := filepath.Join(dir, fmt.Sprintf("%s-r%d-fp16-%d%s", stem, ProgramRevision, Size, ext))
 	if _, err := os.Stat(path + ".done"); err != nil {

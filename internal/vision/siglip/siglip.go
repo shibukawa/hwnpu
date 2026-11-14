@@ -32,7 +32,7 @@ import (
 type Export struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Format is FormatCoreML for an export of Prepare (Core ML packages), "" for IRON's graphs.
+	// Format is FormatCoreAI or FormatCoreML for an export of Prepare, "" for IRON's graphs.
 	Format     string    `json:"format,omitempty"`
 	Version    int       `json:"version,omitempty"`
 	LogitScale float64   `json:"logit_scale"` // exp of the checkpoint's logit_scale
@@ -183,7 +183,7 @@ func (m *Model) PatchRows(img image.Image) []float32 {
 func (m *Model) Image(ctx context.Context, img image.Image) ([]float32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.Format == FormatCoreML {
+	if IsProgramFormat(m.Format) {
 		return m.imageProgram(ctx, img)
 	}
 	if err := m.load(ctx, &m.vision, "vision"); err != nil {
@@ -247,7 +247,7 @@ func (m *Model) openText() error {
 func (m *Model) Texts(ctx context.Context, texts []string) ([][]float32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.Format == FormatCoreML {
+	if IsProgramFormat(m.Format) {
 		return m.textsProgram(ctx, texts)
 	}
 	if err := m.load(ctx, &m.text, "text"); err != nil {

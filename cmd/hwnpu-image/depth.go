@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -59,12 +60,16 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
 	model := expandHome(c.Model)
-	// Apple's Neural Engine and Intel's NPU run the programs Prepare converts (Core ML, OpenVINO
+	// Apple's Neural Engine and Intel's NPU run the programs Prepare converts (Core AI, OpenVINO
 	// IR); AMD's an export of IRON
 	backend := ""
 	if chat.HereVendor() != "amd" {
-		if format, err := llm.ProgramFormat(ctx, c.Backend); err == nil {
+		format, err := imageFormat(ctx, c.Backend)
+		switch {
+		case err == nil:
 			backend = format
+		case runtime.GOOS == "darwin":
+			return err
 		}
 	}
 	programs := backend != ""
@@ -95,10 +100,10 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 	var dev *hwnpu.Device
 	if programs {
 		var opts []hwnpu.Option
-		if backend == llm.BackendCoreML {
+		if llm.AppleFormat(backend) {
 			opts = append(opts, hwnpu.WithPlacement(hwnpu.PlacementStrict))
 		}
-		d, _, err := llm.OpenDevice(ctx, c.Backend, cacheDirOf(""), opts...)
+		d, _, err := openImageDevice(ctx, c.Backend, cacheDirOf(""), opts...)
 		if err != nil {
 			return err
 		}

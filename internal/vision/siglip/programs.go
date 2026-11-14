@@ -1,6 +1,7 @@
 package siglip
 
 import (
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -29,21 +30,30 @@ const ExportVersion = 1
 // ProgramLabels is the texts a call of a converted text program takes.
 const ProgramLabels = 8
 
-// FormatCoreML is Export.Format of an export of Prepare: Core ML packages (vision.mlpackage,
-// text.mlpackage), text/embed.bin in fp16. An export of tools/amd/iron_siglip2.py has none.
-const FormatCoreML = "coreml"
+// FormatCoreML and FormatCoreAI are Export.Format of an export of Prepare: Core ML packages
+// (vision.mlpackage, text.mlpackage) or Core AI programs (vision.aimodel, text.aimodel), with
+// text/embed.bin in fp16. An export of tools/amd/iron_siglip2.py has none.
+const (
+	FormatCoreML = llm.BackendCoreML
+	FormatCoreAI = llm.BackendCoreAI
+)
+
+// IsProgramFormat reports whether an export's Format is Prepare's (programs, not IRON's graphs).
+func IsProgramFormat(format string) bool { return format == FormatCoreML || format == FormatCoreAI }
 
 // Setup is what Prepare makes ready.
 type Setup struct {
 	Dir  string // the checkpoints (Dir/NAME) and the exports
 	Repo string // the Hugging Face repository (google/siglip2-base-patch16-224)
 	Name string
-	Log  io.Writer
+	// Format is the program format: FormatCoreAI, or FormatCoreML ("", for the CPU interpreter).
+	Format string
+	Log    io.Writer
 }
 
 // Prepare makes a SigLIP 2 ready for Apple's Neural Engine in s.Dir, as hwnpu-chat makes its
 // models ready: it downloads the checkpoint when missing and converts it, in Go, into the
-// export NAME-vN.coreml (the two towers in fp16, the tokenizer and the token embedding table the
+// export NAME-vN.FORMAT (the two towers in fp16, the tokenizer and the token embedding table the
 // host looks up), whose directory it returns. The first load compiles the programs.
 func Prepare(ctx context.Context, s Setup) (string, error) {
 	log := s.Log
@@ -51,7 +61,8 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		log = io.Discard
 	}
 	root := filepath.Join(s.Dir, s.Name)
-	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, FormatCoreML))
+	format := cmp.Or(s.Format, FormatCoreML)
+	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	if _, err := os.Stat(out + ".done"); err == nil {
 		return out, nil
 	}
@@ -64,7 +75,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		}
 	}
 	bar := console.NewBar(log, "converting "+filepath.Base(out))
-	if err := Convert(root, out); err != nil {
+	if err := Convert(root, out, format); err != nil {
 		bar.Done("failed")
 		return "", err
 	}
@@ -73,10 +84,10 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 }
 
 // Convert writes the export of the SigLIP 2 checkpoint root (config.json, model.safetensors,
-// tokenizer.json) into out: vision.mlpackage, text.mlpackage, text/tokenizer.json,
-// text/embed.bin (the token embedding rows in fp16) and model.json; out.done, written last, says
-// it is whole.
-func Convert(root, out string) error {
+// tokenizer.json) into out in format (FormatCoreML or FormatCoreAI): the vision and text
+// programs, text/tokenizer.json, text/embed.bin (the token embedding rows in fp16) and
+// model.json; out.done, written last, says it is whole.
+func Convert(root, out, format string) error {
 	c, err := mil.ReadConfig(root, ProgramLabels)
 	if err != nil {
 		return err
@@ -93,7 +104,7 @@ func Convert(root, out string) error {
 		return err
 	}
 	for _, p := range []*mil.Part{mil.Vision(c), mil.Text(c)} {
-		if _, err := llm.WritePart(filepath.Join(out, p.Name+".mlpackage"), p, wt, llm.Options{Backend: llm.BackendCoreML, Format: "fp16"}, func(pkg *mlpackage.Package) {
+		if _, err := llm.WritePart(filepath.Join(out, p.Name+llm.ProgramExt(format)), p, wt, llm.Options{Backend: format, Format: "fp16"}, func(pkg *mlpackage.Package) {
 			pkg.Description = fmt.Sprintf("SigLIP 2's %s tower of %s, fp16 (hwnpu)", p.Name, filepath.Base(root))
 		}); err != nil {
 			return fmt.Errorf("siglip: %s: %w", p.Name, err)
@@ -120,7 +131,7 @@ func Convert(root, out string) error {
 	if len(scale) != 1 || len(bias) != 1 {
 		return fmt.Errorf("siglip: %s: logit_scale and logit_bias of %d and %d values", root, len(scale), len(bias))
 	}
-	x := Export{Name: filepath.Base(root), Kind: "siglip", Format: FormatCoreML, Version: ExportVersion,
+	x := Export{Name: filepath.Base(root), Kind: "siglip", Format: format, Version: ExportVersion,
 		LogitScale: math.Exp(float64(scale[0])), LogitBias: float64(bias[0]),
 		Mean: []float32{0.5, 0.5, 0.5}, Std: []float32{0.5, 0.5, 0.5}, EOS: 1, Pad: 0, Lowercase: true,
 		PatchIn: c.PatchIn(), Tokens: c.Patches(), NPatches: c.Patches(), Labels: c.Labels, TextLen: mil.TextLen}
@@ -175,7 +186,7 @@ func (m *Model) program(ctx context.Context, p *runner.Program, name string) err
 		return nil
 	}
 	t0 := time.Now()
-	x, err := runner.Open(ctx, m.dev, filepath.Join(m.dir, name+".mlpackage"))
+	x, err := runner.Open(ctx, m.dev, filepath.Join(m.dir, name+llm.ProgramExt(m.Format)))
 	if err != nil {
 		return fmt.Errorf("siglip: %s: %w", name, err)
 	}

@@ -323,9 +323,10 @@ func onlyFile(m chat.Model, ext string) (string, error) {
 	return files[0], nil
 }
 
-// openProgramDevice opens the NPU for converted programs (Core ML or OpenVINO IR), or none for
-// the CPU interpreter: the device backend named (--backend, "": HWNPU_BACKEND or the NPU found).
-// what names the model for the error on an NPU that runs neither.
+// openProgramDevice opens the NPU for converted programs (Core AI's or OpenVINO IR), or none for
+// the CPU interpreter (which runs Core ML packages): the device backend named (--backend, "":
+// HWNPU_BACKEND or the NPU found; a Mac's is Core AI's). what names the model for the error on an
+// NPU that runs neither.
 func openProgramDevice(ctx context.Context, cpu bool, cache, name, what string) (*hwnpu.Device, string, func(), error) {
 	if cpu {
 		return nil, llm.BackendCoreML, func() {}, nil
@@ -333,14 +334,13 @@ func openProgramDevice(ctx context.Context, cpu bool, cache, name, what string) 
 	if cache == "" {
 		cache = hcache.Root()
 	}
-	dev, device, err := llm.OpenDevice(ctx, name, cache)
+	dev, backend, err := openImageDevice(ctx, name, cache)
 	if err != nil {
 		return nil, "", nil, err
 	}
-	backend := llm.ProgramBackend(device)
 	if backend == "" {
 		dev.Close()
-		return nil, "", nil, fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--device cpu runs %s on the CPU)", device, what)
+		return nil, "", nil, fmt.Errorf("%s runs neither Core AI programs nor OpenVINO IR (--device cpu runs %s on the CPU)", dev.Info().Backend, what)
 	}
 	return dev, backend, func() { dev.Close() }, nil
 }

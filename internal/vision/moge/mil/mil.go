@@ -287,6 +287,9 @@ func conv(g *graph, x *mlpackage.Var, path string, cout, k int, replicate bool) 
 	return g.Op("conv", inputs, 1, cout, H, W)
 }
 
+// shuffleRows is the most output rows deconv2 shuffles at a time.
+const shuffleRows = 256
+
 // deconv2 is ConvTranspose2d with kernel = stride = 2 (path: weight (cin, cout, 2, 2), bias)
 // of x (1, cin, H, W): a 1 x 1 convolution to cout x 4 channels, then PixelShuffle.
 func deconv2(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
@@ -307,7 +310,19 @@ func deconv2(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 		}
 	}
 	y := g.Conv2D(x, path, wt, bias, cout*4, 1, 1)
-	return g.Op("pixel_shuffle", map[string]any{"x": y, "upscale_factor": g.B.ScalarI32(2)}, 1, cout, 2*H, 2*W)
+	// the shuffle in bands of at most shuffleRows output rows, concatenated (the same values): the
+	// whole of 64 x 400 x 400 put the M1's dense head off the Neural Engine on Core AI ("empty
+	// reset layer candidates in SS cost model", design.md 16.190), two bands of 200 kept it on
+	rows := (2*H + shuffleRows - 1) / shuffleRows
+	if rows <= 1 {
+		return g.Op("pixel_shuffle", map[string]any{"x": y, "upscale_factor": g.B.ScalarI32(2)}, 1, cout, 2*H, 2*W)
+	}
+	var parts []*mlpackage.Var
+	for r := 0; r < rows; r++ {
+		lo, hi := r*H/rows, (r+1)*H/rows
+		parts = append(parts, g.Op("pixel_shuffle", map[string]any{"x": g.Slice(y, 2, lo, hi), "upscale_factor": g.B.ScalarI32(2)}, 1, cout, 2*(hi-lo), 2*W))
+	}
+	return g.Concat(2, parts...)
 }
 
 // resize is torch's bilinear interpolate (align_corners=False) of x (1, C, H, W) to (1, C, h,

@@ -5348,3 +5348,42 @@ Qwen3 は 28 層すべてが注意なので、分けると層ごとに Neural En
 **コマンド**: `hwnpu-image generate -m sana --backend coreai [--size 512]`。`hwnpu-image convert --backend coreai` も Sana を受ける (前は coreml と intel だけ)。`runSana` は書き出しの形式でデバイスを開く (`llm.ExportDevice`)。`--cpu` はこれまでどおり Core ML の書き出しを CPU のインタプリタで。
 
 残り: Neural Engine が持つ量 (`mem.NPUWired`) と footprint の測り直し (重みのバイトだけ見た)。M2 と M3 での確かめ。SANA 1.5 の 3 プロンプト × 2 種。Intel の v5 の書き出し。
+
+### 16.190 `hwnpu-image` を Mac では Core AI だけに (macOS 27 が要る)、画像を読むモデルも `.coreai` の書き出しに — 2026-11-14
+
+16.189 で画像生成のモデルが全部 Core AI の書き出しを持ったので、`hwnpu-image` は Mac で Core ML を使わないようにした。M1 (16 GB、macOS 27.2.1)。
+
+**決めたこと**
+- Mac の `hwnpu-image` は Core AI だけで動く。macOS 26 以前 (Core AI が無い) では「Core AI が要る、macOS 27」というエラーにする (`errNoCoreAI`)。Core ML へ落とすことはしない
+- 画像を読むモデル (ocr、detect、pose、face-detect、depth、segment、label、embed) も、チェックポイントや ONNX から `.aimodel` を直接書く (`.mlpackage` を下ろす段を経ない、16.180 と同じ)
+- `--cpu` (CPU のインタプリタ) と、ONNX Runtime が無い機械の detect / pose / ocr の CPU の経路は、これまでどおり Core ML の書き出し (`.mlpackage`) を milcpu で読む。CPU で動くモデルは小さく、Neural Engine のコンパイルのキャッシュの大きさや読み込み直しのような Core ML の Neural Engine の問題は関わらない
+- ほかのコマンド (hwnpu-chat、hwnpu-audio、hwnpu-dev) は Core ML が既定のまま。変えたのは `cmd/hwnpu-image` の中だけで、`internal/llm` のデバイスの選び方 (`FindDevice`、`ProgramFormat`) は触らない
+
+**仕組み** (`cmd/hwnpu-image/backend.go`)
+- `imageDevice`: Mac では、何も指定しないとき、`coreml`、`coreai` (`--backend` でも `HWNPU_BACKEND` でも) を Core AI のデバイスにする。`HWNPU_BACKEND=coreml` はほかのコマンドのために残っていることがあるので、エラーにせず Core AI に読み替える。`--backend` の選択肢から `coreml` を外した
+- `imageFormat`: 変換する形式。Mac では `coreai` (Core AI のデバイスが無ければエラー)、ほかは `llm.ProgramFormat` (Intel は `intel`)
+- `openImageDevice`: そのデバイスを開き、形式を返す。`exportDevice`: Apple 向けの書き出しは Core AI で開く (前の Core ML の書き出しは読み込むときに Core AI に下ろされる、16.169)
+- `hwnpu-image convert` の既定も `coreai`。`--backend coreml` は `--cpu` が読む書き出しを作るために残す
+- 書き出しの拡張子は `llm.ProgramExt` (`.aimodel`、`.mlpackage`、`.xml`)。depth と MoGe-2 の書き出しの形式に `coreai` を足し、detect、pose、ocr、face、segment は `ProgramExt` で、SigLIP 2 は `Setup.Format` で書き分ける
+
+**画像を読むモデルの結果** (既定のまま、`--backend` なし。16.189 の絵を入力に)
+
+| コマンド | 初回 (変換とコンパイル込み) | 結果 (main の Core ML と) |
+|---|---|---|
+| face-detect (YuNet) | 1.5 秒 | 同じ顔の枠と目印 (スコア 0.91 と 0.909) |
+| pose (RTMO-s) | 6.7 秒 | 1 人、全部 Neural Engine |
+| detect (RTMDet-m) | 9.3 秒 | 同じ (雨の夜の街の絵に COCO の物は無し) |
+| ocr (PP-OCRv6 small) | 12 秒 | 同じ 3 行 |
+| depth (DA3-BASE) | 39 秒 | 全部 Neural Engine |
+| depth -m moge (MoGe-2 ViT-B) | 下の手当ての後 3.3 秒 | 中心 1.42 m、fov 64.0° (Core ML 1.40 m、64.1°) |
+| segment (EfficientSAM-S) | 1 分 04 秒 (取得込み) | 符号器が Neural Engine |
+| label (SigLIP 2 Large) | 3 分 27 秒 (取得 1 分 26 秒込み) | 同じ順位 (fox 0.0365 と 0.0366) |
+| embed (SigLIP 2 Large) | 1.3 秒 (label の後) | コサイン 0.16095 と 0.16104 |
+
+**MoGe-2 の dense が M1 の Core AI で Neural Engine に載らない**: 700 × 700 の `dense` が Sana の VAE (16.189) と同じ `empty reset layer candidates in SS cost model` で GPU に回った (16.182 は M3 で確かめていて、M1 は未確認だった)。`HWNPU_AILOWER_CUT` の二分探索で、マスクの頭の最後の逆畳み込み (1 × 1 の畳み込みで 256 チャンネル、`pixel_shuffle` で 64 × 400 × 400) を足したところで外れた。`pixel_shuffle` も、その前の畳み込みとの組も、`aicheck probe` で単独なら載る。
+- **シャッフルを出力の行の帯に分けて結ぶ** (`mil.deconv2`、`shuffleRows` 256 行まで): 値は同じ (milcpu とのコサイン 1.000000)。2 つの帯でも 4 つでも載り、分けない元の形は外れることを同じ書き出しで確かめた。MoGe-2 の書き出しの版を 2 に (Core ML と Intel の書き出しも作り直し)
+- 2 つの画像のモデルで同じエラーが出たが、どちらも単独の演算ではなく、続いた演算との組み合わせで出た。本物の部品を切り詰めて最初に外れる演算を見つけ、その前後の形を変えずに値の同じ書き方を試すのが早い (new-model-checklist 3.5)
+
+**画像生成** (既定の Anima-Turbo を `--backend` なしで、1024²、種 1): `anima-turbo-v1.1-1024x1024-int8-int8-g4-q512-v3.coreai` を作り、20 本とも Neural Engine。初回は 25 分 (変換 13 秒、DiT の組 1 本 3 分 12 秒)、2 回目から 1 分 00 秒 (読み込み 0.8 秒、1 ステップ 7.0 秒)。main の Core ML は 1 ステップ 6.5 秒だが、キャッシュから追い出されていてコンパイルし直しに 18 分かかった (16.176 と同じ)。最後の潜在のコサインは 0.979 (PSNR 21.3 dB) で同じ絵 (16.169 の M3 では 0.971)。Sana は 16.189。Qwen-Image-2.1-Turbo (512²、狐、種 1) も `.coreai` の書き出し (16.181 の lut6 の関数 2 つの DiT、16.184 の VAE のタイルと DiT の入れ替え) で全部 Neural Engine: 初回 12 分 32 秒 (文の符号器は Core AI のキャッシュに当たり、DiT の組 1 本約 1 分)、2 回目から **38 秒** (1 ステップ 3.5 秒)。16.184 の Core ML の書き出しを下ろした形 (lut4) は 1 分 04 秒、1 ステップ 4.1〜4.6 秒
+
+残り: macOS 26 の Mac でのエラーの確かめ (この M1 は 27)。Anima と Chroma の `.coreai` の書き出しは大きさごとに別で、16.177 の自動のまとめ (Core ML の書き出しを下ろすときだけ) が効かない。Sana のように 1 つの書き出しの関数にするのは次の仕事。Chroma の `.coreai` の書き出しを M1 で (チェックポイントを消しているため変換できず、試していない)。Intel の Mac。M2 と M3 での画像を読むモデルの初回。

@@ -20,7 +20,12 @@
 // value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
 // image.png here (image (2).png, ... when taken) and shows it in the system's viewer.
 //
-//	hwnpu-image convert ~/models/Anima --backend coreml --size 1024 -m ~/models/anima-turbo-1024.coreml
+//	hwnpu-image convert ~/models/Anima --size 1024 -m ~/models/anima-turbo-1024.coreai
+//
+// On a Mac hwnpu-image runs on Apple's Neural Engine through Core AI (macOS 27) alone: its
+// programs are converted for Core AI (.aimodel) and kept compiled in Core AI's own cache (a
+// second start loads in about 0.1 s). Core ML is not used; --cpu runs a Core ML export with the
+// CPU interpreter, for checking without the NPU.
 //
 // generate draws a picture from a prompt. With Anima (circlestone-labs/Anima), Qwen3-0.6B and
 // Anima's LLM adapter read the prompt, the Cosmos-Predict2 2B DiT denoises the latents in
@@ -34,7 +39,7 @@
 //
 // On Apple's Neural Engine and Intel's NPU, generate makes Anima ready as hwnpu-chat makes its
 // models ready: the first run downloads the checkpoint from Hugging Face into --dir/Anima
-// (hwnpu/models in the user cache directory) and converts it, in Go, into Core ML packages or
+// (hwnpu/models in the user cache directory) and converts it, in Go, into Core AI programs or
 // OpenVINO IR for --size; later runs load it. The first load also compiles it for the NPU
 // (minutes at 1024 x 1024), kept in --cache. convert makes such an export from a directory.
 //
@@ -42,7 +47,8 @@
 // ~/models/anima-turbo-1024.amd-npu2, anima-aesthetic-1024.amd-npu2) or of
 // tools/amd/iron_sana.py: Sana (NVlabs), a linear DiT with Gemma 2 2B reading the prompt
 // (internal/imagegen/sana). On Apple's Neural Engine, Sana is downloaded into --dir/Sana and
-// converted into Core ML packages on its first run, as Anima is. Sana runs 20 steps with
+// converted into Core AI programs on its first run, as Anima is (one export for 512 x 512 and
+// 1024 x 1024: --size picks). Sana runs 20 steps with
 // classifier-free guidance (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU
 // interpreter (slow; for checking without the NPU).
 //
@@ -53,7 +59,7 @@
 // internal/imagegen/qwenimage) and Chroma1 (chroma: Chroma1-Flash, Heun's 8 steps; chroma:1-hd,
 // guidance 3 with DPM-Solver++ 2M 25 steps; tools/amd/iron_chroma.py, internal/imagegen/chroma).
 // Chroma1 also runs on Apple's Neural Engine, downloaded into --dir/Chroma and converted into
-// Core ML packages on its first run as Sana is (T5-XXL at lut8 with its FF output projection at fp16, the DiT at lut8).
+// Core AI programs on its first run as Sana is (T5-XXL at lut8 with its FF output projection at fp16, the DiT at lut8).
 // A model whose license restricts its use (Qwen-Image-2.1's research license, Anima's
 // non-commercial one) is asked once, on a terminal, before its first run; --accept-license (or
 // HWNPU_ACCEPT_LICENSE=ID) accepts it without asking.
@@ -63,11 +69,8 @@
 // people's keypoints, detect (DetectCmd) objects and their labels, ocr (OCRCmd) lines of text;
 // on AMD's NPU, which has no form of RTMO, RTMDet and PP-OCR yet, these three run on the CPU
 // with ONNX Runtime. label (LabelCmd) and embed (EmbedCmd) run SigLIP 2 on AMD's NPU and on
-// Apple's Neural Engine (downloaded and converted into Core ML packages on the first run): labels
-// from any candidates, and embeddings of pictures and texts in one space. On Apple's Neural Engine
-// depth, face-detect, pose, detect, ocr, segment, label and embed take --backend coreai (or HWNPU_BACKEND=coreai)
-// to run the same converted programs on Core AI (macOS 27), which keeps them compiled in its own
-// cache: their second start loads in about 0.1 s.
+// Apple's Neural Engine (downloaded and converted into Core AI programs on the first run): labels
+// from any candidates, and embeddings of pictures and texts in one space.
 package main
 
 import (
@@ -90,7 +93,7 @@ type cli struct {
 	Label      LabelCmd      `cmd:"" help:"Label pictures: the likeliest of candidate labels in any language, or of a list of common ones (SigLIP 2; AMD's NPU, Apple's Neural Engine)."`
 	Embed      EmbedCmd      `cmd:"" help:"Embed pictures and texts in one space, for search and similarity (SigLIP 2; AMD's NPU, Apple's Neural Engine)."`
 	Segment    SegmentCmd    `cmd:"" help:"Cut out the thing a point or a box picks in pictures: its mask and a transparent cutout (EfficientSAM; AMD's NPU, Apple's Neural Engine, Intel's NPU, the CPU)."`
-	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory into a Core ML or OpenVINO export, or a Sana or Chroma repository into a Core ML export."`
+	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory or a Sana, Chroma or Qwen-Image repository into a Core AI export (--backend coreml: the Core ML one --cpu runs; intel: OpenVINO IR)."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 
 	AcceptLicense bool `name:"accept-license" help:"Accept the license of a model whose license restricts its use (Qwen-Image-2.1: research only) without being asked; kept, as an answer of yes is."`

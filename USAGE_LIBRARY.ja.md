@@ -86,7 +86,7 @@ Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.el
 - Core ML は「Neural Engine だけ」を指定できません。hwnpu は CPU と Neural Engine だけを許可し、`MLComputePlan` (macOS 14.4 以降) の推定で全演算が Neural Engine に置かれることを確認します。推定なので、実行時の配置までは保証されません
 - Neural Engine は fp16 前提です。fp32 のモデルや小さすぎるモデルは CPU に置かれます。coremltools で fp16 の ML Program に変換してください
 - 小さすぎるモデルは、`tools/coreml/ane_pad.py` でバッチ方向にパディングすると Neural Engine に載せられます。ただし小さなモデルでは遅くなることがあるので、詳しくは [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を読んでから使ってください
-- macOS 27 では、同じ変換済みのモデルを Core AI でも動かせます (`--backend coreai` か `HWNPU_BACKEND=coreai`。既定は Core ML)。結果と速さは同じで、違いはコンパイルした結果をディスクが減るまで持ち続けることです (Core ML は約 4 GiB を超えると 2 回目以降もコンパイルし直します)。使えるコマンドと費用は [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md) の 5 節にあります
+- `hwnpu-image` は Mac では Core AI だけで動きます (macOS 27 が要ります。Core ML は使いません。`--cpu` は確かめ用に Core ML の書き出しを CPU のインタプリタで動かします)。ほかのコマンドも macOS 27 では同じ変換済みのモデルを Core AI で動かせます (`--backend coreai` か `HWNPU_BACKEND=coreai`。既定は Core ML)。結果と速さは同じで、違いはコンパイルした結果をディスクが減るまで持ち続けることです (Core ML は約 4 GiB を超えると 2 回目以降もコンパイルし直します)。使えるコマンドと費用は [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md) の 5 節にあります
 
 ## Intel での注意
 

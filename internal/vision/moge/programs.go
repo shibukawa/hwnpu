@@ -20,8 +20,9 @@ import (
 	"github.com/shibukawa/hwnpu/internal/vision/moge/mil"
 )
 
-// ExportVersion is the layout of the programs Prepare and ConvertSize write.
-const ExportVersion = 1
+// ExportVersion is the layout of the programs Prepare and ConvertSize write. 2: the dense head's
+// deconvolutions shuffled in bands (mil.deconv2, the M1 on Core AI).
+const ExportVersion = 2
 
 // Tokens is the ViT's patches an export of Prepare is made for (MoGe's num_tokens; iron_moge.py's
 // default).
@@ -123,7 +124,7 @@ func (e *Estimator) estimateProgram(ctx context.Context, s *sized, px []uint8, o
 }
 
 // ConvertSize writes the programs of the MoGe-2 checkpoint (model.pt) for bw x bh patches into
-// d in format ("coreml": vit.mlpackage and dense.mlpackage; "intel": vit.xml and dense.xml,
+// d in format ("coreai": .aimodel; "coreml": vit.mlpackage and dense.mlpackage; "intel": vit.xml and dense.xml,
 // OpenVINO IR) and model.json; d.done, written last, says they are whole.
 func ConvertSize(checkpoint, d string, bw, bh int, format string) error {
 	wt, err := mil.OpenWeights(checkpoint)

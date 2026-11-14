@@ -29,11 +29,11 @@ import (
 // convertFlags are what an Anima export for Apple's or Intel's NPU is made with (generate's first
 // run, and convert).
 type convertFlags struct {
-	Backend    string `help:"The program format: coreml (Apple's Neural Engine through Core ML), coreai (through Core AI, macOS 27: Anima, Chroma and Qwen-Image convert for it) or intel (Intel's NPU); default: HWNPU_BACKEND, else the NPU found (convert: coreml)."`
+	Backend    string `help:"The program format: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one) or intel (Intel's NPU); convert also takes coreml, the Core ML export --cpu runs. Default: HWNPU_BACKEND, else the NPU found (convert: coreai)."`
 	Size       int    `default:"1024" help:"The image's width and height in pixels, a multiple of 16 (an export each)."`
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
-	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Core ML; int8 on Intel; default int8 on Core ML, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
-	DitFormat  string `help:"The DiT's weights (fp16; lut8, lut6 on Core ML; int8, int4 on Intel; default int8 on Core ML: faster than fp16 at half its memory, and nearer it than lut8; fp16 on Intel. Qwen-Image: lut4 on Core ML, lut6 on Core AI, where its text pass takes the same and a group's two passes are one program with the weights once)."`
+	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Apple's; int8 on Intel; default int8 on Apple's, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
+	DitFormat  string `help:"The DiT's weights (fp16; lut8, lut6 on Apple's; int8, int4 on Intel; default int8 on Apple's: faster than fp16 at half its memory, and nearer it than lut8; fp16 on Intel. Qwen-Image: lut6, its text pass the same and a group's two passes one program with the weights once)."`
 	Group      int    `help:"The DiT's blocks a program holds (default 4; Anima on Intel: fewer above 512 x 512, 1 at 1024 x 1024, as a program running past Windows' 2 s limit loses the NPU)."`
 	QChunk     int    `name:"qchunk" default:"512" help:"The queries an attention scores at a time (M3: 512 is 25 % faster than 1024 at 1024 x 1024)."`
 }
@@ -43,8 +43,8 @@ func (f convertFlags) options() anima.ConvertOptions {
 		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}
 }
 
-// ConvertCmd is "hwnpu-image convert": an Anima directory or a Sana repository into a Core ML or
-// OpenVINO export.
+// ConvertCmd is "hwnpu-image convert": an Anima directory or a Sana, Chroma or Qwen-Image
+// repository into a Core AI export (Core ML's for --cpu, OpenVINO IR for Intel's NPU).
 type ConvertCmd struct {
 	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/), or a Sana repository of Efficient-Large-Model (transformer/, vae/, scheduler/)."`
 	Model string `short:"m" required:"" type:"path" placeholder:"EXPORT" help:"The export to write."`
@@ -101,13 +101,13 @@ func (c *ConvertCmd) Run() error {
 		if c.Backend != "" && c.Backend != llm.BackendCoreML && c.Backend != llm.BackendCoreAI && c.Backend != llm.BackendIntel {
 			return fmt.Errorf("Sana converts for coreml, coreai or intel (--backend %s)", c.Backend)
 		}
-		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat, Backend: c.Backend}
+		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat, Backend: cmp.Or(c.Backend, llm.BackendCoreAI)}
 		if err := sana.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
 			return err
 		}
 	} else {
 		o := c.options()
-		o.Backend = cmp.Or(o.Backend, llm.BackendCoreML)
+		o.Backend = cmp.Or(o.Backend, llm.BackendCoreAI)
 		text, dit := anima.Formats(o.Backend)
 		o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
 		if err := anima.Convert(c.Anima, c.Model, o, console.Log(os.Stderr)); err != nil {
@@ -119,13 +119,13 @@ func (c *ConvertCmd) Run() error {
 }
 
 // appleFormat is the program format --backend names for a model that converts for Apple's Neural
-// Engine alone: coreml (the default) or coreai.
+// Engine alone: coreai (the default, what hwnpu-image runs) or coreml (what --cpu runs).
 func appleFormat(model, backend string) (string, error) {
 	switch backend {
-	case "", llm.BackendCoreML:
-		return llm.BackendCoreML, nil
-	case llm.BackendCoreAI:
+	case "", llm.BackendCoreAI:
 		return llm.BackendCoreAI, nil
+	case llm.BackendCoreML:
+		return llm.BackendCoreML, nil
 	}
 	return "", fmt.Errorf("%s converts for coreml or coreai (--backend %s)", model, backend)
 }
@@ -147,7 +147,7 @@ type GenerateCmd struct {
 	Noise     string    `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana: (32, H/32, W/32))."`
 	Latents   string    `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
 	Cache     string    `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
-	CPU       bool      `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU."`
+	CPU       bool      `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU (slow; for checking)."`
 	Resident  bool      `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
 	Dump      string    `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py or ref_sana.py."`
 	convertFlags
@@ -221,18 +221,18 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	return err
 }
 
-// sanaModel is the Sana export m runs here: on Apple's Neural Engine (or with --cpu) the Core ML
-// export of --dir (Core AI's with --backend coreai: 512 x 512 and 1024 x 1024 in one), on
+// sanaModel is the Sana export m runs here: on Apple's Neural Engine the Core AI export of --dir
+// (512 x 512 and 1024 x 1024 in one; with --cpu the Core ML export the CPU interpreter runs), on
 // Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU
 // ~/models/NAME.amd-npu2 of tools/amd/iron_sana.py.
 func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, error) {
-	format, err := llm.NativeFormat(ctx, c.Backend)
+	format, err := imageFormat(ctx, c.Backend)
 	switch {
 	case c.CPU: // the CPU interpreter runs Core ML exports
 		format = llm.BackendCoreML
 	case err == nil: // Apple's Neural Engine or Intel's NPU
 	default:
-		return amdExport(m, "tools/amd/iron_sana.py")
+		return amdOr(err, m, "tools/amd/iron_sana.py")
 	}
 	if c.Size%32 != 0 {
 		return "", fmt.Errorf("--size %d: Sana's pictures are multiples of 32 pixels", c.Size)
@@ -245,11 +245,10 @@ func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, erro
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 
-// qwenImageModel is the Qwen-Image-2.1 export m runs here: on Apple's Neural Engine (or with --cpu)
-// the Core ML export of --dir (Core AI's with --backend coreai), downloaded and converted when
-// missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
+// qwenImageModel is the Qwen-Image-2.1 export m runs here: on Apple's Neural Engine the Core AI
+// export of --dir (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
 func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string, error) {
-	format, err := llm.NativeFormat(ctx, c.Backend)
+	format, err := imageFormat(ctx, c.Backend)
 	switch {
 	case c.CPU: // the CPU interpreter runs Core ML exports
 		format = llm.BackendCoreML
@@ -257,7 +256,7 @@ func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string,
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	default:
-		return amdExport(m, "tools/amd/iron_qwenimage.py")
+		return amdOr(err, m, "tools/amd/iron_qwenimage.py")
 	}
 	if c.Size%32 != 0 {
 		return "", fmt.Errorf("--size %d: Qwen-Image's pictures are multiples of 32 pixels", c.Size)
@@ -301,7 +300,7 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		format := llm.BackendCoreML // the CPU interpreter runs Core ML exports
 		var err error
 		if !c.CPU {
-			format, err = llm.NativeFormat(ctx, c.Backend)
+			format, err = imageFormat(ctx, c.Backend)
 		}
 		if err != nil {
 			return err
@@ -324,9 +323,9 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		if !anima.IsProgramExport(model) {
 			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD)) // IRON graphs
 		} else if m, err := anima.ReadProgramManifest(model); err == nil && llm.AppleFormat(m.Backend) {
-			// a Core AI export on Core AI; a Core ML one on Core ML, or on Core AI when asked
-			opts = append(opts, hwnpu.WithBackend(llm.ExportDevice(m.Backend, c.Backend)))
-		} else if b := llm.DeviceBackend(c.Backend); b != "" {
+			// on Core AI (an older Core ML export is lowered to Core AI as it loads)
+			opts = append(opts, hwnpu.WithBackend(exportDevice(m.Backend, c.Backend)))
+		} else if b := imageDevice(c.Backend); b != "" {
 			opts = append(opts, hwnpu.WithBackend(b))
 		}
 		d, err := hwnpu.Open(ctx, opts...)

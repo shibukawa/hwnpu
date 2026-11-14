@@ -242,10 +242,7 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 	if r.s.CPU {
 		return r.cpuProgram(model, name, shape)
 	}
-	ext := ".mlpackage"
-	if r.s.Backend == llm.BackendIntel {
-		ext = ".xml"
-	}
+	ext := llm.ProgramExt(r.s.Backend) // .aimodel, .mlpackage or .xml
 	tag := fmt.Sprintf("%dx%d", shape[3], shape[2])
 	if shape[0] != 1 {
 		tag = fmt.Sprintf("%dx%dx%d", shape[0], shape[3], shape[2])
