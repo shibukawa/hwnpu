@@ -104,12 +104,12 @@ macOS 27 has Core AI beside Core ML. Nothing more to install.
 - **Converting** writes a model's programs side by side, as many as the CPU's cores and the free memory allow (`HWNPU_JOBS=N` sets the number, `1` one at a time); on a terminal it shows a bar and a line for each program being written, erased when all are done
 - **The other commands** keep Core ML as the default; `--backend coreai` or `HWNPU_BACKEND=coreai` runs their converted models (`.mlpackage`, lowered to Core AI programs in Go) on Core AI
 
-- **Commands**: all of `hwnpu-chat`; `hwnpu-image`'s generate (Anima, Chroma, Qwen-Image, Sana: Sana's export holds 512 x 512 and 1024 x 1024 in one), ocr, detect, pose, face-detect, depth, segment, label and embed; all of `hwnpu-audio` (docs/design.md 16.195, 16.196)
+- **Commands**: all of `hwnpu-chat`; `hwnpu-image`'s generate (Anima, Chroma, Qwen-Image, Sana: Sana's export holds 512 x 512 and 1024 x 1024 in one), ocr, detect, pose, face-detect, depth, segment, label and embed; all of `hwnpu-audio` (docs/design.md 16.196, 16.197)
 - **Results and speed**: as Core ML's (the same answers, objects and text; cosines of 0.9999 or more for embeddings and depth; a call within ±10 %)
 - **The difference** is how the compiled programs are kept. Core ML's cache holds about 4 GiB, and past it programs compile again at later starts too (minutes to tens of minutes for the large image generators). Core AI keeps them in its own cache (`~/Library/Caches/coreai-cache`) until the disk runs low. With both caches warm the starts are the same
 - **The cost**: the weights are on the disk three times (the converted `.mlpackage`, the lowered `.aimodel`, Core AI's cache). Below about 15 GB free, macOS removes the caches and the next start compiles again
 - **hwnpu-chat** converts Core AI's own programs from the checkpoint (an export `NAME.coreai` of `.aimodel`s in the model's directory, as the image models', no `.mlpackage`): the programs of 8 and 128 tokens per call are functions of one, so their weights are on the disk, in Core AI's cache and on the Neural Engine once (LFM3-1.7B: 1.2 GB written, 1.32 GiB on the Neural Engine, a second start in 0.4 seconds on an M3; docs/design.md 16.185). Qwen3.5-4B and gemma-4-E4B-it read a 2K-token prompt in about 2 seconds on an M2 (16.191)
-- The record is design.md 16.169–16.196 ([docs/design.md](docs/design.md)); the summary is section 7.5 of [docs/improvements.md](docs/improvements.md)
+- The record is design.md 16.169–16.197 ([docs/design.md](docs/design.md)); the summary is section 7.5 of [docs/improvements.md](docs/improvements.md)
 
 ## Troubleshooting
 

@@ -137,7 +137,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 
 ### 3.5 Core AI (macOS 27)
 
-同じ `.mlpackage` を Core AI でも動かす (`--backend coreai`)。`internal/coreai/ailower` が MIL を Core AI のバイトコードに下ろす。Core ML で 3.1〜3.4 を通った部品も、ここで通らないことがあるので、Core AI でも確かめる (16.169、16.182)。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は Core AI だけで動く (macOS 27、16.190、16.191、16.195) ので、モデルは初めから Core AI のプログラム (`.aimodel`) に書き、Core ML の書き出しは `--cpu` が読むものだけ。M1 でも確かめる: MoGe-2 と Sana の VAE は M3 や Core ML で通ったのに、M1 の Core AI でコンパイラーに落ちた:
+同じ `.mlpackage` を Core AI でも動かす (`--backend coreai`)。`internal/coreai/ailower` が MIL を Core AI のバイトコードに下ろす。Core ML で 3.1〜3.4 を通った部品も、ここで通らないことがあるので、Core AI でも確かめる (16.169、16.182)。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は Core AI だけで動く (macOS 27、16.190、16.191、16.196) ので、モデルは初めから Core AI のプログラム (`.aimodel`) に書き、Core ML の書き出しは `--cpu` が読むものだけ。M1 でも確かめる: MoGe-2 と Sana の VAE は M3 や Core ML で通ったのに、M1 の Core AI でコンパイラーに落ちた:
 
 - **どの演算にも下ろし方が要る**。`aicheck lower OUT PKG` は下ろし方のない最初の演算で止まる (画像のモデルの ONNX のグラフは `max_pool`、続いて `conv_transpose` と replicate の `pad` で止まった)。新しく書くときは coreai-torch の書き方に合わせる: 小さな torch のモジュールを coreai-torch で変換し (`uv run --offline --prerelease=allow --python 3.13 --with coreai-torch==0.4.3 --with torch`、uv のキャッシュから)、プログラムを表示し、バイトコードを `tools/coreai/bcdump` で読む。演算の引数の順は coreai-core の `_coreai_ops_gen.py` にある
 - **どの部品も、Core AI と Core ML の両方で CPU のインタプリタと比べる**: 乱数の入力で `aicheck run -cpu PKG...` と `aicheck run -cpu -coreml PKG...`。全部 Neural Engine に載った部品が Core AI でだけ誤ることがある: PP-OCR の検出器はコサイン 0.05 (Core ML 0.9999) で、RTMDet、RTMO、YuNet、DA3、MoGe-2 は正しかった
@@ -149,8 +149,8 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - **行ごとに触る再帰の状態は重みほどの量になる**: Qwen3.5 の delta rule は 1 MiB の状態を 1 行に 5 回読み書きしていた (1 ステップ 1.3 GB、重みの 3 割)。塊の形は塊に 3 回 (16.193)。部品が天井を下回るときは、活性と状態が動かすバイトも数える
 - **Neural Engine から外す演算は実際の大きさのプログラムで探す**: 小さなプログラム (45 演算) は中身によらず CPU に置かれる。載ると分かっているプログラムに調べたい部分を足し、配置 (Core ML の `hwnpu-dev info`) が変わるところまで切る。8 × 8 どうしの行列積が原因だった。(8 × 8)·(8 × 128) と k·kᵀ は載る (16.193)
 - **下書きのモデルの出力層を語彙の一部に** (Qwen3.5 の MTP、`llm.Options.HeadRows`): 下書きは確かめられるので答えは変わらないが、1 つ外れるとその後の下書きも続かない。覆う割合だけでなく採られた下書きの数で決める: 漢字 1 字まで (43618 行) はコードの囲みと漢字 2 字の語を外し、語彙全体より遅かった。それらを足すと (74272 行) 採られた下書きは変わらない (148 のうち 82 → 80)。低いトークン ID は英語とコードを覆うが、Qwen3.5 の日本語は覆わない (16.192)
-- **参照の精度を先に決める**。`runner` を通した CPU のインタプリタは `HWNPU_CPU_F16=1` がなければ fp32 で計算し、aicheck は fp16 に丸めて動かす。fp16 の丸めに頼るプログラム (MOSS-SoundEffect の snake の `(v + 1536) - 1536`) は丸めた参照とだけ合い、fp32 の参照では `--cpu` の経路が壊れていたことも隠れた (16.196)。定数やマスクを入力に取るプログラムは `AICHECK_CONST=mg=1536,m=1` で本物の値を与える
-- **MOSS-SoundEffect の DAC で見つけた Core AI の Neural Engine の落とし穴 (16.196)**: `(v + c) - c` を c が入力でも `v` に畳む。カーネルが 1 より大きく 512 チャンネル以上の幅方向の畳み込みは、入力を別の演算が計算していると値が違う (高さ方向に: x を (1, C, T, 1)、重みを (co, ci, k, 1))。膨張のある畳み込みは長さによって値が違うか GPU に回る (フレームを膨張の幅の行に並べ、行方向に膨張なしで)。畳み込みの前の明示の `pad` も違った。チャンネルを分ける、明示の pad にする、は効かなかった。`sin` はそのまま Neural Engine で動き、fp16 の入力と同じ程度に正確
+- **参照の精度を先に決める**。`runner` を通した CPU のインタプリタは `HWNPU_CPU_F16=1` がなければ fp32 で計算し、aicheck は fp16 に丸めて動かす。fp16 の丸めに頼るプログラム (MOSS-SoundEffect の snake の `(v + 1536) - 1536`) は丸めた参照とだけ合い、fp32 の参照では `--cpu` の経路が壊れていたことも隠れた (16.197)。定数やマスクを入力に取るプログラムは `AICHECK_CONST=mg=1536,m=1` で本物の値を与える
+- **MOSS-SoundEffect の DAC で見つけた Core AI の Neural Engine の落とし穴 (16.197)**: `(v + c) - c` を c が入力でも `v` に畳む。カーネルが 1 より大きく 512 チャンネル以上の幅方向の畳み込みは、入力を別の演算が計算していると値が違う (高さ方向に: x を (1, C, T, 1)、重みを (co, ci, k, 1))。膨張のある畳み込みは長さによって値が違うか GPU に回る (フレームを膨張の幅の行に並べ、行方向に膨張なしで)。畳み込みの前の明示の `pad` も違った。チャンネルを分ける、明示の pad にする、は効かなかった。`sin` はそのまま Neural Engine で動き、fp16 の入力と同じ程度に正確
 - `aicheck run` と `probe` は、コマンドと同じく Neural Engine のロックを取る (`llm.LockNPU`)。2 つのプロセスが同時に使うと Mac が固まったことがあり、ほかのプロセスのコンパイルは時間の計測も乱す
 
 ## 4. AMD (IRON) と Intel の形

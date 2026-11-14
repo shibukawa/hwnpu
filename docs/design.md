@@ -5503,7 +5503,34 @@ Hugging Face のチェックポイントから `.aimodel` (Core AI) などに変
 - Intel の OpenVINO IR (`ovlower`) はもとから定数を `.bin` に書きながら進む。AMD は Python の IRON の書き出し (チェックポイントは `np.memmap`、重みのイメージは `open_memmap`) で、ここは変えていない
 - 効果音 (`internal/sfx`) は重みを遅れて読み、部品ごとに `.done` を書くので、今回は並べていない
 
-### 16.195 `hwnpu-audio` を Mac では Core AI だけに (macOS 27 が要る)、どのモデルもチェックポイントから `.aimodel` に — 2026-11-14
+### 16.195 NPU を見る道具の下地: `npuinfo` (OS が NPU について教えることを構造体で) — 2026-11-14
+
+macOS のアクティビティモニタも Linux のいつもの道具も NPU を見せない (Windows のタスクマネージャーは 24H2 の 26100.8524 からプロセスごとの NPU の列がある)。ブラウザで見る道具を作る前に、各 OS で何が取れるかを集める `npuinfo` パッケージを足した。将来 gopsutil などから使えるよう、標準ライブラリだけを import し、hwnpu の他のパッケージも使わない (別のモジュールに切り出せる)。今は OS とドライバが返すものをそのまま OS ごとの構造体に入れ、共通の API は後で考える。`go run ./npuinfo/cmd/npuinfo` が JSON を書く。表は [npuinfo/README.ja.md](../npuinfo/README.ja.md)。
+
+**この機械 (Ryzen AI 9 365、Linux 7.0、amdxdna、ファームウェア 1.1.2.64) で取れたもの**
+- プロセスごとの使用: `DRM_IOCTL_AMDXDNA_GET_ARRAY(HW_CONTEXT_ALL)` が root なしで通り、文脈ごとに PID、列 (0+8)、送ったコマンドと終わったコマンドの数、状態を返す。LFM3 q4 のデコード中はコマンドが毎秒約 12 増え、トークンの速さと合う。別のセッションの `hwnpu-image` も、文脈 3 つとして見えた。`gops`、`fps`、`heap_usage` は 0 のまま
+- NPU のメモリ: `/proc/PID/maps` の `/dev/accel/accel0` の行を足すと、LFM3 q4 で 1635 MiB (10 行)。前に測った固定メモリ 1.64 GiB と合う。RSS (390 MB) にも VmPin にも出ない分
+- 忙しさと電力: amdgpu の gpu_metrics (v3) の `average_ipu_activity` (デコード中 93 %)、`average_ipu_power` (1026 mW)、NPU の読み (17.6 GB/s)。構造体の並びはテストで手計算のオフセットと突き合わせた
+- その他の ioctl: AIE の版と形 (8 列 × 6 行、列 504 バイト)、クロック (MP-NPU 1267 MHz、H 1800 MHz)、電力モード、TOPS とタスクの上限と今 (58 TOPS、16 タスク中 2〜3)、列ごとの AIE の状態レジスタ (生のまま)、テレメトリ (生のまま)、最後の非同期エラー
+- 取れないもの: fdinfo に `drm-*` が無い (amdxdna が実装していない)。センサーの問い合わせは ENODEV (この BIOS に PMF の ACPI デバイスが無い)
+
+**読むことで NPU を起こさない**: amdxdna の GET_INFO と GET_ARRAY は寝ている NPU を起こし (`amdxdna_pm_resume_get_locked`)、自動サスペンドの待ち 5 秒の間起こしたままにする。毎秒読む監視は NPU を寝かせなくする。そこで `power/runtime_status` が active のときだけ問い合わせる (`Options.Wake` で変えられる)。デバイスを開くこと、sysfs を読むこと (PCI の config 空間は読まない)、`/proc` を回ることでは起きないことを、寝ている NPU で確かめた。
+
+**macOS (M1、macOS 27.2.1) で動かして足したもの**
+- I/O Registry の読みはそのまま動いた。ANE のクラスは `H11ANEIn` (ドライバ、`DeviceProperties` にアーキテクチャ `h13g`、コア 16、版 64.17)、`H1xANELoadBalancer` の下に `H1xANELoadBalancerClient` (`aned`) と `H1xANELoadBalancerDirectPathClient` (Core AI で直接開くプロセス。`hwnpu-image` は 14 個)。`DeviceProperties` と `IOPowerManagement` を `Darwin.Device` に型付きで出す。`CurrentPowerState` は休みで 0、動かしている間 1
+- プロセスごとの ANE のメモリ: `proc_pid_rusage(RUSAGE_INFO_V6)` の `ri_neural_footprint` (macOS 14 から)。`phys_footprint` (アクティビティモニタのメモリ) には入らない分。0.23 GiB の lut4 のプログラムで 234 MiB。ANE を開いていない (`aned` を通す) `mediaanalysisd` もこれで見つかる。他のユーザーのプロセスは root でないと読めない (`aned` は名前とパスだけ)
+- IOReport (`/usr/lib/libIOReport.dylib`、非公開、root 不要): ANE のチャンネルは `PMP`/`Energy Counters`/`ANE` (mJ)、`AMC Stats`/`Perf Counters`/`ANE RD`・`ANE WR` (バイト)、`Interrupt Statistics (by index)`/`ane 0`、ほかに `PMP` の帯域とストールの分布、`SoC Stats`/`Events` の `ANE_*`。M1 の `Energy Model` には ANE が無い (M2 以降にあるらしいので、あればそちらを使う)。`hwnpu-dev probe bench` (lut4 8 層、5.7 ms/回) を回して 2.0 W、読み 44 GB/s (重み 0.23 GiB × 毎秒 175 回で 40 GB/s と合う)、割り込み毎秒 537 (1 回あたり約 3)。休みの間はどれも 0。powermetrics (root) とは突き合わせていない
+- cgo なしで C を呼ぶ: golang.org/x/sys/unix と同じく `//go:cgo_import_dynamic` とアセンブリのトランポリンで libSystem の `dlopen`、`dlsym`、`dlerror` だけを取り込み、`syscall.syscall6` (linkname) で呼ぶ。CoreFoundation、IOReport、`proc_*` は実行時に dlsym するので、無い OS でもバイナリは起動し、`Info.Errors` に出るだけ。CGO_ENABLED=0 と 1 の両方、darwin/amd64 のクロスビルドで確かめた。標準ライブラリ以外の依存は増えていない
+- ANE を他と並べて見る: 同じ IOReport の購読から、`PMP`/`Energy Counters` の電力の区分全部 (ECPU、PCPU、GPU、ANE、DRAM、DCS、DISP など 26) を `soc_power_w` に、`AMC Stats`/`Perf Counters` の読み書き元全部を `dram_bytes_per_sec` に。M1 の `Energy Model` のチャンネルは全部 0 のままなので、0 は出さない。別のセッションの `hwnpu-image` の画像生成 (ANE のメモリ 9.1 GiB) で ANE 6.9 W、DRAM 1.2 W、CPU 0.25 W、GPU 0
+- その他: 熱の圧力 (`com.apple.system.thermalpressurelevel`) と低電力モード (`com.apple.system.lowpowermode`) を libSystem の notify で。読み込まれている ANE の kext (I/O Registry の `CFBundleIdentifier` と `/System/Library/Extensions/*ANE*.kext` の Info.plist を突き合わせる。M1 は AppleH11ANEInterface 10.102.3。他の 11 個は他のチップ用)、AppleNeuralEngine.framework の version.plist。システムの ANE のプロセス (`aned`、`aneuserd`、`ANECompilerService`) を `proc_pidpath` で (root のプロセスでも読める)
+- 読んでも ANE を起こさない: 休みの間に IOReport ごと 40 回読んで、電源の状態は 0 のまま
+- `Options.SampleInterval` の間 (500 ms) IOReport の 2 回の読みの間で待つ。負にすると読まない
+
+**Windows は書いただけ** (クロスビルドと vet とパースのテストのみ)。Windows は PnP の ComputeAccelerator のデバイス、D3DKMT のアダプター (`D3DKMTEnumAdapters3` で計算専用も)、名前に GPU、NPU、Neural を含むパフォーマンスカウンターを全部 (インスタンス名の `pid_N_luid_…_engtype_…` を分ける)。どれもその機械で動かして、何が出るかを見るところから。
+
+残り: Windows (Intel の機械は `tools/intel/hwnpu-intel-check.ps1` に足すと往復が 1 回で済む) で動かす。M2 以降の Mac で IOReport のチャンネル名を確かめる。AIE の状態とテレメトリを読み解く。共通の API。ブラウザで見る道具。
+
+### 16.196 `hwnpu-audio` を Mac では Core AI だけに (macOS 27 が要る)、どのモデルもチェックポイントから `.aimodel` に — 2026-11-14
 
 16.190 の `hwnpu-image` と同じく、`hwnpu-audio` も Mac では Core ML を Neural Engine に使わない。Core ML は CPU のインタプリタ (`--cpu`、ONNX Runtime の無い機械の pitch と notes) が読む書き出しだけに残し、変換の中間形式にもしない (`.mlpackage` を書いて下ろす段を経ない)。M3 (16 GB、macOS 27.2)。
 
@@ -5527,20 +5554,20 @@ Hugging Face のチェックポイントから `.aimodel` (Core AI) などに変
 | generate (Magenta RealTime 2) | 1 分 12 秒 (読み込み 58 秒) | 曲調 0.3 秒、読み込み 0.1 秒 | 曲調 0.4 秒、読み込み 0.2 秒 | 実時間の 2.1 倍 (main と同じ)。全部 Neural Engine |
 | transcribe (Whisper large-v3-turbo) | 1 分 03 秒 (読み込み 55.5 秒) | 読み込み 0.1〜0.5 秒 | 0.5〜0.8 秒 | 3 つの WAV で main と同じ文 (大文字 1 つだけ違う)。30 秒の窓 0.53〜0.58 秒、Neural Engine 0.78 GiB (main と同じ) |
 | tts (LFM3-Audio-2B) | 1 分 07 秒 (変換 24 秒) | 読み込み 0.1 秒 | 4.3 秒 | 英語と日本語の声を Whisper に戻すと元の文 |
-| generate -m moss-soundeffect:8gb (MOSS-SoundEffect、lut8) | 変換 25 秒、文の符号器 34 秒、DiT と DAC の読み込み 3 分 07 秒 | — | — | 文の符号器と DiT は全部 Neural Engine。DAC の 5 段は Neural Engine のコンパイラーに落ちて GPU (下、16.196 で直した) |
+| generate -m moss-soundeffect:8gb (MOSS-SoundEffect、lut8) | 変換 25 秒、文の符号器 34 秒、DiT と DAC の読み込み 3 分 07 秒 | — | — | 文の符号器と DiT は全部 Neural Engine。DAC の 5 段は Neural Engine のコンパイラーに落ちて GPU (下、16.197 で直した) |
 
 - `TestCoreAIAgainstCPU` (`internal/music`、`HWNPU_MRT_COREAI=1`): Core ML の書き出しを CPU のインタプリタで動かしたものを参照に、Core AI と Core ML の Neural Engine を比べた。言語モデル (lut8) を CPU の貪欲法の 25 フレームに沿わせたロジットの KL (温度 1.3) は Core AI 0.0000 nats、Core ML 0.0003、一番ありそうなトークンが同じなのは 300 のうち 297 と 295。MusicCoCa の文の埋め込みは 5 つの文で最低のコサイン 0.999999 と 0.999997、SpectroStream の復号は 1.000000 と 0.999997。どれも Core AI の方が参照に近い
 - 曲調の 12 個の符号は、"disco funk" で Core AI と Core ML が 3 つ目から違った。MusicCoCa の残差ベクトル量子化は後の段ほど小さな差で選ぶ符号が変わる ("heavy metal" では main の Core ML も CPU の参照と 7 つ目から違う)。埋め込みのコサインが上のとおりなので、Core AI が外れているのではない
 - `tts` を手で変換したもの: `hwnpu-dev convert -backend coreai` の depthformer とコーデックを `--depth` と `--codec` に渡して動いた (テキスト部は Prepare の書き出し)
 - Whisper の `-v` の窓の言語が英語の音声でも `ja` と出る、長い英語の文の書き起こしに大文字が多いのは main の Core ML でも同じ (この変更とは別)
 
-**MOSS-SoundEffect の DAC が Core AI の Neural Engine で動かない**: 5 段とも `ANECCompile() FAILED: Codegen Error: Failed to HandleANELayer` で GPU に回った (この節の時点。16.196 で直した)。
+**MOSS-SoundEffect の DAC が Core AI の Neural Engine で動かない**: 5 段とも `ANECCompile() FAILED: Codegen Error: Failed to HandleANELayer` で GPU に回った (この節の時点。16.197 で直した)。
 
 残り: macOS 26 の Mac でのエラーの確かめ。M1 と Intel の Mac。テキスト部を `-backend coreai` で手で変換した形は動かしていない。Core ML との並べての比べ (sfx) はディスクの空きが足りず未。
 
-### 16.196 MOSS-SoundEffect の DAC を Core AI の Neural Engine に: sin、高さ方向の畳み込み、膨張を行に — 2026-11-14
+### 16.197 MOSS-SoundEffect の DAC を Core AI の Neural Engine に: sin、高さ方向の畳み込み、膨張を行に — 2026-11-14
 
-16.195 で残った MOSS-SoundEffect の DAC (5 段) を、全部 Core AI の Neural Engine で正しく動くようにした。M3 (16 GB、macOS 27.2)。比べる参照は、16.195 の前の DAC (snake の範囲の縮小を fp16 の丸めで) を CPU のインタプリタで fp16 に丸めながら動かしたもの (`HWNPU_CPU_F16=1`。この形は Core ML の Neural Engine で Python の参照と合っていた)。
+16.196 で残った MOSS-SoundEffect の DAC (5 段) を、全部 Core AI の Neural Engine で正しく動くようにした。M3 (16 GB、macOS 27.2)。比べる参照は、16.196 の前の DAC (snake の範囲の縮小を fp16 の丸めで) を CPU のインタプリタで fp16 に丸めながら動かしたもの (`HWNPU_CPU_F16=1`。この形は Core ML の Neural Engine で Python の参照と合っていた)。
 
 **参照の取り違え**: 最初は CPU のインタプリタ (`runner` の CPU の経路) をそのまま参照にして、GPU に回った段が合い (0.0017)、Neural Engine の段が違うと見ていた。しかし `runner` の CPU の経路は fp32 で計算し (`HWNPU_CPU_F16` がなければ丸めない)、snake の丸め `(v + 1536) - 1536` が丸めにならない。GPU も同じく丸めないので合って見えた。fp16 に丸める参照で見ると、CPU (fp32) の main の DAC は 1.44 も違う: **main の `hwnpu-audio generate -m sfx --cpu` の DAC は壊れていた**。aicheck は milcpu を `RoundF16` で動かすので、aicheck と自前の試験で結果が食い違ったのが手がかりになった
 

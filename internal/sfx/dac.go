@@ -148,7 +148,7 @@ func (d *dac) conv(x *mlpackage.Var, name string, dil, pad int, wn bool) *mlpack
 // padded with zeros by padL and padR, of the given dilation. Except for Intel's NPU it runs
 // along the height, x laid out as (1, ci, T, 1): Core AI's Neural Engine miscomputes a
 // convolution along the width of a kernel over 1 and 512 or more channels whose input another
-// operation computes (design.md 16.196), and runs it right along the height.
+// operation computes (design.md 16.197), and runs it right along the height.
 func (d *dac) conv1d(x *mlpackage.Var, name string, w, bias []float32, co, k, dil, padL, padR int) *mlpackage.Var {
 	ci, t := x.Shape[1], x.Shape[3]
 	out := t + padL + padR - dil*(k-1)
@@ -172,7 +172,7 @@ func (d *dac) conv1d(x *mlpackage.Var, name string, w, bias []float32, co, k, di
 // kernel of k by 1, padded by pad / dil rows, and laid back; the output's frame row dil + phase
 // reads the input's frames (row + j) dil + phase. Core AI's Neural Engine miscomputes some
 // dilated convolutions whose input another operation computes (dilation 3 over 128 channels at
-// 8000 and 15000 frames but not 7680 or 16000) and an explicit pad before one (design.md 16.196),
+// 8000 and 15000 frames but not 7680 or 16000) and an explicit pad before one (design.md 16.197),
 // and runs this right.
 func (d *dac) phaseConv(x *mlpackage.Var, name string, w, bias []float32, ci, co, k, dil, pad int) *mlpackage.Var {
 	t := x.Shape[3]
@@ -299,7 +299,7 @@ func (d *dac) snake(x *mlpackage.Var, name string) *mlpackage.Var {
 	if d.Opts.Backend != llm.BackendIntel {
 		// Core AI runs sin on the Neural Engine, and folds (v + mg) - mg into v even with mg an
 		// input, so the rounding below does not round there; the CPU interpreter, which runs the
-		// Core ML export, computes in fp32 and does not round it either (design.md 16.196)
+		// Core ML export, computes in fp32 and does not round it either (design.md 16.197)
 		sn = d.unary("sin", y)
 	} else {
 		n := d.sub(d.add(d.scale(y, float32(1/math.Pi)), d.mg), d.mg)

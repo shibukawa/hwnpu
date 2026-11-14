@@ -160,7 +160,7 @@ func TestDecodeLatentsOnDevice(t *testing.T) {
 
 // On Core AI's Neural Engine (HWNPU_SFX_COREAI=1; HWNPU_SFX_DIR, the model's directory: the
 // models' MOSS-SoundEffect-v2.0 by default) the decoder's stages are all on the NPU and give the
-// CPU interpreter's samples of 5 seconds of seeded latents (design.md 16.196: 0.009 off, the CPU
+// CPU interpreter's samples of 5 seconds of seeded latents (design.md 16.197: 0.009 off, the CPU
 // interpreter 0.003 off the stages of before run with fp16's rounding).
 func TestDecodeLatentsCoreAI(t *testing.T) {
 	if os.Getenv("HWNPU_SFX_COREAI") == "" {
