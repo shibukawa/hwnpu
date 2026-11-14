@@ -75,18 +75,21 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
 	}
-	ext := llm.ProgramExt(s.Backend) // .aimodel, .mlpackage or .xml
-	program = filepath.Join(s.Dir, fmt.Sprintf("%s-r%d-fp16-%d%s", Arch, Revision, Size, ext))
-	done := program + ".done"
-	if _, err := os.Stat(done); err == nil {
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	name := fmt.Sprintf("%s-r%d-fp16-%d", Arch, Revision, Size)
+	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
+	if llm.ExportDone(done) {
 		return model, program, nil
 	}
 	g, err := onnx.Load(model)
 	if err != nil {
 		return "", "", err
 	}
-	bar := console.NewBar(log, "converting "+filepath.Base(program))
-	os.RemoveAll(program)
+	bar := console.NewBar(log, "converting "+name)
+	if err := llm.StartProgram(program, export); err != nil {
+		bar.Done("failed")
+		return "", "", err
+	}
 	p := newProgram(g)
 	_, err = llm.WritePart(program, p, nil, llm.Options{Format: "fp16", Backend: s.Backend}, func(pkg *mlpackage.Package) {
 		pkg.Description = fmt.Sprintf("RTMO from %s up to its head's outputs, %dx%d, fp16 (hwnpu)", s.Repo, Size, Size)
@@ -97,7 +100,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	bar.Done(console.Duration(bar.Elapsed()))
-	return model, program, os.WriteFile(done, nil, 0o644)
+	return model, program, llm.FinishProgram(s.Dir, name, done, export)
 }
 
 // newProgram is the program of the graph up to its dynamic part: for every anchor, the person

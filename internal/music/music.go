@@ -58,8 +58,8 @@ type Setup struct {
 	// Format is the depthformer's weight format (lut8 by default); the other programs are fp16.
 	Format string
 	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, what
-	// the CPU interpreter runs), Core AI's programs (coreai, kept in Dir/coreai) or OpenVINO IR
-	// for Intel's NPU (kept in Dir/intel).
+	// the CPU interpreter runs), Core AI's programs (coreai, in exports NAME.coreai,
+	// llm.CoreAIExport) or OpenVINO IR for Intel's NPU (kept in Dir/intel).
 	Backend string
 	Log     io.Writer
 	// Text prepares MusicCoCa's text side (styles from texts), AudioStyle its audio side
@@ -120,24 +120,36 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 			return p, err
 		}
 	}
-	// Core AI's programs are kept in Dir/coreai; Intel's NPU reads OpenVINO IR (kept in
-	// Dir/intel) and no lookup tables: lut8 is int8
+	// Intel's NPU reads OpenVINO IR (kept in Dir/intel) and no lookup tables: lut8 is int8
+	coreai := s.Backend == llm.BackendCoreAI
 	dir, ext := s.Dir, llm.ProgramExt(s.Backend)
-	if s.Backend == llm.BackendIntel || s.Backend == llm.BackendCoreAI {
-		if s.Backend == llm.BackendIntel {
-			format = llm.IntelFormat(format)
-		}
+	if s.Backend == llm.BackendIntel {
+		format = llm.IntelFormat(format)
 		dir = filepath.Join(s.Dir, s.Backend)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return p, err
 		}
 	}
-	name := func(kind, f string) string {
-		return filepath.Join(dir, fmt.Sprintf("mrt2-small-%s-r%d-%s%s", kind, Revision, f, ext))
+	// a program's path, from the name of what holds it: Core AI's in an export of that name
+	// (llm.CoreAIExport, what is converted again apart: the language models, SpectroStream's
+	// decoder, its encoder, MusicCoCa's text side and its music side), as ROLE.aimodel; Core
+	// ML's and Intel's a program each with its .done
+	exports := map[string]string{} // a program's export
+	name := func(export, role, legacy string) string {
+		if coreai {
+			e, _ := llm.CoreAIExport(s.Dir, export)
+			path := filepath.Join(e, role+ext)
+			exports[path] = export
+			return path
+		}
+		return filepath.Join(dir, legacy+ext)
 	}
-	p.Temporal, p.Depth = name("temporal", format), name("depth", format)
+	lm := fmt.Sprintf("mrt2-small-r%d-%s", Revision, format)
+	p.Temporal = name(lm, "temporal", fmt.Sprintf("mrt2-small-temporal-r%d-%s", Revision, format))
+	p.Depth = name(lm, "depth", fmt.Sprintf("mrt2-small-depth-r%d-%s", Revision, format))
 	ssName := func(kind string) string {
-		return filepath.Join(dir, fmt.Sprintf("mrt2-small-%s-t%d-r%d-fp16%s", kind, DecodeFrames+decodeContext, ssRevision, ext))
+		return name(fmt.Sprintf("mrt2-spectrostream-%s-t%d-r%d-fp16", kind, DecodeFrames+decodeContext, ssRevision), kind,
+			fmt.Sprintf("mrt2-small-%s-t%d-r%d-fp16", kind, DecodeFrames+decodeContext, ssRevision))
 	}
 	p.Decoder = ssName("decoder")
 	if s.Text || s.AudioStyle {
@@ -145,12 +157,14 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	}
 	if s.Text {
 		p.TextEncoder, p.Mapper, p.SPM = at(TextFiles[0]), at(TextFiles[1]), at(TextFiles[3])
-		p.TextProgram = filepath.Join(dir, fmt.Sprintf("mrt2-musiccoca-text-r%d-fp16%s", musicCoCaRevision, ext))
+		p.TextProgram = name(fmt.Sprintf("mrt2-musiccoca-text-r%d-fp16", musicCoCaRevision), "text",
+			fmt.Sprintf("mrt2-musiccoca-text-r%d-fp16", musicCoCaRevision))
 		p.TextTable = strings.TrimSuffix(p.TextProgram, ext) + ".table"
 	}
 	if s.AudioStyle {
 		p.AudioPreprocessor, p.MusicEncoder = at(AudioStyleFiles[0]), at(AudioStyleFiles[1])
-		p.MusicProgram = filepath.Join(dir, fmt.Sprintf("mrt2-musiccoca-music-r%d-fp16%s", musicCoCaRevision, ext))
+		p.MusicProgram = name(fmt.Sprintf("mrt2-musiccoca-music-r%d-fp16", musicCoCaRevision), "music",
+			fmt.Sprintf("mrt2-musiccoca-music-r%d-fp16", musicCoCaRevision))
 		p.MusicPatches = strings.TrimSuffix(p.MusicProgram, ext) + ".patches"
 	}
 	if s.Encoder {
@@ -196,35 +210,67 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	if s.AudioStyle {
 		jobs = append(jobs, job{p.MusicProgram, func() (Program, error) { return musicProgram(p.MusicEncoder, p.MusicPatches) }, none, "fp16"})
 	}
+	// what is missing: Core AI's exports not whole, the other programs without their .done
+	pending := map[string]string{} // the Core AI exports to write, and their marks
+	var todo []job
 	for _, c := range jobs {
-		if _, err := os.Stat(c.path + ".done"); err == nil {
+		if coreai {
+			export, done := llm.CoreAIExport(s.Dir, exports[c.path])
+			if llm.ExportDone(done) {
+				continue
+			}
+			pending[export] = done
+		} else if _, err := os.Stat(c.path + ".done"); err == nil {
 			continue
 		}
+		todo = append(todo, c)
+	}
+	if len(todo) == 0 {
+		return p, nil
+	}
+	for export := range pending {
+		if err := llm.StartExport(export); err != nil {
+			return p, err
+		}
+	}
+	// written side by side (console.Jobs), the weights opened first: the jobs share them
+	q := console.NewJobs(log)
+	for _, c := range todo {
 		w, err := c.w()
 		if err != nil {
 			return p, err
 		}
-		bar := console.NewBar(log, "converting "+filepath.Base(c.path))
-		prog, err := c.prog()
-		if err != nil {
-			bar.Done("failed")
-			return p, err
+		if !coreai {
+			os.RemoveAll(c.path)
 		}
-		os.RemoveAll(c.path)
-		opts := llm.Options{Format: c.format, Backend: s.Backend}
-		if c.format == "lut8" || c.format == "lut6" || c.format == "lut4" {
-			opts.Quant = "kmeans-minmax"
-		}
-		var lwArg llm.Weights
-		if w != nil {
-			lwArg = w
-		}
-		if err := WriteProgram(c.path, prog, lwArg, opts); err != nil {
-			bar.Done("failed")
-			return p, err
-		}
-		bar.Done(console.Duration(bar.Elapsed()))
-		if err := os.WriteFile(c.path+".done", nil, 0o644); err != nil {
+		q.Add(filepath.Base(c.path), func() (string, error) {
+			prog, err := c.prog()
+			if err != nil {
+				return "", err
+			}
+			opts := llm.Options{Format: c.format, Backend: s.Backend}
+			if c.format == "lut8" || c.format == "lut6" || c.format == "lut4" {
+				opts.Quant = "kmeans-minmax"
+			}
+			var lwArg llm.Weights
+			if w != nil {
+				lwArg = w
+			}
+			if err := WriteProgram(c.path, prog, lwArg, opts); err != nil {
+				return "", err
+			}
+			if !coreai {
+				return c.format, os.WriteFile(c.path+".done", nil, 0o644)
+			}
+			return c.format, nil
+		})
+	}
+	// a job holds its program's weights up to ailower.SpillKeep and the tensors it reads
+	if err := q.Run(2 << 30); err != nil {
+		return p, err
+	}
+	for export, done := range pending {
+		if err := llm.FinishExport(export, done, filepath.Join(s.Dir, llm.BackendCoreAI)); err != nil {
 			return p, err
 		}
 	}

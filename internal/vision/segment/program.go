@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -41,10 +40,11 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 	if err != nil {
 		return nil, err
 	}
-	ext := llm.ProgramExt(backend) // .aimodel, .mlpackage or .xml
 	stem := strings.TrimSuffix(filepath.Base(encoder), filepath.Ext(encoder))
-	path := filepath.Join(dir, fmt.Sprintf("%s-r%d-fp16-%d%s", stem, ProgramRevision, Size, ext))
-	if _, err := os.Stat(path + ".done"); err != nil {
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	name := fmt.Sprintf("%s-r%d-fp16-%d", stem, ProgramRevision, Size)
+	path, done, export := llm.ProgramPath(dir, name, backend)
+	if !llm.ExportDone(done) {
 		g, err := onnx.Load(encoder)
 		if err != nil {
 			return nil, err
@@ -52,8 +52,11 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 		if len(g.Inputs) != 1 || len(g.Outputs) != 1 {
 			return nil, fmt.Errorf("segment: %s has %d inputs and %d outputs, not the encoder's 1 and 1", encoder, len(g.Inputs), len(g.Outputs))
 		}
-		bar := console.NewBar(cmp.Or[io.Writer](log, io.Discard), "converting "+filepath.Base(path))
-		os.RemoveAll(path)
+		bar := console.NewBar(cmp.Or[io.Writer](log, io.Discard), "converting "+name)
+		if err := llm.StartProgram(path, export); err != nil {
+			bar.Done("failed")
+			return nil, fmt.Errorf("segment: %w", err)
+		}
 		if _, err := llm.WritePart(path, EncoderProgram(g), nil, llm.Options{Format: "fp16", Backend: backend}, func(pkg *mlpackage.Package) {
 			pkg.Description = fmt.Sprintf("EfficientSAM's image encoder (%s), %dx%d, fp16 (hwnpu)", filepath.Base(encoder), Size, Size)
 		}); err != nil {
@@ -61,7 +64,7 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 			return nil, fmt.Errorf("segment: %w", err)
 		}
 		bar.Done(console.Duration(bar.Elapsed()))
-		if err := os.WriteFile(path+".done", nil, 0o644); err != nil {
+		if err := llm.FinishProgram(dir, name, done, export); err != nil {
 			return nil, err
 		}
 	}

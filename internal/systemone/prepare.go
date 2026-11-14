@@ -34,7 +34,7 @@ type Setup struct {
 	Format string
 	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
 	// what the CPU interpreter runs), OpenVINO IR for Intel's NPU, kept in Dir/intel, or Core AI's
-	// programs (.aimodel), kept in Dir/coreai.
+	// programs, an export NAME.coreai each in Dir (chat.ProgramFile).
 	Backend string
 	Log     io.Writer
 }

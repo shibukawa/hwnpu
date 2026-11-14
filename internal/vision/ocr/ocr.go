@@ -242,20 +242,24 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 	if r.s.CPU {
 		return r.cpuProgram(model, name, shape)
 	}
-	ext := llm.ProgramExt(r.s.Backend) // .aimodel, .mlpackage or .xml
 	tag := fmt.Sprintf("%dx%d", shape[3], shape[2])
 	if shape[0] != 1 {
 		tag = fmt.Sprintf("%dx%dx%d", shape[0], shape[3], shape[2])
 	}
-	path := filepath.Join(repoDir(r.s.Dir, src), fmt.Sprintf("%s-r%d-fp16-%s%s", name, Revision, tag, ext))
-	if _, err := os.Stat(path + ".done"); err != nil {
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	dir, stem := repoDir(r.s.Dir, src), fmt.Sprintf("%s-r%d-fp16-%s", name, Revision, tag)
+	path, done, export := llm.ProgramPath(dir, stem, r.s.Backend)
+	if !llm.ExportDone(done) {
 		g, err := onnx.Load(model)
 		if err != nil {
 			return nil, err
 		}
 		p := NewProgram(g, shape)
-		bar := console.NewBar(r.s.Log, "converting "+filepath.Base(path))
-		os.RemoveAll(path)
+		bar := console.NewBar(r.s.Log, "converting "+stem)
+		if err := llm.StartProgram(path, export); err != nil {
+			bar.Done("failed")
+			return nil, err
+		}
 		_, err = llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.s.Backend}, func(pkg *mlpackage.Package) {
 			pkg.Description = fmt.Sprintf("PP-OCR %s from %s, %s, fp16 (hwnpu)", describe, src.Repo, tag)
 			pkg.Metadata[llm.MetaArch] = "ppocr-" + name
@@ -265,7 +269,7 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 			return nil, err
 		}
 		bar.Done(console.Duration(bar.Elapsed()))
-		if err := os.WriteFile(path+".done", nil, 0o644); err != nil {
+		if err := llm.FinishProgram(dir, stem, done, export); err != nil {
 			return nil, err
 		}
 	}

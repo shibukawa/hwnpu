@@ -63,7 +63,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	root := filepath.Join(s.Dir, s.Name)
 	format := cmp.Or(s.Format, FormatCoreML)
 	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
-	if _, err := os.Stat(out + ".done"); err == nil {
+	if llm.ExportDone(out + ".done") {
 		return out, nil
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -144,7 +144,7 @@ func Convert(root, out, format string) error {
 	if err := os.WriteFile(filepath.Join(out, "model.json"), append(b, '\n'), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(out+".done", nil, 0o644)
+	return llm.FinishExport(out, out+".done")
 }
 
 // writeEmbed writes the token embedding table as fp16 rows.

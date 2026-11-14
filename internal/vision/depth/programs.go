@@ -42,7 +42,7 @@ func (p *progSized) close() error {
 // useProgram loads size w x h of an export of Prepare (Core ML packages or OpenVINO IR),
 // converting it first when it is missing.
 func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized, error) {
-	if _, err := os.Stat(d + ".done"); err != nil {
+	if !llm.ExportDone(d + ".done") {
 		if e.Logf != nil {
 			e.Logf("depth: converting %dx%d (the first picture of this aspect)", w, h)
 		}
@@ -141,7 +141,7 @@ func ConvertSize(root, d string, w, h int, format string) error {
 	if err := os.WriteFile(filepath.Join(d, "model.json"), append(b, '\n'), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(d+".done", nil, 0o644)
+	return llm.FinishExport(d, d+".done")
 }
 
 // Setup is what Prepare makes ready.
