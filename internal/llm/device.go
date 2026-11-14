@@ -162,6 +162,18 @@ func ExportDevice(format, name string) string {
 	return BackendCoreML
 }
 
+// ProgramExt is the file name extension of a program of the program format backend: .aimodel
+// (coreai), .xml (intel, OpenVINO IR), else .mlpackage.
+func ProgramExt(backend string) string {
+	switch backend {
+	case BackendCoreAI:
+		return ".aimodel"
+	case BackendIntel:
+		return ".xml"
+	}
+	return ".mlpackage"
+}
+
 // AppleFormat reports whether a program format runs on Apple's Neural Engine (coreml, coreai).
 func AppleFormat(format string) bool { return format == BackendCoreML || format == BackendCoreAI }
 

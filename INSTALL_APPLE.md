@@ -95,9 +95,12 @@ The intended path is `hwnpu-dev convert`, in Go, from the bf16 checkpoint; corem
 - **LLM checkpoints with hwnpu-dev convert** (Go only, no Python). `go run ./cmd/hwnpu-dev convert -config config.json -weights model.safetensors -o out.mlpackage -seq 32` builds the graph from `config.json` for a known architecture and palettizes the weights to 4 bit. It knows LFM3 so far; other architectures (Llama, Qwen) need their structure added in `internal/llm`. How to choose the source checkpoint and what the Neural Engine accepts are described in [MODEL_ARCHITECTURE.md](MODEL_ARCHITECTURE.md).
 - **Anything else with coremltools** (Python). A generic converter that accepts arbitrary graphs is out of hwnpu's scope, so models that are not a supported LLM architecture (encoders such as MiniLM, vision models) are converted from PyTorch with `ct.convert(..., convert_to="mlprogram", compute_precision=ct.precision.FLOAT16, minimum_deployment_target=ct.target.macOS14)` and fixed input shapes. `tools/coreml/convert_minilm.py` and `tools/coreml/gen_sweep.py` are worked examples, written for the benchmarks.
 
-## 5. Running on Core AI (macOS 27, optional)
+## 5. Running on Core AI (macOS 27)
 
-macOS 27 has Core AI beside Core ML. hwnpu lowers the same converted models (`.mlpackage`) to Core AI programs in Go and runs them on the Neural Engine. Core ML stays the default; `--backend coreai` or `HWNPU_BACKEND=coreai` picks Core AI. Nothing more to install.
+macOS 27 has Core AI beside Core ML. Nothing more to install.
+
+- **`hwnpu-image` runs on Core AI alone** and needs macOS 27 on a Mac. It converts its models for Core AI (`.aimodel`, written from the checkpoints in Go) and does not use Core ML; `--cpu` still runs a Core ML export with the CPU interpreter, for checking without the NPU. A Mac on macOS 26 or earlier gets an error that says so
+- **The other commands** keep Core ML as the default; `--backend coreai` or `HWNPU_BACKEND=coreai` runs their converted models (`.mlpackage`, lowered to Core AI programs in Go) on Core AI
 
 - **Commands**: all of `hwnpu-chat`; `hwnpu-image`'s generate (Anima, Chroma, Qwen-Image, Sana: Sana's export holds 512 x 512 and 1024 x 1024 in one), ocr, detect, pose, face-detect, depth, segment, label and embed. Of `hwnpu-audio`, pitch and generate (Magenta RealTime 2) were checked with `HWNPU_BACKEND=coreai` (the others were not)
 - **Results and speed**: as Core ML's (the same answers, objects and text; cosines of 0.9999 or more for embeddings and depth; a call within ±10 %)

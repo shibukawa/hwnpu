@@ -108,6 +108,13 @@ var probes = map[string]func(g *milpart.Graph){
 		y := g.Add(g.Conv2D(z, "a", randW(1024*32*9, 32*9), make([]float32, 1024), 1024, 3, 1), g.Conv2D(z, "e", e, nil, 1024, 1, 1))
 		g.Output(g.Conv2D(y, "b", randW(3072*1024, 1024), nil, 3072, 1, 1))
 	},
+	// MoGe-2's dense head on the M1 (design.md 16.190): the deconvolution 128 -> 64 at 200 x 200
+	// (a 1 x 1 convolution to 256 channels, then pixel_shuffle) falls off the Neural Engine
+	"ps_256_200":            psProbe(256, 200, 0, 1),
+	"conv_ps_128_200":       psProbe(128, 200, 256, 1),
+	"conv_ps_128_100":       psProbe(128, 100, 256, 1),
+	"conv_ps_128_200_rows2": psProbe(128, 200, 256, 2),
+	"conv_ps_128_200_rows4": psProbe(128, 200, 256, 4),
 	"transpose": func(g *milpart.Graph) {
 		x := g.Input("x", 1, 256, 8, 64)
 		g.Output(g.Transpose(x, 0, 2, 1, 3))
@@ -186,6 +193,32 @@ func vaeInProbe(n int, conv, qkv bool) func(g *milpart.Graph) {
 			y = g.Conv2D(y, "b", randW(3072*1024, 1024), nil, 3072, 1, 1)
 		}
 		g.Output(y)
+	}
+}
+
+// psProbe is pixel_shuffle by 2 of (1, c, n, n), after a 1 x 1 convolution to conv channels when
+// conv > 0, in rows bands of the rows concatenated back.
+func psProbe(c, n, conv, rows int) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		x := g.Input("x", 1, c, n, n)
+		if conv > 0 {
+			x = g.Conv2D(x, "w", randW(conv*c, c), nil, conv, 1, 1)
+		}
+		C := x.Shape[1]
+		var parts []*mlpackage.Var
+		for r := 0; r < rows; r++ {
+			lo, hi := r*n/rows, (r+1)*n/rows
+			band := x
+			if rows > 1 {
+				band = g.Slice(x, 2, lo, hi)
+			}
+			parts = append(parts, g.Op("pixel_shuffle", map[string]any{"x": band, "upscale_factor": g.B.ScalarI32(2)}, 1, C/4, 2*(hi-lo), 2*n))
+		}
+		if len(parts) == 1 {
+			g.Output(parts[0])
+			return
+		}
+		g.Output(g.Concat(2, parts...))
 	}
 }
 

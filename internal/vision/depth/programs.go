@@ -108,8 +108,8 @@ func (e *Estimator) estimateProgram(ctx context.Context, s *sized, img image.Ima
 }
 
 // ConvertSize writes the programs of the DA3 checkpoint root (config.json, model.safetensors)
-// for w x h pixels into d in format ("coreml": vit.mlpackage and head.mlpackage; "intel": vit.xml
-// and head.xml, OpenVINO IR) and model.json; d.done, written last, says they are whole.
+// for w x h pixels into d in format ("coreai": vit.aimodel and head.aimodel; "coreml":
+// vit.mlpackage and head.mlpackage; "intel": vit.xml and head.xml, OpenVINO IR) and model.json; d.done, written last, says they are whole.
 func ConvertSize(root, d string, w, h int, format string) error {
 	c, err := mil.ReadConfig(root, w, h)
 	if err != nil {
@@ -149,8 +149,8 @@ type Setup struct {
 	Dir  string // the checkpoints (Dir/NAME) and the exports
 	Repo string // the Hugging Face repository (depth-anything/DA3MONO-LARGE)
 	Name string
-	// Backend is the program format (llm.Options.Backend): Core ML packages (the default) or
-	// OpenVINO IR for Intel's NPU.
+	// Backend is the program format (llm.Options.Backend): Core AI programs, Core ML packages
+	// (the default) or OpenVINO IR for Intel's NPU.
 	Backend string
 	Log     io.Writer
 }
@@ -194,26 +194,24 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 }
 
 // ExportFormat is an export's Format for a program format (llm.Options.Backend): "intel" for
-// OpenVINO IR, else "coreml".
+// OpenVINO IR, "coreai" for Core AI's programs, else "coreml".
 func ExportFormat(backend string) string {
-	if backend == llm.BackendIntel {
-		return "intel"
+	switch backend {
+	case llm.BackendIntel, llm.BackendCoreAI:
+		return backend
 	}
 	return "coreml"
 }
 
 // ProgramExt is the file name extension of a program of an export's Format.
-func ProgramExt(format string) string {
-	if format == "intel" {
-		return ".xml"
-	}
-	return ".mlpackage"
-}
+func ProgramExt(format string) string { return llm.ProgramExt(ProgramBackend(format)) }
 
-// ProgramBackend is the program format (llm.Options.Backend) of an export's Format.
+// ProgramBackend is the program format (llm.Options.Backend) of an export's Format ("" for an
+// export before Format: coreml).
 func ProgramBackend(format string) string {
-	if format == "intel" {
-		return llm.BackendIntel
+	switch format {
+	case llm.BackendIntel, llm.BackendCoreAI:
+		return format
 	}
 	return llm.BackendCoreML
 }

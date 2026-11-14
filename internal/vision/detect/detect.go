@@ -85,10 +85,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
 	}
-	ext := ".mlpackage"
-	if s.Backend == llm.BackendIntel {
-		ext = ".xml"
-	}
+	ext := llm.ProgramExt(s.Backend) // .aimodel, .mlpackage or .xml
 	stem := filepath.Base(s.File)
 	stem = stem[:len(stem)-len(filepath.Ext(stem))]
 	program = filepath.Join(s.Dir, fmt.Sprintf("%s-%s-r%d-fp16-%d%s", Arch, stem, Revision, Size, ext))

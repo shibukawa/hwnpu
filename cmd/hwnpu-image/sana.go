@@ -58,7 +58,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 		if len(m.Sizes) > 0 {
 			w = r.size
 		}
-		name, opts := llm.ExportDevice(m.Backend, ""), []hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementStrict)}
+		name, opts := exportDevice(m.Backend, ""), []hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementStrict)}
 		if m.Backend == llm.BackendIntel {
 			name, opts = "", nil
 			if b := llm.ProgramBackend(strings.TrimSpace(os.Getenv(llm.BackendEnv))); b != llm.BackendIntel {

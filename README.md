@@ -9,7 +9,7 @@ Commands, written in Go without cgo, that run the NPU built into the CPU (a Go l
 
 | Platform | Backend | Status |
 |---|---|---|
-| macOS (Apple Silicon) | Core ML (and Core AI on macOS 27) | Done. Checked on M1 and M3 |
+| macOS (Apple Silicon) | Core ML (and Core AI on macOS 27; hwnpu-image runs on Core AI alone) | Done. Checked on M1 and M3 |
 | Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR) | Done. Only some models run on the hardware so far |
 | Linux (AMD Ryzen AI) | amdxdna ioctl (exports from IRON / mlir-aie) | Done. Checked on a Ryzen AI 9 365 (Strix Point) |
 | Windows (AMD Ryzen AI) | XRT (xrtshim) | Done. Untested on Windows |
