@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/llm/qwen3"
 )
 
@@ -108,11 +110,14 @@ func TestQwen3NotPagedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := pagedChunk(m, 0); got != 0 {
+	if got := pagedChunk(m, 0, llm.BackendCoreML); got != 0 {
 		t.Errorf("pagedChunk(qwen3, 0) = %d, want 0 (whole)", got)
 	}
-	if got := pagedChunk(m, 1024); got != 1024 {
+	if got := pagedChunk(m, 1024, llm.BackendCoreML); got != 1024 {
 		t.Errorf("pagedChunk(qwen3, 1024) = %d, want 1024", got)
+	}
+	if got := pagedChunk(m, 0, llm.BackendCoreAI); got != paged.DefaultChunk {
+		t.Errorf("pagedChunk(qwen3, 0) on Core AI = %d, want %d", got, paged.DefaultChunk)
 	}
 	if got := m.UnpagedContext(); got != 4096 {
 		t.Errorf("UnpagedContext %d, want 4096", got)

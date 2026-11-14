@@ -364,7 +364,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// beginning of the drafts does not run them again (llm.StateReplayer): another program,
 	// named -sr
 	stateRows := s.Draft > 1 && a.Param(llm.Options{}, "state-rows") != ""
-	chunk, context := pagedChunk(model, s.Paged), s.Context
+	chunk, context := pagedChunk(model, s.Paged, backend), s.Context
 	if context <= 0 {
 		context = DefaultContext
 		if pm, ok := model.(llm.Paged); ok && chunk > 0 && pm.MaxContext() > 0 {
@@ -723,13 +723,15 @@ func shortestChunk(backend string, want int) int {
 
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
 // none: the model must be Paged (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4), on any
-// NPU, and an Unpaged one (Qwen3) is split only when Setup.Paged asks.
-func pagedChunk(model llm.Model, want int) int {
+// NPU, and an Unpaged one (Qwen3) is split only when Setup.Paged asks, but with Core AI, where it
+// runs faster split (with the attention over shorter chunks, shortestChunk; docs/design.md
+// 16.187).
+func pagedChunk(model llm.Model, want int, backend string) int {
 	pm, ok := model.(llm.Paged)
 	if !ok || want < 0 || len(pm.PagedLayers()) == 0 {
 		return 0
 	}
-	if _, whole := model.(llm.Unpaged); whole && want == 0 {
+	if _, whole := model.(llm.Unpaged); whole && want == 0 && backend != llm.BackendCoreAI {
 		return 0 // split only when told (Qwen3)
 	}
 	return cmp.Or(want, paged.DefaultChunk)

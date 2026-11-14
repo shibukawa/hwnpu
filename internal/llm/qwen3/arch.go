@@ -108,7 +108,7 @@ func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 
 }
 
 // PagedLayers are all the layers: split at its attention (llm.Options.Paged), every layer's
-// attention runs on the host's cache in chunks. hwnpu-chat does it only when told (llm.Unpaged).
+// attention runs on the host's cache in chunks. hwnpu-chat does it only when told, or with Core AI (llm.Unpaged).
 func (c *Config) PagedLayers() []int {
 	out := make([]int, c.NumLayers)
 	for i := range out {
