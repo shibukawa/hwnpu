@@ -98,8 +98,8 @@ func (c *ConvertCmd) Run() error {
 			return err
 		}
 	} else if isDir(filepath.Join(c.Anima, "transformer")) {
-		if c.Backend != "" && c.Backend != llm.BackendCoreML && c.Backend != llm.BackendIntel {
-			return fmt.Errorf("Sana converts for coreml or intel (--backend %s)", c.Backend)
+		if c.Backend != "" && c.Backend != llm.BackendCoreML && c.Backend != llm.BackendCoreAI && c.Backend != llm.BackendIntel {
+			return fmt.Errorf("Sana converts for coreml, coreai or intel (--backend %s)", c.Backend)
 		}
 		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat, Backend: c.Backend}
 		if err := sana.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
@@ -204,7 +204,8 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		err = c.qwenImage(ctx, model, outs)
 	} else if sana.IsExport(model) {
 		err = runSana(ctx, sanaRun{model: model, prompts: c.Prompts, outs: outs, keepDiT: c.KeepDiT, negative: c.Negative, noise: c.Noise, latents: c.Latents,
-			steps: c.Steps, guidance: c.Guidance, cfgSigmas: c.CFGSigmas, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache})
+			steps: c.Steps, guidance: c.Guidance, cfgSigmas: c.CFGSigmas, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache,
+			size: c.Size})
 	} else if len(c.Prompts) > 1 {
 		err = errors.New("Anima takes one prompt")
 	} else {
@@ -221,10 +222,11 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 }
 
 // sanaModel is the Sana export m runs here: on Apple's Neural Engine (or with --cpu) the Core ML
-// export of --dir, on Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2
-// of tools/amd/iron_sana.py.
+// export of --dir (Core AI's with --backend coreai: 512 x 512 and 1024 x 1024 in one), on
+// Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU
+// ~/models/NAME.amd-npu2 of tools/amd/iron_sana.py.
 func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, error) {
-	format, err := llm.ProgramFormat(ctx, c.Backend)
+	format, err := llm.NativeFormat(ctx, c.Backend)
 	switch {
 	case c.CPU: // the CPU interpreter runs Core ML exports
 		format = llm.BackendCoreML

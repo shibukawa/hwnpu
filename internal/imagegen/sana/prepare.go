@@ -59,13 +59,26 @@ var Files = []File{
 // programs is in it.
 func ExportName(name string, o ConvertOptions) string {
 	o.defaults(name)
-	return fmt.Sprintf("%s-%dx%d-%s-%s-g%d-v%d.%s", strings.ToLower(name), o.Width, o.Height, o.TextFormat, o.DitFormat, o.Group, ExportVersion, exportSuffix(o.Backend))
+	var sizes []string
+	for _, s := range o.sizes() {
+		if s[0] == s[1] {
+			sizes = append(sizes, fmt.Sprint(s[0]))
+		} else {
+			sizes = append(sizes, fmt.Sprintf("%dx%d", s[0], s[1]))
+		}
+	}
+	size := strings.Join(sizes, "+")
+	if len(sizes) == 1 {
+		size = fmt.Sprintf("%dx%d", o.Width, o.Height)
+	}
+	return fmt.Sprintf("%s-%s-%s-%s-g%d-v%d.%s", strings.ToLower(name), size, o.TextFormat, o.DitFormat, o.Group, ExportVersion, exportSuffix(o.Backend))
 }
 
 // exportSuffix is the extension of an export's directory for a program format.
 func exportSuffix(backend string) string {
-	if backend == llm.BackendIntel {
-		return "intel"
+	switch backend {
+	case llm.BackendIntel, llm.BackendCoreAI:
+		return backend
 	}
 	return "coreml"
 }

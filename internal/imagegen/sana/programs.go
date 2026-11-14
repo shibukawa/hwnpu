@@ -38,6 +38,46 @@ type ProgramManifest struct {
 	Blocks    []string `json:"blocks"` // the DiT's groups of blocks, in order
 	Final     string   `json:"final"`
 	Vae       []string `json:"vae"` // the VAE's stages, in order
+	// Sizes, in an export of several sizes (Core AI's), are the parts of each that depend on the
+	// size (functions of the same programs); Dit, Blocks, Final and Vae are one of them.
+	Sizes []SizeParts `json:"sizes,omitempty"`
+}
+
+// SizeParts are the parts of an export for pictures of Width x Height.
+type SizeParts struct {
+	Width  int      `json:"width"`
+	Height int      `json:"height"`
+	Blocks []string `json:"blocks"`
+	Final  string   `json:"final"`
+	Vae    []string `json:"vae"`
+}
+
+// SizeList is what the export holds: Sizes, else Dit's size.
+func (m *ProgramManifest) SizeList() [][2]int {
+	if len(m.Sizes) == 0 {
+		return [][2]int{{m.Dit.W(), m.Dit.H()}}
+	}
+	var out [][2]int
+	for _, s := range m.Sizes {
+		out = append(out, [2]int{s.Width, s.Height})
+	}
+	return out
+}
+
+// At makes m the parts of its pictures of w x h (0 for the default), or fails when it holds none
+// of that size.
+func (m *ProgramManifest) At(w, h int) error {
+	if w == 0 || w == m.Dit.W() && h == m.Dit.H() {
+		return nil
+	}
+	for _, s := range m.Sizes {
+		if s.Width == w && s.Height == h {
+			m.Blocks, m.Final, m.Vae = s.Blocks, s.Final, s.Vae
+			m.Dit.Size, m.Dit.Width, m.Dit.Height = 0, w, h
+			return nil
+		}
+	}
+	return fmt.Errorf("sana: the export holds %v, not %dx%d", m.SizeList(), w, h)
 }
 
 // IsProgramExport reports whether dir holds an export of Convert.
@@ -84,13 +124,16 @@ type progEngine struct {
 	blks []runner.Program
 }
 
-func openPrograms(dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
+func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
 	m, err := ReadProgramManifest(dir)
 	if err != nil {
 		return nil, DitConfig{}, TextConfig{}, err
 	}
 	if m.Version != ExportVersion {
 		return nil, m.Dit, m.Text, fmt.Errorf("%s is of layout %d, this hwnpu reads %d: convert it again", dir, m.Version, ExportVersion)
+	}
+	if err := m.At(w, h); err != nil {
+		return nil, m.Dit, m.Text, err
 	}
 	return &progEngine{m: m, dir: dir, dev: dev, log: log}, m.Dit, m.Text, nil
 }
@@ -237,9 +280,14 @@ func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32, con
 	for k, cd := range conds {
 		xs[k], bias[k] = patches, cbias(cd.Rows)
 	}
+	// cd.ctx is the caption program's keys and values of every block (mil.Caption): a group
+	// takes its blocks'
+	per := len(conds[0].ctx) / e.m.Dit.Layers // a block's keys and values
+	G := e.m.Dit.Group
 	for i, b := range e.blks {
 		for k, cd := range conds {
-			if xs[k], err = b.Run(ctx, map[string][]float32{"x": xs[k], "t6": t6, "ctx": cd.ctx, "cbias": bias[k]}); err != nil {
+			kv := cd.ctx[i*G*per : (i+1)*G*per]
+			if xs[k], err = b.Run(ctx, map[string][]float32{"x": xs[k], "t6": t6, "kv": kv, "cbias": bias[k]}); err != nil {
 				return nil, fmt.Errorf("blocks group %d: %w", i, err)
 			}
 		}

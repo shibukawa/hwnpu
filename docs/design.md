@@ -5303,3 +5303,48 @@ Qwen3 は 28 層すべてが注意なので、分けると層ごとに Neural En
 - 段を越えるところ: Qwen3-0.6B でプロンプト 569 トークンから 700 トークン生成して 1024 を越えても、45.6 トークン/s で続き、答えは筋が通る (2 回とも同じ)。分けた形だけの答えとは 82 文字目から分かれる (fp16 の注意の丸めが違うので、サンプリングがそこで分かれる)
 - `TestMigrateToPaged` (CPU のインタプリタ) と `TestMigrateToPagedOnNeuralEngine` (Core AI): 小さな LFM3 をキャッシュ 16 の 1 本で 14 トークン進め、塊 32 の分けた形に移して 50 トークンまで。初めから分けたセッションとの相対誤差は CPU で 2e-2 以内、Neural Engine で最大 0.0059
 - `TestWholeTiers`: Qwen3-0.6B は 1024、重み 2 GiB のモデルは段なし
+
+### 16.189 Sana (600M と SANA 1.5 1.6B) を Core AI で: 512² と 1024² を 1 つの書き出しに、交差注意のキーと値をプロンプトごとに 1 回 — 2026-11-14
+
+`hwnpu-image generate -m sana --backend coreai` (または `HWNPU_BACKEND=coreai`)。Qwen-Image、Chroma、Anima (16.180) と同じく、Sana も Core AI の形式 (`coreai`) にチェックポイントから直接書き出す。画像のモデルで残っていたのが Sana の 2 つで、new-model-checklist の手当てを初めから入れた。M1 (16 GB、macOS 27.2.1、26B131)、狐のプロンプト ("a red fox sitting in a snowy forest, photograph")、種 1。
+
+**1 つの書き出しに 512² と 1024²** (`ConvertOptions.Sizes`、`DefaultSizes`、`SizeFunction`): 大きさで形が変わる部品 (DiT の組 7 本 (1.6B は 5 本)、最後の層、VAE の 13 段) は、どれも 1 本の `.aimodel` に関数 `s512x512` と `s1024x1024` を持つ (`llm.WriteAIFunctions`: 同じバイトの重みは 1 回だけ)。大きさによらない部品 (Gemma 2 の 5 本、caption) は関数 1 つ。manifest の `sizes` に大きさごとの部品の名前を持ち、`sana.OpenAt` (`ProgramManifest.At`) が `--size` の分を選ぶ。書き出しの名前は `sana-600m-512+1024-int8-int8-g4-v5.coreai`。`--size` がほかの大きさなら、その大きさだけの書き出しを作る。16.177 の自動のまとめ (Core ML の書き出しを下ろすときに隣のフォルダから兄弟を探す) と違い、書き出しそのものが配る形 (16.174) になる。
+
+- 大きさ: 600M の書き出しは 4.0 GB (Core ML の 1024² だけの v4 は 3.9 GB)。DiT の組は 1 本 71 MB で、関数 2 つでも 1 つ分。1.6B は 5.2 GB (Gemma 2 は 600M の書き出しからハードリンク)
+- 初回は 1024² を描いた回に両方の関数をコンパイルするので、続く 512² はコンパイルなしで 1 枚 **7.0 秒**
+- Core AI は `.aimodel` の関数を全部一緒にコンパイルし、1 つが Neural Engine のコンパイラーで失敗するとほかの関数も GPU に回る (16.184 と同じ)。下の VAE の 1 段目がそれで、1024² の関数のせいで 512² の関数も外れた。調べるときは大きさごとの Core ML の書き出し (`hwnpu-image convert --backend coreml --size N`) の同じ段を `aicheck run` で 1 つずつ見る
+
+**交差注意のキーと値をプロンプトごとに 1 回** (new-model-checklist 7.1、7.2 の Sana の ✗): 交差注意の K と V は caption (プロンプト) だけで決まり、ステップによらない。caption のプログラム (`mil.Caption`) が caption の射影と正規化に続けて、全部のブロックの `to_k` と `to_v` (と 1.6B の `norm_k`、600M の先頭の鍵を引く手当て 16.119) を計算し、`(1, 2 × 層, 300, 交差の隠れ)` で返す。DiT の組 (`mil.Blocks`) は自分のブロックの分を入力 `kv` で受け取る (ホストが切り出す)。空の否定プロンプトは条件つきと同じ K と V で、マスク (`cbias`) だけが違う。
+- ステップの間に Neural Engine が持つ DiT の重み (ファイルの大きさ) が 600M で 555 → 497 MiB、1.6B で約 1.49 → 1.30 GiB (前の値は K と V の射影 0.19 GiB を足した見積もり)。caption のプログラム (600M 150 MB、1.6B 403 MB) はステップの前に閉じる
+- caption のプログラムは 1 プロンプトに 1 回しか走らず、ステップの間は持たないので、K と V の射影は fp16 (`CaptionFormat`、new-model-checklist 5.2 の「1 回のパスは形式を上げても只」)。DiT の int8 / lut8 で計算していた前より参照に近づく (下)
+- 出力は 600M で 56 × 300 × 1152 (約 39 MB)。1 つの軸に並べると 16800 で、16384 を超えて CPU に回る (16.149) ので、層を軸 1 に置く
+- 書き出しの版は 5 (`ExportVersion`)。Core ML と Intel の書き出しも同じグラフで、作り直しになる (Intel は確かめていない)
+
+**VAE の 1 段目が Core AI で Neural Engine に載らない**: 1024² の `vae_s0` (潜在 32 × 32、1024 チャンネル) の読み込みで、Neural Engine のコンパイラーが `Compiler internal error: Internal error: empty reset layer candidates in SS cost model` を出し、プログラムは GPU に回った (配置を厳しく見るので失敗)。同じパッケージを Core ML で動かすと載る。512² (16 × 16) の同じ段は Core AI でも載る。
+- `HWNPU_AILOWER_CUT` の二分探索で、最初の EfficientViT ブロックの q/k/v の 1 × 1 の畳み込み (1024 → 3072) を足したところで外れた。`aicheck probe` で小さく再現した (`vae_in_qkv_32`): `conv_in` (3 × 3、32 → 1024) と、潜在の 32 チャンネルを 32 回ずつ繰り返す近道 (`tile`) の和に q/k/v の畳み込みが続くと外れる。どれか 2 つだけ (`vae_in_32`、`tile_qkv_32`)、16 × 16 (`vae_in_qkv_16`)、q/k/v の畳み込みだけ (`conv1x1_1024_3072_32` ほか 6 つ) は載る
+- **繰り返しを 0 と 1 の重みの 1 × 1 の畳み込みに** (`mil.repeatChannels`): fp16 で厳密に同じ値。`vae_in_onehot_qkv_32` が載り、書き出しの 26 の関数 (13 段 × 2) がどれも Neural Engine で動き、milcpu とのコサインは 0.99999 以上 (`aicheck run -cpu`)
+- VAE の初回のコンパイルは長い。1024² の `vae_s1` (1024 → 512 の拡大と EfficientViT、128 × 128) が 17 分 (Core ML では 2 分 50 秒)、VAE 全体で 21 分。2 回目からは 1 段 0.005〜0.02 秒で読める
+
+**全部 Neural Engine に**: Gemma 2 の 5 本、caption、DiT の組、最後の層、VAE の 13 段が、どちらのモデルのどちらの大きさでも `all on the NPU`。Gemma 2 の行ごとの int8 も Core AI で問題がなかった。
+
+**絵** (600M、1024²): 同じ種の Core ML (main の v4 の書き出し) との最後の潜在のコサインは 0.984 (PSNR 23.7 dB)。同じ構図、同じ狐と木で、前足の形が少し違う。分けると、
+- v5 の Core ML と v5 の Core AI: **0.9976** (29.8 dB)。Chroma の 16.176 (0.9976) と同じほどの、Core AI と Core ML の差
+- v4 と v5 の Core ML: 0.9896。K と V の射影を int8 から fp16 にした分
+- 3 プロンプト (老いた漁師の肖像、雨の夜の街、日の出の山の湖) × 種 1、2 の 1024²: v5 の Core AI と v5 の Core ML は **0.99991〜1.00000** (PSNR 41.8〜52.0 dB)、v4 と v5 の Core ML は 0.9949〜0.99994 (27.7〜43.7 dB)。1 枚は Core AI 17 秒、Core ML 19 秒
+- 参照に近いかを、全部の重みを fp16 にした書き出しを CPU のインタプリタ (float32、`--cpu`) で動かしたものと 512² で比べた。同じ 6 枚で Core AI は 0.949〜0.9996 (21.3〜34.9 dB)、v5 の Core ML は 0.949〜0.9996 (21.4〜35.0 dB) で同じほど (2 つの間は 0.9998〜1.0000)。いちばん低い漁師の種 2 は、同じ人と構図で帽子をかぶる。Core ML も同じなので、Core AI ではなく DiT と Gemma 2 の 8 ビットの重みの差 (16.160 の fp16 の DiT との 0.964〜0.9997 と同じほど)
+- 狐は崩れやすいプロンプトで、512² の Core AI と Core ML は 0.976 まで離れた (参照とは Core AI 0.972、Core ML 0.9946、v4 の Core ML 0.964)。各ステップの DiT の出力 (`--dump`) は 2 つで 0.1 % まで同じ (1 ステップ目と 2 ステップ目のコサイン 1.00000)、Gemma 2 の行も同じ (1.00000)。caption の出力の差 (0.9985) は数えない行 (マスクされる詰め物) にある。違う部品は無く、CFG 4.5 の 20 ステップで小さな差が広がったとみる
+
+**速さ** (M1、2 回目から、Core AI のキャッシュに当たる新しいプロセス、2 回ずつ同じ値)
+
+| | 512² | 1024² | Core ML の 1024² (16.160) |
+|---|---|---|---|
+| Sana 600M | **6.1〜7.1 秒** | **16 秒** | 17 秒 |
+| SANA 1.5 1.6B | **9.4〜9.7 秒** | **28 秒** | 31 秒 |
+
+- 読み込みと準備は 1.1〜2.1 秒 (部品 1 本 0.005〜0.035 秒)。Gemma 2 は 1.2〜1.3 秒
+- 1024² の 1 ステップ: 600M は CFG あり 0.63 秒、なし 0.31 秒 (Core ML の v4 は 0.64 秒と 0.32 秒)。1.6B は 1.37 秒と 0.69 秒 (Core ML の 16.160 は 1.43 秒と 0.72 秒)
+- 初回 (変換とコンパイル込み): 600M の 1024² は 21 分 30 秒 (Gemma 2 1 本 11〜14 秒、DiT の組 1 本 32 秒、VAE 21 分)。1.6B の 1024² は 30 分 (DiT の組 1 本 1 分 45 秒。Gemma 2 と VAE の前半はキャッシュに当たった)。変換は 12〜20 秒
+
+**コマンド**: `hwnpu-image generate -m sana --backend coreai [--size 512]`。`hwnpu-image convert --backend coreai` も Sana を受ける (前は coreml と intel だけ)。`runSana` は書き出しの形式でデバイスを開く (`llm.ExportDevice`)。`--cpu` はこれまでどおり Core ML の書き出しを CPU のインタプリタで。
+
+残り: Neural Engine が持つ量 (`mem.NPUWired`) と footprint の測り直し (重みのバイトだけ見た)。M2 と M3 での確かめ。SANA 1.5 の 3 プロンプト × 2 種。Intel の v5 の書き出し。

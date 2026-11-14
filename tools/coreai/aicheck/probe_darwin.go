@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -81,6 +82,32 @@ var probes = map[string]func(g *milpart.Graph){
 		a, b := g.Slice(x, -1, 0, 256), g.Slice(x, -1, 256, 512)
 		g.Output(g.Concat(-1, b, a))
 	},
+	// Sana's VAE (design.md 16.189): the first stage at 1024 x 1024 falls off the Neural Engine
+	// from its first EfficientViT block's q/k/v convolution (1024 -> 3072 at 32 x 32)
+	"conv1x1_1024_3072_32": convProbe(1024, 3072, 32, 1, false),
+	"conv1x1_1024_3072_16": convProbe(1024, 3072, 16, 1, false),
+	"conv1x1_1024_1024_32": convProbe(1024, 1024, 32, 1, false),
+	"conv1x1_1024_2048_32": convProbe(1024, 2048, 32, 1, false),
+	"conv1x1_512_3072_32":  convProbe(512, 3072, 32, 1, false),
+	"conv1x1_1024_3072_48": convProbe(1024, 3072, 48, 1, false),
+	"conv3x3_32_1024_then_qkv_32": func(g *milpart.Graph) {
+		z := g.Input("x", 1, 32, 32, 32)
+		y := g.Conv2D(z, "a", randW(1024*32*9, 32*9), make([]float32, 1024), 1024, 3, 1)
+		g.Output(g.Conv2D(y, "b", randW(3072*1024, 1024), nil, 3072, 1, 1))
+	},
+	"vae_in_qkv_32": vaeInProbe(32, true, true),
+	"vae_in_32":     vaeInProbe(32, true, false),
+	"vae_in_qkv_16": vaeInProbe(16, true, true),
+	"tile_qkv_32":   vaeInProbe(32, false, true),
+	"vae_in_onehot_qkv_32": func(g *milpart.Graph) {
+		z := g.Scale(g.Input("x", 1, 32, 32, 32), 2)
+		e := make([]float32, 1024*32)
+		for c := 0; c < 1024; c++ {
+			e[c*32+c/32] = 1
+		}
+		y := g.Add(g.Conv2D(z, "a", randW(1024*32*9, 32*9), make([]float32, 1024), 1024, 3, 1), g.Conv2D(z, "e", e, nil, 1024, 1, 1))
+		g.Output(g.Conv2D(y, "b", randW(3072*1024, 1024), nil, 3072, 1, 1))
+	},
 	"transpose": func(g *milpart.Graph) {
 		x := g.Input("x", 1, 256, 8, 64)
 		g.Output(g.Transpose(x, 0, 2, 1, 3))
@@ -129,6 +156,47 @@ func conv3(c, hw int, tail string) func(g *milpart.Graph) {
 		}
 		g.Output(y)
 	}
+}
+
+// convProbe is a k x k convolution of cin to cout channels over an n x n input.
+func convProbe(cin, cout, n, k int, bias bool) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		x := g.Input("x", 1, cin, n, n)
+		var b []float32
+		if bias {
+			b = make([]float32, cout)
+		}
+		g.Output(g.Conv2D(x, "w", randW(cout*cin*k*k, cin*k*k), b, cout, k, 1))
+	}
+}
+
+// vaeInProbe is Sana's VAE conv_in over latents of n x n with (conv) and its shortcut of the 32
+// channels each repeated 32 times (tile), then (qkv) the first EfficientViT block's q/k/v
+// convolution, 1024 -> 3072.
+func vaeInProbe(n int, conv, qkv bool) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		z := g.Scale(g.Input("x", 1, 32, n, n), 2)
+		t := g.Reshape(z, 1, 32, 1, n*n)
+		t = g.Op("tile", map[string]any{"x": t, "reps": g.B.Ints(1, 1, 32, 1)}, 1, 32, 32, n*n)
+		y := g.Reshape(t, 1, 1024, n, n)
+		if conv {
+			y = g.Add(g.Conv2D(z, "a", randW(1024*32*9, 32*9), make([]float32, 1024), 1024, 3, 1), y)
+		}
+		if qkv {
+			y = g.Conv2D(y, "b", randW(3072*1024, 1024), nil, 3072, 1, 1)
+		}
+		g.Output(y)
+	}
+}
+
+// randW is n Gaussian weights for a fan-in of fan.
+func randW(n, fan int) []float32 {
+	w := make([]float32, n)
+	s := 1 / math.Sqrt(float64(fan))
+	for i := range w {
+		w[i] = float32(rand.NormFloat64() * s)
+	}
+	return w
 }
 
 // int8Linear is a linear of an int8 weight (out x in) with a scale per block of colBlock columns
