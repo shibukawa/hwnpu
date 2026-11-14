@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/whisper"
 )
@@ -30,8 +31,8 @@ type Setup struct {
 	// Intel's NPU, which reads no lookup tables).
 	Format string
 	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, what
-	// the CPU interpreter runs), Core AI's programs (coreai, kept in Dir/coreai) or OpenVINO IR
-	// for Intel's NPU, kept in Dir/intel.
+	// the CPU interpreter runs), Core AI's programs (coreai, the three in one export
+	// whisper-….coreai, llm.CoreAIExport) or OpenVINO IR for Intel's NPU, kept in Dir/intel.
 	Backend string
 	Log     io.Writer
 }
@@ -69,21 +70,60 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	checkpoint := sync.OnceValues(func() (string, error) {
 		return filepath.Join(s.Dir, "model.safetensors"), chat.FetchWeights(ctx, s.Repo, s.Dir, log)
 	})
-	for _, p := range []struct {
+	progs := []struct {
+		role string // its name in the Core AI export
 		arch *llm.Arch
 		opts llm.Options
 		path *string
 	}{
-		{whisper.EncoderArch, llm.Options{}, &c.Encoder},
-		{whisper.CrossArch, llm.Options{}, &c.Cross},
-		{whisper.Arch, llm.Options{Seq: 1, Cache: wc.TargetPositions}, &c.Decoder},
-	} {
+		{"encoder", whisper.EncoderArch, llm.Options{}, &c.Encoder},
+		{"cross", whisper.CrossArch, llm.Options{}, &c.Cross},
+		{"decoder", whisper.Arch, llm.Options{Seq: 1, Cache: wc.TargetPositions}, &c.Decoder},
+	}
+	if s.Backend == llm.BackendCoreAI {
+		// one export of the three, written side by side (as every model's Core AI programs)
+		format := cmp.Or(s.Format, whisper.Arch.Format)
+		export, done := llm.CoreAIExport(s.Dir, fmt.Sprintf("whisper-r%d.%d.%d-%s-c%d", whisper.EncoderArch.Revision,
+			whisper.CrossArch.Revision, whisper.Arch.Revision, format, wc.TargetPositions))
+		if !llm.FetchExport(ctx, export, done) {
+			weights, err := checkpoint()
+			if err != nil {
+				return Config{}, err
+			}
+			if err := llm.StartExport(export); err != nil {
+				return Config{}, err
+			}
+			fmt.Fprintf(log, "converting %s for the Neural Engine (Core AI, %s); this takes a minute\n", filepath.Base(export), format)
+			jobs := console.NewJobs(log)
+			for _, p := range progs {
+				f := cmp.Or(s.Format, p.arch.Format)
+				p.opts.Backend = s.Backend
+				jobs.Add(p.role, func() (string, error) {
+					_, err := convert(config, weights, filepath.Join(export, p.role+".aimodel"), p.arch, f, p.opts, io.Discard)
+					return f, err
+				})
+			}
+			// a job holds its program's weights (up to the target's limit) and the tensors it reads
+			if err := jobs.Run(4 << 30); err != nil {
+				return Config{}, err
+			}
+			if err := llm.FinishExport(export, done, filepath.Join(s.Dir, llm.BackendCoreAI)); err != nil {
+				return Config{}, err
+			}
+			llm.ShareExport(ctx, export)
+		}
+		for _, p := range progs {
+			*p.path = exportProgram(export, p.role)
+		}
+	}
+	for _, p := range progs {
+		if s.Backend == llm.BackendCoreAI {
+			break
+		}
 		format := cmp.Or(s.Format, p.arch.Format)
 		dir, ext := s.Dir, llm.ProgramExt(s.Backend)
-		if intel || s.Backend == llm.BackendCoreAI {
-			if intel {
-				format = llm.IntelFormat(format)
-			}
+		if intel {
+			format = llm.IntelFormat(format)
 			dir = filepath.Join(s.Dir, s.Backend)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return Config{}, err
@@ -118,12 +158,26 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if c.Weights, err = chat.Tables(filepath.Join(s.Dir, chat.TablesFile), whisper.Arch, llm.HostTables(dec), checkpoint, log); err != nil {
+	if c.Weights, err = chat.Tables(ctx, filepath.Join(s.Dir, chat.TablesFile), whisper.Arch, llm.HostTables(dec), checkpoint, log); err != nil {
 		return Config{}, err
 	}
 	// a conversion reads the checkpoint into memory: give it back now
 	debug.FreeOSMemory()
 	return c, nil
+}
+
+// exportProgram is the program role of a Core AI export: role.aimodel, or role.parts.json when it
+// was split under the Neural Engine's limit (llm.Convert).
+func exportProgram(export, role string) string {
+	if p := filepath.Join(export, role+".parts.json"); fileExists(p) {
+		return p
+	}
+	return filepath.Join(export, role+".aimodel")
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 // convert writes one program with the converter's defaults (hwnpu-dev convert's), the lookup tables

@@ -34,8 +34,8 @@
 // to 30 seconds of 48 kHz mono from an English or Chinese description (sfx.go).
 //
 // On a Mac hwnpu-audio runs on Apple's Neural Engine through Core AI (macOS 27) alone: each
-// model is converted for Core AI (.aimodel, in the model's coreai/) and kept compiled in Core AI's
-// own cache. Core ML is not used on the Neural Engine; --cpu runs Core ML exports with the CPU
+// model is converted for Core AI (exports NAME.coreai beside the checkpoint, as hwnpu-chat's and
+// hwnpu-image's, llm.CoreAIExport) and kept compiled in Core AI's own cache. Core ML is not used on the Neural Engine; --cpu runs Core ML exports with the CPU
 // interpreter, as do pitch and notes on the CPU without ONNX Runtime.
 //
 // tts (TTSCmd), transcribe (TranscribeCmd), pitch (PitchCmd) and notes (NotesCmd) are described

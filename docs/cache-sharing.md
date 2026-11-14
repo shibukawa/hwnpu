@@ -11,6 +11,7 @@
 - エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具の hash)。版 (`version`、5 節の lock) はまだない
 - hwnpu-image detect、pose、segment が初回に作る AMD の書き出しも層に (鍵は定義の sha256、道具の hash、Go の側の手で上げる版: `chat.PinnedRecipe`)
 - `hwnpu-dev cache layers|ls|push|verify|flush|gc`。`gc` は層のエントリを選んで消し、それだけが名指していた blob も消す (`--orphans` で誰も名指さない blob も、`--apply` で実際に)。途中で止まった S3 のマルチパートは、バケットのライフサイクルの規則で中止させる
+- Core AI の書き出し (2026-11-14、design.md 16.199): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
 - 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)
 
 ## 1. 目的
@@ -346,7 +347,7 @@ any/v1/...        表など対象によらないもの
 
 ## 10. Apple (白紙)
 
-Apple の機械が使えるようになるまで、Apple の配布の形は決めない。`targets` に `apple` の行は書かない。
+Apple の機械が使えるようになるまで、Apple の配布の形は決めない。`targets` に `apple` の行は書かない。チームの層 (NAS、S3) での共有だけは先に入れた (16.199): Core AI の書き出しは `target: coreai` で、どの Mac も同じものを読む (端末で専用化したものは Core AI 自身のキャッシュに残る)。
 
 - 今の Core ML の形: 配れるのは `.mlpackage` まで。`.mlmodelc` は OS の版ごと (`host`)、Neural Engine のコンパイル (e5 バンドル) は機械ごとで、初回の重さ (Gemma 4 で 100 秒級) が残る
 - Core AI の方が事前にビルドしたものを配れる見込みがあり、そうなら Apple でも初回のコンパイルをなくせる。確かめること: 何を事前にビルドできるか、それがチップの世代と OS の版のどちらに縛られるか、Neural Engine への配置を確かめられるか

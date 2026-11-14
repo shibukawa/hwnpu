@@ -119,7 +119,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			names, ps, base = append(names, name), append(ps, p.p), base+"-"+name
 		}
 		weights := ""
-		if !chat.Converted(base + ".coreai") {
+		if !chat.Converted(ctx, base + ".coreai") {
 			if weights, err = checkpoint(); err != nil {
 				return Config{}, err
 			}
@@ -135,7 +135,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			return Config{}, err
 		}
 		weights := ""
-		if !chat.Converted(out) {
+		if !chat.Converted(ctx, out) {
 			if weights, err = p.weights(); err != nil {
 				return Config{}, err
 			}
@@ -154,7 +154,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	slices.Sort(names)
 	names = slices.Compact(names)
-	if c.Weights, err = chat.Tables(filepath.Join(s.Dir, TablesFile), lfm3.Arch, names, checkpoint, log); err != nil {
+	if c.Weights, err = chat.Tables(ctx, filepath.Join(s.Dir, TablesFile), lfm3.Arch, names, checkpoint, log); err != nil {
 		return Config{}, err
 	}
 	// a conversion reads the checkpoint into memory: give it back now

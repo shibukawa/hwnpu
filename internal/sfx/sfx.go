@@ -89,8 +89,9 @@ type Setup struct {
 	TextFormat string // fp16 or lut8 (Formats by default)
 	DitFormat  string // lut8 or fp16
 	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, what
-	// the CPU interpreter runs), Core AI's programs (coreai, kept in Dir/coreai) or OpenVINO IR
-	// for Intel's NPU, kept in Dir/intel, whose lut8 is int8 (llm.IntelFormat).
+	// the CPU interpreter runs), Core AI's programs (coreai, in three exports NAME.coreai,
+	// llm.CoreAIExport) or OpenVINO IR for Intel's NPU, kept in Dir/intel, whose lut8 is int8
+	// (llm.IntelFormat).
 	Backend string
 	Log     io.Writer
 }
@@ -136,14 +137,33 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		return p, err
 	}
 	p.TextCfg = cfg
+	coreai := s.Backend == llm.BackendCoreAI
 	dir, ext := s.Dir, llm.ProgramExt(s.Backend)
-	if intel || s.Backend == llm.BackendCoreAI {
+	if intel {
 		dir = filepath.Join(s.Dir, s.Backend)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return p, err
 		}
 	}
+	// Core AI: three exports (llm.CoreAIExport), what is converted again apart: the text
+	// encoder's parts (hwnpu-text-rREV-FORMAT.coreai), the DiT's (hwnpu-dit-…) and the
+	// decoder's stages (hwnpu-dac-rDACREV-fp16.coreai), each program KIND.aimodel in its export.
+	// Core ML and Intel: a program each, hwnpu-KIND-rREV-FORMAT.EXT with its .done
+	exportOf := func(kind string) (string, string) {
+		part, rev, format := "text", Revision, text
+		switch {
+		case strings.HasPrefix(kind, "dac-"):
+			part, rev, format = "dac", DACRevision, "fp16"
+		case strings.HasPrefix(kind, "dit-"):
+			part, format = "dit", dit
+		}
+		return llm.CoreAIExport(s.Dir, fmt.Sprintf("hwnpu-%s-r%d-%s", part, rev, format))
+	}
 	name := func(kind, format string) string {
+		if coreai {
+			export, _ := exportOf(kind)
+			return filepath.Join(export, kind+ext)
+		}
 		rev := Revision
 		if strings.HasPrefix(kind, "dac-") {
 			rev = DACRevision
@@ -166,6 +186,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		part         llm.Model
 		w            func() (*Weights, error)
 		opts         llm.Options
+		kind         string
 	}
 	var tw, dw, vw *Weights
 	defer func() {
@@ -192,44 +213,76 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	for i, n := range TextSplit(text) {
 		o := TextOptions(text)
 		o.Seq, o.Start, o.Layers, o.NoHead = PromptRows, start, n, true
-		jobs = append(jobs, job{p.Text[i], text, cfg, textW, o})
+		jobs = append(jobs, job{p.Text[i], text, cfg, textW, o, fmt.Sprintf("text-%d", i)})
 		start += n
 	}
-	jobs = append(jobs, job{p.Context, "fp16", Context(), ditW, llm.Options{}})
+	jobs = append(jobs, job{p.Context, "fp16", Context(), ditW, llm.Options{}, "dit-context"})
 	for i, first := 0, 0; first < DitLayers; i, first = i+1, first+DitGroup {
-		jobs = append(jobs, job{p.Blocks[i], dit, Blocks(first, DitGroup), ditW, llm.Options{}})
+		jobs = append(jobs, job{p.Blocks[i], dit, Blocks(first, DitGroup), ditW, llm.Options{}, fmt.Sprintf("dit-blocks-%d", first)})
 	}
 	for i, st := range DACStages() {
-		jobs = append(jobs, job{p.Stages[i], "fp16", st.Part(), vaeW, llm.Options{}})
+		jobs = append(jobs, job{p.Stages[i], "fp16", st.Part(), vaeW, llm.Options{}, fmt.Sprintf("dac-%d", st.Index)})
 	}
-	todo := 0
+	// what is missing: Core AI's exports not whole, the other programs without their .done
+	pending := map[string]string{} // the Core AI exports to write, and their marks
+	var todo []job
 	for _, j := range jobs {
-		if _, err := os.Stat(j.path + ".done"); err != nil {
-			todo++
-		}
-	}
-	done := 0
-	for _, j := range jobs {
-		if _, err := os.Stat(j.path + ".done"); err == nil {
+		if coreai {
+			export, done := exportOf(j.kind)
+			// here, or from the shared layers (looked for once an export)
+			if _, ok := pending[export]; ok {
+				todo = append(todo, j)
+				continue
+			}
+			if llm.FetchExport(ctx, export, done) {
+				continue
+			}
+			pending[export] = done
+		} else if _, err := os.Stat(j.path + ".done"); err == nil {
 			continue
 		}
-		done++
+		todo = append(todo, j)
+	}
+	if len(todo) == 0 {
+		return p, nil
+	}
+	for export := range pending {
+		if err := llm.StartExport(export); err != nil {
+			return p, err
+		}
+	}
+	// written side by side (console.Jobs), the weights opened first: the jobs share them
+	q := console.NewJobs(log)
+	for _, j := range todo {
 		w, err := j.w()
 		if err != nil {
 			return p, err
 		}
-		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] converting %s", done, todo, filepath.Base(j.path)))
-		os.RemoveAll(j.path)
-		opts := j.opts
-		opts.Backend, opts.Format = cmp.Or(s.Backend, llm.BackendCoreML), j.format
-		if _, err := llm.WritePart(j.path, j.part, w, opts, nil); err != nil {
-			bar.Done("failed")
+		if !coreai {
+			os.RemoveAll(j.path)
+		}
+		q.Add(filepath.Base(j.path), func() (string, error) {
+			opts := j.opts
+			opts.Backend, opts.Format = cmp.Or(s.Backend, llm.BackendCoreML), j.format
+			if _, err := llm.WritePart(j.path, j.part, w, opts, nil); err != nil {
+				return "", err
+			}
+			if !coreai {
+				return j.format, os.WriteFile(j.path+".done", nil, 0o644)
+			}
+			return j.format, nil
+		})
+	}
+	// a job holds its program's weights up to ailower.SpillKeep and the tensors it reads (the
+	// text encoder's layers, a group of the DiT's blocks)
+	if err := q.Run(2 << 30); err != nil {
+		return p, err
+	}
+	for export, done := range pending {
+		if err := llm.FinishExport(export, done, filepath.Join(s.Dir, llm.BackendCoreAI)); err != nil {
 			return p, err
 		}
-		bar.Done(console.Duration(bar.Elapsed()) + ", " + j.format)
-		if err := os.WriteFile(j.path+".done", nil, 0o644); err != nil {
-			return p, err
-		}
+		llm.ShareExport(ctx, export)
 	}
 	return p, nil
 }
@@ -423,6 +476,9 @@ func channels(x []float32, n, c int) []float32 {
 // String names the formats of the paths, for the log.
 func (p Paths) String() string {
 	f := func(path string) string {
+		if d := filepath.Dir(path); filepath.Ext(d) == ".coreai" {
+			path = d // Core AI: the export's name holds the format (hwnpu-text-r1-fp16.coreai)
+		}
 		b := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		return b[strings.LastIndex(b, "-")+1:]
 	}

@@ -41,18 +41,21 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
 	}
-	ext := llm.ProgramExt(s.Backend) // .aimodel, .mlpackage or .xml
-	program = filepath.Join(s.Dir, fmt.Sprintf("%s-r%d-fp16-t%d%s", Arch, Revision, ProgramFrames, ext))
-	done := program + ".done"
-	if _, err := os.Stat(done); err == nil {
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	name := fmt.Sprintf("%s-r%d-fp16-t%d", Arch, Revision, ProgramFrames)
+	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
+	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
 		return model, program, nil
 	}
 	m, err := Load(model)
 	if err != nil {
 		return "", "", err
 	}
-	bar := console.NewBar(log, "converting "+filepath.Base(program))
-	os.RemoveAll(program)
+	bar := console.NewBar(log, "converting "+name)
+	if err := llm.StartProgram(program, export); err != nil {
+		bar.Done("failed")
+		return "", "", err
+	}
 	_, err = llm.WritePart(program, &Program{Frames: ProgramFrames}, m.Weights(), llm.Options{Format: "fp16", Backend: s.Backend}, func(p *mlpackage.Package) {
 		p.Description = fmt.Sprintf("SwiftF0's CNN (swift-f0 0.3.0), %d frames a call, fp16 (hwnpu)", ProgramFrames)
 		p.Metadata[llm.MetaArch] = Arch
@@ -62,7 +65,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	bar.Done(console.Duration(bar.Elapsed()))
-	return model, program, os.WriteFile(done, nil, 0o644)
+	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
 }
 
 // Fetch downloads model.onnx into s.Dir unless it is there, checks that it is swift-f0 0.3.0's

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -74,12 +73,15 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	if err := r.close(); err != nil {
 		return err
 	}
-	ext := llm.ProgramExt(r.backend) // .aimodel, .mlpackage or .xml
-	path := filepath.Join(r.dir, fmt.Sprintf("yunet-r%d-fp16-%dx%d%s", ProgramRevision, W, H, ext))
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	name := fmt.Sprintf("yunet-r%d-fp16-%dx%d", ProgramRevision, W, H)
+	path, done, export := llm.ProgramPath(r.dir, name, r.backend)
 	p := r.program(W, H)
-	if _, err := os.Stat(path + ".done"); err != nil {
-		os.RemoveAll(path)
+	if !llm.ProgramReady(ctx, r.dir, name, done, export) {
 		if err := os.MkdirAll(r.dir, 0o755); err != nil {
+			return err
+		}
+		if err := llm.StartProgram(path, export); err != nil {
 			return err
 		}
 		_, err := llm.WritePart(path, p, nil, llm.Options{Format: "fp16", Backend: r.backend}, func(pkg *mlpackage.Package) {
@@ -88,7 +90,7 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 		if err != nil {
 			return fmt.Errorf("face: %w", err)
 		}
-		if err := os.WriteFile(path+".done", nil, 0o644); err != nil {
+		if err := llm.FinishProgram(ctx, r.dir, name, done, export); err != nil {
 			return err
 		}
 	} else {
@@ -106,7 +108,7 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	// OpenVINO's CPU plugin (the Intel path checked without Intel's NPU) is not the NPU
 	if r.dev != nil && !prog.OnNPU() && r.dev.Info().Backend != "openvino" {
 		prog.Close()
-		return fmt.Errorf("face: %s does not run on the NPU alone", filepath.Base(path))
+		return fmt.Errorf("face: %s does not run on the NPU alone", name)
 	}
 	r.p, r.prog, r.w, r.h = p, prog, W, H
 	return nil

@@ -5592,3 +5592,66 @@ macOS のアクティビティモニタも Linux のいつもの道具も NPU �
 - 見つけ方の教訓: 参照の計算の精度 (fp32 か fp16 の丸めか) を決めてから比べる。小さなプログラムで再現できたら、同じ値の別の書き方 (高さ方向、行に並べる) を試す。チャンネルを分ける、明示の pad のような「形を変えるだけ」の書き換えは効かなかった (new-model-checklist 3.5)
 
 残り: 16 GB の既定 (文の符号器 fp16) の `moss-soundeffect:v2.0` は試していない (ディスクの空きが 10 GB で、fp16 の書き出しとそのキャッシュが入らない)。M1 で。人の耳での聞き比べ。
+
+### 16.198 Core AI の書き出しの置き場所をどのコマンドも `NAME.coreai` に揃える、音声のモデルの変換も並べて — 2026-11-14
+
+hwnpu-chat、hwnpu-image、hwnpu-audio が Mac では Core AI だけになった (16.190、16.191、16.196) が、書き出しの置き場所はコマンドごとに違っていた。
+
+| | 前 | 今 |
+|---|---|---|
+| hwnpu-chat、tts、systemone、画像の生成、depth、MoGe-2、SigLIP 2 | `NAME.coreai/` と `NAME.coreai.done` | 同じ |
+| music、sfx、transcribe | モデルのディレクトリの `coreai/` に `.aimodel` を 1 本ずつ、それぞれの `.done` | 別々に変換し直す単位ごとの `NAME.coreai/` |
+| pitch、notes、detect、pose、ocr、face-detect、segment | モデルのディレクトリに `NAME.aimodel` と `NAME.aimodel.done` | `NAME.coreai/model.aimodel` |
+
+**決まり** (`internal/llm/export.go`): Core AI のプログラムはモデルのディレクトリのチェックポイントの横の書き出し `NAME.coreai` (`.aimodel` と要るものを入れたディレクトリ) に置き、できあがったら横に `NAME.coreai.done` (`cache.WriteDone`、書き出しへの相対パス) を書く。書き出しは一度に変換する単位で、途中で切れたものは空にして書き直す (`StartExport`、`FinishExport`)。1 本だけのモデルは `ProgramPath` (`NAME.coreai/model.aimodel`)。Core ML (`--cpu` が読む) と Intel の OpenVINO IR の置き場所は変えない。前の hwnpu の空の `.done` もできている印として読む (`ExportDone`)。
+
+**書き出しの分け方**: 版や形式が別々に変わり、別々に変換し直すものは別の書き出し。
+- music: 言語モデル `mrt2-small-rREV-FORMAT.coreai` (temporal、depth)、`mrt2-spectrostream-decoder-…` と `-encoder-…` (続きを作るときだけ)、`mrt2-musiccoca-text-…` (text.aimodel と text.table)、`mrt2-musiccoca-music-…` (music.aimodel と music.patches)
+- sfx: `hwnpu-text-rREV-FORMAT.coreai` (文の符号器の部品)、`hwnpu-dit-rREV-FORMAT.coreai` (文脈と組)、`hwnpu-dac-rDACREV-fp16.coreai` (DAC の段)。DAC の版が上がっても文の符号器と DiT は変換し直さない (16.197 の `DACRevision`)
+- transcribe: `whisper-rE.C.D-FORMAT-cN.coreai` に encoder、cross、decoder (部品に分けたら `ROLE.parts.json`)
+
+**並べる**: music、sfx、transcribe の書き出しの中のプログラムも `console.Jobs` (16.194) で並べて書く。重みは並べる前に開いておき (遅れて開く関数は 1 つずつ呼ぶ)、プログラムどうしで共有する (どれも `ReadAt` で読む)。MOSS-SoundEffect lut8 は 14 本、Magenta RealTime 2 は 4 本、Whisper は 3 本。
+
+**前の置き場所**: 置き換える書き出しを書き終えたら、前の `coreai/` ディレクトリと同じ名前の `NAME.aimodel`、`NAME.aimodel.done` を消す (何も読まない。ディスクの空きの少ない Mac のため)。
+
+**確かめたこと** (Linux で `Backend: coreai` の `Prepare` を呼んで書き出しだけ。動かすのは Mac)
+- pitch (SwiftF0)、notes (Basic Pitch)、pose (RTMO-s): `NAME.coreai/model.aimodel` と `.done`。2 回目は変換しない。前の `NAME.aimodel` と `.done` は消える
+- transcribe (whisper-large-v3-turbo): 書き出し 1 つに 3 本、並べて 6 秒
+- music (Magenta RealTime 2、文も): 書き出し 3 つに 4 本。言語モデルの `.done` だけ消すと 2 本だけ書き直し、前の `coreai/` は消える
+- sfx (MOSS-SoundEffect lut8): 書き出し 3 つに 14 本、並べて 7 秒。DAC の `.done` だけ消すと DAC の 5 段だけ書き直す
+- Mac での読み込みと実行は試していない (パスの形が変わっただけで、読む側は `runner.Open` にプログラムのパスを渡すまま)。書き出しの名前が変わるので、Mac では次の起動で一度変換し直す (Core AI のキャッシュは内容のハッシュで引くので、コンパイルはやり直さないはず)
+
+### 16.199 Core AI の書き出しと表を共有の層 (NAS、S3) から取り、作ったら書き戻す — 2026-11-14
+
+共有の層 (docs/cache-sharing.md 7 節: 定義の `cache.layers` に並べる NAS のフォルダや S3 のバケット) を通るのは、元のチェックポイントと AMD の IRON の書き出しだけだった。Core AI の書き出し (16.198 で `NAME.coreai` に揃えた) も通す。
+
+**流れ** (`llm.FetchExport`、`llm.ShareExport`、`chat` の `coreAIShares`)
+- 書き出しが手元になければ、変換の前に層を順に探す。あればそこから作り (`store.FetchEntry`、sha256 を確かめる)、`.done` を書く。前の層で `fill` のものには写しを置く
+- 手元で変換したら、`entry.json` を書いて (`store.Describe`)、`write` の層へ後ろで書き戻す (`store.PutLater`、途中で終わっても次の起動で続く)
+- チャットの書き出しは、チェックポイントを落とす前の判定 (`converted`) で層を探すので、層にあればチェックポイントを落とさない。注意を分けたモデルは、重みのない注意のプログラム (`AddMass`、`AddSmaller`) を足し終えてから書き戻す (`shareMade`)。層から取ったものには、足りない分を手元で足す
+- music と sfx は書き出しごとに 1 回だけ探す。depth と MoGe-2 は大きさごとのサブディレクトリが単位 (`da3-small-v1.coreai/518x392`)
+
+**鍵** (`coreAIRecipe`、`kind: coreai`、`target: coreai`): モデル (コマンドが `chat.WithModel` で `ctx` に載せたもの、なければ書き出しを持つディレクトリが `DirName` のモデル)、リポジトリ、定義の sha256 (なければファイルのコミット)、一緒に読むリポジトリ、書き出しの名前 (版と形式が入っている)、`ailower.FormatVersion` (同じ名前で中身が変わる下ろし方の変更のときに手で上げる)。sha256 もコミットも分からないモデルは共有しない。
+
+**表** (`kind: tables`): コマンドがホストで行を引く表 (`tables.safetensors`、`chat.Tables`) も同じく層から取り、作ったら書き戻す (鍵はモデルの部分、アーキテクチャ、表の名前、`tablesVersion`)。表はチェックポイントから作るので、これで変換済みのモデルを動かすだけの機械はチェックポイントを落とさない。1 つのファイルなので、作業ディレクトリ (`work/shared/KEY`) にハードリンクして上げる。
+
+**置き場所も揃えた**: depth、MoGe-2、SigLIP 2 の書き出しはモデルのディレクトリの外 (`models/da3-small-v1.coreai`) にあった (16.198 の漏れ)。チェックポイントのディレクトリの中 (`models/DA3-SMALL/da3-small-v1.coreai`) に移し、前のものは消す (大きさは変換し直す)。
+
+**確かめたこと** (Linux、`Backend: coreai` の `Prepare`。1 台目で変換し、別の手元の根 (`HWNPU_CACHE`) と別のモデルのディレクトリの 2 台目で準備する)
+- path の層 (`HWNPU_CACHE_LAYERS=DIR?write=1`、NAS の代わり): pitch、notes、pose、transcribe (Whisper large-v3-turbo) の書き出しを 1 台目が書き戻し、2 台目は 4 つとも変換せずに層から (Whisper の書き出し 0.84 GB を 0.9 秒)
+- S3 の層 (RustFS 1.0.5、`s3://hwnpu/test/?endpoint=…&path_style=1&write=1`): 同じく 4 つとも層から (Whisper 1.7 秒)。表も層から取れて、2 台目は Whisper のチェックポイント (1.62 GB) を落とさない (モデルのディレクトリ 2.5 GB → 929 MB)
+- テスト: `TestCoreAIShared` (フォルダと偽の S3 で、書き戻して消して取り直す。別の名前、別の sha256 のものは取らない)、`TestTablesShared`、`TestCoreAIRecipe`
+- Mac では試していない。Core AI のキャッシュは `main.hash` で引くので、ほかの Mac で書いた書き出しでも同じものはコンパイルし直さない見込み (16.174)
+
+**使い方** (docs/cache-sharing.md 7.4 節): 定義に
+
+```yaml
+sources:
+  nas: {type: path, path: /Volumes/hwnpu}       # NAS のフォルダ
+  lab: {type: s3, bucket: hwnpu, endpoint: http://nas.local:9000, path_style: true}  # S3 互換
+cache:
+  layers:
+    - {use: nas, write: true, fill: true}
+```
+
+か、`HWNPU_CACHE_LAYERS`。`write` で作ったものを書き戻し、`fill` で後ろの層や Hugging Face から読んだものを写す。

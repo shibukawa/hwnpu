@@ -34,7 +34,7 @@ type Setup struct {
 	Format string
 	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
 	// what the CPU interpreter runs), OpenVINO IR for Intel's NPU, kept in Dir/intel, or Core AI's
-	// programs (.aimodel), kept in Dir/coreai.
+	// programs, an export NAME.coreai each in Dir (chat.ProgramFile).
 	Backend string
 	Log     io.Writer
 }
@@ -73,7 +73,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			return "", err
 		}
 		weights := ""
-		if !chat.Converted(out) {
+		if !chat.Converted(ctx, out) {
 			if weights, err = checkpoint(); err != nil {
 				return "", err
 			}
@@ -117,7 +117,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	names := []string{cfg.Embedding(), cfg.Head()}
 	slices.Sort(names)
-	if c.Weights, err = chat.Tables(filepath.Join(s.Dir, chat.TablesFile), a, slices.Compact(names), checkpoint, log); err != nil {
+	if c.Weights, err = chat.Tables(ctx, filepath.Join(s.Dir, chat.TablesFile), a, slices.Compact(names), checkpoint, log); err != nil {
 		return Config{}, err
 	}
 	// a conversion reads the checkpoint into memory: give it back now

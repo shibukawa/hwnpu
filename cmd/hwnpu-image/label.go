@@ -274,7 +274,7 @@ func openSiglip(ctx context.Context, model string, f siglipFlags, lw io.Writer, 
 		}
 		switch format {
 		case llm.BackendCoreML, llm.BackendCoreAI:
-			if dir, err = siglip.Prepare(ctx, siglip.Setup{Dir: chat.ModelsDir(), Repo: m.Source(), Name: m.Name, Format: format, Log: lw}); err != nil {
+			if dir, err = siglip.Prepare(chat.WithModel(ctx, m), siglip.Setup{Dir: chat.ModelsDir(), Repo: m.Source(), Name: m.Name, Format: format, Log: lw}); err != nil {
 				return nil, nil, err
 			}
 		case "":

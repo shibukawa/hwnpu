@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 // ExportVersion is the layout of the programs Convert writes. Prepare names its exports by it,
@@ -116,7 +117,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	out := filepath.Join(s.Dir, ExportName(o))
 	done := out + ".done"
-	if _, err := os.Stat(done); err == nil {
+	if llm.FetchExport(ctx, out, done) { // here, or from the shared layers
 		return out, nil
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
@@ -151,5 +152,10 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	fmt.Fprintf(log, "converted in %.0f s\n", time.Since(t0).Seconds())
 	// what is left of the checkpoints read goes back to the OS before the programs load
 	debug.FreeOSMemory()
-	return out, cache.WriteDone(done, out)
+	if err := cache.WriteDone(done, out); err != nil {
+		return "", err
+	}
+	// a Core AI export goes in the shared layers that are written (llm.SharedExports)
+	llm.ShareExport(ctx, out)
+	return out, nil
 }

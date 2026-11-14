@@ -85,11 +85,12 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
 	}
-	ext := llm.ProgramExt(s.Backend) // .aimodel, .mlpackage or .xml
 	stem := filepath.Base(s.File)
 	stem = stem[:len(stem)-len(filepath.Ext(stem))]
-	program = filepath.Join(s.Dir, fmt.Sprintf("%s-%s-r%d-fp16-%d%s", Arch, stem, Revision, Size, ext))
-	if _, err := os.Stat(program + ".done"); err == nil {
+	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
+	name := fmt.Sprintf("%s-%s-r%d-fp16-%d", Arch, stem, Revision, Size)
+	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
+	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
 		return model, program, nil
 	}
 	g, err := onnx.Load(model)
@@ -100,8 +101,11 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	bar := console.NewBar(log, "converting "+filepath.Base(program))
-	os.RemoveAll(program)
+	bar := console.NewBar(log, "converting "+name)
+	if err := llm.StartProgram(program, export); err != nil {
+		bar.Done("failed")
+		return "", "", err
+	}
 	_, err = llm.WritePart(program, p, nil, llm.Options{Format: "fp16", Backend: s.Backend}, func(pkg *mlpackage.Package) {
 		pkg.Description = fmt.Sprintf("RTMDet from %s up to its head's convolutions, %dx%d, fp16 (hwnpu)", s.Repo, Size, Size)
 		pkg.Metadata[llm.MetaArch] = Arch
@@ -111,7 +115,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	bar.Done(console.Duration(bar.Elapsed()))
-	return model, program, os.WriteFile(program+".done", nil, 0o644)
+	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
 }
 
 // Fetch downloads the ONNX file into s.Dir unless it is there, checks its sha256 and returns its
