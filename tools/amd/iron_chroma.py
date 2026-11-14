@@ -42,6 +42,8 @@ from iron.operators.copy import Copy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import iron_anima  # noqa: E402
+import iron_gelu  # noqa: E402
+import iron_headnorm  # noqa: E402
 import iron_qwenimage as qi  # noqa: E402
 from iron_anima import bf, command_boundary, variant_bank  # noqa: E402
 from iron_graph import bind_device, export_graph, write_check  # noqa: E402
@@ -97,7 +99,10 @@ class ChromaConfig:
 
 @dataclasses.dataclass
 class Formats:
-    proj: str = "q8"  # the blocks' projections (a distilled DiT is weak at 4 bits)
+    # the blocks' projections: bfp16 (packed on the host as flm.ProjectionGEMM reads B, 9 bits: no
+    # dequantize on the device, iron_q4.bfp16_pack, design.md 16.200); q8 before (a distilled DiT
+    # is weak at 4 bits)
+    proj: str = "bfp16"
     mha: str = "qk"
 
 
@@ -149,8 +154,9 @@ class _Stream:
             setattr(self, a, lin(wt, FMT.proj))
             setattr(self, a + "_b", vec(bs))
         within = P[: c.head_dim]
-        self.qn = vec(f(names["qn"])[within])
-        self.kn = vec(f(names["kn"])[within])
+        # the head's norm weight over the heads: q and k are normed a whole row a call (iron_headnorm)
+        self.qn = iron_headnorm.head_weight(f(names["qn"])[within], c.heads)
+        self.kn = iron_headnorm.head_weight(f(names["kn"])[within], c.heads)
         for a in ("o", "ff1", "ff2"):
             if a in names:
                 setattr(self, a, lin(f(names[a] + ".weight"), FMT.proj))
@@ -166,8 +172,8 @@ TXT = dict(q="attn.add_q_proj", k="attn.add_k_proj", v="attn.add_v_proj", qn="at
 def qkv(s, h, c: ChromaConfig, ang):
     """A stream's q and k (normed, turned) and v of h's rows."""
     n, H, D = h.shape[0], c.heads, c.head_dim
-    q = F.rms_norm(F.linear(h, s.q, s.q_b, precision=PREC).reshape(n * H, D), (D,), s.qn, 1e-6)
-    k = F.rms_norm(F.linear(h, s.k, s.k_b, precision=PREC).reshape(n * H, D), (D,), s.kn, 1e-6)
+    q = iron_headnorm.rms_norm(F.linear(h, s.q, s.q_b, precision=PREC), s.qn, 1e-6, D).reshape(n * H, D)
+    k = iron_headnorm.rms_norm(F.linear(h, s.k, s.k_b, precision=PREC), s.kn, 1e-6, D).reshape(n * H, D)
     v = F.linear(h, s.v, s.v_b, precision=PREC)
     return F.rope(q, ang), F.rope(k, ang), v
 
@@ -212,7 +218,7 @@ class Doubles(iron.Graph):
                 base = 12 * j + (6 if tag == "t" else 0)
                 m[tag] = [mods[(base + r) * E : (base + r + 1) * E] for r in range(6)]
                 shift, scale = m[tag][0], m[tag][1]
-                h = F.layer_norm(x[a:b], (E,), eps=1e-6) * (scale + self.one) + shift
+                h = F.layer_norm(x[a:b], (E,), weight=scale + self.one, eps=1e-6) + shift
                 q, k, v = qkv(self.s(j, tag), h, c, self.angles[a:b])
                 self.qs[a * H : b * H] = q
                 self.ks[a:b] = k.reshape(b - a, H, D)
@@ -222,8 +228,8 @@ class Doubles(iron.Graph):
                 s = self.s(j, tag)
                 _, _, g1, shift2, scale2, g2 = m[tag]
                 y = x[a:b] + F.linear(o[a:b], s.o, s.o_b, precision=PREC) * g1
-                h = F.layer_norm(y, (E,), eps=1e-6) * (scale2 + self.one) + shift2
-                h = F.gelu(F.linear(h, s.ff1, s.ff1_b, precision=PREC), approximate="tanh")
+                h = F.layer_norm(y, (E,), weight=scale2 + self.one, eps=1e-6) + shift2
+                h = iron_gelu.gelu(F.linear(h, s.ff1, s.ff1_b, precision=PREC))
                 self.out[a:b] = y + F.linear(h, s.ff2, s.ff2_b, precision=PREC) * g2
             x = Copy.step(self.out[0:n])
             command_boundary()
@@ -262,7 +268,7 @@ class Singles(iron.Graph):
         for j in range(self.n):
             g = lambda k: getattr(self, f"b{j}_{k}")  # noqa: E731
             shift, scale, gate = (mods[(3 * j + r) * E : (3 * j + r + 1) * E] for r in range(3))
-            h = F.layer_norm(x, (E,), eps=1e-6) * (scale + self.one) + shift
+            h = F.layer_norm(x, (E,), weight=scale + self.one, eps=1e-6) + shift
 
             class S:
                 pass
@@ -274,7 +280,7 @@ class Singles(iron.Graph):
             self.ks[0:n] = k.reshape(n, H, D)
             self.vs[0:n] = v.reshape(n, H, D)
             o = attention(q.reshape(n, H, D), self.ks[:nk], self.vs[:nk]).reshape(n, E)
-            mlp = F.gelu(F.linear(h, g("mlp"), g("mlp_b"), precision=PREC), approximate="tanh")
+            mlp = iron_gelu.gelu(F.linear(h, g("mlp"), g("mlp_b"), precision=PREC))
             y = F.linear(o, g("oa"), precision=PREC) + F.linear(mlp, g("om"), g("o_b"), precision=PREC)
             x = x + y * gate
             command_boundary()
@@ -330,7 +336,7 @@ class DitOut(iron.Graph):
 
     def body(self, x, shift, scale):
         c = self.c
-        h = F.layer_norm(x, (c.hidden,), eps=1e-6) * (scale + self.one) + shift
+        h = F.layer_norm(x, (c.hidden,), weight=scale + self.one, eps=1e-6) + shift
         return F.linear(h, self.proj, self.proj_b, precision=PREC)
 
 
@@ -388,7 +394,7 @@ def main(argv=None) -> int:
     ap.add_argument("--size", type=int, default=1024)
     ap.add_argument("--parts", nargs="*", default=["mods", "dit_in", "ctx", "dit_out", "doubles", "singles", "t5", "vae"],
                     help="graphs to export: the DiT's, and t5 and vae (tools/amd/iron_chroma_parts.py, run after the DiT)")
-    ap.add_argument("--proj", default=FMT.proj, choices=("bf16", "q8", "q6", "q4"))
+    ap.add_argument("--proj", default=FMT.proj, choices=("bf16", "q8", "q6", "q4", "bfp16"))
     ap.add_argument("--one-group", action="store_true")
     ap.add_argument("--random", action="store_true")
     ap.add_argument("--check", action="store_true")

@@ -318,7 +318,7 @@ func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, er
 // before the next is read), then txt_in (text_out). Each prompt's rows (bf16 through float32),
 // len(ids) of Text.Hidden.
 func (p *Pipeline) text(ctx context.Context, ids [][]int32) ([][]float32, error) {
-	g, err := iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, "text"), iron.GraphOptions{SwapVariants: true, Barrier: true})
+	g, err := iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, "text"), iron.GraphOptions{SwapVariants: true, Prefetch: anima.PrefetchFits(p.vae, p.dir, []string{"text"}, "text"), Barrier: true})
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +446,7 @@ func (p *Pipeline) ditText(ctx context.Context, rows [][]float32, ids [][]int32)
 	if err != nil {
 		return nil, err
 	}
-	g, err := iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, "dit_text"), iron.GraphOptions{SwapVariants: !p.ResidentDiT, Barrier: true})
+	g, err := iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, "dit_text"), iron.GraphOptions{SwapVariants: !p.ResidentDiT, Prefetch: !p.ResidentDiT && anima.PrefetchFits(p.vae, p.dir, []string{"dit_text"}, "dit_text"), Barrier: true})
 	if err != nil {
 		return nil, err
 	}
@@ -608,8 +608,9 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 	if p.prog != nil {
 		return p.generatePrograms(ctx, cond, neg, noise, sigmas, smp, step)
 	}
+	prefetch := !p.ResidentDiT && anima.PrefetchFits(p.vae, p.dir, []string{"dit_in", "dit_blocks", "dit_out"}, "dit_blocks")
 	open := func(name string, swap bool) (*iron.Graph, error) {
-		return iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, name), iron.GraphOptions{SwapVariants: swap, Barrier: true})
+		return iron.OpenGraphWith(ctx, p.dev, filepath.Join(p.dir, name), iron.GraphOptions{SwapVariants: swap, Prefetch: prefetch && swap, Barrier: true})
 	}
 	in, err := open("dit_in", false)
 	if err != nil {

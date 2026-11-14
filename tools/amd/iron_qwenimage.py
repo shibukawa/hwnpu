@@ -59,6 +59,7 @@ from iron.operators.mha import MHA
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import iron_anima  # noqa: E402
+import iron_headnorm  # noqa: E402
 import iron_mha  # noqa: E402
 import iron_sana  # noqa: E402
 from iron_anima import RandomWeights, Safetensors, bf, command_boundary, tap, variant_bank  # noqa: E402
@@ -87,13 +88,16 @@ PREC = Precisions()
 
 @dataclasses.dataclass
 class Formats:
-    """The weights' formats: the DiT's attention projections q8 and its MLP q6 (CPU study with
-    tools/ref/qwenimage_quant.py, design.md 16.167: MLP q6 keeps the pictures at 1.21 GB less, q6
-    attention costs as much error for 0.54 GB, q4nx drifts details with or without GPTQ), the text
-    encoder's q6 (as Sana's Gemma 2)."""
+    """The weights' formats: the DiT's projections bfp16 (packed on the host as flm.ProjectionGEMM
+    reads B, 9 bits a weight: no dequantize on the device, iron_q4.bfp16_pack; design.md 16.200:
+    1024² a step 11.7 -> 8.4 s, latent cosine to fp32 0.9988 -> 0.9990, the DiT 6.2 -> 7.6 GB,
+    the run's pinned peak the same), the text encoder's q6 (as Sana's Gemma 2). Before 16.200:
+    attention q8 and MLP q6 (CPU study with tools/ref/qwenimage_quant.py, design.md 16.167: MLP q6
+    keeps the pictures at 1.21 GB less, q6 attention costs as much error for 0.54 GB, q4nx drifts
+    details with or without GPTQ)."""
 
-    attn: str = "q8"
-    mlp: str = "q6"
+    attn: str = "bfp16"
+    mlp: str = "bfp16"
     text: str = "q6"
     mha: str = "qk"  # the DiT's attention products (iron_anima.dit_attention)
 
@@ -228,8 +232,9 @@ class DitBlock(iron.Graph):
         self.v = qparam(g("attn.to_v.weight"), FMT.attn)
         self.o = qparam(g("attn.to_out.0.weight"), FMT.attn)
         within = perm[:D]
-        self.qn = iron.param(bf(g("attn.norm_q.weight")[within]))
-        self.kn = iron.param(bf(g("attn.norm_k.weight")[within]))
+        # the head's norm weight over the heads: q and k are normed a whole row a call (iron_headnorm)
+        self.qn = iron_headnorm.head_weight(g("attn.norm_q.weight")[within], c.heads)
+        self.kn = iron_headnorm.head_weight(g("attn.norm_k.weight")[within], c.heads)
         self.gate = qparam(g("img_mlp.gate_layer.weight"), FMT.mlp)
         self.up = qparam(g("img_mlp.proj.weight"), FMT.mlp)
         self.down = qparam(g("img_mlp.out.weight"), FMT.mlp)
@@ -240,9 +245,9 @@ class DitBlock(iron.Graph):
         E, H, D = c.hidden, c.heads, c.head_dim
         n = x.shape[0]
         P = PREC.dit
-        h = F.layer_norm(x, (E,), eps=c.eps) * m1
-        q = F.rms_norm(F.linear(h, self.q, precision=P).reshape(n * H, D), (D,), self.qn, c.eps)
-        k = F.rms_norm(F.linear(h, self.k, precision=P).reshape(n * H, D), (D,), self.kn, c.eps)
+        h = F.layer_norm(x, (E,), weight=m1, eps=c.eps)
+        q = iron_headnorm.rms_norm(F.linear(h, self.q, precision=P), self.qn, c.eps, D).reshape(n * H, D)
+        k = iron_headnorm.rms_norm(F.linear(h, self.k, precision=P), self.kn, c.eps, D).reshape(n * H, D)
         v = F.linear(h, self.v, precision=P)
         return F.rope(q, angles), F.rope(k, angles), v
 
@@ -251,7 +256,7 @@ class DitBlock(iron.Graph):
         c = self.c
         P = PREC.dit
         x = x + F.linear(o, self.o, precision=P) * g1
-        h = F.layer_norm(x, (c.hidden,), eps=c.eps) * m2
+        h = F.layer_norm(x, (c.hidden,), weight=m2, eps=c.eps)
         f = F.silu(F.linear(h, self.gate, precision=P)) * F.linear(h, self.up, precision=P)
         return x + F.linear(f, self.down, precision=P) * g2
 
@@ -381,7 +386,7 @@ class DitOut(iron.Graph):
 
     def body(self, x, scale):
         c = self.c
-        h = F.layer_norm(x, (c.hidden,), eps=c.eps) * scale
+        h = F.layer_norm(x, (c.hidden,), weight=scale, eps=c.eps)
         return F.linear(h, self.proj, precision=PREC.dit)
 
 
@@ -933,9 +938,9 @@ def main(argv=None) -> int:
     ap.add_argument("--dit-parts", nargs="*", default=["dit_text", "dit_blocks"])
     ap.add_argument("--stages", type=int, nargs="*", help="the VAE's stages to export (default all)")
     ap.add_argument("--no-vae-merge", dest="vae_merge", action="store_false", help="the last block's two same-shaped residual blocks in stages of their own")
-    ap.add_argument("--dit", choices=("bf16", "q8", "q6", "q4"), help="the DiT blocks' projections, attention and MLP alike")
-    ap.add_argument("--dit-attn", default=FMT.attn, choices=("bf16", "q8", "q6", "q4"), help="the DiT blocks' attention projections")
-    ap.add_argument("--dit-mlp", default=FMT.mlp, choices=("bf16", "q8", "q6", "q4"), help="the DiT blocks' MLP")
+    ap.add_argument("--dit", choices=("bf16", "q8", "q6", "q4", "bfp16"), help="the DiT blocks' projections, attention and MLP alike")
+    ap.add_argument("--dit-attn", default=FMT.attn, choices=("bf16", "q8", "q6", "q4", "bfp16"), help="the DiT blocks' attention projections")
+    ap.add_argument("--dit-mlp", default=FMT.mlp, choices=("bf16", "q8", "q6", "q4", "bfp16"), help="the DiT blocks' MLP")
     ap.add_argument("--text", default=FMT.text, choices=("bf16", "q8", "q6", "q4"), help="the text encoder's projections")
     ap.add_argument("--dit-mha", default=FMT.mha, choices=("qk", "qkpv", "bf16"))
     ap.add_argument("--one-group", action="store_true", help="the first group's bank only (a test)")

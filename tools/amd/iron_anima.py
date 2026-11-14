@@ -45,6 +45,7 @@ from iron.operators.mha import MHA
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from iron_graph import bind_device, export_graph, trim_zeros, write_check  # noqa: E402
+import iron_headnorm  # noqa: E402
 import iron_mha  # noqa: E402
 
 PREFIX = "model.diffusion_model."
@@ -109,23 +110,33 @@ PREC = Precisions()
 
 @dataclasses.dataclass
 class DitFormats:
-    """The DiT blocks' weights (set from the command line): iron_q4's q8 (8.5 bits a weight,
-    the default) or q4nx (5), or bf16. The device dequantizes them to bf16 (rounded to nearest
-    even) for each projection's GEMM, which Precision.MEDIUM multiplies in bfp16 anyway.
-    ``attn`` is the self- and cross-attention's q, k, v and output projections, ``mlp`` the GELU
-    MLP's two. The adaLN modulations (in-features 256 on their second linear, no whole blocks),
-    the embeddings and the final layer stay bf16.
+    """The DiT blocks' weights (set from the command line): "bfp16" (the default: packed on the
+    host as flm.ProjectionGEMM reads B, 9 bits a weight, iron_q4.bfp16_pack), iron_q4's q8 (8.5
+    bits) or q4nx (5), or bf16. q8 and q4 are dequantized to bf16 on the device for each GEMM;
+    bfp16 is the format AIE2P's matrix instruction multiplies (Precision.MEDIUM rounds bf16 weights
+    to it in every call), so the GEMM reads it as it is: no dequantize operator, half the bytes of
+    bf16, one rounding (nearest even). ``attn`` is the self- and cross-attention's q, k, v and
+    output projections, ``mlp`` the GELU MLP's two. The adaLN modulations (in-features 256 on
+    their second linear, no whole blocks), the embeddings and the final layer stay bf16.
 
-    q8 draws nearly what bf16 draws (latent cosine to diffusers' fp32 0.961 against bf16's 0.966)
-    in 3.4 GiB of pinned memory instead of 5.0, 2 % slower; q4 (2.7 GiB) changes the picture (0.78): the
-    DiT of an 8-step distilled model carries 4 bits' rounding into the image.
+    bfp16 against q8 (design.md 16.200): a 1024² block 154 -> about 135 ms with the rest of
+    16.200, the first step's velocity error to diffusers' fp32 0.0246 (q8 0.0253, bf16 0.0232),
+    the bank 464 -> 479 MiB. q8 draws nearly what bf16 draws (latent cosine to diffusers' fp32
+    0.961 against bf16's 0.966) in 3.4 GiB of pinned memory instead of 5.0; q4 (2.7 GiB) changes
+    the picture (0.78): the DiT of an 8-step distilled model carries 4 bits' rounding into the
+    image.
     """
 
-    attn: str = "q8"
-    mlp: str = "q8"
+    attn: str = "bfp16"
+    mlp: str = "bfp16"
     # The attention's products (dit_attention): "qk" (QK^T through bfp16), "qkpv" (and P*V) or
     # "bf16" (both bf16, as IRON's MHA)
     mha: str = "qk"
+    # The MLP's GELU: "even" (iron_gelu.GELUEven: the tanh form, its argument in float32, IRON's
+    # tanh table, rounded to nearest even; 4096 x 8192 in 7 against 21 ms), "erf" (IRON's exact
+    # kernel, correctly rounded) or "tanh" (IRON's tanh kernel: bf16 inner terms changed the
+    # pictures)
+    gelu: str = "even"
 
 
 DIT_FMT = DitFormats()
@@ -305,6 +316,15 @@ def dit_attention(q, k, v):
     return iron_mha.attention(q, k, v, d=q.shape[-1], qk_bfp16=m != "bf16", pv_bfp16=m == "qkpv")
 
 
+def dit_gelu(x):
+    """The DiT MLP's GELU by ``--dit-gelu``."""
+    if DIT_FMT.gelu in ("erf", "tanh"):
+        return F.gelu(x, approximate="none" if DIT_FMT.gelu == "erf" else "tanh")
+    import iron_gelu
+
+    return iron_gelu.gelu(x)
+
+
 class DitBlock(iron.Graph):
     """A Cosmos-Predict2 block: adaLN-zero self-attention (RoPE), cross-attention, GELU MLP."""
 
@@ -334,7 +354,7 @@ class DitBlock(iron.Graph):
         n = x.shape[0]
         # self-attention
         shift, scale, gate = self.ada[0].rows(act, temb, 3)
-        h = F.layer_norm(x, (E,), eps=1e-6) * (scale + one) + shift
+        h = F.layer_norm(x, (E,), weight=scale + one, eps=1e-6) + shift
         q, k, v = self.self_attn.qkv(h, h, n, n)
         q, k = F.rope(q, angles), F.rope(k, angles)
         H, D = c.heads, c.head_dim
@@ -342,7 +362,7 @@ class DitBlock(iron.Graph):
         x = x + self.self_attn.out(o.reshape(n, E)) * gate
         # cross-attention over the text: MHA takes no more queries than keys, so 512 rows a call
         shift, scale, gate = self.ada[1].rows(act, temb, 3)
-        h = F.layer_norm(x, (E,), eps=1e-6) * (scale + one) + shift
+        h = F.layer_norm(x, (E,), weight=scale + one, eps=1e-6) + shift
         L = ctx.shape[0]
         q, k, v = self.cross_attn.qkv(h, ctx, n, L)
         q, k, v = q.reshape(n, H, D), k.reshape(L, H, D), v.reshape(L, H, D)
@@ -352,8 +372,8 @@ class DitBlock(iron.Graph):
         x = x + self.cross_attn.out(o) * gate
         # MLP
         shift, scale, gate = self.ada[2].rows(act, temb, 3)
-        h = F.layer_norm(x, (E,), eps=1e-6) * (scale + one) + shift
-        h = F.linear(F.gelu(F.linear(h, self.mlp_1, precision=PREC.dit)), self.mlp_2, precision=PREC.dit)
+        h = F.layer_norm(x, (E,), weight=scale + one, eps=1e-6) + shift
+        h = F.linear(dit_gelu(F.linear(h, self.mlp_1, precision=PREC.dit)), self.mlp_2, precision=PREC.dit)
         return x + h * gate
 
 
@@ -367,23 +387,24 @@ class _Attn(iron.Graph):
         self.k = iron.param(E, kv_in)
         self.v = iron.param(E, kv_in)
         self.o = iron.param(E, E)
-        self.qn = iron.param(c.head_dim)
-        self.kn = iron.param(c.head_dim)
+        self.qn = iron.param(E)  # the head's norm weight over the heads (iron_headnorm)
+        self.kn = iron.param(E)
 
     def load(self, w: Safetensors, p: str) -> None:
         self.q = dit_param(w[f"{p}.q_proj.weight"], DIT_FMT.attn)
         self.k = dit_param(w[f"{p}.k_proj.weight"], DIT_FMT.attn)
         self.v = dit_param(w[f"{p}.v_proj.weight"], DIT_FMT.attn)
         self.o = dit_param(w[f"{p}.output_proj.weight"], DIT_FMT.attn)
-        self.qn = iron.param(bf(w[f"{p}.q_norm.weight"]))
-        self.kn = iron.param(bf(w[f"{p}.k_norm.weight"]))
+        self.qn = iron_headnorm.head_weight(w[f"{p}.q_norm.weight"], self.c.heads)
+        self.kn = iron_headnorm.head_weight(w[f"{p}.k_norm.weight"], self.c.heads)
 
     def qkv(self, h, src, n: int, m: int):
+        """q and k RMS-normed per head (whole rows a call: iron_headnorm), as (rows x heads, 128)."""
         H, D = self.c.heads, self.c.head_dim
-        q = F.linear(h, self.q, precision=PREC.dit).reshape(n * H, D)
-        k = F.linear(src, self.k, precision=PREC.dit).reshape(m * H, D)
+        q = iron_headnorm.rms_norm(F.linear(h, self.q, precision=PREC.dit), self.qn, 1e-6, D)
+        k = iron_headnorm.rms_norm(F.linear(src, self.k, precision=PREC.dit), self.kn, 1e-6, D)
         v = F.linear(src, self.v, precision=PREC.dit)
-        return F.rms_norm(q, (D,), self.qn, 1e-6), F.rms_norm(k, (D,), self.kn, 1e-6), v
+        return q.reshape(n * H, D), k.reshape(m * H, D), v
 
     def out(self, o):
         return F.linear(o, self.o, precision=PREC.dit)
@@ -468,7 +489,7 @@ class DitOut(iron.Graph):
     def body(self, x, temb, et):
         E = self.c.hidden
         shift, scale = self.ada.rows(F.silu(et), temb, 2)
-        h = F.layer_norm(x, (E,), eps=1e-6) * (scale + self.one) + shift
+        h = F.layer_norm(x, (E,), weight=scale + self.one, eps=1e-6) + shift
         return F.linear(h, self.lin, precision=PREC.dit)
 
 
@@ -1177,14 +1198,16 @@ def main(argv=None) -> int:
     ap.add_argument("--text-precision", default=PREC.text.value, choices=[p.value for p in Precision])
     ap.add_argument("--dit-precision", default=PREC.dit.value, choices=[p.value for p in Precision])
     ap.add_argument("--vae-precision", default=PREC.vae.value, choices=[p.value for p in Precision])
-    ap.add_argument("--dit-attn", default=DIT_FMT.attn, choices=("bf16", "q8", "q6", "q4"),
-                    help="the DiT blocks' attention projections: q8 (8.5 bits a weight), q6 (6.5 bits), q4 (q4nx, 5 bits) or bf16")
-    ap.add_argument("--dit-mlp", default=DIT_FMT.mlp, choices=("bf16", "q8", "q6", "q4"),
+    ap.add_argument("--dit-attn", default=DIT_FMT.attn, choices=("bf16", "q8", "q6", "q4", "bfp16"),
+                    help="the DiT blocks' attention projections (bfp16: packed for the GEMM on the host, 9 bits): q8 (8.5 bits a weight), q6 (6.5 bits), q4 (q4nx, 5 bits) or bf16")
+    ap.add_argument("--dit-mlp", default=DIT_FMT.mlp, choices=("bf16", "q8", "q6", "q4", "bfp16"),
                     help="the DiT blocks' MLP: q8, q6, q4 or bf16")
     ap.add_argument("--vae-conv", default=VAE_CONV[0], choices=("grid", "im2col"),
                     help="the VAE's 3 x 3 convolutions: GridGEMM on the grid in place (grid) or an im2col copy")
     ap.add_argument("--dit-mha", default=DIT_FMT.mha, choices=("qk", "qkpv", "bf16"),
                     help="the DiT's attention products: QK^T through bfp16 (qk), P*V too (qkpv), or both bf16")
+    ap.add_argument("--dit-gelu", default=DIT_FMT.gelu, choices=("even", "erf", "tanh"),
+                    help="the DiT MLP's GELU: the tanh form with its argument in float32 (even), exact (erf), or IRON's tanh kernel")
     ap.add_argument("--q4-codes", type=Path, default=None,
                     help="codes tools/amd/anima_gptq.py chose (OUT/codes) for the DiT's q4 and q8 projections, "
                          "in place of rounding them")
@@ -1194,7 +1217,7 @@ def main(argv=None) -> int:
     ap.add_argument("--cols", type=int, default=8)
     ARGS = a = ap.parse_args(argv)
     PREC.text, PREC.dit, PREC.vae = Precision(a.text_precision), Precision(a.dit_precision), Precision(a.vae_precision)
-    DIT_FMT.attn, DIT_FMT.mlp, DIT_FMT.mha = a.dit_attn, a.dit_mlp, a.dit_mha
+    DIT_FMT.attn, DIT_FMT.mlp, DIT_FMT.mha, DIT_FMT.gelu = a.dit_attn, a.dit_mlp, a.dit_mha, a.dit_gelu
     VAE_CONV[0] = a.vae_conv
     if (a.dit_attn, a.dit_mlp) != ("bf16", "bf16"):
         import iron_q4

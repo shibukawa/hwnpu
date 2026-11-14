@@ -965,6 +965,8 @@ def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2, adds=()):
         raise ValueError("q_linear: vectors to add are for one row (a prompt chunk adds them itself)")
     from iron import Precision
 
+    if fmt == "bfp16":
+        return bfp16_linear(x, q, n, k)
     if x.shape[0] <= ROWS_GEMV and fmt in ("q6", "q8"):
         # a few rows (a call checking drafts): the weights stream once through all of them
         R = x.shape[0]
@@ -979,6 +981,71 @@ def q_linear(x, q, n: int, k: int, fmt: str = "q4", cores: int = 2, adds=()):
     packed = DequantBFP.step(q, K=k, N=n)
     return ProjectionGEMM.step(x, packed, K=k, N=n, bfp16_b=True, precision=Precision.MEDIUM,
                                epilogue_modes=(Epilogue.NONE,))
+
+
+# flm.ProjectionGEMM's tiling of a B packed on the host ("bfp16"): tile_n 64 and a compute tile's
+# k slice 128 (the order DequantBFP writes), k tiles of 512 or, where K is no multiple of it, the
+# largest multiple of 128 below it that divides K (Sana 600M's 1152: 384). Pinned on both sides so
+# the packing and the GEMM cannot resolve apart (pack_b says a wrong value packs silently).
+BFP16_TILES = dict(tile_n=64, ct_k=128)
+
+
+def bfp16_tiles(k: int, n: int) -> dict | None:
+    """The tiling bfp16_pack and bfp16_linear take for a (n, k) weight; None where none fits."""
+    if n % BFP16_TILES["tile_n"]:
+        return None
+    kt = next((t for t in (512, 384, 256, 128) if k % t == 0), None)
+    return None if kt is None else dict(BFP16_TILES, k_tile=kt)
+
+
+def bfp16_pack(w) -> np.ndarray:
+    """W (out, in) as flm.ProjectionGEMM's B in bfp16ebs8 blocks (9 bytes for 8 in-features of an
+    out-feature: a shared exponent byte, 8 mantissa bytes), rounded once to nearest even on the
+    host: the format AIE2P's matrix instruction multiplies (Precision.MEDIUM rounds bf16 weights
+    to it in every call). 9 bits a weight."""
+    from iron.operators.flm.gemm.design import S, T
+    from iron.operators.flm.packing import pack_b
+
+    w = np.asarray(w, np.float32)
+    n, k = w.shape
+    t = bfp16_tiles(k, n)
+    if t is None:
+        raise ValueError(f"bfp16: a ({n}, {k}) weight is no whole tiles (out-features by 64, in-features by 128)")
+    b = np.ascontiguousarray(w.T).astype(bfloat16)
+    return np.asarray(pack_b(b, k_tile=t["k_tile"], n_tile=t["tile_n"], s=S, t=T, ct_k=t["ct_k"], bfp16=True,
+                             round_conv_even=True), np.uint8).reshape(-1)
+
+
+def bfp16_linear(x, q, n: int, k: int):
+    """``x @ W.T`` with W packed by bfp16_pack: flm.ProjectionGEMM reads it as it is (no dequantize)."""
+    from iron import Precision
+    from iron.operators.flm import ProjectionGEMM
+    from iron.operators.flm.gemm.op import Epilogue
+
+    if len(x.shape) != 2 or x.shape[0] == 1:
+        raise ValueError("bfp16: a weight packed for the GEMM takes rows, not one row")
+    return ProjectionGEMM.step(x, bfp16_operand(q), K=k, N=n, bfp16_b=True, precision=Precision.MEDIUM,
+                               epilogue_modes=(Epilogue.NONE,), **bfp16_tiles(k, n))
+
+
+def bfp16_operand(q):
+    """The packed bytes q (an iron.param) as a graph weight of bfp16ebs8 blocks.
+
+    ProjectionGEMM's B is typed v8bfp16ebs8, which numpy has no dtype for, so the recorder would
+    take a uint8 param as bytes; the weight is registered as the recorder does a param (its name
+    the graph's attribute path, so variant banks line up), with the block type. Its bytes are
+    stored as they are (Recording stores weights as their raw bytes)."""
+    from aie.helpers.npdtypes import v8bfp16ebs8
+    from aie.utils import bfp
+    from iron.common.declare.operator import graph_recorder
+    from iron.common.graph.handle import Handle
+
+    rec = graph_recorder.get()
+    key = id(q)
+    if key not in rec.weights:
+        name = rec._names.get(key) or rec.fresh(f"w{len(rec.weights)}")
+        rec.weights[key] = (q, Handle.whole((q.size // bfp.BLOCK_BYTES,), v8bfp16ebs8, name, "weight"))
+    return rec.weights[key][1]
 
 
 # Rows up to which a linear runs QGEMVRows (q8, q6), beyond it the prompt chunk's path.
@@ -1003,7 +1070,7 @@ def q_param(w, fmt: str = "q4"):
     import iron
 
     n, k = np.shape(w)
-    p = iron.param(quantize_fmt(w, fmt).reshape(-1))
+    p = iron.param(bfp16_pack(w) if fmt == "bfp16" else quantize_fmt(w, fmt).reshape(-1))
     _Q4[id(p)] = (p, n, k, fmt)
     return p
 

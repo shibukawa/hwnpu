@@ -55,6 +55,26 @@ func ReadGraphManifest(dir string) (*GraphManifest, error) {
 	return &m, nil
 }
 
+// PinnedBytes reads the graph export in dir and returns what OpenGraph pins for it with one set
+// of banks (its banks and its other arguments) and, of that, its banks: what
+// GraphOptions.Prefetch pins in addition.
+func PinnedBytes(dir string) (pinned, banks int64, err error) {
+	m, err := ReadGraphManifest(dir)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, b := range m.Banks {
+		banks += int64(max(b.Bytes, 4096))
+	}
+	pinned = banks
+	for _, a := range m.Graph.Arguments {
+		if _, ok := m.Banks[a.Kind]; !ok {
+			pinned += int64(max(a.Bytes, 4096))
+		}
+	}
+	return pinned, banks, nil
+}
+
 // Graph is a loaded graph export: its banks, its program and its own buffers.
 type Graph struct {
 	Manifest *GraphManifest
@@ -66,7 +86,12 @@ type Graph struct {
 	// them by Use
 	swapped bool
 	cur     int
-	v       *version
+	// prefetch (GraphOptions.Prefetch): a second set of banks, spare, the next variant read
+	// into it while the commands run (pending, until Use takes it)
+	prefetch bool
+	spare    map[string]*hwnpu.Buffer
+	pending  chan prefetched
+	v        *version
 	// keep (GraphOptions.KeepRuns): each command's run, made by the first Run
 	keep bool
 	runs []*hwnpu.Run
@@ -78,6 +103,9 @@ type Graph struct {
 	Timing func(command int, run time.Duration)
 }
 
+// Prefetch is the image pipelines' GraphOptions.Prefetch: on unless HWNPU_IRON_PREFETCH=0.
+var Prefetch = os.Getenv("HWNPU_IRON_PREFETCH") != "0"
+
 // GraphOptions are OpenGraphWith's choices.
 type GraphOptions struct {
 	// SwapVariants keeps one set of banks for all the variants and reads a variant's images
@@ -87,6 +115,11 @@ type GraphOptions struct {
 	// in it for the next. Anima's DiT (7 groups of 4 blocks at 1024 x 1024, q8): pinned
 	// 7 x 464 MiB -> 464 MiB, at a read of 304 MiB a group (page cache to the bank).
 	SwapVariants bool
+	// Prefetch (with SwapVariants) keeps a second set of banks and reads the variant after the
+	// one Use selected ((i + 1) % variants) into it while the commands run, so that Use of
+	// that variant only swaps the sets: a DiT's groups are used in turn every step. Pinned
+	// one set of banks more; the read (page cache to the bank, 10-18 GB/s) no longer waits.
+	Prefetch bool
 	// KeepRuns makes each command's run once and keeps it, its control code in the device
 	// heap (64 MiB on Linux 7.0, shared by every program), instead of making it for each call:
 	// for a small graph called often (a face detector on each frame of a camera). Making a run
@@ -124,6 +157,7 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 	}
 	if opt.SwapVariants && len(images) > 1 {
 		g.swapped = true
+		g.prefetch = opt.Prefetch
 		images = images[:1]
 	}
 	for i, img := range images {
@@ -150,6 +184,16 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 		}
 	}
 	g.banks = g.variants[0]
+	if g.prefetch {
+		g.spare = map[string]*hwnpu.Buffer{}
+		for kind, b := range man.Banks {
+			buf, err := dev.AllocBuffer(max(b.Bytes, 4096))
+			if err != nil {
+				return fail(fmt.Errorf("bank %s (%d MiB), the prefetch's: %w", kind, b.Bytes>>20, err))
+			}
+			g.spare[kind] = buf
+		}
+	}
 	kr, err := dev.Kernel()
 	if err != nil {
 		return fail(err)
@@ -169,12 +213,74 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 		}
 		v.args[a.Kind] = buf
 	}
+	g.startPrefetch(1)
 	return g, nil
+}
+
+// prefetched is what a prefetch read: the variant, its bytes, and its error.
+type prefetched struct {
+	variant int
+	read    int64
+	err     error
+}
+
+// startPrefetch reads variant i into the spare banks in the background (GraphOptions.Prefetch).
+func (g *Graph) startPrefetch(i int) {
+	if !g.prefetch || g.pending != nil {
+		return
+	}
+	i %= len(g.Manifest.Variants)
+	ch := make(chan prefetched, 1)
+	g.pending = ch
+	spare := g.spare
+	go func() {
+		n, err := g.readVariant(i, spare)
+		ch <- prefetched{i, n, err}
+	}()
+}
+
+// takePrefetch waits for the prefetch under way, if any, and returns it.
+func (g *Graph) takePrefetch() (prefetched, bool) {
+	if g.pending == nil {
+		return prefetched{}, false
+	}
+	r := <-g.pending
+	g.pending = nil
+	return r, true
+}
+
+// readVariant reads variant i's images into banks and syncs them to the device.
+func (g *Graph) readVariant(i int, banks map[string]*hwnpu.Buffer) (int64, error) {
+	var read int64
+	for kind, b := range g.Manifest.Banks {
+		name := b.Image
+		if s, ok := g.Manifest.Variants[i][kind]; ok {
+			name = s
+		}
+		if name == "" {
+			continue
+		}
+		buf := banks[kind]
+		n, err := readPrefix(filepath.Join(g.dir, name), buf.Bytes())
+		if err != nil {
+			return read, fmt.Errorf("iron: %s: variant %d: bank %s: %w", g.Manifest.Name, i, kind, err)
+		}
+		if err := buf.SyncToDevice(0, n); err != nil {
+			return read, err
+		}
+		read += int64(n)
+	}
+	return read, nil
 }
 
 // Close releases the device memory.
 func (g *Graph) Close() error {
 	var errs []error
+	g.takePrefetch() // its buffers are closed below
+	for _, b := range g.spare {
+		errs = append(errs, b.Close())
+	}
+	g.spare = nil
 	for _, r := range g.runs {
 		if r != nil {
 			errs = append(errs, r.Close())
@@ -229,27 +335,22 @@ func (g *Graph) Use(i int) error {
 	var read int64
 	done := console.Reading() // preparing, in the times and HWNPU_ENERGY's energy
 	defer func() { done(read) }()
-	for kind, b := range g.Manifest.Banks {
-		name := b.Image
-		if s, ok := g.Manifest.Variants[i][kind]; ok {
-			name = s
-		}
-		if name == "" {
-			continue
-		}
-		buf := g.banks[kind]
-		n, err := readPrefix(filepath.Join(g.dir, name), buf.Bytes())
-		if err != nil {
-			g.cur = -1 // the banks hold part of one variant and part of another
-			return fmt.Errorf("iron: %s: variant %d: bank %s: %w", g.Manifest.Name, i, kind, err)
-		}
-		if err := buf.SyncToDevice(0, n); err != nil {
-			g.cur = -1
-			return err
-		}
-		read += int64(n)
+	if r, ok := g.takePrefetch(); ok && r.variant == i && r.err == nil {
+		g.banks, g.spare = g.spare, g.banks
+		g.variants[0] = g.banks // the set in use, as Close and Variants read it
+		g.cur, read = i, r.read
+		g.startPrefetch(i + 1)
+		return nil
+	}
+	// No prefetch of i (or it failed): read it here. The spare banks may hold part of one.
+	n, err := g.readVariant(i, g.banks)
+	read = n
+	if err != nil {
+		g.cur = -1 // the banks hold part of one variant and part of another
+		return err
 	}
 	g.cur = i
+	g.startPrefetch(i + 1)
 	return nil
 }
 

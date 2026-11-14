@@ -297,6 +297,35 @@ def dw_band(c: DitConfig) -> int:
     return 1 + (c.gw + 1)
 
 
+# GLUMBConv's depthwise convolutions: "op" (iron_dwconv.DWConv3, one operator a branch, the
+# channels padded with zero weights to whole bands over the columns; design.md 16.200) or
+# "eltwise" (a row product and a sum a tap: 18 operators a branch, as before).
+DW = {"form": "op"}
+DW_COLS = 8
+# The VAE's EfficientViT depthwise convolutions (5 x 5 on q, k, v; 3 x 3 in its GLUMBConv): "op"
+# DWConv3 where its bands fit the channels, else "eltwise" as before.
+VAE_DW = {"form": "op"}
+
+
+def dw_band_c(c: "DitConfig") -> int:
+    """DWConv3's band: the widest of 96, 64, 32 channels whose padding of the MLP is the least."""
+    return min((96, 64, 32), key=lambda b: (-(-c.mlp // (DW_COLS * b)) * DW_COLS * b, -b))
+
+
+def mlp_pad(c: "DitConfig") -> int:
+    """The MLP's channels as the graphs hold them: padded to whole DWConv3 bands (zeros)."""
+    if DW["form"] != "op":
+        return c.mlp
+    b = DW_COLS * dw_band_c(c)
+    return -(-c.mlp // b) * b
+
+
+def pad_rows(m, n: int):
+    """``m`` with zero rows to ``n`` (or zero entries, a vector)."""
+    m = np.asarray(m, np.float32)
+    return np.concatenate([m, np.zeros((n - m.shape[0],) + m.shape[1:], np.float32)])
+
+
 def cross_rows(w: np.ndarray, b, heads: int, dim: int, pad: int):
     """A projection of ``heads`` heads of ``dim`` laid out ``pad`` columns to a head."""
     o = np.zeros((heads * pad, w.shape[1]), np.float32)
@@ -322,7 +351,7 @@ class Shared:
     """What every block of a dit_blocks graph shares."""
 
     def __init__(self, c: DitConfig):
-        n, Ch = c.ntok, c.mlp
+        n, Ch = c.ntok, mlp_pad(c)
         self.lin = LinearAttnConsts(c.att_heads, n)
         if c.ntok != c.tokens:
             # the keys' columns of the padding rows: zeros, so no sum of the attention counts them
@@ -339,12 +368,31 @@ class Shared:
         self.cross = iron.state((n, c.cross_heads * c.cross_pad))
 
 
+# The DiT's projections that are a GEMM's B (set from the command line): "bfp16" packs those that
+# tile (iron_q4.bfp16_tiles: out-features by 64, in-features by 128) on the host as
+# flm.ProjectionGEMM reads them (9 bits a weight, no conversion in the GEMM; design.md 16.200);
+# "bf16" keeps them all bf16. The others (the values' and, without q and k norms, the keys', a
+# GEMM's A) stay bf16.
+DIT_FMT = {"proj": "bfp16"}
+
+
+def dproj(w):
+    """An iron.param of a DiT projection used as a GEMM's B: bfp16 where it tiles, else bf16."""
+    w = np.asarray(w, np.float32)
+    if DIT_FMT["proj"] == "bfp16":
+        import iron_q4
+
+        if iron_q4.bfp16_tiles(w.shape[1], w.shape[0]):
+            return iron_q4.q_param(w, "bfp16")
+    return iron.param(bf(w))
+
+
 class SanaBlock(iron.Graph):
     """A Sana block: adaLN-single (a learned table plus the timestep's six rows), linear
     self-attention, cross-attention to the caption, GLUMBConv."""
 
     def __init__(self, c: DitConfig, w: Safetensors | None, i: int, sh: Shared):
-        E, H, Ch = c.hidden, c.att_heads, c.mlp
+        E, H, Ch, Cp = c.hidden, c.att_heads, c.mlp, mlp_pad(c)
         A = c.att_dim
         self.c, self.sh = c, sh
         p = f"transformer_blocks.{i}."
@@ -361,21 +409,22 @@ class SanaBlock(iron.Graph):
             self.ck, self.ckb = iron.param(P, E), iron.param(P)
             self.cv, self.cvb = iron.param(P, E), iron.param(P)
             self.co, self.cob = iron.param(E, P), iron.param(E)
-            self.ia, self.iab = iron.param(Ch, E), iron.param(Ch)
-            self.ig, self.igb = iron.param(Ch, E), iron.param(Ch)
+            self.ia, self.iab = iron.param(Cp, E), iron.param(Cp)
+            self.ig, self.igb = iron.param(Cp, E), iron.param(Cp)
             self.da, self.dab = iron.param(9, Ch), iron.param(Ch)
             self.dg, self.dgb = iron.param(9, Ch), iron.param(Ch)
-            self.pt = iron.param(E, Ch)
+            self.pt = iron.param(E, Cp)
             if c.qk_norm:
                 self.qn, self.kn = iron.param(A), iron.param(A)
                 self.cqn, self.ckn = iron.param(P), iron.param(P)
             return
         self.sst = iron.param(bf(f32(w[p + "scale_shift_table"]).reshape(-1)))
         pad = lambda x: np.concatenate([f32(x), np.zeros((A - E,) + x.shape[1:], np.float32)])  # noqa: E731
-        self.q = iron.param(bf(pad(w[p + "attn1.to_q.weight"])))
-        self.k = iron.param(bf(pad(w[p + "attn1.to_k.weight"])))
+        self.q = dproj(pad(w[p + "attn1.to_q.weight"]))
+        # the keys are a GEMM's A without the q and k norms (kt = k h^T)
+        self.k = (dproj if c.qk_norm else lambda x: iron.param(bf(x)))(pad(w[p + "attn1.to_k.weight"]))
         self.v = iron.param(bf(value_rows(f32(w[p + "attn1.to_v.weight"]), H)))
-        self.o = iron.param(bf(out_cols(f32(w[p + "attn1.to_out.0.weight"]), H)))
+        self.o = dproj(out_cols(f32(w[p + "attn1.to_out.0.weight"]), H))
         self.ob = iron.param(bf(w[p + "attn1.to_out.0.bias"]))
         Hc, Dc, Dp = c.cross_heads, c.cross_head_dim, c.cross_pad
         fold = mha_fold(1 / math.sqrt(Dc))
@@ -383,23 +432,30 @@ class SanaBlock(iron.Graph):
             m, b = cross_rows(f32(w[p + f"attn2.to_{n}.weight"]), f32(w[p + f"attn2.to_{n}.bias"]), Hc, Dc, Dp)
             if n == "q" and not c.qk_norm:
                 m, b = m * fold, b * fold
-            setattr(self, f"c{n}", iron.param(bf(m)))
+            setattr(self, f"c{n}", dproj(m))
             setattr(self, f"c{n}b", iron.param(bf(b)))
         wo = f32(w[p + "attn2.to_out.0.weight"])
         wop = np.zeros((E, Hc * Dp), np.float32)
         for h in range(Hc):
             wop[:, h * Dp : h * Dp + Dc] = wo[:, h * Dc : (h + 1) * Dc]
-        self.co = iron.param(bf(wop))
+        self.co = dproj(wop)
         self.cob = iron.param(bf(w[p + "attn2.to_out.0.bias"]))
         wi = f32(w[p + "ff.conv_inverted.weight"])[:, :, 0, 0]
         bi = f32(w[p + "ff.conv_inverted.bias"])
-        self.ia, self.iab = iron.param(bf(wi[:Ch])), iron.param(bf(bi[:Ch]))
-        self.ig, self.igb = iron.param(bf(wi[Ch:])), iron.param(bf(bi[Ch:]))
+        # the MLP's channels padded to Cp with zero weights and biases (DWConv3's bands): the
+        # padded channels stay 0 through SiLU, the convolution and the gate, and pt ignores them
+        self.ia, self.iab = dproj(pad_rows(wi[:Ch], Cp)), iron.param(bf(pad_rows(bi[:Ch], Cp)))
+        self.ig, self.igb = dproj(pad_rows(wi[Ch:], Cp)), iron.param(bf(pad_rows(bi[Ch:], Cp)))
         wd = f32(w[p + "ff.conv_depth.weight"])[:, 0].reshape(2 * Ch, 9).T  # (9, 2 Ch), tap dy * 3 + dx
         bd = f32(w[p + "ff.conv_depth.bias"])
-        self.da, self.dab = iron.param(bf(wd[:, :Ch])), iron.param(bf(bd[:Ch]))
-        self.dg, self.dgb = iron.param(bf(wd[:, Ch:])), iron.param(bf(bd[Ch:]))
-        self.pt = iron.param(bf(f32(w[p + "ff.conv_point.weight"])[:, :, 0, 0]))
+        if DW["form"] == "op":  # (10, Cp): the 9 taps, then the bias
+            self.ta = iron.param(bf(pad_rows(np.vstack([wd[:, :Ch], bd[None, :Ch]]).T, Cp).T))
+            self.tg = iron.param(bf(pad_rows(np.vstack([wd[:, Ch:], bd[None, Ch:]]).T, Cp).T))
+        else:
+            self.da, self.dab = iron.param(bf(wd[:, :Ch])), iron.param(bf(bd[:Ch]))
+            self.dg, self.dgb = iron.param(bf(wd[:, Ch:])), iron.param(bf(bd[Ch:]))
+        pt = f32(w[p + "ff.conv_point.weight"])[:, :, 0, 0]
+        self.pt = dproj(np.concatenate([pt, np.zeros((E, Cp - Ch), np.float32)], axis=1))
         if c.qk_norm:
             # across the heads, the padded ones' zeros counted in the mean: weight times
             # sqrt(E / A), eps times E / A (self.aeps)
@@ -409,15 +465,20 @@ class SanaBlock(iron.Graph):
             kn, _ = cross_norm(f32(w[p + "attn2.norm_k.weight"]), Hc, Dc, Dp)
             self.cqn, self.ckn = iron.param(bf(qn * fold)), iron.param(bf(kn))
 
-    def depthwise(self, x, grid, taps, bias):
-        """``x`` (tokens, Ch) through a 3 x 3 depthwise convolution (zero padded), over the
-        grid's band of rows (W + 1 to a token row; the pad column's rows are not tokens)."""
+    def depthwise(self, x, grid, taps, bias=None):
+        """``x`` (tokens, Ch) through a 3 x 3 depthwise convolution (zero padded): with DWConv3
+        (``taps`` (10, Ch), the bias its last row) in token order (H W, Ch); else over the grid's
+        band of rows (W + 1 to a token row; the pad column's rows are not tokens)."""
         c = self.c
         H, W, Wp = c.gh, c.gw, c.gw + 1
         Ch = x.shape[1]
         band = dw_band(c)
         Copy.step(x, grid, src=tap(tuple(x.shape), 0, [H * W * Ch], [1]),
                   dst=tap((dw_rows(c), Ch), band * Ch, [H, W * Ch], [Wp * Ch, 1]))
+        if DW["form"] == "op":
+            import iron_dwconv
+
+            return iron_dwconv.dwconv3(grid, taps, H, W, dw_band_c(c))
         n = H * Wp
         y = None
         for dy in range(3):
@@ -433,7 +494,7 @@ class SanaBlock(iron.Graph):
         m = self.sst + t6
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (m[i * E : (i + 1) * E] for i in range(6))
         # linear self-attention
-        h = F.layer_norm(x, (E,), eps=1e-6) * (scale_msa + sh.one) + shift_msa
+        h = F.layer_norm(x, (E,), weight=scale_msa + sh.one, eps=1e-6) + shift_msa
         q = F.linear(h, self.q, precision=PREC.dit)
         A = c.att_dim
         if c.qk_norm:
@@ -470,9 +531,15 @@ class SanaBlock(iron.Graph):
                                      causal=False, d=Dp, scale=MHA_SCALE, num_pipelines=pipelines(Lq)).reshape(Lq, P)
         x = x + F.linear(o, self.co, self.cob, precision=PREC.dit)
         # GLUMBConv
-        h = F.layer_norm(x, (E,), eps=1e-6) * (scale_mlp + sh.one) + shift_mlp
+        h = F.layer_norm(x, (E,), weight=scale_mlp + sh.one, eps=1e-6) + shift_mlp
         a = F.silu(F.linear(h, self.ia, self.iab, precision=PREC.dit))
         g = F.silu(F.linear(h, self.ig, self.igb, precision=PREC.dit))
+        if DW["form"] == "op":
+            f = self.depthwise(a, sh.grid_a, self.ta) * F.silu(self.depthwise(g, sh.grid_g, self.tg))
+            if sh.kmask is not None:  # into whole 256 rows, zeros past the tokens
+                sh.fbuf[0 : c.tokens] = f
+                f = sh.fbuf[0:n]
+            return x + F.linear(f, self.pt, precision=PREC.dit) * gate_mlp
         a = self.depthwise(a, sh.grid_a, self.da, self.dab)
         g = self.depthwise(g, sh.grid_g, self.dg, self.dgb)
         f = a * F.silu(g)  # the band's rows; the pad column's are dropped next
@@ -567,7 +634,7 @@ class DitOut(iron.Graph):
 
     def body(self, x, emb):
         E = self.c.hidden
-        h = F.layer_norm(x, (E,), eps=1e-6) * (self.scale + emb + self.one) + (self.shift + emb)
+        h = F.layer_norm(x, (E,), weight=self.scale + emb + self.one, eps=1e-6) + (self.shift + emb)
         return F.linear(h, self.lin, self.linb, precision=PREC.dit)
 
 
@@ -916,9 +983,14 @@ def dw_band_conv(x, state, g: DwGrid, taps, bias=None):
     return y if bias is None else y + bias
 
 
-def band_dense(y, g: DwGrid, out=None):
+def band_dense(y, g: DwGrid | None, out=None):
     """The pixels' rows of a band (H Wp, C): (H W, C), or into ``out`` (a state of more rows,
-    zeros past them)."""
+    zeros past them). With ``g`` None, y is already (H W, C) (DWConv3's)."""
+    if g is None:
+        if out is None:
+            return y
+        out[0 : y.shape[0]] = y
+        return out[0 : out.shape[0]]
     C = y.shape[1]
     src = tap((g.H * g.Wp, C), 0, [g.H, g.W * C], [g.Wp * C, 1])
     if out is None:
@@ -990,7 +1062,10 @@ class VaeStage(iron.Graph):
                 taps = dw_taps(f32(w[ms + "proj_in.weight"]))  # (25, 3C)
                 po = f32(w[ms + "proj_out.weight"])[:, :, 0, 0]  # (3C, 32), grouped by 32
                 for j, nm in enumerate("qkv"):
-                    self._param(f"{path}.ms_{nm}_taps", taps[:, perm[j]])
+                    t = taps[:, perm[j]]
+                    if self.dw_op(C, W, 5):  # DWConv3's taps: the 25, then a zero bias
+                        t = np.vstack([t, np.zeros((1, C), np.float32)])
+                    self._param(f"{path}.ms_{nm}_taps", t)
                     bd = np.zeros((C, C), np.float32)
                     for h in range(Hh):
                         bd[32 * h : 32 * h + 32, 32 * h : 32 * h + 32] = po[96 * h + 32 * j : 96 * h + 32 * j + 32]
@@ -1010,10 +1085,14 @@ class VaeStage(iron.Graph):
                 self._param(f"{path}.igb", bi[Ch:])
                 td = dw_taps(f32(w[f + "conv_depth.weight"]))
                 bd = f32(w[f + "conv_depth.bias"])
-                self._param(f"{path}.da", td[:, :Ch])
-                self._param(f"{path}.dab", bd[:Ch])
-                self._param(f"{path}.dg", td[:, Ch:])
-                self._param(f"{path}.dgb", bd[Ch:])
+                if self.dw_op(Ch, W, 3):  # DWConv3's taps: the 9, then the bias
+                    self._param(f"{path}.da", np.vstack([td[:, :Ch], bd[None, :Ch]]))
+                    self._param(f"{path}.dg", np.vstack([td[:, Ch:], bd[None, Ch:]]))
+                else:
+                    self._param(f"{path}.da", td[:, :Ch])
+                    self._param(f"{path}.dab", bd[:Ch])
+                    self._param(f"{path}.dg", td[:, Ch:])
+                    self._param(f"{path}.dgb", bd[Ch:])
                 self._param(f"{path}.pt", f32(w[f + "conv_point.weight"])[:, :, 0, 0])
                 self._param(f"{path}.fn", f32(w[f + "norm.weight"]))
                 self._param(f"{path}.fnb", f32(w[f + "norm.bias"]))
@@ -1067,6 +1146,15 @@ class VaeStage(iron.Graph):
     def _param(self, name: str, x) -> None:
         self._index[name] = len(self.params)
         self.params.append(iron.param(bf(x)))
+
+    @staticmethod
+    def dw_op(ch: int, W: int, k: int) -> bool:
+        """Whether the VAE's k x k depthwise convolution over ch channels runs on DWConv3."""
+        if VAE_DW["form"] != "op":
+            return False
+        import iron_dwconv
+
+        return iron_dwconv.band(ch, W, k) is not None
 
     def w(self, name: str):
         return self.params[self._index[name]] if name in self._index else None
@@ -1294,9 +1382,18 @@ class VaeStage(iron.Graph):
         return y, gy
 
     def dwconv(self, x, H: int, W: int, k: int, taps, bias=None):
-        """``x`` (H W, C) dense through a depthwise convolution: the band (DwGrid's)."""
+        """``x`` (H W, C) dense through a depthwise convolution: the band (DwGrid's) and the grid,
+        or with DWConv3 (the bias in ``taps``) (H W, C) dense and None (band_dense passes it)."""
         g = DwGrid(H, W, k)
-        return dw_band_conv(x, self.dw[(H, W, k, x.shape[1])], g, taps, bias), g
+        C = x.shape[1]
+        state = self.dw[(H, W, k, C)]
+        if self.dw_op(C, W, k):
+            import iron_dwconv
+
+            Copy.step(x, state, src=tap(tuple(x.shape), 0, [H * W * C], [1]),
+                      dst=tap((g.rows, C), g.band * C, [H, W * C], [g.Wp * C, 1]))
+            return iron_dwconv.dwconv3(state, taps, H, W, iron_dwconv.band(C, W, k), k), None
+        return dw_band_conv(x, state, g, taps, bias), g
 
     def vit(self, xd, H: int, W: int, path: str):
         """An EfficientViT block on the dense tokens xd (n, C): the pixels' H W rows, then
@@ -1335,9 +1432,9 @@ class VaeStage(iron.Graph):
         # GLUMBConv
         ha = F.silu(F.linear(x1, p("ia"), p("iab"), precision=P))
         hg = F.silu(F.linear(x1, p("ig"), p("igb"), precision=P))
-        ya, g3 = self.dwconv(ha, H, W, 3, p("da"), p("dab"))
+        ya, g3 = self.dwconv(ha, H, W, 3, p("da"), None if self.dw_op(ha.shape[1], W, 3) else p("dab"))
         _profile_boundary()  # F: the norm, the inverted 1 x 1s
-        yg, _ = self.dwconv(hg, H, W, 3, p("dg"), p("dgb"))
+        yg, _ = self.dwconv(hg, H, W, 3, p("dg"), None if self.dw_op(hg.shape[1], W, 3) else p("dgb"))
         _profile_boundary()  # G: two 3 x 3 depthwise
         f = band_dense(ya * F.silu(yg), g3, out=self.padded[(4 * C, n)][0] if pads else None)
         f = F.linear(f, p("pt"), precision=P)
@@ -1647,6 +1744,10 @@ def main(argv=None) -> int:
     ap.add_argument("--only", nargs="*", default=["text", "caption", "dit_in", "dit_blocks", "dit_out", "vae"],
                     help="parts to export: text, caption, dit_in, dit_blocks, dit_out, vae")
     ap.add_argument("--stages", type=int, nargs="*", help="the VAE's stages to export (default all)")
+    ap.add_argument("--dit-proj", default=DIT_FMT["proj"], choices=("bfp16", "bf16"),
+                    help="the DiT's projections that are a GEMM's B: bfp16 packed on the host where they tile, or bf16")
+    ap.add_argument("--dit-dw", default=DW["form"], choices=("op", "eltwise"),
+                    help="GLUMBConv's depthwise convolutions: one DWConv3 operator a branch (the MLP padded to its bands) or 18 elementwise operators")
     ap.add_argument("--dit-precision", default=PREC.dit.value, choices=[p.value for p in Precision],
                     help="the DiT's projections (high: the same pictures as medium, 2.5 times as slow)")
     ap.add_argument("--vae-precision", default=PREC.vae.value, choices=[p.value for p in Precision])
@@ -1658,6 +1759,8 @@ def main(argv=None) -> int:
                     help="vae: the 3 x 3 convolutions (but the upsamplings that halve the channels) as one GEMM over im2col rows or a GEMM a tap")
     ap.add_argument("--vae-up", default=VAE_UP[0], choices=("phase", "grid"),
                     help="vae: the upsamplings as four 2 x 2 convolutions at the low resolution, or the 2x grid and a 3 x 3")
+    ap.add_argument("--vae-dw", default=VAE_DW["form"], choices=("op", "eltwise"),
+                    help="vae: the EfficientViT's depthwise convolutions on DWConv3 (where its bands fit) or elementwise operators")
     ap.add_argument("--vae-cols-mib", type=int, default=VAE_COLS_MIB[0], help="vae: a convolution's im2col rows at most (MiB)")
     ap.add_argument("--text-chunk", type=int, default=64, help="text with a prefix: the rows a call computes")
     ap.add_argument("--no-prefix", action="store_true",
@@ -1672,6 +1775,13 @@ def main(argv=None) -> int:
     ap.add_argument("--cols", type=int, default=8)
     ARGS = a = ap.parse_args(argv)
     TEXT_FMT["fmt"] = a.text_format
+    DIT_FMT["proj"] = a.dit_proj
+    DW["form"] = a.dit_dw
+    VAE_DW["form"] = a.vae_dw
+    if a.dit_proj == "bfp16":
+        import iron_q4
+
+        iron_q4.install_linear()  # F.linear runs the packed weights on flm.ProjectionGEMM
     bind_device(a.device, a.cols)
     cfg = json.loads((a.root / "transformer" / "config.json").read_text())
     c = DitConfig.of(cfg, a.width or a.size, a.height or a.size, a.group)
