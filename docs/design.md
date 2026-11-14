@@ -5502,3 +5502,30 @@ Hugging Face のチェックポイントから `.aimodel` (Core AI) などに変
 - 部品 1 つの見積もり: Anima 1 GiB、Sana 2 GiB、Chroma と Qwen-Image 2 GiB、`llm.ConvertAI` 4 GiB。16 GB の Mac (物理の半分の 3/4 = 6 GB) で Qwen-Image は 3 並べになる (全部メモリの見積もり 6 GiB では 1 つずつだった)。Mac では測っていない
 - Intel の OpenVINO IR (`ovlower`) はもとから定数を `.bin` に書きながら進む。AMD は Python の IRON の書き出し (チェックポイントは `np.memmap`、重みのイメージは `open_memmap`) で、ここは変えていない
 - 効果音 (`internal/sfx`) は重みを遅れて読み、部品ごとに `.done` を書くので、今回は並べていない
+
+### 16.195 NPU を見る道具の下地: `npuinfo` (OS が NPU について教えることを構造体で) — 2026-11-14
+
+macOS のアクティビティモニタも Linux のいつもの道具も NPU を見せない (Windows のタスクマネージャーは 24H2 の 26100.8524 からプロセスごとの NPU の列がある)。ブラウザで見る道具を作る前に、各 OS で何が取れるかを集める `npuinfo` パッケージを足した。将来 gopsutil などから使えるよう、標準ライブラリだけを import し、hwnpu の他のパッケージも使わない (別のモジュールに切り出せる)。今は OS とドライバが返すものをそのまま OS ごとの構造体に入れ、共通の API は後で考える。`go run ./npuinfo/cmd/npuinfo` が JSON を書く。表は [npuinfo/README.ja.md](../npuinfo/README.ja.md)。
+
+**この機械 (Ryzen AI 9 365、Linux 7.0、amdxdna、ファームウェア 1.1.2.64) で取れたもの**
+- プロセスごとの使用: `DRM_IOCTL_AMDXDNA_GET_ARRAY(HW_CONTEXT_ALL)` が root なしで通り、文脈ごとに PID、列 (0+8)、送ったコマンドと終わったコマンドの数、状態を返す。LFM3 q4 のデコード中はコマンドが毎秒約 12 増え、トークンの速さと合う。別のセッションの `hwnpu-image` も、文脈 3 つとして見えた。`gops`、`fps`、`heap_usage` は 0 のまま
+- NPU のメモリ: `/proc/PID/maps` の `/dev/accel/accel0` の行を足すと、LFM3 q4 で 1635 MiB (10 行)。前に測った固定メモリ 1.64 GiB と合う。RSS (390 MB) にも VmPin にも出ない分
+- 忙しさと電力: amdgpu の gpu_metrics (v3) の `average_ipu_activity` (デコード中 93 %)、`average_ipu_power` (1026 mW)、NPU の読み (17.6 GB/s)。構造体の並びはテストで手計算のオフセットと突き合わせた
+- その他の ioctl: AIE の版と形 (8 列 × 6 行、列 504 バイト)、クロック (MP-NPU 1267 MHz、H 1800 MHz)、電力モード、TOPS とタスクの上限と今 (58 TOPS、16 タスク中 2〜3)、列ごとの AIE の状態レジスタ (生のまま)、テレメトリ (生のまま)、最後の非同期エラー
+- 取れないもの: fdinfo に `drm-*` が無い (amdxdna が実装していない)。センサーの問い合わせは ENODEV (この BIOS に PMF の ACPI デバイスが無い)
+
+**読むことで NPU を起こさない**: amdxdna の GET_INFO と GET_ARRAY は寝ている NPU を起こし (`amdxdna_pm_resume_get_locked`)、自動サスペンドの待ち 5 秒の間起こしたままにする。毎秒読む監視は NPU を寝かせなくする。そこで `power/runtime_status` が active のときだけ問い合わせる (`Options.Wake` で変えられる)。デバイスを開くこと、sysfs を読むこと (PCI の config 空間は読まない)、`/proc` を回ることでは起きないことを、寝ている NPU で確かめた。
+
+**macOS (M1、macOS 27.2.1) で動かして足したもの**
+- I/O Registry の読みはそのまま動いた。ANE のクラスは `H11ANEIn` (ドライバ、`DeviceProperties` にアーキテクチャ `h13g`、コア 16、版 64.17)、`H1xANELoadBalancer` の下に `H1xANELoadBalancerClient` (`aned`) と `H1xANELoadBalancerDirectPathClient` (Core AI で直接開くプロセス。`hwnpu-image` は 14 個)。`DeviceProperties` と `IOPowerManagement` を `Darwin.Device` に型付きで出す。`CurrentPowerState` は休みで 0、動かしている間 1
+- プロセスごとの ANE のメモリ: `proc_pid_rusage(RUSAGE_INFO_V6)` の `ri_neural_footprint` (macOS 14 から)。`phys_footprint` (アクティビティモニタのメモリ) には入らない分。0.23 GiB の lut4 のプログラムで 234 MiB。ANE を開いていない (`aned` を通す) `mediaanalysisd` もこれで見つかる。他のユーザーのプロセスは root でないと読めない (`aned` は名前とパスだけ)
+- IOReport (`/usr/lib/libIOReport.dylib`、非公開、root 不要): ANE のチャンネルは `PMP`/`Energy Counters`/`ANE` (mJ)、`AMC Stats`/`Perf Counters`/`ANE RD`・`ANE WR` (バイト)、`Interrupt Statistics (by index)`/`ane 0`、ほかに `PMP` の帯域とストールの分布、`SoC Stats`/`Events` の `ANE_*`。M1 の `Energy Model` には ANE が無い (M2 以降にあるらしいので、あればそちらを使う)。`hwnpu-dev probe bench` (lut4 8 層、5.7 ms/回) を回して 2.0 W、読み 44 GB/s (重み 0.23 GiB × 毎秒 175 回で 40 GB/s と合う)、割り込み毎秒 537 (1 回あたり約 3)。休みの間はどれも 0。powermetrics (root) とは突き合わせていない
+- cgo なしで C を呼ぶ: golang.org/x/sys/unix と同じく `//go:cgo_import_dynamic` とアセンブリのトランポリンで libSystem の `dlopen`、`dlsym`、`dlerror` だけを取り込み、`syscall.syscall6` (linkname) で呼ぶ。CoreFoundation、IOReport、`proc_*` は実行時に dlsym するので、無い OS でもバイナリは起動し、`Info.Errors` に出るだけ。CGO_ENABLED=0 と 1 の両方、darwin/amd64 のクロスビルドで確かめた。標準ライブラリ以外の依存は増えていない
+- ANE を他と並べて見る: 同じ IOReport の購読から、`PMP`/`Energy Counters` の電力の区分全部 (ECPU、PCPU、GPU、ANE、DRAM、DCS、DISP など 26) を `soc_power_w` に、`AMC Stats`/`Perf Counters` の読み書き元全部を `dram_bytes_per_sec` に。M1 の `Energy Model` のチャンネルは全部 0 のままなので、0 は出さない。別のセッションの `hwnpu-image` の画像生成 (ANE のメモリ 9.1 GiB) で ANE 6.9 W、DRAM 1.2 W、CPU 0.25 W、GPU 0
+- その他: 熱の圧力 (`com.apple.system.thermalpressurelevel`) と低電力モード (`com.apple.system.lowpowermode`) を libSystem の notify で。読み込まれている ANE の kext (I/O Registry の `CFBundleIdentifier` と `/System/Library/Extensions/*ANE*.kext` の Info.plist を突き合わせる。M1 は AppleH11ANEInterface 10.102.3。他の 11 個は他のチップ用)、AppleNeuralEngine.framework の version.plist。システムの ANE のプロセス (`aned`、`aneuserd`、`ANECompilerService`) を `proc_pidpath` で (root のプロセスでも読める)
+- 読んでも ANE を起こさない: 休みの間に IOReport ごと 40 回読んで、電源の状態は 0 のまま
+- `Options.SampleInterval` の間 (500 ms) IOReport の 2 回の読みの間で待つ。負にすると読まない
+
+**Windows は書いただけ** (クロスビルドと vet とパースのテストのみ)。Windows は PnP の ComputeAccelerator のデバイス、D3DKMT のアダプター (`D3DKMTEnumAdapters3` で計算専用も)、名前に GPU、NPU、Neural を含むパフォーマンスカウンターを全部 (インスタンス名の `pid_N_luid_…_engtype_…` を分ける)。どれもその機械で動かして、何が出るかを見るところから。
+
+残り: Windows (Intel の機械は `tools/intel/hwnpu-intel-check.ps1` に足すと往復が 1 回で済む) で動かす。M2 以降の Mac で IOReport のチャンネル名を確かめる。AIE の状態とテレメトリを読み解く。共通の API。ブラウザで見る道具。
