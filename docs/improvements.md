@@ -2,7 +2,7 @@
 
 [日本語](improvements.ja.md)
 
-This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.117), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections. Section 7.5 and the rows marked "Core AI" add the Core AI backend of macOS 27 (16.169–16.183), measured on an M1 and an M2 (16 GB, macOS 27.2) unless noted (16.182 and 16.183: an M3).
+This page sorts the changes by what they improved. It draws on the implementation log in design.md chapter 16 (up to 16.117), model-fit.md, intel-npu-models.md, amd-npu-models.md (sections 11–13), amd-xdna2-bench.md, handoff-anima-mac-intel.md and handoff-m3-gptq.md. The numbers are the measurements recorded there. Unless noted, they are from **the Neural Engine (ANE) of an Apple M3 (16 GB)** with LFM3-1.7B. AMD numbers are from a Ryzen AI 9 365 (Strix Point). Numbers in parentheses are design.md sections. Section 7.5 and the rows marked "Core AI" add the Core AI backend of macOS 27 (16.169–16.183), measured on an M1 and an M2 (16 GB, macOS 27.2) unless noted (16.182 and 16.183: an M3). The gpt-oss-20b rows (16.179) are AMD's numbers of 2026-11-14.
 
 - "Generation" = how fast one token is made (ms/token or tokens/s)
 - "Prefill" = how fast the prompt is read (time to the first answer)
@@ -49,6 +49,13 @@ This page sorts the changes by what they improved. It draws on the implementatio
 | AMD: towers loaded only when used (16.81) | | | △ the first image or clip +0.6–0.7 s | ◎ E2B with images and audio 2818 → 1826 MiB while only text | ○ no text-only export needed | | unchanged | AMD |
 | AMD: the prompt's attention on 8 pipelines (`--mha-pipelines`, 16.107) | unchanged | ◎ chunks 2.3–4× faster on E2B (from 0 1.16 → 0.50 s, from 3072 2.53 → 0.64 s), LFM3 2.1–4.8×, PLaMo 3 2B 2.7–4.8×, 0.8B 2.4–4.8×. Energy −66 to −83 % | | | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
 | AMD: the decode step in fewer operators: biases and residuals added in the GEMVs (QGEMVAdd), a gated MLP's gate and up as one table and one operator (QGEMVGlu), gpt-oss's q and k one RoPE (16.179) | ◎ Qwen3.5-0.8B 87 → 73 ms (−16 %), gpt-oss-20b 97.5 → 89.5 ms | unchanged (the same operators) | | unchanged (one table, no second copy) | | | unchanged (cosine 0.9999 to the export before) | AMD (needs exporting again) |
+| AMD: gpt-oss-20b's decode step as one resident array, the output head a phase of it, no barrier before a step (`GptOssStep`, 16.179) | ◎ 79.2 → 50.6 ms a token (12.6 → 19.7 tokens/s): an operator that follows another is loaded again, 30 of the 79 ms | unchanged | | △ +1.06 GiB (the array's own tables and its array of keys and values; 0.67 GiB of it back with the next row) | | | unchanged (KL 0.031) | AMD (needs exporting again) |
+| AMD: one table for the prompt and the decode step (`Q8XDequant`, 16.179) | unchanged | △ +1.9 % | | ◎ gpt-oss pinned 14.1 → 13.4 GB | ○ the image 0.7 GB smaller | | unchanged (the prompt's output bit for bit) | AMD (needs exporting again) |
+| AMD: the decode attention's exponential and sums, the router on every column (16.179) | ○ 50.6 → 49.4 ms with the host's row below; ◎ long contexts: 66.1 → 56.1 ms at 7680 (15.1 → 17.8 tokens/s) | | | | | | unchanged (KL 0.0315, the same errors against the reference) | AMD (needs exporting again) |
+| AMD: a sliding layer's decode cache as a ring of its window (16.179) | unchanged | | | ○ gpt-oss 12.41 → 12.22 GiB | | unchanged (going back and the prompt store as before) | bit for bit the same after going back | AMD (needs exporting again, and the hwnpu of the same change) |
+| AMD: gpt-oss's prompt experts on bfp16, by slots, each block decoded once (16.179) | | ◎ a chunk of 256 tokens about 6 → 1.8 s (7 ms a token; a token at a time 106 ms) | | | | | △ KL of 5 texts 0.027 → 0.030 | AMD |
+| AMD: a checkpoint's own 4 bits kept (gpt-oss's MXFP4 experts, mx4, 16.179) | (4.3 bits a weight, where q4nx takes 5) | | | | | | ◎ rounding them again to q4nx: KL 2–3× | AMD |
+| The host's logits and top k in vector loops (16.179) | ○ gpt-oss 19.4 → 19.7 tokens/s (201088 logits: 1.33 → 0.23 ms a token) | | | | | | the same output | AMD (the logits), all (top k) |
 | AMD: Qwen3.6's prompt experts' gate and up on four cores a column, rows an expert 128 → 256 (16.116) | unchanged | ◎ chunk of 256 3.9 → 3.0 s (always one pass of the experts' weights), 2.7 s with the host's combine on all CPUs, 2.6 s with the experts' down on four cores a column | | | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
 | AMD: Gated DeltaNet's columns aligned to 64 (`COLUMN_ALIGN`, 16.117) | ○ Qwen3.5-0.8B decode 85.6 → 82.5 ms (the fused projection on 8 columns, not 1) | | | △ zero rows (0.8B +7 % of that projection) | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
 | AMD: the prompt GDN's silu once before the operator (`GdnSiLU`, 16.111) | unchanged | ◎ Qwen3.6 chunk of 256 4.5 → 3.9 s (GDN layer 43 → 22 ms), Qwen3.5-0.8B chunk of 512 0.9 → 0.5 s | | | | | unchanged (logits bit for bit the same) | AMD (needs exporting again) |
@@ -116,6 +123,28 @@ Improvements to the GEMV itself:
 - With 2 cores per column it reaches 55 GB/s, the same as bf16. With 1 core it is bound by compute
 - The fused `qkv_proj` and `gate_up_proj` are one `QGEMV` call in decode (6 % faster than splitting)
 
+**gpt-oss-20b on AMD, a decode step by step (16.179).** A token moves 2.53 GB: 24 layers of 88 MB (the 4 experts 57 MB, q/k/v 17.6 MB, o_proj 13.7 MB) and the head's 415 MB. At 55 GB/s that is 46 ms.
+
+| Change | Before | After | Notes |
+|---|---|---|---|
+| Biases and residuals in the GEMVs, a gated MLP's gate and up as one operator, q and k one RoPE | 97.5 ms | 89.5 ms | Generation was bound by the number of operators (80–150 µs each) |
+| A layer's experts as one operator, scales as MXFP4's exponent bytes (`MX4Experts`) | 89.5 ms | 80.5 ms | Each operator carried about 0.4 ms of its streams' start and end |
+| q, k, v with the norm, the bias and RoPE in one operator (`QGEMVQKV`) | 80.4 ms | 79.2 ms | Two operators fewer a layer |
+| The step as the phases of one resident array (`GptOssStep`) | 79.2 ms | 54 ms | An operator following another is loaded again: about 67 µs and 1.2 µs a KB of its cores' programs, 30 ms a token |
+| The head a phase of the array, no barrier before a step | 54 ms | 50.6 ms | The barrier's change of hardware context put the whole array back (2.4 ms a step); the head's q4 table is read in place |
+| The attention's exponential and sums, the router on every column, the host's logits | 50.6 ms | 49.4 ms (20.2 tokens/s) | The host 1.1 ms of it; the rest shows with the context, below |
+
+| Context | Before the attention's change | After |
+|---|---|---|
+| 256 | 51.4 ms | 49.4 ms |
+| 2048 | 54.7 ms | 50.8 ms |
+| 4096 | 58.7 ms | 52.3 ms |
+| 7680 | 66.1 ms | 56.1 ms |
+
+- The steps' own time, 256 steps (`ironlm -forced`), both columns with the host's change. An object of 128 rows went from 21 to 9.6 µs a full-attention layer, 5–6 µs of it the transfer
+- What is left above the floor's 46 ms: the 24 command boundaries (0.1 ms each: one command a token and a chain of commands both failed, section 8), each phase's fixed 25–35 µs (its x objects and descriptors), and the host's 1 ms
+- Energy: the same answer of 600 tokens took 779 J in 62 s when a step was about 90 ms and 553 J in 38 s now (the package: 1.3 → 0.92 J a token, the load included)
+
 ## 3. Prefill (time to the first answer)
 
 | Change | Before | After | Notes |
@@ -132,6 +161,8 @@ Improvements to the GEMV itself:
 | Neural Engine: Gemma 4's KV-sharing layers on the last row alone (16.83) | E2B 16K 27.8 s, 64K 205.2 s | 12.6–13.2 s, 94.6 s | The shared layers (15 to 34), and the host's attention of their 4 full attention layers, on the last token's row. That attention runs on the program of 8 tokens that generates |
 | The same (E4B, `-prefill on`) (16.83) | The default one program: 16K 184.3 s, 64K 1382.8 s | 24.3–25.4 s, 168.4 s (7.5–8.2×) | Two programs (6.5 GiB) do not fit the compile cache: every start takes 135–165 s, and the first tokens after a prompt are slow (3 s at 16K, 14 s at 64K). Generation at 16K is a fifth slower. The default stays one program |
 | Neural Engine: Gemma 4's prompt program with only the layers that write the caches (16.112) | E2B on the M1, 4249 tokens 4.2–4.6 s (q128-last, 8 parts, 1.6 GiB) | 2.4–2.7 s (3 parts, 0.38 GiB) | Layers 0 to 14 alone read 128 tokens at a time; the last 8 tokens go through the program that generates, which gives the logits. The output layer's `reshape` on the CPU is gone from the prompt program too |
+| AMD gpt-oss: the prompt's experts through the matrix units (16.179) | A chunk of 256 tokens about 6 s (the vector mac; a token at a time 106 ms a token) | 5.4 s (bf16 `mmul`), 3.4 s (bfp16, the native float matrix instruction), 1.8 s (slots of 56 rows, each weight block decoded once): 7 ms a token | The bf16 `mmul<4,8,8>` is emulated with broadcast macs on AIE2P. A layer of a chunk now: the experts 35 ms, the attention's side 12 ms, the host 4 ms |
+| AMD gpt-oss: the prompt reads the decode step's q8x tables (`Q8XDequant`, 16.179) | 2048 tokens 15.8 s | 16.1 s (+1.9 %) | The price of holding the projections once (−0.67 GiB): writing rows of 320 bytes runs at 15 GB/s |
 | The Neural Engine's prompt chunk of 128, logits of the last row alone (16.82) | LFM3 4K 3.9–5.4 s, 16K 19.3–25.2 s, 64K 160 s; Gemma 4 E2B 16K 31.2 s; LFM3-VL 16K 21.6 s | 3.3–3.9 s, 15.2–16.1 s, 136–146 s; 23.5 s; 16.9 s | Even at 64 rows a call is mostly reading the weights, so one of 128 costs 1.5 times as much. 256 is no faster. Models in one piece and Intel stay at 64 |
 | AMD: prompt chunk 1024 (16.54) | 2,683 tokens 13.0 s | 10.2 s | Short ones too: 0.56 → 0.43 s |
 | 4 bits on AMD (16.73, 16.76–77) | — | Unchanged (LFM3 2048 tokens 2.29 → 2.38 s, PLaMo 3 2596 tokens 11.2 → 11.8 s) | Weights are turned back from q4nx and q8 into bfp16 or bf16 on the device for the GEMM, so prompt speed does not gain |
@@ -191,9 +222,11 @@ Improvements to the GEMV itself:
 | PLaMo 3 Translate 2B | 5.96 GiB | — | **2.16 GiB** (the 0.51 GiB embedding is a file on the host) | 0 |
 | PLaMo 3 Translate 0.8B | 1.77 GiB | — | **0.58 GiB** (16.103) | 0 |
 | Qwen3.5-0.8B / 2B | 1.81 / 3.92 GiB | — | **1.04 / 1.97 GiB** (6-bit MLP and head, embeddings on the host, 16.104) | 0 |
+| gpt-oss-20b | — (its experts are MXFP4 in the checkpoint) | — | **12.22 GiB** (experts mx4, attention q8, head q4, embeddings a file on the host; 13.1 GiB before the prompt and the decode step shared the projections' tables, 12.41 before the sliding layers' ring, 16.179) | not tried |
 | Anima (1024 × 1024) | 14.2 GiB | **5.0 GiB** loading one stage at a time | **3.4 GiB** (DiT at 8 bits; 2.7 GiB at 4 bits). **1.2 GiB** with the DiT's 7 groups read in turn into one bank (16.106) | — |
 
 - Tables on the host: PLE reads only one row a token, yet the whole table was pinned. The table now stays a file, and before each call only the tokens' rows are written into a small device buffer (18 MB for E2B)
+- A decode step on its own array (gpt-oss, 16.179) holds what it reads in its own order: its tables (the same codes as the prompt's until `Q8XDequant` let the prompt read them: −0.67 GiB) and an array of keys and values beside the prompt's caches (0.4 GiB; the sliding layers' half became rings of 128 rows, −0.19 GiB; the full layers' 0.19 GiB is left). Measure a process's pinned memory by the sizes of its `/dev/accel/accel0` mappings in smaps
 - The embedding is shared with the output matrix, so making the output 4-bit leaves no bf16 rows. The embedding became a host table the same way
 
 ### 5.2 Disk
@@ -238,6 +271,10 @@ Most of the disk is weights and their copies: programs for 8 and 64 tokens per c
 | AMD: 4-bit codes chosen by GPTQ (16.87, `q4_gptq.py`, `--q4-codes`) | Each weight rounded to its nearest level: KL from the NPU's bf16 on E2B 0.120 (README), 0.221 (Japanese Wikipedia); LFM3 0.032, 0.071 | E2B 0.092, 0.081 (top-1 79 → 88 %); LFM3 0.017, 0.038. The GPL, not calibrated on: E2B 0.161 → 0.140, LFM3 0.110 → 0.092 | Same format, so speed and memory are unchanged. Calibration on the CPU before the export (E2B about 40 min, LFM3 about 25). With H damped by 0.01 instead of 0.1 it fitted the calibration texts and made the GPL worse than rounding. Also on the NPU, wiki-ja: E4B 0.083 → 0.049, LFM3-VL 0.067 → 0.034, Audio 0.046 → 0.022, Omni 0.048 → 0.024, PLaMo 3 0.058 → 0.040 (README and GPL mostly better too; Audio's GPL 0.154 → 0.161). LFM3's multimodal models have their own text weights, so each is calibrated (amd-npu-models.md 13, "continued") |
 | Apple: lut6 entries chosen by GPTQ (16.87, `hwnpu-dev convert -codes`) | LFM3 lut6: KL (CPU estimate) README 0.070, wiki40b-ja 0.112 | 0.027, 0.068. Through Go's converter 0.074 → 0.050 (top-1 105 → 111 of 128) | Same format and speed. On the M3's ANE (16.95, every projection with `--q8 gptq`): KL from PyTorch's fp32 against the chat's rounding English 0.322 → 0.247 (median 0.155 → 0.097), Japanese 0.054 → 0.035, as on Core ML's CPU; all on the ANE, same speed. 12 factual questions: 10 of 12 either way (GPTQ got Mount Fuji's height wrong). Fitting the tables too, by k-means weighted with E[x²] (`--lut-fit wkmeans`): lut6 0.050 → 0.038 through Go's converter (top-1 112 of 128); lut4 2.7 → 0.66 → 0.33, better but still 4× lut6's rounding. **Gemma 4 E2B on the M1** (16.114, calibrated on the 16 GB Mac with the tables read from the file, 87 min): on the ANE over 128 tokens English 1.02 → 0.56, Japanese 1.16 → 0.94 (median 0.25 → 0.08, 0.47 → 0.20; top-1 88 → 97, 82 → 92 of 128) with the `per_layer` projections the calibration leaves out at lut8 (+0.01 GiB); 12 questions 10 → 11 of 12; same speed. `hwnpu-chat -codes DIR -format-for per_layer=lut8` |
 | AMD: the cores' rounding to nearest even (16.78) | The cores start in floor mode, and each narrowing to bf16 pulls sums of inputs with a mean downward: Anima's DiT step-0 velocity error q8 0.088, q4 0.244 (bf16 0.025) | q8 0.031, q4 0.087 (the quantization alone on the CPU: 0.007, 0.092). Language models: E2B KL 0.097 → 0.093, LFM3 0.036 unchanged | None (one instruction a call). Takes effect when exported again |
+| AMD: a checkpoint already in 4 bits kept in its format (gpt-oss's MXFP4 experts, mx4, 16.179) | Rounded again to q4nx: weight error 6.6 %, KL README 0.135, wiki-ja 0.107 (CPU) | As they are: 0.052, 0.043 | None (4.3 bits a weight; the e2m1 nibbles are decoded in the kernel) |
+| AMD gpt-oss: only the head's q4 by GPTQ (16.179) | Rounding: KL 0.060 (README), 0.0074 (GPL), 0.027 (wiki-ja), 0.027 (wikitext), 0.032 (Go) | 0.055, 0.0065, 0.021, 0.023, 0.030 | The attention's q8 by GPTQ too made four texts better and wiki-ja 0.027 → 0.066 (three positions at KL 1.6–2.9): left rounded |
+| AMD: bfp16 where a GEMM takes it, not where a softmax follows (16.179) | gpt-oss's prompt experts on bfp16 (8 in-features sharing an exponent, 8-bit mantissas): KL 0.027 → 0.030, kept for 1.6× the speed | The decode attention's scores on it: the heads' outputs 3.6 % of their largest off on random keys (cosine 0.99987). Kept in bf16 | A score's error is its softmax's; a GEMM's averages out |
+| AMD: a shorter exponential on the cores (`gl_exp32`, 16.179) | `exp_f32`, exact in float32 | A quartic on two bf16 limbs, within 1e-4: the same errors against the reference, KL of 5 texts 0.0318 → 0.0315 | None (7 µs an attention object less). A cubic in bf16 alone (0.2 %) put a routing weight 1.3 % off |
 | AMD: Anima's DiT at q8 rather than q4 (16.78) | q4nx: latent cosine 0.777, the face and hands change. GPTQ (`anima_gptq.py`, 16.87) at 512×512 on the CPU: velocity error 0.123 → 0.071, latent cosine 0.868 → 0.939 (q8: 0.013, 0.962) | q8: 0.961 (bf16 0.966), nearly the same picture | 735 MiB more pinned than q4 |
 | Anima: `HIGHEST` for the text only (16.68) | All `MEDIUM` (bfp16): latent cosine 0.938 | 0.966 (bf16 on the CPU: 0.980) | Same time |
 | Anima's fp16 handling (Apple / Intel) (16.69) | DiT residuals reach 2.7e5 and overflow fp16 | Residuals kept at 1/32, norms divided by each row's maximum first: latent cosine 0.99985 on the CPU | None |
@@ -348,6 +385,8 @@ Sharing identical files on the disk (`cache.Clone`, 16.64 and 16.79) depends on 
 
 The host's own CPU code (16.183): the matrix product (`internal/sgemm`) has a NEON kernel on arm64 beside amd64's AVX2 and AVX-512 ones (106 GFLOPS on one thread of an M3, where the Go loop took about 10 times as long in EfficientSAM's decoder), which the CPU interpreter (`milcpu`, `--cpu`) and the ONNX evaluator share; and the evaluator's elementwise operations no longer build tables of indices for the common broadcasts. EfficientSAM's decoder, which runs on the host for each prompt, went from 1.06 s to 0.28 s (`hwnpu-image segment`: 1.5 → 0.72 s a picture).
 
+The host's share of a token (16.179): with gpt-oss on AMD pprof showed 2.3 ms a token on the host, 1.33 ms of it turning 201088 bf16 logits to float32 one at a time. The logits now go through `vecops.BF16ToF32` and `f32.Axpy` (0.23 ms), and the sampling's top k (every backend's) passes over blocks of 256 logits whose largest (`vecops.MinMax`) is not above the k-th. About 1 ms is left: the commands' submits and waits, the logits' copy, the token's text.
+
 ### 7.5 Apple: Core AI (macOS 27)
 
 Core AI keeps what it specialized for the device in its own cache, keyed only by `main.hash` (the sha256 of `main.mlirb`), for each OS build and executable name. It has no ~4 GiB limit like Core ML's compile cache, and one program may hold 2.5–3 GiB on an M3 (Core ML: 1 GiB).
@@ -403,6 +442,13 @@ Core AI keeps what it specialized for the device in its own cache, keyed only by
 | AMD gpt-oss: the exponential as a cubic in bf16 alone | Its 0.2 % put a routing weight 1.3 % off. A quartic on two limbs (within 1e-4) instead | 16.179 |
 | AMD gpt-oss: the cache's size as an array parameter differing by layer | Sliding and full layers became two arrays, loaded again each command (a layer's command 1.80 → 4.27 ms); the check still passes. A parameter outside the array's key | 16.179 |
 | AMD gpt-oss: the attention's cache read in one run (to time the transfers) | The command timed out (ERT_CMD_STATE_TIMEOUT). Keys and values stay read 64 elements each in turn (5–6 µs an object) | 16.179 |
+| AMD gpt-oss: one command a token | The routing writes the scratchpad words the next layer's experts read; mlir-aie reads a sequence's scratchpad once, at its start: cosine 0.877 from the second step. A command boundary a layer stays (0.1 ms each) | 16.179 |
+| AMD gpt-oss: a token's 25 commands as one chain (ERT_CMD_CHAIN) | Linux 7.0's amdxdna takes a chain of ELF commands, and it ran: 19.3–19.6 tokens/s against 19.6–19.7 one by one. The boundary's 0.1 ms is the firmware starting a command, not the round trip | 16.179 |
+| AMD gpt-oss: the decode attention on 4 cores a column | Not needed: once the exponential was short the computing ended within the transfers (an object 9.6 µs, 5–6 of them transfer). It would have needed room in the cores that hold the router | 16.179 |
+| AMD gpt-oss: the attention's outputs written in one run instead of 64-byte pieces | The same time: a phase's fixed 25–35 µs is its x objects and descriptors, not the shape of its writes | 16.179 |
+| AMD gpt-oss: the input norm's weight folded into the q8 table's columns | The q8 error went up and a top token changed. The cores multiply it on their x | 16.179 |
+| AMD gpt-oss: the attention's projections at q6 | KL 2–3× on the CPU (README 0.133). q8 kept; GPTQ at q6 is not tried | 16.179 |
+| AMD gpt-oss: the prompt experts' x resent from the memtile, their outputs in objects of 8 rows | 24.7 → 26.1 ms and 24.66 ms a gate-up: the weights' stream and decoding, x's transfer and the products are each about a third | 16.179 |
 | Core AI: `.aimodelc` (`coreai-build compile`) | First load 5–10× slower than `.aimodel` (26–77 s for 0.5 GiB on an M3), weights still copied into Core AI's cache, and kept per architecture | 16.169 |
 | Core AI: siblings by the whole weight file | PLaMo-Embedding's 128 and 1024 differ by a 458 KB table and did not group; the 3 largest blobs are compared instead | 16.177 |
 | Chroma1-Flash: 512² as a preview of 1024² | With the 1024² noise averaged down to 512², the composition matched in about 1 of 3 seeds; starting 1024² from the 512² latent stretched (hires fix) showed a grid of the token spacing. A preview was not needed | 16.176 |
@@ -421,6 +467,10 @@ Core AI keeps what it specialized for the device in its own cache, keyed only by
 - **`-idle`**: memory is given back while idle, but the next request first pays 0.8–2 s to reload. `-idle 0` turns it off
 - **Towers loaded only when used**: the first image or clip after a start (or after `-idle`) waits 0.5–0.7 s more for the towers, and for that moment the old and the new bank are both pinned (Gemma 4 E2B 4-bit: 1.67 + 2.64 GiB). After that the towers stay until the model is released
 - **The chunk barrier** (16.84): every prompt chunk first runs an empty command in the decode step's hardware context (0.3–0.5 ms a chunk). Without it, exports with the windowed attention hang on their second chunk. Exports with an xclbin per step (NPU1) run none
+- **gpt-oss's export and hwnpu go together** (16.179): the resident decode step needs what hwnpu learned with it (a row's logits as two partial sums, no barrier before a step, the sliding layers' rings). An export made after #148 is refused by an older hwnpu ("kv is no rows of its keys and values"); an older export still runs. `GPTOSS_RESIDENT=0` and `GPTOSS_KV_RING=0` export the older forms
+- **No barrier before a gpt-oss step**: the empty command in a second hardware context that keeps Qwen3.6 from hanging (16.92) is skipped for this export alone (the manifest's `no_step_barrier`): with it every step loads the array again (2.4 ms). Run without it: 399 steps on 2 layers, the KL runs, the agent's task, chats. `HWNPU_IRON_BARRIER=1` puts it back
+- **A decode step's own keys and values**: hwnpu copies a prompt chunk's rows into the step's array and the steps' rows back (before the next chunk, an export of rows, and every 128 steps for the rings). A step at a position that does not follow the last one fills the rings again first
+- **Timing a decode step on AMD**: `HWNPU_IRON_TIMING=1` waits for each command and adds its round trip (gpt-oss: the commands sum to 50.7 ms where a step takes 49.0). A forced run's whole time carries the prompt's variance (±0.3 s, ±1 ms a token over 256 steps): read the steps' own time, which `ironlm -forced` prints. After any change to an export read the commands' times too: an array parameter that differs by layer loads the array again each command and still passes the check
 - **PLaMo 3 as one lut8 program**: short texts are fast, but long documents are read about 10× slower (`-format lut6` gives two programs at lower accuracy)
 - **Sharing on the disk depends on the file system**: ext4, the default of Ubuntu, Debian and many others, cannot share, so each copy takes its full size there. Fedora and openSUSE default to Btrfs. Put the models on Btrfs or XFS to share (on Windows, a Dev Drive). Whole files and the common start of files of one name are shared; bytes after a difference are kept separately
 - **Core AI's first run**: every part is compiled once, and a group of several functions compiles all of them. Chroma1-Flash took 12 min 45 s at 512², 59 min 44 s at 1024², and 1 h 14 min for the 512² that joined the 1024² (after which 1024² loaded in about 1 s a part)
@@ -581,6 +631,14 @@ Apple / Intel (`hwnpu-image convert`):
 - Cosine 0.998–0.9998 against HF on 2 layers of real weights (layers 0 and 3; q4nx experts). Decode only; a prompt runs a token at a time
 - A takes 2.9–5 ms, B 1.0 ms, the head 5.9 ms (q4). Estimated about 210 ms (5 tok/s) for 40 layers. Most of the rest is A's op count (IRON's short convolution is about 10 ops)
 
+**gpt-oss-20b** (16.179)
+- AMD only (IRON; the routing does not fit the Neural Engine). 24 layers, 32 experts of which 4 a token, sliding (128 positions) and full attention in turn with a learned sink a head, a hidden size of 2880 carried as 3072. It always reasons first (the analysis channel of harmony)
+- Formats: the experts in the checkpoint's MXFP4 as they are (mx4), the attention's projections q8 in one table for the prompt and the decode step, the head q4, the embeddings a file on the host. The head's GPTQ codes come from `gptoss_gptq.py` and go in with `--q4-codes`; models.yaml's `amd_export` rounds it
+- Decode is one resident array of the 32 cores, a command a layer (the routing writes the next command's scratchpad words): 49.4 ms a token (20.2 tokens/s), 56.1 ms at a context of 7680. A prompt chunk of 256 tokens 1.8 s (routed on the host). Pinned 12.22 GiB. 0.92 J a token at the package
+- Checks: against HF fp32 every top token and cosine 0.99711–0.99984 (`ironlm` on 32 tokens and 3 steps), KL of 5 texts 0.0093–0.070 (mean 0.0315; `ironlm -forced -bos 200006`, then `ref_gptoss.py forced`), hwnpu-chat agent's task, and going back on the device (`TestKVRingRewindOnDevice`)
+- Switches for measuring: `GPTOSS_RESIDENT=0` (operators apart), `GPTOSS_KV_RING=0`, `GPTOSS_ATTN=0` (the attention and exponential before) or `9` (transfers alone), `MX4_BFP=0` (the prompt's experts on bf16), `HWNPU_IRON_BARRIER`, `HWNPU_IRON_TIMING`; `iron_gptoss_layer.py check --first`, `--one`, `--ring`
+- Left: fewer bytes (the attention below q8 needs GPTQ; the head's windows overlap by 7 %), the full layers' second copy of keys and values (0.19 GiB), checking drafts (each row has its own experts)
+
 **PLaMo-Embedding-1B** (16.18–19, 16.23, 16.34)
 - Structure: PLaMo's decoder with bidirectional attention. The fused `qkv_proj` and `gate_up_proj` are split by row ranges (8192 at a time, because of the 16384 limit)
 - hwnpu-chat's embedding API (`/v1/embeddings`): the query prefix, mean pooling over the text's tokens only, `input_type`, `truncate`, and the shortest of the programs of different lengths (128 / 1024) that fits
@@ -662,6 +720,10 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 | Long contexts | IRON exports have a fixed context (4096 / 12288). Attention over chunks is IRON's side's job | 16.63 |
 | Other sizes of PLaMo 3 | 8B and 31B not tried | 16.70 |
 | MoE warning about reusing BDs | aiecc warns about reusing a BD after a `dma_free_task` with no completion guarantee. Thought harmless, but not proven statically | 16.75 |
+| gpt-oss without the step barrier | Long sessions (hours, `serve`) are not run: 399 steps on 2 layers, KL runs of 5 × 144 steps, the agent's task and answers of 600 tokens were | 16.179 |
+| gpt-oss with `-idle` | Release and reload are not tried since the decode step became a resident array with rings | 16.179 |
+| gpt-oss's attention below 8 bits | q6 by rounding was 2–3× the KL on the CPU; GPTQ at q6 is not tried. The projections are 36 % of a layer's bytes | 16.179 |
+| gpt-oss's energy by part | Only the package's total is measured (0.92 J a token); the NPU's own share (`gpu_metrics`) is not read for it | 16.179 |
 | Drafts on Qwen3.5-2B and 4B | Checking drafts in one call (16.117) is measured only on 0.8B (82 → 62–72 ms/token). 2B (q6) not measured; 4B is q4 and waits for a GEMV of a few rows at q4 | 16.117 |
 | Pipelines of Qwen3.6's prompt attention | The exports' default of 8 (16.107) is not measured on Qwen3.6, which keeps 1 | 16.107 |
 | Speed of q6's GEMV | About q8's time, bound by taking out the high 2 bits. Another layout might be faster | 16.105 |
@@ -674,6 +736,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
 |---|---|---|
 | Which shapes fall to the CPU at the 16384 per-dimension limit and which stay (chunks along an axis, weighting by ratios go to the CPU) | Inside Core ML's compiler | 16.21 |
 | Only the 8-part split loads slowly from the cache (23.7 s) | Not looked into | 16.13 |
+| AMD gpt-oss: the attention's cache read as one run an object (a descriptor of [objects, 16, 1024] in place of [objects, 128, 2, 64]) timed the command out | The descriptor's shape with a per-call repeat count; not looked into and not run again (two hangs can wedge the device) | 16.179 |
 | On a 128K English document, two-level attention has lower loss than normal attention | Normal attention gets distracted by distant tokens, and two levels narrow that | 16.61 |
 | AMD: with the windowed attention, a full ELF's second prompt chunk hangs in its first command | Not the words' values, the cut, the bank offsets or the operators (each passes alone and as an xclbin per step). A pause does not help; another hardware context's command does. Avoided with `chunkBarrier` | 16.80, 16.84 |
 | AMD: splitting Anima's DiT into commands with host steps stops the first command with `ERT_CMD_STATE_TIMEOUT` | Not looked into. Avoided with one graph of 4 blocks | 16.68 |
@@ -717,6 +780,7 @@ With 16 layers (0.97 B):
 - **Moving bytes is the limit, not computing.** On the M2, int8 and lut4 differ 2× in work per byte yet both read at about 63 GB/s
 - **Only the M1's lut4 was compute-bound.** Expanding the 4-bit table is slow there, and the M2 was 1.41× faster (close to the TOPS ratio of 1.44). The M2 reached the ceiling. The M3 has 14% more TOPS and went from 63 to 64 GB/s
 - **AMD is the same.** DMA tops out at 55–57 GB/s with 8 channels (14 GB/s each). The 4-bit GEMV reaches that with 16 cores, and 32 cores are no faster (2.4× spare compute)
+- **gpt-oss-20b on AMD runs at 93 % of this floor** (16.179): a token moves 2.53 GB, 46 ms at 55 GB/s, and takes 49.4 ms. Getting there took removing everything between the reads (operators loaded again, a barrier, exponentials, the host's loop over the logits), not faster arithmetic: the 4 cores a column have compute to spare
 - TOPS helps only prefill and attention over a long context (the one-row matrix-vector products the ANE cannot fill). One generated token follows model-fit.md section 2: weight bytes ÷ read bandwidth + attention + about 3 ms. A faster NPU shrinks only the second term
 
 ### 12.2 What newer chips may bring (not measured)
@@ -739,14 +803,15 @@ Tokens/s ≈ read bandwidth ÷ bytes read per token × tokens advanced per read 
 | Term | Method | State | Expected or measured | Section |
 |---|---|---|---|---|
 | Bytes read per token | Fewer bits (lut3 and lut4 mixed per layer, tables fitted to activations) | Up to choosing levels with GPTQ (16.87). Fitting the table is not done | A trade against accuracy | model-fit.md T8 |
-| 〃 | MoE (read only the experts in use) | Done on AMD with Qwen3.6-35B-A3B (16.89–16.93). Not on the ANE (the routing `gather` goes to the CPU, model-fit.md section 4) | LFM2.5-8B-A1B (8.3B total, 1.5B active) reads about 0.75 GB a token at lut4, a floor of about 12 ms on the ANE. Computing every expert densely reads 4.2 GB, about 65 ms | — |
+| 〃 | MoE (read only the experts in use) | Done on AMD with Qwen3.6-35B-A3B (16.89–16.93). Not on the ANE (the routing `gather` goes to the CPU, model-fit.md section 4) | LFM2.5-8B-A1B (8.3B total, 1.5B active) reads about 0.75 GB a token at lut4, a floor of about 12 ms on the ANE. Computing every expert densely reads 4.2 GB, about 65 ms. gpt-oss-20b (21B, 3.6B active) on AMD reads 2.53 GB a token: a floor of 46 ms, run at 49.4 (16.179) | — |
 | Tokens advanced per read | Speculative decoding (prompt lookup) | Done on Apple and Intel. A Q=8 call costs 13% more than Q=1 | 15.9 → 23.7 tokens/s, 1.2–1.5× over a whole task | 16.33, 16.36, 16.37 |
 | 〃 | A draft model (such as Qwen3.5's `mtp.` layers) for more hits | Apple done (16.109, M1 Qwen3.5-0.8B 26.1 → 43.8 tok/s on code). AMD not yet | Gains if it beats prompt lookup's 1.07–1.67 tokens a call | model-fit.md T9 |
 | 〃 | Read once for several requests (batching) | Not done | One read serves several conversations. Total throughput grows when subagents run side by side | — |
 | 〃 | Draft checking on AMD | Done for q8 / q6 (16.117): a check of 3 rows costs 1.27 decode steps. q4 not yet | Qwen3.5-0.8B 82 → 62–72 ms/token with prompt-lookup drafts | 16.117 |
 | Time not spent reading | Fixed cost per call (about 3 ms), switching parts, host work | LFM3-1.7B at a 1K capacity: of 19.1 ms, 13.4 ms reading weights, 2.8 ms attention, 3 ms fixed | 15–16 ms expected after trimming the fixed cost and attention | model-fit.md section 2 |
 | 〃 | AMD: one submission for a whole layer | Done (a full ELF is 2.7× faster than submitting each op). A fused layer reaches 83% of the read floor | Avoids piling up the 0.06 ms per call | amd-xdna2-bench.md section 4.10, amd-npu-models.md section 2 |
-| Attention over a long context (compute-bound) | `SDPAGrouped`, splitting around attention to compute only the length used | Done (16.39, 16.59). Two-level attention (16.61) | Both TOPS and how the program is written shrink this | 16.39, 16.59, 16.61 |
+| 〃 | AMD: a decode step as one resident array (no operator loaded again), the host's loops in vector code | Done for gpt-oss-20b (16.179). The other models still run their operators apart (about 67 µs and 1.2 µs a KB of programs each time one follows another) | gpt-oss 79.2 → 49.4 ms. What is left: a command boundary a layer (0.1 ms), a phase's fixed 25–35 µs, the host's 1 ms | 16.179 |
+| Attention over a long context (compute-bound) | `SDPAGrouped`, splitting around attention to compute only the length used | Done (16.39, 16.59). Two-level attention (16.61). AMD gpt-oss's decode: 128 rows 21 → 9.6 µs a layer, down to their transfer (16.179) | Both TOPS and how the program is written shrink this. On AMD the cost was the softmax's exponentials, not the products | 16.39, 16.59, 16.61, 16.179 |
 | (For reference) Another reader | Use the DRAM bandwidth the ANE leaves (100 − 64 GB/s on the M3) from the CPU, for example drafting on the CPU and checking on the ANE | Not tried. Using the GPU is a non-goal | Whether syncing pays off is not measured | — |
 
 Expected (M3, LFM3-1.7B, lut4, short context; rough): 19–21 ms now (about 48 tokens/s) → 15–16 ms after trimming the fixed cost and attention (about 60–65 tokens/s; the weight floor is 13.4 ms, about 75) → about 80–90 tokens/s effective with speculative decoding. The default lut6 reads 1.5× the weight bytes, so its weight term is that much larger.
@@ -763,3 +828,5 @@ gpt-oss-20b on AMD (16.179) took generation from 97.5 to 80.5 ms and Qwen3.5-0.8
 | Telling transfers from compute | `hwnpu-dev probe` already reads weights alone; a part's time against its weight bytes says the same | The same with OpenVINO's profiling | Decides whether fewer bytes or less compute is the lever |
 | Attention sinks (a model that has them) | Easy in MIL: one column of the sink's logit concatenated to the scores before the softmax, dropped after | The same in the IR | gpt-oss itself does not run there (its routing), a dense model with sinks would |
 | Biases and residuals in the linear | Not needed: Core ML folds them | Not needed: OpenVINO fuses them | AMD's gain came from removing operators IRON runs one by one |
+| The host's share of a token read with pprof (2026-11-14) | Worth a measurement: top k already gained from the change; what a step does with its logits rows is in `HWNPU_PROFILE`'s `rows` | The same | gpt-oss on AMD had 1.33 ms a token in a loop over its logits; a larger vocabulary or a faster NPU shows such loops |
+| A whole step as one resident program | Already so: a compiled program stays loaded | Already so | AMD's gain came from IRON loading an operator each time it follows another |
