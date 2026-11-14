@@ -490,6 +490,26 @@ func compileNote(dev *hwnpu.Device) string {
 	return "they are compiled first"
 }
 
+// OnNPU reports whether every program of the model's text was verified to run on the NPU: the
+// chains of each cache tier (an IRON export runs on AMD's NPU as a whole). The encoders of
+// images and audio are not counted.
+func (e *Engine) OnNPU() bool {
+	if e.ir != nil {
+		return true
+	}
+	if len(e.tiers) == 0 {
+		return false
+	}
+	for _, t := range e.tiers {
+		for _, ch := range t.chains {
+			if !ch.OnNPU() {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // DeviceName is the NPU the model runs on, as logs call it (llm.DeviceName).
 func (e *Engine) DeviceName() string {
 	if e.dev == nil {
