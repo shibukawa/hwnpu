@@ -5411,16 +5411,42 @@ Qwen3 は 28 層すべてが注意なので、分けると層ごとに Neural En
 | generate (Magenta RealTime 2) | 1 分 12 秒 (読み込み 58 秒) | 曲調 0.3 秒、読み込み 0.1 秒 | 曲調 0.4 秒、読み込み 0.2 秒 | 実時間の 2.1 倍 (main と同じ)。全部 Neural Engine |
 | transcribe (Whisper large-v3-turbo) | 1 分 03 秒 (読み込み 55.5 秒) | 読み込み 0.1〜0.5 秒 | 0.5〜0.8 秒 | 3 つの WAV で main と同じ文 (大文字 1 つだけ違う)。30 秒の窓 0.53〜0.58 秒、Neural Engine 0.78 GiB (main と同じ) |
 | tts (LFM3-Audio-2B) | 1 分 07 秒 (変換 24 秒) | 読み込み 0.1 秒 | 4.3 秒 | 英語と日本語の声を Whisper に戻すと元の文 |
-| generate -m moss-soundeffect:8gb (MOSS-SoundEffect、lut8) | 変換 25 秒、文の符号器 34 秒、DiT と DAC の読み込み 3 分 07 秒 | — | — | 文の符号器と DiT は全部 Neural Engine。**DAC の 5 段がどれも Neural Engine のコンパイラーに落ちて GPU** (下)。既定では止まる |
+| generate -m moss-soundeffect:8gb (MOSS-SoundEffect、lut8) | 変換 25 秒、文の符号器 34 秒、DiT と DAC の読み込み 3 分 07 秒 | — | — | 文の符号器と DiT は全部 Neural Engine。DAC の 5 段は Neural Engine のコンパイラーに落ちて GPU (下、16.192 で直した) |
 
 - `TestCoreAIAgainstCPU` (`internal/music`、`HWNPU_MRT_COREAI=1`): Core ML の書き出しを CPU のインタプリタで動かしたものを参照に、Core AI と Core ML の Neural Engine を比べた。言語モデル (lut8) を CPU の貪欲法の 25 フレームに沿わせたロジットの KL (温度 1.3) は Core AI 0.0000 nats、Core ML 0.0003、一番ありそうなトークンが同じなのは 300 のうち 297 と 295。MusicCoCa の文の埋め込みは 5 つの文で最低のコサイン 0.999999 と 0.999997、SpectroStream の復号は 1.000000 と 0.999997。どれも Core AI の方が参照に近い
 - 曲調の 12 個の符号は、"disco funk" で Core AI と Core ML が 3 つ目から違った。MusicCoCa の残差ベクトル量子化は後の段ほど小さな差で選ぶ符号が変わる ("heavy metal" では main の Core ML も CPU の参照と 7 つ目から違う)。埋め込みのコサインが上のとおりなので、Core AI が外れているのではない
 - `tts` を手で変換したもの: `hwnpu-dev convert -backend coreai` の depthformer とコーデックを `--depth` と `--codec` に渡して動いた (テキスト部は Prepare の書き出し)
 - Whisper の `-v` の窓の言語が英語の音声でも `ja` と出る、長い英語の文の書き起こしに大文字が多いのは main の Core ML でも同じ (この変更とは別)
 
-**MOSS-SoundEffect の DAC が Core AI の Neural Engine で動かない** (未解決)。DAC の段 (snake、重み正規化の畳み込み、多相の転置畳み込み) は Core ML の Neural Engine では全部載っていた。
-- コンパイル: 5 段とも `ANECCompile() FAILED: Codegen Error: Failed to HandleANELayer` で GPU に回る (GPU の値は正しい。CPU のインタプリタとの相対 RMS 0.0017)。段 4 を `HWNPU_AILOWER_CUT` で二分すると、最初に外れるのは畳み込みの後の snake の `clip` (conv → α 倍 → clip)、それを外すと次は残差の足し算 (conv → add)。1 回に読むフレーム数を 1/2、1/4 にすると載る段もあるが、長さで単調ではない
-- 値: Neural Engine に載った段は値が違う (乱数の潜在 100 フレームを CPU のインタプリタと比べて、1/4 の長さで 4 段が載ると相対 RMS 0.59)。原因の 1 つは snake の範囲の縮小の丸め `(v + mg) - mg` (mg = 1536 は入力): Core AI はこれを入力でも `v` に畳む (Core ML は定数だけを畳むので入力にしていた)。間に `clip` か `1` の入力の掛け算を挟むと単独では丸まる (`|v - round(v)|` の最大 0.5)。しかし DAC に入れても相対 RMS は 0.98 (全長)、1.16 (1/4) で、ほかにも違うところがある。Core AI の `sin_v1` は Neural Engine に載るが、±1500 の引数では誤差 0.57 (±4 なら 0.002)、int32 への `cast` は Neural Engine から外れる
-- 当面 `hwnpu-audio generate -m sfx` は Mac では「DAC が Neural Engine に載らない」で止まる (`--allow-off-npu` で DAC を GPU に)
+**MOSS-SoundEffect の DAC が Core AI の Neural Engine で動かない**: 5 段とも `ANECCompile() FAILED: Codegen Error: Failed to HandleANELayer` で GPU に回った (この節の時点。16.192 で直した)。
 
-残り: MOSS-SoundEffect の DAC (上)。macOS 26 の Mac でのエラーの確かめ。M1 と Intel の Mac。テキスト部を `-backend coreai` で手で変換した形は動かしていない。Core ML との並べての比べ (sfx) はディスクの空きが足りず未。
+残り: macOS 26 の Mac でのエラーの確かめ。M1 と Intel の Mac。テキスト部を `-backend coreai` で手で変換した形は動かしていない。Core ML との並べての比べ (sfx) はディスクの空きが足りず未。
+
+### 16.192 MOSS-SoundEffect の DAC を Core AI の Neural Engine に: sin、高さ方向の畳み込み、膨張を行に — 2026-11-14
+
+16.191 で残った MOSS-SoundEffect の DAC (5 段) を、全部 Core AI の Neural Engine で正しく動くようにした。M3 (16 GB、macOS 27.2)。比べる参照は、16.191 の前の DAC (snake の範囲の縮小を fp16 の丸めで) を CPU のインタプリタで fp16 に丸めながら動かしたもの (`HWNPU_CPU_F16=1`。この形は Core ML の Neural Engine で Python の参照と合っていた)。
+
+**参照の取り違え**: 最初は CPU のインタプリタ (`runner` の CPU の経路) をそのまま参照にして、GPU に回った段が合い (0.0017)、Neural Engine の段が違うと見ていた。しかし `runner` の CPU の経路は fp32 で計算し (`HWNPU_CPU_F16` がなければ丸めない)、snake の丸め `(v + 1536) - 1536` が丸めにならない。GPU も同じく丸めないので合って見えた。fp16 に丸める参照で見ると、CPU (fp32) の main の DAC は 1.44 も違う: **main の `hwnpu-audio generate -m sfx --cpu` の DAC は壊れていた**。aicheck は milcpu を `RoundF16` で動かすので、aicheck と自前の試験で結果が食い違ったのが手がかりになった
+
+**見つかった Core AI の誤り** (どれも `aicheck run -cpu` と `HWNPU_AILOWER_CUT` で切り、単独の小さなプログラムで再現)
+1. **`(v + mg) - mg` を `v` に畳む**: mg が入力でも (Core ML は定数だけを畳むので Magic を入力にしていた)。間に clip を挟むと単独では丸まるが、DAC の中では別の誤りと重なった
+2. **幅方向の畳み込みで、入力を別の演算が計算していると値が違う**: カーネルが 1 より大きく、512 チャンネル以上 (2048 フレーム以上) のとき。`conv(x)` は 0.0006、`conv(x * mo)` は mo が全部 1 でも 1.26 (相対 RMS)。入力チャンネルを 256 ずつに分けても、明示の pad にしても直らない。**同じ畳み込みを高さ方向 (x を (1, C, T, 1)、重みを (co, ci, k, 1)) にすると、試した形が全部 0.0003**
+3. **膨張のある畳み込み**: 幅方向の膨張 9 (256 チャンネル) は 1.30、膨張 5 と 7 は GPU に回る。高さ方向でも膨張 3 の 128 チャンネルは 8000 と 15000 フレームで 1.3〜1.4 (7680、9000、16000 は正しい)
+4. **明示の `pad` の後の畳み込み**: 膨張を位相に分ける形で `pad` を前に置くと、段 0 が 0.99 違った
+
+**直し方** (`internal/sfx/dac.go`、Intel の書き出しは前のまま)
+- snake は `sin` をそのまま (Core AI の `sin_v1` は Neural Engine で ±8 で誤差 0.004、±32 で 0.016: fp16 の入力の刻みと同じ程度)。Core ML の書き出しも `--cpu` のためだけになったので同じく `sin` (CPU のインタプリタは fp32 でも正しい)
+- 畳み込みは全部高さ方向 (`conv1d`)。多相の転置畳み込みの畳み込みも
+- 膨張は行に (`phaseConv`): T フレーム (膨張の倍数) を (1, C, T / d, d) に並べ (フレーム = 行 d + 位相)、カーネル k × 1、行で 3 ずつの padding の、膨張のない高さ方向の畳み込みにする。出力のフレーム 行 d + 位相 は入力の (行 + j) d + 位相 を読むので値は同じ。転置も `pad` も要らない。そのため段の 1 回のフレーム数を、出力が 9 の倍数になるように 1024、3200、4000、5000、8000 → 1026、3195、3996、4998、7992 に
+- `DACRevision` 2 (DAC の書き出しの名前だけ。文の符号器と DiT は作り直さない)
+
+**結果**
+- `TestDecodeLatentsCoreAI` (`HWNPU_SFX_COREAI=1`): 種で決めた潜在 250 フレーム (5 秒) を、5 段とも Neural Engine で 1.98 秒。CPU のインタプリタとの相対 RMS 0.0085
+- 参照 (前の DAC、fp16 に丸めた CPU) と: Core AI 0.0089、新しい DAC の CPU (fp32、`--cpu` の形) 0.0027。main の `--cpu` の形は 1.44
+- 文の符号器の部品 (lut8)、DiT の文脈、DiT の組を、Core ML の書き出しの CPU のインタプリタと aicheck で比べた: 相対 RMS 0.006〜0.008、0.0003、0.0008、どれも Neural Engine
+- `hwnpu-audio generate -m moss-soundeffect:8gb --steps 30 --duration 5s` (犬の吠え声、種 1): **全部 Neural Engine**。初回 文の符号器 15 秒、読み込み 3 分 20 秒、2 回目から 文の符号器 1.6 秒、読み込み 0.1 秒、1 ステップ 1.8 秒 (5 秒の音に 55 秒)。2 回の出力はバイト単位で同じ。100 ms ごとの RMS が 0.002〜0.32 で吠え声のように途切れる
+
+- 見つけ方の教訓: 参照の計算の精度 (fp32 か fp16 の丸めか) を決めてから比べる。小さなプログラムで再現できたら、同じ値の別の書き方 (高さ方向、行に並べる) を試す。チャンネルを分ける、明示の pad のような「形を変えるだけ」の書き換えは効かなかった (new-model-checklist 3.5)
+
+残り: 16 GB の既定 (文の符号器 fp16) の `moss-soundeffect:v2.0` は試していない (ディスクの空きが 10 GB で、fp16 の書き出しとそのキャッシュが入らない)。M1 で。人の耳での聞き比べ。
+

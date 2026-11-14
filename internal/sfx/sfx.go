@@ -51,8 +51,12 @@ var Files = []string{
 }
 
 // Revision counts the changes to the programs that call for converting them again (in their
-// names).
-const Revision = 1
+// names); DACRevision the decoder's stages' (2: sin, convolutions along the height, dilations as
+// rows, for Core AI's Neural Engine; design.md 16.192).
+const (
+	Revision    = 1
+	DACRevision = 2
+)
 
 // The defaults of the model card: 100 steps, guidance 4, shift 5.
 const (
@@ -140,7 +144,11 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		}
 	}
 	name := func(kind, format string) string {
-		return filepath.Join(dir, fmt.Sprintf("hwnpu-%s-r%d-%s%s", kind, Revision, format, ext))
+		rev := Revision
+		if strings.HasPrefix(kind, "dac-") {
+			rev = DACRevision
+		}
+		return filepath.Join(dir, fmt.Sprintf("hwnpu-%s-r%d-%s%s", kind, rev, format, ext))
 	}
 	for i := range TextSplit(text) {
 		p.Text = append(p.Text, name(fmt.Sprintf("text-%d", i), text))

@@ -103,12 +103,12 @@ macOS 27 には Core ML のほかに Core AI があります。追加で入れ�
 - **`hwnpu-audio` も Core AI だけで動きます** (macOS 27)。音楽 (Magenta RealTime 2)、効果音 (MOSS-SoundEffect)、tts (LFM3-Audio-2B)、transcribe (Whisper)、pitch、notes を、チェックポイントや ONNX から Core AI 向け (`.aimodel`、モデルのディレクトリの `coreai`) に変換します。`--cpu` と、ONNX Runtime の無い機械で CPU で動かす pitch と notes は、Core ML の書き出しを CPU のインタプリタで読みます
 - **ほかのコマンド**は Core ML が既定のままで、`--backend coreai` か `HWNPU_BACKEND=coreai` で、変換済みのモデル (`.mlpackage`、Go で Core AI のプログラムに下ろす) を Core AI で動かします
 
-- **使えるコマンド**: `hwnpu-chat` の全部、`hwnpu-image` の generate (Anima、Chroma、Qwen-Image、Sana。Sana の書き出しは 512 × 512 と 1024 × 1024 を 1 つに持つ)、ocr、detect、pose、face-detect、depth、segment、label、embed。`hwnpu-audio` の効果音の復号以外の全部 (MOSS-SoundEffect の DAC は Core AI では Neural Engine のコンパイラーに落ち、`--allow-off-npu` のときだけ GPU で動く。docs/design.md 16.191)
+- **使えるコマンド**: `hwnpu-chat` の全部、`hwnpu-image` の generate (Anima、Chroma、Qwen-Image、Sana。Sana の書き出しは 512 × 512 と 1024 × 1024 を 1 つに持つ)、ocr、detect、pose、face-detect、depth、segment、label、embed。`hwnpu-audio` の全部 (docs/design.md 16.191、16.192)
 - **結果と速さ**: Core ML と同じです (同じ文、同じ物や文字、埋め込みや深さのコサイン 0.9999 以上、1 回の呼び出しは ±10 % 以内)
 - **違い**: コンパイルした結果の持ち方です。Core ML のキャッシュは約 4 GiB で、それを超えると 2 回目以降もコンパイルし直します (大きな画像生成のモデルで数分〜数十分)。Core AI は自分のキャッシュ (`~/Library/Caches/coreai-cache`) に、ディスクが減るまで持ち続けます。両方のキャッシュが当たっていれば起動は同じです
 - **費用**: 重みがディスクに 3 回分置かれます (変換した `.mlpackage`、下ろした `.aimodel`、Core AI のキャッシュ)。空きが約 15 GB を切ると macOS がキャッシュを消し、次の起動でコンパイルし直します
 - **hwnpu-chat** は、チェックポイントから Core AI のプログラムを直接書きます (モデルのディレクトリの `coreai` に `.aimodel`、`.mlpackage` は作りません)。1 回に 8 トークンと 128 トークンのプログラムは 1 本の関数 2 つなので、重みはディスク、Core AI のキャッシュ、Neural Engine のどれにも 1 回分です (LFM3-1.7B: 書き出し 1.2 GB、Neural Engine 1.32 GiB、M3 で 2 回目の起動 0.4 秒。docs/design.md 16.185)
-- 記録は [docs/design.md](docs/design.md) の 16.169〜16.191、まとめは [docs/improvements.ja.md](docs/improvements.ja.md) の 7.5 節にあります
+- 記録は [docs/design.md](docs/design.md) の 16.169〜16.192、まとめは [docs/improvements.ja.md](docs/improvements.ja.md) の 7.5 節にあります
 
 ## 困ったとき
 

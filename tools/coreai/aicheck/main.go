@@ -9,7 +9,8 @@
 //
 // run takes an .aimodel too, and PROGRAM.aimodel#NAME for its function NAME. With
 // HWNPU_AILOWER_CUT=N, -cpu compares the cut program's output with milcpu's value of that
-// operation; AICHECK_WORST=1 also prints the elements that differ most. HWNPU_COREAI_UNITS=cpu
+// operation; AICHECK_WORST=1 also prints the elements that differ most; AICHECK_CONST=NAME=V,...
+// gives inputs a value instead of random ones (masks, a constant passed as an input). HWNPU_COREAI_UNITS=cpu
 // runs on Core AI's CPU (a lowering's errors apart from the Neural Engine's, and without its
 // lock); HWNPU_AILOWER_DIVIDE=1 keeps a division by a constant as divide_v1.
 package main

@@ -25,8 +25,6 @@ go run ./cmd/hwnpu-audio generate -m sfx "A dog barking loudly in a park."
 go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a tin roof."   # --steps 50 で半分の時間
 ```
 
-Mac では効果音の復号 (DAC) が、Core AI ではまだ Neural Engine 向けにコンパイルできません。generate は NPU に載らないプログラムを出して止まり、`--allow-off-npu` で復号を GPU で動かします (docs/design.md 16.191)。
-
 ## 読み上げ (LFM3-Audio-2B)
 
 `go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは` は LFM3-Audio-2B (`-m speech`) で文章を読み上げます。詳しくは [CHAT.ja.md](CHAT.ja.md) の 5 節にあります。

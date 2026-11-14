@@ -25,8 +25,6 @@ go run ./cmd/hwnpu-audio generate -m sfx "A dog barking loudly in a park."
 go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a tin roof."   # --steps 50 takes half the time
 ```
 
-On a Mac the sound effects decoder (the DAC) does not yet compile for the Neural Engine on Core AI: generate stops with the programs that are off the NPU, and `--allow-off-npu` runs the decoder on the GPU (docs/design.md 16.191).
-
 ## Reading aloud (LFM3-Audio-2B)
 
 `go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは` reads text aloud with LFM3-Audio-2B (`-m speech`). Details are in section 5 of [CHAT.md](CHAT.md).
