@@ -85,7 +85,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		format := cmp.Or(s.Format, whisper.Arch.Format)
 		export, done := llm.CoreAIExport(s.Dir, fmt.Sprintf("whisper-r%d.%d.%d-%s-c%d", whisper.EncoderArch.Revision,
 			whisper.CrossArch.Revision, whisper.Arch.Revision, format, wc.TargetPositions))
-		if !llm.ExportDone(done) {
+		if !llm.FetchExport(ctx, export, done) {
 			weights, err := checkpoint()
 			if err != nil {
 				return Config{}, err
@@ -110,6 +110,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			if err := llm.FinishExport(export, done, filepath.Join(s.Dir, llm.BackendCoreAI)); err != nil {
 				return Config{}, err
 			}
+			llm.ShareExport(ctx, export)
 		}
 		for _, p := range progs {
 			*p.path = exportProgram(export, p.role)
@@ -157,7 +158,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if c.Weights, err = chat.Tables(filepath.Join(s.Dir, chat.TablesFile), whisper.Arch, llm.HostTables(dec), checkpoint, log); err != nil {
+	if c.Weights, err = chat.Tables(ctx, filepath.Join(s.Dir, chat.TablesFile), whisper.Arch, llm.HostTables(dec), checkpoint, log); err != nil {
 		return Config{}, err
 	}
 	// a conversion reads the checkpoint into memory: give it back now

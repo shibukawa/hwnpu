@@ -62,8 +62,13 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	root := filepath.Join(s.Dir, s.Name)
 	format := cmp.Or(s.Format, FormatCoreML)
-	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
-	if llm.ExportDone(out + ".done") {
+	// the export beside the checkpoint, in the model's directory (as every model's); the one an
+	// earlier hwnpu kept in the models' directory is removed when this one is made
+	old := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
+	out := filepath.Join(root, filepath.Base(old))
+	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
+		os.RemoveAll(old)
+		os.Remove(old + ".done")
 		return out, nil
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -80,6 +85,9 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	bar.Done(console.Duration(bar.Elapsed()))
+	os.RemoveAll(old)
+	os.Remove(old + ".done")
+	llm.ShareExport(ctx, out) // a Core AI export goes in the shared layers that are written
 	return out, nil
 }
 

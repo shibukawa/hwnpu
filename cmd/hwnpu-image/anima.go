@@ -241,7 +241,7 @@ func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, erro
 	if c.TextFormat != "" || c.DitFormat != "" {
 		o.TextFormat, o.DitFormat = c.TextFormat, c.DitFormat
 	}
-	return sana.Prepare(ctx, sana.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Sana"), Repo: m.Repo, Name: m.Name,
+	return sana.Prepare(chat.WithModel(ctx, m), sana.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Sana"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 
@@ -262,7 +262,7 @@ func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string,
 		return "", fmt.Errorf("--size %d: Qwen-Image's pictures are multiples of 32 pixels", c.Size)
 	}
 	o := qwenimage.ConvertOptions{Backend: format, Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
-	return qwenimage.Prepare(ctx, qwenimage.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Qwen-Image"), Repo: m.Repo, Name: m.Name,
+	return qwenimage.Prepare(chat.WithModel(ctx, m), qwenimage.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Qwen-Image"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 

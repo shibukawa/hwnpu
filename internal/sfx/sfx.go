@@ -229,7 +229,12 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	for _, j := range jobs {
 		if coreai {
 			export, done := exportOf(j.kind)
-			if llm.ExportDone(done) {
+			// here, or from the shared layers (looked for once an export)
+			if _, ok := pending[export]; ok {
+				todo = append(todo, j)
+				continue
+			}
+			if llm.FetchExport(ctx, export, done) {
 				continue
 			}
 			pending[export] = done
@@ -277,6 +282,7 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		if err := llm.FinishExport(export, done, filepath.Join(s.Dir, llm.BackendCoreAI)); err != nil {
 			return p, err
 		}
+		llm.ShareExport(ctx, export)
 	}
 	return p, nil
 }

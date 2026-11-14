@@ -78,6 +78,8 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// the sizes converted later (Core AI) are this model's in the shared layers
+		ctx = chat.WithModel(ctx, m)
 		switch {
 		case programs && m.Family == "moge":
 			if model, err = moge.Prepare(ctx, moge.Setup{Dir: chat.ModelsDir(), Repo: m.Repo, Name: m.Name, Backend: backend, Log: lw}); err != nil {

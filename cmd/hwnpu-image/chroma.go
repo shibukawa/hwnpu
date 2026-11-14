@@ -35,7 +35,7 @@ func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, er
 		return "", fmt.Errorf("--size %d: Chroma's pictures are multiples of 16 pixels", c.Size)
 	}
 	o := chroma.ConvertOptions{Backend: format, Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
-	return chroma.Prepare(ctx, chroma.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Chroma"), Repo: m.Repo, Name: m.Name,
+	return chroma.Prepare(chat.WithModel(ctx, m), chroma.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Chroma"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 

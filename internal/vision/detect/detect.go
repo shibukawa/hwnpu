@@ -90,7 +90,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	name := fmt.Sprintf("%s-%s-r%d-fp16-%d", Arch, stem, Revision, Size)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
-	if llm.ExportDone(done) {
+	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
 		return model, program, nil
 	}
 	g, err := onnx.Load(model)
@@ -115,7 +115,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	bar.Done(console.Duration(bar.Elapsed()))
-	return model, program, llm.FinishProgram(s.Dir, name, done, export)
+	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
 }
 
 // Fetch downloads the ONNX file into s.Dir unless it is there, checks its sha256 and returns its

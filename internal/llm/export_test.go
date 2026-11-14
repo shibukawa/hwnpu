@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,7 +36,7 @@ func TestProgramPath(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(export, "stale")); err == nil {
 		t.Error("StartProgram left what an earlier conversion wrote")
 	}
-	if err := FinishProgram(dir, "swiftf0-r1-fp16", done, export); err != nil {
+	if err := FinishProgram(context.Background(), dir, "swiftf0-r1-fp16", done, export); err != nil {
 		t.Fatal(err)
 	}
 	if !ExportDone(done) {

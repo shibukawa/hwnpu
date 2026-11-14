@@ -44,7 +44,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	name := fmt.Sprintf("%s-r%d-fp16-t%d", Arch, Revision, ProgramFrames)
 	program, done, export := llm.ProgramPath(s.Dir, name, s.Backend)
-	if llm.ExportDone(done) {
+	if llm.ProgramReady(ctx, s.Dir, name, done, export) {
 		return model, program, nil
 	}
 	m, err := Load(model)
@@ -65,7 +65,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 		return "", "", err
 	}
 	bar.Done(console.Duration(bar.Elapsed()))
-	return model, program, llm.FinishProgram(s.Dir, name, done, export)
+	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
 }
 
 // Fetch downloads model.onnx into s.Dir unless it is there, checks that it is swift-f0 0.3.0's

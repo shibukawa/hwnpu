@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/safetensors"
 )
@@ -48,20 +49,26 @@ func hasTables(path string, names []string) bool {
 
 // writeTables makes dir's tables file for the model unless it is there with all its tables, and
 // returns its path. checkpoint gives the checkpoint's path, downloading it if need be.
-func writeTables(dir string, a *llm.Arch, model llm.Model, checkpoint func() (string, error), log io.Writer) (string, error) {
+func writeTables(ctx context.Context, dir string, a *llm.Arch, model llm.Model, checkpoint func() (string, error), log io.Writer) (string, error) {
 	names := llm.HostTables(model)
 	if len(names) == 0 {
 		return "", fmt.Errorf("chat: %s has no tables the host reads", a.Name)
 	}
-	return Tables(filepath.Join(dir, TablesFile), a, names, checkpoint, log)
+	return Tables(ctx, filepath.Join(dir, TablesFile), a, names, checkpoint, log)
 }
 
 // Tables writes the named tensors of the checkpoint to out (llm.WriteTables) unless out has them
 // all, and returns out: the tables a command reads rows of while it runs converted programs, so
 // that it runs without the checkpoint (docs/model-fit.md T5). checkpoint gives the checkpoint's
-// path, downloading it if need be; a opens it.
-func Tables(out string, a *llm.Arch, names []string, checkpoint func() (string, error), log io.Writer) (string, error) {
+// path, downloading it if need be; a opens it. The tables are taken from the shared layers when
+// one has them (fetchTables), and those written here are put in them: a machine that runs what
+// was converted elsewhere needs no checkpoint.
+func Tables(ctx context.Context, out string, a *llm.Arch, names []string, checkpoint func() (string, error), log io.Writer) (string, error) {
 	if hasTables(out, names) {
+		return out, nil
+	}
+	m, r := tablesRecipe(ctx, out, a, names)
+	if fetchTables(ctx, r, out) && hasTables(out, names) {
 		return out, nil
 	}
 	path, err := checkpoint()
@@ -83,12 +90,13 @@ func Tables(out string, a *llm.Arch, names []string, checkpoint func() (string, 
 		}
 		fmt.Fprintf(log, "wrote %s (%.2f GB, %d tables): the converted programs run without the checkpoint, which is only needed to convert again\n", out, float64(size)/1e9, len(names))
 	}
+	putTables(ctx, m, r, out)
 	return out, nil
 }
 
 // Converted reports whether a program was converted to out (ConvertProgram, Prepare): its
 // NAME.done is there.
-func Converted(out string) bool { return converted(out) }
+func Converted(ctx context.Context, out string) bool { return converted(ctx, out) }
 
 // Program is what ConvertProgram writes: the program of Arch (empty: the one config.json names)
 // in Format (empty: the architecture's), with the architecture's settings Params, Seq tokens per
@@ -138,7 +146,23 @@ func ProgramFile(dir, name, backend string) (string, error) {
 	return filepath.Join(d, name+programExt(backend)), nil
 }
 
-// converted reports whether convert finished writing out (its NAME.done is there).
-func converted(out string) bool {
-	return exists(doneFile(out))
+// converted reports whether convert finished writing out (its NAME.done is there), or, a Core AI
+// export, whether it was made from the shared layers (llm.SharedExports; its mark then written).
+func converted(ctx context.Context, out string) bool {
+	if exists(doneFile(out)) {
+		return true
+	}
+	if filepath.Ext(out) != ".coreai" || llm.SharedExports == nil || !llm.SharedExports.Fetch(ctx, out) {
+		return false
+	}
+	return cache.WriteDone(doneFile(out), exportProgram(out)) == nil
+}
+
+// exportProgram is the program of a Core AI export of convert: its manifest model.parts.json
+// when it was split, else model.aimodel.
+func exportProgram(export string) string {
+	if p := filepath.Join(export, "model.parts.json"); exists(p) {
+		return p
+	}
+	return filepath.Join(export, "model.aimodel")
 }

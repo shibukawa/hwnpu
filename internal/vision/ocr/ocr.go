@@ -249,7 +249,7 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	dir, stem := repoDir(r.s.Dir, src), fmt.Sprintf("%s-r%d-fp16-%s", name, Revision, tag)
 	path, done, export := llm.ProgramPath(dir, stem, r.s.Backend)
-	if !llm.ExportDone(done) {
+	if !llm.ProgramReady(ctx, dir, stem, done, export) {
 		g, err := onnx.Load(model)
 		if err != nil {
 			return nil, err
@@ -269,7 +269,7 @@ func (r *Reader) program(ctx context.Context, src Source, model, name string, sh
 			return nil, err
 		}
 		bar.Done(console.Duration(bar.Elapsed()))
-		if err := llm.FinishProgram(dir, stem, done, export); err != nil {
+		if err := llm.FinishProgram(ctx, dir, stem, done, export); err != nil {
 			return nil, err
 		}
 	}

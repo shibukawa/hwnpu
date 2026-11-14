@@ -77,7 +77,7 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 	name := fmt.Sprintf("yunet-r%d-fp16-%dx%d", ProgramRevision, W, H)
 	path, done, export := llm.ProgramPath(r.dir, name, r.backend)
 	p := r.program(W, H)
-	if !llm.ExportDone(done) {
+	if !llm.ProgramReady(ctx, r.dir, name, done, export) {
 		if err := os.MkdirAll(r.dir, 0o755); err != nil {
 			return err
 		}
@@ -90,7 +90,7 @@ func (r *programRunner) use(ctx context.Context, W, H int) error {
 		if err != nil {
 			return fmt.Errorf("face: %w", err)
 		}
-		if err := llm.FinishProgram(r.dir, name, done, export); err != nil {
+		if err := llm.FinishProgram(ctx, r.dir, name, done, export); err != nil {
 			return err
 		}
 	} else {

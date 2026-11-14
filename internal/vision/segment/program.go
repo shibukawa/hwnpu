@@ -44,7 +44,7 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 	// Core AI: NAME.coreai/model.aimodel; Core ML and Intel: NAME.mlpackage, NAME.xml
 	name := fmt.Sprintf("%s-r%d-fp16-%d", stem, ProgramRevision, Size)
 	path, done, export := llm.ProgramPath(dir, name, backend)
-	if !llm.ExportDone(done) {
+	if !llm.ProgramReady(ctx, dir, name, done, export) {
 		g, err := onnx.Load(encoder)
 		if err != nil {
 			return nil, err
@@ -64,7 +64,7 @@ func OpenProgram(ctx context.Context, dev *hwnpu.Device, backend, encoder, decod
 			return nil, fmt.Errorf("segment: %w", err)
 		}
 		bar.Done(console.Duration(bar.Elapsed()))
-		if err := llm.FinishProgram(dir, name, done, export); err != nil {
+		if err := llm.FinishProgram(ctx, dir, name, done, export); err != nil {
 			return nil, err
 		}
 	}
