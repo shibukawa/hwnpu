@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -526,4 +527,48 @@ func ReadMeta(m *Manifest) (map[string]string, error) {
 		return nil, err
 	}
 	return pkg.GetDescription().GetMetadata().GetUserDefined(), nil
+}
+
+// ProgramBytes is the size on disk of the programs that loading the model at path loads (a
+// manifest's first tier with its attention programs, or a single package): what a load's bar
+// goes by (console.NewLoadBar). 0 when the manifest cannot be read.
+func ProgramBytes(path string) int64 {
+	m, err := ReadManifest(path)
+	if err != nil {
+		return 0
+	}
+	var n int64
+	for _, p := range m.Tiered()[0].Parts {
+		n += PartBytes(p.Path)
+	}
+	for _, r := range []*PartRecord{m.Attention, m.Mass} {
+		if r != nil {
+			n += PartBytes(r.Path)
+		}
+	}
+	for _, r := range m.Smaller {
+		n += PartBytes(r.Path)
+	}
+	return n
+}
+
+// PartBytes is the size on disk of one program: a package's or an .aimodel's files (of all its
+// functions, for PROGRAM.aimodel#NAME), or an IR's .xml with its .bin.
+func PartBytes(path string) int64 {
+	path, _ = SplitFunction(path)
+	var n int64
+	filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if fi, err := d.Info(); err == nil {
+				n += fi.Size()
+			}
+		}
+		return nil
+	})
+	if strings.EqualFold(filepath.Ext(path), ".xml") {
+		if fi, err := os.Stat(strings.TrimSuffix(path, filepath.Ext(path)) + ".bin"); err == nil {
+			n += fi.Size()
+		}
+	}
+	return n
 }

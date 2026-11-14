@@ -17,6 +17,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
 	"github.com/shibukawa/hwnpu/internal/imagegen/qwenimage/mil"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 )
 
@@ -60,13 +61,13 @@ func openPrograms(dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, er
 func (e *progEngine) open(ctx context.Context, name string) (runner.Program, error) {
 	var bar *console.Bar
 	if e.log != nil {
-		bar = console.NewBar(e.log, "  loading "+name)
+		bar = console.NewLoadBar(e.log, "  loading "+name, llm.PartBytes(filepath.Join(e.dir, name)))
 	}
 	p, err := e.load(ctx, name)
 	if bar != nil {
 		switch {
 		case err != nil:
-			bar.Done("failed")
+			bar.Failed("failed")
 		case e.dev != nil:
 			bar.Done(console.Duration(bar.Elapsed()) + ", all on the NPU")
 		default:

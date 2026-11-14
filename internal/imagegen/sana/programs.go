@@ -15,6 +15,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/sana/mil"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 )
 
@@ -146,7 +147,7 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	}
 	var bar *console.Bar
 	if e.log != nil {
-		bar = console.NewBar(e.log, "  loading "+name)
+		bar = console.NewLoadBar(e.log, "  loading "+name, llm.PartBytes(filepath.Join(e.dir, name)))
 	}
 	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
 	// OpenVINO's CPU plugin (the Intel path checked without Intel's NPU) is not the NPU
@@ -157,7 +158,7 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	if bar != nil {
 		switch {
 		case err != nil:
-			bar.Done("failed")
+			bar.Failed("failed")
 		case e.dev != nil && e.dev.Info().Backend == "openvino":
 			bar.Done(console.Duration(bar.Elapsed()) + ", on " + e.dev.Info().Name)
 		case e.dev != nil: // console.Log colors it green, as Anima's loads say it

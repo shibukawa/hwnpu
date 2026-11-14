@@ -16,6 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
 	"github.com/shibukawa/hwnpu/internal/imagegen/chroma/mil"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 )
 
@@ -151,7 +152,7 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	}
 	var bar *console.Bar
 	if e.log != nil {
-		bar = console.NewBar(e.log, "  loading "+name)
+		bar = console.NewLoadBar(e.log, "  loading "+name, llm.PartBytes(filepath.Join(e.dir, name)))
 	}
 	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
 	if err == nil && e.dev != nil && !p.OnNPU() {
@@ -161,7 +162,7 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	if bar != nil {
 		switch {
 		case err != nil:
-			bar.Done("failed")
+			bar.Failed("failed")
 		case e.dev != nil:
 			bar.Done(console.Duration(bar.Elapsed()) + ", all on the NPU")
 		default:

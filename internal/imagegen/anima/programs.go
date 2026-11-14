@@ -236,15 +236,15 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Wri
 		var bar *console.Bar
 		if show && log != nil {
 			loaded++
-			bar = console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", loaded, total, name))
+			bar = console.NewLoadBar(log, fmt.Sprintf("  [%2d/%d] %s", loaded, total, name), llm.PartBytes(filepath.Join(dir, name)))
 		}
 		p, err := openProgram(ctx, dev, dir, m.Backend, name)
 		if bar != nil {
 			switch {
 			case types.IsOutOfMemory(err):
-				bar.Done("does not fit in the NPU's memory beside the others: making room")
+				bar.Failed("does not fit in the NPU's memory beside the others: making room")
 			case err != nil:
-				bar.Done("failed")
+				bar.Failed("failed")
 			case p.OnNPU():
 				bar.Done(console.Duration(bar.Elapsed()) + ", all on the NPU")
 			default:
