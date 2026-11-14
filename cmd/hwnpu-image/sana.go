@@ -30,17 +30,20 @@ type sanaRun struct {
 	seed          uint64
 	resident, cpu bool
 	dump, cache   string
+	// size is the picture's width and height, taken from an export of several sizes (Core AI's)
+	size int
 }
 
 // runSana draws the picture with an export of Sana: of tools/amd/iron_sana.py on
-// AMD's NPU, or of hwnpu-image convert (Core ML) on Apple's Neural Engine or, with cpu, the CPU
-// interpreter.
+// AMD's NPU, or of hwnpu-image convert on Apple's Neural Engine (Core AI's or Core ML's) or, with
+// cpu, the CPU interpreter (Core ML's).
 func runSana(ctx context.Context, r sanaRun) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
 	t0 := time.Now()
 	programs := sana.IsProgramExport(r.model)
 	var dev *hwnpu.Device
+	w := 0 // the export's default size
 	switch {
 	case r.cpu:
 	case programs:
@@ -52,7 +55,10 @@ func runSana(ctx context.Context, r sanaRun) error {
 		if err != nil {
 			return err
 		}
-		name, opts := llm.BackendCoreML, []hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementStrict)}
+		if len(m.Sizes) > 0 {
+			w = r.size
+		}
+		name, opts := llm.ExportDevice(m.Backend, ""), []hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementStrict)}
 		if m.Backend == llm.BackendIntel {
 			name, opts = "", nil
 			if b := llm.ProgramBackend(strings.TrimSpace(os.Getenv(llm.BackendEnv))); b != llm.BackendIntel {
@@ -76,7 +82,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 	if !programs {
 		iron.ShareExport(r.model, logf)
 	}
-	p, err := sana.Open(ctx, dev, r.model, lw)
+	p, err := sana.OpenAt(ctx, dev, r.model, w, w, lw)
 	if err != nil {
 		return err
 	}

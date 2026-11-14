@@ -19,9 +19,12 @@ const (
 // captionScale divides the caption projection's second linear (Caption).
 const captionScale = 64
 
-// Caption is the caption projection (linear, tanh GELU, linear) and its RMS norm: input text (1,
-// TextRows, 2304), the rows of Gemma 2's last hidden state Sana keeps (zeros past them); output
-// (1, TextRows, hidden), the DiT's ctx.
+// Caption is the caption projection (linear, tanh GELU, linear) and its RMS norm, then every
+// block's cross-attention keys and values of it (with their norms): they do not depend on the
+// step, so they are computed once a prompt and the steps' programs hold none of their weights
+// (new-model-checklist 7.1). Input text (1, TextRows, 2304), the rows of Gemma 2's last hidden
+// state Sana keeps (zeros past them); output kv (1, 2 Layers, TextRows, CrossHeads x
+// CrossHeadDim): block i's keys at 2i, its values at 2i + 1, what Blocks takes.
 func Caption(c Dit) *Part {
 	return part("caption", func(g *graph) {
 		y := g.Input("text", 1, TextRows, c.Caption)
@@ -36,15 +39,39 @@ func Caption(c Dit) *Part {
 		}
 		h = g.LinearS(h, "dit.caption_projection.linear_2.weight", "", c.Hidden, 1.0/captionScale)
 		h = g.Add(h, g.F16s("dit.caption_projection.linear_2.bias", []int{c.Hidden}, b2))
-		g.Output(g.ScaledRMSNorm(h, "dit.caption_norm.weight", 1e-5))
+		ctx := g.ScaledRMSNorm(h, "dit.caption_norm.weight", 1e-5)
+		var ctxd *mlpackage.Var
+		if !c.QKNorm {
+			// every caption row less the first (the prompt's <bos>, always kept): the keys less
+			// the first key, so that the scores are near their spread (design.md 16.119)
+			ctxd = g.Sub(ctx, g.Slice(ctx, 1, 0, 1))
+		}
+		HD := c.CrossHeads * c.CrossHeadDim
+		var kvs []*mlpackage.Var
+		for i := 0; i < c.Layers; i++ {
+			a := fmt.Sprintf("dit.transformer_blocks.%d.attn2.", i)
+			var k *mlpackage.Var
+			if ctxd != nil {
+				k = g.Linear(ctxd, a+"to_k.weight", "", HD) // the bias cancels
+			} else {
+				k = g.LinearBias(ctx, a+"to_k.weight", a+"to_k.bias", "", HD)
+			}
+			if c.QKNorm {
+				k = g.ScaledRMSNorm(k, a+"norm_k.weight", 1e-5)
+			}
+			v := g.LinearBias(ctx, a+"to_v.weight", a+"to_v.bias", "", HD)
+			kvs = append(kvs, g.Reshape(k, 1, 1, TextRows, HD), g.Reshape(v, 1, 1, TextRows, HD))
+		}
+		g.Output(g.Concat(1, kvs...))
 	})
 }
 
 // Blocks is the DiT's blocks first..first+count-1: inputs x (1, tokens, hidden), the residual
 // stream (for the first group, the latents channel last (1, tokens, 32), which it embeds); t6
-// (1, 1, 6 hidden), the time embedding's modulations (the host's, sana.TimeFile); ctx (1, TextRows, hidden), Caption's output;
-// cbias (1, 1, 1, TextRows), 0 for the caption's rows that count and -10000 past them. Output y,
-// the residual stream after them.
+// (1, 1, 6 hidden), the time embedding's modulations (the host's, sana.TimeFile); kv (1, 2 count,
+// TextRows, CrossHeads x CrossHeadDim), these blocks' keys and values of Caption's output; cbias
+// (1, 1, 1, TextRows), 0 for the caption's rows that count and -10000 past them. Output y, the
+// residual stream after them.
 func Blocks(c Dit, first, count int) *Part {
 	return part(fmt.Sprintf("dit_blocks_%d", first), func(g *graph) {
 		n, E := c.Tokens(), c.Hidden
@@ -55,22 +82,20 @@ func Blocks(c Dit, first, count int) *Part {
 			x = g.Input("x", 1, n, E)
 		}
 		t6 := g.Input("t6", 1, 1, 6*E)
-		ctx := g.Input("ctx", 1, TextRows, E)
+		HD := c.CrossHeads * c.CrossHeadDim
+		kv := g.Input("kv", 1, 2*count, TextRows, HD)
 		cbias := g.Input("cbias", 1, 1, 1, TextRows)
-		var ctxd *mlpackage.Var
-		if !c.QKNorm {
-			// every caption row less the first (the prompt's <bos>, always kept): the keys less
-			// the first key, so that the scores are near their spread (design.md 16.119)
-			ctxd = g.Sub(ctx, g.Slice(ctx, 1, 0, 1))
-		}
 		for i := first; i < first+count; i++ {
-			x = block(g, c, i, x, t6, ctx, ctxd, cbias)
+			j := 2 * (i - first)
+			k := g.Reshape(g.Slice(kv, 1, j, j+1), 1, TextRows, HD)
+			v := g.Reshape(g.Slice(kv, 1, j+1, j+2), 1, TextRows, HD)
+			x = block(g, c, i, x, t6, k, v, cbias)
 		}
 		g.Output(x)
 	})
 }
 
-func block(g *graph, c Dit, i int, x, t6, ctx, ctxd, cbias *mlpackage.Var) *mlpackage.Var {
+func block(g *graph, c Dit, i int, x, t6, kk, vv, cbias *mlpackage.Var) *mlpackage.Var {
 	p := fmt.Sprintf("dit.transformer_blocks.%d.", i)
 	E, n := c.Hidden, c.Tokens()
 	sst := g.F16s(p+"scale_shift_table", []int{1, 1, 6 * E}, g.Get(p+"scale_shift_table", 6, E))
@@ -92,20 +117,12 @@ func block(g *graph, c Dit, i int, x, t6, ctx, ctxd, cbias *mlpackage.Var) *mlpa
 	o := linearAttention(g, g.Unary("relu", q), g.Unary("relu", k), v, c.Heads, n)
 	o = g.LinearBias(o, a+"to_out.0.weight", a+"to_out.0.bias", "", E)
 	x = g.Add(x, g.Mul(o, mod(2)))
-	// cross-attention to the caption (no norm before it)
+	// cross-attention to the caption (no norm before it), its keys and values Caption's
 	a = p + "attn2."
 	H, D := c.CrossHeads, c.CrossHeadDim
 	q = g.LinearBias(x, a+"to_q.weight", a+"to_q.bias", "", H*D)
-	var kk *mlpackage.Var
-	if ctxd != nil {
-		kk = g.Linear(ctxd, a+"to_k.weight", "", H*D) // the bias cancels
-	} else {
-		kk = g.LinearBias(ctx, a+"to_k.weight", a+"to_k.bias", "", H*D)
-	}
-	vv := g.LinearBias(ctx, a+"to_v.weight", a+"to_v.bias", "", H*D)
 	if c.QKNorm {
 		q = g.ScaledRMSNorm(q, a+"norm_q.weight", 1e-5)
-		kk = g.ScaledRMSNorm(kk, a+"norm_k.weight", 1e-5)
 	}
 	o = g.QChunkAttention(g.Heads(q, H, D), g.Heads(kk, H, D), g.Heads(vv, H, D), 1/math.Sqrt(float64(D)), cbias, 0)
 	x = g.Add(x, g.LinearBias(g.Merge(o), a+"to_out.0.weight", a+"to_out.0.bias", "", E))

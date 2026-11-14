@@ -220,6 +220,12 @@ func IsExport(dir string) bool { return isIronExport(dir) || IsProgramExport(dir
 // programs with the CPU interpreter when dev is nil). log, when not nil, is shown each program of
 // a Core ML export as it loads (the first load compiles it for the NPU).
 func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
+	return OpenAt(ctx, dev, dir, 0, 0, log)
+}
+
+// OpenAt is Open for pictures of w x h, of an export that holds several sizes (Core AI's,
+// ConvertOptions.Sizes); 0 x 0 is the export's default.
+func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{CFGMin: DefaultCFGSigmas[0], CFGMax: DefaultCFGSigmas[1]}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
@@ -237,7 +243,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 	}
 	if IsProgramExport(dir) {
 		var e *progEngine
-		e, p.Dit, p.Text, err = openPrograms(dev, dir, log)
+		e, p.Dit, p.Text, err = openPrograms(dev, dir, w, h, log)
 		if e != nil {
 			p.eng = e
 		}
@@ -249,6 +255,9 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 		e, p.Dit, p.Text, err = openIron(dev, dir)
 		if e != nil {
 			p.eng = e
+		}
+		if err == nil && w != 0 && (w != p.Dit.W() || h != p.Dit.H()) {
+			err = fmt.Errorf("the export is of %dx%d, not %dx%d", p.Dit.W(), p.Dit.H(), w, h)
 		}
 	}
 	if err != nil {
@@ -472,7 +481,7 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 		conds[k] = Cond{ctx: out, Rows: r.keep}
 		if prompts[k].instruction {
 			p.dump("gemma.bin", r.y)
-			p.dump("cond.bin", out)
+			p.dump("cond.bin", out) // a program export's: every block's cross-attention keys and values (mil.Caption)
 		} else {
 			p.dump("gemma_neg.bin", r.y)
 		}
