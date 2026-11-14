@@ -5190,3 +5190,20 @@ M3 の Core ML の 2 回目は、512² で 4 分 26 秒、1024² で 7 分 08 �
 残り: M1 の Core ML との比較。M3 での確かめ (VAE の広い段の失敗と DiT の持ち方は M1 で見たもの。タイルにしても M3 の Core ML で遅くならないか)。古い書き出しの部品が隣のフォルダに残ると兄弟として拾われる (版の違う書き出しはまとめない方がよい。外れる組になってもほどけるので、壊れはしない)。
 
 注: ここで動かしたのは Core ML の書き出し (`….coreml`) を Core AI で。16.180、16.181 の `coreai` の書き出し (DiT を lut6 の関数 2 つの `.aimodel` に) は、この節のあとで main に入った。VAE のタイル (`mil.VaePart` の入力) と DiT の入れ替え (`swapDiT`、`dev.Info().Backend == "coreai"` のとき) は `coreai` の書き出しにもそのまま効く (書き出しの版は 2) が、M1 では確かめていない。
+
+### 16.185 NPU を見る道具の下地: `npuinfo` (OS が NPU について教えることを構造体で) — 2026-11-14
+
+macOS のアクティビティモニタも Linux のいつもの道具も NPU を見せない (Windows のタスクマネージャーは 24H2 の 26100.8524 からプロセスごとの NPU の列がある)。ブラウザで見る道具を作る前に、各 OS で何が取れるかを集める `npuinfo` パッケージを足した。将来 gopsutil などから使えるよう、標準ライブラリだけを import し、hwnpu の他のパッケージも使わない (別のモジュールに切り出せる)。今は OS とドライバが返すものをそのまま OS ごとの構造体に入れ、共通の API は後で考える。`go run ./npuinfo/cmd/npuinfo` が JSON を書く。表は [npuinfo/README.ja.md](../npuinfo/README.ja.md)。
+
+**この機械 (Ryzen AI 9 365、Linux 7.0、amdxdna、ファームウェア 1.1.2.64) で取れたもの**
+- プロセスごとの使用: `DRM_IOCTL_AMDXDNA_GET_ARRAY(HW_CONTEXT_ALL)` が root なしで通り、文脈ごとに PID、列 (0+8)、送ったコマンドと終わったコマンドの数、状態を返す。LFM3 q4 のデコード中はコマンドが毎秒約 12 増え、トークンの速さと合う。別のセッションの `hwnpu-image` も、文脈 3 つとして見えた。`gops`、`fps`、`heap_usage` は 0 のまま
+- NPU のメモリ: `/proc/PID/maps` の `/dev/accel/accel0` の行を足すと、LFM3 q4 で 1635 MiB (10 行)。前に測った固定メモリ 1.64 GiB と合う。RSS (390 MB) にも VmPin にも出ない分
+- 忙しさと電力: amdgpu の gpu_metrics (v3) の `average_ipu_activity` (デコード中 93 %)、`average_ipu_power` (1026 mW)、NPU の読み (17.6 GB/s)。構造体の並びはテストで手計算のオフセットと突き合わせた
+- その他の ioctl: AIE の版と形 (8 列 × 6 行、列 504 バイト)、クロック (MP-NPU 1267 MHz、H 1800 MHz)、電力モード、TOPS とタスクの上限と今 (58 TOPS、16 タスク中 2〜3)、列ごとの AIE の状態レジスタ (生のまま)、テレメトリ (生のまま)、最後の非同期エラー
+- 取れないもの: fdinfo に `drm-*` が無い (amdxdna が実装していない)。センサーの問い合わせは ENODEV (この BIOS に PMF の ACPI デバイスが無い)
+
+**読むことで NPU を起こさない**: amdxdna の GET_INFO と GET_ARRAY は寝ている NPU を起こし (`amdxdna_pm_resume_get_locked`)、自動サスペンドの待ち 5 秒の間起こしたままにする。毎秒読む監視は NPU を寝かせなくする。そこで `power/runtime_status` が active のときだけ問い合わせる (`Options.Wake` で変えられる)。デバイスを開くこと、sysfs を読むこと (PCI の config 空間は読まない)、`/proc` を回ることでは起きないことを、寝ている NPU で確かめた。
+
+**Windows と macOS は書いただけ** (クロスビルドと vet とパースのテストのみ)。Windows は PnP の ComputeAccelerator のデバイス、D3DKMT のアダプター (`D3DKMTEnumAdapters3` で計算専用も)、名前に GPU、NPU、Neural を含むパフォーマンスカウンターを全部 (インスタンス名の `pid_N_luid_…_engtype_…` を分ける)。macOS は I/O Registry の名前に ANE を含むクラスの木と、その下のユーザークライアントの `IOUserClientCreator` (どのプロセスが ANE を開いているか)、`com.apple.e5rt.e5bundlecache` の大きさ、root なら powermetrics。どれもその機械で動かして、何が出るかを見るところから。
+
+残り: Windows (Intel の機械は `tools/intel/hwnpu-intel-check.ps1` に足すと往復が 1 回で済む) と Mac で動かす。AIE の状態とテレメトリを読み解く。macOS の ANE の電力を root なしで (IOReport、cgo か purego が要る)。共通の API。ブラウザで見る道具。
