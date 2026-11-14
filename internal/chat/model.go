@@ -212,7 +212,9 @@ type Setup struct {
 	Tiers []int
 	// Backend picks the device the programs are converted for and run on (llm.FindDevice): a
 	// device backend (coreml, coreai, levelzero, openvino) or a program format (coreml, intel);
-	// empty for HWNPU_BACKEND or the NPU found. coreai runs the Core ML programs on Core AI.
+	// empty for HWNPU_BACKEND or the NPU found. coreai converts Core AI's programs (.aimodel, in
+	// coreai/) from the checkpoint, the parts of the same layers of the programs of one cache as
+	// the functions of one (llm.ConvertAI).
 	Backend string
 	// Format is the weight format of the chat model's programs (llm.Options.Format); empty for the
 	// architecture's for the backend (llm.Arch.DefaultFormatFor). The encoders stay in fp16.
@@ -239,19 +241,23 @@ func TokenizerFiles(arch string) []string {
 }
 
 // programDir is where the programs for a backend go in a model's directory: Core ML's next to the
-// checkpoint (as before), Intel's in intel/, so that one directory serves both.
+// checkpoint (as before), Intel's in intel/ and Core AI's in coreai/, so that one directory
+// serves all.
 func programDir(dir, backend string) (string, error) {
-	if backend != llm.BackendIntel {
+	if backend != llm.BackendIntel && backend != llm.BackendCoreAI {
 		return dir, nil
 	}
-	d := filepath.Join(dir, "intel")
+	d := filepath.Join(dir, backend)
 	return d, os.MkdirAll(d, 0o755)
 }
 
 // programExt is the file name extension of a program for a backend.
 func programExt(backend string) string {
-	if backend == llm.BackendIntel {
+	switch backend {
+	case llm.BackendIntel:
 		return ".xml"
+	case llm.BackendCoreAI:
+		return ".aimodel"
 	}
 	return ".mlpackage"
 }
@@ -284,7 +290,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Config{}, err
 	}
-	backend, err := llm.ProgramFormat(ctx, s.Backend)
+	backend, err := llm.NativeFormat(ctx, s.Backend)
 	if err != nil {
 		return Config{}, err
 	}
@@ -435,7 +441,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 	}
 	for _, cache := range append(caches, context) {
-		var pkgs []string
+		// each program's file without its extension, function name (Core AI) and settings
+		var outs, names []string
+		var ps []program
+		missing := false
+		base := filepath.Join(pdir, fmt.Sprintf("%s-c%d", kind, cache))
 		for i, p := range progs {
 			last := ""
 			switch {
@@ -444,29 +454,45 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			case p.kvOnly:
 				last = "-kv"
 			}
-			pk, pp := kind, params
+			pk, pp, name := kind, params, fmt.Sprintf("q%d%s", p.seq, last)
 			if i == 0 && stateRows {
-				pk, pp = kind+"-sr", maps.Clone(params)
+				pk, pp, name = kind+"-sr", maps.Clone(params), "sr-"+name
 				pp["state-rows"] = "1"
 			}
-			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s%s", pk, cache, p.seq, last, programExt(backend)))
-			if !converted(out) {
-				if _, err := checkpoint(); err != nil {
-					return Config{}, err
-				}
-			}
-			path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow, kvOnly: p.kvOnly}, s.Log)
-			if err != nil {
+			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s", pk, cache, p.seq, last))
+			missing = missing || !converted(out+programExt(backend))
+			outs, names, base = append(outs, out), append(names, name), base+"-"+name
+			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
+		}
+		if missing {
+			if _, err := checkpoint(); err != nil {
 				return Config{}, err
 			}
-			if chunk > 0 {
+		}
+		var pkgs []string
+		if backend == llm.BackendCoreAI {
+			// the programs of one cache together, their parts of the same layers the functions
+			// of one Core AI program: the weights once on the disk and on the Neural Engine
+			if pkgs, err = convertShared(ctx, c.ModelConfig, c.Weights, base, outs, names, ps, s.Log); err != nil {
+				return Config{}, err
+			}
+		} else {
+			for i, p := range ps {
+				path, err := convert(ctx, c.ModelConfig, c.Weights, outs[i]+programExt(backend), p, s.Log)
+				if err != nil {
+					return Config{}, err
+				}
+				pkgs = append(pkgs, path)
+			}
+		}
+		if chunk > 0 {
+			for _, path := range pkgs {
 				// a conversion from before the two-level attention gets its mass program, which
 				// has no weights, instead of being converted again
 				if err := llm.AddMass(path, cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape().Scale); err != nil {
 					return Config{}, err
 				}
 			}
-			pkgs = append(pkgs, path)
 		}
 		c.Tiers = append(c.Tiers, pkgs)
 	}
@@ -747,25 +773,9 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 		return "", err
 	}
 	defer w.Close()
-	// the converter's defaults and the architecture's format, with the table fitting that keeps
-	// LFM3's answers as they were on the Neural Engine (also used for the embedding model); the
-	// integer formats keep the converter's scale search
-	fs := flag.NewFlagSet("", flag.ContinueOnError)
-	var opts llm.Options
-	set := llm.BindFlags(fs, &opts, "")
-	if err := fs.Parse(nil); err != nil {
+	opts, err := programOptions(a, model, p)
+	if err != nil {
 		return "", err
-	}
-	set()
-	opts.Backend = p.backend
-	opts.Format = cmp.Or(p.format, a.DefaultFormatFor(model, p.backend))
-	if p.backend != llm.BackendIntel && !strings.HasPrefix(opts.Format, "int") {
-		opts.Quant = "kmeans-minmax"
-	}
-	opts.Seq, opts.Cache, opts.Paged, opts.LastRow, opts.KVOnly = p.seq, p.cache, p.paged, p.lastRow, p.kvOnly
-	opts.Codes, opts.FormatFor = p.codes, p.formatFor
-	for k, v := range p.params {
-		opts.Params[k] = v
 	}
 	npu := targetName(p.backend)
 	switch {
@@ -794,6 +804,99 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 		fmt.Fprintf(log, "-codes: %d weights took the chosen tables (%d in %s)\n", codes.Hits()-hits, codes.Len(), p.codes)
 	}
 	return path, cache.WriteDone(done, path)
+}
+
+// programOptions are the converter's options for p: its defaults and the architecture's format,
+// with the table fitting that keeps LFM3's answers as they were on the Neural Engine (also used
+// for the embedding model); the integer formats keep the converter's scale search.
+func programOptions(a *llm.Arch, model llm.Model, p program) (llm.Options, error) {
+	fs := flag.NewFlagSet("", flag.ContinueOnError)
+	var opts llm.Options
+	set := llm.BindFlags(fs, &opts, "")
+	if err := fs.Parse(nil); err != nil {
+		return opts, err
+	}
+	set()
+	opts.Backend = p.backend
+	opts.Format = cmp.Or(p.format, a.DefaultFormatFor(model, p.backend))
+	if p.backend != llm.BackendIntel && !strings.HasPrefix(opts.Format, "int") {
+		opts.Quant = "kmeans-minmax"
+	}
+	opts.Seq, opts.Cache, opts.Paged, opts.LastRow, opts.KVOnly = p.seq, p.cache, p.paged, p.lastRow, p.kvOnly
+	opts.Codes, opts.FormatFor = p.codes, p.formatFor
+	for k, v := range p.params {
+		opts.Params[k] = v
+	}
+	return opts, nil
+}
+
+// convertShared writes the programs ps of one model for Core AI together (llm.ConvertAI), the
+// parts of the same layers as the functions of one Core AI program base.partK.aimodel, unless
+// they are there, and returns the paths of their manifests (outs[i].parts.json). Each has its
+// NAME.done as convert's; all are written again when one is missing, since they share files.
+func convertShared(ctx context.Context, config, weights, base string, outs, names []string, ps []program, log io.Writer) ([]string, error) {
+	done := func(i int) string { return outs[i] + ".done" }
+	read := func() ([]string, bool) {
+		var paths []string
+		for i := range outs {
+			p, ok := cache.ReadDone(done(i))
+			if !ok {
+				return nil, false
+			}
+			paths = append(paths, p)
+		}
+		return paths, true
+	}
+	if paths, ok := read(); ok {
+		return paths, nil
+	}
+	unlock, err := cache.Lock(ctx, base, filepath.Base(base), log)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if paths, ok := read(); ok { // another process converted them meanwhile
+		return paths, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	for i := range outs {
+		os.Remove(done(i))
+	}
+	a, model, err := llm.LoadConfig(config, ps[0].arch)
+	if err != nil {
+		return nil, err
+	}
+	w, err := llm.OpenWeights(weights, a)
+	if err != nil {
+		return nil, err
+	}
+	defer w.Close()
+	var progs []llm.AIProgram
+	for i, p := range ps {
+		opts, err := programOptions(a, model, p)
+		if err != nil {
+			return nil, err
+		}
+		progs = append(progs, llm.AIProgram{Out: outs[i], Name: names[i], Parts: p.parts, Options: opts})
+	}
+	p := ps[0]
+	if p.paged > 0 {
+		fmt.Fprintf(log, "converting %s for the Neural Engine (Core AI, %s; split at its attention, a context of %d held by the host in chunks of %d, %s per call); this takes a few minutes\n", filepath.Base(base), progs[0].Options.Format, p.cache, p.paged, strings.Join(names, " and "))
+	} else {
+		fmt.Fprintf(log, "converting %s for the Neural Engine (Core AI, %s; cache %d, %s per call); this takes a few minutes\n", filepath.Base(base), progs[0].Options.Format, p.cache, strings.Join(names, " and "))
+	}
+	paths, err := llm.ConvertAI(a, model, w, base, "any", progs, log)
+	if err != nil {
+		return nil, err
+	}
+	for i, path := range paths {
+		if err := cache.WriteDone(done(i), path); err != nil {
+			return nil, err
+		}
+	}
+	return paths, nil
 }
 
 // repoName is a repository's name: NAME of OWNER/NAME or OWNER/NAME@REVISION.

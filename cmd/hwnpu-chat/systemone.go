@@ -105,7 +105,7 @@ func (c *SystemOneCmd) Run(ctx context.Context) error {
 		}
 		backend := ""
 		if !c.CPU { // the CPU interpreter runs Core ML packages
-			if backend, err = llm.ProgramFormat(ctx, lf.Backend); err != nil {
+			if backend, err = llm.NativeFormat(ctx, lf.Backend); err != nil {
 				return err
 			}
 		}

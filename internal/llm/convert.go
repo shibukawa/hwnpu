@@ -27,10 +27,15 @@ func Convert(a *Arch, model Model, w Weights, out, targetName string, nParts int
 // ConvertTiers is Convert with the model written once per KV cache length in caches (increasing),
 // as the tiers of out.parts.json: out.cN.mlpackage or out.cN.partK.mlpackage for each. A step
 // costs in proportion to the cache's length, so a sequence runs on the shortest tier and moves up
-// as it grows (internal/llm/chain). With one length it is Convert.
+// as it grows (internal/llm/chain). With one length it is Convert. For Core AI (opts.Backend
+// "coreai") the program is out.aimodel, or split, ConvertAI's of one program: out.parts.json
+// listing out.partK.aimodel#main; it takes no tiers.
 func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nParts int, caches []int, opts Options, log io.Writer) (string, error) {
 	if len(caches) == 0 {
 		caches = []int{opts.Cache}
+	}
+	if opts.Backend == BackendCoreAI {
+		return convertAIOne(a, model, w, out, targetName, nParts, caches, opts, log)
 	}
 	if opts.LastRow && (!a.LastRow || caches[0] <= 0) {
 		return "", fmt.Errorf("llm: %s cannot build the output layer for the last row alone (-last-row needs an architecture that has it and -cache)", a.Name)
@@ -197,6 +202,45 @@ func checkIntelFormats(o Options) error {
 		}
 	}
 	return nil
+}
+
+// convertAIOne is ConvertTiers for Core AI: one program, a .aimodel when it is one part, else
+// ConvertAI's.
+func convertAIOne(a *Arch, model Model, w Weights, out, targetName string, nParts int, caches []int, opts Options, log io.Writer) (string, error) {
+	if len(caches) > 1 {
+		return "", fmt.Errorf("llm: Core AI's programs take one cache length, not tiers %v", caches)
+	}
+	opts.Cache = caches[0]
+	base := strings.TrimSuffix(strings.TrimSuffix(out, ".aimodel"), ".parts.json")
+	if opts.Paged == 0 && opts.Start == 0 && opts.Layers == 0 && nParts <= 1 {
+		plan := []Part{{}}
+		if targetName != "none" {
+			target, err := LookupTargetFor(BackendCoreAI, targetName)
+			if err != nil {
+				return "", err
+			}
+			if plan, err = PlanSplit(model, opts, int64(SplitMargin*float64(target.MaxBytes)), nParts); err != nil {
+				return "", err
+			}
+		}
+		if len(plan) == 1 {
+			if opts.LastRow && (!a.LastRow || opts.Cache <= 0) {
+				return "", fmt.Errorf("llm: %s cannot build the output layer for the last row alone (-last-row needs an architecture that has it and -cache)", a.Name)
+			}
+			if _, err := convertPart(a, model, w, base+".aimodel", opts, log); err != nil {
+				return "", err
+			}
+			return base + ".aimodel", nil
+		}
+	}
+	if opts.Start != 0 || opts.Layers != 0 {
+		return "", fmt.Errorf("llm: Core AI's programs are converted whole (no -start or -layers)")
+	}
+	paths, err := ConvertAI(a, model, w, base, targetName, []AIProgram{{Out: base, Name: "main", Parts: nParts, Options: opts}}, log)
+	if err != nil {
+		return "", err
+	}
+	return paths[0], nil
 }
 
 // convertPart writes one program to path, its weights shared with an identical program's next to
