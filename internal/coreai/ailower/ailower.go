@@ -36,6 +36,11 @@ import (
 // Producer is the producer string of the bytecode hwnpu writes.
 const Producer = "hwnpu-ailower"
 
+// FormatVersion is the version of what the lowering writes for the same MIL program, part of the
+// key of a Core AI export in the shared layers (chat's): raised by hand when a change makes the
+// programs of an export of the same name different, so that the layers' older ones are not taken.
+const FormatVersion = 1
+
 // assetVersion is the aicode serialization asset's version coreai-core 1.0.0b3 writes.
 const assetVersion = 20260204
 

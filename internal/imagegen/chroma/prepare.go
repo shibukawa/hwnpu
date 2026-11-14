@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
+	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 // Setup is what Prepare makes ready.
@@ -81,7 +83,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		log = io.Discard
 	}
 	out := filepath.Join(s.Dir, ExportName(s.Name, o))
-	if _, err := os.Stat(out + ".done"); err == nil {
+	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
 		return out, nil
 	}
 	root := filepath.Join(s.Dir, filepath.Base(s.Repo))
@@ -128,5 +130,10 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	fmt.Fprintf(log, "converted in %s\n", time.Since(t0).Round(time.Second))
 	debug.FreeOSMemory()
-	return out, os.WriteFile(out+".done", []byte(out), 0o644)
+	if err := cache.WriteDone(out+".done", out); err != nil {
+		return "", err
+	}
+	// a Core AI export goes in the shared layers that are written (llm.SharedExports)
+	llm.ShareExport(ctx, out)
+	return out, nil
 }

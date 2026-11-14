@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
@@ -20,16 +21,11 @@ func CoreAIExport(dir, name string) (export, done string) {
 	return export, export + ".done"
 }
 
-// ExportDone reports whether the export (or program) whose mark is done is whole.
+// ExportDone reports whether the export (or program) whose mark is done is whole: the mark is
+// there (it holds the export's path, cache.WriteDone, or nothing: an earlier hwnpu's).
 func ExportDone(done string) bool {
-	_, ok := cache.ReadDone(done)
-	if !ok {
-		// a mark of an earlier hwnpu that holds nothing
-		if fi, err := os.Stat(done); err == nil && fi.Size() == 0 {
-			return true
-		}
-	}
-	return ok
+	_, err := os.Stat(done)
+	return err == nil
 }
 
 // StartExport makes export an empty directory, what an earlier conversion cut off removed.
@@ -53,6 +49,37 @@ func FinishExport(export, done string, old ...string) error {
 	return nil
 }
 
+// Sharer fetches Core AI exports from the shared layers (docs/cache-sharing.md 7) and puts those
+// made here in them.
+type Sharer interface {
+	// Fetch makes export from the first layer that has it and reports whether one had it.
+	Fetch(ctx context.Context, export string) bool
+	// Put puts export, made here and whole, in the layers that are written (in the background).
+	Put(ctx context.Context, export string)
+}
+
+// SharedExports is the Sharer of the exports (chat sets it); nil: none is shared.
+var SharedExports Sharer
+
+// FetchExport reports whether the export whose mark is done is whole: here, or made from the
+// shared layers (SharedExports), its mark then written.
+func FetchExport(ctx context.Context, export, done string) bool {
+	if ExportDone(done) {
+		return true
+	}
+	if SharedExports == nil || !SharedExports.Fetch(ctx, export) {
+		return false
+	}
+	return cache.WriteDone(done, export) == nil
+}
+
+// ShareExport puts the export made here (FinishExport) in the shared layers that are written.
+func ShareExport(ctx context.Context, export string) {
+	if SharedExports != nil {
+		SharedExports.Put(ctx, export)
+	}
+}
+
 // ProgramPath is where the single program NAME of a model goes in dir for backend, the mark that
 // says it is whole, and the export to start before writing it ("" when there is none): Core AI's
 // is model.aimodel in the export NAME.coreai (CoreAIExport); Core ML's NAME.mlpackage and
@@ -73,6 +100,22 @@ func OldCoreAIProgram(dir, name string) []string {
 	return []string{p, p + ".done"}
 }
 
+// ProgramReady reports whether a program of ProgramPath (NAME in dir) is whole: its Core AI
+// export here or from the shared layers (FetchExport; the old program NAME.aimodel then
+// removed), Core ML's and Intel's program with its .done.
+func ProgramReady(ctx context.Context, dir, name, done, export string) bool {
+	if export == "" {
+		return ExportDone(done)
+	}
+	if !FetchExport(ctx, export, done) {
+		return false
+	}
+	for _, o := range OldCoreAIProgram(dir, name) {
+		os.RemoveAll(o)
+	}
+	return true
+}
+
 // StartProgram removes what an earlier conversion left of a program of ProgramPath and starts
 // its export when it has one.
 func StartProgram(program, export string) error {
@@ -83,10 +126,15 @@ func StartProgram(program, export string) error {
 }
 
 // FinishProgram marks a program of ProgramPath (NAME in dir) whole: its export with
-// FinishExport (and the old Core AI program NAME.aimodel removed), or done written empty.
-func FinishProgram(dir, name, done, export string) error {
+// FinishExport (and the old Core AI program NAME.aimodel removed), put in the shared layers
+// (ShareExport), or done written empty.
+func FinishProgram(ctx context.Context, dir, name, done, export string) error {
 	if export != "" {
-		return FinishExport(export, done, OldCoreAIProgram(dir, name)...)
+		if err := FinishExport(export, done, OldCoreAIProgram(dir, name)...); err != nil {
+			return err
+		}
+		ShareExport(ctx, export)
+		return nil
 	}
 	return os.WriteFile(done, nil, 0o644)
 }

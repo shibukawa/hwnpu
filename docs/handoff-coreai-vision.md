@@ -42,7 +42,7 @@ done
 ```sh
 go build -o /tmp/aicheck ./tools/coreai/aicheck
 M=~/Library/Caches/hwnpu/models
-P="$M/PP-OCRv6_small_det_onnx/*.mlpackage $M/PP-OCRv6_small_rec_onnx/*.mlpackage $M/RTMDet-ONNX/*.mlpackage $M/RTMO-s/*.mlpackage $M/YuNet/*.mlpackage $M/da3-base-v1.coreml/*/*.mlpackage"
+P="$M/PP-OCRv6_small_det_onnx/*.mlpackage $M/PP-OCRv6_small_rec_onnx/*.mlpackage $M/RTMDet-ONNX/*.mlpackage $M/RTMO-s/*.mlpackage $M/YuNet/*.mlpackage $M/DA3-BASE/da3-base-v1.coreml/*/*.mlpackage"
 /tmp/aicheck run -cpu -calls 10 $P            # Core AI
 /tmp/aicheck run -cpu -coreml -calls 10 $P    # Core ML
 ```

@@ -79,14 +79,14 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	for _, seq := range s.Seqs {
 		out := filepath.Join(pdir, fmt.Sprintf("embed%s-%s-s%d", a.Rev(), format, seq))
 		if backend != llm.BackendCoreAI { // Core AI's are checked by their export below
-			missing = missing || !converted(out+programExt(backend))
+			missing = missing || !converted(ctx, out+programExt(backend))
 		}
 		name := fmt.Sprintf("s%d", seq)
 		outs, names, base = append(outs, out), append(names, name), base+"-"+name
 		ps = append(ps, program{backend: backend, seq: seq, format: format})
 	}
 	if backend == llm.BackendCoreAI {
-		missing = !converted(base + programExt(backend))
+		missing = !converted(ctx, base+programExt(backend))
 	}
 	if missing {
 		if _, err := checkpoint(); err != nil {
@@ -108,7 +108,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 		}
 	}
 	shareOnce(pdir, s.Log)
-	if c.Weights, err = writeTables(s.Dir, a, model, checkpoint, s.Log); err != nil {
+	if c.Weights, err = writeTables(ctx, s.Dir, a, model, checkpoint, s.Log); err != nil {
 		return EmbedConfig{}, err
 	}
 	return c, nil

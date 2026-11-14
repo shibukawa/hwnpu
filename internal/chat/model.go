@@ -508,7 +508,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			}
 			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s", pk, cache, p.seq, last))
 			if backend != llm.BackendCoreAI { // Core AI's are checked by their export below
-				missing = missing || !converted(out+programExt(backend))
+				missing = missing || !converted(ctx, out+programExt(backend))
 			}
 			outs, names, base = append(outs, out), append(names, name), base+"-"+name
 			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
@@ -524,10 +524,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				all.names, all.base = append(all.names, n), all.base+"-"+n
 			}
 		}
-		missing = !converted(all.base + programExt(backend))
+		missing = !converted(ctx, all.base+programExt(backend))
 	} else if backend == llm.BackendCoreAI {
 		for _, tp := range tps {
-			missing = missing || !converted(tp.base+programExt(backend))
+			missing = missing || !converted(ctx, tp.base+programExt(backend))
 		}
 	}
 	if missing {
@@ -606,7 +606,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			}
 		}
 		out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d-last%s", mkind, context, mtpSeq, programExt(backend)))
-		if !converted(out) {
+		if !converted(ctx, out) {
 			if _, err := checkpoint(); err != nil {
 				return Config{}, err
 			}
@@ -625,6 +625,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		c.MTP = []string{path}
 	}
 	shareOnce(pdir, s.Log)
+	shareMade(ctx) // the exports split at their attention, their programs all added
 	for _, e := range encoders {
 		ea, _, err := llm.LoadConfig(c.ModelConfig, e.arch)
 		if err != nil {
@@ -636,7 +637,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			}
 		}
 		out := filepath.Join(pdir, fmt.Sprintf("%s%s-%s%s", e.arch, ea.Rev(), e.value, programExt(backend)))
-		if !converted(out) {
+		if !converted(ctx, out) {
 			if _, err := checkpoint(); err != nil {
 				return Config{}, err
 			}
@@ -647,7 +648,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 		*e.packages(&c) = []string{path}
 	}
-	if c.Weights, err = writeTables(s.Dir, a, model, checkpoint, s.Log); err != nil {
+	if c.Weights, err = writeTables(ctx, s.Dir, a, model, checkpoint, s.Log); err != nil {
 		return Config{}, err
 	}
 	// A conversion reads the checkpoint into memory (2.4 GiB of PLaMo 3 Translate 2B left after
@@ -916,6 +917,9 @@ func codesHash(dir string) (string, error) {
 // done again.
 func convert(ctx context.Context, config, weights, out string, p program, log io.Writer) (string, error) {
 	done := doneFile(out)
+	if p.backend == llm.BackendCoreAI {
+		converted(ctx, out) // from the shared layers when one has it
+	}
 	if p, ok := cache.ReadDone(done); ok {
 		return p, nil
 	}
@@ -984,7 +988,13 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 			return "", err
 		}
 	}
-	return path, cache.WriteDone(done, path)
+	if err := cache.WriteDone(done, path); err != nil {
+		return "", err
+	}
+	if p.backend == llm.BackendCoreAI {
+		shareExport(ctx, out, p.paged > 0)
+	}
+	return path, nil
 }
 
 // programOptions are the converter's options for p: its defaults and the architecture's format,
@@ -1023,6 +1033,7 @@ func convertShared(ctx context.Context, config, weights, base string, names []st
 	for i, n := range names {
 		manifests[i] = filepath.Join(export, n+".parts.json")
 	}
+	converted(ctx, export) // from the shared layers when one has it
 	if _, ok := cache.ReadDone(done); ok {
 		return manifests, nil
 	}
@@ -1067,7 +1078,42 @@ func convertShared(ctx context.Context, config, weights, base string, names []st
 	if err != nil {
 		return nil, err
 	}
-	return paths, cache.WriteDone(done, paths[0])
+	if err := cache.WriteDone(done, paths[0]); err != nil {
+		return nil, err
+	}
+	shareExport(ctx, export, p.paged > 0)
+	return paths, nil
+}
+
+// madePaged are the Core AI exports of models split at their attention converted here, put in
+// the shared layers once their programs without weights are added (shareMade): putting one
+// describes its files, which AddMass and AddSmaller change after the conversion.
+var madePaged struct {
+	sync.Mutex
+	exports []string
+}
+
+// shareExport puts the Core AI export made here in the shared layers (llm.ShareExport), or,
+// one split at its attention (paged), once Prepare has added its programs (shareMade).
+func shareExport(ctx context.Context, export string, paged bool) {
+	if !paged {
+		llm.ShareExport(ctx, export)
+		return
+	}
+	madePaged.Lock()
+	madePaged.exports = append(madePaged.exports, export)
+	madePaged.Unlock()
+}
+
+// shareMade puts the exports shareExport kept in the shared layers.
+func shareMade(ctx context.Context) {
+	madePaged.Lock()
+	exports := madePaged.exports
+	madePaged.exports = nil
+	madePaged.Unlock()
+	for _, e := range exports {
+		llm.ShareExport(ctx, e)
+	}
 }
 
 // freshDir makes dir an empty directory: what a conversion cut off left in an export is removed.

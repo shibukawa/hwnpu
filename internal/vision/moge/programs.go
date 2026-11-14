@@ -52,13 +52,14 @@ func (p *progSized) close() error {
 // useProgram loads size w x h of an export of Prepare (Core ML packages or OpenVINO IR),
 // converting it first when it is missing.
 func (e *Estimator) useProgram(ctx context.Context, d string, w, h int) (*sized, error) {
-	if !llm.ExportDone(d + ".done") {
+	if !llm.FetchExport(ctx, d, d+".done") { // here, or from the shared layers
 		if e.Logf != nil {
 			e.Logf("moge: converting %dx%d (the first picture of this aspect)", w, h)
 		}
 		if err := ConvertSize(e.Checkpoint, d, w/14, h/14, e.Format); err != nil {
 			return nil, err
 		}
+		llm.ShareExport(ctx, d)
 	}
 	b, err := os.ReadFile(filepath.Join(d, "model.json"))
 	if err != nil {
@@ -184,7 +185,12 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	format := depth.ExportFormat(s.Backend)
-	out := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
+	// the export beside the checkpoint, in the model's directory (as every model's); the one an
+	// earlier hwnpu kept in the models' directory is removed (its sizes are converted again)
+	old := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
+	os.RemoveAll(old)
+	os.Remove(old + ".done")
+	out := filepath.Join(root, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	x := Export{Name: s.Name, Kind: "moge", Tokens: Tokens, Format: format, Checkpoint: pt}
 	for _, a := range Aspects {
 		bw, bh := BaseSize(Tokens, a)

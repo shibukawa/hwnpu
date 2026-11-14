@@ -122,7 +122,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		log = io.Discard
 	}
 	out := filepath.Join(s.Dir, ExportName(s.Name, o))
-	if _, err := os.Stat(out + ".done"); err == nil {
+	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
 		return out, nil
 	}
 	root := filepath.Join(s.Dir, filepath.Base(s.Repo))
@@ -179,7 +179,12 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	fmt.Fprintf(log, "converted in %.0f s\n", time.Since(t0).Seconds())
 	debug.FreeOSMemory()
-	return out, cache.WriteDone(out+".done", out)
+	if err := cache.WriteDone(out+".done", out); err != nil {
+		return "", err
+	}
+	// a Core AI export goes in the shared layers that are written (llm.SharedExports)
+	llm.ShareExport(ctx, out)
+	return out, nil
 }
 
 // sharedExport is a whole export in dir whose text encoder's programs are those o asks for (they do

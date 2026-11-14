@@ -102,6 +102,7 @@ macOS 27 には Core ML のほかに Core AI があります。追加で入れ�
 - **`hwnpu-chat` と `hwnpu-image` は Core AI だけで動き**、Mac では macOS 27 が要ります (`--backend` に `coreml` はありません。ほかのコマンドが受け取る `HWNPU_BACKEND=coreml` は、この 2 つでは Core AI の意味になります)。モデルは Core AI 向け (`.aimodel`、チェックポイントから Go で書き出す) に変換し、Core ML は使いません。`hwnpu-image --cpu` は確かめ用に、これまでどおり Core ML の書き出しを CPU のインタプリタで動かします。macOS 26 以前の Mac では、そう書いたエラーになります
 - **`hwnpu-audio` も Core AI だけで動きます** (macOS 27)。音楽 (Magenta RealTime 2)、効果音 (MOSS-SoundEffect)、tts (LFM3-Audio-2B)、transcribe (Whisper)、pitch、notes を、チェックポイントや ONNX から Core AI 向け (`.aimodel`) に変換します。`--cpu` と、ONNX Runtime の無い機械で CPU で動かす pitch と notes は、Core ML の書き出しを CPU のインタプリタで読みます
 - **置き場所**: どのコマンドも、モデルの Core AI のプログラムを同じ形で、モデルのディレクトリのチェックポイントの横に書き出し `NAME.coreai` (`.aimodel` と要るものを入れたディレクトリ) として置き、できあがったら横に `NAME.coreai.done` を置きます。プログラムが 1 本のモデルは `NAME.coreai/model.aimodel`、別々に変換し直す部分はそれぞれの書き出しです (音楽: 言語モデル、SpectroStream の復号と符号化、MusicCoCa の文と音。効果音: 文の符号器、DiT、DAC)。前の版の `coreai` ディレクトリと `NAME.aimodel` は、置き換える書き出しを書いたときに消します (docs/design.md 16.198)
+- **変換の共有**: 定義に共有の層 (NAS のフォルダや S3 のバケット、`cache.layers`、docs/cache-sharing.md 7.4 節) があれば、書き出しは変換する前にそこを探し、手元で変換したらそこへ置きます。コマンドが行を引く表も同じです。ほかの機械が変換したものを動かす Mac は、書き出しを落とすだけでチェックポイントは要りません。Neural Engine の初回のコンパイルはそれぞれの Mac で要ります (docs/design.md 16.199)
 - **変換**はモデルの部品 (プログラム) を、CPU のコア数と空きメモリが許すだけ並べて書きます (`HWNPU_JOBS=N` で数を決める。`1` で 1 つずつ)。端末では全体のバーと書いている部品ごとの行を出し、全部終わったら消します
 - **ほかのコマンド**は Core ML が既定のままで、`--backend coreai` か `HWNPU_BACKEND=coreai` で、変換済みのモデル (`.mlpackage`、Go で Core AI のプログラムに下ろす) を Core AI で動かします
 
