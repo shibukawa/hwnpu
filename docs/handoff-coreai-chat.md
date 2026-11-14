@@ -2,7 +2,7 @@
 
 作成: 2026-11-14。[design.md](design.md) の 16.185 で、`hwnpu-chat --backend coreai` がチェックポイントから `.aimodel` を直接書くようになった。生成のプログラムと読み取りのプログラムの同じ層の部品は、関数 2 つの 1 本にまとめる。M3 (16 GB、macOS 27.2) で確かめたのは LFM3-1.7B、Qwen3-0.6B、Qwen3.5-0.8B、PLaMo-Embedding-1B。全部 Neural Engine に載り、2 回目の準備は 0.5 秒以下。M3 はディスクの空きが 12 GB しかなく、残りはここに書いたものを、ディスクに余裕のある機械 (macOS 27) でやる。
 
-確かめ終わったら、`--backend` の既定を Core AI にして、`hwnpu-chat` から Core ML を外す (別の PR)。
+**2026-11-14 更新** (16.191): Qwen3.5-4B と gemma-4-E4B-it は M2 で確かめた (全部 Neural Engine、20〜22 トークン/秒)。`hwnpu-chat` は Mac では Core AI だけになり (`--backend` に `coreml` はない、指定なしで Core AI)、書き出しはモデルのディレクトリの `NAME.coreai/` (と `NAME.coreai.done`) になった。下のコマンドの `--backend coreai` は省いてよい。残りは 2 節のほかのモデル。
 
 ## 1. 準備
 
@@ -27,14 +27,14 @@ done
 /tmp/hwnpu-chat -m LFM3-VL-2B --backend coreai --temp 0 --image photo.png "この画像を一文で説明してください。"
 /tmp/hwnpu-chat -m LFM3-Audio-2B --backend coreai --temp 0 --audio question.wav "答えてください。"
 /tmp/hwnpu-chat -m LFM3-Omni-2B --backend coreai --temp 0 --image photo.png "この画像を一文で説明してください。"
-for m in d1-2B d1-Omni-2B; do /tmp/hwnpu-chat systemone -m $m --backend coreai < request.json; done   # Core ML (--backend coreml) と答えが同じか
+for m in d1-2B d1-Omni-2B; do /tmp/hwnpu-chat systemone -m $m --backend coreai < request.json; done   # Core ML (前の hwnpu の --backend coreml) と答えが同じか
 ```
 
 - 期待: どれも `all on the NPU` で、`converting …-q8-q128-last` の行のあとに `2 programs in N Core AI programs` が出る。2 回目の `ready after` は数秒以内
-- 期待: 書き出しはモデルのディレクトリの `coreai/` だけに増え、その大きさは重みの 1 回分ほど。Core AI のキャッシュ (`~/Library/Caches/coreai-cache/<OS>/hwnpu-chat/`) の増え方も 1 回分
+- 期待: 書き出しはモデルのディレクトリの `NAME.coreai/` に増え、その大きさは重みの 1 回分ほど。Core AI のキャッシュ (`~/Library/Caches/coreai-cache/<OS>/hwnpu-chat/`) の増え方も 1 回分
 - **gemma-4-E2B-it と E4B**: 読み取りのプログラムはキャッシュだけ書く (`-kv`、`q128-kv`)。E2B ではその 3 部品が生成側の最初の 3 部品と同じ層で、関数 2 つの 1 本になる。M3 では小さな Gemma 4 で Neural Engine で確かめた (`TestConvertAIKVOnlyOnNeuralEngine`)。実物で、長めのプロンプト (128 トークンを超える) を読ませて答えが崩れないかを見る
 - **Qwen3.5-4B**: 8 ビットの表で、16 GB の機械では重い。生成の速さと、`the Neural Engine holds … GiB` を記録する
-- Core ML (`--backend coreml`) と答えを比べられるなら比べる。16.173 では、貪欲法の文が数十トークン目から分かれることがあった (fp16 の丸めの違い)
+- Core ML (前の hwnpu の `--backend coreml`) と答えを比べられるなら比べる。16.173 では、貪欲法の文が数十トークン目から分かれることがあった (fp16 の丸めの違い)
 
 ## 3. 記録すること
 

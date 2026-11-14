@@ -158,7 +158,11 @@ func buildCached(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Opti
 			if opts.Hidden {
 				y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 			} else {
-				y = m.Linear(h, cfg.Head(), "y", cfg.VocabSize)
+				vocab := cfg.VocabSize
+				if len(opts.HeadRows) > 0 {
+					vocab = len(opts.HeadRows) // the weights read the rows alone (MTP.BuildCached)
+				}
+				y = m.Linear(h, cfg.Head(), "y", vocab)
 			}
 		}
 		outs = []mlpackage.Feature{{Name: y.Name, DType: mlpackage.Float16, Shape: y.Shape}}
@@ -430,7 +434,12 @@ func (m *builder) gatedDeltaNet(i int, h *mlpackage.Var) *mlpackage.Var {
 		state = m.input(fmt.Sprintf("st_rec_%d", i), 1, hv, dk, dv)
 	}
 	decayH, betaH := perHead(decay), perHead(beta)
-	o, state := m.deltaRule(q, k, v, decayH, betaH, state)
+	var o *mlpackage.Var
+	if Arch.Param(m.opts, "delta") == "rows" {
+		o, state = m.deltaRule(q, k, v, decayH, betaH, state)
+	} else {
+		o, state = m.deltaRuleChunks(q, k, v, perHead(g), betaH, state)
+	}
 	if m.opts.Cache > 0 {
 		m.output(state, fmt.Sprintf("st_rec_%d_new", i))
 		if m.stateRows {
@@ -557,6 +566,124 @@ func (m *builder) deltaRule(q, k, v, decay, beta, state *mlpackage.Var) (o, st *
 		return outs[0], state
 	}
 	return m.Op("concat", map[string]any{"values": outs, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, hv, s, dv), state
+}
+
+// deltaChunk is the rows of a chunk of deltaRuleChunks: 8, a step's (Draft) in one.
+const deltaChunk = 8
+
+// deltaRuleChunks is deltaRule over chunks of deltaChunk rows in the chunked form of the gated
+// delta rule (flash-linear-attention's chunk_gated_delta_rule, the WY representation): a chunk
+// reads the state S0 twice (k S0, q S0) and writes it once, where deltaRule reads and writes it
+// five times a row (the state of a value head is dk x dv: Qwen3.5-4B's 32 heads 1 MiB in fp16, 7
+// MiB a row and 1.3 GB a step of 8 rows over its 24 Gated DeltaNet layers, a third as much again
+// as its weights). g is the log of the decay (1, heads, seq, 1). Within a chunk, with
+// G_t = g_1 + ... + g_t, Γ_t = exp(G_t) and the rows' new values u_t = beta_t (v_t - k_t S_{t-1}
+// decayed):
+//
+//	S_t = Γ_t S0 + sum_{j<=t} exp(G_t - G_j) k_j^T u_j
+//	(I + N) U = diag(beta) (V - diag(Γ) K S0),  N_tj = beta_t exp(G_t - G_j) k_t.k_j for j < t
+//	O = diag(Γ) Q S0 + (Q K^T .* exp(G_t - G_j) [j <= t]) U
+//
+// N is strictly lower triangular (nilpotent), so U is B - N (B - N (B - ...)), c-1 products of
+// N with a c x dv matrix, B = diag(beta) (V - diag(Γ) K S0). exp(G_t - G_j) is at most 1 where it is
+// used (the decays are at most 1); above the diagonal it is masked, computed of min(G_t - G_j, 0)
+// so that it does not overflow. Padding rows (beta 0, g 0) leave the state as it is.
+func (m *builder) deltaRuleChunks(q, k, v, g, beta, state *mlpackage.Var) (o, st *mlpackage.Var) {
+	hv, s, dk, dv := q.Shape[1], q.Shape[2], q.Shape[3], v.Shape[3]
+	mm := func(x, y *mlpackage.Var, tx, ty bool, shape ...int) *mlpackage.Var {
+		return m.Op("matmul", map[string]any{"x": x, "y": y, "transpose_x": m.B.ScalarBool(tx), "transpose_y": m.B.ScalarBool(ty)}, shape...)
+	}
+	op := func(typ string, x, y *mlpackage.Var, shape ...int) *mlpackage.Var {
+		return m.Op(typ, map[string]any{"x": x, "y": y}, shape...)
+	}
+	// lower triangular constants of a chunk of c rows: ones on and below the diagonal (the
+	// prefix sums, kept positions of O), below it (of N), and the identity
+	tri := func(c int, diag bool, name string) *mlpackage.Var {
+		vals := make([]float32, c*c)
+		for t := range c {
+			for j := range c {
+				if j < t || diag && j == t {
+					vals[t*c+j] = 1
+				}
+			}
+		}
+		return m.const16(fmt.Sprintf("delta_%s_%d", name, c), []int{1, 1, c, c}, vals)
+	}
+	var outs []*mlpackage.Var
+	for a := 0; a < s; a += deltaChunk {
+		c := min(deltaChunk, s-a)
+		qc, kc, vc := m.slice(q, 2, a, a+c), m.slice(k, 2, a, a+c), m.slice(v, 2, a, a+c)
+		gc, bc := m.slice(g, 2, a, a+c), m.slice(beta, 2, a, a+c)
+		// the prefix sums G and their differences D_tj = G_t - G_j as linears over the row of g
+		// (L_ti - L_ji for D): a matmul with a constant over the heads, or a subtraction
+		// broadcast on both sides, put the whole program off the Neural Engine
+		gRow := m.reshape(gc, 1, hv, 1, c)
+		G := m.reshape(m.Op("linear", map[string]any{"x": gRow, "weight": prefixWeights(m, c, false)}, 1, hv, 1, c), 1, hv, c, 1)
+		D := m.reshape(m.Op("linear", map[string]any{"x": gRow, "weight": prefixWeights(m, c, true)}, 1, hv, 1, c*c), 1, hv, c, c)
+		D = op("minimum", D, m.B.ScalarF16(0), 1, hv, c, c)
+		E := m.Op("exp", map[string]any{"x": D}, 1, hv, c, c)
+		gamma := m.Op("exp", map[string]any{"x": G}, 1, hv, c, 1)
+		n := op("mul", op("mul", mm(kc, kc, false, true, 1, hv, c, c), op("mul", E, tri(c, false, "strict"), 1, hv, c, c), 1, hv, c, c), bc, 1, hv, c, c)
+		w := vc
+		if state != nil {
+			w = op("sub", vc, op("mul", gamma, mm(kc, state, false, false, 1, hv, c, dv), 1, hv, c, dv), 1, hv, c, dv)
+		}
+		// U = (I + N)^-1 B as B - N (B - N (B - ...)), c-1 products: N is nilpotent. A product of
+		// two c x c matrices (forming the inverse) put the whole program off the Neural Engine;
+		// N times a c x dv matrix stays on it
+		bw := op("mul", w, bc, 1, hv, c, dv)
+		u := bw
+		for range c - 1 {
+			u = op("sub", bw, mm(n, u, false, false, 1, hv, c, dv), 1, hv, c, dv)
+		}
+		qk := op("mul", mm(qc, kc, false, true, 1, hv, c, c), op("mul", E, tri(c, true, "incl"), 1, hv, c, c), 1, hv, c, c)
+		oc := mm(qk, u, false, false, 1, hv, c, dv)
+		if state != nil {
+			oc = op("add", oc, op("mul", gamma, mm(qc, state, false, false, 1, hv, c, dv), 1, hv, c, dv), 1, hv, c, dv)
+		}
+		outs = append(outs, oc)
+		// the state after the chunk: Γ_c S0 + K^T (exp(G_c - G_j) u_j)
+		last := m.reshape(m.slice(E, 2, c-1, c), 1, hv, c, 1)
+		upd := mm(kc, op("mul", u, last, 1, hv, c, dv), true, false, 1, hv, dk, dv)
+		if state == nil {
+			state = upd
+		} else {
+			state = op("add", op("mul", state, m.slice(gamma, 2, c-1, c), 1, hv, dk, dv), upd, 1, hv, dk, dv)
+		}
+	}
+	if len(outs) == 1 {
+		return outs[0], state
+	}
+	return m.Op("concat", map[string]any{"values": outs, "axis": m.B.ScalarI32(2), "interleave": m.B.ScalarBool(false)}, 1, hv, s, dv), state
+}
+
+// prefixWeights is the weight (out, c) of a linear over a row of c values g: their prefix sums
+// G_t = g_1 + ... + g_t (c out), or with diff the differences G_t - G_j (c * c out, row t * c + j).
+func prefixWeights(m *builder, c int, diff bool) *mlpackage.Var {
+	l := func(t, i int) float32 {
+		if i <= t {
+			return 1
+		}
+		return 0
+	}
+	if !diff {
+		vals := make([]float32, c*c)
+		for t := range c {
+			for i := range c {
+				vals[t*c+i] = l(t, i)
+			}
+		}
+		return m.const16(fmt.Sprintf("delta_prefix_%d", c), []int{c, c}, vals)
+	}
+	vals := make([]float32, c*c*c)
+	for t := range c {
+		for j := range c {
+			for i := range c {
+				vals[(t*c+j)*c+i] = l(t, i) - l(j, i)
+			}
+		}
+	}
+	return m.const16(fmt.Sprintf("delta_prefix_diff_%d", c), []int{c * c, c}, vals)
 }
 
 // StepInputs gives the inputs of a step of valid tokens from pos (llm.Cached): the causal mask

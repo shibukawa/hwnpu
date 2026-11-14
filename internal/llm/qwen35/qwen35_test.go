@@ -594,3 +594,27 @@ func TestNoNeuralEngineActivations(t *testing.T) {
 		t.Errorf("no log or real_div: %v", ops)
 	}
 }
+
+// The gated delta rule over chunks of rows (deltaRuleChunks, the default) gives the logits of the
+// rule one row after the other (delta=rows) and of the float64 reference, for sequences of one
+// row, of a whole chunk, and past it into a chunk not filled.
+func TestDeltaChunks(t *testing.T) {
+	cfg := tinyConfig(t)
+	w := llm.NewSynthetic(cfg)
+	for _, n := range []int{1, deltaChunk, deltaChunk + 5, 3 * deltaChunk} {
+		ids := make([]int32, n)
+		for i := range ids {
+			ids[i] = int32((i*7 + 3) % cfg.VocabSize)
+		}
+		x := embed16(t, cfg, w, ids)
+		rows := runCPU(t, cfg, w, llm.Options{Seq: n, Format: "fp16", Params: map[string]string{"delta": "rows"}}, x)
+		chunks := runCPU(t, cfg, w, llm.Options{Seq: n, Format: "fp16"}, x)
+		want := logits(t, cfg, w, reference(t, cfg, w, x, -1))
+		if e := relErr(chunks, rows); e > 1e-3 {
+			t.Errorf("%d rows: relative error %g against the rule row by row", n, e)
+		}
+		if e := relErr64(chunks, want, cfg.VocabSize); e > 1e-4 {
+			t.Errorf("%d rows: relative error %g against the reference", n, e)
+		}
+	}
+}
