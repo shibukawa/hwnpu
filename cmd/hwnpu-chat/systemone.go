@@ -73,7 +73,7 @@ type SystemOneCmd struct {
 }
 
 // Run answers the request or serves.
-func (c *SystemOneCmd) Run(ctx context.Context) error {
+func (c *SystemOneCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	lw := logw()
 	lf := loadFlags{Dir: c.Dir, Cache: c.Cache, Models: c.Models}
 	if err := lf.prepare(); err != nil {
@@ -122,7 +122,7 @@ func (c *SystemOneCmd) Run(ctx context.Context) error {
 	}
 	defer m.Close()
 	if c.Listen != "" {
-		return serveSystemOne(ctx, &systemone.Server{M: m, Name: m.Name, Log: lw}, c.Listen, m.MaxTokens())
+		return serveSystemOne(ctx, stop, &systemone.Server{M: m, Name: m.Name, Log: lw}, c.Listen, m.MaxTokens())
 	}
 	console.Running() // a server's or a conversation's times are not of the command's work
 	return answerSystemOne(ctx, m, c.Request)
@@ -158,10 +158,11 @@ func answerSystemOne(ctx context.Context, m *systemone.Model, path string) error
 	return err
 }
 
-func serveSystemOne(ctx context.Context, s *systemone.Server, addr string, maxTokens int) error {
+func serveSystemOne(ctx context.Context, stop context.CancelFunc, s *systemone.Server, addr string, maxTokens int) error {
 	srv := &http.Server{Addr: addr, Handler: s.Handler()}
 	go func() {
 		<-ctx.Done()
+		stop() // as ServeCmd.Run: Ctrl-C is how serving ends
 		srv.Close()
 	}()
 	fmt.Fprintf(os.Stderr, "serving %s (prompts up to %d tokens) at http://%s/v1/systemone\n", s.Name, maxTokens, addr)

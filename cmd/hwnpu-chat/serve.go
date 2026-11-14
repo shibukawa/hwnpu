@@ -97,7 +97,7 @@ type ServeCmd struct {
 }
 
 // Run loads the models and serves until Ctrl-C.
-func (c *ServeCmd) Run(ctx context.Context) error {
+func (c *ServeCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	s, err := c.server(ctx)
 	if err != nil {
 		return err
@@ -106,6 +106,7 @@ func (c *ServeCmd) Run(ctx context.Context) error {
 	srv := &http.Server{Addr: c.Listen, Handler: s.Handler()}
 	go func() {
 		<-ctx.Done()
+		stop() // Ctrl-C is how serving ends: the models are closed and the command returns, not cut short (console.Interrupt)
 		srv.Close()
 	}()
 	var what []string

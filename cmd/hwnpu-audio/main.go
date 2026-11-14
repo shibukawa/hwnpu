@@ -52,7 +52,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -80,7 +79,7 @@ type cli struct {
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := console.Interrupt() // Ctrl-C ends the command, and the process when the command does not return
 	defer stop()
 	var c cli
 	k := kong.Parse(&c,
@@ -96,7 +95,7 @@ func main() {
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	console.MeasureEnergy(console.Log(os.Stderr)) // HWNPU_ENERGY: the idle power, then each phase's energy in the last lines
-	k.FatalIfErrorf(k.Run())
+	k.FatalIfErrorf(console.EndInterrupted(k.Run()))
 	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
 }
 
