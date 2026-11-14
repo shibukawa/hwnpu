@@ -389,13 +389,18 @@ type Program interface {
 	BuildCached(b *mlpackage.Builder, w llm.Weights, opts llm.Options) (ins, outs []mlpackage.Feature, err error)
 }
 
-// WriteProgram writes a program to a Core ML package at path, or as OpenVINO IR with
-// opts.Backend intel (path its .xml).
+// WriteProgram writes a program to a Core ML package at path, as a Core AI program with
+// opts.Backend coreai (path its .aimodel) or as OpenVINO IR with intel (path its .xml).
 func WriteProgram(path string, p Program, w llm.Weights, opts llm.Options) error {
-	if opts.Backend == llm.BackendIntel {
-		_, err := llm.WriteIR(path, map[string]string{llm.MetaArch: "magenta-realtime-2"}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
-			return p.BuildCached(b, w, opts)
-		})
+	build := func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
+		return p.BuildCached(b, w, opts)
+	}
+	switch opts.Backend {
+	case llm.BackendIntel:
+		_, err := llm.WriteIR(path, map[string]string{llm.MetaArch: "magenta-realtime-2"}, build)
+		return err
+	case llm.BackendCoreAI:
+		_, err := llm.WriteAI(path, map[string]string{llm.MetaArch: "magenta-realtime-2"}, build)
 		return err
 	}
 	pkg, err := mlpackage.Create(path)

@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -47,6 +49,18 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 	if err != nil {
 		return err
 	}
+	// AICHECK_CONST=NAME=V,...: inputs given a value instead of random ones (a mask of 1s, a
+	// constant a program takes as an input)
+	consts := map[string]float32{}
+	for _, kv := range strings.Split(os.Getenv("AICHECK_CONST"), ",") {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			f, err := strconv.ParseFloat(v, 32)
+			if err != nil {
+				return fmt.Errorf("AICHECK_CONST %s: %w", kv, err)
+			}
+			consts[k] = float32(f)
+		}
+	}
 	for _, p := range pkgs {
 		name := filepath.Base(p)
 		t := time.Now()
@@ -71,8 +85,12 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 			if a.Kind == types.ArgInput {
 				n := a.Bytes / 2
 				f := make([]float32, n)
+				c, fixed := consts[a.Name]
 				for i := range f {
 					f[i] = float32(rng.NormFloat64() * scale)
+					if fixed {
+						f[i] = c
+					}
 				}
 				hwnpu.EncodeF16(b.Bytes(), f)
 				hwnpu.DecodeF16(f, b.Bytes()) // the values the device sees

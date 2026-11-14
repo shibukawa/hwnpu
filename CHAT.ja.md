@@ -276,19 +276,19 @@ go run ./cmd/hwnpu-dev convert -arch lfm3-audio-encoder -frames 3000 -format fp1
 `hwnpu-audio tts --lang ja -o out.wav こんにちは` が LFM3-Audio-2B (`-m speech`) で文章を読み上げて WAV（24 kHz）に書きます。初回にモデルをモデルのフォルダに落とし (hwnpu-chat の LFM3-Audio-2B と共有)、下のプログラムを 8 ビットの表で自分で変換し、読む表 (`speech-tables.safetensors`) を書くので、2 回目からはチェックポイントは要りません。自分で変換するときは、テキスト部を KV キャッシュ付きで `-hidden-out 1` を付けて変換し（最終の隠れ状態も出力する）、depthformer（`-arch lfm3-depthformer`）と、`audio_tokenizer/` のコーデックのデコーダ（`-codec-frames`）を別に変換します。チャットの返答を音声にする機能はまだありません。実物での確認はまだです（docs/design.md の 16.30）。
 
 ```bash
-go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
+go run ./cmd/hwnpu-dev convert -backend coreai -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev convert -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.mlpackage
+go run ./cmd/hwnpu-dev convert -backend coreai -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev convert -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.mlpackage
+go run ./cmd/hwnpu-dev convert -backend coreai -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.mlpackage --depth DIR/depth.mlpackage --codec DIR/codec.mlpackage --lang ja -o out.wav こんにちは
+go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.parts.json --depth DIR/depth.aimodel --codec DIR/codec.aimodel --lang ja -o out.wav こんにちは
 ```
 
 ## 6. OpenCode から使う

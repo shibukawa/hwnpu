@@ -29,8 +29,9 @@ type Setup struct {
 	// Format is the weight format of the programs (empty: the architectures', lut8; int8 on
 	// Intel's NPU, which reads no lookup tables).
 	Format string
-	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
-	// what the CPU interpreter runs) or OpenVINO IR for Intel's NPU, kept in Dir/intel.
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, what
+	// the CPU interpreter runs), Core AI's programs (coreai, kept in Dir/coreai) or OpenVINO IR
+	// for Intel's NPU, kept in Dir/intel.
 	Backend string
 	Log     io.Writer
 }
@@ -78,10 +79,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		{whisper.Arch, llm.Options{Seq: 1, Cache: wc.TargetPositions}, &c.Decoder},
 	} {
 		format := cmp.Or(s.Format, p.arch.Format)
-		dir, ext := s.Dir, ".mlpackage"
-		if intel {
-			format = llm.IntelFormat(format)
-			dir, ext = filepath.Join(s.Dir, "intel"), ".xml"
+		dir, ext := s.Dir, llm.ProgramExt(s.Backend)
+		if intel || s.Backend == llm.BackendCoreAI {
+			if intel {
+				format = llm.IntelFormat(format)
+			}
+			dir = filepath.Join(s.Dir, s.Backend)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return Config{}, err
 			}
@@ -147,8 +150,11 @@ func convert(config, weights, out string, a *llm.Arch, format string, o llm.Opti
 		opts.Quant = "kmeans-minmax"
 	}
 	target := "the Neural Engine"
-	if o.Backend == llm.BackendIntel {
+	switch o.Backend {
+	case llm.BackendIntel:
 		target = "Intel's NPU"
+	case llm.BackendCoreAI:
+		target = "the Neural Engine (Core AI)"
 	}
 	fmt.Fprintf(log, "converting %s for %s (%s); this takes a minute\n", filepath.Base(out), target, format)
 	return llm.Convert(a, model, w, out, "any", 0, opts, log)

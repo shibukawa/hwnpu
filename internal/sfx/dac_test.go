@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"testing"
@@ -99,26 +100,21 @@ func TestDecodeLatentsCPU(t *testing.T) {
 	}
 }
 
-// On the Neural Engine (HWNPU_SFX_DEVICE=1) the decoder's stages are all on the NPU and give the
-// reference's samples.
-func TestDecodeLatentsOnDevice(t *testing.T) {
-	dir, ref := refDir(t)
-	if os.Getenv("HWNPU_SFX_DEVICE") == "" {
-		t.Skip("HWNPU_SFX_DEVICE is not set")
-	}
+// openCoreAIStages writes the decoder's stages as Core AI programs and loads them on Core AI's
+// Neural Engine, each checked to be all on it.
+func openCoreAIStages(t *testing.T, w *Weights) []Program {
+	t.Helper()
 	ctx := context.Background()
-	dev, _, err := llm.OpenDevice(ctx, "", "")
+	dev, _, err := llm.OpenDevice(ctx, llm.BackendCoreAI, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dev.Close()
-	w := vaeWeights(t, dir)
-	defer w.Close()
+	t.Cleanup(func() { dev.Close() })
 	tmp := t.TempDir()
 	var ps []Program
 	for _, s := range DACStages() {
-		path := filepath.Join(tmp, s.Part().Name+".mlpackage")
-		if _, err := llm.WritePart(path, s.Part(), w, llm.Options{Backend: llm.BackendCoreML}, nil); err != nil {
+		path := filepath.Join(tmp, s.Part().Name+".aimodel")
+		if _, err := llm.WritePart(path, s.Part(), w, llm.Options{Backend: llm.BackendCoreAI}, nil); err != nil {
 			t.Fatal(err)
 		}
 		t0 := time.Now()
@@ -126,10 +122,27 @@ func TestDecodeLatentsOnDevice(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer p.Close()
+		t.Cleanup(func() { p.Close() })
 		t.Logf("%s: loaded in %s, on the NPU: %v", s.Part().Name, time.Since(t0).Round(time.Millisecond), p.OnNPU())
+		if !p.OnNPU() {
+			t.Errorf("%s is not all on the NPU", s.Part().Name)
+		}
 		ps = append(ps, p)
 	}
+	return ps
+}
+
+// On Core AI's Neural Engine (HWNPU_SFX_DEVICE=1) the decoder's stages are all on the NPU and
+// give the reference's samples.
+func TestDecodeLatentsOnDevice(t *testing.T) {
+	dir, ref := refDir(t)
+	if os.Getenv("HWNPU_SFX_DEVICE") == "" {
+		t.Skip("HWNPU_SFX_DEVICE is not set")
+	}
+	ctx := context.Background()
+	w := vaeWeights(t, dir)
+	defer w.Close()
+	ps := openCoreAIStages(t, w)
 	z := readF32(t, ref+".latents.bin")
 	frames := len(z) / LatentDim
 	want := readF32(t, ref+".samples.bin")
@@ -142,6 +155,46 @@ func TestDecodeLatentsOnDevice(t *testing.T) {
 	t.Logf("%d frames in %s: samples %.3g off the reference (relative RMS)", frames, time.Since(t0).Round(time.Millisecond), e)
 	if !(e <= 0.05) {
 		t.Fatalf("samples %.3g off the reference", e)
+	}
+}
+
+// On Core AI's Neural Engine (HWNPU_SFX_COREAI=1; HWNPU_SFX_DIR, the model's directory: the
+// models' MOSS-SoundEffect-v2.0 by default) the decoder's stages are all on the NPU and give the
+// CPU interpreter's samples of 5 seconds of seeded latents (design.md 16.197: 0.009 off, the CPU
+// interpreter 0.003 off the stages of before run with fp16's rounding).
+func TestDecodeLatentsCoreAI(t *testing.T) {
+	if os.Getenv("HWNPU_SFX_COREAI") == "" {
+		t.Skip("HWNPU_SFX_COREAI is not set")
+	}
+	dir := os.Getenv("HWNPU_SFX_DIR")
+	if dir == "" {
+		home, _ := os.UserCacheDir()
+		dir = filepath.Join(home, "hwnpu", "models", "MOSS-SoundEffect-v2.0")
+	}
+	w := vaeWeights(t, dir)
+	defer w.Close()
+	const frames = 250
+	r := rand.New(rand.NewPCG(3, 4))
+	z := make([]float32, LatentDim*frames)
+	for i := range z {
+		z[i] = float32(r.NormFloat64())
+	}
+	samples := frames * HopLength
+	ctx := context.Background()
+	want, err := DecodeLatents(ctx, openStages(t, w, nil), z, frames, frames, samples)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := openCoreAIStages(t, w)
+	t0 := time.Now()
+	got, err := DecodeLatents(ctx, ps, z, frames, frames, samples)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := relRMS(got, want)
+	t.Logf("%d frames in %s on the Neural Engine: %.3g off the CPU interpreter (relative RMS)", frames, time.Since(t0).Round(time.Millisecond), e)
+	if !(e <= 0.02) {
+		t.Fatalf("samples %.3g off the CPU interpreter", e)
 	}
 }
 

@@ -51,8 +51,12 @@ var Files = []string{
 }
 
 // Revision counts the changes to the programs that call for converting them again (in their
-// names).
-const Revision = 1
+// names); DACRevision the decoder's stages' (2: sin, convolutions along the height, dilations as
+// rows, for Core AI's Neural Engine; design.md 16.197).
+const (
+	Revision    = 1
+	DACRevision = 2
+)
 
 // The defaults of the model card: 100 steps, guidance 4, shift 5.
 const (
@@ -84,9 +88,9 @@ type Setup struct {
 	Machine    int
 	TextFormat string // fp16 or lut8 (Formats by default)
 	DitFormat  string // lut8 or fp16
-	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
-	// what the CPU interpreter runs) or OpenVINO IR for Intel's NPU, kept in Dir/intel, whose
-	// lut8 is int8 (llm.IntelFormat).
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, what
+	// the CPU interpreter runs), Core AI's programs (coreai, kept in Dir/coreai) or OpenVINO IR
+	// for Intel's NPU, kept in Dir/intel, whose lut8 is int8 (llm.IntelFormat).
 	Backend string
 	Log     io.Writer
 }
@@ -132,15 +136,19 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 		return p, err
 	}
 	p.TextCfg = cfg
-	dir, ext := s.Dir, ".mlpackage"
-	if intel {
-		dir, ext = filepath.Join(s.Dir, "intel"), ".xml"
+	dir, ext := s.Dir, llm.ProgramExt(s.Backend)
+	if intel || s.Backend == llm.BackendCoreAI {
+		dir = filepath.Join(s.Dir, s.Backend)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return p, err
 		}
 	}
 	name := func(kind, format string) string {
-		return filepath.Join(dir, fmt.Sprintf("hwnpu-%s-r%d-%s%s", kind, Revision, format, ext))
+		rev := Revision
+		if strings.HasPrefix(kind, "dac-") {
+			rev = DACRevision
+		}
+		return filepath.Join(dir, fmt.Sprintf("hwnpu-%s-r%d-%s%s", kind, rev, format, ext))
 	}
 	for i := range TextSplit(text) {
 		p.Text = append(p.Text, name(fmt.Sprintf("text-%d", i), text))
@@ -415,7 +423,7 @@ func channels(x []float32, n, c int) []float32 {
 // String names the formats of the paths, for the log.
 func (p Paths) String() string {
 	f := func(path string) string {
-		b := strings.TrimSuffix(filepath.Base(path), ".mlpackage")
+		b := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 		return b[strings.LastIndex(b, "-")+1:]
 	}
 	return fmt.Sprintf("text encoder %s, DiT %s", f(p.Text[0]), f(p.Blocks[0]))

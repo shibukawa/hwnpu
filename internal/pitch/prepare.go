@@ -26,7 +26,8 @@ type Setup struct {
 	// Dir is where the model and its program are kept; Repo is where the model is downloaded
 	// from when it is not there (chat.Fetch's OWNER/NAME@REVISION).
 	Dir, Repo string
-	// Backend is the program's format (llm.ProgramFormat): coreml or intel.
+	// Backend is the program's format (llm.Options.Backend): coreai, coreml (what the CPU
+	// interpreter runs) or intel.
 	Backend string
 	Log     io.Writer
 }
@@ -40,10 +41,7 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	if model, err = Fetch(ctx, s); err != nil {
 		return "", "", err
 	}
-	ext := ".mlpackage"
-	if s.Backend == llm.BackendIntel {
-		ext = ".xml"
-	}
+	ext := llm.ProgramExt(s.Backend) // .aimodel, .mlpackage or .xml
 	program = filepath.Join(s.Dir, fmt.Sprintf("%s-r%d-fp16-t%d%s", Arch, Revision, ProgramFrames, ext))
 	done := program + ".done"
 	if _, err := os.Stat(done); err == nil {

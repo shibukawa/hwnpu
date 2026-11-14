@@ -9,7 +9,7 @@ CPU 内蔵の NPU を cgo なしで Go から使うためのコマンドです (
 
 | プラットフォーム | バックエンド | 状態 |
 |---|---|---|
-| macOS (Apple Silicon) | Core ML (macOS 27 は Core AI も。hwnpu-image は Core AI だけ) | 実装済み。M1 / M3 で確認 |
+| macOS (Apple Silicon) | Core ML (macOS 27 は Core AI も。hwnpu-image と hwnpu-audio は Core AI だけ) | 実装済み。M1 / M3 で確認 |
 | Linux / Windows (Intel Core Ultra) | Level Zero (OpenVINO IR) | 実装済み。実機で動かしたのは一部のモデルだけ |
 | Linux (AMD Ryzen AI) | amdxdna ioctl (IRON / mlir-aie の書き出し) | 実装済み。Ryzen AI 9 365 (Strix Point) で確認 |
 | Windows (AMD Ryzen AI) | XRT (xrtshim) | 実装済み。Windows では未検証 |

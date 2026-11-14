@@ -50,15 +50,12 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 	var dev *hwnpu.Device
 	backend := llm.BackendCoreML // what the CPU interpreter runs
 	if !o.cpu {
-		d, device, err := llm.OpenDevice(ctx, "", o.cacheDir)
+		d, format, err := openAudioDevice(ctx, o.cacheDir, "--cpu runs MOSS-SoundEffect on the CPU")
 		if err != nil {
 			return err
 		}
 		defer d.Close()
-		if backend = llm.ProgramBackend(device); backend == "" {
-			return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--cpu runs MOSS-SoundEffect on the CPU)", device)
-		}
-		dev = d
+		dev, backend = d, format
 	}
 	p, err := sfx.Prepare(ctx, sfx.Setup{Dir: filepath.Join(o.dir, m.DirName()), Repo: m.Source(), Machine: m.Machine,
 		TextFormat: o.textFormat, DitFormat: o.ditFormat, Backend: backend, Log: lw})

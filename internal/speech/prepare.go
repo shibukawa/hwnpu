@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -38,9 +39,10 @@ type Setup struct {
 	Format string
 	// Cache is the text model's KV cache (0: DefaultCache).
 	Cache int
-	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, also
-	// what the CPU interpreter runs) or OpenVINO IR for Intel's NPU, kept in Dir/intel and with
-	// the text model's lookup tables as integers (llm.IntelFormat).
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, what
+	// the CPU interpreter runs), Core AI's programs (coreai, exports NAME.coreai: the text
+	// model's two programs the functions of one) or OpenVINO IR for Intel's NPU, kept in
+	// Dir/intel and with the text model's lookup tables as integers (llm.IntelFormat).
 	Backend string
 	Log     io.Writer
 }
@@ -106,6 +108,27 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		{codecConfig, codecWeights, "tts-" + codec.Name + codec.Rev() + "-fp16-f64", chat.Program{Arch: codec.Name, Format: "fp16", Params: map[string]string{"codec-frames": "64"}, Backend: s.Backend}},
 	}
 	var paths []string
+	if s.Backend == llm.BackendCoreAI {
+		// the text model's two programs together, their parts of the same layers the functions
+		// of one Core AI program: the weights once on the disk and on the Neural Engine
+		var names []string
+		var ps []chat.Program
+		base := filepath.Join(s.Dir, strings.TrimSuffix(progs[0].name, fmt.Sprintf("-q%d", progs[0].p.Seq)))
+		for _, p := range progs[:2] {
+			name := fmt.Sprintf("q%d", p.p.Seq)
+			names, ps, base = append(names, name), append(ps, p.p), base+"-"+name
+		}
+		weights := ""
+		if !chat.Converted(base + ".coreai") {
+			if weights, err = checkpoint(); err != nil {
+				return Config{}, err
+			}
+		}
+		if paths, err = chat.ConvertShared(ctx, config, weights, base, names, ps, log); err != nil {
+			return Config{}, err
+		}
+		progs = progs[2:]
+	}
 	for _, p := range progs {
 		out, err := chat.ProgramFile(s.Dir, p.name, s.Backend)
 		if err != nil {

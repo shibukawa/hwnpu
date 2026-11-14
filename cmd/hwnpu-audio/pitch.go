@@ -59,17 +59,13 @@ func (c *PitchCmd) Run(ctx context.Context) error {
 		}
 		logf("loaded %s in %.1f s, on the CPU (ONNX Runtime, %d threads)", m.Name, time.Since(t0).Seconds(), max(1, c.Threads))
 	} else {
-		backend := llm.BackendCoreML
+		backend := llm.BackendCoreML // what the CPU interpreter runs
 		var dev *hwnpu.Device
 		if !c.CPU {
-			var device string
-			if dev, device, err = llm.OpenDevice(ctx, "", cacheDir(c.Cache)); err != nil {
+			if dev, backend, err = openAudioDevice(ctx, cacheDir(c.Cache), "--device cpu runs it on the CPU"); err != nil {
 				return err
 			}
 			defer dev.Close()
-			if backend = llm.ProgramBackend(device); backend == "" {
-				return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--device cpu runs it on the CPU)", device)
-			}
 		}
 		setup.Backend = backend
 		model, program, err := pitch.Prepare(ctx, setup)

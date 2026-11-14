@@ -55,7 +55,10 @@ type Config struct {
 	// CacheDir is the compile cache ("" for none). CPU runs everything with the CPU interpreter.
 	CacheDir string
 	CPU      bool
-	Log      io.Writer
+	// Device is the device backend to run on (llm.OpenDevice's name: coreai for Core AI's
+	// programs; "": HWNPU_BACKEND, else the NPU found).
+	Device string
+	Log    io.Writer
 }
 
 // encoder is the tokenizer.
@@ -127,7 +130,7 @@ func Load(ctx context.Context, c Config) (*Synth, error) {
 	}
 	s.closers = append(s.closers, s.w)
 	if !c.CPU {
-		if s.dev, _, err = llm.OpenDevice(ctx, "", c.CacheDir); err != nil { // HWNPU_BACKEND, else the NPU found
+		if s.dev, _, err = llm.OpenDevice(ctx, c.Device, c.CacheDir); err != nil {
 			s.Close()
 			return nil, err
 		}

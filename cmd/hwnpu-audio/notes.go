@@ -75,18 +75,14 @@ func (c *NotesCmd) Run(ctx context.Context) error {
 
 // openConverted loads Basic Pitch's converted program on the NPU (or the CPU interpreter).
 func (c *NotesCmd) openConverted(ctx context.Context, m chat.Model, setup notes.Setup, logf func(string, ...any)) (*notes.Transcriber, error) {
-	backend := llm.BackendCoreML
+	backend := llm.BackendCoreML // what the CPU interpreter runs
 	var dev *hwnpu.Device
 	if !c.CPU {
-		d, device, err := llm.OpenDevice(ctx, "", cacheDir(c.Cache))
+		d, format, err := openAudioDevice(ctx, cacheDir(c.Cache), "--device cpu runs it on the CPU")
 		if err != nil {
 			return nil, err
 		}
-		if backend = llm.ProgramBackend(device); backend == "" {
-			d.Close()
-			return nil, fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--device cpu runs it on the CPU)", device)
-		}
-		dev = d
+		dev, backend = d, format
 	}
 	closeDev := func() {
 		if dev != nil {

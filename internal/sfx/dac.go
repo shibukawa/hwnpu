@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -35,11 +36,11 @@ type DACStage struct {
 	Halo int
 }
 
-// DACStages are the stages, each over as many frames as its output fits in the Neural Engine's
-// 16384 of a dimension (stage 0 over 1024: Core ML put its transposed convolution on the CPU
-// over 1536).
+// DACStages are the stages, each over about as many frames as its output fits in the Neural
+// Engine's 16384 of a dimension (stage 0 over about 1024: Core ML put its transposed convolution on
+// the CPU over 1536), its output a multiple of 9 frames for phaseConv.
 func DACStages() []DACStage {
-	ins := []int{1024, 3200, 4000, 5000, 8000}
+	ins := []int{1026, 3195, 3996, 4998, 7992}
 	var st []DACStage
 	ch := decoderDim
 	for i, r := range decoderRates {
@@ -137,12 +138,54 @@ func (d *dac) conv(x *mlpackage.Var, name string, dil, pad int, wn bool) *mlpack
 	if x.Shape[1] != ci {
 		d.Fail("%s takes %d channels, not %d", name, ci, x.Shape[1])
 	}
+	if dil > 1 && d.Opts.Backend != llm.BackendIntel {
+		return d.phaseConv(x, name, w, bias, ci, co, k, dil, pad)
+	}
+	return d.conv1d(x, name, w, bias, co, k, dil, pad, pad)
+}
+
+// conv1d is a convolution of weight w (co, ci, k) and bias over x (1, ci, 1, T) along T,
+// padded with zeros by padL and padR, of the given dilation. Except for Intel's NPU it runs
+// along the height, x laid out as (1, ci, T, 1): Core AI's Neural Engine miscomputes a
+// convolution along the width of a kernel over 1 and 512 or more channels whose input another
+// operation computes (design.md 16.197), and runs it right along the height.
+func (d *dac) conv1d(x *mlpackage.Var, name string, w, bias []float32, co, k, dil, padL, padR int) *mlpackage.Var {
+	ci, t := x.Shape[1], x.Shape[3]
+	out := t + padL + padR - dil*(k-1)
+	if d.Opts.Backend == llm.BackendIntel {
+		return d.op("conv", map[string]any{
+			"x": x, "weight": d.F16s(name+"_w", []int{co, ci, 1, k}, w), "bias": d.F16s(name+"_b", []int{co}, bias),
+			"strides": d.B.Ints(1, 1), "pad_type": d.Str("custom"), "pad": d.B.Ints(0, 0, int32(padL), int32(padR)),
+			"dilations": d.B.Ints(1, int32(dil)), "groups": d.B.ScalarI32(1),
+		}, 1, co, 1, out)
+	}
+	y := d.op("conv", map[string]any{
+		"x": d.reshape(x, 1, ci, t, 1), "weight": d.F16s(name+"_w", []int{co, ci, k, 1}, w), "bias": d.F16s(name+"_b", []int{co}, bias),
+		"strides": d.B.Ints(1, 1), "pad_type": d.Str("custom"), "pad": d.B.Ints(int32(padL), int32(padR), 0, 0),
+		"dilations": d.B.Ints(int32(dil), 1), "groups": d.B.ScalarI32(1),
+	}, 1, co, out, 1)
+	return d.reshape(y, 1, co, 1, out)
+}
+
+// phaseConv is conv's dilated convolution as an undilated one: x (T frames, a multiple of dil)
+// is laid out as (1, ci, T / dil, dil) (frame row dil + phase), convolved along the rows by a
+// kernel of k by 1, padded by pad / dil rows, and laid back; the output's frame row dil + phase
+// reads the input's frames (row + j) dil + phase. Core AI's Neural Engine miscomputes some
+// dilated convolutions whose input another operation computes (dilation 3 over 128 channels at
+// 8000 and 15000 frames but not 7680 or 16000) and an explicit pad before one (design.md 16.197),
+// and runs this right.
+func (d *dac) phaseConv(x *mlpackage.Var, name string, w, bias []float32, ci, co, k, dil, pad int) *mlpackage.Var {
 	t := x.Shape[3]
-	return d.op("conv", map[string]any{
-		"x": x, "weight": d.F16s(name+"_w", []int{co, ci, 1, k}, w), "bias": d.F16s(name+"_b", []int{co}, bias),
-		"strides": d.B.Ints(1, 1), "pad_type": d.Str("custom"), "pad": d.B.Ints(0, 0, int32(pad), int32(pad)),
-		"dilations": d.B.Ints(1, int32(dil)), "groups": d.B.ScalarI32(1),
-	}, 1, co, 1, t+2*pad-dil*(k-1))
+	if t%dil != 0 || pad%dil != 0 || 2*pad != dil*(k-1) {
+		d.Fail("%s: %d frames, padding %d for dilation %d (a multiple of it, the same frames out)", name, t, pad, dil)
+	}
+	rows, pr := t/dil, int32(pad/dil)
+	z := d.op("conv", map[string]any{
+		"x": d.reshape(x, 1, ci, rows, dil), "weight": d.F16s(name+"_w", []int{co, ci, k, 1}, w), "bias": d.F16s(name+"_b", []int{co}, bias),
+		"strides": d.B.Ints(1, 1), "pad_type": d.Str("custom"), "pad": d.B.Ints(pr, pr, 0, 0),
+		"dilations": d.B.Ints(1, 1), "groups": d.B.ScalarI32(1),
+	}, 1, co, rows, dil)
+	return d.reshape(z, 1, co, 1, t)
 }
 
 // convTranspose is the DecoderBlock's WNConvTranspose1d (kernel 2 stride, padding ceil(stride
@@ -188,11 +231,7 @@ func (d *dac) polyphase(x *mlpackage.Var, name string, w, bias []float32, ci, co
 			pb[ph*co+o] = bias[o]
 		}
 	}
-	z := d.op("conv", map[string]any{
-		"x": x, "weight": d.F16s(name+"_pw", []int{s * co, ci, 1, 2}, pw), "bias": d.F16s(name+"_pb", []int{s * co}, pb),
-		"strides": d.B.Ints(1, 1), "pad_type": d.Str("custom"), "pad": d.B.Ints(0, 0, 1, 1),
-		"dilations": d.B.Ints(1, 1), "groups": d.B.ScalarI32(1),
-	}, 1, s*co, 1, t+1)
+	z := d.conv1d(x, name+"_p", pw, pb, s*co, 2, 1, 1, 1)
 	z = d.reshape(z, s, co, t+1)
 	z = d.transpose(z, 1, 2, 0)
 	z = d.reshape(z, 1, co, 1, (t+1)*s)
@@ -256,16 +295,24 @@ func (d *dac) snake(x *mlpackage.Var, name string) *mlpackage.Var {
 		return d.F16s(name+suffix, []int{1, c, 1, 1}, v)
 	}
 	y := d.clip(d.mul(x, vec("_alpha", big)), -1500, 1500)
-	n := d.sub(d.add(d.scale(y, float32(1/math.Pi)), d.mg), d.mg)
-	r := d.sub(d.sub(y, d.scale(n, 3.125)), d.scale(n, float32(math.Pi-3.125)))
-	w := d.scale(r, float32(2/math.Pi))
-	u := d.mul(w, w)
-	b := sinTerms
-	p := d.addScalar(d.scale(u, b[4]), b[3])
-	for k := 2; k >= 0; k-- {
-		p = d.addScalar(d.mul(p, u), b[k])
+	var sn *mlpackage.Var
+	if d.Opts.Backend != llm.BackendIntel {
+		// Core AI runs sin on the Neural Engine, and folds (v + mg) - mg into v even with mg an
+		// input, so the rounding below does not round there; the CPU interpreter, which runs the
+		// Core ML export, computes in fp32 and does not round it either (design.md 16.197)
+		sn = d.unary("sin", y)
+	} else {
+		n := d.sub(d.add(d.scale(y, float32(1/math.Pi)), d.mg), d.mg)
+		r := d.sub(d.sub(y, d.scale(n, 3.125)), d.scale(n, float32(math.Pi-3.125)))
+		w := d.scale(r, float32(2/math.Pi))
+		u := d.mul(w, w)
+		b := sinTerms
+		p := d.addScalar(d.scale(u, b[4]), b[3])
+		for k := 2; k >= 0; k-- {
+			p = d.addScalar(d.mul(p, u), b[k])
+		}
+		sn = d.mul(w, p)
 	}
-	sn := d.mul(w, p)
 	out := d.add(x, d.mul(d.mul(sn, sn), vec("_inv_alpha", inv)))
 	if !anySmall {
 		return out
