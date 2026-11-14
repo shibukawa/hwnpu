@@ -20,7 +20,7 @@ func main() {
 	wake := flag.Bool("wake", false, "run queries that wake a sleeping NPU")
 	n := flag.Int("n", 1, "times to read")
 	interval := flag.Duration("i", time.Second, "time between reads")
-	sample := flag.Duration("sample", 0, "time between the two samples of rate counters (Windows)")
+	sample := flag.Duration("sample", 0, "time between the two samples of rate counters (Windows, macOS IOReport; <0 skips them on macOS)")
 	noCaches := flag.Bool("no-caches", false, "do not walk compile cache directories (macOS)")
 	flag.Parse()
 

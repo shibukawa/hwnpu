@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func collect(ctx context.Context, opts Options, info *Info) error {
@@ -22,6 +23,23 @@ func collect(ctx context.Context, opts Options, info *Info) error {
 	di.CPU, _ = syscall.Sysctl("machdep.cpu.brand_string")
 	di.Version, _ = syscall.Sysctl("kern.osproductversion")
 	guard("ioreg", info, func() error { return darwinANE(ctx, di) })
+	di.Device = aneDevice(di.ANE)
+	guard("processes", info, func() error {
+		p, err := darwinProcesses(di.Clients)
+		di.Processes = p
+		return err
+	})
+	if opts.SampleInterval >= 0 {
+		guard("ioreport", info, func() error {
+			interval := opts.SampleInterval
+			if interval == 0 {
+				interval = 500 * time.Millisecond
+			}
+			r, err := darwinIOReport(ctx, interval)
+			di.IOReport = r
+			return err
+		})
+	}
 	if !opts.SkipCaches {
 		guard("caches", info, func() error {
 			c, err := darwinCaches(ctx)

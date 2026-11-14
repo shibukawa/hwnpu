@@ -244,3 +244,127 @@ func nodeClasses(nodes []DarwinIONode, seen map[string]bool) {
 		nodeClasses(n.Children, seen)
 	}
 }
+
+// isANEChannel picks the ANE's IOReport channels out of the groups subscribed to.
+func isANEChannel(group, subgroup, name string) bool {
+	n := strings.TrimSpace(name)
+	switch group {
+	case "Interrupt Statistics (by index)":
+		return subgroup == "ane 0" || strings.HasPrefix(subgroup, "ane ") || strings.HasPrefix(subgroup, "dart-ane")
+	case "Energy Model", "PMP", "AMC Stats", "SoC Stats":
+		return strings.Contains(n, "ANE")
+	}
+	return false
+}
+
+// energyJoules converts an IOReport energy value to joules; ok is false for other units.
+func energyJoules(v int64, unit string) (float64, bool) {
+	switch strings.TrimSpace(unit) {
+	case "J":
+		return float64(v), true
+	case "mJ":
+		return float64(v) / 1e3, true
+	case "uJ", "µJ":
+		return float64(v) / 1e6, true
+	case "nJ":
+		return float64(v) / 1e9, true
+	}
+	return 0, false
+}
+
+// summarize fills the ANE fields from the channels.
+func (r *DarwinIOReport) summarize() {
+	if r.Seconds <= 0 {
+		return
+	}
+	var energyEM, energyPMP float64
+	var haveEM bool
+	for _, c := range r.Channels {
+		if c.Value == nil {
+			continue
+		}
+		v := *c.Value
+		n := strings.TrimSpace(c.Name)
+		switch {
+		case c.Group == "Energy Model" && strings.HasPrefix(n, "ANE"):
+			// Later chips have ANE (and sometimes per-core ANE0…); the total is the
+			// largest, or the sum of the parts when there is no total.
+			if j, ok := energyJoules(v, c.Unit); ok {
+				if n == "ANE" {
+					energyEM, haveEM = j, true
+				} else if !haveEM {
+					energyEM += j
+				}
+			}
+		case c.Group == "PMP" && c.SubGroup == "Energy Counters" && n == "ANE":
+			if j, ok := energyJoules(v, c.Unit); ok {
+				energyPMP = j
+			}
+		case c.Group == "AMC Stats" && n == "ANE RD":
+			r.ANEReadBytesPerSec = float64(v) / r.Seconds
+		case c.Group == "AMC Stats" && n == "ANE WR":
+			r.ANEWriteBytesPerSec = float64(v) / r.Seconds
+		case c.Group == "Interrupt Statistics (by index)" && c.SubGroup == "ane 0" && n == "First Level Interrupt Handler Count":
+			r.ANEInterruptsPerSec = float64(v) / r.Seconds
+		}
+	}
+	e := energyPMP
+	if energyEM > 0 {
+		e = energyEM
+	}
+	r.ANEPowerW = e / r.Seconds
+}
+
+// aneDevice finds the node with the ANE driver's DeviceProperties.
+func aneDevice(nodes []DarwinIONode) *DarwinANEDevice {
+	var found *DarwinANEDevice
+	var walk func(n DarwinIONode)
+	walk = func(n DarwinIONode) {
+		if found != nil {
+			return
+		}
+		if dp, ok := n.Properties["DeviceProperties"].(map[string]any); ok {
+			if _, ok := dp["ANEDevicePropertyNumANECores"]; ok {
+				d := &DarwinANEDevice{Class: n.Class}
+				d.Architecture, _ = dp["ANEDevicePropertyTypeANEArchitectureTypeStr"].(string)
+				d.Cores = plistInt(dp["ANEDevicePropertyNumANECores"])
+				d.Version = plistInt(dp["ANEDevicePropertyANEVersion"])
+				d.MinorVersion = plistInt(dp["ANEDevicePropertyANEMinorVersion"])
+				d.BoardType = plistInt(dp["ANEDevicePropertyANEHWBoardType"])
+				d.BoardSubType = plistInt(dp["ANEDevicePropertyANEHWBoardSubType"])
+				d.CPUSubType = plistInt(dp["ANEDevicePropertyANECPUSubType"])
+				d.FirmwareLoaded, _ = n.Properties["FirmwareLoaded"].(bool)
+				d.Compatible, _ = n.Properties["IONameMatched"].(string)
+				if pm, ok := n.Properties["IOPowerManagement"].(map[string]any); ok {
+					d.PowerState = plistInt(pm["CurrentPowerState"])
+					d.MaxPowerState = plistInt(pm["MaxPowerState"])
+				}
+				found = d
+				return
+			}
+		}
+		for _, ch := range n.Children {
+			walk(ch)
+		}
+	}
+	for _, n := range nodes {
+		walk(n)
+	}
+	return found
+}
+
+func plistInt(v any) int {
+	switch t := v.(type) {
+	case int64:
+		return int(t)
+	case uint64:
+		return int(t)
+	case float64:
+		return int(t)
+	case bool:
+		if t {
+			return 1
+		}
+	}
+	return 0
+}

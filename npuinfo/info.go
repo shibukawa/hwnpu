@@ -29,7 +29,8 @@ type Options struct {
 	// it, a monitor that polls does not keep the NPU awake.
 	Wake bool
 	// SampleInterval is the time between the two samples that rate counters need (Windows'
-	// performance counters). 0 means 500 ms.
+	// performance counters, macOS' IOReport). 0 means 500 ms; below 0 leaves those out
+	// (macOS), so Get returns at once.
 	SampleInterval time.Duration
 	// SkipCaches leaves out walking compile cache directories (macOS), which can be slow.
 	SkipCaches bool

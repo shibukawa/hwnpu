@@ -239,3 +239,67 @@ func TestMultiSZ(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestDarwinIOReportSummarize(t *testing.T) {
+	v := func(x int64) *int64 { return &x }
+	r := &DarwinIOReport{Seconds: 0.5, Channels: []DarwinIOReportChannel{
+		{Group: "PMP", SubGroup: "Energy Counters", Name: "ANE", Unit: "mJ", Value: v(1000)},
+		{Group: "AMC Stats", SubGroup: "Perf Counters", Name: "ANE RD", Unit: "B", Value: v(22e9)},
+		{Group: "AMC Stats", SubGroup: "Perf Counters", Name: "ANE WR", Unit: "B", Value: v(5e6)},
+		{Group: "Interrupt Statistics (by index)", SubGroup: "ane 0", Name: "   First Level Interrupt Handler Count", Value: v(270)},
+		{Group: "Interrupt Statistics (by index)", SubGroup: "dart-ane 0", Name: "   First Level Interrupt Handler Count", Value: v(99999)},
+	}}
+	r.summarize()
+	if r.ANEPowerW != 2 || r.ANEReadBytesPerSec != 44e9 || r.ANEWriteBytesPerSec != 10e6 || r.ANEInterruptsPerSec != 540 {
+		t.Fatalf("got %+v", r)
+	}
+	// Later chips: Energy Model's ANE in nJ wins over PMP.
+	r = &DarwinIOReport{Seconds: 1, Channels: []DarwinIOReportChannel{
+		{Group: "PMP", SubGroup: "Energy Counters", Name: "ANE", Unit: "mJ", Value: v(5)},
+		{Group: "Energy Model", Name: "ANE0", Unit: "nJ", Value: v(1e9)},
+		{Group: "Energy Model", Name: "ANE1", Unit: "nJ", Value: v(5e8)},
+	}}
+	r.summarize()
+	if r.ANEPowerW != 1.5 {
+		t.Fatalf("got %v W", r.ANEPowerW)
+	}
+}
+
+func TestIsANEChannel(t *testing.T) {
+	for _, c := range []struct {
+		g, s, n string
+		want    bool
+	}{
+		{"PMP", "Energy Counters", "ANE", true},
+		{"PMP", "Energy Counters", "GPU", false},
+		{"AMC Stats", "Perf Counters", "ANE RD", true},
+		{"Interrupt Statistics (by index)", "ane 0", "  First Level Interrupt Handler Count", true},
+		{"Interrupt Statistics (by index)", "gfx 0", "  First Level Interrupt Handler Count", false},
+		{"AOP endpoint 39", "wake reasons", "aop_crane", false},
+	} {
+		if got := isANEChannel(c.g, c.s, c.n); got != c.want {
+			t.Errorf("%q %q %q: %v", c.g, c.s, c.n, got)
+		}
+	}
+}
+
+func TestANEDevice(t *testing.T) {
+	nodes := []DarwinIONode{{Class: "H1xANELoadBalancer"}, {Class: "H11ANEIn", Properties: map[string]any{
+		"FirmwareLoaded": true,
+		"IONameMatched":  "ane,t8020",
+		"DeviceProperties": map[string]any{
+			"ANEDevicePropertyNumANECores":                int64(16),
+			"ANEDevicePropertyTypeANEArchitectureTypeStr": "h13g",
+			"ANEDevicePropertyANEVersion":                 int64(64),
+		},
+		"IOPowerManagement": map[string]any{"CurrentPowerState": int64(1), "MaxPowerState": int64(1)},
+	}}}
+	d := aneDevice(nodes)
+	if d == nil || d.Class != "H11ANEIn" || d.Cores != 16 || d.Architecture != "h13g" || d.Version != 64 ||
+		!d.FirmwareLoaded || d.Compatible != "ane,t8020" || d.PowerState != 1 || d.MaxPowerState != 1 {
+		t.Fatalf("got %+v", d)
+	}
+	if aneDevice(nodes[:1]) != nil {
+		t.Fatal("found a device without DeviceProperties")
+	}
+}
