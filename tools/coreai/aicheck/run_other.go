@@ -11,3 +11,5 @@ var errDarwin = errors.New("aicheck: probe and run need Core AI (macOS 27 on App
 func probe([]string, bool) error { return errDarwin }
 
 func run([]string, string, float64, bool, bool, int, string) error { return errDarwin }
+
+func cycle([]string, int) error { return errDarwin }

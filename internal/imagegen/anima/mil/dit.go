@@ -3,7 +3,10 @@ package mil
 import (
 	"fmt"
 	"math"
+	"os"
+	"slices"
 
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -84,10 +87,38 @@ func DitQChunk(w, h, qchunk int) int {
 // Blocks is the DiT's blocks first..first+count-1: inputs x (1, patches, 2048), the residual
 // stream divided by DitScale (for the first group, the patches (1, patches, 64), which it
 // embeds); t (1, 1, 8192), a row of Time's output; ctx (1, 512, 1024), the text's
-// conditioning. Output y, the residual stream after them. Self-attention runs qchunk queries at
-// a time (0: all at once).
+// conditioning. Output y, the residual stream after them. On Apple's Neural Engine the attentions
+// run a head at a time (ditBlock's attend); qchunk is the queries the self-attention scores at a
+// time where the heads stay together (Intel's NPU; 0: all at once).
 func Blocks(w, h, first, count, qchunk int) *Part {
-	return part(fmt.Sprintf("dit_blocks_%d", first), func(g *graph) {
+	return blocks(fmt.Sprintf("dit_blocks_%d", first), w, h, first, count, qchunk, nil)
+}
+
+// BlockRanges is Blocks with, in place of the residual stream, the ranges of what the blocks'
+// norms take, to check that a checkpoint's values fit fp16 as the norms are written: output y
+// (1, 1, count x RangeValues). A block's values, in its order: the residual stream at the
+// self-attention's LayerNorm, the self-attention's q and k before their norms, the residual
+// stream at the cross-attention's LayerNorm, the cross-attention's q and k, the residual stream
+// at the MLP's LayerNorm. Each is three values, of its rows over the last axis: the largest
+// magnitude, the largest RMS and the smallest RMS over the patches (the text's rows for the
+// cross-attention's k); for q and k, 16 heads of each.
+func BlockRanges(w, h, first, count, qchunk int) *Part {
+	return blocks(fmt.Sprintf("dit_ranges_%d", first), w, h, first, count, qchunk, &ranges{})
+}
+
+// RangeValues is the values BlockRanges gives of a block: 3 of the residual stream at each of 3
+// norms, 3 x 16 heads of each of 4 queries and keys, and after the cross-attention's queries and
+// keys the largest magnitude of its products with the values before the softmax's sum divides
+// them (milpart.HeadAttention's deferred: what must fit fp16).
+const RangeValues = 3*3 + 4*3*ditHeads + 1
+
+// headChunk is the queries a head's self-attention scores at a time over n patches: 1024 (72 ms
+// of a block at 1024 x 1024 against 512's 70, with half the operations to compile; 2048 is 87,
+// M1).
+func headChunk(n int) int { return min(n, 1024) }
+
+func blocks(name string, w, h, first, count, qchunk int, r *ranges) *Part {
+	return part(name, func(g *graph) {
 		gh, gw := Grid(w, h)
 		n := gh * gw
 		var x *mlpackage.Var
@@ -102,10 +133,55 @@ func Blocks(w, h, first, count, qchunk int) *Part {
 		act := g.SiLU(g.Slice(t, -1, 3*DitHidden, TimeDim))
 		cos, sin := ropeTables(g, gh, gw)
 		for i := first; i < first+count; i++ {
-			x = ditBlock(g, i, x, act, temb, ctx, cos, sin, qchunk)
+			x = ditBlock(g, i, x, act, temb, ctx, cos, sin, qchunk, r)
+		}
+		if r != nil {
+			x = g.Concat(-1, r.out...)
 		}
 		g.Output(x)
 	})
+}
+
+// ranges collects what BlockRanges gives; nil collects nothing.
+type ranges struct {
+	out  []*mlpackage.Var
+	prod *mlpackage.Var // the attention's products so far
+}
+
+// product notes the largest magnitude of an attention's products (HeadAttention's note); done
+// gives it as a value of the ranges.
+func (r *ranges) product(g *graph, o *mlpackage.Var) {
+	m := g.Reduce("max", g.Reduce("max", g.Unary("abs", o), -1), 2) // (1, 1, 1, 1)
+	if r.prod != nil {
+		m = g.Op("maximum", map[string]any{"x": m, "y": r.prod}, m.Shape...)
+	}
+	r.prod = m
+}
+
+func (r *ranges) done(g *graph) {
+	r.out = append(r.out, g.Reshape(r.prod, 1, 1, 1))
+	r.prod = nil
+}
+
+// add notes y (1, rows, d) or (1, rows, heads, d): of each row over d, the largest magnitude m
+// and the RMS (m times the RMS of the row over m, so that no square is over 1), then over the
+// rows the largest m, the largest RMS and the smallest RMS, (1, 1, heads) each.
+func (r *ranges) add(g *graph, y *mlpackage.Var) {
+	if r == nil {
+		return
+	}
+	k := 1
+	if len(y.Shape) == 4 {
+		k = y.Shape[2]
+	}
+	abs := g.Op("maximum", map[string]any{"x": y, "y": g.Scale(y, -1)}, y.Shape...)
+	m := g.Reduce("max", abs, -1)
+	m1 := g.Op("maximum", map[string]any{"x": m, "y": g.B.ScalarF16(1e-3)}, m.Shape...)
+	ys := g.Div(y, m1)
+	rms := g.Mul(m1, g.Unary("sqrt", g.Reduce("mean", g.Mul(ys, ys), -1)))
+	for _, v := range []*mlpackage.Var{g.Reduce("max", m, 1), g.Reduce("max", rms, 1), g.Scale(g.Reduce("max", g.Scale(rms, -1), 1), -1)} {
+		r.out = append(r.out, g.Reshape(v, 1, 1, k))
+	}
 }
 
 // Final is the final layer: inputs x and t as Blocks'; output y (1, patches, 64), each patch's
@@ -135,39 +211,77 @@ func modulation(g *graph, p string, act, temb *mlpackage.Var) (shift, scale1, ga
 	return shift, scale1, gate
 }
 
-func ditBlock(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, qchunk int) *mlpackage.Var {
+func ditBlock(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, qchunk int, r *ranges) *mlpackage.Var {
 	p := fmt.Sprintf("dit.blocks.%d.", i)
 	E, H, D := DitHidden, ditHeads, ditHeadDim
-	sc := 1 / math.Sqrt(float64(D))
+	sc := float32(1 / math.Sqrt(float64(D)))
 	norm := func(name string) (*mlpackage.Var, *mlpackage.Var) {
 		shift, scale1, gate := modulation(g, p+"adaln_modulation_"+name, act, temb)
-		return g.Add(g.Mul(g.ScaledLayerNorm(x, 1e-6), scale1), shift), gate
+		r.add(g, x)
+		return g.Add(g.Mul(g.AbsScaledLayerNorm(x, 1e-6), scale1), shift), gate
 	}
-	head := func(y *mlpackage.Var, normName string, rope bool) *mlpackage.Var {
+	// head is y's heads (1, H, rows, D), normed by normName's weight times s: the queries' norm
+	// takes the attention's 1/sqrt(D), so that no multiply runs over the scores (the Neural
+	// Engine's elementwise passes over the 16 x 512 x 4096 scores of a chunk: on Core AI one
+	// is 11 ms of a block's 230 at 1024 x 1024, M1, design.md 16.201). The division by the
+	// row's largest magnitude before the norm stays: q and k reach 384, whose square is past
+	// fp16, and their rows' RMS spans 0.07 to 92 over the blocks (TestBlockRanges), more than a
+	// constant folded into the projection could bring into fp16's squares
+	head := func(y *mlpackage.Var, normName string, rope bool, s float32) *mlpackage.Var {
 		y = g.Reshape(y, 1, y.Shape[1], H, D)
 		if normName != "" {
-			y = g.ScaledRMSNorm(y, normName, 1e-6)
+			w := slices.Clone(g.Get(normName, D))
+			for j := range w {
+				w[j] *= s
+			}
+			r.add(g, y)
+			y = g.RMSNormWith(g.AbsScaled(y, -1), normName, w, 1e-6, 1)
 		}
 		if rope {
 			y = g.ApplyRope(y, cos, sin)
 		}
 		return g.Transpose(y, 0, 2, 1, 3)
 	}
+	// attend is the attention of q over k and v, v the projection name of its input vin. On
+	// Apple's Neural Engine a head at a time (milpart.HeadAttention): the self-attention 90 ->
+	// 72 ms of a block at 1024 x 1024, the cross-attention 14 -> 10 (design.md 16.202). The
+	// cross-attention divides the softmax's sum after the product with the values (deferred):
+	// over 512 text rows the product is 8.7 at most. The self-attention does not: over 4096
+	// patches the product reached fp16's largest in the last block (TestBlockRanges). Intel's
+	// NPU keeps the heads together (not measured there).
+	attend := func(q, k, vin *mlpackage.Var, name string, cross bool) *mlpackage.Var {
+		v := head(g.Linear(vin, name, "", E), "", false, 1)
+		if g.Opts.Backend == llm.BackendIntel || os.Getenv("HWNPU_ANIMA_ATTENTION") == "chunks" {
+			// HWNPU_ANIMA_ATTENTION=chunks: the heads together on Apple's too, to tell this
+			// attention's rounding from the rest's (convert into a directory of its own)
+			return g.QChunkAttention(q, k, v, 1, nil, qchunk)
+		}
+		if !cross {
+			return g.HeadAttention(q, k, v, headChunk(q.Shape[2]), false, nil)
+		}
+		var note func(*mlpackage.Var)
+		if r != nil {
+			note = func(o *mlpackage.Var) { r.product(g, o) }
+		}
+		o := g.HeadAttention(q, k, v, 0, true, note)
+		if r != nil {
+			r.done(g)
+		}
+		return o
+	}
 	// self-attention
 	h, gate := norm("self_attn")
 	a := p + "self_attn."
-	q := head(g.Linear(h, a+"q_proj.weight", "", E), a+"q_norm.weight", true)
-	k := head(g.Linear(h, a+"k_proj.weight", "", E), a+"k_norm.weight", true)
-	v := head(g.Linear(h, a+"v_proj.weight", "", E), "", false)
-	o := g.Linear(g.Merge(g.QChunkAttention(q, k, v, sc, nil, qchunk)), a+"output_proj.weight", "", E)
+	q := head(g.Linear(h, a+"q_proj.weight", "", E), a+"q_norm.weight", true, sc)
+	k := head(g.Linear(h, a+"k_proj.weight", "", E), a+"k_norm.weight", true, 1)
+	o := g.Linear(g.Merge(attend(q, k, h, a+"v_proj.weight", false)), a+"output_proj.weight", "", E)
 	x = g.Add(x, g.Mul(o, gate))
 	// cross-attention over the text
 	h, gate = norm("cross_attn")
 	a = p + "cross_attn."
-	q = head(g.Linear(h, a+"q_proj.weight", "", E), a+"q_norm.weight", false)
-	k = head(g.Linear(ctx, a+"k_proj.weight", "", E), a+"k_norm.weight", false)
-	v = head(g.Linear(ctx, a+"v_proj.weight", "", E), "", false)
-	o = g.Linear(g.Merge(g.QChunkAttention(q, k, v, sc, nil, qchunk)), a+"output_proj.weight", "", E)
+	q = head(g.Linear(h, a+"q_proj.weight", "", E), a+"q_norm.weight", false, sc)
+	k = head(g.Linear(ctx, a+"k_proj.weight", "", E), a+"k_norm.weight", false, 1)
+	o = g.Linear(g.Merge(attend(q, k, ctx, a+"v_proj.weight", true)), a+"output_proj.weight", "", E)
 	x = g.Add(x, g.Mul(o, gate))
 	// MLP
 	h, gate = norm("mlp")

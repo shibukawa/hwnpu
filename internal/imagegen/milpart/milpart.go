@@ -196,6 +196,30 @@ func (g *Graph) MaxScaled(x *mlpackage.Var, axis int) *mlpackage.Var {
 	return g.Op("real_div", map[string]any{"x": x, "y": m}, x.Shape...)
 }
 
+// AbsScaled is MaxScaled with the magnitude as abs, one operation where MaxScaled's maximum of x
+// and -x is two: the same values, and on the Neural Engine through Core AI 0.8 ms less of each
+// norm over 4096 x 2048 values (Anima's DiT at 1024 x 1024, M1: 4.6 ms of a block's 221 over its
+// six norms, design.md 16.201). MaxScaled stays as it is for the programs already exported with
+// it: a model takes AbsScaled when its export is next made again.
+func (g *Graph) AbsScaled(x *mlpackage.Var, axis int) *mlpackage.Var {
+	m := g.Reduce("max", g.Unary("abs", x), axis)
+	m = g.Op("maximum", map[string]any{"x": m, "y": g.B.ScalarF16(1e-3)}, m.Shape...)
+	return g.Op("real_div", map[string]any{"x": x, "y": m}, x.Shape...)
+}
+
+// AbsScaledLayerNorm is ScaledLayerNorm over AbsScaled.
+func (g *Graph) AbsScaledLayerNorm(x *mlpackage.Var, eps float64) *mlpackage.Var {
+	n := x.Shape[len(x.Shape)-1]
+	ones, zeros := make([]float32, n), make([]float32, n)
+	for i := range ones {
+		ones[i] = 1
+	}
+	gamma := g.F16s(fmt.Sprintf("ln_ones_%d", n), []int{n}, ones)
+	beta := g.F16s(fmt.Sprintf("ln_zeros_%d", n), []int{n}, zeros)
+	return g.Op("layer_norm", map[string]any{"x": g.AbsScaled(x, -1), "axes": g.B.Ints(-1), "gamma": gamma, "beta": beta,
+		"epsilon": g.B.ScalarF16(float32(eps))}, x.Shape...)
+}
+
 // ScaledRMSNorm is the RMS norm over the last axis with the named weight, of x scaled by MaxScaled.
 func (g *Graph) ScaledRMSNorm(x *mlpackage.Var, name string, eps float64) *mlpackage.Var {
 	n := x.Shape[len(x.Shape)-1]
@@ -234,6 +258,71 @@ func (g *Graph) QChunkAttention(q, k, v *mlpackage.Var, scale float64, mask *mlp
 		outs = append(outs, g.SDPAScale(g.Slice(q, 2, lo, hi), k, v, scale, mf))
 	}
 	return g.Concat(2, outs...)
+}
+
+// HeadAttention is the attention of q (1, heads, n, d), which holds the scores' scale, over k and
+// v (1, heads, m, d), as the Neural Engine runs it fastest through Core AI: a head at a time and
+// chunk queries at a time (0: all), a chunk's scores laid out (1, queries, 1, keys) with the
+// softmax over the last axis. Core AI runs a softmax as passes over the scores (exp(x - max),
+// the sum, the division), and those are what an image's self-attention costs: of Anima's 4096 x
+// 4096 scores of 16 heads the two products are 31 ms and the softmax 59 as QChunkAttention
+// writes them, 41 here (M1; every head in one tensor laid out the same way is slower than
+// QChunkAttention, design.md 16.202).
+//
+// With deferred the softmax's sum is divided after the product with the values, not before: 29
+// ms of softmax in place of 41. The product is then of exp(x - max), up to one for each key, so
+// its sum over the keys must fit fp16: use it only where the values and the keys are few and
+// small enough (Anima's cross-attention over 512 text rows: 8.7 at most; its self-attention
+// over 4096 patches reaches fp16's largest). Scaling the values down for it in their
+// projection's int8 weights makes products under fp16's normal range, which the Neural Engine
+// drops (Anima's pictures changed, latent cosine 0.75). note, when not nil, is given each
+// chunk's product before the division (1, 1, queries, d), for checking its range.
+func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, chunk int, deferred bool, note func(*mlpackage.Var)) *mlpackage.Var {
+	heads, n, d := q.Shape[1], q.Shape[2], q.Shape[3]
+	m := k.Shape[2]
+	if chunk <= 0 || chunk > n {
+		chunk = n
+	}
+	var outs []*mlpackage.Var
+	for h := 0; h < heads; h++ {
+		qh, kh, vh := q, k, v
+		if heads > 1 {
+			qh, kh, vh = g.Slice(q, 1, h, h+1), g.Slice(k, 1, h, h+1), g.Slice(v, 1, h, h+1)
+		}
+		var rows []*mlpackage.Var
+		for lo := 0; lo < n; lo += chunk {
+			hi := min(lo+chunk, n)
+			qc := qh
+			if hi-lo < n {
+				qc = g.Slice(qh, 2, lo, hi)
+			}
+			s := g.Reshape(g.MatMul(qc, kh, false, true), 1, hi-lo, 1, m)
+			e := g.Unary("exp", g.Sub(s, g.Reduce("max", s, -1)))
+			sum := g.Reduce("sum", e, -1) // (1, queries, 1, 1)
+			if !deferred {
+				rows = append(rows, g.MatMul(g.Reshape(g.Div(e, sum), 1, 1, hi-lo, m), vh, false, false))
+				continue
+			}
+			o := g.MatMul(g.Reshape(e, 1, 1, hi-lo, m), vh, false, false)
+			if note != nil {
+				note(o)
+			}
+			rows = append(rows, g.Div(o, g.Reshape(sum, 1, 1, hi-lo, 1)))
+		}
+		o := rows[0]
+		if len(rows) > 1 {
+			o = g.Concat(2, rows...)
+		}
+		outs = append(outs, o)
+	}
+	out := outs[0]
+	if len(outs) > 1 {
+		out = g.Concat(1, outs...)
+	}
+	if out.Shape[1] != heads || out.Shape[2] != n || out.Shape[3] != d {
+		g.Fail("HeadAttention: %v from %v", out.Shape, q.Shape)
+	}
+	return out
 }
 
 // Heads is x (1, n, h*d) as (1, h, n, d).

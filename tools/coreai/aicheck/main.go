@@ -4,6 +4,8 @@
 //	go run ./tools/coreai/aicheck ops PKG...      the MIL operation types of the packages
 //	go run ./tools/coreai/aicheck run [-cache DIR] [-scale S] [-cpu] [-coreml] [-calls N] [-ref PKG] PKG...
 //	                                               load on Core AI, run, compare with milcpu
+//	go run ./tools/coreai/aicheck cycle [-rounds N] PKG...
+//	                                               the programs called in a row and in turn: what a switch costs
 //	go run ./tools/coreai/aicheck merge OUT.aimodel NAME=PKG...
 //	                                               one program with a function of each package, the weights shared
 //
@@ -38,6 +40,11 @@ func main() {
 		err = probe(os.Args[2:], os.Getenv("KEEP") != "")
 	case "lower":
 		err = lowerTo(os.Args[2], os.Args[3:])
+	case "cycle": // cycle [-rounds N] PKG...
+		fs := flag.NewFlagSet("cycle", flag.ExitOnError)
+		rounds := fs.Int("rounds", 3, "calls of each program, in a row and in turn")
+		fs.Parse(os.Args[2:])
+		err = cycle(fs.Args(), *rounds)
 	case "merge": // merge OUT.aimodel NAME=PKG...
 		err = merge(os.Args[2], os.Args[3:])
 	case "run":
