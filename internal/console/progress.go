@@ -24,6 +24,7 @@ type Bar struct {
 	mu     sync.Mutex
 	frac   float64 // < 0: not known (no bar, the spinner alone)
 	detail string
+	load   *loadState // of NewLoadBar: the bar is estimated while frac is not known
 
 	done, exited chan struct{}
 }
@@ -32,8 +33,14 @@ type Bar struct {
 const barWidth = 24
 
 // NewBar starts a line of progress on w for label, with no share known yet.
-func NewBar(w io.Writer, label string) *Bar {
-	b := &Bar{w: w, label: label, live: w != nil && Live(w), start: time.Now(), frac: -1}
+func NewBar(w io.Writer, label string) *Bar { return newBar(w, label, nil) }
+
+func newBar(w io.Writer, label string, load *loadState) *Bar {
+	b := &Bar{w: w, label: label, live: w != nil && Live(w), start: time.Now(), frac: -1, load: load}
+	if load != nil {
+		load.start, load.curStart = b.start, b.start
+		pushLoad(b)
+	}
 	if !b.live {
 		return b
 	}
@@ -68,6 +75,13 @@ func (b *Bar) Elapsed() time.Duration { return time.Since(b.start) }
 
 // Done ends the line with result after the label (and a newline).
 func (b *Bar) Done(result string) {
+	if b.load != nil {
+		popLoad(b, true)
+	}
+	b.end(result)
+}
+
+func (b *Bar) end(result string) {
 	if b.w == nil {
 		return
 	}
@@ -83,6 +97,11 @@ func (b *Bar) Done(result string) {
 func (b *Bar) draw(i int) {
 	b.mu.Lock()
 	frac, detail := b.frac, b.detail
+	if frac < 0 && b.load != nil {
+		if frac = b.load.frac(time.Now()); frac >= 0 && detail == "" {
+			detail = "(estimated)"
+		}
+	}
 	b.mu.Unlock()
 	var s strings.Builder
 	fmt.Fprintf(&s, " %s", spinFrames[i%len(spinFrames)])
