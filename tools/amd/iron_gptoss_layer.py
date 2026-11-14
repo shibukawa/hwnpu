@@ -16,7 +16,8 @@ the order a command runs them:
      iron_window's position-indexed rows), a column a key-value group: objects of 128 rows' key
      and value of the group on x's stream, with the heads' sinks
   O  o_proj with its bias and the residual
-  R  the router's logits on RMSNorm(h) (column 0)
+  R  the router's logits on RMSNorm(h): the last two cores of every column their k-blocks' partial
+     sums
   T  the routing: the top 4, their weights, and the next command's scratchpad words (the
      experts' offsets: the experts are the next command's first phase)
   H  the output head, in the last command after the last layer's experts: the final RMSNorm
@@ -34,7 +35,7 @@ a step passes anything of the right shape for those its phases do not use.
 The projections' weights are q8x: iron_q4's q8 codes and scales (the same values as the prompt
 chunk's table) in blocks of 32 out-features by 160 in-features with the block's bias, 5504 bytes
 as an mx4 block, in the order the cores take them ([column][out-block][k-block][core]). The
-router's are bf16 blocks of 32 by 80.
+router's are bf16 blocks of 32 by 80, a column's share with the column (router_table).
 
     python tools/amd/iron_gptoss_layer.py check OUT   # a graph of the phases, random weights
     python tools/amd/iron_gptoss_layer.py dequant OUT   # Q8XDequant: a q8x table to its bf16 weight
@@ -67,7 +68,10 @@ XO = TOK * 2 * D  # x's object: 16384 (the experts' need 12688)
 ROW = 2 * G * D  # a cache row: the groups' keys, then their values
 NW_AT, ANG_AT, RES_AT, SINK_AT = 6144, 9216, 12288, 13312  # kernels/gptoss_layer.cc's GL_NW, GL_ANG, GL_RES, GL_SINK
 QKT = 160  # q8x's in-features a block
-RKT, RKB = 80, 80  # the router's in-features a block; its blocks: 20 objects of 4, the last two cores' real
+RKT = 80  # the router's in-features a block
+RKO = 3  # its objects a column: a block each for the column's last two cores (the first two: nothing)
+RKB = COLS * RKO * CORES  # its blocks: 48 of them k-blocks (39 real)
+YR = COLS * 2 * CORES * moe.MT  # the router's partial sums: a column's 2 objects of its 4 cores' 16 float32
 ATT = H * D  # the heads' outputs
 ATTB = 2 * ATT  # as the attention's cores write them: a column's 512, then as much unused
 QN = 5120  # q, k and v's out-features
@@ -78,15 +82,23 @@ PROG = 256  # the routing's program as bf16 (4 int32 a word)
 PH_E, PH_Q, PH_A, PH_O, PH_R, PH_T, PH_H = 1, 2, 4, 8, 16, 32, 64
 KINDS = {PH_E: (1, 2), PH_Q: (3,), PH_A: (4,), PH_O: (5,), PH_R: (6,), PH_T: (7,), PH_H: (8,)}  # gptoss_layer.cc's
 HB, HKB = 5120, 12  # the head's q4 block (32 out-features by 256 in-features), its k-blocks
+ATTN = int(os.environ.get("GPTOSS_ATTN", "1"))  # GptOssStep.att (0: the attention and exponential before 2026-11-14)
+
+
+def router_slot(kb: int):
+    """K-block kb's place in the router's table: (column, object, core)."""
+    return (kb % (2 * COLS)) // 2, kb // (2 * COLS), 2 + kb % 2
 
 
 def router_table(w, bias):
-    """The router's (32, K) weights and bias as bf16 blocks (uint8 (RKB, BLOCK)): k-block kb (in-features
-    80 kb .., [in-feature][out-feature]; the bias in k-block 0's) is the block of object kb // 2 for
-    core 2 + kb % 2 (the cores with the router's kernel); the first two cores' blocks are nothing."""
+    """The router's (32, K) weights and bias as bf16 blocks (uint8 (RKB, BLOCK)), [column][object]
+    [core]: k-block kb (in-features 80 kb .., [in-feature][out-feature]; the bias in k-block 0's)
+    is the block of router_slot(kb), one of a column's last two cores' (the cores with the router's
+    kernel); the first two cores' blocks are nothing. Every column takes its share at once: on one
+    column the 440 KB were 50 us a layer."""
     w = np.asarray(w, np.float32)
     K = w.shape[1]
-    nk = RKB // 2
+    nk = 2 * COLS * RKO
     wp = np.zeros((MT, nk * RKT), np.float32)
     wp[: w.shape[0], :K] = w
     real = np.zeros((nk, BLOCK), np.uint8)
@@ -94,14 +106,17 @@ def router_table(w, bias):
     b = np.zeros(MT, np.float32)
     b[: len(bias)] = np.asarray(bias, np.float32)
     real[0, BLOCK - 2 * MT :] = b.astype(bfloat16).view(np.uint8)
-    blk = np.zeros((RKB // CORES, CORES, BLOCK), np.uint8)
-    blk[:, 2:] = real.reshape(-1, 2, BLOCK)
+    blk = np.zeros((COLS, RKO, CORES, BLOCK), np.uint8)
+    for kb in range(nk):
+        blk[router_slot(kb)] = real[kb]
     return blk.reshape(RKB, BLOCK)
 
 
 def router_dequant(t, K: int):
-    blk = np.asarray(t, np.uint8).reshape(RKB // CORES, CORES, BLOCK)[:, 2:].reshape(RKB // 2, BLOCK)
-    w = blk[:, : RKT * MT * 2].copy().view(bfloat16).astype(np.float32).reshape(RKB // 2, RKT, MT).transpose(2, 0, 1).reshape(MT, -1)
+    nk = 2 * COLS * RKO
+    all_ = np.asarray(t, np.uint8).reshape(COLS, RKO, CORES, BLOCK)
+    blk = np.stack([all_[router_slot(kb)] for kb in range(nk)])
+    w = blk[:, : RKT * MT * 2].copy().view(bfloat16).astype(np.float32).reshape(nk, RKT, MT).transpose(2, 0, 1).reshape(MT, -1)
     return w[:, :K], blk[0, BLOCK - 2 * MT :].copy().view(bfloat16).astype(np.float32)
 
 
@@ -221,22 +236,22 @@ def step_operator():
     st_t = np.ndarray[(1024,), np.dtype[np.float32]]  # gptoss_layer.cc's gl_state (and room)
     cnt_t = np.ndarray[(12,), np.dtype[np.int32]]  # the phase's counts, the core's column and place
 
-    def kernels(eps: float, rope_rows: int, houts: int, lane: int, core: int):
-        """The core's kernels: the attention on cores 0 and 1, the router on column 0, the routing
-        on its last core (a core's program holds what it runs: 16 KB)."""
+    def kernels(eps: float, rope_rows: int, houts: int, lane: int, core: int, att: int):
+        """The core's kernels: the attention on cores 0 and 1, the router on cores 2 and 3, the
+        routing on column 0's last core (a core's program holds what it runs: 16 KB)."""
         kdir = Path(config.aie_kernels_dir())
         here = Path(__file__).resolve().parent / "kernels"
-        parts = (["ATT"] if core < 2 else []) + (["ROUTER"] if lane == 0 and core >= 2 else []) + (
+        parts = (["ATT"] if core < 2 else []) + (["ROUTER"] if core >= 2 else []) + (
             ["ROUTE"] if (lane, core) == (0, CORES - 1) else [])
         flags = [f"-DMX_K={KD}", f"-DMX_KT={KT}", f"-DMX_XE={IPAD}", f"-DMX_W={XN + R}",
                  f"-DGL_EPS={float(eps)!r}f", f"-DGL_ROPE_ROWS={rope_rows}", f"-DGL_HOUTS={houts}",
-                 *(f"-DGL_{p}=1" for p in parts)]
+                 f"-DGL_ATTN={att}", *(f"-DGL_{p}=1" for p in parts)]
         tag = "_".join(p.lower() for p in parts) or "base"
         flags.append(f"-DGL_TAG={tag}")
         common = dict(source_file=str(here / "gptoss_layer.cc"),
                       include_dirs=[str(here), str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
                       compile_flags=flags,
-                      object_file_name=f"gptoss_layer_{tag}_{rope_rows}_{houts}_{abs(hash(float(eps))) % 10**8}.o")
+                      object_file_name=f"gptoss_layer_{tag}_{rope_rows}_{houts}_{att}_{abs(hash(float(eps))) % 10**8}.o")
         f = lambda name, args: ExternalFunction(f"{tag}_{name}", arg_types=args, **common)  # noqa: E731
         i32 = np.int32
         return [f("gl_plan", [cnt_t, i32, i32, i32, i32]), f("gl_begin", [x_t, st_t, cnt_t]),
@@ -256,13 +271,18 @@ def step_operator():
         drows: int = param(array=True)  # in their down table
         qrows: int = param(array=True)  # in q, k, v's q8x table
         orows: int = param(array=True)  # in o_proj's
-        kvn: int = param(array=True)  # the cache's elements (rows of ROW)
+        # the cache's elements (rows of ROW). Not the array's: a sliding layer's ring and a full
+        # layer's rows are steps of one array (as the array's it was loaded again each command)
+        kvn: int = param()
         angn: int = param(default=D, array=True)  # the angles' elements: a row, or the table (apos its row's place)
         hrows: int = param(array=True)  # blocks in the head's q4 table (a column block 2 halves of HKB)
         logits: int = param(derive=lambda op: op.hrows // (2 * HKB) * 2 * CB, array=True)  # H's output
         eps: float = param(array=True)
         rope_rows: int = param(default=4608, array=True)
         form: int = param(default=1, array=True)
+        # the attention and the exponential (gptoss_layer.cc's GL_ATTN): 1 the values' sums as
+        # broadcast macs and the short exponential, 0 as before them, 9 the transfers alone
+        att: int = param(default=ATTN, array=True)
         phases: int = param(default=PH_E)  # the step's phases: its sequence, not the array's
         sliding: bool = param(default=False)  # A: the layer's attention reads its window's keys
         picked: int = param(default=-1, repr=False)  # E: the reference's experts (iron_moeprobe.PICKED's key)
@@ -289,7 +309,7 @@ def step_operator():
         yq = Out(QN, obj_shape=(CB,), per=(num_aie_columns,))  # Q: q (k and v where the caches are not written)
         ya = Out(ATTB, obj_shape=(CB,), per=(num_aie_columns,))  # A: the heads' outputs (a column's 512, then unused)
         yo = Out(HP, obj_shape=(CB,), per=(num_aie_columns,))  # O: the residual after the attention
-        yr = Out(PROG, obj_shape=(CB,), per=(num_aie_columns,))  # R: the logits' partial sums (float32)
+        yr = Out(YR, obj_shape=(CB,), per=(num_aie_columns,))  # R: the logits' partial sums (float32)
         yw = Out(WV, obj_shape=(CB,), per=(num_aie_columns,))  # T: the routing weights
         image = Out(2 * SLOTS, obj_shape=(CB,), per=(num_aie_columns,))  # T: the next command's scratchpad
         yj = Out(PROG, obj_shape=(CB,), per=(num_aie_columns,))  # what the other cores send with them
@@ -374,7 +394,7 @@ def step_operator():
                     place = Buffer(initial_value=np.array([0, 0, 0, 0, 0, 0, i, j, 0, 0, 0, 0], np.int32))
                     workers.append(Worker(core, [w_l1[i][j].cons(), x_l1[i].cons(), y_l1[i][j].prod(), rtp,
                                                  Buffer(st_t), place,
-                                                 *kernels(self.eps, self.rope_rows, self.hrows // (2 * HKB) // n, i, j)]))
+                                                 *kernels(self.eps, self.rope_rows, self.hrows // (2 * HKB) // n, i, j, self.att)]))
             for name in ("Wg", "Wd", "Wq", "Wo", "Wr", "Wh"):
                 getattr(self, name).bind([f.prod() for f in w_l3])
             for name in ("h", "nwe", "nwq", "nwr", "ang", "sinks", "rw", "prog"):
@@ -513,13 +533,19 @@ def step_operator():
             for d in drains:
                 d.await_()
 
-        def _router(self):  # column 0: RMSNorm of the step's yo, the router's blocks
-            d = self.yr.drain(TAP((PROG,), 0, [2 * CB], [1]), lane=0, wait=True, managed=False)
-            self._twice(self.h, 0, source=self.yo)
-            self._twice(self.nwr, 0)
-            self.h.fill(TAP((HP,), 0, [(XO - 4 * HP) // 1024, 1024], [0, 1]), lane=0, source=self.yo, managed=False)
-            self.Wr.fill(TAP((RKB * BLOCK,), 0, [RKB * BLOCK], [1]), lane=0, managed=False)
-            d.await_()
+        def _router(self):  # RMSNorm of the step's yo, a column's blocks of the router
+            n = self.num_aie_columns
+            run = RKB * BLOCK // n
+            drains = [self.yr.drain(TAP((YR,), l * 2 * CB, [2 * CB], [1]), lane=l, wait=True, managed=False)
+                      for l in range(n)]
+            for l in range(n):
+                self._twice(self.h, l, source=self.yo)
+                self._twice(self.nwr, l)
+                self.h.fill(TAP((HP,), 0, [(XO - 4 * HP) // 1024, 1024], [0, 1]), lane=l, source=self.yo, managed=False)
+            for l in range(n):
+                self.Wr.fill(TAP((RKB * BLOCK,), l * run, [run], [1]), lane=l, managed=False)
+            for d in drains:
+                d.await_()
 
         def _route(self):  # column 0: its last core's two objects, the words then the weights
             lead = (CORES - 1) * MT  # the other cores' part of an object
@@ -528,8 +554,9 @@ def step_operator():
                   self.yj.drain(TAP((PROG,), lead, [MT - 2 * FED + lead], [1]), lane=0, wait=True, managed=False),
                   self.yw.drain(TAP((WV,), 0, [WV], [1]), lane=0, wait=True, managed=False),
                   self.yj.drain(TAP((PROG,), 2 * lead + MT - 2 * FED, [MT - WV], [1]), lane=0, wait=True, managed=False)]
-            self.h.fill(TAP((PROG,), 0, [2 * CB], [1]), lane=0, source=self.yr, managed=False)
-            self.prog.fill(TAP((PROG,), 0, [(XO - 2 * CB) // PROG, PROG], [0, 1]), lane=0, managed=False)
+            # every column's partial sums, then the program to the object's end
+            self.h.fill(TAP((YR,), 0, [YR // 1024, 1024], [1024, 1]), lane=0, source=self.yr, managed=False)
+            self.prog.fill(TAP((PROG,), 0, [(XO - YR) // PROG, PROG], [0, 1]), lane=0, managed=False)
             for d in ds:
                 d.await_()
 
@@ -588,7 +615,7 @@ def step_operator():
                       e3=0, d0=0, d1=0, d2=0, d3=0, kw=None, apos=0, kfirst=0, nkv1=0, ntok=1, nslide=1):
             ph, eps = self.phases, float(self.eps)
             ye, yq, ya, yo = np.zeros(YE, bfloat16), np.zeros(QN, bfloat16), np.zeros(ATTB, bfloat16), np.zeros(HP, bfloat16)
-            yr, yw, image, yj = np.zeros(PROG, bfloat16), np.zeros(WV, bfloat16), np.zeros(2 * SLOTS, bfloat16), np.zeros(PROG, bfloat16)
+            yr, yw, image, yj = np.zeros(YR, bfloat16), np.zeros(WV, bfloat16), np.zeros(2 * SLOTS, bfloat16), np.zeros(PROG, bfloat16)
             cache = np.array(KV, bfloat16).reshape(-1)
             hv = np.asarray(h, np.float64).reshape(-1)
             if ph & PH_E:
@@ -845,6 +872,8 @@ def _check(a) -> int:
     HN = 2 * MT * COLS * a.head  # the head's out-features: a.head column blocks a column
     wh = iron_q4.quantize(rng.standard_normal((HN, HP)).astype(np.float32) * 0.05).reshape(-1, HB)
     picked = [int(v) for v in rng.choice(E, TOP, replace=False)]
+    if a.ring:  # a sliding layer's cache as the ring of its window
+        a.sliding, a.rows = True, TOK
     eps, rows, pos = 1e-5, a.rows, a.position
     # --first: the first command's phases, to time a part of a layer (the check then fails)
     first = sum(dict(Q=PH_Q, A=PH_A, O=PH_O, R=PH_R, T=PH_T)[c] for c in a.first)
@@ -860,11 +889,14 @@ def _check(a) -> int:
             n1 = position + 1
             n = iron.clamp(objects(position), hi=1) if a.sliding else objects(position)
             slide = dict(nkv1=n - 1, **(dict(kfirst=iron.clamp(position * ROW - 127 * ROW, lo=0)) if a.sliding else {}))
+            row = position * ROW
+            if a.ring:  # the window's rows are the ring: one object, the call's row at position % 128
+                slide, row = {}, position % TOK * ROW
             return Step.step(self.gu, self.dn, self.wq, self.wo, self.wr, self.wh, h, nw, nw, nw, ang, sinks, rw, prog,
                              self.KV, grows=self.gu.shape[0], drows=self.dn.shape[0], qrows=self.wq.shape[0],
                              orows=self.wo.shape[0], hrows=self.wh.shape[0], kvn=rows * ROW, eps=eps, phases=phases,
                              sliding=a.sliding,
-                             kw=position * ROW, ntok=n1, nslide=iron.clamp(n1, hi=128), **slide,
+                             kw=row, ntok=n1, nslide=iron.clamp(n1, hi=128), **slide,
                              **{f"e{i}": es[i] * gu_eb for i in range(TOP)},
                              **{f"d{i}": es[i] * dn_eb for i in range(TOP)})
 
@@ -883,12 +915,12 @@ def _check(a) -> int:
         def reference(self, h, nw, ang, sinks, rw, prog, kv0=None, position=0, e0=0, e1=0, e2=0, e3=0):
             kw = dict(grows=gu.size // BLOCK, drows=dn.size // BLOCK, qrows=wq.shape[0], orows=wo.shape[0],
                       hrows=wh.shape[0], kvn=rows * ROW, eps=eps, sliding=a.sliding)
-            first = max(position - 127, 0) if a.sliding else 0
+            first = max(position - 127, 0) if a.sliding and not a.ring else 0
             n1 = position + 1
             r = Step(phases=PH_Q | PH_A | PH_O | PH_R | PH_T, **kw).reference(
                 gu, dn, wq, wo, wr, wh, h, nw, nw, nw, ang, sinks, rw, prog,
                 np.zeros(rows * ROW, bfloat16) if kv0 is None else kv0,
-                kw=position * ROW, kfirst=first * ROW, ntok=n1, nslide=min(n1, 128))
+                kw=(position % TOK if a.ring else position) * ROW, kfirst=first * ROW, ntok=n1, nslide=min(n1, 128))
             es = dict(e0=e0 * gu_eb, e1=e1 * gu_eb, e2=e2 * gu_eb, e3=e3 * gu_eb,
                       d0=e0 * dn_eb, d1=e1 * dn_eb, d2=e2 * dn_eb, d3=e3 * dn_eb)
             out = Step(phases=PH_E | PH_H, **kw).reference(gu, dn, wq, wo, wr, wh, r[4], nw, nw, nw, ang, sinks, rw, prog,
@@ -912,7 +944,8 @@ def _check(a) -> int:
     program[:, 0] = -1
     program[:FED] = [(i % TOP, 1 + i // TOP, i, 0) for i in range(FED)]
     kv0 = np.zeros((rows, 2, G, D), np.float32)
-    kv0[:pos, 0], kv0[:pos, 1] = rng.standard_normal((pos, G, D)) * 0.5, rng.standard_normal((pos, G, D))
+    filled = min(pos, rows)
+    kv0[:filled, 0], kv0[:filled, 1] = rng.standard_normal((filled, G, D)) * 0.5, rng.standard_normal((filled, G, D))
     inputs = dict(h=h.astype(bfloat16), nw=nw.astype(bfloat16), ang=ang.astype(bfloat16),
                   sinks=rng.uniform(-2, 4, H).astype(bfloat16), rw=rw.astype(bfloat16),
                   prog=program.reshape(-1).view(bfloat16))
@@ -934,6 +967,7 @@ def main(argv=None) -> int:
     c.add_argument("--head", type=int, default=70, help="the head's column blocks a column (gpt-oss: 393)")
     c.add_argument("--position", type=int, default=300, help="the call's position (the rows before it random)")
     c.add_argument("--sliding", action="store_true", help="a sliding layer's attention (the last 128 rows)")
+    c.add_argument("--ring", action="store_true", help="a sliding layer's cache as a ring of 128 rows (iron_gptoss.py's KV_RING)")
     c.add_argument("--empty", action="store_true", help="the caches as they are (zeros): no copy into them, for timing")
     c.add_argument("--expanded", action="store_true", help="IRON's expanded loads (the array loaded each command)")
     c.add_argument("--one", action="store_true", help="both steps one command (no host step between: timing)")

@@ -64,6 +64,9 @@ FUSE_QKV = os.environ.get("GPTOSS_FUSE_QKV", "1") == "1"
 # The decode step's layers as phases of one array (iron_gptoss_layer.py's GptOssStep): configured
 # once, where an operator of its own is loaded again each time it follows another
 RESIDENT = os.environ.get("GPTOSS_RESIDENT", "1") == "1"
+# The resident decode step's keys and values of a sliding layer as a ring of its window (0: a row
+# a position, as a full layer's: 16.5 MiB a layer more).
+KV_RING = os.environ.get("GPTOSS_KV_RING", "1") == "1"
 
 
 def install(attn: str = "q8", head: str = "q4") -> None:
@@ -311,6 +314,7 @@ class SinkCache(KVCache):
 
     sinks: tuple | None = None
     kv = None
+    kv_ring = False
 
     def __init__(self, c, window=None):
         super().__init__(c, window)
@@ -321,7 +325,14 @@ class SinkCache(KVCache):
             # decode step's back: internal/llm/iron's joinKV and splitKV). A chunk of rows more
             # than the context: the attention's objects reach past the call's row
             _, G, D = self.keys.shape
-            self.kv = iron.state((c.max_seq_len + c.prefill_chunk, 2, G, D))
+            import iron_gptoss_layer as gl
+
+            # A sliding layer's is a ring of its window: the rows its attention reads are all the
+            # ring holds, in any order (position p's row is p % 128), one object of the attention.
+            # hwnpu fills it from the keys and values where a sequence goes back, and splits the
+            # steps' rows before the ring takes their place (rows.go's ringsTo and stepAt)
+            self.kv_ring = KV_RING and window is not None and window + 1 == gl.TOK
+            self.kv = iron.state((gl.TOK if self.kv_ring else c.max_seq_len + c.prefill_chunk, 2, G, D))
 
     def attend(self, call, q, k, v, scale=None):
         import iron_window
@@ -693,7 +704,10 @@ class GptOss(CausalLM):
                 n = iron.clamp(n, hi=-(-(cur.cache.window + 1) // gl.TOK))
             values = dict(kw=pos * ROW, apos=pos * gl.D, ntok=pos + 1, nslide=iron.clamp(pos + 1, hi=c.window + 1),
                           nkv1=n - 1)
-            if sliding:
+            if sliding and cur.cache.kv_ring:  # the ring's one object, the call's row at its place in it
+                del values["nkv1"]
+                values["kw"] = pos % gl.TOK * ROW
+            elif sliding:
                 values["kfirst"] = iron.clamp(pos * ROW - cur.cache.window * ROW, lo=0)
             if l > 0:
                 e = call.experts[l - 1]

@@ -68,11 +68,18 @@ func (m *Model) caches() ([]kvCache, error) {
 				j.values = c
 			}
 		}
-		if j.keys.row == 0 || j.keys.row != j.values.row || j.kv.p.Bytes%(2*j.keys.row) != 0 ||
-			j.kv.p.Bytes/(2*j.keys.row) < j.keys.p.Bytes/j.keys.row {
+		if j.keys.row == 0 || j.keys.row != j.values.row || j.kv.p.Bytes%(2*j.keys.row) != 0 {
 			return nil, fmt.Errorf("iron: %s.kv is no rows of its keys and values", prefix)
 		}
 		j.kv.row = 2 * j.keys.row
+		if rows := j.kv.p.Bytes / j.kv.row; rows < j.keys.p.Bytes/j.keys.row {
+			// fewer rows than the keys: a ring of the last positions, which the manifest says
+			if m.Manifest.CacheRows[j.kv.name] != rows {
+				return nil, fmt.Errorf("iron: %s.kv is no rows of its keys and values", prefix)
+			}
+			j.ring = rows
+			m.rings = true
+		}
 		m.joins = append(m.joins, *j)
 	}
 	m.kv = out
@@ -84,33 +91,104 @@ func (m *Model) caches() ([]kvCache, error) {
 // group's key and value of together). A prompt chunk writes keys and values, a decode step kv:
 // joinKV copies a chunk's rows into kv after it, splitKV a decode step's rows back before
 // anything reads keys and values (a prompt chunk, ExportRows).
+//
+// A sliding layer's kv is a ring of its window's rows (ring: position p's row is p % ring), the
+// whole of what its attention reads, in any order. It holds the positions before m.ringAt:
+// ringsTo fills it again from the keys and values where a decode step is at another position (a
+// sequence gone back, another one), and stepAt splits the steps' rows before the ring takes
+// their place.
 type kvJoin struct {
 	kv, keys, values kvCache
+	ring             int
 }
 
-// joinKV copies positions [from, to) of every joined layer's keys and values into its kv.
+// slot is the row of position p in kv.
+func (j *kvJoin) slot(p int) int {
+	if j.ring > 0 {
+		return p % j.ring
+	}
+	return p
+}
+
+// joinRows copies positions [lo, to) of keys and values (rows of r bytes by position) into kv.
+func (j *kvJoin) joinRows(kv, keys, values []byte, lo, to int) {
+	r := j.keys.row
+	for p := lo; p < to; p++ {
+		s := j.slot(p)
+		copy(kv[2*s*r:(2*s+1)*r], keys[p*r:(p+1)*r])
+		copy(kv[(2*s+1)*r:(2*s+2)*r], values[p*r:(p+1)*r])
+	}
+}
+
+// splitRows copies positions [lo, to) of kv back into keys and values.
+func (j *kvJoin) splitRows(kv, keys, values []byte, lo, to int) {
+	r := j.keys.row
+	for p := lo; p < to; p++ {
+		s := j.slot(p)
+		copy(keys[p*r:(p+1)*r], kv[2*s*r:(2*s+1)*r])
+		copy(values[p*r:(p+1)*r], kv[(2*s+1)*r:(2*s+2)*r])
+	}
+}
+
+// joinKV copies positions [from, to) of every joined layer's keys and values into its kv; a
+// ring takes all it holds before to (the keys and values hold them: the callers split first).
 func (m *Model) joinKV(from, to int) error {
-	if _, err := m.caches(); err != nil || len(m.joins) == 0 || to <= from {
+	if _, err := m.caches(); err != nil || len(m.joins) == 0 {
 		return err
 	}
-	for _, j := range m.joins {
+	if err := m.join(from, to, false); err != nil {
+		return err
+	}
+	m.ringAt = to
+	return nil
+}
+
+func (m *Model) join(from, to int, ringsOnly bool) error {
+	for i := range m.joins {
+		j := &m.joins[i]
+		lo := from
+		if j.ring > 0 {
+			lo = max(to-j.ring, 0)
+		} else if ringsOnly {
+			continue
+		}
+		if to <= lo {
+			continue
+		}
 		kb, vb, jb := m.buffer(m.decode, j.keys.p.Argument), m.buffer(m.decode, j.values.p.Argument), m.buffer(m.decode, j.kv.p.Argument)
 		r := j.keys.row
-		if err := kb.SyncFromDevice(j.keys.p.Offset+from*r, (to-from)*r); err != nil {
+		if err := kb.SyncFromDevice(j.keys.p.Offset+lo*r, (to-lo)*r); err != nil {
 			return err
 		}
-		if err := vb.SyncFromDevice(j.values.p.Offset+from*r, (to-from)*r); err != nil {
+		if err := vb.SyncFromDevice(j.values.p.Offset+lo*r, (to-lo)*r); err != nil {
 			return err
 		}
-		k, v, dst := kb.Bytes()[j.keys.p.Offset:], vb.Bytes()[j.values.p.Offset:], jb.Bytes()[j.kv.p.Offset:]
-		for p := from; p < to; p++ {
-			copy(dst[2*p*r:(2*p+1)*r], k[p*r:(p+1)*r])
-			copy(dst[(2*p+1)*r:(2*p+2)*r], v[p*r:(p+1)*r])
+		j.joinRows(jb.Bytes()[j.kv.p.Offset:], kb.Bytes()[j.keys.p.Offset:], vb.Bytes()[j.values.p.Offset:], lo, to)
+		off, n := j.kv.p.Offset+2*lo*r, 2*(to-lo)*r
+		if j.ring > 0 {
+			off, n = j.kv.p.Offset, j.kv.p.Bytes
 		}
-		if err := jb.SyncToDevice(j.kv.p.Offset+2*from*r, 2*(to-from)*r); err != nil {
+		if err := jb.SyncToDevice(off, n); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// ringsTo makes the rings hold the positions before position, where a decode step is about to
+// run: nothing to do after the step or the chunk before it; else the steps' rows are split and
+// the rings filled from the keys and values.
+func (m *Model) ringsTo(position int) error {
+	if _, err := m.caches(); err != nil || !m.rings || m.ringAt == position {
+		return err
+	}
+	if err := m.splitKV(); err != nil {
+		return err
+	}
+	if err := m.join(position, position, true); err != nil {
+		return err
+	}
+	m.ringAt = position
 	return nil
 }
 
@@ -122,34 +200,48 @@ func (m *Model) splitKV() error {
 	if _, err := m.caches(); err != nil || len(m.joins) == 0 || to <= from {
 		return err
 	}
-	for _, j := range m.joins {
+	for i := range m.joins {
+		j := &m.joins[i]
+		lo := from
+		off, n := j.kv.p.Offset+2*from*j.keys.row, 2*(to-from)*j.keys.row
+		if j.ring > 0 {
+			lo = max(from, to-j.ring) // (stepAt splits before more steps than its rows)
+			off, n = j.kv.p.Offset, j.kv.p.Bytes
+		}
 		kb, vb, jb := m.buffer(m.decode, j.keys.p.Argument), m.buffer(m.decode, j.values.p.Argument), m.buffer(m.decode, j.kv.p.Argument)
 		r := j.keys.row
-		if err := jb.SyncFromDevice(j.kv.p.Offset+2*from*r, 2*(to-from)*r); err != nil {
+		if err := jb.SyncFromDevice(off, n); err != nil {
 			return err
 		}
-		k, v, src := kb.Bytes()[j.keys.p.Offset:], vb.Bytes()[j.values.p.Offset:], jb.Bytes()[j.kv.p.Offset:]
-		for p := from; p < to; p++ {
-			copy(k[p*r:(p+1)*r], src[2*p*r:(2*p+1)*r])
-			copy(v[p*r:(p+1)*r], src[(2*p+1)*r:(2*p+2)*r])
-		}
-		if err := kb.SyncToDevice(j.keys.p.Offset+from*r, (to-from)*r); err != nil {
+		j.splitRows(jb.Bytes()[j.kv.p.Offset:], kb.Bytes()[j.keys.p.Offset:], vb.Bytes()[j.values.p.Offset:], lo, to)
+		if err := kb.SyncToDevice(j.keys.p.Offset+lo*r, (to-lo)*r); err != nil {
 			return err
 		}
-		if err := vb.SyncToDevice(j.values.p.Offset+from*r, (to-from)*r); err != nil {
+		if err := vb.SyncToDevice(j.values.p.Offset+lo*r, (to-lo)*r); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// stepAt notes that a decode step wrote position's row of the joined layers' kv.
-func (m *Model) stepAt(position int) {
+// stepAt notes that a decode step wrote position's row of the joined layers' kv, and splits
+// the steps' rows once they are as many as a ring holds.
+func (m *Model) stepAt(position int) error {
 	if m.stepped[1] <= m.stepped[0] {
 		m.stepped = [2]int{position, position + 1}
-		return
+	} else {
+		m.stepped[0], m.stepped[1] = min(m.stepped[0], position), max(m.stepped[1], position+1)
 	}
-	m.stepped[0], m.stepped[1] = min(m.stepped[0], position), max(m.stepped[1], position+1)
+	m.ringAt = position + 1
+	if !m.rings {
+		return nil
+	}
+	for _, j := range m.joins {
+		if j.ring > 0 && m.stepped[1]-m.stepped[0] >= j.ring {
+			return m.splitKV()
+		}
+	}
+	return nil
 }
 
 // RowBytes is the bytes of the KV caches' rows of one position.
@@ -215,6 +307,11 @@ func (m *Model) ImportRows(from int, rows []byte) error {
 	n := len(rows) / rb
 	if from < 0 || from+n > m.Manifest.Config.MaxSeqLen {
 		return fmt.Errorf("iron: %d rows from %d past %d positions", n, from, m.Manifest.Config.MaxSeqLen)
+	}
+	if m.rings { // the decode steps' rows before from, which a ring is filled with again
+		if err := m.splitKV(); err != nil {
+			return err
+		}
 	}
 	o := 0
 	for _, c := range cs {

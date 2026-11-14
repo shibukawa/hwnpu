@@ -33,8 +33,8 @@
 //       q4nx table as it is (blocks of 32 out-features by 256 in-features, 5120 bytes: a weight
 //       block's start), cores 0 and 1 the even k-blocks of a column block's halves, cores 2 and 3
 //       the odd ones: each sends its partial sums (bf16), which the host adds
-//   R   the router's logits (GL_ROUTER cores: column 0's last two): bf16 blocks of 80
-//       in-features on hn, each core its k-blocks' partial sums, out as float32 (the column's
+//   R   the router's logits (GL_ROUTER cores: every column's last two): bf16 blocks of 80
+//       in-features on hn, each core its k-blocks' partial sums, out as float32 (a column's
 //       other cores take blocks of nothing and send zeros)
 //   T   the routing (GL_ROUTE core): the partial sums added, the top 4 and their softmax
 //       (moe_route.cc's), out the next command's scratchpad words and the weights
@@ -48,6 +48,12 @@
 #endif
 #ifndef GL_ROPE_ROWS
 #define GL_ROPE_ROWS 0
+#endif
+#ifndef GL_ATTN
+// The attention and the exponential (iron_gptoss_layer.py's GptOssStep.att): 1 the values' sums
+// as broadcast macs and gl_exp32; 0 as before them (both products the API's mmul, exp_f32); 9
+// the attention's transfers alone (a measurement)
+#define GL_ATTN 1
 #endif
 
 // what runs once a phase or an object out is built for size: a core's program is 16 KB
@@ -150,16 +156,62 @@ static inline void gl_bias(const bf16 *bias, float *acc) {
   }
 }
 
+#if GL_ATTN == 0
 // exp of 16 values (below -80 as -80): one copy for the glu, the softmax and the routing.
 __attribute__((noinline)) static aie::vector<float, 16> gl_exp(aie::vector<float, 16> v) {
   aie::accum<accfloat, 16> z;
   z.from_vector(aie::max(v, aie::broadcast<float, 16>(-80.0f)));
   return exp_f32<16>(z).template to_vector<float>();
 }
+#else
+// e^d of 32 values (outside -80 .. 80 as the end): 2^k p(f) with t = d log2(e) = k + f, |f| <=
+// 1/2 (aie_kernels' exp2_bf16.h's exp2_f32_32: the 1.5 * 2^23 rounding, a quartic by Horner's
+// rule on f's and p's two bf16 limbs, within 3e-6 of 2^f, k added into the exponent field). t
+// is from d's two limbs and log2(e)'s (their three larger products: 1e-5 of t, so e^d within
+// 1e-4 for |d| below 10). exp_f32 (exact in float32, on three limbs, 16 values a call) took 7 of
+// the 10 us an object of the attention computed: 33 calls. One copy for the softmax, the glu and
+// the routing.
+__attribute__((noinline)) static aie::vector<float, 32> gl_exp32(aie::vector<float, 32> d) {
+  using acc_t = aie::accum<accfloat, 32>;
+  using bf_t = aie::vector<bf16, 32>;
+  auto acc = [](float c) { return acc_t(aie::broadcast<float, 32>(c)); };
+  const acc_t da(aie::min(aie::max(d, aie::broadcast<float, 32>(-80.0f)), aie::broadcast<float, 32>(80.0f)));
+  const bf_t hi = da.template to_vector<bf16>();
+  const bf_t lo = aie::msc(da, hi, bf16(1.0f)).template to_vector<bf16>();
+  // log2(e) = 1.4375 + 0.00519504 (the first exact in bf16), smallest product first
+  acc_t t = aie::mul(lo, bf16(1.4375f));
+  t = aie::mac(t, hi, bf16(0.00519504f));
+  t = aie::mac(t, hi, bf16(1.4375f));
+  const aie::vector<float, 32> magic = aie::broadcast<float, 32>(12582912.0f);
+  const aie::vector<float, 32> tm = aie::add(t.template to_vector<float>(), magic);
+  const bf_t k = acc_t(aie::sub(tm, magic)).template to_vector<bf16>(); // an integer: exact
+  const acc_t f = aie::msc(t, k, bf16(1.0f));
+  const bf_t f_hi = f.template to_vector<bf16>();
+  const bf_t f_lo = aie::msc(f, f_hi, bf16(1.0f)).template to_vector<bf16>();
+  acc_t p = aie::mac(acc(0.0559063815f), f_hi, bf16(0.009582519f));
+#pragma clang loop unroll(disable)
+  for (int i = 0; i < 3; i++) {
+    static const float c[3] = {0.240241051f, 0.693124175f, 1.0f};
+    const bf_t p_hi = p.template to_vector<bf16>();
+    const bf_t p_lo = aie::msc(p, p_hi, bf16(1.0f)).template to_vector<bf16>();
+    acc_t q = aie::mac(acc(c[i]), p_hi, f_hi);
+    q = aie::mac(q, p_hi, f_lo);
+    p = aie::mac(q, p_lo, f_hi);
+  }
+  const aie::vector<int32_t, 32> ki = aie::sub(tm.template cast_to<int32_t>(), aie::broadcast<int32_t, 32>(0x4b400000));
+  return aie::add(p.template to_vector<float>().template cast_to<int32_t>(),
+                  aie::mul(ki, int32_t(1 << 23)).template to_vector<int32_t>())
+      .template cast_to<float>();
+}
+static inline aie::vector<float, 16> gl_exp(aie::vector<float, 16> d) {
+  return gl_exp32(aie::concat(d, d)).template extract<16>(0);
+}
+#endif
 
 // y = (clamp(u, -L, L) + 1) * g' / (1 + exp(-1.702 g')), g' = min(g, L) (moe_mx4.cc's mx4_glu).
 static inline void gl_glu(const float *g, const float *u, bf16 *y) {
   alignas(64) float out[MT];
+#if GL_ATTN == 0
   const auto lim = aie::broadcast<float, 16>(MX_LIMIT);
   const auto nlim = aie::broadcast<float, 16>(-MX_LIMIT);
   const auto one = aie::broadcast<float, 16>(1.0f);
@@ -172,6 +224,18 @@ static inline void gl_glu(const float *g, const float *u, bf16 *y) {
     aie::vector<float, 16> p = aie::mul(gv, s).template to_vector<float>();
     aie::store_v(out + i, aie::mul(p, aie::add(uv, one)).template to_vector<float>());
   }
+#else
+  // the 32 at once (a float32 product is 32 bf16 products wide whatever the vector)
+  const auto lim = aie::broadcast<float, MT>(MX_LIMIT);
+  const auto nlim = aie::broadcast<float, MT>(-MX_LIMIT);
+  const auto one = aie::broadcast<float, MT>(1.0f);
+  aie::vector<float, MT> gv = aie::min(aie::load_v<MT>(g), lim);
+  aie::vector<float, MT> uv = aie::max(aie::min(aie::load_v<MT>(u), lim), nlim);
+  aie::vector<float, MT> e = gl_exp32(aie::mul(gv, -1.702f).template to_vector<float>());
+  aie::vector<float, MT> s = aie::inv(aie::add(e, one));
+  aie::vector<float, MT> p = aie::mul(gv, s).template to_vector<float>();
+  aie::store_v(out, aie::mul(p, aie::add(uv, one)).template to_vector<float>());
+#endif
   narrow_to_bf16<MT>(y, out);
 }
 
@@ -200,8 +264,9 @@ constexpr int GL_AH = 4;         // A: heads a core
 constexpr int GL_SINK = 13312;   // A: the column's sinks in x's first object (after its q, repeated)
 constexpr int GL_TS = 2 * GL_D;  // A: a token's key and value
 constexpr int GL_RKT = 80;       // R: in-features a block
-constexpr int GL_RKB = 20;       // R: blocks a core (39 k-blocks and one of zeros on two cores)
-constexpr int GL_PROG = 256;     // T: the program's words in x's object (after the partial sums)
+constexpr int GL_RKB = 3;        // R: blocks a core (39 k-blocks and 9 of zeros on every column's last two cores)
+constexpr int GL_COLS = 8;       // the columns
+constexpr int GL_PROG = 2048;    // T: the program's words in x's object (after every column's partial sums)
 constexpr int GL_FED = 8;        // T: the scratchpad words routed (the experts' offsets)
 
 // Every array a vector is loaded from starts on 64 bytes (a load takes the address's upper bits).
@@ -269,7 +334,11 @@ static inline aie::vector<float, 32> gl_rows(aie::vector<float, 16> v) {
 // tile of 8 rows of 8 (tstep further each step; turned to [8 values][8 rows] where turn): the one
 // copy of the matrix product (-Os on the whole file fit too, and gave wrong numbers). The scores
 // of 8 tokens: q's tiles [head][8 k] times the keys' [token][8 k] turned, over the 8 steps of k.
-// The values' sums: p's tiles [head][8 tokens] times the values' [token][8 d], over the tiles.
+// With GL_ATTN 0 the values' sums too: p's tiles [head][8 tokens] times the values' [token][8 d],
+// over the tiles.
+// (On AIE2P's float matrix instruction, bfp16's mac_8x8_8x8T, the scores were as fast as the
+// transfers allow too, but 8 k sharing an exponent with mantissas of 8 bits put the heads'
+// outputs 3 % of their largest off on random keys: a score's error is its softmax's.)
 __attribute__((noinline)) static void gl_mm(const bf16 *a, const bf16 *kv, int tstep, int steps, bool turn, float *out) {
   aie::mmul<4, 8, 8, bfloat16, bfloat16> c;
 #pragma clang loop unroll(disable)
@@ -281,10 +350,15 @@ __attribute__((noinline)) static void gl_mm(const bf16 *a, const bf16 *kv, int t
 }
 
 // An object's first n (of 128) tokens' keys and values (kv: [token][key 64, value 64]) into the
-// core's 4 heads' softmax, 8 tokens at a time as matrix products (the bf16 mmul; no sum across
-// a vector's lanes a token): a dot product a token and a head with its sum took 62 us an
-// object, 12 ms a token at 2000 tokens of context.
+// core's 4 heads' softmax. The scores 8 tokens at a time as matrix products (the bf16 mmul; no
+// sum across a vector's lanes a token: a dot product a token and a head with its sum took 62 us
+// an object, 12 ms a token at 2000 tokens of context), their p = e^(s - m) a tile's 32 at once,
+// and the values' sums as broadcast macs. An object's computing is then under its transfer (6
+// us): with exp_f32 and the sums as matrix products too (GL_ATTN 0) it was 15 us more.
 GL_COLD static void gl_attend(const bf16 *kv, gl_state *st, int n) {
+#if GL_ATTN == 9
+  return; // a measurement: the transfers alone
+#endif
   constexpr int TILES = GL_TOK / 8, L = GL_AH * 8;
   alignas(64) float s[TILES][L];
   alignas(64) bf16 pb[TILES][L];
@@ -304,6 +378,7 @@ GL_COLD static void gl_attend(const bf16 *kv, gl_state *st, int n) {
       aie::max(old, gl_heads<true>(aie::max(top.template extract<16>(0), top.template extract<16>(1))));
   const aie::vector<float, 16> d = gl_exp(aie::sub(old, m)); // the old terms at the new maximum
   aie::store_v(st->m, m);
+#if GL_ATTN == 0
   aie::vector<float, 16> sum = aie::zeros<float, 16>();
 #pragma clang loop unroll(disable)
   for (int tt = 0; tt < TILES; tt++) {
@@ -314,11 +389,55 @@ GL_COLD static void gl_attend(const bf16 *kv, gl_state *st, int n) {
     a.from_vector(aie::concat(e0, e1));
     aie::store_v(pb[tt], aie::transpose(a.template to_vector<bf16>(), 8, 4)); // [token][head] to [head][token]
   }
+#else
+  // p as bf16, [token][head]; their sum is the sum of the p the values are weighted with
+  const aie::vector<float, L> m2 = aie::concat(m, m);
+  aie::accum<accfloat, L> psum = aie::zeros<accfloat, L>();
+#pragma clang loop unroll(disable)
+  for (int tt = 0; tt < TILES; tt++) {
+    aie::accum<accfloat, L> e;
+    e.from_vector(gl_exp32(aie::sub(aie::load_v<L>(s[tt]), m2)));
+    const aie::vector<bf16, L> pv = e.template to_vector<bf16>();
+    psum = aie::mac(psum, pv, bf16(1.0f));
+    aie::store_v(pb[tt], pv);
+  }
+  const aie::vector<float, L> ps = psum.template to_vector<float>();
+  const aie::vector<float, 16> sum = aie::add(ps.template extract<16>(0), ps.template extract<16>(1));
+#endif
   aie::store_v(st->l, aie::add(aie::mul(aie::load_v<16>(st->l), d).template to_vector<float>(), gl_heads<false>(sum)));
   const aie::vector<float, L> drow = gl_rows(d);
+#if GL_ATTN != 0
+  // The values' sums: a token's value (two vectors of 32, as they lie in the object) times its
+  // p of a head, two heads a pass (4 sums of 32 at once). No tile of 8 by 8 is put together.
+  alignas(64) float sums[GL_AH][GL_D];
+#pragma clang loop unroll(disable)
+  for (int hp = 0; hp < GL_AH; hp += 2) {
+    aie::accum<accfloat, 32> a0 = aie::zeros<accfloat, 32>(), a1 = a0, b0 = a0, b1 = a0;
+    const bf16 *p = pb[0] + hp;
+    const bf16 *v = kv + GL_D;
+#pragma clang loop unroll(disable)
+    for (int t = 0; t < GL_TOK; t++) {
+      const aie::vector<bf16, 32> v0 = aie::load_v<32>(v + t * GL_TS), v1 = aie::load_v<32>(v + t * GL_TS + 32);
+      const bf16 pa = p[GL_AH * t], pc = p[GL_AH * t + 1];
+      a0 = aie::mac(a0, v0, pa);
+      a1 = aie::mac(a1, v1, pa);
+      b0 = aie::mac(b0, v0, pc);
+      b1 = aie::mac(b1, v1, pc);
+    }
+    aie::store_v(sums[hp], a0.template to_vector<float>());
+    aie::store_v(sums[hp] + 32, a1.template to_vector<float>());
+    aie::store_v(sums[hp + 1], b0.template to_vector<float>());
+    aie::store_v(sums[hp + 1] + 32, b1.template to_vector<float>());
+  }
+#endif
 #pragma clang loop unroll(disable)
   for (int ds = 0; ds < GL_D / 8; ds++) {
+#if GL_ATTN == 0
     gl_mm(pb[0], kv + GL_D + 8 * ds, 8 * GL_TS, TILES, false, add);
+#else
+    aie::store_v(add, aie::concat(aie::load_v<8>(sums[0] + 8 * ds), aie::load_v<8>(sums[1] + 8 * ds),
+                                  aie::load_v<8>(sums[2] + 8 * ds), aie::load_v<8>(sums[3] + 8 * ds)));
+#endif
     aie::vector<float, L> o = aie::mul(aie::load_v<L>(st->o2[ds]), drow).template to_vector<float>();
     aie::store_v(st->o2[ds], aie::add(o, aie::load_v<L>(add)));
   }
@@ -396,7 +515,7 @@ GL_COLD void GL_FN(gl_plan)(int32_t *cnt, int32_t ph, int32_t kinds, int32_t nto
       {5120 / MT / 8 / GL_CORES, GL_QK / GL_QKT, 1, 0, 0},                    // Q
       {0, 0, 0, 2 * GL_AH, 0},                                                // A: a head's 64 in two objects
       {GL_OUTS, (GL_OK + GL_QKT - 1) / GL_QKT, 1, 0, 0},                      // O
-      {1, GL_RKB, 2, 0, 1},                                                   // R: 32 partial sums as float32
+      {1, GL_RKB, 2, 0, 0},                                                   // R: 32 partial sums as float32
       {0, 0, 0, 2, 1},                                                        // T: the words, the weights
       {GL_HOUTS, GL_HK / GL_HKT / 2, 1, 0, 0},                                // H: half the k-blocks a core
   };
@@ -456,13 +575,17 @@ GL_COLD void GL_FN(gl_begin)(bf16 *x, float *state, const int32_t *cnt) {
 #endif
 #ifdef GL_ROUTE
   else if (kind == K_T) {
-    // each core's partial sums (two objects: [object][core][16 float32]) added, then routed
+    // each column's last two cores' partial sums ([column][object][core][16 float32]) added, then
+    // routed
     alignas(64) float logit[32];
     const float *part = reinterpret_cast<const float *>(x);
     for (int q = 0; q < 2; q++) {
-      aie::vector<float, 16> v = aie::load_v<16>(part + q * 64);
-      for (int c = 1; c < GL_CORES; c++)
-        v = aie::add(v, aie::load_v<16>(part + q * 64 + c * 16));
+      aie::vector<float, 16> v = aie::zeros<float, 16>();
+#pragma clang loop unroll(disable)
+      for (int l = 0; l < GL_COLS; l++) {
+        const float *pl = part + (2 * l + q) * GL_CORES * 16;
+        v = aie::add(v, aie::add(aie::load_v<16>(pl + 2 * 16), aie::load_v<16>(pl + 3 * 16)));
+      }
       aie::store_v(logit + 16 * q, v);
     }
     gl_route(logit, reinterpret_cast<const int32_t *>(x + GL_PROG), st->res + 16,
@@ -494,11 +617,11 @@ void GL_FN(gl_block)(const uint8_t *block, const bf16 *x, float *state, const in
     return;
   }
 #ifdef GL_ROUTER
-  if (kind == K_R) { // the core's k-blocks 2 b + (core - 2)
+  if (kind == K_R) { // the core's k-blocks 2 (8 b + column) + (core - 2)
     const rt_blk_t *A = reinterpret_cast<const rt_blk_t *>(block);
     if (b == 0)
       gl_bias(A->bias, st->acc);
-    const bf16 *xk = x + GL_RKT * (2 * b + cnt[7] - 2);
+    const bf16 *xk = x + GL_RKT * (2 * (GL_COLS * b + cnt[6]) + cnt[7] - 2);
     aie::accum<accfloat, 16> a0, a1;
     a0.from_vector(aie::load_v<16>(st->acc));
     a1.from_vector(aie::load_v<16>(st->acc + 16));

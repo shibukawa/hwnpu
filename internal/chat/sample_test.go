@@ -1,8 +1,10 @@
 package chat
 
 import (
+	"math"
 	"math/rand/v2"
 	"slices"
+	"sort"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -56,5 +58,41 @@ func TestPickSoftcap(t *testing.T) {
 	}
 	if got := (Sampling{Repetition: 1.05}).pick(slices.Clone(two), []int32{0}, nil); got != 0 {
 		t.Errorf("without the cap the penalised token stays ahead: picked %d, want 0", got)
+	}
+}
+
+// topK's pass over whole blocks keeps what a full sort keeps, with ties, NaNs and infinities.
+func TestTopKBlocks(t *testing.T) {
+	rng := rand.New(rand.NewPCG(7, 9))
+	for _, n := range []int{50, 51, 300, 1000, 5001} {
+		logits := make([]float32, n)
+		for i := range logits {
+			logits[i] = float32(rng.NormFloat64())
+		}
+		if n > 100 { // past the first k, which topK takes as they are
+			logits[n-2] = float32(math.NaN())
+		}
+		logits[n/3] = float32(math.Inf(-1))
+		logits[n-1] = logits[n/4] // a tie, at the end
+		for _, k := range []int{1, 7, 50} {
+			got := topK(logits, k)
+			want := topK(logits, 0)
+			// the full sort puts the NaN anywhere: take the k largest numbers
+			var top []float32
+			for _, i := range want {
+				if l := logits[i]; l == l {
+					top = append(top, l)
+				}
+			}
+			sort.Slice(top, func(a, b int) bool { return top[a] > top[b] })
+			if len(got) != k {
+				t.Fatalf("n %d k %d: %d indices", n, k, len(got))
+			}
+			for j, i := range got {
+				if logits[i] != top[j] {
+					t.Fatalf("n %d k %d: place %d is %v, want %v", n, k, j, logits[i], top[j])
+				}
+			}
+		}
 	}
 }
