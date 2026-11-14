@@ -4,7 +4,7 @@
 
 `hwnpu-audio` は、音楽と効果音の生成 (`generate`)、読み上げ (`tts`)、書き起こし (`transcribe`)、音高 (`pitch`)、音符 (`notes`) を NPU で行います。どれも初回にモデルを落として自分で変換します。選べるモデルは `hwnpu-audio list` で出ます。
 
-Mac では Core AI を通して Neural Engine で動かすだけなので、macOS 27 が要ります (macOS 26 以前では、そう書いたエラーで止まります)。モデルは Core AI 向け (`.aimodel`、モデルのディレクトリの `coreai`) に変換し、コンパイルした結果は Core AI が自分のキャッシュに持つので、2 回目からの読み込みは 0.1 秒です (docs/design.md 16.191)。`--cpu` は確かめ用に、Core ML の書き出しを CPU のインタプリタで動かします。
+Mac では Core AI を通して Neural Engine で動かすだけなので、macOS 27 が要ります (macOS 26 以前では、そう書いたエラーで止まります)。モデルは Core AI 向け (`.aimodel`、モデルのディレクトリの `coreai`) に変換し、コンパイルした結果は Core AI が自分のキャッシュに持つので、2 回目からの読み込みは 0.1 秒です (docs/design.md 16.195)。`--cpu` は確かめ用に、Core ML の書き出しを CPU のインタプリタで動かします。
 
 ## 音楽 (Magenta RealTime 2)
 

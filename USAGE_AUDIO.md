@@ -4,7 +4,7 @@
 
 `hwnpu-audio` generates music and sound effects (`generate`), reads text aloud (`tts`), transcribes (`transcribe`), and finds pitch (`pitch`) and notes (`notes`), on the NPU. Each downloads its model on the first run and converts it by itself. `hwnpu-audio list` shows the models to choose from.
 
-On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it needs macOS 27 (on macOS 26 or earlier it stops with an error that says so). Each model is converted for Core AI (`.aimodel`, in the model's `coreai` directory), and Core AI keeps the compiled programs in its own cache: a second start loads in 0.1 seconds (docs/design.md 16.191). `--cpu` runs a Core ML export with the CPU interpreter, for checking without the NPU.
+On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it needs macOS 27 (on macOS 26 or earlier it stops with an error that says so). Each model is converted for Core AI (`.aimodel`, in the model's `coreai` directory), and Core AI keeps the compiled programs in its own cache: a second start loads in 0.1 seconds (docs/design.md 16.195). `--cpu` runs a Core ML export with the CPU interpreter, for checking without the NPU.
 
 ## Music (Magenta RealTime 2)
 

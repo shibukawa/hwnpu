@@ -40,7 +40,7 @@ type Setup struct {
 	// Cache is the text model's KV cache (0: DefaultCache).
 	Cache int
 	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, what
-	// the CPU interpreter runs), Core AI's programs (coreai, kept in Dir/coreai: the text
+	// the CPU interpreter runs), Core AI's programs (coreai, exports NAME.coreai: the text
 	// model's two programs the functions of one) or OpenVINO IR for Intel's NPU, kept in
 	// Dir/intel and with the text model's lookup tables as integers (llm.IntelFormat).
 	Backend string
@@ -111,28 +111,20 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if s.Backend == llm.BackendCoreAI {
 		// the text model's two programs together, their parts of the same layers the functions
 		// of one Core AI program: the weights once on the disk and on the Neural Engine
-		var outs, names []string
+		var names []string
 		var ps []chat.Program
-		base := ""
+		base := filepath.Join(s.Dir, strings.TrimSuffix(progs[0].name, fmt.Sprintf("-q%d", progs[0].p.Seq)))
 		for _, p := range progs[:2] {
-			out, err := chat.ProgramFile(s.Dir, p.name, s.Backend)
-			if err != nil {
-				return Config{}, err
-			}
 			name := fmt.Sprintf("q%d", p.p.Seq)
-			outs, names, ps = append(outs, strings.TrimSuffix(out, ".aimodel")), append(names, name), append(ps, p.p)
-			if base == "" {
-				base = strings.TrimSuffix(strings.TrimSuffix(out, ".aimodel"), "-"+name)
-			}
-			base += "-" + name
+			names, ps, base = append(names, name), append(ps, p.p), base+"-"+name
 		}
 		weights := ""
-		if !chat.Converted(outs[0]+".aimodel") || !chat.Converted(outs[1]+".aimodel") {
+		if !chat.Converted(base + ".coreai") {
 			if weights, err = checkpoint(); err != nil {
 				return Config{}, err
 			}
 		}
-		if paths, err = chat.ConvertShared(ctx, config, weights, base, outs, names, ps, log); err != nil {
+		if paths, err = chat.ConvertShared(ctx, config, weights, base, names, ps, log); err != nil {
 			return Config{}, err
 		}
 		progs = progs[2:]

@@ -115,16 +115,16 @@ func ConvertProgram(ctx context.Context, config, weights, out string, p Program,
 }
 
 // ConvertShared converts programs of one model for Core AI together (ps differ only in their
-// Seq: the same weights) unless they were, the parts of the same layers the functions of one
-// Core AI program base.partK.aimodel (llm.ConvertAI), the weights once on the disk and on the
-// Neural Engine. outs are the programs' paths without an extension and names their functions'
-// names (q1, q64); it returns the paths of their manifests (outs[i].parts.json).
-func ConvertShared(ctx context.Context, config, weights, base string, outs, names []string, ps []Program, log io.Writer) ([]string, error) {
+// Seq: the same weights) into the export base.coreai unless they were (convertShared): the parts
+// of the same layers the functions of one Core AI program, the weights once on the disk and on the
+// Neural Engine. names are the programs' names (q1, q64); it returns the paths of their manifests
+// (base.coreai/NAME.parts.json).
+func ConvertShared(ctx context.Context, config, weights, base string, names []string, ps []Program, log io.Writer) ([]string, error) {
 	var progs []program
 	for _, p := range ps {
 		progs = append(progs, program{backend: llm.BackendCoreAI, arch: p.Arch, format: p.Format, params: p.Params, seq: p.Seq, cache: p.Cache})
 	}
-	return convertShared(ctx, config, weights, base, outs, names, progs, log)
+	return convertShared(ctx, config, weights, base, names, progs, log)
 }
 
 // ProgramFile is where a program named name for backend goes in a model's directory dir: an
@@ -140,5 +140,5 @@ func ProgramFile(dir, name, backend string) (string, error) {
 
 // converted reports whether convert finished writing out (its NAME.done is there).
 func converted(out string) bool {
-	return exists(out[:len(out)-len(filepath.Ext(out))] + ".done")
+	return exists(doneFile(out))
 }

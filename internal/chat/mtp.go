@@ -29,6 +29,9 @@ type mtpDrafter struct {
 	chains []*chain.Chain
 	sess   *decode.Session
 	k      int // the most drafts it guesses in a row
+	// ids are the tokens of the layer's logits, in order, when they are of a part of the
+	// vocabulary (draftVocab); nil: all of it
+	ids []int32
 
 	// fed is the sequence the hidden states and the entries are of; hrows the model's final
 	// hidden states at positions [hbase, hbase+len(hrows)) of it
@@ -79,6 +82,9 @@ func loadMTP(ctx context.Context, e *Engine, c Config) (*mtpDrafter, error) {
 		m.k = v
 	}
 	m.k = min(m.k, ds.Qs()[0]-1)
+	if m.ids, err = readDraftVocab(c.MTP[0]); err != nil {
+		return nil, err
+	}
 	for i, pkg := range c.MTP {
 		var ch *chain.Chain
 		if i == 0 {
@@ -230,7 +236,10 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 		t += n
 		m.real += n
 	}
-	drafts := []int32{argmax(logits)}
+	if m.ids != nil && len(logits) != len(m.ids) {
+		return nil, fmt.Errorf("chat: the multi-token prediction layer gave %d logits for a vocabulary of %d", len(logits), len(m.ids))
+	}
+	drafts := []int32{m.token(logits)}
 	for len(drafts) < k {
 		x, err := m.e.rows(drafts[len(drafts)-1:])
 		if err != nil {
@@ -243,10 +252,19 @@ func (m *mtpDrafter) guess(seq []int32, k int) ([]int32, error) {
 			return nil, err
 		}
 		h = m.sess.Hidden()
-		drafts = append(drafts, argmax(logits))
+		drafts = append(drafts, m.token(logits))
 	}
 	// back to the entries read for real
 	return drafts, m.sess.Truncate(m.real)
+}
+
+// token is the draft the logits give: their largest's token.
+func (m *mtpDrafter) token(logits []float32) int32 {
+	i := argmax(logits)
+	if m.ids != nil {
+		return m.ids[i]
+	}
+	return i
 }
 
 func argmax(v []float32) int32 {

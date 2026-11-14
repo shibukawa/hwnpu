@@ -5388,13 +5388,129 @@ Qwen3 は 28 層すべてが注意なので、分けると層ごとに Neural En
 
 残り: macOS 26 の Mac でのエラーの確かめ (この M1 は 27)。Anima と Chroma の `.coreai` の書き出しは大きさごとに別で、16.177 の自動のまとめ (Core ML の書き出しを下ろすときだけ) が効かない。Sana のように 1 つの書き出しの関数にするのは次の仕事。Chroma の `.coreai` の書き出しを M1 で (チェックポイントを消しているため変換できず、試していない)。Intel の Mac。M2 と M3 での画像を読むモデルの初回。
 
-### 16.191 `hwnpu-audio` を Mac では Core AI だけに (macOS 27 が要る)、どのモデルもチェックポイントから `.aimodel` に — 2026-11-14
+### 16.191 Qwen3.5-4B と gemma-4-E4B-it を Core AI で、`hwnpu-chat` を Mac では Core AI だけに、書き出しを `NAME.coreai` に — 2026-11-14
+
+16.185 の残り (handoff-coreai-chat.md) のうち、Qwen3.5-4B と gemma-4-E4B-it を M2 (16 GB、macOS 27.2.1 (26B131)) で確かめた。どちらも全部の部品が Neural Engine に載り、答えは正しい (「日本の首都は東京です。」)。そのうえで 16.190 の `hwnpu-image` と同じく、`hwnpu-chat` を Mac では Core AI だけにした。
+
+- **`hwnpu-chat` の `--backend`** (`chatDevice`): `coreml` を選べなくした (`enum: ,coreai,intel,levelzero,openvino`)。Mac では、指定なし、`coreai`、`HWNPU_BACKEND=coreml` (ほかのコマンドのために残っていることがある) のどれも Core AI。Core AI のない Mac (macOS 26 以前) は、macOS 27 が要るというエラーにする。Intel と AMD はこれまで通り。PLaMo-Embedding (16.185) と d1 (`systemone`、Core ML の書き出しを Core AI で動かす) も同じ `--backend` で Core AI
+- **書き出しの置き場所を画像のモデルと同じ形に**: モデルのディレクトリの `coreai/` に部品を並べていたのを、1 回の `convertShared` の書き出しを `NAME.coreai/` (中に `model.partK.aimodel`、プログラムごとの `NAME.parts.json`、注意のプログラム) にし、書き終えた印を `NAME.coreai.done` に。1 本だけのもの (MTP の層、符号器) は `NAME.coreai/model.aimodel` (分けたときは `model.parts.json`)。名前は前と同じくプログラムの組を表す。前の `coreai/` は使わない (残っていれば消してよい)
+
+**結果** (M2、`--backend` なし、貪欲法、2 回目以降の値。Core ML は同じ M2 で、このブランチの前の hwnpu の `--backend coreml`)
+
+| | Qwen3.5-4B (lut8、9 部品、MTP の下書き) | gemma-4-E4B-it (lut6、8 部品、読み取りは前の 4 部品) |
+|---|---|---|
+| 書き出し | 約 2 分、4.0 GB (+ MTP 0.3 GB) | 約 1 分、3.3 GB |
+| 1 回目の準備 (コンパイル込み) | 14 分 39 秒 (コンパイル 13 分 15 秒) | 3 分 35 秒 (2 分 48 秒) |
+| 2 回目からの準備 | 0.7〜0.8 秒 (Core ML 5.8 秒) | 0.9〜1.0 秒 (Core ML 4.4 秒) |
+| Neural Engine が持つ量 | 4.05 GiB | 3.27 GiB |
+| 生成 (コードの質問、200 トークンまで) | **20.5〜21.9 トークン/秒** (Core ML 14.5) | **20.3〜20.7** (Core ML 15.7) |
+| 2041 / 2149 トークンのプロンプト | 4.0 秒 (Core ML 29.5 秒) | 1.8 秒 (Core ML 22.8 秒) |
+
+- Core ML では 2 本 (8 と 128 トークン) が Neural Engine のコンパイルのキャッシュ (約 3.5 GiB) に入らず、生成のプログラムが 8 トークンずつプロンプトを読む (`onePrograms`)。Core AI では重みを 1 回分しか持たずに 2 本とも持つので、プロンプトは 7〜13 倍速い
+- 生成の速さは 16.186 の短い塊の注意 (1 層 0.6〜1.0 ms) と、16.192、16.193 の分を含む
+- Qwen3.5-4B の 1 回目は、128 トークンの GDN の部品を含む 18 本 (関数 2 つの 9 本) のコンパイル。この日はディスクの空きが 7〜19 GiB で、macOS が Core AI の項目を消して何度もコンパイルし直した (12〜17 分)。1 回目の時間はこの影響を受けている
+- 部品ごとの照合 (new-model-checklist 3.5、`aicheck run -cpu -ref`、乱数の入力で Core ML の書き出しの同じ部品の milcpu と): Qwen3.5-4B の部品 1、5、9 は y のコサイン 0.999995〜0.999999。E4B の部品 1、4、8 は 0.998986、0.999544、0.999999。E4B の部品 1 と 4 は Core ML で動かしても 0.998981、0.996709 で、Core AI のせいではない
+- チェックポイントは HF の LFS の SHA-256 と一致。構造の照合は 16.88 (Qwen3.5-4B) と 16.65 (E4B) のまま
+
+残り: M1 と M3。handoff-coreai-chat.md のほかのモデル (gemma-4-E2B-it、LFM3-VL / Audio / Omni の符号器、Qwen3.5-2B、Qwen3-1.7B、PLaMo 3 Translate、d1) は試していない。電力量。
+
+### 16.192 Qwen3.5 の MTP の下書きを語彙の一部で (FR-Spec のように)、MTP の注意も短い塊で、プロファイルを段の数で分ける — 2026-11-14
+
+Qwen3.5-4B (M2、Core AI) のプロファイルを見直して、MTP の層の 1 ステップを 13.6 ms から 6.5 ms ほどにした。
+
+**プロファイルが MTP の層と混ざっていた** (`HWNPU_PROFILE`): `profile q=8` は 1 回 8 トークンのプログラムのステップを足していたが、MTP の層も 1 回 8 トークンで、モデルのステップ (9 部品) と MTP のステップ (2 部品) を一緒に平均していた。181 ステップのうちモデルは 59 で、部品 2〜8 は本当の 3 分の 1 に見え、部品 1 だけ MTP の出力層と混ざって大きく見えた。これを Neural Engine が持つ量 (4.8 GiB、M2 で全速と測ったのは 3.62 GiB) による読み直しと読みかけたが、MTP を読み込まなくても部品の時間は変わらなかった。プログラムを 1 回のトークン数と段の数で分けて足す (`profile q=8 (9 stages)`、`(2 stages)`)。
+
+**MTP の出力層を語彙の一部に** (`llm.Options.HeadRows`、`llm.SelectRows`、`chat.draftVocab`): MTP の層の出力層はモデルのもの (埋め込みと共有、24.8 万行) で、MTP の 1 ステップ 13.6 ms のうち 11.4 ms、モデルの 1 ステップごとに 2 回。下書きはモデルが確かめるので、語彙の一部にしても答えは変わらず、外のトークンが下書きされなくなるだけ (FR-Spec と同じ考え)。
+
+- 低い ID は英語の 95 %、Go のコードの 96 % を覆う (byte-level BPE は先に結合したものに小さい ID を振る) が、Qwen3.5 の日本語のトークンは語彙全体に散っていて、32768 で 65 %、131072 でも 81 %
+- 1 つ目の規則 (ID < 32768、かな、漢字 1 字。43618 行): MTP の 1 ステップは 5.7 ms になったが、採られた下書きが 148 のうち 82 → 67 に減り、語彙全体より遅かった (17.0〜17.3 対 17.4〜18.2 トークン/秒)。外れたのは ```` ``` ````、`**:`、`説明`、`計算` など。下書きが 1 つ外れるとその後の下書きも続かない
+- 今の規則 (`dv2`): 加えて漢字 2 字まで、ASCII の記号と空白だけのもの。74272 行 (30 %)。日本語 97 %、英語 96 %、コード 96 %、この答えは全部。採られた下書きは 80 (語彙全体 82)。MTP の部品 2 は 0.68 → 0.26 GiB、MTP の 1 ステップ 13.6 → 6.6〜6.9 ms、生成 17.4〜18.2 → 19.6〜20.1 トークン/秒 (16.191 の前の形で)。答えは語彙全体のときとバイト単位で同じ
+- 行の一覧は書き出しの `draft-vocab.json`。`mtpDrafter.token` が添字をトークンに戻す。Core AI の書き出しだけ。名前に規則を入れる (`qwen35-mtp-lut8-p8192-dv2-…`)
+
+**MTP の注意も短い塊で**: 16.186 の短い塊の注意 (`AddSmaller`) はモデルのプログラムにだけ足していて、MTP の層の注意は塊 8192 全体を読んでいた (1 回 2.8〜3.2 ms、モデルは 0.8〜1.0)。MTP の書き出しにも足すと MTP の 1 ステップ 8.4〜9.0 → 6.5〜6.8 ms、生成 19.2〜21.0 → 20.5〜21.9 トークン/秒。
+
+**shim の写しをなくす案は採らない**: 16.172 の測定で、7 MiB の入力を毎回同じ配列に写すと 7.7 ms、写さずに同じ配列なら 7.2 ms、呼び出し側のバッファの view は 10.7 ms、IOSurface の view は 8.3 ms。写しは呼び出しあたり 0.5 ms ほどで、Qwen3.5-4B の部品 (入出力 7.4 MiB) でなくせても 1 ステップ約 4.5 ms (4 %)。そのためには Go のバッファを shim の配列そのものにする必要がある。Core AI の no-copy は Metal のバッファの view だけで、view は遅かった。
+
+### 16.193 Qwen3.5 の Gated DeltaNet を塊の形で (状態を読み書きするのは塊に 3 回) — 2026-11-14
+
+Qwen3.5-4B のモデルの部品は約 49 GB/s で、Neural Engine の天井 (62 GB/s) まで 1 ステップ約 17 ms あった (M2、Core AI)。
+
+**原因は状態の読み書き**: `deltaRule` は 1 行ずつ `S = S * decay`、`k S`、`S += kᵀ δ`、`q S` と、値のヘッドの状態 (32 × 128 × 128、fp16 で 1 MiB) を 1 行に 5 回読み書きする。1 行 約 7 MiB、8 行で 56 MiB、24 層で 1 ステップ約 1.3 GB と、重み (4.25 GB) の 3 割になる。
+
+**塊の形** (`deltaRuleChunks`、flash-linear-attention の `chunk_gated_delta_rule`、WY 表現): 8 行の塊で、状態は `k S0` と `q S0` で読み、最後に 1 回書く。行の間の依存は 8 × 8 の行列にまとめる。G_t = g_1 + … + g_t (g は decay の対数) として
+
+- S_t = Γ_t S0 + Σ_{j≤t} exp(G_t − G_j) k_jᵀ u_j
+- (I + N) U = diag(β)(V − diag(Γ) K S0)、N_tj = β_t exp(G_t − G_j) k_t·k_j (j < t)
+- O = diag(Γ) Q S0 + (Q Kᵀ ⊙ exp(G_t − G_j)[j ≤ t]) U
+
+exp(G_t − G_j) は使うところでは 1 以下。対角より上は min(·, 0) にしてから exp して溢れないようにし、マスクで消す。パディングの行 (β 0、g 0) は状態を変えない。`delta=rows` で前の形に戻せる。`qwen35` の Revision 1 (名前が `qwen35-r1-…` になり、変換し直す)。
+
+**Neural Engine に載せるまで**
+- 最初の形は部品全体が Neural Engine から外れた (Core ML の配置で 503 演算すべて CPU、Core AI で `ane=false`、32 ms)
+- 規則だけの小さなプログラム (45 演算) は、形によらず CPU に置かれ、配置を調べても当てにならない。1 行ずつの規則のプログラム (100 演算、全部 Neural Engine) に塊の形を途中で切ったものを足し、配置が変わるところまで切った
+- 外れたのは **8 × 8 と 8 × 8 の行列積** (逆行列を (I − N)(I + N²)(I + N⁴) で作る)。k·kᵀ (内側 128) や (8 × 8)·(8 × 128) は載る。同じ変数の 2 乗が原因ではない (写しても転置しても外れる)
+- 逆行列を作らず、N が冪零なことを使って U = B − N(B − N(B − …)) と (8 × 8)·(8 × 128) の積 7 回で解く
+- 累積和 G と差 G_t − G_j は、g の行への定数の `linear` にした
+
+**結果**
+
+| | 1 行ずつ | 塊の形 |
+|---|---|---|
+| 部品 (層 7〜10、aicheck、入出力の写しを含む) | 9.51 ms | 8.23 ms |
+| その部品の初回のコンパイル | 15.8 秒 | 7.0 秒 |
+| milcpu とのコサイン (y、状態) | 0.999996、1.000000 | 0.999996、1.000000 |
+| モデルの 1 ステップ (q=8、9 部品) | 95.8〜97.8 ms (GDN の部品 9.6 ms) | 83〜89 ms (8.3 ms) |
+| プロンプト 128 トークン | 511 ms | 304〜344 ms |
+
+- GDN の部品は 0.46 GB を約 8.3 ms、約 56 GB/s で、入出力の写し (約 0.6 ms) を除くと天井に近い。出力層の部品は 0.73 GB を 11.3 ms (65 GB/s)
+- 貪欲法の答えは、1 行ずつの形と最後の文の 2 語が違う (足し算の順が違い、僅差のトークンが入れ替わる)。部品ごとの誤差は同じ
+- テスト: `TestDeltaChunks` (1、8、13、24 行で、1 行ずつの形と float64 の参照に合う)。ほかの qwen35 のテスト (KV キャッシュ、注意で分けた形、MTP) も塊の形で通る
+- Qwen3.5-0.8B / 2B と Intel の IR も同じ式になる (同じ MIL)。確かめたのは 4B の Core AI だけ
+
+**gemma-4-E4B-it に残りはない**: 部品は約 61 GB/s で天井、1 ステップ約 64 ms は重みの下限 (3.5 GB ÷ 62 GB/s ≈ 56 ms) と注意 (短い塊で 1 層 0.6 ms)。
+
+この日の Qwen3.5-4B (M2、Core AI): チェックポイントから書き出した最初の形 (短い塊の注意も 16.192、16.193 もなし) の 15.9 → **20.5〜21.9 トークン/秒**、プロンプト 2041 トークン 7.8 → 4.0 秒。
+
+### 16.194 変換の部品を並べて書く (コア数とメモリまで)、Core AI の書き出しは重みを全部メモリに持たない — 2026-11-14
+
+Hugging Face のチェックポイントから `.aimodel` (Core AI) などに変換するとき、部品 (プログラム) を 1 つずつ書いていた。部品の変換は 1 スレッドの処理 (MIL を組み、重みを量子化し、Core AI に下ろす) で、部品どうしは独立している。
+
+**並べて書く** (`console.Jobs`): Anima、Sana、Chroma、Qwen-Image の変換と `llm.ConvertAI` (hwnpu-chat と hwnpu-dev convert の Core AI) は、部品を全部並べてから一度に書く。並べる数は CPU のコア数と、使えるメモリ (Linux は MemAvailable、ほかは物理メモリの半分) の 3/4 を部品 1 つの見積もりで割った数の小さい方 (`console.Workers`)。`HWNPU_JOBS=N` で数を決める (`1` で前と同じ 1 つずつ)。チェックポイントは `ReadAt` で読むので部品どうしで共有できる。書き出しのファイルの並び、manifest は前と同じ。
+
+表示は端末なら数行: 全体のバー (`6/24 14s, 6 at a time`) と、書いている部品ごとに 1 行 (名前と秒)。全部終わったら消える (20 部品で 20 行にならない)。失敗した部品の行は残り、まだ始めていない部品は始めない。端末でなければ、部品が終わるごとに `[ 7/24] 名前 秒, 形式` を 1 行。
+
+**Core AI の書き出しのメモリ**: 部品 1 つ (Qwen-Image の DiT の組、出力 629 MB) を書くピークはヒープ 2.55 GiB、RSS 3.0 GB だった。重みは MIL を組むときに一時ファイル (`.milblob.tmp`) へ流しているが、`ailower` が下ろすときに全部読み戻して持ち (626 MB)、`mlirbc.Writer.Bytes` がファイル全体を 1 つの `[]byte` に組み立てていた (もう 1 回分、append で最大 2 倍)。
+
+- `mlirbc.Writer.Spill(f, keep)`: 重み (resource の blob) を `keep` バイトまではメモリに、その先は一時ファイル (`NAME.aimodel.blobs.tmp`) に書いて位置だけ持つ
+- `mlirbc.Writer.WriteTo`: resource の節はファイルの最後にあるので、前の節を書いてから blob を一時ファイルから順に流す。節の長さは blob の頭と詰め物を先に並べて求める。`Bytes` は `WriteTo` を使う (結果は同じ)
+- `ailower.WriteMany` / `WriteOne`: 下ろして `.aimodel` を書く。`main.hash` は書きながら。下ろし終わったら呼び出し側が `.milblob.tmp` を消す (`lowered`)。消さないと実行中の部品 1 つがディスクに部品 3 つ分を持ち、20 並べたら空き 25 GB のディスクが埋まった
+- `ailower.SpillKeep` は 512 MiB: 全部を一時ファイルにすると、ほぼ埋まった Btrfs (空き 9〜34 GB) では書いて読み戻す分だけ遅くなった。RAM ディスクでは全部を一時ファイルにしても前より速い
+
+**結果** (Ryzen AI、20 コア、59 GB、Qwen-Image-2.1 Turbo、coreai、lut6、続けて走らせた組で比べる)
+
+| | 時間 | ピークの RSS |
+|---|---|---|
+| 前 (1 つずつ、全部メモリ) | 2 分 16 秒 | 4.0 GB |
+| 6 並べ、全部メモリ | 65 秒 | 20 GB |
+| 6 並べ、重みを全部一時ファイル | 88 秒 (RAM ディスクで 54 秒、全部メモリは 61 秒) | 3.0 GB |
+| 6 並べ、512 MiB まではメモリ | 56 秒 | 5.4 GB |
+| **既定 (コアとメモリで決まる数)** | **50 秒** | **13.5 GB** |
+| 1 つずつ、重みを全部一時ファイル | 2 分 11 秒 | 0.86 GB |
+
+- ほか (全部メモリの版で): Anima-Turbo 1024 24 → 12 秒 (20 並べ)、Chroma1-Flash 512 2 分 21 秒 → 1 分 2 秒、Qwen3.5-0.8B の 6 部品 (hwnpu-dev convert) 5.7 → 2.1 秒
+- どれも 1 つずつ書いたものとバイト単位で同じ (metadata.json の creationDate を除く)。Sana は Gemma 2 が手元になく実物では試していない
+- 部品 1 つの見積もり: Anima 1 GiB、Sana 2 GiB、Chroma と Qwen-Image 2 GiB、`llm.ConvertAI` 4 GiB。16 GB の Mac (物理の半分の 3/4 = 6 GB) で Qwen-Image は 3 並べになる (全部メモリの見積もり 6 GiB では 1 つずつだった)。Mac では測っていない
+- Intel の OpenVINO IR (`ovlower`) はもとから定数を `.bin` に書きながら進む。AMD は Python の IRON の書き出し (チェックポイントは `np.memmap`、重みのイメージは `open_memmap`) で、ここは変えていない
+- 効果音 (`internal/sfx`) は重みを遅れて読み、部品ごとに `.done` を書くので、今回は並べていない
+
+### 16.195 `hwnpu-audio` を Mac では Core AI だけに (macOS 27 が要る)、どのモデルもチェックポイントから `.aimodel` に — 2026-11-14
 
 16.190 の `hwnpu-image` と同じく、`hwnpu-audio` も Mac では Core ML を Neural Engine に使わない。Core ML は CPU のインタプリタ (`--cpu`、ONNX Runtime の無い機械の pitch と notes) が読む書き出しだけに残し、変換の中間形式にもしない (`.mlpackage` を書いて下ろす段を経ない)。M3 (16 GB、macOS 27.2)。
 
 **決めたこと**
 - Mac の `hwnpu-audio` は Core AI だけで動く。Core AI が無い (macOS 26 以前) ときは「Core AI が要る、macOS 27」というエラー (`errNoCoreAI`)。`HWNPU_BACKEND=coreml` はほかのコマンドのために残っていることがあるので、Core AI に読み替える
 - どのモデルも Core AI のプログラムを直接書く: Magenta RealTime 2 (言語モデル 2 本、SpectroStream の復号と符号化、MusicCoCa の文と音)、MOSS-SoundEffect (文の符号器の部品、DiT の文脈と組、DAC の段)、Whisper (符号器、交差、復号器)、LFM3-Audio-2B の tts (テキスト部、depthformer、コーデック)、SwiftF0、Basic Pitch。書き出しはモデルのディレクトリの `coreai/`
+- tts の書き出しは、main で hwnpu-chat が移った形 (16.191) に合わせて `NAME.coreai` (テキスト部は `tts-…-q1-q64.coreai` に `q1.parts.json` と `q64.parts.json`)。ほかの音声のモデルは `coreai/` に `.aimodel`
 - tts のテキスト部の 1 トークンと 64 トークンのプログラムは、hwnpu-chat (16.185) と同じく同じ層の部品を 1 本の `.aimodel` の関数 2 つにする (`chat.ConvertShared`)。重みはディスクにも Core AI のキャッシュにも 1 回分 (2 部品で 0.81 + 0.82 GiB。Core ML は 4 本で 3.4 GB)
 - `generate --decoder-on gpu|cpu` を外した。16.134 で SpectroStream を Neural Engine に戻してから比べるためだけに残っていたもので、Core AI は計算するユニットを選べない (`GraphSource.Units` は Core ML だけ)
 
@@ -5411,20 +5527,20 @@ Qwen3 は 28 層すべてが注意なので、分けると層ごとに Neural En
 | generate (Magenta RealTime 2) | 1 分 12 秒 (読み込み 58 秒) | 曲調 0.3 秒、読み込み 0.1 秒 | 曲調 0.4 秒、読み込み 0.2 秒 | 実時間の 2.1 倍 (main と同じ)。全部 Neural Engine |
 | transcribe (Whisper large-v3-turbo) | 1 分 03 秒 (読み込み 55.5 秒) | 読み込み 0.1〜0.5 秒 | 0.5〜0.8 秒 | 3 つの WAV で main と同じ文 (大文字 1 つだけ違う)。30 秒の窓 0.53〜0.58 秒、Neural Engine 0.78 GiB (main と同じ) |
 | tts (LFM3-Audio-2B) | 1 分 07 秒 (変換 24 秒) | 読み込み 0.1 秒 | 4.3 秒 | 英語と日本語の声を Whisper に戻すと元の文 |
-| generate -m moss-soundeffect:8gb (MOSS-SoundEffect、lut8) | 変換 25 秒、文の符号器 34 秒、DiT と DAC の読み込み 3 分 07 秒 | — | — | 文の符号器と DiT は全部 Neural Engine。DAC の 5 段は Neural Engine のコンパイラーに落ちて GPU (下、16.192 で直した) |
+| generate -m moss-soundeffect:8gb (MOSS-SoundEffect、lut8) | 変換 25 秒、文の符号器 34 秒、DiT と DAC の読み込み 3 分 07 秒 | — | — | 文の符号器と DiT は全部 Neural Engine。DAC の 5 段は Neural Engine のコンパイラーに落ちて GPU (下、16.196 で直した) |
 
 - `TestCoreAIAgainstCPU` (`internal/music`、`HWNPU_MRT_COREAI=1`): Core ML の書き出しを CPU のインタプリタで動かしたものを参照に、Core AI と Core ML の Neural Engine を比べた。言語モデル (lut8) を CPU の貪欲法の 25 フレームに沿わせたロジットの KL (温度 1.3) は Core AI 0.0000 nats、Core ML 0.0003、一番ありそうなトークンが同じなのは 300 のうち 297 と 295。MusicCoCa の文の埋め込みは 5 つの文で最低のコサイン 0.999999 と 0.999997、SpectroStream の復号は 1.000000 と 0.999997。どれも Core AI の方が参照に近い
 - 曲調の 12 個の符号は、"disco funk" で Core AI と Core ML が 3 つ目から違った。MusicCoCa の残差ベクトル量子化は後の段ほど小さな差で選ぶ符号が変わる ("heavy metal" では main の Core ML も CPU の参照と 7 つ目から違う)。埋め込みのコサインが上のとおりなので、Core AI が外れているのではない
 - `tts` を手で変換したもの: `hwnpu-dev convert -backend coreai` の depthformer とコーデックを `--depth` と `--codec` に渡して動いた (テキスト部は Prepare の書き出し)
 - Whisper の `-v` の窓の言語が英語の音声でも `ja` と出る、長い英語の文の書き起こしに大文字が多いのは main の Core ML でも同じ (この変更とは別)
 
-**MOSS-SoundEffect の DAC が Core AI の Neural Engine で動かない**: 5 段とも `ANECCompile() FAILED: Codegen Error: Failed to HandleANELayer` で GPU に回った (この節の時点。16.192 で直した)。
+**MOSS-SoundEffect の DAC が Core AI の Neural Engine で動かない**: 5 段とも `ANECCompile() FAILED: Codegen Error: Failed to HandleANELayer` で GPU に回った (この節の時点。16.196 で直した)。
 
 残り: macOS 26 の Mac でのエラーの確かめ。M1 と Intel の Mac。テキスト部を `-backend coreai` で手で変換した形は動かしていない。Core ML との並べての比べ (sfx) はディスクの空きが足りず未。
 
-### 16.192 MOSS-SoundEffect の DAC を Core AI の Neural Engine に: sin、高さ方向の畳み込み、膨張を行に — 2026-11-14
+### 16.196 MOSS-SoundEffect の DAC を Core AI の Neural Engine に: sin、高さ方向の畳み込み、膨張を行に — 2026-11-14
 
-16.191 で残った MOSS-SoundEffect の DAC (5 段) を、全部 Core AI の Neural Engine で正しく動くようにした。M3 (16 GB、macOS 27.2)。比べる参照は、16.191 の前の DAC (snake の範囲の縮小を fp16 の丸めで) を CPU のインタプリタで fp16 に丸めながら動かしたもの (`HWNPU_CPU_F16=1`。この形は Core ML の Neural Engine で Python の参照と合っていた)。
+16.195 で残った MOSS-SoundEffect の DAC (5 段) を、全部 Core AI の Neural Engine で正しく動くようにした。M3 (16 GB、macOS 27.2)。比べる参照は、16.195 の前の DAC (snake の範囲の縮小を fp16 の丸めで) を CPU のインタプリタで fp16 に丸めながら動かしたもの (`HWNPU_CPU_F16=1`。この形は Core ML の Neural Engine で Python の参照と合っていた)。
 
 **参照の取り違え**: 最初は CPU のインタプリタ (`runner` の CPU の経路) をそのまま参照にして、GPU に回った段が合い (0.0017)、Neural Engine の段が違うと見ていた。しかし `runner` の CPU の経路は fp32 で計算し (`HWNPU_CPU_F16` がなければ丸めない)、snake の丸め `(v + 1536) - 1536` が丸めにならない。GPU も同じく丸めないので合って見えた。fp16 に丸める参照で見ると、CPU (fp32) の main の DAC は 1.44 も違う: **main の `hwnpu-audio generate -m sfx --cpu` の DAC は壊れていた**。aicheck は milcpu を `RoundF16` で動かすので、aicheck と自前の試験で結果が食い違ったのが手がかりになった
 
@@ -5449,4 +5565,3 @@ Qwen3 は 28 層すべてが注意なので、分けると層ごとに Neural En
 - 見つけ方の教訓: 参照の計算の精度 (fp32 か fp16 の丸めか) を決めてから比べる。小さなプログラムで再現できたら、同じ値の別の書き方 (高さ方向、行に並べる) を試す。チャンネルを分ける、明示の pad のような「形を変えるだけ」の書き換えは効かなかった (new-model-checklist 3.5)
 
 残り: 16 GB の既定 (文の符号器 fp16) の `moss-soundeffect:v2.0` は試していない (ディスクの空きが 10 GB で、fp16 の書き出しとそのキャッシュが入らない)。M1 で。人の耳での聞き比べ。
-

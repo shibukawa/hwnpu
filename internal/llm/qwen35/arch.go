@@ -15,8 +15,11 @@ var Arch = &llm.Arch{
 	Architectures: []string{"Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM"},
 	Format:        "lut8",
 	LastRow:       true,
-	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
+	// 1: the gated delta rule over chunks of rows (deltaRuleChunks)
+	Revision:   1,
+	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	Params: []llm.Param{
+		{Name: "delta", Default: "chunk", Usage: "the Gated DeltaNet's recurrence: chunk (over chunks of rows, the state read and written once a chunk) or rows (one row after the other, the state read and written five times a row)"},
 		{Name: "hidden-out", Default: "0", Usage: "1: a program with a KV cache also outputs h, the final hidden state of every row, which the MTP layer (-arch qwen35-mtp) reads for speculative decoding"},
 		{Name: "state-rows", Default: "0", Usage: "1: a program with a KV cache also outputs st_rec_N_rows, each row's k, v, beta and decay of the Gated DeltaNet layer N, so that the host keeps a beginning of a step's tokens without running them again (speculative decoding)"},
 	},
