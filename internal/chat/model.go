@@ -28,6 +28,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/palette"
+	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
 var hubURL = "https://huggingface.co/"
@@ -218,8 +219,8 @@ type Setup struct {
 	// Backend picks the device the programs are converted for and run on (llm.FindDevice): a
 	// device backend (coreml, coreai, levelzero, openvino) or a program format (coreml, intel);
 	// empty for HWNPU_BACKEND or the NPU found. coreai converts Core AI's programs (.aimodel, in
-	// coreai/) from the checkpoint, the parts of the same layers of the programs of one cache as
-	// the functions of one (llm.ConvertAI).
+	// an export NAME.coreai beside the checkpoint) from the checkpoint, the parts of the same
+	// layers of the programs of one cache as the functions of one (llm.ConvertAI).
 	Backend string
 	// Format is the weight format of the chat model's programs (llm.Options.Format); empty for the
 	// architecture's for the backend (llm.Arch.DefaultFormatFor). The encoders stay in fp16.
@@ -245,26 +246,38 @@ func TokenizerFiles(arch string) []string {
 	return []string{"tokenizer.json"}
 }
 
-// programDir is where the programs for a backend go in a model's directory: Core ML's next to the
-// checkpoint (as before), Intel's in intel/ and Core AI's in coreai/, so that one directory
-// serves all.
+// programDir is where the programs for a backend go in a model's directory: Core ML's and Core
+// AI's exports next to the checkpoint (as the image models' exports), Intel's in intel/, so that
+// one directory serves all.
 func programDir(dir, backend string) (string, error) {
-	if backend != llm.BackendIntel && backend != llm.BackendCoreAI {
+	if backend != llm.BackendIntel {
 		return dir, nil
 	}
-	d := filepath.Join(dir, backend)
+	d := filepath.Join(dir, "intel")
 	return d, os.MkdirAll(d, 0o755)
 }
 
-// programExt is the file name extension of a program for a backend.
+// programExt is the file name extension of a program for a backend. Core AI's programs are an
+// export, a directory NAME.coreai (as the image models'): a program's model.aimodel or its parts
+// and manifest model.parts.json (convert), or the programs of one cache together (convertShared).
 func programExt(backend string) string {
 	switch backend {
 	case llm.BackendIntel:
 		return ".xml"
 	case llm.BackendCoreAI:
-		return ".aimodel"
+		return ".coreai"
 	}
 	return ".mlpackage"
+}
+
+// doneFile is the file that says the program or export out is whole (cache.WriteDone): NAME.done
+// of a program NAME.mlpackage or NAME.xml, NAME.coreai.done of an export NAME.coreai (as the
+// image models' exports).
+func doneFile(out string) string {
+	if filepath.Ext(out) == ".coreai" {
+		return out + ".done"
+	}
+	return strings.TrimSuffix(out, filepath.Ext(out)) + ".done"
 }
 
 // targetName is what logs call the NPU the programs are for.
@@ -494,19 +507,16 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				name = fmt.Sprintf("c%d-%s", cache, name) // the functions of all the caches together
 			}
 			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s", pk, cache, p.seq, last))
-			missing = missing || !converted(out+programExt(backend))
+			if backend != llm.BackendCoreAI { // Core AI's are checked by their export below
+				missing = missing || !converted(out+programExt(backend))
+			}
 			outs, names, base = append(outs, out), append(names, name), base+"-"+name
 			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
 		}
 		tps = append(tps, tierProgs{outs, names, ps, base})
 	}
-	if missing {
-		if _, err := checkpoint(); err != nil {
-			return Config{}, err
-		}
-	}
+	var all tierProgs // a model split at its attention with tiers on Core AI: every tier's programs
 	if hybrid && backend == llm.BackendCoreAI {
-		var all tierProgs
 		all.base = filepath.Join(pdir, kind)
 		for _, tp := range tps {
 			all.outs, all.ps = append(all.outs, tp.outs...), append(all.ps, tp.ps...)
@@ -514,7 +524,19 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				all.names, all.base = append(all.names, n), all.base+"-"+n
 			}
 		}
-		pkgs, err := convertShared(ctx, c.ModelConfig, c.Weights, all.base, all.outs, all.names, all.ps, s.Log)
+		missing = !converted(all.base + programExt(backend))
+	} else if backend == llm.BackendCoreAI {
+		for _, tp := range tps {
+			missing = missing || !converted(tp.base+programExt(backend))
+		}
+	}
+	if missing {
+		if _, err := checkpoint(); err != nil {
+			return Config{}, err
+		}
+	}
+	if hybrid && backend == llm.BackendCoreAI {
+		pkgs, err := convertShared(ctx, c.ModelConfig, c.Weights, all.base, all.names, all.ps, s.Log)
 		if err != nil {
 			return Config{}, err
 		}
@@ -532,7 +554,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		case backend == llm.BackendCoreAI:
 			// the programs of one cache together, their parts of the same layers the functions
 			// of one Core AI program: the weights once on the disk and on the Neural Engine
-			if pkgs, err = convertShared(ctx, c.ModelConfig, c.Weights, base, outs, names, ps, s.Log); err != nil {
+			if pkgs, err = convertShared(ctx, c.ModelConfig, c.Weights, base, names, ps, s.Log); err != nil {
 				return Config{}, err
 			}
 		default:
@@ -572,15 +594,33 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if chunk > 0 {
 			mkind += fmt.Sprintf("-p%d", chunk)
 		}
+		// Core AI's drafts are of a part of the vocabulary (draftVocab), listed in the export
+		var rows []int32
+		if backend == llm.BackendCoreAI {
+			tok, err := tokenizer.Load(filepath.Join(s.Dir, TokenizerFiles(a.Name)[0]))
+			if err != nil {
+				return Config{}, err
+			}
+			if rows = draftVocab(tok); rows != nil {
+				mkind += "-" + draftVocabRule
+			}
+		}
 		out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d-last%s", mkind, context, mtpSeq, programExt(backend)))
 		if !converted(out) {
 			if _, err := checkpoint(); err != nil {
 				return Config{}, err
 			}
 		}
-		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: mtp, format: s.Format, seq: mtpSeq, cache: context, paged: chunk, lastRow: true}, s.Log)
+		path, err := convert(ctx, c.ModelConfig, c.Weights, out, program{backend: backend, arch: mtp, format: s.Format, seq: mtpSeq, cache: context, paged: chunk, lastRow: true, headRows: rows}, s.Log)
 		if err != nil {
 			return Config{}, err
+		}
+		if pm, ok := mm.(llm.Paged); ok && chunk > 0 {
+			// the layer's attention over shorter chunks too, as the model's (without weights):
+			// over the whole chunk it took 3 of its 9 ms a call (Qwen3.5-4B, docs/design.md 16.192)
+			if err := llm.AddSmaller(path, cmp.Or(ma.Param(llm.Options{}, "attn"), "grouped"), pm.PagedShape().Scale, shortestChunk(backend, s.Shortest)); err != nil {
+				return Config{}, err
+			}
 		}
 		c.MTP = []string{path}
 	}
@@ -857,6 +897,7 @@ type program struct {
 	kvOnly            bool     // llm.Options.KVOnly
 	codes             string   // llm.Options.Codes
 	formatFor         []string // llm.Options.FormatFor
+	headRows          []int32  // llm.Options.HeadRows, listed in a Core AI export (draftVocabFile)
 }
 
 // codesHash names a codes directory (llm.Options.Codes) by its index.json: the first 8 hex
@@ -874,7 +915,7 @@ func codesHash(dir string) (string, error) {
 // and returns its path. NAME.done, written last, holds the path (relative to it, cache.WriteDone), so that a conversion cut off is
 // done again.
 func convert(ctx context.Context, config, weights, out string, p program, log io.Writer) (string, error) {
-	done := strings.TrimSuffix(out, filepath.Ext(out)) + ".done"
+	done := doneFile(out)
 	if p, ok := cache.ReadDone(done); ok {
 		return p, nil
 	}
@@ -921,12 +962,27 @@ func convert(ctx context.Context, config, weights, out string, p program, log io
 		}
 		hits = codes.Hits()
 	}
-	path, err := llm.Convert(a, model, w, out, "any", p.parts, opts, log)
+	dst := out
+	if p.backend == llm.BackendCoreAI { // an export: its program, or its parts and manifest, inside
+		if err := freshDir(out); err != nil {
+			return "", err
+		}
+		dst = filepath.Join(out, "model.aimodel")
+	}
+	path, err := llm.Convert(a, model, w, dst, "any", p.parts, opts, log)
 	if err != nil {
 		return "", err
 	}
 	if codes != nil && log != nil {
 		fmt.Fprintf(log, "-codes: %d weights took the chosen tables (%d in %s)\n", codes.Hits()-hits, codes.Len(), p.codes)
+	}
+	if len(p.headRows) > 0 {
+		if p.backend != llm.BackendCoreAI {
+			return "", fmt.Errorf("chat: a part of the vocabulary is listed in a Core AI export alone")
+		}
+		if err := writeDraftVocab(out, p.headRows); err != nil {
+			return "", err
+		}
 	}
 	return path, cache.WriteDone(done, path)
 }
@@ -948,46 +1004,38 @@ func programOptions(a *llm.Arch, model llm.Model, p program) (llm.Options, error
 		opts.Quant = "kmeans-minmax"
 	}
 	opts.Seq, opts.Cache, opts.Paged, opts.LastRow, opts.KVOnly = p.seq, p.cache, p.paged, p.lastRow, p.kvOnly
-	opts.Codes, opts.FormatFor = p.codes, p.formatFor
+	opts.Codes, opts.FormatFor, opts.HeadRows = p.codes, p.formatFor, p.headRows
 	for k, v := range p.params {
 		opts.Params[k] = v
 	}
 	return opts, nil
 }
 
-// convertShared writes the programs ps of one model for Core AI together (llm.ConvertAI), the
-// parts of the same layers as the functions of one Core AI program base.partK.aimodel, unless
-// they are there, and returns the paths of their manifests (outs[i].parts.json). Each has its
-// NAME.done as convert's; all are written again when one is missing, since they share files.
-func convertShared(ctx context.Context, config, weights, base string, outs, names []string, ps []program, log io.Writer) ([]string, error) {
-	done := func(i int) string { return outs[i] + ".done" }
-	read := func() ([]string, bool) {
-		var paths []string
-		for i := range outs {
-			p, ok := cache.ReadDone(done(i))
-			if !ok {
-				return nil, false
-			}
-			paths = append(paths, p)
-		}
-		return paths, true
+// convertShared writes the programs ps of one model for Core AI together (llm.ConvertAI) into the
+// export base.coreai, the parts of the same layers as the functions of one Core AI program
+// model.partK.aimodel and each program's manifest NAME.parts.json (names[i]), unless they are
+// there, and returns the manifests' paths. base.coreai.done, written last, says they are; a
+// conversion cut off is done again, as a whole since the programs share files.
+func convertShared(ctx context.Context, config, weights, base string, names []string, ps []program, log io.Writer) ([]string, error) {
+	export := base + programExt(llm.BackendCoreAI)
+	done := doneFile(export)
+	manifests := make([]string, len(names))
+	for i, n := range names {
+		manifests[i] = filepath.Join(export, n+".parts.json")
 	}
-	if paths, ok := read(); ok {
-		return paths, nil
+	if _, ok := cache.ReadDone(done); ok {
+		return manifests, nil
 	}
-	unlock, err := cache.Lock(ctx, base, filepath.Base(base), log)
+	unlock, err := cache.Lock(ctx, export, filepath.Base(export), log)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	if paths, ok := read(); ok { // another process converted them meanwhile
-		return paths, nil
+	if _, ok := cache.ReadDone(done); ok { // another process converted them meanwhile
+		return manifests, nil
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
-	}
-	for i := range outs {
-		os.Remove(done(i))
 	}
 	a, model, err := llm.LoadConfig(config, ps[0].arch)
 	if err != nil {
@@ -998,30 +1046,36 @@ func convertShared(ctx context.Context, config, weights, base string, outs, name
 		return nil, err
 	}
 	defer w.Close()
+	if err := freshDir(export); err != nil {
+		return nil, err
+	}
 	var progs []llm.AIProgram
 	for i, p := range ps {
 		opts, err := programOptions(a, model, p)
 		if err != nil {
 			return nil, err
 		}
-		progs = append(progs, llm.AIProgram{Out: outs[i], Name: names[i], Parts: p.parts, Options: opts})
+		progs = append(progs, llm.AIProgram{Out: filepath.Join(export, names[i]), Name: names[i], Parts: p.parts, Options: opts})
 	}
 	p := ps[0]
 	if p.paged > 0 {
-		fmt.Fprintf(log, "converting %s for the Neural Engine (Core AI, %s; split at its attention, a context of %d held by the host in chunks of %d, %s per call); this takes a few minutes\n", filepath.Base(base), progs[0].Options.Format, p.cache, p.paged, strings.Join(names, " and "))
+		fmt.Fprintf(log, "converting %s for the Neural Engine (Core AI, %s; split at its attention, a context of %d held by the host in chunks of %d, %s per call); this takes a few minutes\n", filepath.Base(export), progs[0].Options.Format, p.cache, p.paged, strings.Join(names, " and "))
 	} else {
-		fmt.Fprintf(log, "converting %s for the Neural Engine (Core AI, %s; cache %d, %s per call); this takes a few minutes\n", filepath.Base(base), progs[0].Options.Format, p.cache, strings.Join(names, " and "))
+		fmt.Fprintf(log, "converting %s for the Neural Engine (Core AI, %s; cache %d, %s per call); this takes a few minutes\n", filepath.Base(export), progs[0].Options.Format, p.cache, strings.Join(names, " and "))
 	}
-	paths, err := llm.ConvertAI(a, model, w, base, "any", progs, log)
+	paths, err := llm.ConvertAI(a, model, w, filepath.Join(export, "model"), "any", progs, log)
 	if err != nil {
 		return nil, err
 	}
-	for i, path := range paths {
-		if err := cache.WriteDone(done(i), path); err != nil {
-			return nil, err
-		}
+	return paths, cache.WriteDone(done, paths[0])
+}
+
+// freshDir makes dir an empty directory: what a conversion cut off left in an export is removed.
+func freshDir(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return err
 	}
-	return paths, nil
+	return os.MkdirAll(dir, 0o755)
 }
 
 // repoName is a repository's name: NAME of OWNER/NAME or OWNER/NAME@REVISION.

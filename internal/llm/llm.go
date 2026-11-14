@@ -149,6 +149,10 @@ type Options struct {
 	// after each. For a program that reads prompts, of which only the logits after the last token
 	// are used: the output layer is the widest of the model (Arch.LastRow).
 	LastRow bool
+	// HeadRows, when not empty, keeps these rows of the output layer alone, in this order: the
+	// program's logits are of these tokens (a draft's vocabulary, chat's draftVocab). Their count
+	// must be a multiple of the table group for the lutN formats.
+	HeadRows []int32
 	// KVOnly, with Paged, builds only the layers that write the caches (CacheWriters): the
 	// program reads tokens into the caches and outputs no logits. For reading prompts, all of a
 	// prompt but its last tokens, which the program that generates reads; a model whose later
@@ -181,4 +185,43 @@ type Options struct {
 	Backend string
 	// Params holds the architecture's own settings by Param name; missing ones take the default.
 	Params map[string]string
+}
+
+// SelectRows is w with the matrix name read as its rows rows alone, in this order (Get), for an
+// output layer of a vocabulary's part (Options.HeadRows). Rows reads the whole matrix's rows as w
+// does, so that an embedding table of the same name looks up tokens as before.
+func SelectRows(w Weights, name string, rows []int32) Weights {
+	return &selectRows{Weights: w, name: name, rows: rows}
+}
+
+type selectRows struct {
+	Weights
+	name string
+	rows []int32
+}
+
+func (s *selectRows) Get(name string) ([]float32, []int, error) {
+	if name != s.name {
+		return s.Weights.Get(name)
+	}
+	var out []float32
+	width := 0
+	for i := 0; i < len(s.rows); {
+		// runs of consecutive rows in one read
+		j := i + 1
+		for j < len(s.rows) && s.rows[j] == s.rows[j-1]+1 {
+			j++
+		}
+		r, err := s.Weights.Rows(name, int(s.rows[i]), int(s.rows[j-1])+1)
+		if err != nil {
+			return nil, nil, err
+		}
+		if width == 0 {
+			width = len(r) / (j - i)
+			out = make([]float32, 0, width*len(s.rows))
+		}
+		out = append(out, r...)
+		i = j
+	}
+	return out, []int{len(s.rows), width}, nil
 }

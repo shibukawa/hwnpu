@@ -1190,7 +1190,7 @@ func (s *Session) runPaged(st *step, valid int) error {
 		return err
 	}
 	oneMasks := false // the masks of the last token alone, made for the first layer that needs them
-	prof := profStep(q)
+	prof := profStep(profKeyOf(p))
 	var t0 time.Time
 	for i := 0; ; i++ {
 		if prof != nil {
@@ -1531,7 +1531,7 @@ func rows(p Program) int {
 // row returns the logits after token i of the step just run on p (row i of its output).
 func (s *Session) row(p Program, i int) []float32 {
 	if profile.on {
-		defer profRows(p.InShape["x"][1], time.Now())
+		defer profRows(profKeyOf(p), time.Now())
 	}
 	logits := make([]float32, s.vocab)
 	hwnpu.DecodeF16(logits, p.Out["y"][2*i*s.vocab:2*(i+1)*s.vocab])

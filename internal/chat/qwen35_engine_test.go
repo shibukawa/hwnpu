@@ -93,7 +93,7 @@ func TestPrepareQwen35(t *testing.T) {
 	// row adds to the Gated DeltaNet's state (-sr, state-rows)
 	for i, name := range []string{"sr-c96-q8", "c96-q96-last"} {
 		p, q := c.Packages[i], []int{8, 96}[i]
-		if want := fmt.Sprintf("qwen35-fp16-p96-%s.parts.json", name); filepath.Base(p) != want {
+		if want := fmt.Sprintf("qwen35-r1-fp16-p96-%s.parts.json", name); filepath.Base(p) != want {
 			t.Errorf("package %s, want %s", filepath.Base(p), want)
 		}
 		man, err := llm.ReadManifest(p)

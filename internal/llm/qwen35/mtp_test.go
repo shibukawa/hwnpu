@@ -239,3 +239,40 @@ func mtpWeights(c *MTP) llm.Synthetic {
 	}
 	return w
 }
+
+// With HeadRows, the MTP program's logits are those of the rows kept, in their order: the whole
+// vocabulary's at those tokens.
+func TestMTPHeadRows(t *testing.T) {
+	c := tinyMTP(t)
+	w := mtpWeights(c)
+	ids := []int32{3, 1, 4, 1, 5, 9, 2, 6, 5, 3}
+	x, hid := mtpInputs(t, c, w, ids)
+	feed := func(ins []mlpackage.Feature) map[string]milcpu.Tensor {
+		return map[string]milcpu.Tensor{"x": {Shape: ins[0].Shape, Data: x}, "hid": {Shape: ins[1].Shape, Data: hid}}
+	}
+	p, ins, outs, _ := buildProgram(t, c, w, llm.Options{Seq: len(ids) - 1, Format: "fp16"})
+	all, err := p.Run(feed(ins), milcpu.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []int32
+	for r := int32(c.VocabSize) - 1; r >= 0; r -= 3 { // out of order and with gaps
+		rows = append(rows, r)
+	}
+	p, ins, outs2, _ := buildProgram(t, c, w, llm.Options{Seq: len(ids) - 1, Format: "fp16", HeadRows: rows})
+	part, err := p.Run(feed(ins), milcpu.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outs2[0].Shape[len(outs2[0].Shape)-1] != len(rows) {
+		t.Fatalf("output %v for %d rows", outs2[0].Shape, len(rows))
+	}
+	a, b := all[outs[0].Name].Data, part[outs2[0].Name].Data
+	for s := range len(ids) - 1 {
+		for i, r := range rows {
+			if got, want := b[s*len(rows)+i], a[s*c.VocabSize+int(r)]; math.Abs(float64(got-want)) > 1e-3*math.Max(1, math.Abs(float64(want))) {
+				t.Fatalf("row %d, token %d: %g, the whole head's %g", s, r, got, want)
+			}
+		}
+	}
+}

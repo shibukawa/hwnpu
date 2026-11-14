@@ -78,10 +78,15 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	base := filepath.Join(pdir, fmt.Sprintf("embed%s-%s", a.Rev(), format))
 	for _, seq := range s.Seqs {
 		out := filepath.Join(pdir, fmt.Sprintf("embed%s-%s-s%d", a.Rev(), format, seq))
-		missing = missing || !converted(out+programExt(backend))
+		if backend != llm.BackendCoreAI { // Core AI's are checked by their export below
+			missing = missing || !converted(out+programExt(backend))
+		}
 		name := fmt.Sprintf("s%d", seq)
 		outs, names, base = append(outs, out), append(names, name), base+"-"+name
 		ps = append(ps, program{backend: backend, seq: seq, format: format})
+	}
+	if backend == llm.BackendCoreAI {
+		missing = !converted(base + programExt(backend))
 	}
 	if missing {
 		if _, err := checkpoint(); err != nil {
@@ -90,7 +95,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	}
 	if backend == llm.BackendCoreAI {
 		// the lengths as the functions of one Core AI program, the weights once
-		if c.Packages, err = convertShared(ctx, c.ModelConfig, c.Weights, base, outs, names, ps, s.Log); err != nil {
+		if c.Packages, err = convertShared(ctx, c.ModelConfig, c.Weights, base, names, ps, s.Log); err != nil {
 			return EmbedConfig{}, err
 		}
 	} else {
