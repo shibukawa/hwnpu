@@ -49,7 +49,7 @@ G = iron_q4.GROUP
 
 CALIB = [CALIB_DATA / "wikitext2-train.txt", CALIB_DATA / "wiki40b-ja-calib.txt"]
 EVAL = [CALIB_DATA / "wikitext2-test.txt", CALIB_DATA / "wiki40b-ja-eval.txt",
-        Path(__file__).resolve().parents[2] / "README.md"]
+        Path(__file__).resolve().parents[2] / "testdata/texts/readme.md"]
 
 
 def texts(paths, tok, length: int, count: int, skip_chars: int = 0):

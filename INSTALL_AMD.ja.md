@@ -239,7 +239,7 @@ AMD の Windows 用 NPU ドライバは、ドライバが入れる XRT の C++ �
 3. `build\Release\xrtshim.dll` を hwnpu の実行ファイルと同じ場所に置きます（または `HWNPU_XRTSHIM` で場所を指定します）。`xrt_coreutil.dll` は `System32\AMD` かドライバストアから探します。別の場所なら `HWNPU_XRT_CORE` で指定します。
 4. hwnpu を Windows 向けにビルドし（`GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...`）、`hwnpu-dev info` を実行します。バックエンド `xrt` の NPU が出れば使えます。
 
-モデルの書き出しは Linux で行い（IRON と mlir-aie。README を参照）、書き出したディレクトリを持っていきます。`hwnpu-chat -m DIR` で同じように動きます。Linux との違いは次のとおりです。
+モデルの書き出しは Linux で行い（IRON と mlir-aie。[USAGE_LLM_AMD.ja.md](USAGE_LLM_AMD.ja.md) を参照）、書き出したディレクトリを持っていきます。`hwnpu-chat -m DIR` で同じように動きます。Linux との違いは次のとおりです。
 
 - 電力は、ドライバが XRT の electrical の情報に NPU の電力を出していればそれを読みます。
 - 制御コードの置き場は XRT が確保します。Linux 7.0 ではデバイスのヒープが 64 MiB で、hwnpu 自身のドライバ経路と同じです。Windows では違うかもしれません。
