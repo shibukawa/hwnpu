@@ -192,6 +192,11 @@ type Setup struct {
 	// conversation, so the context can be the model's longest. 0 for paged.DefaultChunk when the
 	// model can be split, PagedOff for never. A model split at its attention has no tiers.
 	Paged int
+	// Shortest is the shortest chunk of the attention programs besides Paged's (llm.AddSmaller):
+	// the host holds the cache in the shortest that covers the conversation, 1024, 2048, 4096...
+	// up to Paged, as a call costs a fixed part and a part in proportion to its chunk. 0 for the
+	// backend's (shortestChunk), PagedOff for none.
+	Shortest int
 	// Draft makes the program that generates take this many tokens per call instead of 1, for
 	// checking the drafts of speculative decoding (Engine.Draft); 0 or 1 for none. It is one
 	// program either way: the Neural Engine takes about 100 ms to switch between programs, so
@@ -359,7 +364,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	// beginning of the drafts does not run them again (llm.StateReplayer): another program,
 	// named -sr
 	stateRows := s.Draft > 1 && a.Param(llm.Options{}, "state-rows") != ""
-	chunk, context := pagedChunk(model, s.Paged), s.Context
+	chunk, context := pagedChunk(model, s.Paged, backend), s.Context
 	if context <= 0 {
 		context = DefaultContext
 		if pm, ok := model.(llm.Paged); ok && chunk > 0 && pm.MaxContext() > 0 {
@@ -399,7 +404,15 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		progs[0] = prog{seq: s.Draft}
 	}
 	tiers := s.Tiers
-	if chunk > 0 {
+	switch {
+	case chunk > 0 && backend == llm.BackendCoreAI:
+		// whole programs with short caches (inside) before the one split at its attention: a
+		// step in fewer calls while the conversation is short (wholeTiers)
+		if slices.Contains(tiers, TierAuto) {
+			gen, _ := programBytes(model, format, false)
+			tiers = wholeTiers(model, gen)
+		}
+	case chunk > 0:
 		// the cost follows the tokens used, not the cache: no shorter caches to run on
 		if len(tiers) > 0 && !slices.Contains(tiers, TierAuto) && s.Log != nil {
 			fmt.Fprintf(s.Log, "no cache tiers for %s: split at its attention, a step costs in proportion to the conversation, not to the context of %d\n", c.Name, context)
@@ -440,13 +453,31 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			fmt.Fprintf(s.Log, "%s's programs hold %.2f GiB on the Neural Engine, over the %.1f GiB an M1 holds before every call slows down about 12 times: expect it to be slow on this machine (a smaller -format holds less)\n", c.Name, float64(held)/(1<<30), float64(hold)/(1<<30))
 		}
 	}
+	// the programs of each cache: each one's file without its extension, function name (Core AI)
+	// and settings. A model split at its attention with tiers has whole programs (their caches
+	// inside) for the shorter caches: on Core AI all of them are written together, so that the
+	// whole programs' parts share the weights of the split ones' in one Core AI program
+	type tierProgs struct {
+		outs, names []string
+		ps          []program
+		base        string
+	}
+	hybrid := chunk > 0 && len(caches) > 0
+	var tps []tierProgs
+	missing := false
 	for _, cache := range append(caches, context) {
-		// each program's file without its extension, function name (Core AI) and settings
 		var outs, names []string
 		var ps []program
-		missing := false
-		base := filepath.Join(pdir, fmt.Sprintf("%s-c%d", kind, cache))
-		for i, p := range progs {
+		tkind, tchunk, tprogs := kind, chunk, progs
+		if hybrid && cache < context {
+			tkind, tchunk = strings.Replace(kind, fmt.Sprintf("-p%d", chunk), "", 1), 0
+			tprogs = []prog{progs[0]}
+			if len(progs) > 1 {
+				tprogs = append(tprogs, prog{seq: min(prefillSeq, cache), lastRow: a.LastRow})
+			}
+		}
+		base := filepath.Join(pdir, fmt.Sprintf("%s-c%d", tkind, cache))
+		for i, p := range tprogs {
 			last := ""
 			switch {
 			case p.lastRow:
@@ -454,29 +485,57 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			case p.kvOnly:
 				last = "-kv"
 			}
-			pk, pp, name := kind, params, fmt.Sprintf("q%d%s", p.seq, last)
+			pk, pp, name := tkind, params, fmt.Sprintf("q%d%s", p.seq, last)
 			if i == 0 && stateRows {
-				pk, pp, name = kind+"-sr", maps.Clone(params), "sr-"+name
+				pk, pp, name = tkind+"-sr", maps.Clone(params), "sr-"+name
 				pp["state-rows"] = "1"
+			}
+			if hybrid {
+				name = fmt.Sprintf("c%d-%s", cache, name) // the functions of all the caches together
 			}
 			out := filepath.Join(pdir, fmt.Sprintf("%s-c%d-q%d%s", pk, cache, p.seq, last))
 			missing = missing || !converted(out+programExt(backend))
 			outs, names, base = append(outs, out), append(names, name), base+"-"+name
-			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: chunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
+			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
 		}
-		if missing {
-			if _, err := checkpoint(); err != nil {
-				return Config{}, err
+		tps = append(tps, tierProgs{outs, names, ps, base})
+	}
+	if missing {
+		if _, err := checkpoint(); err != nil {
+			return Config{}, err
+		}
+	}
+	if hybrid && backend == llm.BackendCoreAI {
+		var all tierProgs
+		all.base = filepath.Join(pdir, kind)
+		for _, tp := range tps {
+			all.outs, all.ps = append(all.outs, tp.outs...), append(all.ps, tp.ps...)
+			for _, n := range tp.names {
+				all.names, all.base = append(all.names, n), all.base+"-"+n
 			}
 		}
+		pkgs, err := convertShared(ctx, c.ModelConfig, c.Weights, all.base, all.outs, all.names, all.ps, s.Log)
+		if err != nil {
+			return Config{}, err
+		}
+		for i := range tps {
+			n := len(tps[i].outs)
+			tps[i].outs, pkgs = pkgs[:n], pkgs[n:] // the manifests in place of the files
+		}
+	}
+	for ti, tp := range tps {
+		outs, names, ps, base := tp.outs, tp.names, tp.ps, tp.base
 		var pkgs []string
-		if backend == llm.BackendCoreAI {
+		switch {
+		case hybrid && backend == llm.BackendCoreAI:
+			pkgs = outs
+		case backend == llm.BackendCoreAI:
 			// the programs of one cache together, their parts of the same layers the functions
 			// of one Core AI program: the weights once on the disk and on the Neural Engine
 			if pkgs, err = convertShared(ctx, c.ModelConfig, c.Weights, base, outs, names, ps, s.Log); err != nil {
 				return Config{}, err
 			}
-		} else {
+		default:
 			for i, p := range ps {
 				path, err := convert(ctx, c.ModelConfig, c.Weights, outs[i]+programExt(backend), p, s.Log)
 				if err != nil {
@@ -485,11 +544,16 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				pkgs = append(pkgs, path)
 			}
 		}
-		if chunk > 0 {
+		if chunk > 0 && (!hybrid || ti == len(tps)-1) {
 			for _, path := range pkgs {
 				// a conversion from before the two-level attention gets its mass program, which
 				// has no weights, instead of being converted again
-				if err := llm.AddMass(path, cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape().Scale); err != nil {
+				form, scale := cmp.Or(a.Param(llm.Options{}, "attn"), "grouped"), model.(llm.Paged).PagedShape().Scale
+				if err := llm.AddMass(path, form, scale); err != nil {
+					return Config{}, err
+				}
+				// the attention over shorter chunks, also without weights
+				if err := llm.AddSmaller(path, form, scale, shortestChunk(backend, s.Shortest)); err != nil {
 					return Config{}, err
 				}
 			}
@@ -690,15 +754,76 @@ func pruneCache(dir string, logf func(string, ...any)) {
 	}
 }
 
+// shortestChunk is the shortest chunk of the attention programs of a model split at its attention
+// besides its own (Setup.Shortest; llm.AddSmaller), 0 for none: want, else the backend's. On an
+// M3's Neural Engine with Core AI and LFM3-1.7B, a call over a chunk of 1024 took 0.50 ms a
+// layer, 2048 0.63, 4096 0.93 and 8192 1.49: a conversation of 150 tokens went from 44.1 to 53.7
+// tokens a second. Core ML puts the attention of 8 tokens a call over chunks under 4096 on the
+// CPU (the chain leaves such a program out), so it starts at 4096: 42.4 to 47.9. Intel's NPU is
+// not measured (docs/design.md 16.186).
+func shortestChunk(backend string, want int) int {
+	switch {
+	case want == PagedOff:
+		return 0
+	case want > 0:
+		return want
+	case backend == llm.BackendCoreAI:
+		return 1024
+	case backend == "" || backend == llm.BackendCoreML:
+		return 4096
+	}
+	return 0
+}
+
+// wholeLayerBytes is the most bytes of keys and values a layer of a whole program's caches holds
+// (wholeTiers): a call copies all of them into Core AI's arrays and attends over them. On an M3's
+// Neural Engine with Core AI, LFM3-1.7B (8 kv heads of 64, 2 KiB a position) generated 64, 62, 59
+// and 52 tokens a second whole with caches of 512 to 4096 against 55 split at its attention, and
+// Qwen3-0.6B (8 of 128, 4 KiB) 68, 53, 35 and 20 against 34 to 40: both even at about 4 MiB a
+// layer (docs/design.md 16.188).
+const wholeLayerBytes = 4 << 20
+
+// wholeHold is the most weights the whole program and those split at their attention hold on
+// the Neural Engine together (wholeTiers): each has its own Core AI programs (in one with the
+// others, or with a whole program of another cache, a whole program ran at half its speed,
+// docs/design.md 16.188). An M1 slows down about 12 times past 2.9 GiB (16.118).
+const wholeHold = 5 << 29 // 2.5 GiB
+
+// wholeTiers is the cache of the whole program (its caches inside, none of its attention on the
+// host) a model split at its attention runs on with Core AI while the conversation is short,
+// before it moves to the one split at its attention (decode.Session.Migrate): the longest of 512,
+// 1024, 2048 and 4096 whose keys and values a layer are at most wholeLayerBytes. None for a model
+// whose weights (gen bytes) twice are over wholeHold.
+func wholeTiers(model llm.Model, gen int64) []int {
+	pm, ok := model.(llm.Paged)
+	if !ok || 2*gen > wholeHold || len(pm.PagedLayers()) == 0 {
+		return nil
+	}
+	sh := pm.PagedShape()
+	row := 2 * 2 * sh.KVHeads * sh.HeadDim // fp16 keys and values of a position
+	longest := 0
+	for _, c := range []int{512, 1024, 2048, 4096} {
+		if row > 0 && c*row <= wholeLayerBytes {
+			longest = c
+		}
+	}
+	if longest == 0 {
+		return nil
+	}
+	return []int{longest}
+}
+
 // pagedChunk is the chunk length to split the model at its attention with (Setup.Paged), 0 for
 // none: the model must be Paged (LFM3 and its VL, Audio and Omni checkpoints, Gemma 4), on any
-// NPU, and an Unpaged one (Qwen3) is split only when Setup.Paged asks.
-func pagedChunk(model llm.Model, want int) int {
+// NPU, and an Unpaged one (Qwen3) is split only when Setup.Paged asks, but with Core AI, where it
+// runs faster split (with the attention over shorter chunks, shortestChunk; docs/design.md
+// 16.187).
+func pagedChunk(model llm.Model, want int, backend string) int {
 	pm, ok := model.(llm.Paged)
 	if !ok || want < 0 || len(pm.PagedLayers()) == 0 {
 		return 0
 	}
-	if _, whole := model.(llm.Unpaged); whole && want == 0 {
+	if _, whole := model.(llm.Unpaged); whole && want == 0 && backend != llm.BackendCoreAI {
 		return 0 // split only when told (Qwen3)
 	}
 	return cmp.Or(want, paged.DefaultChunk)

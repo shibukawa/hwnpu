@@ -204,6 +204,7 @@ type tier struct {
 	progs  []decode.Program
 	cache  int
 	sparse decode.Sparse // the two-level attention of its sessions, a Bucket of 0 for none
+	limit  int           // the longest sequence of its sessions split at their attention, 0 for theirs (decode.Session.Limit)
 }
 
 var (
@@ -331,8 +332,12 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			if x := t.progs[len(t.progs)-1].InShape["x"]; len(x) > 1 {
 				perCall = fmt.Sprintf("%d tokens per call, ", x[1])
 			}
+			if cs := ch.Chunks(); len(cs) > 1 {
+				parts += fmt.Sprintf(", attention over chunks of %d to %d", cs[0], cs[len(cs)-1])
+			}
 			bar.Done(fmt.Sprintf("%s, %s%s, %s", console.Duration(bar.Elapsed()), perCall, parts, where))
 		}
+		commonSmaller(t.progs)
 		s, err := t.session(cm)
 		if err != nil {
 			t.close()
@@ -369,8 +374,25 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	}
 	logf("loaded %s in %s, %s, %s", name, console.Duration(time.Since(t0)), programs, where)
 	paged := ""
-	if ds, ok := e.sess.(*decode.Session); ok && ds.Paged() > 0 {
-		paged = e.fitMemory(ds, mem.Physical(), logf)
+	if last := e.tiers[len(e.tiers)-1]; last.chains[0].Paged() > 0 {
+		// the tier split at its attention, which whole programs with short caches may come
+		// before: its sessions' cache within the memory there is
+		ds, ok := e.sess.(*decode.Session)
+		if e.ti != len(e.tiers)-1 {
+			var err error
+			if ds, err = last.session(e.model.(llm.Cached)); err != nil {
+				e.Close()
+				return nil, err
+			}
+			defer ds.Close()
+			ok = true
+		}
+		if ok {
+			paged = e.fitMemory(ds, mem.Physical(), logf)
+			if n := ds.Cache(); n < last.progs[0].Context {
+				last.limit = n
+			}
+		}
 	}
 	if c.PromptDir != "" {
 		last := e.tiers[len(e.tiers)-1]
@@ -415,11 +437,16 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 	if w, ok := mem.NPUWired(); wired && ok && w > wired0 {
 		// a program Core ML has just compiled comes onto the Neural Engine at its first call
 		// (an M3: 0.27 of 2.43 GiB after the load, all of it after the first question)
+		// (the functions of one Core AI program share its weights: each program once)
 		var weights int64
+		seen := map[string]bool{}
 		for _, t := range e.tiers {
 			for _, ch := range t.chains {
 				for _, p := range ch.Parts() {
-					weights += p.WeightBytes
+					if file, _ := llm.SplitFunction(p.Path); !seen[file] {
+						seen[file] = true
+						weights += p.WeightBytes
+					}
 				}
 			}
 		}
@@ -534,13 +561,42 @@ func (t *tier) session(cm llm.Cached) (*decode.Session, error) {
 	// the soft cap of the logits, where the host applies it, goes on the few that sampling looks
 	// at (Sampling.softcap)
 	s.SetRawLogits(true)
-	if t.sparse.Bucket > 0 {
-		if err := s.SetSparse(t.sparse); err != nil {
-			s.Close()
-			return nil, fmt.Errorf("chat: %s: %w", filepath.Base(t.chains[0].Parts()[0].Path), err)
-		}
+	if err := t.paged(s); err != nil {
+		s.Close()
+		return nil, err
 	}
 	return s, nil
+}
+
+// paged gives a session of the tier, or one moved to it, the tier's two-level attention and
+// limit.
+func (t *tier) paged(s *decode.Session) error {
+	if t.sparse.Bucket > 0 {
+		if err := s.SetSparse(t.sparse); err != nil {
+			return fmt.Errorf("chat: %s: %w", filepath.Base(t.chains[0].Parts()[0].Path), err)
+		}
+	}
+	if t.limit > 0 {
+		if err := s.Limit(t.limit); err != nil {
+			return fmt.Errorf("chat: %s: %w", filepath.Base(t.chains[0].Parts()[0].Path), err)
+		}
+	}
+	return nil
+}
+
+// commonSmaller keeps the attention programs over shorter chunks (decode.Program.Smaller) that
+// every program of a tier has: the chain leaves out one the NPU does not take all of, and the
+// programs of one session must attend over the same chunks.
+func commonSmaller(progs []decode.Program) {
+	count := map[int]int{}
+	for _, p := range progs {
+		for _, a := range p.Smaller {
+			count[a.Chunk]++
+		}
+	}
+	for i := range progs {
+		progs[i].Smaller = slices.DeleteFunc(slices.Clone(progs[i].Smaller), func(a *decode.Attention) bool { return count[a.Chunk] < len(progs) })
+	}
 }
 
 func (t *tier) close() {
@@ -594,6 +650,11 @@ func (e *Engine) room(n int) (bool, error) {
 		}
 		for _, p := range t.progs[1:] {
 			if err := e.sess.Add(p); err != nil {
+				return false, err
+			}
+		}
+		if ds, ok := e.sess.(*decode.Session); ok && t.progs[0].RunPart != nil {
+			if err := t.paged(ds); err != nil {
 				return false, err
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -42,6 +43,10 @@ type Manifest struct {
 	// two-level attention (decode.Sparse, paged.BuildMass), of a model split at its attention.
 	// Conversions before it have none (AddMass).
 	Mass *PartRecord `json:"mass,omitempty"`
+	// Smaller are attention programs like Attention over shorter chunks, shortest first, each
+	// chunk (PartRecord.Chunk) dividing the next's and Paged (AddSmaller): the host holds its
+	// cache in the shortest that covers the sequence (decode.Program.Smaller).
+	Smaller []PartRecord `json:"smaller,omitempty"`
 	// KVOnly marks a model split at its attention converted with Options.KVOnly: its parts end
 	// with the last layer that writes a cache, and the program outputs no logits.
 	KVOnly bool `json:"kv_only,omitempty"`
@@ -77,6 +82,17 @@ type PartRecord struct {
 	Output      FeatureRecord   `json:"output"`
 	// Outputs besides y: a program with a KV cache outputs the new keys, values and windows.
 	State []FeatureRecord `json:"state_outputs,omitempty"`
+}
+
+// Chunk is the positions of the chunk an attention program without weights attends over (its
+// input k, (1, kv_heads, chunk, head_dim)), 0 for another program.
+func (r PartRecord) Chunk() int {
+	for _, in := range r.Inputs {
+		if in.Name == "k" && len(in.Shape) == 4 {
+			return in.Shape[2]
+		}
+	}
+	return 0
 }
 
 // FeatureRecord describes an input or output.
@@ -416,6 +432,8 @@ func WriteManifest(path string, m *Manifest) error {
 			*r = &a[0]
 		}
 	}
+	m.Smaller = slices.Clone(m.Smaller)
+	relative(m.Smaller)
 	js, _ := json.MarshalIndent(m, "", "  ")
 	return os.WriteFile(path, append(js, '\n'), 0o644)
 }
@@ -440,6 +458,7 @@ func ReadManifest(path string) (*Manifest, error) {
 		}
 	}
 	absolute(m.Parts)
+	absolute(m.Smaller)
 	for _, r := range []*PartRecord{m.Attention, m.Mass} {
 		if r != nil {
 			r.Path = filepath.Join(filepath.Dir(path), r.Path)
