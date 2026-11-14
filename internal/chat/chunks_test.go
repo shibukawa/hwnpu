@@ -124,3 +124,112 @@ func TestShorterChunks(t *testing.T) {
 		t.Errorf("relative error %g against the programs without them", worst)
 	}
 }
+
+// hybridPaths converts a tiny LFM3 as a whole program with a cache of 16 (its caches inside) and
+// split at its attention in chunks of 32 with a cache of 64, each for 1 and 4 tokens per call: on
+// Core AI the four programs together (llm.ConvertAI).
+func hybridPaths(t *testing.T, backend string) (cfg *lfm3.Config, w llm.Weights, whole, split []string) {
+	t.Helper()
+	cfg, err := lfm3.ParseConfig([]byte(tinyLFM3))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = llm.NewSynthetic(cfg)
+	dir := t.TempDir()
+	type prog struct {
+		name string
+		opts llm.Options
+	}
+	var ps []prog
+	for _, q := range []int{1, 4} {
+		ps = append(ps, prog{fmt.Sprintf("w-q%d", q), llm.Options{Seq: q, Cache: 16, Format: "fp16", Backend: backend, Params: map[string]string{"post-scale": "1"}}})
+	}
+	for _, q := range []int{1, 4} {
+		ps = append(ps, prog{fmt.Sprintf("p-q%d", q), llm.Options{Seq: q, Cache: 64, Paged: 32, Format: "fp16", Backend: backend, Params: map[string]string{"post-scale": "1"}}})
+	}
+	var paths []string
+	if backend == llm.BackendCoreAI {
+		var aps []llm.AIProgram
+		for _, p := range ps {
+			aps = append(aps, llm.AIProgram{Out: filepath.Join(dir, p.name), Name: p.name, Options: p.opts})
+		}
+		if paths, err = llm.ConvertAI(lfm3.Arch, cfg, w, filepath.Join(dir, "m"), "none", aps, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		for _, p := range ps {
+			path, err := llm.Convert(lfm3.Arch, cfg, w, filepath.Join(dir, p.name+".mlpackage"), "none", 0, p.opts, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			paths = append(paths, path)
+		}
+	}
+	return cfg, w, paths[:2], paths[2:]
+}
+
+// checkMigrate steps a session of the whole programs to 14 tokens, moves it to the programs split
+// at their attention (decode.Session.Migrate) and goes on to 50, against a session split from the
+// start, and returns the largest relative error of its logits.
+func checkMigrate(t *testing.T, dev *hwnpu.Device, backend string) float64 {
+	t.Helper()
+	ctx := context.Background()
+	cfg, w, whole, split := hybridPaths(t, backend)
+	sess, c1, err := runner.OpenSession(ctx, dev, whole, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c1.Close() })
+	ref, c2, err := runner.OpenSession(ctx, dev, split, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c2.Close() })
+	next, c3, err := runner.OpenPrograms(ctx, dev, split)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c3.Close() })
+	worst, pos := 0.0, 0
+	step := func(n int) {
+		var embs [][]float32
+		for i := range n {
+			v, _ := llm.Embed(w, cfg, []int32{int32((pos + i) * 7 % cfg.VocabSize)})
+			embs = append(embs, v)
+		}
+		pos += n
+		got, err := sess.Step(embs)
+		if err != nil {
+			t.Fatalf("at %d: %v", pos, err)
+		}
+		want, err := ref.Step(embs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		worst = math.Max(worst, relErr(got, want))
+	}
+	for _, n := range []int{4, 4, 1, 4, 1} {
+		step(n)
+	}
+	if err := sess.Migrate(next[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.Add(next[1]); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{4, 1, 4, 4, 4, 1, 4, 4, 4, 4, 2} {
+		step(n)
+	}
+	if sess.Pos() != 50 || sess.Paged() != 32 {
+		t.Fatalf("at %d, chunks of %d: want 50 and 32", sess.Pos(), sess.Paged())
+	}
+	return worst
+}
+
+// A sequence begun on a whole program with a short cache goes on on the programs split at their
+// attention with the logits of a sequence split from the start, on the CPU interpreter.
+func TestMigrateToPaged(t *testing.T) {
+	if worst := checkMigrate(t, nil, ""); worst > 2e-2 {
+		t.Errorf("relative error %g against the programs split from the start", worst)
+	}
+}

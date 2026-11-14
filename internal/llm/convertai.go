@@ -100,17 +100,28 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 	}
 	// the parts by the layer they begin at: a program's parts of the same first layer have the
 	// same weights, or (the program that writes the caches alone) the first of them
-	// (a part of no layers, NoLayers, is a group of its own)
+	// (a part of no layers, NoLayers, is a group of its own). Whole programs (their caches
+	// inside) beside programs split at their attention have groups of their own, by cache: in one
+	// Core AI program with the whole programs of a cache of 256, Qwen3-0.6B's of 1024 ran at half
+	// the speed it has alone (docs/design.md 16.188)
 	type member struct{ prog, part int }
 	type key struct {
 		start int
 		some  bool // the part has layers
+		whole int // the cache of a program not split at its attention, beside one that is
 	}
 	var starts []key
 	groups := map[key][]member{}
+	var paged bool
+	for _, p := range progs {
+		paged = paged || p.Options.Paged > 0
+	}
 	for i, plan := range plans {
 		for j, p := range plan {
-			k := key{p.Start, p.Layers != NoLayers}
+			k := key{p.Start, p.Layers != NoLayers, 0}
+			if paged && progs[i].Options.Paged == 0 {
+				k.whole = progs[i].Options.Cache
+			}
 			if _, ok := groups[k]; !ok {
 				starts = append(starts, k)
 			}
@@ -118,6 +129,9 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 		}
 	}
 	slices.SortFunc(starts, func(x, y key) int {
+		if x.whole != y.whole {
+			return y.whole - x.whole // the whole programs' first, longest cache first
+		}
 		if x.start != y.start {
 			return x.start - y.start
 		}

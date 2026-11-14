@@ -601,6 +601,9 @@ func (s *Session) Pos() int { return s.pos }
 // (a cache shorter than the longest) keeps its length and is copied as is; the other caches move
 // row by row to the same positions, whether the old or the new one is in chunks.
 func (s *Session) Migrate(np Program) error {
+	if s.chunks == nil && np.RunPart != nil {
+		return s.migratePaged(np)
+	}
 	if s.chunks != nil || np.RunPart != nil {
 		return fmt.Errorf("decode: a program split at its attention has no tiers to move to")
 	}
@@ -670,6 +673,110 @@ func (s *Session) Migrate(np Program) error {
 	}
 	s.progs, s.t, s.kv = []step{{p: np, q: x[1]}}, nt, nkv
 	return nil
+}
+
+// migratePaged moves a session of a whole program, its caches inside, to np, a program of the
+// same model split at its attention (the next tier: a whole program with a short cache runs a
+// step in fewer calls, and the one split at its attention costs in proportion to the
+// conversation past it). The rows of a cache that holds every position go into the chunks the
+// session holds, or into a ring of np's at position mod its length; a ring of the same length
+// is copied as is, and so are the windows and states. np becomes the session's only program.
+func (s *Session) migratePaged(np Program) error {
+	x, ok := np.InShape["x"]
+	if !ok || len(x) != 3 || x[2] != s.hidden {
+		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
+	}
+	if np.NoLogits || !logitsShape(np.OutShape["y"], rows(np), s.vocab) {
+		return fmt.Errorf("decode: no output y (1, %d, %d)", rows(np), s.vocab)
+	}
+	if _, ok := s.m.(llm.Paged); !ok {
+		return fmt.Errorf("decode: the program is split at its attention, the model cannot be")
+	}
+	if c := llm.HostSoftcap(np.Meta); c != s.softcap {
+		return fmt.Errorf("decode: the programs leave different soft caps of the logits to the host (%g and %g)", s.softcap, c)
+	}
+	nkv, nt, err := caches(np)
+	if err != nil {
+		return err
+	}
+	if nt < s.t {
+		return fmt.Errorf("decode: the new program caches %d tokens, fewer than the session's %d", nt, s.t)
+	}
+	if err := s.checkLookups(np); err != nil {
+		return err
+	}
+	first := s.progs[0].p
+	for name, in := range first.In {
+		if llm.HeldInput(name) {
+			out := np.In[name]
+			if len(out) != len(in) {
+				return fmt.Errorf("decode: %s has shape %v in the new program, %v in the session", name, np.InShape[name], first.InShape[name])
+			}
+			copy(out, in)
+		}
+	}
+	old := s.kv
+	pos := s.pos
+	s.progs, s.kv, s.t = []step{{p: np, q: x[1]}}, nkv, nt
+	s.chunks = map[string][]Buf{}
+	s.chunk = s.chunkFor(pos)
+	for i := range s.kv {
+		if s.kv[i].chunk > 0 {
+			s.kv[i].chunk = s.chunk
+		}
+	}
+	for i := range s.kv {
+		nc := &s.kv[i]
+		var c *kvCache
+		for j := range old {
+			if old[j].out == nc.out {
+				c = &old[j]
+			}
+		}
+		if c == nil {
+			return fmt.Errorf("decode: the session has no cache %s for the new program", strings.TrimSuffix(nc.out, "_new"))
+		}
+		if c.heads != nc.heads || c.d != nc.d {
+			return fmt.Errorf("decode: %s has %d heads of %d in the new program, %d of %d in the session", nc.out, nc.heads, nc.d, c.heads, c.d)
+		}
+		if !c.long && (nc.chunk > 0 || nc.total != c.total) {
+			return fmt.Errorf("decode: the ring %s holds %d in the session, the new program's %d", c.parts[0], c.total, nc.total)
+		}
+		if !c.long { // a ring of the same length
+			for _, part := range nc.parts {
+				clear(np.In[part])
+			}
+			copy(np.In[nc.parts[0]], first.In[c.parts[0]])
+			continue
+		}
+		for _, part := range nc.parts {
+			clear(np.In[part])
+		}
+		// the positions before the session's, each head's row where the new cache holds it
+		for p := 0; p < pos; p++ {
+			j, slot := c.locate(p)
+			from, L := first.In[c.parts[j]], c.lens[j]
+			np2 := p
+			if !nc.long {
+				np2 %= nc.total
+			}
+			nj, nslot := nc.locate(np2)
+			var to []byte
+			if nc.chunk > 0 {
+				if to, err = s.part(nc, nj, true); err != nil {
+					return err
+				}
+			} else {
+				to = np.In[nc.parts[nj]]
+			}
+			nL := nc.span(nj)
+			for h := 0; h < c.heads; h++ {
+				o, no := (h*L+slot)*2*c.d, (h*nL+nslot)*2*c.d
+				copy(to[no:no+2*c.d], from[o:o+2*c.d])
+			}
+		}
+	}
+	return s.progs[0].checkPaged(s)
 }
 
 // locate gives the chunk that holds a position of the cache and its row there.
