@@ -236,7 +236,10 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 func loadAttention(ctx context.Context, c *Chain, path string) (*attention, error) {
 	a := &attention{dev: c.dev}
 	var err error
-	if a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units}); err != nil {
+	loaded := console.LoadingPart(llm.PartBytes(path))
+	a.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units})
+	loaded(err == nil)
+	if err != nil {
 		return a, fmt.Errorf("chain: the attention program (%s): %w", path, err)
 	}
 	a.placement = a.g.Placement()
@@ -284,7 +287,10 @@ func loadAttention(ctx context.Context, c *Chain, path string) (*attention, erro
 func loadMass(ctx context.Context, c *Chain, path string) (*mass, error) {
 	ms := &mass{}
 	var err error
-	if ms.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units}); err != nil {
+	loaded := console.LoadingPart(llm.PartBytes(path))
+	ms.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: path, Units: c.units})
+	loaded(err == nil)
+	if err != nil {
 		return nil, fmt.Errorf("chain: the mass program (%s): %w", path, err)
 	}
 	ms.placement = ms.g.Placement()
@@ -432,7 +438,11 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 	var err error
 	for i, lp := range list {
 		p := &Part{PartRecord: lp}
-		if p.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: lp.Path, Units: c.units}); err != nil {
+		// the load's bar goes by the parts loaded and the time of the ones before
+		loaded := console.LoadingPart(llm.PartBytes(lp.Path))
+		p.g, err = c.gr.Compile(ctx, hwnpu.GraphSource{Path: lp.Path, Units: c.units})
+		loaded(err == nil)
+		if err != nil {
 			t.close()
 			return nil, fmt.Errorf("chain: part %d (%s): %w", i, lp.Path, err)
 		}

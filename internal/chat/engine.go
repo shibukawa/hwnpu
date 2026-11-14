@@ -303,7 +303,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			if console.Profile {
 				label += " (" + filepath.Base(pkg) + ")" // the file, which the profile keeps
 			}
-			bar := console.NewBar(c.Log, fmt.Sprintf("  [%d/%d] %s", loaded, total, label))
+			bar := console.NewLoadBar(c.Log, fmt.Sprintf("  [%d/%d] %s", loaded, total, label), llm.ProgramBytes(pkg))
 			var ch *chain.Chain
 			if i == 0 {
 				ch, err = chain.Open(ctx, e.dev, pkg)
@@ -311,7 +311,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 				ch, err = t.chains[0].Share(ctx, e.dev, pkg)
 			}
 			if err != nil {
-				bar.Done("failed")
+				bar.Failed("failed")
 				t.close()
 				e.Close()
 				return nil, err

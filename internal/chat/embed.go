@@ -197,10 +197,10 @@ func LoadEmbedder(ctx context.Context, c EmbedConfig) (*Embedder, error) {
 	}
 	logf("loading %s onto %s: %d programs, up to a minute or two (%s)", e.Name, llm.DeviceName(e.dev), len(c.Packages), compileNote(e.dev))
 	for i, pkg := range c.Packages {
-		bar := console.NewBar(c.Log, fmt.Sprintf("  [%d/%d] %s", i+1, len(c.Packages), filepath.Base(pkg)))
+		bar := console.NewLoadBar(c.Log, fmt.Sprintf("  [%d/%d] %s", i+1, len(c.Packages), filepath.Base(pkg)), llm.ProgramBytes(pkg))
 		ch, err := chain.Open(ctx, e.dev, pkg)
 		if err != nil {
-			bar.Done("failed")
+			bar.Failed("failed")
 			e.Close()
 			return nil, err
 		}
