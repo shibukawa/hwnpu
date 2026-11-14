@@ -81,3 +81,38 @@ func TestShorten(t *testing.T) {
 		t.Errorf("%q", got)
 	}
 }
+
+// TestBarNested draws only the bar started last while it goes on: the one before, drawn in turn
+// with it on the same line, flickered. After it is done, the one before draws again.
+func TestBarNested(t *testing.T) {
+	var b liveBuffer
+	outer := NewBar(&b, "decoding")
+	outer.Set(0.5, "VAE stage 3/6")
+	// the bars write under liveLines' lock: read under it too
+	written := func() string {
+		liveLines.Lock()
+		defer liveLines.Unlock()
+		return b.String()
+	}
+	inner := NewBar(&b, "  loading vae_s3")
+	n := len(written())
+	time.Sleep(350 * time.Millisecond)
+	during := written()[n:]
+	inner.Done("1.2s, all on the NPU")
+	n = len(written())
+	time.Sleep(250 * time.Millisecond)
+	after := written()[n:]
+	outer.Done("in 2s")
+	if bytes.Contains([]byte(during), []byte("decoding")) {
+		t.Errorf("the outer bar drew while the inner one went on: %q", during)
+	}
+	if !bytes.Contains([]byte(during), []byte("loading vae_s3")) {
+		t.Errorf("the inner bar did not draw: %q", during)
+	}
+	if !bytes.Contains([]byte(after), []byte("VAE stage 3/6")) {
+		t.Errorf("the outer bar did not draw again: %q", after)
+	}
+	if !bytes.Contains([]byte(b.String()), []byte("\r  loading vae_s3 1.2s, all on the NPU\x1b[K\n")) {
+		t.Errorf("the inner bar's result is not left: %q", b.String())
+	}
+}

@@ -11,12 +11,15 @@ import (
 
 // Bar is a line of progress: on a terminal, the label, a spinner, a bar, the share done, the
 // seconds since it started and a detail, redrawn ten times a second until Done, which leaves the
-// label and its result. Elsewhere it writes only the line Done gives.
+// label and its result. Elsewhere it writes only the line Done gives. A bar or spinner started
+// while one is drawn (a program loaded during "decoding") takes the line over until it is done,
+// then the one before goes on drawing on the next line: two redrawing the same line in turn flicker.
 type Bar struct {
 	w     io.Writer
 	label string
 	live  bool
 	start time.Time
+	line  *liveLine
 
 	mu     sync.Mutex
 	frac   float64 // < 0: not known (no bar, the spinner alone)
@@ -35,6 +38,7 @@ func NewBar(w io.Writer, label string) *Bar {
 		return b
 	}
 	b.done, b.exited = make(chan struct{}), make(chan struct{})
+	b.line = pushLine()
 	b.draw(0)
 	go func() {
 		defer close(b.exited)
@@ -70,7 +74,7 @@ func (b *Bar) Done(result string) {
 	if b.live {
 		close(b.done)
 		<-b.exited
-		fmt.Fprintf(b.w, "\r%s %s\x1b[K\n", b.label, result)
+		b.line.end(func() { fmt.Fprintf(b.w, "\r%s %s\x1b[K\n", b.label, result) })
 		return
 	}
 	fmt.Fprintf(b.w, "%s %s\n", b.label, result)
@@ -95,7 +99,47 @@ func (b *Bar) draw(i int) {
 		// a narrow terminal shortens the label first: the bar and how far it is are what to see
 		label = shorten(label, max(n-1-columnsIn(s.String()), 16))
 	}
-	io.WriteString(b.w, oneLine(b.w, "\r"+label+s.String()))
+	b.line.draw(func() { io.WriteString(b.w, oneLine(b.w, "\r"+label+s.String())) })
+}
+
+// liveLines are the bars and spinners being drawn, the last started last: only it draws, so
+// that one started inside another does not redraw the same line in turn with it.
+var liveLines struct {
+	sync.Mutex
+	stack []*liveLine
+}
+
+// liveLine is a place in liveLines.
+type liveLine struct{ _ byte } // not of size 0, whose pointers may all be equal
+
+func pushLine() *liveLine {
+	l := new(liveLine)
+	liveLines.Lock()
+	liveLines.stack = append(liveLines.stack, l)
+	liveLines.Unlock()
+	return l
+}
+
+// draw runs write when l is the last started, the writes of all lines one at a time.
+func (l *liveLine) draw(write func()) {
+	liveLines.Lock()
+	defer liveLines.Unlock()
+	if n := len(liveLines.stack); n > 0 && liveLines.stack[n-1] == l {
+		write()
+	}
+}
+
+// end takes l out of liveLines and runs write, the last of the line.
+func (l *liveLine) end(write func()) {
+	liveLines.Lock()
+	defer liveLines.Unlock()
+	for i, x := range liveLines.stack {
+		if x == l {
+			liveLines.stack = append(liveLines.stack[:i], liveLines.stack[i+1:]...)
+			break
+		}
+	}
+	write()
 }
 
 // columnsIn is the columns s takes.
