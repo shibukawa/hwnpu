@@ -56,7 +56,10 @@ const (
 type Setup struct {
 	Dir, Repo string
 	// Format is the depthformer's weight format (lut8 by default); the other programs are fp16.
-	Format  string
+	Format string
+	// Backend is the program format (llm.Options.Backend): Core ML packages (the default, what
+	// the CPU interpreter runs), Core AI's programs (coreai, kept in Dir/coreai) or OpenVINO IR
+	// for Intel's NPU (kept in Dir/intel).
 	Backend string
 	Log     io.Writer
 	// Text prepares MusicCoCa's text side (styles from texts), AudioStyle its audio side
@@ -117,11 +120,14 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 			return p, err
 		}
 	}
-	// Intel's NPU reads OpenVINO IR (kept in Dir/intel) and no lookup tables: lut8 is int8
-	dir, ext := s.Dir, ".mlpackage"
-	if s.Backend == llm.BackendIntel {
-		format = llm.IntelFormat(format)
-		dir, ext = filepath.Join(s.Dir, "intel"), ".xml"
+	// Core AI's programs are kept in Dir/coreai; Intel's NPU reads OpenVINO IR (kept in
+	// Dir/intel) and no lookup tables: lut8 is int8
+	dir, ext := s.Dir, llm.ProgramExt(s.Backend)
+	if s.Backend == llm.BackendIntel || s.Backend == llm.BackendCoreAI {
+		if s.Backend == llm.BackendIntel {
+			format = llm.IntelFormat(format)
+		}
+		dir = filepath.Join(s.Dir, s.Backend)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return p, err
 		}
@@ -252,7 +258,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, p Paths) (*Generator, error) {
 }
 
 // OpenOn is Open with SpectroStream's decoder and encoder on the Core ML units given ("gpu",
-// "cpu"; "": the Neural Engine).
+// "cpu"; "": the Neural Engine). Core AI takes no units: its programs run on the Neural Engine.
 func OpenOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string) (*Generator, error) {
 	g := &Generator{}
 	var err error

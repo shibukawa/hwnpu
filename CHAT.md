@@ -276,19 +276,19 @@ go run ./cmd/hwnpu-dev convert -arch lfm3-audio-encoder -frames 3000 -format fp1
 `hwnpu-audio tts --lang en -o out.wav "Hello from the Neural Engine."` speaks a text into a WAV file (24 kHz) with LFM3-Audio-2B (`-m speech`): the first run downloads it into the models' directory (shared with hwnpu-chat's LFM3-Audio-2B), converts the programs below by itself, in 8 bit tables, and writes the tables it reads (`speech-tables.safetensors`), so that later runs need no checkpoint. To convert them yourself instead: convert the text model with a KV cache and `-hidden-out 1` (it then outputs its final hidden state as well), the depthformer (`-arch lfm3-depthformer`) and the codec decoder of `audio_tokenizer/` (`-codec-frames`). Spoken chat answers are not supported yet. Not yet checked on the real checkpoint (docs/design.md, 16.30).
 
 ```bash
-go run ./cmd/hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
+go run ./cmd/hwnpu-dev convert -backend coreai -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev convert -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.mlpackage
+go run ./cmd/hwnpu-dev convert -backend coreai -arch lfm3-depthformer -format fp16 -config DIR/config.json -weights DIR/model.safetensors -o DIR/depth.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-dev convert -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.mlpackage
+go run ./cmd/hwnpu-dev convert -backend coreai -codec-frames 64 -format fp16 -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -o DIR/codec.aimodel
 ```
 
 ```bash
-go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.mlpackage --depth DIR/depth.mlpackage --codec DIR/codec.mlpackage --lang en -o out.wav "Hello from the Neural Engine."
+go run ./cmd/hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.parts.json --depth DIR/depth.aimodel --codec DIR/codec.aimodel --lang en -o out.wav "Hello from the Neural Engine."
 ```
 
 ## 6. Use it from OpenCode

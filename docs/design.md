@@ -5387,3 +5387,40 @@ Qwen3 は 28 層すべてが注意なので、分けると層ごとに Neural En
 **画像生成** (既定の Anima-Turbo を `--backend` なしで、1024²、種 1): `anima-turbo-v1.1-1024x1024-int8-int8-g4-q512-v3.coreai` を作り、20 本とも Neural Engine。初回は 25 分 (変換 13 秒、DiT の組 1 本 3 分 12 秒)、2 回目から 1 分 00 秒 (読み込み 0.8 秒、1 ステップ 7.0 秒)。main の Core ML は 1 ステップ 6.5 秒だが、キャッシュから追い出されていてコンパイルし直しに 18 分かかった (16.176 と同じ)。最後の潜在のコサインは 0.979 (PSNR 21.3 dB) で同じ絵 (16.169 の M3 では 0.971)。Sana は 16.189。Qwen-Image-2.1-Turbo (512²、狐、種 1) も `.coreai` の書き出し (16.181 の lut6 の関数 2 つの DiT、16.184 の VAE のタイルと DiT の入れ替え) で全部 Neural Engine: 初回 12 分 32 秒 (文の符号器は Core AI のキャッシュに当たり、DiT の組 1 本約 1 分)、2 回目から **38 秒** (1 ステップ 3.5 秒)。16.184 の Core ML の書き出しを下ろした形 (lut4) は 1 分 04 秒、1 ステップ 4.1〜4.6 秒
 
 残り: macOS 26 の Mac でのエラーの確かめ (この M1 は 27)。Anima と Chroma の `.coreai` の書き出しは大きさごとに別で、16.177 の自動のまとめ (Core ML の書き出しを下ろすときだけ) が効かない。Sana のように 1 つの書き出しの関数にするのは次の仕事。Chroma の `.coreai` の書き出しを M1 で (チェックポイントを消しているため変換できず、試していない)。Intel の Mac。M2 と M3 での画像を読むモデルの初回。
+
+### 16.191 `hwnpu-audio` を Mac では Core AI だけに (macOS 27 が要る)、どのモデルもチェックポイントから `.aimodel` に — 2026-11-14
+
+16.190 の `hwnpu-image` と同じく、`hwnpu-audio` も Mac では Core ML を Neural Engine に使わない。Core ML は CPU のインタプリタ (`--cpu`、ONNX Runtime の無い機械の pitch と notes) が読む書き出しだけに残し、変換の中間形式にもしない (`.mlpackage` を書いて下ろす段を経ない)。M3 (16 GB、macOS 27.2)。
+
+**決めたこと**
+- Mac の `hwnpu-audio` は Core AI だけで動く。Core AI が無い (macOS 26 以前) ときは「Core AI が要る、macOS 27」というエラー (`errNoCoreAI`)。`HWNPU_BACKEND=coreml` はほかのコマンドのために残っていることがあるので、Core AI に読み替える
+- どのモデルも Core AI のプログラムを直接書く: Magenta RealTime 2 (言語モデル 2 本、SpectroStream の復号と符号化、MusicCoCa の文と音)、MOSS-SoundEffect (文の符号器の部品、DiT の文脈と組、DAC の段)、Whisper (符号器、交差、復号器)、LFM3-Audio-2B の tts (テキスト部、depthformer、コーデック)、SwiftF0、Basic Pitch。書き出しはモデルのディレクトリの `coreai/`
+- tts のテキスト部の 1 トークンと 64 トークンのプログラムは、hwnpu-chat (16.185) と同じく同じ層の部品を 1 本の `.aimodel` の関数 2 つにする (`chat.ConvertShared`)。重みはディスクにも Core AI のキャッシュにも 1 回分 (2 部品で 0.81 + 0.82 GiB。Core ML は 4 本で 3.4 GB)
+- `generate --decoder-on gpu|cpu` を外した。16.134 で SpectroStream を Neural Engine に戻してから比べるためだけに残っていたもので、Core AI は計算するユニットを選べない (`GraphSource.Units` は Core ML だけ)
+
+**仕組み** (`cmd/hwnpu-audio/backend.go`)
+- `audioDevice`: Mac では `HWNPU_BACKEND` が空、`coreml`、`coreai` のどれでも Core AI のデバイス。`audioFormat`: 変換する形式 (Mac は `coreai`、Intel は `intel`)。`openAudioDevice`: デバイスを開き形式を返す。tts は `speech.Config.Device` で Core AI のデバイスを開く (これまでは `llm.OpenDevice(ctx, "")` で Core ML だった)
+- `music.WriteProgram` に `coreai` (`llm.WriteAI`)。music、sfx、transcribe は `intel` と同じくディレクトリを分け、拡張子は `llm.ProgramExt`。pitch と notes は拡張子だけ
+
+**結果** (`--backend` も `HWNPU_BACKEND` もなし。比べたのは main の Core ML と、Core ML の書き出しを CPU のインタプリタで動かした参照)
+
+| コマンド | 初回 (変換とコンパイル込み) | 2 回目から | main の Core ML の 2 回目 | 結果 |
+|---|---|---|---|---|
+| pitch (SwiftF0) | 7.8 秒 | 読み込み 0.1 秒 | 0.8 秒 | 320 フレームとも main と同じ音高 |
+| notes (Basic Pitch) | 0.5 秒 | 0.2 秒 | 0.4 秒 | CPU の参照と同じ 8 音。main の Core ML は 1 つ多い (88 番、強さ 38、3 倍音) |
+| generate (Magenta RealTime 2) | 1 分 12 秒 (読み込み 58 秒) | 曲調 0.3 秒、読み込み 0.1 秒 | 曲調 0.4 秒、読み込み 0.2 秒 | 実時間の 2.1 倍 (main と同じ)。全部 Neural Engine |
+| transcribe (Whisper large-v3-turbo) | 1 分 03 秒 (読み込み 55.5 秒) | 読み込み 0.1〜0.5 秒 | 0.5〜0.8 秒 | 3 つの WAV で main と同じ文 (大文字 1 つだけ違う)。30 秒の窓 0.53〜0.58 秒、Neural Engine 0.78 GiB (main と同じ) |
+| tts (LFM3-Audio-2B) | 1 分 07 秒 (変換 24 秒) | 読み込み 0.1 秒 | 4.3 秒 | 英語と日本語の声を Whisper に戻すと元の文 |
+| generate -m moss-soundeffect:8gb (MOSS-SoundEffect、lut8) | 変換 25 秒、文の符号器 34 秒、DiT と DAC の読み込み 3 分 07 秒 | — | — | 文の符号器と DiT は全部 Neural Engine。**DAC の 5 段がどれも Neural Engine のコンパイラーに落ちて GPU** (下)。既定では止まる |
+
+- `TestCoreAIAgainstCPU` (`internal/music`、`HWNPU_MRT_COREAI=1`): Core ML の書き出しを CPU のインタプリタで動かしたものを参照に、Core AI と Core ML の Neural Engine を比べた。言語モデル (lut8) を CPU の貪欲法の 25 フレームに沿わせたロジットの KL (温度 1.3) は Core AI 0.0000 nats、Core ML 0.0003、一番ありそうなトークンが同じなのは 300 のうち 297 と 295。MusicCoCa の文の埋め込みは 5 つの文で最低のコサイン 0.999999 と 0.999997、SpectroStream の復号は 1.000000 と 0.999997。どれも Core AI の方が参照に近い
+- 曲調の 12 個の符号は、"disco funk" で Core AI と Core ML が 3 つ目から違った。MusicCoCa の残差ベクトル量子化は後の段ほど小さな差で選ぶ符号が変わる ("heavy metal" では main の Core ML も CPU の参照と 7 つ目から違う)。埋め込みのコサインが上のとおりなので、Core AI が外れているのではない
+- `tts` を手で変換したもの: `hwnpu-dev convert -backend coreai` の depthformer とコーデックを `--depth` と `--codec` に渡して動いた (テキスト部は Prepare の書き出し)
+- Whisper の `-v` の窓の言語が英語の音声でも `ja` と出る、長い英語の文の書き起こしに大文字が多いのは main の Core ML でも同じ (この変更とは別)
+
+**MOSS-SoundEffect の DAC が Core AI の Neural Engine で動かない** (未解決)。DAC の段 (snake、重み正規化の畳み込み、多相の転置畳み込み) は Core ML の Neural Engine では全部載っていた。
+- コンパイル: 5 段とも `ANECCompile() FAILED: Codegen Error: Failed to HandleANELayer` で GPU に回る (GPU の値は正しい。CPU のインタプリタとの相対 RMS 0.0017)。段 4 を `HWNPU_AILOWER_CUT` で二分すると、最初に外れるのは畳み込みの後の snake の `clip` (conv → α 倍 → clip)、それを外すと次は残差の足し算 (conv → add)。1 回に読むフレーム数を 1/2、1/4 にすると載る段もあるが、長さで単調ではない
+- 値: Neural Engine に載った段は値が違う (乱数の潜在 100 フレームを CPU のインタプリタと比べて、1/4 の長さで 4 段が載ると相対 RMS 0.59)。原因の 1 つは snake の範囲の縮小の丸め `(v + mg) - mg` (mg = 1536 は入力): Core AI はこれを入力でも `v` に畳む (Core ML は定数だけを畳むので入力にしていた)。間に `clip` か `1` の入力の掛け算を挟むと単独では丸まる (`|v - round(v)|` の最大 0.5)。しかし DAC に入れても相対 RMS は 0.98 (全長)、1.16 (1/4) で、ほかにも違うところがある。Core AI の `sin_v1` は Neural Engine に載るが、±1500 の引数では誤差 0.57 (±4 なら 0.002)、int32 への `cast` は Neural Engine から外れる
+- 当面 `hwnpu-audio generate -m sfx` は Mac では「DAC が Neural Engine に載らない」で止まる (`--allow-off-npu` で DAC を GPU に)
+
+残り: MOSS-SoundEffect の DAC (上)。macOS 26 の Mac でのエラーの確かめ。M1 と Intel の Mac。テキスト部を `-backend coreai` で手で変換した形は動かしていない。Core ML との並べての比べ (sfx) はディスクの空きが足りず未。

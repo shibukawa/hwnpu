@@ -96,7 +96,7 @@ func openStepOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*st
 	for name, b := range p.Out {
 		outs[name] = make([]float32, len(b)/2)
 	}
-	return &step{closer: c, onNPU: c.OnNPU(), where: where, units: units, name: strings.TrimSuffix(filepath.Base(path), ".mlpackage"), run: func(in map[string][]float32) (map[string][]float32, error) {
+	return &step{closer: c, onNPU: c.OnNPU(), where: where, units: units, name: strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), run: func(in map[string][]float32) (map[string][]float32, error) {
 		for name, b := range p.In {
 			v, ok := in[name]
 			if !ok {

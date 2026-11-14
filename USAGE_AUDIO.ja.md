@@ -4,6 +4,8 @@
 
 `hwnpu-audio` は、音楽と効果音の生成 (`generate`)、読み上げ (`tts`)、書き起こし (`transcribe`)、音高 (`pitch`)、音符 (`notes`) を NPU で行います。どれも初回にモデルを落として自分で変換します。選べるモデルは `hwnpu-audio list` で出ます。
 
+Mac では Core AI を通して Neural Engine で動かすだけなので、macOS 27 が要ります (macOS 26 以前では、そう書いたエラーで止まります)。モデルは Core AI 向け (`.aimodel`、モデルのディレクトリの `coreai`) に変換し、コンパイルした結果は Core AI が自分のキャッシュに持つので、2 回目からの読み込みは 0.1 秒です (docs/design.md 16.191)。`--cpu` は確かめ用に、Core ML の書き出しを CPU のインタプリタで動かします。
+
 ## 音楽 (Magenta RealTime 2)
 
 `go run ./cmd/hwnpu-audio generate "disco funk"` は Magenta RealTime 2 small で、文で指定した曲調の 48 kHz ステレオの音楽を作り、そのままスピーカーで鳴らします (`-o out.wav` でファイルに)。M1 で実時間の約 1.4 倍の速さです。重みは CC-BY 4.0 なので、使うときは「Magenta RealTime 2 by Google DeepMind」と表示してください。
@@ -22,6 +24,8 @@
 go run ./cmd/hwnpu-audio generate -m sfx "A dog barking loudly in a park."
 go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a tin roof."   # --steps 50 で半分の時間
 ```
+
+Mac では効果音の復号 (DAC) が、Core AI ではまだ Neural Engine 向けにコンパイルできません。generate は NPU に載らないプログラムを出して止まり、`--allow-off-npu` で復号を GPU で動かします (docs/design.md 16.191)。
 
 ## 読み上げ (LFM3-Audio-2B)
 

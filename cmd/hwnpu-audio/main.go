@@ -33,6 +33,11 @@
 // Sound effects are MOSS-SoundEffect v2.0 (OpenMOSS-Team/MOSS-SoundEffect-v2.0, Apache-2.0): up
 // to 30 seconds of 48 kHz mono from an English or Chinese description (sfx.go).
 //
+// On a Mac hwnpu-audio runs on Apple's Neural Engine through Core AI (macOS 27) alone: each
+// model is converted for Core AI (.aimodel, in the model's coreai/) and kept compiled in Core AI's
+// own cache. Core ML is not used on the Neural Engine; --cpu runs Core ML exports with the CPU
+// interpreter, as do pitch and notes on the CPU without ONNX Runtime.
+//
 // tts (TTSCmd), transcribe (TranscribeCmd), pitch (PitchCmd) and notes (NotesCmd) are described
 // at their commands.
 package main
@@ -107,7 +112,7 @@ type GenerateCmd struct {
 	Dir      string         `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache    string         `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU      bool           `name:"cpu" help:"Run the programs with the CPU interpreter instead of the NPU (slow)."`
-	OffNPU   bool           `name:"allow-off-npu" help:"Go on when Core ML puts part of a program off the NPU (on the GPU or the CPU; that has made a Mac sluggish and failed)."`
+	OffNPU   bool           `name:"allow-off-npu" help:"Go on when part of a program runs off the NPU (on the GPU or the CPU; that has made a Mac sluggish and failed)."`
 
 	Codes       string  `group:"Music" placeholder:"C,..." help:"MusicCoCa's 12 codes of the style, comma separated, instead of texts or audio."`
 	Continue    string  `group:"Music" type:"existingfile" placeholder:"WAV" help:"A WAV to go on from: the music is the clip, then what follows it (its last 20 seconds count)."`
@@ -122,7 +127,6 @@ type GenerateCmd struct {
 	CFGNotes    float64 `group:"Music" name:"cfg-notes" default:"5" help:"How strongly the notes guide (-1 to 7)."`
 	CFGDrums    float64 `group:"Music" name:"cfg-drums" default:"1" help:"How strongly the drums setting guides (-1 to 7)."`
 	Format      string  `group:"Music" placeholder:"FORMAT" help:"The language model's weight format (lut8 by default; fp16, lut6)."`
-	DecoderOn   string  `group:"Music" name:"decoder-on" enum:"npu,gpu,cpu" default:"npu" help:"Where SpectroStream's decoder and encoder run: npu, or gpu or cpu to compare."`
 
 	Steps      int     `group:"Sound effects" default:"100" help:"Flow-matching steps (each two calls of the DiT; fewer is faster and rougher)."`
 	CFG        float64 `group:"Sound effects" name:"cfg" default:"4" help:"How strongly the description guides (classifier-free guidance)."`
@@ -135,7 +139,6 @@ type GenerateCmd struct {
 type options struct {
 	use, dir, cacheDir, format, out string
 	cpu, newOnly, offNPU, play      bool
-	decoderOn                       string
 	duration, fade                  time.Duration
 	durationSet, fadeSet            bool
 	codes, cont, notes, drums       string
@@ -154,7 +157,7 @@ type options struct {
 // Run makes the music or the sound effect.
 func (c *GenerateCmd) Run(ctx context.Context) error {
 	o := options{use: c.Model, dir: c.Dir, cacheDir: c.Cache, format: c.Format, out: c.Out,
-		cpu: c.CPU, newOnly: c.NewOnly, offNPU: c.OffNPU, play: c.Play || c.Out == "", decoderOn: c.DecoderOn,
+		cpu: c.CPU, newOnly: c.NewOnly, offNPU: c.OffNPU, play: c.Play || c.Out == "",
 		duration: 10 * time.Second, fade: 2 * time.Second, codes: c.Codes, cont: c.Continue, notes: c.Notes, drums: c.Drums,
 		onsets: c.Onsets, width: c.NoteWidth, temperature: c.Temperature, topK: c.TopK,
 		guidance: music.Guidance{Style: c.CFGStyle, Notes: c.CFGNotes, Drums: c.CFGDrums}, seed: c.Seed,
@@ -275,17 +278,13 @@ func run(ctx context.Context, o options, args []string) error {
 	if len(args) == 0 && o.codes == "" && o.cont == "" {
 		return errors.New("music wants a style: texts or WAV files, --codes or --continue")
 	}
-	backend := llm.BackendCoreML
+	backend := llm.BackendCoreML // what the CPU interpreter runs
 	var dev *hwnpu.Device
 	if !o.cpu {
-		var device string
-		if dev, device, err = llm.OpenDevice(ctx, "", o.cacheDir); err != nil {
+		if dev, backend, err = openAudioDevice(ctx, o.cacheDir, "--cpu runs Magenta RealTime 2 on the CPU"); err != nil {
 			return err
 		}
 		defer dev.Close()
-		if backend = llm.ProgramBackend(device); backend == "" {
-			return fmt.Errorf("%s runs neither Core ML packages nor OpenVINO IR (--cpu runs Magenta RealTime 2 on the CPU)", device)
-		}
 	}
 	setup := music.Setup{Dir: filepath.Join(o.dir, m.DirName()), Repo: m.Source(), Format: o.format, Backend: backend, Log: lw, Encoder: o.cont != ""}
 	if o.codes == "" {
@@ -412,16 +411,8 @@ func run(ctx context.Context, o options, args []string) error {
 
 	console.Preparing()
 	t0 := time.Now()
-	units := map[string]string{"npu": "", "gpu": "gpu", "cpu": "cpu"}
-	ss, ok := units[o.decoderOn]
-	if !ok {
-		return fmt.Errorf("--decoder-on %q: npu, gpu or cpu", o.decoderOn)
-	}
-	if ss != "" && backend != llm.BackendCoreML {
-		return fmt.Errorf("--decoder-on %s: Core ML's units, not Intel's NPU", o.decoderOn)
-	}
 	done := spin("loading " + m.Name)
-	g, err := music.OpenOn(ctx, dev, p, ss)
+	g, err := music.Open(ctx, dev, p)
 	if err != nil {
 		done("failed")
 		return err
@@ -505,8 +496,7 @@ func run(ctx context.Context, o options, args []string) error {
 		}
 	}
 	pick := music.TopK(o.topK, o.temperature, r)
-	// the decoder (on the GPU) turns each second into samples while the language model (on the
-	// NPU) writes the next one
+	// the decoder turns each second into samples while the language model writes the next one
 	type chunk struct {
 		pcm []float32
 		err error
@@ -642,8 +632,7 @@ func (s *sink) emit(pcm []float32) error {
 }
 
 // checkNPU reports the programs not all on the NPU, and stops unless --allow-off-npu. A program
-// whose placement Core ML could not tell (MLComputePlan fails or does not finish while the Neural
-// Engine is busy compiling) is reported and does not stop it.
+// whose placement could not be told is reported and does not stop it.
 func checkNPU(lw io.Writer, o options, off []string) error {
 	if o.cpu {
 		return nil

@@ -4,6 +4,8 @@
 
 `hwnpu-audio` generates music and sound effects (`generate`), reads text aloud (`tts`), transcribes (`transcribe`), and finds pitch (`pitch`) and notes (`notes`), on the NPU. Each downloads its model on the first run and converts it by itself. `hwnpu-audio list` shows the models to choose from.
 
+On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it needs macOS 27 (on macOS 26 or earlier it stops with an error that says so). Each model is converted for Core AI (`.aimodel`, in the model's `coreai` directory), and Core AI keeps the compiled programs in its own cache: a second start loads in 0.1 seconds (docs/design.md 16.191). `--cpu` runs a Core ML export with the CPU interpreter, for checking without the NPU.
+
 ## Music (Magenta RealTime 2)
 
 `go run ./cmd/hwnpu-audio generate "disco funk"` uses Magenta RealTime 2 small to make 48 kHz stereo music in the style a text names, and plays it on the speakers as it goes (`-o out.wav` writes a file). On an M1 it runs about 1.4 times faster than real time. The weights are CC-BY 4.0, so when you use them, credit "Magenta RealTime 2 by Google DeepMind".
@@ -22,6 +24,8 @@ The same `generate` with `-m sfx` uses MOSS-SoundEffect v2.0 (Apache-2.0) to mak
 go run ./cmd/hwnpu-audio generate -m sfx "A dog barking loudly in a park."
 go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a tin roof."   # --steps 50 takes half the time
 ```
+
+On a Mac the sound effects decoder (the DAC) does not yet compile for the Neural Engine on Core AI: generate stops with the programs that are off the NPU, and `--allow-off-npu` runs the decoder on the GPU (docs/design.md 16.191).
 
 ## Reading aloud (LFM3-Audio-2B)
 

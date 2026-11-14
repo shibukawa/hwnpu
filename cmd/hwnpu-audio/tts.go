@@ -11,7 +11,6 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/speech"
 )
 
@@ -20,11 +19,15 @@ import (
 // hwnpu-chat's LFM3-Audio-2B) and converts the programs by itself (internal/speech Prepare).
 // Programs converted by hand are given with --checkpoint, --text, --depth and --codec instead:
 //
-//	hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.mlpackage
-//	hwnpu-dev convert -config DIR/config.json -weights DIR/model.safetensors -seq 64 -cache 2048 -hidden-out 1 -o DIR/tts-q64.mlpackage
-//	hwnpu-dev convert -arch lfm3-depthformer -config DIR/config.json -weights DIR/model.safetensors -format fp16 -o DIR/depth.mlpackage
-//	hwnpu-dev convert -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -codec-frames 64 -format fp16 -o DIR/codec.mlpackage
-//	hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.parts.json,DIR/tts-q64.mlpackage --depth DIR/depth.mlpackage --codec DIR/codec.mlpackage --lang ja -o out.wav こんにちは
+//	hwnpu-dev convert -backend coreai -config DIR/config.json -weights DIR/model.safetensors -seq 1 -cache 2048 -hidden-out 1 -o DIR/tts-q1.aimodel
+//	hwnpu-dev convert -backend coreai -config DIR/config.json -weights DIR/model.safetensors -seq 64 -cache 2048 -hidden-out 1 -o DIR/tts-q64.aimodel
+//	hwnpu-dev convert -backend coreai -arch lfm3-depthformer -config DIR/config.json -weights DIR/model.safetensors -format fp16 -o DIR/depth.aimodel
+//	hwnpu-dev convert -backend coreai -config DIR/audio_tokenizer/config.json -weights DIR/audio_tokenizer/model.safetensors -codec-frames 64 -format fp16 -o DIR/codec.aimodel
+//	hwnpu-audio tts --checkpoint DIR --text DIR/tts-q1.parts.json,DIR/tts-q64.aimodel --depth DIR/depth.aimodel --codec DIR/codec.aimodel --lang ja -o out.wav こんにちは
+//
+// On a Mac tts runs on the Neural Engine through Core AI (macOS 27); its own conversion writes
+// the text model's two programs as the functions of one Core AI program, the weights once.
+// --cpu runs Core ML packages (-backend coreml) with the CPU interpreter.
 //
 // The text model is converted with a KV cache and -hidden-out 1 (it outputs its final hidden
 // state, which the depthformer reads); the depthformer and the codec decoder are programs of
@@ -64,7 +67,7 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 		}
 		backend := ""
 		if !c.CPU { // the CPU interpreter runs Core ML packages
-			if backend, err = llm.ProgramFormat(ctx, ""); err != nil {
+			if backend, err = audioFormat(ctx); err != nil {
 				return err
 			}
 		}
@@ -72,7 +75,7 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 			return err
 		}
 	}
-	cfg.CacheDir, cfg.CPU, cfg.Log = cacheDir(c.Cache), c.CPU, lw
+	cfg.CacheDir, cfg.CPU, cfg.Device, cfg.Log = cacheDir(c.Cache), c.CPU, audioDevice(), lw
 	seed := c.Seed
 	if seed == 0 {
 		seed = rand.Uint64() // drawn here so that it can be told (--seed repeats the speech)

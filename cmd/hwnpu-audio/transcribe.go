@@ -50,8 +50,10 @@ func (c *TranscribeCmd) Run(ctx context.Context) error {
 	s := transcribe.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Format: c.Format, Log: lw}
 	o := transcribe.Options{Language: c.Language, Translate: c.Translate, MaxTokens: c.MaxTokens}
 	var dev *hwnpu.Device
-	if !c.CPU {
-		if dev, s.Backend, err = llm.OpenDevice(ctx, "", cacheDir(c.Cache)); err != nil {
+	if c.CPU {
+		s.Backend = llm.BackendCoreML // what the CPU interpreter runs
+	} else {
+		if dev, s.Backend, err = openAudioDevice(ctx, cacheDir(c.Cache), "--cpu runs Whisper on the CPU"); err != nil {
 			return err
 		}
 		defer dev.Close()

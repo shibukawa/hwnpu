@@ -97,8 +97,9 @@ type Program struct {
 	Arch, Format string
 	Params       map[string]string
 	Seq, Cache   int
-	// Backend is the program format (llm.Options.Backend): Core ML (empty) or OpenVINO IR for
-	// Intel's NPU, which takes a lookup table format as its integer one (llm.IntelFormat).
+	// Backend is the program format (llm.Options.Backend): Core ML (empty), Core AI (coreai) or
+	// OpenVINO IR for Intel's NPU, which takes a lookup table format as its integer one
+	// (llm.IntelFormat).
 	Backend string
 }
 
@@ -111,6 +112,19 @@ func ConvertProgram(ctx context.Context, config, weights, out string, p Program,
 		format = llm.IntelFormat(format)
 	}
 	return convert(ctx, config, weights, out, program{backend: p.Backend, arch: p.Arch, format: format, params: p.Params, seq: p.Seq, cache: p.Cache}, log)
+}
+
+// ConvertShared converts programs of one model for Core AI together (ps differ only in their
+// Seq: the same weights) unless they were, the parts of the same layers the functions of one
+// Core AI program base.partK.aimodel (llm.ConvertAI), the weights once on the disk and on the
+// Neural Engine. outs are the programs' paths without an extension and names their functions'
+// names (q1, q64); it returns the paths of their manifests (outs[i].parts.json).
+func ConvertShared(ctx context.Context, config, weights, base string, outs, names []string, ps []Program, log io.Writer) ([]string, error) {
+	var progs []program
+	for _, p := range ps {
+		progs = append(progs, program{backend: llm.BackendCoreAI, arch: p.Arch, format: p.Format, params: p.Params, seq: p.Seq, cache: p.Cache})
+	}
+	return convertShared(ctx, config, weights, base, outs, names, progs, log)
 }
 
 // ProgramFile is where a program named name for backend goes in a model's directory dir: an

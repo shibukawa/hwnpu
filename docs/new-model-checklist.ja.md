@@ -137,7 +137,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 
 ### 3.5 Core AI (macOS 27)
 
-同じ `.mlpackage` を Core AI でも動かす (`--backend coreai`)。`internal/coreai/ailower` が MIL を Core AI のバイトコードに下ろす。Core ML で 3.1〜3.4 を通った部品も、ここで通らないことがあるので、Core AI でも確かめる (16.169、16.182)。`hwnpu-image` は Core AI だけで動く (macOS 27、16.190) ので、画像のモデルは初めから `.coreai` の書き出しにし、Core ML の書き出しは `--cpu` が読むものだけ。M1 でも確かめる: MoGe-2 と Sana の VAE は M3 や Core ML で通ったのに、M1 の Core AI でコンパイラーに落ちた:
+同じ `.mlpackage` を Core AI でも動かす (`--backend coreai`)。`internal/coreai/ailower` が MIL を Core AI のバイトコードに下ろす。Core ML で 3.1〜3.4 を通った部品も、ここで通らないことがあるので、Core AI でも確かめる (16.169、16.182)。`hwnpu-image` と `hwnpu-audio` は Core AI だけで動く (macOS 27、16.190、16.191) ので、画像と音声のモデルは初めから Core AI のプログラム (`.aimodel`) に書き、Core ML の書き出しは `--cpu` が読むものだけ。M1 でも確かめる: MoGe-2 と Sana の VAE は M3 や Core ML で通ったのに、M1 の Core AI でコンパイラーに落ちた:
 
 - **どの演算にも下ろし方が要る**。`aicheck lower OUT PKG` は下ろし方のない最初の演算で止まる (画像のモデルの ONNX のグラフは `max_pool`、続いて `conv_transpose` と replicate の `pad` で止まった)。新しく書くときは coreai-torch の書き方に合わせる: 小さな torch のモジュールを coreai-torch で変換し (`uv run --offline --prerelease=allow --python 3.13 --with coreai-torch==0.4.3 --with torch`、uv のキャッシュから)、プログラムを表示し、バイトコードを `tools/coreai/bcdump` で読む。演算の引数の順は coreai-core の `_coreai_ops_gen.py` にある
 - **どの部品も、Core AI と Core ML の両方で CPU のインタプリタと比べる**: 乱数の入力で `aicheck run -cpu PKG...` と `aicheck run -cpu -coreml PKG...`。全部 Neural Engine に載った部品が Core AI でだけ誤ることがある: PP-OCR の検出器はコサイン 0.05 (Core ML 0.9999) で、RTMDet、RTMO、YuNet、DA3、MoGe-2 は正しかった
