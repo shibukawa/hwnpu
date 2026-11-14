@@ -203,8 +203,8 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	}
 	groups := mil.TextGroups(gc.Layers, o.TextGroup)
 	stages := mil.VaeStages(o.Width, o.Height)
-	total := len(groups) + 2 + dc.Layers/o.Group + len(stages)
-	written := 0
+	// the programs are written side by side once all are listed (jobs.Run)
+	jobs := console.NewJobs(log)
 	ext := ProgramExt(o.Backend)
 	opts := func(kind, format string) llm.Options {
 		opts := llm.Options{Backend: o.Backend, Format: format}
@@ -218,13 +218,12 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
-		written++
-		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts(kind, format), nil); err != nil {
-			bar.Done("failed")
-			return "", fmt.Errorf("sana: %s: %w", p.Name, err)
-		}
-		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
+		jobs.Add(name, func() (string, error) {
+			if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts(kind, format), nil); err != nil {
+				return "", fmt.Errorf("sana: %s: %w", p.Name, err)
+			}
+			return format, nil
+		})
 		return name, nil
 	}
 	// writeSized writes the part of each size (part(dc)): one program as write does for one size,
@@ -246,13 +245,12 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return names, nil
 		}
-		written++
-		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		if _, err := llm.WriteAIFunctions(filepath.Join(out, name), w, fns); err != nil {
-			bar.Done("failed")
-			return nil, fmt.Errorf("sana: %s: %w", name, err)
-		}
-		bar.Done(fmt.Sprintf("%s, %s, %d sizes", console.Duration(bar.Elapsed()), format, len(sizes)))
+		jobs.Add(name, func() (string, error) {
+			if _, err := llm.WriteAIFunctions(filepath.Join(out, name), w, fns); err != nil {
+				return "", fmt.Errorf("sana: %s: %w", name, err)
+			}
+			return fmt.Sprintf("%s, %d sizes", format, len(sizes)), nil
+		})
 		return names, nil
 	}
 	m := &ProgramManifest{Backend: o.Backend, Version: ExportVersion,
@@ -313,6 +311,10 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	}
 	if len(sized) > 1 {
 		m.Sizes = sized
+	}
+	// a job takes up to about 2 GB (Gemma 2's layers, the 1.6B DiT's groups)
+	if err := jobs.Run(2 << 30); err != nil {
+		return err
 	}
 	if len(o.Only) == 0 || o.Only["text"] {
 		if err := writeTextFiles(text, out, w, gc); err != nil {

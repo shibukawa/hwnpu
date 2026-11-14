@@ -250,11 +250,8 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	textGroups := mil.Groups(tc.Layers, o.TextGroup)
 	ditGroups := mil.Groups(dc.Layers, o.Group)
 	stages := mil.VaeStages(vc, o.Width, o.Height)
-	total := len(textGroups) + 2*len(ditGroups) + len(stages)
-	if o.SharedDit() {
-		total -= len(ditGroups)
-	}
-	written := 0
+	// the programs are written side by side once all are listed (jobs.Run)
+	jobs := console.NewJobs(log)
 	write := func(kind string, p *mil.Part, format string) (string, error) {
 		quant := o.DitQuant
 		if kind == "text" || kind == "text_in" {
@@ -264,17 +261,16 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
-		written++
-		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		opts := llm.Options{Backend: o.Backend, Format: format}
-		if strings.HasPrefix(format, "lut") {
-			opts.Quant = quant
-		}
-		if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
-			bar.Done("failed")
-			return "", fmt.Errorf("qwenimage: %s: %w", p.Name, err)
-		}
-		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
+		jobs.Add(name, func() (string, error) {
+			opts := llm.Options{Backend: o.Backend, Format: format}
+			if strings.HasPrefix(format, "lut") {
+				opts.Quant = quant
+			}
+			if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
+				return "", fmt.Errorf("qwenimage: %s: %w", p.Name, err)
+			}
+			return format, nil
+		})
 		return name, nil
 	}
 	m := &ProgramManifest{Kind: ProgramKind, Backend: o.Backend, Version: ExportVersion,
@@ -302,20 +298,19 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 			if len(o.Only) > 0 && !o.Only["dit_text"] && !o.Only["blocks"] {
 				continue
 			}
-			written++
-			bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-			opts := llm.Options{Backend: o.Backend, Format: o.DitFormat}
-			if strings.HasPrefix(o.DitFormat, "lut") {
-				opts.Quant = o.DitQuant
-			}
-			_, err := llm.WriteAIFunctions(filepath.Join(out, name), w, []llm.AIFunction{
-				{Name: "text", Model: mil.TextBlocks(dc, gr[0], gr[1]), Options: opts},
-				{Name: "blocks", Model: mil.Blocks(dc, gr[0], gr[1], qchunk, i == len(ditGroups)-1), Options: opts}})
-			if err != nil {
-				bar.Done("failed")
-				return fmt.Errorf("qwenimage: %s: %w", name, err)
-			}
-			bar.Done(fmt.Sprintf("%s, %s, text pass and blocks", console.Duration(bar.Elapsed()), o.DitFormat))
+			jobs.Add(name, func() (string, error) {
+				opts := llm.Options{Backend: o.Backend, Format: o.DitFormat}
+				if strings.HasPrefix(o.DitFormat, "lut") {
+					opts.Quant = o.DitQuant
+				}
+				_, err := llm.WriteAIFunctions(filepath.Join(out, name), w, []llm.AIFunction{
+					{Name: "text", Model: mil.TextBlocks(dc, gr[0], gr[1]), Options: opts},
+					{Name: "blocks", Model: mil.Blocks(dc, gr[0], gr[1], qchunk, i == len(ditGroups)-1), Options: opts}})
+				if err != nil {
+					return "", fmt.Errorf("qwenimage: %s: %w", name, err)
+				}
+				return o.DitFormat + ", text pass and blocks", nil
+			})
 		}
 	} else {
 		for _, gr := range ditGroups {
@@ -346,6 +341,11 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		m.Vae = append(m.Vae, name)
 		st := stages[i]
 		m.VaeTiles = append(m.VaeTiles, VaeTiling{C: st.C, H: st.H, W: st.W, OutC: st.OutC(), Scale: st.Scale(), Rows: st.Rows, Cols: st.Cols})
+	}
+	// a job takes up to about 1.5 GB: the program's weights up to ailower.SpillKeep, the tensors it
+	// reads (Qwen-Image-2.1 Turbo, lut6)
+	if err := jobs.Run(2 << 30); err != nil {
+		return err
 	}
 	if len(o.Only) == 0 || o.Only["text"] {
 		if err := writeTextFiles(text, out, w, tc); err != nil {

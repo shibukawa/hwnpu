@@ -100,6 +100,7 @@ Neural Engine がモデルに求めること:
 macOS 27 には Core ML のほかに Core AI があります。追加で入れるものはありません。
 
 - **`hwnpu-chat` と `hwnpu-image` は Core AI だけで動き**、Mac では macOS 27 が要ります (`--backend` に `coreml` はありません。ほかのコマンドが受け取る `HWNPU_BACKEND=coreml` は、この 2 つでは Core AI の意味になります)。モデルは Core AI 向け (`.aimodel`、チェックポイントから Go で書き出す) に変換し、Core ML は使いません。`hwnpu-image --cpu` は確かめ用に、これまでどおり Core ML の書き出しを CPU のインタプリタで動かします。macOS 26 以前の Mac では、そう書いたエラーになります
+- **変換**はモデルの部品 (プログラム) を、CPU のコア数と空きメモリが許すだけ並べて書きます (`HWNPU_JOBS=N` で数を決める。`1` で 1 つずつ)。端末では全体のバーと書いている部品ごとの行を出し、全部終わったら消します
 - **ほかのコマンド**は Core ML が既定のままで、`--backend coreai` か `HWNPU_BACKEND=coreai` で、変換済みのモデル (`.mlpackage`、Go で Core AI のプログラムに下ろす) を Core AI で動かします
 
 - **使えるコマンド**: `hwnpu-chat` の全部、`hwnpu-image` の generate (Anima、Chroma、Qwen-Image、Sana。Sana の書き出しは 512 × 512 と 1024 × 1024 を 1 つに持つ)、ocr、detect、pose、face-detect、depth、segment、label、embed。`hwnpu-audio` は `HWNPU_BACKEND=coreai` で pitch と generate (Magenta RealTime 2) を確かめました (ほかは未確認)

@@ -141,8 +141,8 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 	texts := mil.TextGroups(tc.Layers, o.TextGroup)
 	doubles, singles := mil.DoubleGroups(dc, o.DoubleGroup), mil.SingleGroups(dc, o.SingleGroup)
 	stages := mil.VaeStages(vc, o.Width, o.Height)
-	total := len(texts) + 1 + len(doubles) + len(singles) + len(stages)
-	written := 0
+	// the programs are written side by side once all are listed (jobs.Run)
+	jobs := console.NewJobs(log)
 	name := filepath.Base(root)
 	from := linkSources(o.LinkFrom, name, o, dc)
 	ext := ProgramExt(o.Backend)
@@ -156,20 +156,19 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 		if len(o.Only) > 0 && !o.Only[kind] {
 			return name, nil
 		}
-		written++
 		if src := from.part(kind, name, name == lastText); src != "" {
 			if err := linkTree(filepath.Join(src, name), filepath.Join(out, name)); err != nil {
 				return "", err
 			}
-			fmt.Fprintf(log, "  [%2d/%d] %s linked from %s\n", written, total, name, filepath.Base(src))
+			fmt.Fprintf(log, "  %s linked from %s\n", name, filepath.Base(src))
 			return name, nil
 		}
-		bar := console.NewBar(log, fmt.Sprintf("  [%2d/%d] %s", written, total, name))
-		if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
-			bar.Done("failed")
-			return "", fmt.Errorf("chroma: %s: %w", p.Name, err)
-		}
-		bar.Done(fmt.Sprintf("%s, %s", console.Duration(bar.Elapsed()), format))
+		jobs.Add(name, func() (string, error) {
+			if _, err := llm.WritePart(filepath.Join(out, name), p, w, opts, nil); err != nil {
+				return "", fmt.Errorf("chroma: %s: %w", p.Name, err)
+			}
+			return format, nil
+		})
 		return name, nil
 	}
 	m := &ProgramManifest{Backend: o.Backend, Version: ExportVersion,
@@ -227,21 +226,19 @@ func Convert(root, shared, out string, o ConvertOptions, log io.Writer) error {
 			if err := linkTree(filepath.Join(src, EmptyFile), filepath.Join(out, EmptyFile)); err != nil {
 				return err
 			}
-		} else if err := func() error {
-			bar := console.NewBar(log, "  the empty prompt's text rows")
-			rows, err := emptyRows(w, tc, dc)
-			if err == nil {
-				err = writeEmpty(out, rows)
-			}
-			if err != nil {
-				bar.Done("failed")
-				return err
-			}
-			bar.Done(console.Duration(bar.Elapsed()))
-			return nil
-		}(); err != nil {
-			return err
+		} else {
+			jobs.Add("the empty prompt's text rows", func() (string, error) {
+				rows, err := emptyRows(w, tc, dc)
+				if err != nil {
+					return "", err
+				}
+				return "", writeEmpty(out, rows)
+			})
 		}
+	}
+	// a job takes up to about 1.5 GB, as Qwen-Image's (T5-XXL's layers, the 8.9B DiT's groups)
+	if err := jobs.Run(2 << 30); err != nil {
+		return err
 	}
 	if err := writeModel(root, out); err != nil {
 		return err

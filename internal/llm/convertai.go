@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
@@ -147,6 +146,8 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 	for i := range progs {
 		recs[i] = make([]PartRecord, len(plans[i]))
 	}
+	// the programs are written side by side (console.Jobs), their lines erased when all are done
+	jobs := console.NewJobs(log)
 	for k, s := range starts {
 		path := fmt.Sprintf("%s.part%d.aimodel", base, k+1)
 		if len(starts) == 1 {
@@ -160,20 +161,29 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 			}
 			fns = append(fns, AIFunction{Name: progs[m.prog].Name, Model: model, Options: o})
 		}
-		start := time.Now()
-		stop := console.Spin(log, filepath.Base(path))
-		rs, err := WriteAIFunctions(path, w, fns)
-		stop()
-		if err != nil {
-			io.WriteString(log, "\n")
-			return nil, err
-		}
-		fmt.Fprintf(log, ": %d functions, %.2f GiB, %.0fs\n", len(fns), float64(rs[0].WeightBytes)/(1<<30), time.Since(start).Seconds())
-		if target.MaxBytes > 0 && rs[0].WeightBytes >= target.MaxBytes {
-			fmt.Fprintf(log, "warning: %s: weights of %.3f GiB are over the %s limit of %.3f GiB, so the NPU may not take it\n", path, float64(rs[0].WeightBytes)/(1<<30), target.Name, float64(target.MaxBytes)/(1<<30))
-		}
-		for i, m := range groups[s] {
-			recs[m.prog][m.part] = rs[i]
+		jobs.Add(filepath.Base(path), func() (string, error) {
+			rs, err := WriteAIFunctions(path, w, fns)
+			if err != nil {
+				return "", err
+			}
+			for i, m := range groups[s] {
+				recs[m.prog][m.part] = rs[i]
+			}
+			return fmt.Sprintf("%d functions, %.2f GiB", len(fns), float64(rs[0].WeightBytes)/(1<<30)), nil
+		})
+	}
+	// a job holds its program's weights (up to the target's limit, a few GiB) and the tensors it reads
+	if err := jobs.Run(4 << 30); err != nil {
+		return nil, err
+	}
+	warned := map[string]bool{}
+	for _, r := range recs {
+		for _, rec := range r {
+			path, _, _ := strings.Cut(rec.Path, "#") // a function's record: PATH#NAME
+			if target.MaxBytes > 0 && rec.WeightBytes >= target.MaxBytes && !warned[path] {
+				warned[path] = true
+				fmt.Fprintf(log, "warning: %s: weights of %.3f GiB are over the %s limit of %.3f GiB, so the NPU may not take it\n", path, float64(rec.WeightBytes)/(1<<30), target.Name, float64(target.MaxBytes)/(1<<30))
+			}
 		}
 	}
 	var out []string
