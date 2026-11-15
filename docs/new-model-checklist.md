@@ -423,7 +423,7 @@ Qwen-Image-2.1 (not distilled) and Chroma1 (Qwen-Image-2.1-Turbo is in the table
 | The prompt's keys and values out of the step loop | ✓ | — (FLUX's text rows are modulated by the step) | — |
 | The modulations once a sigma, out of the step loop | — | ✓ (Mac: the approximator before the steps, then closed) | ✓ (Mac) |
 | Image attention in 64-key blocks, QK^T in bfp16 | ✓ | ✓ | ✓ |
-| Core AI: the attention scale in the queries' norm (16.201), the attentions a head at a time (16.202, 16.211) | ✓ (v3: 40 steps at 512² 3 min 10 s → 2 min 03 s; 1024² not run) | ✗ (an attention-only program: 205 → 139 ms a block) | ✗ |
+| Core AI: the attention scale in the queries' norm (16.201), the attentions a head at a time (16.202, 16.211) | ✓ (v3: 40 steps at 512² 3 min 10 s → 2 min 03 s; 1024² not run) | ✓ (v2: a picture at 1024² on an M1 5 min 36 s, a call of the DiT 21.7 s; 16.214) | ✓ (the same programs; not run yet) |
 | VAE on the grid (`GridGEMM`, phase upsampling) | ✓ | ✓ | ✓ |
 | Same-shaped VAE stages in one graph | ✓ | ✗ | ✗ |
 | The text encoder in groups (`SwapVariants`) | ✓ | ✓ (T5, 6 groups of 4 layers: peak 5.9 → 4.5 GiB, the same latents) | ✓ |
