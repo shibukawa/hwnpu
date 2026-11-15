@@ -171,7 +171,7 @@ func TestPartsAgainstReference(t *testing.T) {
 			}
 			c.cd = conds[0]
 		}
-		vs, err := e.velocity(ctx, x0, 1, []Cond{c.cd}, []imageInputs{e.imageInputs(c.cd)})
+		vs, err := e.velocity(ctx, [][]float32{x0}, 1, []Cond{c.cd}, []imageInputs{e.imageInputs(c.cd)})
 		if err != nil {
 			t.Fatal(err)
 		}

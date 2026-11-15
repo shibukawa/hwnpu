@@ -45,6 +45,8 @@ type progEngine struct {
 	// ring gives the groups of a step with swapDiT, the next one loading while one runs: a step
 	// of 512 x 512 3.5 -> 3.4 s on an M1 (design.md 16.210)
 	ring *runner.Ring
+	// loader, when set, loads the programs in place of runner.Open (tests)
+	loader runner.OpenFunc
 }
 
 func openPrograms(dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, error) {
@@ -88,6 +90,9 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 
 // load is open without a line: the program on the device unless it is nil, on the NPU alone.
 func (e *progEngine) load(ctx context.Context, name string) (runner.Program, error) {
+	if e.loader != nil {
+		return e.loader(ctx, name)
+	}
 	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
 	if err == nil && e.dev != nil && !p.OnNPU() {
 		p.Close()
@@ -256,15 +261,13 @@ func (e *progEngine) imageInputs(cd Cond) imageInputs {
 	return imageInputs{cos, sin, kb}
 }
 
-// velocity runs the DiT's image blocks on x (tokens x latent, channel last) at sigma for each
-// conditioning, back to back in each group (a group the Neural Engine has to load again is loaded
-// once a step): the velocities, the same layout.
-func (e *progEngine) velocity(ctx context.Context, x []float32, sigma float64, conds []Cond, ins []imageInputs) ([][]float32, error) {
+// velocity runs the DiT's image blocks at sigma on the latents xs[k] (tokens x latent, channel
+// last) under conds[k] (its inputs ins[k]), for every k: several pictures' passes, and each one's
+// two under guidance. They run back to back in each group (a group is loaded once a step, and
+// only its first run follows another group): the velocities, the same layout.
+func (e *progEngine) velocity(ctx context.Context, xs [][]float32, sigma float64, conds []Cond, ins []imageInputs) ([][]float32, error) {
 	mod, scale := e.time.modulation(sigma)
-	xs := make([][]float32, len(conds))
-	for k := range xs {
-		xs[k] = x
-	}
+	xs = append([][]float32(nil), xs...)
 	for gi, name := range e.m.Blocks {
 		var b runner.Program
 		if e.swapDiT {
@@ -297,31 +300,31 @@ func (e *progEngine) velocity(ctx context.Context, x []float32, sigma float64, c
 	return xs, nil
 }
 
-// decode runs the VAE's stages on each of the latents (latent, rows, columns), stage by stage (each
-// loaded once for all of them, one load ahead); the last gives the pictures (1, 4, h, w), RGBA.
+// decode runs the VAE's stages on each of the latents (latent, rows, columns), stage by stage
+// (runner.Stages: each loaded once for the pictures that go through it together, one load ahead);
+// the last gives the pictures (1, 4, h, w), RGBA. The wide stages (288 channels of 1024 x 1024 are
+// 1.2 GB a picture) take as many pictures together as the host holds the outputs of; stage is
+// told of the stages of all the pictures, counted as they are done.
 func (e *progEngine) decode(ctx context.Context, latents [][]float32, stage StageFunc) ([]*image.RGBA, error) {
-	xs := append([][]float32(nil), latents...)
-	t0 := time.Now()
-	err := e.inTurn(ctx, e.m.Vae, func(i int, p runner.Program) error {
-		for k := range xs {
+	xs, err := runner.Stages(ctx, e.m.Vae, e.ahead, e.open, latents, runner.StageBudget,
+		func(i int, p runner.Program, x []float32) ([]float32, error) {
 			var y []float32
 			var err error
 			if i < len(e.m.VaeTiles) && e.m.VaeTiles[i].tiled() {
-				y, err = runTiled(ctx, p, xs[k], e.m.VaeTiles[i])
+				y, err = runTiled(ctx, p, x, e.m.VaeTiles[i])
 			} else {
-				y, err = p.Run(ctx, map[string][]float32{"x": xs[k]})
+				y, err = p.Run(ctx, map[string][]float32{"x": x})
 			}
 			if err != nil {
-				return fmt.Errorf("vae stage %d: %w", i, err)
+				return nil, fmt.Errorf("vae stage %d: %w", i, err)
 			}
-			xs[k] = y
-		}
-		if stage != nil {
-			stage(i, len(e.m.Vae), time.Since(t0))
-		}
-		t0 = time.Now()
-		return nil
-	})
+			return y, nil
+		},
+		func(i, n int, d time.Duration) {
+			if stage != nil {
+				stage(i, n, d)
+			}
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -357,69 +360,94 @@ func pixel(v float32) uint8 {
 
 func fromBF16(h uint16) float32 { return math.Float32frombits(uint32(h) << 16) }
 
-// generatePrograms is Generate with a Core ML export's programs.
-func (p *Pipeline) generatePrograms(ctx context.Context, cond Cond, neg *Cond, noise []float32, sigmas []float64, smp Sampling, step StepFunc) ([]float32, error) {
+// generatePrograms is GenerateAll with a Core ML export's programs: the pictures step together,
+// each group of the DiT's blocks running every picture (and its negative prompt's pass) before the
+// next group.
+func (p *Pipeline) generatePrograms(ctx context.Context, conds []Cond, neg *Cond, noises [][]float32, sigmas []float64, smp Sampling, step StepFunc) ([][]float32, error) {
 	e := p.prog
 	N, L := p.Dit.Tokens(), p.Dit.Latent
-	if len(cond.ptk) != len(e.m.Blocks) {
-		return nil, fmt.Errorf("qwenimage: the text's keys of %d groups for %d", len(cond.ptk), len(e.m.Blocks))
+	for _, cond := range conds {
+		if len(cond.ptk) != len(e.m.Blocks) {
+			return nil, fmt.Errorf("qwenimage: the text's keys of %d groups for %d", len(cond.ptk), len(e.m.Blocks))
+		}
 	}
 	if err := e.openDiT(ctx); err != nil {
 		return nil, fmt.Errorf("qwenimage: %w", err)
 	}
-	conds := []Cond{cond}
-	if neg != nil && smp.Guidance != 1 {
-		conds = append(conds, *neg)
-	}
+	guide := neg != nil && smp.Guidance != 1
+	// each conditioning's image RoPE (the frame follows its text's length) and key bias
 	ins := make([]imageInputs, len(conds))
 	for k, cd := range conds {
 		ins[k] = e.imageInputs(cd)
 	}
-	x := make([]float32, N*L)
-	for ch := 0; ch < L; ch++ {
-		for t := 0; t < N; t++ {
-			x[t*L+ch] = noise[ch*N+t]
+	var negIn imageInputs
+	if guide {
+		negIn = e.imageInputs(*neg)
+	}
+	// x channel last (tokens x latent), as the DiT reads it
+	xs := make([][]float32, len(conds))
+	for k, noise := range noises {
+		x := make([]float32, N*L)
+		for ch := 0; ch < L; ch++ {
+			for t := 0; t < N; t++ {
+				x[t*L+ch] = noise[ch*N+t]
+			}
 		}
+		xs[k] = x
 	}
 	steps := len(sigmas) - 1
-	var d0, d1 []float32
-	var hLast float64
+	d0, d1 := make([][]float32, len(xs)), make([][]float32, len(xs))
+	hLast := make([]float64, len(xs))
 	for i := 0; i < steps; i++ {
 		t0 := time.Now()
-		run := conds[:1]
-		if smp.guided(sigmas[i]) {
-			run = conds
+		// this step's passes: each picture under its prompt and, guided, under the negative one
+		per := 1
+		if guide && smp.guided(sigmas[i]) {
+			per = 2
 		}
-		vs, err := e.velocity(ctx, x, sigmas[i], run, ins)
+		jx, jc, ji := make([][]float32, 0, per*len(xs)), make([]Cond, 0, per*len(xs)), make([]imageInputs, 0, per*len(xs))
+		for k, x := range xs {
+			jx, jc, ji = append(jx, x), append(jc, conds[k]), append(ji, ins[k])
+			if per == 2 {
+				jx, jc, ji = append(jx, x), append(jc, *neg), append(ji, negIn)
+			}
+		}
+		vs, err := e.velocity(ctx, jx, sigmas[i], jc, ji)
 		if err != nil {
 			return nil, fmt.Errorf("qwenimage: step %d: %w", i, err)
 		}
-		v := vs[0]
-		if len(vs) == 2 { // the pipeline's true_cfg_scale: neg + g (cond - neg)
-			g := float32(smp.Guidance)
-			for j := range v {
-				v[j] = vs[1][j] + g*(v[j]-vs[1][j])
+		for k, x := range xs {
+			v := vs[k*per]
+			if per == 2 { // the pipeline's true_cfg_scale: neg + g (cond - neg)
+				u, g := vs[k*per+1], float32(smp.Guidance)
+				for j := range v {
+					v[j] = u[j] + g*(v[j]-u[j])
+				}
 			}
-		}
-		if smp.Solver == "dpm2m" {
-			hLast = anima.DPM2M(x, v, &d0, &d1, sigmas[i], sigmas[i+1], hLast)
-		} else {
-			d := float32(sigmas[i+1] - sigmas[i])
-			for j := range x {
-				x[j] += d * v[j]
+			if smp.Solver == "dpm2m" {
+				hLast[k] = anima.DPM2M(x, v, &d0[k], &d1[k], sigmas[i], sigmas[i+1], hLast[k])
+			} else {
+				d := float32(sigmas[i+1] - sigmas[i])
+				for j := range x {
+					x[j] += d * v[j]
+				}
 			}
 		}
 		if step != nil {
 			step(i, steps, time.Since(t0))
 		}
 	}
-	res := make([]float32, N*L)
-	for ch := 0; ch < L; ch++ {
-		for t := 0; t < N; t++ {
-			res[ch*N+t] = x[t*L+ch]
+	out := make([][]float32, len(xs))
+	for k, x := range xs {
+		res := make([]float32, N*L)
+		for ch := 0; ch < L; ch++ {
+			for t := 0; t < N; t++ {
+				res[ch*N+t] = x[t*L+ch]
+			}
 		}
+		out[k] = res
 	}
-	return res, nil
+	return out, nil
 }
 
 // runTiled runs the program of a tiled VAE stage on each window of its input x (C, H, W) and puts
