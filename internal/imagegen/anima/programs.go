@@ -87,7 +87,8 @@ func WriteProgramManifest(dir string, m *ProgramManifest) error {
 // are loaded into (Intel's NPU: ERROR_OUT_OF_HOST_MEMORY at about 4.6 GB of Anima's fp16 on a
 // Core Ultra 5 135U), others are closed until it does (get): first the text encoder, which runs
 // once a prompt, then the DiT's groups the most recently used first, so that of groups that run
-// in the same order every step, those that fit stay and one place takes the others in turn.
+// in the same order every step, those that fit stay and one place takes the others in turn. On
+// Core AI the DiT's groups are not held at all (swap).
 type progEngine struct {
 	dit                     DitConfig
 	textP, time, patch, fin *slot
@@ -105,6 +106,14 @@ type progEngine struct {
 
 	tick     int64 // counts the uses, for slot.used
 	unloaded int   // programs closed for memory, to tell once
+
+	// swap loads each group of the DiT's blocks for its turn in a step and closes it after
+	// (ring), rather than holding the seven: on Core AI (runner.Swap), where a group loads from
+	// the cache in a fraction of a second. The text encoder is then closed after each prompt
+	// too. On an M1 at 1024 x 1024 the Neural Engine holds 0.57 to 0.84 GiB in place of 2.53, a
+	// step takes 5.7 s in place of 5.6 and a picture as long (design.md 16.215).
+	swap bool
+	ring *runner.Ring
 }
 
 // slot is a program that may be closed for memory and loaded again.
@@ -215,6 +224,7 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Wri
 	dc = DitConfig{Width: m.Width, Height: m.Height, Hidden: 2048, Layers: 28, TextDim: progHidden, TextTokens: progRows,
 		LatentChannels: 16, Patch: 2, VAEScale: 8, Group: 28 / max(1, len(m.Blocks))}
 	e := &progEngine{dit: dc, textRows: progRows, log: log, checkpoint: m.Dit}
+	swap := runner.Swap(dev)
 	// the programs in the order they load, for "[3/19]"
 	total := 3 + len(m.Blocks) + len(m.Vae)
 	if m.Patch != "" {
@@ -272,9 +282,17 @@ func openPrograms(ctx context.Context, dev *hwnpu.Device, dir string, log io.Wri
 	// that does not run on the NPU fails here and not after the denoising; one that does not fit
 	// beside the others closes some of them (get)
 	for _, s := range e.slots() {
-		if _, err := e.get(ctx, s); err != nil {
+		p, err := e.get(ctx, s)
+		if err != nil {
 			return fail(err)
 		}
+		if swap && s.kind == slotBlock { // checked; the steps load it for its turn
+			p.Close()
+			s.p = nil
+		}
+	}
+	if swap {
+		e.swapGroups(runner.Ahead(dev))
 	}
 	if e.unloaded > 0 && log != nil {
 		fmt.Fprintf(log, "  not all the programs fit on the NPU at once: %d were unloaded and load again as they run (an int8 export, --dit-format int8 --text-format int8, needs half the memory)\n", e.unloaded)
@@ -317,8 +335,24 @@ func openProgram(ctx context.Context, dev *hwnpu.Device, dir, backend, name stri
 	return p, nil
 }
 
+// swapGroups makes the steps load each group of the DiT's blocks for its turn and close it after
+// (swap), with ahead the next one while a group runs. The groups are not loaded when it is called.
+func (e *progEngine) swapGroups(ahead bool) {
+	names := make([]string, len(e.blocks))
+	for i, b := range e.blocks {
+		names[i] = b.name
+	}
+	e.swap = true
+	e.ring = runner.NewRing(names, ahead, func(ctx context.Context, name string) (runner.Program, error) {
+		return e.open(ctx, name, false)
+	})
+}
+
 func (e *progEngine) close() error {
 	var errs []error
+	if e.ring != nil { // the group loading for a step that did not come
+		errs = append(errs, e.ring.Close())
+	}
 	for _, s := range e.slots() {
 		if s != nil && s.p != nil {
 			errs = append(errs, s.p.Close())
@@ -338,7 +372,12 @@ func bias(n, rows int) []float32 {
 }
 
 func (e *progEngine) text(ctx context.Context, qx, tx []float32, nq, nt int) ([]float32, error) {
-	return e.run(ctx, e.textP, map[string][]float32{"qx": qx, "tx": tx, "qbias": bias(nq, e.textRows), "tbias": bias(nt, e.textRows)})
+	y, err := e.run(ctx, e.textP, map[string][]float32{"qx": qx, "tx": tx, "qbias": bias(nq, e.textRows), "tbias": bias(nt, e.textRows)})
+	if e.swap && e.textP.p != nil { // it runs once a prompt: not held beside the DiT
+		e.textP.p.Close()
+		e.textP.p = nil
+	}
+	return y, err
 }
 
 func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32, conds [][]float32) ([][]float32, error) {
@@ -363,10 +402,25 @@ func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32, con
 		xs[k] = x
 	}
 	for i, b := range e.blocks {
+		var p runner.Program
+		if e.swap {
+			p, err = e.ring.Take(ctx, i)
+		} else {
+			p, err = e.get(ctx, b)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("blocks group %d: %w", i, err)
+		}
 		for k, cond := range conds {
-			if xs[k], err = e.run(ctx, b, map[string][]float32{"x": xs[k], "t": t, "ctx": cond}); err != nil {
-				return nil, fmt.Errorf("blocks group %d: %w", i, err)
+			if xs[k], err = p.Run(ctx, map[string][]float32{"x": xs[k], "t": t, "ctx": cond}); err != nil {
+				break
 			}
+		}
+		if e.swap {
+			p.Close()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("blocks group %d: %w", i, err)
 		}
 	}
 	for k := range xs {
@@ -381,6 +435,11 @@ func (e *progEngine) hasVAE() bool { return len(e.vae) > 0 }
 
 // decode runs the VAE's stages, each loaded while it runs; the last gives the image (1, 3, h, w).
 func (e *progEngine) decode(ctx context.Context, latents []float32, stage StageFunc) (*image.RGBA, error) {
+	if e.ring != nil { // the group loaded for a step that did not come: not held beside the VAE
+		if err := e.ring.Close(); err != nil {
+			return nil, err
+		}
+	}
 	x := latents
 	for i, name := range e.vae {
 		t0 := time.Now()

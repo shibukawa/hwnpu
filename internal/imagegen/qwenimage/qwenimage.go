@@ -578,6 +578,57 @@ func (s Sampling) guided(sigma float64) bool {
 	return s.Guidance != 1 && (s.CFGMax <= 0 || sigma >= s.CFGMin && sigma <= s.CFGMax)
 }
 
+// checkGenerate fails for what Generate cannot run, and fills in smp's defaults.
+func (p *Pipeline) checkGenerate(cond Cond, neg *Cond, noise []float32, smp *Sampling) error {
+	N, L := p.Dit.Tokens(), p.Dit.Latent
+	if len(noise) != L*N {
+		return fmt.Errorf("qwenimage: %d noise values for latents of %d", len(noise), L*N)
+	}
+	if len(cond.tk) == 0 && len(cond.ptk) == 0 {
+		return errors.New("qwenimage: the DiT runs without a prompt (Encode)")
+	}
+	switch smp.Solver {
+	case "", "euler", "dpm2m":
+	default:
+		return fmt.Errorf("qwenimage: no solver %q (euler, dpm2m)", smp.Solver)
+	}
+	if smp.Guidance == 0 {
+		smp.Guidance = 1
+	}
+	if smp.Guidance != 1 && neg == nil {
+		return errors.New("qwenimage: guidance without a negative prompt's conditioning")
+	}
+	return nil
+}
+
+// GenerateAll is Generate for several pictures at once, conds[k] from noises[k] under the same
+// sigmas and sampling: the latents of each. With a Core ML export (Batched) the pictures step
+// together, each group of the DiT's blocks running every picture before the next group, and step
+// is told of a step when every picture has taken it; else they are drawn one after another, and
+// step is told of each picture's steps.
+func (p *Pipeline) GenerateAll(ctx context.Context, conds []Cond, neg *Cond, noises [][]float32, sigmas []float64, smp Sampling, step StepFunc) ([][]float32, error) {
+	if len(conds) == 0 || len(conds) != len(noises) {
+		return nil, fmt.Errorf("qwenimage: %d conditionings for %d pictures", len(conds), len(noises))
+	}
+	if p.prog == nil {
+		out := make([][]float32, len(conds))
+		for k := range conds {
+			x, err := p.Generate(ctx, conds[k], neg, noises[k], sigmas, smp, step)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = x
+		}
+		return out, nil
+	}
+	for k := range conds {
+		if err := p.checkGenerate(conds[k], neg, noises[k], &smp); err != nil {
+			return nil, err
+		}
+	}
+	return p.generatePrograms(ctx, conds, neg, noises, sigmas, smp, step)
+}
+
 // Generate runs the steps over sigmas (Sigmas) from the noise (latent, rows, columns) under cond,
 // guided by neg (the negative prompt's, Encode) at the steps smp guides: the latents, the same
 // layout. A guided step runs the prompt and the negative prompt back to back in each group of
@@ -585,25 +636,15 @@ func (s Sampling) guided(sigma float64) bool {
 func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []float32, sigmas []float64, smp Sampling, step StepFunc) ([]float32, error) {
 	c := p.Dit
 	N, L := c.Tokens(), c.Latent
-	if len(noise) != L*N {
-		return nil, fmt.Errorf("qwenimage: %d noise values for latents of %d", len(noise), L*N)
-	}
-	if len(cond.tk) == 0 && len(cond.ptk) == 0 {
-		return nil, errors.New("qwenimage: the DiT runs without a prompt (Encode)")
-	}
-	switch smp.Solver {
-	case "", "euler", "dpm2m":
-	default:
-		return nil, fmt.Errorf("qwenimage: no solver %q (euler, dpm2m)", smp.Solver)
-	}
-	if smp.Guidance == 0 {
-		smp.Guidance = 1
-	}
-	if smp.Guidance != 1 && neg == nil {
-		return nil, errors.New("qwenimage: guidance without a negative prompt's conditioning")
+	if err := p.checkGenerate(cond, neg, noise, &smp); err != nil {
+		return nil, err
 	}
 	if p.prog != nil {
-		return p.generatePrograms(ctx, cond, neg, noise, sigmas, smp, step)
+		xs, err := p.generatePrograms(ctx, []Cond{cond}, neg, [][]float32{noise}, sigmas, smp, step)
+		if err != nil {
+			return nil, err
+		}
+		return xs[0], nil
 	}
 	prefetch := !p.ResidentDiT && anima.PrefetchFits(p.vae, p.dir, []string{"dit_in", "dit_blocks", "dit_out"}, "dit_blocks")
 	open := func(name string, swap bool) (*iron.Graph, error) {

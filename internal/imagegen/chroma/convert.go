@@ -18,8 +18,13 @@ import (
 )
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
-// again.
-const ExportVersion = 1
+// again. 2: the DiT's attention scale in the queries' norms, its norms' magnitudes by abs, the
+// attention a head at a time with the image's and the text's keys apart (design.md 16.211, 16.214).
+const ExportVersion = 2
+
+// TextVersion is the layout T5's, the approximator's and the VAE's programs last changed at: an
+// export from it on holds the ones Convert writes, which it links (LinkFrom).
+const TextVersion = 1
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
@@ -326,7 +331,7 @@ func IsRepository(dir string) bool {
 
 // linkFrom is the exports Convert links parts from: text the one with T5's programs, model the
 // one of the same model too (its last T5 program, its empty rows), vae the one of the same size.
-type linkFrom struct{ text, model, vae, dit string }
+type linkFrom struct{ text, model, vae, mods, dit string }
 
 // t5Formats and ditFormats are the formats of T5's and the DiT's weights as the manifest records
 // them: the format, then the rules and the quantizer.
@@ -347,7 +352,7 @@ func linkSources(dirs []string, name string, o ConvertOptions, dc mil.Dit) linkF
 	var f linkFrom
 	for _, d := range dirs {
 		m, err := ReadProgramManifest(d)
-		if err != nil || m.Version != ExportVersion || cmp.Or(m.Backend, llm.BackendCoreML) != cmp.Or(o.Backend, llm.BackendCoreML) {
+		if err != nil || m.Version < TextVersion || m.Version > ExportVersion || cmp.Or(m.Backend, llm.BackendCoreML) != cmp.Or(o.Backend, llm.BackendCoreML) {
 			continue
 		}
 		var md struct {
@@ -365,10 +370,16 @@ func linkSources(dirs []string, name string, o ConvertOptions, dc mil.Dit) linkF
 				f.model = d
 			}
 		}
-		// the approximator and the DiT's groups: the same model, size, text rows and formats
-		if same && f.dit == "" && m.Formats["dit"] == o.ditFormats() && m.Dit.Width == o.Width && m.Dit.Height == o.Height &&
+		// the approximator and the DiT's groups: the same model, size, text rows and formats; the
+		// groups of the same layout only
+		if same && m.Formats["dit"] == o.ditFormats() && m.Dit.Width == o.Width && m.Dit.Height == o.Height &&
 			m.Dit.TextRows == dc.TextRows && len(m.Doubles) > 0 {
-			f.dit = d
+			if f.mods == "" {
+				f.mods = d
+			}
+			if f.dit == "" && m.Version == ExportVersion {
+				f.dit = d
+			}
 		}
 		if m.Dit.Width == o.Width && m.Dit.Height == o.Height && len(m.Vae) > 0 && f.vae == "" {
 			f.vae = d
@@ -388,7 +399,9 @@ func (f linkFrom) part(kind, name string, last bool) string {
 		src = f.text
 	case kind == "vae":
 		src = f.vae
-	case kind == "mods" || kind == "doubles" || kind == "singles":
+	case kind == "mods":
+		src = f.mods
+	case kind == "doubles" || kind == "singles":
 		src = f.dit
 	}
 	if src == "" {
