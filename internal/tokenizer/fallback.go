@@ -78,17 +78,52 @@ func parseFallback(raw []byte, f *file) (*Tokenizer, error) {
 		}
 		fb.byteID[b], fb.byteOf[id] = id, byte(b)
 	}
-	if err := t.readMerges(f); err != nil {
-		return nil, err
-	}
-	for pair, rank := range t.ranks {
+	// add notes the merge of pair at rank, unless first finds the pair already there.
+	var joined []byte
+	add := func(pair [2]string, rank int, first bool) error {
 		a, okA := t.vocab[pair[0]]
 		b, okB := t.vocab[pair[1]]
-		id, okM := t.vocab[pair[0]+pair[1]]
+		joined = append(append(joined[:0], pair[0]...), pair[1]...)
+		id, okM := t.vocab[string(joined)]
 		if !okA || !okB || !okM {
-			return nil, fmt.Errorf("merge %q %q is not in the vocabulary", pair[0], pair[1])
+			return fmt.Errorf("merge %q %q is not in the vocabulary", pair[0], pair[1])
 		}
-		fb.merges[[2]int32{a, b}] = merge{rank, id}
+		key := [2]int32{a, b}
+		if _, dup := fb.merges[key]; !dup || !first {
+			fb.merges[key] = merge{rank, id}
+		}
+		return nil
+	}
+	// The pairs as splitModel read them go in without their ranks by their strings first: a pair
+	// written twice keeps its first rank as in readMerges, since two pairs of strings are one
+	// pair of ids only when they are the same strings. That needs every id to be of one token.
+	direct := f.pairs != nil
+	if direct {
+		seen := make([]bool, len(t.tokens))
+		for _, id := range t.vocab {
+			if id < 0 || seen[id] {
+				direct = false
+				break
+			}
+			seen[id] = true
+		}
+	}
+	if direct {
+		fb.merges = make(map[[2]int32]merge, len(f.pairs))
+		for rank, pair := range f.pairs {
+			if err := add(pair, rank, true); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if err := t.readMerges(f); err != nil {
+			return nil, err
+		}
+		for pair, rank := range t.ranks {
+			if err := add(pair, rank, false); err != nil {
+				return nil, err
+			}
+		}
 	}
 	t.ranks = nil
 	t.fallback = fb

@@ -37,8 +37,14 @@ type progEngine struct {
 	// rather than holding them all (Core AI: a group loads from Core AI's cache in 20 ms). On M1,
 	// Core AI fails to run the eight groups held at once (5.2 GiB on the Neural Engine) rather than
 	// evicting them as Core ML does, runs a group in 0.95 s with four held and in 0.41 s alone
-	// (design.md 16.184). ready says openDiT checked them.
+	// (design.md 16.184). ready says openDiT checked them. On Core AI the programs that run in
+	// turn also load one ahead (inTurn, ring).
 	swapDiT, ready bool
+	// ahead: the programs that run in turn load one ahead (runner.Ahead)
+	ahead bool
+	// ring gives the groups of a step with swapDiT, the next one loading while one runs: a step
+	// of 512 x 512 3.5 -> 3.4 s on an M1 (design.md 16.210)
+	ring *runner.Ring
 }
 
 func openPrograms(dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, error) {
@@ -49,7 +55,7 @@ func openPrograms(dev *hwnpu.Device, dir string, log io.Writer) (*progEngine, er
 	if m.Version != ExportVersion {
 		return nil, fmt.Errorf("%s is of layout %d, this hwnpu reads %d: convert it again", dir, m.Version, ExportVersion)
 	}
-	e := &progEngine{m: m, dir: dir, dev: dev, log: log, swapDiT: dev != nil && dev.Info().Backend == "coreai"}
+	e := &progEngine{m: m, dir: dir, dev: dev, log: log, swapDiT: runner.Swap(dev), ahead: runner.Ahead(dev)}
 	if e.time, err = readTimeFile(filepath.Join(dir, m.Time), m.Dit.Hidden); err != nil {
 		return nil, err
 	}
@@ -104,21 +110,13 @@ func (e *progEngine) each(ctx context.Context, name string, f func(p runner.Prog
 }
 
 // inTurn runs f with each of the programs names in order, each loaded just before and closed
-// after: one is held at a time. Loading the next while one runs did not save time (the Neural
-// Engine's compiles are mostly one at a time) and held two (design.md 16.165).
+// after: one is held at a time. Through Core ML, loading the next while one runs did not save
+// time (the Neural Engine's compiles are mostly one at a time) and held two (design.md 16.165).
+// Through Core AI a program loads from its cache in 0.2 to 0.3 s, as long as it then runs: there
+// the next one loads while this one runs, two held (the text encoder's 9 programs and the DiT's
+// text pass's 8: 7.9 -> 4.7 s a prompt on an M1, the same picture; design.md 16.210).
 func (e *progEngine) inTurn(ctx context.Context, names []string, f func(i int, p runner.Program) error) error {
-	for i, name := range names {
-		p, err := e.open(ctx, name)
-		if err != nil {
-			return err
-		}
-		err = f(i, p)
-		p.Close()
-		if err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	return nil
+	return runner.InTurn(ctx, names, e.ahead, e.open, f)
 }
 
 // encode runs the text encoder on each prompt's ids (the template's), a group of layers at a time
@@ -215,6 +213,7 @@ func (e *progEngine) openDiT(ctx context.Context) error {
 			p.Close()
 		}
 		e.ready = true
+		e.ring = runner.NewRing(e.m.Blocks, e.ahead, e.load)
 		return nil
 	}
 	for _, name := range e.m.Blocks {
@@ -231,6 +230,10 @@ func (e *progEngine) openDiT(ctx context.Context) error {
 func (e *progEngine) closeDiT() error {
 	e.ready = false
 	var errs []error
+	if e.ring != nil { // the group loading for a step that did not come
+		errs = append(errs, e.ring.Close())
+		e.ring = nil
+	}
 	for _, p := range e.blks {
 		errs = append(errs, p.Close())
 	}
@@ -266,7 +269,7 @@ func (e *progEngine) velocity(ctx context.Context, x []float32, sigma float64, c
 		var b runner.Program
 		if e.swapDiT {
 			var err error
-			if b, err = e.load(ctx, name); err != nil {
+			if b, err = e.ring.Take(ctx, gi); err != nil {
 				return nil, fmt.Errorf("%s: %w", name, err)
 			}
 		} else {
