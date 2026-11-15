@@ -23,9 +23,11 @@ import (
 type HubFile struct {
 	Path string
 	Size int64
-	// SHA256 is the file's SHA-256 when it is in LFS (the large ones); GitSHA1 the git blob's
-	// (every file's).
+	// SHA256 is the file's SHA-256 when it is in LFS (the large ones) and the hub says it ("" for
+	// a gated repository's without a token: the hub masks it); GitSHA1 the git blob's (every
+	// file's: of a file in LFS, of its pointer).
 	SHA256, GitSHA1 string
+	LFS             bool
 }
 
 // HubTree is the commit revision of repo is at on Hugging Face and the files of its tree.
@@ -59,8 +61,8 @@ func HubTree(ctx context.Context, repo, revision string) (string, map[string]Hub
 			if f.Type != "file" {
 				continue
 			}
-			h := HubFile{Path: f.Path, Size: f.Size, GitSHA1: f.OID}
-			if f.LFS != nil {
+			h := HubFile{Path: f.Path, Size: f.Size, GitSHA1: f.OID, LFS: f.LFS != nil}
+			if f.LFS != nil && sha256RE.MatchString(f.LFS.OID) {
 				h.SHA256 = f.LFS.OID
 			}
 			files[f.Path] = h
@@ -150,7 +152,7 @@ func ImportOriginal(ctx context.Context, s shared.Source, repo, dir string, name
 			res.Skipped++
 			return nil
 		}
-		if f, ok := have.Files[rel]; ok && f.Size == h.Size && (h.SHA256 == "" || f.SHA256 == h.SHA256) {
+		if f, ok := have.Files[rel]; ok && f.Size == h.Size && (h.SHA256 == "" || f.SHA256 == h.SHA256) && (!h.LFS || h.SHA256 != "" || lfsPointerSHA1(f.SHA256, f.Size) == h.GitSHA1) {
 			res.Had++
 			return nil
 		}
@@ -158,7 +160,7 @@ func ImportOriginal(ctx context.Context, s shared.Source, repo, dir string, name
 		if err != nil {
 			return err
 		}
-		if h.SHA256 != "" && sum != h.SHA256 || h.SHA256 == "" && gitSum != h.GitSHA1 {
+		if !h.matches(sum, gitSum, fi.Size()) {
 			res.Bad++
 			if log != nil {
 				fmt.Fprintf(log, "%s: %s differs from %s's at %.12s: left out\n", p, rel, base, commit)
@@ -192,4 +194,25 @@ func sums(path string, size int64) (string, string, error) {
 		return "", "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), hex.EncodeToString(g.Sum(nil)), nil
+}
+
+// matches reports whether a file of the SHA-256 sum and the git blob SHA-1 gitSum is h: by its
+// SHA-256 when the hub gives it, else by the git object of its LFS pointer (which names the
+// SHA-256 and the size), else by its git blob.
+func (h HubFile) matches(sum, gitSum string, size int64) bool {
+	switch {
+	case h.SHA256 != "":
+		return sum == h.SHA256
+	case h.LFS:
+		return lfsPointerSHA1(sum, size) == h.GitSHA1
+	}
+	return gitSum == h.GitSHA1
+}
+
+// lfsPointerSHA1 is the git blob SHA-1 of the LFS pointer of a file of the SHA-256 sum and size.
+func lfsPointerSHA1(sum string, size int64) string {
+	p := fmt.Sprintf("version https://git-lfs.github.com/spec/v1\noid sha256:%s\nsize %d\n", sum, size)
+	g := sha1.New()
+	fmt.Fprintf(g, "blob %d\x00%s", len(p), p)
+	return hex.EncodeToString(g.Sum(nil))
 }
