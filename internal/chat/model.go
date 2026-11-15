@@ -833,14 +833,24 @@ const wholeLayerBytes = 4 << 20
 // docs/design.md 16.188). An M1 slows down about 12 times past 2.9 GiB (16.118).
 const wholeHold = 5 << 29 // 2.5 GiB
 
+// wholeSlower reports whether this machine runs the whole program slower than the one split at
+// its attention, so that a model has no whole programs (wholeTiers): an M1. Its Neural Engine
+// takes the caches a whole program is given at each call more slowly than an M3's: LFM3-1.7B
+// with a whole program of 2048 generated 33.6 and 37.0 tokens a second (a call 36 ms, the caches
+// of 27 MiB among it) where the split programs alone, their attention over chunks of 1024,
+// generated 39.9 and 43.6 (31 ms), the same drafts kept (docs/design.md 16.218). The split
+// programs alone also hold the weights once (1.4 against 2.6 GiB, under what an M1 holds at full
+// speed, m1HoldBytes) and compile in half the time.
+var wholeSlower = func() bool { return chipName() == "M1" }
+
 // wholeTiers is the cache of the whole program (its caches inside, none of its attention on the
 // host) a model split at its attention runs on with Core AI while the conversation is short,
 // before it moves to the one split at its attention (decode.Session.Migrate): the longest of 512,
 // 1024, 2048 and 4096 whose keys and values a layer are at most wholeLayerBytes. None for a model
-// whose weights (gen bytes) twice are over wholeHold.
+// whose weights (gen bytes) twice are over wholeHold, and none on an M1 (wholeSlower).
 func wholeTiers(model llm.Model, gen int64) []int {
 	pm, ok := model.(llm.Paged)
-	if !ok || 2*gen > wholeHold || len(pm.PagedLayers()) == 0 {
+	if !ok || 2*gen > wholeHold || len(pm.PagedLayers()) == 0 || wholeSlower() {
 		return nil
 	}
 	sh := pm.PagedShape()

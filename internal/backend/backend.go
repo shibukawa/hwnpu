@@ -76,6 +76,14 @@ type Graph interface {
 	Close() error
 }
 
+// InputAllocator is implemented by graphs that can run an input from memory of their own
+// rather than a copy of a buffer's: AllocInput returns the buffer of the input at index there,
+// which may be bound to any argument of that shape, of this graph or another of the device, or
+// nil when it has none for that input.
+type InputAllocator interface {
+	AllocInput(index int) (Buffer, error)
+}
+
 // Request binds buffers to graph arguments and submits executions.
 // Bind has already been checked against ArgInfo by the caller.
 type Request interface {

@@ -49,6 +49,10 @@ var (
 	caiRun   func(h uintptr, ins, outs *uintptr, err **byte) int32
 	// caiForget deletes Core AI's cache entries of an asset; nil with a shim from before it
 	caiForget func(path *byte)
+	// caiInputArray makes an array of an input, whose storage the caller fills in place, and
+	// caiArrayFree frees it; nil with a shim from before them
+	caiInputArray func(h uintptr, index int32) unsafe.Pointer
+	caiArrayFree  func(p unsafe.Pointer)
 )
 
 // kindNeuralEngine is the shim's specialization: prefer the Neural Engine. kindCPU: the CPU alone.
@@ -63,6 +67,11 @@ const (
 // HWNPU_COREML_UNITS. A reduce_mean whose sum passes fp16's range (a mean over 57600 values
 // above 1.1) overflows there, where the Neural Engine and the GPU are right (design.md 16.183).
 const UnitsEnv = "HWNPU_COREAI_UNITS"
+
+// CopyEnv names the environment variable that, when set, gives the programs' inputs buffers of
+// the host's, copied into Core AI's arrays at every run, instead of those arrays themselves
+// (graph.AllocInput): for telling what the copies cost, and whether an error is of the arrays.
+const CopyEnv = "HWNPU_COREAI_COPY"
 
 // OnCPU reports whether UnitsEnv asks for the CPU.
 func OnCPU() bool { return os.Getenv(UnitsEnv) == "cpu" }
@@ -112,6 +121,10 @@ func load() error {
 		purego.RegisterLibFunc(&caiRun, h, "cai_run")
 		if _, err := purego.Dlsym(h, "cai_forget"); err == nil {
 			purego.RegisterLibFunc(&caiForget, h, "cai_forget")
+		}
+		if _, err := purego.Dlsym(h, "cai_input_array"); err == nil {
+			purego.RegisterLibFunc(&caiInputArray, h, "cai_input_array")
+			purego.RegisterLibFunc(&caiArrayFree, h, "cai_array_free")
 		}
 	})
 	return loadErr
@@ -186,12 +199,21 @@ func (d *device) AllocBuffer(size int, kind types.BufferKind) (backend.Buffer, e
 
 func (d *device) Close() error { return nil }
 
-type buffer struct{ b []byte }
+// buffer is the host's memory, or the storage of an array of Core AI's (array: graph.AllocInput).
+type buffer struct {
+	b     []byte
+	array unsafe.Pointer
+}
 
 func (b *buffer) Bytes() []byte                   { return b.b }
 func (b *buffer) SyncToDevice(off, n int) error   { return nil }
 func (b *buffer) SyncFromDevice(off, n int) error { return nil }
 func (b *buffer) Close() error {
+	if b.array != nil {
+		caiArrayFree(b.array)
+		b.b, b.array = nil, nil
+		return nil
+	}
 	err := mem.Free(b.b)
 	b.b = nil
 	return err
@@ -452,6 +474,33 @@ func (g *graph) describe(dir, fn string) error {
 		}
 	}
 	return nil
+}
+
+// AllocInput makes the buffer of the input index as an array of Core AI's, which a run takes as
+// it is: a buffer of the host's is copied into one at every run, and a program's caches are tens
+// of megabytes (an M1 copies about 30 GB/s: PLaMo 3 Translate 2B's 84 MiB of rings took 5.8 of
+// its step's 73 ms, docs/design.md 16.218). It may be bound to any input of that shape, of this
+// program or another. nil when the shim has no such array for the input (backend.InputAllocator).
+func (g *graph) AllocInput(index int) (backend.Buffer, error) {
+	if caiInputArray == nil || g.h == 0 || os.Getenv(CopyEnv) != "" {
+		return nil, nil
+	}
+	if index < 0 || index >= len(g.args) || g.args[index].Kind != types.ArgInput {
+		return nil, fmt.Errorf("coreai: argument %d is not an input", index)
+	}
+	for i, a := range g.order[0] {
+		if a != index {
+			continue
+		}
+		g.mu.Lock()
+		p := caiInputArray(g.h, int32(i))
+		g.mu.Unlock()
+		if p == nil {
+			return nil, nil
+		}
+		return &buffer{b: unsafe.Slice((*byte)(p), g.args[index].Bytes), array: p}, nil
+	}
+	return nil, nil
 }
 
 func (g *graph) Args() []types.ArgInfo            { return g.args }

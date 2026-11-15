@@ -6502,19 +6502,54 @@ PNG はバイト単位で同じ。
 この機械で: `hwnpu cache` は 25.4 GB (IRON のカーネル 19.3 GB、642 単位。ほか `dev/` 5.9 GB)、走査 2.7 秒。元のファイルと書き出しは 11-15 に NAS へ移したので 0。
 
 確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...`。新しい試験: 大きさの読み (`ParseSize`)、変数からの上限、単位の数え (ハードリンクを 1 回、種類)、上限で古い順に消して今使っているものは残す、空きの下限で止めて上限なしなら消さない、`PlanPrune` (年齢、種類、queue にあるものは残す)、`modelstore` で上限を超える取得が `ErrNoRoom`。確かめていないこと: Windows と macOS でのディスクの空き (クロスビルドは通る)、実際のダウンロード中に消すこと。
-### 16.218 一般向けの `hwnpu status` と `hwnpu issue`: NPU の状態と使っているもの、失敗したコマンドの issue の下書き — 2026-11-15
+### 16.218 チャットのモデルの速さの洗い出し (1): Core AI の入力の配列を呼び出し側が直接書く、M1 では分けない 1 本を使わない — 2026-11-15
 
-NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込みで重い) でしか見られず、困ったときに何を書けばよいかも利用者任せだった。16.217 の `hwnpu` に 2 つ足した。
+Mac の `hwnpu-chat` のモデルにまだ速くできるところがあるかを、M1 (16 GB、macOS 27.2.1、Core AI) で 1 ステップを測り分けて洗い出した。重みの部品は読みの床にあり、残っていたのは重みを読む以外の時間 (16.186 と同じ見方) と、チップごとの差だった。この節は測り方と、エクスポートを変えずに入るもの 2 つ。注意の並べ方と PLaMo 3 のリングは次の節から。
 
-- `hwnpu status` (`--json`、`-w 2s`、`--wake`): hwnpu の版 (モジュールとコミット)、OS と CPU とメモリ、コマンドが動かす NPU (`chat.HereVendor`、`HWNPU_BACKEND`)、デバイス (`hwnpu.Enumerate`)、NPU の今 (`npuinfo` を OS ごとに要約: Linux は amdxdna の状態、ファームウェア、タイル、クロック、文脈、gpu_metrics の忙しさと電力。macOS は ANE の起きているか、IOReport の電力と読み出し。Windows は計算専用のアダプターとプロセスごとの使用率)、NPU を使っているプロセスと NPU のメモリ、キャッシュと層
-- 読むことで NPU を起こさない: 起こすのは `--wake` を付けたときだけ。既定では `hwnpu.Enumerate` を呼ばず (デバイスを開くと amdxdna は起きる)、NPU があることと種類は OS の言うことから決める (Linux はドライバ名 `amdxdna`/`intel_vpu`、macOS は I/O Registry の ANE、Windows は計算専用のアダプターの PCI ベンダー。`HWNPU_BACKEND` があればそれ)。`--wake` ではデバイスを開き (`hwnpu.Enumerate`、`chat.HereVendor`)、`npuinfo` も寝ている NPU に問い合わせる。`-w` では Enumerate とキャッシュの走査は 1 回だけ。寝ている NPU で `status` と `issue` を動かして `runtime_active_time` が 0 ms しか増えない (起きない) こと、`--wake` では起きることを確かめた
-- 実行の記録: `hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は `console.RecordRun` で引数を、`console.Log` の書き手 (標準エラー) が行を (進み具合の行は最後の状態、色なし)、`console.EndInterrupted` が終わり方を、`logs/<prog>-<time>-<pid>.log` に書く。コマンドごとに最後の 10 回を残す。`HWNPU_NO_RUN_LOG` で止まる。端末かどうかの判定は変えない (`teeRun` も `Terminal()` を持つ)
-- `hwnpu issue` (`--list`、`--run N`、`--lines`、`--print`、`--title`、`-y`): 直近 1 週間で失敗した最後の実行 (なければ最後の実行) について、コマンド、エラー、ログの末尾、status を Markdown にする。伏せるもの: ホーム (`~`)、ユーザー名と本名、ホスト名、`HWNPU_MODEL_SOURCE*` のホストとフォルダ、公開のもの (Hugging Face、GitHub) 以外の URL のホスト、URL のパスワード、トークン (`token=`、`hf_`、`AKIA`、Bearer)、メールアドレス。空白を含む 40 文字を超える引数 (プロンプト) は文字数に、プロセスのコマンドラインは載せない
-- 送り方: `gh` は使わず、`https://github.com/shibukawa/hwnpu/issues/new?title=...&body=...` を `open` (macOS)、`xdg-open` (Linux)、`rundll32 url.dll,FileProtocolHandler` (Windows。`start` はクエリーの `&` を cmd が読む) で開く。押すまで送られない。URL が 7500 バイトを超えるならログを 2/3 ずつ削り、それでも長ければ `logs/issue-TIME.md` を貼るよう案内する。下書きはいつもそこに残す
+**測り方**: シムの `cai_run` を、入力の写し、Core AI の実行 (`fn.run`)、出力の写しに分けて時間を足す実験版を作った (入れていない)。`aicheck run -calls N` で部品を 1 本ずつ、`hwnpu-chat` で本物の生成を測る。別のプロセスが Neural Engine を使った回は捨てた。
 
-この機械で: `hwnpu status` は Ryzen AI 9 365 の amdxdna (firmware 1.1.2.64、8×6 タイル)、gpu_metrics の NPU 0 %、0.0 W (チップ全体 5.5 W)、キャッシュ 25.4 GB を出す。`hwnpu-chat -m no-such-model "長いプロンプト"` のあとの `hwnpu issue --print` は、プロンプトを `<text of 71 characters>` に、ホームのパスを `~` に、NAS を `source-host-1` に置き換えた。
+**LFM3-1.7B の 1 ステップ** (lut6、1 回 8 トークン、45 トークンのプロンプトから 300 トークン、ms)
 
-確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...`。新しい試験: 実行の記録 (引数、色と `\r` を除いた行、エラー、残す数)、伏せ字 (ホーム、取得元のホストとフォルダ、URL のパスワードと IP、トークン、メール。Hugging Face の URL とファームウェアの版は残す)、引数のプロンプト、issue の URL、下書き (プロセスのコマンドラインを載せない)。確かめていないこと: 実際にブラウザで開くこと (GitHub の画面で受け付けられる長さ)、macOS と Windows での status の要約 (クロスビルドのみ)。
+| | 重みの部品 | 注意 | 合計 | トークン/秒 |
+|---|---|---|---|---|
+| 分けない 1 本 (キャッシュ 2048、2 部品。既定だった) | 36.5 (うちキャッシュ 27 MiB の写し 2.1) | (中) | 36.5 | 33.6 |
+| 注意で分けた形 (7 部品、塊 1024) | 26.8 | 6 × 0.70 = 4.2 | 31.2 | 39.9 |
+| 同、1 回 1 トークン (`--draft 1`) | 26.1 | 6 × 0.62 = 3.7 | 30.0 | 33.0 |
+
+- 重みの部品は 1.30 GB を 26.8 ms、48 GB/s。M1 は表引きの重みを 44〜58 GB/s で読み (出力層の部品が速い)、ここに残りはない
+- 注意の 1 回 (8 トークン): 塊 1024、2048、4096、8192 で 0.64、0.78、1.19、2.07 ms。そのうちシムがキーと値を Core AI の配列に写す分が 0.06、0.10、0.25、0.56 ms (約 29 GB/s)。何もしないプログラムの 1 回は 0.21 ms
+- 1 回 8 トークンは 1 回 1 トークンより 4 % 高いだけ: 下書きが 25 回に 1 回当たれば得で、当たらないときだけ 1 トークンの関数に切り替える案は採らない
+- ホストの仕事 (埋め込み、下書き、サンプリング、表示) は 1 回 0.5 ms
+
+**ほかのモデル** (同じ測り方)
+
+- Qwen3-0.6B (注意 28 層): 分けない 1 本 (キャッシュ 1024) は 1 回 60.9 ms。キャッシュ 112 MiB の写しが 7.9 ms、実行が 52 ms (重みは 0.63 GB)。分けた形は 41.4 ms (注意 28 × 0.79)
+- PLaMo 3 Translate 2B (lut8、4 部品、窓の層 21 層のリング 2048): 1 ステップ 73〜83 ms。リング 84 MiB を毎回写すのが 5.8 ms。リングの長さの分は 16.220
+
+**分けない 1 本は M1 では遅い**: 16.188 の M3 では短い会話が 8 % 速かった (LFM3-1.7B 54.9 → 59.2 トークン/秒)。M1 はプログラムの中のキャッシュを受け取るのが遅く (写しを含めて LFM3-1.7B の 27 MiB に約 10 ms、Qwen3-0.6B の 112 MiB に 48 ms)、分けた形の方が速い。`chat.wholeSlower` (M1) のとき `wholeTiers` は段を作らない: エクスポートは `--tier none` と同じ分けた形だけになる。Neural Engine が持つ重みも 1 回分 (LFM3-1.7B 2.63 → 1.34 GiB)、変換とコンパイルも半分。M2 は測っていない (これまでどおり)。
+
+**入力の配列を呼び出し側が直接書く**: シムは入力ごとに Core AI の配列 (`NDArray`) を持ち、呼び出しのたびに Go のバッファを写していた (16.172)。キャッシュは 1 ステップでほとんど変わらないのに、全部を写す。
+
+- **シム**: `cai_input_array(h, i)` が入力 i の形の配列を作り、その中身 (密な行優先の並び、0 で埋める) の番地を返す。`cai_run` は入力の番地がその配列のものなら、配列そのものを Core AI に渡す (写さない)。形の違う入力に束ねられたら、普通のバッファとして写す。`cai_array_free` で返す。配列は関数によらないので、同じ形の入力ならほかのプログラムにも束ねられる (生成と読み取りのプログラムが共有するキャッシュ、注意のプログラムが順に受け取る塊)。入力ごとの写し先の配列は、普通のバッファを束ねたときに初めて作る
+- **`backend.InputAllocator`、`hwnpu.Graph.AllocInput(index)`**: その入力のバッファを、バックエンドがそこから直接動かせるメモリに取る。ないバックエンドでは `Device.AllocBuffer` と同じ
+- **`chain`**: 部品の入力 (キャッシュ、リング、窓、状態、マスク) と、注意のプログラムの塊とマスク (`attention.newBuf`: キーと値の入力の大きさなら塊として、次にマスクとして) をこれで取る
+- `HWNPU_COREAI_COPY=1` でこれまでどおり写す (比べるため)
+
+**結果** (M1、2 回目以降、`--temp 0`、同じ下書きが当たっている)
+
+| | 前 | 後 |
+|---|---|---|
+| LFM3-1.7B、45 トークンのプロンプト (コード) | 33.6 トークン/秒 | **39.9** (分けた形だけ) |
+| LFM3-1.7B、29 トークンのプロンプト (文章) | 37.0 | **43.6** |
+| Qwen3-0.6B、49 トークンのプロンプト | 20.2 | **30.3** |
+| LFM3-1.7B、3101 トークンのプロンプトの後 (塊 4096) | 39.8〜40.6 (1 ステップ 34.5〜35.1 ms、注意 1.34 ms) | **43.0〜43.1** (32.4〜32.6 ms、0.99〜1.02 ms) |
+| PLaMo 3 Translate 2B、78 トークンの段落 | 12.1 (82.6 ms) | 12.6〜13.1 (76.0〜79.0 ms) |
+
+- 上の 3 行は段の変更、下の 2 行は同じ実行ファイルで `HWNPU_COREAI_COPY=1` と比べた写しの分。PLaMo の訳文は 4 回とも同じ
+- 写しの分は会話が長いほど大きい: 塊 8192 では注意 1 回 2.07 ms のうち 0.56 ms、16K なら 1 ステップに 6.7 ms
+- 入力ごとに写し先の配列を持たなくなった分、メモリも減る (PLaMo 3 2B のリングは Go のバッファと 2 本のプログラムの配列で 3 回持っていた: 252 → 84 MiB)
+
+確かめたこと: `TestInputArrays` (`internal/backend/coreai`: 配列を束ねて動かす、実行の間に中身を書き換える、同じ入力に別の配列、別の入力の配列、普通のバッファに戻してまた配列、返した配列の後、形の違う配列は写す。Core AI の CPU と Neural Engine で)、`TestWholeTiers` (M1 では段なし)。`HWNPU_COREAI_UNITS=cpu` で `go test . ./internal/backend/... ./internal/llm/... ./internal/chat/... ./cmd/hwnpu-chat/...`。確かめていないこと: M2 と M3 での写しの分 (M3 の分けない 1 本は 24 MiB を毎回写している)、画像と音声のプログラム (`chain` を通らないので、これまでどおり写す)。
 
 ### 16.224 Sana の Gemma 2 に指示文のキーと値を持たせる (Core AI): プロンプトの後ろの行だけを計算する — 2026-11-15
 
@@ -6587,3 +6622,17 @@ NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込�
 | `+license:open` | translate | エラー (PLaMo 3 Translate は条件付き) |
 
 確かめたこと: `go build ./...`、`go vet ./internal/chat ./cmd/...`、`go test ./...` (`internal/imagegen/qwenimage` の試験は、この変更の前から `TextDir` がなくてビルドできない。それ以外は通る)。`hwnpu-image list` と `hwnpu-chat list` で、指定なし、`-license:conditional` の用途の欄と、弾かれたモデルの一覧。確かめていないこと: 実機で既定の Sana と FLUX.2 が描くこと (AMD では Sana の書き出し `iron_sana.py` が要る)。
+
+### 16.226 一般向けの `hwnpu status` と `hwnpu issue`: NPU の状態と使っているもの、失敗したコマンドの issue の下書き — 2026-11-15
+
+NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込みで重い) でしか見られず、困ったときに何を書けばよいかも利用者任せだった。16.217 の `hwnpu` に 2 つ足した。
+
+- `hwnpu status` (`--json`、`-w 2s`、`--wake`): hwnpu の版 (モジュールとコミット)、OS と CPU とメモリ、コマンドが動かす NPU (`chat.HereVendor`、`HWNPU_BACKEND`)、デバイス (`hwnpu.Enumerate`)、NPU の今 (`npuinfo` を OS ごとに要約: Linux は amdxdna の状態、ファームウェア、タイル、クロック、文脈、gpu_metrics の忙しさと電力。macOS は ANE の起きているか、IOReport の電力と読み出し。Windows は計算専用のアダプターとプロセスごとの使用率)、NPU を使っているプロセスと NPU のメモリ、キャッシュと層
+- 読むことで NPU を起こさない: 起こすのは `--wake` を付けたときだけ。既定では `hwnpu.Enumerate` を呼ばず (デバイスを開くと amdxdna は起きる)、NPU があることと種類は OS の言うことから決める (Linux はドライバ名 `amdxdna`/`intel_vpu`、macOS は I/O Registry の ANE、Windows は計算専用のアダプターの PCI ベンダー。`HWNPU_BACKEND` があればそれ)。`--wake` ではデバイスを開き (`hwnpu.Enumerate`、`chat.HereVendor`)、`npuinfo` も寝ている NPU に問い合わせる。`-w` では Enumerate とキャッシュの走査は 1 回だけ。寝ている NPU で `status` と `issue` を動かして `runtime_active_time` が 0 ms しか増えない (起きない) こと、`--wake` では起きることを確かめた
+- 実行の記録: `hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は `console.RecordRun` で引数を、`console.Log` の書き手 (標準エラー) が行を (進み具合の行は最後の状態、色なし)、`console.EndInterrupted` が終わり方を、`logs/<prog>-<time>-<pid>.log` に書く。コマンドごとに最後の 10 回を残す。`HWNPU_NO_RUN_LOG` で止まる。端末かどうかの判定は変えない (`teeRun` も `Terminal()` を持つ)
+- `hwnpu issue` (`--list`、`--run N`、`--lines`、`--print`、`--title`、`-y`): 直近 1 週間で失敗した最後の実行 (なければ最後の実行) について、コマンド、エラー、ログの末尾、status を Markdown にする。伏せるもの: ホーム (`~`)、ユーザー名と本名、ホスト名、`HWNPU_MODEL_SOURCE*` のホストとフォルダ、公開のもの (Hugging Face、GitHub) 以外の URL のホスト、URL のパスワード、トークン (`token=`、`hf_`、`AKIA`、Bearer)、メールアドレス。空白を含む 40 文字を超える引数 (プロンプト) は文字数に、プロセスのコマンドラインは載せない
+- 送り方: `gh` は使わず、`https://github.com/shibukawa/hwnpu/issues/new?title=...&body=...` を `open` (macOS)、`xdg-open` (Linux)、`rundll32 url.dll,FileProtocolHandler` (Windows。`start` はクエリーの `&` を cmd が読む) で開く。押すまで送られない。URL が 7500 バイトを超えるならログを 2/3 ずつ削り、それでも長ければ `logs/issue-TIME.md` を貼るよう案内する。下書きはいつもそこに残す
+
+この機械で: `hwnpu status` は Ryzen AI 9 365 の amdxdna (firmware 1.1.2.64、8×6 タイル)、gpu_metrics の NPU 0 %、0.0 W (チップ全体 5.5 W)、キャッシュ 25.4 GB を出す。`hwnpu-chat -m no-such-model "長いプロンプト"` のあとの `hwnpu issue --print` は、プロンプトを `<text of 71 characters>` に、ホームのパスを `~` に、NAS を `source-host-1` に置き換えた。
+
+確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...`。新しい試験: 実行の記録 (引数、色と `\r` を除いた行、エラー、残す数)、伏せ字 (ホーム、取得元のホストとフォルダ、URL のパスワードと IP、トークン、メール。Hugging Face の URL とファームウェアの版は残す)、引数のプロンプト、issue の URL、下書き (プロセスのコマンドラインを載せない)。確かめていないこと: 実際にブラウザで開くこと (GitHub の画面で受け付けられる長さ)、macOS と Windows での status の要約 (クロスビルドのみ)。
