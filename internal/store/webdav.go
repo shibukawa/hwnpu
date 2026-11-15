@@ -6,6 +6,8 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
@@ -35,6 +37,10 @@ type WebDAVConfig struct {
 	// URL's, else the netrc's login for the host, else HWNPU_WEBDAV_USER; with no password: the
 	// URL's, else the netrc's, else HWNPU_WEBDAV_PASSWORD. With neither, nothing signs in.
 	User, Password string
+	// TLSSHA256 is the SHA-256 of the server's certificate (hex, colons allowed) to trust instead
+	// of the system's roots: a NAS's own certificate, which no authority signed and which names
+	// no host (?tls_sha256= of the URL). The certificate is checked, the host name is not.
+	TLSSHA256 string
 	// ReadOnly reads with GET and HEAD only, as any HTTP server serves them; nothing is written
 	// or listed.
 	ReadOnly bool
@@ -91,6 +97,24 @@ func OpenWebDAV(c WebDAVConfig) (*WebDAV, error) {
 	// a whole large download, but one for the connection and the answer's header
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 5 * time.Minute // a MOVE of a large file can take a while
+	if c.TLSSHA256 != "" {
+		want, err := hex.DecodeString(strings.ReplaceAll(strings.ToLower(c.TLSSHA256), ":", ""))
+		if err != nil || len(want) != sha256.Size {
+			return nil, fmt.Errorf("store: %s: tls_sha256 %q is not a SHA-256 in hex", c.Name, c.TLSSHA256)
+		}
+		tr.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true, // the pinned certificate is checked below instead
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 {
+					return fmt.Errorf("store: %s: the server gave no certificate", c.Name)
+				}
+				if got := sha256.Sum256(cs.PeerCertificates[0].Raw); !bytes.Equal(got[:], want) {
+					return fmt.Errorf("store: %s: the server's certificate has the SHA-256 %x, not the tls_sha256 %x", c.Name, got, want)
+				}
+				return nil
+			},
+		}
+	}
 	return &WebDAV{cfg: c, base: u, user: user, pass: pass, client: &http.Client{Transport: tr}, made: map[string]bool{}}, nil
 }
 
@@ -346,7 +370,8 @@ func (w *WebDAV) mkdirs(ctx context.Context, dir string) error {
 		}
 		u = w.url(dir + "/")
 	}
-	// 201 made; 405 (Method Not Allowed) is there already; some servers answer 301 or 200 then
+	// 201 made; 405 (Method Not Allowed) is there already (or, on a UGREEN NAS, its parent is
+	// not: the parents are made first); some servers answer 301 or 200 then
 	_, err := w.do(ctx, "MKCOL", u, nil, nil, http.StatusCreated, http.StatusMethodNotAllowed, http.StatusOK, http.StatusMovedPermanently, http.StatusNoContent)
 	if err != nil {
 		return err
@@ -374,8 +399,16 @@ func (w *WebDAV) put(ctx context.Context, key string, body func() (io.Reader, in
 	rand.Read(rnd[:])
 	tmp := path.Join(dir, ".put-"+hex.EncodeToString(rnd[:]))
 	ok := []int{http.StatusCreated, http.StatusNoContent, http.StatusOK}
+	// the folder first, once a process, so that a large file is not sent twice; and again when
+	// a PUT says it is not there (409, 404; 405 on a UGREEN NAS), made since by another
+	if err := w.mkdirs(ctx, dir); err != nil {
+		return err
+	}
 	_, err := w.do(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
-	if davStatus(err, http.StatusConflict) || davStatus(err, http.StatusNotFound) { // its folder is not there
+	if davStatus(err, http.StatusConflict) || davStatus(err, http.StatusNotFound) || davStatus(err, http.StatusMethodNotAllowed) {
+		w.mu.Lock()
+		delete(w.made, dir)
+		w.mu.Unlock()
 		if err = w.mkdirs(ctx, dir); err == nil {
 			_, err = w.do(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
 		}

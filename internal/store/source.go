@@ -23,7 +23,8 @@ import (
 //
 //	file:///mnt/llm/hwnpu          a folder (file:///C:/models, file://server/share on Windows)
 //	https://USER:PASSWORD@host/dav a WebDAV folder; read with GETs, so any HTTP server serves it
-//	                               read only (the password: here, ~/.netrc or HWNPU_WEBDAV_PASSWORD)
+//	                               read only (the password: here, ~/.netrc or HWNPU_WEBDAV_PASSWORD;
+//	                               ?tls_sha256=HEX trusts a NAS's own certificate)
 //	s3://BUCKET/PREFIX?endpoint=http://host:9000&region=R&profile=P&path_style=true&no_sign=true
 //
 // ?writeback=true puts in the source what is made here and what is read from a later source or
@@ -85,7 +86,8 @@ func ParseSource(name, raw string) (Source, error) {
 		}
 		s.Store = Dir{Name: name, Root: p}
 	case "http", "https":
-		c := WebDAVConfig{Name: name, ReadOnly: !s.Writeback}
+		c := WebDAVConfig{Name: name, ReadOnly: !s.Writeback, TLSSHA256: q.Get("tls_sha256")}
+		q.Del("tls_sha256")
 		if u.User != nil {
 			c.User = u.User.Username()
 			c.Password, _ = u.User.Password()

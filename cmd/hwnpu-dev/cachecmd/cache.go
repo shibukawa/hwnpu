@@ -33,6 +33,7 @@ type Cmd struct {
 	Sources SourcesCmd `cmd:"" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read."`
 	Ls      LsCmd      `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev cache sources); with --original the repositories' locks."`
 	Push    PushCmd    `cmd:"" help:"Put exports for AMD's NPU that are here in the sources written back to (with entry.json, made for them when missing)."`
+	Import  ImportCmd  `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
 	Update  UpdateCmd  `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
 	Verify  VerifyCmd  `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
 	Flush   FlushCmd   `cmd:"" help:"Do the work the background left in the queue (what goes in the sources) and wait for it."`
@@ -463,4 +464,148 @@ func (mc MigrateCmd) Run(c *Cmd) error {
 	}
 	fmt.Printf("%s: %d repositories (%d files), %d conversions moved\n", s, r.Repos, r.Files, r.Entries)
 	return err
+}
+
+// ImportCmd is hwnpu-dev cache import.
+type ImportCmd struct {
+	Dir    []string `arg:"" help:"Folders: a checkpoint (DIR, or DIR=OWNER/NAME[@REVISION] when its name is no model's of the definitions) or an export for AMD's NPU (NAME.amd-npu2*, with manifest.json or model.json)."`
+	DryRun bool     `name:"dry-run" help:"Only show what each folder is taken for."`
+}
+
+// importRepos are the repositories of folders whose name is no model's of the definitions.
+var importRepos = map[string]string{
+	"FLUX.1-schnell":      "black-forest-labs/FLUX.1-schnell",
+	"FLUX.2-klein-4B":     "black-forest-labs/FLUX.2-klein-4B",
+	"gpt-oss-20b":         "openai/gpt-oss-20b",
+	"yunet":               "opencv/face_detection_yunet",
+	"Sana_600M_1024px":    "Efficient-Large-Model/Sana_600M_1024px_diffusers",
+	"SANA1.5_1.6B_1024px": "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
+}
+
+// animaPaths map the folder of tools/amd/iron_anima.py (diffusion_models/, text_encoders/,
+// diffusers/) to its two repositories.
+var animaPaths = []struct{ repo, local, remote string }{
+	{"circlestone-labs/Anima", "diffusion_models/", "split_files/diffusion_models/"},
+	{"circlestone-labs/Anima", "text_encoders/", "split_files/text_encoders/"},
+	{"circlestone-labs/Anima", "vae/", "split_files/vae/"},
+	{"circlestone-labs/Anima-Base-v1.0-Diffusers", "diffusers/", ""},
+}
+
+func (ic ImportCmd) Run(c *Cmd) error {
+	if err := load(c); err != nil {
+		return err
+	}
+	ctx, stop := signalContext()
+	defer stop()
+	writes := shared.Writebacks()
+	if len(writes) == 0 && !ic.DryRun {
+		return errors.New("no source is written back to: give one ?writeback=true (" + shared.SourceEnv + ")")
+	}
+	failed := 0
+	for _, arg := range ic.Dir {
+		dir, repo, _ := strings.Cut(arg, "=")
+		dir = filepath.Clean(dir)
+		if err := ic.one(ctx, writes, dir, repo); err != nil {
+			fmt.Printf("%s: %v\n", dir, err)
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d folders were not put", failed)
+	}
+	return nil
+}
+
+func (ic ImportCmd) one(ctx context.Context, writes []shared.Source, dir, repo string) error {
+	name := filepath.Base(dir)
+	if strings.Contains(name, ".amd-npu2") {
+		return ic.export(ctx, writes, dir)
+	}
+	type part struct {
+		repo string
+		path func(string) string
+	}
+	var parts []part
+	switch {
+	case repo != "":
+		parts = []part{{repo, nil}}
+	case name == "Anima":
+		for _, a := range animaPaths {
+			parts = append(parts, part{a.repo, func(p string) string {
+				if rest, ok := strings.CutPrefix(p, a.local); ok {
+					return a.remote + rest
+				}
+				return ""
+			}})
+		}
+	default:
+		if r, ok := importRepos[name]; ok {
+			parts = []part{{r, nil}}
+			break
+		}
+		for _, m := range chat.Catalog {
+			if m.Repo != "" && m.DirName() == name {
+				parts = []part{{m.Source(), nil}}
+				break
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return errors.New("no model of the definitions is of this name: give DIR=OWNER/NAME")
+	}
+	for _, p := range parts {
+		if ic.DryRun {
+			fmt.Printf("%s: original %s\n", dir, p.repo)
+			continue
+		}
+		for _, s := range writes {
+			res, err := chat.ImportOriginal(ctx, s, p.repo, dir, p.path, console.Log(os.Stderr))
+			if err != nil {
+				return fmt.Errorf("%s: %w", p.repo, err)
+			}
+			fmt.Printf("%s: %s@%.12s: %d files put (%.2f GB), %d there, %d differ, %d not of it\n",
+				dir, p.repo, res.Commit, res.Put, float64(res.Bytes)/1e9, res.Had, res.Bad, res.Skipped)
+		}
+	}
+	return nil
+}
+
+// export puts an export for AMD's NPU made by hand: one of a model's amd_export or first run
+// as hwnpu-dev cache push does, any other under the model whose name begins it (its own name
+// when none), described by its name.
+func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir string) error {
+	have := func(f string) bool { _, err := os.Stat(filepath.Join(dir, f)); return err == nil }
+	if !have("manifest.json") && !have("model.json") && !have("dit_blocks") { // Anima's has neither
+		return errors.New("not a whole export (no manifest.json or model.json)")
+	}
+	name := filepath.Base(dir)
+	stem, _, _ := strings.Cut(name, ".amd-npu2")
+	var m chat.Model
+	for _, c := range chat.Catalog {
+		n := strings.ToLower(c.Name)
+		if l := strings.ToLower(stem); (l == n || strings.HasPrefix(l, n+"-") || strings.HasPrefix(l, n+".")) && len(c.Name) > len(m.Name) {
+			m = c
+		}
+	}
+	kind := "iron-import"
+	var recipe map[string]string
+	switch {
+	case m.Name != "" && len(m.AMDExport) > 0 && filepath.Base(chat.AMDExportDir(m)) == name:
+		kind, recipe = "iron-lm", chat.ExportRecipe(ctx, m, "iron_export_lm.py", m.AMDExport)
+	case m.Name != "":
+		if tool, version, ok := firstRunExport(m); ok && strings.EqualFold(name, strings.ToLower(m.Name)+".amd-npu2") {
+			kind, recipe = chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version)
+		}
+	default:
+		m = chat.Model{Name: stem}
+	}
+	if recipe == nil {
+		recipe = map[string]string{"model": m.Name, "target": cache.AMDTarget, "export": name, "made": "by hand (hwnpu-dev cache import)"}
+	}
+	e := chat.PlaceEntry(kind, m, cache.AMDTarget, name, recipe)
+	if ic.DryRun {
+		fmt.Printf("%s: %s %s\n", dir, kind, e.Path)
+		return nil
+	}
+	return describeAndPut(ctx, writes, m, e, dir)
 }
