@@ -146,7 +146,11 @@ func Lookup(name string) (Model, bool) {
 	return Model{}, false
 }
 
-// ModelsDir is where models are kept when not told: models under cache.Root.
+// ModelDir is the directory of model m's converted programs: ModelsDir/NAME (Model.DirName).
+// Its files (config.json, the checkpoint) are in RepoDir.
+func ModelDir(m Model) string { return filepath.Join(ModelsDir(), m.DirName()) }
+
+// ModelsDir is where the models' converted programs are kept: models under cache.Root.
 // Each model has a directory of its name there.
 func ModelsDir() string {
 	return cache.Sub("models")
@@ -155,9 +159,9 @@ func ModelsDir() string {
 // Resolve returns the model a name of -use means: one of the catalog by its name; a family or a
 // category of the catalog, with a tag or picked for the machine's memory (Pick: plamo3translate,
 // plamo3translate:2b, translate); or a Hugging Face repository (OWNER/NAME) of an architecture
-// hwnpu-chat runs, whose config.json it downloads to root/NAME to find out what the model is for.
+// hwnpu-chat runs, whose config.json it downloads (RepoDir) to find out what the model is for.
 // What else such a model can do is not known. Only the model picked is downloaded.
-func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, error) {
+func Resolve(ctx context.Context, name string, log io.Writer) (Model, error) {
 	m, ok, err := lookupFor(name, log)
 	if err != nil {
 		return Model{}, err
@@ -169,12 +173,8 @@ func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, erro
 	if !ok {
 		return Model{}, errNoModel(name)
 	}
-	dir := filepath.Join(root, m.DirName())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return m, err
-	}
-	path := filepath.Join(dir, "config.json")
-	if err := fetch(ctx, m.Source(), "config.json", path, log); err != nil {
+	path, err := fetch(ctx, m.Source(), "config.json", log)
+	if err != nil {
 		return m, err
 	}
 	a, model, err := llm.LoadConfig(path, "")
@@ -263,11 +263,19 @@ func repoModel(name string) (Model, bool) {
 	return Model{Name: path.Base(repo), Repo: repo, Revision: rev}, true
 }
 
-// Downloaded reports whether the model is in dir: its tables (TablesFile, written once its
-// programs are converted, which then run without the checkpoint), model.safetensors, or the
-// index of a checkpoint in several files and all the files it names.
-func Downloaded(dir string) bool {
-	if exists(filepath.Join(dir, TablesFile)) || exists(filepath.Join(dir, "model.safetensors")) {
+// Downloaded reports whether model m is here: its tables in its directory of programs
+// (ModelDir, TablesFile: written once its programs are converted, which then run without the
+// checkpoint), or its checkpoint (RepoDir): model.safetensors, or the index of a checkpoint in
+// several files and all the files it names.
+func Downloaded(m Model) bool {
+	if exists(filepath.Join(ModelDir(m), TablesFile)) {
+		return true
+	}
+	if m.Repo == "" {
+		return false
+	}
+	dir := RepoDir(m.Source())
+	if exists(filepath.Join(dir, "model.safetensors")) {
 		return true
 	}
 	files, err := shards(filepath.Join(dir, "model.safetensors.index.json"))

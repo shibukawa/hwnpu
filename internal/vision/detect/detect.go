@@ -118,14 +118,11 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
 }
 
-// Fetch downloads the ONNX file into s.Dir unless it is there, checks its sha256 and returns its
+// Fetch downloads the ONNX file (chat.RepoDir) unless it is there, checks its sha256 and returns its
 // path: all the CPU (OpenCPU) needs.
 func Fetch(ctx context.Context, s Setup) (string, error) {
-	model := filepath.Join(s.Dir, filepath.FromSlash(s.File))
-	if err := os.MkdirAll(filepath.Dir(model), 0o755); err != nil {
-		return "", err
-	}
-	if err := chat.Fetch(ctx, s.Repo, s.File, model, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+	model, err := chat.Fetch(ctx, s.Repo, s.File, cmp.Or[io.Writer](s.Log, io.Discard))
+	if err != nil {
 		return "", err
 	}
 	if s.SHA256 != "" {

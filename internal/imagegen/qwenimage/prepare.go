@@ -20,22 +20,23 @@ import (
 
 // Setup is what Prepare makes ready.
 type Setup struct {
-	// Dir holds the checkpoints (a directory per repository, Qwen3-VL-8B in TextDir) and the
-	// exports.
+	// Dir holds the exports; the checkpoint is the repository's files (chat.RepoDir).
 	Dir string
 	// Repo is the Hugging Face repository (Qwen/Qwen-Image-2.1-Turbo).
 	Repo string
+	// TextRepos are the other Qwen-Image-2.1 repositories: Qwen3-VL-8B (the Text files) is
+	// read from the first that has it here, so that it is downloaded once (it is one file in one
+	// repository, shards in another).
+	TextRepos []string
 	// Name names the export (Qwen-Image-2.1-Turbo).
 	Name string
 	ConvertOptions
 	Log io.Writer
 }
 
-// TextDir is the directory of Dir that holds Qwen3-VL-8B (text_encoder/ and processor/): the same
-// weights in every Qwen-Image-2.1 repository (image-models-survey-qwen-chroma.md 2).
-const TextDir = "Qwen3-VL-8B"
-
-// File is a file of a Qwen-Image-2.1 repository Prepare downloads: Text, one of TextDir's.
+// File is a file of a Qwen-Image-2.1 repository Prepare downloads: Text, one of Qwen3-VL-8B's
+// (text_encoder/ and processor/): the same weights in every Qwen-Image-2.1 repository
+// (image-models-survey-qwen-chroma.md 2).
 type File struct {
 	Name string
 	Text bool
@@ -58,20 +59,20 @@ var Files = []File{
 }
 
 // textWeights is the text encoder's checkpoint: one file (Qwen-Image-2.1-Turbo) or the shards of
-// its index (Qwen-Image-2.1). TextDir holds either, whichever repository put it there.
+// its index (Qwen-Image-2.1).
 const textWeights = "text_encoder/model.safetensors"
 
-// fetchSharded puts the checkpoint name of repo at path, or when the repository has it in
-// several files, its index (path.index.json) and the files it names beside it. Shards already
-// there (of another repository's download) are kept.
-func fetchSharded(ctx context.Context, repo, name, path string, log io.Writer) error {
+// fetchSharded puts the checkpoint name of repo here (chat.RepoDir), or when the repository has
+// it in several files, its index (NAME.index.json) and the files it names beside it.
+func fetchSharded(ctx context.Context, repo, name string, log io.Writer) error {
+	path := filepath.Join(chat.RepoDir(repo), filepath.FromSlash(name))
 	index := path + ".index.json"
 	if _, err := os.Stat(index); err != nil {
-		err := chat.Fetch(ctx, repo, name, path, log)
+		_, err := chat.Fetch(ctx, repo, name, log)
 		if err == nil || !chat.NotFound(err) {
 			return err
 		}
-		if err := chat.Fetch(ctx, repo, name+".index.json", index, log); err != nil {
+		if _, err := chat.Fetch(ctx, repo, name+".index.json", log); err != nil {
 			return err
 		}
 	}
@@ -85,11 +86,11 @@ func fetchSharded(ctx context.Context, repo, name, path string, log io.Writer) e
 	dir := filepath.Dir(name)
 	var want []chat.File
 	for _, f := range files {
-		want = append(want, chat.File{Repo: repo, Name: dir + "/" + filepath.Base(f), Path: f})
+		want = append(want, chat.File{Repo: repo, Name: dir + "/" + filepath.Base(f)})
 	}
 	chat.Expect(ctx, want)
 	for _, f := range want {
-		if err := chat.Fetch(ctx, repo, f.Name, f.Path, log); err != nil {
+		if _, err := chat.Fetch(ctx, repo, f.Name, log); err != nil {
 			return err
 		}
 	}
@@ -125,31 +126,38 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
 		return out, nil
 	}
-	root := filepath.Join(s.Dir, filepath.Base(s.Repo))
-	text := filepath.Join(s.Dir, TextDir)
-	at := func(f File) string {
-		if f.Text {
-			return filepath.Join(text, f.Name)
+	textRepo := s.Repo
+	for _, r := range s.TextRepos {
+		if _, err := os.Stat(filepath.Join(chat.RepoDir(r), "text_encoder", "config.json")); err == nil && r != s.Repo {
+			textRepo = r
+			break
 		}
-		return filepath.Join(root, f.Name)
 	}
+	repoOf := func(f File) string {
+		if f.Text {
+			return textRepo
+		}
+		return s.Repo
+	}
+	root, text := chat.RepoDir(s.Repo), chat.RepoDir(textRepo)
 	var want []chat.File
 	for _, f := range Files {
-		want = append(want, chat.File{Repo: s.Repo, Name: f.Name, Path: at(f)})
+		want = append(want, chat.File{Repo: repoOf(f), Name: f.Name})
 	}
 	chat.Expect(ctx, want)
 	for _, f := range Files {
-		path := at(f)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return "", err
-		}
-		fetch := chat.Fetch
+		var err error
 		if f.Name == textWeights {
-			fetch = fetchSharded
+			err = fetchSharded(ctx, repoOf(f), f.Name, log)
+		} else {
+			_, err = chat.Fetch(ctx, repoOf(f), f.Name, log)
 		}
-		if err := fetch(ctx, s.Repo, f.Name, path, log); err != nil {
+		if err != nil {
 			return "", err
 		}
+	}
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err

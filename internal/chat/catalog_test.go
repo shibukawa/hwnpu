@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,7 @@ func TestLookup(t *testing.T) {
 
 // A repository outside the catalog is a chat or an embedding model by its config.json.
 func TestResolve(t *testing.T) {
+	cacheHere(t)
 	configs := map[string]string{
 		"/org/my-lfm3/resolve/main/config.json":  `{"model_type": "lfm3", ` + tinyLFM3[1:],
 		"/org/my-plamo/resolve/main/config.json": tinyPlamo,
@@ -54,7 +56,7 @@ func TestResolve(t *testing.T) {
 	defer srv.Close()
 	defer func(u string) { hubURL = u }(hubURL)
 	hubURL = srv.URL + "/"
-	root := t.TempDir()
+	t.Setenv(cache.RootEnv, t.TempDir())
 	ctx := context.Background()
 	for _, c := range []struct {
 		name string
@@ -64,16 +66,16 @@ func TestResolve(t *testing.T) {
 		{"org/my-lfm3", KindChat},
 		{"org/my-plamo", KindEmbed},
 	} {
-		m, err := Resolve(ctx, c.name, root, io.Discard)
+		m, err := Resolve(ctx, c.name, io.Discard)
 		if err != nil || m.Kind != c.kind {
 			t.Errorf("%s: %+v, %v; want a %s model", c.name, m, err, c.kind)
 		}
 	}
-	if m, _ := Resolve(ctx, "org/my-plamo", root, io.Discard); m.Name != "my-plamo" || m.Repo != "org/my-plamo" {
+	if m, _ := Resolve(ctx, "org/my-plamo", io.Discard); m.Name != "my-plamo" || m.Repo != "org/my-plamo" {
 		t.Errorf("org/my-plamo: %+v", m)
 	}
 	for _, name := range []string{"org/my-bert", "org/none", "no-such-model"} {
-		if m, err := Resolve(ctx, name, root, io.Discard); err == nil {
+		if m, err := Resolve(ctx, name, io.Discard); err == nil {
 			t.Errorf("%s: %+v, want an error", name, m)
 		}
 	}

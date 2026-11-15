@@ -40,7 +40,6 @@ type SegmentCmd struct {
 	Box         string   `placeholder:"X1,Y1,X2,Y2" help:"A box around the thing."`
 	All         bool     `help:"Write all three candidate masks (NAME.mask0.png ...) instead of the best scored."`
 	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"Where to write the masks (default: next to each picture)."`
-	Dir         string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Device      string   `enum:",npu,cpu" default:"" help:"Where to run the encoder: npu or cpu (default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
 	Threads     int      `default:"1" help:"The CPU's threads with --device cpu (1: the least CPU time and energy)."`
 	backendFlag `embed:""`
@@ -70,11 +69,7 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 	if encFile == "" || decFile == "" {
 		return fmt.Errorf("%s: models.yaml names no *_encoder.onnx and *_decoder.onnx in its sha256", m.Name)
 	}
-	dir := c.Dir
-	if dir == "" {
-		dir = chat.ModelsDir()
-	}
-	setup := segment.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), Encoder: encFile, Decoder: decFile, SHA256: m.SHA256, Log: lw}
+	setup := segment.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Encoder: encFile, Decoder: decFile, SHA256: m.SHA256, Log: lw}
 	t0 := time.Now()
 	var sm *segment.Model
 	fetchEnc := func() (string, error) { e, _, err := segment.Fetch(ctx, setup); return e, err }
@@ -111,7 +106,7 @@ func (c *SegmentCmd) Run(ctx context.Context) error {
 			return err
 		}
 		defer dev.Close()
-		if sm, err = segment.OpenProgram(ctx, dev, backend, enc, dec, filepath.Dir(enc), lw); err != nil {
+		if sm, err = segment.OpenProgram(ctx, dev, backend, enc, dec, setup.Dir, lw); err != nil {
 			return err
 		}
 	} else {

@@ -18,7 +18,6 @@ import (
 
 // loadFlags are where the models are and how they are made ready, for every command that runs one.
 type loadFlags struct {
-	Dir         string        `type:"path" placeholder:"DIR" help:"Where the models are kept, each in a directory of its name: the checkpoint and the converted programs, downloaded and converted when missing (default: hwnpu/models in the user cache directory)."`
 	Backend     string        `enum:",coreai,intel,levelzero,openvino" default:"" help:"The NPU to convert for and run on: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one; the models converted for it from their checkpoints), levelzero or intel (Intel's NPU), openvino (OpenVINO, HWNPU_OV_DEVICE, for checking without the NPU) (default: HWNPU_BACKEND, else the NPU found)."`
 	Cache       string        `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	PromptCache string        `placeholder:"DIR" help:"Keep the prompts read on disk, so that a prompt beginning like an earlier one is not read again after a restart (default: prompts in the compile cache; \"off\" for none)."`
@@ -31,7 +30,6 @@ func (f *loadFlags) prepare() error {
 	if err := chat.LoadUserModels(f.Models, logw()); err != nil {
 		return err
 	}
-	f.Dir = cmp.Or(f.Dir, chat.ModelsDir())
 	var err error
 	if f.Backend, err = resolveBackend(context.Background(), f.Backend); err != nil {
 		return err
@@ -125,7 +123,7 @@ type loaded struct {
 
 // loadChat makes ready and loads the chat model name names: an export's directory, the export
 // of AMD's NPU, the programs of --package, or the model of the definitions, downloaded and
-// converted into --dir when missing.
+// converted when missing (chat.RepoDir, chat.ModelDir).
 func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags, ef *encoderFlags) (loaded, error) {
 	iron := ""
 	if isPath(name) {
@@ -135,7 +133,7 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 		}
 	} else if cf.Package == "" {
 		var err error
-		if iron, err = chat.AMDExport(ctx, name, lf.Backend, lf.Dir, logw()); err != nil {
+		if iron, err = chat.AMDExport(ctx, name, lf.Backend, logw()); err != nil {
 			return loaded{}, err
 		}
 	}
@@ -144,7 +142,7 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 		e, err := chat.Load(ctx, chat.Config{IRON: iron, Tokenizer: cf.Tokenizer, Log: logw(), PromptDir: promptDir, Idle: lf.Idle})
 		return loaded{Engine: e}, err
 	}
-	m, err := chat.Resolve(ctx, name, lf.Dir, logw())
+	m, err := chat.Resolve(ctx, name, logw())
 	if err != nil {
 		return loaded{}, err
 	}
@@ -155,12 +153,12 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 	if err != nil {
 		return loaded{}, fmt.Errorf("--tier: %w", err)
 	}
-	md := filepath.Join(lf.Dir, m.DirName())
+	md, src := chat.ModelDir(m), chat.RepoDir(m.Source())
 	c := chat.Config{ModelConfig: cf.Config, Weights: cf.Weights}
 	if cf.Package != "" {
 		c.Packages, c.Name, c.Backend = strings.Split(cf.Package, ","), m.Name, lf.Backend
-		c.ModelConfig = cmp.Or(c.ModelConfig, filepath.Join(md, "config.json"))
-		c.Weights = cmp.Or(c.Weights, chat.WeightsIn(md))
+		c.ModelConfig = cmp.Or(c.ModelConfig, filepath.Join(src, "config.json"))
+		c.Weights = cmp.Or(c.Weights, chat.WeightsIn(m))
 	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name,
 		// the flags, else the model's definition (models.yaml's prefill, format, context and
 		// paged, of the variant for this machine's memory)
@@ -202,10 +200,10 @@ func loadEmbedder(ctx context.Context, m chat.Model, lf *loadFlags, ef *embedFla
 	if err != nil {
 		return nil, fmt.Errorf("--embed-seq: %w", err)
 	}
-	md := filepath.Join(lf.Dir, m.DirName())
+	md, src := chat.ModelDir(m), chat.RepoDir(m.Source())
 	var c chat.EmbedConfig
 	if ef.EmbedPackage != "" {
-		c = chat.EmbedConfig{Packages: strings.Split(ef.EmbedPackage, ","), ModelConfig: filepath.Join(md, "config.json"), Weights: chat.WeightsIn(md), Name: m.Name, Backend: lf.Backend}
+		c = chat.EmbedConfig{Packages: strings.Split(ef.EmbedPackage, ","), ModelConfig: filepath.Join(src, "config.json"), Weights: chat.WeightsIn(m), Name: m.Name, Backend: lf.Backend}
 	} else if c, err = chat.PrepareEmbedder(ctx, chat.EmbedSetup{Dir: md, Repo: m.Source(), Name: m.Name, Seqs: seqs, Backend: lf.Backend, Log: logw()}); err != nil {
 		return nil, err
 	}

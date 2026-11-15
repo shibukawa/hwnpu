@@ -24,7 +24,7 @@ func TestWriteProbes(t *testing.T) {
 	if out == "" || root == "" {
 		t.Skip("HWNPU_ANIMA_PROBE_OUT and HWNPU_ANIMA_DIR")
 	}
-	w, err := OpenWeights(root, "anima-turbo-v1.1.safetensors")
+	w, err := OpenWeights(root, filepath.Join(root, "diffusers"), "anima-turbo-v1.1.safetensors")
 	if err != nil {
 		t.Fatal(err)
 	}

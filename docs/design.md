@@ -5920,3 +5920,30 @@ AMD の gpt-oss-20b は、計算を速くするのではなく、読み出しの
 - `hwnpu-dev cache`: `layers` を `sources` に (読んだ `.env` も出す)。`ls [N] [--original]`、`push`、`gc N` (エントリのフォルダ、`--orphans` で entry.json のない書きかけ)、`update`、`migrate N [--remove]` (前の並びのフォルダをハードリンクで移す)
 
 確かめたこと: `go test ./internal/store ./internal/envfile ./internal/chat ./cmd/...`。store: URL の読み取りと環境の並び、元のモデルと lock (コミットの違いを書かない、名指しのないファイルを読まない)、変換後の置き場所と取り出し、書き換えられたファイルを見つける、キュー、gc、前の並びからの移し (`TestMigrate`)、WebDAV (`golang.org/x/net/webdav` のサーバーで、読み書き、続き、一覧、読むだけの HTTP、netrc)。chat: 取得元の順と HF、HF なしで HF に出ない、固定の sha256 と固定のリビジョン、S3 (偽のサーバー)、書き戻しと 2 台目が HF に出ない (`TestWriteback`)、`v0-`、`v3`、`v3-` の当たり方 (`TestSharedExport`: 版ありは道具が変わっても取る、コミットが変われば作る)、Core AI の書き出しと表。この機械の NAS (`/mnt/llm`) は今マウントされておらず、前の並びのデータの移しと Synology の WebDAV の実機は未確認。
+
+### 16.209 層を平らに: 手元のキャッシュと同梱のモデルも取得元、`original/OWNER/NAME` を全部のコマンドで、公開の `modelstore` — 2026-11-15
+
+16.208 の取得元の前後に層を足し、1 つの仕組みで並べた (docs/cache-sharing.md 7)。
+
+```
+0. この機械のキャッシュ (cache.Root)  いつも書き戻す・その場で使う
+1. HWNPU_MODEL_SOURCE, _1, ...
+2. アプリ同梱のモデル                 configdir の資源フォルダの models/、読むだけ・その場で使う
+3. Hugging Face
+```
+
+- 元のファイルは、どの層から来ても手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`) に置き、手元の `hwnpu-lock.json` に名指しする。`chat.Fetch(ctx, repo, name, log)` はパスを返す (置き場所を呼ぶ側が決めない)。`chat.FetchWeights` も `model.safetensors` のパスを返す。前は各パッケージが `Setup.Dir` (`models/NAME`、`Anima/`、`Chroma/<repo>`、`t5-xxl/`、`gemma-2-2b-it/`、`Qwen3-VL-8B/`、`ocr/<repo>`...) をばらばらに組み立てていた
+- 速い道: 手元の lock がファイルを名指しし、大きさが合い、コミットが決まったものと同じならネットにも取得元にも聞かない。コミットは定義の固定、1 番以降で最初の lock、手元の lock、HF の `main` の順。取得元の lock が移れば手元も移り、sha256 が同じファイルは残す (`store.Record` の follow)
+- 前の `models/NAME/FILE` は読まれたときに移す (sha256 を固定、lock、`X-Linked-Etag` と照らす)。この機械の `~/.cache/hwnpu/models` は 11-14 に NAS へ移して空だったので、移すものはなかった
+- 同梱のモデル: `store.SetBundles`、`store.Dir.InPlace` (ハードリンク、できなければシンボリックリンク)。lock を信頼して sha256 は計り直さない。hwnpu のコマンドは `configdir.New("", "hwnpu")` の資源フォルダ (`share/hwnpu/models` など)、組み込むアプリは `modelstore.Options.Bundle`
+- 共有していた部品 (Sana の Gemma 2、Chroma の T5-XXL と VAE) は各リポジトリのフォルダに。models.yaml が sha256 を固定しているので `sameFile` がハードリンクで 1 つにする (リポジトリ名で引くように直した)。Qwen-Image の Qwen3-VL-8B は 1 ファイルのリポジトリと分割のリポジトリがあるので、`qwenimage.Setup.TextRepos` で、もう手元にある方のリポジトリから読む
+- Anima の `Convert` は 1 つのフォルダの並び (`diffusion_models/`、`text_encoders/`、`diffusers/`) でなく `anima.Checkpoint{Models, Diffusers}`。手で並べたフォルダは `anima.LayoutCheckpoint`
+- 各コマンドの `--dir` を消した (根は `HWNPU_CACHE`)。`chat.Resolve`、`chat.List`、`chat.AMDExport`、`chat.PrepareAMD` から dir の引数を外し、`chat.ModelDir(m)` (変換したもの、`models/NAME`)、`chat.Downloaded(m)`、`chat.WeightsIn(m)` に。Intel の確認のスクリプトは `-ModelsDir` を `-CacheRoot` (`HWNPU_CACHE`) に。顔の検出は `~/models/<repo>` を直接読むのをやめた
+- `hwnpu-dev cache` の番号は 0 が手元のキャッシュ (`sources`、`ls 0`、`gc 0`、`update --source 0`)。書き戻す取得元がなければ `update` は手元の lock を移す
+- 公開の `modelstore` (`Open(Options{Root, Sources, HuggingFace, Bundle, BundleFolder})`、`File`、`Weights`、`Dir`、`Layers`)。層はプロセスの設定。`cache.SetRoot`
+- `go test` は `HWNPU_CACHE` がなければプロセスごとの一時フォルダを根にする (試験が `~/.cache/hwnpu` に書かない)。chat の試験は試験ごとに根を分ける (`cacheHere`)
+
+変換したもの (`models/NAME` のプログラム、`entries/`、`~/models`) を手元でも `converted/.../vN` にし、完了の印を `entry.json` に揃えるのは次の PR。
+
+確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...` が通る。新しい試験: 取得元から手元へ取り、取得元をなくしても手元から読む、lock が移ると手元も移り同じファイルは残す、前の `models/NAME` の移し (sha256 の違うものは取り直す)、同梱のモデルをその場で (ハードリンク)、`modelstore` の層 (`TestLayers`)。確かめていないこと: 実機の Hugging Face からの取得、Mac と Intel の機械での実行、インストーラが置いた同梱のモデル。
+

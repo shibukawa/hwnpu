@@ -33,7 +33,7 @@ func TestConvertParts(t *testing.T) {
 	if f := os.Getenv("HWNPU_QWENIMAGE_DIT_TEXT"); f != "" {
 		o.DitTextFormat, _, _ = strings.Cut(f, ":")
 	}
-	if err := Convert(root, filepath.Join(filepath.Dir(root), TextDir), out, o, os.Stderr); err != nil {
+	if err := Convert(root, root, out, o, os.Stderr); err != nil {
 		t.Fatal(err)
 	}
 }

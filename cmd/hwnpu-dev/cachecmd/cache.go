@@ -74,8 +74,15 @@ func (SourcesCmd) Run(c *Cmd) error {
 	ss := shared.Sources()
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "#\tsource\twriteback")
-	for i, s := range ss {
-		fmt.Fprintf(w, "%d\t%s\t%v\n", i+1, s, s.Writeback)
+	for i, s := range layers() {
+		wb := fmt.Sprint(s.Writeback)
+		switch {
+		case i == 0:
+			wb = "this machine's"
+		case s.From == "bundle":
+			wb = "bundled, read only"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\n", i, s, wb)
 	}
 	if shared.HuggingFace() {
 		fmt.Fprintf(w, "-\tHugging Face\t-\n")
@@ -90,18 +97,22 @@ func (SourcesCmd) Run(c *Cmd) error {
 	return nil
 }
 
-// source is the source of number n (1 is the first) of hwnpu-dev cache sources.
+// layers are the layers of hwnpu-dev cache sources, by their numbers: 0 this machine's cache,
+// then the sources of the environment and the bundled models.
+func layers() []shared.Source { return append([]shared.Source{shared.Local()}, shared.Sources()...) }
+
+// source is the layer of number n of hwnpu-dev cache sources (0: this machine's cache).
 func source(n int) (shared.Source, error) {
-	ss := shared.Sources()
-	if n < 1 || n > len(ss) {
-		return shared.Source{}, fmt.Errorf("no source %d: hwnpu-dev cache sources shows %d", n, len(ss))
+	ls := layers()
+	if n < 0 || n >= len(ls) {
+		return shared.Source{}, fmt.Errorf("no source %d: hwnpu-dev cache sources shows 0 to %d", n, len(ls)-1)
 	}
-	return ss[n-1], nil
+	return ls[n], nil
 }
 
 // LsCmd is hwnpu-dev cache ls.
 type LsCmd struct {
-	Source   int  `arg:"" optional:"" help:"The source's number in hwnpu-dev cache sources (all when left out)."`
+	Source   int  `arg:"" optional:"" default:"-1" help:"The source's number in hwnpu-dev cache sources (0: this machine's cache; all when left out)."`
 	Original bool `help:"List the repositories' locks (original/) instead."`
 }
 
@@ -117,8 +128,8 @@ func (l LsCmd) Run(c *Cmd) error {
 	} else {
 		fmt.Fprintln(w, "source\tkind\tGB\tmade\tpath")
 	}
-	for i, s := range shared.Sources() {
-		if l.Source != 0 && l.Source != i+1 {
+	for i, s := range layers() {
+		if l.Source >= 0 && l.Source != i {
 			continue
 		}
 		if l.Original {
@@ -130,14 +141,14 @@ func (l LsCmd) Run(c *Cmd) error {
 			for _, r := range repos {
 				lk, err := shared.ReadLock(ctx, s, r)
 				if err != nil {
-					fmt.Fprintf(w, "%d\t%s\t?\t?\t?\t%v\n", i+1, r, err)
+					fmt.Fprintf(w, "%d\t%s\t?\t?\t?\t%v\n", i, r, err)
 					continue
 				}
 				var n int64
 				for _, f := range lk.Files {
 					n += f.Size
 				}
-				fmt.Fprintf(w, "%d\t%s\t%.12s\t%d\t%.2f\t%s\n", i+1, r, lk.Commit, len(lk.Files), float64(n)/1e9, lk.Updated.Local().Format(time.DateTime))
+				fmt.Fprintf(w, "%d\t%s\t%.12s\t%d\t%.2f\t%s\n", i, r, lk.Commit, len(lk.Files), float64(n)/1e9, lk.Updated.Local().Format(time.DateTime))
 			}
 			continue
 		}
@@ -149,10 +160,10 @@ func (l LsCmd) Run(c *Cmd) error {
 		for _, rel := range entries {
 			e, err := shared.ReadEntryAt(ctx, s, rel)
 			if err != nil {
-				fmt.Fprintf(w, "%d\t?\t?\t?\t%s\n", i+1, rel)
+				fmt.Fprintf(w, "%d\t?\t?\t?\t%s\n", i, rel)
 				continue
 			}
-			fmt.Fprintf(w, "%d\t%s\t%.2f\t%s\t%s\n", i+1, e.Kind, float64(e.Bytes())/1e9, e.Made.Local().Format(time.DateTime), strings.TrimPrefix(rel, "converted/"))
+			fmt.Fprintf(w, "%d\t%s\t%.2f\t%s\t%s\n", i, e.Kind, float64(e.Bytes())/1e9, e.Made.Local().Format(time.DateTime), strings.TrimPrefix(rel, "converted/"))
 		}
 	}
 	return w.Flush()
@@ -259,7 +270,7 @@ func pushFirstRun(ctx context.Context, writes []shared.Source, m chat.Model, too
 
 // GCCmd is hwnpu-dev cache gc.
 type GCCmd struct {
-	Source    int      `arg:"" help:"The source's number in hwnpu-dev cache sources."`
+	Source    int      `arg:"" help:"The source's number in hwnpu-dev cache sources (0: this machine's cache)."`
 	Model     []string `help:"Remove the entries of these models." placeholder:"NAME"`
 	Kind      []string `help:"Remove the entries of these kinds (iron-lm, iron-onnxcnn...)." placeholder:"KIND"`
 	Key       []string `help:"Remove the entries whose key starts with these (the HASH of vN-HASH)." placeholder:"KEY"`
@@ -367,7 +378,7 @@ func (FlushCmd) Run(c *Cmd) error {
 // UpdateCmd is hwnpu-dev cache update.
 type UpdateCmd struct {
 	Repo   []string `arg:"" optional:"" help:"Models of the definitions or repositories (OWNER/NAME[@REVISION]) to move (all the sources hold when left out)."`
-	Source int      `help:"Only this source (its number in hwnpu-dev cache sources)."`
+	Source int      `default:"-1" help:"Only this source (its number in hwnpu-dev cache sources; 0: this machine's cache, which otherwise follows the sources)."`
 }
 
 func (u UpdateCmd) Run(c *Cmd) error {
@@ -377,7 +388,10 @@ func (u UpdateCmd) Run(c *Cmd) error {
 	ctx, stop := signalContext()
 	defer stop()
 	writes := shared.Writebacks()
-	if u.Source != 0 {
+	if len(writes) == 0 {
+		writes = []shared.Source{shared.Local()} // no shared source: this machine's cache moves itself
+	}
+	if u.Source >= 0 {
 		s, err := source(u.Source)
 		if err != nil {
 			return err
@@ -432,6 +446,9 @@ func (mc MigrateCmd) Run(c *Cmd) error {
 	}
 	ctx, stop := signalContext()
 	defer stop()
+	if mc.Source == 0 {
+		return errors.New("this machine's cache moves its files itself when they are read (models/NAME to original/)")
+	}
 	s, err := source(mc.Source)
 	if err != nil {
 		return err

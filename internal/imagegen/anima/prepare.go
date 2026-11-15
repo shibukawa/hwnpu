@@ -33,26 +33,25 @@ const (
 	RepoDiffusers = "circlestone-labs/Anima-Base-v1.0-Diffusers"
 )
 
-// File is a file Prepare downloads: Name of the Hugging Face repository Repo, at Path in Dir.
-type File struct{ Repo, Name, Path string }
+// File is a file Prepare downloads: Name of the Hugging Face repository Repo.
+type File struct{ Repo, Name string }
 
 // Files are the files Prepare downloads for the diffusion model dit (models.yaml pins their
 // sha256: the split files under the model's repository, the Diffusers ones under diffusers/).
 func Files(dit string) []File {
 	return []File{
-		{RepoSplit, "split_files/diffusion_models/" + dit, "diffusion_models/" + dit},
-		{RepoSplit, "split_files/text_encoders/qwen_3_06b_base.safetensors", "text_encoders/qwen_3_06b_base.safetensors"},
-		{RepoDiffusers, "vae/config.json", "diffusers/vae/config.json"},
-		{RepoDiffusers, "vae/diffusion_pytorch_model.safetensors", "diffusers/vae/diffusion_pytorch_model.safetensors"},
-		{RepoDiffusers, "tokenizer/tokenizer.json", "diffusers/tokenizer/tokenizer.json"},
-		{RepoDiffusers, "t5_tokenizer/tokenizer.json", "diffusers/t5_tokenizer/tokenizer.json"},
+		{RepoSplit, "split_files/diffusion_models/" + dit},
+		{RepoSplit, "split_files/text_encoders/qwen_3_06b_base.safetensors"},
+		{RepoDiffusers, "vae/config.json"},
+		{RepoDiffusers, "vae/diffusion_pytorch_model.safetensors"},
+		{RepoDiffusers, "tokenizer/tokenizer.json"},
+		{RepoDiffusers, "t5_tokenizer/tokenizer.json"},
 	}
 }
 
 // Setup is what Prepare makes ready.
 type Setup struct {
-	// Dir holds the checkpoint in Convert's layout (diffusion_models/, text_encoders/,
-	// diffusers/) and the exports.
+	// Dir holds the exports; the checkpoint is the repositories' files (RepoCheckpoint).
 	Dir string
 	// ConvertOptions are the export's: Backend, the size, the diffusion model's file and the
 	// formats (empty: Formats), Group and QChunk. Only is not used.
@@ -95,7 +94,7 @@ func ExportName(o ConvertOptions) string {
 		o.TextFormat, o.DitFormat, o.Group, o.QChunk, ExportVersion, cmp.Or(o.Backend, "coreml"))
 }
 
-// Prepare makes Anima ready in s.Dir, as hwnpu-chat makes its models ready: it downloads the
+// Prepare makes Anima ready in s.Dir (its checkpoint: RepoCheckpoint), as hwnpu-chat makes its models ready: it downloads the
 // checkpoint files that are missing, converts the export that is missing and returns its
 // directory. NAME.done, written last, says an export is whole; one cut off is converted again.
 func Prepare(ctx context.Context, s Setup) (string, error) {
@@ -128,15 +127,11 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	var want []chat.File
 	for _, f := range Files(o.Dit) {
-		want = append(want, chat.File{Repo: f.Repo, Name: f.Name, Path: filepath.Join(s.Dir, f.Path)})
+		want = append(want, chat.File{Repo: f.Repo, Name: f.Name})
 	}
 	chat.Expect(ctx, want)
 	for _, f := range Files(o.Dit) {
-		path := filepath.Join(s.Dir, f.Path)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return "", err
-		}
-		if err := chat.Fetch(ctx, f.Repo, f.Name, path, log); err != nil {
+		if _, err := chat.Fetch(ctx, f.Repo, f.Name, log); err != nil {
 			return "", err
 		}
 	}
@@ -149,7 +144,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	}
 	fmt.Fprintf(log, "converting %s (%dx%d, text %s, DiT %s); this takes under a minute\n", filepath.Base(out), o.Width, o.Height, o.TextFormat, o.DitFormat)
 	t0 := time.Now()
-	if err := Convert(s.Dir, out, o, log); err != nil {
+	if err := Convert(RepoCheckpoint(), out, o, log); err != nil {
 		return "", err
 	}
 	fmt.Fprintf(log, "converted in %.0f s\n", time.Since(t0).Seconds())

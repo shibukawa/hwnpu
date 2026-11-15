@@ -19,7 +19,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -114,14 +113,11 @@ func newProgram(g *onnx.Graph) *onnx.Program {
 	return &onnx.Program{G: g, Inputs: []onnx.ValueInfo{{Name: in, Shape: []int{1, 3, Size, Size}}}, Outputs: g.Cut(in, dynamic, outputs), Flat: true}
 }
 
-// Fetch downloads the ONNX export into s.Dir unless it is there, checks its sha256 and returns
+// Fetch downloads the ONNX export (chat.RepoDir) unless it is there, checks its sha256 and returns
 // its path: all the CPU (OpenCPU) needs.
 func Fetch(ctx context.Context, s Setup) (string, error) {
-	model := filepath.Join(s.Dir, filepath.FromSlash(ModelFile))
-	if err := os.MkdirAll(filepath.Dir(model), 0o755); err != nil {
-		return "", err
-	}
-	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+	model, err := chat.Fetch(ctx, s.Repo, ModelFile, cmp.Or[io.Writer](s.Log, io.Discard))
+	if err != nil {
 		return "", err
 	}
 	if s.SHA256 != "" {

@@ -69,7 +69,6 @@ type result struct {
 
 func Main() {
 	use := flag.String("use", "LFM3-1.7B", "the chat model: a name that hwnpu-chat list shows, or a Hugging Face repository OWNER/NAME")
-	dir := flag.String("dir", chat.ModelsDir(), "where the models are kept (as hwnpu-chat's --dir); the programs go in FORMATS/ of the model's program directory")
 	formats := flag.String("formats", "int8,int4-g128,int4", "weight formats to compare, comma separated")
 	ref := flag.String("ref", "fp16", "the reference format (\"none\": no reference, perplexity and time only)")
 	backend := flag.String("backend", "", "the NPU (as hwnpu-chat's --backend; default: HWNPU_BACKEND, else the NPU found)")
@@ -89,50 +88,52 @@ func Main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := run(ctx, *use, *dir, *formats, *ref, *backend, *refBackend, *cache, *seq, *cacheDir, *jsonOut); err != nil {
+	if err := run(ctx, *use, *formats, *ref, *backend, *refBackend, *cache, *seq, *cacheDir, *jsonOut); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-dev formats:", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, use, root, formatList, refFormat, backend, refBackend string, cache, seq int, cacheDir, jsonOut string) error {
-	m, err := chat.Resolve(ctx, use, root, os.Stderr)
+func run(ctx context.Context, use, formatList, refFormat, backend, refBackend string, cache, seq int, cacheDir, jsonOut string) error {
+	m, err := chat.Resolve(ctx, use, os.Stderr)
 	if err != nil {
 		return err
 	}
 	if m.Kind != chat.KindChat {
 		return fmt.Errorf("%s is not a chat model", m.Name)
 	}
-	md := filepath.Join(root, m.DirName())
+	// the programs go in formats/ of the model's directory of programs (chat.ModelDir)
+	md, src := chat.ModelDir(m), chat.RepoDir(m.Source())
 	if err := os.MkdirAll(md, 0o755); err != nil {
 		return err
 	}
-	if err := chat.Fetch(ctx, m.Source(), "config.json", filepath.Join(md, "config.json"), os.Stderr); err != nil {
+	if _, err := chat.Fetch(ctx, m.Source(), "config.json", os.Stderr); err != nil {
 		return err
 	}
-	a, model, err := llm.LoadConfig(filepath.Join(md, "config.json"), "")
+	a, model, err := llm.LoadConfig(filepath.Join(src, "config.json"), "")
 	if err != nil {
 		return err
 	}
 	// the architecture's tokenizer (PLaMo 3's tokenizer.jsonl) and the checkpoint, in shards or not
 	for _, f := range chat.TokenizerFiles(a.Name) {
-		if err := chat.Fetch(ctx, m.Source(), f, filepath.Join(md, f), os.Stderr); err != nil {
+		if _, err := chat.Fetch(ctx, m.Source(), f, os.Stderr); err != nil {
 			return err
 		}
 	}
-	if err := chat.FetchWeights(ctx, m.Source(), md, os.Stderr); err != nil {
+	weights, err := chat.FetchWeights(ctx, m.Source(), os.Stderr)
+	if err != nil {
 		return err
 	}
 	cm, ok := model.(llm.Cached)
 	if !ok {
 		return fmt.Errorf("%s cannot run with a KV cache", a.Title)
 	}
-	w, err := llm.OpenWeights(filepath.Join(md, "model.safetensors"), a)
+	w, err := llm.OpenWeights(weights, a)
 	if err != nil {
 		return err
 	}
 	defer w.Close()
-	tok, err := tokenizer.Load(filepath.Join(md, chat.TokenizerFiles(a.Name)[0]))
+	tok, err := tokenizer.Load(filepath.Join(src, chat.TokenizerFiles(a.Name)[0]))
 	if err != nil {
 		return err
 	}

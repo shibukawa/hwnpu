@@ -3,10 +3,11 @@ package chat
 import (
 	"errors"
 	"fmt"
+	"github.com/shibukawa/configdir"
 	"io"
 	"maps"
 	"os"
-	"path"
+
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -125,6 +126,9 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	}
 	Catalog, Categories, Aliases, ModelFiles = catalog, categories, aliases, t.files
 	shared.SetSources(sources, hf)
+	if user {
+		shared.SetBundles(BundleDirs(configdir.New("", "hwnpu"), ""))
+	}
 	digests, pinned = map[string]map[string]string{}, map[string][]pinnedFile{}
 	for _, m := range catalog {
 		for f, d := range m.SHA256 {
@@ -137,12 +141,8 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 				digests[repo] = map[string]string{}
 			}
 			digests[repo][f] = d
-			dir := m.DirName()
-			if repo != m.Source() {
-				r, _, _ := strings.Cut(repo, "@")
-				dir = path.Base(r)
-			}
-			if p := (pinnedFile{dir, f}); !slices.Contains(pinned[strings.ToLower(d)], p) {
+			base, _, _ := strings.Cut(repo, "@")
+			if p := (pinnedFile{base, f}); !slices.Contains(pinned[strings.ToLower(d)], p) {
 				pinned[strings.ToLower(d)] = append(pinned[strings.ToLower(d)], p)
 			}
 		}

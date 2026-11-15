@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/chat"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,10 +34,26 @@ type ConvertOptions struct {
 	Only map[string]bool
 }
 
-// Convert writes an export of Anima from root (the layout of tools/amd/iron_anima.py:
-// diffusion_models/, text_encoders/, diffusers/) into out: the programs, the tokenizers, the
+// Checkpoint is where Convert reads Anima from: Models holds diffusion_models/ and
+// text_encoders/ (split_files/ of RepoSplit), Diffusers vae/, tokenizer/ and t5_tokenizer/ (of
+// RepoDiffusers).
+type Checkpoint struct{ Models, Diffusers string }
+
+// LayoutCheckpoint is the Checkpoint of a folder in the layout of tools/amd/iron_anima.py:
+// diffusion_models/, text_encoders/, diffusers/.
+func LayoutCheckpoint(root string) Checkpoint {
+	return Checkpoint{Models: root, Diffusers: filepath.Join(root, "diffusers")}
+}
+
+// RepoCheckpoint is the Checkpoint of the repositories' files here (chat.RepoDir), which
+// Prepare downloads.
+func RepoCheckpoint() Checkpoint {
+	return Checkpoint{Models: filepath.Join(chat.RepoDir(RepoSplit), "split_files"), Diffusers: chat.RepoDir(RepoDiffusers)}
+}
+
+// Convert writes an export of Anima from ck into out: the programs, the tokenizers, the
 // embedding tables (text/, as the IRON export's) and manifest.json.
-func Convert(root, out string, o ConvertOptions, log io.Writer) error {
+func Convert(ck Checkpoint, out string, o ConvertOptions, log io.Writer) error {
 	if o.Width%16 != 0 || o.Height%16 != 0 || o.Width <= 0 || o.Height <= 0 {
 		return fmt.Errorf("anima: %dx%d is no whole 16-pixel patches", o.Width, o.Height)
 	}
@@ -52,7 +69,7 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 	if o.Dit == "" {
 		o.Dit = "anima-turbo-v1.1.safetensors"
 	}
-	w, err := mil.OpenWeights(root, o.Dit)
+	w, err := mil.OpenWeights(ck.Models, ck.Diffusers, o.Dit)
 	if err != nil {
 		return err
 	}
@@ -65,7 +82,7 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 		Mean []float64 `json:"latents_mean"`
 		Std  []float64 `json:"latents_std"`
 	}
-	raw, err := os.ReadFile(filepath.Join(root, "diffusers", "vae", "config.json"))
+	raw, err := os.ReadFile(filepath.Join(ck.Diffusers, "vae", "config.json"))
 	if err != nil {
 		return err
 	}
@@ -123,7 +140,7 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 		return err
 	}
 	if len(o.Only) == 0 || o.Only["text"] {
-		if err := writeTextFiles(root, out, w); err != nil {
+		if err := writeTextFiles(ck, out, w); err != nil {
 			return err
 		}
 	}
@@ -132,10 +149,10 @@ func Convert(root, out string, o ConvertOptions, log io.Writer) error {
 
 // writeTextFiles writes text/: the tokenizers, the embedding tables (bf16) the host reads the
 // prompt's rows from and the empty prompt's conditioning (EmptyCondFile).
-func writeTextFiles(root, out string, w *mil.Weights) error {
+func writeTextFiles(ck Checkpoint, out string, w *mil.Weights) error {
 	for _, c := range []struct{ src, dst string }{
-		{filepath.Join(root, "diffusers", "tokenizer", "tokenizer.json"), "qwen_tokenizer.json"},
-		{filepath.Join(root, "diffusers", "t5_tokenizer", "tokenizer.json"), "t5_tokenizer.json"},
+		{filepath.Join(ck.Diffusers, "tokenizer", "tokenizer.json"), "qwen_tokenizer.json"},
+		{filepath.Join(ck.Diffusers, "t5_tokenizer", "tokenizer.json"), "t5_tokenizer.json"},
 	} {
 		b, err := os.ReadFile(c.src)
 		if err != nil {

@@ -19,7 +19,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
@@ -134,11 +133,8 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 // Fetch downloads nmp.onnx unless it is there, checks its sha256 and returns its path: all the
 // CPU (OpenCPU) needs.
 func Fetch(ctx context.Context, s Setup) (string, error) {
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
-		return "", err
-	}
-	model := filepath.Join(s.Dir, ModelFile)
-	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+	model, err := chat.Fetch(ctx, s.Repo, ModelFile, cmp.Or[io.Writer](s.Log, io.Discard))
+	if err != nil {
 		return "", err
 	}
 	if s.SHA256 != "" {

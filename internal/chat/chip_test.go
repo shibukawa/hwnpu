@@ -6,11 +6,29 @@ import (
 	"testing"
 )
 
-// TestMain picks models as on a chip that no definition leaves out, whatever this machine is;
-// TestPickNotOn sets the chip itself.
+// TestMain picks models as on a chip that no definition leaves out, whatever this machine is
+// (TestPickNotOn sets the chip itself), and keeps what the tests download out of this machine's
+// cache (a test of its own sets HWNPU_CACHE again).
 func TestMain(m *testing.M) {
 	chipName = func() string { return "" }
-	os.Exit(m.Run())
+	dir, err := os.MkdirTemp("", "hwnpu-chat-test")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HWNPU_CACHE", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// cacheHere gives the test a cache of its own (HWNPU_CACHE): a machine of its own.
+func cacheHere(t *testing.T) string {
+	t.Helper()
+	d := t.TempDir()
+	t.Setenv("HWNPU_CACHE", d)
+	clearCommits()
+	t.Cleanup(clearCommits)
+	return d
 }
 
 func TestChipOf(t *testing.T) {

@@ -52,7 +52,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -108,7 +107,6 @@ type GenerateCmd struct {
 	Duration *time.Duration `placeholder:"10s" help:"How long: 10s, 2m, 1m30s (default 10s; music with --notes: the MIDI file's length; sound effects up to 30s)."`
 	Fade     *time.Duration `placeholder:"2s" help:"Fade out over the last part (music: 2s by default, 0 to stop where the generation does; sound effects: none by default)."`
 	Seed     uint64         `placeholder:"N" help:"The random seed (0: a new one)."`
-	Dir      string         `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache    string         `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU      bool           `name:"cpu" help:"Run the programs with the CPU interpreter instead of the NPU (slow)."`
 	OffNPU   bool           `name:"allow-off-npu" help:"Go on when part of a program runs off the NPU (on the GPU or the CPU; that has made a Mac sluggish and failed)."`
@@ -155,7 +153,7 @@ type options struct {
 
 // Run makes the music or the sound effect.
 func (c *GenerateCmd) Run(ctx context.Context) error {
-	o := options{use: c.Model, dir: c.Dir, cacheDir: c.Cache, format: c.Format, out: c.Out,
+	o := options{use: c.Model, cacheDir: c.Cache, format: c.Format, out: c.Out,
 		cpu: c.CPU, newOnly: c.NewOnly, offNPU: c.OffNPU, play: c.Play || c.Out == "",
 		duration: 10 * time.Second, fade: 2 * time.Second, codes: c.Codes, cont: c.Continue, notes: c.Notes, drums: c.Drums,
 		onsets: c.Onsets, width: c.NoteWidth, temperature: c.Temperature, topK: c.TopK,
@@ -166,9 +164,6 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	}
 	if c.Fade != nil {
 		o.fade, o.fadeSet = *c.Fade, true
-	}
-	if o.dir == "" {
-		o.dir = chat.ModelsDir()
 	}
 	if o.cacheDir == "" {
 		o.cacheDir = cache.Root()
@@ -181,7 +176,6 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 // machine's memory.
 type ListCmd struct {
 	Kind string `arg:"" optional:"" enum:"music,sfx,speech,transcribe,pitch,notes," default:"" help:"Only music, sfx, speech, transcribe, pitch or notes models."`
-	Dir  string `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 }
 
 // Run lists the models.
@@ -189,15 +183,11 @@ func (c *ListCmd) Run() error {
 	if err := chat.LoadUserModels("", os.Stderr); err != nil {
 		return err
 	}
-	dir := c.Dir
-	if dir == "" {
-		dir = chat.ModelsDir()
-	}
 	kinds := []chat.Kind{chat.KindMusic, chat.KindSFX, chat.KindSpeech, chat.KindTranscribe, chat.KindPitch, chat.KindNotes}
 	if c.Kind != "" {
 		kinds = []chat.Kind{chat.Kind(c.Kind)}
 	}
-	chat.List(os.Stdout, dir, kinds...)
+	chat.List(os.Stdout, kinds...)
 	return nil
 }
 
@@ -213,7 +203,7 @@ func resolve(name string, lw io.Writer) (chat.Model, error) {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "no model %q; the music and sound effects models of the definitions:\n\n", name)
-		chat.List(os.Stderr, chat.ModelsDir(), chat.KindMusic, chat.KindSFX)
+		chat.List(os.Stderr, chat.KindMusic, chat.KindSFX)
 		fmt.Fprintln(os.Stderr)
 	}
 	return m, err
@@ -285,7 +275,7 @@ func run(ctx context.Context, o options, args []string) error {
 		}
 		defer dev.Close()
 	}
-	setup := music.Setup{Dir: filepath.Join(o.dir, m.DirName()), Repo: m.Source(), Format: o.format, Backend: backend, Log: lw, Encoder: o.cont != ""}
+	setup := music.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Format: o.format, Backend: backend, Log: lw, Encoder: o.cont != ""}
 	if o.codes == "" {
 		for _, s := range styles {
 			setup.Text = setup.Text || s.text != ""

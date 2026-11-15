@@ -4,7 +4,6 @@ import (
 	"fmt"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	"io"
-	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -15,9 +14,9 @@ import (
 // for its vendor, of the variant for its memory), repository, whether it is downloaded to dir, and what it is; then what each use
 // and family of them picks on a machine of each of MODEL.md's columns; the aliases; and the
 // definition files read.
-func List(w io.Writer, dir string, ks ...Kind) {
+func List(w io.Writer, ks ...Kind) {
 	ListHave(w, "DOWNLOADED", func(m Model) string {
-		if Downloaded(filepath.Join(dir, m.DirName())) {
+		if Downloaded(m) {
 			return "yes"
 		}
 		return "no"

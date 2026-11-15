@@ -41,12 +41,15 @@ func TestFetch(t *testing.T) {
 	defer func(u string) { hubURL = u }(hubURL)
 	hubURL = srv.URL + "/"
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "f.bin")
+	cacheHere(t)
+	path := filepath.Join(RepoDir("org/m"), "f.bin")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path+".part", []byte(body[:4321]), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := fetch(context.Background(), "org/m", "f.bin", path, io.Discard); err != nil {
+	if _, err := fetch(context.Background(), "org/m", "f.bin", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(path)
@@ -56,13 +59,13 @@ func TestFetch(t *testing.T) {
 	if _, err := os.Stat(path + ".part"); !os.IsNotExist(err) {
 		t.Error("the .part file is left")
 	}
-	if err := fetch(context.Background(), "org/m", "f.bin", path, io.Discard); err != nil {
+	if _, err := fetch(context.Background(), "org/m", "f.bin", io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if len(ranges) != 1 || ranges[0] != "bytes=4321-" {
 		t.Errorf("requests with ranges %q, want one for bytes=4321-", ranges)
 	}
-	if err := fetch(context.Background(), "org/m", "none.bin", filepath.Join(dir, "none.bin"), io.Discard); err == nil {
+	if _, err := fetch(context.Background(), "org/m", "none.bin", io.Discard); err == nil {
 		t.Error("no error for a file the repository does not have")
 	}
 }
@@ -70,6 +73,7 @@ func TestFetch(t *testing.T) {
 // Prepare converts the vision encoder of an LFM3-VL checkpoint besides its text model, and
 // nothing more for a text only one.
 func TestPrepareEncoders(t *testing.T) {
+	cacheHere(t)
 	vl := `{"model_type": "lfm3_vl", "tie_word_embeddings": true, "projector_hidden_act": "gelu", "projector_bias": true, "projector_hidden_size": 32,
 	"text_config": {"model_type": "lfm3", ` + tinyLFM3[1:] + `,` + imageVL[strings.Index(imageVL, `"vision_config"`):]
 	vcfg, err := lfm3vl.ParseConfig([]byte(vl))
@@ -117,10 +121,10 @@ func TestPrepareEncoders(t *testing.T) {
 	if len(c.Packages) != 2 || len(c.Vision) != 1 || len(c.Audio) != 0 {
 		t.Fatalf("packages %q, vision %q, audio %q", c.Packages, c.Vision, c.Audio)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "processor_config.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(RepoDir("org/vl"), "processor_config.json")); err != nil {
 		t.Error("the image processor's settings are not downloaded:", err)
 	}
-	vis, err := vision.Load(ctx, nil, dir, c.Vision)
+	vis, err := vision.Load(ctx, nil, filepath.Dir(c.ModelConfig), c.Vision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,6 +240,7 @@ func TestTiersNone(t *testing.T) {
 // it was trained for and no tiers, its chunks no longer than the context, for the Neural Engine
 // and for Intel's NPU (in IR); asked not to, it converts it whole with the context asked for.
 func TestPreparePaged(t *testing.T) {
+	cacheHere(t)
 	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
 	tcfg, err := lfm3.ParseConfig([]byte(text))
 	if err != nil {
@@ -306,6 +311,7 @@ func TestPreparePaged(t *testing.T) {
 // take the chosen tables, and leaves the programs without codes as they were; codes are refused
 // for a format that is not a lookup table.
 func TestPrepareCodes(t *testing.T) {
+	cacheHere(t)
 	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
 	tcfg, err := lfm3.ParseConfig([]byte(text))
 	if err != nil {
@@ -417,6 +423,7 @@ func TestPrepareCodes(t *testing.T) {
 // weights), hold more than an M1's Neural Engine holds (neuralEngineHold, likewise), or -prefill
 // says otherwise; then the one that generates reads the prompts.
 func TestPreparePrefill(t *testing.T) {
+	cacheHere(t)
 	text := `{"model_type": "lfm3", "max_position_embeddings": 96, ` + tinyLFM3[1:]
 	tcfg, err := lfm3.ParseConfig([]byte(text))
 	if err != nil {

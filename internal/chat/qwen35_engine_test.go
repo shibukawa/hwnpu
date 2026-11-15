@@ -48,6 +48,7 @@ func TestEngineReuseQwen35(t *testing.T) {
 // Prepare downloads a Qwen3.5 checkpoint in two files by its index and converts it split at its
 // attention with the longest context it was trained for.
 func TestPrepareQwen35(t *testing.T) {
+	cacheHere(t)
 	cfg, err := qwen35.ParseConfig([]byte(tinyQwen35))
 	if err != nil {
 		t.Fatal(err)
@@ -105,15 +106,16 @@ func TestPrepareQwen35(t *testing.T) {
 			t.Errorf("%s: paged %d, cache %d, seq %d, %d parts", p, man.Paged, man.Cache, man.Seq, len(man.Parts))
 		}
 	}
-	if !Downloaded(dir) || filepath.Base(c.Weights) != TablesFile {
-		t.Errorf("downloaded %v, weights %s", Downloaded(dir), c.Weights)
+	if !exists(filepath.Join(dir, TablesFile)) || filepath.Base(c.Weights) != TablesFile {
+		t.Errorf("no tables in %s, weights %s", dir, c.Weights)
 	}
 	// the tables are the checkpoint's rows: the same as read from the checkpoint
-	a, model, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
+	src := RepoDir("org/qwen")
+	a, model, err := llm.LoadConfig(filepath.Join(src, "config.json"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ck, err := llm.OpenWeights(filepath.Join(dir, "model.safetensors"), a)
+	ck, err := llm.OpenWeights(filepath.Join(src, "model.safetensors"), a)
 	if err != nil {
 		t.Fatal(err)
 	}

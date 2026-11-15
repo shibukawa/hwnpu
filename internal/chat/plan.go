@@ -17,10 +17,12 @@ import (
 
 // File is a file of a model's repository and where fetch puts it.
 type File struct {
-	Repo string // as fetch takes it: OWNER/NAME, OWNER/NAME@REVISION or SOURCE:NAME
+	Repo string // as fetch takes it: OWNER/NAME or OWNER/NAME@REVISION
 	Name string // in the repository
-	Path string
 }
+
+// Path is where the file is kept (RepoDir).
+func (f File) Path() string { return filepath.Join(RepoDir(f.Repo), filepath.FromSlash(f.Name)) }
 
 // plan is the files Expect looked up that are not fetched yet (their sizes and the bytes
 // written so far), and the bytes of those fetched since, for a download's bar to show the time
@@ -43,7 +45,7 @@ func Expect(ctx context.Context, files []File) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
 	for _, f := range files {
-		if _, err := os.Stat(f.Path); err == nil {
+		if _, err := os.Stat(f.Path()); err == nil {
 			continue
 		}
 		wg.Add(1)
@@ -53,7 +55,7 @@ func Expect(ctx context.Context, files []File) {
 			defer func() { <-sem }()
 			if n, ok := fileSize(ctx, f.Repo, f.Name); ok {
 				mu.Lock()
-				sizes[filepath.Clean(f.Path)] = n
+				sizes[filepath.Clean(f.Path())] = n
 				mu.Unlock()
 			}
 		}()
