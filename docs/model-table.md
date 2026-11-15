@@ -112,7 +112,7 @@ models:
     features: [translation]
     from: hf:pfnet/plamo-3-translate-0.8b
     bytes: 1.79e9
-    memory: 2.4                        # 動かしたときのメモリ (GB)。MODEL.md の「開始時」
+    memory: 1.0                        # 動かしたときのメモリ (GB)。MODEL.md の「開始時」
     about: "Preferred Networks' PLaMo 3 Translate 0.8B: ..."
   PP-OCRv6-small:
     family: ppocr
@@ -338,20 +338,20 @@ search: [team-share, lab-s3, hf]      # 全体の探索順。既定は [hf]
 
 ### 6.2 機械のメモリごとの違い (variants、実装済み)
 
-`builds` は NPU とモデルで決める。それとは別に、同じモデルを**機械のメモリ**で動かし分けたいことがある。Qwen3-1.7B は、プロンプトを読むプログラムを別に持つと Neural Engine に 3.26 GiB とプロセスの最大 4.1 GB で約 7.6 GB になり、8 GB の機械には重い。生成のプログラムにプロンプトも読ませれば 1.63 GiB と 2.8 GB の約 4.5 GB で載る (新しいプロンプトを読むのは約 5 倍遅い)。そこで、モデルの欄に動かし方を書き、`variants` に、より大きなメモリの機械での差分を書く:
+`builds` は NPU とモデルで決める。それとは別に、同じモデルを**機械のメモリ**で動かし分けたいことがある。Qwen3-1.7B は、Core ML ではプロンプトを読むプログラムを別に持つと Neural Engine に 3.26 GiB とプロセスの最大 4.1 GB で約 7.6 GB になり、8 GB の機械には重かった。生成のプログラムにプロンプトも読ませれば 1.63 GiB と 2.8 GB の約 4.5 GB で載る (新しいプロンプトを読むのは約 5 倍遅い)。Core AI ではプロンプトを読むプログラムが同じ重みの関数になり、差は 2.1 GB と 2.3 GB に縮んだ (M1 で実測、design.md 16.221)。そこで、モデルの欄に動かし方を書き、`variants` に、より大きなメモリの機械での差分を書く:
 
 ```yaml
   Qwen3-1.7B:
     machine: 8          # この欄は 8 GB の機械のもの
-    memory: 4.5
+    memory: 2.1
     prefill: off
     variants:
-      16: {memory: 7.6, prefill: auto}   # 16 GB 以上
+      16: {memory: 2.3, prefill: auto}   # 16 GB 以上
 ```
 
 - 動かし方の欄は `prefill` (auto、on、off)、`format` (重みの形式)、`context` (トークン)、`paged` (塊のトークン、-1 は分けない)。hwnpu-chat の同じ名前のフラグの既定になり、フラグを与えればフラグが勝つ。チャットのモデルだけが持てる
 - `variants` のキーは機械のメモリ (GB)。機械が持つ最大のキーの差分を 1 つだけ、モデルの欄の上に重ねる (16 と 32 があれば、32 GB の機械では 32 の差分だけ)。差分が書けるのは `memory` と動かし方の 4 つで、書いた欄だけが変わる。キーは `machine` より大きくなければならない (`machine` の欄がモデル自身)
-- どの機械の差分か: 名前で選んだとき (`-m Qwen3-1.7B`) はこの機械のメモリ (`HWNPU_MEMORY` で上書き)、ファミリーと用途では選ぶときの機械 (`qwen3:16g` なら 16 GB)。ファミリーで同じ列の候補を比べる `memory` も、その機械の差分のもの (8 GB で、Qwen3-0.6B の 3.9 GB と Qwen3-1.7B の 4.5 GB から 1.7B)
+- どの機械の差分か: 名前で選んだとき (`-m Qwen3-1.7B`) はこの機械のメモリ (`HWNPU_MEMORY` で上書き)、ファミリーと用途では選ぶときの機械 (`qwen3:16g` なら 16 GB)。ファミリーで同じ列の候補を比べる `memory` も、その機械の差分のもの (8 GB で、Qwen3-0.6B の 1.6 GB と Qwen3-1.7B の 2.1 GB から 1.7B)
 - `hwnpu-chat list` の MEMORY はこの機械の差分のもの。`chat.Lookup` と `chat.Catalog` は差分を当てる前のモデル、`Model.On(machine)` が当てたもの
 - ユーザーのファイルは、名前を書いた差分だけを替え、ほかは残す (`device` と同じ)。`like` は動かし方と差分を引き継ぐ
 - `builds` (6 節) を実装するときは、`builds` の欄がモデルの欄と差分より先に来る (NPU ごとの事情の方が具体的)。今は NPU で分ける必要がない (Qwen3-1.7B は Apple だけ)

@@ -6632,6 +6632,59 @@ kv ヘッドごとの形は、kv ヘッド 1 つ分の問い合わせのヘッ�
 
 確かめたこと: `TestMigrateRings` (CPU のインタプリタ、小さな PLaMo 3 を文脈 8 と 64 で: 移る、移る前の印へ戻る、窓と塊を越える。リングの写しか印の作り直しを壊すと相対誤差 1.1 で落ちる)、`TestMigrateRingsOnNeuralEngine` (Core AI、関数 4 つの `.aimodel`)、`TestEngineRingTiers` (エンジン: 短いプロンプト、生成で段を越える、移る前の印から別の答え、新しい短い会話)、`TestRingTiers`。確かめていないこと: M2 と M3 (16.71 の M3 の 57.8 ms は、同じ比なら約 40 ms)、0.8B (リング 14 MiB) と 8B (28 層で 112 MiB)、サーバーでいくつもの会話が段を行き来するとき。
 
+### 16.221 チャットのモデルのメモリを Core AI で測り直す: MODEL.md と models.yaml の値 — 2026-11-15
+
+16.218〜16.220 で読み込むプログラムが変わった (M1 は分けない 1 本を読まない、PLaMo 3 は短い文脈の関数を持つ)。それとは別に、MODEL.md と models.yaml の Apple の値は Core ML の頃のものが残っていた: 生成用とプロンプト用の 2 本がそれぞれ重みを持つ、Qwen3 は 4096 のキャッシュを持つ 1 本、という形での値。チャットと埋め込みのモデルを M1 (16 GB、macOS 27.2.1、Core AI) で測り直した。
+
+**測り方**: 子プロセスの `proc_pid_rusage` (flavor 6) から footprint (`ri_phys_footprint`) と Neural Engine の分 (`ri_neural_footprint`) を 0.1 秒ごとに読み、和の最大を取る。プロセスごとの値なので、ほかのプロセスが Neural Engine を使っていても混ざらない (`mem.NPUWired` は機械全体)。`hwnpu-chat -m NAME --temp 0 -n 200 "富士山について…"` を 2 回走らせ、変換とコンパイルが済んだ 2 回目を値にする。1 回目の最大は変換の分。翻訳は 78 トークンの段落、画像は 512 × 512 の 1 枚、音声は数秒の 1 本、埋め込みは `hwnpu-chat search` に 3 行。
+
+**16.218〜16.220 の前後** (M1。前は main の実行ファイル)
+
+| | 前 | 後 |
+|---|---|---|
+| LFM3-1.7B | 3.10 GB (Neural Engine 2.63 GiB + プロセス 0.26 GiB) | **1.71 GB** (1.36 + 0.23) |
+| Qwen3-0.6B | 1.81 GB (1.23 + 0.46) | **1.07 GB** (0.65 + 0.35) |
+| PLaMo 3 Translate 0.8B | 1.74 GB (1.48 + 0.15) | **1.01 GB** (0.82 + 0.12) |
+| PLaMo 3 Translate 2B | 3.27 GB (2.66 + 0.39) | 3.20 GB (2.74 + 0.24) |
+
+- 上の 3 つは、分けない 1 本 (重みをもう 1 組持つ) を読まなくなった分。PLaMo 3 Translate 0.8B は、4096 の分けない 1 本が、同じ `.aimodel` の短い文脈の関数に替わった (どのチップでも)
+- PLaMo 3 Translate 2B は短い文脈の関数の分、Neural Engine が 0.1 GiB 増えた (固定されたメモリ 2.55 → 2.64〜2.68 GiB)。M1 が全速で持てる 2.86 GiB まで約 0.18 GiB で、どの実行も全速。プロセスは 0.15 GiB 減った
+- 入力の配列を Core AI のものにしても (16.218)、Neural Engine の分は変わらない (`HWNPU_COREAI_COPY=1` と同じ)
+
+**全部の値** (M1、16.220 までの形。「合わせて」は GiB の和の最大を GB に直したもの)
+
+| | Neural Engine | プロセス | 合わせて | 1 回目 (変換) のプロセスの最大 |
+|---|---|---|---|---|
+| LFM3-1.7B (lut6) | 1.36 GiB | 0.23 GiB | 1.71 GB | — |
+| 同、M2 以降の形 (`--tier 2048`) | 2.64 | 0.21 | 3.05 GB | — |
+| Qwen3-0.6B (lut8) | 0.65 | 0.35 | 1.07 GB | — |
+| 同、M2 以降の形 (`--tier 1024`) | 1.23 | 0.26 | 1.60 GB | 2.0 GiB |
+| Qwen3-1.7B (lut8、プロンプト用の関数つき) | 1.80 | 0.36 | 2.32 GB | 3.1 GiB |
+| 同、`prefill: off` (16 GB 未満の既定) | 1.64 | 0.23 | 2.01 GB | 1.8 GiB |
+| Qwen3.5-0.8B (lut8、MTP の層つき) | 0.99 | 0.39 | 1.48 GB | 3.0 GiB |
+| 同、M2 以降の形 (`--tier 2048`) | 1.84 | 0.31 | 2.29 GB | 3.3 GiB |
+| Qwen3.5-2B (lut6) | 1.67 | 0.39 | 2.20 GB | 6.0 GiB |
+| LFM3-VL-2B (lut8) 文だけ / 画像 1 枚 | 2.14 / 2.24 | 0.23 / 0.25 | 2.55 / 2.67 GB | 2.9 GiB |
+| LFM3-Audio-2B 文だけ / 音声 1 本 | 2.05 / 2.18 | 0.23 / 0.21 | 2.44 / 2.57 GB | 2.8 GiB |
+| LFM3-Omni-2B 文だけ / 画像と音声 | 2.40 / 2.63 | 0.23 / 0.25 | 2.83 / 3.10 GB | 2.9 GiB |
+| PLaMo 3 Translate 0.8B (lut8) | 0.82 | 0.12 | 1.01 GB | 2.3 GiB |
+| PLaMo 3 Translate 2B (lut8) | 2.74 | 0.24 | 3.20 GB | 2.7 GiB (16.220 の前の形の変換) |
+| PLaMo-Embedding-1B (lut8) | 1.05 | 0.03 | 1.16 GB | 1.3 GiB |
+| Gemma 4 E2B (lut6) | 固定 1.66 GiB (16.218 の実行の表示) | 測っていない | — | — |
+
+**分かったこと**
+
+- Core AI では、生成用とプロンプト用のプログラムは同じ `.aimodel` の関数で、重みは 1 回分。プロセスの定常は 0.03〜0.4 GiB (トークナイザー、キャッシュ、埋め込みの表のうち読んだページ)。文書の「Qwen3-0.6B 3.9 GB」「Qwen3-1.7B 4.5 / 7.6 GB」「PLaMo 3 Translate 0.8B 2.4 GB」「Qwen3.5-2B 4.2 GB」は 2 分の 1 から 3 分の 1 になった
+- **M2 以降の形** (重みの 2 倍が 2.5 GiB に収まるモデルの、短い会話用の分けない 1 本。16.188) は重みをもう 1 組持つ: LFM3-1.7B 3.05 GB、Qwen3-0.6B 1.60 GB、Qwen3.5-0.8B 2.29 GB。8 GB の機械の目安 (約 3 GB) に対して、LFM3-1.7B は M2 以降では目安いっぱい。M1 で `--tier N` を与えて読み込ませた値で、M2 と M3 の実機では測っていない
+- **Qwen3-1.7B の `prefill: off`** (16 GB 未満) が省くのは、Core ML では約 3.1 GB だった (4.5 GB と 7.6 GB。プロンプト用のプログラムが重みをもう 1 組持つ)。Core AI では Neural Engine の 0.16 GiB、合わせて 0.3 GB
+- LFM3 の VL と Omni は符号器を初めから読み込む。「画像か音声が来るまでは 2.2 GB」(Omni、AMD) は Apple では 2.8 GB
+- 変換のあいだ、プロセスは 2〜3 GiB (Qwen3.5-2B は 6.0 GiB)。この間 Neural Engine にはまだ載っていない。8 GB の機械で Qwen3.5-2B を変換するとスワップに入る (`machine: 16` のまま)
+- PLaMo-Embedding-1B は 1.16 GB (重みからの見込みは 1.3 GB)
+
+**変えたもの**: `models.yaml` の `memory` (Apple の値が違うものは `{amd: X, apple: Y}`。Apple の値は、チップで違うモデルでは大きい方の M2 以降の形)、Qwen3 の `about` (文脈 4096 → 40960)、MODEL.md と MODEL.ja.md (用途の表の括弧、モデルごとの表、Apple と Qwen3 の注記)、docs/model-table.md 6.2 の例、`TestBuiltinVariants` の値。用途ごとの選び方 (`categories`、`machine`) は変えていない。
+
+測っていないもの: Gemma 4 E2B のプロセスの分 (ディスクの空きが足りず、取り直さなかった。2.3 GB のまま)、Gemma 4 E4B、Qwen3.5-4B、PLaMo 3 Translate 8B (Core ML の頃の 8.2 GB のまま。Core AI では Neural Engine の 3.81 GiB にプロセスの 0.3 GiB 前後のはず)、d1、M2 と M3 の実機。`hwnpu-chat list` の MEMORY はベンダーごとの値で、M1 でも M2 以降の形の値を出す (LFM3-1.7B は 3.1 GB と出るが、M1 では 1.7 GB)。
+
 ### 16.224 Sana の Gemma 2 に指示文のキーと値を持たせる (Core AI): プロンプトの後ろの行だけを計算する — 2026-11-15
 
 16.210 の残りの最後で、AMD の 16.138 の Mac 版。Sana のプロンプトは 208 トークンの指示文 (`sana.Instruction`) の後に続き、Gemma 2 は 512 行を全部計算していた: 11 トークンのプロンプトで 217 行が中身で、残すのは 11 行。指示文の行は、因果的な注意なのでどのプロンプトでも同じ。M1 (16 GB、macOS 27.2.1、26B131)、Sana 600M の 512²、2 回目から。
