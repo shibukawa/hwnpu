@@ -98,7 +98,8 @@ func writeProgramManifest(dir string, m *ProgramManifest) error {
 
 // progEngine runs the programs of internal/imagegen/chroma/mil, each a runner.Program on the
 // Neural Engine (or the CPU interpreter). T5's groups, the approximator and each VAE stage are
-// loaded only while they run; the DiT's groups from the first step to the last.
+// loaded only while they run; the DiT's groups from the first step to the last, or on Core AI each
+// for its turn in a call (swapDiT).
 type progEngine struct {
 	m    *ProgramManifest
 	dir  string
@@ -112,6 +113,17 @@ type progEngine struct {
 	empty   []float32
 	doubles []runner.Program
 	singles []runner.Program
+	// swapDiT loads each group of the DiT's blocks for each of its calls, runs it and closes it,
+	// rather than holding the ten of them (8.3 GiB at lut8): Core AI loads a group from its cache
+	// in a fraction of a second, and holding them all is no faster, since a group that follows
+	// another pays for that either way (an M1 at 512 x 512: a picture in 1 m 25 to 30 s with 2.2
+	// to 2.6 GiB on the Neural Engine, against 1 m 36 s with 8.3; design.md 16.210). checked says
+	// openDiT loaded each once (the first load compiles it) and saw it on the NPU; ring gives the
+	// groups of a call, the doubles then the singles, with ahead the next one loading while one
+	// runs (without it a call takes 7.2 s in place of 5.4 to 5.8: a group is 0.7 to 0.9 GB).
+	// ahead: T5's groups and the VAE's stages load one ahead as well (runner.Ahead).
+	swapDiT, checked, ahead bool
+	ring                    *runner.Ring
 }
 
 func openPrograms(dev *hwnpu.Device, dir string, log io.Writer, c *Config, model *Model, logf func(string, ...any)) (*progEngine, error) {
@@ -130,7 +142,7 @@ func openPrograms(dev *hwnpu.Device, dir string, log io.Writer, c *Config, model
 	if err := json.Unmarshal(b, model); err != nil {
 		return nil, err
 	}
-	e := &progEngine{m: m, dir: dir, dev: dev, log: log, logf: logf}
+	e := &progEngine{m: m, dir: dir, dev: dev, log: log, logf: logf, swapDiT: runner.Swap(dev), ahead: runner.Ahead(dev)}
 	if rows, err := readEmpty(dir, m.Dit.Hidden); err == nil {
 		e.empty = make([]float32, m.Dit.TextRows*m.Dit.Hidden)
 		for i, v := range rows {
@@ -154,11 +166,7 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	if e.log != nil {
 		bar = console.NewLoadBar(e.log, "  loading "+name, llm.PartBytes(filepath.Join(e.dir, name)))
 	}
-	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
-	if err == nil && e.dev != nil && !p.OnNPU() {
-		p.Close()
-		err = fmt.Errorf("%s does not run on the NPU alone", name)
-	}
+	p, err := e.load(ctx, name)
 	if bar != nil {
 		switch {
 		case err != nil:
@@ -175,6 +183,16 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	return p, nil
 }
 
+// load is open without a line: the program on the device unless it is nil, on the NPU alone.
+func (e *progEngine) load(ctx context.Context, name string) (runner.Program, error) {
+	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
+	if err == nil && e.dev != nil && !p.OnNPU() {
+		p.Close()
+		p, err = nil, fmt.Errorf("%s does not run on the NPU alone", name)
+	}
+	return p, err
+}
+
 // maskBias is the additive mask of n valid rows of rows: 0, then -10000.
 func maskBias(n, rows int) []float32 {
 	b := make([]float32, rows)
@@ -185,7 +203,8 @@ func maskBias(n, rows int) []float32 {
 }
 
 // encode runs T5's groups in turn, each loaded once for every prompt: at most one group's weights
-// are held. The empty prompt (one token, </s>) takes the export's rows (EmptyFile) without T5.
+// are held, on Core AI two (the next group loads while this one runs, runner.InTurn). The empty
+// prompt (one token, </s>) takes the export's rows (EmptyFile) without T5.
 func (e *progEngine) encode(ctx context.Context, xs [][]float32, ns []int) ([]Cond, error) {
 	t0 := time.Now()
 	R := e.m.Dit.TextRows
@@ -200,21 +219,20 @@ func (e *progEngine) encode(ctx context.Context, xs [][]float32, ns []int) ([]Co
 			todo = append(todo, k)
 		}
 	}
-	for _, name := range e.m.Text {
-		if len(todo) == 0 {
-			break
-		}
-		p, err := e.open(ctx, name)
+	if len(todo) > 0 {
+		err := runner.InTurn(ctx, e.m.Text, e.ahead, e.open, func(_ int, p runner.Program) error {
+			for _, k := range todo {
+				y, err := p.Run(ctx, map[string][]float32{"x": hs[k], "mask": masks[k]})
+				if err != nil {
+					return err
+				}
+				hs[k] = y
+			}
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
-		for _, k := range todo {
-			if hs[k], err = p.Run(ctx, map[string][]float32{"x": hs[k], "mask": masks[k]}); err != nil {
-				p.Close()
-				return nil, fmt.Errorf("%s: %w", name, err)
-			}
-		}
-		p.Close()
 	}
 	conds := make([]Cond, len(xs))
 	for k := range hs {
@@ -228,7 +246,8 @@ func (e *progEngine) encode(ctx context.Context, xs [][]float32, ns []int) ([]Co
 
 // openDiT runs the approximator once for each sigma the steps take (its rows depend on the
 // timestep alone; Heun's steps share theirs with the next step's start, and CFG's two passes
-// theirs), closes it and loads the DiT's groups.
+// theirs), closes it and loads the DiT's groups: all of them held, or with swapDiT each in turn
+// by the calls (group).
 func (e *progEngine) openDiT(ctx context.Context, sigmas []float64) error {
 	c := e.m.Dit
 	if e.mods == nil {
@@ -256,6 +275,24 @@ func (e *progEngine) openDiT(ctx context.Context, sigmas []float64) error {
 		}
 		p.Close()
 	}
+	if e.swapDiT {
+		if e.ring != nil {
+			return nil
+		}
+		names := e.groups()
+		if !e.checked { // each loaded once here (the first load compiles it), then for each call
+			for _, name := range names {
+				p, err := e.open(ctx, name)
+				if err != nil {
+					return err
+				}
+				p.Close()
+			}
+			e.checked = true
+		}
+		e.ring = runner.NewRing(names, e.ahead, e.load)
+		return nil
+	}
 	if e.doubles != nil {
 		return nil
 	}
@@ -277,11 +314,46 @@ func (e *progEngine) openDiT(ctx context.Context, sigmas []float64) error {
 
 func (e *progEngine) closeDiT() error {
 	var errs []error
+	if e.ring != nil { // the group loading for a call that did not come
+		errs = append(errs, e.ring.Close())
+		e.ring = nil
+	}
 	for _, p := range append(append([]runner.Program(nil), e.doubles...), e.singles...) {
 		errs = append(errs, p.Close())
 	}
 	e.doubles, e.singles = nil, nil
 	return errors.Join(errs...)
+}
+
+// groups are the DiT's programs in the order a call runs them: the doubles, then the singles.
+func (e *progEngine) groups() []string {
+	var names []string
+	for _, g := range e.m.Doubles {
+		names = append(names, g.Name)
+	}
+	for _, g := range e.m.Singles {
+		names = append(names, g.Name)
+	}
+	return names
+}
+
+// group gives the DiT's program i of groups for a call to run, and what to do with it after: with
+// swapDiT it is loaded for this call (or was loading since the group before it ran) and release
+// closes it; else it is one of those held.
+func (e *progEngine) group(ctx context.Context, i int) (p runner.Program, release func(), err error) {
+	if e.swapDiT {
+		if e.ring == nil {
+			return nil, nil, errors.New("the DiT is not open (openDiT)")
+		}
+		if p, err = e.ring.Take(ctx, i); err != nil {
+			return nil, nil, err
+		}
+		return p, func() { p.Close() }, nil
+	}
+	if i < len(e.doubles) {
+		return e.doubles[i], func() {}, nil
+	}
+	return e.singles[i-len(e.doubles)], func() {}, nil
 }
 
 func (e *progEngine) close() error { return e.closeDiT() }
@@ -310,7 +382,6 @@ func (e *progEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 	}
 	// each group runs every conditioning before the next group (design.md 16.148, 16.160): a
 	// group the Neural Engine has to load again loads once a call of the DiT
-	var err error
 	for gi, g := range e.m.Doubles {
 		var rs []int
 		for b := g.First; b < g.First+g.Count; b++ {
@@ -320,6 +391,10 @@ func (e *progEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 			}
 		}
 		m := rows(rs...)
+		b, release, err := e.group(ctx, gi)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", g.Name, err)
+		}
 		for k, cd := range conds {
 			in := map[string][]float32{"mods": m, "kbias": kb[k]}
 			if gi == 0 {
@@ -327,10 +402,12 @@ func (e *progEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 			} else {
 				in["x"] = hs[k]
 			}
-			if hs[k], err = e.doubles[gi].Run(ctx, in); err != nil {
+			if hs[k], err = b.Run(ctx, in); err != nil {
+				release()
 				return nil, fmt.Errorf("%s: %w", g.Name, err)
 			}
 		}
+		release()
 	}
 	for gi, g := range e.m.Singles {
 		var rs []int
@@ -341,33 +418,40 @@ func (e *progEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 			rs = append(rs, c.Mods-2, c.Mods-1)
 		}
 		m := rows(rs...)
+		b, release, err := e.group(ctx, len(e.m.Doubles)+gi)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", g.Name, err)
+		}
 		for k := range conds {
-			if hs[k], err = e.singles[gi].Run(ctx, map[string][]float32{"x": hs[k], "mods": m, "kbias": kb[k]}); err != nil {
+			if hs[k], err = b.Run(ctx, map[string][]float32{"x": hs[k], "mods": m, "kbias": kb[k]}); err != nil {
+				release()
 				return nil, fmt.Errorf("%s: %w", g.Name, err)
 			}
 		}
+		release()
 	}
 	return hs, nil
 }
 
-// decode runs the VAE's stages, each loaded while it runs; the last gives the picture (1, 3, h,
-// w).
+// decode runs the VAE's stages, each loaded while it runs (on Core AI while the stage before it
+// runs); the last gives the picture (1, 3, h, w).
 func (e *progEngine) decode(ctx context.Context, z []float32, stage anima.StageFunc) (*image.RGBA, error) {
 	x := z
-	for i, name := range e.m.Vae {
-		t0 := time.Now()
-		p, err := e.open(ctx, name)
+	t0 := time.Now()
+	err := runner.InTurn(ctx, e.m.Vae, e.ahead, e.open, func(i int, p runner.Program) error {
+		y, err := p.Run(ctx, map[string][]float32{"x": x})
 		if err != nil {
-			return nil, fmt.Errorf("vae stage %d: %w", i, err)
+			return err
 		}
-		x, err = p.Run(ctx, map[string][]float32{"x": x})
-		p.Close()
-		if err != nil {
-			return nil, fmt.Errorf("vae stage %d: %w", i, err)
-		}
+		x = y
 		if stage != nil {
 			stage(i, len(e.m.Vae), time.Since(t0))
 		}
+		t0 = time.Now()
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("vae: %w", err)
 	}
 	W, H := e.m.Dit.Width, e.m.Dit.Height
 	if len(x) != 3*W*H {

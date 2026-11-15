@@ -260,28 +260,113 @@ func (g *Graph) QChunkAttention(q, k, v *mlpackage.Var, scale float64, mask *mlp
 	return g.Concat(2, outs...)
 }
 
+// maxKeyPart is the most keys of a tensor of HeadAttention's scores.
+const maxKeyPart = 4096
+
+// KeyParts cuts the keys lo..hi-1 into the parts HeadAttention makes score tensors of: powers of
+// two, maxKeyPart at most, the largest first, and at most 3 parts past the whole maxKeyParts, the
+// last taking what is left (2304 keys: 2048 and 256; 3600: 2048, 1024 and 528).
+func KeyParts(lo, hi int) [][2]int {
+	var out [][2]int
+	for hi-lo > maxKeyPart {
+		out = append(out, [2]int{lo, lo + maxKeyPart})
+		lo += maxKeyPart
+	}
+	for n := 0; lo < hi; n++ {
+		p := 1
+		for 2*p <= hi-lo {
+			p *= 2
+		}
+		if n == 2 {
+			p = hi - lo
+		}
+		out = append(out, [2]int{lo, lo + p})
+		lo += p
+	}
+	return out
+}
+
+// HeadOptions are HeadAttention's.
+type HeadOptions struct {
+	// Chunk is the queries a chunk (0: all of them).
+	Chunk int
+	// Split, when not 0, is where the keys part in two kinds (an image's, then a text's): Bias
+	// is then of the keys past it alone, and KeyParts cuts each kind by itself.
+	Split int
+	// Bias, when not nil, is added to the scores of every query: 0 for the keys attended to and
+	// -10000 for the others, (1, 1, 1, keys), or with Split (1, 1, 1, keys - Split) for the keys
+	// past it alone (the others are all attended to).
+	Bias *mlpackage.Var
+	// Whole keeps the keys in one tensor however many they are (KeyParts).
+	Whole bool
+	// Deferred divides the softmax's sum after the product with the values, not before: 29 ms
+	// of softmax in place of 41 for Anima's self-attention. The product is then of exp(x - max),
+	// up to one for each key, so its sum over the keys must fit fp16: use it only where the
+	// values and the keys are few and small enough (Anima's cross-attention over 512 text rows:
+	// 8.7 at most; its self-attention over 4096 patches reaches fp16's largest). Scaling the
+	// values down for it in their projection's int8 weights makes products under fp16's normal
+	// range, which the Neural Engine drops (Anima's pictures changed, latent cosine 0.75). The
+	// keys are then not cut in parts.
+	Deferred bool
+	// Note, when not nil, is given each chunk's product before Deferred's division (1, 1,
+	// queries, d), for checking its range.
+	Note func(*mlpackage.Var)
+}
+
 // HeadAttention is the attention of q (1, heads, n, d), which holds the scores' scale, over k and
 // v (1, heads, m, d), as the Neural Engine runs it fastest through Core AI: a head at a time and
-// chunk queries at a time (0: all), a chunk's scores laid out (1, queries, 1, keys) with the
-// softmax over the last axis. Core AI runs a softmax as passes over the scores (exp(x - max),
-// the sum, the division), and those are what an image's self-attention costs: of Anima's 4096 x
-// 4096 scores of 16 heads the two products are 31 ms and the softmax 59 as QChunkAttention
-// writes them, 41 here (M1; every head in one tensor laid out the same way is slower than
+// a chunk of queries at a time, a chunk's scores laid out (1, queries, 1, keys) with the softmax
+// over the last axis. Core AI runs a softmax as passes over the scores (exp(x - max), the sum,
+// the division), and those are what an image's self-attention costs: of Anima's 4096 x 4096
+// scores of 16 heads the two products are 31 ms and the softmax 59 as QChunkAttention writes
+// them, 41 here (M1; every head in one tensor laid out the same way is slower than
 // QChunkAttention, design.md 16.202).
 //
-// With deferred the softmax's sum is divided after the product with the values, not before: 29
-// ms of softmax in place of 41. The product is then of exp(x - max), up to one for each key, so
-// its sum over the keys must fit fp16: use it only where the values and the keys are few and
-// small enough (Anima's cross-attention over 512 text rows: 8.7 at most; its self-attention
-// over 4096 patches reaches fp16's largest). Scaling the values down for it in their
-// projection's int8 weights makes products under fp16's normal range, which the Neural Engine
-// drops (Anima's pictures changed, latent cosine 0.75). note, when not nil, is given each
-// chunk's product before the division (1, 1, queries, d), for checking its range.
-func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, chunk int, deferred bool, note func(*mlpackage.Var)) *mlpackage.Var {
+// The layout is fast when the keys are a power of two, 4096 at most: 8 heads of 4096 queries
+// took 0.27 ns a score over 4096 keys, 0.38 to 0.47 over 2304, 3072, 4160, 5120 and 8192, where
+// QChunkAttention takes 0.39 to 0.44 over any (M1, design.md 16.211). So the keys are cut in
+// such parts (KeyParts), each part's scores a tensor of its own under the one softmax: the
+// largest of their maxima, the sum of their sums. Qwen-Image's 4096 image keys and 512 text
+// keys (32 heads, 4096 queries): 278 ms in one tensor, 173 in two, QChunkAttention 248. With
+// parts the probabilities are the exponentials times the sum's reciprocal: dividing two parts
+// by the one sum left the Neural Engine. Past 4096 keys of a kind the parts are not tuned
+// (8192 as two parts of 4096: 0.46 ns a score, in one tensor 0.38).
+func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, o HeadOptions) *mlpackage.Var {
 	heads, n, d := q.Shape[1], q.Shape[2], q.Shape[3]
 	m := k.Shape[2]
+	chunk := o.Chunk
 	if chunk <= 0 || chunk > n {
 		chunk = n
+	}
+	if o.Split < 0 || o.Split >= m || (o.Split > 0 && o.Deferred) {
+		g.Fail("HeadAttention: split %d of %d keys, deferred %v", o.Split, m, o.Deferred)
+		return q
+	}
+	// the keys' parts: [lo, hi) and their bias (nil: none)
+	type span struct {
+		lo, hi int
+		bias   *mlpackage.Var
+	}
+	var parts []span
+	for _, kind := range [][2]int{{0, o.Split}, {o.Split, m}} {
+		if kind[0] == kind[1] {
+			continue
+		}
+		biased := o.Bias != nil && (o.Split == 0 || kind[0] == o.Split)
+		cut := [][2]int{kind}
+		if !o.Whole && !o.Deferred {
+			cut = KeyParts(kind[0], kind[1])
+		}
+		for _, c := range cut {
+			p := span{lo: c[0], hi: c[1]}
+			if biased {
+				p.bias = o.Bias
+				if c[1]-c[0] < o.Bias.Shape[3] {
+					p.bias = g.Slice(o.Bias, -1, c[0]-kind[0], c[1]-kind[0])
+				}
+			}
+			parts = append(parts, p)
+		}
 	}
 	var outs []*mlpackage.Var
 	for h := 0; h < heads; h++ {
@@ -289,31 +374,77 @@ func (g *Graph) HeadAttention(q, k, v *mlpackage.Var, chunk int, deferred bool, 
 		if heads > 1 {
 			qh, kh, vh = g.Slice(q, 1, h, h+1), g.Slice(k, 1, h, h+1), g.Slice(v, 1, h, h+1)
 		}
+		ks, vs := []*mlpackage.Var{kh}, []*mlpackage.Var{vh}
+		if len(parts) > 1 {
+			ks, vs = nil, nil
+			for _, p := range parts {
+				ks, vs = append(ks, g.Slice(kh, 2, p.lo, p.hi)), append(vs, g.Slice(vh, 2, p.lo, p.hi))
+			}
+		}
 		var rows []*mlpackage.Var
 		for lo := 0; lo < n; lo += chunk {
 			hi := min(lo+chunk, n)
+			c := hi - lo
 			qc := qh
-			if hi-lo < n {
+			if c < n {
 				qc = g.Slice(qh, 2, lo, hi)
 			}
-			s := g.Reshape(g.MatMul(qc, kh, false, true), 1, hi-lo, 1, m)
-			e := g.Unary("exp", g.Sub(s, g.Reduce("max", s, -1)))
-			sum := g.Reduce("sum", e, -1) // (1, queries, 1, 1)
-			if !deferred {
-				rows = append(rows, g.MatMul(g.Reshape(g.Div(e, sum), 1, 1, hi-lo, m), vh, false, false))
-				continue
+			var ss []*mlpackage.Var // the parts' scores (1, queries, 1, keys of the part)
+			// joined is the parts' reductions (1, queries, 1, 1) as one: side by side and reduced
+			// again. A maximum (or a sum) of two reductions of tensors of unlike widths fails
+			// the Neural Engine's compiler (4096 and 1024 keys: "Interleave should be matched
+			// for dual-input PEs").
+			joined := func(typ string, xs []*mlpackage.Var) *mlpackage.Var {
+				if len(xs) == 1 {
+					return xs[0]
+				}
+				return g.Reduce(typ, g.Concat(-1, xs...), -1)
 			}
-			o := g.MatMul(g.Reshape(e, 1, 1, hi-lo, m), vh, false, false)
-			if note != nil {
-				note(o)
+			var pms []*mlpackage.Var
+			for i, p := range parts {
+				s := g.Reshape(g.MatMul(qc, ks[i], false, true), 1, c, 1, p.hi-p.lo)
+				if p.bias != nil {
+					s = g.Add(s, p.bias)
+				}
+				ss = append(ss, s)
+				pms = append(pms, g.Reduce("max", s, -1))
 			}
-			rows = append(rows, g.Div(o, g.Reshape(sum, 1, 1, hi-lo, 1)))
+			mx := joined("max", pms)
+			var es, pss []*mlpackage.Var
+			for _, s := range ss {
+				e := g.Unary("exp", g.Sub(s, mx))
+				es = append(es, e)
+				pss = append(pss, g.Reduce("sum", e, -1))
+			}
+			sum := joined("sum", pss) // (1, queries, 1, 1)
+			switch {
+			case len(parts) > 1:
+				r := g.Op("real_div", map[string]any{"x": g.B.ScalarF16(1), "y": sum}, sum.Shape...)
+				var row *mlpackage.Var
+				for i, p := range parts {
+					pv := g.MatMul(g.Reshape(g.Mul(es[i], r), 1, 1, c, p.hi-p.lo), vs[i], false, false)
+					if row == nil {
+						row = pv
+					} else {
+						row = g.Add(row, pv)
+					}
+				}
+				rows = append(rows, row)
+			case !o.Deferred:
+				rows = append(rows, g.MatMul(g.Reshape(g.Div(es[0], sum), 1, 1, c, m), vh, false, false))
+			default:
+				p := g.MatMul(g.Reshape(es[0], 1, 1, c, m), vh, false, false)
+				if o.Note != nil {
+					o.Note(p)
+				}
+				rows = append(rows, g.Div(p, g.Reshape(sum, 1, 1, c, 1)))
+			}
 		}
-		o := rows[0]
+		r := rows[0]
 		if len(rows) > 1 {
-			o = g.Concat(2, rows...)
+			r = g.Concat(2, rows...)
 		}
-		outs = append(outs, o)
+		outs = append(outs, r)
 	}
 	out := outs[0]
 	if len(outs) > 1 {

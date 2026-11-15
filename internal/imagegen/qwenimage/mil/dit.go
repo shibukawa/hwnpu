@@ -3,7 +3,10 @@ package mil
 import (
 	"fmt"
 	"math"
+	"os"
 
+	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -113,13 +116,14 @@ type block struct{ p string }
 func blk(i int) block { return block{fmt.Sprintf("dit.transformer_blocks.%d.", i)} }
 
 // qkv is the modulated norm of x (1, n, E) and the attention's q, k (normed, turned) and v, each
-// (1, n, H, D).
+// (1, n, H, D). q holds the attention's scale, 1 / sqrt(D), in its norm's weight: the attention
+// then runs at scale 1, without a multiply over its scores (design.md 16.201).
 func (b block) qkv(g *graph, c Dit, x, m1, cos, sin *mlpackage.Var) (q, k, v *mlpackage.Var) {
 	E, H, D := c.Hidden, c.Heads, c.HeadDim
 	n := x.Shape[1]
-	h := g.Mul(g.ScaledLayerNorm(x, c.Eps), m1)
+	h := g.Mul(g.AbsScaledLayerNorm(x, c.Eps), m1)
 	p := b.p + "attn."
-	proj := func(name, norm string) *mlpackage.Var {
+	proj := func(name, norm string, s float32) *mlpackage.Var {
 		var y *mlpackage.Var
 		if norm == "" {
 			y = g.Linear(h, p+name+".weight", "", E)
@@ -134,19 +138,32 @@ func (b block) qkv(g *graph, c Dit, x, m1, cos, sin *mlpackage.Var) (q, k, v *ml
 		nw := g.Get(p+norm+".weight", D)
 		pw := make([]float32, D)
 		for i, src := range headPerm(D) {
-			pw[i] = nw[src]
+			pw[i] = nw[src] * s
 		}
-		y = g.RMSNormWith(g.MaxScaled(y, -1), p+norm+".weight", pw, c.Eps, 1)
+		y = g.RMSNormWith(g.AbsScaled(y, -1), p+norm+".weight", pw, c.Eps, 1)
 		return g.ApplyRope(y, cos, sin)
 	}
-	return proj("to_q", "norm_q"), proj("to_k", "norm_k"), proj("to_v", "")
+	return proj("to_q", "norm_q", float32(1/math.Sqrt(float64(D)))), proj("to_k", "norm_k", 1), proj("to_v", "", 1)
+}
+
+// HeadChunk is the queries the image attention takes at a time, a head at a time
+// (milpart.HeadAttention): of Qwen-Image's 4096 image queries over 4096 image keys and 512 text
+// keys, 32 heads took 168 ms in chunks of 1024 and 159 of 512, which compile 40 % longer; 2048
+// left the Neural Engine (M1, design.md 16.211).
+const HeadChunk = 1024
+
+// headAttention reports whether the image attention is written a head at a time: not for
+// Intel's NPU (not measured there), and not with HWNPU_QWENIMAGE_ATTENTION=chunks, which writes
+// the heads together as before design.md 16.211 (to tell a rounding difference from a mistake).
+func headAttention(g *graph) bool {
+	return g.Opts.Backend != llm.BackendIntel && os.Getenv("HWNPU_QWENIMAGE_ATTENTION") != "chunks"
 }
 
 // rest is the attention's output projection o (1, n, E) gated into x, and the SwiGLU MLP's.
 func (b block) rest(g *graph, c Dit, x, o, g1, m2, g2 *mlpackage.Var) *mlpackage.Var {
 	E := c.Hidden
 	x = g.Add(x, g.Mul(g.Linear(o, b.p+"attn.to_out.0.weight", "", E), g1))
-	h := g.Mul(g.ScaledLayerNorm(x, c.Eps), m2)
+	h := g.Mul(g.AbsScaledLayerNorm(x, c.Eps), m2)
 	p := b.p + "img_mlp."
 	f := g.Mul(g.SiLU(g.Linear(h, p+"gate_layer.weight", "", c.MLP)), g.Linear(h, p+"proj.weight", "", c.MLP))
 	return g.Add(x, g.Mul(g.Linear(f, p+"out.weight", "", E), g2))
@@ -165,8 +182,11 @@ func modRows(g *graph, mod *mlpackage.Var, E int) (m1, g1, m2, g2 *mlpackage.Var
 // (1, tokens, 1, head_dim), the image rows' RoPE (their frame is the text's length); tk and tv (1,
 // count x TextRows, hidden), the text's keys (after their norm and RoPE) and values of these
 // blocks (Text's outputs); kbias (1, 1, 1, tokens + TextRows), 0 for the image's keys and the
-// text's that count, -10000 past them. The attention runs qchunk queries at a time (0: all; QChunk
-// is the default). The last group (final) also takes scale (1, 1, hidden),
+// text's that count, -10000 past them. On Apple's Neural Engine the attention runs a head at a time,
+// HeadChunk queries at a time, the image's keys and the text's as score tensors of their own
+// (milpart.HeadAttention: its core 248 -> 168 ms a block at 1024 x 1024 on an M1, design.md
+// 16.211); else qchunk queries at a time with the heads together (0: all; QChunk is the default).
+// The last group (final) also takes scale (1, 1, hidden),
 // norm_out's 1 + scale, and gives the velocity (1, tokens, 64); the others the residual stream
 // after them.
 func Blocks(c Dit, first, count, qchunk int, final bool) *Part {
@@ -188,6 +208,10 @@ func Blocks(c Dit, first, count, qchunk int, final bool) *Part {
 			scale = g.Input("scale", 1, 1, E)
 		}
 		m1, g1, m2, g2 := modRows(g, mod, E)
+		var tbias *mlpackage.Var // the text's keys' bias: the image's keys all count
+		if headAttention(g) {
+			tbias = g.Slice(kbias, -1, n, n+TextRows)
+		}
 		for j := 0; j < count; j++ {
 			b := blk(first + j)
 			q, k, v := b.qkv(g, c, x, m1, cos, sin)
@@ -197,11 +221,16 @@ func Blocks(c Dit, first, count, qchunk int, final bool) *Part {
 			heads := func(y *mlpackage.Var) *mlpackage.Var { return g.Transpose(y, 0, 2, 1, 3) }
 			keys := heads(g.Concat(1, k, text(tk)))
 			vals := heads(g.Concat(1, v, text(tv)))
-			o := g.QChunkAttention(heads(q), keys, vals, 1/math.Sqrt(float64(D)), kbias, qchunk)
+			var o *mlpackage.Var
+			if headAttention(g) {
+				o = g.HeadAttention(heads(q), keys, vals, milpart.HeadOptions{Chunk: HeadChunk, Split: n, Bias: tbias})
+			} else {
+				o = g.QChunkAttention(heads(q), keys, vals, 1, kbias, qchunk)
+			}
 			x = b.rest(g, c, x, g.Merge(o), g1, m2, g2)
 		}
 		if final {
-			h := g.Mul(g.ScaledLayerNorm(x, c.Eps), scale)
+			h := g.Mul(g.AbsScaledLayerNorm(x, c.Eps), scale)
 			x = g.Linear(h, "dit.proj_out.weight", "", c.Latent)
 		}
 		g.Output(x)
@@ -229,7 +258,7 @@ func TextBlocks(c Dit, first, count int) *Part {
 			b := blk(first + j)
 			q, k, v := b.qkv(g, c, x, m1, cos, sin)
 			heads := func(y *mlpackage.Var) *mlpackage.Var { return g.Transpose(y, 0, 2, 1, 3) }
-			o := g.QChunkAttention(heads(q), heads(k), heads(v), 1/math.Sqrt(float64(D)), causal, 0)
+			o := g.QChunkAttention(heads(q), heads(k), heads(v), 1, causal, 0)
 			outs = append(outs, g.Reshape(k, 1, TextRows, E), g.Reshape(v, 1, TextRows, E))
 			x = b.rest(g, c, x, g.Merge(o), g1, m2, g2)
 		}

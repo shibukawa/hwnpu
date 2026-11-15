@@ -42,7 +42,7 @@ func TestConvertParts(t *testing.T) {
 // pass lut8 and its image blocks lut4 (k-means with the extremes kept).
 func TestExportName(t *testing.T) {
 	got := ExportName("Qwen-Image-2.1-Turbo", ConvertOptions{Width: 512})
-	if want := "qwen-image-2.1-turbo-512x512-lut8-lut8-kmm-lut4-kmm-g4-v2.coreml"; got != want {
+	if want := "qwen-image-2.1-turbo-512x512-lut8-lut8-kmm-lut4-kmm-g4-v3.coreml"; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
 	if got := ExportName("Qwen-Image-2.1-Turbo", ConvertOptions{Width: 1024, DitFormat: "lut6"}); !strings.Contains(got, "1024x1024-lut8-lut8-kmm-lut6-kmm") {
@@ -50,7 +50,7 @@ func TestExportName(t *testing.T) {
 	}
 	// Core AI: the DiT and its text pass lut6, one program a group (SharedDit)
 	ai := ConvertOptions{Width: 1024, Backend: "coreai"}
-	if got, want := ExportName("Qwen-Image-2.1-Turbo", ai), "qwen-image-2.1-turbo-1024x1024-lut8-lut6-kmm-lut6-kmm-g4-v2.coreai"; got != want {
+	if got, want := ExportName("Qwen-Image-2.1-Turbo", ai), "qwen-image-2.1-turbo-1024x1024-lut8-lut6-kmm-lut6-kmm-g4-v3.coreai"; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
 	if !ai.SharedDit() {
@@ -86,26 +86,40 @@ func TestShareText(t *testing.T) {
 	os.WriteFile(filepath.Join(from, "manifest.json"), b, 0o644)
 	o2 := ConvertOptions{Width: 1024}
 	o2.defaults()
-	if got, _ := sharedExport(dir, "Qwen-Image-2.1-Turbo", o2); got != "" {
+	if got, _, _ := sharedExport(dir, "Qwen-Image-2.1-Turbo", o2); got != "" {
 		t.Fatalf("an export without .done shared: %s", got)
 	}
 	os.WriteFile(from+".done", nil, 0o644)
-	if got, same := sharedExport(dir, "Qwen-Image-2.1-Turbo", o2); got != from || !same {
-		t.Fatalf("shared %q (same %v), want %q of the same model", got, same, from)
+	if got, same, ditText := sharedExport(dir, "Qwen-Image-2.1-Turbo", o2); got != from || !same || !ditText {
+		t.Fatalf("shared %q (same %v, text pass %v), want %q of the same model", got, same, ditText, from)
 	}
 	o3 := o2
 	o3.DitTextFormat = "lut6"
-	if got, same := sharedExport(dir, "Qwen-Image-2.1-Turbo", o3); got != from || same {
+	if got, same, _ := sharedExport(dir, "Qwen-Image-2.1-Turbo", o3); got != from || same {
 		t.Fatalf("a text pass of another format: shared %q (same %v), want the text encoder's only", got, same)
 	}
 	o4 := o2
 	o4.TextFormat = "lut6"
-	if got, _ := sharedExport(dir, "Qwen-Image-2.1-Turbo", o4); got != "" {
+	if got, _, _ := sharedExport(dir, "Qwen-Image-2.1-Turbo", o4); got != "" {
 		t.Fatalf("a text encoder of another format shared: %s", got)
 	}
 	// the base model: Qwen-Image-2.1 is a prefix of the Turbo's name, and is not the same model
-	if got, same := sharedExport(dir, "Qwen-Image-2.1", o); got != from || same {
+	if got, same, _ := sharedExport(dir, "Qwen-Image-2.1", o); got != from || same {
 		t.Fatalf("another model: shared %q (same %v), want the text encoder's only", got, same)
+	}
+	// an export of an older layout, from TextVersion on: the text encoder's programs, its last
+	// group too, but not the DiT's text pass; one before TextVersion shares nothing
+	for _, c := range []struct {
+		version       int
+		from          string
+		same, ditText bool
+	}{{ExportVersion - 1, from, true, false}, {TextVersion - 1, "", false, false}, {ExportVersion + 1, "", false, false}} {
+		m.Version = c.version
+		b, _ := json.Marshal(m)
+		os.WriteFile(filepath.Join(from, "manifest.json"), b, 0o644)
+		if got, same, ditText := sharedExport(dir, "Qwen-Image-2.1-Turbo", o2); got != c.from || same != c.same || ditText != c.ditText {
+			t.Fatalf("layout %d: shared %q (same %v, text pass %v), want %q (%v, %v)", c.version, got, same, ditText, c.from, c.same, c.ditText)
+		}
 	}
 	linked := func(out, f string) bool {
 		a, _ := os.Stat(filepath.Join(from, f))
