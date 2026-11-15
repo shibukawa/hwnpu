@@ -157,11 +157,12 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.RemoveAll(out); err != nil {
 		return "", err
 	}
-	if from, same := sharedExport(s.Dir, s.Name, o); from != "" {
-		if err := linkShared(from, out, same, same && !o.SharedDit()); err != nil {
+	if from, same, ditText := sharedExport(s.Dir, s.Name, o); from != "" {
+		ditText = ditText && !o.SharedDit()
+		if err := linkShared(from, out, same, ditText); err != nil {
 			return "", err
 		}
-		if same && !o.SharedDit() {
+		if ditText {
 			o.Only = map[string]bool{"blocks": true, "time": true, "vae": true}
 			fmt.Fprintf(log, "the text encoder's and the DiT's text pass's programs from %s\n", filepath.Base(from))
 		} else {
@@ -188,28 +189,31 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 }
 
 // sharedExport is a whole export in dir whose text encoder's programs are those o asks for (they do
-// not depend on the picture's size), or "". same says it is of the same model, name, so that its
-// DiT's text pass and the text encoder's last group (which ends with the DiT's txt_in) are this
-// one's too; one of another model (Qwen-Image-2.1 and its Turbo hold the same Qwen3-VL-8B) shares
-// the text encoder's other groups only. One of the same model is taken first.
-func sharedExport(dir, name string, o ConvertOptions) (from string, same bool) {
+// not depend on the picture's size, and are the same from TextVersion on), or "". same says it is
+// of the same model, name, so that the text encoder's last group (which ends with the DiT's
+// txt_in) is this one's too; ditText that its DiT's text pass is as well (the same layout too).
+// One of another model (Qwen-Image-2.1 and its Turbo hold the same Qwen3-VL-8B) shares the text
+// encoder's other groups only. The one that shares the most is taken.
+func sharedExport(dir, name string, o ConvertOptions) (from string, same, ditText bool) {
 	done, _ := filepath.Glob(filepath.Join(dir, "*."+o.Backend+".done"))
 	for _, d := range done {
 		e := strings.TrimSuffix(d, ".done")
 		m, err := ReadProgramManifest(e)
-		if err != nil || m.Version != ExportVersion || m.Formats["text"] != o.TextFormat || m.Formats["text_quant"] != o.TextQuant ||
-			len(m.TextIn) == 0 || len(m.DitText) == 0 {
+		if err != nil || m.Version < TextVersion || m.Version > ExportVersion || m.Formats["text"] != o.TextFormat ||
+			m.Formats["text_quant"] != o.TextQuant || len(m.TextIn) == 0 || len(m.DitText) == 0 {
 			continue
 		}
 		if exportModel(e) == strings.ToLower(name) && m.Formats["dit_text"] == o.DitTextFormat && m.Formats["dit_quant"] == o.DitQuant &&
 			m.Dit.Group == o.Group {
-			return e, true
-		}
-		if from == "" {
+			if m.Version == ExportVersion {
+				return e, true, true
+			}
+			from, same = e, true
+		} else if from == "" {
 			from = e
 		}
 	}
-	return from, false
+	return from, same, false
 }
 
 var exportSize = regexp.MustCompile(`-[0-9]+x[0-9]+-`)
