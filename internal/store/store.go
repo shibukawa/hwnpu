@@ -1,8 +1,9 @@
-// Package store reads and writes the places files are shared through (docs/cache-sharing.md 7):
-// a folder (a shared one: NFS, SMB, an external disk) or S3 (any endpoint: AWS, RustFS, Cloudflare R2,
-// through tinygodriver's storage/s3, without the AWS SDK or the aws command). A Store holds
-// objects by key, a slash-separated path; the layers (layer.go) keep in it the blobs of files by
-// their SHA-256, the entries of what was converted, and the index of the checkpoints' files.
+// Package store reads and writes the sources models are looked for in (docs/cache-sharing.md 7):
+// a folder (a mounted NAS, an external disk), an HTTP server (WebDAV to write, any server to
+// read) or S3 (any endpoint: AWS, RustFS, Cloudflare R2, through tinygodriver's storage/s3,
+// without the AWS SDK or the aws command). A Store holds objects by key, a slash-separated path;
+// a Source (source.go) keeps in it the repositories' files with their locks (original.go) and
+// what was converted (converted.go).
 package store
 
 import (
@@ -202,6 +203,7 @@ func (d Dir) Delete(_ context.Context, key string) error {
 	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	removeEmpty(filepath.Dir(p), filepath.Clean(d.Root))
 	return nil
 }
 

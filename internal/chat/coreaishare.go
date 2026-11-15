@@ -2,7 +2,6 @@ package chat
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,66 +38,32 @@ type coreAIShares struct{}
 var sharedLog io.Writer = console.Log(os.Stderr)
 
 func (coreAIShares) Fetch(ctx context.Context, export string) bool {
-	_, r := coreAIRecipe(ctx, export)
-	return fetchShared(ctx, CoreAIKind, r, export, filepath.Base(export))
+	m, r := coreAIRecipe(ctx, export)
+	return fetchShared(ctx, CoreAIKind, m, r, export, r["export"])
 }
 
 func (coreAIShares) Put(ctx context.Context, export string) {
 	m, r := coreAIRecipe(ctx, export)
-	putShared(ctx, CoreAIKind, m, r, export, filepath.Base(export))
+	putShared(CoreAIKind, m, r, export, r["export"])
 }
 
-// fetchShared makes dst (a directory) from the first shared layer that has the entry of kind
-// that recipe r describes, and reports whether one had it (what says so names it what). The
-// layers before it keep a copy when they fill. A nil r (what it is made from is not known) is in
-// none.
-func fetchShared(ctx context.Context, kind string, r map[string]string, dst, what string) bool {
-	layers := shared.Layers()
-	if r == nil || !slices.ContainsFunc(layers, func(l shared.Layer) bool { return l.Holds(shared.ScopePortable) }) {
+// fetchShared makes dst (a directory) from the first source that has the conversion of kind of
+// model m that recipe r describes, named export here (nil r: nothing to look for). It reports
+// whether it did.
+func fetchShared(ctx context.Context, kind string, m Model, r map[string]string, dst, export string) bool {
+	if r == nil {
 		return false
 	}
-	i, err := shared.FetchEntry(ctx, layers, shared.ScopePortable, kind, shared.Fingerprint(r), dst, labelLog{sharedLog, filepath.Base(dst), what})
-	if err != nil {
-		if !errors.Is(err, shared.ErrNotFound) {
-			fmt.Fprintf(sharedLog, "the shared layers: %v; making %s here\n", err, what)
-		}
-		return false
-	}
-	for _, l := range layers[:i] {
-		if l.Fill && l.Holds(shared.ScopePortable) {
-			shared.PutLater(l, dst)
-		}
-	}
-	return true
+	return fetchConverted(ctx, placeOf(kind, m, r["target"], export, r), dst, labelLog{sharedLog, filepath.Base(dst), export})
 }
 
-// putShared describes dir, made here and whole, as the entry of kind of model m that recipe r
-// describes (its entry.json) and puts it in the shared layers that are written, in the
-// background (what says so names it what).
-func putShared(ctx context.Context, kind string, m Model, r map[string]string, dir, what string) {
-	var to []shared.Layer
-	for _, l := range shared.Layers() {
-		if l.Write && l.Holds(shared.ScopePortable) {
-			to = append(to, l)
-		}
-	}
-	if len(to) == 0 || r == nil {
+// putShared describes dir, made here and whole, as the conversion of kind of model m that
+// recipe r describes, and puts it in the sources that are written back to.
+func putShared(kind string, m Model, r map[string]string, dir, export string) {
+	if r == nil {
 		return
 	}
-	target := CoreAITarget
-	if kind != CoreAIKind {
-		target = ""
-	}
-	e := shared.Entry{Key: shared.Fingerprint(r), Kind: kind, Scope: shared.ScopePortable, Model: m.Name, Target: target,
-		Recipe: r, MadeBy: map[string]string{"host": hostName()}}
-	if _, err := shared.Describe(dir, e); err != nil {
-		fmt.Fprintf(sharedLog, "%s: %s: %v\n", what, shared.EntryFile, err)
-		return
-	}
-	for _, l := range to {
-		fmt.Fprintf(sharedLog, "putting %s in %s in the background\n", what, l)
-		shared.PutLater(l, dir)
-	}
+	putConverted(placeOf(kind, m, r["target"], export, r), dir, sharedLog)
 }
 
 type modelKey struct{}
@@ -218,13 +183,13 @@ func tablesRecipe(ctx context.Context, out string, a *llm.Arch, names []string) 
 
 // fetchTables makes the tables file out from the shared layers (an entry of a directory that
 // holds it) and reports whether one had it.
-func fetchTables(ctx context.Context, r map[string]string, out string) bool {
+func fetchTables(ctx context.Context, m Model, r map[string]string, out string) bool {
 	if r == nil {
 		return false
 	}
 	tmp := out + ".shared"
 	defer os.RemoveAll(tmp)
-	if !fetchShared(ctx, TablesKind, r, tmp, filepath.Base(out)) {
+	if !fetchShared(ctx, TablesKind, m, r, tmp, filepath.Base(out)) {
 		return false
 	}
 	return os.Rename(filepath.Join(tmp, filepath.Base(out)), out) == nil
@@ -233,7 +198,7 @@ func fetchTables(ctx context.Context, r map[string]string, out string) bool {
 // putTables puts the tables file out, written here, in the shared layers that are written: a
 // directory of the work area holds it (a hard link, else a copy) until the queue has put it.
 func putTables(ctx context.Context, m Model, r map[string]string, out string) {
-	if r == nil || !slices.ContainsFunc(shared.Layers(), func(l shared.Layer) bool { return l.Write && l.Holds(shared.ScopePortable) }) {
+	if r == nil || len(shared.Writebacks()) == 0 {
 		return
 	}
 	dir := cache.Sub("work", "shared", shared.Fingerprint(r))
@@ -248,7 +213,7 @@ func putTables(ctx context.Context, m Model, r map[string]string, out string) {
 			return
 		}
 	}
-	putShared(ctx, TablesKind, m, r, dir, filepath.Base(out))
+	putShared(TablesKind, m, r, dir, filepath.Base(out))
 }
 
 // copyStream copies the file src to dst a piece at a time.

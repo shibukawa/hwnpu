@@ -3,6 +3,7 @@ package chat
 import (
 	"cmp"
 	"context"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -118,42 +119,26 @@ func planFinish(path string) {
 	}
 }
 
-// fileSize is the size of a file of repo in the first source that has it: a path source's file,
-// or a Hugging Face repository's from a HEAD request (X-Linked-Size, which a redirect to the CDN
+// fileSize is the size of a file of repo: the one the lock of the first source that names it
+// says, else Hugging Face's from a HEAD request (X-Linked-Size, which a redirect to the CDN
 // carries).
 func fileSize(ctx context.Context, repo, name string) (int64, bool) {
-	order, key := sourceOrder(repo)
-	for _, sn := range order {
-		s := Sources[sn]
-		switch s.Type {
-		case "path":
-			if n, ok := pathSize(s, key, name); ok {
-				return n, true
-			}
-		case "hf":
-			if n, ok := hfSize(ctx, key, name); ok {
-				return n, true
+	base, _, _ := strings.Cut(repo, "@")
+	commit := lockedCommit(ctx, repo)
+	for _, s := range shared.Sources() {
+		if l, err := shared.ReadLock(ctx, s, base); err == nil && (commit == "" || l.Commit == commit) {
+			if f, ok := l.Files[name]; ok {
+				return f.Size, true
 			}
 		}
 	}
-	return 0, false
-}
-
-func pathSize(s Source, key, name string) (int64, bool) {
-	base, rev, _ := strings.Cut(key, "@")
-	if !safeName(base) || !safeName(name) {
+	if !shared.HuggingFace() {
 		return 0, false
 	}
-	dirs := []string{base}
-	if rev != "" {
-		dirs = []string{base + "@" + rev, base}
+	if commit != "" {
+		repo = base + "@" + commit
 	}
-	for _, d := range dirs {
-		if fi, err := os.Stat(filepath.Join(s.Path, filepath.FromSlash(d), filepath.FromSlash(name))); err == nil && fi.Mode().IsRegular() {
-			return fi.Size(), true
-		}
-	}
-	return 0, false
+	return hfSize(ctx, repo, name)
 }
 
 // headClient asks without following redirects: the size is on the Hub's answer.

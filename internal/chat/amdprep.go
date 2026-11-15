@@ -165,16 +165,16 @@ func PrepareAMD(ctx context.Context, m Model, dir string, log io.Writer) (string
 		}
 	}
 	out := AMDExportDir(m)
-	// the shared layers first: a machine without IRON runs an export made elsewhere (no layers:
-	// the hub is not asked for the commit)
+	// the sources first: a machine without IRON runs an export made elsewhere (no sources: the
+	// hub is not asked for the commit)
 	var recipe map[string]string
-	if len(shared.Layers()) > 0 {
+	if len(shared.Sources()) > 0 {
 		recipe = ExportRecipe(ctx, m, "iron_export_lm.py", m.AMDExport)
 	}
 	err := SharedExport(ctx, "iron-lm", recipe, out, log, func() error {
 		python, err := ironPython(ctx)
 		if err != nil {
-			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the shared layers, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or copy an export made elsewhere to %s",
+			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or copy an export made elsewhere to %s",
 				m.Name, out, err, IRONEnv, out)
 		}
 		return exportAMD(ctx, python, m, dir, out, logf, log)

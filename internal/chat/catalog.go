@@ -44,9 +44,10 @@ type Model struct {
 	Features []string // what it can do besides its kind, from Features
 	Repo     string   // the Hugging Face repository it is downloaded from
 	Revision string   // the repository's revision to download ("": main)
-	// SourceName is the source of sources the model comes from, "" for hf (Hugging Face, or the
-	// sources of Search); Repo is then the model's folder in it.
-	SourceName string
+	// Targets are the versions of the model's conversions by target (models.yaml's targets).
+	Targets map[string]int
+	// Develop marks a model in development (models.yaml's develop).
+	Develop bool
 	// SHA256 pins the repository's files by name.
 	SHA256 map[string]string
 	// Arch is the structure the definitions name (llm.Lookup), "" for the one config.json says.
@@ -112,13 +113,9 @@ func (m Model) DirName() string {
 	return path.Base(m.Repo)
 }
 
-// Source is the repository as fetch takes it: OWNER/NAME, or OWNER/NAME@REVISION when pinned,
-// from hf (or the sources of Search), or SOURCE:NAME from a source of sources.
+// Source is the repository as fetch takes it: OWNER/NAME, or OWNER/NAME@REVISION when pinned.
 func (m Model) Source() string {
-	switch {
-	case m.SourceName != "":
-		return m.SourceName + ":" + m.Repo
-	case m.Revision != "":
+	if m.Revision != "" {
 		return m.Repo + "@" + m.Revision
 	}
 	return m.Repo
@@ -251,21 +248,14 @@ func ResolveForKinds(name string, log io.Writer, kinds ...Kind) (Model, error) {
 type NoModelError struct{ Name string }
 
 func (e *NoModelError) Error() string {
-	return fmt.Sprintf("chat: no model %q (hwnpu-chat list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME, a model of a source of the definitions SOURCE:NAME)", e.Name)
+	return fmt.Sprintf("chat: no model %q (hwnpu-chat list shows the models, their families and the uses that pick one; a repository is written OWNER/NAME)", e.Name)
 }
 
 func errNoModel(name string) error { return &NoModelError{Name: name} }
 
-// repoModel is the model a name of a repository means: OWNER/NAME or OWNER/NAME@REVISION of
-// Hugging Face (or the sources of Search), or SOURCE:NAME, a model of a source of the
-// definitions. ok is false for neither.
+// repoModel is the model a name of a repository means: OWNER/NAME or OWNER/NAME@REVISION (of
+// the sources or Hugging Face). ok is false otherwise.
 func repoModel(name string) (Model, bool) {
-	if src, rest := splitSource(name); src != "" {
-		if !safeName(rest) || strings.Contains(rest, "@") {
-			return Model{}, false
-		}
-		return Model{Name: path.Base(rest), Repo: rest, SourceName: src}, true
-	}
 	repo, rev, _ := strings.Cut(name, "@")
 	if strings.Count(repo, "/") != 1 || !safeName(repo) || strings.HasSuffix(repo, "/") {
 		return Model{}, false

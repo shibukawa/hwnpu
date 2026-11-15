@@ -116,15 +116,15 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	if err != nil {
 		return err
 	}
-	var layers []shared.Layer
+	var sources []shared.Source
+	hf := true
 	if user {
-		if layers, err = buildLayers(t.layers, t.layersFile, t.sources, t.warn); err != nil {
+		if sources, hf, err = shared.FromEnv(); err != nil {
 			return err
 		}
 	}
 	Catalog, Categories, Aliases, ModelFiles = catalog, categories, aliases, t.files
-	Sources, Search = t.sources, t.search
-	shared.SetLayers(layers)
+	shared.SetSources(sources, hf)
 	digests, pinned = map[string]map[string]string{}, map[string][]pinnedFile{}
 	for _, m := range catalog {
 		for f, d := range m.SHA256 {
@@ -147,9 +147,6 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 			}
 		}
 	}
-	foundMu.Lock()
-	clear(found)
-	foundMu.Unlock()
 	return nil
 }
 
@@ -192,10 +189,22 @@ type modelEntry struct {
 	// variants it names and keeps the others.
 	Variants *map[int]*variantEntry `yaml:"variants"`
 	// NotOn are the chips (M1) a family or a category does not pick the model on.
-	NotOn  *[]string `yaml:"not_on"`
-	About  *string   `yaml:"about"`
-	Like   string    `yaml:"like"`
-	Remove bool      `yaml:"remove"`
+	NotOn *[]string `yaml:"not_on"`
+	// Targets are the versions of the model's conversions by target (amd-xdna2, coreai),
+	// bumped by hand when what is made changes: the folder vN of a source (docs/cache-sharing.md
+	// 3). A file over another changes the targets it names and keeps the others.
+	Targets *map[string]*targetEntry `yaml:"targets"`
+	// Develop marks a model in development: its conversions go in the sources as vN-HASH of
+	// what they are made from, not vN.
+	Develop *bool   `yaml:"develop"`
+	About   *string `yaml:"about"`
+	Like    string  `yaml:"like"`
+	Remove  bool    `yaml:"remove"`
+}
+
+// targetEntry is a target of a model's targets.
+type targetEntry struct {
+	Version int `yaml:"version"`
 }
 
 type pickEntry struct {
@@ -212,18 +221,19 @@ type categoryEntry struct {
 }
 
 // tableFile is a definition file. NPUs and Builds are designed (docs/model-table.md) but not
-// read yet: a file that has them gets a warning. Of Cache, the layers are read
-// (docs/cache-sharing.md 7).
+// read yet: a file that has them gets a warning. Sources, Search and Cache were read before the
+// sources moved to the environment (HWNPU_MODEL_SOURCE: docs/cache-sharing.md 7): a file that
+// has them is refused with what to do.
 type tableFile struct {
 	Version    int                       `yaml:"version"`
 	Models     map[string]*modelEntry    `yaml:"models"`
 	Categories map[string]*categoryEntry `yaml:"categories"`
 	Aliases    map[string]string         `yaml:"aliases"`
-	Sources    map[string]*sourceEntry   `yaml:"sources"`
-	Search     *[]string                 `yaml:"search"`
+	Sources    any                       `yaml:"sources"`
+	Search     any                       `yaml:"search"`
 	NPUs       any                       `yaml:"npus"`
 	Builds     any                       `yaml:"builds"`
-	Cache      *cacheEntry               `yaml:"cache"`
+	Cache      any                       `yaml:"cache"`
 }
 
 // order is a file's models and categories in the order written (maps lose it).
@@ -257,17 +267,11 @@ type table struct {
 	aliases    map[string]string
 	aliasFile  map[string]string
 	removed    map[string]string // models a file removed, by the file
-	sources    map[string]Source
-	search     []string
-	searchFile string
-	layers     []layerEntry
-	layersFile string
 }
 
 func newTable(log io.Writer) *table {
 	return &table{log: log, models: map[string]*modelEntry{}, origin: map[string][]string{},
-		cats: map[string]*category{}, aliases: map[string]string{}, aliasFile: map[string]string{}, removed: map[string]string{},
-		sources: map[string]Source{SourceHF: {Name: SourceHF, Type: "hf"}}, search: []string{SourceHF}, searchFile: Builtin}
+		cats: map[string]*category{}, aliases: map[string]string{}, aliasFile: map[string]string{}, removed: map[string]string{}}
 }
 
 func (t *table) warn(file, format string, args ...any) {
@@ -306,31 +310,9 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 	if err := yaml.Unmarshal(raw, &o); err != nil {
 		return fmt.Errorf("chat: %s: %w", name, err)
 	}
-	if builtin && (f.Sources != nil || f.Search != nil) {
-		return fmt.Errorf("chat: %s: sources and search are the user's to set", name)
-	}
-	for key, e := range f.Sources {
-		s, err := toSource(key, e)
-		if err != nil {
-			return fmt.Errorf("chat: %s: %w", name, err)
-		}
-		t.sources[key] = s
-	}
-	if f.Search != nil {
-		if len(*f.Search) == 0 {
-			return fmt.Errorf("chat: %s: search lists no source", name)
-		}
-		t.search, t.searchFile = slices.Clone(*f.Search), name
-	}
-	if f.Cache != nil {
-		if builtin {
-			return fmt.Errorf("chat: %s: cache is the machine's and the user's to set", name)
-		}
-		if f.Cache.Layers != nil {
-			t.layers, t.layersFile = slices.Clone(*f.Cache.Layers), name
-		}
-		if f.Cache.Prebuilt != nil {
-			t.warn(name, "cache.prebuilt is not read by this version of hwnpu yet (docs/cache-sharing.md); skipped")
+	for key, v := range map[string]any{"sources": f.Sources, "search": f.Search, "cache": f.Cache} {
+		if v != nil {
+			return fmt.Errorf("chat: %s: %s is not read any more: the sources are URLs in %s, %s_1, ... (a .env file can set them: docs/cache-sharing.md 7)", name, key, shared.SourceEnv, shared.SourceEnv)
 		}
 	}
 	for key, v := range map[string]any{"npus": f.NPUs, "builds": f.Builds} {
@@ -410,6 +392,11 @@ func merge(dst, src *modelEntry) {
 		m := maps.Clone(*dst.Device)
 		maps.Copy(m, *src.Device)
 		defer func() { dst.Device = &m }()
+	}
+	if src.Targets != nil && dst.Targets != nil {
+		m := maps.Clone(*dst.Targets)
+		maps.Copy(m, *src.Targets)
+		defer func() { dst.Targets = &m }()
 	}
 	if src.Variants != nil && dst.Variants != nil {
 		m := maps.Clone(*dst.Variants)
@@ -498,11 +485,6 @@ var kinds = map[Kind]string{
 // build makes the catalog, the categories and the aliases of what was merged.
 func (t *table) build() ([]Model, []Category, map[string]string, error) {
 	var errs []error
-	for _, s := range t.search {
-		if _, ok := t.sources[s]; !ok {
-			errs = append(errs, fmt.Errorf("chat: %s: search: no source %q (sources defines them; hf is Hugging Face)", t.searchFile, s))
-		}
-	}
 	var catalog []Model
 	byName := map[string]bool{}
 	for _, name := range t.modelOrder {
@@ -511,7 +493,7 @@ func (t *table) build() ([]Model, []Category, map[string]string, error) {
 			errs = append(errs, err)
 			continue
 		}
-		m, err := toModel(name, e, t.sources)
+		m, err := toModel(name, e)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("chat: %s: %w", strings.Join(t.origin[name], ", "), err))
 			continue
@@ -589,7 +571,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 }
 
 // toModel is the catalog's entry of a merged model.
-func toModel(name string, e *modelEntry, sources map[string]Source) (Model, error) {
+func toModel(name string, e *modelEntry) (Model, error) {
 	m := Model{Name: name}
 	get := func(p *string) string {
 		if p == nil {
@@ -615,22 +597,27 @@ func toModel(name string, e *modelEntry, sources map[string]Source) (Model, erro
 		return m, fmt.Errorf("model %s: kind %q is not one of %s", name, m.Kind, strings.Join(ks, ", "))
 	}
 	src := get(e.From)
-	sn, repo, ok := strings.Cut(src, ":")
-	switch s, known := sources[sn]; {
-	case !ok || !known:
-		return m, fmt.Errorf("model %s: from %q is not SOURCE:NAME (hf:OWNER/NAME, or a source of sources)", name, src)
-	case s.Type == "hf":
-		repo, m.Revision, _ = strings.Cut(repo, "@")
-		if strings.Count(repo, "/") != 1 || !safeName(repo) || strings.HasSuffix(repo, "/") {
-			return m, fmt.Errorf("model %s: from %q is not hf:OWNER/NAME", name, src)
-		}
-	default:
-		if !safeName(repo) || strings.Contains(repo, "@") {
-			return m, fmt.Errorf("model %s: from %q: NAME must be a folder inside the source", name, src)
-		}
-		m.SourceName = sn
+	repo, ok := strings.CutPrefix(src, "hf:")
+	if !ok {
+		return m, fmt.Errorf("model %s: from %q is not hf:OWNER/NAME (a model of your own: put it in a source as original/OWNER/NAME with its hwnpu-lock.json)", name, src)
+	}
+	repo, m.Revision, _ = strings.Cut(repo, "@")
+	if strings.Count(repo, "/") != 1 || !safeName(repo) || strings.HasSuffix(repo, "/") {
+		return m, fmt.Errorf("model %s: from %q is not hf:OWNER/NAME", name, src)
 	}
 	m.Repo = repo
+	if e.Targets != nil {
+		m.Targets = map[string]int{}
+		for t, v := range *e.Targets {
+			if v == nil || v.Version < 1 {
+				return m, fmt.Errorf("model %s: targets: %s needs a version of 1 or more", name, t)
+			}
+			m.Targets[t] = v.Version
+		}
+	}
+	if e.Develop != nil {
+		m.Develop = *e.Develop
+	}
 	if e.SHA256 != nil {
 		for f, d := range *e.SHA256 {
 			if len(d) != 64 || strings.Trim(strings.ToLower(d), "0123456789abcdef") != "" {

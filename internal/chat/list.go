@@ -2,6 +2,7 @@ package chat
 
 import (
 	"fmt"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 	"io"
 	"path/filepath"
 	"slices"
@@ -135,10 +136,16 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 		}
 	}
 	var srcs []string
-	for _, s := range Search {
-		srcs = append(srcs, Sources[s].String())
+	for _, s := range shared.Sources() {
+		srcs = append(srcs, s.String())
 	}
-	fmt.Fprintf(w, "\nModels from hf are looked for in: %s\n", strings.Join(srcs, ", "))
+	if shared.HuggingFace() {
+		srcs = append(srcs, "Hugging Face")
+	}
+	if len(srcs) == 0 {
+		srcs = []string{"nowhere (" + shared.HuggingFaceEnv + "=false and no " + shared.SourceEnv + ")"}
+	}
+	fmt.Fprintf(w, "\nModels are looked for in: %s\n", strings.Join(srcs, ", "))
 	fmt.Fprintf(w, "Definitions: %s (yours: %s, %s, -models)\n", strings.Join(ModelFiles, ", "), UserModelsFile(), ModelsEnv)
 }
 

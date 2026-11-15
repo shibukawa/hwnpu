@@ -68,7 +68,7 @@ func Tables(ctx context.Context, out string, a *llm.Arch, names []string, checkp
 		return out, nil
 	}
 	m, r := tablesRecipe(ctx, out, a, names)
-	if fetchTables(ctx, r, out) && hasTables(out, names) {
+	if fetchTables(ctx, m, r, out) && hasTables(out, names) {
 		return out, nil
 	}
 	path, err := checkpoint()

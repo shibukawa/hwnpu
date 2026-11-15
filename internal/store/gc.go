@@ -2,90 +2,77 @@ package store
 
 import (
 	"context"
-	"encoding/json"
+	"path"
 	"strings"
 )
 
-// GC is what hwnpu-dev cache gc removes from a layer: the entries chosen and the blobs that only
-// they named, and with orphans the blobs that nothing names (docs/cache-sharing.md 7). Nothing is
-// removed until Apply. A blob a push or a fill is putting in the layer at the same time is named
-// by nothing until its entry or index is written: run gc with orphans when nothing writes there.
+// GC is what hwnpu-dev cache gc removes from a source: the entries chosen (their folders), and
+// with orphans the files under converted/ that no entry.json is with (what a writeback cut off
+// left). Nothing is removed until Apply. Run it with orphans when nothing writes to the source:
+// an entry being put there has its entry.json written last.
 type GC struct {
 	Entries []Entry  // the entries removed
-	Blobs   []string // the blobs removed, by SHA-256
-	Bytes   int64    // what the blobs held (an orphan's size when the store says it)
+	Orphans []string // the files removed that no entry has
+	Bytes   int64    // what the entries' files held
+	keys    []string // every file removed, entry.json first in each folder
 }
 
-// PlanGC works out a GC of l: drop chooses the entries to remove.
-func PlanGC(ctx context.Context, l Layer, drop func(Entry) bool, orphans bool) (GC, error) {
+// PlanGC works out a GC of s: drop chooses the entries to remove.
+func PlanGC(ctx context.Context, s Source, drop func(Entry) bool, orphans bool) (GC, error) {
 	var g GC
-	keep := map[string]bool{}
-	dropped := map[string]int64{}
-	kinds, err := ListEntries(ctx, l)
+	keys, err := s.Store.List(ctx, "converted/")
 	if err != nil {
 		return g, err
 	}
-	for _, kk := range kinds {
-		e, err := ReadLayerEntry(ctx, l, kk[0], kk[1])
+	entries := map[string]bool{}
+	for _, k := range keys {
+		if rel, ok := strings.CutSuffix(k, "/"+EntryFile); ok {
+			entries[rel] = true
+		}
+	}
+	gone := map[string]bool{}
+	for rel := range entries {
+		e, err := ReadEntryAt(ctx, s, rel)
 		if err != nil {
-			return g, err // an entry that cannot be read: its blobs are not known, so nothing goes
+			continue // one that cannot be read is left
+		}
+		if e.Path == "" {
+			e.Path = rel
 		}
 		if drop(e) {
 			g.Entries = append(g.Entries, e)
-			for _, f := range e.Files {
-				dropped[f.SHA256] = f.Size
-			}
+			g.Bytes += e.Bytes()
+			gone[rel] = true
+			g.keys = append(g.keys, rel+"/"+EntryFile)
+		}
+	}
+	for _, k := range keys {
+		if strings.HasSuffix(k, "/"+EntryFile) {
 			continue
 		}
-		for _, f := range e.Files {
-			keep[f.SHA256] = true
-		}
-	}
-	ups, err := l.Store.List(ctx, "upstream/")
-	if err != nil {
-		return g, err
-	}
-	for _, k := range ups {
-		b, err := l.Store.Read(ctx, k)
-		if err != nil {
-			return g, err
-		}
-		var u upstreamFile
-		if json.Unmarshal(b, &u) == nil {
-			keep[u.SHA256] = true
-		}
-	}
-	blobs, err := l.Store.List(ctx, "blobs/sha256/")
-	if err != nil {
-		return g, err
-	}
-	for _, k := range blobs {
-		sum := k[strings.LastIndexByte(k, '/')+1:]
-		if keep[sum] || blobKey(sum) != k {
-			continue
-		}
-		if n, ok := dropped[sum]; ok {
-			g.Blobs = append(g.Blobs, sum)
-			g.Bytes += n
-		} else if orphans {
-			g.Blobs = append(g.Blobs, sum)
-			if n, ok, err := l.Store.Has(ctx, k); err == nil && ok {
-				g.Bytes += n
+		owner := ""
+		for d := path.Dir(k); d != "." && d != "converted"; d = path.Dir(d) {
+			if entries[d] {
+				owner = d
+				break
 			}
+		}
+		switch {
+		case owner != "" && gone[owner]:
+			g.keys = append(g.keys, k)
+		case owner == "" && orphans:
+			g.Orphans = append(g.Orphans, k)
+			g.keys = append(g.keys, k)
 		}
 	}
 	return g, nil
 }
 
-// Apply removes what g names from l: the entries first, so that none names a blob that is gone.
-func (g GC) Apply(ctx context.Context, l Layer) error {
-	for _, e := range g.Entries {
-		if err := l.Store.Delete(ctx, entryKey(e.Kind, e.Key)); err != nil {
-			return err
-		}
-	}
-	for _, sum := range g.Blobs {
-		if err := l.Store.Delete(ctx, blobKey(sum)); err != nil {
+// Apply removes what g names from s: each entry's entry.json first, so that no reader takes a
+// folder that is going.
+func (g GC) Apply(ctx context.Context, s Source) error {
+	for _, k := range g.keys {
+		if err := s.Store.Delete(ctx, k); err != nil {
 			return err
 		}
 	}

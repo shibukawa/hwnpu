@@ -1,6 +1,7 @@
-// Package cachecmd is hwnpu-dev cache: what is kept here (the cache's root) and in the shared
-// layers (docs/cache-sharing.md 7): the layers in effect, what they hold, putting an export in
-// them, checking an entry, and finishing the work left in the background.
+// Package cachecmd is hwnpu-dev cache: what is kept here (the cache's root) and in the sources
+// (docs/cache-sharing.md 7): the sources in effect, what they hold, putting an export in them,
+// checking an entry, moving a repository's lock to a new commit, and finishing the work left in
+// the background.
 package cachecmd
 
 import (
@@ -16,6 +17,8 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/envfile"
 	"github.com/shibukawa/hwnpu/internal/pose"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	"github.com/shibukawa/hwnpu/internal/vision/detect"
@@ -27,12 +30,14 @@ import (
 type Cmd struct {
 	Models string `help:"${models_usage}" placeholder:"FILE,..."`
 
-	Layers LayersCmd `cmd:"" help:"Show the cache's root and the shared layers in effect: what each holds, whether it is written or filled, and what set it."`
-	Ls     LsCmd     `cmd:"" help:"List the entries the shared layers hold (or one layer: its number of layers)."`
-	Push   PushCmd   `cmd:"" help:"Put exports for AMD's NPU that are here in the layers that are written (with entry.json, made for them when missing)."`
-	Verify VerifyCmd `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
-	Flush  FlushCmd  `cmd:"" help:"Do the work the background left in the queue (what goes in the layers) and wait for it."`
-	GC     GCCmd     `cmd:"" name:"gc" help:"Remove entries from a shared layer (by model, kind, key or age) and the blobs only they named; with --orphans the blobs nothing names too. Shows what would go unless --apply."`
+	Sources SourcesCmd `cmd:"" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read."`
+	Ls      LsCmd      `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev cache sources); with --original the repositories' locks."`
+	Push    PushCmd    `cmd:"" help:"Put exports for AMD's NPU that are here in the sources written back to (with entry.json, made for them when missing)."`
+	Update  UpdateCmd  `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
+	Verify  VerifyCmd  `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
+	Flush   FlushCmd   `cmd:"" help:"Do the work the background left in the queue (what goes in the sources) and wait for it."`
+	GC      GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); with --orphans the files no entry.json is with too. Shows what would go unless --apply."`
+	Migrate MigrateCmd `cmd:"" help:"Move what a folder source holds in the layout before (blobs/, upstream/, entries/) to original/ and converted/, by hard links."`
 }
 
 // Vars are kong's variables of the command.
@@ -44,10 +49,10 @@ func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt)
 }
 
-// LayersCmd is hwnpu-dev cache layers.
-type LayersCmd struct{}
+// SourcesCmd is hwnpu-dev cache sources.
+type SourcesCmd struct{}
 
-func (LayersCmd) Run(c *Cmd) error {
+func (SourcesCmd) Run(c *Cmd) error {
 	if err := load(c); err != nil {
 		return err
 	}
@@ -56,26 +61,48 @@ func (LayersCmd) Run(c *Cmd) error {
 		fmt.Printf(" (%s)", cache.RootEnv)
 	}
 	fmt.Printf("\nAMD exports: %s (and read from %s)\nIRON's kernels: %s\n", chat.AMDRoot(), cache.LegacyExports(), chat.IRONCache())
-	ls := shared.Layers()
-	if len(ls) == 0 {
-		fmt.Println("shared layers: none (cache.layers of a definition file, or " + chat.LayersEnv + ")")
-		return nil
-	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "#\tlayer\tholds\twrite\tfill\tfill_gated\tfrom")
-	for i, l := range ls {
-		holds := strings.Join(l.Scopes, ",")
-		if holds == "" {
-			holds = "all"
+	for _, f := range envfile.Loaded {
+		fmt.Printf(".env: %s", f.Path)
+		if len(f.Set) > 0 {
+			fmt.Printf(" (%s)", strings.Join(f.Set, ", "))
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%v\t%v\t%v\t%s\n", i+1, l, holds, l.Write, l.Fill, l.FillGated, l.From)
+		if f.Err != nil {
+			fmt.Printf(": %v", f.Err)
+		}
+		fmt.Println()
 	}
-	return w.Flush()
+	ss := shared.Sources()
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "#\tsource\twriteback")
+	for i, s := range ss {
+		fmt.Fprintf(w, "%d\t%s\t%v\n", i+1, s, s.Writeback)
+	}
+	if shared.HuggingFace() {
+		fmt.Fprintf(w, "-\tHugging Face\t-\n")
+	}
+	w.Flush()
+	if len(ss) == 0 {
+		fmt.Printf("(no sources: %s, %s_1, ... set them)\n", shared.SourceEnv, shared.SourceEnv)
+	}
+	if !shared.HuggingFace() {
+		fmt.Printf("(%s=false: Hugging Face is not read)\n", shared.HuggingFaceEnv)
+	}
+	return nil
+}
+
+// source is the source of number n (1 is the first) of hwnpu-dev cache sources.
+func source(n int) (shared.Source, error) {
+	ss := shared.Sources()
+	if n < 1 || n > len(ss) {
+		return shared.Source{}, fmt.Errorf("no source %d: hwnpu-dev cache sources shows %d", n, len(ss))
+	}
+	return ss[n-1], nil
 }
 
 // LsCmd is hwnpu-dev cache ls.
 type LsCmd struct {
-	Layer int `arg:"" optional:"" help:"The layer's number in hwnpu-dev cache layers (all when left out)."`
+	Source   int  `arg:"" optional:"" help:"The source's number in hwnpu-dev cache sources (all when left out)."`
+	Original bool `help:"List the repositories' locks (original/) instead."`
 }
 
 func (l LsCmd) Run(c *Cmd) error {
@@ -84,25 +111,48 @@ func (l LsCmd) Run(c *Cmd) error {
 	}
 	ctx, stop := signalContext()
 	defer stop()
-	ls := shared.Layers()
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "layer\tkind\tmodel\ttarget\tGB\tmade\tkey")
-	for i, layer := range ls {
-		if l.Layer != 0 && l.Layer != i+1 {
+	if l.Original {
+		fmt.Fprintln(w, "source\trepository\tcommit\tfiles\tGB\tupdated")
+	} else {
+		fmt.Fprintln(w, "source\tkind\tGB\tmade\tpath")
+	}
+	for i, s := range shared.Sources() {
+		if l.Source != 0 && l.Source != i+1 {
 			continue
 		}
-		entries, err := shared.ListEntries(ctx, layer)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", layer, err)
-			continue
-		}
-		for _, k := range entries {
-			e, err := shared.ReadLayerEntry(ctx, layer, k[0], k[1])
+		if l.Original {
+			repos, err := chat.LockedRepos(ctx, s)
 			if err != nil {
-				fmt.Fprintf(w, "%d\t%s\t?\t?\t?\t?\t%s\n", i+1, k[0], k[1][:12])
+				fmt.Fprintf(os.Stderr, "%s: %v\n", s, err)
 				continue
 			}
-			fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%.2f\t%s\t%s\n", i+1, e.Kind, e.Model, e.Target, float64(e.Bytes())/1e9, e.Made.Local().Format(time.DateTime), e.Key[:12])
+			for _, r := range repos {
+				lk, err := shared.ReadLock(ctx, s, r)
+				if err != nil {
+					fmt.Fprintf(w, "%d\t%s\t?\t?\t?\t%v\n", i+1, r, err)
+					continue
+				}
+				var n int64
+				for _, f := range lk.Files {
+					n += f.Size
+				}
+				fmt.Fprintf(w, "%d\t%s\t%.12s\t%d\t%.2f\t%s\n", i+1, r, lk.Commit, len(lk.Files), float64(n)/1e9, lk.Updated.Local().Format(time.DateTime))
+			}
+			continue
+		}
+		entries, err := shared.ListEntries(ctx, s)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", s, err)
+			continue
+		}
+		for _, rel := range entries {
+			e, err := shared.ReadEntryAt(ctx, s, rel)
+			if err != nil {
+				fmt.Fprintf(w, "%d\t?\t?\t?\t%s\n", i+1, rel)
+				continue
+			}
+			fmt.Fprintf(w, "%d\t%s\t%.2f\t%s\t%s\n", i+1, e.Kind, float64(e.Bytes())/1e9, e.Made.Local().Format(time.DateTime), strings.TrimPrefix(rel, "converted/"))
 		}
 	}
 	return w.Flush()
@@ -119,14 +169,9 @@ func (p PushCmd) Run(c *Cmd) error {
 	}
 	ctx, stop := signalContext()
 	defer stop()
-	var writes []shared.Layer
-	for _, l := range shared.Layers() {
-		if l.Write && l.Holds(shared.ScopePortable) {
-			writes = append(writes, l)
-		}
-	}
+	writes := shared.Writebacks()
 	if len(writes) == 0 {
-		return errors.New("no layer is written: give one write: true (cache.layers) or ?write=1 (" + chat.LayersEnv + ")")
+		return errors.New("no source is written back to: give one ?writeback=true (" + shared.SourceEnv + ")")
 	}
 	for _, name := range p.Model {
 		m, ok := chat.Lookup(name)
@@ -158,21 +203,28 @@ func (p PushCmd) Run(c *Cmd) error {
 		// an export made by hand (or before entries) gets its entry.json: what it would be made
 		// from now. Made with other tools than these, it is not this recipe's: --force is not
 		// offered, the export is to be made again with this hwnpu
-		recipe["kind"] = "iron-lm"
-		key := shared.Fingerprint(recipe)
-		e, err := shared.ReadEntry(dir)
-		if err != nil || e.Key != key {
-			fmt.Fprintf(os.Stderr, "%s: describing %s (the SHA-256 of its files)\n", m.Name, dir)
-			if e, err = shared.Describe(dir, shared.Entry{Key: key, Kind: "iron-lm", Scope: shared.ScopePortable, Model: m.Name, Target: cache.AMDTarget,
-				Recipe: recipe, MadeBy: map[string]string{"note": "described by hwnpu-dev cache push"}}); err != nil {
-				return err
-			}
+		if err := describeAndPut(ctx, writes, m, chat.PlaceEntry("iron-lm", m, cache.AMDTarget, filepath.Base(dir), recipe), dir); err != nil {
+			return err
 		}
-		for _, l := range writes {
-			fmt.Fprintf(os.Stderr, "%s: putting %.2f GB in %s\n", m.Name, float64(e.Bytes())/1e9, l)
-			if err := shared.PutEntry(ctx, l, dir); err != nil {
-				return fmt.Errorf("%s: %s: %w", m.Name, l, err)
-			}
+	}
+	return nil
+}
+
+// describeAndPut gives dir the entry.json of want (described again unless it has it) and puts it
+// in the sources writes.
+func describeAndPut(ctx context.Context, writes []shared.Source, m chat.Model, want shared.Entry, dir string) error {
+	e, err := shared.ReadEntry(dir)
+	if err != nil || e.Key != want.Key || e.Path != want.Path {
+		fmt.Fprintf(os.Stderr, "%s: describing %s (the SHA-256 of its files)\n", m.Name, dir)
+		want.MadeBy = map[string]string{"note": "described by hwnpu-dev cache push"}
+		if e, err = shared.Describe(dir, want); err != nil {
+			return err
+		}
+	}
+	for _, s := range writes {
+		fmt.Fprintf(os.Stderr, "%s: putting %.2f GB in %s (%s)\n", m.Name, float64(e.Bytes())/1e9, s, e.Path)
+		if err := shared.PutEntry(ctx, s, dir); err != nil {
+			return fmt.Errorf("%s: %s: %w", m.Name, s, err)
 		}
 	}
 	return nil
@@ -193,7 +245,7 @@ func firstRunExport(m chat.Model) (tool string, version int, ok bool) {
 }
 
 // pushFirstRun puts the export of a first run (ironcnn.Dir) in the layers writes.
-func pushFirstRun(ctx context.Context, writes []shared.Layer, m chat.Model, tool string, version int) error {
+func pushFirstRun(ctx context.Context, writes []shared.Source, m chat.Model, tool string, version int) error {
 	dir := ironcnn.Dir(m.Name)
 	if _, err := os.Stat(filepath.Join(dir, "model.json")); err != nil {
 		return fmt.Errorf("%s: no export %s here (made by its first run on AMD's NPU)", m.Name, filepath.Base(dir))
@@ -202,34 +254,17 @@ func pushFirstRun(ctx context.Context, writes []shared.Layer, m chat.Model, tool
 	if recipe == nil {
 		return fmt.Errorf("%s: the definitions pin none of its files (sha256)", m.Name)
 	}
-	kind := chat.ExportKind(tool)
-	recipe["kind"] = kind
-	key := shared.Fingerprint(recipe)
-	e, err := shared.ReadEntry(dir)
-	if err != nil || e.Key != key {
-		fmt.Fprintf(os.Stderr, "%s: describing %s (the SHA-256 of its files)\n", m.Name, dir)
-		if e, err = shared.Describe(dir, shared.Entry{Key: key, Kind: kind, Scope: shared.ScopePortable, Model: m.Name, Target: cache.AMDTarget,
-			Recipe: recipe, MadeBy: map[string]string{"note": "described by hwnpu-dev cache push"}}); err != nil {
-			return err
-		}
-	}
-	for _, l := range writes {
-		fmt.Fprintf(os.Stderr, "%s: putting %.2f GB in %s\n", m.Name, float64(e.Bytes())/1e9, l)
-		if err := shared.PutEntry(ctx, l, dir); err != nil {
-			return fmt.Errorf("%s: %s: %w", m.Name, l, err)
-		}
-	}
-	return nil
+	return describeAndPut(ctx, writes, m, chat.PlaceEntry(chat.ExportKind(tool), m, cache.AMDTarget, filepath.Base(dir), recipe), dir)
 }
 
 // GCCmd is hwnpu-dev cache gc.
 type GCCmd struct {
-	Layer     int      `arg:"" help:"The layer's number in hwnpu-dev cache layers."`
+	Source    int      `arg:"" help:"The source's number in hwnpu-dev cache sources."`
 	Model     []string `help:"Remove the entries of these models." placeholder:"NAME"`
 	Kind      []string `help:"Remove the entries of these kinds (iron-lm, iron-onnxcnn...)." placeholder:"KIND"`
-	Key       []string `help:"Remove the entries whose key starts with these (as hwnpu-dev cache ls shows it)." placeholder:"KEY"`
+	Key       []string `help:"Remove the entries whose key starts with these (the HASH of vN-HASH)." placeholder:"KEY"`
 	OlderThan int      `name:"older-than" help:"Remove the entries made more than this many days ago." placeholder:"DAYS"`
-	Orphans   bool     `help:"Remove the blobs no entry and no file of a checkpoint names too (not while anything writes to the layer: what is being put there is named last)."`
+	Orphans   bool     `help:"Remove the files under converted/ that no entry.json is with too (not while anything writes to the source: entry.json is written last)."`
 	Apply     bool     `help:"Remove them (without it, only show what would go)."`
 }
 
@@ -239,14 +274,13 @@ func (g GCCmd) Run(c *Cmd) error {
 	}
 	ctx, stop := signalContext()
 	defer stop()
-	ls := shared.Layers()
-	if g.Layer < 1 || g.Layer > len(ls) {
-		return fmt.Errorf("no layer %d: hwnpu-dev cache layers shows %d", g.Layer, len(ls))
+	l, err := source(g.Source)
+	if err != nil {
+		return err
 	}
 	if len(g.Model) == 0 && len(g.Kind) == 0 && len(g.Key) == 0 && g.OlderThan == 0 && !g.Orphans {
 		return errors.New("say what to remove: --model, --kind, --key, --older-than or --orphans")
 	}
-	l := ls[g.Layer-1]
 	before := time.Now().AddDate(0, 0, -g.OlderThan)
 	drop := func(e shared.Entry) bool {
 		for _, m := range g.Model {
@@ -271,15 +305,18 @@ func (g GCCmd) Run(c *Cmd) error {
 		return err
 	}
 	for _, e := range plan.Entries {
-		fmt.Printf("entry %s %s %s %.2f GB %s\n", e.Kind, e.Model, e.Key[:12], float64(e.Bytes())/1e9, e.Made.Local().Format(time.DateTime))
+		fmt.Printf("%s %s %.2f GB %s\n", e.Kind, e.Path, float64(e.Bytes())/1e9, e.Made.Local().Format(time.DateTime))
+	}
+	for _, k := range plan.Orphans {
+		fmt.Printf("orphan %s\n", k)
 	}
 	verb := "would remove"
 	if g.Apply {
 		verb = "removing"
 	}
-	fmt.Printf("%s: %s %d entries and %d blobs (%.2f GB)\n", l, verb, len(plan.Entries), len(plan.Blobs), float64(plan.Bytes)/1e9)
+	fmt.Printf("%s: %s %d entries (%.2f GB) and %d orphans\n", l, verb, len(plan.Entries), float64(plan.Bytes)/1e9, len(plan.Orphans))
 	if !g.Apply {
-		if len(plan.Entries)+len(plan.Blobs) > 0 {
+		if len(plan.Entries)+len(plan.Orphans) > 0 {
 			fmt.Println("(--apply removes them)")
 		}
 		return nil
@@ -325,4 +362,88 @@ func (FlushCmd) Run(c *Cmd) error {
 	}
 	fmt.Println("the queue is empty")
 	return nil
+}
+
+// UpdateCmd is hwnpu-dev cache update.
+type UpdateCmd struct {
+	Repo   []string `arg:"" optional:"" help:"Models of the definitions or repositories (OWNER/NAME[@REVISION]) to move (all the sources hold when left out)."`
+	Source int      `help:"Only this source (its number in hwnpu-dev cache sources)."`
+}
+
+func (u UpdateCmd) Run(c *Cmd) error {
+	if err := load(c); err != nil {
+		return err
+	}
+	ctx, stop := signalContext()
+	defer stop()
+	writes := shared.Writebacks()
+	if u.Source != 0 {
+		s, err := source(u.Source)
+		if err != nil {
+			return err
+		}
+		writes = []shared.Source{s}
+	}
+	if len(writes) == 0 {
+		return errors.New("no source is written back to: give one ?writeback=true (" + shared.SourceEnv + ")")
+	}
+	failed := 0
+	for _, s := range writes {
+		repos := u.Repo
+		if len(repos) == 0 {
+			var err error
+			if repos, err = chat.LockedRepos(ctx, s); err != nil {
+				return fmt.Errorf("%s: %w", s, err)
+			}
+		}
+		for _, r := range repos {
+			if m, ok := chat.Lookup(r); ok {
+				r = m.Source()
+			}
+			res, err := chat.UpdateLock(ctx, s, r, console.Log(os.Stderr))
+			switch {
+			case errors.Is(err, shared.ErrNotFound):
+				fmt.Printf("%s: %s: none there\n", s, r)
+			case err != nil:
+				fmt.Printf("%s: %s: %v\n", s, r, err)
+				failed++
+			case res.From == res.To:
+				fmt.Printf("%s: %s: %.12s, up to date\n", s, r, res.To)
+			default:
+				fmt.Printf("%s: %s: %.12s -> %.12s (%d files the same, %d downloaded again, %d dropped)\n", s, r, res.From, res.To, res.Same, res.Changed, res.Dropped)
+			}
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d repositories were not moved", failed)
+	}
+	return nil
+}
+
+// MigrateCmd is hwnpu-dev cache migrate.
+type MigrateCmd struct {
+	Source int  `arg:"" help:"The source's number in hwnpu-dev cache sources (a folder: file://)."`
+	Remove bool `help:"Remove from the layout before what was moved (the data stays: hard links)."`
+}
+
+func (mc MigrateCmd) Run(c *Cmd) error {
+	if err := load(c); err != nil {
+		return err
+	}
+	ctx, stop := signalContext()
+	defer stop()
+	s, err := source(mc.Source)
+	if err != nil {
+		return err
+	}
+	d, ok := s.Store.(shared.Dir)
+	if !ok {
+		return fmt.Errorf("%s is not a folder (file://)", s)
+	}
+	r, err := shared.MigrateDir(ctx, d.Root, chat.MigratePlace, mc.Remove, os.Stdout)
+	for _, k := range r.Skipped {
+		fmt.Printf("left: %s\n", k)
+	}
+	fmt.Printf("%s: %d repositories (%d files), %d conversions moved\n", s, r.Repos, r.Files, r.Entries)
+	return err
 }

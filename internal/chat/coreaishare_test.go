@@ -28,9 +28,9 @@ func TestCoreAIShared(t *testing.T) {
 		t.Run(st.String(), func(t *testing.T) {
 			t.Setenv(cache.RootEnv, t.TempDir())
 			sharedLog = testLog{t}
-			l := shared.Layer{Store: st, Write: true}
-			shared.SetLayers([]shared.Layer{l})
-			t.Cleanup(func() { shared.SetLayers(nil) })
+			l := shared.Source{Store: st, Writeback: true}
+			shared.SetSources([]shared.Source{l}, false)
+			t.Cleanup(func() { shared.SetSources(nil, true) })
 			m := Model{Name: "swiftf0", Repo: "lars76/swift-f0", SHA256: map[string]string{"model.onnx": "ab12"}}
 			ctx := WithModel(context.Background(), m)
 
@@ -109,9 +109,9 @@ func (l testLog) Write(p []byte) (int, error) { l.t.Log(string(p)); return len(p
 func TestTablesShared(t *testing.T) {
 	t.Setenv(cache.RootEnv, t.TempDir())
 	sharedLog = testLog{t}
-	l := shared.Layer{Store: shared.Dir{Name: "nas", Root: t.TempDir()}, Write: true}
-	shared.SetLayers([]shared.Layer{l})
-	t.Cleanup(func() { shared.SetLayers(nil) })
+	l := shared.Source{Store: shared.Dir{Name: "nas", Root: t.TempDir()}, Writeback: true}
+	shared.SetSources([]shared.Source{l}, false)
+	t.Cleanup(func() { shared.SetSources(nil, true) })
 	ctx := WithModel(context.Background(), Model{Name: "whisper", Repo: "openai/whisper-large-v3-turbo", SHA256: map[string]string{"model.safetensors": "01"}})
 	a := &llm.Arch{Name: "whisper"}
 	out := filepath.Join(t.TempDir(), "whisper-large-v3-turbo", TablesFile)
@@ -121,7 +121,7 @@ func TestTablesShared(t *testing.T) {
 	putTables(ctx, m, r, out)
 	shared.Flush(ctx)
 	os.Remove(out)
-	if !fetchTables(ctx, r, out) {
+	if !fetchTables(ctx, m, r, out) {
 		t.Fatal("not made from the layer")
 	}
 	if b, err := os.ReadFile(out); err != nil || string(b) != "tables" {
@@ -130,7 +130,7 @@ func TestTablesShared(t *testing.T) {
 	if _, err := os.Stat(out + ".shared"); err == nil {
 		t.Error("the download's directory is left")
 	}
-	if _, r2 := tablesRecipe(ctx, out, a, []string{"other"}); fetchTables(ctx, r2, out+"2") {
+	if m2, r2 := tablesRecipe(ctx, out, a, []string{"other"}); fetchTables(ctx, m2, r2, out+"2") {
 		t.Error("tables of other names were taken")
 	}
 }

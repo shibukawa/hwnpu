@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,38 +15,18 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 )
 
-// What is put in the layers goes in the background, after it is whole here (docs/cache-sharing.md
-// 7.1): a job is written to work/queue under the cache's root first and removed when done, so
+// What is written back to the sources goes in the background, after it is whole here
+// (docs/cache-sharing.md 7.1): a job is written to work/queue under the cache's root first and removed when done, so
 // that one cut off (the process ended, the network went) is done by the next process that runs.
 // A job that fails is kept for the next one and logged to work/queue.log; it never stops a run.
 
-// Layers are the layers in the order they are looked in (set from the definitions: chat).
-var (
-	layersMu sync.RWMutex
-	layers   []Layer
-)
-
-// SetLayers sets the layers.
-func SetLayers(ls []Layer) {
-	layersMu.Lock()
-	layers = ls
-	layersMu.Unlock()
-}
-
-// Layers are the layers set.
-func Layers() []Layer {
-	layersMu.RLock()
-	defer layersMu.RUnlock()
-	return layers
-}
-
-// job is a piece of work on a layer.
+// job is a piece of work on a source.
 type job struct {
-	Op    string `json:"op"`    // "entry": PutEntry of Dir; "upstream": PutUpstream
-	Layer string `json:"layer"` // the layer's String()
-	Dir   string `json:"dir,omitempty"`
-	Repo  string `json:"repo,omitempty"`
-	// Commit, Name, Path and SHA256 are PutUpstream's.
+	Op     string `json:"op"`     // "entry": PutEntry of Dir; "original": PutOriginal
+	Source string `json:"source"` // the source's String()
+	Dir    string `json:"dir,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	// Commit, Name, Path and SHA256 are PutOriginal's.
 	Commit string `json:"commit,omitempty"`
 	Name   string `json:"name,omitempty"`
 	Path   string `json:"path,omitempty"`
@@ -67,12 +48,12 @@ var (
 
 func queueDir() string { return cache.Sub("work", "queue") }
 
-// PutLater puts the entry of dir in layer l in the background.
-func PutLater(l Layer, dir string) { enqueue(job{Op: "entry", Layer: l.String(), Dir: dir}) }
+// PutLater puts the entry of dir in source s in the background (PutEntry).
+func PutLater(s Source, dir string) { enqueue(job{Op: "entry", Source: s.String(), Dir: dir}) }
 
-// FillLater puts a file of a checkpoint in layer l in the background (PutUpstream).
-func FillLater(l Layer, repo, commit, name, path, sum string) {
-	enqueue(job{Op: "upstream", Layer: l.String(), Repo: repo, Commit: commit, Name: name, Path: path, SHA256: sum})
+// FillLater puts a file of a repository in source s in the background (PutOriginal).
+func FillLater(s Source, repo, commit, name, path, sum string) {
+	enqueue(job{Op: "original", Source: s.String(), Repo: repo, Commit: commit, Name: name, Path: path, SHA256: sum})
 }
 
 func enqueue(j job) {
@@ -177,21 +158,25 @@ func runJob(file string) error {
 		os.Remove(file)
 		return err
 	}
-	var l *Layer
-	for _, x := range Layers() {
-		if x.String() == j.Layer {
-			l = &x
+	var src *Source
+	for _, x := range Sources() {
+		if x.String() == j.Source {
+			src = &x
 			break
 		}
 	}
-	if l == nil {
-		return fmt.Errorf("no layer %s now", j.Layer)
+	if src == nil {
+		return fmt.Errorf("no source %s now", j.Source)
 	}
 	switch j.Op {
 	case "entry":
-		err = PutEntry(ctx, *l, j.Dir)
-	case "upstream":
-		err = PutUpstream(ctx, *l, j.Repo, j.Commit, j.Name, j.Path, j.SHA256)
+		err = PutEntry(ctx, *src, j.Dir)
+	case "original":
+		err = PutOriginal(ctx, *src, j.Repo, j.Commit, j.Name, j.Path, j.SHA256)
+		if errors.Is(err, ErrOtherCommit) {
+			logQueue("%s: %v (left as it is: hwnpu-dev cache update moves it)", describe(j), err)
+			err = nil
+		}
 	default:
 		err = fmt.Errorf("a job %q this hwnpu does not know", j.Op)
 	}
@@ -200,7 +185,7 @@ func runJob(file string) error {
 	}
 	if err == nil {
 		os.Remove(file)
-		logQueue("%s: put in %s", describe(j), j.Layer)
+		logQueue("%s: put in %s", describe(j), j.Source)
 	}
 	return err
 }

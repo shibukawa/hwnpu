@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/goccy/go-yaml"
 
 	"github.com/shibukawa/hwnpu"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 // userFiles loads the built-in definitions with files of the given contents over them, the
@@ -18,10 +20,28 @@ import (
 // returns the warnings.
 func userFiles(t *testing.T, contents ...string) (string, error) {
 	t.Helper()
+	return withSources(t, nil, contents...)
+}
+
+// withSources is userFiles with the sources of the URLs (HWNPU_MODEL_SOURCE, _1, ...) and no
+// others the environment has.
+func withSources(t *testing.T, urls []string, contents ...string) (string, error) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); strings.HasPrefix(k, shared.SourceEnv) || k == shared.HuggingFaceEnv {
+			t.Setenv(k, "")
+		}
+	}
+	for i, u := range urls {
+		k := shared.SourceEnv
+		if i > 0 {
+			k += "_" + strconv.Itoa(i)
+		}
+		t.Setenv(k, u)
+	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	t.Setenv(ModelsEnv, "")
-	t.Setenv(LayersEnv, "")
 	if os.Getenv("HWNPU_CACHE") == "" {
 		t.Setenv("HWNPU_CACHE", t.TempDir())
 	}
@@ -203,10 +223,11 @@ func TestUserErrors(t *testing.T) {
 		{"unknown key", "version: 1\nmodels:\n  LFM3-1.7B:\n    memroy: 1\n", "memroy"},
 		{"no version", "models: {}\n", "no version"},
 		{"bad kind", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: video\n", "kind"},
-		{"unknown source", "version: 1\nmodels:\n  x:\n    from: s3:bucket/x\n    kind: chat\n", "not SOURCE:NAME"},
-		{"search unknown", "version: 1\nsearch: [mirror, hf]\n", "no source \"mirror\""},
-		{"source type", "version: 1\nsources:\n  m: {type: ftp}\n", "not path or s3"},
-		{"source escapes", "version: 1\nsources:\n  m: {type: path, path: /tmp}\nmodels:\n  x:\n    from: m:../etc\n    kind: chat\n", "inside the source"},
+		{"not hf", "version: 1\nmodels:\n  x:\n    from: s3:bucket/x\n    kind: chat\n", "not hf:OWNER/NAME"},
+		{"search", "version: 1\nsearch: [mirror, hf]\n", "HWNPU_MODEL_SOURCE"},
+		{"sources", "version: 1\nsources:\n  m: {type: path, path: /tmp}\n", "not read any more"},
+		{"cache", "version: 1\ncache:\n  layers: []\n", "not read any more"},
+		{"target version", "version: 1\nmodels:\n  LFM3-1.7B:\n    targets: {coreai: {version: 0}}\n", "version of 1 or more"},
 		{"bad digest", "version: 1\nmodels:\n  LFM3-1.7B:\n    sha256: {config.json: abc}\n", "64 hex"},
 		{"bad feature", "version: 1\nmodels:\n  x:\n    from: hf:a/b\n    kind: chat\n    features: [flying]\n", "flying"},
 		{"like nothing", "version: 1\nmodels:\n  x:\n    like: nothing\n", "no such model"},

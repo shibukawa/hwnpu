@@ -1,16 +1,16 @@
 # 変換済みのモデルの配布と、キャッシュの共有 (設計案)
 
-作成: 2026-11-12。状態: P0、P1 の層とフォルダと gc、P2 の S3、AMD のチャットのモデルと初回に作る画像のモデルの書き出しの共有を実装 (0 節、design.md 16.169)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
+作成: 2026-11-12。状態: P0、P1 の層とフォルダと gc、P2 の S3、AMD のチャットのモデルと初回に作る画像のモデルの書き出しの共有を実装 (0 節、design.md 16.169)。2026-11-15 に取得元を環境変数の URL (フォルダ、WebDAV と HTTP、S3) と固定の並び (`original/` と `hwnpu-lock.json`、`converted/.../vN`) に作り直した (7 節、design.md 16.208)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
 
 ## 0. 実装したもの (2026-11-12)
 
 - 根を 1 つに (`cache.Root`、`HWNPU_CACHE`)。AMD の書き出しは `entries/amd-xdna2/` に作り、`~/models` は読むだけ。IRON の JIT のキャッシュは `iron/` (`~/.npu/cache` を最初の書き出しの前に移し、リンクを残す)。組み込みの IRON の道具は `tools/`。まだ移していないもの: `models/` (チェックポイントと Core ML、OpenVINO のプログラム) を `src/` と `entries/` に分けること
 - `.done` を相対パスに、ダウンロード・変換・書き出しのロック、HF の続きのダウンロードの `If-Range`
-- 層 (7 節): フォルダと S3 (tinygodriver、7.2 節)、`write` と `fill` と `fill_gated` と `scopes`、組織のファイル (`/etc/hwnpu/models.yaml` など)、`HWNPU_CACHE_LAYERS`、`HWNPU_CACHE_WRITE=0` (7.4 節)。後のファイルの `cache.layers` は並びごと置き換える (層ごとの差分ではない)
-- 元のチェックポイントのフォワードプロキシ (7.1 節): 定義の sha256、HF の HEAD の `X-Linked-Etag`、コミットの索引の順で層を探す
+- 取得元 (7 節、2026-11-15 に作り直し): `HWNPU_MODEL_SOURCE`、`_1`、... の URL (`file://`、`http(s)://` の WebDAV と読むだけの HTTP、`s3://`)、`?writeback=true`、`HWNPU_MODEL_HUGGING_FACE`、`.env` (7.4 節)。元のモデルは `original/OWNER/NAME/` と `hwnpu-lock.json`、変換後は `converted/MODEL/TARGET/EXPORT/VERSION/`。定義の `targets` (版) と `develop`。`hwnpu-dev cache sources|ls|push|update|verify|flush|gc|migrate`
+- 元のチェックポイントのフォワードプロキシ (7.1 節): lock のコミットのファイルを取得元から、なければ HF から同じコミットで取り、書き戻す取得元に置く
 - エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具の hash)。版 (`version`、5 節の lock) はまだない
 - hwnpu-image detect、pose、segment が初回に作る AMD の書き出しも層に (鍵は定義の sha256、道具の hash、Go の側の手で上げる版: `chat.PinnedRecipe`)
-- `hwnpu-dev cache layers|ls|push|verify|flush|gc`。`gc` は層のエントリを選んで消し、それだけが名指していた blob も消す (`--orphans` で誰も名指さない blob も、`--apply` で実際に)。途中で止まった S3 のマルチパートは、バケットのライフサイクルの規則で中止させる
+- `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に)。途中で止まった S3 のマルチパートは、バケットのライフサイクルの規則で中止させる
 - Core AI の書き出し (2026-11-14、design.md 16.199): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
 - 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)
 
@@ -62,13 +62,15 @@
 models:
   LFM3-1.7B:
     from: hf:LiquidAI/LFM3-1.7B@6c1f0e3a...     # 配るモデルはコミットの固定が必須 (40 桁)
-    prebuilt:
-      repo: hf:hwnpu/LFM3-1.7B
-      targets:
-        amd-xdna2: {version: 2, format: q4, codes: gptq}
-        intel:     {version: 1, format: int8, publish: staging}
-        # apple は 10 節が決まるまで書かない
+    targets:                                    # 2026-11-15 に読むようにした (版だけ)
+      amd-xdna2: {version: 2}
+      coreai:    {version: 1}
+      # apple は 10 節が決まるまで書かない
+  FLUX.2-klein-4B:
+    develop: true                               # 開発中: 取得元には vN-HASH で置く
 ```
+
+- 2026-11-15 の実装: 版はモデルの直下の `targets.<対象>.version` (`prebuilt:` の下ではない。取得元が環境変数の URL になり `prebuilt.repo` は要らない)。`format` や `codes` などの欄はまだ読まない。利用者のファイルは名指した対象だけを変える
 
 - 行に書いたパラメータ全部が、その版の中身。実行時の設定 (フラグ、`builds`、`variants`) がこれと合えば配布物を使い、合わなければ手元で変換する (`-explain` に理由)
 - `like: 行の名前` で、ほかの行の値を引き継いで違うところだけ書ける (`apple-m1: {like: apple, version: 2, prefill: off}`)
@@ -127,73 +129,55 @@ models:
 | `host` | `.mlmodelc` (OS の版)、Level Zero の blob (ドライバとデバイス)、placement (チップ) | path、s3。鍵に機械の指紋 |
 | `local` | プロンプトのキャッシュ、e5 バンドルのキャッシュ、履歴、ライセンスの同意、ロック | 共有しない |
 
-## 7. 層 (透過型のキャッシュ)
+## 7. 取得元 (透過型のキャッシュ)
+
+2026-11-15 に作り直した (design.md 16.208)。それまでの「層」(定義の `sources`、`search`、`cache.layers`、`HWNPU_CACHE_LAYERS`、内容で番地を決める `blobs/sha256`) は、環境変数の URL の並びと、人が見て分かる固定の並びに置き換えた。
 
 ```
-読み: 手元 → 層 1 → 層 2 → ... → hf → 手元で作る
-書き: 作ったら手元に置き、write: true の層へ書き戻す (失敗しても続ける)
+読み: 手元 → HWNPU_MODEL_SOURCE → _1 → _2 → ... → Hugging Face (HWNPU_MODEL_HUGGING_FACE=true のとき) → 手元で作る
+書き: ?writeback=true の取得元へ、手元で作ったものと、後ろの取得元や HF から読んだものを裏で置く (失敗しても続ける)
 ```
 
-| 層 | 並び | 読み書き |
+取得元は URL で書く。`HWNPU_MODEL_SOURCE` で始まる環境変数を全部集め、番号の順に並べる (番号のない `HWNPU_MODEL_SOURCE` が最初、抜けた番号は気にしない)。エラーになった取得元は飛ばして次へ:
+
+| URL | 取得元 | 書き戻し |
 |---|---|---|
-| local (`HWNPU_CACHE`、既定は `UserCacheDir/hwnpu`) | 今の並び + `entry.json` | 読み書き |
-| path | `blobs/sha256/ab/<sha256>` と `entries/<kind>/<key>.json` (内容で番地を決める) | 読み書き |
-| s3 | path と同じ。`github.com/shibukawa/tinygodriver/storage/s3` (7.2 節) | 読み書き |
-| hf | 9 節の並び。Actions だけが書く | 読みだけ |
+| `file:///mnt/llm/hwnpu` | フォルダ (マウントした NAS、手元のディスク)。Windows は `file:///C:/models`、`file://server/share` | 普通のファイルの操作 |
+| `https://USER:PASSWORD@nas:5006/hwnpu`、`http://...` | WebDAV (7.5 節)。読むのは GET と HEAD だけなので、書き戻さないならどの HTTP サーバー (nginx の静的配信) でもよい | WebDAV (PUT、MOVE、MKCOL) |
+| `s3://BUCKET/PREFIX?endpoint=http://host:9100&region=R&profile=P&path_style=true&no_sign=true` | S3 (7.2 節) | PUT とマルチパート |
 
-- 書くときは blob を全部上げてから最後にエントリの JSON。JSON があれば揃っている。2 台が同じ鍵を同時に作っても、blob は同じ番地に重なるだけ
-- 重複はファイル単位で除かれる (Q=8 と Q=64 の `weight.bin`)。手元では sha256 の索引を引き、同じものがあれば reflink (`cache.Clone`)。先頭だけ同じものの共有 (`ClonePrefix`) は手元だけの最適化
-- 落としながら sha256 を計算し、違えばその層を飛ばして次へ (ミラーと同じ規則。この機械では大きなダウンロードにビットの反転があった)。HF の LFS は ETag が sha256 なので落とす前にも分かる
-- 信頼: 書ける層は書ける人を信頼する (xclbin や ELF は NPU で動く)。HF は名前空間を信頼する。署名 (ed25519 でエントリの JSON に) は後で足せる形にする
-- `Prune` は手元の層だけを掃除する。共有の層の掃除は `hwnpu-dev cache gc` で明示的に
+- `?writeback=true` (どの種類にも): 書き戻す。手元で変換したもの (8 節の 3) と、後ろの取得元や HF から読んだもの (フォワードプロキシ) の両方。gated のリポジトリとライセンスの確認のあるモデルも置く (読む機械でのライセンスの確認は手元で今どおり)
+- `HWNPU_MODEL_HUGGING_FACE`: 最後の番兵。`true` (既定) で HF から取る。`false` でネットに出ない (HF への HEAD もしない)。取得元で解決できないものはエラー
+- 取得元の中の並び:
 
-設定は今の `sources` の定義を使う:
-
-```yaml
-sources:
-  team-nfs: {type: path, path: /mnt/share/hwnpu}
-  lab-s3:   {type: s3, bucket: models, prefix: hwnpu/, profile: rustfs}
-search: [team-nfs, lab-s3, hf]           # 元のチェックポイント (今と同じ)
-cache:
-  layers:                                # 変換済み
-    - {use: team-nfs, write: true, scopes: [portable, host]}
-    - {use: lab-s3, write: true}
-  prebuilt: auto                         # auto | off (常に手元で) | only (手元で作らない)
+```
+original/OWNER/NAME/FILE...               HF と同じ並びのファイル。そのままモデルのフォルダとして使える
+original/OWNER/NAME/hwnpu-lock.json       コミットと、ファイルごとの sha256 と大きさ
+converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最後に書く (あれば揃っている)
 ```
 
-組織や環境ごとの設定の置き方は 7.4 節。
+- `hwnpu-lock.json` (`store.Lock`): `{"format": 1, "repo": "OWNER/NAME", "commit": "<40 桁>", "files": {"config.json": {"sha256": "...", "size": 123}}, "updated": "..."}`。名指しのないファイルは読まない。コミットの違うファイルは書き戻さない (`ErrOtherCommit`、キューの記録に残す)
+- コミットの決め方: 定義がコミットを固定していればそれ。`main` を追うモデルは最初の取得元の lock のコミット (どの機械も同じファイルで動く)。lock がなければ HF の `main` (`X-Repo-Commit`)。取得元にないファイルを HF から取るときも、lock のコミットのものを取る (`resolve/<コミット>/`)。`main` 以外のブランチやタグは、HF に聞いたコミットと lock を照らし、聞けなければ (HF に出られるときは) 取得元を使わない
+- lock を新しいコミットに移すのは明示的なコマンドだけ: `hwnpu-dev cache update [MODEL...]`。HF の今のコミットを聞き、sha256 の変わったファイルだけ落とし直して置き、最後に lock を書く (LFS のファイルは `X-Linked-Etag` で比べ、変わらなければ落とさない)
+- `VERSION` (`store.VersionDir`): 定義の `targets.<対象>.version` が N のモデルは `vN`。`develop: true` なら `vN-<レシピの指紋の 8 桁>`。版のないモデル (今は全部) は `v0-<8 桁>`
+- 当たりの条件: `vN` は版と、道具の hash を除いたレシピ (元のコミット、sha256、引数) が同じもの。道具の hash が違うだけの 2 台が同じフォルダを書き換え合わないように。出力が変わる直しをしたら版を上げる (3 節)。`vN-HASH` と `v0-HASH` は指紋がそのまま同じもの
+- `EXPORT` は手元の書き出しの名前 (`Qwen3.5-0.8B.amd-npu2-q6`、`LFM3-1.7B.coreai`、`tables.safetensors`)。対象のない表は `TARGET` を `any` に
+- ファイル単位の重複除去 (同じ `weight.bin` を 1 つに) はやめた。並びが分かりやすいこと、普通の HTTP サーバーで配れることを取った
+- 落としたものは lock や entry.json の sha256 と照らし、違えばその取得元を飛ばして次へ (この機械では大きなダウンロードにビットの反転があった)
+- 信頼: 書ける取得元は書ける人を信頼する (xclbin や ELF は NPU で動く)
+- `Prune` は手元だけを掃除する。取得元の掃除は `hwnpu-dev cache gc N` で明示的に (エントリのフォルダを entry.json から消す。`--orphans` で entry.json のない書きかけ)
+- 前の並び (`blobs/`、`upstream/`、`entries/`) のフォルダは `hwnpu-dev cache migrate N [--remove]` でハードリンクで移す。元のモデルはファイルの多いコミットを取る。変換後は名前の分かるもの (Core AI、表、AMD の言語モデルと初回の書き出し) だけ
 
-### 7.1 層に置くもの: 書き戻しと、読んだものの写し (fill)
+`hwnpu-dev cache sources` で、今効いている取得元の並び、書き戻すか、HF を読むか、読んだ `.env` を出す。`ls [N] [--original]` で中身。
 
-層ごとに、何を置くかを 2 つの欄で決める。どちらも既定は `false`。
+### 7.1 書き戻し
 
-| 欄 | 置くもの | 使い方 |
-|---|---|---|
-| `write` | 手元で作ったエントリ (8 節の 3) | バリエーションや配っていない組み合わせの共有 |
-| `fill` | より後ろの層や上流から読んだものを、そのまま (フォワードプロキシの共有キャッシュ) | 社内の 1 台が一度落とせば、ほかの機械は HF に出ない |
+- 手元で揃ってから、裏で置く (落としながら 2 か所に書かない)。終わらずにプロセスが終われば `work/queue` に残して次の起動で続ける。entry.json と lock が最後なので、途中で切れても壊れたものは見えない
+- 後ろの取得元で当たったものは、それより前の書き戻す取得元にも置く (前が速い NAS、後ろが遠い S3 のとき)
+- 置けなかったとき (書けない、容量がない) は `work/queue.log` に残して続ける。書き戻しの失敗で実行を止めない
+- lock は読んで足して書く。2 台が同時に同じリポジトリを足すと片方の名指しが消えることがあるが、消えたファイルは次に読む機械が HF から取って足し直す
 
-```yaml
-cache:
-  layers:
-    - {use: team-nfs, write: true, fill: true}
-    - {use: lab-s3, fill: true, scopes: [upstream, portable]}
-```
-
-`fill` で置くもの:
-
-- HF の配布物 (エントリ): 落として sha256 を確かめた後、同じ `entry.json` と blob をその層に置く。次の機械は手前の層で当たる
-- 元のチェックポイント (`upstream`): 今のミラーの並び (`OWNER/NAME@COMMIT/FILE`、model-table 5.4 節) で置く。`search` にその層を入れておけば、今の `fetch` のままで当たる
-- 手前の層からの写し: 層 2 で当たったものは層 1 にも置く (層 1 が速い NFS、層 2 が遠い S3 のとき)
-
-規則:
-
-- 置くのは確かめたものだけ: エントリは `entry.json` の sha256、チェックポイントは固定の `sha256`。固定のないファイルは HF の応答の ETag (LFS は sha256) と照らす。確かめられないもの (LFS でない小さなファイルで固定がないもの) は、取った時点のコミットの下にだけ置く
-- 場所は必ずコミットで決める。`@main` のように固定していないモデルは、HF の応答の `X-Repo-Commit` で実際のコミットを取り、その下に置く。ブランチの名前の下には置かない (古いものを新しいと見せないため)
-- 手元で揃ってから、裏で写す (落としながら 2 か所に書かない)。写し終わらずにプロセスが終われば、`work/fill-queue` に残して次の起動で続ける。blob が先、JSON が最後 (7 節) なので、途中で切れても壊れたものは見えない
-- 同意の要るリポジトリ (gated、Gemma など) とライセンスの確認のあるモデル (16.155) は既定で写さない (`fill_gated: true` で写す)。写したものを読む機械でも、ライセンスの確認は手元で今どおりにする
-- 置けなかったとき (書けない、容量がない) は警告を 1 行出して続ける。層への書き込みの失敗で実行を止めない
-
-別案: HF の API (`/resolve/`) を真似るキャッシュのサーバー (`hwnpu-dev cache serve`) を 1 台に置き、`HF_ENDPOINT` で向ける。hwnpu 以外の道具 (huggingface_hub、IRON の環境) も使えるが、サーバーの運用が要る。まずはサーバーのない形 (NFS、S3 に各機械が fill) で始め、要れば後で足す。
+別案だったもの: HF の API (`/resolve/`) を真似るキャッシュのサーバー (`hwnpu-dev cache serve`) を 1 台に置き、`HF_ENDPOINT` で向ける。サーバーの運用が要るので入れていない。`original/` は HF と同じ並びなので、要れば後で足せる。
 
 ### 7.2 S3 のクライアント
 
@@ -243,31 +227,41 @@ hwnpu/
 - Apple の e5 バンドルのキャッシュ (`~/Library/Caches/<プロセス>/com.apple.e5rt.e5bundlecache`) は OS が持つもので、すでにキャッシュのフォルダの下。場所は変えない
 - ユーザーの設定 (`models.yaml`、`licenses.json`) は今の設定のフォルダのまま (キャッシュではない)
 
-### 7.4 組織と環境ごとの設定
+### 7.4 組織と環境ごとの設定: `.env`
 
-書き戻し (`write`) と写し (`fill`) の先は、チームの S3 や NFS のキャッシュの層 (7 節)。HF には書かない (9 節の Actions だけ)。どの層を使うかは、利用者ではなく組織や環境で決まることが多いので、設定を 3 段で重ねる (あとのものが勝つ):
+取得元は環境変数で決める。hwnpu の各コマンドは起動したときに `.env.local` と `.env` を読み (`internal/envfile`)、環境にない変数だけを足す。前にあるものが勝つ:
 
-| 段 | 場所 | 使い方 |
-|---|---|---|
-| 組織 (機械全体) | Linux `/etc/hwnpu/models.yaml`、macOS `/Library/Application Support/hwnpu/models.yaml`、Windows `%ProgramData%\hwnpu\models.yaml` | 管理者が配る (MDM、構成管理)。社内の `sources`、`search`、`cache.layers`、社内のモデルやエイリアス |
-| 利用者 | 今のユーザーのファイル (model-table.md 3 節) | 個人の差分 (層を外す、手元の NFS を足す) |
-| 環境 | 環境変数 (下の表)、`--models FILE` | CI、コンテナ、一時的な切り替え |
+1. プロセスの環境変数
+2. カレントディレクトリの `.env.local`、`.env`
+3. ユーザーの設定のフォルダ (`~/.config/hwnpu/`、Windows は `%LOCALAPPDATA%\hwnpu\`) の `.env.local`、`.env`
+4. 機械の設定 (Linux `/etc/hwnpu/`、macOS `/Library/Application Support/hwnpu/`、Windows `%ProgramData%\hwnpu\`) の `.env.local`、`.env`: 組織の管理者が配る
 
-- 組織の段は、今の重ね方 (組み込み → ユーザー → `HWNPU_MODELS` → `--models`) の、組み込みとユーザーの間に入れる。形も重ね方も同じ models.yaml なので、新しい形式を作らない
-- 鍵 (S3 の認証) は設定のファイルに書かない。環境変数か `~/.aws/credentials` のプロファイル (7.2 節)。組織のファイルには `profile: team` のような名前だけを書く
-- 層の欄 `write`、`fill`、`fill_gated` も層ごとに組織のファイルで決める。利用者のファイルで `false` にはできるが、組織の層を勝手に増やす向きの上書き (`write: true`) は警告を出して従う (組織が書き込みの権限で止める)
-
-環境変数:
+- 読むのは `HWNPU_`、`HF_`、`AWS_` で始まる名前だけ (ほかのプロジェクトの `.env` を拾っても困らないように)。テスト (`go test`) では読まない
+- 書き方: 1 行に `NAME=VALUE`、`export ` を前に付けてもよい、`#` から後ろは注釈、`'...'` はそのまま、`"..."` は `\n`、`\"` が使える
+- 秘密 (WebDAV のパスワード、S3 の鍵) は `.env.local` に (git に入れない慣例)。ログと `hwnpu-dev cache sources` には URL の利用者とパスワードを出さない
 
 | 変数 | 働き |
 |---|---|
+| `HWNPU_MODEL_SOURCE`、`HWNPU_MODEL_SOURCE_1`、... | 取得元の URL (7 節) |
+| `HWNPU_MODEL_HUGGING_FACE` | `false` でネットに出ない。既定は `true` |
 | `HWNPU_CACHE` | 手元の根 (7.3 節) |
-| `HWNPU_CACHE_LAYERS` | 層の並びを丸ごと置き換える。`s3://bucket/prefix?write=1&fill=1&profile=team,/mnt/share/hwnpu?fill=1`。`off` で共有の層を全部外す |
-| `HWNPU_CACHE_WRITE=0` | どの層にも書かない (読むだけ) |
-| `HWNPU_OFFLINE=1` | ネットに出ない (model-table.md 11.3 節)。path の層だけを読む |
-| `HWNPU_PREBUILT` | `auto`、`off`、`only` (7 節の `prebuilt`) |
+| `HWNPU_WEBDAV_USER`、`HWNPU_WEBDAV_PASSWORD` | URL にも `~/.netrc` にもないときの WebDAV の利用者 (7.5 節) |
+| `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_PROFILE` | S3 の鍵 (7.2 節) |
+| `HF_TOKEN` | gated のリポジトリ。CI 以外ではデバイスフローのサインイン (design.md 16.153) を勧める |
+| `HWNPU_MODELS`、`HWNPU_ACCEPT_LICENSE`、`HWNPU_BACKEND`、`HWNPU_DEVICE` | 自分の定義のファイル、ライセンスの確認、機械ごとの NPU の選び方 |
 
-`hwnpu-dev cache layers` で、今効いている層の並び、各層の `write` と `fill`、それをどのファイルや変数が決めたかを出す。
+なくしたもの: 定義のファイルの `sources`、`search`、`cache` (書いてあるファイルは、移し方を書いたエラーで止める)、`from: SOURCE:NAME` と `-use SOURCE:NAME` (自分のモデルは取得元の `original/OWNER/NAME/` に lock と一緒に置き、`from: hf:OWNER/NAME` で名指す)、`HWNPU_CACHE_LAYERS`、`HWNPU_CACHE_WRITE` (`?writeback=true` を外す)。設計だけだった `HWNPU_OFFLINE` (`HWNPU_MODEL_HUGGING_FACE=false`) と `HWNPU_PREBUILT` (取得元にあるかないかで決まる) も作らない。
+
+### 7.5 WebDAV
+
+`internal/store/webdav.go`。標準ライブラリの `net/http` と `encoding/xml` だけで書いた (依存なし。テストだけが `golang.org/x/net/webdav` のサーバーを使う)。Synology (5005 番が http、5006 番が https)、Nextcloud (`https://HOST/remote.php/dav/files/USER/...`)、nginx の `dav_methods` などを想定。
+
+- 読み: `GET` (`Range` で途中から続ける。範囲を無視したサーバーには頭から)。有無と大きさは、書き戻す取得元では `PROPFIND` の深さ 0 (`HEAD` の `Content-Length` を省くサーバーや、フォルダにも 200 を返すサーバーがあるため)、読むだけの取得元では `HEAD`
+- 書き: 同じフォルダの一時の名前 (`.put-<乱数>`) に `PUT` してから `MOVE` (`Overwrite: T`) で置く。読む側が書きかけを見ない。親のフォルダがなければ (409、404) 根から `MKCOL` して送り直す。大きなファイルも 1 回の `PUT` (サーバーの上限に注意: nginx の `client_max_body_size`、IIS の `maxAllowedContentLength`)
+- 一覧: `PROPFIND` の深さ 1 で辿る (深さ無限は切ってあるサーバーが多い)。`.put-` の書きかけは出さない。`gc` と `ls` が使う
+- 認証: Basic。利用者とパスワードは URL のもの、なければ `~/.netrc` (`NETRC`、Windows は `_netrc`) のそのホストの `machine`、なければ `HWNPU_WEBDAV_USER` と `HWNPU_WEBDAV_PASSWORD`。401 のエラーにはその並びを書く
+- 再試行: 5xx (501 を除く)、429、接続の切断は S3 と同じく 3 回まで
+- 確かめたこと: `TestWebDAV` (3 MB の読み書き、途中からの続き、空のファイル、フォルダは有無で偽、一覧、削除、鍵の外れ)、`TestWebDAVSource` (エントリと lock を書き戻し、同じサーバーを読むだけの取得元として読む、読むだけへの書き込みはエラー)、`TestWebDAVSignIn` (netrc、パスワードの違い、URL のパスワードを表示しない)。Synology の実機は未確認
 
 ## 8. 準備の流れ: 計画と作るを分ける
 
@@ -371,13 +365,38 @@ Apple の機械が使えるようになるまで、Apple の配布の形は決�
 - Apple は白紙 (10 節)
 - S3 は AWS SDK も `aws` CLI も使わず、tinygodriver の `storage/s3` (7.2 節)
 - AMD (amd-xdna2) は CI の NPU の照合が通れば自動で `main` に進める。Intel と、Apple が決まった後の Apple は `promote` を待つ
-- 書き戻しと写しの先はチームの S3 や NFS の層。どの層を使うかは組織のファイル、利用者のファイル、環境変数の 3 段で決める (7.4 節)
+- 書き戻しと写しの先はチームの S3 や NFS の層。どの層を使うかは組織のファイル、利用者のファイル、環境変数の 3 段で決める (7.4 節)。2026-11-15 に 12.1 節で置き換えた
 - HF の名前空間は組織 `hwnpu` (https://huggingface.co/hwnpu、2026-11-12 に取得)。1 モデル 1 リポジトリ (`hwnpu/<モデル名>`)
 - 置き場所は OS のローミングしないキャッシュのフォルダの下の 1 つの根だけ (7.3 節)
-- gated のモデルとライセンスの確認のあるモデルは、既定では `fill` で写さない。組織のファイルで層ごとに `fill_gated: true` (7.1 節)
-- 共有の層には、手元で作ったものの書き戻し (`write`) のほかに、読んだものをそのまま置く写し (`fill`、フォワードプロキシの共有キャッシュ) も持てる (7.1 節)
+- gated のモデルとライセンスの確認のあるモデルは、既定では `fill` で写さない。組織のファイルで層ごとに `fill_gated: true` (7.1 節)。2026-11-15 に 12.1 節で置き換えた
+- 共有の層には、手元で作ったものの書き戻し (`write`) のほかに、読んだものをそのまま置く写し (`fill`、フォワードプロキシの共有キャッシュ) も持てる (7.1 節)。2026-11-15 に 12.1 節で置き換えた
 - 配布物がなければ今の仕組みで手元で作る。そのときは元データと変換後のデータを両方残し、パラメータを変えたバリエーションを元を落とし直さずに作れるようにする (8.1、8.2 節)
+
+## 12.1 決めたこと (2026-11-15)
+
+- 取得元は定義のファイルでなく、環境変数の URL の並び (`HWNPU_MODEL_SOURCE`、`_1`、...、番号の順、エラーなら次)。最後に `HWNPU_MODEL_HUGGING_FACE` (true/false)。`.env` と `.env.local` をカレント、ユーザー、機械の順に読む (7、7.4 節)
+- `http(s)://` は WebDAV、書き戻さないなら読むだけの HTTP。URL のパスワードを受け付け、表示では伏せる。S3 の鍵は今どおり AWS の環境変数かプロファイル
+- `?writeback=true` は、手元で作ったものと読んだものの写しの両方。gated も写す
+- 中の並びは固定: `original/OWNER/NAME/` (コミットのフォルダは作らず `hwnpu-lock.json` で照らす) と `converted/MODEL/TARGET/EXPORT/vN`。lock を移すのは `hwnpu-dev cache update` だけ
+- 版は `targets.<対象>.version`。版ありは `vN`、`develop: true` は `vN-HASH`、版なしは `v0-HASH`
+- `HWNPU_CACHE_LAYERS` は読み替えずに消す。`HWNPU_PREBUILT` は作らない (取得元にあるかで決まる)
+- `HF_TOKEN` は CI 以外では勧めない。refresh token の保存 (OS の資格情報の置き場) と、Actions のトークンの交換 (Hugging Face の Trusted Publishers、RFC 8693) は別に
 
 ## 13. 未決
 
-なし (2026-11-12)。
+次の PR: 層を平らにする (2026-11-15 に決めた)。手元のキャッシュと同梱のモデルも取得元の 1 つにして、並べる。
+
+```
+0. 手元のキャッシュ   Root() (os.UserCacheDir()/hwnpu、HWNPU_CACHE)   書き戻しあり・その場で使う
+1. HWNPU_MODEL_SOURCE, _1, _2 ...                                URL ごとの設定
+2. アプリ同梱のモデル  インストーラが置いたフォルダ (アプリのコードで有効にする) 読むだけ・その場で使う
+3. Hugging Face       HWNPU_MODEL_HUGGING_FACE                        最後の番兵
+```
+
+- 手元と同梱のモデルはパスをそのまま返す (コピーしない)。`file://` の NAS は今のとおり手元に写す
+- コミットを決めるのは models.yaml の固定、なければ 1 番以降で最初の lock、なければ Hugging Face の main。手元はそれに従い、違うコミットのものは置き換える (共有の層は ErrOtherCommit のまま)
+- 手元の並びも `original/` と `converted/.../vN` に揃え、今の `models/` と `entries/` は一度だけ移す (MigrateDir)
+- 同梱のモデルは環境変数でなく、組み込むアプリがコードで場所を決める。場所の問い合わせは configdir に足す (必要なら)
+
+- Synology の WebDAV の実機の確認
+- refresh token の保存と、Actions のトークンの交換 (12.1 節)

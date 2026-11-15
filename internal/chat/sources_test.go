@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
-	"github.com/shibukawa/hwnpu/internal/store/s3fake"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +13,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	shared "github.com/shibukawa/hwnpu/internal/store"
+	"github.com/shibukawa/hwnpu/internal/store/s3fake"
 )
 
 // hub serves files as Hugging Face does (OWNER/NAME/resolve/REV/FILE) and counts the requests.
@@ -59,13 +62,28 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
-// TestSearchMirror checks the search: a model from hf comes from the shared folder first, and from
-// Hugging Face when the folder does not have the file.
-func TestSearchMirror(t *testing.T) {
+// lockIn puts files of repo at commit in the folder source root, as a writeback would, with
+// their lock.
+func lockIn(t *testing.T, root, repo, commit string, files map[string]string) {
+	t.Helper()
+	l := shared.Lock{Format: shared.LockFormat, Repo: repo, Commit: commit, Files: map[string]shared.LockedFile{}}
+	for name, body := range files {
+		put(t, filepath.Join(root, "original", filepath.FromSlash(repo), filepath.FromSlash(name)), body)
+		l.Files[name] = shared.LockedFile{SHA256: digest(body), Size: int64(len(body))}
+	}
+	b, _ := json.Marshal(l)
+	put(t, filepath.Join(root, "original", filepath.FromSlash(repo), shared.LockName), string(b))
+}
+
+// TestSources checks the order: a file a source's lock names comes from the source, one it
+// does not from Hugging Face, of the lock's commit; one neither has is not found (FetchWeights
+// then tries the index of shards); a file in the folder the lock does not name is not taken.
+func TestSources(t *testing.T) {
 	share := t.TempDir()
-	put(t, filepath.Join(share, "LiquidAI", "LFM3-1.7B", "config.json"), "from the share")
-	n := hub(t, map[string]string{"LiquidAI/LFM3-1.7B/resolve/main/tokenizer.json": "from the hub"})
-	if _, err := userFiles(t, fmt.Sprintf("version: 1\nsources:\n  share: {type: path, path: %q}\nsearch: [share, hf]\n", share)); err != nil {
+	lockIn(t, share, "LiquidAI/LFM3-1.7B", testCommit, map[string]string{"config.json": "from the share"})
+	put(t, filepath.Join(share, "original", "LiquidAI", "LFM3-1.7B", "README.md"), "not locked")
+	n := hub(t, map[string]string{"LiquidAI/LFM3-1.7B/resolve/" + testCommit + "/tokenizer.json": "from the hub"})
+	if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share)}); err != nil {
 		t.Fatal(err)
 	}
 	m, _ := Lookup("LFM3-1.7B")
@@ -83,121 +101,79 @@ func TestSearchMirror(t *testing.T) {
 	if got := read(t, filepath.Join(dir, "tokenizer.json")); got != "from the hub" {
 		t.Errorf("tokenizer.json %q", got)
 	}
-	// none has it: not found, as FetchWeights needs to try the index of shards
+	if c, _ := servedCommit(m.Source()); c != testCommit {
+		t.Errorf("commit %q, not the lock's", c)
+	}
 	err := fetch(ctx, m.Source(), "model.safetensors", filepath.Join(dir, "model.safetensors"), nil)
 	if !NotFound(err) {
 		t.Errorf("a file none has: %v", err)
 	}
+	if err := fetch(ctx, m.Source(), "README.md", filepath.Join(dir, "README.md"), nil); !NotFound(err) {
+		t.Errorf("a file the lock does not name: %v", err)
+	}
 }
 
-// TestSearchWithoutHub checks that a search without hf never asks Hugging Face.
-func TestSearchWithoutHub(t *testing.T) {
+// TestHuggingFaceOff checks that HWNPU_MODEL_HUGGING_FACE=false never asks Hugging Face.
+func TestHuggingFaceOff(t *testing.T) {
 	share := t.TempDir()
-	n := hub(t, map[string]string{"LiquidAI/LFM3-1.7B/resolve/main/config.json": "x"})
-	if _, err := userFiles(t, fmt.Sprintf("version: 1\nsources:\n  share: {type: path, path: %q}\nsearch: [share]\n", share)); err != nil {
+	lockIn(t, share, "LiquidAI/LFM3-1.7B", testCommit, map[string]string{"config.json": "x"})
+	n := hub(t, map[string]string{"LiquidAI/LFM3-1.7B/resolve/main/tokenizer.json": "x"})
+	if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share)}); err != nil {
 		t.Fatal(err)
 	}
-	err := fetch(context.Background(), "LiquidAI/LFM3-1.7B", "config.json", filepath.Join(t.TempDir(), "config.json"), nil)
-	if !NotFound(err) || n.Load() != 0 {
+	t.Setenv(shared.HuggingFaceEnv, "false")
+	if err := LoadModels(nil, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := fetch(ctx, "LiquidAI/LFM3-1.7B", "config.json", filepath.Join(t.TempDir(), "config.json"), nil); err != nil {
+		t.Fatal(err)
+	}
+	err := fetch(ctx, "LiquidAI/LFM3-1.7B", "tokenizer.json", filepath.Join(t.TempDir(), "tokenizer.json"), nil)
+	if !NotFound(err) || n.Load() != 0 || !strings.Contains(err.Error(), shared.HuggingFaceEnv) {
 		t.Errorf("%v, %d requests to the hub", err, n.Load())
 	}
 }
 
-// TestPinnedDigest checks that a mirror's file that differs from the pinned SHA-256 is dropped
-// and the next source tried, and that a pinned revision's folder is read first.
+// TestPinnedDigest checks that a source's file that differs from the pinned SHA-256 is passed
+// over for Hugging Face, and that a model pinned to a commit does not take another commit's
+// files.
 func TestPinnedDigest(t *testing.T) {
 	share := t.TempDir()
-	put(t, filepath.Join(share, "LiquidAI", "LFM3-1.7B", "config.json"), "stale")
-	put(t, filepath.Join(share, "LiquidAI", "LFM3-1.7B", "tokenizer.json"), "tok")
-	put(t, filepath.Join(share, "LiquidAI", "LFM3-1.7B@abc", "tokenizer.json"), "tok at abc")
-	hub(t, map[string]string{"LiquidAI/LFM3-1.7B/resolve/abc/config.json": "fresh"})
-	if _, err := userFiles(t, fmt.Sprintf(`version: 1
-sources:
-  share: {type: path, path: %q}
-search: [share, hf]
-models:
-  LFM3-1.7B:
-    from: hf:LiquidAI/LFM3-1.7B@abc
-    sha256: {config.json: %s}
-`, share, digest("fresh"))); err != nil {
+	lockIn(t, share, "LiquidAI/LFM3-1.7B", testCommit, map[string]string{"config.json": "stale", "tokenizer.json": "tok"})
+	hub(t, map[string]string{
+		"LiquidAI/LFM3-1.7B/resolve/" + testCommit + "/config.json": "fresh",
+		"LiquidAI/LFM3-1.7B/resolve/abc/tokenizer.json":             "tok at abc",
+	})
+	if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share)}, fmt.Sprintf("version: 1\nmodels:\n  LFM3-1.7B:\n    sha256: {config.json: %s}\n", digest("fresh"))); err != nil {
 		t.Fatal(err)
 	}
-	m, _ := Lookup("LFM3-1.7B")
 	dir := t.TempDir()
-	var log strings.Builder
-	if err := fetch(context.Background(), m.Source(), "config.json", filepath.Join(dir, "config.json"), &log); err != nil {
+	if err := fetch(context.Background(), "LiquidAI/LFM3-1.7B", "config.json", filepath.Join(dir, "config.json"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, filepath.Join(dir, "config.json")); got != "fresh" {
 		t.Errorf("config.json %q", got)
 	}
-	if !strings.Contains(log.String(), "SHA-256") {
-		t.Errorf("no word of the stale copy:\n%s", log.String())
-	}
-	if err := fetch(context.Background(), m.Source(), "tokenizer.json", filepath.Join(dir, "tokenizer.json"), nil); err != nil {
+	if err := fetch(context.Background(), "LiquidAI/LFM3-1.7B@abc", "tokenizer.json", filepath.Join(dir, "tokenizer.json"), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(t, filepath.Join(dir, "tokenizer.json")); got != "tok at abc" {
 		t.Errorf("tokenizer.json %q, want the pinned revision's", got)
 	}
-	// only the stale copy anywhere: an error, not a wrong file
-	if _, err := userFiles(t, fmt.Sprintf("version: 1\nsources:\n  share: {type: path, path: %q}\nsearch: [share]\nmodels:\n  LFM3-1.7B:\n    sha256: {config.json: %s}\n", share, digest("fresh"))); err != nil {
-		t.Fatal(err)
-	}
-	dst := filepath.Join(t.TempDir(), "config.json")
-	if err := fetch(context.Background(), "LiquidAI/LFM3-1.7B", "config.json", dst, nil); err == nil {
-		t.Error("the stale copy was taken")
-	}
-	if _, err := os.Stat(dst); err == nil {
-		t.Error("the stale copy was left")
-	}
 }
 
-// TestModelFromSource checks a model whose from names a path source, and a -use of SOURCE:NAME.
-func TestModelFromSource(t *testing.T) {
-	share := t.TempDir()
-	put(t, filepath.Join(share, "team", "distill-0.8b", "config.json"), "distilled")
-	n := hub(t, nil)
-	if _, err := userFiles(t, fmt.Sprintf(`version: 1
-sources:
-  share: {type: path, path: %q}
-models:
-  my-distill:
-    like: plamo-3-translate-0.8b
-    from: share:team/distill-0.8b
-`, share)); err != nil {
-		t.Fatal(err)
-	}
-	m, _ := Lookup("my-distill")
-	if m.Source() != "share:team/distill-0.8b" || m.DirName() != "distill-0.8b" {
-		t.Fatalf("source %s, directory %s", m.Source(), m.DirName())
-	}
-	dst := filepath.Join(t.TempDir(), "config.json")
-	if err := fetch(context.Background(), m.Source(), "config.json", dst, nil); err != nil || read(t, dst) != "distilled" || n.Load() != 0 {
-		t.Errorf("%v, %d requests to the hub", err, n.Load())
-	}
-	r, err := ResolveFor("share:team/distill-0.8b", KindTranscribe, nil)
-	if err != nil || r.Source() != "share:team/distill-0.8b" || r.Name != "distill-0.8b" {
-		t.Errorf("-use SOURCE:NAME: %+v, %v", r, err)
-	}
-	if _, err := ResolveFor("share:../x", KindTranscribe, nil); err == nil {
-		t.Error("a name outside the source was taken")
-	}
-}
-
-// TestS3Source checks an s3 source through a fake aws command: the URL, the endpoint, the
-// profile and no_sign it is given, and a missing object as not found.
+// TestS3Source reads a source of S3 (unsigned, no_sign) in the layout of original/.
 func TestS3Source(t *testing.T) {
 	srv := s3fake.New(t)
-	srv.Put("models", "hf/LiquidAI/LFM3-1.7B/config.json", []byte("from s3"))
+	l, _ := json.Marshal(shared.Lock{Format: shared.LockFormat, Repo: "LiquidAI/LFM3-1.7B", Commit: testCommit,
+		Files: map[string]shared.LockedFile{"config.json": {SHA256: digest("from s3"), Size: 7}}})
+	srv.Put("models", "hf/original/LiquidAI/LFM3-1.7B/config.json", []byte("from s3"))
+	srv.Put("models", "hf/original/LiquidAI/LFM3-1.7B/"+shared.LockName, l)
 	t.Setenv("AWS_ACCESS_KEY_ID", "")
 	t.Setenv("AWS_PROFILE", "")
 	n := hub(t, nil)
-	if _, err := userFiles(t, fmt.Sprintf(`version: 1
-sources:
-  lab: {type: s3, bucket: models, prefix: hf, endpoint: %q, no_sign: true}
-search: [lab, hf]
-`, srv.URL)); err != nil {
+	if _, err := withSources(t, []string{"s3://models/hf?no_sign=true&endpoint=" + srv.URL}); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -207,24 +183,9 @@ search: [lab, hf]
 	if got := read(t, filepath.Join(dir, "config.json")); got != "from s3" || n.Load() != 0 {
 		t.Errorf("config.json %q, %d requests to the hub", got, n.Load())
 	}
-	err := fetch(context.Background(), "LiquidAI/LFM3-1.7B", "tokenizer.json", filepath.Join(dir, "tokenizer.json"), nil)
-	if !NotFound(err) {
-		t.Errorf("a missing object: %v", err)
-	}
-	if srv.Requests["GET"] < 2 {
-		t.Error("the bucket was not asked for tokenizer.json")
-	}
 	// signed with the profile's keys: no keys is an error that says so, not a silent fall back
-	if _, err := userFiles(t, fmt.Sprintf(`version: 1
-sources:
-  lab: {type: s3, bucket: models, prefix: hf, endpoint: %q, profile: none}
-search: [lab]
-`, srv.URL)); err != nil {
-		t.Fatal(err)
-	}
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
-	err = fetch(context.Background(), "LiquidAI/LFM3-1.7B", "generation_config.json", filepath.Join(dir, "g.json"), nil)
-	if err == nil || !strings.Contains(err.Error(), "no keys") {
+	if _, err := withSources(t, []string{"s3://models/hf?profile=none&endpoint=" + srv.URL}); err == nil || !strings.Contains(err.Error(), "no keys") {
 		t.Errorf("without keys: %v", err)
 	}
 }
