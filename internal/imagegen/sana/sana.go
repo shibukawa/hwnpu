@@ -133,9 +133,11 @@ type Pipeline struct {
 	Dit  DitConfig
 	Text TextConfig
 	// prefixIDs are the tokens of the instruction the text graph holds, prefixOut their last
-	// hidden states (bf16, rows of Text.Hidden).
+	// hidden states (bf16, rows of Text.Hidden); an export of programs has them as float32
+	// (heldOut, HeldOutFile).
 	prefixIDs []int32
 	prefixOut []byte
+	heldOut   []float32
 	Model     Model
 
 	eng   engine
@@ -206,10 +208,11 @@ type part interface {
 	close() error
 }
 
-// allPart is a part of programs loaded only while they run, which runs several inputs (each from
-// position 0) with each program loaded once: progEngine's Gemma 2.
+// allPart is a part of programs loaded only while they run, which runs several inputs, each from
+// a position of its own (0, or Text.Prefix), with each program loaded once: progEngine's Gemma
+// 2. An input is the rows it has, an output as many rows as the program that ran it takes.
 type allPart interface {
-	runAll(ctx context.Context, ins [][]float32) ([][]float32, error)
+	runAll(ctx context.Context, ins [][]float32, starts []int) ([][]float32, error)
 }
 
 // allDecoder is an engine whose VAE decodes several pictures stage by stage, each stage loaded
@@ -276,7 +279,12 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 		return fail(err)
 	}
 	td := filepath.Join(dir, "text")
-	if p.Text.Prefix > 0 {
+	if p.Text.Prefix > 0 && IsProgramExport(dir) {
+		// Gemma 2's programs hold the instruction's first rows (mil.TextFrom)
+		if p.prefixIDs, p.heldOut, err = readHeld(dir, p.Text); err != nil {
+			return fail(err)
+		}
+	} else if p.Text.Prefix > 0 {
 		// an IRON export whose text graph holds the instruction's first rows (iron_sana's Prefix)
 		mt, err := iron.ReadGraphManifest(td)
 		if err != nil {
@@ -431,7 +439,11 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 	runs := make([]run, len(prompts))
 	for k, tp := range prompts {
 		ids, total := p.tokens(tp.text, tp.instruction)
-		start := textStart(ids, p.prefixIDs, p.Text.Prefix, R)
+		chunk := R
+		if p.heldOut != nil { // programs: from the held rows, or from the first
+			chunk = p.Text.Prefix
+		}
+		start := textStart(ids, p.prefixIDs, p.Text.Prefix, chunk)
 		if p.Text.Prefix > 0 {
 			if len(ids) > p.Text.Cache {
 				return nil, fmt.Errorf("sana: %d tokens, the text graph holds %d", len(ids), p.Text.Cache)
@@ -471,16 +483,17 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 		return nil
 	}
 	hs := make([][]float32, len(runs)) // each prompt's last hidden states from its start
-	if all, ok := text.(allPart); ok && p.Text.Prefix == 0 {
-		// programs loaded while they run: every prompt through each, which loads once for all
-		xs := make([][]float32, len(runs))
+	if all, ok := text.(allPart); ok {
+		// programs loaded while they run: every prompt through each, which loads once for all;
+		// a prompt after the instruction from the rows the programs hold
+		xs, starts := make([][]float32, len(runs)), make([]int, len(runs))
 		for k, r := range runs {
-			xs[k] = make([]float32, R*E)
-			if err := rows(xs[k], r.ids); err != nil {
+			xs[k], starts[k] = make([]float32, (len(r.ids)-r.start)*E), r.start
+			if err := rows(xs[k], r.ids[r.start:]); err != nil {
 				return nil, err
 			}
 		}
-		if hs, err = all.runAll(ctx, xs); err != nil {
+		if hs, err = all.runAll(ctx, xs, starts); err != nil {
 			return nil, err
 		}
 	} else {
@@ -504,10 +517,13 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 		ids, start, h := r.ids, r.start, hs[k]
 		// hidden is row i's last hidden state: the prefix's below start, the graph's from it
 		hidden := func(i int) []float32 {
-			if i < start {
-				return fromBF16s(p.prefixOut[2*i*E : 2*(i+1)*E])
+			switch {
+			case i >= start:
+				return h[(i-start)*E : (i-start+1)*E]
+			case p.heldOut != nil:
+				return p.heldOut[i*E : (i+1)*E]
 			}
-			return h[(i-start)*E : (i-start+1)*E]
+			return fromBF16s(p.prefixOut[2*i*E : 2*(i+1)*E])
 		}
 		// the rows Sana keeps: the first and the last 299 of the padded length, of which those
 		// before len(ids) count (a prefix: the first, then a run)

@@ -36,12 +36,15 @@ type source struct {
 
 // OpenWeights opens root/transformer, root/vae and text/text_encoder (text is the repository
 // that holds Gemma 2: root, or any other Sana's, the same files), each one file or the shards of
-// a model.safetensors.index.json. text "" leaves Gemma 2 out.
+// a model.safetensors.index.json. text "" leaves Gemma 2 out, root "" the DiT and the VAE.
 func OpenWeights(root, text string) (*Weights, error) {
 	w := &Weights{}
-	dirs := []struct{ prefix, dir, file string }{
-		{"dit.", filepath.Join(root, "transformer"), "diffusion_pytorch_model"},
-		{"vae.", filepath.Join(root, "vae"), "diffusion_pytorch_model"},
+	var dirs []struct{ prefix, dir, file string }
+	if root != "" {
+		dirs = []struct{ prefix, dir, file string }{
+			{"dit.", filepath.Join(root, "transformer"), "diffusion_pytorch_model"},
+			{"vae.", filepath.Join(root, "vae"), "diffusion_pytorch_model"},
+		}
 	}
 	if text != "" {
 		dirs = append(dirs, struct{ prefix, dir, file string }{"gemma.", filepath.Join(text, "text_encoder"), "model"})

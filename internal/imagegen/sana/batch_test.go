@@ -49,8 +49,8 @@ func (p *fakeProgram) Run(_ context.Context, in map[string][]float32) ([]float32
 // what they are when it runs alone.
 func TestTextRunAll(t *testing.T) {
 	l := &fakeLoader{}
-	e := &progEngine{m: &ProgramManifest{TextParts: []string{"t0", "t1", "t2"}}, loader: l.load}
-	ys, err := textPart{e}.runAll(context.Background(), [][]float32{{1}, {10}, {100}})
+	e := &progEngine{m: &ProgramManifest{TextParts: []string{"t0", "t1", "t2"}, Text: TextConfig{Rows: 1, Hidden: 1}}, loader: l.load}
+	ys, err := textPart{e}.runAll(context.Background(), [][]float32{{1}, {10}, {100}}, []int{0, 0, 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +65,51 @@ func TestTextRunAll(t *testing.T) {
 	y, err := textPart{e}.run(context.Background(), []float32{10}, 0)
 	if err != nil || y[0] != ys[1][0] {
 		t.Errorf("alone: %v, %v; together %v", y, err, ys[1])
+	}
+}
+
+// A prompt after the instruction runs the shortest function that holds its rows after the held
+// ones, a prompt without it the programs over every row; each function's programs are loaded
+// once for the prompts they run, and a prompt's rows are followed by zeros.
+func TestTextRunAllFrom(t *testing.T) {
+	ctx := context.Background()
+	l := &fakeLoader{out: map[string]int{"t0#whole": 8, "t1#whole": 8, "t0#from2": 2, "t1#from2": 2, "t0#from6": 6, "t1#from6": 6}}
+	m := &ProgramManifest{TextParts: []string{"t0#whole", "t1#whole"}, Text: TextConfig{Rows: 8, Hidden: 1, Prefix: 4, Cache: 8},
+		TextFrom: []TextFunc{{Rows: 2, Parts: []string{"t0#from2", "t1#from2"}}, {Rows: 6, Parts: []string{"t0#from6", "t1#from6"}}}}
+	e := &progEngine{m: m, loader: l.load}
+	// two rows after the held ones, five after them, three from the first (no instruction), one after
+	xs := [][]float32{{1, 0}, {10, 0, 0, 0, 0}, {100, 0, 0}, {20}}
+	ys, err := textPart{e}.runAll(ctx, xs, []int{4, 4, 0, 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range []struct {
+		rows int
+		v    float32
+	}{{2, 3}, {6, 12}, {8, 102}, {2, 22}} {
+		if len(ys[k]) != want.rows || ys[k][0] != want.v {
+			t.Errorf("prompt %d: %d rows starting with %g, want %d with %g", k, len(ys[k]), ys[k][0], want.rows, want.v)
+		}
+	}
+	want := "+t0#whole t0#whole(100) -t0#whole +t1#whole t1#whole(101) -t1#whole" +
+		" +t0#from2 t0#from2(1) t0#from2(20) -t0#from2 +t1#from2 t1#from2(2) t1#from2(21) -t1#from2" +
+		" +t0#from6 t0#from6(10) -t0#from6 +t1#from6 t1#from6(11) -t1#from6"
+	if got := strings.Join(l.log, " "); got != want {
+		t.Errorf("the programs ran as\n%s\nwant\n%s", got, want)
+	}
+	// what the programs do not run
+	for _, c := range []struct {
+		x     []float32
+		start int
+	}{{[]float32{1}, 3}, {make([]float32, 7), 4}, {make([]float32, 9), 0}} {
+		if _, err := (textPart{e}).runAll(ctx, [][]float32{c.x}, []int{c.start}); err == nil {
+			t.Errorf("%d rows from %d ran", len(c.x), c.start)
+		}
+	}
+	// an export without held rows: from the first row alone
+	e = &progEngine{m: &ProgramManifest{TextParts: []string{"t0"}, Text: TextConfig{Rows: 8, Hidden: 1}}, loader: l.load}
+	if _, err := (textPart{e}).runAll(ctx, [][]float32{{1}}, []int{4}); err == nil {
+		t.Error("a start after rows the programs do not hold ran")
 	}
 }
 
