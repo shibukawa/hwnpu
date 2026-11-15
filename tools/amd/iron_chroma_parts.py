@@ -513,6 +513,11 @@ GN_C = 2.0 ** -5  # the constant beside a group's row norms (step 5)
 BIG_NORM = 1 << 26  # a norm (or 1 x 1 convolution) over more elements is cut into commands (FluxVaeStage.cut)
 GN_PIXELS = 262144  # a big norm's transposes and row sums take this many pixels a command
 ATTN_ROWS = 4096  # the mid block's attention over at most this many pixels in one pass
+# HOST_NORM: a GroupNorm as two operators and a host step (iron_groupnorm: the channels' sums and
+# sums of squares in one pass, the host's float64 arithmetic between two commands, then y = x a
+# + b), in place of group_norm's 20 operators. The stage's meta lists its norms (``norms``) for
+# hwnpu's anima.VAE; IRON's reference cannot run such a stage (the row the host writes is zero).
+HOST_NORM = [False]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -573,15 +578,11 @@ class FluxVaeStage(qi.VaeStage):
         self.params, self._index, self.states = [], {}, []
         self._consts = {}
         self._gn_grids = []
-        sc, sh = float(vae_cfg["scaling_factor"]), float(vae_cfg["shift_factor"])
         gg = g
         for op in ops:
             kind = op[0]
             if kind == "in":
-                a = np.zeros((64, 64), np.float32)
-                a[np.arange(16), np.arange(16)] = 1 / sc
-                b = np.zeros(64, np.float32)
-                b[:16] = sh
+                a, b = self.in_affine(w, vae_cfg)
                 self._param("in.w", a)
                 self._param("in.b", b)
                 self._conv3("conv_in", w, "decoder.conv_in", 64)
@@ -627,6 +628,18 @@ class FluxVaeStage(qi.VaeStage):
             else:
                 raise ValueError(op)
 
+    LATENT = 16  # the latents' channels (the first grid's are 64 wide)
+
+    def in_affine(self, w, vae_cfg: dict):
+        """The 1 x 1 affine before conv_in, (64, 64) and (64,) over the first grid's channels:
+        the latents' unscaling, z / scaling_factor + shift_factor."""
+        sc, sh = float(vae_cfg["scaling_factor"]), float(vae_cfg["shift_factor"])
+        a = np.zeros((64, 64), np.float32)
+        a[np.arange(16), np.arange(16)] = 1 / sc
+        b = np.zeros(64, np.float32)
+        b[:16] = sh
+        return a, b
+
     def _const(self, name: str, x) -> None:
         """A constant shared by the stage's norms (made once)."""
         if name not in self._index:
@@ -634,7 +647,15 @@ class FluxVaeStage(qi.VaeStage):
 
     def _gn(self, name: str, w, path: str, s: NormShape) -> None:
         """A GroupNorm's constants (group_norm): its own (the group means' fold Gm, the residual
-        means' Gr, gamma and the step-5 factor spread to the channels, beta) and the shared ones."""
+        means' Gr, gamma and the step-5 factor spread to the channels, beta) and the shared ones.
+        With HOST_NORM, its gamma and beta for the host (host_norm)."""
+        if HOST_NORM[0]:
+            if not hasattr(self, "norm_specs"):
+                self.norm_specs, self.norms = {}, []
+            self.norm_specs[name] = dict(channels=s.C, groups=GROUPS, pixels=s.np, eps=GN_EPS,
+                                         gamma=[float(v) for v in f32(w[f"{path}.weight"])],
+                                         beta=[float(v) for v in f32(w[f"{path}.bias"])])
+            return
         C, cg, q, k = s.C, s.cg, s.q, s.k
         grp = np.arange(C) // cg
         same = (grp[:, None] == grp[None, :]).astype(np.float32)
@@ -661,8 +682,40 @@ class FluxVaeStage(qi.VaeStage):
 
     # --- inside body ---
 
+    def host_norm(self, x, rows: int, C: int, name: str):
+        """GroupNorm(32) of x (rows, C), whose rows past the image's pixels are zeros (a grid's
+        pads), with the host's arithmetic (HOST_NORM): (rows, C), the pads' rows not zero.
+
+        ChannelStats writes each line's sums into a state the host reads when the command ends;
+        the host writes each channel's factor and term into the row RowAffine reads in the next
+        command. The norm's entry in ``self.norms`` names the two states."""
+        import iron_groupnorm as gn
+
+        P = gn.line_pixels(C)
+        lines, L = rows // P, P * C
+        assert rows % P == 0, (rows, P)
+        # the sums over longer lines (a line's sums are 2 C float32: an eighth of the line's
+        # bytes at 8192 values), into one state the stage's norms use in turn
+        PS = gn.stats_pixels(C)
+        slines = rows // PS
+        assert rows % PS == 0, (rows, PS)
+        n = slines * 2 * C
+        if getattr(self, "_stats", None) is None or self._stats.shape[0] < n:
+            self._stats_name = f"gn{len(self.norms)}.stats"
+            self._stats = iron.state((n,), dtype=np.float32, name=self._stats_name)
+            self.states.append(self._stats)
+        i = len(self.norms)
+        row = iron.state((L,), name=f"gn{i}.row")
+        self.states.append(row)
+        gn.ChannelStats.step(x.reshape(slines, PS * C), self._stats[0:n].reshape(slines, 2 * C), channels=C)
+        command_boundary()  # the host's step: the sums are whole, the row is not read yet
+        self.norms.append(dict(self.norm_specs[name], name=name, stats=self._stats_name, stats_bytes=4 * n, row=f"gn{i}.row"))
+        return gn.RowAffine.step(x.reshape(lines, L), row[0:L], channels=C).reshape(rows, C)
+
     def group_norm(self, d, s: NormShape, name: str):
         """GroupNorm(32) of the dense pixels d (np, C), gamma and beta: (np, C) (module doc)."""
+        if HOST_NORM[0]:
+            return self.host_norm(d, s.np, s.C, name)
         C, q, L, R, k, W = s.C, s.q, s.L, s.R, s.k, s.W
         # 1. minus the group means, per channel (bf16)
         cs = GEMM.step(self.w(f"ones{s.np // q}"), d.reshape(s.np // q, q * C), b_col_maj=False, precision=HIGHEST)
@@ -729,6 +782,19 @@ class FluxVaeStage(qi.VaeStage):
         """GroupNorm and SiLU of the grid x into a fresh grid (its pads zero)."""
         s = NormShape(g.H * g.W, g.C)
         cut = self.cut(s)
+        if HOST_NORM[0]:
+            # over the grid as it is: its pads are zeros in the sums; the norm and SiLU leave them
+            # not zero, and only the image's pixels are copied into the fresh grid
+            y = self.host_norm(x, g.rows, g.C, name)
+            cut()
+            y = F.silu(y)
+            cut()
+            out = self.new_grid(g)
+            C, Wp = g.C, g.Wp
+            t = tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [Wp * C, 1])
+            Copy.step(y, out, src=t, dst=t)
+            cut()
+            return self.view(out)
         d = self.dense(x, g)
         cut()
         y = self.group_norm(d, s, name)
@@ -871,9 +937,12 @@ def export_vae(root: Path, out: Path, width: int, height: int, check: bool, ref:
         go = st.g_out if ops[-1][0] != "head" else None
         meta = dict(stage=i, ops=json.loads(json.dumps(ops)), grid_in=dataclasses.asdict(g),
                     grid_out=None if go is None else dataclasses.asdict(go), pad=iron_anima.VAE_PAD,
-                    width=width, height=height, scaling_factor=cfg["scaling_factor"], shift_factor=cfg["shift_factor"])
+                    width=width, height=height, scaling_factor=cfg["scaling_factor"], shift_factor=cfg["shift_factor"],
+                    norms=getattr(st, "norms", []))
         m = export_graph(cg, d / f"s{i}", f"vae_s{i}", meta)
         print(f"vae s{i}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+        if HOST_NORM[0]:
+            continue  # the host's norm steps are not in IRON's reference: checked on the NPU
         if x_ref is not None:
             t1 = time.time()
             x_in = x_ref
@@ -905,7 +974,7 @@ def export_vae(root: Path, out: Path, width: int, height: int, check: bool, ref:
 
 def _check_input(st, g: GridShape, rng) -> np.ndarray:
     x = np.zeros((g.rows, g.C), np.float32)
-    C = 16 if st.ops[0][0] == "in" else g.C
+    C = st.LATENT if st.ops[0][0] == "in" else g.C
     for y in range(g.H):
         x[g.pixel(y, 0) : g.pixel(y, 0) + g.W, :C] = rng.standard_normal((g.W, C))
     return x
@@ -943,6 +1012,9 @@ def main(argv=None) -> int:
     ap.add_argument("--stages", type=int, nargs="*", help="the VAE's stages to export (default all)")
     ap.add_argument("--vae-config", type=Path, help="a directory with the VAE's config.json when ROOT/vae has none "
                     "(Chroma1-Flash's vae/ holds the weights only: FLUX.1-schnell's vae/)")
+    ap.add_argument("--host-norm", action=argparse.BooleanOptionalAction, default=True,
+                    help="the VAE's GroupNorms as two operators and a host step (iron_groupnorm, HOST_NORM); "
+                         "--no-host-norm for the device-only norm, which --ref-vae and --check can run")
     ap.add_argument("--vae-precision", default=iron_anima.PREC.vae.value, choices=[p.value for p in Precision],
                     help="the VAE's convolutions (medium: bfp16 operands, as Anima's; IRON's CPU reference does not round to bfp16)")
     ap.add_argument("--t5-format", default="q8", choices=("bf16", "q8", "q6", "q4"))
@@ -963,6 +1035,7 @@ def main(argv=None) -> int:
 
     iron_q4.install_linear()
     iron_anima.PREC.vae = Precision(a.vae_precision)
+    HOST_NORM[0] = a.host_norm
     bind_device(a.device, a.cols)
     a.out.mkdir(parents=True, exist_ok=True)
     if "t5" in a.only:

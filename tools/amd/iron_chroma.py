@@ -395,6 +395,8 @@ def main(argv=None) -> int:
     ap.add_argument("--parts", nargs="*", default=["mods", "dit_in", "ctx", "dit_out", "doubles", "singles", "t5", "vae"],
                     help="graphs to export: the DiT's, and t5 and vae (tools/amd/iron_chroma_parts.py, run after the DiT)")
     ap.add_argument("--proj", default=FMT.proj, choices=("bf16", "q8", "q6", "q4", "bfp16"))
+    ap.add_argument("--exp", default=None, choices=("exact", "mid", "instruction"),
+                    help="the attention's softmax exponentials (iron_mha.ImageMHA.exp; default mid)")
     ap.add_argument("--one-group", action="store_true")
     ap.add_argument("--random", action="store_true")
     ap.add_argument("--check", action="store_true")
@@ -402,6 +404,10 @@ def main(argv=None) -> int:
     ap.add_argument("--cols", type=int, default=8)
     ARGS = a = ap.parse_args(argv)
     FMT.proj = a.proj
+    if a.exp:
+        import iron_mha
+
+        iron_mha.EXP[0] = a.exp
     import iron_q4
 
     iron_q4.PREFILL["q4"] = "bf16"

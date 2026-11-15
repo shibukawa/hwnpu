@@ -42,6 +42,10 @@ class ImageMHA(MHA):
 
     qk_bfp16: bool = param(default=True, array=True)
     pv_bfp16: bool = param(default=False, array=True)
+    # the softmax's exponentials: "exact" IRON's cubic on two bf16 limbs (float32 accuracy, then
+    # rounded to bf16), "mid" the cubic on one limb (kernels/exp2_mid.h: within the result's own
+    # bf16 rounding), "instruction" AIE2P's exp2 (several times the error)
+    exp: str = param(default="exact", array=True)
     # The keys a call stands for, those past its bound zeros counted in the softmax (module
     # docstring); 0: off. It may be less than kv_len, K's and V's rows in memory, which the
     # bound keeps it from reading past.
@@ -83,17 +87,38 @@ class ImageMHA(MHA):
             emulate = self.qk_bfp16 and self.pv_bfp16
         else:
             emulate = self.qk_bfp16 if qk_object else self.pv_bfp16
-        return kernels.linalg.mha(
-            B_q,
-            width,
-            B_kv,
-            b_col_maj=True,
-            accurate_exp2=accurate_exp2,
-            causal=self.causal,
-            window=self.window or 0,
-            packed=self.packed and self.window is not None,
-            emulate_bf16_mmul_with_bfp16=emulate and self.unmasked(),
-        )
+        if self.exp not in ("exact", "mid", "instruction"):
+            raise ValueError(f"ImageMHA: exp {self.exp!r}")
+        from aie.iron.kernels import linalg
+
+        # "mid": IRON's accurate build of kernels/mha_mid.cc, which is linalg/mha.cc after
+        # kernels/exp2_mid.h (it takes exp2_bf16 over)
+        extra, source = [], None
+        if self.exp == "mid":
+            from aie.utils import config
+
+            here = Path(__file__).resolve().parent / "kernels"
+            extra, source = [f"-I{config.aie_kernels_dir()}", f"-I{here}"], here / "mha_mid.cc"
+        orig = linalg._make_extern
+
+        def make(func_name, source_path, *args, compile_flags=None, **kw):
+            return orig(func_name, source or source_path, *args, compile_flags=[*(compile_flags or []), *extra], **kw)
+
+        linalg._make_extern = make
+        try:
+            return kernels.linalg.mha(
+                B_q,
+                width,
+                B_kv,
+                b_col_maj=True,
+                accurate_exp2=accurate_exp2 and self.exp != "instruction",
+                causal=self.causal,
+                window=self.window or 0,
+                packed=self.packed and self.window is not None,
+                emulate_bf16_mmul_with_bfp16=emulate and self.unmasked(),
+            )
+        finally:
+            linalg._make_extern = orig
 
     def reference(self, Q, K, V, s_q=None, s_kv=None, **kw):
         if not self.zero_keys:
@@ -204,6 +229,9 @@ class ImageMHA(MHA):
         return batched_matmul_pv, [*args, kernel]
 
 
+EXP = ["mid"]  # ImageMHA.exp of attention(): the cubic on one bf16 limb (kernels/exp2_mid.h, design.md 16.207)
+
+
 def attention(q, k, v, *, d: int, qk_bfp16: bool = True, pv_bfp16: bool = False, zero_keys: int = 0):
     """Unmasked multi-head attention of (rows, heads, d) q, k and v, interleaved as projections
     write them, on eight pipelines: ImageMHA at d = 128 (B_q 32, P*V on two cores), else MHA.
@@ -214,12 +242,13 @@ def attention(q, k, v, *, d: int, qk_bfp16: bool = True, pv_bfp16: bool = False,
             raise ValueError("zero_keys: ImageMHA's, at d = 128")
         return ImageMHA.step(q, k, v, heads_interleaved=True, kv_interleaved=True, causal=False,
                              num_pipelines=8, B_q=32, pv_cores=2, qk_bfp16=qk_bfp16, pv_bfp16=pv_bfp16,
-                             zero_keys=int(zero_keys))
+                             zero_keys=int(zero_keys), exp=EXP[0])
     if d != 128:
         return MHA.step(q, k, v, heads_interleaved=True, kv_interleaved=True, causal=False,
                         num_pipelines=8)
     return ImageMHA.step(q, k, v, heads_interleaved=True, kv_interleaved=True, causal=False,
-                         num_pipelines=8, B_q=32, pv_cores=2, qk_bfp16=qk_bfp16, pv_bfp16=pv_bfp16)
+                         num_pipelines=8, B_q=32, pv_cores=2, qk_bfp16=qk_bfp16, pv_bfp16=pv_bfp16,
+                         exp=EXP[0])
 
 
 def _check(argv=None) -> int:

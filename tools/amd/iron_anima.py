@@ -709,6 +709,20 @@ VAE_PAD = 16
 # "im2col" (a Copy gathers each pixel's 3 x 3 neighbours into rows 9 C wide, then one GEMM)
 VAE_CONV = ["grid"]
 VAE_TAP_ROWS = 64  # image rows a GridGEMM takes at once
+# flm.ProjectionGEMM gives each of its 8 columns of cores a tile of out-features (tile_n, 64 by
+# default): a convolution to 128 channels kept 2 columns busy and to 256 channels 4. gemm_tile_n
+# picks the widest tile that fills the 8 columns (16 for 128 channels, 32 for 256).
+VAE_TILE_N = [False]  # FLUX.2 klein's exports set it (iron_flux2klein.py); the other VAEs are not exported with it yet
+
+
+def gemm_tile_n(n: int):
+    """The n tile of a GEMM to n out-features (VAE_TILE_N): None is IRON's default."""
+    if not VAE_TILE_N[0]:
+        return None
+    for t in (64, 32, 16):
+        if n % t == 0 and n // t >= 8:
+            return t
+    return 16 if n % 16 == 0 else None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -914,7 +928,7 @@ class VaeStage(iron.Graph):
             from iron_gridgemm import GridGEMM
 
             R = max(r for r in range(16, min(VAE_TAP_ROWS, g.H) + 1, 16) if g.H % r == 0)
-            kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae)
+            kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae, tile_n=gemm_tile_n(cout))
             for r0 in range(0, g.H, R):
                 n = R * Wp
                 if self.has(f"{wname}.g"):
@@ -1000,7 +1014,7 @@ class VaeStage(iron.Graph):
         gout = GridShape(2 * g.H, 2 * g.W, cout)
         out = self.new_grid(gout)
         Wp, C = g.Wp, g.C
-        kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae)
+        kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae, tile_n=gemm_tile_n(cout))
         R = max(r for r in range(16, min(VAE_TAP_ROWS, g.H) + 1, 16) if g.H % r == 0)
         for r0 in range(0, g.H, R):
             n = R * Wp
@@ -1223,6 +1237,10 @@ def main(argv=None) -> int:
                     help="the VAE's 3 x 3 convolutions: GridGEMM on the grid in place (grid) or an im2col copy")
     ap.add_argument("--dit-mha", default=DIT_FMT.mha, choices=("qk", "qkpv", "bf16"),
                     help="the DiT's attention products: QK^T through bfp16 (qk), P*V too (qkpv), or both bf16")
+    ap.add_argument("--dit-exp", default="exact", choices=("exact", "mid", "instruction"),
+                    help="the DiT attention's softmax exponentials (iron_mha.ImageMHA.exp). exact here: with mid "
+                         "(the other image models' default) Anima-Turbo's 1024 x 1024 picture moved (latents 0.976 "
+                         "against exact's, the same seed) for 3 %% of a step; not judged against float32 yet")
     ap.add_argument("--dit-cross", default=DIT_FMT.cross, choices=("trim", "chunks"),
                     help="the DiT's cross-attention: one call over the prompt's text rows, the zero rows "
                          "counted (trim), or 512 patches a call over all 512 rows (chunks)")
@@ -1238,6 +1256,10 @@ def main(argv=None) -> int:
     ARGS = a = ap.parse_args(argv)
     PREC.text, PREC.dit, PREC.vae = Precision(a.text_precision), Precision(a.dit_precision), Precision(a.vae_precision)
     DIT_FMT.attn, DIT_FMT.mlp, DIT_FMT.mha, DIT_FMT.gelu = a.dit_attn, a.dit_mlp, a.dit_mha, a.dit_gelu
+    if a.dit_exp:
+        import iron_mha
+
+        iron_mha.EXP[0] = a.dit_exp
     DIT_FMT.cross = a.dit_cross
     VAE_CONV[0] = a.vae_conv
     if (a.dit_attn, a.dit_mlp) != ("bf16", "bf16"):

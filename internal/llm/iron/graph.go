@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -97,10 +98,31 @@ type Graph struct {
 	runs []*hwnpu.Run
 	// barrier (GraphOptions.Barrier): the ELF loaded again and its empty command
 	barrier     bool
+	lent        map[string]bool // the kinds whose buffers GraphOptions.Buffers lent (not closed)
 	barrierProg *hwnpu.Program
 	barrierRun  *hwnpu.Run
 	// Timing, when set, is told each command's run time.
 	Timing func(command int, run time.Duration)
+	// After, when set, is called after each command of Run, before the next: a host step
+	// between two commands, which reads and writes the graph's named buffers (Named). An
+	// error ends the Run.
+	After func(command int) error
+}
+
+// Named returns the host view of the buffer the export placed under name (a state the graph
+// was given a name for: manifest's buffers), and syncs of it from and to the device.
+func (g *Graph) Named(name string) (b []byte, fromDevice, toDevice func() error, err error) {
+	p, ok := g.v.m.Buffers[name]
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("iron: %s: no buffer %s", g.Manifest.Name, name)
+	}
+	buf := g.buffer(p.Argument)
+	if buf == nil || p.Offset+p.Bytes > buf.Size() {
+		return nil, nil, nil, fmt.Errorf("iron: %s: buffer %s is outside %s", g.Manifest.Name, name, p.Argument)
+	}
+	return buf.Bytes()[p.Offset : p.Offset+p.Bytes],
+		func() error { return buf.SyncFromDevice(p.Offset, p.Bytes) },
+		func() error { return buf.SyncToDevice(p.Offset, p.Bytes) }, nil
 }
 
 // Prefetch is the image pipelines' GraphOptions.Prefetch: on unless HWNPU_IRON_PREFETCH=0.
@@ -132,6 +154,33 @@ type GraphOptions struct {
 	// keys and values into the causal cache from start) hung the next Run's first command
 	// (ERT_CMD_STATE_TIMEOUT); the first Run is always right.
 	Barrier bool
+	// Buffers lends device buffers by bank or argument kind (each at least as large as the
+	// kind's): the graph uses them instead of allocating its own and does not close them. A
+	// bank's is filled from its image and zeroed past it (the states a graph expects zero);
+	// an argument's is taken as it is. Allocating a device buffer pins and zeroes its pages in
+	// the kernel, 0.33 s a GiB, and closing it 0.11 s a GiB: a VAE's stages, each a graph with
+	// work areas of 1 to 3 GiB, share one (anima.VAE). Not with variants.
+	Buffers map[string]*hwnpu.Buffer
+}
+
+// ClearParallel zeroes b on several threads (a lent bank's work area: GiBs).
+func ClearParallel(b []byte) {
+	const part = 64 << 20
+	if len(b) <= part {
+		clear(b)
+		return
+	}
+	n := min(8, (len(b)+part-1)/part)
+	step := (len(b)/n + 4095) &^ 4095
+	var wg sync.WaitGroup
+	for o := 0; o < len(b); o += step {
+		wg.Add(1)
+		go func(c []byte) {
+			defer wg.Done()
+			clear(c)
+		}(b[o:min(o+step, len(b))])
+	}
+	wg.Wait()
 }
 
 // OpenGraph loads the graph exported in dir onto dev.
@@ -160,25 +209,45 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 		g.prefetch = opt.Prefetch
 		images = images[:1]
 	}
+	lent := func(kind string, n int) *hwnpu.Buffer {
+		if b := opt.Buffers[kind]; b != nil && b.Size() >= n && len(images) == 1 && !g.swapped {
+			if g.lent == nil {
+				g.lent = map[string]bool{}
+			}
+			g.lent[kind] = true
+			return b
+		}
+		return nil
+	}
 	for i, img := range images {
 		banks := map[string]*hwnpu.Buffer{}
 		g.variants = append(g.variants, banks)
 		for kind, b := range man.Banks {
-			buf, err := dev.AllocBuffer(max(b.Bytes, 4096))
-			if err != nil {
-				return fail(fmt.Errorf("bank %s (%d MiB): %w", kind, b.Bytes>>20, err))
+			need := max(b.Bytes, 4096)
+			buf := lent(kind, need)
+			own := buf == nil
+			if own {
+				var err error
+				if buf, err = dev.AllocBuffer(need); err != nil {
+					return fail(fmt.Errorf("bank %s (%d MiB): %w", kind, b.Bytes>>20, err))
+				}
 			}
 			banks[kind] = buf
 			name := b.Image
 			if s, ok := img[kind]; ok {
 				name = s
 			}
+			read := 0
 			if name != "" {
-				if err := readInto(filepath.Join(dir, name), buf.Bytes()); err != nil {
+				var err error
+				if read, err = readPrefix(filepath.Join(dir, name), buf.Bytes()[:need]); err != nil {
 					return fail(fmt.Errorf("variant %d: bank %s: %w", i, kind, err))
 				}
 			}
-			if err := buf.SyncToDevice(0, buf.Size()); err != nil {
+			if !own { // what the graph before left there
+				ClearParallel(buf.Bytes()[read:need])
+			}
+			if err := buf.SyncToDevice(0, need); err != nil {
 				return fail(err)
 			}
 		}
@@ -207,9 +276,11 @@ func OpenGraphWith(ctx context.Context, dev *hwnpu.Device, dir string, opt Graph
 		if _, ok := g.banks[a.Kind]; ok {
 			continue
 		}
-		buf, err := dev.AllocBuffer(max(a.Bytes, 4096))
-		if err != nil {
-			return fail(fmt.Errorf("argument %s: %w", a.Kind, err))
+		buf := lent(a.Kind, max(a.Bytes, 4096))
+		if buf == nil {
+			if buf, err = dev.AllocBuffer(max(a.Bytes, 4096)); err != nil {
+				return fail(fmt.Errorf("argument %s: %w", a.Kind, err))
+			}
 		}
 		v.args[a.Kind] = buf
 	}
@@ -296,16 +367,20 @@ func (g *Graph) Close() error {
 		g.barrierProg = nil
 	}
 	if v := g.v; v != nil {
-		for _, b := range v.args {
-			errs = append(errs, b.Close())
+		for kind, b := range v.args {
+			if !g.lent[kind] {
+				errs = append(errs, b.Close())
+			}
 		}
 		if v.prog != nil {
 			errs = append(errs, v.prog.Close())
 		}
 	}
 	for _, banks := range g.variants {
-		for _, b := range banks {
-			errs = append(errs, b.Close())
+		for kind, b := range banks {
+			if !g.lent[kind] {
+				errs = append(errs, b.Close())
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -355,17 +430,53 @@ func (g *Graph) Use(i int) error {
 }
 
 // readPrefix reads the file at path into the start of dst and returns how many bytes it read.
+// A large file is read by several threads: a bank's image comes from the page cache, a copy a
+// thread makes at 5 to 7 GB/s (a DiT's groups are read again every step: FLUX.2 klein's 3.9 GB
+// took 0.55 s a step on one thread).
 func readPrefix(path string, dst []byte) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
 	}
 	defer f.Close()
-	n, err := io.ReadFull(f, dst)
-	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-		err = nil
+	const part = 32 << 20
+	n := len(dst)
+	if st, err := f.Stat(); err == nil && st.Size() < int64(n) {
+		n = int(st.Size())
 	}
-	return n, err
+	if n <= part {
+		n, err := io.ReadFull(f, dst)
+		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+			err = nil
+		}
+		return n, err
+	}
+	threads := min(8, (n+part-1)/part)
+	step := (n/threads + 4095) &^ 4095
+	errs := make([]error, threads)
+	var wg sync.WaitGroup
+	for t := 0; t < threads; t++ {
+		lo, hi := t*step, min((t+1)*step, n)
+		if lo >= hi {
+			break
+		}
+		wg.Add(1)
+		go func(t, lo, hi int) {
+			defer wg.Done()
+			for o := lo; o < hi; {
+				k, err := f.ReadAt(dst[o:hi], int64(o))
+				o += k
+				if err != nil {
+					if o < hi {
+						errs[t] = fmt.Errorf("%s: read at %d: %w", path, o, err)
+					}
+					return
+				}
+			}
+		}(t, lo, hi)
+	}
+	wg.Wait()
+	return n, errors.Join(errs...)
 }
 
 func (g *Graph) buffer(kind string) *hwnpu.Buffer {
@@ -495,6 +606,11 @@ func (g *Graph) Run(ctx context.Context, values map[string]int64) error {
 		}
 		if err != nil {
 			return fmt.Errorf("iron: %s: command %d: %w", g.Manifest.Name, k, err)
+		}
+		if g.After != nil {
+			if err := g.After(k); err != nil {
+				return fmt.Errorf("iron: %s: after command %d: %w", g.Manifest.Name, k, err)
+			}
 		}
 	}
 	return nil
