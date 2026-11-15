@@ -22,9 +22,12 @@ import (
 // chunk) is each summary's softmax summed over the rows of its kv head.
 
 // BuildMass writes the mass program for tokens query rows over a chunk of summaries into b and
-// returns its inputs and outputs. The form is the attention program's (Build).
+// returns its inputs and outputs. The form is the attention program's (Build), grouped for Heads.
 func BuildMass(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins, outs []mlpackage.Feature, err error) {
 	nh, nkv, d := sh.Heads, sh.KVHeads, sh.HeadDim
+	if form == Heads {
+		form = "grouped"
+	}
 	if form != "grouped" && form != "tile" {
 		return nil, nil, fmt.Errorf("paged: attention form %q is not grouped or tile", form)
 	}

@@ -11,7 +11,7 @@ import (
 func parse(t *testing.T, args ...string) (*cli, string) {
 	t.Helper()
 	var c cli
-	p, err := kong.New(&c, kong.Vars{"models_usage": chat.ModelsUsage, "tiers": chat.DefaultTiers,
+	p, err := kong.New(&c, kong.Vars{"models_usage": chat.ModelsUsage,
 		"embed_seqs": ints(chat.DefaultEmbedSeqs), "mtp": chat.MTPAuto})
 	if err != nil {
 		t.Fatal(err)
@@ -41,8 +41,18 @@ func TestParse(t *testing.T) {
 		t.Errorf("opencode: %+v", c.OpenCode)
 	}
 	c, _ = parse(t, "serve", "-m", "LFM3-1.7B,plamo-embedding-1b", "--no-sparse")
-	if c.Serve.Listen != "127.0.0.1:8080" || c.Serve.Sparse || c.Serve.Tier != chat.DefaultTiers {
+	// --tier not given: the model's definition, else auto (loadChat)
+	if c.Serve.Listen != "127.0.0.1:8080" || c.Serve.Sparse || c.Serve.Tier != nil {
 		t.Errorf("serve: %+v", c.Serve)
+	}
+	// given, also as nothing (no shorter caches)
+	c, _ = parse(t, "chat", "--tier", "2048", "hello")
+	if c.Chat.Tier == nil || *c.Chat.Tier != "2048" {
+		t.Errorf("--tier 2048: %v", c.Chat.Tier)
+	}
+	c, _ = parse(t, "chat", "--tier=", "hello")
+	if c.Chat.Tier == nil || *c.Chat.Tier != "" {
+		t.Errorf("--tier=: %v", c.Chat.Tier)
 	}
 }
 

@@ -40,6 +40,10 @@ type Manifest struct {
 	// (internal/llm/paged); Cache is then the longest sequence the host's cache holds.
 	Paged     int         `json:"paged,omitempty"`
 	Attention *PartRecord `json:"attention,omitempty"`
+	// AttnForm is the form Attention and Smaller are written in when it is not the model's
+	// (grouped or tile): paged.Heads for Core AI (attentionForm). A manifest from before it has
+	// the model's, and RefreshAttention writes the programs again.
+	AttnForm string `json:"attention_form,omitempty"`
 	// Mass is the program without weights that weighs one chunk of bucket summaries for the
 	// two-level attention (decode.Sparse, paged.BuildMass), of a model split at its attention.
 	// Conversions before it have none (AddMass).

@@ -420,13 +420,22 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		progs[0] = prog{seq: s.Draft}
 	}
 	tiers := s.Tiers
+	// rings: the shorter caches are of programs split at their attention too, for a short
+	// context (ringTiers), not of whole programs
+	rings := false
 	switch {
 	case chunk > 0 && backend == llm.BackendCoreAI:
-		// whole programs with short caches (inside) before the one split at its attention: a
-		// step in fewer calls while the conversation is short (wholeTiers)
+		// programs with shorter caches before the ones split at the attention with the model's
+		// context: of a model whose other layers see a window, the same programs for a short
+		// context, their caches shorter than the window's rings (ringTiers); of another, whole
+		// programs (their caches inside), a step in fewer calls (wholeTiers)
 		if slices.Contains(tiers, TierAuto) {
-			gen, _ := programBytes(model, format, false)
-			tiers = wholeTiers(model, gen)
+			if tiers = ringTiers(model); len(tiers) > 0 {
+				rings = true
+			} else {
+				gen, _ := programBytes(model, format, false)
+				tiers = wholeTiers(model, gen)
+			}
 		}
 	case chunk > 0:
 		// the cost follows the tokens used, not the cache: no shorter caches to run on
@@ -485,7 +494,15 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		var outs, names []string
 		var ps []program
 		tkind, tchunk, tprogs := kind, chunk, progs
-		if hybrid && cache < context {
+		switch {
+		case hybrid && cache < context && rings:
+			// the same programs for the short context, in chunks of it at most
+			tchunk = min(chunk, cache)
+			tprogs = slices.Clone(progs)
+			for i := range tprogs {
+				tprogs[i].seq = min(tprogs[i].seq, tchunk)
+			}
+		case hybrid && cache < context:
 			tkind, tchunk = strings.Replace(kind, fmt.Sprintf("-p%d", chunk), "", 1), 0
 			tprogs = []prog{progs[0]}
 			if len(progs) > 1 {
@@ -577,6 +594,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				if err := llm.AddMass(path, form, scale); err != nil {
 					return Config{}, err
 				}
+				// the attention in the form the backend runs fastest, of a conversion from
+				// before it (Core AI: a kv head at a time), also without weights
+				if err := llm.RefreshAttention(path, form, scale); err != nil {
+					return Config{}, err
+				}
 				// the attention over shorter chunks, also without weights
 				if err := llm.AddSmaller(path, form, scale, shortestChunk(backend, s.Shortest)); err != nil {
 					return Config{}, err
@@ -621,7 +643,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if pm, ok := mm.(llm.Paged); ok && chunk > 0 {
 			// the layer's attention over shorter chunks too, as the model's (without weights):
 			// over the whole chunk it took 3 of its 9 ms a call (Qwen3.5-4B, docs/design.md 16.192)
-			if err := llm.AddSmaller(path, cmp.Or(ma.Param(llm.Options{}, "attn"), "grouped"), pm.PagedShape().Scale, shortestChunk(backend, s.Shortest)); err != nil {
+			mform := cmp.Or(ma.Param(llm.Options{}, "attn"), "grouped")
+			if err := llm.RefreshAttention(path, mform, pm.PagedShape().Scale); err != nil {
+				return Config{}, err
+			}
+			if err := llm.AddSmaller(path, mform, pm.PagedShape().Scale, shortestChunk(backend, s.Shortest)); err != nil {
 				return Config{}, err
 			}
 		}
@@ -832,6 +858,30 @@ const wholeLayerBytes = 4 << 20
 // others, or with a whole program of another cache, a whole program ran at half its speed,
 // docs/design.md 16.188). An M1 slows down about 12 times past 2.9 GiB (16.118).
 const wholeHold = 5 << 29 // 2.5 GiB
+
+// minRingTier is the shortest context worth programs of their own (ringTiers): a conversation
+// passes a shorter one at once.
+const minRingTier = 256
+
+// ringTiers is the context of the programs that a model whose other layers attend over a window
+// (llm.Windowed) runs on with Core AI while the conversation is short, before it moves to the
+// ones of the model's context (decode.Session.Migrate): a quarter of the window, when that is
+// minRingTier at least. A program is given its window layers' caches whole at every call, rings
+// of the window in the programs of the model's context: PLaMo 3 Translate 2B's 21 rings of 2048
+// are 84 MiB, and a step of them 76 ms on an M1 where the same programs for a context of 512
+// (21 MiB of caches) take 52 (docs/design.md 16.220). They are split at the attention as the
+// others and functions of the same Core AI programs, so the weights are held once. None for a
+// model without a window, or with a short one (Gemma 4's 512: a context of 256 runs no faster).
+func ringTiers(model llm.Model) []int {
+	w, ok := model.(llm.Windowed)
+	if _, paged := model.(llm.Paged); !ok || !paged {
+		return nil
+	}
+	if c := w.RingWindow() / 4; c >= minRingTier {
+		return []int{c}
+	}
+	return nil
+}
 
 // wholeSlower reports whether this machine runs the whole program slower than the one split at
 // its attention, so that a model has no whole programs (wholeTiers): an M1. Its Neural Engine

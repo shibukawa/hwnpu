@@ -171,7 +171,14 @@ func ModelsDir() string {
 // hwnpu-chat runs, whose config.json it downloads (RepoDir) to find out what the model is for.
 // What else such a model can do is not known. Only the model picked is downloaded.
 func Resolve(ctx context.Context, name string, log io.Writer) (Model, error) {
-	m, ok, err := lookupFor(name, log)
+	return ResolveOn(ctx, name, 0, log)
+}
+
+// ResolveOn is Resolve on a machine of machine GB (hwnpu-chat --memory): the model picked and
+// run as such a machine would, whatever memory is chosen for the model (ChosenMemory); 0 for this
+// machine's memory (MachineMemory) and the memory chosen.
+func ResolveOn(ctx context.Context, name string, machine int, log io.Writer) (Model, error) {
+	m, ok, err := lookupOn(name, machine, log)
 	if err != nil {
 		return Model{}, err
 	}
@@ -205,16 +212,33 @@ func Resolve(ctx context.Context, name string, log io.Writer) (Model, error) {
 }
 
 // lookupFor finds a model of the definitions a name means: by its name (or repository), or as
-// a family or a use (Pick, logged), each through the aliases, On the machine. ok is false for
-// none.
-func lookupFor(name string, log io.Writer) (Model, bool, error) {
+// a family or a use (Pick, logged), each through the aliases, On the machine, or on the memory
+// chosen for the model (ChosenMemory). ok is false for none.
+func lookupFor(name string, log io.Writer) (Model, bool, error) { return lookupOn(name, 0, log) }
+
+// lookupOn is lookupFor on a machine of machine GB, 0 for this one's (MachineMemory). A machine
+// given, or a tag of memory (lfm3:8g), runs the model as on it, whatever memory is chosen for it.
+func lookupOn(name string, machine int, log io.Writer) (Model, bool, error) {
+	given := machine > 0
+	if !given {
+		machine = MachineMemory()
+	}
 	if m, ok := Lookup(name); ok {
-		m = Alias(m, log).On(MachineMemory())
+		m = Alias(m, log)
+		m = m.On(runsAs(m, machine, given, log))
 		return m, true, Allowed(m) // named: refused, not replaced
 	}
-	m, why, ok, err := Pick(name, MachineMemory())
+	if _, tag, tagged := strings.Cut(name, ":"); tagged {
+		if _, ok := MemoryTag(tag); ok {
+			given = true
+		}
+	}
+	m, why, ok, err := Pick(name, machine)
 	if err != nil || !ok {
 		return Model{}, false, err
+	}
+	if gb := runsAs(m, machine, given, log); gb != machine {
+		m = byName(m.Name).On(gb)
 	}
 	if log != nil {
 		fmt.Fprintf(log, "%s: %s, %s (about %.1f GB running)\n", name, m.Name, why, m.MemoryFor(HereVendor()))

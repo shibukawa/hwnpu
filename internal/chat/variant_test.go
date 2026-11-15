@@ -13,7 +13,7 @@ func TestBuiltinVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, ok := Lookup("Qwen3-1.7B")
-	if !ok || m.Run.Prefill != PrefillOff || m.Memory != 4.5 || m.Variants[16].Run.Prefill != PrefillAuto {
+	if !ok || m.Run.Prefill != PrefillOff || m.Memory != 2.1 || m.Variants[16].Run.Prefill != PrefillAuto {
 		t.Fatalf("as defined: %+v", m)
 	}
 	for _, c := range []struct {
@@ -22,9 +22,9 @@ func TestBuiltinVariants(t *testing.T) {
 		memory         float64
 		family, tagged string // what qwen3 and qwen3:1.7b pick
 	}{
-		{8, PrefillOff, 4.5, "Qwen3-1.7B", "Qwen3-1.7B"},
-		{16, PrefillAuto, 7.6, "Qwen3-1.7B", "Qwen3-1.7B"},
-		{64, PrefillAuto, 7.6, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{8, PrefillOff, 2.1, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{16, PrefillAuto, 2.3, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{64, PrefillAuto, 2.3, "Qwen3-1.7B", "Qwen3-1.7B"},
 	} {
 		t.Setenv(MemoryEnv, strconv.Itoa(c.machine))
 		got, ok, err := lookupFor("Qwen3-1.7B", nil)
@@ -44,6 +44,52 @@ func TestBuiltinVariants(t *testing.T) {
 	}
 	if p, _, _, _ := Pick("qwen3:0.6b", 16); p.Name != "Qwen3-0.6B" || p.Run != (Run{}) {
 		t.Errorf("qwen3:0.6b: %s %+v", p.Name, p.Run)
+	}
+}
+
+// LFM3-1.7B and Qwen3.5-0.8B: no whole program of short conversations on 8 GB (tier none),
+// which would hold the weights a second time, and auto from 16 GB; the memory of 16 GB by the
+// chip, an M1 not loading that program.
+func TestBuiltinTier(t *testing.T) {
+	if err := LoadModels(nil, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer func(f func() string) { chipName = f }(chipName)
+	for _, c := range []struct {
+		name          string
+		machine       int
+		tier          string
+		m1, m3, other float64 // Apple's M1, an M3, AMD's
+	}{
+		{"LFM3-1.7B", 8, "none", 1.7, 1.7, 2.2},
+		{"LFM3-1.7B", 16, "auto", 1.7, 3.1, 2.2},
+		{"LFM3-1.7B", 64, "auto", 1.7, 3.1, 2.2},
+		{"Qwen3.5-0.8B", 8, "none", 1.5, 1.5, 1.5},
+		{"Qwen3.5-0.8B", 16, "auto", 1.5, 2.3, 1.5},
+	} {
+		t.Setenv(MemoryEnv, strconv.Itoa(c.machine))
+		got, ok, err := lookupFor(c.name, nil)
+		if !ok || err != nil || got.Run.Tier != c.tier {
+			t.Fatalf("%s on %d GB: tier %q (%v), want %q", c.name, c.machine, got.Run.Tier, err, c.tier)
+		}
+		chipName = func() string { return "M1" }
+		m1 := got.MemoryFor("apple")
+		chipName = func() string { return "M3" }
+		if m3, amd := got.MemoryFor("apple"), got.MemoryFor("amd"); m1 != c.m1 || m3 != c.m3 || amd != c.other {
+			t.Errorf("%s on %d GB: memory %v on an M1, %v on an M3, %v on AMD's; want %v, %v, %v", c.name, c.machine, m1, m3, amd, c.m1, c.m3, c.other)
+		}
+	}
+	// a tier is auto, none or a list of caches
+	for _, bad := range []string{`""`, "short", "0", "-4"} {
+		if _, err := userFiles(t, "version: 1\nmodels:\n  LFM3-1.7B:\n    tier: "+bad+"\n"); err == nil {
+			t.Errorf("tier: %s was taken", bad)
+		}
+	}
+	if _, err := userFiles(t, "version: 1\nmodels:\n  LFM3-1.7B:\n    tier: \"512,2048\"\n    variants:\n      16: {tier: none}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := Lookup("LFM3-1.7B"); m.Run.Tier != "512,2048" || m.On(16).Run.Tier != "none" || m.On(16).MemoryFor("amd") != 2.2 {
+		t.Errorf("a file of the user's: %+v, on 16 GB %+v", m.Run, m.On(16).Run)
 	}
 }
 
@@ -105,7 +151,7 @@ models:
 		t.Errorf("on 32 GB: %+v", got)
 	}
 	d, _ := Lookup("my-qwen")
-	if d.Run != (Run{Prefill: PrefillOff, Format: "lut6", Paged: 1024}) || len(d.Variants) != 2 || d.Memory != 4.5 {
+	if d.Run != (Run{Prefill: PrefillOff, Format: "lut6", Paged: 1024}) || len(d.Variants) != 2 || d.Memory != 2.1 {
 		t.Errorf("like: %+v %+v %v", d.Run, d.Variants, d.Memory)
 	}
 }
