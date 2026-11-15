@@ -216,15 +216,15 @@ func writeAIPaged(man *Manifest, a *Arch, pm Paged, out string, o Options) error
 		form = "tile"
 	}
 	sh := pm.PagedShape()
-	apath := out + ".attn.aimodel"
-	_, ins, outs, err := writeAI(apath, map[string]string{MetaDescription: fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-dev convert)", a.Title, o.Paged, o.Seq, form)},
-		func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
-			return paged.Build(b, sh, form, o.Seq, o.Paged)
-		})
+	arec, err := writeAttention(out+".attn", BackendCoreAI, sh, form, o.Seq, o.Paged, a.Title)
 	if err != nil {
 		return err
 	}
-	man.Attention = &PartRecord{Path: apath, Inputs: records(ins...), Output: records(outs[0])[0], State: records(outs[1:]...)}
+	man.Attention = arec
+	if af := attentionForm(BackendCoreAI, form, sh); af != form {
+		man.AttnForm = af
+	}
+	var ins, outs []mlpackage.Feature
 	mpath := out + ".mass.aimodel"
 	_, ins, outs, err = writeAI(mpath, map[string]string{MetaDescription: fmt.Sprintf("%s weights of a chunk of %d bucket summaries, %d per call, %s (hwnpu-dev convert)", a.Title, o.Paged, o.Seq, form)},
 		func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {

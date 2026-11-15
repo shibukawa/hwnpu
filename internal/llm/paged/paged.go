@@ -13,11 +13,14 @@
 // Core ML puts the forms with little work on the CPU: on an M3 and an M4 (macOS 27.0.1), the
 // grouped form with 1 query row stays off the Neural Engine up to chunks of 8192, with 8 rows up
 // to 2048; 64 rows are on it from 1024. Chunks of 8192 take 8 and 64 rows on the Neural Engine.
+//
+// Core AI runs a third form faster, a kv head at a time (Heads).
 package paged
 
 import (
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
@@ -30,6 +33,17 @@ type Shape struct {
 	Scale float64
 }
 
+// Heads is the form of the attention program that Core AI runs fastest on the Neural Engine: a
+// kv head at a time, its scores laid out (1, rows, 1, keys) with the reductions over the last
+// axis, the scale on the queries and the sum of the exps a reduce_sum (which Core ML placed
+// unsteadily, Build). As the image models' attention (docs/design.md 16.202), for the few query
+// rows of a language model's step. On an M1 a call of LFM3-1.7B's 8 rows over a chunk of 1024,
+// 4096 and 8192 keys takes 0.47, 0.80 and 1.23 ms against the grouped form's 0.55, 0.94 and
+// 1.45; of 128 rows, 1.09, 3.14 and 6.18 against 1.26, 4.16 and 8.22. With one kv head for all
+// the heads (Gemma 4 E2B, PLaMo 3 Translate 0.8B) the program leaves the Neural Engine: the
+// grouped form is theirs (docs/design.md 16.219).
+const Heads = "heads"
+
 // DefaultChunk is the chunk length hwnpu-chat converts with: 8 and 64 query rows are on the
 // Neural Engine, 8 rows at their fastest per key (1.09 ms per 1K over 6 layers on an M3), and the
 // host's merge is a few percent of a step.
@@ -37,14 +51,14 @@ const DefaultChunk = 8192
 
 // Build writes the program for tokens query rows over a chunk of the given length into b and
 // returns its inputs and outputs. form is "grouped" (the query heads of a kv head stacked along
-// the rows of one matrix product, as blocks.SDPAGrouped) or "tile" (the keys and values copied for
-// each query head, as blocks.SDPA). The sum of the exps is a matrix product with ones, as
-// blocks.ChunkedSDPA takes it: a reduce_sum made the placement of 64 rows per call change from
-// one compile to the next.
+// the rows of one matrix product, as blocks.SDPAGrouped), "tile" (the keys and values copied for
+// each query head, as blocks.SDPA) or Heads. The sum of the exps of the first two is a matrix
+// product with ones, as blocks.ChunkedSDPA takes it: a reduce_sum made the placement of 64 rows
+// per call change from one compile to the next (Core ML).
 func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins, outs []mlpackage.Feature, err error) {
 	nh, nkv, d := sh.Heads, sh.KVHeads, sh.HeadDim
-	if form != "grouped" && form != "tile" {
-		return nil, nil, fmt.Errorf("paged: attention form %q is not grouped or tile", form)
+	if form != "grouped" && form != "tile" && form != Heads {
+		return nil, nil, fmt.Errorf("paged: attention form %q is not grouped, tile or %s", form, Heads)
 	}
 	if tokens < 1 || chunk < 1 || nh < 1 || nkv < 1 || d < 1 || nh%nkv != 0 {
 		return nil, nil, fmt.Errorf("paged: %d tokens over a chunk of %d with %d heads on %d kv heads of %d", tokens, chunk, nh, nkv, d)
@@ -93,25 +107,72 @@ func Build(b *mlpackage.Builder, sh Shape, form string, tokens, chunk int) (ins,
 		return reshape(x, 1, nh, c, d)
 	}
 	grouped := form == "grouped" && rep > 1
-	var sc *mlpackage.Var
-	if grouped {
-		sc = reshape(matmul(reshape(q, 1, nkv, rep*s, d), k, true, 1, nkv, rep*s, c), 1, nh, s, c)
+	var o, m, l *mlpackage.Var
+	if form == Heads {
+		// a kv head at a time: the rows of its query heads (1, 1, n, d) over its keys, the scores
+		// (1, n, 1, c). The scale is on the queries, a pass over them instead of one over the
+		// scores
+		n := rep * s
+		slice := func(x *mlpackage.Var, axis, lo, hi int) *mlpackage.Var {
+			begin, end := make([]int32, len(x.Shape)), make([]int32, len(x.Shape))
+			out := slices.Clone(x.Shape)
+			for i, dim := range x.Shape {
+				end[i] = int32(dim)
+			}
+			begin[axis], end[axis], out[axis] = int32(lo), int32(hi), hi-lo
+			return op("slice_by_index", map[string]any{"x": x, "begin": b.Ints(begin...), "end": b.Ints(end...)}, out...)
+		}
+		cat := func(xs []*mlpackage.Var, last int) *mlpackage.Var {
+			if len(xs) == 1 {
+				return xs[0]
+			}
+			return op("concat", map[string]any{"values": xs, "axis": b.ScalarI32(1), "interleave": b.ScalarBool(false)}, 1, len(xs), n, last)
+		}
+		q = op("mul", map[string]any{"x": q, "y": scale}, 1, nh, s, d)
+		// the mask of the rows of a kv head's query heads, head after head: (1, n, 1, c)
+		mk := reshape(mask, 1, s, 1, c)
+		if rep > 1 {
+			ms := make([]*mlpackage.Var, rep)
+			for i := range ms {
+				ms[i] = mk
+			}
+			mk = op("concat", map[string]any{"values": ms, "axis": b.ScalarI32(1), "interleave": b.ScalarBool(false)}, 1, n, 1, c)
+		}
+		var os, ms, ls []*mlpackage.Var
+		for g := range nkv {
+			qg, kg, vg := q, k, v
+			if nkv > 1 {
+				qg, kg, vg = slice(q, 1, g*rep, (g+1)*rep), slice(k, 1, g, g+1), slice(v, 1, g, g+1)
+			}
+			sc := reshape(matmul(reshape(qg, 1, 1, n, d), kg, true, 1, 1, n, c), 1, n, 1, c)
+			sc = op("add", map[string]any{"x": sc, "y": mk}, 1, n, 1, c)
+			mg := op("reduce_max", map[string]any{"x": sc, "axes": b.Ints(3), "keep_dims": b.ScalarBool(true)}, 1, n, 1, 1)
+			e := op("exp", map[string]any{"x": op("sub", map[string]any{"x": sc, "y": mg}, 1, n, 1, c)}, 1, n, 1, c)
+			lg := reshape(op("reduce_sum", map[string]any{"x": e, "axes": b.Ints(3), "keep_dims": b.ScalarBool(true)}, 1, n, 1, 1), 1, 1, n, 1)
+			og := op("real_div", map[string]any{"x": matmul(reshape(e, 1, 1, n, c), vg, false, 1, 1, n, d), "y": lg}, 1, 1, n, d)
+			os, ms, ls = append(os, og), append(ms, reshape(mg, 1, 1, n, 1)), append(ls, lg)
+		}
+		o, m, l = reshape(cat(os, d), 1, nh, s, d), reshape(cat(ms, 1), rows...), reshape(cat(ls, 1), rows...)
 	} else {
-		k, v = tile(k), tile(v)
-		sc = matmul(q, k, true, 1, nh, s, c)
-	}
-	sc = op("add", map[string]any{"x": op("mul", map[string]any{"x": sc, "y": scale}, 1, nh, s, c), "y": mask}, 1, nh, s, c)
-	m := op("reduce_max", map[string]any{"x": sc, "axes": b.Ints(3), "keep_dims": b.ScalarBool(true)}, rows...)
-	e := op("exp", map[string]any{"x": op("sub", map[string]any{"x": sc, "y": m}, 1, nh, s, c)}, 1, nh, s, c)
-	var o, l *mlpackage.Var
-	if grouped {
-		e = reshape(e, 1, nkv, rep*s, c)
-		l = matmul(e, one, false, 1, nkv, rep*s, 1)
-		o = op("real_div", map[string]any{"x": matmul(e, v, false, 1, nkv, rep*s, d), "y": l}, 1, nkv, rep*s, d)
-		o, l = reshape(o, 1, nh, s, d), reshape(l, rows...)
-	} else {
-		l = matmul(e, one, false, rows...)
-		o = op("real_div", map[string]any{"x": matmul(e, v, false, 1, nh, s, d), "y": l}, 1, nh, s, d)
+		var sc *mlpackage.Var
+		if grouped {
+			sc = reshape(matmul(reshape(q, 1, nkv, rep*s, d), k, true, 1, nkv, rep*s, c), 1, nh, s, c)
+		} else {
+			k, v = tile(k), tile(v)
+			sc = matmul(q, k, true, 1, nh, s, c)
+		}
+		sc = op("add", map[string]any{"x": op("mul", map[string]any{"x": sc, "y": scale}, 1, nh, s, c), "y": mask}, 1, nh, s, c)
+		m = op("reduce_max", map[string]any{"x": sc, "axes": b.Ints(3), "keep_dims": b.ScalarBool(true)}, rows...)
+		e := op("exp", map[string]any{"x": op("sub", map[string]any{"x": sc, "y": m}, 1, nh, s, c)}, 1, nh, s, c)
+		if grouped {
+			e = reshape(e, 1, nkv, rep*s, c)
+			l = matmul(e, one, false, 1, nkv, rep*s, 1)
+			o = op("real_div", map[string]any{"x": matmul(e, v, false, 1, nkv, rep*s, d), "y": l}, 1, nkv, rep*s, d)
+			o, l = reshape(o, 1, nh, s, d), reshape(l, rows...)
+		} else {
+			l = matmul(e, one, false, rows...)
+			o = op("real_div", map[string]any{"x": matmul(e, v, false, 1, nh, s, d), "y": l}, 1, nh, s, d)
+		}
 	}
 	for _, x := range []struct {
 		name string
