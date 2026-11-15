@@ -32,16 +32,28 @@ type ProgramManifest struct {
 	Formats map[string]string `json:"formats"`
 	Dit     DitConfig         `json:"dit"`
 	Text    TextConfig        `json:"text"`
-	// TextParts are Gemma 2's groups of layers, in order; the last ends with the final norm.
+	// TextParts are Gemma 2's groups of layers, in order; the last ends with the final norm. They
+	// run Text.Rows rows from the first.
 	TextParts []string `json:"text_parts"`
-	Caption   string   `json:"caption"`
-	Time      string   `json:"time"`   // TimeFile
-	Blocks    []string `json:"blocks"` // the DiT's groups of blocks, in order
-	Final     string   `json:"final"`
-	Vae       []string `json:"vae"` // the VAE's stages, in order
+	// TextFrom, in an export whose programs hold the instruction's first Text.Prefix rows (Core
+	// AI's), are their functions for the rows after those, the shortest first: a prompt after
+	// the instruction runs the first that holds its rows.
+	TextFrom []TextFunc `json:"text_from,omitempty"`
+	Caption  string     `json:"caption"`
+	Time     string     `json:"time"`   // TimeFile
+	Blocks   []string   `json:"blocks"` // the DiT's groups of blocks, in order
+	Final    string     `json:"final"`
+	Vae      []string   `json:"vae"` // the VAE's stages, in order
 	// Sizes, in an export of several sizes (Core AI's), are the parts of each that depend on the
 	// size (functions of the same programs); Dit, Blocks, Final and Vae are one of them.
 	Sizes []SizeParts `json:"sizes,omitempty"`
+}
+
+// TextFunc is Gemma 2's programs for Rows rows after the held ones: a function of each of
+// TextParts' programs, in their order.
+type TextFunc struct {
+	Rows  int      `json:"rows"`
+	Parts []string `json:"parts"`
 }
 
 // SizeParts are the parts of an export for pictures of Width x Height.
@@ -125,6 +137,8 @@ type progEngine struct {
 	blks []runner.Program
 	// loader, when set, loads the programs in place of runner.Open (tests)
 	loader runner.OpenFunc
+	// ahead: Gemma 2's programs load one ahead (runner.Ahead: Core AI)
+	ahead bool
 }
 
 func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
@@ -138,7 +152,7 @@ func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*prog
 	if err := m.At(w, h); err != nil {
 		return nil, m.Dit, m.Text, err
 	}
-	return &progEngine{m: m, dir: dir, dev: dev, log: log}, m.Dit, m.Text, nil
+	return &progEngine{m: m, dir: dir, dev: dev, log: log, ahead: runner.Ahead(dev)}, m.Dit, m.Text, nil
 }
 
 // open loads one program, on the device unless it is nil, and fails unless it runs on the NPU
@@ -186,36 +200,82 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 type textPart struct{ e *progEngine }
 
 func (t textPart) run(ctx context.Context, x []float32, start int) ([]float32, error) {
-	if start != 0 {
-		return nil, fmt.Errorf("sana: a Core ML export runs the prompt from its start, not %d", start)
-	}
-	ys, err := t.runAll(ctx, [][]float32{x})
+	ys, err := t.runAll(ctx, [][]float32{x}, []int{start})
 	if err != nil {
 		return nil, err
 	}
 	return ys[0], nil
 }
 
-// runAll runs each x of xs (a prompt's rows, from its start) through Gemma 2's programs: a program
-// is loaded once for all of them.
-func (t textPart) runAll(ctx context.Context, xs [][]float32) ([][]float32, error) {
-	xs = append([][]float32(nil), xs...)
-	for _, name := range t.e.m.TextParts {
-		p, err := t.e.open(ctx, name)
+// runAll runs each x of xs through Gemma 2's programs: the rows of a prompt from position
+// starts[k] on (hidden values each; fewer than a program takes are followed by zeros), which is
+// 0, or the rows the programs hold (Text.Prefix). The output is as many rows as the program that
+// ran it takes. A program is loaded once for all the prompts it runs: those from 0 run the
+// programs over every row, the others the shortest of TextFrom that holds their rows.
+func (t textPart) runAll(ctx context.Context, xs [][]float32, starts []int) ([][]float32, error) {
+	m := t.e.m
+	E := m.Text.Hidden
+	// the prompts of each function
+	type fn struct {
+		rows  int
+		parts []string
+		ks    []int
+	}
+	fns := append([]fn{{rows: m.Text.Rows, parts: m.TextParts}}, make([]fn, len(m.TextFrom))...)
+	for i, f := range m.TextFrom {
+		fns[1+i] = fn{rows: f.Rows, parts: f.Parts}
+	}
+	for k, x := range xs {
+		f := -1
+		switch {
+		case starts[k] == 0:
+			f = 0
+		case starts[k] == m.Text.Prefix && len(m.TextFrom) > 0:
+			for i, tf := range m.TextFrom {
+				if len(x) <= tf.Rows*E {
+					f = 1 + i
+					break
+				}
+			}
+		default:
+			return nil, fmt.Errorf("sana: the programs run a prompt from its first row or from row %d, not from %d", m.Text.Prefix, starts[k])
+		}
+		if f < 0 || len(x) > fns[f].rows*E {
+			return nil, fmt.Errorf("sana: %d rows from %d, more than the programs take", len(x)/E, starts[k])
+		}
+		fns[f].ks = append(fns[f].ks, k)
+	}
+	ys := make([][]float32, len(xs))
+	for _, f := range fns {
+		if len(f.ks) == 0 {
+			continue
+		}
+		hs := make([][]float32, len(f.ks))
+		for j, k := range f.ks {
+			hs[j] = make([]float32, f.rows*E)
+			copy(hs[j], xs[k])
+		}
+		// on Core AI the next program loads while this one runs: a short function runs a prompt
+		// in 0.04 s, and its program loads in 0.02 s, or in 0.2 s when its weights' pages are
+		// not in memory (design.md 16.224)
+		err := runner.InTurn(ctx, f.parts, t.e.ahead, t.e.open, func(_ int, p runner.Program) error {
+			for j := range hs {
+				y, err := p.Run(ctx, map[string][]float32{"x": hs[j]})
+				if err != nil {
+					return err
+				}
+				hs[j] = y
+			}
+			return nil
+		})
 		if err != nil {
 			return nil, err
 		}
-		for k := range xs {
-			if xs[k], err = p.Run(ctx, map[string][]float32{"x": xs[k]}); err != nil {
-				break
-			}
-		}
-		p.Close()
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
+		for j, k := range f.ks {
+			ys[k] = hs[j]
 		}
 	}
-	return xs, nil
+	return ys, nil
 }
 
 func (t textPart) close() error { return nil }

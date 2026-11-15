@@ -3,8 +3,10 @@ package sana
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,14 +15,37 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/sana/mil"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
+	"github.com/shibukawa/hwnpu/internal/tokenizer"
 )
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
 // again. 2: the time embedding on the host (TimeFile); 3: Gemma 2's GELU written with exp and
 // real_div (mil.Text); 4: the caption's second linear scaled down (mil.Caption); 5: the
 // cross-attention's keys and values once a prompt (mil.Caption gives them, mil.Blocks takes
-// them), Core AI's exports of several sizes (Sizes), the VAE's channel repeat as a convolution.
-const ExportVersion = 5
+// them), Core AI's exports of several sizes (Sizes), the VAE's channel repeat as a convolution;
+// 6: Core AI's Gemma 2 programs hold the instruction's first rows as keys and values and have
+// functions for the rows after them (mil.TextFrom, ProgramManifest.TextFrom).
+const ExportVersion = 6
+
+// DitVersion is the oldest ExportVersion whose programs but Gemma 2's are those of this one: an
+// export of it gives them to a new export (Prepare), which then converts Gemma 2 alone.
+const DitVersion = 5
+
+// TextFunction is the function of a Core AI Gemma 2 program that runs rows rows after the held
+// ones (mil.TextFrom); WholeFunction the one that runs every row from the first (mil.Text).
+func TextFunction(rows int) string { return fmt.Sprintf("from%d", rows) }
+
+// WholeFunction is the function of a Core AI Gemma 2 program over all its rows.
+const WholeFunction = "whole"
+
+// HeldFile and HeldOutFile are, in an export whose Gemma 2 programs hold the instruction's first
+// rows (TextConfig.Prefix): those rows' tokens, as JSON ({"prefix": [...]}), and their last hidden
+// states, float32 rows of the hidden width.
+const (
+	HeldFile    = "text/held.json"
+	HeldOutFile = "text/held_out.bin"
+)
 
 // ConvertOptions select what Convert writes.
 type ConvertOptions struct {
@@ -193,7 +218,17 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 	if err != nil {
 		return err
 	}
-	w, err := mil.OpenWeights(root, text)
+	// the weights of what is written: with o.Only, the others' files need not be here
+	wroot, wtext := root, text
+	if len(o.Only) > 0 {
+		if !o.Only["caption"] && !o.Only["time"] && !o.Only["blocks"] && !o.Only["final"] && !o.Only["vae"] {
+			wroot = ""
+		}
+		if !o.Only["text"] {
+			wtext = ""
+		}
+	}
+	w, err := mil.OpenWeights(wroot, wtext)
 	if err != nil {
 		return err
 	}
@@ -259,12 +294,58 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 			TextRows: mil.TextRows, Group: o.Group,
 			VAEScale: mil.VAEScale, Caption: dc.Caption},
 		Text: TextConfig{Rows: mil.TextLen, Hidden: gc.Hidden, Vocab: gc.Vocab}}
-	for _, gr := range groups {
-		name, err := write("text", mil.Text(gc, gr[0], gr[1]), o.TextFormat)
-		if err != nil {
-			return err
+	if o.Backend == llm.BackendCoreAI {
+		// Gemma 2's programs hold the instruction's first rows as keys and values, computed here on
+		// the host, and have a function for each length of what follows them (mil.TextFrom), the
+		// weights once; the function over all the rows stays for a prompt without the instruction
+		// (the negative prompt)
+		m.Text.Prefix, m.Text.Cache = mil.TextHeld, mil.TextLen
+		for _, rows := range mil.TextFromRows {
+			m.TextFrom = append(m.TextFrom, TextFunc{Rows: rows})
 		}
-		m.TextParts = append(m.TextParts, name)
+		var held [][][2][]float32 // each group's layers' keys and values of the held rows
+		if len(o.Only) == 0 || o.Only["text"] {
+			ids, err := heldTokens(text)
+			if err != nil {
+				return err
+			}
+			var last []float32
+			if held, last, err = heldRows(w, gc, groups, ids, o, out); err != nil {
+				return err
+			}
+			if err := writeHeld(out, ids, last); err != nil {
+				return err
+			}
+		}
+		for gi, gr := range groups {
+			name := mil.Text(gc, gr[0], gr[1]).Name + ext
+			m.TextParts = append(m.TextParts, name+"#"+WholeFunction)
+			for i, rows := range mil.TextFromRows {
+				m.TextFrom[i].Parts = append(m.TextFrom[i].Parts, name+"#"+TextFunction(rows))
+			}
+			if held == nil {
+				continue
+			}
+			fns := []llm.AIFunction{{Name: WholeFunction, Model: mil.Text(gc, gr[0], gr[1]), Options: opts("text", o.TextFormat)}}
+			for _, rows := range mil.TextFromRows {
+				fns = append(fns, llm.AIFunction{Name: TextFunction(rows), Model: mil.TextFrom(gc, gr[0], gr[1], mil.TextHeld, rows, held[gi]),
+					Options: opts("text", o.TextFormat)})
+			}
+			jobs.Add(name, func() (string, error) {
+				if _, err := llm.WriteAIFunctions(filepath.Join(out, name), w, fns); err != nil {
+					return "", fmt.Errorf("sana: %s: %w", name, err)
+				}
+				return fmt.Sprintf("%s, %d functions", o.TextFormat, len(fns)), nil
+			})
+		}
+	} else {
+		for _, gr := range groups {
+			name, err := write("text", mil.Text(gc, gr[0], gr[1]), o.TextFormat)
+			if err != nil {
+				return err
+			}
+			m.TextParts = append(m.TextParts, name)
+		}
 	}
 	if m.Caption, err = write("caption", mil.Caption(dc), CaptionFormat); err != nil {
 		return err
@@ -329,6 +410,121 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		return err
 	}
 	return writeProgramManifest(out, m)
+}
+
+// heldTokens are the tokens Gemma 2's programs hold the rows of: <bos> and the first of the
+// instruction's, mil.TextHeld in all. A prompt's tokens start with them (Pipeline.tokens).
+func heldTokens(text string) ([]int32, error) {
+	tok, err := tokenizer.Load(filepath.Join(text, "tokenizer", "tokenizer.json"))
+	if err != nil {
+		return nil, err
+	}
+	bos, ok := tok.ID("<bos>")
+	if !ok {
+		return nil, errors.New("sana: the tokenizer has no <bos>")
+	}
+	ids := append([]int32{bos}, tok.Encode(Instruction)...)
+	// the instruction's last tokens are not held: they may merge with the prompt's first
+	if len(ids) < mil.TextHeld+4 {
+		return nil, fmt.Errorf("sana: the instruction is %d tokens, too few to hold %d of", len(ids), mil.TextHeld)
+	}
+	return ids[:mil.TextHeld], nil
+}
+
+// heldRows runs Gemma 2 over the held tokens ids on the host (milcpu, float32, the weights in the
+// text format: the layers the programs run): each group's layers' keys and values of those rows
+// (mil.TextKV), and the rows' last hidden states. A group's program is written under out for the
+// run and removed.
+func heldRows(w *mil.Weights, gc mil.Gemma, groups [][2]int, ids []int32, o ConvertOptions, out string) (kv [][][2][]float32, last []float32, err error) {
+	E, n := gc.Hidden, len(ids)
+	// the rows as the pipeline feeds them: the table's bf16 values times sqrt(hidden), in bf16
+	x := make([]float32, n*E)
+	norm := float32(math.Sqrt(float64(E)))
+	for i, id := range ids {
+		row, err := w.Rows("gemma.embed_tokens.weight", int(id), int(id)+1)
+		if err != nil {
+			return nil, nil, err
+		}
+		for j, v := range row {
+			x[i*E+j] = fromBF16(bf16(fromBF16(bf16(v)) * norm))
+		}
+	}
+	tmp, err := os.MkdirTemp(out, "held-")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer os.RemoveAll(tmp)
+	for _, gr := range groups {
+		p := mil.TextKV(gc, gr[0], gr[1], n)
+		path := filepath.Join(tmp, p.Name+".mlpackage")
+		if _, err := llm.WritePart(path, p, w, llm.Options{Backend: llm.BackendCoreML, Format: o.TextFormat, Quant: o.TextQuant}, nil); err != nil {
+			return nil, nil, fmt.Errorf("sana: %s: %w", p.Name, err)
+		}
+		prog, closer, err := milcpu.OpenPackage(path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("sana: %s: %w", p.Name, err)
+		}
+		y, err := prog.Run(map[string]milcpu.Tensor{"x": {Shape: []int{1, n, E}, Data: x}}, milcpu.Options{})
+		closer.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("sana: %s: %w", p.Name, err)
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return nil, nil, err
+		}
+		v, ok := y["y"]
+		if !ok || len(v.Data) != mil.TextKVLen(gc, gr[1], n) {
+			return nil, nil, fmt.Errorf("sana: %s gave %d values, not %d", p.Name, len(v.Data), mil.TextKVLen(gc, gr[1], n))
+		}
+		var k [][2][]float32
+		x, k = mil.SplitTextKV(gc, gr[1], n, v.Data)
+		kv = append(kv, k)
+	}
+	return kv, x, nil
+}
+
+// writeHeld writes HeldFile and HeldOutFile: the held tokens and their last hidden states.
+func writeHeld(out string, ids []int32, last []float32) error {
+	b, err := json.Marshal(struct {
+		Prefix []int32 `json:"prefix"`
+	}{ids})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(out, HeldFile), append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	buf := make([]byte, 4*len(last))
+	for i, v := range last {
+		binary.LittleEndian.PutUint32(buf[4*i:], math.Float32bits(v))
+	}
+	return os.WriteFile(filepath.Join(out, HeldOutFile), buf, 0o644)
+}
+
+// readHeld reads HeldFile and HeldOutFile of the export dir: the tokens whose rows Gemma 2's
+// programs hold (tc.Prefix of them) and their last hidden states.
+func readHeld(dir string, tc TextConfig) ([]int32, []float32, error) {
+	b, err := os.ReadFile(filepath.Join(dir, HeldFile))
+	if err != nil {
+		return nil, nil, err
+	}
+	var x struct {
+		Prefix []int32 `json:"prefix"`
+	}
+	if err := json.Unmarshal(b, &x); err != nil || len(x.Prefix) != tc.Prefix {
+		return nil, nil, fmt.Errorf("text: %s holds %d tokens, the programs %d rows (%v)", HeldFile, len(x.Prefix), tc.Prefix, err)
+	}
+	if b, err = os.ReadFile(filepath.Join(dir, HeldOutFile)); err != nil {
+		return nil, nil, err
+	}
+	if len(b) != 4*tc.Prefix*tc.Hidden {
+		return nil, nil, fmt.Errorf("text: %s is %d bytes, not %d rows of %d", HeldOutFile, len(b), tc.Prefix, tc.Hidden)
+	}
+	out := make([]float32, len(b)/4)
+	for i := range out {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:]))
+	}
+	return x.Prefix, out, nil
 }
 
 // nonFinite matches a JSON value Python writes for a non-finite number.
