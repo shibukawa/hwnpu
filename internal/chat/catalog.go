@@ -99,9 +99,11 @@ type Model struct {
 	// slow there (PLaMo 3 Translate 8B on an M1, over the 2.8 GiB its Neural Engine runs at full
 	// speed). Its name and FAMILY:TAG still run it.
 	NotOn []string
-	// License is the weights' license (models.yaml's license): its id, where it is, and whether
-	// the user accepts it before the first download or run (AcceptLicense).
+	// License is the weights' license (models.yaml's license): its id, where it is, its class,
+	// and whether the user accepts it before the first download or run (AcceptLicense).
 	License License
+	// Content is what the model may make that the policy refuses unless allowed (Contents: nsfw).
+	Content []string
 }
 
 // DirName is the model's directory in the models' directory: its repository's name, so that
@@ -180,6 +182,9 @@ func Resolve(ctx context.Context, name string, log io.Writer) (Model, error) {
 	if !ok {
 		return Model{}, errNoModel(name)
 	}
+	if err := Allowed(m); err != nil {
+		return m, err // a repository's license is not known: a +license refuses it
+	}
 	path, err := fetch(ctx, m.Source(), "config.json", log)
 	if err != nil {
 		return m, err
@@ -204,7 +209,8 @@ func Resolve(ctx context.Context, name string, log io.Writer) (Model, error) {
 // none.
 func lookupFor(name string, log io.Writer) (Model, bool, error) {
 	if m, ok := Lookup(name); ok {
-		return Alias(m, log).On(MachineMemory()), true, nil
+		m = Alias(m, log).On(MachineMemory())
+		return m, true, Allowed(m) // named: refused, not replaced
 	}
 	m, why, ok, err := Pick(name, MachineMemory())
 	if err != nil || !ok {
@@ -247,7 +253,7 @@ func ResolveForKinds(name string, log io.Writer, kinds ...Kind) (Model, error) {
 		return Model{}, errNoModel(name)
 	}
 	m.Kind = kind
-	return m, nil
+	return m, Allowed(m)
 }
 
 // NoModelError is the error of a name that is no model, family or use of the definitions nor a

@@ -183,6 +183,16 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 	if cands == nil {
 		return Model{}, "", false, nil
 	}
+	// the model policy: a model it refuses is not picked (a tag of one is an error)
+	var allowed []Model
+	var refusals []string
+	for _, c := range cands {
+		if err := Allowed(c); err != nil {
+			refusals = append(refusals, fmt.Sprintf("%s: %s", c.Name, err.(*PolicyError).Why))
+			continue
+		}
+		allowed = append(allowed, c)
+	}
 	if gb, ok := MemoryTag(tag); tagged && ok {
 		// a tag of memory (8g, 16gb) is a column of MODEL.md's table: the pick of such a machine
 		machine, tagged = gb, false
@@ -198,7 +208,7 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 		}
 		switch len(hits) {
 		case 1:
-			return hits[0], fmt.Sprintf("%s:%s", base, hits[0].Tag), true, nil
+			return hits[0], fmt.Sprintf("%s:%s", base, hits[0].Tag), true, Allowed(hits[0])
 		case 0:
 			return Model{}, "", true, fmt.Errorf("chat: %s %s has no tag %q (it has %s, or a machine's memory as %s:16g)", kind, base, tag, strings.Join(tags, ", "), base)
 		}
@@ -208,6 +218,22 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 		}
 		return Model{}, "", true, fmt.Errorf("chat: %s:%s is any of %s: name the family", base, tag, strings.Join(names, ", "))
 	}
+	if kind == "category" && len(refusals) > 0 && !slices.ContainsFunc(allowed, func(c Model) bool { return c.Machine <= machine }) {
+		// none of the use's own models for this machine is allowed: others of its kind
+		if more := fallbacks(cands); len(more) > 0 {
+			allowed = append(allowed, more...)
+			refusals = append(refusals, fmt.Sprintf("so %s of its kind", strings.Join(names(more), ", ")))
+		}
+	}
+	if len(allowed) == 0 {
+		return Model{}, "", true, fmt.Errorf("chat: the model policy (%s, policy of models.yaml) refuses all the models of %s %s: %s", PolicyEnv, kind, base, strings.Join(refusals, "; "))
+	}
+	cands = allowed
+	defer func() {
+		if len(refusals) > 0 && err == nil {
+			why += "; refused by the model policy: " + strings.Join(refusals, "; ")
+		}
+	}()
 	// the largest column the machine has; among models of one column the larger on this machine
 	for i := range cands {
 		cands[i] = cands[i].On(machine)
@@ -245,4 +271,41 @@ func pickModel(name string, machine int) (m Model, why string, ok bool, err erro
 		why += fmt.Sprintf(" (%s to choose another, or a machine's memory as %s:16g)", strings.Join(others, ", "), base)
 	}
 	return best, why, true, nil
+}
+
+// fallbacks are, for a use whose own models (cands) the model policy refuses on this machine, the
+// other models of their kind and features that it allows and a family picks (Machine above 0),
+// of the most open license class among them (an open license before a non-commercial one).
+func fallbacks(cands []Model) []Model {
+	features := slices.Clone(cands[0].Features)
+	for _, c := range cands[1:] {
+		features = slices.DeleteFunc(features, func(f string) bool { return !slices.Contains(c.Features, f) })
+	}
+	var out []Model
+	best := len(LicenseClasses)
+	for _, m := range Catalog {
+		if m.Kind != cands[0].Kind || m.Machine == 0 || slices.ContainsFunc(cands, func(c Model) bool { return c.Name == m.Name }) ||
+			slices.ContainsFunc(features, func(f string) bool { return !slices.Contains(m.Features, f) }) || Allowed(m) != nil {
+			continue
+		}
+		class := slices.Index(LicenseClasses, m.License.Class)
+		if class < 0 {
+			class = len(LicenseClasses)
+		}
+		switch {
+		case class < best:
+			out, best = []Model{m}, class
+		case class == best:
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func names(ms []Model) []string {
+	var s []string
+	for _, m := range ms {
+		s = append(s, m.Name)
+	}
+	return s
 }

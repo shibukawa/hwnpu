@@ -6,6 +6,8 @@
 
 ## 画像生成 (Anima)
 
+Anima と Chroma は、プロンプトに `safe` を書いても NSFW の絵を描くことがあるので、オプトインしないと選びません。`HWNPU_MODEL_ALLOWLIST=+nsfw` (環境変数か `.env`) で使えるようになります。オプトインしていなければ、`-m` を省いた `generate` は 8 GB の機械で Sana 600M、16 GB からは FLUX.2 klein 4B を選びます。`-m anima` のように名前で指すと、理由を添えたエラーになります。ライセンスでモデルを絞る書き方 (`-license:non-commercial` など) は [docs/model-provenance.md](docs/model-provenance.md) の 2 節にあります。下の例は `+nsfw` のある環境での動かし方です。
+
 `go run ./cmd/hwnpu-image` は、Anima (circlestone-labs/Anima、Cosmos-Predict2 2B の DiT と Qwen3-0.6B、Qwen-Image の VAE) でプロンプトから絵を描きます。テキストの符号化、DiT のステップ、VAE の復号はすべて NPU の上の IRON のグラフで、ホストはトークン化、埋め込みの行の取り出し、パッチの並べ替え、Euler のステップ、PNG を受け持ちます。書き出しは画像の大きさと拡散モデルごとで、hwnpu の `tools/amd/iron_anima.py` が作ります (1024 × 1024 で 4.0 GB。DiT のブロックの重みは 8 ビット)。
 
 ```bash

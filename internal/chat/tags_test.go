@@ -117,6 +117,7 @@ func TestRouteByFamily(t *testing.T) {
 // (hwnpu-image generate -m sana:8g), in any case, with or without a space, and of any size, not
 // only MODEL.md's columns.
 func TestImageMemoryTags(t *testing.T) {
+	setPolicy(t, "+nsfw") // Anima's
 	for name, want := range map[string]string{
 		"sana:8g": "Sana-600M", "sana:8G": "Sana-600M", "sana:8GB": "Sana-600M", "sana:8 G": "Sana-600M",
 		"sana:12g": "Sana-600M", "sana:4g": "Sana-600M", "sana:16G": "SANA1.5-1.6B", "sana:100g": "SANA1.5-1.6B",

@@ -119,12 +119,18 @@ func LoadModels(files []string, user bool, log io.Writer) error {
 	}
 	var sources []shared.Source
 	hf := true
+	rules := t.policy
 	if user {
 		if sources, hf, err = shared.FromEnv(); err != nil {
 			return err
 		}
+		env, err := policyFromEnv()
+		if err != nil {
+			return err
+		}
+		rules = append(rules, env...)
 	}
-	Catalog, Categories, Aliases, ModelFiles = catalog, categories, aliases, t.files
+	Catalog, Categories, Aliases, ModelFiles, Policy = catalog, categories, aliases, t.files, rules
 	shared.SetSources(sources, hf)
 	if user {
 		shared.SetBundles(BundleDirs(configdir.New("", "hwnpu"), ""))
@@ -181,6 +187,8 @@ type modelEntry struct {
 	// License is the weights' license; with accept, the user accepts it once before the model
 	// is first downloaded or run (AcceptLicense).
 	License *License `yaml:"license"`
+	// Content is what the model may make that the policy refuses unless allowed: [nsfw].
+	Content *[]string `yaml:"content"`
 	// RunEntry is how hwnpu-chat runs a chat model when its flags do not say (prefill, format,
 	// context, paged), on a machine of machine GB.
 	RunEntry `yaml:",inline"`
@@ -234,6 +242,8 @@ type tableFile struct {
 	NPUs       any                       `yaml:"npus"`
 	Builds     any                       `yaml:"builds"`
 	Cache      any                       `yaml:"cache"`
+	// Policy are items of the model policy (+nsfw, -license:non-commercial), read before PolicyEnv's.
+	Policy []string `yaml:"policy"`
 }
 
 // order is a file's models and categories in the order written (maps lose it).
@@ -267,6 +277,7 @@ type table struct {
 	aliases    map[string]string
 	aliasFile  map[string]string
 	removed    map[string]string // models a file removed, by the file
+	policy     []Rule            // the files' policy
 }
 
 func newTable(log io.Writer) *table {
@@ -322,6 +333,16 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 			}
 			t.warn(name, "%s is not read by this version of hwnpu yet (docs/model-table.md); skipped", key)
 		}
+	}
+	if len(f.Policy) > 0 {
+		if builtin {
+			return fmt.Errorf("chat: %s: the built-in definitions have no policy", name)
+		}
+		rules, err := ParsePolicy(f.Policy, name)
+		if err != nil {
+			return err
+		}
+		t.policy = append(t.policy, rules...)
 	}
 	t.files = append(t.files, name)
 	for _, item := range o.Models {
@@ -566,7 +587,7 @@ func (t *table) resolveLike(name string, seen []string) (*modelEntry, error) {
 	out.Tag, out.Like, out.SHA256 = nil, "", nil // the files of another repository are not the base's
 	merge(&out, &modelEntry{Family: e.Family, Tag: e.Tag, Kind: e.Kind, From: e.From, Arch: e.Arch, Machine: e.Machine,
 		Memory: e.Memory, Bytes: e.Bytes, Features: e.Features, NoThink: e.NoThink, About: e.About, SHA256: e.SHA256, Device: e.Device, AMDExport: e.AMDExport, File: e.File, With: e.With,
-		License: e.License, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
+		License: e.License, Content: e.Content, RunEntry: e.RunEntry, Variants: e.Variants, NotOn: e.NotOn})
 	return &out, nil
 }
 
@@ -586,6 +607,17 @@ func toModel(name string, e *modelEntry) (Model, error) {
 		if m.License.ID == "" || m.License.Accept && m.License.URL == "" {
 			return m, fmt.Errorf("model %s: a license needs its id (and a url to accept it)", name)
 		}
+		if m.License.Class != "" && !slices.Contains(LicenseClasses, m.License.Class) {
+			return m, fmt.Errorf("model %s: license class %q is not one of %s", name, m.License.Class, strings.Join(LicenseClasses, ", "))
+		}
+	}
+	if e.Content != nil {
+		for _, c := range *e.Content {
+			if !slices.Contains(Contents, c) {
+				return m, fmt.Errorf("model %s: content %q is not one of %s", name, c, strings.Join(Contents, ", "))
+			}
+		}
+		m.Content = slices.Clone(*e.Content)
 	}
 	m.Kind = Kind(get(e.Kind))
 	if _, ok := kinds[m.Kind]; !ok {

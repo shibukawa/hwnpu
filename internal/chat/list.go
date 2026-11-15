@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"fmt"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 	"io"
@@ -72,10 +73,12 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 	// a family's cells are its tags; a use's name the family too, as its models are of several
 	row := func(name, tags, about string, family bool) {
 		m, _, _, _ := Pick(name, machine)
-		line := fmt.Sprintf("  %s\t%s", name, m.Name)
+		line := fmt.Sprintf("  %s\t%s", name, cmp.Or(m.Name, "-"))
 		for _, c := range Columns {
 			p, _, _, _ := Pick(name, c)
 			switch {
+			case p.Name == "":
+				line += "\t-" // the model policy refuses all
 			case family && p.Tag != "":
 				line += "\t" + p.Tag
 			case p.Tag != "":
@@ -123,6 +126,15 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 	}
 	tw.Flush()
 	fmt.Fprintf(w, "%s=GB picks as a machine of that memory would.\n", MemoryEnv)
+	var refusals []string
+	for _, m := range Catalog {
+		if err := Allowed(m); of(m) && err != nil {
+			refusals = append(refusals, fmt.Sprintf("  %s: %s", m.Name, err.(*PolicyError).Why))
+		}
+	}
+	if len(refusals) > 0 {
+		fmt.Fprintf(w, "\nNot picked or run by the model policy (%s%s, policy of models.yaml):\n%s\n", PolicyEnv, policyText(), strings.Join(refusals, "\n"))
+	}
 	if len(Aliases) > 0 {
 		fmt.Fprintln(w, "\nAliases (the model on the right runs wherever the one on the left is picked):")
 		var froms []string
@@ -159,4 +171,12 @@ func inGB(n float64) string {
 		return fmt.Sprintf("%.0f MB", n*1e3)
 	}
 	return fmt.Sprintf("%.1f GB", n)
+}
+
+// policyText is "=RULES" of the model policy, "" for none.
+func policyText() string {
+	if len(Policy) == 0 {
+		return ""
+	}
+	return "=" + joinRules(Policy)
 }
