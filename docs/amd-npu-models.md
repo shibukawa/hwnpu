@@ -1209,10 +1209,11 @@ design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG な
 python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024
 hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"
 hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
+hwnpu-image generate -m flux2-klein --ref-half -i fox.png -i room.png "The fox from image 1 is sitting on the sofa in the living room from image 2."
 ~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/ref_flux2klein.py ~/models/FLUX.2-klein-4B OUT --size 512   # 参照
 hwnpu-image generate -m EXPORT --noise OUT.noise.bin --latents got.lat --dump DIR "..."                       # 参照と同じノイズで
 ```
 
-- `--refs 0 1 1d2` (既定) は参照 0 枚、1 枚、半分の辺の 1 枚のブロックを書き出す (`hwnpu-image generate --ref-half`)。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
+- `--refs` は参照の枚数と大きさごとのブロックを書き出す (N: 絵の大きさの N 枚、NdD: 辺が 1/D の N 枚。`hwnpu-image generate --ref-half` は d2)。既定は 4 枚まで、1 ステップ 12800 行までで、1024² は `0 1 2 1d2 2d2 3d2 4d2`、512² は `0 1 2 3 4 2d2 4d2`。参照 2 枚以上の時間と照合は design.md 16.209 (1024² の半分 × 2 で 1 枚 42 秒、等倍 × 2 で 1 分 41 秒)。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
 - `--text q8` や `q6` は文の書き出しを小さくするが、パッドの行が参照から離れる (16.206)
 - 電力量はまだ測っていない

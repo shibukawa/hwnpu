@@ -65,7 +65,9 @@ hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn
 - It runs on AMD's NPU only for now, from the export of `tools/amd/iron_flux2klein.py` (`~/models/flux.2-klein-4b.amd-npu2`; [docs/amd-npu-models.md](docs/amd-npu-models.md), section 24)
 - On a Ryzen AI 9 365 a 1024 x 1024 picture takes about 29 s and an edit with one reference about 1 min; the 512 x 512 export takes 11 s and 15 s. The memory peaks at 3.9 GB at 1024 x 1024 (1.9 GB at 512 x 512)
 - `--ref-half` reads the references at half the picture's sides: an edit at 1024 x 1024 takes about 37 s, with less of the reference's fine detail (not with the 512 x 512 export)
-- A reference image's centre is cropped to the picture's shape and scaled to its size. The export holds the blocks for a number of references (one by default)
+- Up to 4 references: repeat `--image` (`-i`), and name them in the prompt in that order as image 1, image 2. For example: `hwnpu-image generate -m flux2-klein -i fox.png -i room.png "The fox from image 1 is sitting on the sofa in the living room from image 2."`
+- At 1024 x 1024, up to 2 references of the picture's size (about 1 min 40 s a picture) and up to 4 with `--ref-half` (2: 42 s, 3: 50 s, 4: 1 min). At 512 x 512, up to 4 of the picture's size (2: 20 s, 4: 32 s), and 2 or 4 with `--ref-half` (13 s, 16 s). The memory's peak stays (2.0 GB with 4 at 512 x 512)
+- A reference image's centre is cropped to the picture's shape and scaled to its size (half of it with `--ref-half`, which applies to every reference)
 - Write an edit as what to change and what to keep. Prompts are expected in English
 
 ## Depth estimation (Depth Anything 3, MoGe-2)

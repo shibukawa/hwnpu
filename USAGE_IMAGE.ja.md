@@ -65,7 +65,9 @@ hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn
 - 今は AMD の NPU だけです。`tools/amd/iron_flux2klein.py` の書き出し (`~/models/flux.2-klein-4b.amd-npu2`) を使います ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 24 節)
 - Ryzen AI 9 365 で、1024 × 1024 の 1 枚が約 29 秒、参照 1 枚の編集が約 1 分です。512 × 512 の書き出しでは 11 秒と 15 秒です。メモリのピークは 1024 × 1024 で 3.9 GB (512 × 512 で 1.9 GB) です
 - `--ref-half` を付けると、参照を絵の半分の辺で読みます。1024 × 1024 の編集が約 37 秒になり、参照の細部は少し減ります (512 × 512 の書き出しでは使えません)
-- 参照画像は、絵の縦横比に合わせて中央を切り出し、絵の大きさに縮めて (拡げて) 使います。枚数は書き出しが持つ分までです (既定は 1 枚)
+- 参照は 4 枚まで渡せます。`--image` (`-i`) を枚数だけ繰り返し、プロンプトでは渡した順に image 1、image 2 と呼びます。例: `hwnpu-image generate -m flux2-klein -i fox.png -i room.png "The fox from image 1 is sitting on the sofa in the living room from image 2."`
+- 1024 × 1024 では、絵と同じ大きさの参照は 2 枚まで (1 枚約 1 分 40 秒)、`--ref-half` なら 4 枚まで (2 枚 42 秒、3 枚 50 秒、4 枚 1 分)。512 × 512 では同じ大きさで 4 枚まで (2 枚 20 秒、4 枚 32 秒)、`--ref-half` は 2 枚か 4 枚 (13 秒、16 秒)。メモリのピークは変わりません (512 × 512 の 4 枚で 2.0 GB)
+- 参照画像は、絵の縦横比に合わせて中央を切り出し、絵の大きさ (`--ref-half` ではその半分) に縮めて (拡げて) 使います。`--ref-half` は全部の参照に効きます
 - 編集の指示は、変えるところと残すところを文で書きます。プロンプトは英語が前提です
 
 ## 深度推定 (Depth Anything 3、MoGe-2)
