@@ -54,9 +54,13 @@ func TestPolicyPicks(t *testing.T) {
 		machine      int
 		want         string // the model picked, or "error"
 	}{
-		// NSFW models are picked only with +nsfw: Anima is the image's pick of 8 GB
+		// NSFW models run only with +nsfw, and the image's picks are not NSFW (Sana 600M on 8 GB,
+		// FLUX.2 klein from 16 GB): Anima runs when it is named
 		{"", "image", 8, "Sana-600M"},
-		{"+nsfw", "image", 8, "Anima-Turbo"},
+		{"", "image", 16, "FLUX.2-klein-4B"},
+		{"+nsfw", "image", 8, "Sana-600M"},
+		{"+nsfw", "image", 16, "FLUX.2-klein-4B"},
+		{"+nsfw", "anima-turbo", 8, "Anima-Turbo"},
 		{"", "anima", 8, "error"},
 		{"+nsfw,-nsfw", "image", 8, "Sana-600M"},
 		// license: an id or a class; a use takes another of its kind when its own are refused

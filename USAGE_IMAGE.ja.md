@@ -6,16 +6,16 @@
 
 ## 画像生成 (Anima)
 
-Anima と Chroma は、プロンプトに `safe` を書いても NSFW の絵を描くことがあるので、オプトインしないと選びません。`HWNPU_MODEL_ALLOWLIST=+nsfw` (環境変数か `.env`) で使えるようになります。オプトインしていなければ、`-m` を省いた `generate` は 8 GB の機械で Sana 600M、16 GB からは FLUX.2 klein 4B を選びます。`-m anima` のように名前で指すと、理由を添えたエラーになります。ライセンスでモデルを絞る書き方 (`-license:non-commercial` など) は [docs/model-provenance.md](docs/model-provenance.md) の 2 節にあります。下の例は `+nsfw` のある環境での動かし方です。
+`-m` を省いた `generate` は、16 GB からは FLUX.2 klein 4B (主力: Apache-2.0、M1 で 1024 × 1024 が約 41 秒。次の節)、8 GB の機械では Sana 600M で描きます。Anima と Chroma は、プロンプトに `safe` を書いても NSFW の絵を描くことがあるので、`HWNPU_MODEL_ALLOWLIST=+nsfw` (環境変数か `.env`) でオプトインして名前で指したとき (`-m anima-turbo`、`-m anima`、`-m chroma`) だけ動きます。オプトインしていなければ、名前で指すと理由を添えたエラーになります。オプトインしても、`-m` を省けば FLUX.2 klein か Sana です。ライセンスでモデルを絞る書き方 (`-license:non-commercial` など) は [docs/model-provenance.md](docs/model-provenance.md) の 2 節にあります。下の例は `+nsfw` のある環境での動かし方です。
 
 `go run ./cmd/hwnpu-image` は、Anima (circlestone-labs/Anima、Cosmos-Predict2 2B の DiT と Qwen3-0.6B、Qwen-Image の VAE) でプロンプトから絵を描きます。テキストの符号化、DiT のステップ、VAE の復号はすべて NPU の上の IRON のグラフで、ホストはトークン化、埋め込みの行の取り出し、パッチの並べ替え、Euler のステップ、PNG を受け持ちます。書き出しは画像の大きさと拡散モデルごとで、hwnpu の `tools/amd/iron_anima.py` が作ります (1024 × 1024 で 4.0 GB。DiT のブロックの重みは 8 ビット)。
 
 ```bash
 python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2 --size 1024
-go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"
+go run ./cmd/hwnpu-image generate -m anima-turbo "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"
 ```
 
-Anima の拡散モデルは 2 つです。`-m` を省くと Anima-Turbo (`anima-turbo`) で、8 ステップ、CFG なしで描きます。`-m anima` は Anima-Aesthetic (質の高い絵で調整したもの) で、CFG 4 (`--guidance`、モデルカードの勧めは 4〜5) です。既定は DPM-Solver++ 2M の 25 ステップ、CFG は雑音の多い 17 ステップだけです (`--sampler euler --steps 30 --cfg-sigmas 0,1` でモデルカードのとおり 30 ステップ全部に CFG)。DiT を 1 枚に 42 回走らせるので Turbo の約 4.5 倍の時間がかかります。負のプロンプトは `--negative` です (既定は空。モデルカードの勧めは `"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"` で、Aesthetic では score タグを入れない)。Turbo に `--guidance` なしで `--negative` を付けると、弱い CFG 1.5 で走ります (1 ステップに DiT を 2 回)。書き出しは `--dit` で拡散モデルを選びます。
+Anima の拡散モデルは 2 つです。`-m anima-turbo` は Anima-Turbo で、8 ステップ、CFG なしで描きます。`-m anima` は Anima-Aesthetic (質の高い絵で調整したもの) で、CFG 4 (`--guidance`、モデルカードの勧めは 4〜5) です。既定は DPM-Solver++ 2M の 25 ステップ、CFG は雑音の多い 17 ステップだけです (`--sampler euler --steps 30 --cfg-sigmas 0,1` でモデルカードのとおり 30 ステップ全部に CFG)。DiT を 1 枚に 42 回走らせるので Turbo の約 4.5 倍の時間がかかります。負のプロンプトは `--negative` です (既定は空。モデルカードの勧めは `"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"` で、Aesthetic では score タグを入れない)。Turbo に `--guidance` なしで `--negative` を付けると、弱い CFG 1.5 で走ります (1 ステップに DiT を 2 回)。書き出しは `--dit` で拡散モデルを選びます。
 
 ```bash
 python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-npu2 --size 1024 --dit anima-aesthetic-v1.1.safetensors
