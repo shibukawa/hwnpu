@@ -105,6 +105,8 @@ type file struct {
 		IgnoreMerges bool              `json:"ignore_merges"`
 		ByteFallback bool              `json:"byte_fallback"`
 	} `json:"model"`
+	// pairs are the merges as splitModel read them (Model.Merges is then empty); nil: not read
+	pairs [][2]string
 }
 
 // Load reads a tokenizer.json, or PLaMo's tokenizer.jsonl (LoadPlamo).
@@ -125,8 +127,16 @@ func Load(path string) (*Tokenizer, error) {
 
 func parse(raw []byte) (*Tokenizer, error) {
 	var f file
+	// the vocabulary and the merges, nearly all of the file, read by themselves (splitModel)
+	small, vocab, pairs, fast := splitModel(raw)
+	if fast {
+		raw = small
+	}
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, err
+	}
+	if fast {
+		f.Model.Vocab, f.pairs = vocab, pairs
 	}
 	if f.Model.Type == "BPE" && f.Model.ByteFallback {
 		return parseFallback(raw, &f)
@@ -196,6 +206,17 @@ func newTokenizer(f *file) *Tokenizer {
 
 // readMerges reads the merge ranks.
 func (t *Tokenizer) readMerges(f *file) error {
+	if f.pairs != nil {
+		if len(t.ranks) == 0 {
+			t.ranks = make(map[[2]string]int, len(f.pairs))
+		}
+		for i, pair := range f.pairs {
+			if _, dup := t.ranks[pair]; !dup {
+				t.ranks[pair] = i
+			}
+		}
+		return nil
+	}
 	for i, m := range f.Model.Merges {
 		var pair [2]string
 		var s string
