@@ -53,6 +53,21 @@ On Apple's Neural Engine, Sana 600M and SANA 1.5 1.6B run with `hwnpu-image gene
 
 On AMD's NPU it uses the export of `tools/amd/iron_chroma.py` ([docs/amd-npu-models.md](docs/amd-npu-models.md)). On Apple's Neural Engine, the first run downloads the checkpoint (27.5 GB) to `--dir/Chroma`, converts it to Core AI programs in Go alone (about 1 minute) and compiles it for the Neural Engine. T5-XXL is lut8 (fp16 only for the FF output projection, which gives outliers) and is read and closed 3 layers at a time; the DiT is lut8 and the VAE fp16, and all of it runs on the Neural Engine. On an M1 (16 GB), from the second run on, a picture takes about 2 minutes with Chroma1-Flash at 512 × 512, about 9 and a half minutes at 1024 × 1024, and about 22 minutes with Chroma1-HD at 1024 × 1024 (the first run compiles for the Neural Engine for about an hour and a half; HD shares T5 and the VAE with the Flash export). It keeps the DiT's weights (8.3 GiB) pinned on the Neural Engine while it runs, so it needs a Mac of 16 GB or more. The cosine of the latents against float32 on the CPU from the same noise is 0.987 to 0.997 (3 prompts × 2 kinds, 512²), and the pictures are the same. The records are in section 16.170 of [docs/design.md](docs/design.md). To export by hand, use `hwnpu-image convert ~/models/Chroma1-Flash -m OUT --tokenizer T5_TOKENIZER.json` (`--text` if T5 and the VAE are somewhere else).
 
+## Image generation and editing (FLUX.2 klein)
+
+`hwnpu-image generate -m flux2-klein` draws with Black Forest Labs' FLUX.2 klein 4B (a 3.9B DiT, Qwen3-4B and the FLUX.2 VAE, Apache-2.0). It is distilled: 4 steps, no classifier-free guidance (`--negative` and `--guidance` do not apply). With `--image` it edits a reference image.
+
+```
+hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"
+hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
+```
+
+- It runs on AMD's NPU only for now, from the export of `tools/amd/iron_flux2klein.py` (`~/models/flux.2-klein-4b.amd-npu2`; [docs/amd-npu-models.md](docs/amd-npu-models.md), section 24)
+- On a Ryzen AI 9 365 a 1024 x 1024 picture takes about 29 s and an edit with one reference about 1 min; the 512 x 512 export takes 11 s and 15 s. The memory peaks at 3.9 GB at 1024 x 1024 (1.9 GB at 512 x 512)
+- `--ref-half` reads the references at half the picture's sides: an edit at 1024 x 1024 takes about 37 s, with less of the reference's fine detail (not with the 512 x 512 export)
+- A reference image's centre is cropped to the picture's shape and scaled to its size. The export holds the blocks for a number of references (one by default)
+- Write an edit as what to change and what to keep. Prompts are expected in English
+
 ## Depth estimation (Depth Anything 3, MoGe-2)
 
 `go run ./cmd/hwnpu-image depth` estimates the depth of a photo on AMD's NPU or Apple's Neural Engine (Intel's NPU too, untested on the hardware). The models are Depth Anything 3 (Apache-2.0): DA3MONO-LARGE (the default, relative depth), DA3METRIC-LARGE (meters, with `--fov` or `--focal`) and DA3-SMALL / BASE (lighter versions, depth and confidence). For each image it writes `NAME.depth.png` (brighter is nearer); `--raw` also writes the depth as float32, and `--sky` an image of the sky (the confidence for SMALL / BASE). An export holds a size for each aspect ratio, and the one nearest the image is used. As with generate, `-m` is a name, a family (`da3:small`, `da3metric`, `moge`, `moge:vits`) or an export directory. The default use, `depth`, picks by memory: DA3-SMALL on 8 GB, DA3-BASE on 16 GB and DA3MONO-LARGE from 24 GB (`depth:24g` or `-m DA3MONO-LARGE` for the larger one).

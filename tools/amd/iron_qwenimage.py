@@ -943,6 +943,8 @@ def main(argv=None) -> int:
     ap.add_argument("--dit-mlp", default=FMT.mlp, choices=("bf16", "q8", "q6", "q4", "bfp16"), help="the DiT blocks' MLP")
     ap.add_argument("--text", default=FMT.text, choices=("bf16", "q8", "q6", "q4"), help="the text encoder's projections")
     ap.add_argument("--dit-mha", default=FMT.mha, choices=("qk", "qkpv", "bf16"))
+    ap.add_argument("--dit-exp", default=None, choices=("exact", "mid", "instruction"),
+                    help="the DiT attention's softmax exponentials (iron_mha.ImageMHA.exp; default mid)")
     ap.add_argument("--one-group", action="store_true", help="the first group's bank only (a test)")
     ap.add_argument("--random", action="store_true", help="weights drawn at random in the checkpoint's shapes")
     ap.add_argument("--check", action="store_true", help="write each graph's inputs and reference outputs")
@@ -953,6 +955,8 @@ def main(argv=None) -> int:
     FMT.text, FMT.mha = a.text, a.dit_mha
     VAE_MERGE[0] = a.vae_merge
     iron_anima.DIT_FMT.mha = a.dit_mha
+    if a.dit_exp:
+        iron_mha.EXP[0] = a.dit_exp
     iron_anima.PREC.vae = PREC.vae
     import iron_q4
 

@@ -30,7 +30,7 @@ Setup: [Apple](INSTALL_APPLE.md), [Intel](INSTALL_INTEL.md), [AMD](INSTALL_AMD.m
 | Command | What it does | Guide |
 |---|---|---|
 | `hwnpu-chat` | Chat, translation, a coding agent (`agent`), an OpenAI compatible server (`serve`), embedding search (`search`), typed judgments (`systemone`) | [CHAT.md](CHAT.md); AMD: [USAGE_LLM_AMD.md](USAGE_LLM_AMD.md) |
-| `hwnpu-image` | Image generation (Anima, Sana, Chroma1), depth, faces, objects, poses, text (OCR), labels, cutouts | [USAGE_IMAGE.md](USAGE_IMAGE.md) |
+| `hwnpu-image` | Image generation (Anima, Sana, Chroma1) and editing (FLUX.2 klein), depth, faces, objects, poses, text (OCR), labels, cutouts | [USAGE_IMAGE.md](USAGE_IMAGE.md) |
 | `hwnpu-audio` | Music and sound effects, speech, transcription, pitch, notes | [USAGE_AUDIO.md](USAGE_AUDIO.md) |
 | `hwnpu-dev` | Checks, NPU measurements (`probe`), model conversion and comparison | [USAGE_DEV.md](USAGE_DEV.md), [PROBE.md](PROBE.md) |
 

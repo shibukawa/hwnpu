@@ -71,9 +71,6 @@ func openIron(ctx context.Context, dev *hwnpu.Device, dir string, c *Config, mod
 	if e.vae, err = anima.OpenVAE(ctx, dev, filepath.Join(dir, "vae")); err != nil {
 		return nil, err
 	}
-	// a stage loads beside the one before only when they hold 3 GiB or less together: the 1024 x
-	// 1024 VAE's last stages (2 to 3 GiB each) would otherwise set the run's peak
-	e.vae.PrefetchLimit = 3 << 30
 	return e, nil
 }
 

@@ -1173,3 +1173,46 @@ Go の評価器に足した演算: If (枝が外の値を読む分を If の入�
 - 3 枚の写真と 5 つのプロンプト (点 4 つ、箱 1 つ) の 15 の mask で、NPU と CPU (ONNX Runtime) の mask の IoU は 0.93〜1.0 (10 は 0.99 以上。0.95 未満の 2 つはスコア 0.28 と 0.37 の候補)、スコアの差は 0.01 以内。既定で書く一番スコアの高い mask は、5 つとも IoU 0.989 以上
 - 電力量はまだ測っていない
 
+
+## 24. FLUX.2 klein 4B: 生成と参照画像の編集 (`hwnpu-image generate -m flux2-klein`、2026-11-15)
+
+design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG なし。
+
+### 24.1 構成 (`tools/amd/iron_flux2klein.py`)
+
+| グラフ | 中身 | 呼ぶ回数 |
+|---|---|---|
+| text | Qwen3-4B の 36 層のうち 27 層 (bf16、HIGHEST、SiLU は `iron_silu.SiLUF32`)、3 層 × 9 組、512 行を 1 回で。プロンプトの行は因果、パッドの行はプロンプトのキーだけ (注意 2 回を `sel` で選ぶ) | プロンプトごとに 9 組 |
+| ctx | context_embedder (層 9、18、27 の後の隠れ状態から 3072 列) | プロンプトごとに 1 回 |
+| mods | 時刻の埋め込みと変調の線形 4 つ | ステップの前に全ステップ分 |
+| dit_in、dit_in_r1 | x_embedder | 1 ステップ 1 回 |
+| doubles、singles (`_r1`: 参照 1 枚、`_r1d2`: 半分の辺の参照 1 枚) | double 1 つ × 5 組、single 2 つ × 10 組 (bfp16、注意は QK^T と P·V が bfp16、指数は `exp2_mid.h`)。`_r1` のバンクは参照なしのものを指す | 1 ステップ 15 組 |
+| dit_out | norm_out と proj_out | 1 ステップ 1 回 |
+| vae/s0..s9 | 復号器。GroupNorm は演算子 2 つとホストの計算 (`iron_groupnorm.py`) | 1 枚 1 回 |
+| vae_enc/s0..s5、vae_enc_d2 | 符号器 (参照の大きさ、その半分の辺) | 参照 1 枚に 1 回 |
+
+### 24.2 測定 (Ryzen AI 9 365、16.208 の後)
+
+| | 512² | 1024² |
+|---|---|---|
+| 1 ステップ (生成、編集、参照を半分で読む編集) | 1.3 秒、2.2 秒 | 4.4 秒、11.2 秒、5.6 秒 |
+| 1 枚 (生成、編集、参照を半分で読む編集) | 10.5 秒、15 秒 | 29 秒、59 秒、37 秒 |
+| ピークのメモリ (生成、編集) | 1.9 GB、1.5 GB | 3.9 GB (NPU 3.43 GiB) |
+| CPU の float32 との潜在のコサイン (生成、編集) | 0.975、0.998 | 0.961、0.996 |
+| 書き出し | 12 GB (512² と重みを共有) | 12 GB |
+
+16.206 の時点では 1024² が 39 秒と 1 分 22 秒、4.9 GB。VAE の段のバッファの使い回し、注意の P·V の bfp16 とソフトマックスの指数、重みの読み方 (16.207)、VAE の GroupNorm と参照を半分で読む編集 (16.208) で縮めた。
+
+### 24.3 手順
+
+```
+python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024
+hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"
+hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
+~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/ref_flux2klein.py ~/models/FLUX.2-klein-4B OUT --size 512   # 参照
+hwnpu-image generate -m EXPORT --noise OUT.noise.bin --latents got.lat --dump DIR "..."                       # 参照と同じノイズで
+```
+
+- `--refs 0 1 1d2` (既定) は参照 0 枚、1 枚、半分の辺の 1 枚のブロックを書き出す (`hwnpu-image generate --ref-half`)。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
+- `--text q8` や `q6` は文の書き出しを小さくするが、パッドの行が参照から離れる (16.206)
+- 電力量はまだ測っていない

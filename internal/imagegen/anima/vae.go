@@ -37,11 +37,17 @@ func (g GridShape) Rows() int { return ((g.H+2)*g.Wp() + 2 + 255) / 256 * 256 }
 // Pixel is the row of pixel (y, x).
 func (g GridShape) Pixel(y, x int) int { return 1 + g.Wp() + y*g.Wp() + 1 + x }
 
-// VAE is the Qwen-Image VAE decoder in stages (vae/s0, vae/s1, ...), each a graph from one
+// VAE is a VAE's decoder (or encoder) in stages (vae/s0, vae/s1, ...), each a graph from one
 // padded grid to the next; the first takes the DiT's latents (unnormalized and post_quant_conv
-// in its first 1 x 1 convolution), the last gives the pixels. Each stage is on the device only
-// while it runs: the stages' banks are mostly their feature maps (8.2 GiB together at 1024 x
-// 1024, the largest stage 1.2 GiB).
+// in its first 1 x 1 convolution), the last gives the pixels. A stage is on the device only
+// while it runs.
+//
+// The stages share their device buffers. A stage's banks are mostly its feature maps (1 to 3
+// GiB at 1024 x 1024), and allocating a device buffer pins and zeroes its pages in the kernel
+// (0.33 s a GiB, and 0.11 s a GiB to free): the ten stages of FLUX.2's decoder allocated 17.6
+// GiB, 7.6 of its 14 s. So each bank kind has one buffer, as large as the largest stage's, lent to
+// every stage (iron.GraphOptions.Buffers: filled from the stage's image, zeroed past it), and a
+// stage's output buffer is the next stage's input buffer, with no copy.
 type VAE struct {
 	dev    *hwnpu.Device
 	stages []string // each stage's directory
@@ -53,12 +59,17 @@ type VAE struct {
 	Latent, Channels int
 	// Stage, when set, is told of each stage as it ends.
 	Stage StageFunc
-	// PrefetchLimit, when not 0, loads a stage while the one before runs only when the two hold
-	// at most this many bytes on the device together (otherwise after it closes): the peak
-	// against a stage's load time. Qwen-Image-2.1's 1024 x 1024 stages 4 and 5 are 5.9 GiB
-	// together.
-	PrefetchLimit int64
-	sizes         []int64 // each stage's banks and arguments
+	info  []stageInfo
+}
+
+// stageInfo is what a stage's graph holds on the device: its banks by kind, and the arguments
+// of its input and output (each an argument's only handle, or the buffers are not shared).
+type stageInfo struct {
+	banks             map[string]int
+	inKind, outKind   string
+	inBytes, outBytes int
+	args              int64 // the arguments' bytes
+	norms             []HostNorm
 }
 
 // OpenVAE reads the stages' manifests in dir; Decode loads each stage onto dev as it runs.
@@ -106,36 +117,77 @@ func OpenVAE(ctx context.Context, dev *hwnpu.Device, dir string) (*VAE, error) {
 			v.in.Pad = m.Pad
 		}
 		v.stages = append(v.stages, d)
-		var n int64
-		for _, b := range gm.Banks {
-			n += int64(b.Bytes)
+		si := stageInfo{banks: map[string]int{}}
+		for kind, b := range gm.Banks {
+			si.banks[kind] = b.Bytes
 		}
+		argBytes := map[string]int{}
 		for _, a := range gm.Graph.Arguments {
 			if _, ok := gm.Banks[a.Kind]; !ok {
-				n += int64(a.Bytes)
+				si.args += int64(a.Bytes)
+				argBytes[a.Kind] = a.Bytes
 			}
 		}
-		v.sizes = append(v.sizes, n)
+		// an argument that is one whole handle can be handed from a stage to the next
+		whole := func(hs []iron.Handle) (string, int) {
+			if len(hs) != 1 || hs[0].Offset != 0 || argBytes[hs[0].Argument] != hs[0].Bytes {
+				return "", 0
+			}
+			for _, o := range append(append([]iron.Handle(nil), gm.Graph.Inputs...), gm.Graph.Outputs...) {
+				if o.Argument == hs[0].Argument && o.Name != hs[0].Name {
+					return "", 0
+				}
+			}
+			return hs[0].Argument, hs[0].Bytes
+		}
+		var nm struct {
+			Norms []HostNorm `json:"norms"`
+		}
+		if len(gm.Meta) > 0 {
+			if err := json.Unmarshal(gm.Meta, &nm); err != nil {
+				return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)
+			}
+		}
+		si.norms = nm.Norms
+		si.inKind, si.inBytes = whole(gm.Graph.Inputs)
+		si.outKind, si.outBytes = whole(gm.Graph.Outputs)
+		v.info = append(v.info, si)
 	}
 	return v, nil
 }
 
-// Peak is the most Decode pins at once: a stage, with the next one beside it where
-// PrefetchLimit lets it load early.
+// Peak is the most a run pins at once: each bank kind's largest (the buffers the stages share)
+// and the largest stage's arguments.
 func (v *VAE) Peak() int64 {
-	var peak int64
-	for i, n := range v.sizes {
-		if i+1 < len(v.sizes) && (v.PrefetchLimit == 0 || n+v.sizes[i+1] <= v.PrefetchLimit) {
-			n += v.sizes[i+1]
+	banks := map[string]int{}
+	var args int64
+	for _, si := range v.info {
+		for kind, n := range si.banks {
+			banks[kind] = max(banks[kind], n)
 		}
-		peak = max(peak, n)
+		args = max(args, si.args)
+	}
+	peak := args
+	for _, n := range banks {
+		peak += int64(n)
 	}
 	return peak
 }
 
+// PrefetchFloor is the pinned memory a stage may always reach with its second set of banks: at
+// 512 x 512 the VAE's peak is about 1 GiB (its stages share their buffers), under a DiT stage with
+// the set, whose reads would then wait (FLUX.2 klein: 1.0 of a picture's 6.0 s of steps).
+const PrefetchFloor = 2 << 30
+
+// prefetchMargin is what a stage pins beside the buffers PinnedBytes counts (its programs, the
+// commands' control code): FLUX.2 klein's edit with a half-size reference counted 3.2 GiB with the
+// second set of banks and pinned 3.53, over the VAE's 3.39.
+const prefetchMargin = 384 << 20
+
 // PrefetchFits says whether the swapped graphs among the graphs in dirs (open together, under
 // root) may keep a second set of banks (iron.GraphOptions.Prefetch) without the stage pinning
-// more than the VAE's peak: a run's peak is then unchanged. Off when iron.Prefetch is.
+// more than the VAE's peak, or than PrefetchFloor: a 1024 x 1024 run's peak is then unchanged.
+// Off when iron.Prefetch is.
 func PrefetchFits(v *VAE, root string, dirs []string, swapped ...string) bool {
 	if !iron.Prefetch || v == nil {
 		return false
@@ -151,7 +203,7 @@ func PrefetchFits(v *VAE, root string, dirs []string, swapped ...string) bool {
 			total += banks
 		}
 	}
-	return total <= v.Peak()
+	return total+prefetchMargin <= max(v.Peak(), PrefetchFloor)
 }
 
 // Close releases nothing: no stage stays on the device after Decode.
@@ -159,94 +211,9 @@ func (v *VAE) Close() error { return nil }
 
 // Decode turns the DiT's latents (Latent, H/8, W/8 for Anima), channel major, into the image.
 func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error) {
-	g := v.in
-	h, w := g.H, g.W
-	z := v.Latent
-	if len(latents) != z*h*w {
-		return nil, fmt.Errorf("anima: vae: %d latent values for %dx%dx%d", len(latents), z, h, w)
-	}
-	// Each stage's graph is loaded while the one before runs (two stages on the device at
-	// most), and its output is copied straight into the next one's input.
-	type opened struct {
-		g   *iron.Graph
-		err error
-	}
-	load := func(i int) chan opened {
-		ch := make(chan opened, 1)
-		go func() {
-			g, err := iron.OpenGraph(ctx, v.dev, v.stages[i])
-			ch <- opened{g, err}
-		}()
-		return ch
-	}
-	var out []byte
-	next := load(0)
-	cur := <-next
-	if cur.err != nil {
-		return nil, fmt.Errorf("anima: vae stage 0: %w", cur.err)
-	}
-	if err := v.writeLatents(cur.g, latents); err != nil {
-		cur.g.Close()
+	out, err := v.run(ctx, latents, v.Latent)
+	if err != nil {
 		return nil, err
-	}
-	for i := range v.stages {
-		t0 := time.Now()
-		next = nil
-		early := v.PrefetchLimit == 0 || v.sizes[i]+v.sizes[i+min(1, len(v.sizes)-1-i)] <= v.PrefetchLimit
-		if i+1 < len(v.stages) && early {
-			next = load(i + 1)
-		}
-		fail := func(err error) (*image.RGBA, error) {
-			cur.g.Close()
-			if next != nil {
-				if n := <-next; n.g != nil {
-					n.g.Close()
-				}
-			}
-			return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)
-		}
-		if err := cur.g.Run(ctx, nil); err != nil {
-			return fail(err)
-		}
-		o, err := cur.g.Output(cur.g.Outputs()[0].Name)
-		if err != nil {
-			return fail(err)
-		}
-		if next == nil && i+1 < len(v.stages) { // the next stage after this one closes
-			o = append([]byte(nil), o...)
-			cur.g.Close()
-			if n := <-load(i + 1); n.err != nil {
-				return nil, fmt.Errorf("anima: vae stage %d: %w", i+1, n.err)
-			} else {
-				in, err := n.g.Input("x")
-				if err != nil || len(in) != len(o) {
-					n.g.Close()
-					return nil, fmt.Errorf("anima: vae stage %d: the input (%d bytes) for %d bytes: %v", i+1, len(in), len(o), err)
-				}
-				copy(in, o)
-				cur = n
-			}
-		} else if next == nil {
-			out = append([]byte(nil), o...)
-			cur.g.Close()
-		} else {
-			n := <-next
-			next = nil
-			if n.err != nil {
-				return fail(n.err)
-			}
-			in, err := n.g.Input("x")
-			if err != nil || len(in) != len(o) {
-				n.g.Close()
-				return fail(fmt.Errorf("the next stage's input (%d bytes) for %d bytes: %v", len(in), len(o), err))
-			}
-			copy(in, o)
-			cur.g.Close()
-			cur = n
-		}
-		if v.Stage != nil {
-			v.Stage(i, len(v.stages), time.Since(t0))
-		}
 	}
 	W, H := v.Width, v.Height
 	if len(out) < 2*64*W*H {
@@ -271,8 +238,134 @@ func (v *VAE) Decode(ctx context.Context, latents []float32) (*image.RGBA, error
 	return img, nil
 }
 
-// writeLatents writes the DiT's latents into the first stage's input grid (bf16, zeros around).
-func (v *VAE) writeLatents(s *iron.Graph, latents []float32) error {
+// Encode runs an encoder's stages (FLUX.2's vae_enc: the first grid is the picture's, the last
+// stage gives the latents' pixels, dense, 64 channels wide) on the picture px, (Channels, Height,
+// Width), channel major, in [-1, 1]: the latents (Latent, h, w), channel major, h and w the
+// last stage's.
+func (v *VAE) Encode(ctx context.Context, px []float32) ([]float32, error) {
+	out, err := v.run(ctx, px, v.Channels)
+	if err != nil {
+		return nil, err
+	}
+	n := len(out) / (2 * 64)
+	z := make([]float32, v.Latent*n)
+	for i := 0; i < n; i++ {
+		for c := 0; c < v.Latent; c++ {
+			z[c*n+i] = fromBF16(binary.LittleEndian.Uint16(out[2*(64*i+c):]))
+		}
+	}
+	return z, nil
+}
+
+// run writes x, (channels, H, W) of the first stage's grid, channel major, into it and runs the
+// stages in turn: the last stage's output.
+func (v *VAE) run(ctx context.Context, latents []float32, channels int) (out []byte, err error) {
+	g := v.in
+	h, w := g.H, g.W
+	z := channels
+	if len(latents) != z*h*w {
+		return nil, fmt.Errorf("anima: vae: %d values for %dx%dx%d", len(latents), z, h, w)
+	}
+	// the buffers the stages share: a bank kind's (the largest stage's size), and the input,
+	// which is the stage before's output
+	banks := map[string]*hwnpu.Buffer{}
+	var in *hwnpu.Buffer
+	defer func() {
+		for _, b := range banks {
+			b.Close()
+		}
+		if in != nil {
+			in.Close()
+		}
+	}()
+	for _, si := range v.info {
+		for kind := range si.banks {
+			if banks[kind] != nil {
+				continue
+			}
+			n := 0
+			for _, sj := range v.info {
+				n = max(n, sj.banks[kind])
+			}
+			if banks[kind], err = v.dev.AllocBuffer(max(n, 4096)); err != nil {
+				return nil, fmt.Errorf("anima: vae: the stages' %s bank (%d MiB): %w", kind, n>>20, err)
+			}
+		}
+	}
+	for i, dir := range v.stages {
+		t0 := time.Now()
+		si := v.info[i]
+		lend := map[string]*hwnpu.Buffer{}
+		for kind := range si.banks {
+			lend[kind] = banks[kind]
+		}
+		handed := in != nil && si.inKind != "" && in.Size() >= si.inBytes
+		if handed {
+			lend[si.inKind] = in
+		}
+		var next *hwnpu.Buffer // this stage's output, the next one's input
+		if i+1 < len(v.stages) && si.outKind != "" && v.info[i+1].inKind != "" && v.info[i+1].inBytes == si.outBytes {
+			if next, err = v.dev.AllocBuffer(max(si.outBytes, 4096)); err != nil {
+				return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)
+			}
+			lend[si.outKind] = next
+		}
+		fail := func(err error) ([]byte, error) {
+			if next != nil {
+				next.Close()
+			}
+			return nil, fmt.Errorf("anima: vae stage %d: %w", i, err)
+		}
+		sg, err := iron.OpenGraphWith(ctx, v.dev, dir, iron.GraphOptions{Buffers: lend})
+		if err != nil {
+			return fail(err)
+		}
+		switch {
+		case i == 0:
+			err = v.writeLatents(sg, latents, channels)
+		case !handed: // the stage before's output, copied
+			var x []byte
+			if x, err = sg.Input("x"); err == nil && len(x) != len(out) {
+				err = fmt.Errorf("the input (%d bytes) for %d bytes", len(x), len(out))
+			}
+			copy(x, out)
+		}
+		var normsDone func() error
+		if err == nil {
+			normsDone, err = hostNorms(sg, si.norms)
+		}
+		if err == nil {
+			err = sg.Run(ctx, nil)
+		}
+		if err == nil {
+			err = normsDone()
+		}
+		var o []byte
+		if err == nil {
+			o, err = sg.Output(sg.Outputs()[0].Name)
+		}
+		if err != nil {
+			sg.Close()
+			return fail(err)
+		}
+		if next == nil { // the last stage's, or one the next stage copies
+			out = append(out[:0], o...)
+		}
+		sg.Close()
+		if in != nil {
+			in.Close()
+		}
+		in = next
+		if v.Stage != nil {
+			v.Stage(i, len(v.stages), time.Since(t0))
+		}
+	}
+	return out, nil
+}
+
+// writeLatents writes the latents (channels, H, W) into the first stage's input grid (bf16,
+// zeros around).
+func (v *VAE) writeLatents(s *iron.Graph, latents []float32, channels int) error {
 	in, err := s.Input("x")
 	if err != nil {
 		return err
@@ -282,7 +375,7 @@ func (v *VAE) writeLatents(s *iron.Graph, latents []float32) error {
 	for y := 0; y < g.H; y++ {
 		for x := 0; x < g.W; x++ {
 			o := 2 * g.Pixel(y, x) * g.C
-			for c := 0; c < v.Latent; c++ {
+			for c := 0; c < channels; c++ {
 				binary.LittleEndian.PutUint16(in[o+2*c:], bf16(latents[(c*g.H+y)*g.W+x]))
 			}
 		}

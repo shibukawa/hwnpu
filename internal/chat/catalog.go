@@ -132,6 +132,7 @@ var Features = []struct{ Name, About string }{
 	{"query", "embeds search queries and the documents searched differently (input_type)"},
 	{"vision", "reads the images of user messages (image_url; /image in the terminal)"},
 	{"audio", "reads the audio of user messages (input_audio, WAV; /audio in the terminal)"},
+	{"edit", "edits or composes from reference images (hwnpu-image generate --image)"},
 	{"translation", "translates the text of each user message (chat_template_kwargs target_lang, source_lang, form, context, glossary; -to in the terminal)"},
 }
 
