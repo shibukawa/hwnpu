@@ -171,7 +171,7 @@ func TestPartsAgainstReference(t *testing.T) {
 			}
 			c.cd = conds[0]
 		}
-		vs, err := e.velocity(ctx, x0, 1, []Cond{c.cd}, []imageInputs{e.imageInputs(c.cd)})
+		vs, err := e.velocity(ctx, [][]float32{x0}, 1, []Cond{c.cd}, []imageInputs{e.imageInputs(c.cd)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,8 +277,9 @@ func TestTextGroupsBisect(t *testing.T) {
 }
 
 // TestTextLayersBisect writes Qwen3-VL-8B's layers HWNPU_QWENIMAGE_LAYERS (4..7) one program each
-// (HWNPU_QWENIMAGE_ROOT's text encoder, int8) into HWNPU_QWENIMAGE_OUT, and runs them from the CPU
-// interpreter's previous output on both: each layer's cosine and its non-finite values.
+// (the text encoder of HWNPU_QWENIMAGE_ROOT, or of the repository HWNPU_QWENIMAGE_TEXT, int8) into
+// HWNPU_QWENIMAGE_OUT, and runs them from the CPU interpreter's previous output on both: each
+// layer's cosine and its non-finite values.
 func TestTextLayersBisect(t *testing.T) {
 	dir, root, out := os.Getenv("HWNPU_QWENIMAGE_EXPORT"), os.Getenv("HWNPU_QWENIMAGE_ROOT"), os.Getenv("HWNPU_QWENIMAGE_OUT")
 	if dir == "" || root == "" || out == "" {
@@ -296,7 +297,9 @@ func TestTextLayersBisect(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	text := filepath.Join(filepath.Dir(root), TextDir)
+	// the repository whose files hold Qwen3-VL-8B's text_encoder/: root's own, or another
+	// Qwen-Image-2.1's (HWNPU_QWENIMAGE_TEXT)
+	text := cmp.Or(os.Getenv("HWNPU_QWENIMAGE_TEXT"), root)
 	tc, err := mil.ReadText(text)
 	if err != nil {
 		t.Fatal(err)

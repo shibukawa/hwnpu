@@ -237,3 +237,34 @@ func (p *Pipeline) Decode(ctx context.Context, latents []float32) (*image.RGBA, 
 	}
 	return p.eng.decode(ctx, latents, p.Stage)
 }
+
+// Batched reports whether several pictures drawn together take less time than one after another:
+// an export of programs, whose text encoder's programs and VAE stages are loaded for each run
+// (EncodeAll and DecodeAll load each once for all the pictures).
+func (p *Pipeline) Batched() bool {
+	_, ok := p.eng.(allDecoder)
+	return ok
+}
+
+// DecodeAll is Decode for several pictures' latents: with an export of programs the VAE runs
+// stage by stage, each stage loaded once for all the pictures (Stage is then told of a stage when
+// every picture is through it); else one picture after another.
+func (p *Pipeline) DecodeAll(ctx context.Context, latents ...[]float32) ([]*image.RGBA, error) {
+	if !p.KeepDiT {
+		if err := p.eng.closeDiT(); err != nil {
+			return nil, err
+		}
+	}
+	if d, ok := p.eng.(allDecoder); ok {
+		return d.decodeAll(ctx, latents, p.Stage)
+	}
+	imgs := make([]*image.RGBA, len(latents))
+	for k, x := range latents {
+		img, err := p.eng.decode(ctx, x, p.Stage)
+		if err != nil {
+			return nil, err
+		}
+		imgs[k] = img
+	}
+	return imgs, nil
+}
