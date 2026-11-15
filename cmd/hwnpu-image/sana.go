@@ -21,8 +21,10 @@ import (
 // sanaRun is what runSana takes from the command line.
 type sanaRun struct {
 	model, negative, noise, latents string
-	// prompts are drawn one after another into outs, the pipeline loaded once
+	// prompts are drawn into outs, the pipeline loaded once: batch of them together (an export
+	// of programs: their text and their VAE's stages loaded once for all), else one after another
 	prompts, outs []string
+	batch         int
 	keepDiT       bool
 	steps         int
 	guidance      float64
@@ -120,85 +122,110 @@ func runSana(ctx context.Context, r sanaRun) error {
 	console.Running()
 
 	// with several pictures the DiT stays on the device between them (keepDiT): only Gemma 2
-	// and the VAE's stages are loaded for each
+	// and the VAE's stages are loaded for each, or with an export of programs for each batch of
+	// them (design.md 16.216)
 	p.KeepDiT = r.keepDiT && len(r.prompts) > 1
-	for i, prompt := range r.prompts {
+	batch := 1
+	if p.Batched() {
+		batch = max(1, r.batch)
+	}
+	for lo := 0; lo < len(r.prompts); lo += batch {
+		hi := min(lo+batch, len(r.prompts))
 		t1 := time.Now()
-		seed := r.seed
-		if seed != 0 {
-			seed += uint64(i)
-		}
-		if err := drawSana(ctx, p, r, prompt, r.outs[i], seed, steps, guidance, lw, logf); err != nil {
+		if err := drawSana(ctx, p, r, lo, hi, steps, guidance, lw, logf); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "%s: %s (%s since the start)\n", r.outs[i], console.Duration(time.Since(t1)), console.Duration(time.Since(t0)))
+		for i := lo; i < hi; i++ {
+			if hi-lo == 1 {
+				fmt.Fprintf(os.Stderr, "%s: %s (%s since the start)\n", r.outs[i], console.Duration(time.Since(t1)), console.Duration(time.Since(t0)))
+			} else {
+				fmt.Fprintf(os.Stderr, "%s: %s a picture, %d together (%s since the start)\n", r.outs[i],
+					console.Duration(time.Since(t1)/time.Duration(hi-lo)), hi-lo, console.Duration(time.Since(t0)))
+			}
+		}
 	}
 	return nil
 }
 
-// drawSana draws one picture of prompt into out with the loaded pipeline p.
-func drawSana(ctx context.Context, p *sana.Pipeline, r sanaRun, prompt, out string, seed uint64, steps int, guidance float64,
+// drawSana draws the pictures of the prompts lo to hi-1 into their outs with the loaded pipeline
+// p: the text of all of them, each one's steps, then the VAE over all of them.
+func drawSana(ctx context.Context, p *sana.Pipeline, r sanaRun, lo, hi, steps int, guidance float64,
 	lw io.Writer, logf func(string, ...any)) error {
 	live := console.Live(lw)
-	cond, neg, err := p.EncodeBoth(ctx, prompt, r.negative)
+	conds, negs, err := p.EncodeAll(ctx, r.prompts[lo:hi], r.negative)
 	if err != nil {
 		return err
 	}
-	var noise []float32
-	if r.noise != "" {
-		if noise, err = readF32(r.noise); err != nil {
+	xs := make([][]float32, hi-lo)
+	for i := lo; i < hi; i++ {
+		var noise []float32
+		if r.noise != "" {
+			if noise, err = readF32(r.noise); err != nil {
+				return err
+			}
+			if len(noise) != p.Dit.Latent*p.Dit.Tokens() {
+				return fmt.Errorf("%s: %d values for latents of %d", r.noise, len(noise), p.Dit.Latent*p.Dit.Tokens())
+			}
+		} else {
+			s := r.seed
+			if s == 0 {
+				s = rand.Uint64()
+			} else {
+				s += uint64(i)
+			}
+			logf("seed %d", s)
+			noise = p.Noise(s)
+		}
+		name := "denoising"
+		if hi-lo > 1 {
+			name = fmt.Sprintf("denoising %d/%d", i-lo+1, hi-lo)
+		}
+		bar := console.NewBar(lw, name)
+		bar.Set(0, fmt.Sprintf("step 1/%d", steps))
+		x, err := p.Generate(ctx, conds[i-lo], negs[i-lo], noise, steps, guidance, func(i, n int, d time.Duration) {
+			per := bar.Elapsed() / time.Duration(i+1)
+			bar.Set(float64(i+1)/float64(n), fmt.Sprintf("step %d/%d, %.1f s a step", min(i+2, n), n, per.Seconds()))
+			if !live {
+				logf("step %d/%d: %.2f s", i+1, n, d.Seconds())
+			}
+		})
+		if err != nil {
+			bar.Done("failed")
 			return err
 		}
-		if len(noise) != p.Dit.Latent*p.Dit.Tokens() {
-			return fmt.Errorf("%s: %d values for latents of %d", r.noise, len(noise), p.Dit.Latent*p.Dit.Tokens())
+		bar.Done(fmt.Sprintf("%d steps in %s", steps, console.Duration(bar.Elapsed())))
+		if r.latents != "" {
+			if err := writeF32(r.latents, x); err != nil {
+				return err
+			}
 		}
-	} else {
-		s := seed
-		if s == 0 {
-			s = rand.Uint64()
-		}
-		logf("seed %d", s)
-		noise = p.Noise(s)
+		xs[i-lo] = x
 	}
-	bar := console.NewBar(lw, "denoising")
-	bar.Set(0, fmt.Sprintf("step 1/%d", steps))
-	x, err := p.Generate(ctx, cond, neg, noise, steps, guidance, func(i, n int, d time.Duration) {
-		per := bar.Elapsed() / time.Duration(i+1)
-		bar.Set(float64(i+1)/float64(n), fmt.Sprintf("step %d/%d, %.1f s a step", min(i+2, n), n, per.Seconds()))
-		if !live {
-			logf("step %d/%d: %.2f s", i+1, n, d.Seconds())
-		}
-	})
-	if err != nil {
-		bar.Done("failed")
-		return err
-	}
-	bar.Done(fmt.Sprintf("%d steps in %s", steps, console.Duration(bar.Elapsed())))
-	if r.latents != "" {
-		if err := writeF32(r.latents, x); err != nil {
-			return err
-		}
-	}
-	bar = console.NewBar(lw, "decoding")
+	bar := console.NewBar(lw, "decoding")
 	p.Stage = func(i, n int, d time.Duration) {
 		bar.Set(float64(i+1)/float64(n), fmt.Sprintf("VAE stage %d/%d", min(i+2, n), n))
 		if !live {
 			logf("vae stage %d: %.2f s", i, d.Seconds())
 		}
 	}
-	img, err := p.Decode(ctx, x)
+	imgs, err := p.DecodeAll(ctx, xs...)
 	if err != nil {
 		bar.Done("failed")
 		return err
 	}
 	bar.Done("in " + console.Duration(bar.Elapsed()))
-	f, err := os.Create(out)
-	if err != nil {
-		return err
+	for i, img := range imgs {
+		f, err := os.Create(r.outs[lo+i])
+		if err != nil {
+			return err
+		}
+		if err := png.Encode(f, img); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
 	}
-	if err := png.Encode(f, img); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	return nil
 }

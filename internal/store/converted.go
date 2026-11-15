@@ -40,6 +40,14 @@ func VersionDir(version int, develop bool, key string) string {
 	return fmt.Sprintf("v%d-%s", version, key[:min(8, len(key))])
 }
 
+// logf writes a line on log (nil for nowhere).
+func logf(log io.Writer) func(string, ...any) {
+	if log == nil {
+		return nil
+	}
+	return func(format string, args ...any) { fmt.Fprintf(log, format+"\n", args...) }
+}
+
 // bar shows a download from a source on log.
 func bar(log io.Writer, what string) (*console.Bar, func(done, total int64)) {
 	b := console.NewBar(log, what)
@@ -97,9 +105,12 @@ func materialize(ctx context.Context, s Source, e Entry, rel, dst string, log io
 	if err := os.MkdirAll(part, 0o755); err != nil {
 		return err
 	}
+	total := e.Bytes()
+	if err := cache.Room(total, dst, logf(log)); err != nil {
+		return err
+	}
 	br, set := bar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(dst), s))
 	var done int64
-	total := e.Bytes()
 	for _, f := range e.Files {
 		p := filepath.Join(part, filepath.FromSlash(f.Path))
 		if fi, err := os.Stat(p); err == nil && fi.Size() == f.Size {

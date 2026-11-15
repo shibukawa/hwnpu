@@ -116,19 +116,30 @@ func (c *GenerateCmd) chroma(ctx context.Context, model string, outs []string) e
 	if err != nil {
 		return err
 	}
-	for i := range c.Prompts {
+	var neg *chroma.Cond
+	if smp.Guidance != 1 {
+		neg = &conds[len(c.Prompts)]
+	}
+	// an export of programs: --batch pictures at a time, their steps together (a group of the
+	// DiT's blocks runs every picture before the next group, and pays for following another group
+	// in its first run alone), then the VAE's stages over all of them. AMD's NPU draws one picture
+	// after another
+	batch := 1
+	if p.Batched() {
+		batch = max(1, c.Batch)
+	}
+	for lo := 0; lo < len(c.Prompts); lo += batch {
+		hi := min(lo+batch, len(c.Prompts))
+		n := hi - lo
 		t1 := time.Now()
-		cond := conds[i]
-		var neg *chroma.Cond
-		if smp.Guidance != 1 {
-			neg = &conds[len(c.Prompts)]
-		}
-		var x []float32
-		if c.Noise != "" {
-			if x, err = readF32(c.Noise); err != nil {
-				return err
+		xs := make([][]float32, n)
+		for i := lo; i < hi; i++ {
+			if c.Noise != "" {
+				if xs[i-lo], err = readF32(c.Noise); err != nil {
+					return err
+				}
+				continue
 			}
-		} else {
 			s := c.Seed
 			if s == 0 {
 				s = rand.Uint64()
@@ -136,53 +147,74 @@ func (c *GenerateCmd) chroma(ctx context.Context, model string, outs []string) e
 				s += uint64(i)
 			}
 			logf("seed %d", s)
-			x = p.Noise(s)
+			xs[i-lo] = p.Noise(s)
 		}
-		bar := console.NewBar(lw, "denoising")
+		name := "denoising"
+		if n > 1 {
+			name = fmt.Sprintf("denoising %d pictures", n)
+		}
+		// times are a step's time and, with several pictures, each one's share of it
+		times := func(per time.Duration) string {
+			if n > 1 {
+				return fmt.Sprintf("%.1f s a step, %.1f s a picture", per.Seconds(), per.Seconds()/float64(n))
+			}
+			return fmt.Sprintf("%.1f s a step", per.Seconds())
+		}
+		bar := console.NewBar(lw, name)
 		bar.Set(0, fmt.Sprintf("step 1/%d", steps))
-		x, err = p.Generate(ctx, cond, neg, x, sig, smp, func(i, n int, d time.Duration) {
+		xs, err = p.GenerateAll(ctx, conds[lo:hi], neg, xs, sig, smp, func(i, total int, d time.Duration) {
 			per := bar.Elapsed() / time.Duration(i+1)
-			bar.Set(float64(i+1)/float64(n), fmt.Sprintf("step %d/%d, %.1f s a step, %s left", min(i+2, n), n, per.Seconds(),
-				console.Duration(time.Duration(n-i-1)*per)))
+			bar.Set(float64(i+1)/float64(total), fmt.Sprintf("step %d/%d, %s, %s left", min(i+2, total), total, times(per),
+				console.Duration(time.Duration(total-i-1)*per)))
 			if !live {
-				logf("step %d/%d: sigma %.3f -> %.3f, %.1f s", i+1, n, sig[i], sig[i+1], d.Seconds())
+				logf("step %d/%d: sigma %.3f -> %.3f, %.1f s", i+1, total, sig[i], sig[i+1], d.Seconds())
 			}
 		})
 		if err != nil {
 			bar.Done("failed")
 			return err
 		}
-		bar.Done(fmt.Sprintf("%d steps in %s (%.1f s a step)", steps, console.Duration(bar.Elapsed()), bar.Elapsed().Seconds()/float64(steps)))
+		bar.Done(fmt.Sprintf("%d steps in %s (%s)", steps, console.Duration(bar.Elapsed()), times(bar.Elapsed()/time.Duration(steps))))
 		if c.Latents != "" {
-			if err := writeF32(c.Latents, x); err != nil {
-				return err
+			for _, x := range xs {
+				if err := writeF32(c.Latents, x); err != nil {
+					return err
+				}
 			}
 		}
 		bar = console.NewBar(lw, "decoding")
-		p.Stage = func(i, n int, d time.Duration) {
-			bar.Set(float64(i+1)/float64(n), fmt.Sprintf("VAE stage %d/%d", min(i+2, n), n))
+		p.Stage = func(i, total int, d time.Duration) {
+			bar.Set(float64(i+1)/float64(total), fmt.Sprintf("VAE stage %d/%d", min(i+2, total), total))
 			if !live {
 				logf("vae stage %d: %.2f s", i, d.Seconds())
 			}
 		}
-		img, err := p.Decode(ctx, x)
+		imgs, err := p.DecodeAll(ctx, xs...)
 		if err != nil {
 			bar.Done("failed")
 			return err
 		}
 		bar.Done("in " + console.Duration(bar.Elapsed()))
-		f, err := os.Create(outs[i])
-		if err != nil {
-			return err
+		for i, img := range imgs {
+			out := outs[lo+i]
+			f, err := os.Create(out)
+			if err != nil {
+				return err
+			}
+			if err := png.Encode(f, img); err != nil {
+				f.Close()
+				return err
+			}
+			if err := f.Close(); err != nil {
+				return err
+			}
+			if n > 1 {
+				fmt.Fprintf(os.Stderr, "%s: %s a picture, %d together (%s since the start)\n", out, console.Duration(time.Since(t1)/time.Duration(n)), n,
+					console.Duration(time.Since(t0)))
+			} else {
+				fmt.Fprintf(os.Stderr, "%s: %s (%s since the start)\n", out, console.Duration(time.Since(t1)), console.Duration(time.Since(t0)))
+			}
 		}
-		if err := png.Encode(f, img); err != nil {
-			f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "%s: %s (%s since the start)\n", outs[i], console.Duration(time.Since(t1)), console.Duration(time.Since(t0)))
 	}
 	return nil
 }

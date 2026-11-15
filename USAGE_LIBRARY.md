@@ -67,6 +67,13 @@ weights, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")            // model.safeten
 
 - The settings are the process's: `Open` sets them for everything in it
 - The bundled models are in the layout of a source (`original/OWNER/NAME/` with `hwnpu-lock.json`) and are used in place (linked, not copied)
+- `Options.Limits` (nil: `HWNPU_CACHE_MAX_SIZE`, `HWNPU_CACHE_MIN_FREE`) bounds the cache: a download that would leave the disk with less than `MinFree` (10 GB unless set) fails with `modelstore.ErrNoRoom`; with a `MaxSize`, the units least recently used are removed first to make room. `s.Usage()`, `s.PlanPrune(o)`, `s.Prune(o)` and `s.Remove(units)` are what `hwnpu cache` does
+
+```go
+s, err := modelstore.Open(modelstore.Options{Limits: &modelstore.Limits{MaxSize: 100e9, MinFree: 20e9}})
+u, err := s.Usage()                                                     // u.Units: kind, bytes, last used
+gone, err := s.Prune(modelstore.PruneOptions{OlderThan: 30 * 24 * time.Hour}) // not used for 30 days
+```
 
 ## AMD (running kernels directly)
 

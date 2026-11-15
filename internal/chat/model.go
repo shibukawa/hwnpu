@@ -1266,6 +1266,9 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	} else {
 		os.Remove(part + ".etag")
 	}
+	if err := cache.Room(resp.ContentLength, path, logLine(log)); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(part, flags, 0o644)
 	if err != nil {
 		return err
@@ -1283,6 +1286,14 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	pw.bar.Done(fmt.Sprintf("%s in %s to %s", gb(pw.done, -1), console.Duration(pw.bar.Elapsed()), filepath.Dir(path)))
 	os.Remove(part + ".etag")
 	return os.Rename(part, path)
+}
+
+// logLine writes a line on log (nil for nowhere).
+func logLine(log io.Writer) func(string, ...any) {
+	if log == nil {
+		return nil
+	}
+	return func(format string, args ...any) { fmt.Fprintf(log, format+"\n", args...) }
 }
 
 // commits are the commits Hugging Face served the repositories' files of a revision from

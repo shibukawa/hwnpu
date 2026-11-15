@@ -133,9 +133,11 @@ type Pipeline struct {
 	Dit  DitConfig
 	Text TextConfig
 	// prefixIDs are the tokens of the instruction the text graph holds, prefixOut their last
-	// hidden states (bf16, rows of Text.Hidden).
+	// hidden states (bf16, rows of Text.Hidden); an export of programs has them as float32
+	// (heldOut, HeldOutFile).
 	prefixIDs []int32
 	prefixOut []byte
+	heldOut   []float32
 	Model     Model
 
 	eng   engine
@@ -206,6 +208,19 @@ type part interface {
 	close() error
 }
 
+// allPart is a part of programs loaded only while they run, which runs several inputs, each from
+// a position of its own (0, or Text.Prefix), with each program loaded once: progEngine's Gemma
+// 2. An input is the rows it has, an output as many rows as the program that ran it takes.
+type allPart interface {
+	runAll(ctx context.Context, ins [][]float32, starts []int) ([][]float32, error)
+}
+
+// allDecoder is an engine whose VAE decodes several pictures stage by stage, each stage loaded
+// once: progEngine.
+type allDecoder interface {
+	decodeAll(ctx context.Context, latents [][]float32, stage StageFunc) ([]*image.RGBA, error)
+}
+
 // Cond is a prompt's conditioning: the caption (TextRows x hidden) and how many of its rows
 // count.
 type Cond struct {
@@ -264,7 +279,12 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 		return fail(err)
 	}
 	td := filepath.Join(dir, "text")
-	if p.Text.Prefix > 0 {
+	if p.Text.Prefix > 0 && IsProgramExport(dir) {
+		// Gemma 2's programs hold the instruction's first rows (mil.TextFrom)
+		if p.prefixIDs, p.heldOut, err = readHeld(dir, p.Text); err != nil {
+			return fail(err)
+		}
+	} else if p.Text.Prefix > 0 {
 		// an IRON export whose text graph holds the instruction's first rows (iron_sana's Prefix)
 		mt, err := iron.ReadGraphManifest(td)
 		if err != nil {
@@ -364,18 +384,38 @@ func (p *Pipeline) EncodeNegative(ctx context.Context, prompt string, cond Cond)
 // EncodeBoth is Encode's and EncodeNegative's conditionings with each graph loaded once (the
 // text graph's 1.7 GB is most of the time of a short prompt).
 func (p *Pipeline) EncodeBoth(ctx context.Context, prompt, negative string) (cond, neg Cond, err error) {
-	if strings.TrimSpace(negative) == "" {
-		if cond, err = p.Encode(ctx, prompt); err != nil {
-			return
-		}
-		neg, err = p.EncodeNegative(ctx, negative, cond)
-		return
-	}
-	c, err := p.encode(ctx, []textPrompt{{prompt, true}, {negative, false}})
+	conds, negs, err := p.EncodeAll(ctx, []string{prompt}, negative)
 	if err != nil {
 		return Cond{}, Cond{}, err
 	}
-	return c[0], c[1], nil
+	return conds[0], negs[0], nil
+}
+
+// EncodeAll is EncodeBoth for several prompts under one negative prompt: each prompt's
+// conditioning and the negative prompt's for it, with each graph (or program) loaded once for all
+// of them.
+func (p *Pipeline) EncodeAll(ctx context.Context, prompts []string, negative string) (conds, negs []Cond, err error) {
+	tps := make([]textPrompt, 0, len(prompts)+1)
+	for _, prompt := range prompts {
+		tps = append(tps, textPrompt{prompt, true})
+	}
+	n := len(prompts)
+	if strings.TrimSpace(negative) != "" {
+		tps = append(tps, textPrompt{negative, false})
+	}
+	cs, err := p.encode(ctx, tps)
+	if err != nil {
+		return nil, nil, err
+	}
+	conds, negs = cs[:n:n], make([]Cond, n)
+	for k := range negs {
+		if len(cs) > n {
+			negs[k] = cs[n]
+		} else { // the empty prompt: the prompt's own first row (EncodeNegative)
+			negs[k] = Cond{ctx: conds[k].ctx, Rows: 1}
+		}
+	}
+	return conds, negs, nil
 }
 
 // textPrompt is a prompt for the text graph, after the instruction (Sana's prompt) or alone
@@ -399,7 +439,11 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 	runs := make([]run, len(prompts))
 	for k, tp := range prompts {
 		ids, total := p.tokens(tp.text, tp.instruction)
-		start := textStart(ids, p.prefixIDs, p.Text.Prefix, R)
+		chunk := R
+		if p.heldOut != nil { // programs: from the held rows, or from the first
+			chunk = p.Text.Prefix
+		}
+		start := textStart(ids, p.prefixIDs, p.Text.Prefix, chunk)
 		if p.Text.Prefix > 0 {
 			if len(ids) > p.Text.Cache {
 				return nil, fmt.Errorf("sana: %d tokens, the text graph holds %d", len(ids), p.Text.Cache)
@@ -422,38 +466,64 @@ func (p *Pipeline) encode(ctx context.Context, prompts []textPrompt) ([]Cond, er
 	}
 	defer closeText()
 	tLoad := time.Now()
-	x := make([]float32, R*E)
 	row := make([]byte, 2*E)
 	norm := float32(math.Sqrt(float64(E)))
-	for k := range runs {
-		r := &runs[k]
-		ids, start := r.ids, r.start
-		// the embedding rows times sqrt(hidden) (Gemma's normalizer, 48 in bf16, rounded to
-		// bf16 as the reference's embedding), a chunk at a time from start (one call of every
-		// row without a prefix)
-		var h []float32
-		for at := start; at < len(ids); at += R {
-			clear(x)
-			for i, id := range ids[at:min(at+R, len(ids))] {
-				if _, err := p.embed.ReadAt(row, int64(id)*int64(2*E)); err != nil {
-					return nil, err
-				}
-				for j := 0; j < E; j++ {
-					x[i*E+j] = fromBF16(bf16(fromBF16(binary.LittleEndian.Uint16(row[2*j:])) * norm))
-				}
+	// rows writes the embedding rows of ids times sqrt(hidden) (Gemma's normalizer, 48 in bf16,
+	// rounded to bf16 as the reference's embedding) into x, zeros past them
+	rows := func(x []float32, ids []int32) error {
+		clear(x)
+		for i, id := range ids {
+			if _, err := p.embed.ReadAt(row, int64(id)*int64(2*E)); err != nil {
+				return err
 			}
-			out, err := text.run(ctx, x, at)
-			if err != nil {
+			for j := 0; j < E; j++ {
+				x[i*E+j] = fromBF16(bf16(fromBF16(binary.LittleEndian.Uint16(row[2*j:])) * norm))
+			}
+		}
+		return nil
+	}
+	hs := make([][]float32, len(runs)) // each prompt's last hidden states from its start
+	if all, ok := text.(allPart); ok {
+		// programs loaded while they run: every prompt through each, which loads once for all;
+		// a prompt after the instruction from the rows the programs hold
+		xs, starts := make([][]float32, len(runs)), make([]int, len(runs))
+		for k, r := range runs {
+			xs[k], starts[k] = make([]float32, (len(r.ids)-r.start)*E), r.start
+			if err := rows(xs[k], r.ids[r.start:]); err != nil {
 				return nil, err
 			}
-			h = append(h, out...)
 		}
+		if hs, err = all.runAll(ctx, xs, starts); err != nil {
+			return nil, err
+		}
+	} else {
+		x := make([]float32, R*E)
+		for k, r := range runs {
+			// a chunk at a time from start (one call of every row without a prefix)
+			for at := r.start; at < len(r.ids); at += R {
+				if err := rows(x, r.ids[at:min(at+R, len(r.ids))]); err != nil {
+					return nil, err
+				}
+				out, err := text.run(ctx, x, at)
+				if err != nil {
+					return nil, err
+				}
+				hs[k] = append(hs[k], out...)
+			}
+		}
+	}
+	for k := range runs {
+		r := &runs[k]
+		ids, start, h := r.ids, r.start, hs[k]
 		// hidden is row i's last hidden state: the prefix's below start, the graph's from it
 		hidden := func(i int) []float32 {
-			if i < start {
-				return fromBF16s(p.prefixOut[2*i*E : 2*(i+1)*E])
+			switch {
+			case i >= start:
+				return h[(i-start)*E : (i-start+1)*E]
+			case p.heldOut != nil:
+				return p.heldOut[i*E : (i+1)*E]
 			}
-			return h[(i-start)*E : (i-start+1)*E]
+			return fromBF16s(p.prefixOut[2*i*E : 2*(i+1)*E])
 		}
 		// the rows Sana keeps: the first and the last 299 of the padded length, of which those
 		// before len(ids) count (a prefix: the first, then a run)

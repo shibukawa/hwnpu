@@ -103,6 +103,15 @@ type engine interface {
 	close() error
 }
 
+// together is an engine of programs that takes several pictures at once (progEngine): a group of
+// the DiT's blocks, or a stage of the VAE, runs every picture before the next one loads.
+type together interface {
+	// velocities is velocity with latents of its own for each conditioning: xs[k] under conds[k].
+	velocities(ctx context.Context, conds []Cond, xs [][]float32, sigma float64) ([][]float32, error)
+	// decodeAll is decode for several pictures' latents, stage by stage.
+	decodeAll(ctx context.Context, zs [][]float32, stage anima.StageFunc) ([]*image.RGBA, error)
+}
+
 // Pipeline is a loaded export.
 type Pipeline struct {
 	C     Config
@@ -331,12 +340,37 @@ func (s Sampling) guided(sigma float64) bool {
 // by neg at the steps smp guides: Heun's (the DiT twice a step but the last, as
 // FlowMatchHeunDiscreteScheduler), Euler's or DPM-Solver++ 2M's.
 func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []float32, sigmas []float64, smp Sampling, step StepFunc) ([]float32, error) {
-	c := p.C
-	if len(noise) != c.Tokens()*c.Latent {
-		return nil, fmt.Errorf("chroma: %d noise values for latents of %d", len(noise), c.Tokens()*c.Latent)
+	xs, err := p.GenerateAll(ctx, []Cond{cond}, neg, [][]float32{noise}, sigmas, smp, step)
+	if err != nil {
+		return nil, err
 	}
-	if cond.ctx == nil && cond.rows == nil {
-		return nil, errors.New("chroma: the DiT runs without a prompt (Encode)")
+	return xs[0], nil
+}
+
+// Batched reports whether several pictures drawn together take less time than one after another
+// (GenerateAll, DecodeAll): an export of programs, where a group of the DiT's blocks that follows
+// another group pays for that once for all the pictures, and a stage of the VAE is loaded once.
+func (p *Pipeline) Batched() bool {
+	_, ok := p.eng.(together)
+	return ok
+}
+
+// GenerateAll is Generate for several pictures at once, conds[k] from noises[k] under the same
+// sigmas and sampling: the latents of each. With an export of programs the pictures step
+// together: each call of the DiT runs a group of its blocks on every picture (and on each one's
+// negative prompt) before the next group. step is told of a step when every picture has taken it.
+func (p *Pipeline) GenerateAll(ctx context.Context, conds []Cond, neg *Cond, noises [][]float32, sigmas []float64, smp Sampling, step StepFunc) ([][]float32, error) {
+	c := p.C
+	if len(conds) == 0 || len(conds) != len(noises) {
+		return nil, fmt.Errorf("chroma: %d conditionings for %d pictures", len(conds), len(noises))
+	}
+	for k, cond := range conds {
+		if len(noises[k]) != c.Tokens()*c.Latent {
+			return nil, fmt.Errorf("chroma: %d noise values for latents of %d", len(noises[k]), c.Tokens()*c.Latent)
+		}
+		if cond.ctx == nil && cond.rows == nil {
+			return nil, errors.New("chroma: the DiT runs without a prompt (Encode)")
+		}
 	}
 	switch smp.Solver {
 	case "heun", "euler", "dpm2m":
@@ -364,59 +398,95 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, neg *Cond, noise []f
 	if !p.KeepDiT {
 		defer p.eng.closeDiT()
 	}
-	vel := func(x []float32, sigma float64) ([]float32, error) {
-		conds := []Cond{cond}
+	// vel is each picture's velocity at sigma from its latents xs[k]: the DiT under its prompt
+	// and, at a sigma the guidance runs at, under the negative prompt
+	vel := func(xs [][]float32, sigma float64) ([][]float32, error) {
+		per := 1
 		if smp.guided(sigma) {
-			conds = append(conds, *neg)
+			per = 2
 		}
-		vs, err := p.eng.velocity(ctx, conds, x, sigma)
-		if err != nil {
-			return nil, err
-		}
-		v := vs[0]
-		if len(vs) == 2 { // neg + g (cond - neg)
-			g := float32(smp.Guidance)
-			for j := range v {
-				v[j] = vs[1][j] + g*(v[j]-vs[1][j])
+		jc, jx := make([]Cond, 0, per*len(xs)), make([][]float32, 0, per*len(xs))
+		for k, x := range xs {
+			jc, jx = append(jc, conds[k]), append(jx, x)
+			if per == 2 {
+				jc, jx = append(jc, *neg), append(jx, x)
 			}
 		}
-		return v, nil
+		var vs [][]float32
+		if t, ok := p.eng.(together); ok {
+			var err error
+			if vs, err = t.velocities(ctx, jc, jx, sigma); err != nil {
+				return nil, err
+			}
+		} else { // one picture's passes after another's
+			for k, x := range xs {
+				v, err := p.eng.velocity(ctx, jc[k*per:(k+1)*per], x, sigma)
+				if err != nil {
+					return nil, err
+				}
+				vs = append(vs, v...)
+			}
+		}
+		out := make([][]float32, len(xs))
+		for k := range xs {
+			v := vs[k*per]
+			if per == 2 { // neg + g (cond - neg)
+				u, g := vs[k*per+1], float32(smp.Guidance)
+				for j := range v {
+					v[j] = u[j] + g*(v[j]-u[j])
+				}
+			}
+			out[k] = v
+		}
+		return out, nil
 	}
-	x := append([]float32(nil), noise...)
-	var d0, d1 []float32
-	var hLast float64
+	xs := make([][]float32, len(noises))
+	for k, noise := range noises {
+		xs[k] = append([]float32(nil), noise...)
+	}
+	d0, d1 := make([][]float32, len(xs)), make([][]float32, len(xs))
+	hLast := make([]float64, len(xs))
 	for i := 0; i < n; i++ {
 		t0 := time.Now()
 		dt := float32(sigmas[i+1] - sigmas[i])
-		v1, err := vel(x, sigmas[i])
+		v1, err := vel(xs, sigmas[i])
 		if err != nil {
 			return nil, fmt.Errorf("chroma: step %d: %w", i, err)
 		}
 		switch {
 		case smp.Solver == "dpm2m":
-			hLast = anima.DPM2M(x, v1, &d0, &d1, sigmas[i], sigmas[i+1], hLast)
-		case smp.Solver == "heun" && sigmas[i+1] != 0:
-			pred := make([]float32, len(x))
-			for j := range x {
-				pred[j] = x[j] + dt*v1[j]
+			for k, x := range xs {
+				hLast[k] = anima.DPM2M(x, v1[k], &d0[k], &d1[k], sigmas[i], sigmas[i+1], hLast[k])
 			}
-			v2, err := vel(pred, sigmas[i+1])
+		case smp.Solver == "heun" && sigmas[i+1] != 0:
+			preds := make([][]float32, len(xs))
+			for k, x := range xs {
+				preds[k] = make([]float32, len(x))
+				for j := range x {
+					preds[k][j] = x[j] + dt*v1[k][j]
+				}
+			}
+			v2, err := vel(preds, sigmas[i+1])
 			if err != nil {
 				return nil, fmt.Errorf("chroma: step %d: %w", i, err)
 			}
-			for j := range x {
-				x[j] += dt * (v1[j] + v2[j]) / 2
+			for k, x := range xs {
+				for j := range x {
+					x[j] += dt * (v1[k][j] + v2[k][j]) / 2
+				}
 			}
 		default:
-			for j := range x {
-				x[j] += dt * v1[j]
+			for k, x := range xs {
+				for j := range x {
+					x[j] += dt * v1[k][j]
+				}
 			}
 		}
 		if step != nil {
 			step(i, n, time.Since(t0))
 		}
 	}
-	return x, nil
+	return xs, nil
 }
 
 // Unpack is the packed latents (Noise's layout) as the VAE takes them, (16, H/8, W/8): FLUX's
@@ -443,6 +513,29 @@ func Unpack(x []float32, gh, gw, latent int) []float32 {
 func (p *Pipeline) Decode(ctx context.Context, x []float32) (*image.RGBA, error) {
 	c := p.C
 	return p.eng.decode(ctx, Unpack(x, c.GH(), c.GW(), c.Latent), p.Stage)
+}
+
+// DecodeAll is Decode for several pictures' latents: with an export of programs the VAE runs
+// stage by stage, each stage loaded once for all the pictures (Stage is then told of a stage when
+// every picture is through it); else one picture after another.
+func (p *Pipeline) DecodeAll(ctx context.Context, xs ...[]float32) ([]*image.RGBA, error) {
+	c := p.C
+	zs := make([][]float32, len(xs))
+	for k, x := range xs {
+		zs[k] = Unpack(x, c.GH(), c.GW(), c.Latent)
+	}
+	if t, ok := p.eng.(together); ok {
+		return t.decodeAll(ctx, zs, p.Stage)
+	}
+	imgs := make([]*image.RGBA, len(zs))
+	for k, z := range zs {
+		img, err := p.eng.decode(ctx, z, p.Stage)
+		if err != nil {
+			return nil, err
+		}
+		imgs[k] = img
+	}
+	return imgs, nil
 }
 
 // sinusoid is diffusers' get_timestep_embedding(t, dim, flip_sin_to_cos=True,

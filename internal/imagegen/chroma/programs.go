@@ -124,6 +124,8 @@ type progEngine struct {
 	// ahead: T5's groups and the VAE's stages load one ahead as well (runner.Ahead).
 	swapDiT, checked, ahead bool
 	ring                    *runner.Ring
+	// loader, when set, loads the programs in place of runner.Open (tests)
+	loader runner.OpenFunc
 }
 
 func openPrograms(dev *hwnpu.Device, dir string, log io.Writer, c *Config, model *Model, logf func(string, ...any)) (*progEngine, error) {
@@ -185,6 +187,9 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 
 // load is open without a line: the program on the device unless it is nil, on the NPU alone.
 func (e *progEngine) load(ctx context.Context, name string) (runner.Program, error) {
+	if e.loader != nil {
+		return e.loader(ctx, name)
+	}
 	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
 	if err == nil && e.dev != nil && !p.OnNPU() {
 		p.Close()
@@ -359,6 +364,16 @@ func (e *progEngine) group(ctx context.Context, i int) (p runner.Program, releas
 func (e *progEngine) close() error { return e.closeDiT() }
 
 func (e *progEngine) velocity(ctx context.Context, conds []Cond, x []float32, sigma float64) ([][]float32, error) {
+	xs := make([][]float32, len(conds))
+	for k := range xs {
+		xs[k] = x
+	}
+	return e.velocities(ctx, conds, xs, sigma)
+}
+
+// velocities runs the DiT at sigma on the latents xs[k] under conds[k], for every k: several
+// pictures' passes, and each one's two under guidance.
+func (e *progEngine) velocities(ctx context.Context, conds []Cond, xs [][]float32, sigma float64) ([][]float32, error) {
 	c := e.m.Dit
 	E, N, R := c.Hidden, c.Tokens(), c.Rows()
 	mods, ok := e.mods[sigma]
@@ -381,7 +396,8 @@ func (e *progEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 		}
 	}
 	// each group runs every conditioning before the next group (design.md 16.148, 16.160): a
-	// group the Neural Engine has to load again loads once a call of the DiT
+	// group the Neural Engine has to load again loads once a call of the DiT, and a group that
+	// follows another one pays for that in its first run alone
 	for gi, g := range e.m.Doubles {
 		var rs []int
 		for b := g.First; b < g.First+g.Count; b++ {
@@ -398,7 +414,7 @@ func (e *progEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 		for k, cd := range conds {
 			in := map[string][]float32{"mods": m, "kbias": kb[k]}
 			if gi == 0 {
-				in["x"], in["ctx"] = x, cd.rows
+				in["x"], in["ctx"] = xs[k], cd.rows
 			} else {
 				in["x"] = hs[k]
 			}
@@ -436,35 +452,46 @@ func (e *progEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 // decode runs the VAE's stages, each loaded while it runs (on Core AI while the stage before it
 // runs); the last gives the picture (1, 3, h, w).
 func (e *progEngine) decode(ctx context.Context, z []float32, stage anima.StageFunc) (*image.RGBA, error) {
-	x := z
-	t0 := time.Now()
-	err := runner.InTurn(ctx, e.m.Vae, e.ahead, e.open, func(i int, p runner.Program) error {
-		y, err := p.Run(ctx, map[string][]float32{"x": x})
-		if err != nil {
-			return err
-		}
-		x = y
-		if stage != nil {
-			stage(i, len(e.m.Vae), time.Since(t0))
-		}
-		t0 = time.Now()
-		return nil
-	})
+	imgs, err := e.decodeAll(ctx, [][]float32{z}, stage)
+	if err != nil {
+		return nil, err
+	}
+	return imgs[0], nil
+}
+
+// decodeAll is decode for several pictures' latents, stage by stage (runner.Stages): a stage is
+// loaded once and runs every picture before the next one, so that only its first run follows a
+// load. The wide stages take as many pictures together as the host holds the outputs of; stage is
+// told of the stages of all the pictures, counted as they are done.
+func (e *progEngine) decodeAll(ctx context.Context, zs [][]float32, stage anima.StageFunc) ([]*image.RGBA, error) {
+	xs, err := runner.Stages(ctx, e.m.Vae, e.ahead, e.open, zs, runner.StageBudget,
+		func(_ int, p runner.Program, x []float32) ([]float32, error) {
+			return p.Run(ctx, map[string][]float32{"x": x})
+		},
+		func(i, n int, d time.Duration) {
+			if stage != nil {
+				stage(i, n, d)
+			}
+		})
 	if err != nil {
 		return nil, fmt.Errorf("vae: %w", err)
 	}
 	W, H := e.m.Dit.Width, e.m.Dit.Height
-	if len(x) != 3*W*H {
-		return nil, fmt.Errorf("vae: %d values for a %dx%d picture", len(x), W, H)
-	}
-	img := image.NewRGBA(image.Rect(0, 0, W, H))
-	for y := 0; y < H; y++ {
-		for xx := 0; xx < W; xx++ {
-			i := y*W + xx
-			img.SetRGBA(xx, y, color.RGBA{pixel(x[i]), pixel(x[W*H+i]), pixel(x[2*W*H+i]), 255})
+	imgs := make([]*image.RGBA, len(xs))
+	for k, x := range xs {
+		if len(x) != 3*W*H {
+			return nil, fmt.Errorf("vae: %d values for a %dx%d picture", len(x), W, H)
 		}
+		img := image.NewRGBA(image.Rect(0, 0, W, H))
+		for y := 0; y < H; y++ {
+			for xx := 0; xx < W; xx++ {
+				i := y*W + xx
+				img.SetRGBA(xx, y, color.RGBA{pixel(x[i]), pixel(x[W*H+i]), pixel(x[2*W*H+i]), 255})
+			}
+		}
+		imgs[k] = img
 	}
-	return img, nil
+	return imgs, nil
 }
 
 // pixel is a value in [-1, 1] as a byte.

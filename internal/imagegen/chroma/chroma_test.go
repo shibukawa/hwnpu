@@ -69,8 +69,28 @@ func TestLinkSources(t *testing.T) {
 	}
 	// another T5 format of the same model and size: its DiT
 	o = ConvertOptions{Width: 1024, Height: 1024, TextFormat: "lut8", TextFormatFor: []string{"wo=fp16"}, DitFormat: "lut8"}
-	if f := linkSources([]string{hd1024}, "Chroma1-HD", o, mil.Dit{TextRows: 512}); f.dit != hd1024 || f.text != "" {
+	if f := linkSources([]string{hd1024}, "Chroma1-HD", o, mil.Dit{TextRows: 512}); f.dit != hd1024 || f.mods != hd1024 || f.text != "" {
 		t.Errorf("sources %+v", f)
+	}
+	// an export of an older layout: T5's, the VAE's and the approximator's programs, not the DiT's
+	// groups; one before TextVersion nothing
+	old := mk("old", "Chroma1-HD", 1024, 512, "fp16")
+	for _, c := range []struct {
+		version int
+		want    linkFrom
+	}{{ExportVersion - 1, linkFrom{text: old, model: old, vae: old, mods: old}}, {TextVersion - 1, linkFrom{}}, {ExportVersion + 1, linkFrom{}}} {
+		m, err := ReadProgramManifest(old)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.Version = c.version
+		if err := writeProgramManifest(old, m); err != nil {
+			t.Fatal(err)
+		}
+		o := ConvertOptions{Width: 1024, Height: 1024, TextFormat: "fp16", DitFormat: "lut8"}
+		if f := linkSources([]string{old}, "Chroma1-HD", o, mil.Dit{TextRows: 512}); f != c.want {
+			t.Errorf("layout %d: sources %+v, want %+v", c.version, f, c.want)
+		}
 	}
 	f = linkSources([]string{hd1024, flash512}, "Chroma1-HD", ConvertOptions{Width: 512, Height: 512, TextFormat: "fp16", DitFormat: "lut8"}, mil.Dit{TextRows: 512})
 	if f.text != hd1024 || f.model != hd1024 || f.vae != flash512 {

@@ -219,7 +219,7 @@ hwnpu が書くものは全部、OS のローミングしないキャッシュ�
 
 ```
 hwnpu/
-  original/OWNER/NAME/FILE...        元のモデル (層 0)。取得元と同じ並び、hwnpu-lock.json 付き
+  original/OWNER/NAME/FILE...        元のモデル (層 0)。取得元と同じ並び、hwnpu-lock.json 付き (大きさの上限と LRU は 7.7)
   models/NAME/                       変換したプログラム (次の PR で converted/ に移す)
   entries/<target>/<name>/           AMD の書き出し (同上)
   KEY.mlmodelc|.blob|.json           機械ごとのもの (Core ML のコンパイル、Level Zero、placement)
@@ -295,6 +295,35 @@ dir := s.Dir("LiquidAI/LFM3-1.7B")                         // original/LiquidAI/
 ```
 
 層はプロセスの設定 (`Open` がプロセス全体に効く)。変換したものの取得と作成 (`Make`) は次の PR で足す。
+
+### 7.7 手元のキャッシュの大きさ: 空きの下限と LRU、`hwnpu cache`
+
+手元のキャッシュ (層 0) は放っておくと増える一方なので、ダウンロードの前に場所を確かめ、使っていないものから消せるようにした (`internal/cache` の `Room`、`Scan`、`PlanPrune`。公開の入り口は `modelstore`)。
+
+| 変数 | 既定 | 意味 |
+|---|---|---|
+| `HWNPU_CACHE_MIN_FREE` | `10GB` (`0` でなし、`5%` のようにディスクの割合も) | 根のあるディスクに残す空き。これを切るダウンロードは始めない (`ErrNoRoom`) |
+| `HWNPU_CACHE_MAX_SIZE` | なし | キャッシュの上限。超えるダウンロードの前に、最近使っていない単位から消して収める。これがあるときだけ、空きの下限を切るときも消す |
+
+コードからは `modelstore.Options.Limits` (`cache.SetLimits`)。`go test` では空きの下限を既定で 0 にする。
+
+- 単位 (まとめて消すもの): `original/OWNER/NAME` (元のファイル)、`models/NAME` と `converted/MODEL/TARGET/EXPORT/vN` (変換したもの)、`entries/TARGET/NAME` (AMD の書き出し)、`iron/KEY` (IRON のカーネル)、根の `KEY.mlmodelc` などの同じ鍵のもの (この機械でコンパイルしたもの)。それ以外 (`prompts/`、`history/`、`locks/`、`work/`、`dev/`、道具) は数えるだけで消さない
+- 最後に使った時刻: 単位のフォルダの時刻と中のファイルの時刻の新しい方。取得 (`chat.Fetch` は速い道でも)、`chat.ModelDir`、`cache.FindExport` が `cache.Touch` でフォルダの時刻を今にする (5 分に 1 回まで)。atime は noatime/relatime で当てにならないので使わない。IRON のカーネルは IRON が読むときに時刻が変わらないので、作った順になる
+- 消さないもの: 最近 1 時間に使った単位 (ほかのプロセスが読んでいるかもしれない)、このプロセスが使った単位、書き戻しの queue に仕事がある単位 (`store` が `cache.SetBusy` で教える)、書いている途中の単位
+- 消すときは、元のファイルなら `hwnpu-lock.json`、変換したものなら `entry.json` を先に消す (読む側が途中のものを揃っているとみなさない)。空になった親 (`original/OWNER`) も消す
+- 大きさはファイルの大きさの和。ハードリンク (Unix) は 1 回だけ数える (同じ sha256 を別のリポジトリと共有しているもの)。reflink で共有したブロックは区別しない
+- 上限の判定のための走査はプロセスに 1 回 (この機械では IRON の 61 万ファイルで 2.7 秒)。あとは足した分を数える。空きの下限だけなら statfs (`GetDiskFreeSpaceEx`) 1 回
+
+一般の利用者のためのコマンドとして `hwnpu` を足した (`hwnpu-dev cache` は取得元の管理のまま)。
+
+```
+hwnpu cache                          根、ディスクの空き、上限、種類ごとの量、層
+hwnpu cache ls [-k KIND] [-s] [PAT]  単位ごとの大きさと最後に使った時刻 (古い順、-s で大きい順)
+hwnpu cache prune --max-size 200GB   古い順に消して収める (--older-than 30d も。なしなら HWNPU_CACHE_MAX_SIZE)
+hwnpu cache clear Qwen3-1.7B         名前 (モデル名、OWNER/NAME、glob) の単位を消す。--kind、--all。端末では確かめる (-y で聞かない)
+```
+
+`prune` と `clear` は `-n` (`--dry-run`) で消すものだけ見せる。`clear` は最近使ったものも消す (書き戻し待ちのものは残す)。
 
 ## 8. 準備の流れ: 計画と作るを分ける
 

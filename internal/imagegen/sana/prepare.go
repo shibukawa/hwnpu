@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,6 +70,11 @@ func ExportName(name string, o ConvertOptions) string {
 	return fmt.Sprintf("%s-%s-%s-%s-g%d-v%d.%s", strings.ToLower(name), size, o.TextFormat, o.DitFormat, o.Group, ExportVersion, exportSuffix(o.Backend))
 }
 
+// exportNameAt is ExportName for the layout version.
+func exportNameAt(name string, o ConvertOptions, version int) string {
+	return strings.Replace(ExportName(name, o), fmt.Sprintf("-v%d.", ExportVersion), fmt.Sprintf("-v%d.", version), 1)
+}
+
 // exportSuffix is the extension of an export's directory for a program format.
 func exportSuffix(backend string) string {
 	switch backend {
@@ -94,16 +100,30 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
 		return out, nil
 	}
-	// the repository's files (chat.RepoDir); Gemma 2's are the same in every Sana's (pinned:
-	// linked from another's when it is here)
+	// what is converted: all of it, less what another export gives as hard links (the same
+	// bytes, so Core AI's cache holds them compiled): Gemma 2's programs from an export of this
+	// layout, the others from this Sana's export of an older layout whose DiT is this one's
+	only := map[string]bool{"text": true, "caption": true, "time": true, "blocks": true, "final": true, "vae": true}
+	textFrom, ditFrom := textExport(s.Dir, o), ditExport(s.Dir, s.Name, o)
+	if textFrom != "" {
+		delete(only, "text")
+	}
+	if ditFrom != "" {
+		only = map[string]bool{"text": only["text"]}
+	}
+	// the repository's files (chat.RepoDir) that are read: the configurations, and the weights of
+	// what is converted. Gemma 2's are the same in every Sana's (pinned: linked from another's
+	// when it is here)
 	root := chat.RepoDir(s.Repo)
 	text := root
 	var want []chat.File
 	for _, f := range Files {
-		want = append(want, chat.File{Repo: s.Repo, Name: f.Name})
+		if needs(f, only) {
+			want = append(want, chat.File{Repo: s.Repo, Name: f.Name})
+		}
 	}
 	chat.Expect(ctx, want)
-	for _, f := range Files {
+	for _, f := range want {
 		if _, err := chat.Fetch(ctx, s.Repo, f.Name, log); err != nil {
 			return "", err
 		}
@@ -117,12 +137,20 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.RemoveAll(out); err != nil {
 		return "", err
 	}
-	if from := textExport(s.Dir, o); from != "" {
-		if err := linkText(from, out); err != nil {
+	if textFrom != "" {
+		if err := linkText(textFrom, out); err != nil {
 			return "", err
 		}
-		o.Only = map[string]bool{"caption": true, "time": true, "blocks": true, "final": true, "vae": true}
-		fmt.Fprintf(log, "Gemma 2's programs from %s\n", filepath.Base(from))
+		fmt.Fprintf(log, "Gemma 2's programs from %s\n", filepath.Base(textFrom))
+	}
+	if ditFrom != "" {
+		if err := linkDit(ditFrom, out); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(log, "the DiT's and the VAE's programs from %s\n", filepath.Base(ditFrom))
+	}
+	if len(only) < 6 {
+		o.Only = only // nothing of it true: the manifest alone
 	}
 	fmt.Fprintf(log, "converting %s (%dx%d, text %s, DiT %s); this takes a few minutes\n", filepath.Base(out), o.Width, o.Height, o.TextFormat, o.DitFormat)
 	t0 := time.Now()
@@ -139,6 +167,18 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	return out, nil
 }
 
+// needs reports whether Prepare reads the file f of the repository when it converts only: a
+// configuration always, weights (and Gemma 2's tokenizer and index) when their part is converted.
+func needs(f File, only map[string]bool) bool {
+	switch {
+	case f.Text:
+		return only["text"] || f.Name == "text_encoder/config.json"
+	case strings.HasSuffix(f.Name, ".safetensors"):
+		return only["blocks"]
+	}
+	return true
+}
+
 // textExport is a whole export in dir whose Gemma 2 programs are those o asks for (the program
 // format, the text format and ExportVersion), or "".
 func textExport(dir string, o ConvertOptions) string {
@@ -153,13 +193,54 @@ func textExport(dir string, o ConvertOptions) string {
 	return ""
 }
 
+// ditExport is a whole export in dir of the Sana name and o's options in an older layout whose
+// programs but Gemma 2's are this layout's (DitVersion on), or "".
+func ditExport(dir, name string, o ConvertOptions) string {
+	for v := ExportVersion - 1; v >= DitVersion; v-- {
+		e := filepath.Join(dir, exportNameAt(name, o, v))
+		if _, err := os.Stat(e + ".done"); err != nil {
+			continue
+		}
+		if m, err := ReadProgramManifest(e); err == nil && m.Version == v && m.Formats["dit"] == o.DitFormat {
+			return e
+		}
+	}
+	return ""
+}
+
 // linkText hard links the Gemma 2 programs and text/ of the export from into out.
 func linkText(from, out string) error {
 	m, err := ReadProgramManifest(from)
 	if err != nil {
 		return err
 	}
-	for _, sub := range append([]string{"text"}, m.TextParts...) {
+	return linkParts(from, out, append([]string{"text"}, m.TextParts...))
+}
+
+// linkDit hard links the programs of the export from but Gemma 2's into out: the caption's, the
+// time embedding's weights, the DiT's and the VAE's, of every size.
+func linkDit(from, out string) error {
+	m, err := ReadProgramManifest(from)
+	if err != nil {
+		return err
+	}
+	names := slices.Concat([]string{m.Caption, m.Time, m.Final}, m.Blocks, m.Vae)
+	for _, sp := range m.Sizes {
+		names = slices.Concat(names, []string{sp.Final}, sp.Blocks, sp.Vae)
+	}
+	return linkParts(from, out, names)
+}
+
+// linkParts hard links the files and directories names of from into out, each once: a name is a
+// path in the export, a program's with its function after "#" or without.
+func linkParts(from, out string, names []string) error {
+	seen := map[string]bool{}
+	for _, name := range names {
+		sub, _, _ := strings.Cut(name, "#")
+		if sub == "" || seen[sub] {
+			continue
+		}
+		seen[sub] = true
 		src := filepath.Join(from, sub)
 		err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {

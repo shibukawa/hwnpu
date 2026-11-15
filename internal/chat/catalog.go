@@ -151,7 +151,13 @@ func Lookup(name string) (Model, bool) {
 
 // ModelDir is the directory of model m's converted programs: ModelsDir/NAME (Model.DirName).
 // Its files (config.json, the checkpoint) are in RepoDir.
-func ModelDir(m Model) string { return filepath.Join(ModelsDir(), m.DirName()) }
+func ModelDir(m Model) string {
+	d := modelDir(m)
+	cache.Touch(d) // what asks for it uses it (LRU)
+	return d
+}
+
+func modelDir(m Model) string { return filepath.Join(ModelsDir(), m.DirName()) }
 
 // ModelsDir is where the models' converted programs are kept: models under cache.Root.
 // Each model has a directory of its name there.
@@ -275,7 +281,7 @@ func repoModel(name string) (Model, bool) {
 // checkpoint), or its checkpoint (RepoDir): model.safetensors, or the index of a checkpoint in
 // several files and all the files it names.
 func Downloaded(m Model) bool {
-	if exists(filepath.Join(ModelDir(m), TablesFile)) {
+	if exists(filepath.Join(modelDir(m), TablesFile)) {
 		return true
 	}
 	if m.Repo == "" {

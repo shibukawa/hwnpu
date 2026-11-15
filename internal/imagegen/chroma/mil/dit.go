@@ -3,7 +3,10 @@ package mil
 import (
 	"fmt"
 	"math"
+	"os"
 
+	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
+	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
@@ -127,6 +130,7 @@ type ditGraph struct {
 	c        Dit
 	cos, sin *mlpackage.Var // (1, rows, 1, head_dim)
 	kbias    *mlpackage.Var // (1, 1, 1, rows)
+	tbias    *mlpackage.Var // kbias of the text's rows (attend)
 	m        *mlpackage.Var // (1, mods, hidden): the program's modulation rows
 	qchunk   int
 }
@@ -147,11 +151,13 @@ func (d *ditGraph) mod(r int) *mlpackage.Var { return d.Slice(d.m, 1, r, r+1) }
 
 // modulate is the norm of x (no weight, eps 1e-6) times 1 + scale, plus shift.
 func (d *ditGraph) modulate(x, shift, scale *mlpackage.Var) *mlpackage.Var {
-	return d.Add(d.Mul(d.ScaledLayerNorm(x, 1e-6), d.AddScalar(scale, 1)), shift)
+	return d.Add(d.Mul(d.AbsScaledLayerNorm(x, 1e-6), d.AddScalar(scale, 1)), shift)
 }
 
 // qkv is a stream's q and k (normed, turned by the rows' rotary embedding from row lo) and v of
-// h's rows, each (1, n, heads, head_dim).
+// h's rows, each (1, n, heads, head_dim). q holds the attention's scale, 1 / sqrt(head_dim), in
+// its norm's weight: the attention then runs at scale 1, without a multiply over its scores
+// (design.md 16.201).
 func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.Var) {
 	c := d.c
 	n, H, D := h.Shape[1], c.Heads, c.HeadDim
@@ -160,22 +166,45 @@ func (d *ditGraph) qkv(s stream, h *mlpackage.Var, lo int) (q, k, v *mlpackage.V
 	if lo == 0 && n == c.Rows() {
 		cos, sin = d.cos, d.sin
 	}
-	head := func(name, norm string) *mlpackage.Var {
+	head := func(name, norm string, sc float32) *mlpackage.Var {
 		y := d.Reshape(d.LinearBias(h, name+".weight", name+".bias", "", E), 1, n, H, D)
 		if norm != "" {
-			y = d.ApplyRope(d.ScaledRMSNorm(y, norm, 1e-6), cos, sin)
+			w := append([]float32(nil), d.Get(norm, D)...)
+			for i := range w {
+				w[i] *= sc
+			}
+			y = d.ApplyRope(d.RMSNormWith(d.AbsScaled(y, -1), norm, w, 1e-6, 1), cos, sin)
 		}
 		return y
 	}
-	return head(s.q, s.qn), head(s.k, s.kn), head(s.v, "")
+	return head(s.q, s.qn, float32(1/math.Sqrt(float64(D)))), head(s.k, s.kn, 1), head(s.v, "", 1)
+}
+
+// HeadChunk is the queries the attention takes at a time, a head at a time
+// (milpart.HeadAttention): of Chroma's 4608 rows at 1024 x 1024, 24 heads took 139 ms in chunks
+// of 1024 and 134 of 512, which compile 40 % longer (M1, design.md 16.211).
+const HeadChunk = 1024
+
+// headAttention reports whether the attention is written a head at a time: not for Intel's NPU
+// (not measured there), and not with HWNPU_CHROMA_ATTENTION=chunks, which writes the heads
+// together as before design.md 16.211 (to tell a rounding difference from a mistake).
+func headAttention(g *graph) bool {
+	return g.Opts.Backend != llm.BackendIntel && os.Getenv("HWNPU_CHROMA_ATTENTION") != "chunks"
 }
 
 // attend is the attention of q, k, v (1, rows, heads, head_dim) over the keys kbias keeps:
-// (1, rows, hidden).
+// (1, rows, hidden). On Apple's Neural Engine a head at a time, HeadChunk queries at a time, the
+// image's keys and the text's as score tensors of their own (the image's all count, kbias is the
+// text's alone): its core 205 -> 139 ms a block at 1024 x 1024 on an M1 (design.md 16.211).
 func (d *ditGraph) attend(q, k, v *mlpackage.Var) *mlpackage.Var {
 	t := func(x *mlpackage.Var) *mlpackage.Var { return d.Transpose(x, 0, 2, 1, 3) }
-	o := d.QChunkAttention(t(q), t(k), t(v), 1/math.Sqrt(float64(d.c.HeadDim)), d.kbias, d.qchunk)
-	return d.Merge(o)
+	if !headAttention(d.graph) {
+		return d.Merge(d.QChunkAttention(t(q), t(k), t(v), 1, d.kbias, d.qchunk))
+	}
+	if d.tbias == nil {
+		d.tbias = d.Slice(d.kbias, -1, d.c.Tokens(), d.c.Rows())
+	}
+	return d.Merge(d.HeadAttention(t(q), t(k), t(v), milpart.HeadOptions{Chunk: HeadChunk, Split: d.c.Tokens(), Bias: d.tbias}))
 }
 
 // gelu is the MLP's tanh GELU.

@@ -1,6 +1,6 @@
 # モデルのライセンスと内容、使ってよいモデルの指定 (設計案)
 
-作成: 2026-11-15。状態: 1 段 (調査) と 2 段 (models.yaml の `license` と `content`、`HWNPU_MODEL_ALLOWLIST` の指定) を実装 (design.md 16.214)。3 段と 4 段は設計案。
+作成: 2026-11-15。状態: 1 段 (調査) と 2 段 (models.yaml の `license` と `content`、`HWNPU_MODEL_ALLOWLIST` の指定) を実装 (design.md 16.225)。3 段と 4 段は設計案。
 
 ## 0. 実装したもの (2026-11-15)
 

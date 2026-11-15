@@ -32,16 +32,28 @@ type ProgramManifest struct {
 	Formats map[string]string `json:"formats"`
 	Dit     DitConfig         `json:"dit"`
 	Text    TextConfig        `json:"text"`
-	// TextParts are Gemma 2's groups of layers, in order; the last ends with the final norm.
+	// TextParts are Gemma 2's groups of layers, in order; the last ends with the final norm. They
+	// run Text.Rows rows from the first.
 	TextParts []string `json:"text_parts"`
-	Caption   string   `json:"caption"`
-	Time      string   `json:"time"`   // TimeFile
-	Blocks    []string `json:"blocks"` // the DiT's groups of blocks, in order
-	Final     string   `json:"final"`
-	Vae       []string `json:"vae"` // the VAE's stages, in order
+	// TextFrom, in an export whose programs hold the instruction's first Text.Prefix rows (Core
+	// AI's), are their functions for the rows after those, the shortest first: a prompt after
+	// the instruction runs the first that holds its rows.
+	TextFrom []TextFunc `json:"text_from,omitempty"`
+	Caption  string     `json:"caption"`
+	Time     string     `json:"time"`   // TimeFile
+	Blocks   []string   `json:"blocks"` // the DiT's groups of blocks, in order
+	Final    string     `json:"final"`
+	Vae      []string   `json:"vae"` // the VAE's stages, in order
 	// Sizes, in an export of several sizes (Core AI's), are the parts of each that depend on the
 	// size (functions of the same programs); Dit, Blocks, Final and Vae are one of them.
 	Sizes []SizeParts `json:"sizes,omitempty"`
+}
+
+// TextFunc is Gemma 2's programs for Rows rows after the held ones: a function of each of
+// TextParts' programs, in their order.
+type TextFunc struct {
+	Rows  int      `json:"rows"`
+	Parts []string `json:"parts"`
 }
 
 // SizeParts are the parts of an export for pictures of Width x Height.
@@ -123,6 +135,10 @@ type progEngine struct {
 	time *timeEmbed
 	fin  runner.Program
 	blks []runner.Program
+	// loader, when set, loads the programs in place of runner.Open (tests)
+	loader runner.OpenFunc
+	// ahead: Gemma 2's programs load one ahead (runner.Ahead: Core AI)
+	ahead bool
 }
 
 func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*progEngine, DitConfig, TextConfig, error) {
@@ -136,7 +152,7 @@ func openPrograms(dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*prog
 	if err := m.At(w, h); err != nil {
 		return nil, m.Dit, m.Text, err
 	}
-	return &progEngine{m: m, dir: dir, dev: dev, log: log}, m.Dit, m.Text, nil
+	return &progEngine{m: m, dir: dir, dev: dev, log: log, ahead: runner.Ahead(dev)}, m.Dit, m.Text, nil
 }
 
 // open loads one program, on the device unless it is nil, and fails unless it runs on the NPU
@@ -149,7 +165,13 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	if e.log != nil {
 		bar = console.NewLoadBar(e.log, "  loading "+name, llm.PartBytes(filepath.Join(e.dir, name)))
 	}
-	p, err := runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
+	var p runner.Program
+	var err error
+	if e.loader != nil {
+		p, err = e.loader(ctx, name)
+	} else {
+		p, err = runner.Open(ctx, e.dev, filepath.Join(e.dir, name))
+	}
 	// OpenVINO's CPU plugin (the Intel path checked without Intel's NPU) is not the NPU
 	if err == nil && e.dev != nil && !p.OnNPU() && e.dev.Info().Backend != "openvino" {
 		p.Close()
@@ -173,35 +195,87 @@ func (e *progEngine) open(ctx context.Context, name string) (runner.Program, err
 	return p, nil
 }
 
-// once loads the program name, runs it on in and closes it.
-func (e *progEngine) once(ctx context.Context, name string, in map[string][]float32) ([]float32, error) {
-	p, err := e.open(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	defer p.Close()
-	y, err := p.Run(ctx, in)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
-	}
-	return y, nil
-}
-
 // textPart runs Gemma 2's programs in turn, each loaded only while it runs: at most one
 // group's weights are held (the five are 2.2 GB at int8).
 type textPart struct{ e *progEngine }
 
 func (t textPart) run(ctx context.Context, x []float32, start int) ([]float32, error) {
-	if start != 0 {
-		return nil, fmt.Errorf("sana: a Core ML export runs the prompt from its start, not %d", start)
+	ys, err := t.runAll(ctx, [][]float32{x}, []int{start})
+	if err != nil {
+		return nil, err
 	}
-	var err error
-	for _, name := range t.e.m.TextParts {
-		if x, err = t.e.once(ctx, name, map[string][]float32{"x": x}); err != nil {
+	return ys[0], nil
+}
+
+// runAll runs each x of xs through Gemma 2's programs: the rows of a prompt from position
+// starts[k] on (hidden values each; fewer than a program takes are followed by zeros), which is
+// 0, or the rows the programs hold (Text.Prefix). The output is as many rows as the program that
+// ran it takes. A program is loaded once for all the prompts it runs: those from 0 run the
+// programs over every row, the others the shortest of TextFrom that holds their rows.
+func (t textPart) runAll(ctx context.Context, xs [][]float32, starts []int) ([][]float32, error) {
+	m := t.e.m
+	E := m.Text.Hidden
+	// the prompts of each function
+	type fn struct {
+		rows  int
+		parts []string
+		ks    []int
+	}
+	fns := append([]fn{{rows: m.Text.Rows, parts: m.TextParts}}, make([]fn, len(m.TextFrom))...)
+	for i, f := range m.TextFrom {
+		fns[1+i] = fn{rows: f.Rows, parts: f.Parts}
+	}
+	for k, x := range xs {
+		f := -1
+		switch {
+		case starts[k] == 0:
+			f = 0
+		case starts[k] == m.Text.Prefix && len(m.TextFrom) > 0:
+			for i, tf := range m.TextFrom {
+				if len(x) <= tf.Rows*E {
+					f = 1 + i
+					break
+				}
+			}
+		default:
+			return nil, fmt.Errorf("sana: the programs run a prompt from its first row or from row %d, not from %d", m.Text.Prefix, starts[k])
+		}
+		if f < 0 || len(x) > fns[f].rows*E {
+			return nil, fmt.Errorf("sana: %d rows from %d, more than the programs take", len(x)/E, starts[k])
+		}
+		fns[f].ks = append(fns[f].ks, k)
+	}
+	ys := make([][]float32, len(xs))
+	for _, f := range fns {
+		if len(f.ks) == 0 {
+			continue
+		}
+		hs := make([][]float32, len(f.ks))
+		for j, k := range f.ks {
+			hs[j] = make([]float32, f.rows*E)
+			copy(hs[j], xs[k])
+		}
+		// on Core AI the next program loads while this one runs: a short function runs a prompt
+		// in 0.04 s, and its program loads in 0.02 s, or in 0.2 s when its weights' pages are
+		// not in memory (design.md 16.224)
+		err := runner.InTurn(ctx, f.parts, t.e.ahead, t.e.open, func(_ int, p runner.Program) error {
+			for j := range hs {
+				y, err := p.Run(ctx, map[string][]float32{"x": hs[j]})
+				if err != nil {
+					return err
+				}
+				hs[j] = y
+			}
+			return nil
+		})
+		if err != nil {
 			return nil, err
 		}
+		for j, k := range f.ks {
+			ys[k] = hs[j]
+		}
 	}
-	return x, nil
+	return ys, nil
 }
 
 func (t textPart) close() error { return nil }
@@ -305,29 +379,48 @@ func (e *progEngine) velocity(ctx context.Context, patches, tproj []float32, con
 // decode runs the VAE's stages, each loaded while it runs; the last gives the picture (1, 3, h,
 // w).
 func (e *progEngine) decode(ctx context.Context, latents []float32, stage StageFunc) (*image.RGBA, error) {
-	x := latents
-	for i, name := range e.m.Vae {
-		t0 := time.Now()
-		var err error
-		if x, err = e.once(ctx, name, map[string][]float32{"x": x}); err != nil {
-			return nil, fmt.Errorf("vae stage %d: %w", i, err)
-		}
-		if stage != nil {
-			stage(i, len(e.m.Vae), time.Since(t0))
-		}
+	imgs, err := e.decodeAll(ctx, [][]float32{latents}, stage)
+	if err != nil {
+		return nil, err
+	}
+	return imgs[0], nil
+}
+
+// decodeAll is decode for several pictures' latents, stage by stage (runner.Stages): a stage is
+// loaded once and runs every picture before the next stage loads. A stage's first call after its
+// load is its slow one (the 13 stages at 1024 x 1024 on an M1: 3.0 s of first calls, 2.0 s of
+// later ones; design.md 16.210), which a picture decoded alone pays in every stage. The wide
+// stages take as many pictures together as the host holds the outputs of; stage is told of the
+// stages of all the pictures, counted as they are done.
+func (e *progEngine) decodeAll(ctx context.Context, latents [][]float32, stage StageFunc) ([]*image.RGBA, error) {
+	xs, err := runner.Stages(ctx, e.m.Vae, false, e.open, latents, runner.StageBudget,
+		func(_ int, p runner.Program, x []float32) ([]float32, error) {
+			return p.Run(ctx, map[string][]float32{"x": x})
+		},
+		func(i, n int, d time.Duration) {
+			if stage != nil {
+				stage(i, n, d)
+			}
+		})
+	if err != nil {
+		return nil, fmt.Errorf("vae: %w", err)
 	}
 	W, H := e.m.Dit.W(), e.m.Dit.H()
-	if len(x) != 3*W*H {
-		return nil, fmt.Errorf("vae: %d values for a %dx%d picture", len(x), W, H)
-	}
-	img := image.NewRGBA(image.Rect(0, 0, W, H))
-	for y := 0; y < H; y++ {
-		for xx := 0; xx < W; xx++ {
-			i := y*W + xx
-			img.SetRGBA(xx, y, color.RGBA{pixel(x[i]), pixel(x[W*H+i]), pixel(x[2*W*H+i]), 255})
+	imgs := make([]*image.RGBA, len(xs))
+	for k, x := range xs {
+		if len(x) != 3*W*H {
+			return nil, fmt.Errorf("vae: %d values for a %dx%d picture", len(x), W, H)
 		}
+		img := image.NewRGBA(image.Rect(0, 0, W, H))
+		for y := 0; y < H; y++ {
+			for xx := 0; xx < W; xx++ {
+				i := y*W + xx
+				img.SetRGBA(xx, y, color.RGBA{pixel(x[i]), pixel(x[W*H+i]), pixel(x[2*W*H+i]), 255})
+			}
+		}
+		imgs[k] = img
 	}
-	return img, nil
+	return imgs, nil
 }
 
 func (e *progEngine) close() error { return e.closeDiT() }
