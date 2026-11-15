@@ -13,7 +13,7 @@ func TestBuiltinVariants(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, ok := Lookup("Qwen3-1.7B")
-	if !ok || m.Run.Prefill != PrefillOff || m.Memory != 4.5 || m.Variants[16].Run.Prefill != PrefillAuto {
+	if !ok || m.Run.Prefill != PrefillOff || m.Memory != 2.1 || m.Variants[16].Run.Prefill != PrefillAuto {
 		t.Fatalf("as defined: %+v", m)
 	}
 	for _, c := range []struct {
@@ -22,9 +22,9 @@ func TestBuiltinVariants(t *testing.T) {
 		memory         float64
 		family, tagged string // what qwen3 and qwen3:1.7b pick
 	}{
-		{8, PrefillOff, 4.5, "Qwen3-1.7B", "Qwen3-1.7B"},
-		{16, PrefillAuto, 7.6, "Qwen3-1.7B", "Qwen3-1.7B"},
-		{64, PrefillAuto, 7.6, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{8, PrefillOff, 2.1, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{16, PrefillAuto, 2.3, "Qwen3-1.7B", "Qwen3-1.7B"},
+		{64, PrefillAuto, 2.3, "Qwen3-1.7B", "Qwen3-1.7B"},
 	} {
 		t.Setenv(MemoryEnv, strconv.Itoa(c.machine))
 		got, ok, err := lookupFor("Qwen3-1.7B", nil)
@@ -105,7 +105,7 @@ models:
 		t.Errorf("on 32 GB: %+v", got)
 	}
 	d, _ := Lookup("my-qwen")
-	if d.Run != (Run{Prefill: PrefillOff, Format: "lut6", Paged: 1024}) || len(d.Variants) != 2 || d.Memory != 4.5 {
+	if d.Run != (Run{Prefill: PrefillOff, Format: "lut6", Paged: 1024}) || len(d.Variants) != 2 || d.Memory != 2.1 {
 		t.Errorf("like: %+v %+v %v", d.Run, d.Variants, d.Memory)
 	}
 }

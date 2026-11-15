@@ -72,8 +72,13 @@ models:
     kind: chat
     from: hf:LiquidAI/LFM3-1.7B
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-1.7B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
+    # Apple (Core AI, measured on an M1, 2026-11-15, docs/design.md 16.221): the programs split
+    # at the attention hold the weights once, 1.36 GiB on the Neural Engine and the process's
+    # 0.23 GiB, 1.7 GB: all an M1 loads (16.218). An M2 or later also loads the whole program of
+    # short conversations (16.188) with its own copy of the weights: 2.64 + 0.21 GiB, 3.1 GB
+    # (an M1 made to load it, --tier 2048)
     machine: 8
-    memory: 2.2
+    memory: {amd: 2.2, apple: 3.1}
     bytes: 3.5e9
     features: [tools, thinking]
     amd_export: lfm3 --max-seq-len 12288 --q4
@@ -84,8 +89,11 @@ models:
     kind: chat
     from: hf:LiquidAI/LFM3-VL-2B
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-VL-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
+    # Apple (Core AI, an M1, 2026-11-15, 16.221): 2.24 GiB on the Neural Engine and the process's
+    # 0.25 GiB describing a picture; 2.14 + 0.23 GiB (2.6 GB) with text alone, the vision
+    # encoder loaded from the start
     machine: 8
-    memory: 2.6
+    memory: {amd: 2.6, apple: 2.7}
     bytes: 3.8e9
     features: [tools, thinking, vision]
     amd_export: lfm3vl --max-seq-len 12288 --q4
@@ -96,6 +104,8 @@ models:
     kind: chat
     from: hf:LiquidAI/LFM3-Audio-2B
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
+    # Apple (Core AI, an M1, 2026-11-15, 16.221): 2.18 GiB on the Neural Engine and the process's
+    # 0.21 GiB answering about a clip (2.6 GB); 2.05 + 0.23 GiB (2.4 GB) with text alone
     machine: 8
     memory: 2.6
     bytes: 4.0e9
@@ -108,8 +118,11 @@ models:
     kind: chat
     from: hf:LiquidAI/LFM3-Omni-2B
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
+    # Apple (Core AI, an M1, 2026-11-15, 16.221): 2.63 GiB on the Neural Engine and the process's
+    # 0.25 GiB with a picture and a clip; 2.40 + 0.23 GiB (2.8 GB) with text alone, both
+    # encoders loaded from the start
     machine: 8
-    memory: 3.0
+    memory: {amd: 3.0, apple: 3.1}
     bytes: 4.3e9
     features: [tools, thinking, vision, audio]
     amd_export: lfm3omni --max-seq-len 12288 --q4
@@ -156,8 +169,12 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3.5-0.8B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE", class: open}
+    # Apple (Core AI, an M1, 2026-11-15, docs/design.md 16.221): 0.99 GiB on the Neural Engine
+    # (the multi-token prediction layer's programs among it) and the process's 0.39 GiB, 1.5 GB
+    # on an M1; with the whole program of short conversations an M2 or later loads too
+    # (--tier 2048 on the M1) 1.84 + 0.31 GiB, 2.3 GB
     machine: 8
-    memory: 2.6
+    memory: {amd: 1.5, apple: 2.3}
     bytes: 1.77e9
     features: [tools, thinking]
     no_think: true
@@ -169,8 +186,11 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3.5-2B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE", class: open}
+    # Apple (Core AI, an M1, 2026-11-15, 16.221): 1.67 GiB on the Neural Engine and the process's
+    # 0.39 GiB (no whole program: its weights twice are over what the two may hold); converting
+    # it the first time the process peaks at 6.0 GiB
     machine: 16
-    memory: 4.2
+    memory: {amd: 2.4, apple: 2.2}
     bytes: 4.57e9
     features: [tools, thinking]
     no_think: true
@@ -194,11 +214,14 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3-0.6B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE", class: open}
+    # Apple only. Core AI, an M1, 2026-11-15 (16.221): split at its attention, 0.65 GiB on the
+    # Neural Engine and the process's 0.35 GiB, 1.1 GB on an M1; with the whole program of short
+    # conversations an M2 or later loads too (--tier 1024 on the M1) 1.23 + 0.26 GiB, 1.6 GB
     machine: 8
-    memory: 3.9
+    memory: 1.6
     bytes: 1.52e9
     features: [tools, thinking]
-    about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts and with a context of 4096 (-paged 1024 for 32768, slower); in 8 bit tables, tool calls as JSON"
+    about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB); in 8 bit tables, tool calls as JSON"
   Qwen3-1.7B:
     # the same checkpoint (byte for byte) as MOSS-SoundEffect v2.0's text encoder: the files of
     # the same sha256 are linked from one's download into the other's (fetch)
@@ -210,18 +233,20 @@ models:
     sha256:
       model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
       model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
-    # M3: on 8 GB one program reads the prompts too, 1.63 GiB on the Neural Engine and the
-    # process's 2.2 to 2.8 GB at its peak while loading (1.0 to 1.6 GB answering); a new prompt
-    # of 1822 tokens in 16.8 s. From 16 GB a program of its own reads them (3.4 s): two of
-    # 1.63 GiB and the process's 3.0 to 4.1 GB at its peak (1.5 to 2.1 GB answering)
+    # Core AI, an M1, 2026-11-15 (16.221): split at its attention. On 8 GB one program reads
+    # the prompts too, 1.64 GiB on the Neural Engine and the process's 0.23 GiB. From 16 GB the
+    # program of 128 tokens a call reads them, a function of the same .aimodel (the weights
+    # held once): 1.80 + 0.36 GiB. With Core ML each program held the weights (M3: 1.63 GiB and
+    # the process's 2.2 to 2.8 GB at its peak, a new prompt of 1822 tokens in 16.8 s; two of
+    # 1.63 GiB and 3.0 to 4.1 GB from 16 GB, 3.4 s), 4.5 and 7.6 GB
     machine: 8
-    memory: 4.5
+    memory: 2.1
     prefill: off
     variants:
-      16: {memory: 7.6, prefill: auto}
+      16: {memory: 2.3, prefill: auto}
     bytes: 4.06e9
     features: [tools, thinking]
-    about: "Qwen3-1.7B, the 0.6B's structure in 1.7B (byte for byte the text encoder of MOSS-SoundEffect): weak at Japanese facts as the 0.6B is; a context of 4096 (-paged 1024 for 32768, slower), in 8 bit tables, tool calls as JSON; below 16 GB one program, slower to read long prompts"
+    about: "Qwen3-1.7B, the 0.6B's structure in 1.7B (byte for byte the text encoder of MOSS-SoundEffect): weak at Japanese facts as the 0.6B is; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB), in 8 bit tables, tool calls as JSON; below 16 GB one program, slower to read long prompts"
   plamo-3-translate-8b:
     # the 2B's structure in 8B (hidden 4096, 32 layers, 4 key and value heads). Apple: 4 bit
     # tables (the architecture's Format for the 8B), 3.81 GiB on the Neural Engine and the
@@ -257,8 +282,11 @@ models:
     kind: chat
     from: hf:pfnet/plamo-3-translate-2b
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-2b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
+    # Apple (Core AI, an M1, 2026-11-15, 16.221): 2.74 GiB on the Neural Engine (2.64 to 2.68
+    # wired: the programs of the short context are functions of the same .aimodel, 0.1 GiB
+    # more, 16.220) and the process's 0.24 GiB
     machine: 16
-    memory: 2.7
+    memory: {amd: 2.7, apple: 3.2}
     bytes: 5.76e9
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
@@ -269,8 +297,10 @@ models:
     kind: chat
     from: hf:pfnet/plamo-3-translate-0.8b
     license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-0.8b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
+    # Apple (Core AI, an M1, 2026-11-15, 16.221): 0.82 GiB on the Neural Engine and the process's
+    # 0.12 GiB; as AMD's
     machine: 8
-    memory: 2.4
+    memory: 1.0
     bytes: 1.79e9
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
@@ -281,8 +311,10 @@ models:
     kind: embedding
     from: hf:pfnet/plamo-embedding-1b
     license: {id: apache-2.0, url: "https://huggingface.co/pfnet/plamo-embedding-1b/blob/main/LICENSE.txt", class: open}
+    # Apple (Core AI, an M1, 2026-11-15, 16.221): 1.05 GiB on the Neural Engine and the process's
+    # 0.03 GiB (hwnpu-chat search); AMD's is estimated from the weights
     machine: 8
-    memory: 1.3
+    memory: {amd: 1.3, apple: 1.2}
     bytes: 2.1e9
     features: [query]
     about: "Preferred Networks' Japanese sentence embeddings (2048 dimensions): search, clustering, classification"
