@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 
+	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
@@ -257,13 +258,13 @@ func ditBlock(g *graph, i int, x, act, temb, ctx, cos, sin *mlpackage.Var, qchun
 			return g.QChunkAttention(q, k, v, 1, nil, qchunk)
 		}
 		if !cross {
-			return g.HeadAttention(q, k, v, headChunk(q.Shape[2]), false, nil)
+			return g.HeadAttention(q, k, v, milpart.HeadOptions{Chunk: headChunk(q.Shape[2])})
 		}
 		var note func(*mlpackage.Var)
 		if r != nil {
 			note = func(o *mlpackage.Var) { r.product(g, o) }
 		}
-		o := g.HeadAttention(q, k, v, 0, true, note)
+		o := g.HeadAttention(q, k, v, milpart.HeadOptions{Deferred: true, Note: note})
 		if r != nil {
 			r.done(g)
 		}

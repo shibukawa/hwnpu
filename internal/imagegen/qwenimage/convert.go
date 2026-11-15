@@ -16,8 +16,14 @@ import (
 )
 
 // ExportVersion is the layout of the programs Convert writes; an export of another is converted
-// again. 2: the VAE's stages of 1152 channels at 64 x 64 and more run on tiles (VaeTiles).
-const ExportVersion = 2
+// again. 2: the VAE's stages of 1152 channels at 64 x 64 and more run on tiles (VaeTiles). 3: the
+// DiT's attention scale in the queries' norm, its norms' magnitudes by abs, the image attention a
+// head at a time with the image's and the text's keys apart (design.md 16.211).
+const ExportVersion = 3
+
+// TextVersion is the layout the text encoder's programs last changed at: an export from it on
+// holds the ones Convert writes, which Prepare links.
+const TextVersion = 2
 
 // SysPrompt and Template are QwenImage21Pipeline's prompt template (prompt_template_t2i): the system
 // message's tokens are dropped from the DiT's text rows.
