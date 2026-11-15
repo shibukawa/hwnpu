@@ -6343,3 +6343,30 @@ PNG はバイト単位で同じ。
 変換したもの (`models/NAME` のプログラム、`entries/`、`~/models`) を手元でも `converted/.../vN` にし、完了の印を `entry.json` に揃えるのは次の PR。
 
 確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...` が通る。新しい試験: 取得元から手元へ取り、取得元をなくしても手元から読む、lock が移ると手元も移り同じファイルは残す、前の `models/NAME` の移し (sha256 の違うものは取り直す)、同梱のモデルをその場で (ハードリンク)、`modelstore` の層 (`TestLayers`)。確かめていないこと: 実機の Hugging Face からの取得、Mac と Intel の機械での実行、インストーラが置いた同梱のモデル。
+
+### 16.214 モデルの指定: ライセンスの区分 (`class`)、`content: [nsfw]` と `HWNPU_MODEL_ALLOWLIST` — 2026-11-15
+
+お客さんの規程でモデルの選び方がきびしいことがある (商用で使えないライセンスの禁止)。Anima は `safe` を書いても NSFW の絵を描く。用途の既定は機械のメモリで変わるので、承認したモデルを利用者が手で守るのは難しい。全モデルのライセンスを調べ (docs/model-provenance.md 3 節、一次資料の URL つき)、models.yaml に持たせて、利用者が `+` と `-` で絞れるようにした。
+
+- models.yaml: 全モデルに `license` (`class`: `open`、`conditional`、`non-commercial`)。`content: [nsfw]` は Anima と Chroma だけ (頼めば出しうるだけの Qwen-Image、FLUX.2、Sana には付けない)。組み込みの全モデルに id、url、class のあるライセンスがあることを試験で確かめる (`TestBuiltinLicenses`)
+- 指定 (`chat.Policy`、`internal/chat/policy.go`): `HWNPU_MODEL_ALLOWLIST` (`.env` も) と、利用者の定義のファイルの `policy: [...]` (組み込みには書けない)。項目は `+license:X` か `-license:X` (X は id か区分) と `+nsfw`
+  - `-` が `+` に勝つ。`+license` があれば許可リスト (どれにも当たらないもの、ライセンスの分からないものを弾く)
+  - `nsfw` は `+nsfw` がなければ弾く。`+nsfw` は NSFW を出すモードではなく、生成の振る舞いは変えない
+- 選び方 (`pickModel`): 弾かれたモデルは候補から外す。用途 (`image`、`chat`) で、この機械に合う許されたモデルが残らなければ、同じ種類と機能 (用途のモデルに共通の `features`) で、ファミリーが選ぶ (`machine` が 0 でない)、許されたモデルのうち、いちばん開いたライセンスの区分のものを足す。弾いたモデルと理由は選んだ理由 (`why`) の後ろに。名前やタグで指したとき (`-m anima`、`anima:aesthetic`、Hugging Face のリポジトリ、API のリクエスト) は差し替えず、理由を添えた `*chat.PolicyError`。リポジトリのモデルはライセンスを知らないので、`-license` は通り、`+license` で弾かれる
+- `hwnpu-chat list` などの一覧は、弾かれたモデルと理由を最後に出す。全部弾かれた用途とファミリーの欄は `-`
+- 既定の振る舞いが変わった: 何も指定しなければ Anima と Chroma を選ばない。`hwnpu-image generate` の既定は 8 GB で Sana 600M、16 GB から FLUX.2 klein 4B (前は Anima-Turbo)。Anima を使うには `HWNPU_MODEL_ALLOWLIST=+nsfw`。USAGE_IMAGE と MODEL に書いた
+
+指定と結果の例 (試験 `TestPolicyPicks`):
+
+| 指定 | 用途 | 選ぶもの |
+|---|---|---|
+| なし | image、8 GB | Sana-600M (Anima-Turbo は nsfw) |
+| `+nsfw` | image、8 GB | Anima-Turbo |
+| `+nsfw,-license:non-commercial` | image、8 GB | Sana-600M |
+| `-license:apache-2.0` | image、8 GB | Qwen-Image-2.1-Turbo (残るのは研究用のライセンスだけ。初回に同意を聞く) |
+| `-license:conditional` | chat、8 GB | Qwen3-1.7B (LFM3 は年商の上限つき。同じ種類の open のもの) |
+| `-license:conditional` | chat、16 GB | gemma-4-E2B-it (用途の 16 GB の欄) |
+| `-license:lfm-open-1.0` | speech | エラー (代わりがない) |
+| `+license:open` | translate | エラー (PLaMo 3 Translate は条件付き) |
+
+確かめたこと: `go build ./...`、`go vet ./internal/chat ./cmd/...`、`go test ./...` (`internal/imagegen/qwenimage` の試験は、この変更の前から `TextDir` がなくてビルドできない。それ以外は通る)。`hwnpu-image list` と `hwnpu-chat list` で、指定なし、`-license:conditional` の用途の欄と、弾かれたモデルの一覧。確かめていないこと: 実機で既定の Sana と FLUX.2 が描くこと (AMD では Sana の書き出し `iron_sana.py` が要る)。

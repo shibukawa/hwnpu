@@ -6,6 +6,8 @@
 
 ## Image generation (Anima)
 
+Anima and Chroma may draw NSFW pictures even with `safe` in the prompt, so they are picked only when you opt in: `HWNPU_MODEL_ALLOWLIST=+nsfw` (in the environment or a `.env` file). Without it, `generate` without `-m` picks Sana 600M on an 8 GB machine and FLUX.2 klein 4B from 16 GB, and naming one (`-m anima`) is an error that says why. Section 2 of [docs/model-provenance.md](docs/model-provenance.md) describes how to narrow the models by license as well (`-license:non-commercial`, ...). The examples below assume `+nsfw`.
+
 `go run ./cmd/hwnpu-image` draws a picture from a prompt with Anima (circlestone-labs/Anima: the DiT of Cosmos-Predict2 2B, Qwen3-0.6B and the VAE of Qwen-Image). Encoding the text, the DiT steps and decoding with the VAE are all IRON graphs on the NPU. The host does the tokenization, picking the embedding rows, reordering the patches, the Euler steps and the PNG. An export is made per image size and diffusion model, by hwnpu's `tools/amd/iron_anima.py` (4.0 GB at 1024 × 1024, with the DiT blocks' weights in 8 bits).
 
 ```bash

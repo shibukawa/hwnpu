@@ -42,6 +42,7 @@ func withSources(t *testing.T, urls []string, contents ...string) (string, error
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("LOCALAPPDATA", t.TempDir())
 	t.Setenv(ModelsEnv, "")
+	t.Setenv(PolicyEnv, "")
 	if os.Getenv("HWNPU_CACHE") == "" {
 		t.Setenv("HWNPU_CACHE", t.TempDir())
 	}

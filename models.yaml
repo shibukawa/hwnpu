@@ -20,6 +20,12 @@
 #                 keep it as vN (v0-HASH with no version)
 #   develop       true: in development; what is converted goes in the sources as vN-HASH
 #   arch          the structure, one of hwnpu-dev convert -archs (default: from config.json)
+#   license       the weights' license: {id, url, class, terms, accept}. class is what it allows of
+#                 commercial use: open, conditional (a cap of revenue, a registration) or
+#                 non-commercial (the weights, even when what they make may be sold); accept asks
+#                 the user once before the first run. Every model has one (docs/model-provenance.md)
+#   content       what it may make unasked that the model policy refuses unless allowed: [nsfw]
+#                 (HWNPU_MODEL_ALLOWLIST=+nsfw)
 #   sha256        FILE: the SHA-256 of a file of the repository, checked from any source; a file
 #                 another model pins with the same SHA-256 and has downloaded is linked from its
 #                 directory instead of downloaded (Qwen3-1.7B and MOSS-SoundEffect's text encoder)
@@ -53,6 +59,10 @@
 #   that much memory (GB) or more runs. A file of your own replaces a column's model, or drops it
 #   with remove: true.
 # aliases: NAME: OTHER runs OTHER wherever NAME is picked (a use, a family's tag, -m or -use, a request).
+# policy: [ITEM, ...] (a file of your own only) the model policy, before HWNPU_MODEL_ALLOWLIST's
+#   items (comma separated): -license:ID or -license:CLASS refuses, +license:... allows only what
+#   it names, +nsfw allows the models of content nsfw. A - wins. A use picks the next model
+#   allowed; a model named is refused with why (docs/model-provenance.md 2)
 version: 1
 
 models:
@@ -61,6 +71,7 @@ models:
     tag: 1.7b
     kind: chat
     from: hf:LiquidAI/LFM3-1.7B
+    license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-1.7B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.2
     bytes: 3.5e9
@@ -72,6 +83,7 @@ models:
     tag: 2b
     kind: chat
     from: hf:LiquidAI/LFM3-VL-2B
+    license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-VL-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.6
     bytes: 3.8e9
@@ -83,6 +95,7 @@ models:
     tag: 2b
     kind: chat
     from: hf:LiquidAI/LFM3-Audio-2B
+    license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.6
     bytes: 4.0e9
@@ -94,6 +107,7 @@ models:
     tag: 2b
     kind: chat
     from: hf:LiquidAI/LFM3-Omni-2B
+    license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 3.0
     bytes: 4.3e9
@@ -105,6 +119,7 @@ models:
     tag: e2b
     kind: chat
     from: hf:google/gemma-4-E2B-it
+    license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 8
     memory: 2.3
     bytes: 10.2e9
@@ -116,6 +131,7 @@ models:
     tag: e4b
     kind: chat
     from: hf:google/gemma-4-E4B-it
+    license: {id: apache-2.0, url: "https://ai.google.dev/gemma/docs/gemma_4_license", class: open}
     machine: 24
     memory: 4.0
     bytes: 16.0e9
@@ -127,6 +143,7 @@ models:
     tag: 4b
     kind: chat
     from: hf:Qwen/Qwen3.5-4B
+    license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE", class: open}
     machine: 24
     memory: 4.2
     bytes: 9.3e9
@@ -138,6 +155,7 @@ models:
     tag: 0.8b
     kind: chat
     from: hf:Qwen/Qwen3.5-0.8B
+    license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE", class: open}
     machine: 8
     memory: 2.6
     bytes: 1.77e9
@@ -150,6 +168,7 @@ models:
     tag: 2b
     kind: chat
     from: hf:Qwen/Qwen3.5-2B
+    license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE", class: open}
     machine: 16
     memory: 4.2
     bytes: 4.57e9
@@ -162,6 +181,7 @@ models:
     tag: 20b
     kind: chat
     from: hf:openai/gpt-oss-20b
+    license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
     machine: 32
     memory: 14.6
     bytes: 14.4e9
@@ -173,6 +193,7 @@ models:
     tag: 0.6b
     kind: chat
     from: hf:Qwen/Qwen3-0.6B
+    license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE", class: open}
     machine: 8
     memory: 3.9
     bytes: 1.52e9
@@ -185,6 +206,7 @@ models:
     tag: 1.7b
     kind: chat
     from: hf:Qwen/Qwen3-1.7B@70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
+    license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/LICENSE", class: open}
     sha256:
       model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
       model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
@@ -214,6 +236,7 @@ models:
     tag: 8b
     kind: chat
     from: hf:pfnet/plamo-3-translate-8b@cc265d585980c39436db5b9c136cd6644f446807
+    license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-8b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     # the shards' sha256 as Hugging Face's API gives them, checked against the download (M1)
     sha256:
       model-00001-of-00004.safetensors: 2bb697527d3003a96b699366c186e23efecf9af03d882cb2697290213a69a4c3
@@ -233,6 +256,7 @@ models:
     tag: 2b
     kind: chat
     from: hf:pfnet/plamo-3-translate-2b
+    license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-2b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     machine: 16
     memory: 2.7
     bytes: 5.76e9
@@ -244,6 +268,7 @@ models:
     tag: 0.8b
     kind: chat
     from: hf:pfnet/plamo-3-translate-0.8b
+    license: {id: plamo-community-license, url: "https://huggingface.co/pfnet/plamo-3-translate-0.8b/blob/main/LICENSE/en", class: conditional, terms: "commercial use after registering, by groups of up to 1 billion yen of annual revenue; Built with PLaMo shown"}
     machine: 8
     memory: 2.4
     bytes: 1.79e9
@@ -255,6 +280,7 @@ models:
     tag: 1b
     kind: embedding
     from: hf:pfnet/plamo-embedding-1b
+    license: {id: apache-2.0, url: "https://huggingface.co/pfnet/plamo-embedding-1b/blob/main/LICENSE.txt", class: open}
     machine: 8
     memory: 1.3
     bytes: 2.1e9
@@ -265,6 +291,8 @@ models:
     tag: large-v3-turbo
     kind: transcribe
     from: hf:openai/whisper-large-v3-turbo
+    # MIT by the model card (the repository has no license file; large-v3's card says apache-2.0)
+    license: {id: mit, url: "https://huggingface.co/openai/whisper-large-v3-turbo", class: open}
     machine: 8
     memory: 1.9
     bytes: 1.6e9
@@ -274,6 +302,7 @@ models:
     tag: 2b
     kind: speech
     from: hf:LiquidAI/LFM3-Audio-2B
+    license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.4
     bytes: 4.0e9
@@ -283,6 +312,7 @@ models:
     tag: 2b
     kind: decision
     from: hf:LiquidAI/d1-2B
+    license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/d1-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.4
     about: "Liquid AI's d1-2B: answers typed questions about a state (the System One API), images too, in 8 bit tables"
@@ -291,6 +321,7 @@ models:
     tag: 2b
     kind: decision
     from: hf:LiquidAI/d1-Omni-2B
+    license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/d1-Omni-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     machine: 8
     memory: 2.8
     about: "Liquid AI's d1-Omni-2B: d1 with an audio encoder, questions about images and clips and questions asked as a clip"
@@ -301,6 +332,7 @@ models:
     # lars76/swift-f0 0.3.0's swift_f0/model.onnx (MIT), byte for byte (sha256), from a mirror on
     # Hugging Face: the project publishes it on GitHub and PyPI only
     from: hf:aaatmy/swift-f0-onnx@7877fbaad8ea5dbe0fac0edc4b2703cbea381c14
+    license: {id: mit, url: "https://github.com/lars76/swift-f0/blob/main/LICENSE", class: open}
     sha256: {model.onnx: 6385e8c2ebc3872e82c9ff5946228de44cd3be77a750ea53698b7dbfe94b0a22}
     machine: 8
     memory: 0.06
@@ -312,6 +344,7 @@ models:
     kind: pose
     # OpenMMLab MMPose's RTMO-s (Apache-2.0), the ONNX export Transformers.js reads
     from: hf:Xenova/RTMO-s@d8c526187f341d287753831c9c8b1ecc4855bba1
+    license: {id: apache-2.0, url: "https://github.com/open-mmlab/mmpose/blob/main/LICENSE", class: open}
     sha256: {onnx/model.onnx: 1cd6a3517658903233e9ccb78666554862f57f0944b6886e2048093594aef4e7}
     # AMD's NPU: an export of tools/amd/iron_onnxcnn.py (its transformer layer included, at
     # HIGH), made on the first run; the people and keypoints of ONNX Runtime's within 2 px
@@ -329,6 +362,7 @@ models:
     tag: tiny
     kind: detect
     from: hf:bukuroo/RTMDet-ONNX@aa91dbccc283db36b2c250a1d91ba9518db553da
+    license: {id: apache-2.0, url: "https://github.com/open-mmlab/mmdetection/blob/main/LICENSE", class: open}
     sha256: {rtmdet-tiny-coco.onnx: f25bab7abb4ccfba4f785b90e8bc1bf1dec432e8878a9ecef9a79e3f6f9a62a5}
     # AMD's NPU (tools/amd/iron_onnxcnn.py) holds RTMDet-m's objects, but tiny's and s's BN-folded
     # weights and biases cancel to outputs 50 times smaller, past MEDIUM's bfp16 (A and B) and the
@@ -369,6 +403,7 @@ models:
     tag: small
     kind: ocr
     from: hf:PaddlePaddle/PP-OCRv6_small_rec_onnx@b8f84f0b80c529de40b4fbb3544b84fa7233a513
+    license: {id: apache-2.0, url: "https://github.com/PaddlePaddle/PaddleOCR/blob/main/LICENSE", class: open}
     with: {detector: "hf:PaddlePaddle/PP-OCRv6_small_det_onnx@28fe5895c24fd108c19eb3e8479f4ab385fbfc62"}
     sha256:
       inference.onnx: 5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634
@@ -388,6 +423,8 @@ models:
     # spotify/basic-pitch's basic_pitch/saved_models/icassp_2022/nmp.onnx (Apache-2.0), byte for
     # byte (sha256), from a mirror on Hugging Face: Spotify's repository there holds no weights
     from: hf:AEmotionStudio/basic-pitch-onnx-models@327fd8ccd2f0bb84cbe56b4a0e9d318398ddf763
+    # Apache-2.0 with a NOTICE to keep
+    license: {id: apache-2.0, url: "https://github.com/spotify/basic-pitch/blob/main/LICENSE", class: open}
     sha256: {nmp.onnx: 2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec}
     machine: 8
     memory: 0.07
@@ -400,6 +437,7 @@ models:
     # Google DeepMind's Magenta RealTime 2 (code Apache-2.0, weights CC-BY 4.0: credit "Magenta
     # RealTime 2 by Google DeepMind" where the music is used)
     from: hf:google/magenta-realtime-2@010aa0dcb0dfd27b24f0ad07b4dad63e8f9521cc
+    license: {id: cc-by-4.0, url: "https://huggingface.co/google/magenta-realtime-2", class: open, terms: "credit Magenta RealTime 2 by Google DeepMind where the music is used"}
     machine: 8
     memory: 1.0
     bytes: 1.7e9
@@ -413,6 +451,8 @@ models:
     # picks the text encoder's format (sfx.Formats): fp16 here, lut8 with 5 layers in fp16 in
     # the -lut8 one (moss-soundeffect:8g)
     from: hf:OpenMOSS-Team/MOSS-SoundEffect-v2.0@e35df4d82fbe87fcd5d14e5d100e349c0c3c076d
+    # the VAE is DAC's code (Descript, MIT); who trained its weights is not known
+    license: {id: apache-2.0, url: "https://huggingface.co/OpenMOSS-Team/MOSS-SoundEffect-v2.0", class: open}
     # the text encoder is Qwen3-1.7B's checkpoint: linked from its download when it is here
     sha256:
       text_encoder/model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
@@ -438,7 +478,9 @@ models:
     from: hf:circlestone-labs/Anima
     # the weights for non-commercial use only (the pictures may be used commercially): asked once
     # before the first run (hwnpu-image --accept-license)
-    license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", accept: true}
+    license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", class: non-commercial, accept: true}
+    # makes NSFW pictures even with safe in the prompt: +nsfw in HWNPU_MODEL_ALLOWLIST picks it
+    content: [nsfw]
     file: anima-turbo-v1.1.safetensors
     with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
     sha256:
@@ -460,7 +502,9 @@ models:
     from: hf:circlestone-labs/Anima
     # the weights for non-commercial use only (the pictures may be used commercially): asked once
     # before the first run (hwnpu-image --accept-license)
-    license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", accept: true}
+    license: {id: circlestone-labs-non-commercial, url: "https://huggingface.co/circlestone-labs/Anima/blob/main/LICENSE.md", terms: "the weights for non-commercial use only; the pictures may be used commercially", class: non-commercial, accept: true}
+    # makes NSFW pictures even with safe in the prompt: +nsfw in HWNPU_MODEL_ALLOWLIST picks it
+    content: [nsfw]
     file: anima-aesthetic-v1.1.safetensors
     with: {diffusers: "hf:circlestone-labs/Anima-Base-v1.0-Diffusers"}
     sha256:
@@ -479,7 +523,9 @@ models:
     tag: 1-flash
     kind: image
     from: hf:lodestones/Chroma1-Flash
-    license: {id: apache-2.0, url: "https://huggingface.co/lodestones/Chroma1-Flash"}
+    license: {id: apache-2.0, url: "https://huggingface.co/lodestones/Chroma1-Flash", class: open}
+    # trained uncensored (lodestones/Chroma's card: "Fully uncensored")
+    content: [nsfw]
     sha256:
       scheduler/scheduler_config.json: f7682ce6d9f1b12dcb8394c653ede50a0f7c724a5acd0a68f2bfb9f88756cd81
       text_encoder/config.json: a5052c13f27780d720c78338cb51235395aabb2ed65813dbf6b305727727fb62
@@ -525,7 +571,7 @@ models:
     tag: 4b
     kind: image
     from: hf:black-forest-labs/FLUX.2-klein-4B
-    license: {id: apache-2.0, url: "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B"}
+    license: {id: apache-2.0, url: "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B", class: open}
     sha256:
       text_encoder/model-00001-of-00002.safetensors: 8c0506e7f4936fa7e26183a4fd8da4e2bdbc5990ba64ae441f965d51228f36ea
       text_encoder/model-00002-of-00002.safetensors: 82f2bd839378541b0557bfabaf37c7d3d637071fdcb73302dedd7cf61162ce07
@@ -548,7 +594,7 @@ models:
     kind: image
     from: hf:Qwen/Qwen-Image-2.1-Turbo
     # research and evaluation only: asked once before the first run (hwnpu-image --accept-license)
-    license: {id: qwen-research, url: "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/main/LICENSE", terms: "research and evaluation only, not commercial use", accept: true}
+    license: {id: qwen-research, url: "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/main/LICENSE", class: non-commercial, terms: "research and evaluation only, not commercial use", accept: true}
     sha256:
       processor/tokenizer.json: be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506
       text_encoder/model.safetensors: a1eee8233f3063466dd3b06e857b0a2cf13a77c543908374771d51a546beb2e0
@@ -581,6 +627,8 @@ models:
     tag: 0.6b
     kind: image
     from: hf:Efficient-Large-Model/Sana_600M_1024px_diffusers
+    # the text encoder brings Gemma's terms and prohibited use policy (no sexually explicit content)
+    license: {id: apache-2.0, url: "https://huggingface.co/Efficient-Large-Model/Sana_600M_1024px_diffusers/blob/main/LICENSE", class: open}
     sha256:
       transformer/config.json: 38916317861688918bee963c296ee0f9e939b6d2fd4f5e9f6908f2b9a9179fa6
       transformer/diffusion_pytorch_model.safetensors: f9db5116ca285dd8a431dc8ee5123a9b74177640f6559c6fea4047c6e8ff5089
@@ -602,6 +650,8 @@ models:
     tag: 1.6b
     kind: image
     from: hf:Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers
+    # the text encoder brings Gemma's terms and prohibited use policy (no sexually explicit content)
+    license: {id: apache-2.0, url: "https://huggingface.co/Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers/blob/main/LICENSE", class: open}
     sha256:
       transformer/config.json: 70863bf60b87cbeab5780c9827ffc5b880cd1ec9ce22bf033409b7e257e8fc68
       transformer/diffusion_pytorch_model.safetensors: 300b4109622d8ffd12d827a4127d2f82f102e3b9a0d413285f6bcf46729a3e54
@@ -626,6 +676,7 @@ models:
     tag: mono-large
     kind: depth
     from: hf:depth-anything/DA3MONO-LARGE
+    license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3MONO-LARGE", class: open}
     machine: 24
     memory: 1.4
     bytes: 1.4e9
@@ -635,6 +686,7 @@ models:
     tag: base
     kind: depth
     from: hf:depth-anything/DA3-BASE
+    license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3-BASE", class: open}
     machine: 16
     memory: 0.75
     bytes: 0.5e9
@@ -644,6 +696,7 @@ models:
     tag: small
     kind: depth
     from: hf:depth-anything/DA3-SMALL
+    license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3-SMALL", class: open}
     machine: 8
     memory: 0.5
     bytes: 0.14e9
@@ -653,6 +706,7 @@ models:
     tag: large
     kind: depth
     from: hf:depth-anything/DA3METRIC-LARGE
+    license: {id: apache-2.0, url: "https://huggingface.co/depth-anything/DA3METRIC-LARGE", class: open}
     machine: 8
     memory: 1.4
     bytes: 1.4e9
@@ -662,6 +716,7 @@ models:
     tag: vitl
     kind: depth
     from: hf:Ruicheng/moge-2-vitl-normal
+    license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 24
     memory: 2.6
     bytes: 1.3e9
@@ -671,6 +726,7 @@ models:
     tag: vitb
     kind: depth
     from: hf:Ruicheng/moge-2-vitb-normal
+    license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 16
     memory: 2.1
     bytes: 0.4e9
@@ -680,6 +736,7 @@ models:
     tag: vits
     kind: depth
     from: hf:Ruicheng/moge-2-vits-normal
+    license: {id: mit, url: "https://github.com/microsoft/MoGe/blob/main/LICENSE", class: open}
     machine: 8
     memory: 1.9
     bytes: 0.14e9
@@ -689,6 +746,7 @@ models:
     tag: 2023mar
     kind: face-detect
     from: hf:opencv/face_detection_yunet
+    license: {id: mit, url: "https://github.com/opencv/opencv_zoo/blob/main/models/face_detection_yunet/LICENSE", class: open}
     # AMD's NPU (IRON) switches its array for each operator: 29 ms and 127 mJ a picture at
     # 320 x 256, the CPU (onnxruntime, 1 thread) 2.7 ms and 7.7 mJ (docs/amd-npu-models.md 17).
     # Apple and Intel compile the whole graph: not measured yet, the NPU
@@ -707,6 +765,7 @@ models:
     tag: base
     kind: label
     from: hf:google/siglip2-base-patch16-224
+    license: {id: apache-2.0, url: "https://huggingface.co/google/siglip2-base-patch16-224", class: open}
     machine: 8
     # M3: 0.45 GB of the process at most (embedding the 444 default labels) and 0.36 GB on the
     # Neural Engine (Core AI: 0.48)
@@ -718,6 +777,7 @@ models:
     tag: large
     kind: label
     from: hf:google/siglip2-large-patch16-256
+    license: {id: apache-2.0, url: "https://huggingface.co/google/siglip2-large-patch16-256", class: open}
     machine: 16
     # M3: 1.8 GB of the process and 1.24 GB on the Neural Engine (Core AI: 1.56)
     memory: {amd: 1.7, apple: 3.3}
@@ -734,6 +794,7 @@ models:
     tag: ti
     kind: segment
     from: hf:yunyangx/EfficientSAM@1cf49585c39567bfc49e991ab8eb31f491ad4877
+    license: {id: apache-2.0, url: "https://github.com/yformer/EfficientSAM/blob/main/LICENSE", class: open}
     sha256: {efficientsam_ti_encoder.onnx: 84ed466ffcc5c1f8d08409bc34a23bb364ab2c15e402cb12d4335a42be0e0951, efficientsam_ti_decoder.onnx: a62f8fa5ea080447c0689418d69e58f1e83e0b7adf9c142e2bd9bcc8045c0b11}
     device: {amd: npu}
     machine: 8

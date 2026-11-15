@@ -114,6 +114,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 </tbody>
 </table>
 
+- 画像生成の Anima と Chroma は、`HWNPU_MODEL_ALLOWLIST=+nsfw` でオプトインしたときだけ選びます (頼まなくても NSFW の絵を描くことがあるため)。オプトインしなければ、8 GB は Sana 600M、16 GB からは FLUX.2 klein 4B です。ライセンスでモデルを絞るときも同じ変数を使います ([docs/model-provenance.md](docs/model-provenance.md))
 - 括弧の中は、起動して短い会話をしたときの想定のメモリです (次の節)。長い会話では KV キャッシュの分が増えます
 - 32 GB を超えても、今は大きなモデルがありません。メモリの多い機械では、上の表の組み合わせを同時に動かすか、長い文脈に使います
 - 小さな機械では、`--context` で文脈を短くすると KV キャッシュの分が減ります。hwnpu-chat は KV キャッシュが物理メモリの 4 分の 1 を超えるとき、文脈を自分で縮めます

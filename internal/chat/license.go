@@ -16,7 +16,7 @@ import (
 // License is a model's license in models.yaml:
 //
 //	license: {id: qwen-research, url: https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/main/LICENSE,
-//	          terms: "research and evaluation only, not commercial use", accept: true}
+//	          class: non-commercial, terms: "research and evaluation only, not commercial use", accept: true}
 //
 // With Accept, the license restricts what the weights may be used for (non-commercial ones): the
 // user accepts it once before the model is first downloaded or run (AcceptLicense), and the
@@ -29,6 +29,9 @@ type License struct {
 	URL string `yaml:"url"`
 	// Terms is what it allows, in one line, shown when asking.
 	Terms string `yaml:"terms"`
+	// Class is what it allows of commercial use (LicenseClasses: open, conditional,
+	// non-commercial), which the model policy reads (license:non-commercial).
+	Class string `yaml:"class"`
 	// Accept makes AcceptLicense ask.
 	Accept bool `yaml:"accept"`
 }
