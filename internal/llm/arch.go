@@ -220,6 +220,15 @@ type Paged interface {
 	MaxContext() int
 }
 
+// Windowed is a Paged model whose layers outside PagedLayers attend over a window of the
+// sequence: their caches are rings of RingWindow positions in the program, which a call is given
+// whole whatever the sequence holds (PLaMo 3 Translate 2B's 21 rings of 2048 are 84 MiB a call).
+// While a sequence is shorter, programs built for a shorter context run it with shorter caches
+// (chat's ring tiers, docs/design.md 16.220).
+type Windowed interface {
+	RingWindow() int
+}
+
 // Unpaged is a Paged model that runs faster in one piece, with its cache in the program, than
 // split at its attention: every layer of Qwen3 attends, so a split model calls the Neural Engine
 // twice a layer (on an M1, Qwen3-0.6B generates 11 to 12 tokens/s whole with a cache of 4096,

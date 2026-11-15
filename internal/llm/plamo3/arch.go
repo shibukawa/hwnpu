@@ -182,6 +182,15 @@ func (c *Config) PagedLayers() []int {
 	return out
 }
 
+// RingWindow is the window of the sliding layers, the length of their rings (llm.Windowed), 0
+// for a model without them.
+func (c *Config) RingWindow() int {
+	if !c.has(false) {
+		return 0
+	}
+	return c.Window
+}
+
 // PagedShape is the full attention layers' heads, kv heads and head size (llm.Paged), with their
 // scores scaled by 1/sqrt(head_dim) times YaRN's concentration squared.
 func (c *Config) PagedShape() paged.Shape {
