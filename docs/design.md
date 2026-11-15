@@ -6354,23 +6354,6 @@ PNG はバイト単位で同じ。
 
 確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...` が通る。新しい試験: 取得元から手元へ取り、取得元をなくしても手元から読む、lock が移ると手元も移り同じファイルは残す、前の `models/NAME` の移し (sha256 の違うものは取り直す)、同梱のモデルをその場で (ハードリンク)、`modelstore` の層 (`TestLayers`)。確かめていないこと: 実機の Hugging Face からの取得、Mac と Intel の機械での実行、インストーラが置いた同梱のモデル。
 
-<<<<<<< HEAD
-### 16.214 手元のキャッシュの大きさ: 空きの下限、LRU、一般向けの `hwnpu cache` — 2026-11-15
-
-手元のキャッシュ (16.213 の層 0) は増える一方で、消すには `~/.cache/hwnpu` を手で消すしかなかった。ダウンロードの前に場所を確かめ、使っていないものから消す仕組みを共有の部分 (`internal/cache`) に入れ、一般の利用者のためのコマンド `hwnpu` を足した (docs/cache-sharing.md 7.7)。
-
-- `cache.Room(need, path, log)`: 取得元からの取得 (`store.FetchOriginal`)、変換したものの取得 (`store.materialize`)、Hugging Face からの取得 (`chat.fetchHF`、Content-Length) の前に呼ぶ。`HWNPU_CACHE_MIN_FREE` (既定 10 GB、割合も) を切るなら始めない。`HWNPU_CACHE_MAX_SIZE` があれば、超えるとき (と空きが足りないとき) に最近使っていない単位から消す。足りなければ `ErrNoRoom` (`chat.fetch` は取得元から HF に回らずに止まる)
-- 上限は既定でなし: 消すと AMD の書き出しのように作り直しに時間がかかるものがあるので、利用者が上限を決めたときだけ自動で消す。下限は既定であり、ディスクを埋めきらない
-- 単位: 元のリポジトリ、`models/NAME`、`converted/.../vN`、`entries/TARGET/NAME`、`iron/KEY`、根のコンパイルしたもの (鍵ごと)。最後に使った時刻はフォルダの mtime を `cache.Touch` で進める (atime は当てにならない)。`chat.fetch` の速い道、`chat.ModelDir`、`cache.FindExport` が呼ぶ。一覧のための `Downloaded` は時刻を変えない
-- 消さないもの: 最近 1 時間 (`cache.KeepRecent`)、このプロセスが使ったもの、書き戻しの queue にあるもの (`cache.SetBusy`)
-- 大きさはハードリンクを 1 回だけ数える (Unix の dev/ino)。上限のための走査はプロセスに 1 回
-- `modelstore`: `Options.Limits`、`Usage`、`Limits`、`DiskSpace`、`PlanPrune`、`Prune`、`Remove`、`ErrNoRoom` (型は `cache` の別名)
-- `cmd/hwnpu`: `hwnpu cache` (info)、`ls`、`prune`、`clear`。`hwnpu-dev cache` は取得元の管理のまま
-
-この機械で: `hwnpu cache` は 25.4 GB (IRON のカーネル 19.3 GB、642 単位。ほか `dev/` 5.9 GB)、走査 2.7 秒。元のファイルと書き出しは 11-15 に NAS へ移したので 0。
-
-確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...`。新しい試験: 大きさの読み (`ParseSize`)、変数からの上限、単位の数え (ハードリンクを 1 回、種類)、上限で古い順に消して今使っているものは残す、空きの下限で止めて上限なしなら消さない、`PlanPrune` (年齢、種類、queue にあるものは残す)、`modelstore` で上限を超える取得が `ErrNoRoom`。確かめていないこと: Windows と macOS でのディスクの空き (クロスビルドは通る)、実際のダウンロード中に消すこと。
-=======
 ### 16.214 Chroma の DiT の注意も Qwen-Image と同じ形に: Chroma1-Flash の 1024² を M1 で 5 分 36 秒 (Core AI) — 2026-11-15
 
 16.211 の `HeadAttention` (キーを 2 のべき乗の塊に、画像と文のキーを別のスコアに) を Chroma の DiT (24 ヘッド、隠れ 3072、ダブル 19 + シングル 38 ブロック) に入れた。Chroma は文の行も問い合わせになる (1024² で行もキーも 4096 + 512)。M1 (16 GB、macOS 27.2.1、26B131)、狐のプロンプト、種 1。時間は 16.210 (組ごとの入れ替えと先読み) を入れた上での値。
@@ -6503,4 +6486,19 @@ PNG はバイト単位で同じ。
 - 単体テスト (偽のプログラム。エンジンの `loader`): まとめて描いた絵が 1 枚ずつ描いた絵と同じ値 (Chroma: Heun、Euler、DPM-Solver++ 2M × CFG あり / なし。Qwen-Image: Euler と DPM-Solver++ 2M × CFG あり / なし)、組と文の符号器と VAE の段が 1 回の読み込みで全部のパスを回す、`TestStages` (狭い段は全部一緒、出力が入らない段からは入る枚数ずつ、どの分け方でも同じ出力、失敗しても開いたものが残らない)。絵を取り違える変更を入れると落ちることを確かめた
 
 **Neural Engine は、前のプロセスが終わった直後は空いていない**: 測っている間、Chroma が T5 の 1 本目で 2 回続けて失敗した (`ANEProgramProcessRequestDirect() Failed with status=0xf: Request cancelled`)。ほかの作業の hwnpu-chat が終わってロックが空いた直後で、`mem.NPUWired` にその 1.47 GiB が残っていた。ロックを取ってから 64 MiB 未満になるまで待つ (7 秒) と通る。この節の測定は包みの側でそう待っている。コマンドの側で待つ変更は別に出す。
->>>>>>> origin/main
+
+### 16.217 手元のキャッシュの大きさ: 空きの下限、LRU、一般向けの `hwnpu cache` — 2026-11-15
+
+手元のキャッシュ (16.213 の層 0) は増える一方で、消すには `~/.cache/hwnpu` を手で消すしかなかった。ダウンロードの前に場所を確かめ、使っていないものから消す仕組みを共有の部分 (`internal/cache`) に入れ、一般の利用者のためのコマンド `hwnpu` を足した (docs/cache-sharing.md 7.7)。
+
+- `cache.Room(need, path, log)`: 取得元からの取得 (`store.FetchOriginal`)、変換したものの取得 (`store.materialize`)、Hugging Face からの取得 (`chat.fetchHF`、Content-Length) の前に呼ぶ。`HWNPU_CACHE_MIN_FREE` (既定 10 GB、割合も) を切るなら始めない。`HWNPU_CACHE_MAX_SIZE` があれば、超えるとき (と空きが足りないとき) に最近使っていない単位から消す。足りなければ `ErrNoRoom` (`chat.fetch` は取得元から HF に回らずに止まる)
+- 上限は既定でなし: 消すと AMD の書き出しのように作り直しに時間がかかるものがあるので、利用者が上限を決めたときだけ自動で消す。下限は既定であり、ディスクを埋めきらない
+- 単位: 元のリポジトリ、`models/NAME`、`converted/.../vN`、`entries/TARGET/NAME`、`iron/KEY`、根のコンパイルしたもの (鍵ごと)。最後に使った時刻はフォルダの mtime を `cache.Touch` で進める (atime は当てにならない)。`chat.fetch` の速い道、`chat.ModelDir`、`cache.FindExport` が呼ぶ。一覧のための `Downloaded` は時刻を変えない
+- 消さないもの: 最近 1 時間 (`cache.KeepRecent`)、このプロセスが使ったもの、書き戻しの queue にあるもの (`cache.SetBusy`)
+- 大きさはハードリンクを 1 回だけ数える (Unix の dev/ino)。上限のための走査はプロセスに 1 回
+- `modelstore`: `Options.Limits`、`Usage`、`Limits`、`DiskSpace`、`PlanPrune`、`Prune`、`Remove`、`ErrNoRoom` (型は `cache` の別名)
+- `cmd/hwnpu`: `hwnpu cache` (info)、`ls`、`prune`、`clear`。`hwnpu-dev cache` は取得元の管理のまま
+
+この機械で: `hwnpu cache` は 25.4 GB (IRON のカーネル 19.3 GB、642 単位。ほか `dev/` 5.9 GB)、走査 2.7 秒。元のファイルと書き出しは 11-15 に NAS へ移したので 0。
+
+確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...`。新しい試験: 大きさの読み (`ParseSize`)、変数からの上限、単位の数え (ハードリンクを 1 回、種類)、上限で古い順に消して今使っているものは残す、空きの下限で止めて上限なしなら消さない、`PlanPrune` (年齢、種類、queue にあるものは残す)、`modelstore` で上限を超える取得が `ErrNoRoom`。確かめていないこと: Windows と macOS でのディスクの空き (クロスビルドは通る)、実際のダウンロード中に消すこと。
