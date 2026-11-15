@@ -937,9 +937,12 @@ def export_vae(root: Path, out: Path, width: int, height: int, check: bool, ref:
         go = st.g_out if ops[-1][0] != "head" else None
         meta = dict(stage=i, ops=json.loads(json.dumps(ops)), grid_in=dataclasses.asdict(g),
                     grid_out=None if go is None else dataclasses.asdict(go), pad=iron_anima.VAE_PAD,
-                    width=width, height=height, scaling_factor=cfg["scaling_factor"], shift_factor=cfg["shift_factor"])
+                    width=width, height=height, scaling_factor=cfg["scaling_factor"], shift_factor=cfg["shift_factor"],
+                    norms=getattr(st, "norms", []))
         m = export_graph(cg, d / f"s{i}", f"vae_s{i}", meta)
         print(f"vae s{i}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+        if HOST_NORM[0]:
+            continue  # the host's norm steps are not in IRON's reference: checked on the NPU
         if x_ref is not None:
             t1 = time.time()
             x_in = x_ref
@@ -1009,6 +1012,9 @@ def main(argv=None) -> int:
     ap.add_argument("--stages", type=int, nargs="*", help="the VAE's stages to export (default all)")
     ap.add_argument("--vae-config", type=Path, help="a directory with the VAE's config.json when ROOT/vae has none "
                     "(Chroma1-Flash's vae/ holds the weights only: FLUX.1-schnell's vae/)")
+    ap.add_argument("--host-norm", action=argparse.BooleanOptionalAction, default=True,
+                    help="the VAE's GroupNorms as two operators and a host step (iron_groupnorm, HOST_NORM); "
+                         "--no-host-norm for the device-only norm, which --ref-vae and --check can run")
     ap.add_argument("--vae-precision", default=iron_anima.PREC.vae.value, choices=[p.value for p in Precision],
                     help="the VAE's convolutions (medium: bfp16 operands, as Anima's; IRON's CPU reference does not round to bfp16)")
     ap.add_argument("--t5-format", default="q8", choices=("bf16", "q8", "q6", "q4"))
@@ -1029,6 +1035,7 @@ def main(argv=None) -> int:
 
     iron_q4.install_linear()
     iron_anima.PREC.vae = Precision(a.vae_precision)
+    HOST_NORM[0] = a.host_norm
     bind_device(a.device, a.cols)
     a.out.mkdir(parents=True, exist_ok=True)
     if "t5" in a.only:
