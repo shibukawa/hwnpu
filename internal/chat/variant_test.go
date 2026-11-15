@@ -47,6 +47,52 @@ func TestBuiltinVariants(t *testing.T) {
 	}
 }
 
+// LFM3-1.7B and Qwen3.5-0.8B: no whole program of short conversations on 8 GB (tier none),
+// which would hold the weights a second time, and auto from 16 GB; the memory of 16 GB by the
+// chip, an M1 not loading that program.
+func TestBuiltinTier(t *testing.T) {
+	if err := LoadModels(nil, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer func(f func() string) { chipName = f }(chipName)
+	for _, c := range []struct {
+		name          string
+		machine       int
+		tier          string
+		m1, m3, other float64 // Apple's M1, an M3, AMD's
+	}{
+		{"LFM3-1.7B", 8, "none", 1.7, 1.7, 2.2},
+		{"LFM3-1.7B", 16, "auto", 1.7, 3.1, 2.2},
+		{"LFM3-1.7B", 64, "auto", 1.7, 3.1, 2.2},
+		{"Qwen3.5-0.8B", 8, "none", 1.5, 1.5, 1.5},
+		{"Qwen3.5-0.8B", 16, "auto", 1.5, 2.3, 1.5},
+	} {
+		t.Setenv(MemoryEnv, strconv.Itoa(c.machine))
+		got, ok, err := lookupFor(c.name, nil)
+		if !ok || err != nil || got.Run.Tier != c.tier {
+			t.Fatalf("%s on %d GB: tier %q (%v), want %q", c.name, c.machine, got.Run.Tier, err, c.tier)
+		}
+		chipName = func() string { return "M1" }
+		m1 := got.MemoryFor("apple")
+		chipName = func() string { return "M3" }
+		if m3, amd := got.MemoryFor("apple"), got.MemoryFor("amd"); m1 != c.m1 || m3 != c.m3 || amd != c.other {
+			t.Errorf("%s on %d GB: memory %v on an M1, %v on an M3, %v on AMD's; want %v, %v, %v", c.name, c.machine, m1, m3, amd, c.m1, c.m3, c.other)
+		}
+	}
+	// a tier is auto, none or a list of caches
+	for _, bad := range []string{`""`, "short", "0", "-4"} {
+		if _, err := userFiles(t, "version: 1\nmodels:\n  LFM3-1.7B:\n    tier: "+bad+"\n"); err == nil {
+			t.Errorf("tier: %s was taken", bad)
+		}
+	}
+	if _, err := userFiles(t, "version: 1\nmodels:\n  LFM3-1.7B:\n    tier: \"512,2048\"\n    variants:\n      16: {tier: none}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := Lookup("LFM3-1.7B"); m.Run.Tier != "512,2048" || m.On(16).Run.Tier != "none" || m.On(16).MemoryFor("amd") != 2.2 {
+		t.Errorf("a file of the user's: %+v, on 16 GB %+v", m.Run, m.On(16).Run)
+	}
+}
+
 func TestOn(t *testing.T) {
 	m := Model{Machine: 8, Memory: 4, MemoryBy: PerVendor{"": 4}, Run: Run{Prefill: PrefillOff, Format: "lut6"},
 		Variants: map[int]Variant{

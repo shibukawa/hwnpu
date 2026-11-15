@@ -190,10 +190,10 @@ type modelEntry struct {
 	// Content is what the model may make that the policy refuses unless allowed: [nsfw].
 	Content *[]string `yaml:"content"`
 	// RunEntry is how hwnpu-chat runs a chat model when its flags do not say (prefill, format,
-	// context, paged), on a machine of machine GB.
+	// context, paged, tier), on a machine of machine GB.
 	RunEntry `yaml:",inline"`
 	// Variants change memory and how the model runs on machines of more memory, by the least
-	// memory in GB: {16: {memory: 7.6, prefill: auto}}. A file over another changes the
+	// memory in GB: {16: {memory: 2.3, prefill: auto}}. A file over another changes the
 	// variants it names and keeps the others.
 	Variants *map[int]*variantEntry `yaml:"variants"`
 	// NotOn are the chips (M1) a family or a category does not pick the model on.
@@ -714,7 +714,7 @@ func toModel(name string, e *modelEntry) (Model, error) {
 		return m, fmt.Errorf("model %s: %w", name, err)
 	}
 	if !run.zero() && m.Kind != KindChat {
-		return m, fmt.Errorf("model %s: prefill, format, context and paged are for chat models (hwnpu-chat)", name)
+		return m, fmt.Errorf("model %s: prefill, format, context, paged and tier are for chat models (hwnpu-chat)", name)
 	}
 	m.Run = run
 	if e.Variants != nil {

@@ -11,6 +11,10 @@
 //	hwnpu cache prune --older-than 30d       # remove what was not used for 30 days
 //	hwnpu cache clear Qwen3-1.7B             # remove a model's files and programs
 //	hwnpu cache clear --all                  # remove everything the cache holds of the models
+//	hwnpu memory                             # this machine's memory, the models with a memory chosen
+//	hwnpu memory LFM3-1.7B                   # the memory it runs as, and how
+//	hwnpu memory LFM3-1.7B 8                 # run it as on a machine of 8 GB, in every command
+//	hwnpu memory LFM3-1.7B --forget          # as on this machine again
 //
 // The cache is hwnpu in the user cache directory (~/.cache/hwnpu, ~/Library/Caches/hwnpu,
 // %LOCALAPPDATA%\hwnpu), or HWNPU_CACHE. It is held in units, each removed whole: a repository's
@@ -29,6 +33,14 @@
 // adapter (Windows), and the devices are not opened. --wake opens them and asks the NPU too (on
 // Linux amdxdna wakes for a few seconds). The processes that use it are listed with the NPU's
 // memory each holds.
+//
+// memory chooses the memory a model runs as on this machine: how a model runs on a machine of
+// some memory (its programs: models.yaml's variants) is the definition's, and the user chooses
+// only the machine, to run a model the smaller way beside other programs on a machine of more.
+// Every command that resolves the model (hwnpu-chat, hwnpu-image, hwnpu-audio, an application
+// through modelstore) runs it so, and converts or fetches the programs of that memory alone. It
+// is kept in run.json in hwnpu's directory of settings (beside the user's models.yaml), not in
+// the cache. hwnpu-chat --memory GB (or a tag of memory: lfm3:8g) chooses it too.
 //
 // hwnpu-chat, hwnpu-image and hwnpu-audio keep their last 10 runs in logs/ under the cache (the
 // arguments, the log, how it ended). issue writes a draft of an issue of shibukawa/hwnpu about the
@@ -52,6 +64,7 @@ import (
 type cli struct {
 	Status StatusCmd `cmd:"" help:"This machine's NPU: the device, its driver, how busy it is and what uses it; what hwnpu runs on; the cache."`
 	Cache  CacheCmd  `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
+	Memory MemoryCmd `cmd:"" help:"The memory each model runs as on this machine, in every hwnpu command: choose a smaller one (hwnpu memory LFM3-1.7B 8) to run a model beside other programs, the way models.yaml defines for that memory."`
 	Issue  IssueCmd  `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
 }
 

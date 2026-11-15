@@ -20,6 +20,7 @@
 package modelstore
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -214,3 +215,43 @@ func (s *Store) Remove(units []Unit) ([]Unit, error) {
 	}
 	return done, errors.Join(errs...)
 }
+
+// Memory is the memory a model runs as on this machine (Store.Memory).
+type Memory struct {
+	Model   string // the model's name in the definitions
+	GB      int    // the memory it runs as: Chosen, else Machine
+	Chosen  int    // chosen for it (SetMemory), 0 for none
+	Machine int    // this machine's (HWNPU_MEMORY, else the physical memory)
+}
+
+// Memory is the memory model name (a name of the definitions, its repository, or a family or a
+// use: the model it picks here) runs as on this machine. Every hwnpu command and a Store's
+// application run a model as on a machine of that memory: its programs are those models.yaml
+// defines for it (variants), converted or fetched for that alone.
+func (s *Store) Memory(name string) (Memory, error) {
+	m, err := chat.Named(name)
+	if err != nil {
+		return Memory{}, err
+	}
+	mem := Memory{Model: m.Name, Chosen: chat.ChosenMemory(m), Machine: chat.MachineMemory()}
+	mem.GB = cmp.Or(mem.Chosen, mem.Machine)
+	return mem, nil
+}
+
+// SetMemory chooses gb as the memory model name runs as on this machine, in every hwnpu command
+// (a 16 GB Mac that runs a model the 8 GB way, beside other programs); 0 forgets it. It is kept
+// in hwnpu's directory of settings (run.json beside the user's models.yaml), not in the cache:
+// pruning the cache keeps it, and another machine reading the same cache does not get it.
+func (s *Store) SetMemory(name string, gb int) (Memory, error) {
+	m, err := chat.Named(name)
+	if err != nil {
+		return Memory{}, err
+	}
+	if err := chat.ChooseMemory(m, gb); err != nil {
+		return Memory{}, err
+	}
+	return s.Memory(m.Name)
+}
+
+// Memories are the models with a memory chosen (SetMemory), by name.
+func (s *Store) Memories() map[string]int { return chat.ChosenMemories() }

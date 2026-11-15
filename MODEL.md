@@ -33,7 +33,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <tbody>
 <tr>
 <th>Chat, coding<br><sub>hwnpu-chat, hwnpu-chat agent <code>-m chat</code></sub></th>
-<td><b>LFM3-1.7B</b> (2.2 GB on AMD; on Apple 1.7 GB on an M1, 3.1 GB on an M2 or later)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.3 GB)<br>a size larger, 5B with its per-layer embeddings<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.1 GB; Apple only)<br>in one program, slower to read long prompts<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>, 1.1 GB on an M1, 1.6 GB on an M2 or later, 1.5 GB download)<br>the smallest download, weak at facts</td>
+<td><b>LFM3-1.7B</b> (1.7 GB on Apple, 2.2 GB on AMD)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.3 GB)<br>a size larger, 5B with its per-layer embeddings<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>, 2.2 to 2.4 GB)<br>writes code too<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.1 GB; Apple only)<br>in one program, slower to read long prompts (<code>--prefill on</code> for faster, +0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>, 1.1 GB on an M1, 1.6 GB on an M2 or later, 1.5 GB download)<br>the smallest download, weak at facts</td>
 <td><b>Gemma 4 E2B</b> (2.3 GB)<br>with a long context too (+0.8 GB at 131072)<br><b>Gemma 4 E4B</b> (4.0 GB)<br>for short conversations<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.3 GB)<br>with a program of its own to read prompts, 5 times faster at it</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>with a long context too (+2.1 GB at 131072)</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>planned: Qwen3.6-35B-A3B (MoE, about 25 GB at 4 bits)</i></td>
@@ -106,7 +106,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 </tr>
 <tr>
 <th>Several at once<br><sub>hwnpu-chat <code>serve -m A,B,…</code></sub></th>
-<td>one at a time</td>
+<td>LFM3-1.7B + PLaMo 3 Translate 0.8B (2.7 GB on Apple, 3.2 GB on AMD)</td>
 <td>Gemma 4 E2B + PLaMo-Embedding-1B (3.5 to 3.6 GB)<br>+ PLaMo 3 Translate 2B (6.3 GB on AMD, 6.7 GB on Apple)</td>
 <td>Gemma 4 E4B + PLaMo-Embedding-1B + PLaMo 3 Translate 2B (8.0 GB on AMD, 8.4 GB on Apple)</td>
 <td colspan="3">and Gemma 4 E2B with images and audio, and Anima-Turbo in another process (about 15.5 to 16 GB)</td>
@@ -117,6 +117,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 - Anima and Chroma (image generation) are picked only when you opt in with `HWNPU_MODEL_ALLOWLIST=+nsfw`, as they may draw NSFW pictures unasked. Without it, image generation is Sana 600M on 8 GB and FLUX.2 klein 4B from 16 GB. The same variable narrows the models by license ([docs/model-provenance.md](docs/model-provenance.md))
 - The figure in parentheses is the expected memory after starting and a short conversation (next section). Long conversations add the KV cache
 - Past 32 GB there is no larger model yet. A machine with more memory runs the combinations above at once, or long contexts
+- A machine of 8 GB runs the models the way that takes less memory (LFM3-1.7B without its whole program of short conversations, Qwen3-1.7B without a program of its own to read prompts). To run one beside other programs on a machine of more memory, `hwnpu memory LFM3-1.7B 8` (or `hwnpu-chat --memory 8`) runs it the 8 GB way in every command ([docs/cache-sharing.md](docs/cache-sharing.md) 7.8)
 - On a small machine, a shorter `--context` cuts the KV cache. hwnpu-chat shrinks the context itself when the KV cache would be over a quarter of the physical memory
 
 ## Memory per model
@@ -125,7 +126,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 
 | Model | Use | At start | Growth with the conversation (KV cache) | Basis |
 |---|---|---|---|---|
-| LFM3-1.7B | Chat, coding | 2.2 GB on AMD. On Apple 1.7 GB on an M1 (1.36 GiB on the Neural Engine and 0.23 GiB of the process), 3.1 GB on an M2 or later (the program of short conversations holds the weights once more: 2.64 GiB and 0.21 GiB) | 12 KiB/token (3 GiB at 262144) | measured (AMD and an M1; an M2's programs loaded on the M1 with `--tier 2048`) |
+| LFM3-1.7B | Chat, coding | 2.2 GB on AMD. On Apple 1.7 GB (1.36 GiB on the Neural Engine and 0.23 GiB of the process); 3.1 GB on an M2 or later from 16 GB (the program of short conversations holds the weights once more: 2.64 GiB and 0.21 GiB) | 12 KiB/token (3 GiB at 262144) | measured (AMD and an M1; an M2's programs loaded on the M1 with `--tier 2048`) |
 | Gemma 4 E2B | Chat, coding | 2.3 GB (an M1 with Core AI: 1.66 GiB on the Neural Engine; the process not measured with Core AI) | 6 KiB/token (0.75 GiB at 131072) | measured |
 | Gemma 4 E2B with images and audio | Images, audio (one image and 30 seconds a prompt) | 3.4 GB (2.4 GB until an image or audio arrives) | 6 KiB/token | measured |
 | Gemma 4 E4B | Chat, coding | 4.0 GB | 16 KiB/token (2 GiB at 131072) | measured |
@@ -157,7 +158,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | d1-2B, d1-Omni-2B | Decisions on a state | about 2.4 GB, about 2.8 GB | short inputs only | estimated from the weights |
 | Qwen3-0.6B | Chat (weak at facts) | 1.1 GB on an M1 (0.65 GiB on the Neural Engine and 0.35 GiB of the process), 1.6 GB on an M2 or later (with the program of short conversations 1.23 GiB and 0.26 GiB) | 126 KiB/token (4.9 GiB at its context of 40960; a machine of 16 GB cuts it to 32768, 3.9 GiB) | measured on an M1 (an M2's programs with `--tier 1024`) |
 | Qwen3-1.7B | Chat (weak at Japanese facts) | 2.1 GB below 16 GB, 2.3 GB from 16 GB (M1: one program of 8 bit tables, 1.64 GiB on the Neural Engine and 0.23 GiB of the process; from 16 GB with the function that reads prompts, 1.80 GiB and 0.36 GiB) | 126 KiB/token (4.9 GiB at its context of 40960; a machine of 16 GB cuts it to 32768, 3.9 GiB) | measured on an M1 |
-| Qwen3.5-0.8B | Chat (weak at Japanese facts) | 1.5 GB on AMD (6-bit MLP). On Apple 1.5 GB on an M1 (8 bit tables: 0.99 GiB on the Neural Engine and 0.39 GiB of the process), 2.3 GB on an M2 or later (with the program of short conversations 1.84 GiB and 0.31 GiB) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and an M1; an M2's programs with `--tier 2048`) |
+| Qwen3.5-0.8B | Chat (weak at Japanese facts) | 1.5 GB (AMD with a 6-bit MLP; Apple in 8 bit tables, 0.99 GiB on the Neural Engine and 0.39 GiB of the process); 2.3 GB on an M2 or later from 16 GB (with the program of short conversations 1.84 GiB and 0.31 GiB) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and an M1; an M2's programs with `--tier 2048`) |
 | Qwen3.5-2B | Chat, code | 2.4 GB on AMD (6-bit MLP), 2.2 GB on Apple (M1: 1.67 GiB on the Neural Engine in 6 bit tables and 0.39 GiB of the process) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and an M1) |
 | Qwen3.5-4B | Chat, code | about 4.2 GB (3.9 GiB of 8 bit weights) | 32 KiB/token (8 GiB at 262144; 114688 tokens on 16 GB) | runs on an M3's Neural Engine; memory estimated from the weights |
 | gpt-oss-20b (AMD only) | Chat, code, reasoning | 14.5 GB (13.0 GiB pinned for the NPU: MXFP4 experts as they are, 8-bit attention, 4-bit head) | 48 KiB/token (0.38 GiB at its 8192) | measured on a Ryzen AI 9 365 |
@@ -166,7 +167,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 - The weights mix 4 and 8 bits (the MLP and output matrices at 4 bits, the attention projections at 8; for image generation, the DiT at 8 bits). Qwen3.5-0.8B and 2B fall apart on long English text at 4 bits, so their MLP and output matrices are at 6 bits
 - "Measured" is the memory pinned for the NPU, measured on a Ryzen AI 9 365, plus the process's own. It follows from the size of the weights
 - Apple's Neural Engine (Core AI, macOS 27) has its weights in 4, 6 and 8 bit tables (LFM3-1.7B, Gemma 4 and Qwen3.5-2B in 6 bits; LFM3's VL, Audio, Omni and d1 checkpoints, PLaMo 3 Translate 2B and 0.8B, Qwen3 and the other Qwen3.5 in 8; PLaMo 3 Translate 8B in 4). The program that generates and the one that reads prompts are functions of the same `.aimodel`, so the Neural Engine holds the weights once. With Core ML each of the two had its own copy: on an M3 LFM3-1.7B held 2.43 GiB on the Neural Engine and PLaMo 3 Translate 0.8B took about 2.4 GB in all, and on an M1 Qwen3-0.6B about 3.9 GB
-- On an M2 or later, a model whose weights twice are within 2.5 GiB (LFM3-1.7B, Qwen3-0.6B, Qwen3.5-0.8B) also loads one whole program for short conversations (`--tier`), which holds the weights once more. An M1 does not load it (the split programs are faster there). `--tier none` gives an M2 or later the M1's memory
+- On an M2 or later, a model whose weights twice are within 2.5 GiB (LFM3-1.7B, Qwen3-0.6B, Qwen3.5-0.8B) also loads one whole program for short conversations (`--tier`), which holds the weights once more. An M1 does not load it (the split programs are faster there). On a machine of 8 GB LFM3-1.7B and Qwen3.5-0.8B do not load it either (models.yaml's `tier: none` and `variants`: LFM3-1.7B's 3.1 GB would be over what such a machine has for models). `--tier auto` loads it there, and `--tier none` leaves it out on a machine of 16 GB or more
 - The values marked M1 were measured on an M1 of 16 GB on 2026-11-15 (docs/design.md 16.221): from the second start on, the peak of the process's footprint and the Neural Engine's share together, sampled every 0.1 s while it answers 200 tokens. The first start converts the model, and the process is larger for a while (at most 2.0 GiB for Qwen3-0.6B, 2.3 for PLaMo 3 Translate 0.8B, 2.7 for the 2B, 2.8 to 2.9 for LFM3's VL, Audio and Omni, 3.0 for Qwen3.5-0.8B and 6.0 GiB for Qwen3.5-2B). Gemma 4 E4B, Qwen3.5-4B and PLaMo 3 Translate 8B were not measured again with Core AI
 - With Core AI the cache of a conversation also keeps the means of every 8 positions (the two-level attention of long conversations), so it grows by nine eighths of the table (13.5 KiB/token for LFM3-1.7B, 3.4 GiB at 262144; 6.75 KiB for Gemma 4 E2B)
 - The Neural Engine's share is kernel memory of its driver, in no process's RSS or footprint (Activity Monitor and `top` do not show it). hwnpu-chat says how much it is after loading; a program compiled just then comes onto the Neural Engine at its first call

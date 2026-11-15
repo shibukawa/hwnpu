@@ -6685,6 +6685,41 @@ kv ヘッドごとの形は、kv ヘッド 1 つ分の問い合わせのヘッ�
 
 測っていないもの: Gemma 4 E2B のプロセスの分 (ディスクの空きが足りず、取り直さなかった。2.3 GB のまま)、Gemma 4 E4B、Qwen3.5-4B、PLaMo 3 Translate 8B (Core ML の頃の 8.2 GB のまま。Core AI では Neural Engine の 3.81 GiB にプロセスの 0.3 GiB 前後のはず)、d1、M2 と M3 の実機。`hwnpu-chat list` の MEMORY はベンダーごとの値で、M1 でも M2 以降の形の値を出す (LFM3-1.7B は 3.1 GB と出るが、M1 では 1.7 GB)。
 
+### 16.222 8 GB の機械では短い会話用の 1 本を読まない: models.yaml の `tier`、`memory` のチップの欄、Qwen3.5-2B を 8 GB に — 2026-11-15
+
+16.221 の値を見て、機械のメモリごとの選び方を見直した。
+
+- **8 GB の機械では、短い会話用の分けない 1 本 (16.188) を読まない**。この 1 本は重みをもう 1 組持つ: LFM3-1.7B は 1.7 GB が 3.1 GB になり、8 GB の機械の目安 (約 3 GB) を越える。16 GB からは今までどおり。機械のメモリごとの違いは `variants` (16.154 の Qwen3-1.7B の `prefill` と同じ) で書く
+  - 動かし方の欄に **`tier`** を足した (`chat.Run.Tier`): `--tier` と同じ `auto`、`none`、長さの並び。`--tier` は、与えなければモデルの定義、それも無ければ `auto` (フラグは `*string` にして、与えていないことと空の `--tier=` を分ける)
+  - `LFM3-1.7B` と `Qwen3.5-0.8B` に `tier: none` と `variants: {16: {…, tier: auto}}`。**Qwen3-0.6B は変えない**: 1 本を足しても 1.6 GB で目安の中、M3 では 1 本の方が 2 倍近く速い (16.188 の 68 対 34〜40 トークン/秒)。それに `tier` はベンダーを分けないので、Intel の NPU で分けずに動かす形の 4096 の段まで消してしまう
+  - Qwen3-1.7B の `prefill: off` (16 GB 未満) はそのまま。Core AI で省けるのは 0.3 GB になったが (16.221)、8 GB では小さい方を既定にする。速い方が欲しければ `--prefill on`
+- **`memory` にチップの欄** (`chat.PerVendor`): `memory: {amd: 2.2, apple: 3.1, M1: 1.7}`。Apple の NPU で、その Mac のチップ (`chat.Chips`: M1〜M5、`not_on` と同じ名前) の欄があればそれを取る。`hwnpu-chat list` の MEMORY は、M1 では LFM3-1.7B を 1.7 GB と出す (16.221 では 3.1 GB と出ていた)。用途やファミリーで同じ列の候補を比べる値 (`Model.Memory`) は今までどおりチップを見ない
+- **Qwen3.5-2B を 8 GB に** (`machine: 16` → `8`): 2.2 GB で収まる。`-m qwen3.5` は 8 GB で 2B を選ぶ (0.8B は `qwen3.5:0.8b`)。初回の変換でプロセスが 6.0 GiB になるので、8 GB の機械では変換済みのプログラムを取ってくる形が前提 (配る仕組みは別の変更)
+- MODEL.md: 8 GB の列に Qwen3.5-2B、「いくつも同時に」の 8 GB を「1 つずつ」から「LFM3-1.7B + PLaMo 3 Translate 0.8B (Apple 2.7 GB、AMD 3.2 GB)」に
+
+| 8 GB の機械 (Apple) | これまで | これから |
+|---|---|---|
+| LFM3-1.7B (`-m chat`) | M1 1.7 GB、M2 以降 3.1 GB | 1.7 GB |
+| Qwen3.5-0.8B | M1 1.5 GB、M2 以降 2.3 GB | 1.5 GB |
+| `-m qwen3.5` | Qwen3.5-0.8B | Qwen3.5-2B (2.2 GB) |
+
+確かめたこと: `TestBuiltinTier` (8 GB と 16 GB の `tier`、M1 と M3 と AMD のメモリ、`tier` の値の検査、ユーザーのファイル)、`TestPerVendor` (チップの欄)、`TestTags` (`qwen3.5` の 8 GB)、`--tier` の解析。`HWNPU_MEMORY=8`、`16` の `hwnpu-chat list`。確かめていないこと: M2 と M3 の実機 (8 GB で 1 本を読まないときの速さ。16.188 の M3 では 1 本つきが 8 % 速かった)。
+
+### 16.223 モデルを何 GB の機械として動かすか: `hwnpu memory`、`hwnpu-chat --memory`、設定の `run.json` — 2026-11-16
+
+16.222 で、機械のメモリごとの動かし方 (8 GB では短い会話用の 1 本なし、Qwen3-1.7B はプロンプト用のプログラムなし) を models.yaml の `variants` に書いた。どのメモリでどう動かすかは、調べた側が定義に書くもので、プログラムを作る人や使う人がモデルの特性を知って個々のフラグ (`--tier`、`--prefill`) で決めるものではない。使う人が選ぶのは「この機械をメモリいくつの機械として扱うか」だけにする: 16 GB の Mac でも、ほかのプログラムと一緒に動かすために 8 GB の形で動かしたい、という場合がある。その選択はモデル管理の設定で、どのコマンドも守る (同じモデルの形違いを何組も入れない)。
+
+- **選び方**: `hwnpu memory LFM3-1.7B 8` (`--forget` で忘れる、名前なしで一覧)。`hwnpu-chat --memory 8` やメモリのタグ (`lfm3:8g`) で用意したモデルも、用意が済んだらそのメモリが選ばれる (`keepMemory`)。公開の API は `modelstore.Store` の `Memory`、`SetMemory`、`Memories`
+- **置き場所**: 設定のフォルダの `run.json` (`chat.RunFile`: ユーザーの models.yaml の隣、`{"models": {"LFM3-1.7B": {"memory": 8}}}`)。最初はモデルの置き場 (キャッシュ) に置いたが、`hwnpu cache prune` でモデルと一緒に消えると次は 16 GB の形で取り直し、`HWNPU_CACHE` を共有するとほかの機械にも移るので、この機械の設定に移した。手で書く models.yaml には書かない (機械が書き戻すと、コメントと人の書いたものが崩れる)。`go test` は `XDG_CONFIG_HOME` なしでは読み書きしない
+- **守るところ**: `lookupOn` (Resolve、ResolveFor、ResolveForKinds、hwnpu-chat serve の読み込み、`modelstore`)。メモリを与えられていなければ、選んだメモリで `Model.On` を当て、起動時に 1 行 (`LFM3-1.7B: runs as on a machine of 8 GB, as chosen (…/run.json; hwnpu memory LFM3-1.7B --forget forgets it)`)。今 `variants` を持つのはチャットのモデルだけだが、画像や音声のモデルに足してもそのまま効く
+- **優先の順**: その実行のメモリのタグか `--memory` → 選んだメモリ → `HWNPU_MEMORY` → 機械のメモリ。`HWNPU_MEMORY` は今の実行全体の上書きで、残さない
+- ファミリーや用途の名前 (`lfm3`) がどのモデルを選ぶかは機械のメモリで決める (選んだメモリはモデルごとなので、選ぶ前には使えない)。選んだモデルにメモリが選んであれば、そのメモリの形で動く
+- `--tier`、`--prefill`、`--format`、`--context`、`--paged` は残さない。その実行だけに効き、なければ定義 (そのメモリの `variants`) の値
+- 形を変えても、前の形のプログラムはキャッシュに残る (LRU で消えるまで)。`hwnpu memory` がそう言い、`hwnpu cache clear NAME` を勧める
+- チップの違いはその場で見る (`chipName`。M1 は短い会話用の 1 本を持たない、`memory` のチップの欄)
+
+確かめたこと: `TestChosenMemory` (16 GB で LFM3-1.7B に 8 を選ぶと `tier: none`、Qwen3-1.7B は `prefill: off`、`--memory 16` はそれより強い、忘れる、最後の 1 つでファイルも消す、壊れたファイル)、`TestRunFileInTests`、`TestMemoryGiven` (タグ、`--memory`、残したときのログ)。`hwnpu memory` を一時の設定のフォルダで: 一覧、選ぶ、ファミリーの名前 (`lfm3` → LFM3-1.7B)、`8g`、忘れる、ない名前。
+
 ### 16.224 Sana の Gemma 2 に指示文のキーと値を持たせる (Core AI): プロンプトの後ろの行だけを計算する — 2026-11-15
 
 16.210 の残りの最後で、AMD の 16.138 の Mac 版。Sana のプロンプトは 208 トークンの指示文 (`sana.Instruction`) の後に続き、Gemma 2 は 512 行を全部計算していた: 11 トークンのプロンプトで 217 行が中身で、残すのは 11 行。指示文の行は、因果的な注意なのでどのプロンプトでも同じ。M1 (16 GB、macOS 27.2.1、26B131)、Sana 600M の 512²、2 回目から。

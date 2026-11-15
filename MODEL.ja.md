@@ -33,7 +33,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <tbody>
 <tr>
 <th>チャット、コーディング<br><sub>hwnpu-chat、hwnpu-chat agent <code>-m chat</code></sub></th>
-<td><b>LFM3-1.7B</b> (AMD 2.2 GB、Apple は M1 で 1.7 GB、M2 以降 3.1 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.1 GB。Apple だけ)<br>プログラム 1 本で、長いプロンプトを読むのは遅い<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>、M1 で 1.1 GB、M2 以降 1.6 GB、ダウンロード 1.5 GB)<br>一番小さなダウンロード。事実に弱い</td>
+<td><b>LFM3-1.7B</b> (Apple 1.7 GB、AMD 2.2 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>、2.2〜2.4 GB)<br>コードも書く<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.1 GB。Apple だけ)<br>プログラム 1 本で、長いプロンプトを読むのは遅い (<code>--prefill on</code> で速く、+0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>、M1 で 1.1 GB、M2 以降 1.6 GB、ダウンロード 1.5 GB)<br>一番小さなダウンロード。事実に弱い</td>
 <td><b>Gemma 4 E2B</b> (2.3 GB)<br>長い文脈 (131072 で +0.8 GB) も<br><b>Gemma 4 E4B</b> (4.0 GB)<br>短い会話なら<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.3 GB)<br>プロンプトを読むプログラムを別に持ち、読むのが 5 倍速い</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>長い文脈 (131072 で +2.1 GB) も</td>
 <td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>予定: Qwen3.6-35B-A3B (MoE、4 ビットで約 25 GB)</i></td>
@@ -106,7 +106,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 </tr>
 <tr>
 <th>いくつも同時に<br><sub>hwnpu-chat <code>serve -m A,B,…</code></sub></th>
-<td>1 つずつ</td>
+<td>LFM3-1.7B + PLaMo 3 Translate 0.8B (Apple 2.7 GB、AMD 3.2 GB)</td>
 <td>Gemma 4 E2B + PLaMo-Embedding-1B (3.5〜3.6 GB)<br>+ PLaMo 3 Translate 2B (AMD 6.3 GB、Apple 6.7 GB)</td>
 <td>Gemma 4 E4B + PLaMo-Embedding-1B + PLaMo 3 Translate 2B (AMD 8.0 GB、Apple 8.4 GB)</td>
 <td colspan="3">その上に Gemma 4 E2B 画像と音声つき、別のプロセスで Anima-Turbo (約 15.5〜16 GB)</td>
@@ -117,6 +117,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 - 画像生成の Anima と Chroma は、`HWNPU_MODEL_ALLOWLIST=+nsfw` でオプトインしたときだけ選びます (頼まなくても NSFW の絵を描くことがあるため)。オプトインしなければ、8 GB は Sana 600M、16 GB からは FLUX.2 klein 4B です。ライセンスでモデルを絞るときも同じ変数を使います ([docs/model-provenance.md](docs/model-provenance.md))
 - 括弧の中は、起動して短い会話をしたときの想定のメモリです (次の節)。長い会話では KV キャッシュの分が増えます
 - 32 GB を超えても、今は大きなモデルがありません。メモリの多い機械では、上の表の組み合わせを同時に動かすか、長い文脈に使います
+- 8 GB の機械では、メモリの小さい方の動かし方になります (LFM3-1.7B は短い会話用の 1 本なし、Qwen3-1.7B はプロンプト用のプログラムなし)。メモリの多い機械でほかのプログラムと一緒に動かすときは、`hwnpu memory LFM3-1.7B 8` (または `hwnpu-chat --memory 8`) で、どのコマンドでもそのモデルは 8 GB の形で動きます ([docs/cache-sharing.md](docs/cache-sharing.md) 7.8)
 - 小さな機械では、`--context` で文脈を短くすると KV キャッシュの分が減ります。hwnpu-chat は KV キャッシュが物理メモリの 4 分の 1 を超えるとき、文脈を自分で縮めます
 
 ## モデルごとのメモリ
@@ -125,7 +126,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 
 | モデル | 用途 | 起動時 | 会話で増える分 (KV キャッシュ) | 根拠 |
 |---|---|---|---|---|
-| LFM3-1.7B | チャット、コーディング | AMD 2.2 GB。Apple は M1 で 1.7 GB (Neural Engine に 1.36 GiB とプロセスの 0.23 GiB)、M2 以降は 3.1 GB (短い会話用の 1 本が重みをもう 1 組持つ: 2.64 GiB と 0.21 GiB) | 12 KiB/トークン (262144 で 3 GiB) | 実測 (AMD と M1。M2 以降の形は M1 に `--tier 2048` で読み込ませて) |
+| LFM3-1.7B | チャット、コーディング | AMD 2.2 GB。Apple は 1.7 GB (Neural Engine に 1.36 GiB とプロセスの 0.23 GiB)。16 GB からの M2 以降は 3.1 GB (短い会話用の 1 本が重みをもう 1 組持つ: 2.64 GiB と 0.21 GiB) | 12 KiB/トークン (262144 で 3 GiB) | 実測 (AMD と M1。M2 以降の形は M1 に `--tier 2048` で読み込ませて) |
 | Gemma 4 E2B | チャット、コーディング | 2.3 GB (M1 の Core AI: Neural Engine に 1.66 GiB。プロセスの分は Core AI では測っていない) | 6 KiB/トークン (131072 で 0.75 GiB) | 実測 |
 | Gemma 4 E2B 画像と音声つき | 画像、音声 (1 回に 1 枚と 30 秒まで) | 3.4 GB (画像か音声が来るまでは 2.4 GB) | 6 KiB/トークン | 実測 |
 | Gemma 4 E4B | チャット、コーディング | 4.0 GB | 16 KiB/トークン (131072 で 2 GiB) | 実測 |
@@ -157,7 +158,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | d1-2B、d1-Omni-2B | 状態の判定 | 約 2.4 GB、約 2.8 GB | 短い入力のみ | 重みから見込み |
 | Qwen3-0.6B | チャット (事実に弱い) | M1 で 1.1 GB (Neural Engine に 0.65 GiB とプロセスの 0.35 GiB)、M2 以降は 1.6 GB (短い会話用の 1 本を足して 1.23 GiB と 0.26 GiB) | 126 KiB/トークン (文脈 40960 で 4.9 GiB。16 GB の機械では 32768 に縮めて 3.9 GiB) | M1 で実測 (M2 以降の形は `--tier 1024` で) |
 | Qwen3-1.7B | チャット (日本語の事実に弱い) | 16 GB 未満は 2.1 GB、16 GB からは 2.3 GB (M1: 8 ビットの表の 1 本で Neural Engine に 1.64 GiB とプロセスの 0.23 GiB。16 GB からはプロンプトを読む関数を足して 1.80 GiB と 0.36 GiB) | 126 KiB/トークン (文脈 40960 で 4.9 GiB。16 GB の機械では 32768 に縮めて 3.9 GiB) | M1 で実測 |
-| Qwen3.5-0.8B | チャット (日本語の事実に弱い) | AMD 1.5 GB (MLP は 6 ビット)。Apple は M1 で 1.5 GB (8 ビットの表。Neural Engine に 0.99 GiB とプロセスの 0.39 GiB)、M2 以降は 2.3 GB (短い会話用の 1 本を足して 1.84 GiB と 0.31 GiB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M1。M2 以降の形は `--tier 2048` で) |
+| Qwen3.5-0.8B | チャット (日本語の事実に弱い) | 1.5 GB (AMD は MLP が 6 ビット。Apple は 8 ビットの表で、Neural Engine に 0.99 GiB とプロセスの 0.39 GiB)。16 GB からの M2 以降は 2.3 GB (短い会話用の 1 本を足して 1.84 GiB と 0.31 GiB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M1。M2 以降の形は `--tier 2048` で) |
 | Qwen3.5-2B | チャット、コード | AMD 2.4 GB (MLP は 6 ビット)、Apple 2.2 GB (M1: 6 ビットの表で Neural Engine に 1.67 GiB とプロセスの 0.39 GiB) | 14 KiB/トークン (262144 で 3.38 GiB) | 実測 (AMD と M1) |
 | Qwen3.5-4B | チャット、コード | 約 4.2 GB (8 ビットの重み 3.9 GiB) | 32 KiB/トークン (262144 で 8 GiB。16 GB では 114688 トークン) | M3 の Neural Engine で動作を確認。メモリは重みから見込み |
 | gpt-oss-20b (AMD だけ) | チャット、コード、推論 | 14.5 GB (NPU に 13.0 GiB を固定: 専門家は MXFP4 のまま、注意は 8 ビット、出力層は 4 ビット) | 48 KiB/トークン (8192 で 0.38 GiB) | Ryzen AI 9 365 で測定 |
@@ -166,7 +167,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 - 重みは 4 ビットと 8 ビットを混ぜた形です (MLP と出力の行列が 4 ビット、注意の射影が 8 ビット。画像生成は DiT が 8 ビット)。Qwen3.5-0.8B と 2B は 4 ビットでは長い英文で崩れるので、MLP と出力の行列を 6 ビットにします
 - 「実測」は、NPU に固定されたメモリを Ryzen AI 9 365 で測った値に、プロセスの分を足したものです。モデルの重みの大きさで決まります
 - Apple の Neural Engine (Core AI、macOS 27) の重みは 4、6、8 ビットの表です (LFM3-1.7B、Gemma 4、Qwen3.5-2B は 6 ビット、LFM3 の VL、Audio、Omni、d1、PLaMo 3 Translate の 2B と 0.8B、Qwen3、ほかの Qwen3.5 は 8 ビット、PLaMo 3 Translate 8B は 4 ビット)。生成用とプロンプトを読む用のプログラムは同じ `.aimodel` の関数なので、重みは Neural Engine に 1 回分だけ載ります。Core ML の頃は 2 本がそれぞれ重みを持ち、M3 で LFM3-1.7B は Neural Engine に 2.43 GiB、PLaMo 3 Translate 0.8B は合わせて約 2.4 GB、M1 で Qwen3-0.6B は約 3.9 GB でした
-- M2 以降の Mac では、重みの 2 倍が 2.5 GiB に収まるモデル (LFM3-1.7B、Qwen3-0.6B、Qwen3.5-0.8B) は、短い会話用に注意で分けない 1 本も読み込み (`--tier`)、これが重みをもう 1 組持ちます。M1 は読み込みません (分けた形の方が速い)。`--tier none` で、M2 以降も M1 と同じメモリになります
+- M2 以降の Mac では、重みの 2 倍が 2.5 GiB に収まるモデル (LFM3-1.7B、Qwen3-0.6B、Qwen3.5-0.8B) は、短い会話用に注意で分けない 1 本も読み込み (`--tier`)、これが重みをもう 1 組持ちます。M1 は読み込みません (分けた形の方が速い)。8 GB の機械では、LFM3-1.7B と Qwen3.5-0.8B はこの 1 本を読み込みません (models.yaml の `tier: none` と `variants`。LFM3-1.7B は 3.1 GB になり、8 GB の機械の目安を越えるため)。`--tier auto` で読み込み、`--tier none` で 16 GB からの機械でも読み込みません
 - 「M1」と書いた値は 16 GB の M1 で 2026-11-15 に測りました (docs/design.md 16.221)。2 回目からの起動で 200 トークンの答えを出す間、プロセスの footprint と Neural Engine の分を 0.1 秒ごとに見た、和の最大です。初めて動かすときは、変換のためにプロセスが一時的に大きくなります (最大で Qwen3-0.6B 2.0 GiB、PLaMo 3 Translate 0.8B 2.3、2B 2.7、LFM3 の VL、Audio、Omni 2.8〜2.9、Qwen3.5-0.8B 3.0、Qwen3.5-2B 6.0 GiB)。Gemma 4 E4B、Qwen3.5-4B、PLaMo 3 Translate 8B は Core AI では測り直していません
 - Core AI では、長い会話の 2 段の注意のために 8 個ごとの平均も持つので、会話で増える分は 8 分の 9 になります (LFM3-1.7B で 13.5 KiB/トークン、262144 で 3.4 GiB。Gemma 4 E2B で 6.75 KiB)
 - Neural Engine の分はそのドライバーのカーネルのメモリで、どのプロセスの RSS にも footprint にも出ません (アクティビティモニタや `top` には見えません)。hwnpu-chat は読み込んだ後にその量を表示します。その場でコンパイルしたプログラムは、最初の呼び出しで Neural Engine に載ります
