@@ -131,6 +131,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 | `--draft N` | `8` | tokens per call of the program that generates: a token and N-1 guesses checked at once (speculative decoding, section 3); `0` or `1` generates one token per call. On AMD's NPU the export decides it: one exported with `--verify 3` checks 2 guesses a call (Qwen3.5 for now), and `HWNPU_IRON_DRAFTS=0` turns that off |
 | `--mtp auto\|off` | `auto` | `auto`: when the checkpoint has a multi-token prediction layer (Qwen3.5's `mtp.`), also guess with it (2 at most, `HWNPU_MTP_DRAFTS` changes it); `off`: guesses from the prompt alone |
 | `--prefill auto` | `auto` | whether a program of 64 tokens per call reads the prompts beside the one that generates. `auto` has one unless the two programs' weights would be over the Neural Engine's compile cache (about 4 GiB; Gemma 4 E4B), and then the one that generates reads the prompts (slower for long ones). `on` always, `off` never |
+| `--memory GB` | the memory chosen (`hwnpu memory`), else `HWNPU_MEMORY`, else the machine's | run the model as on a machine of GB memory ("Running a model the smaller way", below): `--memory 8` on a 16 GB Mac runs it the 8 GB way, to leave room for other programs. Kept as the model's memory, which every command keeps to |
 | `--prompt-cache DIR` | `prompts` in the compile cache | keep the prompts read on disk, so that a prompt beginning like an earlier one (an agent's system message and tools) is not read again after a restart (section 3); `off` for none |
 | `--system TEXT` | none | the chat's system message (a translation model's reference context) |
 | `--to LANG` | none | the language a translation model (PLaMo 3 Translate) translates into; none: `en` for a text with Japanese characters, else `ja` |
@@ -148,6 +149,13 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 | `--embed-package A,B` | none | embedding programs you converted with `hwnpu-dev convert` (encoders take `-seq` only), with `config.json` and `model.safetensors` in the model's directory |
 
 The flags from `--think` to `--context`, `--package`, `--config`, `--weights` and `--tokenizer` are for chat models, the `--embed-` flags for embedding models. `--package` and its companions (and `--embed-package`) take one model of their kind in `-m`.
+
+**Running a model the smaller way**: how a model runs on a machine of some memory (whether it has the whole program of short conversations, or a program of its own to read prompts) is written in models.yaml from what was measured (`variants`), and hwnpu-chat picks by the machine's memory. On 8 GB, LFM3-1.7B and Qwen3.5-0.8B have no whole program of short conversations (`tier: none`), and Qwen3-1.7B reads its prompts with the program that generates (`prefill: off`).
+
+- To run a model beside other programs on a machine of more memory, `--memory 8` (or a tag of memory: `lfm3:8g`) runs it the 8 GB way. Once the model is ready, the memory is kept in hwnpu's settings (`~/.config/hwnpu/run.json`), and the next runs go on the 8 GB way without the flag, in the other commands too (a start says `LFM3-1.7B: runs as on a machine of 8 GB, as chosen …`). `hwnpu memory LFM3-1.7B 8` does the same; `hwnpu memory` shows it and `hwnpu memory LFM3-1.7B --forget` forgets it ([docs/cache-sharing.md](docs/cache-sharing.md) 7.8)
+- The order is the run's tag of memory or `--memory`, the memory chosen, `HWNPU_MEMORY`, the machine's memory
+- Only the memory is kept: `--tier`, `--prefill` and the other flags hold for their run
+- A family's name (`lfm3`) picks by this machine's memory; the model picked runs as the memory chosen for it, if any
 
 - With LFM3-1.7B split at its attention (`--paged` 8192, the default), a step costs in proportion to the conversation: a context of 262144 does not slow a short one. Measured on an M3 (16 GB) (sections 16.58 and 16.59 of [docs/design.md](docs/design.md)); a short conversation generates 1.3 to 1.7 times as fast as with the model not split (`--paged -1 --context 16320`), with the same answers word for word:
 

@@ -131,6 +131,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 | `--draft N` | `8` | 生成するプログラムの 1 回のトークン数: 本物 1 つと推測 N-1 個をまとめて確かめる (投機的デコード、3 節)。`0` か `1` で 1 回 1 トークン。AMD の NPU では書き出しで決まる: `--verify 3` で書き出したものは 1 回に推測 2 つを確かめる (今は Qwen3.5)。`HWNPU_IRON_DRAFTS=0` で使わない |
 | `--mtp auto\|off` | `auto` | `auto`: チェックポイントに複数トークン予測の層 (Qwen3.5 の `mtp.`) があれば、その層の推測も使う (多くて 2 つ、`HWNPU_MTP_DRAFTS` で変えられる)。`off`: プロンプトからの推測だけ |
 | `--prefill auto` | `auto` | 生成用のほかに、1 回 64 トークンでプロンプトを読むプログラムを持つか。`auto` は持つが、2 本の重みが Neural Engine のコンパイルのキャッシュ (約 4 GiB) を超えるなら持たず (Gemma 4 E4B)、生成用のプログラムがプロンプトも読む (長いプロンプトは遅い)。`on` で常に持ち、`off` で持たない |
+| `--memory GB` | 選んだメモリ (`hwnpu memory`)、なければ `HWNPU_MEMORY`、なければ機械のメモリ | モデルを、メモリ GB の機械のように動かす (下の「メモリの小さい形で動かす」)。16 GB の Mac で `--memory 8` なら、ほかのプログラムと一緒に動かせるよう 8 GB の形で動かす。そのモデルのメモリとして残り、どのコマンドも守る |
 | `--prompt-cache DIR` | コンパイルキャッシュの `prompts` | 読んだプロンプトをディスクに残し、起動し直した後も、先頭が同じプロンプト (エージェントの system と道具) を読み直さない (3 節)。`off` で無し |
 | `--system TEXT` | なし | 対話の system メッセージ (翻訳モデルでは参考文脈) |
 | `--to LANG` | なし | 翻訳モデル (PLaMo 3 Translate) が訳す先の言語。なしなら日本語を含む文は `en`、ほかは `ja` |
@@ -148,6 +149,13 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 | `--embed-package A,B` | なし | `hwnpu-dev convert` で自分で変換した埋め込みのプログラムを使う (エンコーダは `-seq` だけ)。`config.json` と `model.safetensors` はモデルの置き場に置く |
 
 `--think` から `--context` まで、`--package`、`--config`、`--weights`、`--tokenizer` はチャットのモデルの、`--embed-` で始まるものは埋め込みモデルのフラグです。`--package` とその仲間 (と `--embed-package`) は、`-m` にその用途のモデルが 1 つのときだけ使えます。
+
+**メモリの小さい形で動かす**: モデルをメモリいくつの機械でどう動かすか (短い会話用の 1 本を持つか、プロンプト用のプログラムを持つか) は、調べた結果として models.yaml に書いてあり (`variants`)、hwnpu-chat は機械のメモリで選びます。8 GB の機械では、LFM3-1.7B と Qwen3.5-0.8B は短い会話用の 1 本を持たず (`tier: none`)、Qwen3-1.7B は生成のプログラムがプロンプトも読みます (`prefill: off`)。
+
+- メモリの多い機械でも、ほかのプログラムと一緒に動かしたいときは `--memory 8` (またはメモリのタグ: `lfm3:8g`) で 8 GB の形で動かせます。モデルの用意ができた時点で、そのメモリがモデル管理の設定 (`~/.config/hwnpu/run.json`) に残り、次からはフラグなしでも、hwnpu-chat 以外のコマンドでも 8 GB の形で動きます (起動のときに `LFM3-1.7B: runs as on a machine of 8 GB, as chosen …` と出ます)。`hwnpu memory LFM3-1.7B 8` でも同じで、`hwnpu memory` で見て、`hwnpu memory LFM3-1.7B --forget` で忘れます ([docs/cache-sharing.md](docs/cache-sharing.md) 7.8)
+- 優先の順は、その実行のメモリのタグか `--memory`、選んだメモリ、`HWNPU_MEMORY`、機械のメモリです
+- 残るのはメモリだけです。`--tier` や `--prefill` などのフラグはその実行だけに効きます
+- 家族の名前 (`lfm3`) は、この機械のメモリで選びます。選ばれたモデルにメモリが選んであれば、そのメモリの形で動きます
 
 - LFM3-1.7B (`--paged` 8192、既定) では、1 ステップの費用は会話の長さに比例します。文脈を 262144 にしても、短い会話は遅くなりません。M3 (16 GB) での実測は次のとおりです ([docs/design.md](docs/design.md) の 16.58、16.59)。短い会話の生成は分けない形 (`--paged -1 --context 16320`) の 1.3〜1.7 倍の速さで、答えは一字一句同じでした
 
