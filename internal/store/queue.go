@@ -48,6 +48,26 @@ var (
 
 func queueDir() string { return cache.Sub("work", "queue") }
 
+// the units of the cache work is queued for are not removed (cache.Room, hwnpu cache prune)
+func init() { cache.SetBusy(queuedPaths) }
+
+// queuedPaths are the paths here the jobs of the queue put in the sources.
+func queuedPaths() []string {
+	files, _ := filepath.Glob(filepath.Join(queueDir(), "*.json"))
+	var out []string
+	for _, f := range files {
+		var j job
+		if b, err := os.ReadFile(f); err == nil && json.Unmarshal(b, &j) == nil {
+			for _, p := range []string{j.Dir, j.Path} {
+				if p != "" {
+					out = append(out, p)
+				}
+			}
+		}
+	}
+	return out
+}
+
 // PutLater puts the entry of dir in source s in the background (PutEntry).
 func PutLater(s Source, dir string) { enqueue(job{Op: "entry", Source: s.String(), Dir: dir}) }
 

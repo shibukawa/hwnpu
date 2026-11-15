@@ -6343,3 +6343,19 @@ PNG はバイト単位で同じ。
 変換したもの (`models/NAME` のプログラム、`entries/`、`~/models`) を手元でも `converted/.../vN` にし、完了の印を `entry.json` に揃えるのは次の PR。
 
 確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...` が通る。新しい試験: 取得元から手元へ取り、取得元をなくしても手元から読む、lock が移ると手元も移り同じファイルは残す、前の `models/NAME` の移し (sha256 の違うものは取り直す)、同梱のモデルをその場で (ハードリンク)、`modelstore` の層 (`TestLayers`)。確かめていないこと: 実機の Hugging Face からの取得、Mac と Intel の機械での実行、インストーラが置いた同梱のモデル。
+
+### 16.214 手元のキャッシュの大きさ: 空きの下限、LRU、一般向けの `hwnpu cache` — 2026-11-15
+
+手元のキャッシュ (16.213 の層 0) は増える一方で、消すには `~/.cache/hwnpu` を手で消すしかなかった。ダウンロードの前に場所を確かめ、使っていないものから消す仕組みを共有の部分 (`internal/cache`) に入れ、一般の利用者のためのコマンド `hwnpu` を足した (docs/cache-sharing.md 7.7)。
+
+- `cache.Room(need, path, log)`: 取得元からの取得 (`store.FetchOriginal`)、変換したものの取得 (`store.materialize`)、Hugging Face からの取得 (`chat.fetchHF`、Content-Length) の前に呼ぶ。`HWNPU_CACHE_MIN_FREE` (既定 10 GB、割合も) を切るなら始めない。`HWNPU_CACHE_MAX_SIZE` があれば、超えるとき (と空きが足りないとき) に最近使っていない単位から消す。足りなければ `ErrNoRoom` (`chat.fetch` は取得元から HF に回らずに止まる)
+- 上限は既定でなし: 消すと AMD の書き出しのように作り直しに時間がかかるものがあるので、利用者が上限を決めたときだけ自動で消す。下限は既定であり、ディスクを埋めきらない
+- 単位: 元のリポジトリ、`models/NAME`、`converted/.../vN`、`entries/TARGET/NAME`、`iron/KEY`、根のコンパイルしたもの (鍵ごと)。最後に使った時刻はフォルダの mtime を `cache.Touch` で進める (atime は当てにならない)。`chat.fetch` の速い道、`chat.ModelDir`、`cache.FindExport` が呼ぶ。一覧のための `Downloaded` は時刻を変えない
+- 消さないもの: 最近 1 時間 (`cache.KeepRecent`)、このプロセスが使ったもの、書き戻しの queue にあるもの (`cache.SetBusy`)
+- 大きさはハードリンクを 1 回だけ数える (Unix の dev/ino)。上限のための走査はプロセスに 1 回
+- `modelstore`: `Options.Limits`、`Usage`、`Limits`、`DiskSpace`、`PlanPrune`、`Prune`、`Remove`、`ErrNoRoom` (型は `cache` の別名)
+- `cmd/hwnpu`: `hwnpu cache` (info)、`ls`、`prune`、`clear`。`hwnpu-dev cache` は取得元の管理のまま
+
+この機械で: `hwnpu cache` は 25.4 GB (IRON のカーネル 19.3 GB、642 単位。ほか `dev/` 5.9 GB)、走査 2.7 秒。元のファイルと書き出しは 11-15 に NAS へ移したので 0。
+
+確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...`。新しい試験: 大きさの読み (`ParseSize`)、変数からの上限、単位の数え (ハードリンクを 1 回、種類)、上限で古い順に消して今使っているものは残す、空きの下限で止めて上限なしなら消さない、`PlanPrune` (年齢、種類、queue にあるものは残す)、`modelstore` で上限を超える取得が `ErrNoRoom`。確かめていないこと: Windows と macOS でのディスクの空き (クロスビルドは通る)、実際のダウンロード中に消すこと。

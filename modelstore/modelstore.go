@@ -21,6 +21,7 @@ package modelstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -53,9 +54,31 @@ type Options struct {
 	// BundleFolder is the folder of each resource folder with the models, in the layout of a
 	// source (original/OWNER/NAME/ with hwnpu-lock.json, converted/): "models" when empty.
 	BundleFolder string
+	// Limits are what this machine's cache may take of the disk: nil for HWNPU_CACHE_MAX_SIZE and
+	// HWNPU_CACHE_MIN_FREE (10GB free unless set). A download that would leave less free, or put
+	// the cache over MaxSize, removes the units least recently used first when there is a MaxSize,
+	// and fails (ErrNoRoom) when that is not enough.
+	Limits *Limits
 	// Log is where downloads and copies are shown (nil for nowhere).
 	Log io.Writer
 }
+
+// Limits are what the cache may take of the disk (cache.Limits).
+type Limits = cache.Limits
+
+// Unit is a part of the cache that is removed whole: a repository's files (original/OWNER/NAME),
+// a model's programs (models/NAME, converted/...), an export for AMD's NPU, a kernel IRON
+// compiled, a program compiled for this machine.
+type Unit = cache.Unit
+
+// Usage is what this machine's cache holds.
+type Usage = cache.Usage
+
+// PruneOptions say what Prune removes.
+type PruneOptions = cache.PruneOptions
+
+// ErrNoRoom is a download's error when the limits do not let it in.
+var ErrNoRoom = cache.ErrNoRoom
 
 // Store fetches the models' files from the layers Open set.
 type Store struct {
@@ -75,6 +98,7 @@ type Layer struct {
 // the model definitions (hwnpu's models.yaml, the machine's and the user's) too.
 func Open(o Options) (*Store, error) {
 	cache.SetRoot(o.Root)
+	cache.SetLimits(o.Limits)
 	if err := chat.LoadModels(nil, true, o.Log); err != nil {
 		return nil, err
 	}
@@ -146,4 +170,47 @@ func (s *Store) Layers() []Layer {
 		ls = append(ls, Layer{Name: "Hugging Face"})
 	}
 	return ls
+}
+
+// Usage walks this machine's cache and counts what it holds, by unit.
+func (s *Store) Usage() (Usage, error) { return cache.Scan() }
+
+// Limits are the limits in effect (Options.Limits, else the variables').
+func (s *Store) Limits() (Limits, error) { return cache.CurrentLimits() }
+
+// DiskSpace is the bytes free and the size of the disk of this machine's cache.
+func (s *Store) DiskSpace() (free, total int64, err error) { return cache.DiskSpace(cache.Root()) }
+
+// PlanPrune is what Prune(o) would remove, the least recently used first: units used in the last
+// hour (cache.KeepRecent unless o.Keep), by this process, or with a writeback queued are kept.
+func (s *Store) PlanPrune(o PruneOptions) ([]Unit, error) {
+	u, err := cache.Scan()
+	if err != nil {
+		return nil, err
+	}
+	return cache.PlanPrune(u, o), nil
+}
+
+// Prune removes the units o says, and returns them.
+func (s *Store) Prune(o PruneOptions) ([]Unit, error) {
+	units, err := s.PlanPrune(o)
+	if err != nil {
+		return nil, err
+	}
+	return s.Remove(units)
+}
+
+// Remove removes units (of Usage), and returns those it removed. A unit another process holds
+// open may stay (Windows).
+func (s *Store) Remove(units []Unit) ([]Unit, error) {
+	var done []Unit
+	var errs []error
+	for _, u := range units {
+		if err := u.Remove(); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", u.Name, err))
+			continue
+		}
+		done = append(done, u)
+	}
+	return done, errors.Join(errs...)
 }

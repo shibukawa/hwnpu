@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/shibukawa/configdir"
@@ -73,5 +75,33 @@ func TestLayers(t *testing.T) {
 	}
 	if _, err := s.File(ctx, "lab/a", "missing.json"); !NotFound(err) {
 		t.Errorf("a file no layer has: %v", err)
+	}
+}
+
+// TestNoRoom fails a download that would put the cache over its limit, and Prune frees it.
+func TestNoRoom(t *testing.T) {
+	root, share := t.TempDir(), t.TempDir()
+	lockIn(t, share, "lab/a", map[string]string{"config.json": "from the share"})
+	lockIn(t, share, "lab/b", map[string]string{"config.json": strings.Repeat("x", 400)})
+	off := false
+	s, err := Open(Options{Root: root, Sources: []string{"file://" + filepath.ToSlash(share)}, HuggingFace: &off, Limits: &Limits{MaxSize: 300}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Open(Options{})
+	ctx := context.Background()
+	if _, err := s.File(ctx, "lab/a", "config.json"); err != nil {
+		t.Fatal(err)
+	}
+	// lab/a, used now, is kept: lab/b does not fit
+	if _, err := s.File(ctx, "lab/b", "config.json"); !errors.Is(err, ErrNoRoom) {
+		t.Fatalf("over the limit: %v", err)
+	}
+	u, err := s.Usage()
+	if err != nil || len(u.Units) != 1 || u.Units[0].Name != "original/lab/a" {
+		t.Fatalf("usage %+v, %v", u, err)
+	}
+	if units, err := s.PlanPrune(PruneOptions{MaxSize: 1, Keep: -1}); err != nil || len(units) != 0 {
+		t.Errorf("a unit this process uses is pruned: %v, %v", units, err)
 	}
 }

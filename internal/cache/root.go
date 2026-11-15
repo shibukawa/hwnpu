@@ -99,6 +99,7 @@ func ExportRoots() []string {
 func FindExport(name string, have func(dir string) bool) string {
 	for _, r := range ExportRoots() {
 		if d := filepath.Join(r, name); have(d) {
+			Touch(d) // used now (LRU)
 			return d
 		}
 	}
