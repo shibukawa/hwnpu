@@ -6359,3 +6359,17 @@ PNG はバイト単位で同じ。
 この機械で: `hwnpu cache` は 25.4 GB (IRON のカーネル 19.3 GB、642 単位。ほか `dev/` 5.9 GB)、走査 2.7 秒。元のファイルと書き出しは 11-15 に NAS へ移したので 0。
 
 確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...`。新しい試験: 大きさの読み (`ParseSize`)、変数からの上限、単位の数え (ハードリンクを 1 回、種類)、上限で古い順に消して今使っているものは残す、空きの下限で止めて上限なしなら消さない、`PlanPrune` (年齢、種類、queue にあるものは残す)、`modelstore` で上限を超える取得が `ErrNoRoom`。確かめていないこと: Windows と macOS でのディスクの空き (クロスビルドは通る)、実際のダウンロード中に消すこと。
+
+### 16.215 一般向けの `hwnpu status` と `hwnpu issue`: NPU の状態と使っているもの、失敗したコマンドの issue の下書き — 2026-11-15
+
+NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込みで重い) でしか見られず、困ったときに何を書けばよいかも利用者任せだった。16.214 の `hwnpu` に 2 つ足した。
+
+- `hwnpu status` (`--json`、`-w 2s`、`--wake`): hwnpu の版 (モジュールとコミット)、OS と CPU とメモリ、コマンドが動かす NPU (`chat.HereVendor`、`HWNPU_BACKEND`)、デバイス (`hwnpu.Enumerate`)、NPU の今 (`npuinfo` を OS ごとに要約: Linux は amdxdna の状態、ファームウェア、タイル、クロック、文脈、gpu_metrics の忙しさと電力。macOS は ANE の起きているか、IOReport の電力と読み出し。Windows は計算専用のアダプターとプロセスごとの使用率)、NPU を使っているプロセスと NPU のメモリ、キャッシュと層
+- 読むことで NPU を起こさない: 起こすのは `--wake` を付けたときだけ。既定では `hwnpu.Enumerate` を呼ばず (デバイスを開くと amdxdna は起きる)、NPU があることと種類は OS の言うことから決める (Linux はドライバ名 `amdxdna`/`intel_vpu`、macOS は I/O Registry の ANE、Windows は計算専用のアダプターの PCI ベンダー。`HWNPU_BACKEND` があればそれ)。`--wake` ではデバイスを開き (`hwnpu.Enumerate`、`chat.HereVendor`)、`npuinfo` も寝ている NPU に問い合わせる。`-w` では Enumerate とキャッシュの走査は 1 回だけ。寝ている NPU で `status` と `issue` を動かして `runtime_active_time` が 0 ms しか増えない (起きない) こと、`--wake` では起きることを確かめた
+- 実行の記録: `hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は `console.RecordRun` で引数を、`console.Log` の書き手 (標準エラー) が行を (進み具合の行は最後の状態、色なし)、`console.EndInterrupted` が終わり方を、`logs/<prog>-<time>-<pid>.log` に書く。コマンドごとに最後の 10 回を残す。`HWNPU_NO_RUN_LOG` で止まる。端末かどうかの判定は変えない (`teeRun` も `Terminal()` を持つ)
+- `hwnpu issue` (`--list`、`--run N`、`--lines`、`--print`、`--title`、`-y`): 直近 1 週間で失敗した最後の実行 (なければ最後の実行) について、コマンド、エラー、ログの末尾、status を Markdown にする。伏せるもの: ホーム (`~`)、ユーザー名と本名、ホスト名、`HWNPU_MODEL_SOURCE*` のホストとフォルダ、公開のもの (Hugging Face、GitHub) 以外の URL のホスト、URL のパスワード、トークン (`token=`、`hf_`、`AKIA`、Bearer)、メールアドレス。空白を含む 40 文字を超える引数 (プロンプト) は文字数に、プロセスのコマンドラインは載せない
+- 送り方: `gh` は使わず、`https://github.com/shibukawa/hwnpu/issues/new?title=...&body=...` を `open` (macOS)、`xdg-open` (Linux)、`rundll32 url.dll,FileProtocolHandler` (Windows。`start` はクエリーの `&` を cmd が読む) で開く。押すまで送られない。URL が 7500 バイトを超えるならログを 2/3 ずつ削り、それでも長ければ `logs/issue-TIME.md` を貼るよう案内する。下書きはいつもそこに残す
+
+この機械で: `hwnpu status` は Ryzen AI 9 365 の amdxdna (firmware 1.1.2.64、8×6 タイル)、gpu_metrics の NPU 0 %、0.0 W (チップ全体 5.5 W)、キャッシュ 25.4 GB を出す。`hwnpu-chat -m no-such-model "長いプロンプト"` のあとの `hwnpu issue --print` は、プロンプトを `<text of 71 characters>` に、ホームのパスを `~` に、NAS を `source-host-1` に置き換えた。
+
+確かめたこと: `go build ./...`、`go vet ./...`、`go test ./...`。新しい試験: 実行の記録 (引数、色と `\r` を除いた行、エラー、残す数)、伏せ字 (ホーム、取得元のホストとフォルダ、URL のパスワードと IP、トークン、メール。Hugging Face の URL とファームウェアの版は残す)、引数のプロンプト、issue の URL、下書き (プロセスのコマンドラインを載せない)。確かめていないこと: 実際にブラウザで開くこと (GitHub の画面で受け付けられる長さ)、macOS と Windows での status の要約 (クロスビルドのみ)。

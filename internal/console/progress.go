@@ -206,7 +206,10 @@ func cut(s string, n int) string {
 
 // columnsOf is the width of the terminal w writes to, 0 when not known.
 func columnsOf(w io.Writer) int {
-	if l, ok := w.(logWriter); ok {
+	switch l := w.(type) {
+	case logWriter:
+		w = l.w
+	case teeRun:
 		w = l.w
 	}
 	if f, ok := w.(*os.File); ok {

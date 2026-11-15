@@ -1,7 +1,10 @@
-// hwnpu looks after what hwnpu keeps on this machine: the models downloaded and the programs
-// converted from them (the cache, docs/cache-sharing.md 7). The models are run by hwnpu-chat,
-// hwnpu-image and hwnpu-audio.
+// hwnpu looks after hwnpu on this machine: the NPU and what uses it, the models downloaded and
+// the programs converted from them (the cache, docs/cache-sharing.md 7), and reports of problems.
+// The models are run by hwnpu-chat, hwnpu-image and hwnpu-audio.
 //
+//	hwnpu status                             # the NPU (driver, firmware, how busy, power), what uses it, the cache
+//	hwnpu status -w 2s                       # again every 2 seconds
+//	hwnpu issue                              # a draft issue about the last command that failed, opened in the browser
 //	hwnpu cache                              # where the cache is, what it holds, the disk's free space
 //	hwnpu cache ls                           # each unit: its size and when it was last used
 //	hwnpu cache prune --max-size 200GB       # remove the least recently used until it fits
@@ -20,6 +23,21 @@
 // (200GB) is the most the cache holds: a download that would go over, or leave the disk short,
 // removes the units least recently used first. Nothing used in the last hour is removed by itself
 // or by prune (another process may be reading it).
+//
+// status reads what the OS tells of the NPU (npuinfo) as it is, and does not wake it: the NPU and
+// its vendor are known from the driver (Linux), the I/O Registry (macOS) or the compute-only
+// adapter (Windows), and the devices are not opened. --wake opens them and asks the NPU too (on
+// Linux amdxdna wakes for a few seconds). The processes that use it are listed with the NPU's
+// memory each holds.
+//
+// hwnpu-chat, hwnpu-image and hwnpu-audio keep their last 10 runs in logs/ under the cache (the
+// arguments, the log, how it ended). issue writes a draft of an issue of shibukawa/hwnpu about the
+// last that failed in the past week (or --run N of --list), with the last lines of its log and
+// status, the home folder, the user's and the machine's names, the sources' addresses, a URL's
+// password and tokens hidden, a long text argument (a prompt) replaced by its length, and the
+// processes' command lines left out. It shows the draft, keeps it in logs/issue-TIME.md, and opens
+// GitHub's page of a new issue with it filled in (open, xdg-open, or Windows' URL handler):
+// nothing is sent until the button there is pressed.
 package main
 
 import (
@@ -32,7 +50,9 @@ import (
 )
 
 type cli struct {
-	Cache CacheCmd `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
+	Status StatusCmd `cmd:"" help:"This machine's NPU: the device, its driver, how busy it is and what uses it; what hwnpu runs on; the cache."`
+	Cache  CacheCmd  `cmd:"" help:"What the cache of models holds, the disk's free space; remove what is not used."`
+	Issue  IssueCmd  `cmd:"" help:"Draft an issue about the last command that failed, with this machine's status (names and secrets hidden), and open it in the browser to check and send."`
 }
 
 func main() {
