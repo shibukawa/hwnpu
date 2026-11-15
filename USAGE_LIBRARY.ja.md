@@ -67,6 +67,13 @@ weights, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")            // model.safeten
 
 - 設定はプロセスのもの: `Open` はプロセス全体に効きます
 - 同梱のモデルは取得元と同じ並び (`original/OWNER/NAME/` と `hwnpu-lock.json`) で置き、その場で使います (コピーせずリンク)
+- `Options.Limits` (nil: `HWNPU_CACHE_MAX_SIZE`、`HWNPU_CACHE_MIN_FREE`) でキャッシュの大きさを抑えます: ディスクの空きが `MinFree` (指定がなければ 10 GB) を切るダウンロードは `modelstore.ErrNoRoom` で失敗し、`MaxSize` があれば先に最近使っていない単位から消して場所を空けます。`s.Usage()`、`s.PlanPrune(o)`、`s.Prune(o)`、`s.Remove(units)` は `hwnpu cache` と同じ処理です
+
+```go
+s, err := modelstore.Open(modelstore.Options{Limits: &modelstore.Limits{MaxSize: 100e9, MinFree: 20e9}})
+u, err := s.Usage()                                                     // u.Units: 種類、大きさ、最後に使った時刻
+gone, err := s.Prune(modelstore.PruneOptions{OlderThan: 30 * 24 * time.Hour}) // 30 日使っていないもの
+```
 
 ## AMD (カーネルを直接動かす)
 

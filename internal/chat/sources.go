@@ -77,6 +77,7 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 	commit := lockedCommit(ctx, repo)
 	want, pinnedSum := digests[repo][name]
 	want = strings.ToLower(want)
+	cache.Touch(path) // used now: kept, and last in the LRU order
 	if here(ctx, local, base, commit, name, want, path) {
 		return path, nil
 	}
@@ -142,6 +143,9 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 			}
 		}
 		return path, nil
+	}
+	if errors.Is(err, cache.ErrNoRoom) {
+		return "", err
 	}
 	if !errors.Is(err, shared.ErrNotFound) && log != nil {
 		fmt.Fprintf(log, "%v\n", err)

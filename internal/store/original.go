@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
 
@@ -157,6 +158,9 @@ func FetchOriginal(ctx context.Context, ss []Source, repo, commit, name, sum, ds
 				continue
 			}
 			return i, l, nil
+		}
+		if err := cache.Room(f.Size, dst, logf(log)); err != nil {
+			return -1, Lock{}, err
 		}
 		br, set := bar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), s))
 		if err := getChecked(ctx, s.Store, OriginalKey(repo, name), f.SHA256, dst, func(n, _ int64) { set(n, f.Size) }); err != nil {
