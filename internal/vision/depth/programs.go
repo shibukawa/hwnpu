@@ -147,7 +147,7 @@ func ConvertSize(root, d string, w, h int, format string) error {
 
 // Setup is what Prepare makes ready.
 type Setup struct {
-	Dir  string // the checkpoints (Dir/NAME) and the exports
+	Dir  string // the exports (Dir/NAME); the checkpoint is the repository's (chat.RepoDir)
 	Repo string // the Hugging Face repository (depth-anything/DA3MONO-LARGE)
 	Name string
 	// Backend is the program format (llm.Options.Backend): Core AI programs, Core ML packages
@@ -162,27 +162,24 @@ type Setup struct {
 func Prepare(ctx context.Context, s Setup) (string, error) {
 	root := filepath.Join(s.Dir, s.Name)
 	for _, f := range []string{"config.json", "model.safetensors"} {
-		path := filepath.Join(root, f)
-		if err := os.MkdirAll(root, 0o755); err != nil {
-			return "", err
-		}
-		if err := chat.Fetch(ctx, s.Repo, f, path, s.Log); err != nil {
+		if _, err := chat.Fetch(ctx, s.Repo, f, s.Log); err != nil {
 			return "", err
 		}
 	}
-	c, err := mil.ReadConfig(root, Sizes[0][0], Sizes[0][1])
+	src := chat.RepoDir(s.Repo)
+	c, err := mil.ReadConfig(src, Sizes[0][0], Sizes[0][1])
 	if err != nil {
 		return "", err
 	}
 	format := ExportFormat(s.Backend)
-	// the export beside the checkpoint, in the model's directory (as every model's); the one an
-	// earlier hwnpu kept in the models' directory is removed (its sizes are converted again)
+	// the export in the model's directory (as every model's); the one an earlier hwnpu kept in
+	// the models' directory is removed (its sizes are converted again)
 	old := filepath.Join(s.Dir, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	os.RemoveAll(old)
 	os.Remove(old + ".done")
 	out := filepath.Join(root, fmt.Sprintf("%s-v%d.%s", strings.ToLower(s.Name), ExportVersion, format))
 	x := Export{Name: s.Name, Kind: "depth", Metric: strings.Contains(strings.ToLower(s.Name), "metric"), MetricScale: 300,
-		Second: "sky", Format: format, Checkpoint: root, Version: ExportVersion}
+		Second: "sky", Format: format, Checkpoint: src, Version: ExportVersion}
 	if c.Dual {
 		x.Second = "confidence"
 	}

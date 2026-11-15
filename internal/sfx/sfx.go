@@ -98,7 +98,7 @@ type Setup struct {
 
 // Paths are the files and programs of a prepared model.
 type Paths struct {
-	Dir     string
+	Dir     string   // the repository's files (chat.RepoDir)
 	Text    []string // the text encoder's parts
 	Context string
 	Blocks  []string // the DiT's groups, DitGroup blocks each
@@ -117,22 +117,21 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	if intel {
 		text, dit = llm.IntelFormat(text), llm.IntelFormat(dit)
 	}
-	p := Paths{Dir: s.Dir}
+	p := Paths{Dir: chat.RepoDir(s.Repo)}
 	var want []chat.File
 	for _, f := range Files {
-		want = append(want, chat.File{Repo: s.Repo, Name: f, Path: p.at(f)})
+		want = append(want, chat.File{Repo: s.Repo, Name: f})
 	}
 	chat.Expect(ctx, want)
 	for _, f := range Files {
-		path := p.at(f)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return p, err
-		}
-		if err := chat.Fetch(ctx, s.Repo, f, path, log); err != nil {
+		if _, err := chat.Fetch(ctx, s.Repo, f, log); err != nil {
 			return p, err
 		}
 	}
-	cfg, err := TextConfig(s.Dir)
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return p, err
+	}
+	cfg, err := TextConfig(p.Dir)
 	if err != nil {
 		return p, err
 	}

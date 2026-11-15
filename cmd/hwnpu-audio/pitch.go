@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -29,7 +28,6 @@ type PitchCmd struct {
 	FMin      float64  `name:"fmin" placeholder:"HZ" help:"The lowest pitch to consider (0: 46.875)."`
 	FMax      float64  `name:"fmax" placeholder:"HZ" help:"The highest pitch to consider (0: 2093.75)."`
 	Threshold float64  `default:"0.5" help:"The confidence at and over which a frame is voiced."`
-	Dir       string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache     string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU       bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device    string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
@@ -44,7 +42,7 @@ func (c *PitchCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	setup := pitch.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Log: lw}
+	setup := pitch.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Log: lw}
 	var d *pitch.Detector
 	t0 := time.Now()
 	ort, builtin := cpuRoute(m, c.Device, c.CPU, c.Threads, logf)

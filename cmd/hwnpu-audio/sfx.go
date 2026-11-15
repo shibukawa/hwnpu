@@ -7,7 +7,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -57,7 +56,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		defer d.Close()
 		dev, backend = d, format
 	}
-	p, err := sfx.Prepare(ctx, sfx.Setup{Dir: filepath.Join(o.dir, m.DirName()), Repo: m.Source(), Machine: m.Machine,
+	p, err := sfx.Prepare(ctx, sfx.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Machine: m.Machine,
 		TextFormat: o.textFormat, DitFormat: o.ditFormat, Backend: backend, Log: lw})
 	if err != nil {
 		return err

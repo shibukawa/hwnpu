@@ -18,8 +18,7 @@ import (
 
 // Setup is what Prepare makes ready.
 type Setup struct {
-	// Dir holds the checkpoints (a directory per repository, Gemma 2 in TextDir, shared by every
-	// Sana) and the exports.
+	// Dir holds the exports; the checkpoint is the repository's files (chat.RepoDir).
 	Dir string
 	// Repo is the Hugging Face repository (Efficient-Large-Model/Sana_600M_1024px_diffusers).
 	Repo string
@@ -29,10 +28,6 @@ type Setup struct {
 	Log io.Writer
 }
 
-// TextDir is the directory of Dir that holds Gemma 2 (text_encoder/ and tokenizer/): every Sana
-// repository has the same weights and tokenizer (see Files).
-const TextDir = "gemma-2-2b-it"
-
 // File is a file of a Sana repository: Text, one of Gemma 2's.
 type File struct {
 	Name string
@@ -40,8 +35,8 @@ type File struct {
 }
 
 // Files are the files of a Sana repository Prepare downloads (models.yaml pins their sha256).
-// Gemma 2's (Text) go to TextDir, downloaded once from the first Sana's repository: the other
-// repositories' copies differ only in config.json's metadata (_name_or_path, transformers_version).
+// Gemma 2's (Text) are the same in every Sana repository but config.json's metadata
+// (_name_or_path, transformers_version): the weights are linked from another's (pinned).
 var Files = []File{
 	{"transformer/config.json", false},
 	{"transformer/diffusion_pytorch_model.safetensors", false},
@@ -99,27 +94,22 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
 		return out, nil
 	}
-	root := filepath.Join(s.Dir, filepath.Base(s.Repo))
-	text := filepath.Join(s.Dir, TextDir)
-	at := func(f File) string {
-		if f.Text {
-			return filepath.Join(text, f.Name)
-		}
-		return filepath.Join(root, f.Name)
-	}
+	// the repository's files (chat.RepoDir); Gemma 2's are the same in every Sana's (pinned:
+	// linked from another's when it is here)
+	root := chat.RepoDir(s.Repo)
+	text := root
 	var want []chat.File
 	for _, f := range Files {
-		want = append(want, chat.File{Repo: s.Repo, Name: f.Name, Path: at(f)})
+		want = append(want, chat.File{Repo: s.Repo, Name: f.Name})
 	}
 	chat.Expect(ctx, want)
 	for _, f := range Files {
-		path := at(f)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if _, err := chat.Fetch(ctx, s.Repo, f.Name, log); err != nil {
 			return "", err
 		}
-		if err := chat.Fetch(ctx, s.Repo, f.Name, path, log); err != nil {
-			return "", err
-		}
+	}
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err

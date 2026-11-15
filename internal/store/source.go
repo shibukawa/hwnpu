@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
 )
 
 // A source is a place models are looked for in before Hugging Face (docs/cache-sharing.md 7): a
@@ -223,10 +225,11 @@ func FromEnv() ([]Source, bool, error) {
 var (
 	sourcesMu   sync.RWMutex
 	sources     []Source
+	bundles     []Source
 	huggingFace = true
 )
 
-// SetSources sets the sources and whether Hugging Face is read after them.
+// SetSources sets the sources of the environment and whether Hugging Face is read after them.
 func SetSources(ss []Source, hf bool) {
 	sourcesMu.Lock()
 	sources, huggingFace = ss, hf
@@ -234,11 +237,34 @@ func SetSources(ss []Source, hf bool) {
 	clearLocks()
 }
 
-// Sources are the sources set.
+// SetBundles sets the folders of models an application installs with it (read only, used in
+// place), read after the sources of the environment and before Hugging Face.
+func SetBundles(dirs []string) {
+	var bs []Source
+	for _, d := range dirs {
+		bs = append(bs, Source{Store: Dir{Name: "bundle", Root: d, InPlace: true}, From: "bundle"})
+	}
+	sourcesMu.Lock()
+	bundles = bs
+	sourcesMu.Unlock()
+	clearLocks()
+}
+
+// Sources are the layers after the machine's own cache: the sources of the environment, then
+// the bundled models.
 func Sources() []Source {
 	sourcesMu.RLock()
 	defer sourcesMu.RUnlock()
-	return sources
+	if len(bundles) == 0 {
+		return sources
+	}
+	return append(slices.Clip(sources), bundles...)
+}
+
+// Local is the first layer: the machine's own cache (cache.Root), which holds what is read from
+// the others and what is made here, in the layout of a source.
+func Local() Source {
+	return Source{Store: Dir{Name: "cache", Root: cache.Root()}, Writeback: true, From: cache.RootEnv}
 }
 
 // HuggingFace reports whether Hugging Face is read after the sources.

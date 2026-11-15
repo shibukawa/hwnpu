@@ -34,12 +34,12 @@ type source struct {
 
 // OpenWeights opens the checkpoints in root: diffusion_models/dit (the official split file),
 // text_encoders/qwen_3_06b_base.safetensors and diffusers/vae/diffusion_pytorch_model.safetensors.
-func OpenWeights(root, dit string) (*Weights, error) {
+func OpenWeights(models, diffusers, dit string) (*Weights, error) {
 	w := &Weights{}
 	for _, s := range []struct{ prefix, strip, path string }{
-		{"dit.", "model.diffusion_model.", filepath.Join(root, "diffusion_models", dit)},
-		{"qwen.", "model.", filepath.Join(root, "text_encoders", "qwen_3_06b_base.safetensors")},
-		{"vae.", "", filepath.Join(root, "diffusers", "vae", "diffusion_pytorch_model.safetensors")},
+		{"dit.", "model.diffusion_model.", filepath.Join(models, "diffusion_models", dit)},
+		{"qwen.", "model.", filepath.Join(models, "text_encoders", "qwen_3_06b_base.safetensors")},
+		{"vae.", "", filepath.Join(diffusers, "vae", "diffusion_pytorch_model.safetensors")},
 	} {
 		f, err := safetensors.Open(s.path)
 		if err != nil {

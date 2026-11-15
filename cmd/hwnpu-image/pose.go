@@ -38,7 +38,6 @@ type PoseCmd struct {
 	Score       float64  `default:"0.3" help:"The least score of a person to report."`
 	Draw        bool     `help:"Also write NAME.pose.png: the picture with the boxes, keypoints and skeletons."`
 	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
-	Dir         string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU         bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
@@ -58,11 +57,7 @@ func (c *PoseCmd) Run(ctx context.Context) error {
 	if cache == "" {
 		cache = hcache.Root()
 	}
-	dir := c.Dir
-	if dir == "" {
-		dir = chat.ModelsDir()
-	}
-	setup := pose.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), SHA256: m.SHA256[pose.ModelFile], Log: lw}
+	setup := pose.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), SHA256: m.SHA256[pose.ModelFile], Log: lw}
 	fetch := func() (string, error) { return pose.Fetch(ctx, setup) }
 	if export := amdCNNExport(ctx, m, c.Device, c.CPU, logf, pose.ExportVersion, fetch, func(python []string, model, dir string) error {
 		return pose.ExportNPU(ctx, python, m.Name, model, dir, lw)

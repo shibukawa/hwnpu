@@ -134,9 +134,16 @@ models:
 2026-11-15 に作り直した (design.md 16.208)。それまでの「層」(定義の `sources`、`search`、`cache.layers`、`HWNPU_CACHE_LAYERS`、内容で番地を決める `blobs/sha256`) は、環境変数の URL の並びと、人が見て分かる固定の並びに置き換えた。
 
 ```
-読み: 手元 → HWNPU_MODEL_SOURCE → _1 → _2 → ... → Hugging Face (HWNPU_MODEL_HUGGING_FACE=true のとき) → 手元で作る
-書き: ?writeback=true の取得元へ、手元で作ったものと、後ろの取得元や HF から読んだものを裏で置く (失敗しても続ける)
+0. この機械のキャッシュ  cache.Root (HWNPU_CACHE)          いつも書き戻す・その場で使う
+1. HWNPU_MODEL_SOURCE, _1, _2 ...                          URL ごとの設定 (?writeback=true)
+2. アプリ同梱のモデル    アプリの資源フォルダの models/     読むだけ・その場で使う
+3. Hugging Face          HWNPU_MODEL_HUGGING_FACE (既定 true)
+→ どこにもなければ手元で作る
+
+書き: 0 番へは必ず、?writeback=true の取得元へは裏で、手元で作ったものと後ろの層から読んだものを置く (失敗しても続ける)
 ```
+
+2026-11-15 の 2 つ目の変更 (design.md 16.209) で、手元のキャッシュと同梱のモデルも同じ仕組みの層にした。どの層も中は同じ並び (下) で、手元のキャッシュも `original/OWNER/NAME/` に `hwnpu-lock.json` を持つ。どの層から来たファイルも、使うのは手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`)。同梱のモデルはハードリンク、別のファイルシステムならシンボリックリンクで、コピーしない。
 
 取得元は URL で書く。`HWNPU_MODEL_SOURCE` で始まる環境変数を全部集め、番号の順に並べる (番号のない `HWNPU_MODEL_SOURCE` が最初、抜けた番号は気にしない)。エラーになった取得元は飛ばして次へ:
 
@@ -157,8 +164,8 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 ```
 
 - `hwnpu-lock.json` (`store.Lock`): `{"format": 1, "repo": "OWNER/NAME", "commit": "<40 桁>", "files": {"config.json": {"sha256": "...", "size": 123}}, "updated": "..."}`。名指しのないファイルは読まない。コミットの違うファイルは書き戻さない (`ErrOtherCommit`、キューの記録に残す)
-- コミットの決め方: 定義がコミットを固定していればそれ。`main` を追うモデルは最初の取得元の lock のコミット (どの機械も同じファイルで動く)。lock がなければ HF の `main` (`X-Repo-Commit`)。取得元にないファイルを HF から取るときも、lock のコミットのものを取る (`resolve/<コミット>/`)。`main` 以外のブランチやタグは、HF に聞いたコミットと lock を照らし、聞けなければ (HF に出られるときは) 取得元を使わない
-- lock を新しいコミットに移すのは明示的なコマンドだけ: `hwnpu-dev cache update [MODEL...]`。HF の今のコミットを聞き、sha256 の変わったファイルだけ落とし直して置き、最後に lock を書く (LFS のファイルは `X-Linked-Etag` で比べ、変わらなければ落とさない)
+- コミットの決め方: 定義がコミットを固定していればそれ。`main` を追うモデルは 1 番以降で最初の lock のコミット (どの機械も同じファイルで動く)、なければ手元のキャッシュの lock のコミット (手元にあるものは HF に聞き直さない)、それもなければ HF の `main` (`X-Repo-Commit`)。手元のキャッシュは決まったコミットに従う: 取得元の lock が別のコミットに移ると、手元の lock も移し、ファイルは新しい lock の sha256 と同じなら残し、違えば取り直す (共有の取得元は `ErrOtherCommit` のまま触らない)。取得元にないファイルを HF から取るときも、lock のコミットのものを取る (`resolve/<コミット>/`)。`main` 以外のブランチやタグは、HF に聞いたコミットと lock を照らし、聞けなければ (HF に出られるときは) 取得元を使わない
+- lock を新しいコミットに移すのは明示的なコマンドだけ: `hwnpu-dev cache update [MODEL...]` (書き戻す取得元がなければ手元のキャッシュ、`--source 0`)。HF の今のコミットを聞き、sha256 の変わったファイルだけ落とし直して置き、最後に lock を書く (LFS のファイルは `X-Linked-Etag` で比べ、変わらなければ落とさない)
 - `VERSION` (`store.VersionDir`): 定義の `targets.<対象>.version` が N のモデルは `vN`。`develop: true` なら `vN-<レシピの指紋の 8 桁>`。版のないモデル (今は全部) は `v0-<8 桁>`
 - 当たりの条件: `vN` は版と、道具の hash を除いたレシピ (元のコミット、sha256、引数) が同じもの。道具の hash が違うだけの 2 台が同じフォルダを書き換え合わないように。出力が変わる直しをしたら版を上げる (3 節)。`vN-HASH` と `v0-HASH` は指紋がそのまま同じもの
 - `EXPORT` は手元の書き出しの名前 (`Qwen3.5-0.8B.amd-npu2-q6`、`LFM3-1.7B.coreai`、`tables.safetensors`)。対象のない表は `TARGET` を `any` に
@@ -168,7 +175,9 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 - `Prune` は手元だけを掃除する。取得元の掃除は `hwnpu-dev cache gc N` で明示的に (エントリのフォルダを entry.json から消す。`--orphans` で entry.json のない書きかけ)
 - 前の並び (`blobs/`、`upstream/`、`entries/`) のフォルダは `hwnpu-dev cache migrate N [--remove]` でハードリンクで移す。元のモデルはファイルの多いコミットを取る。変換後は名前の分かるもの (Core AI、表、AMD の言語モデルと初回の書き出し) だけ
 
-`hwnpu-dev cache sources` で、今効いている取得元の並び、書き戻すか、HF を読むか、読んだ `.env` を出す。`ls [N] [--original]` で中身。
+`hwnpu-dev cache sources` で、今効いている層の並び (0 が手元のキャッシュ)、書き戻すか、HF を読むか、読んだ `.env` を出す。`ls [N] [--original]` で中身。
+
+同梱のモデル: インストーラがアプリの資源フォルダ (`github.com/shibukawa/configdir` v1.1.0 の `QueryResourceFolders`: 実行ファイルの隣、`X.app/Contents/Resources`、`PREFIX/share/APP`、`$XDG_DATA_DIRS/APP`) の `models/` に、取得元と同じ並びで置く。環境変数ではなくアプリのコードで決める: hwnpu のコマンドは hwnpu の資源フォルダ (`share/hwnpu/models` など) を読み、hwnpu を組み込むアプリは `modelstore.Options.Bundle` で自分のものを渡す (7.6 節)。
 
 ### 7.1 書き戻し
 
@@ -206,22 +215,25 @@ hwnpu が書くものは全部、OS のローミングしないキャッシュ�
 | Linux | `$XDG_CACHE_HOME/hwnpu` (`~/.cache/hwnpu`) | |
 | Windows | `%LOCALAPPDATA%\hwnpu` | `Roaming` (`%APPDATA%`) には置かない。ユーザーの `models.yaml` も同じ根にあるので、掃除は下のサブフォルダだけを触る |
 
-どれも `os.UserCacheDir()` の下で、`HWNPU_CACHE` で根ごと移せる (外付けのディスク)。根の下の並び:
+どれも `os.UserCacheDir()` の下で、`HWNPU_CACHE` (コードからは `modelstore.Options.Root`、`cache.SetRoot`) で根ごと移せる (外付けのディスク)。`go test` は `HWNPU_CACHE` がなければプロセスごとの一時フォルダを根にする (試験がこの機械のキャッシュに書かない)。根の下の並び:
 
 ```
 hwnpu/
-  src/<owner>/<name>@<commit>/       元のチェックポイント (upstream)。owner とコミットで分けるので取り違えない
-  entries/<target>/<model>/<kind>-<key12>/   変換済みのエントリ (entry.json)。人が見て分かる名前、本体は鍵
-  host/<key>.mlmodelc|.blob|.json    機械ごとのもの (Core ML のコンパイル、Level Zero、placement)
-  work/                              作業中 (.part、変換と書き出しの途中)。rename と reflink が効くよう同じファイルシステムに置く
+  original/OWNER/NAME/FILE...        元のモデル (層 0)。取得元と同じ並び、hwnpu-lock.json 付き
+  models/NAME/                       変換したプログラム (次の PR で converted/ に移す)
+  entries/<target>/<name>/           AMD の書き出し (同上)
+  KEY.mlmodelc|.blob|.json           機械ごとのもの (Core ML のコンパイル、Level Zero、placement)
+  work/                              作業中 (.part、変換と書き出しの途中、queue)。rename と reflink が効くよう同じファイルシステムに置く
   tools/amd-tools-<hash>/            組み込みの IRON の道具
   iron/                              IRON の JIT のキャッシュ (NPU_CACHE_HOME)
   prompts/  history/  locks/         local の scope
 ```
 
+前の hwnpu が `models/NAME/` に置いた元のファイルは、読まれたときに `original/OWNER/NAME/` へ移す (rename)。sha256 を、定義の固定、取得元の lock、HF の `X-Linked-Etag` のどれかと照らし、合えば移して手元の lock に足し、違えば取り直す。sha256 の分からない小さなファイル (LFS でない) は HF に出られるなら取り直し、出られないならそのまま使う。
+
 今その外に書いているものを移す:
 
-- AMD の書き出し (`~/models/NAME.amd-npu2*`): `entries/amd-xdna2/...` へ。`~/models` は開発の手で作ったものの置き場として、読みだけの古い層として探し続ける (書かない)
+- AMD の書き出し (`~/models/NAME.amd-npu2*`): `entries/amd-xdna2/...` へ。`~/models` は今は読みだけの古い層として探す (書かない)。次の PR で `converted/` に移して読まなくなる (13 節)
 - IRON の JIT のキャッシュ (`~/.npu/cache`、この機械で 52 GB): `RunIRON` が `NPU_CACHE_HOME=<根>/iron` を渡す (mlir-aie の `python/utils/compile` が読む)
 - 作業中のものを `/tmp` に置かない (Linux では RAM の tmpfs のことがあり、GB 級の書き出しで遅くなる)
 - Apple の e5 バンドルのキャッシュ (`~/Library/Caches/<プロセス>/com.apple.e5rt.e5bundlecache`) は OS が持つもので、すでにキャッシュのフォルダの下。場所は変えない
@@ -262,6 +274,24 @@ hwnpu/
 - 認証: Basic。利用者とパスワードは URL のもの、なければ `~/.netrc` (`NETRC`、Windows は `_netrc`) のそのホストの `machine`、なければ `HWNPU_WEBDAV_USER` と `HWNPU_WEBDAV_PASSWORD`。401 のエラーにはその並びを書く
 - 再試行: 5xx (501 を除く)、429、接続の切断は S3 と同じく 3 回まで
 - 確かめたこと: `TestWebDAV` (3 MB の読み書き、途中からの続き、空のファイル、フォルダは有無で偽、一覧、削除、鍵の外れ)、`TestWebDAVSource` (エントリと lock を書き戻し、同じサーバーを読むだけの取得元として読む、読むだけへの書き込みはエラー)、`TestWebDAVSignIn` (netrc、パスワードの違い、URL のパスワードを表示しない)。Synology の実機は未確認
+
+### 7.6 公開の API: `modelstore`
+
+hwnpu をライブラリとして組み込むアプリのための入り口 (`github.com/shibukawa/hwnpu/modelstore`)。hwnpu のコマンドも同じ仕組み (`chat.Fetch`、`chat.FetchWeights`、`chat.RepoDir`) を通る。
+
+```go
+cd := configdir.New("", "myapp")
+s, err := modelstore.Open(modelstore.Options{
+    Root:    "",       // "" = HWNPU_CACHE、なければユーザーのキャッシュの hwnpu (層 0)
+    Sources: nil,      // nil = HWNPU_MODEL_SOURCE* (.env も)、空 = なし
+    Bundle:  &cd,      // 資源フォルダの models/ (層 2)。nil = なし
+})
+p, err := s.File(ctx, "LiquidAI/LFM3-1.7B", "config.json") // 手元のパス
+w, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")             // model.safetensors (分割なら索引も)
+dir := s.Dir("LiquidAI/LFM3-1.7B")                         // original/LiquidAI/LFM3-1.7B
+```
+
+層はプロセスの設定 (`Open` がプロセス全体に効く)。変換したものの取得と作成 (`Make`) は次の PR で足す。
 
 ## 8. 準備の流れ: 計画と作るを分ける
 
@@ -381,22 +411,18 @@ Apple の機械が使えるようになるまで、Apple の配布の形は決�
 - 版は `targets.<対象>.version`。版ありは `vN`、`develop: true` は `vN-HASH`、版なしは `v0-HASH`
 - `HWNPU_CACHE_LAYERS` は読み替えずに消す。`HWNPU_PREBUILT` は作らない (取得元にあるかで決まる)
 - `HF_TOKEN` は CI 以外では勧めない。refresh token の保存 (OS の資格情報の置き場) と、Actions のトークンの交換 (Hugging Face の Trusted Publishers、RFC 8693) は別に
+- 層を平らに (design.md 16.209): 手元のキャッシュを 0 番 (いつも書き戻す)、同梱のモデルを取得元の後ろ (読むだけ、その場で)。手元の並びも取得元と同じ `original/` に。モデルの探索と取得は公開の API (`modelstore`) にし、各コマンドも同じものを使う。各コマンドの `--dir` は消す (根は `HWNPU_CACHE`)
+- 同梱のモデルの場所はインストーラが置き、アプリのコードで決める (環境変数にしない)。資源フォルダは configdir v1.1.0 の `QueryResourceFolders`
+- `~/models` は次の PR で `converted/` に移して読まなくなる
 
 ## 13. 未決
 
-次の PR: 層を平らにする (2026-11-15 に決めた)。手元のキャッシュと同梱のモデルも取得元の 1 つにして、並べる。
+層を平らにする (2026-11-15) の残り (2 つ目の PR):
 
-```
-0. 手元のキャッシュ   Root() (os.UserCacheDir()/hwnpu、HWNPU_CACHE)   書き戻しあり・その場で使う
-1. HWNPU_MODEL_SOURCE, _1, _2 ...                                URL ごとの設定
-2. アプリ同梱のモデル  インストーラが置いたフォルダ (アプリのコードで有効にする) 読むだけ・その場で使う
-3. Hugging Face       HWNPU_MODEL_HUGGING_FACE                        最後の番兵
-```
-
-- 手元と同梱のモデルはパスをそのまま返す (コピーしない)。`file://` の NAS は今のとおり手元に写す
-- コミットを決めるのは models.yaml の固定、なければ 1 番以降で最初の lock、なければ Hugging Face の main。手元はそれに従い、違うコミットのものは置き換える (共有の層は ErrOtherCommit のまま)
-- 手元の並びも `original/` と `converted/.../vN` に揃え、今の `models/` と `entries/` は一度だけ移す (MigrateDir)
-- 同梱のモデルは環境変数でなく、組み込むアプリがコードで場所を決める。場所の問い合わせは configdir に足す (必要なら)
+- 変換したもの (`models/NAME/` のプログラム、`entries/` の AMD の書き出し) を手元でも `converted/MODEL/TARGET/EXPORT/vN/` に。完了の印を `entry.json` 1 つに (今は `NAME.done`、`NAME.ext.done`、`entry.json` が混在)。Core AI と AMD 以外の書き出しも取得元で共有される
+- `~/models` を `hwnpu-dev cache migrate` で一度 `converted/` に移し、以後は読まない。手で作ったものは `hwnpu-dev cache import DIR` で取り込む (tools/amd の案内も合わせる)
+- `modelstore` に変換したものの API (`Make`)
+- 同梱のモデルの変換したものをその場で使う (今は `FetchEntry` がコピーする)
 
 - Synology の WebDAV の実機の確認
 - refresh token の保存と、Actions のトークンの交換 (12.1 節)

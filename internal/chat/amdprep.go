@@ -102,7 +102,7 @@ func OnlyAMD(ctx context.Context, backend string) bool {
 // (OnlyAMD). As the other NPUs' models are prepared on their first run, a model of the
 // definitions with amd_export and no export here is made ready by PrepareAMD: its checkpoint
 // downloaded into dir and exported with IRON.
-func AMDExport(ctx context.Context, use, backend, dir string, log io.Writer) (string, error) {
+func AMDExport(ctx context.Context, use, backend string, log io.Writer) (string, error) {
 	if !OnlyAMD(ctx, backend) {
 		return "", nil
 	}
@@ -130,7 +130,7 @@ func AMDExport(ctx context.Context, use, backend, dir string, log io.Writer) (st
 		}
 		return "", errors.New(msg)
 	}
-	return PrepareAMD(ctx, m, dir, log)
+	return PrepareAMD(ctx, m, log)
 }
 
 // amdExports are the names of the exports in cache.ExportRoots.
@@ -154,11 +154,11 @@ var checkpointFiles = []string{"tokenizer.json", "tokenizer.jsonl", "tokenizer_c
 
 // PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as models.yaml's amd_export
 // says: from the shared layers when one has it (SharedExport), else it checks that IRON's
-// environment is there (IRONEnv), downloads the checkpoint into
-// dir/NAME (only the files the exporter reads), and runs tools/amd/iron_export_lm.py (the copy
+// environment is there (IRONEnv), downloads the checkpoint (RepoDir: only the files the
+// exporter reads), and runs tools/amd/iron_export_lm.py (the copy
 // built into hwnpu) in that environment into DIR.part, renamed to the export when it is done.
 // Its output goes to DIR.log. A cut-off export is made again.
-func PrepareAMD(ctx context.Context, m Model, dir string, log io.Writer) (string, error) {
+func PrepareAMD(ctx context.Context, m Model, log io.Writer) (string, error) {
 	logf := func(format string, args ...any) {
 		if log != nil {
 			fmt.Fprintf(log, format+"\n", args...)
@@ -177,7 +177,7 @@ func PrepareAMD(ctx context.Context, m Model, dir string, log io.Writer) (string
 			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or copy an export made elsewhere to %s",
 				m.Name, out, err, IRONEnv, out)
 		}
-		return exportAMD(ctx, python, m, dir, out, logf, log)
+		return exportAMD(ctx, python, m, out, logf, log)
 	})
 	if err != nil {
 		return "", err
@@ -185,21 +185,18 @@ func PrepareAMD(ctx context.Context, m Model, dir string, log io.Writer) (string
 	return out, nil
 }
 
-// exportAMD downloads model m's checkpoint into dir and exports it with IRON into out.
-func exportAMD(ctx context.Context, python []string, m Model, dir, out string, logf func(string, ...any), log io.Writer) error {
+// exportAMD downloads model m's checkpoint (RepoDir) and exports it with IRON into out.
+func exportAMD(ctx context.Context, python []string, m Model, out string, logf func(string, ...any), log io.Writer) error {
 	logf("%s: no export for AMD's NPU here; downloading the checkpoint and exporting it with IRON (%s)", m.Name, strings.Join(m.AMDExport, " "))
-	ck := filepath.Join(dir, m.DirName())
-	if err := os.MkdirAll(ck, 0o755); err != nil {
+	ck := RepoDir(m.Source())
+	if _, err := fetch(ctx, m.Source(), "config.json", log); err != nil {
 		return err
 	}
-	if err := fetch(ctx, m.Source(), "config.json", filepath.Join(ck, "config.json"), log); err != nil {
-		return err
-	}
-	if err := FetchWeights(ctx, m.Source(), ck, log); err != nil {
+	if _, err := FetchWeights(ctx, m.Source(), log); err != nil {
 		return err
 	}
 	for _, f := range checkpointFiles {
-		if err := fetch(ctx, m.Source(), f, filepath.Join(ck, f), io.Discard); err != nil && !NotFound(err) {
+		if _, err := fetch(ctx, m.Source(), f, io.Discard); err != nil && !NotFound(err) {
 			return err
 		}
 	}

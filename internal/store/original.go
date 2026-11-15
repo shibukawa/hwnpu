@@ -150,6 +150,14 @@ func FetchOriginal(ctx context.Context, ss []Source, repo, commit, name, sum, ds
 		if !ok || commit != "" && l.Commit != commit || sum != "" && !strings.EqualFold(f.SHA256, sum) {
 			continue
 		}
+		if d, ok := s.Store.(Dir); ok && d.InPlace {
+			// a folder installed with the application: used where it is, as its lock says
+			if _, err := d.Get(ctx, OriginalKey(repo, name), dst, nil); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", s, err))
+				continue
+			}
+			return i, l, nil
+		}
 		br, set := bar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), s))
 		if err := getChecked(ctx, s.Store, OriginalKey(repo, name), f.SHA256, dst, func(n, _ int64) { set(n, f.Size) }); err != nil {
 			br.Done("failed")
@@ -189,20 +197,6 @@ func getChecked(ctx context.Context, s Store, key, sum, dst string, bar func(don
 // and names it in the source's lock. A source whose lock is of another commit is left as it is
 // (ErrOtherCommit: hwnpu-dev cache update moves it).
 func PutOriginal(ctx context.Context, s Source, repo, commit, name, path, sum string) error {
-	unlock, err := lockWork(ctx, s.String()+"|"+repo)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	l, err := readLock(ctx, s, repo) // not the one read before: another machine may have added files
-	switch {
-	case errors.Is(err, ErrNotFound):
-		l = Lock{Repo: repo, Commit: commit}
-	case err != nil:
-		return err
-	case l.Commit != commit:
-		return fmt.Errorf("%s: %s: %s, not %s: %w", s, repo, short(l.Commit), short(commit), ErrOtherCommit)
-	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -212,17 +206,50 @@ func PutOriginal(ctx context.Context, s Source, repo, commit, name, path, sum st
 			return err
 		}
 	}
-	if f, ok := l.Files[name]; ok && f.SHA256 == sum {
-		return nil
-	}
-	if err := s.Store.Put(ctx, OriginalKey(repo, name), path); err != nil {
+	return Record(ctx, s, repo, commit, name, LockedFile{SHA256: sum, Size: fi.Size()}, false,
+		func(l Lock) error {
+			if f, ok := l.Files[name]; ok && f.SHA256 == sum {
+				return errHave
+			}
+			return s.Store.Put(ctx, OriginalKey(repo, name), path)
+		})
+}
+
+var errHave = errors.New("there")
+
+// Record names a file of repo of commit in s's lock, after put (nil: the file is there) put it
+// in s. A lock of another commit is ErrOtherCommit, unless follow: then it is replaced by one of
+// commit naming only the file (the files of the other commit stay, not named: what the machine's
+// own cache does when the sources move to another commit).
+func Record(ctx context.Context, s Source, repo, commit, name string, f LockedFile, follow bool, put func(Lock) error) error {
+	unlock, err := lockWork(ctx, s.String()+"|"+repo)
+	if err != nil {
 		return err
+	}
+	defer unlock()
+	l, err := readLock(ctx, s, repo) // not the one read before: another process may have added files
+	switch {
+	case errors.Is(err, ErrNotFound) || err == nil && l.Commit != commit && follow:
+		l = Lock{Repo: repo, Commit: commit}
+	case err != nil:
+		return err
+	case l.Commit != commit:
+		return fmt.Errorf("%s: %s: %s, not %s: %w", s, repo, short(l.Commit), short(commit), ErrOtherCommit)
+	}
+	if put != nil {
+		if err := put(l); errors.Is(err, errHave) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+	} else if g, ok := l.Files[name]; ok && g == f {
+		return nil
 	}
 	l.Files = maps.Clone(l.Files)
 	if l.Files == nil {
 		l.Files = map[string]LockedFile{}
 	}
-	l.Files[name] = LockedFile{SHA256: sum, Size: fi.Size()}
+	l.Files[name] = f
 	return WriteLock(ctx, s, l)
 }
 

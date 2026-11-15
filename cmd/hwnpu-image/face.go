@@ -145,7 +145,7 @@ func (c *FaceDetectCmd) open(ctx context.Context, logf func(string, ...any)) (*f
 		if err != nil {
 			return nil, err
 		}
-		d, err := face.OpenProgram(ctx, dev, backend, path, filepath.Dir(path))
+		d, err := face.OpenProgram(ctx, dev, backend, path, chat.ModelDir(m))
 		if err != nil {
 			dev.Close()
 			return nil, err
@@ -182,22 +182,10 @@ func openFaceNPU(ctx context.Context, dir string) (*face.Detector, error) {
 	return d, nil
 }
 
-// faceONNX is the model's ONNX file: in ~/models/NAME (a download for iron_yunet.py) when
-// there, else fetched into hwnpu's models directory (models.yaml pins its sha256).
+// faceONNX is the model's ONNX file, fetched when missing (chat.Fetch; models.yaml pins its
+// sha256). Its programs go in its directory of programs (chat.ModelDir).
 func faceONNX(ctx context.Context, m chat.Model) (string, error) {
-	const file = "face_detection_yunet_2023mar.onnx"
-	home, _ := os.UserHomeDir()
-	if p := filepath.Join(home, "models", filepath.Base(m.Repo), file); fileExists(p) {
-		return p, nil
-	}
-	p := filepath.Join(chat.ModelsDir(), m.Name, file)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return "", err
-	}
-	if err := chat.Fetch(ctx, m.Source(), file, p, os.Stderr); err != nil {
-		return "", err
-	}
-	return p, nil
+	return chat.Fetch(ctx, m.Source(), "face_detection_yunet_2023mar.onnx", os.Stderr)
 }
 
 func fileExists(p string) bool {

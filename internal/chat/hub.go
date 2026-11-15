@@ -3,6 +3,7 @@ package chat
 import (
 	"cmp"
 	"context"
+	"github.com/shibukawa/configdir"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -58,4 +59,23 @@ func hubFile(ctx context.Context, repo, name string) (sum, commit string) {
 		commit = c
 	}
 	return sum, commit
+}
+
+// BundleFolder is the folder of an application's resource folders that holds the models it
+// installs with it, in the layout of a source (original/, converted/).
+const BundleFolder = "models"
+
+// BundleDirs are the folders of models app installs with it: folder (BundleFolder when "") of
+// each of its resource folders that has it (configdir's QueryResourceFolders: next to the
+// executable, X.app/Contents/Resources, PREFIX/share/APP, $XDG_DATA_DIRS/APP). hwnpu's commands
+// read hwnpu's (LoadModels); an application that embeds hwnpu says its own (modelstore).
+func BundleDirs(app configdir.ConfigDir, folder string) []string {
+	var dirs []string
+	for _, c := range app.QueryResourceFolders() {
+		d := filepath.Join(c.Path, cmp.Or(folder, BundleFolder))
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			dirs = append(dirs, d)
+		}
+	}
+	return dirs
 }

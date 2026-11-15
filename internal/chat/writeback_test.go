@@ -77,15 +77,11 @@ func TestWriteback(t *testing.T) {
 		t.Fatalf("sources %v", ss)
 	}
 	ctx := context.Background()
-	a := t.TempDir()
+	a := map[string]string{}
 	for _, f := range []string{"config.json", "model.safetensors"} {
-		if err := fetch(ctx, "lab/m", f, filepath.Join(a, f), nil); err != nil {
-			t.Fatal(err)
-		}
+		a[f] = fetched(t, "lab/m", f)
 	}
-	if err := fetch(ctx, "lab/g", "config.json", filepath.Join(a, "g.json"), nil); err != nil {
-		t.Fatal(err)
-	}
+	fetched(t, "lab/g", "config.json")
 	shared.Flush(ctx)
 	src := shared.Sources()[0]
 	l, err := shared.ReadLock(ctx, src, "lab/m")
@@ -103,13 +99,10 @@ func TestWriteback(t *testing.T) {
 	if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}); err != nil {
 		t.Fatal(err)
 	}
+	clearCommits()
 	before := counts["GET"] + counts["HEAD"]
-	b := t.TempDir()
 	for _, f := range []string{"config.json", "model.safetensors"} {
-		if err := fetch(ctx, "lab/m", f, filepath.Join(b, f), nil); err != nil {
-			t.Fatal(err)
-		}
-		if read(t, filepath.Join(b, f)) != read(t, filepath.Join(a, f)) {
+		if fetched(t, "lab/m", f) != a[f] {
 			t.Errorf("%s differs", f)
 		}
 	}

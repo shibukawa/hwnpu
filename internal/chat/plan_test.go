@@ -51,13 +51,15 @@ func TestExpect(t *testing.T) {
 	t.Setenv("HF_TOKEN", "")
 	t.Setenv("HF_TOKEN_PATH", filepath.Join(t.TempDir(), "none"))
 
-	dir := t.TempDir()
+	cacheHere(t)
+	dir := RepoDir("owner/x")
+	os.MkdirAll(dir, 0o755)
 	at := func(f string) string { return filepath.Join(dir, f) }
 	os.WriteFile(at("here.json"), []byte("[]"), 0o644)                       // here: not looked up
 	os.WriteFile(at("b.bin.part"), []byte(strings.Repeat("b", 1000)), 0o644) // cut off: goes on
 	var want []File
 	for _, f := range []string{"a.bin", "b.bin", "small.json", "here.json", "missing.bin"} {
-		want = append(want, File{"owner/x", f, at(f)})
+		want = append(want, File{"owner/x", f})
 	}
 	Expect(context.Background(), want)
 	if heads.Load() != 3 {
@@ -71,7 +73,7 @@ func TestExpect(t *testing.T) {
 		done, total int64
 	}{{"a.bin", 4000, 8002}, {"small.json", 4002, 8002}, {"b.bin", 0, 0}}
 	for _, s := range steps {
-		if err := fetch(context.Background(), "owner/x", s.file, at(s.file), nil); err != nil {
+		if _, err := fetch(context.Background(), "owner/x", s.file, nil); err != nil {
 			t.Fatal(err)
 		}
 		if done, total := planNow(); done != s.done || total != s.total {

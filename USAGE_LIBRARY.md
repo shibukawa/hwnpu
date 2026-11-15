@@ -51,6 +51,23 @@ fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" is
 - On Intel, energy is read from RAPL on Linux. It is the value of the whole CPU package, not of the NPU alone, and usually needs root
 - The cache key holds the model, the build flags and the versions of the driver and compiler (macOS on Apple), so a change in any of them rebuilds it
 
+## Models' files (modelstore)
+
+`github.com/shibukawa/hwnpu/modelstore` finds and fetches the files of the models as hwnpu's commands do: this machine's cache, then the sources (`HWNPU_MODEL_SOURCE`: folders, WebDAV and HTTP, S3), then the models the application installs with it, then Hugging Face (docs/cache-sharing.md 7).
+
+```go
+app := configdir.New("", "myapp") // github.com/shibukawa/configdir v1.1.0
+s, err := modelstore.Open(modelstore.Options{
+	Bundle: &app, // the installer's models/ in the app's resource folder (nil: none)
+	// Root: "" (HWNPU_CACHE, else hwnpu in the user cache directory), Sources: nil (the environment's)
+})
+config, err := s.File(ctx, "LiquidAI/LFM3-1.7B", "config.json") // a local path
+weights, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")            // model.safetensors (or its shards)
+```
+
+- The settings are the process's: `Open` sets them for everything in it
+- The bundled models are in the layout of a source (`original/OWNER/NAME/` with `hwnpu-lock.json`) and are used in place (linked, not copied)
+
 ## AMD (running kernels directly)
 
 AMD's NPU runs kernels built with IRON / mlir-aie (an xclbin and an instruction stream), not models.

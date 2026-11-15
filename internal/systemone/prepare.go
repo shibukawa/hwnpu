@@ -39,7 +39,7 @@ type Setup struct {
 	Log     io.Writer
 }
 
-// Prepare downloads the d1 checkpoint into s.Dir unless it is there, converts its programs for
+// Prepare downloads the d1 checkpoint (chat.RepoDir) unless it is there, converts its programs for
 // the Neural Engine unless they are (the model for each prompt length; the vision encoder for
 // images of 512x512 and, for d1-Omni, the audio encoder for clips up to 30 seconds, when the
 // checkpoint has them), and writes the tables the host reads (the token embeddings and the
@@ -51,11 +51,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return Config{}, err
 	}
 	for _, f := range []string{"config.json", "tokenizer.json", "calibration.json"} {
-		if err := chat.Fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), log); err != nil {
+		if _, err := chat.Fetch(ctx, s.Repo, f, log); err != nil {
 			return Config{}, err
 		}
 	}
-	config := filepath.Join(s.Dir, "config.json")
+	config := filepath.Join(chat.RepoDir(s.Repo), "config.json")
 	a, model, err := llm.LoadConfig(config, "")
 	if err != nil {
 		return Config{}, err
@@ -65,7 +65,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return Config{}, fmt.Errorf("systemone: %s is not a d1 model (LFM3 with architectures D1Model)", s.Repo)
 	}
 	checkpoint := sync.OnceValues(func() (string, error) {
-		return filepath.Join(s.Dir, "model.safetensors"), chat.FetchWeights(ctx, s.Repo, s.Dir, log)
+		return chat.FetchWeights(ctx, s.Repo, log)
 	})
 	convert := func(name string, p chat.Program) (string, error) {
 		out, err := chat.ProgramFile(s.Dir, name, s.Backend)
@@ -99,7 +99,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		c.Packages = append(c.Packages, path)
 	}
 	if _, _, err := llm.LoadConfig(config, lfm3vl.Arch.Name); err == nil {
-		if err := chat.Fetch(ctx, s.Repo, "processor_config.json", filepath.Join(s.Dir, "processor_config.json"), log); err != nil && !chat.NotFound(err) {
+		if _, err := chat.Fetch(ctx, s.Repo, "processor_config.json", log); err != nil && !chat.NotFound(err) {
 			return Config{}, err
 		}
 		path, err := convert(lfm3vl.Arch.Name+lfm3vl.Arch.Rev()+"-512x512", chat.Program{Arch: lfm3vl.Arch.Name, Format: "fp16", Params: map[string]string{"image": "512x512"}})

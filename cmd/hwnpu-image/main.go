@@ -38,27 +38,27 @@
 // quality, score_7, safe, " (without score_7 for Anima-Aesthetic).
 //
 // On Apple's Neural Engine and Intel's NPU, generate makes Anima ready as hwnpu-chat makes its
-// models ready: the first run downloads the checkpoint from Hugging Face into --dir/Anima
-// (hwnpu/models in the user cache directory) and converts it, in Go, into Core AI programs or
+// models ready: the first run downloads the checkpoint from Hugging Face (hwnpu/original in
+// the user cache directory) and converts it into hwnpu/models/Anima, in Go, into Core AI programs or
 // OpenVINO IR for --size; later runs load it. The first load also compiles it for the NPU
 // (minutes at 1024 x 1024), kept in --cache. convert makes such an export from a directory.
 //
 // On AMD's NPU, the exports are of tools/amd/iron_anima.py (see docs/amd-npu-models.md;
 // ~/models/anima-turbo-1024.amd-npu2, anima-aesthetic-1024.amd-npu2) or of
 // tools/amd/iron_sana.py: Sana (NVlabs), a linear DiT with Gemma 2 2B reading the prompt
-// (internal/imagegen/sana). On Apple's Neural Engine, Sana is downloaded into --dir/Sana and
-// converted into Core AI programs on its first run, as Anima is (one export for 512 x 512 and
+// (internal/imagegen/sana). On Apple's Neural Engine, Sana is downloaded and converted (into
+// hwnpu/models/Sana) into Core AI programs on its first run, as Anima is (one export for 512 x 512 and
 // 1024 x 1024: --size picks). Sana runs 20 steps with
 // classifier-free guidance (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU
 // interpreter (slow; for checking without the NPU).
 //
-// On AMD's NPU (and Qwen-Image-2.1-Turbo on Apple's Neural Engine, downloaded into --dir/Qwen-Image
+// On AMD's NPU (and Qwen-Image-2.1-Turbo on Apple's Neural Engine, downloaded
 // and converted on its first run: internal/imagegen/qwenimage/mil), generate also runs
 // Qwen-Image-2.1 (qwen-image: Qwen-Image-2.1-Turbo, 8 steps;
 // qwen-image:2.1, 40 steps, guidance with --guidance and --negative; tools/amd/iron_qwenimage.py,
 // internal/imagegen/qwenimage) and Chroma1 (chroma: Chroma1-Flash, Heun's 8 steps; chroma:1-hd,
 // guidance 3 with DPM-Solver++ 2M 25 steps; tools/amd/iron_chroma.py, internal/imagegen/chroma).
-// Chroma1 also runs on Apple's Neural Engine, downloaded into --dir/Chroma and converted into
+// Chroma1 also runs on Apple's Neural Engine, downloaded and converted into
 // Core AI programs on its first run as Sana is (T5-XXL at lut8 with its FF output projection at fp16, the DiT at lut8).
 // A model whose license restricts its use (Qwen-Image-2.1's research license, Anima's
 // non-commercial one) is asked once, on a terminal, before its first run; --accept-license (or

@@ -56,6 +56,10 @@ func SafeKey(key string) bool {
 // Dir is a Store of a folder: the object of key is the file Root/key.
 type Dir struct {
 	Name, Root string
+	// InPlace gets a file by linking to it where a hard link fails (another file system): a
+	// symbolic link, never a copy. For a folder of this machine that stays (an application's
+	// bundled models), not a mounted share.
+	InPlace bool
 }
 
 func (d Dir) String() string { return fmt.Sprintf("%s (folder %s)", d.Name, d.Root) }
@@ -82,6 +86,15 @@ func (d Dir) Get(ctx context.Context, key, dst string, bar func(done, total int6
 	// the same file system: a hard link (the layer's files are never written in place)
 	if os.Link(src, dst) == nil {
 		return fi.Size(), nil
+	}
+	if d.InPlace {
+		abs, err := filepath.Abs(src)
+		if err != nil {
+			return 0, err
+		}
+		if err := os.Symlink(abs, dst); err == nil {
+			return fi.Size(), nil
+		}
 	}
 	in, err := os.Open(src)
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 )
 
 // TTSCmd is "hwnpu-audio tts": speaks a text with LFM3-Audio-2B on the Neural Engine into a WAV
-// file (24 kHz). The first run downloads LFM3-Audio-2B into --dir (its download is shared with
+// file (24 kHz). The first run downloads LFM3-Audio-2B (its download is shared with
 // hwnpu-chat's LFM3-Audio-2B) and converts the programs by itself (internal/speech Prepare).
 // Programs converted by hand are given with --checkpoint, --text, --depth and --codec instead:
 //
@@ -41,7 +40,6 @@ type TTSCmd struct {
 	Seed      uint64   `placeholder:"N" help:"The random seed of the speech codes (0: a new one, logged so that it can be repeated)."`
 	MaxFrames int      `name:"max-frames" placeholder:"N" help:"Most audio frames of 80 ms (0: until the end of audio or a full cache)."`
 	Format    string   `placeholder:"FORMAT" help:"Weight format of the text model's programs (default: the model's, 8 bit tables)."`
-	Dir       string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache     string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	Models    string   `placeholder:"FILES" help:"${models_usage}."`
 	CPU       bool     `name:"cpu" help:"Run on the CPU interpreter instead of the Neural Engine (slow)."`
@@ -71,7 +69,7 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 				return err
 			}
 		}
-		if cfg, err = speech.Prepare(ctx, speech.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Format: c.Format, Backend: backend, Log: lw}); err != nil {
+		if cfg, err = speech.Prepare(ctx, speech.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Format: c.Format, Backend: backend, Log: lw}); err != nil {
 			return err
 		}
 	}

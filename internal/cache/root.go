@@ -3,6 +3,9 @@ package cache
 import (
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
 )
 
 // RootEnv moves the root of everything hwnpu keeps (Root) elsewhere: an external disk, a
@@ -23,8 +26,14 @@ const RootEnv = "HWNPU_CACHE"
 //
 // and the compile caches' entries (KEY.mlmodelc, KEY.blob) at its top, as before.
 func Root() string {
+	if d := setRoot.Load(); d != nil {
+		return *d
+	}
 	if d := os.Getenv(RootEnv); d != "" {
 		return d
+	}
+	if testing.Testing() {
+		return testRoot() // go test never writes the machine's cache
 	}
 	d, err := os.UserCacheDir()
 	if err != nil {
@@ -32,6 +41,27 @@ func Root() string {
 	}
 	return filepath.Join(d, "hwnpu")
 }
+
+var setRoot atomic.Pointer[string]
+
+// SetRoot moves Root to dir for this process, over RootEnv ("" for RootEnv's again): an
+// application that keeps hwnpu's files where it says (modelstore.Options.Root).
+func SetRoot(dir string) {
+	if dir == "" {
+		setRoot.Store(nil)
+		return
+	}
+	setRoot.Store(&dir)
+}
+
+// testRoot is Root under go test without RootEnv: a directory of the process's own.
+var testRoot = sync.OnceValue(func() string {
+	d, err := os.MkdirTemp("", "hwnpu-test-cache")
+	if err != nil {
+		panic(err)
+	}
+	return d
+})
 
 // Sub is a directory under Root.
 func Sub(elem ...string) string {
