@@ -30,11 +30,11 @@ Mac の Neural Engine と Intel の NPU では、hwnpu-chat と同じく、初�
 go run ./cmd/hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms" -o out.png
 ```
 
-M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 48 秒、Anima-Aesthetic が約 3 分 55 秒 (DiT 1 回 5.6 秒。Neural Engine に 2.6 GiB、プロセスの最大 3.9 GB は 16.201 の前に測った値) です。記録は [docs/design.md](docs/design.md) の 16.85、16.152、16.160、16.201、16.202 にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
+M3 (16 GB) の Neural Engine で、1024 × 1024 の 1 枚が 8 ステップで約 40 秒、プロセスのメモリは最大 3.8 GB です (読み込み 3 秒、DiT 1 ステップ 4.2〜4.4 秒、VAE 3.7 秒。既定の重みはテキストも DiT も int8)。M1 (16 GB) では Anima-Turbo が 1 枚約 49 秒、Anima-Aesthetic が約 4 分 (DiT 1 回 5.7 秒。DiT の組を順に読み込んで閉じるので、Neural Engine が抱えるのは 0.6〜0.8 GiB、プロセスのメモリは最大 3.3 GB) です。Neural Engine を使う hwnpu のコマンドがほかに動いている間は、それが終わるのを待ちます。記録は [docs/design.md](docs/design.md) の 16.85、16.152、16.160、16.201、16.202、16.215 にあります。Intel の NPU では未確認です ([docs/handoff-anima-mac-intel.md](docs/handoff-anima-mac-intel.md))。手で書き出すときは `hwnpu-image convert DIR --model OUT` (DIR は `~/models/Anima` と同じ置き方) を使います。
 
 ## 画像生成 (Sana)
 
-`hwnpu-image generate -m sana` は NVlabs の Sana (線形注意の DiT、Gemma 2 2B、DC-AE の VAE) で描きます。Sana 600M と SANA 1.5 1.6B で、20 ステップと CFG (雑音の多い 14 ステップだけ) です。英語のプロンプト向けで、Mac の Neural Engine では画像生成のモデルでいちばん速く (M1 で Sana 600M 約 17 秒、SANA 1.5 約 31 秒、Anima-Turbo は約 58 秒)、Neural Engine が抱えるメモリも少なくて済みます (0.6 / 1.6 GiB、Anima-Turbo は 2.6 GiB)。
+`hwnpu-image generate -m sana` は NVlabs の Sana (線形注意の DiT、Gemma 2 2B、DC-AE の VAE) で描きます。Sana 600M と SANA 1.5 1.6B で、20 ステップと CFG (雑音の多い 14 ステップだけ) です。英語のプロンプト向けで、Mac の Neural Engine では画像生成のモデルでいちばん速いです (M1 の 1024 × 1024 で Sana 600M 約 15 秒、SANA 1.5 約 28 秒、Anima-Turbo は約 49 秒)。Neural Engine が抱えるメモリは 0.6 / 1.6 GiB です (Anima-Turbo は 0.6〜0.8 GiB)。
 
 AMD の NPU では書き出しを渡します。書き出しは `tools/amd/iron_sana.py` が、Efficient-Large-Model の diffusers のリポジトリから作ります。2 ステップに蒸留した Sana-Sprint は、絵の質が Sana よりかなり低いので外しました ([docs/design.md](docs/design.md) の 16.148)。
 

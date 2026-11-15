@@ -344,7 +344,13 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 		if !anima.IsProgramExport(model) {
 			opts = append(opts, hwnpu.WithVendor(hwnpu.VendorAMD)) // IRON graphs
 		} else if m, err := anima.ReadProgramManifest(model); err == nil && llm.AppleFormat(m.Backend) {
-			// on Core AI (an older Core ML export is lowered to Core AI as it loads)
+			// on Core AI (an older Core ML export is lowered to Core AI as it loads). One hwnpu
+			// process at a time uses the Neural Engine, as the other models' devices are opened
+			// (llm.OpenDevice): beside a chat a stage of the VAE failed, "Inference failed —
+			// request aborted" (design.md 16.215)
+			if err := llm.LockNPU(ctx); err != nil {
+				return err
+			}
 			opts = append(opts, hwnpu.WithBackend(exportDevice(m.Backend, c.Backend)))
 		} else if b := imageDevice(c.Backend); b != "" {
 			opts = append(opts, hwnpu.WithBackend(b))
