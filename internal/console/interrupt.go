@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/signal"
 	"sync"
@@ -71,10 +72,14 @@ func Interrupt() (context.Context, context.CancelFunc) {
 // Ctrl-C ended the context of Interrupt: the error is then the cancellation at whatever the
 // command was doing ("step 1: blocks 0..3: command 0: context canceled"), not a failure to
 // report. Otherwise it returns err.
+//
+// It ends the run's file too (RecordRun), with err.
 func EndInterrupted(err error) error {
 	if err != nil && interrupted.Load() {
+		endRun(errors.New("interrupted (Ctrl-C)"))
 		end()
 	}
+	endRun(err)
 	return err
 }
 

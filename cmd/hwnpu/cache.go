@@ -30,6 +30,25 @@ func open() (*modelstore.Store, error) {
 	return modelstore.Open(modelstore.Options{Log: os.Stderr})
 }
 
+// view is a Store as status reads it.
+type view struct{ *modelstore.Store }
+
+// LayerNames are the names of the layers, in order.
+func (v view) LayerNames() []string {
+	var n []string
+	for _, l := range v.Layers() {
+		s := l.Name
+		switch {
+		case l.Bundled:
+			s += " (bundled, read only)"
+		case l.Writeback:
+			s += " (written back to)"
+		}
+		n = append(n, s)
+	}
+	return n
+}
+
 var kindHelp = strings.Join(cache.Kinds, ", ")
 
 // InfoCmd is hwnpu cache info.

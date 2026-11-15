@@ -38,16 +38,24 @@ func Colors(f *os.File) bool {
 // Log returns a writer for the logs of loading and serving a model (chat.Setup.Log and the like)
 // that writes them to f in gray, with "all on the NPU" in green and "NOT all on the NPU" in red;
 // f itself when it does not take colors.
+//
+// What goes to standard error is kept in the run's file too (RecordRun).
 func Log(f *os.File) io.Writer {
 	if !Colors(f) {
+		if f == os.Stderr {
+			return teeRun{f}
+		}
 		return f
 	}
 	return logWriter{f}
 }
 
-type logWriter struct{ w io.Writer }
+type logWriter struct{ w *os.File }
 
 func (l logWriter) Write(p []byte) (int, error) {
+	if l.w == os.Stderr {
+		recordLog(p)
+	}
 	if _, err := io.WriteString(l.w, gray+Highlight(string(p))+reset); err != nil {
 		return 0, err
 	}
@@ -71,5 +79,6 @@ func Notef(format string, args ...any) {
 	if Colors(os.Stderr) {
 		s = gray + strings.TrimSuffix(s, "\n") + reset + s[len(strings.TrimSuffix(s, "\n")):]
 	}
+	recordLog([]byte(s))
 	io.WriteString(os.Stderr, s)
 }
