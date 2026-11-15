@@ -36,7 +36,7 @@ go run ./cmd/hwnpu-chat list
 - ターミナルで動かすのは `-m` に指定した 1 つのモデルです。チャットのモデルは `chat` と `agent`、埋め込みモデルは `search` で使います。サーバー (`serve`) はいくつでも動かせます (例 `-m LFM3-1.7B,plamo-embedding-1b`)
 - 用途かファミリーの名前を書くと、機械のメモリに合うモデルを [MODEL.ja.md](MODEL.ja.md) の表のとおりに選びます。`-m translate` は 8 GB の機械で PLaMo 3 Translate 0.8B、16 GB 以上で 8B です (M1 では 8B が遅すぎるので 2B)。`-m chat` は 8 GB で LFM3-1.7B、16 GB で Gemma 4 E2B、24 GB 以上で E4B です。Docker のイメージのようにタグで決めることもできます。タグはモデルの大きさ (`-m plamo3translate:2b`、`-m gemma4:e4b`、`-m chat:e4b`) か、機械のメモリ、つまり MODEL.ja.md の表の列 (`-m chat:24g` は 24 GB の機械で動かすもの、`-m plamo3translate:8g`) です。用途は `chat` (`code`、`agent`)、`vision`、`audio`、`translate`、`embedding` (`embed`、`search`) です。ファミリーとタグ、この機械でどれが選ばれるかは `hwnpu-chat list` に出ます。ダウンロードと変換は選ばれたモデルの分だけです。`HWNPU_MEMORY=24` で 24 GB の機械と同じに選びます。API のリクエストの `model` も同じ書き方ができます
 - モデル、用途、選ばれるモデルは、hwnpu に組み込まれた [models.yaml](models.yaml) から来ます。自分のファイル `~/.config/hwnpu/models.yaml` (Windows は `%LOCALAPPDATA%\hwnpu\models.yaml`。`HWNPU_MODELS` と `--models FILE` も) に差分だけを書くと、それに重ねて読みます。自分のモデル (`like:` で別のモデルの欄を引き継ぐ、`from: hf:OWNER/NAME@REVISION`)、用途の列 (`categories: translate: picks: [{machine: 8, model: ...}]`)、あるモデルが選ばれるところで別のモデルを動かすエイリアス (`aliases: plamo-3-translate-0.8b: my-distill`) が書けます。読んだファイルとエイリアスは `hwnpu-chat list` に出ます (docs/model-table.md)
-- 取得元: 同じファイルで、Hugging Face より先に (または代わりに) 共有フォルダや S3 からモデルを取れます。`sources: {share: {type: path, path: /Volumes/share/hf}, lab: {type: s3, bucket: models, prefix: hf/, endpoint: http://rustfs.lab:9000, profile: rustfs}}` と `search: [share, lab, hf]` で、それぞれの `OWNER/NAME/` を順に探します (S3 は `aws` コマンドで。`hf` を外せば Hugging Face に出ません)。自分のモデルは取得元を名指しでき (`from: share:team/my-distill`)、`sha256: {config.json: ...}` を書くと、どこから取ってもそのファイルを確かめます
+- 取得元: Hugging Face より先に (または代わりに) 共有の場所からモデルを取れます。環境変数か `.env` (カレントディレクトリ、`~/.config/hwnpu/`、`/etc/hwnpu/`) に URL で書きます: `HWNPU_MODEL_SOURCE=file:///mnt/nas/hwnpu?writeback=true` (マウントしたフォルダ)、`HWNPU_MODEL_SOURCE_1=https://USER:PASSWORD@nas:5006/hwnpu` (WebDAV。読むだけならどの HTTP サーバーでも)、`HWNPU_MODEL_SOURCE_2=s3://models/hwnpu?endpoint=http://rustfs.lab:9000&profile=rustfs`。番号の順に探します。`?writeback=true` を付けると、手元で落としたものと変換したものをそこへ置き、次の機械はどちらも要りません。`HWNPU_MODEL_HUGGING_FACE=false` で Hugging Face に出ません。取得元には `original/OWNER/NAME/` (コミットとファイルの sha256 を書いた `hwnpu-lock.json` と一緒に) と `converted/` があり、`hwnpu-dev cache update` で Hugging Face の新しいコミットに移します (docs/cache-sharing.md 7 節)。`sha256: {config.json: ...}` を書くと、どこから取ってもそのファイルを確かめます
 - 名前の大文字と小文字は区別せず、一覧のリポジトリ名でも指定できます。一覧にない Hugging Face のリポジトリも `-m OWNER/NAME` で指定でき、hwnpu-chat が動かせる構造 (チャットは LFM3、埋め込みは PLaMo のエンコーダ) なら `config.json` から用途を判断します
 - 同意の要るリポジトリ (FLUX.1 [schnell] のように、Hugging Face のページで利用条件への同意を求めるもの): そのページで同意してから、端末で最初にダウンロードすると Hugging Face にサインインします。表示されるコードを https://hf.co/oauth/device に入れると、hwnpu に「同意済みの同意制リポジトリを読む」ことだけを許すか Hugging Face が尋ねます (ほかのことや非公開のリポジトリは許しません)。トークンはそのプロセスの中だけに持ち、保存しません。アカウントがまだ同意していなければそう表示するので、同意して Enter を押します。手持ちのトークンがあればそちらを使います: `HF_TOKEN`、または `hf auth login` が保存したもの (`~/.cache/huggingface/token`)。端末のないとき (`serve`、スクリプト) は `HF_TOKEN` に read のトークンを入れます
 
@@ -48,7 +48,7 @@ go run ./cmd/hwnpu-chat
 
 引数は要りません。最初の起動では次のことを自動で行います (M3 で、落とす時間を除いて約 4 分: 変換に 2 分少々、コンパイルに 2 分)。2 回目からはコンパイル済みのものを読み込むだけで、数秒から 1 分ほどで始まります。読み込みの間は進み具合を表示します。
 
-1. Hugging Face の [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) から `config.json`、`tokenizer.json`、`model.safetensors` (3.5 GB) を `~/Library/Caches/hwnpu/models/LFM3-1.7B` に落とします。途中で切れても、もう一度起動すれば続きから落とします
+1. Hugging Face の [LiquidAI/LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B) から `config.json`、`tokenizer.json`、`model.safetensors` (3.5 GB) を `~/Library/Caches/hwnpu/original/LiquidAI/LFM3-1.7B` に落とします (変換したプログラムは `~/Library/Caches/hwnpu/models/LFM3-1.7B`。どちらも `HWNPU_CACHE` で移せます)。途中で切れても、もう一度起動すれば続きから落とします
 2. Neural Engine 用に、6 ビットの表と grouped 注意で、全注意の層で分けて変換します (`lfm3-lut6-grouped-p8192-c262144-q8.parts.json` と `-q128-last`。それぞれ 7 部分で合わせて約 1.2 GiB と、重みのない注意のプログラム 1 つ)。生成するもの (1 回 8 トークン: 本物 1 つと推測 7 つをまとめて確かめる。3 節) と、1 回 128 トークンでプロンプトを読むものです (ロジットは最後の行だけ計算する)。2026 年 11 月 6 日までの `-q64` (1 回 64 トークン) より 2 割ほど速く読み、`-q64` はもう読まれないので消して構いません (design.md の 16.82)。2 つは 1 つの KV キャッシュを共有します。全注意の層の注意は、hwnpu-chat が自分の持つキャッシュに対して 8192 トークンの塊ごとに計算します (`--paged`、2 節)。このため 1 ステップの費用は会話の長さに比例し、キャッシュのメモリも会話とともに増えるので、文脈はモデルの上限の 262144 トークンです。2026 年 11 月 4 日までの既定 (`lfm3-lut6-grouped-c16320-q8.mlpackage`、文脈 16320、費用は容量に比例) のファイルはもう読まれないので消して構いません。2026 年 11 月までの既定は 4 ビットの表と tile 注意 (`lfm3-c16320-q8.mlpackage`) で、そのファイルはもう読まれないので消して構いません。bf16 のモデルとの近さは lut4 の 6 倍 (KL 1.39 → 0.23 nats)、コーディングの課題は 13〜27 往復が 6 往復になり、grouped 注意のおかげで 1 回の呼び出しは以前より 38% 速いままです ([docs/design.md](docs/design.md) の 16.41)
 3. Neural Engine 向けにコンパイルします (1〜2 分)。結果は `~/Library/Caches/hwnpu` に残ります。同じ重みのファイル (生成用と読み込み用のプログラム、そのコンパイル結果) は macOS ではディスクの上で 1 つ分を共有し (APFS の clone。普通のファイルのまま)、プログラムを消したものと 30 日使わなかったもののコンパイル結果は起動時に消します (docs/design.md の 16.64)
 
@@ -84,7 +84,7 @@ go run ./cmd/hwnpu-chat -m LFM3-VL-2B
 
 ### Gemma 4 E2B と E4B を使う
 
-`-m gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/models/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし、8 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で、LFM3-1.7B と同じく全注意の層の前後で分けて変換します (`gemma4-lut6-p8192-c131072-q8.parts.json` と `-q128-last`。それぞれ 8 部分で約 1.6 GiB と、重みのない注意のプログラム 1 つ。プロンプトは 1 回 128 トークンで読み、KV を共有する後ろの 20 層は最後のトークンの行だけを計算するので、16K で 27.8 → 13 秒、64K で 205 → 95 秒 (design.md の 16.82、16.83)。11 月 6 日までの `-q64` は消して構いません)。初回の変換は M3 で約 3 分、コンパイルも約 3 分で、2 回目からの起動は 2 秒ほどです (分けない 2 部分のプログラムは、Neural Engine のコンパイルのキャッシュに残らず毎回 50〜100 秒かかっていました。docs/design.md の 16.42、16.43、16.63)。2026 年 11 月 4 日までの `gemma4-lut6-c16320-*` と、それより前の `gemma4-c16320-*` はもう読まれないので消して構いません。
+`-m gemma-4-E2B-it` で Google の Gemma 4 E2B (指示調整版) を使えます。手順は同じで、`~/Library/Caches/hwnpu/original/google/gemma-4-E2B-it` に `model.safetensors` (10.2 GB。音声と画像の部分も入っているが、変換するのはテキストだけ) を落とし、8 トークンと 64 トークンのプログラムを 6 ビットの表 (lut6) で、LFM3-1.7B と同じく全注意の層の前後で分けて変換します (`gemma4-lut6-p8192-c131072-q8.parts.json` と `-q128-last`。それぞれ 8 部分で約 1.6 GiB と、重みのない注意のプログラム 1 つ。プロンプトは 1 回 128 トークンで読み、KV を共有する後ろの 20 層は最後のトークンの行だけを計算するので、16K で 27.8 → 13 秒、64K で 205 → 95 秒 (design.md の 16.82、16.83)。11 月 6 日までの `-q64` は消して構いません)。初回の変換は M3 で約 3 分、コンパイルも約 3 分で、2 回目からの起動は 2 秒ほどです (分けない 2 部分のプログラムは、Neural Engine のコンパイルのキャッシュに残らず毎回 50〜100 秒かかっていました。docs/design.md の 16.42、16.43、16.63)。2026 年 11 月 4 日までの `gemma4-lut6-c16320-*` と、それより前の `gemma4-c16320-*` はもう読まれないので消して構いません。
 
 ```bash
 go run ./cmd/hwnpu-chat -m gemma-4-E2B-it
@@ -142,7 +142,6 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 | `--context N` | `0` | プロンプトと答えを合わせた最大トークン数。`0` は、注意で分けたモデル (`--paged`) ならモデルの上限 (LFM3-1.7B と Qwen3.5 は 262144、LFM3-VL、Audio、Omni は 128000、Gemma 4 は 131072)、それ以外は 16320。変えると、その長さで変換し直す。分けないモデルで 16320 を超えるとキャッシュを塊に分ける |
 | `--paged N` | `0` | 全注意の層でモデルを分け、hwnpu-chat が持つキャッシュに対して N トークンの塊ごとに注意を計算する。1 ステップの費用が `--context` ではなく会話の長さに比例し、キャッシュのメモリも会話とともに増える (LFM3-1.7B で 1 トークン 12 KiB、262144 で 3 GiB。メモリの 4 分の 1 を超えるなら文脈を縮める)。`0` はモデルが許すとき 8192 (LFM3 とその VL、Audio、Omni、Gemma 4、Qwen3.5。Neural Engine でも Intel の NPU でも)、`-1` で分けない (そのとき `--tier` が効く) |
 | `--sparse` | `true` | 注意で分けたモデル (`--paged`) で会話が約 48K を超えたら、1 回の呼び出しで鍵 16384 (プロンプトを読むときは 32768) だけを正確に読み (その呼び出しにとって重い 8 トークンのバケット、最後の 512、最初の 4)、ほかのバケットは鍵と値の平均 1 つで読む。128K 以上で呼び出しが数分の 1 になる ([docs/design.md](docs/design.md) の 16.61)。`false` で毎回キャッシュ全体を読む |
-| `--dir DIR` | `~/Library/Caches/hwnpu/models` | モデルの置き場。モデルごとに `DIR/名前` にチェックポイントと変換したプログラムを置く |
 | `--package A,B` | なし | `hwnpu-dev convert` で自分で変換したチャットのプログラムを使う (5 節) |
 | `--dump DIR` | なし | サーバーで、要求、プロンプト、生成した文を要求ごとに保存する |
 | `--embed-seq A,B` | `128,1024` | 埋め込みモデルを変換する長さ。文はそれが収まる最も短いもので動き、最も長いものが 1 つの文の最大トークン数になる |
@@ -210,7 +209,7 @@ curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' -
 go run ./cmd/hwnpu-chat search -m plamo-embedding-1b
 ```
 
-[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) は日本語 (と英語) の文を 2048 個の数のベクトルにします。意味の近い文ほど同じ向きのベクトルになります。最初の起動で `config.json`、`tokenizer.model`、`model.safetensors` (2.1 GB) を `~/Library/Caches/hwnpu/models/plamo-embedding-1b` に落とし、チャットのモデルと同じく `--embed-seq` の長さごとに 1 回ずつ変換します。
+[pfnet/plamo-embedding-1b](https://huggingface.co/pfnet/plamo-embedding-1b) は日本語 (と英語) の文を 2048 個の数のベクトルにします。意味の近い文ほど同じ向きのベクトルになります。最初の起動で `config.json`、`tokenizer.model`、`model.safetensors` (2.1 GB) を `~/Library/Caches/hwnpu/original/pfnet/plamo-embedding-1b` に落とし、チャットのモデルと同じく `--embed-seq` の長さごとに 1 回ずつ変換します。
 
 ターミナルでは、入力した 1 行ずつが検索の対象の文書として溜まり、`?` (全角の `？` も可) で始まる行が検索の問い (クエリ) になります。文書をクエリとのコサイン類似度の高い順に並べます。`/list` で文書の一覧、`/reset` で文書を消し、`/exit` か Ctrl-D で終わります。
 

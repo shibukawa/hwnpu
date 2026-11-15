@@ -36,8 +36,12 @@ type Entry struct {
 	Scope  string `json:"scope"`
 	Model  string `json:"model,omitempty"`
 	Target string `json:"target,omitempty"`
-	// Version is the model's version for the target, for what is published (0: made here).
+	// Version is the model's version for the target (models.yaml's targets; 0: none).
 	Version int `json:"version,omitempty"`
+	// Develop is a version of a model in development (VersionDir).
+	Develop bool `json:"develop,omitempty"`
+	// Path is the entry's folder in a source (EntryPath).
+	Path string `json:"path,omitempty"`
 	// Recipe is everything the entry was made from: what the key is the fingerprint of.
 	Recipe map[string]string `json:"recipe"`
 	Files  []File            `json:"files"`

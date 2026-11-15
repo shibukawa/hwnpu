@@ -55,7 +55,7 @@ func TestBlockRanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := cmp.Or(os.Getenv("HWNPU_ANIMA_RANGES"), t.TempDir())
-	w, err := mil.OpenWeights(root, m.Dit)
+	w, err := mil.OpenWeights(root, filepath.Join(root, "diffusers"), m.Dit)
 	if err != nil {
 		t.Fatal(err)
 	}

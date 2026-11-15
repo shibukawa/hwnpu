@@ -104,21 +104,21 @@ func (s Setup) files() []string {
 func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
 	format := cmp.Or(s.Format, "lut8")
-	at := func(f string) string { return filepath.Join(s.Dir, filepath.FromSlash(f)) }
+	src := chat.RepoDir(s.Repo)
+	at := func(f string) string { return filepath.Join(src, filepath.FromSlash(f)) }
 	p := Paths{Dir: s.Dir, Checkpoint: at(Files[0])}
 	var want []chat.File
 	for _, f := range s.files() {
-		want = append(want, chat.File{Repo: s.Repo, Name: f, Path: at(f)})
+		want = append(want, chat.File{Repo: s.Repo, Name: f})
 	}
 	chat.Expect(ctx, want)
 	for _, f := range s.files() {
-		path := at(f)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if _, err := chat.Fetch(ctx, s.Repo, f, log); err != nil {
 			return p, err
 		}
-		if err := chat.Fetch(ctx, s.Repo, f, path, log); err != nil {
-			return p, err
-		}
+	}
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return p, err
 	}
 	// Intel's NPU reads OpenVINO IR (kept in Dir/intel) and no lookup tables: lut8 is int8
 	coreai := s.Backend == llm.BackendCoreAI

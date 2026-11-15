@@ -56,11 +56,12 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 		return EmbedConfig{}, err
 	}
 	for _, f := range []string{"config.json", "tokenizer.model"} {
-		if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
+		if _, err := fetch(ctx, s.Repo, f, s.Log); err != nil {
 			return EmbedConfig{}, err
 		}
 	}
-	c := EmbedConfig{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, llm.DeviceBackend(""), backend)}
+	src := RepoDir(s.Repo)
+	c := EmbedConfig{ModelConfig: filepath.Join(src, "config.json"), Weights: filepath.Join(src, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, llm.DeviceBackend(""), backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, "")
 	if err != nil {
 		return EmbedConfig{}, err
@@ -70,7 +71,7 @@ func PrepareEmbedder(ctx context.Context, s EmbedSetup) (EmbedConfig, error) {
 	format := a.DefaultFormatFor(model, backend)
 	// the checkpoint is downloaded only to write a program or the tables from it (tables.go)
 	checkpoint := sync.OnceValues(func() (string, error) {
-		return c.Weights, fetch(ctx, s.Repo, "model.safetensors", c.Weights, s.Log)
+		return fetch(ctx, s.Repo, "model.safetensors", s.Log)
 	})
 	var outs, names []string
 	var ps []program

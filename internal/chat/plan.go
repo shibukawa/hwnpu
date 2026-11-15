@@ -3,6 +3,7 @@ package chat
 import (
 	"cmp"
 	"context"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,10 +17,12 @@ import (
 
 // File is a file of a model's repository and where fetch puts it.
 type File struct {
-	Repo string // as fetch takes it: OWNER/NAME, OWNER/NAME@REVISION or SOURCE:NAME
+	Repo string // as fetch takes it: OWNER/NAME or OWNER/NAME@REVISION
 	Name string // in the repository
-	Path string
 }
+
+// Path is where the file is kept (RepoDir).
+func (f File) Path() string { return filepath.Join(RepoDir(f.Repo), filepath.FromSlash(f.Name)) }
 
 // plan is the files Expect looked up that are not fetched yet (their sizes and the bytes
 // written so far), and the bytes of those fetched since, for a download's bar to show the time
@@ -42,7 +45,7 @@ func Expect(ctx context.Context, files []File) {
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
 	for _, f := range files {
-		if _, err := os.Stat(f.Path); err == nil {
+		if _, err := os.Stat(f.Path()); err == nil {
 			continue
 		}
 		wg.Add(1)
@@ -52,7 +55,7 @@ func Expect(ctx context.Context, files []File) {
 			defer func() { <-sem }()
 			if n, ok := fileSize(ctx, f.Repo, f.Name); ok {
 				mu.Lock()
-				sizes[filepath.Clean(f.Path)] = n
+				sizes[filepath.Clean(f.Path())] = n
 				mu.Unlock()
 			}
 		}()
@@ -118,42 +121,26 @@ func planFinish(path string) {
 	}
 }
 
-// fileSize is the size of a file of repo in the first source that has it: a path source's file,
-// or a Hugging Face repository's from a HEAD request (X-Linked-Size, which a redirect to the CDN
+// fileSize is the size of a file of repo: the one the lock of the first source that names it
+// says, else Hugging Face's from a HEAD request (X-Linked-Size, which a redirect to the CDN
 // carries).
 func fileSize(ctx context.Context, repo, name string) (int64, bool) {
-	order, key := sourceOrder(repo)
-	for _, sn := range order {
-		s := Sources[sn]
-		switch s.Type {
-		case "path":
-			if n, ok := pathSize(s, key, name); ok {
-				return n, true
-			}
-		case "hf":
-			if n, ok := hfSize(ctx, key, name); ok {
-				return n, true
+	base, _, _ := strings.Cut(repo, "@")
+	commit := lockedCommit(ctx, repo)
+	for _, s := range shared.Sources() {
+		if l, err := shared.ReadLock(ctx, s, base); err == nil && (commit == "" || l.Commit == commit) {
+			if f, ok := l.Files[name]; ok {
+				return f.Size, true
 			}
 		}
 	}
-	return 0, false
-}
-
-func pathSize(s Source, key, name string) (int64, bool) {
-	base, rev, _ := strings.Cut(key, "@")
-	if !safeName(base) || !safeName(name) {
+	if !shared.HuggingFace() {
 		return 0, false
 	}
-	dirs := []string{base}
-	if rev != "" {
-		dirs = []string{base + "@" + rev, base}
+	if commit != "" {
+		repo = base + "@" + commit
 	}
-	for _, d := range dirs {
-		if fi, err := os.Stat(filepath.Join(s.Path, filepath.FromSlash(d), filepath.FromSlash(name))); err == nil && fi.Mode().IsRegular() {
-			return fi.Size(), true
-		}
-	}
-	return 0, false
+	return hfSize(ctx, repo, name)
 }
 
 // headClient asks without following redirects: the size is on the Hub's answer.

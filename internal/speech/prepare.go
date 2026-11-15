@@ -50,26 +50,27 @@ type Setup struct {
 // files are the checkpoint's files besides the weights; generation_config.json may be missing.
 var files = []string{"config.json", "tokenizer.json", "audio_tokenizer/config.json"}
 
-// Prepare downloads the checkpoint into s.Dir unless it is there, converts the programs hwnpu-audio tts
+// Prepare downloads the checkpoint (chat.RepoDir) unless it is there, converts the programs hwnpu-audio tts
 // runs unless they are (the text model with a KV cache and its final hidden state out, 1 and 64
 // tokens per call; the depthformer; the codec decoder of 64 frames per call), and writes the
 // tables the host reads. The checkpoint is downloaded only when something is converted or written
 // from it.
 func Prepare(ctx context.Context, s Setup) (Config, error) {
 	log := cmp.Or[io.Writer](s.Log, io.Discard)
-	if err := os.MkdirAll(filepath.Join(s.Dir, "audio_tokenizer"), 0o755); err != nil {
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return Config{}, err
 	}
 	for _, f := range files {
-		if err := chat.Fetch(ctx, s.Repo, f, filepath.Join(s.Dir, filepath.FromSlash(f)), log); err != nil {
+		if _, err := chat.Fetch(ctx, s.Repo, f, log); err != nil {
 			return Config{}, err
 		}
 	}
-	if err := chat.Fetch(ctx, s.Repo, "generation_config.json", filepath.Join(s.Dir, "generation_config.json"), log); err != nil && !chat.NotFound(err) {
+	if _, err := chat.Fetch(ctx, s.Repo, "generation_config.json", log); err != nil && !chat.NotFound(err) {
 		return Config{}, err
 	}
-	config := filepath.Join(s.Dir, "config.json")
-	codecConfig := filepath.Join(s.Dir, "audio_tokenizer", "config.json")
+	src := chat.RepoDir(s.Repo)
+	config := filepath.Join(src, "config.json")
+	codecConfig := filepath.Join(src, "audio_tokenizer", "config.json")
 	a, tm, err := llm.LoadConfig(config, lfm3.Arch.Name)
 	if err != nil {
 		return Config{}, err
@@ -79,18 +80,17 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return Config{}, err
 	}
 	checkpoint := sync.OnceValues(func() (string, error) {
-		return filepath.Join(s.Dir, "model.safetensors"), chat.FetchWeights(ctx, s.Repo, s.Dir, log)
+		return chat.FetchWeights(ctx, s.Repo, log)
 	})
 	codecWeights := sync.OnceValues(func() (string, error) {
-		p := filepath.Join(s.Dir, "audio_tokenizer", "model.safetensors")
-		return p, chat.Fetch(ctx, s.Repo, "audio_tokenizer/model.safetensors", p, log)
+		return chat.Fetch(ctx, s.Repo, "audio_tokenizer/model.safetensors", log)
 	})
 	cache := cmp.Or(s.Cache, DefaultCache)
 	format := cmp.Or(s.Format, a.DefaultFormatFor(tm, s.Backend))
 	if s.Backend == llm.BackendIntel {
 		format = llm.IntelFormat(format)
 	}
-	c := Config{Dir: s.Dir}
+	c := Config{Dir: src}
 	type prog struct {
 		config  string
 		weights func() (string, error)
@@ -119,7 +119,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			names, ps, base = append(names, name), append(ps, p.p), base+"-"+name
 		}
 		weights := ""
-		if !chat.Converted(ctx, base + ".coreai") {
+		if !chat.Converted(ctx, base+".coreai") {
 			if weights, err = checkpoint(); err != nil {
 				return Config{}, err
 			}

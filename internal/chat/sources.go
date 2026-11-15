@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,131 +11,34 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
-// Where the files of the models come from (docs/model-table.md 5): Hugging Face (the source
-// "hf", always there), shared folders (path) and S3 (s3, any endpoint: AWS, RustFS, Cloudflare R2; read with
-// internal/store, not the aws command). A model's from names its source; a model from hf is looked for in the sources
-// of Search in order, so that a mirror of Hugging Face is read first.
-
-// SourceHF is the name of Hugging Face's source.
-const SourceHF = "hf"
-
-// Source is a place the files of models are read from.
-type Source struct {
-	Name string
-	Type string // "hf", "path" or "s3"
-	// Path is a path source's folder: a model's files are in Path/NAME (for hf models in a
-	// search, Path/OWNER/NAME, or Path/OWNER/NAME@REVISION first when pinned).
-	Path string
-	// The bucket and the prefix of an s3 source, and how it is reached: the endpoint (for
-	// RustFS, Cloudflare R2 and the like), the region, the profile of ~/.aws/credentials and
-	// ~/.aws/config whose static keys sign, path_style (nil: paths except on AWS's endpoints),
-	// and no_sign for a public bucket (shared.S3Config).
-	Bucket, Prefix, Endpoint, Region, Profile string
-	PathStyle                                 *bool
-	NoSign                                    bool
-}
-
-// String describes the source for logs and -list.
-func (s Source) String() string {
-	switch s.Type {
-	case "path":
-		return fmt.Sprintf("%s (folder %s)", s.Name, s.Path)
-	case "s3":
-		d := fmt.Sprintf("%s (s3://%s/%s", s.Name, s.Bucket, s.Prefix)
-		if s.Endpoint != "" {
-			d += " at " + s.Endpoint
-		}
-		return d + ")"
-	}
-	return s.Name + " (Hugging Face)"
-}
+// Where the files of the models come from (docs/cache-sharing.md 7), in layers: the machine's
+// own cache (cache.Root: original/OWNER/NAME, with its hwnpu-lock.json), the sources of the
+// environment (HWNPU_MODEL_SOURCE, HWNPU_MODEL_SOURCE_1, ...: internal/store), the models an
+// application installs with it (store.SetBundles), and Hugging Face last unless
+// HWNPU_MODEL_HUGGING_FACE=false. A repository's files in a layer are those its hwnpu-lock.json
+// names, of the commit it names: a model that does not pin a commit takes the commit of the first
+// lock after the machine's cache, so that every machine of the sources runs the same files
+// (hwnpu-dev cache update moves the lock), and the machine's cache follows it. A file read from a
+// later layer goes in the machine's cache and in the sources before with ?writeback=true (in the
+// background).
 
 var (
-	// Sources are the sources of the definitions by name, Hugging Face's among them.
-	Sources = map[string]Source{SourceHF: {Name: SourceHF, Type: "hf"}}
-	// Search is the order the sources are looked in for a model from hf (the definitions'
-	// search; [hf] when they give none).
-	Search = []string{SourceHF}
 	// digests are the SHA-256 of the files of the models the definitions pin (sha256), by the
 	// model's Source() and the file's name.
 	digests = map[string]map[string]string{}
-	// pinned are the files the definitions pin, by their SHA-256 (lower case): where each is in
-	// the models' directory, so that a file two models share (MOSS-SoundEffect's text encoder is
-	// Qwen3-1.7B) is downloaded once (sameFile).
+	// pinned are the files the definitions pin, by their SHA-256 (lower case): the repository
+	// (OWNER/NAME) and the name of each, so that a file two models share (MOSS-SoundEffect's
+	// text encoder is Qwen3-1.7B) is downloaded once (sameFile).
 	pinned = map[string][]pinnedFile{}
-
-	// found remembers the source a repository's first file came from, to take the rest from
-	// there too.
-	foundMu sync.Mutex
-	found   = map[string]string{}
 )
-
-// sourceEntry is a source in a definition file.
-type sourceEntry struct {
-	Type      string `yaml:"type"`
-	Path      string `yaml:"path"`
-	Bucket    string `yaml:"bucket"`
-	Prefix    string `yaml:"prefix"`
-	Endpoint  string `yaml:"endpoint"`
-	Region    string `yaml:"region"`
-	Profile   string `yaml:"profile"`
-	PathStyle *bool  `yaml:"path_style"`
-	NoSign    bool   `yaml:"no_sign"`
-}
-
-var sourceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-
-// toSource checks a source of a definition file.
-func toSource(name string, e *sourceEntry) (Source, error) {
-	s := Source{Name: name, Type: e.Type, Path: e.Path, Bucket: e.Bucket, Prefix: e.Prefix, Endpoint: e.Endpoint, Region: e.Region, Profile: e.Profile, PathStyle: e.PathStyle, NoSign: e.NoSign}
-	if !sourceName.MatchString(name) || name == SourceHF {
-		return s, fmt.Errorf("source %q: a name of letters, digits, - and _, not %s", name, SourceHF)
-	}
-	switch s.Type {
-	case "path":
-		if s.Path == "" {
-			return s, fmt.Errorf("source %s: a path source needs path", name)
-		}
-		if rest, ok := strings.CutPrefix(s.Path, "~"); ok && (rest == "" || rest[0] == '/' || rest[0] == '\\') {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return s, err
-			}
-			s.Path = filepath.Join(home, rest)
-		}
-	case "s3":
-		if s.Bucket == "" {
-			return s, fmt.Errorf("source %s: an s3 source needs bucket", name)
-		}
-		if s.Prefix != "" && !strings.HasSuffix(s.Prefix, "/") {
-			s.Prefix += "/"
-		}
-	default:
-		return s, fmt.Errorf("source %s: type %q is not path or s3", name, s.Type)
-	}
-	return s, nil
-}
-
-// splitSource reads a repository as fetch takes it: SOURCE:NAME for a model of a path or s3
-// source, else OWNER/NAME[@REVISION], from hf (looked for in Search).
-func splitSource(repo string) (source, name string) {
-	if s, n, ok := strings.Cut(repo, ":"); ok {
-		if _, known := Sources[s]; known && s != SourceHF {
-			return s, n
-		}
-	}
-	return "", repo
-}
 
 // safeName reports whether name is a relative path of a source's model that stays inside it.
 func safeName(name string) bool {
@@ -144,99 +48,282 @@ func safeName(name string) bool {
 	return !slices.Contains(strings.Split(name, "/"), "..")
 }
 
-// pinnedFile is a file of a model the definitions pin: its model's directory (Model.DirName) and
-// its name in the repository.
-type pinnedFile struct{ dir, name string }
+// pinnedFile is a file of a model the definitions pin: its repository (OWNER/NAME) and its name
+// in it.
+type pinnedFile struct{ repo, name string }
 
-// fetch puts a file of a model's repository at path unless it is there. repo is Model.Source():
-// OWNER/NAME or OWNER/NAME@REVISION from hf, looked for in Search in order (the source the
-// repository's first file came from first), or SOURCE:NAME from that source alone. A file the
-// definitions pin (sha256) is checked; one that differs is removed and the next source tried. A
-// pinned file another model of the same SHA-256 has in the models' directory is linked from there
-// first (sameFile).
-func fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
+// RepoDir is the folder of the files of repo (OWNER/NAME, or OWNER/NAME@REVISION) here:
+// original/OWNER/NAME under the cache's root, as in a source. Whatever the revision, a repository
+// has one folder: its hwnpu-lock.json says which commit the files are of.
+func RepoDir(repo string) string {
+	base, _, _ := strings.Cut(repo, "@")
+	return cache.Sub(filepath.FromSlash(shared.OriginalKey(base, "")))
+}
+
+// fetch returns the path of a file of a model's repository here (RepoDir), which it puts there
+// unless it is there. repo is Model.Source(): OWNER/NAME or OWNER/NAME@REVISION. The file is of the
+// commit the model pins, or the first source's lock names, or the one the machine's cache has; it
+// is looked for in the sources (shared.Sources), then on Hugging Face (unless
+// HWNPU_MODEL_HUGGING_FACE=false). A file the definitions pin (sha256) is checked; one that
+// differs is removed. A pinned file another repository of the same SHA-256 has here is linked from
+// there first (sameFile).
+func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error) {
+	if !safeName(name) {
+		return "", fmt.Errorf("chat: %q is not a file of %s", name, repo)
+	}
+	base, rev, _ := strings.Cut(repo, "@")
+	path := filepath.Join(RepoDir(base), filepath.FromSlash(name))
+	local := shared.Local()
+	commit := lockedCommit(ctx, repo)
+	want, pinnedSum := digests[repo][name]
+	want = strings.ToLower(want)
+	if here(ctx, local, base, commit, name, want, path) {
+		return path, nil
 	}
 	// one process downloads a file at a time; one that waited finds it there
 	unlock, err := cache.Lock(ctx, path, repo+"/"+name, log)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer unlock()
-	if _, err := os.Stat(path); err == nil {
-		return nil
+	if here(ctx, local, base, commit, name, want, path) {
+		return path, nil
+	}
+	if adopt(ctx, local, repo, commit, name, want, path, log) {
+		return path, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
 	}
 	stop := console.Downloading(repo + "/" + name)
-	bytes := int64(-1) // linked from another model: no download
+	bytes := int64(-1) // linked from another repository: no download
 	defer func() { stop(bytes) }()
-	if want, ok := digests[repo][name]; ok && sameFile(want, name, path, log) {
-		planFinish(path)
-		return nil
-	}
-	order, key := sourceOrder(repo)
-	var errs []error
-	for _, sn := range order {
-		s := Sources[sn]
-		var err error
-		fromLayer := false
-		switch s.Type {
-		case "hf":
-			// the shared layers first: a forward proxy of the hub (docs/cache-sharing.md 7.1)
-			if fromLayer = fromLayers(ctx, key, name, path, log); !fromLayer {
-				err = fetchHF(ctx, key, name, path, log)
-			}
-		case "path":
-			err = fetchPath(s, key, name, path, log)
-		case "s3":
-			err = fetchS3(ctx, s, key, name, path, log)
-		default:
-			err = fmt.Errorf("chat: no source %q", sn)
-		}
-		if err == nil {
-			if err = verify(repo, name, path); err == nil {
-				if fi, err := os.Stat(path); err == nil {
-					bytes = fi.Size()
-				}
-				planFinish(path)
-				foundMu.Lock()
-				found[repo] = sn
-				foundMu.Unlock()
-				if !fromLayer && s.Type == "hf" {
-					fillLayers(ctx, key, name, path)
-				}
-				return nil
-			}
+	// record puts the file in the machine's lock, of commit c and SHA-256 sum ("": worked out)
+	record := func(c, sum string) error {
+		if err := verify(repo, name, path); err != nil {
 			os.Remove(path)
+			return err
 		}
-		if errors.Is(err, errNotFound) {
-			continue
+		fi, err := os.Stat(path)
+		if err != nil {
+			return err
 		}
-		errs = append(errs, err)
-		if len(order) > 1 && log != nil {
-			fmt.Fprintf(log, "%s: %v; trying the next source\n", s.Name, err)
+		if fi.Mode()&os.ModeSymlink == 0 {
+			bytes = fi.Size()
+		}
+		if sum == "" {
+			if sum, err = shared.FileSHA256(path); err != nil {
+				return err
+			}
+		}
+		planFinish(path)
+		if c != "" || commit == "" {
+			noteLockCommit(repo, c)
+		}
+		return shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: sum, Size: fi.Size()}, true, nil)
+	}
+	if pinnedSum && sameFile(want, name, path, log) {
+		bytes = -1
+		return path, record(commit, want)
+	}
+	ss := shared.Sources()
+	if commit == "" && rev != "" && rev != "main" && shared.HuggingFace() {
+		ss = nil // a branch or a tag whose commit is not known: what the sources hold may be another's
+	}
+	i, lk, err := shared.FetchOriginal(ctx, ss, base, commit, name, want, path, log)
+	if err == nil {
+		sum := lk.Files[name].SHA256
+		if err := record(lk.Commit, sum); err != nil {
+			return "", err
+		}
+		for _, s := range ss[:i] {
+			if s.Writeback {
+				shared.FillLater(s, base, lk.Commit, name, path, sum)
+			}
+		}
+		return path, nil
+	}
+	if !errors.Is(err, shared.ErrNotFound) && log != nil {
+		fmt.Fprintf(log, "%v\n", err)
+	}
+	if !shared.HuggingFace() {
+		return "", fmt.Errorf("chat: %s of %s is in none of the sources (%s), and %s=false keeps hwnpu off Hugging Face: %w",
+			name, repo, sourceNames(ss), shared.HuggingFaceEnv, errNotFound)
+	}
+	from := repo
+	if commit != "" {
+		from = base + "@" + commit // the files of the sources' commit
+	}
+	if err := fetchHF(ctx, from, name, path, log); err != nil {
+		return "", err
+	}
+	c, _ := servedCommit(from)
+	if err := record(c, ""); err != nil {
+		return "", err
+	}
+	for _, s := range shared.Writebacks() {
+		if c != "" {
+			shared.FillLater(s, base, c, name, path, want)
 		}
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return fmt.Errorf("chat: %s of %s is in none of the sources %s: %w", name, key, strings.Join(order, ", "), errNotFound)
+	return path, nil
 }
 
-// sourceOrder is the sources fetch looks in for a file of repo, in order, and the repository's
-// name in them.
-func sourceOrder(repo string) (order []string, key string) {
-	src, key := splitSource(repo)
-	if src != "" {
-		return []string{src}, key
+// here reports whether the file of repo base at path is the one the machine's lock names, of
+// commit (any, for "") and of the SHA-256 the definitions pin (want, when not "").
+func here(ctx context.Context, local shared.Source, base, commit, name, want, path string) bool {
+	l, err := shared.ReadLock(ctx, local, base)
+	if err != nil {
+		return false
 	}
-	order = slices.Clone(Search)
-	foundMu.Lock()
-	if f, ok := found[repo]; ok {
-		order = append([]string{f}, slices.DeleteFunc(order, func(s string) bool { return s == f })...)
+	f, ok := l.Files[name]
+	if !ok || commit != "" && l.Commit != commit || want != "" && f.SHA256 != want {
+		return false
 	}
-	foundMu.Unlock()
-	return order, key
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() != f.Size {
+		return false
+	}
+	if commit == "" {
+		noteLockCommit(base, l.Commit)
+	}
+	return true
+}
+
+// adopt takes a file at path that the machine's lock does not name (one of another commit, from
+// before the lock moved; or one of an earlier hwnpu's models/NAME/, LegacyModelDir) when it has
+// the SHA-256 it should have: the one the definitions pin, a source's lock names or Hugging Face
+// says (a file in LFS), and reports whether it did. One that differs is removed. A file whose
+// SHA-256 is not known is taken only when hwnpu keeps off Hugging Face (else it comes again: a
+// small file, not in LFS).
+func adopt(ctx context.Context, local shared.Source, repo, commit, name, want, path string, log io.Writer) bool {
+	base, _, _ := strings.Cut(repo, "@")
+	if _, err := os.Lstat(path); err != nil {
+		old := filepath.Join(LegacyModelDir(base), filepath.FromSlash(name))
+		if fi, err := os.Stat(old); err != nil || !fi.Mode().IsRegular() {
+			return false
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil || os.Rename(old, path) != nil {
+			return false
+		}
+	}
+	sum := want
+	if sum == "" && commit != "" {
+		for _, s := range shared.Sources() {
+			if l, err := shared.ReadLock(ctx, s, base); err == nil && l.Commit == commit {
+				if f, ok := l.Files[name]; ok {
+					sum = f.SHA256
+					break
+				}
+			}
+		}
+	}
+	c := commit
+	if sum == "" && shared.HuggingFace() {
+		from := repo
+		if commit != "" {
+			from = base + "@" + commit
+		}
+		var hc string
+		if sum, hc = hubFile(ctx, from, name); c == "" {
+			c = hc
+		}
+		if sum == "" {
+			os.Remove(path)
+			return false
+		}
+	}
+	got, err := shared.FileSHA256(path)
+	if err != nil {
+		return false
+	}
+	if sum != "" && got != sum {
+		if log != nil {
+			fmt.Fprintf(log, "%s of %s here is not the one of %s: downloading it again\n", name, base, short(c))
+		}
+		os.Remove(path)
+		return false
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if c == "" {
+		if l, err := shared.ReadLock(ctx, local, base); err == nil {
+			c = l.Commit // hwnpu off Hugging Face, no source's lock: the commit of what is here
+		}
+	}
+	if shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: got, Size: fi.Size()}, true, nil) != nil {
+		return false
+	}
+	noteLockCommit(repo, c)
+	planFinish(path)
+	return true
+}
+
+func short(commit string) string {
+	if commit == "" {
+		return "the commit asked for"
+	}
+	return commit[:min(12, len(commit))]
+}
+
+// LegacyModelDir is where an earlier hwnpu kept the files of repo base: models/NAME under the
+// cache's root. A file asked for that is there is moved to RepoDir when it is the right one.
+func LegacyModelDir(base string) string { return cache.Sub("models", path.Base(base)) }
+
+// lockedCommit is the commit fetch takes the files of repo from: the revision the definitions
+// pin when it is a commit, else the one this process took them from before; for main, else the
+// one of the first source with a lock of the repository, else the one of the machine's cache
+// (what is here: Hugging Face is not asked whether main moved; hwnpu-dev cache update moves it);
+// for another branch or tag, the one Hugging Face says it is. "" for any (Hugging Face's main).
+func lockedCommit(ctx context.Context, repo string) string {
+	if c, ok := servedCommit(repo); ok {
+		return c
+	}
+	base, rev, _ := strings.Cut(repo, "@")
+	if rev != "" && rev != "main" {
+		if len(shared.Sources()) == 0 {
+			return "" // nothing to match: Hugging Face serves the revision
+		}
+		if _, c := hubFile(ctx, repo, "config.json"); c != "" {
+			noteLockCommit(repo, c)
+			return c
+		}
+		return "" // what the sources hold of the revision is not known: any lock is taken
+	}
+	for _, s := range append(shared.Sources(), shared.Local()) {
+		if l, err := shared.ReadLock(ctx, s, base); err == nil && l.Commit != "" {
+			noteLockCommit(repo, l.Commit)
+			return l.Commit
+		}
+	}
+	return ""
+}
+
+// noteLockCommit keeps the commit repo's files come from in this process (servedCommit).
+func noteLockCommit(repo, commit string) {
+	if commit == "" {
+		return
+	}
+	base, rev, _ := strings.Cut(repo, "@")
+	if commitRE.MatchString(rev) {
+		return
+	}
+	commitsMu.Lock()
+	commits[base+"@"+cmp.Or(rev, "main")] = commit
+	commitsMu.Unlock()
+}
+
+func sourceNames(ss []shared.Source) string {
+	if len(ss) == 0 {
+		return "none: " + shared.SourceEnv + " sets them"
+	}
+	var n []string
+	for _, s := range ss {
+		n = append(n, s.String())
+	}
+	return strings.Join(n, ", ")
 }
 
 // Pinned is the SHA-256 the definitions pin for a file of repo (as Fetch takes it), if any: a
@@ -275,24 +362,19 @@ func hasDigest(path, want string) error {
 	return nil
 }
 
-// sameFile puts at path (the file name of a model's directory in the models' directory) the file
-// of the SHA-256 want another model has there, linked (or copied where links fail), and reports
-// whether it did. A copy that does not have the SHA-256 is removed and the next looked at.
+// sameFile puts at path (the file name of a repository here) the file of the SHA-256 want
+// another repository has here, linked (or copied where links fail), and reports whether it did.
+// A copy that does not have the SHA-256 is removed and the next looked at.
 func sameFile(want, name, path string, log io.Writer) bool {
-	dir, ok := strings.CutSuffix(filepath.Clean(path), string(filepath.Separator)+filepath.Clean(filepath.FromSlash(name)))
-	if !ok {
-		return false // not NAME's place in a model's directory: no models' directory to look in
-	}
-	root := filepath.Dir(dir)
 	for _, f := range pinned[strings.ToLower(want)] {
-		src := filepath.Join(root, f.dir, filepath.FromSlash(f.name))
+		src := filepath.Join(RepoDir(f.repo), filepath.FromSlash(f.name))
 		if filepath.Clean(src) == filepath.Clean(path) {
 			continue
 		}
 		if fi, err := os.Stat(src); err != nil || !fi.Mode().IsRegular() {
 			continue
 		}
-		label := fmt.Sprintf("%s of %s (the same SHA-256)", f.name, f.dir)
+		label := fmt.Sprintf("%s of %s (the same SHA-256)", f.name, f.repo)
 		if err := linkOrCopy(src, path, label, log); err != nil {
 			if log != nil {
 				fmt.Fprintf(log, "%s: %v\n", label, err)
@@ -348,69 +430,4 @@ func linkOrCopy(src, dst, what string, log io.Writer) error {
 	}
 	pw.bar.Done(fmt.Sprintf("%s to %s", gb(pw.done, -1), filepath.Dir(dst)))
 	return os.Rename(part, dst)
-}
-
-// fetchPath copies a file of a path source's model: Path/NAME/FILE, or for a model from hf
-// looked for in it, Path/OWNER/NAME@REVISION/FILE and then Path/OWNER/NAME/FILE. A hard link is
-// made where the folder allows it.
-func fetchPath(s Source, key, name, dst string, log io.Writer) error {
-	base, rev, _ := strings.Cut(key, "@")
-	if !safeName(base) || !safeName(name) || strings.ContainsAny(rev, "/\\") {
-		return fmt.Errorf("chat: %s: %s/%s is not a file inside the source", s.Name, key, name)
-	}
-	var dirs []string
-	if rev != "" {
-		dirs = append(dirs, base+"@"+rev)
-	}
-	dirs = append(dirs, base)
-	for _, d := range dirs {
-		src := filepath.Join(s.Path, filepath.FromSlash(d), filepath.FromSlash(name))
-		fi, err := os.Stat(src)
-		if err != nil || fi.IsDir() {
-			continue
-		}
-		return linkOrCopy(src, dst, s.String(), log)
-	}
-	return fmt.Errorf("chat: %s: %s/%s: %w", s.Name, key, name, errNotFound)
-}
-
-// fetchS3 downloads a file of an s3 source's model: s3://BUCKET/PREFIX/NAME/FILE, or for a
-// model from hf, PREFIX/OWNER/NAME@REVISION/FILE and then PREFIX/OWNER/NAME/FILE (internal/store:
-// signed with the profile's or the environment's keys, or unsigned with no_sign).
-func fetchS3(ctx context.Context, s Source, key, name, dst string, log io.Writer) error {
-	base, rev, _ := strings.Cut(key, "@")
-	if !safeName(base) || !safeName(name) || strings.ContainsAny(rev, "/\\") {
-		return fmt.Errorf("chat: %s: %s/%s is not a file inside the source", s.Name, key, name)
-	}
-	st, err := sourceStore(s)
-	if err != nil {
-		return err
-	}
-	var keys []string
-	if rev != "" {
-		keys = append(keys, base+"@"+rev)
-	}
-	keys = append(keys, base)
-	for _, k := range keys {
-		obj := k + "/" + name
-		b := console.NewBar(log, fmt.Sprintf("downloading %s from %s", path.Base(name), st))
-		n, err := st.Get(ctx, obj, dst, func(done, total int64) {
-			if total > 0 {
-				b.Set(float64(done)/float64(total), gb(done, total))
-			} else {
-				b.Set(-1, gb(done, -1))
-			}
-		})
-		if errors.Is(err, shared.ErrNotFound) {
-			b.Done("not there")
-			continue
-		}
-		if err != nil {
-			b.Done("failed")
-			return fmt.Errorf("chat: %s: %s: %w", s.Name, obj, err)
-		}
-		b.Done(fmt.Sprintf("%s in %s to %s", gb(n, -1), console.Duration(b.Elapsed()), filepath.Dir(dst)))
-		return nil
-	}
-	return fmt.Errorf("chat: %s: %s/%s: %w", s.Name, key, name, errNotFound)
 }

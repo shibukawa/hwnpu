@@ -25,7 +25,7 @@ import (
 //	hwnpu-chat systemone request.json                     # -m decision: d1-2B, downloaded and converted when missing
 //	hwnpu-chat systemone -m d1-omni --listen 127.0.0.1:8080
 //
-// The first run downloads the model into --dir and converts its programs by itself
+// The first run downloads the model and converts its programs by itself
 // (internal/systemone Prepare: the model for prompts of --seq tokens, and the vision and audio
 // encoders the checkpoint has). Programs converted by hand are given with --checkpoint and
 // --package:
@@ -57,7 +57,6 @@ type SystemOneCmd struct {
 	Listen  string `placeholder:"ADDR" help:"Serve POST /v1/systemone at this address (127.0.0.1:8080) instead of answering one request."`
 	Seq     string `default:"512" placeholder:"N,..." help:"Prompt lengths of the programs converted, comma separated: a prompt runs on the shortest that holds it."`
 	Format  string `placeholder:"FORMAT" help:"Weight format of the d1 model's programs (default: lut8)."`
-	Dir     string `type:"path" placeholder:"DIR" help:"Where the models are kept (default: hwnpu/models in the user cache directory)."`
 	Cache   string `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	Models  string `placeholder:"FILES" help:"${models_usage}."`
 	CPU     bool   `name:"cpu" help:"Run on the CPU interpreter instead of the Neural Engine (slow; for checking)."`
@@ -75,7 +74,7 @@ type SystemOneCmd struct {
 // Run answers the request or serves.
 func (c *SystemOneCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	lw := logw()
-	lf := loadFlags{Dir: c.Dir, Cache: c.Cache, Models: c.Models}
+	lf := loadFlags{Cache: c.Cache, Models: c.Models}
 	if err := lf.prepare(); err != nil {
 		return err
 	}
@@ -109,7 +108,7 @@ func (c *SystemOneCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 				return err
 			}
 		}
-		if cfg, err = systemone.Prepare(ctx, systemone.Setup{Dir: filepath.Join(lf.Dir, m.DirName()), Repo: m.Source(), Seqs: seqs, Format: c.Format, Backend: backend, Log: lw}); err != nil {
+		if cfg, err = systemone.Prepare(ctx, systemone.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Seqs: seqs, Format: c.Format, Backend: backend, Log: lw}); err != nil {
 			return err
 		}
 		cfg.Name = m.Name

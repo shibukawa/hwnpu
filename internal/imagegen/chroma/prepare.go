@@ -18,8 +18,8 @@ import (
 
 // Setup is what Prepare makes ready.
 type Setup struct {
-	// Dir holds the checkpoints (a directory per repository; T5-XXL and the VAE in SharedDir,
-	// the same files in every Chroma) and the exports.
+	// Dir holds the exports; the checkpoint is the repository's files (chat.RepoDir), T5's
+	// tokenizer.json Anima's (tokenizerFile).
 	Dir string
 	// Repo is the Hugging Face repository (lodestones/Chroma1-Flash).
 	Repo string
@@ -29,11 +29,8 @@ type Setup struct {
 	Log io.Writer
 }
 
-// SharedDir is the directory of Dir that holds T5-XXL (text_encoder/), the VAE (vae/) and T5's
-// tokenizer.json: Chroma1-Flash's and Chroma1-HD's are the same files (models.yaml's sha256).
-const SharedDir = "t5-xxl"
-
-// File is a file of a Chroma repository; Shared ones go to SharedDir.
+// File is a file of a Chroma repository; Shared ones (T5-XXL, the VAE) are the same in
+// Chroma1-Flash and Chroma1-HD (models.yaml's sha256).
 type File struct {
 	Name   string
 	Shared bool
@@ -86,28 +83,26 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if llm.FetchExport(ctx, out, out+".done") { // here, or from the shared layers
 		return out, nil
 	}
-	root := filepath.Join(s.Dir, filepath.Base(s.Repo))
-	shared := filepath.Join(s.Dir, SharedDir)
-	at := func(f File) string {
-		if f.Shared {
-			return filepath.Join(shared, f.Name)
-		}
-		return filepath.Join(root, f.Name)
-	}
+	// the repository's files (chat.RepoDir); T5-XXL and the VAE are the same in every Chroma's
+	// (pinned: linked from another's when it is here)
+	root := chat.RepoDir(s.Repo)
+	shared := root
 	var want []chat.File
 	for _, f := range Files {
-		want = append(want, chat.File{Repo: s.Repo, Name: f.Name, Path: at(f)})
+		want = append(want, chat.File{Repo: s.Repo, Name: f.Name})
 	}
-	tok := filepath.Join(shared, "tokenizer.json")
-	want = append(want, chat.File{Repo: anima.RepoDiffusers, Name: tokenizerFile, Path: tok})
+	want = append(want, chat.File{Repo: anima.RepoDiffusers, Name: tokenizerFile})
 	chat.Expect(ctx, want)
+	var tok string
 	for _, f := range want {
-		if err := os.MkdirAll(filepath.Dir(f.Path), 0o755); err != nil {
+		p, err := chat.Fetch(ctx, f.Repo, f.Name, log)
+		if err != nil {
 			return "", err
 		}
-		if err := chat.Fetch(ctx, f.Repo, f.Name, f.Path, log); err != nil {
-			return "", err
-		}
+		tok = p // the last: T5's tokenizer.json
+	}
+	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err

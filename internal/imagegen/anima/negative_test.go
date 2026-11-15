@@ -22,7 +22,7 @@ func TestEmptyCond(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := mil.OpenWeights(root, filepath.Base(dit))
+	w, err := mil.OpenWeights(root, filepath.Join(root, "diffusers"), filepath.Base(dit))
 	if err != nil {
 		t.Fatal(err)
 	}

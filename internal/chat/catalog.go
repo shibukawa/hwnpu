@@ -44,9 +44,10 @@ type Model struct {
 	Features []string // what it can do besides its kind, from Features
 	Repo     string   // the Hugging Face repository it is downloaded from
 	Revision string   // the repository's revision to download ("": main)
-	// SourceName is the source of sources the model comes from, "" for hf (Hugging Face, or the
-	// sources of Search); Repo is then the model's folder in it.
-	SourceName string
+	// Targets are the versions of the model's conversions by target (models.yaml's targets).
+	Targets map[string]int
+	// Develop marks a model in development (models.yaml's develop).
+	Develop bool
 	// SHA256 pins the repository's files by name.
 	SHA256 map[string]string
 	// Arch is the structure the definitions name (llm.Lookup), "" for the one config.json says.
@@ -112,13 +113,9 @@ func (m Model) DirName() string {
 	return path.Base(m.Repo)
 }
 
-// Source is the repository as fetch takes it: OWNER/NAME, or OWNER/NAME@REVISION when pinned,
-// from hf (or the sources of Search), or SOURCE:NAME from a source of sources.
+// Source is the repository as fetch takes it: OWNER/NAME, or OWNER/NAME@REVISION when pinned.
 func (m Model) Source() string {
-	switch {
-	case m.SourceName != "":
-		return m.SourceName + ":" + m.Repo
-	case m.Revision != "":
+	if m.Revision != "" {
 		return m.Repo + "@" + m.Revision
 	}
 	return m.Repo
@@ -150,7 +147,11 @@ func Lookup(name string) (Model, bool) {
 	return Model{}, false
 }
 
-// ModelsDir is where models are kept when not told: models under cache.Root.
+// ModelDir is the directory of model m's converted programs: ModelsDir/NAME (Model.DirName).
+// Its files (config.json, the checkpoint) are in RepoDir.
+func ModelDir(m Model) string { return filepath.Join(ModelsDir(), m.DirName()) }
+
+// ModelsDir is where the models' converted programs are kept: models under cache.Root.
 // Each model has a directory of its name there.
 func ModelsDir() string {
 	return cache.Sub("models")
@@ -159,9 +160,9 @@ func ModelsDir() string {
 // Resolve returns the model a name of -use means: one of the catalog by its name; a family or a
 // category of the catalog, with a tag or picked for the machine's memory (Pick: plamo3translate,
 // plamo3translate:2b, translate); or a Hugging Face repository (OWNER/NAME) of an architecture
-// hwnpu-chat runs, whose config.json it downloads to root/NAME to find out what the model is for.
+// hwnpu-chat runs, whose config.json it downloads (RepoDir) to find out what the model is for.
 // What else such a model can do is not known. Only the model picked is downloaded.
-func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, error) {
+func Resolve(ctx context.Context, name string, log io.Writer) (Model, error) {
 	m, ok, err := lookupFor(name, log)
 	if err != nil {
 		return Model{}, err
@@ -173,12 +174,8 @@ func Resolve(ctx context.Context, name, root string, log io.Writer) (Model, erro
 	if !ok {
 		return Model{}, errNoModel(name)
 	}
-	dir := filepath.Join(root, m.DirName())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return m, err
-	}
-	path := filepath.Join(dir, "config.json")
-	if err := fetch(ctx, m.Source(), "config.json", path, log); err != nil {
+	path, err := fetch(ctx, m.Source(), "config.json", log)
+	if err != nil {
 		return m, err
 	}
 	a, model, err := llm.LoadConfig(path, "")
@@ -252,21 +249,14 @@ func ResolveForKinds(name string, log io.Writer, kinds ...Kind) (Model, error) {
 type NoModelError struct{ Name string }
 
 func (e *NoModelError) Error() string {
-	return fmt.Sprintf("chat: no model %q (hwnpu-chat list shows the models, their families and the uses that pick one; a Hugging Face repository is written OWNER/NAME, a model of a source of the definitions SOURCE:NAME)", e.Name)
+	return fmt.Sprintf("chat: no model %q (hwnpu-chat list shows the models, their families and the uses that pick one; a repository is written OWNER/NAME)", e.Name)
 }
 
 func errNoModel(name string) error { return &NoModelError{Name: name} }
 
-// repoModel is the model a name of a repository means: OWNER/NAME or OWNER/NAME@REVISION of
-// Hugging Face (or the sources of Search), or SOURCE:NAME, a model of a source of the
-// definitions. ok is false for neither.
+// repoModel is the model a name of a repository means: OWNER/NAME or OWNER/NAME@REVISION (of
+// the sources or Hugging Face). ok is false otherwise.
 func repoModel(name string) (Model, bool) {
-	if src, rest := splitSource(name); src != "" {
-		if !safeName(rest) || strings.Contains(rest, "@") {
-			return Model{}, false
-		}
-		return Model{Name: path.Base(rest), Repo: rest, SourceName: src}, true
-	}
 	repo, rev, _ := strings.Cut(name, "@")
 	if strings.Count(repo, "/") != 1 || !safeName(repo) || strings.HasSuffix(repo, "/") {
 		return Model{}, false
@@ -274,11 +264,19 @@ func repoModel(name string) (Model, bool) {
 	return Model{Name: path.Base(repo), Repo: repo, Revision: rev}, true
 }
 
-// Downloaded reports whether the model is in dir: its tables (TablesFile, written once its
-// programs are converted, which then run without the checkpoint), model.safetensors, or the
-// index of a checkpoint in several files and all the files it names.
-func Downloaded(dir string) bool {
-	if exists(filepath.Join(dir, TablesFile)) || exists(filepath.Join(dir, "model.safetensors")) {
+// Downloaded reports whether model m is here: its tables in its directory of programs
+// (ModelDir, TablesFile: written once its programs are converted, which then run without the
+// checkpoint), or its checkpoint (RepoDir): model.safetensors, or the index of a checkpoint in
+// several files and all the files it names.
+func Downloaded(m Model) bool {
+	if exists(filepath.Join(ModelDir(m), TablesFile)) {
+		return true
+	}
+	if m.Repo == "" {
+		return false
+	}
+	dir := RepoDir(m.Source())
+	if exists(filepath.Join(dir, "model.safetensors")) {
 		return true
 	}
 	files, err := shards(filepath.Join(dir, "model.safetensors.index.json"))

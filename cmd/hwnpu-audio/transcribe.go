@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,7 +18,7 @@ import (
 )
 
 // TranscribeCmd is "hwnpu-audio transcribe": speech to text with Whisper on the Neural Engine.
-// The first run downloads the checkpoint (1.6 GB for whisper-large-v3-turbo) into --dir and
+// The first run downloads the checkpoint (1.6 GB for whisper-large-v3-turbo) and
 // converts its three programs (the encoder, the cross attention's keys and values, the decoder),
 // in 8 bit tables by default. A WAV of any rate and channels is read (averaged to mono and
 // resampled to 16 kHz), 30 seconds at a time; each window's language is detected unless
@@ -33,7 +32,6 @@ type TranscribeCmd struct {
 	Format     string   `placeholder:"FORMAT" help:"Weight format of the programs: lut8 (default), lut6, lut4 or fp16."`
 	MaxTokens  int      `name:"max-tokens" placeholder:"N" help:"Most tokens of text per 30 seconds (0: as many as the decoder holds, 444)."`
 	Verbose    bool     `short:"v" help:"Log each window's language and times."`
-	Dir        string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir): the checkpoint and its programs in NAME/."`
 	Cache      string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	Models     string   `placeholder:"FILES" help:"${models_usage}."`
 	CPU        bool     `name:"cpu" help:"Run on the CPU interpreter instead of the Neural Engine (slow)."`
@@ -47,7 +45,7 @@ func (c *TranscribeCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s := transcribe.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), Format: c.Format, Log: lw}
+	s := transcribe.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Format: c.Format, Log: lw}
 	o := transcribe.Options{Language: c.Language, Translate: c.Translate, MaxTokens: c.MaxTokens}
 	var dev *hwnpu.Device
 	if c.CPU {

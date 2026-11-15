@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -33,7 +32,6 @@ type NotesCmd struct {
 	FMin    float64  `name:"fmin" placeholder:"HZ" help:"Drop the notes below this frequency (0: none)."`
 	FMax    float64  `name:"fmax" placeholder:"HZ" help:"Drop the notes above this frequency (0: none)."`
 	Melodia bool     `default:"${melodia}" negatable:"" help:"Also take notes from the strong activations left without an onset (basic-pitch's melodia trick)."`
-	Dir     string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache   string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU     bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device  string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
@@ -51,7 +49,7 @@ func (c *NotesCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	setup := notes.Setup{Dir: filepath.Join(modelsDir(c.Dir), m.DirName()), Repo: m.Source(), SHA256: m.SHA256[notes.ModelFile], Log: lw}
+	setup := notes.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), SHA256: m.SHA256[notes.ModelFile], Log: lw}
 	var tr *notes.Transcriber
 	t0 := time.Now()
 	ort, builtin := cpuRoute(m, c.Device, c.CPU, c.Threads, logf)

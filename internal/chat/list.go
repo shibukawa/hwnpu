@@ -2,8 +2,8 @@ package chat
 
 import (
 	"fmt"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 	"io"
-	"path/filepath"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -14,9 +14,9 @@ import (
 // for its vendor, of the variant for its memory), repository, whether it is downloaded to dir, and what it is; then what each use
 // and family of them picks on a machine of each of MODEL.md's columns; the aliases; and the
 // definition files read.
-func List(w io.Writer, dir string, ks ...Kind) {
+func List(w io.Writer, ks ...Kind) {
 	ListHave(w, "DOWNLOADED", func(m Model) string {
-		if Downloaded(filepath.Join(dir, m.DirName())) {
+		if Downloaded(m) {
 			return "yes"
 		}
 		return "no"
@@ -135,10 +135,16 @@ func ListHave(w io.Writer, column string, have func(Model) string, ks ...Kind) {
 		}
 	}
 	var srcs []string
-	for _, s := range Search {
-		srcs = append(srcs, Sources[s].String())
+	for _, s := range shared.Sources() {
+		srcs = append(srcs, s.String())
 	}
-	fmt.Fprintf(w, "\nModels from hf are looked for in: %s\n", strings.Join(srcs, ", "))
+	if shared.HuggingFace() {
+		srcs = append(srcs, "Hugging Face")
+	}
+	if len(srcs) == 0 {
+		srcs = []string{"nowhere (" + shared.HuggingFaceEnv + "=false and no " + shared.SourceEnv + ")"}
+	}
+	fmt.Fprintf(w, "\nModels are looked for in: %s\n", strings.Join(srcs, ", "))
 	fmt.Fprintf(w, "Definitions: %s (yours: %s, %s, -models)\n", strings.Join(ModelFiles, ", "), UserModelsFile(), ModelsEnv)
 }
 

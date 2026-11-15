@@ -116,7 +116,10 @@ func (s *S3) key(key string) (string, error) {
 
 // retry runs f until it succeeds, fails in a way that does not pass, or has run tries times,
 // waiting longer each time.
-func retry(ctx context.Context, f func() error) error {
+func retry(ctx context.Context, f func() error) error { return retryIf(ctx, transient, f) }
+
+// retryIf is retry with what passes told by transient.
+func retryIf(ctx context.Context, transient func(error) bool, f func() error) error {
 	var err error
 	for i := 0; i < tries; i++ {
 		if err = f(); err == nil || !transient(err) || ctx.Err() != nil {

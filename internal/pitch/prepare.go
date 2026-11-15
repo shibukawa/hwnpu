@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
@@ -32,7 +31,7 @@ type Setup struct {
 	Log     io.Writer
 }
 
-// Prepare downloads model.onnx into s.Dir unless it is there, checks that it is swift-f0
+// Prepare downloads model.onnx (chat.RepoDir) unless it is there, checks that it is swift-f0
 // 0.3.0's (ModelSHA256), and converts the CNN's program unless it is: a call of ProgramFrames
 // frames (30 s and the context around), in fp16 (the 14K weights are nothing to compress).
 // It returns the model's and the program's paths.
@@ -68,14 +67,11 @@ func Prepare(ctx context.Context, s Setup) (model, program string, err error) {
 	return model, program, llm.FinishProgram(ctx, s.Dir, name, done, export)
 }
 
-// Fetch downloads model.onnx into s.Dir unless it is there, checks that it is swift-f0 0.3.0's
+// Fetch downloads model.onnx (chat.RepoDir) unless it is there, checks that it is swift-f0 0.3.0's
 // and returns its path: all the CPU (OpenCPU) needs.
 func Fetch(ctx context.Context, s Setup) (string, error) {
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
-		return "", err
-	}
-	model := filepath.Join(s.Dir, ModelFile)
-	if err := chat.Fetch(ctx, s.Repo, ModelFile, model, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+	model, err := chat.Fetch(ctx, s.Repo, ModelFile, cmp.Or[io.Writer](s.Log, io.Discard))
+	if err != nil {
 		return "", err
 	}
 	return model, checkSHA(model)

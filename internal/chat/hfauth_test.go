@@ -85,6 +85,7 @@ func signedOut(t *testing.T, terminal bool, in string) {
 }
 
 func TestGatedSignInAndAgree(t *testing.T) {
+	cacheHere(t)
 	var agreed atomic.Bool
 	var valid atomic.Value
 	valid.Store("-")
@@ -116,6 +117,7 @@ func TestGatedSignInAndAgree(t *testing.T) {
 }
 
 func TestGatedRefresh(t *testing.T) {
+	cacheHere(t)
 	var agreed atomic.Bool
 	agreed.Store(true)
 	var valid atomic.Value
@@ -134,6 +136,7 @@ func TestGatedRefresh(t *testing.T) {
 }
 
 func TestGatedNoTerminal(t *testing.T) {
+	cacheHere(t)
 	var agreed atomic.Bool
 	var valid atomic.Value
 	valid.Store("-")
@@ -158,6 +161,7 @@ func TestGatedNoTerminal(t *testing.T) {
 }
 
 func TestNotGated401(t *testing.T) {
+	cacheHere(t)
 	// a repository that does not exist (or is private) answers 401 too: no sign-in for it
 	var agreed atomic.Bool
 	var valid atomic.Value

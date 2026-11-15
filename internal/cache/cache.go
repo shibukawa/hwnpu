@@ -15,6 +15,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	// the .env files are read before any variable is (docs/cache-sharing.md 7.4)
+	_ "github.com/shibukawa/hwnpu/internal/envfile"
 )
 
 // Key hashes the parts with length prefixes, so ("ab","c") and ("a","bc") differ.

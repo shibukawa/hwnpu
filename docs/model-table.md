@@ -9,7 +9,7 @@
 - `hwnpu-chat list` と `-list` (hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
 - hwnpu-transcribe、hwnpu-tts、hwnpu-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。hwnpu-tts と hwnpu-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
 - 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
-- 取得元 (`internal/chat/sources.go`): ユーザーのファイルの `sources` (`type: path` の共有フォルダ、`type: s3`。`endpoint`、`region`、`profile`、`path_style`、`no_sign`。2026-11-12 から aws コマンドでなく tinygodriver の `storage/s3`、docs/cache-sharing.md 7.2 節) と、全体の探索順 `search` (既定 `[hf]`、5.4 節)。`from: SOURCE:NAME` でモデルごとに名指し。`-use SOURCE:NAME` も。ファイルごとに `search` の順に探し、見つかった取得元を次のファイルから先に見る。共有フォルダはハードリンクを試してから写す。リビジョンを固定したモデルは `OWNER/NAME@REV/` を先に探す。`sha256` を書いたファイルは、どの取得元から取っても確かめ、違えば消して次の取得元へ。組み込みのファイルは `sources` と `search` を持たない。まだないもの: `copy: false` (写さずに読む)、オフライン (11.3 節)、ダウンロードしながらの sha256 の計算 (今は取ったあとに読み直す)
+- 取得元 (`internal/chat/sources.go`): 2026-11-15 から定義のファイルの `sources`、`search`、`cache.layers` と `from: SOURCE:NAME` は読まない。環境変数か `.env` の URL (`HWNPU_MODEL_SOURCE`、`_1`、... と `HWNPU_MODEL_HUGGING_FACE`) にした (docs/cache-sharing.md 7 節、design.md 16.212)。下の 5 節の `sources` と `search` の例は、それより前の設計
   - 確かめたこと: テスト (共有フォルダを先に、なければ HF。`hf` のない探索順は HF に出ない。sha256 の違う写しを飛ばす。固定したリビジョンのフォルダを先に。`SOURCE:NAME` のモデル。偽の aws で S3 の URL、endpoint、profile、no_sign と、ないもの。aws がないときのエラー)。sha256 の確認と探索順を壊すとテストが落ちる。M3 で、whisper-large-v3-turbo の写しを置いたフォルダだけを探索順にして (`search: [share]`)、空のモデルのフォルダから取得、変換、表、書き起こしまで通った (HF への通信なし)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
 - 別のリポジトリでも、同じ SHA-256 を `sha256` に書いたファイルは 1 度だけ落とす (2026-11-11): `fetch` は落とす前に、同じ SHA-256 のファイルをモデルの置き場所のほかのモデルのディレクトリに探し、あればハードリンク (できなければ写し) にして SHA-256 を確かめる。違えば消して取得元から。Qwen3-1.7B の 2 つのファイルと MOSS-SoundEffect v2.0 の `text_encoder/` (4.1 GB)
@@ -176,6 +176,8 @@ builds:
 「LFM3 の M2 以降の既定はこれ、M1 はこれ」は、`npu: apple` の行と `npu: apple-m1` の行の 2 行で書く。広い名前の行が既定、狭い名前の行が例外になる (6 節)。
 
 ## 5. 取得元
+
+2026-11-15: この節の `sources`、`search`、`from: SOURCE:NAME` は docs/cache-sharing.md 7 節 (環境変数の URL、`original/` と `hwnpu-lock.json`) に置き換えた。リビジョンとハッシュの固定 (5.3 節) とエイリアス (5.1 節) はそのまま。
 
 | type | 書き方 | 取り方 |
 |---|---|---|

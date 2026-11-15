@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -111,7 +112,7 @@ func (c *ConvertCmd) Run() error {
 		o.Backend = cmp.Or(o.Backend, llm.BackendCoreAI)
 		text, dit := anima.Formats(o.Backend)
 		o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
-		if err := anima.Convert(c.Anima, c.Model, o, console.Log(os.Stderr)); err != nil {
+		if err := anima.Convert(anima.LayoutCheckpoint(c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
 			return err
 		}
 	}
@@ -134,8 +135,7 @@ func appleFormat(model, backend string) (string, error) {
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
 type GenerateCmd struct {
 	Prompts    []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana and Qwen-Image take several: a picture each, the model loaded once (Qwen-Image on Apple's Neural Engine: every prompt read first, then every picture's steps, then the decoding of all; its programs load in minutes, the steps in seconds)."`
-	Model      string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models); on Apple's and Intel's (Anima and Sana) the model is downloaded and converted into --dir on its first run."`
-	Dir        string    `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir): the checkpoints and exports in Anima/ and Sana/."`
+	Model      string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: anima-turbo; anima (Anima-Aesthetic), sana, sana:1.6b; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models); on Apple's and Intel's (Anima and Sana) the model is downloaded and converted on its first run."`
 	Out        string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
 	KeepDiT    bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana and Chroma on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (the text encoder and the VAE are loaded for each; Chroma on macOS 27 loads the DiT's groups for each step either way)."`
 	Steps      int       `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Anima-Aesthetic 25 with dpm2m, the model card's 30 to 50 with euler; Sana 20)."`
@@ -230,7 +230,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	return err
 }
 
-// sanaModel is the Sana export m runs here: on Apple's Neural Engine the Core AI export of --dir
+// sanaModel is the Sana export m runs here: on Apple's Neural Engine the Core AI export
 // (512 x 512 and 1024 x 1024 in one; with --cpu the Core ML export the CPU interpreter runs), on
 // Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU
 // ~/models/NAME.amd-npu2 of tools/amd/iron_sana.py.
@@ -250,12 +250,12 @@ func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, erro
 	if c.TextFormat != "" || c.DitFormat != "" {
 		o.TextFormat, o.DitFormat = c.TextFormat, c.DitFormat
 	}
-	return sana.Prepare(chat.WithModel(ctx, m), sana.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Sana"), Repo: m.Repo, Name: m.Name,
+	return sana.Prepare(chat.WithModel(ctx, m), sana.Setup{Dir: filepath.Join(chat.ModelsDir(), "Sana"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 
 // qwenImageModel is the Qwen-Image-2.1 export m runs here: on Apple's Neural Engine the Core AI
-// export of --dir (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
+// export (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
 func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string, error) {
 	format, err := imageFormat(ctx, c.Backend)
 	switch {
@@ -271,13 +271,25 @@ func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string,
 		return "", fmt.Errorf("--size %d: Qwen-Image's pictures are multiples of 32 pixels", c.Size)
 	}
 	o := qwenimage.ConvertOptions{Backend: format, Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
-	return qwenimage.Prepare(chat.WithModel(ctx, m), qwenimage.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Qwen-Image"), Repo: m.Repo, Name: m.Name,
+	return qwenimage.Prepare(chat.WithModel(ctx, m), qwenimage.Setup{Dir: filepath.Join(chat.ModelsDir(), "Qwen-Image"), Repo: m.Repo, Name: m.Name, TextRepos: qwenImageRepos(),
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
+}
+
+// qwenImageRepos are the repositories of the Qwen-Image models of the definitions, which hold the
+// same text encoder (qwenimage.Setup.TextRepos).
+func qwenImageRepos() []string {
+	var repos []string
+	for _, m := range chat.Catalog {
+		if strings.HasPrefix(m.Repo, "Qwen/Qwen-Image-2.1") && !slices.Contains(repos, m.Repo) {
+			repos = append(repos, m.Repo)
+		}
+	}
+	return repos
 }
 
 // animaModel is the Anima export m runs here: on AMD's NPU (no Apple or Intel NPU found, no
 // --backend) ~/models/NAME.amd-npu2 of tools/amd/iron_anima.py, "" otherwise (anima prepares
-// the one of --dir).
+// the one prepared here).
 func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, error) {
 	if c.CPU || c.Backend != "" {
 		return "", nil
@@ -293,13 +305,13 @@ func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, err
 // at the 4 the others take.
 const turboNegativeGuidance = 1.5
 
-// anima draws the picture with Anima: the export model, or "" for the one of --dir (downloaded
+// anima draws the picture with Anima: the export model, or "" for the one prepared here (downloaded
 // and converted when missing).
 func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	anima.ResidentDiT = c.Resident
 	o := c.options()
 	cacheDir := c.Cache
-	dir := cmp.Or(c.Dir, chat.ModelsDir())
+	dir := chat.ModelsDir()
 	// what goes on in gray (with a spinner or a bar on a terminal), the picture's line as it is
 	lw := console.Log(os.Stderr)
 	live := console.Live(lw)

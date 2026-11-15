@@ -51,6 +51,23 @@ fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" �
 - Intel の電力量は Linux の RAPL で読みます。NPU 単体ではなく CPU パッケージ全体の値で、通常は root 権限が必要です
 - キャッシュのキーにはモデル、ビルドフラグ、ドライバとコンパイラ (Apple は macOS) の版が入るので、どれかが変わると作り直します
 
+## モデルのファイル (modelstore)
+
+`github.com/shibukawa/hwnpu/modelstore` は、hwnpu のコマンドと同じ順でモデルのファイルを探して取ります: この機械のキャッシュ、取得元 (`HWNPU_MODEL_SOURCE`: フォルダ、WebDAV と HTTP、S3)、アプリが一緒に入れたモデル、Hugging Face の順です (docs/cache-sharing.md 7 節)。
+
+```go
+app := configdir.New("", "myapp") // github.com/shibukawa/configdir v1.1.0
+s, err := modelstore.Open(modelstore.Options{
+	Bundle: &app, // インストーラがアプリの資源フォルダの models/ に置いたもの (nil: なし)
+	// Root: "" (HWNPU_CACHE、なければユーザーのキャッシュの hwnpu)、Sources: nil (環境のもの)
+})
+config, err := s.File(ctx, "LiquidAI/LFM3-1.7B", "config.json") // 手元のパス
+weights, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")            // model.safetensors (分割ならその索引も)
+```
+
+- 設定はプロセスのもの: `Open` はプロセス全体に効きます
+- 同梱のモデルは取得元と同じ並び (`original/OWNER/NAME/` と `hwnpu-lock.json`) で置き、その場で使います (コピーせずリンク)
+
 ## AMD (カーネルを直接動かす)
 
 AMD の NPU は、モデルではなく IRON / mlir-aie でビルドしたカーネル (xclbin と命令列) を実行します。

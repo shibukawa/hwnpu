@@ -35,7 +35,6 @@ type OCRCmd struct {
 	Draw        bool     `help:"Also write NAME.text.png: the picture with the lines' boxes."`
 	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
 	Repeat      int      `default:"1" help:"Run each picture this many times and report the mean time."`
-	Dir         string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU         bool     `name:"cpu" help:"Run the converted programs on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
@@ -68,10 +67,7 @@ func (c *OCRCmd) Run(ctx context.Context) error {
 		defer npuHeld(logf)()
 		dev, backend = d, b
 	}
-	dir := c.Dir
-	if dir == "" {
-		dir = chat.ModelsDir()
-	}
+	dir := chat.ModelsDir()
 	detSHA, recSHA := map[string]string{}, map[string]string{}
 	for f, d := range m.SHA256 {
 		if rest, ok := strings.CutPrefix(f, "detector/"); ok {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 )
@@ -43,7 +44,7 @@ func (f *serverFlags) server(ctx context.Context) (*chat.Server, error) {
 		var m chat.Model
 		if !isPath(name) {
 			var err error
-			if m, err = chat.Resolve(ctx, name, f.Dir, logw()); err != nil {
+			if m, err = chat.Resolve(ctx, name, logw()); err != nil {
 				return fail(err)
 			}
 			if seen[m.Name] {
@@ -170,7 +171,7 @@ func (c *SearchCmd) Run(ctx context.Context, stop context.CancelFunc) error {
 	if err := c.prepare(); err != nil {
 		return err
 	}
-	m, err := chat.Resolve(ctx, c.Model, c.Dir, logw())
+	m, err := chat.Resolve(ctx, c.Model, logw())
 	if err != nil {
 		return err
 	}
@@ -264,23 +265,22 @@ func oneLine(s string) string {
 // whether they are downloaded (on AMD's NPU: the export each runs from), and what the features
 // mean.
 type ListCmd struct {
-	Dir    string `type:"path" placeholder:"DIR" help:"Where the models are kept (default: hwnpu/models in the user cache directory)."`
 	Models string `placeholder:"FILES" help:"${models_usage}."`
 }
 
 // Run lists the models.
 func (c *ListCmd) Run(ctx context.Context) error {
-	lf := loadFlags{Dir: c.Dir, Models: c.Models}
+	lf := loadFlags{Models: c.Models}
 	if err := lf.prepare(); err != nil {
 		return err
 	}
-	showModels(os.Stdout, lf.Dir, chat.OnlyAMD(ctx, ""))
+	showModels(os.Stdout, chat.OnlyAMD(ctx, ""))
 	return nil
 }
 
 // showModels writes the models of the definitions hwnpu-chat runs (chat.List) and what the
 // features mean.
-func showModels(w io.Writer, dir string, amd bool) {
+func showModels(w io.Writer, amd bool) {
 	if amd { // what runs: the export here, or the one the first run makes
 		chat.ListHave(w, "RUNS FROM", func(m chat.Model) string {
 			if d := chat.FindAMDExport(m); d != "" {
@@ -292,7 +292,7 @@ func showModels(w io.Writer, dir string, amd bool) {
 			return "- (no form for AMD)"
 		}, chat.KindChat, chat.KindEmbed, chat.KindDecision)
 	} else {
-		chat.List(w, dir, chat.KindChat, chat.KindEmbed, chat.KindDecision)
+		chat.List(w, chat.KindChat, chat.KindEmbed, chat.KindDecision)
 	}
 	fmt.Fprintln(w, "\nFeatures:")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -305,9 +305,9 @@ func showModels(w io.Writer, dir string, amd bool) {
 		"architecture; serve takes several, comma separated. The default is LFM3-1.7B (search: embedding).\n"+
 		"Requests may name a model the same ways. Only the model picked is downloaded.\n"+
 		"On AMD's NPU a name runs its export, NAME.amd-npu2-q4 (-q6, or none for bf16) in %s or ~/models;\n"+
-		"the first run takes it from the shared layers (hwnpu-dev cache layers), else downloads the checkpoint\n"+
+		"the first run takes it from the sources (hwnpu-dev cache sources), else downloads the checkpoint\n"+
 		"and makes it with IRON (tools/amd/iron_export_lm.py, %s, INSTALL_AMD.md).\n"+
-		"Models are kept in %s.\n", shortPath(chat.AMDRoot()), chat.IRONEnv, dir)
+		"Models are kept in %s (HWNPU_CACHE moves it).\n", shortPath(chat.AMDRoot()), chat.IRONEnv, shortPath(cache.Root()))
 }
 
 // shortPath is path with the home directory written ~.

@@ -18,8 +18,8 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
 
-// chromaModel is the Chroma export m runs here: on Apple's Neural Engine the Core AI export of
-// --dir (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py.
+// chromaModel is the Chroma export m runs here: on Apple's Neural Engine the Core AI export
+// (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py.
 func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, error) {
 	format, err := imageFormat(ctx, c.Backend)
 	switch {
@@ -35,7 +35,7 @@ func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, er
 		return "", fmt.Errorf("--size %d: Chroma's pictures are multiples of 16 pixels", c.Size)
 	}
 	o := chroma.ConvertOptions{Backend: format, Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
-	return chroma.Prepare(chat.WithModel(ctx, m), chroma.Setup{Dir: filepath.Join(cmp.Or(c.Dir, chat.ModelsDir()), "Chroma"), Repo: m.Repo, Name: m.Name,
+	return chroma.Prepare(chat.WithModel(ctx, m), chroma.Setup{Dir: filepath.Join(chat.ModelsDir(), "Chroma"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
 

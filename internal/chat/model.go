@@ -177,8 +177,10 @@ func Tiers(s string) ([]int, error) {
 
 // Setup says where the model is and how to get it.
 type Setup struct {
-	Dir  string // holds config.json, tokenizer.json, model.safetensors and the converted programs
-	Repo string // Hugging Face repository the missing checkpoint files come from
+	Dir string // holds the converted programs (ModelsDir/NAME)
+	// Repo is the repository of the model's files (config.json, tokenizer.json,
+	// model.safetensors), which are kept in RepoDir(Repo)
+	Repo string
 	// Arch is the structure to convert the model as (llm.Lookup), "" for the one config.json
 	// says (Model.Arch: a distilled model whose model_type is a name of its own).
 	Arch string
@@ -316,23 +318,24 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if err := fetch(ctx, s.Repo, "config.json", filepath.Join(s.Dir, "config.json"), s.Log); err != nil {
+	src := RepoDir(s.Repo)
+	if _, err := fetch(ctx, s.Repo, "config.json", s.Log); err != nil {
 		return Config{}, err
 	}
-	c := Config{ModelConfig: filepath.Join(s.Dir, "config.json"), Weights: filepath.Join(s.Dir, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, llm.DeviceBackend(""), backend)}
+	c := Config{ModelConfig: filepath.Join(src, "config.json"), Weights: filepath.Join(src, "model.safetensors"), Name: cmp.Or(s.Name, repoName(s.Repo)), Backend: cmp.Or(s.Backend, llm.DeviceBackend(""), backend)}
 	a, model, err := llm.LoadConfig(c.ModelConfig, s.Arch)
 	if err != nil {
 		return Config{}, err
 	}
 	for _, f := range TokenizerFiles(a.Name) {
-		if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
+		if _, err := fetch(ctx, s.Repo, f, s.Log); err != nil {
 			return Config{}, err
 		}
 	}
 	// the checkpoint is downloaded only when a program or the tables are to be written from it:
 	// what was converted runs without it (tables.go)
 	checkpoint := sync.OnceValues(func() (string, error) {
-		return c.Weights, FetchWeights(ctx, s.Repo, s.Dir, s.Log)
+		return FetchWeights(ctx, s.Repo, s.Log)
 	})
 	// The name says what the program is: the format always, since a change of the defaults
 	// (LFM3 to lut6 and the grouped attention, 2026-11) must convert anew instead of loading
@@ -597,7 +600,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		// Core AI's drafts are of a part of the vocabulary (draftVocab), listed in the export
 		var rows []int32
 		if backend == llm.BackendCoreAI {
-			tok, err := tokenizer.Load(filepath.Join(s.Dir, TokenizerFiles(a.Name)[0]))
+			tok, err := tokenizer.Load(filepath.Join(src, TokenizerFiles(a.Name)[0]))
 			if err != nil {
 				return Config{}, err
 			}
@@ -632,7 +635,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 			continue // the checkpoint has no such encoder
 		}
 		for _, f := range e.files {
-			if err := fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), s.Log); err != nil {
+			if _, err := fetch(ctx, s.Repo, f, s.Log); err != nil {
 				return Config{}, err
 			}
 		}
@@ -1136,36 +1139,36 @@ var errNotFound = errors.New("not in the repository")
 // NotFound reports whether err is Fetch's for a file the repository does not have.
 func NotFound(err error) bool { return errors.Is(err, errNotFound) }
 
-// FetchWeights downloads the checkpoint into dir: model.safetensors, or when the repository has
-// it in several files (Qwen3.5-4B), its index model.safetensors.index.json and the files it
-// names. llm.OpenWeights opens either by the name model.safetensors.
-func FetchWeights(ctx context.Context, repo, dir string, log io.Writer) error {
-	single := filepath.Join(dir, "model.safetensors")
+// FetchWeights puts the checkpoint of repo here (RepoDir): model.safetensors, or when the
+// repository has it in several files (Qwen3.5-4B), its index model.safetensors.index.json and the
+// files it names. It returns the path of model.safetensors, by which llm.OpenWeights opens either.
+func FetchWeights(ctx context.Context, repo string, log io.Writer) (string, error) {
+	single := filepath.Join(RepoDir(repo), "model.safetensors")
 	index := single + ".index.json"
 	if _, err := os.Stat(index); err != nil {
-		err := fetch(ctx, repo, "model.safetensors", single, log)
+		_, err := fetch(ctx, repo, "model.safetensors", log)
 		if err == nil || !errors.Is(err, errNotFound) {
-			return err
+			return single, err
 		}
-		if err := fetch(ctx, repo, "model.safetensors.index.json", index, log); err != nil {
-			return err
+		if _, err := fetch(ctx, repo, "model.safetensors.index.json", log); err != nil {
+			return single, err
 		}
 	}
 	files, err := shards(index)
 	if err != nil {
-		return err
+		return single, err
 	}
 	var want []File
 	for _, f := range files {
-		want = append(want, File{repo, f, filepath.Join(dir, f)})
+		want = append(want, File{repo, f})
 	}
 	Expect(ctx, want)
 	for _, f := range files {
-		if err := fetch(ctx, repo, f, filepath.Join(dir, f), log); err != nil {
-			return err
+		if _, err := fetch(ctx, repo, f, log); err != nil {
+			return single, err
 		}
 	}
-	return nil
+	return single, nil
 }
 
 // shards are the files an index of a checkpoint in several files names, in order.
@@ -1379,8 +1382,9 @@ func gb(n, total int64) string {
 	return fmt.Sprintf("%.2f / %.2f %s", float64(n)/div, float64(total)/div, unit)
 }
 
-// Fetch puts a file of a model's repository (Model.Source) at path unless it is there, from the
-// model's source or the sources of Search, as Prepare does for the checkpoint.
-func Fetch(ctx context.Context, repo, name, path string, log io.Writer) error {
-	return fetch(ctx, repo, name, path, log)
+// Fetch returns the path of a file of a model's repository (Model.Source) here (RepoDir), which
+// it puts there unless it is there: from the machine's cache, the sources, the bundled models or
+// Hugging Face (docs/cache-sharing.md 7).
+func Fetch(ctx context.Context, repo, name string, log io.Writer) (string, error) {
+	return fetch(ctx, repo, name, log)
 }

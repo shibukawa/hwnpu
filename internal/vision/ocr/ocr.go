@@ -138,17 +138,17 @@ func Open(ctx context.Context, dev *hwnpu.Device, s Setup) (*Reader, error) {
 	r := &Reader{Thresh: 0.2, BoxThresh: 0.45, Unclip: 1.4, Sizes: Sizes, Widths: Widths, Batch: Batch, Columns: Columns,
 		s: s, dev: dev, det: map[[2]int]runner.Program{}, rec: map[int]runner.Program{}, onNPU: dev != nil}
 	var err error
-	if r.detModel, err = fetch(ctx, s.Dir, s.Det, ModelFile, log); err != nil {
+	if r.detModel, err = fetch(ctx, s.Det, ModelFile, log); err != nil {
 		return nil, err
 	}
-	detCfg, err := fetch(ctx, s.Dir, s.Det, ConfigFile, log)
+	detCfg, err := fetch(ctx, s.Det, ConfigFile, log)
 	if err != nil {
 		return nil, err
 	}
-	if r.recModel, err = fetch(ctx, s.Dir, s.Rec, ModelFile, log); err != nil {
+	if r.recModel, err = fetch(ctx, s.Rec, ModelFile, log); err != nil {
 		return nil, err
 	}
-	recCfg, err := fetch(ctx, s.Dir, s.Rec, ConfigFile, log)
+	recCfg, err := fetch(ctx, s.Rec, ConfigFile, log)
 	if err != nil {
 		return nil, err
 	}
@@ -192,14 +192,10 @@ func readYAML(path string, v any) error {
 	return nil
 }
 
-// fetch downloads a repository's file into dir/NAME (the repository's name) and checks its
-// sha256 when pinned.
-func fetch(ctx context.Context, dir string, s Source, file string, log io.Writer) (string, error) {
-	path := filepath.Join(repoDir(dir, s), file)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
-	if err := chat.Fetch(ctx, s.Repo, file, path, log); err != nil {
+// fetch downloads a repository's file (chat.RepoDir) and checks its sha256 when pinned.
+func fetch(ctx context.Context, s Source, file string, log io.Writer) (string, error) {
+	path, err := chat.Fetch(ctx, s.Repo, file, log)
+	if err != nil {
 		return "", err
 	}
 	if want := s.SHA256[file]; want != "" {
@@ -210,6 +206,7 @@ func fetch(ctx context.Context, dir string, s Source, file string, log io.Writer
 	return path, nil
 }
 
+// repoDir is where the programs of a source go: dir/NAME (the repository's name).
 func repoDir(dir string, s Source) string {
 	repo := s.Repo
 	if i := slices.Index([]byte(repo), '@'); i >= 0 {

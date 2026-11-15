@@ -18,13 +18,13 @@ import (
 // checkpoint (docs/model-fit.md T5), so the checkpoint is only needed to convert.
 const TablesFile = "tables.safetensors"
 
-// WeightsIn is the file a model's directory gives Config.Weights: its tables when they are there,
-// else the checkpoint.
-func WeightsIn(dir string) string {
-	if p := filepath.Join(dir, TablesFile); exists(p) {
+// WeightsIn is the file model m gives Config.Weights: its tables in its directory of programs
+// (ModelDir) when they are there, else its checkpoint (RepoDir).
+func WeightsIn(m Model) string {
+	if p := filepath.Join(ModelDir(m), TablesFile); exists(p) {
 		return p
 	}
-	return filepath.Join(dir, "model.safetensors")
+	return filepath.Join(RepoDir(m.Source()), "model.safetensors")
 }
 
 func exists(path string) bool {
@@ -68,7 +68,7 @@ func Tables(ctx context.Context, out string, a *llm.Arch, names []string, checkp
 		return out, nil
 	}
 	m, r := tablesRecipe(ctx, out, a, names)
-	if fetchTables(ctx, r, out) && hasTables(out, names) {
+	if fetchTables(ctx, m, r, out) && hasTables(out, names) {
 		return out, nil
 	}
 	path, err := checkpoint()

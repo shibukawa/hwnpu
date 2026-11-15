@@ -53,16 +53,13 @@ type Setup struct {
 	Log    io.Writer
 }
 
-// Fetch downloads the two ONNX files into s.Dir unless they are there, checks their sha256 and
+// Fetch downloads the two ONNX files (chat.RepoDir) unless they are there, checks their sha256 and
 // returns their paths.
 func Fetch(ctx context.Context, s Setup) (encoder, decoder string, err error) {
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
-		return "", "", err
-	}
 	var paths [2]string
 	for i, f := range []string{s.Encoder, s.Decoder} {
-		p := filepath.Join(s.Dir, filepath.FromSlash(f))
-		if err := chat.Fetch(ctx, s.Repo, f, p, cmp.Or[io.Writer](s.Log, io.Discard)); err != nil {
+		p, err := chat.Fetch(ctx, s.Repo, f, cmp.Or[io.Writer](s.Log, io.Discard))
+		if err != nil {
 			return "", "", err
 		}
 		if want := s.SHA256[f]; want != "" {

@@ -40,7 +40,7 @@ type Setup struct {
 // files are the checkpoint's files besides the weights.
 var files = []string{"config.json", "generation_config.json", "tokenizer.json"}
 
-// Prepare downloads the checkpoint into s.Dir unless it is there, and converts its three
+// Prepare downloads the checkpoint (chat.RepoDir) unless it is there, and converts its three
 // programs for the Neural Engine (or Intel's NPU, s.Backend) unless they are: the encoder (whisper-encoder), the cross
 // program (whisper-cross) and the decoder with a KV cache of every position it takes, one token
 // per call.
@@ -50,11 +50,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		return Config{}, err
 	}
 	for _, f := range files {
-		if err := chat.Fetch(ctx, s.Repo, f, filepath.Join(s.Dir, f), log); err != nil {
+		if _, err := chat.Fetch(ctx, s.Repo, f, log); err != nil {
 			return Config{}, err
 		}
 	}
-	config := filepath.Join(s.Dir, "config.json")
+	src := chat.RepoDir(s.Repo)
+	config := filepath.Join(src, "config.json")
 	raw, err := os.ReadFile(config)
 	if err != nil {
 		return Config{}, err
@@ -63,12 +64,12 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	c := Config{Dir: s.Dir}
+	c := Config{Dir: src}
 	intel := s.Backend == llm.BackendIntel
 	// the checkpoint is downloaded only to convert a program or write the tables from it: what
 	// was converted runs without it
 	checkpoint := sync.OnceValues(func() (string, error) {
-		return filepath.Join(s.Dir, "model.safetensors"), chat.FetchWeights(ctx, s.Repo, s.Dir, log)
+		return chat.FetchWeights(ctx, s.Repo, log)
 	})
 	progs := []struct {
 		role string // its name in the Core AI export

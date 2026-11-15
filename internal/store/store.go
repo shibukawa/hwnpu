@@ -1,8 +1,9 @@
-// Package store reads and writes the places files are shared through (docs/cache-sharing.md 7):
-// a folder (a shared one: NFS, SMB, an external disk) or S3 (any endpoint: AWS, RustFS, Cloudflare R2,
-// through tinygodriver's storage/s3, without the AWS SDK or the aws command). A Store holds
-// objects by key, a slash-separated path; the layers (layer.go) keep in it the blobs of files by
-// their SHA-256, the entries of what was converted, and the index of the checkpoints' files.
+// Package store reads and writes the sources models are looked for in (docs/cache-sharing.md 7):
+// a folder (a mounted NAS, an external disk), an HTTP server (WebDAV to write, any server to
+// read) or S3 (any endpoint: AWS, RustFS, Cloudflare R2, through tinygodriver's storage/s3,
+// without the AWS SDK or the aws command). A Store holds objects by key, a slash-separated path;
+// a Source (source.go) keeps in it the repositories' files with their locks (original.go) and
+// what was converted (converted.go).
 package store
 
 import (
@@ -55,6 +56,10 @@ func SafeKey(key string) bool {
 // Dir is a Store of a folder: the object of key is the file Root/key.
 type Dir struct {
 	Name, Root string
+	// InPlace gets a file by linking to it where a hard link fails (another file system): a
+	// symbolic link, never a copy. For a folder of this machine that stays (an application's
+	// bundled models), not a mounted share.
+	InPlace bool
 }
 
 func (d Dir) String() string { return fmt.Sprintf("%s (folder %s)", d.Name, d.Root) }
@@ -81,6 +86,15 @@ func (d Dir) Get(ctx context.Context, key, dst string, bar func(done, total int6
 	// the same file system: a hard link (the layer's files are never written in place)
 	if os.Link(src, dst) == nil {
 		return fi.Size(), nil
+	}
+	if d.InPlace {
+		abs, err := filepath.Abs(src)
+		if err != nil {
+			return 0, err
+		}
+		if err := os.Symlink(abs, dst); err == nil {
+			return fi.Size(), nil
+		}
 	}
 	in, err := os.Open(src)
 	if err != nil {
@@ -202,6 +216,7 @@ func (d Dir) Delete(_ context.Context, key string) error {
 	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	removeEmpty(filepath.Dir(p), filepath.Clean(d.Root))
 	return nil
 }
 

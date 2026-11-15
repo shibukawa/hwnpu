@@ -48,8 +48,8 @@ param(
   [switch]$List,
   # the clone of hwnpu to run (default: the one this script is in)
   [string]$Repo = "",
-  # where the models are kept (hwnpu's -dir; default: %LOCALAPPDATA%\hwnpu\models)
-  [string]$ModelsDir = "",
+  # hwnpu's cache, where the models are kept (HWNPU_CACHE; default: %LOCALAPPDATA%\hwnpu)
+  [string]$CacheRoot = "",
   # directory of the logs (default: a new %USERPROFILE%\hwnpu-intel-logs\hwnpu-intel-<machine>-<time>)
   [string]$Out = "",
   # multiply every time limit by this
@@ -239,8 +239,7 @@ $ChatPrompts = @(
 # ---------------------------------------------------------------------------------------------
 # tests
 
-$Common = @()
-if ($ModelsDir -ne "") { $Common = @("--dir", $ModelsDir) }
+if ($CacheRoot -ne "") { $env:HWNPU_CACHE = $CacheRoot }
 
 function T($h) { return New-Object PSObject -Property $h }
 
@@ -345,13 +344,13 @@ $Tests = @(
   (T @{ Name = "pose"; Level = 2; Exe = "hwnpu-image"; Sub = "pose"; Min = 30; Needs = "image"
         Args = @("--device", "npu", "{INPUTS}\shapes.png")
         Note = "RTMO-s on the NPU: converts and runs (no people in the test image)" }),
-  (T @{ Name = "face"; Level = 2; Exe = "hwnpu-image"; Sub = "face-detect"; Min = 30; Needs = "image"; NoDir = $true
+  (T @{ Name = "face"; Level = 2; Exe = "hwnpu-image"; Sub = "face-detect"; Min = 30; Needs = "image"
         Args = @("--device", "npu", "{INPUTS}\shapes.png")
         Note = "YuNet on the NPU: converts and runs (no faces in the test image)" }),
-  (T @{ Name = "depth-da3"; Level = 2; Exe = "hwnpu-image"; Sub = "depth"; Min = 45; Needs = "image"; NoDir = $true
+  (T @{ Name = "depth-da3"; Level = 2; Exe = "hwnpu-image"; Sub = "depth"; Min = 45; Needs = "image"
         Args = @("-m", "DA3-SMALL", "--raw", "-o", "{OUT}\depth-da3", "{INPUTS}\shapes.png")
         Note = "Depth Anything 3 small (pixel_shuffle lowered): depth-da3\shapes.depth.png" }),
-  (T @{ Name = "depth-moge"; Level = 2; Exe = "hwnpu-image"; Sub = "depth"; Min = 45; Needs = "image"; NoDir = $true
+  (T @{ Name = "depth-moge"; Level = 2; Exe = "hwnpu-image"; Sub = "depth"; Min = 45; Needs = "image"
         Args = @("-m", "moge-2-vits", "-o", "{OUT}\depth-moge", "{INPUTS}\shapes.png")
         Note = "MoGe-2 ViT-S: depth-moge\shapes.depth.png" }),
   (T @{ Name = "pitch"; Level = 2; Exe = "hwnpu-audio"; Sub = "pitch"; Min = 20; Needs = "clip"
@@ -441,8 +440,8 @@ function Collect-System {
       & $py.Source $f
     } else { "python not on PATH" }
   }
-  $hw = Join-Path $env:LOCALAPPDATA "hwnpu"
-  Sec "hwnpu cache sizes (MB)" { "models {0}`ncache total {1}" -f (DirMB $(if ($ModelsDir -ne "") { $ModelsDir } else { Join-Path $hw "models" })), (DirMB $hw) }
+  $hw = $(if ($CacheRoot -ne "") { $CacheRoot } else { Join-Path $env:LOCALAPPDATA "hwnpu" })
+  Sec "hwnpu cache sizes (MB)" { "original {0}`nmodels {1}`ncache total {2}" -f (DirMB (Join-Path $hw "original")), (DirMB (Join-Path $hw "models")), (DirMB $hw) }
   Write-Utf8 $f $sb.ToString()
   Log "system information in system.txt"
 }
@@ -479,13 +478,9 @@ function Run-Test($t) {
     Remove-Item (Join-Path $AgentDir "answer.txt") -ErrorAction SilentlyContinue
   }
 
-  # go run ./cmd/EXE [SUB] [--dir DIR] ARGS
+  # go run ./cmd/EXE [SUB] ARGS (the models in HWNPU_CACHE: -CacheRoot)
   $argv = @("run", ("./cmd/" + $t.Exe))
   if ($t.PSObject.Properties["Sub"]) { $argv += $t.Sub }
-  # the commands that take the models directory (hwnpu-dev formats keeps the std flag package, which reads --dir too)
-  # (hwnpu-image depth and face-detect keep theirs in hwnpu's own models directory: NoDir)
-  $noDir = $t.PSObject.Properties["NoDir"] -and $t.NoDir
-  if (-not $noDir -and ($t.Exe -in @("hwnpu-chat", "hwnpu-image", "hwnpu-audio") -or ($t.Exe -eq "hwnpu-dev" -and $t.Sub -eq "formats"))) { $argv += $Common }
   foreach ($a in $t.Args) { $argv += (Expand $a) }
   $cmdline = ($argv | ForEach-Object { Quote-Arg $_ }) -join " "
   $r.command = "go " + $cmdline

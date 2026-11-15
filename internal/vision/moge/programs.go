@@ -180,8 +180,8 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", err
 	}
-	pt := filepath.Join(root, "model.pt")
-	if err := chat.Fetch(ctx, s.Repo, "model.pt", pt, s.Log); err != nil {
+	pt, err := chat.Fetch(ctx, s.Repo, "model.pt", s.Log)
+	if err != nil {
 		return "", err
 	}
 	format := depth.ExportFormat(s.Backend)

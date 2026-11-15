@@ -47,7 +47,6 @@ type DetectCmd struct {
 	Draw        bool     `help:"Also write NAME.objects.png: the picture with the boxes."`
 	Out         string   `short:"o" type:"path" placeholder:"DIR" help:"The directory --draw writes into (default: next to each picture)."`
 	Repeat      int      `default:"1" help:"Run each picture this many times and report the mean time."`
-	Dir         string   `type:"path" placeholder:"DIR" help:"Where the models are kept (as hwnpu-chat's --dir)."`
 	Cache       string   `placeholder:"DIR" help:"Compile cache (default: hwnpu in the user cache directory)."`
 	CPU         bool     `name:"cpu" help:"Run the converted program on the CPU interpreter instead of the NPU (slow; for checking a conversion)."`
 	Device      string   `enum:",npu,cpu" default:"" help:"Where to run: npu or cpu (ONNX Runtime; default: models.yaml's device for this machine's NPU, or HWNPU_DEVICE)."`
@@ -71,11 +70,7 @@ func (c *DetectCmd) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dir := c.Dir
-	if dir == "" {
-		dir = chat.ModelsDir()
-	}
-	setup := detect.Setup{Dir: filepath.Join(dir, m.DirName()), Repo: m.Source(), File: file, SHA256: m.SHA256[file], Log: lw}
+	setup := detect.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), File: file, SHA256: m.SHA256[file], Log: lw}
 	var d *detect.Detector
 	t0 := time.Now()
 	fetch := func() (string, error) { return detect.Fetch(ctx, setup) }

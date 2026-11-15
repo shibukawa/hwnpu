@@ -5,7 +5,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/milcpu"
 	"github.com/shibukawa/hwnpu/internal/onnxrt"
 
-	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -13,9 +12,6 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 )
-
-// modelsDir is --dir, or where the models are kept by default (as hwnpu-chat's --dir).
-func modelsDir(dir string) string { return cmp.Or(dir, chat.ModelsDir()) }
 
 // cacheDir is --cache, or hwnpu in the user cache directory.
 func cacheDir(dir string) string {
@@ -73,7 +69,7 @@ func resolveKind(name string, kind chat.Kind, models string, lw io.Writer) (chat
 	if e := (*chat.NoModelError)(nil); errors.As(err, &e) {
 		err = fmt.Errorf("no %s model, family or use %q (hwnpu-audio list %s shows them)", kind, name, kind)
 		fmt.Fprintf(os.Stderr, "no %s model %q; the %s models of the definitions:\n\n", kind, name, kind)
-		chat.List(os.Stderr, chat.ModelsDir(), kind)
+		chat.List(os.Stderr, kind)
 		fmt.Fprintln(os.Stderr)
 	}
 	return m, err

@@ -3,8 +3,11 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -176,151 +179,279 @@ func TestProfile(t *testing.T) {
 	}
 }
 
-// TestEntries puts an export in one layer and makes it from there, checks it, and finds a
-// checkpoint's file by its SHA-256 and by its commit.
+// describe gives dir an entry.json at rel.
+func describeAt(t *testing.T, dir, rel string, recipe map[string]string) Entry {
+	t.Helper()
+	e, err := Describe(dir, Entry{Kind: "iron-lm", Scope: ScopePortable, Recipe: recipe, Path: rel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// TestEntries puts an export in one source and makes it from there, and checks it.
 func TestEntries(t *testing.T) {
 	t.Setenv(cache.RootEnv, t.TempDir())
 	ctx := context.Background()
 	exp := filepath.Join(t.TempDir(), "m.amd-npu2")
 	write(t, filepath.Join(exp, "manifest.json"), `{"version":1}`)
 	write(t, filepath.Join(exp, "bank.bin"), "weights")
-	write(t, filepath.Join(exp, "check", "x.bin"), "weights") // the same bytes: one blob
+	write(t, filepath.Join(exp, "check", "x.bin"), "weights")
 	recipe := map[string]string{"model": "m", "commit": "abc"}
-	e, err := Describe(exp, Entry{Kind: "iron-lm", Scope: ScopePortable, Recipe: recipe})
-	if err != nil {
-		t.Fatal(err)
+	rel := EntryPath("m", "amd-xdna2", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
+	if !strings.HasPrefix(rel, "converted/m/amd-xdna2/m.amd-npu2/v0-") || len(path.Base(rel)) != 11 {
+		t.Fatalf("path %s", rel)
 	}
+	e := describeAt(t, exp, rel, recipe)
 	if e.Key != Fingerprint(recipe) || len(e.Files) != 3 {
 		t.Fatalf("%+v", e)
 	}
 	if err := Verify(exp, true); err != nil {
 		t.Fatal(err)
 	}
-	near, far := Dir{Name: "near", Root: t.TempDir()}, Dir{Name: "far", Root: t.TempDir()}
-	layers := []Layer{{Store: near, Fill: true}, {Store: far, Write: true}}
-	if err := PutEntry(ctx, layers[1], exp); err != nil {
+	near, far := Source{Store: Dir{Name: "near", Root: t.TempDir()}}, Source{Store: Dir{Name: "far", Root: t.TempDir()}, Writeback: true}
+	ss := []Source{near, far}
+	if err := PutEntry(ctx, far, exp); err != nil {
 		t.Fatal(err)
 	}
-	blobs, _ := far.List(ctx, "blobs/")
-	if len(blobs) != 2 {
-		t.Errorf("%d blobs for 2 contents", len(blobs))
+	if b, err := os.ReadFile(filepath.Join(far.Store.(Dir).Root, filepath.FromSlash(rel), "check", "x.bin")); err != nil || string(b) != "weights" {
+		t.Fatalf("in the source: %q %v", b, err)
 	}
+	byKey := func(k string) func(Entry) bool { return func(e Entry) bool { return e.Key == k } }
 	out := filepath.Join(t.TempDir(), "m.amd-npu2")
-	i, err := FetchEntry(ctx, layers, ScopePortable, "iron-lm", e.Key, out, nil)
+	i, err := FetchEntry(ctx, ss, rel, byKey(e.Key), out, nil)
 	if err != nil || i != 1 {
 		t.Fatalf("%d %v", i, err)
 	}
 	if err := Verify(out, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := FetchEntry(ctx, layers, ScopePortable, "iron-lm", Fingerprint(map[string]string{"model": "other"}), out+"2", nil); err != ErrNotFound {
+	if _, err := FetchEntry(ctx, ss, rel, byKey("other"), out+"2", nil); err != ErrNotFound {
 		t.Errorf("another key: %v", err)
 	}
-	// a layer of other scopes is not looked in
-	if _, err := FetchEntry(ctx, []Layer{{Store: far, Scopes: []string{ScopeUpstream}}}, ScopePortable, "iron-lm", e.Key, out+"3", nil); err != ErrNotFound {
-		t.Errorf("a layer of upstream only: %v", err)
+	if es, err := ListEntries(ctx, far); err != nil || len(es) != 1 || es[0] != rel {
+		t.Errorf("ListEntries: %v %v", es, err)
 	}
-	// a blob that changed in the layer is found out
-	b0 := e.Files[0].SHA256
-	write(t, filepath.Join(far.Root, "blobs", "sha256", b0[:2], b0), "tampered")
-	if _, err := FetchEntry(ctx, layers, ScopePortable, "iron-lm", e.Key, out+"4", nil); err == nil {
-		t.Error("a changed blob was taken")
-	}
-
-	ck := filepath.Join(t.TempDir(), "config.json")
-	write(t, ck, `{"a":1}`)
-	sum, _ := FileSHA256(ck)
-	if err := PutUpstream(ctx, layers[1], "lab/m", "c0ffee", "config.json", ck, ""); err != nil {
-		t.Fatal(err)
-	}
-	dst := filepath.Join(t.TempDir(), "config.json")
-	if i, got, err := FetchUpstream(ctx, layers, "lab/m", "c0ffee", "config.json", "", dst, nil); err != nil || i != 1 || got != sum {
-		t.Errorf("by commit: %d %s %v", i, got, err)
-	}
-	os.Remove(dst)
-	if _, _, err := FetchUpstream(ctx, layers, "lab/m", "", "config.json", sum, dst, nil); err != nil {
-		t.Errorf("by SHA-256: %v", err)
-	}
-	os.Remove(dst)
-	if _, _, err := FetchUpstream(ctx, layers, "lab/m", "other", "config.json", "", dst, nil); err != ErrNotFound {
-		t.Errorf("another commit: %v", err)
+	// a file that changed in the source is found out
+	write(t, filepath.Join(far.Store.(Dir).Root, filepath.FromSlash(rel), "bank.bin"), "tampered")
+	if _, err := FetchEntry(ctx, ss, rel, byKey(e.Key), out+"4", nil); err == nil {
+		t.Error("a changed file was taken")
 	}
 }
 
-// TestQueue puts an entry in a layer in the background and leaves work that fails for later.
+// TestOriginals puts files of a repository in a source with its lock and reads them back by
+// commit and SHA-256; a file of another commit is not put.
+func TestOriginals(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	s := Source{Store: Dir{Name: "nas", Root: t.TempDir()}, Writeback: true}
+	ck := filepath.Join(t.TempDir(), "config.json")
+	write(t, ck, `{"a":1}`)
+	sum, _ := FileSHA256(ck)
+	c1, c2 := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	if err := PutOriginal(ctx, s, "lab/m", c1, "config.json", ck, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := PutOriginal(ctx, s, "lab/m", c1, "sub/w.bin", ck, sum); err != nil {
+		t.Fatal(err)
+	}
+	if err := PutOriginal(ctx, s, "lab/m", c2, "other.json", ck, ""); !errors.Is(err, ErrOtherCommit) {
+		t.Errorf("another commit: %v", err)
+	}
+	root := s.Store.(Dir).Root
+	if b, _ := os.ReadFile(filepath.Join(root, "original", "lab", "m", "sub", "w.bin")); string(b) != `{"a":1}` {
+		t.Errorf("not a plain folder: %q", b)
+	}
+	clearLocks()
+	l, err := ReadLock(ctx, s, "lab/m")
+	if err != nil || l.Commit != c1 || len(l.Files) != 2 || l.Files["config.json"].SHA256 != sum || l.Files["config.json"].Size != 7 {
+		t.Fatalf("lock: %+v %v", l, err)
+	}
+	dst := filepath.Join(t.TempDir(), "config.json")
+	if i, got, err := FetchOriginal(ctx, []Source{s}, "lab/m", c1, "config.json", "", dst, nil); err != nil || i != 0 || got.Commit != c1 {
+		t.Errorf("by commit: %d %v %v", i, got, err)
+	}
+	os.Remove(dst)
+	if _, _, err := FetchOriginal(ctx, []Source{s}, "lab/m", "", "config.json", sum, dst, nil); err != nil {
+		t.Errorf("by SHA-256: %v", err)
+	}
+	os.Remove(dst)
+	if _, _, err := FetchOriginal(ctx, []Source{s}, "lab/m", c2, "config.json", "", dst, nil); err != ErrNotFound {
+		t.Errorf("another commit: %v", err)
+	}
+	write(t, filepath.Join(root, "original", "lab", "m", "unlocked.bin"), "x")
+	if _, _, err := FetchOriginal(ctx, []Source{s}, "lab/m", "", "unlocked.bin", "", dst, nil); err != ErrNotFound {
+		t.Errorf("a file the lock does not name: %v", err)
+	}
+}
+
+// TestQueue puts an entry in a source in the background and leaves work that fails for later.
 func TestQueue(t *testing.T) {
 	t.Setenv(cache.RootEnv, t.TempDir())
 	ctx := context.Background()
 	exp := filepath.Join(t.TempDir(), "e")
 	write(t, filepath.Join(exp, "a"), "a")
-	if _, err := Describe(exp, Entry{Kind: "k", Recipe: map[string]string{"x": "1"}}); err != nil {
-		t.Fatal(err)
-	}
-	l := Layer{Store: Dir{Name: "share", Root: t.TempDir()}, Write: true}
-	SetLayers([]Layer{l})
-	t.Cleanup(func() { SetLayers(nil) })
-	PutLater(l, exp)
-	PutLater(Layer{Store: Dir{Name: "gone", Root: "/nonexistent"}}, exp) // no such layer now: kept
+	describeAt(t, exp, "converted/m/t/e/v0-12345678", map[string]string{"x": "1"})
+	s := Source{Store: Dir{Name: "share", Root: t.TempDir()}, Writeback: true}
+	SetSources([]Source{s}, true)
+	t.Cleanup(func() { SetSources(nil, true) })
+	PutLater(s, exp)
+	PutLater(Source{Store: Dir{Name: "gone", Root: "/nonexistent"}}, exp) // no such source now: kept
 	Flush(ctx)
-	if es, _ := ListEntries(ctx, l); len(es) != 1 {
+	if es, _ := ListEntries(ctx, s); len(es) != 1 {
 		t.Errorf("entries %v", es)
 	}
 	left, _ := filepath.Glob(filepath.Join(cache.Sub("work", "queue"), "*.json"))
 	if len(left) != 1 {
 		t.Errorf("%d jobs left", len(left))
 	}
-	if b, _ := os.ReadFile(cache.Sub("work", "queue.log")); !strings.Contains(string(b), "no layer") {
+	if b, _ := os.ReadFile(cache.Sub("work", "queue.log")); !strings.Contains(string(b), "no source") {
 		t.Errorf("log: %s", b)
 	}
 }
 
 func TestGC(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
 	ctx := context.Background()
-	l := Layer{Store: Dir{Name: "t", Root: t.TempDir()}}
-	mk := func(model, body string) Entry {
+	s := Source{Store: Dir{Name: "t", Root: t.TempDir()}}
+	mk := func(model, body string) (Entry, string) {
 		d := t.TempDir()
-		os.WriteFile(filepath.Join(d, "shared"), []byte("same in both"), 0o644)
 		os.WriteFile(filepath.Join(d, "own"), []byte(body), 0o644)
-		e, err := Describe(d, Entry{Kind: "k", Scope: ScopePortable, Model: model, Recipe: map[string]string{"model": model}})
+		r := map[string]string{"model": model}
+		rel := EntryPath(model, "t", model+".x", VersionDir(0, false, Fingerprint(r)))
+		e, err := Describe(d, Entry{Kind: "k", Model: model, Recipe: r, Path: rel})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := PutEntry(ctx, l, d); err != nil {
+		if err := PutEntry(ctx, s, d); err != nil {
 			t.Fatal(err)
 		}
-		return e
+		return e, rel
 	}
-	a, b := mk("a", "a's own"), mk("b", "b's own")
-	up := filepath.Join(t.TempDir(), "w")
-	os.WriteFile(up, []byte("a checkpoint's file"), 0o644)
-	if err := PutUpstream(ctx, l, "o/r", "c0ffee", "w", up, ""); err != nil {
-		t.Fatal(err)
-	}
-	orphan := filepath.Join(t.TempDir(), "x")
-	os.WriteFile(orphan, []byte("nothing names it"), 0o644)
-	sum, _ := FileSHA256(orphan)
-	if err := putBlob(ctx, l.Store, sum, orphan, 16); err != nil {
-		t.Fatal(err)
-	}
-	g, err := PlanGC(ctx, l, func(e Entry) bool { return e.Model == "a" }, false)
+	a, ra := mk("a", "a's own")
+	b, rb := mk("b", "b's own")
+	root := s.Store.(Dir).Root
+	write(t, filepath.Join(root, "converted", "c", "t", "c.x", "v1", "half"), "a writeback cut off")
+	g, err := PlanGC(ctx, s, func(e Entry) bool { return e.Model == "a" }, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(g.Entries) != 1 || g.Entries[0].Key != a.Key || len(g.Blobs) != 1 || g.Bytes != int64(len("a's own")) {
+	if len(g.Entries) != 1 || g.Entries[0].Key != a.Key || len(g.Orphans) != 0 || g.Bytes != int64(len("a's own")) {
 		t.Fatalf("plan: %+v", g)
 	}
-	if err := g.Apply(ctx, l); err != nil {
+	if err := g.Apply(ctx, s); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(root, "converted", "a")); err == nil {
+		t.Error("a's folders are left")
+	}
 	dst := filepath.Join(t.TempDir(), "b")
-	if _, err := FetchEntry(ctx, []Layer{l}, ScopePortable, "k", b.Key, dst, nil); err != nil {
+	if _, err := FetchEntry(ctx, []Source{s}, rb, func(e Entry) bool { return e.Key == b.Key }, dst, nil); err != nil {
 		t.Fatalf("b after gc: %v", err)
 	}
-	if _, err := FetchEntry(ctx, []Layer{l}, ScopePortable, "k", a.Key, dst+"2", nil); !errors.Is(err, ErrNotFound) {
+	if _, err := FetchEntry(ctx, []Source{s}, ra, func(Entry) bool { return true }, dst+"2", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a after gc: %v", err)
 	}
-	g, _ = PlanGC(ctx, l, func(Entry) bool { return false }, true)
-	if len(g.Entries) != 0 || len(g.Blobs) != 1 || g.Blobs[0] != sum {
+	g, _ = PlanGC(ctx, s, func(Entry) bool { return false }, true)
+	if len(g.Entries) != 0 || len(g.Orphans) != 1 || g.Orphans[0] != "converted/c/t/c.x/v1/half" {
 		t.Fatalf("orphans: %+v", g)
+	}
+}
+
+// TestMigrate moves the layout before (blobs, upstream, entries) to original/ and converted/.
+func TestMigrate(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	root := t.TempDir()
+	blob := func(body string) string {
+		p := filepath.Join(t.TempDir(), "b")
+		write(t, p, body)
+		sum, _ := FileSHA256(p)
+		write(t, filepath.Join(root, "blobs", "sha256", sum[:2], sum), body)
+		return sum
+	}
+	c1, c2 := strings.Repeat("1", 40), strings.Repeat("2", 40)
+	for _, f := range []struct{ commit, name, body string }{{c1, "config.json", "{}"}, {c1, "w/model.bin", "weights"}, {c2, "config.json", "{2}"}} {
+		sum := blob(f.body)
+		write(t, filepath.Join(root, "upstream", "lab", "m@"+f.commit, filepath.FromSlash(f.name)+".json"), fmt.Sprintf(`{"sha256":%q,"size":%d}`, sum, len(f.body)))
+	}
+	sum := blob("program")
+	e := Entry{Format: EntryFormat, Key: strings.Repeat("k", 64), Kind: "coreai", Model: "M", Target: "coreai",
+		Recipe: map[string]string{"export": "M.coreai"}, Files: []File{{Path: "main.mlirb", Size: 7, SHA256: sum}}}
+	b, _ := json.Marshal(e)
+	write(t, filepath.Join(root, "entries", "coreai", e.Key+".json"), string(b))
+	place := func(e Entry) (string, bool) {
+		return EntryPath(e.Model, e.Target, e.Recipe["export"], VersionDir(0, false, e.Key)), e.Recipe["export"] != ""
+	}
+	r, err := MigrateDir(ctx, root, place, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Repos != 1 || r.Files != 2 || r.Entries != 1 || len(r.Skipped) != 1 {
+		t.Fatalf("%+v", r)
+	}
+	s := Source{Store: Dir{Name: "nas", Root: root}}
+	clearLocks()
+	if l, err := ReadLock(ctx, s, "lab/m"); err != nil || l.Commit != c1 || len(l.Files) != 2 {
+		t.Errorf("lock %+v %v", l, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "original", "lab", "m", "w", "model.bin")); string(b) != "weights" {
+		t.Errorf("model.bin %q", b)
+	}
+	rel := "converted/M/coreai/M.coreai/v0-kkkkkkkk"
+	if got, err := ReadEntryAt(ctx, s, rel); err != nil || got.Path != rel {
+		t.Errorf("entry %+v %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "entries")); err == nil {
+		t.Error("entries/ is left")
+	}
+	if _, err := os.Stat(filepath.Join(root, "upstream", "lab", "m@"+c2)); err != nil {
+		t.Error("the other commit was removed")
+	}
+}
+
+// TestParseSource reads the URLs of the sources and their order in the environment.
+func TestParseSource(t *testing.T) {
+	for _, c := range []struct{ url, want, err string }{
+		{"file:///mnt/llm/hwnpu?writeback=true", "folder /mnt/llm/hwnpu", ""},
+		{"file:///mnt/x?writeback=nope", "", "not true or false"},
+		{"file://relative/x", "", "share of Windows"},
+		{"https://me:secret@nas:5006/hwnpu", "https://nas:5006/hwnpu/, read only", ""},
+		{"http://nas/dav?writeback=1", "webdav http://nas/dav/", ""},
+		{"s3://bucket/pre?endpoint=http://h:9100&path_style=true&no_sign=true", "s3://bucket/pre/ at http://h:9100", ""},
+		{"s3:///x", "", "no bucket"},
+		{"https://nas/x?color=red", "", "color is not a setting"},
+		{"ftp://nas/x", "", "not a file://"},
+	} {
+		s, err := ParseSource("V", c.url)
+		if c.err != "" {
+			if err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Errorf("%s: %v, want %q", c.url, err, c.err)
+			}
+			continue
+		}
+		if err != nil || !strings.Contains(s.String(), c.want) || strings.Contains(s.String(), "secret") {
+			t.Errorf("%s: %v %v, want %q", c.url, s, err, c.want)
+		}
+	}
+	t.Setenv(SourceEnv+"_10", "file:///ten")
+	t.Setenv(SourceEnv+"_2", "file:///two?writeback=true")
+	t.Setenv(SourceEnv, "file:///first")
+	t.Setenv(SourceEnv+"S", "file:///another-variable")
+	t.Setenv(HuggingFaceEnv, "false")
+	ss, hf, err := FromEnv()
+	if err != nil || hf || len(ss) != 3 {
+		t.Fatalf("%v %v %v", ss, hf, err)
+	}
+	var got []string
+	for _, s := range ss {
+		got = append(got, s.Store.(Dir).Root)
+	}
+	if strings.Join(got, " ") != "/first /two /ten" || !ss[1].Writeback || ss[0].Writeback || ss[2].From != SourceEnv+"_10" {
+		t.Errorf("order %v", got)
+	}
+	t.Setenv(SourceEnv+"_x", "file:///x")
+	if _, _, err := FromEnv(); err == nil {
+		t.Error("a source variable without a number")
 	}
 }

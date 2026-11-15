@@ -1,0 +1,227 @@
+package store
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
+	"golang.org/x/net/webdav"
+)
+
+// davServer is a WebDAV server (golang.org/x/net/webdav) of a folder under /dav/, signed in to
+// as user u, password p, that refuses PROPFIND of depth infinity as servers often do.
+type davServer struct {
+	*httptest.Server
+	root     string
+	requests atomic.Int64
+	ranges   atomic.Int64
+}
+
+func newDAV(t *testing.T) *davServer {
+	t.Helper()
+	d := &davServer{root: t.TempDir()}
+	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(d.root), LockSystem: webdav.NewMemLS()}
+	d.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		d.requests.Add(1)
+		if u, p, ok := r.BasicAuth(); !ok || u != "u" || p != "p" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="dav"`)
+			http.Error(w, "sign in", http.StatusUnauthorized)
+			return
+		}
+		if r.Method == "PROPFIND" && r.Header.Get("Depth") != "0" && r.Header.Get("Depth") != "1" {
+			http.Error(w, "no depth infinity", http.StatusForbidden)
+			return
+		}
+		if r.Header.Get("Range") != "" {
+			d.ranges.Add(1)
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(d.Close)
+	return d
+}
+
+func openDAV(t *testing.T, d *davServer) *WebDAV {
+	t.Helper()
+	t.Setenv("NETRC", filepath.Join(t.TempDir(), "none"))
+	t.Setenv(WebDAVUserEnv, "u")
+	t.Setenv(WebDAVPasswordEnv, "p")
+	st, err := OpenWebDAV(WebDAVConfig{Name: "nas", URL: d.URL + "/dav/hwnpu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// TestWebDAV puts, reads, lists and deletes files as TestStores does, and goes on with a
+// download cut off.
+func TestWebDAV(t *testing.T) {
+	ctx := context.Background()
+	d := newDAV(t)
+	st := openDAV(t, d)
+	big := make([]byte, 3<<20+17)
+	rand.Read(big)
+	src := filepath.Join(t.TempDir(), "big")
+	os.WriteFile(src, big, 0o644)
+	if err := st.Put(ctx, "blobs/sha256/ab/big", src); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(ctx, "entries/amd/k@1.json", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(ctx, "top", nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(d.root, "hwnpu", "blobs", "sha256", "ab", "big")); err != nil || !bytes.Equal(b, big) {
+		t.Fatalf("on the server: %d bytes, %v", len(b), err)
+	}
+	if n, ok, err := st.Has(ctx, "blobs/sha256/ab/big"); err != nil || !ok || n != int64(len(big)) {
+		t.Errorf("Has: %d %v %v", n, ok, err)
+	}
+	if n, ok, err := st.Has(ctx, "top"); err != nil || !ok || n != 0 {
+		t.Errorf("Has of an empty file: %d %v %v", n, ok, err)
+	}
+	for _, k := range []string{"blobs/none", "none/at/all", "blobs/sha256"} { // a folder is not a file
+		if _, ok, err := st.Has(ctx, k); err != nil || ok {
+			t.Errorf("Has of %s: %v %v", k, ok, err)
+		}
+	}
+	dst := filepath.Join(t.TempDir(), "x", "big")
+	os.MkdirAll(filepath.Dir(dst), 0o755)
+	os.WriteFile(dst+".part", big[:1<<20], 0o644)
+	if n, err := st.Get(ctx, "blobs/sha256/ab/big", dst, nil); err != nil || n != int64(len(big)) {
+		t.Fatalf("Get: %d %v", n, err)
+	}
+	if b, _ := os.ReadFile(dst); !bytes.Equal(b, big) {
+		t.Fatalf("got %d bytes", len(b))
+	}
+	if d.ranges.Load() == 0 {
+		t.Error("the cut-off download started over")
+	}
+	if b, err := st.Read(ctx, "entries/amd/k@1.json"); err != nil || string(b) != "{}" {
+		t.Errorf("Read: %q %v", b, err)
+	}
+	if _, err := st.Get(ctx, "none", dst+"2", nil); !isNotFound(err) {
+		t.Errorf("Get of none: %v", err)
+	}
+	if _, err := st.Read(ctx, "a/none"); !isNotFound(err) {
+		t.Errorf("Read of none: %v", err)
+	}
+	os.WriteFile(filepath.Join(d.root, "hwnpu", "blobs", ".put-left"), []byte("x"), 0o644)
+	keys, err := st.List(ctx, "")
+	if err != nil || strings.Join(keys, " ") != "blobs/sha256/ab/big entries/amd/k@1.json top" {
+		t.Errorf("List: %v %v", keys, err)
+	}
+	if keys, err := st.List(ctx, "entries/"); err != nil || strings.Join(keys, " ") != "entries/amd/k@1.json" {
+		t.Errorf("List entries/: %v %v", keys, err)
+	}
+	if keys, err := st.List(ctx, "nothing/"); err != nil || len(keys) != 0 {
+		t.Errorf("List of nothing: %v %v", keys, err)
+	}
+	if err := st.Delete(ctx, "top"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Delete(ctx, "top"); err != nil {
+		t.Errorf("Delete of none: %v", err)
+	}
+	if _, ok, _ := st.Has(ctx, "top"); ok {
+		t.Error("deleted, still there")
+	}
+	if _, err := st.Read(ctx, "../x"); err == nil {
+		t.Error("a key out of the store was taken")
+	}
+}
+
+// TestWebDAVSource puts an entry and a repository's file in a WebDAV source and reads them
+// back, also as a server read only.
+func TestWebDAVSource(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	d := newDAV(t)
+	l := Source{Store: openDAV(t, d), Writeback: true}
+	dir := filepath.Join(t.TempDir(), "x.amd-npu")
+	write(t, filepath.Join(dir, "a.bin"), "aaaa")
+	write(t, filepath.Join(dir, "sub", "b.bin"), "bb")
+	rel := EntryPath("x", "amd-xdna2", "x.amd-npu", "v1")
+	if _, err := Describe(dir, Entry{Kind: "amd", Key: "x@1", Scope: ScopePortable, Path: rel}); err != nil {
+		t.Fatal(err)
+	}
+	if err := PutEntry(ctx, l, dir); err != nil {
+		t.Fatal(err)
+	}
+	if es, err := ListEntries(ctx, l); err != nil || len(es) != 1 || es[0] != rel {
+		t.Errorf("ListEntries: %v %v", es, err)
+	}
+	all := func(Entry) bool { return true }
+	dst := filepath.Join(t.TempDir(), "y")
+	if i, err := FetchEntry(ctx, []Source{l}, rel, all, dst, nil); err != nil || i != 0 {
+		t.Fatalf("FetchEntry: %d %v", i, err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dst, "sub", "b.bin")); string(b) != "bb" {
+		t.Errorf("got %q", b)
+	}
+	c := strings.Repeat("c", 40)
+	if err := PutOriginal(ctx, l, "lab/m", c, "config.json", filepath.Join(dir, "a.bin"), ""); err != nil {
+		t.Fatal(err)
+	}
+	// the same server read only, as plain HTTP
+	ro, err := ParseSource("ro", strings.Replace(d.URL, "//", "//u:p@", 1)+"/dav/hwnpu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearLocks()
+	if i, lk, err := FetchOriginal(ctx, []Source{ro}, "lab/m", c, "config.json", "", filepath.Join(t.TempDir(), "c.json"), nil); err != nil || i != 0 || lk.Commit != c {
+		t.Errorf("read only: %d %+v %v", i, lk, err)
+	}
+	if i, err := FetchEntry(ctx, []Source{ro}, rel, all, filepath.Join(t.TempDir(), "z"), nil); err != nil || i != 0 {
+		t.Errorf("read only entry: %v", err)
+	}
+	if err := ro.Store.Write(ctx, "x", nil); err == nil || !strings.Contains(err.Error(), "writeback") {
+		t.Errorf("a write to a source read only: %v", err)
+	}
+}
+
+// TestWebDAVSignIn takes the login from the netrc and says what to do without one.
+func TestWebDAVSignIn(t *testing.T) {
+	ctx := context.Background()
+	d := newDAV(t)
+	host := strings.TrimPrefix(d.URL, "http://")
+	host = host[:strings.LastIndex(host, ":")]
+	netrc := filepath.Join(t.TempDir(), "netrc")
+	os.WriteFile(netrc, []byte("machine other login x password y\nmachine "+host+"\n  login u\n  password p\ndefault login z password w\n"), 0o600)
+	t.Setenv("NETRC", netrc)
+	t.Setenv(WebDAVUserEnv, "")
+	t.Setenv(WebDAVPasswordEnv, "")
+	st, err := OpenWebDAV(WebDAVConfig{Name: "nas", URL: d.URL + "/dav/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Write(ctx, "f", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = OpenWebDAV(WebDAVConfig{Name: "nas", URL: strings.Replace(d.URL, "//", "//z@", 1) + "/dav/"})
+	if err := st.Write(ctx, "f", []byte("x")); err == nil || !strings.Contains(err.Error(), "~/.netrc") {
+		t.Errorf("a wrong password: %v", err)
+	}
+	st, _ = OpenWebDAV(WebDAVConfig{Name: "nas", URL: strings.Replace(d.URL, "//", "//u:p@", 1) + "/dav/"})
+	if err := st.Write(ctx, "f", []byte("x")); err != nil {
+		t.Errorf("the URL's password: %v", err)
+	}
+	if strings.Contains(st.String(), "p@") || strings.Contains(st.String(), ":p") {
+		t.Errorf("the password is shown: %s", st)
+	}
+	if l, p := parseNetrc("machine h login a password b\nmachine h login c password d\n", "h", "c"); l != "c" || p != "d" {
+		t.Errorf("netrc by login: %s %s", l, p)
+	}
+	if l, p := parseNetrc("default login a password b", "h", ""); l != "a" || p != "b" {
+		t.Errorf("netrc default: %s %s", l, p)
+	}
+}
