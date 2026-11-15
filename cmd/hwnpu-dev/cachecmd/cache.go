@@ -474,8 +474,6 @@ type ImportCmd struct {
 
 // importRepos are the repositories of folders whose name is no model's of the definitions.
 var importRepos = map[string]string{
-	"FLUX.1-schnell":      "black-forest-labs/FLUX.1-schnell",
-	"FLUX.2-klein-4B":     "black-forest-labs/FLUX.2-klein-4B",
 	"gpt-oss-20b":         "openai/gpt-oss-20b",
 	"yunet":               "opencv/face_detection_yunet",
 	"Sana_600M_1024px":    "Efficient-Large-Model/Sana_600M_1024px_diffusers",

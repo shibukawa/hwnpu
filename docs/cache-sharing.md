@@ -1,6 +1,6 @@
 # 変換済みのモデルの配布と、キャッシュの共有 (設計案)
 
-作成: 2026-11-12。状態: P0、P1 の層とフォルダと gc、P2 の S3、AMD のチャットのモデルと初回に作る画像のモデルの書き出しの共有を実装 (0 節、design.md 16.169)。2026-11-15 に取得元を環境変数の URL (フォルダ、WebDAV と HTTP、S3) と固定の並び (`original/` と `hwnpu-lock.json`、`converted/.../vN`) に作り直した (7 節、design.md 16.208)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
+作成: 2026-11-12。状態: P0、P1 の層とフォルダと gc、P2 の S3、AMD のチャットのモデルと初回に作る画像のモデルの書き出しの共有を実装 (0 節、design.md 16.169)。2026-11-15 に取得元を環境変数の URL (フォルダ、WebDAV と HTTP、S3) と固定の並び (`original/` と `hwnpu-lock.json`、`converted/.../vN`) に作り直した (7 節、design.md 16.212)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
 
 ## 0. 実装したもの (2026-11-12)
 
@@ -131,7 +131,7 @@ models:
 
 ## 7. 取得元 (透過型のキャッシュ)
 
-2026-11-15 に作り直した (design.md 16.208)。それまでの「層」(定義の `sources`、`search`、`cache.layers`、`HWNPU_CACHE_LAYERS`、内容で番地を決める `blobs/sha256`) は、環境変数の URL の並びと、人が見て分かる固定の並びに置き換えた。
+2026-11-15 に作り直した (design.md 16.212)。それまでの「層」(定義の `sources`、`search`、`cache.layers`、`HWNPU_CACHE_LAYERS`、内容で番地を決める `blobs/sha256`) は、環境変数の URL の並びと、人が見て分かる固定の並びに置き換えた。
 
 ```
 0. この機械のキャッシュ  cache.Root (HWNPU_CACHE)          いつも書き戻す・その場で使う
@@ -143,7 +143,7 @@ models:
 書き: 0 番へは必ず、?writeback=true の取得元へは裏で、手元で作ったものと後ろの層から読んだものを置く (失敗しても続ける)
 ```
 
-2026-11-15 の 2 つ目の変更 (design.md 16.209) で、手元のキャッシュと同梱のモデルも同じ仕組みの層にした。どの層も中は同じ並び (下) で、手元のキャッシュも `original/OWNER/NAME/` に `hwnpu-lock.json` を持つ。どの層から来たファイルも、使うのは手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`)。同梱のモデルはハードリンク、別のファイルシステムならシンボリックリンクで、コピーしない。
+2026-11-15 の 2 つ目の変更 (design.md 16.213) で、手元のキャッシュと同梱のモデルも同じ仕組みの層にした。どの層も中は同じ並び (下) で、手元のキャッシュも `original/OWNER/NAME/` に `hwnpu-lock.json` を持つ。どの層から来たファイルも、使うのは手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`)。同梱のモデルはハードリンク、別のファイルシステムならシンボリックリンクで、コピーしない。
 
 取得元は URL で書く。`HWNPU_MODEL_SOURCE` で始まる環境変数を全部集め、番号の順に並べる (番号のない `HWNPU_MODEL_SOURCE` が最初、抜けた番号は気にしない)。エラーになった取得元は飛ばして次へ:
 
@@ -414,7 +414,7 @@ Apple の機械が使えるようになるまで、Apple の配布の形は決�
 - 版は `targets.<対象>.version`。版ありは `vN`、`develop: true` は `vN-HASH`、版なしは `v0-HASH`
 - `HWNPU_CACHE_LAYERS` は読み替えずに消す。`HWNPU_PREBUILT` は作らない (取得元にあるかで決まる)
 - `HF_TOKEN` は CI 以外では勧めない。refresh token の保存 (OS の資格情報の置き場) と、Actions のトークンの交換 (Hugging Face の Trusted Publishers、RFC 8693) は別に
-- 層を平らに (design.md 16.209): 手元のキャッシュを 0 番 (いつも書き戻す)、同梱のモデルを取得元の後ろ (読むだけ、その場で)。手元の並びも取得元と同じ `original/` に。モデルの探索と取得は公開の API (`modelstore`) にし、各コマンドも同じものを使う。各コマンドの `--dir` は消す (根は `HWNPU_CACHE`)
+- 層を平らに (design.md 16.213): 手元のキャッシュを 0 番 (いつも書き戻す)、同梱のモデルを取得元の後ろ (読むだけ、その場で)。手元の並びも取得元と同じ `original/` に。モデルの探索と取得は公開の API (`modelstore`) にし、各コマンドも同じものを使う。各コマンドの `--dir` は消す (根は `HWNPU_CACHE`)
 - 同梱のモデルの場所はインストーラが置き、アプリのコードで決める (環境変数にしない)。資源フォルダは configdir v1.1.0 の `QueryResourceFolders`
 - `~/models` は次の PR で `converted/` に移して読まなくなる
 
