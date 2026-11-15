@@ -97,28 +97,47 @@ func (c *GenerateCmd) qwenImage(ctx context.Context, model string, outs []string
 		logf("seed %d", s)
 		return p.Noise(s), nil
 	}
-	generate := func(cond qwenimage.Cond, neg *qwenimage.Cond, x []float32) ([]float32, error) {
-		bar := console.NewBar(lw, "denoising")
+	// generate draws the pictures of conds from the noises xs: with an export of programs their
+	// steps together (a step is then all of them through the DiT), else one picture after another
+	generate := func(conds []qwenimage.Cond, neg *qwenimage.Cond, xs [][]float32) ([][]float32, error) {
+		n := 1 // the pictures a step runs
+		if p.Batched() {
+			n = len(conds)
+		}
+		name := "denoising"
+		if n > 1 {
+			name = fmt.Sprintf("denoising %d pictures", n)
+		}
+		// times are a step's time and, with several pictures, each one's share of it
+		times := func(per time.Duration) string {
+			if n > 1 {
+				return fmt.Sprintf("%.1f s a step, %.1f s a picture", per.Seconds(), per.Seconds()/float64(n))
+			}
+			return fmt.Sprintf("%.1f s a step", per.Seconds())
+		}
+		bar := console.NewBar(lw, name)
 		bar.Set(0, fmt.Sprintf("step 1/%d", steps))
-		x, err := p.Generate(ctx, cond, neg, x, sig, smp, func(i, n int, d time.Duration) {
+		xs, err := p.GenerateAll(ctx, conds, neg, xs, sig, smp, func(i, total int, d time.Duration) {
 			per := bar.Elapsed() / time.Duration(i+1)
-			bar.Set(float64(i+1)/float64(n), fmt.Sprintf("step %d/%d, %.1f s a step, %s left", min(i+2, n), n, per.Seconds(),
-				console.Duration(time.Duration(n-i-1)*per)))
+			bar.Set(float64(i+1)/float64(total), fmt.Sprintf("step %d/%d, %s, %s left", min(i+2, total), total, times(per),
+				console.Duration(time.Duration(total-i-1)*per)))
 			if !live {
-				logf("step %d/%d: sigma %.3f -> %.3f, %.1f s", i+1, n, sig[i], sig[i+1], d.Seconds())
+				logf("step %d/%d: sigma %.3f -> %.3f, %.1f s", i+1, total, sig[i], sig[i+1], d.Seconds())
 			}
 		})
 		if err != nil {
 			bar.Done("failed")
 			return nil, err
 		}
-		bar.Done(fmt.Sprintf("%d steps in %s (%.1f s a step)", steps, console.Duration(bar.Elapsed()), bar.Elapsed().Seconds()/float64(steps)))
+		bar.Done(fmt.Sprintf("%d steps in %s (%s)", steps, console.Duration(bar.Elapsed()), times(bar.Elapsed()/time.Duration(steps))))
 		if c.Latents != "" {
-			if err := writeF32(c.Latents, x); err != nil {
-				return nil, err
+			for _, x := range xs {
+				if err := writeF32(c.Latents, x); err != nil {
+					return nil, err
+				}
 			}
 		}
-		return x, nil
+		return xs, nil
 	}
 	decode := func(xs ...[]float32) ([]*image.RGBA, error) {
 		bar := console.NewBar(lw, "decoding")
@@ -136,7 +155,8 @@ func (c *GenerateCmd) qwenImage(ctx context.Context, model string, outs []string
 		bar.Done("in " + console.Duration(bar.Elapsed()))
 		return imgs, nil
 	}
-	write := func(i int, img *image.RGBA, t1 time.Time) error {
+	// write writes picture i, one of n drawn together since t1
+	write := func(i int, img *image.RGBA, t1 time.Time, n int) error {
 		f, err := os.Create(outs[i])
 		if err != nil {
 			return err
@@ -148,7 +168,12 @@ func (c *GenerateCmd) qwenImage(ctx context.Context, model string, outs []string
 		if err := f.Close(); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "%s: %s (%s since the start)\n", outs[i], console.Duration(time.Since(t1)), console.Duration(time.Since(t0)))
+		if n > 1 {
+			fmt.Fprintf(os.Stderr, "%s: %s a picture, %d together (%s since the start)\n", outs[i], console.Duration(time.Since(t1)/time.Duration(n)), n,
+				console.Duration(time.Since(t0)))
+		} else {
+			fmt.Fprintf(os.Stderr, "%s: %s (%s since the start)\n", outs[i], console.Duration(time.Since(t1)), console.Duration(time.Since(t0)))
+		}
 		return nil
 	}
 	// the conditionings of the prompts (and of the negative prompt, after them)
@@ -165,55 +190,38 @@ func (c *GenerateCmd) qwenImage(ctx context.Context, model string, outs []string
 		}
 		return cs, nil, nil
 	}
+	// an export of programs loads them for each phase, which takes longer than running them, and
+	// a group of the DiT's blocks that follows another one pays for that in its first run alone:
+	// --batch pictures at a time, their prompts' text, then their steps together, then the VAE's
+	// stages over all of them. AMD's NPU draws one picture after another
+	batch := 1
 	if p.Batched() {
-		// a Core ML export loads its programs for each phase, which takes longer than running them:
-		// every prompt's text, then every picture's steps with the DiT held, then the VAE's stages
-		// over all the pictures
+		batch = max(1, c.Batch)
+	}
+	for lo := 0; lo < len(c.Prompts); lo += batch {
+		hi := min(lo+batch, len(c.Prompts))
 		t1 := time.Now()
-		conds, neg, err := encode(c.Prompts)
+		conds, neg, err := encode(c.Prompts[lo:hi])
 		if err != nil {
 			return err
 		}
-		xs := make([][]float32, len(c.Prompts))
-		for i := range c.Prompts {
-			x, err := noise(i)
-			if err != nil {
+		xs := make([][]float32, hi-lo)
+		for i := lo; i < hi; i++ {
+			if xs[i-lo], err = noise(i); err != nil {
 				return err
 			}
-			if xs[i], err = generate(conds[i], neg, x); err != nil {
-				return err
-			}
+		}
+		if xs, err = generate(conds, neg, xs); err != nil {
+			return err
 		}
 		imgs, err := decode(xs...)
 		if err != nil {
 			return err
 		}
 		for i, img := range imgs {
-			if err := write(i, img, t1); err != nil {
+			if err := write(lo+i, img, t1, hi-lo); err != nil {
 				return err
 			}
-		}
-		return nil
-	}
-	for i, prompt := range c.Prompts {
-		t1 := time.Now()
-		conds, neg, err := encode([]string{prompt})
-		if err != nil {
-			return err
-		}
-		x, err := noise(i)
-		if err != nil {
-			return err
-		}
-		if x, err = generate(conds[0], neg, x); err != nil {
-			return err
-		}
-		imgs, err := decode(x)
-		if err != nil {
-			return err
-		}
-		if err := write(i, imgs[0], t1); err != nil {
-			return err
 		}
 	}
 	return nil
