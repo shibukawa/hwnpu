@@ -32,10 +32,10 @@ go run ./cmd/hwnpu-dev report -o report.md   # この機械の NPU で hwnpu が
 | `hwnpu-chat` | 対話、翻訳、コーディングエージェント (`agent`)、OpenAI 互換のサーバー (`serve`)、埋め込みの検索 (`search`)、型付きの判定 (`systemone`) | [CHAT.ja.md](CHAT.ja.md)、AMD は [USAGE_LLM_AMD.ja.md](USAGE_LLM_AMD.ja.md) |
 | `hwnpu-image` | 画像生成 (Anima、Sana、Chroma1) と編集 (FLUX.2 klein)、深度、顔、物、姿勢、文字 (OCR)、ラベル付け、切り抜き | [USAGE_IMAGE.ja.md](USAGE_IMAGE.ja.md) |
 | `hwnpu-audio` | 音楽と効果音の生成、読み上げ、書き起こし、音高、音符 | [USAGE_AUDIO.ja.md](USAGE_AUDIO.ja.md) |
-| `hwnpu` | NPU の状態と使っているもの (`status`)、失敗したコマンドの issue の下書き (`issue`)、モデルのキャッシュ: 中身、ディスクの空き、使っていないものを消す (`cache`、`cache prune`、`cache clear`) | [docs/cache-sharing.md](docs/cache-sharing.md) 7.7 |
+| `hwnpu` | NPU の状態と使っているもの (`status`)、失敗したコマンドの issue の下書き (`issue`)、モデルのキャッシュ: 中身、ディスクの空き、使っていないものを消す (`cache`、`cache prune`、`cache clear`)、モデルを何 GB の機械として動かすか (`memory`) | [docs/cache-sharing.md](docs/cache-sharing.md) 7.7、7.8 |
 | `hwnpu-dev` | 動作確認、NPU の測定 (`probe`)、モデルの変換と照合 | [USAGE_DEV.ja.md](USAGE_DEV.ja.md)、[PROBE.ja.md](PROBE.ja.md) |
 
-モデルは名前 (`-m gemma-4-E2B-it`)、ファミリー (`-m gemma4`)、用途 (`-m translate`) で指定でき、ファミリーと用途はマシンのメモリに合うものを選びます。選べるモデルは組み込みの [models.yaml](models.yaml) から来ていて、自分のファイルで足したり差し替えたりできます ([docs/model-table.md](docs/model-table.md))。
+モデルは名前 (`-m gemma-4-E2B-it`)、ファミリー (`-m gemma4`)、用途 (`-m translate`) で指定でき、ファミリーと用途はマシンのメモリに合うものを選びます。選べるモデルは組み込みの [models.yaml](models.yaml) から来ていて、自分のファイルで足したり差し替えたりできます ([docs/model-table.md](docs/model-table.md))。メモリの多い機械でモデルをほかのプログラムと一緒に動かすときは、`hwnpu memory LFM3-1.7B 8` で、どのコマンドでもそのモデルを 8 GB の機械の形で動かせます。
 
 コマンドが失敗したら、`go run ./cmd/hwnpu issue` でその issue の下書きを作れます。コマンド、エラー、ログの末尾、この機械の NPU (`hwnpu status`) が入ります。ホームフォルダ、ユーザー名とマシン名、取得元のアドレス、トークンは伏せ、コマンドラインのプロンプトは文字数に置き換えます。下書きを入れた GitHub の新しい issue のページを開くので、そこでボタンを押すまでは何も送られません。
 

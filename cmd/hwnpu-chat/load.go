@@ -57,6 +57,40 @@ type convertFlags struct {
 	Draft     int     `default:"8" help:"Tokens per call of the program that checks drafts (speculative decoding: tokens guessed from the prompt and the answer so far are checked in one call); 0 or 1 turns it off."`
 	MTP       string  `name:"mtp" default:"${mtp}" help:"auto: drafts also from the checkpoint's multi-token prediction layer when it has one (Qwen3.5); off: from the prompt alone."`
 	Prefill   string  `help:"A program of 64 tokens per call (128 for a model split at its attention) to read prompts beside the one that generates: auto (unless the two would not stay in the Neural Engine's compile cache of about 4 GiB, as Gemma 4 E4B's do not: then the one that generates reads the prompts, slower for long ones), on or off (default: the model's definition for this machine's memory, else auto)."`
+	Memory    int     `placeholder:"GB" help:"Run the model as on a machine of this much memory, as MODEL.md's columns: --memory 8 on a 16 GB Mac for the smaller programs models.yaml gives 8 GB (LFM3-1.7B and Qwen3.5-0.8B without the whole program of short conversations, Qwen3-1.7B without the one that reads prompts), to leave room for other programs. Kept for the model once it is ready, and every hwnpu command runs it so (hwnpu memory shows and changes it; a tag of memory, lfm3:8g, does the same) (default: the memory chosen for the model, else HWNPU_MEMORY, else the machine's)."`
+}
+
+// given is what the flags give of how a model runs (chat.Run), the zero for those not given.
+func (f *convertFlags) given() chat.Run {
+	r := chat.Run{Prefill: f.Prefill, Format: f.Format, Context: f.Context, Paged: f.Paged}
+	if f.Tier != nil {
+		r.Tier = cmp.Or(strings.TrimSpace(*f.Tier), "none") // an empty --tier is none
+	}
+	return r
+}
+
+// memoryGiven is the memory name and the flags say to run the model as: a tag of memory
+// (lfm3:8g), else --memory, 0 for none.
+func memoryGiven(name string, cf *convertFlags) int {
+	if _, tag, tagged := strings.Cut(name, ":"); tagged {
+		if gb, ok := chat.MemoryTag(tag); ok {
+			return gb
+		}
+	}
+	return max(cf.Memory, 0)
+}
+
+// keepMemory keeps gb, the memory given (memoryGiven), as the one to run model m as
+// (chat.ChooseMemory), now that it is ready on it. Not keeping it fails no run.
+func keepMemory(m chat.Model, gb int, log io.Writer) {
+	if gb == 0 || chat.ChosenMemory(m) == gb {
+		return
+	}
+	if err := chat.ChooseMemory(m, gb); err != nil {
+		fmt.Fprintf(log, "%s: %d GB not kept for the next runs: %v\n", m.Name, gb, err)
+		return
+	}
+	fmt.Fprintf(log, "%s: runs as on a machine of %d GB from now on, in every hwnpu command (%s; hwnpu memory %s --forget forgets it)\n", m.Name, gb, chat.RunFile(), m.Name)
 }
 
 // samplingFlags are how a chat model answers.
@@ -142,22 +176,13 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 		e, err := chat.Load(ctx, chat.Config{IRON: iron, Tokenizer: cf.Tokenizer, Log: logw(), PromptDir: promptDir, Idle: lf.Idle})
 		return loaded{Engine: e}, err
 	}
-	m, err := chat.Resolve(ctx, name, logw())
+	gb := memoryGiven(name, cf)
+	m, err := chat.ResolveOn(ctx, name, gb, logw())
 	if err != nil {
 		return loaded{}, err
 	}
 	if m.Kind != chat.KindChat {
 		return loaded{}, fmt.Errorf("%s is a %s model, not a chat model", m.Name, m.Kind)
-	}
-	// --tier, else the model's definition (models.yaml's tier, of the variant for this machine's
-	// memory), else auto
-	tier, from := cmp.Or(m.Run.Tier, chat.DefaultTiers), "models.yaml's tier"
-	if cf.Tier != nil {
-		tier, from = *cf.Tier, "--tier"
-	}
-	tiers, err := chat.Tiers(tier)
-	if err != nil {
-		return loaded{}, fmt.Errorf("%s: %w", from, err)
 	}
 	md, src := chat.ModelDir(m), chat.RepoDir(m.Source())
 	c := chat.Config{ModelConfig: cf.Config, Weights: cf.Weights}
@@ -165,13 +190,20 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 		c.Packages, c.Name, c.Backend = strings.Split(cf.Package, ","), m.Name, lf.Backend
 		c.ModelConfig = cmp.Or(c.ModelConfig, filepath.Join(src, "config.json"))
 		c.Weights = cmp.Or(c.Weights, chat.WeightsIn(m))
-	} else if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name,
-		// the flags, else the model's definition (models.yaml's prefill, format, context, paged
-		// and tier, of the variant for this machine's memory)
-		Context: cmp.Or(cf.Context, m.Run.Context), Paged: cmp.Or(cf.Paged, m.Run.Paged), Shortest: cf.Shortest, Prefill: cmp.Or(cf.Prefill, m.Run.Prefill),
-		Format: cmp.Or(cf.Format, m.Run.Format), Draft: cf.Draft, MTP: cf.MTP, Tiers: tiers, Backend: lf.Backend, Codes: cf.Codes,
-		FormatFor: split(cf.FormatFor), Log: logw()}); err != nil {
-		return loaded{}, err
+	} else {
+		// the flags, else the model's definition for the memory it runs as (Model.On)
+		run := m.Run.Over(cf.given())
+		tiers, err := chat.Tiers(cmp.Or(run.Tier, chat.DefaultTiers))
+		if err != nil {
+			return loaded{}, fmt.Errorf("tier %q: %w", run.Tier, err)
+		}
+		if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name,
+			Context: run.Context, Paged: run.Paged, Shortest: cf.Shortest, Prefill: run.Prefill,
+			Format: run.Format, Draft: cf.Draft, MTP: cf.MTP, Tiers: tiers, Backend: lf.Backend, Codes: cf.Codes,
+			FormatFor: split(cf.FormatFor), Log: logw()}); err != nil {
+			return loaded{}, err
+		}
+		keepMemory(m, gb, logw())
 	}
 	c.Tokenizer, c.CacheDir, c.Log = cf.Tokenizer, lf.Cache, logw()
 	c.PromptDir = promptDir

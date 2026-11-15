@@ -325,6 +325,24 @@ hwnpu cache clear Qwen3-1.7B         名前 (モデル名、OWNER/NAME、glob) �
 
 `prune` と `clear` は `-n` (`--dry-run`) で消すものだけ見せる。`clear` は最近使ったものも消す (書き戻し待ちのものは残す)。
 
+### 7.8 モデルを何 GB の機械として動かすか: `hwnpu memory`
+
+モデルをメモリいくつの機械でどう動かすか (どのプログラムを作るか、取ってくるか) は models.yaml の定義 (`variants`) が決め、使う人はモデルの特性を知らなくてよい。使う人が選ぶのは「この機械を何 GB の機械として扱うか」だけで、選んだものはモデル管理の設定として、どのコマンドも守る (同じモデルの形違いを何組も入れない)。
+
+```
+hwnpu memory                         この機械のメモリと、メモリを選んだモデル
+hwnpu memory LFM3-1.7B               何 GB の機械として動くか、そのときの形 (tier none など) とメモリ
+hwnpu memory LFM3-1.7B 8             8 GB の機械として動かす (16 GB の Mac で、ほかのプログラムと一緒に)
+hwnpu memory LFM3-1.7B --forget      この機械のメモリに戻す
+```
+
+- 置き場所: 設定のフォルダ (`~/.config/hwnpu/run.json`、`$XDG_CONFIG_HOME/hwnpu`、Windows は `%LOCALAPPDATA%\hwnpu`)。ユーザーの models.yaml の隣の別のファイルで、`{"models": {"LFM3-1.7B": {"memory": 8}}}`。キャッシュには置かない: `prune` で消えず、同じキャッシュ (`HWNPU_CACHE`) を読むほかの機械には移らない
+- 守るところ: モデルの名前の解決 (`chat.Resolve`、`ResolveFor`、ファミリーや用途で選んだモデル)。hwnpu-chat、hwnpu-image、hwnpu-audio、`modelstore` を使うアプリが同じ。今メモリごとの形を持つのはチャットのモデル (LFM3-1.7B、Qwen3.5-0.8B、Qwen3-1.7B) だけだが、ほかのモデルに `variants` を足せばそのまま効く
+- 優先: その実行のメモリのタグ (`lfm3:8g`) または `hwnpu-chat --memory`、選んだメモリ、`HWNPU_MEMORY`、機械のメモリ。`hwnpu-chat --memory 8` で用意したモデルは、そのメモリが選ばれたものとして残る
+- ファミリーや用途の名前 (`lfm3`) がどのモデルを選ぶかは、この機械のメモリで決まる。選ばれたモデルにメモリが選んであれば、その形で動く
+- 公開の API: `modelstore.Store` の `Memory`、`SetMemory` (0 で忘れる)、`Memories`
+- 形を変えても、前の形のプログラムはキャッシュに残る (LRU で消えるまで)。`hwnpu cache clear NAME` で全部消せば、次は選んだ形のものだけを作る (取ってくる)
+
 ## 8. 準備の流れ: 計画と作るを分ける
 
 今の `chat.Prepare` と `PrepareAMD` は、まずチェックポイントを落とす。これを次にする:
