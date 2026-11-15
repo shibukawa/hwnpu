@@ -599,13 +599,18 @@ func (s *Session) Pos() int { return s.pos }
 // (the next tier of a tiered model): the cached rows are copied over, and np becomes the session's
 // only program; add programs of other step lengths again (Add) with buffers shared with np. A ring
 // (a cache shorter than the longest) keeps its length and is copied as is; the other caches move
-// row by row to the same positions, whether the old or the new one is in chunks.
+// row by row to the same positions, whether the old or the new one is in chunks. A whole program
+// moves to one split at its attention (migratePaged), and one split at it to another with longer
+// caches (migrateSplit).
 func (s *Session) Migrate(np Program) error {
 	if s.chunks == nil && np.RunPart != nil {
 		return s.migratePaged(np)
 	}
+	if s.chunks != nil && np.RunPart != nil {
+		return s.migrateSplit(np)
+	}
 	if s.chunks != nil || np.RunPart != nil {
-		return fmt.Errorf("decode: a program split at its attention has no tiers to move to")
+		return fmt.Errorf("decode: a program split at its attention moves to another split at it, not to a whole one")
 	}
 	x, ok := np.InShape["x"]
 	if !ok || len(x) != 3 || x[2] != s.hidden {
@@ -777,6 +782,168 @@ func (s *Session) migratePaged(np Program) error {
 		}
 	}
 	return s.progs[0].checkPaged(s)
+}
+
+// migrateSplit moves a session of a program split at its attention to np, another split at the
+// same layers whose caches are at least as long: the next tier of a model whose other layers
+// see a window of the sequence, from the programs of a short context, where those layers'
+// caches hold every position, to the ones of the model's context, where they are rings of the
+// window (a call is given every ring whole: PLaMo 3 Translate 2B's 21 rings of 2048 are 84 MiB
+// against 21 MiB of caches of 512, docs/design.md 16.220). The chunks the session holds stay its
+// own and move into np's chunks (fit); a cache in the program that holds every position goes
+// into np's ring at position mod its length, or into its cache; a ring of the same length is
+// copied as is, and so are the windows and states. np becomes the session's only program, and
+// the two-level attention is off until set again. The marks of the session from before are not
+// np's: Remark.
+func (s *Session) migrateSplit(np Program) error {
+	x, ok := np.InShape["x"]
+	if !ok || len(x) != 3 || x[2] != s.hidden {
+		return fmt.Errorf("decode: no input x (1, q, %d)", s.hidden)
+	}
+	if np.NoLogits || !logitsShape(np.OutShape["y"], rows(np), s.vocab) {
+		return fmt.Errorf("decode: no output y (1, %d, %d)", rows(np), s.vocab)
+	}
+	if c := llm.HostSoftcap(np.Meta); c != s.softcap {
+		return fmt.Errorf("decode: the programs leave different soft caps of the logits to the host (%g and %g)", s.softcap, c)
+	}
+	nkv, nt, err := caches(np)
+	if err != nil {
+		return err
+	}
+	if nt < s.t {
+		return fmt.Errorf("decode: the new program caches %d tokens, fewer than the session's %d", nt, s.t)
+	}
+	if err := s.checkLookups(np); err != nil {
+		return err
+	}
+	first := s.progs[0].p
+	for name, in := range first.In {
+		if llm.HeldInput(name) && len(np.In[name]) != len(in) {
+			return fmt.Errorf("decode: %s has shape %v in the new program, %v in the session", name, np.InShape[name], first.InShape[name])
+		}
+	}
+	// every cache of np's from the session's, checked before anything moves
+	from := make([]*kvCache, len(nkv))
+	for i := range nkv {
+		nc := &nkv[i]
+		for j := range s.kv {
+			if s.kv[j].out == nc.out {
+				from[i] = &s.kv[j]
+			}
+		}
+		c := from[i]
+		switch {
+		case c == nil:
+			return fmt.Errorf("decode: the session has no cache %s for the new program", strings.TrimSuffix(nc.out, "_new"))
+		case c.heads != nc.heads || c.d != nc.d:
+			return fmt.Errorf("decode: %s has %d heads of %d in the new program, %d of %d in the session", nc.out, nc.heads, nc.d, c.heads, c.d)
+		case (c.chunk > 0) != (nc.chunk > 0):
+			return fmt.Errorf("decode: the cache %s is the host's in one program and the program's in the other", strings.TrimSuffix(nc.out, "_new"))
+		case c.chunk == 0 && !c.long && (nc.long || nc.total != c.total):
+			return fmt.Errorf("decode: the ring %s holds %d in the session, the new program's %d", c.parts[0], c.total, nc.total)
+		}
+	}
+	for name, in := range first.In {
+		if llm.HeldInput(name) {
+			copy(np.In[name], in)
+		}
+	}
+	pos := s.pos
+	for i := range nkv {
+		nc, c := &nkv[i], from[i]
+		if nc.chunk > 0 {
+			nc.chunk = c.chunk // the chunks stay as they are until fit moves them
+			continue
+		}
+		for _, part := range nc.parts {
+			clear(np.In[part])
+		}
+		if !c.long { // a ring of the same length
+			copy(np.In[nc.parts[0]], first.In[c.parts[0]])
+			continue
+		}
+		// the positions before the session's, each head's row where the new cache holds it
+		for p := 0; p < pos; p++ {
+			j, slot := c.locate(p)
+			src, L := first.In[c.parts[j]], c.lens[j]
+			np2 := p
+			if !nc.long {
+				np2 %= nc.total
+			}
+			nj, nslot := nc.locate(np2)
+			dst, nL := np.In[nc.parts[nj]], nc.lens[nj]
+			for h := 0; h < c.heads; h++ {
+				o, no := (h*L+slot)*2*c.d, (h*nL+nslot)*2*c.d
+				copy(dst[no:no+2*c.d], src[o:o+2*c.d])
+			}
+		}
+	}
+	// the old programs' masks, and the two-level attention's buffers
+	for i := range s.progs {
+		st := &s.progs[i]
+		bufs := append(append([]Buf{st.zero}, st.spare...), slices.Collect(maps.Values(st.masks))...)
+		if st.sp != nil {
+			bufs = append(bufs, st.sp.bufs()...)
+		}
+		for _, b := range bufs {
+			if b != nil {
+				b.Close()
+			}
+		}
+	}
+	if s.sparse != nil {
+		for _, b := range s.sparse.bufs() {
+			b.Close()
+		}
+		s.sparse = nil
+	}
+	s.progs, s.kv, s.t = []step{{p: np, q: x[1]}}, nkv, nt
+	// the chunks are still of the old programs' length: the step's buffers for it, then the
+	// rows into the chunks np attends over
+	if err := s.progs[0].checkPaged(s); err != nil {
+		return err
+	}
+	return s.fit(pos)
+}
+
+// Remark is the mark m, taken by the session before a Migrate, for the session after it: the
+// windows and states as m holds them, and of the rings the new programs have where the old ones
+// held every position, the slots before the mark's position as they are now. It is nil when
+// they are no longer what they were at the mark: the sequence has gone round a ring since.
+func (s *Session) Remark(m *Mark) *Mark {
+	in := s.progs[0].p.In
+	nm := &Mark{pos: m.pos, bufs: map[string][]byte{}, rows: m.rows}
+	for name, b := range in {
+		if llm.HeldInput(name) {
+			old, ok := m.bufs[name]
+			if !ok || len(old) != len(b) {
+				return nil
+			}
+			nm.bufs[name] = old
+		}
+	}
+	for _, c := range s.kv {
+		if c.long {
+			continue
+		}
+		name := c.parts[0]
+		if old, ok := m.bufs[name]; ok { // a ring before too
+			nm.bufs[name] = old
+			continue
+		}
+		sh := s.progs[0].p.InShape[name]
+		if len(sh) != 4 || s.pos > sh[2] || m.pos > s.pos {
+			return nil
+		}
+		heads, slots, row := sh[1], sh[2], 2*sh[3]
+		n := min(m.pos, slots)
+		out := make([]byte, 0, heads*n*row)
+		for h := range heads {
+			out = append(out, in[name][h*slots*row:(h*slots+n)*row]...)
+		}
+		nm.bufs[name] = out
+	}
+	return nm
 }
 
 // locate gives the chunk that holds a position of the cache and its row there.

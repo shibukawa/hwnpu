@@ -116,3 +116,23 @@ func TestMigrateToPagedOnNeuralEngine(t *testing.T) {
 	}
 	t.Logf("worst relative error %.2g (Core AI, the Neural Engine)", worst)
 }
+
+// The programs of a short context and of the model's, both split at their attention, as
+// functions of the same Core AI programs: a sequence moves from the former to the latter, where
+// the window layers' caches are rings, on the Neural Engine.
+func TestMigrateRingsOnNeuralEngine(t *testing.T) {
+	ctx := context.Background()
+	if infos, err := (coreai.Provider{}).Enumerate(ctx); err != nil || len(infos) == 0 {
+		t.Skip("no Core AI")
+	}
+	dev, err := hwnpu.Open(ctx, hwnpu.WithBackend("coreai"), hwnpu.WithPlacement(hwnpu.PlacementPrefer), hwnpu.WithCacheDir(filepath.Join(t.TempDir(), "cache")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { dev.Close() })
+	worst := checkRings(t, dev, llm.BackendCoreAI)
+	if worst > 3e-2 {
+		t.Errorf("relative error %g against the programs of the long context from the start", worst)
+	}
+	t.Logf("worst relative error %.2g (Core AI, the Neural Engine)", worst)
+}

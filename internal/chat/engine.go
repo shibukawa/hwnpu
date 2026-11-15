@@ -295,7 +295,7 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 		total += len(pkgs)
 	}
 	t0, allOnNPU := time.Now(), true
-	for _, pkgs := range tiers {
+	for ti, pkgs := range tiers {
 		var t tier
 		for i, pkg := range pkgs {
 			loaded++
@@ -344,7 +344,8 @@ func Load(ctx context.Context, c Config) (*Engine, error) {
 			e.Close()
 			return nil, err
 		}
-		if !c.Dense && t.chains[0].Paged() > 0 && t.chains[0].HasMass() {
+		// (the two-level attention is the last tier's: it begins far past a short context)
+		if !c.Dense && ti == len(tiers)-1 && t.chains[0].Paged() > 0 && t.chains[0].HasMass() {
 			if sp := decode.DefaultSparse(); s.SetSparse(sp) != nil {
 				logf("no two-level attention: %v", s.SetSparse(sp))
 			} else {
@@ -657,6 +658,15 @@ func (e *Engine) room(n int) (bool, error) {
 			if err := t.paged(ds); err != nil {
 				return false, err
 			}
+			// the marks of the sequence were the session's before the move: those the new
+			// programs can go back to stay (decode.Session.Remark)
+			marks := e.cur.marks[:0]
+			for _, m := range e.cur.marks {
+				if nm := ds.Remark(m.m); nm != nil {
+					marks = append(marks, mark{nm, m.logits})
+				}
+			}
+			e.cur.marks = marks
 		}
 		e.ti++
 	}
@@ -1123,10 +1133,14 @@ func (e *Engine) prefill(ctx context.Context, prompt []int32, st *Stats) ([]floa
 		if before := len(e.cur.fed); cut > before && cut < before+k {
 			k = cut - before
 		}
+		ti := e.ti
 		if ok, err := e.room(k); err != nil {
 			return nil, err
 		} else if !ok {
 			return nil, fmt.Errorf("%w: %d tokens, the cache holds %d", ErrContext, len(prompt), e.sess.Cache())
+		}
+		if e.ti != ti {
+			kept = nil // marks of the tier before, not the store's programs'
 		}
 		before := len(e.cur.fed)
 		if _, err := e.step(prompt[before : before+k]); err != nil {
