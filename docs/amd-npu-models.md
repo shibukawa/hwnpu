@@ -229,7 +229,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 
 - **汎用のグラフの書き出し** (`tools/amd/iron_graph.py`、Go の `iron.Graph`): 言語モデルの版 (decode、prompt) を持たない、入力から出力への IRON のグラフ。manifest は `iron_export_lm.py` の版の形をそのまま使う。`variants` で、同じ ELF に別の重みのバンクを持てる (DiT の 7 組。コンパイルは 1 回)。バンクの像は末尾のゼロを切って書く (VAE で 8 GB → 0.2 GB、読み込み 10 秒 → 4 秒)
 - **コマンドの大きさ**: 1 コマンドの制御コードはデバイスのヒープ (64 MiB) に、時間は amdxdna の 2 秒に収める。テキストは 7 層ごとに空のホストステップ (`iron.on_host`) でコマンドを分けた (80 MB の ELF が 5 コマンドに)。DiT では同じ分け方で最初のコマンドが `ERT_CMD_STATE_TIMEOUT` で止まった (原因は未調査) ので、4 ブロック (制御コード 20 MB、1.0 秒) を 1 コマンドにし、グループごとにグラフを呼ぶ。VAE は段ごとに別のグラフ
-- **交差注意**: IRON の MHA はクエリより短いキーを取らない (クエリがキーの最後の行という前提)。4096 個のパッチを 512 行ずつに分け、それぞれ 512 個のテキストのキーに注意する
+- **交差注意** (2026-11-15、design.md 16.205、`--dit-cross trim` が既定): 4096 個のパッチを 1 回で、プロンプトの行 (per-call の `nt`、Go の `anima.condRows` が条件づけの末尾の 0 の行から数える) のキーだけに注意する。残りの 0 の行のキーと値も 0 なので、それぞれ e^{0 − m} を softmax の和に足すだけ (`iron_mha.ImageMHA(zero_keys=512)`、`kernels/mha_zero_keys.cc`)。IRON の MHA の「クエリはキーの最後の行」(kv_len ≥ クエリ) は因果も窓もなければ読まれないので、`zero_keys` では K と V が短くてよい。前の形 (`--dit-cross chunks`) は 512 行ずつ 8 回、512 キー全部
 - **アダプタのマスク**: 注意のキーを有効な行に切る (`k[:n]`)。出力の有効でない行はホストがゼロにする (アダプタのマスクと 512 行への埋めと同じ)
 - **VAE の畳み込み**: チャネルを最後に置いた、ゼロで囲んだ格子 (各行 W + 16 画素、上下に 1 行) にし、3 × 3 の畳み込みは格子を `iron_gridgemm.GridGEMM` がそのまま読む GEMM (1 つか kernel の行ごとに 3 つ)、拡大は出力の 4 つの位相ごとの低い解像度の 2 × 2 の畳み込みにする (2026-11-10、Sana の 14 節と同じ。前は Copy で近傍 9 画素を集めた im2col の行列と GEMM 1 回、`--vae-conv im2col`)。結果の内側だけを次の格子に Copy で書き戻すので、囲みはずっとゼロのまま (RMS 正規化と SiLU はゼロをゼロのままにする)。行数は 256 の倍数に揃える (GEMM のタイルと、格子全体の写しが奇数の長さに分かれないため)。中段の注意は 1 ヘッド 384 次元で、MHA は `d=384` を取る (16384 行で 423 ms)
 - **注意** (2026-11-10、design.md 16.147): `iron_mha.ImageMHA`。因果なしなのでキーを 64 ずつにして mha.cc の速い softmax を通し、P·V を 2 コアにして QK^T だけを bfp16 で掛ける。4096 × 4096 × 16 × 128 が 146 → 59 ms。`--dit-mha bf16` は積を bf16 のまま (103 ms)、`qkpv` は P·V も bfp16 (54 ms)
@@ -245,6 +245,7 @@ hwnpu のエンジンは、ロジットを受け取ってホストで標本を�
 | VAE (10 段) | 5.2 秒 (段ごとの読み込みを含む。前は 10 秒) |
 | 合計 | 約 44 秒 (前は約 68〜70 秒)。1 枚の電力量 688 J (前は約 1000 J) |
 | 16.200 の後 (DiT の重み bfp16、GELU、ヘッドの RMSNorm、組の先読み) | 約 35〜36 秒 (DiT 1 ステップ 3.6〜3.8 秒)。fp32 との潜在のコサイン 0.947 → 0.975 |
+| 16.205 の後 (交差注意をプロンプトの行だけに、1 回で) | 約 33 秒 (DiT 1 ステップ 3.2 秒)、572〜615 J |
 | 固定されたメモリの最大 | 3.4 GiB (DiT の重み q8。bf16 では 5.0 GiB、全部を読み込んだままだと 14.2 GiB) |
 
 CPU (diffusers、fp32、9 分 17 秒) を参照に、同じノイズから:
@@ -273,7 +274,7 @@ DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`
 
 ### 11.5 残り
 
-- 速さ: 注意は 16.147 で 2.5 倍に (1 枚 70 → 44 秒)。残る律速は P·V のコア (bf16) と softmax の exp2 の多項式、DiT の射影と MLP の GEMM
+- 速さ: 注意は 16.147 で 2.5 倍に (1 枚 70 → 44 秒)、交差注意は 16.205 で 1 ブロック約 13 → 5 ms。残る律速は自己注意の P·V のコア (bf16) と softmax の exp2 の多項式 (1 塊約 6 000 サイクルずつで釣り合う)、DiT の射影と MLP の GEMM
 - ComfyUI のノードからの呼び出し (同じグラフを持つサーバー) は未実装
 - DiT をホストステップで分けると止まる原因
 - 512 × 512 は書き出せる (`--size 512`、2026-11-08): 1 枚 14 秒 (16.147 の前は 20 秒)、固定の最大 1111 MiB
@@ -299,6 +300,7 @@ go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low 
 | Anima-Aesthetic、1024²、オイラー法 30 ステップ、CFG 4 (モデルカード) | 4 分 40 秒 | 9.1 秒/ステップ | 4.8 kJ | 2409 MiB |
 | **Anima-Aesthetic、1024²、DPM-Solver++ 2M 25 ステップ、CFG は σ ≥ 0.6 の 17 ステップ (既定、16.154)** | **3 分 19 秒** | 7.6 秒/ステップ | **3.8 kJ** | 2409 MiB |
 | 同じ設定、16.200 の後 (DiT の重み bfp16 ほか、`HWNPU_ENERGY` で測った) | **2 分 37 秒** | 6.0 秒/ステップ | 2.84 kJ (16.200 の前の q8 で 3.04 kJ) | 2409 MiB |
+| 同じ設定、16.205 の後 (交差注意をプロンプトの行だけに。前の書き出しは同じ日に 2 分 40 秒、3.03 kJ) | **2 分 22 秒** | 5.4 秒/ステップ | 2.71 kJ | 2409 MiB |
 | Anima-Aesthetic、512²、オイラー法 30 ステップ、CFG 4 | 1 分 23 秒 | 2.5〜2.7 秒/ステップ | | |
 | Anima-Aesthetic、512²、既定 | 約 1 分 | 2.2 秒/ステップ | | |
 
@@ -1171,3 +1173,47 @@ Go の評価器に足した演算: If (枝が外の値を読む分を If の入�
 - 3 枚の写真と 5 つのプロンプト (点 4 つ、箱 1 つ) の 15 の mask で、NPU と CPU (ONNX Runtime) の mask の IoU は 0.93〜1.0 (10 は 0.99 以上。0.95 未満の 2 つはスコア 0.28 と 0.37 の候補)、スコアの差は 0.01 以内。既定で書く一番スコアの高い mask は、5 つとも IoU 0.989 以上
 - 電力量はまだ測っていない
 
+
+## 24. FLUX.2 klein 4B: 生成と参照画像の編集 (`hwnpu-image generate -m flux2-klein`、2026-11-15)
+
+design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG なし。
+
+### 24.1 構成 (`tools/amd/iron_flux2klein.py`)
+
+| グラフ | 中身 | 呼ぶ回数 |
+|---|---|---|
+| text | Qwen3-4B の 36 層のうち 27 層 (bf16、HIGHEST、SiLU は `iron_silu.SiLUF32`)、3 層 × 9 組、512 行を 1 回で。プロンプトの行は因果、パッドの行はプロンプトのキーだけ (注意 2 回を `sel` で選ぶ) | プロンプトごとに 9 組 |
+| ctx | context_embedder (層 9、18、27 の後の隠れ状態から 3072 列) | プロンプトごとに 1 回 |
+| mods | 時刻の埋め込みと変調の線形 4 つ | ステップの前に全ステップ分 |
+| dit_in、dit_in_nROWS | x_embedder | 1 ステップ 1 回 |
+| doubles、singles (`_nROWS`: 参照つきの 1 ステップの行数ごと。`_n8704` は等倍 1 枚にも半分 4 枚にも使う) | double 1 つ × 5 組、single 2 つ × 10 組 (bfp16、注意は QK^T と P·V が bfp16、指数は `exp2_mid.h`)。`_nROWS` のバンクは参照なしのものを指す | 1 ステップ 15 組 |
+| dit_out | norm_out と proj_out | 1 ステップ 1 回 |
+| vae/s0..s9 | 復号器。GroupNorm は演算子 2 つとホストの計算 (`iron_groupnorm.py`) | 1 枚 1 回 |
+| vae_enc/s0..s5、vae_enc_d2 | 符号器 (参照の大きさ、その半分の辺) | 参照 1 枚に 1 回 |
+
+### 24.2 測定 (Ryzen AI 9 365、16.208 の後)
+
+| | 512² | 1024² |
+|---|---|---|
+| 1 ステップ (生成、編集、参照を半分で読む編集) | 1.3 秒、2.2 秒 | 4.4 秒、11.2 秒、5.6 秒 |
+| 1 枚 (生成、編集、参照を半分で読む編集) | 10.5 秒、15 秒 | 29 秒、59 秒、37 秒 |
+| ピークのメモリ (生成、編集) | 1.9 GB、1.5 GB | 3.9 GB (NPU 3.43 GiB) |
+| CPU の float32 との潜在のコサイン (生成、編集) | 0.975、0.998 | 0.961、0.996 |
+| 書き出し | 12 GB (512² と重みを共有) | 12 GB |
+
+16.206 の時点では 1024² が 39 秒と 1 分 22 秒、4.9 GB。VAE の段のバッファの使い回し、注意の P·V の bfp16 とソフトマックスの指数、重みの読み方 (16.207)、VAE の GroupNorm と参照を半分で読む編集 (16.208) で縮めた。
+
+### 24.3 手順
+
+```
+python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024
+hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"
+hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
+hwnpu-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 is sitting on the sofa in the living room from image 2."
+~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/ref_flux2klein.py ~/models/FLUX.2-klein-4B OUT --size 512   # 参照
+hwnpu-image generate -m EXPORT --noise OUT.noise.bin --latents got.lat --dump DIR "..."                       # 参照と同じノイズで
+```
+
+- `--refs` は参照つきのブロックを書き出す (N: 絵の大きさの N 枚、NdD: 辺が 1/D の N 枚、A+BdD: 混在。`hwnpu-image generate -i FILE@half` が d2)。グラフは 1 ステップの行数だけで決まるので `_nROWS` と名付け、同じ行数の指定は 1 回だけコンパイルする。既定は 4 枚までの等倍と半分の組み合わせのうち 12800 行までで、1024² は 5632〜12800 行の 8 つ (半分 1〜4 枚、等倍 1 枚 + 半分 0〜3 枚、等倍 2 枚)、512² は 2048〜5632 行の 7 つ。時間と照合は design.md 16.209。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
+- `--text q8` や `q6` は文の書き出しを小さくするが、パッドの行が参照から離れる (16.206)
+- 電力量はまだ測っていない

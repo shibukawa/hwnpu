@@ -137,7 +137,8 @@ def _derived_entry(w, derived: dict, version: str) -> dict:
     """A word with no closed form: an MHA derivation by its constants and extents, or else a
     table over a prompt chunk's rows (the words of the row counts)."""
     op, name, counts = derived[w.symbol]
-    if type(op).__name__ == "MHA":
+    # IRON's MHA or a subclass that keeps its per-call words (iron_mha.ImageMHA)
+    if type(op).__name__ in ("MHA", "ImageMHA"):
         const = {}
         for k in MHA_CONSTANTS:
             v = getattr(op, k)

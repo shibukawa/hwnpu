@@ -9,20 +9,16 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
 
-// TestVAEPeak checks the VAE's peak follows Decode's rule: a stage with the next beside it only
-// where PrefetchLimit lets them load together.
+// TestVAEPeak checks the VAE's peak follows run's rule: the stages share a buffer a bank kind, as
+// large as the largest stage's, and a stage holds its own arguments beside them.
 func TestVAEPeak(t *testing.T) {
-	v := &VAE{sizes: []int64{100, 300, 250, 50}}
-	if got := v.Peak(); got != 550 {
-		t.Errorf("no limit: peak %d, want 550 (stages 1 and 2 together)", got)
-	}
-	v.PrefetchLimit = 400
-	if got := v.Peak(); got != 400 {
-		t.Errorf("limit 400: peak %d, want 400 (stages 0 and 1)", got)
-	}
-	v.PrefetchLimit = 200
-	if got := v.Peak(); got != 300 {
-		t.Errorf("limit 200: peak %d, want 300 (stage 1 alone)", got)
+	v := &VAE{info: []stageInfo{
+		{banks: map[string]int{"scratch": 100}, args: 10},
+		{banks: map[string]int{"scratch": 300, "weights": 20}, args: 40},
+		{banks: map[string]int{"scratch": 250}, args: 60},
+	}}
+	if got := v.Peak(); got != 300+20+60 {
+		t.Errorf("peak %d, want 380 (the largest scratch and weights banks, the largest arguments)", got)
 	}
 }
 
@@ -60,16 +56,20 @@ func TestPrefetchFits(t *testing.T) {
 	}
 	root := t.TempDir()
 	writeGraph(t, filepath.Join(root, "dit_in"), 10, 6)
-	writeGraph(t, filepath.Join(root, "dit_blocks"), 400, 20)
+	writeGraph(t, filepath.Join(root, "dit_blocks"), 1400, 20)
 	stage := []string{"dit_in", "dit_blocks"}
-	// the stage pins 16 + 420 MiB, with the prefetch's bank 836 MiB
-	v := &VAE{sizes: []int64{900 << 20}}
+	// the stage pins 16 + 1420 MiB, with the prefetch's bank 2836 MiB and the margin 3220: over PrefetchFloor
+	v := &VAE{info: []stageInfo{{args: 3300 << 20}}}
 	if !PrefetchFits(v, root, stage, "dit_blocks") {
-		t.Error("836 MiB within a 900 MiB peak: no prefetch")
+		t.Error("3220 MiB within a 3300 MiB peak: no prefetch")
 	}
-	v.sizes = []int64{800 << 20}
+	v.info = []stageInfo{{args: 3100 << 20}}
 	if PrefetchFits(v, root, stage, "dit_blocks") {
-		t.Error("836 MiB over an 800 MiB peak: prefetched")
+		t.Error("3220 MiB over a 3100 MiB peak: prefetched")
+	}
+	writeGraph(t, filepath.Join(root, "small"), 400, 20)
+	if !PrefetchFits(v, root, []string{"small"}, "small") {
+		t.Error("820 MiB and the margin under PrefetchFloor: no prefetch")
 	}
 	if PrefetchFits(nil, root, stage, "dit_blocks") || PrefetchFits(v, root, []string{"missing"}, "missing") {
 		t.Error("prefetched without a VAE or a manifest")

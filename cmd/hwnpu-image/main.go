@@ -58,6 +58,8 @@
 // qwen-image:2.1, 40 steps, guidance with --guidance and --negative; tools/amd/iron_qwenimage.py,
 // internal/imagegen/qwenimage) and Chroma1 (chroma: Chroma1-Flash, Heun's 8 steps; chroma:1-hd,
 // guidance 3 with DPM-Solver++ 2M 25 steps; tools/amd/iron_chroma.py, internal/imagegen/chroma).
+// FLUX.2 klein 4B (flux2-klein: 4 steps without guidance; --image gives reference images to edit or
+// compose from; tools/amd/iron_flux2klein.py, internal/imagegen/flux2klein) runs on AMD's NPU alone.
 // Chroma1 also runs on Apple's Neural Engine, downloaded and converted into
 // Core AI programs on its first run as Sana is (T5-XXL at lut8 with its FF output projection at fp16, the DiT at lut8).
 // A model whose license restricts its use (Qwen-Image-2.1's research license, Anima's

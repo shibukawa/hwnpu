@@ -53,6 +53,23 @@ Apple の Neural Engine では、`hwnpu-image generate -m sana "..."` などで 
 
 AMD の NPU では `tools/amd/iron_chroma.py` の書き出しを使います ([docs/amd-npu-models.md](docs/amd-npu-models.md))。Apple の Neural Engine では、初回にチェックポイント (27.5 GB) を落とし、Go だけで Core AI のプログラムに変換して (約 1 分)、Neural Engine 用にコンパイルします。T5-XXL は lut8 (外れ値を出す FF の出力の射影だけ fp16) で 3 層ずつ読んで閉じ、DiT は lut8、VAE は fp16 で、全部が Neural Engine に載ります。M1 (16 GB) で、2 回目からの 1 枚は Chroma1-Flash の 512 × 512 で約 2 分、1024 × 1024 で約 9 分半、Chroma1-HD の 1024 × 1024 で約 22 分です (初回は Neural Engine 用のコンパイルが約 1 時間半。HD は Flash の書き出しから T5 と VAE を共有します)。DiT の重み (8.3 GiB) を Neural Engine に固定したまま回すので、16 GB 以上の Mac が要ります。CPU の float32 と同じノイズからの潜在のコサインは 0.987〜0.997 (3 プロンプト × 2 種、512²) で、絵は同じです。記録は [docs/design.md](docs/design.md) の 16.170 にあります。手で書き出すときは `hwnpu-image convert ~/models/Chroma1-Flash -m OUT --tokenizer T5_TOKENIZER.json` (T5 と VAE が別の場所なら `--text`) を使います。
 
+## 画像生成と編集 (FLUX.2 klein)
+
+`hwnpu-image generate -m flux2-klein` は Black Forest Labs の FLUX.2 klein 4B (3.9B の DiT、Qwen3-4B、FLUX.2 の VAE、Apache-2.0) で描きます。蒸留済みで、4 ステップ、CFG なしです (`--negative` と `--guidance` は使えません)。`--image` で参照画像を渡すと、その絵を編集します。
+
+```
+hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"
+hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
+```
+
+- 今は AMD の NPU だけです。`tools/amd/iron_flux2klein.py` の書き出し (`~/models/flux.2-klein-4b.amd-npu2`) を使います ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 24 節)
+- Ryzen AI 9 365 で、1024 × 1024 の 1 枚が約 29 秒、参照 1 枚の編集が約 1 分です。512 × 512 の書き出しでは 11 秒と 15 秒です。メモリのピークは 1024 × 1024 で 3.9 GB (512 × 512 で 1.9 GB) です
+- 参照を `-i FILE@half` と書くと、その参照だけ絵の半分の辺で読みます。1024 × 1024 の参照 1 枚の編集が約 37 秒になり、その参照の細部は少し減ります。何も付けなければ絵と同じ大きさで読みます
+- 参照は 4 枚まで渡せます。`--image` (`-i`) を枚数だけ繰り返し、プロンプトでは渡した順に image 1、image 2 と呼びます。例: `hwnpu-image generate -m flux2-klein -i fox.png -i room.png "The fox from image 1 is sitting on the sofa in the living room from image 2."`
+- 大きさは参照ごとに選べます。被写体は同じ大きさ、背景や画風は `@half` にすると、質と時間の釣り合いが取れます (例: `-i fox.png -i room.png@half`)。1024 × 1024 の 1 枚の時間: `@half` 2 枚 42 秒、3 枚 50 秒、4 枚 1 分。同じ大きさ 1 枚 + `@half` 1 枚 1 分 8 秒、+ 2 枚 1 分 18 秒、+ 3 枚 1 分 30 秒。同じ大きさ 2 枚 1 分 41 秒 (同じ大きさは 2 枚まで)。512 × 512 では同じ大きさで 4 枚まで (2 枚 20 秒、4 枚 32 秒) で、`@half` は 2 枚か 4 枚にします (1 枚や 3 枚は行数が合わず、動かせる組み合わせを示すエラーになります)。メモリのピークは 1024 × 1024 で 3.9 GB のままです
+- 参照画像は、絵の縦横比に合わせて中央を切り出し、絵の大きさ (`@half` ではその半分) に縮めて (拡げて) 使います
+- 編集の指示は、変えるところと残すところを文で書きます。プロンプトは英語が前提です
+
 ## 深度推定 (Depth Anything 3、MoGe-2)
 
 `go run ./cmd/hwnpu-image depth` は、AMD の NPU か Apple の Neural Engine (Intel の NPU も。実機では未確認) で写真の深度を推定します。モデルは Depth Anything 3 (Apache-2.0) の DA3MONO-LARGE (既定、相対の深度)、DA3METRIC-LARGE (`--fov` か `--focal` でメートル)、DA3-SMALL / BASE (軽い版、深度と確信度) です。画像ごとに `NAME.depth.png` (近いほど明るい) を書き、`--raw` で深度の float32、`--sky` で空 (SMALL / BASE は確信度) の画像も書きます。書き出しは縦横比ごとの大きさを持ち、画像に近いものを使います。`-m` は generate と同じく名前かファミリー (`da3:small`、`da3metric`、`moge`、`moge:vits`) か書き出しのディレクトリです。既定の用途 `depth` はメモリで選び、8 GB は DA3-SMALL、16 GB は DA3-BASE、24 GB 以上は DA3MONO-LARGE です (`depth:24g` や `-m DA3MONO-LARGE` で大きい方も)。

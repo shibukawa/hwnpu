@@ -201,6 +201,10 @@ func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32, con
 			return nil, err
 		}
 	}
+	rows := make([]map[string]int64, len(conds))
+	for k, cond := range conds {
+		rows[k] = map[string]int64{"nt": int64(condRows(cond, e.dit.TextDim))}
+	}
 	xs := make([][]byte, len(conds))
 	for k := range xs {
 		xs[k] = append([]byte(nil), x...) // Output's bytes are the graph's, which the next run writes
@@ -219,7 +223,7 @@ func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32, con
 			if err := e.ditBlocks.SetInput("x", xs[k]); err != nil {
 				return nil, err
 			}
-			if err := e.ditBlocks.Run(ctx, nil); err != nil {
+			if err := e.ditBlocks.Run(ctx, rows[k]); err != nil {
 				return nil, fmt.Errorf("blocks %d..%d: %w", g*e.dit.Group, (g+1)*e.dit.Group-1, err)
 			}
 			out, err := e.ditBlocks.Output(e.ditBlocks.Outputs()[0].Name)
@@ -244,6 +248,25 @@ func (e *ironEngine) velocity(ctx context.Context, patches, tproj []float32, con
 		vs[k] = fromBF16s(v)
 	}
 	return vs, nil
+}
+
+// condRows is the rows of a conditioning (rows of dim) before its trailing zero rows, at least 1:
+// dit_blocks' per-call nt. An export with --dit-cross trim attends those rows and counts the
+// zero rows' keys (zeros too) in the softmax, so the output is the same as over every row; an
+// export before it takes no nt.
+func condRows(cond []float32, dim int) int {
+	if dim <= 0 {
+		return len(cond)
+	}
+	n := len(cond) / dim
+	for ; n > 1; n-- {
+		for _, x := range cond[(n-1)*dim : n*dim] {
+			if x != 0 {
+				return n
+			}
+		}
+	}
+	return 1
 }
 
 func (e *ironEngine) hasVAE() bool { return e.vae != nil }
