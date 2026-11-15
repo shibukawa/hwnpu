@@ -72,6 +72,30 @@ type attention struct {
 	placement  hwnpu.PlacementReport
 	mass       *mass // the two-level attention's, nil when the manifest has none
 	chunk      int   // of a shorter chunk's (llm.Manifest.Smaller); 0 for the manifest's Paged
+	// family is the tier's attention programs, over every chunk length: a buffer for one of
+	// them is allocated as its input of that size (newBuf)
+	family []*attention
+}
+
+// newBuf allocates a buffer of n bytes for the attention programs of the tier: as the input of
+// that size of one of them, its keys and values (a chunk of the cache) before its mask, which
+// the backend may run without copying it (hwnpu.Graph.AllocInput: with Core AI a chunk of 8192
+// of LFM3-1.7B, 16 MiB of keys and values, was copied in 0.56 of the call's 2.07 ms on an M1),
+// else of the device. A buffer bound to an input of another shape of its size is copied as one
+// of the device's (a mask of 128 rows over 4096 keys is as large as LFM3-1.7B's 1024 keys).
+func (a *attention) newBuf(n int) (*hwnpu.Buffer, error) {
+	family := append([]*attention{a}, a.family...)
+	for _, f := range family {
+		if f.g.Args()[f.k].Bytes == n {
+			return f.g.AllocInput(f.k)
+		}
+	}
+	for _, f := range family {
+		if f.g.Args()[f.mask].Bytes == n {
+			return f.g.AllocInput(f.mask)
+		}
+	}
+	return a.dev.AllocBuffer(n)
 }
 
 // mass is the loaded program without weights that weighs a chunk of bucket summaries for the
@@ -223,6 +247,10 @@ func (t *tier) loadPaged(ctx context.Context, c *Chain, man *llm.Manifest) error
 		sa.chunk = r.Chunk()
 		t.smaller = append(t.smaller, sa)
 	}
+	family := append([]*attention{a}, t.smaller...)
+	for _, f := range family {
+		f.family = family
+	}
 	if man.Mass != nil {
 		if a.mass, err = loadMass(ctx, c, man.Mass.Path); err != nil {
 			return err
@@ -335,7 +363,7 @@ func (a *attention) program(ctx context.Context, chunk int) *decode.Attention {
 	return &decode.Attention{
 		Chunk: chunk,
 		Q:     a.q.Bytes(), O: a.o.Bytes(), M: a.m.Bytes(), L: a.l.Bytes(),
-		NewBuf: func(n int) (decode.Buf, error) { return a.dev.AllocBuffer(n) },
+		NewBuf: func(n int) (decode.Buf, error) { return a.newBuf(n) },
 		Run: func(k, v, mask decode.Buf) error {
 			for _, x := range []struct {
 				i int
@@ -486,9 +514,13 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 							t.close()
 							return nil, fmt.Errorf("chain: part %d takes %s of %d bytes, the shared buffer has %d", i, a.Name, a.Bytes, b.Size())
 						}
-					} else if b, err = alloc(a.Bytes); err != nil {
+					} else if b, err = p.g.AllocInput(a.Index); err != nil {
+						// (the caches among them: where the backend can, memory it runs from
+						// without a copy at each call)
 						t.close()
 						return nil, err
+					} else {
+						t.bufs = append(t.bufs, b)
 					}
 					t.inputs[a.Name], t.inShape[a.Name] = b, a.Dims
 				}

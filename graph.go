@@ -30,13 +30,39 @@ func (r graphRunner) Compile(ctx context.Context, src GraphSource) (*Graph, erro
 		_ = g.Close()
 		return nil, &PlacementError{Report: rep}
 	}
-	return &Graph{be: g, args: g.Args()}, nil
+	return &Graph{be: g, args: g.Args(), dev: r.d}, nil
 }
 
 // Graph is a compiled graph.
 type Graph struct {
 	be   backend.Graph
 	args []ArgInfo
+	dev  *Device
+}
+
+// AllocInput allocates the buffer of the input at index: where the backend can run an input
+// from memory of its own (Core AI: the array it is given, so that a run copies nothing), there;
+// elsewhere as Device.AllocBuffer of the argument's bytes. The buffer may be bound to any
+// argument of that shape, of this graph or another of the device. For the inputs that hold much
+// and change little from one run to the next: the caches of a language model.
+func (g *Graph) AllocInput(index int) (*Buffer, error) {
+	if g.be == nil {
+		return nil, ErrClosed
+	}
+	if index < 0 || index >= len(g.args) || g.args[index].Kind != ArgInput {
+		return nil, fmt.Errorf("hwnpu: argument %d is not an input", index)
+	}
+	size := g.args[index].Bytes
+	if a, ok := g.be.(backend.InputAllocator); ok {
+		b, err := a.AllocInput(index)
+		if err != nil {
+			return nil, err
+		}
+		if b != nil {
+			return &Buffer{be: b, size: size, dev: g.dev}, nil
+		}
+	}
+	return g.dev.AllocBuffer(size)
 }
 
 // Args lists the graph arguments. Inputs come first; the order defines Bind indices.
