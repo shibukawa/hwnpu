@@ -524,7 +524,7 @@ A command looks for a model in this order:
 - **Values that differ by NPU**: the download, the memory and the placement can differ from one NPU to another
   - Anima takes 3.5 GB on AMD, and 4.1 GB is the value for the Mac
   - The download differs too: AMD now downloads the checkpoint and exports here, and it will download only an export once distribution starts
-  - When they differ, write a table by vendor, in the same form as `device` (`memory: {amd: 3.5, apple: 4.1}`). A single value applies to every NPU. A vendor the table leaves out takes its largest value. The DOWNLOAD and MEMORY columns of `hwnpu-chat list` and `hwnpu-image list` show the values for this machine's NPU
+  - When they differ, write a table by vendor, in the same form as `device` (`memory: {amd: 3.5, apple: 4.1}`). A single value applies to every NPU. A vendor the table leaves out takes its largest value. Where one of Apple's chips differs, the table may name it too (`memory: {amd: 2.2, apple: 3.1, M1: 1.7}`: a Mac whose chip the table names takes that). The DOWNLOAD and MEMORY columns of `hwnpu-chat list` and `hwnpu-image list` show the values for this machine's NPU
 - **Uses pick by memory like their families**: give a use's `picks` the same steps as its family. The use `depth` listed only DA3MONO-LARGE, so an 8 GB machine got the model meant for 24 GB
 - **How to check**:
   - Print `hwnpu-image list` (`hwnpu-chat list`) with `HWNPU_MEMORY=8`, `16` and `24`. Check that the use's column and the family's column pick the same model

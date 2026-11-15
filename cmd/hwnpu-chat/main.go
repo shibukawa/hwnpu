@@ -87,7 +87,6 @@ func main() {
 		kong.UsageOnError(),
 		kong.Vars{
 			"models_usage": chat.ModelsUsage,
-			"tiers":        chat.DefaultTiers,
 			"embed_seqs":   ints(chat.DefaultEmbedSeqs),
 			"mtp":          chat.MTPAuto,
 		},

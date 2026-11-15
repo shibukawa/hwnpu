@@ -6685,6 +6685,26 @@ kv ヘッドごとの形は、kv ヘッド 1 つ分の問い合わせのヘッ�
 
 測っていないもの: Gemma 4 E2B のプロセスの分 (ディスクの空きが足りず、取り直さなかった。2.3 GB のまま)、Gemma 4 E4B、Qwen3.5-4B、PLaMo 3 Translate 8B (Core ML の頃の 8.2 GB のまま。Core AI では Neural Engine の 3.81 GiB にプロセスの 0.3 GiB 前後のはず)、d1、M2 と M3 の実機。`hwnpu-chat list` の MEMORY はベンダーごとの値で、M1 でも M2 以降の形の値を出す (LFM3-1.7B は 3.1 GB と出るが、M1 では 1.7 GB)。
 
+### 16.222 8 GB の機械では短い会話用の 1 本を読まない: models.yaml の `tier`、`memory` のチップの欄、Qwen3.5-2B を 8 GB に — 2026-11-15
+
+16.221 の値を見て、機械のメモリごとの選び方を見直した。
+
+- **8 GB の機械では、短い会話用の分けない 1 本 (16.188) を読まない**。この 1 本は重みをもう 1 組持つ: LFM3-1.7B は 1.7 GB が 3.1 GB になり、8 GB の機械の目安 (約 3 GB) を越える。16 GB からは今までどおり。機械のメモリごとの違いは `variants` (16.154 の Qwen3-1.7B の `prefill` と同じ) で書く
+  - 動かし方の欄に **`tier`** を足した (`chat.Run.Tier`): `--tier` と同じ `auto`、`none`、長さの並び。`--tier` は、与えなければモデルの定義、それも無ければ `auto` (フラグは `*string` にして、与えていないことと空の `--tier=` を分ける)
+  - `LFM3-1.7B` と `Qwen3.5-0.8B` に `tier: none` と `variants: {16: {…, tier: auto}}`。**Qwen3-0.6B は変えない**: 1 本を足しても 1.6 GB で目安の中、M3 では 1 本の方が 2 倍近く速い (16.188 の 68 対 34〜40 トークン/秒)。それに `tier` はベンダーを分けないので、Intel の NPU で分けずに動かす形の 4096 の段まで消してしまう
+  - Qwen3-1.7B の `prefill: off` (16 GB 未満) はそのまま。Core AI で省けるのは 0.3 GB になったが (16.221)、8 GB では小さい方を既定にする。速い方が欲しければ `--prefill on`
+- **`memory` にチップの欄** (`chat.PerVendor`): `memory: {amd: 2.2, apple: 3.1, M1: 1.7}`。Apple の NPU で、その Mac のチップ (`chat.Chips`: M1〜M5、`not_on` と同じ名前) の欄があればそれを取る。`hwnpu-chat list` の MEMORY は、M1 では LFM3-1.7B を 1.7 GB と出す (16.221 では 3.1 GB と出ていた)。用途やファミリーで同じ列の候補を比べる値 (`Model.Memory`) は今までどおりチップを見ない
+- **Qwen3.5-2B を 8 GB に** (`machine: 16` → `8`): 2.2 GB で収まる。`-m qwen3.5` は 8 GB で 2B を選ぶ (0.8B は `qwen3.5:0.8b`)。初回の変換でプロセスが 6.0 GiB になるので、8 GB の機械では変換済みのプログラムを取ってくる形が前提 (配る仕組みは別の変更)
+- MODEL.md: 8 GB の列に Qwen3.5-2B、「いくつも同時に」の 8 GB を「1 つずつ」から「LFM3-1.7B + PLaMo 3 Translate 0.8B (Apple 2.7 GB、AMD 3.2 GB)」に
+
+| 8 GB の機械 (Apple) | これまで | これから |
+|---|---|---|
+| LFM3-1.7B (`-m chat`) | M1 1.7 GB、M2 以降 3.1 GB | 1.7 GB |
+| Qwen3.5-0.8B | M1 1.5 GB、M2 以降 2.3 GB | 1.5 GB |
+| `-m qwen3.5` | Qwen3.5-0.8B | Qwen3.5-2B (2.2 GB) |
+
+確かめたこと: `TestBuiltinTier` (8 GB と 16 GB の `tier`、M1 と M3 と AMD のメモリ、`tier` の値の検査、ユーザーのファイル)、`TestPerVendor` (チップの欄)、`TestTags` (`qwen3.5` の 8 GB)、`--tier` の解析。`HWNPU_MEMORY=8`、`16` の `hwnpu-chat list`。確かめていないこと: M2 と M3 の実機 (8 GB で 1 本を読まないときの速さ。16.188 の M3 では 1 本つきが 8 % 速かった)。
+
 ### 16.224 Sana の Gemma 2 に指示文のキーと値を持たせる (Core AI): プロンプトの後ろの行だけを計算する — 2026-11-15
 
 16.210 の残りの最後で、AMD の 16.138 の Mac 版。Sana のプロンプトは 208 トークンの指示文 (`sana.Instruction`) の後に続き、Gemma 2 は 512 行を全部計算していた: 11 トークンのプロンプトで 217 行が中身で、残すのは 11 行。指示文の行は、因果的な注意なのでどのプロンプトでも同じ。M1 (16 GB、macOS 27.2.1、26B131)、Sana 600M の 512²、2 回目から。

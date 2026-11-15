@@ -54,12 +54,22 @@ func ChooseDevice(m Model, vendor, flag string) (device, why string, err error) 
 // PerVendor is a value by the vendor of the machine's NPU (Vendors); "" holds the one for the
 // vendors it does not name. A definition writes it as one number (every vendor) or as a table
 // of vendors (memory: {amd: 3.5, apple: 4.1}): what a model takes and downloads can differ by
-// NPU (Anima-Turbo: 3.5 GB on AMD's, 4.1 on Apple's).
+// NPU (Anima-Turbo: 3.5 GB on AMD's, 4.1 on Apple's). The table may also name Apple's chips
+// (Chips) where one differs from the others (memory: {amd: 2.2, apple: 3.1, M1: 1.7}: an M1
+// does not load LFM3-1.7B's whole program of short conversations).
 type PerVendor map[string]float64
 
-// For is the value for vendor: its own, else the one for every vendor, else the largest of the
-// table (a vendor it leaves out is not assumed to need less).
+// For is the value for vendor: on Apple's, this machine's chip's when the table names it, else
+// the vendor's own, else the one for every vendor, else the largest of the table (a vendor it
+// leaves out is not assumed to need less).
 func (p PerVendor) For(vendor string) float64 {
+	if vendor == "apple" {
+		if c := chipName(); c != "" {
+			if v, ok := p[c]; ok {
+				return v
+			}
+		}
+	}
 	if v, ok := p[vendor]; ok {
 		return v
 	}
@@ -73,7 +83,7 @@ func (p PerVendor) For(vendor string) float64 {
 	return m
 }
 
-// UnmarshalYAML reads a number or a table of vendors.
+// UnmarshalYAML reads a number or a table of vendors and chips.
 func (p *PerVendor) UnmarshalYAML(unmarshal func(any) error) error {
 	var one float64
 	if err := unmarshal(&one); err == nil {
@@ -82,11 +92,11 @@ func (p *PerVendor) UnmarshalYAML(unmarshal func(any) error) error {
 	}
 	var by map[string]float64
 	if err := unmarshal(&by); err != nil {
-		return fmt.Errorf("a number or a table of vendors (%s)", strings.Join(Vendors, ", "))
+		return fmt.Errorf("a number or a table of vendors (%s) and chips (%s)", strings.Join(Vendors, ", "), strings.Join(Chips, ", "))
 	}
 	for v := range by {
-		if !slices.Contains(Vendors, v) {
-			return fmt.Errorf("vendor %q is not one of %s", v, strings.Join(Vendors, ", "))
+		if !slices.Contains(Vendors, v) && !slices.Contains(Chips, v) {
+			return fmt.Errorf("%q is not a vendor (%s) or a chip (%s)", v, strings.Join(Vendors, ", "), strings.Join(Chips, ", "))
 		}
 	}
 	*p = by

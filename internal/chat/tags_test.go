@@ -33,7 +33,7 @@ func TestPick(t *testing.T) {
 		{"audio", 8, "LFM3-Audio-2B"},
 		{"audio", 16, "LFM3-Omni-2B"},
 		{"embed", 16, "plamo-embedding-1b"},
-		{"qwen3.5", 8, "Qwen3.5-0.8B"},
+		{"qwen3.5", 8, "Qwen3.5-2B"}, // 2.2 GB: for 8 GB too (the 0.8B by its tag)
 		{"qwen3.5", 16, "Qwen3.5-2B"},
 		{"qwen3.5", 24, "Qwen3.5-4B"},
 		{"qwen35:4b", 16, "Qwen3.5-4B"},
@@ -184,6 +184,28 @@ func TestPerVendor(t *testing.T) {
 	}
 	if err := yaml.Unmarshal([]byte("memory: {nvidia: 1}\n"), &e); err == nil {
 		t.Error("an unknown vendor was taken")
+	}
+	// a table names a chip of Apple's where it differs: this machine's on Apple's NPU, and no
+	// other vendor's
+	defer func(f func() string) { chipName = f }(chipName)
+	var c modelEntry
+	if err := yaml.UnmarshalWithOptions([]byte("memory: {amd: 2.2, apple: 3.1, M1: 1.7}\n"), &c, yaml.DisallowUnknownField()); err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []struct {
+		chip, vendor string
+		want         float64
+	}{
+		{"M1", "apple", 1.7}, {"M3", "apple", 3.1}, {"", "apple", 3.1},
+		{"M1", "amd", 2.2}, {"M1", "intel", 3.1}, {"M1", "", 3.1},
+	} {
+		chipName = func() string { return w.chip }
+		if got := c.Memory.For(w.vendor); got != w.want {
+			t.Errorf("memory for %q on %q: %v, want %v", w.vendor, w.chip, got, w.want)
+		}
+	}
+	if err := yaml.Unmarshal([]byte("memory: {M9: 1}\n"), &c); err == nil {
+		t.Error("an unknown chip was taken")
 	}
 	// a table over a number changes its vendors; a number over a table replaces it
 	dst := &modelEntry{Memory: &PerVendor{"": 4.1}}

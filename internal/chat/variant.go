@@ -8,19 +8,24 @@ import (
 )
 
 // Run is how hwnpu-chat runs a chat model when its flags do not say: models.yaml's prefill,
-// format, context and paged, the defaults of --prefill, --format, --context and --paged ("" and
-// 0: hwnpu-chat's own).
+// format, context, paged and tier, the defaults of --prefill, --format, --context, --paged and
+// --tier ("" and 0: hwnpu-chat's own).
 type Run struct {
 	Prefill string // PrefillAuto, PrefillOn or PrefillOff
 	Format  string // the weight format of its programs (lut8, int8, ...)
 	Context int    // tokens of a prompt and its answer together
 	Paged   int    // the chunk length to split it at its attention with, -1 never
+	// Tier is the caches shorter than the context to run on while a conversation is short, as
+	// --tier takes them (Tiers): auto, none or a list. LFM3-1.7B has none on a machine of 8 GB,
+	// where the whole program of short conversations would hold its weights a second time
+	// (3.1 GB against 1.7), and auto from 16 GB.
+	Tier string
 }
 
 // over is r with the fields o gives.
 func (r Run) over(o Run) Run {
 	return Run{Prefill: cmp.Or(o.Prefill, r.Prefill), Format: cmp.Or(o.Format, r.Format),
-		Context: cmp.Or(o.Context, r.Context), Paged: cmp.Or(o.Paged, r.Paged)}
+		Context: cmp.Or(o.Context, r.Context), Paged: cmp.Or(o.Paged, r.Paged), Tier: cmp.Or(o.Tier, r.Tier)}
 }
 
 // zero reports whether r gives nothing.
@@ -28,8 +33,8 @@ func (r Run) zero() bool { return r == Run{} }
 
 // Variant is a model's settings on a machine of more memory than its Machine (models.yaml's
 // variants): what it takes running and how it runs, the fields it gives replacing the model's.
-// Qwen3-1.7B reads prompts with a program of its own from 16 GB, where the 3.26 GiB of its two
-// programs fit, and with the one that generates on 8 GB.
+// Qwen3-1.7B reads prompts with a program of its own from 16 GB and with the one that generates
+// on 8 GB; LFM3-1.7B has its whole program of short conversations from 16 GB.
 type Variant struct {
 	Memory PerVendor // nil: the model's
 	Run    Run
@@ -62,9 +67,10 @@ type RunEntry struct {
 	Format  *string `yaml:"format"`
 	Context *int    `yaml:"context"`
 	Paged   *int    `yaml:"paged"`
+	Tier    *string `yaml:"tier"`
 }
 
-// variantEntry is a variant in a definition file: variants: {16: {memory: 7.6, prefill: auto}}.
+// variantEntry is a variant in a definition file: variants: {16: {memory: 2.3, prefill: auto}}.
 type variantEntry struct {
 	Memory   *PerVendor `yaml:"memory"`
 	RunEntry `yaml:",inline"`
@@ -93,6 +99,14 @@ func toRun(e RunEntry) (Run, error) {
 			return r, fmt.Errorf("paged %d is not a chunk of tokens or -1 (never)", r.Paged)
 		}
 	}
+	if e.Tier != nil {
+		if r.Tier = strings.TrimSpace(*e.Tier); r.Tier == "" {
+			return r, fmt.Errorf("tier is empty (none for no shorter caches)")
+		}
+		if _, err := Tiers(r.Tier); err != nil {
+			return r, fmt.Errorf("tier %q is not auto, none or a list of caches: %w", r.Tier, err)
+		}
+	}
 	return r, nil
 }
 
@@ -114,7 +128,7 @@ func toVariants(m Model, es map[int]*variantEntry) (map[int]Variant, error) {
 			return nil, fmt.Errorf("variant of %d GB: %w", gb, err)
 		}
 		if !r.zero() && m.Kind != KindChat {
-			return nil, fmt.Errorf("variant of %d GB: prefill, format, context and paged are for chat models (hwnpu-chat)", gb)
+			return nil, fmt.Errorf("variant of %d GB: prefill, format, context, paged and tier are for chat models (hwnpu-chat)", gb)
 		}
 		v := Variant{Run: r}
 		if e.Memory != nil {

@@ -35,16 +35,17 @@
 #   bytes         the size of the download (the files preparation fetches, GB of 10^9 bytes)
 #                 memory and bytes take one number, or a table by the NPU's vendor where they
 #                 differ (memory: {amd: 3.5, apple: 4.1}); a vendor the table leaves out takes its
-#                 largest
+#                 largest. The table may name Apple's chips too (M1, M2, ...), where one differs
+#                 from the others (memory: {amd: 2.2, apple: 3.1, M1: 1.7})
 #   features      what it can do besides its kind (hwnpu-chat list explains them)
 #   no_think      answers without thinking unless asked (its chat template's own default)
-#   prefill, format, context, paged
+#   prefill, format, context, paged, tier
 #                 how hwnpu-chat runs a chat model when its flags (--prefill, --format, --context,
-#                 --paged) do not say: auto, on or off; a weight format (lut8); tokens; a chunk of
-#                 tokens or -1
+#                 --paged, --tier) do not say: auto, on or off; a weight format (lut8); tokens; a
+#                 chunk of tokens or -1; auto, none or a list of caches
 #   variants      the model on machines of more memory than machine, by the least memory in GB:
-#                 each changes the memory and the four above that it gives, on machines of that
-#                 much or more (variants: {16: {memory: 7.6, prefill: auto}}); a file of your own
+#                 each changes the memory and the five above that it gives, on machines of that
+#                 much or more (variants: {16: {memory: 2.3, prefill: auto}}); a file of your own
 #                 changes the variants it names
 #   amd_export    how tools/amd/iron_export_lm.py exports it for AMD's NPU: its model and options.
 #                 Without an export here (~/models/NAME.amd-npu2, with -q4 or -q6 for --q4 and
@@ -74,11 +75,15 @@ models:
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-1.7B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
     # Apple (Core AI, measured on an M1, 2026-11-15, docs/design.md 16.221): the programs split
     # at the attention hold the weights once, 1.36 GiB on the Neural Engine and the process's
-    # 0.23 GiB, 1.7 GB: all an M1 loads (16.218). An M2 or later also loads the whole program of
-    # short conversations (16.188) with its own copy of the weights: 2.64 + 0.21 GiB, 3.1 GB
-    # (an M1 made to load it, --tier 2048)
+    # 0.23 GiB, 1.7 GB. The whole program of short conversations (16.188) holds them once more,
+    # 2.64 + 0.21 GiB, 3.1 GB (an M1 made to load it, --tier 2048): over what a machine of 8 GB
+    # has for models, so none there (tier: none; --tier auto has it, 16.222), and from 16 GB on
+    # an M2 or later (an M1 never loads it, 16.218)
     machine: 8
-    memory: {amd: 2.2, apple: 3.1}
+    memory: {amd: 2.2, apple: 1.7}
+    tier: none
+    variants:
+      16: {memory: {apple: 3.1, M1: 1.7}, tier: auto}
     bytes: 3.5e9
     features: [tools, thinking]
     amd_export: lfm3 --max-seq-len 12288 --q4
@@ -170,11 +175,14 @@ models:
     from: hf:Qwen/Qwen3.5-0.8B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE", class: open}
     # Apple (Core AI, an M1, 2026-11-15, docs/design.md 16.221): 0.99 GiB on the Neural Engine
-    # (the multi-token prediction layer's programs among it) and the process's 0.39 GiB, 1.5 GB
-    # on an M1; with the whole program of short conversations an M2 or later loads too
-    # (--tier 2048 on the M1) 1.84 + 0.31 GiB, 2.3 GB
+    # (the multi-token prediction layer's programs among it) and the process's 0.39 GiB, 1.5 GB;
+    # with the whole program of short conversations (--tier 2048 on the M1) 1.84 + 0.31 GiB,
+    # 2.3 GB: none on a machine of 8 GB (tier: none, 16.222), from 16 GB on an M2 or later
     machine: 8
-    memory: {amd: 1.5, apple: 2.3}
+    memory: 1.5
+    tier: none
+    variants:
+      16: {memory: {apple: 2.3, M1: 1.5}, tier: auto}
     bytes: 1.77e9
     features: [tools, thinking]
     no_think: true
@@ -187,9 +195,10 @@ models:
     from: hf:Qwen/Qwen3.5-2B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE", class: open}
     # Apple (Core AI, an M1, 2026-11-15, 16.221): 1.67 GiB on the Neural Engine and the process's
-    # 0.39 GiB (no whole program: its weights twice are over what the two may hold); converting
-    # it the first time the process peaks at 6.0 GiB
-    machine: 16
+    # 0.39 GiB (no whole program: its weights twice are over what the two may hold): for 8 GB
+    # too (16.222). Converting it the first time the process peaks at 6.0 GiB, which a machine
+    # of 8 GB swaps for: there the programs converted already are to be fetched
+    machine: 8
     memory: {amd: 2.4, apple: 2.2}
     bytes: 4.57e9
     features: [tools, thinking]
@@ -216,9 +225,11 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3-0.6B/blob/main/LICENSE", class: open}
     # Apple only. Core AI, an M1, 2026-11-15 (16.221): split at its attention, 0.65 GiB on the
     # Neural Engine and the process's 0.35 GiB, 1.1 GB on an M1; with the whole program of short
-    # conversations an M2 or later loads too (--tier 1024 on the M1) 1.23 + 0.26 GiB, 1.6 GB
+    # conversations an M2 or later loads too (--tier 1024 on the M1) 1.23 + 0.26 GiB, 1.6 GB.
+    # It keeps that program on 8 GB (within what such a machine has, and twice as fast on an
+    # M3, 16.188)
     machine: 8
-    memory: 1.6
+    memory: {apple: 1.6, M1: 1.1}
     bytes: 1.52e9
     features: [tools, thinking]
     about: "Qwen's smallest Qwen3, a plain dense model of 0.6B: small to download, but weak at facts; a context of 40960, cut to what a quarter of the memory holds (32768 on 16 GB); in 8 bit tables, tool calls as JSON"
