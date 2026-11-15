@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -27,6 +28,54 @@ func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, err
 		return "", fmt.Errorf("%s runs on AMD's NPU; not yet on %s", m.Name, format)
 	}
 	return amdOr(err, m, "tools/amd/iron_flux2klein.py")
+}
+
+// referenceArg is an --image argument's file and the reference's size as the picture's sides over
+// div: FILE or FILE@full (1: the picture's size), FILE@half (2: half its sides). A file whose own
+// name ends in @half or @full is read as it is, at the picture's size.
+func referenceArg(arg string) (file string, div int, err error) {
+	div = 1
+	if _, err := os.Stat(arg); err == nil {
+		return arg, div, nil
+	}
+	at := strings.LastIndex(arg, "@")
+	if at < 0 {
+		return "", 0, fmt.Errorf("--image: %s: no such file", arg)
+	}
+	switch strings.ToLower(arg[at+1:]) {
+	case "half":
+		div = 2
+	case "full":
+		div = 1
+	default:
+		return "", 0, fmt.Errorf("--image: %s: no such file (a reference's size is FILE@half or FILE@full)", arg)
+	}
+	file = arg[:at]
+	if _, err := os.Stat(file); err != nil {
+		return "", 0, fmt.Errorf("--image: %s: no such file", file)
+	}
+	return file, div, nil
+}
+
+// referenceNames names references of the picture's sides over divs as Pipeline.References does:
+// "1+2@half".
+func referenceNames(divs []int) string {
+	full, half := 0, 0
+	for _, d := range divs {
+		if d > 1 {
+			half++
+		} else {
+			full++
+		}
+	}
+	var name []string
+	if full > 0 {
+		name = append(name, fmt.Sprint(full))
+	}
+	if half > 0 {
+		name = append(name, fmt.Sprintf("%d@half", half))
+	}
+	return strings.Join(name, "+")
 }
 
 // klein draws the pictures with an export of tools/amd/iron_flux2klein.py on AMD's NPU
@@ -70,15 +119,18 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) er
 		}
 		refs = append(refs, r)
 	}
-	div := 1
-	if c.RefHalf {
-		div = 2
+	files, divs := make([]string, len(c.Image)), make([]int, len(c.Image))
+	for i, arg := range c.Image {
+		if files[i], divs[i], err = referenceArg(arg); err != nil {
+			return err
+		}
 	}
-	if n := len(c.Image); n > 0 && !p.HasReferences(n, div) {
-		return fmt.Errorf("--image: the export %s has no blocks or no VAE encoder for %d reference(s) of the picture's sides over %d (it has %v)",
-			filepath.Base(model), n, div, p.References())
+	if len(files) > 0 && !p.HasReferences(divs) {
+		return fmt.Errorf("--image: the export %s does not run these references (%s); it runs %s, and the others once tools/amd/iron_flux2klein.py --refs compiled their rows",
+			filepath.Base(model), referenceNames(divs), strings.Join(p.References(), ", "))
 	}
-	for _, f := range c.Image {
+	for i, f := range files {
+		div := divs[i]
 		r, err := os.Open(f)
 		if err != nil {
 			return err
@@ -93,7 +145,11 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) er
 		if err != nil {
 			return err
 		}
-		logf("the reference %s in %.2f s", filepath.Base(f), time.Since(t1).Seconds())
+		size := ""
+		if div > 1 {
+			size = fmt.Sprintf(" at %dx%d", p.C.Width/div, p.C.Height/div)
+		}
+		logf("the reference %s%s in %.2f s", filepath.Base(f), size, time.Since(t1).Seconds())
 		if c.Dump != "" { // the reference's latents, to check the VAE's encoder
 			if err := writeF32(filepath.Join(c.Dump, fmt.Sprintf("ref_%d.f32", len(refs))), z); err != nil {
 				return err

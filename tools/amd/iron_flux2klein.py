@@ -12,10 +12,12 @@ the DiT attends to the pads too. The latents are 2 x 2 patches of the FLUX.2 VAE
 
 Editing: the references' latents are rows of the image's stream after the picture's, with the
 picture's modulation, told apart by the first RoPE axis (10, 20, ...). ``--refs`` names the
-references the blocks are compiled for: N of the picture's size, or NdD of its sides over D (a
+references the blocks are compiled for: N of the picture's size, NdD of its sides over D (a
 reference of half the sides is a quarter of the rows: an edit's step at 1024 x 1024 has 5632
-rows in place of 8704). Only the picture's rows are read at the end. The blocks' weights are
-placed alike whatever the rows, so the graphs of each row count share one set of banks.
+rows in place of 8704), or a mix (1+2d2). Only the picture's rows are read at the end. The
+positions are an input and the blocks' weights are placed alike whatever the rows, so the
+graphs depend on a step's row count alone: they are named by it (doubles_n8704 serves one
+reference of the picture's size and four of half its sides) and share one set of banks.
 
   mods        the timestep's embedding (``tproj``, the sinusoid of 1000 sigma) to the modulation
               rows: the doubles' image (6 hidden: shift, scale, gate of the attention and of the
@@ -67,8 +69,9 @@ from iron_graph import bind_device, export_graph, write_check  # noqa: E402
 class KleinConfig:
     width: int = 1024
     height: int = 1024
-    refs: int = 0  # references whose rows follow the picture's
-    ref_div: int = 1  # a reference's sides are the picture's over this (2: a quarter of the rows)
+    # the references whose rows follow the picture's, in their order: each one's sides are the
+    # picture's over this (1: the picture's size, 2: half its sides, a quarter of the rows)
+    refs: tuple = ()
     text_rows: int = 512  # Qwen3's rows (the prompt padded to max_sequence_length)
     hidden: int = 3072
     heads: int = 24
@@ -98,15 +101,14 @@ class KleinConfig:
         """The picture's rows."""
         return self.gh * self.gw
 
-    @property
-    def ref_tokens(self) -> int:
-        """A reference's rows."""
-        return (self.gh // self.ref_div) * (self.gw // self.ref_div)
+    def ref_tokens(self, div: int) -> int:
+        """The rows of a reference of the picture's sides over div."""
+        return (self.gh // div) * (self.gw // div)
 
     @property
     def image_rows(self) -> int:
         """The image stream's rows: the picture's and the references'."""
-        return self.tokens + self.refs * self.ref_tokens
+        return self.tokens + sum(self.ref_tokens(d) for d in self.refs)
 
     @property
     def rows(self) -> int:
@@ -129,8 +131,8 @@ def positions(c: KleinConfig) -> np.ndarray:
     (10 (i + 1), row, column, 0), then the text's (0, 0, 0, position)."""
     pos = np.zeros((c.rows, 4))
     at = 0
-    for i in range(1 + c.refs):
-        gh, gw = (c.gh, c.gw) if i == 0 else (c.gh // c.ref_div, c.gw // c.ref_div)
+    for i, div in enumerate((1, *c.refs)):
+        gh, gw = c.gh // div, c.gw // div
         n = gh * gw
         pos[at : at + n, 0] = 10 * i
         pos[at : at + n, 1] = np.repeat(np.arange(gh), gw)
@@ -756,26 +758,40 @@ MAX_REFS = 4  # the model's limit (BFL's specification of FLUX.2 klein)
 MAX_ROWS = 12800  # the default's largest step: two references of 1024 x 1024 (4 steps in 1.5 min)
 
 
+def parse_refs(spec: str) -> tuple:
+    """A --refs name's references, as KleinConfig.refs: "0" none, "2" two of the picture's size,
+    "2d2" two of half its sides, "1+2d2" one of the picture's size and two of half its sides."""
+    out = []
+    for part in spec.split("+"):
+        n, _, d = part.partition("d")
+        out += [int(d or 1)] * int(n)
+    return tuple(out)
+
+
 def default_refs(size: int) -> list[str]:
-    """The references compiled by default: every count to MAX_REFS, of the picture's size and of
-    half its sides, whose step is whole rounds of the attention (512 rows) and at most MAX_ROWS
-    rows. More rows compile and run too when named (three references of 1024 x 1024: 16896 rows,
-    4 steps in 2.4 min at a 4.6 GB peak)."""
-    out = ["0"]
-    for d in (1, 2):
-        for n in range(1, MAX_REFS + 1):
-            c = KleinConfig(width=size, height=size, refs=n, ref_div=d)
-            if c.rows % 512 == 0 and c.rows <= MAX_ROWS:
-                out.append(f"{n}d{d}" if d > 1 else str(n))
+    """The references compiled by default: every mix of up to MAX_REFS references of the
+    picture's size and of half its sides whose step is whole rounds of the attention (512 rows)
+    and at most MAX_ROWS rows, one name a row count (the blocks' graphs depend on the row count
+    alone). More rows compile and run too when named (three references of 1024 x 1024: 16896
+    rows, 4 steps in 2.4 min at a 4.6 GB peak)."""
+    out, seen = ["0"], set()
+    for full in range(MAX_REFS + 1):
+        for half in range(MAX_REFS + 1 - full):
+            if full + half == 0:
+                continue
+            name = "+".join(([str(full)] if full else []) + ([f"{half}d2"] if half else []))
+            c = KleinConfig(width=size, height=size, refs=parse_refs(name))
+            if c.rows % 512 == 0 and c.rows <= MAX_ROWS and c.rows not in seen:
+                seen.add(c.rows)
+                out.append(name)
     return out
 
 
 def suffix(c: KleinConfig) -> str:
-    """The graphs' names for the references: "" (none), _r1 (one of the picture's size), _r1d2
-    (one of half its sides)."""
-    if not c.refs:
-        return ""
-    return f"_r{c.refs}" + (f"d{c.ref_div}" if c.ref_div != 1 else "")
+    """The graphs' names for the references: "" (none), else _nROWS of a step's rows. The graphs
+    depend on the row count alone (the positions are an input): one reference of the picture's
+    size and four of half its sides run the same _n8704 at 1024 x 1024."""
+    return f"_n{c.rows}" if c.refs else ""
 
 
 def export_dit(root: Path, out: Path, c: KleinConfig, check: bool) -> None:
@@ -856,10 +872,12 @@ def main(argv=None) -> int:
     ap.add_argument("--size", type=int, default=1024)
     ap.add_argument("--refs", nargs="*",
                     help="the references to compile the blocks for: 0 (text to image), N (N references of the picture's "
-                         "size), NdD (of its sides over D: 1d2 is one reference of half the sides, a quarter of its rows). "
-                         f"Default: 0 to {MAX_REFS} references of the picture's size and of half its sides, those of at "
-                         f"most {MAX_ROWS} rows a step (1024 x 1024: 0 1 2 1d2 2d2 3d2 4d2; 512 x 512: 0 1 2 3 4 2d2 4d2); "
-                         "a graph of a row count is 12 MB, its banks the others'")
+                         "size), NdD (of its sides over D: 1d2 is one reference of half the sides, a quarter of its rows), "
+                         "A+BdD (a mix: 1+2d2). The graphs are named by a step's rows (_nROWS) and serve every mix of "
+                         f"that many rows. Default: every mix of up to {MAX_REFS} references of the picture's size and "
+                         f"of half its sides of at most {MAX_ROWS} rows a step (1024 x 1024: 5632 to 12800 rows in steps "
+                         "of 1024; 512 x 512: 2048 to 4608 in steps of 512, and 5632); a graph of a row count is 12 MB, "
+                         "its banks the others'")
     ap.add_argument("--parts", nargs="*", default=["text", "mods", "dit_in", "ctx", "dit_out", "doubles", "singles", "vae", "vae_enc"])
     ap.add_argument("--ref-enc", type=Path, help="tools/ref/ref_flux2klein.py --encode's OUT.npz: run the encoder stages' references in turn on its picture, against its latents")
     ap.add_argument("--stages", type=int, nargs="*", help="the VAE's stages to export (default all)")
@@ -895,15 +913,17 @@ def main(argv=None) -> int:
         export_text(a.root, a.out, a.check)
     if a.refs is None:
         a.refs = default_refs(a.size)
-    divs = set()
-    for r in sorted(a.refs, key=lambda r: ("d" in r, r)):  # the picture's alone first: the others share its banks
-        n, _, d = r.partition("d")
-        c = KleinConfig(width=a.size, height=a.size, refs=int(n), ref_div=int(d or 1))
+    divs, seen = set(), set()
+    configs = [(r, KleinConfig(width=a.size, height=a.size, refs=parse_refs(r))) for r in a.refs]
+    for r, c in sorted(configs, key=lambda rc: rc[1].rows):  # the picture's alone first: the others share its banks
         if c.refs and c.rows % 512:  # the attention's 8 pipelines take whole rounds of 64 rows each
             print(f"{r}: {c.rows} rows are no multiple of 512: not compiled at this size", flush=True)
             continue
-        if c.refs and c.ref_div > 1:
-            divs.add(c.ref_div)
+        divs.update(d for d in c.refs if d > 1)
+        if c.rows in seen:
+            print(f"{r}: {c.rows} rows, compiled already", flush=True)
+            continue
+        seen.add(c.rows)
         export_dit(a.root, a.out, c, a.check)
     iron_anima.VAE_TILE_N[0] = True  # the convolutions' out-feature tiles over all 8 columns
     if a.host_norm:

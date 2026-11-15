@@ -147,8 +147,7 @@ type GenerateCmd struct {
 	Seed       uint64    `placeholder:"N" help:"The noise's seed (0: from the time)."`
 	Noise      string    `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana: (32, H/32, W/32))."`
 	Latents    string    `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
-	Image      []string  `name:"image" short:"i" type:"existingfile" placeholder:"FILE" help:"FLUX.2 klein: a reference image to edit or to compose from (PNG or JPEG; its centre cropped to the picture's shape and scaled to its size); repeat for several, as many as the export was compiled for."`
-	RefHalf    bool      `name:"ref-half" help:"FLUX.2 klein: read the reference images at half the picture's sides (a quarter of their rows in each step: an edit at 1024 x 1024 in about two thirds of the time, with less of the reference's fine detail)."`
+	Image      []string  `name:"image" short:"i" placeholder:"FILE[@half]" help:"FLUX.2 klein: a reference image to edit or to compose from (PNG or JPEG; its centre cropped to the picture's shape and scaled to its size); repeat for up to 4, named image 1, image 2, ... in the prompt. FILE@half reads that reference at half the picture's sides (a quarter of its rows in each step: an edit at 1024 x 1024 in about two thirds of the time, with less of the reference's fine detail)."`
 	RefLatents []string  `name:"ref-latents" type:"existingfile" placeholder:"FILE" help:"FLUX.2 klein: a reference's latents as raw float32 (tokens x 128, normalized), for checks against tools/ref/ref_flux2klein.py; repeat for several."`
 	Cache      string    `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
 	CPU        bool      `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU (slow; for checking)."`

@@ -226,35 +226,60 @@ func (p *Pipeline) dump(name string, b []byte) {
 	}
 }
 
-// References are the references the export's blocks were compiled for, as tools/amd/
-// iron_flux2klein.py names them: "0" (text to image), "1" (one of the picture's size), "1d2" (one
-// of half its sides).
+// MaxReferences is the model's limit of reference images.
+const MaxReferences = 4
+
+// References are the references the export runs, as hwnpu-image names them: "0" (text to image),
+// "2" (two of the picture's size), "2@half" (two of half its sides), "1+2@half" (a mix): every
+// mix of up to MaxReferences whose step's rows the export's blocks were compiled for
+// (tools/amd/iron_flux2klein.py --refs) and whose sizes it has an encoder for.
 func (p *Pipeline) References() []string {
-	var out []string
-	for n := 0; n <= 10; n++ {
-		for _, d := range []int{1, 2, 4} {
-			if n == 0 && d > 1 {
+	out := []string{"0"}
+	for full := 0; full <= MaxReferences; full++ {
+		for half := 0; full+half <= MaxReferences; half++ {
+			if full+half == 0 {
 				continue
 			}
-			if _, err := os.Stat(filepath.Join(p.dir, "doubles"+suffix(n, d), "manifest.json")); err == nil {
-				out = append(out, strings.TrimPrefix(suffix(n, d), "_r"))
+			divs := make([]int, 0, full+half)
+			for i := 0; i < full; i++ {
+				divs = append(divs, 1)
 			}
+			for i := 0; i < half; i++ {
+				divs = append(divs, 2)
+			}
+			if !p.HasReferences(divs) {
+				continue
+			}
+			var name []string
+			if full > 0 {
+				name = append(name, fmt.Sprint(full))
+			}
+			if half > 0 {
+				name = append(name, fmt.Sprintf("%d@half", half))
+			}
+			out = append(out, strings.Join(name, "+"))
 		}
-	}
-	if len(out) > 0 && out[0] == "" {
-		out[0] = "0"
 	}
 	return out
 }
 
-// HasReferences reports whether the export holds the blocks and the encoder for n references of
-// the picture's sides over div.
-func (p *Pipeline) HasReferences(n, div int) bool {
-	enc := "vae_enc"
-	if div > 1 {
-		enc = fmt.Sprintf("vae_enc_d%d", div)
+// HasReferences reports whether the export holds the blocks for a step with references of the
+// picture's sides over each of divs (in any order: the blocks depend on the rows alone) and the
+// encoders of those sizes.
+func (p *Pipeline) HasReferences(divs []int) bool {
+	rows, ok := p.rows(divs)
+	if !ok {
+		return false
 	}
-	for _, f := range []string{"doubles" + suffix(n, div), enc} {
+	need := []string{"doubles" + p.suffix(rows), "singles" + p.suffix(rows), "dit_in" + p.suffix(rows)}
+	for _, d := range divs {
+		if d > 1 {
+			need = append(need, fmt.Sprintf("vae_enc_d%d", d))
+		} else {
+			need = append(need, "vae_enc")
+		}
+	}
+	for _, f := range need {
 		if _, err := os.Stat(filepath.Join(p.dir, f, "manifest.json")); err != nil {
 			return false
 		}
@@ -262,15 +287,27 @@ func (p *Pipeline) HasReferences(n, div int) bool {
 	return true
 }
 
-// suffix is the graphs' names for refs references of the picture's sides over div.
-func suffix(refs, div int) string {
-	switch {
-	case refs == 0:
-		return ""
-	case div > 1:
-		return fmt.Sprintf("_r%dd%d", refs, div)
+// rows is a step's rows with references of the picture's sides over each of divs: the picture's,
+// the references' and the text's.
+func (p *Pipeline) rows(divs []int) (int, bool) {
+	c := p.C
+	n := c.Tokens() + c.TextRows
+	for _, d := range divs {
+		if d < 1 || c.GH()%d != 0 || c.GW()%d != 0 {
+			return 0, false
+		}
+		n += (c.GH() / d) * (c.GW() / d)
 	}
-	return fmt.Sprintf("_r%d", refs)
+	return n, true
+}
+
+// suffix is the name of the graphs of a step of that many rows: none for the picture and the
+// text alone, else _nROWS (iron_flux2klein.suffix).
+func (p *Pipeline) suffix(rows int) string {
+	if rows == p.C.Tokens()+p.C.TextRows {
+		return ""
+	}
+	return fmt.Sprintf("_n%d", rows)
 }
 
 // Tokens are the prompt's tokens in the template, cut to the text's rows (the pipeline
@@ -468,14 +505,14 @@ func (p *Pipeline) Noise(seed uint64) []float32 {
 
 // positions are the DiT's rows' position ids (reference index, row, column, text position): the
 // picture's (0, y, x, 0), each reference's (10 (i + 1), y, x, 0) over its own grid (the picture's
-// sides over div), then the text's (0, 0, 0, l).
-func (p *Pipeline) positions(refs, div int) [][4]float64 {
+// sides over its div), then the text's (0, 0, 0, l).
+func (p *Pipeline) positions(divs []int) [][4]float64 {
 	c := p.C
 	var out [][4]float64
-	for i := 0; i <= refs; i++ {
+	for i := 0; i <= len(divs); i++ {
 		gh, gw := c.GH(), c.GW()
 		if i > 0 {
-			gh, gw = gh/div, gw/div
+			gh, gw = gh/divs[i-1], gw/divs[i-1]
 		}
 		for y := 0; y < gh; y++ {
 			for x := 0; x < gw; x++ {
@@ -524,24 +561,23 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, refs [][]float32, no
 	if cond.ctx == nil {
 		return nil, errors.New("flux2klein: the DiT runs without a prompt (Encode)")
 	}
-	// the references' rows: all of the picture's sides over one div
-	div := 1
+	// the references' rows: each of the picture's size, or of half or a quarter of its sides
+	divs := make([]int, len(refs))
 	for i, r := range refs {
-		d := 0
 		for _, k := range []int{1, 2, 4} {
 			if len(r)*k*k == N*c.Latent && c.GH()%k == 0 && c.GW()%k == 0 {
-				d = k
+				divs[i] = k
 			}
 		}
-		if d == 0 || i > 0 && d != div {
-			return nil, fmt.Errorf("flux2klein: reference %d: %d values for latents of %d (the references are all of the picture's size, or all of half its sides)", i, len(r), N*c.Latent)
+		if divs[i] == 0 {
+			return nil, fmt.Errorf("flux2klein: reference %d: %d values for latents of %d (a reference is of the picture's size, or of half its sides)", i+1, len(r), N*c.Latent)
 		}
-		div = d
 	}
-	sfx := suffix(len(refs), div)
-	if _, err := os.Stat(filepath.Join(p.dir, "doubles"+sfx, "manifest.json")); err != nil {
-		return nil, fmt.Errorf("flux2klein: the export has no blocks for %d references of the picture's sides over %d (it has them for %v)", len(refs), div, p.References())
+	if !p.HasReferences(divs) {
+		return nil, fmt.Errorf("flux2klein: the export has no blocks for these %d references (it runs %s)", len(refs), strings.Join(p.References(), ", "))
 	}
+	rows, _ := p.rows(divs)
+	sfx := p.suffix(rows)
 	n := len(sigmas) - 1
 	// every step's modulation rows first: the mods graph (0.3 GB of bf16) is not held during the blocks
 	mg, err := p.open(ctx, "mods", false, false)
@@ -580,8 +616,7 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, refs [][]float32, no
 			return nil, fmt.Errorf("flux2klein: %w", err)
 		}
 	}
-	angles := toBF16(p.ropeAngles(p.positions(len(refs), div)))
-	rows := N + len(refs)*N/(div*div) + c.TextRows
+	angles := toBF16(p.ropeAngles(p.positions(divs)))
 	var refRows []byte // the references' latents: the same rows every step
 	for _, r := range refs {
 		refRows = append(refRows, toBF16(r)...)

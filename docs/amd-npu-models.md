@@ -1185,8 +1185,8 @@ design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG な
 | text | Qwen3-4B の 36 層のうち 27 層 (bf16、HIGHEST、SiLU は `iron_silu.SiLUF32`)、3 層 × 9 組、512 行を 1 回で。プロンプトの行は因果、パッドの行はプロンプトのキーだけ (注意 2 回を `sel` で選ぶ) | プロンプトごとに 9 組 |
 | ctx | context_embedder (層 9、18、27 の後の隠れ状態から 3072 列) | プロンプトごとに 1 回 |
 | mods | 時刻の埋め込みと変調の線形 4 つ | ステップの前に全ステップ分 |
-| dit_in、dit_in_r1 | x_embedder | 1 ステップ 1 回 |
-| doubles、singles (`_r1`: 参照 1 枚、`_r1d2`: 半分の辺の参照 1 枚) | double 1 つ × 5 組、single 2 つ × 10 組 (bfp16、注意は QK^T と P·V が bfp16、指数は `exp2_mid.h`)。`_r1` のバンクは参照なしのものを指す | 1 ステップ 15 組 |
+| dit_in、dit_in_nROWS | x_embedder | 1 ステップ 1 回 |
+| doubles、singles (`_nROWS`: 参照つきの 1 ステップの行数ごと。`_n8704` は等倍 1 枚にも半分 4 枚にも使う) | double 1 つ × 5 組、single 2 つ × 10 組 (bfp16、注意は QK^T と P·V が bfp16、指数は `exp2_mid.h`)。`_nROWS` のバンクは参照なしのものを指す | 1 ステップ 15 組 |
 | dit_out | norm_out と proj_out | 1 ステップ 1 回 |
 | vae/s0..s9 | 復号器。GroupNorm は演算子 2 つとホストの計算 (`iron_groupnorm.py`) | 1 枚 1 回 |
 | vae_enc/s0..s5、vae_enc_d2 | 符号器 (参照の大きさ、その半分の辺) | 参照 1 枚に 1 回 |
@@ -1209,11 +1209,11 @@ design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG な
 python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024
 hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"
 hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
-hwnpu-image generate -m flux2-klein --ref-half -i fox.png -i room.png "The fox from image 1 is sitting on the sofa in the living room from image 2."
+hwnpu-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 is sitting on the sofa in the living room from image 2."
 ~/.cache/hwnpu/dev/ref-venv/bin/python tools/ref/ref_flux2klein.py ~/models/FLUX.2-klein-4B OUT --size 512   # 参照
 hwnpu-image generate -m EXPORT --noise OUT.noise.bin --latents got.lat --dump DIR "..."                       # 参照と同じノイズで
 ```
 
-- `--refs` は参照の枚数と大きさごとのブロックを書き出す (N: 絵の大きさの N 枚、NdD: 辺が 1/D の N 枚。`hwnpu-image generate --ref-half` は d2)。既定は 4 枚まで、1 ステップ 12800 行までで、1024² は `0 1 2 1d2 2d2 3d2 4d2`、512² は `0 1 2 3 4 2d2 4d2`。参照 2 枚以上の時間と照合は design.md 16.209 (1024² の半分 × 2 で 1 枚 42 秒、等倍 × 2 で 1 分 41 秒)。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
+- `--refs` は参照つきのブロックを書き出す (N: 絵の大きさの N 枚、NdD: 辺が 1/D の N 枚、A+BdD: 混在。`hwnpu-image generate -i FILE@half` が d2)。グラフは 1 ステップの行数だけで決まるので `_nROWS` と名付け、同じ行数の指定は 1 回だけコンパイルする。既定は 4 枚までの等倍と半分の組み合わせのうち 12800 行までで、1024² は 5632〜12800 行の 8 つ (半分 1〜4 枚、等倍 1 枚 + 半分 0〜3 枚、等倍 2 枚)、512² は 2048〜5632 行の 7 つ。時間と照合は design.md 16.209。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
 - `--text q8` や `q6` は文の書き出しを小さくするが、パッドの行が参照から離れる (16.206)
 - 電力量はまだ測っていない

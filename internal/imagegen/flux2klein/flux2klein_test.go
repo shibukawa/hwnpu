@@ -1,7 +1,11 @@
 package flux2klein
 
 import (
+	"fmt"
 	"math"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -62,7 +66,7 @@ func TestUnpack(t *testing.T) {
 func TestPositions(t *testing.T) {
 	p := testPipeline(64)
 	N := p.C.Tokens()
-	pos := p.positions(2, 1)
+	pos := p.positions([]int{1, 1})
 	if len(pos) != 3*N+p.C.TextRows {
 		t.Fatalf("%d rows, want %d", len(pos), 3*N+p.C.TextRows)
 	}
@@ -76,20 +80,75 @@ func TestPositions(t *testing.T) {
 		}
 	}
 	// references of half the sides: a quarter of the rows each, their own grid
-	half := p.positions(1, 2)
+	half := p.positions([]int{2})
 	if len(half) != N+N/4+p.C.TextRows {
 		t.Fatalf("%d rows with a half-size reference, want %d", len(half), N+N/4+p.C.TextRows)
 	}
 	if got, want := half[N+3], ([4]float64{10, 1, 1, 0}); got != want {
 		t.Errorf("row %d of a half-size reference: %v, want %v", N+3, got, want)
 	}
-	if suffix(0, 1) != "" || suffix(1, 1) != "_r1" || suffix(1, 2) != "_r1d2" {
-		t.Errorf("suffixes %q %q %q", suffix(0, 1), suffix(1, 1), suffix(1, 2))
+	// a mix: the second reference's rows follow the first's, on its own grid
+	mix := p.positions([]int{2, 1})
+	if len(mix) != N+N/4+N+p.C.TextRows {
+		t.Fatalf("%d rows with a half-size and a full-size reference, want %d", len(mix), N+N/4+N+p.C.TextRows)
+	}
+	if got, want := mix[N+N/4+5], ([4]float64{20, 1, 1, 0}); got != want {
+		t.Errorf("row %d of the second reference: %v, want %v", N+N/4+5, got, want)
+	}
+	// the graphs' names: by a step's rows, whatever the references that make them up
+	base := N + p.C.TextRows
+	for _, c := range []struct {
+		divs []int
+		rows int
+	}{{nil, base}, {[]int{1}, base + N}, {[]int{2, 1}, base + N + N/4}, {[]int{1, 2}, base + N + N/4}, {[]int{2, 2, 2, 2}, base + N}} {
+		rows, ok := p.rows(c.divs)
+		if !ok || rows != c.rows {
+			t.Errorf("rows of %v: %d %v, want %d", c.divs, rows, ok, c.rows)
+		}
+	}
+	if _, ok := p.rows([]int{3}); ok {
+		t.Error("rows: a reference of a third of a 4 x 4 grid's sides")
+	}
+	if a, b := p.suffix(base), p.suffix(base+N); a != "" || b != fmt.Sprintf("_n%d", base+N) {
+		t.Errorf("suffixes %q %q", a, b)
 	}
 	a := p.ropeAngles(pos[:1])
 	for i := 0; i < p.C.HeadDim; i += 2 { // position 0: no turn
 		if a[i] != 1 || a[i+1] != 0 {
 			t.Fatalf("angle %d of position 0: cos %g sin %g", i/2, a[i], a[i+1])
 		}
+	}
+}
+
+// The references an export runs: the mixes whose rows it has blocks for and whose sizes it has
+// an encoder for.
+func TestReferences(t *testing.T) {
+	p := testPipeline(64) // 16 picture rows, 512 text rows; a reference 16 rows, a half-size one 4
+	p.dir = t.TempDir()
+	have := func(names ...string) {
+		for _, n := range names {
+			d := filepath.Join(p.dir, n)
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(d, "manifest.json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if got := p.References(); !reflect.DeepEqual(got, []string{"0"}) {
+		t.Errorf("no references: %v", got)
+	}
+	// 544 rows: one of the picture's size, or four of half its sides; 548: the first and one more
+	have("vae_enc", "doubles_n544", "singles_n544", "dit_in_n544", "doubles_n548", "singles_n548", "dit_in_n548")
+	if got := p.References(); !reflect.DeepEqual(got, []string{"0", "1"}) {
+		t.Errorf("without the half-size encoder: %v", got)
+	}
+	have("vae_enc_d2")
+	if got := p.References(); !reflect.DeepEqual(got, []string{"0", "4@half", "1", "1+1@half"}) {
+		t.Errorf("with it: %v", got)
+	}
+	if !p.HasReferences([]int{2, 1}) || p.HasReferences([]int{1, 1}) || p.HasReferences([]int{2}) {
+		t.Error("HasReferences: a mix in either order runs, two of the picture's size and one half-size do not")
 	}
 }

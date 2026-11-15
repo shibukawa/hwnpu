@@ -117,7 +117,7 @@ def main(argv=None) -> int:
     iron_q4.PREFILL["q4"] = "bf16"
     iron_q4.install_linear()
     bind_device(a.device, a.cols)
-    c = k.KleinConfig(width=a.size, height=a.size, refs=a.refs, single_group=1)
+    c = k.KleinConfig(width=a.size, height=a.size, refs=(1,) * a.refs, single_group=1)
     w = qi.Checkpoint(a.root / "transformer")
     rng = np.random.default_rng(0)
     n, E, H, D, M = c.rows, c.hidden, c.heads, c.head_dim, c.mlp
