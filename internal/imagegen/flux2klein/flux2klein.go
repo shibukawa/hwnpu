@@ -1,6 +1,7 @@
 // Package flux2klein runs FLUX.2 [klein] 4B (black-forest-labs/FLUX.2-klein-4B, Apache-2.0), an
-// image model that draws from a prompt and edits reference images, on AMD's NPU: the graphs
-// tools/amd/iron_flux2klein.py exports.
+// image model that draws from a prompt and edits reference images, on an NPU: on AMD's, the graphs
+// tools/amd/iron_flux2klein.py exports; on Apple's Neural Engine, the Core AI programs of
+// internal/imagegen/flux2klein/mil that Convert writes (progEngine: text to image for now).
 //
 // The DiT is FLUX.1's shape with 5 double-stream and 20 single-stream blocks, 3072 wide; Qwen3-4B
 // reads the prompt (512 rows: the hidden states after layers 9, 18 and 27 side by side; the DiT
@@ -32,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -101,8 +103,12 @@ const PadID = 151643
 // StepFunc is told that step i (of n) took d.
 type StepFunc func(i, n int, d time.Duration)
 
-// IsExport reports whether dir is an export of tools/amd/iron_flux2klein.py.
-func IsExport(dir string) bool {
+// IsExport reports whether dir is an export of FLUX.2 klein: of tools/amd/iron_flux2klein.py, or
+// of Convert.
+func IsExport(dir string) bool { return isIronExport(dir) || IsProgramExport(dir) }
+
+// isIronExport reports whether dir is an export of tools/amd/iron_flux2klein.py.
+func isIronExport(dir string) bool {
 	for _, p := range []string{"doubles/manifest.json", "singles/manifest.json", "mods/manifest.json", "ctx/manifest.json", "text/manifest.json"} {
 		if _, err := os.Stat(filepath.Join(dir, p)); err != nil {
 			return false
@@ -134,10 +140,23 @@ type Pipeline struct {
 	Logf func(format string, args ...any)
 	// Stage, when set, is told of each stage of the VAE as it ends.
 	Stage anima.StageFunc
+
+	// prog runs an export of Convert (Apple's Neural Engine); nil for an IRON export
+	prog *progEngine
 }
 
-// Open reads the export in dir.
-func Open(ctx context.Context, dev *hwnpu.Device, dir string) (*Pipeline, error) {
+// Open reads the export in dir: of tools/amd/iron_flux2klein.py on AMD's NPU, or of Convert on
+// Apple's Neural Engine (log, when not nil, shows the programs loading).
+func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
+	return OpenAt(ctx, dev, dir, 0, 0, log)
+}
+
+// OpenAt is Open for pictures of w x h, one of the sizes an export of Convert holds
+// (ConvertOptions.Sizes); 0 x 0 is the export's default (an IRON export's one size).
+func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
+	if IsProgramExport(dir) {
+		return openProgramPipeline(dev, dir, w, h, log)
+	}
 	p := &Pipeline{dev: dev, dir: dir}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
@@ -208,6 +227,9 @@ func (p *Pipeline) Close() error {
 	if p.embed != nil {
 		p.embed.Close()
 	}
+	if p.prog != nil {
+		return p.prog.closeDiT()
+	}
 	return nil
 }
 
@@ -235,6 +257,9 @@ const MaxReferences = 4
 // (tools/amd/iron_flux2klein.py --refs) and whose sizes it has an encoder for.
 func (p *Pipeline) References() []string {
 	out := []string{"0"}
+	if p.prog != nil {
+		return out
+	}
 	for full := 0; full <= MaxReferences; full++ {
 		for half := 0; full+half <= MaxReferences; half++ {
 			if full+half == 0 {
@@ -267,6 +292,9 @@ func (p *Pipeline) References() []string {
 // picture's sides over each of divs (in any order: the blocks depend on the rows alone) and the
 // encoders of those sizes.
 func (p *Pipeline) HasReferences(divs []int) bool {
+	if p.prog != nil {
+		return len(divs) == 0
+	}
 	rows, ok := p.rows(divs)
 	if !ok {
 		return false
@@ -320,9 +348,11 @@ func (p *Pipeline) Tokens(prompt string) []int32 {
 	return ids
 }
 
-// Cond is a prompt's conditioning: the DiT's text rows (TextRows x hidden, bf16).
+// Cond is a prompt's conditioning: the DiT's text rows (TextRows x hidden, bf16; on Apple's Neural
+// Engine float32, divided by mil.DitScale).
 type Cond struct {
-	ctx []byte
+	ctx  []byte
+	rows []float32
 	// Tokens is the prompt's tokens in the template (the rest of the rows are pads).
 	Tokens int
 }
@@ -364,6 +394,9 @@ func (p *Pipeline) Encode(ctx context.Context, prompt string) (Cond, error) {
 // prompt's keys only (sel picks each row's attention, nk is the prompt's tokens). The outputs of
 // the groups ending at layers 9, 18 and 27 go to ctx, the DiT's context_embedder.
 func (p *Pipeline) EncodeAll(ctx context.Context, prompts ...string) ([]Cond, error) {
+	if p.prog != nil {
+		return p.encodePrograms(ctx, prompts)
+	}
 	t0 := time.Now()
 	T := p.Text
 	R, E := T.Rows, T.Hidden
@@ -558,6 +591,12 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, refs [][]float32, no
 	if len(noise) != N*c.Latent {
 		return nil, fmt.Errorf("flux2klein: %d noise values for latents of %d", len(noise), N*c.Latent)
 	}
+	if p.prog != nil {
+		if len(refs) > 0 {
+			return nil, errors.New("flux2klein: editing (--image) runs on AMD's NPU only for now")
+		}
+		return p.generatePrograms(ctx, cond, noise, sigmas, step)
+	}
 	if cond.ctx == nil {
 		return nil, errors.New("flux2klein: the DiT runs without a prompt (Encode)")
 	}
@@ -717,6 +756,9 @@ func (p *Pipeline) Unpack(x []float32) []float32 {
 // the rows a step carries (HasReferences).
 func (p *Pipeline) EncodeImage(ctx context.Context, img image.Image, div int) ([]float32, error) {
 	c := p.C
+	if p.prog != nil {
+		return nil, errors.New("flux2klein: editing (--image) runs on AMD's NPU only for now")
+	}
 	if div < 1 || c.Width%(16*div) != 0 || c.Height%(16*div) != 0 {
 		return nil, fmt.Errorf("flux2klein: a reference of the picture's sides over %d", div)
 	}
@@ -782,6 +824,13 @@ func (p *Pipeline) EncodeImage(ctx context.Context, img image.Image, div int) ([
 
 // Decode turns the latents (Noise's layout) into the picture.
 func (p *Pipeline) Decode(ctx context.Context, x []float32) (*image.RGBA, error) {
+	if p.prog != nil {
+		imgs, err := p.DecodeAll(ctx, x)
+		if err != nil {
+			return nil, err
+		}
+		return imgs[0], nil
+	}
 	p.vae.Stage = p.Stage
 	return p.vae.Decode(ctx, p.Unpack(x))
 }

@@ -149,6 +149,7 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | Depth Anything 3 Mono / Metric Large、Small、Base (AMD) | 深度推定 (hwnpu-image depth) | 1.4 GB (Large)、0.75 GB (Base)、0.5 GB (Small) | なし | 実測 |
 | Sana 600M、SANA 1.5 1.6B (1024 × 1024、AMD) | 画像生成 | 2.3 GB (NPU の最大 2.0 GB に、プロセスを足したもの。NPU の最大は 2 段が同時に載る VAE で、Gemma 2 を 6 ビットにしたテキストのグラフが次。DiT は 1 組ずつ読み、0.4 GB) | なし | 実測 |
 | FLUX.2 klein 4B (1024 × 1024、AMD) | 画像生成、参照画像の編集 (hwnpu-image generate `-m flux2-klein`、`--image`) | 3.9 GB (NPU の最大 3.4 GiB は VAE の段、それにプロセスの 0.2 GiB。編集でも同じ。512 × 512 では 1.9 GB。文の符号器と DiT は 1 組ずつ読む) | なし | 実測 |
+| FLUX.2 klein 4B (1024 × 1024、Apple) | 画像生成 (hwnpu-image generate `-m flux2-klein`。編集は AMD) | プロセスの最大 4.1 GB (VAE の段。512 × 512 で 1.4 GB)、Neural Engine 1.5 GiB (Qwen3-4B と DiT は lut8、組ごとに) | なし | 実測 (M1) |
 | Sana 600M、SANA 1.5 1.6B (1024 × 1024、Apple) | 画像生成 | プロセスの最大 3.9 GB (Gemma 2 は int8 の 5 本を走る間だけ。DiT は int8 (600M) か lut8 (1.5) で、Neural Engine に 0.60 / 1.56 GiB。VAE は段ごと) | なし | 実測 (M1) |
 | DA3-SMALL、DA3MONO-LARGE、MoGe-2 ViT-S (Apple) | 深度推定 (hwnpu-image depth) | 1 つの大きさのプログラム (fp16)。縦横比ごとに初めて使うときに変換 | なし | 未測定 |
 | SigLIP 2 Base / Large (Apple) | ラベル付け、画像と文の埋め込み (hwnpu-image label、embed) | 約 0.9 / 3.3 GB (M3: プロセスの footprint 最大 0.45 / 1.8 GB と、Neural Engine に 0.36 / 1.24 GB。Core AI では 0.48 / 1.56 GB) | なし (1 枚、文 8 つずつ) | M3 で実測 |

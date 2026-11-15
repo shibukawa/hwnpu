@@ -368,6 +368,7 @@ Done (bring them in from the start):
 | **The modulations once a sigma** (a DiT whose modulations depend on the timestep alone) | Chroma's approximator (5 layers of 5120, 262M) gives the 344 modulation rows from the timestep alone: run it for every sigma before the steps and close it, so it is not held during the steps. Heun's 15 calls take 8 sigmas (a step's end is the next one's start), CFG's two passes share them | 16.170 |
 | **Load the next program ahead** (Core AI, `runner.InTurn`, `runner.Ring`) | Where parts are loaded, run and closed in turn (a text encoder's groups, T5, a VAE's stages, the groups of a swapped DiT), the next one loads while this one runs. A load from Core AI's cache takes 0.2 to 0.3 s, about as long as a run: Qwen-Image-Turbo's text at 512² 8.0 → 4.7 s, a call of Chroma's swapped DiT 7.2 → 5.4 to 5.8 s, the same pictures. It does not help on Core ML (a load is a compile, the row above). On Core AI swap a DiT's groups: no slower than holding them all, and the Neural Engine holds less (Chroma 8.3 → 2.2 to 2.6 GiB; Anima, whose groups are small, 2.53 → 0.57 to 0.84 GiB with 5.6 → 5.7 s a step and the same time a picture) | 16.210, 16.215 |
 | **A head at a time needs the keys in parts of powers of two** (Core AI, `milpart.KeyParts`, `HeadOptions.Split`) | In a DiT whose text rows are in the same attention (Qwen-Image: 4096 + 512 keys) the form of a head at a time alone is no faster (278 ms; the heads together 248 ms). It is fast when the keys are a power of two, 4096 at most: the image's keys and the text's as score tensors of their own under one softmax (the largest of their maxima, the sum of their sums), the padding's bias on the text's part alone. 168 ms, a step at 1024² 15.9 s (at 512² 3.4 → 3.0 s). Dividing two parts by the one sum, and a `maximum` of the maxima of parts of unlike widths, left the Neural Engine. Time an attention-only program of the model's shape (heads, queries, keys) first (`milpart/probe_test.go`) | 16.211 |
+| **The host's memory back between the VAE's stages** (`debug.FreeOSMemory`) | A VAE stage's float32 input and output at 1024² are up to 0.5 GB each, and Go keeps the freed ones until its heap shrinks: the largest stage then holds the stages before it too. FLUX.2 klein at 1024²: the peak 5.1 → 4.1 GB for 0.4 s more of decoding. Hand the host's weights that are needed only before the steps back too (FLUX.2's time embedding, 0.7 GB of float32: its rows for every sigma first). Not yet in the other models' VAEs (`runner.Stages`' callers) | 16.227 |
 
 Not tried yet (estimates; measure them before adopting):
 
@@ -412,30 +413,30 @@ The items above and in sections 3–5 and 9, for each image model in models.yaml
 | 3 prompts × 2 seeds against diffusers' fp32 (9), Mac | ✓ | ✗ (one picture: 0.984; the 16.160 changes were judged on 6 pictures against the Neural Engine's fp16) | ✓ | ✗ (not against diffusers; on the M1 4 min 30 s an image, the Neural Engine 2.62 GiB, the default against 30 Euler steps the same in 2 of 4, 16.160) | ✓ (512², latents 0.935–0.981, the same compositions and the sign's lettering, 16.165) |
 | Intel's NPU | ✗ (no form) | ✗ | ✗ (exports made; the hardware's run after the reload fix not checked) | ✗ (likewise) | ✗ |
 
-Qwen-Image-2.1 (not distilled) and Chroma1 (Qwen-Image-2.1-Turbo is in the table above; 16.155–16.157, 16.167; Chroma1 on the Mac 16.170):
+Qwen-Image-2.1 (not distilled) and Chroma1 (Qwen-Image-2.1-Turbo is in the table above; 16.155–16.157, 16.167; Chroma1 on the Mac 16.170), and FLUX.2 klein 4B (AMD 16.206–16.208, the Mac 16.227):
 
-| Item | Qwen-Image-2.1 | Chroma1-Flash | Chroma1-HD |
-|---|---|---|---|
-| CFG's passes per weight group, AMD | ✓ (guidance only when asked, as diffusers) | — (no CFG) | ✓ |
-| CFG's passes per weight group, Core ML / OpenVINO | ✗ (no Mac or Intel form) | — | ✓ (Mac, `progEngine.velocity`: a guided step 58 s against 35 s unguided at 1024²: the second pass in a group takes 23 s) |
-| The negative read in the same text load (`EncodeAll`) | ✓ (the empty prompt is a real one: the chat template's tokens) | — | ✓ |
-| The empty negative without running the text encoder | — | — | ✓ (Mac: `text/empty.bin`, the empty prompt's 2 rows through T5 in float32 at export) |
-| A second-order solver | measured, not adopted (DPM 25 moved details: 0.973 against Euler 40's 0.990 to 100 steps) | ✓ (Heun, 8 steps) | ✓ (DPM-Solver++ 2M, 25 steps) |
-| CFG at the noisier steps only | ✗ (not measured) | — | ✓ (σ ≥ 0.6) |
-| A fixed text prefix held in the export | — (the system prompt is shorter than a 64-row chunk) | — (no instruction) | — |
-| The prompt's keys and values out of the step loop | ✓ | — (FLUX's text rows are modulated by the step) | — |
-| The modulations once a sigma, out of the step loop | — | ✓ (Mac: the approximator before the steps, then closed) | ✓ (Mac) |
-| Image attention in 64-key blocks, QK^T in bfp16 | ✓ | ✓ | ✓ |
-| Core AI: the attention scale in the queries' norm (16.201), the attentions a head at a time (16.202, 16.211) | ✓ (v3: 40 steps at 512² 3 min 10 s → 2 min 03 s; 1024² not run) | ✓ (v2: a picture at 1024² on an M1 5 min 36 s, a call of the DiT 21.7 s; 16.214) | ✓ (the same programs; a picture at 512² 3 min 39 s, a guided step 10.0 s; 1024² not run) |
-| VAE on the grid (`GridGEMM`, phase upsampling) | ✓ | ✓ | ✓ |
-| Same-shaped VAE stages in one graph | ✓ | ✗ | ✗ |
-| The text encoder in groups (`SwapVariants`) | ✓ | ✓ (T5, 6 groups of 4 layers: peak 5.9 → 4.5 GiB, the same latents) | ✓ |
-| Fewer bytes of DiT weights, AMD | ✓ (q8 attention, q6 MLP; q4 and GPTQ measured, not adopted) | ✓ (q8; formats per part not swept) | ✓ (q8, likewise) |
-| Fewer bytes of DiT weights, Mac | ✗ | ✓ (lut8; per-row int8 overflowed and broke the pictures, 16.170) | ✓ (lut8, the same programs) |
-| The memory the Neural Engine holds (`mem.NPUWired`) on the M1 | — | ✓ (8.29 GiB at 512², 6.92 at 1024²; T5 fp16 2 layers at a time) | ✓ (4.7–5.4 GiB at 1024², T5 and the VAE linked from Flash's export) |
-| Energy per image at 1024² (AMD, package) | ✓ 9.3 kJ, 504 s (40 steps, no CFG) | ✓ 4.6 kJ, 267 s | ✓ 12.1 kJ, 685 s (CFG 3) |
-| 3 prompts × 2 seeds against diffusers' fp32 | ✗ (one picture, CFG 4: 0.9982) | ✓ (the Mac at 512²: latent cosine 0.987–0.997, PSNR 30–38 dB against `ref_chroma_lean.py`, the same pictures; AMD one picture: 0.9988) | ✗ (one picture, CFG 3: 0.9957; the Mac: the reference's first 4 calls at 1024² through the DiT, 0.9998 or more) |
-| Intel's NPU | ✗ | ✗ | ✗ |
+| Item | Qwen-Image-2.1 | Chroma1-Flash | Chroma1-HD | FLUX.2 klein 4B |
+|---|---|---|---|---|
+| CFG's passes per weight group, AMD | ✓ (guidance only when asked, as diffusers) | — (no CFG) | ✓ | — (no CFG) |
+| CFG's passes per weight group, Core ML / OpenVINO | ✗ (no Mac or Intel form) | — | ✓ (Mac, `progEngine.velocity`: a guided step 58 s against 35 s unguided at 1024²: the second pass in a group takes 23 s) | — |
+| The negative read in the same text load (`EncodeAll`) | ✓ (the empty prompt is a real one: the chat template's tokens) | — | ✓ | — |
+| The empty negative without running the text encoder | — | — | ✓ (Mac: `text/empty.bin`, the empty prompt's 2 rows through T5 in float32 at export) | — |
+| A second-order solver | measured, not adopted (DPM 25 moved details: 0.973 against Euler 40's 0.990 to 100 steps) | ✓ (Heun, 8 steps) | ✓ (DPM-Solver++ 2M, 25 steps) | — (Euler, 4 distilled steps) |
+| CFG at the noisier steps only | ✗ (not measured) | — | ✓ (σ ≥ 0.6) | — |
+| A fixed text prefix held in the export | — (the system prompt is shorter than a 64-row chunk) | — (no instruction) | — | — (the chat template's prefix is 3 tokens) |
+| The prompt's keys and values out of the step loop | ✓ | — (FLUX's text rows are modulated by the step) | — | — (FLUX's text rows are modulated by the step) |
+| The modulations once a sigma, out of the step loop | — | ✓ (Mac: the approximator before the steps, then closed) | ✓ (Mac) | ✓ (Mac: on the host in float32 before the steps, the weights dropped after, 16.227) |
+| Image attention in 64-key blocks, QK^T in bfp16 | ✓ | ✓ | ✓ | ✓ (16.206) |
+| Core AI: the attention scale in the queries' norm (16.201), the attentions a head at a time (16.202, 16.211) | ✓ (v3: 40 steps at 512² 3 min 10 s → 2 min 03 s; 1024² not run) | ✓ (v2: a picture at 1024² on an M1 5 min 36 s, a call of the DiT 21.7 s; 16.214) | ✓ (the same programs; a picture at 512² 3 min 39 s, a guided step 10.0 s; 1024² not run) | ✓ (Mac: 1024² 9.2 s a step, a picture 41 s on an M1; 16.227) |
+| VAE on the grid (`GridGEMM`, phase upsampling) | ✓ | ✓ | ✓ | ✓ (Chroma's stages) |
+| Same-shaped VAE stages in one graph | ✓ | ✗ | ✗ | ✗ |
+| The text encoder in groups (`SwapVariants`) | ✓ | ✓ (T5, 6 groups of 4 layers: peak 5.9 → 4.5 GiB, the same latents) | ✓ | ✓ (Mac: 9 programs of 3 layers in turn) |
+| Fewer bytes of DiT weights, AMD | ✓ (q8 attention, q6 MLP; q4 and GPTQ measured, not adopted) | ✓ (q8; formats per part not swept) | ✓ (q8, likewise) | ✓ (bfp16, 16.200) |
+| Fewer bytes of DiT weights, Mac | ✗ | ✓ (lut8; per-row int8 overflowed and broke the pictures, 16.170) | ✓ (lut8, the same programs) | ✓ (lut8; lut6 measured: 2.0 against 2.2 s a step at 512², the velocity 10.6 % off float32 against 3.8 %, not adopted; 16.227) |
+| The memory the Neural Engine holds (`mem.NPUWired`) on the M1 | — | ✓ (8.29 GiB at 512², 6.92 at 1024²; T5 fp16 2 layers at a time) | ✓ (4.7–5.4 GiB at 1024², T5 and the VAE linked from Flash's export) | ✓ (1.46–1.50 GiB at 512² and 1024², the DiT a group at a time) |
+| Energy per image at 1024² (AMD, package) | ✓ 9.3 kJ, 504 s (40 steps, no CFG) | ✓ 4.6 kJ, 267 s | ✓ 12.1 kJ, 685 s (CFG 3) | ✗ |
+| 3 prompts × 2 seeds against diffusers' fp32 | ✗ (one picture, CFG 4: 0.9982) | ✓ (the Mac at 512²: latent cosine 0.987–0.997, PSNR 30–38 dB against `ref_chroma_lean.py`, the same pictures; AMD one picture: 0.9988) | ✗ (one picture, CFG 3: 0.9957; the Mac: the reference's first 4 calls at 1024² through the DiT, 0.9998 or more) | ✗ (no PyTorch on the Mac here; the first step's velocity against the same programs in float32 on the CPU: 3.8 %, cosine 0.9993) |
+| Intel's NPU | ✗ | ✗ | ✗ | ✗ |
 
 The AMD cells are being done in separate work (q8 for Sana's DiT, the cross-attention's keys and values, Anima's VAE stages, Sana's CFG steps there); update them when it lands. Energy on the Mac and Intel remain.
 
