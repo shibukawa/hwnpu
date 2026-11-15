@@ -577,6 +577,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				if err := llm.AddMass(path, form, scale); err != nil {
 					return Config{}, err
 				}
+				// the attention in the form the backend runs fastest, of a conversion from
+				// before it (Core AI: a kv head at a time), also without weights
+				if err := llm.RefreshAttention(path, form, scale); err != nil {
+					return Config{}, err
+				}
 				// the attention over shorter chunks, also without weights
 				if err := llm.AddSmaller(path, form, scale, shortestChunk(backend, s.Shortest)); err != nil {
 					return Config{}, err
@@ -621,7 +626,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if pm, ok := mm.(llm.Paged); ok && chunk > 0 {
 			// the layer's attention over shorter chunks too, as the model's (without weights):
 			// over the whole chunk it took 3 of its 9 ms a call (Qwen3.5-4B, docs/design.md 16.192)
-			if err := llm.AddSmaller(path, cmp.Or(ma.Param(llm.Options{}, "attn"), "grouped"), pm.PagedShape().Scale, shortestChunk(backend, s.Shortest)); err != nil {
+			mform := cmp.Or(ma.Param(llm.Options{}, "attn"), "grouped")
+			if err := llm.RefreshAttention(path, mform, pm.PagedShape().Scale); err != nil {
+				return Config{}, err
+			}
+			if err := llm.AddSmaller(path, mform, pm.PagedShape().Scale, shortestChunk(backend, s.Shortest)); err != nil {
 				return Config{}, err
 			}
 		}

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"math"
@@ -496,10 +497,76 @@ func AddSmaller(path, form string, scale float64, from int) error {
 	return WriteManifest(path, man)
 }
 
+// AttentionEnv names the environment variable that keeps the attention programs of a model
+// split at its attention in the model's own form ("grouped") instead of the one its backend
+// runs fastest (attentionForm), for comparing the two: the programs are written again when it
+// changes (RefreshAttention).
+const AttentionEnv = "HWNPU_ATTENTION"
+
+// attentionForm is the form the attention programs of a model split at its attention are
+// written in for backend, from the model's (its architecture's attn: grouped or tile): Core AI
+// runs a grouped attention of several kv heads faster a kv head at a time (paged.Heads). One kv
+// head for all the heads written so leaves the Neural Engine (Gemma 4 E2B, PLaMo 3 Translate
+// 0.8B): it stays grouped.
+func attentionForm(backend, form string, sh paged.Shape) string {
+	if backend == BackendCoreAI && form == "grouped" && sh.KVHeads > 1 && os.Getenv(AttentionEnv) != "grouped" {
+		return paged.Heads
+	}
+	return form
+}
+
+// RefreshAttention writes the attention programs of a model split at its attention again when
+// they are not in the form its backend runs fastest now (attentionForm), from the attention
+// program's shape, form being the model's and scale its score scale (as AddMass takes them):
+// they have no weights, so a conversion from before the form keeps its parts. The programs over
+// shorter chunks are removed for AddSmaller to write again. It does nothing for a manifest in
+// that form already, or not split at its attention.
+func RefreshAttention(path, form string, scale float64) error {
+	man, err := ReadManifest(path)
+	if err != nil {
+		return err
+	}
+	if man.Paged == 0 || man.Attention == nil {
+		return nil
+	}
+	var q, k []int
+	for _, in := range man.Attention.Inputs {
+		switch in.Name {
+		case "q":
+			q = in.Shape
+		case "k":
+			k = in.Shape
+		}
+	}
+	if len(q) != 4 || len(k) != 4 {
+		return fmt.Errorf("llm: %s: the attention program has no q and k of 4 dimensions", path)
+	}
+	sh := paged.Shape{Heads: q[1], KVHeads: k[1], HeadDim: q[3], Scale: scale}
+	want := attentionForm(man.Backend, form, sh)
+	if cmp.Or(man.AttnForm, form) == want {
+		return nil
+	}
+	stem := strings.TrimSuffix(man.Attention.Path, filepath.Ext(man.Attention.Path))
+	rec, err := writeAttention(stem, man.Backend, sh, form, q[2], k[2], man.Model)
+	if err != nil {
+		return err
+	}
+	for _, r := range man.Smaller {
+		os.RemoveAll(r.Path)
+	}
+	man.Attention, man.Smaller, man.AttnForm = rec, nil, ""
+	if want != form {
+		man.AttnForm = want
+	}
+	return WriteManifest(path, man)
+}
+
 // writeAttention writes the attention program without weights over a chunk of chunk positions
 // for seq query rows, stem with the backend's extension: a package for Core ML, IR for Intel's
-// NPU, a Core AI program.
+// NPU, a Core AI program. form is the model's: the program is in the backend's form of it
+// (attentionForm).
 func writeAttention(stem, backend string, sh paged.Shape, form string, seq, chunk int, title string) (*PartRecord, error) {
+	form = attentionForm(backend, form, sh)
 	desc := fmt.Sprintf("%s attention over a chunk of %d cached tokens, %d per call, %s (hwnpu-dev convert)", title, chunk, seq, form)
 	build := func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
 		return paged.Build(b, sh, form, seq, chunk)
