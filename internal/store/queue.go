@@ -183,6 +183,7 @@ func runJob(file string) error {
 		return err
 	}
 	defer unlock()
+	start := time.Now() // after the lock: the time of the work, not of waiting for another process
 	b, err := os.ReadFile(file)
 	if os.IsNotExist(err) {
 		return nil // another process did it
@@ -222,9 +223,39 @@ func runJob(file string) error {
 	}
 	if err == nil {
 		os.Remove(file)
-		logQueue("%s: put in %s", describe(j), j.Source)
+		logQueue("%s: put in %s (%s)", describe(j), j.Source, rate(size(j), time.Since(start)))
 	}
 	return err
+}
+
+// size is the bytes job j puts: its file, or the files of its entry's directory.
+func size(j job) int64 {
+	if j.Op != "entry" {
+		fi, err := os.Stat(j.Path)
+		if err != nil {
+			return 0
+		}
+		return fi.Size()
+	}
+	var n int64
+	filepath.WalkDir(j.Dir, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if fi, err := d.Info(); err == nil {
+				n += fi.Size()
+			}
+		}
+		return nil
+	})
+	return n
+}
+
+// rate says how much was put in d: "0.62 GB in 24.1s, 25.7 MB/s".
+func rate(n int64, d time.Duration) string {
+	s := fmt.Sprintf("%.2f GB in %.1fs", float64(n)/1e9, d.Seconds())
+	if d > 0 {
+		s += fmt.Sprintf(", %.1f MB/s", float64(n)/1e6/d.Seconds())
+	}
+	return s
 }
 
 func describe(j job) string {
