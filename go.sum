@@ -20,8 +20,6 @@ github.com/klauspost/compress v1.20.3 h1:zWNoFqq/lSuYQRim3dUXlXeA0IqwuZGicdG5ZTf
 github.com/klauspost/compress v1.20.3/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/shibukawa/configdir v1.1.0 h1:4GP0P/WcJ1U7GkUSANC89OrhDblax6IKQ6BOLjKJRI8=
 github.com/shibukawa/configdir v1.1.0/go.mod h1:HTskqR/IUiw5DQ/w4mu/gtNIHuHRnMsWaTMbSbM32d4=
-github.com/shibukawa/tinygodriver v1.3.9 h1:K+3lNMkZlZy6PS+SqJkgLQ2aWlIP2DB/xAYxgQTm93o=
-github.com/shibukawa/tinygodriver v1.3.9/go.mod h1:wCcrdtPHO4kv68Jt8SgI/Zm4wuh9D6Qcokdc0kID/U4=
 github.com/shibukawa/tinygodriver v1.3.10 h1:V8c4AwpwlpsnU1UhrK3xOtgCEZ/tK4T7UnvQgZvo8VY=
 github.com/shibukawa/tinygodriver v1.3.10/go.mod h1:wCcrdtPHO4kv68Jt8SgI/Zm4wuh9D6Qcokdc0kID/U4=
 golang.org/x/net v0.61.0 h1:RR+6j/BTBCrggOLugxa+66R8FvoN6MHlzDlZIbN9YFw=
