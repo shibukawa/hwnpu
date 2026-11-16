@@ -534,8 +534,10 @@ models:
       diffusers/t5_tokenizer/tokenizer.json: 2432e8aa83414a69884a5cbd54a68f528c042d1f30780affbefcbb85091f022e
       split_files/diffusion_models/anima-turbo-v1.1.safetensors: fba11953276b57edf59d1dc4f1857ac05aa079c56f982b4d7c20298d57d3f7eb
     machine: 8
-    # AMD: the NPU's 2.4 GiB peak (the VAE's stages) and the process's 0.9 GiB, measured
-    memory: {amd: 3.5, apple: 4.1}
+    # AMD: the NPU's 2.4 GiB peak (the VAE's stages) and the process's 0.9 GiB, measured. Apple:
+    # the peak of the footprint and the Neural Engine footprint together, 4.8 GB at 1024 x 1024 on
+    # an M1 (3.1 GiB of the process and 1.4 GiB on the Neural Engine, design.md 16.228)
+    memory: {amd: 3.5, apple: 4.8}
     bytes: 5.9e9
     about: "Anima-Turbo (Cosmos-Predict2 2B, Qwen3-0.6B): 1024x1024 in 8 steps, Danbooru tags and natural language"
   Anima-Aesthetic:
@@ -558,7 +560,8 @@ models:
       diffusers/t5_tokenizer/tokenizer.json: 2432e8aa83414a69884a5cbd54a68f528c042d1f30780affbefcbb85091f022e
       split_files/diffusion_models/anima-aesthetic-v1.1.safetensors: 3c1868387a3a1ff504bbb87c33678321965ead381fcf87afbd0264daa600c082
     machine: 8
-    memory: {amd: 3.5, apple: 4.1}
+    # Anima-Turbo's programs with other weights: its memory
+    memory: {amd: 3.5, apple: 4.8}
     bytes: 5.9e9
     about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 25 DPM-Solver++ steps with classifier-free guidance (--guidance, --negative), about 4.5 times Anima-Turbo's time"
   Chroma1-Flash:
@@ -626,9 +629,10 @@ models:
     # buffers; the text encoder's layers and the DiT's blocks are read a group at a time into one
     # bank) and the process's 0.16 GiB, measured; an edit with one reference peaks the same
     # (design.md 16.206 to 16.208). 1.9 GB at 512 x 512.
-    # Apple: the process's footprint at 1024 x 1024 (4.1 GB, the VAE's stages; 1.4 GB at 512 x 512);
-    # the Neural Engine holds 1.5 GiB more (the DiT a group at a time, design.md 16.227)
-    memory: {amd: 3.9, apple: 4.1}
+    # Apple: the peak of the process's footprint and its Neural Engine footprint together at
+    # 1024 x 1024 on an M1, 4.9 GB (in the VAE's stages: 3.8 GiB of the process and 0.8 GiB on the
+    # Neural Engine; 3.1 GB at 512 x 512), measured (design.md 16.227, 16.228)
+    memory: {amd: 3.9, apple: 4.9}
     # the repository's diffusers layout (its single-file copy of the DiT is not fetched)
     bytes: 1.6e10
     features: [edit]
@@ -686,8 +690,10 @@ models:
       text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 8
-    # Apple: the process's peak footprint 3.87 GB (M1, design.md 16.152; 3.87 too with the int8 DiT, 16.160)
-    memory: {amd: 2.3, apple: 3.9}
+    # Apple: the peak of the footprint and the Neural Engine footprint together at 1024 x 1024 on
+    # an M1, 4.4 GB (3.3 GiB of the process and 0.8 GiB on the Neural Engine, in the VAE's stages);
+    # 2.1 GB at 512 x 512 (design.md 16.228)
+    memory: {amd: 2.3, apple: 4.4}
     bytes: 8.9e9
     about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
   SANA1.5-1.6B:
@@ -709,8 +715,9 @@ models:
       text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 16
-    # Apple: the process's peak footprint 3.85 GB (M1, the lut8 DiT, design.md 16.160)
-    memory: {amd: 2.3, apple: 3.9}
+    # Apple: the peak of the footprint and the Neural Engine footprint together at 1024 x 1024 on
+    # an M1, 4.5 GB (3.4 GiB of the process and 0.8 GiB on the Neural Engine; design.md 16.228)
+    memory: {amd: 2.3, apple: 4.5}
     bytes: 9.7e9
     about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
@@ -903,8 +910,12 @@ categories:
   image:
     aliases: [generate]
     about: image generation (hwnpu-image generate)
+    # FLUX.2 klein from 16 GB (4.9 GB on Apple at 1024 x 1024, 41 s on an M1): Apache-2.0, safe
+    # by default, and edits too on AMD; Sana 600M (4.4 GB, 2.1 GB at 512 x 512) on 8 GB. Anima
+    # and Chroma (nsfw) are not picked even with +nsfw: named, they run (design.md 16.228)
     picks:
-      - {machine: 8, model: Anima-Turbo}
+      - {machine: 8, model: Sana-600M}
+      - {machine: 16, model: FLUX.2-klein-4B}
   depth:
     about: depth estimation (hwnpu-image depth)
     picks:

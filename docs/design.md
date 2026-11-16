@@ -6849,3 +6849,32 @@ NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込�
 **メモリ**: 1024² の最大は VAE の段。最初は 5.8 GB だった。時刻の埋め込みの重み (float32 で 0.7 GB) をステップの前に全部の σ の行を作ってから捨て、ステップのごみ (組の出力、1024² で 57 MB ずつ) を VAE の前に返し (`debug.FreeOSMemory`) て 5.1 GB、VAE の段ごとにも返して 4.1 GB (デコードは 4.3 → 4.7 秒)。段ごとに返すのは他の画像モデルの VAE にも効くはずだが、まだ FLUX.2 だけ
 
 **当てはまらないもの** (new-model-checklist 7.1): CFG とその周り (蒸留済み)、文のキーと値をステップの外に (FLUX の文の行はステップごとに変調される)、決まった前置き (チャットのテンプレートの前置きは 3 トークン)、文の行を減らす (DiT がパッドも見るので厳密でない)
+
+### 16.228 画像のモデルのメモリを Core AI で測り直す、画像生成の主力を FLUX.2 klein 4B に — 2026-11-16
+
+16.221 でチャットのモデルを測り直したのと同じ測り方で、Apple の画像生成のモデルを測る。models.yaml の Apple の値は、Core ML の頃の「プロセスの footprint だけ」(Neural Engine の分を含まない) が残っていた。あわせて、画像生成の用途 (`image`、`hwnpu-image generate` の既定) を FLUX.2 klein 4B (16.227) にする。
+
+**測り方**: 16.221 と同じ。子プロセスの `proc_pid_rusage` (flavor 6) の `ri_phys_footprint` と `ri_neural_footprint` を 0.1 秒ごとに読み、和の最大を取る。Qwen3-0.6B を測ると 16.221 と同じ 1.07 GB (0.65 + 0.35 GiB) になった。1 枚を 2 回描き、2 回目を値にする。M1 (16 GB)、狐のプロンプト、種 1。
+
+| | 1 枚 | 合わせて | 最大のとき (プロセス + Neural Engine) | Neural Engine の最大 | 前の値 (プロセスだけ) |
+|---|---|---|---|---|---|
+| FLUX.2 klein 4B 1024² | 41 秒 | **4.93 GB** | 3.83 + 0.76 GiB (VAE の段) | 2.32 GiB (DiT) | 4.1 GB |
+| FLUX.2 klein 4B 512² | 10 秒 | 3.09 GB | 1.08 + 1.79 GiB | 1.79 GiB | — |
+| Anima-Turbo 1024² | 48 秒 | **4.81 GB** | 3.06 + 1.42 GiB | 1.43 GiB | 4.1 GB |
+| Sana 600M 1024² | 15 秒 | **4.35 GB** | 3.27 + 0.78 GiB (VAE の段) | 1.54 GiB | 3.9 GB |
+| Sana 600M 512² | 4.7 秒 | 2.13 GB | 1.21 + 0.78 GiB | 1.71 GiB | — |
+| SANA 1.5 1.6B 1024² | (コンパイルの残りで 2 分 26 秒) | **4.45 GB** | 3.36 + 0.78 GiB | 1.71 GiB | 3.9 GB |
+
+- どれも 1024² の最大は VAE の最後の段で、プロセスの分 (段の入力と出力の float32、Core AI の段の中のバッファ) が大きい。Neural Engine の最大は DiT や文の符号器のときだが、そのときプロセスは小さい。だから和の最大は「プロセスの最大 + Neural Engine の最大」より小さい (FLUX.2 は 3.83 + 2.32 = 6.2 GiB の和にはならない)
+- 1 回目 (変換かコンパイルのあと) の最大はこれより大きい: FLUX.2 1024² 7.00 GB (コンパイルの間のプロセス 5.0 GiB)、SANA 1.5 5.24 GB、Sana 600M 4.82 GB
+- Core AI のキャッシュは実行ファイルの名前ごとなので、測る実行ファイルは `hwnpu-image` という名前にする (別の名前では全部をコンパイルし直す。Qwen-Image-2.1 の 1024² で 1 時間を超えたので、Qwen-Image と Chroma は今回は測らなかった)
+
+**主力を FLUX.2 klein に**: `image` の候補は、8 GB が Sana 600M、16 GB からが FLUX.2 klein 4B。
+
+- FLUX.2 klein は Anima-Turbo とメモリがほぼ同じ (4.9 と 4.8 GB) で少し速く (41 と 48 秒)、Apache-2.0、頼まなければ NSFW を描かない、AMD では編集もできる
+- Anima と Chroma は NSFW を描きうる (16.225)。前は `+nsfw` があると用途が Anima-Turbo を選んだが、候補に書かないことにした。`+nsfw` で名前を指せば動く (`TestPolicyPicks`: `+nsfw` でも `image` は 8 GB で Sana 600M、16 GB で FLUX.2 klein、`anima-turbo` は Anima-Turbo)
+- 8 GB の機械 (モデルに使えるのは約 3 GB): 1024² ではどれも 4.3 GB を超える。Sana 600M は 512² で 2.1 GB、FLUX.2 klein は 512² で 3.1 GB。MODEL.md は 8 GB の欄を Sana 600M (1024² はほかのアプリを閉じて) と、△ FLUX.2 klein の `--size 512` にした
+
+**変えたもの**: models.yaml の `memory` (FLUX.2 klein 4.9、Anima-Turbo と Anima-Aesthetic 4.8、Sana 600M 4.4、SANA 1.5 4.5) と `image` の候補、MODEL.md と MODEL.ja.md の画像生成の行とモデルごとの表、USAGE_IMAGE の既定の説明、`-m` の説明
+
+測っていないもの: Qwen-Image-2.1 と Chroma1 (Core ML の頃の値のまま)、SANA 1.5 の 512²、Anima-Aesthetic (Anima-Turbo と同じプログラムなので同じ値にした)
