@@ -585,7 +585,7 @@ func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir stri
 			m = c
 		}
 	}
-	kind := "iron-import"
+	kind := chat.ImportKind
 	var recipe map[string]string
 	switch {
 	case m.Name != "" && len(m.AMDExport) > 0 && filepath.Base(chat.AMDExportDir(m)) == name:
@@ -598,7 +598,7 @@ func (ic ImportCmd) export(ctx context.Context, writes []shared.Source, dir stri
 		m = chat.Model{Name: stem}
 	}
 	if recipe == nil {
-		recipe = map[string]string{"model": m.Name, "target": cache.AMDTarget, "export": name, "made": "by hand (hwnpu-dev cache import)"}
+		recipe = chat.ImportedRecipe(m, cache.AMDTarget, name)
 	}
 	e := chat.PlaceEntry(kind, m, cache.AMDTarget, name, recipe)
 	if ic.DryRun {

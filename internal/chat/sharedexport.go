@@ -134,32 +134,72 @@ func modelNamed(name string) Model {
 // known: an unpinned model with no lock and Hugging Face out of reach) builds without the
 // sources.
 func SharedExport(ctx context.Context, kind string, recipe map[string]string, out string, log io.Writer, build func() error) error {
+	return SharedExportOr(ctx, kind, recipe, nil, out, log, build)
+}
+
+// SharedRecipe is an entry of the sources by its kind and its recipe.
+type SharedRecipe struct {
+	Kind   string
+	Recipe map[string]string
+}
+
+// SharedExportOr is SharedExport that, when no source has recipe's entry, takes the first of
+// others that a source has (each at the place its kind and recipe give under out's name: an
+// export made by hand that hwnpu-dev cache import put there, ImportedRecipe) before it builds.
+// What build makes is put as recipe's.
+func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer, build func() error) error {
 	if recipe == nil {
 		return build()
 	}
 	if log == nil {
 		log = io.Discard
 	}
-	r := maps.Clone(recipe)
-	r["kind"] = kind
-	p := placeOf(kind, modelNamed(recipe["model"]), recipe["target"], filepath.Base(out), r)
+	p := sharedPlace(kind, recipe, out)
+	places := []place{p}
+	for _, o := range others {
+		places = append(places, sharedPlace(o.Kind, o.Recipe, out))
+	}
 	unlock, err := cache.Lock(ctx, out+":layers", "the export "+filepath.Base(out), log)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if e, err := shared.ReadEntry(out); err == nil && p.takes(e) {
-		return nil
+	if e, err := shared.ReadEntry(out); err == nil {
+		for _, q := range places {
+			if q.takes(e) {
+				return nil
+			}
+		}
 	}
-	if fetchConverted(ctx, p, out, log) {
-		os.WriteFile(out+".done", nil, 0o644)
-		return nil
+	for _, q := range places {
+		if fetchConverted(ctx, q, out, log) {
+			os.WriteFile(out+".done", nil, 0o644)
+			return nil
+		}
 	}
 	if err := build(); err != nil {
 		return err
 	}
 	putConverted(p, out, log)
 	return nil
+}
+
+// sharedPlace is the place of the entry of kind and recipe named as out.
+func sharedPlace(kind string, recipe map[string]string, out string) place {
+	r := maps.Clone(recipe)
+	r["kind"] = kind
+	return placeOf(kind, modelNamed(recipe["model"]), recipe["target"], filepath.Base(out), r)
+}
+
+// ImportKind is the kind of entry of an export for AMD's NPU made by hand, which hwnpu-dev cache
+// import puts in the sources.
+const ImportKind = "iron-import"
+
+// ImportedRecipe is the recipe hwnpu-dev cache import describes an export made by hand with
+// (ImportKind): its model, target and name alone, so that a command finds one under the name it
+// would make the export with.
+func ImportedRecipe(m Model, target, export string) map[string]string {
+	return map[string]string{"model": m.Name, "target": target, "export": export, "made": "by hand (hwnpu-dev cache import)"}
 }
 
 func hostName() string { h, _ := os.Hostname(); return h }

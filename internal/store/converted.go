@@ -115,8 +115,14 @@ func materialize(ctx context.Context, s Source, e Entry, rel, dst string, log io
 	for _, f := range e.Files {
 		p := filepath.Join(part, filepath.FromSlash(f.Path))
 		if fi, err := os.Stat(p); err == nil && fi.Size() == f.Size {
-			done += f.Size // a download cut off before had it
-			continue
+			// a download cut off before had it, unless the machine stopped before its bytes were
+			// on the disk: after a reboot a file can keep its size with other bytes (two banks of
+			// an export for AMD's NPU of 164 files, 2026-11-16), so it is checked again
+			if sum, err := FileSHA256(p); err == nil && sum == f.SHA256 {
+				done += f.Size
+				continue
+			}
+			os.Remove(p)
 		}
 		base := done
 		if err := getChecked(ctx, s.Store, rel+"/"+f.Path, f.SHA256, p, func(n, _ int64) { set(base+n, total) }); err != nil {

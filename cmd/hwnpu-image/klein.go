@@ -10,6 +10,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -22,16 +23,19 @@ import (
 )
 
 // kleinModel is the FLUX.2 klein export m runs here: on Apple's Neural Engine the Core AI export,
-// downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of
-// tools/amd/iron_flux2klein.py.
+// downloaded and converted when missing; on AMD's NPU the export of tools/amd/iron_flux2klein.py
+// for --size (512 or 1024), from the shared layers or made with IRON when missing
+// (flux2klein.PrepareAMD).
 func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, error) {
 	format, err := imageFormat(ctx, c.Backend)
 	switch {
 	case err == nil && format == llm.BackendCoreAI:
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
-	default:
+	case runtime.GOOS == "darwin" || chat.HereVendor() != "amd":
 		return amdOr(err, m, "tools/amd/iron_flux2klein.py")
+	default:
+		return flux2klein.PrepareAMD(chat.WithModel(ctx, m), m, c.Size, console.Log(os.Stderr))
 	}
 	if c.Size%16 != 0 {
 		return "", fmt.Errorf("--size %d: FLUX.2 klein's pictures are multiples of 16 pixels", c.Size)
@@ -191,13 +195,11 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) er
 	if err != nil {
 		return err
 	}
-	// Apple's Neural Engine: --batch pictures at a time, their steps together (a group of the DiT's
-	// blocks runs every picture before the next group loads), then the VAE's stages over all of
-	// them. AMD's NPU, and an edit, draw one picture after another
-	batch := 1
-	if p.Batched() && len(refs) == 0 {
-		batch = max(1, c.Batch)
-	}
+	// --batch pictures at a time, their steps together (a group of the DiT's blocks runs every
+	// picture before the next group's weights are read, or its program loads), then the VAE: on
+	// Apple's Neural Engine its stages over all of them, on AMD's NPU a picture after another (a
+	// stage hands its output to the next on the device). An edit's pictures share its references
+	batch := max(1, c.Batch)
 	for lo := 0; lo < len(c.Prompts); lo += batch {
 		hi := min(lo+batch, len(c.Prompts))
 		n := hi - lo
@@ -244,13 +246,7 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) er
 				logf("step %d/%d: sigma %.3f -> %.3f, %.1f s", i+1, total, sg[i], sg[i+1], d.Seconds())
 			}
 		}
-		if len(refs) > 0 {
-			var x []float32
-			x, err = p.Generate(ctx, conds[lo], refs, xs[0], sg, progress)
-			xs[0] = x
-		} else {
-			xs, err = p.GenerateAll(ctx, conds[lo:hi], xs, sg, progress)
-		}
+		xs, err = p.GenerateAll(ctx, conds[lo:hi], refs, xs, sg, progress)
 		if err != nil {
 			bar.Done("failed")
 			return err

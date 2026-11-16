@@ -233,6 +233,17 @@ func TestEntries(t *testing.T) {
 	if es, err := ListEntries(ctx, far); err != nil || len(es) != 1 || es[0] != rel {
 		t.Errorf("ListEntries: %v %v", es, err)
 	}
+	// a download cut off before left a file of the right size with other bytes (a reboot before
+	// they were on the disk): it is downloaded again
+	cut := filepath.Join(t.TempDir(), "m.amd-npu2")
+	write(t, filepath.Join(cut+".part", "bank.bin"), "\x00\x00\x00\x00\x00\x00\x00")
+	write(t, filepath.Join(cut+".part", "manifest.json"), `{"version":1}`)
+	if _, err := FetchEntry(ctx, ss, rel, byKey(e.Key), cut, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(cut, true); err != nil {
+		t.Errorf("a file of the right size and other bytes was kept: %v", err)
+	}
 	// a file that changed in the source is found out
 	write(t, filepath.Join(far.Store.(Dir).Root, filepath.FromSlash(rel), "bank.bin"), "tampered")
 	if _, err := FetchEntry(ctx, ss, rel, byKey(e.Key), out+"4", nil); err == nil {

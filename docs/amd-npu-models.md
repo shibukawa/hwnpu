@@ -1205,6 +1205,8 @@ design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG な
 
 ### 24.3 手順
 
+`hwnpu-image generate -m flux2-klein` は、初回に `--size` (512 か既定の 1024) の書き出しを用意する (`flux2klein.PrepareAMD`、design.md 16.235): 手元 (キャッシュの `entries/amd-xdna2`、`~/models`) になければ取得元 (`HWNPU_MODEL_SOURCE`) から。取得元には、ほかの機械の初回が置いたもの (`kind: iron-flux2klein`) か、手で作って `hwnpu-dev cache import` で同じ名前で置いたもの (`iron-import`)。どちらもなければチェックポイントを落として `HWNPU_IRON_ENV` の IRON で書き出し (512² で 9 分、IRON のカーネルのキャッシュが空で)、書き戻す取得元に置く。手で書き出すなら:
+
 ```
 python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024
 hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"

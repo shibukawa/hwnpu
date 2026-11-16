@@ -534,8 +534,9 @@ models:
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
   # hwnpu-image generate: on AMD's NPU the export ~/models/NAME.amd-npu2 (or NAME-1024.amd-npu2,
-  # in lower case) of tools/amd/iron_anima.py or iron_sana.py; on Apple's NPU Anima and Sana, on
-  # Intel's Anima, are downloaded and converted on their first run
+  # in lower case) of tools/amd/iron_anima.py or iron_sana.py (FLUX.2 klein's from the sources or
+  # exported with IRON on its first run, NAME-512.amd-npu2 for --size 512); on Apple's NPU Anima
+  # and Sana, on Intel's Anima, are downloaded and converted on their first run
   Anima-Turbo:
     family: anima-turbo
     tag: v1.1

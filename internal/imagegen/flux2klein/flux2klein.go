@@ -586,19 +586,49 @@ func (p *Pipeline) ropeAngles(pos [][4]float64) []float32 {
 // refs are the references' latents, each in Noise's layout (EncodeImage): the export must hold
 // the blocks compiled for that many (References).
 func (p *Pipeline) Generate(ctx context.Context, cond Cond, refs [][]float32, noise []float32, sigmas []float64, step StepFunc) ([]float32, error) {
+	xs, err := p.GenerateAll(ctx, []Cond{cond}, refs, [][]float32{noise}, sigmas, step)
+	if err != nil {
+		return nil, err
+	}
+	return xs[0], nil
+}
+
+// GenerateAll is Generate of several pictures, each noises[k] under conds[k], with the same
+// references (none on Apple's Neural Engine), their steps together: each group of the DiT's
+// blocks runs every picture before the next group's weights are read (on AMD's NPU into the one
+// bank; on Apple's Neural Engine its program loaded), and the modulation rows and the DiT's
+// graphs are made once for all of them. step is told of the steps of all of them. A picture's
+// latents are the same as Generate's alone.
+func (p *Pipeline) GenerateAll(ctx context.Context, conds []Cond, refs [][]float32, noises [][]float32, sigmas []float64, step StepFunc) ([][]float32, error) {
+	if len(conds) != len(noises) {
+		return nil, fmt.Errorf("flux2klein: %d conditionings for %d pictures", len(conds), len(noises))
+	}
 	c := p.C
-	E, N := c.Hidden, c.Tokens()
-	if len(noise) != N*c.Latent {
-		return nil, fmt.Errorf("flux2klein: %d noise values for latents of %d", len(noise), N*c.Latent)
+	for _, x := range noises {
+		if len(x) != c.Tokens()*c.Latent {
+			return nil, fmt.Errorf("flux2klein: %d noise values for latents of %d", len(x), c.Tokens()*c.Latent)
+		}
 	}
 	if p.prog != nil {
 		if len(refs) > 0 {
 			return nil, errors.New("flux2klein: editing (--image) runs on AMD's NPU only for now")
 		}
-		return p.generatePrograms(ctx, cond, noise, sigmas, step)
+		return p.generatePrograms(ctx, conds, noises, sigmas, step)
 	}
-	if cond.ctx == nil {
-		return nil, errors.New("flux2klein: the DiT runs without a prompt (Encode)")
+	return p.generateIRON(ctx, conds, refs, noises, sigmas, step)
+}
+
+// generateIRON is GenerateAll on AMD's NPU: a step embeds each picture's latents and the
+// references' (dit_in), runs the double blocks and then the single blocks a group at a time (the
+// group's weights read into the bank once, then every picture's rows through it), and each
+// picture's final norm and projection (dit_out).
+func (p *Pipeline) generateIRON(ctx context.Context, conds []Cond, refs, noises [][]float32, sigmas []float64, step StepFunc) ([][]float32, error) {
+	c := p.C
+	E, N := c.Hidden, c.Tokens()
+	for _, cd := range conds {
+		if cd.ctx == nil {
+			return nil, errors.New("flux2klein: the DiT runs without a prompt (Encode)")
+		}
 	}
 	// the references' rows: each of the picture's size, or of half or a quarter of its sides
 	divs := make([]int, len(refs))
@@ -660,60 +690,75 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, refs [][]float32, no
 	for _, r := range refs {
 		refRows = append(refRows, toBF16(r)...)
 	}
-	x := append([]float32(nil), noise...)
+	xs := make([][]float32, len(noises))
+	for k, x := range noises {
+		xs[k] = append([]float32(nil), x...)
+	}
 	var tRead, tRun time.Duration
 	tLoop := time.Now()
-	blocks := func(g *iron.Graph, h, m []byte, o int, what string) ([]byte, error) {
+	// blocks runs g's groups over every picture's rows hs, in place: a group's weights are read
+	// into the bank once for all of them
+	blocks := func(g *iron.Graph, hs [][]byte, m []byte, o int, what string) error {
 		for gi := 0; gi < max(g.Variants(), 1); gi++ {
 			if g.Variants() > 0 {
 				t := time.Now()
 				if err := g.Use(gi); err != nil {
-					return nil, err
+					return err
 				}
 				tRead += time.Since(t)
 			}
-			t := time.Now()
-			if err := run(ctx, g, map[string][]byte{"x": h, "mods": m, "angles": angles}, map[string]int64{"nk": int64(rows)}); err != nil {
-				return nil, fmt.Errorf("%s group %d: %w", what, gi, err)
-			}
-			tRun += time.Since(t)
-			var err error
-			if h, err = output(g, o); err != nil {
-				return nil, err
+			for k := range hs {
+				t := time.Now()
+				if err := run(ctx, g, map[string][]byte{"x": hs[k], "mods": m, "angles": angles}, map[string]int64{"nk": int64(rows)}); err != nil {
+					return fmt.Errorf("%s group %d: %w", what, gi, err)
+				}
+				tRun += time.Since(t)
+				var err error
+				if hs[k], err = output(g, o); err != nil {
+					return err
+				}
 			}
 		}
-		return h, nil
+		return nil
 	}
+	hs := make([][]byte, len(xs))
 	for i := 0; i < n; i++ {
 		t0 := time.Now()
 		m := mods[i]
 		row := func(a, b int) []byte { return m[2*a*E : 2*b*E] }
-		if err := run(ctx, in, map[string][]byte{"x": append(toBF16(x), refRows...)}, nil); err != nil {
-			return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
+		for k, x := range xs {
+			if err := run(ctx, in, map[string][]byte{"x": append(toBF16(x), refRows...)}, nil); err != nil {
+				return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
+			}
+			h, err := output(in, 0)
+			if err != nil {
+				return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
+			}
+			hs[k] = append(h, conds[k].ctx...) // [image rows, text rows]
 		}
-		h, err := output(in, 0)
+		err := blocks(doubles, hs, row(0, 12), -1, "double blocks")
+		if err == nil {
+			err = blocks(singles, hs, row(12, 15), 0, "single blocks")
+		}
 		if err != nil {
 			return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
 		}
-		h = append(h, cond.ctx...) // [image rows, text rows]
-		if h, err = blocks(doubles, h, row(0, 12), -1, "double blocks"); err == nil {
-			h, err = blocks(singles, h, row(12, 15), 0, "single blocks")
-		}
-		if err != nil {
-			return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
-		}
-		if err := run(ctx, out, map[string][]byte{"x": h[:2*N*E], "scale": row(15, 16), "shift": row(16, 17)}, nil); err != nil {
-			return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
-		}
-		vb, err := output(out, 0)
-		if err != nil {
-			return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
-		}
-		p.dump(fmt.Sprintf("v_%d.bf16", i), vb)
-		v := fromBF16s(vb)
 		dt := float32(sigmas[i+1] - sigmas[i])
-		for j := range x {
-			x[j] += dt * v[j]
+		for k, x := range xs {
+			if err := run(ctx, out, map[string][]byte{"x": hs[k][:2*N*E], "scale": row(15, 16), "shift": row(16, 17)}, nil); err != nil {
+				return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
+			}
+			vb, err := output(out, 0)
+			if err != nil {
+				return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
+			}
+			if k == 0 {
+				p.dump(fmt.Sprintf("v_%d.bf16", i), vb)
+			}
+			v := fromBF16s(vb)
+			for j := range x {
+				x[j] += dt * v[j]
+			}
 		}
 		if step != nil {
 			step(i, n, time.Since(t0))
@@ -722,7 +767,7 @@ func (p *Pipeline) Generate(ctx context.Context, cond Cond, refs [][]float32, no
 	all := time.Since(tLoop)
 	p.logf("the steps' %.2f s: the blocks %.2f s, the groups' weights %.2f s, the rest (the embedding, the output, the host) %.2f s",
 		all.Seconds(), tRun.Seconds(), tRead.Seconds(), (all - tRun - tRead).Seconds())
-	return x, nil
+	return xs, nil
 }
 
 // Unpack is the packed latents (Noise's layout) as the VAE takes them, (32, H/8, W/8): each

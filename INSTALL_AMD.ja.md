@@ -207,6 +207,8 @@ HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "こんにちは"
 
 ある機械で作った書き出しは、同じ NPU のほかの機械でも動きます (ディレクトリを写すか、`-m` に渡す)。
 
+hwnpu-image generate も、FLUX.2 klein 4B (`-m flux2-klein`、`--size 512` か既定の 1024) の書き出しを、初回に同じように `tools/amd/iron_flux2klein.py` で作ります。何かを落とす前に、`HWNPU_MODEL_SOURCE` の取得元に書き出しがないかを見ます: ほかの機械の初回が置いたもの、または手で作って `hwnpu-dev cache import` で同じ名前 (`flux.2-klein-4b.amd-npu2`、`flux.2-klein-4b-512.amd-npu2`) で置いたもの。作ったものは書き戻す取得元 (`?writeback=true`) に置きます。
+
 ## 5. 自分のカーネルを使う
 
 ```go

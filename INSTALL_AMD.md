@@ -207,6 +207,8 @@ HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "Hello"
 
 An export made on one machine runs on another with the same NPU (copy the directory, or pass it to `-m`).
 
+hwnpu-image generate makes FLUX.2 klein 4B's export (`-m flux2-klein`, `--size 512` or the default 1024) the same way on its first run, with `tools/amd/iron_flux2klein.py`. Before it downloads anything it looks in the sources of `HWNPU_MODEL_SOURCE` for an export: one another machine's first run put there, or one made by hand that `hwnpu-dev cache import` put there under the same name (`flux.2-klein-4b.amd-npu2`, `flux.2-klein-4b-512.amd-npu2`). One it makes goes to the sources written back to (`?writeback=true`).
+
 ## 5. Using your own kernels
 
 ```go

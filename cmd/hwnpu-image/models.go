@@ -117,6 +117,9 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 		if d, err := amdExport(m, ""); err == nil {
 			return shortHome(d)
 		}
+		if m.Kind == chat.KindImage && strings.HasPrefix(m.Family, "flux2-klein") && vendor == "amd" { // flux2klein.PrepareAMD
+			return "exported on first run (IRON)"
+		}
 		if m.Kind == chat.KindLabel && strings.EqualFold(vendor, hwnpu.VendorApple.String()) { // siglip.Prepare
 			return "converted on first run"
 		}
@@ -129,12 +132,12 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 
 // convertedImage reports whether the image family converts for this machine's NPU (vendor, as
 // hwnpu.Vendor's String) on its first run: Anima and Sana on Apple's (Core AI) and Intel's,
-// Qwen-Image and Chroma on Apple's.
+// Qwen-Image, Chroma and FLUX.2 klein on Apple's.
 func convertedImage(family, vendor string) bool {
 	switch v := strings.ToLower(vendor); {
 	case strings.HasPrefix(family, "anima"), strings.HasPrefix(family, "sana"):
 		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
-	case strings.HasPrefix(family, "qwen-image"), strings.HasPrefix(family, "chroma"):
+	case strings.HasPrefix(family, "qwen-image"), strings.HasPrefix(family, "chroma"), strings.HasPrefix(family, "flux2-klein"):
 		return v == strings.ToLower(hwnpu.VendorApple.String())
 	}
 	return false
