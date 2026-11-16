@@ -54,9 +54,20 @@ func (p place) takes(e shared.Entry) bool {
 	return maps.Equal(a, b)
 }
 
-// fetchConverted makes dst from the first source that has the place's entry, and puts it in the
-// sources before that one that are written back to. It reports whether it did.
+// fetchConverted is fetchFrom, and, when no source has the entry, starts putting dst in the
+// sources written back to as it is made here next (startEarly): for a conversion a miss is
+// followed by.
 func fetchConverted(ctx context.Context, p place, dst string, log io.Writer) bool {
+	if fetchFrom(ctx, p, dst, log) {
+		return true
+	}
+	startEarly(p, dst)
+	return false
+}
+
+// fetchFrom makes dst from the first source that has the place's entry, and puts it in the
+// sources before that one that are written back to. It reports whether it did.
+func fetchFrom(ctx context.Context, p place, dst string, log io.Writer) bool {
 	ss := shared.Sources()
 	if len(ss) == 0 {
 		return false
@@ -66,10 +77,6 @@ func fetchConverted(ctx context.Context, p place, dst string, log io.Writer) boo
 		if !errors.Is(err, shared.ErrNotFound) && log != nil {
 			fmt.Fprintf(log, "the sources: %v; making %s here\n", err, filepath.Base(dst))
 		}
-		// it is made here next: its files go in the sources written back to as they are written
-		for _, s := range shared.Writebacks() {
-			shared.StartEarly(s, p.entry.Path, dst)
-		}
 		return false
 	}
 	for _, s := range ss[:i] {
@@ -78,6 +85,14 @@ func fetchConverted(ctx context.Context, p place, dst string, log io.Writer) boo
 		}
 	}
 	return true
+}
+
+// startEarly puts the files of dir, the place's entry being made here next, in the sources
+// written back to as they are written (store.StartEarly).
+func startEarly(p place, dir string) {
+	for _, s := range shared.Writebacks() {
+		shared.StartEarly(s, p.entry.Path, dir)
+	}
 }
 
 // putConverted describes dir, made here and whole, as the place's entry and puts it in the

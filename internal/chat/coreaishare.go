@@ -155,7 +155,7 @@ func FetchPrebuilt(ctx context.Context, export, arch string) {
 		if _, err := os.Stat(root); err == nil {
 			return
 		}
-	} else if !fetchConverted(ctx, p, dir, labelLog{sharedLog, filepath.Base(dir), filepath.Base(export) + " (prebuilt for " + arch + ")"}) {
+	} else if !fetchFrom(ctx, p, dir, labelLog{sharedLog, filepath.Base(dir), filepath.Base(export) + " (prebuilt for " + arch + ")"}) { // nothing is made here after a miss: no early puts
 		return
 	}
 	if err := coreai.Unbundle(filepath.Join(dir, coreai.BundleFile), root); err != nil {
