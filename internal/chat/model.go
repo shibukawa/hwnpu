@@ -1330,6 +1330,12 @@ func shards(index string) ([]string, error) {
 // a token (hfToken), signing in, agreeing to the terms. repo is OWNER/NAME, or
 // OWNER/NAME@REVISION for a revision other than main.
 func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error {
+	return fetchHFTee(ctx, repo, name, path, log, nil)
+}
+
+// fetchHFTee is fetchHF that also writes the file, when it comes whole from its start, to what
+// tee returns for its size (nil: nowhere): the sources written back to (shared.StartTee).
+func fetchHFTee(ctx context.Context, repo, name, path string, log io.Writer, tee func(size int64) io.Writer) error {
 	repo, rev, _ := strings.Cut(repo, "@")
 	url := hubURL + repo + "/resolve/" + cmp.Or(rev, "main") + "/" + name
 	part := path + ".part"
@@ -1402,7 +1408,13 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	if err != nil {
 		return err
 	}
-	pw := &progress{w: f, done: have, from: have, total: total, plan: planned(path),
+	var dst io.Writer = f
+	if tee != nil && resp.StatusCode == http.StatusOK && resp.ContentLength >= 0 {
+		if w := tee(resp.ContentLength); w != nil {
+			dst = io.MultiWriter(f, w) // w never fails nor holds the download back
+		}
+	}
+	pw := &progress{w: dst, done: have, from: have, total: total, plan: planned(path),
 		bar: console.NewBar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), repo))}
 	_, err = io.Copy(pw, resp.Body)
 	if cerr := f.Close(); err == nil {

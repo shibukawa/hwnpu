@@ -158,7 +158,31 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 	if commit != "" {
 		from = base + "@" + commit // the files of the sources' commit
 	}
-	if err := fetchHF(ctx, from, name, path, log); err != nil {
+	// the file goes in the sources written back to as it comes (a tee), where it can; where it
+	// cannot, it is put from the queue after
+	var tees []*shared.Tee
+	tee := func(size int64) io.Writer {
+		c, _ := servedCommit(from)
+		var ws []io.Writer
+		for _, s := range shared.Writebacks() {
+			if t := shared.StartTee(ctx, s, base, c, name, size); t != nil {
+				tees = append(tees, t)
+				ws = append(ws, t)
+			}
+		}
+		if len(ws) == 0 {
+			return nil
+		}
+		return io.MultiWriter(ws...)
+	}
+	err = fetchHFTee(ctx, from, name, path, log, tee)
+	teed := map[string]bool{}
+	for _, t := range tees {
+		if t.Finish(ctx, want, err) {
+			teed[t.Source().String()] = true
+		}
+	}
+	if err != nil {
 		return "", err
 	}
 	c, _ := servedCommit(from)
@@ -166,7 +190,7 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 		return "", err
 	}
 	for _, s := range shared.Writebacks() {
-		if c != "" {
+		if c != "" && !teed[s.String()] {
 			shared.FillLater(s, base, c, name, path, want)
 		}
 	}

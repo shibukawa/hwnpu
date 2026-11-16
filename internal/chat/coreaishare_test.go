@@ -192,4 +192,12 @@ func TestPrebuiltShared(t *testing.T) {
 	if _, err := os.Stat(coreai.PackedRoot(other, "h14g")); err == nil {
 		t.Error("an export of other programs took them")
 	}
+	// a miss makes nothing here: nothing begins to be put for it (store.StartEarly would mark
+	// the folder and watch it until the process ends)
+	filepath.WalkDir(l.Store.(shared.Dir).Root, func(p string, d os.DirEntry, err error) error {
+		if err == nil && strings.HasPrefix(d.Name(), shared.WritingPrefix) {
+			t.Errorf("a miss began puts: %s", p)
+		}
+		return nil
+	})
 }
