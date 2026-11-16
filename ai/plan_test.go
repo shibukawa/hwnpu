@@ -7,8 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/chat"
 )
 
 type fakeModel struct{ closed *int }
@@ -44,6 +47,46 @@ func fakeRoles(t *testing.T) (prepared, loads, closed *int) {
 	return
 }
 
+// ownDefinitions keeps the machine's and the user's definition files and shared layers out of a
+// test: only the built-in definitions and those the test gives are read.
+func ownDefinitions(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("LOCALAPPDATA", dir)
+	t.Setenv(chat.ModelsEnv, "")
+	t.Setenv(chat.LayersEnv, "off")
+	saved := chat.SystemModelsFile
+	chat.SystemModelsFile = func() string { return "" }
+	t.Cleanup(func() {
+		chat.SystemModelsFile = saved
+		defs.read = false
+		chat.LoadModels(nil, false, nil)
+	})
+	defs.read = false
+}
+
+func TestDefinitions(t *testing.T) {
+	ownDefinitions(t)
+	// an app's file over the built-in ones: its translate picks the 2B model on 8 GB machines too
+	app := filepath.Join(t.TempDir(), "models.yaml")
+	if err := os.WriteFile(app, []byte("version: 1\ncategories:\n  translate:\n    picks:\n      - {machine: 8, model: plamo-3-translate-2b}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Definitions(nil, app); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewRegistry().Require("translate").Memory(8).Plan(context.Background(), Store{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Items[0].Model != "plamo-3-translate-2b" {
+		t.Errorf("translate with the app's definitions: %s", p.Items[0].Model)
+	}
+	if !slices.Contains(chat.ModelFiles, app) {
+		t.Errorf("files read %v, not the app's", chat.ModelFiles)
+	}
+}
+
 func TestResolve(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -76,6 +119,7 @@ func TestResolve(t *testing.T) {
 }
 
 func TestPlanRunOpen(t *testing.T) {
+	ownDefinitions(t)
 	prepared, loads, closed := fakeRoles(t)
 	ctx := context.Background()
 	store := Store{Dir: t.TempDir()}
@@ -115,7 +159,7 @@ func TestPlanRunOpen(t *testing.T) {
 		t.Errorf("stages %v", stages)
 	}
 	// the warm-up loads each once where there is an NPU
-	if p.target != "" && (*loads != 2 || *closed != 2) {
+	if p.npu.target != "" && (*loads != 2 || *closed != 2) {
 		t.Errorf("warm-up: %d loads, %d closed, want 2 and 2", *loads, *closed)
 	}
 
@@ -204,6 +248,7 @@ func copyDir(t *testing.T, from, to string) {
 }
 
 func TestBundle(t *testing.T) {
+	ownDefinitions(t)
 	fakeRoles(t)
 	ctx := context.Background()
 	built := Store{Dir: t.TempDir()}
@@ -265,5 +310,32 @@ func TestLineWriter(t *testing.T) {
 	want := []string{"downloading a 10%", "downloading a 50%", "done"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("lines %q, want %q", got, want)
+	}
+}
+
+func TestStoreOfAnotherTarget(t *testing.T) {
+	ownDefinitions(t)
+	fakeRoles(t)
+	ctx := context.Background()
+	store := Store{Dir: t.TempDir()}
+	// a store prepared before Core AI ran the Neural Engine: its Core ML programs do not run
+	old := &manifest{Format: storeFormat, Target: "apple", Uses: map[string]*record{"speech": {Model: "LFM3-Audio-2B-TTS", Role: RoleSpeech}}}
+	if err := old.write(store.Dir); err != nil {
+		t.Fatal(err)
+	}
+	p, err := NewRegistry().Require("transcribe").Plan(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.NoWarmUp = true
+	if err := p.Run(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, err := readManifest(store.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Target != p.npu.target || len(m.Uses) != 1 || m.Uses["transcribe"] == nil {
+		t.Errorf("store.json of %q with %v, want only transcribe for %q", m.Target, m.Uses, p.npu.target)
 	}
 }

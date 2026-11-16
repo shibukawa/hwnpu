@@ -30,7 +30,8 @@
 // for the machine's memory when the plan is made, and the store remembers the pick, so that the
 // model prepared is the model run.
 //
-// The models' downloads and programs are hwnpu-chat's and hwnpu-audio's: DefaultStore is their
-// directory, and what they prepared is used as it is (a Run then only checks it and writes it
-// into the store's StoreFile).
+// The models' downloads and programs are hwnpu-chat's and hwnpu-audio's, for the same NPU (Core
+// AI on a Mac), through the same definitions, sources and shared layers (Definitions):
+// DefaultStore is their directory, and what they prepared is used as it is (a Run then only
+// checks it and writes it into the store's StoreFile).
 package ai

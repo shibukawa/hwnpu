@@ -45,14 +45,13 @@ type Transcriber struct {
 	t     *transcribe.Transcriber
 	dev   *hwnpu.Device
 	model string
-	cpu   bool
 }
 
 // Model is the name of the model in the definitions.
 func (t *Transcriber) Model() string { return t.model }
 
 // OnNPU reports whether the programs were verified to run on the NPU.
-func (t *Transcriber) OnNPU() bool { return !t.cpu && t.t.OnNPU() }
+func (t *Transcriber) OnNPU() bool { return t.t.OnNPU() }
 
 // Transcribe turns speech (mono, at TranscribeRate, in [-1, 1]) into text. Speech longer than 30
 // seconds is read in windows, each starting where the last one's last whole segment ended.

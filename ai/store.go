@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
@@ -22,24 +25,22 @@ type Store struct {
 	// Bundles are prepared stores shipped with the app, read only: directories with a
 	// StoreFile whose paths are relative to them. They are looked in before Dir.
 	Bundles []string
-	// Cache is the compile cache of the NPU's programs ("": hwnpu in the user cache
-	// directory). Apple's compiled programs belong to the machine and its OS, so they are not
+	// Cache is the compile cache of the NPU's programs ("": hwnpu's root, cache.Root,
+	// HWNPU_CACHE). Apple's compiled programs belong to the machine and its OS, so they are not
 	// bundled.
 	Cache string
 }
 
-// DefaultStore is the store of hwnpu's commands (hwnpu-chat, hwnpu-audio): what they downloaded
-// and converted is used as it is.
+// DefaultStore is the store of hwnpu's commands (hwnpu-chat, hwnpu-audio): models under hwnpu's
+// root (HWNPU_CACHE, else hwnpu in the OS's cache directory). What they downloaded and converted
+// is used as it is.
 func DefaultStore() Store { return Store{Dir: chat.ModelsDir()} }
 
 func (s Store) cacheDir() string {
 	if s.Cache != "" {
 		return s.Cache
 	}
-	if d, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(d, "hwnpu")
-	}
-	return ""
+	return cache.Root()
 }
 
 // StoreFile is the file in a store that says what each use was prepared as.
@@ -59,7 +60,7 @@ var (
 // manifest is StoreFile.
 type manifest struct {
 	Format int `json:"format"`
-	// Target is the NPU the programs are for (hereTarget): apple, intel, amd-npu2.
+	// Target is the NPU the programs are for (npu.target): coreai, intel, amd-xdna2.
 	Target string             `json:"target"`
 	Uses   map[string]*record `json:"uses"`
 }
@@ -248,14 +249,23 @@ func (s Store) find(use, target string) (located, error) {
 	return located{}, fmt.Errorf("%w: %s (Plan and Run prepare it)", ErrNotPrepared, use)
 }
 
-// put writes use's record into Dir's StoreFile.
-func (s Store) put(use, target string, r *record) error {
+// put writes use's record into Dir's StoreFile, under the lock of the file (other processes
+// prepare other uses in the same store). A StoreFile of another target, the programs of another
+// NPU (a directory copied from another machine, or prepared for Core ML before Core AI ran the
+// Neural Engine), is replaced: Dir is this machine's.
+func (s Store) put(ctx context.Context, use, target string, r *record) error {
+	file := filepath.Join(s.Dir, StoreFile)
+	unlock, err := cache.Lock(ctx, file, file, io.Discard)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	m, err := readManifest(s.Dir)
 	if err != nil {
 		return err
 	}
-	if m.Target != "" && m.Target != target {
-		return fmt.Errorf("%w: %s was prepared for %s, this machine is %s", ErrBundleTarget, s.Dir, m.Target, target)
+	if m.Target != target {
+		m.Uses = map[string]*record{}
 	}
 	m.Target = target
 	r = r.clone()
@@ -264,21 +274,40 @@ func (s Store) put(use, target string, r *record) error {
 	return m.write(s.Dir)
 }
 
-// hereTarget is the target of this machine's NPU: apple, intel or amd-npu2; "" when there is
-// none (a machine without an NPU runs on the CPU).
-func hereTarget(ctx context.Context) string {
-	if chat.OnlyAMD(ctx, "") {
-		return "amd-npu2"
+// npu is this machine's NPU as the models are prepared for it and run on it, picked as
+// hwnpu-chat and hwnpu-audio pick it: HWNPU_BACKEND, else the NPU found; on a Mac Core AI's
+// (macOS 27), which runs the Neural Engine for them (Core ML is not used).
+type npu struct {
+	// target is StoreFile's: coreai, intel or amd-xdna2 (cache.AMDTarget); "" when no NPU runs
+	// here (a Mac without Core AI: the programs are converted, not loaded).
+	target string
+	// device is the device backend to open (llm.FindDevice, "" for the NPU found); format the
+	// program format transcribe and speech convert for (llm.Options.Backend).
+	device, format string
+}
+
+// hereNPU is this machine's npu.
+func hereNPU(ctx context.Context) npu {
+	device := strings.TrimSpace(os.Getenv(llm.BackendEnv))
+	if runtime.GOOS == "darwin" {
+		switch device {
+		case "", llm.BackendCoreML, llm.BackendCoreAI:
+			device = llm.BackendCoreAI
+		}
 	}
-	f, err := llm.ProgramFormat(ctx, "")
+	if chat.OnlyAMD(ctx, device) {
+		return npu{target: cache.AMDTarget, device: device}
+	}
+	if device == llm.BackendCoreAI {
+		n := npu{device: device, format: llm.BackendCoreAI}
+		if _, _, err := llm.FindDevice(ctx, device); err == nil {
+			n.target = llm.BackendCoreAI
+		}
+		return n
+	}
+	f, err := llm.ProgramFormat(ctx, device)
 	if err != nil {
-		return ""
+		return npu{device: device}
 	}
-	switch f {
-	case llm.BackendCoreML:
-		return "apple"
-	case llm.BackendIntel:
-		return "intel"
-	}
-	return f
+	return npu{target: f, device: device, format: f}
 }

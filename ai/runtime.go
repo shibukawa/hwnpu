@@ -15,23 +15,18 @@ type Option func(*options)
 
 type options struct {
 	log io.Writer
-	cpu bool
 }
 
 // WithLog sends what loading the models does (the programs, where they run) to w.
 func WithLog(w io.Writer) Option { return func(o *options) { o.log = w } }
 
-// WithCPU runs the models with the CPU interpreter instead of the NPU: slow, for tests and
-// machines without an NPU.
-func WithCPU() Option { return func(o *options) { o.cpu = true } }
-
 // Runtime runs the models a store has prepared. It touches no network and converts nothing:
 // a use the store has not prepared is ErrNotPrepared. Each model is loaded at its first use
 // and stays until Close.
 type Runtime struct {
-	store  Store
-	target string
-	o      options
+	store Store
+	npu   npu
+	o     options
 
 	mu     sync.Mutex
 	loaded map[string]io.Closer
@@ -44,12 +39,9 @@ func Open(ctx context.Context, store Store, opts ...Option) (*Runtime, error) {
 	if store.Dir == "" && len(store.Bundles) == 0 {
 		return nil, errors.New("ai: a store needs a directory or bundles")
 	}
-	rt := &Runtime{store: store, loaded: map[string]io.Closer{}}
+	rt := &Runtime{store: store, npu: hereNPU(ctx), loaded: map[string]io.Closer{}}
 	for _, o := range opts {
 		o(&rt.o)
-	}
-	if !rt.o.cpu {
-		rt.target = hereTarget(ctx)
 	}
 	return rt, nil
 }
@@ -85,14 +77,14 @@ func (rt *Runtime) get(ctx context.Context, use string, want Role) (io.Closer, e
 	if l, ok := rt.loaded[use]; ok {
 		return l, nil
 	}
-	loc, err := rt.store.find(use, rt.target)
+	loc, err := rt.store.find(use, rt.npu.target)
 	if err != nil {
 		return nil, err
 	}
 	if loc.Role != want {
 		return nil, fmt.Errorf("ai: %s is prepared as %s (%s), not %s", use, loc.Role, loc.Model, want)
 	}
-	l, err := roles[want].load(ctx, loc, loadEnv{cache: rt.store.cacheDir(), cpu: rt.o.cpu, log: rt.o.log})
+	l, err := roles[want].load(ctx, loc, loadEnv{cache: rt.store.cacheDir(), device: rt.npu.device, log: rt.o.log})
 	if err != nil {
 		return nil, fmt.Errorf("ai: loading %s (%s): %w", use, loc.Model, err)
 	}

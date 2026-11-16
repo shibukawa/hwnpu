@@ -1,6 +1,6 @@
 # アプリに組み込む API: モデルの準備と実行を分ける (計画)
 
-作成: 2026-11-11。状態: `ai` パッケージの v0 を実装 (2026-11-14、11 節)。`ai/server` から先は未実装。
+作成: 2026-11-11。状態: `ai` パッケージの v0 を実装 (2026-11-14、11 節)。取得と置き場をコマンドと同じ仕組み (cache-sharing.md の根、定義の重ね、層) に揃えた (2026-11-15)。`ai/server` から先は未実装。
 
 hwnpu は NPU の機能を提供し、それをアプリに組み込む仕組みを提供する。`hwnpu-chat`、`hwnpu-image`、`hwnpu-audio` は、個々の機能で何ができるかを見せるショーケースとして残す。組み込みの例は `samples/` に置き、最初は同時通訳 (逐次通訳) にする。その後、多レイヤー分割と擬似立体 (顔の位置と深度による視差) を作る。
 
@@ -19,21 +19,24 @@ hwnpu は NPU の機能を提供し、それをアプリに組み込む仕組み
 **実行の API はネットワークに触らず、変換もしない。** 準備済みの置き場からだけ読み込む。
 
 ```go
+// 定義: 組み込み → 機械 → 利用者 → HWNPU_MODELS → アプリのファイル (取得元と共有の層もここ)
+err := ai.Definitions(logw, appModelsYAML)
+
 // 登録: アプリが使うモデルを宣言する (組み込みの models.yaml と、アプリ独自の項目)
 reg := ai.NewRegistry()
 reg.Require("transcribe", "translate", "speech", "vad")
 
 // 計画: 何が足りないか、何を何バイト落とすか、変換が要るか、ライセンスを調べる。まだ何も落とさない
-plan, err := reg.Plan(ctx, ai.Store{Dir: dataDir, Bundles: []string{resources}}, ai.HuggingFace())
+plan, err := reg.Plan(ctx, ai.Store{Dir: dataDir, Bundles: []string{resources}})
 plan.DownloadBytes()
 plan.Licenses() // 同意の画面や、表示が要るもの (CC-BY など)
 
-// 準備: 取得 → sha256 の照合 → 変換 → 試しに 1 回読み込む (Core ML のコンパイル)。進み具合を返す
+// 準備: 層か取得元から取る → sha256 の照合 → 変換 (層にあれば取るだけ) → 試しに 1 回読み込む (NPU のコンパイル)。進み具合を返す
 err = plan.Run(ctx, func(p ai.Progress) { ... })
 
 // 実行: 準備されていなければ ErrNotPrepared。ネットワークにも変換にも触らない
 rt, err := ai.Open(ctx, ai.Store{Dir: dataDir, Bundles: []string{resources}})
-stt, err := rt.Transcriber("transcribe")
+stt, err := rt.Transcriber(ctx, "transcribe")
 ```
 
 - **用途の名前は計画のときに決める**: `translate` のように、マシンのメモリで選ぶモデルが変わる名前がある (`internal/chat/tags.go`)。計画の段階で選んだモデルを置き場の目録 (`store.json`) に書き、実行時はそれを読む。準備したモデルと実行時に選ぶモデルが食い違わないようにするため
@@ -42,16 +45,20 @@ stt, err := rt.Transcriber("transcribe")
 
 ## 3. 取得元
 
+取得元は `ai` の型にせず、コマンドと同じ定義と層の仕組み (cache-sharing.md 7 節) をそのまま使う。アプリが変えたいときは、自分の定義のファイルを `ai.Definitions` で読ませる。
+
 | 取得元 | 中身 | 変換 |
 |---|---|---|
-| `ai.HuggingFace()` | 今の実装 (`chat.Fetch`)。途中から再開でき、同意の要るリポジトリはデバイスフローでサインインする (design.md 16.153) | する |
-| `ai.Mirror(baseURL)` | HF と同じファイルの並びを、HTTPS の基準の URL の下に置く。公開の S3、CloudFront、署名付き URL はこれで足りる | する |
-| `ai.Prebuilt(...)` | 変換済みの配布 (prebuilt.md)。HF の `hwnpu/NAME`、またはミラー | しない |
-| `ai.Source` (インタフェース) | `Fetch(ctx, file) (io.ReadCloser, int64, error)`。非公開の S3 などは、アプリが自分の SDK で実装する。hwnpu は AWS の SDK に依存しない | 中身による |
+| Hugging Face | `chat.Fetch`。途中から再開でき (`If-Range`)、同意の要るリポジトリはデバイスフローでサインインする (design.md 16.153) | する |
+| 定義の `sources` と `search` | 元のチェックポイントを HF の前に探すフォルダと S3 (tinygodriver、AWS の SDK なし) | する |
+| 共有の層 (`cache.layers`、`HWNPU_CACHE_LAYERS`) | 元のチェックポイントと変換済みのもの (Core AI の書き出し、表、AMD の書き出し) を、フォルダと S3 に置いたもの。読む前に探し、作ったものを書ける層へ書き戻す (`write`、`fill`) | 層にあればしない |
+| 変換済みの配布 (cache-sharing.md 9 節の `hf` の層) | HF の `hwnpu/NAME`。まだない | しない |
 | バンドル (`Store.Bundles`) | アプリに同梱した、読み取り専用のディレクトリ (4 節) | **しない** |
 
-- どの取得元でも、models.yaml の `sha256` で照合する。今は一部のファイルにしか付いていない (Qwen3-1.7B、Sana、Anima など) ので、全ファイルに広げる。変換済みの配布は、目録 (`manifest.json`) の sha256 で照合する
-- ライセンス: ミラーや同梱が許されるかどうかは、モデルごとに異なる。Gemma の規約、同意の要るリポジトリ、CC-BY の表示 (Magenta RealTime 2) などがある。`plan.Licenses()` は models.yaml の項目から、再配布が許されるかと、表示する文を返す
+- 定義の重ねはコマンドと同じ: 組み込み → 機械 (`/etc/hwnpu/models.yaml`、`/Library/Application Support/hwnpu/models.yaml`、`%ProgramData%\hwnpu\models.yaml`) → 利用者 (`~/.config/hwnpu/models.yaml`) → `HWNPU_MODELS` → アプリのファイル。組織の層や取得元は、アプリが何もしなくても効く
+- 前に考えていた `ai.HuggingFace()`、`ai.Mirror(baseURL)`、`ai.Source` (アプリが SDK で実装する取得元) は作らない。非公開の S3 は層と取得元の `type: s3` で読める。署名なしの HTTPS のミラー (公開の S3、CloudFront) が要れば、`internal/chat` の取得元に種類を 1 つ足す
+- どの取得元でも、models.yaml の `sha256` で照合する。今は一部のファイルにしか付いていない (Qwen3-1.7B、Sana、Anima など) ので、全ファイルに広げる。層のエントリは `entry.json` の sha256 で照合する
+- ライセンス: ミラーや同梱が許されるかどうかは、モデルごとに異なる。Gemma の規約、同意の要るリポジトリ、CC-BY の表示 (Magenta RealTime 2) などがある。`plan.Licenses()` は models.yaml の項目から、再配布が許されるかと、表示する文を返す。同意の要るものは層に写さない (`fill_gated`) のも、コマンドと同じ
 
 ## 4. バンドル: NPU の種類ごとに作り、実行時には変換しない
 
@@ -59,20 +66,20 @@ stt, err := rt.Transcriber("transcribe")
 
 ### 4.1 対象の名前
 
-prebuilt.md 3 節と同じ名前を使う。
+cache-sharing.md 3.1 節と同じ名前を使う (層のエントリの `target` と同じ)。
 
 | 対象 | 同梱するもの | 1 つのバンドルで動く範囲 |
 |---|---|---|
-| `apple` | `.mlpackage` か `.mlmodelc` (Core ML でコンパイル済みのもの。`internal/backend/coreml` はそのまま読める) | M1〜M4 で同じファイル。M1 は一度に読み込むプログラムを少なくするだけ (`internal/chat/model.go` の `m1HoldBytes`)。macOS の最低の版を目録に書く |
-| `amd-npu2` | IRON の書き出し (ELF、xclbin、バンク、manifest) | XDNA 2 (Strix 以降) |
-| `amd-npu1` | `--per-step` の書き出し | XDNA (Phoenix、Hawk Point)。実機で未確認 |
+| `coreai` | Core AI の書き出し (`NAME.coreai`、端末によらない `.aimodel`)。Mac の Neural Engine は Core AI だけで動かす (macOS 27、design.md 16.185、16.196)。端末で専用化したものは Core AI 自身のキャッシュにあり、配れない | M1〜M4 で同じファイル。macOS の最低の版を目録に書く |
+| `amd-xdna2` | IRON の書き出し (ELF、xclbin、バンク、manifest) | XDNA 2 (Strix 以降) |
+| `amd-xdna1` | `--per-step` の書き出し | XDNA (Phoenix、Hawk Point)。実機で未確認 |
 | `intel` | OpenVINO IR (`.xml`、`.bin`) | Core Ultra。NPU の blob は、ドライバが読み込むときにコンパイルする |
 
 ### 4.2 中身と目録
 
 ```
 bundle/
-├── hwnpu-bundle.json    目録: format_version、対象 (apple など)、作った hwnpu のコミット、
+├── hwnpu-bundle.json    目録: format_version、対象 (coreai など)、作った hwnpu のコミット、
 │                        macOS の最低の版、各モデルの名前、メモリの段、ファイルと sha256、ライセンス
 ├── whisper-large-v3-turbo/   トークナイザー、埋め込みの表、プログラム (prebuilt.md 4 節の組と同じ並び)
 ├── plamo-3-translate-0.8b/
@@ -86,11 +93,11 @@ bundle/
 ### 4.3 作り方: `hwnpu-dev bundle`
 
 ```
-hwnpu-dev bundle -target apple -use transcribe,translate,speech,vad -memory 8,16 -o dist/bundle
+hwnpu-dev bundle -target coreai -use transcribe,translate,speech,vad -memory 8,16 -o dist/bundle
 ```
 
 - 計画と準備 (2 節) を、その対象とメモリの段で行い、置き場から目録とファイルを集める。変換済みの配布があればそれを使い、なければ手元で変換する
-- **`apple` と `intel` は、どの OS の機械でも作れる**: 変換は Go だけで、Python も Mac も要らない (README の `hwnpu-dev convert`)。ただし `.mlmodelc` にするには Mac の Core ML のコンパイルが要る。Mac 以外で作るときは `.mlpackage` を入れ、初回に端末でコンパイルする
+- **`coreai` と `intel` は、どの OS の機械でも作れる**: 変換は Go だけで、Python も Mac も要らない (README の `hwnpu-dev convert`)。Neural Engine のコンパイルは初回に端末で行う (準備の試しの読み込み)
 - `amd-*` は IRON の環境が要る。aix1 で作るか、変換済みの配布を使う
 - バンドルに入れるモデルのライセンスを確かめ、再配布できないものは失敗にする (`-allow-license` で明示したときだけ通す)
 
@@ -115,9 +122,9 @@ hwnpu-dev bundle -target apple -use transcribe,translate,speech,vad -memory 8,16
 
 | 配布物 | GOOS / GOARCH | タグ | 同梱 |
 |---|---|---|---|
-| Mac 版 | darwin / arm64 | `hwnpu_apple,hwnpu_noconvert` | `apple` のバンドル |
-| Linux の Ryzen AI 版 | linux / amd64 | `hwnpu_amd,hwnpu_noconvert` | `amd-npu2` (と `amd-npu1`) のバンドル |
-| Windows の Ryzen AI 版 | windows / amd64 | `hwnpu_amd,hwnpu_noconvert` | `amd-npu2` のバンドル |
+| Mac 版 | darwin / arm64 | `hwnpu_apple,hwnpu_noconvert` | `coreai` のバンドル |
+| Linux の Ryzen AI 版 | linux / amd64 | `hwnpu_amd,hwnpu_noconvert` | `amd-xdna2` (と `amd-xdna1`) のバンドル |
+| Windows の Ryzen AI 版 | windows / amd64 | `hwnpu_amd,hwnpu_noconvert` | `amd-xdna2` のバンドル |
 | Core Ultra 版 | linux、windows / amd64 | `hwnpu_intel,hwnpu_noconvert` | `intel` のバンドル |
 
 `hwnpu_noconvert` を入れるには、今の `Prepare` を「取得」と「変換」に分け、変換のファイルにタグを付ける必要がある。`chat.Prepare`、`transcribe.Prepare`、`speech.Prepare`、`internal/onnx` を使うものが対象になる。手間が大きいので、7 節の 4 番目に回す。
@@ -286,7 +293,7 @@ A2A と MCP のどちらも、同じ仕事の置き場と待ち行列の上の�
 手分けのための作業の一覧 (依存、機械、合格の条件) は [app-api-tasks.md](app-api-tasks.md)。大きな流れは次のとおり。
 
 0. 前提: Core ML のパッケージを決定的に書き、変換し直すかどうかを入力のハッシュで決める。今は `Manifest.json` の UUID が乱数で、`proto.Marshal` も決定的なモードなしなので、同じ入力で変換し直してもコンパイルのキャッシュが外れる (handoff-ane-cache.md 4 節)。直さないと、バンドルや配布の sha256 が安定せず、アプリを更新するたびに利用者の端末で ANE のコンパイルがやり直しになる
-1. `ai` パッケージ: 登録、計画、準備、置き場の目録、取得元 (HF とミラー)。transcribe、translate、speech と音量の VAD を入れ、`hwnpu-audio` の transcribe と tts を、これを使う形に置き換える
+1. `ai` パッケージ: 登録、計画、準備、置き場の目録。取得元と層はコマンドの定義のまま (3 節)。transcribe、translate、speech と音量の VAD を入れ、`hwnpu-audio` の transcribe と tts を、これを使う形に置き換える
 2. `ai/server` と `internal/ws`: 音声の 2 つのエンドポイントとストリーム。`hwnpu-chat serve` をこれに載せ替える
 3. `samples/interpreter`
 4. ビルドタグ、`Prepare` を取得と変換に分ける作業、`hwnpu_noconvert`、バンドルと `hwnpu-dev bundle`
@@ -309,18 +316,19 @@ A2A と MCP のどちらも、同じ仕事の置き場と待ち行列の上の�
 |---|---|
 | `stream.go` | `Chunk`、`Stream`、`Text`、`Of`、`Collect`、`Finals`、`Rechunk`、`SplitSentences`、`Sentences`、`Tee`、`Async` |
 | `vad.go` | 音量の VAD (`NewVAD`、`Detect`、`Segments`)。背景の雑音の高さを追い、そこから 12 dB 上を発話とする。発話の終わりの待ち 600 ms、最短 250 ms、前後の余白 200 ms、最長 25 秒 |
-| `plan.go` | `Registry` (`Require`、`Memory`)、`Plan` (`Items`、`Ready`、`DownloadBytes`、`MemoryGB`、`Licenses`、`Run`)、`Progress`、`Prepare` (1 回で済ませる CLI 向け)、`Definitions` |
-| `store.go` | `Store` (`Dir`、`Bundles`、`Cache`)、置き場の目録 `store.json`、`ErrNotPrepared`、`ErrBundleTarget` |
-| `runtime.go` | `Open`、`WithLog`、`WithCPU`、`Runtime` (`Transcriber`、`Translator`、`Speaker`、`VAD`、`Uses`、`Close`) |
+| `plan.go` | `Registry` (`Require`、`Memory`)、`Plan` (`Items`、`Ready`、`DownloadBytes`、`MemoryGB`、`Licenses`、`Run`)、`Progress`、`Prepare` (1 回で済ませる CLI 向け)、`Definitions` (コマンドと同じ定義の重ねに、アプリのファイルを足す) |
+| `store.go` | `Store` (`Dir`、`Bundles`、`Cache`)、置き場の目録 `store.json`、`ErrNotPrepared`、`ErrBundleTarget`、この機械の NPU (`coreai`、`intel`、`amd-xdna2`) |
+| `runtime.go` | `Open`、`WithLog`、`Runtime` (`Transcriber`、`Translator`、`Speaker`、`VAD`、`Uses`、`Close`) |
 | `transcribe.go`、`translate.go`、`speak.go` | 一括 (`Transcribe`、`Translate`、`Speak`) と流れ (`TranscribeStream`、`TranslateStream`、`SpeakStream`) |
 
-- **準備は今の `Prepare` を呼ぶ**: `transcribe.Prepare`、`speech.Prepare`、`chat.Prepare` (AMD では `chat.AMDExport`) を、`hwnpu-audio` と `hwnpu-chat` と同じ設定で呼ぶ。プログラムの名前が同じになるので、CLI で準備したものはそのまま使える (`DefaultStore` は CLI の置き場)。準備の結果 (プログラムの道筋) を `store.json` に、置き場からの相対の道筋で書く。`Open` はそれだけを読み、`Prepare` を呼ばない
-- **バンドルの最初の形**: 準備した置き場をそのままコピーしたものがバンドルになる (`store.json` の道筋が相対なので)。`store.json` に対象 (`apple`、`intel`、`amd-npu2`) を書き、違う機械では `ErrBundleTarget`。`hwnpu-bundle.json` (4 節) の目録、メモリの段、`hwnpu-dev bundle` はまだない (E3)
+- **準備は今の `Prepare` を呼ぶ**: `transcribe.Prepare`、`speech.Prepare`、`chat.Prepare` (AMD では `chat.AMDExport`) を、`hwnpu-audio` と `hwnpu-chat` と同じ設定と同じ NPU (Mac では Core AI、`HWNPU_BACKEND` も同じに読む) で呼ぶ。プログラムの名前が同じになるので、CLI で準備したものはそのまま使える (`DefaultStore` は CLI の置き場、`cache.Root` の下の `models/`)。取得は `chat.Fetch` を通るので、共有の層、`sources` と `search`、ロック、`If-Range` の続きもコマンドと同じに効く。Core AI の書き出しも層にあれば取るだけで、作ったら書き戻す。準備の結果 (プログラムの道筋) を `store.json` に、置き場からの相対の道筋で書く。`Open` はそれだけを読み、`Prepare` を呼ばない
+- **バンドルの最初の形**: 準備した置き場をそのままコピーしたものがバンドルになる (`store.json` の道筋が相対なので)。`store.json` に対象 (`coreai`、`intel`、`amd-xdna2`) を書き、違う機械では `ErrBundleTarget`。`Dir` の `store.json` が別の対象のもの (Core ML の頃に準備したもの、別の機械から写したもの) なら、準備のときに置き換える。`store.json` の書き込みは `cache.Lock` の下で行い、別のプロセスが同じ置き場に別の用途を準備しても壊れない。バンドルを層 (読むだけのフォルダ) として扱う形も取れるが、層から取ると手元の根に写す (同じファイルシステムならハードリンク) ので、アプリの中で読む今の形を残す。`hwnpu-bundle.json` (4 節) の目録、メモリの段、`hwnpu-dev bundle` はまだない (E3)
 - **計画はファイルを数えない**: 「準備済みか」は `store.json` に同じモデルで書かれていて、ファイルが全部あるかで決める。落とす量は、チェックポイントがなければ models.yaml の `bytes`。変換が要るかどうか、どのファイルを何バイト落とすかの正確な一覧は、`Prepare` を取得と変換に分けてから (A3、B1 の残り)
-- **取得元**: `ai.HuggingFace()`、`ai.Mirror()`、`ai.Source` はまだない。今は models.yaml の `sources` と `search` (フォルダと S3) が効き、アプリは `ai.Definitions` で自分の定義のファイルを読ませる。HTTPS のミラーは `internal/chat` の取得元に種類を 1 つ足す形にする
+- **取得元と層**: 3 節のとおり、`ai` の型は作らずコマンドの定義を使う。最初の `Plan` は、`ai.Definitions` が呼ばれていなければ、アプリのファイルなしで定義を読む (機械と利用者のファイル、`HWNPU_MODELS`、層)。`Item.Download` は上限 (層に変換済みのものがあれば、チェックポイントは落とさない)
 - **進み具合**: 今は `internal` が書くログの行 (`Progress.Message`) と段階 (`prepare`、`warmup`、`done`) だけ。バイト数の入った構造のある値は、取得を分けてから
 - **試しの読み込み**: NPU のある機械では、準備の最後に 1 回読み込んで閉じる (`Plan.NoWarmUp` で外せる)
 - **6 節の形から変えたところ**: `rt.Transcriber(ctx, use)` のように、読み込みの関数は ctx を取る (初めの呼び出しでプログラムを読み込み、数十秒かかることがあるため)。`Plan` は取得元を引数に取らない
 - **流れの形の制限**: `TranscribeStream` は区切り (`Final`) ごとにまとめて読む (話している途中の仮の字幕は B5)。`SpeakStream` は文ごとに全部作ってから返す (できた音から返すのは B6)。`TranslateStream` は直前の 4 組を履歴にする
 - **NPU で動くかの報告**: `Transcriber.OnNPU`、`Translator.OnNPU` (足した `chat.Engine.OnNPU`)。`Speaker` はテキスト部のセッションの置き場所を外から見られないので、まだない
-- **確かめたこと**: CPU で動くテスト (流れの道具、VAD の一括と流れの一致、計画 → 準備 → 2 回目の計画で何も要らない、バンドルへのコピー、対象の違い)。`-race` で 20 回。Linux と Windows へのビルド。NPU での確認 (`HWNPU_AI_STORE`、`HWNPU_AI_USES` を付けた `TestOnDevice`) はまだ回していない
+- **CPU で動かす口 (`WithCPU`) は外した**: Mac の Neural Engine は Core AI の書き出しを動かし、CPU のインタープリターは Core ML の書き出しを動かすので、準備したものと合わない
+- **確かめたこと**: CPU で動くテスト (流れの道具、VAD の一括と流れの一致、計画 → 準備 → 2 回目の計画で何も要らない、バンドルへのコピー、対象の違い、アプリの定義のファイル、別の対象の `store.json` の置き換え)。`-race` で 20 回。Linux と Windows へのビルド。NPU での確認 (`HWNPU_AI_STORE`、`HWNPU_AI_USES` を付けた `TestOnDevice`) はまだ回していない

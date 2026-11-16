@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 
-	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/speech"
@@ -13,11 +12,11 @@ import (
 )
 
 // The roles' preparing (download and conversion, as hwnpu-audio and hwnpu-chat do on their
-// first run, with the same programs, so that what one prepared the other uses) and loading
-// (from the record alone: no network, no conversion).
+// first run, with the same programs for the same NPU, so that what one prepared the other uses,
+// through the same layers) and loading (from the record alone: no network, no conversion).
 
 func prepareTranscribe(e prepareEnv) (*record, error) {
-	c, err := transcribe.Prepare(e.ctx, transcribe.Setup{Dir: e.dir, Repo: e.model.Source(), Log: e.log})
+	c, err := transcribe.Prepare(e.ctx, transcribe.Setup{Dir: e.dir, Repo: e.model.Source(), Backend: e.npu.format, Log: e.log})
 	if err != nil {
 		return nil, err
 	}
@@ -26,25 +25,20 @@ func prepareTranscribe(e prepareEnv) (*record, error) {
 
 func loadTranscribe(ctx context.Context, l located, env loadEnv) (io.Closer, error) {
 	r := l.Transcribe
-	var dev *hwnpu.Device
-	if !env.cpu {
-		var err error
-		if dev, _, err = llm.OpenDevice(ctx, "", env.cache); err != nil {
-			return nil, err
-		}
+	dev, _, err := llm.OpenDevice(ctx, env.device, env.cache)
+	if err != nil {
+		return nil, err
 	}
 	t, err := transcribe.Load(ctx, dev, transcribe.Config{Dir: r.Dir, Encoder: r.Encoder, Cross: r.Cross, Decoder: r.Decoder, Weights: r.Weights})
 	if err != nil {
-		if dev != nil {
-			dev.Close()
-		}
+		dev.Close()
 		return nil, err
 	}
-	return &Transcriber{t: t, dev: dev, model: l.Model, cpu: env.cpu}, nil
+	return &Transcriber{t: t, dev: dev, model: l.Model}, nil
 }
 
 func prepareSpeech(e prepareEnv) (*record, error) {
-	c, err := speech.Prepare(e.ctx, speech.Setup{Dir: e.dir, Repo: e.model.Source(), Log: e.log})
+	c, err := speech.Prepare(e.ctx, speech.Setup{Dir: e.dir, Repo: e.model.Source(), Backend: e.npu.format, Log: e.log})
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +48,7 @@ func prepareSpeech(e prepareEnv) (*record, error) {
 func loadSpeech(ctx context.Context, l located, env loadEnv) (io.Closer, error) {
 	r := l.Speech
 	s, err := speech.Load(ctx, speech.Config{Text: r.Text, Depth: r.Depth, Codec: r.Codec, Dir: r.Dir, Weights: r.Weights,
-		CacheDir: env.cache, CPU: env.cpu, Log: env.log})
+		CacheDir: env.cache, Device: env.device, Log: env.log})
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +57,7 @@ func loadSpeech(ctx context.Context, l located, env loadEnv) (io.Closer, error) 
 
 func prepareTranslate(e prepareEnv) (*record, error) {
 	// AMD's NPU runs an export of IRON instead of the programs of the other NPUs
-	iron, err := chat.AMDExport(e.ctx, e.model.Name, "", e.root, e.log)
+	iron, err := chat.AMDExport(e.ctx, e.model.Name, e.npu.device, e.root, e.log)
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +73,7 @@ func prepareTranslate(e prepareEnv) (*record, error) {
 	// and format), so that the programs are the ones it converts
 	c, err := chat.Prepare(e.ctx, chat.Setup{Dir: e.dir, Repo: m.Source(), Arch: m.Arch, Name: m.Name,
 		Context: m.Run.Context, Paged: m.Run.Paged, Prefill: m.Run.Prefill, Format: m.Run.Format,
-		Draft: 8, MTP: chat.MTPAuto, Tiers: tiers, Log: e.log})
+		Draft: 8, MTP: chat.MTPAuto, Tiers: tiers, Backend: e.npu.device, Log: e.log})
 	if err != nil {
 		return nil, err
 	}
