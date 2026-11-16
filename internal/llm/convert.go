@@ -2,6 +2,7 @@ package llm
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -158,7 +159,10 @@ const (
 	MetaArch  = "com.github.shibukawa.hwnpu.arch"
 	MetaParam = "com.github.shibukawa.hwnpu.param."
 	// MetaSoftcap is the soft cap the host applies to the logits (LogitSoftcap), when not 0.
-	MetaSoftcap     = "com.github.shibukawa.hwnpu.softcap"
+	MetaSoftcap = "com.github.shibukawa.hwnpu.softcap"
+	// MetaSinks is the attention sinks the host adds to its merge of the chunks (Sinks): a JSON
+	// object of the layers' numbers to a logit per head.
+	MetaSinks       = "com.github.shibukawa.hwnpu.sinks"
 	MetaSource      = "com.github.shibukawa.hwnpu.source"
 	MetaFormat      = "com.github.shibukawa.hwnpu.format"
 	MetaDescription = "com.github.shibukawa.hwnpu.description"
@@ -175,7 +179,28 @@ func metadata(a *Arch, model Model, w Weights, opts Options) map[string]string {
 			m[MetaSoftcap] = strconv.FormatFloat(c, 'g', -1, 64)
 		}
 	}
+	if s, err := sinksMeta(model, w); err == nil && s != "" { // ConvertAI fails on the error first
+		m[MetaSinks] = s
+	}
 	return m
+}
+
+// sinksMeta is MetaSinks of a model with attention sinks the host adds (Sinks), "" for another.
+func sinksMeta(model Model, w Weights) (string, error) {
+	sm, ok := model.(Sinks)
+	if !ok {
+		return "", nil
+	}
+	sinks, err := sm.HostSinks(w)
+	if err != nil {
+		return "", err
+	}
+	byLayer := map[string][]float32{}
+	for l, v := range sinks {
+		byLayer[strconv.Itoa(l)] = v
+	}
+	b, err := json.Marshal(byLayer)
+	return string(b), err
 }
 
 // IntelFormat is the weight format for Intel's NPU that stands in for a Neural Engine one: int4

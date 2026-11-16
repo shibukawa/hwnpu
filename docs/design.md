@@ -6878,3 +6878,55 @@ NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込�
 **変えたもの**: models.yaml の `memory` (FLUX.2 klein 4.9、Anima-Turbo と Anima-Aesthetic 4.8、Sana 600M 4.4、SANA 1.5 4.5) と `image` の候補、MODEL.md と MODEL.ja.md の画像生成の行とモデルごとの表、USAGE_IMAGE の既定の説明、`-m` の説明
 
 測っていないもの: Qwen-Image-2.1 と Chroma1 (Core ML の頃の値のまま)、SANA 1.5 の 512²、Anima-Aesthetic (Anima-Turbo と同じプログラムなので同じ値にした)
+
+### 16.229 gpt-oss-20b を Apple の Neural Engine で (Core AI): 専門家を密に計算する形。M1 では保持の上限 2.8 GiB を超えて実用にならない — 2026-11-16
+
+16.179 で AMD だけに入れた gpt-oss-20b を、Mac (Core AI) でも動かす形を作った。M1 (16 GB、macOS 27.2) で測った。変換は `internal/llm/gptoss`。チャットにはまだつないでいない (models.yaml は AMD だけのまま)。
+
+**専門家を 1 つずつのプログラムにする形は載らない** (`tools/coreai/moeprobe`、合成の重み、lut4、1 回 8 行)
+
+- 専門家 1 個 (gate、up、down、12 MB) は 1 回 0.50 ms。層の 4 個を goroutine から同時に呼ぶと 1 個 0.37 ms (層で 1.47 ms)。768 個を経路で選べれば、専門家は 1 トークン約 35 ms の見込みだった
+- **Neural Engine が同時に持てるプログラムは機械全体で約 128 本**。124 本までは 0.37 ms、132 本で 0.76 ms、144 本で 1.0 ms、200 本で 1.4〜3.5 ms (「Program load failed — no ANE resources (transient; retry)」を出して入れ替える)。別のプロセスが 100 本を持つと、こちらの 100 本も入れ替わった (2.1 ms)。バイト数ではなく本数の上限
+- `.aimodel` の関数も 1 本と数える。32 関数の `.aimodel` 8 つ (256 本) も同じく入れ替わった。1 つの `AIModel` から関数を全部読み込んでも同じだった (shim を変えて試し、戻した)
+- 表を入力で渡す形 (`lut_to_dense` の索引を uint8 の入力に) は受け付けられるが、表を引く処理は CPU で行われる。Neural Engine に渡るのは戻した fp16 の重みで、2880 × 2880 が 13 ms (定数の lut8 なら 0.34 ms)。fp16 の重みを入力にするなら 1 重み 2 バイト (専門家だけで 38 GB) になり、メモリに入らない
+
+**専門家を密に計算する形**: 1 層 32 専門家を 1 本のプログラムで計算し、経路の重み (上位 4 個以外は 0) を掛けて足す。4 専門家ずつ組にし、各専門家の gate と up、組の down 1 本 (中間の 11520 列。軸は 16384 以内) とした。1 層 382 MiB が 9.3 ms (43 GB/s) で、全部 Neural Engine に載る (`mps.fullyPlacedOnANE`)。毎トークンすべての専門家の重みを読むので、24 層で約 223 ms かかる
+
+**M1 の保持の上限は Core AI でも同じ** (`aicheck cycle`、密な層を順に呼ぶ)
+
+| 層 | 持つ量 | 1 周 (順に) | 単独の和 |
+|---|---|---|---|
+| 4 | 1.49 GiB | 37 ms | 39 ms |
+| 7 | 2.61 GiB | 65 ms | 70 ms |
+| 8 | 2.98 GiB | 716 ms | 96 ms |
+| 24 | 8.9 GiB | 2.37 s | 0.23 s |
+
+- 3.0 GiB を超えると呼び出しのたびにプログラムを載せ直す (1 層 約 190 ms)。Core ML で測った `m1HoldBytes` (2.8 GiB、16.118) と同じ壁。gpt-oss-20b の lut4 (約 10 GB) は M1 では約 0.4 トークン/秒の見込みで、実用にならない
+- M2 (Core ML で 3.65 GiB まで)、M3、M4 にこの壁は見えていないが、10 GB 近くでは測っていない。M3/M4 で確かめる手順:
+
+```sh
+go run ./tools/coreai/moeprobe -dense 24 -out /tmp/gptoss-dense        # 8.9 GB
+go build -o /tmp/aicheck-cycle ./tools/coreai/aicheck
+/tmp/aicheck-cycle cycle -rounds 3 /tmp/gptoss-dense/dense*.aimodel     # all の in turn が alone 並みなら持てる
+rm -rf /tmp/gptoss-dense ~/Library/Caches/coreai-cache/*/aicheck-cycle
+```
+
+- (Chroma1 の DiT 8.3 GiB は M1 で載せ直しなく回った (16.170)。1 回が秒単位の呼び出しで、ここと何が違うのかは分かっていない)
+
+**変換** (`internal/llm/gptoss`、`gptoss` アーキテクチャ)
+
+- 層: 窓 (128) の層と全体の層が交互。窓の層は輪のキャッシュをプログラムに持ち、全体の層の注意はホストがチャンクで行う (`llm.Paged`、`llm.Windowed`。PLaMo 3 と同じ形)。YaRN は全層 (truncate false。concentration 1.3466 は cos と sin に入れず、スコアのスケールに 2 乗で掛ける)
+- sink: 窓の層はスコアに sink の列を足して softmax し、その列を落とす。全体の層は、変換がメタデータ (`llm.MetaSinks`) に書いた sink を、ホストがチャンクを合わせるときに値 0 のキー 1 つとして足す (`paged.Merge.AddSink`、`decode`、`sparse` も)
+- 経路: プログラムの中で上位 k 個を選ぶ (lowering に比較の演算がないので、最大値との差を 1/16 で切って 2^16 倍し relu(1 − t) をとる)。2^-16 以上の差は混ざらない (fp16 で 2^-6 以上の値の間隔)。65536 は fp16 を超えるので 256 を 2 回掛ける
+- MXFP4: チェックポイントの `*_blocks` と `*_scales` (uint8) を専門家ずつ読む (`llm.RawWeights`、`safetensors.File.BytesRange`)。gate と up は行が交互 (偶数が gate)。量子化のないチェックポイントの密な `gate_up_proj` (in × out) も読む
+- 形式: 専門家と出力層は lut4、注意の q、k、v、o は lut8 (`attn-format`)、router は fp16
+
+**専門家の表**: MXFP4 の値は 16 行の組に 24〜40 種類しかない (e2m1 の 15 値 × 組の 2〜3 の 2 の冪)。palette の k-means では重みの誤差が 16〜34 % (一様なら 28〜98 %) 残る。組ごとに最良の 16 個 (1 次元の k-means を種類の値の上で動的計画法で厳密に解く、`quant.go`) なら 6.5〜11.6 %。lut6 なら誤差 0 だが専門家が 14 GB になる。層 0〜2 の層の変化の誤差は 29〜58 % から 10〜14 % になった。行ごとの 2 の冪を先に抜くと gate の重みの誤差は 4〜8 % に下がるが、層の出力は 11〜12.5 % で変わらないので既定にしない (`expert-tables exact-rows`)。列ごとの 2 の冪は合わせても 0 になった (列の向きの偏りがない)
+
+**照合**
+
+- 合成の小さなモデル (2 種の層、sink、YaRN、8 専門家から 2 個、swiglu の上限 0.5 で clamp が効く) を fp16 で CPU に: テストの中の fp64 の forward と相対誤差 5.3e-5、層ごとに 1.4〜3.4e-5。部品に分けた形、キャッシュの形 (輪)、注意で分けた形 (ホストの sink)、LastRow とも一致 (fp16 のキャッシュで 2〜3e-4)。MXFP4 から読んだ専門家は密なパラメータと同じプログラムになる
+- テストが誤りを見つけることを確かめた: ホストの sink を外す (0.32)、プログラムの sink を外す (0.27)、gate と up の bias を入れ替える (0.22)、窓を外す (0.27)、輪のマスクを 1 ずらす (0.44)、経路の各巡で選んだものを次の巡から外さない (0.45)
+- 実物 (openai/gpt-oss-20b) の層 0〜2 を transformers の fp32 (`ref_gptoss.py` の forward、40 トークン) と比べた: fp16 で層の変化の相対誤差 2〜3e-4 (MXFP4 の読み、YaRN、sink、窓、専門家が合っている)。lut4 は上の 10〜14 %
+
+**測っていないもの**: Neural Engine 上での実物の変換と、KL、速さ、メモリ (M1 では上の壁で意味がない)。M3/M4 で上の手順が全速なら、変換して `hwnpu-chat` で測り、models.yaml に Apple の形を足す

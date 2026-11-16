@@ -120,6 +120,23 @@ func (f *File) Bytes(name string) ([]byte, error) {
 	return buf, nil
 }
 
+// BytesRange reads bytes [begin, end) of a tensor's raw data: a slice of a large tensor whose
+// type Float32 does not convert (MXFP4's uint8 blocks, one expert of them).
+func (f *File) BytesRange(name string, begin, end int64) ([]byte, error) {
+	t, ok := f.tensors[name]
+	if !ok {
+		return nil, fmt.Errorf("safetensors: no tensor %q", name)
+	}
+	if begin < 0 || end < begin || t.begin+end > t.end {
+		return nil, fmt.Errorf("safetensors: %s: bytes %d..%d of %d", name, begin, end, t.end-t.begin)
+	}
+	buf := make([]byte, end-begin)
+	if _, err := f.f.ReadAt(buf, f.dataBase+t.begin+begin); err != nil {
+		return nil, fmt.Errorf("safetensors: %s: %w", name, err)
+	}
+	return buf, nil
+}
+
 // Float32 reads a tensor and converts BF16, F16 or F32 data to float32.
 func (f *File) Float32(name string) ([]float32, error) {
 	t, ok := f.tensors[name]

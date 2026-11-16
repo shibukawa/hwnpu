@@ -104,7 +104,10 @@ type Session struct {
 	sparse *sparse // the two-level attention (SetSparse), nil when off
 
 	softcap float64 // the soft cap the host applies to the program's logits, 0 for none
-	raw     bool    // return the logits before it (SetRawLogits)
+	// sinks are the attention sinks the host adds to its merge of a layer's chunks (llm.Sinks), by
+	// layer; nil for a model without them
+	sinks map[int][]float32
+	raw   bool // return the logits before it (SetRawLogits)
 }
 
 // kvCache is one cache of keys or values: an input kv_NAME, or the chunks kv_NAME_cJ that hold
@@ -169,13 +172,16 @@ func New(p Program, m llm.Cached) (*Session, error) {
 	}
 	s := &Session{progs: []step{{p: p, q: x[1]}}, m: m, hidden: x[2], vocab: vocab}
 	s.softcap = llm.HostSoftcap(p.Meta)
+	var err error
+	if s.sinks, err = llm.HostSinks(p.Meta); err != nil {
+		return nil, err
+	}
 	if l, ok := m.(llm.TokenInputs); ok {
 		s.lookups = l.TokenInputs()
 	}
 	if err := s.checkLookups(p); err != nil {
 		return nil, err
 	}
-	var err error
 	if s.kv, s.t, err = caches(p); err != nil {
 		return nil, err
 	}
@@ -1420,6 +1426,9 @@ func (s *Session) runPaged(st *step, valid int) error {
 			hwnpu.DecodeF16(st.o[2], att.L)
 			st.merge.Add(st.o[0], st.o[1], st.o[2])
 		}
+		if sk := s.sinks[layer]; sk != nil {
+			st.merge.AddSink(sk)
+		}
 		st.merge.Result(st.res)
 		putAttnOut(p, layer, st.res)
 	}
@@ -1510,6 +1519,9 @@ func (s *Session) attendOne(st *step, layer int, kc, vc *kvCache, valid int, mas
 			hwnpu.DecodeF16(sm.o[1], a.M)
 			hwnpu.DecodeF16(sm.o[2], a.L)
 			sm.merge.Add(sm.o[0], sm.o[1], sm.o[2])
+		}
+		if sk := s.sinks[layer]; sk != nil {
+			sm.merge.AddSink(sk)
 		}
 		sm.merge.Result(sm.res)
 	}

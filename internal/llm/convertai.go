@@ -45,6 +45,9 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 		}
 		budget = int64(SplitMargin * float64(target.MaxBytes))
 	}
+	if _, err := sinksMeta(model, w); err != nil {
+		return nil, err
+	}
 	names := map[string]bool{}
 	plans := make([][]Part, len(progs))
 	for i := range progs {
@@ -107,7 +110,7 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 	type key struct {
 		start int
 		some  bool // the part has layers
-		whole int // the cache of a program not split at its attention, beside one that is
+		whole int  // the cache of a program not split at its attention, beside one that is
 	}
 	var starts []key
 	groups := map[key][]member{}

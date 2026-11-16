@@ -20,6 +20,7 @@ bias, times the routing weight. ``check`` compares it with transformers' modules
     $PY tools/ref/ref_gptoss.py ref MODEL_DIR WORK [--tokens 32] [--steps 3]   # an export's check/
     $PY tools/ref/ref_gptoss.py logits MODEL_DIR IDS OUT            # every position's logits
     $PY tools/ref/ref_gptoss.py sweep MODEL_DIR OUT.json --variant NAME:PART=FMT,... ...
+    $PY tools/ref/ref_gptoss.py hidden MODEL_DIR OUT [--layers 3] [--tokens 40]  # internal/llm/gptoss's TestRealLayers
 
 ``ref`` writes iron_qwen35_check.py's files (ref.json, ref_K.bin: the logits after the prompt
 and after each greedy step), which ironlm reads from an export's check/. ``logits`` reads token
@@ -414,6 +415,24 @@ def read_ids(path):
     return np.fromfile(p, np.uint32).astype(np.int64).tolist()
 
 
+def cmd_hidden(a):
+    """The hidden states entering each of the first layers and after them (OUT/hiddenN.bin,
+    float32, tokens x hidden) of TEXT after a user turn's start, and OUT/meta.json, for
+    internal/llm/gptoss's TestRealLayers (GPTOSS_REF)."""
+    ck = Checkpoint(a.model_dir)
+    m = GptOss(ck)
+    ids = tokenizer(a.model_dir).encode(USER + TEXT).ids[: a.tokens]
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    h = m.embed(ids)
+    h.numpy().astype(np.float32).tofile(out / "hidden0.bin")
+    for i in range(a.layers):
+        h, _ = m.layer(i, h, ck.layer(i))
+        h.numpy().astype(np.float32).tofile(out / f"hidden{i + 1}.bin")
+        print(f"layer {i}: max |h| {h.abs().max().item():.3f}", file=sys.stderr)
+    (out / "meta.json").write_text(json.dumps({"tokens": len(ids), "layers": a.layers}))
+
+
 def cmd_logits(a):
     g = GptOss(Checkpoint(a.model_dir))
     ids = read_ids(a.ids)
@@ -502,11 +521,17 @@ def main():
     s.add_argument("out")
     s.add_argument("--variant", action="append", default=[], help="NAME:attn=q8,experts=q4,head=q4")
     s.add_argument("--length", type=int, default=400)
+    hd = sub.add_parser("hidden")
+    hd.add_argument("model_dir")
+    hd.add_argument("out")
+    hd.add_argument("--layers", type=int, default=3)
+    hd.add_argument("--tokens", type=int, default=40)
     ap.add_argument("--threads", type=int, default=0)
     a = ap.parse_args()
     if a.threads:
         torch.set_num_threads(a.threads)
-    {"check": cmd_check, "ref": cmd_ref, "logits": cmd_logits, "sweep": cmd_sweep, "forced": cmd_forced}[a.cmd](a)
+    {"check": cmd_check, "ref": cmd_ref, "logits": cmd_logits, "sweep": cmd_sweep, "forced": cmd_forced,
+     "hidden": cmd_hidden}[a.cmd](a)
 
 
 if __name__ == "__main__":

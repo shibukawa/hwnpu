@@ -292,6 +292,9 @@ func (s *Session) attendSparse(st *step, layer int, kc, vc *kvCache, pos, rows, 
 		ss.smerge.Sub(ss.o[0], ss.o[1], ss.o[2])
 	}
 	st.merge.AddMerge(ss.smerge)
+	if sk := s.sinks[layer]; sk != nil {
+		st.merge.AddSink(sk)
+	}
 	st.merge.Result(st.res)
 	return true, nil
 }

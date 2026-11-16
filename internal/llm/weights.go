@@ -53,6 +53,14 @@ func OpenWeights(path string, a *Arch) (Weights, error) {
 	return nil, fmt.Errorf("%s: %s: expected a .safetensors or .gguf file", a.Name, path)
 }
 
+// RawWeights is a checkpoint that also gives a tensor's bytes as they are stored, for the tensors
+// Get does not convert: MXFP4's uint8 blocks and scales (internal/llm/gptoss).
+type RawWeights interface {
+	// RawRange reads bytes [begin, end) of the tensor name and gives its dtype ("U8", "BF16", ...)
+	// and shape.
+	RawRange(name string, begin, end int64) (data []byte, dtype string, shape []int, err error)
+}
+
 type stWeights struct {
 	f    *safetensors.File
 	path string
@@ -74,6 +82,15 @@ func (w stWeights) Rows(name string, begin, end int) ([]float32, error) {
 		return nil, fmt.Errorf("%s: %s has no matrix %s", w.arch.Name, w.path, name)
 	}
 	return w.f.Float32Range(name, begin*t.Shape[1], end*t.Shape[1])
+}
+
+func (w stWeights) RawRange(name string, begin, end int64) ([]byte, string, []int, error) {
+	t, ok := w.f.Lookup(name)
+	if !ok {
+		return nil, "", nil, fmt.Errorf("%s: %s has no tensor %s", w.arch.Name, w.path, name)
+	}
+	b, err := w.f.BytesRange(name, begin, end)
+	return b, t.DType, t.Shape, err
 }
 
 func (w stWeights) Names() []string { return w.f.Names() }
@@ -188,6 +205,16 @@ func (w *shardedWeights) Rows(name string, begin, end int) ([]float32, error) {
 		return nil, fmt.Errorf("%s: %s has no matrix %s", w.arch.Name, w.path, name)
 	}
 	return f.Float32Range(name, begin*t.Shape[1], end*t.Shape[1])
+}
+
+func (w *shardedWeights) RawRange(name string, begin, end int64) ([]byte, string, []int, error) {
+	f, ok := w.files[name]
+	if !ok {
+		return nil, "", nil, fmt.Errorf("%s: %s has no tensor %s", w.arch.Name, w.path, name)
+	}
+	t, _ := f.Lookup(name)
+	b, err := f.BytesRange(name, begin, end)
+	return b, t.DType, t.Shape, err
 }
 
 func (w *shardedWeights) Names() []string { return slices.Sorted(maps.Keys(w.files)) }

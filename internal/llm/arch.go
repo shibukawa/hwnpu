@@ -276,6 +276,37 @@ func Softcap(logits []float32, c float64) {
 	}
 }
 
+// Sinks is a Paged model whose attention has a learned logit per head that takes a share of the
+// softmax and adds nothing to the output (gpt-oss's sinks). The host adds those of PagedLayers to
+// its merge of the chunks (paged.Merge.AddSink), as the conversion writes them into the parts'
+// metadata (MetaSinks); the other layers hold theirs in the program.
+type Sinks interface {
+	// HostSinks reads the sinks of PagedLayers from the checkpoint: a logit per head by layer.
+	HostSinks(w Weights) (map[int][]float32, error)
+}
+
+// HostSinks parses the sinks the host adds to the attention of a program with the metadata meta
+// (MetaSinks): a logit per head by layer, nil for none.
+func HostSinks(meta map[string]string) (map[int][]float32, error) {
+	s, ok := meta[MetaSinks]
+	if !ok {
+		return nil, nil
+	}
+	var byLayer map[string][]float32
+	if err := json.Unmarshal([]byte(s), &byLayer); err != nil {
+		return nil, fmt.Errorf("llm: the sinks of the metadata: %w", err)
+	}
+	out := map[int][]float32{}
+	for k, v := range byLayer {
+		l, err := strconv.Atoi(k)
+		if err != nil {
+			return nil, fmt.Errorf("llm: the sinks of the metadata: layer %q", k)
+		}
+		out[l] = v
+	}
+	return out, nil
+}
+
 // TokenInput is a program input that the host fills per token like x, from a table of the
 // checkpoint that stays on the host: the row of Table for each token, Width values, as an input
 // of shape (1, seq, Width).

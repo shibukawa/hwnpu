@@ -257,6 +257,28 @@ func (c *Merge) Add(o, m, l []float32) {
 	}
 }
 
+// AddSink adds a key that every row of a head sees with the logit sink[head] and a value of
+// zeros (gpt-oss's attention sinks): it takes its share of the softmax and adds nothing to the
+// output. The rows are heads × tokens, as o is laid out.
+func (c *Merge) AddSink(sink []float32) {
+	tokens := c.rows / len(sink)
+	for r := 0; r < c.rows; r++ {
+		mj := sink[r/tokens]
+		if mj > c.top[r] {
+			if c.sum[r] > 0 {
+				f := float32(math.Exp(float64(c.top[r] - mj)))
+				c.sum[r] *= f
+				row := c.acc[r*c.dim : (r+1)*c.dim]
+				for i := range row {
+					row[i] *= f
+				}
+			}
+			c.top[r] = mj
+		}
+		c.sum[r] += float32(math.Exp(float64(mj - c.top[r])))
+	}
+}
+
 // Result writes the merged attention, rows × dim, into out.
 func (c *Merge) Result(out []float32) {
 	for r := 0; r < c.rows; r++ {
