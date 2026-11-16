@@ -10,7 +10,7 @@
 - 元のチェックポイントのフォワードプロキシ (7.1 節): lock のコミットのファイルを取得元から、なければ HF から同じコミットで取り、書き戻す取得元に置く
 - エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具の hash)。版 (`version`、5 節の lock) はまだない
 - hwnpu-image detect、pose、segment が初回に作る AMD の書き出しも層に (鍵は定義の sha256、道具の hash、Go の側の手で上げる版: `chat.PinnedRecipe`)
-- `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に)。書き戻しが切れて残したもの (`original/` も) は `hwnpu cache clean` で消す (7.1 節)。途中で止まった S3 のマルチパートは、バケットのライフサイクルの規則で中止させる
+- `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に)。書き戻しが切れて残したもの (`original/` も) は `hwnpu cache clean` で消す (7.1 節)。途中で止まった S3 のマルチパートも `hwnpu cache clean` が中止する (始まって 1 時間を過ぎたもの)。バケットのライフサイクルの規則があれば、それも効く
 - Core AI の書き出し (2026-11-14、design.md 16.199): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
 - 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)
 
@@ -188,7 +188,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 - lock は読んで足して書く。2 台が同時に同じリポジトリを足すと片方の名指しが消えることがあるが、消えたファイルは次に読む機械が HF から取って足し直す
 - フォルダは揃っているか、揃っていないかの 2 つだけ: 変換結果のフォルダ (`converted/MODEL/TARGET/EXPORT/VERSION`) は `entry.json` があれば揃っていて、なければ中身は全部使わない。リポジトリのフォルダ (`original/OWNER/NAME`) は `hwnpu-lock.json` が名指すファイルだけを使う。1 つのファイルは同じフォルダの一時の名前 (`.put-`) に書いて名前を変える (S3 は PUT が終わるまで見えない)
 - 書いている間は、そのフォルダに印 `.writing-ID` (機械、プロセス、始めた時刻、最後に書いた時刻) を置き、5 分ごとに書き直し (`store.WritingRefresh`)、終わったら消す (`store.MarkWriting`: `PutEntry`、`PutOriginal`、`hwnpu-dev cache update`)
-- `hwnpu cache clean` (`store.PlanClean`、`modelstore.Store.PlanClean`): 書き戻す取得元から、書き戻しが切れて残したものを消す。entry.json のない変換結果のフォルダは丸ごと (空になったフォルダも)、lock が名指さない元のファイル (lock がなければ全部)、`.put-` の一時ファイル、古い印。印か、ファイルのどれかが最近 1 時間に変わったフォルダ (`store.WritingStale`) は書いている途中とみなして残す。ファイルの時刻も見るのは、印を置かない前の hwnpu が書いているフォルダを消さないため (2026-11-16、UGREEN の NAS で Mac が LFM3-1.7B の重みを置いている最中に、印のない `.put-` を消しかけた。NAS が 423 Locked で断った)。消す直前にもフォルダを見直し、その間に書き始めたもの、揃ったものは残す。`converted/` と `original/` の外は触らない。`hwnpu-dev cache gc --orphans` も同じ決め方
+- `hwnpu cache clean` (`store.PlanClean`、`modelstore.Store.PlanClean`): 書き戻す取得元から、書き戻しが切れて残したものを消す。entry.json のない変換結果のフォルダは丸ごと (空になったフォルダも)、lock が名指さない元のファイル (lock がなければ全部)、`.put-` の一時ファイル、古い印。印か、ファイルのどれかが最近 1 時間に変わったフォルダ (`store.WritingStale`) は書いている途中とみなして残す。ファイルの時刻も見るのは、印を置かない前の hwnpu が書いているフォルダを消さないため (2026-11-16、UGREEN の NAS で Mac が LFM3-1.7B の重みを置いている最中に、印のない `.put-` を消しかけた。NAS が 423 Locked で断った)。消す直前にもフォルダを見直し、その間に書き始めたもの、揃ったものは残す。S3 では、`converted/` と `original/` の下で始まって 1 時間 (`store.WritingStale`) を過ぎたマルチパートを `ListMultipartUploads` で探し、`AbortMultipartUpload` で中止する (部分の大きさは一覧に出ないので、表の大きさは `?`)。`converted/` と `original/` の外は触らない。`hwnpu-dev cache gc --orphans` も同じ決め方
 
 別案だったもの: HF の API (`/resolve/`) を真似るキャッシュのサーバー (`hwnpu-dev cache serve`) を 1 台に置き、`HF_ENDPOINT` で向ける。サーバーの運用が要るので入れていない。`original/` は HF と同じ並びなので、要れば後で足せる。
 
@@ -197,11 +197,11 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 AWS SDK (aws-sdk-go-v2) は重いので使わない。`aws` CLI を呼ぶ今の形 (model-table 5 節、`internal/chat/sources.go` の `fetchS3`) もやめ、`github.com/shibukawa/tinygodriver` の `storage/s3` (署名は `cloud/aws`) にする。元のチェックポイントの取得元 (`type: s3`) と、キャッシュの層の両方をこれ 1 つで読む。
 
 - 依存: 標準ライブラリと tinygodriver の中の小さなパッケージだけ (`cloud/aws`、`internal/cloudhttp`、`internal/hmacsha256`、`encoding/simdhex`)。モジュールは 1 つで go.mod の require は多いが、リンクされるのは使うパッケージだけ
-- 使う操作: `Get` / `GetRange` (続きから落とす)、`Head` (エントリの有無)、`Put`、マルチパートの 4 つ、`List` (gc と ls)
+- 使う操作: `Get` / `GetRange` (続きから落とす)、`Head` (エントリの有無)、`Put`、マルチパートの 4 つ、`List` (gc と ls)、`ListMultipartUploads` (clean)
 - 設定の欄は `endpoint` (`WithEndpoint`)、`region` (`WithRegion`)、`path_style` (`WithPathStyle`。既定は amazonaws.com なら仮想ホスト形式、それ以外はパス形式なので、RustFS で `~/.aws/config` に `addressing_style` を書く手順は要らなくなる)。大きなファイルは `WithUnsignedPayload` で、本体を読み込まずに送る
 - tinygodriver が持たないものを hwnpu の側で足す:
   - 認証: tinygodriver は静的な値と環境変数 (`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`AWS_REGION`、`AWS_ENDPOINT_URL_S3`) だけ。`profile` は、hwnpu が `~/.aws/credentials` と `~/.aws/config` のその節の静的な鍵 (`aws_access_key_id`、`aws_secret_access_key`、`aws_session_token`、`region`、`endpoint_url`) だけを読んで渡す。SSO とインスタンスのメタデータは持たない。SSO の利用者は `eval "$(aws configure export-credentials --profile X --format env)"` で環境変数にしてから使う (docs に書く)
-  - マルチパート: `Put` は 1 回の要求 (上限 5 GiB) で、分割は自分でする。64 MiB を超えるファイルは 64 MiB の部分に分けて上げ (IRON のバンクには数 GB のものがある)、失敗したら必ず `AbortMultipartUpload`。途中で止まった分は、tinygodriver に一覧の操作がないので、バケットのライフサイクルの規則 (未完了のマルチパートを N 日で中止) に任せる
+  - マルチパート: `Put` は 1 回の要求 (上限 5 GiB) で、分割は自分でする。64 MiB を超えるファイルは 64 MiB の部分に分けて上げ (IRON のバンクには数 GB のものがある)、失敗したら必ず `AbortMultipartUpload`。途中で止まった分 (プロセスが落ちて Abort できなかったもの) は、`hwnpu cache clean` が `ListMultipartUploads` (tinygodriver v1.3.10 から) で見つけて中止する。始まって 1 時間を過ぎたものだけで、ほかの機械が上げている途中のものは残す。バケットのライフサイクルの規則 (未完了のマルチパートを N 日で中止) を足しておけば、clean を走らせなくても消える
   - 再試行: 5xx、接続の切断、`SlowDown` は指数的に待って 3 回まで。ダウンロードは `GetRange` で続きから
   - `no_sign` (署名なしの公開バケット): tinygodriver で鍵なしの要求が送れるかを確かめる。送れなければ、公開バケットは `https://` の取得元 (HTTP の GET) として読む
 - 確かめたこと (2026-11-13、RustFS 1.0.5 を手元で): 部分に分けた送り (5 MiB の部分で 12 MiB)、空のファイル (tinygodriver v1.3.8 は長さ 0 の本体を chunked で送り 411 になった。v1.3.9 で直った)、`GetRange` の続き、一覧、削除、パス形式 (`internal/store` の `TestS3Server`、`HWNPU_S3_TEST_ENDPOINT` を与えたときだけ)。Qwen3.5-0.8B の書き出し (1.57 GB) を `push` (10 秒) し、空の根で IRON なしに層から取って NPU で答えた (準備 4.4 秒)

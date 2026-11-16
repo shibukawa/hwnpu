@@ -420,6 +420,56 @@ func (s *S3) listAll(ctx context.Context, prefix string) ([]listed, error) {
 	}
 }
 
+// uploadsLeft lists the multipart uploads in progress under prefix initiated before before:
+// those a Put cut off left (a process that died between CreateMultipartUpload and
+// CompleteMultipartUpload or AbortMultipartUpload), whose parts S3 keeps, and bills, unlisted.
+func (s *S3) uploadsLeft(ctx context.Context, prefix string, before time.Time) ([]CleanUpload, error) {
+	if err := s.writable(); err != nil {
+		return nil, err
+	}
+	var ups []CleanUpload
+	var keyMarker, idMarker string
+	for {
+		var page *s3.ListUploadsResult
+		err := retry(ctx, func() error {
+			opts := []s3.ListOption{s3.WithPrefix(s.cfg.Prefix + prefix)}
+			if keyMarker != "" {
+				opts = append(opts, s3.WithKeyMarker(keyMarker), s3.WithUploadIDMarker(idMarker))
+			}
+			var err error
+			page, err = s.client.ListMultipartUploads(ctx, s.cfg.Bucket, opts...)
+			return err
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, u := range page.Uploads {
+			if u.Initiated.Before(before) {
+				ups = append(ups, CleanUpload{Key: strings.TrimPrefix(u.Key, s.cfg.Prefix), ID: u.UploadID, Initiated: u.Initiated})
+			}
+		}
+		if !page.IsTruncated || page.NextKeyMarker == "" {
+			return ups, nil
+		}
+		keyMarker, idMarker = page.NextKeyMarker, page.NextUploadIDMarker
+	}
+}
+
+// abortUpload aborts an upload uploadsLeft listed; one gone since (completed, aborted) is no error.
+func (s *S3) abortUpload(ctx context.Context, u CleanUpload) error {
+	k, err := s.key(u.Key)
+	if err != nil {
+		return err
+	}
+	err = retry(ctx, func() error {
+		return s.client.AbortMultipartUpload(ctx, s3.MultipartUpload{Bucket: s.cfg.Bucket, Key: k, UploadID: u.ID})
+	})
+	if notFound(err) {
+		return nil
+	}
+	return err
+}
+
 func (s *S3) Delete(ctx context.Context, key string) error {
 	if err := s.writable(); err != nil {
 		return err

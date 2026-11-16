@@ -26,7 +26,7 @@ type CacheCmd struct {
 	Ls    LsCmd    `cmd:"" help:"List the units of the cache (or those PATTERN names): kind, size, when last used; the least recently used first."`
 	Prune PruneCmd `cmd:"" help:"Remove the units least recently used until the cache holds --max-size, or those not used for --older-than. Units used in the last hour are kept."`
 	Clear ClearCmd `cmd:"" help:"Remove the units PATTERN names (a model's name, OWNER/NAME, a glob: 'Qwen*'), of --kind, or --all."`
-	Clean CleanCmd `cmd:"" help:"Remove from the sources written back to (HWNPU_MODEL_SOURCE ?writeback=true) what a writeback cut off left: an export's folder with no entry.json, a repository's files its hwnpu-lock.json does not name, the temporary files of uploads. Folders being written now are left."`
+	Clean CleanCmd `cmd:"" help:"Remove from the sources written back to (HWNPU_MODEL_SOURCE ?writeback=true) what a writeback cut off left: an export's folder with no entry.json, a repository's files its hwnpu-lock.json does not name, the temporary files of uploads, in S3 the uploads in parts cut off over an hour ago. Folders being written now are left."`
 }
 
 func open() (*modelstore.Store, error) {
@@ -382,7 +382,7 @@ func (c CleanCmd) Run() error {
 		fmt.Println("no source is written back to (HWNPU_MODEL_SOURCE ?writeback=true)")
 		return nil
 	}
-	var folders, files int
+	var folders, files, uploads int
 	var bytes int64
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "source\tsize\tfiles\twhy\tfolder")
@@ -396,14 +396,22 @@ func (c CleanCmd) Run() error {
 			folders++
 			files += len(f.Files)
 		}
+		for _, u := range p.Uploads {
+			fmt.Fprintf(w, "%s\t?\t1\tupload cut off %s\t%s\n", p.Source, u.Initiated.Local().Format("2006-01-02 15:04"), u.Key)
+			uploads++
+		}
 		bytes += p.Bytes()
 	}
-	if folders == 0 {
+	if folders == 0 && uploads == 0 {
 		fmt.Println("nothing to remove: what the sources hold is whole")
 		return nil
 	}
 	w.Flush()
-	fmt.Printf("%d files in %d folders, %s\n", files, folders, cache.FormatSize(bytes))
+	fmt.Printf("%d files in %d folders, %s", files, folders, cache.FormatSize(bytes))
+	if uploads > 0 {
+		fmt.Printf("; %d S3 uploads in parts to abort (their parts, of a size S3 does not list, go too)", uploads)
+	}
+	fmt.Println()
 	if c.DryRun {
 		fmt.Println("(--dry-run: nothing removed)")
 		return nil
@@ -420,10 +428,14 @@ func (c CleanCmd) Run() error {
 		}
 	}
 	n, err := s.Clean(ctx, plans)
-	if n < files {
-		fmt.Printf("removed %d of the %d files (the rest are in folders a writeback has started in since)\n", n, files)
-	} else {
-		fmt.Printf("removed %d files, %s\n", n, cache.FormatSize(bytes))
+	if all := files + uploads; n < all && err == nil {
+		fmt.Printf("removed %d of the %d files and uploads (the rest are in folders a writeback has started in since)\n", n, all)
+	} else if err == nil {
+		fmt.Printf("removed %d files, %s", n-uploads, cache.FormatSize(bytes))
+		if uploads > 0 {
+			fmt.Printf(", and aborted %d uploads", uploads)
+		}
+		fmt.Println()
 	}
 	return err
 }

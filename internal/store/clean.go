@@ -16,11 +16,26 @@ import (
 // an upload (.put-) and the markers of writebacks no longer going on (.writing-) go too. A
 // folder with a marker written in the last WritingStale, or a file changed then (a writeback of
 // a hwnpu before the markers), is being written and is left as it is, as is everything outside
-// converted/ and original/.
+// converted/ and original/. In S3, the multipart uploads under them initiated more than
+// WritingStale ago, which a Put cut off left and S3 keeps the parts of unlisted, are aborted.
 type Clean struct {
 	Source  string // the source's String()
 	Folders []CleanFolder
+	Uploads []CleanUpload
 	src     Source
+}
+
+// CleanUpload is a multipart upload in progress Clean aborts.
+type CleanUpload struct {
+	Key       string // the object it was to make
+	ID        string
+	Initiated time.Time
+}
+
+// uploadCleaner is a Store with uploads in parts that are left when cut off (S3).
+type uploadCleaner interface {
+	uploadsLeft(ctx context.Context, prefix string, before time.Time) ([]CleanUpload, error)
+	abortUpload(ctx context.Context, u CleanUpload) error
 }
 
 // CleanFolder is a folder Clean removes files of.
@@ -115,6 +130,15 @@ func PlanClean(ctx context.Context, s Source) (Clean, error) {
 		}
 	}
 	now := time.Now()
+	if u, ok := s.Store.(uploadCleaner); ok {
+		for _, top := range []string{"converted/", "original/"} {
+			ups, err := u.uploadsLeft(ctx, top, now.Add(-WritingStale))
+			if err != nil {
+				return c, err
+			}
+			c.Uploads = append(c.Uploads, ups...)
+		}
+	}
 	for _, d := range slices.Sorted(func(yield func(string) bool) {
 		for d := range byFolder {
 			if !yield(d) {
@@ -177,12 +201,21 @@ func planFolder(ctx context.Context, s Source, d string, ls []listed, now time.T
 	return f, nil
 }
 
-// Apply removes what c names and returns how many files it removed. Each folder is looked at
-// again first: one that a writeback has started in since, or that has become whole (an
-// entry.json), is left. The markers go last, so that a folder cut off again is still taken as one.
+// Apply removes what c names and returns how many files it removed and uploads it aborted. Each
+// folder is looked at again first: one that a writeback has started in since, or that has become
+// whole (an entry.json), is left. The markers go last, so that a folder cut off again is still
+// taken as one.
 func (c Clean) Apply(ctx context.Context) (int, error) {
 	n := 0
 	s := c.src
+	if u, ok := s.Store.(uploadCleaner); ok {
+		for _, up := range c.Uploads {
+			if err := u.abortUpload(ctx, up); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
 	for _, f := range c.Folders {
 		ls, err := listAll(ctx, s.Store, f.Path+"/")
 		if err != nil {

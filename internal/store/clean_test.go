@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
+	"github.com/shibukawa/tinygodriver/storage/s3"
 )
 
 // TestClean removes what writebacks cut off left, the same in a folder, on WebDAV and in S3, and
@@ -226,5 +227,58 @@ func TestMarkWriting(t *testing.T) {
 		if isMarker(k) || isTemp(k) {
 			t.Errorf("%s is left after PutEntry", k)
 		}
+	}
+}
+
+// TestCleanUploads aborts in S3 the multipart uploads a Put cut off left under converted/ and
+// original/, those initiated more than WritingStale ago, and leaves the ones going on and the
+// ones not hwnpu's.
+func TestCleanUploads(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	srv, st := fakeS3(t, "pre")
+	s := Source{Store: st, Writeback: true}
+	old := time.Now().Add(-2 * WritingStale)
+	cut := srv.StartUpload("models", "pre/converted/m/t/m.x/v1/w.bin", old)
+	cutOrig := srv.StartUpload("models", "pre/original/lab/r/model.safetensors", old)
+	going := srv.StartUpload("models", "pre/converted/m/t/m.x/v2/w.bin", time.Now())
+	other := srv.StartUpload("models", "pre/notes/big.bin", old)
+	outside := srv.StartUpload("models", "elsewhere/converted/x", old)
+
+	c, err := PlanClean(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, u := range c.Uploads {
+		ids = append(ids, u.ID)
+		if u.Initiated.IsZero() || strings.HasPrefix(u.Key, "pre/") {
+			t.Errorf("upload %+v", u)
+		}
+	}
+	slices.Sort(ids)
+	if want := slices.Sorted(slices.Values([]string{cut, cutOrig})); !slices.Equal(ids, want) {
+		t.Errorf("uploads %v, want %v", ids, want)
+	}
+	srv.StartUpload("models", "pre/converted/m/t/m.x/v3/w.bin", old) // after the plan: left for the next one
+	// one completed or aborted since is no error
+	if err := st.client.AbortMultipartUpload(ctx, s3.MultipartUpload{Bucket: "models", Key: "pre/converted/m/t/m.x/v1/w.bin", UploadID: cut}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := c.Apply(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("aborted %d", n)
+	}
+	left := srv.Uploads()
+	for _, id := range []string{going, other, outside} {
+		if !slices.Contains(left, id) {
+			t.Errorf("%s was aborted", id)
+		}
+	}
+	if slices.Contains(left, cutOrig) || len(left) != 4 {
+		t.Errorf("left %v", left)
 	}
 }

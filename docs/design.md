@@ -4500,7 +4500,7 @@ docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
 - Cloudflare R2 (`region: auto`) でも `TestS3Server` が通り、push (1.57 GB、119 秒) と層からの chat (準備 54 秒) ができた。無料枠は 10 GB なので小さなものだけ置く
 - 未確認: AWS の S3。Windows のロックの実機。MinIO は対象にしない (保守が終わった)
 - **初回に作る画像の書き出しも層に** (2026-11-13、`amdFirstRunExport`): hwnpu-image detect、pose、segment (RTMDet、RTMO、EfficientSAM) の書き出しは、手元になければ層を見て、なければ IRON で作って `write` の層へ。層にあれば IRON のない機械でも NPU で動く。鍵は `chat.PinnedRecipe`: 定義の sha256 (ONNX のモデルはファイルを全部固定している)、道具の名前と hash、Go の側の版 (`detect.ExportVersion`、`pose.ExportVersion`、`segment.ExportVersion`)。道具に渡す引数は Go が ONNX から決めるので、引数そのものは鍵に入れず、渡し方を変えたら版を手で上げる (cache-sharing.md 3 節の方針)。エントリの種類は `iron-onnxcnn` と `iron-efficientsam` (`chat.ExportKind`)。`hwnpu-dev cache push` もこの 3 種を受ける。この機械で: RTMO-s、RTMDet-m、EfficientSAM-Ti を共有フォルダの層に push し、空の HOME とキャッシュの根、IRON なしで、3 つとも層から 0.1〜0.2 秒で取って NPU で動いた
-- **`hwnpu-dev cache gc N`** (`store.PlanGC`): 層 N から、`--model`、`--kind`、`--key` (先頭)、`--older-than DAYS` で選んだエントリと、それだけが名指していた blob を消す。`--orphans` で、どのエントリにもチェックポイントの索引にも名指されない blob も (書き込み中の層では使わない: 置いている途中のものは名指すものが最後に書かれる)。`--apply` がなければ、消すものを出すだけ。エントリを先に消し、blob を後に。共有フォルダの層と RustFS で確かめた。途中で止まったマルチパートは tinygodriver に一覧の操作がないので、バケットのライフサイクルの規則 (「未完了のマルチパートを N 日で中止」) に任せる
+- **`hwnpu-dev cache gc N`** (`store.PlanGC`): 層 N から、`--model`、`--kind`、`--key` (先頭)、`--older-than DAYS` で選んだエントリと、それだけが名指していた blob を消す。`--orphans` で、どのエントリにもチェックポイントの索引にも名指されない blob も (書き込み中の層では使わない: 置いている途中のものは名指すものが最後に書かれる)。`--apply` がなければ、消すものを出すだけ。エントリを先に消し、blob を後に。共有フォルダの層と RustFS で確かめた。途中で止まったマルチパートは `hwnpu cache clean` が中止する (16.231)
 - 残り: Anima などの手で作る画像の書き出し (道具の引数を Go が持たない。HF の配布物で配る)。Core ML と OpenVINO のプログラム (チャットの変換) のエントリ化と、計画と作るの分離 (cache-sharing.md 8 節)、HF の配布物を読む層と Actions (同 9 節) は次
 
 ### 16.172 PLaMo (3 Translate と Embedding) を Core AI で: 経路の直しと、入力の配列の使い回し — 2026-11-13
@@ -6958,8 +6958,8 @@ Linux で書き戻しを確かめたとき (cache-sharing.md 7.5)、切れた書
 
 - 実機で、印だけでは足りないことが分かった: 掃除の計画と実行の間に、Mac (印を置かない前の hwnpu) が LFM3-1.7B の重みを置き始め、その `.put-` を消しかけた (NAS が 423 Locked で断った)。ファイルの時刻 (WebDAV の `getlastmodified`、フォルダの mtime、S3 の LastModified) のどれかが 1 時間以内のフォルダも、書いている途中とみなす
 - 消す直前にフォルダを見直す (その間に書き始めたもの、entry.json が揃ったものは残す)。印は最後に消す
-- S3 の途中で止まったマルチパートは、tinygodriver に一覧の操作がないので、前と同じくバケットのライフサイクルに任せる
+- S3 の途中で止まったマルチパート (プロセスが落ちて Complete も Abort もされなかったもの。部分は一覧に出ないまま課金される) は、tinygodriver v1.3.10 の `ListMultipartUploads` で `converted/` と `original/` の下を一覧し、始まって `WritingStale` を過ぎたものを `AbortMultipartUpload` で中止する。始まった時刻は S3 が持つので、印は要らない
 
-**確かめたこと**: `TestClean` (フォルダ、WebDAV、S3 の偽物で同じ筋書き: 揃ったエントリの横の `.put-`、印の古い書きかけ、印のない書きかけ、書いている途中のもの、lock の名指さないファイル、lock のないリポジトリ、hwnpu のものでないファイル、計画のあとに書き始めたもの)、`TestMarkWriting` (書き直し、終わりに消す、`PutEntry` が残さない)。NAS で書き戻しを SIGKILL で切ると、印と `.put-` と entry.json のないフォルダが残り、`hwnpu cache clean -n` はそれを書いている途中として残した。
+**確かめたこと**: `TestClean` (フォルダ、WebDAV、S3 の偽物で同じ筋書き: 揃ったエントリの横の `.put-`、印の古い書きかけ、印のない書きかけ、書いている途中のもの、lock の名指さないファイル、lock のないリポジトリ、hwnpu のものでないファイル、計画のあとに書き始めたもの)、`TestCleanUploads` (S3 の偽物で、古いマルチパートを中止し、新しいもの、hwnpu のものでないもの、計画のあとに始まったものは残す。その間に消えたものは誤りにしない)、`TestMarkWriting` (書き直し、終わりに消す、`PutEntry` が残さない)。NAS で書き戻しを SIGKILL で切ると、印と `.put-` と entry.json のないフォルダが残り、`hwnpu cache clean -n` はそれを書いている途中として残した。
 
 **入れたもの**: `store.MarkWriting`、`store.PlanClean` と `Clean.Apply`、`modelstore.Store.PlanClean` と `Clean`、`hwnpu cache clean [-n] [-y]`。`hwnpu-dev cache gc --orphans` も同じ決め方にした
