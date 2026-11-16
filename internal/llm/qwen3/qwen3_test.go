@@ -150,11 +150,19 @@ func reference(t *testing.T, c *Config, w llm.Weights, ids []int32) refRun {
 	for i := 0; i < c.NumLayers; i++ {
 		run.hidden = append(run.hidden, slices.Clone(h))
 		l := fmt.Sprintf("model.layers.%d.", i)
-		// Qwen3Attention: q_norm and k_norm over each head, then RoPE
+		// Qwen3Attention: q_norm and k_norm over each head, then RoPE; Qwen2Attention: q, k and v
+		// with their biases, no norms
 		x := rmsNorm(h, d, l+"input_layernorm.weight")
-		q := rmsNorm(linear(x, l+"self_attn.q_proj.weight", d, nh*hd), hd, l+"self_attn.q_norm.weight")
-		k := rmsNorm(linear(x, l+"self_attn.k_proj.weight", d, nkv*hd), hd, l+"self_attn.k_norm.weight")
-		v := linear(x, l+"self_attn.v_proj.weight", d, nkv*hd)
+		var q, k, v []float64
+		if c.qwen2 {
+			q = addBias(linear(x, l+"self_attn.q_proj.weight", d, nh*hd), f16(t, w, l+"self_attn.q_proj.bias"))
+			k = addBias(linear(x, l+"self_attn.k_proj.weight", d, nkv*hd), f16(t, w, l+"self_attn.k_proj.bias"))
+			v = addBias(linear(x, l+"self_attn.v_proj.weight", d, nkv*hd), f16(t, w, l+"self_attn.v_proj.bias"))
+		} else {
+			q = rmsNorm(linear(x, l+"self_attn.q_proj.weight", d, nh*hd), hd, l+"self_attn.q_norm.weight")
+			k = rmsNorm(linear(x, l+"self_attn.k_proj.weight", d, nkv*hd), hd, l+"self_attn.k_norm.weight")
+			v = linear(x, l+"self_attn.v_proj.weight", d, nkv*hd)
+		}
 		rope(q, nh)
 		rope(k, nkv)
 		o := make([]float64, s*nh*hd)
@@ -196,6 +204,14 @@ func reference(t *testing.T, c *Config, w llm.Weights, ids []int32) refRun {
 	run.hidden = append(run.hidden, slices.Clone(h))
 	run.logits = linear(rmsNorm(h, d, "model.norm.weight"), c.head(), d, c.VocabSize)
 	return run
+}
+
+// addBias adds b to each row of x.
+func addBias(x, b []float64) []float64 {
+	for i := range x {
+		x[i] += b[i%len(b)]
+	}
+	return x
 }
 
 func f32(x []float64) []float32 {

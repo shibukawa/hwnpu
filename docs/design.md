@@ -6878,3 +6878,34 @@ NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込�
 **変えたもの**: models.yaml の `memory` (FLUX.2 klein 4.9、Anima-Turbo と Anima-Aesthetic 4.8、Sana 600M 4.4、SANA 1.5 4.5) と `image` の候補、MODEL.md と MODEL.ja.md の画像生成の行とモデルごとの表、USAGE_IMAGE の既定の説明、`-m` の説明
 
 測っていないもの: Qwen-Image-2.1 と Chroma1 (Core ML の頃の値のまま)、SANA 1.5 の 512²、Anima-Aesthetic (Anima-Turbo と同じプログラムなので同じ値にした)
+
+### 16.230 Qwen2.5-Coder (Qwen2) の変換: 構造は Qwen3 のまま入るが、Neural Engine の表では 8 ビット未満で崩れる — 2026-11-16
+
+Qwen/Qwen2.5-Coder-7B-Instruct と 14B-Instruct (`Qwen2ForCausalLM`) を Mac (Core AI) で動かせるかを調べた。M1 (16 GB)、7B のチェックポイント、64 トークンの会話 (チャットの形式)。
+
+**構造**: Qwen3 の層から q と k の頭ごとの norm を除き、q、k、v に bias を足したもの。config に head_dim はない (hidden / heads = 128)。`internal/llm/qwen3` に `qwen2` アーキテクチャ (`Qwen2Arch`、`ParseQwen2Config`) として足した。注意で分けた形 (`llm.Paged`) とキャッシュ、LastRow は Qwen3 のもの。チャットの形式は Qwen3 の考えない版に、system がないときの Qwen2.5 の決まった一文 (`chat.Qwen25`)。transformers の `apply_chat_template` で描いた 9 件 (道具、呼び出し、応答) と 1 文字ずつ一致した
+
+**照合**
+
+- 合成の小さな Qwen2 (bias、norm なし、head_dim なし、tied と非 tied) を fp16 で CPU に: テストの中の fp64 の forward と相対誤差 1.6e-5、層ごと、注意で分けた形も一致。bias を外すと 0.70 で落ちる
+- 実物の 7B: transformers のモジュールを 1 層ずつ組んで float32 で回す参照 (`tools/ref/ref_qwen2.py`。7B の float32 は 30 GB で 16 GB の Mac に入らない) と、層 0〜2 と出力層を CPU で: fp16 で層の変化の相対誤差 7e-5〜6.6e-4、ロジット 4e-7
+
+**重みの形式** (CPU で全 28 層を 1 層ずつ、前の層の出力を次に渡して、参照のロジットとの KL。`TestRealChained`)
+
+| 形式 | KL の平均 | 中央値 | 最上位の一致 | 7B の重み |
+|---|---|---|---|---|
+| lut4 (一様) | 0.90 | 0.41 | 36/64 | 3.5 GB |
+| lut4 (k-means) | 0.47 | 0.20 | 45/64 | 3.5 GB |
+| lut4 (k-means、注意と出力層は lut8) | 0.45 | 0.23 | 48/64 | 4.2 GB |
+| lut4 (k-means、表を 256 列ごと) | 0.41 | 0.25 | 50/64 | 3.5 GB |
+| lut4 (k-means、表を 32 列ごと) | 0.16 | 0.089 | 54/64 | 3.9 GB |
+| lut6 (k-means) | 0.18 | 0.078 | 50/64 | 5.3 GB |
+| lut6 (k-means、表を 128 列ごと) | 0.063 | 0.027 | 58/64 | 5.3 GB |
+| lut8 | 0.0012 | 0.0008 | 63/64 | 7.1 GB |
+
+- lut4 では層ごとに変化の 20〜77 % がずれる (層 0、3、26、27 は隠れ状態で 28〜43 %)。一部の層ではなく全体が、16 行で 1 つの表に弱い。既定を lut8 にした (`Qwen2Arch.Format`)
+- 表を活性に合わせて選ぶ GPTQ (`tools/amd/q4_gptq.py --fmt-q4 lut4`) はモデル全体を float32 で読むので、7B (30 GB) は 16 GB の Mac では回らない。試していない
+
+**Mac での見込み**: lut8 の 7B は 7.1 GB を毎トークン読む。M1 は 2.8 GiB (16.118)、M2 は 3.65 GiB までしか全速で持てないので、どちらも呼び出しのたびに載せ直す。M3/M4 は 4 GiB 近くまでしか測っていない。14B は lut8 で 14 GB で、16 GB の Mac には入らない。M3/M4 で 7 GB を全速で持てるかは、`tools/coreai/moeprobe -dense 18` (6.7 GB) の `aicheck cycle` で確かめられる (16.229 の手順)
+
+**測っていないもの**: Neural Engine での実物の変換と速さ、models.yaml (入れていない)、AMD の形 (IRON の書き出しがない。q4nx の 32 列ごとのスケールなら 4 ビットでも Neural Engine の表より細かい)

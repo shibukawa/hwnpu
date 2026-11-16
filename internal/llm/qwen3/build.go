@@ -227,13 +227,19 @@ func (m *builder) attnMask(keys int) *mlpackage.Var {
 }
 
 // qkv is layer i's queries (1, heads, seq, head_dim) and the step's keys and values (1, kv heads,
-// seq, head_dim): the queries and keys normed per head (q_norm, k_norm) and turned by RoPE.
+// seq, head_dim): the queries and keys normed per head (q_norm, k_norm) and turned by RoPE; for
+// Qwen2, with the projections' biases and no norms.
 func (m *builder) qkv(i int, h *mlpackage.Var) (q, k, v *mlpackage.Var) {
 	c := m.cfg
 	p := layerPrefix(i) + "self_attn."
 	hd, s := c.HeadDim, m.seq
 	heads := func(name string, n int) *mlpackage.Var {
-		t := m.Linear(h, p+name+"_proj.weight", "", n*hd)
+		var t *mlpackage.Var
+		if c.qwen2 {
+			t = m.LinearBias(h, p+name+"_proj.weight", p+name+"_proj.bias", "", n*hd)
+		} else {
+			t = m.Linear(h, p+name+"_proj.weight", "", n*hd)
+		}
 		return m.Op("reshape", map[string]any{"x": t, "shape": m.B.Ints(1, int32(s), int32(n), int32(hd))}, 1, s, n, hd)
 	}
 	toHeads := func(t *mlpackage.Var) *mlpackage.Var {
@@ -241,8 +247,13 @@ func (m *builder) qkv(i int, h *mlpackage.Var) (q, k, v *mlpackage.Var) {
 		return m.Op("transpose", map[string]any{"x": t, "perm": m.B.Ints(0, 2, 1, 3)}, sh[0], sh[2], sh[1], sh[3])
 	}
 	cos, sin := m.ropeTables()
-	q = toHeads(m.ApplyRope(m.norm(heads("q", c.NumHeads), p+"q_norm.weight", hd), cos, sin))
-	k = toHeads(m.ApplyRope(m.norm(heads("k", c.NumKVHeads), p+"k_norm.weight", hd), cos, sin))
+	if c.qwen2 { // Qwen2Attention: the projections with their biases, no norms over the heads
+		q = toHeads(m.ApplyRope(heads("q", c.NumHeads), cos, sin))
+		k = toHeads(m.ApplyRope(heads("k", c.NumKVHeads), cos, sin))
+	} else {
+		q = toHeads(m.ApplyRope(m.norm(heads("q", c.NumHeads), p+"q_norm.weight", hd), cos, sin))
+		k = toHeads(m.ApplyRope(m.norm(heads("k", c.NumKVHeads), p+"k_norm.weight", hd), cos, sin))
+	}
 	v = toHeads(heads("v", c.NumKVHeads))
 	return q, k, v
 }

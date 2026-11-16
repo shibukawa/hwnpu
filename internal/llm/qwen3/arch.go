@@ -23,7 +23,27 @@ var Arch = &llm.Arch{
 	LoadConfig: func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 }
 
-func init() { llm.Register(Arch) }
+// Qwen2Arch registers Qwen2 (Qwen2.5, Qwen2.5-Coder) with the whitelist: Qwen3's decoder with
+// biases on q, k and v and no norms over the heads (ParseQwen2Config). 8 bit tables: on
+// Qwen2.5-Coder-7B-Instruct's logits on the CPU (64 tokens of a chat, transformers' float32 as the
+// reference) lut8 is KL 0.0012 nats (63 of 64 top tokens the same), lut6 0.18 (with tables per 128
+// columns 0.063), lut4 0.90 (k-means 0.47, per 32 columns 0.16): the Neural Engine's tables of 16
+// rows lose too much of it below 8 bits without choosing them against the activations
+// (docs/design.md 16.230).
+var Qwen2Arch = &llm.Arch{
+	Name:          "qwen2",
+	Title:         "Qwen2",
+	ModelTypes:    []string{"qwen2"},
+	Architectures: []string{"Qwen2ForCausalLM"},
+	Format:        "lut8",
+	LastRow:       true,
+	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseQwen2Config(raw) },
+}
+
+func init() {
+	llm.Register(Arch)
+	llm.Register(Qwen2Arch)
+}
 
 // Hidden is the hidden size.
 func (c *Config) Hidden() int { return c.HiddenSize }
@@ -58,8 +78,14 @@ func (c *Config) Tensors() map[string][]int {
 		t[l+"self_attn.k_proj.weight"] = []int{c.NumKVHeads * hd, d}
 		t[l+"self_attn.v_proj.weight"] = []int{c.NumKVHeads * hd, d}
 		t[l+"self_attn.o_proj.weight"] = []int{d, c.NumHeads * hd}
-		t[l+"self_attn.q_norm.weight"] = []int{hd}
-		t[l+"self_attn.k_norm.weight"] = []int{hd}
+		if c.qwen2 {
+			t[l+"self_attn.q_proj.bias"] = []int{c.NumHeads * hd}
+			t[l+"self_attn.k_proj.bias"] = []int{c.NumKVHeads * hd}
+			t[l+"self_attn.v_proj.bias"] = []int{c.NumKVHeads * hd}
+		} else {
+			t[l+"self_attn.q_norm.weight"] = []int{hd}
+			t[l+"self_attn.k_norm.weight"] = []int{hd}
+		}
 		t[l+"mlp.gate_proj.weight"] = []int{f, d}
 		t[l+"mlp.up_proj.weight"] = []int{f, d}
 		t[l+"mlp.down_proj.weight"] = []int{d, f}

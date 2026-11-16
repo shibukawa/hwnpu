@@ -183,6 +183,8 @@ func TemplateFor(arch string) (Template, error) {
 		return Gemma4, nil
 	case "qwen3":
 		return Qwen3, nil
+	case "qwen2":
+		return Qwen25, nil
 	case "qwen35":
 		return Qwen35, nil
 	case "qwen36":
