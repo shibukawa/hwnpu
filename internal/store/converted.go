@@ -154,6 +154,7 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 		return err
 	}
 	defer unlock()
+	put := endEarly(s, dir) // what went while it was made (StartEarly)
 	if old, err := ReadEntryAt(ctx, s, rel); err == nil && old.Key == e.Key {
 		return nil
 	}
@@ -164,10 +165,26 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 	// WebDAV), entry.json after them all
 	err = each(ctx, PutStreams, len(e.Files), func(ctx context.Context, i int) error {
 		f := e.Files[i]
-		return s.Store.Put(ctx, rel+"/"+f.Path, filepath.Join(dir, filepath.FromSlash(f.Path)))
+		p := filepath.Join(dir, filepath.FromSlash(f.Path))
+		if st, ok := put[f.Path]; ok {
+			if fi, err := os.Stat(p); err == nil && stampOf(fi) == st {
+				return nil // put while it was made, and not changed since
+			}
+		}
+		return s.Store.Put(ctx, rel+"/"+f.Path, p)
 	})
 	if err != nil {
 		return err
+	}
+	// what went while it was made and is not in it (a file the conversion removed)
+	in := map[string]bool{}
+	for _, f := range e.Files {
+		in[f.Path] = true
+	}
+	for f := range put {
+		if !in[f] {
+			s.Store.Delete(ctx, rel+"/"+f)
+		}
 	}
 	b, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {

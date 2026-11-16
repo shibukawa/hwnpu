@@ -66,6 +66,10 @@ func fetchConverted(ctx context.Context, p place, dst string, log io.Writer) boo
 		if !errors.Is(err, shared.ErrNotFound) && log != nil {
 			fmt.Fprintf(log, "the sources: %v; making %s here\n", err, filepath.Base(dst))
 		}
+		// it is made here next: its files go in the sources written back to as they are written
+		for _, s := range shared.Writebacks() {
+			shared.StartEarly(s, p.entry.Path, dst)
+		}
 		return false
 	}
 	for _, s := range ss[:i] {
