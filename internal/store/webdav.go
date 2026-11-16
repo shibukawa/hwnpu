@@ -578,6 +578,7 @@ type davEntry struct {
 	rel        string
 	collection bool
 	size       int64
+	mod        time.Time // zero when the server did not say
 }
 
 type multistatus struct {
@@ -589,14 +590,15 @@ type multistatus struct {
 				ResourceType struct {
 					Collection *struct{} `xml:"collection"`
 				} `xml:"resourcetype"`
-				Length string `xml:"getcontentlength"`
+				Length   string `xml:"getcontentlength"`
+				Modified string `xml:"getlastmodified"`
 			} `xml:"prop"`
 		} `xml:"propstat"`
 	} `xml:"response"`
 }
 
 const propfindBody = `<?xml version="1.0" encoding="utf-8"?>
-<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>`
+<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>`
 
 // propfind lists what is at rel (a key, or a folder ending in /) at depth "0" or "1".
 func (w *WebDAV) propfind(ctx context.Context, rel, depth string) ([]davEntry, error) {
@@ -637,6 +639,9 @@ func (w *WebDAV) propfind(ctx context.Context, rel, depth string) ([]davEntry, e
 			if ps.Prop.ResourceType.Collection != nil {
 				e.collection = true
 			}
+			if t, err := http.ParseTime(strings.TrimSpace(ps.Prop.Modified)); err == nil {
+				e.mod = t
+			}
 			if n, err := strconv.ParseInt(strings.TrimSpace(ps.Prop.Length), 10, 64); err == nil {
 				e.size = n
 			}
@@ -653,6 +658,17 @@ func (w *WebDAV) propfind(ctx context.Context, rel, depth string) ([]davEntry, e
 // List walks the folders under prefix with PROPFINDs of depth 1 (depth infinity is often turned
 // off).
 func (w *WebDAV) List(ctx context.Context, prefix string) ([]string, error) {
+	ls, err := w.list(ctx, prefix, false)
+	return keysOf(ls), err
+}
+
+// listAll is List with the temporary files of uploads (.put-) too, and when each was last
+// changed (Clean).
+func (w *WebDAV) listAll(ctx context.Context, prefix string) ([]listed, error) {
+	return w.list(ctx, prefix, true)
+}
+
+func (w *WebDAV) list(ctx context.Context, prefix string, all bool) ([]listed, error) {
 	if err := w.writable(); err != nil {
 		return nil, err // a server read with GETs has no listing
 	}
@@ -660,7 +676,7 @@ func (w *WebDAV) List(ctx context.Context, prefix string) ([]string, error) {
 	if dir != "" && !SafeKey(dir) {
 		return nil, fmt.Errorf("store: %q is not a prefix inside %s", prefix, w)
 	}
-	var keys []string
+	var keys []listed
 	var walk func(dir string) error
 	walk = func(dir string) error {
 		rel := ""
@@ -684,14 +700,14 @@ func (w *WebDAV) List(ctx context.Context, prefix string) ([]string, error) {
 				if err := walk(r.rel); err != nil {
 					return err
 				}
-			case !strings.HasPrefix(name, ".put-"):
-				keys = append(keys, r.rel)
+			case all || !strings.HasPrefix(name, ".put-"):
+				keys = append(keys, listed{r.rel, r.mod})
 			}
 		}
 		return nil
 	}
 	err := walk(dir)
-	slices.Sort(keys)
+	slices.SortFunc(keys, func(a, b listed) int { return strings.Compare(a.key, b.key) })
 	return keys, err
 }
 
@@ -704,6 +720,19 @@ func (w *WebDAV) Delete(ctx context.Context, key string) error {
 	}
 	_, err := w.do(ctx, http.MethodDelete, w.url(key), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusNotFound)
 	return err
+}
+
+// removeEmpty removes the folder dir if no file is under it (empty folders may be: a DELETE of
+// a folder removes what is in it too, so it is listed first, to its depth).
+func (w *WebDAV) removeEmpty(ctx context.Context, dir string) bool {
+	if w.writable() != nil || w.checkKey(dir) != nil {
+		return false
+	}
+	if files, err := w.list(ctx, dir+"/", true); err != nil || len(files) > 0 {
+		return false
+	}
+	_, err := w.do(ctx, http.MethodDelete, w.url(dir+"/"), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusNotFound)
+	return err == nil
 }
 
 // netrcLogin reads the login and the password of host in the netrc (NETRC, else ~/.netrc;

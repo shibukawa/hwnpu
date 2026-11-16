@@ -389,10 +389,16 @@ func (s *S3) Write(ctx context.Context, key string, b []byte) error {
 }
 
 func (s *S3) List(ctx context.Context, prefix string) ([]string, error) {
+	ls, err := s.listAll(ctx, prefix)
+	return keysOf(ls), err
+}
+
+// listAll is List with when each object was last changed (Clean).
+func (s *S3) listAll(ctx context.Context, prefix string) ([]listed, error) {
 	if err := s.writable(); err != nil {
 		return nil, err // a public bucket's listing is not read
 	}
-	var keys []string
+	var keys []listed
 	token := ""
 	for {
 		var page *s3.ListResult
@@ -405,7 +411,7 @@ func (s *S3) List(ctx context.Context, prefix string) ([]string, error) {
 			return nil, err
 		}
 		for _, o := range page.Objects {
-			keys = append(keys, strings.TrimPrefix(o.Key, s.cfg.Prefix))
+			keys = append(keys, listed{strings.TrimPrefix(o.Key, s.cfg.Prefix), o.LastModified})
 		}
 		if !page.IsTruncated {
 			return keys, nil

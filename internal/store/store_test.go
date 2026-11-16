@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/store/s3fake"
@@ -388,7 +389,10 @@ func TestGC(t *testing.T) {
 	a, ra := mk("a", "a's own")
 	b, rb := mk("b", "b's own")
 	root := s.Store.(Dir).Root
-	write(t, filepath.Join(root, "converted", "c", "t", "c.x", "v1", "half"), "a writeback cut off")
+	half := filepath.Join(root, "converted", "c", "t", "c.x", "v1", "half")
+	write(t, half, "a writeback cut off")
+	long := time.Now().Add(-2 * WritingStale) // not one being written
+	os.Chtimes(half, long, long)
 	g, err := PlanGC(ctx, s, func(e Entry) bool { return e.Model == "a" }, false)
 	if err != nil {
 		t.Fatal(err)

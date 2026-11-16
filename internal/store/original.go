@@ -222,6 +222,12 @@ func PutOriginal(ctx context.Context, s Source, repo, commit, name, path, sum st
 	case err != nil && !errors.Is(err, ErrNotFound):
 		return err
 	}
+	// marked until the lock names it, so that Clean leaves the file while this goes on
+	done, err := MarkWriting(ctx, s, "original/"+repo)
+	if err != nil {
+		return err
+	}
+	defer done()
 	if err := s.Store.Put(ctx, OriginalKey(repo, name), path); err != nil {
 		return err
 	}

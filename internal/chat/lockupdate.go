@@ -107,6 +107,12 @@ func UpdateLock(ctx context.Context, s shared.Source, repo string, log io.Writer
 	}
 	work := cache.Sub("work", "update", strings.ReplaceAll(base, "/", "--")+"@"+u.To)
 	defer os.RemoveAll(work)
+	// the files are put before the lock names them: marked, so that hwnpu cache clean leaves them
+	done, err := shared.MarkWriting(ctx, s, "original/"+base)
+	if err != nil {
+		return u, err
+	}
+	defer done()
 	next := shared.Lock{Repo: base, Commit: u.To, Files: map[string]shared.LockedFile{}}
 	at := base + "@" + u.To
 	for name, f := range l.Files {

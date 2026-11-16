@@ -6943,3 +6943,23 @@ Qwen/Qwen2.5-Coder-7B-Instruct と 14B-Instruct (`Qwen2ForCausalLM`) を Mac (Co
 **14B**: 構造は同じで中間 13824 (分けない)。4 ビットで 7.0 GB、チェックポイント 29.5 GB がこの M1 のディスクに入らず、変換も校正もしていない。手順は 7B と同じ (`ref_qwen2.py --stats` は不要、`qwen2_gptq.py` で 1 層 約 4 分の見込み)
 
 **測っていないもの**: M2 以降の速さとメモリ (マージ後に)、14B、長い会話とエージェントの課題、別の評価の文での KL (ここは 64 トークン 1 つ)、AMD の形 (IRON の書き出しがない。q4nx の 32 列ごとのスケールなら 4 ビットでも Neural Engine の表より細かい)
+
+### 16.231 取得元の掃除: フォルダは揃っているかいないかの 2 つ、書いている間の印、`hwnpu cache clean` — 2026-11-16
+
+Linux で書き戻しを確かめたとき (cache-sharing.md 7.5)、切れた書き戻しの一時ファイル `.put-` が NAS に残り続けていた (Qwen3.5-0.8B の書き出しの 597 MB、LFM3-1.7B の重みの 1.9 GB と 0.66 GB、Chroma1-Flash と Core AI の書き出し)。一覧 (`List`) が `.put-` を隠すので、`hwnpu-dev cache gc --orphans` にも見えなかった。
+
+**決め方**: フォルダは揃っているか、揃っていないかの 2 つだけ (読む側はもとからそう読んでいる)。
+
+- 変換結果のフォルダ (`converted/MODEL/TARGET/EXPORT/VERSION`): `entry.json` があれば揃っている。なければ中身は全部消してよい。揃っているフォルダでも `.put-` は消す
+- リポジトリのフォルダ (`original/OWNER/NAME`): `hwnpu-lock.json` が名指すファイルだけが要る。名指さないもの (前のコミットのもの、`.put-`) は消してよい。lock がなければ全部
+- `converted/` と `original/` の外 (NAS の `.DS_Store` など) は触らない
+
+**書いている途中のものを消さない**: 一時の名前の時刻で区切る案は、S3 では使えない (`.put-` がなく、PUT の途中は見えない。見えるのは置き終えたファイルと entry.json のないフォルダ)。そこで書く側がフォルダに印 `.writing-ID` (JSON: 機械、プロセス、始めた時刻、最後に書いた時刻) を置き、5 分ごとに書き直し、終わったら消す。印の時刻は中身に書くので、ファイルの時刻を返さないストアでも読める。最後に書いたのが 1 時間以内の印があるフォルダは書いている途中とみなす。
+
+- 実機で、印だけでは足りないことが分かった: 掃除の計画と実行の間に、Mac (印を置かない前の hwnpu) が LFM3-1.7B の重みを置き始め、その `.put-` を消しかけた (NAS が 423 Locked で断った)。ファイルの時刻 (WebDAV の `getlastmodified`、フォルダの mtime、S3 の LastModified) のどれかが 1 時間以内のフォルダも、書いている途中とみなす
+- 消す直前にフォルダを見直す (その間に書き始めたもの、entry.json が揃ったものは残す)。印は最後に消す
+- S3 の途中で止まったマルチパートは、tinygodriver に一覧の操作がないので、前と同じくバケットのライフサイクルに任せる
+
+**確かめたこと**: `TestClean` (フォルダ、WebDAV、S3 の偽物で同じ筋書き: 揃ったエントリの横の `.put-`、印の古い書きかけ、印のない書きかけ、書いている途中のもの、lock の名指さないファイル、lock のないリポジトリ、hwnpu のものでないファイル、計画のあとに書き始めたもの)、`TestMarkWriting` (書き直し、終わりに消す、`PutEntry` が残さない)。NAS で書き戻しを SIGKILL で切ると、印と `.put-` と entry.json のないフォルダが残り、`hwnpu cache clean -n` はそれを書いている途中として残した。
+
+**入れたもの**: `store.MarkWriting`、`store.PlanClean` と `Clean.Apply`、`modelstore.Store.PlanClean` と `Clean`、`hwnpu cache clean [-n] [-y]`。`hwnpu-dev cache gc --orphans` も同じ決め方にした

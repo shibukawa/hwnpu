@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path"
 	"slices"
 	"strconv"
@@ -24,6 +26,7 @@ type CacheCmd struct {
 	Ls    LsCmd    `cmd:"" help:"List the units of the cache (or those PATTERN names): kind, size, when last used; the least recently used first."`
 	Prune PruneCmd `cmd:"" help:"Remove the units least recently used until the cache holds --max-size, or those not used for --older-than. Units used in the last hour are kept."`
 	Clear ClearCmd `cmd:"" help:"Remove the units PATTERN names (a model's name, OWNER/NAME, a glob: 'Qwen*'), of --kind, or --all."`
+	Clean CleanCmd `cmd:"" help:"Remove from the sources written back to (HWNPU_MODEL_SOURCE ?writeback=true) what a writeback cut off left: an export's folder with no entry.json, a repository's files its hwnpu-lock.json does not name, the temporary files of uploads. Folders being written now are left."`
 }
 
 func open() (*modelstore.Store, error) {
@@ -356,4 +359,71 @@ func parseAge(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("%q is not an age (30d, 12h, 2w)", s)
 	}
 	return d, nil
+}
+
+// CleanCmd is hwnpu cache clean.
+type CleanCmd struct {
+	Yes    bool `short:"y" help:"Do not ask."`
+	DryRun bool `short:"n" help:"Show what would be removed, and remove nothing."`
+}
+
+func (c CleanCmd) Run() error {
+	s, err := open()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	plans, err := s.PlanClean(ctx)
+	if err != nil {
+		return err
+	}
+	if len(plans) == 0 {
+		fmt.Println("no source is written back to (HWNPU_MODEL_SOURCE ?writeback=true)")
+		return nil
+	}
+	var folders, files int
+	var bytes int64
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "source\tsize\tfiles\twhy\tfolder")
+	for _, p := range plans {
+		for _, f := range p.Folders {
+			why := "left over"
+			if f.Whole {
+				why = "not whole"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", p.Source, cache.FormatSize(f.Bytes), len(f.Files), why, f.Path)
+			folders++
+			files += len(f.Files)
+		}
+		bytes += p.Bytes()
+	}
+	if folders == 0 {
+		fmt.Println("nothing to remove: what the sources hold is whole")
+		return nil
+	}
+	w.Flush()
+	fmt.Printf("%d files in %d folders, %s\n", files, folders, cache.FormatSize(bytes))
+	if c.DryRun {
+		fmt.Println("(--dry-run: nothing removed)")
+		return nil
+	}
+	if !c.Yes {
+		if !console.Terminal(os.Stdin) {
+			return errors.New("--yes removes them (standard input is not a terminal to ask on)")
+		}
+		fmt.Print("remove them? [y/N] ")
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+			fmt.Println("nothing removed")
+			return nil
+		}
+	}
+	n, err := s.Clean(ctx, plans)
+	if n < files {
+		fmt.Printf("removed %d of the %d files (the rest are in folders a writeback has started in since)\n", n, files)
+	} else {
+		fmt.Printf("removed %d files, %s\n", n, cache.FormatSize(bytes))
+	}
+	return err
 }
