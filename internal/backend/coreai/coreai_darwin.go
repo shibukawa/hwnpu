@@ -477,6 +477,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		return nil, fmt.Errorf("coreai: functions and compute units are not supported: %w", types.ErrUnsupported)
 	}
 	path, fn := splitFunction(src.Path)
+	cache.Touch(path) // the model it is of is used now (the cache's LRU)
 	dir, cached, owned, stored := path, true, "", ""
 	if !strings.EqualFold(filepath.Ext(path), ".aimodel") {
 		var err error

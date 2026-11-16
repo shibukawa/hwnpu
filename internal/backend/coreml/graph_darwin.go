@@ -78,6 +78,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	if _, err := os.Stat(src.Path); err != nil {
 		return nil, fmt.Errorf("coreml: %w", err)
 	}
+	cache.Touch(src.Path) // the model it is of is used now (the cache's LRU)
 	g := &graph{}
 	compiled := src.Path
 	// HWNPU_COREML_TRACE=1 prints how long each phase of loading takes, to see where a slow load
@@ -161,6 +162,8 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 			if err == nil && placementKey != "" && g.placement.Verified {
 				if raw, e := json.Marshal(g.placement); e == nil {
 					cache.Store(d.opts.CacheDir, placementKey, ".json", func(tmp string) error { return os.WriteFile(tmp, raw, 0o644) }) // best effort
+					// hwnpu cache ls names its model by it; Prune removes it when that is gone
+					cache.SetSource(d.opts.CacheDir, placementKey, src.Path)
 				}
 			}
 		}
