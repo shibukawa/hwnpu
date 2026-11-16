@@ -332,7 +332,8 @@ dir := s.Dir("LiquidAI/LFM3-1.7B")                         // original/LiquidAI/
 
 ```
 hwnpu cache                          根、ディスクの空き、上限、種類ごとの量、層
-hwnpu cache ls [-k KIND] [-s] [PAT]  単位ごとの大きさと最後に使った時刻 (古い順、-s で大きい順)
+hwnpu cache ls [-k KIND] [-s] [-u] [PAT]  モデルと種類ごとの単位の数、大きさ、最後に使った時刻 (古い順、-s で大きい順、-u で単位ごと)。
+                                     compiled のモデルは KEY.src (元のパッケージ) から。残っていなければ (source not recorded)
 hwnpu cache prune --max-size 200GB   古い順に消して収める (--older-than 30d も。なしなら HWNPU_CACHE_MAX_SIZE)
 hwnpu cache clear Qwen3-1.7B         名前 (モデル名、OWNER/NAME、glob) の単位を消す。--kind、--all。端末では確かめる (-y で聞かない)
 hwnpu cache clean                    書き戻す取得元から、書き戻しが切れて残したものを消す (7.1 節)。-n、-y

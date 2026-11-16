@@ -23,7 +23,7 @@ import (
 // CacheCmd is hwnpu cache.
 type CacheCmd struct {
 	Info  InfoCmd  `cmd:"" default:"1" help:"Where the cache is, what it holds by kind, the disk's free space, the limits and the layers models are read from (the command when none is named)."`
-	Ls    LsCmd    `cmd:"" help:"List the units of the cache (or those PATTERN names): kind, size, when last used; the least recently used first."`
+	Ls    LsCmd    `cmd:"" help:"What the cache holds (or what PATTERN names) by model and kind: the units, size, when last used; the least recently used first (--units: each unit)."`
 	Prune PruneCmd `cmd:"" help:"Remove the units least recently used until the cache holds --max-size, or those not used for --older-than. Units used in the last hour are kept."`
 	Clear ClearCmd `cmd:"" help:"Remove the units PATTERN names (a model's name, OWNER/NAME, a glob: 'Qwen*'), of --kind, or --all."`
 	Clean CleanCmd `cmd:"" help:"Remove from the sources written back to (HWNPU_MODEL_SOURCE ?writeback=true) what a writeback cut off left: an export's folder with no entry.json, a repository's files its hwnpu-lock.json does not name, the temporary files of uploads, in S3 the uploads in parts cut off over an hour ago. Folders being written now are left."`
@@ -137,9 +137,14 @@ func match(x modelstore.Unit, patterns []string) bool {
 	}
 	base := path.Base(name)
 	export, _, _ := strings.Cut(base, ".")
+	model := strings.ToLower(x.Model)
+	_, modelName, _ := strings.Cut(model, "/")
 	for _, p := range patterns {
 		p = strings.ToLower(p)
-		for _, s := range []string{name, rest, base, export} {
+		for _, s := range []string{name, rest, base, export, model, modelName} {
+			if s == "" {
+				continue
+			}
 			if ok, _ := path.Match(p, s); ok {
 				return true
 			}
@@ -176,16 +181,76 @@ func used(t time.Time) string {
 	return fmt.Sprintf("%d days ago", int(d.Hours()/24))
 }
 
+// modelName is the model column of x.
+func modelName(x modelstore.Unit) string {
+	switch {
+	case x.Leftover:
+		return "(record of a removed program)"
+	case x.Model != "":
+		return x.Model
+	case x.Kind == cache.KindKernels:
+		return "(IRON kernels, shared)"
+	}
+	return "(source not recorded)"
+}
+
+// table lists each unit.
 func table(units []modelstore.Unit) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "kind\tsize\tlast used\tunit")
+	fmt.Fprintln(w, "model\tkind\tsize\tlast used\tunit")
 	var total int64
 	for _, x := range units {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", x.Kind, cache.FormatSize(x.Bytes), used(x.Used), x.Name)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", modelName(x), x.Kind, cache.FormatSize(x.Bytes), used(x.Used), x.Name)
 		total += x.Bytes
 	}
 	w.Flush()
 	fmt.Printf("%d units, %s\n", len(units), cache.FormatSize(total))
+}
+
+// group is the units of a model of a kind.
+type group struct {
+	model, kind string
+	units       int
+	bytes       int64
+	used        time.Time
+}
+
+// groups are the units by model and kind, in the order of their last use (the latest of theirs).
+func groups(units []modelstore.Unit) []group {
+	var out []group
+	at := map[[2]string]int{}
+	for _, x := range units {
+		k := [2]string{modelName(x), x.Kind}
+		i, ok := at[k]
+		if !ok {
+			i = len(out)
+			at[k] = i
+			out = append(out, group{model: k[0], kind: k[1]})
+		}
+		g := &out[i]
+		g.units++
+		g.bytes += x.Bytes
+		if x.Used.After(g.used) {
+			g.used = x.Used
+		}
+	}
+	slices.SortStableFunc(out, func(a, b group) int { return a.used.Compare(b.used) })
+	return out
+}
+
+// summary lists the units by model and kind.
+func summary(gs []group) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "model\tkind\tunits\tsize\tlast used")
+	var n int
+	var total int64
+	for _, g := range gs {
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n", g.model, g.kind, g.units, cache.FormatSize(g.bytes), used(g.used))
+		n += g.units
+		total += g.bytes
+	}
+	w.Flush()
+	fmt.Printf("%d units, %s\n", n, cache.FormatSize(total))
 }
 
 // LsCmd is hwnpu cache ls.
@@ -193,6 +258,7 @@ type LsCmd struct {
 	Patterns []string `arg:"" optional:"" name:"pattern" help:"Units to list: a model's name, OWNER/NAME, a glob (all when left out)."`
 	Kind     []string `short:"k" help:"Only units of these kinds (${kinds})." placeholder:"KIND,..."`
 	Size     bool     `short:"s" help:"The largest first, instead of the least recently used."`
+	Units    bool     `short:"u" help:"Each unit, instead of the units of a model of a kind together."`
 }
 
 func (l LsCmd) Run() error {
@@ -208,10 +274,18 @@ func (l LsCmd) Run() error {
 		return err
 	}
 	units := pick(u.ByUse(), l.Patterns, l.Kind)
-	if l.Size {
-		slices.SortStableFunc(units, func(a, b modelstore.Unit) int { return cmp.Compare(b.Bytes, a.Bytes) })
+	if l.Units {
+		if l.Size {
+			slices.SortStableFunc(units, func(a, b modelstore.Unit) int { return cmp.Compare(b.Bytes, a.Bytes) })
+		}
+		table(units)
+		return nil
 	}
-	table(units)
+	gs := groups(units)
+	if l.Size {
+		slices.SortStableFunc(gs, func(a, b group) int { return cmp.Compare(b.bytes, a.bytes) })
+	}
+	summary(gs)
 	return nil
 }
 
@@ -276,7 +350,11 @@ func remove(s *modelstore.Store, units []modelstore.Unit, dryRun, yes bool) erro
 		fmt.Println("nothing to remove")
 		return nil
 	}
-	table(units)
+	if len(units) > 30 {
+		summary(groups(units)) // hwnpu cache ls --units lists each
+	} else {
+		table(units)
+	}
 	if dryRun {
 		fmt.Println("(--dry-run: nothing removed)")
 		return nil
