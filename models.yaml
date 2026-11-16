@@ -625,12 +625,14 @@ models:
     # AMD: the peak of a 1024 x 1024 run, 3.43 GiB on the NPU (the VAE's stages, which share their
     # buffers; the text encoder's layers and the DiT's blocks are read a group at a time into one
     # bank) and the process's 0.16 GiB, measured; an edit with one reference peaks the same
-    # (design.md 16.206 to 16.208). 1.9 GB at 512 x 512
-    memory: {amd: 3.9}
+    # (design.md 16.206 to 16.208). 1.9 GB at 512 x 512.
+    # Apple: the process's footprint at 1024 x 1024 (4.1 GB, the VAE's stages; 1.4 GB at 512 x 512);
+    # the Neural Engine holds 1.5 GiB more (the DiT a group at a time, design.md 16.227)
+    memory: {amd: 3.9, apple: 4.1}
     # the repository's diffusers layout (its single-file copy of the DiT is not fetched)
     bytes: 1.6e10
     features: [edit]
-    about: "FLUX.2 klein 4B (a 3.9B DiT of FLUX's shape, Qwen3-4B reads the prompt, the FLUX.2 VAE): 4 steps without guidance, and edits or composes from reference images (--image); AMD's NPU (about 29 s at 1024 x 1024, an edit 1 min, 37 s with --ref-half); Apache-2.0"
+    about: "FLUX.2 klein 4B (a 3.9B DiT of FLUX's shape, Qwen3-4B reads the prompt, the FLUX.2 VAE): 4 steps without guidance, and edits or composes from reference images (--image, AMD); AMD's NPU (about 29 s at 1024 x 1024, an edit 1 min, 37 s with --ref-half) and Apple's Neural Engine (text to image: about 41 s at 1024 x 1024, 11 s at 512 x 512 on an M1); Apache-2.0"
   Qwen-Image-2.1-Turbo:
     family: qwen-image
     tag: 2.1-turbo

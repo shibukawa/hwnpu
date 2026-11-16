@@ -147,6 +147,9 @@ type Vae struct {
 	Latent   int
 	Scaling  float64
 	Shift    float64
+	// PostQuant: the latents go through post_quant_conv (a 1 x 1 convolution) before conv_in, in
+	// place of the scaling and the shift (FLUX.2's VAE, internal/imagegen/flux2klein)
+	PostQuant bool
 }
 
 // ReadVae reads vae/config.json of dir.

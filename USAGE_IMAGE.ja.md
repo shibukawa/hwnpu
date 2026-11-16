@@ -64,7 +64,8 @@ hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn
 hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
 ```
 
-- 今は AMD の NPU だけです。`tools/amd/iron_flux2klein.py` の書き出し (`~/models/flux.2-klein-4b.amd-npu2`) を使います ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 24 節)
+- AMD の NPU では `tools/amd/iron_flux2klein.py` の書き出し (`~/models/flux.2-klein-4b.amd-npu2`) を使います ([docs/amd-npu-models.md](docs/amd-npu-models.md) の 24 節)
+- Apple の Neural Engine (Core AI、macOS 27) では、初回にチェックポイント (16 GB) を落として Core AI のプログラムに変換し (約 20 秒。大きさごとの書き出しで、`--size 512` か既定の 1024)、各プログラムを Neural Engine 用にコンパイルします (1024 × 1024 の初回で約 40 分。512 × 512 も一緒にコンパイルされます)。Qwen3-4B と DiT は lut8、VAE は fp16 で、時刻の埋め込みだけホストで計算します。M1 (16 GB) で、2 回目以降は 512 × 512 の 1 枚が約 11 秒、1024 × 1024 が約 41 秒で、プロセスのメモリは 1024 × 1024 で最大 4.1 GB (512 × 512 で 1.4 GB)、Neural Engine が 1.5 GiB です。プロンプトが複数なら 4 枚ずつまとめて描きます (`--batch`、512 × 512 で 1 枚 9 秒)。今は文からの生成だけで、編集 (`--image`) は AMD の NPU で動きます
 - Ryzen AI 9 365 で、1024 × 1024 の 1 枚が約 29 秒、参照 1 枚の編集が約 1 分です。512 × 512 の書き出しでは 11 秒と 15 秒です。メモリのピークは 1024 × 1024 で 3.9 GB (512 × 512 で 1.9 GB) です
 - 参照を `-i FILE@half` と書くと、その参照だけ絵の半分の辺で読みます。1024 × 1024 の参照 1 枚の編集が約 37 秒になり、その参照の細部は少し減ります。何も付けなければ絵と同じ大きさで読みます
 - 参照は 4 枚まで渡せます。`--image` (`-i`) を枚数だけ繰り返し、プロンプトでは渡した順に image 1、image 2 と呼びます。例: `hwnpu-image generate -m flux2-klein -i fox.png -i room.png "The fox from image 1 is sitting on the sofa in the living room from image 2."`

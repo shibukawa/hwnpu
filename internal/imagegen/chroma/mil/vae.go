@@ -8,7 +8,7 @@ import (
 )
 
 // VaeOp is one module of the decoder a stage runs: "in" (the latents unscaled, z / scaling_factor
-// + shift_factor, and conv_in), "res" (a ResnetBlock2D of Path, In to Out channels), "attn" (the
+// + shift_factor, or through post_quant_conv, and conv_in), "res" (a ResnetBlock2D of Path, In to Out channels), "attn" (the
 // mid block's attention), "up" (nearest 2x and the upsampler's 3 x 3 convolution) or "head"
 // (conv_norm_out, SiLU, conv_out to RGB).
 type VaeOp struct {
@@ -82,7 +82,11 @@ func VaeProgram(v Vae, w, h, i int) *Part {
 		for _, op := range st.Ops {
 			switch op.Kind {
 			case "in":
-				x = g.AddScalar(g.Scale(x, float32(1/v.Scaling)), float32(v.Shift))
+				if v.PostQuant {
+					x = conv(g, x, "vae.post_quant_conv", v.Latent, 1)
+				} else {
+					x = g.AddScalar(g.Scale(x, float32(1/v.Scaling)), float32(v.Shift))
+				}
 				x = conv(g, x, "vae.decoder.conv_in", op.Out, 3)
 			case "res":
 				x = vaeRes(g, x, op.Path, op.Out, v.Groups)
