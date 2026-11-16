@@ -91,4 +91,45 @@ void moe_end_add(float *acc, const bf16 *xr, int32_t off, bf16 *y) {
   zero_256<float, MT>(acc);
 }
 
+// The same three for one core program of both GEMVs (iron_moeprobe's MoEExperts),
+// whose x object is MOE_K long and holds either phase's x: the in-features and
+// where the routing weight or the residual sits are given per call.
+
+// sums over x's first 32 n in-features.
+void moe_sums_n(const bf16 *x, bf16 *sums, int32_t n) {
+  for (int l = 0; l < n; l++) {
+    sums[l] = bf16(aie::reduce_add(aie::load_v<32>(x + 32 * l)));
+  }
+}
+
+// moe_glu with the routing weight at xw[at].
+void moe_glu_at(float *g, float *u, const bf16 *xw, int32_t at, bf16 *y) {
+  const float s = float(xw[at]);
+  for (int i = 0; i < MT; i += 16) {
+    aie::vector<float, 16> gv = aie::load_v<16>(g + i);
+    aie::vector<float, 16> uv = aie::load_v<16>(u + i);
+    aie::vector<float, 16> a = silu_vec<16>(gv);
+    aie::vector<float, 16> p = aie::mul(a, uv).template to_vector<float>();
+    p = aie::mul(p, s).template to_vector<float>();
+    aie::store_v(g + i, p);
+  }
+  narrow_to_bf16<MT>(y, g);
+  zero_256<float, MT>(g);
+  zero_256<float, MT>(u);
+}
+
+// moe_end_add with the residual's out-features at xr + at.
+void moe_end_at(float *acc, const bf16 *xr, int32_t at, bf16 *y) {
+  const bf16 *r = xr + at;
+  for (int i = 0; i < MT; i += 16) {
+    aie::vector<float, 16> a = aie::load_v<16>(acc + i);
+    aie::accum<accfloat, 16> t;
+    t.from_vector(aie::load_v<16>(r + i));
+    aie::vector<float, 16> rv = t.template to_vector<float>();
+    aie::store_v(acc + i, aie::add(a, rv));
+  }
+  narrow_to_bf16<MT>(y, acc);
+  zero_256<float, MT>(acc);
+}
+
 } // extern "C"

@@ -296,6 +296,18 @@ models:
       - [0, 4, 11, 15, 22, 23]  # layer 22
       - [0, 22, 31]  # layer 23
     about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (all wired into memory on 24 GB and more; on 16 GB about 4 GB of them, the ones every text runs and those the application runs most, fewer when the system runs short of memory), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
+  Qwen3.6-35B-A3B:
+    family: qwen3.6
+    tag: 35b-a3b
+    kind: chat
+    from: hf:Qwen/Qwen3.6-35B-A3B
+    license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", class: open}
+    machine: 48
+    memory: 25
+    bytes: 71.9e9
+    features: [tools, thinking]
+    amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4
+    about: "Qwen's Qwen3.6-35B-A3B, a mixture of experts (35B, 3B active) of Gated DeltaNet and attention: AMD's NPU only, its experts and head at 4 bits; the download has the vision part too, which is not converted"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b

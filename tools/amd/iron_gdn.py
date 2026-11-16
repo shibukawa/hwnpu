@@ -218,7 +218,7 @@ def gdn_scratch(R: int, dk: int, seg: int = 0, dv: int = 0, conv: int = 0, norm:
 
 
 def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pairs: bool = False,
-                 presilu: bool = False, steps: int = 0):
+                 presilu: bool = False, steps: int = 0, slots: int = 0):
     """The GatedDeltaRule operator for ``n`` columns of two cores, each core ``hc`` value heads:
     each core's words (four a head) are values of their own, so it is made per shape.
 
@@ -245,12 +245,18 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
     ``steps`` > 1 (with ``conv`` and ``norm``: a check of drafts, iron_verify.py): ``steps``
     rows a call, each run as a decode step's row in turn, the state staying in the cores; the
     final state is ``steps`` states, the one after each row (the host keeps the one after the
-    last row it keeps), y each row's."""
+    last row it keeps), y each row's.
+
+    ``slots`` > 0 (a decode step, with ``conv`` and ``norm``): ``state`` is the whole checkpoint
+    state of that many slots, read at the per-call element offset ``read_at``, and ``final`` the
+    same buffer (an InOut) written at ``write_at``, in place of copies of the slot in and out
+    around the operator (two Copy steps of 2.2 MB a Qwen3.6 layer). The two may be one slot: a
+    column reads each object of its run before it writes it back."""
     import aie.dialects.index as index
     from aie.dialects.aie import T
     from aie.extras.dialects import arith
     from aie.helpers.taplib import TensorAccessPattern as TAP
-    from aie.iron import Buffer, In, ObjectFifo, Out, Worker
+    from aie.iron import Buffer, In, InOut, ObjectFifo, Out, Worker
     from aie.iron.controlflow import range_
     from aie.iron.device import AnyMemTile
     from aie.iron.kernel import ExternalFunction
@@ -261,6 +267,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
     from iron.common import Built, Operator, Rtp
 
     cores = 2 * n
+    if slots and not (conv and norm and not steps):
+        raise ValueError("gdn_operator: slots are a decode step's, with conv and norm")
 
     def kernels(R: int, blocks: int, dk: int, seg: int, dv: int, zw: int):
         flags = [f"-DGDR_SEG={seg}", f"-DGDR_CONV={conv}"] if conv else []
@@ -353,9 +361,17 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             z = In(rows, hv, obj_shape=(zw,), per=(columns,))
         if conv:
             taps = In(conv, twidth, obj_shape=(seg,), per=(columns,))  # x's channel, after the row
-        state = In(states, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
-        y = Out(rows, hv, obj_shape=(ypair,), per=(columns,))
-        final = Out(finals, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+        if slots:  # the checkpoint state, each slot ``states`` long: read and written in place
+            total: int = param(derive=lambda op: slots * op.states, repr=False)
+            state = In(total, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+            y = Out(rows, hv, obj_shape=(ypair,), per=(columns,))
+            final = InOut(total, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+            read_at = per_call(derive=lambda op: 0)  # elements: the slot read
+            write_at = per_call(derive=lambda op: 0)  # and the one written
+        else:
+            state = In(states, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
+            y = Out(rows, hv, obj_shape=(ypair,), per=(columns,))
+            final = Out(finals, dtype=np.float32, obj_shape=(pair,), per=(columns,), depth=1)
         valid = per_call(bounds=rows)
         count = per_call(derive=lambda op: op.valid)
 
@@ -552,9 +568,12 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             skip = self.pair if pairs else 0  # the pair ahead of the run, left as it is
             # The fills first: a prompt chunk's drains are 2 hc S descriptors a column, past what a
             # channel's task queue holds before the data they wait for has come in.
+            size = self.total if slots else self.states
+            rd = (self.read_at if self.read_at.per_call else None) if slots else None
+            wr = (self.write_at if self.write_at.per_call else None) if slots else None
             for c in range(n):
-                self.state.fill(TAP((self.states,), c * run + skip, [run - skip], [1]), lane=c,
-                                managed=False)
+                self.state.fill(TAP((size,), c * run + skip, [run - skip], [1]), lane=c,
+                                offset_parameter=rd, managed=False)
                 if conv:  # the row once (the core keeps the convolution's output), then the taps
                     self.x.fill(TAP((rows, TW), c * seg, [seg], [1]), lane=c, managed=False)
                     if norm:
@@ -563,8 +582,8 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                 else:
                     self.x.fill(TAP((rows, W), c * seg, [hc * S, rows, seg], [0, W, 1]), lane=c,
                                 managed=False)
-            drains = [self.final.drain(TAP((self.states,), c * run + skip, [run - skip], [1]), lane=c,
-                                       wait=True, managed=False) for c in range(n)]
+            drains = [self.final.drain(TAP((size,), c * run + skip, [run - skip], [1]), lane=c,
+                                       offset_parameter=wr, wait=True, managed=False) for c in range(n)]
             if R == 1:
                 for c in range(n):
                     h0 = c * 2 * hc  # the column's first head (core 0's), core 1's from h0 + hc
@@ -628,6 +647,18 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                     st = put(final)
                     finals.append(st)
                 return np.concatenate(ys), np.concatenate(finals)
+        elif slots:
+            def reference(self, x, z, taps, state, final, *, read_at=0, write_at=0):
+                shape = dict(heads=self.heads, key_heads=self.key_heads, key_dim=self.key_dim,
+                             value_dim=self.value_dim, n=n)
+                H, dv, S = self.heads, self.value_dim, self.states
+                st = np.asarray(state, np.float32).reshape(-1)[int(read_at) : int(read_at) + S]
+                u, rest, put = conv_reference(x, taps, st, **shape)
+                y, fin = gdn_reference(u, rest, self.words, **shape, valid=1)
+                y = norm_reference(np.asarray(y).reshape(1, H, dv), np.asarray(z).reshape(1, H, dv), norm)
+                out = np.array(final, np.float32).reshape(-1)
+                out[int(write_at) : int(write_at) + S] = put(fin)
+                return y.reshape(1, H * dv), out
         elif norm:
             def reference(self, x, z, taps, state):
                 shape = dict(heads=self.heads, key_heads=self.key_heads, key_dim=self.key_dim,
