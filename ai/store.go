@@ -10,40 +10,58 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/modelstore"
 )
 
-// Store is where prepared models are kept.
+// Store is where the models come from and where they are kept prepared.
 type Store struct {
-	// Dir is where Plan.Run downloads and converts the models, each in a directory of its
-	// own, and writes what it prepared (StoreFile).
-	Dir string
-	// Bundles are prepared stores shipped with the app, read only: directories with a
-	// StoreFile whose paths are relative to them. They are looked in before Dir.
-	Bundles []string
-	// Cache is the compile cache of the NPU's programs ("": hwnpu's root, cache.Root,
-	// HWNPU_CACHE). Apple's compiled programs belong to the machine and its OS, so they are not
-	// bundled.
-	Cache string
+	// Models are where the models' files come from and this machine's cache they are kept in,
+	// as hwnpu's commands read them (modelstore: this machine's cache, HWNPU_MODEL_SOURCE*, the
+	// models bundled with the app, Hugging Face), and the app's own definition files
+	// (Models.Files). The zero value is the commands': what they downloaded and converted is
+	// used as it is, and what Run prepares they use.
+	Models modelstore.Options
+	// Prepared are caches prepared beforehand and shipped with the app, read only and used where
+	// they are: directories with a StoreFile whose paths are relative to them (a copy of the
+	// prepared parts of a cache). They are looked in before this machine's cache. Unlike the
+	// bundled models of Models.Bundle, which Run fetches the files of, a use found in one runs
+	// without Run.
+	Prepared []string
 }
 
-// DefaultStore is the store of hwnpu's commands (hwnpu-chat, hwnpu-audio): models under hwnpu's
-// root (HWNPU_CACHE, else hwnpu in the OS's cache directory). What they downloaded and converted
-// is used as it is.
-func DefaultStore() Store { return Store{Dir: chat.ModelsDir()} }
+// DefaultStore is the store of hwnpu's commands (hwnpu-chat, hwnpu-audio).
+func DefaultStore() Store { return Store{} }
 
-func (s Store) cacheDir() string {
-	if s.Cache != "" {
-		return s.Cache
+// openMu keeps the process's layers and definitions (modelstore.Open) from changing while a
+// Plan or an Open reads them.
+var openMu sync.Mutex
+
+// open sets the process's layers and definitions as s says (modelstore.Open). Prepared models
+// and the compile caches are then under cache.Root.
+func (s Store) open() error {
+	if _, err := modelstore.Open(s.Models); err != nil {
+		return fmt.Errorf("ai: %w", err)
 	}
-	return cache.Root()
+	return nil
 }
 
-// StoreFile is the file in a store that says what each use was prepared as.
+// dir is the directory of this machine's cache the StoreFile is in and its paths are relative
+// to: cache.Root, which holds the models' programs (models/, converted/) and their checkpoints
+// (original/).
+func (s Store) dir() string { return cache.Root() }
+
+// cacheDir is the compile cache of the NPU's programs. Apple's compiled programs belong to the
+// machine and its OS, so they are not shipped.
+func (s Store) cacheDir() string { return cache.Root() }
+
+// StoreFile is the file in a store (cache.Root, or a directory of Store.Prepared) that says what
+// each use was prepared as.
 const StoreFile = "store.json"
 
 // storeFormat is the version of StoreFile's format this package writes and reads.
@@ -68,9 +86,12 @@ type manifest struct {
 // record is what a use was prepared as. Its paths are relative to the store's directory, or
 // absolute for files outside it (an export of AMD's NPU in its own directory).
 type record struct {
-	Model    string    `json:"model"`
-	Role     Role      `json:"role"`
-	Dir      string    `json:"dir"`
+	Model string `json:"model"`
+	Role  Role   `json:"role"`
+	Dir   string `json:"dir"`
+	// Run is the model's definition for the memory it runs as (Model.On): the variant its
+	// programs were converted for.
+	Run      chat.Run  `json:"run"`
 	MemoryGB float64   `json:"memory_gb,omitempty"`
 	Prepared time.Time `json:"prepared"`
 
@@ -215,15 +236,13 @@ type located struct {
 	bundle bool
 }
 
-// find looks for use's record in the bundles, then in Dir, with its files all there. A record
-// of another target is skipped, and reported as ErrBundleTarget when nothing else is found.
+// find looks for use's record in the prepared caches, then in this machine's, with its files all
+// there. A record of another target is skipped, and reported as ErrBundleTarget when nothing else
+// is found.
 func (s Store) find(use, target string) (located, error) {
 	var mismatch error
-	roots := append(append([]string(nil), s.Bundles...), s.Dir)
+	roots := append(append([]string(nil), s.Prepared...), s.dir())
 	for i, root := range roots {
-		if root == "" {
-			continue
-		}
 		m, err := readManifest(root)
 		if err != nil {
 			return located{}, err
@@ -241,7 +260,7 @@ func (s Store) find(use, target string) (located, error) {
 		if f := r.missing(); f != "" {
 			continue
 		}
-		return located{record: r, root: root, bundle: i < len(s.Bundles)}, nil
+		return located{record: r, root: root, bundle: i < len(s.Prepared)}, nil
 	}
 	if mismatch != nil {
 		return located{}, mismatch
@@ -249,18 +268,19 @@ func (s Store) find(use, target string) (located, error) {
 	return located{}, fmt.Errorf("%w: %s (Plan and Run prepare it)", ErrNotPrepared, use)
 }
 
-// put writes use's record into Dir's StoreFile, under the lock of the file (other processes
-// prepare other uses in the same store). A StoreFile of another target, the programs of another
-// NPU (a directory copied from another machine, or prepared for Core ML before Core AI ran the
-// Neural Engine), is replaced: Dir is this machine's.
+// put writes use's record into this machine's StoreFile, under the lock of the file (other
+// processes prepare other uses in the same cache). A StoreFile of another target, the programs of
+// another NPU (a cache copied from another machine, or prepared for Core ML before Core AI ran
+// the Neural Engine), is replaced: the cache is this machine's.
 func (s Store) put(ctx context.Context, use, target string, r *record) error {
-	file := filepath.Join(s.Dir, StoreFile)
+	dir := s.dir()
+	file := filepath.Join(dir, StoreFile)
 	unlock, err := cache.Lock(ctx, file, file, io.Discard)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	m, err := readManifest(s.Dir)
+	m, err := readManifest(dir)
 	if err != nil {
 		return err
 	}
@@ -269,9 +289,9 @@ func (s Store) put(ctx context.Context, use, target string, r *record) error {
 	}
 	m.Target = target
 	r = r.clone()
-	r.relative(s.Dir)
+	r.relative(dir)
 	m.Uses[use] = r
-	return m.write(s.Dir)
+	return m.write(dir)
 }
 
 // npu is this machine's NPU as the models are prepared for it and run on it, picked as

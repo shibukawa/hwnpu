@@ -31,7 +31,7 @@
 // model prepared is the model run.
 //
 // The models' downloads and programs are hwnpu-chat's and hwnpu-audio's, for the same NPU (Core
-// AI on a Mac), through the same definitions, sources and shared layers (Definitions):
-// DefaultStore is their directory, and what they prepared is used as it is (a Run then only
-// checks it and writes it into the store's StoreFile).
+// AI on a Mac), through the same definitions and layers (Store.Models, modelstore): what they
+// prepared is used as it is (a Run then only checks it and writes it into the cache's
+// StoreFile).
 package ai

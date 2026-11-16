@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -47,55 +46,12 @@ func (r *Registry) Require(names ...string) *Registry {
 	return r
 }
 
-// Memory makes uses and families pick their models for a machine of gb GB instead of this one
-// (a bundle for smaller machines). 0 is this machine's.
+// Memory makes uses and families pick their models, and the models their programs, for a machine
+// of gb GB instead of this one (a cache to ship for smaller machines). 0 is this machine's, with
+// the memory chosen for a model (hwnpu memory, modelstore.Store.SetMemory).
 func (r *Registry) Memory(gb int) *Registry {
 	r.memory = gb
 	return r
-}
-
-// Definitions reads the definitions as hwnpu's commands do (docs/cache-sharing.md 7.4): the
-// built-in models.yaml, the machine's (/etc/hwnpu/models.yaml, /Library/Application
-// Support/hwnpu/models.yaml, %ProgramData%\hwnpu\models.yaml), the user's
-// (~/.config/hwnpu/models.yaml), those of HWNPU_MODELS, and then files, the app's own, each over
-// the ones before. Besides models, uses and aliases they give the sources downloads come from
-// (folders, S3 buckets before Hugging Face) and the shared layers of what was downloaded and
-// converted (cache.layers, HWNPU_CACHE_LAYERS), which Run reads before downloading or
-// converting anything and writes what it made into. Warnings go to log (nil: none).
-//
-// They are read into the process's definitions, which hwnpu-chat's -models change too. The first
-// Plan reads them without files when Definitions has not been called.
-func Definitions(log io.Writer, files ...string) error {
-	defs.Lock()
-	defer defs.Unlock()
-	return loadDefinitions(log, files)
-}
-
-// defs is whether the process's definitions were read (Definitions).
-var defs struct {
-	sync.Mutex
-	read bool
-}
-
-func loadDefinitions(log io.Writer, files []string) error {
-	if log == nil {
-		log = io.Discard
-	}
-	if err := chat.LoadModels(files, true, log); err != nil {
-		return fmt.Errorf("ai: definitions: %w", err)
-	}
-	defs.read = true
-	return nil
-}
-
-// readDefinitions reads the definitions without the app's files unless they were read.
-func readDefinitions() error {
-	defs.Lock()
-	defer defs.Unlock()
-	if defs.read {
-		return nil
-	}
-	return loadDefinitions(nil, nil)
 }
 
 // resolved is a name of the registry and what it means.
@@ -106,30 +62,25 @@ type resolved struct {
 	why   string
 }
 
-// resolve finds what a name means for a machine of memory GB.
+// resolve finds what a name means for a machine of memory GB (0: this one, with the memory
+// chosen for each model, hwnpu memory), as hwnpu's commands find it.
 func resolve(name string, memory int) (resolved, error) {
 	if strings.EqualFold(name, string(RoleVAD)) {
 		return resolved{use: name, role: RoleVAD}, nil
 	}
-	var m chat.Model
-	why := ""
-	if l, ok := chat.Lookup(name); ok {
-		m = chat.Alias(l, nil).On(memory)
-	} else {
-		p, w, ok, err := chat.Pick(name, memory)
-		if err != nil {
-			return resolved{}, err
-		}
-		if !ok {
-			return resolved{}, fmt.Errorf("ai: no model, family or use %q in the definitions (hwnpu-chat list shows them)", name)
-		}
-		m, why = p, w
+	var why strings.Builder
+	m, ok, err := chat.LookupOn(name, memory, &why)
+	if err != nil {
+		return resolved{}, fmt.Errorf("ai: %w", err)
+	}
+	if !ok {
+		return resolved{}, fmt.Errorf("ai: no model, family or use %q in the definitions (hwnpu-chat list shows them)", name)
 	}
 	role, err := roleOf(m)
 	if err != nil {
 		return resolved{}, err
 	}
-	return resolved{use: name, role: role, model: m, why: why}, nil
+	return resolved{use: name, role: role, model: m, why: strings.TrimSpace(why.String())}, nil
 }
 
 // roleOf is the role of a model of the definitions.
@@ -167,12 +118,13 @@ type Item struct {
 	About string
 	// Why says how a use or a family picked the model (for 16 GB machines).
 	Why string
-	// Ready is true when the store has it prepared, in Bundle when that is not "".
+	// Ready is true when the store has it prepared, in Bundle (a directory of Store.Prepared)
+	// when that is not "".
 	Ready  bool
 	Bundle string
 	// Download is about how many bytes preparing it downloads: the model's size in the
 	// definitions, 0 when its checkpoint is here (or it is Ready). It is the most: a shared
-	// layer (Definitions) may hold what was converted, and then the checkpoint is not
+	// layer (Store.Models) may hold what was converted, and then the checkpoint is not
 	// downloaded.
 	Download int64
 	// MemoryGB is what the model takes running, from the definitions (0: not known).
@@ -181,31 +133,31 @@ type Item struct {
 	model chat.Model
 }
 
-// License is what a model's terms ask an app to show or agree to.
+// License is what a model's terms ask an app to show or agree to (models.yaml's license).
 type License struct {
 	Model string
 	Repo  string
-	// URL is the model's page, where its terms are.
+	// ID names the license (apache-2.0, gemma); Class is what it allows of commercial use
+	// (open, conditional, non-commercial); Terms says it in one line.
+	ID, Class, Terms string
+	// URL is where its text is: the license's, else the model's page.
 	URL string
+	// Accept is true when the license asks to be agreed to before the model is downloaded.
+	Accept bool
 }
 
-// Plan resolves the registry's names for the machine (or Memory) and finds what store lacks.
-// It reads the definitions first unless Definitions has.
+// Plan resolves the registry's names for the machine (or Memory) and finds what store lacks. It
+// sets the process's layers and reads the definitions as store.Models says (modelstore.Open).
 func (r *Registry) Plan(ctx context.Context, store Store) (*Plan, error) {
-	if store.Dir == "" && len(store.Bundles) == 0 {
-		return nil, errors.New("ai: a store needs a directory or bundles")
-	}
-	if err := readDefinitions(); err != nil {
+	openMu.Lock()
+	defer openMu.Unlock()
+	if err := store.open(); err != nil {
 		return nil, err
-	}
-	memory := r.memory
-	if memory <= 0 {
-		memory = chat.MachineMemory()
 	}
 	p := &Plan{store: store, npu: hereNPU(ctx)}
 	vendor := chat.HereVendor()
 	for _, name := range r.names {
-		res, err := resolve(name, memory)
+		res, err := resolve(name, r.memory)
 		if err != nil {
 			return nil, err
 		}
@@ -218,21 +170,16 @@ func (r *Registry) Plan(ctx context.Context, store Store) (*Plan, error) {
 		m := res.model
 		it.model, it.Model, it.Repo, it.About = m, m.Name, m.Source(), m.About
 		it.MemoryGB = m.MemoryFor(vendor)
-		if loc, err := store.find(name, p.npu.target); err == nil && loc.Model == m.Name {
+		if loc, err := store.find(name, p.npu.target); err == nil && loc.Model == m.Name && loc.Run == m.Run {
 			it.Ready = true
 			if loc.bundle {
 				it.Bundle = loc.root
 			}
-		} else if err != nil && !errors.Is(err, ErrNotPrepared) && !(errors.Is(err, ErrBundleTarget) && store.Dir != "") {
+		} else if err != nil && !errors.Is(err, ErrNotPrepared) && !errors.Is(err, ErrBundleTarget) {
 			return nil, err
 		}
-		if !it.Ready {
-			if store.Dir == "" {
-				return nil, fmt.Errorf("%w: %s is in none of the bundles, and the store has no directory to prepare it in", ErrNotPrepared, name)
-			}
-			if !chat.Downloaded(filepath.Join(store.Dir, m.DirName())) {
-				it.Download = int64(m.BytesFor(vendor))
-			}
+		if !it.Ready && !chat.Downloaded(m) {
+			it.Download = int64(m.BytesFor(vendor))
 		}
 		p.Items = append(p.Items, it)
 	}
@@ -277,8 +224,9 @@ func (p *Plan) Licenses() []License {
 			continue
 		}
 		seen[it.Model] = true
-		l := License{Model: it.Model, Repo: it.Repo}
-		if it.model.SourceName == "" && it.model.Repo != "" {
+		ml := it.model.License
+		l := License{Model: it.Model, Repo: it.Repo, ID: ml.ID, Class: ml.Class, Terms: ml.Terms, URL: ml.URL, Accept: ml.Accept}
+		if l.URL == "" && it.model.Repo != "" {
 			l.URL = "https://huggingface.co/" + it.model.Repo
 		}
 		out = append(out, l)
@@ -354,7 +302,7 @@ func stripANSI(s string) string {
 // Run prepares the uses that are not ready, in order, as hwnpu-chat and hwnpu-audio do on their
 // first run: it takes what is missing from the shared layers or downloads it (checked against the
 // definitions' sha256 where they have one), converts the programs unless a layer has them, puts
-// what it downloaded and made into the layers that take it (Definitions), loads each once
+// what it downloaded and made into the layers that take it (Store.Models), loads each once
 // (unless NoWarmUp) and writes it into the store. fn (nil for none) is called in Run's goroutine.
 // A Run cut off (ctx, a network error) goes on from where it stopped when run again.
 func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
@@ -374,16 +322,16 @@ func (p *Plan) Run(ctx context.Context, fn func(Progress)) error {
 		}
 		log := &lineWriter{fn: func(line string) { report(StagePrepare, line) }}
 		report(StagePrepare, "")
-		env := prepareEnv{ctx: ctx, model: it.model, dir: filepath.Join(p.store.Dir, it.model.DirName()), root: p.store.Dir, npu: p.npu, log: log}
+		env := prepareEnv{ctx: ctx, model: it.model, dir: chat.ModelDir(it.model), npu: p.npu, log: log}
 		r, err := roles[it.Role].prepare(env)
 		if err != nil {
 			return fmt.Errorf("ai: preparing %s (%s): %w", it.Use, it.Model, err)
 		}
-		r.Model, r.Role, r.Dir, r.MemoryGB, r.Prepared = it.Model, it.Role, env.dir, it.MemoryGB, time.Now().UTC().Truncate(time.Second)
+		r.Model, r.Role, r.Dir, r.Run, r.MemoryGB, r.Prepared = it.Model, it.Role, env.dir, it.model.Run, it.MemoryGB, time.Now().UTC().Truncate(time.Second)
 		if !p.NoWarmUp && p.npu.target != "" {
 			report(StageWarmUp, "")
 			log.fn = func(line string) { report(StageWarmUp, line) }
-			l, err := roles[it.Role].load(ctx, located{record: r, root: p.store.Dir}, loadEnv{cache: p.store.cacheDir(), device: p.npu.device, log: log})
+			l, err := roles[it.Role].load(ctx, located{record: r, root: p.store.dir()}, loadEnv{cache: p.store.cacheDir(), device: p.npu.device, log: log})
 			if err != nil {
 				return fmt.Errorf("ai: loading %s (%s) once: %w", it.Use, it.Model, err)
 			}
@@ -414,8 +362,7 @@ func Prepare(ctx context.Context, store Store, fn func(Progress), names ...strin
 type prepareEnv struct {
 	ctx   context.Context
 	model chat.Model
-	dir   string // the model's directory in the store
-	root  string // the store's directory, where the models' directories are
+	dir   string // the model's directory of programs (chat.ModelDir)
 	npu   npu    // what the programs are converted for
 	log   io.Writer
 }

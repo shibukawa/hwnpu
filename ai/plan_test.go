@@ -11,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/modelstore"
 )
 
 type fakeModel struct{ closed *int }
@@ -47,22 +49,28 @@ func fakeRoles(t *testing.T) (prepared, loads, closed *int) {
 	return
 }
 
-// ownDefinitions keeps the machine's and the user's definition files and shared layers out of a
-// test: only the built-in definitions and those the test gives are read.
+// ownDefinitions keeps the machine's and the user's definition files, memory choices and model
+// policy out of a test: only the built-in definitions and those the test gives are read.
 func ownDefinitions(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("LOCALAPPDATA", dir)
 	t.Setenv(chat.ModelsEnv, "")
-	t.Setenv(chat.LayersEnv, "off")
+	t.Setenv(chat.PolicyEnv, "")
+	t.Setenv(chat.MemoryEnv, "")
 	saved := chat.SystemModelsFile
 	chat.SystemModelsFile = func() string { return "" }
 	t.Cleanup(func() {
 		chat.SystemModelsFile = saved
-		defs.read = false
+		cache.SetRoot("")
 		chat.LoadModels(nil, false, nil)
 	})
-	defs.read = false
+}
+
+// testStore is a store of a cache of its own, with no sources and no Hugging Face.
+func testStore(t *testing.T) Store {
+	off := false
+	return Store{Models: modelstore.Options{Root: t.TempDir(), Sources: []string{}, HuggingFace: &off}}
 }
 
 func TestDefinitions(t *testing.T) {
@@ -72,10 +80,9 @@ func TestDefinitions(t *testing.T) {
 	if err := os.WriteFile(app, []byte("version: 1\ncategories:\n  translate:\n    picks:\n      - {machine: 8, model: plamo-3-translate-2b}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Definitions(nil, app); err != nil {
-		t.Fatal(err)
-	}
-	p, err := NewRegistry().Require("translate").Memory(8).Plan(context.Background(), Store{Dir: t.TempDir()})
+	store := testStore(t)
+	store.Models.Files = []string{app}
+	p, err := NewRegistry().Require("translate").Memory(8).Plan(context.Background(), store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +129,7 @@ func TestPlanRunOpen(t *testing.T) {
 	ownDefinitions(t)
 	prepared, loads, closed := fakeRoles(t)
 	ctx := context.Background()
-	store := Store{Dir: t.TempDir()}
+	store := testStore(t)
 	reg := NewRegistry().Require("transcribe", "translate", "vad").Memory(8)
 
 	p, err := reg.Plan(ctx, store)
@@ -164,7 +171,7 @@ func TestPlanRunOpen(t *testing.T) {
 	}
 
 	// the store says what was prepared, with paths relative to it
-	raw, err := os.ReadFile(filepath.Join(store.Dir, StoreFile))
+	raw, err := os.ReadFile(filepath.Join(store.Models.Root, StoreFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +179,7 @@ func TestPlanRunOpen(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
 	}
-	if r := m.Uses["translate"]; r == nil || r.Model != "plamo-3-translate-0.8b" || r.Transcribe.Encoder != "plamo-3-translate-0.8b/program.mlpackage" {
+	if r := m.Uses["translate"]; r == nil || r.Model != "plamo-3-translate-0.8b" || r.Transcribe.Encoder != "models/plamo-3-translate-0.8b/program.mlpackage" {
 		t.Errorf("store.json: %s", raw)
 	}
 
@@ -251,7 +258,7 @@ func TestBundle(t *testing.T) {
 	ownDefinitions(t)
 	fakeRoles(t)
 	ctx := context.Background()
-	built := Store{Dir: t.TempDir()}
+	built := testStore(t)
 	p, err := NewRegistry().Require("transcribe").Memory(8).Plan(ctx, built)
 	if err != nil {
 		t.Fatal(err)
@@ -260,10 +267,11 @@ func TestBundle(t *testing.T) {
 	if err := p.Run(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	// the prepared store moved elsewhere is a bundle: its paths are relative
-	bundle := filepath.Join(t.TempDir(), "Resources", "models")
-	copyDir(t, built.Dir, bundle)
-	app := Store{Bundles: []string{bundle}}
+	// the prepared cache moved elsewhere is a prepared store to ship: its paths are relative
+	bundle := filepath.Join(t.TempDir(), "Resources", "prepared")
+	copyDir(t, built.Models.Root, bundle)
+	app := testStore(t)
+	app.Prepared = []string{bundle}
 	p2, err := NewRegistry().Require("transcribe").Memory(8).Plan(ctx, app)
 	if err != nil {
 		t.Fatal(err)
@@ -276,9 +284,9 @@ func TestBundle(t *testing.T) {
 	if _, err := rt.get(ctx, "transcribe", RoleTranscribe); err != nil {
 		t.Errorf("load from the bundle: %v", err)
 	}
-	// what is in no bundle cannot be prepared without a directory
-	if _, err := NewRegistry().Require("translate").Plan(ctx, app); !errors.Is(err, ErrNotPrepared) {
-		t.Errorf("translate without a directory: %v, want ErrNotPrepared", err)
+	// what is in none is to prepare in the app's cache
+	if p, err := NewRegistry().Require("translate").Plan(ctx, app); err != nil || p.Ready() {
+		t.Errorf("translate in no prepared store: %v, %+v", err, p)
 	}
 
 	// a bundle for another NPU
@@ -296,7 +304,7 @@ func TestBundle(t *testing.T) {
 	// a file of the bundle missing: not prepared
 	m.Target = ""
 	m.write(bundle)
-	os.Remove(filepath.Join(bundle, "whisper-large-v3-turbo", "program.mlpackage"))
+	os.Remove(filepath.Join(bundle, "models", "whisper-large-v3-turbo", "program.mlpackage"))
 	if _, err := app.find("transcribe", "apple"); !errors.Is(err, ErrNotPrepared) {
 		t.Errorf("bundle with a file missing: %v, want ErrNotPrepared", err)
 	}
@@ -317,10 +325,10 @@ func TestStoreOfAnotherTarget(t *testing.T) {
 	ownDefinitions(t)
 	fakeRoles(t)
 	ctx := context.Background()
-	store := Store{Dir: t.TempDir()}
+	store := testStore(t)
 	// a store prepared before Core AI ran the Neural Engine: its Core ML programs do not run
 	old := &manifest{Format: storeFormat, Target: "apple", Uses: map[string]*record{"speech": {Model: "LFM3-Audio-2B-TTS", Role: RoleSpeech}}}
-	if err := old.write(store.Dir); err != nil {
+	if err := old.write(store.Models.Root); err != nil {
 		t.Fatal(err)
 	}
 	p, err := NewRegistry().Require("transcribe").Plan(ctx, store)
@@ -331,11 +339,39 @@ func TestStoreOfAnotherTarget(t *testing.T) {
 	if err := p.Run(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
-	m, err := readManifest(store.Dir)
+	m, err := readManifest(store.Models.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if m.Target != p.npu.target || len(m.Uses) != 1 || m.Uses["transcribe"] == nil {
 		t.Errorf("store.json of %q with %v, want only transcribe for %q", m.Target, m.Uses, p.npu.target)
+	}
+}
+
+func TestPreparedForAnotherVariant(t *testing.T) {
+	ownDefinitions(t)
+	fakeRoles(t)
+	ctx := context.Background()
+	store := testStore(t)
+	reg := NewRegistry().Require("translate").Memory(8)
+	p, err := reg.Plan(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.NoWarmUp = true
+	if err := p.Run(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	// the programs of another variant of the model (as on a machine of other memory): to prepare
+	m, err := readManifest(store.Models.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Uses["translate"].Run.Context = 1234
+	if err := m.write(store.Models.Root); err != nil {
+		t.Fatal(err)
+	}
+	if p, err := reg.Plan(ctx, store); err != nil || p.Ready() {
+		t.Errorf("a store of another variant: %v, ready %v", err, p != nil && p.Ready())
 	}
 }

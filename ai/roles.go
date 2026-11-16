@@ -57,20 +57,21 @@ func loadSpeech(ctx context.Context, l located, env loadEnv) (io.Closer, error) 
 
 func prepareTranslate(e prepareEnv) (*record, error) {
 	// AMD's NPU runs an export of IRON instead of the programs of the other NPUs
-	iron, err := chat.AMDExport(e.ctx, e.model.Name, e.npu.device, e.root, e.log)
+	iron, err := chat.AMDExport(e.ctx, e.model.Name, e.npu.device, e.log)
 	if err != nil {
 		return nil, err
 	}
 	if iron != "" {
 		return &record{Chat: &chatRecord{IRON: iron, Name: e.model.Name}}, nil
 	}
-	tiers, err := chat.Tiers(chat.DefaultTiers)
+	m := e.model
+	// hwnpu-chat's defaults with the model's definition for the memory it runs as (models.yaml's
+	// context, paged, prefill, format and tier, Model.On), so that the programs are the ones it
+	// converts
+	tiers, err := chat.Tiers(cmp.Or(m.Run.Tier, chat.DefaultTiers))
 	if err != nil {
 		return nil, err
 	}
-	m := e.model
-	// hwnpu-chat's defaults with the model's definition (models.yaml's context, paged, prefill
-	// and format), so that the programs are the ones it converts
 	c, err := chat.Prepare(e.ctx, chat.Setup{Dir: e.dir, Repo: m.Source(), Arch: m.Arch, Name: m.Name,
 		Context: m.Run.Context, Paged: m.Run.Paged, Prefill: m.Run.Prefill, Format: m.Run.Format,
 		Draft: 8, MTP: chat.MTPAuto, Tiers: tiers, Backend: e.npu.device, Log: e.log})

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/shibukawa/hwnpu/internal/cache"
 )
 
 // Option is a setting of Open.
@@ -33,11 +35,15 @@ type Runtime struct {
 	closed bool
 }
 
-// Open opens the models of store. A bundle or a store prepared for another NPU's programs is
-// ErrBundleTarget when one of its uses is asked for.
+// Open opens the models of store. A prepared cache or a store prepared for another NPU's programs
+// is ErrBundleTarget when one of its uses is asked for. It sets the process's layers and reads
+// the definitions as store.Models says (modelstore.Open), though it reads nothing from them.
 func Open(ctx context.Context, store Store, opts ...Option) (*Runtime, error) {
-	if store.Dir == "" && len(store.Bundles) == 0 {
-		return nil, errors.New("ai: a store needs a directory or bundles")
+	openMu.Lock()
+	err := store.open()
+	openMu.Unlock()
+	if err != nil {
+		return nil, err
 	}
 	rt := &Runtime{store: store, npu: hereNPU(ctx), loaded: map[string]io.Closer{}}
 	for _, o := range opts {
@@ -46,10 +52,10 @@ func Open(ctx context.Context, store Store, opts ...Option) (*Runtime, error) {
 	return rt, nil
 }
 
-// Uses are the uses the store has prepared, in its bundles and its directory.
+// Uses are the uses the store has prepared, in its prepared caches and this machine's.
 func (rt *Runtime) Uses() []string {
 	var out []string
-	for _, root := range append(append([]string(nil), rt.store.Bundles...), rt.store.Dir) {
+	for _, root := range append(append([]string(nil), rt.store.Prepared...), rt.store.dir()) {
 		if root == "" {
 			continue
 		}
@@ -83,6 +89,10 @@ func (rt *Runtime) get(ctx context.Context, use string, want Role) (io.Closer, e
 	}
 	if loc.Role != want {
 		return nil, fmt.Errorf("ai: %s is prepared as %s (%s), not %s", use, loc.Role, loc.Model, want)
+	}
+	if !loc.bundle {
+		// used: kept by this machine's cache while the process runs, and last in its LRU
+		cache.Touch(loc.Dir)
 	}
 	l, err := roles[want].load(ctx, loc, loadEnv{cache: rt.store.cacheDir(), device: rt.npu.device, log: rt.o.log})
 	if err != nil {

@@ -8,22 +8,24 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
+	"github.com/shibukawa/hwnpu/modelstore"
 )
 
 // TestOnDevice prepares and runs the uses of HWNPU_AI_USES (comma separated: transcribe,
-// translate, speech) in the store HWNPU_AI_STORE on the machine's NPU: Plan, Run (which
-// downloads and converts what is missing, as hwnpu-chat and hwnpu-audio do), Open, and a call of
+// translate, speech) in the cache HWNPU_AI_STORE (hwnpu's root: what the commands prepared is
+// used) on the machine's NPU: Plan, Run (which fetches and converts what is missing, as
+// hwnpu-chat and hwnpu-audio do, through the sources of the environment), Open, and a call of
 // each. HWNPU_AI_WAV is speech for transcribe (default: the speech speech makes, or skipped).
 // Run it while no other session uses the Neural Engine:
 //
-//	HWNPU_AI_STORE=~/Library/Caches/hwnpu/models HWNPU_AI_USES=translate go test ./ai -run OnDevice -v
+//	HWNPU_AI_STORE=~/Library/Caches/hwnpu HWNPU_AI_USES=translate go test ./ai -run OnDevice -v
 func TestOnDevice(t *testing.T) {
 	dir, uses := os.Getenv("HWNPU_AI_STORE"), os.Getenv("HWNPU_AI_USES")
 	if dir == "" || uses == "" {
 		t.Skip("HWNPU_AI_STORE and HWNPU_AI_USES are not set")
 	}
 	ctx := context.Background()
-	store := Store{Dir: dir}
+	store := Store{Models: modelstore.Options{Root: dir}}
 	names := strings.Split(uses, ",")
 	p, err := NewRegistry().Require(names...).Plan(ctx, store)
 	if err != nil {
