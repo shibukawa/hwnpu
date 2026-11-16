@@ -79,8 +79,11 @@ const mtpSeq = 8
 
 // mtpArch is the architecture of a model's multi-token prediction layer, "" for none: that of
 // the arch with -mtp, when the checkpoint has its tensors. A program of the layer converted
-// before in pdir says it has them; else the checkpoint is downloaded to look (tables.go).
-func mtpArch(config string, a *llm.Arch, pdir string, checkpoint func() (string, error)) (string, error) {
+// before in pdir says it has them, else the index of a checkpoint in several files (index: its
+// path, "" for none) names them; else the checkpoint is downloaded to look (tables.go). The
+// index spares a machine that takes what another converted from the sources the checkpoint's
+// download (1.75 GB for Qwen3.5-0.8B, design.md 16.231).
+func mtpArch(config string, a *llm.Arch, pdir string, index func() string, checkpoint func() (string, error)) (string, error) {
 	name := a.Name + "-mtp"
 	ma, mm, err := llm.LoadConfig(config, name)
 	if err != nil {
@@ -88,6 +91,16 @@ func mtpArch(config string, a *llm.Arch, pdir string, checkpoint func() (string,
 	}
 	if done, _ := filepath.Glob(filepath.Join(pdir, ma.Name+"*-last*.done")); len(done) > 0 {
 		return name, nil
+	}
+	if p := index(); p != "" {
+		if names, err := indexNames(p); err == nil {
+			for t := range mm.Tensors() {
+				if strings.HasPrefix(t, "mtp.") && strings.HasSuffix(t, "norm.weight") && !names[t] {
+					return "", nil
+				}
+			}
+			return name, nil
+		}
 	}
 	weights, err := checkpoint()
 	if err != nil {
@@ -106,6 +119,28 @@ func mtpArch(config string, a *llm.Arch, pdir string, checkpoint func() (string,
 		}
 	}
 	return name, nil
+}
+
+// indexNames are the tensors the index of a checkpoint in several files (its weight_map) names.
+func indexNames(index string) (map[string]bool, error) {
+	raw, err := os.ReadFile(index)
+	if err != nil {
+		return nil, err
+	}
+	var idx struct {
+		WeightMap map[string]string `json:"weight_map"`
+	}
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return nil, err
+	}
+	if len(idx.WeightMap) == 0 {
+		return nil, fmt.Errorf("%s has no weight_map", index)
+	}
+	names := map[string]bool{}
+	for n := range idx.WeightMap {
+		names[n] = true
+	}
+	return names, nil
 }
 
 // compileCacheBytes is about what the Neural Engine's own cache of compiled programs holds
@@ -381,7 +416,14 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	var mtp string
 	params := map[string]string{}
 	if s.Draft > 1 && s.MTP != MTPOff && backend != llm.BackendIntel {
-		if mtp, err = mtpArch(c.ModelConfig, a, pdir, checkpoint); err != nil {
+		index := func() string {
+			p, err := fetch(ctx, s.Repo, "model.safetensors.index.json", s.Log)
+			if err != nil {
+				return ""
+			}
+			return p
+		}
+		if mtp, err = mtpArch(c.ModelConfig, a, pdir, index, checkpoint); err != nil {
 			return Config{}, err
 		}
 		if mtp != "" {
@@ -1165,7 +1207,13 @@ func convertShared(ctx context.Context, config, weights, base string, names []st
 	if err := cache.WriteDone(done, paths[0]); err != nil {
 		return nil, err
 	}
-	shareExport(ctx, export, p.paged > 0)
+	// paged when any program is: the first (the shortest cache) may be whole while the longer
+	// ones are split at their attention, and AddSmaller changes their manifests after this
+	paged := false
+	for _, p := range ps {
+		paged = paged || p.paged > 0
+	}
+	shareExport(ctx, export, paged)
 	return paths, nil
 }
 

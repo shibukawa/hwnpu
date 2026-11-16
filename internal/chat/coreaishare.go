@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
@@ -81,10 +83,8 @@ func WithModel(ctx context.Context, m Model) context.Context {
 // and the lowering's version. nil when the model is not known, or neither the files' digests nor
 // their commit are.
 func coreAIRecipe(ctx context.Context, export string) (Model, map[string]string) {
-	name := filepath.Base(export)
-	if parent := filepath.Dir(export); filepath.Ext(parent) == ".coreai" {
-		name = filepath.Base(parent) + "/" + name
-	} else if filepath.Ext(export) != ".coreai" {
+	name, ok := coreAIExportName(export)
+	if !ok {
 		return Model{}, nil
 	}
 	m, r := modelRecipe(ctx, export)
@@ -93,6 +93,103 @@ func coreAIRecipe(ctx context.Context, export string) (Model, map[string]string)
 	}
 	r["kind"], r["target"], r["export"], r["lowering"] = CoreAIKind, CoreAITarget, name, fmt.Sprint(ailower.FormatVersion)
 	return m, r
+}
+
+// coreAIExportName is the name of the Core AI export in the shared layers: its directory's, with
+// the directory it is in when that is an export too (a size of depth's).
+func coreAIExportName(export string) (string, bool) {
+	name := filepath.Base(export)
+	if parent := filepath.Dir(export); filepath.Ext(parent) == ".coreai" {
+		return filepath.Base(parent) + "/" + name, true
+	}
+	return name, filepath.Ext(export) == ".coreai"
+}
+
+// PrebuiltKind is the kind of entry of the prebuilt programs of a Core AI export for an
+// architecture of the Neural Engine, packed (coreai.PackedRoot): each X.ARCH.aimodelc of
+// coreai-build without its weights, which the device makes again from the export's bytecode.
+// They are in converted/MODEL/coreai-ARCH/EXPORT/VERSION as one file (coreai.BundleFile;
+// docs/cache-sharing.md 7.9).
+const PrebuiltKind = "coreai-prebuilt"
+
+// prebuiltFormat is the version of what coreai.Pack writes, part of the key.
+const prebuiltFormat = 2
+
+func init() { coreai.FetchPrebuilt = FetchPrebuilt }
+
+// prebuiltPlace is the place of the packed prebuilt programs of the export for arch. Its key is
+// what they are compiled from, the programs' bytecode (coreai.ProgramsDigest), not what the
+// export was converted from: a machine whose export is the same bytes finds them whatever
+// made it. The model is the one of the export's entry.json (from the shared layers, or made
+// here and put in them), else the one whose directory holds it.
+func prebuiltPlace(export, arch string) (place, bool) {
+	name, ok := coreAIExportName(export)
+	if !ok {
+		return place{}, false
+	}
+	digest := coreai.ProgramsDigest(export)
+	if digest == "" {
+		return place{}, false
+	}
+	var m Model
+	if e, err := shared.ReadEntry(export); err == nil && e.Model != "" {
+		m = modelNamed(e.Model)
+	} else if m, _, ok = modelOfDir(export); !ok {
+		return place{}, false
+	}
+	r := map[string]string{"kind": PrebuiltKind, "export": name, "arch": arch, "programs": digest, "format": fmt.Sprint(prebuiltFormat)}
+	return placeOf(PrebuiltKind, m, CoreAITarget+"-"+arch, name, r), true
+}
+
+// FetchPrebuilt makes the packed prebuilt programs of the export for arch (coreai.PackedRoot)
+// from the first source that has them (coreai.FetchPrebuilt: the backend asks when it would
+// compile a program of the export).
+func FetchPrebuilt(ctx context.Context, export, arch string) {
+	p, ok := prebuiltPlace(export, arch)
+	if !ok {
+		return
+	}
+	root := coreai.PackedRoot(export, arch)
+	dir := bundleDir(root)
+	if e, err := shared.ReadEntry(dir); err == nil && p.takes(e) {
+		if _, err := os.Stat(root); err == nil {
+			return
+		}
+	} else if !fetchConverted(ctx, p, dir, labelLog{sharedLog, filepath.Base(dir), filepath.Base(export) + " (prebuilt for " + arch + ")"}) {
+		return
+	}
+	if err := coreai.Unbundle(filepath.Join(dir, coreai.BundleFile), root); err != nil {
+		fmt.Fprintf(sharedLog, "%s (prebuilt for %s): %v; compiled on the device\n", filepath.Base(export), arch, err)
+	}
+}
+
+// bundleDir is the entry of the shared layers that holds the bundle of the packed prebuilt
+// programs at root, beside them (kept: the queue may put it in a source before the one it
+// came from).
+func bundleDir(root string) string { return root + ".shared" }
+
+// PutPrebuilt puts the packed prebuilt programs of the export for arch (coreai.PackedRoot, made
+// here by hwnpu-dev prebuild) in the sources that are written back to, in the background, as
+// one file (coreai.Bundle).
+func PutPrebuilt(export, arch string) error {
+	p, ok := prebuiltPlace(export, arch)
+	if !ok {
+		return fmt.Errorf("%s: not a Core AI export of a model of the definitions", export)
+	}
+	if len(shared.Writebacks()) == 0 {
+		return errors.New("no source is written back to (HWNPU_MODEL_SOURCE...?writeback=true)")
+	}
+	root := coreai.PackedRoot(export, arch)
+	dir := bundleDir(root)
+	os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := coreai.Bundle(root, filepath.Join(dir, coreai.BundleFile)); err != nil {
+		return err
+	}
+	putConverted(p, dir, labelLog{sharedLog, filepath.Base(dir), filepath.Base(export) + " (prebuilt for " + arch + ")"})
+	return nil
 }
 
 // modelRecipe is the model's part of a key of the shared layers for what is made from it in

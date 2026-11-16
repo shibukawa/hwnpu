@@ -321,6 +321,18 @@ func tlsHandshakeTimeout(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "TLS handshake timeout")
 }
 
+// call is do for an answer whose body is not wanted: read to its end and closed, so that its
+// connection is used again (a connection left open is not, and each new one asks for the host's
+// address again: 5 seconds a request for a NAS's .local name, design.md 16.231).
+func (w *WebDAV) call(ctx context.Context, method, u string, hdr http.Header, body func() (io.Reader, int64), ok ...int) error {
+	resp, err := w.do(ctx, method, u, hdr, body, ok...)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	return resp.Body.Close()
+}
+
 func davTransient(err error) bool {
 	var ue *unreachableError
 	if errors.As(err, &ue) {
@@ -501,7 +513,7 @@ func (w *WebDAV) mkdirsLocked(ctx context.Context, dir string) error {
 	}
 	// 201 made; 405 (Method Not Allowed) is there already (or, on a UGREEN NAS, its parent is
 	// not: the parents are made first); some servers answer 301 or 200 then
-	_, err := w.do(ctx, "MKCOL", u, nil, nil, http.StatusCreated, http.StatusMethodNotAllowed, http.StatusOK, http.StatusMovedPermanently, http.StatusNoContent)
+	err := w.call(ctx, "MKCOL", u, nil, nil, http.StatusCreated, http.StatusMethodNotAllowed, http.StatusOK, http.StatusMovedPermanently, http.StatusNoContent)
 	if err != nil {
 		return err
 	}
@@ -533,21 +545,21 @@ func (w *WebDAV) put(ctx context.Context, key string, body func() (io.Reader, in
 	if err := w.mkdirs(ctx, dir); err != nil {
 		return err
 	}
-	_, err := w.do(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
+	err := w.call(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
 	if davStatus(err, http.StatusConflict) || davStatus(err, http.StatusNotFound) || davStatus(err, http.StatusMethodNotAllowed) {
 		w.mu.Lock()
 		delete(w.made, dir)
 		w.mu.Unlock()
 		if err = w.mkdirs(ctx, dir); err == nil {
-			_, err = w.do(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
+			err = w.call(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
 		}
 	}
 	if err != nil {
 		return err
 	}
 	hdr := http.Header{"Destination": {w.url(key)}, "Overwrite": {"T"}}
-	if _, err := w.do(ctx, "MOVE", w.url(tmp), hdr, nil, http.StatusCreated, http.StatusNoContent, http.StatusOK); err != nil {
-		w.do(context.WithoutCancel(ctx), http.MethodDelete, w.url(tmp), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusNotFound)
+	if err := w.call(ctx, "MOVE", w.url(tmp), hdr, nil, http.StatusCreated, http.StatusNoContent, http.StatusOK); err != nil {
+		w.call(context.WithoutCancel(ctx), http.MethodDelete, w.url(tmp), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusNotFound)
 		return err
 	}
 	return nil
@@ -718,8 +730,7 @@ func (w *WebDAV) Delete(ctx context.Context, key string) error {
 	if err := w.checkKey(key); err != nil {
 		return err
 	}
-	_, err := w.do(ctx, http.MethodDelete, w.url(key), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusNotFound)
-	return err
+	return w.call(ctx, http.MethodDelete, w.url(key), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusNotFound)
 }
 
 // removeEmpty removes the folder dir if no file is under it (empty folders may be: a DELETE of

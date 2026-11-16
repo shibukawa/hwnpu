@@ -11,6 +11,7 @@
 //	hwnpu-dev powerbench -decode 8,16
 //	hwnpu-dev report -o report.md
 //	hwnpu-dev cache layers                   # the cache's root and the shared layers
+//	hwnpu-dev prebuild EXPORT                # compile Core AI programs ahead of time (macOS)
 //	hwnpu-dev xclbin ...                     # xclbinutil's arguments, as aiecc passes them
 //	hwnpu-dev check -h                       # each tool's flags
 //
@@ -37,6 +38,7 @@ import (
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/info"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/irdiff"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/powerbench"
+	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/prebuild"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/probe"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/report"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/xclbin"
@@ -56,6 +58,7 @@ type cli struct {
 	Info       tool         `cmd:"" passthrough:"all" help:"List the NPUs hwnpu can use, and where a model's operations would run (was hwnpuinfo)."`
 	Probe      tool         `cmd:"" passthrough:"all" help:"Measure this machine's NPU with generated LLM-shaped models: speed, size limit, KV cache (was npuprobe)."`
 	Powerbench tool         `cmd:"" passthrough:"all" help:"Measure the power Core ML models draw with macOS powermetrics (was powerbench)."`
+	Prebuild   tool         `cmd:"" passthrough:"all" help:"Compile Core AI programs ahead of time with coreai-build, X.ARCH.aimodelc beside each X.aimodel of an export (macOS, Xcode 27's Metal Toolchain)."`
 	Report     tool         `cmd:"" passthrough:"all" help:"Check every NPU with bundled test models and print a report for an issue (was report)."`
 	Xclbin     tool         `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
 	Cache      cachecmd.Cmd `cmd:"" help:"The cache's root and the shared layers (docs/cache-sharing.md): show them, list and put exports, check entries, finish the background work."`
@@ -63,7 +66,7 @@ type cli struct {
 
 var mains = map[string]func(){
 	"check": check.Main, "convert": convert.Main, "generate": generate.Main, "formats": formats.Main,
-	"info": info.Main, "irdiff": irdiff.Main, "probe": probe.Main, "powerbench": powerbench.Main, "report": report.Main,
+	"info": info.Main, "irdiff": irdiff.Main, "probe": probe.Main, "powerbench": powerbench.Main, "prebuild": prebuild.Main, "report": report.Main,
 	"xclbin": xclbin.Main,
 }
 

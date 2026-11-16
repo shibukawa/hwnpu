@@ -7,6 +7,7 @@ require (
 	github.com/ebitengine/oto/v3 v3.5.1
 	github.com/ebitengine/purego v0.11.2
 	github.com/goccy/go-yaml v1.19.2
+	github.com/klauspost/compress v1.20.3
 	github.com/shibukawa/configdir v1.1.0
 	github.com/shibukawa/tinygodriver v1.3.10
 	golang.org/x/net v0.61.0

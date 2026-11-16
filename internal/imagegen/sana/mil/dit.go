@@ -91,6 +91,13 @@ func Blocks(c Dit, first, count int) *Part {
 			v := g.Reshape(g.Slice(kv, 1, j+1, j+2), 1, TextRows, HD)
 			x = block(g, c, i, x, t6, k, v, cbias)
 		}
+		if c.CoreAI {
+			// times 1, exact: without it coreai-build fuses the last block's conv_point, its
+			// modulation and the residual into the output and names two constants of the fusion
+			// after the weight ("redefinition of symbol"), and the program is left off the Neural
+			// Engine (design.md 16.233)
+			x = g.Scale(x, 1)
+		}
 		g.Output(x)
 	})
 }

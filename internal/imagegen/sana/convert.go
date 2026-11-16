@@ -25,12 +25,14 @@ import (
 // cross-attention's keys and values once a prompt (mil.Caption gives them, mil.Blocks takes
 // them), Core AI's exports of several sizes (Sizes), the VAE's channel repeat as a convolution;
 // 6: Core AI's Gemma 2 programs hold the instruction's first rows as keys and values and have
-// functions for the rows after them (mil.TextFrom, ProgramManifest.TextFrom).
-const ExportVersion = 6
+// functions for the rows after them (mil.TextFrom, ProgramManifest.TextFrom); 7: Core AI's DiT
+// blocks end in a multiplication by 1 and its VAE takes a ResBlock a stage and the norm's max
+// with the channels last, so that coreai-build compiles them (design.md 16.233).
+const ExportVersion = 7
 
 // DitVersion is the oldest ExportVersion whose programs but Gemma 2's are those of this one: an
 // export of it gives them to a new export (Prepare), which then converts Gemma 2 alone.
-const DitVersion = 5
+const DitVersion = 7
 
 // TextFunction is the function of a Core AI Gemma 2 program that runs rows rows after the held
 // ones (mil.TextFrom); WholeFunction the one that runs every row from the first (mil.Text).
@@ -184,6 +186,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		if dcs[i], err = mil.ReadDit(root, sz[0], sz[1]); err != nil {
 			return err
 		}
+		dcs[i].CoreAI = o.Backend == llm.BackendCoreAI
 	}
 	dc, err := mil.ReadDit(root, o.Width, o.Height)
 	if err != nil {
@@ -237,7 +240,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		return err
 	}
 	groups := mil.TextGroups(gc.Layers, o.TextGroup)
-	stages := mil.VaeStages(o.Width, o.Height)
+	stages := mil.VaeStages(o.Width, o.Height, o.Backend == llm.BackendCoreAI)
 	// the programs are written side by side once all are listed (jobs.Run)
 	jobs := console.NewJobs(log)
 	ext := ProgramExt(o.Backend)
@@ -377,7 +380,7 @@ func Convert(root, text, out string, o ConvertOptions, log io.Writer) error {
 		sized[i].Final = names[i]
 	}
 	for s := range stages {
-		names, err := writeSized("vae", func(c mil.Dit) *mil.Part { return mil.Vae(c.Width, c.Height, s, vcfg.Scaling) }, "fp16")
+		names, err := writeSized("vae", func(c mil.Dit) *mil.Part { return mil.Vae(c.Width, c.Height, s, vcfg.Scaling, c.CoreAI) }, "fp16")
 		if err != nil {
 			return err
 		}

@@ -14,13 +14,14 @@ import (
 const (
 	KindOriginal  = "original"  // original/OWNER/NAME: a repository's files (downloaded again)
 	KindConverted = "converted" // models/NAME (programs), converted/MODEL/TARGET/EXPORT/vN (made or downloaded again)
+	KindPrebuilt  = "prebuilt"  // models/NAME/EXPORT.prebuilt: Core AI's prebuilt programs of an export (downloaded again)
 	KindExport    = "export"    // entries/TARGET/NAME: an export for AMD's NPU
 	KindKernels   = "kernels"   // iron/KEY: a kernel IRON compiled
 	KindCompiled  = "compiled"  // KEY.mlmodelc, KEY.blob...: a program compiled for this machine
 )
 
 // Kinds are the kinds of units, in the order they are shown.
-var Kinds = []string{KindOriginal, KindConverted, KindExport, KindKernels, KindCompiled}
+var Kinds = []string{KindOriginal, KindConverted, KindPrebuilt, KindExport, KindKernels, KindCompiled}
 
 // Unit is a part of the cache that is removed whole.
 type Unit struct {
@@ -105,6 +106,13 @@ func Scan() (Usage, error) {
 				kind = KindKernels
 			}
 			for _, d := range dirs(p, 1) {
+				if kind == KindConverted {
+					// an export's prebuilt programs are a unit of their own (the model's count
+					// leaves them out: tree)
+					for _, pb := range prebuiltDirs(d) {
+						add(Unit{Kind: KindPrebuilt, Path: pb})
+					}
+				}
 				add(Unit{Kind: kind, Path: d})
 			}
 			continue
@@ -171,6 +179,30 @@ func dirs(dir string, depth int) []string {
 	return out
 }
 
+// PrebuiltSuffix ends the folder of an export's prebuilt programs (coreai.PackedSuffix after the
+// export's NAME.coreai).
+const PrebuiltSuffix = ".coreai.prebuilt"
+
+// prebuiltDirs are the folders of exports' prebuilt programs in the model's folder dir: beside
+// its exports, or beside an export in one (a size of depth's).
+func prebuiltDirs(dir string) []string {
+	var out []string
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || p == dir {
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), PrebuiltSuffix) {
+			out = append(out, p)
+			return filepath.SkipDir
+		}
+		if rel, _ := filepath.Rel(dir, p); strings.Count(rel, string(filepath.Separator)) >= 2 {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return out
+}
+
 // entryDirs are the folders under dir with an entry.json.
 func entryDirs(dir string) []string {
 	var out []string
@@ -196,6 +228,9 @@ func tree(p string, seen map[fileKey]bool) (int64, int, time.Time) {
 	filepath.WalkDir(p, func(q string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
+		}
+		if d.IsDir() && q != p && strings.HasSuffix(d.Name(), PrebuiltSuffix) {
+			return filepath.SkipDir // a unit of its own (KindPrebuilt)
 		}
 		fi, err := d.Info()
 		if err != nil {
@@ -246,6 +281,12 @@ func UnitOf(path string) (string, bool) {
 		n = 3
 	case "models", "iron":
 		n = 2
+		for i := 2; i < len(parts) && i <= 4; i++ {
+			if parts[0] == "models" && strings.HasSuffix(parts[i], PrebuiltSuffix) {
+				n = i + 1 // an export's prebuilt programs
+				break
+			}
+		}
 	case "converted":
 		n = 5 // converted/MODEL/TARGET/EXPORT/vN
 	default:

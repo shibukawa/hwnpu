@@ -1,6 +1,7 @@
 package sana
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -74,14 +75,17 @@ func TestLinkExports(t *testing.T) {
 	dir := t.TempDir()
 	o := ConvertOptions{Width: 512, Height: 512, Backend: llm.BackendCoreAI}
 	o.defaults("Sana-600M")
-	old := filepath.Join(dir, exportNameAt("Sana-600M", o, DitVersion))
-	if want := filepath.Join(dir, "sana-600m-512+1024-int8-int8-g4-v5.coreai"); old != want {
+	// an export of the layout before this one; when it holds other DiT programs (DitVersion is
+	// this layout), ditExport takes none, and linkDit is checked on it alone
+	older := DitVersion < ExportVersion
+	old := filepath.Join(dir, exportNameAt("Sana-600M", o, ExportVersion-1))
+	if want := filepath.Join(dir, fmt.Sprintf("sana-600m-512+1024-int8-int8-g4-v%d.coreai", ExportVersion-1)); old != want {
 		t.Fatalf("the older export is %s, want %s", old, want)
 	}
 	if got := ditExport(dir, "Sana-600M", o); got != "" {
 		t.Errorf("an older export found in an empty folder: %s", got)
 	}
-	m := &ProgramManifest{Backend: llm.BackendCoreAI, Version: DitVersion, Formats: map[string]string{"text": "int8", "dit": "int8"},
+	m := &ProgramManifest{Backend: llm.BackendCoreAI, Version: ExportVersion - 1, Formats: map[string]string{"text": "int8", "dit": "int8"},
 		TextParts: []string{"text_0.aimodel"}, Caption: "caption.aimodel", Time: TimeFile,
 		Blocks: []string{"dit_blocks_0.aimodel#s512x512"}, Final: "dit_final.aimodel#s512x512", Vae: []string{"vae_s0.aimodel#s512x512"},
 		Sizes: []SizeParts{
@@ -89,8 +93,8 @@ func TestLinkExports(t *testing.T) {
 			{Width: 1024, Height: 1024, Blocks: []string{"dit_blocks_0.aimodel#s1024x1024"}, Final: "dit_final.aimodel#s1024x1024", Vae: []string{"vae_s0.aimodel#s1024x1024"}},
 		}}
 	writeExport(t, old, m, "text_0.aimodel", "caption.aimodel", TimeFile, "dit_blocks_0.aimodel", "dit_final.aimodel", "vae_s0.aimodel", "text/tokenizer.json")
-	if got := ditExport(dir, "Sana-600M", o); got != old {
-		t.Fatalf("the older export: %q, want %s", got, old)
+	if got := ditExport(dir, "Sana-600M", o); older && got != old || !older && got != "" {
+		t.Fatalf("the older export: %q (DitVersion %d, ExportVersion %d)", got, DitVersion, ExportVersion)
 	}
 	// not another Sana's, not another DiT format's, not one that is not whole
 	if got := ditExport(dir, "SANA1.5-1.6B", o); got != "" {
@@ -121,7 +125,7 @@ func TestLinkExports(t *testing.T) {
 		}
 	}
 	// Gemma 2's programs of an export of this layout, whose functions name each program
-	cur := filepath.Join(dir, "sana1.5-1.6b-512+1024-int8-lut8-g4-v6.coreai")
+	cur := filepath.Join(dir, fmt.Sprintf("sana1.5-1.6b-512+1024-int8-lut8-g4-v%d.coreai", ExportVersion))
 	writeExport(t, cur, &ProgramManifest{Backend: llm.BackendCoreAI, Version: ExportVersion, Formats: map[string]string{"text": "int8", "dit": "lut8"},
 		TextParts: []string{"text_0.aimodel#" + WholeFunction}, TextFrom: []TextFunc{{Rows: 64, Parts: []string{"text_0.aimodel#" + TextFunction(64)}}}},
 		"text_0.aimodel", "text/tokenizer.json", HeldFile, HeldOutFile)

@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,13 +28,14 @@ type davServer struct {
 	root     string
 	requests atomic.Int64
 	ranges   atomic.Int64
+	conns    atomic.Int64 // the connections made to it
 }
 
 func newDAV(t *testing.T) *davServer {
 	t.Helper()
 	d := &davServer{root: t.TempDir()}
 	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(d.root), LockSystem: webdav.NewMemLS()}
-	d.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	d.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.requests.Add(1)
 		if u, p, ok := r.BasicAuth(); !ok || u != "u" || p != "p" {
 			w.Header().Set("WWW-Authenticate", `Basic realm="dav"`)
@@ -48,6 +51,12 @@ func newDAV(t *testing.T) *davServer {
 		}
 		h.ServeHTTP(w, r)
 	}))
+	d.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			d.conns.Add(1)
+		}
+	}
+	d.Start()
 	t.Cleanup(d.Close)
 	return d
 }
@@ -293,5 +302,28 @@ func TestWebDAVDown(t *testing.T) {
 	}
 	if d := time.Since(start); d > 2*time.Second {
 		t.Errorf("took %v: the server off was tried again", d)
+	}
+}
+
+// TestWebDAVConnections writes files in new folders (MKCOL, PUT and MOVE, whose answers are not
+// read) and reads them back over one connection: each new one asked for a NAS's .local address
+// again, 5 seconds a request (design.md 16.231).
+func TestWebDAVConnections(t *testing.T) {
+	ctx := context.Background()
+	d := newDAV(t)
+	st := openDAV(t, d)
+	for i := range 20 {
+		if err := st.Write(ctx, fmt.Sprintf("converted/m/t/e%d/v0/f", i), []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := st.Has(ctx, fmt.Sprintf("converted/m/t/e%d/v0/f", i)); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+	}
+	if err := st.Delete(ctx, "converted/m/t/e0/v0/f"); err != nil {
+		t.Fatal(err)
+	}
+	if n := d.conns.Load(); n > 1 {
+		t.Errorf("%d connections for %d requests", n, d.requests.Load())
 	}
 }
