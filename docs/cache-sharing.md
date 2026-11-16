@@ -181,7 +181,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 
 ### 7.1 書き戻し
 
-- 手元で揃ってから、裏で置く (落としながら 2 か所に書かない)。終わらずにプロセスが終われば `work/queue` に残して次の起動で続ける。entry.json と lock が最後なので、途中で切れても壊れたものは見えない
+- 手元で揃ってから、裏で置く (落としながら 2 か所に書かない)。コマンドは終わる前に、キューの仕事 (このプロセスのものと、前のプロセスが残したもの) が済むまで待つ (`store.Wait`、`hwnpu-dev cache flush` と同じ。2026-11-16)。書き戻すのは自分で変換する人だけで、配られたものを読むだけの機械はキューが空なのですぐ終わる。待つ間の Ctrl-C と、プロセスが落ちたときは `work/queue` に残し、次の起動で続ける。entry.json と lock が最後なので、途中で切れても壊れたものは見えない
 - 後ろの取得元で当たったものは、それより前の書き戻す取得元にも置く (前が速い NAS、後ろが遠い S3 のとき)
 - 置けなかったとき (書けない、容量がない) は `work/queue.log` に残して続ける。書き戻しの失敗で実行を止めない
 - lock は読んで足して書く。2 台が同時に同じリポジトリを足すと片方の名指しが消えることがあるが、消えたファイルは次に読む機械が HF から取って足し直す
@@ -274,7 +274,9 @@ hwnpu/
 - 認証: Basic。利用者とパスワードは URL のもの、なければ `~/.netrc` (`NETRC`、Windows は `_netrc`) のそのホストの `machine`、なければ `HWNPU_WEBDAV_USER` と `HWNPU_WEBDAV_PASSWORD`。401 のエラーにはその並びを書く
 - 再試行: 5xx (501 を除く)、429、接続の切断は S3 と同じく 3 回まで
 - 確かめたこと: `TestWebDAV` (3 MB の読み書き、途中からの続き、空のファイル、フォルダは有無で偽、一覧、削除、鍵の外れ)、`TestWebDAVSource` (エントリと lock を書き戻し、同じサーバーを読むだけの取得元として読む、読むだけへの書き込みはエラー)、`TestWebDAVSignIn` (netrc、パスワードの違い、URL のパスワードを表示しない)。Synology の実機は未確認
-- 自己署名の証明書 (NAS のもの。ホスト名を持たないものは、OS の信頼に足しても Go の検証が通らない): URL に `?tls_sha256=<証明書の SHA-256>` を足すと、その証明書だけを信じる (ホスト名は見ない)。値は `openssl s_client -connect HOST:PORT </dev/null | openssl x509 -noout -fingerprint -sha256`
+- 自己署名の証明書 (NAS のもの。ホスト名を持たないものは、OS の信頼に足しても Go の検証が通らない): URL に `?tls_sha256=<証明書の SHA-256>` を足すと、その証明書だけを信じる (ホスト名は見ない)。値は `openssl s_client -connect HOST:PORT </dev/null | openssl x509 -noout -fingerprint -sha256`。手早く試すなら `?insecure=true` (証明書もホスト名も見ない。同じ LAN の NAS でだけ)
+- UGREEN の NAS で書き戻しと読み戻し (2026-11-16): `?writeback=true&insecure=true` で Qwen3-0.6B を空の根から。NAS になかった元のファイル (config、tokenizer、model.safetensors 1.5 GB、lock) と、この Mac で作った `converted/Qwen3-0.6B/coreai/...coreai` (0.62 GB) と `any/tables.safetensors` (0.31 GB) が置かれた (`hwnpu-dev cache flush` で 71 秒)。次に空の根、`HWNPU_MODEL_HUGGING_FACE=false` で、変換済みを NAS から 18 秒で取り、チェックポイントを落とさずに答えた。macOS で Go の `.local` の名前引きは 1 回 5 秒かかるので、引いた番地をプロセスの間覚える。IP (`https://192.168.1.127:5006/llm`) でもよい
+- 止まった NAS (2026-11-16): つながらない (名前が引けない、接続を断られる、5 秒で答えない、証明書が信じられない) 取得元は、そのプロセスの間は設定がなかったものとして扱う。最初の 1 回で標準エラーに 1 行出し、その後の要求はすぐ失敗して次の取得元へ。再試行は時間切れ (mDNS の `.local` の名前引きはときどき時間切れになる) のときだけ 3 回まで、断られたときと名前がないときはすぐ (前は 1 ファイルごとに接続の待ち 30 秒 × 再試行が入れ子で重なった)。書き戻しはキューに残り、次の起動で続く
 - UGREEN の NAS (2026-11-15): フォルダのない所への PUT と、親のない MKCOL が 409 でなく 405 を返す。PUT の前にフォルダを (プロセスで一度) 作り、405 でも作り直す
 - `hwnpu-dev cache import DIR...`: 手で置いたフォルダ (`~/models`) を書き戻す取得元に置く。チェックポイントは Hugging Face のツリー (`/api/models/REPO/tree/COMMIT`) と照らし、大きさと中身 (LFS は sha256、ほかは git の blob の sha1) の同じファイルだけを `original/` に。書き出し (`NAME.amd-npu2*`) は `converted/`。名前が定義にないフォルダは `DIR=OWNER/NAME`
 

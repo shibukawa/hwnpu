@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"golang.org/x/net/webdav"
@@ -223,5 +226,72 @@ func TestWebDAVSignIn(t *testing.T) {
 	}
 	if l, p := parseNetrc("default login a password b", "h", ""); l != "a" || p != "b" {
 		t.Errorf("netrc default: %s %s", l, p)
+	}
+}
+
+// TestWebDAVSelfSigned reads over https from a server whose certificate no authority signed: an
+// error by default, read with ?tls_sha256= of its certificate or with ?insecure=true.
+func TestWebDAVSelfSigned(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "hwnpu", "a.txt"), "aaa")
+	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(root), LockSystem: webdav.NewMemLS()}
+	srv := httptest.NewTLSServer(h)
+	defer srv.Close()
+	sum := sha256.Sum256(srv.Certificate().Raw)
+	for _, c := range []struct {
+		query string
+		ok    bool
+	}{
+		{"", false},
+		{"?insecure=false", false},
+		{"?tls_sha256=" + hex.EncodeToString(sum[:]), true},
+		{"?tls_sha256=" + strings.Repeat("00", sha256.Size), false},
+		{"?insecure=true", true},
+		{"?insecure=true&writeback=true", true},
+	} {
+		s, err := ParseSource("nas", srv.URL+"/dav/hwnpu"+c.query)
+		if err != nil {
+			t.Fatalf("%q: %v", c.query, err)
+		}
+		b, err := s.Store.Read(ctx, "a.txt")
+		if ok := err == nil && string(b) == "aaa"; ok != c.ok {
+			t.Errorf("%q: read %q %v", c.query, b, err)
+		}
+	}
+	if _, err := ParseSource("nas", srv.URL+"/dav?insecure=maybe"); err == nil {
+		t.Error("insecure=maybe: no error")
+	}
+}
+
+// TestWebDAVDown reads past a server that is off as if it were not set: the source after it
+// answers, at once, and nothing more is asked of the one off.
+func TestWebDAVDown(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close() // its port refuses connections now
+	nas, err := ParseSource("nas", dead.URL+"/dav/hwnpu?writeback=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := Source{Store: Dir{Name: "folder", Root: t.TempDir()}, Writeback: true}
+	c := strings.Repeat("c", 40)
+	src := filepath.Join(t.TempDir(), "config.json")
+	write(t, src, "{}")
+	if err := PutOriginal(ctx, folder, "lab/m", c, "config.json", src, ""); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	clearLocks()
+	i, _, err := FetchOriginal(ctx, []Source{nas, folder}, "lab/m", c, "config.json", "", filepath.Join(t.TempDir(), "c.json"), nil)
+	if err != nil || i != 1 {
+		t.Fatalf("FetchOriginal: %d %v", i, err)
+	}
+	if err := PutOriginal(ctx, nas, "lab/m", c, "config.json", src, ""); !unreachable(err) {
+		t.Errorf("a write to the server off: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("took %v: the server off was tried again", d)
 	}
 }

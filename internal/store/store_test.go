@@ -310,6 +310,33 @@ func TestQueue(t *testing.T) {
 	}
 }
 
+// TestWait does at the end of a command the work a process before left in the queue, and says
+// nothing when there is none.
+func TestWait(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	var out strings.Builder
+	Wait(&out)
+	if out.Len() != 0 {
+		t.Errorf("an empty queue: %q", out.String())
+	}
+	exp := filepath.Join(t.TempDir(), "e")
+	write(t, filepath.Join(exp, "a"), "a")
+	describeAt(t, exp, "converted/m/t/e/v0-12345678", map[string]string{"x": "1"})
+	s := Source{Store: Dir{Name: "share", Root: t.TempDir()}, Writeback: true}
+	SetSources([]Source{s}, true)
+	t.Cleanup(func() { SetSources(nil, true) })
+	j := job{Op: "entry", Source: s.String(), Dir: exp} // left by a process before, not started here
+	b, _ := json.Marshal(j)
+	write(t, filepath.Join(queueDir(), j.id()+".json"), string(b))
+	Wait(&out)
+	if es, _ := ListEntries(context.Background(), s); len(es) != 1 {
+		t.Errorf("entries %v", es)
+	}
+	if !strings.Contains(out.String(), "writing 1 back") {
+		t.Errorf("said %q", out.String())
+	}
+}
+
 func TestGC(t *testing.T) {
 	t.Setenv(cache.RootEnv, t.TempDir())
 	ctx := context.Background()

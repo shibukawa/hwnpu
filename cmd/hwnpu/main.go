@@ -54,11 +54,13 @@ package main
 
 import (
 	"context"
+	"os"
 
 	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 type cli struct {
@@ -78,5 +80,7 @@ func main() {
 		kong.UsageOnError(),
 		kong.Vars{"kinds": kindHelp, "max_size_env": cache.MaxSizeEnv},
 		kong.BindTo(ctx, (*context.Context)(nil)))
-	k.FatalIfErrorf(console.EndInterrupted(k.Run()))
+	err := console.EndInterrupted(k.Run())
+	shared.Wait(console.Log(os.Stderr)) // what was made here goes in the sources written back to
+	k.FatalIfErrorf(err)
 }

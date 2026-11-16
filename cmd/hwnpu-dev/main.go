@@ -27,6 +27,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/internal/console"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/cachecmd"
 	"github.com/shibukawa/hwnpu/cmd/hwnpu-dev/check"
@@ -79,7 +80,9 @@ func main() {
 		kong.Description("Tools for developing hwnpu: converting and checking models by hand, measuring NPUs, packaging xclbins."),
 		kong.Vars(cachecmd.Vars),
 		kong.UsageOnError())
-	k.FatalIfErrorf(k.Run())
+	err := k.Run()
+	shared.Wait(os.Stderr) // what was made here goes in the sources written back to
+	k.FatalIfErrorf(err)
 	console.WriteProfile(os.Stderr) // HWNPU_PROFILE's downloads and loads
 }
 

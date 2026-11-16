@@ -41,6 +41,9 @@ type WebDAVConfig struct {
 	// of the system's roots: a NAS's own certificate, which no authority signed and which names
 	// no host (?tls_sha256= of the URL). The certificate is checked, the host name is not.
 	TLSSHA256 string
+	// Insecure trusts any certificate (?insecure=true of the URL): neither it nor the host name
+	// is checked. TLSSHA256 is the safer way to trust a NAS's own certificate.
+	Insecure bool
 	// ReadOnly reads with GET and HEAD only, as any HTTP server serves them; nothing is written
 	// or listed.
 	ReadOnly bool
@@ -57,6 +60,7 @@ type WebDAV struct {
 
 	mu   sync.Mutex
 	made map[string]bool // the folders known to be there
+	down error           // the server could not be reached: every request fails at once with it
 }
 
 // WebDAVPasswordEnv and WebDAVUserEnv sign in to a WebDAV store the netrc does not name.
@@ -97,7 +101,13 @@ func OpenWebDAV(c WebDAVConfig) (*WebDAV, error) {
 	// a whole large download, but one for the connection and the answer's header
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 5 * time.Minute // a MOVE of a large file can take a while
-	if c.TLSSHA256 != "" {
+	// a NAS that is off is found out soon (not after the default 30 seconds, for each try), and
+	// its name is looked up once: a .local name takes 5 seconds a lookup on macOS (mDNS)
+	tr.DialContext = (&cachedDialer{d: net.Dialer{Timeout: davDialTimeout, KeepAlive: 30 * time.Second}}).DialContext
+	tr.TLSHandshakeTimeout = davDialTimeout
+	tr.MaxIdleConnsPerHost = 8 // the queue's jobs go side by side
+	switch {
+	case c.TLSSHA256 != "":
 		want, err := hex.DecodeString(strings.ReplaceAll(strings.ToLower(c.TLSSHA256), ":", ""))
 		if err != nil || len(want) != sha256.Size {
 			return nil, fmt.Errorf("store: %s: tls_sha256 %q is not a SHA-256 in hex", c.Name, c.TLSSHA256)
@@ -109,11 +119,13 @@ func OpenWebDAV(c WebDAVConfig) (*WebDAV, error) {
 					return fmt.Errorf("store: %s: the server gave no certificate", c.Name)
 				}
 				if got := sha256.Sum256(cs.PeerCertificates[0].Raw); !bytes.Equal(got[:], want) {
-					return fmt.Errorf("store: %s: the server's certificate has the SHA-256 %x, not the tls_sha256 %x", c.Name, got, want)
+					return &pinError{fmt.Errorf("store: %s: the server's certificate has the SHA-256 %x, not the tls_sha256 %x", c.Name, got, want)}
 				}
 				return nil
 			},
 		}
+	case c.Insecure:
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	return &WebDAV{cfg: c, base: u, user: user, pass: pass, client: &http.Client{Transport: tr}, made: map[string]bool{}}, nil
 }
@@ -155,9 +167,63 @@ type davError struct {
 
 func (e *davError) Error() string { return fmt.Sprintf("store: %s %s: %s", e.Method, e.URL, e.Status) }
 
+// davDialTimeout bounds connecting to a server (its name's lookup too) and its TLS handshake.
+var davDialTimeout = 15 * time.Second
+
+// cachedDialer dials with the addresses of a host looked up once.
+type cachedDialer struct {
+	d     net.Dialer
+	mu    sync.Mutex
+	addrs map[string][]string // host: its addresses
+}
+
+func (c *cachedDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) != nil {
+		return c.d.DialContext(ctx, network, addr)
+	}
+	c.mu.Lock()
+	ips, ok := c.addrs[host]
+	c.mu.Unlock()
+	if !ok {
+		lctx, cancel := context.WithTimeout(ctx, davDialTimeout)
+		ips, err = net.DefaultResolver.LookupHost(lctx, host)
+		cancel()
+		if err != nil {
+			return nil, &net.OpError{Op: "dial", Net: network, Err: err}
+		}
+		c.mu.Lock()
+		if c.addrs == nil {
+			c.addrs = map[string][]string{}
+		}
+		c.addrs[host] = ips
+		c.mu.Unlock()
+	}
+	var first error
+	for _, ip := range ips {
+		conn, err := c.d.DialContext(ctx, network, net.JoinHostPort(ip, port))
+		if err == nil {
+			return conn, nil
+		}
+		first = cmp.Or(first, err)
+	}
+	return nil, first
+}
+
 // do makes a request (body made by body for each try, nil for none), retried as S3's are (5xx,
 // 429, a cut connection). An answer of a status not in ok is a davError, its body closed.
+//
+// A server that cannot be reached (no such host, the connection refused, a certificate not
+// trusted, or no answer in any of the tries) is not tried again in this process: a NAS that is off is a source
+// that is not there, and every request after fails at once (the sources after it are read, and
+// what goes in it stays in the queue for the next run).
 func (w *WebDAV) do(ctx context.Context, method, u string, hdr http.Header, body func() (io.Reader, int64), ok ...int) (*http.Response, error) {
+	w.mu.Lock()
+	down := w.down
+	w.mu.Unlock()
+	if down != nil {
+		return nil, down
+	}
 	var resp *http.Response
 	err := retryIf(ctx, davTransient, func() error {
 		var r io.Reader
@@ -204,12 +270,67 @@ func (w *WebDAV) do(ctx context.Context, method, u string, hdr http.Header, body
 			}
 			return nil, fmt.Errorf("%w (signed in as %s: give the password in the URL, ~/.netrc (machine %s) or %s)", err, who, w.base.Hostname(), WebDAVPasswordEnv)
 		}
+		if unreachable(err) && ctx.Err() == nil {
+			err = &unreachableError{name: w.cfg.Name, host: w.base.Host, err: err}
+			w.mu.Lock()
+			if w.down == nil {
+				w.down = err
+				w.mu.Unlock()
+				fmt.Fprintf(os.Stderr, "store: %s (%s) cannot be reached; read on as if it were not set this run: %v\n", w.cfg.Name, w.base.Host, errors.Unwrap(err))
+			} else {
+				err = w.down
+				w.mu.Unlock()
+			}
+		}
 		return nil, err
 	}
 	return resp, nil
 }
 
+// unreachableError is a server do could not reach.
+type unreachableError struct {
+	name, host string
+	err        error
+}
+
+func (e *unreachableError) Error() string {
+	return fmt.Sprintf("store: %s (%s) cannot be reached: %v", e.name, e.host, e.err)
+}
+func (e *unreachableError) Unwrap() error { return e.err }
+
+// pinError is a certificate that is not the one of tls_sha256.
+type pinError struct{ error }
+
+func (e *pinError) Unwrap() error { return e.error }
+
+// unreachable reports an error of reaching the server at all: its name, a connection, the TLS
+// handshake (not one cut off later, which a try again goes on from).
+func unreachable(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	var cert *tls.CertificateVerificationError
+	var rec tls.RecordHeaderError
+	var ue *unreachableError
+	var pin *pinError
+	return errors.As(err, &ue) || errors.As(err, &pin) || errors.As(err, &dns) || errors.As(err, &op) && op.Op == "dial" ||
+		errors.As(err, &cert) || errors.As(err, &rec) || tlsHandshakeTimeout(err)
+}
+
+func tlsHandshakeTimeout(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "TLS handshake timeout")
+}
+
 func davTransient(err error) bool {
+	var ue *unreachableError
+	if errors.As(err, &ue) {
+		return false
+	}
+	if unreachable(err) {
+		// a lookup or a connection that only timed out (a .local name over mDNS does now and
+		// then) is tried again before the server is taken for off; one refused is not
+		var ne net.Error
+		return errors.As(err, &ne) && ne.Timeout()
+	}
 	var de *davError
 	if errors.As(err, &de) {
 		return de.StatusCode >= 500 && de.StatusCode != http.StatusNotImplemented || de.StatusCode == http.StatusTooManyRequests
