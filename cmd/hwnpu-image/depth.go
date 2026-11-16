@@ -94,7 +94,7 @@ func (c *DepthCmd) Run(ctx context.Context) error {
 			if m.Family == "moge" {
 				tool = "tools/amd/iron_moge.py"
 			}
-			if model, err = amdExport(m, tool); err != nil {
+			if model, err = amdExport(ctx, m, tool, 0); err != nil {
 				return err
 			}
 		}

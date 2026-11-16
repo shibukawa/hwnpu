@@ -32,7 +32,7 @@ import (
 // run, and convert).
 type convertFlags struct {
 	Backend    string `help:"The program format: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one) or intel (Intel's NPU); convert also takes coreml, the Core ML export --cpu runs. Default: HWNPU_BACKEND, else the NPU found (convert: coreai)."`
-	Size       int    `default:"1024" help:"The image's width and height in pixels, a multiple of 16 (an export each)."`
+	Size       int    `default:"1024" help:"The image's width and height in pixels, a multiple of 16 (an export each; on AMD's NPU NAME-SIZE.amd-npu2 for a size other than 1024)."`
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
 	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Apple's; int8 on Intel; default int8 on Apple's, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
 	DitFormat  string `help:"The DiT's weights (fp16; lut8, lut6 on Apple's; int8, int4 on Intel; default int8 on Apple's: faster than fp16 at half its memory, and nearer it than lut8; fp16 on Intel. Qwen-Image: lut6, its text pass the same and a group's two passes one program with the weights once)."`
@@ -135,7 +135,7 @@ func appleFormat(model, backend string) (string, error) {
 // GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
 type GenerateCmd struct {
 	Prompts    []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana, Qwen-Image and Chroma take several: a picture each, the model loaded once (on Apple's Neural Engine --batch of them are drawn together)."`
-	Model      string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: FLUX.2 klein 4B from 16 GB, Sana 600M on 8 GB; flux2-klein, sana, sana:1.6b, anima-turbo and anima (Anima-Aesthetic) with HWNPU_MODEL_ALLOWLIST=+nsfw; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models; FLUX.2 klein's for --size, from the sources or exported with IRON on its first run); on Apple's and Intel's (Anima and Sana) the model is downloaded and converted on its first run."`
+	Model      string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: FLUX.2 klein 4B from 16 GB, Sana 600M on 8 GB; flux2-klein, sana, sana:1.6b, anima-turbo and anima (Anima-Aesthetic) with HWNPU_MODEL_ALLOWLIST=+nsfw; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs NAME.amd-npu2 (NAME-SIZE.amd-npu2 for another --size) in the cache's entries/amd-xdna2 or ~/models, else one the sources hold, downloaded once (FLUX.2 klein's exported with IRON when they have none; one made by hand in entries/amd-xdna2 goes in the sources written back to on its first use); on Apple's and Intel's (Anima and Sana) the model is downloaded and converted on its first run."`
 	Out        string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
 	Batch      int       `name:"batch" default:"4" placeholder:"N" help:"Sana, Qwen-Image, Chroma and FLUX.2 klein on Apple's Neural Engine with several prompts: the pictures drawn together, N at a time (their prompts are read, then their steps run, then the VAE's stages over all of them, so that a program is loaded once for the N pictures; they are written together, when the last is drawn); FLUX.2 klein on AMD's NPU too, its steps together (a group of the DiT's weights read once for the N pictures; the VAE a picture after another); 1 draws one picture after another."`
 	KeepDiT    bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana and Chroma on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (the text encoder and the VAE are loaded for each; Chroma on macOS 27 loads the DiT's groups for each step either way)."`
@@ -242,7 +242,7 @@ func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, erro
 		format = llm.BackendCoreML
 	case err == nil: // Apple's Neural Engine or Intel's NPU
 	default:
-		return amdOr(err, m, "tools/amd/iron_sana.py")
+		return amdOr(ctx, err, m, "tools/amd/iron_sana.py", c.Size)
 	}
 	if c.Size%32 != 0 {
 		return "", fmt.Errorf("--size %d: Sana's pictures are multiples of 32 pixels", c.Size)
@@ -266,7 +266,7 @@ func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string,
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	default:
-		return amdOr(err, m, "tools/amd/iron_qwenimage.py")
+		return amdOr(ctx, err, m, "tools/amd/iron_qwenimage.py", c.Size)
 	}
 	if c.Size%32 != 0 {
 		return "", fmt.Errorf("--size %d: Qwen-Image's pictures are multiples of 32 pixels", c.Size)
@@ -298,7 +298,7 @@ func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, err
 	if _, err := llm.ProgramFormat(ctx, ""); err == nil {
 		return "", nil // Apple's or Intel's NPU
 	}
-	return amdExport(m, "tools/amd/iron_anima.py")
+	return amdExport(ctx, m, "tools/amd/iron_anima.py", c.Size)
 }
 
 // turboNegativeGuidance is the guidance scale a --negative without --guidance gets on a model that

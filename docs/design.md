@@ -7143,3 +7143,26 @@ Mac (16.227) は `hwnpu-image generate -m flux2-klein` だけで、初回にチ�
 **VAE はまとめない**: 段を開くのは 512² で 0.52 / 2.07 秒、1024² で 0.77 / 5.45 秒 (一時的に開くのを測った版で)。まとめると、段の出力をデバイスのまま次の段に渡す今の形 (16.207) をやめて、絵ごとにホストに写して持つことになる。1 枚 0.5〜0.8 秒のためにピークを上げない
 
 **残り**: Anima、Sana、Chroma、Qwen-Image の AMD の書き出しは今も手で (取り込んだものを取得元から読むのは同じ形で足せる)。`hwnpu-dev cache push` は FLUX.2 klein の初回の書き出しを知らない (初回が書き戻すので、手で作ったものは `import` で)。1024² の初回の IRON の書き出しの時間は測っていない
+
+### 16.236 AMD の書き出しを全部取得元を通して: 手で作ったものも名前で取り、初めて使ったときに置く。取得を 4 本並びに (Mac も) — 2026-11-17
+
+AMD の書き出しで取得元から取れたのは、hwnpu-chat の `amd_export`、detect / pose / segment の初回の書き出し、FLUX.2 klein (16.235) だけだった。画像生成 (Anima、Sana、Chroma、Qwen-Image)、深さ (DA3、MoGe-2)、顔 (YuNet)、ラベル (SigLIP 2)、`amd_export` のないチャットのモデルは手元しか見ず、NAS に `hwnpu-dev cache import` で置いた書き出しがあっても、新しい機械では動かなかった。手で作ったものを NAS に置くのも手でだった。取得元からの取得は 1 ファイルずつだった。
+
+**main に届いていなかった書き戻し** (#199): #194 (落としながらの tee) と #195 (変換しながら置く) は、行き先が積み重ねた下のブランチで、main に入っていなかった (#188 と同じ形)。squash の commit だけを今の main に当て、2 つ直した。
+
+- #197 の `hwnpu cache clean` は、印か 1 時間以内に変わったファイルのあるフォルダを残す。tee と変換しながら置くのは印を置かなかったので、大きなファイルの tee や、IRON の長いコンパイルの間に置いたものを途中で消しうる。どちらも書いている間は印を置く
+- #195 は取得元で外れると必ず置き始めていた。#198 の prebuilt の取得は外れても何も作らないので、bundle のフォルダを見張り、印を NAS に置いたままにしていた。取るだけ (`fetchFrom`) と置き始める (`startEarly`) に分け、作るときだけ始める
+
+**手で作る書き出しも取得元から** (`chat.AMDNamed`): 名前は tools/amd の案内と取得元のもの (小文字の `NAME.amd-npu2`、1024² と大きさのないものは `NAME-1024.amd-npu2` も、ほかの `--size` は `NAME-SIZE.amd-npu2`。チャットは `NAME.amd-npu2-q4`、`NAME.amd-npu2`)。手元 (`entries/amd-xdna2`、`~/models`) になければ、取得元の同じ名前の `iron-import` を手元の `entries/amd-xdna2` に落とす。2 回目からはその写しで、取得元には聞かない。`amd_export` のあるチャットのモデルも、その名前の取り込んだものがあれば、IRON で作る前に取る
+
+- AMD では `--size` も見る。前は 1024² の書き出しを使っていた。NAS には `anima-turbo-512`、`chroma1-flash-512`、`qwen-image-2.1-turbo-512` がある
+- NPU が AMD のでない機械では取りに行かない (前と同じ、NPU がないというエラー)
+
+**手で作ったものを置く** (`chat.ShareMadeByHand`): `entries/amd-xdna2` にあって `entry.json` のない書き出し (取ってきたものでも、初回に作ったものでもない) は、初めて使ったときに記述し (ファイルの SHA-256。`entry.json` に残るので一度だけ)、書き戻す取得元に裏で置く。鍵は名前だけの取り込みのレシピなので、同じ名前があればその取得元には置かない (`PutEntry` が鍵で見る)。`~/models` は読むだけの層 (7.3 節) なので書かない (`hwnpu-dev cache import`)。エラーで出す手で作る手順の行き先も `~/models` から `entries/amd-xdna2` にした
+
+**取得を並べる**: 変換結果 (`store.materialize`: AMD の書き出し、Mac の Core AI の書き出し、表、prebuilt) のファイルを 4 本ずつ (`store.FetchStreams`)、大きいものから。続きから取るときに残ったファイルを照らすのも並べて。元のファイルも、いくつかを落とすところは 4 本ずつ (`chat.FetchFiles`: 画像のモデルの準備、音のモデル、チャットのモデルの分割した重み)。バーは最後に始めたものが描くので、どのバーも計画の全部の残りを出す今の形 (`chat.Expect`) のままでよい
+
+- この機械 (Wi-Fi) と UGREEN の NAS の間で、同じ書き出しの大きなファイルを 30 秒ずつ (curl): 1 本 5 MB/s、4 本で計 9 MB/s
+- 試験: `TestEntryStreams` (9 ファイルの entry を 4 本で、揃って照らせる)、`TestFetchFiles` (偽の Hugging Face で 7 ファイルを 4 本で)、`TestAMDNamed` (手で作ったものを置く、ほかの機械が取って次は写し、`~/models` は置かない)
+
+**残り**: NAS での通しの測り (空のキャッシュから Anima などを取る時間、1 本と 4 本の書き出しの取得) は、NAS が答えなくなって (2026-11-17 0 時台、名前も IP も) まだ。`hwnpu-dev cache push` は初回の FLUX.2 klein の書き出しを知らない

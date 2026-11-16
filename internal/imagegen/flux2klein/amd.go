@@ -56,7 +56,8 @@ func amdArgs(size int) []string { return []string{"--size", fmt.Sprint(size)} }
 
 // PrepareAMD makes the export of FLUX.2 klein (m) for AMD's NPU for pictures of size x size
 // ready, as hwnpu-chat makes its models' (chat.PrepareAMD), and returns its directory: one here
-// (cache.ExportRoots, by AMDExportName; NAME-1024.amd-npu2 too at 1024), else from the shared
+// (cache.ExportRoots, by AMDExportName; NAME-1024.amd-npu2 too at 1024; one made by hand there
+// goes in the sources written back to: chat.ShareMadeByHand), else from the shared
 // layers (the export a first run made elsewhere, AMDRecipe, or one made by hand that hwnpu-dev
 // cache import put there under the same name), else it downloads the checkpoint (AMDFiles) and
 // exports it with IRON in IRON's environment (chat.IRONEnv; 9 minutes at 512 x 512 on a Ryzen
@@ -77,6 +78,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, size int, log io.Writer) (str
 	}
 	for _, n := range names {
 		if d := cache.FindExport(n, isIronExport); d != "" {
+			chat.ShareMadeByHand(m, d, log) // one made by hand here goes in the sources written back to
 			return d, nil
 		}
 	}
@@ -94,11 +96,8 @@ func PrepareAMD(ctx context.Context, m chat.Model, size int, log io.Writer) (str
 		for i, f := range AMDFiles {
 			want[i] = chat.File{Repo: m.Repo, Name: f}
 		}
-		chat.Expect(ctx, want)
-		for _, f := range want {
-			if _, err := chat.Fetch(ctx, f.Repo, f.Name, log); err != nil {
-				return err
-			}
+		if err := chat.FetchFiles(ctx, want, log); err != nil {
+			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err

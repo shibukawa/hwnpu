@@ -1291,13 +1291,7 @@ func FetchWeights(ctx context.Context, repo string, log io.Writer) (string, erro
 	for _, f := range files {
 		want = append(want, File{repo, f})
 	}
-	Expect(ctx, want)
-	for _, f := range files {
-		if _, err := fetch(ctx, repo, f, log); err != nil {
-			return single, err
-		}
-	}
-	return single, nil
+	return single, FetchFiles(ctx, want, log)
 }
 
 // shards are the files an index of a checkpoint in several files names, in order.

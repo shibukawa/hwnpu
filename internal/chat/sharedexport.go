@@ -172,11 +172,14 @@ func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, 
 		}
 	}
 	for _, q := range places {
-		if fetchConverted(ctx, q, out, log) {
+		if fetchFrom(ctx, q, out, log) {
 			os.WriteFile(out+".done", nil, 0o644)
 			return nil
 		}
 	}
+	// made here: its files go in the sources written back to as they are written, as recipe's
+	// (not on the misses before: an export of others fetched into out would go too)
+	startEarly(p, out)
 	if err := build(); err != nil {
 		return err
 	}

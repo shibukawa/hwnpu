@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	shared "github.com/shibukawa/hwnpu/internal/store"
@@ -243,6 +245,13 @@ func TestSharedExportImported(t *testing.T) {
 	if es, _ := shared.ListEntries(ctx, shared.Sources()[0]); len(es) != 1 {
 		t.Errorf("the imported export was put again: %v", es)
 	}
+	// nor began to be put as it was fetched (the early puts mark the folder they put in)
+	filepath.WalkDir(share, func(p string, d os.DirEntry, err error) error {
+		if err == nil && strings.HasPrefix(d.Name(), shared.WritingPrefix) {
+			t.Errorf("puts began for a fetched export: %s", p)
+		}
+		return nil
+	})
 	// a second run here: the export it fetched is taken
 	if err := SharedExportOr(ctx, "iron-x", recipe, imported, out, nil, build(out)); err != nil || built != 0 {
 		t.Fatalf("built %d: %v", built, err)
@@ -265,5 +274,58 @@ func TestSharedExportImported(t *testing.T) {
 	}
 	if got, err := shared.ReadEntryAt(ctx, shared.Sources()[0], rel); err != nil || got.Kind != "iron-x" {
 		t.Errorf("the built export's entry %s: %+v %v", rel, got, err)
+	}
+}
+
+// TestFetchFiles downloads the files of a repository store.FetchStreams at a time, each whole.
+func TestFetchFiles(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	if _, err := withSources(t, nil); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	now, most := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(r.URL.Path, "/")
+		if strings.HasPrefix(p, "api/") {
+			fmt.Fprint(w, `{"gated": false}`)
+			return
+		}
+		w.Header().Set("X-Repo-Commit", testCommit)
+		if r.Method != http.MethodGet {
+			return
+		}
+		mu.Lock()
+		now++
+		most = max(most, now)
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprint(w, "body of "+path.Base(p))
+		mu.Lock()
+		now--
+		mu.Unlock()
+	}))
+	t.Cleanup(srv.Close)
+	old := hubURL
+	hubURL = srv.URL + "/"
+	t.Cleanup(func() { hubURL = old })
+	var files []File
+	for i := 0; i < 7; i++ {
+		files = append(files, File{Repo: "lab/m", Name: fmt.Sprintf("shard-%d.bin", i)})
+	}
+	if err := FetchFiles(context.Background(), files, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if got := read(t, f.Path()); got != "body of "+f.Name {
+			t.Errorf("%s: %q", f.Name, got)
+		}
+	}
+	if most != shared.FetchStreams || most < 2 {
+		t.Errorf("%d downloads at once, want %d", most, shared.FetchStreams)
+	}
+	// an error stops the rest and is returned
+	if err := FetchFiles(context.Background(), []File{{Repo: "lab/m", Name: "../x"}}, nil); err == nil {
+		t.Error("no error for a name outside the repository")
 	}
 }

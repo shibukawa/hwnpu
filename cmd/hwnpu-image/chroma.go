@@ -29,7 +29,7 @@ func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, er
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	default:
-		return amdOr(err, m, "tools/amd/iron_chroma.py")
+		return amdOr(ctx, err, m, "tools/amd/iron_chroma.py", c.Size)
 	}
 	if c.Size%16 != 0 {
 		return "", fmt.Errorf("--size %d: Chroma's pictures are multiples of 16 pixels", c.Size)

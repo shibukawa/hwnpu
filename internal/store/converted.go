@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -100,7 +101,12 @@ func ReadEntryAt(ctx context.Context, s Source, rel string) (Entry, error) {
 	return parseEntry(b)
 }
 
-// materialize makes the entry e at rel of s in dst.
+// FetchStreams is how many files of an entry are downloaded from a source at a time: over Wi-Fi
+// from a NAS (UGREEN, WebDAV) one stream took 5 MB/s and four 9 MB/s (2026-11-17).
+var FetchStreams = 4
+
+// materialize makes the entry e at rel of s in dst: its files FetchStreams at a time, the largest
+// first, into dst.part, which is renamed to dst when all are there and checked.
 func materialize(ctx context.Context, s Source, e Entry, rel, dst string, log io.Writer) error {
 	part := dst + ".part"
 	if err := os.MkdirAll(part, 0o755); err != nil {
@@ -111,25 +117,46 @@ func materialize(ctx context.Context, s Source, e Entry, rel, dst string, log io
 		return err
 	}
 	br, set := bar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(dst), s))
-	var done int64
-	for _, f := range e.Files {
+	order := make([]int, len(e.Files))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return cmp.Compare(e.Files[b].Size, e.Files[a].Size) })
+	var mu sync.Mutex
+	got := make([]int64, len(e.Files)) // each file's bytes here
+	progress := func(i int, n int64) {
+		mu.Lock()
+		got[i] = n
+		var done int64
+		for _, g := range got {
+			done += g
+		}
+		mu.Unlock()
+		set(done, total)
+	}
+	err := each(ctx, FetchStreams, len(order), func(ctx context.Context, k int) error {
+		i := order[k]
+		f := e.Files[i]
 		p := filepath.Join(part, filepath.FromSlash(f.Path))
 		if fi, err := os.Stat(p); err == nil && fi.Size() == f.Size {
 			// a download cut off before had it, unless the machine stopped before its bytes were
 			// on the disk: after a reboot a file can keep its size with other bytes (two banks of
 			// an export for AMD's NPU of 164 files, 2026-11-16), so it is checked again
 			if sum, err := FileSHA256(p); err == nil && sum == f.SHA256 {
-				done += f.Size
-				continue
+				progress(i, f.Size)
+				return nil
 			}
 			os.Remove(p)
 		}
-		base := done
-		if err := getChecked(ctx, s.Store, rel+"/"+f.Path, f.SHA256, p, func(n, _ int64) { set(base+n, total) }); err != nil {
-			br.Done("failed")
+		if err := getChecked(ctx, s.Store, rel+"/"+f.Path, f.SHA256, p, func(n, _ int64) { progress(i, n) }); err != nil {
 			return err
 		}
-		done += f.Size
+		progress(i, f.Size)
+		return nil
+	})
+	if err != nil {
+		br.Done("failed")
+		return err
 	}
 	if err := WriteEntry(part, e); err != nil {
 		br.Done("failed")
@@ -140,7 +167,7 @@ func materialize(ctx context.Context, s Source, e Entry, rel, dst string, log io
 		br.Done("failed")
 		return err
 	}
-	br.Done(fmt.Sprintf("%.2f GB in %s", float64(total)/1e9, console.Duration(br.Elapsed())))
+	br.Done(rate(total, br.Elapsed()))
 	return nil
 }
 

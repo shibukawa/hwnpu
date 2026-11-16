@@ -33,7 +33,7 @@ func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, err
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	case runtime.GOOS == "darwin" || chat.HereVendor() != "amd":
-		return amdOr(err, m, "tools/amd/iron_flux2klein.py")
+		return "", err
 	default:
 		return flux2klein.PrepareAMD(chat.WithModel(ctx, m), m, c.Size, console.Log(os.Stderr))
 	}

@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -525,5 +526,54 @@ func TestParseSource(t *testing.T) {
 	t.Setenv(SourceEnv+"_x", "file:///x")
 	if _, _, err := FromEnv(); err == nil {
 		t.Error("a source variable without a number")
+	}
+}
+
+// slowGets is a folder store whose Gets take a while, counting how many go on at once.
+type slowGets struct {
+	Dir
+	mu        sync.Mutex
+	now, most int
+}
+
+func (s *slowGets) Get(ctx context.Context, key, dst string, bar func(done, total int64)) (int64, error) {
+	s.mu.Lock()
+	s.now++
+	s.most = max(s.most, s.now)
+	s.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	n, err := s.Dir.Get(ctx, key, dst, bar)
+	s.mu.Lock()
+	s.now--
+	s.mu.Unlock()
+	return n, err
+}
+
+// TestEntryStreams downloads the files of an entry FetchStreams at a time, and the entry is
+// whole.
+func TestEntryStreams(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	exp := filepath.Join(t.TempDir(), "m.amd-npu2")
+	for i := 0; i < 9; i++ {
+		write(t, filepath.Join(exp, fmt.Sprintf("bank_g%d.bin", i)), strings.Repeat("w", 1000*(i+1)))
+	}
+	recipe := map[string]string{"model": "m", "commit": "abc"}
+	rel := EntryPath("m", "amd-xdna2", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
+	describeAt(t, exp, rel, recipe)
+	root := t.TempDir()
+	if err := PutEntry(ctx, Source{Store: Dir{Name: "nas", Root: root}, Writeback: true}, exp); err != nil {
+		t.Fatal(err)
+	}
+	st := &slowGets{Dir: Dir{Name: "nas", Root: root}}
+	out := filepath.Join(t.TempDir(), "m.amd-npu2")
+	if _, err := FetchEntry(ctx, []Source{{Store: st}}, rel, func(Entry) bool { return true }, out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(out, true); err != nil {
+		t.Error(err)
+	}
+	if st.most != FetchStreams || st.most < 2 {
+		t.Errorf("%d downloads at once, want %d (more than one)", st.most, FetchStreams)
 	}
 }
