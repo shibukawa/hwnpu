@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
+	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
 // tinyQwen2 is a small Qwen2 with what Qwen2.5-Coder-7B has: biases on q, k and v, no norms
@@ -137,5 +139,52 @@ func TestQwen2Config(t *testing.T) {
 	a, err := llm.Detect([]byte(tinyQwen2))
 	if err != nil || a != Qwen2Arch {
 		t.Errorf("detected %v, %v", a, err)
+	}
+}
+
+// An intermediate over mlpSplit is computed in pieces: in fp16 the logits of the reference, in
+// lut4 those of the MLP in one piece (its pieces cut from the matrices palettized whole).
+func TestQwen2SplitMLP(t *testing.T) {
+	c := tinyQwen2Config(t)
+	w := llm.NewSynthetic(c)
+	feed := map[string][]float32{"x": rows(t, w, c.Embedding(), tokens)}
+	whole := build(t, c, w, llm.Options{Seq: len(tokens), Format: "lut4"}).run(t, feed)["y"]
+	defer func(s int) { mlpSplit = s }(mlpSplit)
+	mlpSplit = 48 // intermediate 96: pieces of 64 and 32
+	ref := reference(t, c, w, tokens)
+	if e := relErr(build(t, c, w, llm.Options{Seq: len(tokens), Format: "fp16"}).run(t, feed)["y"], ref.logits); !(e <= 1e-4) {
+		t.Errorf("fp16 in pieces: relative error %g", e)
+	}
+	p := build(t, c, w, llm.Options{Seq: len(tokens), Format: "lut4"})
+	if e := relErr32(p.run(t, feed)["y"], whole); !(e <= 1e-5) {
+		t.Errorf("lut4 in pieces: relative error %g against one piece", e)
+	}
+}
+
+// A Core AI program refuses weights of tables or scales per block of columns, which the Neural
+// Engine computes with the first block's alone; whole rows build.
+func TestCoreAIRowsOnly(t *testing.T) {
+	c := tinyQwen2Config(t)
+	w := llm.NewSynthetic(c)
+	newB := func() *mlpackage.Builder {
+		blobs, err := mlpackage.NewBlobWriter(filepath.Join(t.TempDir(), "w.bin"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { blobs.Close() })
+		return mlpackage.NewBuilder("CoreML8", blobs)
+	}
+	for _, o := range []llm.Options{{Format: "lut4", ColBlock: 32}, {Format: "int4-g32"}, {Format: "int8-g16"}} {
+		o.Seq, o.Backend = 4, llm.BackendCoreAI
+		if _, _, err := Build(newB(), c, w, o); err == nil || !strings.Contains(err.Error(), "whole rows only") {
+			t.Errorf("%s col block %d: error %v", o.Format, o.ColBlock, err)
+		}
+		o.Backend = ""
+		if _, _, err := Build(newB(), c, w, o); err != nil {
+			t.Errorf("%s col block %d for Core ML: %v", o.Format, o.ColBlock, err)
+		}
+	}
+	if _, _, err := Build(newB(), c, w, llm.Options{Seq: 4, Format: "lut4", Backend: llm.BackendCoreAI}); err != nil {
+		t.Errorf("whole rows: %v", err)
 	}
 }

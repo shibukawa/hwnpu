@@ -15,7 +15,14 @@ and hwnpu-dev generate -score:
     $PY tools/ref/ref_qwen2.py MODEL_DIR OUT_PREFIX [--seq 64] [--text "..."] [--chat]
 
 --chat puts the text in a user turn of the model's chat template (the system turn and the
-assistant's start included), as hwnpu-chat would give it. Needs torch and transformers.
+assistant's start included), as hwnpu-chat would give it.
+
+--stats OUT.safetensors --calib FILE... instead runs the files' texts (up to --calib-tokens
+each) through the model and writes the mean square of each linear layer's inputs by in-feature,
+float32, named WEIGHT.x2 after the weights that read them (q_proj, k_proj and v_proj the same,
+gate_proj and up_proj the same; lm_head.weight.x2 the final norm's output): what an
+activation-aware fitting of the weights' tables weighs each column's error by (tools/coreai/lutfit).
+Needs torch and transformers.
 """
 import argparse
 import json
@@ -63,7 +70,12 @@ def main():
     ap.add_argument("--seq", type=int, default=64)
     ap.add_argument("--text", default=TEXT)
     ap.add_argument("--chat", action="store_true", help="the text as a user turn of the chat template")
+    ap.add_argument("--stats", help="write the inputs' mean squares to this safetensors file instead")
+    ap.add_argument("--calib", nargs="*", default=[], help="--stats: text files to run")
+    ap.add_argument("--calib-tokens", type=int, default=512)
     a = ap.parse_args()
+    if a.stats:
+        return stats(a)
 
     from transformers import AutoConfig, AutoTokenizer
     from transformers.models.qwen2 import modeling_qwen2 as M
@@ -110,6 +122,61 @@ def main():
             "vocab": int(logits.shape[-1]), "text": text, "dtype": "float32", "output": "logits"}
     Path(str(out) + ".json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
     print(f"{n} tokens, top token after the last: {int(logits[-1].argmax())} ({tok.decode([int(logits[-1].argmax())])!r})")
+
+
+def stats(a):
+    """--stats: the mean square of each linear's inputs over the --calib texts, by in-feature."""
+    from safetensors.torch import save_file
+    from transformers import AutoConfig, AutoTokenizer
+    from transformers.models.qwen2 import modeling_qwen2 as M
+
+    cfg = AutoConfig.from_pretrained(a.model_dir)
+    cfg._attn_implementation = "eager"
+    tok = AutoTokenizer.from_pretrained(a.model_dir)
+    seqs = [tok(Path(f).read_text(), add_special_tokens=False)["input_ids"][: a.calib_tokens] for f in a.calib]
+    ck = Checkpoint(a.model_dir)
+    torch.set_grad_enabled(False)
+    emb = ck.get("model.embed_tokens.weight")
+    hs = [emb[torch.tensor(s)][None] for s in seqs]
+    del emb
+    rope = M.Qwen2RotaryEmbedding(config=cfg)
+    sums, count = {}, 0
+    for s in seqs:
+        count += len(s)
+
+    def add(name, x):
+        v = x.reshape(-1, x.shape[-1]).double().pow(2).sum(0)
+        sums[name] = sums.get(name, 0) + v
+
+    for i in range(cfg.num_hidden_layers):
+        t0 = time.time()
+        layer = ck.load(M.Qwen2DecoderLayer(cfg, i), f"model.layers.{i}.")
+        p = f"model.layers.{i}."
+        hooks = []
+        for mod, names in ((layer.self_attn.q_proj, ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]),
+                           (layer.self_attn.o_proj, ["self_attn.o_proj"]),
+                           (layer.mlp.gate_proj, ["mlp.gate_proj", "mlp.up_proj"]),
+                           (layer.mlp.down_proj, ["mlp.down_proj"])):
+            def hook(_m, args, names=names):
+                for n in names:
+                    add(p + n + ".weight.x2", args[0])
+            hooks.append(mod.register_forward_pre_hook(hook))
+        for j, h in enumerate(hs):
+            n = h.shape[1]
+            pos = torch.arange(n)[None]
+            mask = torch.full((n, n), float("-inf")).triu(1)[None, None]
+            out = layer(h, attention_mask=mask, position_ids=pos, position_embeddings=rope(h, pos))
+            hs[j] = out[0] if isinstance(out, tuple) else out
+        for hk in hooks:
+            hk.remove()
+        del layer
+        print(f"layer {i}: {time.time() - t0:.1f} s", flush=True)
+    norm = ck.load(M.Qwen2RMSNorm(cfg.hidden_size, eps=cfg.rms_norm_eps), "model.norm.")
+    head = "model.embed_tokens.weight" if cfg.tie_word_embeddings else "lm_head.weight"
+    for h in hs:
+        add(head + ".x2", norm(h))
+    save_file({k: (v / count).float().contiguous() for k, v in sums.items()}, a.stats)
+    print(f"{len(sums)} inputs over {count} tokens of {len(seqs)} texts")
 
 
 if __name__ == "__main__":

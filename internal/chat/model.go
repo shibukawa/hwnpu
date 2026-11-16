@@ -232,6 +232,10 @@ type Setup struct {
 	// The programs' names carry a hash of its index (-gptq-HASH), so that other codes or none
 	// convert anew.
 	Codes string
+	// CodesHash is the hash of the codes the definitions convert the model with (models.yaml's
+	// codes, Run.Codes): the programs are named for them, as with Codes, so that a conversion with
+	// them is taken from the sources; to convert here, Codes or CodesDir has them.
+	CodesHash string
 	// FormatFor gives some tensors another format than Format (llm.Options.FormatFor,
 	// "SUBSTRING=FORMAT" entries, such as per_layer=lut8); the programs' names carry them.
 	FormatFor []string
@@ -345,13 +349,23 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
 		kind += "-" + attn
 	}
-	if s.Codes != "" {
+	// the codes: a directory given, or the definitions' hash of them (CodesHash), whose directory
+	// is needed only to convert (CodesDir): a conversion with them is taken from the sources
+	codes := s.Codes
+	if s.Codes != "" || s.CodesHash != "" {
 		if !strings.HasPrefix(format, "lut") {
 			return Config{}, fmt.Errorf("chat: -codes are lookup tables, for the lutN formats, not %s", format)
 		}
-		h, err := codesHash(s.Codes)
-		if err != nil {
-			return Config{}, err
+		h := s.CodesHash
+		if s.Codes != "" {
+			var err error
+			if h, err = codesHash(s.Codes); err != nil {
+				return Config{}, err
+			}
+		} else if d := CodesDir(s.Dir, h); exists(filepath.Join(d, "index.json")) {
+			if dh, err := codesHash(d); err == nil && dh == h {
+				codes = d
+			}
 		}
 		kind += "-gptq-" + h
 	}
@@ -531,7 +545,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				missing = missing || !converted(ctx, out+programExt(backend))
 			}
 			outs, names, base = append(outs, out), append(names, name), base+"-"+name
-			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
+			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
 		}
 		tps = append(tps, tierProgs{outs, names, ps, base})
 	}
@@ -551,6 +565,9 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 	}
 	if missing {
+		if s.CodesHash != "" && codes == "" {
+			return Config{}, fmt.Errorf("chat: %s's programs are converted with the lookup tables %s (models.yaml's codes), which neither the sources nor %s have: --codes DIR, or a models.yaml of your own without codes", c.Name, s.CodesHash, CodesDir(s.Dir, s.CodesHash))
+		}
 		if _, err := checkpoint(); err != nil {
 			return Config{}, err
 		}
@@ -963,6 +980,10 @@ type program struct {
 	formatFor         []string // llm.Options.FormatFor
 	headRows          []int32  // llm.Options.HeadRows, listed in a Core AI export (draftVocabFile)
 }
+
+// CodesDir is where Prepare looks for the codes of a hash (Setup.CodesHash) in a model's
+// directory: codes-HASH beside its programs.
+func CodesDir(dir, hash string) string { return filepath.Join(dir, "codes-"+hash) }
 
 // codesHash names a codes directory (llm.Options.Codes) by its index.json: the first 8 hex
 // digits of its SHA-256. The index has each weight's key, a hash of its values.

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/milcpu"
 )
 
 // readF32 reads a file of little endian float32.
@@ -62,7 +63,7 @@ func TestRealLayers(t *testing.T) {
 	format := cmp.Or(os.Getenv("QWEN_FORMAT"), "fp16")
 	n, _ := strconv.Atoi(cmp.Or(os.Getenv("QWEN_LAYERS"), "3"))
 	for _, i := range append(seq(n), c.NumLayers) {
-		p := build(t, c, w, llm.Options{Seq: meta.Seq, Format: format, Quant: os.Getenv("QWEN_QUANT"), Start: i, Layers: 1, NoHead: i < c.NumLayers})
+		p := build(t, c, w, llm.Options{Seq: meta.Seq, Format: format, Quant: os.Getenv("QWEN_QUANT"), Codes: os.Getenv("QWEN_CODES"), Start: i, Layers: 1, NoHead: i < c.NumLayers})
 		in := at(i)
 		out := p.run(t, map[string][]float32{"x": in})["y"]
 		var want []float32
@@ -136,7 +137,7 @@ func TestRealChained(t *testing.T) {
 	}
 	h := readF32(t, ref+".hidden.bin")[:meta.Seq*meta.Hidden]
 	for i := 0; i <= c.NumLayers; i++ {
-		p := build(t, c, w, llm.Options{Seq: meta.Seq, Format: format, Quant: os.Getenv("QWEN_QUANT"), ColBlock: colBlock, FormatFor: formatFor, Start: i, Layers: 1, NoHead: i < c.NumLayers})
+		p := build(t, c, w, llm.Options{Seq: meta.Seq, Format: format, Quant: os.Getenv("QWEN_QUANT"), Codes: os.Getenv("QWEN_CODES"), ColBlock: colBlock, FormatFor: formatFor, Start: i, Layers: 1, NoHead: i < c.NumLayers})
 		h = p.run(t, map[string][]float32{"x": h})["y"]
 	}
 	want := readF32(t, ref+".logits.bin")
@@ -184,4 +185,49 @@ func logSoftmax(x []float32) []float64 {
 		out[i] = float64(v) - lz
 	}
 	return out
+}
+
+// With QWEN_CHECKPOINT and QWEN_REF, each layer in fp16 on the CPU with every operation's result
+// rounded to fp16 (as the Neural Engine computes): the operations whose largest value passes
+// QWEN_OVER (30000), which overflow or nearly overflow fp16's 65504.
+func TestRealF16Overflow(t *testing.T) {
+	dir, ref := os.Getenv("QWEN_CHECKPOINT"), os.Getenv("QWEN_REF")
+	if dir == "" || ref == "" || os.Getenv("QWEN_F16") == "" {
+		t.Skip("QWEN_CHECKPOINT, QWEN_REF and QWEN_F16 not set")
+	}
+	a, m, err := llm.LoadConfig(filepath.Join(dir, "config.json"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := m.(*Config)
+	w, err := llm.OpenWeights(filepath.Join(dir, "model.safetensors"), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	var meta struct{ Seq, Hidden int }
+	raw, _ := os.ReadFile(ref + ".json")
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	over, _ := strconv.ParseFloat(cmp.Or(os.Getenv("QWEN_OVER"), "30000"), 64)
+	hidden := readF32(t, ref+".hidden.bin")
+	for i := 0; i < c.NumLayers; i++ {
+		p := build(t, c, w, llm.Options{Seq: meta.Seq, Format: "fp16", Start: i, Layers: 1, NoHead: true})
+		in := hidden[i*meta.Seq*meta.Hidden : (i+1)*meta.Seq*meta.Hidden]
+		var worst float32
+		var worstOp string
+		_, err := p.p.Run(map[string]milcpu.Tensor{"x": {Shape: []int{1, meta.Seq, meta.Hidden}, Data: in}}, milcpu.Options{RoundF16: true, Trace: func(typ, name string, mx, rms float32) {
+			if mx > worst || mx != mx {
+				worst, worstOp = mx, typ+" "+name
+			}
+			if float64(mx) > over || mx != mx {
+				t.Logf("layer %d: %s %s max %g", i, typ, name, mx)
+			}
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("layer %d: largest %g at %s", i, worst, worstOp)
+	}
 }

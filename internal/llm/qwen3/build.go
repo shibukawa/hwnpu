@@ -189,14 +189,43 @@ func (m *builder) layerRest(i int, a, residual *mlpackage.Var) *mlpackage.Var {
 	return m.Op("add", map[string]any{"x": h, "y": f}, h.Shape...)
 }
 
-// mlp is Qwen3MLP: down_proj(silu(gate_proj(x)) * up_proj(x)).
+// mlpSplit is the widest intermediate the MLP computes in one piece: the Neural Engine's axis
+// limit. Qwen2.5-Coder-7B's 18944 in one piece left every part off the Neural Engine (an MLP of
+// its size 18.3 ms a call on the CPU against 2.49 ms in two, M1, Core AI). A variable for the
+// tests.
+var mlpSplit = llm.NeuralEngineMaxDim
+
+// mlp is Qwen3MLP: down_proj(silu(gate_proj(x)) * up_proj(x)). An intermediate over mlpSplit is
+// computed in pieces of whole 32 columns, each with its rows of gate_proj and up_proj and its
+// columns of down_proj (blocks.MatrixSlice: the blocks of the matrices palettized whole), the
+// downs added.
 func (m *builder) mlp(i int, h *mlpackage.Var) *mlpackage.Var {
 	p := layerPrefix(i) + "mlp."
-	f := m.cfg.IntermediateSize
-	gate := m.SiLU(m.Linear(h, p+"gate_proj.weight", "", f))
-	up := m.Linear(h, p+"up_proj.weight", "", f)
-	g := m.Op("mul", map[string]any{"x": gate, "y": up}, gate.Shape...)
-	return m.Linear(g, p+"down_proj.weight", "", m.d)
+	f, d := m.cfg.IntermediateSize, m.d
+	if f <= mlpSplit {
+		gate := m.SiLU(m.Linear(h, p+"gate_proj.weight", "", f))
+		up := m.Linear(h, p+"up_proj.weight", "", f)
+		g := m.Op("mul", map[string]any{"x": gate, "y": up}, gate.Shape...)
+		return m.Linear(g, p+"down_proj.weight", "", d)
+	}
+	n := (f + mlpSplit - 1) / mlpSplit
+	piece := (f/n + 31) / 32 * 32
+	sh := append([]int{}, h.Shape[:len(h.Shape)-1]...)
+	var sum *mlpackage.Var
+	for a := 0; a < f; a += piece {
+		b := min(a+piece, f)
+		ps := append(append([]int{}, sh...), b-a)
+		gate := m.Op("linear", map[string]any{"x": h, "weight": m.MatrixSlice(p+"gate_proj.weight", f, d, a, b, 0, d)}, ps...)
+		up := m.Op("linear", map[string]any{"x": h, "weight": m.MatrixSlice(p+"up_proj.weight", f, d, a, b, 0, d)}, ps...)
+		g := m.Op("mul", map[string]any{"x": m.SiLU(gate), "y": up}, ps...)
+		y := m.Op("linear", map[string]any{"x": g, "weight": m.MatrixSlice(p+"down_proj.weight", d, f, 0, d, a, b)}, h.Shape...)
+		if sum == nil {
+			sum = y
+		} else {
+			sum = m.Op("add", map[string]any{"x": sum, "y": y}, h.Shape...)
+		}
+	}
+	return sum
 }
 
 // ropeTables returns the cos and sin tables (1, seq, 1, head_dim): constants for positions

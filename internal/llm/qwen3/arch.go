@@ -31,7 +31,10 @@ var Arch = &llm.Arch{
 // rows lose too much of it below 8 bits without choosing them against the activations
 // (docs/design.md 16.230).
 var Qwen2Arch = &llm.Arch{
-	Name:          "qwen2",
+	Name: "qwen2",
+	// 1: an MLP wider than the Neural Engine's axis in pieces (mlp, Qwen2.5-Coder-7B's 18944):
+	// in one piece every part was off the Neural Engine
+	Revision:      1,
 	Title:         "Qwen2",
 	ModelTypes:    []string{"qwen2"},
 	Architectures: []string{"Qwen2ForCausalLM"},

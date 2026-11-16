@@ -205,6 +205,28 @@ models:
     no_think: true
     amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
     about: "Qwen's Qwen3.5-2B, the 4B's structure in 2B: its text model in 6 bit tables (as good as 8 bit ones on it), answering without thinking unless asked; the download has the vision part too, which is not converted"
+  Qwen2.5-Coder-7B-Instruct:
+    # Qwen2 (qwen2: Qwen3's decoder with biases on q, k and v, no norms over the heads; its MLP
+    # of 18944 in two pieces, under the Neural Engine's 16384). Apple: 4 bit tables over whole
+    # rows chosen by GPTQ against the activations (codes, tools/ref/qwen2_gptq.py): KL 0.13 nats
+    # against transformers' float32 where rounding gives 0.90 (lut8 0.0012; --format-for
+    # down_proj=lut8 0.078 for 0.95 GB more). Tables of column blocks would be finer, but the
+    # Neural Engine reads only a row's first (docs/design.md 16.230). M1 (2026-11-16): 4.0 GB on
+    # the Neural Engine and the process's 0.35 GB, 0.8 tokens/s: over the 2.8 GiB an M1 runs at
+    # full speed (16.118), so not picked there; the M2 and later not measured. AMD: no export
+    family: qwen2.5-coder
+    tag: 7b
+    kind: chat
+    from: hf:Qwen/Qwen2.5-Coder-7B-Instruct
+    license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/blob/main/LICENSE", class: open}
+    machine: 16
+    memory: 4.4
+    not_on: [M1]
+    format: lut4
+    codes: faace07a
+    bytes: 15.2e9
+    features: [tools]
+    about: "Qwen's Qwen2.5-Coder-7B-Instruct: code generation, completion and repair, tool calls as JSON, in 4 bit tables chosen against its activations; no thinking; a context of 32768"
   gpt-oss-20b:
     family: gpt-oss
     tag: 20b

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"cmp"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strings"
@@ -20,12 +21,17 @@ type Run struct {
 	// where the whole program of short conversations would hold its weights a second time
 	// (3.1 GB against 1.7), and auto from 16 GB.
 	Tier string
+	// Codes is the hash of the lookup tables chosen against the activations (GPTQ) that its
+	// programs are converted with (Setup.CodesHash): Qwen2.5-Coder's 4 bit tables, which
+	// rounding alone leaves far from the model (docs/design.md 16.230).
+	Codes string
 }
 
 // over is r with the fields o gives.
 func (r Run) over(o Run) Run {
 	return Run{Prefill: cmp.Or(o.Prefill, r.Prefill), Format: cmp.Or(o.Format, r.Format),
-		Context: cmp.Or(o.Context, r.Context), Paged: cmp.Or(o.Paged, r.Paged), Tier: cmp.Or(o.Tier, r.Tier)}
+		Context: cmp.Or(o.Context, r.Context), Paged: cmp.Or(o.Paged, r.Paged), Tier: cmp.Or(o.Tier, r.Tier),
+		Codes: cmp.Or(o.Codes, r.Codes)}
 }
 
 // zero reports whether r gives nothing.
@@ -68,6 +74,7 @@ type RunEntry struct {
 	Context *int    `yaml:"context"`
 	Paged   *int    `yaml:"paged"`
 	Tier    *string `yaml:"tier"`
+	Codes   *string `yaml:"codes"`
 }
 
 // variantEntry is a variant in a definition file: variants: {16: {memory: 2.3, prefill: auto}}.
@@ -99,6 +106,12 @@ func toRun(e RunEntry) (Run, error) {
 			return r, fmt.Errorf("paged %d is not a chunk of tokens or -1 (never)", r.Paged)
 		}
 	}
+	if e.Codes != nil {
+		r.Codes = strings.TrimSpace(*e.Codes)
+		if _, err := hex.DecodeString(r.Codes); err != nil || len(r.Codes) != 8 {
+			return r, fmt.Errorf("codes %q is not the 8 hex digits of a codes directory's hash", r.Codes)
+		}
+	}
 	if e.Tier != nil {
 		if r.Tier = strings.TrimSpace(*e.Tier); r.Tier == "" {
 			return r, fmt.Errorf("tier is empty (none for no shorter caches)")
@@ -128,7 +141,7 @@ func toVariants(m Model, es map[int]*variantEntry) (map[int]Variant, error) {
 			return nil, fmt.Errorf("variant of %d GB: %w", gb, err)
 		}
 		if !r.zero() && m.Kind != KindChat {
-			return nil, fmt.Errorf("variant of %d GB: prefill, format, context, paged and tier are for chat models (hwnpu-chat)", gb)
+			return nil, fmt.Errorf("variant of %d GB: prefill, format, context, paged, tier and codes are for chat models (hwnpu-chat)", gb)
 		}
 		v := Variant{Run: r}
 		if e.Memory != nil {

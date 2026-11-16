@@ -162,6 +162,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | Qwen3.5-0.8B | Chat (weak at Japanese facts) | 1.5 GB (AMD with a 6-bit MLP; Apple in 8 bit tables, 0.99 GiB on the Neural Engine and 0.39 GiB of the process); 2.3 GB on an M2 or later from 16 GB (with the program of short conversations 1.84 GiB and 0.31 GiB) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and an M1; an M2's programs with `--tier 2048`) |
 | Qwen3.5-2B | Chat, code | 2.4 GB on AMD (6-bit MLP), 2.2 GB on Apple (M1: 1.67 GiB on the Neural Engine in 6 bit tables and 0.39 GiB of the process) | 14 KiB/token (3.38 GiB at 262144) | measured (AMD and an M1) |
 | Qwen3.5-4B | Chat, code | about 4.2 GB (3.9 GiB of 8 bit weights) | 32 KiB/token (8 GiB at 262144; 114688 tokens on 16 GB) | runs on an M3's Neural Engine; memory estimated from the weights |
+| Qwen2.5-Coder-7B-Instruct (Apple) | Code, chat | about 4.4 GB (M1: 4.0 GB on the Neural Engine in 4 bit tables chosen by GPTQ and the process's 0.35 GB) | 63 KiB/token (1.97 GiB at 32768) | measured on an M1 (0.8 tokens/s there, over its Neural Engine's 2.8 GiB: not picked on an M1); the M2 and later not measured |
 | gpt-oss-20b (AMD only) | Chat, code, reasoning | 14.5 GB (13.0 GiB pinned for the NPU: MXFP4 experts as they are, 8-bit attention, 4-bit head) | 48 KiB/token (0.38 GiB at its 8192) | measured on a Ryzen AI 9 365 |
 | Qwen3.6-35B-A3B (planned) | Chat, code | about 25 GB | — | estimated from 4-bit weights; not ported |
 

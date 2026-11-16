@@ -23,6 +23,8 @@ type Graph struct {
 	B    *mlpackage.Builder
 	W    llm.Weights
 	Opts llm.Options
+
+	luts map[string]palette.LUT4 // the whole matrices MatrixSlice cut blocks of, by name
 }
 
 type buildError struct{ err error }
@@ -117,6 +119,16 @@ func (g *Graph) WeightRows(name string, begin, end, cols int, scale float32) *ml
 	return g.matrix(name, fmt.Sprintf("%s_%d_%d", name, begin, end), w, end-begin, cols, scale)
 }
 
+// rowsOnly refuses a weight of tables or scales per block of columns in a Core AI program: the
+// Neural Engine compiles it (fully placed, at the speed of whole rows) but every row group takes
+// its first column block's table or scale for all its columns, where Core AI's CPU is right
+// (macOS 27.2, M1: docs/design.md 16.230). Core ML and Intel's NPU are left as they were.
+func (g *Graph) rowsOnly(name string, colBlock, cols int) {
+	if g.Opts.Backend == llm.BackendCoreAI && colBlock > 0 && colBlock != cols {
+		g.Fail("%s: tables or scales of %d columns (of %d): the Neural Engine reads only the first block's through Core AI; whole rows only", name, colBlock, cols)
+	}
+}
+
 // matrix writes the (rows, cols) values w of the tensor name as the constant constName.
 func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scale float32) *mlpackage.Var {
 	format := g.Opts.FormatOf(name)
@@ -131,6 +143,7 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 			g.Fail("%s: %v", name, err)
 		}
 		if ok {
+			g.rowsOnly(name, q.ColBlock, cols)
 			v, err := g.B.LUT(constName, bits, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
 			if err != nil {
 				g.Fail("%v", err)
@@ -161,6 +174,7 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 			g.Fail("unknown quantizer %q", g.Opts.Quant)
 		}
 		q := palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, mode)
+		g.rowsOnly(name, q.ColBlock, cols)
 		v, err = g.B.LUT(constName, bits, []int{rows, cols}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
 	default:
 		bits, block, ok := llm.LinearFormat(format)
@@ -170,6 +184,7 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 		if block > 0 && cols%block != 0 {
 			g.Fail("%s: %d columns are not a multiple of the %s blocks", name, cols, format)
 		}
+		g.rowsOnly(name, block, cols)
 		search := true
 		switch g.Opts.Quant {
 		case "", "mse":
@@ -185,6 +200,65 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 			v, err = g.B.Int8Scaled(constName, []int{rows, cols}, []int{1, q.ColBlock}, q.Data, q.Scales)
 		}
 	}
+	if err != nil {
+		g.Fail("%v", err)
+	}
+	return v
+}
+
+// MatrixSlice is the block of rows [r0, r1) and columns [c0, c1) of the named (rows, cols)
+// weight as a constant of its own, for a weight split to keep an axis within the Neural
+// Engine's 16384 (Qwen2.5-Coder-7B's MLP of 18944). In a lutN format it is that block of the
+// whole matrix's tables, fitted once (or the codes chosen for the whole matrix, Opts.Codes), so
+// that the parts together are the matrix palettized whole: the rows whole groups, the columns
+// whole column blocks (any with tables of whole rows). In another format, the block's values.
+// The constant is called name_r0_r1_c0_c1.
+func (g *Graph) MatrixSlice(name string, rows, cols, r0, r1, c0, c1 int) *mlpackage.Var {
+	constName := fmt.Sprintf("%s_%d_%d_%d_%d", name, r0, r1, c0, c1)
+	format := g.Opts.FormatOf(name)
+	bits := map[string]int{"lut4": 4, "lut6": 6, "lut8": 8}[format]
+	if bits == 0 {
+		w := g.Get(name, rows, cols)
+		part := make([]float32, 0, (r1-r0)*(c1-c0))
+		for r := r0; r < r1; r++ {
+			part = append(part, w[r*cols+c0:r*cols+c1]...)
+		}
+		return g.matrix(name, constName, part, r1-r0, c1-c0, 1)
+	}
+	q, ok := g.luts[name]
+	if !ok {
+		w := g.Get(name, rows, cols)
+		found := false
+		if g.Opts.Codes != "" {
+			c, err := LoadCodes(g.Opts.Codes)
+			if err != nil {
+				g.Fail("%v", err)
+			}
+			if q, found, err = c.Lookup(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 1); err != nil {
+				g.Fail("%s: %v", name, err)
+			}
+		}
+		if !found {
+			mode := palette.Uniform
+			switch g.Opts.Quant {
+			case "", "uniform":
+			case "kmeans":
+				mode = palette.KMeans
+			case "kmeans-minmax":
+				mode = palette.KMeansMinMax
+			default:
+				g.Fail("unknown quantizer %q", g.Opts.Quant)
+			}
+			q = palette.QuantizeBits(w, rows, cols, g.Opts.Group, g.Opts.ColBlock, bits, 8, mode)
+		}
+		if g.luts == nil {
+			g.luts = map[string]palette.LUT4{}
+		}
+		g.luts[name] = q
+	}
+	s := q.Sub(r0, r1, c0, c1)
+	g.rowsOnly(name, s.ColBlock, s.Cols)
+	v, err := g.B.LUT(constName, bits, []int{s.Rows, s.Cols}, []int{s.Group, s.ColBlock}, s.Indices, s.LUT)
 	if err != nil {
 		g.Fail("%v", err)
 	}
