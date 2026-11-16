@@ -116,29 +116,46 @@ func Resume() {
 	})
 }
 
-// worker does the jobs of the queue one at a time until none is left.
+// worker does the jobs of the queue, PutStreams at a time, until none is left.
 func worker(wakeup chan struct{}) {
 	defer queueBusy.Done()
-	failed := map[string]bool{}
+	var (
+		mu      sync.Mutex
+		failed  = map[string]bool{}
+		running = map[string]bool{}
+	)
+	done := make(chan struct{}, PutStreams)
 	for {
 		files, _ := filepath.Glob(filepath.Join(queueDir(), "*.json"))
-		did := false
+		mu.Lock()
 		for _, f := range files {
-			if failed[f] {
+			if failed[f] || running[f] || len(running) >= PutStreams {
 				continue
 			}
-			did = true
-			if err := runJob(f); err != nil {
-				failed[f] = true
-				logQueue("%s: %v (left for the next run)", filepath.Base(f), err)
-			}
+			running[f] = true
+			go func() {
+				err := runJob(f)
+				mu.Lock()
+				delete(running, f)
+				if err != nil {
+					failed[f] = true
+				}
+				mu.Unlock()
+				if err != nil {
+					logQueue("%s: %v (left for the next run)", filepath.Base(f), err)
+				}
+				done <- struct{}{}
+			}()
 		}
-		if did {
-			continue
-		}
+		busy := len(running) > 0
+		mu.Unlock()
 		select {
+		case <-done:
 		case <-wakeup:
 		case <-time.After(2 * time.Second):
+			if busy {
+				continue
+			}
 			queueMu.Lock()
 			if len(wakeup) == 0 {
 				queueWake = nil
