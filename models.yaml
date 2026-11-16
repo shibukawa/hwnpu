@@ -302,12 +302,15 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3.6-35B-A3B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", class: open}
+    # AMD (a Ryzen AI 9 365, 2026-11-17, docs/design.md 16.267): 24,188 MiB of the NPU's (the
+    # experts and head at 4 bits, the mixers at 8) and the process's 880 MiB at its peak while
+    # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB
     machine: 48
-    memory: 25
+    memory: 26.3
     bytes: 71.9e9
     features: [tools, thinking]
     amd_export: qwen35moe --max-seq-len 4096 --prefill-chunk 256 --q4
-    about: "Qwen's Qwen3.6-35B-A3B, a mixture of experts (35B, 3B active) of Gated DeltaNet and attention: AMD's NPU only, its experts and head at 4 bits; the download has the vision part too, which is not converted"
+    about: "Qwen's Qwen3.6-35B-A3B, a mixture of experts (35B, 3B active) of Gated DeltaNet and attention: AMD's NPU only, 8.5 tokens/s, its experts and head at 4 bits; the download (72 GB) has the vision part too, which is not converted"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b
