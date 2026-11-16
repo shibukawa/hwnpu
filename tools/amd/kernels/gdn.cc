@@ -588,6 +588,17 @@ extern "C" void gdn_gather_conv(int32_t t, int32_t qo, int32_t ko, int32_t vo,
   gather_row(u_row, t, qo, ko, vo, abo);
 }
 
+// gdn_gather_conv's v slice, a and b alone: q and k stay from the last full gather (the
+// rule only reads them), a core's slices of one key head gathering them once.
+extern "C" void gdn_gather_conv_v(int32_t t, int32_t vo, int32_t abo) {
+  const aie::rounding_mode saved_rounding =
+      aie::swap_rounding(aie::rounding_mode::conv_even);
+  silu_row(u_row + vo, blk + 2 * R * Dk + t * Dv, Dv);
+  blk[2 * R * Dk + R * Dv + t] = u_row[abo];
+  blk[2 * R * Dk + R * Dv + R + t] = u_row[abo + 1];
+  aie::set_rounding(saved_rounding);
+}
+
 #ifdef GDR_NORM_DIM
 static_assert(R == 1 && HD % Dv == 0 && HD % 32 == 0, "gdn_norm: a decode step's row, whole slices");
 

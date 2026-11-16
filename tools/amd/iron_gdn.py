@@ -267,6 +267,7 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
     from iron.common import Built, Operator, Rtp
 
     cores = 2 * n
+    GATHER_V = [None]  # a decode step's gather of the v slice alone (kernels: conv and norm)
     if slots and not (conv and norm and not steps):
         raise ValueError("gdn_operator: slots are a decode step's, with conv and norm")
 
@@ -314,6 +315,7 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             if norm:
                 rule = ExternalFunction("gdn_rule_keep", arg_types=[st_t, st_t, *[i32] * 7], **common)
                 normk = ExternalFunction("gdn_norm", arg_types=[y_t, xt_t, i32, i32], **common)
+                GATHER_V[0] = ExternalFunction("gdn_gather_conv_v", arg_types=[i32] * 3, **common)
                 return gather, rule, convk, normk, bindk, scr_t
             return gather, rule, convk, None, bindk, scr_t
         # without conv, the third: a y of zeros (a prompt chunk's blocks past the call's rows)
@@ -462,7 +464,7 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                         y_f.release(1)
                 x_f.release(1)
 
-            def core(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k, bind=None, scr=None):
+            def core(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k, bind=None, scr=None, gather_v=None):
                 bind(scr)  # the arrays the core keeps between calls, in its scratch buffer
                 if steps:
                     return core_steps(x_f, s_f, y_f, f_f, gather, rule, convk, normk, rtp, j, k)
@@ -487,6 +489,10 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                     qo, ko = i32c(kl * dk), i32c(KHg * dk + kl * dk)
                     vbase = 2 * KHg * dk + hl * dv
                     abo = i32c(2 * KHg * dk + Hg * dv + 2 * hl)
+                    if gather_v is not None and (i == 0 or kl != (hl - 1) // rep):
+                        # q and k once for the core's slices of this key head; each slice then
+                        # gathers its v alone (gdn_gather_conv_v)
+                        gather(i32c(0), qo, ko, i32c(vbase), abo)
                     for s in range_(S):
                         s32 = index.casts(T.i32(), s)
                         vo = arith.addi(i32c(vbase), arith.muli(s32, i32c(SLICE)))
@@ -495,7 +501,9 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
                         # (the rule's work, with no live row, skipped)
                         for b in range_(nb if nb is not None else blocks):
                             for t in range_(R):
-                                if conv:
+                                if gather_v is not None:
+                                    gather_v(index.casts(T.i32(), t), vo, abo)
+                                elif conv:
                                     gather(index.casts(T.i32(), t), qo, ko, vo, abo)
                                 else:
                                     row = x_f.acquire(1)
@@ -532,7 +540,11 @@ def gdn_operator(n: int = 8, hc: int = 2, conv: int = 0, norm: float = 0.0, pair
             workers = []
             for c in range(n):
                 for j in range(2):
-                    if norm:
+                    if norm and GATHER_V[0] is not None and not steps:
+                        fn = lambda x_f, s_f, y_f, f_f, g, r, ck, nk, gv, rtp, b, scr, j=j, k=2 * c + j: core(  # noqa: E731
+                            x_f, s_f, y_f, f_f, g, r, ck, nk, rtp, j, k, b, scr, gather_v=gv)
+                        ks = [gather, rule, convk, normk, GATHER_V[0]]
+                    elif norm:
                         fn = lambda x_f, s_f, y_f, f_f, g, r, ck, nk, rtp, b, scr, j=j, k=2 * c + j: core(  # noqa: E731
                             x_f, s_f, y_f, f_f, g, r, ck, nk, rtp, j, k, b, scr)
                         ks = [gather, rule, convk, normk]
