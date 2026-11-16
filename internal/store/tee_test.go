@@ -59,8 +59,14 @@ func TestTee(t *testing.T) {
 					tee.Write(b[:n])
 					b = b[n:]
 				}
+				if !hasMarker(ls(), "original/lab/m/") {
+					t.Errorf("no marker in the repository's folder while the file is put: %v", ls())
+				}
 				if got := tee.Finish(ctx, tc.sum, tc.dlErr); got != tc.want {
 					t.Fatalf("Finish: %v", got)
+				}
+				if hasMarker(ls(), "original/lab/m/") {
+					t.Errorf("the marker is left: %v", ls())
 				}
 				clearLocks()
 				l, err := ReadLock(ctx, s, "lab/m")
@@ -128,6 +134,16 @@ func files(t *testing.T, root string) []string {
 		return nil
 	})
 	return out
+}
+
+// hasMarker reports whether one of keys is a marker (MarkWriting) in folder (ending in a slash).
+func hasMarker(keys []string, folder string) bool {
+	for _, k := range keys {
+		if strings.HasPrefix(k, folder) && isMarker(k) {
+			return true
+		}
+	}
+	return false
 }
 
 func slicesHas(ss []string, s string) bool {

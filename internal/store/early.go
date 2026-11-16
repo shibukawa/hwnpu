@@ -40,6 +40,8 @@ type early struct {
 	done     chan struct{}
 	mu       sync.Mutex
 	put      map[string]stamp // the files put: slash paths in dir
+	// unmark removes the marker that tells Clean the folder at rel is being written (MarkWriting)
+	unmark func()
 }
 
 var (
@@ -67,8 +69,16 @@ func StartEarly(s Source, rel, dir string) {
 	if earlies[id] != nil {
 		return
 	}
+	// the folder is not whole until PutEntry writes entry.json, which can be long after the
+	// first files (an export for AMD's NPU compiles for minutes): marked meanwhile, so that Clean
+	// leaves it
+	unmark, err := MarkWriting(ctx, s, rel)
+	if err != nil {
+		logQueue("%s: not put in %s while it is made: %v", filepath.Base(dir), s, err)
+		return
+	}
 	e := &early{s: s, rel: rel, dir: dir, start: time.Now().Add(-time.Second), stop: make(chan struct{}),
-		done: make(chan struct{}), put: map[string]stamp{}}
+		done: make(chan struct{}), put: map[string]stamp{}, unmark: unmark}
 	earlies[id] = e
 	go e.run(ctx)
 }
@@ -85,6 +95,7 @@ func endEarly(s Source, dir string) map[string]stamp {
 	}
 	close(e.stop)
 	<-e.done
+	e.unmark() // PutEntry marks the folder from here
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if n := len(e.put); n > 0 {

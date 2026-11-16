@@ -58,6 +58,20 @@ func TestEarly(t *testing.T) {
 	if st.n(key("stale.bin")) != 0 || st.n(key("w.tmp")) != 0 {
 		t.Errorf("put early: %v", st.puts)
 	}
+	// the folder has no entry.json yet: a marker keeps Clean off it, even with its files put
+	// longer ago than WritingStale (a conversion that compiles for long)
+	if !hasMarker(files(t, root), rel+"/") {
+		t.Errorf("no marker while files are put early: %v", files(t, root))
+	}
+	long := time.Now().Add(-2 * WritingStale)
+	for _, f := range files(t, root) {
+		if !isMarker(f) {
+			os.Chtimes(filepath.Join(root, filepath.FromSlash(f)), long, long)
+		}
+	}
+	if c, err := PlanClean(ctx, s); err != nil || len(c.Folders) != 0 {
+		t.Errorf("Clean takes a folder being made: %+v %v", c.Folders, err)
+	}
 	write(t, filepath.Join(dir, "b.bin"), "b2, changed after")
 	os.Remove(filepath.Join(dir, "gone.bin"))
 	os.Remove(filepath.Join(dir, "w.tmp"))
@@ -66,6 +80,9 @@ func TestEarly(t *testing.T) {
 	describeAt(t, dir, rel, map[string]string{"x": "1"})
 	if err := PutEntry(ctx, s, dir); err != nil {
 		t.Fatal(err)
+	}
+	if hasMarker(files(t, root), rel+"/") {
+		t.Errorf("the marker is left: %v", files(t, root))
 	}
 	if n := st.n(key("a/main.mlirb")); n != 1 {
 		t.Errorf("a/main.mlirb put %d times", n)

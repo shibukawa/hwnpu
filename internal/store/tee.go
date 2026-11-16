@@ -57,6 +57,9 @@ type Tee struct {
 	mu                 sync.Mutex
 	pending, written   int64
 	err                error // why it dropped out
+	// unmark removes the marker that tells Clean the repository's folder is being written
+	// (MarkWriting): the file is under a temporary name until Finish
+	unmark func()
 }
 
 // StartTee starts putting the file name of repo of commit, of size bytes, in s as it is
@@ -73,13 +76,21 @@ func StartTee(ctx context.Context, s Source, repo, commit, name string, size int
 	case err != nil && !errors.Is(err, ErrNotFound):
 		return nil
 	}
-	ps, err := st.stream(ctx, OriginalKey(repo, name), size)
+	// marked until the lock names the file, as PutOriginal does: a large file downloads for
+	// longer than Clean takes a folder untouched for left
+	unmark, err := MarkWriting(ctx, s, "original/"+repo)
 	if err != nil {
 		logQueue("%s/%s: not put in %s as it is downloaded: %v", repo, name, s, err)
 		return nil
 	}
+	ps, err := st.stream(ctx, OriginalKey(repo, name), size)
+	if err != nil {
+		unmark()
+		logQueue("%s/%s: not put in %s as it is downloaded: %v", repo, name, s, err)
+		return nil
+	}
 	t := &Tee{s: s, repo: repo, commit: commit, name: name, size: size, start: time.Now(), ps: ps,
-		h: sha256.New(), ch: make(chan []byte, 4096), done: make(chan struct{})}
+		h: sha256.New(), ch: make(chan []byte, 4096), done: make(chan struct{}), unmark: unmark}
 	go t.run()
 	return t
 }
@@ -146,6 +157,7 @@ func (t *Tee) Finish(ctx context.Context, sum string, downloadErr error) bool {
 	if t == nil {
 		return false
 	}
+	defer t.unmark()
 	close(t.ch)
 	t.mu.Lock()
 	err := t.err
