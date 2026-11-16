@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Clean is what a writeback cut off left in a source (hwnpu cache clean, docs/cache-sharing.md
+// Clean is what a writeback cut off left in a source (hwnpu cache clean, docs/cache-sharing-design.md
 // 7.1). A folder is whole or it is not: an entry's folder (converted/MODEL/TARGET/EXPORT/VERSION)
 // with no entry.json is not, and goes whole; in a repository's folder (original/OWNER/NAME) the
 // files its hwnpu-lock.json does not name go, all of them with no lock. The temporary files of

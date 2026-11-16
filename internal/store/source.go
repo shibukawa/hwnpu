@@ -16,7 +16,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 )
 
-// A source is a place models are looked for in before Hugging Face (docs/cache-sharing.md 7): a
+// A source is a place models are looked for in before Hugging Face (docs/cache-sharing-design.md 7): a
 // folder (a mounted NAS, a local disk), an HTTP server (WebDAV, or any server read only) or S3.
 // The sources are HWNPU_MODEL_SOURCE, then HWNPU_MODEL_SOURCE_1, _2, ... (every variable that
 // starts with HWNPU_MODEL_SOURCE, in the order of its number), each a URL:

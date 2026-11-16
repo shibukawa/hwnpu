@@ -1433,7 +1433,7 @@ func logLine(log io.Writer) func(string, ...any) {
 
 // commits are the commits Hugging Face served the repositories' files of a revision from
 // (X-Repo-Commit), by OWNER/NAME@REVISION: what a copy of a file is put under in a shared layer
-// (docs/cache-sharing.md 7.1), never a branch's name.
+// (docs/cache-sharing-design.md 7.1), never a branch's name.
 var (
 	commitsMu sync.Mutex
 	commits   = map[string]string{}
@@ -1530,7 +1530,7 @@ func gb(n, total int64) string {
 
 // Fetch returns the path of a file of a model's repository (Model.Source) here (RepoDir), which
 // it puts there unless it is there: from the machine's cache, the sources, the bundled models or
-// Hugging Face (docs/cache-sharing.md 7).
+// Hugging Face (docs/cache-sharing-design.md 7).
 func Fetch(ctx context.Context, repo, name string, log io.Writer) (string, error) {
 	return fetch(ctx, repo, name, log)
 }

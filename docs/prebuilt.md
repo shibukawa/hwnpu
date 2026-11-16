@@ -1,6 +1,6 @@
 # 変換済みのモデルを Hugging Face で配る (計画)
 
-作成: 2026-11-07。状態: 計画 (未実装)。版、対象、キャッシュの層は docs/cache-sharing.md (2026-11-12) にまとめ直した。食い違うところはそちらを正とする (版はモデル × 対象ごと、定義は models.yaml の `prebuilt`、`amd-npu2/` は `amd-xdna2/`)。
+作成: 2026-11-07。状態: 計画 (未実装)。版、対象、キャッシュの層は docs/cache-sharing-design.md (2026-11-12) にまとめ直した。食い違うところはそちらを正とする (版はモデル × 対象ごと、定義は models.yaml の `prebuilt`、`amd-npu2/` は `amd-xdna2/`)。
 
 利用者の手元では、ダウンロードして読み込むだけにする。変換と校正と照合は aix1 (Ryzen AI 9 365、Linux) を GitHub Actions の self-hosted runner にして、そこで回す。design.md 16 章の当初の方針 (「配布前に一度だけ各 NPU の形式へ変換し、S3/NFS などで配る」) の置き場所を、Hugging Face に具体化したもの。
 

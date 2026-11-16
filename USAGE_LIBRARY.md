@@ -53,7 +53,7 @@ fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" is
 
 ## Models' files (modelstore)
 
-`github.com/shibukawa/hwnpu/modelstore` finds and fetches the files of the models as hwnpu's commands do: this machine's cache, then the sources (`HWNPU_MODEL_SOURCE`: folders, WebDAV and HTTP, S3), then the models the application installs with it, then Hugging Face (docs/cache-sharing.md 7).
+`github.com/shibukawa/hwnpu/modelstore` finds and fetches the files of the models as hwnpu's commands do: this machine's cache, then the sources (`HWNPU_MODEL_SOURCE`: folders, WebDAV and HTTP, S3), then the models the application installs with it, then Hugging Face (docs/cache-sharing-design.md 7).
 
 ```go
 app := configdir.New("", "myapp") // github.com/shibukawa/configdir v1.1.0

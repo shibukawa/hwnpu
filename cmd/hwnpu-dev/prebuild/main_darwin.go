@@ -14,7 +14,7 @@
 // without its weights, which a device makes again from the export's bytecode) and -put puts
 // each architecture's in the sources written back to (HWNPU_MODEL_SOURCE...?writeback=true): a
 // machine that fetches the export fetches its architecture's too, and loads the programs
-// without the Neural Engine compiler (docs/cache-sharing.md 7.9).
+// without the Neural Engine compiler (docs/cache-sharing-design.md 7.9).
 package prebuild
 
 import (

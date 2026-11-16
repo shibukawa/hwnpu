@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	// the .env files are read before any variable is (docs/cache-sharing.md 7.4)
+	// the .env files are read before any variable is (docs/cache-sharing-design.md 7.4)
 	_ "github.com/shibukawa/hwnpu/internal/envfile"
 )
 

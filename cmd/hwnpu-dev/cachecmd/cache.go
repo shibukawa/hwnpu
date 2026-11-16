@@ -1,5 +1,5 @@
 // Package cachecmd is hwnpu-dev cache: what is kept here (the cache's root) and in the sources
-// (docs/cache-sharing.md 7): the sources in effect, what they hold, putting an export in them,
+// (docs/cache-sharing-design.md 7): the sources in effect, what they hold, putting an export in them,
 // checking an entry, moving a repository's lock to a new commit, and finishing the work left in
 // the background.
 package cachecmd

@@ -14,7 +14,7 @@
 #                 a command's --device and HWNPU_DEVICE override it
 #   from          hf:OWNER/NAME (a Hugging Face repository), hf:OWNER/NAME@REVISION to pin one.
 #                 Models of one repository share its download (NAME's directory). It is looked for
-#                 in the sources first (HWNPU_MODEL_SOURCE, _1, ...: docs/cache-sharing.md 7)
+#                 in the sources first (HWNPU_MODEL_SOURCE, _1, ...: docs/cache-sharing-design.md 7)
 #   targets       the version of what is converted for each target ({amd-xdna2: {version: 2},
 #                 coreai: {version: 1}}), bumped by hand when what is made changes: the sources
 #                 keep it as vN (v0-HASH with no version)

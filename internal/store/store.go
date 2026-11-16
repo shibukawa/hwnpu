@@ -1,4 +1,4 @@
-// Package store reads and writes the sources models are looked for in (docs/cache-sharing.md 7):
+// Package store reads and writes the sources models are looked for in (docs/cache-sharing-design.md 7):
 // a folder (a mounted NAS, an external disk), an HTTP server (WebDAV to write, any server to
 // read) or S3 (any endpoint: AWS, RustFS, Cloudflare R2, through tinygodriver's storage/s3,
 // without the AWS SDK or the aws command). A Store holds objects by key, a slash-separated path;

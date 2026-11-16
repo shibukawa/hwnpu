@@ -400,7 +400,7 @@ func init() { cache.SetRestorable(restorableEntries) }
 // of the programs in the cache's exports that have a prebuilt program for this device: they hold
 // the program's weights again, and the prebuilt program makes them again in seconds rather than
 // the Neural Engine compiler's minutes, so a disk short of room loses them first (cache.Room,
-// docs/cache-sharing.md 7.7).
+// docs/cache-sharing-design.md 7.7).
 func restorableEntries() []string {
 	base := coreAICacheDir()
 	if base == "" || os.Getenv(PrebuiltEnv) == "off" || Arch() == "" {

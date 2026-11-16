@@ -1,5 +1,5 @@
 // hwnpu looks after hwnpu on this machine: the NPU and what uses it, the models downloaded and
-// the programs converted from them (the cache, docs/cache-sharing.md 7), and reports of problems.
+// the programs converted from them (the cache, docs/cache-sharing-design.md 7), and reports of problems.
 // The models are run by hwnpu-chat, hwnpu-image and hwnpu-audio.
 //
 //	hwnpu status                             # the NPU (driver, firmware, how busy, power), what uses it, the cache

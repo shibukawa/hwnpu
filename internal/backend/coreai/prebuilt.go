@@ -17,7 +17,7 @@ import (
 // layout: each X.ARCH.aimodelc without its weights (resources.bin, 99 % of it), which are the
 // bytes of X.aimodel's main.mlirb in another order, with a map of that order in their place
 // (resources.bin.map.json, Pack). That folder is what the shared layers carry for an
-// architecture (docs/cache-sharing.md 7.9): a few percent of the export. Core AI is given the
+// architecture (docs/cache-sharing-design.md 7.9): a few percent of the export. Core AI is given the
 // program assembled again from the export's bytecode (Assemble) and fills its cache entry from it.
 
 // PackedSuffix is the folder beside an export that holds its packed prebuilt programs.

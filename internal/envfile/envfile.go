@@ -1,4 +1,4 @@
-// Package envfile reads hwnpu's settings from .env files (docs/cache-sharing.md 7.4) into the
+// Package envfile reads hwnpu's settings from .env files (docs/cache-sharing-design.md 7.4) into the
 // environment when a program starts: .env.local and .env of the current directory, of the
 // user's settings (~/.config/hwnpu, %LOCALAPPDATA%\hwnpu) and of the machine's (/etc/hwnpu,
 // /Library/Application Support/hwnpu, %ProgramData%\hwnpu), in that order. A variable the
