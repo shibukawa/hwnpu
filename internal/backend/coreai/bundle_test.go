@@ -42,19 +42,21 @@ func TestBundle(t *testing.T) {
 		t.Error("a leftover was bundled")
 	}
 
-	evil := filepath.Join(dir, "evil.tar.zst")
-	f, _ := os.Create(evil)
-	zw, _ := zstd.NewWriter(f)
-	tw := tar.NewWriter(zw)
-	tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: "../escape", Size: 1})
-	tw.Write([]byte("x"))
-	tw.Close()
-	zw.Close()
-	f.Close()
-	if err := Unbundle(evil, filepath.Join(dir, "evil")); err == nil {
-		t.Error("a path outside was taken")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "escape")); err == nil {
-		t.Error("a file was written outside")
+	for _, name := range []string{"../escape", "nested/../escape"} {
+		evil := filepath.Join(dir, "evil.tar.zst")
+		f, _ := os.Create(evil)
+		zw, _ := zstd.NewWriter(f)
+		tw := tar.NewWriter(zw)
+		tw.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: name, Size: 1})
+		tw.Write([]byte("x"))
+		tw.Close()
+		zw.Close()
+		f.Close()
+		if err := Unbundle(evil, filepath.Join(dir, "evil")); err == nil {
+			t.Errorf("%q was accepted", name)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "escape")); err == nil {
+			t.Errorf("%q was written outside", name)
+		}
 	}
 }
