@@ -157,3 +157,41 @@ func TestWholeTiers(t *testing.T) {
 		t.Errorf("tiny LFM3 (%d kv heads of %d): %v, want %v", sh.KVHeads, sh.HeadDim, got, want)
 	}
 }
+
+// Qwen25.Render writes what Qwen2.5's chat template does: no thinking, its own system message
+// when there is none. The expected prompts in testdata/qwen25_template.json were rendered by
+// transformers' apply_chat_template (tools/ref/template_golden.py --text-content with
+// Qwen/Qwen2.5-Coder-7B-Instruct).
+func TestQwen25RenderMatchesTemplate(t *testing.T) {
+	raw, err := os.ReadFile("testdata/qwen25_template.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Name     string    `json:"name"`
+		NoThink  bool      `json:"no_think"`
+		Messages []Message `json:"messages"`
+		Tools    []Tool    `json:"tools"`
+		Want     string    `json:"want"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			got, thinking, err := Qwen25.Render(c.Messages, c.Tools, Options{NoThink: c.NoThink})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.Want {
+				t.Errorf("got\n%s\nwant\n%s", got, c.Want)
+			}
+			if thinking {
+				t.Error("thinking")
+			}
+		})
+	}
+	if f, err := TemplateFor("qwen2"); err != nil || f != Qwen25 {
+		t.Errorf("the qwen2 architecture's format: %v, %v", f, err)
+	}
+}

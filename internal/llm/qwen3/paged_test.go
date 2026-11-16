@@ -21,7 +21,7 @@ func convertPaged(t *testing.T, c *Config, w llm.Weights, cache, chunk int, qs .
 	var paths []string
 	for _, q := range qs {
 		opts := llm.Options{Seq: q, Cache: cache, Paged: chunk, Format: "fp16"}
-		path, err := llm.Convert(Arch, c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		path, err := llm.Convert(archOf(c), c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -118,7 +118,7 @@ func TestPagedLastRow(t *testing.T) {
 	var paths []string
 	for _, q := range []int{1, 4} {
 		opts := llm.Options{Seq: q, Cache: 16, Paged: 4, LastRow: q > 1, Format: "fp16"}
-		path, err := llm.Convert(Arch, c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
+		path, err := llm.Convert(archOf(c), c, w, filepath.Join(dir, fmt.Sprintf("m-q%d.mlpackage", q)), "none", 0, opts, io.Discard)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -714,7 +714,7 @@ func toModel(name string, e *modelEntry) (Model, error) {
 		return m, fmt.Errorf("model %s: %w", name, err)
 	}
 	if !run.zero() && m.Kind != KindChat {
-		return m, fmt.Errorf("model %s: prefill, format, context, paged and tier are for chat models (hwnpu-chat)", name)
+		return m, fmt.Errorf("model %s: prefill, format, context, paged, tier and codes are for chat models (hwnpu-chat)", name)
 	}
 	m.Run = run
 	if e.Variants != nil {

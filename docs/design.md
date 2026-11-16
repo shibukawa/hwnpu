@@ -6878,3 +6878,68 @@ NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込�
 **変えたもの**: models.yaml の `memory` (FLUX.2 klein 4.9、Anima-Turbo と Anima-Aesthetic 4.8、Sana 600M 4.4、SANA 1.5 4.5) と `image` の候補、MODEL.md と MODEL.ja.md の画像生成の行とモデルごとの表、USAGE_IMAGE の既定の説明、`-m` の説明
 
 測っていないもの: Qwen-Image-2.1 と Chroma1 (Core ML の頃の値のまま)、SANA 1.5 の 512²、Anima-Aesthetic (Anima-Turbo と同じプログラムなので同じ値にした)
+
+### 16.230 Qwen2.5-Coder (Qwen2) の変換: 構造は Qwen3 のまま入る。4 ビットは行全体の表と GPTQ で。Neural Engine は列のブロックごとの表とスケールを黙って誤る — 2026-11-16
+
+Qwen/Qwen2.5-Coder-7B-Instruct と 14B-Instruct (`Qwen2ForCausalLM`) を Mac (Core AI) で動かせるかを調べた。M1 (16 GB)、7B のチェックポイント、64 トークンの会話 (チャットの形式)。
+
+**構造**: Qwen3 の層から q と k の頭ごとの norm を除き、q、k、v に bias を足したもの。config に head_dim はない (hidden / heads = 128)。`internal/llm/qwen3` に `qwen2` アーキテクチャ (`Qwen2Arch`、`ParseQwen2Config`) として足した。注意で分けた形 (`llm.Paged`) とキャッシュ、LastRow は Qwen3 のもの。チャットの形式は Qwen3 の考えない版に、system がないときの Qwen2.5 の決まった一文 (`chat.Qwen25`)。transformers の `apply_chat_template` で描いた 9 件 (道具、呼び出し、応答) と 1 文字ずつ一致した
+
+**照合**
+
+- 合成の小さな Qwen2 (bias、norm なし、head_dim なし、tied と非 tied) を fp16 で CPU に: テストの中の fp64 の forward と相対誤差 1.6e-5、層ごと、注意で分けた形も一致。bias を外すと 0.70 で落ちる
+- 実物の 7B: transformers のモジュールを 1 層ずつ組んで float32 で回す参照 (`tools/ref/ref_qwen2.py`。7B の float32 は 30 GB で 16 GB の Mac に入らない) と、層 0〜2 と出力層を CPU で: fp16 で層の変化の相対誤差 7e-5〜6.6e-4、ロジット 4e-7
+
+**重みの形式** (CPU で全 28 層を 1 層ずつ、前の層の出力を次に渡して、参照のロジットとの KL。`TestRealChained`)
+
+| 形式 | KL の平均 | 中央値 | 最上位の一致 | 7B の重み |
+|---|---|---|---|---|
+| lut4 (一様) | 0.90 | 0.41 | 36/64 | 3.5 GB |
+| lut4 (k-means) | 0.47 | 0.20 | 45/64 | 3.5 GB |
+| lut4 (k-means、注意と出力層は lut8) | 0.45 | 0.23 | 48/64 | 4.2 GB |
+| lut4 (k-means、表を 256 列ごと) | 0.41 | 0.25 | 50/64 | 3.5 GB |
+| lut4 (k-means、表を 32 列ごと) | 0.16 | 0.089 | 54/64 | 3.9 GB |
+| lut6 (k-means) | 0.18 | 0.078 | 50/64 | 5.3 GB |
+| lut6 (k-means、表を 128 列ごと) | 0.063 | 0.027 | 58/64 | 5.3 GB |
+| lut8 | 0.0012 | 0.0008 | 63/64 | 7.1 GB |
+
+- lut4 では層ごとに変化の 20〜77 % がずれる (層 0、3、26、27 は隠れ状態で 28〜43 %)。一部の層ではなく全体が、16 行で 1 つの表に弱い。アーキテクチャの既定は lut8 にした (`Qwen2Arch.Format`)
+
+**4 ビットを使える形に** (同じ KL の測り方。校正の文は repo の Go、Python、README の英語と日本語の 4 つを 512 トークンずつ、評価の会話とは別)
+
+| 表の選び方 | KL の平均 | 中央値 | 最上位の一致 | 1 重み |
+|---|---|---|---|---|
+| k-means を入力の 2 乗平均で重みづけ (`palette.QuantizeWeighted`、`tools/coreai/lutfit`) | 0.23 | 0.078 | 51/64 | 4 ビット |
+| 同じく、表を 128 列ごと | 0.13 | 0.064 | 50/64 | 4.1 ビット |
+| 同じく、表を 32 列ごと | 0.092 | 0.047 | 56/64 | 4.5 ビット |
+| 32 列ごとの表に GPTQ (`tools/ref/qwen2_gptq.py`) | 0.060 | 0.038 | 62/64 | 4.5 ビット |
+| 行全体の表に GPTQ (Neural Engine で使える形、既定) | 0.131 | 0.051 | 54/64 | 4 ビット |
+| 同じく、注意だけ lut8 | 0.105 | 0.043 | 55/64 | +0.44 GB |
+| 同じく、出力層だけ lut8 | 0.142 | 0.044 | 58/64 | +0.27 GB |
+| 同じく、down だけ lut8 (`--format-for down_proj=lut8`) | 0.078 | 0.035 | 57/64 | +0.95 GB |
+
+- 入力の 2 乗平均は `ref_qwen2.py --stats` (1 層ずつ float32、2048 トークンで 2 分)。表は 16 行 × 列のブロックごとに、各重みの誤差をその列の入力の 2 乗平均で重みづけした Lloyd 法 (重みつきの分位から)
+- GPTQ: `q4_gptq.py` はモデル全体を float32 で読むので 7B (30 GB) は 16 GB の Mac で回らない。1 層ずつ組み、校正の文を量子化した層に通して、層の中も q、k、v → o → gate、up → down の順に H を集めて選ぶ版を書いた。表は先に重みつき Lloyd で固定し、GPTQ は各重みの表の位置だけを選ぶ。down の H (18944²) は float32 で 1.4 GB。1 層 約 155 s、全体 77 分。層 0 の変化の誤差は重みづけだけの 14.7 % から 10.5 %
+- 選んだ表は codes (`palette.Codes`、`index.json` と重みごとの `.idx`、`.tab`) に書く。Go から書く `palette.CodesWriter` を足し、列のブロック (`col_block`) も読めるようにした (CPU での比較用)。`hwnpu-chat --codes DIR` で変換に使う
+
+**Neural Engine は列のブロックごとの表とスケールを誤る** (Core AI、macOS 27.2、M1)
+
+- 16 行 × 32 列ごとの表の重みは Neural Engine に全部載り (`mps.fullyPlacedOnANE`)、行全体の表と同じ速さ (3584 × 18944 の 4 本、130〜146 MB で 1 本 4.2〜4.3 ms) だが、値が違う。32 × 64、表をブロックごとに定数 1、2、4、8 にして x をすべて 1 にすると、行の組はどの列にも最初の列のブロックの表を使った (32 (1 + 1) と 32 (2 + 2)、正しくは 32 (1 + 4) と 32 (2 + 8))
+- int4-g32、int4-g128、int8-g32 (入力 N 個ごとのスケール) も同じく誤る (milcpu とのコサイン 0.966〜0.984)。行ごとの int4 と行全体の lut4 は正確 (1.000000)
+- Core AI の CPU (`HWNPU_COREAI_UNITS=cpu`) ではどちらも正しい (160 = 160、int4-g32 のコサイン 0.99994): lowering と演算の意味は合っていて、Neural Engine へのコンパイルが列のブロックを落とす
+- 32 列ごとの表の GPTQ で変換した 7B は、Neural Engine に全部載って答えが壊れた (実物の部品 1 つで y のコサイン 0.56〜0.84)
+- そこで Core AI のプログラムでは、列のブロックごとの表とスケールを変換で断る (`blocks.Graph.rowsOnly`)。Core ML (int8-gN を CPU に置く) と Intel の NPU はそのまま
+
+**MLP を Neural Engine の軸の上限で分ける**: 7B の中間 18944 は 16384 を超え、1 本のままだと部品が全部 Neural Engine から外れた (最初の変換は答えは正しく 0.1 トークン/秒、MLP 1 つで 18.3 ms 対 2 つに分けて 2.49 ms)。16384 を超える中間は 32 列の倍数で分け、gate と up は行、down は列を分ける (`blocks.Graph.MatrixSlice`: 行列全体で量子化した表と索引のブロックなので、分けても値は同じ、codes もそのまま使える)。分けた部品は Neural Engine で 1 回 2.94 ms (125 MiB、44 GB/s、分けないと 20.9 ms)。`Qwen2Arch.Revision` を 1 に (同じ名前で古い変換を読まないように)。14B の中間 13824 は分けない
+
+**M1 で動かした** (2026-11-16、Core AI、行全体の表の GPTQ、`qwen2-r1-lut4-gptq-faace07a`)
+
+- 変換 2 分 35 秒 (29 の Core AI プログラム、生成の 8 トークンとプロンプトの 128 トークンは同じ `.aimodel` の関数)、読み込み 1 分 15 秒、全部 Neural Engine に載った。2 回目からは 0.5 秒で読み込む
+- 答えは正しい: 「n 番目のフィボナッチ数を返す Go の関数」は繰り返しで書いた正しいコード、「goroutine を 2 文で」も正しい説明
+- 0.8〜0.9 トークン/秒 (プロンプト 40〜49 トークンを 1.2〜1.5 秒)。Neural Engine が持つのは 4.0 GB で、M1 が全速で持てる 2.8 GiB (16.118) を超え、呼び出しのたびに載せ直す (PLaMo 3 Translate 8B の 0.8 トークン/秒と同じ)。分けた部品は 1 回 2.94 ms なので、全部を持てる機械では 1 トークン約 0.1 s の見込み (測っていない)
+- メモリ (2 回目、答えの間に 5 秒ごと): Neural Engine 4.0 GB、プロセスの footprint 0.35 GB、合わせて約 4.4 GB。最初の変換のあいだはプロセスが 6.3 GB に
+- models.yaml: `format: lut4`、`codes: faace07a` (GPTQ の codes のハッシュ。プログラムの名前に入るので、変換は NAS などの source から取れる。変換するには codes が `models/NAME/codes-HASH` か `--codes` に要る)、`not_on: [M1]`、`machine: 16`、`memory: 4.4`。変換は NAS に書き戻した。M2 は 3.65 GiB (Core ML で測った値) まで全速なので、4.0 GB が全速かは測ってみるまで分からない
+
+**14B**: 構造は同じで中間 13824 (分けない)。4 ビットで 7.0 GB、チェックポイント 29.5 GB がこの M1 のディスクに入らず、変換も校正もしていない。手順は 7B と同じ (`ref_qwen2.py --stats` は不要、`qwen2_gptq.py` で 1 層 約 4 分の見込み)
+
+**測っていないもの**: M2 以降の速さとメモリ (マージ後に)、14B、長い会話とエージェントの課題、別の評価の文での KL (ここは 64 トークン 1 つ)、AMD の形 (IRON の書き出しがない。q4nx の 32 列ごとのスケールなら 4 ビットでも Neural Engine の表より細かい)
