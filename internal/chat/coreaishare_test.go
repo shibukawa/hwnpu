@@ -4,8 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/shibukawa/hwnpu/internal/backend/coreai"
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	shared "github.com/shibukawa/hwnpu/internal/store"
@@ -132,5 +134,62 @@ func TestTablesShared(t *testing.T) {
 	}
 	if m2, r2 := tablesRecipe(ctx, out, a, []string{"other"}); fetchTables(ctx, m2, r2, out+"2") {
 		t.Error("tables of other names were taken")
+	}
+}
+
+// TestPrebuiltShared puts the packed prebuilt programs of an export for an architecture in a
+// shared layer (hwnpu-dev prebuild -put) and makes them again beside the same export on
+// another machine, under converted/MODEL/coreai-ARCH. An export of other programs (another
+// main.hash) does not take them.
+func TestPrebuiltShared(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	sharedLog = testLog{t}
+	l := shared.Source{Store: shared.Dir{Name: "nas", Root: t.TempDir()}, Writeback: true}
+	shared.SetSources([]shared.Source{l}, false)
+	t.Cleanup(func() { shared.SetSources(nil, true) })
+	ctx := context.Background()
+
+	// the export as the shared layers made it, its entry.json naming the model (an image
+	// model's directory is not the repository's)
+	export := func(hash string) string {
+		e := filepath.Join(t.TempDir(), "Sana", "sana-600m-v5.coreai")
+		for _, p := range []string{"dit.aimodel", "vae/decoder.aimodel"} {
+			os.MkdirAll(filepath.Join(e, p), 0o755)
+			os.WriteFile(filepath.Join(e, p, "main.mlirb"), []byte("bytecode"), 0o644)
+			os.WriteFile(filepath.Join(e, p, "main.hash"), []byte(hash), 0o644)
+		}
+		if err := shared.WriteEntry(e, shared.Entry{Format: shared.EntryFormat, Model: "Sana-600M", Kind: CoreAIKind}); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	here := export("h1")
+	packed := filepath.Join(coreai.PackedRoot(here, "h14g"), "vae", "decoder.h14g.aimodelc")
+	os.MkdirAll(packed, 0o755)
+	os.WriteFile(filepath.Join(packed, "main.hash"), []byte("h1"), 0o644)
+	os.WriteFile(filepath.Join(packed, "resources.bin"+coreai.MapSuffix), []byte("{}"), 0o644)
+	if err := PutPrebuilt(here, "h14g"); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	es, err := shared.ListEntries(ctx, l)
+	if err != nil || len(es) != 1 || !strings.HasPrefix(es[0], "converted/Sana-600M/coreai-h14g/sana-600m-v5.coreai/") {
+		t.Fatalf("entries in the layer: %v, %v", es, err)
+	}
+
+	there := export("h1")
+	FetchPrebuilt(ctx, there, "h14g")
+	got := filepath.Join(coreai.PackedRoot(there, "h14g"), "vae", "decoder.h14g.aimodelc", "main.hash")
+	if b, err := os.ReadFile(got); err != nil || string(b) != "h1" {
+		t.Fatalf("not made from the layer: %q %v", b, err)
+	}
+	FetchPrebuilt(ctx, there, "h15g")
+	if _, err := os.Stat(coreai.PackedRoot(there, "h15g")); err == nil {
+		t.Error("another architecture's were made")
+	}
+	other := export("h2")
+	FetchPrebuilt(ctx, other, "h14g")
+	if _, err := os.Stat(coreai.PackedRoot(other, "h14g")); err == nil {
+		t.Error("an export of other programs took them")
 	}
 }

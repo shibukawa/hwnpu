@@ -31,6 +31,9 @@ type Dit struct {
 	Caption       int // the text's width (Gemma 2's hidden, 2304)
 	Latent        int // DC-AE's channels (32)
 	QKNorm        bool
+	// CoreAI writes the programs for Core AI, in the forms coreai-build (Xcode's offline compiler,
+	// hwnpu-dev prebuild) takes too (design.md 16.233).
+	CoreAI bool
 }
 
 // VAEScale is DC-AE's downsampling: a latent pixel is 32 x 32 of the picture's.

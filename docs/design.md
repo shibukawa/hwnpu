@@ -4349,7 +4349,7 @@ Core ML の Neural Engine のキャッシュは約 4 GiB で、それを超え�
 - **実行** (`internal/backend/coreai`): Swift の shim (`shim/shim.swift`、`tools/coreai/build-shim.sh` で `libcaishim.dylib`、go:embed して purego で読む。`CGO_ENABLED=0` のまま)。`Compile` は `.mlpackage` を下ろして hwnpu のキャッシュに `.aimodel` を置き (キーはパッケージのダイジェスト)、Core AI で Neural Engine を指定して読む。入出力はコピー (`NDArray(shape:scalarType:)` と strides に沿った memcpy)。Core AI のキャッシュのエントリーは壊れることがあり (読み込みは通って `loadFunction` が 0.01 秒で `_GenericObjCError 0`、作り直さない)、そのときはエントリーを消して読み直す。配置は Core AI のキャッシュの MPSGraph の manifest の `mps.fullyPlacedOnANE` で見る
 - **確かめ方** (`tools/coreai/aicheck`): `run -cpu` は部品を Core AI で動かして `milcpu` と比べる。`probe` は小さな MIL (SDPA、RoPE、RMSNorm、int8 の線形…) が Neural Engine に載るか。`HWNPU_AILOWER_CUT=N` は先頭の N 個の演算だけを下ろし、外れる演算を二分探索で探す。`HWNPU_AILOWER_TRACE` は op_id と演算の対応 (Core AI のエラーは op_id で場所を示す)
 - **Anima-Turbo** (M3、1024²、int8-int8): 22 本すべて Neural Engine に載り、`milcpu` とのコサイン 0.99987〜1.000000 (文の符号器 0.12 秒、DiT の 4 ブロックの組 0.60 秒、VAE の段 0.04〜0.35 秒)。1 枚は 1 回目 4 分 50 秒 (Core AI のコンパイル 4 分 13 秒)、2 回目 38 秒 (読み込み 2.5 秒、1 ステップ 4.1 秒)。Core ML の 2 回目は 37 秒 (読み込み 3.4 秒、4.0 秒)。Anima は 2.8 GB で Core ML のキャッシュに収まるので差はない。同じ種の Core ML との最後の潜在はコサイン 0.971、PSNR 24.7 dB で、構図は同じ (手元が少し違う)
-- `.aimodelc` (`coreai-build compile`) は採らない: M3 で初回の読み込みが `.aimodel` の 5〜10 倍遅く (0.5 GiB で 26〜77 秒)、Core AI のキャッシュには重みがやはり複製され、アーキテクチャ (macOS で 22) ごとに重みを持つ。`.aimodel` は端末に依らない
+- `.aimodelc` (`coreai-build compile`) は採らない: M3 で初回の読み込みが `.aimodel` の 5〜10 倍遅く (0.5 GiB で 26〜77 秒)、Core AI のキャッシュには重みがやはり複製され、アーキテクチャ (macOS で 22) ごとに重みを持つ。`.aimodel` は端末に依らない。のちに配るものとしては採った: 重みを除いて `.aimodel` から組み立てる (16.229、16.232)
 - 1 本の上限は M3 で 2.5〜3 GiB (fp16 の合成で 2.5 GiB は全部 Neural Engine、3 GiB は外れて GPU)。Core ML の 1 GiB より大きい
 
 残り: Core AI の変換に失敗すると LLVM が abort してプロセスごと落ちる (下ろし方の誤りは `aicheck` で先に見つける)。`ailower` と `mlirbc` の単体テスト。LUT (lut4、lut8)、拡大、`pad` などは書いてあるが Anima の部品でしか確かめていない。Qwen-Image を Core AI で (キャッシュの効果が出るモデル)。Core AI のキャッシュに重みが複製される分のディスク (Qwen-Image で 17 GB)。M3 以外のチップ。
@@ -6879,6 +6879,63 @@ NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込�
 
 測っていないもの: Qwen-Image-2.1 と Chroma1 (Core ML の頃の値のまま)、SANA 1.5 の 512²、Anima-Aesthetic (Anima-Turbo と同じプログラムなので同じ値にした)
 
+### 16.229 Core AI の初回を速く: 直列の ANE コンパイラ、常駐の部品が食う wired メモリ、prebuilt (`hwnpu-dev prebuild`) — 2026-11-15
+
+`hwnpu-image generate -m chroma:1-flash` (1024²) の初回が M2 16 GB (macOS 27.2 26B131) で `dit_double_N` 1 本に 3 分 38 秒、DiT 10 本で約 50 分かかる。何に時間がかかり、何が縮められるかを測った。計測の道具は `tools/coreai/caiload` (Swift、Core AI だけで specialize・実行・`-cycle` で切り替え費用) と `tools/coreai/chromafake` (safetensors のヘッダだけから乱数の重みの Chroma の部品を書く。`CHROMAFAKE_SEED`、`-double-group`)。
+
+**ANE のコンパイラは機械全体で 1 本の直列の列**: 時間は全部 `ANECompilerService` (root の単一インスタンス、1 スレッド)。別プロセスや別スレッドから投げても後ろに並ぶ (10 プロセス × 10 部品が 67 秒で一斉に終わる。順に投げて 79 秒)。公開 API (`SpecializationOptions`) に調整はない。Core AI の項目 (`~/Library/Caches/coreai-cache/BUILD/EXE/HASH/ID/model.aimodelx`) が持つのは重み (`resources.bin`) と MPSGraph の骨格で、ANE のバイナリは aned 側 (SIP の `/Library/Caches/com.apple.aned`)。並列化はできない。
+
+- **ブロック数に超線形** (1024²、乱数の重み): 1 ブロック 30 秒、2 ブロック 76 秒、4 ブロック 219 秒。呼び出しは線形 (1 ブロック 360 ms、4 ブロック 1428 ms)
+- **aned の鍵は署名の識別子**: Core AI のユーザー側の項目は実行ファイル名ごと、aned 側のバイナリは署名の識別子ごと。Go がリンクした実行ファイルは ad-hoc 署名の `a.out` なので、どのビルドの hwnpu-image も共有する。名前だけ hwnpu-image にした Swift の道具 (識別子 `caiload`) は項目を見つけるがバイナリが得られず `nilError` になる (`codesign -s - -f -i a.out COPY` で共有できた)。正規の識別子で署名したリリースは開発ビルドと aned 側を共有しない (初回のコンパイルがもう一度かかる)
+- `AIModelCache.model(for:options:)` は 1〜20 ms で項目の有無を答える (aned 側のバイナリの有無はわからない)
+
+**ブロックを細かく分けるのは逆効果** (`--group 2`: ダブル 1 / シングル 2 で DiT 39 本、同じプロンプトと種、絵はバイト単位で同じ):
+
+| | 既定 (ダブル 4 / シングル 8、10 本) | `--group 2` (39 本) |
+|---|---|---|
+| DiT の初回コンパイル | 約 46 分 | 23 分 23 秒 |
+| 1 ステップ (Heun、2 回目の実行) | 48.6 秒 | 77.9 秒 (+60 %) |
+| 1 枚 | 6 分 36 秒 | 10 分 30 秒 |
+| コンパイル中の `ANECompilerService` の RSS | 3.2 GB | 4.9 GB (シングル 2 つの部品) |
+
+遅くなる間ホストの CPU は 10〜15 % で、費用は Core AI / ANE 側。ただし**切り替えそのものではない**。常駐の部品を `caiload -cycle` で 1 本ずつ (solo) と順回し (in turn) で呼ぶと:
+
+| 常駐 | solo の合計 | 順回し 1 周 | 差 | wired の増分 |
+|---|---|---|---|---|
+| 乱数 1 ブロック × 8 | 2.88 秒 | 2.87 秒 | 0 | +5.0 GB (1 本 0.63 GB) |
+| 乱数 1 ブロック × 19 | 6.95 秒 | 7.55 秒 | +32 ms/本 | スワップ 3.1 → 6.2 GB |
+| 実機 ダブル 4 ブロック × 5 | 6.70 秒 | 6.77 秒 | +13 ms/本 | +7.0 GB (1 本 1.40 GB) |
+| 実機 シングル 8 ブロック × 5 | 13.8 秒 | 13.8 秒 | 0 | +6.7 GB (1 本 1.34 GB) |
+| 実機 DiT 10 本 | 20.3 秒 | 23.8 秒 | +356 ms/本、+3.6 秒 | 4 ↔ 12 GB を往復 |
+
+- **常駐 1 本の費用は wired メモリ**: 1024² で「固定 約 0.36 GB + lut8 の重みの 1.2 倍」(1 ブロック 221 MB → 0.63 GB、4 ブロック 905 MB → 1.45 GB)。最初の呼び出しでワイヤされ、そのまま残る。収まる範囲では切り替えは無料
+- 既定の 10 本で約 14 GB を要求して 16 GB を超え、カーネルが毎回の DiT で約 3 GB をワイヤし直す。その +3.6 秒/回が 48.6 秒/ステップのうち 7 秒 (15 %)。hwnpu 側のホストの費用は 1 回 0.7 秒 (CPU 5 %)。39 本では固定分だけで 14 GB (39 × 0.36) になり +14.5 秒/回
+- 16 GB では今より細かくしない。粗くすればステップは速いがコンパイルは超線形。32 GB なら 10 本が収まりステップは約 15 % 速いはず (未計測)。ブロック数を models.yaml に置くなら搭載メモリで粗くする向き
+- ステップの solo の時間: ダブル 4 ブロック 1.41 秒、シングル 8 ブロック 2.86 秒 (どちらも 1 ブロック約 0.36 秒)
+
+**AOT (prebuilt)**: Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`) の `coreai-build compile X.aimodel --platform macOS --architecture h14g --preferred-compute neural-engine` は、プロセス内 1 スレッドで (並列は別プロセス) `X.h14g.aimodelc` を書く: `main.hash` (元と同じ)、`metadata.json` (`sourceHash`)、`main-h14g.mlirb` (1 KB、重みのないバイトコード)、`main-h14g-delegates/MPSGraph/mpsExecutable.mpsgraphpackage/{manifest.plist, specialized_model_1.mpsgraph, original_model_0.mpsgraph, binary_0.llir.bundle/.../h14g/*.mlir.bc (ANE の LLIR、大きさの約 1 %), resources.bin (重み)}`。アーキテクチャは 22 (h13c/d/g/s、h14c/d/g/s、h15c/d/g/m/s、h16c/g/s、h17c/d/g/p/s、h18g。h14g が M2、h14c が M2 Max)。`--preferred-compute` なしでは ANE の領域が出ない。h14s/h14d はコンパイラが落ちる (exit 139)。
+
+- **読み込み** (`coreai.Prebuilt`): `.aimodelc` を `AIModel(contentsOf:)` に渡すと、ANE のコンパイラの代わりに `ANELargeModelCompilerService` (CPU 25 %) が LLIR を仕上げる。1 ブロック 5.4 秒 (ネイティブ 30 秒)、2 ブロック 19 秒 (76 秒)、4 ブロック 66 秒 (219 秒)。512² の 3 ブロックのような小さい部品は遅い (39 秒 対 27 秒)。できた項目は元の `.aimodel` と同じ hash・同じ ID に入り、`resources.bin` はネイティブの項目とバイト単位で同一。次からは `.aimodel` の道がそのまま 0.01 秒で項目を読む。だから規則は「`hasEntry` が偽で、隣に同じ hash の `X.ARCH.aimodelc` があり、その manifest に `mps.fullyPlacedOnANE` があれば、それを開く」だけ (`HWNPU_COREAI_PREBUILT=off` で切る)。shim は `PATH.aimodelc#NAME` も分ける。prebuilt から入った部品の呼び出しは 3〜5 % 遅い (4 ブロック 1498 ms 対 1428 ms)
+- **`hwnpu-dev prebuild EXPORT [-arch LIST|all] [-j N] [-force] [-n]`** (`coreai.Build`): 部品 × アーキテクチャごとに `coreai-build` を 1 プロセスずつ、`-j` (既定: メモリ 6 GB を超えた 4 GB ごとに 1、コアの半分まで。16 GB で 2) 並べて走らせ、`.prebuild-*` に書いてから名前を付け替える。Chroma1-Flash 1024² の 29 本は 9 分 (ピーク 2.3 GB/プロセス)。ダブル 1 分 5〜19 秒、シングル 8 ブロック 2 分 10 秒、T5 の組 10 秒、VAE 1〜10 秒。ANE のコードは合計 140 MB、重みは 15.6 GB
+- **オフラインのコンパイラが ANE に乗せない部品がある**: `dit_double_8`、`dit_double_12`、`text_0` の 3 本は exit 0 で、stderr に `ANECCompileOffline() failed ... ErrorList = (CompilationFailure)`、LLIR なし、`ANERegionsHash` の後半が空の sha256 (GPU 行きの部品)。単独でも、2 本並行でも同じ。同じ形の乱数の重みの部品 (`chromafake -double-group 4` の `dit_double_4`) は乗るので、構造や混雑ではなく部品 (重み) に依る。デバイスのコンパイラは同じ 3 本を乗せている。`Build` はこれを失敗とし (出力は残さない)、他が終わってから単独でもう 1 度試す。`Prebuilt` は mark のないものを使わない (ネイティブにコンパイルする)
+- **配布への道**: 重みの `resources.bin` は `main.mlirb` の切り出しではない (定数の順が違う) が、GPU 向けの specialize (`preferredComputeUnitKind: .gpu`、905 MB の部品で 3.9 秒) の項目の `resources.bin` は同じ大きさで、ANE 向けと違うのは 916 MB のうち 19.6 MB (6 か所。1 ブロックでは 231 MB のうち 9.9 MB の 1 か所)。アーキテクチャごとに LLIR (11 MB) と差分 (20 MB) を配り、利用者の機械で GPU の specialize から `resources.bin` を取って組み立てれば、部品 1 本 3 % 強で済む見込み。まだ作っていない
+- **初回の実行** (prebuilt のある 26 本は仕上げ、ない 3 本はネイティブ。M2 16 GB、Chroma1-Flash 1024²、8 ステップ、新しい実行ファイル名で Core AI の項目なし): 同じ seed の PNG はベースラインとバイト単位で同一
+
+| | 読み込みとコンパイル | 全体 | 1 ステップ |
+|---|---|---|---|
+| prebuilt の初回 | 1 分 07 秒 (T5 の組 2〜4 秒、DiT 2〜4 秒、ネイティブの 2 本 12〜13 秒) | 7 分 24 秒 | 52.5 秒 |
+| 2 回目 (項目) | 5.5 秒 | 6 分 35 秒 | 48.5 秒 |
+
+  ネイティブの 3 本 (`text_0` 3.6 秒、`dit_double_8`/`12` 12〜13 秒) は aned 側のコンパイル済み (署名 ID `a.out` で Go のバイナリ全部が共有) が残っていたはずで、真の初回ならそれぞれ数分かかる
+- **アーキテクチャの間の比較** (乱数 1 ブロックの `dit_double_0` を 22 種類に): 12 種類はできた (h13g、h14c/g、h15c/g、h16c/g/s、h17c/d/g/s)。h13c/d/s、h14d/s、h15d/m/s、h17p の 9 種類は `coreai-build` が落ち (SIGSEGV、4〜7 秒)、h18g は ANE に乗らない。ファイルごとに見ると:
+  - `resources.bin` (231 MB、全体の 99 %)、`original_model_0.mpsgraph`、`main.hash`、LLIR の `Manifest.json` は **12 種類で全部同一**
+  - ANE の LLIR (`*_ANE_region_0_0.mlir.bc`、2.8 MB、h13g だけ 4.3 MB) は 11 通り: h17c と h17d (2 ダイ) だけが同じで、同じ世代の無印と Max でも違う
+  - `manifest.plist`、`specialized_model_1.mpsgraph`、`main-ARCH.mlirb`、`metadata.json` は 1〜40 KB で種類ごと。manifest の `deviceDescriptor` に ANE の世代 (h13g は 8、h14g は 10) と LLIR の hash
+  - **他の種類のものは読めない**: M2 で h13g のものを開くと `incompatibleCompiledAssetArchitecture(device: "h14g", asset: ["h13g"])`。名前と `deviceDescriptor` を h14g に書き換えても `failedToSpecialize`。本物の h14g は 0.72 秒で読み込み、384 ms/回
+  - `resources.bin` は `main.mlirb` の重みのバイトそのもので、並べ方だけが違う (256 バイトの見本 40 個が全部、別の位置に見つかる)。だから配るのは「並べ替えの表」(重みに依らずアーキテクチャにも依らない) と、種類ごとの LLIR + 小さいファイル (部品の約 1.2 %) でよく、ダウンローダが `.aimodel` から `resources.bin` を組み立てられる見込み
+
+**残り**: 配布 (並べ替えの表と種類ごとの LLIR から組み立てる。`coreai-build` が落ちる 9 種類は機械の上でネイティブ)、#174 の後の書き出しで prebuild し直す、`chroma.ExportName` にグループを含める (`--link-from` は先頭グループのブロック数も見るようにした)、models.yaml のブロック数、別スレッドで見えた Qwen-Image の `dit_0#text` の ANE コンパイラ内部エラー (`Spiller: symbol not freed`)。
+
 ### 16.230 Qwen2.5-Coder (Qwen2) の変換: 構造は Qwen3 のまま入る。4 ビットは行全体の表と GPTQ で。Neural Engine は列のブロックごとの表とスケールを黙って誤る — 2026-11-16
 
 Qwen/Qwen2.5-Coder-7B-Instruct と 14B-Instruct (`Qwen2ForCausalLM`) を Mac (Core AI) で動かせるかを調べた。M1 (16 GB)、7B のチェックポイント、64 トークンの会話 (チャットの形式)。
@@ -6943,3 +7000,87 @@ Qwen/Qwen2.5-Coder-7B-Instruct と 14B-Instruct (`Qwen2ForCausalLM`) を Mac (Co
 **14B**: 構造は同じで中間 13824 (分けない)。4 ビットで 7.0 GB、チェックポイント 29.5 GB がこの M1 のディスクに入らず、変換も校正もしていない。手順は 7B と同じ (`ref_qwen2.py --stats` は不要、`qwen2_gptq.py` で 1 層 約 4 分の見込み)
 
 **測っていないもの**: M2 以降の速さとメモリ (マージ後に)、14B、長い会話とエージェントの課題、別の評価の文での KL (ここは 64 トークン 1 つ)、AMD の形 (IRON の書き出しがない。q4nx の 32 列ごとのスケールなら 4 ビットでも Neural Engine の表より細かい)
+
+### 16.231 取得元の往復を実機で: Hugging Face → 変換 → NAS へ書き戻し → 別のキャッシュは変換後だけ (WebDAV、Qwen3.5-0.8B、Core AI) — 2026-11-16
+
+`HWNPU_MODEL_SOURCE=https://USER:PASS@ugreen.local:5006/llm?writeback=true` (UGREEN の NAS の WebDAV) と、毎回空の `HWNPU_CACHE` で `hwnpu-chat chat -m Qwen3.5-0.8B --backend coreai` を流した (M2 16 GB)。NAS には Qwen3.5-0.8B の元も Core AI の変換もない状態から。
+
+- **証明書**: NAS の自己署名 (`CN=UGREEN`、ホスト名なし) は Go の検証を通らず、取得元が丸ごと飛ばされる (`x509: certificate is not trusted`)。URL に `&tls_sha256=<証明書の SHA-256>` (7.5 節) が要る
+- **書き戻しが終わらない**: 元のファイル (1.75 GB を 37 秒) は置けたが、Core AI の書き出し (36 ファイル 96 MB) が 48 分、95 ファイル 1.5 GB のものは 1 時間たっても置けず、プロセスは答えた後 58 分待って queue に残して終わった。原因は 2 つ重なっていた:
+  - `ugreen.local` の名前の解決 (mDNS) が毎回 5.01 秒 (curl でも同じ。IP を与えれば 1 要求 0.04 秒、続けての要求は 0.013 秒)
+  - `WebDAV.put` と `mkdirs` が、成功した MKCOL、PUT、MOVE (と DELETE) の答えの本体を閉じていなかった。Go は閉じていない接続を使い回さないので、要求ごとに新しい接続 = 名前の解決 5 秒。1 ファイルに MKCOL・PUT・MOVE・PROPFIND で約 80 秒
+  - 直し: 本体の要らない要求は `call` (読み切って閉じる)。`cachedDialer` で、ホストの番地を最初の 1 回だけ引き、答えなければ引き直す。テスト: 105 要求で接続 85 本だったものが 1 本 (`TestWebDAVConnections`)、`TestCachedDialer`
+  - 直した後、同じ 1.5 GB (95 ファイル) と表 0.51 GB の書き戻しが 60 秒。取り出しは 96 MB を 45 秒 → 2.3 秒
+- **書き出しの説明が早すぎた**: 短いキャッシュ (2048) は丸ごと、長いもの (262144) は注意で分けた混成の書き出しで、`convertShared` が先頭の部品だけを見て「分けていない」とし、変換の直後に entry.json (ファイルごとの sha256) を作っていた。その後 `AddSmaller` が `c262144-q128-last.parts.json` を書き換えるので、NAS の entry.json の sha256 と中身が合わず、次の機械は取り出しに失敗して変換し直した。どれか 1 本でも分けていれば `shareMade` (部品を全部足した後) で置く
+- **変換後があっても元のチェックポイントを落としていた**: `mtpArch` (MTP の層の有無) が、手元に MTP の部品がなければ確かめるためにチェックポイントを落とす。分割のチェックポイントなら索引 (`model.safetensors.index.json`、51 kB) の `weight_map` で足りるので、先にそれを見る (1 ファイルのチェックポイントは今どおり落とす)
+
+| 実行 (空のキャッシュ) | NAS にあったもの | 取ったもの | 準備まで |
+|---|---|---|---|
+| A | なし | HF から元 1.75 GB、変換、元と変換後を NAS へ | 10 分 41 秒 (書き戻しで 58 分居残り) |
+| D (直した後) | 元、MTP と表 | NAS から元、変換、置く | 1 分 13 秒 (書き戻し 51 秒) |
+| F (直した後) | 全部 | NAS から変換後 2.2 GB と元の config・tokenizer・索引 12 MB だけ | 45 秒 |
+
+画像のモデル (`llm.ShareExport` の道) も Sana-600M (`hwnpu-image generate`、1024²) で確かめた。直しは要らなかった:
+
+| 実行 (空のキャッシュ) | NAS にあったもの | 取ったもの | 全体 |
+|---|---|---|---|
+| G | 元の一部 (3.65 GB、文のエンコーダーなし) | NAS から DiT と VAE、HF から文のエンコーダー 5.2 GB (NAS へ書き戻し、元は 8.88 GB に)、変換 9 秒、書き出し 4.29 GB を NAS へ | 22 分 47 秒 (Neural Engine の初回のコンパイル 19 分) |
+| H | 全部 | NAS から書き出し 4.29 GB を 1 分 22 秒、元は 1 つも取らない | 4 分 17 秒 |
+
+H の PNG は G とバイト単位で同一。
+
+Core AI の書き出しの対象は `coreai` 1 つで、M1 と M2 で同じもの (`.aimodel` は機械に依らず、チップ向けのコンパイルは各機の Core AI のキャッシュ)。形式は書き出しの名前に入るので、形式が違えば別のエントリになる。答えはどれも「東京です。」。F の 44 秒の大半は変換後の取り出しと Core AI の読み込み (この機械では Core AI の項目があるので短い。新しい機械ではここにコンパイルが乗る)。
+
+
+### 16.232 prebuilt を取得元で配る: 重みを除いて詰め、`.aimodel` から組み立てる (Core AI) — 2026-11-16
+
+16.229 の prebuilt (`coreai-build` の `X.ARCH.aimodelc`) を、変換後と同じ取得元で機械の種類ごとに配る (docs/cache-sharing.md 7.9)。
+
+- **詰める** (`coreai.Pack`): `.aimodelc` の `resources.bin` (99 %) を `resources.bin.map.json` に。中身は `main.mlirb` の資源の塊 (blob) を並べ替えたもので、塊の頭 16 バイトと 64 KiB ごとの位置を索引にし、前の一致の続きを先に試して、合わない数バイト (塊の間の頭書き) だけを literal に持つ。Chroma の 1 ブロックの部品で 231 MB → 2.97 MB (表 2.5 KB)、組み立て直してバイト単位で同一。中身の多くが `main.mlirb` にないファイルはそのまま置く
+- **組み立てる** (`coreai.Assemble`): 小さなファイルはハードリンク、表は `main.mlirb` から読んで書き、大きさと sha256 を照らす。違うバイトコードからは作らない。バックエンドは一時フォルダに組み立てて Core AI に開かせ、開いたら消す (Core AI の項目が重みを持つ)
+- **鍵**: 書き出しの各 `.aimodel` の場所と `main.hash` の sha256 (`coreai.ProgramsDigest`)、アーキテクチャ、書き出しの名前。`converted/MODEL/coreai-ARCH/EXPORT/v0-HASH`。モデルは書き出しの entry.json のもの (画像のモデルのフォルダは `Sana/` でリポジトリの名前ではないので、entry.json のない手元の書き出しは配れない)
+- **取る**: `Compile` が、Core AI の項目もなく手元の prebuilt もない部品を読むとき、書き出しごとにプロセスで 1 回、`coreai.FetchPrebuilt` (chat が設定) で取得元に聞き、`EXPORT.prebuilt/ARCH/` に置く
+- **1 つのファイルに** (`coreai.Bundle`、`prebuilt.tar.zst`): 詰めたフォルダを tar にして zstd (klauspost/compress) で。Chroma の 1 ブロックの部品の 12 種類 (h13g〜h17s) で測ると、1 種類 10 ファイル 3.02 MB が lz4 2.01 MB、gzip 1.51 MB、zstd -3 1.22 MB、-19 0.97 MB。12 種類をまとめると 36.98 MB が zstd -19 --long で 1.33 MB (LLIR の大半が種類の間で同じ) だが、取るのは自分の種類だけなので種類ごとに 1 つ
+- **手元のキャッシュ** (`hwnpu cache`、docs/cache-sharing.md 7.7): `EXPORT.coreai.prebuilt` は種類 `prebuilt` の単位 (モデルの量に数えない)。空きの下限を切るときは、prebuilt のある部品の Core AI の項目 (`coreai-cache/<OS>/hwnpu*/<hash>`、重みの複製) を先に消す: prebuilt から数秒で作り直せる。prebuilt そのものは作り直しのもとなので残す
+- **置く**: `hwnpu-dev prebuild -arch LIST -put EXPORT` (`-packed` は置かずに詰めるだけ)。全体を作ってから詰めるのではなく、部品ごとに作って詰め、全体の `.aimodelc` は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB)
+
+**Sana-600M (1024²、M2 16 GB、空のキャッシュと新しい署名の識別子で毎回)**:
+
+| | A: ネイティブ | B: 取得元の prebuilt |
+|---|---|---|
+| 取ったもの | 元のファイルを NAS から 8 分 22 秒、変換 37 秒、書き出しを NAS へ (4.73 GB を 149 秒) | 書き出し 4.33 GB を 8 分 17 秒、prebuilt (h14g、29 MB) を 5.4 秒 |
+| Gemma 2 の 5 本 | 41、32、33、32 秒 (text_21 は途中から prebuilt で 56 秒) | 86、47、36、45、37 秒 |
+| caption | 15 秒 | 17 秒 |
+| DiT 7 本 | 各 12 秒 | 各 11〜12 秒 (prebuilt なし) |
+| VAE 13 段 | 16 分 21 秒 (s9、s10、s11 が各 3 分 40 秒) | 15 分 40 秒 (s8 だけ prebuilt) |
+| 生成 | 21 分 32 秒 | 21 分 44 秒 |
+
+- 仕組みは端から端まで動いた: 取得、組み立て、Core AI の読み込み、仕上げ。PNG は A と B でバイト単位で同一
+- ただし **Sana では速くならない**: `coreai-build` (Metal Toolchain 27.2) が 27 本のうち 19 本 (DiT の 7 本と VAE の 12 段) を ANE に乗せない。DiT は 2 つの大きさの関数を持つ部品で `redefinition of symbol named 'hwnpu_101'`、関数を 1 つにした部品でも 1024² の関数は `module verification error`、VAE は 1 関数でも `ANECCompileOffline() failed ... CompilationFailure`。端末のコンパイラは全部乗せる。乗った Gemma 2 の部品は仕上げのほうがネイティブのコンパイルより遅い (16.169 の M3 の 5〜10 倍、16.229 の 512² の 3 ブロックと同じ傾向)
+- (その後、Sana の DiT と VAE は `coreai-build` に通る形に書き直した: 16.233)
+- だから prebuilt は効くモデルを選んで作る: Chroma1-Flash の 1024² の DiT (4 ブロックで 66 秒 対 219 秒、DiT 10 本で約 46 分 → 読み込み 1 分 07 秒、16.229)。Sana は作らない (試しに置いたものは `hwnpu-dev cache gc 1 --kind coreai-prebuilt --apply` で消した)
+- 端末で作ったコンパイル済み (aned の `/Library/Caches/com.apple.aned`、SIP の中、署名の識別子ごと) は持ち出せないので、配れるのは `coreai-build` の出力だけで、その出来に縛られる
+
+### 16.233 Sana の Core AI の書き出しを `coreai-build` に通す: DiT の出力の ×1、VAE の norm の最大をチャンネルを最後に、ブロックを 1 段ずつ、multiscale の 1 × 1 を密に — 2026-11-16
+
+16.232 で Sana-600M (1024²、M2) の 27 本のうち 19 本 (DiT の 7 本、VAE の 12 段) を `coreai-build` (Metal Toolchain 27.2) が ANE に乗せなかった。端末のコンパイラは全部乗せる。VAE の大きな段の初回は端末で 3 分 40 秒 (s9〜s11) あり、prebuilt が効くはずのところ。部品だけを変換する道 (`sana.Convert` の `Only`) と `HWNPU_AILOWER_CUT` の二分探索で、どの演算で落ちるかを突き止めた。直しはどれも値を変えない (CPU の `milcpu` で 128² の VAE を古い 13 段と新しい 20 段で流し、差は 0: `TestVaeCoreAI`、`HWNPU_TEST_SANA`)。Core AI の書き出しだけで、Core ML と OpenVINO はそのまま。`ExportVersion` 7。
+
+- **DiT** (`redefinition of symbol named 'hwnpu_N'`、N はその部品で最後に使う重み): 組の最後のブロックの `conv_point` の行列積、`mod(5)` の積、残差の和が出力に融合され、その融合の定数 2 つ (4608 バイトと f16 の 1 要素) に重みの名前がつく。重みの名前の付け方 (`w%d`)、使わない資源を足す、行列積を 2 つに分ける、和の順、末尾の reshape・transpose・+0 では変わらない。末尾の `x × 1` (`g.Scale(x, 1)`) で融合が切れ、7 本とも通る。1 つの大きさの関数だけでも、fp16 でも同じ
+- **VAE の norm** (`CompilationFailure`、詳細なし): `chanNorm` の `MaxScaled(x, 1)` (チャンネル方向の最大) から先が落ちる。`abs` 1 つにしても同じ。転置してチャンネルを最後の軸にして最大を取り、戻して割ると通る。(1, C, H W) に reshape して軸 1 で取ると通るが ANE の領域が 2〜4 に割れて全部は乗らない。端末では 1 回 124 → 137 ms (+10 %、vae_s9)
+- **VAE の段**: 2 つ以上のブロックの段は、最初のブロックの後の norm の割り算から落ちる (s7 の 2 つの ResBlock、s1 の upsampling と 3 つの EfficientViT)。逆数を掛ける形 (`rsqrt` の 2 乗) でも同じ。1 段に 1 ブロック (upsampling は次のブロックと) にすると通る。13 段 → 20 段
+- **EfficientViT の注意** (`'anehlo.store' op DRAM stride[0] must be >= inner stride * inner size`): 普通の 1 × 1 の qkv の注意は通り、multiscale の枝 (5 × 5 の depthwise、群 32 の 1 × 1) の注意が落ちる。群の 1 × 1 の出力を heads に reshape するところ。間に ×1 では変わらない。群の 1 × 1 をブロック対角の密な 1 × 1 にすると通る (重み 3C × 3C、C 512 で 4.7 MB。vit(3, 2) で 1 回 105.9 → 108.6 ms、端末の初回 6.8 → 20.6 秒)。q、k、v を融合の行から別々の畳み込みにする形、注意を (heads, 32, n) のまま転置なしにする形 (行の最大を軸 2 で取るとコンパイラが `SetDimensionOrderHint` の assert で落ちる) は通らなかった
+- 試して効かなかったもの: depthwise の塊を 2048 や 1024 に、GLU の値と門を別の畳み込みに (かえって s2〜s4 も落ちる)、`conv_inverted` を出力チャンネルで 4 つに
+
+**結果** (M2、h14g): 27 本 → 文 5 本、caption、DiT 7 本と final、VAE 20 段の 34 本が全部 `coreai-build` を通り、全部 ANE に乗る (manifest の `fullyPlacedOnANE`)。端末で仕上げると (`caiload`、新しい署名の識別子):
+
+| | ネイティブの初回 | prebuilt の仕上げ |
+|---|---|---|
+| vae_s9 (16.232 の版、ResBlock 128 × 1024²) | 189 秒 | 0.32 秒 |
+| vit(5, 1) | 4.5 秒 | 0.73 秒 (1 回 14.1 ms はどちらも同じ) |
+| vit(3, 1〜3) (C 512) | 7〜21 秒 | `failedToSpecialize` (端末がネイティブにコンパイルし直す) |
+| ほかの VAE の段、DiT | 12 秒前後 (DiT) | 5〜17 秒、多くはちょうど 10.2 秒 |
+
+- 仕上げの約 10.2 秒の床: 1 プロセスの最初の部品が 0.2〜0.3 秒で終わり、続く部品が 10.2 秒ずつのことがある。ANE のサービスはどれも暇。原因は未解明
+- prebuilt から仕上げた部品は、そのまま項目に残り 1 回が遅い (vae_s9 で 137 → 177 ms)
+- 通しの測り (空のキャッシュで NAS の書き出しと prebuilt から 1 枚、絵の比較) はまだ
+
