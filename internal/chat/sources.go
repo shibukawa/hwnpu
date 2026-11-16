@@ -19,7 +19,7 @@ import (
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
-// Where the files of the models come from (docs/cache-sharing.md 7), in layers: the machine's
+// Where the files of the models come from (docs/cache-sharing-design.md 7), in layers: the machine's
 // own cache (cache.Root: original/OWNER/NAME, with its hwnpu-lock.json), the sources of the
 // environment (HWNPU_MODEL_SOURCE, HWNPU_MODEL_SOURCE_1, ...: internal/store), the models an
 // application installs with it (store.SetBundles), and Hugging Face last unless

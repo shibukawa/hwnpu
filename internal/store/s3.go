@@ -17,7 +17,7 @@ import (
 	"github.com/shibukawa/tinygodriver/storage/s3"
 )
 
-// S3Config is where an S3 store is and how it is signed for (docs/cache-sharing.md 7.2).
+// S3Config is where an S3 store is and how it is signed for (docs/cache-sharing-design.md 7.2).
 type S3Config struct {
 	Name           string
 	Bucket, Prefix string

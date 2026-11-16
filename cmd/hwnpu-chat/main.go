@@ -25,7 +25,7 @@
 // tools/amd/iron_export_lm.py). list shows the models.
 //
 // A model's files are kept in hwnpu/original/OWNER/NAME in the user cache directory
-// (HWNPU_CACHE moves it; docs/cache-sharing.md 7), its programs in hwnpu/models/NAME. On Apple's Neural
+// (HWNPU_CACHE moves it; docs/cache-sharing-design.md 7), its programs in hwnpu/models/NAME. On Apple's Neural
 // Engine and Intel's NPU the first run downloads it from Hugging Face and converts it; later runs
 // load what is there. A chat model is converted twice with a KV cache of --context tokens,
 // --draft (8) tokens per call to generate (a token and the guesses after it, checked at once) and

@@ -61,7 +61,7 @@ type cli struct {
 	Prebuild   tool         `cmd:"" passthrough:"all" help:"Compile Core AI programs ahead of time with coreai-build, X.ARCH.aimodelc beside each X.aimodel of an export (macOS, Xcode 27's Metal Toolchain)."`
 	Report     tool         `cmd:"" passthrough:"all" help:"Check every NPU with bundled test models and print a report for an issue (was report)."`
 	Xclbin     tool         `cmd:"" passthrough:"all" help:"Package an mlir-aie design into an xclbin without XRT, in place of xclbinutil (was hwnpu-xclbin)."`
-	Cache      cachecmd.Cmd `cmd:"" help:"The cache's root and the shared layers (docs/cache-sharing.md): show them, list and put exports, check entries, finish the background work."`
+	Cache      cachecmd.Cmd `cmd:"" help:"The cache's root and the shared layers (docs/cache-sharing-design.md): show them, list and put exports, check entries, finish the background work."`
 }
 
 var mains = map[string]func(){

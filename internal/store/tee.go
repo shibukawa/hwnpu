@@ -20,7 +20,7 @@ import (
 
 // What is downloaded from Hugging Face goes in the sources written back to as it comes (a tee),
 // besides the file here, so that a large checkpoint is not put after it is whole
-// (docs/cache-sharing.md 7.1). It goes under a temporary name and is moved into place, and named
+// (docs/cache-sharing-design.md 7.1). It goes under a temporary name and is moved into place, and named
 // in the lock, only when the download is whole and its SHA-256 the one expected. A source that
 // takes no stream (S3), one that falls behind (TeeBuffer) or fails drops out of the tee: the file
 // goes in it from the queue after the download, as before.

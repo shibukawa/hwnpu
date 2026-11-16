@@ -15,7 +15,7 @@ import (
 
 // A writeback marks the folder it writes in (an entry's, converted/MODEL/TARGET/EXPORT/VERSION, or
 // a repository's, original/OWNER/NAME) with a file .writing-ID while it writes, refreshed every
-// WritingRefresh (docs/cache-sharing.md 7.1). A folder is whole or it is not; Clean removes what a
+// WritingRefresh (docs/cache-sharing-design.md 7.1). A folder is whole or it is not; Clean removes what a
 // writeback cut off left in one that is not, unless a marker in it was refreshed in the last
 // WritingStale: a writeback going on there.
 

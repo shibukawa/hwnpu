@@ -9,7 +9,7 @@
 - `hwnpu-chat list` と `-list` (hwnpu-transcribe、hwnpu-tts、hwnpu-systemone) に、そのコマンドの種類のモデル、エイリアス、読んだファイル
 - hwnpu-transcribe、hwnpu-tts、hwnpu-systemone が `-use` (`transcribe`、`speech`、`decision`、ファミリー、タグ、`OWNER/NAME`) で選ぶ。hwnpu-tts と hwnpu-systemone は自動で落として変換する (`speech.Prepare`、`systemone.Prepare`)。手で変換したものを渡す今までの形も残す
 - 3 つとも、変換が済んでいればチェックポイントを落とさず、表 (T5) を書いてそれで動く: hwnpu-transcribe は `tables.safetensors` (デコーダの単語の埋め込み)、hwnpu-tts は `speech-tables.safetensors` (テキスト部の埋め込み、depthformer の表、feedback、マスク)、hwnpu-systemone は `tables.safetensors` (埋め込みと、答えのラベルの出力の行)
-- 取得元 (`internal/chat/sources.go`): 2026-11-15 から定義のファイルの `sources`、`search`、`cache.layers` と `from: SOURCE:NAME` は読まない。環境変数か `.env` の URL (`HWNPU_MODEL_SOURCE`、`_1`、... と `HWNPU_MODEL_HUGGING_FACE`) にした (docs/cache-sharing.md 7 節、design.md 16.212)。下の 5 節の `sources` と `search` の例は、それより前の設計
+- 取得元 (`internal/chat/sources.go`): 2026-11-15 から定義のファイルの `sources`、`search`、`cache.layers` と `from: SOURCE:NAME` は読まない。環境変数か `.env` の URL (`HWNPU_MODEL_SOURCE`、`_1`、... と `HWNPU_MODEL_HUGGING_FACE`) にした (docs/cache-sharing-design.md 7 節、design.md 16.212)。下の 5 節の `sources` と `search` の例は、それより前の設計
   - 確かめたこと: テスト (共有フォルダを先に、なければ HF。`hf` のない探索順は HF に出ない。sha256 の違う写しを飛ばす。固定したリビジョンのフォルダを先に。`SOURCE:NAME` のモデル。偽の aws で S3 の URL、endpoint、profile、no_sign と、ないもの。aws がないときのエラー)。sha256 の確認と探索順を壊すとテストが落ちる。M3 で、whisper-large-v3-turbo の写しを置いたフォルダだけを探索順にして (`search: [share]`)、空のモデルのフォルダから取得、変換、表、書き起こしまで通った (HF への通信なし)
 - 同じリポジトリのモデルはダウンロードを共有する (`Model.DirName`: リポジトリの名前。LFM3-Audio-2B と LFM3-Audio-2B-TTS)
 - 別のリポジトリでも、同じ SHA-256 を `sha256` に書いたファイルは 1 度だけ落とす (2026-11-11): `fetch` は落とす前に、同じ SHA-256 のファイルをモデルの置き場所のほかのモデルのディレクトリに探し、あればハードリンク (できなければ写し) にして SHA-256 を確かめる。違えば消して取得元から。Qwen3-1.7B の 2 つのファイルと MOSS-SoundEffect v2.0 の `text_encoder/` (4.1 GB)
@@ -177,7 +177,7 @@ builds:
 
 ## 5. 取得元
 
-2026-11-15: この節の `sources`、`search`、`from: SOURCE:NAME` は docs/cache-sharing.md 7 節 (環境変数の URL、`original/` と `hwnpu-lock.json`) に置き換えた。リビジョンとハッシュの固定 (5.3 節) とエイリアス (5.1 節) はそのまま。
+2026-11-15: この節の `sources`、`search`、`from: SOURCE:NAME` は docs/cache-sharing-design.md 7 節 (環境変数の URL、`original/` と `hwnpu-lock.json`) に置き換えた。リビジョンとハッシュの固定 (5.3 節) とエイリアス (5.1 節) はそのまま。
 
 | type | 書き方 | 取り方 |
 |---|---|---|
@@ -185,7 +185,7 @@ builds:
 | `path` | `from: team-share:plamo-distill-0.8b` | `path` の下のフォルダ。`copy: false` なら写さずに読む (NFS や SMB の共有フォルダ) |
 | `s3` | `from: lab-s3:plamo-distill-0.8b` | `aws s3 sync s3://BUCKET/PREFIX/plamo-distill-0.8b/ DIR` を呼ぶ |
 
-S3 は `aws` コマンド (v2) に任せる。認証、リージョン、再試行、マルチパートを自前で持たないため。 (docs/cache-sharing.md 7.2 節で改めた: tinygodriver の `storage/s3` に移した。下の 3 行は aws コマンドのころのもの)
+S3 は `aws` コマンド (v2) に任せる。認証、リージョン、再試行、マルチパートを自前で持たないため。 (docs/cache-sharing-design.md 7.2 節で改めた: tinygodriver の `storage/s3` に移した。下の 3 行は aws コマンドのころのもの)
 
 - `endpoint` は `--endpoint-url`、`profile` は `--profile`、`region` は `--region`、`no_sign` は `--no-sign-request` で渡す。ほかは `aws` の通常の設定 (`AWS_*` の環境変数、`~/.aws/config`) がそのまま効く
 - RustFS のようにパス形式のアドレスが要る実装は、`~/.aws/config` のそのプロファイルに `s3 = addressing_style = path` を書く (`aws` にコマンドラインの指定がないため)。docs に手順を書く
@@ -223,7 +223,7 @@ aliases:
 
 ### 5.2 どこから持ってくるか (読み込みの順)
 
-変換済みの配布とキャッシュの層は docs/cache-sharing.md (2026-11-12) にまとめ直した。この節の `prebuilt` の書き方は、そちらの 4 節 (モデル × 対象の版) が正。
+変換済みの配布とキャッシュの層は docs/cache-sharing-design.md (2026-11-12) にまとめ直した。この節の `prebuilt` の書き方は、そちらの 4 節 (モデル × 対象の版) が正。
 
 モデルには取得元を 2 つ書ける。
 
@@ -485,7 +485,7 @@ skill は最後に、どちらにするかを聞く。
 
 | 消すもの | いつ |
 |---|---|
-| 元のチェックポイント (safetensors) | (docs/cache-sharing.md 8.1 節で改めた: 手元で作ったときは元も残し、長く使っていないときと上限のときだけ消す) 今の設定のプログラムと表 (`tables.safetensors`) が揃ったら、すぐ。`config.json`、トークナイザー、`source.json` は残す。変換し直すときは固定どおりのものを落とし直す |
+| 元のチェックポイント (safetensors) | (docs/cache-sharing-design.md 8.1 節で改めた: 手元で作ったときは元も残し、長く使っていないときと上限のときだけ消す) 今の設定のプログラムと表 (`tables.safetensors`) が揃ったら、すぐ。`config.json`、トークナイザー、`source.json` は残す。変換し直すときは固定どおりのものを落とし直す |
 | 前の設定、前の `format_version`、前のハッシュのプログラム | 準備の終わりに。今の `gemma4-lut6-c16320-*` のような古い名前もここで消える |
 | 前に配布物を落とした分と、手元で変換した分の重複 | 配布物に切り替わったら、手元で変換した方を消す |
 | 長く使っていないモデル | `cache.unused_days` (既定 30 日) 使っていなければ、フォルダごと消す。消しても次に頼めば落とし直す |

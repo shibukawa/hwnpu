@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-// WebDAVConfig is where a WebDAV folder is and who signs in to it (docs/cache-sharing.md 7).
+// WebDAVConfig is where a WebDAV folder is and who signs in to it (docs/cache-sharing-design.md 7).
 type WebDAVConfig struct {
 	Name string
 	// URL is the folder: https://nas:5006/hwnpu (Synology), https://cloud/remote.php/dav/files/USER/hwnpu

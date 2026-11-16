@@ -53,7 +53,7 @@ fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" �
 
 ## モデルのファイル (modelstore)
 
-`github.com/shibukawa/hwnpu/modelstore` は、hwnpu のコマンドと同じ順でモデルのファイルを探して取ります: この機械のキャッシュ、取得元 (`HWNPU_MODEL_SOURCE`: フォルダ、WebDAV と HTTP、S3)、アプリが一緒に入れたモデル、Hugging Face の順です (docs/cache-sharing.md 7 節)。
+`github.com/shibukawa/hwnpu/modelstore` は、hwnpu のコマンドと同じ順でモデルのファイルを探して取ります: この機械のキャッシュ、取得元 (`HWNPU_MODEL_SOURCE`: フォルダ、WebDAV と HTTP、S3)、アプリが一緒に入れたモデル、Hugging Face の順です (docs/cache-sharing-design.md 7 節)。
 
 ```go
 app := configdir.New("", "myapp") // github.com/shibukawa/configdir v1.1.0

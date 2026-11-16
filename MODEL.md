@@ -117,7 +117,7 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 - Image generation (`-m image`, the default of hwnpu-image generate) is Sana 600M on 8 GB and FLUX.2 klein 4B from 16 GB. Anima and Chroma, which may draw NSFW pictures unasked, run only when you opt in with `HWNPU_MODEL_ALLOWLIST=+nsfw` and name them (`-m anima-turbo`, `-m chroma`): the use does not pick them even then. The same variable narrows the models by license ([docs/model-provenance.md](docs/model-provenance.md))
 - The figure in parentheses is the expected memory after starting and a short conversation (next section). Long conversations add the KV cache
 - Past 32 GB there is no larger model yet. A machine with more memory runs the combinations above at once, or long contexts
-- A machine of 8 GB runs the models the way that takes less memory (LFM3-1.7B without its whole program of short conversations, Qwen3-1.7B without a program of its own to read prompts). To run one beside other programs on a machine of more memory, `hwnpu memory LFM3-1.7B 8` (or `hwnpu-chat --memory 8`) runs it the 8 GB way in every command ([docs/cache-sharing.md](docs/cache-sharing.md) 7.8)
+- A machine of 8 GB runs the models the way that takes less memory (LFM3-1.7B without its whole program of short conversations, Qwen3-1.7B without a program of its own to read prompts). To run one beside other programs on a machine of more memory, `hwnpu memory LFM3-1.7B 8` (or `hwnpu-chat --memory 8`) runs it the 8 GB way in every command ([docs/cache-sharing-design.md](docs/cache-sharing-design.md) 7.8)
 - On a small machine, a shorter `--context` cuts the KV cache. hwnpu-chat shrinks the context itself when the KV cache would be over a quarter of the physical memory
 
 ## Memory per model

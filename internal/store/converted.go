@@ -18,7 +18,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/console"
 )
 
-// What is converted goes in a source as a folder (docs/cache-sharing.md 7):
+// What is converted goes in a source as a folder (docs/cache-sharing-design.md 7):
 //
 //	converted/MODEL/TARGET/EXPORT/VERSION/FILE...
 //	converted/MODEL/TARGET/EXPORT/VERSION/entry.json   written last: a folder with it is whole
