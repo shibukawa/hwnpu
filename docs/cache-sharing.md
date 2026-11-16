@@ -10,6 +10,9 @@
 - 元のチェックポイントのフォワードプロキシ (7.1 節): lock のコミットのファイルを取得元から、なければ HF から同じコミットで取り、書き戻す取得元に置く
 - エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具の hash)。版 (`version`、5 節の lock) はまだない
 - hwnpu-image detect、pose、segment が初回に作る AMD の書き出しも層に (鍵は定義の sha256、道具の hash、Go の側の手で上げる版: `chat.PinnedRecipe`)
+- hwnpu-image generate の FLUX.2 klein も、AMD では初回に層から取るか IRON で作って書き戻す (`kind: iron-flux2klein`、鍵は `chat.PinnedRecipe` と `--size`。2026-11-16、design.md 16.235)。層にそれがなければ、手で作って `hwnpu-dev cache import` で置いた同じ名前の書き出し (`kind: iron-import`、レシピはモデル、対象、名前だけ: `chat.ImportedRecipe`) を取る (`chat.SharedExportOr`)。取り込んだものを書き戻し直すことはしない
+- ほかの手で作る AMD の書き出し (hwnpu-image の画像生成、深さ、顔、ラベル、`amd_export` のない hwnpu-chat のモデル) も、手元になければ取得元の同じ名前の `iron-import` を取って手元の `entries/amd-xdna2` に (`chat.AMDNamed`、2026-11-17、design.md 16.236)。2 回目からはその写しで、取得元には聞かない。`entries/amd-xdna2` にある手で作ったもの (entry.json がない) は、初めて使ったときに記述して書き戻す取得元に置く (`chat.ShareMadeByHand`。同じ名前があればその取得元には置かない)。`~/models` のものは書かない (`hwnpu-dev cache import`)
+- 取得は並べる: 変換結果のファイルを 4 本ずつ、大きいものから (`store.FetchStreams`)、元のファイルも 4 本ずつ (`chat.FetchFiles`: 画像、音、チャットのモデルの分割した重み)。この機械 (Wi-Fi) と UGREEN の NAS で 1 本 5 MB/s、4 本 9 MB/s
 - `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に)。書き戻しが切れて残したもの (`original/` も) は `hwnpu cache clean` で消す (7.1 節)。途中で止まった S3 のマルチパートも `hwnpu cache clean` が中止する (始まって 1 時間を過ぎたもの)。バケットのライフサイクルの規則があれば、それも効く
 - Core AI の書き出し (2026-11-14、design.md 16.199): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
 - 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)

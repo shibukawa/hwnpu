@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	shared "github.com/shibukawa/hwnpu/internal/store"
@@ -187,5 +189,143 @@ func TestSharedExport(t *testing.T) {
 				t.Error("an export of another commit was taken")
 			}
 		})
+	}
+}
+
+// TestSharedExportImported takes an export made by hand that hwnpu-dev cache import put in the
+// source (ImportedRecipe) when the source has none of the recipe's, without building it or
+// putting it again; with neither, it builds and puts the recipe's.
+func TestSharedExportImported(t *testing.T) {
+	ctx := context.Background()
+	share := t.TempDir()
+	if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}, "version: 1\nmodels:\n  LFM3-1.7B:\n    machine: 8\n"); err != nil {
+		t.Fatal(err)
+	}
+	m := modelNamed("LFM3-1.7B")
+	name := "lfm3-1.7b.amd-npu2"
+	// made by hand and imported
+	hand := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(hand, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hand, "manifest.json"), []byte(`{"by":"hand"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := PlaceEntry(ImportKind, m, cache.AMDTarget, name, ImportedRecipe(m, cache.AMDTarget, name))
+	if _, err := shared.Describe(hand, e); err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.PutEntry(ctx, shared.Sources()[0], hand); err != nil {
+		t.Fatal(err)
+	}
+	recipe := map[string]string{"model": m.Name, "target": cache.AMDTarget, "tool": "iron_x.py", "tools": "t1"}
+	imported := []SharedRecipe{{Kind: ImportKind, Recipe: ImportedRecipe(m, cache.AMDTarget, name)}}
+	built := 0
+	build := func(out string) func() error {
+		return func() error {
+			built++
+			if err := os.MkdirAll(out, 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(out, "manifest.json"), []byte(`{"by":"build"}`), 0o644)
+		}
+	}
+	t.Setenv(cache.RootEnv, t.TempDir()) // another machine
+	out := filepath.Join(t.TempDir(), name)
+	if err := SharedExportOr(ctx, "iron-x", recipe, imported, out, nil, build(out)); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	if built != 0 || read(t, filepath.Join(out, "manifest.json")) != `{"by":"hand"}` {
+		t.Fatalf("built %d, %s", built, read(t, filepath.Join(out, "manifest.json")))
+	}
+	if _, err := os.Stat(out + ".done"); err != nil {
+		t.Error("no .done")
+	}
+	if es, _ := shared.ListEntries(ctx, shared.Sources()[0]); len(es) != 1 {
+		t.Errorf("the imported export was put again: %v", es)
+	}
+	// nor began to be put as it was fetched (the early puts mark the folder they put in)
+	filepath.WalkDir(share, func(p string, d os.DirEntry, err error) error {
+		if err == nil && strings.HasPrefix(d.Name(), shared.WritingPrefix) {
+			t.Errorf("puts began for a fetched export: %s", p)
+		}
+		return nil
+	})
+	// a second run here: the export it fetched is taken
+	if err := SharedExportOr(ctx, "iron-x", recipe, imported, out, nil, build(out)); err != nil || built != 0 {
+		t.Fatalf("built %d: %v", built, err)
+	}
+	// another name: neither is there, so it is built and put as the recipe's
+	other := "lfm3-1.7b-512.amd-npu2"
+	out2 := filepath.Join(t.TempDir(), other)
+	imported2 := []SharedRecipe{{Kind: ImportKind, Recipe: ImportedRecipe(m, cache.AMDTarget, other)}}
+	if err := SharedExportOr(ctx, "iron-x", recipe, imported2, out2, nil, build(out2)); err != nil {
+		t.Fatal(err)
+	}
+	shared.Flush(ctx)
+	es, _ := shared.ListEntries(ctx, shared.Sources()[0])
+	if built != 1 || len(es) != 2 {
+		t.Fatalf("built %d, entries %v", built, es)
+	}
+	rel := es[0]
+	if !strings.Contains(rel, "/"+other+"/") {
+		rel = es[1]
+	}
+	if got, err := shared.ReadEntryAt(ctx, shared.Sources()[0], rel); err != nil || got.Kind != "iron-x" {
+		t.Errorf("the built export's entry %s: %+v %v", rel, got, err)
+	}
+}
+
+// TestFetchFiles downloads the files of a repository store.FetchStreams at a time, each whole.
+func TestFetchFiles(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	if _, err := withSources(t, nil); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	now, most := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(r.URL.Path, "/")
+		if strings.HasPrefix(p, "api/") {
+			fmt.Fprint(w, `{"gated": false}`)
+			return
+		}
+		w.Header().Set("X-Repo-Commit", testCommit)
+		if r.Method != http.MethodGet {
+			return
+		}
+		mu.Lock()
+		now++
+		most = max(most, now)
+		mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+		fmt.Fprint(w, "body of "+path.Base(p))
+		mu.Lock()
+		now--
+		mu.Unlock()
+	}))
+	t.Cleanup(srv.Close)
+	old := hubURL
+	hubURL = srv.URL + "/"
+	t.Cleanup(func() { hubURL = old })
+	var files []File
+	for i := 0; i < 7; i++ {
+		files = append(files, File{Repo: "lab/m", Name: fmt.Sprintf("shard-%d.bin", i)})
+	}
+	if err := FetchFiles(context.Background(), files, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if got := read(t, f.Path()); got != "body of "+f.Name {
+			t.Errorf("%s: %q", f.Name, got)
+		}
+	}
+	if most != shared.FetchStreams || most < 2 {
+		t.Errorf("%d downloads at once, want %d", most, shared.FetchStreams)
+	}
+	// an error stops the rest and is returned
+	if err := FetchFiles(context.Background(), []File{{Repo: "lab/m", Name: "../x"}}, nil); err == nil {
+		t.Error("no error for a name outside the repository")
 	}
 }

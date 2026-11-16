@@ -160,7 +160,7 @@ func (c *FaceDetectCmd) open(ctx context.Context, logf func(string, ...any)) (*f
 		}
 		return face.OpenCPU(path, c.Threads)
 	}
-	dir, err := amdExport(m, "tools/amd/iron_yunet.py")
+	dir, err := amdExport(ctx, m, "tools/amd/iron_yunet.py", 0)
 	if err != nil {
 		return nil, err
 	}

@@ -122,11 +122,8 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 			want = append(want, chat.File{Repo: s.Repo, Name: f.Name})
 		}
 	}
-	chat.Expect(ctx, want)
-	for _, f := range want {
-		if _, err := chat.Fetch(ctx, s.Repo, f.Name, log); err != nil {
-			return "", err
-		}
+	if err := chat.FetchFiles(ctx, want, log); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", err

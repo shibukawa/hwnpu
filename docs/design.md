@@ -7102,3 +7102,67 @@ Core AI の書き出しの対象は `coreai` 1 つで、M1 と M2 で同じも�
 - 仕上げの約 10.2 秒の床: 1 プロセスの最初の部品が 0.2〜0.3 秒で終わり、続く部品が 10.2 秒ずつのことがある。ANE のサービスはどれも暇。原因は未解明
 - prebuilt から仕上げた部品は、そのまま項目に残り 1 回が遅い (vae_s9 で 137 → 177 ms)
 - 通しの測り (空のキャッシュで NAS の書き出しと prebuilt から 1 枚、絵の比較) はまだ
+
+### 16.235 FLUX.2 klein を AMD でも初回に用意する (取得元から、なければ IRON で書き出す)、`--batch` を AMD でも — 2026-11-16
+
+Mac (16.227) は `hwnpu-image generate -m flux2-klein` だけで、初回にチェックポイントを落として変換する。AMD (16.206〜16.209) は `tools/amd/iron_flux2klein.py` を手で回し、手元のキャッシュの `entries/amd-xdna2` か `~/models` の書き出ししか見なかった。取得元 (NAS) に `hwnpu-dev cache import` で置いた書き出しがあっても読まず、`--size` も見ずに 1024² の書き出しを使っていた。Mac の `--batch` (16.216、16.227) もなかった。この 2 つを AMD に入れた。
+
+**初回の流れ** (`flux2klein.PrepareAMD`、`cmd/hwnpu-image` の `kleinModel`)
+
+1. 手元: `--size` の書き出し。1024² (既定) は `flux.2-klein-4b.amd-npu2` (前の名前の `-1024` も)、512² は `flux.2-klein-4b-512.amd-npu2`。ほかの大きさは断る (測ったのは 1 ステップの行が注意の 512 行の倍数になるこの 2 つ。ほかは `iron_flux2klein.py --size` で書き出して `-m DIR`)
+2. 取得元: まず初回の書き出し (`kind: iron-flux2klein`。レシピは `chat.PinnedRecipe` (定義の sha256、組み込みの道具の hash、`flux2klein.AMDExportVersion`) と `--size`)、なければ手で作って取り込んだもの (`kind: iron-import`)。取り込んだもののレシピはモデル、対象、名前だけ (`chat.ImportedRecipe`、`hwnpu-dev cache import` と共有) なので、置き場所をチェックポイントなしで計算できる (`TestAMDImportedPlace` は NAS の 2 つのフォルダ `v0-2d2e30e3`、`v0-d9fa89fa` と一致を見る)。2 つ目のレシピは `chat.SharedExportOr` で探し、取り込んだものは取ってきても書き戻し直さない
+3. IRON: 書き出しが読むファイル (`flux2klein.AMDFiles`: Mac の `Files` と `model_index.json`。単一ファイルの DiT は落とさない) を落とし、`chat.RunIRON` で `iron_flux2klein.py CK OUT --size N` (`--refs` は既定の、参照 4 枚までの組み合わせ)。できたものは書き戻す取得元へ。IRON がなければ、何を入れるか (`HWNPU_IRON_ENV`) と、取り込む手を言って止まる
+
+`hwnpu-image list` の「RUNS FROM」は、AMD で書き出しがなければ「exported on first run (IRON)」。Mac で FLUX.2 klein が「-」だったのも「converted on first run」に直した
+
+**確かめたこと** (Ryzen AI 9 365、NAS は UGREEN の WebDAV、この機械は無線 LAN。どれも `-m flux2-klein`、狐のプロンプト、種 1)
+
+| | 何をしたか | 時間 |
+|---|---|---|
+| 手元のキャッシュが空、NAS に手で取り込んだもの | 512² と 1024² の書き出しを NAS から取って描く。チェックポイントは落とさない | 11.25 GB を 8 分 8 秒 (前半は別のセッションと NAS を分けて 2〜3 MB/s、後半 12〜14 MB/s)、11.43 GB を 26 分 (チェックポイントの取得と並べて) |
+| 別の根、空のフォルダの取得元 (書き戻す)、HF なし | チェックポイント (NAS の `original/` から取っておいた) を見つけ、IRON で 512² を書き出し、描き、取得元に置く | 書き出し 9 分 9 秒 (IRON のカーネルのキャッシュが空で)、1 枚 8.4 秒 |
+| もう 1 つの根、その取得元だけ、IRON なし、HF なし | 初回の書き出しを取って描く。チェックポイントは落とさない | 準備 7 秒 (同じディスクのフォルダ) |
+
+- 3 つの 512² の絵はバイト単位で同じ (手で作って取り込んだものと、初回に作ったもの)
+- Hugging Face はこの回線で 29〜35 kB/s しか出ず (16 GB に 6 日)、IRON の確かめのチェックポイントは NAS から取った (1 時間 22 分)
+
+**途中で切れた取得の続き** (`store.materialize`): 機械の再起動をまたいで 512² の書き出しを取り直すと、`.part` に大きさの合うファイルが 2 つ (`text/bank_g3_scratch.bin`、`bank_g4_scratch.bin`) あり、中身が entry.json の SHA-256 と違った。再起動の前に書いた分がディスクに載らないまま大きさだけ残ったもの。今までは大きさが合えば照らさずに使い、揃ったものとして entry.json を書いていた (次の実行で壊れた書き出しを使う)。続きから取るときは、大きさの合うファイルも SHA-256 を照らし、違えば消して取り直す (`TestEntries`)。照らすのは `.part` に残ったものだけなので、初めての取得の時間は変わらない。NAS のほうの書き出しは正しかった (3 つ目は取得のときの照合で外れて取り直した)
+
+**`--batch`** (`Pipeline.GenerateAll`、`generateIRON`): 文は前からプロンプト全部で 1 回 (`EncodeAll`)。ステップは、組の重みを 1 回読んで全部の絵の行を通す (組が外側、絵が内側)。mods と DiT の 4 つのグラフを開くのも 1 回。編集でも同じ参照で何枚もまとめる。VAE は絵ごと
+
+| 4 枚 (種 1〜4、違うプロンプト) | `--batch 1` | `--batch 4` | ピーク (NPU + プロセス) |
+|---|---|---|---|
+| 512² | 40.1 秒 (1 枚 8.1 秒) | 36.8 秒 (1 枚 7.3 秒) | 1.81 → 1.87 GiB |
+| 1024² (実行の部分、2 回とも同じ) | 1 分 40 秒 | 1 分 37 秒 | 3.64 → 3.70 GiB |
+
+- 絵は 4 枚とも、どちらの大きさも `--batch 1` とバイト単位で同じ
+- 組の重みの読みは、どちらの大きさも先読み (16.207) で隠れていて 0 秒だった。だから効くのは mods と DiT を開くのが 1 枚 1 回でなくなる分 (1 枚 0.6〜0.9 秒) だけで、1024² では 3 %
+- ピーク: 最初は 1024² で 3.83〜3.89 GiB になった。VAE の前に、ステップのごみ (4 枚の行とその写し) と前の絵の VAE の最後の段の出力 (1024² で 128 MB) が Go のヒープに残っていた。絵を復号する前ごとに `debug.FreeOSMemory` で 3.68〜3.71 GiB (1 枚ずつは 3.64)
+- ピークの測り方: 0.1 秒ごとに `/proc/PID/fdinfo` の accel の fd の `drm-total-memory` (amdxdna が数える NPU のバッファ) と `/proc/PID/status` の `RssAnon + RssShmem` を読み、和の最大。1 枚の 1024² で 3.44 + 0.18 GiB で、16.208 の 3.43 + 0.16 GiB と合う
+
+**VAE はまとめない**: 段を開くのは 512² で 0.52 / 2.07 秒、1024² で 0.77 / 5.45 秒 (一時的に開くのを測った版で)。まとめると、段の出力をデバイスのまま次の段に渡す今の形 (16.207) をやめて、絵ごとにホストに写して持つことになる。1 枚 0.5〜0.8 秒のためにピークを上げない
+
+**残り**: Anima、Sana、Chroma、Qwen-Image の AMD の書き出しは今も手で (取り込んだものを取得元から読むのは同じ形で足せる)。`hwnpu-dev cache push` は FLUX.2 klein の初回の書き出しを知らない (初回が書き戻すので、手で作ったものは `import` で)。1024² の初回の IRON の書き出しの時間は測っていない
+
+### 16.236 AMD の書き出しを全部取得元を通して: 手で作ったものも名前で取り、初めて使ったときに置く。取得を 4 本並びに (Mac も) — 2026-11-17
+
+AMD の書き出しで取得元から取れたのは、hwnpu-chat の `amd_export`、detect / pose / segment の初回の書き出し、FLUX.2 klein (16.235) だけだった。画像生成 (Anima、Sana、Chroma、Qwen-Image)、深さ (DA3、MoGe-2)、顔 (YuNet)、ラベル (SigLIP 2)、`amd_export` のないチャットのモデルは手元しか見ず、NAS に `hwnpu-dev cache import` で置いた書き出しがあっても、新しい機械では動かなかった。手で作ったものを NAS に置くのも手でだった。取得元からの取得は 1 ファイルずつだった。
+
+**main に届いていなかった書き戻し** (#199): #194 (落としながらの tee) と #195 (変換しながら置く) は、行き先が積み重ねた下のブランチで、main に入っていなかった (#188 と同じ形)。squash の commit だけを今の main に当て、2 つ直した。
+
+- #197 の `hwnpu cache clean` は、印か 1 時間以内に変わったファイルのあるフォルダを残す。tee と変換しながら置くのは印を置かなかったので、大きなファイルの tee や、IRON の長いコンパイルの間に置いたものを途中で消しうる。どちらも書いている間は印を置く
+- #195 は取得元で外れると必ず置き始めていた。#198 の prebuilt の取得は外れても何も作らないので、bundle のフォルダを見張り、印を NAS に置いたままにしていた。取るだけ (`fetchFrom`) と置き始める (`startEarly`) に分け、作るときだけ始める
+
+**手で作る書き出しも取得元から** (`chat.AMDNamed`): 名前は tools/amd の案内と取得元のもの (小文字の `NAME.amd-npu2`、1024² と大きさのないものは `NAME-1024.amd-npu2` も、ほかの `--size` は `NAME-SIZE.amd-npu2`。チャットは `NAME.amd-npu2-q4`、`NAME.amd-npu2`)。手元 (`entries/amd-xdna2`、`~/models`) になければ、取得元の同じ名前の `iron-import` を手元の `entries/amd-xdna2` に落とす。2 回目からはその写しで、取得元には聞かない。`amd_export` のあるチャットのモデルも、その名前の取り込んだものがあれば、IRON で作る前に取る
+
+- AMD では `--size` も見る。前は 1024² の書き出しを使っていた。NAS には `anima-turbo-512`、`chroma1-flash-512`、`qwen-image-2.1-turbo-512` がある
+- NPU が AMD のでない機械では取りに行かない (前と同じ、NPU がないというエラー)
+
+**手で作ったものを置く** (`chat.ShareMadeByHand`): `entries/amd-xdna2` にあって `entry.json` のない書き出し (取ってきたものでも、初回に作ったものでもない) は、初めて使ったときに記述し (ファイルの SHA-256。`entry.json` に残るので一度だけ)、書き戻す取得元に裏で置く。鍵は名前だけの取り込みのレシピなので、同じ名前があればその取得元には置かない (`PutEntry` が鍵で見る)。`~/models` は読むだけの層 (7.3 節) なので書かない (`hwnpu-dev cache import`)。エラーで出す手で作る手順の行き先も `~/models` から `entries/amd-xdna2` にした
+
+**取得を並べる**: 変換結果 (`store.materialize`: AMD の書き出し、Mac の Core AI の書き出し、表、prebuilt) のファイルを 4 本ずつ (`store.FetchStreams`)、大きいものから。続きから取るときに残ったファイルを照らすのも並べて。元のファイルも、いくつかを落とすところは 4 本ずつ (`chat.FetchFiles`: 画像のモデルの準備、音のモデル、チャットのモデルの分割した重み)。バーは最後に始めたものが描くので、どのバーも計画の全部の残りを出す今の形 (`chat.Expect`) のままでよい
+
+- この機械 (Wi-Fi) と UGREEN の NAS の間で、同じ書き出しの大きなファイルを 30 秒ずつ (curl): 1 本 5 MB/s、4 本で計 9 MB/s
+- 試験: `TestEntryStreams` (9 ファイルの entry を 4 本で、揃って照らせる)、`TestFetchFiles` (偽の Hugging Face で 7 ファイルを 4 本で)、`TestAMDNamed` (手で作ったものを置く、ほかの機械が取って次は写し、`~/models` は置かない)
+
+**残り**: NAS での通しの測り (空のキャッシュから Anima などを取る時間、1 本と 4 本の書き出しの取得) は、NAS が答えなくなって (2026-11-17 0 時台、名前も IP も) まだ。`hwnpu-dev cache push` は初回の FLUX.2 klein の書き出しを知らない

@@ -78,11 +78,12 @@ func exportDevice(format, name string) string {
 	return llm.ExportDevice(format, imageDevice(name))
 }
 
-// amdOr is the export of AMD's NPU for m (amdExport) when no other NPU was found, or, on a Mac,
-// err: imageFormat's without Core AI.
-func amdOr(err error, m chat.Model, tool string) (string, error) {
-	if runtime.GOOS == "darwin" {
+// amdOr is the export of AMD's NPU for m at size (amdExport) when no other NPU was found and
+// AMD's is here, else err: imageFormat's (on a Mac without Core AI, or no NPU found), so that a
+// machine with no NPU downloads no export.
+func amdOr(ctx context.Context, err error, m chat.Model, tool string, size int) (string, error) {
+	if runtime.GOOS == "darwin" || chat.HereVendor() != "amd" {
 		return "", err
 	}
-	return amdExport(m, tool)
+	return amdExport(ctx, m, tool, size)
 }

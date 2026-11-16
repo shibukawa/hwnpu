@@ -520,36 +520,14 @@ func scaled(xs []float32, s float32) []float32 {
 	return out
 }
 
-// Batched reports whether GenerateAll and DecodeAll take several pictures together (an export of
-// Convert); on AMD's NPU they draw one after another.
-func (p *Pipeline) Batched() bool { return p.prog != nil }
-
-// GenerateAll is Generate of several pictures (text to image), each noises[k] under conds[k]: on
-// Apple's Neural Engine their steps together, each group of the DiT's blocks running every picture
-// before the next group loads; step is told of the steps of all of them.
-func (p *Pipeline) GenerateAll(ctx context.Context, conds []Cond, noises [][]float32, sigmas []float64, step StepFunc) ([][]float32, error) {
-	if len(conds) != len(noises) {
-		return nil, fmt.Errorf("flux2klein: %d conditionings for %d pictures", len(conds), len(noises))
-	}
-	if p.prog == nil {
-		out := make([][]float32, len(conds))
-		for k := range conds {
-			x, err := p.Generate(ctx, conds[k], nil, noises[k], sigmas, step)
-			if err != nil {
-				return nil, err
-			}
-			out[k] = x
-		}
-		return out, nil
-	}
+// generatePrograms is GenerateAll on Apple's Neural Engine (text to image): the pictures' steps
+// together, each group of the DiT's blocks running every picture before the next group loads.
+func (p *Pipeline) generatePrograms(ctx context.Context, conds []Cond, noises [][]float32, sigmas []float64, step StepFunc) ([][]float32, error) {
 	rows := make([][]float32, len(conds))
 	xs := make([][]float32, len(conds))
 	for k, cd := range conds {
 		if cd.rows == nil {
 			return nil, errors.New("flux2klein: the DiT runs without a prompt (Encode)")
-		}
-		if len(noises[k]) != p.C.Tokens()*p.C.Latent {
-			return nil, fmt.Errorf("flux2klein: %d noise values for latents of %d", len(noises[k]), p.C.Tokens()*p.C.Latent)
 		}
 		rows[k], xs[k] = cd.rows, append([]float32(nil), noises[k]...)
 	}
@@ -588,11 +566,16 @@ func (p *Pipeline) GenerateAll(ctx context.Context, conds []Cond, noises [][]flo
 }
 
 // DecodeAll is Decode of several pictures' latents: on Apple's Neural Engine each VAE stage over
-// all of them.
+// all of them; on AMD's NPU one picture after another (a stage hands its output to the next on
+// the device, and opening a stage is 0.5 to 0.8 s of a picture's 2 to 6 s of decoding).
 func (p *Pipeline) DecodeAll(ctx context.Context, xs ...[]float32) ([]*image.RGBA, error) {
 	if p.prog == nil {
 		out := make([]*image.RGBA, len(xs))
 		for k, x := range xs {
+			// the garbage of the steps of every picture, and of the picture decoded before (its
+			// last stage's output, 128 MB at 1024 x 1024), back to the system before the VAE's
+			// peak
+			debug.FreeOSMemory()
 			img, err := p.Decode(ctx, x)
 			if err != nil {
 				return nil, err
@@ -609,13 +592,4 @@ func (p *Pipeline) DecodeAll(ctx context.Context, xs ...[]float32) ([]*image.RGB
 	// the VAE's stages, the largest of a picture's memory
 	debug.FreeOSMemory()
 	return p.prog.decodeAll(ctx, zs, p.Stage)
-}
-
-// generatePrograms is Generate on Apple's Neural Engine.
-func (p *Pipeline) generatePrograms(ctx context.Context, cond Cond, noise []float32, sigmas []float64, step StepFunc) ([]float32, error) {
-	xs, err := p.GenerateAll(ctx, []Cond{cond}, [][]float32{noise}, sigmas, step)
-	if err != nil {
-		return nil, err
-	}
-	return xs[0], nil
 }

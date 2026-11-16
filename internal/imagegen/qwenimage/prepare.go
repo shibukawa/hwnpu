@@ -88,13 +88,7 @@ func fetchSharded(ctx context.Context, repo, name string, log io.Writer) error {
 	for _, f := range files {
 		want = append(want, chat.File{Repo: repo, Name: dir + "/" + filepath.Base(f)})
 	}
-	chat.Expect(ctx, want)
-	for _, f := range want {
-		if _, err := chat.Fetch(ctx, repo, f.Name, log); err != nil {
-			return err
-		}
-	}
-	return nil
+	return chat.FetchFiles(ctx, want, log)
 }
 
 // ExportName is the directory Prepare writes the export of name and o into: what changes the

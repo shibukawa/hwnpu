@@ -61,11 +61,8 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	for _, f := range Files {
 		want = append(want, chat.File{Repo: s.Repo, Name: f})
 	}
-	chat.Expect(ctx, want)
-	for _, f := range want {
-		if _, err := chat.Fetch(ctx, f.Repo, f.Name, log); err != nil {
-			return "", err
-		}
+	if err := chat.FetchFiles(ctx, want, log); err != nil {
+		return "", err
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
