@@ -217,7 +217,7 @@ models:
     family: qwen2.5-coder
     tag: 7b
     kind: chat
-    from: hf:Qwen/Qwen2.5-Coder-7B-Instruct
+    from: hf:Qwen/Qwen2.5-Coder-7B-Instruct@c03e6d358207e414f1eca0bb1891e29f1db0e242
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/blob/main/LICENSE", class: open}
     machine: 16
     memory: 4.4
