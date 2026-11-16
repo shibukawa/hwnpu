@@ -7,9 +7,9 @@ import (
 )
 
 // GC is what hwnpu-dev cache gc removes from a source: the entries chosen (their folders), and
-// with orphans the files under converted/ that no entry.json is with (what a writeback cut off
-// left). Nothing is removed until Apply. Run it with orphans when nothing writes to the source:
-// an entry being put there has its entry.json written last.
+// with orphans what a writeback cut off left under converted/ (Clean's: the folders with no
+// entry.json, the temporary files of uploads; a folder being written is left). Nothing is
+// removed until Apply.
 type GC struct {
 	Entries []Entry  // the entries removed
 	Orphans []string // the files removed that no entry has
@@ -57,12 +57,20 @@ func PlanGC(ctx context.Context, s Source, drop func(Entry) bool, orphans bool) 
 				break
 			}
 		}
-		switch {
-		case owner != "" && gone[owner]:
+		if owner != "" && gone[owner] {
 			g.keys = append(g.keys, k)
-		case owner == "" && orphans:
-			g.Orphans = append(g.Orphans, k)
-			g.keys = append(g.keys, k)
+		}
+	}
+	if orphans {
+		c, err := PlanClean(ctx, s)
+		if err != nil {
+			return g, err
+		}
+		for _, f := range c.Folders {
+			if strings.HasPrefix(f.Path, "converted/") && !gone[f.Path] {
+				g.Orphans = append(g.Orphans, f.Files...)
+				g.keys = append(g.keys, f.Files...)
+			}
 		}
 	}
 	return g, nil

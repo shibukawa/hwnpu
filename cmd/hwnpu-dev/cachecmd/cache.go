@@ -37,7 +37,7 @@ type Cmd struct {
 	Update  UpdateCmd  `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
 	Verify  VerifyCmd  `cmd:"" help:"Check directories against their entry.json: the sizes, and the SHA-256 with --sums."`
 	Flush   FlushCmd   `cmd:"" help:"Do the work the background left in the queue (what goes in the sources) and wait for it."`
-	GC      GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); with --orphans the files no entry.json is with too. Shows what would go unless --apply."`
+	GC      GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); with --orphans what a writeback cut off left too. Shows what would go unless --apply."`
 	Migrate MigrateCmd `cmd:"" help:"Move what a folder source holds in the layout before (blobs/, upstream/, entries/) to original/ and converted/, by hard links."`
 }
 
@@ -276,7 +276,7 @@ type GCCmd struct {
 	Kind      []string `help:"Remove the entries of these kinds (iron-lm, iron-onnxcnn...)." placeholder:"KIND"`
 	Key       []string `help:"Remove the entries whose key starts with these (the HASH of vN-HASH)." placeholder:"KEY"`
 	OlderThan int      `name:"older-than" help:"Remove the entries made more than this many days ago." placeholder:"DAYS"`
-	Orphans   bool     `help:"Remove the files under converted/ that no entry.json is with too (not while anything writes to the source: entry.json is written last)."`
+	Orphans   bool     `help:"Remove what a writeback cut off left under converted/ too: the folders with no entry.json, the temporary files of uploads (.put-); a folder being written (a .writing- marker of the last hour) is left (hwnpu cache clean does original/ too)."`
 	Apply     bool     `help:"Remove them (without it, only show what would go)."`
 }
 

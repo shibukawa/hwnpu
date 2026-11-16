@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -116,8 +115,11 @@ func Unbundle(file, dst string) error {
 			if err != nil {
 				return err
 			}
-			name := path.Clean(h.Name)
-			if !fs.ValidPath(name) || name == "." {
+			name := h.Name
+			if h.Typeflag == tar.TypeDir {
+				name = strings.TrimSuffix(name, "/")
+			}
+			if !fs.ValidPath(name) || name == "." || !filepath.IsLocal(filepath.FromSlash(name)) {
 				return fmt.Errorf("%s: %q is not a path inside it", filepath.Base(file), h.Name)
 			}
 			p := filepath.Join(tmp, filepath.FromSlash(name))

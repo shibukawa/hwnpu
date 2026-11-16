@@ -9,7 +9,7 @@ require (
 	github.com/goccy/go-yaml v1.19.2
 	github.com/klauspost/compress v1.20.3
 	github.com/shibukawa/configdir v1.1.0
-	github.com/shibukawa/tinygodriver v1.3.9
+	github.com/shibukawa/tinygodriver v1.3.10
 	golang.org/x/net v0.61.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.43.0

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 // ErrNotFound is a Store's error for a key it does not hold.
@@ -183,7 +184,24 @@ func (d Dir) Write(_ context.Context, key string, b []byte) error {
 	return os.Rename(tmp.Name(), p)
 }
 
-func (d Dir) List(_ context.Context, prefix string) ([]string, error) {
+func (d Dir) List(ctx context.Context, prefix string) ([]string, error) {
+	ls, err := d.list(prefix, false)
+	return keysOf(ls), err
+}
+
+// listAll is List with the temporary files of writes (.put-) too, and when each was last
+// changed (Clean).
+func (d Dir) listAll(_ context.Context, prefix string) ([]listed, error) {
+	return d.list(prefix, true)
+}
+
+// removeEmpty removes the folder dir if nothing is in it.
+func (d Dir) removeEmpty(_ context.Context, dir string) bool {
+	p, err := d.file(dir)
+	return err == nil && os.Remove(p) == nil
+}
+
+func (d Dir) list(prefix string, all bool) ([]listed, error) {
 	root := d.Root
 	if prefix != "" {
 		if !SafeKey(strings.TrimSuffix(prefix, "/")) {
@@ -191,7 +209,7 @@ func (d Dir) List(_ context.Context, prefix string) ([]string, error) {
 		}
 		root = filepath.Join(d.Root, filepath.FromSlash(prefix))
 	}
-	var keys []string
+	var keys []listed
 	err := filepath.WalkDir(root, func(p string, e os.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -199,9 +217,13 @@ func (d Dir) List(_ context.Context, prefix string) ([]string, error) {
 			}
 			return err
 		}
-		if e.Type().IsRegular() && !strings.HasPrefix(e.Name(), ".put-") {
+		if e.Type().IsRegular() && (all || !strings.HasPrefix(e.Name(), ".put-")) {
 			rel, _ := filepath.Rel(d.Root, p)
-			keys = append(keys, filepath.ToSlash(rel))
+			var mod time.Time
+			if fi, err := e.Info(); err == nil {
+				mod = fi.ModTime()
+			}
+			keys = append(keys, listed{filepath.ToSlash(rel), mod})
 		}
 		return nil
 	})
