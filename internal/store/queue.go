@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
 	"time"
@@ -157,6 +159,21 @@ func Flush(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+}
+
+// Wait is Flush at the end of a command: when the queue holds work (put by this process or left
+// by one before), it says so on w and waits until it is done or Ctrl-C, which leaves the rest
+// for the next run. With none (a machine that writes nothing back), it returns at once.
+func Wait(w io.Writer) {
+	files, _ := filepath.Glob(filepath.Join(queueDir(), "*.json"))
+	if len(files) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "writing %d back to the sources before ending (Ctrl-C leaves them for the next run)\n", len(files))
+	wake() // the queue's worker may have ended (or Resume found none) before this work was there
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	Flush(ctx)
 }
 
 func runJob(file string) error {

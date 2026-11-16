@@ -65,6 +65,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 type cli struct {
@@ -93,7 +94,11 @@ func main() {
 		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Bind(stop))
 	console.MeasureEnergy(console.Log(os.Stderr)) // HWNPU_ENERGY: the idle power, then each phase's energy in the last lines
-	console.RecordRun() // for hwnpu issue: the arguments, the log and how it ended
-	k.FatalIfErrorf(console.EndInterrupted(k.Run()))
-	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
+	console.RecordRun()                           // for hwnpu issue: the arguments, the log and how it ended
+	err := console.EndInterrupted(k.Run())
+	if err == nil {
+		console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
+	}
+	shared.Wait(console.Log(os.Stderr)) // what was made here goes in the sources written back to (after the times)
+	k.FatalIfErrorf(err)
 }

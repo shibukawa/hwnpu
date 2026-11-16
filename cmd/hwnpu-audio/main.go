@@ -66,6 +66,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
 	"github.com/shibukawa/hwnpu/internal/music"
 	"github.com/shibukawa/hwnpu/internal/notes"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 type cli struct {
@@ -94,9 +95,13 @@ func main() {
 		},
 		kong.BindTo(ctx, (*context.Context)(nil)))
 	console.MeasureEnergy(console.Log(os.Stderr)) // HWNPU_ENERGY: the idle power, then each phase's energy in the last lines
-	console.RecordRun() // for hwnpu issue: the arguments, the log and how it ended
-	k.FatalIfErrorf(console.EndInterrupted(k.Run()))
-	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
+	console.RecordRun()                           // for hwnpu issue: the arguments, the log and how it ended
+	err := console.EndInterrupted(k.Run())
+	if err == nil {
+		console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
+	}
+	shared.Wait(console.Log(os.Stderr)) // what was made here goes in the sources written back to (after the times)
+	k.FatalIfErrorf(err)
 }
 
 // GenerateCmd is "hwnpu-audio generate": music, or with a sound effects model a sound effect.
