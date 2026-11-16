@@ -66,16 +66,16 @@ func TestCFGSigmas(t *testing.T) {
 // 1.6B (its int8 DiT breaks the pictures).
 func TestFormats(t *testing.T) {
 	for name, want := range map[string]string{
-		"Sana-600M":                     "sana-600m-1024x1024-int8-int8-g4-v6.coreml",
-		"SANA1.5-1.6B":                  "sana1.5-1.6b-1024x1024-int8-lut8-g4-v6.coreml",
-		"Sana_600M_1024px_diffusers":    "sana_600m_1024px_diffusers-1024x1024-int8-int8-g4-v6.coreml",
-		"SANA1.5_1.6B_1024px_diffusers": "sana1.5_1.6b_1024px_diffusers-1024x1024-int8-lut8-g4-v6.coreml",
+		"Sana-600M":                     "sana-600m-1024x1024-int8-int8-g4-v7.coreml",
+		"SANA1.5-1.6B":                  "sana1.5-1.6b-1024x1024-int8-lut8-g4-v7.coreml",
+		"Sana_600M_1024px_diffusers":    "sana_600m_1024px_diffusers-1024x1024-int8-int8-g4-v7.coreml",
+		"SANA1.5_1.6B_1024px_diffusers": "sana1.5_1.6b_1024px_diffusers-1024x1024-int8-lut8-g4-v7.coreml",
 	} {
 		if got := ExportName(name, ConvertOptions{}); got != want {
 			t.Errorf("%s: %s, want %s", name, got, want)
 		}
 	}
-	if got := ExportName("Sana-600M", ConvertOptions{DitFormat: "fp16"}); got != "sana-600m-1024x1024-int8-fp16-g4-v6.coreml" {
+	if got := ExportName("Sana-600M", ConvertOptions{DitFormat: "fp16"}); got != "sana-600m-1024x1024-int8-fp16-g4-v7.coreml" {
 		t.Errorf("Sana-600M at fp16: %s", got)
 	}
 }
@@ -88,9 +88,9 @@ func TestCoreAISizes(t *testing.T) {
 		size int
 		want string
 	}{
-		{1024, "sana-600m-512+1024-int8-int8-g4-v6.coreai"},
-		{512, "sana-600m-512+1024-int8-int8-g4-v6.coreai"},
-		{768, "sana-600m-768x768-int8-int8-g4-v6.coreai"},
+		{1024, "sana-600m-512+1024-int8-int8-g4-v7.coreai"},
+		{512, "sana-600m-512+1024-int8-int8-g4-v7.coreai"},
+		{768, "sana-600m-768x768-int8-int8-g4-v7.coreai"},
 	} {
 		if got := ExportName("Sana-600M", ConvertOptions{Backend: "coreai", Width: c.size}); got != c.want {
 			t.Errorf("%d: %s, want %s", c.size, got, c.want)

@@ -21,29 +21,37 @@ func TestTextGroups(t *testing.T) {
 }
 
 // TestVaeStages checks that each stage's input is the previous stage's output: the channels and
-// the size after its upsamplings.
+// the size after its upsamplings; and that Core AI's stages run the same modules in the same
+// order.
 func TestVaeStages(t *testing.T) {
-	st := VaeStages(1024, 768)
-	C, H, W := 32, 768/32, 1024/32
-	for i, s := range st {
-		if s.C != C || s.H != H || s.W != W {
-			t.Fatalf("stage %d takes %dx%dx%d, the one before gives %dx%dx%d", i, s.C, s.H, s.W, C, H, W)
-		}
-		for _, op := range s.Ops {
-			switch op.Kind {
-			case "in":
-				C = VaeChannels[len(VaeChannels)-1]
-			case "up":
-				if op.In != C {
-					t.Fatalf("stage %d: %s takes %d channels of %d", i, op.Path, op.In, C)
+	var ops [2][]VaeOp
+	for k, coreAI := range []bool{false, true} {
+		st := VaeStages(1024, 768, coreAI)
+		C, H, W := 32, 768/32, 1024/32
+		for i, s := range st {
+			if s.C != C || s.H != H || s.W != W {
+				t.Fatalf("coreAI %v: stage %d takes %dx%dx%d, the one before gives %dx%dx%d", coreAI, i, s.C, s.H, s.W, C, H, W)
+			}
+			for _, op := range s.Ops {
+				ops[k] = append(ops[k], op)
+				switch op.Kind {
+				case "in":
+					C = VaeChannels[len(VaeChannels)-1]
+				case "up":
+					if op.In != C {
+						t.Fatalf("stage %d: %s takes %d channels of %d", i, op.Path, op.In, C)
+					}
+					C, H, W = op.Out, 2*H, 2*W
+				case "head":
+					C = 3
 				}
-				C, H, W = op.Out, 2*H, 2*W
-			case "head":
-				C = 3
 			}
 		}
+		if C != 3 || H != 768 || W != 1024 {
+			t.Errorf("coreAI %v: the decoder gives %dx%dx%d", coreAI, C, H, W)
+		}
 	}
-	if C != 3 || H != 768 || W != 1024 {
-		t.Errorf("the decoder gives %dx%dx%d", C, H, W)
+	if fmt.Sprint(ops[0]) != fmt.Sprint(ops[1]) {
+		t.Errorf("Core AI's stages run\n%v\nnot\n%v", ops[1], ops[0])
 	}
 }

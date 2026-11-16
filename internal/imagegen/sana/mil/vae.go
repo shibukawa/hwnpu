@@ -27,8 +27,10 @@ type VaeStage struct {
 }
 
 // VaeStages is the decoder of a w x h picture in the stages of tools/amd/iron_sana.py
-// (vae_stages), each a program of its own.
-func VaeStages(w, h int) []VaeStage {
+// (vae_stages), each a program of its own. For Core AI (coreAI) a ResBlock or an EfficientViT
+// block is a stage of its own (an upsampling with the block after it): coreai-build fails on the
+// norm after the first block of a program of several (design.md 16.233).
+func VaeStages(w, h int, coreAI bool) []VaeStage {
 	gh, gw := h/VAEScale, w/VAEScale
 	d := "vae.decoder.up_blocks"
 	C := VaeChannels
@@ -36,6 +38,30 @@ func VaeStages(w, h int) []VaeStage {
 	res := func(i, j int) VaeOp { return VaeOp{"res", fmt.Sprintf("%s.%d.%d", d, i, j), C[i], C[i]} }
 	up := func(i int) VaeOp { return VaeOp{"up", fmt.Sprintf("%s.%d.0", d, i), C[i+1], C[i]} }
 	st := func(s, c int, ops ...VaeOp) VaeStage { return VaeStage{ops, c, s * gh, s * gw} }
+	if coreAI {
+		return []VaeStage{
+			st(1, 32, VaeOp{Kind: "in"}, vit(5, 0)),
+			st(1, 1024, vit(5, 1)),
+			st(1, 1024, vit(5, 2)),
+			st(1, 1024, up(4), vit(4, 1)),
+			st(2, 1024, vit(4, 2)),
+			st(2, 1024, vit(4, 3)),
+			st(2, 1024, up(3), vit(3, 1)),
+			st(4, 512, vit(3, 2)),
+			st(4, 512, vit(3, 3)),
+			st(4, 512, up(2), res(2, 1)),
+			st(8, 512, res(2, 2)),
+			st(8, 512, res(2, 3)),
+			st(8, 512, up(1), res(1, 1)),
+			st(16, 256, res(1, 2)),
+			st(16, 256, res(1, 3)),
+			st(16, 256, up(0)),
+			st(32, 128, res(0, 1)),
+			st(32, 128, res(0, 2)),
+			st(32, 128, res(0, 3)),
+			st(32, 128, VaeOp{Kind: "head"}),
+		}
+	}
 	return []VaeStage{
 		st(1, 32, VaeOp{Kind: "in"}, vit(5, 0), vit(5, 1), vit(5, 2)),
 		st(1, 1024, up(4), vit(4, 1), vit(4, 2), vit(4, 3)),
@@ -53,11 +79,11 @@ func VaeStages(w, h int) []VaeStage {
 	}
 }
 
-// Vae is stage i of VaeStages(w, h): input x (1, C, H, W) (the latents for the first); output the
+// Vae is stage i of VaeStages(w, h, coreAI): input x (1, C, H, W) (the latents for the first); output the
 // next stage's input, or the picture (1, 3, h, w) in [-1, 1] roughly (the host clamps).
 // scaling is the VAE's scaling_factor (vae/config.json).
-func Vae(w, h, i int, scaling float64) *Part {
-	st := VaeStages(w, h)[i]
+func Vae(w, h, i int, scaling float64, coreAI bool) *Part {
+	st := VaeStages(w, h, coreAI)[i]
 	return part(fmt.Sprintf("vae_s%d", i), func(g *graph) {
 		x := g.Input("x", 1, st.C, st.H, st.W)
 		for _, op := range st.Ops {
@@ -65,13 +91,13 @@ func Vae(w, h, i int, scaling float64) *Part {
 			case "in":
 				x = vaeIn(g, x, scaling)
 			case "vit":
-				x = vaeViT(g, x, op.Path)
+				x = vaeViT(g, x, op.Path, coreAI)
 			case "up":
 				x = vaeUp(g, x, op.Path, op.Out)
 			case "res":
-				x = vaeRes(g, x, op.Path)
+				x = vaeRes(g, x, op.Path, coreAI)
 			case "head":
-				x = g.Unary("relu", chanNorm(g, x, "vae.decoder.norm_out"))
+				x = g.Unary("relu", chanNorm(g, x, "vae.decoder.norm_out", coreAI))
 				x = conv(g, x, "vae.decoder.conv_out", 3, 3, true)
 			}
 		}
@@ -95,10 +121,20 @@ func conv(g *graph, x *mlpackage.Var, path string, cout, k int, bias bool) *mlpa
 }
 
 // chanNorm is DC-AE's RMS norm over the channels with weight and bias (eps 1e-5), of x scaled by
-// MaxScaled over the channels.
-func chanNorm(g *graph, x *mlpackage.Var, path string) *mlpackage.Var {
+// MaxScaled over the channels. lastMax (Core AI) takes the largest magnitude of the channels with
+// them the last axis: coreai-build fails on a max over the channels of (1, C, H, W) (design.md
+// 16.233). The same values, a tenth slower on the Neural Engine (vae_s9 at 1024 x 1024 on the M2:
+// 124 -> 137 ms).
+func chanNorm(g *graph, x *mlpackage.Var, path string, lastMax bool) *mlpackage.Var {
 	C, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
-	xs := g.MaxScaled(x, 1)
+	var xs *mlpackage.Var
+	if lastMax {
+		m := g.Reduce("max", g.Unary("abs", g.Transpose(x, 0, 2, 3, 1)), -1) // (1, H, W, 1)
+		m = g.Op("maximum", map[string]any{"x": m, "y": g.B.ScalarF16(1e-3)}, m.Shape...)
+		xs = g.Op("real_div", map[string]any{"x": x, "y": g.Transpose(m, 0, 3, 1, 2)}, x.Shape...)
+	} else {
+		xs = g.MaxScaled(x, 1)
+	}
 	ms := g.Reduce("mean", g.Mul(xs, xs), 1)
 	r := g.Op("rsqrt", map[string]any{"x": ms, "epsilon": g.B.ScalarF16(1e-5)}, 1, 1, H, W)
 	gm := g.F16s(path+".weight", []int{1, C, 1, 1}, g.Get(path+".weight", C))
@@ -149,17 +185,17 @@ func vaeUp(g *graph, x *mlpackage.Var, path string, cout int) *mlpackage.Var {
 }
 
 // vaeRes is a ResBlock: conv1, SiLU, conv2 (no bias), the RMS norm, plus x.
-func vaeRes(g *graph, x *mlpackage.Var, path string) *mlpackage.Var {
+func vaeRes(g *graph, x *mlpackage.Var, path string, coreAI bool) *mlpackage.Var {
 	C := x.Shape[1]
 	a := g.Unary("silu", conv(g, x, path+".conv1", C, 3, true))
 	a = conv(g, a, path+".conv2", C, 3, false)
-	return g.Add(chanNorm(g, a, path+".norm"), x)
+	return g.Add(chanNorm(g, a, path+".norm", coreAI), x)
 }
 
 // vaeViT is an EfficientViT block: the multi-scale linear attention (heads of 32; q, k and v of
 // a head the 96 channels of the concatenated projections, and of the 5 x 5 depthwise and grouped
 // 1 x 1 convolutions of them), then GLUMBConv, each normed and added to its input.
-func vaeViT(g *graph, x *mlpackage.Var, path string) *mlpackage.Var {
+func vaeViT(g *graph, x *mlpackage.Var, path string, coreAI bool) *mlpackage.Var {
 	C, H, W := x.Shape[1], x.Shape[2], x.Shape[3]
 	n, heads := H*W, C/32
 	a := path + ".attn."
@@ -167,7 +203,19 @@ func vaeViT(g *graph, x *mlpackage.Var, path string) *mlpackage.Var {
 	qkv := g.Conv2D(x, a+"to_qkv", wqkv, nil, 3*C, 1, 1) // (1, 3C, H, W)
 	ms := a + "to_qkv_multiscale.0."
 	m := g.Conv2D(qkv, ms+"proj_in", g.Get(ms+"proj_in.weight", 3*C, 1, 5, 5), nil, 3*C, 5, 3*C)
-	m = g.Conv2D(m, ms+"proj_out", g.Get(ms+"proj_out.weight", 3*C, 32), nil, 3*C, 1, 3*C/32)
+	if coreAI {
+		// the grouped 1 x 1 (groups of 32) as a dense one, its weight block diagonal: the same
+		// values, and coreai-build places the attention of its output (a grouped convolution's
+		// output reshaped into heads fails its layout check, "DRAM stride", design.md 16.233)
+		pw := g.Get(ms+"proj_out.weight", 3*C, 32)
+		w := make([]float32, 3*C*3*C)
+		for o := range 3 * C {
+			copy(w[o*3*C+o/32*32:], pw[o*32:(o+1)*32])
+		}
+		m = g.Conv2D(m, ms+"proj_out", w, nil, 3*C, 1, 1)
+	} else {
+		m = g.Conv2D(m, ms+"proj_out", g.Get(ms+"proj_out.weight", 3*C, 32), nil, 3*C, 1, 3*C/32)
+	}
 	attend := func(t *mlpackage.Var) *mlpackage.Var {
 		t = g.Reshape(t, 1, heads, 96, n)
 		q := g.Unary("relu", g.Slice(t, 2, 0, 32))
@@ -179,7 +227,7 @@ func vaeViT(g *graph, x *mlpackage.Var, path string) *mlpackage.Var {
 	}
 	o := g.Concat(1, attend(qkv), attend(m))
 	o = conv(g, o, a+"to_out", C, 1, false)
-	x = g.Add(chanNorm(g, o, a+"norm_out"), x)
+	x = g.Add(chanNorm(g, o, a+"norm_out", coreAI), x)
 	// GLUMBConv
 	f := path + ".conv_out."
 	ch := 4 * C
@@ -187,5 +235,5 @@ func vaeViT(g *graph, x *mlpackage.Var, path string) *mlpackage.Var {
 	v, gate := gluDepthwise(g, h, f+"conv_depth", ch)
 	h = g.Mul(v, g.Unary("silu", gate))
 	h = conv(g, h, f+"conv_point", C, 1, false)
-	return g.Add(chanNorm(g, h, f+"norm"), x)
+	return g.Add(chanNorm(g, h, f+"norm", coreAI), x)
 }
