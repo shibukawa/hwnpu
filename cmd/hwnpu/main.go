@@ -6,7 +6,7 @@
 //	hwnpu status -w 2s                       # again every 2 seconds
 //	hwnpu issue                              # a draft issue about the last command that failed, opened in the browser
 //	hwnpu cache                              # where the cache is, what it holds, the disk's free space
-//	hwnpu cache ls                           # each unit: its size and when it was last used
+//	hwnpu cache ls                           # by model and kind: the units, size, when last used (-u: each unit)
 //	hwnpu cache prune --max-size 200GB       # remove the least recently used until it fits
 //	hwnpu cache prune --older-than 30d       # remove what was not used for 30 days
 //	hwnpu cache clear Qwen3-1.7B             # remove a model's files and programs

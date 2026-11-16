@@ -282,3 +282,33 @@ func TestRoomRestorable(t *testing.T) {
 		t.Errorf("logged %v", logged)
 	}
 }
+
+// TestScanModel names the model of each unit, of a compiled program by its source, and a
+// compiled program of which only the record of its source is left.
+func TestScanModel(t *testing.T) {
+	root, _ := fill(t)
+	key := strings.Repeat("ab", 32)
+	if err := SetSource(root, key, filepath.Join(root, "models", "Old", "x.mlpackage")); err != nil {
+		t.Fatal(err)
+	}
+	gone := strings.Repeat("cd", 32)
+	if err := SetSource(root, gone, "/elsewhere/Other.mlpackage"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"original/lab/old": "lab/old", "models/Old": "Old", "entries/amd-xdna2/Old.amd-npu2": "Old.amd-npu2",
+		"iron/0123": "", "compiled/" + key: "Old", "compiled/" + gone: "Other", "converted/Old/coreai/Old.coreai/v1": "Old",
+	}
+	for _, x := range u.Units {
+		if m, ok := want[x.Name]; ok && x.Model != m {
+			t.Errorf("%s: model %q, want %q", x.Name, x.Model, m)
+		}
+		if x.Leftover != (x.Name == "compiled/"+gone) {
+			t.Errorf("%s: leftover %v", x.Name, x.Leftover)
+		}
+	}
+}

@@ -33,6 +33,12 @@ type Unit struct {
 	Files int
 	// Used is when it was last used: the latest of its folder's time (Touch) and its files'.
 	Used time.Time
+	// Model is the model it is of: OWNER/NAME of a repository, NAME of its programs and exports,
+	// and of a compiled program the one its source (SetSource) is in. "" when not known: IRON's
+	// kernels (shared), a compiled program that recorded no source.
+	Model string
+	// Leftover: a compiled program of which only the record of its source is left.
+	Leftover bool
 }
 
 // Usage is what the root holds.
@@ -152,12 +158,46 @@ func Scan() (Usage, error) {
 		add(*c)
 	}
 	for i := range u.Units {
-		if u.Units[i].Name == "" {
-			rel, _ := filepath.Rel(root, u.Units[i].Path)
-			u.Units[i].Name = filepath.ToSlash(rel)
+		x := &u.Units[i]
+		if x.Name == "" {
+			rel, _ := filepath.Rel(root, x.Path)
+			x.Name = filepath.ToSlash(rel)
+		}
+		if x.Kind != KindCompiled {
+			x.Model = ModelOf(x.Name)
+			continue
+		}
+		x.Leftover = true
+		for _, p := range x.Paths {
+			if !strings.HasSuffix(p, sourceSuffix) {
+				x.Leftover = false
+			}
+		}
+		if src, ok := Source(root, strings.TrimPrefix(x.Name, "compiled/")); ok {
+			if rel, err := filepath.Rel(root, src); err == nil && !strings.HasPrefix(rel, "..") {
+				x.Model = ModelOf(filepath.ToSlash(rel))
+			} else {
+				x.Model = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+			}
 		}
 	}
 	return u, nil
+}
+
+// ModelOf is the model the path rel under the root (with /) is of: OWNER/NAME of
+// original/OWNER/NAME/..., NAME of models/NAME/..., converted/NAME/... and entries/TARGET/NAME,
+// "" for any other.
+func ModelOf(rel string) string {
+	parts := strings.Split(rel, "/")
+	switch {
+	case parts[0] == "original" && len(parts) >= 3:
+		return parts[1] + "/" + parts[2]
+	case (parts[0] == "models" || parts[0] == "converted") && len(parts) >= 2:
+		return parts[1]
+	case parts[0] == "entries" && len(parts) >= 3:
+		return parts[2]
+	}
+	return ""
 }
 
 // dirs are the entries depth folders below dir (original/OWNER/NAME: 2), the ones that are

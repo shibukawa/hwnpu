@@ -239,7 +239,9 @@ func commitOf(ctx context.Context, m Model) string {
 
 // modelOfDir is the model of the catalog whose directory (Model.DirName) holds path, among its
 // parents up to three levels (an export, or a directory in one), and that directory. Of several
-// models of one repository (its formats), the first by name: the key is the same from every one.
+// models of one directory, the one whose file (Model.File, its extension left out) the name of
+// path, or of a directory it is in, starts with (Anima-Turbo's anima-turbo-v1.1-...coreai, not
+// Anima-Aesthetic's), else the first by name: the key is the same from every one.
 func modelOfDir(path string) (Model, string, bool) {
 	d := filepath.Dir(path)
 	for range 3 {
@@ -251,6 +253,14 @@ func modelOfDir(path string) (Model, string, bool) {
 		}
 		if len(found) > 0 {
 			slices.SortFunc(found, func(a, b Model) int { return strings.Compare(a.Name, b.Name) })
+			if rel, err := filepath.Rel(d, path); err == nil {
+				first, _, _ := strings.Cut(filepath.ToSlash(rel), "/")
+				for _, m := range found {
+					if stem := strings.TrimSuffix(m.File, filepath.Ext(m.File)); stem != "" && strings.HasPrefix(first, stem) {
+						return m, d, true
+					}
+				}
+			}
 			return found[0], d, true
 		}
 		if p := filepath.Dir(d); p != d {
