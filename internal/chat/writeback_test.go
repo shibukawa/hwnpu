@@ -82,6 +82,10 @@ func TestWriteback(t *testing.T) {
 		a[f] = fetched(t, "lab/m", f)
 	}
 	fetched(t, "lab/g", "config.json")
+	// they went as they were downloaded (a tee), not from the queue after
+	if b, _ := os.ReadFile(cache.Sub("work", "queue.log")); strings.Count(string(b), "as it was downloaded") != 3 {
+		t.Errorf("not teed: %s", b)
+	}
 	shared.Flush(ctx)
 	src := shared.Sources()[0]
 	l, err := shared.ReadLock(ctx, src, "lab/m")
