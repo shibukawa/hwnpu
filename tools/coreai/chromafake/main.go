@@ -17,6 +17,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/imagegen/chroma/mil"
@@ -66,6 +67,9 @@ func (f *fake) Get(name string) ([]float32, []int, error) {
 	for _, c := range name {
 		h = h*31 + int(c)
 	}
+	if seed, _ := strconv.Atoi(os.Getenv("CHROMAFAKE_SEED")); seed != 0 {
+		h = h*1000003 + seed // CHROMAFAKE_SEED=N: other weights (another program for Core AI's cache)
+	}
 	rng := rand.New(rand.NewSource(int64(h)))
 	v := make([]float32, n)
 	std, mean := 0.02, 0.0
@@ -104,14 +108,15 @@ func main() {
 	size := flag.Int("size", 1024, "the picture's size")
 	parts := flag.String("parts", "text,mods,doubles,singles,vae", "the parts to write")
 	all := flag.Bool("all", false, "every group (default: the first and the last of each kind)")
+	doubleGroup := flag.Int("double-group", 4, "double blocks in a program")
 	flag.Parse()
-	if err := run(*repo, *headers, *out, *size, *parts, *all); err != nil {
+	if err := run(*repo, *headers, *out, *size, *parts, *all, *doubleGroup); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(repo, headers, out string, size int, parts string, all bool) error {
+func run(repo, headers, out string, size int, parts string, all bool, doubleGroup int) error {
 	f := &fake{shapes: map[string][]int{}}
 	ents, err := os.ReadDir(headers)
 	if err != nil {
@@ -182,7 +187,7 @@ func run(repo, headers, out string, size int, parts string, all bool) error {
 		}
 	}
 	if want["doubles"] {
-		for _, g := range pick(mil.DoubleGroups(dc, 4)) {
+		for _, g := range pick(mil.DoubleGroups(dc, doubleGroup)) {
 			if err := write(mil.Doubles(dc, g[0], g[1]), "lut8", nil); err != nil {
 				return err
 			}

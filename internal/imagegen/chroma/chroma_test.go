@@ -47,7 +47,7 @@ func TestLinkSources(t *testing.T) {
 		d := filepath.Join(dir, name)
 		m := &ProgramManifest{Version: ExportVersion, Formats: map[string]string{"t5": t5, "dit": "lut8"},
 			Dit: Config{Width: size, Height: size, TextRows: rows}, Text: []string{"text_0.mlpackage"}, Vae: []string{"vae_s0.mlpackage"},
-			Doubles: []Group{{Name: "dit_double_0.mlpackage"}}}
+			Doubles: []Group{{Name: "dit_double_0.mlpackage", Count: 4}}, Singles: []Group{{Name: "dit_single_0.mlpackage", Count: 8}}}
 		if err := os.MkdirAll(filepath.Join(d, "text_0.mlpackage", "Data"), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -68,9 +68,14 @@ func TestLinkSources(t *testing.T) {
 		t.Errorf("sources %+v", f)
 	}
 	// another T5 format of the same model and size: its DiT
-	o = ConvertOptions{Width: 1024, Height: 1024, TextFormat: "lut8", TextFormatFor: []string{"wo=fp16"}, DitFormat: "lut8"}
+	o = ConvertOptions{Width: 1024, Height: 1024, TextFormat: "lut8", TextFormatFor: []string{"wo=fp16"}, DitFormat: "lut8", DoubleGroup: 4, SingleGroup: 8}
 	if f := linkSources([]string{hd1024}, "Chroma1-HD", o, mil.Dit{TextRows: 512}); f.dit != hd1024 || f.mods != hd1024 || f.text != "" {
 		t.Errorf("sources %+v", f)
+	}
+	// other blocks a program: the approximator, not the DiT's groups
+	o.DoubleGroup = 1
+	if f := linkSources([]string{hd1024}, "Chroma1-HD", o, mil.Dit{TextRows: 512}); f.dit != "" || f.mods != hd1024 {
+		t.Errorf("groups of 4 blocks linked as groups of 1: %+v", f)
 	}
 	// an export of an older layout: T5's, the VAE's and the approximator's programs, not the DiT's
 	// groups; one before TextVersion nothing

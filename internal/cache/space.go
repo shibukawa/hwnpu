@@ -221,11 +221,20 @@ func Room(need int64, path string, log func(format string, args ...any)) error {
 		added += need
 		return nil
 	}
-	if l.MaxSize > 0 {
-		keep := map[string]bool{}
-		if u, ok := UnitOf(path); ok {
-			keep[u] = true
+	keep := map[string]bool{}
+	if u, ok := UnitOf(path); ok {
+		keep[u] = true
+	}
+	if short > 0 {
+		// short of disk: what is made again soon goes first, with or without a MaxSize (Core AI's
+		// entries of programs with prebuilt ones here, SetRestorable; docs/cache-sharing.md 7.7)
+		if freed := evictRestorable(short, log); freed > 0 {
+			if free, _, err = DiskSpace(root); err == nil {
+				short = minFree - (free - need)
+			}
 		}
+	}
+	if (short > 0 || over > 0) && l.MaxSize > 0 {
 		freed := evictLRU(scanned, max(short, over), keep, log)
 		over -= freed
 		if free, _, err = DiskSpace(root); err == nil {
@@ -282,4 +291,63 @@ func evictLRU(u *Usage, bytes int64, keep map[string]bool, log func(string, ...a
 	}
 	u.Units = left
 	return freed
+}
+
+// restorable, when set (the Core AI backend), lists what outside the root is made again in
+// little time and may go first when the disk is short: Core AI's entries of programs that have
+// prebuilt ones here (their weights again; a few seconds to make from the prebuilt program, not
+// the Neural Engine compiler's minutes).
+var restorable func() []string
+
+// SetRestorable sets what lists the paths (folders) made again soon (restorable).
+func SetRestorable(f func() []string) { restorable = f }
+
+// evictRestorable removes the paths restorable lists, the least recently used first, until
+// bytes are freed, none used in the last KeepRecent or by this process (Use). It returns the
+// bytes freed.
+func evictRestorable(bytes int64, log func(string, ...any)) int64 {
+	if restorable == nil {
+		return 0
+	}
+	var units []Unit
+	seen := map[fileKey]bool{}
+	for _, p := range restorable() {
+		b, n, t := tree(p, seen)
+		if n > 0 {
+			units = append(units, Unit{Name: p, Kind: KindRestorable, Path: p, Paths: []string{p}, Bytes: b, Files: n, Used: t})
+		}
+	}
+	u := Usage{Units: units}
+	var freed int64
+	now := time.Now()
+	for _, x := range u.ByUse() {
+		if freed >= bytes {
+			break
+		}
+		if !Removable(x, now, KeepRecent) {
+			continue
+		}
+		if err := os.RemoveAll(x.Path); err != nil {
+			if log != nil {
+				log("cache: removing %s: %v", x.Path, err)
+			}
+			continue
+		}
+		if log != nil {
+			log("cache: removed %s (%s, made again from its prebuilt program when next loaded) to make room", x.Path, FormatSize(x.Bytes))
+		}
+		freed += x.Bytes
+	}
+	return freed
+}
+
+// KindRestorable is the kind of what restorable lists (outside the root).
+const KindRestorable = "restorable"
+
+// Use says this process uses path, a folder outside the root (restorable): it is not removed
+// while the process runs.
+func Use(path string) {
+	usedMu.Lock()
+	usedHere[path] = true
+	usedMu.Unlock()
 }

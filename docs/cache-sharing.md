@@ -279,6 +279,7 @@ hwnpu/
 - UGREEN の NAS で書き戻しと読み戻し (2026-11-16): `?writeback=true&insecure=true` で Qwen3-0.6B を空の根から。NAS になかった元のファイル (config、tokenizer、model.safetensors 1.5 GB、lock) と、この Mac で作った `converted/Qwen3-0.6B/coreai/...coreai` (0.62 GB) と `any/tables.safetensors` (0.31 GB) が置かれた (`hwnpu-dev cache flush` で 71 秒)。次に空の根、`HWNPU_MODEL_HUGGING_FACE=false` で、変換済みを NAS から 18 秒で取り、チェックポイントを落とさずに答えた。macOS で Go の `.local` の名前引きは 1 回 5 秒かかるので、引いた番地をプロセスの間覚える。IP (`https://192.168.1.127:5006/llm`) でもよい
 - 止まった NAS (2026-11-16): つながらない (名前が引けない、接続を断られる、5 秒で答えない、証明書が信じられない) 取得元は、そのプロセスの間は設定がなかったものとして扱う。最初の 1 回で標準エラーに 1 行出し、その後の要求はすぐ失敗して次の取得元へ。再試行は時間切れ (mDNS の `.local` の名前引きはときどき時間切れになる) のときだけ 3 回まで、断られたときと名前がないときはすぐ (前は 1 ファイルごとに接続の待ち 30 秒 × 再試行が入れ子で重なった)。書き戻しはキューに残り、次の起動で続く
 - UGREEN の NAS (2026-11-15): フォルダのない所への PUT と、親のない MKCOL が 409 でなく 405 を返す。PUT の前にフォルダを (プロセスで一度) 作り、405 でも作り直す
+- UGREEN の NAS (2026-11-16): 自己署名の証明書なので `?tls_sha256=` が要る。`.local` の名前の解決が 1 回 5 秒かかったので、ホストの番地はプロセスで 1 回だけ引き (答えなければ引き直す)、答えの本体は必ず読み切って閉じて接続を使い回す (design.md 16.231)
 - `hwnpu-dev cache import DIR...`: 手で置いたフォルダ (`~/models`) を書き戻す取得元に置く。チェックポイントは Hugging Face のツリー (`/api/models/REPO/tree/COMMIT`) と照らし、大きさと中身 (LFS は sha256、ほかは git の blob の sha1) の同じファイルだけを `original/` に。書き出し (`NAME.amd-npu2*`) は `converted/`。名前が定義にないフォルダは `DIR=OWNER/NAME`
 
 ### 7.6 公開の API: `modelstore`
@@ -310,8 +311,9 @@ dir := s.Dir("LiquidAI/LFM3-1.7B")                         // original/LiquidAI/
 
 コードからは `modelstore.Options.Limits` (`cache.SetLimits`)。`go test` では空きの下限を既定で 0 にする。
 
-- 単位 (まとめて消すもの): `original/OWNER/NAME` (元のファイル)、`models/NAME` と `converted/MODEL/TARGET/EXPORT/vN` (変換したもの)、`entries/TARGET/NAME` (AMD の書き出し)、`iron/KEY` (IRON のカーネル)、根の `KEY.mlmodelc` などの同じ鍵のもの (この機械でコンパイルしたもの)。それ以外 (`prompts/`、`history/`、`locks/`、`work/`、`dev/`、道具) は数えるだけで消さない
-- 最後に使った時刻: 単位のフォルダの時刻と中のファイルの時刻の新しい方。取得 (`chat.Fetch` は速い道でも)、`chat.ModelDir`、`cache.FindExport` が `cache.Touch` でフォルダの時刻を今にする (5 分に 1 回まで)。atime は noatime/relatime で当てにならないので使わない。IRON のカーネルは IRON が読むときに時刻が変わらないので、作った順になる
+- 単位 (まとめて消すもの): `original/OWNER/NAME` (元のファイル)、`models/NAME` と `converted/MODEL/TARGET/EXPORT/vN` (変換したもの)、`models/NAME/EXPORT.coreai.prebuilt` (Core AI の prebuilt、7.9。`models/NAME` の量には数えない)、`entries/TARGET/NAME` (AMD の書き出し)、`iron/KEY` (IRON のカーネル)、根の `KEY.mlmodelc` などの同じ鍵のもの (この機械でコンパイルしたもの)。それ以外 (`prompts/`、`history/`、`locks/`、`work/`、`dev/`、道具) は数えるだけで消さない
+- 空きの下限を切るとき: まず、根の外の Core AI のキャッシュ (`~/Library/Caches/coreai-cache/<OS>/hwnpu*/<hash>/`) のうち、手元に prebuilt のある部品の項目を古い順に消す (`HWNPU_CACHE_MAX_SIZE` がなくても、`cache.SetRestorable`)。項目は重みをもう一度持つので書き出しと同じだけ大きく、次に読むときに prebuilt から数秒で作り直される (ANE のコンパイラの数分ではない)。このプロセスが読んだ項目と、最近 1 時間の項目は消さない。それでも足りなければ、上限があるときだけ根の単位を古い順に消し、なければ `ErrNoRoom`。prebuilt (`EXPORT.coreai.prebuilt`、書き出しの 1〜2 %) は作り直しのもとなので先には消さず、ほかの単位と同じ LRU に並ぶ
+- 最後に使った時刻: 単位のフォルダの時刻と中のファイルの時刻の新しい方。取得 (`chat.Fetch` は速い道でも)、`chat.ModelDir`、`cache.FindExport`、Core AI の prebuilt を組み立てるバックエンドが `cache.Touch` でフォルダの時刻を今にする (5 分に 1 回まで)。atime は noatime/relatime で当てにならないので使わない。IRON のカーネルは IRON が読むときに時刻が変わらないので、作った順になる
 - 消さないもの: 最近 1 時間に使った単位 (ほかのプロセスが読んでいるかもしれない)、このプロセスが使った単位、書き戻しの queue に仕事がある単位 (`store` が `cache.SetBusy` で教える)、書いている途中の単位
 - 消すときは、元のファイルなら `hwnpu-lock.json`、変換したものなら `entry.json` を先に消す (読む側が途中のものを揃っているとみなさない)。空になった親 (`original/OWNER`) も消す
 - 大きさはファイルの大きさの和。ハードリンク (Unix) は 1 回だけ数える (同じ sha256 を別のリポジトリと共有しているもの)。reflink で共有したブロックは区別しない
@@ -345,6 +347,23 @@ hwnpu memory LFM3-1.7B --forget      この機械のメモリに戻す
 - ファミリーや用途の名前 (`lfm3`) がどのモデルを選ぶかは、この機械のメモリで決まる。選ばれたモデルにメモリが選んであれば、その形で動く
 - 公開の API: `modelstore.Store` の `Memory`、`SetMemory` (0 で忘れる)、`Memories`
 - 形を変えても、前の形のプログラムはキャッシュに残る (LRU で消えるまで)。`hwnpu cache clear NAME` で全部消せば、次は選んだ形のものだけを作る (取ってくる)
+
+### 7.9 Core AI の prebuilt: 変換後と一緒に、機械の種類ごとのコンパイル済みを配る
+
+Core AI の書き出し (`coreai`、`.aimodel`) は機械に依らないが、初めて読む機械では Neural Engine のコンパイラが部品ごとに数十秒〜数分かかる (機械全体で 1 本の直列の列、design.md 16.229)。Metal Toolchain の `coreai-build` は実機がなくても 22 種類のアーキテクチャ向けに先にコンパイルでき (`X.ARCH.aimodelc`)、それを読む機械はコンパイラの代わりに仕上げだけをする。そのコンパイル済みを、変換後と同じ取得元に置く。
+
+```
+converted/MODEL/coreai/EXPORT/VERSION/...          書き出し (.aimodel)。どの Mac も同じ
+converted/MODEL/coreai-ARCH/EXPORT/VERSION/...     ARCH (h13g = M1、h14g = M2、h15g = M3 ...) 向けのコンパイル済み、重みなし
+```
+
+- 重みは配らない: `.aimodelc` の 99 % は `resources.bin` (重み) で、中身は `.aimodel` の `main.mlirb` のバイトを並べ替えたもの (アーキテクチャに依らない)。`coreai.Pack` はそれを `resources.bin.map.json` (`main.mlirb` のどこから何バイト、の並び。数 KB) に置き換える。1 種類あたり書き出しの 1〜2 % (ANE の LLIR と小さなファイル)
+- 鍵は部品のバイトコード: `programs` (書き出しの中の各 `.aimodel` の場所と `main.hash` の sha256)、`arch`、`export`、`format`。どの機械が変換したかに依らず、同じバイトの書き出しなら当たる。モデルは書き出しの entry.json のもの
+- 作る (開発機、Xcode 27 の Metal Toolchain): `hwnpu-dev prebuild -arch all -put EXPORT`。部品 × アーキテクチャごとに `coreai-build` を走らせ、詰めて `EXPORT.prebuilt/ARCH/` に置き、アーキテクチャごとに 1 つのファイル (`prebuilt.tar.zst`、tar を zstd で) にして書き戻す取得元へ (`EXPORT.prebuilt/ARCH.shared/`)。WebDAV ではファイルごとに PUT と MOVE がかかるので 1 つに。zstd で約 1/3 (h14g の 1 部品 3.0 MB → 0.97 MB、`-19`)。`coreai-build` が落ちる種類と、ANE に乗せられない部品は抜けたまま置く (その機械がネイティブにコンパイルする)
+- 使う (どの Mac も、道具は要らない): Core AI のキャッシュに項目がなく、手元に prebuilt もない部品を読むとき、バックエンドが書き出しごとに 1 回、この機械の種類 (`AIModel.deviceArchitecture`) のものを取得元に聞く (`coreai.FetchPrebuilt`)。取れたら `EXPORT.prebuilt/ARCH.shared/` に置いて `EXPORT.prebuilt/ARCH/` に展開し、部品ごとに重みを `main.mlirb` から組み立てて (sha256 を照らす) 一時フォルダの `.aimodelc` を Core AI に渡し、読み込んだら消す。Core AI の項目ができるので次からは `.aimodel` のまま 0.01 秒。読めなければ (道具の版が違う、壊れている) その部品はネイティブに
+- 効くかはモデル次第 (design.md 16.232): `coreai-build` が ANE に乗せられない部品は配られず、乗った小さな部品は仕上げのほうがネイティブより遅いこともある。Chroma1-Flash の 1024² の DiT は初回の約 46 分が約 1 分になる。Sana-600M は書き出しを `coreai-build` に通る形にした (design.md 16.233) ので、VAE の大きな段 (端末で 1 段 3 分 40 秒) が数秒〜10 秒になる見込み。だから prebuild は自動でなく、効くモデルの書き出しを選んで `-put` する
+- 手元の `EXPORT.prebuilt/` は残す: 読み込んだ部品は Core AI の項目に入るが、項目 (重みの複製、書き出しと同じ大きさ) が消えたとき (空きが足りない、OS の更新) にネットに出ずに数秒で作り直すもとになる。空きが足りないときは、prebuilt のある部品の Core AI の項目が先に消える (7.7)。`hwnpu cache` では種類 `prebuilt` の単位 (`clear --kind prebuilt` で消せる。消してもまた取得元から取る)。組み立てた重み入りの `.aimodelc` は読み込んだ直後に消す
+- 項目がある機械は何も聞かない (2 回目からの実行は取得元に触らない)。`HWNPU_COREAI_PREBUILT=off` で使わない
 
 ## 8. 準備の流れ: 計画と作るを分ける
 

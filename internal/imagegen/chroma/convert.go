@@ -371,13 +371,15 @@ func linkSources(dirs []string, name string, o ConvertOptions, dc mil.Dit) linkF
 			}
 		}
 		// the approximator and the DiT's groups: the same model, size, text rows and formats; the
-		// groups of the same layout only
+		// groups of the same layout and blocks a program only (a group's name says where it starts,
+		// not how many it holds: with other groups, dit_double_4 of 4 blocks would be linked as one of 1)
 		if same && m.Formats["dit"] == o.ditFormats() && m.Dit.Width == o.Width && m.Dit.Height == o.Height &&
 			m.Dit.TextRows == dc.TextRows && len(m.Doubles) > 0 {
 			if f.mods == "" {
 				f.mods = d
 			}
-			if f.dit == "" && m.Version == ExportVersion {
+			if f.dit == "" && m.Version == ExportVersion && len(m.Singles) > 0 &&
+				m.Doubles[0].Count == o.DoubleGroup && m.Singles[0].Count == o.SingleGroup {
 				f.dit = d
 			}
 		}
