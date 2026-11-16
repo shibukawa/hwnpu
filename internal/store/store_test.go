@@ -259,6 +259,15 @@ func TestOriginals(t *testing.T) {
 		t.Errorf("another commit: %v", err)
 	}
 	root := s.Store.(Dir).Root
+	// the file of another commit is not put over the lock's (the put goes before the lock's)
+	ck2 := filepath.Join(t.TempDir(), "config.json")
+	write(t, ck2, `{"b":2}`)
+	if err := PutOriginal(ctx, s, "lab/m", c2, "config.json", ck2, ""); !errors.Is(err, ErrOtherCommit) {
+		t.Errorf("another commit's config.json: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "original", "lab", "m", "config.json")); string(b) != `{"a":1}` {
+		t.Errorf("config.json of the lock's commit put over: %q", b)
+	}
 	if b, _ := os.ReadFile(filepath.Join(root, "original", "lab", "m", "sub", "w.bin")); string(b) != `{"a":1}` {
 		t.Errorf("not a plain folder: %q", b)
 	}
@@ -334,6 +343,27 @@ func TestWait(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "writing 1 back") {
 		t.Errorf("said %q", out.String())
+	}
+}
+
+// TestOriginalsSideBySide puts the files of one repository at once: the lock names them all.
+func TestOriginalsSideBySide(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	s := Source{Store: Dir{Name: "nas", Root: t.TempDir()}, Writeback: true}
+	c := strings.Repeat("a", 40)
+	const n = 12
+	err := each(ctx, n, n, func(ctx context.Context, i int) error {
+		f := filepath.Join(t.TempDir(), "f")
+		write(t, f, strings.Repeat("x", i+1))
+		return PutOriginal(ctx, s, "lab/m", c, fmt.Sprintf("f%02d.bin", i), f, "")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearLocks()
+	if l, err := ReadLock(ctx, s, "lab/m"); err != nil || len(l.Files) != n {
+		t.Errorf("lock names %d of %d files: %v", len(l.Files), n, err)
 	}
 }
 

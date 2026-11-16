@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
@@ -159,10 +160,14 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 	if err := s.Store.Delete(ctx, rel+"/"+EntryFile); err != nil {
 		return err
 	}
-	for _, f := range e.Files {
-		if err := s.Store.Put(ctx, rel+"/"+f.Path, filepath.Join(dir, filepath.FromSlash(f.Path))); err != nil {
-			return err
-		}
+	// the files side by side (an export of Core AI is many small ones, each a PUT and a MOVE on
+	// WebDAV), entry.json after them all
+	err = each(ctx, PutStreams, len(e.Files), func(ctx context.Context, i int) error {
+		f := e.Files[i]
+		return s.Store.Put(ctx, rel+"/"+f.Path, filepath.Join(dir, filepath.FromSlash(f.Path)))
+	})
+	if err != nil {
+		return err
 	}
 	b, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {
@@ -185,6 +190,47 @@ func ListEntries(ctx context.Context, s Source) ([]string, error) {
 	}
 	slices.Sort(out)
 	return out, nil
+}
+
+// PutStreams is how many puts go to a source at a time: the files of an entry, the jobs of the
+// queue.
+var PutStreams = 4
+
+// each runs f(ctx, 0..n-1), at most k at a time, and returns the first error: the rest are then
+// not started, and the ctx of those running ends.
+func each(parent context.Context, k, n int, f func(context.Context, int) error) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		first error
+	)
+	sem := make(chan struct{}, max(k, 1))
+	for i := 0; i < n && ctx.Err() == nil; i++ {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			if err := f(ctx, i); err != nil {
+				mu.Lock()
+				if first == nil {
+					first = err
+					cancel()
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if first == nil {
+		first = parent.Err()
+	}
+	return first
 }
 
 // lockWork is the lock of one piece of work on a source (cache.Lock).

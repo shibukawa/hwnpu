@@ -60,6 +60,7 @@ type WebDAV struct {
 
 	mu   sync.Mutex
 	made map[string]bool // the folders known to be there
+	mk   sync.Mutex      // held while folders are made: the puts side by side make the same ones
 	down error           // the server could not be reached: every request fails at once with it
 }
 
@@ -473,8 +474,15 @@ func (w *WebDAV) Has(ctx context.Context, key string) (int64, bool, error) {
 }
 
 // mkdirs makes the folders of dir (a slash path inside the store, "" for its root) that are
-// not there, from the store's folder down.
+// not there, from the store's folder down, one put at a time (two MKCOLs of one folder at once
+// are refused: 423 Locked).
 func (w *WebDAV) mkdirs(ctx context.Context, dir string) error {
+	w.mk.Lock()
+	defer w.mk.Unlock()
+	return w.mkdirsLocked(ctx, dir)
+}
+
+func (w *WebDAV) mkdirsLocked(ctx context.Context, dir string) error {
 	if dir == "." {
 		dir = ""
 	}
@@ -486,7 +494,7 @@ func (w *WebDAV) mkdirs(ctx context.Context, dir string) error {
 	}
 	u := w.url("")
 	if dir != "" {
-		if err := w.mkdirs(ctx, path.Dir(dir)); err != nil {
+		if err := w.mkdirsLocked(ctx, path.Dir(dir)); err != nil {
 			return err
 		}
 		u = w.url(dir + "/")

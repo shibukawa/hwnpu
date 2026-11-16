@@ -121,7 +121,7 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 		if c != "" || commit == "" {
 			noteLockCommit(repo, c)
 		}
-		return shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: sum, Size: fi.Size()}, true, nil)
+		return shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: sum, Size: fi.Size()}, true)
 	}
 	if pinnedSum && sameFile(want, name, path, log) {
 		bytes = -1
@@ -257,7 +257,7 @@ func adopt(ctx context.Context, local shared.Source, repo, commit, name, want, p
 			c = l.Commit // hwnpu off Hugging Face, no source's lock: the commit of what is here
 		}
 	}
-	if shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: got, Size: fi.Size()}, true, nil) != nil {
+	if shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: got, Size: fi.Size()}, true) != nil {
 		return false
 	}
 	noteLockCommit(repo, c)
