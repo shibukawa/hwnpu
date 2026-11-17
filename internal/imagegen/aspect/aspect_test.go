@@ -25,9 +25,22 @@ func TestParse(t *testing.T) {
 	if w, h, err := ParseOrSide("768", 16); err != nil || w != 768 || h != 768 {
 		t.Errorf("ParseOrSide(768) = %dx%d, %v", w, h, err)
 	}
-	for _, bad := range []string{"1024x1024", "5:4", ""} {
+	for _, bad := range []string{"1000x1000", "5:4", ""} {
 		if _, _, err := ParseOrSide(bad, 16); err == nil {
 			t.Errorf("ParseOrSide(%q) accepted", bad)
 		}
+	}
+}
+
+// TestParseOrSideWxH: WIDTHxHEIGHT in multiples of the model's pixels.
+func TestParseOrSideWxH(t *testing.T) {
+	if w, h, err := ParseOrSide("768x1152", 16); err != nil || w != 768 || h != 1152 {
+		t.Fatalf("768x1152: %d %d %v", w, h, err)
+	}
+	if _, _, err := ParseOrSide("770x1152", 16); err == nil {
+		t.Fatal("770x1152: no error")
+	}
+	if w, h, err := ParseOrSide("2:3", 16); err != nil || w != 832 || h != 1248 {
+		t.Fatalf("2:3: %d %d %v", w, h, err)
 	}
 }
