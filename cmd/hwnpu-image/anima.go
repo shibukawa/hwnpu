@@ -67,6 +67,11 @@ func (f convertFlags) picture(multiple int) (w, h int, err error) {
 	return aspect.ParseOrSide(f.Size, multiple)
 }
 
+// pictureIn is picture for a model whose aspect ratios are the sizes of as (FLUX.2 klein's own).
+func (f convertFlags) pictureIn(as []aspect.Aspect, multiple int) (w, h int, err error) {
+	return aspect.ParseOrSideIn(f.Size, as, multiple)
+}
+
 // ConvertCmd is "hwnpu-image convert": an Anima directory or a Sana, Chroma or Qwen-Image
 // repository into a Core AI export (Core ML's for --cpu, OpenVINO IR for Intel's NPU).
 type ConvertCmd struct {

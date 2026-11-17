@@ -7291,3 +7291,23 @@ Mac (16.227) は 512² と 1024² を 1 つの書き出し (関数 2 つの `.ai
 
 **残り**: Chroma1-HD (同じ構造で、同じ手順のはず)。Neural Engine の 832 x 1248 などは Core AI の側 (`milpart.KeyParts`、`HeadChunk`、VAE の注意の塊の長さが 64 の倍数でない) で、AMD のこの変更とは別
 
+
+### 16.242 FLUX.2 klein の 16:9 と 9:16 を 1344 x 768 に (ほかのモデルは 1360 x 752 のまま) — 2026-11-18
+
+FLUX.2 klein だけ、16:9 と 9:16 を 1360 x 752 から 1344 x 768 / 768 x 1344 に変えた (`flux2klein.Aspects` = `aspect.With(aspect.All, ...)`; `hwnpu-image --size 16:9` も AMD の書き出しも Core AI の変換もこれを読む)。比は 1.750 (16:9 から −1.6 %、1360 x 752 は +1.7 %)、画素は 1.03 M で 1360 x 752 よりわずかに多く、辺が 64 の倍数 (パッチ 84 x 48 = 4032、VAE の注意 168 x 96 = 16128 で、どれも 64 で割り切れる)。比の誤差がもう少し大きい 1280 x 704 (1.818、0.90 M) も AMD では描けた (24 秒、3.15 GiB) が、画素の多い方を選んだ。Anima、Chroma などは 16.238 の 8 つ (`aspect.All`) のまま。
+
+- Mac の Neural Engine では 1344 x 768 が失敗する (利用者の確認)。辺が 64 の倍数でも通らないので、16.241 の「長さが 64 の倍数でない」だけでは説明できず、Core AI の側で別に調べる。AMD では描ける
+- 書き出しの名前を `flux.2-klein-4b-aspects2.amd-npu2` に変えた: 手で作った書き出しの取得元の記述 (`iron-import`) は名前だけで探すので、同じ名前のままだと 16:9 が 1360 x 752 の前の書き出しが見つかってそのまま使われる。`AMDExportVersion` を 2 に (取得元の鍵の `args` も変わる)。新しい書き出しが手元にあれば、前の `flux.2-klein-4b-aspects.amd-npu2` も正方形の書き出しと同じく消す (`dropSubsets`、しばらく使われていないとき)
+- `aspect.With`、`ParseIn`、`ParseOrSideIn`、`SizesOf`: 表を差し替えたモデルのための関数。`aspect.Parse` などは前のまま `aspect.All` / `aspect.All32`
+
+**測ったこと** (Ryzen AI 9 365、4 ステップ、種 1、"a portrait photo of a young woman with round glasses reading a book in a sunlit cafe"): 書き出し 12 分 58 秒 (最大 RSS 19.1 GB)、16.0 GB
+
+| 大きさ | 1 枚 | 最大 (NPU と RSS) |
+|---|---|---|
+| 1:1 1024² | 28 秒 | 3.60 GiB |
+| 1:1s 512² | 10 秒 | 1.90 GiB |
+| 2:3 832 x 1248、3:2 | 27 秒 | 3.55〜3.60 GiB |
+| 3:4 880 x 1168、4:3 | 28 秒 | 3.61〜3.64 GiB |
+| 9:16 768 x 1344、16:9 1344 x 768 | 27 秒 | 3.53〜3.62 GiB |
+
+どの大きさも glasses に従い、端の乱れはない。16:9 は 1360 x 752 と同じ 27 秒 (行はどちらも 4608 で 1024² と同じ)。

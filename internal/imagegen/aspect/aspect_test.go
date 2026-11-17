@@ -44,3 +44,17 @@ func TestParseOrSideWxH(t *testing.T) {
 		t.Fatalf("2:3: %d %d %v", w, h, err)
 	}
 }
+
+// TestWith: a model's own sizes of some ratios, the others and All as they were.
+func TestWith(t *testing.T) {
+	as := With(All, Aspect{"16:9", 1344, 768})
+	if w, h, err := ParseOrSideIn("16:9", as, 16); err != nil || w != 1344 || h != 768 {
+		t.Fatalf("16:9: %d %d %v", w, h, err)
+	}
+	if w, h, err := ParseOrSideIn("2:3", as, 16); err != nil || w != 832 || h != 1248 {
+		t.Fatalf("2:3: %d %d %v", w, h, err)
+	}
+	if w, h, _ := Parse("16:9", 16); w != 1360 || h != 752 {
+		t.Fatalf("All's 16:9 changed: %d %d", w, h)
+	}
+}

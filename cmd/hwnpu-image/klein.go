@@ -27,7 +27,7 @@ import (
 // of every aspect ratio of --size (one export), from the shared layers or made with IRON when
 // missing (flux2klein.PrepareAMD).
 func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, error) {
-	w, h, err := c.picture(16)
+	w, h, err := c.pictureIn(flux2klein.Aspects, 16)
 	if err != nil {
 		return "", err
 	}
@@ -101,7 +101,7 @@ func referenceNames(divs []int) string {
 // tools/amd/iron_flux2klein.py on AMD's NPU, or of hwnpu-image convert on Apple's Neural Engine
 // (Core AI's).
 func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) error {
-	pw, ph, err := c.picture(16)
+	pw, ph, err := c.pictureIn(flux2klein.Aspects, 16)
 	if err != nil {
 		return err
 	}

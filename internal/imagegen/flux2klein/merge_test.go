@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 )
 
 // writeJSON writes v as path's JSON, making its directory.
@@ -290,10 +291,10 @@ func TestPrepareAMDMerges(t *testing.T) {
 	if n := AMDMergedName(m.Name, [2]int{1024, 1024}, [2]int{512, 512}); n != "flux.2-klein-4b-512+1024.amd-npu2" {
 		t.Error(n)
 	}
-	if n := AMDMergedName(m.Name, AMDSizes...); n != "flux.2-klein-4b-aspects.amd-npu2" {
+	if n := AMDMergedName(m.Name, AMDSizes...); n != "flux.2-klein-4b-aspects2.amd-npu2" {
 		t.Error(n)
 	}
-	if r := AMDRecipe(m, AMDSizes...); r["args"] != "--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752" {
+	if r := AMDRecipe(m, AMDSizes...); r["args"] != "--size 1024 512 832x1248 880x1168 768x1344 1248x832 1168x880 1344x768" {
 		t.Errorf("the recipe of every size: %v", r["args"])
 	}
 
@@ -312,6 +313,15 @@ func TestPrepareAMDAspects(t *testing.T) {
 	if err := os.Chtimes(squares, old, old); err != nil {
 		t.Fatal(err)
 	}
+	// the export of the aspect ratios before (16:9 at 1360 x 752), which the new one replaces
+	before := filepath.Join(chat.AMDRoot(), amdOldAspectsName(m.Name))
+	fakeSized(t, before, 1024, nil, "w")
+	for _, s := range aspect.Sizes(16)[1:] {
+		writeJSON(t, filepath.Join(before, sizeDir(s[0], s[1]), "vae", "manifest.json"), map[string]any{})
+	}
+	if err := os.Chtimes(before, old, old); err != nil {
+		t.Fatal(err)
+	}
 	all := filepath.Join(chat.AMDRoot(), AMDMergedName(m.Name, AMDSizes...))
 	fakeSized(t, all, 1024, nil, "w")
 	for _, s := range AMDSizes[1:] {
@@ -322,7 +332,12 @@ func TestPrepareAMDAspects(t *testing.T) {
 			t.Errorf("%v: %s %v, want %s", s, got, err, all)
 		}
 	}
-	if _, err := os.Stat(squares); err == nil {
-		t.Errorf("%s stays", squares)
+	for _, d := range []string{squares, before} {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("%s stays", d)
+		}
+	}
+	if w, h, err := aspect.ParseOrSideIn("16:9", Aspects, 16); err != nil || w != 1344 || h != 768 {
+		t.Errorf("16:9: %d x %d %v", w, h, err)
 	}
 }

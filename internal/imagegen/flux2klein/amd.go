@@ -20,12 +20,18 @@ const AMDTool = "iron_flux2klein.py"
 
 // AMDExportVersion is the version of PrepareAMD's exports (a key of the shared layers:
 // chat.PinnedRecipe), raised by hand when what PrepareAMD passes AMDTool changes.
-const AMDExportVersion = 1
+const AMDExportVersion = 2
 
-// AMDSizes are the pictures' sizes (width, height) PrepareAMD exports for: the eight aspect
-// ratios of --size (aspect.All), 1024 x 1024 first (laid out as an export of its own). A step
-// whose rows are no whole rounds of the attention's 512 runs padded, the text's rows first.
-var AMDSizes = aspect.Sizes(16)
+// Aspects are FLUX.2 klein's sizes of the eight aspect ratios of --size: aspect.All's, but 16:9
+// and 9:16 at 1344 x 768 (1.03 M pixels, multiples of 64 pixels; 1360 x 752 before, 2026-11-18),
+// which the other models of multiples of 16 pixels keep.
+var Aspects = aspect.With(aspect.All, aspect.Aspect{Name: "9:16", Width: 768, Height: 1344},
+	aspect.Aspect{Name: "16:9", Width: 1344, Height: 768})
+
+// AMDSizes are the pictures' sizes (width, height) PrepareAMD exports for: Aspects, 1024 x 1024
+// first (laid out as an export of its own). A step whose rows are no whole rounds of the
+// attention's 512 runs padded, the text's rows first.
+var AMDSizes = aspect.SizesOf(Aspects)
 
 // amdSquares are the sizes of the exports of one size each that PrepareAMD made before
 // AMDSizes (AMDExportName) and that MergeAMD makes one.
@@ -48,12 +54,14 @@ func AMDExportName(name string, size int) string {
 
 // AMDMergedName is the name of the one export for AMD's NPU of the model named name for pictures
 // of every one of sizes (tools/amd/iron_flux2klein.py --size 1024 512, or MergeAMD of the exports
-// of each), NAME in lower case: NAME-aspects.amd-npu2 for AMDSizes, else NAME-512+1024.amd-npu2,
-// the sizes in increasing order (a square by its side, else WxH).
+// of each), NAME in lower case: NAME-aspects2.amd-npu2 for AMDSizes, else
+// NAME-512+1024.amd-npu2, the sizes in increasing order (a square by its side, else WxH).
+// NAME-aspects.amd-npu2 (amdOldAspectsName) is the one of 16:9 at 1360 x 752 before: a name of
+// its own, as the shared layers' entry of an export made by hand goes by its name alone.
 func AMDMergedName(name string, sizes ...[2]int) string {
 	n := strings.ToLower(name)
 	if sameSizes(sizes, AMDSizes) {
-		return n + "-aspects.amd-npu2"
+		return n + "-aspects2.amd-npu2"
 	}
 	s := slices.Clone(sizes)
 	slices.SortFunc(s, func(a, b [2]int) int { return a[0]*a[1] - b[0]*b[1] })
@@ -63,6 +71,10 @@ func AMDMergedName(name string, sizes ...[2]int) string {
 	}
 	return n + "-" + strings.Join(parts, "+") + ".amd-npu2"
 }
+
+// amdOldAspectsName is the name of m's export of the eight aspect ratios with 16:9 at 1360 x 752
+// (AMDExportVersion 1), which the one of AMDSizes replaces (dropSubsets).
+func amdOldAspectsName(name string) string { return strings.ToLower(name) + "-aspects.amd-npu2" }
 
 // sameSizes reports whether a and b hold the same sizes.
 func sameSizes(a, b [][2]int) bool {
@@ -131,7 +143,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, w, h int, log io.Writer) (str
 	size := [2]int{w, h}
 	if !slices.Contains(AMDSizes, size) {
 		return "", fmt.Errorf("--size %dx%d: FLUX.2 klein's exports for AMD's NPU are of %s (tools/amd/%s --size exports another, run with -m DIR)",
-			w, h, aspect.Names(), AMDTool)
+			w, h, aspectNames(), AMDTool)
 	}
 	if log == nil {
 		log = io.Discard
@@ -184,7 +196,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, w, h int, log io.Writer) (str
 				m.Name, merged, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export for AMD's NPU here or in the sources; downloading the checkpoint and exporting it with IRON (%s in one, the blocks for up to 4 references too; %s on a Ryzen AI 9 365)\n",
-			m.Name, aspect.Names(), amdExportTime)
+			m.Name, aspectNames(), amdExportTime)
 		want := make([]chat.File, len(AMDFiles))
 		for i, f := range AMDFiles {
 			want[i] = chat.File{Repo: m.Repo, Name: f}
@@ -283,11 +295,11 @@ func removeExport(d string) {
 }
 
 // dropSubsets removes the cache's exports of m of fewer sizes than AMDSizes (MergeAMD's of the
-// squares, and those of one square each) that may go (mayGo): the export of every AMDSizes
-// draws theirs.
+// squares, and those of one square each) and the one of the aspect ratios before
+// (amdOldAspectsName) that may go (mayGo): the export of every AMDSizes draws theirs.
 func dropSubsets(m chat.Model, log io.Writer) {
 	root := chat.AMDRoot()
-	names := []string{AMDMergedName(m.Name, amdSquares...)}
+	names := []string{AMDMergedName(m.Name, amdSquares...), amdOldAspectsName(m.Name)}
 	for _, s := range amdSquares {
 		names = append(names, AMDExportName(m.Name, s[0]))
 	}
@@ -298,6 +310,15 @@ func dropSubsets(m chat.Model, log io.Writer) {
 			fmt.Fprintf(log, "%s: removed (%s draws its sizes)\n", n, AMDMergedName(m.Name, AMDSizes...))
 		}
 	}
+}
+
+// aspectNames are Aspects' names and sizes: "1:1 (1024x1024), 1:1s (512x512), ...".
+func aspectNames() string {
+	s := make([]string, len(Aspects))
+	for i, a := range Aspects {
+		s[i] = fmt.Sprintf("%s (%dx%d)", a.Name, a.Width, a.Height)
+	}
+	return strings.Join(s, ", ")
 }
 
 // sizeNames are sizes as "512 x 512 and 1024 x 1024".
