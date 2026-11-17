@@ -94,3 +94,14 @@ func TestTextStart(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyMask: dit_blocks' kmask (iron_sana.kmask) keeps the tokens' columns of every row.
+func TestKeyMask(t *testing.T) {
+	m := fromBF16s(keyMask(2, 4, 3))
+	want := []float32{1, 1, 1, 0, 1, 1, 1, 0}
+	for i := range want {
+		if m[i] != want[i] {
+			t.Fatalf("keyMask(2, 4, 3) = %v, want %v", m, want)
+		}
+	}
+}

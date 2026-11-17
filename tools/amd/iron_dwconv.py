@@ -42,8 +42,10 @@ def depths(w: int, c: int, k: int) -> tuple[int, int] | None:
     """The window's and the output's fifo depths for a band of c channels: k + 1 and 2 where they
     fit a core, else k (the next row lands while the window waits) or one output; None if not."""
     row, out = (w + k - 1) * c * 2, w * c * 2
+    # with 1 KiB to spare: sums of CORE_BYTES less 0 and 512 bytes (Sana's VAE at 832 x 1248, w
+    # 104, k 3, c 64; at 768 x 1344, w 168, k 3, c 32) left the last core's output fifo no place
     for di, do in ((k + 1, 2), (k, 2), (k, 1)):
-        if di * row + do * out + (k * k + 1) * c * 2 <= CORE_BYTES:
+        if di * row + do * out + (k * k + 1) * c * 2 <= CORE_BYTES - (1 << 10):
             return di, do
     return None
 

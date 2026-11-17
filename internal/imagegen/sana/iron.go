@@ -8,6 +8,8 @@ import (
 	"image"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
@@ -21,6 +23,10 @@ type ironEngine struct {
 	dit  DitConfig
 	text TextConfig
 	vae  *VAE
+	sfx  string // the DiT's graphs' names for the picture's size: "" for the first size's, else _WxH
+	// kmask is dit_blocks' input of the keys' columns that are tokens (bf16 ones, zeros for the
+	// padding) in an export of several sizes on one bank; nil when the graph holds its own
+	kmask []byte
 
 	ditIn, ditBlocks, ditOut *iron.Graph // open while the steps run
 	ctxSet                   []float32   // the caption dit_blocks holds
@@ -44,7 +50,43 @@ func isIronExport(dir string) bool {
 	return err == nil
 }
 
-func openIron(dev *hwnpu.Device, dir string) (*ironEngine, DitConfig, TextConfig, error) {
+// SizesDir is the directory of an IRON export's VAEs for pictures of another size than its first
+// (tools/amd/iron_sana.py --size 1024 512 832x1248 ...): SizesDir/WxH/vae. The DiT's graphs of
+// that size are dit_in_WxH, dit_blocks_WxH (on the first size's banks) and dit_out_WxH.
+const SizesDir = "sizes"
+
+// IronSizes are the pictures' sizes (width, height) the IRON export in dir draws: its first size,
+// then those with a VAE in SizesDir and the DiT's graphs; nil when dir is no IRON export.
+func IronSizes(dir string) [][2]int {
+	if !isIronExport(dir) {
+		return nil
+	}
+	m, err := iron.ReadGraphManifest(filepath.Join(dir, "dit_blocks"))
+	if err != nil {
+		return nil
+	}
+	dc, err := meta[DitConfig](m)
+	if err != nil {
+		return nil
+	}
+	out := [][2]int{{dc.W(), dc.H()}}
+	entries, _ := os.ReadDir(filepath.Join(dir, SizesDir))
+	for _, en := range entries {
+		var w, h int
+		if _, err := fmt.Sscanf(en.Name(), "%dx%d", &w, &h); err != nil || fmt.Sprintf("%dx%d", w, h) != en.Name() {
+			continue
+		}
+		_, ev := os.Stat(filepath.Join(dir, SizesDir, en.Name(), "vae", "manifest.json"))
+		_, eb := os.Stat(filepath.Join(dir, "dit_blocks_"+en.Name(), "manifest.json"))
+		if ev == nil && eb == nil {
+			out = append(out, [2]int{w, h})
+		}
+	}
+	return out
+}
+
+// openIron reads the export's manifests for pictures of w x h (0 x 0: its first size).
+func openIron(dev *hwnpu.Device, dir string, w, h int) (*ironEngine, DitConfig, TextConfig, error) {
 	e := &ironEngine{dev: dev, dir: dir}
 	var tc TextConfig
 	mb, err := iron.ReadGraphManifest(filepath.Join(dir, "dit_blocks"))
@@ -53,6 +95,32 @@ func openIron(dev *hwnpu.Device, dir string) (*ironEngine, DitConfig, TextConfig
 	}
 	if e.dit, err = meta[DitConfig](mb); err != nil {
 		return nil, e.dit, tc, err
+	}
+	vae := filepath.Join(dir, "vae")
+	defer func() {
+		for _, in := range mb.Graph.Inputs {
+			if in.Name == "kmask" && len(in.Shape) == 2 {
+				e.kmask = keyMask(in.Shape[0], in.Shape[1], e.dit.Tokens())
+			}
+		}
+	}()
+	if w != 0 && (w != e.dit.W() || h != e.dit.H()) {
+		size := fmt.Sprintf("%dx%d", w, h)
+		if !slices.Contains(IronSizes(dir), [2]int{w, h}) {
+			var have []string
+			for _, s := range IronSizes(dir) {
+				have = append(have, fmt.Sprintf("%dx%d", s[0], s[1]))
+			}
+			return nil, e.dit, tc, fmt.Errorf("the export draws %s, not %s", strings.Join(have, ", "), size)
+		}
+		e.sfx = "_" + size
+		if mb, err = iron.ReadGraphManifest(filepath.Join(dir, "dit_blocks"+e.sfx)); err != nil {
+			return nil, e.dit, tc, err
+		}
+		if e.dit, err = meta[DitConfig](mb); err != nil {
+			return nil, e.dit, tc, err
+		}
+		vae = filepath.Join(dir, SizesDir, size, "vae")
 	}
 	if n, v := e.dit.Layers/e.dit.Group, max(1, len(mb.Variants)); v != n {
 		return nil, e.dit, tc, fmt.Errorf("dit_blocks holds %d groups, the DiT %d", v, n)
@@ -65,7 +133,7 @@ func openIron(dev *hwnpu.Device, dir string) (*ironEngine, DitConfig, TextConfig
 		return nil, e.dit, tc, err
 	}
 	e.text = tc
-	if e.vae, err = OpenVAE(dev, filepath.Join(dir, "vae")); err != nil {
+	if e.vae, err = OpenVAE(dev, vae); err != nil {
 		return nil, e.dit, tc, err
 	}
 	return e, e.dit, tc, nil
@@ -134,7 +202,7 @@ func (e *ironEngine) openDiT(ctx context.Context, resident bool) error {
 		g    **iron.Graph
 		name string
 	}{{&e.ditIn, "dit_in"}, {&e.ditBlocks, "dit_blocks"}, {&e.ditOut, "dit_out"}} {
-		g, err := iron.OpenGraphWith(ctx, e.dev, filepath.Join(e.dir, x.name), iron.GraphOptions{SwapVariants: !resident})
+		g, err := iron.OpenGraphWith(ctx, e.dev, filepath.Join(e.dir, x.name+e.sfx), iron.GraphOptions{SwapVariants: !resident})
 		if err != nil {
 			e.closeDiT()
 			return err
@@ -142,7 +210,24 @@ func (e *ironEngine) openDiT(ctx context.Context, resident bool) error {
 		*x.g = g
 	}
 	e.ctxSet = nil
+	if e.kmask != nil {
+		if err := e.ditBlocks.SetInput("kmask", e.kmask); err != nil {
+			e.closeDiT()
+			return err
+		}
+	}
 	return nil
+}
+
+// keyMask is iron_sana.kmask: rows x cols bf16, ones in the first tokens columns, zeros after.
+func keyMask(rows, cols, tokens int) []byte {
+	m := make([]float32, rows*cols)
+	for r := range rows {
+		for c := range min(tokens, cols) {
+			m[r*cols+c] = 1
+		}
+	}
+	return toBF16(m)
 }
 
 // velocity runs the DiT on patches (tokens x latent, channel last) once for each conditioning.
