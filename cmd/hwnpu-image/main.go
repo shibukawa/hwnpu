@@ -44,7 +44,7 @@
 // (minutes at 1024 x 1024), kept in --cache. convert makes such an export from a directory.
 //
 // On AMD's NPU, the exports are of tools/amd/iron_anima.py (see docs/amd-npu-models.md;
-// ~/models/anima-turbo-1024.amd-npu2, anima-aesthetic-1024.amd-npu2) or of
+// ~/models/anima-turbo.amd-npu2, anima-aesthetic.amd-npu2, of the eight aspect ratios of --size) or of
 // tools/amd/iron_sana.py: Sana (NVlabs), a linear DiT with Gemma 2 2B reading the prompt
 // (internal/imagegen/sana). On Apple's Neural Engine, Sana is downloaded and converted (into
 // hwnpu/models/Sana) into Core AI programs on its first run, as Anima is (one export for 512 x 512 and

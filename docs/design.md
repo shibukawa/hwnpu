@@ -7291,3 +7291,11 @@ Mac (16.227) は 512² と 1024² を 1 つの書き出し (関数 2 つの `.ai
 
 **残り**: Chroma1-HD (同じ構造で、同じ手順のはず)。Neural Engine の 832 x 1248 などは Core AI の側 (`milpart.KeyParts`、`HeadChunk`、VAE の注意の塊の長さが 64 の倍数でない) で、AMD のこの変更とは別
 
+
+### 16.242 画像のモデルの AMD の書き出しの名前を NAME.amd-npu2 に (8 つのアスペクト比のもの) — 2026-11-18
+
+Anima、Sana、Chroma1、FLUX.2 klein の AMD の書き出しは、どれも `--size` の 8 つのアスペクト比を 1 つに持つ (16.237〜16.241)。名前の `-aspects` は、どのモデルにも付くので何も区別しない。それで書き出しの名前を `NAME.amd-npu2` (小文字) にした。
+
+- hwnpu-image は `NAME.amd-npu2` だけを探す (`aspectsAMD`、`flux2klein.PrepareAMD`)。正方形ごとの名前 (`NAME-1024.amd-npu2`、`NAME-512.amd-npu2`、`NAME-512+1024.amd-npu2`) はもう探さない。前の 1024² だけの書き出しは同じ名前だったが、描ける大きさを見るので、1024² にだけ使われる
+- FLUX.2 klein の、正方形ごとの書き出しを取る、1 つにまとめる (`MergeAMD`)、消す処理はやめた。取得元にも手元にも、もう正方形ごとの書き出しはない
+- 取得元 (NAS) の正方形ごとの書き出しは消した。8 つの書き出しは `NAME.amd-npu2` の名前で置き直した (手で作ったものの鍵は名前から決まる: `ImportedRecipe`)。Qwen-Image はまだ大きさごとの書き出し (`qwen-image-2.1-turbo.amd-npu2` と `-512`) のまま

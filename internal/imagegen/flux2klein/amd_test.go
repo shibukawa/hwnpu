@@ -2,6 +2,7 @@ package flux2klein
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,20 +22,33 @@ func kleinModel(t *testing.T) chat.Model {
 	return m
 }
 
-// fakeIronExport writes the manifests isIronExport looks for into dir, with mark in model.json.
-func fakeIronExport(t *testing.T, dir, mark string) {
+// fakeIronExport writes the manifests isIronExport and IronSizes look for into dir, an export
+// that draws sizes (the first laid out as an export of its own, the others in SizesDir), with mark
+// in model.json.
+func fakeIronExport(t *testing.T, dir, mark string, sizes ...[2]int) {
 	t.Helper()
-	for _, p := range []string{"doubles", "singles", "mods", "ctx", "text"} {
-		if err := os.MkdirAll(filepath.Join(dir, p), 0o755); err != nil {
+	write := func(p string, b []byte) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, p, "manifest.json"), []byte("{}"), 0o644); err != nil {
+		if err := os.WriteFile(p, b, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "model.json"), []byte(mark), 0o644); err != nil {
+	for _, p := range []string{"singles", "mods", "ctx", "text"} {
+		write(filepath.Join(dir, p, "manifest.json"), []byte("{}"))
+	}
+	doubles, err := json.Marshal(map[string]any{"version": 1, "kind": "graph", "name": "doubles",
+		"graph": map[string]any{"elf": "graph.elf", "kernels": []map[string]any{{"name": "k"}}}, "meta": map[string]any{"config": map[string]any{"width": sizes[0][0], "height": sizes[0][1]}}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	write(filepath.Join(dir, "doubles", "manifest.json"), doubles)
+	for _, s := range sizes[1:] {
+		write(filepath.Join(dir, sizeDir(s[0], s[1]), "vae", "manifest.json"), []byte("{}"))
+	}
+	write(filepath.Join(dir, "model.json"), []byte(mark))
 }
 
 // noSources leaves only the machine's cache (a new root) and no IRON, so that nothing is
@@ -50,41 +64,31 @@ func noSources(t *testing.T) {
 }
 
 func TestAMDExportName(t *testing.T) {
-	for size, want := range map[int]string{1024: "flux.2-klein-4b.amd-npu2", 512: "flux.2-klein-4b-512.amd-npu2"} {
-		if got := AMDExportName("FLUX.2-klein-4B", size); got != want {
-			t.Errorf("%d: %s, want %s", size, got, want)
-		}
+	if got := AMDExportName("FLUX.2-klein-4B"); got != "flux.2-klein-4b.amd-npu2" {
+		t.Errorf("%s, want flux.2-klein-4b.amd-npu2", got)
 	}
 }
 
-// TestAMDImportedPlace: the exports made by hand of FLUX.2 klein that hwnpu-dev cache import put
-// in a source are found where it put them (the folders of a source that holds both sizes).
+// TestAMDImportedPlace: the export made by hand of FLUX.2 klein that hwnpu-dev cache import put
+// in a source is found where it put it, and the first run's is another entry, of every size.
 func TestAMDImportedPlace(t *testing.T) {
 	m := kleinModel(t)
-	for size, want := range map[int]string{
-		1024: "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b.amd-npu2/v0-2d2e30e3",
-		512:  "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b-512.amd-npu2/v0-d9fa89fa",
-	} {
-		name := AMDExportName(m.Name, size)
-		if got := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name)).Path; got != want {
-			t.Errorf("%d: %s, want %s", size, got, want)
-		}
+	name := AMDExportName(m.Name)
+	want := "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b.amd-npu2/v0-2d2e30e3"
+	if got := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name)).Path; got != want {
+		t.Errorf("%s, want %s", got, want)
 	}
-	// the first run's export is another entry, of its size
-	r512, r1024 := AMDRecipe(m, [2]int{512, 512}), AMDRecipe(m, [2]int{1024, 1024})
-	if r512 == nil || r512["args"] != "--size 512" || r1024["args"] != "--size 1024" || r512["tool"] != AMDTool {
-		t.Fatalf("recipes %v, %v", r512, r1024)
+	r := AMDRecipe(m, AMDSizes...)
+	if r == nil || r["args"] != "--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752" || r["tool"] != AMDTool {
+		t.Fatalf("recipe %v", r)
 	}
-	if r512["sha256:transformer/diffusion_pytorch_model.safetensors"] == "" {
+	if r["sha256:transformer/diffusion_pytorch_model.safetensors"] == "" {
 		t.Error("the recipe has not the DiT's SHA-256")
-	}
-	if a, b := shared.Fingerprint(r512), shared.Fingerprint(r1024); a == b {
-		t.Error("the sizes' recipes are the same")
 	}
 }
 
-// TestPrepareAMDHere runs an export here by its name (the older NAME-1024 too) without a source or
-// IRON, and refuses a size it does not export.
+// TestPrepareAMDHere runs the export here by its name without a source or IRON, and refuses a
+// size it does not export; an older one of 1024 x 1024 alone by that name draws that size only.
 func TestPrepareAMDHere(t *testing.T) {
 	noSources(t)
 	m := kleinModel(t)
@@ -92,24 +96,20 @@ func TestPrepareAMDHere(t *testing.T) {
 	if _, err := PrepareAMD(ctx, m, 768, 768, nil); err == nil || !strings.Contains(err.Error(), "--size 768x768") {
 		t.Errorf("768: %v", err)
 	}
-	old := filepath.Join(chat.AMDRoot(), "flux.2-klein-4b-1024.amd-npu2")
-	fakeIronExport(t, old, "{}")
-	if got, err := PrepareAMD(ctx, m, 1024, 1024, nil); err != nil || got != old {
-		t.Errorf("1024: %s %v, want %s", got, err, old)
-	}
-	dir := filepath.Join(chat.AMDRoot(), AMDExportName(m.Name, 1024))
-	fakeIronExport(t, dir, "{}")
+	dir := filepath.Join(chat.AMDRoot(), AMDExportName(m.Name))
+	fakeIronExport(t, dir, "{}", [2]int{1024, 1024})
 	if got, err := PrepareAMD(ctx, m, 1024, 1024, nil); err != nil || got != dir {
-		t.Errorf("1024: %s %v, want %s", got, err, dir)
+		t.Errorf("1024 of the older export: %s %v, want %s", got, err, dir)
 	}
-	// none of 512 x 512 here, none in a source, no IRON: what to do
-	_, err := PrepareAMD(ctx, m, 512, 512, nil)
-	if err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
-		t.Errorf("512 with no export and no IRON: %v", err)
-	}
-	// 832 x 1248 is in the export of every size only
 	if _, err := PrepareAMD(ctx, m, 832, 1248, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
-		t.Errorf("832 x 1248 with exports of squares only: %v", err)
+		t.Errorf("832 x 1248 with an export of 1024 x 1024 alone and no IRON: %v", err)
+	}
+	os.RemoveAll(dir)
+	fakeIronExport(t, dir, "{}", AMDSizes...)
+	for _, s := range AMDSizes {
+		if got, err := PrepareAMD(ctx, m, s[0], s[1], nil); err != nil || got != dir {
+			t.Errorf("%v: %s %v, want %s", s, got, err, dir)
+		}
 	}
 }
 
@@ -124,9 +124,9 @@ func TestPrepareAMDImported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := AMDExportName(m.Name, 512)
+	name := AMDExportName(m.Name)
 	hand := filepath.Join(t.TempDir(), name)
-	fakeIronExport(t, hand, `{"by":"hand"}`)
+	fakeIronExport(t, hand, `{"by":"hand"}`, AMDSizes...)
 	e := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name))
 	if _, err := shared.Describe(hand, e); err != nil {
 		t.Fatal(err)
