@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
 	"github.com/shibukawa/hwnpu/internal/imagegen/qwenimage"
@@ -33,7 +33,7 @@ import (
 // run, and convert).
 type convertFlags struct {
 	Backend    string `help:"The program format: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one) or intel (Intel's NPU); convert also takes coreml, the Core ML export --cpu runs. Default: HWNPU_BACKEND, else the NPU found (convert: coreai)."`
-	Size       string `default:"1:1" help:"The picture's aspect ratio: 1:1 (1024 x 1024), 1:1s (512 x 512), 2:3, 3:4, 9:16, 3:2, 4:3 or 16:9 (Anima; an export each, on AMD's NPU for 1:1 and 1:1s only). The other models take 1:1 and 1:1s too, and still a pixel count."`
+	Size       string `default:"1:1" help:"The picture's aspect ratio: 1:1 (1024 x 1024), 1:1s (512 x 512), 2:3, 3:4, 9:16, 3:2, 4:3 or 16:9 (Anima and FLUX.2 klein; Anima an export each, on AMD's NPU for 1:1 and 1:1s only; FLUX.2 klein on AMD's NPU one export of all eight). The other models take 1:1 and 1:1s, and still a pixel count."`
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
 	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Apple's; int8 on Intel; default int8 on Apple's, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
 	DitFormat  string `help:"The DiT's weights (fp16; lut8, lut6 on Apple's; int8, int4 on Intel; default int8 on Apple's: faster than fp16 at half its memory, and nearer it than lut8; fp16 on Intel. Qwen-Image: lut6, its text pass the same and a group's two passes one program with the weights once)."`
@@ -48,19 +48,22 @@ func (f convertFlags) options() (anima.ConvertOptions, error) {
 }
 
 // side is the picture's side in pixels for the models whose sizes are still squares: 1:1 and
-// 1:1s, or a pixel count as before (the rest of the sizes are Anima's for now).
+// 1:1s, or a pixel count as before.
 func (f convertFlags) side() (int, error) {
-	if w, h, err := anima.ParseAspect(f.Size); err == nil {
-		if w != h {
-			return 0, fmt.Errorf("--size %s: this model takes 1:1 or 1:1s for now", f.Size)
-		}
-		return w, nil
+	w, h, err := aspect.ParseOrSide(f.Size, 16)
+	if err != nil {
+		return 0, err
 	}
-	n, err := strconv.Atoi(f.Size)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("--size %s: not 1:1 or 1:1s, nor a pixel count", f.Size)
+	if w != h {
+		return 0, fmt.Errorf("--size %s: this model takes 1:1 or 1:1s for now", f.Size)
 	}
-	return n, nil
+	return w, nil
+}
+
+// picture is the picture's width and height for a model whose pictures are multiples of
+// multiple pixels: an aspect ratio of --size (aspect.Of), or a pixel count as before (a square).
+func (f convertFlags) picture(multiple int) (w, h int, err error) {
+	return aspect.ParseOrSide(f.Size, multiple)
 }
 
 // ConvertCmd is "hwnpu-image convert": an Anima directory or a Sana, Chroma or Qwen-Image

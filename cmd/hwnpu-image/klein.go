@@ -24,10 +24,10 @@ import (
 
 // kleinModel is the FLUX.2 klein export m runs here: on Apple's Neural Engine the Core AI export,
 // downloaded and converted when missing; on AMD's NPU the export of tools/amd/iron_flux2klein.py
-// for --size (512 or 1024), from the shared layers or made with IRON when missing
-// (flux2klein.PrepareAMD).
+// of every aspect ratio of --size (one export), from the shared layers or made with IRON when
+// missing (flux2klein.PrepareAMD).
 func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, error) {
-	side, err := c.side()
+	w, h, err := c.picture(16)
 	if err != nil {
 		return "", err
 	}
@@ -39,12 +39,12 @@ func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, err
 	case runtime.GOOS == "darwin" || chat.HereVendor() != "amd":
 		return "", err
 	default:
-		return flux2klein.PrepareAMD(chat.WithModel(ctx, m), m, side, console.Log(os.Stderr))
+		return flux2klein.PrepareAMD(chat.WithModel(ctx, m), m, w, h, console.Log(os.Stderr))
 	}
-	if side%16 != 0 {
-		return "", fmt.Errorf("--size %d: FLUX.2 klein's pictures are multiples of 16 pixels", side)
+	if w%16 != 0 || h%16 != 0 {
+		return "", fmt.Errorf("--size %s: FLUX.2 klein's pictures are multiples of 16 pixels", c.Size)
 	}
-	o := flux2klein.ConvertOptions{Width: side, Height: side, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+	o := flux2klein.ConvertOptions{Width: w, Height: h, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
 	return flux2klein.Prepare(chat.WithModel(ctx, m), flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo,
 		Name: m.Name, ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
@@ -101,7 +101,7 @@ func referenceNames(divs []int) string {
 // tools/amd/iron_flux2klein.py on AMD's NPU, or of hwnpu-image convert on Apple's Neural Engine
 // (Core AI's).
 func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) error {
-	side, err := c.side()
+	pw, ph, err := c.picture(16)
 	if err != nil {
 		return err
 	}
@@ -129,11 +129,11 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) er
 		iron.ShareExport(model, logf)
 	}
 	defer dev.Close()
-	w := 0
+	w, h := 0, 0
 	if flux2klein.IsProgramExport(model) || len(flux2klein.IronSizes(model)) > 1 {
-		w = side // an export of several sizes draws at --size (one of a size alone draws at its own)
+		w, h = pw, ph // an export of several sizes draws at --size (one of a size alone draws at its own)
 	}
-	p, err := flux2klein.OpenAt(ctx, dev, model, w, w, lw)
+	p, err := flux2klein.OpenAt(ctx, dev, model, w, h, lw)
 	if err != nil {
 		return err
 	}

@@ -1205,13 +1205,15 @@ design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG な
 
 ### 24.3 手順
 
-`hwnpu-image generate -m flux2-klein` は、初回に `--size` (512 か既定の 1024) の書き出しを用意する (`flux2klein.PrepareAMD`、design.md 16.235): 手元 (キャッシュの `entries/amd-xdna2`、`~/models`) になければ取得元 (`HWNPU_MODEL_SOURCE`) から。取得元には、ほかの機械の初回が置いたもの (`kind: iron-flux2klein`) か、手で作って `hwnpu-dev cache import` で同じ名前で置いたもの (`iron-import`)。どちらもなければチェックポイントを落として `HWNPU_IRON_ENV` の IRON で両方の大きさを 1 つに書き出し (`--size 1024 512`、`flux.2-klein-4b-512+1024.amd-npu2`、11.77 GB。8 分 43 秒、IRON のカーネルのキャッシュが温まった状態で。512² だけなら空のキャッシュで 9 分)、書き戻す取得元に置く。取得元はまず両方の書き出しを、なければ `--size` の書き出しを探す。手元に大きさごとの書き出しが両方あれば `flux2klein.MergeAMD` で 1 つにして消す (design.md 16.237)。
+`hwnpu-image generate -m flux2-klein` は、初回に `--size` (8 つのアスペクト比、既定は 1:1) の書き出しを用意する (`flux2klein.PrepareAMD`、design.md 16.235): 手元 (キャッシュの `entries/amd-xdna2`、`~/models`) になければ取得元 (`HWNPU_MODEL_SOURCE`) から。取得元には、ほかの機械の初回が置いたもの (`kind: iron-flux2klein`) か、手で作って `hwnpu-dev cache import` で同じ名前で置いたもの (`iron-import`)。どちらもなければチェックポイントを落として `HWNPU_IRON_ENV` の IRON で 8 つの大きさを 1 つに書き出し (`--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752`、`flux.2-klein-4b-aspects.amd-npu2`、16.23 GB、30 分ほど)、書き戻す取得元に置き、キャッシュの正方形だけの書き出しを消す (design.md 16.238)。取得元はまず 8 つの書き出しを、なければ正方形の `--size` の書き出しを探す。手元に大きさごとの書き出しが両方あれば `flux2klein.MergeAMD` で 1 つにして消す (design.md 16.237)。
 
-1 つの書き出しの中の形: ブロックのグラフ (dit_in、doubles、singles) は 1 ステップの行の数だけで決まるので、最初の大きさ (1024²) の絵の行 (4608) を名前なし、ほかを `_nROWS` として全部の大きさで共有し、バンクは doubles と singles の 1 組だけ。512² の絵は `doubles_n1536` など、3 枚の参照つきの 512² (4608 行) は 1024² の絵のグラフ。大きさで変わる dit_out と VAE は `sizes/512x512/`、参照の符号器は辺の長さで探す (512² の参照は 1024² の `vae_enc_d2`、256² は `sizes/256x256/vae_enc`)。手で書き出すなら:
+1 つの書き出しの中の形: ブロックのグラフ (dit_in、doubles、singles) は 1 ステップの行の数だけで決まるので、最初の大きさ (1024²) の絵の行 (4608) を名前なし、ほかを `_nROWS` として全部の大きさで共有し、バンクは doubles と singles の 1 組だけ。512² の絵は `doubles_n1536` など、3 枚の参照つきの 512² (4608 行) は 1024² の絵のグラフ。大きさで変わる dit_out と VAE は `sizes/512x512/`、参照の符号器は辺の長さで探す (512² の参照は 1024² の `vae_enc_d2`、256² は `sizes/256x256/vae_enc`)。512 の倍数の行にならない 1 ステップ (長方形、512² の半分の参照が奇数枚) は、テキストの行を先に置いて 512 の倍数まで詰め、鍵を `nk` で区切る: single ブロック、`dit_in`、`dit_out` は正方形のものを使い、double ブロックだけテキストが先の `doubles_tROWS` (バンクは同じ)。長方形の VAE と符号器は `sizes/WxH/` (design.md 16.238)。手で書き出すなら:
 
 ```
 python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024
 python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b-512+1024.amd-npu2 --size 1024 512   # 両方を 1 つに
+python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b-aspects.amd-npu2 --size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752   # 8 つ
+hwnpu-image generate -m flux2-klein --size 9:16 "A red fox sitting in a snowy forest at dawn, soft light"
 hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"
 hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
 hwnpu-image generate -m flux2-klein -i fox.png -i room.png@half "The fox from image 1 is sitting on the sofa in the living room from image 2."

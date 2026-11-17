@@ -265,15 +265,15 @@ func TestPrepareAMDMerges(t *testing.T) {
 	fakeSized(t, big, 1024, nil, "w")
 	fakeSized(t, small, 512, nil, "w")
 	// 1024's used now (by another process): 512 is drawn from its own
-	if got, err := PrepareAMD(ctx, m, 512, nil); err != nil || got != small {
+	if got, err := PrepareAMD(ctx, m, 512, 512, nil); err != nil || got != small {
 		t.Fatalf("512 with 1024 in use: %s %v", got, err)
 	}
 	old := time.Now().Add(-2 * time.Hour)
 	if err := os.Chtimes(big, old, old); err != nil {
 		t.Fatal(err)
 	}
-	got, err := PrepareAMD(ctx, m, 512, nil)
-	want := filepath.Join(chat.AMDRoot(), AMDMergedName(m.Name, 512, 1024))
+	got, err := PrepareAMD(ctx, m, 512, 512, nil)
+	want := filepath.Join(chat.AMDRoot(), AMDMergedName(m.Name, amdSquares...))
 	if err != nil || got != want {
 		t.Fatalf("512: %s %v, want %s", got, err, want)
 	}
@@ -282,15 +282,47 @@ func TestPrepareAMDMerges(t *testing.T) {
 			t.Errorf("%s stays", d)
 		}
 	}
-	for _, size := range AMDSizes {
-		if got, err := PrepareAMD(ctx, m, size, nil); err != nil || got != want {
-			t.Errorf("%d: %s %v", size, got, err)
+	for _, size := range amdSquares {
+		if got, err := PrepareAMD(ctx, m, size[0], size[1], nil); err != nil || got != want {
+			t.Errorf("%v: %s %v", size, got, err)
 		}
 	}
-	if AMDMergedName(m.Name, 1024, 512) != "flux.2-klein-4b-512+1024.amd-npu2" {
-		t.Error(AMDMergedName(m.Name, 1024, 512))
+	if n := AMDMergedName(m.Name, [2]int{1024, 1024}, [2]int{512, 512}); n != "flux.2-klein-4b-512+1024.amd-npu2" {
+		t.Error(n)
 	}
-	if r := AMDRecipe(m, amdFirst()...); r["args"] != "--size 1024 512" {
-		t.Errorf("the recipe of both: %v", r["args"])
+	if n := AMDMergedName(m.Name, AMDSizes...); n != "flux.2-klein-4b-aspects.amd-npu2" {
+		t.Error(n)
+	}
+	if r := AMDRecipe(m, AMDSizes...); r["args"] != "--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752" {
+		t.Errorf("the recipe of every size: %v", r["args"])
+	}
+
+}
+
+// TestPrepareAMDAspects: the export of every size here draws them all and replaces the exports of
+// the squares (those not used lately).
+func TestPrepareAMDAspects(t *testing.T) {
+	noSources(t)
+	m := kleinModel(t)
+	ctx := context.Background()
+	squares := filepath.Join(chat.AMDRoot(), AMDMergedName(m.Name, amdSquares...))
+	fakeSized(t, squares, 1024, nil, "w")
+	writeJSON(t, filepath.Join(squares, sizeDir(512, 512), "vae", "manifest.json"), map[string]any{})
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(squares, old, old); err != nil {
+		t.Fatal(err)
+	}
+	all := filepath.Join(chat.AMDRoot(), AMDMergedName(m.Name, AMDSizes...))
+	fakeSized(t, all, 1024, nil, "w")
+	for _, s := range AMDSizes[1:] {
+		writeJSON(t, filepath.Join(all, sizeDir(s[0], s[1]), "vae", "manifest.json"), map[string]any{})
+	}
+	for _, s := range AMDSizes {
+		if got, err := PrepareAMD(ctx, m, s[0], s[1], nil); err != nil || got != all {
+			t.Errorf("%v: %s %v, want %s", s, got, err, all)
+		}
+	}
+	if _, err := os.Stat(squares); err == nil {
+		t.Errorf("%s stays", squares)
 	}
 }

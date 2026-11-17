@@ -183,8 +183,9 @@ func amdNames(m chat.Model, size int) []string {
 // what the listing shows, without asking the sources.
 func amdExportHere(m chat.Model) string {
 	names := amdNames(m, 0)
-	if strings.HasPrefix(m.Family, "flux2-klein") { // flux2klein.PrepareAMD's export of both sizes first
-		names = append([]string{flux2klein.AMDMergedName(m.Name, flux2klein.AMDSizes...)}, names...)
+	if strings.HasPrefix(m.Family, "flux2-klein") { // flux2klein.PrepareAMD's export of every size first, then of the squares
+		names = append([]string{flux2klein.AMDMergedName(m.Name, flux2klein.AMDSizes...),
+			flux2klein.AMDMergedName(m.Name, [2]int{512, 512}, [2]int{1024, 1024})}, names...)
 	}
 	for _, n := range names {
 		if d := hcache.FindExport(n, isDir); d != "" {

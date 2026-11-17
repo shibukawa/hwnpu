@@ -122,9 +122,9 @@ func TestPositions(t *testing.T) {
 }
 
 // The references an export runs: the mixes whose rows it has blocks for and whose sizes it has
-// an encoder for.
+// an encoder for; a step whose rows are no whole rounds of 512 runs padded, the text's rows first.
 func TestReferences(t *testing.T) {
-	p := testPipeline(64) // 16 picture rows, 512 text rows; a reference 16 rows, a half-size one 4
+	p := testPipeline(512) // 1024 picture rows, 512 text rows; a reference 1024 rows, a half-size one 256
 	p.dir = t.TempDir()
 	have := func(names ...string) {
 		for _, n := range names {
@@ -140,16 +140,38 @@ func TestReferences(t *testing.T) {
 	if got := p.References(); !reflect.DeepEqual(got, []string{"0"}) {
 		t.Errorf("no references: %v", got)
 	}
-	// 544 rows: one of the picture's size, or four of half its sides; 548: the first and one more
-	have("vae_enc", "doubles_n544", "singles_n544", "dit_in_n544", "doubles_n548", "singles_n548", "dit_in_n548")
+	// 2560 rows: one of the picture's size, or four of half its sides
+	have("vae_enc", "doubles_n2560", "singles_n2560", "dit_in_n2560")
 	if got := p.References(); !reflect.DeepEqual(got, []string{"0", "1"}) {
 		t.Errorf("without the half-size encoder: %v", got)
 	}
-	have("vae_enc_d2")
-	if got := p.References(); !reflect.DeepEqual(got, []string{"0", "4@half", "1", "1+1@half"}) {
+	// one of half the sides: 1792 rows, padded to 2048 with the text's first
+	have("vae_enc_d2", "doubles_t2048", "singles_n2048", "dit_in_n2048")
+	if got := p.References(); !reflect.DeepEqual(got, []string{"0", "1@half", "4@half", "1"}) {
 		t.Errorf("with it: %v", got)
 	}
-	if !p.HasReferences([]int{2, 1}) || p.HasReferences([]int{1, 1}) || p.HasReferences([]int{2}) {
-		t.Error("HasReferences: a mix in either order runs, two of the picture's size and one half-size do not")
+	// two of half the sides are 2048 rows exactly: the image's rows first (doubles_n2048)
+	if !p.HasReferences([]int{2, 2, 2, 2}) || !p.HasReferences([]int{2}) || p.HasReferences([]int{2, 2}) || p.HasReferences([]int{1, 2}) {
+		t.Error("HasReferences: 4@half and 1@half run, 2@half and 1+1@half do not")
+	}
+	for _, c := range []struct {
+		divs    []int
+		want    step
+		imageAt int
+	}{
+		{nil, step{rows: 1536, padded: 1536, doubles: "doubles", singles: "singles", ditIn: "dit_in"}, 0},
+		{[]int{2}, step{rows: 1792, padded: 2048, textFirst: true, doubles: "doubles_t2048", singles: "singles_n2048", ditIn: "dit_in_n2048"}, 512},
+		{[]int{2, 2}, step{rows: 2048, padded: 2048, doubles: "doubles_n2048", singles: "singles_n2048", ditIn: "dit_in_n2048"}, 0},
+	} {
+		got, ok := p.step(c.divs)
+		if !ok || got != c.want || got.imageAt(p.C.TextRows) != c.imageAt {
+			t.Errorf("step of %v: %+v (image at %d), want %+v (at %d)", c.divs, got, got.imageAt(p.C.TextRows), c.want, c.imageAt)
+		}
+	}
+	// a picture that is no square: 832 x 1248 is 4056 rows and the text's, padded to the 1024 x 1024 export's 4608
+	q := testPipeline(1024)
+	q.C.Width, q.C.Height = 832, 1248
+	if got, _ := q.step(nil); got != (step{rows: 4568, padded: 4608, textFirst: true, doubles: "doubles_t4608", singles: "singles", ditIn: "dit_in"}) {
+		t.Errorf("832 x 1248: %+v", got)
 	}
 }

@@ -561,6 +561,9 @@ class NormShape:
         return -(-(self.k + 1) // 64) * 64
 
     def __post_init__(self):
+        if HOST_NORM[0]:  # the host's statistics over the grid's lines: any pixels (832 x 1248's 104 x 156 latents)
+            assert self.C % GROUPS == 0, self
+            return
         assert self.C % GROUPS == 0 and self.R % 64 == 0 and self.k + 1 <= 4096, self
         assert self.np * self.cg * GN_EPS > GN_C**2, self  # step 5's eps is positive
 
@@ -610,6 +613,7 @@ class FluxVaeStage(qi.VaeStage):
                 self._param(f"{path}.proj.w", f32(w[f"{path}.to_out.0.weight"]))
                 self._param(f"{path}.proj.b", f32(w[f"{path}.to_out.0.bias"]))
                 self._const(f"eye{C}", np.eye(C, dtype=np.float32))
+                self._attn_mask(gg.H * gg.W)
             elif kind == "up":
                 _, path, cin, cout = op
                 wt = f32(w[f"{path}.upsamplers.0.conv.weight"])  # (cout, cin, 3, 3)
@@ -644,6 +648,26 @@ class FluxVaeStage(qi.VaeStage):
         """A constant shared by the stage's norms (made once)."""
         if name not in self._index:
             self._param(name, x)
+
+    @staticmethod
+    def attn_rows(n: int) -> int:
+        """The mid block's attention's rows for n pixels: n, or whole rounds of 256 (a picture
+        whose latents are no multiple of 256 pixels: 832 x 1248's 104 x 156), the pads no key."""
+        return -(-n // 256) * 256
+
+    def _attn_mask(self, n: int) -> None:
+        """The scores' term of the attention over n pixels padded (attn_rows): 0 for a pixel, a
+        large negative for a pad (its weight e^-30000: 0)."""
+        p = self.attn_rows(n)
+        if p != n:
+            # the term of every query's scores as a GEMM's output: ones (Qc, 64) by (p, 64) whose
+            # first column is the term (a row's broadcast over 16384 columns takes a DMA
+            # descriptor a row, more than a channel's 16)
+            m = np.zeros((p, 64), np.float32)
+            m[n:, 0] = -30000.0
+            self._const(f"mask{n}", m)
+            qc = p if p <= ATTN_ROWS else 256  # attn's queries a pass
+            self._const(f"ones{qc}x64", np.ones((qc, 64), np.float32))
 
     def _gn(self, name: str, w, path: str, s: NormShape) -> None:
         """A GroupNorm's constants (group_norm): its own (the group means' fold Gm, the residual
@@ -714,8 +738,8 @@ class FluxVaeStage(qi.VaeStage):
 
     def group_norm(self, d, s: NormShape, name: str):
         """GroupNorm(32) of the dense pixels d (np, C), gamma and beta: (np, C) (module doc)."""
-        if HOST_NORM[0]:
-            return self.host_norm(d, s.np, s.C, name)
+        if HOST_NORM[0]:  # d's rows: the pixels, and the attention's pads (attn_rows)
+            return self.host_norm(d, d.shape[0], s.C, name)
         C, q, L, R, k, W = s.C, s.q, s.L, s.R, s.k, s.W
         # 1. minus the group means, per channel (bf16)
         cs = GEMM.step(self.w(f"ones{s.np // q}"), d.reshape(s.np // q, q * C), b_col_maj=False, precision=HIGHEST)
@@ -812,37 +836,57 @@ class FluxVaeStage(qi.VaeStage):
         gout = GridShape(g.H, g.W, cout)
         out = self.new_grid(gout)
         R = g.chunk(g.C)
-        for r0 in range(0, g.H, R):
+        for r0, valid in g.chunks(R):
             if r0 and r0 % 128 == 0:
                 command_boundary()
             s0 = g.band + r0 * g.Wp
             y = F.linear(x[s0 : s0 + R * g.Wp], self.w(f"{wname}.w"), self.w(f"{wname}.b"), precision=iron_anima.PREC.vae)
-            self.interior_from(y, gout, out, r0, R)
+            self.interior_from(y, gout, out, r0, valid)
         command_boundary()
         return self.view(out), gout
 
     def attn(self, x, g: GridShape, path: str):
         """GroupNorm, then iron_qwenimage's one-head attention as GEMMs, the residual."""
         n, C = g.H * g.W, g.C
-        d = self.dense(x, g)
+        p = self.attn_rows(n)
+        if p == n:
+            d = self.dense(x, g)
+        else:  # the pixels, then zeros to whole rounds of 256 rows: the pads' scores masked out
+            ds = iron.state((p, C))
+            self.states.append(ds)
+            Copy.step(x, ds, src=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [g.Wp * C, 1]),
+                      dst=tap((p, C), 0, [g.H, g.W * C], [g.W * C, 1]))
+            d = self.view(ds)
         h = self.group_norm(d, NormShape(n, C), f"{path}.norm")
         qh, kh, vh = (F.linear(h, self.w(f"{path}.{c}.w"), self.w(f"{path}.{c}.b"), precision=HIGHEST) for c in "qkv")
         vt = F.linear(self.w(f"eye{C}"), vh, precision=HIGHEST)  # (C, n): V's transpose, exactly
-        # queries a pass: the scores (Qc, n); a row longer than 4096 streams, 48 rows a core at most
-        Qc = n if n <= ATTN_ROWS else 256
-        if Qc == n:
-            o = F.linear(Softmax.step(F.linear(qh, kh, precision=HIGHEST)), vt, precision=HIGHEST)
+        # queries a pass: the scores (Qc, p); a row longer than 4096 streams, 48 rows a core at most
+        Qc = p if p <= ATTN_ROWS else 256
+        mask = lambda s: s  # noqa: E731
+        if p != n:  # the pads' term, the same for every pass: (Qc, p), once
+            mt = F.linear(self.w(f"ones{Qc}x64"), self.w(f"mask{n}"), precision=HIGHEST)
+            ms = iron.state((Qc, p))
+            self.states.append(ms)
+            ms[0:Qc] = mt
+            mask = lambda s: s + self.view(ms)  # noqa: E731
+        if Qc == p:
+            o = F.linear(Softmax.step(mask(F.linear(qh, kh, precision=HIGHEST))), vt, precision=HIGHEST)
         else:
-            ob = iron.state((n, C))
+            ob = iron.state((p, C))
             self.states.append(ob)
-            for r0 in range(0, n, Qc):
+            for r0 in range(0, p, Qc):
                 if r0 and r0 % (16 * Qc) == 0:
                     command_boundary()
-                s = F.linear(qh[r0 : r0 + Qc], kh, precision=HIGHEST)  # (Qc, n)
+                s = mask(F.linear(qh[r0 : r0 + Qc], kh, precision=HIGHEST))  # (Qc, p)
                 ob[r0 : r0 + Qc] = F.linear(Softmax.step(s), vt, precision=HIGHEST)
             o = self.view(ob)
         o = d + F.linear(o, self.w(f"{path}.proj.w"), self.w(f"{path}.proj.b"), precision=iron_anima.PREC.vae)
-        return self.to_grid(o, g), g
+        if p == n:
+            return self.to_grid(o, g), g
+        out = self.new_grid(g)
+        Copy.step(o, out, src=tap((p, C), 0, [g.H, g.W * C], [g.W * C, 1]),
+                  dst=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [g.Wp * C, 1]))
+        return self.view(out), g
 
     def body(self, x):
         g = self.g_in

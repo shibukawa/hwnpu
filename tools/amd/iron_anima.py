@@ -733,13 +733,30 @@ class GridShape:
 
     @property
     def Wp(self) -> int:
-        return self.W + VAE_PAD
+        """A padded row's pixels: W and VAE_PAD, and as many more as make it a multiple of 16
+        (a picture whose latents are no multiple of 16 across: 832 x 1248's 104), so that a chunk
+        of 16 rows is whole transfers."""
+        return self.W + VAE_PAD + (-self.W % 16)
+
+    @property
+    def Ha(self) -> int:
+        """The image rows the convolutions run over: H, rounded up to 16 (the rows past H zeros,
+        never written: a chunk's rows there are computed and not copied)."""
+        return -(-self.H // 16) * 16
 
     @property
     def rows(self) -> int:
         """The padded rows and a zero pixel either side, rounded up to 256 rows (zeros) so a
         copy of the whole grid splits into even transfers."""
-        return -(-((self.H + 2) * self.Wp + 2) // 256) * 256
+        return -(-((self.Ha + 2) * self.Wp + 2) // 256) * 256
+
+    def chunks(self, R: int) -> list:
+        """The chunks of R image rows over Ha: (first row, the image's rows of it)."""
+        return [(r0, min(R, self.H - r0)) for r0 in range(0, self.Ha, R)]
+
+    def tap_rows(self) -> int:
+        """Image rows a GridGEMM takes at once: a multiple of 16 dividing Ha, at most VAE_TAP_ROWS."""
+        return max(r for r in range(16, min(VAE_TAP_ROWS, self.Ha) + 1, 16) if self.Ha % r == 0)
 
     @property
     def band(self) -> int:
@@ -753,10 +770,10 @@ class GridShape:
         """Image rows a convolution takes at once: a multiple of 16 dividing H, its im2col rows
         (9 * cin wide) at most 64 MiB."""
         best = 16
-        for r in range(16, self.H + 1, 16):
-            if self.H % r == 0 and r * self.Wp * 9 * cin * 2 <= 64 << 20:
+        for r in range(16, self.Ha + 1, 16):
+            if self.Ha % r == 0 and r * self.Wp * 9 * cin * 2 <= 64 << 20:
                 best = r
-        assert self.H % best == 0 and best * self.Wp % 256 == 0, (self, best)
+        assert self.Ha % best == 0 and best * self.Wp % 256 == 0, (self, best)
         return best
 
 
@@ -912,8 +929,9 @@ class VaeStage(iron.Graph):
         them, ``(rows * Wp, C)``) into the grid ``dst`` from image row ``offset_rows``."""
         R = g.H if rows is None else rows
         C, Wp = g.C, g.Wp
+        n = src.shape[0] if getattr(src, "shape", None) else R * Wp  # a chunk's rows: the last may copy fewer
         Copy.step(src, dst,
-                  src=tap((R * Wp, C), C, [R, g.W * C], [Wp * C, 1]),
+                  src=tap((n, C), C, [R, g.W * C], [Wp * C, 1]),
                   dst=tap((g.rows, C), g.pixel(offset_rows, 0) * C, [R, g.W * C], [Wp * C, 1]))
 
     def conv3(self, x, g: GridShape, wname: str, cout: int, out=None):
@@ -927,9 +945,9 @@ class VaeStage(iron.Graph):
             from iron.operators.flm.gemm.design import Epilogue
             from iron_gridgemm import GridGEMM
 
-            R = max(r for r in range(16, min(VAE_TAP_ROWS, g.H) + 1, 16) if g.H % r == 0)
+            R = g.tap_rows()
             kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae, tile_n=gemm_tile_n(cout))
-            for r0 in range(0, g.H, R):
+            for r0, valid in g.chunks(R):
                 n = R * Wp
                 if self.has(f"{wname}.g"):
                     s0 = g.band + r0 * Wp - Wp - 1
@@ -943,16 +961,16 @@ class VaeStage(iron.Graph):
                         t = GridGEMM.step(x[s0 : s0 + n + 2], self.w(f"{wname}.g{dy}"), M=n, MA=n + 2, CA=C, **kw)
                         y = t if y is None else y + t
                 y = y + self.w(f"{wname}.b")
-                self.interior_from(y, gout, out, r0, R)
+                self.interior_from(y, gout, out, r0, valid)
                 command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
             return self.view(out), gout
         R = g.chunk(g.C)
-        for r0 in range(0, g.H, R):
+        for r0, valid in g.chunks(R):
             n = R * Wp
             cols = Copy.step(x, src=tap((g.rows, C), (g.band + r0 * Wp - Wp - 1) * C,
                                         [R, Wp, 3, 3 * C], [Wp * C, C, Wp * C, 1])).reshape(n, 9 * C)
             y = F.linear(cols, self.w(f"{wname}.w"), self.w(f"{wname}.b"), precision=PREC.vae)
-            self.interior_from(y, gout, out, r0, R)
+            self.interior_from(y, gout, out, r0, valid)
         return self.view(out), gout
 
     def conv1(self, x, g: GridShape, wname: str, cout: int):
@@ -960,10 +978,10 @@ class VaeStage(iron.Graph):
         gout = GridShape(g.H, g.W, cout)
         out = self.new_grid(gout)
         R = g.chunk(g.C)
-        for r0 in range(0, g.H, R):
+        for r0, valid in g.chunks(R):
             s = g.band + r0 * g.Wp
             y = F.linear(x[s : s + R * g.Wp], self.w(f"{wname}.w"), self.w(f"{wname}.b"), precision=PREC.vae)
-            self.interior_from(y, gout, out, r0, R)
+            self.interior_from(y, gout, out, r0, valid)
         return self.view(out), gout
 
     def norm_silu(self, x, g: GridShape, gamma: str):
@@ -1015,8 +1033,8 @@ class VaeStage(iron.Graph):
         out = self.new_grid(gout)
         Wp, C = g.Wp, g.C
         kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae, tile_n=gemm_tile_n(cout))
-        R = max(r for r in range(16, min(VAE_TAP_ROWS, g.H) + 1, 16) if g.H % r == 0)
-        for r0 in range(0, g.H, R):
+        R = g.tap_rows()
+        for r0, valid in g.chunks(R):
             n = R * Wp
             for py in range(2):
                 for px in range(2):
@@ -1034,8 +1052,8 @@ class VaeStage(iron.Graph):
                             y = t if y is None else y + t
                     y = y + self.w(f"{path}.up.b")
                     # logical row i is the output of the low pixel band + r0 Wp + i: row 1 is (r0, 0)
-                    Copy.step(y, out, src=tap((n, cout), cout, [R, g.W, cout], [Wp * cout, cout, 1]),
-                              dst=tap((gout.rows, cout), gout.pixel(2 * r0 + py, px) * cout, [R, g.W, cout],
+                    Copy.step(y, out, src=tap((n, cout), cout, [valid, g.W, cout], [Wp * cout, cout, 1]),
+                              dst=tap((gout.rows, cout), gout.pixel(2 * r0 + py, px) * cout, [valid, g.W, cout],
                                       [2 * gout.Wp * cout, 2 * cout, 1]))
             command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
         return self.view(out), gout
