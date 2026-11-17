@@ -7230,4 +7230,21 @@ Mac (16.227) は 512² と 1024² を 1 つの書き出し (関数 2 つの `.ai
 - 長方形の VAE が大きいのは、高さのまとまりが 16 行ずつになり (176 = 16 x 11 など) 制御コード (graph.elf) が増えるから
 - 試験: `TestReferences` (詰めたステップの名前と並べ方)、`TestPrepareAMDAspects` (8 つの書き出しが全部を描き、正方形だけのものを消す)、`aspect.TestParse`
 
-**残り**: Anima の AMD の書き出しは RoPE の表がバンクに焼き込まれて大きさごとにバンクが分かれ (`DitBlocks.angles`)、自己注意の行も 64 の倍数の前提。8 つにするには RoPE を入力に移して詰める (FLUX と同じ形)。Anima の VAE の注意は MHA (`pipelines(n)`) なので、詰めた鍵の区切りも要る。Mac の FLUX.2 klein は長方形を大きさごとの書き出しとして変換する道を通しただけで、この機械では確かめていない (既定は 512² と 1024² のまま)。Chroma、Sana、Qwen-Image の `--size` はまだ正方形だけ。取得元の古い書き出し (正方形ごと) は残る。空のカーネルのキャッシュから 8 つを書き出す時間は測っていない
+**残り**: Anima の AMD の 8 つ (16.239 で済み)。Mac の FLUX.2 klein は長方形を大きさごとの書き出しとして変換する道を通しただけで、この機械では確かめていない (既定は 512² と 1024² のまま)。Chroma、Sana、Qwen-Image の `--size` はまだ正方形だけ。取得元の古い書き出し (正方形ごと) は残る。空のカーネルのキャッシュから 8 つを書き出す時間は測っていない
+
+### 16.239 Anima の AMD の書き出しを 8 つのアスペクト比に (RoPE を入力に、詰めた行) — 2026-11-17
+
+16.238 の残りの Anima。`iron_anima.py --size` が大きさを複数受け、8 つ (`--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752`) を 1 つの書き出し `anima-turbo-aspects.amd-npu2` にする。hwnpu-image は `NAME-aspects.amd-npu2` を正方形の書き出しより先に探す (`animaAMDNames`)。
+
+- **RoPE を入力に**: `DitBlocks` は RoPE の表を重みのバンクに焼いていたので大きさごとにバンクが分かれた。表を `angles` 入力 (行 × head_dim) に移し、ホスト (`ropeAngles`、Python の `rope_table` を Go に移したもの。`TestRopeAngles` で照らす) が作る。古い書き出し (`angles` 入力がない) もそのまま動く
+- **詰めた行**: DiT の行はパッチの数を 512 の倍数に切り上げ (832 x 1248 は 4056 → 4608、1024² と同じ)、自己注意の鍵と値を `nk` (パッチの数) で区切る。詰め物の行の角度は位置 0、出力は前のパッチの数だけ取る。グラフは行の数で名づけ (`dit_blocks_n1024` など、1024² の 4096 行のものは名前に何もつかない)、バンクは `share_banks` で 1 組 (512² のものも同じ重み)
+- **VAE**: 大きさごとに `sizes/WxH/vae`。長方形は 16.238 の `GridShape` に加え、中ほどの注意 (Anima は MHA) を 256 行の倍数に詰め、詰めた鍵に -30000 を足す `attn_masked` (マスクは 1 の列とマスクの行の GEMM で作る)。長方形の段 0 を NPU で照らして cosine 0.999911
+
+**測ったこと** (Ryzen AI 9 365、Anima-Turbo v1.1、8 ステップ、種 1、"a young woman with round glasses reading a book in a sunlit cafe, anime style")
+
+- 書き出し: 6 分 38 秒、最大 RSS 7.1 GB、5.8 GB (1024² だけのもの 2 分 18 秒、7.0 GB、3.9 GB)
+- 1:1 は 1024² だけの書き出しの絵とバイト単位で同じ (SHA-256 一致)、32 秒、最大 2.00 GiB (NPU 1.21)
+- 1:1s 9.9 秒 1.74 GiB。2:3、3:4、9:16、3:2、4:3、16:9 はどれも 31〜32 秒、2.04〜2.11 GiB (行が 1024² と同じ 4608 なので時間も同じ)。どの大きさも glasses に従い、端の乱れはない
+- Anima-Aesthetic も同じ道具で `--dit anima-aesthetic-v1.1.safetensors` (`anima-aesthetic-aspects.amd-npu2`): 書き出し 2 分 50 秒 (カーネルのキャッシュが温まった状態)、最大 RSS 7.1 GB、5.8 GB。25 ステップ、CFG で 1:1 2 分 23 秒 2.14 GiB、2:3 2 分 23 秒 2.11 GiB、16:9 2 分 22 秒 2.09 GiB
+
+**残り**: Chroma、Sana、Qwen-Image の AMD の 8 つ、Mac と Intel の書き出しの 8 つ。取得元の正方形の書き出しは残る

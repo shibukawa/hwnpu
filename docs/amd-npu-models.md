@@ -270,6 +270,8 @@ python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2
 go run ./cmd/hwnpu-image generate --model ~/models/anima-turbo-1024.amd-npu2 "..." --seed 1 -o out.png
 ```
 
+8 つのアスペクト比 (16.239) を 1 つの書き出しに: `--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752` で `anima-turbo-aspects.amd-npu2` (約 7 分、最大 RSS 7.1 GB、5.8 GB)。hwnpu-image はこの名前を正方形だけの書き出しより先に探し、`--size 2:3` などで大きさを選ぶ。
+
 DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`q4`、`bf16`) で選ぶ (13 節)。確かめ方: `--check` で各グラフに乱数の入力と IRON の参照の出力を書き、`go run ./tools/amd/irongraph DIR` で NPU と比べる。`--random` は乱数の重み (チェックポイントの形だけ使う)。全体は `tools/ref/ref_anima.py` (diffusers で CPU) の `noise` を `--noise` に、`--dump` と `--latents` で条件づけ、各ステップの速度、最後の潜在を書いて比べる。
 
 ### 11.5 残り
@@ -278,6 +280,7 @@ DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`
 - ComfyUI のノードからの呼び出し (同じグラフを持つサーバー) は未実装
 - DiT をホストステップで分けると止まる原因
 - 512 × 512 は書き出せる (`--size 512`、2026-11-08): 1 枚 14 秒 (16.147 の前は 20 秒)、固定の最大 1111 MiB
+- 8 つのアスペクト比 (2026-11-17、16.239): DiT は 512 行の倍数に詰めて鍵を `nk` で区切り、RoPE は入力に。長方形は 1024² と同じ 4608 行のグラフで 1 枚 31〜32 秒、最大 2.04〜2.11 GiB
 
 ### 11.6 Turbo でない Anima: Anima-Aesthetic (CFG、2026-11-10)
 
@@ -287,6 +290,8 @@ DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`
 python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-npu2 --size 1024 --dit anima-aesthetic-v1.1.safetensors   # 2.5 分
 go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low quality"
 ```
+
+8 つのアスペクト比は Turbo と同じく `--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752` で `anima-aesthetic-aspects.amd-npu2` (2 分 50 秒、5.8 GB、16.239)。長方形も 1024² と同じ 1 枚 2 分 22〜23 秒。
 
 - **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。CFG 4 (モデルカードの 4〜5)。ステップはモデルカードではオイラー法の 30〜50 だが、既定は DPM-Solver++ 2M の 25 ステップで、CFG は σ が 0.6 以上のステップだけ (16.154、下の結果)。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1
 - **重みの組ごとに 2 回**: DiT は 4 ブロックの組の重みを 1 つのバンクに読み直して回す (12 節) ので、組ごとに条件と無条件を続けて走らせ、読み直しを 1 ステップ 7 回のまま にする (Sana と同じ)。`dit_in` (時刻とパッチの埋め込み) は条件によらないので 1 回。2 回を別々に回したときより 512 × 512 で 1 ステップ 3.0 → 2.7 秒、潜在はビット単位で同じ
