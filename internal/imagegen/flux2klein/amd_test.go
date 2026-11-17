@@ -71,7 +71,7 @@ func TestAMDImportedPlace(t *testing.T) {
 		}
 	}
 	// the first run's export is another entry, of its size
-	r512, r1024 := AMDRecipe(m, 512), AMDRecipe(m, 1024)
+	r512, r1024 := AMDRecipe(m, [2]int{512, 512}), AMDRecipe(m, [2]int{1024, 1024})
 	if r512 == nil || r512["args"] != "--size 512" || r1024["args"] != "--size 1024" || r512["tool"] != AMDTool {
 		t.Fatalf("recipes %v, %v", r512, r1024)
 	}
@@ -89,23 +89,27 @@ func TestPrepareAMDHere(t *testing.T) {
 	noSources(t)
 	m := kleinModel(t)
 	ctx := context.Background()
-	if _, err := PrepareAMD(ctx, m, 768, nil); err == nil || !strings.Contains(err.Error(), "--size 768") {
+	if _, err := PrepareAMD(ctx, m, 768, 768, nil); err == nil || !strings.Contains(err.Error(), "--size 768x768") {
 		t.Errorf("768: %v", err)
 	}
 	old := filepath.Join(chat.AMDRoot(), "flux.2-klein-4b-1024.amd-npu2")
 	fakeIronExport(t, old, "{}")
-	if got, err := PrepareAMD(ctx, m, 1024, nil); err != nil || got != old {
+	if got, err := PrepareAMD(ctx, m, 1024, 1024, nil); err != nil || got != old {
 		t.Errorf("1024: %s %v, want %s", got, err, old)
 	}
 	dir := filepath.Join(chat.AMDRoot(), AMDExportName(m.Name, 1024))
 	fakeIronExport(t, dir, "{}")
-	if got, err := PrepareAMD(ctx, m, 1024, nil); err != nil || got != dir {
+	if got, err := PrepareAMD(ctx, m, 1024, 1024, nil); err != nil || got != dir {
 		t.Errorf("1024: %s %v, want %s", got, err, dir)
 	}
 	// none of 512 x 512 here, none in a source, no IRON: what to do
-	_, err := PrepareAMD(ctx, m, 512, nil)
+	_, err := PrepareAMD(ctx, m, 512, 512, nil)
 	if err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
 		t.Errorf("512 with no export and no IRON: %v", err)
+	}
+	// 832 x 1248 is in the export of every size only
+	if _, err := PrepareAMD(ctx, m, 832, 1248, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
+		t.Errorf("832 x 1248 with exports of squares only: %v", err)
 	}
 }
 
@@ -131,7 +135,7 @@ func TestPrepareAMDImported(t *testing.T) {
 		t.Fatal(err)
 	}
 	shared.SetSources([]shared.Source{s}, false)
-	got, err := PrepareAMD(ctx, m, 512, nil)
+	got, err := PrepareAMD(ctx, m, 512, 512, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

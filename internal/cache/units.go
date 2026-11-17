@@ -379,6 +379,21 @@ func Removable(x Unit, now time.Time, keep time.Duration) bool {
 	return true
 }
 
+// Queued reports whether work is queued for the unit path is in (SetBusy: a writeback to the
+// sources): it is not to be removed.
+func Queued(path string) bool {
+	unit, ok := UnitOf(path)
+	if !ok || busy == nil {
+		return false
+	}
+	for _, p := range busy() {
+		if u, ok := UnitOf(p); ok && u == unit {
+			return true
+		}
+	}
+	return false
+}
+
 // Remove removes x. A repository's lock goes first, so that a process reading it after takes
 // none of its files as there.
 func (x Unit) Remove() error {

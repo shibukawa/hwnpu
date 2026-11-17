@@ -19,8 +19,9 @@ import (
 )
 
 // GridShape is a padded channel-last grid of the VAE (iron_anima.GridShape): H rows of W
-// pixels of C channels, each row padded to Wp = W + Pad pixels (one zero pixel before the
-// image), a zero row above and below and a zero pixel before the first, rounded up to 256 rows.
+// pixels of C channels, each row padded to Wp pixels (one zero pixel before the image), a zero
+// row above and below (and below the rows up to Ha) and a zero pixel before the first, rounded
+// up to 256 rows.
 type GridShape struct {
 	H   int `json:"H"`
 	W   int `json:"W"`
@@ -28,11 +29,14 @@ type GridShape struct {
 	Pad int `json:"-"`
 }
 
-// Wp is a padded row's pixels.
-func (g GridShape) Wp() int { return g.W + g.Pad }
+// Wp is a padded row's pixels: W and Pad, and as many more as make it a multiple of 16.
+func (g GridShape) Wp() int { return g.W + g.Pad + (16-g.W%16)%16 }
+
+// Ha is the image rows the convolutions run over: H rounded up to 16.
+func (g GridShape) Ha() int { return (g.H + 15) / 16 * 16 }
 
 // Rows is the grid's rows (pixels).
-func (g GridShape) Rows() int { return ((g.H+2)*g.Wp() + 2 + 255) / 256 * 256 }
+func (g GridShape) Rows() int { return ((g.Ha()+2)*g.Wp() + 2 + 255) / 256 * 256 }
 
 // Pixel is the row of pixel (y, x).
 func (g GridShape) Pixel(y, x int) int { return 1 + g.Wp() + y*g.Wp() + 1 + x }

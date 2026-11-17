@@ -164,18 +164,8 @@ func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, 
 		return err
 	}
 	defer unlock()
-	if e, err := shared.ReadEntry(out); err == nil {
-		for _, q := range places {
-			if q.takes(e) {
-				return nil
-			}
-		}
-	}
-	for _, q := range places {
-		if fetchFrom(ctx, q, out, log) {
-			os.WriteFile(out+".done", nil, 0o644)
-			return nil
-		}
+	if fetchPlaces(ctx, places, out, log) {
+		return nil
 	}
 	// made here: its files go in the sources written back to as they are written, as recipe's
 	// (not on the misses before: an export of others fetched into out would go too)
@@ -185,6 +175,46 @@ func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, 
 	}
 	putConverted(p, out, log)
 	return nil
+}
+
+// FetchShared is SharedExportOr without the build: it reports whether out is recipe's entry, or
+// one of others', here or fetched from a source. A nil recipe is never there.
+func FetchShared(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer) (bool, error) {
+	if recipe == nil {
+		return false, nil
+	}
+	if log == nil {
+		log = io.Discard
+	}
+	places := []place{sharedPlace(kind, recipe, out)}
+	for _, o := range others {
+		places = append(places, sharedPlace(o.Kind, o.Recipe, out))
+	}
+	unlock, err := cache.Lock(ctx, out+":layers", "the export "+filepath.Base(out), log)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	return fetchPlaces(ctx, places, out, log), nil
+}
+
+// fetchPlaces reports whether out is the entry of one of places: here, or fetched from the first
+// source that has one (out.done written then).
+func fetchPlaces(ctx context.Context, places []place, out string, log io.Writer) bool {
+	if e, err := shared.ReadEntry(out); err == nil {
+		for _, q := range places {
+			if q.takes(e) {
+				return true
+			}
+		}
+	}
+	for _, q := range places {
+		if fetchFrom(ctx, q, out, log) {
+			os.WriteFile(out+".done", nil, 0o644)
+			return true
+		}
+	}
+	return false
 }
 
 // sharedPlace is the place of the entry of kind and recipe named as out.

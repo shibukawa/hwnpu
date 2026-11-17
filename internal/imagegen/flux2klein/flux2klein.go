@@ -38,6 +38,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -117,15 +118,56 @@ func isIronExport(dir string) bool {
 	return true
 }
 
+// SizesDir is the directory of an IRON export's parts for pictures of another size than its first
+// (tools/amd/iron_flux2klein.py --size 1024 512): SizesDir/WxH holds that size's dit_out and vae,
+// and vae_enc for an encoder of references of that size that the first size has not. The blocks'
+// graphs (dit_in, doubles, singles) depend on a step's rows alone: every size runs them by its
+// rows, named after the first size's picture's (none) or _nROWS, on one set of banks.
+const SizesDir = "sizes"
+
+// sizeDir is SizesDir/WxH.
+func sizeDir(w, h int) string { return filepath.Join(SizesDir, fmt.Sprintf("%dx%d", w, h)) }
+
+// IronSizes are the pictures' sizes (width, height) the IRON export in dir draws: its first size,
+// then those of SizesDir with a VAE, nil when dir is no IRON export.
+func IronSizes(dir string) [][2]int {
+	m, err := iron.ReadGraphManifest(filepath.Join(dir, "doubles"))
+	if err != nil {
+		return nil
+	}
+	var x struct {
+		Config Config `json:"config"`
+	}
+	if json.Unmarshal(m.Meta, &x) != nil {
+		return nil
+	}
+	out := [][2]int{{x.Config.Width, x.Config.Height}}
+	entries, _ := os.ReadDir(filepath.Join(dir, SizesDir))
+	for _, e := range entries {
+		var w, h int
+		if _, err := fmt.Sscanf(e.Name(), "%dx%d", &w, &h); err != nil || fmt.Sprintf("%dx%d", w, h) != e.Name() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, SizesDir, e.Name(), "vae", "manifest.json")); err == nil {
+			out = append(out, [2]int{w, h})
+		}
+	}
+	return out
+}
+
 // Pipeline is a loaded export.
 type Pipeline struct {
 	C     Config
 	Text  TextConfig
 	Model Model
 
-	dev   *hwnpu.Device
-	dir   string
-	taps  []int // the text graph's groups whose outputs the DiT reads
+	dev *hwnpu.Device
+	dir string
+	// base is the shape of the IRON export's first size: its picture's step is the blocks' graphs
+	// without a suffix (C is the size drawn)
+	base  Config
+	sized string // the directory of C's dit_out and vae: "" for the first size, else sizeDir
+	taps  []int  // the text graph's groups whose outputs the DiT reads
 	tok   *tokenizer.Tokenizer
 	embed *os.File // bf16 rows of Text.Hidden
 	vae   *anima.VAE
@@ -151,8 +193,9 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 	return OpenAt(ctx, dev, dir, 0, 0, log)
 }
 
-// OpenAt is Open for pictures of w x h, one of the sizes an export of Convert holds
-// (ConvertOptions.Sizes); 0 x 0 is the export's default (an IRON export's one size).
+// OpenAt is Open for pictures of w x h, one of the sizes the export holds (an export of Convert:
+// ConvertOptions.Sizes; an IRON one: IronSizes); 0 x 0 is the export's default (an IRON export's
+// first size).
 func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	if IsProgramExport(dir) {
 		return openProgramPipeline(dev, dir, w, h, log)
@@ -175,7 +218,18 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 	if err := json.Unmarshal(m.Meta, &x); err != nil {
 		return fail(err)
 	}
-	p.C = x.Config
+	p.C, p.base = x.Config, x.Config
+	if (w != 0 || h != 0) && (w != p.base.Width || h != p.base.Height) {
+		sizes := IronSizes(dir)
+		if !slices.Contains(sizes, [2]int{w, h}) {
+			var names []string
+			for _, s := range sizes {
+				names = append(names, fmt.Sprintf("%dx%d", s[0], s[1]))
+			}
+			return fail(fmt.Errorf("%s draws %s, not %dx%d", filepath.Base(dir), strings.Join(names, " and "), w, h))
+		}
+		p.C.Width, p.C.Height, p.sized = w, h, sizeDir(w, h)
+	}
 	tm, err := iron.ReadGraphManifest(filepath.Join(dir, "text"))
 	if err != nil {
 		return fail(err)
@@ -204,10 +258,10 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 	if p.embed, err = os.Open(filepath.Join(td, "embed.bin")); err != nil {
 		return fail(err)
 	}
-	if p.vae, err = anima.OpenVAE(ctx, dev, filepath.Join(dir, "vae")); err != nil {
+	if p.vae, err = anima.OpenVAE(ctx, dev, filepath.Join(dir, p.part("vae"))); err != nil {
 		return fail(err)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "vae", "manifest.json"))
+	b, err := os.ReadFile(filepath.Join(dir, p.part("vae"), "manifest.json"))
 	if err != nil {
 		return fail(err)
 	}
@@ -220,6 +274,43 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 	}
 	p.bnMean, p.bnStd = vm.Mean, vm.Std
 	return p, nil
+}
+
+// part is the directory of the drawn size's part name (dit_out, vae) in the export: the first
+// size's, or sizeDir's where it has one (a size whose picture has no more rows than the first's
+// runs the first's dit_out on the picture's rows and as many after them).
+func (p *Pipeline) part(name string) string {
+	if p.sized == "" {
+		return name
+	}
+	d := filepath.Join(p.sized, name)
+	if _, err := os.Stat(filepath.Join(p.dir, d, "manifest.json")); err != nil && name == "dit_out" {
+		return name
+	}
+	return d
+}
+
+// encoder is the directory of the VAE's encoder of references of w x h in the export: the first
+// size's vae_enc, its vae_enc_dD of its sides over D, or SizesDir/WxH/vae_enc; the first that holds
+// one, else the name an export of the first size alone gives it (for the error).
+func (p *Pipeline) encoder(w, h int) string {
+	var names []string
+	b := p.base
+	if w == b.Width && h == b.Height {
+		names = append(names, "vae_enc")
+	}
+	for _, d := range []int{2, 4} {
+		if w*d == b.Width && h*d == b.Height {
+			names = append(names, fmt.Sprintf("vae_enc_d%d", d))
+		}
+	}
+	names = append(names, filepath.Join(sizeDir(w, h), "vae_enc"))
+	for _, n := range names {
+		if _, err := os.Stat(filepath.Join(p.dir, n, "manifest.json")); err == nil {
+			return n
+		}
+	}
+	return names[0]
 }
 
 // Close releases what Open holds.
@@ -295,17 +386,13 @@ func (p *Pipeline) HasReferences(divs []int) bool {
 	if p.prog != nil {
 		return len(divs) == 0
 	}
-	rows, ok := p.rows(divs)
+	st, ok := p.step(divs)
 	if !ok {
 		return false
 	}
-	need := []string{"doubles" + p.suffix(rows), "singles" + p.suffix(rows), "dit_in" + p.suffix(rows)}
+	need := st.graphs()
 	for _, d := range divs {
-		if d > 1 {
-			need = append(need, fmt.Sprintf("vae_enc_d%d", d))
-		} else {
-			need = append(need, "vae_enc")
-		}
+		need = append(need, p.encoder(p.C.Width/d, p.C.Height/d))
 	}
 	for _, f := range need {
 		if _, err := os.Stat(filepath.Join(p.dir, f, "manifest.json")); err != nil {
@@ -329,13 +416,58 @@ func (p *Pipeline) rows(divs []int) (int, bool) {
 	return n, true
 }
 
-// suffix is the name of the graphs of a step of that many rows: none for the picture and the
-// text alone, else _nROWS (iron_flux2klein.suffix).
+// suffix is the name of the graphs of a step of that many rows: none for the export's first
+// size's picture and text alone, else _nROWS (iron_flux2klein.suffix).
 func (p *Pipeline) suffix(rows int) string {
-	if rows == p.C.Tokens()+p.C.TextRows {
+	if rows == p.base.Tokens()+p.base.TextRows {
 		return ""
 	}
 	return fmt.Sprintf("_n%d", rows)
+}
+
+// attentionRows is the rows the blocks' attention takes in whole rounds (its 8 pipelines' 64).
+const attentionRows = 512
+
+// step is how a step of the DiT runs (iron_flux2klein.config): its rows, and where those are no
+// whole rounds of the attention (a picture that is no square of 512 or 1024, a reference of half
+// a 512 x 512 picture's sides), the text's rows first and the rest padded to them; the keys are
+// bounded to the step's own (nk).
+type step struct {
+	rows      int  // the picture's, the references' and the text's
+	padded    int  // the graphs' rows: rows, or whole rounds of attentionRows
+	textFirst bool // [text rows, image rows, pads] in place of [image rows, text rows]
+	doubles   string
+	singles   string
+	ditIn     string
+}
+
+// graphs are the graphs the step runs.
+func (s step) graphs() []string { return []string{s.doubles, s.singles, s.ditIn} }
+
+// imageAt is the image stream's first row.
+func (s step) imageAt(textRows int) int {
+	if s.textFirst {
+		return textRows
+	}
+	return 0
+}
+
+// step is the step with references of the picture's sides over each of divs.
+func (p *Pipeline) step(divs []int) (step, bool) {
+	rows, ok := p.rows(divs)
+	if !ok {
+		return step{}, false
+	}
+	s := step{rows: rows, padded: rows}
+	if rows%attentionRows != 0 {
+		s.textFirst, s.padded = true, (rows+attentionRows-1)/attentionRows*attentionRows
+	}
+	sfx := p.suffix(s.padded)
+	s.doubles, s.singles, s.ditIn = "doubles"+sfx, "singles"+sfx, "dit_in"+sfx
+	if s.textFirst {
+		s.doubles = fmt.Sprintf("doubles_t%d", s.padded)
+	}
+	return s, true
 }
 
 // Tokens are the prompt's tokens in the template, cut to the text's rows (the pipeline
@@ -645,8 +777,9 @@ func (p *Pipeline) generateIRON(ctx context.Context, conds []Cond, refs, noises 
 	if !p.HasReferences(divs) {
 		return nil, fmt.Errorf("flux2klein: the export has no blocks for these %d references (it runs %s)", len(refs), strings.Join(p.References(), ", "))
 	}
-	rows, _ := p.rows(divs)
-	sfx := p.suffix(rows)
+	st, _ := p.step(divs)
+	rows, T := st.rows, c.TextRows
+	at := st.imageAt(T)
 	n := len(sigmas) - 1
 	// every step's modulation rows first: the mods graph (0.3 GB of bf16) is not held during the blocks
 	mg, err := p.open(ctx, "mods", false, false)
@@ -674,8 +807,8 @@ func (p *Pipeline) generateIRON(ctx context.Context, conds []Cond, refs, noises 
 		}
 	}
 	defer closeAll()
-	names := []string{"dit_in" + sfx, "doubles" + sfx, "singles" + sfx, "dit_out"}
-	prefetch := anima.PrefetchFits(p.vae, p.dir, names, "doubles"+sfx, "singles"+sfx)
+	names := []string{st.ditIn, st.doubles, st.singles, p.part("dit_out")}
+	prefetch := anima.PrefetchFits(p.vae, p.dir, names, st.doubles, st.singles)
 	for _, x := range []struct {
 		g    **iron.Graph
 		name string
@@ -685,11 +818,29 @@ func (p *Pipeline) generateIRON(ctx context.Context, conds []Cond, refs, noises 
 			return nil, fmt.Errorf("flux2klein: %w", err)
 		}
 	}
-	angles := toBF16(p.ropeAngles(p.positions(divs)))
+	// dit_out's rows: the picture's, or the first size's of more (a size of its own none):
+	// the picture's first, then what follows them
+	outRows := N
+	for _, in := range out.Inputs() {
+		if in.Name == "x" && len(in.Shape) == 2 {
+			outRows = in.Shape[0]
+		}
+	}
+	if outRows < N {
+		return nil, fmt.Errorf("flux2klein: %s takes %d rows, the picture's are %d", names[3], outRows, N)
+	}
+	pos := p.positions(divs)
+	if st.textFirst { // the text's rows first, the pads' positions zeros
+		pos = append(append(pos[len(pos)-T:len(pos):len(pos)], pos[:len(pos)-T]...), make([][4]float64, st.padded-rows)...)
+	}
+	angles := toBF16(p.ropeAngles(pos))
 	var refRows []byte // the references' latents: the same rows every step
 	for _, r := range refs {
 		refRows = append(refRows, toBF16(r)...)
 	}
+	// dit_in's rows past the step's: zeros (x_embedder has no bias: their rows zeros)
+	refRows = append(refRows, make([]byte, 2*(st.padded-rows)*c.Latent)...)
+	outIn := make([]byte, 2*outRows*E)
 	xs := make([][]float32, len(noises))
 	for k, x := range noises {
 		xs[k] = append([]float32(nil), x...)
@@ -734,7 +885,11 @@ func (p *Pipeline) generateIRON(ctx context.Context, conds []Cond, refs, noises 
 			if err != nil {
 				return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
 			}
-			hs[k] = append(h, conds[k].ctx...) // [image rows, text rows]
+			if st.textFirst {
+				hs[k] = append(append(make([]byte, 0, len(h)+len(conds[k].ctx)), conds[k].ctx...), h...) // [text rows, image rows, pads]
+			} else {
+				hs[k] = append(h, conds[k].ctx...) // [image rows, text rows]
+			}
 		}
 		err := blocks(doubles, hs, row(0, 12), -1, "double blocks")
 		if err == nil {
@@ -745,7 +900,8 @@ func (p *Pipeline) generateIRON(ctx context.Context, conds []Cond, refs, noises 
 		}
 		dt := float32(sigmas[i+1] - sigmas[i])
 		for k, x := range xs {
-			if err := run(ctx, out, map[string][]byte{"x": hs[k][:2*N*E], "scale": row(15, 16), "shift": row(16, 17)}, nil); err != nil {
+			clear(outIn[copy(outIn, hs[k][2*at*E:]):])
+			if err := run(ctx, out, map[string][]byte{"x": outIn, "scale": row(15, 16), "shift": row(16, 17)}, nil); err != nil {
 				return nil, fmt.Errorf("flux2klein: step %d: %w", i, err)
 			}
 			vb, err := output(out, 0)
@@ -755,7 +911,7 @@ func (p *Pipeline) generateIRON(ctx context.Context, conds []Cond, refs, noises 
 			if k == 0 {
 				p.dump(fmt.Sprintf("v_%d.bf16", i), vb)
 			}
-			v := fromBF16s(vb)
+			v := fromBF16s(vb[:2*N*c.Latent])
 			for j := range x {
 				x[j] += dt * v[j]
 			}
@@ -808,10 +964,7 @@ func (p *Pipeline) EncodeImage(ctx context.Context, img image.Image, div int) ([
 		return nil, fmt.Errorf("flux2klein: a reference of the picture's sides over %d", div)
 	}
 	W, H := c.Width/div, c.Height/div
-	dir := "vae_enc"
-	if div > 1 {
-		dir = fmt.Sprintf("vae_enc_d%d", div)
-	}
+	dir := p.encoder(W, H)
 	b := img.Bounds()
 	sw, sh := b.Dx(), b.Dy()
 	cw, ch := sw, sh
