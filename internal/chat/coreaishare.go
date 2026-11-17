@@ -278,13 +278,23 @@ const tablesVersion = 1
 
 // tablesRecipe is what the tables in out are made from, their key in the shared layers: the
 // model's part (modelRecipe), the architecture and the tables' names.
-func tablesRecipe(ctx context.Context, out string, a *llm.Arch, names []string) (Model, map[string]string) {
+func tablesRecipe(ctx context.Context, out string, a *llm.Arch, names []string, groups map[string]int) (Model, map[string]string) {
 	m, r := modelRecipe(ctx, out)
 	if r == nil {
 		return Model{}, nil
 	}
 	sorted := slices.Sorted(slices.Values(names))
 	r["kind"], r["arch"], r["tables"], r["version"] = TablesKind, a.Name, strings.Join(sorted, ","), fmt.Sprint(tablesVersion)
+	// the tables stored in int8 (llm.WriteTables): another file, another entry
+	var int8s []string
+	for _, n := range sorted {
+		if g := groups[n]; g > 0 {
+			int8s = append(int8s, fmt.Sprintf("%s:%d", n, g))
+		}
+	}
+	if len(int8s) > 0 {
+		r["int8"] = strings.Join(int8s, ",")
+	}
 	return m, r
 }
 

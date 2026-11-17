@@ -901,6 +901,10 @@ def main(argv=None) -> int:
     ap.add_argument("--device-ple", action="store_true",
                     help="Gemma 4: keep the per-layer token table on the device (IRON's own gathers) instead of "
                          "on the host (iron_hostple: 4.4 GiB less pinned memory for E2B)")
+    ap.add_argument("--ple", choices=("int8", "bf16"), default="int8",
+                    help="Gemma 4: how ple.bin stores the per-layer token table on the host: int8 with an fp16 scale "
+                         "a layer's slice of a row (half the file: E2B 4.4 -> 2.2 GiB, KL 0.00005 from bf16; "
+                         "docs/improvements.md 12.7), or bf16 as the checkpoint has it")
     ap.add_argument("--verify", type=int, default=0, metavar="ROWS",
                     help="add the version checking drafts: ROWS tokens (the next and the drafts) a call, "
                          "every row's logits out (iron_verify.py)")
@@ -927,11 +931,11 @@ def main(argv=None) -> int:
         import iron_hostple
 
         if a.model.endswith("full"):
-            iron_hostple.install(q4=a.q4, attn=a.attn)
+            iron_hostple.install(q4=a.q4, attn=a.attn, ple=a.ple)
         else:
             import iron_gemma4
 
-            iron_hostple.install(q4=a.q4, attn=a.attn, words=iron_gemma4.SCRATCHPAD_WORDS)
+            iron_hostple.install(q4=a.q4, attn=a.attn, words=iron_gemma4.SCRATCHPAD_WORDS, ple=a.ple)
             iron_gemma4.install_tail_boundary()
     elif a.model == "plamo3" and a.q4:
         import iron_plamo3

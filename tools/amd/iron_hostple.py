@@ -19,6 +19,12 @@ iron_q4's: q4nx 5 bits a weight, q8 8.5; decode on QGEMV, prefill dequantized on
 longer gives in bf16: they go to the host the same way (embed.bin, embed_rows of
 (prefill_chunk, hidden_size)), times sqrt(hidden_size) on the device as before.
 
+With install(ple="int8") (iron_export_lm's default), ple.bin holds each layer's slice of a row
+(ple_dim values) as an fp16 scale and ple_dim int8 values (ple_int8), and the manifest's entry
+says format "int8": the host expands a row to bf16 as it writes it. Half the file (E2B 4.4 ->
+2.2 GiB, E4B 5.25 -> 2.65), KL 0.00005 from the bf16 table (tools/amd/ple_quant_kl.py,
+docs/improvements.md 12.7). The device's buffer and what the layers compute are unchanged.
+
 The manifest names the tables in host_tables (iron_export_lm.export). hwnpu's iron.Model fills
 them.
 """
@@ -42,6 +48,7 @@ SCRATCHPAD_WORDS = 24
 # The tables by id of their model, by buffer: IRON takes no array attribute that is not a weight.
 _TABLES: dict[int, dict[str, np.ndarray]] = {}
 _Q4 = {"on": False, "attn": "q8"}
+_PLE = {"fmt": "bf16"}  # how write() stores ple.bin: install's ple
 _HOST_EMBED: dict[int, bool] = {}  # by id of the model: its embeddings on the host
 
 
@@ -54,10 +61,14 @@ def _keep() -> set:
     return {"attn"} if _Q4["attn"] == "bf16" else set()
 
 
-def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS) -> None:
+def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, ple: str = "bf16") -> None:
     """Patch IRON's Gemma4 (and so Gemma4Multimodal's text model) to read its PLE from ple_rows;
     with q4, its projections and head in q4nx and its token embeddings from embed_rows. A prompt
-    chunk's command reads up to words scratchpad words."""
+    chunk's command reads up to words scratchpad words. ple is how ple.bin stores the table:
+    "int8" (ple_int8) or "bf16"."""
+    if ple not in ("int8", "bf16"):
+        raise ValueError(f"ple.bin in {ple}: int8 or bf16")
+    _PLE["fmt"] = ple
     import iron
     from iron.applications.gemma4 import model as g4
     from iron.lm import CausalLM
@@ -185,6 +196,25 @@ def text_model(model):
     return model.text if hasattr(model, "towers") else model
 
 
+def ple_int8(rows: np.ndarray, layers: int, path, chunk: int = 8192) -> None:
+    """Write the table rows (vocab, layers * ple_dim, bf16) to path as ple.bin's format "int8": a
+    row is layers parts, each an fp16 scale (the slice's largest magnitude / 127) followed by its
+    ple_dim values rounded to int8. hwnpu expands a value to bf16(q * scale)."""
+    n, width = rows.shape
+    e = width // layers
+    with open(path, "wb") as f:
+        for i in range(0, n, chunk):
+            x = np.asarray(rows[i : i + chunk]).astype(np.float32).reshape(-1, layers, e)
+            s = (np.abs(x).max(-1) / 127).astype(np.float16)
+            d = s.astype(np.float32)
+            d[d == 0] = 1
+            q = np.clip(np.rint(x / d[..., None]), -127, 127).astype(np.int8)
+            part = np.empty((x.shape[0], layers, 2 + e), np.uint8)
+            part[..., :2] = s.view(np.uint8).reshape(x.shape[0], layers, 2)
+            part[..., 2:] = q.view(np.uint8)
+            part.tofile(f)
+
+
 def write(model, buffers: dict, out) -> list:
     """Write the host tables (ple.bin, embed.bin) and return the manifest's host_tables (empty
     without install())."""
@@ -199,12 +229,17 @@ def write(model, buffers: dict, out) -> list:
         if len(names) != 1:
             raise SystemExit(f"host tables: the decode step holds {names} for {state}")
         fn = "ple.bin" if state == PLE else "embed.bin"
-        np.ascontiguousarray(rows).view(np.uint8).tofile(out / fn)
         layers = int(c.num_hidden_layers) if state == PLE else 1
-        out_tables.append(dict(
+        entry = dict(
             buffer=names[0], file=fn, rows=int(rows.shape[0]),
             # A table row is layers parts of part_bytes; the buffer holds, by layer, slots rows of
             # part_bytes: part l of the call's row r goes to slot r of layer l.
             layers=layers, part_bytes=int(rows.shape[1]) * 2 // layers, slots=int(c.prefill_chunk),
-        ))
+        )
+        if state == PLE and _PLE["fmt"] == "int8":
+            ple_int8(rows, layers, out / fn)
+            entry["format"] = "int8"
+        else:
+            np.ascontiguousarray(rows).view(np.uint8).tofile(out / fn)
+        out_tables.append(entry)
     return out_tables
