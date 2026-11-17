@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"maps"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -77,12 +79,23 @@ func PlanGC(ctx context.Context, s Source, drop func(Entry) bool, orphans bool) 
 }
 
 // Apply removes what g names from s: each entry's entry.json first, so that no reader takes a
-// folder that is going.
+// folder that is going. Then the folders it emptied go, and those above them left empty (a
+// folder of WebDAV stays when its files are deleted: removeFolder).
 func (g GC) Apply(ctx context.Context, s Source) error {
 	for _, k := range g.keys {
 		if err := s.Store.Delete(ctx, k); err != nil {
 			return err
 		}
+	}
+	dirs := map[string]bool{}
+	for _, e := range g.Entries {
+		dirs[e.Path] = true
+	}
+	for _, k := range g.Orphans {
+		dirs[path.Dir(k)] = true
+	}
+	for _, d := range slices.Sorted(maps.Keys(dirs)) {
+		removeFolder(ctx, s.Store, d)
 	}
 	return nil
 }
