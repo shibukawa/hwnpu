@@ -337,8 +337,8 @@ func qwenImageRepos() []string {
 }
 
 // animaModel is the Anima export m runs here: on AMD's NPU (no Apple or Intel NPU found, no
-// --backend) ~/models/NAME.amd-npu2 of tools/amd/iron_anima.py, "" otherwise (anima prepares
-// the one prepared here).
+// --backend) the export of tools/amd/iron_anima.py that draws --size (animaAMD), "" otherwise
+// (anima prepares the one prepared here).
 func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, error) {
 	if c.CPU || c.Backend != "" {
 		return "", nil
@@ -350,10 +350,43 @@ func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, err
 	if err != nil {
 		return "", err
 	}
-	if w != h {
-		return "", fmt.Errorf("--size %s: AMD's NPU has 1:1 and 1:1s for Anima for now", c.Size)
+	return animaAMD(ctx, m, w, h)
+}
+
+// animaAMDNames are the names of the exports of Anima model m for AMD's NPU that may draw w x h:
+// the export of every aspect ratio (NAME-aspects.amd-npu2), then for a square amdNames'.
+func animaAMDNames(m chat.Model, w, h int) []string {
+	names := []string{strings.ToLower(m.Name) + "-aspects.amd-npu2"}
+	if w == h {
+		names = append(names, amdNames(m, w)...)
 	}
-	return amdExport(ctx, m, "tools/amd/iron_anima.py", w)
+	return names
+}
+
+// animaAMD is the export of Anima model m for AMD's NPU that draws w x h (animaAMDNames), here or
+// in the sources (chat.AMDNamed): made by hand with tools/amd/iron_anima.py, which the error
+// tells how to run when there is none.
+func animaAMD(ctx context.Context, m chat.Model, w, h int) (string, error) {
+	names := animaAMDNames(m, w, h)
+	draws := func(d string) bool { return isDir(d) && slices.Contains(anima.IronSizes(d), [2]int{w, h}) }
+	if d := chat.AMDNamed(ctx, m, names, draws, console.Log(os.Stderr)); d != "" {
+		return d, nil
+	}
+	flags := ""
+	if m.File != "" {
+		flags = " --dit " + m.File
+	}
+	var sizes []string
+	for _, a := range aspect.All {
+		if a.Width == a.Height {
+			sizes = append(sizes, fmt.Sprint(a.Width))
+		} else {
+			sizes = append(sizes, fmt.Sprintf("%dx%d", a.Width, a.Height))
+		}
+	}
+	return "", fmt.Errorf("AMD's NPU runs exports of tools/amd/iron_anima.py, and neither this machine (%s) nor the sources have one of %s that draws %dx%d: download %s and run\n  python tools/amd/iron_anima.py ~/models/%s %s --size %s%s\n(one export of all eight aspect ratios; its first run here puts it in the sources written back to; see docs/amd-npu-models.md)",
+		strings.Join(hcache.ExportRoots(), ", "), m.Name, w, h, strings.TrimPrefix(m.Source(), "hf:"), filepath.Base(m.Repo),
+		shortHome(filepath.Join(chat.AMDRoot(), names[0])), strings.Join(sizes, " "), flags)
 }
 
 // turboNegativeGuidance is the guidance scale a --negative without --guidance gets on a model that
@@ -424,7 +457,11 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	if !anima.IsProgramExport(model) {
 		iron.ShareExport(model, logf)
 	}
-	p, err := anima.Open(ctx, dev, model, lw)
+	pw, ph := 0, 0
+	if !anima.IsProgramExport(model) && len(anima.IronSizes(model)) > 1 {
+		pw, ph = o.Width, o.Height // an export of several sizes draws at --size (one of a size alone at its own)
+	}
+	p, err := anima.OpenAt(ctx, dev, model, pw, ph, lw)
 	if err != nil {
 		return err
 	}

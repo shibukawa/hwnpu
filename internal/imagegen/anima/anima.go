@@ -54,6 +54,10 @@ type DitConfig struct {
 	Patch          int `json:"patch"`
 	VAEScale       int `json:"vae_scale"`
 	Group          int `json:"group"`
+	// HeadDim and RopeScale: the RoPE's (iron_anima.rope_table; an IRON export's dit_blocks
+	// takes it as an input)
+	HeadDim   int       `json:"head_dim"`
+	RopeScale []float64 `json:"rope_scale"`
 }
 
 // Grid is the patches down and across.
@@ -136,6 +140,13 @@ type StageFunc func(i, n int, d time.Duration)
 // log, when not nil, is shown each program of an export of hwnpu-image convert as it loads (on a
 // terminal, a line with a spinner: the first load compiles it for the NPU, minutes at 1024 x 1024).
 func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
+	return OpenAt(ctx, dev, dir, 0, 0, log)
+}
+
+// OpenAt is Open for pictures of w x h, one of the sizes an IRON export holds (IronSizes); 0 x 0
+// is the export's own (an IRON export's first size; an export of hwnpu-image convert is of one
+// size, and w and h are not read).
+func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{dir: dir}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
@@ -153,7 +164,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 			return nil, errors.New("anima: an IRON export runs on AMD's NPU only")
 		}
 		var ie *ironEngine
-		ie, p.Dit, p.Text, err = openIron(ctx, dev, dir)
+		ie, p.Dit, p.Text, err = openIron(ctx, dev, dir, w, h)
 		if ie != nil {
 			p.eng, p.Checkpoint = ie, ie.checkpoint
 		}

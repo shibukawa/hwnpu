@@ -70,3 +70,21 @@ func TestCondRows(t *testing.T) {
 		t.Fatalf("%d rows, want 4", n)
 	}
 }
+
+// ropeAngles is iron_anima.angles_input's (values it printed for 832 x 1248, padded to 4096 rows).
+func TestRopeAngles(t *testing.T) {
+	c := DitConfig{Width: 832, Height: 1248, Patch: 2, VAEScale: 8, HeadDim: 128, RopeScale: []float64{1, 4, 4}}
+	if n := graphRows(4056); n != 4096 {
+		t.Fatalf("graphRows(4056) = %d", n)
+	}
+	a := ropeAngles(c, 4096)
+	for _, x := range []struct {
+		r, i int
+		want float64
+	}{{0, 0, 1}, {0, 1, 0}, {57, 50, 0.9763529896736145}, {57, 51, 0.21618230640888214}, {1000, 90, -0.3588709235191345},
+		{1000, 127, 0.00046515470603480935}, {4055, 70, 0.9945487380027771}, {4060, 0, 1}, {4060, 1, 0}} {
+		if got := float64(a[x.r*128+x.i]); math.Abs(got-x.want) > 1e-6 {
+			t.Errorf("angle (%d, %d): %v, want %v", x.r, x.i, got, x.want)
+		}
+	}
+}
