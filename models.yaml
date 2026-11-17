@@ -541,10 +541,11 @@ models:
     memory: 2.2
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
-  # hwnpu-image generate: on AMD's NPU the export ~/models/NAME.amd-npu2 (or NAME-1024.amd-npu2,
-  # in lower case) of tools/amd/iron_anima.py or iron_sana.py (FLUX.2 klein's from the sources or
-  # exported with IRON on its first run, NAME-512.amd-npu2 for --size 512); on Apple's NPU Anima
-  # and Sana, on Intel's Anima, are downloaded and converted on their first run
+  # hwnpu-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the
+  # sources) of tools/amd/iron_anima.py, iron_sana.py or iron_chroma.py, of the eight aspect ratios
+  # of --size in one (FLUX.2 klein's exported with IRON on its first run when the sources have
+  # none); on Apple's NPU Anima and Sana, on Intel's Anima, are downloaded and converted on their
+  # first run
   Anima-Turbo:
     family: anima-turbo
     tag: v1.1
@@ -619,10 +620,12 @@ models:
     # AMD: the peak of a 1024 x 1024 run, the NPU's mappings and the process's RSS: 4643 MiB with
     # T5 in groups of 4 layers (5.9 when T5's 5 GB was pinned at once; design.md 16.167).
     # Apple: the process's footprint at 1024 x 1024 (4.3 GB); the Neural Engine holds 6.9 GiB more
-    # (the DiT, design.md 16.170)
-    memory: {amd: 4.6, apple: 4.3}
-    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here)
-    bytes: 2.75e10
+    # (the DiT, design.md 16.170). AMD (2026-11-17, design.md 16.241): the peak of the eight aspect
+    # ratios, 3.47 to 3.62 GiB (the NPU's 3.44 and the process's 0.25 at most)
+    memory: {amd: 3.9, apple: 4.3}
+    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here). AMD: the
+    # export of all eight aspect ratios (chroma1-flash-aspects.amd-npu2, 18.8 GB)
+    bytes: {amd: 18.8e9, apple: 2.75e10}
     about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU and Apple's Neural Engine (about 9.5 min at 1024 x 1024 on an M1); Apache-2.0"
   Chroma1-HD:
     like: Chroma1-Flash
@@ -725,7 +728,7 @@ models:
     # an M1, 4.4 GB (3.3 GiB of the process and 0.8 GiB on the Neural Engine, in the VAE's stages);
     # 2.1 GB at 512 x 512 (design.md 16.228). AMD (2026-11-17, design.md 16.240): the peak of the
     # eight aspect ratios, 2.03 to 2.23 GiB (the NPU's 1.9 and the process's 0.35 at most); the
-    # download is the export of all eight (sana-600m-aspects.amd-npu2, 11.5 GB)
+    # download is the export of all eight (sana-600m.amd-npu2, 11.5 GB)
     memory: {amd: 2.4, apple: 4.4}
     bytes: {amd: 11.5e9, apple: 8.9e9}
     about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
@@ -751,7 +754,7 @@ models:
     # Apple: the peak of the footprint and the Neural Engine footprint together at 1024 x 1024 on
     # an M1, 4.5 GB (3.4 GiB of the process and 0.8 GiB on the Neural Engine; design.md 16.228).
     # AMD (2026-11-17, design.md 16.240): the peak of the eight aspect ratios, 2.03 to 2.14 GiB;
-    # the download is the export of all eight (sana1.5-1.6b-aspects.amd-npu2, 16.5 GB)
+    # the download is the export of all eight (sana1.5-1.6b.amd-npu2, 16.5 GB)
     memory: {amd: 2.3, apple: 4.5}
     bytes: {amd: 16.5e9, apple: 9.7e9}
     about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
