@@ -619,10 +619,12 @@ models:
     # AMD: the peak of a 1024 x 1024 run, the NPU's mappings and the process's RSS: 4643 MiB with
     # T5 in groups of 4 layers (5.9 when T5's 5 GB was pinned at once; design.md 16.167).
     # Apple: the process's footprint at 1024 x 1024 (4.3 GB); the Neural Engine holds 6.9 GiB more
-    # (the DiT, design.md 16.170)
-    memory: {amd: 4.6, apple: 4.3}
-    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here)
-    bytes: 2.75e10
+    # (the DiT, design.md 16.170). AMD (2026-11-17, design.md 16.241): the peak of the eight aspect
+    # ratios, 3.47 to 3.62 GiB (the NPU's 3.44 and the process's 0.25 at most)
+    memory: {amd: 3.9, apple: 4.3}
+    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here). AMD: the
+    # export of all eight aspect ratios (chroma1-flash-aspects.amd-npu2, 18.8 GB)
+    bytes: {amd: 18.8e9, apple: 2.75e10}
     about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU and Apple's Neural Engine (about 9.5 min at 1024 x 1024 on an M1); Apache-2.0"
   Chroma1-HD:
     like: Chroma1-Flash
