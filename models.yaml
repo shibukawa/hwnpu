@@ -570,7 +570,9 @@ models:
     # the peak of the footprint and the Neural Engine footprint together, 4.8 GB at 1024 x 1024 on
     # an M1 (3.1 GiB of the process and 1.4 GiB on the Neural Engine, design.md 16.228)
     memory: {amd: 3.5, apple: 4.8}
-    bytes: 5.9e9
+    # AMD: the export of the eight aspect ratios (anima-turbo.amd-npu2, 6.13 GB) packed in the
+    # sources (files.tar.zst)
+    bytes: {amd: 4.24e9, apple: 5.9e9}
     about: "Anima-Turbo (Cosmos-Predict2 2B, Qwen3-0.6B): 1024x1024 in 8 steps, Danbooru tags and natural language"
   Anima-Aesthetic:
     family: anima
@@ -592,9 +594,9 @@ models:
       diffusers/t5_tokenizer/tokenizer.json: 2432e8aa83414a69884a5cbd54a68f528c042d1f30780affbefcbb85091f022e
       split_files/diffusion_models/anima-aesthetic-v1.1.safetensors: 3c1868387a3a1ff504bbb87c33678321965ead381fcf87afbd0264daa600c082
     machine: 8
-    # Anima-Turbo's programs with other weights: its memory
+    # Anima-Turbo's programs with other weights: its memory and download
     memory: {amd: 3.5, apple: 4.8}
-    bytes: 5.9e9
+    bytes: {amd: 4.24e9, apple: 5.9e9}
     about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 25 DPM-Solver++ steps with classifier-free guidance (--guidance, --negative), about 4.5 times Anima-Turbo's time"
   Chroma1-Flash:
     family: chroma
@@ -622,8 +624,10 @@ models:
     # Apple: the process's footprint at 1024 x 1024 (4.3 GB); the Neural Engine holds 6.9 GiB more
     # (the DiT, design.md 16.170)
     memory: {amd: 4.6, apple: 4.3}
-    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here)
-    bytes: 2.75e10
+    # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here). AMD:
+    # the export of the eight aspect ratios (chroma1-flash.amd-npu2, 18.85 GB) packed in the
+    # sources (files.tar.zst); Chroma1-HD's is as large
+    bytes: {amd: 16.24e9, apple: 2.75e10}
     about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU and Apple's Neural Engine (about 9.5 min at 1024 x 1024 on an M1); Apache-2.0"
   Chroma1-HD:
     like: Chroma1-Flash
@@ -726,9 +730,10 @@ models:
     # an M1, 4.4 GB (3.3 GiB of the process and 0.8 GiB on the Neural Engine, in the VAE's stages);
     # 2.1 GB at 512 x 512 (design.md 16.228). AMD (2026-11-17, design.md 16.240): the peak of the
     # eight aspect ratios, 2.03 to 2.23 GiB (the NPU's 1.9 and the process's 0.35 at most); the
-    # download is the export of all eight (sana-600m.amd-npu2, 11.5 GB)
+    # download is the export of all eight (sana-600m.amd-npu2, 11.5 GB) packed in the sources
+    # (files.tar.zst)
     memory: {amd: 2.4, apple: 4.4}
-    bytes: {amd: 11.5e9, apple: 8.9e9}
+    bytes: {amd: 7.14e9, apple: 8.9e9}
     about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
   SANA1.5-1.6B:
     family: sana
@@ -752,9 +757,10 @@ models:
     # Apple: the peak of the footprint and the Neural Engine footprint together at 1024 x 1024 on
     # an M1, 4.5 GB (3.4 GiB of the process and 0.8 GiB on the Neural Engine; design.md 16.228).
     # AMD (2026-11-17, design.md 16.240): the peak of the eight aspect ratios, 2.03 to 2.14 GiB;
-    # the download is the export of all eight (sana1.5-1.6b.amd-npu2, 16.5 GB)
+    # the download is the export of all eight (sana1.5-1.6b.amd-npu2, 16.5 GB) packed in the
+    # sources (files.tar.zst)
     memory: {amd: 2.3, apple: 4.5}
-    bytes: {amd: 16.5e9, apple: 9.7e9}
+    bytes: {amd: 11.48e9, apple: 9.7e9}
     about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
   # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
