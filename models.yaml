@@ -721,9 +721,11 @@ models:
     machine: 8
     # Apple: the peak of the footprint and the Neural Engine footprint together at 1024 x 1024 on
     # an M1, 4.4 GB (3.3 GiB of the process and 0.8 GiB on the Neural Engine, in the VAE's stages);
-    # 2.1 GB at 512 x 512 (design.md 16.228)
-    memory: {amd: 2.3, apple: 4.4}
-    bytes: 8.9e9
+    # 2.1 GB at 512 x 512 (design.md 16.228). AMD (2026-11-17, design.md 16.240): the peak of the
+    # eight aspect ratios, 2.03 to 2.23 GiB (the NPU's 1.9 and the process's 0.35 at most); the
+    # download is the export of all eight (sana-600m-aspects.amd-npu2, 11.5 GB)
+    memory: {amd: 2.4, apple: 4.4}
+    bytes: {amd: 11.5e9, apple: 8.9e9}
     about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
   SANA1.5-1.6B:
     family: sana
@@ -745,9 +747,11 @@ models:
       tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
     machine: 16
     # Apple: the peak of the footprint and the Neural Engine footprint together at 1024 x 1024 on
-    # an M1, 4.5 GB (3.4 GiB of the process and 0.8 GiB on the Neural Engine; design.md 16.228)
+    # an M1, 4.5 GB (3.4 GiB of the process and 0.8 GiB on the Neural Engine; design.md 16.228).
+    # AMD (2026-11-17, design.md 16.240): the peak of the eight aspect ratios, 2.03 to 2.14 GiB;
+    # the download is the export of all eight (sana1.5-1.6b-aspects.amd-npu2, 16.5 GB)
     memory: {amd: 2.3, apple: 4.5}
-    bytes: 9.7e9
+    bytes: {amd: 16.5e9, apple: 9.7e9}
     about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
   # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
