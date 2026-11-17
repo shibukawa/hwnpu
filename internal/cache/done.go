@@ -7,7 +7,7 @@ import (
 
 // The marks of what is whole (NAME.done, written last): those that hold a path hold it relative
 // to the mark's directory, so that a directory copied to another machine or mounted elsewhere
-// still finds its programs (docs/cache-sharing.md 2).
+// still finds its programs (docs/cache-sharing-design.md 2).
 
 // WriteDone writes the mark done that says path is whole.
 func WriteDone(done, path string) error {

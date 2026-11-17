@@ -16,7 +16,7 @@ import (
 
 // SystemModelsFile is the definition file of the machine, which its administrator puts there
 // (the organization's models): read after the built-in one and before the user's
-// (docs/cache-sharing.md 7.4).
+// (docs/cache-sharing-design.md 7.4).
 var SystemModelsFile = func() string {
 	switch runtime.GOOS {
 	case "windows":

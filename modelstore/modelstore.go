@@ -1,5 +1,5 @@
 // Package modelstore finds and fetches the files of the models hwnpu runs, as hwnpu's commands
-// do (docs/cache-sharing.md 7). A file is looked for in layers, in order:
+// do (docs/cache-sharing-design.md 7). A file is looked for in layers, in order:
 //
 //	0  this machine's cache  Options.Root (HWNPU_CACHE, else hwnpu in the user cache directory),
 //	                         what is read from the other layers: written back to always

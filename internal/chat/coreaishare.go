@@ -23,14 +23,14 @@ import (
 const CoreAIKind = "coreai"
 
 // CoreAITarget is the target of the Core AI exports: their programs (.aimodel, MLIR bytecode)
-// are the same on every Mac (docs/cache-sharing.md 10): what is compiled for the chip stays in
+// are the same on every Mac (docs/cache-sharing-design.md 10): what is compiled for the chip stays in
 // Core AI's own cache.
 const CoreAITarget = "coreai"
 
 func init() { llm.SharedExports = coreAIShares{} }
 
 // coreAIShares fetches the Core AI exports (NAME.coreai, llm.CoreAIExport) of every command from
-// the shared layers (docs/cache-sharing.md 7), the folders and S3 buckets the definitions name
+// the shared layers (docs/cache-sharing-design.md 7), the folders and S3 buckets the definitions name
 // (cache.layers), and puts those made here in the layers that are written. The key is what an
 // export is made from (coreAIRecipe): the model's files, the export's name (the revisions and
 // formats it is converted with) and the lowering's version.
@@ -109,7 +109,7 @@ func coreAIExportName(export string) (string, bool) {
 // architecture of the Neural Engine, packed (coreai.PackedRoot): each X.ARCH.aimodelc of
 // coreai-build without its weights, which the device makes again from the export's bytecode.
 // They are in converted/MODEL/coreai-ARCH/EXPORT/VERSION as one file (coreai.BundleFile;
-// docs/cache-sharing.md 7.9).
+// docs/cache-sharing-design.md 7.9).
 const PrebuiltKind = "coreai-prebuilt"
 
 // prebuiltFormat is the version of what coreai.Pack writes, part of the key.

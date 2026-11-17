@@ -15,7 +15,7 @@ import (
 	amdtools "github.com/shibukawa/hwnpu/tools/amd"
 )
 
-// place is where a conversion goes in the sources (docs/cache-sharing.md 7): its folder
+// place is where a conversion goes in the sources (docs/cache-sharing-design.md 7): its folder
 // converted/MODEL/TARGET/EXPORT/VERSION and the entry it is described by (no files yet).
 type place struct {
 	entry shared.Entry
@@ -129,7 +129,7 @@ func modelNamed(name string) Model {
 }
 
 // SharedExport makes the export out (a directory) that recipe describes: from the first source
-// that has it (docs/cache-sharing.md 7), else with build. What build made gets its entry.json
+// that has it (docs/cache-sharing-design.md 7), else with build. What build made gets its entry.json
 // and goes in the sources that are written back to. A nil recipe (what it is made from is not
 // known: an unpinned model with no lock and Hugging Face out of reach) builds without the
 // sources.

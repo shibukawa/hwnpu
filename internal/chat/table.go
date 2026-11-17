@@ -199,7 +199,7 @@ type modelEntry struct {
 	// NotOn are the chips (M1) a family or a category does not pick the model on.
 	NotOn *[]string `yaml:"not_on"`
 	// Targets are the versions of the model's conversions by target (amd-xdna2, coreai),
-	// bumped by hand when what is made changes: the folder vN of a source (docs/cache-sharing.md
+	// bumped by hand when what is made changes: the folder vN of a source (docs/cache-sharing-design.md
 	// 3). A file over another changes the targets it names and keeps the others.
 	Targets *map[string]*targetEntry `yaml:"targets"`
 	// Develop marks a model in development: its conversions go in the sources as vN-HASH of
@@ -230,7 +230,7 @@ type categoryEntry struct {
 
 // tableFile is a definition file. NPUs and Builds are designed (docs/model-table.md) but not
 // read yet: a file that has them gets a warning. Sources, Search and Cache were read before the
-// sources moved to the environment (HWNPU_MODEL_SOURCE: docs/cache-sharing.md 7): a file that
+// sources moved to the environment (HWNPU_MODEL_SOURCE: docs/cache-sharing-design.md 7): a file that
 // has them is refused with what to do.
 type tableFile struct {
 	Version    int                       `yaml:"version"`
@@ -323,7 +323,7 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 	}
 	for key, v := range map[string]any{"sources": f.Sources, "search": f.Search, "cache": f.Cache} {
 		if v != nil {
-			return fmt.Errorf("chat: %s: %s is not read any more: the sources are URLs in %s, %s_1, ... (a .env file can set them: docs/cache-sharing.md 7)", name, key, shared.SourceEnv, shared.SourceEnv)
+			return fmt.Errorf("chat: %s: %s is not read any more: the sources are URLs in %s, %s_1, ... (a .env file can set them: docs/cache-sharing-design.md 7)", name, key, shared.SourceEnv, shared.SourceEnv)
 		}
 	}
 	for key, v := range map[string]any{"npus": f.NPUs, "builds": f.Builds} {

@@ -4482,7 +4482,7 @@ Core ML の Neural Engine のキャッシュは約 4 GiB で、それを超え�
 
 ### 16.171 キャッシュの根を 1 つに、共有の層 (共有フォルダと S3) と AMD の書き出しの共有 — 2026-11-12
 
-docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
+docs/cache-sharing-design.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
 
 - **根** (`cache.Root`): OS のローミングしないキャッシュのフォルダの下の `hwnpu` (`HWNPU_CACHE` で移せる)。各コマンドがばらばらに `os.UserCacheDir()` を引いていた 13 か所をこれに。AMD の書き出しは `entries/amd-xdna2/NAME.amd-npu2*` に作り、`~/models` は読むだけ (`cache.ExportRoots`)。組み込みの IRON の道具は `tools/`。IRON の JIT のキャッシュは `iron/` (`NPU_CACHE_HOME` を書き出しに渡す)。`~/.npu/cache` は最初の書き出しの前に `iron/` へ名前を変えて移し、元の場所にリンクを残す (この機械では 52 GB が一瞬で移った)
 - **`.done` を相対パスに** (`cache.WriteDone`、`ReadDone`): チャットの変換、書き起こし、Anima、Sana、Qwen-Image、hwnpu-dev formats。前の hwnpu の絶対パスは、その場所がなければ印の隣の同じ名前を読む
@@ -4499,9 +4499,9 @@ docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
 - RustFS 1.0.5 (手元) で (2026-11-13): `TestS3Server` (`HWNPU_S3_TEST_ENDPOINT`) が部分に分けた送り、空のファイル、続き、一覧、削除で通った。空のファイルは tinygodriver v1.3.8 が長さ 0 の本体を chunked で送り 411 になった (v1.3.9 で直り、hwnpu の回避は外した)。Qwen3.5-0.8B の書き出しを RustFS の層に `push` (1.57 GB、10 秒)、空の根と IRON なしの hwnpu-chat が層から取って答えた (準備 4.4 秒)
 - Cloudflare R2 (`region: auto`) でも `TestS3Server` が通り、push (1.57 GB、119 秒) と層からの chat (準備 54 秒) ができた。無料枠は 10 GB なので小さなものだけ置く
 - 未確認: AWS の S3。Windows のロックの実機。MinIO は対象にしない (保守が終わった)
-- **初回に作る画像の書き出しも層に** (2026-11-13、`amdFirstRunExport`): hwnpu-image detect、pose、segment (RTMDet、RTMO、EfficientSAM) の書き出しは、手元になければ層を見て、なければ IRON で作って `write` の層へ。層にあれば IRON のない機械でも NPU で動く。鍵は `chat.PinnedRecipe`: 定義の sha256 (ONNX のモデルはファイルを全部固定している)、道具の名前と hash、Go の側の版 (`detect.ExportVersion`、`pose.ExportVersion`、`segment.ExportVersion`)。道具に渡す引数は Go が ONNX から決めるので、引数そのものは鍵に入れず、渡し方を変えたら版を手で上げる (cache-sharing.md 3 節の方針)。エントリの種類は `iron-onnxcnn` と `iron-efficientsam` (`chat.ExportKind`)。`hwnpu-dev cache push` もこの 3 種を受ける。この機械で: RTMO-s、RTMDet-m、EfficientSAM-Ti を共有フォルダの層に push し、空の HOME とキャッシュの根、IRON なしで、3 つとも層から 0.1〜0.2 秒で取って NPU で動いた
+- **初回に作る画像の書き出しも層に** (2026-11-13、`amdFirstRunExport`): hwnpu-image detect、pose、segment (RTMDet、RTMO、EfficientSAM) の書き出しは、手元になければ層を見て、なければ IRON で作って `write` の層へ。層にあれば IRON のない機械でも NPU で動く。鍵は `chat.PinnedRecipe`: 定義の sha256 (ONNX のモデルはファイルを全部固定している)、道具の名前と hash、Go の側の版 (`detect.ExportVersion`、`pose.ExportVersion`、`segment.ExportVersion`)。道具に渡す引数は Go が ONNX から決めるので、引数そのものは鍵に入れず、渡し方を変えたら版を手で上げる (cache-sharing-design.md 3 節の方針)。エントリの種類は `iron-onnxcnn` と `iron-efficientsam` (`chat.ExportKind`)。`hwnpu-dev cache push` もこの 3 種を受ける。この機械で: RTMO-s、RTMDet-m、EfficientSAM-Ti を共有フォルダの層に push し、空の HOME とキャッシュの根、IRON なしで、3 つとも層から 0.1〜0.2 秒で取って NPU で動いた
 - **`hwnpu-dev cache gc N`** (`store.PlanGC`): 層 N から、`--model`、`--kind`、`--key` (先頭)、`--older-than DAYS` で選んだエントリと、それだけが名指していた blob を消す。`--orphans` で、どのエントリにもチェックポイントの索引にも名指されない blob も (書き込み中の層では使わない: 置いている途中のものは名指すものが最後に書かれる)。`--apply` がなければ、消すものを出すだけ。エントリを先に消し、blob を後に。共有フォルダの層と RustFS で確かめた。途中で止まったマルチパートは `hwnpu cache clean` が中止する (16.234)
-- 残り: Anima などの手で作る画像の書き出し (道具の引数を Go が持たない。HF の配布物で配る)。Core ML と OpenVINO のプログラム (チャットの変換) のエントリ化と、計画と作るの分離 (cache-sharing.md 8 節)、HF の配布物を読む層と Actions (同 9 節) は次
+- 残り: Anima などの手で作る画像の書き出し (道具の引数を Go が持たない。HF の配布物で配る)。Core ML と OpenVINO のプログラム (チャットの変換) のエントリ化と、計画と作るの分離 (cache-sharing-design.md 8 節)、HF の配布物を読む層と Actions (同 9 節) は次
 
 ### 16.172 PLaMo (3 Translate と Embedding) を Core AI で: 経路の直しと、入力の配列の使い回し — 2026-11-13
 
@@ -4558,7 +4558,7 @@ docs/cache-sharing.md の P0 と P1、P2 の大半 (同 0 節に一覧)。
 
 ### 16.174 `.aimodel` を配って動かすための調査: 容量、キャッシュの鍵と方針、重みの共有 — 2026-11-13
 
-変換済みのモデルを Hugging Face に置き、Apple では `.aimodel` を落として動かす形 (docs/cache-sharing.md の 10 節) を考えて調べた。M1 (macOS 27.2)、題材は LFM3-1.7B (lut6、8 トークンと 128 トークンの 2 本、それぞれ 7 つの部品)。
+変換済みのモデルを Hugging Face に置き、Apple では `.aimodel` を落として動かす形 (docs/cache-sharing-design.md の 10 節) を考えて調べた。M1 (macOS 27.2)、題材は LFM3-1.7B (lut6、8 トークンと 128 トークンの 2 本、それぞれ 7 つの部品)。
 
 **決めたこと**
 - 配るのは、8 トークンと 128 トークンを関数 2 つにまとめた `.aimodel` (重みは 1 本分) と、実行に要る小さなファイル
@@ -4649,7 +4649,7 @@ Core AI で動かすと全部で約 10 GB で、重みを 5 回分持ってい�
 
 **ディスク**: 16.174 の LFM3 と同じく、重みを 3 回持つ。書き出し (14 GB)、hwnpu のキャッシュの `.aimodel` (14 GB)、Core AI のキャッシュ (14〜17 GB)。チェックポイントの 27.5 GB を足すと約 73 GB。この M2 では空きが約 15 GiB を切ったところで macOS が `~/Library/Caches` を掃除し、Core AI のキャッシュだけでなく hwnpu のキャッシュの根 (モデルと書き出しごと) も消えた。空き 20 GB で終えた 1 回目の後には、Core AI の 33 項目のうち 3 つしか残らず、2 回目はほぼ全部コンパイルし直した (16.174 の `storagePressure` の掃除と同じとみる)。
 
-- **`.aimodel` の重みを捨てる** (`HWNPU_COREAI_DROP_BYTECODE=1`、16.174 の「最終手段のオプション」を下ろした `.aimodel` に): 読み込めて Core AI のキャッシュに項目ができたら、hwnpu のキャッシュの `.aimodel` の `main.mlirb` を空のファイルに置き換える (切り詰めずに rename で置き換える。Core AI がまだ古いファイルを写像しているかもしれない)。既定は 16.174 のとおり残す。Chroma1-Flash の 512² で hwnpu のキャッシュは 28 → 15 GB、DiT の組の読み込みは重みを読まないので 6.5 → 0.5 秒 (`aicheck`)。今の形 (元のチェックポイントから手元で変換する) では、項目が消えてもパッケージから数秒で下ろし直せる。しかし `.aimodel` を Hugging Face に置いて落とす形 (16.174、cache-sharing.md の 10 節) では、手元にパッケージがなく、項目が消えたら `.aimodel` の落とし直しになる (Chroma1-Flash で 14 GB)。それで既定は残す。項目が消えたときの Core AI のコンパイルし直しは、`.aimodel` を残していても同じだけかかる
+- **`.aimodel` の重みを捨てる** (`HWNPU_COREAI_DROP_BYTECODE=1`、16.174 の「最終手段のオプション」を下ろした `.aimodel` に): 読み込めて Core AI のキャッシュに項目ができたら、hwnpu のキャッシュの `.aimodel` の `main.mlirb` を空のファイルに置き換える (切り詰めずに rename で置き換える。Core AI がまだ古いファイルを写像しているかもしれない)。既定は 16.174 のとおり残す。Chroma1-Flash の 512² で hwnpu のキャッシュは 28 → 15 GB、DiT の組の読み込みは重みを読まないので 6.5 → 0.5 秒 (`aicheck`)。今の形 (元のチェックポイントから手元で変換する) では、項目が消えてもパッケージから数秒で下ろし直せる。しかし `.aimodel` を Hugging Face に置いて落とす形 (16.174、cache-sharing-design.md の 10 節) では、手元にパッケージがなく、項目が消えたら `.aimodel` の落とし直しになる (Chroma1-Flash で 14 GB)。それで既定は残す。項目が消えたときの Core AI のコンパイルし直しは、`.aimodel` を残していても同じだけかかる
 - **空の `.aimodel` を Core AI に解析させない** (オプションによらず常に): 空の `main.mlirb` を Core AI が解析すると、LLVM が abort してプロセスごと落ちる (`cannot unwrap empty odiec_module_t`)。起きるのは、項目がないときと、項目に `main-this.odix` がないとき (Core AI がコンパイルし直す)。そこで空の `.aimodel` は開く前に項目を確かめる (`hasEntry`: `coreai-cache/<kern.osversion>/<実行ファイル名>/<main.hash>/*/model.aimodelx/main-this.odix` が空でないファイル)。なければパッケージから下ろし直す。項目があっても読めないとき (`main-this-delegates` がないと `loadFunction` が失敗する) は、shim は項目を消して読み直さず (`cai_open` の kind の `0x100`。読み直すと空のバイトコードを解析する)、Go の側で下ろし直して最初と同じように読む。直接渡された空の `.aimodel` で項目がないときは、開かずにエラーにする。項目を消す、`odix` を消す、`delegates` を消す、の 3 通りで、落ちずに下ろし直して同じ値になった。判定に迷うときは「空にしない」「下ろし直す」に倒す。16.174 の配る形で `.aimodel` を消すオプションを作るときも、この確かめ方 (`hasEntry`、`kindNoRetry`) が要る
 - 単体テスト: `TestCut` (偽の HOME に項目を作る)
 
@@ -4669,7 +4669,7 @@ Core AI で動かすと全部で約 10 GB で、重みを 5 回分持ってい�
 
 16.174 で LFM3-1.7B に試した重みの共有 (8 トークンと 128 トークンを 1 本の `.aimodel` の関数 2 つに) を、Core AI のバックエンドがどのモデルにも自動で行うようにした (`internal/backend/coreai/group_darwin.go`)。呼び出す側 (chain、chat、PLaMo-Embedding) には手を入れていないので、マージ済みのモデルも次に `--backend coreai` で読み込んだときに移る。
 
-**位置づけ**: これは手元で変換する経路 (チェックポイントから `.mlpackage` に変換し、hwnpu のキャッシュに `.aimodel` を作る) の話で、主流は落としてきた `.aimodel` を動かす形になる (16.174、cache-sharing.md 10 節)。その形とは次のように分ける。
+**位置づけ**: これは手元で変換する経路 (チェックポイントから `.mlpackage` に変換し、hwnpu のキャッシュに `.aimodel` を作る) の話で、主流は落としてきた `.aimodel` を動かす形になる (16.174、cache-sharing-design.md 10 節)。その形とは次のように分ける。
 - 落としてきた `.aimodel` (`PATH.aimodel` や `PATH.aimodel#NAME`) は、そのまま開く。ハッシュもまとめ直しもせず、消しもしない。手元に残すのが既定で、Core AI のキャッシュが消されても落とし直さずにコンパイルし直すだけで済む。ストレージが厳しいときに消すのはオプションにする (未実装)。そのオプションでは Core AI のエントリは残す (`cai_forget` は呼ばない)
 - 変換の経路でこの節が消すのは、hwnpu のキャッシュにある、前の hwnpu が部品ごとに作った `.aimodel` (と Core AI のそのエントリ) だけ。どれも手元の `.mlpackage` から作り直せる
 - まとめた `.aimodel` は配る形と同じ (関数をまとめた 1 本)。配るものを作るときは、これをキャッシュから取り出せばよい。関数の名前は中身の sha256 からとる (`p` + 16 桁) ので、同じ変換なら機械によらず同じ。配る `parts.json` が `.aimodel#NAME` を指すとき、この名前のままにするか、`f8` や `f128` のような読める名前にするかは、配る形を作るときに決める
@@ -5633,7 +5633,7 @@ hwnpu-chat、hwnpu-image、hwnpu-audio が Mac では Core AI だけになった
 
 ### 16.199 Core AI の書き出しと表を共有の層 (NAS、S3) から取り、作ったら書き戻す — 2026-11-14
 
-共有の層 (docs/cache-sharing.md 7 節: 定義の `cache.layers` に並べる NAS のフォルダや S3 のバケット) を通るのは、元のチェックポイントと AMD の IRON の書き出しだけだった。Core AI の書き出し (16.198 で `NAME.coreai` に揃えた) も通す。
+共有の層 (docs/cache-sharing-design.md 7 節: 定義の `cache.layers` に並べる NAS のフォルダや S3 のバケット) を通るのは、元のチェックポイントと AMD の IRON の書き出しだけだった。Core AI の書き出し (16.198 で `NAME.coreai` に揃えた) も通す。
 
 **流れ** (`llm.FetchExport`、`llm.ShareExport`、`chat` の `coreAIShares`)
 - 書き出しが手元になければ、変換の前に層を順に探す。あればそこから作り (`store.FetchEntry`、sha256 を確かめる)、`.done` を書く。前の層で `fill` のものには写しを置く
@@ -5653,7 +5653,7 @@ hwnpu-chat、hwnpu-image、hwnpu-audio が Mac では Core AI だけになった
 - テスト: `TestCoreAIShared` (フォルダと偽の S3 で、書き戻して消して取り直す。別の名前、別の sha256 のものは取らない)、`TestTablesShared`、`TestCoreAIRecipe`
 - Mac では試していない。Core AI のキャッシュは `main.hash` で引くので、ほかの Mac で書いた書き出しでも同じものはコンパイルし直さない見込み (16.174)
 
-**使い方** (docs/cache-sharing.md 7.4 節): 定義に
+**使い方** (docs/cache-sharing-design.md 7.4 節): 定義に
 
 ```yaml
 sources:
@@ -6316,7 +6316,7 @@ PNG はバイト単位で同じ。
 
 ### 16.212 取得元を環境変数の URL に: フォルダ、WebDAV と HTTP、S3。`original/` と `hwnpu-lock.json`、`converted/.../vN` — 2026-11-15
 
-キャッシュの層 (16.169、16.199) は、定義のファイルの `sources`、`search`、`cache.layers` と `HWNPU_CACHE_LAYERS` で決め、中は内容で番地を決める並び (`blobs/sha256/AB/SHA256`、`upstream/OWNER/NAME@COMMIT/FILE.json`、`entries/KIND/KEY.json`) だった。設定が 3 か所に分かれ、NAS の中は人が見ても何があるか分からず、普通の HTTP サーバーでは配れなかった。WebDAV に対応してほしいという話から、設定と並びを作り直した (docs/cache-sharing.md 7 節、12.1 節)。
+キャッシュの層 (16.169、16.199) は、定義のファイルの `sources`、`search`、`cache.layers` と `HWNPU_CACHE_LAYERS` で決め、中は内容で番地を決める並び (`blobs/sha256/AB/SHA256`、`upstream/OWNER/NAME@COMMIT/FILE.json`、`entries/KIND/KEY.json`) だった。設定が 3 か所に分かれ、NAS の中は人が見ても何があるか分からず、普通の HTTP サーバーでは配れなかった。WebDAV に対応してほしいという話から、設定と並びを作り直した (docs/cache-sharing-design.md 7 節、12.1 節)。
 
 - 取得元は URL の並び: `HWNPU_MODEL_SOURCE`、`HWNPU_MODEL_SOURCE_1`、... (その名前で始まる変数を全部集め、番号の順。エラーの取得元は飛ばす)。`file://` (マウントしたフォルダ)、`http(s)://USER:PASSWORD@HOST/PATH` (WebDAV。書き戻さないなら GET と HEAD だけなので、どの HTTP サーバーでも)、`s3://BUCKET/PREFIX?endpoint=...`。`?writeback=true` で、手元で作ったものと後ろから読んだものを裏で置く。最後の番兵 `HWNPU_MODEL_HUGGING_FACE=false` でネットに出ない (`internal/store/source.go`)
 - `.env` と `.env.local` を、カレントディレクトリ、ユーザーの設定のフォルダ、機械の設定のフォルダの順に読み、環境にない `HWNPU_`、`HF_`、`AWS_` の変数だけを足す (`internal/envfile`。`internal/console` と `internal/cache` が空の import で読むので、どの変数より先に読まれる。`go test` では読まない)
@@ -6330,7 +6330,7 @@ PNG はバイト単位で同じ。
 
 ### 16.213 層を平らに: 手元のキャッシュと同梱のモデルも取得元、`original/OWNER/NAME` を全部のコマンドで、公開の `modelstore` — 2026-11-15
 
-16.212 の取得元の前後に層を足し、1 つの仕組みで並べた (docs/cache-sharing.md 7)。
+16.212 の取得元の前後に層を足し、1 つの仕組みで並べた (docs/cache-sharing-design.md 7)。
 
 ```
 0. この機械のキャッシュ (cache.Root)  いつも書き戻す・その場で使う
@@ -6489,7 +6489,7 @@ PNG はバイト単位で同じ。
 
 ### 16.217 手元のキャッシュの大きさ: 空きの下限、LRU、一般向けの `hwnpu cache` — 2026-11-15
 
-手元のキャッシュ (16.213 の層 0) は増える一方で、消すには `~/.cache/hwnpu` を手で消すしかなかった。ダウンロードの前に場所を確かめ、使っていないものから消す仕組みを共有の部分 (`internal/cache`) に入れ、一般の利用者のためのコマンド `hwnpu` を足した (docs/cache-sharing.md 7.7)。
+手元のキャッシュ (16.213 の層 0) は増える一方で、消すには `~/.cache/hwnpu` を手で消すしかなかった。ダウンロードの前に場所を確かめ、使っていないものから消す仕組みを共有の部分 (`internal/cache`) に入れ、一般の利用者のためのコマンド `hwnpu` を足した (docs/cache-sharing-design.md 7.7)。
 
 - `cache.Room(need, path, log)`: 取得元からの取得 (`store.FetchOriginal`)、変換したものの取得 (`store.materialize`)、Hugging Face からの取得 (`chat.fetchHF`、Content-Length) の前に呼ぶ。`HWNPU_CACHE_MIN_FREE` (既定 10 GB、割合も) を切るなら始めない。`HWNPU_CACHE_MAX_SIZE` があれば、超えるとき (と空きが足りないとき) に最近使っていない単位から消す。足りなければ `ErrNoRoom` (`chat.fetch` は取得元から HF に回らずに止まる)
 - 上限は既定でなし: 消すと AMD の書き出しのように作り直しに時間がかかるものがあるので、利用者が上限を決めたときだけ自動で消す。下限は既定であり、ディスクを埋めきらない
@@ -7003,7 +7003,7 @@ Qwen/Qwen2.5-Coder-7B-Instruct と 14B-Instruct (`Qwen2ForCausalLM`) を Mac (Co
 
 ### 16.234 取得元の掃除: フォルダは揃っているかいないかの 2 つ、書いている間の印、`hwnpu cache clean` — 2026-11-16
 
-Linux で書き戻しを確かめたとき (cache-sharing.md 7.5)、切れた書き戻しの一時ファイル `.put-` が NAS に残り続けていた (Qwen3.5-0.8B の書き出しの 597 MB、LFM3-1.7B の重みの 1.9 GB と 0.66 GB、Chroma1-Flash と Core AI の書き出し)。一覧 (`List`) が `.put-` を隠すので、`hwnpu-dev cache gc --orphans` にも見えなかった。
+Linux で書き戻しを確かめたとき (cache-sharing-design.md 7.5)、切れた書き戻しの一時ファイル `.put-` が NAS に残り続けていた (Qwen3.5-0.8B の書き出しの 597 MB、LFM3-1.7B の重みの 1.9 GB と 0.66 GB、Chroma1-Flash と Core AI の書き出し)。一覧 (`List`) が `.put-` を隠すので、`hwnpu-dev cache gc --orphans` にも見えなかった。
 
 **決め方**: フォルダは揃っているか、揃っていないかの 2 つだけ (読む側はもとからそう読んでいる)。
 
@@ -7053,14 +7053,14 @@ Core AI の書き出しの対象は `coreai` 1 つで、M1 と M2 で同じも�
 
 ### 16.232 prebuilt を取得元で配る: 重みを除いて詰め、`.aimodel` から組み立てる (Core AI) — 2026-11-16
 
-16.229 の prebuilt (`coreai-build` の `X.ARCH.aimodelc`) を、変換後と同じ取得元で機械の種類ごとに配る (docs/cache-sharing.md 7.9)。
+16.229 の prebuilt (`coreai-build` の `X.ARCH.aimodelc`) を、変換後と同じ取得元で機械の種類ごとに配る (docs/cache-sharing-design.md 7.9)。
 
 - **詰める** (`coreai.Pack`): `.aimodelc` の `resources.bin` (99 %) を `resources.bin.map.json` に。中身は `main.mlirb` の資源の塊 (blob) を並べ替えたもので、塊の頭 16 バイトと 64 KiB ごとの位置を索引にし、前の一致の続きを先に試して、合わない数バイト (塊の間の頭書き) だけを literal に持つ。Chroma の 1 ブロックの部品で 231 MB → 2.97 MB (表 2.5 KB)、組み立て直してバイト単位で同一。中身の多くが `main.mlirb` にないファイルはそのまま置く
 - **組み立てる** (`coreai.Assemble`): 小さなファイルはハードリンク、表は `main.mlirb` から読んで書き、大きさと sha256 を照らす。違うバイトコードからは作らない。バックエンドは一時フォルダに組み立てて Core AI に開かせ、開いたら消す (Core AI の項目が重みを持つ)
 - **鍵**: 書き出しの各 `.aimodel` の場所と `main.hash` の sha256 (`coreai.ProgramsDigest`)、アーキテクチャ、書き出しの名前。`converted/MODEL/coreai-ARCH/EXPORT/v0-HASH`。モデルは書き出しの entry.json のもの (画像のモデルのフォルダは `Sana/` でリポジトリの名前ではないので、entry.json のない手元の書き出しは配れない)
 - **取る**: `Compile` が、Core AI の項目もなく手元の prebuilt もない部品を読むとき、書き出しごとにプロセスで 1 回、`coreai.FetchPrebuilt` (chat が設定) で取得元に聞き、`EXPORT.prebuilt/ARCH/` に置く
 - **1 つのファイルに** (`coreai.Bundle`、`prebuilt.tar.zst`): 詰めたフォルダを tar にして zstd (klauspost/compress) で。Chroma の 1 ブロックの部品の 12 種類 (h13g〜h17s) で測ると、1 種類 10 ファイル 3.02 MB が lz4 2.01 MB、gzip 1.51 MB、zstd -3 1.22 MB、-19 0.97 MB。12 種類をまとめると 36.98 MB が zstd -19 --long で 1.33 MB (LLIR の大半が種類の間で同じ) だが、取るのは自分の種類だけなので種類ごとに 1 つ
-- **手元のキャッシュ** (`hwnpu cache`、docs/cache-sharing.md 7.7): `EXPORT.coreai.prebuilt` は種類 `prebuilt` の単位 (モデルの量に数えない)。空きの下限を切るときは、prebuilt のある部品の Core AI の項目 (`coreai-cache/<OS>/hwnpu*/<hash>`、重みの複製) を先に消す: prebuilt から数秒で作り直せる。prebuilt そのものは作り直しのもとなので残す
+- **手元のキャッシュ** (`hwnpu cache`、docs/cache-sharing-design.md 7.7): `EXPORT.coreai.prebuilt` は種類 `prebuilt` の単位 (モデルの量に数えない)。空きの下限を切るときは、prebuilt のある部品の Core AI の項目 (`coreai-cache/<OS>/hwnpu*/<hash>`、重みの複製) を先に消す: prebuilt から数秒で作り直せる。prebuilt そのものは作り直しのもとなので残す
 - **置く**: `hwnpu-dev prebuild -arch LIST -put EXPORT` (`-packed` は置かずに詰めるだけ)。全体を作ってから詰めるのではなく、部品ごとに作って詰め、全体の `.aimodelc` は消す (Sana の 27 本 × 12 種類を全体で持つと 50 GB)
 
 **Sana-600M (1024²、M2 16 GB、空のキャッシュと新しい署名の識別子で毎回)**:

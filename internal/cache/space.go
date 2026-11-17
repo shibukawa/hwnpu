@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// How much of the disk the cache takes (docs/cache-sharing.md 7.7). Every download into the
+// How much of the disk the cache takes (docs/cache-sharing-design.md 7.7). Every download into the
 // root asks Room first:
 //
 //   - HWNPU_CACHE_MIN_FREE (10GB unless set; 0 for none) is what is left free on the root's disk:
@@ -227,7 +227,7 @@ func Room(need int64, path string, log func(format string, args ...any)) error {
 	}
 	if short > 0 {
 		// short of disk: what is made again soon goes first, with or without a MaxSize (Core AI's
-		// entries of programs with prebuilt ones here, SetRestorable; docs/cache-sharing.md 7.7)
+		// entries of programs with prebuilt ones here, SetRestorable; docs/cache-sharing-design.md 7.7)
 		if freed := evictRestorable(short, log); freed > 0 {
 			if free, _, err = DiskSpace(root); err == nil {
 				short = minFree - (free - need)

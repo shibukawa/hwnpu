@@ -20,7 +20,7 @@ const EntryFile = "entry.json"
 // EntryFormat is the version of EntryFile this hwnpu reads and writes.
 const EntryFormat = 1
 
-// The scopes of what is shared (docs/cache-sharing.md 6).
+// The scopes of what is shared (docs/cache-sharing-design.md 6).
 const (
 	ScopeUpstream = "upstream" // a checkpoint's files, by their SHA-256
 	ScopePortable = "portable" // what is converted: the same on every machine of the target
@@ -28,7 +28,7 @@ const (
 )
 
 // Entry is a directory of what was made (an export, a converted program) and what it was made
-// from (docs/cache-sharing.md 6). Its paths are relative to the directory.
+// from (docs/cache-sharing-design.md 6). Its paths are relative to the directory.
 type Entry struct {
 	Format int    `json:"format"`
 	Key    string `json:"key"` // the fingerprint of Recipe (Fingerprint)

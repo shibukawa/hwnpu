@@ -49,7 +49,7 @@ func FinishExport(export, done string, old ...string) error {
 	return nil
 }
 
-// Sharer fetches Core AI exports from the shared layers (docs/cache-sharing.md 7) and puts those
+// Sharer fetches Core AI exports from the shared layers (docs/cache-sharing-design.md 7) and puts those
 // made here in them.
 type Sharer interface {
 	// Fetch makes export from the first layer that has it and reports whether one had it.

@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// The locks of what is being prepared (docs/cache-sharing.md 6, model-table.md 11.2): a file in
+// The locks of what is being prepared (docs/cache-sharing-design.md 6, model-table.md 11.2): a file in
 // Root/locks held with flock (LockFileEx on Windows) while a process downloads, converts or
 // exports one thing, so that two processes do not write it at once. The OS lets it go when the
 // process ends, so that no stale lock is left. Within a process a mutex of the same name keeps

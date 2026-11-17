@@ -18,7 +18,7 @@ import (
 )
 
 // What is written back to the sources goes in the background, after it is whole here
-// (docs/cache-sharing.md 7.1): a job is written to work/queue under the cache's root first and removed when done, so
+// (docs/cache-sharing-design.md 7.1): a job is written to work/queue under the cache's root first and removed when done, so
 // that one cut off (the process ended, the network went) is done by the next process that runs.
 // A job that fails is kept for the next one and logged to work/queue.log; it never stops a run.
 

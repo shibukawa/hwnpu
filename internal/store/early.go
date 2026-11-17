@@ -12,7 +12,7 @@ import (
 // A conversion made here goes in the sources written back to while it is made: the files of its
 // directory that are written and left alone for a while (EarlySettle) are put as they come
 // (StartEarly), and PutEntry, when the conversion is whole, puts only those that changed or came
-// after, then entry.json (docs/cache-sharing.md 7.1). The converters are not told: what is put
+// after, then entry.json (docs/cache-sharing-design.md 7.1). The converters are not told: what is put
 // early and changes after is put again, and what is put early and is not in the entry at the
 // end (a file the converter removed) is removed. A conversion that stops leaves what was put of it
 // without an entry.json, as one cut off (hwnpu-dev cache gc --orphans).

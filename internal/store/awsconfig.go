@@ -12,7 +12,7 @@ import (
 // profile is what hwnpu reads of a profile of the AWS CLI's files: the static keys of
 // ~/.aws/credentials (AWS_SHARED_CREDENTIALS_FILE) and the region and the endpoint of
 // ~/.aws/config (AWS_CONFIG_FILE). SSO, assumed roles and the instance's metadata are not read
-// (docs/cache-sharing.md 7.2).
+// (docs/cache-sharing-design.md 7.2).
 type profile struct {
 	creds            aws.Credentials
 	region, endpoint string
