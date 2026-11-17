@@ -84,7 +84,7 @@ models:
     tier: none
     variants:
       16: {memory: {apple: 3.1, M1: 1.7}, tier: auto}
-    bytes: 3.5e9
+    bytes: {amd: 1.74e9, apple: 3.5e9}
     features: [tools, thinking]
     amd_export: lfm3 --max-seq-len 12288 --q4
     about: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"
@@ -99,7 +99,7 @@ models:
     # encoder loaded from the start
     machine: 8
     memory: {amd: 2.6, apple: 2.7}
-    bytes: 3.8e9
+    bytes: {amd: 2.08e9, apple: 3.8e9}
     features: [tools, thinking, vision]
     amd_export: lfm3vl --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with a vision encoder: its text model in 8 bit tables, images of 512x512"
@@ -113,7 +113,7 @@ models:
     # 0.21 GiB answering about a clip (2.6 GB); 2.05 + 0.23 GiB (2.4 GB) with text alone
     machine: 8
     memory: 2.6
-    bytes: 4.0e9
+    bytes: {amd: 1.97e9, apple: 4.0e9}
     features: [tools, thinking, audio]
     amd_export: lfm3audio --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with an audio encoder: its text model in 8 bit tables, clips up to 30 seconds; answers are text (speech: hwnpu-audio tts)"
@@ -128,7 +128,7 @@ models:
     # encoders loaded from the start
     machine: 8
     memory: {amd: 3.0, apple: 3.1}
-    bytes: 4.3e9
+    bytes: {amd: 2.33e9, apple: 4.3e9}
     features: [tools, thinking, vision, audio]
     amd_export: lfm3omni --max-seq-len 12288 --q4
     about: "Liquid AI's LFM3 with both encoders: images of 512x512 and clips up to 30 seconds, answers in text"
@@ -141,10 +141,10 @@ models:
     machine: 8
     # AMD (2026-11-17, docs/improvements.md 12.7): the peak of a chat, 1.76 GiB on the NPU and
     # the process's 0.45 GiB; the download is the converted export (5.09 GB, its per-layer
-    # embedding table in int8). Apple (an M2, 2026-11-17): the converted Core AI export (1.73 GB)
-    # and the tables (3.17 GB, the per-layer embeddings in int8), 4.94 GB with the tokenizer
+    # embedding table in int8), packed to 4.78 GB. Apple (an M2, 2026-11-17): the converted Core AI
+    # export (1.73 GB) and the tables (3.17 GB, the per-layer embeddings in int8), 4.94 GB with the tokenizer
     memory: {amd: 2.4, apple: 2.3}
-    bytes: {amd: 5.1e9, apple: 4.9e9}
+    bytes: {amd: 4.78e9, apple: 4.9e9}
     features: [tools, thinking]
     amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"
@@ -157,10 +157,10 @@ models:
     machine: 24
     # AMD (2026-11-17, docs/improvements.md 12.7): the peak of a chat, 3.55 GiB on the NPU and
     # the process's 0.51 GiB; the download is the converted export (8.07 GB, its per-layer
-    # embedding table in int8). Apple (an M2, 2026-11-17): the converted Core AI export (3.51 GB)
-    # and the tables (4.18 GB, the per-layer embeddings in int8), 7.73 GB with the tokenizer
+    # embedding table in int8), packed to 7.45 GB. Apple (an M2, 2026-11-17): the converted Core AI
+    # export (3.51 GB) and the tables (4.18 GB, the per-layer embeddings in int8), 7.73 GB with the tokenizer
     memory: {amd: 4.3, apple: 4.0}
-    bytes: {amd: 8.1e9, apple: 7.7e9}
+    bytes: {amd: 7.45e9, apple: 7.7e9}
     features: [tools, thinking]
     amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"
@@ -172,7 +172,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.5-4B/blob/main/LICENSE", class: open}
     machine: 24
     memory: 4.2
-    bytes: 9.3e9
+    bytes: {amd: 4.46e9, apple: 9.3e9}
     features: [tools, thinking]
     amd_export: qwen35 --max-seq-len 4096 --q4
     about: "Qwen's Qwen3.5-4B: strong at code for its size, its text model in 8 bit tables (6 bit ones lose too much) read 8 tokens per call; the download has the vision part too, which is not converted"
@@ -191,7 +191,7 @@ models:
     tier: none
     variants:
       16: {memory: {apple: 2.3, M1: 1.5}, tier: auto}
-    bytes: 1.77e9
+    bytes: {amd: 1.18e9, apple: 1.77e9}
     features: [tools, thinking]
     no_think: true
     amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
@@ -208,7 +208,7 @@ models:
     # of 8 GB swaps for: there the programs converted already are to be fetched
     machine: 8
     memory: {amd: 2.4, apple: 2.2}
-    bytes: 4.57e9
+    bytes: {amd: 2.67e9, apple: 4.57e9}
     features: [tools, thinking]
     no_think: true
     amd_export: qwen35 --max-seq-len 4096 --q4 --mlp q6 --head q6 --verify 3
@@ -243,7 +243,7 @@ models:
     license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
     machine: 32
     memory: 14.6
-    bytes: 14.4e9
+    bytes: {amd: 11.79e9, apple: 14.4e9}
     features: [tools, thinking]
     amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256
     about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): AMD's NPU only, its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention at 8 bits; it always reasons first (the low effort with no_think)"
@@ -313,7 +313,7 @@ models:
     not_on: [M1]
     memory: {amd: 6.5, apple: 8.2}
     prefill: off
-    bytes: 17.07e9
+    bytes: {amd: 6.41e9, apple: 17.07e9}
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 8B: the 2B's translation from a model 3.5 times as large, in 4 bit tables (as good as 8 bit ones on it); 10 to 11 tokens/s on an M3; not picked on an M1 (its 3.8 GiB is over what an M1's Neural Engine runs at full speed: the 2B there); on Intel's NPU in int4, its precision not checked yet"
@@ -328,7 +328,7 @@ models:
     # more, 16.220) and the process's 0.24 GiB
     machine: 16
     memory: {amd: 2.7, apple: 3.2}
-    bytes: 5.76e9
+    bytes: {amd: 2.35e9, apple: 5.76e9}
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 2B: translation between Japanese, English and other languages, in 8 bit tables; the earlier texts and translations of a conversation are its history"
@@ -342,7 +342,7 @@ models:
     # 0.12 GiB; as AMD's
     machine: 8
     memory: 1.0
-    bytes: 1.79e9
+    bytes: {amd: 0.83e9, apple: 1.79e9}
     features: [translation]
     amd_export: plamo3 --max-seq-len 8192 --q4
     about: "Preferred Networks' PLaMo 3 Translate 0.8B: the 2B's translation in a third of the memory, for small machines, in 8 bit tables"
