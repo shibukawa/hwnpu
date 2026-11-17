@@ -15,7 +15,7 @@
 - hwnpu-image generate の FLUX.2 klein も、AMD では初回に層から取るか IRON で作って書き戻す (`kind: iron-flux2klein`、鍵は `chat.PinnedRecipe` と `--size`。2026-11-16、design.md 16.235)。層にそれがなければ、手で作って `hwnpu-dev cache import` で置いた同じ名前の書き出し (`kind: iron-import`、レシピはモデル、対象、名前だけ: `chat.ImportedRecipe`) を取る (`chat.SharedExportOr`)。取り込んだものを書き戻し直すことはしない
 - ほかの手で作る AMD の書き出し (hwnpu-image の画像生成、深さ、顔、ラベル、`amd_export` のない hwnpu-chat のモデル) も、手元になければ取得元の同じ名前の `iron-import` を取って手元の `entries/amd-xdna2` に (`chat.AMDNamed`、2026-11-17、design.md 16.236)。2 回目からはその写しで、取得元には聞かない。`entries/amd-xdna2` にある手で作ったもの (entry.json がない) は、初めて使ったときに記述して書き戻す取得元に置く (`chat.ShareMadeByHand`。同じ名前があればその取得元には置かない)。`~/models` のものは書かない (`hwnpu-dev cache import`)
 - 取得は並べる: 変換結果のファイルを 4 本ずつ、大きいものから (`store.FetchStreams`)、元のファイルも 4 本ずつ (`chat.FetchFiles`: 画像、音、チャットのモデルの分割した重み)。この機械 (Wi-Fi) と UGREEN の NAS で 1 本 5 MB/s、4 本 9 MB/s
-- `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に)。書き戻しが切れて残したもの (`original/` も) は `hwnpu cache clean` で消す (7.1 節)。途中で止まった S3 のマルチパートも `hwnpu cache clean` が中止する (始まって 1 時間を過ぎたもの)。バケットのライフサイクルの規則があれば、それも効く
+- `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に。`--target amd-xdna2` でその対象のものだけに絞る: 同じモデルの Core AI の書き出しを残す)。書き戻しが切れて残したもの (`original/` も) は `hwnpu cache clean` で消す (7.1 節)。途中で止まった S3 のマルチパートも `hwnpu cache clean` が中止する (始まって 1 時間を過ぎたもの)。バケットのライフサイクルの規則があれば、それも効く
 - Core AI の書き出し (2026-11-14、design.md 16.199): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
 - 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)
 
@@ -187,7 +187,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 ### 7.1 書き戻し
 
 - Hugging Face から落とす元のファイルは、落としながら書き戻す取得元にも書く (`store.Tee`、2026-11-16)。一時の名前 (`.put-`) に送り、落とし終えて大きさと sha256 が合ったときだけ正式な名前に移して lock に足す。対応はフォルダと WebDAV (S3 はキューで)。取得元が 64 MiB (`store.TeeBuffer`) 遅れたとき、失敗したとき、`.part` から続けたとき、lock が別のコミットのときは tee から外れ、落とし終えた後にキューで置く。ダウンロードは止めない。Qwen3-0.6B (M1、Wi-Fi、UGREEN の NAS) で答えた後の待ちが 35 秒から 6 秒に。Wi-Fi では受信と送信が電波を分け合い、ダウンロードは 40 秒 (curl だけ) から 54 秒になった。有線なら遅れないはず
-- 手元で変換するものは、変換しながら置く (`store.StartEarly`、2026-11-16)。書き戻す取得元で見つからなかったとき、その書き出しのフォルダを 2 秒ごとに見て、見始めてから書かれ、3 秒触られていないファイルから 4 本まで並べて置く (`.` で始まるもの、`.tmp`、`.part` は除く)。変換器には手を入れない。最後の `PutEntry` は、置いた後に変わったファイルと後から書かれたファイルだけを置き、置いたが entry にないもの (変換が消したもの) を消してから `entry.json` を書く。取得元のその場所に `entry.json` がすでにあれば、変換しながらは置かない (その entry のファイルを途中で書き換えないため)。変換が途中で止まれば、置いた分は `entry.json` のないまま残り、印が古くなってから `hwnpu cache clean` が消す。Qwen3-1.7B (書き出し 1.75 GB と表 0.62 GB) で、答えた後の待ちが 35 秒から 12 秒に (変換中に 129 ファイル)
+- 手元で変換するものは、変換しながら置く (`store.StartEarly`、2026-11-16。AMD の書き出しは詰めて置くので除く: 7.10)。書き戻す取得元で見つからなかったとき、その書き出しのフォルダを 2 秒ごとに見て、見始めてから書かれ、3 秒触られていないファイルから 4 本まで並べて置く (`.` で始まるもの、`.tmp`、`.part` は除く)。変換器には手を入れない。最後の `PutEntry` は、置いた後に変わったファイルと後から書かれたファイルだけを置き、置いたが entry にないもの (変換が消したもの) を消してから `entry.json` を書く。取得元のその場所に `entry.json` がすでにあれば、変換しながらは置かない (その entry のファイルを途中で書き換えないため)。変換が途中で止まれば、置いた分は `entry.json` のないまま残り、印が古くなってから `hwnpu cache clean` が消す。Qwen3-1.7B (書き出し 1.75 GB と表 0.62 GB) で、答えた後の待ちが 35 秒から 12 秒に (変換中に 129 ファイル)
 - ほかの取得元から読んだものは、手元で揃ってから裏で置く。コマンドは終わる前に、キューの仕事 (このプロセスのものと、前のプロセスが残したもの) が済むまで待つ (`store.Wait`、`hwnpu-dev cache flush` と同じ。2026-11-16)。書き戻すのは自分で変換する人だけで、配られたものを読むだけの機械はキューが空なのですぐ終わる。待つ間の Ctrl-C と、プロセスが落ちたときは `work/queue` に残し、次の起動で続ける。entry.json と lock が最後なので、途中で切れても壊れたものは見えない
 - 後ろの取得元で当たったものは、それより前の書き戻す取得元にも置く (前が速い NAS、後ろが遠い S3 のとき)
 - 置けなかったとき (書けない、容量がない) は `work/queue.log` に残して続ける。書き戻しの失敗で実行を止めない
@@ -376,6 +376,25 @@ converted/MODEL/coreai-ARCH/EXPORT/VERSION/...     ARCH (h13g = M1、h14g = M2�
 - 効くかはモデル次第 (design.md 16.232): `coreai-build` が ANE に乗せられない部品は配られず、乗った小さな部品は仕上げのほうがネイティブより遅いこともある。Chroma1-Flash の 1024² の DiT は初回の約 46 分が約 1 分になる。Sana-600M は書き出しを `coreai-build` に通る形にした (design.md 16.233) ので、VAE の大きな段 (端末で 1 段 3 分 40 秒) が数秒〜10 秒になる見込み。だから prebuild は自動でなく、効くモデルの書き出しを選んで `-put` する
 - 手元の `EXPORT.prebuilt/` は残す: 読み込んだ部品は Core AI の項目に入るが、項目 (重みの複製、書き出しと同じ大きさ) が消えたとき (空きが足りない、OS の更新) にネットに出ずに数秒で作り直すもとになる。空きが足りないときは、prebuilt のある部品の Core AI の項目が先に消える (7.7)。`hwnpu cache` では種類 `prebuilt` の単位 (`clear --kind prebuilt` で消せる。消してもまた取得元から取る)。組み立てた重み入りの `.aimodelc` は読み込んだ直後に消す
 - 項目がある機械は何も聞かない (2 回目からの実行は取得元に触らない)。`HWNPU_COREAI_PREBUILT=off` で使わない
+
+### 7.10 AMD の書き出しは 1 つに詰めて置く: `files.tar.zst`
+
+AMD の書き出し (`converted/MODEL/amd-xdna2/EXPORT/VERSION`、`store.Packs`) は、取得元ではファイルを並べず、全部を tar にして zstd で詰めた 1 つのファイル (`files.tar.zst`、`store.PackFile`) と `entry.json` だけにする (2026-11-17、design.md 16.237)。Core AI の prebuilt (7.9) と同じく、WebDAV でファイルごとにかかる PUT と MOVE を 1 回にし、送る量を減らす。
+
+```
+converted/MODEL/amd-xdna2/EXPORT/VERSION/files.tar.zst   書き出しの全部のファイル (tar、zstd)
+converted/MODEL/amd-xdna2/EXPORT/VERSION/entry.json      files: 中のファイル (大きさ、sha256)、pack: files.tar.zst の大きさと sha256
+```
+
+- 置く (`PutEntry`): 手元の書き出しを `work/pack/` に詰め (zstd の既定の速さ)、置いてから、そのフォルダの `files.tar.zst` と `entry.json` と印のほかのもの (前の hwnpu が並べて置いたファイル) を消し、`entry.json` を最後に書く。詰めるのは揃ってからなので、変換しながら置く (`StartEarly`) のはしない
+- 取る (`materialize`): `files.tar.zst` を `DST.part/` に落とし (切れたら続きから)、sha256 を照らしてから展開する。entry.json の `files` にあるものだけを、それぞれの大きさと sha256 を照らしながら書き、足りなくても余っても断る。展開したら詰めたものは消す。手元に残るのは展開した書き出しだけ (詰めたものは持たない)
+- 縮み方: 重み (bank) は 1 GB が 0.78 GB、プログラム (ELF) は 1/60 ほど (Qwen3.6-35B-A3B の書き出しで zstd -3)
+- `entry.json` の `files` は中身を並べたままなので、`hwnpu-dev cache ls` の大きさは展開したもの。`pack` を知らない前の hwnpu は中のファイルを取れずに外れ、手元で作る
+- `pack` のない AMD の書き出し (前の hwnpu が置いたもの) も、今までどおりファイルごとに取れる
+
+- `hwnpu-dev cache export MODEL...`: `amd_export` のあるチャットのモデルの書き出しを作って (取得元にあれば取って) 書き戻し、書き出しと詰めた大きさを出す。IRON の書き出しは CPU だけ (aiecc と Peano、`bind_device` は名前で選ぶだけ) なので、NPU をほかが使っている間にも回せる
+- 2026-11-17、チャットの 13 モデルを今の道具で書き出して UGREEN の NAS に置いた。合わせて 65.7 GB が 55.2 GB。gemma-4-E2B-it 7.42 → 7.11 GB、E4B 10.86 → 10.24 GB と gemma は 4〜6% しか縮まず、ほかは 2〜3 割 (Qwen3.5-4B 5.39 → 4.46、gpt-oss-20b 14.39 → 11.79、plamo-3-translate-8b 7.45 → 6.41)。Qwen3.5-0.8B (1.18 GB) を空の根に取って展開して答えるまでを確かめた (取るのに 40 秒、展開 2 秒)
+- 注意: 同じ機械の `work/queue` を前の hwnpu (pack を知らないもの) も処理すると、同じ entry をばらで置き直し、詰めたものが `.put-` のまま残ることがある (plamo-3-translate-2b で起きた)。その機械の hwnpu を揃えること
 
 ## 8. 準備の流れ: 計画と作るを分ける
 

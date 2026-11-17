@@ -264,11 +264,12 @@ Parameters, in the query string:
 | `sources` | The sources in effect |
 | `ls [N] [--original]` | What source N holds (conversions, or the repositories' locks) |
 | `push` | Put exports made here (AMD) into the writable sources |
+| `export MODEL...` | Make the AMD exports of chat models with IRON on the CPU alone (no NPU), unless a source has them, put them in the writable sources and print their sizes |
 | `import DIR...` | Put folders made by hand (`~/models`) into a source: checkpoints that match their Hugging Face repository, and exports |
 | `update [MODEL...]` | Move repositories to Hugging Face's newest commit |
 | `verify [--sums]` | Check against `entry.json` |
 | `flush` | Finish the upload queue |
-| `gc N [--model M] [--kind K] [--key K] [--older-than DAYS] [--orphans] [--apply]` | Remove conversions from source N (source numbers are those `sources` prints; 0 is this machine's cache) |
+| `gc N [--model M] [--kind K] [--key K] [--older-than DAYS] [--target T] [--orphans] [--apply]` | Remove conversions from source N (source numbers are those `sources` prints; 0 is this machine's cache) |
 | `migrate N` | Move an older layout (`blobs/`, `upstream/`, `entries/`) by hard links |
 
 ### 3.5 What a source looks like inside
@@ -315,6 +316,7 @@ What can be shared depends on what the NPU's toolchain produces. The checkpoint 
 ### 4.2 AMD XDNA 2 (Linux)
 
 - Models are converted to an **IRON export**: a folder with `manifest.json`, the NPU programs (`xclbin`, instruction ELFs) and weights, about 0.5–2 GB per chat model. It is stored in `entries/amd-xdna2/` and in sources as `converted/MODEL/amd-xdna2/EXPORT/vN/`.
+- In a source an export is **one packed file**, `files.tar.zst` (tar and zstd), beside `entry.json`, which lists the files inside with their sizes and SHA-256. It is downloaded (resuming if cut off), unpacked and checked file by file; only the unpacked export is kept here. Packing saves 16% over the 13 chat models (65.7 to 55.2 GB) and one upload per file on WebDAV. Exports put loose by an older hwnpu are still read file by file.
 - The key of an export is a fingerprint of: the model, the checkpoint commit, the SHA-256 of the definition, the export's options (`amd_export`) and the hash of the bundled IRON tools. A change that alters the output needs the key (or the version) to change, so a stale export is never matched.
 - A machine without IRON (the common case in an office) downloads the export and runs on the NPU after "preparing" for a few seconds.
 - Image models that build their programs on first use (`detect`, `pose`, `segment`, FLUX.2 klein) are shared the same way: found in a source, else made with IRON and put back.

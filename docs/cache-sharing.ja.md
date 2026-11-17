@@ -263,11 +263,12 @@ URL の後ろに足せる設定:
 | `sources` | 効いている取得元 |
 | `ls [N] [--original]` | 取得元 N の中身 (変換結果、または各リポジトリの lock) |
 | `push` | ここで作った AMD の書き出しを、書き戻す取得元へ |
+| `export MODEL...` | チャットのモデルの AMD の書き出しを IRON で CPU だけで作り (NPU は使わない)、取得元になければ書き戻す取得元へ置いて、大きさを出す |
 | `import DIR...` | 手で置いたフォルダ (`~/models`) を取得元へ: Hugging Face と同じと確かめたチェックポイントと、書き出し |
 | `update [MODEL...]` | リポジトリを Hugging Face の新しいコミットへ |
 | `verify [--sums]` | `entry.json` と照らす |
 | `flush` | アップロードのキューを済ませる |
-| `gc N [--model M] [--kind K] [--key K] [--older-than 日数] [--orphans] [--apply]` | 取得元 N の変換結果を消す (番号は `sources` に出るもの。0 は手元のキャッシュ) |
+| `gc N [--model M] [--kind K] [--key K] [--older-than 日数] [--target T] [--orphans] [--apply]` | 取得元 N の変換結果を消す (番号は `sources` に出るもの。0 は手元のキャッシュ) |
 | `migrate N` | 前の並び (`blobs/`、`upstream/`、`entries/`) をハードリンクで移す |
 
 ### 3.5 取得元の中の並び
@@ -314,6 +315,7 @@ w, _ := s.Weights(ctx, "LiquidAI/LFM3-1.7B")
 ### 4.2 AMD XDNA 2 (Linux)
 
 - モデルは **IRON の書き出し**に変換します。`manifest.json`、NPU のプログラム (`xclbin`、命令の ELF)、重みのフォルダで、チャットのモデルで 0.5〜2 GB ほどです。手元では `entries/amd-xdna2/`、取得元では `converted/MODEL/amd-xdna2/EXPORT/vN/` に置かれます。
+- 取得元では書き出しを **1 つに詰めたファイル** `files.tar.zst` (tar と zstd) と、中のファイルの大きさと SHA-256 を並べた `entry.json` だけにします。落とし (切れたら続きから)、展開しながらファイルごとに照らし、手元には展開したものだけを残します。チャットの 13 モデルで 65.7 GB が 55.2 GB (16% 減) になり、WebDAV でファイルごとの送りもなくなります。前の hwnpu がばらで置いたものも、今までどおりファイルごとに取れます。
 - 書き出しの鍵は、モデル、チェックポイントのコミット、定義の sha256、書き出しの設定 (`amd_export`)、同梱した IRON の道具の hash の指紋です。出力の変わる直しは鍵 (か版) を変えるので、古い書き出しに当たりません。
 - IRON のない機械 (社内ではこれがふつう) は、書き出しを落とし、数秒の「準備」だけで NPU で動きます。
 - 初回に自分のプログラムを作る画像のモデル (`detect`、`pose`、`segment`、FLUX.2 klein) も同じ共有です。取得元にあればそれを使い、なければ IRON で作って書き戻します。
