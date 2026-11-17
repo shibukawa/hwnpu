@@ -141,9 +141,10 @@ models:
     machine: 8
     # AMD (2026-11-17, docs/improvements.md 12.7): the peak of a chat, 1.76 GiB on the NPU and
     # the process's 0.45 GiB; the download is the converted export (5.09 GB, its per-layer
-    # embedding table in int8). Apple: the checkpoint (no converted entry yet)
+    # embedding table in int8). Apple (an M2, 2026-11-17): the converted Core AI export (1.73 GB)
+    # and the tables (3.17 GB, the per-layer embeddings in int8), 4.94 GB with the tokenizer
     memory: {amd: 2.4, apple: 2.3}
-    bytes: {amd: 5.1e9, apple: 10.2e9}
+    bytes: {amd: 5.1e9, apple: 4.9e9}
     features: [tools, thinking]
     amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E2B, instruction tuned: its text model in 6 bit tables (the download has the vision and audio parts too, which are not converted)"
@@ -156,9 +157,10 @@ models:
     machine: 24
     # AMD (2026-11-17, docs/improvements.md 12.7): the peak of a chat, 3.55 GiB on the NPU and
     # the process's 0.51 GiB; the download is the converted export (8.07 GB, its per-layer
-    # embedding table in int8). Apple: the checkpoint (no converted entry yet)
+    # embedding table in int8). Apple (an M2, 2026-11-17): the converted Core AI export (3.51 GB)
+    # and the tables (4.18 GB, the per-layer embeddings in int8), 7.73 GB with the tokenizer
     memory: {amd: 4.3, apple: 4.0}
-    bytes: {amd: 8.1e9, apple: 16.0e9}
+    bytes: {amd: 8.1e9, apple: 7.7e9}
     features: [tools, thinking]
     amd_export: gemma4 --max-seq-len 4096 --q4
     about: "Google's Gemma 4 E4B, instruction tuned: larger and slower than E2B, its text model in 6 bit tables (vision and audio not converted)"
