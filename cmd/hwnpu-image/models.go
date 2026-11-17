@@ -16,6 +16,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
 )
 
 // acceptLicenses is --accept-license.
@@ -181,7 +182,11 @@ func amdNames(m chat.Model, size int) []string {
 // amdExportHere is the export of model m for AMD's NPU here (amdNames at no size), "" for none:
 // what the listing shows, without asking the sources.
 func amdExportHere(m chat.Model) string {
-	for _, n := range amdNames(m, 0) {
+	names := amdNames(m, 0)
+	if strings.HasPrefix(m.Family, "flux2-klein") { // flux2klein.PrepareAMD's export of both sizes first
+		names = append([]string{flux2klein.AMDMergedName(m.Name, flux2klein.AMDSizes...)}, names...)
+	}
+	for _, n := range names {
 		if d := hcache.FindExport(n, isDir); d != "" {
 			return d
 		}

@@ -122,8 +122,8 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) er
 	}
 	defer dev.Close()
 	w := 0
-	if flux2klein.IsProgramExport(model) {
-		w = c.Size // an export of several sizes draws at --size
+	if flux2klein.IsProgramExport(model) || len(flux2klein.IronSizes(model)) > 1 {
+		w = c.Size // an export of several sizes draws at --size (one of a size alone draws at its own)
 	}
 	p, err := flux2klein.OpenAt(ctx, dev, model, w, w, lw)
 	if err != nil {

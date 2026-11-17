@@ -709,12 +709,13 @@ def export_encoder(root: Path, out: Path, width: int, height: int, check: bool, 
         stages=len(stages), width=width, height=height, pad=iron_anima.VAE_PAD, channels=3, latent=32), indent=1) + "\n")
 
 
-def export_vae(root: Path, out: Path, width: int, height: int, check: bool, ref: Path | None, only: list | None) -> None:
+def export_vae(root: Path, out: Path, width: int, height: int, check: bool, ref: Path | None, only: list | None,
+               name: str = "vae") -> None:
     cp, Stage = make_vae_stage()
     w = vae_weights(root)
     cfg = json.loads((root / "vae" / "config.json").read_text())
     stages = cp.vae_stages(cfg, width, height)
-    d = out / "vae"
+    d = out / name
     d.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
     z = np.load(ref) if ref is not None else None
@@ -787,18 +788,37 @@ def default_refs(size: int) -> list[str]:
     return out
 
 
-def suffix(c: KleinConfig) -> str:
-    """The graphs' names for the references: "" (none), else _nROWS of a step's rows. The graphs
-    depend on the row count alone (the positions are an input): one reference of the picture's
-    size and four of half its sides run the same _n8704 at 1024 x 1024."""
-    return f"_n{c.rows}" if c.refs else ""
+def suffix(c: KleinConfig, base_rows: int | None = None) -> str:
+    """The graphs' names for a step of c's rows: "" for the export's first size's picture and text
+    alone (base_rows, by default c's own picture's), else _nROWS. The graphs depend on the row
+    count alone (the positions are an input): one reference of the picture's size and four of half
+    its sides run the same _n8704 at 1024 x 1024, and a step of 512 x 512 with three references of
+    its size the 1024 x 1024 picture's 4608 rows."""
+    if base_rows is None:
+        base_rows = KleinConfig(width=c.width, height=c.height).rows
+    return "" if c.rows == base_rows else f"_n{c.rows}"
 
 
-def export_dit(root: Path, out: Path, c: KleinConfig, check: bool) -> None:
+def size_dir(width: int, height: int) -> str:
+    """The directory of an export's parts for pictures of another size than its first (--size
+    1024 512): sizes/WxH (dit_out, vae; vae_enc for an encoder of that size)."""
+    return f"sizes/{width}x{height}"
+
+
+def export_dit(root: Path, out: Path, c: KleinConfig, check: bool, sfx: str | None = None,
+               blocks: bool = True, small_parts: tuple = ("mods", "ctx", "dit_out"), out_dir: str = "") -> None:
+    """The DiT's graphs for c: dit_in, doubles and singles of a step's rows (named by sfx, suffix's
+    by default) when blocks, and of small_parts those that do not depend on the references (the
+    picture's alone: mods, ctx, dit_out) in out_dir/NAME. A graph of a row count other than the
+    first size's picture's shares that picture's banks."""
     w = qi.Checkpoint(root / "transformer", random=ARGS.random)
     rng = np.random.default_rng(0)
     meta = dict(config=dataclasses.asdict(c), weights=FMT.proj, mha=FMT.mha)
-    E, sfx = c.hidden, suffix(c)
+    E = c.hidden
+    if sfx is None:
+        sfx = suffix(c)
+    if c.refs:
+        small_parts = ()
     small = [
         ("mods", lambda: Mods(c, w), dict(tproj=(256,)), lambda: dict(tproj=bf(qi.timestep_sinusoid(700.0)))),
         ("ctx", lambda: Ctx(c, w), {f"h{i}": (c.text_rows, c.text) for i in range(3)},
@@ -810,18 +830,21 @@ def export_dit(root: Path, out: Path, c: KleinConfig, check: bool) -> None:
                       shift=bf(0.1 * rng.standard_normal(E)))),
     ]
     for name, make, shapes, inputs in small:
-        if name.removesuffix(sfx) not in ARGS.parts or (c.refs and name in ("mods", "ctx", "dit_out")):
+        part = name.removesuffix(sfx) if name.startswith("dit_in") else name
+        if part not in ARGS.parts or (part == "dit_in" and not blocks) or (part != "dit_in" and part not in small_parts):
             continue  # the graphs that do not depend on the references are the picture's alone
+        if part != "dit_in":
+            name = f"{out_dir}/{part}" if out_dir else part
         t0 = time.time()
         g = make()
         cg = g.compile(**shapes)
-        m = export_graph(cg, out / name, name, meta)
+        m = export_graph(cg, out / name, Path(name).name, meta)
         print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         if check:
             write_check(g, m, out / name, inputs())
     for base, cls, total, group, nmods in (("doubles", Doubles, c.doubles, c.double_group, 12),
                                            ("singles", Singles, c.singles, c.single_group, 3)):
-        if base not in ARGS.parts:
+        if base not in ARGS.parts or not blocks:
             continue
         name = base + sfx
         t0 = time.time()
@@ -833,7 +856,7 @@ def export_dit(root: Path, out: Path, c: KleinConfig, check: bool) -> None:
         m = export_graph(cg, d, name, dict(meta, groups=groups, group=group))
         print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         variants = [{k: b["image"] for k, b in m["banks"].items()}]
-        shared = c.refs and qi.share_banks(m, d, out / base)
+        shared = sfx and qi.share_banks(m, d, out / base)
         if shared:
             variants = [{k: f.replace("../dit_blocks/", f"../{base}/") for k, f in v.items()} for v in shared]
             for b in m["banks"].values():
@@ -851,14 +874,15 @@ def export_dit(root: Path, out: Path, c: KleinConfig, check: bool) -> None:
                         dict(nk=c.rows))
 
 
-def write_model(root: Path, out: Path, c: KleinConfig) -> None:
+def write_model(root: Path, out: Path, c: KleinConfig, sizes: list | None = None) -> None:
     """model.json: the checkpoint's scheduler and the pipeline's defaults (4 steps, no guidance:
-    the checkpoint is distilled)."""
+    the checkpoint is distilled), and the pictures' sizes the export draws (the first c's)."""
     sched = json.loads((root / "scheduler" / "scheduler_config.json").read_text())
     mi = json.loads((root / "model_index.json").read_text())
     (out / "model.json").write_text(json.dumps(dict(
         name=root.name, scheduler=sched, steps=4 if mi.get("is_distilled", True) else 50,
-        guidance=1.0 if mi.get("is_distilled", True) else 4.0, width=c.width, height=c.height), indent=1) + "\n")
+        guidance=1.0 if mi.get("is_distilled", True) else 4.0, width=c.width, height=c.height,
+        sizes=[[s, s] for s in (sizes or [c.width])]), indent=1) + "\n")
 
 
 ARGS = None
@@ -869,7 +893,11 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", type=Path)
     ap.add_argument("out", type=Path)
-    ap.add_argument("--size", type=int, default=1024)
+    ap.add_argument("--size", type=int, nargs="+", default=[1024],
+                    help="the pictures' sides (square). Several (1024 512) make one export of them all: the first is laid "
+                         "out as an export of its own, the others add the blocks' graphs of the row counts the first has "
+                         "not (on the first's banks: the same weights in the same places) and their dit_out, VAE and "
+                         f"encoders in {size_dir(0, 0).split('/')[0]}/WxH (an encoder of a size the first has is shared)")
     ap.add_argument("--refs", nargs="*",
                     help="the references to compile the blocks for: 0 (text to image), N (N references of the picture's "
                          "size), NdD (of its sides over D: 1d2 is one reference of half the sides, a quarter of its rows), "
@@ -911,32 +939,58 @@ def main(argv=None) -> int:
     a.out.mkdir(parents=True, exist_ok=True)
     if "text" in a.parts:
         export_text(a.root, a.out, a.check)
-    if a.refs is None:
-        a.refs = default_refs(a.size)
-    divs, seen = set(), set()
-    configs = [(r, KleinConfig(width=a.size, height=a.size, refs=parse_refs(r))) for r in a.refs]
-    for r, c in sorted(configs, key=lambda rc: rc[1].rows):  # the picture's alone first: the others share its banks
-        if c.refs and c.rows % 512:  # the attention's 8 pipelines take whole rounds of 64 rows each
-            print(f"{r}: {c.rows} rows are no multiple of 512: not compiled at this size", flush=True)
-            continue
-        divs.update(d for d in c.refs if d > 1)
-        if c.rows in seen:
-            print(f"{r}: {c.rows} rows, compiled already", flush=True)
+    sizes = list(dict.fromkeys(a.size))
+    first = sizes[0]
+    base_rows = KleinConfig(width=first, height=first).rows
+    refs = {s: a.refs if a.refs is not None else default_refs(s) for s in sizes}
+    divs = {s: set() for s in sizes}
+    seen = set()
+    configs = []
+    for s in sizes:
+        for r in refs[s]:
+            c = KleinConfig(width=s, height=s, refs=parse_refs(r))
+            if c.refs and c.rows % 512:  # the attention's 8 pipelines take whole rounds of 64 rows each
+                print(f"{s}x{s} {r}: {c.rows} rows are no multiple of 512: not compiled at this size", flush=True)
+                continue
+            divs[s].update(d for d in c.refs if d > 1)
+            configs.append((s, r, c))
+    # the first size's picture alone first: the others share its banks
+    configs.sort(key=lambda src: (src[2].rows != base_rows or src[0] != first or bool(src[2].refs), src[2].rows))
+    for s, r, c in configs:
+        picture = not c.refs  # a size's picture alone: its dit_out (and the first's mods and ctx)
+        blocks = c.rows not in seen
+        if not blocks and not picture:
+            print(f"{s}x{s} {r}: {c.rows} rows, compiled already", flush=True)
             continue
         seen.add(c.rows)
-        export_dit(a.root, a.out, c, a.check)
+        small_parts = ("mods", "ctx", "dit_out") if s == first else ("dit_out",)
+        export_dit(a.root, a.out, c, a.check, sfx=suffix(c, base_rows), blocks=blocks, small_parts=small_parts,
+                   out_dir="" if s == first else size_dir(s, s))
     iron_anima.VAE_TILE_N[0] = True  # the convolutions' out-feature tiles over all 8 columns
     if a.host_norm:
         import iron_chroma_parts
 
         iron_chroma_parts.HOST_NORM[0] = True
-    if "vae" in a.parts:
-        export_vae(a.root, a.out, a.size, a.size, a.check, a.ref, a.stages)
-    if "vae_enc" in a.parts:
-        export_encoder(a.root, a.out, a.size, a.size, a.check, a.ref_enc, a.stages)
-        for d in sorted(divs):  # the encoder of a smaller reference
-            export_encoder(a.root, a.out, a.size // d, a.size // d, False, None, a.stages, name=f"vae_enc_d{d}")
-    write_model(a.root, a.out, KleinConfig(width=a.size, height=a.size))
+    encoders = {}  # an encoder's sides: its directory (one of the first size's, or sizes/WxH/vae_enc)
+    for s in sizes:
+        if "vae" in a.parts:
+            export_vae(a.root, a.out, s, s, a.check and s == first, a.ref if s == first else None, a.stages,
+                       name="vae" if s == first else f"{size_dir(s, s)}/vae")
+        if "vae_enc" not in a.parts:
+            continue
+        for d in [1] + sorted(divs[s]):  # the encoder of a reference of the picture's size, and the smaller ones
+            p = s // d
+            if p in encoders:
+                print(f"{s}x{s}: the encoder of {p}x{p} references is {encoders[p]}", flush=True)
+                continue
+            if s == first:
+                name = "vae_enc" if d == 1 else f"vae_enc_d{d}"
+            else:
+                name = f"{size_dir(p, p)}/vae_enc"
+            first_check = s == first and d == 1
+            export_encoder(a.root, a.out, p, p, a.check and first_check, a.ref_enc if first_check else None, a.stages, name=name)
+            encoders[p] = name
+    write_model(a.root, a.out, KleinConfig(width=first, height=first), sizes)
     return 0
 
 

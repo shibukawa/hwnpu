@@ -12,6 +12,7 @@ import (
 func testPipeline(size int) *Pipeline {
 	p := &Pipeline{C: Config{Width: size, Height: size, TextRows: 512, Hidden: 3072, HeadDim: 128, Latent: 128, Text: 2560,
 		Axes: []int{32, 32, 32, 32}, Theta: 2000, Doubles: 5, Singles: 20, DoubleGroup: 1, SingleGroup: 2}}
+	p.base = p.C // an export of one size
 	p.Model.Steps = 4
 	p.bnMean, p.bnStd = make([]float32, 128), make([]float32, 128)
 	for i := range p.bnMean {
