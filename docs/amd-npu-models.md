@@ -291,6 +291,8 @@ python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-
 go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low quality"
 ```
 
+8 つのアスペクト比は Turbo と同じく `--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752` で `anima-aesthetic-aspects.amd-npu2` (2 分 50 秒、5.8 GB、16.239)。長方形も 1024² と同じ 1 枚 2 分 22〜23 秒。
+
 - **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。CFG 4 (モデルカードの 4〜5)。ステップはモデルカードではオイラー法の 30〜50 だが、既定は DPM-Solver++ 2M の 25 ステップで、CFG は σ が 0.6 以上のステップだけ (16.154、下の結果)。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1
 - **重みの組ごとに 2 回**: DiT は 4 ブロックの組の重みを 1 つのバンクに読み直して回す (12 節) ので、組ごとに条件と無条件を続けて走らせ、読み直しを 1 ステップ 7 回のまま にする (Sana と同じ)。`dit_in` (時刻とパッチの埋め込み) は条件によらないので 1 回。2 回を別々に回したときより 512 × 512 で 1 ステップ 3.0 → 2.7 秒、潜在はビット単位で同じ
 - **空の負のプロンプト**: diffusers は空のプロンプトを、マスクした Qwen3 のトークン 1 つで走らせる (隠れ状態は 0、T5 のトークンは `</s>` だけ)。アダプタの交差注意はバイアスがないので 0 の源では何も足さず、1 行の自己注意はその行の値。残りは重みだけで決まる 1 行の計算なので、書き出しが `text/empty_cond.bin` (float32 の 1 行) に持つ (テキストのグラフは Qwen3 のトークンを全部マスクできない)。`iron_anima.py` の `empty_cond` と Go の `anima.EmptyCond` は diffusers の値とコサイン 1.0000。この節より前の書き出しにはないので、空の負のプロンプトでは書き出し直しを求める
