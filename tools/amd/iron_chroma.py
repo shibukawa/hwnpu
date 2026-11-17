@@ -24,7 +24,7 @@ RoPE: FLUX turns pairs (2i, 2i + 1) of a head; the q and k rows are permuted wit
 IRON's pairs (i, i + 64) are them (iron_qwenimage.head_perm). The text's positions are 0 (no turn).
 
   python tools/amd/iron_chroma.py ~/models/Chroma1-Flash OUT --size 1024
-  python tools/amd/iron_chroma.py ~/models/Chroma1-Flash OUT --size 1024 512 768x1152 ...   # several in one
+  python tools/amd/iron_chroma.py ~/models/Chroma1-Flash OUT --size 1024 512 832x1248 ...   # several in one
 
 Sizes. The rows are the image's, the text's 512 and padding to whole rounds of 512 (its keys cut by
 nk with the text's pads, its outputs not read; 768 x 1152: 3456 + 512 = 3968 rows run as 4096).

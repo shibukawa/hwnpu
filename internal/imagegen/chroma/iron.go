@@ -43,7 +43,7 @@ type ironEngine struct {
 }
 
 // SizesDir is the directory of an IRON export's VAEs for pictures of another size than its first
-// (tools/amd/iron_chroma.py --size 1024 512 768x1152 ...): SizesDir/WxH/vae; the DiT's graphs of
+// (tools/amd/iron_chroma.py --size 1024 512 832x1248 ...): SizesDir/WxH/vae; the DiT's graphs of
 // that size are dit_in_WxH, doubles_WxH, dit_out_WxH and singles_WxH or the first size's.
 const SizesDir = "sizes"
 
