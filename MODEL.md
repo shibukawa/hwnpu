@@ -33,10 +33,10 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 <tbody>
 <tr>
 <th>Chat, coding<br><sub>hwnpu-chat, hwnpu-chat agent <code>-m chat</code></sub></th>
-<td><b>LFM3-1.7B</b> (1.7 GB on Apple, 2.2 GB on AMD)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.3 GB)<br>a size larger, 5B with its per-layer embeddings<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>, 2.2 to 2.4 GB)<br>writes code too<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.1 GB; Apple only)<br>in one program, slower to read long prompts (<code>--prefill on</code> for faster, +0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>, 1.1 GB on an M1, 1.6 GB on an M2 or later, 1.5 GB download)<br>the smallest download, weak at facts</td>
-<td><b>Gemma 4 E2B</b> (2.3 GB)<br>with a long context too (+0.8 GB at 131072)<br><b>Gemma 4 E4B</b> (4.0 GB)<br>for short conversations<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.3 GB)<br>with a program of its own to read prompts, 5 times faster at it</td>
-<td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>with a long context too (+2.1 GB at 131072)</td>
-<td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>planned: Qwen3.6-35B-A3B (MoE, about 25 GB at 4 bits)</i></td>
+<td><b>LFM3-1.7B</b> (1.7 GB on Apple, 2.2 GB on AMD)<br>fast, for agents<br><b>Gemma 4 E2B</b> (2.4 GB on AMD, 2.3 GB on Apple)<br>a size larger, 5B with its per-layer embeddings<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>, 2.2 to 2.4 GB)<br>writes code too<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.1 GB; Apple only)<br>in one program, slower to read long prompts (<code>--prefill on</code> for faster, +0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>, 1.1 GB on an M1, 1.6 GB on an M2 or later, 1.5 GB download)<br>the smallest download, weak at facts</td>
+<td><b>Gemma 4 E2B</b> (2.4 GB on AMD, 2.3 GB on Apple)<br>with a long context too (+0.8 GB at 131072)<br><b>Gemma 4 E4B</b> (4.3 GB on AMD, 4.0 GB on Apple)<br>for short conversations<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>, 2.3 GB)<br>with a program of its own to read prompts, 5 times faster at it</td>
+<td colspan="2"><b>Gemma 4 E4B</b> (4.3 GB on AMD, 4.0 GB on Apple)<br>with a long context too (+2.1 GB at 131072)</td>
+<td colspan="2"><b>Gemma 4 E4B</b> (4.3 GB on AMD, 4.0 GB on Apple)<br><i>planned: Qwen3.6-35B-A3B (MoE, about 25 GB at 4 bits)</i></td>
 </tr>
 <tr>
 <th>Reading images<br><sub>hwnpu-chat <code>-m vision</code> (<code>image_url</code>, <code>/image</code>)</sub></th>
@@ -127,9 +127,9 @@ hwnpu-chat and hwnpu-chat agent pick from this table themselves: the name under 
 | Model | Use | At start | Growth with the conversation (KV cache) | Basis |
 |---|---|---|---|---|
 | LFM3-1.7B | Chat, coding | 2.2 GB on AMD. On Apple 1.7 GB (1.36 GiB on the Neural Engine and 0.23 GiB of the process); 3.1 GB on an M2 or later from 16 GB (the program of short conversations holds the weights once more: 2.64 GiB and 0.21 GiB) | 12 KiB/token (3 GiB at 262144) | measured (AMD and an M1; an M2's programs loaded on the M1 with `--tier 2048`) |
-| Gemma 4 E2B | Chat, coding | 2.3 GB (an M1 with Core AI: 1.66 GiB on the Neural Engine; the process not measured with Core AI) | 6 KiB/token (0.75 GiB at 131072) | measured |
+| Gemma 4 E2B | Chat, coding | 2.4 GB on AMD (2026-11-17), 2.3 GB on Apple (an M1 with Core AI: 1.66 GiB on the Neural Engine; the process not measured with Core AI) | 6 KiB/token (0.75 GiB at 131072) | measured |
 | Gemma 4 E2B with images and audio | Images, audio (one image and 30 seconds a prompt) | 3.4 GB (2.4 GB until an image or audio arrives) | 6 KiB/token | measured |
-| Gemma 4 E4B | Chat, coding | 4.0 GB | 16 KiB/token (2 GiB at 131072) | measured |
+| Gemma 4 E4B | Chat, coding | 4.3 GB on AMD (2026-11-17), 4.0 GB on Apple | 16 KiB/token (2 GiB at 131072) | measured |
 | LFM3-VL-2B | Images (512 × 512) | 2.6 GB on AMD, 2.7 GB on Apple (M1: 2.24 GiB on the Neural Engine and 0.25 GiB of the process describing a picture; 2.6 GB with text alone, the vision encoder loaded from the start) | 12 KiB/token (1.46 GiB at 128000) | measured (AMD and an M1) |
 | SwiftF0 | Pitch (F0) | about 0.06 GB (M1: a footprint of 58 MB; 14K weights) | none (30 seconds at a time) | measured on an M1 |
 | Basic Pitch | Notes (MIDI) | about 0.07 GB (M1: a footprint of 75 MB; 36K weights) | none (2 second windows) | measured on an M1 |
