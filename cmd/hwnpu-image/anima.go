@@ -363,27 +363,18 @@ func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, err
 	return animaAMD(ctx, m, w, h)
 }
 
-// aspectsAMDNames are the names of the exports of model m for AMD's NPU that may draw w x h: the
-// export of every aspect ratio (NAME-aspects.amd-npu2), then for a square amdNames'.
-func aspectsAMDNames(m chat.Model, w, h int) []string {
-	names := []string{strings.ToLower(m.Name) + "-aspects.amd-npu2"}
-	if w == h {
-		names = append(names, amdNames(m, w)...)
-	}
-	return names
-}
-
 // animaAMD is the export of Anima model m for AMD's NPU that draws w x h (aspectsAMD).
 func animaAMD(ctx context.Context, m chat.Model, w, h int) (string, error) {
 	return aspectsAMD(ctx, m, w, h, "tools/amd/iron_anima.py", 16, anima.IronSizes)
 }
 
-// aspectsAMD is the export of model m for AMD's NPU that draws w x h (aspectsAMDNames; sizes are
+// aspectsAMD is the export of model m for AMD's NPU that draws w x h, of every aspect ratio by the
+// name NAME.amd-npu2 (an older one of 1024 x 1024 alone by that name draws that size only; sizes are
 // the sizes an export draws), here or in the sources (chat.AMDNamed): made by hand with tool,
 // which the error tells how to run for every aspect ratio of pictures of multiple pixels
 // (aspect.Of) when there is none.
 func aspectsAMD(ctx context.Context, m chat.Model, w, h int, tool string, multiple int, sizes func(dir string) [][2]int) (string, error) {
-	names := aspectsAMDNames(m, w, h)
+	names := []string{strings.ToLower(m.Name) + ".amd-npu2"}
 	draws := func(d string) bool { return isDir(d) && slices.Contains(sizes(d), [2]int{w, h}) }
 	if d := chat.AMDNamed(ctx, m, names, draws, console.Log(os.Stderr)); d != "" {
 		return d, nil
