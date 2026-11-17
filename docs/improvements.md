@@ -957,3 +957,42 @@ A step of `hwnpu-chat`'s models timed apart on an M1 (Core AI; design.md 16.218 
 | The attention's keys and values given as int8 | Not measured. Moving the data is most of an attention call (16 MiB of a chunk of 8192: 1.4 ms). Half of it, and an approximation | 16.15 |
 | The whole program measured again on an M2 and an M3 | Not measured. With the copies gone and the attention changed, the M3's +8 % (16.188) is another | — |
 | lut4 and lut6 mixed by layer | As 12.3: a trade against precision | 12.3 |
+
+### 12.7 Gemma 4's per-layer embedding table in 8 bits (from AMD's Quark article; adopted 2026-11-17, measured on the CPU and on AMD's NPU)
+
+AMD's ROCm blog on Qwen3.8-Flash-Next with Quark ([quark-qwen-ple](https://rocm.blogs.amd.com/artificial-intelligence/quark-qwen-ple/README.html)) shrinks that model's n-gram table: a learned table at layer 2 whose rows are looked up by a hash of the token and the one or two before it, 102 GB of BF16. In FP8 E4M3 with one scale for the whole tensor (51 GB), MMLU-Pro was unchanged (85.35 → 85.40 without thinking). Collapsed to one row a token (1.3 GB) it lost 2 points, and with no table at all it fell to 52.81. The rest of the article (the routed experts in AWQ UINT4 g128, W4A8 decode kernels for RDNA3) is GPU work and brings nothing new to hwnpu.
+
+Gemma 4's per-layer embeddings (PLE) are a table of the same kind: a row a token, the device never holds it, and **the host reads one row a token on every NPU**. On AMD it is ple.bin (`tools/amd/iron_hostple.py`, read in `internal/llm/iron/hosttables.go`). On Apple and Intel it is `tables.safetensors` (`internal/chat/tables.go`, read through `llm.TokenRow`). Both are bf16 copied as stored: 4.4 GiB for E2B and 5.25 GiB for E4B (MODEL.md: they "stay files" in the page cache). A row stored in 8 bits and expanded on the host when it is read changes nothing the device runs. It works the same on AMD, Apple and Intel, and its error is the same on all three.
+
+`tools/amd/ple_quant_kl.py` measures it. It runs Gemma 4 E2B's text model in fp32 on the CPU (`q4_gptq.load_gemma4_lean`), rounds the table's rows when they are looked up, and takes the KL of the logits from those of the bf16 table. The other weights stay fp32, so the KL is the table's alone. The texts were readme.md, GPL-3, model.go, README.ja.md and CHAT.ja.md: 1280 tokens each, the first 256 not scored, so 5 × 1024 positions.
+
+| PLE table | Bytes a row (E2B) | E2B table | KL mean (5 texts) | KL per text | top-1 |
+|---|---|---|---|---|---|
+| bf16 (now) | 17920 | 4.38 GiB | 0 | — | 100 % |
+| fp8 E4M3, one scale (the article's) | 8960 | 2.19 GiB | 0.00066 | 0.00033–0.00104 | 97.9–99.3 % |
+| fp8 E4M3, a scale a row | 8962 | 2.19 GiB | 0.00062 | 0.00028–0.00076 | 98.8–99.8 % |
+| int8, a scale a row | 8962 | 2.19 GiB | 0.00026 | 0.00011–0.00065 | 99.2–99.8 % |
+| **int8, a scale a layer's slice (256 values, fp16 scale)** | **9030** | **2.20 GiB** | **0.00005** | **0.00003–0.00007** | **99.6–99.9 %** |
+| int4, a scale a layer's slice | 4550 | 1.11 GiB | 0.0179 | 0.011–0.026 | 92.9–95.9 % |
+| int4, a scale every 32 values | 5040 | 1.23 GiB | 0.0085 | 0.005–0.015 | 93.6–97.4 % |
+| no table (zeros) | 0 | 0 | 3.12 | 2.1–5.3 | 23–51 % |
+| token embedding int8, a scale a row (PLE bf16; the head still fp32) | 1538 of 3072 | 0.38 of 0.75 GiB | 0.00038 | 0.00007–0.00095 | 99.1–99.7 % |
+| both (PLE int8 per slice, embedding int8 per row) | | 2.58 of 5.13 GiB | 0.00046 | 0.00011–0.00108 | 98.9–99.7 % |
+
+- **int8 with a scale a layer's slice is free.** Its KL of 0.00005 is under a thousandth of what the 4-bit weights already cost (q4nx MLP: KL 0.229, 0.091 with bf16 attention; iron_hostple). The scales add 0.8 %. E2B's table goes from 4.4 to 2.2 GiB, E4B's from 5.25 to about 2.65 GiB (42 layers × 256: 10836 bytes a row).
+- FP8 with one scale, as in the article, also holds (KL 0.0007). On hwnpu int8 is better and just as simple, because the host expands the rows: no FP8 hardware is needed.
+- 4 bits costs as much as changing a weight format (KL 0.01–0.03, top-1 down to 93 %). Not worth 1 GiB.
+- The table cannot be dropped. Without it Gemma 4 falls apart on every text (KL 2–5), worse than Qwen's model without its n-gram table in the article.
+- What it buys: half the disk of every Gemma 4 export (and of the copies shared between them, 16.64), half of what the page cache holds of the table, and half of what a machine downloads from the shared layers (`tables.safetensors`, `ple.bin`). It does not lower the peak memory: the host reads the rows with `ReadAt` (no mapping), so the table was never in the process's RSS or the device's pinned memory, and the page cache holds only the rows of the tokens used, which the OS drops when memory runs short. Nor does it change the speed: a token reads 9 KB instead of 18 KB, and expanding 8960 values is microseconds.
+- **Adopted (2026-11-17).** AMD: `iron_export_lm.py --ple int8` (the default) has iron_hostple write ple.bin as an fp16 scale and 256 int8 values a layer's slice (`ple_int8`), and the manifest's `host_tables` entry says `"format": "int8"`. `fillHostTables` expands each part to bf16 as it writes the row (`iron.HostTableInt8`). `--ple bf16` writes the table as before, and exports with no format still read as before. `tools/amd/ple_to_int8.py EXPORT` rewrites an older export's ple.bin without exporting again (5 s for E2B). Apple and Intel: Gemma 4's `TokenInput` has `Group: 256`, and `llm.WriteTables` stores that table in `tables.safetensors` as I8 with an F16 matrix of scales (`NAME.hwnpu_scale`). `safetensors.File.Float32Range` expands it, so `Rows`, `Get` and `llm.TokenRow` are unchanged. The tables' key in the shared layers gains `int8`, so older builds never take the new file. A tables file written before is kept and still read. Written from the E2B checkpoint in 25 s, 2.20 GiB, and every value checked (10 tokens × 8960) is the same as in ple.bin's int8.
+- **On the NPU, end to end (E2B, AMD, 2026-11-17).** The q4 export (`gemma4 --max-seq-len 4096 --q4`) made with the bf16 table, then a copy rewritten with `ple_to_int8.py`: the same programs, only the table differs. `tools/amd/ironlm -forced` ran 5 texts (256 tokens as the prompt, then 400 decode steps each), and the logits were compared with the CPU's fp32 reference with the bf16 table:
+
+| | readme.md | GPL-3 | model.go | README.ja.md | CHAT.ja.md | mean |
+|---|---|---|---|---|---|---|
+| NPU, bf16 table: KL from the CPU | 0.207 | 0.197 | 0.192 | 0.112 | 0.069 | 0.155 |
+| NPU, int8 table: KL from the CPU | 0.188 | 0.197 | 0.185 | 0.111 | 0.063 | 0.149 |
+| NPU int8 from NPU bf16 | 0.015 | 0.0045 | 0.0033 | 0.0054 | 0.0031 | 0.0063 (top-1 98.0 %) |
+| CPU int8 from CPU bf16 (fp32 weights) | 0.00003 | 0.00009 | 0.00004 | 0.00007 | 0.00001 | 0.00005 |
+
+  The NPU gives the same logits bit for bit when an export runs again, so the 0.006 comes from the table. It is more than on the CPU, likely because the 4-bit weights and bf16 activations carry a small change in the inputs further. But the table moves them no farther from the reference: 0.155 with bf16, 0.149 with int8, within the spread from text to text. A decode step is 127.4 ms with bf16 and 127.1 ms with int8.
+- **E4B, on the NPU (2026-11-17).** Exported with the default (`--ple int8`) and with `--ple bf16`: the two exports differ only in ple.bin (5.25 → 2.65 GiB; the export 11 → 7.6 GB) and the manifest's `format`. The same 5 texts: KL from the CPU's fp32 reference 0.0579 with bf16 and 0.0594 with int8 (per text 0.048 → 0.055, 0.104 → 0.107, 0.052 → 0.052, 0.059 → 0.057, 0.027 → 0.027). Int8 from bf16: 0.0038, top-1 97.9 %. On the CPU with fp32 weights: 0.00005, as for E2B. A decode step is 181.2 ms either way. `hwnpu-chat chat --temp 0` gives the same answer to the letter with both exports (111 tokens, 5.5 tokens/s).

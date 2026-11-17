@@ -282,6 +282,10 @@ func Softcap(logits []float32, c float64) {
 type TokenInput struct {
 	Input, Table string
 	Width        int
+	// Group, when not 0, has WriteTables store the table in int8 with an fp16 scale every Group
+	// values of a row (Gemma 4's per-layer embeddings: a scale a layer's slice, half the file
+	// and KL 0.00005 from bf16, docs/improvements.md 12.7). Rows reads it back as float32.
+	Group int
 }
 
 // TokenInputs is a model whose program takes inputs looked up per token besides x (Gemma 4's
