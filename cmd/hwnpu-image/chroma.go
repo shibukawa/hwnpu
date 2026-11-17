@@ -19,9 +19,10 @@ import (
 )
 
 // chromaModel is the Chroma export m runs here: on Apple's Neural Engine the Core AI export
-// (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py.
+// (with --cpu the Core ML one), downloaded and converted when missing, at --size; on AMD's NPU
+// ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py (1:1 and 1:1s).
 func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, error) {
-	side, err := c.side()
+	w, h, err := c.size()
 	if err != nil {
 		return "", err
 	}
@@ -33,12 +34,16 @@ func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, er
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	default:
+		side, serr := c.side("Chroma")
+		if serr != nil {
+			return "", serr
+		}
 		return amdOr(ctx, err, m, "tools/amd/iron_chroma.py", side)
 	}
-	if side%16 != 0 {
-		return "", fmt.Errorf("--size %d: Chroma's pictures are multiples of 16 pixels", side)
+	if w%16 != 0 || h%16 != 0 {
+		return "", fmt.Errorf("--size %s: Chroma's pictures are multiples of 16 pixels", c.Size)
 	}
-	o := chroma.ConvertOptions{Backend: format, Width: side, Height: side, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+	o := chroma.ConvertOptions{Backend: format, Width: w, Height: h, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
 	return chroma.Prepare(chat.WithModel(ctx, m), chroma.Setup{Dir: filepath.Join(chat.ModelsDir(), "Chroma"), Repo: m.Repo, Name: m.Name,
 		ConvertOptions: o, Log: console.Log(os.Stderr)})
 }

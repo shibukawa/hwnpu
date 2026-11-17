@@ -33,7 +33,7 @@ import (
 // run, and convert).
 type convertFlags struct {
 	Backend    string `help:"The program format: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one) or intel (Intel's NPU); convert also takes coreml, the Core ML export --cpu runs. Default: HWNPU_BACKEND, else the NPU found (convert: coreai)."`
-	Size       string `default:"1:1" help:"The picture's aspect ratio: 1:1 (1024 x 1024), 1:1s (512 x 512), 2:3, 3:4, 9:16, 3:2, 4:3 or 16:9 (Anima; an export each, on AMD's NPU for 1:1 and 1:1s only). The other models take 1:1 and 1:1s too, and still a pixel count."`
+	Size       string `default:"1:1" help:"The picture's aspect ratio: 1:1 (1024 x 1024), 1:1s (512 x 512), 2:3, 3:4, 9:16, 3:2, 4:3 or 16:9 (an export each). Anima and Chroma take all eight, FLUX.2 klein too; Sana and Qwen-Image take 1:1 and 1:1s (their sides are multiples of 32); on AMD's NPU only 1:1 and 1:1s. A pixel count is a square."`
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
 	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Apple's; int8 on Intel; default int8 on Apple's, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
 	DitFormat  string `help:"The DiT's weights (fp16; lut8, lut6 on Apple's; int8, int4 on Intel; default int8 on Apple's: faster than fp16 at half its memory, and nearer it than lut8; fp16 on Intel. Qwen-Image: lut6, its text pass the same and a group's two passes one program with the weights once)."`
@@ -47,20 +47,30 @@ func (f convertFlags) options() (anima.ConvertOptions, error) {
 		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}, err
 }
 
-// side is the picture's side in pixels for the models whose sizes are still squares: 1:1 and
-// 1:1s, or a pixel count as before (the rest of the sizes are Anima's for now).
-func (f convertFlags) side() (int, error) {
+// size is the picture's width and height in pixels: an aspect ratio of anima.Aspects, or a pixel
+// count (a square) as before.
+func (f convertFlags) size() (w, h int, err error) {
 	if w, h, err := anima.ParseAspect(f.Size); err == nil {
-		if w != h {
-			return 0, fmt.Errorf("--size %s: this model takes 1:1 or 1:1s for now", f.Size)
-		}
-		return w, nil
+		return w, h, nil
 	}
 	n, err := strconv.Atoi(f.Size)
 	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("--size %s: not 1:1 or 1:1s, nor a pixel count", f.Size)
+		return 0, 0, fmt.Errorf("--size %s: not an aspect ratio (1:1, 1:1s, 2:3, 3:4, 9:16, 3:2, 4:3, 16:9), nor a pixel count", f.Size)
 	}
-	return n, nil
+	return n, n, nil
+}
+
+// side is the picture's side for the models that take squares alone (model names it in the error):
+// 1:1 and 1:1s, or a pixel count.
+func (f convertFlags) side(model string) (int, error) {
+	w, h, err := f.size()
+	if err != nil {
+		return 0, err
+	}
+	if w != h {
+		return 0, fmt.Errorf("--size %s: %s takes 1:1 or 1:1s for now", f.Size, model)
+	}
+	return w, nil
 }
 
 // ConvertCmd is "hwnpu-image convert": an Anima directory or a Sana, Chroma or Qwen-Image
@@ -88,11 +98,11 @@ func (c *ConvertCmd) Run() error {
 		if err != nil {
 			return err
 		}
-		side, err := c.side()
+		w, h, err := c.size()
 		if err != nil {
 			return err
 		}
-		o := chroma.ConvertOptions{Backend: backend, Width: side, Height: side, TextFormat: c.TextFormat, DitFormat: c.DitFormat,
+		o := chroma.ConvertOptions{Backend: backend, Width: w, Height: h, TextFormat: c.TextFormat, DitFormat: c.DitFormat,
 			Tokenizer: c.Tokenizer, TextRows: c.TextRows}
 		if c.Only != "" {
 			o.Only = map[string]bool{}
@@ -117,7 +127,7 @@ func (c *ConvertCmd) Run() error {
 		if err != nil {
 			return err
 		}
-		side, err := c.side()
+		side, err := c.side("Qwen-Image")
 		if err != nil {
 			return err
 		}
@@ -129,7 +139,7 @@ func (c *ConvertCmd) Run() error {
 		if c.Backend != "" && c.Backend != llm.BackendCoreML && c.Backend != llm.BackendCoreAI && c.Backend != llm.BackendIntel {
 			return fmt.Errorf("Sana converts for coreml, coreai or intel (--backend %s)", c.Backend)
 		}
-		side, err := c.side()
+		side, err := c.side("Sana")
 		if err != nil {
 			return err
 		}
@@ -246,7 +256,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	} else if qwenimage.IsExport(model) {
 		err = c.qwenImage(ctx, model, outs)
 	} else if sana.IsExport(model) {
-		side, serr := c.side()
+		side, serr := c.side("Sana")
 		if serr != nil {
 			return serr
 		}
@@ -273,7 +283,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 // Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU
 // ~/models/NAME.amd-npu2 of tools/amd/iron_sana.py.
 func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, error) {
-	side, err := c.side()
+	side, err := c.side("Sana")
 	if err != nil {
 		return "", err
 	}
@@ -299,7 +309,7 @@ func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, erro
 // qwenImageModel is the Qwen-Image-2.1 export m runs here: on Apple's Neural Engine the Core AI
 // export (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
 func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string, error) {
-	side, err := c.side()
+	side, err := c.side("Qwen-Image")
 	if err != nil {
 		return "", err
 	}
