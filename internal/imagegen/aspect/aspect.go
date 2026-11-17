@@ -4,6 +4,7 @@ package aspect
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -59,9 +60,28 @@ func Names() string {
 	return strings.Join(names, ", ")
 }
 
+// With are as, the aspects of the same names as overrides replaced by them: a model's own sizes
+// for some of the ratios (FLUX.2 klein's 16:9 and 9:16).
+func With(as []Aspect, overrides ...Aspect) []Aspect {
+	out := slices.Clone(as)
+	for _, o := range overrides {
+		for i := range out {
+			if out[i].Name == o.Name {
+				out[i] = o
+			}
+		}
+	}
+	return out
+}
+
 // Parse is the picture's size of an aspect ratio's name (one of Of(multiple)).
 func Parse(name string, multiple int) (width, height int, err error) {
-	for _, a := range Of(multiple) {
+	return ParseIn(name, Of(multiple))
+}
+
+// ParseIn is the picture's size of an aspect ratio's name, one of as.
+func ParseIn(name string, as []Aspect) (width, height int, err error) {
+	for _, a := range as {
 		if strings.EqualFold(name, a.Name) {
 			return a.Width, a.Height, nil
 		}
@@ -73,7 +93,12 @@ func Parse(name string, multiple int) (width, height int, err error) {
 // the eight, such as 768x1152), or a picture of side x side pixels for a pixel count (the square
 // sizes --size took before it took names).
 func ParseOrSide(spec string, multiple int) (width, height int, err error) {
-	if w, h, err := Parse(spec, multiple); err == nil {
+	return ParseOrSideIn(spec, Of(multiple), multiple)
+}
+
+// ParseOrSideIn is ParseOrSide with the aspect ratios' sizes of as.
+func ParseOrSideIn(spec string, as []Aspect, multiple int) (width, height int, err error) {
+	if w, h, err := ParseIn(spec, as); err == nil {
 		return w, h, nil
 	}
 	if ws, hs, ok := strings.Cut(strings.ToLower(spec), "x"); ok {
@@ -102,8 +127,10 @@ func Name(width, height, multiple int) string {
 }
 
 // Sizes are the aspects' sizes (width, height) of Of(multiple).
-func Sizes(multiple int) [][2]int {
-	as := Of(multiple)
+func Sizes(multiple int) [][2]int { return SizesOf(Of(multiple)) }
+
+// SizesOf are the sizes (width, height) of as.
+func SizesOf(as []Aspect) [][2]int {
 	out := make([][2]int, len(as))
 	for i, a := range as {
 		out[i] = [2]int{a.Width, a.Height}

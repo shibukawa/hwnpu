@@ -18,23 +18,27 @@ const AMDTool = "iron_flux2klein.py"
 
 // AMDExportVersion is the version of PrepareAMD's exports (a key of the shared layers:
 // chat.PinnedRecipe), raised by hand when what PrepareAMD passes AMDTool changes.
-const AMDExportVersion = 1
+const AMDExportVersion = 2
 
-// AMDSizes are the pictures' sizes (width, height) PrepareAMD exports for: the eight aspect
-// ratios of --size (aspect.All), 1024 x 1024 first (laid out as an export of its own). A step
-// whose rows are no whole rounds of the attention's 512 runs padded, the text's rows first.
-var AMDSizes = aspect.Sizes(16)
+// Aspects are FLUX.2 klein's sizes of the eight aspect ratios of --size: aspect.All's, but 16:9
+// and 9:16 at 1344 x 768 (1.03 M pixels, multiples of 64 pixels; 1360 x 752 before, 2026-11-18),
+// which the other models of multiples of 16 pixels keep.
+var Aspects = aspect.With(aspect.All, aspect.Aspect{Name: "9:16", Width: 768, Height: 1344},
+	aspect.Aspect{Name: "16:9", Width: 1344, Height: 768})
+
+// AMDSizes are the pictures' sizes (width, height) PrepareAMD exports for: Aspects, 1024 x 1024
+// first (laid out as an export of its own). A step whose rows are no whole rounds of the
+// attention's 512 runs padded, the text's rows first.
+var AMDSizes = aspect.SizesOf(Aspects)
 
 // AMDFiles are the repository's files AMDTool reads: Files and model_index.json (whether the
 // checkpoint is distilled).
 var AMDFiles = append(slices.Clone(Files), "model_index.json")
 
-// AMDExportName is the name of the export for AMD's NPU of the model named name, of every
-// AMDSizes (tools/amd/iron_flux2klein.py --size 1024 512 ...): NAME.amd-npu2, NAME in lower case
-// (the name the sources hold an export made by hand under). An older one of 1024 x 1024 alone by
-// that name draws that size only.
+// AMDExportName is the name of the export for AMD's NPU of every AMDSizes. The distinct suffix
+// prevents an imported export with the previous 16:9 and 9:16 sizes from being reused.
 func AMDExportName(name string) string {
-	return strings.ToLower(name) + ".amd-npu2"
+	return strings.ToLower(name) + "-aspects2.amd-npu2"
 }
 
 // sizeArg is a size as AMDTool's --size takes it: N for N x N, else WxH.
@@ -78,7 +82,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, w, h int, log io.Writer) (str
 	size := [2]int{w, h}
 	if !slices.Contains(AMDSizes, size) {
 		return "", fmt.Errorf("--size %dx%d: FLUX.2 klein's exports for AMD's NPU are of %s (tools/amd/%s --size exports another, run with -m DIR)",
-			w, h, aspect.Names(), AMDTool)
+			w, h, aspectNames(), AMDTool)
 	}
 	if log == nil {
 		log = io.Discard
@@ -98,7 +102,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, w, h int, log io.Writer) (str
 				m.Name, out, err, chat.IRONEnv)
 		}
 		fmt.Fprintf(log, "%s: no export for AMD's NPU here or in the sources; downloading the checkpoint and exporting it with IRON (%s in one, the blocks for up to 4 references too; %s on a Ryzen AI 9 365)\n",
-			m.Name, aspect.Names(), amdExportTime)
+			m.Name, aspectNames(), amdExportTime)
 		want := make([]chat.File, len(AMDFiles))
 		for i, f := range AMDFiles {
 			want[i] = chat.File{Repo: m.Repo, Name: f}
@@ -127,4 +131,13 @@ const amdExportTime = "about 30 minutes"
 // drawsSize reports whether dir is an IRON export that draws pictures of w x h.
 func drawsSize(dir string, w, h int) bool {
 	return isIronExport(dir) && slices.Contains(IronSizes(dir), [2]int{w, h})
+}
+
+// aspectNames are Aspects' names and sizes: "1:1 (1024x1024), 1:1s (512x512), ...".
+func aspectNames() string {
+	s := make([]string, len(Aspects))
+	for i, a := range Aspects {
+		s[i] = fmt.Sprintf("%s (%dx%d)", a.Name, a.Width, a.Height)
+	}
+	return strings.Join(s, ", ")
 }

@@ -64,8 +64,8 @@ func noSources(t *testing.T) {
 }
 
 func TestAMDExportName(t *testing.T) {
-	if got := AMDExportName("FLUX.2-klein-4B"); got != "flux.2-klein-4b.amd-npu2" {
-		t.Errorf("%s, want flux.2-klein-4b.amd-npu2", got)
+	if got := AMDExportName("FLUX.2-klein-4B"); got != "flux.2-klein-4b-aspects2.amd-npu2" {
+		t.Errorf("%s, want flux.2-klein-4b-aspects2.amd-npu2", got)
 	}
 }
 
@@ -74,12 +74,12 @@ func TestAMDExportName(t *testing.T) {
 func TestAMDImportedPlace(t *testing.T) {
 	m := kleinModel(t)
 	name := AMDExportName(m.Name)
-	want := "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b.amd-npu2/v0-2d2e30e3"
+	want := "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b-aspects2.amd-npu2/v0-89545ca2"
 	if got := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name)).Path; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
 	r := AMDRecipe(m, AMDSizes...)
-	if r == nil || r["args"] != "--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752" || r["tool"] != AMDTool {
+	if r == nil || r["args"] != "--size 1024 512 832x1248 880x1168 768x1344 1248x832 1168x880 1344x768" || r["tool"] != AMDTool {
 		t.Fatalf("recipe %v", r)
 	}
 	if r["sha256:transformer/diffusion_pytorch_model.safetensors"] == "" {
@@ -88,7 +88,7 @@ func TestAMDImportedPlace(t *testing.T) {
 }
 
 // TestPrepareAMDHere runs the export here by its name without a source or IRON, and refuses a
-// size it does not export; an older one of 1024 x 1024 alone by that name draws that size only.
+// size it does not export.
 func TestPrepareAMDHere(t *testing.T) {
 	noSources(t)
 	m := kleinModel(t)
@@ -96,6 +96,12 @@ func TestPrepareAMDHere(t *testing.T) {
 	if _, err := PrepareAMD(ctx, m, 768, 768, nil); err == nil || !strings.Contains(err.Error(), "--size 768x768") {
 		t.Errorf("768: %v", err)
 	}
+	legacy := filepath.Join(chat.AMDRoot(), strings.ToLower(m.Name)+".amd-npu2")
+	fakeIronExport(t, legacy, "{}", [2]int{1024, 1024}, [2]int{752, 1360}, [2]int{1360, 752})
+	if _, err := PrepareAMD(ctx, m, 768, 1344, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
+		t.Errorf("768 x 1344 reused the legacy export: %v", err)
+	}
+	os.RemoveAll(legacy)
 	dir := filepath.Join(chat.AMDRoot(), AMDExportName(m.Name))
 	fakeIronExport(t, dir, "{}", [2]int{1024, 1024})
 	if got, err := PrepareAMD(ctx, m, 1024, 1024, nil); err != nil || got != dir {
