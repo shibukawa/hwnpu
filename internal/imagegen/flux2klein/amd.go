@@ -111,12 +111,14 @@ func amdArgs(sizes ...[2]int) []string {
 // ready, as hwnpu-chat makes its models' (chat.PrepareAMD), and returns its directory, in this
 // order:
 //
-//   - the export of every AMDSizes here (AMDMergedName in cache.ExportRoots)
+//   - the export of every AMDSizes here (AMDMergedName in cache.ExportRoots; one made by hand
+//     goes in the sources written back to: chat.ShareMadeByHand)
 //   - for 512 x 512 and 1024 x 1024: the export of both here (MergeAMD's), else of the size
 //     alone (AMDExportName; NAME-1024.amd-npu2 too at 1024; one made by hand goes in the sources
 //     written back to: chat.ShareMadeByHand). When the cache's entries hold the exports of both
 //     sizes alone, they are made one (MergeAMD) and removed: 11 GB less
-//   - from the shared layers: the export of every AMDSizes (AMDRecipe), else for a square of the
+//   - from the shared layers: the export of every AMDSizes (AMDRecipe, or one made by hand under
+//     AMDMergedName), else for a square of the
 //     size alone (the export a first run made elsewhere, or one made by hand that hwnpu-dev
 //     cache import put there under its name)
 //   - else it downloads the checkpoint (AMDFiles) and exports every AMDSizes in one with IRON in
@@ -137,6 +139,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, w, h int, log io.Writer) (str
 	draws := func(d string) bool { return drawsSize(d, w, h) }
 	mergedName := AMDMergedName(m.Name, AMDSizes...)
 	if d := cache.FindExport(mergedName, draws); d != "" {
+		chat.ShareMadeByHand(m, d, log) // one made by hand here goes in the sources written back to
 		dropSubsets(m, log)
 		return d, nil
 	}
@@ -154,7 +157,8 @@ func PrepareAMD(ctx context.Context, m chat.Model, w, h int, log io.Writer) (str
 		}
 	}
 	merged := filepath.Join(chat.AMDRoot(), mergedName)
-	if ok, err := chat.FetchShared(ctx, chat.ExportKind(AMDTool), AMDRecipe(m, AMDSizes...), nil, merged, log); err != nil {
+	mergedImported := []chat.SharedRecipe{{Kind: chat.ImportKind, Recipe: chat.ImportedRecipe(m, cache.AMDTarget, mergedName)}}
+	if ok, err := chat.FetchShared(ctx, chat.ExportKind(AMDTool), AMDRecipe(m, AMDSizes...), mergedImported, merged, log); err != nil {
 		return "", err
 	} else if ok && draws(merged) {
 		dropSubsets(m, log)
@@ -173,7 +177,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, w, h int, log io.Writer) (str
 			return single, nil
 		}
 	}
-	err := chat.SharedExport(ctx, chat.ExportKind(AMDTool), AMDRecipe(m, AMDSizes...), merged, log, func() error {
+	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), AMDRecipe(m, AMDSizes...), mergedImported, merged, log, func() error {
 		python, err := chat.IRONPython(ctx)
 		if err != nil {
 			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or put an export made elsewhere in a source (hwnpu-dev cache import)",
