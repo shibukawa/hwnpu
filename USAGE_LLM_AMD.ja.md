@@ -61,7 +61,7 @@ go run ./cmd/hwnpu-chat serve -m ~/models/gemma-4-E2B-it.mm.amd-npu2 --listen 12
 
 NPU のバッファは固定されたメモリで、プロセスの RSS には出ません (Gemma 4 E2B の 4 ビットで 1.8 GB)。`hwnpu-chat` (`chat`、`agent`、`serve`) は、AMD の NPU の書き出しを要求が `--idle` (既定 5 分) 来ない間はデバイスから下ろしてメモリを返し、次の要求で読み直します (E2B で 1〜2 秒)。会話はホストに写しておいた続きから進みます。`--idle 0` で下ろしません。画像と音声つきの書き出しは、塔の重みを最初の画像か音声が来るまで載せないので (Gemma 4 E2B の 4 ビットで 2.82 → 1.83 GB、文だけの書き出しとの差は 51 MiB。最初の画像か音声で 0.7 秒。[docs/design.md](docs/design.md) の 16.81)、文だけで使うときも同じ書き出しで済みます。
 
-同じモデルの書き出しを複数置くと (文だけと画像と音声つき、4 ビットと bf16 など)、同じファイルを持ちます (Gemma 4 E2B なら `ple.bin` の 4.4 GiB など)。モデルを置くディスクが Btrfs や XFS (reflink)、Windows の ReFS や Dev Drive のように写しを共有できるファイルシステムなら、hwnpu は書き出しを最初に読むときに、隣の書き出しと同じバイトのファイルとファイルの先頭をその写し (reflink) に置き換え、ディスクを 1 つ分しか使いません (Gemma 4 E2B の 2 つで 15.2 → 8.2 GiB。普通のファイルのまま)。ext4 と NTFS では何もしません ([docs/design.md](docs/design.md) の 16.79。Windows は実機では未確認)。
+同じモデルの書き出しを複数置くと (文だけと画像と音声つき、4 ビットと bf16 など)、同じファイルを持ちます (Gemma 4 E2B なら `ple.bin` の 2.2 GiB など。層ごとの埋め込みを int8 で持つもので、2026-11-17 より前の書き出しでは 4.4 GiB)。モデルを置くディスクが Btrfs や XFS (reflink)、Windows の ReFS や Dev Drive のように写しを共有できるファイルシステムなら、hwnpu は書き出しを最初に読むときに、隣の書き出しと同じバイトのファイルとファイルの先頭をその写し (reflink) に置き換え、ディスクを 1 つ分しか使いません (Gemma 4 E2B の 2 つで 15.2 → 8.2 GiB。普通のファイルのまま)。ext4 と NTFS では何もしません ([docs/design.md](docs/design.md) の 16.79。Windows は実機では未確認)。
 
 ## PLaMo 3 Translate
 

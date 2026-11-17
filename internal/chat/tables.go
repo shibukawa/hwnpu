@@ -54,7 +54,7 @@ func writeTables(ctx context.Context, dir string, a *llm.Arch, model llm.Model, 
 	if len(names) == 0 {
 		return "", fmt.Errorf("chat: %s has no tables the host reads", a.Name)
 	}
-	return Tables(ctx, filepath.Join(dir, TablesFile), a, names, checkpoint, log)
+	return GroupedTables(ctx, filepath.Join(dir, TablesFile), a, names, llm.HostTableGroups(model), checkpoint, log)
 }
 
 // Tables writes the named tensors of the checkpoint to out (llm.WriteTables) unless out has them
@@ -64,10 +64,17 @@ func writeTables(ctx context.Context, dir string, a *llm.Arch, model llm.Model, 
 // one has them (fetchTables), and those written here are put in them: a machine that runs what
 // was converted elsewhere needs no checkpoint.
 func Tables(ctx context.Context, out string, a *llm.Arch, names []string, checkpoint func() (string, error), log io.Writer) (string, error) {
+	return GroupedTables(ctx, out, a, names, nil, checkpoint, log)
+}
+
+// GroupedTables is Tables with the tables that groups names stored in int8, a scale every
+// groups[name] values of a row (llm.WriteTables; llm.HostTableGroups). A tables file written
+// before, with them in bf16, is kept: it reads the same way.
+func GroupedTables(ctx context.Context, out string, a *llm.Arch, names []string, groups map[string]int, checkpoint func() (string, error), log io.Writer) (string, error) {
 	if hasTables(out, names) {
 		return out, nil
 	}
-	m, r := tablesRecipe(ctx, out, a, names)
+	m, r := tablesRecipe(ctx, out, a, names, groups)
 	if fetchTables(ctx, m, r, out) && hasTables(out, names) {
 		return out, nil
 	}
@@ -80,7 +87,7 @@ func Tables(ctx context.Context, out string, a *llm.Arch, names []string, checkp
 		return "", err
 	}
 	defer w.Close()
-	if err := llm.WriteTables(w, names, out); err != nil {
+	if err := llm.WriteTables(w, names, groups, out); err != nil {
 		return "", err
 	}
 	if log != nil {

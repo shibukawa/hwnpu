@@ -33,10 +33,10 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 <tbody>
 <tr>
 <th>チャット、コーディング<br><sub>hwnpu-chat、hwnpu-chat agent <code>-m chat</code></sub></th>
-<td><b>LFM3-1.7B</b> (Apple 1.7 GB、AMD 2.2 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>、2.2〜2.4 GB)<br>コードも書く<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.1 GB。Apple だけ)<br>プログラム 1 本で、長いプロンプトを読むのは遅い (<code>--prefill on</code> で速く、+0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>、M1 で 1.1 GB、M2 以降 1.6 GB、ダウンロード 1.5 GB)<br>一番小さなダウンロード。事実に弱い</td>
-<td><b>Gemma 4 E2B</b> (2.3 GB)<br>長い文脈 (131072 で +0.8 GB) も<br><b>Gemma 4 E4B</b> (4.0 GB)<br>短い会話なら<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.3 GB)<br>プロンプトを読むプログラムを別に持ち、読むのが 5 倍速い</td>
-<td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br>長い文脈 (131072 で +2.1 GB) も</td>
-<td colspan="2"><b>Gemma 4 E4B</b> (4.0 GB)<br><i>予定: Qwen3.6-35B-A3B (MoE、4 ビットで約 25 GB)</i></td>
+<td><b>LFM3-1.7B</b> (Apple 1.7 GB、AMD 2.2 GB)<br>速く、エージェント向け<br><b>Gemma 4 E2B</b> (AMD 2.4 GB、Apple 2.3 GB)<br>層ごとの埋め込みを含めて 5B の、ひと回り大きなモデル<br><b>Qwen3.5-2B</b> (<code>-m qwen3.5</code>、2.2〜2.4 GB)<br>コードも書く<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.1 GB。Apple だけ)<br>プログラム 1 本で、長いプロンプトを読むのは遅い (<code>--prefill on</code> で速く、+0.3 GB)<br><b>Qwen3-0.6B</b> (<code>-m qwen3:0.6b</code>、M1 で 1.1 GB、M2 以降 1.6 GB、ダウンロード 1.5 GB)<br>一番小さなダウンロード。事実に弱い</td>
+<td><b>Gemma 4 E2B</b> (AMD 2.4 GB、Apple 2.3 GB)<br>長い文脈 (131072 で +0.8 GB) も<br><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br>短い会話なら<br><b>Qwen3-1.7B</b> (<code>-m qwen3</code>、2.3 GB)<br>プロンプトを読むプログラムを別に持ち、読むのが 5 倍速い</td>
+<td colspan="2"><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br>長い文脈 (131072 で +2.1 GB) も</td>
+<td colspan="2"><b>Gemma 4 E4B</b> (AMD 4.3 GB、Apple 4.0 GB)<br><i>予定: Qwen3.6-35B-A3B (MoE、4 ビットで約 25 GB)</i></td>
 </tr>
 <tr>
 <th>画像を読む<br><sub>hwnpu-chat <code>-m vision</code> (<code>image_url</code>、<code>/image</code>)</sub></th>
@@ -127,9 +127,9 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 | モデル | 用途 | 起動時 | 会話で増える分 (KV キャッシュ) | 根拠 |
 |---|---|---|---|---|
 | LFM3-1.7B | チャット、コーディング | AMD 2.2 GB。Apple は 1.7 GB (Neural Engine に 1.36 GiB とプロセスの 0.23 GiB)。16 GB からの M2 以降は 3.1 GB (短い会話用の 1 本が重みをもう 1 組持つ: 2.64 GiB と 0.21 GiB) | 12 KiB/トークン (262144 で 3 GiB) | 実測 (AMD と M1。M2 以降の形は M1 に `--tier 2048` で読み込ませて) |
-| Gemma 4 E2B | チャット、コーディング | 2.3 GB (M1 の Core AI: Neural Engine に 1.66 GiB。プロセスの分は Core AI では測っていない) | 6 KiB/トークン (131072 で 0.75 GiB) | 実測 |
+| Gemma 4 E2B | チャット、コーディング | AMD 2.4 GB (2026-11-17)、Apple 2.3 GB (M1 の Core AI: Neural Engine に 1.66 GiB。プロセスの分は Core AI では測っていない) | 6 KiB/トークン (131072 で 0.75 GiB) | 実測 |
 | Gemma 4 E2B 画像と音声つき | 画像、音声 (1 回に 1 枚と 30 秒まで) | 3.4 GB (画像か音声が来るまでは 2.4 GB) | 6 KiB/トークン | 実測 |
-| Gemma 4 E4B | チャット、コーディング | 4.0 GB | 16 KiB/トークン (131072 で 2 GiB) | 実測 |
+| Gemma 4 E4B | チャット、コーディング | AMD 4.3 GB (2026-11-17)、Apple 4.0 GB | 16 KiB/トークン (131072 で 2 GiB) | 実測 |
 | LFM3-VL-2B | 画像 (512 × 512) | AMD 2.6 GB、Apple 2.7 GB (M1: 画像を読んで Neural Engine に 2.24 GiB とプロセスの 0.25 GiB。文だけなら 2.6 GB。画像の符号器は初めから載る) | 12 KiB/トークン (128000 で 1.46 GiB) | 実測 (AMD と M1) |
 | SwiftF0 | 音高 (F0) | 約 0.06 GB (M1: プロセスの footprint 58 MB。重み 14K) | なし (30 秒ずつ) | M1 で実測 |
 | Basic Pitch | 音符 (MIDI) | 約 0.07 GB (M1: プロセスの footprint 75 MB。重み 36K) | なし (2 秒の窓ずつ) | M1 で実測 |
@@ -175,5 +175,5 @@ hwnpu-chat と hwnpu-chat agent は、この表から自分でモデルを選び
 - Core AI では、長い会話の 2 段の注意のために 8 個ごとの平均も持つので、会話で増える分は 8 分の 9 になります (LFM3-1.7B で 13.5 KiB/トークン、262144 で 3.4 GiB。Gemma 4 E2B で 6.75 KiB)
 - Neural Engine の分はそのドライバーのカーネルのメモリで、どのプロセスの RSS にも footprint にも出ません (アクティビティモニタや `top` には見えません)。hwnpu-chat は読み込んだ後にその量を表示します。その場でコンパイルしたプログラムは、最初の呼び出しで Neural Engine に載ります
 - Qwen3-0.6B と Qwen3-1.7B も、Core AI ではほかのチャットのモデルと同じく注意で分けて動かします (28 層すべてが注意。M1 で Qwen3-0.6B は 32 トークン/秒、Qwen3-1.7B は 22)。文脈は 40960 で、キャッシュは会話とともに増え、メモリの 4 分の 1 を超える分は文脈を縮めます (16 GB で 32768)。Core ML の頃は 4096 のキャッシュを持つ 1 本のプログラムで、Qwen3-0.6B は約 3.9 GB、Qwen3-1.7B は 4.5 GB (16 GB からは 7.6 GB) でした。16 GB 未満の機械では、Qwen3-1.7B は生成のプログラムがプロンプトも 1 回 8 トークンずつ読む 1 本で動かします (models.yaml の `prefill: off` と `variants`)。Core ML で測ると、新しい 1822 トークンのプロンプトを読むのに 16.8 秒、プロンプト用のプログラムでは 3.4 秒でした (`--prefill on` でいつでも)。Core AI ではプロンプト用のプログラムは同じ重みの関数で、足しても Neural Engine に 0.16 GiB、合わせて 0.3 GB しか増えません。AMD の NPU 向けの書き出しはまだありません
-- 数えていないもの: Gemma 4 の層ごとの埋め込みの表 (E2B で 4.4 GB) と、トークンの埋め込みの表 (0.5〜0.75 GB) は、ファイルのまま置いて、使う行だけを読みます。OS のページキャッシュに入りますが、メモリが足りなければ捨てられます
+- 数えていないもの: Gemma 4 の層ごとの埋め込みの表 (E2B で int8 の 2.4 GB。2026-11-17 より前に変換した bf16 のものは 4.7 GB。docs/improvements.md 12.7) と、トークンの埋め込みの表 (0.5〜0.75 GB) は、ファイルのまま置いて、使う行だけを読みます。OS のページキャッシュに入りますが、メモリが足りなければ捨てられます
 - 同じモデルの複数の書き出し (文だけと画像と音声つきなど) は、ディスクの上で同じファイルを共有できます (Btrfs、XFS、APFS、ReFS)。メモリの上では共有しないので、同時に動かせば別々に数えます

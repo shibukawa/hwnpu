@@ -82,3 +82,56 @@ func TestShardedSafetensors(t *testing.T) {
 		t.Errorf("an index naming the wrong file: %v", err)
 	}
 }
+
+// A table WriteTables stores in int8 (a scale every group values of a row) reads back by Rows
+// and Get within half a step of each group's scale, ranges across rows included; the other
+// tables are copied as they are.
+func TestWriteTablesInt8(t *testing.T) {
+	dir := t.TempDir()
+	const rows, cols, group = 5, 8, 4
+	table := make([]float32, rows*cols)
+	for i := range table {
+		table[i] = float32(math.Sin(float64(i)*0.7)) * float32(1+i%cols/group*10)
+	}
+	table[2*cols] = 0 // a group of zeros keeps a zero scale
+	table[2*cols+1], table[2*cols+2], table[2*cols+3] = 0, 0, 0
+	src := filepath.Join(dir, "model.safetensors")
+	writeSafetensors(t, src, map[string][]float32{"ple": table, "emb": {1, 2, 3, 4}}, map[string][]int{"ple": {rows, cols}, "emb": {2, 2}})
+	a := &Arch{Name: "test"}
+	w, err := OpenWeights(src, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "tables.safetensors")
+	if err := WriteTables(w, []string{"emb", "ple"}, map[string]int{"ple": group}, out); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	tw, err := OpenWeights(out, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tw.Close()
+	if e, err := tw.Rows("emb", 1, 2); err != nil || !slices.Equal(e, []float32{3, 4}) {
+		t.Fatalf("emb row 1: %v %v", e, err)
+	}
+	all, shape, err := tw.Get("ple")
+	if err != nil || !slices.Equal(shape, []int{rows, cols}) {
+		t.Fatalf("Get: %v %v", shape, err)
+	}
+	for g := 0; g < rows*cols/group; g++ {
+		m := float32(0)
+		for _, v := range table[g*group : (g+1)*group] {
+			m = max(m, float32(math.Abs(float64(v))))
+		}
+		for i := g * group; i < (g+1)*group; i++ {
+			if d := math.Abs(float64(all[i] - table[i])); d > float64(m)/127*0.51+1e-6 {
+				t.Errorf("value %d: %v for %v (largest %v)", i, all[i], table[i], m)
+			}
+		}
+	}
+	r, err := tw.Rows("ple", 1, 4)
+	if err != nil || !slices.Equal(r, all[cols:4*cols]) {
+		t.Fatalf("Rows 1..4 differ from Get: %v", err)
+	}
+}
