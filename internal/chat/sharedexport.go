@@ -250,10 +250,14 @@ func sourceCommit(ctx context.Context, m Model) string {
 
 // ExportRecipe is what an export of model m for AMD's NPU with IRON's tools is made from (a key
 // of the shared layers): the model, the commit of its files and the SHA-256 the definitions pin,
-// the tool and its arguments, the tools' hash. nil when the commit is not known.
+// the tool and its arguments, the tools' hash (for iron_export_lm.py, of the files of tools/amd
+// the export reads: amdtools.LMHash). nil when the commit is not known.
 func ExportRecipe(ctx context.Context, m Model, tool string, args []string) map[string]string {
 	commit := sourceCommit(ctx, m)
 	hash, err := amdtools.Hash()
+	if tool == "iron_export_lm.py" {
+		hash, err = amdtools.LMHash(args)
+	}
 	if commit == "" || err != nil {
 		return nil
 	}
