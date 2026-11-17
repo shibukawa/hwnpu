@@ -200,8 +200,9 @@ func TestEntries(t *testing.T) {
 	write(t, filepath.Join(exp, "bank.bin"), "weights")
 	write(t, filepath.Join(exp, "check", "x.bin"), "weights")
 	recipe := map[string]string{"model": "m", "commit": "abc"}
-	rel := EntryPath("m", "amd-xdna2", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
-	if !strings.HasPrefix(rel, "converted/m/amd-xdna2/m.amd-npu2/v0-") || len(path.Base(rel)) != 11 {
+	// an entry of loose files (not an export for AMD's NPU, which goes packed: TestPackedEntries)
+	rel := EntryPath("m", "coreai", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
+	if !strings.HasPrefix(rel, "converted/m/coreai/m.amd-npu2/v0-") || len(path.Base(rel)) != 11 {
 		t.Fatalf("path %s", rel)
 	}
 	e := describeAt(t, exp, rel, recipe)
@@ -559,7 +560,7 @@ func TestEntryStreams(t *testing.T) {
 		write(t, filepath.Join(exp, fmt.Sprintf("bank_g%d.bin", i)), strings.Repeat("w", 1000*(i+1)))
 	}
 	recipe := map[string]string{"model": "m", "commit": "abc"}
-	rel := EntryPath("m", "amd-xdna2", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
+	rel := EntryPath("m", "coreai", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
 	describeAt(t, exp, rel, recipe)
 	root := t.TempDir()
 	if err := PutEntry(ctx, Source{Store: Dir{Name: "nas", Root: root}, Writeback: true}, exp); err != nil {

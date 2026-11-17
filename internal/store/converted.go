@@ -108,6 +108,9 @@ var FetchStreams = 4
 // materialize makes the entry e at rel of s in dst: its files FetchStreams at a time, the largest
 // first, into dst.part, which is renamed to dst when all are there and checked.
 func materialize(ctx context.Context, s Source, e Entry, rel, dst string, log io.Writer) error {
+	if e.Pack != nil {
+		return materializePacked(ctx, s, e, rel, dst, log)
+	}
 	part := dst + ".part"
 	if err := os.MkdirAll(part, 0o755); err != nil {
 		return err
@@ -202,6 +205,16 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 	if err := s.Store.Delete(ctx, rel+"/"+EntryFile); err != nil {
 		return err
 	}
+	if Packs(rel) {
+		// one file (an export for AMD's NPU), entry.json after it
+		pf, err := putPacked(ctx, s, rel, dir, e)
+		if err != nil {
+			return err
+		}
+		e.Pack = &pf
+		return writeEntryAt(ctx, s, rel, e)
+	}
+	e.Pack = nil
 	// the files side by side (an export of Core AI is many small ones, each a PUT and a MOVE on
 	// WebDAV), entry.json after them all
 	err = each(ctx, PutStreams, len(e.Files), func(ctx context.Context, i int) error {
@@ -227,6 +240,11 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 			s.Store.Delete(ctx, rel+"/"+f)
 		}
 	}
+	return writeEntryAt(ctx, s, rel, e)
+}
+
+// writeEntryAt writes e as the entry.json of the folder rel of s.
+func writeEntryAt(ctx context.Context, s Source, rel string, e Entry) error {
 	b, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {
 		return err

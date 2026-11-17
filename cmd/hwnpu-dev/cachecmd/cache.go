@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -32,6 +33,7 @@ type Cmd struct {
 
 	Sources SourcesCmd `cmd:"" help:"Show the cache's root, the sources in effect (HWNPU_MODEL_SOURCE, _1, ...), whether each is written back to, whether Hugging Face is read, and the .env files read."`
 	Ls      LsCmd      `cmd:"" help:"List the conversions the sources hold (or one source: its number in hwnpu-dev cache sources); with --original the repositories' locks."`
+	Export  ExportCmd  `cmd:"" help:"Make the exports for AMD's NPU of chat models (amd_export) with IRON on the CPU alone, unless a source has them, and put them in the sources written back to (packed); then show their sizes."`
 	Push    PushCmd    `cmd:"" help:"Put exports for AMD's NPU that are here in the sources written back to (with entry.json, made for them when missing)."`
 	Import  ImportCmd  `cmd:"" help:"Put folders made by hand (~/models) in the sources written back to: a checkpoint's files that are its Hugging Face repository's (original/), an export for AMD's NPU (converted/)."`
 	Update  UpdateCmd  `cmd:"" help:"Move the repositories' files in the sources written back to to the commit Hugging Face serves now (their hwnpu-lock.json): the files that changed are downloaded again."`
@@ -170,6 +172,62 @@ func (l LsCmd) Run(c *Cmd) error {
 	return w.Flush()
 }
 
+// ExportCmd is hwnpu-dev cache export: chat.PrepareAMD of each model without running it (the
+// export compiles on the CPU: no NPU is opened), the writeback waited for.
+type ExportCmd struct {
+	Model []string `arg:"" help:"Models of the definitions with amd_export."`
+}
+
+func (x ExportCmd) Run(c *Cmd) error {
+	if err := load(c); err != nil {
+		return err
+	}
+	ctx, stop := signalContext()
+	defer stop()
+	writes := shared.Writebacks()
+	if len(writes) == 0 {
+		return errors.New("no source is written back to: give one ?writeback=true (" + shared.SourceEnv + ")")
+	}
+	log := console.Log(os.Stderr)
+	var made []string
+	for _, name := range x.Model {
+		m, ok := chat.Lookup(name)
+		if !ok || len(m.AMDExport) == 0 {
+			return fmt.Errorf("%s is not a model of the definitions with amd_export", name)
+		}
+		start := time.Now()
+		dir, err := chat.PrepareAMD(ctx, m, log)
+		if err != nil {
+			return fmt.Errorf("%s: %w", m.Name, err)
+		}
+		shared.Flush(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		e, err := shared.ReadEntry(dir)
+		if err != nil {
+			return fmt.Errorf("%s: %w", m.Name, err)
+		}
+		line := fmt.Sprintf("%s\t%s\t%.2f", m.Name, filepath.Base(dir), float64(e.Bytes())/1e9)
+		for _, s := range writes {
+			if t, err := shared.ReadEntryAt(ctx, s, e.Path); err == nil && t.Key == e.Key && t.Pack != nil {
+				line += fmt.Sprintf("\t%.2f", float64(t.Pack.Size)/1e9)
+			} else {
+				line += "\t-"
+			}
+		}
+		line += "\t" + time.Since(start).Round(time.Second).String() + "\t" + e.Path
+		fmt.Fprintf(os.Stderr, "%s: %s\n", m.Name, line)
+		made = append(made, line)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(w, "model\texport\tGB\tpacked GB\ttook\tpath")
+	for _, l := range made {
+		fmt.Fprintln(w, l)
+	}
+	return w.Flush()
+}
+
 // PushCmd is hwnpu-dev cache push.
 type PushCmd struct {
 	Model []string `arg:"" help:"Models of the definitions (their exports for AMD's NPU: made by amd_export, or on the first run of hwnpu-image detect, pose, segment) to put in the layers."`
@@ -276,6 +334,7 @@ type GCCmd struct {
 	Kind      []string `help:"Remove the entries of these kinds (iron-lm, iron-onnxcnn...)." placeholder:"KIND"`
 	Key       []string `help:"Remove the entries whose key starts with these (the HASH of vN-HASH)." placeholder:"KEY"`
 	OlderThan int      `name:"older-than" help:"Remove the entries made more than this many days ago." placeholder:"DAYS"`
+	Target    []string `help:"Only the entries of these targets (amd-xdna2, coreai...): with the others, which choose among them." placeholder:"TARGET"`
 	Orphans   bool     `help:"Remove what a writeback cut off left under converted/ too: the folders with no entry.json, the temporary files of uploads (.put-); a folder being written (a .writing- marker of the last hour) is left (hwnpu cache clean does original/ too)."`
 	Apply     bool     `help:"Remove them (without it, only show what would go)."`
 }
@@ -295,6 +354,9 @@ func (g GCCmd) Run(c *Cmd) error {
 	}
 	before := time.Now().AddDate(0, 0, -g.OlderThan)
 	drop := func(e shared.Entry) bool {
+		if len(g.Target) > 0 && !slices.Contains(g.Target, e.Target) {
+			return false
+		}
 		for _, m := range g.Model {
 			if strings.EqualFold(e.Model, m) {
 				return true

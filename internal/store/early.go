@@ -53,10 +53,11 @@ func earlyID(s Source, dir string) string { return s.String() + "|" + filepath.C
 
 // StartEarly puts the files of dir, the conversion of the entry at rel being made here, in s as
 // they are written, until PutEntry of dir (or the process ends). It does nothing for a source not
-// written back to, or one that holds an entry at rel already (whose files are not put over
-// before PutEntry takes its entry.json away).
+// written back to, an entry that goes packed (Packs: its pack is made when it is whole), or a
+// source that holds an entry at rel already (whose files are not put over before PutEntry takes
+// its entry.json away).
 func StartEarly(s Source, rel, dir string) {
-	if !s.Writeback || !SafeKey(rel) || !strings.HasPrefix(rel, "converted/") {
+	if !s.Writeback || !SafeKey(rel) || !strings.HasPrefix(rel, "converted/") || Packs(rel) {
 		return
 	}
 	ctx := context.Background()

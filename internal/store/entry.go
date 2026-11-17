@@ -45,6 +45,9 @@ type Entry struct {
 	// Recipe is everything the entry was made from: what the key is the fingerprint of.
 	Recipe map[string]string `json:"recipe"`
 	Files  []File            `json:"files"`
+	// Pack is the one file in a source that holds Files, for an entry that goes there packed
+	// (Packs: PackFile); none here, where the files are.
+	Pack *File `json:"pack,omitempty"`
 	// MadeBy is the tools and the machine that made it, recorded only (not in the key).
 	MadeBy map[string]string `json:"made_by,omitempty"`
 	Made   time.Time         `json:"made"`
@@ -83,7 +86,7 @@ func Fingerprint(recipe map[string]string) string {
 // Describe lists the files of dir (every regular file but EntryFile) with their sizes and
 // SHA-256, into e, and writes e as dir's EntryFile. Symbolic links are not followed or listed.
 func Describe(dir string, e Entry) (Entry, error) {
-	e.Format, e.Files = EntryFormat, nil
+	e.Format, e.Files, e.Pack = EntryFormat, nil, nil
 	if e.Key == "" {
 		e.Key = Fingerprint(e.Recipe)
 	}
