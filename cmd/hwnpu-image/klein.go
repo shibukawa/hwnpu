@@ -27,6 +27,10 @@ import (
 // for --size (512 or 1024), from the shared layers or made with IRON when missing
 // (flux2klein.PrepareAMD).
 func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, error) {
+	side, err := c.side()
+	if err != nil {
+		return "", err
+	}
 	format, err := imageFormat(ctx, c.Backend)
 	switch {
 	case err == nil && format == llm.BackendCoreAI:
@@ -35,12 +39,12 @@ func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, err
 	case runtime.GOOS == "darwin" || chat.HereVendor() != "amd":
 		return "", err
 	default:
-		return flux2klein.PrepareAMD(chat.WithModel(ctx, m), m, c.Size, console.Log(os.Stderr))
+		return flux2klein.PrepareAMD(chat.WithModel(ctx, m), m, side, console.Log(os.Stderr))
 	}
-	if c.Size%16 != 0 {
-		return "", fmt.Errorf("--size %d: FLUX.2 klein's pictures are multiples of 16 pixels", c.Size)
+	if side%16 != 0 {
+		return "", fmt.Errorf("--size %d: FLUX.2 klein's pictures are multiples of 16 pixels", side)
 	}
-	o := flux2klein.ConvertOptions{Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
+	o := flux2klein.ConvertOptions{Width: side, Height: side, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
 	return flux2klein.Prepare(chat.WithModel(ctx, m), flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo,
 		Name: m.Name, ConvertOptions: o, Log: console.Log(os.Stderr)})
 }
@@ -97,6 +101,10 @@ func referenceNames(divs []int) string {
 // tools/amd/iron_flux2klein.py on AMD's NPU, or of hwnpu-image convert on Apple's Neural Engine
 // (Core AI's).
 func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) error {
+	side, err := c.side()
+	if err != nil {
+		return err
+	}
 	lw := console.Log(os.Stderr)
 	live := console.Live(lw)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
@@ -123,7 +131,7 @@ func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) er
 	defer dev.Close()
 	w := 0
 	if flux2klein.IsProgramExport(model) {
-		w = c.Size // an export of several sizes draws at --size
+		w = side // an export of several sizes draws at --size
 	}
 	p, err := flux2klein.OpenAt(ctx, dev, model, w, w, lw)
 	if err != nil {
