@@ -857,8 +857,8 @@ def share_banks(m: dict, d: Path, blocks: Path):
     for kind, b in m["banks"].items():
         if b.get("image") is not None:
             (d / b["image"]).unlink()
-            b["image"] = f"../dit_blocks/{bm['banks'][kind]['image']}"
-    return [{k: f"../dit_blocks/{f}" for k, f in v.items()} for v in bm.get("variants") or [
+            b["image"] = f"../{blocks.name}/{bm['banks'][kind]['image']}"
+    return [{k: f"../{blocks.name}/{f}" for k, f in v.items()} for v in bm.get("variants") or [
         {k: b["image"] for k, b in bm["banks"].items()}]]
 
 

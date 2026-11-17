@@ -24,6 +24,14 @@ RoPE: FLUX turns pairs (2i, 2i + 1) of a head; the q and k rows are permuted wit
 IRON's pairs (i, i + 64) are them (iron_qwenimage.head_perm). The text's positions are 0 (no turn).
 
   python tools/amd/iron_chroma.py ~/models/Chroma1-Flash OUT --size 1024
+  python tools/amd/iron_chroma.py ~/models/Chroma1-Flash OUT --size 1024 512 768x1152 ...   # several in one
+
+Sizes. The rows are the image's, the text's 512 and padding to whole rounds of 512 (its keys cut by
+nk with the text's pads, its outputs not read; 768 x 1152: 3456 + 512 = 3968 rows run as 4096).
+The RoPE is the blocks' input angles, so the blocks of every size hold the same banks: each other
+size's doubles (the image's and the text's weights split at its tokens), dit_in and dit_out are
+graphs of their own named _WxH, its singles too when its rows differ from the first size's, on the
+first size's bank files; its VAE in sizes/WxH/vae.
 """
 
 import argparse
@@ -85,8 +93,21 @@ class ChromaConfig:
         return self.gh * self.gw
 
     @property
-    def rows(self) -> int:
+    def img_rows(self) -> int:
+        """The image's rows as dit_in, dit_out and the double blocks' image stream compute them:
+        tokens in whole 256s (flm.ProjectionGEMM's), the rest dropped."""
+        return -(-self.tokens // 256) * 256
+
+    @property
+    def real_rows(self) -> int:
+        """The image's rows, then the text's."""
         return self.tokens + self.text_rows
+
+    @property
+    def rows(self) -> int:
+        """The graphs' rows: real_rows in whole rounds of the attention's 512, the rest padding
+        after the text (its keys past nk with the text's pads; its rows' outputs not read)."""
+        return -(-self.real_rows // 512) * 512
 
     # the approximator's rows: singles 3 each, then the doubles' image 6 each and text 6 each,
     # then the final norm's shift and scale
@@ -118,7 +139,8 @@ class _Cfg:
 
 
 def angles(c: ChromaConfig) -> np.ndarray:
-    """The rows' RoPE: the image's (0, row, column) first, then the text's (0, 0, 0)."""
+    """The rows' RoPE (the blocks' input angles): the image's (0, row, column) first, then the
+    text's and the padding's (0, 0, 0)."""
     pos = np.zeros((c.rows, 3))
     pos[: c.tokens, 1] = np.repeat(np.arange(c.gh), c.gw)
     pos[: c.tokens, 2] = np.tile(np.arange(c.gw), c.gh)
@@ -181,7 +203,8 @@ def qkv(s, h, c: ChromaConfig, ang):
 class Doubles(iron.Graph):
     """``double_group`` ChromaTransformerBlocks over ``x`` (rows: the image's, then the text's).
     Inputs: ``x``; ``mods`` (group x 12, hidden), each block's image modulation rows (shift, scale,
-    gate, shift, scale, gate) then the text's; per call ``nk``, the keys attended to."""
+    gate, shift, scale, gate) then the text's; ``angles`` (rows, head_dim), the rows' RoPE; per call
+    ``nk``, the keys attended to."""
 
     def __init__(self, c: ChromaConfig, first: int = 0, w=None):
         self.c = c
@@ -195,7 +218,6 @@ class Doubles(iron.Graph):
         self.one = vec(np.ones(c.hidden))
         n, H, D = c.rows, c.heads, c.head_dim
         self.qs, self.ks, self.vs = iron.state((n * H, D)), iron.state((n, H, D)), iron.state((n, H, D))
-        self.angles = vec(angles(c))
         self.out = iron.state((n, c.hidden))
 
     def s(self, j, tag):
@@ -207,22 +229,31 @@ class Doubles(iron.Graph):
             setattr(o, k, getattr(self, f"b{j}_{tag}_{k}"))
         return o
 
-    def body(self, x, mods, *, nk: Scratchpad[np.int32]):
+    def body(self, x, mods, angles, *, nk: Scratchpad[np.int32]):
         c = self.c
         E, H, D, N, T = c.hidden, c.heads, c.head_dim, c.tokens, c.text_rows
-        n = c.rows
+        n, Np = c.rows, c.img_rows
         for j in self.blocks:
-            parts = {"i": (0, N), "t": (N, n)}
+            # each stream's rows computed (whole 256s, flm.ProjectionGEMM's) and its own of them:
+            # the image's over Np rows (past N the text's, computed and dropped), the text's 512
+            parts = {"i": (0, Np), "t": (N, N + T)}
+            own = {"i": N, "t": T}
             m = {}
             for tag, (a, b) in parts.items():
                 base = 12 * j + (6 if tag == "t" else 0)
                 m[tag] = [mods[(base + r) * E : (base + r + 1) * E] for r in range(6)]
                 shift, scale = m[tag][0], m[tag][1]
                 h = F.layer_norm(x[a:b], (E,), weight=scale + self.one, eps=1e-6) + shift
-                q, k, v = qkv(self.s(j, tag), h, c, self.angles[a:b])
-                self.qs[a * H : b * H] = q
-                self.ks[a:b] = k.reshape(b - a, H, D)
-                self.vs[a:b] = v.reshape(b - a, H, D)
+                q, k, v = qkv(self.s(j, tag), h, c, angles[a:b])
+                r = own[tag]
+                if r == b - a:
+                    self.qs[a * H : b * H] = q
+                    self.ks[a:b] = k.reshape(b - a, H, D)
+                    self.vs[a:b] = v.reshape(b - a, H, D)
+                else:
+                    self.qs[a * H : (a + r) * H] = q[0 : r * H]
+                    self.ks[a : a + r] = k.reshape(b - a, H, D)[0:r]
+                    self.vs[a : a + r] = v.reshape(b - a, H, D)[0:r]
             o = attention(self.qs.reshape(n, H, D), self.ks[:nk], self.vs[:nk]).reshape(n, E)
             for tag, (a, b) in parts.items():
                 s = self.s(j, tag)
@@ -230,7 +261,9 @@ class Doubles(iron.Graph):
                 y = x[a:b] + F.linear(o[a:b], s.o, s.o_b, precision=PREC) * g1
                 h = F.layer_norm(y, (E,), weight=scale2 + self.one, eps=1e-6) + shift2
                 h = iron_gelu.gelu(F.linear(h, s.ff1, s.ff1_b, precision=PREC))
-                self.out[a:b] = y + F.linear(h, s.ff2, s.ff2_b, precision=PREC) * g2
+                y = y + F.linear(h, s.ff2, s.ff2_b, precision=PREC) * g2
+                r = own[tag]
+                self.out[a : a + r] = y if r == b - a else y[0:r]
             x = Copy.step(self.out[0:n])
             command_boundary()
         return x
@@ -238,7 +271,7 @@ class Doubles(iron.Graph):
 
 class Singles(iron.Graph):
     """``single_group`` ChromaSingleTransformerBlocks over ``x``; ``mods`` (group x 3, hidden),
-    each block's shift, scale and gate; per call ``nk``."""
+    each block's shift, scale and gate; ``angles`` (rows, head_dim), the rows' RoPE; per call ``nk``."""
 
     def __init__(self, c: ChromaConfig, first: int = 0, w=None):
         self.c = c
@@ -258,11 +291,10 @@ class Singles(iron.Graph):
             setattr(self, f"b{j}_om", lin(po[:, E:], FMT.proj))
             setattr(self, f"b{j}_o_b", vec(f("proj_out.bias")))
         self.one = vec(np.ones(E))
-        self.angles = vec(angles(c))
         n, H, D = c.rows, c.heads, c.head_dim
         self.ks, self.vs = iron.state((n, H, D)), iron.state((n, H, D))
 
-    def body(self, x, mods, *, nk: Scratchpad[np.int32]):
+    def body(self, x, mods, angles, *, nk: Scratchpad[np.int32]):
         c = self.c
         E, H, D, n = c.hidden, c.heads, c.head_dim, c.rows
         for j in range(self.n):
@@ -276,7 +308,7 @@ class Singles(iron.Graph):
             s = S()
             for k in ("q", "q_b", "k", "k_b", "v", "v_b", "qn", "kn"):
                 setattr(s, k, g(k))
-            q, k, v = qkv(s, h, c, self.angles)
+            q, k, v = qkv(s, h, c, angles)
             self.ks[0:n] = k.reshape(n, H, D)
             self.vs[0:n] = v.reshape(n, H, D)
             o = attention(q.reshape(n, H, D), self.ks[:nk], self.vs[:nk]).reshape(n, E)
@@ -340,47 +372,64 @@ class DitOut(iron.Graph):
         return F.linear(h, self.proj, self.proj_b, precision=PREC)
 
 
-def export_dit(root: Path, out: Path, c: ChromaConfig, check: bool) -> None:
+def export_dit(root: Path, out: Path, c: ChromaConfig, check: bool, base: ChromaConfig | None = None) -> None:
+    """The DiT's graphs of c's size. Of another size than the export's first (base): dit_in,
+    dit_out and doubles named _WxH (the image's rows split from the text's at its tokens), singles
+    _WxH only when its rows differ from base's (it depends on the rows alone); their banks are
+    base's (iron_qwenimage.share_banks: the same weights in the same places, the RoPE an input);
+    mods and ctx hold no size."""
+    base = base or c
+    sfx = "" if (c.width, c.height) == (base.width, base.height) else f"_{c.width}x{c.height}"
     w = qi.Checkpoint(root / "transformer", random=ARGS.random)
     rng = np.random.default_rng(0)
     meta = dict(config=dataclasses.asdict(c), weights=FMT.proj, mha=FMT.mha)
     E = c.hidden
     small = [
         ("mods", Mods(c, w), dict(x=(c.mod_rows, c.approx_in)), lambda: dict(x=bf(rng.standard_normal((c.mod_rows, c.approx_in))))),
-        ("dit_in", Embed(w, "x_embedder"), dict(x=(c.tokens, c.latent)), lambda: dict(x=bf(rng.standard_normal((c.tokens, c.latent))))),
+        ("dit_in", Embed(w, "x_embedder"), dict(x=(c.img_rows, c.latent)), lambda: dict(x=bf(rng.standard_normal((c.img_rows, c.latent))))),
         ("ctx", Embed(w, "context_embedder"), dict(x=(c.text_rows, c.t5)), lambda: dict(x=bf(rng.standard_normal((c.text_rows, c.t5)) * 0.1))),
-        ("dit_out", DitOut(c, w), dict(x=(c.tokens, E), shift=(E,), scale=(E,)),
-         lambda: dict(x=bf(rng.standard_normal((c.tokens, E))), shift=bf(0.1 * rng.standard_normal(E)), scale=bf(0.1 * rng.standard_normal(E)))),
+        ("dit_out", DitOut(c, w), dict(x=(c.img_rows, E), shift=(E,), scale=(E,)),
+         lambda: dict(x=bf(rng.standard_normal((c.img_rows, E))), shift=bf(0.1 * rng.standard_normal(E)), scale=bf(0.1 * rng.standard_normal(E)))),
     ]
     for name, g, shapes, inputs in small:
-        if name not in ARGS.parts:
+        if name not in ARGS.parts or sfx and name in ("mods", "ctx"):
             continue
+        name += sfx if name in ("dit_in", "dit_out") else ""
         t0 = time.time()
         cg = g.compile(**shapes)
         m = export_graph(cg, out / name, name, meta)
         print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         if check:
             write_check(g, m, out / name, inputs())
-    for name, cls, total, group, nmods in (("doubles", Doubles, c.doubles, c.double_group, 12), ("singles", Singles, c.singles, c.single_group, 3)):
-        if name not in ARGS.parts:
+    for kind, cls, total, group, nmods in (("doubles", Doubles, c.doubles, c.double_group, 12), ("singles", Singles, c.singles, c.single_group, 3)):
+        if kind not in ARGS.parts:
+            continue
+        name = kind + sfx
+        if kind == "singles" and sfx and c.rows == base.rows:
+            print(f"{c.width}x{c.height}: singles of {c.rows} rows are {kind}'s", flush=True)
             continue
         t0 = time.time()
         g = cls(c, 0, w)
-        shapes = dict(x=(c.rows, E), mods=(group * nmods * E,))
+        shapes = dict(x=(c.rows, E), mods=(group * nmods * E,), angles=(c.rows, c.head_dim))
         cg = g.compile(**shapes)
         d = out / name
         groups = total // group
         m = export_graph(cg, d, name, dict(meta, groups=groups, group=group))
         print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         variants = [{k: b["image"] for k, b in m["banks"].items()}]
-        for i in range(1, 1 if ARGS.one_group else groups):
+        shared = sfx and qi.share_banks(m, d, out / kind)
+        if shared:
+            variants = shared
+            print(f"{name}: the banks are {kind}'s (the same weights in the same places): stored once", flush=True)
+        for i in range(1, 1 if ARGS.one_group or shared else groups):
             variants.append(variant_bank(cg, cls(c, i * group, w), d, f"bank_g{i}"))
             print(f"{name}: bank of blocks {i * group}..{(i + 1) * group - 1}", flush=True)
         m["variants"] = variants
         (d / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
         if check:
             mods = np.concatenate([0.1 * rng.standard_normal(E) for _ in range(group * nmods)])
-            write_check(g, m, d, dict(x=bf(rng.standard_normal((c.rows, E))), mods=bf(mods)), dict(nk=c.tokens + 13))
+            write_check(g, m, d, dict(x=bf(rng.standard_normal((c.rows, E))), mods=bf(mods), angles=bf(angles(c))),
+                        dict(nk=c.tokens + 13))
 
 
 ARGS = None
@@ -391,7 +440,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", type=Path)
     ap.add_argument("out", type=Path)
-    ap.add_argument("--size", type=int, default=1024)
+    ap.add_argument("--size", nargs="+", default=["1024"],
+                    help="the pictures' sizes: N (N x N) or WxH, multiples of 16. Several (1024 512 832x1248 ...) make "
+                         "one export of them: each other size's dit_in, dit_out and doubles named _WxH (singles "
+                         "too when its rows differ) on the first size's banks, its VAE in sizes/WxH/vae")
     ap.add_argument("--parts", nargs="*", default=["mods", "dit_in", "ctx", "dit_out", "doubles", "singles", "t5", "vae"],
                     help="graphs to export: the DiT's, and t5 and vae (tools/amd/iron_chroma_parts.py, run after the DiT)")
     ap.add_argument("--proj", default=FMT.proj, choices=("bf16", "q8", "q6", "q4", "bfp16"))
@@ -413,20 +465,35 @@ def main(argv=None) -> int:
     iron_q4.PREFILL["q4"] = "bf16"
     iron_q4.install_linear()
     bind_device(a.device, a.cols)
-    c = ChromaConfig(width=a.size, height=a.size)
+    sizes = list(dict.fromkeys(parse_size(x) for x in a.size))
+    configs = [ChromaConfig(width=w, height=h) for w, h in sizes]
+    base = configs[0]
     a.out.mkdir(parents=True, exist_ok=True)
-    export_dit(a.root, a.out, c, a.check)
+    for c in configs:
+        export_dit(a.root, a.out, c, a.check and c is base, base)
     write_model(a.root, a.out)
     rest = [p for p in ("t5", "vae") if p in a.parts]
-    if rest:  # in a process of its own: the parts' module sets IRON's formats and precisions its way
-        import subprocess
+    # in a process of its own: the parts' module sets IRON's formats and precisions its way. T5
+    # holds no size; each other size's VAE goes in sizes/WxH/vae
+    import subprocess
 
-        cmd = [sys.executable, str(Path(__file__).with_name("iron_chroma_parts.py")), str(a.root), str(a.out),
-               "--size", str(a.size), "--only", *rest, "--device", a.device, "--cols", str(a.cols)]
-        if a.check:
+    for c in configs:
+        only = [p for p in rest if p == "vae" or c is base]
+        if not only:
+            continue
+        out = a.out if c is base else a.out / "sizes" / f"{c.width}x{c.height}"
+        cmd = [sys.executable, str(Path(__file__).with_name("iron_chroma_parts.py")), str(a.root), str(out),
+               "--width", str(c.width), "--height", str(c.height), "--only", *only, "--device", a.device, "--cols", str(a.cols)]
+        if a.check and c is base:
             cmd.append("--check")
         subprocess.run(cmd, check=True)
     return 0
+
+
+def parse_size(spec: str) -> tuple:
+    """A --size: N (N x N) or WxH, in pixels."""
+    w, _, h = spec.lower().partition("x")
+    return int(w), int(h or w)
 
 
 def write_model(root: Path, out: Path) -> None:

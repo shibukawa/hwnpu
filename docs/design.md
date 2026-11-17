@@ -7265,3 +7265,29 @@ Mac (16.227) は 512² と 1024² を 1 つの書き出し (関数 2 つの `.ai
 - SANA 1.5 1.6B (`SANA1.5-1.6B`、VAE 1.1) も道具を変えずに同じ手順で (`sana1.5-1.6b-aspects.amd-npu2`): 書き出し 3 分 57 秒 (カーネルのキャッシュが温まった状態)、最大 RSS 8.7 GB、16 GB (DiT の重み 3.2 GB × 2)。1:1 と長方形 6 つは 1 分 01〜02 秒、最大 2.03〜2.14 GiB、1:1s 28 秒 2.03 GiB。glasses はどの大きさでも従った
 
 **残り**: Chroma、Qwen-Image の AMD の 8 つ
+
+### 16.241 Chroma1-Flash の AMD の書き出しを複数の大きさに (RoPE を入力に、行を 512 と 256 の倍数に詰める) — 2026-11-17
+
+`iron_chroma.py --size` が大きさを複数受け (`N` か `WxH`)、1 つの書き出しにする (`chroma1-flash-aspects.amd-npu2`)。Mac の Neural Engine では 832 x 1248 と 800 x 1200 が失敗し 768 x 1152 が通る (Chroma1 も FLUX.2 klein も) ので、Neural Engine の長さがどれも 64 の倍数になる大きさ (1024²、512²、768 x 1152、1152 x 768、768 x 1024、1024 x 768、640 x 1152、1152 x 640) と、832 x 1248 で試した。
+
+- **RoPE を入力に**: `Doubles` と `Singles` は RoPE の表をバンクに焼いていた。入力 `angles` (rows x 128) に移し (Go の `ropeAngles`、`TestRopeAngles` で Python の値と照らす)、どの大きさのブロックも 1 つのバンクを使う (`share_banks`、`../doubles/` のように先のフォルダの名前で。前は `dit_blocks` 決め打ち)。前の書き出し (`angles` の入力なし) もそのまま動く
+- **行**: [絵、文の 512、詰め物] を 512 の倍数に (768 x 1152: 3456 + 512 = 3968 → 4096)。詰め物は文の詰め物の後なので、前からの `nk` (絵と文の行) で鍵から外れ、マスクは要らない (FLUX.2 klein は文が先なので並べ替えが要った)。single ブロックは行の数だけで決まり、1 つ目の大きさと行が同じなら同じグラフ
+- **256 の倍数**: AMD の射影 (`flm.ProjectionGEMM`) は M が 256 の倍数。double ブロックの絵の流れは絵のトークンを 256 の倍数に切り上げた行 (`img_rows`、3456 → 3584: その先は文の行で、計算して捨てる) で、文の流れは 512 行で計算し、それぞれ自分の行だけを注意の状態と出力に書く。`dit_in` と `dit_out` も `img_rows` で (Go が 0 を足して、先頭のトークンの分だけ取る)。正方形は前と同じ計算
+- **大きさ**: `dit_in`、`dit_out`、`doubles` は大きさごと (`_WxH`)、`singles` は行が違うときだけ、VAE は `sizes/WxH/vae` (16.238 の一般化した VAE)。`--size` は `WxH` も受ける (`aspect.ParseOrSide`、モデルの画素の倍数)
+
+**測ったこと** (Ryzen AI 9 365、Chroma1-Flash、Heun 8 ステップ、種 1、"a portrait photo of a young woman with round glasses reading a book in a sunlit cafe"。ほかのセッションの書き出しと NPU を分けていた)
+
+| 大きさ | 1 枚 | 最大 (NPU と RSS) |
+|---|---|---|
+| 1024² | 3 分 16 秒 | 3.54 GiB |
+| 512² | 1 分 00 秒 | 1.50 GiB |
+| 768 x 1152、1152 x 768 | 2 分 44 秒 | 3.00〜3.03 GiB |
+| 768 x 1024、1024 x 768 | 2 分 21〜22 秒 | 2.68〜2.71 GiB |
+| 640 x 1152、1152 x 640 | 2 分 18〜19 秒 | 2.51〜2.56 GiB |
+| 832 x 1248 | 3 分 15 秒 | 3.54 GiB |
+
+- 書き出し: 9 つで 15 分 06 秒 (最大 RSS 29.6 GB)、17 GB。DiT の重みは 1 組
+- どの大きさも glasses に従い、端の乱れはない。832 x 1248 (Neural Engine で失敗する大きさ) も AMD では描ける。1024² は前の 3 分 22 秒〜3 分 47 秒 (16.2xx) より遅くならない
+
+**残り**: Chroma1-HD (同じ構造で、同じ手順のはず)。Neural Engine の 832 x 1248 などは Core AI の側 (`milpart.KeyParts`、`HeadChunk`、VAE の注意の塊の長さが 64 の倍数でない) で、AMD のこの変更とは別
+

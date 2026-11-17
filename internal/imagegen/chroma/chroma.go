@@ -53,6 +53,10 @@ type Config struct {
 	Mods        int `json:"mods"`
 	ModRows     int `json:"mod_rows"`
 	ApproxIn    int `json:"approx_in"`
+	// the RoPE's (iron_chroma.ChromaConfig): an export whose blocks take it as an input
+	Axes    []int   `json:"axes"`
+	Theta   float64 `json:"theta"`
+	HeadDim int     `json:"head_dim"`
 }
 
 // GH and GW are the patches' rows and columns (2 x 2 latent pixels each).
@@ -66,6 +70,10 @@ func (c Config) Tokens() int { return c.GH() * c.GW() }
 
 // Rows is the DiT's rows: the image's, then the text's.
 func (c Config) Rows() int { return c.Tokens() + c.TextRows }
+
+// GraphRows is the rows of an IRON export's blocks: Rows in whole rounds of 512, the rest padding
+// after the text (iron_chroma.ChromaConfig.rows).
+func (c Config) GraphRows() int { return (c.Rows() + 511) / 512 * 512 }
 
 // StepFunc is told that step i (of n) took d.
 type StepFunc func(i, n int, d time.Duration)
@@ -137,6 +145,12 @@ type Pipeline struct {
 // Neural Engine (or, with dev nil, the CPU interpreter) one of Convert. log, when not nil, is
 // shown each Core ML program as it loads (the first load compiles it for the NPU).
 func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*Pipeline, error) {
+	return OpenAt(ctx, dev, dir, 0, 0, log)
+}
+
+// OpenAt is Open for pictures of w x h of an IRON export of several sizes (IronSizes); 0 x 0 is
+// the export's first.
+func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
 	p := &Pipeline{embedScale: 1}
 	fail := func(err error) (*Pipeline, error) {
 		p.Close()
@@ -158,7 +172,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, dir string, log io.Writer) (*P
 			return fail(errors.New("an IRON export runs on AMD's NPU only"))
 		}
 		var e *ironEngine
-		e, err = openIron(ctx, dev, dir, &p.C, &p.Model, p.logf)
+		e, err = openIron(ctx, dev, dir, w, h, &p.C, &p.Model, p.logf)
 		if e != nil {
 			p.eng = e
 			p.t5dim = e.t5dim

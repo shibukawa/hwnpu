@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -21,10 +22,6 @@ import (
 // chromaModel is the Chroma export m runs here: on Apple's Neural Engine the Core AI export
 // (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_chroma.py.
 func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, error) {
-	side, err := c.side()
-	if err != nil {
-		return "", err
-	}
 	format, err := imageFormat(ctx, c.Backend)
 	switch {
 	case c.CPU: // the CPU interpreter runs Core ML exports
@@ -32,8 +29,18 @@ func (c *GenerateCmd) chromaModel(ctx context.Context, m chat.Model) (string, er
 	case err == nil && llm.AppleFormat(format):
 	case err == nil:
 		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
-	default:
-		return amdOr(ctx, err, m, "tools/amd/iron_chroma.py", side)
+	case runtime.GOOS == "darwin" || chat.HereVendor() != "amd":
+		return "", err
+	default: // AMD's NPU: an export of every aspect ratio, or one of the square alone
+		w, h, perr := c.picture(16)
+		if perr != nil {
+			return "", perr
+		}
+		return aspectsAMD(ctx, m, w, h, "tools/amd/iron_chroma.py", 16, chroma.IronSizes)
+	}
+	side, err := c.side()
+	if err != nil {
+		return "", err
 	}
 	if side%16 != 0 {
 		return "", fmt.Errorf("--size %d: Chroma's pictures are multiples of 16 pixels", side)
@@ -74,7 +81,14 @@ func (c *GenerateCmd) chroma(ctx context.Context, model string, outs []string) e
 		dev = d
 		iron.ShareExport(model, logf)
 	}
-	p, err := chroma.Open(ctx, dev, model, lw)
+	w, h := 0, 0 // the export's first size
+	if !programs && len(chroma.IronSizes(model)) > 1 {
+		var err error
+		if w, h, err = c.picture(16); err != nil {
+			return err
+		}
+	}
+	p, err := chroma.OpenAt(ctx, dev, model, w, h, lw)
 	if err != nil {
 		return err
 	}

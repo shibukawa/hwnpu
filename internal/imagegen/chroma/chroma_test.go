@@ -120,3 +120,21 @@ func TestLinkSources(t *testing.T) {
 		t.Error("not a hard link")
 	}
 }
+
+// TestRopeAngles: the blocks' input angles of 768 x 1152 against iron_chroma.angles' values
+// (3456 patches, 3968 rows run as 4096).
+func TestRopeAngles(t *testing.T) {
+	c := Config{Width: 768, Height: 1152, TextRows: 512, Axes: []int{16, 56, 56}, Theta: 10000, HeadDim: 128}
+	if c.Rows() != 3968 || c.GraphRows() != 4096 {
+		t.Fatalf("rows %d, graph rows %d", c.Rows(), c.GraphRows())
+	}
+	a := ropeAngles(c)
+	for _, x := range []struct {
+		r, col int
+		want   float64
+	}{{0, 1, 0}, {100, 3, 0}, {1000, 40, 0.926369845867157}, {3455, 70, 0.9999513626098633}, {3456, 5, 0}, {4095, 127, 0}} {
+		if got := float64(a[x.r*c.HeadDim+x.col]); math.Abs(got-x.want) > 1e-5 {
+			t.Errorf("angles[%d, %d] = %v, want %v", x.r, x.col, got, x.want)
+		}
+	}
+}

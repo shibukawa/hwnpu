@@ -69,15 +69,24 @@ func Parse(name string, multiple int) (width, height int, err error) {
 	return 0, 0, fmt.Errorf("%q is not an aspect ratio; use one of %s", name, Names())
 }
 
-// ParseOrSide is Parse, or a picture of side x side pixels for a pixel count (the square sizes
-// --size took before it took names).
+// ParseOrSide is Parse, or WIDTHxHEIGHT (multiples of multiple; the sizes an export holds beyond
+// the eight, such as 768x1152), or a picture of side x side pixels for a pixel count (the square
+// sizes --size took before it took names).
 func ParseOrSide(spec string, multiple int) (width, height int, err error) {
 	if w, h, err := Parse(spec, multiple); err == nil {
 		return w, h, nil
 	}
+	if ws, hs, ok := strings.Cut(strings.ToLower(spec), "x"); ok {
+		w, ew := strconv.Atoi(ws)
+		h, eh := strconv.Atoi(hs)
+		if ew != nil || eh != nil || w <= 0 || h <= 0 || w%multiple != 0 || h%multiple != 0 {
+			return 0, 0, fmt.Errorf("--size %s: not WIDTHxHEIGHT in multiples of %d pixels", spec, multiple)
+		}
+		return w, h, nil
+	}
 	n, err := strconv.Atoi(spec)
 	if err != nil || n <= 0 {
-		return 0, 0, fmt.Errorf("--size %s: not an aspect ratio (%s), nor a pixel count", spec, Names())
+		return 0, 0, fmt.Errorf("--size %s: not an aspect ratio (%s), WIDTHxHEIGHT, nor a pixel count", spec, Names())
 	}
 	return n, n, nil
 }
