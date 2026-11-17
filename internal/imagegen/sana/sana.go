@@ -267,7 +267,7 @@ func OpenAt(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io
 			return fail(errors.New("an IRON export runs on AMD's NPU only"))
 		}
 		var e *ironEngine
-		e, p.Dit, p.Text, err = openIron(dev, dir)
+		e, p.Dit, p.Text, err = openIron(dev, dir, w, h)
 		if e != nil {
 			p.eng = e
 		}

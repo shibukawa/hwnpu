@@ -32,8 +32,9 @@ type sanaRun struct {
 	seed          uint64
 	resident, cpu bool
 	dump, cache   string
-	// size is the picture's width and height, taken from an export of several sizes (Core AI's)
-	size int
+	// width and height are the picture's, taken from an export of several sizes (Core AI's
+	// squares, an IRON export's aspect ratios)
+	width, height int
 }
 
 // runSana draws the picture with an export of Sana: of tools/amd/iron_sana.py on
@@ -45,7 +46,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 	t0 := time.Now()
 	programs := sana.IsProgramExport(r.model)
 	var dev *hwnpu.Device
-	w := 0 // the export's default size
+	w, h := 0, 0 // the export's default size
 	switch {
 	case r.cpu:
 	case programs:
@@ -58,7 +59,7 @@ func runSana(ctx context.Context, r sanaRun) error {
 			return err
 		}
 		if len(m.Sizes) > 0 {
-			w = r.size
+			w, h = r.width, r.height
 		}
 		name, opts := exportDevice(m.Backend, ""), []hwnpu.Option{hwnpu.WithPlacement(hwnpu.PlacementStrict)}
 		if m.Backend == llm.BackendIntel {
@@ -83,8 +84,11 @@ func runSana(ctx context.Context, r sanaRun) error {
 	}
 	if !programs {
 		iron.ShareExport(r.model, logf)
+		if len(sana.IronSizes(r.model)) > 1 {
+			w, h = r.width, r.height
+		}
 	}
-	p, err := sana.OpenAt(ctx, dev, r.model, w, w, lw)
+	p, err := sana.OpenAt(ctx, dev, r.model, w, h, lw)
 	if err != nil {
 		return err
 	}

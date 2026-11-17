@@ -7247,4 +7247,19 @@ Mac (16.227) は 512² と 1024² を 1 つの書き出し (関数 2 つの `.ai
 - 1:1s 9.9 秒 1.74 GiB。2:3、3:4、9:16、3:2、4:3、16:9 はどれも 31〜32 秒、2.04〜2.11 GiB (行が 1024² と同じ 4608 なので時間も同じ)。どの大きさも glasses に従い、端の乱れはない
 - Anima-Aesthetic も同じ道具で `--dit anima-aesthetic-v1.1.safetensors` (`anima-aesthetic-aspects.amd-npu2`): 書き出し 2 分 50 秒 (カーネルのキャッシュが温まった状態)、最大 RSS 7.1 GB、5.8 GB。25 ステップ、CFG で 1:1 2 分 23 秒 2.14 GiB、2:3 2 分 23 秒 2.11 GiB、16:9 2 分 22 秒 2.09 GiB
 
-**残り**: Chroma、Sana、Qwen-Image の AMD の 8 つ、Mac と Intel の書き出しの 8 つ。取得元の正方形の書き出しは残る
+**残り**: Chroma、Qwen-Image の AMD の 8 つ (Sana は 16.240)、Mac と Intel の書き出しの 8 つ。取得元の正方形の書き出しは残る
+
+### 16.240 Sana の AMD の書き出しを 8 つのアスペクト比に (DiT の重みを大きさで共有、VAE の深さ方向の畳み込みの余裕) — 2026-11-17
+
+`iron_sana.py --size` が大きさを複数受け、8 つ (32 の倍数の `aspect.All32`: `--size 1024 512 832x1248 864x1152 768x1344 1248x832 1152x864 1344x768`) を 1 つの書き出し `sana-600m-aspects.amd-npu2` にする。hwnpu-image は Anima と同じく `NAME-aspects.amd-npu2` を先に探す (`aspectsAMD`、Anima のものを一般化)。
+
+- **DiT は大きさごと、重みは 1 組**: Sana の DiT のグラフはトークンの数だけでなく深さ方向の畳み込みの格子 (幅 + 1 の行) にもよるので、大きさごとに `dit_in_WxH`、`dit_blocks_WxH`、`dit_out_WxH`。重みのバンク (`scratch`) は状態も含むので、そのままでは大きさで形が変わって共有できなかった (最初の書き出し 14 GB)。複数の大きさの書き出しでは、詰め物の鍵のマスクをパラメータから入力 `kmask` に移し (Go の `keyMask` が作る)、格子の状態を同じ ntok の大きさの最大の行に揃える (`grid_cap`)。1 M 画素の 7 つは ntok がどれも 1024 で、`share_banks` で 1 組 (1:1s は ntok 256 で別の 1.1 GB)
+- **VAE**: 大きさごとに `sizes/WxH/vae`。832 x 1248 (幅 104、k 3、64 チャンネル) と 768 x 1344 (幅 168、k 3、32 チャンネル) で、DWConv3 のコアの見積もりが上限ちょうどと 512 バイト下で、最後のコアの出力の fifo が置けなかった。見積もりに 1 KiB の余裕を求める (`iron_dwconv.depths`。使うのは Sana だけ)
+
+**測ったこと** (Ryzen AI 9 365、Sana 600M、20 ステップ、CFG、種 1、"a portrait photo of a young woman with round glasses reading a book in a sunlit cafe")
+
+- 書き出し: DiT とテキスト 8 分 20 秒 (最大 RSS 12 GB) + VAE 4 分 42 秒。11 GB (テキスト 2.9 GB、DiT の重み 1.1 GB + 1:1s の 1.1 GB、VAE 0.7 GB + ほかの 7 つ 5.0 GB)
+- 1 枚: 1:1、2:3、3:4、9:16、3:2、4:3、16:9 どれも 35 秒、最大 2.03〜2.23 GiB。1:1s 19 秒、2.03 GiB。どの大きさも glasses に従い、端の乱れはない
+- 1:1 のグラフは `kmask` の入力 (すべて 1) と格子が前と違うので、1024² だけの書き出しとのバイト単位の比較はしていない
+
+**残り**: Chroma、Qwen-Image の AMD の 8 つ。Sana 1600M も同じ手順で作れるはず (確かめていない)

@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -249,13 +250,13 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	} else if qwenimage.IsExport(model) {
 		err = c.qwenImage(ctx, model, outs)
 	} else if sana.IsExport(model) {
-		side, serr := c.side()
+		side, sh, serr := c.picture(32)
 		if serr != nil {
 			return serr
 		}
 		err = runSana(ctx, sanaRun{model: model, prompts: c.Prompts, outs: outs, batch: c.Batch, keepDiT: c.KeepDiT, negative: c.Negative, noise: c.Noise, latents: c.Latents,
 			steps: c.Steps, guidance: c.Guidance, cfgSigmas: c.CFGSigmas, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache,
-			size: side})
+			width: side, height: sh})
 	} else if len(c.Prompts) > 1 {
 		err = errors.New("Anima takes one prompt")
 	} else {
@@ -276,17 +277,26 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 // Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU
 // ~/models/NAME.amd-npu2 of tools/amd/iron_sana.py.
 func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, error) {
-	side, err := c.side()
-	if err != nil {
-		return "", err
-	}
 	format, err := imageFormat(ctx, c.Backend)
 	switch {
 	case c.CPU: // the CPU interpreter runs Core ML exports
 		format = llm.BackendCoreML
 	case err == nil: // Apple's Neural Engine or Intel's NPU
-	default:
-		return amdOr(ctx, err, m, "tools/amd/iron_sana.py", side)
+	case runtime.GOOS == "darwin" || chat.HereVendor() != "amd":
+		return "", err
+	default: // AMD's NPU: an export of every aspect ratio, or one of the square alone
+		w, h, perr := c.picture(32)
+		if perr != nil {
+			return "", perr
+		}
+		if w%32 != 0 || h%32 != 0 {
+			return "", fmt.Errorf("--size %s: Sana's pictures are multiples of 32 pixels", c.Size)
+		}
+		return aspectsAMD(ctx, m, w, h, "tools/amd/iron_sana.py", 32, sana.IronSizes)
+	}
+	side, err := c.side()
+	if err != nil {
+		return "", err
 	}
 	if side%32 != 0 {
 		return "", fmt.Errorf("--size %d: Sana's pictures are multiples of 32 pixels", side)
@@ -353,9 +363,9 @@ func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, err
 	return animaAMD(ctx, m, w, h)
 }
 
-// animaAMDNames are the names of the exports of Anima model m for AMD's NPU that may draw w x h:
-// the export of every aspect ratio (NAME-aspects.amd-npu2), then for a square amdNames'.
-func animaAMDNames(m chat.Model, w, h int) []string {
+// aspectsAMDNames are the names of the exports of model m for AMD's NPU that may draw w x h: the
+// export of every aspect ratio (NAME-aspects.amd-npu2), then for a square amdNames'.
+func aspectsAMDNames(m chat.Model, w, h int) []string {
 	names := []string{strings.ToLower(m.Name) + "-aspects.amd-npu2"}
 	if w == h {
 		names = append(names, amdNames(m, w)...)
@@ -363,12 +373,18 @@ func animaAMDNames(m chat.Model, w, h int) []string {
 	return names
 }
 
-// animaAMD is the export of Anima model m for AMD's NPU that draws w x h (animaAMDNames), here or
-// in the sources (chat.AMDNamed): made by hand with tools/amd/iron_anima.py, which the error
-// tells how to run when there is none.
+// animaAMD is the export of Anima model m for AMD's NPU that draws w x h (aspectsAMD).
 func animaAMD(ctx context.Context, m chat.Model, w, h int) (string, error) {
-	names := animaAMDNames(m, w, h)
-	draws := func(d string) bool { return isDir(d) && slices.Contains(anima.IronSizes(d), [2]int{w, h}) }
+	return aspectsAMD(ctx, m, w, h, "tools/amd/iron_anima.py", 16, anima.IronSizes)
+}
+
+// aspectsAMD is the export of model m for AMD's NPU that draws w x h (aspectsAMDNames; sizes are
+// the sizes an export draws), here or in the sources (chat.AMDNamed): made by hand with tool,
+// which the error tells how to run for every aspect ratio of pictures of multiple pixels
+// (aspect.Of) when there is none.
+func aspectsAMD(ctx context.Context, m chat.Model, w, h int, tool string, multiple int, sizes func(dir string) [][2]int) (string, error) {
+	names := aspectsAMDNames(m, w, h)
+	draws := func(d string) bool { return isDir(d) && slices.Contains(sizes(d), [2]int{w, h}) }
 	if d := chat.AMDNamed(ctx, m, names, draws, console.Log(os.Stderr)); d != "" {
 		return d, nil
 	}
@@ -376,17 +392,17 @@ func animaAMD(ctx context.Context, m chat.Model, w, h int) (string, error) {
 	if m.File != "" {
 		flags = " --dit " + m.File
 	}
-	var sizes []string
-	for _, a := range aspect.All {
+	var args []string
+	for _, a := range aspect.Of(multiple) {
 		if a.Width == a.Height {
-			sizes = append(sizes, fmt.Sprint(a.Width))
+			args = append(args, fmt.Sprint(a.Width))
 		} else {
-			sizes = append(sizes, fmt.Sprintf("%dx%d", a.Width, a.Height))
+			args = append(args, fmt.Sprintf("%dx%d", a.Width, a.Height))
 		}
 	}
-	return "", fmt.Errorf("AMD's NPU runs exports of tools/amd/iron_anima.py, and neither this machine (%s) nor the sources have one of %s that draws %dx%d: download %s and run\n  python tools/amd/iron_anima.py ~/models/%s %s --size %s%s\n(one export of all eight aspect ratios; its first run here puts it in the sources written back to; see docs/amd-npu-models.md)",
-		strings.Join(hcache.ExportRoots(), ", "), m.Name, w, h, strings.TrimPrefix(m.Source(), "hf:"), filepath.Base(m.Repo),
-		shortHome(filepath.Join(chat.AMDRoot(), names[0])), strings.Join(sizes, " "), flags)
+	return "", fmt.Errorf("AMD's NPU runs exports of %s, and neither this machine (%s) nor the sources have one of %s that draws %dx%d: download %s and run\n  python %s ~/models/%s %s --size %s%s\n(one export of all eight aspect ratios; its first run here puts it in the sources written back to; see docs/amd-npu-models.md)",
+		tool, strings.Join(hcache.ExportRoots(), ", "), m.Name, w, h, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo),
+		shortHome(filepath.Join(chat.AMDRoot(), names[0])), strings.Join(args, " "), flags)
 }
 
 // turboNegativeGuidance is the guidance scale a --negative without --guidance gets on a model that

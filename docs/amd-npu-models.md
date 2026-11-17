@@ -696,6 +696,14 @@ python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/models/sana-
 go run ./cmd/hwnpu-image generate --model ~/models/sana-600m-1024.amd-npu2 "..." --seed 1 -o out.png
 ```
 
+8 つのアスペクト比 (1:1、1:1s、2:3、3:4、9:16、3:2、4:3、16:9: 32 の倍数の `aspect.All32`) を 1 つの書き出しに (design.md 16.240):
+
+```bash
+python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/.cache/hwnpu/entries/amd-xdna2/sana-600m-aspects.amd-npu2 \
+    --size 1024 512 832x1248 864x1152 768x1344 1248x832 1152x864 1344x768   # 約 13 分、11 GB
+go run ./cmd/hwnpu-image generate -m sana --size 2:3 "..."
+```
+
 `--only` で部品を選べる (`text caption dit_in dit_blocks dit_out vae`)。`--text-format q8` / `bf16` は Gemma 2 を q8 (固定 2.3 GiB) / bf16 (4.6 GiB) に、`--no-prefix` は指示文も毎回計算する前の形 (512 行) に (14.6)、`--dit-precision high` は DiT の射影を HIGH に (Sana 600M で絵は同じ、2.5 倍遅い)。確かめ方は Anima と同じ: `--check` と `go run ./tools/amd/irongraph DIR`、全体は `tools/ref/ref_sana.py` の `noise` を raw の float32 にして `--noise` に (Sana-Sprint はステップ + 1 個)、`--latents` で最後の潜在、`--dump DIR` で各ステップの DiT の出力とキャプション。
 
 ### 14.5 追加 (2026-11-09)
@@ -743,7 +751,7 @@ Sana はプロンプトの前に毎回同じ指示文 (diffusers の complex_hum
 ### 14.8 残り
 
 - VAE は約 6.3 秒 (1 枚の時間の半分、14.7)。低い解像度の EfficientViT の段 (0〜3) が計 2.1 秒、1024² の ResBlock 3 つが 1.4 秒。EfficientViT の線形注意は、ヘッドごとのブロック対角の積を、全部のヘッドの密な行列積とマスクで計算していて、要る計算の H 倍 (64² で 32 倍) をしている。深さ方向の畳み込みは要素ごとの掛け算と足し算 (5 × 5 で 49 回) で、IRON の `axpy` は係数がスカラーだけなので 1 回にできない
-- 書き出しは 1 つの大きさ。大きさごとに書き出す (`hwnpu-image generate --model` はその書き出しの大きさで描く)
+- 書き出しは 8 つのアスペクト比を 1 つに (2026-11-17、16.240): 1 M 画素の 7 つは DiT の重みを共有、1:1s だけ別。どの大きさも 1 枚 35 秒 (1:1s 19 秒)、最大 2.0〜2.2 GiB
 - Mac は 4 つの Sana を Core ML で (design.md 16.145)。Intel (OpenVINO) は未対応
 - Sana 1600M (1.0) は Sana 600M と同じ VAE 1.0、1.6B の DiT で、同じ手順で書き出せるはず (確かめていない)
 

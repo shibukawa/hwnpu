@@ -183,7 +183,7 @@ func amdNames(m chat.Model, size int) []string {
 // what the listing shows, without asking the sources.
 func amdExportHere(m chat.Model) string {
 	names := amdNames(m, 0)
-	if strings.HasPrefix(m.Family, "anima") { // the export of every aspect ratio first (animaAMD)
+	if strings.HasPrefix(m.Family, "anima") || strings.HasPrefix(m.Family, "sana") { // the export of every aspect ratio first (aspectsAMD)
 		names = append([]string{strings.ToLower(m.Name) + "-aspects.amd-npu2"}, names...)
 	}
 	if strings.HasPrefix(m.Family, "flux2-klein") { // flux2klein.PrepareAMD's export of every size first, then of the squares

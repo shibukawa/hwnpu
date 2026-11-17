@@ -36,6 +36,13 @@ product gives each head's row ``[N, c D, 0...]``; RMS-normalizing that row of 64
 ``c / 8`` turns into ``N / D``. A head whose ``D`` is 0 gives 0, as the reference's eps does.
 
   python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers OUT --size 1024   # or --width 1152 --height 896
+  python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers OUT \
+      --size 1024 512 832x1248 864x1152 768x1344 1248x832 1152x864 1344x768   # the eight aspect ratios in one
+
+Sizes. The text and the caption hold no size; the DiT's graphs do (its tokens and the depthwise
+convolutions' grid), so each other size has its own dit_in, dit_out and dit_blocks, named _WxH,
+whose dit_blocks names the first size's bank files (the same weights in the same places), and
+its own VAE in sizes/WxH/vae.
 
 See docs/amd-npu-models.md.
 """
@@ -232,6 +239,11 @@ class DitConfig:
     text_rows: int = 512  # the 300 rows Sana keeps of the prompt, padded
     group: int = 4
     vae_scale: int = 32
+    # an export of several sizes (share_banks): the keys' mask of the padding rows an input
+    # (kmask) and the depthwise convolutions' grid at least grid_cap rows, so that the sizes of
+    # the same ntok hold the same bank (the weights and the states of the same shapes)
+    kmask_input: bool = False
+    grid_cap: int = 0
 
     @property
     def gw(self) -> int:
@@ -347,24 +359,29 @@ def cross_norm(w: np.ndarray, heads: int, dim: int, pad: int) -> tuple[np.ndarra
     return o * math.sqrt(E / P), 1e-5 * E / P
 
 
+def kmask(c: DitConfig) -> np.ndarray:
+    """The keys' columns of the padding rows: zeros, so that no sum of the attention counts them."""
+    m = np.zeros((c.att_dim, c.ntok), np.float32)
+    m[:, : c.tokens] = 1
+    return m
+
+
 class Shared:
     """What every block of a dit_blocks graph shares."""
 
     def __init__(self, c: DitConfig):
         n, Ch = c.ntok, mlp_pad(c)
         self.lin = LinearAttnConsts(c.att_heads, n)
-        if c.ntok != c.tokens:
-            # the keys' columns of the padding rows: zeros, so no sum of the attention counts them
-            m = np.zeros((c.att_dim, n), np.float32)
-            m[:, : c.tokens] = 1
-            self.kmask = iron.param(bf(m))
+        self.kmask = None
+        if c.kmask_input:
+            self.fbuf = iron.state((n, Ch))  # the mask is DitBlocks' input kmask
+        elif c.ntok != c.tokens:
+            self.kmask = iron.param(bf(kmask(c)))
             self.fbuf = iron.state((n, Ch))
-        else:
-            self.kmask = None
         self.one = iron.param(bf(np.ones(c.hidden)))
         self.eye = iron.param(bf(np.eye(c.att_dim))) if c.qk_norm else None
-        self.grid_a = iron.state((dw_rows(c), Ch))
-        self.grid_g = iron.state((dw_rows(c), Ch))
+        self.grid_a = iron.state((max(dw_rows(c), c.grid_cap), Ch))
+        self.grid_g = iron.state((max(dw_rows(c), c.grid_cap), Ch))
         self.cross = iron.state((n, c.cross_heads * c.cross_pad))
 
 
@@ -474,11 +491,11 @@ class SanaBlock(iron.Graph):
         Ch = x.shape[1]
         band = dw_band(c)
         Copy.step(x, grid, src=tap(tuple(x.shape), 0, [H * W * Ch], [1]),
-                  dst=tap((dw_rows(c), Ch), band * Ch, [H, W * Ch], [Wp * Ch, 1]))
+                  dst=tap(tuple(grid.shape), band * Ch, [H, W * Ch], [Wp * Ch, 1]))
         if DW["form"] == "op":
             import iron_dwconv
 
-            return iron_dwconv.dwconv3(grid, taps, H, W, dw_band_c(c))
+            return iron_dwconv.dwconv3(grid[0 : dw_rows(c)], taps, H, W, dw_band_c(c))
         n = H * Wp
         y = None
         for dy in range(3):
@@ -488,8 +505,9 @@ class SanaBlock(iron.Graph):
                 y = t if y is None else y + t
         return y + bias
 
-    def body(self, x, t6, ctx, nk):
+    def body(self, x, t6, ctx, nk, km=None):
         c, sh = self.c, self.sh
+        km = sh.kmask if km is None else km
         E, n = c.hidden, x.shape[0]
         m = self.sst + t6
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (m[i * E : (i + 1) * E] for i in range(6))
@@ -503,8 +521,8 @@ class SanaBlock(iron.Graph):
             kt = F.linear(sh.eye, k, precision=Precision.HIGHEST)  # the transpose, exactly
         else:
             kt = ReLU.step(F.linear(self.k, h, precision=PREC.dit))  # (A, n)
-        if sh.kmask is not None:
-            kt = kt * sh.kmask
+        if km is not None:
+            kt = kt * km
         vt = F.linear(self.v, h, precision=PREC.dit)  # (64 H, n)
         o = linear_attention(ReLU.step(q), kt, vt, sh.lin)
         x = x + F.linear(o, self.o, self.ob, precision=PREC.dit) * gate_msa
@@ -536,7 +554,7 @@ class SanaBlock(iron.Graph):
         g = F.silu(F.linear(h, self.ig, self.igb, precision=PREC.dit))
         if DW["form"] == "op":
             f = self.depthwise(a, sh.grid_a, self.ta) * F.silu(self.depthwise(g, sh.grid_g, self.tg))
-            if sh.kmask is not None:  # into whole 256 rows, zeros past the tokens
+            if c.ntok != c.tokens:  # into whole 256 rows, zeros past the tokens
                 sh.fbuf[0 : c.tokens] = f
                 f = sh.fbuf[0:n]
             return x + F.linear(f, self.pt, precision=PREC.dit) * gate_mlp
@@ -545,7 +563,7 @@ class SanaBlock(iron.Graph):
         f = a * F.silu(g)  # the band's rows; the pad column's are dropped next
         H, W, Wp, Ch = c.gh, c.gw, c.gw + 1, c.mlp
         src = tap((H * Wp, Ch), 0, [H, W * Ch], [Wp * Ch, 1])
-        if sh.kmask is None:
+        if c.ntok == c.tokens:
             f = Copy.step(f, src=src).reshape(n, Ch)
         else:  # into whole 256 rows, zeros past the tokens
             Copy.step(f, sh.fbuf, src=src, dst=tap((n, Ch), 0, [H * W * Ch], [1]))
@@ -557,8 +575,9 @@ class DitBlocks(iron.Graph):
     """``group`` Sana blocks over the tokens ``x``.
 
     Inputs: ``x`` (tokens, hidden); ``t6`` (6 hidden), the timestep's modulation rows
-    (dit_in); ``ctx`` (text_rows, hidden), the caption. Per call: ``nk``, the caption's rows
-    that count (the rest are masked).
+    (dit_in); ``ctx`` (text_rows, hidden), the caption; with ``kmask_input``, ``kmask``
+    (att_dim, ntok), ones for the tokens' columns, zeros for the padding's. Per call: ``nk``, the
+    caption's rows that count (the rest are masked).
     """
 
     def __init__(self, c: DitConfig, first: int = 0, w: Safetensors | None = None):
@@ -566,9 +585,9 @@ class DitBlocks(iron.Graph):
         self.sh = Shared(c)
         self.blocks = [SanaBlock(c, w, first + j, self.sh) for j in range(c.group)]
 
-    def body(self, x, t6, ctx, *, nk: Scratchpad[np.int32]):
+    def body(self, x, t6, ctx, kmask=None, *, nk: Scratchpad[np.int32]):
         for b in self.blocks:
-            x = b(x, t6, ctx, nk)
+            x = b(x, t6, ctx, nk) if kmask is None else b(x, t6, ctx, nk, kmask)
         return x
 
 
@@ -1572,12 +1591,13 @@ def vae_stages(width: int, height: int) -> list[tuple[list, GridShape]]:
     ]
 
 
-def export_vae(root: Path, out: Path, width: int, height: int, check: bool, only: list | None = None) -> None:
+def export_vae(root: Path, out: Path, width: int, height: int, check: bool, only: list | None = None,
+               name: str = "vae") -> None:
     w = (RandomWeights if ARGS.random else Safetensors)(root / "vae" / "diffusion_pytorch_model.safetensors")
     cfg = json.loads((root / "vae" / "config.json").read_text())
     assert cfg["decoder_block_out_channels"] == VAE_C and cfg["upsample_block_type"] == "interpolate", cfg
     stages = vae_stages(width, height)
-    d = out / "vae"
+    d = out / name
     d.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
     for i, (ops, g) in enumerate(stages):
@@ -1669,12 +1689,23 @@ def export_text(root: Path, out: Path, check: bool) -> None:
         write_check(g, m, d, dict(x=bf(x)))
 
 
-def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
+def size_suffix(c: DitConfig, base: DitConfig) -> str:
+    """The DiT's graphs' names for c's size: "" for the export's first size's, else _WxH. Unlike
+    Anima's they depend on the size, not the rows alone (the depthwise convolutions' grid)."""
+    return "" if (c.width, c.height) == (base.width, base.height) else f"_{c.width}x{c.height}"
+
+
+def export_dit(root: Path, out: Path, c: DitConfig, check: bool, sfx: str = "") -> None:
+    """caption (the first size's alone: it holds no size), dit_in, dit_out and dit_blocks of c's
+    size, named NAME + sfx. dit_blocks of another size shares the first's banks
+    (iron_qwenimage.share_banks: the same weights in the same places)."""
+    import iron_qwenimage as qi
+
     w = (RandomWeights if ARGS.random else Safetensors)(root / "transformer" / "diffusion_pytorch_model.safetensors")
     rng = np.random.default_rng(0)
     meta = dict(config=dataclasses.asdict(c))
     E, n = c.hidden, c.ntok
-    if "caption" in ARGS.only:
+    if "caption" in ARGS.only and not sfx:
         t0 = time.time()
         g = Caption(c, w)
         cg = g.compile(y=(c.text_rows, c.caption))
@@ -1686,37 +1717,47 @@ def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
         t0 = time.time()
         g = DitIn(c, w)
         cg = g.compile(patches=(n, c.latent), tproj=(256,))
-        m = export_graph(cg, out / "dit_in", "dit_in", meta)
-        print(f"dit_in: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+        m = export_graph(cg, out / f"dit_in{sfx}", f"dit_in{sfx}", meta)
+        print(f"dit_in{sfx}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         if check:
             ins = dict(patches=bf(rng.standard_normal((n, c.latent))), tproj=bf(timestep_sinusoid(0.78)))
-            write_check(g, m, out / "dit_in", ins)
+            write_check(g, m, out / f"dit_in{sfx}", ins)
     if "dit_out" in ARGS.only:
         t0 = time.time()
         g = DitOut(c, w)
         cg = g.compile(x=(n, E), emb=(E,))
-        m = export_graph(cg, out / "dit_out", "dit_out", meta)
-        print(f"dit_out: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+        m = export_graph(cg, out / f"dit_out{sfx}", f"dit_out{sfx}", meta)
+        print(f"dit_out{sfx}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         if check:
-            write_check(g, m, out / "dit_out", dict(x=bf(rng.standard_normal((n, E)) * 4), emb=bf(rng.standard_normal(E))))
+            write_check(g, m, out / f"dit_out{sfx}", dict(x=bf(rng.standard_normal((n, E)) * 4), emb=bf(rng.standard_normal(E))))
     if "dit_blocks" in ARGS.only:
         t0 = time.time()
         g = DitBlocks(c, 0, w)
-        cg = g.compile(x=(n, E), t6=(6 * E,), ctx=(c.text_rows, E))
-        d = out / "dit_blocks"
+        shapes = dict(x=(n, E), t6=(6 * E,), ctx=(c.text_rows, E))
+        if c.kmask_input:
+            shapes["kmask"] = (c.att_dim, n)
+        cg = g.compile(**shapes)
+        name = f"dit_blocks{sfx}"
+        d = out / name
         groups = c.layers // c.group
-        m = export_graph(cg, d, "dit_blocks", dict(meta, groups=groups))
-        print(f"dit_blocks: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+        m = export_graph(cg, d, name, dict(meta, groups=groups))
+        print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         variants = [{k: b["image"] for k, b in m["banks"].items()}]
-        for i in range(1, groups if not ARGS.one_group else 1):
+        shared = sfx and qi.share_banks(m, d, out / "dit_blocks")
+        if shared:
+            variants = shared
+            print(f"{name}: the banks are dit_blocks' (the same weights in the same places): stored once", flush=True)
+        for i in range(1, 1 if shared else groups if not ARGS.one_group else 1):
             variants.append(variant_bank(cg, DitBlocks(c, i * c.group, w), d, f"bank_g{i}"))
-            print(f"dit_blocks: bank of blocks {i * c.group}..{(i + 1) * c.group - 1}", flush=True)
+            print(f"{name}: bank of blocks {i * c.group}..{(i + 1) * c.group - 1}", flush=True)
         m["variants"] = variants
         (d / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
         if check:
             ctx = rng.standard_normal((c.text_rows, E))
-            write_check(g, m, d, dict(x=bf(rng.standard_normal((n, E))), t6=bf(rng.standard_normal(6 * E) * 0.3),
-                                      ctx=bf(ctx)), dict(nk=13))
+            ins = dict(x=bf(rng.standard_normal((n, E))), t6=bf(rng.standard_normal(6 * E) * 0.3), ctx=bf(ctx))
+            if c.kmask_input:
+                ins["kmask"] = bf(kmask(c))
+            write_check(g, m, d, ins, dict(nk=13))
 
 
 def write_model(root: Path, out: Path, c: DitConfig) -> None:
@@ -1737,7 +1778,10 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("root", type=Path, help="a diffusers repository of Sana (transformer/, vae/, text_encoder/, tokenizer/)")
     ap.add_argument("out", type=Path)
-    ap.add_argument("--size", type=int, default=1024, help="the picture's width and height")
+    ap.add_argument("--size", nargs="+", default=["1024"],
+                    help="the pictures' sizes: N (N x N) or WxH, multiples of 32. Several (1024 512 832x1248 ...) make "
+                         "one export of them: the text and caption once, the DiT's graphs of each other size _WxH "
+                         "(on the first's banks), its VAE in sizes/WxH/vae")
     ap.add_argument("--width", type=int, default=0, help="the picture's width (Sana's bins: 1152x896, 1344x768, ...)")
     ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--group", type=int, default=4)
@@ -1784,9 +1828,20 @@ def main(argv=None) -> int:
         iron_q4.install_linear()  # F.linear runs the packed weights on flm.ProjectionGEMM
     bind_device(a.device, a.cols)
     cfg = json.loads((a.root / "transformer" / "config.json").read_text())
-    c = DitConfig.of(cfg, a.width or a.size, a.height or a.size, a.group)
+    sizes = [parse_size(x) for x in a.size]
+    if a.width or a.height:
+        sizes = [(a.width or sizes[0][0], a.height or sizes[0][1])]
+    sizes = list(dict.fromkeys(sizes))
+    configs = [DitConfig.of(cfg, w, h, a.group) for w, h in sizes]
     if a.layers:
-        c = dataclasses.replace(c, layers=a.layers)
+        configs = [dataclasses.replace(c, layers=a.layers) for c in configs]
+    if len(configs) > 1:
+        # the sizes of the same tokens' rows (every picture of about 1 M pixels but 1:1s) on one bank
+        cap = {}
+        for x in configs:
+            cap[x.ntok] = max(cap.get(x.ntok, 0), dw_rows(x))
+        configs = [dataclasses.replace(x, kmask_input=True, grid_cap=cap[x.ntok]) for x in configs]
+    c = base = configs[0]
     PREC.dit = Precision(a.dit_precision)
     PREC.vae = Precision(a.vae_precision)
     PREC.vae_attn = Precision(a.vae_attn_precision)
@@ -1799,10 +1854,19 @@ def main(argv=None) -> int:
     if "text" in a.only:
         export_text(a.root, a.out, a.check)
     if {"caption", "dit_in", "dit_blocks", "dit_out"} & set(a.only):
-        export_dit(a.root, a.out, c, a.check)
+        for c in configs:
+            export_dit(a.root, a.out, c, a.check and c is base, size_suffix(c, base))
     if "vae" in a.only:
-        export_vae(a.root, a.out, c.width, c.height, a.check, a.stages)
+        for c in configs:
+            export_vae(a.root, a.out, c.width, c.height, a.check and c is base, a.stages,
+                       name="vae" if c is base else f"sizes/{c.width}x{c.height}/vae")
     return 0
+
+
+def parse_size(spec: str) -> tuple:
+    """A --size: N (N x N) or WxH, in pixels."""
+    w, _, h = spec.lower().partition("x")
+    return int(w), int(h or w)
 
 
 if __name__ == "__main__":
