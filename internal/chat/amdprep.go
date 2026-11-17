@@ -228,14 +228,22 @@ func RunIRON(ctx context.Context, python []string, name, script string, args []s
 	if err != nil {
 		return err
 	}
+	// an out.done here before the lock is of an export the caller does not take (made with other
+	// tools or another recipe, whose entry it did not match): made again. One written while
+	// waiting for the lock is of another process that made it meanwhile.
+	var before time.Time
+	if fi, err := os.Stat(out + ".done"); err == nil {
+		before = fi.ModTime()
+	}
 	unlock, err := cache.Lock(ctx, out, "the export "+filepath.Base(out), log)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if _, err := os.Stat(out + ".done"); err == nil {
+	if fi, err := os.Stat(out + ".done"); err == nil && !fi.ModTime().Equal(before) {
 		return nil // another process made it meanwhile
 	}
+	os.Remove(out + ".done")
 	part, logPath := out+".part", out+".log"
 	os.RemoveAll(part) // cut off before: made again
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
