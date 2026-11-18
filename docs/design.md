@@ -7341,3 +7341,13 @@ Qwen-Image-2.1 (7B の DiT、Qwen3-VL-8B) は、NPU で使うにはパラメー�
 - `image` の用途は 8 GB から FLUX.2 klein 4B を選ぶ (`machine: 8`)。Sana 600M が 8 GB の既定だった。AMD のピークは 3.9 GB、Apple (M1) は 1024² で 4.9 GB、512² で 3.1 GB
 - `tools/amd` の `iron_qwenimage.py` と `iron_sana.py` は、Anima、Chroma1、FLUX.2 klein が借りていた部分 (`Checkpoint`、`qparam`、`head_perm`、`rope_angles`、`share_banks`、`VaeStage`、`timestep_sinusoid`、`text_linear` など) を `iron_dit.py` に移して消した。Sana だけが使っていた `iron_dwconv.py` も消した。カーネル (`kernels/dwconv3.cc` など) は残す: チャットの書き出しの鍵はカーネルを全部含む (`amdtools.LMHash`) ので、消すとチャットの書き出しが全部作り直しになる
 - Intel の NPU の画像生成は Anima だけになる
+
+### 16.245 物体検出、姿勢、切り抜きの手で作った AMD の書き出しも初めて使ったときに取得元へ — 2026-11-18
+
+画像生成の書き出し (`chat.AMDNamed`) と FLUX.2 klein (`flux2klein.PrepareAMD`) は、`entries/amd-xdna2` にある手で作ったもの (entry.json がない) を初めて使ったときに書き戻す取得元に置く (`chat.ShareMadeByHand`、16.236)。物体検出、姿勢、切り抜き (`amdFirstRunExport`: `iron_onnxcnn.py`、`iron_efficientsam.py`) は手元にあればそのまま使うだけで、置いていなかった (初回にその場で書き出したものは `chat.SharedExport` が置く)。
+
+- `chat.ShareMadeHere(m, dir, kind, recipe, log)`: `ShareMadeByHand` の記述の種類と鍵を選べる形 (`ShareMadeByHand` は `iron-import` と `ImportedRecipe` で呼ぶ)。entry.json があるもの、`AMDRoot` の外 (`~/models`)、鍵のないもの (definitions が sha256 を持たない) は置かない
+- `amdFirstRunExport` は手元のものを `ExportKind(tool)` と `PinnedRecipe(m, tool, version)` で記述する: `hwnpu-dev cache import` がこの道具の書き出しを記述するのと同じ (`firstRunExport`) で、ほかの機械の初回の `SharedExport` がそのまま取る
+- 試験: `TestShareMadeHere`
+
+SigLIP のラベルの埋め込み (`hwnpu/siglip/NAME-HASH.f32`、ラベル 1 組で数百 KB、数秒で作り直せる) は置かない。`hwnpu-dev convert` の Core AI / OpenVINO の書き出しは AMD の外なので、ここでは扱わない。
