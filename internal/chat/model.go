@@ -608,6 +608,27 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	}
 	if missing {
 		if s.CodesHash != "" && codes == "" {
+			// the codes are needed only now, to convert: from the shared layers when one has them
+			if d := CodesDir(s.Dir, s.CodesHash); fetchCodes(ctx, s.Dir, s.CodesHash, d) {
+				codes = d
+				for ti := range tps {
+					for i := range tps[ti].ps {
+						tps[ti].ps[i].codes = d
+					}
+				}
+				for i := range all.ps {
+					all.ps[i].codes = d
+				}
+			}
+		} else if s.CodesHash != "" {
+			// converted with the definitions' codes, which this machine has: put in the shared
+			// layers, so that another machine (or this one, after a change of what is written)
+			// converts again without them
+			if h, err := codesHash(codes); err == nil && h == s.CodesHash {
+				putCodes(ctx, s.Dir, h, codes)
+			}
+		}
+		if s.CodesHash != "" && codes == "" {
 			return Config{}, fmt.Errorf("chat: %s's programs are converted with the lookup tables %s (models.yaml's codes), which neither the sources nor %s have: --codes DIR, or a models.yaml of your own without codes", c.Name, s.CodesHash, CodesDir(s.Dir, s.CodesHash))
 		}
 		if _, err := checkpoint(); err != nil {
