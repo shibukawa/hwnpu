@@ -108,14 +108,16 @@ INPLACE=1 /tmp/aicheck run -calls 50 -cpu DIR/mm_dyn_big.mlpackage
 
 ### 3.3 ANE のコンパイラが gather を外す理由 (sudo)
 
-ログの理由は `<private>` で伏せられる。伏せを外して probe を回し、ログを取る。
+ログの理由は `<private>` で伏せられる。macOS 27 では `sudo log config --mode "private_data:on"` は「Invalid Modes 'private_data:on'」で効かない。構成プロファイル [tools/coreai/logging/private-data.mobileconfig](../tools/coreai/logging/private-data.mobileconfig) (`com.apple.system.logging` の `System` → `Enable-Private-Data`) を入れる:
 
 ```sh
-sudo log config --mode "private_data:on"
+open tools/coreai/logging/private-data.mobileconfig
+# システム設定 → 一般 → デバイス管理 (または プライバシーとセキュリティ → プロファイル) で
+# 「Unified log private data (hwnpu)」をインストール (管理者のパスワード)
 /usr/bin/log show --last 1m --info | grep -c "<private>"    # 減ったか確かめる
 ```
 
-`log` は zsh の組み込みに化けるので `/usr/bin/log` と書く。macOS 10.15 以降はこれが効かないことがある。効かなければ、構成プロファイル (`com.apple.system.logging` の `System` → `Enable-Private-Data` を true) を入れる (システム設定で承認が要る)。
+`log` は zsh の組み込みに化けるので `/usr/bin/log` と書く。
 
 ```sh
 rm -rf ~/Library/Caches/coreai-cache/*/aicheck
@@ -127,9 +129,7 @@ grep -i -E "gather|slice|reject|unsupported|not supported|validation|ANE region|
 
 見たいもの: `com.apple.anec:validation` の Start と End の間の行、`ANECValidateGatherLayer rejected …` の status、MPSGraph の配置の判断。終わったら戻す:
 
-```sh
-sudo log config --mode "private_data:off"     # プロファイルを入れたならシステム設定で消す
-```
+システム設定の同じ画面でプロファイルを削除する。
 
 ### 3.4 次の段 (実装)
 
