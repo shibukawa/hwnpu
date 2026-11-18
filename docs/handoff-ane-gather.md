@@ -259,6 +259,8 @@ probe (int16 の索引は fp16 の入力をプログラムの中で int16 に変
 
 ### 3.1 ほかのチップでの配置 (M2、M3、M4)
 
+2026-11-19: M2 でも LFM2-8B-A1B (専門家を Neural Engine、拡大は gather_nd) が動いた。
+
 ```sh
 git fetch origin && git switch t3/ane-gather-probe
 go build -o /tmp/aicheck ./tools/coreai/aicheck
