@@ -213,6 +213,21 @@ LFM2-8B-A1B が hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B --backend coreai`) で動�
 - lfm3 (LFM2 の密な形) に MoE の層を足して、hwnpu-dev convert と実行時 (層ごとにルーターのロジットをホストへ戻し、専門家の配列を結び付ける) に組み込む
 - 結び付けの費用が層の数で増える理由 (Core AI の覚えている配列の上限か、16 GB の機械のメモリ圧か)。M3 の 24 GB 以上で比べたい
 
+### gpt-oss-20b の見込み (M3、2026-11-19)
+
+専門家は 24 層 × 32 × (2880 × 5760 + 2880 × 2880) = 19.1 B。int8 で 19.1 GB (16 GB に載らない)、4 ビットで 9.6 GB (注意 0.64 B と出力層 0.58 B を lut8 で足して約 11.5 GB)。
+
+4 ビットの専門家を int8 に 2 つ詰め、`+128` で負をなくして `floor_div` で取り出す形 (`aicheck moe4`):
+
+| 形 (4 専門家、1 層) | LFM2 型 | gpt-oss 型 |
+|---|---|---|
+| 行ごとの scale | 8.7 ms | 17.3 ms |
+| 64 列ごとの scale | 10.5 ms | 21.9 ms |
+
+gpt-oss は専門家だけで 24 層 × 17〜22 ms = 0.4〜0.5 s/トークン (2 tok/s ほど)。時間の大半は重みの要素ごとの演算 (cast、+128、floor_div、×16、−)。int8 の 1 層 1.7 ms も cast が律速と見られる (Neural Engine の要素ごとの演算は約 16〜26 G 要素/s)。
+
+値: Core AI の CPU (`HWNPU_COREAI_UNITS=cpu`) では正しい (cos 0.9998) が、Neural Engine では NaN。取り出しだけのプログラムは Neural Engine で全部の int8 について正しい (`aicheck fdiv`)。`mod` を入れたプログラムは GPU に回る。どこで無限大になるかは未調査 (`HWNPU_AILOWER_CUT` で切り分ける)。
+
 ## 2. コード (このブランチ)
 
 | ファイル | 変更 |

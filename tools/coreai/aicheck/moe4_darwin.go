@@ -80,10 +80,13 @@ func moe4(argv []string) error {
 			return g.Op("matmul", map[string]any{"x": x, "y": y, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(ty)}, shape...)
 		}
 		// unpack: v = 16 hi + lo8, hi in -8..7, lo8 in 0..15
-		unpack := func(v *mlpackage.Var) (lo8, hi *mlpackage.Var) {
-			hi = f16("floor_div", map[string]any{"x": v, "y": g.B.ScalarF16(16)}, v.Shape...)
-			lo8 = g.Op("sub", map[string]any{"x": v, "y": g.Mul(hi, g.B.ScalarF16(16))}, v.Shape...)
-			return lo8, hi
+		// unpack: v + 128 = 16 (hi + 8) + (lo + 8), both 0..15 (non-negative: the Neural Engine's
+		// floor_div of a negative value rounded toward 0)
+		unpack := func(v *mlpackage.Var) (lo8, hi8 *mlpackage.Var) {
+			u := g.AddScalar(v, 128)
+			hi8 = f16("floor_div", map[string]any{"x": u, "y": g.B.ScalarF16(16)}, v.Shape...)
+			lo8 = g.Op("sub", map[string]any{"x": u, "y": g.Mul(hi8, g.B.ScalarF16(16))}, v.Shape...)
+			return lo8, hi8
 		}
 		// group sums of a row (1, 1, n) over groups of G: (1, 1, n/G)
 		gsum := func(x *mlpackage.Var, n int) *mlpackage.Var {
@@ -122,11 +125,11 @@ func moe4(argv []string) error {
 			if G > 0 {
 				sg, su := g.Slice(sgu, 2, 0, I), g.Slice(sgu, 2, I, 2*I)
 				gate = g.Op("sub", map[string]any{"x": mm(x, scaleRows(gl, sg, H, I), false, 1, 1, I), "y": g.Mul(mm(xg, sg, false, 1, 1, I), g.B.ScalarF16(8))}, 1, 1, I)
-				up = mm(x, scaleRows(gh, su, H, I), false, 1, 1, I)
+				up = g.Op("sub", map[string]any{"x": mm(x, scaleRows(gh, su, H, I), false, 1, 1, I), "y": g.Mul(mm(xg, su, false, 1, 1, I), g.B.ScalarF16(8))}, 1, 1, I)
 			} else {
 				sg, su := g.Slice(sgu, 2, 0, I), g.Slice(sgu, 2, I, 2*I)
 				gate = g.Mul(g.Op("sub", map[string]any{"x": mm(x, gl, false, 1, 1, I), "y": g.Mul(xs, g.B.ScalarF16(8))}, 1, 1, I), sg)
-				up = g.Mul(mm(x, gh, false, 1, 1, I), su)
+				up = g.Mul(g.Op("sub", map[string]any{"x": mm(x, gh, false, 1, 1, I), "y": g.Mul(xs, g.B.ScalarF16(8))}, 1, 1, I), su)
 			}
 			a := g.Mul(g.SiLU(gate), up)
 			var d1, d2 *mlpackage.Var
@@ -134,11 +137,11 @@ func moe4(argv []string) error {
 				ag := gsum(a, I)
 				s1, s2 := g.Slice(sdn, 1, 0, H/2), g.Slice(sdn, 1, H/2, H)
 				d1 = g.Op("sub", map[string]any{"x": mm(a, scaleCols(dl, s1, H/2, I), true, 1, 1, H/2), "y": g.Mul(mm(ag, s1, true, 1, 1, H/2), g.B.ScalarF16(8))}, 1, 1, H/2)
-				d2 = mm(a, scaleCols(dh, s2, H/2, I), true, 1, 1, H/2)
+				d2 = g.Op("sub", map[string]any{"x": mm(a, scaleCols(dh, s2, H/2, I), true, 1, 1, H/2), "y": g.Mul(mm(ag, s2, true, 1, 1, H/2), g.B.ScalarF16(8))}, 1, 1, H/2)
 			} else {
 				as := f16("reduce_sum", map[string]any{"x": a, "axes": g.B.Ints(2), "keep_dims": g.B.ScalarBool(true)}, 1, 1, 1)
 				d1 = g.Mul(g.Op("sub", map[string]any{"x": mm(a, dl, true, 1, 1, H/2), "y": g.Mul(as, g.B.ScalarF16(8))}, 1, 1, H/2), g.Slice(sdn, 2, 0, H/2))
-				d2 = g.Mul(mm(a, dh, true, 1, 1, H/2), g.Slice(sdn, 2, H/2, H))
+				d2 = g.Mul(g.Op("sub", map[string]any{"x": mm(a, dh, true, 1, 1, H/2), "y": g.Mul(as, g.B.ScalarF16(8))}, 1, 1, H/2), g.Slice(sdn, 2, H/2, H))
 			}
 			y := g.Mul(g.Concat(2, d1, d2), g.Input(fmt.Sprintf("r%d", k), 1, 1, 1))
 			if acc == nil {
@@ -228,7 +231,7 @@ func moe4(argv []string) error {
 		gu, dn, sgu, sdn backend.Buffer
 		gate, up, down   []float32 // the values (layer 0's first K)
 	}
-	pack := func(lo, hi int) byte { return byte(int8(16*hi + lo + 8)) }
+	pack := func(lo, hi int) byte { return byte(int8(16*(hi+8) + lo + 8 - 128)) }
 	held := make([][]expert, *layers)
 	t = time.Now()
 	for l := range held {
@@ -428,5 +431,79 @@ func moe4(argv []string) error {
 		return err
 	}
 	fmt.Printf("  a call: the same experts %.3f ms, chosen in one layer %.3f ms, chosen in any of %d layers %.3f ms\n", ms(same), ms(one), *layers, ms(all))
+	return nil
+}
+
+// fdivCheck runs floor_div, mod and the unpacking of moe4 on every int8 on the Neural Engine and
+// prints the values that differ from the host's.
+func fdivCheck() error {
+	ctx := context.Background()
+	if err := llm.LockNPU(ctx); err != nil {
+		return err
+	}
+	dev, err := coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{})
+	if err != nil {
+		return err
+	}
+	dir, err := os.MkdirTemp("", "aicheck-fdiv-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	const n = 256 * 1024 // large enough for the Neural Engine
+	body := func(g *milpart.Graph) {
+		v := g.B.Op("cast", map[string]any{"x": g.InputI8("b", 1, 64, n/64), "dtype": g.B.Str("c", "fp16")}, mlpackage.Float16, 1, 64, n/64)
+		u := g.AddScalar(v, 128)
+		hi := g.B.Op("floor_div", map[string]any{"x": u, "y": g.B.ScalarF16(16)}, mlpackage.Float16, 1, 64, n/64)
+		lo := g.Op("sub", map[string]any{"x": u, "y": g.Mul(hi, g.B.ScalarF16(16))}, 1, 64, n/64)
+		g.Output(g.Concat(1, v, u, hi, lo, lo))
+	}
+	path := filepath.Join(dir, "fdiv.mlpackage")
+	if _, err := llm.WritePart(path, &milpart.Part{Name: "fdiv", Model: "moe", Body: body}, nil, llm.Options{Backend: llm.BackendCoreML, Format: "fp16"}, nil); err != nil {
+		return err
+	}
+	gp, err := dev.Compile(ctx, types.GraphSource{Path: path})
+	if err != nil {
+		return err
+	}
+	defer gp.Close()
+	fmt.Printf("ane=%v %v\n", gp.Placement().OnNPU(), gp.Placement().Ops)
+	req, _ := gp.NewRequest()
+	var in, out backend.Buffer
+	for _, a := range gp.Args() {
+		b, _ := dev.AllocBuffer(a.Bytes, types.BufferKind(0))
+		req.Bind(a.Index, b)
+		if a.Kind == types.ArgInput {
+			in = b
+		} else {
+			out = b
+		}
+	}
+	for i := 0; i < n; i++ {
+		in.Bytes()[i] = byte(int8(i%256 - 128))
+	}
+	f, err := req.Submit()
+	if err == nil {
+		err = f.Wait(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	got := make([]float32, 5*n)
+	hwnpu.DecodeF16(got, out.Bytes())
+	bad := 0
+	for i := 0; i < n; i++ {
+		b := i%256 - 128
+		want := []float32{float32(b), float32(b + 128), float32((b + 128) / 16), float32((b + 128) % 16), float32((b + 128) % 16)}
+		for k := range want {
+			if got[k*n+i] != want[k] {
+				if bad < 12 {
+					fmt.Printf("  b=%4d: %s got %g want %g\n", b, []string{"cast", "+128", "floor_div", "lo", "mod"}[k], got[k*n+i], want[k])
+				}
+				bad++
+			}
+		}
+	}
+	fmt.Printf("%d of %d values differ\n", bad, 5*n)
 	return nil
 }

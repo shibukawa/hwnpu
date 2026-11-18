@@ -44,6 +44,8 @@ func main() {
 		err = gatherCheck(os.Args[2:])
 	case "moeserve":
 		err = moeServe(os.Args[2:])
+	case "fdiv":
+		err = fdivCheck()
 	case "moe4":
 		err = moe4(os.Args[2:])
 	case "moepack":
