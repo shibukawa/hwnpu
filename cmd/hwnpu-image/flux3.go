@@ -22,7 +22,7 @@ import (
 
 // flux3Model is the FLUX.3 klein export m runs here: on Apple's Neural Engine the Core AI export,
 // downloaded and converted when missing (with the DiT's lut8 tables fitted to the activations when
-// the exports' directory holds flux3klein.StatsFile); on AMD's NPU the export of
+// the exports' directory or a source holds flux3klein.StatsFile); on AMD's NPU the export of
 // tools/amd/iron_flux3klein.py of every size of models.yaml npu.amd (one export), from the shared
 // layers or made with IRON when missing (flux3klein.PrepareAMD). It returns the export and, on AMD,
 // the sizes it draws (nil: --size's own).

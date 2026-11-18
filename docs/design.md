@@ -7431,7 +7431,7 @@ black-forest-labs/flux-3-image-klein (FLUX Kommunity License、gated) を `inter
 - 分位点から始めると、表の一番上の段が 99.8 % 点になり、少数の大きな重みが潰れて絵が壊れる。uniform (最小と最大) から始めた重み付き Lloyd (`palette.QuantizeWeightedMinMax`) だけが効いた。重みなしの k-means (uniform から) は uniform と同じ
 - 校正 12 本でも 4 本と変わらない (平均 0.980)。int8 に負けた 2 枚は細かい装飾 (丼の縁の模様、看板の右の街並み) で軌道が分かれたもの
 - 1 ステップの速度誤差 (参照の入力を与える) は自由に回した結果を予測しない。single ブロックの注意だけ int8 にすると速度誤差は 2.33 → 2.29 % でほぼ同じでも、潜在の cosine は 0.964 → 0.983 になった。重みの 6 % の変調と埋め込みも 0.978 まで効く。mode ブロックは効かない
-- 統計は `ref_flux3klein.py --stats` (int8 の DiT で 4 プロンプト、評価のプロンプトとは別) を `WEIGHT.x2` に直したもの。書き出しのフォルダの `flux3-klein.x2.safetensors` があれば `Prepare` が使い (書き出し名に `lut8x2`)、なければ uniform で警告する
+- 統計は `ref_flux3klein.py --stats` (int8 の DiT で 4 プロンプト、評価のプロンプトとは別) を `WEIGHT.x2` に直したもの。書き出しのフォルダの `flux3-klein.x2.safetensors` があれば `Prepare` が使い (書き出し名に `lut8x2`)、なければ取得元の hwnpu のリポジトリ `original/hwnpu/flux-3-image-klein-calibration/` (Hugging Face にない、commit のない `hwnpu-lock.json`) から取って使う。SHA-256 はコードに固定 (`StatsSHA256`) し、違うものは使わない。取得元が設定されていなければ Hugging Face には問い合わせない (そこにはない)。どちらにもなければ uniform で警告する
 
 **Neural Engine で測ったこと** (M3 16 GB、すべて NPU に置かれた)
 
