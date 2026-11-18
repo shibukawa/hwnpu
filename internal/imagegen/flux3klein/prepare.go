@@ -12,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/store"
 )
 
 // Setup is what Prepare makes ready.
@@ -26,9 +27,19 @@ type Setup struct {
 	Log io.Writer
 }
 
-// StatsFile is the file in Setup.Dir Prepare takes the DiT's activation statistics from when the
-// options name none (ConvertOptions.Stats): tools/ref/flux3_quant.py's calibration, 4 prompts.
+// StatsFile is the file of the DiT's activation statistics (E[x^2] of each matrix's inputs) the
+// lut8 tables are fitted to: tools/ref/ref_flux3klein.py --stats, 4 prompts at 512x512. Prepare
+// takes it, when the options name none (ConvertOptions.Stats), from Setup.Dir, else from the
+// sources (StatsRepo).
 const StatsFile = "flux3-klein.x2.safetensors"
+
+// StatsRepo is the repository of the sources (HWNPU_MODEL_SOURCE: original/StatsRepo/StatsFile,
+// its hwnpu-lock.json of no commit) that holds StatsFile: it is hwnpu's, not on Hugging Face.
+// StatsSHA256 is its SHA-256: a file that differs is not taken.
+const (
+	StatsRepo   = "hwnpu/flux-3-image-klein-calibration"
+	StatsSHA256 = "5cfe6955407ad2240933e1ec51107c6f5c279c990d9bae0e834ee743bf8bd83b"
+)
 
 // Files are the files of the repository Convert reads (models.yaml pins the large ones' sha256):
 // the diffusers layout, not its single-file copy of the DiT nor its fp8 and nvfp4 variants.
@@ -56,9 +67,7 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		log = io.Discard
 	}
 	if o.Stats == "" {
-		if p := filepath.Join(s.Dir, StatsFile); fileExists(p) {
-			o.Stats = p
-		}
+		o.Stats = stats(ctx, s.Dir, log)
 	}
 	o.defaults()
 	out := filepath.Join(s.Dir, ExportName(s.Name, o))
@@ -82,8 +91,8 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		return "", err
 	}
 	if o.Stats == "" {
-		fmt.Fprintf(log, "no activation statistics (%s): the DiT's lut8 tables are spaced evenly, which loses fine detail; see docs/design.md (FLUX.3 klein)\n",
-			filepath.Join(s.Dir, StatsFile))
+		fmt.Fprintf(log, "no activation statistics (%s, nor %s in the sources): the DiT's lut8 tables are spaced evenly, which loses fine detail; see docs/design.md (FLUX.3 klein)\n",
+			filepath.Join(s.Dir, StatsFile), StatsRepo)
 	}
 	fmt.Fprintf(log, "converting %s (Qwen3-VL %s, DiT %s): several minutes; the first load then compiles the programs for the NPU\n",
 		filepath.Base(out), o.TextFormat, o.DitFormat)
@@ -99,6 +108,33 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 	llm.ShareExport(ctx, out)
 	return out, nil
 }
+
+// stats is the path of StatsFile: dir's, else the sources' (StatsRepo, fetched here: chat.RepoDir)
+// when it has StatsSHA256; "" for none.
+func stats(ctx context.Context, dir string, log io.Writer) string {
+	if p := filepath.Join(dir, StatsFile); fileExists(p) {
+		return p
+	}
+	p := filepath.Join(chat.RepoDir(StatsRepo), StatsFile)
+	if !fileExists(p) {
+		if len(store.Sources()) == 0 {
+			return "" // Hugging Face has it not: Prepare says so when it converts
+		}
+		var err error
+		if p, err = chat.Fetch(ctx, StatsRepo, StatsFile, io.Discard); err != nil {
+			return "" // in no source
+		}
+	}
+	sum, err := store.FileSHA256(p)
+	if err != nil || sum != statsSum {
+		fmt.Fprintf(log, "%s of %s is not the one hwnpu fits the tables to (SHA-256 %s, want %s): not taken\n", StatsFile, StatsRepo, sum, statsSum)
+		return ""
+	}
+	return p
+}
+
+// statsSum is StatsSHA256 (another in the tests).
+var statsSum = StatsSHA256
 
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
