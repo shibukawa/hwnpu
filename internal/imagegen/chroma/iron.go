@@ -399,7 +399,7 @@ func (e *ironEngine) decode(ctx context.Context, z []float32, stage anima.StageF
 
 // ropeAngles is the blocks' input angles (GraphRows x HeadDim, cos and sin interleaved: IRON's
 // RoPE) of the image's rows at (0, row, column), then the text's and the padding's at (0, 0, 0)
-// (iron_chroma.angles, iron_qwenimage.rope_angles).
+// (iron_chroma.angles, iron_dit.rope_angles).
 func ropeAngles(c Config) []float32 {
 	var freqs []float64
 	var axis []int

@@ -30,8 +30,8 @@ import iron  # noqa: E402
 import iron.functional as F  # noqa: E402
 from iron import Scratchpad  # noqa: E402
 import iron_anima  # noqa: E402
+import iron_dit  # noqa: E402
 import iron_headnorm  # noqa: E402
-import iron_qwenimage as qi  # noqa: E402
 from iron_anima import bf  # noqa: E402
 from iron_graph import _raw, bind_device, export_graph  # noqa: E402
 
@@ -77,7 +77,7 @@ class Elem(iron.Graph):
     def __init__(self, c, w):
         self.c = c
         f = lambda n: np.asarray(w["single_transformer_blocks.0." + n], np.float32)  # noqa: E731
-        within = qi.head_perm(c)[: c.head_dim]
+        within = iron_dit.head_perm(c)[: c.head_dim]
         self.qn = iron_headnorm.head_weight(f("attn.norm_q.weight")[within], c.heads)
         self.kn = iron_headnorm.head_weight(f("attn.norm_k.weight")[within], c.heads)
         self.one = k.vec(np.ones(c.hidden))
@@ -118,7 +118,7 @@ def main(argv=None) -> int:
     iron_q4.install_linear()
     bind_device(a.device, a.cols)
     c = k.KleinConfig(width=a.size, height=a.size, refs=(1,) * a.refs, single_group=1)
-    w = qi.Checkpoint(a.root / "transformer")
+    w = iron_dit.Checkpoint(a.root / "transformer")
     rng = np.random.default_rng(0)
     n, E, H, D, M = c.rows, c.hidden, c.heads, c.head_dim, c.mlp
     r = lambda *s: bf(rng.standard_normal(s))  # noqa: E731

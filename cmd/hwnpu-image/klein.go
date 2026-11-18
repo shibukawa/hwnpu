@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/shibukawa/hwnpu/internal/backend/amd"
 	"image"
 	_ "image/jpeg"
 	"image/png"
@@ -17,36 +19,95 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
 
+// npuGeneration is the generation of this machine's NPU of vendor as models.yaml names it: the
+// chip on Apple, xdna1 or xdna2 on AMD, "" when it is not known (the default sizes then).
+func npuGeneration(vendor string) string {
+	switch vendor {
+	case "apple":
+		return chat.Chip()
+	case "amd":
+		return amd.Generation()
+	}
+	return ""
+}
+
+// npuAspects are the picture sizes of FLUX.2 klein's export for vendor's NPU on generation gen:
+// models.yaml npu's sizes, with the generation's overrides, in the order of aspect.All.
+func npuAspects(m chat.Model, vendor, gen string) ([]aspect.Aspect, error) {
+	spec, ok := m.NPU[vendor]
+	if !ok {
+		return nil, fmt.Errorf("%s has no %s sizes in models.yaml (npu)", m.Name, vendor)
+	}
+	sizes := spec.SizesOn(gen)
+	out := make([]aspect.Aspect, 0, len(aspect.All))
+	for _, a := range aspect.All {
+		wh, ok := sizes[a.Name]
+		if !ok {
+			return nil, fmt.Errorf("%s: no %s size for %s in models.yaml (npu)", m.Name, vendor, a.Name)
+		}
+		out = append(out, aspect.Aspect{Name: a.Name, Width: wh[0], Height: wh[1]})
+	}
+	return out, nil
+}
+
+// kleinSizesHere are FLUX.2 klein's sizes on this machine's NPU, for an export given by its
+// directory (the model is then the default one, FLUX.2-klein-4B).
+func kleinSizesHere() ([]aspect.Aspect, error) {
+	m, ok := chat.Lookup("FLUX.2-klein-4B")
+	if !ok {
+		return nil, errors.New("FLUX.2-klein-4B is not in models.yaml")
+	}
+	vendor := chat.HereVendor()
+	if vendor == "" {
+		return nil, errors.New("no NPU here for FLUX.2 klein's sizes")
+	}
+	return npuAspects(m, vendor, npuGeneration(vendor))
+}
+
 // kleinModel is the FLUX.2 klein export m runs here: on Apple's Neural Engine the Core AI export,
 // downloaded and converted when missing; on AMD's NPU the export of tools/amd/iron_flux2klein.py
-// of every aspect ratio of --size (one export), from the shared layers or made with IRON when
-// missing (flux2klein.PrepareAMD).
-func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, error) {
-	w, h, err := c.picture(16)
-	if err != nil {
-		return "", err
+// of every size of models.yaml npu.amd (one export), from the shared layers or made with IRON when
+// missing (flux2klein.PrepareAMD). It returns the export and the sizes it draws.
+func (c *GenerateCmd) kleinModel(ctx context.Context, m chat.Model) (string, []aspect.Aspect, error) {
+	format, ferr := imageFormat(ctx, c.Backend)
+	onApple := ferr == nil && format == llm.BackendCoreAI
+	vendor := "amd"
+	if onApple {
+		vendor = "apple"
 	}
-	format, err := imageFormat(ctx, c.Backend)
+	as, err := npuAspects(m, vendor, npuGeneration(vendor))
+	if err != nil {
+		return "", nil, err
+	}
+	w, h, err := c.pictureIn(as, 16)
+	if err != nil {
+		return "", nil, err
+	}
 	switch {
-	case err == nil && format == llm.BackendCoreAI:
-	case err == nil:
-		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
+	case onApple:
+	case ferr == nil:
+		return "", nil, fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
 	case runtime.GOOS == "darwin" || chat.HereVendor() != "amd":
-		return "", err
+		return "", nil, ferr
 	default:
-		return flux2klein.PrepareAMD(chat.WithModel(ctx, m), m, w, h, console.Log(os.Stderr))
+		dir, err := flux2klein.PrepareAMD(chat.WithModel(ctx, m), m, aspect.SizesOf(as), w, h, console.Log(os.Stderr))
+		return dir, as, err
 	}
 	if w%16 != 0 || h%16 != 0 {
-		return "", fmt.Errorf("--size %s: FLUX.2 klein's pictures are multiples of 16 pixels", c.Size)
+		return "", nil, fmt.Errorf("--size %s: FLUX.2 klein's pictures are multiples of 16 pixels", c.Size)
 	}
-	o := flux2klein.ConvertOptions{Width: w, Height: h, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
-	return flux2klein.Prepare(chat.WithModel(ctx, m), flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo,
+	spec := m.NPU["apple"]
+	o := flux2klein.ConvertOptions{Width: w, Height: h,
+		TextFormat: cmp.Or(c.TextFormat, spec.Text), DitFormat: cmp.Or(c.DitFormat, spec.Dit)}
+	dir, err := flux2klein.Prepare(chat.WithModel(ctx, m), flux2klein.Setup{Dir: filepath.Join(chat.ModelsDir(), "FLUX.2-klein"), Repo: m.Repo,
 		Name: m.Name, ConvertOptions: o, Log: console.Log(os.Stderr)})
+	return dir, as, err
 }
 
 // referenceArg is an --image argument's file and the reference's size as the picture's sides over
@@ -100,8 +161,14 @@ func referenceNames(divs []int) string {
 // klein draws the pictures with an export of FLUX.2 klein 4B (4 Euler steps, no guidance): of
 // tools/amd/iron_flux2klein.py on AMD's NPU, or of hwnpu-image convert on Apple's Neural Engine
 // (Core AI's).
-func (c *GenerateCmd) klein(ctx context.Context, model string, outs []string) error {
-	pw, ph, err := c.picture(16)
+func (c *GenerateCmd) klein(ctx context.Context, model string, as []aspect.Aspect, outs []string) error {
+	if as == nil { // an export given by its directory: the sizes of this machine's NPU
+		var err error
+		if as, err = kleinSizesHere(); err != nil {
+			return err
+		}
+	}
+	pw, ph, err := c.pictureIn(as, 16)
 	if err != nil {
 		return err
 	}

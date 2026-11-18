@@ -66,8 +66,16 @@ func fetchImported(ctx context.Context, m Model, out string, log io.Writer) bool
 // left as it is). Only exports in AMDRoot: ~/models is read, not written (hwnpu-dev cache import
 // puts one from there).
 func ShareMadeByHand(m Model, dir string, log io.Writer) {
+	name := filepath.Base(dir)
+	ShareMadeHere(m, dir, ImportKind, ImportedRecipe(m, cache.AMDTarget, name), log)
+}
+
+// ShareMadeHere is ShareMadeByHand for an export described as kind and recipe's (as hwnpu-dev
+// cache import describes one of a first run's tool: ExportKind and PinnedRecipe), nothing when
+// recipe is nil.
+func ShareMadeHere(m Model, dir, kind string, recipe map[string]string, log io.Writer) {
 	to := shared.Writebacks()
-	if len(to) == 0 {
+	if len(to) == 0 || recipe == nil {
 		return
 	}
 	if _, err := os.Stat(filepath.Join(dir, shared.EntryFile)); err == nil {
@@ -80,7 +88,7 @@ func ShareMadeByHand(m Model, dir string, log io.Writer) {
 		log = io.Discard
 	}
 	name := filepath.Base(dir)
-	e := PlaceEntry(ImportKind, m, cache.AMDTarget, name, ImportedRecipe(m, cache.AMDTarget, name))
+	e := PlaceEntry(kind, m, cache.AMDTarget, name, recipe)
 	e.MadeBy = map[string]string{"host": hostName(), "note": "made by hand, described by its first use"}
 	fmt.Fprintf(log, "%s: made by hand here; describing it (the SHA-256 of its files, once) to put it in the sources\n", name)
 	if _, err := shared.Describe(dir, e); err != nil {

@@ -1262,9 +1262,9 @@ def suffix(c: DitConfig, base_rows: int) -> str:
 
 def export_dit(root: Path, out: Path, c: DitConfig, check: bool, sfx: str = "") -> None:
     """dit_in, dit_out and dit_blocks of c's rows (named NAME + sfx). dit_blocks of another row
-    count than the first size's shares its banks (iron_qwenimage.share_banks: the same weights
+    count than the first size's shares its banks (iron_dit.share_banks: the same weights
     in the same places)."""
-    import iron_qwenimage as qi
+    import iron_dit
 
     w = dit_weights(root)
     rng = np.random.default_rng(0)
@@ -1303,7 +1303,7 @@ def export_dit(root: Path, out: Path, c: DitConfig, check: bool, sfx: str = "") 
     m = export_graph(cg, d, name, dict(meta, groups=groups))
     print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
     variants = [{k: b["image"] for k, b in m["banks"].items()}]
-    shared = sfx and qi.share_banks(m, d, out / "dit_blocks")
+    shared = sfx and iron_dit.share_banks(m, d, out / "dit_blocks")
     if shared:
         variants = shared
         print(f"{name}: the banks are dit_blocks' (the same weights in the same places): stored once", flush=True)

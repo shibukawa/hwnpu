@@ -269,7 +269,7 @@ The commands without `--backend` (hwnpu-image, hwnpu-audio) run on OpenVINO the 
 powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
 ```
 
-`-Level quick` (about 30 minutes) checks the device, `hwnpu-dev report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, hwnpu-chat agent, hwnpu-dev formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Qwen3, Anima at 1024 x 1024, hwnpu-dev probe and the models not yet run on an Intel machine (OCR, RTMDet, RTMO, YuNet, DA3, MoGe-2, SwiftF0, Basic Pitch, Whisper, LFM3-Audio's speech, Magenta RealTime 2, Sana 600M, MOSS-SoundEffect: about 25 GB more of downloads, 17 GB less with `-Skip sana,sfx`). `-List` shows the tests, `-Only` and `-Skip` choose them.
+`-Level quick` (about 30 minutes) checks the device, `hwnpu-dev report` and a small LFM3-1.7B chat. `standard` (the default, a few hours and about 25 GB of downloads) adds LFM3-1.7B with its defaults, hwnpu-chat agent, hwnpu-dev formats, PLaMo 3 Translate, PLaMo-Embedding, Gemma 4 E2B and Anima at 512 x 512. `full` adds images and audio in the chat, Qwen3.5, Qwen3, Anima at 1024 x 1024, hwnpu-dev probe and the models not yet run on an Intel machine (OCR, RTMDet, RTMO, YuNet, DA3, MoGe-2, SwiftF0, Basic Pitch, Whisper, LFM3-Audio's speech, Magenta RealTime 2, MOSS-SoundEffect: about 19 GB more of downloads, 11 GB less with `-Skip sfx`). `-List` shows the tests, `-Only` and `-Skip` choose them.
 
 ## Troubleshooting
 

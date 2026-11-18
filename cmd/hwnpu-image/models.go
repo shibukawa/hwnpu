@@ -16,7 +16,6 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
 )
 
 // acceptLicenses is --accept-license.
@@ -44,7 +43,7 @@ func isPath(name string) bool {
 }
 
 // resolve is the model of the definitions (models.yaml) a name of --model means for kind: its
-// name, a family (sana, sana:1.6b: picked for the machine's memory) or a use (image, depth).
+// name, a family (chroma, anima: picked for the machine's memory) or a use (image, depth).
 // What was picked is logged.
 func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	if err := chat.LoadUserModels("", os.Stderr); err != nil {
@@ -133,13 +132,13 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 }
 
 // convertedImage reports whether the image family converts for this machine's NPU (vendor, as
-// hwnpu.Vendor's String) on its first run: Anima and Sana on Apple's (Core AI) and Intel's,
-// Qwen-Image, Chroma and FLUX.2 klein on Apple's.
+// hwnpu.Vendor's String) on its first run: Anima on Apple's (Core AI) and Intel's, Chroma and
+// FLUX.2 klein on Apple's.
 func convertedImage(family, vendor string) bool {
 	switch v := strings.ToLower(vendor); {
-	case strings.HasPrefix(family, "anima"), strings.HasPrefix(family, "sana"):
+	case strings.HasPrefix(family, "anima"):
 		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
-	case strings.HasPrefix(family, "qwen-image"), strings.HasPrefix(family, "chroma"), strings.HasPrefix(family, "flux2-klein"):
+	case strings.HasPrefix(family, "chroma"), strings.HasPrefix(family, "flux2-klein"):
 		return v == strings.ToLower(hwnpu.VendorApple.String())
 	}
 	return false
@@ -182,15 +181,7 @@ func amdNames(m chat.Model, size int) []string {
 // amdExportHere is the export of model m for AMD's NPU here (amdNames at no size), "" for none:
 // what the listing shows, without asking the sources.
 func amdExportHere(m chat.Model) string {
-	names := amdNames(m, 0)
-	if strings.HasPrefix(m.Family, "anima") || strings.HasPrefix(m.Family, "sana") || strings.HasPrefix(m.Family, "chroma") { // the export of every aspect ratio first (aspectsAMD)
-		names = append([]string{strings.ToLower(m.Name) + "-aspects.amd-npu2"}, names...)
-	}
-	if strings.HasPrefix(m.Family, "flux2-klein") { // flux2klein.PrepareAMD's export of every size first, then of the squares
-		names = append([]string{flux2klein.AMDMergedName(m.Name, flux2klein.AMDSizes...),
-			flux2klein.AMDMergedName(m.Name, [2]int{512, 512}, [2]int{1024, 1024})}, names...)
-	}
-	for _, n := range names {
+	for _, n := range amdNames(m, 0) { // NAME.amd-npu2 first: the export of every aspect ratio (aspectsAMD, flux2klein.PrepareAMD)
 		if d := hcache.FindExport(n, isDir); d != "" {
 			return d
 		}

@@ -2,7 +2,7 @@
 //
 //	hwnpu-image generate "masterpiece, best quality, score_7, safe, 1girl, cherry blossoms"   # image.png, shown
 //	hwnpu-image generate -m anima "masterpiece, best quality, 1girl, cherry blossoms" -o girl.png   # Anima-Aesthetic, 25 DPM-Solver++ steps
-//	hwnpu-image generate -m sana "a red fox in a snowy forest" -o fox.png
+//	hwnpu-image generate -m flux2-klein "a red fox in a snowy forest" -o fox.png
 //	hwnpu-image depth photo.jpg                                  # photo.depth.png
 //	hwnpu-image depth -m moge --normal --raw photo.jpg
 //	hwnpu-image face-detect --draw photo.jpg                     # JSON lines, photo.faces.png
@@ -13,8 +13,8 @@
 //	hwnpu-image label -l "a cat,a dog,猫" photo.jpg               # zero-shot, any candidates, any language
 //	hwnpu-image embed --compare photo.jpg -t "a red car"         # cosine and probability of a text and a picture
 //
-// --model takes a name, a family or a use of models.yaml (image, anima-turbo, anima, sana,
-// sana:1.6b; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo;
+// --model takes a name, a family or a use of models.yaml (image, flux2-klein, anima-turbo, anima,
+// chroma; depth, da3:small, da3metric, moge:vits; face-detect, yunet; pose, rtmo;
 // detect, rtmdet:tiny; ocr, ppocr:medium; label, siglip2:large): a family alone picks for the
 // machine's memory, as hwnpu-chat's --model. On AMD's NPU the model picked runs ~/models/NAME.amd-npu2. A
 // value with a / (or a leading . or ~) is an export's directory. Without -o, generate writes
@@ -44,26 +44,16 @@
 // (minutes at 1024 x 1024), kept in --cache. convert makes such an export from a directory.
 //
 // On AMD's NPU, the exports are of tools/amd/iron_anima.py (see docs/amd-npu-models.md;
-// ~/models/anima-turbo-1024.amd-npu2, anima-aesthetic-1024.amd-npu2) or of
-// tools/amd/iron_sana.py: Sana (NVlabs), a linear DiT with Gemma 2 2B reading the prompt
-// (internal/imagegen/sana). On Apple's Neural Engine, Sana is downloaded and converted (into
-// hwnpu/models/Sana) into Core AI programs on its first run, as Anima is (one export for 512 x 512 and
-// 1024 x 1024: --size picks). Sana runs 20 steps with
-// classifier-free guidance (--guidance, 4.5 by default; --negative). --cpu runs a Core ML export with the CPU
-// interpreter (slow; for checking without the NPU).
+// ~/models/anima-turbo.amd-npu2, anima-aesthetic.amd-npu2, of the eight aspect ratios of --size).
+// --cpu runs a Core ML export with the CPU interpreter (slow; for checking without the NPU).
 //
-// On AMD's NPU (and Qwen-Image-2.1-Turbo on Apple's Neural Engine, downloaded
-// and converted on its first run: internal/imagegen/qwenimage/mil), generate also runs
-// Qwen-Image-2.1 (qwen-image: Qwen-Image-2.1-Turbo, 8 steps;
-// qwen-image:2.1, 40 steps, guidance with --guidance and --negative; tools/amd/iron_qwenimage.py,
-// internal/imagegen/qwenimage) and Chroma1 (chroma: Chroma1-Flash, Heun's 8 steps; chroma:1-hd,
+// generate also runs Chroma1 (chroma: Chroma1-Flash, Heun's 8 steps; chroma:1-hd,
 // guidance 3 with DPM-Solver++ 2M 25 steps; tools/amd/iron_chroma.py, internal/imagegen/chroma).
 // FLUX.2 klein 4B (flux2-klein: 4 steps without guidance; --image gives reference images to edit or
-// compose from; tools/amd/iron_flux2klein.py, internal/imagegen/flux2klein) runs on AMD's NPU alone.
-// Chroma1 also runs on Apple's Neural Engine, downloaded and converted into
-// Core AI programs on its first run as Sana is (T5-XXL at lut8 with its FF output projection at fp16, the DiT at lut8).
-// A model whose license restricts its use (Qwen-Image-2.1's research license, Anima's
-// non-commercial one) is asked once, on a terminal, before its first run; --accept-license (or
+// compose from; tools/amd/iron_flux2klein.py, internal/imagegen/flux2klein; the image use's model
+// from 8 GB). Chroma1 and FLUX.2 klein also run on Apple's Neural Engine, downloaded and converted
+// into Core AI programs on their first run as Anima is (Chroma1's T5-XXL at lut8 with its FF output projection at fp16, the DiT at lut8).
+// A model whose license restricts its use (Anima's non-commercial one) is asked once, on a terminal, before its first run; --accept-license (or
 // HWNPU_ACCEPT_LICENSE=ID) accepts it without asking.
 //
 // depth estimates the depth of pictures on AMD's NPU or Apple's Neural Engine with Depth
@@ -86,7 +76,7 @@ import (
 )
 
 type cli struct {
-	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (Anima, Sana, Qwen-Image-2.1)."`
+	Generate   GenerateCmd   `cmd:"" help:"Draw a picture from a prompt (FLUX.2 klein, Anima, Chroma1)."`
 	Depth      DepthCmd      `cmd:"" help:"Estimate the depth of pictures (Depth Anything 3, MoGe-2; AMD's and Apple's NPU)."`
 	FaceDetect FaceDetectCmd `cmd:"" name:"face-detect" help:"Find the faces in pictures: boxes and five landmarks (YuNet; the CPU, AMD's or Apple's NPU)."`
 	Pose       PoseCmd       `cmd:"" help:"Find the people in pictures and their 17 keypoints (RTMO; Apple's Neural Engine, Intel's NPU, the CPU)."`
@@ -95,10 +85,10 @@ type cli struct {
 	Label      LabelCmd      `cmd:"" help:"Label pictures: the likeliest of candidate labels in any language, or of a list of common ones (SigLIP 2; AMD's NPU, Apple's Neural Engine)."`
 	Embed      EmbedCmd      `cmd:"" help:"Embed pictures and texts in one space, for search and similarity (SigLIP 2; AMD's NPU, Apple's Neural Engine)."`
 	Segment    SegmentCmd    `cmd:"" help:"Cut out the thing a point or a box picks in pictures: its mask and a transparent cutout (EfficientSAM; AMD's NPU, Apple's Neural Engine, Intel's NPU, the CPU)."`
-	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory or a Sana, Chroma or Qwen-Image repository into a Core AI export (--backend coreml: the Core ML one --cpu runs; intel: OpenVINO IR)."`
+	Convert    ConvertCmd    `cmd:"" help:"Convert an Anima directory or a Chroma repository into a Core AI export (--backend coreml: the Core ML one --cpu runs; intel: OpenVINO IR)."`
 	List       ListCmd       `cmd:"" help:"List the image and depth models, their exports and what each family picks for a machine's memory."`
 
-	AcceptLicense bool `name:"accept-license" help:"Accept the license of a model whose license restricts its use (Qwen-Image-2.1: research only) without being asked; kept, as an answer of yes is."`
+	AcceptLicense bool `name:"accept-license" help:"Accept the license of a model whose license restricts its use (Anima: non-commercial) without being asked; kept, as an answer of yes is."`
 }
 
 func main() {

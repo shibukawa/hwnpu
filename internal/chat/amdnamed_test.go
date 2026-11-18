@@ -94,3 +94,32 @@ func TestAMDNamed(t *testing.T) {
 		t.Errorf("%s for none", got)
 	}
 }
+
+// TestShareMadeHere: an export of a first run's tool made by hand here (detect, pose, segment)
+// goes in the source written back to as that tool's entry (the kind and recipe a first run elsewhere
+// looks for), once; nothing without a recipe.
+func TestShareMadeHere(t *testing.T) {
+	ctx := context.Background()
+	share := t.TempDir()
+	if _, err := withSources(t, []string{"file://" + filepath.ToSlash(share) + "?writeback=true"}, "version: 1\nmodels:\n  LFM3-1.7B:\n    machine: 8\n"); err != nil {
+		t.Fatal(err)
+	}
+	m := modelNamed("LFM3-1.7B")
+	dir := filepath.Join(AMDRoot(), "lfm3-1.7b.amd-npu2")
+	handExport(t, dir, "here:")
+	ShareMadeHere(m, dir, ExportKind("iron_onnxcnn.py"), nil, nil)
+	if _, err := os.Stat(filepath.Join(dir, shared.EntryFile)); err == nil {
+		t.Fatal("described without a recipe")
+	}
+	recipe := map[string]string{"model": m.Name, "tool": "iron_onnxcnn.py", "version": "3"}
+	ShareMadeHere(m, dir, ExportKind("iron_onnxcnn.py"), recipe, nil)
+	shared.Flush(ctx)
+	es, _ := shared.ListEntries(ctx, shared.Sources()[0])
+	if len(es) != 1 {
+		t.Fatalf("entries in the source: %v", es)
+	}
+	e, err := shared.ReadEntryAt(ctx, shared.Sources()[0], es[0])
+	if err != nil || e.Kind != ExportKind("iron_onnxcnn.py") || e.Recipe["version"] != "3" {
+		t.Fatalf("the entry: %+v %v", e, err)
+	}
+}

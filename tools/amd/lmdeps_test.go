@@ -65,7 +65,7 @@ func TestLMClosure(t *testing.T) {
 func TestLMFiles(t *testing.T) {
 	g := LMFiles([]string{"gemma4", "--max-seq-len", "4096", "--q4"})
 	l := LMFiles([]string{"lfm3", "--q4"})
-	if !slices.Contains(g, "iron_hostple.py") || slices.Contains(l, "iron_gemma4.py") || slices.Contains(l, "iron_sana.py") {
+	if !slices.Contains(g, "iron_hostple.py") || slices.Contains(l, "iron_gemma4.py") || slices.Contains(l, "iron_dit.py") {
 		t.Errorf("gemma4 %v\nlfm3 %v", g, l)
 	}
 	if q := LMFiles([]string{"qwen35", "--verify", "3"}); !slices.Contains(q, "iron_verify.py") {

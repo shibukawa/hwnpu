@@ -201,6 +201,42 @@ func TestWebDAVSource(t *testing.T) {
 	}
 }
 
+// TestWebDAVGC removes an entry of a WebDAV source with its folders (a folder of WebDAV stays
+// when its files are deleted), up to the model's, and leaves the others.
+func TestWebDAVGC(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	d := newDAV(t)
+	l := Source{Store: openDAV(t, d), Writeback: true}
+	put := func(model string) {
+		dir := filepath.Join(t.TempDir(), model)
+		write(t, filepath.Join(dir, "sub", "b.bin"), model)
+		rel := EntryPath(model, "amd-xdna2", model+".amd-npu", "v1")
+		if _, err := Describe(dir, Entry{Kind: "amd", Key: model + "@1", Model: model, Scope: ScopePortable, Path: rel}); err != nil {
+			t.Fatal(err)
+		}
+		if err := PutEntry(ctx, l, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("x")
+	put("y")
+	g, err := PlanGC(ctx, l, func(e Entry) bool { return e.Model == "x" }, false)
+	if err != nil || len(g.Entries) != 1 {
+		t.Fatalf("plan: %+v %v", g, err)
+	}
+	if err := g.Apply(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	conv := filepath.Join(d.root, "hwnpu", "converted")
+	if _, err := os.Stat(filepath.Join(conv, "x")); err == nil {
+		t.Error("x's folders are left")
+	}
+	if _, err := os.Stat(filepath.Join(conv, "y", "amd-xdna2", "y.amd-npu", "v1", EntryFile)); err != nil {
+		t.Errorf("y: %v", err)
+	}
+}
+
 // TestWebDAVSignIn takes the login from the netrc and says what to do without one.
 func TestWebDAVSignIn(t *testing.T) {
 	ctx := context.Background()

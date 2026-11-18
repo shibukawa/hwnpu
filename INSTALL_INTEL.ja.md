@@ -269,7 +269,7 @@ HWNPU_OV_PYTHON=~/ov/bin/python HWNPU_OV_DEVICE=NPU hwnpu-chat --backend openvin
 powershell -ExecutionPolicy Bypass -File .\tools\intel\hwnpu-intel-check.ps1 -Level quick
 ```
 
-`-Level quick` (30 分ほど) はデバイス、`hwnpu-dev report`、小さな LFM3-1.7B のチャット。`standard` (既定。数時間、初回は 25 GB ほどのダウンロード) は、LFM3-1.7B の既定の設定、hwnpu-chat agent、hwnpu-dev formats、PLaMo 3 Translate、PLaMo-Embedding、Gemma 4 E2B、512 × 512 の Anima を足します。`full` はさらにチャットへの画像と音声、Qwen3.5、Qwen3、1024 × 1024 の Anima、hwnpu-dev probe と、Intel の実機ではまだ動かしていないモデル (OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、SwiftF0、Basic Pitch、Whisper、LFM3-Audio の読み上げ、Magenta RealTime 2、Sana 600M、MOSS-SoundEffect。ダウンロードは 25 GB ほど増え、`-Skip sana,sfx` で 17 GB 減ります)。`-List` でテストの一覧、`-Only` と `-Skip` で選べます。
+`-Level quick` (30 分ほど) はデバイス、`hwnpu-dev report`、小さな LFM3-1.7B のチャット。`standard` (既定。数時間、初回は 25 GB ほどのダウンロード) は、LFM3-1.7B の既定の設定、hwnpu-chat agent、hwnpu-dev formats、PLaMo 3 Translate、PLaMo-Embedding、Gemma 4 E2B、512 × 512 の Anima を足します。`full` はさらにチャットへの画像と音声、Qwen3.5、Qwen3、1024 × 1024 の Anima、hwnpu-dev probe と、Intel の実機ではまだ動かしていないモデル (OCR、RTMDet、RTMO、YuNet、DA3、MoGe-2、SwiftF0、Basic Pitch、Whisper、LFM3-Audio の読み上げ、Magenta RealTime 2、MOSS-SoundEffect。ダウンロードは 19 GB ほど増え、`-Skip sfx` で 11 GB 減ります)。`-List` でテストの一覧、`-Only` と `-Skip` で選べます。
 
 ## うまくいかないとき
 

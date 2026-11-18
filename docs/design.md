@@ -7267,7 +7267,7 @@ Mac (16.227) は 512² と 1024² を 1 つの書き出し (関数 2 つの `.ai
 
 **残り**: Chroma、Qwen-Image の AMD の 8 つ
 
-### 16.241 Chroma1-Flash の AMD の書き出しを複数の大きさに (RoPE を入力に、行を 512 と 256 の倍数に詰める) — 2026-11-17
+### 16.241 Chroma1 (Flash と HD) の AMD の書き出しを複数の大きさに (RoPE を入力に、行を 512 と 256 の倍数に詰める) — 2026-11-17
 
 `iron_chroma.py --size` が大きさを複数受け (`N` か `WxH`)、1 つの書き出しにする (`chroma1-flash-aspects.amd-npu2`)。大きさは Anima や FLUX.2 klein と同じ 8 つのアスペクト比 (`aspect.All`: 1024²、512²、832 x 1248、880 x 1168、752 x 1360 とその横長)。Mac の Neural Engine では 832 x 1248 と 800 x 1200 が失敗し 768 x 1152 が通る (Chroma1 も FLUX.2 klein も) ので、先に Neural Engine の長さがどれも 64 の倍数になる大きさ (768 x 1152、768 x 1024、640 x 1152 とその横長) も試したが、AMD では 832 x 1248 も描けるので 2:3 は 832 x 1248 のまま (Neural Engine の失敗は Core AI の側で直す)。
 
@@ -7290,10 +7290,78 @@ Mac (16.227) は 512² と 1024² を 1 つの書き出し (関数 2 つの `.ai
 - どの大きさも glasses に従い、端の乱れはない。行が 1024² と同じ 4608 なので、時間もメモリもほぼ 1024² と同じ。1024² は前の 3 分 22 秒〜3 分 47 秒 (16.2xx) より遅くならない
 - 64 の倍数の大きさ (行が 4096 に収まる) は少し速い: 768 x 1152 で 2 分 44 秒、3.0 GiB、640 x 1152 で 2 分 18 秒、2.5 GiB
 
-**残り**: Chroma1-HD (同じ構造で、同じ手順のはず)。Neural Engine の 832 x 1248 などは Core AI の側 (`milpart.KeyParts`、`HeadChunk`、VAE の注意の塊の長さが 64 の倍数でない) で、AMD のこの変更とは別
+**Chroma1-HD**: 同じ構造なので Python も Go も変えず、`iron_chroma.py ~/models/Chroma1-HD OUT --size` (同じ 8 つ) で書き出せた (9 分 19 秒、最大 RSS 29.2 GB、18.8 GB)。T5-XXL と VAE は Flash とバイト単位で同じ (NAS にも 1 つしかないので、Flash のものをハードリンクした)。DPM++ 2M 25 ステップ、ガイダンス 3 を 17 ステップまで (否定のプロンプトの行も流す)
+
+| 大きさ | 1 枚 | 最大 (NPU と RSS) |
+|---|---|---|
+| 1024² | 8 分 34 秒 | 3.55 GiB |
+| 512² | 2 分 32 秒 | 1.53 GiB |
+| 832 x 1248、1248 x 832 | 8 分 34〜37 秒 | 3.50〜3.54 GiB |
+| 880 x 1168、1168 x 880 | 8 分 31〜32 秒 | 3.49〜3.60 GiB |
+| 752 x 1360、1360 x 752 | 8 分 29〜30 秒 | 3.46〜3.62 GiB |
+
+どの大きさも glasses に従い、端の乱れはない。メモリと書き出しの大きさは Flash と同じなので、models.yaml は Flash の値 (AMD 3.9 GB、18.8 GB) を継ぐ。
+
+**残り**: Neural Engine の 832 x 1248 などは Core AI の側 (`milpart.KeyParts`、`HeadChunk`、VAE の注意の塊の長さが 64 の倍数でない) で、AMD のこの変更とは別
 
 
-### 16.242 Core AI の書き出しも取得元に詰めて置く、チャットのモデルの prebuilt は効かない、機種の記号 — 2026-11-18
+### 16.242 FLUX.2 klein の 16:9 と 9:16 を 1344 x 768 に (ほかのモデルは 1360 x 752 のまま) — 2026-11-18
+
+FLUX.2 klein だけ、16:9 と 9:16 を 1360 x 752 から 1344 x 768 / 768 x 1344 に変えた (`flux2klein.Aspects` = `aspect.With(aspect.All, ...)`; `hwnpu-image --size 16:9` も AMD の書き出しも Core AI の変換もこれを読む)。比は 1.750 (16:9 から −1.6 %、1360 x 752 は +1.7 %)、画素は 1.03 M で 1360 x 752 よりわずかに多く、辺が 64 の倍数 (パッチ 84 x 48 = 4032、VAE の注意 168 x 96 = 16128 で、どれも 64 で割り切れる)。比の誤差がもう少し大きい 1280 x 704 (1.818、0.90 M) も AMD では描けた (24 秒、3.15 GiB) が、画素の多い方を選んだ。Anima、Chroma などは 16.238 の 8 つ (`aspect.All`) のまま。
+
+- Mac の Neural Engine では 1344 x 768 が失敗する (利用者の確認)。辺が 64 の倍数でも通らないので、16.241 の「長さが 64 の倍数でない」だけでは説明できず、Core AI の側で別に調べる。AMD では描ける
+- 書き出しの名前を `flux.2-klein-4b-aspects2.amd-npu2` にした: 手で作った書き出しの取得元の記述 (`iron-import`) は名前だけで探すので、同じ名前のままだと 16:9 が 1360 x 752 の前の書き出しが見つかってそのまま使われる。`AMDExportVersion` を 2 にして取得元の鍵の `args` も変える
+- `aspect.With`、`ParseIn`、`ParseOrSideIn`、`SizesOf`: 表を差し替えたモデルのための関数。`aspect.Parse` などは前のまま `aspect.All` / `aspect.All32`
+
+**測ったこと** (Ryzen AI 9 365、4 ステップ、種 1、"a portrait photo of a young woman with round glasses reading a book in a sunlit cafe"): 書き出し 12 分 58 秒 (最大 RSS 19.1 GB)、16.0 GB
+
+| 大きさ | 1 枚 | 最大 (NPU と RSS) |
+|---|---|---|
+| 1:1 1024² | 28 秒 | 3.60 GiB |
+| 1:1s 512² | 10 秒 | 1.90 GiB |
+| 2:3 832 x 1248、3:2 | 27 秒 | 3.55〜3.60 GiB |
+| 3:4 880 x 1168、4:3 | 28 秒 | 3.61〜3.64 GiB |
+| 9:16 768 x 1344、16:9 1344 x 768 | 27 秒 | 3.53〜3.62 GiB |
+
+どの大きさも glasses に従い、端の乱れはない。16:9 は 1360 x 752 と同じ 27 秒 (行はどちらも 4608 で 1024² と同じ)。
+
+
+### 16.243 画像のモデルの AMD の書き出しの名前を NAME.amd-npu2 に (8 つのアスペクト比のもの) — 2026-11-18
+
+Anima、Sana、Chroma1 の AMD の書き出しは、どれも `--size` の 8 つのアスペクト比を 1 つに持つ (16.237〜16.241)。名前の `-aspects` は、どのモデルにも付くので何も区別しない。それで書き出しの名前を `NAME.amd-npu2` (小文字) にした。FLUX.2 klein は 16.242 のアスペクト比変更と、前の書き出しと名前が衝突するのを避けるため `NAME-aspects2.amd-npu2` を使う。
+
+- hwnpu-image はそれぞれの書き出し名だけを探す (`aspectsAMD`、`flux2klein.PrepareAMD`)。正方形ごとの名前 (`NAME-1024.amd-npu2`、`NAME-512.amd-npu2`、`NAME-512+1024.amd-npu2`) はもう探さない。Anima、Sana、Chroma1 の前の 1024² だけの書き出しは同じ名前だが、描ける大きさを見るので 1024² にだけ使われる
+- FLUX.2 klein の、正方形ごとの書き出しを取る、1 つにまとめる (`MergeAMD`)、消す処理はやめた。取得元にも手元にも、もう正方形ごとの書き出しはない
+- 取得元 (NAS) の正方形ごとの書き出しは消した。8 つの書き出しは Anima、Sana、Chroma1 が `NAME.amd-npu2`、FLUX.2 klein が `NAME-aspects2.amd-npu2` の名前で置き直した (手で作ったものの鍵は名前から決まる: `ImportedRecipe`)。Qwen-Image はまだ大きさごとの書き出し (`qwen-image-2.1-turbo.amd-npu2` と `-512`) のまま
+
+### 16.244 Sana と Qwen-Image をやめる。image は 8 GB から FLUX.2 klein — 2026-11-18
+
+Qwen-Image-2.1 (7B の DiT、Qwen3-VL-8B) は、NPU で使うにはパラメータが多すぎて使いにくい。Sana (600M、SANA 1.5 1.6B) も一緒にやめる。
+
+- models.yaml の 4 つ (Qwen-Image-2.1-Turbo、Qwen-Image-2.1、Sana-600M、SANA1.5-1.6B) を消した。hwnpu-image の generate と convert の Sana と Qwen-Image の道も、`internal/imagegen/sana`、`internal/imagegen/qwenimage`、`tools/coreai/qlut`、`tools/ref` のそれらの参照も消した
+- `image` の用途は 8 GB から FLUX.2 klein 4B を選ぶ (`machine: 8`)。Sana 600M が 8 GB の既定だった。AMD のピークは 3.9 GB、Apple (M1) は 1024² で 4.9 GB、512² で 3.1 GB
+- `tools/amd` の `iron_qwenimage.py` と `iron_sana.py` は、Anima、Chroma1、FLUX.2 klein が借りていた部分 (`Checkpoint`、`qparam`、`head_perm`、`rope_angles`、`share_banks`、`VaeStage`、`timestep_sinusoid`、`text_linear` など) を `iron_dit.py` に移して消した。Sana だけが使っていた `iron_dwconv.py` も消した。カーネル (`kernels/dwconv3.cc` など) は残す: チャットの書き出しの鍵はカーネルを全部含む (`amdtools.LMHash`) ので、消すとチャットの書き出しが全部作り直しになる
+- Intel の NPU の画像生成は Anima だけになる
+
+### 16.245 物体検出、姿勢、切り抜きの手で作った AMD の書き出しも初めて使ったときに取得元へ — 2026-11-18
+
+画像生成の書き出し (`chat.AMDNamed`) と FLUX.2 klein (`flux2klein.PrepareAMD`) は、`entries/amd-xdna2` にある手で作ったもの (entry.json がない) を初めて使ったときに書き戻す取得元に置く (`chat.ShareMadeByHand`、16.236)。物体検出、姿勢、切り抜き (`amdFirstRunExport`: `iron_onnxcnn.py`、`iron_efficientsam.py`) は手元にあればそのまま使うだけで、置いていなかった (初回にその場で書き出したものは `chat.SharedExport` が置く)。
+
+- `chat.ShareMadeHere(m, dir, kind, recipe, log)`: `ShareMadeByHand` の記述の種類と鍵を選べる形 (`ShareMadeByHand` は `iron-import` と `ImportedRecipe` で呼ぶ)。entry.json があるもの、`AMDRoot` の外 (`~/models`)、鍵のないもの (definitions が sha256 を持たない) は置かない
+- `amdFirstRunExport` は手元のものを `ExportKind(tool)` と `PinnedRecipe(m, tool, version)` で記述する: `hwnpu-dev cache import` がこの道具の書き出しを記述するのと同じ (`firstRunExport`) で、ほかの機械の初回の `SharedExport` がそのまま取る
+- 試験: `TestShareMadeHere`
+
+SigLIP のラベルの埋め込み (`hwnpu/siglip/NAME-HASH.f32`、ラベル 1 組で数百 KB、数秒で作り直せる) は置かない。`hwnpu-dev convert` の Core AI / OpenVINO の書き出しは AMD の外なので、ここでは扱わない。
+
+### 16.246 FLUX.2 klein の AMD の書き出しも NAME.amd-npu2 に (前の大きさの書き出しは入れ替える) — 2026-11-18
+
+16.243 でほかの画像モデルの書き出しの名前から `-aspects` を外したが、FLUX.2 klein は `flux.2-klein-4b-aspects2.amd-npu2` のままだった (16.242: 取得元の手で作った書き出しの記述 `iron-import` は名前だけで探すので、同じ名前の前の書き出し、16:9 が 1360 x 752 のもの、が取られる)。取得元の前の書き出しは消した (16.245 の後片付け) ので、名前を `flux.2-klein-4b.amd-npu2` に揃えた。
+
+- 前の書き出しが手元に残る機械 (取得元から取ったもの、entry.json は同じ種類と名前): その大きさ (1024²、2:3 など 6 つ) はそのまま描く。ないもの (1344 x 768、768 x 1344) を頼むと、`PrepareAMD` はそれを `NAME.amd-npu2.replaced` に退け、取得元の今の書き出しを取る (なければ IRON で作る)。取れなかったときは元に戻す
+- 取得元の書き出しは同じ中身を新しい名前で置き直し、`-aspects2` の記述は消した
+- 試験: `TestPrepareAMDReplaces` (手元の前の書き出しを取得元の今のものに入れ替える)、`TestPrepareAMDHere` (取得元も IRON もなければ前の書き出しを戻す)
+
+### 16.247 Core AI の書き出しも取得元に詰めて置く、チャットのモデルの prebuilt は効かない、機種の記号 — 2026-11-18
 
 **置く方針** (docs/cache-sharing-design.md 7.9、7.10): Core AI のモデルは、取得元に `.aimodel` の書き出し (重みを含む、どの Mac も使う) と、`coreai-build` で作れる機種の prebuilt (重みを除いた `.aimodelc`) を置き、どちらも tar を zstd で詰めた 1 つのファイルにする。prebuilt は重みを `.aimodel` から組み立てるので、`.aimodel` は prebuilt のある機種にも要る。
 

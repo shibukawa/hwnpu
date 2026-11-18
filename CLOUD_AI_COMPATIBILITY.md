@@ -40,7 +40,6 @@ The NPUs:
 | Speech | Text-to-Speech, Polly, Azure TTS, OpenAI `/v1/audio/speech` | `hwnpu-audio tts` (no endpoint yet) | LFM3-Audio-2B | ◎ | — | — |
 | Decisions about a state | (llama.cpp's System One API) | `hwnpu-chat systemone` | d1-2B, d1-Omni-2B | ◎ | — | — |
 | Image generation | OpenAI Images, Imagen | `hwnpu-image generate` (no endpoint yet) | Anima-Turbo | ◎ | ○ | ◎ |
-| 〃 | 〃 | 〃 | Sana / Sana-Sprint | ◎ | — | ◎ |
 | Depth, points, normals | (no common cloud API) | `hwnpu-image depth` | Depth Anything 3, MoGe-2 | ○ (converted, not measured) | — | ◎ |
 | Faces (boxes and 5 landmarks) | Cloud Vision face detection, Rekognition DetectFaces, Azure Face, Apple Vision | `hwnpu-image face-detect` | YuNet | ○ (not measured) | — | CPU (it runs on the NPU, at 16–40× the CPU's energy; docs/amd-npu-models.md 17) |
 | People's poses (17 points) | Apple Vision's body pose, Video Intelligence's person detection | `hwnpu-image pose` | RTMO-s | ◎ | ○ | ◎ (exported on the first run, docs/amd-npu-models.md 22) |
@@ -98,7 +97,7 @@ Left out:
 
 `hwnpu-chat serve` has three: `/v1/models`, `/v1/chat/completions` and `/v1/embeddings` (`internal/chat/server.go`). Some features have the model but no endpoint:
 
-- `/v1/audio/transcriptions` (Whisper), `/v1/audio/speech` (LFM3-Audio), `/v1/images/generations` (Anima, Sana)
+- `/v1/audio/transcriptions` (Whisper), `/v1/audio/speech` (LFM3-Audio), `/v1/images/generations` (FLUX.2 klein, Anima)
 - An image analysis endpoint (as Cloud Vision's `images:annotate`: objects, text, faces, poses and labels in one call)
 - `/v1/rerank` (after the reranker of 2.3)
 
@@ -108,7 +107,7 @@ AMD has no public graph compiler; each model's IRON graph is built in Python (`t
 
 - Each switch between a GEMM and another op takes about 250 µs and about 1 mJ. Runs of the same op take 5–30 µs each.
 - So small CNNs of many ops lose to the CPU. YuNet (about 70 ops) took 127 mJ a picture on the NPU, 7.7 mJ on one CPU thread.
-- ViTs, transformers and large convolutions (im2col GEMMs) fit. DA3, MoGe-2, Sana and Anima run this way.
+- ViTs, transformers and large convolutions (im2col GEMMs) fit. DA3, MoGe-2 and Anima run this way.
 
 The order suggested for the image features on AMD:
 

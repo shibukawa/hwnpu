@@ -266,11 +266,11 @@ CPU (diffusers、fp32、9 分 17 秒) を参照に、同じノイズから:
 `~/models/Anima` に置くもの: 公式の `split_files` (`diffusion_models/anima-turbo-v1.1.safetensors`、`text_encoders/qwen_3_06b_base.safetensors`) と、circlestone-labs/Anima-Base-v1.0-Diffusers の設定、トークナイザー、VAE (`diffusers/{tokenizer,t5_tokenizer,text_encoder,transformer,vae,text_conditioner,scheduler}`、VAE は diffusers の名前の `diffusion_pytorch_model.safetensors`)。
 
 ```bash
-python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo-1024.amd-npu2 --size 1024   # 約 5 分、4.0 GB (DiT の重み q8)
-go run ./cmd/hwnpu-image generate --model ~/models/anima-turbo-1024.amd-npu2 "..." --seed 1 -o out.png
+python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-turbo.amd-npu2 --size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752   # 約 7 分、5.8 GB (DiT の重み q8)
+go run ./cmd/hwnpu-image generate --model ~/models/anima-turbo.amd-npu2 "..." --seed 1 -o out.png
 ```
 
-8 つのアスペクト比 (16.239) を 1 つの書き出しに: `--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752` で `anima-turbo-aspects.amd-npu2` (約 7 分、最大 RSS 7.1 GB、5.8 GB)。hwnpu-image はこの名前を正方形だけの書き出しより先に探し、`--size 2:3` などで大きさを選ぶ。
+書き出しは 8 つのアスペクト比 (16.239) を 1 つに持つ (最大 RSS 7.1 GB)。hwnpu-image は `NAME.amd-npu2` を探し、`--size 2:3` などで大きさを選ぶ (`--size 1024` だけで書き出すと 1024² だけの 4.0 GB、約 5 分)。
 
 DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`q4`、`bf16`) で選ぶ (13 節)。確かめ方: `--check` で各グラフに乱数の入力と IRON の参照の出力を書き、`go run ./tools/amd/irongraph DIR` で NPU と比べる。`--random` は乱数の重み (チェックポイントの形だけ使う)。全体は `tools/ref/ref_anima.py` (diffusers で CPU) の `noise` を `--noise` に、`--dump` と `--latents` で条件づけ、各ステップの速度、最後の潜在を書いて比べる。
 
@@ -287,11 +287,11 @@ DiT のブロックの重みは `--dit-attn` と `--dit-mlp` (`q8` が既定、`
 `split_files/diffusion_models/` の `anima-aesthetic-v1.1.safetensors` (質の高い絵で調整したもの) と `anima-base-v1.0.safetensors` (調整前の基盤モデル) は、Turbo と同じ構造で同じ形の重み (685 本、bf16)。Base だけ名前の頭が `model.diffusion_model.` でなく `net.` (Cosmos の学習のままの名前) なので、`iron_anima.py`、`ref_anima.py`、`mil.OpenWeights` は名前から頭を見分ける。グラフはそのまま、書き出しは `--dit` で選ぶ。Anima-Base は models.yaml から外した (LoRA を読み込まない hwnpu では Aesthetic で足りる、design.md 16.158) が、`--dit anima-base-v1.0.safetensors` の書き出しは今も作れる:
 
 ```bash
-python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic-1024.amd-npu2 --size 1024 --dit anima-aesthetic-v1.1.safetensors   # 2.5 分
+python tools/amd/iron_anima.py ~/models/Anima ~/models/anima-aesthetic.amd-npu2 --size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752 --dit anima-aesthetic-v1.1.safetensors   # 2 分 50 秒
 go run ./cmd/hwnpu-image generate -m anima "..." --negative "worst quality, low quality"
 ```
 
-8 つのアスペクト比は Turbo と同じく `--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752` で `anima-aesthetic-aspects.amd-npu2` (2 分 50 秒、5.8 GB、16.239)。長方形も 1024² と同じ 1 枚 2 分 22〜23 秒。
+8 つのアスペクト比は Turbo と同じ (5.8 GB、16.239)。長方形も 1024² と同じ 1 枚 2 分 22〜23 秒。
 
 - **CFG** (`--guidance`、`--negative`): 1 ステップに DiT を条件 (プロンプト) と無条件 (負のプロンプト) で走らせ、`v = u + s (c − u)` (diffusers の ClassifierFreeGuidance)。CFG 4 (モデルカードの 4〜5)。ステップはモデルカードではオイラー法の 30〜50 だが、既定は DPM-Solver++ 2M の 25 ステップで、CFG は σ が 0.6 以上のステップだけ (16.154、下の結果)。どちらにするかは書き出しの `dit_blocks` の meta の `checkpoint` (Core ML と OpenVINO は manifest の `dit`) で決め、名前に turbo があるか記録のない前の書き出しは 8 ステップ、CFG 1
 - **重みの組ごとに 2 回**: DiT は 4 ブロックの組の重みを 1 つのバンクに読み直して回す (12 節) ので、組ごとに条件と無条件を続けて走らせ、読み直しを 1 ステップ 7 回のまま にする (Sana と同じ)。`dit_in` (時刻とパッチの埋め込み) は条件によらないので 1 回。2 回を別々に回したときより 512 × 512 で 1 ステップ 3.0 → 2.7 秒、潜在はビット単位で同じ
@@ -699,7 +699,7 @@ go run ./cmd/hwnpu-image generate --model ~/models/sana-600m-1024.amd-npu2 "..."
 8 つのアスペクト比 (1:1、1:1s、2:3、3:4、9:16、3:2、4:3、16:9: 32 の倍数の `aspect.All32`) を 1 つの書き出しに (design.md 16.240):
 
 ```bash
-python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/.cache/hwnpu/entries/amd-xdna2/sana-600m-aspects.amd-npu2 \
+python tools/amd/iron_sana.py ~/models/Sana_600M_1024px_diffusers ~/.cache/hwnpu/entries/amd-xdna2/sana-600m.amd-npu2 \
     --size 1024 512 832x1248 864x1152 768x1344 1248x832 1152x864 1344x768   # 約 13 分、11 GB
 go run ./cmd/hwnpu-image generate -m sana --size 2:3 "..."
 ```
@@ -753,7 +753,7 @@ Sana はプロンプトの前に毎回同じ指示文 (diffusers の complex_hum
 - VAE は約 6.3 秒 (1 枚の時間の半分、14.7)。低い解像度の EfficientViT の段 (0〜3) が計 2.1 秒、1024² の ResBlock 3 つが 1.4 秒。EfficientViT の線形注意は、ヘッドごとのブロック対角の積を、全部のヘッドの密な行列積とマスクで計算していて、要る計算の H 倍 (64² で 32 倍) をしている。深さ方向の畳み込みは要素ごとの掛け算と足し算 (5 × 5 で 49 回) で、IRON の `axpy` は係数がスカラーだけなので 1 回にできない
 - 書き出しは 8 つのアスペクト比を 1 つに (2026-11-17、16.240): 1 M 画素の 7 つは DiT の重みを共有、1:1s だけ別。どの大きさも 1 枚 35 秒 (1:1s 19 秒)、最大 2.0〜2.2 GiB
 - Mac は 4 つの Sana を Core ML で (design.md 16.145)。Intel (OpenVINO) は未対応
-- SANA 1.5 1.6B (VAE 1.1) は同じ手順で書き出せる (`sana1.5-1.6b-aspects.amd-npu2`、8 つで 16 GB、1 枚 1 分 01〜02 秒、1:1s 28 秒、16.240)。Sana 1600M (1.0) は確かめていない
+- SANA 1.5 1.6B (VAE 1.1) は同じ手順で書き出せる (`sana1.5-1.6b.amd-npu2`、8 つで 16 GB、1 枚 1 分 01〜02 秒、1:1s 28 秒、16.240)。Sana 1600M (1.0) は確かめていない
 
 ## 15. 深度推定: Depth Anything 3 (`hwnpu-image depth`、2026-11-09)
 
@@ -1218,14 +1218,12 @@ design.md 16.206。Apache-2.0、同意は要らない。4 ステップ、CFG な
 
 ### 24.3 手順
 
-`hwnpu-image generate -m flux2-klein` は、初回に `--size` (8 つのアスペクト比、既定は 1:1) の書き出しを用意する (`flux2klein.PrepareAMD`、design.md 16.235): 手元 (キャッシュの `entries/amd-xdna2`、`~/models`) になければ取得元 (`HWNPU_MODEL_SOURCE`) から。取得元には、ほかの機械の初回が置いたもの (`kind: iron-flux2klein`) か、手で作って `hwnpu-dev cache import` で同じ名前で置いたもの (`iron-import`)。どちらもなければチェックポイントを落として `HWNPU_IRON_ENV` の IRON で 8 つの大きさを 1 つに書き出し (`--size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752`、`flux.2-klein-4b-aspects.amd-npu2`、16.23 GB、30 分ほど)、書き戻す取得元に置き、キャッシュの正方形だけの書き出しを消す (design.md 16.238)。取得元はまず 8 つの書き出しを、なければ正方形の `--size` の書き出しを探す。手元に大きさごとの書き出しが両方あれば `flux2klein.MergeAMD` で 1 つにして消す (design.md 16.237)。
+`hwnpu-image generate -m flux2-klein` は、初回に `--size` (8 つのアスペクト比、既定は 1:1) の書き出しを用意する (`flux2klein.PrepareAMD`、design.md 16.235): 手元 (キャッシュの `entries/amd-xdna2`、`~/models`) になければ取得元 (`HWNPU_MODEL_SOURCE`) から。取得元には、ほかの機械の初回が置いたもの (`kind: iron-flux2klein`) か、手で作って `hwnpu-dev cache import` で同じ名前で置いたもの (`iron-import`)。どちらもなければチェックポイントを落として `HWNPU_IRON_ENV` の IRON で 8 つの大きさを 1 つに書き出し (`--size 1024 512 832x1248 880x1168 768x1344 1248x832 1168x880 1344x768`、`flux.2-klein-4b.amd-npu2`、約 16 GB、30 分ほど)、書き戻す取得元に置く。FLUX.2 klein の 16:9 と 9:16 は 1344 x 768 / 768 x 1344 で、ほかのモデルの 1360 x 752 と異なる (design.md 16.242)。手元に同じ名前の前の書き出し (16:9 が 1360 x 752) があれば、それにない大きさを頼んだときに取得元の今の書き出しと入れ替える (design.md 16.246)。
 
 1 つの書き出しの中の形: ブロックのグラフ (dit_in、doubles、singles) は 1 ステップの行の数だけで決まるので、最初の大きさ (1024²) の絵の行 (4608) を名前なし、ほかを `_nROWS` として全部の大きさで共有し、バンクは doubles と singles の 1 組だけ。512² の絵は `doubles_n1536` など、3 枚の参照つきの 512² (4608 行) は 1024² の絵のグラフ。大きさで変わる dit_out と VAE は `sizes/512x512/`、参照の符号器は辺の長さで探す (512² の参照は 1024² の `vae_enc_d2`、256² は `sizes/256x256/vae_enc`)。512 の倍数の行にならない 1 ステップ (長方形、512² の半分の参照が奇数枚) は、テキストの行を先に置いて 512 の倍数まで詰め、鍵を `nk` で区切る: single ブロック、`dit_in`、`dit_out` は正方形のものを使い、double ブロックだけテキストが先の `doubles_tROWS` (バンクは同じ)。長方形の VAE と符号器は `sizes/WxH/` (design.md 16.238)。手で書き出すなら:
 
 ```
-python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024
-python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b-512+1024.amd-npu2 --size 1024 512   # 両方を 1 つに
-python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b-aspects.amd-npu2 --size 1024 512 832x1248 880x1168 752x1360 1248x832 1168x880 1360x752   # 8 つ
+python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B ~/models/flux.2-klein-4b.amd-npu2 --size 1024 512 832x1248 880x1168 768x1344 1248x832 1168x880 1344x768   # 8 つ
 hwnpu-image generate -m flux2-klein --size 9:16 "A red fox sitting in a snowy forest at dawn, soft light"
 hwnpu-image generate -m flux2-klein "A red fox sitting in a snowy forest at dawn, soft light"
 hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn. Keep the fox as it is."
