@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -23,10 +24,12 @@ const AMDExportVersion = 2
 // checkpoint is distilled).
 var AMDFiles = append(slices.Clone(Files), "model_index.json")
 
-// AMDExportName is the name of the export for AMD's NPU of every size its caller gives. The distinct suffix
-// prevents an imported export with the previous 16:9 and 9:16 sizes from being reused.
+// AMDExportName is the name of the export for AMD's NPU of every size its caller gives:
+// NAME.amd-npu2 in lower case, as the other image models' (design.md 16.243). An export of that
+// name here that lacks a size asked for (the one of 16:9 at 1360 x 752 before, design.md 16.242)
+// is replaced by PrepareAMD.
 func AMDExportName(name string) string {
-	return strings.ToLower(name) + "-aspects2.amd-npu2"
+	return strings.ToLower(name) + ".amd-npu2"
 }
 
 // sizeArg is a size as AMDTool's --size takes it: N for N x N, else WxH.
@@ -82,6 +85,25 @@ func PrepareAMD(ctx context.Context, m chat.Model, sizes [][2]int, w, h int, log
 		return d, nil
 	}
 	out := filepath.Join(chat.AMDRoot(), name)
+	// one of this name here that does not draw w x h is of other sizes (16:9 at 1360 x 752 before):
+	// set aside for the one of sizes from the sources (or IRON), and put back when there is none
+	if isIronExport(out) {
+		aside := out + ".replaced"
+		os.RemoveAll(aside)
+		if err := os.Rename(out, aside); err != nil {
+			return "", err
+		}
+		os.Remove(out + ".done")
+		fmt.Fprintf(log, "%s: does not draw %dx%d (an export of other sizes); getting the one of %s\n", name, w, h, sizeNames(sizes))
+		defer func() {
+			if isIronExport(out) {
+				os.RemoveAll(aside)
+			} else {
+				os.RemoveAll(out)
+				os.Rename(aside, out)
+			}
+		}()
+	}
 	imported := []chat.SharedRecipe{{Kind: chat.ImportKind, Recipe: chat.ImportedRecipe(m, cache.AMDTarget, name)}}
 	err := chat.SharedExportOr(ctx, chat.ExportKind(AMDTool), AMDRecipe(m, sizes...), imported, out, log, func() error {
 		python, err := chat.IRONPython(ctx)

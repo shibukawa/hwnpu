@@ -7351,3 +7351,11 @@ Qwen-Image-2.1 (7B の DiT、Qwen3-VL-8B) は、NPU で使うにはパラメー�
 - 試験: `TestShareMadeHere`
 
 SigLIP のラベルの埋め込み (`hwnpu/siglip/NAME-HASH.f32`、ラベル 1 組で数百 KB、数秒で作り直せる) は置かない。`hwnpu-dev convert` の Core AI / OpenVINO の書き出しは AMD の外なので、ここでは扱わない。
+
+### 16.246 FLUX.2 klein の AMD の書き出しも NAME.amd-npu2 に (前の大きさの書き出しは入れ替える) — 2026-11-18
+
+16.243 でほかの画像モデルの書き出しの名前から `-aspects` を外したが、FLUX.2 klein は `flux.2-klein-4b-aspects2.amd-npu2` のままだった (16.242: 取得元の手で作った書き出しの記述 `iron-import` は名前だけで探すので、同じ名前の前の書き出し、16:9 が 1360 x 752 のもの、が取られる)。取得元の前の書き出しは消した (16.245 の後片付け) ので、名前を `flux.2-klein-4b.amd-npu2` に揃えた。
+
+- 前の書き出しが手元に残る機械 (取得元から取ったもの、entry.json は同じ種類と名前): その大きさ (1024²、2:3 など 6 つ) はそのまま描く。ないもの (1344 x 768、768 x 1344) を頼むと、`PrepareAMD` はそれを `NAME.amd-npu2.replaced` に退け、取得元の今の書き出しを取る (なければ IRON で作る)。取れなかったときは元に戻す
+- 取得元の書き出しは同じ中身を新しい名前で置き直し、`-aspects2` の記述は消した
+- 試験: `TestPrepareAMDReplaces` (手元の前の書き出しを取得元の今のものに入れ替える)、`TestPrepareAMDHere` (取得元も IRON もなければ前の書き出しを戻す)
