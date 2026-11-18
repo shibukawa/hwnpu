@@ -25,6 +25,8 @@ go run ./cmd/hwnpu-audio generate -m sfx "A dog barking loudly in a park."
 go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a tin roof."   # --steps 50 takes half the time
 ```
 
+On AMD's NPU the text encoder and the DiT run as the graphs of `tools/amd/iron_moss_sfx.py` (the DiT's GEMMs in bfp16, the text encoder in bf16, or in 8 bits for `moss-soundeffect:8g`), and the DAC decoder's stages on the CPU. The first run exports them with IRON (about a minute) unless a source has the export (`moss-soundeffect-v2.0.amd-npu2`). On a Ryzen AI 9 365 a step takes 2.8 seconds (5 seconds of sound in 25 steps in 1 minute 9 seconds; the card's 100 steps about 4 minutes 40 seconds), at about 5 GB.
+
 ## Reading aloud (LFM3-Audio-2B)
 
 `go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは` reads text aloud with LFM3-Audio-2B (`-m speech`). Details are in section 5 of [CHAT.md](CHAT.md).

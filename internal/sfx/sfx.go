@@ -27,6 +27,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/qwen3"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
 	"github.com/shibukawa/hwnpu/internal/tokenizer"
@@ -104,6 +105,13 @@ type Paths struct {
 	Blocks  []string // the DiT's groups, DitGroup blocks each
 	Stages  []string // the decoder's stages
 	TextCfg *qwen3.Config
+	// Host are the files the host reads the text encoder's embedding table and final norm
+	// from (prefix "") and the DiT's HostTensors (prefix "dit."); nil: the checkpoint's. An
+	// export for AMD's NPU has its own (PrepareAMD).
+	Host map[string][]string
+	// AMD says the programs are graphs for AMD's NPU (iron.GraphProgram) and the decoder's
+	// stages Core ML packages the CPU interpreter runs.
+	AMD bool
 }
 
 func (p Paths) at(f string) string { return filepath.Join(p.Dir, filepath.FromSlash(f)) }
@@ -303,10 +311,14 @@ func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
 	if g.tok, err = tokenizer.Load(p.at("tokenizer/tokenizer.json")); err != nil {
 		return nil, err
 	}
-	if g.textW, err = OpenWeights(nil, map[string][]string{"": {p.at(Files[6]), p.at(Files[7])}}); err != nil {
+	textFiles, ditFiles := []string{p.at(Files[6]), p.at(Files[7])}, []string{p.at(Files[9])}
+	if p.Host != nil {
+		textFiles, ditFiles = p.Host[""], p.Host["dit."]
+	}
+	if g.textW, err = OpenWeights(nil, map[string][]string{"": textFiles}); err != nil {
 		return nil, err
 	}
-	if g.ditW, err = OpenWeights(nil, map[string][]string{"dit.": {p.at(Files[9])}}); err != nil {
+	if g.ditW, err = OpenWeights(nil, map[string][]string{"dit.": ditFiles}); err != nil {
 		g.Close()
 		return nil, err
 	}
@@ -324,7 +336,7 @@ func Open(p Paths, dev *hwnpu.Device) (*Generator, error) {
 func (g *Generator) Load(ctx context.Context, loaded func(name string, p runner.Program, took time.Duration)) error {
 	open := func(path string) (runner.Program, error) {
 		t0 := time.Now()
-		pr, err := runner.Open(ctx, g.dev, path)
+		pr, err := g.open(ctx, path)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 		}
@@ -356,6 +368,18 @@ func (g *Generator) Load(ctx context.Context, loaded func(name string, p runner.
 	return nil
 }
 
+// open loads a program: on AMD's NPU a graph (iron.GraphProgram), or a Core ML package on the
+// CPU interpreter (the decoder's stages); else on the device.
+func (g *Generator) open(ctx context.Context, path string) (runner.Program, error) {
+	if g.p.AMD {
+		if iron.IsGraph(path) {
+			return iron.OpenGraphProgram(ctx, g.dev, path)
+		}
+		return runner.Open(ctx, nil, path)
+	}
+	return runner.Open(ctx, g.dev, path)
+}
+
 // Close lets the programs and the weights go.
 func (g *Generator) Close() error {
 	for _, p := range g.progs {
@@ -382,7 +406,7 @@ func (g *Generator) Encode(ctx context.Context, prompt string, seconds float64, 
 	}()
 	for _, path := range g.p.Text {
 		t0 := time.Now()
-		pr, err := runner.Open(ctx, g.dev, path)
+		pr, err := g.open(ctx, path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", filepath.Base(path), err)
 		}

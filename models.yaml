@@ -547,7 +547,9 @@ models:
       text_encoder/model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
       text_encoder/model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
     machine: 16
-    memory: 2.3
+    # AMD's: the NPU's pinned memory and the process's of 10 s (a Ryzen AI 9 365, 2026-11-19): the
+    # DiT's graphs in bf16 and the decoder on the CPU
+    memory: {amd: 5.1, apple: 2.3}
     bytes: 1.15e10
     about: "MOSS-SoundEffect v2.0 (1.3B DiT, Qwen3-1.7B text encoder in fp16, DAC VAE): up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
   MOSS-SoundEffect-v2.0-lut8:

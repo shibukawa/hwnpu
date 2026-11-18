@@ -25,6 +25,8 @@ go run ./cmd/hwnpu-audio generate -m sfx "A dog barking loudly in a park."
 go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a tin roof."   # --steps 50 で半分の時間
 ```
 
+AMD の NPU では、文の符号器と DiT は `tools/amd/iron_moss_sfx.py` のグラフ (DiT の行列積は bfp16、文の符号器は bf16、`moss-soundeffect:8g` では 8 ビット)、DAC の復号器の段は CPU で動きます。初回は、取得元に書き出し (`moss-soundeffect-v2.0.amd-npu2`) がなければ IRON で書き出します (約 1 分)。Ryzen AI 9 365 で 1 ステップ 2.8 秒 (5 秒の音を 25 ステップで 1 分 09 秒、カードの 100 ステップなら約 4 分 40 秒)、約 5 GB です。
+
 ## 読み上げ (LFM3-Audio-2B)
 
 `go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは` は LFM3-Audio-2B (`-m speech`) で文章を読み上げます。詳しくは [CHAT.ja.md](CHAT.ja.md) の 5 節にあります。

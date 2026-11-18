@@ -1300,3 +1300,37 @@ python tools/amd/iron_lfm3speech.py ~/models/LFM3-Audio-2B ~/models/lfm3-audio-2
 go run ./tools/amd/irongraph ~/models/lfm3-audio-2b-tts.amd-npu2/depth
 go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは   # 初回は書き出しを取得元から、なければ IRON で
 ```
+
+## 27. MOSS-SoundEffect v2.0: 効果音 (`hwnpu-audio generate -m sfx`、2026-11-19)
+
+OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作る。設計の記録は design.md 16.254。
+
+### 27.1 構成 (`tools/amd/iron_moss_sfx.py`)
+
+| グラフ | 中身 |
+|---|---|
+| `text/` | Qwen3-1.7B の 28 層 (256 行、因果)。入力はホストが引いたトークンの埋め込み、出力は最後の層の隠れ状態 (最後の norm はホスト)。`--text bf16` か `q8` |
+| `dit-context/` | text_embedder (512 行の文の符号器の出力 → 1536) |
+| `dit-blocks-N/` | DiT のブロック N..N+4 (1536 行、鍵は 1500): 自己注意 (RoPE)、512 行の文への cross、FFN。最初の組は patch_embedding、最後の組は head。入力 `x`、`ctx`、`mod` (変調の行、平ら) |
+| `host/` | ホストの表: トークンの埋め込みと最後の norm (bf16)、時刻の埋め込みと scale_shift_table (float32) |
+| `dac/` | DAC の復号器の 5 段 (Core ML、fp16)。CPU のインタプリタで (`sfx.PrepareAMD` が変換) |
+
+### 27.2 測定 (Ryzen AI 9 365)
+
+| | 時間 |
+|---|---|
+| DiT 1 ブロック | 41 ms |
+| 速度 1 回 (30 ブロック) | 1.24 秒 |
+| 1 ステップ (CFG で 2 回) | 2.8 秒 |
+| 5 秒の音、25 ステップ | 1 分 09 秒 |
+| 書き出し | 53 秒 + DAC の変換 (6.2 GB) |
+
+最大メモリは 10 秒で 4.9 GiB。
+
+### 27.3 手順
+
+```bash
+python tools/amd/iron_moss_sfx.py ~/models/MOSS-SoundEffect-v2.0 ~/models/moss-soundeffect-v2.0.amd-npu2   # --text q8、--check、--groups 1
+go run ./tools/amd/irongraph ~/models/moss-soundeffect-v2.0.amd-npu2/dit-blocks-0
+go run ./cmd/hwnpu-audio generate -m sfx --duration 5s "A dog barking loudly in a park."
+```

@@ -31,6 +31,7 @@ import (
 	"github.com/shibukawa/hwnpu"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/decode"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3gen"
 	"github.com/shibukawa/hwnpu/internal/llm/runner"
@@ -178,8 +179,8 @@ func Load(ctx context.Context, c Config) (*Synth, error) {
 		// the depthformer's and the codec decoder's graphs (tools/amd/iron_lfm3speech.py), or
 		// Core ML packages of them on the CPU interpreter
 		open = func(path string) (runner.Program, error) {
-			if isGraph(path) {
-				return openGraphProgram(ctx, s.dev, path)
+			if iron.IsGraph(path) {
+				return iron.OpenGraphProgram(ctx, s.dev, path)
 			}
 			return runner.Open(ctx, nil, path)
 		}

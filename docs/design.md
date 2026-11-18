@@ -7578,3 +7578,27 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 
 - 速さ: 文のモデルの head (128000 × 2048 の q8、0.27 GB) は読み上げでは読まない logits のため。depth_linear はフレームの 3 回で同じなので 1 回でよい (1 フレーム 4 ms)。depthformer の重みを q8 に
 - LFM3-Omni-2B の読み上げ (`model.depth_decoder`、別の表の名前) は対象外
+
+### 16.254 MOSS-SoundEffect を AMD の NPU に (IRON、`hwnpu-audio generate -m sfx`) — 2026-11-19
+
+16.253 の次に、効果音 (MOSS-SoundEffect v2.0) を AMD の NPU に移した (`tools/amd/iron_moss_sfx.py`、docs/amd-npu-models.md 27 節)。internal/sfx のプログラムと同じ入出力のグラフを書き出し、ホストの道 (文の符号化、時刻の埋め込みと変調、CFG の Euler、DAC の段の呼び方) はそのまま使う。
+
+- **グラフをプログラムに** (`iron.GraphProgram`、16.253 の speech の adapter を `internal/llm/iron` に移した): 書き出しの meta の `program` が今のプログラムの形 (`[1, 1500, 128]` など) を言い、グラフの詰めた行と列 (1500 → 1536 のフレーム) を入れるときに 0 で埋め、出すときに外す。1 次元の入力 (DiT の `mod`) はそのまま。呼び出しごとの値は meta の `values`
+- **文の符号器** (`text/`): Qwen3-1.7B の 28 層を 256 行に (因果、RoPE は rotate_half、q と k の頭ごとの norm、SwiGLU は float32 の sigmoid の `iron_silu`)。4 層ずつ 1 コマンド。`--text bf16` (sfx の fp16) か `q8` (sfx の lut8。`TextFP16` の 5 層は bf16、`iron_dit.text_param`)。最後の norm とトークンの埋め込みはホスト (`host/text.safetensors`)
+- **DiT** (`dit-context/`、`dit-blocks-N/` の 6 組): Core ML の版と同じく残差を `DitScale` (4) で割った形 (patch_embedding と cross の出力を 1/4 に。ゲートはホストの `mod` が割ってある)。bf16 は fp16 の範囲の工夫 (`maxScaled`) が要らない。q と k の RMS norm は 1536 の全体、RoPE は Wan の隣り合う対 (IRON の RoPE の `two_halves=False`)、自己注意は `iron_anima.dit_attention` (ImageMHA、128 の頭) で鍵 1500 (`nk`)。cross の鍵と値は 1536 行の状態の最初の 512 行に書いて `nt` = 512 で区切る (MHA の鍵の行は問い合わせの行以上: `kv_len (512) must be ... at least seq_pad (1536)`)。GELU は exact (tanh の近似のチェックポイントに IRON の tanh のカーネルより近い)。行列積は MEDIUM (bfp16、Anima の DiT と同じ)。1 ブロックが 1 コマンド
+- **DAC の復号器は CPU**: Snake の sin² が IRON にない (sin も cos もない) ので、Core ML の段 (`DACStages`、fp16) を `PrepareAMD` が書き出しの `dac/` に変換し、CPU のインタプリタで回す。10 秒の音で数秒
+- `hwnpu-audio generate -m sfx` は AMD の NPU では `sfx.PrepareAMD` (手元、取得元、なければ IRON で書き出して DAC を変換し、取得元へ)。書き出しには `host/` (ホストの表)、tokenizer と文の符号器の config も入れ、チェックポイントなしで動く
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- グラフはランダムな入力で IRON の参照と: dit-context cosine 0.99995、dit-blocks-0 (5 ブロック) 0.99994、文の符号器 0.9991 (最大の差は大きな活性の行)
+- CPU のインタプリタの Core ML (文の符号器と DiT を fp16 で変換) と、同じ犬の吠える声のプロンプト (16 トークン) で: 文の符号器の出力 cosine 0.99963 (相対 RMS 2.8 %)、同じ context と種 1 のノイズで最初の速度 cosine 0.99978 (相対 RMS 2.1 %。sfx.Formats の記録では Mac の fp16 の DiT が参照から 2.1 %、lut8 が 2.7 %)
+- 時間: 1 ブロック 41 ms、速度 1 回 (30 ブロック) 1.24 秒、CFG の 1 ステップ 2.8 秒。5 秒の音を 25 ステップで 1 分 09 秒、10 秒を 10 ステップで 35 秒 (DAC の CPU を含む)。文の符号器 1.4 秒
+- 初回の流れ (取得元なし): IRON の書き出し 53 秒、DAC の 5 段の変換の後に生成した
+- 最大メモリ: 10 秒で 4.9 GiB (DiT の 6 組の固定 2.5 GB と CPU の DAC)。models.yaml の amd を 5.1 GB に
+
+**残り**
+
+- DAC を NPU に (Snake の sin² の float32 のカーネル、`kernels/silu_f32.cc` の形で)。dilation のある畳み込みと転置畳み込みは行のずらしと GEMM で書ける
+- 音は聞いて確かめていない (この機械に音を聞く手段がない)。数値は CPU の fp16 の版と比べた
+- lut8 の版 (`moss-soundeffect:8g`、文の符号器を q8) の最大メモリ
