@@ -224,6 +224,9 @@ func amdFirstRunExport(ctx context.Context, m chat.Model, flag string, interp bo
 	}
 	dir := ironcnn.Dir(m.Name)
 	if have(dir) == nil {
+		// one made by hand here goes in the sources written back to, described as a first run's
+		// (as hwnpu-dev cache import describes it), so that other machines' first runs find it
+		chat.ShareMadeHere(m, dir, chat.ExportKind(tool), chat.PinnedRecipe(m, tool, version), console.Log(os.Stderr))
 		return dir
 	}
 	// none here: from the shared layers, else made as hwnpu-chat makes its models'
