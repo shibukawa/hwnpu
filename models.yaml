@@ -542,10 +542,9 @@ models:
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
   # hwnpu-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the
-  # sources) of tools/amd/iron_anima.py, iron_sana.py or iron_chroma.py, of the eight aspect ratios
-  # of --size in one (FLUX.2 klein's exported with IRON on its first run when the sources have
-  # none); on Apple's NPU Anima and Sana, on Intel's Anima, are downloaded and converted on their
-  # first run
+  # sources) of tools/amd/iron_anima.py or iron_chroma.py, of the eight aspect ratios of --size
+  # in one (FLUX.2 klein's exported with IRON on its first run when the sources have none); on
+  # Apple's and Intel's NPU Anima is downloaded and converted on its first run
   Anima-Turbo:
     family: anima-turbo
     tag: v1.1
@@ -570,7 +569,9 @@ models:
     # the peak of the footprint and the Neural Engine footprint together, 4.8 GB at 1024 x 1024 on
     # an M1 (3.1 GiB of the process and 1.4 GiB on the Neural Engine, design.md 16.228)
     memory: {amd: 3.5, apple: 4.8}
-    bytes: 5.9e9
+    # AMD: the export of the eight aspect ratios (anima-turbo.amd-npu2, 6.13 GB) packed in the
+    # sources (files.tar.zst)
+    bytes: {amd: 4.24e9, apple: 5.9e9}
     about: "Anima-Turbo (Cosmos-Predict2 2B, Qwen3-0.6B): 1024x1024 in 8 steps, Danbooru tags and natural language"
   Anima-Aesthetic:
     family: anima
@@ -592,9 +593,9 @@ models:
       diffusers/t5_tokenizer/tokenizer.json: 2432e8aa83414a69884a5cbd54a68f528c042d1f30780affbefcbb85091f022e
       split_files/diffusion_models/anima-aesthetic-v1.1.safetensors: 3c1868387a3a1ff504bbb87c33678321965ead381fcf87afbd0264daa600c082
     machine: 8
-    # Anima-Turbo's programs with other weights: its memory
+    # Anima-Turbo's programs with other weights: its memory and download
     memory: {amd: 3.5, apple: 4.8}
-    bytes: 5.9e9
+    bytes: {amd: 4.24e9, apple: 5.9e9}
     about: "Anima-Aesthetic v1.1: Anima tuned on high-quality pictures, 25 DPM-Solver++ steps with classifier-free guidance (--guidance, --negative), about 4.5 times Anima-Turbo's time"
   Chroma1-Flash:
     family: chroma
@@ -624,8 +625,9 @@ models:
     # ratios, 3.47 to 3.62 GiB (the NPU's 3.44 and the process's 0.25 at most)
     memory: {amd: 3.9, apple: 4.3}
     # the T5-XXL and the VAE are FLUX.1 schnell's, byte for byte (shared when it is here). AMD: the
-    # export of all eight aspect ratios (chroma1-flash-aspects.amd-npu2, 18.8 GB)
-    bytes: {amd: 18.8e9, apple: 2.75e10}
+    # export of all eight aspect ratios (chroma1-flash.amd-npu2, 18.85 GB) packed in the sources
+    # (files.tar.zst); Chroma1-HD's is as large
+    bytes: {amd: 16.24e9, apple: 2.75e10}
     about: "Chroma1-Flash (FLUX.1 schnell's 8.9B DiT with an FFN for its modulations, T5-XXL, FLUX's VAE): Heun's 8 steps without guidance; AMD's NPU and Apple's Neural Engine (about 9.5 min at 1024 x 1024 on an M1); Apache-2.0"
   Chroma1-HD:
     like: Chroma1-Flash
@@ -658,7 +660,7 @@ models:
       tokenizer/tokenizer.json: aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4
       transformer/diffusion_pytorch_model.safetensors: 9f29f9edcfdae452a653ffb51a534ca4decd389952c225724ff3b94042612a6e
       vae/diffusion_pytorch_model.safetensors: ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04
-    machine: 16
+    machine: 8
     # AMD: the peak of a 1024 x 1024 run, 3.43 GiB on the NPU (the VAE's stages, which share their
     # buffers; the text encoder's layers and the DiT's blocks are read a group at a time into one
     # bank) and the process's 0.16 GiB, measured; an edit with one reference peaks the same
@@ -671,93 +673,6 @@ models:
     bytes: 1.6e10
     features: [edit]
     about: "FLUX.2 klein 4B (a 3.9B DiT of FLUX's shape, Qwen3-4B reads the prompt, the FLUX.2 VAE): 4 steps without guidance, and edits or composes from reference images (--image, AMD); AMD's NPU (about 29 s at 1024 x 1024, an edit 1 min, 37 s with --ref-half) and Apple's Neural Engine (text to image: about 41 s at 1024 x 1024, 11 s at 512 x 512 on an M1); Apache-2.0"
-  Qwen-Image-2.1-Turbo:
-    family: qwen-image
-    tag: 2.1-turbo
-    kind: image
-    from: hf:Qwen/Qwen-Image-2.1-Turbo
-    # research and evaluation only: asked once before the first run (hwnpu-image --accept-license)
-    license: {id: qwen-research, url: "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo/blob/main/LICENSE", class: non-commercial, terms: "research and evaluation only, not commercial use", accept: true}
-    sha256:
-      processor/tokenizer.json: be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506
-      text_encoder/model.safetensors: a1eee8233f3063466dd3b06e857b0a2cf13a77c543908374771d51a546beb2e0
-      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 6cccd922767f01694461bdcf1f34ea7b771f3442e4d5e338ea9aa55277431cc0
-      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 69f53ebb063d2f606bdaff7e22e0e2144f28d978d73dc75e6e4293fc5982eab5
-      vae/diffusion_pytorch_model.safetensors: 71879ffd5321e6d10c3c87513e2b474b1252efa7f3dec2969214a9bf06a6dd5c
-    machine: 16
-    # AMD: the peak of a 1024 x 1024 run, 3.1 GiB on the NPU (the VAE's stage 4; the text encoder's
-    # layers and the DiT's blocks are read a group at a time into one bank) and the process's 1.0
-    # GiB, measured. Apple: the process's peak footprint at 1024 x 1024 (M3; 4.5 GB at 512 x 512,
-    # design.md 16.165)
-    memory: {amd: 4.2, apple: 6.0}
-    bytes: 3.25e10
-    about: "Qwen-Image-2.1-Turbo (7B single-stream DiT, Qwen3-VL-8B reads the prompt, RGBA VAE): 8 steps without guidance; AMD's and Apple's NPU (on Apple's, loading its 17 GB of programs takes most of the time: several prompts in one run); Qwen Research License (not commercial)"
-  Qwen-Image-2.1:
-    like: Qwen-Image-2.1-Turbo
-    tag: "2.1"
-    from: hf:Qwen/Qwen-Image-2.1
-    sha256:
-      # its own: the Turbo's but trim_offsets and the decoder's flags (the same tokens)
-      processor/tokenizer.json: aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4
-      transformer/diffusion_pytorch_model-00001-of-00002.safetensors: 9e6bc2d641e67bf277895ea8777141044a38f3edb7101bc469b2961dd7c36b4b
-      transformer/diffusion_pytorch_model-00002-of-00002.safetensors: 3aaf234dcbe128530479735854a346b5e3e66283b7c11db56f836bbd1c13ebaa
-      vae/diffusion_pytorch_model.safetensors: a07a1b7c4ee2966a1b3bdc37de9b4f983d56937e46619f709a80b6e490675417
-    # named as qwen-image:2.1: the family alone picks the Turbo
-    machine: 0
-    about: "Qwen-Image-2.1, the undistilled full model (Turbo is its 8-step distillation): 40 Euler steps, classifier-free guidance with --guidance and --negative (none by default, as its pipeline); AMD's and Apple's NPU; Qwen Research License (not commercial)"
-  Sana-600M:
-    family: sana
-    tag: 0.6b
-    kind: image
-    from: hf:Efficient-Large-Model/Sana_600M_1024px_diffusers
-    # the text encoder brings Gemma's terms and prohibited use policy (no sexually explicit content)
-    license: {id: apache-2.0, url: "https://huggingface.co/Efficient-Large-Model/Sana_600M_1024px_diffusers/blob/main/LICENSE", class: open}
-    sha256:
-      transformer/config.json: 38916317861688918bee963c296ee0f9e939b6d2fd4f5e9f6908f2b9a9179fa6
-      transformer/diffusion_pytorch_model.safetensors: f9db5116ca285dd8a431dc8ee5123a9b74177640f6559c6fea4047c6e8ff5089
-      vae/config.json: 4e5669aa03caa77615b73b21c9347c384cb11124a9590683e32a510df0176eb4
-      vae/diffusion_pytorch_model.safetensors: 15a4b09e56d95b768a0ec9da50b702e21d920333fc9b3480d66bb5c7fad9d87f
-      scheduler/scheduler_config.json: 70e8603120cc387316aa3bc7f08cb2872f6b6eb6eff6f25df1b88b6b76389e81
-      text_encoder/config.json: 3b45a277b19814724be26e4985dd24c5c3efb01bebe5139af77f99254101961a
-      text_encoder/model.safetensors.index.json: 92764588f700e36874c52f9f05bba143857e5069fc69b14450f907a1cdf879ed
-      text_encoder/model-00001-of-00002.safetensors: e909230aabafad02d097c7dc02f2ae062b4e6b0593477c1f07679d277e09ce71
-      text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
-      tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
-    machine: 8
-    # Apple: the peak of the footprint and the Neural Engine footprint together at 1024 x 1024 on
-    # an M1, 4.4 GB (3.3 GiB of the process and 0.8 GiB on the Neural Engine, in the VAE's stages);
-    # 2.1 GB at 512 x 512 (design.md 16.228). AMD (2026-11-17, design.md 16.240): the peak of the
-    # eight aspect ratios, 2.03 to 2.23 GiB (the NPU's 1.9 and the process's 0.35 at most); the
-    # download is the export of all eight (sana-600m.amd-npu2, 11.5 GB)
-    memory: {amd: 2.4, apple: 4.4}
-    bytes: {amd: 11.5e9, apple: 8.9e9}
-    about: "NVlabs' Sana 600M (Gemma 2 2B reads the prompt): 20 steps with classifier-free guidance (--guidance, --negative), English prompts; AMD's and Apple's NPU"
-  SANA1.5-1.6B:
-    family: sana
-    tag: 1.6b
-    kind: image
-    from: hf:Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers
-    # the text encoder brings Gemma's terms and prohibited use policy (no sexually explicit content)
-    license: {id: apache-2.0, url: "https://huggingface.co/Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers/blob/main/LICENSE", class: open}
-    sha256:
-      transformer/config.json: 70863bf60b87cbeab5780c9827ffc5b880cd1ec9ce22bf033409b7e257e8fc68
-      transformer/diffusion_pytorch_model.safetensors: 300b4109622d8ffd12d827a4127d2f82f102e3b9a0d413285f6bcf46729a3e54
-      vae/config.json: ba6f3d3e44d75d44fdd3760097c069173b5b925e6d14604d5d3582628d09cca6
-      vae/diffusion_pytorch_model.safetensors: dfd991d1b54ffabf22745c5885589d8f2a7bc59930d95d92bd741c4fc64454bb
-      scheduler/scheduler_config.json: f9256042828841b26561487c7e0c33fff8717e98ac0fef5c1f6d05bfdd66e908
-      text_encoder/config.json: 733f241a6692770dfba10383e2c5a56a4f88b320732d9ee8fa16118737eca84d
-      text_encoder/model.safetensors.index.json: 92764588f700e36874c52f9f05bba143857e5069fc69b14450f907a1cdf879ed
-      text_encoder/model-00001-of-00002.safetensors: e909230aabafad02d097c7dc02f2ae062b4e6b0593477c1f07679d277e09ce71
-      text_encoder/model-00002-of-00002.safetensors: 48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18
-      tokenizer/tokenizer.json: 5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060
-    machine: 16
-    # Apple: the peak of the footprint and the Neural Engine footprint together at 1024 x 1024 on
-    # an M1, 4.5 GB (3.4 GiB of the process and 0.8 GiB on the Neural Engine; design.md 16.228).
-    # AMD (2026-11-17, design.md 16.240): the peak of the eight aspect ratios, 2.03 to 2.14 GiB;
-    # the download is the export of all eight (sana1.5-1.6b.amd-npu2, 16.5 GB)
-    memory: {amd: 2.3, apple: 4.5}
-    bytes: {amd: 16.5e9, apple: 9.7e9}
-    about: "SANA 1.5 1.6B: nearer the prompt than 600M, 20 steps with classifier-free guidance; AMD's and Apple's NPU"
   # hwnpu-image depth: on AMD's NPU the export ~/models/NAME.amd-npu2 (lower case) of
   # tools/amd/iron_da3.py or iron_moge.py; on Apple's NPU the checkpoint is downloaded and each size
   # converted when a picture first takes it
@@ -948,12 +863,11 @@ categories:
   image:
     aliases: [generate]
     about: image generation (hwnpu-image generate)
-    # FLUX.2 klein from 16 GB (4.9 GB on Apple at 1024 x 1024, 41 s on an M1): Apache-2.0, safe
-    # by default, and edits too on AMD; Sana 600M (4.4 GB, 2.1 GB at 512 x 512) on 8 GB. Anima
-    # and Chroma (nsfw) are not picked even with +nsfw: named, they run (design.md 16.228)
+    # FLUX.2 klein from 8 GB (4.9 GB on Apple at 1024 x 1024, 41 s on an M1; 3.9 GB on AMD):
+    # Apache-2.0, safe by default, and edits too on AMD. Anima and Chroma (nsfw) are not picked
+    # even with +nsfw: named, they run (design.md 16.228, 16.244)
     picks:
-      - {machine: 8, model: Sana-600M}
-      - {machine: 16, model: FLUX.2-klein-4B}
+      - {machine: 8, model: FLUX.2-klein-4B}
   depth:
     about: depth estimation (hwnpu-image depth)
     picks:

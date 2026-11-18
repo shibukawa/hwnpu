@@ -64,8 +64,6 @@ Hugging Face の API (`cardData.license`)、モデルカード、リポジトリ
 | Anima-Turbo、Anima-Aesthetic | `circlestone-labs-non-commercial` (Anima は v1.2、Anima-Base-v1.0-Diffusers は v1.0) | 不可 / 可 (v1.2 の 2.e。v1.0 にはこの例外がない) | NVIDIA Open Model License (Cosmos-Predict2-2B の派生): 「Built on NVIDIA Cosmos」の表示、安全機構を外すと権利が切れる | likely | △ |
 | Chroma1-Flash、Chroma1-HD | `apache-2.0` | 可 / 可 | FLUX.1 schnell、T5-XXL、FLUX の VAE (どれも Apache-2.0) | likely (「Fully uncensored」) | ✓ |
 | FLUX.2-klein-4B | `apache-2.0` | 可 / 可 | Qwen3-4B、FLUX.2 の VAE (Apache-2.0)。9B は非商用なので差し替えない | filtered (学習データの選別、出入りの NSFW フィルタ、透かしと C2PA) | ✓ |
-| Qwen-Image-2.1-Turbo、Qwen-Image-2.1 | `qwen-research` | 不可 (研究と評価のみ) / 書かれていない | 文の読み取りの Qwen3-VL-8B もこのライセンスで同梱 | possible (記述なし) | ✓ (NSFW は未確認) |
-| Sana-600M、SANA1.5-1.6B | `apache-2.0` (カードに「研究目的」の記述あり) | 可 / 可 | Gemma 2 2B の Gemma Terms of Use と禁止用途の方針 (性的な内容の生成を禁止、利用規約への組み込みと表示の義務)。DC-AE は MIT | possible (フィルタなし、Gemma の方針で禁止) | ✓ |
 | magenta-realtime-2-small | `cc-by-4.0` (重み)、コードは Apache-2.0 | 可 (表示の義務: 「Magenta RealTime 2 by Google DeepMind」) / 可 | なし | — | ✓ |
 | MOSS-SoundEffect-v2.0 (lut8 も) | `apache-2.0` | 可 / 可 | Qwen3-1.7B (Apache-2.0)、DAC 形の VAE (コードは Descript の MIT、重みを誰が学習したかは不明) | — | △ |
 
@@ -96,16 +94,14 @@ Hugging Face の API (`cardData.license`)、モデルカード、リポジトリ
 - **PLaMo Community License**: 商用は事前の登録が要る。関係するサイトや UI に「Built with PLaMo」と表示し、派生のモデルの名前に「PLaMo」を入れる。生成物で学習したモデルも同じライセンスになる (第 5 条 3 項、蒸留への継承)。変換したもの (`converted/.../vN`) を取得元で配るときは、ライセンスの同梱が要る
 - **LFM Open License**: 年商の上限はグループ全体 (Legal Entity に関連会社を含む)。違反すると自動で終了し、コピーを消す義務がある
 - **Anima**: 落とす 2 つのリポジトリのライセンスの版が違い、Diffusers 側の v1.0 には「生成物は商用可」の例外がない。Cosmos から NVIDIA Open Model License の表示の義務も引き継ぐ
-- **Sana**: Gemma 2 の禁止用途 (性的な内容の生成) を引き継ぐ。これは使う人の使い方の義務で、モデルを選ぶかどうかの判定ではない。`+nsfw` は NSFW を出すためのモードではなく「出しうるモデルも選んでよい」なので、Sana を弾く理由にはしない。Sana は `content` に `nsfw` を付けず、`about` かドキュメントで禁止用途を伝える
 - **magenta-realtime-2**: 生成した音楽を使う所に表示が要る (CC-BY 4.0)
 - **basic-pitch**: NOTICE の同梱が要る
 
 ### 4.3 NSFW
 
 - likely: Anima (学習に `safe, sensitive, nsfw, explicit` のタグ。短いプロンプトで出やすいとカード自身が書く)、Chroma (検閲なしをうたう)
-- possible: Qwen-Image (記述なし)、Sana (フィルタなし。Gemma の方針では禁止)
 - filtered: FLUX.2-klein (学習データの選別と、入出力のフィルタ)
-- `content: [nsfw]` (`+nsfw` がないと選ばない) を付けるのは likely の Anima と Chroma だけ。頼んでいないのに出してくる (Anima は `safe` を付けても出る) のが問題で、頼めば出しうるだけのモデル (Qwen-Image、Sana、FLUX.2-klein) は付けない。Qwen-Image に記述がないのは、実際に出して確かめるまで possible のまま
+- `content: [nsfw]` (`+nsfw` がないと選ばない) を付けるのは likely の Anima と Chroma だけ。頼んでいないのに出してくる (Anima は `safe` を付けても出る) のが問題で、filtered の FLUX.2-klein には付けない
 
 ## 5. 本家に寄せる
 
@@ -128,7 +124,6 @@ Hugging Face の API (`cardData.license`)、モデルカード、リポジトリ
 
 ## 6. 確かめられなかったこと
 
-- Qwen-Image-2.1 の NSFW の傾向
 - MOSS-SoundEffect の VAE の重みを誰が学習したか、DiT が Wan の重みから始めたか
 - Whisper large-v3-turbo のライセンス (カードは MIT、元の large-v3 は Apache-2.0。ファイルはない)
 - PLaMo Community License の日本語版と英語版のどちらが正か (日本語版は読んでいない)

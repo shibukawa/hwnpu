@@ -43,7 +43,7 @@ func isPath(name string) bool {
 }
 
 // resolve is the model of the definitions (models.yaml) a name of --model means for kind: its
-// name, a family (sana, sana:1.6b: picked for the machine's memory) or a use (image, depth).
+// name, a family (chroma, anima: picked for the machine's memory) or a use (image, depth).
 // What was picked is logged.
 func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	if err := chat.LoadUserModels("", os.Stderr); err != nil {
@@ -132,13 +132,13 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 }
 
 // convertedImage reports whether the image family converts for this machine's NPU (vendor, as
-// hwnpu.Vendor's String) on its first run: Anima and Sana on Apple's (Core AI) and Intel's,
-// Qwen-Image, Chroma and FLUX.2 klein on Apple's.
+// hwnpu.Vendor's String) on its first run: Anima on Apple's (Core AI) and Intel's, Chroma and
+// FLUX.2 klein on Apple's.
 func convertedImage(family, vendor string) bool {
 	switch v := strings.ToLower(vendor); {
-	case strings.HasPrefix(family, "anima"), strings.HasPrefix(family, "sana"):
+	case strings.HasPrefix(family, "anima"):
 		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
-	case strings.HasPrefix(family, "qwen-image"), strings.HasPrefix(family, "chroma"), strings.HasPrefix(family, "flux2-klein"):
+	case strings.HasPrefix(family, "chroma"), strings.HasPrefix(family, "flux2-klein"):
 		return v == strings.ToLower(hwnpu.VendorApple.String())
 	}
 	return false

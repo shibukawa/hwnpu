@@ -1,5 +1,5 @@
 // Package milpart has what the MIL programs of the image models share (internal/imagegen/anima/mil,
-// internal/imagegen/sana/mil): a Part, one program that llm.WritePart writes as a Core ML package
+// chroma/mil, flux2klein/mil): a Part, one program that llm.WritePart writes as a Core ML package
 // or lowers to OpenVINO IR, and a Graph with the tensor operations their layers are written in.
 package milpart
 
@@ -15,7 +15,7 @@ import (
 // Part is one program of an image model: a model for llm.WritePart whose Build runs Body.
 type Part struct {
 	Name string
-	// Model prefixes the build's errors ("anima", "sana").
+	// Model prefixes the build's errors ("anima", "chroma").
 	Model string
 	Body  func(g *Graph)
 }

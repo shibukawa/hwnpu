@@ -21,7 +21,7 @@ T5-XXL's 512 rows, the pads masked past the prompt and one pad token.
   dit_out     norm_out (its shift and scale rows) and proj_out of the image's rows
 
 RoPE: FLUX turns pairs (2i, 2i + 1) of a head; the q and k rows are permuted within each head so
-IRON's pairs (i, i + 64) are them (iron_qwenimage.head_perm). The text's positions are 0 (no turn).
+IRON's pairs (i, i + 64) are them (iron_dit.head_perm). The text's positions are 0 (no turn).
 
   python tools/amd/iron_chroma.py ~/models/Chroma1-Flash OUT --size 1024
   python tools/amd/iron_chroma.py ~/models/Chroma1-Flash OUT --size 1024 512 832x1248 ...   # several in one
@@ -50,9 +50,9 @@ from iron.operators.copy import Copy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import iron_anima  # noqa: E402
+import iron_dit  # noqa: E402
 import iron_gelu  # noqa: E402
 import iron_headnorm  # noqa: E402
-import iron_qwenimage as qi  # noqa: E402
 from iron_anima import bf, command_boundary, variant_bank  # noqa: E402
 from iron_graph import bind_device, export_graph, write_check  # noqa: E402
 
@@ -132,7 +132,7 @@ PREC = Precision.MEDIUM
 
 
 class _Cfg:
-    """The DitConfig fields iron_qwenimage's RoPE helpers read."""
+    """The DitConfig fields iron_dit's RoPE helpers read."""
 
     def __init__(self, c: ChromaConfig):
         self.axes, self.theta, self.head_dim, self.heads = c.axes, c.theta, c.head_dim, c.heads
@@ -144,15 +144,15 @@ def angles(c: ChromaConfig) -> np.ndarray:
     pos = np.zeros((c.rows, 3))
     pos[: c.tokens, 1] = np.repeat(np.arange(c.gh), c.gw)
     pos[: c.tokens, 2] = np.tile(np.arange(c.gw), c.gh)
-    return qi.rope_angles(_Cfg(c), pos)
+    return iron_dit.rope_angles(_Cfg(c), pos)
 
 
 def perm(c: ChromaConfig) -> np.ndarray:
-    return qi.head_perm(_Cfg(c))
+    return iron_dit.head_perm(_Cfg(c))
 
 
 def lin(w, fmt: str):
-    return qi.qparam(np.asarray(w, np.float32), fmt)
+    return iron_dit.qparam(np.asarray(w, np.float32), fmt)
 
 
 def vec(w):
@@ -376,11 +376,11 @@ def export_dit(root: Path, out: Path, c: ChromaConfig, check: bool, base: Chroma
     """The DiT's graphs of c's size. Of another size than the export's first (base): dit_in,
     dit_out and doubles named _WxH (the image's rows split from the text's at its tokens), singles
     _WxH only when its rows differ from base's (it depends on the rows alone); their banks are
-    base's (iron_qwenimage.share_banks: the same weights in the same places, the RoPE an input);
+    base's (iron_dit.share_banks: the same weights in the same places, the RoPE an input);
     mods and ctx hold no size."""
     base = base or c
     sfx = "" if (c.width, c.height) == (base.width, base.height) else f"_{c.width}x{c.height}"
-    w = qi.Checkpoint(root / "transformer", random=ARGS.random)
+    w = iron_dit.Checkpoint(root / "transformer", random=ARGS.random)
     rng = np.random.default_rng(0)
     meta = dict(config=dataclasses.asdict(c), weights=FMT.proj, mha=FMT.mha)
     E = c.hidden
@@ -417,7 +417,7 @@ def export_dit(root: Path, out: Path, c: ChromaConfig, check: bool, base: Chroma
         m = export_graph(cg, d, name, dict(meta, groups=groups, group=group))
         print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         variants = [{k: b["image"] for k, b in m["banks"].items()}]
-        shared = sfx and qi.share_banks(m, d, out / kind)
+        shared = sfx and iron_dit.share_banks(m, d, out / kind)
         if shared:
             variants = shared
             print(f"{name}: the banks are {kind}'s (the same weights in the same places): stored once", flush=True)

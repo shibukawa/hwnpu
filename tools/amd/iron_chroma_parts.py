@@ -88,7 +88,7 @@ rounding of bf16 results: neither is measured here (nothing ran on the NPU).
 
 The grids, the 3 x 3 convolutions (GridGEMM), the 2x upsampling as four phase convolutions at the
 low resolution, the stages' export, are iron_anima.VaeStage's; the attention's GEMMs (one head of
-512 channels) iron_qwenimage.VaeStage's.
+512 channels) iron_dit.VaeStage's.
 
   python tools/amd/iron_chroma_parts.py ~/models/Chroma1-Flash OUT --only t5 vae --size 512 \\
       --vae-config ~/models/FLUX.1-schnell/vae
@@ -116,8 +116,7 @@ from iron.operators.softmax import Softmax
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import iron_anima  # noqa: E402
-import iron_qwenimage as qi  # noqa: E402
-import iron_sana  # noqa: E402
+import iron_dit  # noqa: E402
 from iron_anima import GridShape, bf, command_boundary, tap, variant_bank  # noqa: E402
 from iron_graph import bind_device, export_graph, write_check  # noqa: E402
 
@@ -204,7 +203,7 @@ def t5_bias(c: T5Config, table) -> np.ndarray:
 
 class T5Layer(iron.Graph):
     """A T5 encoder block: RMS norm, self-attention (no scaling, the shared bias), RMS norm,
-    gated-GELU FF; the residuals. Weights iron_sana.text_param (q8)."""
+    gated-GELU FF; the residuals. Weights iron_dit.text_param (q8)."""
 
     def __init__(self, c: T5Config, w, i: int):
         E, M = c.hidden, c.mlp
@@ -217,7 +216,7 @@ class T5Layer(iron.Graph):
             def lin(n, *s):
                 if n.split(".")[-2] in c.bf16:  # kept bf16 (T5Config.bf16)
                     return iron.param(bf(w[p + n]))
-                return iron_sana.text_param(f32(w[p + n]))
+                return iron_dit.text_param(f32(w[p + n]))
 
             vec = lambda n, s: iron.param(bf(w[p + n]))  # noqa: E731
         self.ln0 = vec("0.layer_norm.weight", E)
@@ -240,13 +239,13 @@ class T5Layer(iron.Graph):
             _, _, k, fmt = e
             _, QDequant = iron_q4.operators()
             w = QDequant.step(w.reshape(-1, iron_q4.FORMATS[fmt]), fmt=fmt, K=k)
-        return F.linear(w, h, precision=iron_sana.PREC.text)
+        return F.linear(w, h, precision=iron_dit.PREC.text)
 
     def body(self, x, xl, st, bias):
         """x the residual (bf16), or with xl its low half (``residual`` "pair"): x + xl."""
         c = self.c
         L, E, D, HG, GW, KA = c.rows, c.hidden, c.head_dim, c.heads_per_group, c.group_width, c.aug
-        tl = iron_sana.text_linear
+        tl = iron_dit.text_linear
         h = F.rms_norm(x, (E,), self.ln0, c.eps)
         q = tl(h, self.q)  # (L, E)
         kt = self.transposed(h, self.k)  # (E, L): head h's rows h D .. h D + D
@@ -349,7 +348,7 @@ class T5(iron.Graph):
 
 
 def t5_checkpoint(root: Path, random: bool = False):
-    return qi.Checkpoint(root / "text_encoder", random=random)
+    return iron_dit.Checkpoint(root / "text_encoder", random=random)
 
 
 def _proto_fields(b: bytes):
@@ -437,8 +436,8 @@ def t5_tokenizer_json(tok: Path) -> dict:
 
 def export_t5(root: Path, out: Path, c: T5Config, check: bool, ref: Path | None, layers: int | None) -> None:
     w = t5_checkpoint(root, ARGS.random)
-    iron_sana.TEXT_FMT["fmt"] = ARGS.t5_format
-    iron_sana.PREC.text = HIGHEST
+    iron_dit.TEXT_FMT["fmt"] = ARGS.t5_format
+    iron_dit.PREC.text = HIGHEST
     t0 = time.time()
     n = layers or c.layers
     G = c.group if c.group and n % c.group == 0 else 0
@@ -568,7 +567,7 @@ class NormShape:
         assert self.np * self.cg * GN_EPS > GN_C**2, self  # step 5's eps is positive
 
 
-class FluxVaeStage(qi.VaeStage):
+class FluxVaeStage(iron_dit.VaeStage):
     """iron_anima.VaeStage for FLUX's decoder (2-D convolutions, 16 latent channels, GroupNorm).
 
     Ops: ("in",) the latents' unscaling (a 1 x 1 affine of the 16 channels, in a grid of 64) and
@@ -846,7 +845,7 @@ class FluxVaeStage(qi.VaeStage):
         return self.view(out), gout
 
     def attn(self, x, g: GridShape, path: str):
-        """GroupNorm, then iron_qwenimage's one-head attention as GEMMs, the residual."""
+        """GroupNorm, then iron_dit.VaeStage's one-head attention as GEMMs, the residual."""
         n, C = g.H * g.W, g.C
         p = self.attn_rows(n)
         if p == n:

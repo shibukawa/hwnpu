@@ -46,7 +46,7 @@ doubles_tROWS, on the same banks.
 
 RoPE: four axes of 32 (the reference index, row, column, the text's position), theta 2000; FLUX
 turns pairs (2i, 2i + 1) of a head, so the q and k rows are permuted within each head to IRON's
-pairs (i, i + 64) (iron_qwenimage.head_perm).
+pairs (i, i + 64) (iron_dit.head_perm).
 
   python tools/amd/iron_flux2klein.py ~/models/FLUX.2-klein-4B OUT --size 1024
 """
@@ -67,9 +67,8 @@ from iron.operators.copy import Copy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import iron_anima  # noqa: E402
+import iron_dit  # noqa: E402
 import iron_headnorm  # noqa: E402
-import iron_qwenimage as qi  # noqa: E402
-import iron_sana  # noqa: E402
 import iron_silu  # noqa: E402
 from iron_anima import bf, command_boundary, variant_bank  # noqa: E402
 from iron_graph import bind_device, export_graph, write_check  # noqa: E402
@@ -171,11 +170,11 @@ def positions(c: KleinConfig) -> np.ndarray:
 
 
 def angles(c: KleinConfig) -> np.ndarray:
-    return qi.rope_angles(c, positions(c))
+    return iron_dit.rope_angles(c, positions(c))
 
 
 def lin(w):
-    return qi.qparam(np.asarray(w, np.float32), FMT.proj)
+    return iron_dit.qparam(np.asarray(w, np.float32), FMT.proj)
 
 
 def vec(w):
@@ -187,7 +186,7 @@ class _Stream:
     norms' weights over the heads, and whatever else ``parts`` names (name -> weight)."""
 
     def __init__(self, c: KleinConfig, q, k, v, qn, kn, **parts):
-        P = qi.head_perm(c)
+        P = iron_dit.head_perm(c)
         within = P[: c.head_dim]
         self.q, self.k, self.v = lin(q[P]), lin(k[P]), lin(v)
         self.qn = iron_headnorm.head_weight(np.asarray(qn, np.float32)[within], c.heads)
@@ -419,7 +418,7 @@ class Qwen3Layer(iron.Graph):
     def __init__(self, c: TextConfig, w, i: int):
         self.c = c
         p = f"model.layers.{i}."
-        lin = lambda n: iron_sana.text_param(qi.f32(w[p + n]))  # noqa: E731
+        lin = lambda n: iron_dit.text_param(iron_dit.f32(w[p + n]))  # noqa: E731
         vec_ = lambda n: iron.param(bf(w[p + n]))  # noqa: E731
         self.in_norm, self.post_norm = vec_("input_layernorm.weight"), vec_("post_attention_layernorm.weight")
         self.q, self.k = lin("self_attn.q_proj.weight"), lin("self_attn.k_proj.weight")
@@ -433,7 +432,7 @@ class Qwen3Layer(iron.Graph):
 
         c = self.c
         L, H, G, D = c.rows, c.heads, c.kv_heads, c.head_dim
-        tl = iron_sana.text_linear
+        tl = iron_dit.text_linear
         h = F.rms_norm(x, (c.hidden,), self.in_norm, c.eps)
         q = F.rms_norm(tl(h, self.q).reshape(L * H, D), (D,), self.qn, c.eps)
         k = F.rms_norm(tl(h, self.k).reshape(L * G, D), (D,), self.kn, c.eps)
@@ -477,10 +476,10 @@ class Text(iron.Graph):
 
 def export_text(root: Path, out: Path, check: bool) -> None:
     c = TextConfig()
-    w = qi.Checkpoint(root / "text_encoder", random=ARGS.random)
+    w = iron_dit.Checkpoint(root / "text_encoder", random=ARGS.random)
     t0 = time.time()
-    iron_sana.TEXT_FMT["fmt"] = ARGS.text
-    iron_sana.PREC.text = Precision.HIGHEST
+    iron_dit.TEXT_FMT["fmt"] = ARGS.text
+    iron_dit.PREC.text = Precision.HIGHEST
     groups = c.layers // c.group
     meta = dict(config=dataclasses.asdict(c), weights=ARGS.text, groups=groups,
                 taps=[layer // c.group - 1 for layer in KleinConfig().text_layers])
@@ -509,7 +508,7 @@ def export_text(root: Path, out: Path, check: bool) -> None:
         ids = np.concatenate([rng.integers(0, 150000, real), np.full(c.rows - real, 151643)])
         sel = np.zeros((c.rows, c.heads * c.head_dim), np.float32)
         sel[:real] = 1
-        write_check(g, m, d, dict(x=bf(qi.f32(e[ids])), angles=bf(iron_anima.half_rope_table(c.rows, c.head_dim, c.theta)),
+        write_check(g, m, d, dict(x=bf(iron_dit.f32(e[ids])), angles=bf(iron_anima.half_rope_table(c.rows, c.head_dim, c.theta)),
                                   sel=bf(sel)), dict(nk=real))
 
 
@@ -535,9 +534,9 @@ def make_vae_stage():
 
         def in_affine(self, w, vae_cfg: dict):
             a = np.zeros((64, 64), np.float32)
-            a[:32, :32] = qi.f32(w["post_quant_conv.weight"])[:, :, 0, 0]
+            a[:32, :32] = iron_dit.f32(w["post_quant_conv.weight"])[:, :, 0, 0]
             b = np.zeros(64, np.float32)
-            b[:32] = qi.f32(w["post_quant_conv.bias"])
+            b[:32] = iron_dit.f32(w["post_quant_conv.bias"])
             return a, b
 
     return cp, Flux2VaeStage
@@ -562,7 +561,7 @@ def make_enc_stage():
             self.params, self._index, self.states = [], {}, []
             self._consts = {}
             self._gn_grids = []
-            f = lambda n: qi.f32(w[n])  # noqa: E731
+            f = lambda n: iron_dit.f32(w[n])  # noqa: E731
             gg = g
             for op in ops:
                 kind = op[0]
@@ -721,7 +720,7 @@ def export_encoder(root: Path, out: Path, width: int, height: int, check: bool, 
             continue
         if x_ref is not None:
             x_in = x_ref
-            y = qi.f32(st.reference(bf(x_in)))
+            y = iron_dit.f32(st.reference(bf(x_in)))
             if go is not None:
                 x_ref = y
             else:
@@ -768,7 +767,7 @@ def export_vae(root: Path, out: Path, width: int, height: int, check: bool, ref:
             continue  # the host's norm steps are not in IRON's reference: checked on the NPU
         if x_ref is not None:
             x_in = x_ref
-            y = qi.f32(st.reference(bf(x_in)))
+            y = iron_dit.f32(st.reference(bf(x_in)))
             if go is not None:
                 x_ref = y
             else:  # the picture: the reference's (H, W, 3) in 0..1
@@ -780,8 +779,8 @@ def export_vae(root: Path, out: Path, width: int, height: int, check: bool, ref:
                 write_check(st, m, d / f"s{i}", dict(x=bf(x_in)))
         elif check:
             write_check(st, m, d / f"s{i}", dict(x=bf(cp._check_input(st, g, rng))))
-    mean = qi.f32(w["bn.running_mean"])
-    std = np.sqrt(qi.f32(w["bn.running_var"]) + float(cfg["batch_norm_eps"]))
+    mean = iron_dit.f32(w["bn.running_mean"])
+    std = np.sqrt(iron_dit.f32(w["bn.running_var"]) + float(cfg["batch_norm_eps"]))
     (d / "manifest.json").write_text(json.dumps(dict(
         stages=len(stages), width=width, height=height, pad=iron_anima.VAE_PAD, channels=3, latent=32, patch=2,
         bn_mean=[float(v) for v in mean], bn_std=[float(v) for v in std]), indent=1) + "\n")
@@ -871,14 +870,14 @@ def export_dit(root: Path, out: Path, c: KleinConfig, check: bool, names: dict, 
     dit_out (the picture's rows, or dit_out_rows of them: a padded step's), dit_in, doubles,
     singles. A blocks' graph of a row count other than the first size's picture's shares that
     picture's banks."""
-    w = qi.Checkpoint(root / "transformer", random=ARGS.random)
+    w = iron_dit.Checkpoint(root / "transformer", random=ARGS.random)
     rng = np.random.default_rng(0)
     meta = dict(config=dataclasses.asdict(c), weights=FMT.proj, mha=FMT.mha)
     E = c.hidden
     image = c.graph_rows - c.text_rows  # dit_in's rows: the image stream's, padded (zeros: no bias)
     out_rows = names.get("dit_out_rows", c.tokens)
     small = [
-        ("mods", lambda: Mods(c, w), dict(tproj=(256,)), lambda: dict(tproj=bf(qi.timestep_sinusoid(700.0)))),
+        ("mods", lambda: Mods(c, w), dict(tproj=(256,)), lambda: dict(tproj=bf(iron_dit.timestep_sinusoid(700.0)))),
         ("ctx", lambda: Ctx(c, w), {f"h{i}": (c.text_rows, c.text) for i in range(3)},
          lambda: {f"h{i}": bf(rng.standard_normal((c.text_rows, c.text))) for i in range(3)}),
         ("dit_in", lambda: DitIn(c, w), dict(x=(image, c.latent)),
@@ -912,7 +911,7 @@ def export_dit(root: Path, out: Path, c: KleinConfig, check: bool, names: dict, 
         m = export_graph(cg, d, name, dict(meta, groups=groups, group=group))
         print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
         variants = [{k: b["image"] for k, b in m["banks"].items()}]
-        shared = name != base and qi.share_banks(m, d, out / base)
+        shared = name != base and iron_dit.share_banks(m, d, out / base)
         if shared:
             variants = [{k: f.replace("../dit_blocks/", f"../{base}/") for k, f in v.items()} for v in shared]
             for b in m["banks"].values():
