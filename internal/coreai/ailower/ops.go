@@ -123,7 +123,19 @@ func (l *lowerer) op(op *milspec.Operation) {
 		x := l.in(op, "x")
 		set(l.transpose(x, l.ints(op, "perm")))
 	case "slice_by_index":
+		if !l.isConst(op, "begin") {
+			// begin and end given at run time (a dynamic slice), the strides one
+			x := l.in(op, "x")
+			set(l.emit("slice_v1", x.elem, oshape, nil, x, l.in(op, "begin"), l.in(op, "end"), l.i32s(ones(len(x.shape))...)))
+			return
+		}
 		set(l.sliceByIndex(op, oshape))
+	case "gather_nd":
+		x := l.in(op, "x")
+		set(l.emit("gather_nd_v1", x.elem, oshape, nil, x, l.in(op, "indices")))
+	case "gather_along_axis":
+		x := l.in(op, "x")
+		set(l.emit("gather_along_axis_v1", x.elem, oshape, nil, x, l.in(op, "indices"), l.i32(l.ints(op, "axis")[0])))
 	case "concat":
 		set(l.concat(op, oshape))
 	case "tile":

@@ -517,6 +517,8 @@ func short(elem string) string {
 		return "f32"
 	case "sint32":
 		return "i32"
+	case "sint8":
+		return "i8"
 	}
 	return elem
 }
@@ -529,6 +531,8 @@ func elemOf(dt milspec.DataType) string {
 		return "float32"
 	case milspec.DataType_INT32:
 		return "sint32"
+	case milspec.DataType_INT8:
+		return "sint8"
 	case milspec.DataType_BOOL:
 		return "bool"
 	}
@@ -684,6 +688,19 @@ func (l *lowerer) in(op *milspec.Operation, key string) val {
 		l.fail("%s %s: input %s missing", op.GetType(), opName(op), key)
 	}
 	return l.binding(a.GetArguments()[0])
+}
+
+// isConst is whether the operation's input key is a constant.
+func (l *lowerer) isConst(op *milspec.Operation, key string) bool {
+	a := op.GetInputs()[key]
+	if a == nil || len(a.GetArguments()) == 0 {
+		return false
+	}
+	if n := a.GetArguments()[0].GetName(); n != "" {
+		_, ok := l.consts[l.resolve(n)]
+		return ok
+	}
+	return true
 }
 
 func (l *lowerer) has(op *milspec.Operation, key string) bool {

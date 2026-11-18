@@ -110,6 +110,11 @@ func walkBlock(plan, block objc.ID, rep *types.PlacementReport) {
 		case isKind(dev, "MLGPUComputeDevice"):
 			device = "gpu"
 		}
+		for _, d := range arrayItems(send(usage, "supportedComputeDevices")) {
+			if isKind(d, "MLNeuralEngineComputeDevice") {
+				device += " (the Neural Engine supports it)"
+			}
+		}
 		name := ""
 		if outs := arrayItems(send(op, "outputs")); len(outs) > 0 {
 			name = goString(send(outs[0], "name"))
