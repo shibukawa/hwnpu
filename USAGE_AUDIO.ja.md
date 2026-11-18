@@ -6,6 +6,8 @@
 
 Mac では Core AI を通して Neural Engine で動かすだけなので、macOS 27 が要ります (macOS 26 以前では、そう書いたエラーで止まります)。モデルは Core AI 向け (モデルのディレクトリの書き出し `NAME.coreai` に `.aimodel`、hwnpu-chat や hwnpu-image と同じ) に変換し、コンパイルした結果は Core AI が自分のキャッシュに持つので、2 回目からの読み込みは 0.1 秒です (docs/design.md 16.196)。`--cpu` は確かめ用に、Core ML の書き出しを CPU のインタプリタで動かします。
 
+AMD の NPU (Ryzen AI 300 以降) では、どのモデルも IRON の書き出し (`tools/amd`) で動きます。初回は、取得元になければ自分で書き出し (IRON の環境は [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md) のとおり)、書き戻す取得元に置きます。書き起こし、読み上げ、効果音はほとんどが NPU で、音楽は復号器が NPU、言語モデルが CPU です。`pitch` と `notes` は CPU で動きます。
+
 ## 音楽 (Magenta RealTime 2)
 
 `go run ./cmd/hwnpu-audio generate "disco funk"` は Magenta RealTime 2 small で、文で指定した曲調の 48 kHz ステレオの音楽を作り、そのままスピーカーで鳴らします (`-o out.wav` でファイルに)。M1 で実時間の約 1.4 倍の速さです。重みは CC-BY 4.0 なので、使うときは「Magenta RealTime 2 by Google DeepMind」と表示してください。
@@ -15,6 +17,8 @@ Mac では Core AI を通して Neural Engine で動かすだけなので、macO
 - MIDI の音符: `--notes melody.mid`
 - 録音の続き: `--continue intro.wav`
 - 鳴らしながらファイルにも書く: `--play -o out.wav`、標準出力に流す: `-o -`
+
+AMD の NPU では、SpectroStream の復号器が `tools/amd/iron_magenta.py` のグラフで、言語モデルと MusicCoCa は CPU で動きます。初回は、取得元に書き出し (`magenta-realtime-2-small.amd-npu2`) がなければ IRON で復号器を書き出します (約 15 秒)。Ryzen AI 9 365 で実時間の約 0.3 倍 (4 秒を 13 秒。音楽の 1 秒あたり復号器 1.6 秒、言語モデル 1.6 秒。全部 CPU なら 28 秒)、約 2.7 GB です。
 
 ## 効果音 (MOSS-SoundEffect)
 

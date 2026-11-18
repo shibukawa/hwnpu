@@ -6,6 +6,8 @@
 
 On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it needs macOS 27 (on macOS 26 or earlier it stops with an error that says so). Each model is converted for Core AI (exports `NAME.coreai` of `.aimodel`s in the model's directory, as hwnpu-chat's and hwnpu-image's), and Core AI keeps the compiled programs in its own cache: a second start loads in 0.1 seconds (docs/design.md 16.196). `--cpu` runs a Core ML export with the CPU interpreter, for checking without the NPU.
 
+On AMD's NPU (Ryzen AI 300 and later) each model runs from an export of IRON's (`tools/amd`), which the first run makes (IRON's environment as [INSTALL_AMD.md](INSTALL_AMD.md) says) unless a source has it, and puts in the sources written back to: transcription, speech and sound effects mostly on the NPU, music's decoder on the NPU and its language model on the CPU. `pitch` and `notes` run on the CPU.
+
 ## Music (Magenta RealTime 2)
 
 `go run ./cmd/hwnpu-audio generate "disco funk"` uses Magenta RealTime 2 small to make 48 kHz stereo music in the style a text names, and plays it on the speakers as it goes (`-o out.wav` writes a file). On an M1 it runs about 1.4 times faster than real time. The weights are CC-BY 4.0, so when you use them, credit "Magenta RealTime 2 by Google DeepMind".
@@ -15,6 +17,8 @@ On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it nee
 - MIDI notes: `--notes melody.mid`
 - Continuing a recording: `--continue intro.wav`
 - Play and write a file at once: `--play -o out.wav`; stream to standard output: `-o -`
+
+On AMD's NPU SpectroStream's decoder runs as the graph of `tools/amd/iron_magenta.py`, and the language model and MusicCoCa on the CPU. The first run exports the decoder with IRON (about 15 seconds) unless a source has it (`magenta-realtime-2-small.amd-npu2`). On a Ryzen AI 9 365 it makes music at about 0.3 times real time (4 seconds in 13 seconds: the decoder 1.6 seconds and the language model 1.6 seconds a second of music; all on the CPU 28 seconds), at about 2.7 GB.
 
 ## Sound effects (MOSS-SoundEffect)
 

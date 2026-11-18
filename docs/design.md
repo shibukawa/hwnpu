@@ -7555,7 +7555,7 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 
 16.252 の次に、読み上げ (LFM3-Audio-2B-TTS) を AMD の NPU に移した (`tools/amd/iron_lfm3speech.py`、docs/amd-npu-models.md 26 節)。書き出し `lfm3-audio-2b-tts.amd-npu2` は 3 つのプログラムとホストの表からなる。
 
-- **文のモデル** (`text/`、`iron_export_lm.py lfm3tts --q4 --mlp q8 --head q8`、`iron_lfm3tts.py`): LFM3-Audio の `lfm.` の文の部分を `Lfm3` で、最後の norm の出力 (depthformer が読む隠れ状態) を名前つきの状態 `hwnpu_hidden` に書いてから head に渡す。プロンプトの塊 (最後の行) でも decode でも同じ位置に書かれ、ホストは呼び出しのたびに読む (`iron.Model.Buffer`)。`--q4` でトークンの埋め込みはホストの表 (`hwnpu_embed_rows`) になるので、フレームの後の入力 (符号ごとの feedback の行の和、どのトークンでもない) をホストが書ける (`iron.Model.StepRow`: `fillHostTables` が埋め込みの表の代わりにその行を写す)。重みは Apple の lut8 と同じく 8 ビット (MLP と head も q8。4 ビットでは Apple で読み上げが崩れた、16.31)。`iron_export_lm.py` の LFM3 に `--mlp` と `--head` を通した (既定は今までの q4)
+- **文のモデル** (`text/`、`iron_lfm3tts.py`: `iron_export_lm.py` に `lfm3tts` を足し、MLP と head を q8 にして `--q4` で呼ぶ): LFM3-Audio の `lfm.` の文の部分を `Lfm3` で、最後の norm の出力 (depthformer が読む隠れ状態) を名前つきの状態 `hwnpu_hidden` に書いてから head に渡す。プロンプトの塊 (最後の行) でも decode でも同じ位置に書かれ、ホストは呼び出しのたびに読む (`iron.Model.Buffer`)。`--q4` でトークンの埋め込みはホストの表 (`hwnpu_embed_rows`) になるので、フレームの後の入力 (符号ごとの feedback の行の和、どのトークンでもない) をホストが書ける (`iron.Model.StepRow`: `fillHostTables` が埋め込みの表の代わりにその行を写す)。重みは Apple の lut8 と同じく 8 ビット (MLP と head も q8。4 ビットでは Apple で読み上げが崩れた、16.31)。`iron_export_lm.py` は変えない (チャットのモデルの書き出しの鍵 `amdtools.LMHash` がそのバイトを含むので、変えると取得元の全部のチャットの書き出しが見つからなくなる): `iron_lfm3tts.py` の `main` が MODELS に足し、`iron_lfm3.install_q4` に `mlp="q8", head="q8"` を渡すようにしてから `iron_export_lm.main` を呼ぶ
 - **depthformer** (`depth/`、グラフ): MaskGIT の 1 回。12 の符号帳の行を MHA の 64 行に詰める。頭が 32 値で IRON の MHA は 64 の倍数なので、頭を 64 に [x0..x15, 0 × 16, x16..x31, 0 × 16] と並べる: RoPE の半分ずつ (rotate_half、i と i + 32) が 32 の頭の i と i + 16 の対になり、0 は 0 のまま。64 の上の RMS norm は、重みを √2 で割り eps を半分にすると 32 の上の norm と同じ。値は [v0..v31, 0 × 32] で、o_proj は頭ごとに最初の 32 を読む。logits は符号帳ごとの norm と表の GEMV (2017 を 2048 に詰める)
 - **codec の復号器** (`codec/`、グラフ): 64 フレーム (384 の STFT フレーム) を 1 回に。最近傍の 6 倍は、ホストがフレームの符号のベクトルを 6 行に写して入れる (線形の層の前なので同じ)。短い畳み込み (7 タップ、0 から因果) は、タップごとの積を状態に k 行ずらして書いて足す (16.252 の conv2 と同じ形)。注意は窓 30 (自分を含む) の因果、GQA、RoPE、ゲート
 - **ホスト** (`internal/speech`): 文のモデルを `textModel` の interface にした (`decode.Session` と `ironText`)。プロンプトは `ironText` が自分で読む (`promptReader`、トークンの id のまま塊で)。depthformer と codec は `graphProgram` (グラフの書き出しを `runner.Program` に: meta の `program` が今のプログラムの形を言い、行の繰り返しと詰めた列を外す) なので、MaskGIT、抽選、feedback、重なりのある codec の呼び出し、逆 STFT は同じ道。ホストの表は書き出しの `tables.safetensors` (bf16: 符号の表、mask の埋め込み、feedback の表)
@@ -7602,3 +7602,30 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 - DAC を NPU に (Snake の sin² の float32 のカーネル、`kernels/silu_f32.cc` の形で)。dilation のある畳み込みと転置畳み込みは行のずらしと GEMM で書ける
 - 音は聞いて確かめていない (この機械に音を聞く手段がない)。数値は CPU の fp16 の版と比べた
 - lut8 の版 (`moss-soundeffect:8g`、文の符号器を q8) の最大メモリ
+
+### 16.255 Magenta RealTime 2 の SpectroStream の復号器を AMD の NPU に (IRON、`hwnpu-audio generate`) — 2026-11-19
+
+音のモデルの最後に、音楽 (Magenta RealTime 2 small) を AMD の NPU で動くようにした。CPU のインタプリタだけでは 4 秒に 28 秒かかり、そのうち 23 秒が SpectroStream の復号器、言語モデル (temporal と depth) は 1 フレーム約 50 ms だった。そこで復号器を IRON のグラフにし (`tools/amd/iron_magenta.py`、docs/amd-npu-models.md 28 節)、言語モデル、MusicCoCa、符号器は Core ML の版を CPU で回す。
+
+- **形**: 行が (時間, 周波数)、列がチャンネル。畳み込みは余白つきの格子 (上に 0 の行、左右に 0 の列) を IRON の Copy の tap で im2col し、1 つの GEMM に。DMA の一番内側は 1023 ワードまでなので、1024 チャンネルの 3 タップはタップごとに列の区画へ写す。GEMM の行は 32 の倍数なので、時間の区切りは最後のものが T を越えてよい (格子の下に 40 行の 0)
+- **転置畳み込み**: 出力の時間と周波数の位相 (ストライドの剰余) ごとに、入力の上の普通の畳み込み (Flax の ConvTranspose の重みを両方の軸で反転して位相の分を取る) を計算し、出力の位相の場所に tap で散らす。時間は因果 (最後の kt − st を切る)、周波数は "same" (ft / 2 を前に)。近傍の拡大 (shortcut) も同じ散らし
+- **マスクなし**: Core ML の版は、窓の曲より前のフレームを、畳み込みの入力ごとにマスクで 0 にする。グラフはホストが窓の曲の最初のフレームを行 0 に置くので、格子の上の 0 の行がその 0 になり、同じ値になる (時間は因果なので、後ろの余った行は前に効かない)。窓は 48 フレーム (Go の 41)
+- **ELU**: IRON にないので float32 のカーネル (`kernels/elu_f32.cc`、`iron_elu.py`: exp(min(x, 0)) − 1 + max(x, 0)、exp は −30 で切る)。fp16 の版の値の割り算 (`decoderScales`) は bf16 では要らない
+- **ホスト** (`internal/music`): `OpenAMD` が復号器のグラフを Core ML の版と同じ入出力の step にする (`ironDecoder`: x のチャンネル先の窓をマスクの最初の 1 から行に、出力を (2, 2, 4W, 480) の並びに戻し、`DecoderOutScale` で割る)。言語モデルなどは `dev` nil で CPU。`hwnpu-audio generate` は AMD の NPU では `music.PrepareAMD` で書き出しを用意し、CPU の部分は NPU の検査 (`checkNPU`) に掛けない
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- ELU のカーネルは IRON の参照と一致 (−1e6、−30、0 付近、1e6 を含む乱数、cosine 1.000000)
+- 復号器のグラフは乱数の入力で IRON の参照と cosine 0.99998、1 回 (新しい 25 フレーム、1 秒分) 1.2 秒 (CPU は 5.7 秒)
+- 同じ `--codes` と種で、CPU だけの版の 4 秒と比べて波形の SNR 27.8 dB、cosine 0.9992 (言語モデルは同じ CPU の版なので符号は同じ、違いは復号器だけ)。文の曲調 ("smooth jazz") も MusicCoCa (CPU) から
+- 時間: 4 秒を 13 秒 (復号器 6.4 秒)、8 秒を 24 秒。実時間の 0.3 倍 (全部 CPU では 0.14 倍)
+- 初回の流れ (取得元なし): IRON の書き出し 13 秒 (89 MB)
+- 最大メモリ: 8 秒で 2.5 GiB。models.yaml の amd を 2.7 GB に
+
+**試してやめたこと**: 復号器の時間の 38 % は出力の 7 × 7 の畳み込み (2 チャンネル、半分ずつ 226 ms) で、im2col の写しが半分で 578 MB になる。FLUX の VAE の `GridGEMM` (格子を写さずに A として読む) は、単独の 7 × 7 ならコンパイルできたが、このグラフの中では IRON の GEMM の前置き (`rtp.write`) が "Operand 0 of operation aiex.npu.rtp_write must be a Value" で落ちた。原因は調べていない
+
+**残り**
+
+- 言語モデルを NPU に (temporal は 12 層の窓 41 の KV キャッシュと sink、depth は 12 ステップの 2 層。どちらも 1 行の GEMV): 1 フレーム 66 ms のほとんど
+- 出力の層の im2col を減らす (時間のタップだけ im2col にし、周波数のタップは出力の列で持って足す)
+- MusicCoCa の音の側と SpectroStream の符号器 (`--continue`) は CPU のまま

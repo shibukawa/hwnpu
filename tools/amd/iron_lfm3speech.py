@@ -6,8 +6,8 @@ hwnpu-audio tts runs on AMD's NPU.
 
 writes into OUT:
 
-  text/   the text model, its final hidden state out (iron_export_lm.py lfm3tts --q4 --mlp q8
-          --head q8: iron_lfm3tts.py), run by internal/speech as hwnpu-chat runs LFM3
+  text/   the text model, its final hidden state out (iron_lfm3tts.py: iron_export_lm.py with
+          the MLP and the head in q8), run by internal/speech as hwnpu-chat runs LFM3
   depth/  one MaskGIT pass of the depthformer (a graph, iron_graph.py): x (64, 1024), each
           codebook's embedding of its code or the mask embedding in rows 0..11 (the host looks
           them up), and h (1, 2048), the text model's final hidden state; out (12, 2048), each
@@ -371,9 +371,9 @@ def main(argv=None) -> int:
     rng = np.random.default_rng(0)
     if "text" in a.only:
         t0 = time.time()
-        tool = Path(__file__).resolve().parent / "iron_export_lm.py"
-        args = [sys.executable, str(tool), "lfm3tts", str(a.root), str(a.out / "text"), "--max-seq-len", str(a.cache),
-                "--q4", "--mlp", "q8", "--head", "q8", "--device", a.device, "--cols", str(a.cols)]
+        tool = Path(__file__).resolve().parent / "iron_lfm3tts.py"
+        args = [sys.executable, str(tool), str(a.root), str(a.out / "text"), "--max-seq-len", str(a.cache),
+                "--q4", "--device", a.device, "--cols", str(a.cols)]
         if a.random:
             args += ["--random-weights", "0"]
         subprocess.run(args, check=True)

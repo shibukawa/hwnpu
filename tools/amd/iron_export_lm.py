@@ -52,8 +52,6 @@ MODELS = {
     "lfm3vl": ("iron_lfm3vl", "Lfm3Vl"),
     # LFM3-Audio (LFM3-Audio-2B): LFM3 with its audio encoder, audio in (iron_lfm3audio.py).
     "lfm3audio": ("iron_lfm3audio", "Lfm3Audio"),
-    # LFM3-Audio's text model alone for speaking, its final hidden state out (iron_lfm3tts.py).
-    "lfm3tts": ("iron_lfm3tts", "Lfm3Tts"),
     # LFM3-Omni (LFM3-Omni-2B): LFM3 with both towers, images and audio in (iron_lfm3omni.py).
     "lfm3omni": ("iron_lfm3omni", "Lfm3Omni"),
     # PLaMo 3 (pfnet/plamo-3-translate-2b): an application kept in hwnpu (iron_plamo3.py).
@@ -893,10 +891,10 @@ def main(argv=None) -> int:
     ap.add_argument("--conv", choices=("q8", "q4", "bf16"), default="q8",
                     help="with --q4, LFM3's short convolutions' projections (in_proj, out_proj)")
     ap.add_argument("--mlp", choices=("q4", "q6", "q8"), default="q4",
-                    help="with --q4, the MLP of Qwen3.5 (q4nx, or q6, 6.5 bits a weight, for the small models, 0.8B "
-                         "and 2B, whose 4-bit MLP is most of the error) and of LFM3 (q4 or q8)")
+                    help="with --q4, Qwen3.5's MLP: q4nx, or q6 (6.5 bits a weight) for the small models (0.8B, "
+                         "2B), whose 4-bit MLP is most of the error")
     ap.add_argument("--head", choices=("q4", "q6", "q8", "bf16"), default="q4",
-                    help="with --q4, the head of Qwen3.5 and LFM3 (tied to the embeddings)")
+                    help="with --q4, Qwen3.5's head (tied to the embeddings)")
     ap.add_argument("--q4-codes", type=Path, default=None,
                     help="with --q4, the codes q4_gptq.py chose against the activations (GPTQ): its weights take "
                          "them instead of rounding to the nearest level, the others are rounded")
@@ -946,11 +944,7 @@ def main(argv=None) -> int:
     elif a.model.startswith("lfm3") and a.q4:
         import iron_lfm3
 
-        # the MLP and the head in --mlp and --head (q4, the default, or q8: lfm3tts's, whose speech
-        # 4 bits spoil); q6 is Qwen3.5's alone
-        if a.mlp == "q6" or a.head in ("q6",):
-            raise SystemExit("LFM3: --mlp and --head take q4, q8 (or bf16 for --head)")
-        iron_lfm3.install_q4(mlp=a.mlp, attn=a.attn, conv=a.conv, head=a.head)
+        iron_lfm3.install_q4(attn=a.attn, conv=a.conv)
     elif a.model.startswith("qwen35") and a.q4:
         import iron_qwen35
 

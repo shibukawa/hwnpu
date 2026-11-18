@@ -1276,7 +1276,7 @@ LFM3-Audio-2B で文章を 24 kHz の声にする (Apple と同じ流れ、inter
 
 | 部分 | 中身 |
 |---|---|
-| `text/` | `iron_export_lm.py lfm3tts --q4 --mlp q8 --head q8` (`iron_lfm3tts.py`): LFM3-Audio の文のモデル、2048 位置。最後の norm の出力を状態 `hwnpu_hidden` に書く。トークンの埋め込みはホスト (`embed.bin`)。decode 1 コマンド、プロンプトの塊 (1024) 18 コマンド |
+| `text/` | `python iron_lfm3tts.py CHECKPOINT OUT --q4` (`iron_export_lm.py` に `lfm3tts` を足し、MLP と head を q8 にして呼ぶ): LFM3-Audio の文のモデル、2048 位置。最後の norm の出力を状態 `hwnpu_hidden` に書く。トークンの埋め込みはホスト (`embed.bin`)。decode 1 コマンド、プロンプトの塊 (1024) 18 コマンド |
 | `depth/` | MaskGIT の 1 回 (グラフ): x (64, 1024) の行 0..11 に符号帳ごとの符号の埋め込みか mask の埋め込み、h (1, 2048)。depth_linear、3 層 (頭 32 を 64 に詰める、GQA 32 / 8、RoPE、q と k の norm、ゲート、SwiGLU)、norm、符号帳ごとの norm と表の GEMV。出力 (12, 2048) |
 | `codec/` | 復号器 (グラフ): 64 フレームの符号のベクトル (12 × 4 の 48 値を 64 に詰め、6 行ずつに写したもの、384 行)。project_out と from_quantizer、8 層 (短い畳み込み 7 タップと窓 30 の注意、サンドイッチの norm)、norm、lin。出力 (384, 1344) の 1282 列が STFT のフレーム |
 | `tables.safetensors` | ホストの表 (bf16): 12 の符号の表 (2017 × 1024)、mask の埋め込み、feedback の表 (24204 × 2048) |
@@ -1333,4 +1333,39 @@ OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説�
 python tools/amd/iron_moss_sfx.py ~/models/MOSS-SoundEffect-v2.0 ~/models/moss-soundeffect-v2.0.amd-npu2   # --text q8、--check、--groups 1
 go run ./tools/amd/irongraph ~/models/moss-soundeffect-v2.0.amd-npu2/dit-blocks-0
 go run ./cmd/hwnpu-audio generate -m sfx --duration 5s "A dog barking loudly in a park."
+```
+
+## 28. Magenta RealTime 2 の SpectroStream の復号器 (`hwnpu-audio generate`、2026-11-19)
+
+Magenta RealTime 2 small (コードは Apache-2.0、重みは CC-BY 4.0) の音楽で、SpectroStream の復号器を AMD の NPU で回す。言語モデル、MusicCoCa、符号器は CPU (Core ML の版)。設計の記録は design.md 16.255。
+
+### 28.1 構成 (`tools/amd/iron_magenta.py`)
+
+| 部分 | 中身 |
+|---|---|
+| 入力 | x (64, 256): 窓の曲の最初のフレームから、フレームごとの符号の量子化の埋め込みの和 |
+| input_layer、residual unit | 1 × 1 の畳み込み (256 → 2560) を (時間 × 5, 512) に、3 × 3 の 2 段 |
+| decoder_0 | 転置 4 × 3 (時間 2 倍、1024)、3 × 3 と shortcut を出力の半分ずつ (左と右) |
+| decoder_1..6 | 半分ずつ同じ重みで: 転置 (位相ごと)、3 × 3、shortcut (1 × 1 か そのまま) の近傍の拡大。周波数は 5 → 480、時間は 96 → 192 |
+| 出力 | ELU、7 × 7 の因果の畳み込み (2 チャンネルを 64 に詰める)。out0 と out1 (192 × 480, 64) の列 0 と 1 が実部と虚部 |
+
+44 コマンド。ELU は `kernels/elu_f32.cc`。
+
+### 28.2 測定 (Ryzen AI 9 365)
+
+| | 時間 |
+|---|---|
+| 復号器 1 回 (新しい 25 フレーム、1 秒分) | 1.2 秒 (CPU 5.7 秒) |
+| そのうち出力の 7 × 7 (半分ずつ) | 226 ms × 2 |
+| 4 秒の音楽 | 13 秒 (全部 CPU で 28 秒) |
+| 書き出し | 13 秒 (89 MB) |
+
+最大メモリは 8 秒で 2.5 GiB。
+
+### 28.3 手順
+
+```bash
+python tools/amd/iron_magenta.py ~/models/magenta-realtime-2 ~/models/magenta-realtime-2-small.amd-npu2   # --check
+go run ./tools/amd/irongraph ~/models/magenta-realtime-2-small.amd-npu2/decoder
+go run ./cmd/hwnpu-audio generate --duration 10s "disco funk" -o out.wav
 ```
