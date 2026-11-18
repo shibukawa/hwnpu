@@ -78,6 +78,46 @@ ANE の gather は、索引が si16 などで、3 つの軸の座標の組 (チ�
 - 往復は層ごとに 1 回増える。gpt-oss の 24 層で 1 トークン 10 ms ほどの見積もり
 - gpt-oss-20b の専門家は int8 で約 19 GB。16 GB の機械には載らない。32 GB 以上か、小さい MoE (LFM2-8B-A1B など) が対象
 
+### MoE の 1 層を実行時の重みで (M1、`aicheck moe`)
+
+専門家の SwiGLU (gate と up を 1 つの積、down、ルーティングの重みで足す) を、専門家ごとの int8 の配列 (と列ごとの fp16 の拡大) を入力にして組み、同じ計算を定数の int8 の重みで組んだもの (同じ大きさの密なモデルの費用) と比べた。1 行 (デコード)。照合は Go の float32 で cos 1.000000 (int8 の入力の正しさはこれで確認)。
+
+形: gpt-oss-20b (幅 2880、専門家 2880、32 個、top-4、1 個 24.9 MB) と Qwen3-30B-A3B 型 (2048、768、128 個、top-8、1 個 4.7 MB)。
+
+**1 プログラムに入る専門家は 5 個まで** (実行時の重み行列 10 枚)。6 個から急に遅い:
+
+| top-k | gpt-oss | Qwen 型 |
+|---|---|---|
+| 4 | 3.75 ms | 1.44 ms |
+| 5 | 5.00 ms | 1.79 ms |
+| 6 | **21.53 ms** | **7.78 ms** |
+| 8 | — | 10.70 ms |
+
+入力の数でも大きさでもない (8 KB の入力 32 個、1 MiB の入力 16 個では段差なし)。top-8 は 4 個ずつ 2 回呼ぶ (`-split 4`)。
+
+**結び付け直しの費用**: Core AI は、一度 ANE に割り当てた配列を数百 MB ぶん覚えている。超えると結び付けるたびに約 5 GB/s 相当の割り当て直しが起きる。1 層 (3 回の中央値):
+
+| | gpt-oss (1 プログラム) | Qwen 型 (4 個 × 2 回) |
+|---|---|---|
+| 定数の重み (基準) | 2.14 ms | 1.64 ms |
+| 実行時の重み、同じ専門家 | 3.99 ms | 3.22 ms |
+| 回す専門家 少 (gpt-oss 4〜16、Qwen 8〜32) | 4.23〜4.43 ms | 3.86〜4.07 ms |
+| 1 層の全部 (gpt-oss 32 個 796 MB、Qwen 128 個 604 MB) | 5.22 ms | 5.83 ms |
+
+実際のモデルは全層の専門家を回す。4 層ぶん持たせて層もばらばらに選ぶと (gpt-oss 3.2 GB、Qwen 2.4 GB):
+
+| 1 層 (ルーター 0.2 ms と top-k を含む) | gpt-oss | Qwen 型 |
+|---|---|---|
+| 定数の重み (基準) | 2.18 ms | 1.64 ms |
+| 選んだ配列を結び付ける | 20.83 ms (+854%) | 13.67 ms (+735%) |
+| **K 個の枠を結び付けたまま、選んだ専門家を CPU で枠へコピー** (`-copy`、8 スレッド) | **8.93 ms (+309%)**、うちコピー 4.30 ms | **6.16 ms (+277%)**、うちコピー 1.66 ms |
+
+コピー方式は照合 cos 1.000000 (書き換えた中身は呼ぶたびに読み直される)。コピーは約 23 GB/s。
+
+1 トークンの見込み (専門家の部分だけ): gpt-oss 24 層 × 8.9 ms ≈ 214 ms (密な同等 52 ms、AMD は全体で 20 tok/s)、Qwen3-30B-A3B 48 層 × 6.2 ms ≈ 296 ms。どちらも int8 で 16 GB に載らない (gpt-oss 約 19 GB、Qwen3-30B 約 29 GB)。16 GB に載るのは LFM2-8B-A1B のような小さい MoE。
+
+まだ詰められること: 1 専門家ずつの呼び出しにして、次の専門家のコピーを今の専門家の計算と重ねる (呼び出し 1 回 0.2 ms と引き換え)。IOSurface や Metal のバッファの入力 (`tools/coreai/moebind`、Swift) は、NDArray より速くならなかった (gpt-oss の 32 専門家で 6.5〜8.0 ms、NDArray 5.4〜8.4)。moebind は入力 41 個 (Qwen 型 top-8) で ANE の要求が失敗する (`0xe00002bc`)。
+
 ## 2. コード (このブランチ)
 
 | ファイル | 変更 |
@@ -90,6 +130,8 @@ ANE の gather は、索引が si16 などで、3 つの軸の座標の組 (チ�
 | `internal/mlpackage/program.go` | `Int16` |
 | `tools/coreai/aicheck/probe_darwin.go` | probe の追加 (下)。`COREML=1` で Core ML、出力に理由と演算ごとの装置 |
 | `tools/coreai/aicheck/run_darwin.go` | `INPLACE=1` でプログラム自身の入力配列 (`backend.InputAllocator`) を使う |
+| `tools/coreai/aicheck/moe_darwin.go` | `aicheck moe` (MoE の 1 層の計測。`-model gptoss\|qwen3moe\|small`、`-layers`、`-topk`、`-split`、`-copy`、`-fp16`、`-scale-out`)、`aicheck locked CMD` (NPU のロックを取って CMD を回す) |
+| `tools/coreai/moebind/main.swift` | NDArray、Metal のバッファ、IOSurface の入力で結び付けの費用を比べる (Swift) |
 
 probe (int16 の索引は fp16 の入力をプログラムの中で int16 に変換する `idx16`。Core ML のモデルの記述に int16 の入力がないため): `gnd16_const`、`gnd16_mm`、`gnd16_pts`、`gnd16_pts_in`、`gnd16_pts_w1`、`gnd16_pts_4d`、`gnd16_pts_hw`、`gaa16_const`、`gaa16_input`、`dslice16_const`、`dslice16_mm` (この 2 つは Core AI の段でプロセスが落ちる)、`gnd_const`、`gnd_input`、`gnd_mm`、`gaa_input`、`gaa_const`、`dslice_const`、`dslice_input`、`dslice_mm`、`mm_dyn`、`mm_dyn_big`、`mm_dyn_i8`、`mm_dyn_i8_big`、`lin_const_big`、`lin_i8_big`、`argmax`。
 
@@ -113,7 +155,26 @@ COREML=1 /tmp/aicheck probe linear gnd_const gnd_input gnd_mm gaa_input gaa_cons
 
 `ane=true` なら全部 Neural Engine。**とくに見たいのは `gnd16_pts_w1` と `gnd16_pts_4d`** (M1 では「Cannot decompose layer on this architecture」)。新しい世代でここが通るかと、通ったときの次の返事 (3.3 の `log stream` で)。Core ML の行は、演算ごとに優先される装置と、ANE が対応するか (「(the Neural Engine supports it)」) を出す。**新しい世代で gather_nd か dslice が ANE に載れば、MoE の形はずっと簡単になる** (表は定数のまま、専門家の番号だけ入力)。
 
-### 3.2 実行時の重みの速さ
+### 3.2 MoE の 1 層 (M2 以降で見たい)
+
+```sh
+/tmp/aicheck moe -model gptoss -layers 4 -calls 200 -copy
+/tmp/aicheck moe -model qwen3moe -layers 4 -calls 200 -split 4 -copy
+/tmp/aicheck moe -model qwen3moe -layers 1 -calls 100 -topk 6     # 5 個までの段差が残るか
+```
+
+見たいもの: 1 プログラム 5 個までの段差、結び付け直しの費用 (覚えておける量が増えていれば「選んだ配列を結び付ける」がコピー方式より速くなる)、コピー方式の 1 層。gpt-oss の `-layers 4` は 3.2 GB 使う。
+
+Swift の比較 (Neural Engine を優先して読み込む):
+
+```sh
+KEEP=1 /tmp/aicheck moe -model gptoss -calls 5 | grep "packages in"     # DIR
+mkdir -p /tmp/moe && /tmp/aicheck lower /tmp/moe DIR/experts_i8.mlpackage
+swiftc -sdk "$(xcrun --sdk macosx --show-sdk-path)" -target arm64-apple-macos27.0 -O -parse-as-library tools/coreai/moebind/main.swift -o /tmp/moebind
+/tmp/aicheck locked /tmp/moebind /tmp/moe/experts_i8.aimodel 2880 2880 4 32 100
+```
+
+### 3.2b 実行時の重みの速さ (1 枚)
 
 ```sh
 KEEP=1 /tmp/aicheck probe mm_dyn_big mm_dyn_i8_big lin_const_big lin_i8_big   # 最後の行に packages in DIR

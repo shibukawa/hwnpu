@@ -219,6 +219,22 @@ var probes = map[string]func(g *milpart.Graph){
 		i := g.B.Op("reduce_argmax", map[string]any{"x": x, "axis": g.B.ScalarI32(-1), "keep_dims": g.B.ScalarBool(true)}, mlpackage.Int32, 1, 1)
 		g.Output(g.B.Op("cast", map[string]any{"x": i, "dtype": g.B.Str("c", "fp16")}, mlpackage.Float16, 1, 1))
 	},
+	"inputs16":       inputsN(16),
+	"inputs20":       inputsN(20),
+	"inputs22":       inputsN(22),
+	"inputs24":       inputsN(24),
+	"inputs26":       inputsN(26),
+	"inputs28":       inputsN(28),
+	"inputs30":       inputsN(30),
+	"inputs32":       inputsN(32),
+	"big6":           bigInputsN(6),
+	"big8":           bigInputsN(8),
+	"big9":           bigInputsN(9),
+	"big10":          bigInputsN(10),
+	"big11":          bigInputsN(11),
+	"big12":          bigInputsN(12),
+	"big14":          bigInputsN(14),
+	"big16":          bigInputsN(16),
 	"int8_row_big":   int8Linear(2048, 1024, 1024),
 	"int8_row_small": int8Linear(64, 512, 512),
 	"int8_blk32_big": int8Linear(2048, 1024, 32),
@@ -393,6 +409,28 @@ func int8Linear8(out, in int) func(g *milpart.Graph) {
 func idx16(g *milpart.Graph, name string, shape ...int) *mlpackage.Var {
 	x := g.Input(name, shape...)
 	return g.B.Op("cast", map[string]any{"x": x, "dtype": g.B.Str("c", "int16")}, mlpackage.Int16, shape...)
+}
+
+// inputsN is n inputs of 64 x 64 summed: what a call costs by its number of inputs.
+func inputsN(n int) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		acc := g.Input("x0", 1, 64, 64)
+		for i := 1; i < n; i++ {
+			acc = g.Add(acc, g.Input(fmt.Sprintf("x%d", i), 1, 64, 64))
+		}
+		g.Output(acc)
+	}
+}
+
+// bigInputsN is n inputs of 1 MiB (512 x 1024 fp16) summed.
+func bigInputsN(n int) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		acc := g.Input("x0", 1, 512, 1024)
+		for i := 1; i < n; i++ {
+			acc = g.Add(acc, g.Input(fmt.Sprintf("x%d", i), 1, 512, 1024))
+		}
+		g.Output(acc)
+	}
 }
 
 // constF16 is a constant fp16 tensor of Gaussian values.
