@@ -64,8 +64,8 @@ func noSources(t *testing.T) {
 }
 
 func TestAMDExportName(t *testing.T) {
-	if got := AMDExportName("FLUX.2-klein-4B"); got != "flux.2-klein-4b-aspects2.amd-npu2" {
-		t.Errorf("%s, want flux.2-klein-4b-aspects2.amd-npu2", got)
+	if got := AMDExportName("FLUX.2-klein-4B"); got != "flux.2-klein-4b.amd-npu2" {
+		t.Errorf("%s, want flux.2-klein-4b.amd-npu2", got)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestAMDExportName(t *testing.T) {
 func TestAMDImportedPlace(t *testing.T) {
 	m := kleinModel(t)
 	name := AMDExportName(m.Name)
-	want := "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b-aspects2.amd-npu2/v0-89545ca2"
+	want := "converted/FLUX.2-klein-4B/amd-xdna2/flux.2-klein-4b.amd-npu2/v0-2d2e30e3"
 	if got := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name)).Path; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
@@ -96,13 +96,23 @@ func TestPrepareAMDHere(t *testing.T) {
 	if _, err := PrepareAMD(ctx, m, amdTestSizes, 768, 768, nil); err == nil || !strings.Contains(err.Error(), "--size 768x768") {
 		t.Errorf("768: %v", err)
 	}
-	legacy := filepath.Join(chat.AMDRoot(), strings.ToLower(m.Name)+".amd-npu2")
-	fakeIronExport(t, legacy, "{}", [2]int{1024, 1024}, [2]int{752, 1360}, [2]int{1360, 752})
-	if _, err := PrepareAMD(ctx, m, amdTestSizes, 768, 1344, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
-		t.Errorf("768 x 1344 reused the legacy export: %v", err)
-	}
-	os.RemoveAll(legacy)
+	// the export of 16:9 at 1360 x 752 before, of the same name: its sizes run, 16:9 now is
+	// another export (none here: kept as it was)
 	dir := filepath.Join(chat.AMDRoot(), AMDExportName(m.Name))
+	fakeIronExport(t, dir, `{"sizes":"before"}`, [2]int{1024, 1024}, [2]int{752, 1360}, [2]int{1360, 752})
+	if got, err := PrepareAMD(ctx, m, amdTestSizes, 1024, 1024, nil); err != nil || got != dir {
+		t.Errorf("1024 of the export before: %s %v", got, err)
+	}
+	if _, err := PrepareAMD(ctx, m, amdTestSizes, 768, 1344, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
+		t.Errorf("768 x 1344 reused the export before: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "model.json")); err != nil || string(b) != `{"sizes":"before"}` {
+		t.Errorf("the export before was not put back: %q %v", b, err)
+	}
+	if _, err := os.Stat(dir + ".replaced"); err == nil {
+		t.Error("the export set aside stays")
+	}
+	os.RemoveAll(dir)
 	fakeIronExport(t, dir, "{}", [2]int{1024, 1024})
 	if got, err := PrepareAMD(ctx, m, amdTestSizes, 1024, 1024, nil); err != nil || got != dir {
 		t.Errorf("1024 of the older export: %s %v, want %s", got, err, dir)
@@ -153,6 +163,46 @@ func TestPrepareAMDImported(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(chat.RepoDir(m.Repo), "transformer")); err == nil {
 		t.Error("the checkpoint was downloaded")
+	}
+}
+
+// TestPrepareAMDReplaces: an export of this name here of the sizes before (16:9 at 1360 x 752) is
+// replaced by the one of every size a source holds when a size it lacks is asked for.
+func TestPrepareAMDReplaces(t *testing.T) {
+	noSources(t)
+	m := kleinModel(t)
+	ctx := context.Background()
+	share := t.TempDir()
+	s, err := shared.ParseSource(shared.SourceEnv, "file://"+filepath.ToSlash(share))
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := AMDExportName(m.Name)
+	hand := filepath.Join(t.TempDir(), name)
+	fakeIronExport(t, hand, `{"sizes":"now"}`, amdTestSizes...)
+	e := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name))
+	if _, err := shared.Describe(hand, e); err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.PutEntry(ctx, s, hand); err != nil {
+		t.Fatal(err)
+	}
+	// the one before here, fetched from the source then (its entry.json the same kind and name)
+	dir := filepath.Join(chat.AMDRoot(), name)
+	fakeIronExport(t, dir, `{"sizes":"before"}`, [2]int{1024, 1024}, [2]int{752, 1360}, [2]int{1360, 752})
+	if _, err := shared.Describe(dir, e); err != nil {
+		t.Fatal(err)
+	}
+	shared.SetSources([]shared.Source{s}, false)
+	got, err := PrepareAMD(ctx, m, amdTestSizes, 1344, 768, nil)
+	if err != nil || got != dir {
+		t.Fatalf("%s %v, want %s", got, err, dir)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, "model.json")); err != nil || string(b) != `{"sizes":"now"}` {
+		t.Errorf("model.json %q %v", b, err)
+	}
+	if _, err := os.Stat(dir + ".replaced"); err == nil {
+		t.Error("the export set aside stays")
 	}
 }
 
