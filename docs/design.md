@@ -7533,7 +7533,7 @@ Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is
 
 - **画像**: FLUX.2 klein 4B の 512+1024 の書き出し (`v0-e0fa18f9`) と、`coreai-build` が通る 12 種類 (h13g、h14c/g、h15c/g、h16c/g/s、h17c/d/g/s) の prebuilt。1 種類ずつ作って (`hwnpu-dev prebuild -arch ARCH -put`) 置いた (1 種類 8〜14 分、失敗 0)。12 種類を一度に作ると、どれも最後まで置かれない
 - **チャット**: 15 のうち 14 (Qwen3-0.6B、Qwen3.5-0.8B/2B/4B、Qwen3-1.7B、LFM3-1.7B/VL-2B/Audio-2B/Omni-2B、gemma-4-E2B/E4B、plamo-3-translate-0.8b/2b/8b) を `hwnpu-chat` で変換し、書き戻した。どれも全部 NPU で、答え (日本の首都、訳) は正しい。prebuilt は置かない (16.247)。この M1 で作ったのは 16 GB の列の書き出しで、8 GB の列 (LFM3-1.7B、Qwen3.5-0.8B、Qwen3-1.7B) は作っていない
-- **Qwen2.5-Coder-7B は作り直せなかった**: GPTQ の codes (`codes: faace07a`) が NAS にも手元にもない。codes は変換にだけ要り、変換は取得元から取れる前提 (16.226 のころ) だったので、選んだ機械にしか残っていなかった。書き出しの鍵が変わると、codes なしでは誰も作り直せない
+- **Qwen2.5-Coder-7B は作り直せなかった**: GPTQ の codes (`codes: faace07a`) が NAS にも手元にもない。codes は変換にだけ要り、変換は取得元から取れる前提 (16.230) だったので、選んだ機械にしか残っていなかった。書き出しの鍵が変わると、codes なしでは誰も作り直せない
 - そこで codes も取得元に置く (`chat.putCodes`、`fetchCodes`、種類 `codes`、`converted/MODEL/any/codes-HASH`、鍵はモデルの部分と index.json のハッシュ)。定義の codes で変換するとき、手元の codes (`models/NAME/codes-HASH` か `--codes`、ハッシュが定義と同じもの) を置く。手元にないときは変換の前に取得元から取る。Qwen2.5-Coder は codes を `tools/ref/qwen2_gptq.py` で作り直して一度変換すれば、以後は置かれる
 
 **M1 での prebuilt の初回** (FLUX.2 klein 1024²、種 1、署名の識別子を変えた 2 つのコピーで空のキャッシュから、空き 90 GB 以上):
