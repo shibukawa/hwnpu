@@ -133,12 +133,12 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 
 // convertedImage reports whether the image family converts for this machine's NPU (vendor, as
 // hwnpu.Vendor's String) on its first run: Anima on Apple's (Core AI) and Intel's, Chroma and
-// FLUX.2 klein on Apple's.
+// FLUX.2 and FLUX.3 klein on Apple's.
 func convertedImage(family, vendor string) bool {
 	switch v := strings.ToLower(vendor); {
 	case strings.HasPrefix(family, "anima"):
 		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
-	case strings.HasPrefix(family, "chroma"), strings.HasPrefix(family, "flux2-klein"):
+	case strings.HasPrefix(family, "chroma"), strings.HasPrefix(family, "flux2-klein"), strings.HasPrefix(family, "flux3-klein"):
 		return v == strings.ToLower(hwnpu.VendorApple.String())
 	}
 	return false

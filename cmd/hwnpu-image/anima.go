@@ -23,6 +23,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
+	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
@@ -194,7 +195,11 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 			return err
 		}
 		model = ""
-		if strings.HasPrefix(m.Family, "flux2-klein") {
+		if strings.HasPrefix(m.Family, "flux3-klein") {
+			if model, err = c.flux3Model(ctx, m); err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(m.Family, "flux2-klein") {
 			if model, kleinAs, err = c.kleinModel(ctx, m); err != nil {
 				return err
 			}
@@ -214,7 +219,9 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		}
 	}
 	var err error
-	if flux2klein.IsExport(model) {
+	if flux3klein.IsExport(model) {
+		err = c.flux3(ctx, model, outs)
+	} else if flux2klein.IsExport(model) {
 		err = c.klein(ctx, model, kleinAs, outs)
 	} else if chroma.IsExport(model) {
 		err = c.chroma(ctx, model, outs)

@@ -14,6 +14,19 @@ import (
 // of a weight then counts as much as it moves the layer's output, so the columns the inputs are
 // large at get the levels. Weighted Lloyd's algorithm from the weighted quantiles, iters passes.
 func QuantizeWeighted(w []float32, rows, cols, group, colBlock, bits, iters int, colWeight []float32) LUT4 {
+	return quantizeWeighted(w, rows, cols, group, colBlock, bits, iters, colWeight, false)
+}
+
+// QuantizeWeightedMinMax is QuantizeWeighted with each table's weighted Lloyd started from the
+// uniform levels between the block's minimum and maximum (as KMeansMinMax) in place of the
+// weighted quantiles: a quantile start puts the top level at the block's 99.8 % point and clips
+// the few large weights, which FLUX.3 klein's DiT does not survive (its picture breaks; started
+// from the extremes, its lut8 matches per-row int8: docs/design.md, FLUX.3 klein).
+func QuantizeWeightedMinMax(w []float32, rows, cols, group, colBlock, bits, iters int, colWeight []float32) LUT4 {
+	return quantizeWeighted(w, rows, cols, group, colBlock, bits, iters, colWeight, true)
+}
+
+func quantizeWeighted(w []float32, rows, cols, group, colBlock, bits, iters int, colWeight []float32, minmax bool) LUT4 {
 	if colBlock <= 0 || colBlock > cols {
 		colBlock = cols
 	}
@@ -51,7 +64,11 @@ func QuantizeWeighted(w []float32, rows, cols, group, colBlock, bits, iters int,
 					copy(vals[r*colBlock:], w[(rb*group+r)*cols+cb*colBlock:][:colBlock])
 					copy(wts[r*colBlock:], colWeight[cb*colBlock:][:colBlock])
 				}
-				fitWeighted(c, vals, wts, iters, ids)
+				if minmax {
+					fitWeightedMinMax(c, vals, wts, iters, ids)
+				} else {
+					fitWeighted(c, vals, wts, iters, ids)
+				}
 				for i := range c {
 					out.LUT[g*k+i] = f16(c[i])
 					c[i] = f16val(out.LUT[g*k+i])
@@ -102,6 +119,31 @@ func fitWeighted(c, vals, wts []float32, iters int, ids []uint8) {
 	for ; next < k; next++ {
 		c[next] = vals[order[len(order)-1]]
 	}
+	weightedLloyd(c, vals, wts, iters, ids)
+}
+
+// fitWeightedMinMax fits sorted centers c to vals weighted by wts: started at the levels evenly
+// spaced between the values' minimum and maximum, then iters passes of weighted Lloyd. ids is
+// scratch of len(vals).
+func fitWeightedMinMax(c, vals, wts []float32, iters int, ids []uint8) {
+	lo, hi := vals[0], vals[0]
+	for _, v := range vals {
+		lo, hi = min(lo, v), max(hi, v)
+	}
+	k := len(c)
+	for i := range c {
+		c[i] = lo + (hi-lo)*float32(i)/float32(k-1)
+	}
+	if hi == lo {
+		return
+	}
+	weightedLloyd(c, vals, wts, iters, ids)
+}
+
+// weightedLloyd refines sorted centers c over vals weighted by wts, iters passes (a center no value
+// is nearest to stays).
+func weightedLloyd(c, vals, wts []float32, iters int, ids []uint8) {
+	k := len(c)
 	mids := make([]float32, k-1)
 	var th vecops.Thresholds
 	var sum, sw [256]float64
