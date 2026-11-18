@@ -18,8 +18,11 @@ LLM) is not run: the prompt is encoded as given.
   4. the VAE's decoder on the latents un-normalized and un-patched.
 
 The DiT runs in bf16 on PyTorch's MPS (the float32 DiT, 22 GB, does not fit), the VAE in float32.
+``--device cpu`` runs it on the CPU (AMD's machine, to check tools/amd/iron_flux3klein.py's export;
+``--dtype float32`` there fits in 64 GB). Without transformer/'s diffusers files the DiT is read from
+the repository's single-file copy (model.safetensors, BFL's names: diffusers' from_single_file).
 
-  python tools/ref/ref_flux3klein.py OUT --size 512 --prompt "..."                 # text to image
+  python tools/ref/ref_flux3klein.py OUT --size 512 --prompt "..."                 # text to image (--size 832x1248: W x H)
   python tools/ref/ref_flux3klein.py OUT --size 512 --image in.png --prompt "..."  # an edit
 
 writes OUT.npz (text rows, noise, the reference's latents, each step's sigma, input and DiT output, the
@@ -59,15 +62,28 @@ GROUP = 16  # rows of a lut8 table
 
 def free():
     gc.collect()
-    torch.mps.empty_cache()
+    if DEV.type == "mps":
+        torch.mps.empty_cache()
 
 
 def encode_prompt(prompt):
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
 
-    tok = AutoProcessor.from_pretrained(f"{MODEL}/text_encoder")
+    msgs = [{"role": "user", "content": prompt}]
+    try:
+        tok = AutoProcessor.from_pretrained(f"{MODEL}/text_encoder")
+        text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+    except (ImportError, ValueError):  # the processor's video part wants torchvision: its tokenizer and template
+        import json
+        import types
+
+        from transformers import AutoTokenizer
+
+        t = AutoTokenizer.from_pretrained(f"{MODEL}/text_encoder")
+        tmpl = json.load(open(f"{MODEL}/text_encoder/chat_template.json"))["chat_template"]
+        text = t.apply_chat_template(msgs, chat_template=tmpl, tokenize=False, add_generation_prompt=True)
+        tok = types.SimpleNamespace(tokenizer=t)
     te = Qwen3VLForConditionalGeneration.from_pretrained(f"{MODEL}/text_encoder", dtype=DT).to(DEV).eval()
-    text = tok.apply_chat_template([{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True)
     real = tok.tokenizer(text, return_tensors="pt", truncation=True, max_length=MAXLEN)["input_ids"].shape[1]
     padded = min(math.ceil(real / PAD) * PAD, MAXLEN)
     inp = tok.tokenizer(text, return_tensors="pt", padding="max_length", padding_side="right",
@@ -120,7 +136,8 @@ def bn_stats(vae):
 
 
 def encode_reference(vae, path, size):
-    img = Image.open(path).convert("RGB").resize((size, size), Image.LANCZOS)
+    """size: (width, height)."""
+    img = Image.open(path).convert("RGB").resize(size, Image.LANCZOS)
     x = torch.from_numpy(np.asarray(img)).float().permute(2, 0, 1)[None] / 127.5 - 1.0
     mean, std = bn_stats(vae)
     with torch.no_grad():
@@ -167,6 +184,9 @@ def load_transformer(qfile, overrides):
     from diffusers.models import Flux3Transformer2DModel
 
     if qfile is None:
+        if not any(f.endswith(".safetensors") for f in os.listdir(f"{MODEL}/transformer")):
+            return Flux3Transformer2DModel.from_single_file(f"{MODEL}/model.safetensors", config=MODEL, subfolder="transformer",
+                                                            torch_dtype=DT).to(DEV).eval()
         return Flux3Transformer2DModel.from_pretrained(f"{MODEL}/transformer", dtype=DT).to(DEV).eval()
     from accelerate import init_empty_weights
     from safetensors import safe_open
@@ -292,12 +312,13 @@ def rel_rms(a, b):
 
 
 def main():
+    global MODEL, DEV, DT
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--prompt")
     ap.add_argument("--image", default=None)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--size", type=int, default=1024)
+    ap.add_argument("--size", default="1024", help="N (N x N) or WxH, multiples of 16")
     ap.add_argument("--from", dest="ref", default=None, help="REF.npz: rerun its prompt and reference")
     ap.add_argument("--quant", default="none", choices=["none", "int8", "lut8"],
                     help="the DiT's linear weights: QDIR/transformer_QUANT.safetensors (--qfile overrides)")
@@ -307,23 +328,28 @@ def main():
                     help="the layers whose module name matches REGEX from FILE instead (repeatable)")
     ap.add_argument("--teacher-only", action="store_true", help="with --from: the teacher-forced errors alone")
     ap.add_argument("--stats", default=None, help="accumulate E[x^2] of each linear layer's input here")
+    ap.add_argument("--model", default=MODEL, help="the repository's directory")
+    ap.add_argument("--device", default=DEV.type, help="mps (Apple) or cpu")
+    ap.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"], help="the text encoder's and the DiT's")
     a = ap.parse_args()
+    MODEL, DEV, DT = os.path.expanduser(a.model), torch.device(a.device), getattr(torch, a.dtype)
     t0 = time.time()
 
     ref = np.load(a.ref if a.ref.endswith(".npz") else a.ref + ".npz") if a.ref else None
     if ref is not None:
-        size = int(ref["size"])
+        size = (int(ref["width"]), int(ref["height"])) if "width" in ref else (int(ref["size"]),) * 2
         rows = torch.from_numpy(ref["text_rows"]).to(DEV, DT)
         cond = torch.from_numpy(ref["cond"]).to(DEV, DT) if ref["cond"].size else None
         noise = torch.from_numpy(ref["noise"]).to(DEV)
     else:
         if not a.prompt:
             ap.error("--prompt is required without --from")
-        size = a.size
+        w, _, h = a.size.lower().partition("x")
+        size = (int(w), int(h or w))
         rows = encode_prompt(a.prompt)
         noise = None
         cond = None
-    lh = lw = size // 16
+    lw, lh = size[0] // 16, size[1] // 16
     vae = load_vae()
     if ref is None and a.image:
         c = encode_reference(vae, a.image, size)
@@ -377,10 +403,11 @@ def main():
 
     img = decode(vae, lat, lh, lw)
     Image.fromarray(img).save(a.out + ".png")
-    np.savez(a.out + ".npz", size=size, text_rows=rows.float().cpu().numpy(),
+    np.savez(a.out + ".npz", size=size[0], width=size[0], height=size[1], text_rows=rows.float().cpu().numpy(),
              cond=cond.float().cpu().numpy() if cond is not None else np.zeros(0, np.float32),
              noise=noise.cpu().numpy(), sigmas=np.array(sigmas), step_in=np.stack(step_in),
              step_out=np.stack(step_out), latents=lat.cpu().numpy(), quant=label)
+    noise.cpu().numpy().astype("<f4").tofile(a.out + ".noise.f32")  # hwnpu-image generate --noise
     if ref is not None:
         z, x = torch.from_numpy(ref["latents"]).double().ravel(), lat.cpu().double().ravel()
         cos = float(z @ x / z.norm() / x.norm())
@@ -389,7 +416,7 @@ def main():
         mse = float(((r - img.astype(np.float64)) ** 2).mean())
         psnr = 10 * math.log10(255**2 / mse) if mse else float("inf")
         print(f"final latents cosine {cos:.5f}, PSNR {psnr:.2f} dB against {rpng} [{label}]", flush=True)
-    print(f"wrote {a.out}.png and .npz ({size} x {size}); steps {time.time() - t1:.1f} s, total {time.time() - t0:.1f} s",
+    print(f"wrote {a.out}.png and .npz ({size[0]} x {size[1]}); steps {time.time() - t1:.1f} s, total {time.time() - t0:.1f} s",
           flush=True)
 
 

@@ -145,10 +145,10 @@ func (m *ProgramManifest) variant(w, h, n int) (*Variant, error) {
 	return best, nil
 }
 
-// IsExport reports whether dir holds an export of Convert.
+// IsExport reports whether dir holds an export of Convert or of tools/amd/iron_flux3klein.py.
 func IsExport(dir string) bool {
 	_, err := ReadProgramManifest(dir)
-	return err == nil
+	return err == nil || IsIronExport(dir)
 }
 
 // ReadProgramManifest reads dir/manifest.json of an export of Convert.
@@ -179,7 +179,8 @@ func writeProgramManifest(dir string, m *ProgramManifest) error {
 // StepFunc reports step i of n done, in d.
 type StepFunc func(i, n int, d time.Duration)
 
-// Pipeline is an export of Convert on Apple's Neural Engine, for pictures of one size.
+// Pipeline is an export for pictures of one size: of Convert on Apple's Neural Engine, or of
+// tools/amd/iron_flux3klein.py on AMD's NPU.
 type Pipeline struct {
 	W, H int
 	m    *ProgramManifest
@@ -199,10 +200,21 @@ type Pipeline struct {
 	loader runner.OpenFunc
 	// checked are the programs loaded once (the first load compiles them) and seen on the NPU
 	checked map[string]bool
+	// iron runs an IRON export (AMD's NPU); nil for one of Convert
+	iron *ironPipe
 }
 
-// Open reads the export in dir for pictures of w x h, running its programs on dev.
-func Open(dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
+// Open reads the export in dir for pictures of w x h, running its programs on dev: one of Convert
+// (Apple's Neural Engine) or of tools/amd/iron_flux3klein.py (AMD's NPU).
+func Open(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, log io.Writer) (*Pipeline, error) {
+	if IsIronExport(dir) {
+		p := &Pipeline{W: w, H: h, dir: dir, dev: dev, log: log, checked: map[string]bool{}}
+		if err := p.openIron(ctx, dev, dir, w, h); err != nil {
+			p.Close()
+			return nil, fmt.Errorf("flux3klein: %w", err)
+		}
+		return p, nil
+	}
 	m, err := ReadProgramManifest(dir)
 	if err != nil {
 		return nil, err
@@ -328,7 +340,10 @@ func (p *Pipeline) load(ctx context.Context, name string) (runner.Program, error
 type Cond struct {
 	v      *Variant
 	stream []float32
-	Tokens int
+	// ironStream is the text slot's stream on AMD's NPU (bf16), its first rows the prompt's
+	ironStream []byte
+	rows       int
+	Tokens     int
 }
 
 // embedRows are Qwen3-VL's embedding rows of ids, the pad's past them to rows, times EmbedScale.
@@ -356,6 +371,9 @@ func (p *Pipeline) embedRows(ids []int32, rows int) ([]float32, error) {
 // shortest text length the export holds for them), then context_embedder of the eight hidden
 // states the DiT reads.
 func (p *Pipeline) Encode(ctx context.Context, prompt string) (Cond, error) {
+	if p.iron != nil {
+		return p.encodeIron(ctx, prompt)
+	}
 	t0 := time.Now()
 	ids := p.Tokens(prompt)
 	v, err := p.m.variant(p.W, p.H, len(ids))
@@ -447,6 +465,9 @@ func (p *Pipeline) modulations(sigmas []float64) ([][]float32, error) {
 // (their modulation follows the step's target), the image's, then the single blocks give the
 // velocity, and an Euler step moves the latents (tokens x 128).
 func (p *Pipeline) Generate(ctx context.Context, cond Cond, noise []float32, sigmas []float64, step StepFunc) ([]float32, error) {
+	if p.iron != nil {
+		return p.generateIron(ctx, cond, noise, sigmas, step)
+	}
 	v := cond.v
 	if v == nil {
 		return nil, errors.New("flux3klein: the DiT runs without a prompt (Encode)")
@@ -549,6 +570,9 @@ func (p *Pipeline) Unpack(x []float32) []float32 {
 
 // Decode runs the VAE's stages on the latents (Generate's) and returns the picture.
 func (p *Pipeline) Decode(ctx context.Context, cond Cond, x []float32, stage func(i, n int, d time.Duration)) (*image.RGBA, error) {
+	if p.iron != nil {
+		return p.decodeIron(ctx, x, stage)
+	}
 	z := p.Unpack(x)
 	debug.FreeOSMemory()
 	xs, err := runner.Stages(ctx, cond.v.Vae, p.ahead, p.open, [][]float32{z}, runner.StageBudget,

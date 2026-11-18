@@ -7442,7 +7442,63 @@ black-forest-labs/flux-3-image-klein (FLUX Kommunity License、gated) を `inter
 
 **未確認・未対応**
 
-- 編集 (参照画像、`image_cond` の流れ)、AMD の NPU、512² と 1024² 以外の大きさ、161 トークン以上のプロンプト
+- 編集 (参照画像、`image_cond` の流れ)、512² と 1024² 以外の大きさ、161 トークン以上のプロンプト (AMD は 16.250)
 - Neural Engine の側のメモリ (models.yaml の 5.5 GB は推定のまま)
 - パディングの行のずれを減らす (Qwen3-VL の先の層を fp16 にするなど)
 - 統計の配り方 (今は書き出しを作る機械に手で置く)
+
+### 16.250 FLUX.3 klein を AMD の NPU に (IRON、文からの生成) — 2026-11-18
+
+16.248 の FLUX.3 klein を AMD の NPU でも描けるようにした。`tools/amd/iron_flux3klein.py` が書き出し、`internal/imagegen/flux3klein` の `Pipeline` が IRON の書き出しも開く (`iron.go`)。`-m flux3-klein` は AMD では `flux3klein.PrepareAMD` (手元の `flux-3-image-klein.amd-npu2`、取得元の書き出し、なければチェックポイントを落として IRON で書き出す。FLUX.2 klein の 16.235 と同じ流れ)。
+
+**チェックポイント**: 取得元 (NAS) の `original/` は Hugging Face の最上位の写しで、DiT は単一ファイル版の `model.safetensors` (BFL の名前、11.1 GB) しかなく、diffusers の `transformer/*.safetensors` がなかった。この機械には HF のトークンもない (gated)。そこで AMD の書き出しは単一ファイル版を読む (`AMDFiles`。sha256 は BFL の `manifest.json` と一致し、models.yaml に足した)。名前は diffusers 0.43.0 の `convert_flux3_transformer_checkpoint_to_diffusers` の置き換えをそのまま写した (`norm_out` の行は shift, scale から scale, shift に入れ替える)。diffusers の配置があればそちらを読む。参照 (`tools/ref/ref_flux3klein.py`) も `--device cpu`、`--model`、単一ファイル (`from_single_file`) で、この機械の CPU で動くようにした (512² で 16 ステップ 2 分)。processor は動画の部分に torchvision を要るので、なければトークナイザーと `chat_template.json` で同じ文を作る
+
+**行の並べ方**: テキストは 512 行の枠 (`text_slot`) で持ち、プロンプトの行 R (トークン数を 80 の倍数に切り上げ、80〜480) だけが鍵になる (`nk`)。
+
+- テキスト (Qwen3-VL の 32 層、4 層ずつ 8 バンク): FLUX.2 klein の `Qwen3Layer` をそのまま使う (プロンプトは因果、パッドはプロンプトの鍵だけ)。角度は入力で、パッドの位置は 1。512 行で回して先頭 R 行を使う (パッドは後ろの行に影響しないので、80 行で回したものと同じ)
+- テキストの mode ブロック: 512 行、鍵は先頭 R
+- single ブロック: [画像の行, テキストの枠]。注意も MLP も行の順に依らない (RoPE は行ごと) ので diffusers の [テキスト, 画像] と同じ結果になる。画像が先なら区切りが 512 の倍数 (1024 行、4096 行) で固定され、鍵は先頭 N + R の連続した範囲なので、1 つのグラフがどの R にも効く。行は 1536 (512²) と 4608 (1024²)
+- 変調 (14 行) はホスト (16.248 の `timeembed.go`)。書き出しは `time.safetensors` を同じ名前 (`dit.` + diffusers の名前) で置く
+- 大きさは 512² と 1024² の 2 つで 1 つの書き出し。2 つ目の大きさのグラフ (`sizes/512x512/{dit_in,image_modes,singles,dit_out,vae}`) は 1 つ目のバンクを共有する (`share_banks`)。13 GB。書き出しは 4 分 31 秒 (IRON のカーネルは FLUX.2 klein のものができている状態)、最大 RSS 16 GB
+- DiT の重みは FLUX.2 klein と同じ bfp16、Qwen3-VL は bf16。bf16 なのでテキストの流れの 9.7e6 も Apple のような縮小なしで持てる
+
+**確かめたこと** (Ryzen AI 9 365、ほかに NPU を使うものなし)
+
+- 6 つの DiT のグラフはランダムな重みで IRON の参照と cosine 0.99995 以上 (`irongraph`)
+- 512²、狐のプロンプト (19 トークン、80 行)、参照と同じノイズ: 最後の潜在の cosine 0.9985、絵の PSNR 39.4 dB (Apple の 37.0 より上)。速度の cosine は最初のステップ 0.9997、8 ステップ目 0.9995、最後 0.995。テキストの 8 つの隠れ状態は cosine 0.999998
+- 512²、91 トークン (160 行) の部屋のプロンプト: 最後の潜在 0.984、PSNR 32.2 dB、最初の速度 0.9992。構図も物も同じで、炎や本の細部が少し違う (自由に回すと細部の軌道が分かれる: 16.248 と同じ)
+- 時間 (2 回目以降): 1024² は 1 枚 1 分 43 秒 (テキスト 2.8 秒、16 ステップ 1 分 33 秒で 5.9 秒ずつ、VAE 6.5 秒)、512² は 32 秒 (1.7 秒ずつ、VAE 2.3 秒)。組の重みの読み込みは 0.01 秒 (ページキャッシュから先読み)
+- 最大メモリ (NPU の drm-total-memory と RssAnon + RssShmem の和): 1024² で 3.59 GiB、512² で 2.49 GiB。models.yaml の amd を 3.9 GB に
+- `-m flux3-klein` が手元の書き出しを名前で見つけて描く
+- 書き出しがないときの初回: チェックポイントを手元のキャッシュの `original/` に置き (NAS の `original/black-forest-labs/flux-3-image-klein` には `hwnpu-lock.json` がなく、gated の HF に問い合わせに行って止まるので、手元のロックに記録した)、取得元なしで `-m flux3-klein --size 512`。IRON の書き出し 3 分 43 秒 (entries/amd-xdna2 に) の後に描いた。1 枚目まで 4 分 16 秒
+
+**未確認・未対応**
+
+- 編集 (参照画像)。8 つのアスペクト比は 16.251
+- 取得元への書き戻しと、取得元からの書き出しの取得 (この確認では取得元を使わなかった。16.251)
+- NAS の `original/` の FLUX.3 klein に `hwnpu-lock.json` がない (手で置いた写し): 取得元だけでは設定ファイルを取れない
+
+
+### 16.251 FLUX.3 klein の AMD の書き出しを 8 つのアスペクト比で 1 つに、取得元へ — 2026-11-18
+
+16.250 の書き出しは 512² と 1024² だけだった。ほかの画像のモデル (FLUX.2 klein、16.238) と同じく、`--size` の 8 つのアスペクト比 (models.yaml の `npu.amd.sizes`。FLUX.2 klein の AMD と同じ 1:1 1024²、1:1s 512²、2:3 832 × 1248、3:4 880 × 1168、9:16 768 × 1344、3:2、4:3、16:9 1344 × 768) を 1 つの書き出しにした (`AMDExportVersion` 2)。
+
+**行の並べ方**: 画像のパッチ N は 512 の倍数とは限らない (832 × 1248 は 4056、880 × 1168 は奇数の 4015)。注意は 512 行の倍数でしか取れないので、画像の行をゼロで 512 の倍数 P まで詰める (`image_rows`。512² 以外の 7 つは 4096)。
+
+- dit_in、image mode ブロック、dit_out は P 行で回す。image mode ブロックの鍵は先頭 N (`nk`)。詰めた行は鍵にならないので、問い合わせの結果は読まずに捨てる (dit_out の先頭 N 行だけ使う)
+- single ブロックの行は [画像の P 行, テキストの 512 行の枠] のまま (変調の区切りは P で固定)。鍵だけを [画像の N 行, テキストの枠] に詰め直す (枠の鍵と値を N 行目に写す: `parallel(keys=...)`)。鍵は先頭 N + R の連続した範囲になり、どのプロンプトの長さにも 1 つのグラフで効く。FLUX.2 klein のようにテキストを先にすると、テキストの枠の中の鍵でない行 (R の後ろ) が鍵の間に挟まるので取らなかった
+- dit_in、image mode ブロック、dit_out は P だけで決まるので、P が 1024² と同じ大きさは 1024² のものをそのまま使う (`flux3klein.ironPart`: `sizes/WxH/PART` がなければ最初の大きさのもの)。single ブロックは鍵の写しが N に依るので大きさごと (`sizes/WxH/singles`、バンクは 1024² のものを共有)。VAE も大きさごと
+- 1:1 と 1:1s は前と同じ並び (N = P) で、512² の絵は前の書き出しとバイトまで同じ
+
+**書き出し**: 10 分 45 秒 (手で。IRON のカーネルのキャッシュがある状態)、最大 RSS 16.8 GB、15 GB (13 GB から。7 つの大きさは `singles` と `vae` だけで 0.2〜0.5 GB ずつ)。`PrepareAMD` からの初回は 11 分 27 秒。
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- 鍵の写しのある single ブロック (880 × 1168、N = 4015) はランダムな重みで IRON の参照と cosine 0.999996 (`irongraph`)
+- 3:4 (880 × 1168)、狐のプロンプト、CPU の diffusers の bf16 と同じノイズ: 最初の速度の cosine 0.99977、最後の潜在 0.990、絵の PSNR 34.1 dB。構図も毛並みも同じ
+- 2:3、9:16、16:9 も絵として正しい (灯台のプロンプト)。1 枚 1 分 52〜55 秒 (ステップ 6.4 秒。CPU で参照を回しながら。回していないときの 3:4 は 5.7 秒、1 分 43 秒)
+- 初回の流れ: 取得元 (NAS、書き戻しあり) を設定して `-m flux3-klein --size 3:4`。手元の 2 つの大きさの書き出しは 3:4 を描かないので脇によけ、取得元にもないので IRON で書き出して描き、取得元に置いた (`iron-flux3klein`、15.60 GB、`flux-3-image-klein/amd-xdna2/flux-3-image-klein.amd-npu2/v0-d9e70775`)。全体で 16 分 15 秒
+- 短いテキストの枠 (プロンプトの 80〜240 行だけのテキストと text mode ブロック) は、IRON の MHA が 8 本のパイプラインで 512 行の倍数しか取らない (256 行で `seq_pad (256) must be whole rounds of 64 rows on each of num_pipelines (8)`) ので取らなかった。見込みは 1 枚 1.8 秒 (テキスト 8 組で 2 秒、text mode ブロック 22 ms × 5 × 16) ほどで、パイプラインを減らすと注意が遅くなる
+- 取得元から: 手元の書き出しをよけて `-m flux3-klein --size 1:1s`。取得元から 13.76 GB (詰めたもの) を 5 分 51 秒 (39 MB/s) で取り、9.6 秒で展開して、手で書き出したものとバイトまで同じ絵を描いた
+- 鍵の `tools` は tools/amd 全体のハッシュ (`amdtools.Hash`) なので、tools/amd のどこかが変わると、作り方の項目 (`iron-flux3klein`) は見つからなくなる。FLUX.2 klein と同じく `hwnpu-dev cache import` で名前の項目 (`iron-import`、`v0-ce420049`) も置いた (4 分 28 秒)。`PrepareAMD` は両方を探す
+- 最大メモリ (3:4): 3.61 GiB。1024² と同じく models.yaml の 3.9 GB に入る

@@ -2,7 +2,7 @@
 
 [English](new-model-checklist.md)
 
-作成: 2026-11-07、更新: 2026-11-14 (3.5: Core AI での確かめ方。画像を読むモデルを Core AI に載せたときのもの。続けて Qwen3.5-4B と Gemma 4 E4B: 段の数で分けるプロファイル、再帰の状態のバイト、Neural Engine から外れる演算の探し方、語彙の一部の下書きの出力層。続けて Sana を Core AI で: 1 つの書き出しの大きさを 1 本のプログラムの関数に、コンパイラーで失敗する関数がほかを道連れにすること、交差注意のキーと値をプロンプトごとに 1 回)、2026-11-12 (Qwen-Image-2.1-Turbo を Mac で: 注意の吸い込みで行ごとの int8 があふれること、コンパイルのキャッシュを超えるプログラムの読み込み、画像のモデルの表。続けて、その移植でしたがここになかったもの: k-means-minmax の lut4 の表、プロンプトに 1 回のパスを 1 段上の形式に、大きな DiT の lut4、コンパイルの時間と比べた問い合わせの塊、参照の最大から決める残差の倍率、別の大きさの書き出しとの部品の共有、16 GB の Mac での float32 のストリームの参照)、2026-11-10 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)、2026-11-11 (7.1 節の画像生成の速さ、RTMDet と PP-OCRv6 で見つけた ANE の sigmoid のずれ、16384 を超える幅、OCR の照合。続けて画像のモデルをこの手順と突き合わせた 7.2 節の表と、Sana で ANE と IRON で見つけてここになかったもの、Sana の CFG のステップ、Mac の CFG の順、8 ビットの DiT)、2026-11-12 (Mac の Chroma1: 変調を σ ごとに一度、ANE の int8 の積和と小さな積、コンパイルのキャッシュの大きさ)、2026-11-13 (AMD の gpt-oss-20b: チェックポイントの 4 ビットの形のまま、注意の sink、8 列に割り切れない隠れ次元、プロンプトの専門家に bf16 の行列演算器、DMA の 1023 語、IRON のコンパイルのキャッシュと入っているカーネル)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
+作成: 2026-11-07、更新: 2026-11-18 (11.4: 画像のモデルの書き出しを 8 つのアスペクト比で 1 つにし、取得元に置く。AMD の FLUX.3 klein から)、2026-11-14 (3.5: Core AI での確かめ方。画像を読むモデルを Core AI に載せたときのもの。続けて Qwen3.5-4B と Gemma 4 E4B: 段の数で分けるプロファイル、再帰の状態のバイト、Neural Engine から外れる演算の探し方、語彙の一部の下書きの出力層。続けて Sana を Core AI で: 1 つの書き出しの大きさを 1 本のプログラムの関数に、コンパイラーで失敗する関数がほかを道連れにすること、交差注意のキーと値をプロンプトごとに 1 回)、2026-11-12 (Qwen-Image-2.1-Turbo を Mac で: 注意の吸い込みで行ごとの int8 があふれること、コンパイルのキャッシュを超えるプログラムの読み込み、画像のモデルの表。続けて、その移植でしたがここになかったもの: k-means-minmax の lut4 の表、プロンプトに 1 回のパスを 1 段上の形式に、大きな DiT の lut4、コンパイルの時間と比べた問い合わせの塊、参照の最大から決める残差の倍率、別の大きさの書き出しとの部品の共有、16 GB の Mac での float32 のストリームの参照)、2026-11-10 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)、2026-11-11 (7.1 節の画像生成の速さ、RTMDet と PP-OCRv6 で見つけた ANE の sigmoid のずれ、16384 を超える幅、OCR の照合。続けて画像のモデルをこの手順と突き合わせた 7.2 節の表と、Sana で ANE と IRON で見つけてここになかったもの、Sana の CFG のステップ、Mac の CFG の順、8 ビットの DiT)、2026-11-12 (Mac の Chroma1: 変調を σ ごとに一度、ANE の int8 の積和と小さな積、コンパイルのキャッシュの大きさ)、2026-11-13 (AMD の gpt-oss-20b: チェックポイントの 4 ビットの形のまま、注意の sink、8 列に割り切れない隠れ次元、プロンプトの専門家に bf16 の行列演算器、DMA の 1023 語、IRON のコンパイルのキャッシュと入っているカーネル)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
 
 ## 方針: 速さより消費電力
 
@@ -501,7 +501,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 コマンドは、モデルを次の順に探す。
 
 1. **手元にある書き出し**: 前に変換したもので、`NAME.done` (最後に書く) があるもの。途中で切れたものは作り直す
-2. **配布された書き出し** (将来): Hugging Face から、その NPU のサブフォルダだけを落とす ([prebuilt.md](prebuilt.md))。書き出しの形式が安定してからにする。今はない
+2. **取得元の書き出し** (`HWNPU_MODEL_SOURCE`、共有の層: [cache-sharing.ja.md](cache-sharing.ja.md)): 同じ作り方 (モデル、チェックポイントの固定、書き出しの道具とオプション、書き出しの版) の項目、なければ `hwnpu-dev cache import` が名前で置いた手作りのもの。新しいモデルの書き出しがそこに置かれ、見つかるようにするには: 11.4。(Hugging Face での配布、[prebuilt.md](prebuilt.md) はまだ計画)
 3. **手元で変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換して `.done` を書く
    - Apple と Intel は、Go の変換器で変換する。手本は Mac と Intel の Anima (`anima.Prepare`) と、hwnpu-chat のモデル (`chat.Prepare`)
    - AMD は、IRON の書き出しの道具 (`tools/amd/iron_*.py`) を IRON の環境 (mlir-aie、Peano、Python) で動かす。環境が見つからなければ、何を入れればよいか (INSTALL_AMD.md) を出して止める。黙って落ちたり、手順を利用者に丸投げしたりしない。hwnpu-chat はこうしている (`chat.PrepareAMD`): models.yaml の `amd_export` に書き出しのモデルとオプション、書き出しのスクリプトは hwnpu に埋め込み (`tools/amd/embed.go`)、IRON の環境は `HWNPU_IRON_ENV` か PATH の python3
@@ -568,6 +568,19 @@ done
 - **コンパイルも Python なしにするには**: 新しい形を作る人と、配布を作る CI だけの話。それも今の IRON (Python) で作れるので、必須ではなく、優先度は低い
   - 残る依存: mlir-aie (`aiecc` の C++ 版、`aie-opt`、`aie-translate`、`bootgen`。wheel で 853 MB)、Peano (AIE の `clang`、`llc`、`ld.lld`。422 MB)、カーネルのソースと AIE API のヘッダ。xclbinutil は hwnpu-dev xclbin で代わる
   - Go に移す部分: IRON の演算ごとの設計 (ObjectFIFO、ワーカー、実行の手順から MLIR を作るところ) と、`iron_graph.export_graph`
+
+### 11.4 画像のモデルの書き出し: 8 つのアスペクト比を 1 つに、取得元に置く (2026-11-18)
+
+AMD の FLUX.2 klein (design.md 16.237、16.238、16.242) と FLUX.3 klein (16.250、16.251)、Core AI の書き出しの prebuilt (cache-sharing-design.md 7.9) から。
+
+- **大きさは models.yaml が決める** (書き出しの道具の既定ではない): `npu.amd.sizes` (と `npu.apple.sizes`) に、`--size` の 8 つのアスペクト比 (`1:1`、`1:1s`、`2:3`、`3:4`、`9:16`、`3:2`、`4:3`、`16:9`。`internal/imagegen/aspect`) と、その NPU の書き出しが描く画素を書く。コマンドはそれ (`npuAspects`) で `--size` を読み、書き出しも作るので、`--size 16:9` は書き出しが持つ大きさを描く (FLUX.2 と FLUX.3 の AMD の 16:9 は 1344 x 768。aspect.All の 1360 x 752 ではない)
+- **8 つで 1 つの書き出し** (大きさごとにしない): 最初の大きさのグラフが重みのバンクを持ち、ほかの大きさのグラフは `sizes/WxH/` に同じバンクの上で置く (`iron_dit.share_banks`: 同じ重みが同じ所にあるものは 1 回だけ)。FLUX.2 klein は 1:1 と 1:1s で 22.68 → 11.77 GB、8 つで 16.23 GB。注意が 512 行の倍数で取れない大きさは詰め物をして回し、鍵を `nk` で区切る: FLUX.2 はテキストの行を先にする (区切りが絵によらず 512)、FLUX.3 は画像の行を詰め、single ブロックの鍵を [画像のパッチ, テキストの枠] に並べ直す (16.251)。詰めた行の数だけで決まるグラフは大きさの間で共有する: 行の数で名前か置き場所を決め、読む側が最初の大きさのものに戻れるようにする (`flux3klein.ironPart`)
+- **鍵**: `chat.PinnedRecipe(model, tool, version)` と書き出しの道具の引数 (`AMDRecipe`)。道具が読むファイルすべての sha256 を models.yaml (`sha256:`) に書く: 固定がないと作り方が nil になり、何も共有されない。道具に渡すものか書き出すもの (大きさ、形式、グラフの並べ方) が変わったら、書き出しの版 (`AMDExportVersion`) を手で上げる。埋め込みの道具のハッシュも鍵に入る
+- **初回の実行が取得元に置く**: `PrepareAMD` は `chat.SharedExportOr` を通して書き出しの道具を動かす。作り方の項目を取ってくるか、書き出して、書き戻す取得元 (`?writeback=true`) すべてに置く仕事を積む (`hwnpu-dev cache flush` で終わらせる)。だから新しい書き出しを NAS に置くには、取得元を設定した機械でモデルを名前で 1 回動かす (ファイルを手で写さない)。手で作った書き出しは `hwnpu-dev cache import DIR` (名前が鍵) か、最初に使ったとき (`chat.ShareMadeByHand`) に置かれる。同じ名前の古い書き出しで、求めた大きさのないものは脇によけて置き換え、ほかに得られなければ戻す
+- **反対側から確かめる**: `hwnpu-dev cache ls N` が `converted/MODEL/amd-xdna2/NAME/vN-…` に項目を出すこと。手元の書き出しをよけてもう一度名前で動かすと、取得元から取ってきて (`fetching …`)、同じバイトの絵を描くこと
+- **チェックポイントも取得元に**: 取得元の `original/OWNER/NAME/` は `hwnpu-lock.json` (コミットと各ファイルの sha256 と大きさ) があるときだけ読まれる。gated のリポジトリを手で写してそれがないと見つからず、Hugging Face に取りに行く (NAS の FLUX.3 klein の `model.safetensors` とテキストエンコーダ、16.250)
+- **Apple (Core AI)**: `.aimodel` の書き出しは初回の変換で同じように `converted/MODEL/coreai/…` に置かれる。機種ごとの prebuilt (重みを除いて先にコンパイルした部品、`coreai-ARCH/`) は、あとで開発用の Mac が `hwnpu-dev prebuild -arch all -put EXPORT` で足す。`coreai-build` が作れる 12 種類だけ、効くモデルだけ: FLUX.2 klein の初回は M2 で 52 → 17 分、Anima-Turbo は 45 → 38 分。チャットのモデルは初回の読み込みが遅くなった (LFM3-1.7B 2:17 → 8:12) ので置かない (cache-sharing-design.md 7.9)
+- **書き出しの時間、大きさ、最大 RSS を記録する**: models.yaml と利用者へのメッセージ (`amdExportTime`) に。初回の実行がどれだけかかるかを伝える
 
 ## 12. 試して効かなかったもの (繰り返さない)
 

@@ -118,7 +118,7 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 		if d := amdExportHere(m); d != "" {
 			return shortHome(d)
 		}
-		if m.Kind == chat.KindImage && strings.HasPrefix(m.Family, "flux2-klein") && vendor == "amd" { // flux2klein.PrepareAMD
+		if m.Kind == chat.KindImage && (strings.HasPrefix(m.Family, "flux2-klein") || strings.HasPrefix(m.Family, "flux3-klein")) && vendor == "amd" { // flux2klein.PrepareAMD, flux3klein.PrepareAMD
 			return "exported on first run (IRON)"
 		}
 		if m.Kind == chat.KindLabel && strings.EqualFold(vendor, hwnpu.VendorApple.String()) { // siglip.Prepare
