@@ -206,7 +206,7 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 		return err
 	}
 	if Packs(rel) {
-		// one file (an export for AMD's NPU), entry.json after it
+		// one file (an export for AMD's NPU or of Core AI), entry.json after it
 		pf, err := putPacked(ctx, s, rel, dir, e)
 		if err != nil {
 			return err
@@ -215,8 +215,7 @@ func PutEntry(ctx context.Context, s Source, dir string) error {
 		return writeEntryAt(ctx, s, rel, e)
 	}
 	e.Pack = nil
-	// the files side by side (an export of Core AI is many small ones, each a PUT and a MOVE on
-	// WebDAV), entry.json after them all
+	// the files side by side (each a PUT and a MOVE on WebDAV), entry.json after them all
 	err = each(ctx, PutStreams, len(e.Files), func(ctx context.Context, i int) error {
 		f := e.Files[i]
 		p := filepath.Join(dir, filepath.FromSlash(f.Path))

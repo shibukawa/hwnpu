@@ -20,8 +20,10 @@ import (
 )
 
 // Archs are the architectures coreai-build compiles for on macOS (Metal Toolchain 27.2): a name
-// for each chip variant (h14g an M2, h14c an M2 Max, h15g an M3, ...), as AIModel's
-// deviceArchitectureName.
+// for each chip variant, as AIModel's deviceArchitectureName. The chips, as coreai-build inspect
+// names them for each (seen on a device: h13c, h14g): g the chip (h13g M1 ... h17g M5, h18g M6),
+// s its Pro, c its Max, d its Ultra (h17d none named); h15m an M3 Max too, h17p the A18 and A18
+// Pro.
 var Archs = []string{
 	"h13c", "h13d", "h13g", "h13s",
 	"h14c", "h14d", "h14g", "h14s",

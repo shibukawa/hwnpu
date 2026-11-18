@@ -58,6 +58,22 @@ hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn
 - 参照画像は、絵の縦横比に合わせて中央を切り出し、絵の大きさ (`@half` ではその半分) に縮めて (拡げて) 使います
 - 編集の指示は、変えるところと残すところを文で書きます。プロンプトは英語が前提です
 
+## 画像生成 (FLUX.3 klein)
+
+`hwnpu-image generate -m flux3-klein` は Black Forest Labs の FLUX.3 klein (5.5B の DiT、プロンプトを読む Qwen3-VL-4B、FLUX.2 の VAE) で描きます。蒸留済みで、16 ステップ、CFG なしです (`--negative` と `--guidance` は使えません)。ライセンスは FLUX Kommunity License (非商用・非本番の利用。商用は Qualifying User だけ) で、Hugging Face のリポジトリは gated です。初回の前に、そこで規約に同意し、`HF_TOKEN` を設定 (またはターミナルでサインイン) してください。hwnpu は一度だけライセンスへの同意を確かめます (`--accept-license` で同意)。
+
+```
+hwnpu-image generate -m flux3-klein "A photo portrait of a smiling young woman wearing thin black-framed eyeglasses, plain light grey background"
+hwnpu-image generate -m flux3-klein --size 512 "A rocky coastline at golden hour with a red lighthouse"
+```
+
+- AMD の NPU と Apple の Neural Engine (Core AI、macOS 27) で動き、今は文からの生成だけです (`--image` はエラー)。Apple では `--size` は 1:1 (1024 × 1024) か 1:1s (512 × 512) で、プロンプトはチャットテンプレート込みで 160 トークンまでです (1 つの書き出しが両方の大きさと 80 行、160 行のテキストを持ちます)。AMD では `--size` は 8 つのアスペクト比のどれでもよく (1:1、1:1s、2:3 は 832 × 1248、3:4 は 880 × 1168、9:16 は 768 × 1344、3:2、4:3、16:9 は 1344 × 768。FLUX.2 klein と同じ)、プロンプトは 480 トークンまでです
+- AMD の NPU では、初回に書き出し (`flux-3-image-klein.amd-npu2`、15 GB、8 つの大きさ) を取得元から取り、なければチェックポイント (DiT の単一ファイル版 `model.safetensors`、Qwen3-VL、VAE で 20 GB) を落として IRON で書き出し (`tools/amd/iron_flux3klein.py`。`HWNPU_IRON_ENV` を設定。IRON のカーネルができていれば約 11 分)、書き戻す取得元に置きます。Ryzen AI 9 365 で 1024 × 1024 の 1 枚が約 1 分 45 秒 (16 ステップが 5.9 秒ずつ、テキスト 3 秒、VAE 7 秒)、512 × 512 が 32 秒、ほかのアスペクト比が約 1 分 45 秒で、最大メモリは 3.6 GiB (512 × 512 で 2.5 GiB) です。DiT の重みは bfp16、Qwen3-VL は bf16 で、CPU の diffusers の bf16 のパイプラインと同じノイズから比べると、512 × 512 の絵は PSNR 39 dB (最後の潜在の cosine 0.998) です
+- 初回にチェックポイント (20 GB) を落として変換し (約 3 分。書き出しは 9.4 GB)、各プログラムを Neural Engine 用にコンパイルします (初回は両方の大きさで約 50 分)。M3 (16 GB) で、2 回目以降は 1024 × 1024 の 1 枚が約 2 分 (16 ステップが 7.4 秒ずつ、テキスト 1 秒、VAE 4 秒)、512 × 512 が約 30 秒 で、プロセスのメモリは最大 4.1 GB です
+- Qwen3-VL と DiT は lut8、VAE と context_embedder は fp16 で、時刻の埋め込みと変調はホストで計算します。書き出しのフォルダ (キャッシュの `models/FLUX.3-klein`) か取得元 (`HWNPU_MODEL_SOURCE` の `original/hwnpu/flux-3-image-klein-calibration/`) に `flux3-klein.x2.safetensors` があると、DiT の lut8 の表を活性に合わせて作ります。これは `tools/ref/ref_flux3klein.py --stats` で校正した入力の二乗平均 (重み.x2、入力の列ごと) です。なければ表は等間隔になり、髪などの細部が変わります ([docs/design.md](docs/design.md) の 16.248)
+- 同じノイズから diffusers の bf16 のパイプラインと比べると、512 × 512 の絵は PSNR 37 dB です (最初のステップの速度は cosine 0.9997)
+- プロンプトは英語が前提です
+
 ## 深度推定 (Depth Anything 3、MoGe-2)
 
 `go run ./cmd/hwnpu-image depth` は、AMD の NPU か Apple の Neural Engine (Intel の NPU も。実機では未確認) で写真の深度を推定します。モデルは Depth Anything 3 (Apache-2.0) の DA3MONO-LARGE (既定、相対の深度)、DA3METRIC-LARGE (`--fov` か `--focal` でメートル)、DA3-SMALL / BASE (軽い版、深度と確信度) です。画像ごとに `NAME.depth.png` (近いほど明るい) を書き、`--raw` で深度の float32、`--sky` で空 (SMALL / BASE は確信度) の画像も書きます。書き出しは縦横比ごとの大きさを持ち、画像に近いものを使います。`-m` は generate と同じく名前かファミリー (`da3:small`、`da3metric`、`moge`、`moge:vits`) か書き出しのディレクトリです。既定の用途 `depth` はメモリで選び、8 GB は DA3-SMALL、16 GB は DA3-BASE、24 GB 以上は DA3MONO-LARGE です (`depth:24g` や `-m DA3MONO-LARGE` で大きい方も)。

@@ -4349,7 +4349,8 @@ Core ML の Neural Engine のキャッシュは約 4 GiB で、それを超え�
 - **実行** (`internal/backend/coreai`): Swift の shim (`shim/shim.swift`、`tools/coreai/build-shim.sh` で `libcaishim.dylib`、go:embed して purego で読む。`CGO_ENABLED=0` のまま)。`Compile` は `.mlpackage` を下ろして hwnpu のキャッシュに `.aimodel` を置き (キーはパッケージのダイジェスト)、Core AI で Neural Engine を指定して読む。入出力はコピー (`NDArray(shape:scalarType:)` と strides に沿った memcpy)。Core AI のキャッシュのエントリーは壊れることがあり (読み込みは通って `loadFunction` が 0.01 秒で `_GenericObjCError 0`、作り直さない)、そのときはエントリーを消して読み直す。配置は Core AI のキャッシュの MPSGraph の manifest の `mps.fullyPlacedOnANE` で見る
 - **確かめ方** (`tools/coreai/aicheck`): `run -cpu` は部品を Core AI で動かして `milcpu` と比べる。`probe` は小さな MIL (SDPA、RoPE、RMSNorm、int8 の線形…) が Neural Engine に載るか。`HWNPU_AILOWER_CUT=N` は先頭の N 個の演算だけを下ろし、外れる演算を二分探索で探す。`HWNPU_AILOWER_TRACE` は op_id と演算の対応 (Core AI のエラーは op_id で場所を示す)
 - **Anima-Turbo** (M3、1024²、int8-int8): 22 本すべて Neural Engine に載り、`milcpu` とのコサイン 0.99987〜1.000000 (文の符号器 0.12 秒、DiT の 4 ブロックの組 0.60 秒、VAE の段 0.04〜0.35 秒)。1 枚は 1 回目 4 分 50 秒 (Core AI のコンパイル 4 分 13 秒)、2 回目 38 秒 (読み込み 2.5 秒、1 ステップ 4.1 秒)。Core ML の 2 回目は 37 秒 (読み込み 3.4 秒、4.0 秒)。Anima は 2.8 GB で Core ML のキャッシュに収まるので差はない。同じ種の Core ML との最後の潜在はコサイン 0.971、PSNR 24.7 dB で、構図は同じ (手元が少し違う)
-- `.aimodelc` (`coreai-build compile`) は採らない: M3 で初回の読み込みが `.aimodel` の 5〜10 倍遅く (0.5 GiB で 26〜77 秒)、Core AI のキャッシュには重みがやはり複製され、アーキテクチャ (macOS で 22) ごとに重みを持つ。`.aimodel` は端末に依らない。のちに配るものとしては採った: 重みを除いて `.aimodel` から組み立てる (16.229、16.232)
+- 配るもの (2026-11-18 に書き直し。この節を書いたときは「`.aimodelc` は採らない」としていた): 端末に依らない `.aimodel` を変換後として配り、`.aimodelc` (`coreai-build compile`) は重みを除いた機械の種類ごとの差分として、それと並べて配る (16.229、16.232、docs/cache-sharing-design.md 7.9)。`.aimodelc` の 99 % を占める重み (`resources.bin`) は `.aimodel` の `main.mlirb` のバイトを並べ替えたものなので、配るのは ANE の LLIR と小さなファイル (書き出しの 1〜2 %) を tar と zstd で 1 つに詰めたものだけで、端末が `main.mlirb` から重みを組み立てて `.aimodelc` に戻し、Core AI に読ませる。端末のネイティブのコンパイル (ANE のコンパイラ、機械全体で直列) の代わりに仕上げだけになり、大きな部品ほど効く (Chroma の 4 ブロックの部品で 219 → 66 秒)。重みを持たないので、アーキテクチャ (macOS で 22) ごとに重みを持つ問題はない
+  - 当時の測り方 (M3、0.5 GiB で `.aimodel` の 5〜10 倍、26〜77 秒) は小さな部品で、小さな部品では仕上げのほうがネイティブより遅いことは今も同じ (16.229)。だから prebuilt は効く書き出しを選んで作る。Core AI のキャッシュに重みが複製されるのはどちらの道でも同じ
 - 1 本の上限は M3 で 2.5〜3 GiB (fp16 の合成で 2.5 GiB は全部 Neural Engine、3 GiB は外れて GPU)。Core ML の 1 GiB より大きい
 
 残り: Core AI の変換に失敗すると LLVM が abort してプロセスごと落ちる (下ろし方の誤りは `aicheck` で先に見つける)。`ailower` と `mlirbc` の単体テスト。LUT (lut4、lut8)、拡大、`pad` などは書いてあるが Anima の部品でしか確かめていない。Qwen-Image を Core AI で (キャッシュの効果が出るモデル)。Core AI のキャッシュに重みが複製される分のディスク (Qwen-Image で 17 GB)。M3 以外のチップ。
@@ -6927,7 +6928,7 @@ NPU の様子は `npuinfo` (16.195) の JSON か `hwnpu-dev report` (測定込�
 | 2 回目 (項目) | 5.5 秒 | 6 分 35 秒 | 48.5 秒 |
 
   ネイティブの 3 本 (`text_0` 3.6 秒、`dit_double_8`/`12` 12〜13 秒) は aned 側のコンパイル済み (署名 ID `a.out` で Go のバイナリ全部が共有) が残っていたはずで、真の初回ならそれぞれ数分かかる
-- **アーキテクチャの間の比較** (乱数 1 ブロックの `dit_double_0` を 22 種類に): 12 種類はできた (h13g、h14c/g、h15c/g、h16c/g/s、h17c/d/g/s)。h13c/d/s、h14d/s、h15d/m/s、h17p の 9 種類は `coreai-build` が落ち (SIGSEGV、4〜7 秒)、h18g は ANE に乗らない。ファイルごとに見ると:
+- **アーキテクチャの間の比較** (乱数 1 ブロックの `dit_double_0` を 22 種類に): 12 種類はできた (h13g、h14c/g、h15c/g、h16c/g/s、h17c/d/g/s)。h13c/d/s、h14d/s、h15d/m/s、h17p の 9 種類は `coreai-build` が落ち (SIGSEGV、4〜7 秒)、h18g は ANE に乗らない (2026-11-18 に Metal Toolchain 27.2.47 と LFM3-1.7B の部品で測り直しても同じ)。記号と機種: `coreai-build inspect X.ARCH.aimodelc` の `Supported chips` が名前を出す。g が無印 (h13g M1、h14g M2、h15g M3、h16g M4、h17g M5、h18g M6)、s が Pro、c が Max、d が Ultra (h17d は名前なし)、h15m も M3 Max (もう 1 つの版)、h17p は A18 と A18 Pro。実機の `AIModel.deviceArchitectureName` でも h13c (M1 Max) と h14g (M2) を見た。だから prebuilt を配れるのは M1、M2 と M2 Max、M3 と M3 Max (h15c)、M4 の全部、M5 と M5 Pro と M5 Max で、M1 Pro / Max / Ultra、M2 Pro / Ultra、M3 Pro / Ultra と M3 Max の h15m、A18 の Mac は端末でネイティブにコンパイルし、M6 は ANE に乗らない。`--platform` を変えると種類の並びが別になる (iOS は h13g、h14g、h15g、h16g などで、visionOS は h14g.n301 と h17g.n301a) ので、macOS の 22 種類は Mac のものだけ。ファイルごとに見ると:
   - `resources.bin` (231 MB、全体の 99 %)、`original_model_0.mpsgraph`、`main.hash`、LLIR の `Manifest.json` は **12 種類で全部同一**
   - ANE の LLIR (`*_ANE_region_0_0.mlir.bc`、2.8 MB、h13g だけ 4.3 MB) は 11 通り: h17c と h17d (2 ダイ) だけが同じで、同じ世代の無印と Max でも違う
   - `manifest.plist`、`specialized_model_1.mpsgraph`、`main-ARCH.mlirb`、`metadata.json` は 1〜40 KB で種類ごと。manifest の `deviceDescriptor` に ANE の世代 (h13g は 8、h14g は 10) と LLIR の hash
@@ -7351,3 +7352,177 @@ Qwen-Image-2.1 (7B の DiT、Qwen3-VL-8B) は、NPU で使うにはパラメー�
 - 試験: `TestShareMadeHere`
 
 SigLIP のラベルの埋め込み (`hwnpu/siglip/NAME-HASH.f32`、ラベル 1 組で数百 KB、数秒で作り直せる) は置かない。`hwnpu-dev convert` の Core AI / OpenVINO の書き出しは AMD の外なので、ここでは扱わない。
+
+### 16.246 FLUX.2 klein の AMD の書き出しも NAME.amd-npu2 に (前の大きさの書き出しは入れ替える) — 2026-11-18
+
+16.243 でほかの画像モデルの書き出しの名前から `-aspects` を外したが、FLUX.2 klein は `flux.2-klein-4b-aspects2.amd-npu2` のままだった (16.242: 取得元の手で作った書き出しの記述 `iron-import` は名前だけで探すので、同じ名前の前の書き出し、16:9 が 1360 x 752 のもの、が取られる)。取得元の前の書き出しは消した (16.245 の後片付け) ので、名前を `flux.2-klein-4b.amd-npu2` に揃えた。
+
+- 前の書き出しが手元に残る機械 (取得元から取ったもの、entry.json は同じ種類と名前): その大きさ (1024²、2:3 など 6 つ) はそのまま描く。ないもの (1344 x 768、768 x 1344) を頼むと、`PrepareAMD` はそれを `NAME.amd-npu2.replaced` に退け、取得元の今の書き出しを取る (なければ IRON で作る)。取れなかったときは元に戻す
+- 取得元の書き出しは同じ中身を新しい名前で置き直し、`-aspects2` の記述は消した
+- 試験: `TestPrepareAMDReplaces` (手元の前の書き出しを取得元の今のものに入れ替える)、`TestPrepareAMDHere` (取得元も IRON もなければ前の書き出しを戻す)
+
+### 16.247 Core AI の書き出しも取得元に詰めて置く、チャットのモデルの prebuilt は効かない、機種の記号 — 2026-11-18
+
+**置く方針** (docs/cache-sharing-design.md 7.9、7.10): Core AI のモデルは、取得元に `.aimodel` の書き出し (重みを含む、どの Mac も使う) と、`coreai-build` で作れる機種の prebuilt (重みを除いた `.aimodelc`) を置き、どちらも tar を zstd で詰めた 1 つのファイルにする。prebuilt は重みを `.aimodel` から組み立てるので、`.aimodel` は prebuilt のある機種にも要る。
+
+- `store.Packs` が `coreai` の対象も取る (`files.tar.zst`)。LFM3-1.7B の書き出しは 103 ファイル。縮むのは 1〜5 % (2.62 → 2.59 GB、Chroma1-Flash 15.97 → 15.25 GB) で、効くのはファイルの数。変換しながら置くこと (`StartEarly`) は Core AI の書き出しの道だったので、今これで置くものはない
+- 前の hwnpu がばらで置いたものは `hwnpu-dev cache repack SOURCE --target coreai --apply` で詰め直す (鍵は同じ。手元に同じ鍵の書き出しがあればそれから)。UGREEN の NAS の 30 件 (80.32 GB) を詰め直した: 手元にあった 21 件は 5 秒〜1 分 38 秒、取ってきた 9 件 (画像のモデルと Qwen3) は 32 秒〜14 分 40 秒 (Chroma1-Flash)。空の根から Qwen3.5-0.8B を取ると 1.54 GB を落として 1.4 秒で展開し、答えた
+
+**機種の記号** (`coreai-build inspect X.ARCH.aimodelc` の `Supported chips`): 16.229 の 22 種類は g が無印、s が Pro、c が Max、d が Ultra で、h13 が M1、h14 が M2、h15 が M3、h16 が M4、h17 が M5、h18g が M6。h15m も M3 Max (もう 1 つの版)、h17p は A18 と A18 Pro、h17d は名前なし。`--platform` を変えると種類の並びが別になる (iOS は h13g〜h16g …、visionOS は h14g.n301 と h17g.n301a)。
+
+- 9 種類 (M1 Pro / Max / Ultra、M2 Pro / Ultra、M3 Pro / Ultra と h15m、A18) で `coreai-build` が落ちるのは、ANE のオフラインのコンパイラ (`ANEHostCompiler`) の `ZinIrCompilerParameters::PropogateGlobalOptionsToPerProcedureOptions` が空の `ZinIrTarget` を読む SIGSEGV (クラッシュレポート)。プログラムに依らない (Anima の 1 関数の小さな部品でも)。`--preferred-compute none` (GPU) なら 22 種類とも通る
+- M6 (h18g) は `error: redefinition of symbol named 'hwnpu_N'` (hwnpu の定数の名前) を出して ANE のコードなしに終わり、全部が GPU の MPSGraph になる。1 関数の部品でも同じ。端末のネイティブのコンパイルでも同じか、実機がなく分からない。後回し
+- ANE に乗せるのは `--preferred-compute neural-engine` のときだけ (既定の `none` は GPU だけ)
+
+**チャットのモデルの prebuilt** (M2 16 GB、h14g、署名の識別子を変えた 2 つのコピーで空の Core AI と aned のキャッシュから、同じ種):
+
+| | ネイティブ | prebuilt (手元に組み立てて) |
+|---|---|---|
+| LFM3-1.7B (`coreai-build` 19 部品 33 秒) | 2 分 17 秒 (52 秒、0 秒、1 分 23 秒、2.1 秒) | 8 分 12 秒 (5 分 12 秒、0 秒、2 分 08 秒、50 秒) |
+| plamo-3-translate-8b (12 部品 34 秒) | 1 分 13 秒 (1 分 11 秒、1.5 秒) | 7 分 08 秒 (6 分 17 秒、50 秒) |
+| Qwen3.5-4B (26 部品 6 分 4 秒) | 12 分 26 秒 (朝の同じ機械の初回) | 7 分 07 秒 (6 分 17 秒、50 秒) で読めたが、最初の呼び出しから 1 時間 40 分答えず、測る枠の時間切れで止めた |
+
+- 答えと速さは同じ (LFM3-1.7B 68.0 と 68.1 tokens/s、下書きの採用 163 / 690 も同じ。plamo 12.5 と 12.4)
+- 仕上げは `ANELargeModelCompilerService` (CPU 25 %、1 スレッド)。plamo と Qwen3.5-4B の 6 分 17 秒と 50 秒、LFM3 の最後の 50 秒が同じ値なのは、計算でなく待ち (時間切れ) に見える。調べていない
+- だからチャットのモデルには prebuilt を置かない (`.aimodel` だけ)。prebuilt が効いたのは Chroma1-Flash の 1024² の DiT (4 ブロックの部品、16.229) のような、1 部品のコンパイルが数分かかる大きな部品
+
+**画像のモデルの prebuilt** (同じ測り方、1024²、種 1、`hwnpu-image generate`。Sana と Qwen-Image は対象から外した):
+
+| | ネイティブ | prebuilt | 絵 |
+|---|---|---|---|
+| FLUX.2 klein 4B (`coreai-build` 27 部品 18 分 19 秒、dit_single_0 は ANE に乗らず抜ける) | 52 分 16 秒 | **16 分 55 秒** | 同じ構図、細部が違う (PSNR 28.9 dB、値の 84 % が違う) |
+| Anima-Turbo (20 部品 4 分 6 秒、VAE の 8 段は ANE に乗らず抜ける) | 45 分 01 秒 | 37 分 50 秒 | バイト単位で同じ |
+
+- 効いたのは DiT: FLUX の dit_double 2 分 40 秒 → 27〜37 秒、dit_single (5、10、15) 約 7 分 → 33 秒、VAE の段 12 秒〜3 分 23 秒 → 約 10 秒 (10 段で 13 分 30 秒 → 1 分 33 秒)。Anima の DiT の 4 ブロックの組 1 分 55 秒前後 → 23〜32 秒
+- 遅くなったのは文の符号器: プロセスの最初の部品が 3〜4 分 (FLUX の text_0 6.8 秒 → 3 分 20 秒、Anima の text 37 秒 → 3 分 45 秒)。チャットのモデルの最初の部品 (5 分 12 秒、6 分 17 秒) と同じに、1 つめの prebuilt に数分の決まった費用があるように見える。チャットのモデルは部品が少ないのでこれで負け、部品が多く 1 つが数分かかる画像のモデルでは勝つ
+- 1 ステップは同じ (FLUX 7.7〜8.1 秒、Anima 105.1 と 106.7 秒)。Anima はどちらも最初のステップが 13 分余り (808 と 821 秒) かかる。読み込みの後の最初の呼び出しの何かで、prebuilt と関係ない。調べていない
+- FLUX の絵がバイト単位で揃わないのは、prebuilt から仕上げた部品のどれかが端末のコンパイルと少し違う数値を出すため (Chroma と Anima では揃った)。見た目の差は細部だけ
+- だから FLUX.2 klein には prebuilt を置く値打ちがある (初回が 3 分の 1)。Anima は 16 % 短くなるだけ
+- 置き方 (2026-11-18): 仕上げの数分の決まった費用、9 種類で落ちる `coreai-build`、M6 の名前の衝突、Qwen3.5-4B の止まり、FLUX の数値の違いは Apple に報告した。端末の仕上げ (OS) が直れば、置いた prebuilt のまま速くなるので、効く画像のモデル (FLUX.2 klein、Chroma1-Flash、Anima) は今の道具の prebuilt を `hwnpu-dev prebuild -arch all -put` で置く。チャットのモデルは今は置かない (遅くなり、止まるものがある)。`coreai-build` の側の修正 (落ちる 9 種類、M6) は Metal Toolchain を上げて作り直さないと届かない
+- まだ置いていない: FLUX.2 klein の 12 種類を作る途中で、ディスク (空き約 110 GB) が一杯になって止めた。`$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` に 12 GB が残っていた (`coreai-build` が MPSGraph の作業に使うもの。`prebuild` の後始末の外)。並べて作るときは空きを見る要がある。Anima-Turbo の 1024² の書き出しはまだ取得元にない (手元のものは共有より前に作り、`entry.json` がない)
+
+
+### 16.248 FLUX.3 klein を Apple の Neural Engine に (文からの生成、lut8 の表を活性に合わせて) — 2026-11-18
+
+black-forest-labs/flux-3-image-klein (FLUX Kommunity License、gated) を `internal/imagegen/flux3klein` に移した。`hwnpu-image generate -m flux3-klein`。参照は diffusers 0.43.0 の `transformer_flux3.py` と `modular_pipelines/flux3` (蒸留版のブロック)、それをプロンプト拡張 (Qwen3.5) なしで部品ごとに読み込むように書き直した `tools/ref/ref_flux3klein.py` (MPS、bf16)。
+
+**構造** (FLUX.2 klein との違い)
+
+- DiT 5.55B: テキストと画像がそれぞれ別の重みの mode ブロック 5 層 (自分の流れの中だけで注意。注意と FFN を同じ変調の入力から並列に計算し `x + gate (attn + ff)`)、その後に [テキスト, 画像] の順で single ブロック 28 層 (変調は流れごと、重みは共通)。FFN は SwiGLU で `linear_in` の前半が gate (18432 行は 16384 を超えるので `#gate` と `#up` に分けて読む)
+- 変調はホスト (14 行): 画像は `silu(temb(t) + temb'(t'))`、テキストは `silu(temb(0) + temb'(t'))`。flow-map の目標時刻 t' がテキストにも入るので、テキストの mode ブロックも毎ステップ回す。`norm_out` は scale、shift の順。timestep は bf16 に丸めてから 1000 倍し、それも bf16 に丸める (パイプラインが `timestep.to(dtype) * 1000` で渡す)。diffusers の部品との差は相対 RMS 1e-7 (`TestModulation`)
+- RoPE: 4 軸 × 32、θ 10000、画像の行と列は 0.5 倍 (`image_rope_scale`)、テキストは (0, 0, 0, i)。FLUX と同じく (2i, 2i+1) の対なので q と k の行を `RopePerm` で並べ替える
+- テキスト: Qwen3-VL-4B の言語部分 (36 層のうち 32 層まで) の 4, 8, ..., 32 層の後を 8 つ並べて 20480。テキストだけなら mrope は普通の RoPE と同じ。80 の倍数に右詰めし、パディングの位置 ID は 1 (学習時の transformers 4.57 の値をパイプラインが明示する)。マスクは FLUX.2 klein と同じ (プロンプトは因果、パディングはプロンプトのキーだけ): transformers 5.23 の呼び方と 4 層後で一致することを Python で確かめた (自分も見る、因果だけ、はどちらも 160〜180 % ずれる)
+- `context_embedder` の入力 20480 は 16384 を超えるので、4 タップずつ 2 つの入力と列の半分ずつの線形の和にした
+- **fp16 のあふれ**: テキストの流れは `context_embedder` の出力で 1.2e5、single ブロックの後段で 9.7e6 (数行の数チャネル。画像は 2900)。画像は FLUX.2 と同じ 1/32、テキストは 1/1024 で持ち、ブロックの出力 (1/32) をテキストに足す gate を 32/1024 倍する。Qwen3-VL の隠れ状態は最大 11264 (2 行目、attention sink) で TextScale 8 で収まる
+- VAE は FLUX.2 の `AutoencoderKLFlux2` と同じなので FLUX.2 klein の段 (Chroma の復号器) をそのまま使う
+
+**書き出し**: 512² と 1024²、テキスト 80 行と 160 行を 1 つに (テキスト、`ctx`、テキストの mode ブロックは行数ごと、画像の mode ブロックと VAE は大きさごと、single ブロックは両方の組の関数、重みは 1 回)。Qwen3-VL と DiT は lut8、`ctx` と VAE は fp16。変換 2 分 37 秒 (表の作成 1 分 23 秒)、9.4 GB。初回のコンパイルは約 50 分 (single ブロックの組が 1 つ 6.5 分。512² の初回に 1024² の関数も一緒に)。
+
+**量子化** (MPS の参照で 512²、bf16 との最終の潜在の cosine)
+
+| DiT の形式 | ポートレート | 8 プロンプトの平均 / 中央値 |
+|---|---|---|
+| 行ごとの int8 (クリップ点を探す) | 0.9967 | 0.988 / 0.996 |
+| lut8 uniform (16 行の表、均等) | 0.964 (髪が変わる) | 3 枚で 0.956 |
+| lut8 k-means (分位点から、hwnpu の `kmeans`) | **0.56 (壊れる)** | — |
+| lut8 重み付き k-means (重み付き分位点から) | 0.93 | — |
+| lut8 重み付き k-means (uniform から、E[x²]、校正 4 本) | **0.998** | 0.981 / 0.997 (int8 に 8 枚中 3 枚で勝つ) |
+
+- 分位点から始めると、表の一番上の段が 99.8 % 点になり、少数の大きな重みが潰れて絵が壊れる。uniform (最小と最大) から始めた重み付き Lloyd (`palette.QuantizeWeightedMinMax`) だけが効いた。重みなしの k-means (uniform から) は uniform と同じ
+- 校正 12 本でも 4 本と変わらない (平均 0.980)。int8 に負けた 2 枚は細かい装飾 (丼の縁の模様、看板の右の街並み) で軌道が分かれたもの
+- 1 ステップの速度誤差 (参照の入力を与える) は自由に回した結果を予測しない。single ブロックの注意だけ int8 にすると速度誤差は 2.33 → 2.29 % でほぼ同じでも、潜在の cosine は 0.964 → 0.983 になった。重みの 6 % の変調と埋め込みも 0.978 まで効く。mode ブロックは効かない
+- 統計は `ref_flux3klein.py --stats` (int8 の DiT で 4 プロンプト、評価のプロンプトとは別) を `WEIGHT.x2` に直したもの。書き出しのフォルダの `flux3-klein.x2.safetensors` があれば `Prepare` が使い (書き出し名に `lut8x2`)、なければ取得元の hwnpu のリポジトリ `original/hwnpu/flux-3-image-klein-calibration/` (Hugging Face にない、commit のない `hwnpu-lock.json`) から取って使う。SHA-256 はコードに固定 (`StatsSHA256`) し、違うものは使わない。取得元が設定されていなければ Hugging Face には問い合わせない (そこにはない)。どちらにもなければ uniform で警告する
+
+**Neural Engine で測ったこと** (M3 16 GB、すべて NPU に置かれた)
+
+- 512²、参照と同じノイズ: 絵の PSNR 37.0 dB、最初のステップの速度 cosine 0.9997 (相対 RMS 2.5 %)、最後のステップで 0.993
+- 512² (2 回目以降): 1 枚 29 秒 (16 ステップ 27 秒で 1.7 秒ずつ)
+- 1024² (2 回目以降): 1 枚 2 分 2 秒 (テキスト 1.0 秒、16 ステップ 1 分 57 秒で 7.4 秒ずつ、VAE 3.8 秒)、プロセスのフットプリント最大 4.1 GB (最大 RSS 3.8 GB)
+- パディングの行のテキストの状態が参照から 50 % ずれる (プロンプトの行は 3〜7 %)。マスクは合っている (上) ので数値の誤差: パディングの位置 1 は attention sink の 2 行目と同じで、Qwen3-VL の lut8 の誤差を拾うと見ている。絵には目立たない
+
+**未確認・未対応**
+
+- 編集 (参照画像、`image_cond` の流れ)、512² と 1024² 以外の大きさ、161 トークン以上のプロンプト (AMD は 16.250)
+- Neural Engine の側のメモリ (models.yaml の 5.5 GB は推定のまま)
+- パディングの行のずれを減らす (Qwen3-VL の先の層を fp16 にするなど)
+- 統計の配り方 (今は書き出しを作る機械に手で置く)
+
+### 16.249 隣り合う lut の表を同じにしない: `coreai-build` が FLUX の dit_single_0 を ANE に乗せなかった理由 — 2026-11-18
+
+16.247 で FLUX.2 klein の `dit_single_0` だけが `coreai-build` で ANE に乗らずに抜けた。stderr は `CompilationFailure` だけだが、os_log (プロセス `coreai-build`、`ANEHostCompiler`) に本当の理由が出る。M1 (h13g、Metal Toolchain 27.2.47.0、`coreai-build` 3605.6.3)、private_data の記録を有効にして調べた。
+
+```
+Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is not content-uniform across its num_lut_per_group=32 slots
+```
+
+**原因**: ANE のオフラインのコンパイラは、`lut_to_dense` の重みを出力 256 行ずつの区切りに分け、区切りの先頭で同じ表が何行続くかを「表を共有する行の数」とみなして、テンソル全体にそれを求める。hwnpu の lut8 は 16 行ごとに 1 つの表 (`milpart` の既定の Group 16) なので、区切りの先頭の 2 つの表がたまたまバイト単位で同じだと 32 行の共有とされ、次の 32 行の表が違って落ちる。`dit_single_0` (640 MB) で当てはまるのは 1 か所だけ (3072 行の射影の表 96 と 97、出力の 1536 行目)。最小と最大で決まる一様な表 (`palette.Uniform`) では隣が同じ表になりやすい (192 個のうち 185〜191 種類)。
+
+- 合成の線形層 (`tools/coreai/lutfake`、256 × 256 から): 表が全部違えば通り、表 1 を表 0 の写しにすると同じエラー。h14g、h15g、h16g、h17g でも、lut4、lut6、lut8 でも、表 1 つの行数 1 / 8 / 16 / 32 でも落ち、`num_lut_per_group` はいつも表の行数の 2 倍 (2 / 16 / 32 / 64)。全部同じ表と、32 行ずつ同じ表は通る。先頭で 3 つ続くと `total_cout (256) must be a multiple of num_lut_per_group (48)` で落ちる
+- 端末のコンパイラ (`AIModel(contentsOf:)`) は同じモデルを全部 ANE に乗せる
+- `dit_single_0` の表 97 の値を 1 つ fp16 で 1 単位ずらすと、2 つの関数とも ANE に乗った (`fullyPlacedOnANE`)
+- 隣り合う同じ表は `tools/coreai/lutscan -tile 16 X.aimodel/main.mlirb` で探せる
+
+**直し** (`mlpackage.DistinctNeighbours`、`Builder.LUT` から): 表が前の行の組の同じ列の表と同じなら、その表の絶対値が一番大きい値を fp16 で 1 単位 0 に近づける (全部 0 の表は最小の非正規化数に)。lut の書き出しはどの量子化 (一様、k-means、GPTQ の符号) でもここを通る。表そのものの丸めより小さい変化で、FLUX の単ブロックの部品 4 本 (各 640 MB) で変わるのは 1〜2 バイト。直した `dit_single_0` は `coreai-build` で 2 つの関数とも ANE に乗った (M1、h13g、12 分 25 秒)。
+
+- 書き出しのバイトが変わるので `ailower.FormatVersion` を 2 に上げた (取得元の Core AI の書き出しの鍵。前の版の書き出しは取らない)。手元にある同じ名前の書き出しはそのまま使われる (動くが、prebuilt の鍵は書き出しの中身の hash なので取得元の新しい prebuilt とは合わず、ネイティブにコンパイルする)
+- Apple には FB25624151 (追記に再現の 2 つのモデル) で報告した
+
+**機種**: この直しで変わるのは表の並びで落ちる部品だけ。`coreai-build` が落ちる 9 種類 (16.247) と M6 (h18g) には効かない (直した合成のモデルでも h13c は SIGSEGV、h18g は ANE に乗らない)。`--architecture` を省くと `coreai-build` は 22 種類を順に作るが、`--preferred-compute neural-engine` では最初の h13c で落ちて全体が止まるので、`hwnpu-dev prebuild` のように 1 種類ずつ別のプロセスで作る要がある。
+
+**作り直し** (FLUX.2 klein の 512² と 1024² の書き出し、M1): `tools/coreai/kleinonly prepare 1024x1024` (生成なしに `hwnpu-image` と同じ準備。元のファイルから変換 24 秒) と `kleinonly put EXPORT` で取得元に置いた (`lowering: 2` の新しい鍵、7.7 GB)。取得元を読むには `chat.LoadUserModels` が要る (それなしでは `HWNPU_MODEL_SOURCE` が読まれず、取りも置きもしない)。
+
+### 16.250 FLUX.3 klein を AMD の NPU に (IRON、文からの生成) — 2026-11-18
+
+16.248 の FLUX.3 klein を AMD の NPU でも描けるようにした。`tools/amd/iron_flux3klein.py` が書き出し、`internal/imagegen/flux3klein` の `Pipeline` が IRON の書き出しも開く (`iron.go`)。`-m flux3-klein` は AMD では `flux3klein.PrepareAMD` (手元の `flux-3-image-klein.amd-npu2`、取得元の書き出し、なければチェックポイントを落として IRON で書き出す。FLUX.2 klein の 16.235 と同じ流れ)。
+
+**チェックポイント**: 取得元 (NAS) の `original/` は Hugging Face の最上位の写しで、DiT は単一ファイル版の `model.safetensors` (BFL の名前、11.1 GB) しかなく、diffusers の `transformer/*.safetensors` がなかった。この機械には HF のトークンもない (gated)。そこで AMD の書き出しは単一ファイル版を読む (`AMDFiles`。sha256 は BFL の `manifest.json` と一致し、models.yaml に足した)。名前は diffusers 0.43.0 の `convert_flux3_transformer_checkpoint_to_diffusers` の置き換えをそのまま写した (`norm_out` の行は shift, scale から scale, shift に入れ替える)。diffusers の配置があればそちらを読む。参照 (`tools/ref/ref_flux3klein.py`) も `--device cpu`、`--model`、単一ファイル (`from_single_file`) で、この機械の CPU で動くようにした (512² で 16 ステップ 2 分)。processor は動画の部分に torchvision を要るので、なければトークナイザーと `chat_template.json` で同じ文を作る
+
+**行の並べ方**: テキストは 512 行の枠 (`text_slot`) で持ち、プロンプトの行 R (トークン数を 80 の倍数に切り上げ、80〜480) だけが鍵になる (`nk`)。
+
+- テキスト (Qwen3-VL の 32 層、4 層ずつ 8 バンク): FLUX.2 klein の `Qwen3Layer` をそのまま使う (プロンプトは因果、パッドはプロンプトの鍵だけ)。角度は入力で、パッドの位置は 1。512 行で回して先頭 R 行を使う (パッドは後ろの行に影響しないので、80 行で回したものと同じ)
+- テキストの mode ブロック: 512 行、鍵は先頭 R
+- single ブロック: [画像の行, テキストの枠]。注意も MLP も行の順に依らない (RoPE は行ごと) ので diffusers の [テキスト, 画像] と同じ結果になる。画像が先なら区切りが 512 の倍数 (1024 行、4096 行) で固定され、鍵は先頭 N + R の連続した範囲なので、1 つのグラフがどの R にも効く。行は 1536 (512²) と 4608 (1024²)
+- 変調 (14 行) はホスト (16.248 の `timeembed.go`)。書き出しは `time.safetensors` を同じ名前 (`dit.` + diffusers の名前) で置く
+- 大きさは 512² と 1024² の 2 つで 1 つの書き出し。2 つ目の大きさのグラフ (`sizes/512x512/{dit_in,image_modes,singles,dit_out,vae}`) は 1 つ目のバンクを共有する (`share_banks`)。13 GB。書き出しは 4 分 31 秒 (IRON のカーネルは FLUX.2 klein のものができている状態)、最大 RSS 16 GB
+- DiT の重みは FLUX.2 klein と同じ bfp16、Qwen3-VL は bf16。bf16 なのでテキストの流れの 9.7e6 も Apple のような縮小なしで持てる
+
+**確かめたこと** (Ryzen AI 9 365、ほかに NPU を使うものなし)
+
+- 6 つの DiT のグラフはランダムな重みで IRON の参照と cosine 0.99995 以上 (`irongraph`)
+- 512²、狐のプロンプト (19 トークン、80 行)、参照と同じノイズ: 最後の潜在の cosine 0.9985、絵の PSNR 39.4 dB (Apple の 37.0 より上)。速度の cosine は最初のステップ 0.9997、8 ステップ目 0.9995、最後 0.995。テキストの 8 つの隠れ状態は cosine 0.999998
+- 512²、91 トークン (160 行) の部屋のプロンプト: 最後の潜在 0.984、PSNR 32.2 dB、最初の速度 0.9992。構図も物も同じで、炎や本の細部が少し違う (自由に回すと細部の軌道が分かれる: 16.248 と同じ)
+- 時間 (2 回目以降): 1024² は 1 枚 1 分 43 秒 (テキスト 2.8 秒、16 ステップ 1 分 33 秒で 5.9 秒ずつ、VAE 6.5 秒)、512² は 32 秒 (1.7 秒ずつ、VAE 2.3 秒)。組の重みの読み込みは 0.01 秒 (ページキャッシュから先読み)
+- 最大メモリ (NPU の drm-total-memory と RssAnon + RssShmem の和): 1024² で 3.59 GiB、512² で 2.49 GiB。models.yaml の amd を 3.9 GB に
+- `-m flux3-klein` が手元の書き出しを名前で見つけて描く
+- 書き出しがないときの初回: チェックポイントを手元のキャッシュの `original/` に置き (NAS の `original/black-forest-labs/flux-3-image-klein` には `hwnpu-lock.json` がなく、gated の HF に問い合わせに行って止まるので、手元のロックに記録した)、取得元なしで `-m flux3-klein --size 512`。IRON の書き出し 3 分 43 秒 (entries/amd-xdna2 に) の後に描いた。1 枚目まで 4 分 16 秒
+
+**未確認・未対応**
+
+- 編集 (参照画像)。8 つのアスペクト比は 16.251
+- 取得元への書き戻しと、取得元からの書き出しの取得 (この確認では取得元を使わなかった。16.251)
+- NAS の `original/` の FLUX.3 klein に `hwnpu-lock.json` がない (手で置いた写し): 取得元だけでは設定ファイルを取れない
+
+
+### 16.251 FLUX.3 klein の AMD の書き出しを 8 つのアスペクト比で 1 つに、取得元へ — 2026-11-18
+
+16.250 の書き出しは 512² と 1024² だけだった。ほかの画像のモデル (FLUX.2 klein、16.238) と同じく、`--size` の 8 つのアスペクト比 (models.yaml の `npu.amd.sizes`。FLUX.2 klein の AMD と同じ 1:1 1024²、1:1s 512²、2:3 832 × 1248、3:4 880 × 1168、9:16 768 × 1344、3:2、4:3、16:9 1344 × 768) を 1 つの書き出しにした (`AMDExportVersion` 2)。
+
+**行の並べ方**: 画像のパッチ N は 512 の倍数とは限らない (832 × 1248 は 4056、880 × 1168 は奇数の 4015)。注意は 512 行の倍数でしか取れないので、画像の行をゼロで 512 の倍数 P まで詰める (`image_rows`。512² 以外の 7 つは 4096)。
+
+- dit_in、image mode ブロック、dit_out は P 行で回す。image mode ブロックの鍵は先頭 N (`nk`)。詰めた行は鍵にならないので、問い合わせの結果は読まずに捨てる (dit_out の先頭 N 行だけ使う)
+- single ブロックの行は [画像の P 行, テキストの 512 行の枠] のまま (変調の区切りは P で固定)。鍵だけを [画像の N 行, テキストの枠] に詰め直す (枠の鍵と値を N 行目に写す: `parallel(keys=...)`)。鍵は先頭 N + R の連続した範囲になり、どのプロンプトの長さにも 1 つのグラフで効く。FLUX.2 klein のようにテキストを先にすると、テキストの枠の中の鍵でない行 (R の後ろ) が鍵の間に挟まるので取らなかった
+- dit_in、image mode ブロック、dit_out は P だけで決まるので、P が 1024² と同じ大きさは 1024² のものをそのまま使う (`flux3klein.ironPart`: `sizes/WxH/PART` がなければ最初の大きさのもの)。single ブロックは鍵の写しが N に依るので大きさごと (`sizes/WxH/singles`、バンクは 1024² のものを共有)。VAE も大きさごと
+- 1:1 と 1:1s は前と同じ並び (N = P) で、512² の絵は前の書き出しとバイトまで同じ
+
+**書き出し**: 10 分 45 秒 (手で。IRON のカーネルのキャッシュがある状態)、最大 RSS 16.8 GB、15 GB (13 GB から。7 つの大きさは `singles` と `vae` だけで 0.2〜0.5 GB ずつ)。`PrepareAMD` からの初回は 11 分 27 秒。
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- 鍵の写しのある single ブロック (880 × 1168、N = 4015) はランダムな重みで IRON の参照と cosine 0.999996 (`irongraph`)
+- 3:4 (880 × 1168)、狐のプロンプト、CPU の diffusers の bf16 と同じノイズ: 最初の速度の cosine 0.99977、最後の潜在 0.990、絵の PSNR 34.1 dB。構図も毛並みも同じ
+- 2:3、9:16、16:9 も絵として正しい (灯台のプロンプト)。1 枚 1 分 52〜55 秒 (ステップ 6.4 秒。CPU で参照を回しながら。回していないときの 3:4 は 5.7 秒、1 分 43 秒)
+- 初回の流れ: 取得元 (NAS、書き戻しあり) を設定して `-m flux3-klein --size 3:4`。手元の 2 つの大きさの書き出しは 3:4 を描かないので脇によけ、取得元にもないので IRON で書き出して描き、取得元に置いた (`iron-flux3klein`、15.60 GB、`flux-3-image-klein/amd-xdna2/flux-3-image-klein.amd-npu2/v0-d9e70775`)。全体で 16 分 15 秒
+- 短いテキストの枠 (プロンプトの 80〜240 行だけのテキストと text mode ブロック) は、IRON の MHA が 8 本のパイプラインで 512 行の倍数しか取らない (256 行で `seq_pad (256) must be whole rounds of 64 rows on each of num_pipelines (8)`) ので取らなかった。見込みは 1 枚 1.8 秒 (テキスト 8 組で 2 秒、text mode ブロック 22 ms × 5 × 16) ほどで、パイプラインを減らすと注意が遅くなる
+- 取得元から: 手元の書き出しをよけて `-m flux3-klein --size 1:1s`。取得元から 13.76 GB (詰めたもの) を 5 分 51 秒 (39 MB/s) で取り、9.6 秒で展開して、手で書き出したものとバイトまで同じ絵を描いた
+- 鍵の `tools` は tools/amd 全体のハッシュ (`amdtools.Hash`) なので、tools/amd のどこかが変わると、作り方の項目 (`iron-flux3klein`) は見つからなくなる。FLUX.2 klein と同じく `hwnpu-dev cache import` で名前の項目 (`iron-import`、`v0-ce420049`) も置いた (4 分 28 秒)。`PrepareAMD` は両方を探す
+- 最大メモリ (3:4): 3.61 GiB。1024² と同じく models.yaml の 3.9 GB に入る

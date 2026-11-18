@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -41,6 +42,7 @@ type Cmd struct {
 	Flush   FlushCmd   `cmd:"" help:"Do the work the background left in the queue (what goes in the sources) and wait for it."`
 	GC      GCCmd      `cmd:"" name:"gc" help:"Remove conversions from a source (by model, kind, key or age); with --orphans what a writeback cut off left too. Shows what would go unless --apply."`
 	Migrate MigrateCmd `cmd:"" help:"Move what a folder source holds in the layout before (blobs/, upstream/, entries/) to original/ and converted/, by hard links."`
+	Repack  RepackCmd  `cmd:"" help:"Pack the exports an hwnpu before put in a source as loose files though they go packed now (Core AI's: files.tar.zst), from this machine's copy of the same key or fetched; shows what would be packed unless --apply."`
 }
 
 // Vars are kong's variables of the command.
@@ -396,6 +398,99 @@ func (g GCCmd) Run(c *Cmd) error {
 		return nil
 	}
 	return plan.Apply(ctx, l)
+}
+
+// RepackCmd is hwnpu-dev cache repack: shared.Repack of the entries of a source written back to
+// that go packed (shared.Packs) and lie there loose, put by an hwnpu before Core AI's exports
+// went packed (docs/cache-sharing-design.md 7.10).
+type RepackCmd struct {
+	Source int      `arg:"" help:"The source's number in hwnpu-dev cache sources (one written back to)."`
+	Model  []string `help:"Only the entries of these models." placeholder:"NAME"`
+	Target []string `help:"Only the entries of these targets (coreai, amd-xdna2)." placeholder:"TARGET"`
+	Apply  bool     `help:"Pack them (without it, only show what would be packed)."`
+}
+
+func (r RepackCmd) Run(c *Cmd) error {
+	if err := load(c); err != nil {
+		return err
+	}
+	ctx, stop := signalContext()
+	defer stop()
+	if r.Source == 0 {
+		return errors.New("this machine's cache keeps its exports unpacked: name a source (hwnpu-dev cache sources)")
+	}
+	l, err := source(r.Source)
+	if err != nil {
+		return err
+	}
+	if !l.Writeback {
+		return fmt.Errorf("%s is not written back to (?writeback=true)", l)
+	}
+	entries, err := shared.ListEntries(ctx, l)
+	if err != nil {
+		return err
+	}
+	var todo []shared.Entry
+	var bytes int64
+	for _, rel := range entries {
+		if !shared.Packs(rel) {
+			continue
+		}
+		e, err := shared.ReadEntryAt(ctx, l, rel)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", rel, err)
+			continue
+		}
+		if e.Pack != nil || len(r.Target) > 0 && !slices.Contains(r.Target, e.Target) ||
+			len(r.Model) > 0 && !slices.ContainsFunc(r.Model, func(m string) bool { return strings.EqualFold(e.Model, m) }) {
+			continue
+		}
+		e.Path = rel
+		todo = append(todo, e)
+		bytes += e.Bytes()
+	}
+	verb := "would pack"
+	if r.Apply {
+		verb = "packing"
+	}
+	fmt.Printf("%s: %s %d entries (%.2f GB)\n", l, verb, len(todo), float64(bytes)/1e9)
+	for _, e := range todo {
+		local := localExport(e)
+		from := "fetched"
+		if local != "" {
+			from = "from " + local
+		}
+		fmt.Printf("%s %s %.2f GB (%s)\n", e.Kind, strings.TrimPrefix(e.Path, "converted/"), float64(e.Bytes())/1e9, from)
+		if !r.Apply {
+			continue
+		}
+		start := time.Now()
+		if _, err := shared.Repack(ctx, l, e.Path, local, os.Stderr); err != nil {
+			return fmt.Errorf("%s: %w", e.Path, err)
+		}
+		p, err := shared.ReadEntryAt(ctx, l, e.Path)
+		if err == nil && p.Pack != nil {
+			fmt.Printf("  packed into %.2f GB in %s\n", float64(p.Pack.Size)/1e9, time.Since(start).Round(time.Second))
+		}
+	}
+	if !r.Apply && len(todo) > 0 {
+		fmt.Println("(--apply packs them)")
+	}
+	return nil
+}
+
+// localExport is this machine's copy of the export of entry e (models/*/EXPORT with an entry.json
+// of the same key), or "". shared.Repack checks its files before it takes them.
+func localExport(e shared.Entry) string {
+	export := path.Base(path.Dir(e.Path))
+	dirs, _ := filepath.Glob(filepath.Join(cache.Sub("models"), "*", export))
+	more, _ := filepath.Glob(filepath.Join(cache.Sub("models"), "*", "*", export))
+	for _, d := range append(dirs, more...) {
+		if l, err := shared.ReadEntry(d); err == nil && l.Key == e.Key {
+			return d
+		}
+	}
+	return ""
 }
 
 // VerifyCmd is hwnpu-dev cache verify.

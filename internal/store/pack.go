@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -18,21 +19,23 @@ import (
 	"github.com/shibukawa/hwnpu/internal/cache"
 )
 
-// An export for AMD's NPU goes in a source as one file (docs/cache-sharing-design.md 7.10): its files as
-// a tar compressed with zstd, PackFile, beside entry.json, which lists the files inside (Files)
-// and the pack itself (Entry.Pack). One file rather than a folder of them (each a PUT and a MOVE
-// on WebDAV), and smaller: the programs (ELF) compress to a 60th, the weights' banks by a fifth.
-// It is unpacked here into the export's directory as it is fetched; the directory here keeps no
-// pack. Core AI's prebuilt programs are packed by their own (coreai.Bundle).
+// An export for AMD's NPU or of Core AI goes in a source as one file (docs/cache-sharing-design.md
+// 7.10): its files as a tar compressed with zstd, PackFile, beside entry.json, which lists the
+// files inside (Files) and the pack itself (Entry.Pack). One file rather than a folder of them
+// (each a PUT and a MOVE on WebDAV; a Core AI export of a chat model is about a hundred), and
+// smaller: AMD's programs (ELF) compress to a 60th, the weights' banks by a fifth, a Core AI
+// export by a few percent. It is unpacked here into the export's directory as it is fetched; the
+// directory here keeps no pack. Core AI's prebuilt programs are packed by their own
+// (coreai.Bundle).
 
 // PackFile is the file in a source that holds a packed entry's files.
 const PackFile = "files.tar.zst"
 
 // Packs reports whether the entry at rel (EntryPath) goes in a source packed: an export for
-// AMD's NPU.
+// AMD's NPU or of Core AI.
 func Packs(rel string) bool {
 	parts := strings.Split(rel, "/")
-	return len(parts) >= 3 && parts[0] == "converted" && parts[2] == cache.AMDTarget
+	return len(parts) >= 3 && parts[0] == "converted" && (parts[2] == cache.AMDTarget || parts[2] == cache.CoreAITarget)
 }
 
 // packTo writes e's files (in dir) as a tar compressed with zstd at out and returns it as a File
@@ -247,4 +250,47 @@ func putPacked(ctx context.Context, s Source, rel, dir string, e Entry) (File, e
 		}
 	}
 	return pf, nil
+}
+
+// Repack puts the entry at rel of s, which an hwnpu before put there as loose files (Packs
+// taking its target since: Core AI's exports, 2026-11-18), packed as PutEntry puts it now: its
+// files from here (local, a directory whose entry has the same key and whose files check out by
+// their sizes and SHA-256) or else fetched from s into the work's directory. The key stays, so
+// every machine finds it as before. It reports whether it repacked (not: not to be packed, or
+// packed already).
+func Repack(ctx context.Context, s Source, rel, local string, log io.Writer) (bool, error) {
+	e, err := ReadEntryAt(ctx, s, rel)
+	if err != nil {
+		return false, err
+	}
+	if !Packs(rel) || e.Pack != nil {
+		return false, nil
+	}
+	dir := local
+	if l, err := ReadEntry(local); local == "" || err != nil || l.Key != e.Key || Verify(local, true) != nil {
+		dir = cache.Sub("work", "repack", cache.Key([]byte(s.String()), []byte(rel)), path.Base(path.Dir(rel)))
+		defer os.RemoveAll(filepath.Dir(dir))
+		if _, err := FetchEntry(ctx, []Source{s}, rel, func(x Entry) bool { return x.Key == e.Key }, dir, log); err != nil {
+			return false, err
+		}
+	}
+	unlock, err := lockWork(ctx, s.String()+"|"+rel)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	done, err := MarkWriting(ctx, s, rel)
+	if err != nil {
+		return false, err
+	}
+	defer done()
+	if err := s.Store.Delete(ctx, rel+"/"+EntryFile); err != nil {
+		return false, err
+	}
+	pf, err := putPacked(ctx, s, rel, dir, e)
+	if err != nil {
+		return false, err
+	}
+	e.Pack = &pf
+	return true, writeEntryAt(ctx, s, rel, e)
 }

@@ -46,7 +46,7 @@ func TestEarly(t *testing.T) {
 	write(t, filepath.Join(dir, "stale.bin"), "from a conversion cut off")
 	old := time.Now().Add(-time.Hour)
 	os.Chtimes(filepath.Join(dir, "stale.bin"), old, old)
-	rel := EntryPath("x", "coreai", "x.coreai", "v0-12345678")
+	rel := EntryPath("x", "any", "x.coreai", "v0-12345678")
 
 	StartEarly(s, rel, dir)
 	write(t, filepath.Join(dir, "a", "main.mlirb"), "aaaa")
