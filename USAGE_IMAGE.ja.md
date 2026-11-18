@@ -69,7 +69,7 @@ hwnpu-image generate -m flux3-klein --size 512 "A rocky coastline at golden hour
 
 - 今は Apple の Neural Engine (Core AI、macOS 27) だけで、文からの生成だけです (`--image` はエラー)。`--size` は 1:1 (1024 × 1024) か 1:1s (512 × 512) です。プロンプトはチャットテンプレート込みで 160 トークンまで (1 つの書き出しが両方の大きさと 80 行、160 行のテキストを持ちます)
 - 初回にチェックポイント (20 GB) を落として変換し (約 3 分。書き出しは 9.4 GB)、各プログラムを Neural Engine 用にコンパイルします (初回は両方の大きさで約 50 分)。M3 (16 GB) で、2 回目以降は 1024 × 1024 の 1 枚が約 2 分 (16 ステップが 7.4 秒ずつ、テキスト 1 秒、VAE 4 秒)、512 × 512 が約 30 秒 で、プロセスのメモリは最大 4.1 GB です
-- Qwen3-VL と DiT は lut8、VAE と context_embedder は fp16 で、時刻の埋め込みと変調はホストで計算します。書き出しのフォルダ (キャッシュの `models/FLUX.3-klein`) に `flux3-klein.x2.safetensors` があると、DiT の lut8 の表を活性に合わせて作ります。これは `tools/ref/ref_flux3klein.py --stats` で校正した入力の二乗平均 (重み.x2、入力の列ごと) です。なければ表は等間隔になり、髪などの細部が変わります ([docs/design.md](docs/design.md) の 16.248)
+- Qwen3-VL と DiT は lut8、VAE と context_embedder は fp16 で、時刻の埋め込みと変調はホストで計算します。書き出しのフォルダ (キャッシュの `models/FLUX.3-klein`) か取得元 (`HWNPU_MODEL_SOURCE` の `original/hwnpu/flux-3-image-klein-calibration/`) に `flux3-klein.x2.safetensors` があると、DiT の lut8 の表を活性に合わせて作ります。これは `tools/ref/ref_flux3klein.py --stats` で校正した入力の二乗平均 (重み.x2、入力の列ごと) です。なければ表は等間隔になり、髪などの細部が変わります ([docs/design.md](docs/design.md) の 16.248)
 - 同じノイズから diffusers の bf16 のパイプラインと比べると、512 × 512 の絵は PSNR 37 dB です (最初のステップの速度は cosine 0.9997)
 - プロンプトは英語が前提です
 

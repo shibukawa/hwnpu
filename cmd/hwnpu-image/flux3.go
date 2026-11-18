@@ -19,7 +19,7 @@ import (
 
 // flux3Model is the FLUX.3 klein export m runs here: on Apple's Neural Engine the Core AI export,
 // downloaded and converted when missing (with the DiT's lut8 tables fitted to the activations when
-// the exports' directory holds flux3klein.StatsFile).
+// the exports' directory or a source holds flux3klein.StatsFile).
 func (c *GenerateCmd) flux3Model(ctx context.Context, m chat.Model) (string, error) {
 	format, err := imageFormat(ctx, c.Backend)
 	if err != nil {
