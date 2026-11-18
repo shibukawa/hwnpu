@@ -12,10 +12,12 @@ import (
 )
 
 var binaryOps = map[string]string{"add": "add_v1", "sub": "sub_v1", "mul": "mul_v1", "real_div": "divide_v1",
-	"maximum": "maximum_v1", "minimum": "minimum_v1", "pow": "pow_v1"}
+	"maximum": "maximum_v1", "minimum": "minimum_v1", "pow": "pow_v1",
+	// for unpacking two 4-bit codes from an int8 (internal/llm/experts)
+	"floor_div": "floor_divide_v1", "mod": "modulo_v1"}
 
 var unaryOps = map[string]string{"exp": "exp_v1", "tanh": "tanh_v1", "sqrt": "sqrt_v1", "abs": "abs_v1",
-	"cos": "cos_v1", "sin": "sin_v1", "erf": "erf_v1", "log": "log_v1"}
+	"cos": "cos_v1", "sin": "sin_v1", "erf": "erf_v1", "log": "log_v1", "round": "round_v1"}
 
 // op lowers one MIL operation.
 func (l *lowerer) op(op *milspec.Operation) {
@@ -123,7 +125,19 @@ func (l *lowerer) op(op *milspec.Operation) {
 		x := l.in(op, "x")
 		set(l.transpose(x, l.ints(op, "perm")))
 	case "slice_by_index":
+		if !l.isConst(op, "begin") {
+			// begin and end given at run time (a dynamic slice), the strides one
+			x := l.in(op, "x")
+			set(l.emit("slice_v1", x.elem, oshape, nil, x, l.in(op, "begin"), l.in(op, "end"), l.i32s(ones(len(x.shape))...)))
+			return
+		}
 		set(l.sliceByIndex(op, oshape))
+	case "gather_nd":
+		x := l.in(op, "x")
+		set(l.emit("gather_nd_v1", x.elem, oshape, nil, x, l.in(op, "indices")))
+	case "gather_along_axis":
+		x := l.in(op, "x")
+		set(l.emit("gather_along_axis_v1", x.elem, oshape, nil, x, l.in(op, "indices"), l.i32(l.ints(op, "axis")[0])))
 	case "concat":
 		set(l.concat(op, oshape))
 	case "tile":
@@ -166,7 +180,7 @@ func (l *lowerer) op(op *milspec.Operation) {
 	case "cast":
 		x := l.in(op, "x")
 		dt := l.str(op, "dtype", "")
-		elem := map[string]string{"fp16": "float16", "fp32": "float32", "int32": "sint32"}[dt]
+		elem := map[string]string{"fp16": "float16", "fp32": "float32", "int32": "sint32", "int16": "sint16", "int8": "sint8"}[dt]
 		if elem == "" {
 			l.fail("cast %s: dtype %s", out, dt)
 		}

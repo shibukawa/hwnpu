@@ -13,3 +13,7 @@ func probe([]string, bool) error { return errDarwin }
 func run([]string, string, float64, bool, bool, int, string) error { return errDarwin }
 
 func cycle([]string, int) error { return errDarwin }
+
+func moe([]string) error { return errDarwin }
+
+func locked([]string) error { return errDarwin }

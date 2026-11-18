@@ -187,12 +187,15 @@ func run(ctx context.Context, pkg, config, weights, tokPath, system, prompt, sco
 		return e, err
 	}
 	if hasCache(c) {
-		if score != "" || writeRef != "" {
-			return fmt.Errorf("-score and -write-ref take a model without a cache (hwnpu-dev convert -seq N); %s has one", pkg)
+		if writeRef != "" {
+			return fmt.Errorf("-write-ref takes a model without a cache (hwnpu-dev convert -seq N); %s has one", pkg)
 		}
 		cm, ok := model.(llm.Cached)
 		if !ok {
 			return fmt.Errorf("%s has a KV cache, but %s cannot run with one", pkg, a.Title)
+		}
+		if score != "" {
+			return scoreCached(ctx, c, cm, score, embed)
 		}
 		return generateCached(ctx, c, cm, ids, stops, embed, out, maxNew, preloadAt, s)
 	}
@@ -479,8 +482,11 @@ func (s sampling) pick(logits []float32, context []int32) int32 {
 }
 
 func hasCache(c *chain.Chain) bool {
+	if c.Paged() > 0 { // the host holds the caches (every attention layer of LFM2-MoE's)
+		return true
+	}
 	for name := range c.Program(context.Background()).In {
-		if strings.HasPrefix(name, "kv_") {
+		if llm.CacheInput(name) {
 			return true
 		}
 	}
@@ -556,6 +562,67 @@ func (p *printer) add(t int32) {
 // generateCached reads the prompt Q tokens per step and then generates one token per step. With
 // cache tiers it starts on the loaded (shortest) one, preloads the next when the cache is preloadAt
 // full and moves to it when the cache fills.
+// scoreCached is -score for a model with a KV cache: each reference's tokens are stepped through
+// the session as generation steps them, the program's steps of its tokens per call, and the
+// logits after each token compared with the reference's.
+func scoreCached(ctx context.Context, c *chain.Chain, m llm.Cached, score string, embed func(int32) ([]float32, error)) error {
+	vocab, _ := m.Output()
+	softcap := llm.HostSoftcap(c.Meta())
+	for _, prefix := range strings.Split(score, ",") {
+		ref, err := check.LoadRef(prefix)
+		if err != nil {
+			return err
+		}
+		n := len(ref.IDs)
+		sess, err := decode.New(c.Program(ctx), m)
+		if err != nil {
+			return err
+		}
+		if n >= sess.Cache() {
+			return fmt.Errorf("%s: %d tokens; the cache holds %d", prefix, n, sess.Cache())
+		}
+		got := make([]float32, n*vocab)
+		for i := 0; i < n; i += sess.Q() {
+			toks := ref.IDs[i:min(i+sess.Q(), n)]
+			var e [][]float32
+			for _, t := range toks {
+				v, err := embed(t)
+				if err != nil {
+					return err
+				}
+				e = append(e, v)
+			}
+			logits, err := sess.Step(e)
+			if err != nil {
+				return err
+			}
+			// the logits after the step's last token (a program of one token per call: every one)
+			last := i + len(toks) - 1
+			copy(got[last*vocab:(last+1)*vocab], logits)
+			llm.Softcap(got[last*vocab:(last+1)*vocab], softcap)
+		}
+		if sess.Q() != 1 {
+			return fmt.Errorf("-score of a model with a cache takes a program of one token per call (-seq 1), not %d", sess.Q())
+		}
+		from := max(ref.Meta.From, 1)
+		var kls []float64
+		agree := 0
+		for i := from - 1; i < n-1; i++ {
+			kls = append(kls, check.KL(ref.Logits[i*vocab:(i+1)*vocab], got[i*vocab:(i+1)*vocab]))
+			if argmaxOf(got[i*vocab:(i+1)*vocab]) == argmaxOf(ref.Logits[i*vocab:(i+1)*vocab]) {
+				agree++
+			}
+		}
+		mean := 0.0
+		for _, k := range kls {
+			mean += k
+		}
+		sort.Float64s(kls)
+		fmt.Printf("%s: %d positions from %d, stepped with the cache: KL mean %.4f, median %.4f, largest %.3f; argmax %d/%d\n", filepath.Base(prefix), len(kls), from-1, mean/float64(len(kls)), kls[len(kls)/2], kls[len(kls)-1], agree, len(kls))
+	}
+	return nil
+}
+
 func generateCached(ctx context.Context, c *chain.Chain, m llm.Cached, ids []int32, stops map[int32]bool, embed func(int32) ([]float32, error), out *printer, maxNew int, preloadAt float64, s sampling) error {
 	sess, err := decode.New(c.Program(ctx), m)
 	if err != nil {

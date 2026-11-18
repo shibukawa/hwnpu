@@ -7527,8 +7527,28 @@ Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is
 - 鍵の `tools` は tools/amd 全体のハッシュ (`amdtools.Hash`) なので、tools/amd のどこかが変わると、作り方の項目 (`iron-flux3klein`) は見つからなくなる。FLUX.2 klein と同じく `hwnpu-dev cache import` で名前の項目 (`iron-import`、`v0-ce420049`) も置いた (4 分 28 秒)。`PrepareAMD` は両方を探す
 - 最大メモリ (3:4): 3.61 GiB。1024² と同じく models.yaml の 3.9 GB に入る
 
+### 16.252 書き出しの作り直し (FormatVersion 2) と GPTQ の codes を取得元に、M1 での prebuilt の初回 — 2026-11-19
 
-### 16.252 音響系のモデルの Core AI の書き出しを取得元に、prebuilt は置かない — 2026-11-19
+16.249 で `ailower.FormatVersion` を 2 にしたので、取得元にある Core AI の書き出しの鍵 (`lowering`) はすべて変わり、どの機械も前の書き出しを取らなくなった。M1 (16 GB) で作り直して NAS に置いた。
+
+- **画像**: FLUX.2 klein 4B の 512+1024 の書き出し (`v0-e0fa18f9`) と、`coreai-build` が通る 12 種類 (h13g、h14c/g、h15c/g、h16c/g/s、h17c/d/g/s) の prebuilt。1 種類ずつ作って (`hwnpu-dev prebuild -arch ARCH -put`) 置いた (1 種類 8〜14 分、失敗 0)。12 種類を一度に作ると、どれも最後まで置かれない
+- **チャット**: 15 のうち 14 (Qwen3-0.6B、Qwen3.5-0.8B/2B/4B、Qwen3-1.7B、LFM3-1.7B/VL-2B/Audio-2B/Omni-2B、gemma-4-E2B/E4B、plamo-3-translate-0.8b/2b/8b) を `hwnpu-chat` で変換し、書き戻した。どれも全部 NPU で、答え (日本の首都、訳) は正しい。prebuilt は置かない (16.247)。この M1 で作ったのは 16 GB の列の書き出しで、8 GB の列 (LFM3-1.7B、Qwen3.5-0.8B、Qwen3-1.7B) は作っていない
+- **Qwen2.5-Coder-7B は作り直せなかった**: GPTQ の codes (`codes: faace07a`) が NAS にも手元にもない。codes は変換にだけ要り、変換は取得元から取れる前提 (16.230) だったので、選んだ機械にしか残っていなかった。書き出しの鍵が変わると、codes なしでは誰も作り直せない
+- そこで codes も取得元に置く (`chat.putCodes`、`fetchCodes`、種類 `codes`、`converted/MODEL/any/codes-HASH`、鍵はモデルの部分と index.json のハッシュ)。定義の codes で変換するとき、手元の codes (`models/NAME/codes-HASH` か `--codes`、ハッシュが定義と同じもの) を置く。手元にないときは変換の前に取得元から取る。Qwen2.5-Coder は codes を `tools/ref/qwen2_gptq.py` で作り直して一度変換すれば、以後は置かれる
+
+**M1 での prebuilt の初回** (FLUX.2 klein 1024²、種 1、署名の識別子を変えた 2 つのコピーで空のキャッシュから、空き 90 GB 以上):
+
+| | 取得元の prebuilt | 端末のコンパイル |
+|---|---|---|
+| 全体 | **7 分 48 秒** | 40 分 08 秒 |
+| 文 (Qwen3-4B) | 112 秒 | 81 秒 |
+| 4 ステップ (DiT の読み込みとコンパイル込み) | 4 分 06 秒 | 36 分 59 秒 |
+| 1 ステップ | 8.9〜9.2 秒 | 8.9〜9.4 秒 |
+
+- 絵はバイト単位で同じ。27 部品すべて NPU。`vae_s0` の 1024² の関数は今も端末で仕上げに失敗し (`failedToSpecialize`)、端末でコンパイルする (約 20 秒)
+- **ディスクが少ないと初回が止まる**: 空きが 12〜22 GB のときの初回は、最初のステップが 5〜15 分かかった。macOS の `deleted` が空きを作るために消せるもの (CD_NEAR_LOW_DISK_EVENT) を消し、prebuilt から仕上げたばかりのプログラムが読めなくなる。aned が `Model load failed … isPreCompiledModel=1` を出し、Core AI が OS の中で端末のコンパイルに切り替える (hwnpu には失敗が見えないので、prebuilt で直せない)。22 GB 空いていても消し始めた。初回を測るときは 25 GB 以上空ける
+
+### 16.253 音響系のモデルの Core AI の書き出しを取得元に、prebuilt は置かない — 2026-11-19
 
 Mac の音響系のモデル (hwnpu-audio の 7 つ) の Core AI の書き出しを取得元 (NAS) に置いた。チャットと画像のモデル (16.247) と同じく、ほかの Mac は変換をせずに取ってくる。prebuilt (7.9) は M1 (h13g) で測って、**どのモデルにも置かない**ことにした。
 
@@ -7553,6 +7573,7 @@ Mac の音響系のモデル (hwnpu-audio の 7 つ) の Core AI の書き出し
 | LFM3-Audio-2B-TTS | 59 秒 | 56 秒 (差なし) | — |
 
 - `coreai-build` (h13g) が作れなかった部品: MOSS の DAC の 5 段 (ANE に乗らない)、Magenta の spectrostream decoder (異常終了)。Whisper の encoder は `coreai-build` に 6 分かかった
+- **この測定は空きが 14〜21 GB のときで、known-issues.md 8 の「25 GB 以上空ける」を満たしていない** (prebuilt の回の始めの空き: TTS 29 GB、Whisper 21 GB、Magenta 18 GB、MOSS 16 GB と 15 GB)。空きが少ないと仕上げたばかりのプログラムを macOS が消し、Core AI が OS の中で端末のコンパイルに切り替える (known-issues.md 8)。Whisper が遅くなったのはこれかもしれない。25 GB 以上空けて測り直すまで、この表は結論にしない
 - prebuilt が失敗すると、ネイティブに落ちずにコマンドが失敗する (Magenta、MOSS)。取得元に置くと、取ってきた Mac が動かなくなる。だから作れる機種でも置かない
 - 最初の測り方は誤っていた: 実行ファイルを `cp` しただけでは署名の識別子が `a.out` のままで、aned の側のキャッシュを前の回と共有する (16.247 の注)。端末でコンパイルした直後の prebuilt の回は Whisper の読み込みが 1.2 秒になった
 

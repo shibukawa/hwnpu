@@ -11,6 +11,7 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/backend"
 	"github.com/shibukawa/hwnpu/internal/backend/coreai"
+	"github.com/shibukawa/hwnpu/internal/backend/coreml"
 	"github.com/shibukawa/hwnpu/internal/imagegen/milpart"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
@@ -73,6 +74,167 @@ var probes = map[string]func(g *milpart.Graph){
 		}
 		g.Output(g.LinearConst(x, "w", w, 512, nil))
 	},
+	// indexing at run time, for mixtures of experts: 8 "experts" of 256 x 256
+	"gnd_const": func(g *milpart.Graph) { // an expert's weight picked from a constant table
+		w := constF16(g, "w", 8, 256, 256)
+		i := g.InputI32("i", 2, 1)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 2, 256, 256))
+	},
+	"gnd_input": func(g *milpart.Graph) { // the same from an input table
+		w := g.Input("w", 8, 256, 256)
+		i := g.InputI32("i", 2, 1)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 2, 256, 256))
+	},
+	"gnd_mm": func(g *milpart.Graph) { // the picked weight times activations
+		w := constF16(g, "w", 8, 256, 256)
+		i := g.InputI32("i", 1, 1)
+		a := g.Input("a", 1, 16, 256)
+		e := g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1, 256, 256)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": e, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, 16, 256))
+	},
+	"gaa_input": func(g *milpart.Graph) { // gather_along_axis of an input
+		x := g.Input("x", 1, 8, 256)
+		i := g.InputI32("i", 1, 2, 256)
+		g.Output(g.Op("gather_along_axis", map[string]any{"x": x, "indices": i, "axis": g.B.ScalarI32(1), "validate_indices": g.B.ScalarBool(false)}, 1, 2, 256))
+	},
+	"gaa_const": func(g *milpart.Graph) { // rows of a constant table (an embedding lookup)
+		x := constF16(g, "t", 8, 256)
+		i := g.InputI32("i", 2, 256)
+		g.Output(g.Op("gather_along_axis", map[string]any{"x": x, "indices": i, "axis": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 2, 256))
+	},
+	"dslice_const": func(g *milpart.Graph) { // an expert's rows of a constant table at a run time offset
+		w := constF16(g, "w", 8*256, 256)
+		b := g.InputI32("b", 2)
+		e := g.InputI32("e", 2)
+		g.Output(g.Op("slice_by_index", map[string]any{"x": w, "begin": b, "end": e}, 256, 256))
+	},
+	"dslice_input": func(g *milpart.Graph) {
+		w := g.Input("w", 8*256, 256)
+		b := g.InputI32("b", 2)
+		e := g.InputI32("e", 2)
+		g.Output(g.Op("slice_by_index", map[string]any{"x": w, "begin": b, "end": e}, 256, 256))
+	},
+	"dslice_mm": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8*256, 256)
+		b := g.InputI32("b", 2)
+		e := g.InputI32("e", 2)
+		a := g.Input("a", 16, 256)
+		s := g.Op("slice_by_index", map[string]any{"x": w, "begin": b, "end": e}, 256, 256)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": s, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 16, 256))
+	},
+	// the same with int16 indices: the Neural Engine takes fp16, f8E4M3, si8, ui8, si16, ui16 (no si32)
+	"gnd16_const": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 2, 1)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 2, 256, 256))
+	},
+	"gnd16_pts": func(g *milpart.Graph) { // elements by their 3 coordinates (the form the Neural Engine's gather asks for)
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 1024, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1024))
+	},
+	"gnd16_pts_in": func(g *milpart.Graph) {
+		w := g.Input("w", 8, 256, 256)
+		i := idx16(g, "i", 1024, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1024))
+	},
+	"gnd16_pts_w1": func(g *milpart.Graph) { // the index tensor's width 1: (1024, 1, 3)
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 1024, 1, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1024, 1))
+	},
+	"gnd16_pts_4d": func(g *milpart.Graph) { // (1, 1024, 1, 3)
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 1, 1024, 1, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1, 1024, 1))
+	},
+	"gnd16_pts_hw": func(g *milpart.Graph) { // (32, 32, 1, 3)
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 32, 32, 1, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 32, 32, 1))
+	},
+	"gnd16_mm": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 1, 1)
+		a := g.Input("a", 1, 16, 256)
+		e := g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1, 256, 256)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": e, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, 16, 256))
+	},
+	"gaa16_const": func(g *milpart.Graph) {
+		x := constF16(g, "t", 8, 256)
+		i := idx16(g, "i", 2, 256)
+		g.Output(g.Op("gather_along_axis", map[string]any{"x": x, "indices": i, "axis": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 2, 256))
+	},
+	"gaa16_input": func(g *milpart.Graph) {
+		x := g.Input("x", 1, 8, 256)
+		i := idx16(g, "i", 1, 2, 256)
+		g.Output(g.Op("gather_along_axis", map[string]any{"x": x, "indices": i, "axis": g.B.ScalarI32(1), "validate_indices": g.B.ScalarBool(false)}, 1, 2, 256))
+	},
+	"dslice16_const": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8*256, 256)
+		b := idx16(g, "b", 2)
+		e := idx16(g, "e", 2)
+		g.Output(g.Op("slice_by_index", map[string]any{"x": w, "begin": b, "end": e}, 256, 256))
+	},
+	"dslice16_mm": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8*256, 256)
+		b := idx16(g, "b", 2)
+		e := idx16(g, "e", 2)
+		a := g.Input("a", 16, 256)
+		s := g.Op("slice_by_index", map[string]any{"x": w, "begin": b, "end": e}, 256, 256)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": s, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 16, 256))
+	},
+	// weights passed at run time: the host picks the experts and binds their arrays
+	"mm_dyn": func(g *milpart.Graph) {
+		a := g.Input("a", 1, 16, 256)
+		w := g.Input("w", 1, 256, 256)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": w, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, 16, 256))
+	},
+	"mm_dyn_big": func(g *milpart.Graph) { // gpt-oss's width: a token's rows times an expert's 2880 x 2880
+		a := g.Input("a", 1, 8, 2880)
+		w := g.Input("w", 1, 2880, 2880)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": w, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, 8, 2880))
+	},
+	"mm_dyn_i8": func(g *milpart.Graph) { // int8 weights at run time, cast and scaled on the device
+		a := g.Input("a", 1, 16, 256)
+		w := g.InputI8("w", 1, 256, 256)
+		wf := g.B.Op("cast", map[string]any{"x": w, "dtype": g.B.Str("c", "fp16")}, mlpackage.Float16, 1, 256, 256)
+		wf = g.Scale(wf, 0.01)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": wf, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, 16, 256))
+	},
+	"mm_dyn_i8_big": func(g *milpart.Graph) { // int8 weights at run time at gpt-oss's width
+		a := g.Input("a", 1, 8, 2880)
+		w := g.InputI8("w", 1, 2880, 2880)
+		wf := g.B.Op("cast", map[string]any{"x": w, "dtype": g.B.Str("c", "fp16")}, mlpackage.Float16, 1, 2880, 2880)
+		wf = g.Scale(wf, 0.0005)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": wf, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, 8, 2880))
+	},
+	"lin_const_big": func(g *milpart.Graph) { // the same product with constant fp16 weights, for comparison
+		a := g.Input("a", 1, 8, 2880)
+		g.Output(g.LinearConst(a, "w", randW(2880*2880, 2880), 2880, nil))
+	},
+	"lin_i8_big": int8Linear8(2880, 2880),
+	"argmax": func(g *milpart.Graph) { // the router's choice on the device
+		x := g.Input("x", 1, 32)
+		i := g.B.Op("reduce_argmax", map[string]any{"x": x, "axis": g.B.ScalarI32(-1), "keep_dims": g.B.ScalarBool(true)}, mlpackage.Int32, 1, 1)
+		g.Output(g.B.Op("cast", map[string]any{"x": i, "dtype": g.B.Str("c", "fp16")}, mlpackage.Float16, 1, 1))
+	},
+	"inputs16":       inputsN(16),
+	"inputs20":       inputsN(20),
+	"inputs22":       inputsN(22),
+	"inputs24":       inputsN(24),
+	"inputs26":       inputsN(26),
+	"inputs28":       inputsN(28),
+	"inputs30":       inputsN(30),
+	"inputs32":       inputsN(32),
+	"big6":           bigInputsN(6),
+	"big8":           bigInputsN(8),
+	"big9":           bigInputsN(9),
+	"big10":          bigInputsN(10),
+	"big11":          bigInputsN(11),
+	"big12":          bigInputsN(12),
+	"big14":          bigInputsN(14),
+	"big16":          bigInputsN(16),
 	"int8_row_big":   int8Linear(2048, 1024, 1024),
 	"int8_row_small": int8Linear(64, 512, 512),
 	"int8_blk32_big": int8Linear(2048, 1024, 32),
@@ -222,6 +384,68 @@ func psProbe(c, n, conv, rows int) func(g *milpart.Graph) {
 	}
 }
 
+// int8Linear8 is a linear of a constant int8 weight (out x in, a scale per row) on 8 rows.
+func int8Linear8(out, in int) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		x := g.Input("x", 1, 8, in)
+		data := make([]byte, out*in)
+		for i := range data {
+			data[i] = byte(rand.Intn(255) - 127)
+		}
+		scales := make([]uint16, out)
+		for i := range scales {
+			scales[i] = mlpackage.Float16Bits(0.0005)
+		}
+		w, err := g.B.Int8Scaled("w", []int{out, in}, []int{1, in}, data, scales)
+		if err != nil {
+			panic(err)
+		}
+		g.Output(g.Op("linear", map[string]any{"x": x, "weight": w}, 1, 8, out))
+	}
+}
+
+// idx16 is an fp16 input cast to int16 on the device: indices the Neural Engine takes (Core ML's
+// model description has no int16 input).
+func idx16(g *milpart.Graph, name string, shape ...int) *mlpackage.Var {
+	x := g.Input(name, shape...)
+	return g.B.Op("cast", map[string]any{"x": x, "dtype": g.B.Str("c", "int16")}, mlpackage.Int16, shape...)
+}
+
+// inputsN is n inputs of 64 x 64 summed: what a call costs by its number of inputs.
+func inputsN(n int) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		acc := g.Input("x0", 1, 64, 64)
+		for i := 1; i < n; i++ {
+			acc = g.Add(acc, g.Input(fmt.Sprintf("x%d", i), 1, 64, 64))
+		}
+		g.Output(acc)
+	}
+}
+
+// bigInputsN is n inputs of 1 MiB (512 x 1024 fp16) summed.
+func bigInputsN(n int) func(g *milpart.Graph) {
+	return func(g *milpart.Graph) {
+		acc := g.Input("x0", 1, 512, 1024)
+		for i := 1; i < n; i++ {
+			acc = g.Add(acc, g.Input(fmt.Sprintf("x%d", i), 1, 512, 1024))
+		}
+		g.Output(acc)
+	}
+}
+
+// constF16 is a constant fp16 tensor of Gaussian values.
+func constF16(g *milpart.Graph, name string, shape ...int) *mlpackage.Var {
+	n := 1
+	for _, d := range shape {
+		n *= d
+	}
+	w, err := g.B.F16s(name, shape, randW(n, shape[len(shape)-1]))
+	if err != nil {
+		panic(err)
+	}
+	return w
+}
+
 // randW is n Gaussian weights for a fan-in of fan.
 func randW(n, fan int) []float32 {
 	w := make([]float32, n)
@@ -258,7 +482,13 @@ func probe(names []string, keep bool) error {
 	if err := llm.LockNPU(ctx); err != nil {
 		return err
 	}
-	dev, err := coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{})
+	var dev backend.Device
+	var err error
+	if os.Getenv("COREML") != "" { // Core ML's compute plan: each operation's devices
+		dev, err = coreml.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{})
+	} else {
+		dev, err = coreai.Provider{}.Open(ctx, types.DeviceInfo{}, backend.Options{})
+	}
 	if err != nil {
 		return err
 	}
@@ -289,7 +519,8 @@ func probe(names []string, keep bool) error {
 			fmt.Printf("%-14s FAIL %v\n", n, err)
 			continue
 		}
-		fmt.Printf("%-14s ane=%v\n", n, g.Placement().OnNPU())
+		p := g.Placement()
+		fmt.Printf("%-14s ane=%v verified=%v reason=%q ops=%v\n", n, p.OnNPU(), p.Verified, p.Reason, p.Ops)
 		g.Close()
 	}
 	if keep {

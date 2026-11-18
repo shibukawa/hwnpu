@@ -381,7 +381,7 @@ converted/MODEL/coreai-ARCH/EXPORT/VERSION/...     ARCH (h13g = M1、h14g = M2�
 - 作る順: `.aimodel` の書き出しを置き (変換した機械が自動で)、そのあと開発機が `hwnpu-dev prebuild -arch all -put EXPORT` で 12 種類の prebuilt を足す
 - prebuilt を作るかはモデルの部品次第 (下の「効くかはモデル次第」)。作らないモデルは `.aimodel` だけ
 - **チャットのモデルには今は作らない** (2026-11-18、M2、design.md 16.247): LFM3-1.7B は初回の読み込みが 2 分 17 秒 (ネイティブ) から 8 分 12 秒 (prebuilt) に、plamo-3-translate-8b は 1 分 13 秒から 7 分 08 秒に延びた。Qwen3.5-4B は 7 分 07 秒で読めた (ネイティブは 12 分 26 秒) が、最初の呼び出しで止まり、1 時間 40 分たっても答えなかった。速さ (tokens/s) と答えは同じ
-- **音響系のモデルにも作らない** (2026-11-19、M1、design.md 16.252): Whisper は初回が 2 分 48 秒から 4 分 37 秒に延び、Magenta と MOSS-SoundEffect は prebuilt から読むと失敗する (ネイティブに落ちずにコマンドが失敗する)。TTS は差がない
+- **音響系のモデルにも作らない** (2026-11-19、M1、design.md 16.253): Whisper は初回が 2 分 48 秒から 4 分 37 秒に延び、Magenta と MOSS-SoundEffect は prebuilt から読むと失敗する (ネイティブに落ちずにコマンドが失敗する)。TTS は差がない
 - 画像のモデル (2026-11-18、M2、1024²、design.md 16.247): FLUX.2 klein 4B は初回が 52 分 16 秒から 16 分 55 秒に縮む (絵は細部が違う)。Anima-Turbo は 45 分 01 秒から 37 分 50 秒 (絵は同じ)。プロセスの最初の prebuilt に 3〜6 分かかるので、部品が少ないモデルでは負ける
 
 - 重みは配らない: `.aimodelc` の 99 % は `resources.bin` (重み) で、中身は `.aimodel` の `main.mlirb` のバイトを並べ替えたもの (アーキテクチャに依らない)。`coreai.Pack` はそれを `resources.bin.map.json` (`main.mlirb` のどこから何バイト、の並び。数 KB) に置き換える。1 種類あたり書き出しの 1〜2 % (ANE の LLIR と小さなファイル)
