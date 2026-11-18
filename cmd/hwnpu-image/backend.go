@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu"
-	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
@@ -76,14 +75,4 @@ func exportDevice(format, name string) string {
 		return llm.BackendCoreAI
 	}
 	return llm.ExportDevice(format, imageDevice(name))
-}
-
-// amdOr is the export of AMD's NPU for m at size (amdExport) when no other NPU was found and
-// AMD's is here, else err: imageFormat's (on a Mac without Core AI, or no NPU found), so that a
-// machine with no NPU downloads no export.
-func amdOr(ctx context.Context, err error, m chat.Model, tool string, size int) (string, error) {
-	if runtime.GOOS == "darwin" || chat.HereVendor() != "amd" {
-		return "", err
-	}
-	return amdExport(ctx, m, tool, size)
 }

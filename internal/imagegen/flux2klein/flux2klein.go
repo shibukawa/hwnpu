@@ -692,7 +692,7 @@ func (p *Pipeline) positions(divs []int) [][4]float64 {
 }
 
 // ropeAngles is IRON's RoPE table of positions pos (rows x HeadDim, cos and sin interleaved),
-// each axis's frequencies theta^(-2k / d) (iron_qwenimage.rope_angles).
+// each axis's frequencies theta^(-2k / d) (iron_dit.rope_angles).
 func (p *Pipeline) ropeAngles(pos [][4]float64) []float32 {
 	c := p.C
 	var freqs []float64

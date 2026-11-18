@@ -106,7 +106,7 @@ macOS 27 には Core ML のほかに Core AI があります。追加で入れ�
 - **変換**はモデルの部品 (プログラム) を、CPU のコア数と空きメモリが許すだけ並べて書きます (`HWNPU_JOBS=N` で数を決める。`1` で 1 つずつ)。端末では全体のバーと書いている部品ごとの行を出し、全部終わったら消します
 - **ほかのコマンド**は Core ML が既定のままで、`--backend coreai` か `HWNPU_BACKEND=coreai` で、変換済みのモデル (`.mlpackage`、Go で Core AI のプログラムに下ろす) を Core AI で動かします
 
-- **使えるコマンド**: `hwnpu-chat` の全部、`hwnpu-image` の generate (Anima、Chroma、Qwen-Image、Sana。Sana の書き出しは 512 × 512 と 1024 × 1024 を 1 つに持つ)、ocr、detect、pose、face-detect、depth、segment、label、embed。`hwnpu-audio` の全部 (docs/design.md 16.196、16.197)
+- **使えるコマンド**: `hwnpu-chat` の全部、`hwnpu-image` の generate (Anima、Chroma、FLUX.2 klein)、ocr、detect、pose、face-detect、depth、segment、label、embed。`hwnpu-audio` の全部 (docs/design.md 16.196、16.197)
 - **結果と速さ**: Core ML と同じです (同じ文、同じ物や文字、埋め込みや深さのコサイン 0.9999 以上、1 回の呼び出しは ±10 % 以内)
 - **違い**: コンパイルした結果の持ち方です。Core ML のキャッシュは約 4 GiB で、それを超えると 2 回目以降もコンパイルし直します (大きな画像生成のモデルで数分〜数十分)。Core AI は自分のキャッシュ (`~/Library/Caches/coreai-cache`) に、ディスクが減るまで持ち続けます。両方のキャッシュが当たっていれば起動は同じです
 - **費用**: 重みがディスクに 3 回分置かれます (変換した `.mlpackage`、下ろした `.aimodel`、Core AI のキャッシュ)。空きが約 15 GB を切ると macOS がキャッシュを消し、次の起動でコンパイルし直します

@@ -536,10 +536,8 @@ type ImportCmd struct {
 
 // importRepos are the repositories of folders whose name is no model's of the definitions.
 var importRepos = map[string]string{
-	"gpt-oss-20b":         "openai/gpt-oss-20b",
-	"yunet":               "opencv/face_detection_yunet",
-	"Sana_600M_1024px":    "Efficient-Large-Model/Sana_600M_1024px_diffusers",
-	"SANA1.5_1.6B_1024px": "Efficient-Large-Model/SANA1.5_1.6B_1024px_diffusers",
+	"gpt-oss-20b": "openai/gpt-oss-20b",
+	"yunet":       "opencv/face_detection_yunet",
 }
 
 // animaPaths map the folder of tools/amd/iron_anima.py (diffusion_models/, text_encoders/,

@@ -7332,3 +7332,12 @@ Anima、Sana、Chroma1 の AMD の書き出しは、どれも `--size` の 8 つ
 - hwnpu-image はそれぞれの書き出し名だけを探す (`aspectsAMD`、`flux2klein.PrepareAMD`)。正方形ごとの名前 (`NAME-1024.amd-npu2`、`NAME-512.amd-npu2`、`NAME-512+1024.amd-npu2`) はもう探さない。Anima、Sana、Chroma1 の前の 1024² だけの書き出しは同じ名前だが、描ける大きさを見るので 1024² にだけ使われる
 - FLUX.2 klein の、正方形ごとの書き出しを取る、1 つにまとめる (`MergeAMD`)、消す処理はやめた。取得元にも手元にも、もう正方形ごとの書き出しはない
 - 取得元 (NAS) の正方形ごとの書き出しは消した。8 つの書き出しは Anima、Sana、Chroma1 が `NAME.amd-npu2`、FLUX.2 klein が `NAME-aspects2.amd-npu2` の名前で置き直した (手で作ったものの鍵は名前から決まる: `ImportedRecipe`)。Qwen-Image はまだ大きさごとの書き出し (`qwen-image-2.1-turbo.amd-npu2` と `-512`) のまま
+
+### 16.244 Sana と Qwen-Image をやめる。image は 8 GB から FLUX.2 klein — 2026-11-18
+
+Qwen-Image-2.1 (7B の DiT、Qwen3-VL-8B) は、NPU で使うにはパラメータが多すぎて使いにくい。Sana (600M、SANA 1.5 1.6B) も一緒にやめる。
+
+- models.yaml の 4 つ (Qwen-Image-2.1-Turbo、Qwen-Image-2.1、Sana-600M、SANA1.5-1.6B) を消した。hwnpu-image の generate と convert の Sana と Qwen-Image の道も、`internal/imagegen/sana`、`internal/imagegen/qwenimage`、`tools/coreai/qlut`、`tools/ref` のそれらの参照も消した
+- `image` の用途は 8 GB から FLUX.2 klein 4B を選ぶ (`machine: 8`)。Sana 600M が 8 GB の既定だった。AMD のピークは 3.9 GB、Apple (M1) は 1024² で 4.9 GB、512² で 3.1 GB
+- `tools/amd` の `iron_qwenimage.py` と `iron_sana.py` は、Anima、Chroma1、FLUX.2 klein が借りていた部分 (`Checkpoint`、`qparam`、`head_perm`、`rope_angles`、`share_banks`、`VaeStage`、`timestep_sinusoid`、`text_linear` など) を `iron_dit.py` に移して消した。Sana だけが使っていた `iron_dwconv.py` も消した。カーネル (`kernels/dwconv3.cc` など) は残す: チャットの書き出しの鍵はカーネルを全部含む (`amdtools.LMHash`) ので、消すとチャットの書き出しが全部作り直しになる
+- Intel の NPU の画像生成は Anima だけになる

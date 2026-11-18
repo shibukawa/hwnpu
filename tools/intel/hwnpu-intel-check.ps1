@@ -21,8 +21,8 @@
               LFM3-Audio-2B with a clip, Qwen3.5-0.8B, Qwen3-0.6B, PLaMo 3 Translate 2B, Anima 1024 x 1024,
               resident in int8, hwnpu-dev probe, and the models first converted to OpenVINO IR in
               2026-11 (checked only on OpenVINO's CPU before): OCR, RTMDet, RTMO, YuNet, DA3, MoGe-2,
-              SwiftF0, Basic Pitch, Whisper, LFM3-Audio TTS, Magenta RealTime 2, Sana 600M and
-              MOSS-SoundEffect (about 25 GB more of downloads; -Skip sana,sfx leaves out 17 GB of them)
+              SwiftF0, Basic Pitch, Whisper, LFM3-Audio TTS, Magenta RealTime 2 and MOSS-SoundEffect
+              (about 19 GB more of downloads; -Skip sfx leaves out 11 GB of them)
 
   A test that finished (exit code 0) is skipped when the script runs again with the same -Out,
   so it can be stopped with Ctrl-C and run again. -Rerun runs them all again.
@@ -368,9 +368,6 @@ $Tests = @(
   (T @{ Name = "music"; Level = 2; Exe = "hwnpu-audio"; Sub = "generate"; Min = 60
         Args = @("--duration", "5s", "--seed", "1", "-o", "{OUT}\music.wav", "disco funk")
         Note = "Magenta RealTime 2 small (conv_transpose, elu lowered): 5 s of music.wav" }),
-  (T @{ Name = "sana"; Level = 2; Exe = "hwnpu-image"; Sub = "generate"; Min = 240
-        Args = @("--backend", "intel", "-m", "Sana-600M", "--size", "512", "--seed", "1", "-o", "{OUT}\sana-512.png", "a red apple on a wooden table, photo")
-        Note = "Sana 600M 512 x 512 (about 6 GB download): Gemma 2 and the DiT in int8" }),
   (T @{ Name = "sfx"; Level = 2; Exe = "hwnpu-audio"; Sub = "generate"; Min = 240
         Args = @("-m", "sfx", "--duration", "5s", "--steps", "20", "--seed", "1", "-o", "{OUT}\sfx.wav", "A dog barking loudly in a park.")
         Note = "MOSS-SoundEffect v2.0 (11.5 GB download): the text encoder and the DiT in int8, 20 steps" })
