@@ -261,6 +261,17 @@ probe (int16 の索引は fp16 の入力をプログラムの中で int16 に変
 
 2026-11-19: M2 でも LFM2-8B-A1B (専門家を Neural Engine、拡大は gather_nd) が動いた。
 
+| LFM2-8B-A1B (hwnpu-chat) | M2 | M3 |
+| --- | --- | --- |
+| 配置 | 全部 NPU | 全部 NPU |
+| 生成 | 12.0〜13.1 tok/s | 14.1 tok/s |
+| 専門家 (1 層 1 行) | 3.83 ms | 2.7〜3.0 ms |
+| プロンプト (M2 約 1620、M3 1503 トークン) | 14.4〜43.3 s (37〜112 tok/s、回ごとに違う) | 10.9 s (138 tok/s) |
+| 初回 (取得・変換・コンパイル) | 17.5 分、最大 12.9 GB | — |
+| 2 回目以降の読み込み | 3.1〜3.2 s、8.0 GB | — |
+
+M2 のプロンプトの時間のばらつきは未調査。
+
 ```sh
 git fetch origin && git switch t3/ane-gather-probe
 go build -o /tmp/aicheck ./tools/coreai/aicheck
