@@ -198,6 +198,8 @@ type modelEntry struct {
 	Variants *map[int]*variantEntry `yaml:"variants"`
 	// NotOn are the chips (M1) a family or a category does not pick the model on.
 	NotOn *[]string `yaml:"not_on"`
+	// NPU is the model's export for each NPU vendor (apple, amd, intel).
+	NPU *map[string]*npuEntry `yaml:"npu"`
 	// Targets are the versions of the model's conversions by target (amd-xdna2, coreai),
 	// bumped by hand when what is made changes: the folder vN of a source (docs/cache-sharing-design.md
 	// 3). A file over another changes the targets it names and keeps the others.
@@ -209,6 +211,20 @@ type modelEntry struct {
 	Like    string  `yaml:"like"`
 	Remove  bool    `yaml:"remove"`
 }
+
+// npuEntry is a model's export for one NPU vendor (npu): formats (text, dit), sizes (the default on
+// every generation: aspect ratio to WIDTHxHEIGHT) and generations (overrides of sizes by generation).
+type npuEntry struct {
+	Formats *struct {
+		Text string `yaml:"text"`
+		Dit  string `yaml:"dit"`
+	} `yaml:"formats"`
+	Sizes       map[string]string            `yaml:"sizes"`
+	Generations map[string]map[string]string `yaml:"generations"`
+}
+
+// NPUVendors are the NPU vendors a model's npu names.
+var NPUVendors = []string{"apple", "amd", "intel"}
 
 // targetEntry is a target of a model's targets.
 type targetEntry struct {
@@ -708,6 +724,45 @@ func toModel(name string, e *modelEntry) (Model, error) {
 			}
 		}
 		m.NotOn = slices.Clone(*e.NotOn)
+	}
+	if e.NPU != nil {
+		m.NPU = map[string]NPUSpec{}
+		for vendor, ne := range *e.NPU {
+			if !slices.Contains(NPUVendors, vendor) {
+				return m, fmt.Errorf("model %s: npu %q is not one of %s", name, vendor, strings.Join(NPUVendors, ", "))
+			}
+			if ne == nil {
+				return m, fmt.Errorf("model %s: npu %s has no sizes", name, vendor)
+			}
+			spec := NPUSpec{ByGen: map[string]map[string][2]int{}}
+			if ne.Formats != nil {
+				spec.Text, spec.Dit = ne.Formats.Text, ne.Formats.Dit
+			}
+			parse := func(where string, sizes map[string]string) (map[string][2]int, error) {
+				out := map[string][2]int{}
+				for aspect, wh := range sizes {
+					var w, h int
+					if _, err := fmt.Sscanf(wh, "%dx%d", &w, &h); err != nil || w <= 0 || h <= 0 || fmt.Sprintf("%dx%d", w, h) != wh {
+						return nil, fmt.Errorf("model %s: npu %s %s %s: %q is not WIDTHxHEIGHT", name, vendor, where, aspect, wh)
+					}
+					out[aspect] = [2]int{w, h}
+				}
+				return out, nil
+			}
+			var err error
+			if spec.Sizes, err = parse("sizes", ne.Sizes); err != nil {
+				return m, err
+			}
+			for gen, sizes := range ne.Generations {
+				if vendor == "apple" && !slices.Contains(Chips, gen) {
+					return m, fmt.Errorf("model %s: npu apple generations %q is not one of %s", name, gen, strings.Join(Chips, ", "))
+				}
+				if spec.ByGen[gen], err = parse("generations "+gen, sizes); err != nil {
+					return m, err
+				}
+			}
+			m.NPU[vendor] = spec
+		}
 	}
 	run, err := toRun(e.RunEntry)
 	if err != nil {

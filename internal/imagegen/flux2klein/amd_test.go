@@ -78,7 +78,7 @@ func TestAMDImportedPlace(t *testing.T) {
 	if got := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name)).Path; got != want {
 		t.Errorf("%s, want %s", got, want)
 	}
-	r := AMDRecipe(m, AMDSizes...)
+	r := AMDRecipe(m, amdTestSizes...)
 	if r == nil || r["args"] != "--size 1024 512 832x1248 880x1168 768x1344 1248x832 1168x880 1344x768" || r["tool"] != AMDTool {
 		t.Fatalf("recipe %v", r)
 	}
@@ -93,27 +93,27 @@ func TestPrepareAMDHere(t *testing.T) {
 	noSources(t)
 	m := kleinModel(t)
 	ctx := context.Background()
-	if _, err := PrepareAMD(ctx, m, 768, 768, nil); err == nil || !strings.Contains(err.Error(), "--size 768x768") {
+	if _, err := PrepareAMD(ctx, m, amdTestSizes, 768, 768, nil); err == nil || !strings.Contains(err.Error(), "--size 768x768") {
 		t.Errorf("768: %v", err)
 	}
 	legacy := filepath.Join(chat.AMDRoot(), strings.ToLower(m.Name)+".amd-npu2")
 	fakeIronExport(t, legacy, "{}", [2]int{1024, 1024}, [2]int{752, 1360}, [2]int{1360, 752})
-	if _, err := PrepareAMD(ctx, m, 768, 1344, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
+	if _, err := PrepareAMD(ctx, m, amdTestSizes, 768, 1344, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
 		t.Errorf("768 x 1344 reused the legacy export: %v", err)
 	}
 	os.RemoveAll(legacy)
 	dir := filepath.Join(chat.AMDRoot(), AMDExportName(m.Name))
 	fakeIronExport(t, dir, "{}", [2]int{1024, 1024})
-	if got, err := PrepareAMD(ctx, m, 1024, 1024, nil); err != nil || got != dir {
+	if got, err := PrepareAMD(ctx, m, amdTestSizes, 1024, 1024, nil); err != nil || got != dir {
 		t.Errorf("1024 of the older export: %s %v, want %s", got, err, dir)
 	}
-	if _, err := PrepareAMD(ctx, m, 832, 1248, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
+	if _, err := PrepareAMD(ctx, m, amdTestSizes, 832, 1248, nil); err == nil || !strings.Contains(err.Error(), chat.IRONEnv) {
 		t.Errorf("832 x 1248 with an export of 1024 x 1024 alone and no IRON: %v", err)
 	}
 	os.RemoveAll(dir)
-	fakeIronExport(t, dir, "{}", AMDSizes...)
-	for _, s := range AMDSizes {
-		if got, err := PrepareAMD(ctx, m, s[0], s[1], nil); err != nil || got != dir {
+	fakeIronExport(t, dir, "{}", amdTestSizes...)
+	for _, s := range amdTestSizes {
+		if got, err := PrepareAMD(ctx, m, amdTestSizes, s[0], s[1], nil); err != nil || got != dir {
 			t.Errorf("%v: %s %v, want %s", s, got, err, dir)
 		}
 	}
@@ -132,7 +132,7 @@ func TestPrepareAMDImported(t *testing.T) {
 	}
 	name := AMDExportName(m.Name)
 	hand := filepath.Join(t.TempDir(), name)
-	fakeIronExport(t, hand, `{"by":"hand"}`, AMDSizes...)
+	fakeIronExport(t, hand, `{"by":"hand"}`, amdTestSizes...)
 	e := chat.PlaceEntry(chat.ImportKind, m, cache.AMDTarget, name, chat.ImportedRecipe(m, cache.AMDTarget, name))
 	if _, err := shared.Describe(hand, e); err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestPrepareAMDImported(t *testing.T) {
 		t.Fatal(err)
 	}
 	shared.SetSources([]shared.Source{s}, false)
-	got, err := PrepareAMD(ctx, m, 512, 512, nil)
+	got, err := PrepareAMD(ctx, m, amdTestSizes, 512, 512, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,3 +155,6 @@ func TestPrepareAMDImported(t *testing.T) {
 		t.Error("the checkpoint was downloaded")
 	}
 }
+
+// amdTestSizes are the AMD export's sizes (models.yaml npu.amd), 1024 x 1024 first.
+var amdTestSizes = [][2]int{{1024, 1024}, {512, 512}, {832, 1248}, {880, 1168}, {768, 1344}, {1248, 832}, {1168, 880}, {1344, 768}}

@@ -38,6 +38,30 @@ const (
 )
 
 // Model is a model of the definitions (models.yaml).
+// NPUSpec is a model's export for one NPU vendor (models.yaml's npu): the weight formats it is
+// made in (Text for the text encoder, Dit for the DiT; "" for the defaults), the picture sizes
+// that are the default on every generation of the vendor's NPU (Sizes: the aspect ratio's name,
+// then width and height), and the sizes a generation overrides (ByGen: by generation, a chip on
+// Apple, xdna1 or xdna2 on AMD).
+type NPUSpec struct {
+	Text, Dit string
+	Sizes     map[string][2]int
+	ByGen     map[string]map[string][2]int
+}
+
+// SizesOn are the picture sizes of the aspect ratios on generation gen: its override where it has
+// one, the default otherwise ("" or an unknown generation: the default).
+func (s NPUSpec) SizesOn(gen string) map[string][2]int {
+	out := make(map[string][2]int, len(s.Sizes))
+	for k, v := range s.Sizes {
+		out[k] = v
+	}
+	for k, v := range s.ByGen[gen] {
+		out[k] = v
+	}
+	return out
+}
+
 type Model struct {
 	Name     string // what -use and the API call it
 	Kind     Kind
@@ -95,6 +119,9 @@ type Model struct {
 	// With are the other repositories the model reads, by role (an OCR's detector): OWNER/NAME
 	// or OWNER/NAME@REVISION as fetch takes them. Their files' sha256 are SHA256's ROLE/FILE.
 	With map[string]string
+	// NPU is the model's export for each NPU vendor (models.yaml's npu: apple, amd, intel); a
+	// vendor it leaves out has none.
+	NPU map[string]NPUSpec
 	// NotOn are the chips (Chips) a family or a category does not pick the model on: it is too
 	// slow there (PLaMo 3 Translate 8B on an M1, over the 2.8 GiB its Neural Engine runs at full
 	// speed). Its name and FAMILY:TAG still run it.

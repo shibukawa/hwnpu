@@ -23,3 +23,6 @@ func chipOf(brand string) string {
 	}
 	return ""
 }
+
+// Chip is the machine's chip of Chips ("M1" for an Apple M1 Pro), "" for another.
+func Chip() string { return chipName() }
