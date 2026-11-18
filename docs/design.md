@@ -7526,3 +7526,38 @@ Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is
 - 取得元から: 手元の書き出しをよけて `-m flux3-klein --size 1:1s`。取得元から 13.76 GB (詰めたもの) を 5 分 51 秒 (39 MB/s) で取り、9.6 秒で展開して、手で書き出したものとバイトまで同じ絵を描いた
 - 鍵の `tools` は tools/amd 全体のハッシュ (`amdtools.Hash`) なので、tools/amd のどこかが変わると、作り方の項目 (`iron-flux3klein`) は見つからなくなる。FLUX.2 klein と同じく `hwnpu-dev cache import` で名前の項目 (`iron-import`、`v0-ce420049`) も置いた (4 分 28 秒)。`PrepareAMD` は両方を探す
 - 最大メモリ (3:4): 3.61 GiB。1024² と同じく models.yaml の 3.9 GB に入る
+
+
+### 16.252 音響系のモデルの Core AI の書き出しを取得元に、prebuilt は置かない — 2026-11-19
+
+Mac の音響系のモデル (hwnpu-audio の 7 つ) の Core AI の書き出しを取得元 (NAS) に置いた。チャットと画像のモデル (16.247) と同じく、ほかの Mac は変換をせずに取ってくる。prebuilt (7.9) は M1 (h13g) で測って、**どのモデルにも置かない**ことにした。
+
+**置いたもの** (`ailower.FormatVersion` 2、M1 で変換。Neural Engine を使う別の計測と重ならないよう `HWNPU_COREAI_UNITS=cpu HWNPU_NPU_LOCK=off` で変換し、書き戻しはふだんの `llm.ShareExport`)
+
+| モデル | 書き出し |
+| --- | --- |
+| LFM3-Audio-2B-TTS | `tts-lfm3-r1-lut8-c2048-q1-q64` (1.76 GB)、`tts-lfm3-depthformer-fp16`、`tts-lfm3-codec-fp16-f64`、表 (`speech-tables.safetensors`) |
+| whisper-large-v3-turbo | `whisper-r0.0.0-lut8-c448` (0.84 GB)、表 |
+| swift-f0、basic-pitch | `swiftf0-r3-fp16-t1896`、`basic-pitch-r2-fp16` |
+| magenta-realtime-2-small | `mrt2-small-r1-lut8`、`mrt2-musiccoca-text-r1-fp16`、`mrt2-spectrostream-decoder-t41-r4-fp16` |
+| MOSS-SoundEffect-v2.0 (-lut8) | `hwnpu-dit-r1-lut8` (1.44 GB)、`hwnpu-text-r1-fp16` (2.82 GB)、`hwnpu-text-r1-lut8` (1.68 GB)、`hwnpu-dac-r2-fp16` |
+
+**prebuilt を測った** (M1、h13g、`hwnpu-dev prebuild -packed -arch h13g`。初回の「変換、読み込み、コンパイル」の時間。回ごとに実行ファイルの名前と署名の識別子 (`codesign -s - -f -i`) を変え、Core AI と aned のどちらのキャッシュも空から。prebuilt を先に)
+
+| モデル | 端末でコンパイル | prebuilt から | 出力 |
+| --- | --- | --- | --- |
+| whisper-large-v3-turbo | 2 分 48 秒 | 4 分 37 秒 | 同じ文字起こし |
+| magenta-realtime-2-small | 21 秒 | 失敗 (読み込みで `Program load failed — bad program image`) | — |
+| MOSS-SoundEffect-v2.0 | 4 分 50 秒 | 読み込みは 2 分 56 秒 (端末は 4 分 04 秒) だが、DiT の最初の呼び出しが `ANEProgramProcessRequestDirect() ... Request cancelled` で失敗 | — |
+| MOSS-SoundEffect-v2.0-lut8 | 12 分 25 秒 | 読み込み 2 分 51 秒、同じく DiT で失敗 | — |
+| LFM3-Audio-2B-TTS | 59 秒 | 56 秒 (差なし) | — |
+
+- `coreai-build` (h13g) が作れなかった部品: MOSS の DAC の 5 段 (ANE に乗らない)、Magenta の spectrostream decoder (異常終了)。Whisper の encoder は `coreai-build` に 6 分かかった
+- prebuilt が失敗すると、ネイティブに落ちずにコマンドが失敗する (Magenta、MOSS)。取得元に置くと、取ってきた Mac が動かなくなる。だから作れる機種でも置かない
+- 最初の測り方は誤っていた: 実行ファイルを `cp` しただけでは署名の識別子が `a.out` のままで、aned の側のキャッシュを前の回と共有する (16.247 の注)。端末でコンパイルした直後の prebuilt の回は Whisper の読み込みが 1.2 秒になった
+
+**ほかに見えたこと** (prebuilt と別)
+
+- M1 では MOSS の DAC の 5 段が GPU に回る (16.197 で M3 では Neural Engine に乗せた)。`--allow-off-npu` なしでは `generate -m sfx` が失敗する
+- MOSS は書き出しがあっても実行に元のファイルを読む (元のファイルを消すと、取得元から 11 GB を取り直した)
+- Whisper (端末で 2 分 48 秒) は `say -v Kyoko` の日本語 6.6 秒を正しく起こした (`今日はとても良い天気なので公園を散歩しました。明日は雨が降るそうです。`)。TTS も Neural Engine では 54 フレーム (4.3 秒) で止まった (CPU では 2011 フレームまで止まらなかった)
