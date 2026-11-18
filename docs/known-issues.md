@@ -2,7 +2,7 @@
 
 作成: 2026-11-19。対象: Apple の Core AI (macOS 27.2.1 26B131) と `coreai-build` (Metal Toolchain 27.2.47.0、coreai-build 3605.6.3)。
 
-hwnpu が今どう回避しているか、Apple の側で直ったときに hwnpu で何をするか、を問題ごとにまとめる。調べた経緯と数値は design.md の各節にある。Apple への報告 (Feedback Assistant) の番号のうち、分かっているものを書いた。
+hwnpu が今どう回避しているか、Apple の側で直ったときに hwnpu で何をするか、を問題ごとにまとめる。調べた経緯と数値は design.md の各節にある。Apple への報告 (Feedback Assistant) の番号も書いた。
 
 OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各問題がまだあるかを見て、直ったものだけをこの文書の手順で外す。
 
@@ -12,11 +12,11 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 |---|---|---|---|---|
 | 1 | prebuilt の仕上げが機械全体で 10 秒に 1 本 | FB25624129 | なし (prebuilt は大きな部品に効くので置く) | 測り直して、チャットのモデルにも置くか決める |
 | 2 | 隣り合う同じ lut の表で `coreai-build` が ANE をあきらめる | FB25624151 (追記あり) | 表の 1 つを 1 ulp ずらす (`mlpackage.DistinctNeighbours`) | 外さなくてよい。外すなら FormatVersion を上げて全部作り直す |
-| 3 | `coreai-build` が通した `.aimodelc` が端末で仕上がらない (`vae_s0` 1024²) | 番号未記入 | 端末のコンパイルに戻る (自動、約 20 秒) | 何もしなくてよい (置いた prebuilt のまま効く) |
-| 4 | prebuilt から仕上げたプログラムの 1 回の呼び出しが遅い | 番号未記入 | なし (8〜16 %、M1) | 何もしなくてよい。チャットのモデルの判断に入れる |
+| 3 | `coreai-build` が通した `.aimodelc` が端末で仕上がらない (`vae_s0` 1024²) | FB25624294 | 端末のコンパイルに戻る (自動、約 20 秒) | 何もしなくてよい (置いた prebuilt のまま効く) |
+| 4 | prebuilt から仕上げたプログラムの 1 回の呼び出しが遅い | FB25624318 | なし (8〜16 %、M1) | 何もしなくてよい。チャットのモデルの判断に入れる |
 | 5 | ANE のコンパイルと prebuilt の仕上げが機械全体で 1 本ずつ | FB25624259 | なし | 読み込みを並べるか測る |
-| 6 | 22 種類のうち 9 種類で `coreai-build` が落ちる | 番号未記入 (追記あり) | 通る 12 種類だけ `-arch` で名指しして作る | その種類を作って置く |
-| 7 | h18g (M6) で ANE に乗らない | 番号未記入 | h18g は作らない (端末でコンパイル) | h18g を作って置く |
+| 6 | 22 種類のうち 9 種類で `coreai-build` が落ちる | FB25624336 (追記あり) | 通る 12 種類だけ `-arch` で名指しして作る | その種類を作って置く |
+| 7 | h18g (M6) で ANE に乗らない | FB25625077 (FB25624336 にも) | h18g は作らない (端末でコンパイル) | h18g を作って置く |
 | 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | 未報告 | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
 | 9 | チャットのモデルでは prebuilt が遅く、止まるものがある | 報告済み (16.247) | チャットのモデルに prebuilt を置かない | 測り直して、置くなら作って置く |
 
@@ -36,13 +36,13 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
   3. 直った Metal Toolchain を、prebuilt を作る機械の最低限として docs に書く (古い `coreai-build` では同じ部品がまた GPU に回る)
 - 確かめ方: `tools/coreai/lutfake -dup N` (合成の 1 層) は `Builder.LUT` を通るので、今は再現しない。再現には `DistinctNeighbours` を外した hwnpu で書くか、Apple への追記に添えた再現 (lut8 の 256 × 256 の 1 層。リポジトリにはない) を使う。モデルにその並びがあるかは `tools/coreai/lutscan -tile 16` で見る
 
-## 3. 端末で仕上がらない `.aimodelc` (番号未記入)
+## 3. 端末で仕上がらない `.aimodelc` (FB25624294)
 
 - **何が**: FLUX.2 klein の `vae_s0` の 1024² の関数は、`coreai-build` は通るのに、端末の仕上げで "Too many kernel bytes" から `failedToSpecialize` になる
 - **今**: hwnpu は失敗を見て、その部品だけ端末でコンパイルする ("the prebuilt program failed (failedToSpecialize), compiled on the device")。約 20 秒余計にかかる
 - **直ったら**: 何もしなくてよい。置いてある prebuilt のまま、その行が出なくなる
 
-## 4. prebuilt から仕上げたプログラムの呼び出しが遅い (番号未記入)
+## 4. prebuilt から仕上げたプログラムの呼び出しが遅い (FB25624318)
 
 - **何が**: prebuilt から仕上げたものは LLIR の道 (`useANELLIR` が true) を通り、中間のバッファが大きい (VAE の段で 549 MB、端末のコンパイルでは 411 MB)。1 回の呼び出しが M1 で 8〜16 %、M2 の Chroma で 3〜5 % 遅い
 - **今**: 回避はない。初回の短縮 (FLUX.2 klein の M1 で 40 分 → 8 分) の方が大きいので置いている
@@ -54,7 +54,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **今**: 回避はない (並べても速くならないので、読み込みは順に頼んでいる)
 - **直ったら**: 部品を並べて開く (Core AI の読み込みの先回り、#171) と初回が縮むか測る。縮むなら、並べる数を決めて既定にする
 
-## 6. 9 種類で `coreai-build` が落ちる (番号未記入)
+## 6. 9 種類で `coreai-build` が落ちる (FB25624336)
 
 - **何が**: `--preferred-compute neural-engine` で h13c/d/s、h14d/s、h15d/m/s、h17p の 9 種類が SIGSEGV (`ZinIrCompilerParameters::PropogateGlobalOptionsToPerProcedureOptions`) で落ちる。`--architecture` を省くと最初の h13c で落ちて全体が止まる。design.md 16.247、16.249
 - **今**: prebuilt は通る 12 種類 (h13g、h14c/g、h15c/g、h16c/g/s、h17c/d/g/s) だけ、`-arch` で名指しして 1 種類ずつ作る。落ちる種類の Mac (M1 Pro/Max/Ultra、M2 Pro/Ultra、M3 Pro/Max/Ultra、A18) は端末でコンパイルする
@@ -72,7 +72,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **作り直し** (書き出しが変わったとき。2 節、FormatVersion を上げたとき): 書き出しを作って置き (`hwnpu-image` か `tools/coreai/kleinonly prepare` を取得元の書き戻しありで)、その書き出しに上の prebuild をする。チャットのモデルは `hwnpu-chat` を書き戻しありで 1 回ずつ動かす (9 節)。2026-11-19 の作り直しの記録は design.md 16.252
 - 確かめ方: `xcrun coreai-build compile X.aimodel --platform macOS --architecture h13c --preferred-compute neural-engine --output out/` が落ちず、`out/…/manifest.plist` に `mps.fullyPlacedOnANE` があること。失敗の理由は stderr でなく os_log (プロセス `coreai-build`、ANEHostCompiler) に出る
 
-## 7. h18g (M6) で ANE に乗らない (番号未記入)
+## 7. h18g (M6) で ANE に乗らない (FB25625077、FB25624336)
 
 - **何が**: h18g は落ちないが、どのモデルも "failed to verify module" で ANE をあきらめ、GPU だけの `.aimodelc` を書いて 0 で終わる
 - **今**: h18g の prebuilt は作らない (GPU だけのものを置くと、M6 で ANE を使わなくなる)。M6 は端末でコンパイルする
