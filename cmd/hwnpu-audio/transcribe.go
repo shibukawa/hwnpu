@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/llm"
+	"github.com/shibukawa/hwnpu/internal/llm/iron"
 	"github.com/shibukawa/hwnpu/internal/llm/lfm3audio"
 	"github.com/shibukawa/hwnpu/internal/llm/whisper"
 	"github.com/shibukawa/hwnpu/internal/mem"
@@ -25,7 +27,7 @@ import (
 // --language says it, and the text is greedy (internal/transcribe).
 type TranscribeCmd struct {
 	Files      []string `arg:"" type:"existingfile" name:"FILE.wav" help:"The WAV files of speech."`
-	Model      string   `short:"m" default:"transcribe" placeholder:"NAME" help:"The Whisper model: a name, a use or a family of models.yaml (transcribe, whisper:large-v3-turbo), or a Hugging Face repository OWNER/NAME."`
+	Model      string   `short:"m" default:"transcribe" placeholder:"NAME" help:"The Whisper model: a name, a use or a family of models.yaml (transcribe, whisper:large-v3-turbo), a Hugging Face repository OWNER/NAME, or on AMD's NPU an export's directory (tools/amd/iron_whisper.py)."`
 	Language   string   `short:"l" placeholder:"CODE" help:"The language of the speech (ja, en, ...); none: detected in each 30 seconds."`
 	Translate  bool     `help:"Turn the speech into English text instead of its own language's."`
 	Timestamps bool     `help:"Print each segment with its start and end."`
@@ -41,30 +43,62 @@ type TranscribeCmd struct {
 func (c *TranscribeCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
 	logf := func(format string, args ...any) { fmt.Fprintf(lw, format+"\n", args...) }
-	m, err := resolveKind(c.Model, chat.KindTranscribe, c.Models, lw)
-	if err != nil {
+	var (
+		m   chat.Model
+		err error
+	)
+	export := ""
+	if transcribe.IsIronExport(expandHome(c.Model)) {
+		export = expandHome(c.Model) // an export of tools/amd/iron_whisper.py, for AMD's NPU
+		m.Name = filepath.Base(export)
+	} else if m, err = resolveKind(c.Model, chat.KindTranscribe, c.Models, lw); err != nil {
 		return err
 	}
 	s := transcribe.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Format: c.Format, Log: lw}
 	o := transcribe.Options{Language: c.Language, Translate: c.Translate, MaxTokens: c.MaxTokens}
-	var dev *hwnpu.Device
-	if c.CPU {
-		s.Backend = llm.BackendCoreML // what the CPU interpreter runs
-	} else {
-		if dev, s.Backend, err = openAudioDevice(ctx, cacheDir(c.Cache), "--cpu runs Whisper on the CPU"); err != nil {
+	var (
+		dev    *hwnpu.Device
+		t      *transcribe.Transcriber
+		wired0 int64
+		wired  bool
+		t0     time.Time
+	)
+	if export != "" || !c.CPU && onAMD() {
+		// AMD's NPU runs the graphs of tools/amd/iron_whisper.py (exported on the first run)
+		dir := export
+		if dir == "" {
+			var err error
+			if dir, err = transcribe.PrepareAMD(chat.WithModel(ctx, m), m, lw); err != nil {
+				return err
+			}
+		}
+		if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
 			return err
 		}
 		defer dev.Close()
-	}
-	cfg, err := transcribe.Prepare(ctx, s)
-	if err != nil {
-		return err
-	}
-	wired0, wired := mem.NPUWired()
-	t0 := time.Now()
-	t, err := transcribe.Load(ctx, dev, cfg)
-	if err != nil {
-		return err
+		iron.ShareExport(dir, logf)
+		t0 = time.Now()
+		if t, err = transcribe.LoadIron(ctx, dev, dir); err != nil {
+			return err
+		}
+	} else {
+		if c.CPU {
+			s.Backend = llm.BackendCoreML // what the CPU interpreter runs
+		} else {
+			if dev, s.Backend, err = openAudioDevice(ctx, cacheDir(c.Cache), "--cpu runs Whisper on the CPU"); err != nil {
+				return err
+			}
+			defer dev.Close()
+		}
+		cfg, err := transcribe.Prepare(ctx, s)
+		if err != nil {
+			return err
+		}
+		wired0, wired = mem.NPUWired()
+		t0 = time.Now()
+		if t, err = transcribe.Load(ctx, dev, cfg); err != nil {
+			return err
+		}
 	}
 	defer t.Close()
 	logf("loaded %s in %.1f s, %s", m.Name, time.Since(t0).Seconds(), placement(c.CPU, t.OnNPU()))

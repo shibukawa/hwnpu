@@ -51,15 +51,40 @@ type generation struct {
 
 // Transcriber holds the loaded programs of a Whisper checkpoint.
 type Transcriber struct {
+	cfg   *whisper.Config
+	gen   generation
+	tok   *tokenizer.Tokenizer
+	p     programs
+	langs map[int32]string // language tokens' codes
+}
+
+// programs run a checkpoint's encoder and decoder: the converted programs (Core AI's, OpenVINO
+// IR, Core ML's on the CPU interpreter) or the graphs of tools/amd/iron_whisper.py on AMD's NPU
+// (ironPrograms).
+type programs interface {
+	// encode reads a window's log mel frames (frame-major, 3000 x mel bins) and gives the
+	// decoder its cross attention's keys and values.
+	encode(ctx context.Context, mel []float32) error
+	// reset starts the decoder at position 0.
+	reset()
+	// step reads one token at the next position and returns the logits after it.
+	step(ctx context.Context, id int32) ([]float32, error)
+	// positions is the decoder's positions; pos the next one.
+	positions() int
+	pos() int
+	onNPU() bool
+	Close() error
+}
+
+// converted are the programs Prepare converts: the encoder, the cross program and the decoder
+// with a KV cache the host holds.
+type converted struct {
 	cfg      *whisper.Config
 	dec      *whisper.Decoder
-	gen      generation
-	tok      *tokenizer.Tokenizer
 	w        llm.Weights // the token embeddings, looked up per step
 	enc, crs runner.Program
 	sess     *decode.Session
 	closers  []io.Closer
-	langs    map[int32]string // language tokens' codes
 }
 
 // Load reads the checkpoint's settings and tokenizer and loads the programs on dev (nil: the CPU
@@ -73,14 +98,41 @@ func Load(ctx context.Context, dev *hwnpu.Device, c Config) (*Transcriber, error
 	if err != nil {
 		return nil, err
 	}
-	t := &Transcriber{cfg: dec.Config, dec: dec, langs: map[int32]string{}}
+	t, err := newTranscriber(c.Dir, dec.Config)
+	if err != nil {
+		return nil, err
+	}
+	p := &converted{cfg: dec.Config, dec: dec}
 	ok := false
 	defer func() {
 		if !ok {
-			t.Close()
+			p.Close()
 		}
 	}()
-	raw, err = os.ReadFile(filepath.Join(c.Dir, "generation_config.json"))
+	if p.w, err = llm.OpenWeights(cmp.Or(c.Weights, filepath.Join(c.Dir, "model.safetensors")), whisper.Arch); err != nil {
+		return nil, err
+	}
+	if p.enc, err = runner.Open(ctx, dev, c.Encoder); err != nil {
+		return nil, fmt.Errorf("transcribe: encoder: %w", err)
+	}
+	if p.crs, err = runner.Open(ctx, dev, c.Cross); err != nil {
+		return nil, fmt.Errorf("transcribe: cross: %w", err)
+	}
+	s, cl, err := runner.OpenSession(ctx, dev, []string{c.Decoder}, dec)
+	if err != nil {
+		return nil, fmt.Errorf("transcribe: decoder: %w", err)
+	}
+	p.sess = s
+	p.closers = append(p.closers, cl)
+	ok = true
+	t.p = p
+	return t, nil
+}
+
+// newTranscriber reads the settings and the tokenizer of the checkpoint in dir.
+func newTranscriber(dir string, cfg *whisper.Config) (*Transcriber, error) {
+	t := &Transcriber{cfg: cfg, langs: map[int32]string{}}
+	raw, err := os.ReadFile(filepath.Join(dir, "generation_config.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -93,45 +145,76 @@ func Load(ctx context.Context, dev *hwnpu.Device, c Config) (*Transcriber, error
 	for tok, id := range t.gen.LangToID {
 		t.langs[id] = strings.TrimSuffix(strings.TrimPrefix(tok, "<|"), "|>")
 	}
-	if t.tok, err = tokenizer.Load(filepath.Join(c.Dir, "tokenizer.json")); err != nil {
+	if t.tok, err = tokenizer.Load(filepath.Join(dir, "tokenizer.json")); err != nil {
 		return nil, err
 	}
-	if t.w, err = llm.OpenWeights(cmp.Or(c.Weights, filepath.Join(c.Dir, "model.safetensors")), whisper.Arch); err != nil {
-		return nil, err
-	}
-	if t.enc, err = runner.Open(ctx, dev, c.Encoder); err != nil {
-		return nil, fmt.Errorf("transcribe: encoder: %w", err)
-	}
-	if t.crs, err = runner.Open(ctx, dev, c.Cross); err != nil {
-		return nil, fmt.Errorf("transcribe: cross: %w", err)
-	}
-	s, cl, err := runner.OpenSession(ctx, dev, []string{c.Decoder}, dec)
-	if err != nil {
-		return nil, fmt.Errorf("transcribe: decoder: %w", err)
-	}
-	t.sess = s
-	t.closers = append(t.closers, cl)
-	ok = true
 	return t, nil
 }
 
-// OnNPU reports whether the encoder and the cross program run on the NPU.
-func (t *Transcriber) OnNPU() bool { return t.enc.OnNPU() && t.crs.OnNPU() }
+// OnNPU reports whether the encoder (and the cross program) run on the NPU.
+func (t *Transcriber) OnNPU() bool { return t.p.onNPU() }
 
 // Close releases the programs.
 func (t *Transcriber) Close() error {
-	for _, p := range []runner.Program{t.enc, t.crs} {
-		if p != nil {
-			p.Close()
+	if t.p == nil {
+		return nil
+	}
+	return t.p.Close()
+}
+
+func (p *converted) onNPU() bool { return p.enc.OnNPU() && p.crs.OnNPU() }
+
+func (p *converted) Close() error {
+	for _, x := range []runner.Program{p.enc, p.crs} {
+		if x != nil {
+			x.Close()
 		}
 	}
-	for _, c := range t.closers {
+	for _, c := range p.closers {
 		c.Close()
 	}
-	if t.w != nil {
-		t.w.Close()
+	if p.w != nil {
+		p.w.Close()
 	}
 	return nil
+}
+
+func (p *converted) encode(ctx context.Context, mel []float32) error {
+	h, err := p.enc.Run(ctx, map[string][]float32{"x": mel})
+	if err != nil {
+		return fmt.Errorf("transcribe: encoder: %w", err)
+	}
+	kv, err := p.crs.Run(ctx, map[string][]float32{"x": h})
+	if err != nil {
+		return fmt.Errorf("transcribe: cross: %w", err)
+	}
+	n := len(kv) / (2 * p.cfg.DecoderLayers)
+	buf := make([]byte, 2*n)
+	for i := 0; i < p.cfg.DecoderLayers; i++ {
+		for j, name := range []string{"xk", "xv"} {
+			hwnpu.EncodeF16(buf, kv[(2*i+j)*n:(2*i+j+1)*n])
+			if err := p.sess.SetInputF16(fmt.Sprintf("%s_%d", name, i), buf); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (p *converted) reset()         { p.sess.Reset() }
+func (p *converted) positions() int { return p.sess.Cache() }
+func (p *converted) pos() int       { return p.sess.Pos() }
+
+func (p *converted) step(_ context.Context, id int32) ([]float32, error) {
+	row, err := llm.TokenRow(p.w, p.dec, id)
+	if err != nil {
+		return nil, err
+	}
+	logits, err := p.sess.Step([][]float32{row})
+	if err != nil {
+		return nil, fmt.Errorf("transcribe: decoder: %w", err)
+	}
+	return logits, nil
 }
 
 // Options are a transcription's settings.
@@ -222,29 +305,14 @@ func (t *Transcriber) SegmentText(s Segment) string { return t.tok.Decode(s.Toke
 func (t *Transcriber) window(ctx context.Context, mel []float32, o Options, timestamps bool) (Window, error) {
 	var w Window
 	t1 := time.Now()
-	h, err := t.enc.Run(ctx, map[string][]float32{"x": mel})
-	if err != nil {
-		return w, fmt.Errorf("transcribe: encoder: %w", err)
-	}
-	kv, err := t.crs.Run(ctx, map[string][]float32{"x": h})
-	if err != nil {
-		return w, fmt.Errorf("transcribe: cross: %w", err)
-	}
-	n := len(kv) / (2 * t.cfg.DecoderLayers)
-	buf := make([]byte, 2*n)
-	for i := 0; i < t.cfg.DecoderLayers; i++ {
-		for j, name := range []string{"xk", "xv"} {
-			hwnpu.EncodeF16(buf, kv[(2*i+j)*n:(2*i+j+1)*n])
-			if err := t.sess.SetInputF16(fmt.Sprintf("%s_%d", name, i), buf); err != nil {
-				return w, err
-			}
-		}
+	if err := t.p.encode(ctx, mel); err != nil {
+		return w, err
 	}
 	t2 := time.Now()
 	w.Encode = t2.Sub(t1)
 
-	t.sess.Reset()
-	logits, err := t.step(cmp.Or(t.gen.DecoderStart, int32(t.cfg.VocabSize)))
+	t.p.reset()
+	logits, err := t.p.step(ctx, cmp.Or(t.gen.DecoderStart, int32(t.cfg.VocabSize)))
 	if err != nil {
 		return w, err
 	}
@@ -266,11 +334,11 @@ func (t *Transcriber) window(ctx context.Context, mel []float32, o Options, time
 		prompt = append(prompt, t.gen.NoTimestamps)
 	}
 	for _, id := range prompt {
-		if logits, err = t.step(id); err != nil {
+		if logits, err = t.p.step(ctx, id); err != nil {
 			return w, err
 		}
 	}
-	most := t.sess.Cache() - t.sess.Pos()
+	most := t.p.positions() - t.p.pos()
 	if o.MaxTokens > 0 {
 		most = min(most, o.MaxTokens)
 	}
@@ -298,25 +366,12 @@ func (t *Transcriber) window(ctx context.Context, mel []float32, o Options, time
 		if len(w.Tokens) == most {
 			break
 		}
-		if logits, err = t.step(next); err != nil {
+		if logits, err = t.p.step(ctx, next); err != nil {
 			return w, err
 		}
 	}
 	w.Decode = time.Since(t2)
 	return w, nil
-}
-
-// step reads one token and returns the logits after it.
-func (t *Transcriber) step(id int32) ([]float32, error) {
-	row, err := llm.TokenRow(t.w, t.dec, id)
-	if err != nil {
-		return nil, err
-	}
-	logits, err := t.sess.Step([][]float32{row})
-	if err != nil {
-		return nil, fmt.Errorf("transcribe: decoder: %w", err)
-	}
-	return logits, nil
 }
 
 // detect is the language token with the largest logit (transformers' detect_language).

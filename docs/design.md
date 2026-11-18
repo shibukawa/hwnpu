@@ -7526,3 +7526,27 @@ Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is
 - 取得元から: 手元の書き出しをよけて `-m flux3-klein --size 1:1s`。取得元から 13.76 GB (詰めたもの) を 5 分 51 秒 (39 MB/s) で取り、9.6 秒で展開して、手で書き出したものとバイトまで同じ絵を描いた
 - 鍵の `tools` は tools/amd 全体のハッシュ (`amdtools.Hash`) なので、tools/amd のどこかが変わると、作り方の項目 (`iron-flux3klein`) は見つからなくなる。FLUX.2 klein と同じく `hwnpu-dev cache import` で名前の項目 (`iron-import`、`v0-ce420049`) も置いた (4 分 28 秒)。`PrepareAMD` は両方を探す
 - 最大メモリ (3:4): 3.61 GiB。1024² と同じく models.yaml の 3.9 GB に入る
+
+### 16.252 Whisper を AMD の NPU に (IRON、`hwnpu-audio transcribe`) — 2026-11-19
+
+hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU ではエラーだった (変換器が AMD の形を書かないので、モデルごとに IRON の書き出しが要る)。音のモデルの 1 つ目として Whisper large-v3-turbo を IRON に移した (`tools/amd/iron_whisper.py`、docs/amd-npu-models.md 25 節)。
+
+- **2 つのグラフ**: `encoder` (30 秒の窓のログメル、conv1 と conv2、32 層、復号器 4 層の cross の鍵と値) と `decoder` (1 トークン。自己注意の KV キャッシュはグラフの状態に、cross の鍵と値も状態 `xk{i}`、`xv{i}` に置き、ホストが窓ごとに符号器の出力を写す。logits まで)。Core AI の 3 つのプログラム (符号器、cross、復号器) と違い、cross は符号器の最後に入れた
+- **conv2 (stride 2)**: 出力のフレーム t は conv1 のフレーム 2t − 1、2t、2t + 1 を読む。ホストが conv1 の im2col を偶数のフレームを前半、奇数を後半に並べるので、3 つは偶数の行 t、奇数の行 t、奇数の行 t − 1。最後のものは奇数の半分の積を状態に 1 行ずらして書く (その行 0 は conv2 の詰め物で 0 のまま)
+- **復号器**: 1 行の linear は GEMV (float32 で丸める)。注意は MHA の 1 問い合わせ (packed)。鍵は `pos` に書き、`n` = pos + 1 まで読む。トークンと位置の埋め込みはホストが足す (`decoder/embed.bin`、`positions.bin`)。logits の表 (51866 行) は 52224 に詰める
+- **ホスト** (`internal/transcribe`): 今のプログラム (`converted`) と IRON (`ironPrograms`) を `programs` の interface で隠し、窓の切り方、言語の判定、タイムスタンプ、抑えるトークンは同じ道を通る。`hwnpu-audio transcribe` は AMD の NPU が見つかれば (`HWNPU_BACKEND` がほかを指さなければ) `transcribe.PrepareAMD` で書き出しを用意する (手元、取得元、なければ IRON で書き出して取得元へ。FLUX.3 klein の `PrepareAMD` と同じ形)。`-m DIR` で書き出しのディレクトリも
+- **鍵**: models.yaml の whisper-large-v3-turbo に commit と 4 つのファイルの sha256 を固定した (`chat.PinnedRecipe` が要る)
+
+**確かめたこと** (Ryzen AI 9 365、ほかに NPU を使うものなし)
+
+- 復号器はランダムな入力で IRON の参照と cosine 1.000000 (`irongraph`)、1 回 19 ms
+- 符号器は乱数のログメルで IRON の参照と、8 層で cosine 0.9999、24 層で 0.998、32 層で 0.99 (層を重ねるほど広がる。外れる行は散らばっていて、conv2 のずらしの行 0 ではない)。実際の音声では書き起こしが正しいので、乱数の入力が深い層で増幅されていると見た
+- `/usr/share/sounds/alsa/Front_Left.wav` は「Front. Left.」、speech-dispatcher の案内 (29.4 秒) はほぼ正確 (「You can find it in... ...or in your home in .speechdispatcher...」)。3 回つなげた 88.3 秒をタイムスタンプつきの長い形で、3 つの窓とも同じ文と時刻の切れ目
+- 符号器の行列積: HIGHEST (bf16) 1.71 秒、MEDIUM (bfp16) 0.84 秒で、試した音声の文は一字一句同じ。既定を MEDIUM に。復号は 1 秒に 51 トークン (GEMV が 1 トークンに 316 MB を読む)。88.3 秒を 9.0 秒 (実時間の 9.8 倍)
+- 最大メモリ (NPU の drm-total-memory と RssAnon + RssShmem): 2.0 GiB。models.yaml の amd を 2.2 GB に
+- 初回の流れ (取得元なし): チェックポイントを手元に置いて `hwnpu-audio transcribe`。IRON の書き出し 19 秒の後に書き起こした
+
+**未確認・残り**
+
+- 日本語などの英語でない音声 (この機械に音声の素材がない)。Core AI の 65 秒の日本語と同じ素材で比べたい
+- 復号の速さ: 1 トークン 19 ms のほとんどは重みを読む時間 (層 4 つの 210 MB と logits の表 133 MB)。表を 8 ビットにする、logits を候補だけにする、などは試していない

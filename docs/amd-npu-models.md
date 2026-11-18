@@ -1235,3 +1235,35 @@ hwnpu-image generate -m EXPORT --noise OUT.noise.bin --latents got.lat --dump DI
 - `--refs` は参照つきのブロックを書き出す (N: 絵の大きさの N 枚、NdD: 辺が 1/D の N 枚、A+BdD: 混在。`hwnpu-image generate -i FILE@half` が d2)。グラフは 1 ステップの行数だけで決まるので `_nROWS` と名付け、同じ行数の指定は 1 回だけコンパイルする。既定は 4 枚までの等倍と半分の組み合わせのうち 12800 行までで、1024² は 5632〜12800 行の 8 つ (半分 1〜4 枚、等倍 1 枚 + 半分 0〜3 枚、等倍 2 枚)、512² は 2048〜5632 行の 7 つ。時間と照合は design.md 16.209。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
 - `--text q8` や `q6` は文の書き出しを小さくするが、パッドの行が参照から離れる (16.206)
 - 電力量はまだ測っていない
+
+## 25. Whisper large-v3-turbo: 書き起こし (`hwnpu-audio transcribe`、2026-11-19)
+
+OpenAI の Whisper large-v3-turbo (MIT、99 の言語) を AMD の NPU で動かす。符号器 32 層、復号器 4 層、幅 1280、頭 20 (64 ずつ)。設計の記録は design.md 16.252。
+
+### 25.1 構成 (`tools/amd/iron_whisper.py`)
+
+| グラフ | 中身 |
+|---|---|
+| `encoder` | 入力は conv1 の im2col (ホストが作る。偶数のフレームを行 0 から、奇数を行 1536 から。1 行はメルの 128 ビン × 3 タップ、384 列)。conv1 と GELU、conv2 (タップ 0 は奇数の半分の積を状態に 1 行ずらして)、GELU、位置埋め込み、32 のブロック (LayerNorm、q と v に bias、k はなし、MHA、出力の射影、LayerNorm、exact の GELU の MLP)、最後の LayerNorm、復号器 4 層の cross の鍵 (bias なし) と値。行は 1500 フレームを 1536 に詰め、鍵は `nk` = 1500。4 ブロックずつ 1 コマンド (10 コマンド)。出力 out0..out7 は層 i の鍵 (2i) と値 (2i + 1) |
+| `decoder` | 1 トークン: 入力はトークンと位置の埋め込みの和 (ホストが足す)。4 層 (自己注意は状態 `k{i}`、`v{i}` (448 × 20 × 64) の `pos` に書いて `n` まで読む。cross は状態 `xk{i}`、`xv{i}` を `nk` まで)、最後の LayerNorm、logits (トークンの埋め込みと共有、52224 列に詰める)。1 コマンド |
+
+ホスト (`internal/transcribe`) は、符号器の出力 8 つを復号器の状態に写して (`iron.Graph.Named`、窓ごとに 31 MB)、トークンごとに復号器を回す。窓の切り方、言語の判定、タイムスタンプ、抑えるトークンは Core AI と同じ。
+
+### 25.2 測定 (Ryzen AI 9 365)
+
+| | 時間 | |
+|---|---|---|
+| 符号器 (30 秒の窓) | 0.84 秒 (MEDIUM)、1.71 秒 (HIGHEST) | 試した音声で文は同じ |
+| 復号器 | 19 ms / トークン (51 トークン/秒) | 重みと logits の表 316 MB を読む |
+| 88.3 秒の英語 (3 窓、タイムスタンプ) | 9.0 秒 | 実時間の 9.8 倍 |
+| 書き出し | 19 秒 | IRON のカーネルが揃っていて。1.7 GB |
+
+最大メモリは 2.0 GiB (NPU の固定メモリとプロセス)。
+
+### 25.3 手順
+
+```bash
+python tools/amd/iron_whisper.py ~/models/whisper-large-v3-turbo ~/models/whisper-large-v3-turbo.amd-npu2   # --precision HIGHEST、--check
+go run ./tools/amd/irongraph ~/models/whisper-large-v3-turbo.amd-npu2/decoder
+go run ./cmd/hwnpu-audio transcribe -v speech.wav     # 初回は書き出しを取得元から、なければ IRON で
+```

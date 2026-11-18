@@ -363,11 +363,18 @@ models:
     family: whisper
     tag: large-v3-turbo
     kind: transcribe
-    from: hf:openai/whisper-large-v3-turbo
+    from: hf:openai/whisper-large-v3-turbo@41f01f3fe87f28c78e2fbf8b568835947dd65ed9
     # MIT by the model card (the repository has no license file; large-v3's card says apache-2.0)
     license: {id: mit, url: "https://huggingface.co/openai/whisper-large-v3-turbo", class: open}
+    # pinned for the export for AMD's NPU (tools/amd/iron_whisper.py, a key of the sources)
+    sha256:
+      config.json: c5b526b3e3cd64cd8940dabb45e8ba726629e22d8ed389c29b552f9140daf04a
+      generation_config.json: cce11bfe3aaa6ae9e072ea2637caaec8795e68d9b67e655a5af16ee509681a4c
+      model.safetensors: 542566a422ae4f3fd23f1ba11add198fca01bbf82e66e6a2857b3f608b1eb9d1
+      tokenizer.json: 297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd
     machine: 8
-    memory: 1.9
+    # AMD's: the NPU's pinned memory and the process's of 88 s of speech (a Ryzen AI 9 365, 2026-11-19)
+    memory: {amd: 2.2, apple: 1.9}
     bytes: 1.6e9
     about: "OpenAI's Whisper large-v3-turbo: transcription of 99 languages, with timestamps, in 8 bit tables"
   LFM3-Audio-2B-TTS:

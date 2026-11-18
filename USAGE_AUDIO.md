@@ -33,6 +33,8 @@ go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a ti
 
 `go run ./cmd/hwnpu-audio transcribe speech.wav` transcribes speech with Whisper large-v3-turbo. It downloads the checkpoint on the first run and converts it. On an M3 it reads a 30 second window in 0.6 seconds, and transcribed 65 seconds of Japanese in 4 seconds. `-l ja`, `--translate` and `--timestamps` work.
 
+On AMD's NPU (Ryzen AI 300 and later) it runs the two graphs of `tools/amd/iron_whisper.py`, the encoder of a window and the decoder of one token, which keeps its KV cache on the NPU. The first run downloads the checkpoint and exports it with IRON (about 20 seconds once IRON's kernels are built; IRON's environment as [INSTALL_AMD.md](INSTALL_AMD.md) says, `HWNPU_IRON_ENV`), unless a source has the export (`whisper-large-v3-turbo.amd-npu2`). On a Ryzen AI 9 365 a window's encoder takes 0.84 seconds and the decoder 51 tokens a second: 88 seconds of English speech in 9 seconds, at about 2.1 GB (the NPU's pinned memory and the process's). `-m DIR` runs an export's directory.
+
 ## Pitch and notes (SwiftF0, Basic Pitch)
 
 `go run ./cmd/hwnpu-audio pitch voice.wav` gives the pitch of a voice or instrument every 16 ms with SwiftF0, and `go run ./cmd/hwnpu-audio notes --midi song.mid song.wav` writes notes to MIDI with Basic Pitch. Both models are distributed as ONNX, and `internal/onnx` turns their static parts into NPU programs. On AMD machines they run on the CPU (as in the object detection section of [USAGE_IMAGE.md](USAGE_IMAGE.md), ONNX Runtime is used when it is installed).

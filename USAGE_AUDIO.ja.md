@@ -33,6 +33,8 @@ go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a ti
 
 `go run ./cmd/hwnpu-audio transcribe speech.wav` は Whisper large-v3-turbo で音声を書き起こします。初回にチェックポイントを落として変換します。M3 で 30 秒の窓を 0.6 秒で読み、65 秒の日本語を 4 秒で書き起こしました。`-l ja`、`--translate`、`--timestamps` が使えます。
 
+AMD の NPU (Ryzen AI 300 以降) では、`tools/amd/iron_whisper.py` の 2 つのグラフ (窓ごとの符号器と、1 トークンずつの復号器。復号器の KV キャッシュは NPU に置きます) で動きます。初回は、取得元に書き出し (`whisper-large-v3-turbo.amd-npu2`) がなければ、チェックポイントを落として IRON で書き出します (IRON のカーネルが揃っていれば約 20 秒。IRON の環境は [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md) のとおり、`HWNPU_IRON_ENV`)。Ryzen AI 9 365 で、30 秒の窓の符号器が 0.84 秒、復号が 1 秒に 51 トークンで、88 秒の英語を 9 秒で書き起こしました (NPU の固定メモリとプロセスで約 2.1 GB)。`-m DIR` で書き出したディレクトリを動かせます。
+
 ## 音高と音符 (SwiftF0、Basic Pitch)
 
 `go run ./cmd/hwnpu-audio pitch voice.wav` は SwiftF0 で声や楽器の音高を 16 ms ごとに、`go run ./cmd/hwnpu-audio notes --midi song.mid song.wav` は Basic Pitch で音符を MIDI に出します。どちらも ONNX で配られるモデルで、`internal/onnx` が静的な部分を NPU のプログラムにします。AMD の機械では CPU で動きます ([USAGE_IMAGE.ja.md](USAGE_IMAGE.ja.md) の物の検出の節と同じく、ONNX Runtime があればそれを使います)。
