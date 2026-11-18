@@ -7400,3 +7400,49 @@ SigLIP のラベルの埋め込み (`hwnpu/siglip/NAME-HASH.f32`、ラベル 1 �
 - だから FLUX.2 klein には prebuilt を置く値打ちがある (初回が 3 分の 1)。Anima は 16 % 短くなるだけ
 - 置き方 (2026-11-18): 仕上げの数分の決まった費用、9 種類で落ちる `coreai-build`、M6 の名前の衝突、Qwen3.5-4B の止まり、FLUX の数値の違いは Apple に報告した。端末の仕上げ (OS) が直れば、置いた prebuilt のまま速くなるので、効く画像のモデル (FLUX.2 klein、Chroma1-Flash、Anima) は今の道具の prebuilt を `hwnpu-dev prebuild -arch all -put` で置く。チャットのモデルは今は置かない (遅くなり、止まるものがある)。`coreai-build` の側の修正 (落ちる 9 種類、M6) は Metal Toolchain を上げて作り直さないと届かない
 - まだ置いていない: FLUX.2 klein の 12 種類を作る途中で、ディスク (空き約 110 GB) が一杯になって止めた。`$TMPDIR/com.apple.MetalPerformanceShadersGraphHost` に 12 GB が残っていた (`coreai-build` が MPSGraph の作業に使うもの。`prebuild` の後始末の外)。並べて作るときは空きを見る要がある。Anima-Turbo の 1024² の書き出しはまだ取得元にない (手元のものは共有より前に作り、`entry.json` がない)
+
+
+### 16.248 FLUX.3 klein を Apple の Neural Engine に (文からの生成、lut8 の表を活性に合わせて) — 2026-11-18
+
+black-forest-labs/flux-3-image-klein (FLUX Kommunity License、gated) を `internal/imagegen/flux3klein` に移した。`hwnpu-image generate -m flux3-klein`。参照は diffusers 0.43.0 の `transformer_flux3.py` と `modular_pipelines/flux3` (蒸留版のブロック)、それをプロンプト拡張 (Qwen3.5) なしで部品ごとに読み込むように書き直した `tools/ref/ref_flux3klein.py` (MPS、bf16)。
+
+**構造** (FLUX.2 klein との違い)
+
+- DiT 5.55B: テキストと画像がそれぞれ別の重みの mode ブロック 5 層 (自分の流れの中だけで注意。注意と FFN を同じ変調の入力から並列に計算し `x + gate (attn + ff)`)、その後に [テキスト, 画像] の順で single ブロック 28 層 (変調は流れごと、重みは共通)。FFN は SwiGLU で `linear_in` の前半が gate (18432 行は 16384 を超えるので `#gate` と `#up` に分けて読む)
+- 変調はホスト (14 行): 画像は `silu(temb(t) + temb'(t'))`、テキストは `silu(temb(0) + temb'(t'))`。flow-map の目標時刻 t' がテキストにも入るので、テキストの mode ブロックも毎ステップ回す。`norm_out` は scale、shift の順。timestep は bf16 に丸めてから 1000 倍し、それも bf16 に丸める (パイプラインが `timestep.to(dtype) * 1000` で渡す)。diffusers の部品との差は相対 RMS 1e-7 (`TestModulation`)
+- RoPE: 4 軸 × 32、θ 10000、画像の行と列は 0.5 倍 (`image_rope_scale`)、テキストは (0, 0, 0, i)。FLUX と同じく (2i, 2i+1) の対なので q と k の行を `RopePerm` で並べ替える
+- テキスト: Qwen3-VL-4B の言語部分 (36 層のうち 32 層まで) の 4, 8, ..., 32 層の後を 8 つ並べて 20480。テキストだけなら mrope は普通の RoPE と同じ。80 の倍数に右詰めし、パディングの位置 ID は 1 (学習時の transformers 4.57 の値をパイプラインが明示する)。マスクは FLUX.2 klein と同じ (プロンプトは因果、パディングはプロンプトのキーだけ): transformers 5.23 の呼び方と 4 層後で一致することを Python で確かめた (自分も見る、因果だけ、はどちらも 160〜180 % ずれる)
+- `context_embedder` の入力 20480 は 16384 を超えるので、4 タップずつ 2 つの入力と列の半分ずつの線形の和にした
+- **fp16 のあふれ**: テキストの流れは `context_embedder` の出力で 1.2e5、single ブロックの後段で 9.7e6 (数行の数チャネル。画像は 2900)。画像は FLUX.2 と同じ 1/32、テキストは 1/1024 で持ち、ブロックの出力 (1/32) をテキストに足す gate を 32/1024 倍する。Qwen3-VL の隠れ状態は最大 11264 (2 行目、attention sink) で TextScale 8 で収まる
+- VAE は FLUX.2 の `AutoencoderKLFlux2` と同じなので FLUX.2 klein の段 (Chroma の復号器) をそのまま使う
+
+**書き出し**: 512² と 1024²、テキスト 80 行と 160 行を 1 つに (テキスト、`ctx`、テキストの mode ブロックは行数ごと、画像の mode ブロックと VAE は大きさごと、single ブロックは両方の組の関数、重みは 1 回)。Qwen3-VL と DiT は lut8、`ctx` と VAE は fp16。変換 2 分 37 秒 (表の作成 1 分 23 秒)、9.4 GB。初回のコンパイルは約 50 分 (single ブロックの組が 1 つ 6.5 分。512² の初回に 1024² の関数も一緒に)。
+
+**量子化** (MPS の参照で 512²、bf16 との最終の潜在の cosine)
+
+| DiT の形式 | ポートレート | 8 プロンプトの平均 / 中央値 |
+|---|---|---|
+| 行ごとの int8 (クリップ点を探す) | 0.9967 | 0.988 / 0.996 |
+| lut8 uniform (16 行の表、均等) | 0.964 (髪が変わる) | 3 枚で 0.956 |
+| lut8 k-means (分位点から、hwnpu の `kmeans`) | **0.56 (壊れる)** | — |
+| lut8 重み付き k-means (重み付き分位点から) | 0.93 | — |
+| lut8 重み付き k-means (uniform から、E[x²]、校正 4 本) | **0.998** | 0.981 / 0.997 (int8 に 8 枚中 3 枚で勝つ) |
+
+- 分位点から始めると、表の一番上の段が 99.8 % 点になり、少数の大きな重みが潰れて絵が壊れる。uniform (最小と最大) から始めた重み付き Lloyd (`palette.QuantizeWeightedMinMax`) だけが効いた。重みなしの k-means (uniform から) は uniform と同じ
+- 校正 12 本でも 4 本と変わらない (平均 0.980)。int8 に負けた 2 枚は細かい装飾 (丼の縁の模様、看板の右の街並み) で軌道が分かれたもの
+- 1 ステップの速度誤差 (参照の入力を与える) は自由に回した結果を予測しない。single ブロックの注意だけ int8 にすると速度誤差は 2.33 → 2.29 % でほぼ同じでも、潜在の cosine は 0.964 → 0.983 になった。重みの 6 % の変調と埋め込みも 0.978 まで効く。mode ブロックは効かない
+- 統計は `ref_flux3klein.py --stats` (int8 の DiT で 4 プロンプト、評価のプロンプトとは別) を `WEIGHT.x2` に直したもの。書き出しのフォルダの `flux3-klein.x2.safetensors` があれば `Prepare` が使い (書き出し名に `lut8x2`)、なければ uniform で警告する
+
+**Neural Engine で測ったこと** (M3 16 GB、すべて NPU に置かれた)
+
+- 512²、参照と同じノイズ: 絵の PSNR 37.0 dB、最初のステップの速度 cosine 0.9997 (相対 RMS 2.5 %)、最後のステップで 0.993
+- 512² (2 回目以降): 1 枚 29 秒 (16 ステップ 27 秒で 1.7 秒ずつ)
+- 1024² (2 回目以降): 1 枚 2 分 2 秒 (テキスト 1.0 秒、16 ステップ 1 分 57 秒で 7.4 秒ずつ、VAE 3.8 秒)、プロセスのフットプリント最大 4.1 GB (最大 RSS 3.8 GB)
+- パディングの行のテキストの状態が参照から 50 % ずれる (プロンプトの行は 3〜7 %)。マスクは合っている (上) ので数値の誤差: パディングの位置 1 は attention sink の 2 行目と同じで、Qwen3-VL の lut8 の誤差を拾うと見ている。絵には目立たない
+
+**未確認・未対応**
+
+- 編集 (参照画像、`image_cond` の流れ)、AMD の NPU、512² と 1024² 以外の大きさ、161 トークン以上のプロンプト
+- Neural Engine の側のメモリ (models.yaml の 5.5 GB は推定のまま)
+- パディングの行のずれを減らす (Qwen3-VL の先の層を fp16 にするなど)
+- 統計の配り方 (今は書き出しを作る機械に手で置く)

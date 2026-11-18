@@ -58,6 +58,21 @@ hwnpu-image generate -m flux2-klein --image fox.png "Change the season to autumn
 - A reference image's centre is cropped to the picture's shape and scaled to its size (half of it with `@half`)
 - Write an edit as what to change and what to keep. Prompts are expected in English
 
+## Image generation (FLUX.3 klein)
+
+`hwnpu-image generate -m flux3-klein` draws with Black Forest Labs' FLUX.3 klein (a 5.5B DiT, Qwen3-VL-4B reads the prompt, the FLUX.2 VAE). It is distilled: 16 steps, no classifier-free guidance (`--negative` and `--guidance` do not apply). Its license is the FLUX Kommunity License (non-commercial and non-production use; commercial use only as a Qualifying User), and the Hugging Face repository is gated: agree to its terms there and set `HF_TOKEN` (or sign in at a terminal) before the first run. hwnpu asks once to accept the license (`--accept-license` answers yes).
+
+```
+hwnpu-image generate -m flux3-klein "A photo portrait of a smiling young woman wearing thin black-framed eyeglasses, plain light grey background"
+hwnpu-image generate -m flux3-klein --size 512 "A rocky coastline at golden hour with a red lighthouse"
+```
+
+- Apple's Neural Engine (Core AI, macOS 27) only for now, text to image only (`--image` is refused). `--size` is 1:1 (1024 x 1024) or 1:1s (512 x 512); a prompt of up to 160 tokens in the chat template (one export holds both sizes and texts of 80 and 160 rows)
+- The first run downloads the checkpoint (20 GB) and converts it (about 3 minutes; the export is 9.4 GB), then compiles each program for the Neural Engine (about 50 minutes the first time, both sizes together). On an M3 (16 GB), from the second run on, a 1024 x 1024 picture takes about 2 minutes (16 steps of 7.4 s, the text 1 s, the VAE 4 s) and a 512 x 512 one about 30 seconds, with at most 4.1 GB of process memory
+- Qwen3-VL and the DiT are lut8, the VAE and context_embedder fp16, and the timesteps' embeddings and modulations are computed on the host. The DiT's lut8 tables are fitted to the activations when the exports' directory (`models/FLUX.3-klein` in the cache) holds `flux3-klein.x2.safetensors`, the inputs' mean squares of a calibration with `tools/ref/ref_flux3klein.py --stats` (converted to WEIGHT.x2 by in-feature): without it the tables are spaced evenly, which changes fine detail such as hair ([docs/design.md](docs/design.md), 16.248)
+- Against diffusers' bf16 pipeline from the same noise, a 512 x 512 picture comes out at a PSNR of 37 dB (the first step's velocity at a cosine of 0.9997)
+- Prompts are expected in English
+
 ## Depth estimation (Depth Anything 3, MoGe-2)
 
 `go run ./cmd/hwnpu-image depth` estimates the depth of a photo on AMD's NPU or Apple's Neural Engine (Intel's NPU too, untested on the hardware). The models are Depth Anything 3 (Apache-2.0): DA3MONO-LARGE (the default, relative depth), DA3METRIC-LARGE (meters, with `--fov` or `--focal`) and DA3-SMALL / BASE (lighter versions, depth and confidence). For each image it writes `NAME.depth.png` (brighter is nearer); `--raw` also writes the depth as float32, and `--sky` an image of the sky (the confidence for SMALL / BASE). An export holds a size for each aspect ratio, and the one nearest the image is used. As with generate, `-m` is a name, a family (`da3:small`, `da3metric`, `moge`, `moge:vits`) or an export directory. The default use, `depth`, picks by memory: DA3-SMALL on 8 GB, DA3-BASE on 16 GB and DA3MONO-LARGE from 24 GB (`depth:24g` or `-m DA3MONO-LARGE` for the larger one).

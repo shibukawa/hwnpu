@@ -102,3 +102,37 @@ func TestSub(t *testing.T) {
 		}
 	}
 }
+
+// QuantizeWeightedMinMax keeps a group's few large weights (its top level starts at the maximum),
+// and its weighted error is no worse than the uniform levels' it starts from (Lloyd's passes do not
+// raise it).
+func TestQuantizeWeightedMinMax(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	rows, cols := 16, 256
+	w := make([]float32, rows*cols)
+	for i := range w {
+		w[i] = float32(rng.NormFloat64() * 0.02)
+	}
+	w[5*cols+7] = 1.5 // an outlier, as the DiT's
+	x2 := make([]float32, cols)
+	for i := range x2 {
+		x2[i] = float32(0.1 + rng.Float64())
+	}
+	werr := func(q LUT4) float64 {
+		dq := q.Dequantize()
+		s := 0.0
+		for i, v := range w {
+			d := float64(dq[i] - v)
+			s += float64(x2[i%cols]) * d * d
+		}
+		return s
+	}
+	mm := QuantizeWeightedMinMax(w, rows, cols, 16, 0, 4, 20, x2)
+	uni := QuantizeBits(w, rows, cols, 16, 0, 4, 8, Uniform)
+	if d := mm.Dequantize()[5*cols+7]; math.Abs(float64(d)-1.5) > 0.05 {
+		t.Errorf("the outlier comes out %g from min-max, want about 1.5", d)
+	}
+	if e, u := werr(mm), werr(uni); e > u*1.0001 {
+		t.Errorf("min-max start's weighted error %g is past the uniform levels' %g", e, u)
+	}
+}
