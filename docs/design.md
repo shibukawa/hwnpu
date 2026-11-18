@@ -7446,3 +7446,27 @@ black-forest-labs/flux-3-image-klein (FLUX Kommunity License、gated) を `inter
 - Neural Engine の側のメモリ (models.yaml の 5.5 GB は推定のまま)
 - パディングの行のずれを減らす (Qwen3-VL の先の層を fp16 にするなど)
 - 統計の配り方 (今は書き出しを作る機械に手で置く)
+
+### 16.249 隣り合う lut の表を同じにしない: `coreai-build` が FLUX の dit_single_0 を ANE に乗せなかった理由 — 2026-11-18
+
+16.247 で FLUX.2 klein の `dit_single_0` だけが `coreai-build` で ANE に乗らずに抜けた。stderr は `CompilationFailure` だけだが、os_log (プロセス `coreai-build`、`ANEHostCompiler`) に本当の理由が出る。M1 (h13g、Metal Toolchain 27.2.47.0、`coreai-build` 3605.6.3)、private_data の記録を有効にして調べた。
+
+```
+Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is not content-uniform across its num_lut_per_group=32 slots
+```
+
+**原因**: ANE のオフラインのコンパイラは、`lut_to_dense` の重みを出力 256 行ずつの区切りに分け、区切りの先頭で同じ表が何行続くかを「表を共有する行の数」とみなして、テンソル全体にそれを求める。hwnpu の lut8 は 16 行ごとに 1 つの表 (`milpart` の既定の Group 16) なので、区切りの先頭の 2 つの表がたまたまバイト単位で同じだと 32 行の共有とされ、次の 32 行の表が違って落ちる。`dit_single_0` (640 MB) で当てはまるのは 1 か所だけ (3072 行の射影の表 96 と 97、出力の 1536 行目)。最小と最大で決まる一様な表 (`palette.Uniform`) では隣が同じ表になりやすい (192 個のうち 185〜191 種類)。
+
+- 合成の線形層 (`tools/coreai/lutfake`、256 × 256 から): 表が全部違えば通り、表 1 を表 0 の写しにすると同じエラー。h14g、h15g、h16g、h17g でも、lut4、lut6、lut8 でも、表 1 つの行数 1 / 8 / 16 / 32 でも落ち、`num_lut_per_group` はいつも表の行数の 2 倍 (2 / 16 / 32 / 64)。全部同じ表と、32 行ずつ同じ表は通る。先頭で 3 つ続くと `total_cout (256) must be a multiple of num_lut_per_group (48)` で落ちる
+- 端末のコンパイラ (`AIModel(contentsOf:)`) は同じモデルを全部 ANE に乗せる
+- `dit_single_0` の表 97 の値を 1 つ fp16 で 1 単位ずらすと、2 つの関数とも ANE に乗った (`fullyPlacedOnANE`)
+- 隣り合う同じ表は `tools/coreai/lutscan -tile 16 X.aimodel/main.mlirb` で探せる
+
+**直し** (`mlpackage.DistinctNeighbours`、`Builder.LUT` から): 表が前の行の組の同じ列の表と同じなら、その表の絶対値が一番大きい値を fp16 で 1 単位 0 に近づける (全部 0 の表は最小の非正規化数に)。lut の書き出しはどの量子化 (一様、k-means、GPTQ の符号) でもここを通る。表そのものの丸めより小さい変化で、FLUX の単ブロックの部品 4 本 (各 640 MB) で変わるのは 1〜2 バイト。直した `dit_single_0` は `coreai-build` で 2 つの関数とも ANE に乗った (M1、h13g、12 分 25 秒)。
+
+- 書き出しのバイトが変わるので `ailower.FormatVersion` を 2 に上げた (取得元の Core AI の書き出しの鍵。前の版の書き出しは取らない)。手元にある同じ名前の書き出しはそのまま使われる (動くが、prebuilt の鍵は書き出しの中身の hash なので取得元の新しい prebuilt とは合わず、ネイティブにコンパイルする)
+- Apple には FB25624151 (追記に再現の 2 つのモデル) で報告した
+
+**機種**: この直しで変わるのは表の並びで落ちる部品だけ。`coreai-build` が落ちる 9 種類 (16.247) と M6 (h18g) には効かない (直した合成のモデルでも h13c は SIGSEGV、h18g は ANE に乗らない)。`--architecture` を省くと `coreai-build` は 22 種類を順に作るが、`--preferred-compute neural-engine` では最初の h13c で落ちて全体が止まるので、`hwnpu-dev prebuild` のように 1 種類ずつ別のプロセスで作る要がある。
+
+**作り直し** (FLUX.2 klein の 512² と 1024² の書き出し、M1): `tools/coreai/kleinonly prepare 1024x1024` (生成なしに `hwnpu-image` と同じ準備。元のファイルから変換 24 秒) と `kleinonly put EXPORT` で取得元に置いた (`lowering: 2` の新しい鍵、7.7 GB)。取得元を読むには `chat.LoadUserModels` が要る (それなしでは `HWNPU_MODEL_SOURCE` が読まれず、取りも置きもしない)。
