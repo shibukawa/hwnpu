@@ -187,7 +187,7 @@ converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最
 ### 7.1 書き戻し
 
 - Hugging Face から落とす元のファイルは、落としながら書き戻す取得元にも書く (`store.Tee`、2026-11-16)。一時の名前 (`.put-`) に送り、落とし終えて大きさと sha256 が合ったときだけ正式な名前に移して lock に足す。対応はフォルダと WebDAV (S3 はキューで)。取得元が 64 MiB (`store.TeeBuffer`) 遅れたとき、失敗したとき、`.part` から続けたとき、lock が別のコミットのときは tee から外れ、落とし終えた後にキューで置く。ダウンロードは止めない。Qwen3-0.6B (M1、Wi-Fi、UGREEN の NAS) で答えた後の待ちが 35 秒から 6 秒に。Wi-Fi では受信と送信が電波を分け合い、ダウンロードは 40 秒 (curl だけ) から 54 秒になった。有線なら遅れないはず
-- 手元で変換するものは、変換しながら置く (`store.StartEarly`、2026-11-16。AMD の書き出しは詰めて置くので除く: 7.10)。書き戻す取得元で見つからなかったとき、その書き出しのフォルダを 2 秒ごとに見て、見始めてから書かれ、3 秒触られていないファイルから 4 本まで並べて置く (`.` で始まるもの、`.tmp`、`.part` は除く)。変換器には手を入れない。最後の `PutEntry` は、置いた後に変わったファイルと後から書かれたファイルだけを置き、置いたが entry にないもの (変換が消したもの) を消してから `entry.json` を書く。取得元のその場所に `entry.json` がすでにあれば、変換しながらは置かない (その entry のファイルを途中で書き換えないため)。変換が途中で止まれば、置いた分は `entry.json` のないまま残り、印が古くなってから `hwnpu cache clean` が消す。Qwen3-1.7B (書き出し 1.75 GB と表 0.62 GB) で、答えた後の待ちが 35 秒から 12 秒に (変換中に 129 ファイル)
+- 手元で変換するものは、変換しながら置く (`store.StartEarly`、2026-11-16。AMD と Core AI の書き出しは詰めて置くので除く: 7.10。2026-11-18 に Core AI も詰めるようにしたので、今これで置くものはない)。書き戻す取得元で見つからなかったとき、その書き出しのフォルダを 2 秒ごとに見て、見始めてから書かれ、3 秒触られていないファイルから 4 本まで並べて置く (`.` で始まるもの、`.tmp`、`.part` は除く)。変換器には手を入れない。最後の `PutEntry` は、置いた後に変わったファイルと後から書かれたファイルだけを置き、置いたが entry にないもの (変換が消したもの) を消してから `entry.json` を書く。取得元のその場所に `entry.json` がすでにあれば、変換しながらは置かない (その entry のファイルを途中で書き換えないため)。変換が途中で止まれば、置いた分は `entry.json` のないまま残り、印が古くなってから `hwnpu cache clean` が消す。Qwen3-1.7B (書き出し 1.75 GB と表 0.62 GB) で、答えた後の待ちが 35 秒から 12 秒に (変換中に 129 ファイル)
 - ほかの取得元から読んだものは、手元で揃ってから裏で置く。コマンドは終わる前に、キューの仕事 (このプロセスのものと、前のプロセスが残したもの) が済むまで待つ (`store.Wait`、`hwnpu-dev cache flush` と同じ。2026-11-16)。書き戻すのは自分で変換する人だけで、配られたものを読むだけの機械はキューが空なのですぐ終わる。待つ間の Ctrl-C と、プロセスが落ちたときは `work/queue` に残し、次の起動で続ける。entry.json と lock が最後なので、途中で切れても壊れたものは見えない
 - 後ろの取得元で当たったものは、それより前の書き戻す取得元にも置く (前が速い NAS、後ろが遠い S3 のとき)
 - 置けなかったとき (書けない、容量がない) は `work/queue.log` に残して続ける。書き戻しの失敗で実行を止めない
@@ -369,6 +369,20 @@ converted/MODEL/coreai/EXPORT/VERSION/...          書き出し (.aimodel)。ど
 converted/MODEL/coreai-ARCH/EXPORT/VERSION/...     ARCH (h13g = M1、h14g = M2、h15g = M3 ...) 向けのコンパイル済み、重みなし
 ```
 
+**置く方針 (2026-11-18)**: Core AI のモデルは、取得元に次の 2 つを両方置く。どちらも tar を zstd で詰めた 1 つのファイル。
+
+| 置くもの | 置き場所 | 誰が使うか |
+| --- | --- | --- |
+| `.aimodel` の書き出し (重みを含む、機械に依らない) | `coreai/`、`files.tar.zst` (7.10) | **すべての Mac**。prebuilt のない機種 (`coreai-build` が落ちる M1 Pro / Max / Ultra、M2 Pro / Ultra、M3 Pro / Ultra と h15m の M3 Max、A18、ANE に乗らない M6) はこれを端末でネイティブにコンパイルする。prebuilt のある機種も、重みはここから組み立てる |
+| 機種ごとの prebuilt (重みを除いた `.aimodelc`) | `coreai-ARCH/`、`prebuilt.tar.zst` | `coreai-build` で作れる 12 種類 (M1、M2、M2 Max、M3、M3 Max の h15c、M4 / Pro / Max、M5 / Pro / Max / Ultra) だけ。初回のネイティブのコンパイルの代わりに仕上げだけにする |
+
+- prebuilt は `.aimodel` を置き換えない (重みを持たないので、それだけでは動かない)。`.aimodel` を置かずに prebuilt だけ置くことはしない
+- どの機種に効くかの対応は design.md 16.229 (`coreai-build inspect` の `Supported chips`)。作れない機種の prebuilt は置かない (取りに来ても見つからず、ネイティブに落ちる)
+- 作る順: `.aimodel` の書き出しを置き (変換した機械が自動で)、そのあと開発機が `hwnpu-dev prebuild -arch all -put EXPORT` で 12 種類の prebuilt を足す
+- prebuilt を作るかはモデルの部品次第 (下の「効くかはモデル次第」)。作らないモデルは `.aimodel` だけ
+- **チャットのモデルには今は作らない** (2026-11-18、M2、design.md 16.242): LFM3-1.7B は初回の読み込みが 2 分 17 秒 (ネイティブ) から 8 分 12 秒 (prebuilt) に、plamo-3-translate-8b は 1 分 13 秒から 7 分 08 秒に延びた。Qwen3.5-4B は 7 分 07 秒で読めた (ネイティブは 12 分 26 秒) が、最初の呼び出しで止まり、1 時間 40 分たっても答えなかった。速さ (tokens/s) と答えは同じ
+- 画像のモデル (2026-11-18、M2、1024²、design.md 16.242): FLUX.2 klein 4B は初回が 52 分 16 秒から 16 分 55 秒に縮む (絵は細部が違う)。Anima-Turbo は 45 分 01 秒から 37 分 50 秒 (絵は同じ)。プロセスの最初の prebuilt に 3〜6 分かかるので、部品が少ないモデルでは負ける
+
 - 重みは配らない: `.aimodelc` の 99 % は `resources.bin` (重み) で、中身は `.aimodel` の `main.mlirb` のバイトを並べ替えたもの (アーキテクチャに依らない)。`coreai.Pack` はそれを `resources.bin.map.json` (`main.mlirb` のどこから何バイト、の並び。数 KB) に置き換える。1 種類あたり書き出しの 1〜2 % (ANE の LLIR と小さなファイル)
 - 鍵は部品のバイトコード: `programs` (書き出しの中の各 `.aimodel` の場所と `main.hash` の sha256)、`arch`、`export`、`format`。どの機械が変換したかに依らず、同じバイトの書き出しなら当たる。モデルは書き出しの entry.json のもの
 - 作る (開発機、Xcode 27 の Metal Toolchain): `hwnpu-dev prebuild -arch all -put EXPORT`。部品 × アーキテクチャごとに `coreai-build` を走らせ、詰めて `EXPORT.prebuilt/ARCH/` に置き、アーキテクチャごとに 1 つのファイル (`prebuilt.tar.zst`、tar を zstd で) にして書き戻す取得元へ (`EXPORT.prebuilt/ARCH.shared/`)。WebDAV ではファイルごとに PUT と MOVE がかかるので 1 つに。zstd で約 1/3 (h14g の 1 部品 3.0 MB → 0.97 MB、`-19`)。`coreai-build` が落ちる種類と、ANE に乗せられない部品は抜けたまま置く (その機械がネイティブにコンパイルする)
@@ -377,9 +391,11 @@ converted/MODEL/coreai-ARCH/EXPORT/VERSION/...     ARCH (h13g = M1、h14g = M2�
 - 手元の `EXPORT.prebuilt/` は残す: 読み込んだ部品は Core AI の項目に入るが、項目 (重みの複製、書き出しと同じ大きさ) が消えたとき (空きが足りない、OS の更新) にネットに出ずに数秒で作り直すもとになる。空きが足りないときは、prebuilt のある部品の Core AI の項目が先に消える (7.7)。`hwnpu cache` では種類 `prebuilt` の単位 (`clear --kind prebuilt` で消せる。消してもまた取得元から取る)。組み立てた重み入りの `.aimodelc` は読み込んだ直後に消す
 - 項目がある機械は何も聞かない (2 回目からの実行は取得元に触らない)。`HWNPU_COREAI_PREBUILT=off` で使わない
 
-### 7.10 AMD の書き出しは 1 つに詰めて置く: `files.tar.zst`
+### 7.10 AMD と Core AI の書き出しは 1 つに詰めて置く: `files.tar.zst`
 
 AMD の書き出し (`converted/MODEL/amd-xdna2/EXPORT/VERSION`、`store.Packs`) は、取得元ではファイルを並べず、全部を tar にして zstd で詰めた 1 つのファイル (`files.tar.zst`、`store.PackFile`) と `entry.json` だけにする (2026-11-17、design.md 16.237)。Core AI の prebuilt (7.9) と同じく、WebDAV でファイルごとにかかる PUT と MOVE を 1 回にし、送る量を減らす。
+
+2026-11-18 から Core AI の書き出し (`converted/MODEL/coreai/EXPORT/VERSION`、`.aimodel` の集まり) も同じに詰める (`store.Packs` が `coreai` の対象も取る)。チャットのモデルの書き出しはファイルが 100 ほど (LFM3-1.7B で 103) あり、縮むのは 1〜5 % (zstd の既定の速さで LFM3-1.7B の 2.62 GB が 2.59 GB、Anima の 3.03 GB が 2.89 GB、Chroma1-Flash の 15.97 GB が 15.25 GB。重みの表はほぼ縮まない)。効くのはファイルの数。機械の種類ごとの prebuilt (`coreai-ARCH`) はもともと `prebuilt.tar.zst` の 1 ファイルで、表 (`any`、`tables.safetensors`) は 1 ファイルなので、どちらもそのまま。変換しながら置くこと (7.1) はなくなり、書き出しが揃ってから詰めて送る。
 
 ```
 converted/MODEL/amd-xdna2/EXPORT/VERSION/files.tar.zst   書き出しの全部のファイル (tar、zstd)
@@ -390,7 +406,8 @@ converted/MODEL/amd-xdna2/EXPORT/VERSION/entry.json      files: 中のファイ�
 - 取る (`materialize`): `files.tar.zst` を `DST.part/` に落とし (切れたら続きから)、sha256 を照らしてから展開する。entry.json の `files` にあるものだけを、それぞれの大きさと sha256 を照らしながら書き、足りなくても余っても断る。展開したら詰めたものは消す。手元に残るのは展開した書き出しだけ (詰めたものは持たない)
 - 縮み方: 重み (bank) は 1 GB が 0.78 GB、プログラム (ELF) は 1/60 ほど (Qwen3.6-35B-A3B の書き出しで zstd -3)
 - `entry.json` の `files` は中身を並べたままなので、`hwnpu-dev cache ls` の大きさは展開したもの。`pack` を知らない前の hwnpu は中のファイルを取れずに外れ、手元で作る
-- `pack` のない AMD の書き出し (前の hwnpu が置いたもの) も、今までどおりファイルごとに取れる
+- `pack` のない AMD と Core AI の書き出し (前の hwnpu が置いたもの) も、今までどおりファイルごとに取れる
+- `hwnpu-dev cache repack SOURCE [--target coreai] [--model NAME] [--apply]`: そういう書き出しを詰め直す。同じ鍵の書き出しが手元 (`models/*/EXPORT`) にあり、大きさと sha256 が合えばそれから、なければ取得元から `work/repack/` に取って詰め、置いてからばらのファイルを消す。鍵は変えないので、どの機械も前と同じに当たる
 
 - `hwnpu-dev cache export MODEL...`: `amd_export` のあるチャットのモデルの書き出しを作って (取得元にあれば取って) 書き戻し、書き出しと詰めた大きさを出す。IRON の書き出しは CPU だけ (aiecc と Peano、`bind_device` は名前で選ぶだけ) なので、NPU をほかが使っている間にも回せる
 - 2026-11-17、チャットの 13 モデルを今の道具で書き出して UGREEN の NAS に置いた。合わせて 65.7 GB が 55.2 GB。gemma-4-E2B-it 7.42 → 7.11 GB、E4B 10.86 → 10.24 GB と gemma は 4〜6% しか縮まず、ほかは 2〜3 割 (Qwen3.5-4B 5.39 → 4.46、gpt-oss-20b 14.39 → 11.79、plamo-3-translate-8b 7.45 → 6.41)。Qwen3.5-0.8B (1.18 GB) を空の根に取って展開して答えるまでを確かめた (取るのに 40 秒、展開 2 秒)
