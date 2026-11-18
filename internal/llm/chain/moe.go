@@ -35,7 +35,7 @@ type moe struct {
 	dnArg   []int
 	layers  map[int]*moeLayer
 	bufs    []*hwnpu.Buffer
-	locked  [][]byte // the memory HWNPU_MOE_WIRE wired, unwired by close
+	locked  [][]byte   // the memory HWNPU_MOE_WIRE wired, unwired by close
 	mu      sync.Mutex // one row at a time: the chains that share it run in turn
 	// the programs of one expert on all the rows of a call, by its rows (experts.BuildRows)
 	rows map[int]*moeRows
@@ -63,10 +63,6 @@ type moeRows struct {
 	x, i, r, zero        *hwnpu.Buffer
 	ys                   [2]*hwnpu.Buffer // the calls' outputs in turn, each the next call's acc
 	sArg, gu, dn, acc, y int
-	xArg, iArg, rArg     int
-	// fixed are requests of the program each bound to one layer's expert for good, by layer and
-	// expert, made when first run (HWNPU_MOE_FIXED): a call then binds only acc and y
-	fixed map[[2]int]*hwnpu.Request
 }
 
 // minRows is the fewest valid rows a call's experts run on with the program of all its rows
@@ -266,7 +262,6 @@ func loadRows(ctx context.Context, c *Chain, path string) (*moeRows, error) {
 		idx[n] = a.Index
 	}
 	mr.sArg, mr.gu, mr.dn, mr.acc, mr.y = idx["S"], idx["gu"], idx["dn"], idx["acc"], idx["y"]
-	mr.xArg, mr.iArg, mr.rArg = idx["x"], idx["i"], idx["r"]
 	in := func(n string) (*hwnpu.Buffer, error) {
 		b, err := g.AllocInput(idx[n])
 		if err == nil {
@@ -310,9 +305,6 @@ func (m *moe) close() {
 		return
 	}
 	for _, mr := range m.rows {
-		for _, r := range mr.fixed {
-			r.Close()
-		}
 		mr.req.Close()
 		mr.g.Close()
 	}
@@ -346,7 +338,7 @@ func (m *moe) run(ctx context.Context, layer int, xs, logits, out []byte, rows i
 	start := time.Now()
 	H, E, K := m.shape.Hidden, m.shape.Experts, m.shape.TopK
 	if mr := m.rows[len(xs)/(2*H)]; mr != nil && rows >= minRows {
-		err := m.runRows(ctx, mr, layer, ml, xs, logits, out, rows)
+		err := m.runRows(ctx, mr, ml, xs, logits, out, rows)
 		m.Calls += rows
 		m.Time += time.Since(start)
 		return err
@@ -438,7 +430,7 @@ func (t *tier) runExperts(ctx context.Context, layer int) error {
 // runRows runs a call's experts with the program of all its rows: each expert any of the first
 // rows chose once, the rows' weights for it (0 for the others) in r, the outputs summed through
 // acc.
-func (m *moe) runRows(ctx context.Context, mr *moeRows, layer int, ml *moeLayer, xs, logits, out []byte, rows int) error {
+func (m *moe) runRows(ctx context.Context, mr *moeRows, ml *moeLayer, xs, logits, out []byte, rows int) error {
 	H, E, K := m.shape.Hidden, m.shape.Experts, m.shape.TopK
 	R := len(xs) / (2 * H)
 	lg := make([]float32, E)
@@ -462,41 +454,16 @@ func (m *moe) runRows(ctx context.Context, mr *moeRows, layer int, ml *moeLayer,
 	}
 	acc := mr.zero
 	n := 0
-	fixed := os.Getenv("HWNPU_MOE_FIXED") != ""
 	for e, we := range weights {
 		if we == nil {
 			continue
 		}
 		y := mr.ys[n%2]
-		req := mr.req
-		binds := []struct {
+		for _, b := range []struct {
 			i int
 			b *hwnpu.Buffer
-		}{{mr.gu, ml.gu[e]}, {mr.dn, ml.dn[e]}, {mr.acc, acc}, {mr.y, y}}
-		if fixed {
-			key := [2]int{layer, e}
-			if req = mr.fixed[key]; req == nil {
-				var err error
-				if req, err = mr.g.NewRequest(); err != nil {
-					return err
-				}
-				if mr.fixed == nil {
-					mr.fixed = map[[2]int]*hwnpu.Request{}
-				}
-				mr.fixed[key] = req
-				for _, b := range []struct {
-					i int
-					b *hwnpu.Buffer
-				}{{mr.sArg, ml.scales}, {mr.gu, ml.gu[e]}, {mr.dn, ml.dn[e]}, {mr.xArg, mr.x}, {mr.iArg, mr.i}, {mr.rArg, mr.r}} {
-					if err := req.Bind(b.i, b.b); err != nil {
-						return err
-					}
-				}
-			}
-			binds = binds[2:]
-		}
-		for _, b := range binds {
-			if err := req.Bind(b.i, b.b); err != nil {
+		}{{mr.gu, ml.gu[e]}, {mr.dn, ml.dn[e]}, {mr.acc, acc}, {mr.y, y}} {
+			if err := mr.req.Bind(b.i, b.b); err != nil {
 				return err
 			}
 		}
@@ -505,7 +472,7 @@ func (m *moe) runRows(ctx context.Context, mr *moeRows, layer int, ml *moeLayer,
 		mr.i.SyncToDevice(0, mr.i.Size())
 		mr.r.SyncToDevice(0, mr.r.Size())
 		t0 := time.Now()
-		if err := req.Run(ctx); err != nil {
+		if err := mr.req.Run(ctx); err != nil {
 			return fmt.Errorf("chain: an expert of %d rows: %w", R, err)
 		}
 		m.Called += time.Since(t0)
