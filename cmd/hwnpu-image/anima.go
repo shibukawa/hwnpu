@@ -187,6 +187,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	}
 	c.Out = outs[0]
 	model := expandHome(c.Model)
+	var kleinAs []aspect.Aspect // FLUX.2 klein's sizes on this machine's export (nil: the directory's own)
 	if !isPath(c.Model) {
 		m, err := resolve(c.Model, chat.KindImage)
 		if err != nil {
@@ -194,7 +195,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		}
 		model = ""
 		if strings.HasPrefix(m.Family, "flux2-klein") {
-			if model, err = c.kleinModel(ctx, m); err != nil {
+			if model, kleinAs, err = c.kleinModel(ctx, m); err != nil {
 				return err
 			}
 		} else if strings.HasPrefix(m.Family, "chroma") {
@@ -214,7 +215,7 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	}
 	var err error
 	if flux2klein.IsExport(model) {
-		err = c.klein(ctx, model, outs)
+		err = c.klein(ctx, model, kleinAs, outs)
 	} else if chroma.IsExport(model) {
 		err = c.chroma(ctx, model, outs)
 	} else if len(c.Prompts) > 1 {
