@@ -7629,3 +7629,20 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 - 言語モデルを NPU に (temporal は 12 層の窓 41 の KV キャッシュと sink、depth は 12 ステップの 2 層。どちらも 1 行の GEMV): 1 フレーム 66 ms のほとんど
 - 出力の層の im2col を減らす (時間のタップだけ im2col にし、周波数のタップは出力の列で持って足す)
 - MusicCoCa の音の側と SpectroStream の符号器 (`--continue`) は CPU のまま
+
+### 16.256 音のモデルの AMD の書き出しを取得元へ (UGREEN の NAS) — 2026-11-19
+
+16.252〜16.255 の最終の tools/amd で、手元の試しの書き出しを消して 5 つを初回として作り、書き戻す取得元 (NAS、WebDAV) に置いた。
+
+| 種類 | 置き場所 | GB |
+|---|---|---|
+| iron-whisper | whisper-large-v3-turbo/amd-xdna2/whisper-large-v3-turbo.amd-npu2/v0-12b61cd8 | 1.81 |
+| iron-lfm3speech | LFM3-Audio-2B-TTS/amd-xdna2/lfm3-audio-2b-tts.amd-npu2/v0-3a5fe2ac | 3.13 |
+| iron-moss_sfx | MOSS-SoundEffect-v2.0/amd-xdna2/moss-soundeffect-v2.0.amd-npu2/v0-e553fdcd | 6.63 |
+| iron-moss_sfx | MOSS-SoundEffect-v2.0-lut8/amd-xdna2/moss-soundeffect-v2.0-lut8.amd-npu2/v0-4db8e6f6 | 5.55 |
+| iron-magenta | magenta-realtime-2-small/amd-xdna2/magenta-realtime-2-small.amd-npu2/v0-b9fbeae2 | 0.09 |
+
+- MOSS-SoundEffect-v2.0-lut8 は `like` で sha256 を引き継がない (別のリポジトリのファイルかもしれないので) ため鍵がなく (`chat.PinnedRecipe` が nil)、置かれなかった。models.yaml の lut8 の版に同じ 2 つの sha256 を書いた
+- 空の根 (`HWNPU_CACHE` を新しいディレクトリに、`HWNPU_IRON_ENV` をないものに、取得元は読むだけ) で: Whisper は書き出し 1.81 GB を取って 42 秒で書き起こした。読み上げは 2.75 GB (詰めたもの) を 62 秒 (44 MB/s) で取り、チェックポイントなしで読み上げた (Whisper で元の文)。効果音は 6.44 GB を 146 秒で取り、チェックポイントなしで生成した (書き出しの `host/` と `dac/` で足りる)。音楽は復号器の書き出しのほかに、言語モデルの Core ML の版のためにチェックポイントが要る
+- lut8 の版の最大メモリ: 10 秒で 4.9 GiB (fp16 の版と同じ。DiT と CPU の DAC が大半)。models.yaml の amd を 5.1 GB に
+- 同じ頃、Mac のセッションが音のモデルの Core AI の書き出し (whisper、tts、MOSS の text、dit、dac、magenta) を取得元に置いていた

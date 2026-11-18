@@ -560,8 +560,14 @@ models:
   MOSS-SoundEffect-v2.0-lut8:
     like: MOSS-SoundEffect-v2.0
     tag: v2.0-lut8
+    # the same files as MOSS-SoundEffect-v2.0's (like does not take sha256): the key of its export
+    # for AMD's NPU
+    sha256:
+      text_encoder/model-00001-of-00002.safetensors: 169ad53ec313c3a34b06c0809216e4fc072cce444a5d4ff2b59690d064130ed5
+      text_encoder/model-00002-of-00002.safetensors: 912becff8d60672aa8628ef08c05898d9adf17c2ad4ae3caf99b065622fdeff9
     machine: 8
-    memory: 2.2
+    # AMD's: as MOSS-SoundEffect-v2.0's (the DiT's graphs and the decoder on the CPU are most of it)
+    memory: {amd: 5.1, apple: 2.2}
     about: "MOSS-SoundEffect v2.0 with the text encoder in lut8 (5 of its 28 layers in fp16) for 8 GB: up to 30 s of 48 kHz mono sound effects from a text; Apache-2.0"
 
   # hwnpu-image generate: on AMD's NPU the export NAME.amd-npu2 (in lower case: here, else from the
