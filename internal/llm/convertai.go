@@ -69,7 +69,16 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 		_, routed := model.(Routed)
 		switch {
 		case routed && o.Paged > 0:
-			return nil, fmt.Errorf("llm: %s is cut at its mixture of experts layers and cannot also be split at its attention (-paged)", a.Title)
+			if _, ok := model.(Paged); !ok {
+				return nil, fmt.Errorf("llm: %s cannot be split at its attention (-paged)", a.Title)
+			}
+			switch {
+			case o.Cache <= 0:
+				return nil, fmt.Errorf("llm: -paged needs -cache, the longest sequence")
+			case o.Seq < 1 || o.Seq > o.Paged:
+				return nil, fmt.Errorf("llm: -paged %d takes 1 to %d tokens per call, not %d", o.Paged, o.Paged, o.Seq)
+			}
+			plans[i], err = PlanRouted(model, o, budget)
 		case routed:
 			plans[i], err = PlanRouted(model, o, budget)
 		case o.Paged > 0:

@@ -50,43 +50,61 @@ func build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 	if opts.Format == "" {
 		opts.Format = cfg.Format()
 	}
-	if opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers {
+	afterAttn := opts.Layers == llm.NoLayers // the rest of layer Start's attention, up to its router
+	if !afterAttn && (opts.Layers <= 0 || opts.Start+opts.Layers > cfg.NumLayers) {
 		opts.Layers = cfg.NumLayers - opts.Start
 	}
-	if opts.Paged > 0 {
-		return nil, nil, fmt.Errorf("lfm2moe: the model is cut at its experts and not split at its attention (-paged)")
+	if opts.Paged > 0 && opts.Cache <= 0 {
+		return nil, nil, fmt.Errorf("lfm2moe: a program split at its attention (Paged) needs a KV cache")
 	}
 	if opts.LastRow && opts.Cache <= 0 {
 		return nil, nil, fmt.Errorf("lfm2moe: the logits of the last row alone (LastRow) are of a program with a KV cache")
 	}
 	start, end := opts.Start, opts.Start+opts.Layers
+	paged := func(i int) bool { return opts.Paged > 0 && cfg.IsAttention(i) }
+	if afterAttn && (!paged(start) || !cfg.IsRouted(start)) {
+		return nil, nil, fmt.Errorf("lfm2moe: a part of no layers is the rest of an attention layer the host attends for, up to its experts (layer %d)", start)
+	}
 	m := &builder{Graph: &blocks.Graph{Name: "lfm2moe", B: b, W: w, Opts: opts}, cfg: cfg, opts: opts, seq: opts.Seq, d: cfg.HiddenSize, ins: map[string]*mlpackage.Var{}}
 	err = blocks.Run(func() {
 		x := b.Input("x", mlpackage.Float16, 1, m.seq, m.d)
 		ins = []mlpackage.Feature{{Name: "x", DType: mlpackage.Float16, Shape: x.Shape}}
 		h := x
 		i := start
-		if start > 0 && cfg.IsRouted(start) {
+		switch {
+		case afterAttn:
+			end = start // the part ends with the layer's router
+		case start > 0 && cfg.IsRouted(start):
 			h = m.Op("add", map[string]any{"x": h, "y": m.input(fmt.Sprintf("moe_o_%d", start), 1, m.seq, m.d)}, h.Shape...)
 			i++
 		}
 		for ; i < end; i++ {
-			if cfg.IsRouted(i) {
-				m.Fail("layer %d's experts are inside the part of layers %d to %d: a part ends where they begin (llm.PlanRouted)", i, start, end-1)
+			if cfg.IsRouted(i) || paged(i) {
+				m.Fail("layer %d's experts or attention are inside the part of layers %d to %d: a part ends where they begin (llm.PlanRouted)", i, start, end-1)
 			}
 			h = m.dense(i, m.operator(i, h))
 		}
 		var y *mlpackage.Var
 		switch {
+		case afterAttn:
+			h = m.Op("add", map[string]any{"x": m.attnOutput(start, m.input(fmt.Sprintf("attn_o_%d", start), 1, cfg.NumHeads, m.seq, cfg.HeadDim)), "y": h}, h.Shape...)
+			m.moeHead(start, h)
+			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
+		case end < cfg.NumLayers && paged(end):
+			// the host attends next: the queries, the step's keys and values; y the hidden
+			// state entering the layer
+			p := fmt.Sprintf("model.layers.%d.", end)
+			q, k, v := m.qkv(end, m.RMSNorm(h, p+"operator_norm.weight", m.d, cfg.NormEps, 1))
+			m.output(q, fmt.Sprintf("attn_q_%d", end))
+			m.output(k, fmt.Sprintf("kv_k_%d_new", end))
+			m.output(v, fmt.Sprintf("kv_v_%d_new", end))
+			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		case end < cfg.NumLayers:
 			if !cfg.IsRouted(end) {
 				m.Fail("the part of layers %d to %d ends at a dense layer", start, end-1)
 			}
 			h = m.operator(end, h)
-			p := fmt.Sprintf("model.layers.%d.", end)
-			f := m.RMSNorm(h, p+"ffn_norm.weight", m.d, cfg.NormEps, 1)
-			m.output(f, fmt.Sprintf("moe_x_%d", end))
-			m.output(m.router(f, p+"feed_forward.gate.weight"), fmt.Sprintf("moe_logits_%d", end))
+			m.moeHead(end, h)
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
 		case opts.NoHead:
 			y = b.NamedOp("identity", "y", map[string]any{"x": h}, mlpackage.Float16, h.Shape...)
@@ -108,6 +126,15 @@ func build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 		ins = append(ins, m.inList...)
 	})
 	return ins, outs, err
+}
+
+// moeHead is the end of a part before layer i's experts: the ffn norm's output moe_x_N and the
+// router's logits moe_logits_N (llm.Routed).
+func (m *builder) moeHead(i int, h *mlpackage.Var) {
+	p := fmt.Sprintf("model.layers.%d.", i)
+	f := m.RMSNorm(h, p+"ffn_norm.weight", m.d, m.cfg.NormEps, 1)
+	m.output(f, fmt.Sprintf("moe_x_%d", i))
+	m.output(m.router(f, p+"feed_forward.gate.weight"), fmt.Sprintf("moe_logits_%d", i))
 }
 
 // router is the router's logits (1, seq, experts), its weight in fp16: the choice of the experts
@@ -184,8 +211,9 @@ func (m *builder) shortConv(i int, h *mlpackage.Var) *mlpackage.Var {
 	return m.Linear(y, p+"out_proj.weight", "", d)
 }
 
-// attention is grouped query attention with QK RMS norms and RoPE, causal.
-func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
+// qkv is the attention's queries (1, heads, seq, head_dim) and keys and values (1, kv_heads, seq,
+// head_dim) from the normed hidden state, with the QK norms and RoPE.
+func (m *builder) qkv(i int, h *mlpackage.Var) (q, k, v *mlpackage.Var) {
 	p := fmt.Sprintf("model.layers.%d.self_attn.", i)
 	s, nh, nkv, hd := m.seq, m.cfg.NumHeads, m.cfg.NumKVHeads, m.cfg.HeadDim
 	const lt = "full_attention"
@@ -204,9 +232,23 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 		}
 		return m.Op("transpose", map[string]any{"x": v, "perm": m.B.Ints(0, 2, 1, 3)}, 1, n, s, hd)
 	}
-	q := heads("q_proj.weight", "q_layernorm.weight", nh)
-	k := heads("k_proj.weight", "k_layernorm.weight", nkv)
-	v := heads("v_proj.weight", "", nkv)
+	return heads("q_proj.weight", "q_layernorm.weight", nh), heads("k_proj.weight", "k_layernorm.weight", nkv), heads("v_proj.weight", "", nkv)
+}
+
+// attnOutput is the output projection of the attention's o (1, heads, seq, head_dim).
+func (m *builder) attnOutput(i int, o *mlpackage.Var) *mlpackage.Var {
+	s, nh, hd := m.seq, m.cfg.NumHeads, m.cfg.HeadDim
+	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, s, nh, hd)
+	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(s), int32(nh*hd))}, 1, s, nh*hd)
+	return m.Linear(o, fmt.Sprintf("model.layers.%d.self_attn.out_proj.weight", i), "", m.d)
+}
+
+// attention is grouped query attention with QK RMS norms and RoPE, causal, over the cache in the
+// program.
+func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
+	s, nkv, hd := m.seq, m.cfg.NumKVHeads, m.cfg.HeadDim
+	const lt = "full_attention"
+	q, k, v := m.qkv(i, h)
 	var o *mlpackage.Var
 	if m.opts.Cache > 0 {
 		m.output(k, fmt.Sprintf("kv_k_%d_new", i))
@@ -233,9 +275,7 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 	} else {
 		o = m.Attention(q, k, v, "mask_"+lt, 0)
 	}
-	o = m.Op("transpose", map[string]any{"x": o, "perm": m.B.Ints(0, 2, 1, 3)}, 1, s, nh, hd)
-	o = m.Op("reshape", map[string]any{"x": o, "shape": m.B.Ints(1, int32(s), int32(nh*hd))}, 1, s, nh*hd)
-	return m.Linear(o, p+"out_proj.weight", "", m.d)
+	return m.attnOutput(i, o)
 }
 
 // StepInputs gives the masks and rotary tables of a step of valid tokens from pos (llm.Cached):
@@ -243,6 +283,10 @@ func (m *builder) attention(i int, h *mlpackage.Var) *mlpackage.Var {
 func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 	const lt = "full_attention"
 	out := map[string][]float32{}
+	if cache == pagedCache { // PagedStepInputs: the host attends, the rotary tables alone
+		out["rope_cos_"+lt], out["rope_sin_"+lt] = blocks.RopeValues(c.RopeInvFreq(), pos, q, c.HeadDim)
+		return out
+	}
 	mask := make([]float32, q*(cache+q))
 	for t := 0; t < q; t++ {
 		row := mask[t*(cache+q):]
@@ -275,4 +319,13 @@ func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 	}
 	out["rope_cos_"+lt], out["rope_sin_"+lt] = blocks.RopeValues(c.RopeInvFreq(), pos, q, c.HeadDim)
 	return out
+}
+
+// pagedCache marks StepInputs' call from PagedStepInputs.
+const pagedCache = -1
+
+// PagedStepInputs is StepInputs for a program split at its attention (llm.Paged): the rotary
+// tables, the masks being the host's attention's.
+func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 {
+	return c.StepInputs(pos, valid, q, pagedCache)
 }

@@ -62,8 +62,8 @@ type tier struct {
 
 	// of a model cut at its mixture of experts layers (llm.Manifest.Experts)
 	moe     *moe
-	moeAt   map[int]int // the layer whose experts run after each part that has them
-	ownsMoE bool        // false for a chain made by Share, whose experts are the other's
+	moeAt   map[*Part]int // the layer whose experts run after each part that has them
+	ownsMoE bool          // false for a chain made by Share, whose experts are the other's
 }
 
 // attention is the loaded program without weights that attends over one chunk of the cache.
@@ -208,8 +208,8 @@ func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[
 // loadExperts loads the experts of a model cut at its mixture of experts layers, or takes
 // another chain's (Share), and finds the parts they run after.
 func (t *tier) loadExperts(ctx context.Context, c *Chain, man *llm.Manifest, shared *moe) error {
-	if man.Paged > 0 || len(man.Tiers) > 0 {
-		return fmt.Errorf("chain: a model cut at its mixture of experts layers is neither split at its attention nor in tiers")
+	if len(man.Tiers) > 0 {
+		return fmt.Errorf("chain: a model cut at its mixture of experts layers has no tiers")
 	}
 	if shared != nil {
 		t.moe = shared
@@ -617,7 +617,7 @@ func (t *tier) run(ctx context.Context) error {
 		if err := p.req.Run(ctx); err != nil {
 			return fmt.Errorf("chain: part %d: %w", i, err)
 		}
-		if layer, ok := t.moeAt[i]; ok {
+		if layer, ok := t.moeAt[p]; ok {
 			if err := t.runExperts(ctx, layer); err != nil {
 				return err
 			}
@@ -653,6 +653,11 @@ func (t *tier) program(ctx context.Context) decode.Program {
 				}
 				for _, b := range part.outs {
 					b.SyncFromDevice(0, b.Size())
+				}
+				if layer, ok := t.moeAt[part]; ok {
+					if err := t.runExperts(ctx, layer); err != nil {
+						return err
+					}
 				}
 			}
 			return nil

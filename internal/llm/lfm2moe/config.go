@@ -16,6 +16,7 @@ import (
 	"math"
 
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
+	"github.com/shibukawa/hwnpu/internal/llm/paged"
 )
 
 // Config is the subset of config.json the conversion needs.
@@ -151,9 +152,28 @@ func (c *Config) ExpertNames(layer int) experts.Names {
 	return n
 }
 
-// UnpagedContext is the cache of the whole programs (their caches inside): the model is not
-// split at its attention, being cut at its experts already.
-func (c *Config) UnpagedContext() int { return 4096 }
+// PagedLayers are the attention layers: split at them (llm.Options.Paged), the host attends over
+// its cache in chunks, as well as running the experts.
+func (c *Config) PagedLayers() []int {
+	var out []int
+	for i := range c.LayerTypes {
+		if c.IsAttention(i) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// PagedShape is the attention's heads, kv heads and head size, its scores scaled by 1/sqrt(head_dim).
+func (c *Config) PagedShape() paged.Shape {
+	return paged.Shape{Heads: c.NumHeads, KVHeads: c.NumKVHeads, HeadDim: c.HeadDim}
+}
+
+// PagedKV is the layer itself: every attention layer has its own keys and values.
+func (c *Config) PagedKV(layer int) int { return layer }
+
+// MaxContext is max_position_embeddings: 128000 for LFM2-8B-A1B.
+func (c *Config) MaxContext() int { return c.MaxPositions }
 
 // Format is lut8: LFM3's family loses its answers in lut4 on the Neural Engine
 // (docs/design.md 16.31). The experts are int8 whatever it is.

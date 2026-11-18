@@ -21,7 +21,7 @@ func init() { llm.Register(Arch) }
 
 var (
 	_ llm.Routed    = (*Config)(nil)
-	_ llm.Unpaged   = (*Config)(nil)
+	_ llm.Paged     = (*Config)(nil)
 	_ llm.Formatter = (*Config)(nil)
 )
 

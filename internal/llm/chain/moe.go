@@ -353,8 +353,8 @@ func (m *moe) run(ctx context.Context, layer int, xs, logits, out []byte, rows i
 
 // moeHooks finds the parts after which the host runs a layer's experts: those that output
 // moe_logits_N, by part index.
-func (t *tier) moeHooks() (map[int]int, error) {
-	hooks := map[int]int{}
+func (t *tier) moeHooks() (map[*Part]int, error) {
+	hooks := map[*Part]int{}
 	for i, p := range t.parts {
 		for _, a := range p.g.Args() {
 			if a.Kind == hwnpu.ArgOutput && strings.HasPrefix(a.Name, "moe_logits_") {
@@ -367,7 +367,7 @@ func (t *tier) moeHooks() (map[int]int, error) {
 						return nil, fmt.Errorf("chain: part %d outputs %s but no part has %s", i, a.Name, n)
 					}
 				}
-				hooks[i] = layer
+				hooks[p] = layer
 			}
 		}
 	}

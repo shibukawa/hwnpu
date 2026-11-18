@@ -203,7 +203,9 @@ LFM2-8B-A1B が hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B --backend coreai`) で動�
 
 プロンプト (2026-11-19): 呼び出しの全部の行を専門家 1 つずつで回すプログラム (`experts.BuildRows`、`model.experts.q128.aimodel`、出力を次の呼び出しの acc に) と、MoE のモデルのプロンプトのプログラムを 1 回 128 に。1503 トークンのプロンプト 61.7 s → 15.6 s (64) → 10.9 s (128)。KL 0.0057 (48/48)。生成の 1 トークン 70 ms (文脈 4096) のうち専門家 57.5 ms (1 層 2.6 ms、呼び出しそのもの)。
 
-残り: paged (長い文脈) と tools の形式 (LFM2 の `<|tool_call_start|>`) は未対応。生成の専門家の呼び出しを次の部品に入れても 4 % ほど。4 ビットの専門家 (2026-11-19): 精度は 64 列ごとの scale で KL 0.023 (専門家だけ、int8 は 0.0019、行ごと 0.071、`moeserve -bits 4 -group 64`)。速さはどれも int8 (1 層 1.7〜2.6 ms) に負ける: int8 に 2 つ詰めて `floor_div` で取り出す 8.7〜11 ms (値も誤り)、Core AI の int4 配列 (`NDArray.ScalarType.int4`、1 バイトに 2 つ、下位の 4 ビットが先) を `blockwise_shift_scale` で戻す形は正しいが GPU に載り 6.4〜9.8 ms、int4 配列を cast する形は Neural Engine で正しいが 85 ms (`aicheck moe4`)。int4 の入力 (`types.I4`、ailower の `sint4`、shim) と `floor_div`、`mod`、`round` の lowering は残した。
+長い文脈と道具 (2026-11-19): MoE の切れ目と注意の分割を合わせた (`llm.PlanRouted` + `Paged`、29 部品、文脈 128000)。16.9K トークンの passkey を見つけた。LFM2 の道具の形式 (`chat.LFM2`、テンプレートと 9 会話一致)、API で呼び出しと応答が往復する。agent の課題はモデルが edit の `old` を外す。
+
+残り:生成の専門家の呼び出しを次の部品に入れても 4 % ほど。4 ビットの専門家 (2026-11-19): 精度は 64 列ごとの scale で KL 0.023 (専門家だけ、int8 は 0.0019、行ごと 0.071、`moeserve -bits 4 -group 64`)。速さはどれも int8 (1 層 1.7〜2.6 ms) に負ける: int8 に 2 つ詰めて `floor_div` で取り出す 8.7〜11 ms (値も誤り)、Core AI の int4 配列 (`NDArray.ScalarType.int4`、1 バイトに 2 つ、下位の 4 ビットが先) を `blockwise_shift_scale` で戻す形は正しいが GPU に載り 6.4〜9.8 ms、int4 配列を cast する形は Neural Engine で正しいが 85 ms (`aicheck moe4`)。int4 の入力 (`types.I4`、ailower の `sint4`、shim) と `floor_div`、`mod`、`round` の lowering は残した。
 
 ### 次の段
 

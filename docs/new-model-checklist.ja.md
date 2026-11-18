@@ -162,7 +162,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - **専門家の形が `internal/llm/experts` に合うか**: bias のない SwiGLU (gate、up、down)、sigmoid か softmax の点数、選ぶための bias、上位 k の正規化と倍率。共有の専門家、bias、clamp (gpt-oss) はプログラムを足す必要がある。層ごとに大きさが違えば大きさごとにプログラムが要る
 - **先にチップで層の形を測る**: `aicheck moe -model NAME -layers L -copy` (`moeShapes` に形を足す) をモデルが持つ層の数で、同じ大きさの定数の重みと比べる。`aicheck moepack -two` (専門家 2 配列、拡大は gather) も。M3 で 1 層は定数の約 3 倍、持たせる専門家が多いほど結び付けが高い。`aicheck probe gnd16_const gnd16_pts_w1` で拡大の gather がそのチップに載るか分かる (M3 は載り、M1 は載らない)
 - **専門家の誤差と移植の誤差を分ける**: モデルの残りを transformers で、MoE の段を `aicheck moeserve` で回す (`tools/ref/lfm2moe_ane.py run ref|ane`、`compare`)。LFM2-8B-A1B の int8 の専門家を Neural Engine で KL 0.0019、48 トークン同じ文。そのあと変換したものを `hwnpu-dev generate -score` で、キャッシュなし (`-seq N`) とキャッシュありの 1 トークンずつ (`-cache C -seq 1`) の両方: 0.0062 と 0.0056
-- **アーキテクチャでは**: `llm.Routed` を実装する。部品は MoE の層の始まりで終わり、`moe_x_N` (ffn の norm の出力) と `moe_logits_N` (ルーター、fp16: 選択は小さな差で決まる) を出し、y は残差。次の部品は `moe_o_N` を足して始まる。`Tensors` に専門家は入れない (`experts.WriteFile` が読む)。変換は Core AI だけで `llm.PlanRouted` が切り、注意では分けない
+- **アーキテクチャでは**: `llm.Routed` を実装する。部品は MoE の層の始まりで終わり、`moe_x_N` (ffn の norm の出力) と `moe_logits_N` (ルーター、fp16: 選択は小さな差で決まる) を出し、y は残差。次の部品は `moe_o_N` を足して始まる。`Tensors` に専門家は入れない (`experts.WriteFile` が読む)。変換は Core AI だけで `llm.PlanRouted` が切る。`llm.Paged` でもあるモデルは注意でも分け、注意の層の出力からルーターまでは層なしの部品 (`NoLayers`) にする (LFM2-8B-A1B: 29 部品、文脈 128000)
 - **行を数える**: 生成の専門家は行ごとにかかるので、hwnpu-chat は MoE のモデルで draft を切り、tier は 1 つ。プロンプトの呼び出しは選ばれた専門家を全部の行に 1 回ずつ回す (`experts.BuildRows`) ので、プロンプトのプログラムは 1 回 128 トークン: LFM2-8B-A1B は 138 tokens/s、1 行ずつなら 24
 - **MoE でないモデルが変わらないことを確かめる**: MoE の経路は `llm.Routed` と `experts` のある manifest だけが通る。LFM3-1.7B: 同じ文、同じ 57.4 tok/s、変換し直しもなし
 

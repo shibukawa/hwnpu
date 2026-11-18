@@ -345,8 +345,10 @@ func kvOnlyParts(m Model, plan []Part) ([]Part, error) {
 
 // PlanRouted divides a Routed model into parts cut at its mixture of experts layers: a part ends
 // where one of them begins (with its router) and the next starts with it (the experts' output),
-// so that the host runs the experts between them. A part is a layer or a few; one over budget is
-// an error.
+// so that the host runs the experts between them. Split at its attention too (Options.Paged, a
+// Paged model), a part also ends where one of PagedLayers begins (its queries, keys and values,
+// PlanPaged); when that layer has experts, a part of no layers (NoLayers) starting at it takes the
+// attention's output up to the router. A part is a layer or a few; one over budget is an error.
 func PlanRouted(m Model, opts Options, budget int64) ([]Part, error) {
 	rm, ok := m.(Routed)
 	if !ok {
@@ -357,25 +359,43 @@ func PlanRouted(m Model, opts Options, budget int64) ([]Part, error) {
 	cost := append([]int64(nil), layers...)
 	cost[0] += pre
 	cost[n-1] += post
-	bounds := []int{0}
+	routed, attend := map[int]bool{}, map[int]bool{}
 	for _, c := range rm.RoutedLayers() {
-		if c <= bounds[len(bounds)-1] || c >= n {
-			return nil, fmt.Errorf("llm: the mixture of experts layers %v are not in order within %d layers, after layer 0", rm.RoutedLayers(), n)
+		if c <= 0 || c >= n {
+			return nil, fmt.Errorf("llm: the mixture of experts layers %v are not within %d layers, after layer 0", rm.RoutedLayers(), n)
 		}
-		bounds = append(bounds, c)
+		routed[c] = true
 	}
-	bounds = append(bounds, n)
+	if opts.Paged > 0 {
+		pm, ok := m.(Paged)
+		if !ok {
+			return nil, fmt.Errorf("llm: the model cannot be split at its attention (-paged)")
+		}
+		for _, c := range pm.PagedLayers() {
+			if c <= 0 || c >= n {
+				return nil, fmt.Errorf("llm: the attention layers %v are not within %d layers, after layer 0", pm.PagedLayers(), n)
+			}
+			attend[c] = true
+		}
+	}
 	var out []Part
-	for i := 0; i+1 < len(bounds); i++ {
-		a, b := bounds[i], bounds[i+1]
+	a := 0 // the current part's first layer
+	for l := 1; l <= n; l++ {
+		if l < n && !routed[l] && !attend[l] {
+			continue
+		}
 		var total int64
-		for _, c := range cost[a:b] {
+		for _, c := range cost[a:l] {
 			total += c
 		}
 		if total > budget {
-			return nil, fmt.Errorf("llm: layers %d to %d need %.2f GiB, over the %.2f GiB a part may hold", a, b-1, gib(total), gib(budget))
+			return nil, fmt.Errorf("llm: layers %d to %d need %.2f GiB, over the %.2f GiB a part may hold", a, l-1, gib(total), gib(budget))
 		}
-		out = append(out, Part{Start: a, Layers: b - a, Bytes: total})
+		out = append(out, Part{Start: a, Layers: l - a, Bytes: total})
+		if attend[l] && routed[l] {
+			out = append(out, Part{Start: l, Layers: NoLayers}) // after the attention, to the router
+		}
+		a = l
 	}
 	return out, nil
 }

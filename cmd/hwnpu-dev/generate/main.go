@@ -482,8 +482,11 @@ func (s sampling) pick(logits []float32, context []int32) int32 {
 }
 
 func hasCache(c *chain.Chain) bool {
+	if c.Paged() > 0 { // the host holds the caches (every attention layer of LFM2-MoE's)
+		return true
+	}
 	for name := range c.Program(context.Background()).In {
-		if strings.HasPrefix(name, "kv_") {
+		if llm.CacheInput(name) {
 			return true
 		}
 	}

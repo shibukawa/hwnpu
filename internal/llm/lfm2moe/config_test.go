@@ -36,3 +36,25 @@ func TestPlanRouted(t *testing.T) {
 		}
 	}
 }
+
+// Split at its attention too, a layer with both gets a part of no layers between its attention and
+// its experts.
+func TestPlanRoutedPaged(t *testing.T) {
+	c, err := ParseConfig([]byte(cfg8b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := llm.PlanRouted(c, llm.Options{Format: "lut8", Paged: 8192, Cache: 32768}, 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][2]int{{0, 2}, {2, llm.NoLayers}, {2, 1}, {3, 1}, {4, 1}, {5, llm.NoLayers}, {5, 1}}
+	if len(plan) != len(want) {
+		t.Fatalf("plan %v, want starts and layers %v", plan, want)
+	}
+	for i, p := range plan {
+		if p.Start != want[i][0] || p.Layers != want[i][1] {
+			t.Errorf("part %d: %d+%d, want %v", i, p.Start, p.Layers, want[i])
+		}
+	}
+}

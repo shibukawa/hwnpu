@@ -250,7 +250,8 @@ type Unpaged interface {
 // layer N with the input moe_o_N (1, seq, hidden), the experts' weighted output, which the host
 // writes (internal/llm/chain), and x, that hidden state. The experts' weights are not in the
 // parts: the conversion writes them into a file of their own (Manifest.Experts). It is converted
-// for Core AI alone, and not split at its attention.
+// for Core AI alone. A Routed model that is Paged may be split at its attention too
+// (PlanRouted).
 type Routed interface {
 	Cached
 	// RoutedLayers are the mixture of experts layers, in order; layer 0 is not one.
