@@ -18,6 +18,7 @@ const (
 	Float16 = milspec.DataType_FLOAT16
 	Float32 = milspec.DataType_FLOAT32
 	Int32   = milspec.DataType_INT32
+	Int16   = milspec.DataType_INT16
 	Int8    = milspec.DataType_INT8
 	UInt4   = milspec.DataType_UINT4
 	UInt6   = milspec.DataType_UINT6
@@ -240,6 +241,12 @@ func (b *Builder) F32(name string, shape []int, vals []float32) (*Var, error) {
 		binary.LittleEndian.PutUint32(raw[4*i:], math.Float32bits(v))
 	}
 	return b.constOp(name, Float32, shape, raw, BlobFloat32)
+}
+
+// I8s adds an int8 constant (raw two's complement bytes), not a constexpr: the values themselves
+// (what a gather picks from).
+func (b *Builder) I8s(name string, shape []int, raw []byte) (*Var, error) {
+	return b.constOp(name, Int8, shape, raw, BlobInt8)
 }
 
 // I32 adds an int32 constant.

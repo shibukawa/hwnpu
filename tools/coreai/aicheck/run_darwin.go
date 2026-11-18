@@ -76,7 +76,13 @@ func run(pkgs []string, cacheDir string, scale float64, cpu, coreML bool, calls 
 		var outs []types.ArgInfo
 		var bufs []backend.Buffer
 		for _, a := range g.Args() {
-			b, err := dev.AllocBuffer(a.Bytes, types.BufferKind(0))
+			var b backend.Buffer
+			var err error
+			if ia, ok := g.(backend.InputAllocator); ok && a.Kind == types.ArgInput && os.Getenv("INPLACE") != "" {
+				b, err = ia.AllocInput(a.Index) // the program's own array: no copy at a call
+			} else {
+				b, err = dev.AllocBuffer(a.Bytes, types.BufferKind(0))
+			}
 			if err != nil {
 				return err
 			}

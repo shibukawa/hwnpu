@@ -6,6 +6,8 @@
 //	                                               load on Core AI, run, compare with milcpu
 //	go run ./tools/coreai/aicheck cycle [-rounds N] PKG...
 //	                                               the programs called in a row and in turn: what a switch costs
+//	go run ./tools/coreai/aicheck moe [-model gptoss|qwen3moe|small] [-rows N] [-layers N] [-fp16]
+//	                                               a mixture of experts layer with the experts' weights at run time
 //	go run ./tools/coreai/aicheck merge OUT.aimodel NAME=PKG...
 //	                                               one program with a function of each package, the weights shared
 //
@@ -36,6 +38,20 @@ func main() {
 		n := 50
 		fmt.Sscan(os.Getenv("N"), &n)
 		err = listOps(os.Args[2], n)
+	case "locked": // locked CMD ARGS...: runs CMD holding the Neural Engine lock
+		err = locked(os.Args[2:])
+	case "gather":
+		err = gatherCheck(os.Args[2:])
+	case "moeserve":
+		err = moeServe(os.Args[2:])
+	case "fdiv":
+		err = fdivCheck()
+	case "moe4":
+		err = moe4(os.Args[2:])
+	case "moepack":
+		err = moePack(os.Args[2:])
+	case "moe":
+		err = moe(os.Args[2:])
 	case "probe":
 		err = probe(os.Args[2:], os.Getenv("KEEP") != "")
 	case "lower":
