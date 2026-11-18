@@ -60,6 +60,9 @@ func TestPickNotOn(t *testing.T) {
 		{"M1", "plamo3translate:8b", 16, "plamo-3-translate-8b"},
 		{"M2", "plamo3translate", 16, "plamo-3-translate-8b"},
 		{"M3", "translate", 16, "plamo-3-translate-8b"},
+		// the family has no other: still picked, and Prepare refuses it there (a MoE model)
+		{"M1", "lfm2", 16, "LFM2-8B-A1B"},
+		{"M2", "lfm2", 16, "LFM2-8B-A1B"},
 	} {
 		chipName = func() string { return c.chip }
 		m, why, ok, err := Pick(c.name, c.machine)

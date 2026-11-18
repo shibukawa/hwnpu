@@ -366,6 +366,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if _, routed := model.(llm.Routed); routed && Chip() == "M1" {
+		// the experts' program picks their scales with gather_nd, which an M1's Neural Engine
+		// does not take (docs/handoff-ane-gather.md 1): refused before the checkpoint downloads
+		return Config{}, fmt.Errorf("chat: %s is a mixture of experts, which runs on an M2 or later, not on an M1's Neural Engine", c.Name)
+	}
 	if _, routed := model.(llm.Routed); routed && s.Draft > 1 {
 		// a call's experts run row by row (llm.Routed): checking 7 drafts costs 8 rows of them,
 		// for the few a model accepts (LFM2-8B-A1B: 13 of 95, 2.3 tokens/s against 15)
