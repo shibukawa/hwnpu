@@ -25,7 +25,7 @@ const CoreAIKind = "coreai"
 // CoreAITarget is the target of the Core AI exports: their programs (.aimodel, MLIR bytecode)
 // are the same on every Mac (docs/cache-sharing-design.md 10): what is compiled for the chip stays in
 // Core AI's own cache.
-const CoreAITarget = "coreai"
+const CoreAITarget = cache.CoreAITarget
 
 func init() { llm.SharedExports = coreAIShares{} }
 

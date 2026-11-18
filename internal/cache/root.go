@@ -72,6 +72,10 @@ func Sub(elem ...string) string {
 // XDNA 2 (IRON's npu2).
 const AMDTarget = "amd-xdna2"
 
+// CoreAITarget is the target of the Core AI exports (.aimodel, MLIR bytecode): the same on
+// every Mac; what is compiled for a chip goes as its own target, CoreAITarget-ARCH.
+const CoreAITarget = "coreai"
+
 // Entries is where the exports for a target are kept: entries/TARGET under Root.
 func Entries(target string) string { return Sub("entries", target) }
 
