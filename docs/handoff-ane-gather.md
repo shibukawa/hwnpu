@@ -41,7 +41,22 @@ Core AI の基本演算 (`aicode.primitive.*`) にもある。引数の数は C+
 | 重みが入力の `matmul` (fp16) | **全部 ANE** | ある |
 | int8 の入力を `cast` で fp16 にし、拡大して `matmul` | **全部 ANE** | (Core ML は仕様 10 以上が要り、試していない) |
 
-Core AI のログ: 「setNDXANEProcedureAttrs: entry '…' has 0 ANE regions」。MPSGraph が gather の部分を ANE に回していない。理由はログで `<private>` (3 章)。
+Core AI のログ: 「setNDXANEProcedureAttrs: entry '…' has 0 ANE regions」。MPSGraph が gather の部分を ANE に回していない。
+
+### ANE の検証が外す理由 (M1)
+
+MPSGraph は ANE の領域の候補を `ANEValidateNetworkCreate` に渡し、演算ごとに `support` と `errorMsg` を受け取る。この辞書は `log stream --level debug` にだけ出る (`log show` には残らない。読み方は 3.3)。索引の形を変えながら追った:
+
+| 試したこと (probe) | 返事 |
+|---|---|
+| 索引が int32 (`gnd_const` ほか全部) | Incompatible element type for ANE: expected fp16, f8E4M3, si8, ui8, si16, or ui16 |
+| 索引を int16 に、行を丸ごと取る形 (`gnd16_const`、`gnd16_mm`、`gaa16_*`) | Invalid gather axes size 1, must be 3 |
+| 3 座標の組、索引 (1024, 3) (`gnd16_pts`) | Invalid gather index tensor width size 1024, must be 1 |
+| 索引 (32, 32, 1, 3) (`gnd16_pts_hw`) | Invalid gather index tensor channel size 96, must be 3 |
+| 索引 (1024, 1, 3)、(1, 1024, 1, 3) (`gnd16_pts_w1`、`gnd16_pts_4d`): 条件を全部満たす形 | **Cannot decompose layer on this architecture** |
+| begin を int16 にした動的切り出し (`dslice16_*`) | Core AI → MPS の段で「'mps.strided_slice' op operand #1 must be … mps index type」(int32 か int64 しか取らず、ANE は int32 を取らない)。プロセスが落ちる |
+
+ANE の gather は、索引が si16 などで、3 つの軸の座標の組 (チャネル 3、幅 1) の、要素ごとの取り出しだけ。M1 (h13) ではそれも「分解できない」で止まる。**M1 では gather は使えない**。新しい世代では最後の段を通るかもしれない (3.1)。通っても要素ごとなので、専門家の重み (数百万要素) を取るには索引が大きすぎ、埋め込みの行などの小さい表向き。
 
 ### 実行時の重みの速さ (M1)
 
@@ -68,14 +83,15 @@ Core AI のログ: 「setNDXANEProcedureAttrs: entry '…' has 0 ANE regions」�
 | ファイル | 変更 |
 |---|---|
 | `internal/coreai/ailower/ops.go` | `gather_nd`、`gather_along_axis` を Core AI の基本演算に。begin が定数でない `slice_by_index` を `slice_v1` に |
-| `internal/coreai/ailower/ailower.go` | `isConst`。int8 の入力 (`sint8`、短い名前 `i8`) |
-| `internal/backend/coreai/coreai_darwin.go` | int8 の入出力 (`types.I8`) |
+| `internal/coreai/ailower/ailower.go` | `isConst`。int8、int16 の入力 (`sint8` / `i8`、`sint16` / `i16`)。`cast` の `int16`、`int8` は ops.go |
+| `internal/backend/coreai/coreai_darwin.go` | int8、int16 の入出力 (`types.I8`、`types.I16`) |
 | `internal/backend/coreml/plan_darwin.go` | MLComputePlan の `supportedComputeDevices` に ANE があれば、装置の名前に「(the Neural Engine supports it)」と付ける (実験用) |
-| `internal/imagegen/milpart/milpart.go` | `InputI32`、`InputI8` |
+| `internal/imagegen/milpart/milpart.go` | `InputI32`、`InputI16`、`InputI8` |
+| `internal/mlpackage/program.go` | `Int16` |
 | `tools/coreai/aicheck/probe_darwin.go` | probe の追加 (下)。`COREML=1` で Core ML、出力に理由と演算ごとの装置 |
 | `tools/coreai/aicheck/run_darwin.go` | `INPLACE=1` でプログラム自身の入力配列 (`backend.InputAllocator`) を使う |
 
-probe: `gnd_const`、`gnd_input`、`gnd_mm`、`gaa_input`、`gaa_const`、`dslice_const`、`dslice_input`、`dslice_mm`、`mm_dyn`、`mm_dyn_big`、`mm_dyn_i8`、`mm_dyn_i8_big`、`lin_const_big`、`lin_i8_big`、`argmax`。
+probe (int16 の索引は fp16 の入力をプログラムの中で int16 に変換する `idx16`。Core ML のモデルの記述に int16 の入力がないため): `gnd16_const`、`gnd16_mm`、`gnd16_pts`、`gnd16_pts_in`、`gnd16_pts_w1`、`gnd16_pts_4d`、`gnd16_pts_hw`、`gaa16_const`、`gaa16_input`、`dslice16_const`、`dslice16_mm` (この 2 つは Core AI の段でプロセスが落ちる)、`gnd_const`、`gnd_input`、`gnd_mm`、`gaa_input`、`gaa_const`、`dslice_const`、`dslice_input`、`dslice_mm`、`mm_dyn`、`mm_dyn_big`、`mm_dyn_i8`、`mm_dyn_i8_big`、`lin_const_big`、`lin_i8_big`、`argmax`。
 
 実験用の変更で、main に入れる形にはしていない (`plan_darwin.go` の文言、`run` の int8 の入力の値はでたらめ)。
 
@@ -91,10 +107,11 @@ go build -o /tmp/aicheck ./tools/coreai/aicheck
 sysctl -n machdep.cpu.brand_string
 rm -rf ~/Library/Caches/coreai-cache/*/aicheck     # aicheck の probe のキャッシュだけ
 /tmp/aicheck probe linear gnd_const gnd_input gnd_mm gaa_input gaa_const dslice_const dslice_input dslice_mm mm_dyn mm_dyn_big mm_dyn_i8 mm_dyn_i8_big
+/tmp/aicheck probe gnd16_const gnd16_mm gnd16_pts gnd16_pts_w1 gnd16_pts_4d gnd16_pts_hw gaa16_const gaa16_input
 COREML=1 /tmp/aicheck probe linear gnd_const gnd_input gnd_mm gaa_input gaa_const dslice_const dslice_input argmax
 ```
 
-`ane=true` なら全部 Neural Engine。Core ML の行は、演算ごとに優先される装置と、ANE が対応するか (「(the Neural Engine supports it)」) を出す。**新しい世代で gather_nd か dslice が ANE に載れば、MoE の形はずっと簡単になる** (表は定数のまま、専門家の番号だけ入力)。
+`ane=true` なら全部 Neural Engine。**とくに見たいのは `gnd16_pts_w1` と `gnd16_pts_4d`** (M1 では「Cannot decompose layer on this architecture」)。新しい世代でここが通るかと、通ったときの次の返事 (3.3 の `log stream` で)。Core ML の行は、演算ごとに優先される装置と、ANE が対応するか (「(the Neural Engine supports it)」) を出す。**新しい世代で gather_nd か dslice が ANE に載れば、MoE の形はずっと簡単になる** (表は定数のまま、専門家の番号だけ入力)。
 
 ### 3.2 実行時の重みの速さ
 
@@ -119,15 +136,17 @@ open tools/coreai/logging/private-data.mobileconfig
 
 `log` は zsh の組み込みに化けるので `/usr/bin/log` と書く。
 
+検証の返事は debug の段で、`log show` には残らない。probe の間 `log stream` で拾う:
+
 ```sh
 rm -rf ~/Library/Caches/coreai-cache/*/aicheck
-/tmp/aicheck probe gnd_const gaa_const dslice_const mm_dyn
-/usr/bin/log show --last 3m --info --debug --style compact \
-  --predicate 'process == "aicheck" OR process == "ANECompilerService"' > /tmp/anec_private.log
-grep -i -E "gather|slice|reject|unsupported|not supported|validation|ANE region|placement" /tmp/anec_private.log | head -100
+/usr/bin/log stream --level debug --style compact --predicate 'process == "aicheck"' > /tmp/anec_stream.log &
+sleep 2; /tmp/aicheck probe gnd16_pts_w1 gnd16_pts_4d gnd16_const; sleep 2; kill %1
+grep -B2 -A12 "outValidationParams" /tmp/anec_stream.log      # 演算ごとの support と errorMsg
+grep errorMsg /tmp/anec_stream.log | grep -v '""' | sort | uniq -c
 ```
 
-見たいもの: `com.apple.anec:validation` の Start と End の間の行、`ANECValidateGatherLayer rejected …` の status、MPSGraph の配置の判断。終わったら戻す:
+終わったら戻す:
 
 システム設定の同じ画面でプロファイルを削除する。
 

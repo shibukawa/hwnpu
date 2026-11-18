@@ -642,7 +642,7 @@ func (g *graph) describe(dir, fn string) error {
 		}
 		for _, n := range names {
 			x := byName[n]
-			dt := map[string]types.DType{"f16": types.F16, "f32": types.F32, "i32": types.I32, "i8": types.I8}[x.Elem]
+			dt := map[string]types.DType{"f16": types.F16, "f32": types.F32, "i32": types.I32, "i8": types.I8, "i16": types.I16}[x.Elem]
 			if dt == types.DTypeUnknown {
 				return fmt.Errorf("coreai: %s %q of type %s: %w", kind, n, x.Elem, types.ErrUnsupported)
 			}

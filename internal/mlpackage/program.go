@@ -17,6 +17,7 @@ const (
 	Float16 = milspec.DataType_FLOAT16
 	Float32 = milspec.DataType_FLOAT32
 	Int32   = milspec.DataType_INT32
+	Int16   = milspec.DataType_INT16
 	Int8    = milspec.DataType_INT8
 	UInt4   = milspec.DataType_UINT4
 	UInt6   = milspec.DataType_UINT6

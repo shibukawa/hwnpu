@@ -178,7 +178,7 @@ func (l *lowerer) op(op *milspec.Operation) {
 	case "cast":
 		x := l.in(op, "x")
 		dt := l.str(op, "dtype", "")
-		elem := map[string]string{"fp16": "float16", "fp32": "float32", "int32": "sint32"}[dt]
+		elem := map[string]string{"fp16": "float16", "fp32": "float32", "int32": "sint32", "int16": "sint16", "int8": "sint8"}[dt]
 		if elem == "" {
 			l.fail("cast %s: dtype %s", out, dt)
 		}

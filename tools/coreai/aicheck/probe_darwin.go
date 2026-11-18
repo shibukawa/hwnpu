@@ -122,6 +122,68 @@ var probes = map[string]func(g *milpart.Graph){
 		s := g.Op("slice_by_index", map[string]any{"x": w, "begin": b, "end": e}, 256, 256)
 		g.Output(g.Op("matmul", map[string]any{"x": a, "y": s, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 16, 256))
 	},
+	// the same with int16 indices: the Neural Engine takes fp16, f8E4M3, si8, ui8, si16, ui16 (no si32)
+	"gnd16_const": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 2, 1)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 2, 256, 256))
+	},
+	"gnd16_pts": func(g *milpart.Graph) { // elements by their 3 coordinates (the form the Neural Engine's gather asks for)
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 1024, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1024))
+	},
+	"gnd16_pts_in": func(g *milpart.Graph) {
+		w := g.Input("w", 8, 256, 256)
+		i := idx16(g, "i", 1024, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1024))
+	},
+	"gnd16_pts_w1": func(g *milpart.Graph) { // the index tensor's width 1: (1024, 1, 3)
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 1024, 1, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1024, 1))
+	},
+	"gnd16_pts_4d": func(g *milpart.Graph) { // (1, 1024, 1, 3)
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 1, 1024, 1, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1, 1024, 1))
+	},
+	"gnd16_pts_hw": func(g *milpart.Graph) { // (32, 32, 1, 3)
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 32, 32, 1, 3)
+		g.Output(g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 32, 32, 1))
+	},
+	"gnd16_mm": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8, 256, 256)
+		i := idx16(g, "i", 1, 1)
+		a := g.Input("a", 1, 16, 256)
+		e := g.Op("gather_nd", map[string]any{"x": w, "indices": i, "batch_dims": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 1, 256, 256)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": e, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 1, 16, 256))
+	},
+	"gaa16_const": func(g *milpart.Graph) {
+		x := constF16(g, "t", 8, 256)
+		i := idx16(g, "i", 2, 256)
+		g.Output(g.Op("gather_along_axis", map[string]any{"x": x, "indices": i, "axis": g.B.ScalarI32(0), "validate_indices": g.B.ScalarBool(false)}, 2, 256))
+	},
+	"gaa16_input": func(g *milpart.Graph) {
+		x := g.Input("x", 1, 8, 256)
+		i := idx16(g, "i", 1, 2, 256)
+		g.Output(g.Op("gather_along_axis", map[string]any{"x": x, "indices": i, "axis": g.B.ScalarI32(1), "validate_indices": g.B.ScalarBool(false)}, 1, 2, 256))
+	},
+	"dslice16_const": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8*256, 256)
+		b := idx16(g, "b", 2)
+		e := idx16(g, "e", 2)
+		g.Output(g.Op("slice_by_index", map[string]any{"x": w, "begin": b, "end": e}, 256, 256))
+	},
+	"dslice16_mm": func(g *milpart.Graph) {
+		w := constF16(g, "w", 8*256, 256)
+		b := idx16(g, "b", 2)
+		e := idx16(g, "e", 2)
+		a := g.Input("a", 16, 256)
+		s := g.Op("slice_by_index", map[string]any{"x": w, "begin": b, "end": e}, 256, 256)
+		g.Output(g.Op("matmul", map[string]any{"x": a, "y": s, "transpose_x": g.B.ScalarBool(false), "transpose_y": g.B.ScalarBool(false)}, 16, 256))
+	},
 	// weights passed at run time: the host picks the experts and binds their arrays
 	"mm_dyn": func(g *milpart.Graph) {
 		a := g.Input("a", 1, 16, 256)
@@ -324,6 +386,13 @@ func int8Linear8(out, in int) func(g *milpart.Graph) {
 		}
 		g.Output(g.Op("linear", map[string]any{"x": x, "weight": w}, 1, 8, out))
 	}
+}
+
+// idx16 is an fp16 input cast to int16 on the device: indices the Neural Engine takes (Core ML's
+// model description has no int16 input).
+func idx16(g *milpart.Graph, name string, shape ...int) *mlpackage.Var {
+	x := g.Input(name, shape...)
+	return g.B.Op("cast", map[string]any{"x": x, "dtype": g.B.Str("c", "int16")}, mlpackage.Int16, shape...)
 }
 
 // constF16 is a constant fp16 tensor of Gaussian values.

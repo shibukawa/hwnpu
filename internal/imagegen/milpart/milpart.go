@@ -67,6 +67,13 @@ func (g *Graph) InputI32(name string, shape ...int) *mlpackage.Var {
 	return x
 }
 
+// InputI16 adds an int16 input (indices the Neural Engine takes: it has no int32).
+func (g *Graph) InputI16(name string, shape ...int) *mlpackage.Var {
+	x := g.B.Input(name, mlpackage.Int16, shape...)
+	g.ins = append(g.ins, mlpackage.Feature{Name: name, DType: mlpackage.Int16, Shape: x.Shape})
+	return x
+}
+
 // InputI8 adds an int8 input (weights passed at run time).
 func (g *Graph) InputI8(name string, shape ...int) *mlpackage.Var {
 	x := g.B.Input(name, mlpackage.Int8, shape...)
