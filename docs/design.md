@@ -7550,3 +7550,31 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 
 - 日本語などの英語でない音声 (この機械に音声の素材がない)。Core AI の 65 秒の日本語と同じ素材で比べたい
 - 復号の速さ: 1 トークン 19 ms のほとんどは重みを読む時間 (層 4 つの 210 MB と logits の表 133 MB)。表を 8 ビットにする、logits を候補だけにする、などは試していない
+
+### 16.253 LFM3-Audio-2B の読み上げを AMD の NPU に (IRON、`hwnpu-audio tts`) — 2026-11-19
+
+16.252 の次に、読み上げ (LFM3-Audio-2B-TTS) を AMD の NPU に移した (`tools/amd/iron_lfm3speech.py`、docs/amd-npu-models.md 26 節)。書き出し `lfm3-audio-2b-tts.amd-npu2` は 3 つのプログラムとホストの表からなる。
+
+- **文のモデル** (`text/`、`iron_export_lm.py lfm3tts --q4 --mlp q8 --head q8`、`iron_lfm3tts.py`): LFM3-Audio の `lfm.` の文の部分を `Lfm3` で、最後の norm の出力 (depthformer が読む隠れ状態) を名前つきの状態 `hwnpu_hidden` に書いてから head に渡す。プロンプトの塊 (最後の行) でも decode でも同じ位置に書かれ、ホストは呼び出しのたびに読む (`iron.Model.Buffer`)。`--q4` でトークンの埋め込みはホストの表 (`hwnpu_embed_rows`) になるので、フレームの後の入力 (符号ごとの feedback の行の和、どのトークンでもない) をホストが書ける (`iron.Model.StepRow`: `fillHostTables` が埋め込みの表の代わりにその行を写す)。重みは Apple の lut8 と同じく 8 ビット (MLP と head も q8。4 ビットでは Apple で読み上げが崩れた、16.31)。`iron_export_lm.py` の LFM3 に `--mlp` と `--head` を通した (既定は今までの q4)
+- **depthformer** (`depth/`、グラフ): MaskGIT の 1 回。12 の符号帳の行を MHA の 64 行に詰める。頭が 32 値で IRON の MHA は 64 の倍数なので、頭を 64 に [x0..x15, 0 × 16, x16..x31, 0 × 16] と並べる: RoPE の半分ずつ (rotate_half、i と i + 32) が 32 の頭の i と i + 16 の対になり、0 は 0 のまま。64 の上の RMS norm は、重みを √2 で割り eps を半分にすると 32 の上の norm と同じ。値は [v0..v31, 0 × 32] で、o_proj は頭ごとに最初の 32 を読む。logits は符号帳ごとの norm と表の GEMV (2017 を 2048 に詰める)
+- **codec の復号器** (`codec/`、グラフ): 64 フレーム (384 の STFT フレーム) を 1 回に。最近傍の 6 倍は、ホストがフレームの符号のベクトルを 6 行に写して入れる (線形の層の前なので同じ)。短い畳み込み (7 タップ、0 から因果) は、タップごとの積を状態に k 行ずらして書いて足す (16.252 の conv2 と同じ形)。注意は窓 30 (自分を含む) の因果、GQA、RoPE、ゲート
+- **ホスト** (`internal/speech`): 文のモデルを `textModel` の interface にした (`decode.Session` と `ironText`)。プロンプトは `ironText` が自分で読む (`promptReader`、トークンの id のまま塊で)。depthformer と codec は `graphProgram` (グラフの書き出しを `runner.Program` に: meta の `program` が今のプログラムの形を言い、行の繰り返しと詰めた列を外す) なので、MaskGIT、抽選、feedback、重なりのある codec の呼び出し、逆 STFT は同じ道。ホストの表は書き出しの `tables.safetensors` (bf16: 符号の表、mask の埋め込み、feedback の表)
+- `hwnpu-audio tts` は AMD の NPU では `speech.PrepareAMD` (手元、取得元、なければ IRON で書き出して取得元へ)。`-m DIR` で書き出し、`--iron-text DIR` で文のモデルの書き出しだけを (depthformer と codec は Core ML のパッケージを CPU で) も動かせる
+- 鍵のために models.yaml の LFM3-Audio-2B-TTS に commit と 6 つのファイルの sha256 を固定した
+
+**デバイスヒープの断り**: 最初の形 (チェックポイントの表を開いてから文のモデルの書き出しを読む) は、2 回に 1 回ほど `CREATE_HWCTX` が `EINVAL` になった (カーネルのログは `aie2_send_host_buf_msgs` の 64 MiB のデバイスヒープの登録、opcode 0x106、状態 0x4000003。失敗のたびにヒープの番地が同じ)。hwnpu-chat (同じ書き出しを先に読む) は 4 回とも通る。文のモデルを `Load` の最初 (表の 4 GB の mmap の前) に読むようにすると 5 回とも通った。番地の何が断られるのかは分かっていない (amd-xdna2-bench.md の約 125 回に 1 回のものと同じ断り方)
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- depthformer のグラフはランダムな入力で IRON の参照と cosine 0.99994、codec は 0.99997 (最大の差 1.19 は位相の列の 4 行。振幅の列は 0.125 まで)
+- 段ごとに置き換えて: 文のモデルだけ NPU (depthformer と codec は CPU のインタプリタ) で、同じ文が Whisper (16.252、AMD) で一字一句同じに書き起こせる。全部 NPU でも同じ。CPU のインタプリタだけの参照も同じ文
+- 英語 4 文 (女声、男声)、日本語 1 文 (「今日はいい天気ですね。散歩に行きましょう。」は「今日はいい天気ですね散歩に行きましょう」) が書き起こしで元の文になる
+- 時間: 日本語の 5.12 秒 (64 フレーム) を 11.8 秒 (実時間の 0.43 倍)。フレームごとに文のモデル 107 ms (q8 の 2.0 GB を読む 1 ステップ)、depthformer の 3 回で 72 ms (1 回 24 ms)、codec は 64 フレームで 72 ms。CPU のインタプリタは depthformer 1 回 25 ms、全部 CPU で 4.16 秒に 42.5 秒
+- depthformer の 1 回 24 ms の内訳: depth_linear の GEMV (12288 × 2048) 2 ms、1 層 6 ms (MLP 3 ms、注意 3.5 ms)、logits の 12 の GEMV 3 ms。64 行の GEMM は重みを読む速さで決まる (1 層 32 MB を約 6 ms)。MEDIUM (bfp16) は行を 256 の倍数にする要があり、256 行では HIGHEST 11.6 ms、MEDIUM 9.5 ms で 64 行より遅い。logits を 1 つの GEMM にすると 22 ms (出力 3 MB)
+- 最大メモリ: 2.6 GiB。models.yaml の amd を 2.9 GB に
+- 初回の流れ (取得元なし): 書き出し 52 秒の後に読み上げた
+
+**残り**
+
+- 速さ: 文のモデルの head (128000 × 2048 の q8、0.27 GB) は読み上げでは読まない logits のため。depth_linear はフレームの 3 回で同じなので 1 回でよい (1 フレーム 4 ms)。depthformer の重みを q8 に
+- LFM3-Omni-2B の読み上げ (`model.depth_decoder`、別の表の名前) は対象外

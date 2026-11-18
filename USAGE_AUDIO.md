@@ -29,6 +29,8 @@ go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a ti
 
 `go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは` reads text aloud with LFM3-Audio-2B (`-m speech`). Details are in section 5 of [CHAT.md](CHAT.md).
 
+On AMD's NPU it runs the export of `tools/amd/iron_lfm3speech.py`: the text model (8 bit, its final hidden state out), the depthformer's MaskGIT pass and the codec decoder, each a program on the NPU; the host samples the codes and runs the inverse STFT. The first run exports it with IRON (about a minute once IRON's kernels are built) unless a source has it (`lfm3-audio-2b-tts.amd-npu2`). On a Ryzen AI 9 365 it speaks at about 0.43 times real time (5.1 seconds of Japanese in 11.8 seconds: the text model 107 ms and the depthformer's three passes 72 ms a frame of 80 ms), at about 2.8 GB.
+
 ## Transcription (Whisper)
 
 `go run ./cmd/hwnpu-audio transcribe speech.wav` transcribes speech with Whisper large-v3-turbo. It downloads the checkpoint on the first run and converts it. On an M3 it reads a 30 second window in 0.6 seconds, and transcribed 65 seconds of Japanese in 4 seconds. `-l ja`, `--translate` and `--timestamps` work.

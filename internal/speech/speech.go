@@ -58,13 +58,38 @@ type Config struct {
 	// Device is the device backend to run on (llm.OpenDevice's name: coreai for Core AI's
 	// programs; "": HWNPU_BACKEND, else the NPU found).
 	Device string
-	Log    io.Writer
+	// IronText is, on AMD's NPU, the text model's export of tools/amd/iron_lfm3tts.py (in place
+	// of Text); Depth and Codec are then graphs of tools/amd/iron_lfm3speech.py (or Core ML
+	// packages, run on the CPU interpreter).
+	IronText string
+	Log      io.Writer
 }
 
 // encoder is the tokenizer.
 type encoder interface {
 	Encode(text string) []int32
 }
+
+// textModel runs the text model with its KV cache: a decode.Session of the converted programs,
+// or on AMD's NPU the export of tools/amd/iron_lfm3tts.py (ironText).
+type textModel interface {
+	Reset()
+	// Q is the rows a Step takes at most.
+	Q() int
+	// Step reads rows of embeddings at the next positions; Hidden is the final hidden state
+	// after the last of them.
+	Step(rows [][]float32) ([]float32, error)
+	Hidden() []float32
+	Pos() int
+	Cache() int
+}
+
+// promptReader is a textModel that reads a prompt's tokens itself (their embeddings its own).
+type promptReader interface {
+	ReadPrompt(ctx context.Context, ids []int32) error
+}
+
+var _ textModel = (*decode.Session)(nil)
 
 // Synth speaks text.
 type Synth struct {
@@ -73,7 +98,7 @@ type Synth struct {
 	depth *lfm3gen.Depth
 	codec *lfm3gen.Codec
 	w     llm.Weights // the checkpoint
-	sess  *decode.Session
+	sess  textModel
 	dprog runner.Program
 	cprog runner.Program
 	cfr   int // the codec program's frames
@@ -83,7 +108,10 @@ type Synth struct {
 
 	// Sampling of the speech codes.
 	Sampling Sampling
-	rows     map[string][]float32 // rows of the code and feedback tables read so far
+	// Times is the time the last Speak spent in the text model (the prompt and the frames'
+	// feedback), the depthformer's passes and the codec decoder.
+	Times struct{ Text, Depth, Codec time.Duration }
+	rows  map[string][]float32 // rows of the code and feedback tables read so far
 }
 
 // Sampling is how the codes are drawn: a temperature (0 picks the best), the k best (0: all,
@@ -116,6 +144,21 @@ func Load(ctx context.Context, c Config) (*Synth, error) {
 		return nil, err
 	}
 	s := &Synth{text: tm.(*lfm3.Config), depth: dm.(*lfm3gen.Depth), codec: cm.(*lfm3gen.Codec), rows: map[string][]float32{}}
+	t0 := time.Now()
+	if c.IronText != "" {
+		// AMD's NPU: the text model's export of tools/amd/iron_lfm3tts.py, loaded first (before
+		// the tables are mapped, as hwnpu-chat loads an export)
+		if s.dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+			return nil, err
+		}
+		t, err := openIronText(ctx, s.dev, c.IronText, s.text.HiddenSize, logf)
+		if err != nil {
+			s.Close()
+			return nil, err
+		}
+		s.sess = t
+		s.closers = append(s.closers, t)
+	}
 	s.Sampling = Sampling{s.depth.Temperature, s.depth.TopK, s.depth.Repetition, s.depth.RepWindow}
 	if err := s.Sampling.override(filepath.Join(c.Dir, "generation_config.json")); err != nil {
 		return nil, err
@@ -129,26 +172,38 @@ func Load(ctx context.Context, c Config) (*Synth, error) {
 		return nil, err
 	}
 	s.closers = append(s.closers, s.w)
-	if !c.CPU {
-		if s.dev, _, err = llm.OpenDevice(ctx, c.Device, c.CacheDir); err != nil {
+	open := func(path string) (runner.Program, error) { return runner.Open(ctx, s.dev, path) }
+	switch {
+	case c.IronText != "":
+		// the depthformer's and the codec decoder's graphs (tools/amd/iron_lfm3speech.py), or
+		// Core ML packages of them on the CPU interpreter
+		open = func(path string) (runner.Program, error) {
+			if isGraph(path) {
+				return openGraphProgram(ctx, s.dev, path)
+			}
+			return runner.Open(ctx, nil, path)
+		}
+	default:
+		if !c.CPU {
+			if s.dev, _, err = llm.OpenDevice(ctx, c.Device, c.CacheDir); err != nil {
+				s.Close()
+				return nil, err
+			}
+		}
+		sess, cl, err := runner.OpenSession(ctx, s.dev, c.Text, s.text)
+		if err != nil {
 			s.Close()
 			return nil, err
 		}
+		s.sess = sess
+		s.closers = append(s.closers, cl)
 	}
-	t0 := time.Now()
-	sess, cl, err := runner.OpenSession(ctx, s.dev, c.Text, s.text)
-	if err != nil {
-		s.Close()
-		return nil, err
-	}
-	s.sess = sess
-	s.closers = append(s.closers, cl)
-	if s.dprog, err = runner.Open(ctx, s.dev, c.Depth); err != nil {
+	if s.dprog, err = open(c.Depth); err != nil {
 		s.Close()
 		return nil, err
 	}
 	s.closers = append(s.closers, s.dprog)
-	if s.cprog, err = runner.Open(ctx, s.dev, c.Codec); err != nil {
+	if s.cprog, err = open(c.Codec); err != nil {
 		s.Close()
 		return nil, err
 	}
@@ -265,7 +320,15 @@ type Request struct {
 // Speak returns the speech of a request: samples at SampleRate, and the codes of its frames.
 func (s *Synth) Speak(ctx context.Context, r Request) ([]float32, [][]int32, error) {
 	ids := s.tok.Encode(Prompt(r.Text, r.Language, r.Voice, s.depth.Omni))
+	s.Times.Text, s.Times.Depth, s.Times.Codec = 0, 0, 0
+	t0 := time.Now()
 	s.sess.Reset()
+	if pr, ok := s.sess.(promptReader); ok {
+		if err := pr.ReadPrompt(ctx, ids); err != nil {
+			return nil, nil, err
+		}
+		ids = nil
+	}
 	for i := 0; i < len(ids); i += s.sess.Q() {
 		emb, err := llm.Embed(s.w, s.text, ids[i:min(i+s.sess.Q(), len(ids))])
 		if err != nil {
@@ -282,12 +345,15 @@ func (s *Synth) Speak(ctx context.Context, r Request) ([]float32, [][]int32, err
 	if s.sess.Hidden() == nil {
 		return nil, nil, errors.New("speech: the text model does not output its hidden state h (convert it with -hidden-out 1)")
 	}
+	s.Times.Text += time.Since(t0)
 	seed := cmp.Or(r.Seed, rand.Uint64())
 	frames, err := s.Frames(ctx, s.sess.Hidden(), rand.New(rand.NewPCG(seed, 0)), r.MaxFrames)
 	if err != nil {
 		return nil, nil, err
 	}
+	t1 := time.Now()
 	pcm, err := s.Decode(ctx, frames)
+	s.Times.Codec += time.Since(t1)
 	return pcm, frames, err
 }
 
@@ -314,9 +380,11 @@ func (s *Synth) Frames(ctx context.Context, h []float32, rng *rand.Rand, limit i
 		if err != nil {
 			return nil, err
 		}
+		t0 := time.Now()
 		if _, err := s.sess.Step([][]float32{fb}); err != nil {
 			return nil, err
 		}
+		s.Times.Text += time.Since(t0)
 		h = s.sess.Hidden()
 	}
 	return frames, nil
@@ -362,10 +430,12 @@ func (s *Synth) frame(ctx context.Context, h []float32, hist [][]int32, rng *ran
 			}
 			copy(x[cb*d:], e)
 		}
+		t0 := time.Now()
 		logits, err := s.dprog.Run(ctx, map[string][]float32{"x": x, "h": h})
 		if err != nil {
 			return nil, err
 		}
+		s.Times.Depth += time.Since(t0)
 		for range pick {
 			cb := order[k]
 			k++

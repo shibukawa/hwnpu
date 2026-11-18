@@ -29,6 +29,8 @@ go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a ti
 
 `go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは` は LFM3-Audio-2B (`-m speech`) で文章を読み上げます。詳しくは [CHAT.ja.md](CHAT.ja.md) の 5 節にあります。
 
+AMD の NPU では `tools/amd/iron_lfm3speech.py` の書き出しで動きます。文のモデル (8 ビット、最後の隠れ状態を出す)、depthformer の MaskGIT の 1 回、codec の復号器がそれぞれ NPU のプログラムで、符号の抽選と逆 STFT はホストです。初回は、取得元に書き出し (`lfm3-audio-2b-tts.amd-npu2`) がなければ IRON で書き出します (IRON のカーネルが揃っていれば約 1 分)。Ryzen AI 9 365 で実時間の約 0.43 倍 (日本語の 5.1 秒を 11.8 秒。80 ms のフレームごとに文のモデル 107 ms、depthformer の 3 回で 72 ms)、約 2.8 GB です。
+
 ## 書き起こし (Whisper)
 
 `go run ./cmd/hwnpu-audio transcribe speech.wav` は Whisper large-v3-turbo で音声を書き起こします。初回にチェックポイントを落として変換します。M3 で 30 秒の窓を 0.6 秒で読み、65 秒の日本語を 4 秒で書き起こしました。`-l ja`、`--translate`、`--timestamps` が使えます。

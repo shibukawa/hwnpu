@@ -33,7 +33,7 @@ import (
 // their own (internal/speech).
 type TTSCmd struct {
 	Text      []string `arg:"" name:"TEXT" help:"The text to speak (the words are joined with spaces)."`
-	Model     string   `short:"m" default:"speech" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (speech, lfm3-audio-tts:2b), or a Hugging Face repository OWNER/NAME of an LFM3-Audio checkpoint."`
+	Model     string   `short:"m" default:"speech" placeholder:"NAME" help:"The model: a name, a use or a family of models.yaml (speech, lfm3-audio-tts:2b), a Hugging Face repository OWNER/NAME of an LFM3-Audio checkpoint, or on AMD's NPU an export's directory (tools/amd/iron_lfm3speech.py)."`
 	Out       string   `short:"o" default:"out.wav" type:"path" placeholder:"FILE" help:"The WAV file to write."`
 	Lang      string   `default:"en" placeholder:"LANG" help:"The language: a code of the model card (en, en-gb, ja, zh, ...) or a language's name."`
 	Voice     string   `enum:"female,male" default:"female" help:"The voice: female or male."`
@@ -48,17 +48,30 @@ type TTSCmd struct {
 	TextModel  string `group:"Converted by hand" name:"text" placeholder:"PKG,..." help:"The text model converted with -cache and -hidden-out 1, packages of different -seq, comma separated."`
 	Depth      string `group:"Converted by hand" placeholder:"PKG" help:"The depthformer (hwnpu-dev convert -arch lfm3-depthformer)."`
 	Codec      string `group:"Converted by hand" placeholder:"PKG" help:"The codec decoder (hwnpu-dev convert on audio_tokenizer/, -arch lfm3-codec)."`
+	IronText   string `group:"Converted by hand" name:"iron-text" type:"existingdir" placeholder:"DIR" help:"On AMD's NPU, the text model's export of iron_export_lm.py lfm3tts in place of --text (--depth and --codec graphs of tools/amd/iron_lfm3speech.py, or Core ML packages run on the CPU)."`
 }
 
 // Run speaks the text.
 func (c *TTSCmd) Run(ctx context.Context) error {
 	lw := console.Log(os.Stderr)
-	manual := c.Checkpoint != "" || c.TextModel != "" || c.Depth != "" || c.Codec != ""
-	if manual && (c.Checkpoint == "" || c.TextModel == "" || c.Depth == "" || c.Codec == "") {
-		return fmt.Errorf("programs converted by hand take all of --checkpoint, --text, --depth and --codec")
+	manual := c.Checkpoint != "" || c.TextModel != "" || c.IronText != "" || c.Depth != "" || c.Codec != ""
+	if manual && (c.Checkpoint == "" || c.TextModel == "" && c.IronText == "" || c.Depth == "" || c.Codec == "") {
+		return fmt.Errorf("programs converted by hand take all of --checkpoint, --text (or --iron-text), --depth and --codec")
 	}
-	cfg := speech.Config{Text: strings.Split(c.TextModel, ","), Depth: c.Depth, Codec: c.Codec, Dir: c.Checkpoint}
-	if !manual {
+	cfg := speech.Config{Text: strings.Split(c.TextModel, ","), Depth: c.Depth, Codec: c.Codec, Dir: c.Checkpoint, IronText: c.IronText}
+	switch {
+	case !manual && speech.IsIronExport(expandHome(c.Model)):
+		cfg = speech.IronConfig(expandHome(c.Model)) // an export of tools/amd/iron_lfm3speech.py
+	case !manual && !c.CPU && onAMD():
+		// AMD's NPU runs the export of tools/amd/iron_lfm3speech.py (made on the first run)
+		m, err := resolveKind(c.Model, chat.KindSpeech, c.Models, lw)
+		if err != nil {
+			return err
+		}
+		if cfg, err = speech.PrepareAMD(chat.WithModel(ctx, m), m, lw); err != nil {
+			return err
+		}
+	case !manual:
 		m, err := resolveKind(c.Model, chat.KindSpeech, c.Models, lw)
 		if err != nil {
 			return err
@@ -101,7 +114,8 @@ func (c *TTSCmd) Run(ctx context.Context) error {
 		return err
 	}
 	secs := float64(len(pcm)) / float64(s.SampleRate())
-	fmt.Fprintf(lw, "%d frames, %.2f s of audio in %.1f s (seed %d)\n", len(frames), secs, time.Since(t0).Seconds(), seed)
+	fmt.Fprintf(lw, "%d frames, %.2f s of audio in %.1f s (seed %d; the text model %.1f s, the depthformer %.1f s, the codec decoder %.1f s)\n",
+		len(frames), secs, time.Since(t0).Seconds(), seed, s.Times.Text.Seconds(), s.Times.Depth.Seconds(), s.Times.Codec.Seconds())
 	fmt.Println(c.Out)
 	return nil
 }

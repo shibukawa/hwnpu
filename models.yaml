@@ -381,10 +381,19 @@ models:
     family: lfm3-audio-tts
     tag: 2b
     kind: speech
-    from: hf:LiquidAI/LFM3-Audio-2B
+    from: hf:LiquidAI/LFM3-Audio-2B@2d6c1f99c129b3ef07a8d168bc0ff08e2bdb93f1
     license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
+    # pinned for the export for AMD's NPU (tools/amd/iron_lfm3speech.py, a key of the sources)
+    sha256:
+      config.json: 1eb2a8349a1ec9eda2ed8e8bb1a8788007ae2ae9baa38a7d959743c5379d30d8
+      generation_config.json: fa4a9e00378a7c93d199787e6a219bdf48d4bbe85f563b6450c461de5f394853
+      tokenizer.json: 41927bd314d17d7d7fadb44e10cd0919f7b71528d7741596d8cbd15c6945ec44
+      model.safetensors: 9abe5e402f163296e0988f94ad67f65dab61c723e260fea9374109b3775e28f7
+      audio_tokenizer/config.json: 13ac10473c6cf45618a3e9603f529c889683c9e28fa77e0d4f0ca6e686d0cbf4
+      audio_tokenizer/model.safetensors: 45984a872fdcf0b94cd0ec68822bbf26f0c6fcb580cfaba0f7fa3ee60355137f
     machine: 8
-    memory: 2.4
+    # AMD's: the NPU's pinned memory and the process's speaking 5 s (a Ryzen AI 9 365, 2026-11-19)
+    memory: {amd: 2.9, apple: 2.4}
     bytes: 4.0e9
     about: "LFM3-Audio-2B speaking a text (24 kHz WAV): its text model in 8 bit tables, the depthformer and the codec decoder in fp16; shares LFM3-Audio-2B's download"
   d1-2B:

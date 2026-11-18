@@ -1267,3 +1267,36 @@ python tools/amd/iron_whisper.py ~/models/whisper-large-v3-turbo ~/models/whispe
 go run ./tools/amd/irongraph ~/models/whisper-large-v3-turbo.amd-npu2/decoder
 go run ./cmd/hwnpu-audio transcribe -v speech.wav     # 初回は書き出しを取得元から、なければ IRON で
 ```
+
+## 26. LFM3-Audio-2B の読み上げ (`hwnpu-audio tts`、2026-11-19)
+
+LFM3-Audio-2B で文章を 24 kHz の声にする (Apple と同じ流れ、internal/speech)。設計の記録は design.md 16.253。
+
+### 26.1 構成 (`tools/amd/iron_lfm3speech.py`)
+
+| 部分 | 中身 |
+|---|---|
+| `text/` | `iron_export_lm.py lfm3tts --q4 --mlp q8 --head q8` (`iron_lfm3tts.py`): LFM3-Audio の文のモデル、2048 位置。最後の norm の出力を状態 `hwnpu_hidden` に書く。トークンの埋め込みはホスト (`embed.bin`)。decode 1 コマンド、プロンプトの塊 (1024) 18 コマンド |
+| `depth/` | MaskGIT の 1 回 (グラフ): x (64, 1024) の行 0..11 に符号帳ごとの符号の埋め込みか mask の埋め込み、h (1, 2048)。depth_linear、3 層 (頭 32 を 64 に詰める、GQA 32 / 8、RoPE、q と k の norm、ゲート、SwiGLU)、norm、符号帳ごとの norm と表の GEMV。出力 (12, 2048) |
+| `codec/` | 復号器 (グラフ): 64 フレームの符号のベクトル (12 × 4 の 48 値を 64 に詰め、6 行ずつに写したもの、384 行)。project_out と from_quantizer、8 層 (短い畳み込み 7 タップと窓 30 の注意、サンドイッチの norm)、norm、lin。出力 (384, 1344) の 1282 列が STFT のフレーム |
+| `tables.safetensors` | ホストの表 (bf16): 12 の符号の表 (2017 × 1024)、mask の埋め込み、feedback の表 (24204 × 2048) |
+
+### 26.2 測定 (Ryzen AI 9 365)
+
+| | 時間 |
+|---|---|
+| 文のモデル 1 ステップ | 107 ms |
+| depthformer 1 回 | 24 ms (フレームに 3 回) |
+| codec (64 フレーム、5.1 秒分) | 72 ms |
+| 日本語 5.12 秒 | 11.8 秒 (実時間の 0.43 倍) |
+| 書き出し | 52 秒 (3.0 GB) |
+
+最大メモリは 2.6 GiB。
+
+### 26.3 手順
+
+```bash
+python tools/amd/iron_lfm3speech.py ~/models/LFM3-Audio-2B ~/models/lfm3-audio-2b-tts.amd-npu2   # --only depth codec、--check
+go run ./tools/amd/irongraph ~/models/lfm3-audio-2b-tts.amd-npu2/depth
+go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは   # 初回は書き出しを取得元から、なければ IRON で
+```
