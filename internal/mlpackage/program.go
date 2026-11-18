@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/vecops"
@@ -323,6 +324,7 @@ func (b *Builder) LUT(name string, bits int, shape, block []int, indices []byte,
 	}
 	lutShape[len(shape)] = entries
 	lutShape[len(shape)+1] = 1
+	lut = DistinctNeighbours(lut, lutShape[0], tables/lutShape[0], entries)
 	raw := make([]byte, 2*len(lut))
 	for i, h := range lut {
 		binary.LittleEndian.PutUint16(raw[2*i:], h)
@@ -335,6 +337,49 @@ func (b *Builder) LUT(name string, bits int, shape, block []int, indices []byte,
 		return nil, err
 	}
 	return b.op("constexpr_lut_to_dense", b.unique(name), map[string]any{"indices": idx, "lut": lv}, Float16, shape), nil
+}
+
+// DistinctNeighbours returns lut (groups x perGroup tables of entries fp16 halves, groups the
+// first axis, the output rows) with no table equal to the same column block's table of the
+// group before: where one is, its largest entry is moved one ulp towards zero (lut itself is
+// not changed; it is returned as is when nothing is). coreai-build's Neural Engine compiler
+// (Metal Toolchain 27.2) takes two equal tables at the start of a tile of 256 output rows for
+// tables shared by twice the rows and then fails the whole program ("per-cout group 1 is not
+// content-uniform across its num_lut_per_group=32 slots"), leaving it off the Neural Engine;
+// equal neighbours are common with tables fitted to a block's minimum and maximum. The device's
+// compiler is not affected. One ulp of one level is below the tables' own rounding.
+func DistinctNeighbours(lut []uint16, groups, perGroup, entries int) []uint16 {
+	size := perGroup * entries // halves of a group's tables
+	if groups < 2 || len(lut) != groups*size {
+		return lut
+	}
+	out := lut
+	for g := 1; g < groups; g++ {
+		for c := 0; c < perGroup; c++ {
+			t := out[g*size+c*entries : g*size+(c+1)*entries]
+			if !slices.Equal(t, out[(g-1)*size+c*entries:(g-1)*size+(c+1)*entries]) {
+				continue
+			}
+			if &out[0] == &lut[0] {
+				out = slices.Clone(lut)
+				t = out[g*size+c*entries : g*size+(c+1)*entries]
+			}
+			// the entry of the largest magnitude, one ulp smaller (fp16 is sign and magnitude:
+			// the bits less one); a table of zeros gets the smallest subnormal instead
+			best := 0
+			for i, h := range t {
+				if h&0x7fff > t[best]&0x7fff && h&0x7c00 != 0x7c00 {
+					best = i
+				}
+			}
+			if t[best]&0x7fff == 0 {
+				t[best] = 1
+			} else {
+				t[best]--
+			}
+		}
+	}
+	return out
 }
 
 // Int4Scaled adds a linearly quantized fp16 tensor: constexpr_blockwise_shift_scale over int4
