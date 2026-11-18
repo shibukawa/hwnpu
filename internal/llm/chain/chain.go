@@ -59,6 +59,11 @@ type tier struct {
 	paged   int          // the chunk length
 	context int          // the longest sequence (the manifest's Cache)
 	kvOnly  bool         // the parts write the caches and output no logits (llm.Manifest.KVOnly)
+
+	// of a model cut at its mixture of experts layers (llm.Manifest.Experts)
+	moe     *moe
+	moeAt   map[int]int // the layer whose experts run after each part that has them
+	ownsMoE bool        // false for a chain made by Share, whose experts are the other's
 }
 
 // attention is the loaded program without weights that attends over one chunk of the cache.
@@ -140,7 +145,7 @@ func Open(ctx context.Context, dev *hwnpu.Device, path string) (*Chain, error) {
 	if err != nil {
 		return nil, err
 	}
-	return open(ctx, dev, man, nil, "")
+	return open(ctx, dev, man, nil, nil, "")
 }
 
 // OpenOn is Open with every part run on the units given (hwnpu.GraphSource.Units: "gpu", "cpu";
@@ -151,7 +156,7 @@ func OpenOn(ctx context.Context, dev *hwnpu.Device, path, units string) (*Chain,
 	if err != nil {
 		return nil, err
 	}
-	return open(ctx, dev, man, nil, units)
+	return open(ctx, dev, man, nil, nil, units)
 }
 
 // Share loads the model at path like Open, but binds its KV cache inputs (kv_*, win_*, st_*: llm.CacheInput) to the
@@ -170,10 +175,12 @@ func (c *Chain) Share(ctx context.Context, dev *hwnpu.Device, path string) (*Cha
 			shared[name] = b
 		}
 	}
-	return open(ctx, dev, man, shared, "")
+	return open(ctx, dev, man, shared, c.cur.moe, "")
 }
 
-func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[string]*hwnpu.Buffer, units string) (*Chain, error) {
+// open loads the model of man; shared are cache buffers of another chain (Share) and sharedMoE
+// its experts, nil for none.
+func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[string]*hwnpu.Buffer, sharedMoE *moe, units string) (*Chain, error) {
 	gr, err := dev.Graph()
 	if err != nil {
 		return nil, err
@@ -189,7 +196,33 @@ func open(ctx context.Context, dev *hwnpu.Device, man *llm.Manifest, shared map[
 			return nil, err
 		}
 	}
+	if man.Experts != nil {
+		if err := c.cur.loadExperts(ctx, c, man, sharedMoE); err != nil {
+			c.cur.close()
+			return nil, err
+		}
+	}
 	return c, nil
+}
+
+// loadExperts loads the experts of a model cut at its mixture of experts layers, or takes
+// another chain's (Share), and finds the parts they run after.
+func (t *tier) loadExperts(ctx context.Context, c *Chain, man *llm.Manifest, shared *moe) error {
+	if man.Paged > 0 || len(man.Tiers) > 0 {
+		return fmt.Errorf("chain: a model cut at its mixture of experts layers is neither split at its attention nor in tiers")
+	}
+	if shared != nil {
+		t.moe = shared
+	} else {
+		m, err := loadMoE(ctx, c, man.Experts)
+		if err != nil {
+			return err
+		}
+		t.moe, t.ownsMoE = m, true
+	}
+	var err error
+	t.moeAt, err = t.moeHooks()
+	return err
 }
 
 // loadPaged loads the attention program of a model split at its attention and groups the parts
@@ -552,6 +585,11 @@ func (c *Chain) load(ctx context.Context, list []llm.PartRecord, shared map[stri
 }
 
 func (t *tier) close() {
+	if t.ownsMoE {
+		t.moe.report()
+		t.moe.close()
+	}
+	t.moe, t.ownsMoE = nil, false
 	if t.attn != nil {
 		t.attn.close()
 		t.attn = nil
@@ -579,6 +617,14 @@ func (t *tier) run(ctx context.Context) error {
 		if err := p.req.Run(ctx); err != nil {
 			return fmt.Errorf("chain: part %d: %w", i, err)
 		}
+		if layer, ok := t.moeAt[i]; ok {
+			if err := t.runExperts(ctx, layer); err != nil {
+				return err
+			}
+		}
+	}
+	if t.moe != nil {
+		t.moe.Runs++
 	}
 	return nil
 }

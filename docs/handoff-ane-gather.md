@@ -118,6 +118,99 @@ ANE の gather は、索引が si16 などで、3 つの軸の座標の組 (チ�
 
 まだ詰められること: 1 専門家ずつの呼び出しにして、次の専門家のコピーを今の専門家の計算と重ねる (呼び出し 1 回 0.2 ms と引き換え)。IOSurface や Metal のバッファの入力 (`tools/coreai/moebind`、Swift) は、NDArray より速くならなかった (gpt-oss の 32 専門家で 6.5〜8.0 ms、NDArray 5.4〜8.4)。moebind は入力 41 個 (Qwen 型 top-8) で ANE の要求が失敗する (`0xe00002bc`)。
 
+## 1b. M3 で分かったこと (2026-11-18)
+
+M3 (16 GB、macOS 27.2.1、ビルド 26B131)、ブランチ `t3/moe-m3-ane-gather-check` (`t3/ane-gather-probe` から)。
+
+### gather は M3 の Neural Engine に載り、値も正しい
+
+3.1 の probe: int32 の索引 (`gnd_*`、`gaa_*`) と動的切り出し (`dslice_*`) は M1 と同じく GPU。Core ML の計画でも CPU。**int16 の索引の probe は全部 `ane=true`** (`gnd16_const`、`gnd16_mm`、`gnd16_pts*`、`gaa16_*`)。M1 で「Invalid gather axes size 1, must be 3」だった行を丸ごと取る形 (`gnd16_const`) も載る。
+
+`aicheck gather` (新規) で値を確かめた: 定数の表 (E, out, in) から、int16 の専門家の番号 (入力) で gather_nd して x と積を取り、Go の float32 と比べる。どの選び方でも cos 1.000000、出力はどれも選んだ専門家と一致。表の大きさは時間に効かない (E 16 と 64 で同じ。選んだ分だけ読む)。
+
+| 形 (1 専門家 1024 × 1024) | 配置 | 1 回 |
+|---|---|---|
+| 定数 fp16 の K 枚と積 (基準、K 4) | ANE | 0.33 ms |
+| fp16 の表、gather_nd 1 つで K 個 (K 1 / 2 / 4) | ANE | 0.55 / 2.9 / 6〜7 ms (K に比例しない) |
+| fp16 の表、1 個ずつ gather_nd (`-each`、K 2 / 4 / 8) | ANE | 0.89 / 1.53 / 2.80 ms |
+| int8 の定数 (constexpr ではない `I8s`) を gather → cast → 行の拡大 (`-int8 -each`、K 4) | ANE | 1.66 ms |
+| 同じ int8 を gather_nd 1 つで K 4 | **GPU** (ANECCompile FAILED) | 0.77〜0.99 ms |
+| constexpr の int8 の 3 次元の表 (`-int8 -raw8=false`) | GPU (gather の無い基準も GPU。3 次元の constexpr と batch の matmul のせい) | |
+
+ANE の gather は**要素あたり約 3 G 要素/s** (fp16 でも int8 でも 1 M 要素で約 0.33〜0.36 ms)。定数の重みを読む速さ (約 35〜50 GB/s) の 1/6 ほど。専門家の重みを表から gather すると、LFM2-8B-A1B の 1 層 (4 個 × 11 M 要素) で約 15 ms になり、下の結び付けより遅い。**gather は小さい表 (専門家ごとの拡大、埋め込みの行など) に使う**。
+
+### MoE の 1 層 (M3、`aicheck moe`)
+
+M1 との違い:
+
+- **1 プログラム 5 個までの段差は無い**。Qwen 型の top-5 / 6 / 8 が 1.13 / 1.34 / 1.76 ms (1 プログラム)。`-split` は要らない
+- 結び付け直しがずっと安い。4 層 (gpt-oss 3.2 GB、Qwen 2.4 GB) で層もばらばらに選んで: gpt-oss 4.38 ms (M1 20.8)、Qwen 型 4.69 ms (M1 13.7)。gpt-oss はコピー方式 (6.19 ms) より速い
+- コピー方式: gpt-oss 6.19 ms、Qwen 型 3.86 ms。コピーは約 16〜23 GB/s
+
+結び付けの費用は、配列の**数**と**全体の大きさ**の両方で増える。LFM2 型 (1 層 352 MB、128 配列) で層の数を変えて: 1 層 1.81、4 層 2.11、8 層 2.40、11 層 2.59、14 層 2.70、18 層 3.54、22 層 (全部、7.75 GB) 5.32 ms。Granite 1B 型 (1 層 50 MB) では 8 層 3.70、16 層 4.22、24 層 4.53 ms (配列が 32 個/回と多い)。
+
+### 実在の小さい MoE を全層ぶん持たせて (M3、16 GB)
+
+config は Hugging Face のもの。MoE の層の専門家を全部、Core AI の入力配列に int8 で持たせ、毎回ランダムな層とランダムな専門家を選ぶ。1 層あたり (ルーター 0.15〜0.18 ms は別)。どれも照合 cos 1.000000。
+
+| モデル (MoE 層 × 専門家、top-k) | 専門家の int8 | 定数 (同じ大きさの密) | 4 配列を結び付け (`moe`) | コピー方式 (`moe -copy`) | 2 配列 + 拡大は gather (`moepack -two`) | 1 配列 + 拡大は gather (`moepack`) |
+|---|---|---|---|---|---|---|
+| Granite 3.1 1B-A400M (24 × 32、8) | 1.2 GB | 0.73 ms | 4.53 | **2.2** | 3.07 | 2.56 |
+| Granite 3.1 3B-A800M (32 × 40、8) | 3.0 GB | 0.72〜0.85 ms | 4.77 | **3.0** | 3.53 | 3.37 |
+| OLMoE-1B-7B (16 × 64、8) | 6.4 GB | 1.22〜1.31 ms | 5.70 | **4.2** | 5.05 | 7.89 |
+| LFM2-8B-A1B (22 × 32、4) | 7.75 GB | 0.97〜1.03 ms | 5.32 | 4.66 | **4.35** | 7.05 |
+
+(コピー方式の列はコピー込みの専門家の呼び出し。`moepack` の 1 配列は (H, 3I) に gate|up と down の転置を並べたもの。実行時の重みを切り出すぶん、大きい専門家では計算が遅くなる。)
+
+1 トークンの見込み (専門家とルーターだけ。注意・conv・頭は別): Granite 1B 約 55 ms、Granite 3B 約 100 ms、OLMoE 約 70 ms、LFM2-8B-A1B 約 100 ms。どれも同じ大きさの密 (定数の重み) の 3〜5 倍。**M3 の 16 GB で、8B 級までの MoE は Neural Engine で動かせる見込み** (LFM2-8B-A1B で 1 トークン 120 ms 前後、8 tok/s ほど)。
+
+### 実際の LFM2-8B-A1B で生成 (M3、`aicheck moeserve` + `tools/ref/lfm2moe_ane.py`)
+
+本物のチェックポイント (bf16、16.7 GB、`~/Library/Caches/hwnpu/original/LiquidAI/LFM2-8B-A1B`) で、MoE の 22 層を Neural Engine に、残り (conv、注意、密な 2 層、埋め込み、頭) を transformers の float32 (CPU) にして貪欲に 48 トークン生成した。専門家は行ごとの int8 (absmax / 127、拡大は fp16)。gate|up (H, 2I) と down (H, I) の 2 配列で、拡大は層ごとの表から ANE の gather で取る。全層の専門家 (7.75 GB) を持たせたまま、ルーターも ANE で回す (ルーターの重みは層ごとの入力配列)。選択 (sigmoid + expert_bias の top-4、正規化) はホストで行う。基準は同じモデルの専門家を bf16 → float32 で CPU で計算したもの。
+
+| | 結果 |
+|---|---|
+| 生成した文 | 基準と 48 トークンとも同じ (「The sky appears blue because Earth's atmosphere scatters …」) |
+| 基準の生成した列での KL(ref ‖ ane) | 平均 0.0019、最大 0.043、top-1 一致 100% |
+| 選んだ専門家の一致 | 99.0% (層ごとに 97〜100%) |
+| 1 行 1 層 (ANE、デコード中) | ルーター 0.33 ms + 専門家 2.7〜3.0 ms |
+| 専門家の部分の 1 トークン | 22 層 × 約 3.2 ms ≈ 70 ms |
+
+全体の 820 ms/トークンは、CPU の PyTorch (conv の参照実装) とパイプの往復が大半。ANE の部分だけなら、注意・conv を ANE に載せて (lfm3 と同じ形) 1 トークン 90〜100 ms、10 tok/s 前後の見込み。
+
+### hwnpu に組み込んだ (M3、2026-11-19)
+
+LFM2-8B-A1B が hwnpu-chat (`-m LiquidAI/LFM2-8B-A1B --backend coreai`) で動く。専門家は Neural Engine、選択はホスト。
+
+- `internal/llm/lfm2moe` (新しいアーキテクチャ、`lfm2_moe`): LFM2 の conv と注意 (`out_proj`、`q_layernorm`、gate と sandwich norm なし)、密な 2 層、ルーターまで。lfm3 は触っていない
+- `llm.Routed` (arch.go) と `llm.PlanRouted` (split.go): MoE の層ごとに部品を切る。部品は `moe_x_N` (ffn_norm の出力) と `moe_logits_N` (fp16 のルーター) を出して終わり、次の部品は `moe_o_N` を足して始まる。ConvertAI は専門家のプログラム (`model.experts.aimodel`) と行ごと int8 の専門家 (`model.experts.safetensors`、7.22 GiB) を書き、manifest の `experts` に記す。Core AI だけ、paged と tiers なし
+- `internal/llm/experts`: 専門家のプログラム (2 配列 + 拡大の gather、silu は exp/real_div)、選択 (`Routing.Choose`)、重みファイルの書き出し
+- `internal/llm/chain/moe.go`: `moe_logits_N` を出す部品の後で、行ごとに上位 k 個を選んで専門家のプログラムを呼ぶ。入力 `last` があれば有効な行だけ。全層の専門家はプログラム自身の入力配列に一度だけ読み込み、`Share` した chain と共有する
+- chat: MoE のモデルは cache tiers なし (export ごとに専門家のファイルが付くため)、draft なし (1 回 8 行だと専門家も 8 行: 2.3 tok/s)。LFM2 の会話形式 (`chat.LFM2`、think なし)
+- `hwnpu-dev generate -score` を KV キャッシュのあるモデルにも (1 トークンずつ)
+
+| LFM2-8B-A1B (M3 16 GB、lut8 + 専門家 int8) | 結果 |
+|---|---|
+| 変換 (hwnpu-dev convert) | 21 s、23 部品 + 専門家 |
+| 読み込み | 2.7 s (コンパイル済み)、全部品 NPU |
+| 生成 (hwnpu-dev generate、1 トークン 1 回) | 15.4 tok/s (64.7 ms/トークン) |
+| 生成 (hwnpu-chat) | 14.1 tok/s |
+| 基準 (bf16 専門家、float32) の生成した 48 トークンでの KL | キャッシュなし 0.0062 (argmax 48/48)、キャッシュあり 1 トークンずつ 0.0056 (47/48) |
+
+外れた 1 か所は基準でも ' through' 53% と ' than' 43% の僅差。そこでキャッシュあり生成の文が分かれる。
+
+回帰: LFM3-1.7B は変更前 (`t3/ane-gather-probe`) と同じ文、同じ 57.4 tok/s。変換し直しもない (プログラムが同じ)。
+
+プロンプト (2026-11-19): 呼び出しの全部の行を専門家 1 つずつで回すプログラム (`experts.BuildRows`、`model.experts.q128.aimodel`、出力を次の呼び出しの acc に) と、MoE のモデルのプロンプトのプログラムを 1 回 128 に。1503 トークンのプロンプト 61.7 s → 15.6 s (64) → 10.9 s (128)。KL 0.0057 (48/48)。生成の 1 トークン 70 ms (文脈 4096) のうち専門家 57.5 ms (1 層 2.6 ms、呼び出しそのもの)。
+
+残り: paged (長い文脈) と tools の形式 (LFM2 の `<|tool_call_start|>`) は未対応。生成の専門家の呼び出しを次の部品に入れても 4 % ほど。4 ビットの専門家 (2026-11-19): 精度は 64 列ごとの scale で KL 0.023 (専門家だけ、int8 は 0.0019、行ごと 0.071、`moeserve -bits 4 -group 64`)。速さはどれも int8 (1 層 1.7〜2.6 ms) に負ける: int8 に 2 つ詰めて `floor_div` で取り出す 8.7〜11 ms (値も誤り)、Core AI の int4 配列 (`NDArray.ScalarType.int4`、1 バイトに 2 つ、下位の 4 ビットが先) を `blockwise_shift_scale` で戻す形は正しいが GPU に載り 6.4〜9.8 ms、int4 配列を cast する形は Neural Engine で正しいが 85 ms (`aicheck moe4`)。int4 の入力 (`types.I4`、ailower の `sint4`、shim) と `floor_div`、`mod`、`round` の lowering は残した。
+
+### 次の段
+
+- 実装の形: ルーターまでを 1 プログラム (層の注意・conv と同じ呼び出し)、ホストで top-k、専門家を 1 プログラム (層の形ごとに 1 つ、全層で共有)。専門家は「小さい MoE はコピー方式、大きい専門家は 2 配列 + 拡大の gather」。拡大の表は層ごとの入力配列 (または層ごとのプログラムの定数)
+- lfm3 (LFM2 の密な形) に MoE の層を足して、hwnpu-dev convert と実行時 (層ごとにルーターのロジットをホストへ戻し、専門家の配列を結び付ける) に組み込む
+- 結び付けの費用が層の数で増える理由 (Core AI の覚えている配列の上限か、16 GB の機械のメモリ圧か)。M3 の 24 GB 以上で比べたい
+
 ## 2. コード (このブランチ)
 
 | ファイル | 変更 |
@@ -131,6 +224,12 @@ ANE の gather は、索引が si16 などで、3 つの軸の座標の組 (チ�
 | `tools/coreai/aicheck/probe_darwin.go` | probe の追加 (下)。`COREML=1` で Core ML、出力に理由と演算ごとの装置 |
 | `tools/coreai/aicheck/run_darwin.go` | `INPLACE=1` でプログラム自身の入力配列 (`backend.InputAllocator`) を使う |
 | `tools/coreai/aicheck/moe_darwin.go` | `aicheck moe` (MoE の 1 層の計測。`-model gptoss\|qwen3moe\|small`、`-layers`、`-topk`、`-split`、`-copy`、`-fp16`、`-scale-out`)、`aicheck locked CMD` (NPU のロックを取って CMD を回す) |
+| `tools/coreai/aicheck/gather_darwin.go` | `aicheck gather` (M3): 定数の表から int16 の番号で専門家を gather_nd して積。Go の float32 と照合、密な定数と時間を比べる。`-e`、`-out`、`-in`、`-k`、`-each`、`-int8`、`-raw8` |
+| `tools/coreai/aicheck/moepack_darwin.go` | `aicheck moepack` (M3): 結び付ける配列を減らした専門家の層。`-scales gather` で拡大を層ごとの 1 配列から ANE の gather で取る。`-two` で gate|up と down の 2 配列 |
+| `tools/coreai/aicheck/moeserve_darwin.go` | `aicheck moeserve CKPT`: 実際の LFM2-MoE の専門家とルーターを ANE で回すサーバー (標準入出力の 2 進) |
+| `tools/ref/lfm2moe_ane.py` | LFM2-MoE の残りを transformers で回し、MoE を基準 (`run ref`) か moeserve (`run ane`) にして生成・比較 (`compare`) |
+| `internal/mlpackage/program.go` | `I8s` (constexpr ではない int8 の定数。gather の表) |
+| `tools/coreai/aicheck/moe_darwin.go` (M3) | `-model lfm2moe\|olmoe\|granite3b\|granite1b` |
 | `tools/coreai/moebind/main.swift` | NDArray、Metal のバッファ、IOSurface の入力で結び付けの費用を比べる (Swift) |
 
 probe (int16 の索引は fp16 の入力をプログラムの中で int16 に変換する `idx16`。Core ML のモデルの記述に int16 の入力がないため): `gnd16_const`、`gnd16_mm`、`gnd16_pts`、`gnd16_pts_in`、`gnd16_pts_w1`、`gnd16_pts_4d`、`gnd16_pts_hw`、`gaa16_const`、`gaa16_input`、`dslice16_const`、`dslice16_mm` (この 2 つは Core AI の段でプロセスが落ちる)、`gnd_const`、`gnd_input`、`gnd_mm`、`gaa_input`、`gaa_const`、`dslice_const`、`dslice_input`、`dslice_mm`、`mm_dyn`、`mm_dyn_big`、`mm_dyn_i8`、`mm_dyn_i8_big`、`lin_const_big`、`lin_i8_big`、`argmax`。

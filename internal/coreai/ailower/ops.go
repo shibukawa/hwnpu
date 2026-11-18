@@ -12,10 +12,12 @@ import (
 )
 
 var binaryOps = map[string]string{"add": "add_v1", "sub": "sub_v1", "mul": "mul_v1", "real_div": "divide_v1",
-	"maximum": "maximum_v1", "minimum": "minimum_v1", "pow": "pow_v1"}
+	"maximum": "maximum_v1", "minimum": "minimum_v1", "pow": "pow_v1",
+	// for unpacking two 4-bit codes from an int8 (internal/llm/experts)
+	"floor_div": "floor_divide_v1", "mod": "modulo_v1"}
 
 var unaryOps = map[string]string{"exp": "exp_v1", "tanh": "tanh_v1", "sqrt": "sqrt_v1", "abs": "abs_v1",
-	"cos": "cos_v1", "sin": "sin_v1", "erf": "erf_v1", "log": "log_v1"}
+	"cos": "cos_v1", "sin": "sin_v1", "erf": "erf_v1", "log": "log_v1", "round": "round_v1"}
 
 // op lowers one MIL operation.
 func (l *lowerer) op(op *milspec.Operation) {

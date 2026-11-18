@@ -342,3 +342,40 @@ func kvOnlyParts(m Model, plan []Part) ([]Part, error) {
 	}
 	return out, nil
 }
+
+// PlanRouted divides a Routed model into parts cut at its mixture of experts layers: a part ends
+// where one of them begins (with its router) and the next starts with it (the experts' output),
+// so that the host runs the experts between them. A part is a layer or a few; one over budget is
+// an error.
+func PlanRouted(m Model, opts Options, budget int64) ([]Part, error) {
+	rm, ok := m.(Routed)
+	if !ok {
+		return nil, fmt.Errorf("llm: the model has no mixture of experts layers to cut at")
+	}
+	pre, layers, post := EstimateBytes(m, opts)
+	n := len(layers)
+	cost := append([]int64(nil), layers...)
+	cost[0] += pre
+	cost[n-1] += post
+	bounds := []int{0}
+	for _, c := range rm.RoutedLayers() {
+		if c <= bounds[len(bounds)-1] || c >= n {
+			return nil, fmt.Errorf("llm: the mixture of experts layers %v are not in order within %d layers, after layer 0", rm.RoutedLayers(), n)
+		}
+		bounds = append(bounds, c)
+	}
+	bounds = append(bounds, n)
+	var out []Part
+	for i := 0; i+1 < len(bounds); i++ {
+		a, b := bounds[i], bounds[i+1]
+		var total int64
+		for _, c := range cost[a:b] {
+			total += c
+		}
+		if total > budget {
+			return nil, fmt.Errorf("llm: layers %d to %d need %.2f GiB, over the %.2f GiB a part may hold", a, b-1, gib(total), gib(budget))
+		}
+		out = append(out, Part{Start: a, Layers: b - a, Bytes: total})
+	}
+	return out, nil
+}

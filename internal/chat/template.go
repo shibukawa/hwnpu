@@ -170,6 +170,26 @@ func (lfm3Format) Think() (open, close, end string) {
 	return "<think>", "</think>", thinkOver + "</think>"
 }
 
+// LFM2 is the chat format of LiquidAI's LFM2 models (LFM2-8B-A1B): LFM3's turns without the
+// thinking, which LFM2 has no tokens for.
+var LFM2 Template = lfm2Format{}
+
+type lfm2Format struct{}
+
+func (lfm2Format) Render(msgs []Message, tools []Tool, o Options) (string, bool, error) {
+	o.NoThink, o.KeepThinking = true, false
+	p, err := Render(msgs, tools, o)
+	return strings.ReplaceAll(p, "<think></think>", ""), false, err
+}
+
+func (lfm2Format) Parse(text string, thinking bool, tools []Tool, final bool) Answer {
+	return Parse(text, false, tools, final)
+}
+
+func (lfm2Format) Stops() []string { return []string{"<|im_end|>", "<|endoftext|>"} }
+
+func (lfm2Format) Think() (open, close, end string) { return "", "", "" }
+
 // thinkOver ends thinking that has reached its budget, before the closing token: the model
 // answers from what it has thought so far.
 const thinkOver = "\n\nI have no more time to think and must answer now.\n"
@@ -179,6 +199,8 @@ func TemplateFor(arch string) (Template, error) {
 	switch arch {
 	case "lfm3":
 		return LFM3, nil
+	case "lfm2moe":
+		return LFM2, nil
 	case "gemma4":
 		return Gemma4, nil
 	case "qwen3":
