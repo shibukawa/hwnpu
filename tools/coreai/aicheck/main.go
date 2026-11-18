@@ -40,6 +40,14 @@ func main() {
 		err = listOps(os.Args[2], n)
 	case "locked": // locked CMD ARGS...: runs CMD holding the Neural Engine lock
 		err = locked(os.Args[2:])
+	case "gather":
+		err = gatherCheck(os.Args[2:])
+	case "moeserve":
+		err = moeServe(os.Args[2:])
+	case "moe4":
+		err = moe4(os.Args[2:])
+	case "moepack":
+		err = moePack(os.Args[2:])
 	case "moe":
 		err = moe(os.Args[2:])
 	case "probe":

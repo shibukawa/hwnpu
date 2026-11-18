@@ -242,6 +242,12 @@ func (b *Builder) F32(name string, shape []int, vals []float32) (*Var, error) {
 	return b.constOp(name, Float32, shape, raw, BlobFloat32)
 }
 
+// I8s adds an int8 constant (raw two's complement bytes), not a constexpr: the values themselves
+// (what a gather picks from).
+func (b *Builder) I8s(name string, shape []int, raw []byte) (*Var, error) {
+	return b.constOp(name, Int8, shape, raw, BlobInt8)
+}
+
 // I32 adds an int32 constant.
 func (b *Builder) I32(name string, shape []int, vals []int32) (*Var, error) {
 	raw := make([]byte, 4*len(vals))

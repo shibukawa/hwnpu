@@ -28,9 +28,13 @@ import (
 type moeShape struct{ hidden, inter, experts, topK int }
 
 var moeShapes = map[string]moeShape{
-	"gptoss":   {2880, 2880, 32, 4}, // gpt-oss-20b
-	"qwen3moe": {2048, 768, 128, 8}, // Qwen3-30B-A3B
-	"small":    {1024, 512, 16, 4},  // for a quick try
+	"gptoss":    {2880, 2880, 32, 4}, // gpt-oss-20b
+	"qwen3moe":  {2048, 768, 128, 8}, // Qwen3-30B-A3B
+	"small":     {1024, 512, 16, 4},  // for a quick try
+	"lfm2moe":   {2048, 1792, 32, 4}, // LFM2-8B-A1B (22 of its 24 layers)
+	"olmoe":     {2048, 1024, 64, 8}, // OLMoE-1B-7B (16 layers)
+	"granite3b": {1536, 512, 40, 8},  // Granite 3.1 3B-A800M (32 layers)
+	"granite1b": {1024, 512, 32, 8},  // Granite 3.1 1B-A400M (24 layers)
 }
 
 // moe measures a mixture of experts layer on the Neural Engine with the experts' weights passed
