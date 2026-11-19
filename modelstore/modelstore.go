@@ -1,5 +1,5 @@
 // Package modelstore finds and fetches the files of the models hwnpu runs, as hwnpu's commands
-// do (docs/cache-sharing.md 7). A file is looked for in layers, in order:
+// do (docs/cache-sharing-design.md 7). A file is looked for in layers, in order:
 //
 //	0  this machine's cache  Options.Root (HWNPU_CACHE, else hwnpu in the user cache directory),
 //	                         what is read from the other layers: written back to always
@@ -199,6 +199,48 @@ func (s *Store) Prune(o PruneOptions) ([]Unit, error) {
 		return nil, err
 	}
 	return s.Remove(units)
+}
+
+// SourceClean is what a writeback cut off left in a source written back to (PlanClean): the
+// folders that are not whole and the temporary files of uploads.
+type SourceClean = shared.Clean
+
+// CleanFolder is a folder of a source SourceClean removes files of.
+type CleanFolder = shared.CleanFolder
+
+// PlanClean works out what a writeback cut off left in each source written back to (not this
+// machine's cache, not the bundled models): an export's folder with no entry.json (all its
+// files), a repository's files its hwnpu-lock.json does not name, the temporary files of
+// uploads. A folder a writeback marked in the last hour (store.WritingStale) is being written and
+// is left. Nothing is removed until Clean.
+func (s *Store) PlanClean(ctx context.Context) ([]SourceClean, error) {
+	var out []SourceClean
+	for _, src := range shared.Writebacks() {
+		if src.From == "bundle" || src.From == cache.RootEnv {
+			continue
+		}
+		c, err := shared.PlanClean(ctx, src)
+		if err != nil {
+			return out, fmt.Errorf("%s: %w", src, err)
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// Clean removes what plans name, each folder looked at again first (one a writeback has started
+// in since is left), and returns how many files it removed.
+func (s *Store) Clean(ctx context.Context, plans []SourceClean) (int, error) {
+	var errs []error
+	n := 0
+	for _, c := range plans {
+		m, err := c.Apply(ctx)
+		n += m
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", c.Source, err))
+		}
+	}
+	return n, errors.Join(errs...)
 }
 
 // Remove removes units (of Usage), and returns those it removed. A unit another process holds

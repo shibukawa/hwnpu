@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
@@ -241,6 +242,28 @@ type Unpaged interface {
 	UnpagedContext() int
 }
 
+// Routed is a Cached model with mixture of experts layers whose experts the host picks
+// (internal/llm/experts): it is cut at each of RoutedLayers (PlanRouted). A part that ends where
+// such a layer N begins computes the layer up to its router and stops: it outputs moe_x_N (1,
+// seq, hidden), the row the experts take, and moe_logits_N (1, seq, experts), the router's
+// logits, and its y is the hidden state the experts' output is added to. The next part starts at
+// layer N with the input moe_o_N (1, seq, hidden), the experts' weighted output, which the host
+// writes (internal/llm/chain), and x, that hidden state. The experts' weights are not in the
+// parts: the conversion writes them into a file of their own (Manifest.Experts). It is converted
+// for Core AI alone. A Routed model that is Paged may be split at its attention too
+// (PlanRouted).
+type Routed interface {
+	Cached
+	// RoutedLayers are the mixture of experts layers, in order; layer 0 is not one.
+	RoutedLayers() []int
+	// ExpertShape is their experts' sizes (one shape for every layer).
+	ExpertShape() experts.Shape
+	// Routing is how their routers pick and weigh the experts.
+	Routing() experts.Routing
+	// ExpertNames are a layer's tensors of its experts in the checkpoint.
+	ExpertNames(layer int) experts.Names
+}
+
 // CacheWriters is a Paged model whose layers past the first CacheLayers write no cache: they
 // reuse the keys and values of earlier layers (Gemma 4's shared layers), so a program that only
 // reads tokens into the caches (Options.KVOnly) stops before them.
@@ -282,6 +305,10 @@ func Softcap(logits []float32, c float64) {
 type TokenInput struct {
 	Input, Table string
 	Width        int
+	// Group, when not 0, has WriteTables store the table in int8 with an fp16 scale every Group
+	// values of a row (Gemma 4's per-layer embeddings: a scale a layer's slice, half the file
+	// and KL 0.00005 from bf16, docs/improvements.md 12.7). Rows reads it back as float32.
+	Group int
 }
 
 // TokenInputs is a model whose program takes inputs looked up per token besides x (Gemma 4's

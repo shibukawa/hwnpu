@@ -39,7 +39,9 @@ const Producer = "hwnpu-ailower"
 // FormatVersion is the version of what the lowering writes for the same MIL program, part of the
 // key of a Core AI export in the shared layers (chat's): raised by hand when a change makes the
 // programs of an export of the same name different, so that the layers' older ones are not taken.
-const FormatVersion = 1
+// 2: no two neighbouring lookup tables are equal (mlpackage.DistinctNeighbours), which
+// coreai-build's Neural Engine compiler failed on.
+const FormatVersion = 2
 
 // assetVersion is the aicode serialization asset's version coreai-core 1.0.0b3 writes.
 const assetVersion = 20260204
@@ -517,6 +519,12 @@ func short(elem string) string {
 		return "f32"
 	case "sint32":
 		return "i32"
+	case "sint8":
+		return "i8"
+	case "sint16":
+		return "i16"
+	case "sint4":
+		return "i4"
 	}
 	return elem
 }
@@ -529,6 +537,12 @@ func elemOf(dt milspec.DataType) string {
 		return "float32"
 	case milspec.DataType_INT32:
 		return "sint32"
+	case milspec.DataType_INT8:
+		return "sint8"
+	case milspec.DataType_INT16:
+		return "sint16"
+	case milspec.DataType_INT4:
+		return "sint4"
 	case milspec.DataType_BOOL:
 		return "bool"
 	}
@@ -684,6 +698,19 @@ func (l *lowerer) in(op *milspec.Operation, key string) val {
 		l.fail("%s %s: input %s missing", op.GetType(), opName(op), key)
 	}
 	return l.binding(a.GetArguments()[0])
+}
+
+// isConst is whether the operation's input key is a constant.
+func (l *lowerer) isConst(op *milspec.Operation, key string) bool {
+	a := op.GetInputs()[key]
+	if a == nil || len(a.GetArguments()) == 0 {
+		return false
+	}
+	if n := a.GetArguments()[0].GetName(); n != "" {
+		_, ok := l.consts[l.resolve(n)]
+		return ok
+	}
+	return true
 }
 
 func (l *lowerer) has(op *milspec.Operation, key string) bool {

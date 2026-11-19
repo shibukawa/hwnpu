@@ -54,23 +54,23 @@ func TestPolicyPicks(t *testing.T) {
 		machine      int
 		want         string // the model picked, or "error"
 	}{
-		// NSFW models run only with +nsfw, and the image's picks are not NSFW (Sana 600M on 8 GB,
-		// FLUX.2 klein from 16 GB): Anima runs when it is named
-		{"", "image", 8, "Sana-600M"},
+		// NSFW models run only with +nsfw, and the image's pick is not NSFW (FLUX.2 klein from
+		// 8 GB): Anima runs when it is named
+		{"", "image", 8, "FLUX.2-klein-4B"},
 		{"", "image", 16, "FLUX.2-klein-4B"},
-		{"+nsfw", "image", 8, "Sana-600M"},
+		{"+nsfw", "image", 8, "FLUX.2-klein-4B"},
 		{"+nsfw", "image", 16, "FLUX.2-klein-4B"},
 		{"+nsfw", "anima-turbo", 8, "Anima-Turbo"},
 		{"", "anima", 8, "error"},
-		{"+nsfw,-nsfw", "image", 8, "Sana-600M"},
+		{"+nsfw,-nsfw", "image", 8, "FLUX.2-klein-4B"},
 		// license: an id or a class; a use takes another of its kind when its own are refused
 		{"-license:conditional", "chat", 8, "Qwen3.5-2B"}, // LFM3 caps the revenue: an open model of 8 GB
 		{"-license:conditional", "chat", 16, "gemma-4-E2B-it"},
-		{"+nsfw,-license:non-commercial", "image", 8, "Sana-600M"},
+		{"+nsfw,-license:non-commercial", "image", 8, "FLUX.2-klein-4B"},
 		{"-license:lfm-open-1.0", "speech", 8, "error"},
 		{"+license:open", "translate", 8, "error"},
 		{"+license:open,+license:plamo-community-license", "translate", 8, "plamo-3-translate-0.8b"},
-		{"-license:apache-2.0", "image", 8, "Qwen-Image-2.1-Turbo"}, // the least closed license left: research only
+		{"-license:apache-2.0", "image", 8, "error"}, // the others are NSFW (Anima) or Apache-2.0 too (Chroma1)
 	} {
 		setPolicy(t, tc.policy)
 		m, why, ok, err := Pick(tc.name, tc.machine)

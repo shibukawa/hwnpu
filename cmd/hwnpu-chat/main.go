@@ -25,7 +25,7 @@
 // tools/amd/iron_export_lm.py). list shows the models.
 //
 // A model's files are kept in hwnpu/original/OWNER/NAME in the user cache directory
-// (HWNPU_CACHE moves it; docs/cache-sharing.md 7), its programs in hwnpu/models/NAME. On Apple's Neural
+// (HWNPU_CACHE moves it; docs/cache-sharing-design.md 7), its programs in hwnpu/models/NAME. On Apple's Neural
 // Engine and Intel's NPU the first run downloads it from Hugging Face and converts it; later runs
 // load what is there. A chat model is converted twice with a KV cache of --context tokens,
 // --draft (8) tokens per call to generate (a token and the guesses after it, checked at once) and
@@ -65,6 +65,7 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 type cli struct {
@@ -93,7 +94,11 @@ func main() {
 		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Bind(stop))
 	console.MeasureEnergy(console.Log(os.Stderr)) // HWNPU_ENERGY: the idle power, then each phase's energy in the last lines
-	console.RecordRun() // for hwnpu issue: the arguments, the log and how it ended
-	k.FatalIfErrorf(console.EndInterrupted(k.Run()))
-	console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
+	console.RecordRun()                           // for hwnpu issue: the arguments, the log and how it ended
+	err := console.EndInterrupted(k.Run())
+	if err == nil {
+		console.Done(console.Log(os.Stderr)) // the times, when the command said console.Running; HWNPU_PROFILE's profile
+	}
+	shared.Wait(console.Log(os.Stderr)) // what was made here goes in the sources written back to (after the times)
+	k.FatalIfErrorf(err)
 }

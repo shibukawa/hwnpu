@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/shibukawa/hwnpu"
@@ -33,21 +36,91 @@ type ironEngine struct {
 	vae   *anima.VAE
 	logf  func(format string, args ...any)
 	d     *dit
+	// sfx and singles are the names' suffixes of the picture's size (iron_chroma.export_dit):
+	// "" for the export's first size, else _WxH (singles "" when its rows are the first size's)
+	sfx, singles string
+	angles       []byte // the blocks' input of the rows' RoPE; nil for an export that holds its own
 }
 
-func openIron(ctx context.Context, dev *hwnpu.Device, dir string, c *Config, model *Model, logf func(string, ...any)) (*ironEngine, error) {
-	e := &ironEngine{dev: dev, dir: dir, logf: logf}
-	m, err := iron.ReadGraphManifest(filepath.Join(dir, "doubles"))
+// SizesDir is the directory of an IRON export's VAEs for pictures of another size than its first
+// (tools/amd/iron_chroma.py --size 1024 512 832x1248 ...): SizesDir/WxH/vae; the DiT's graphs of
+// that size are dit_in_WxH, doubles_WxH, dit_out_WxH and singles_WxH or the first size's.
+const SizesDir = "sizes"
+
+// IronSizes are the pictures' sizes (width, height) the IRON export in dir draws: its first size,
+// then those with a VAE in SizesDir and their doubles; nil when dir is no IRON export.
+func IronSizes(dir string) [][2]int {
+	if !isIronExport(dir) {
+		return nil
+	}
+	c, err := ironConfig(dir, "doubles")
 	if err != nil {
-		return nil, err
+		return nil
+	}
+	out := [][2]int{{c.Width, c.Height}}
+	entries, _ := os.ReadDir(filepath.Join(dir, SizesDir))
+	for _, en := range entries {
+		var w, h int
+		if _, err := fmt.Sscanf(en.Name(), "%dx%d", &w, &h); err != nil || fmt.Sprintf("%dx%d", w, h) != en.Name() {
+			continue
+		}
+		_, ev := os.Stat(filepath.Join(dir, SizesDir, en.Name(), "vae", "manifest.json"))
+		_, ed := os.Stat(filepath.Join(dir, "doubles_"+en.Name(), "manifest.json"))
+		if ev == nil && ed == nil {
+			out = append(out, [2]int{w, h})
+		}
+	}
+	return out
+}
+
+// ironConfig is the DiT's shape in the meta of the export's graph name.
+func ironConfig(dir, name string) (Config, error) {
+	m, err := iron.ReadGraphManifest(filepath.Join(dir, name))
+	if err != nil {
+		return Config{}, err
 	}
 	var x struct {
 		Config Config `json:"config"`
 	}
-	if err := json.Unmarshal(m.Meta, &x); err != nil {
+	err = json.Unmarshal(m.Meta, &x)
+	return x.Config, err
+}
+
+func openIron(ctx context.Context, dev *hwnpu.Device, dir string, w, h int, c *Config, model *Model, logf func(string, ...any)) (*ironEngine, error) {
+	e := &ironEngine{dev: dev, dir: dir, logf: logf}
+	base, err := ironConfig(dir, "doubles")
+	if err != nil {
 		return nil, err
 	}
-	e.C, *c = x.Config, x.Config
+	cfg, vae := base, filepath.Join(dir, "vae")
+	if w != 0 && (w != base.Width || h != base.Height) {
+		size := fmt.Sprintf("%dx%d", w, h)
+		if !slices.Contains(IronSizes(dir), [2]int{w, h}) {
+			var have []string
+			for _, s := range IronSizes(dir) {
+				have = append(have, fmt.Sprintf("%dx%d", s[0], s[1]))
+			}
+			return nil, fmt.Errorf("the export draws %s, not %s", strings.Join(have, ", "), size)
+		}
+		e.sfx = "_" + size
+		if cfg, err = ironConfig(dir, "doubles"+e.sfx); err != nil {
+			return nil, err
+		}
+		if cfg.GraphRows() != base.GraphRows() {
+			e.singles = e.sfx
+		}
+		vae = filepath.Join(dir, SizesDir, size, "vae")
+	}
+	e.C, *c = cfg, cfg
+	m, err := iron.ReadGraphManifest(filepath.Join(dir, "doubles"+e.sfx))
+	if err != nil {
+		return nil, err
+	}
+	for _, in := range m.Graph.Inputs {
+		if in.Name == "angles" { // the RoPE an input (an export before it holds its own)
+			e.angles = toBF16(ropeAngles(cfg))
+		}
+	}
 	*model = Model{Name: "Chroma1-Flash", Steps: 8, Guidance: 1, Sampler: "heun"}
 	if b, err := os.ReadFile(filepath.Join(dir, "model.json")); err == nil {
 		if err := json.Unmarshal(b, model); err != nil {
@@ -68,7 +141,7 @@ func openIron(ctx context.Context, dev *hwnpu.Device, dir string, c *Config, mod
 		return nil, fmt.Errorf("t5: %d rows for the DiT's %d (%v)", t.Config.Rows, c.TextRows, err)
 	}
 	e.t5dim = t.Config.Hidden
-	if e.vae, err = anima.OpenVAE(ctx, dev, filepath.Join(dir, "vae")); err != nil {
+	if e.vae, err = anima.OpenVAE(ctx, dev, vae); err != nil {
 		return nil, err
 	}
 	return e, nil
@@ -196,10 +269,19 @@ func (e *ironEngine) openDiT(ctx context.Context, _ []float64) error {
 		g    **iron.Graph
 		name string
 		swap bool
-	}{{&d.mods, "mods", false}, {&d.in, "dit_in", false}, {&d.doubles, "doubles", true}, {&d.singles, "singles", true}, {&d.out, "dit_out", false}} {
+	}{{&d.mods, "mods", false}, {&d.in, "dit_in" + e.sfx, false}, {&d.doubles, "doubles" + e.sfx, true},
+		{&d.singles, "singles" + e.singles, true}, {&d.out, "dit_out" + e.sfx, false}} {
 		if *x.g, err = e.openWith(ctx, x.name, x.swap, prefetch && x.swap); err != nil {
 			d.close()
 			return err
+		}
+	}
+	if e.angles != nil {
+		for _, g := range []*iron.Graph{d.doubles, d.singles} {
+			if err := g.SetInput("angles", e.angles); err != nil {
+				d.close()
+				return err
+			}
 		}
 	}
 	e.d = d
@@ -228,16 +310,26 @@ func (e *ironEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 		return nil, err
 	}
 	row := func(k int) []byte { return mods[2*k*E : 2*(k+1)*E] }
-	if err := run(ctx, d.in, map[string][]byte{"x": toBF16(x)}, nil); err != nil {
+	// dit_in and dit_out take the image's rows in whole 256s (iron_chroma.ChromaConfig.img_rows):
+	// zeros past the tokens, their outputs dropped
+	np := inputRows(d.in, N)
+	xin := toBF16(x)
+	xin = append(xin, make([]byte, 2*(np-N)*c.Latent)...)
+	if err := run(ctx, d.in, map[string][]byte{"x": xin}, nil); err != nil {
 		return nil, err
 	}
 	img, err := output(d.in, 0)
 	if err != nil {
 		return nil, err
 	}
+	img = img[:2*N*E]
 	hs := make([][]byte, len(conds))
+	pad := 0
+	if e.angles != nil { // the padding to the graphs' rows (zeros, its keys past nk)
+		pad = c.GraphRows() - c.Rows()
+	}
 	for k, cd := range conds {
-		hs[k] = append(append([]byte(nil), img...), cd.ctx...) // [image rows, text rows]
+		hs[k] = append(append(append([]byte(nil), img...), cd.ctx...), make([]byte, 2*pad*E)...) // [image rows, text rows, padding]
 	}
 	blocks := func(g *iron.Graph, group, nmods int, rows func(b int) []int, out int, what string) error {
 		for gi := 0; gi < g.Variants(); gi++ {
@@ -284,14 +376,18 @@ func (e *ironEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 	last := c.Mods - 2
 	vs := make([][]float32, len(conds))
 	for k := range conds {
-		if err := run(ctx, d.out, map[string][]byte{"x": hs[k][:2*N*E], "shift": row(last), "scale": row(last + 1)}, nil); err != nil {
+		xo := hs[k][:2*N*E]
+		if no := inputRows(d.out, N); no > N {
+			xo = append(append([]byte(nil), xo...), make([]byte, 2*(no-N)*E)...)
+		}
+		if err := run(ctx, d.out, map[string][]byte{"x": xo, "shift": row(last), "scale": row(last + 1)}, nil); err != nil {
 			return nil, err
 		}
 		v, err := output(d.out, 0)
 		if err != nil {
 			return nil, err
 		}
-		vs[k] = fromBF16s(v)
+		vs[k] = fromBF16s(v)[:N*c.Latent]
 	}
 	return vs, nil
 }
@@ -299,4 +395,41 @@ func (e *ironEngine) velocity(ctx context.Context, conds []Cond, x []float32, si
 func (e *ironEngine) decode(ctx context.Context, z []float32, stage anima.StageFunc) (*image.RGBA, error) {
 	e.vae.Stage = stage
 	return e.vae.Decode(ctx, z)
+}
+
+// ropeAngles is the blocks' input angles (GraphRows x HeadDim, cos and sin interleaved: IRON's
+// RoPE) of the image's rows at (0, row, column), then the text's and the padding's at (0, 0, 0)
+// (iron_chroma.angles, iron_dit.rope_angles).
+func ropeAngles(c Config) []float32 {
+	var freqs []float64
+	var axis []int
+	for a, d := range c.Axes {
+		for k := 0; k < d; k += 2 {
+			freqs = append(freqs, 1/math.Pow(c.Theta, float64(k)/float64(d)))
+			axis = append(axis, a)
+		}
+	}
+	out := make([]float32, c.GraphRows()*c.HeadDim)
+	for r := range c.GraphRows() {
+		pos := [3]float64{}
+		if r < c.Tokens() {
+			pos = [3]float64{0, float64(r / c.GW()), float64(r % c.GW())}
+		}
+		for i, f := range freqs {
+			a := pos[axis[i]] * f
+			out[r*c.HeadDim+2*i] = float32(math.Cos(a))
+			out[r*c.HeadDim+2*i+1] = float32(math.Sin(a))
+		}
+	}
+	return out
+}
+
+// inputRows is the rows of g's input x, n when it says none.
+func inputRows(g *iron.Graph, n int) int {
+	for _, in := range g.Inputs() {
+		if in.Name == "x" && len(in.Shape) > 0 && in.Shape[0] > n {
+			return in.Shape[0]
+		}
+	}
+	return n
 }

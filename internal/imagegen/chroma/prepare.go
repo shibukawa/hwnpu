@@ -92,15 +92,10 @@ func Prepare(ctx context.Context, s Setup) (string, error) {
 		want = append(want, chat.File{Repo: s.Repo, Name: f.Name})
 	}
 	want = append(want, chat.File{Repo: anima.RepoDiffusers, Name: tokenizerFile})
-	chat.Expect(ctx, want)
-	var tok string
-	for _, f := range want {
-		p, err := chat.Fetch(ctx, f.Repo, f.Name, log)
-		if err != nil {
-			return "", err
-		}
-		tok = p // the last: T5's tokenizer.json
+	if err := chat.FetchFiles(ctx, want, log); err != nil {
+		return "", err
 	}
+	tok := want[len(want)-1].Path() // T5's tokenizer.json
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return "", err
 	}

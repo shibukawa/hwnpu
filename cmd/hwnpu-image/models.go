@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/chat"
+	"github.com/shibukawa/hwnpu/internal/console"
 )
 
 // acceptLicenses is --accept-license.
@@ -42,7 +43,7 @@ func isPath(name string) bool {
 }
 
 // resolve is the model of the definitions (models.yaml) a name of --model means for kind: its
-// name, a family (sana, sana:1.6b: picked for the machine's memory) or a use (image, depth).
+// name, a family (chroma, anima: picked for the machine's memory) or a use (image, depth).
 // What was picked is logged.
 func resolve(name string, kind chat.Kind) (chat.Model, error) {
 	if err := chat.LoadUserModels("", os.Stderr); err != nil {
@@ -97,7 +98,7 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 			return "CPU"
 		}
 		if (m.Kind == chat.KindDetect || m.Kind == chat.KindPose || m.Kind == chat.KindSegment) && vendor == "amd" { // an export of iron_onnxcnn.py or iron_efficientsam.py, made on the first run
-			if d, err := amdExport(m, ""); err == nil {
+			if d := amdExportHere(m); d != "" {
 				return shortHome(d)
 			}
 			return "exported on first run (IRON)"
@@ -114,8 +115,11 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 			}
 			return "converted on first run"
 		}
-		if d, err := amdExport(m, ""); err == nil {
+		if d := amdExportHere(m); d != "" {
 			return shortHome(d)
+		}
+		if m.Kind == chat.KindImage && (strings.HasPrefix(m.Family, "flux2-klein") || strings.HasPrefix(m.Family, "flux3-klein")) && vendor == "amd" { // flux2klein.PrepareAMD, flux3klein.PrepareAMD
+			return "exported on first run (IRON)"
 		}
 		if m.Kind == chat.KindLabel && strings.EqualFold(vendor, hwnpu.VendorApple.String()) { // siglip.Prepare
 			return "converted on first run"
@@ -128,36 +132,61 @@ func listModels(w io.Writer, kinds ...chat.Kind) {
 }
 
 // convertedImage reports whether the image family converts for this machine's NPU (vendor, as
-// hwnpu.Vendor's String) on its first run: Anima and Sana on Apple's (Core AI) and Intel's,
-// Qwen-Image and Chroma on Apple's.
+// hwnpu.Vendor's String) on its first run: Anima on Apple's (Core AI) and Intel's, Chroma and
+// FLUX.2 and FLUX.3 klein on Apple's.
 func convertedImage(family, vendor string) bool {
 	switch v := strings.ToLower(vendor); {
-	case strings.HasPrefix(family, "anima"), strings.HasPrefix(family, "sana"):
+	case strings.HasPrefix(family, "anima"):
 		return v == strings.ToLower(hwnpu.VendorApple.String()) || v == strings.ToLower(hwnpu.VendorIntel.String())
-	case strings.HasPrefix(family, "qwen-image"), strings.HasPrefix(family, "chroma"):
+	case strings.HasPrefix(family, "chroma"), strings.HasPrefix(family, "flux2-klein"), strings.HasPrefix(family, "flux3-klein"):
 		return v == strings.ToLower(hwnpu.VendorApple.String())
 	}
 	return false
 }
 
-// amdExport is the export of model m on AMD's NPU: NAME.amd-npu2 or NAME-1024.amd-npu2, NAME
-// in lower case (what tools/amd/iron_*.py are told to write), in entries/amd-xdna2 under the
-// cache's root or in ~/models (hcache.ExportRoots). tool is the script that writes it, for the
-// error when there is none.
-func amdExport(m chat.Model, tool string) (string, error) {
-	root := hcache.LegacyExports()
+// amdExport is the export of model m on AMD's NPU for pictures of size x size (0: a model of one
+// size; amdNames), here (entries/amd-xdna2 under the cache's root, or ~/models:
+// hcache.ExportRoots) or in the sources, downloaded once into the cache's entries/amd-xdna2
+// (chat.AMDNamed): an export made by hand and put there (hwnpu-dev cache import, or its first use
+// on the machine that made it). tool is the script that writes it, for the error when there is
+// none.
+func amdExport(ctx context.Context, m chat.Model, tool string, size int) (string, error) {
+	names := amdNames(m, size)
+	if d := chat.AMDNamed(ctx, m, names, isDir, console.Log(os.Stderr)); d != "" {
+		return d, nil
+	}
+	flags := ""
+	if m.File != "" {
+		flags = " --dit " + m.File
+	}
+	if size != 0 && size != 1024 {
+		flags += fmt.Sprintf(" --size %d", size)
+	}
+	out := filepath.Join(chat.AMDRoot(), names[0])
+	return "", fmt.Errorf("AMD's NPU runs exports of %s, and neither this machine (%s) nor the sources have %s for %s: download %s and run\n  python %s ~/models/%s %s%s\n(its first run here puts it in the sources written back to; see docs/amd-npu-models.md)",
+		tool, strings.Join(hcache.ExportRoots(), ", "), names[0], m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), shortHome(out), flags)
+}
+
+// amdNames are the names the export of model m for AMD's NPU has, for pictures of size x size,
+// in lower case (what tools/amd/iron_*.py are told to write, and the sources hold): NAME.amd-npu2
+// or NAME-1024.amd-npu2 at 1024 and for a model of one size (0), NAME-SIZE.amd-npu2 otherwise.
+func amdNames(m chat.Model, size int) []string {
 	name := strings.ToLower(m.Name)
-	for _, n := range []string{name, name + "-1024"} {
-		if d := hcache.FindExport(n+".amd-npu2", isDir); d != "" {
-			return d, nil
+	if size == 0 || size == 1024 {
+		return []string{name + ".amd-npu2", name + "-1024.amd-npu2"}
+	}
+	return []string{fmt.Sprintf("%s-%d.amd-npu2", name, size)}
+}
+
+// amdExportHere is the export of model m for AMD's NPU here (amdNames at no size), "" for none:
+// what the listing shows, without asking the sources.
+func amdExportHere(m chat.Model) string {
+	for _, n := range amdNames(m, 0) { // NAME.amd-npu2 first: the export of every aspect ratio (aspectsAMD, flux2klein.PrepareAMD)
+		if d := hcache.FindExport(n, isDir); d != "" {
+			return d
 		}
 	}
-	file := ""
-	if m.File != "" {
-		file = " --dit " + m.File
-	}
-	return "", fmt.Errorf("AMD's NPU runs exports of %s, and %s has no %s.amd-npu2 for %s: download %s and run\n  python %s ~/models/%s ~/models/%s.amd-npu2%s\n(see docs/amd-npu-models.md)",
-		tool, root, name, m.Name, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo), name, file)
+	return ""
 }
 
 // shortHome is path with the home directory written ~.

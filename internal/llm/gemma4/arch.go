@@ -62,12 +62,13 @@ func (c *Config) Embedding() string { return c.Prefix + "embed_tokens.weight" }
 func (c *Config) perLayerTable() string { return c.Prefix + "embed_tokens_per_layer.weight" }
 
 // TokenInputs is the per-layer embeddings, which the host looks up like the token embeddings
-// (llm.TokenInputs): the program's input ple, the rows as they are in the checkpoint.
+// (llm.TokenInputs): the program's input ple, the rows as they are in the checkpoint. The
+// tables file holds them in int8 with a scale a layer's slice (Group).
 func (c *Config) TokenInputs() []llm.TokenInput {
 	if c.PerLayerDim == 0 {
 		return nil
 	}
-	return []llm.TokenInput{{Input: "ple", Table: c.perLayerTable(), Width: c.NumLayers * c.PerLayerDim}}
+	return []llm.TokenInput{{Input: "ple", Table: c.perLayerTable(), Width: c.NumLayers * c.PerLayerDim, Group: c.PerLayerDim}}
 }
 
 // BeforeLayers reports the tensors of the per-layer embeddings' projection, which the program

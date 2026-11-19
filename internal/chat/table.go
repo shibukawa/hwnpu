@@ -198,8 +198,10 @@ type modelEntry struct {
 	Variants *map[int]*variantEntry `yaml:"variants"`
 	// NotOn are the chips (M1) a family or a category does not pick the model on.
 	NotOn *[]string `yaml:"not_on"`
+	// NPU is the model's export for each NPU vendor (apple, amd, intel).
+	NPU *map[string]*npuEntry `yaml:"npu"`
 	// Targets are the versions of the model's conversions by target (amd-xdna2, coreai),
-	// bumped by hand when what is made changes: the folder vN of a source (docs/cache-sharing.md
+	// bumped by hand when what is made changes: the folder vN of a source (docs/cache-sharing-design.md
 	// 3). A file over another changes the targets it names and keeps the others.
 	Targets *map[string]*targetEntry `yaml:"targets"`
 	// Develop marks a model in development: its conversions go in the sources as vN-HASH of
@@ -209,6 +211,20 @@ type modelEntry struct {
 	Like    string  `yaml:"like"`
 	Remove  bool    `yaml:"remove"`
 }
+
+// npuEntry is a model's export for one NPU vendor (npu): formats (text, dit), sizes (the default on
+// every generation: aspect ratio to WIDTHxHEIGHT) and generations (overrides of sizes by generation).
+type npuEntry struct {
+	Formats *struct {
+		Text string `yaml:"text"`
+		Dit  string `yaml:"dit"`
+	} `yaml:"formats"`
+	Sizes       map[string]string            `yaml:"sizes"`
+	Generations map[string]map[string]string `yaml:"generations"`
+}
+
+// NPUVendors are the NPU vendors a model's npu names.
+var NPUVendors = []string{"apple", "amd", "intel"}
 
 // targetEntry is a target of a model's targets.
 type targetEntry struct {
@@ -230,7 +246,7 @@ type categoryEntry struct {
 
 // tableFile is a definition file. NPUs and Builds are designed (docs/model-table.md) but not
 // read yet: a file that has them gets a warning. Sources, Search and Cache were read before the
-// sources moved to the environment (HWNPU_MODEL_SOURCE: docs/cache-sharing.md 7): a file that
+// sources moved to the environment (HWNPU_MODEL_SOURCE: docs/cache-sharing-design.md 7): a file that
 // has them is refused with what to do.
 type tableFile struct {
 	Version    int                       `yaml:"version"`
@@ -323,7 +339,7 @@ func (t *table) add(name string, raw []byte, builtin bool) error {
 	}
 	for key, v := range map[string]any{"sources": f.Sources, "search": f.Search, "cache": f.Cache} {
 		if v != nil {
-			return fmt.Errorf("chat: %s: %s is not read any more: the sources are URLs in %s, %s_1, ... (a .env file can set them: docs/cache-sharing.md 7)", name, key, shared.SourceEnv, shared.SourceEnv)
+			return fmt.Errorf("chat: %s: %s is not read any more: the sources are URLs in %s, %s_1, ... (a .env file can set them: docs/cache-sharing-design.md 7)", name, key, shared.SourceEnv, shared.SourceEnv)
 		}
 	}
 	for key, v := range map[string]any{"npus": f.NPUs, "builds": f.Builds} {
@@ -709,12 +725,51 @@ func toModel(name string, e *modelEntry) (Model, error) {
 		}
 		m.NotOn = slices.Clone(*e.NotOn)
 	}
+	if e.NPU != nil {
+		m.NPU = map[string]NPUSpec{}
+		for vendor, ne := range *e.NPU {
+			if !slices.Contains(NPUVendors, vendor) {
+				return m, fmt.Errorf("model %s: npu %q is not one of %s", name, vendor, strings.Join(NPUVendors, ", "))
+			}
+			if ne == nil {
+				return m, fmt.Errorf("model %s: npu %s has no sizes", name, vendor)
+			}
+			spec := NPUSpec{ByGen: map[string]map[string][2]int{}}
+			if ne.Formats != nil {
+				spec.Text, spec.Dit = ne.Formats.Text, ne.Formats.Dit
+			}
+			parse := func(where string, sizes map[string]string) (map[string][2]int, error) {
+				out := map[string][2]int{}
+				for aspect, wh := range sizes {
+					var w, h int
+					if _, err := fmt.Sscanf(wh, "%dx%d", &w, &h); err != nil || w <= 0 || h <= 0 || fmt.Sprintf("%dx%d", w, h) != wh {
+						return nil, fmt.Errorf("model %s: npu %s %s %s: %q is not WIDTHxHEIGHT", name, vendor, where, aspect, wh)
+					}
+					out[aspect] = [2]int{w, h}
+				}
+				return out, nil
+			}
+			var err error
+			if spec.Sizes, err = parse("sizes", ne.Sizes); err != nil {
+				return m, err
+			}
+			for gen, sizes := range ne.Generations {
+				if vendor == "apple" && !slices.Contains(Chips, gen) {
+					return m, fmt.Errorf("model %s: npu apple generations %q is not one of %s", name, gen, strings.Join(Chips, ", "))
+				}
+				if spec.ByGen[gen], err = parse("generations "+gen, sizes); err != nil {
+					return m, err
+				}
+			}
+			m.NPU[vendor] = spec
+		}
+	}
 	run, err := toRun(e.RunEntry)
 	if err != nil {
 		return m, fmt.Errorf("model %s: %w", name, err)
 	}
 	if !run.zero() && m.Kind != KindChat {
-		return m, fmt.Errorf("model %s: prefill, format, context, paged and tier are for chat models (hwnpu-chat)", name)
+		return m, fmt.Errorf("model %s: prefill, format, context, paged, tier and codes are for chat models (hwnpu-chat)", name)
 	}
 	m.Run = run
 	if e.Variants != nil {

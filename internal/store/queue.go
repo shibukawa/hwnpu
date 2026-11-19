@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sync"
 	"time"
@@ -16,7 +18,7 @@ import (
 )
 
 // What is written back to the sources goes in the background, after it is whole here
-// (docs/cache-sharing.md 7.1): a job is written to work/queue under the cache's root first and removed when done, so
+// (docs/cache-sharing-design.md 7.1): a job is written to work/queue under the cache's root first and removed when done, so
 // that one cut off (the process ended, the network went) is done by the next process that runs.
 // A job that fails is kept for the next one and logged to work/queue.log; it never stops a run.
 
@@ -114,29 +116,46 @@ func Resume() {
 	})
 }
 
-// worker does the jobs of the queue one at a time until none is left.
+// worker does the jobs of the queue, PutStreams at a time, until none is left.
 func worker(wakeup chan struct{}) {
 	defer queueBusy.Done()
-	failed := map[string]bool{}
+	var (
+		mu      sync.Mutex
+		failed  = map[string]bool{}
+		running = map[string]bool{}
+	)
+	done := make(chan struct{}, PutStreams)
 	for {
 		files, _ := filepath.Glob(filepath.Join(queueDir(), "*.json"))
-		did := false
+		mu.Lock()
 		for _, f := range files {
-			if failed[f] {
+			if failed[f] || running[f] || len(running) >= PutStreams {
 				continue
 			}
-			did = true
-			if err := runJob(f); err != nil {
-				failed[f] = true
-				logQueue("%s: %v (left for the next run)", filepath.Base(f), err)
-			}
+			running[f] = true
+			go func() {
+				err := runJob(f)
+				mu.Lock()
+				delete(running, f)
+				if err != nil {
+					failed[f] = true
+				}
+				mu.Unlock()
+				if err != nil {
+					logQueue("%s: %v (left for the next run)", filepath.Base(f), err)
+				}
+				done <- struct{}{}
+			}()
 		}
-		if did {
-			continue
-		}
+		busy := len(running) > 0
+		mu.Unlock()
 		select {
+		case <-done:
 		case <-wakeup:
 		case <-time.After(2 * time.Second):
+			if busy {
+				continue
+			}
 			queueMu.Lock()
 			if len(wakeup) == 0 {
 				queueWake = nil
@@ -159,6 +178,21 @@ func Flush(ctx context.Context) {
 	}
 }
 
+// Wait is Flush at the end of a command: when the queue holds work (put by this process or left
+// by one before), it says so on w and waits until it is done or Ctrl-C, which leaves the rest
+// for the next run. With none (a machine that writes nothing back), it returns at once.
+func Wait(w io.Writer) {
+	files, _ := filepath.Glob(filepath.Join(queueDir(), "*.json"))
+	if len(files) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "writing %d back to the sources before ending (Ctrl-C leaves them for the next run)\n", len(files))
+	wake() // the queue's worker may have ended (or Resume found none) before this work was there
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	Flush(ctx)
+}
+
 func runJob(file string) error {
 	ctx := context.Background()
 	unlock, err := lockWork(ctx, file)
@@ -166,6 +200,7 @@ func runJob(file string) error {
 		return err
 	}
 	defer unlock()
+	start := time.Now() // after the lock: the time of the work, not of waiting for another process
 	b, err := os.ReadFile(file)
 	if os.IsNotExist(err) {
 		return nil // another process did it
@@ -205,9 +240,39 @@ func runJob(file string) error {
 	}
 	if err == nil {
 		os.Remove(file)
-		logQueue("%s: put in %s", describe(j), j.Source)
+		logQueue("%s: put in %s (%s)", describe(j), j.Source, rate(size(j), time.Since(start)))
 	}
 	return err
+}
+
+// size is the bytes job j puts: its file, or the files of its entry's directory.
+func size(j job) int64 {
+	if j.Op != "entry" {
+		fi, err := os.Stat(j.Path)
+		if err != nil {
+			return 0
+		}
+		return fi.Size()
+	}
+	var n int64
+	filepath.WalkDir(j.Dir, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if fi, err := d.Info(); err == nil {
+				n += fi.Size()
+			}
+		}
+		return nil
+	})
+	return n
+}
+
+// rate says how much was put in d: "0.62 GB in 24.1s, 25.7 MB/s".
+func rate(n int64, d time.Duration) string {
+	s := fmt.Sprintf("%.2f GB in %.1fs", float64(n)/1e9, d.Seconds())
+	if d > 0 {
+		s += fmt.Sprintf(", %.1f MB/s", float64(n)/1e6/d.Seconds())
+	}
+	return s
 }
 
 func describe(j job) string {

@@ -15,7 +15,7 @@ import (
 	amdtools "github.com/shibukawa/hwnpu/tools/amd"
 )
 
-// place is where a conversion goes in the sources (docs/cache-sharing.md 7): its folder
+// place is where a conversion goes in the sources (docs/cache-sharing-design.md 7): its folder
 // converted/MODEL/TARGET/EXPORT/VERSION and the entry it is described by (no files yet).
 type place struct {
 	entry shared.Entry
@@ -54,9 +54,20 @@ func (p place) takes(e shared.Entry) bool {
 	return maps.Equal(a, b)
 }
 
-// fetchConverted makes dst from the first source that has the place's entry, and puts it in the
-// sources before that one that are written back to. It reports whether it did.
+// fetchConverted is fetchFrom, and, when no source has the entry, starts putting dst in the
+// sources written back to as it is made here next (startEarly): for a conversion a miss is
+// followed by.
 func fetchConverted(ctx context.Context, p place, dst string, log io.Writer) bool {
+	if fetchFrom(ctx, p, dst, log) {
+		return true
+	}
+	startEarly(p, dst)
+	return false
+}
+
+// fetchFrom makes dst from the first source that has the place's entry, and puts it in the
+// sources before that one that are written back to. It reports whether it did.
+func fetchFrom(ctx context.Context, p place, dst string, log io.Writer) bool {
 	ss := shared.Sources()
 	if len(ss) == 0 {
 		return false
@@ -74,6 +85,14 @@ func fetchConverted(ctx context.Context, p place, dst string, log io.Writer) boo
 		}
 	}
 	return true
+}
+
+// startEarly puts the files of dir, the place's entry being made here next, in the sources
+// written back to as they are written (store.StartEarly).
+func startEarly(p place, dir string) {
+	for _, s := range shared.Writebacks() {
+		shared.StartEarly(s, p.entry.Path, dir)
+	}
 }
 
 // putConverted describes dir, made here and whole, as the place's entry and puts it in the
@@ -110,37 +129,110 @@ func modelNamed(name string) Model {
 }
 
 // SharedExport makes the export out (a directory) that recipe describes: from the first source
-// that has it (docs/cache-sharing.md 7), else with build. What build made gets its entry.json
+// that has it (docs/cache-sharing-design.md 7), else with build. What build made gets its entry.json
 // and goes in the sources that are written back to. A nil recipe (what it is made from is not
 // known: an unpinned model with no lock and Hugging Face out of reach) builds without the
 // sources.
 func SharedExport(ctx context.Context, kind string, recipe map[string]string, out string, log io.Writer, build func() error) error {
+	return SharedExportOr(ctx, kind, recipe, nil, out, log, build)
+}
+
+// SharedRecipe is an entry of the sources by its kind and its recipe.
+type SharedRecipe struct {
+	Kind   string
+	Recipe map[string]string
+}
+
+// SharedExportOr is SharedExport that, when no source has recipe's entry, takes the first of
+// others that a source has (each at the place its kind and recipe give under out's name: an
+// export made by hand that hwnpu-dev cache import put there, ImportedRecipe) before it builds.
+// What build makes is put as recipe's.
+func SharedExportOr(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer, build func() error) error {
 	if recipe == nil {
 		return build()
 	}
 	if log == nil {
 		log = io.Discard
 	}
-	r := maps.Clone(recipe)
-	r["kind"] = kind
-	p := placeOf(kind, modelNamed(recipe["model"]), recipe["target"], filepath.Base(out), r)
+	p := sharedPlace(kind, recipe, out)
+	places := []place{p}
+	for _, o := range others {
+		places = append(places, sharedPlace(o.Kind, o.Recipe, out))
+	}
 	unlock, err := cache.Lock(ctx, out+":layers", "the export "+filepath.Base(out), log)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if e, err := shared.ReadEntry(out); err == nil && p.takes(e) {
+	if fetchPlaces(ctx, places, out, log) {
 		return nil
 	}
-	if fetchConverted(ctx, p, out, log) {
-		os.WriteFile(out+".done", nil, 0o644)
-		return nil
-	}
+	// made here: its files go in the sources written back to as they are written, as recipe's
+	// (not on the misses before: an export of others fetched into out would go too)
+	startEarly(p, out)
 	if err := build(); err != nil {
 		return err
 	}
 	putConverted(p, out, log)
 	return nil
+}
+
+// FetchShared is SharedExportOr without the build: it reports whether out is recipe's entry, or
+// one of others', here or fetched from a source. A nil recipe is never there.
+func FetchShared(ctx context.Context, kind string, recipe map[string]string, others []SharedRecipe, out string, log io.Writer) (bool, error) {
+	if recipe == nil {
+		return false, nil
+	}
+	if log == nil {
+		log = io.Discard
+	}
+	places := []place{sharedPlace(kind, recipe, out)}
+	for _, o := range others {
+		places = append(places, sharedPlace(o.Kind, o.Recipe, out))
+	}
+	unlock, err := cache.Lock(ctx, out+":layers", "the export "+filepath.Base(out), log)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	return fetchPlaces(ctx, places, out, log), nil
+}
+
+// fetchPlaces reports whether out is the entry of one of places: here, or fetched from the first
+// source that has one (out.done written then).
+func fetchPlaces(ctx context.Context, places []place, out string, log io.Writer) bool {
+	if e, err := shared.ReadEntry(out); err == nil {
+		for _, q := range places {
+			if q.takes(e) {
+				return true
+			}
+		}
+	}
+	for _, q := range places {
+		if fetchFrom(ctx, q, out, log) {
+			os.WriteFile(out+".done", nil, 0o644)
+			return true
+		}
+	}
+	return false
+}
+
+// sharedPlace is the place of the entry of kind and recipe named as out.
+func sharedPlace(kind string, recipe map[string]string, out string) place {
+	r := maps.Clone(recipe)
+	r["kind"] = kind
+	return placeOf(kind, modelNamed(recipe["model"]), recipe["target"], filepath.Base(out), r)
+}
+
+// ImportKind is the kind of entry of an export for AMD's NPU made by hand, which hwnpu-dev cache
+// import puts in the sources.
+const ImportKind = "iron-import"
+
+// ImportedRecipe is the recipe hwnpu-dev cache import describes an export made by hand with
+// (ImportKind): its model, target and name alone, so that a command finds one under the name it
+// would make the export with.
+func ImportedRecipe(m Model, target, export string) map[string]string {
+	return map[string]string{"model": m.Name, "target": target, "export": export, "made": "by hand (hwnpu-dev cache import)"}
 }
 
 func hostName() string { h, _ := os.Hostname(); return h }
@@ -158,10 +250,14 @@ func sourceCommit(ctx context.Context, m Model) string {
 
 // ExportRecipe is what an export of model m for AMD's NPU with IRON's tools is made from (a key
 // of the shared layers): the model, the commit of its files and the SHA-256 the definitions pin,
-// the tool and its arguments, the tools' hash. nil when the commit is not known.
+// the tool and its arguments, the tools' hash (for iron_export_lm.py, of the files of tools/amd
+// the export reads: amdtools.LMHash). nil when the commit is not known.
 func ExportRecipe(ctx context.Context, m Model, tool string, args []string) map[string]string {
 	commit := sourceCommit(ctx, m)
 	hash, err := amdtools.Hash()
+	if tool == "iron_export_lm.py" {
+		hash, err = amdtools.LMHash(args)
+	}
 	if commit == "" || err != nil {
 		return nil
 	}

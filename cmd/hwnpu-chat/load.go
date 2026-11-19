@@ -199,7 +199,7 @@ func loadChat(ctx context.Context, name string, lf *loadFlags, cf *convertFlags,
 		}
 		if c, err = chat.Prepare(ctx, chat.Setup{Dir: md, Repo: m.Source(), Arch: m.Arch, Name: m.Name,
 			Context: run.Context, Paged: run.Paged, Shortest: cf.Shortest, Prefill: run.Prefill,
-			Format: run.Format, Draft: cf.Draft, MTP: cf.MTP, Tiers: tiers, Backend: lf.Backend, Codes: cf.Codes,
+			Format: run.Format, Draft: cf.Draft, MTP: cf.MTP, Tiers: tiers, Backend: lf.Backend, Codes: cf.Codes, CodesHash: run.Codes,
 			FormatFor: split(cf.FormatFor), Log: logw()}); err != nil {
 			return loaded{}, err
 		}

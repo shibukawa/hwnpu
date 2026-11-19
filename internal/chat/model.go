@@ -79,8 +79,11 @@ const mtpSeq = 8
 
 // mtpArch is the architecture of a model's multi-token prediction layer, "" for none: that of
 // the arch with -mtp, when the checkpoint has its tensors. A program of the layer converted
-// before in pdir says it has them; else the checkpoint is downloaded to look (tables.go).
-func mtpArch(config string, a *llm.Arch, pdir string, checkpoint func() (string, error)) (string, error) {
+// before in pdir says it has them, else the index of a checkpoint in several files (index: its
+// path, "" for none) names them; else the checkpoint is downloaded to look (tables.go). The
+// index spares a machine that takes what another converted from the sources the checkpoint's
+// download (1.75 GB for Qwen3.5-0.8B, design.md 16.231).
+func mtpArch(config string, a *llm.Arch, pdir string, index func() string, checkpoint func() (string, error)) (string, error) {
 	name := a.Name + "-mtp"
 	ma, mm, err := llm.LoadConfig(config, name)
 	if err != nil {
@@ -88,6 +91,16 @@ func mtpArch(config string, a *llm.Arch, pdir string, checkpoint func() (string,
 	}
 	if done, _ := filepath.Glob(filepath.Join(pdir, ma.Name+"*-last*.done")); len(done) > 0 {
 		return name, nil
+	}
+	if p := index(); p != "" {
+		if names, err := indexNames(p); err == nil {
+			for t := range mm.Tensors() {
+				if strings.HasPrefix(t, "mtp.") && strings.HasSuffix(t, "norm.weight") && !names[t] {
+					return "", nil
+				}
+			}
+			return name, nil
+		}
 	}
 	weights, err := checkpoint()
 	if err != nil {
@@ -106,6 +119,28 @@ func mtpArch(config string, a *llm.Arch, pdir string, checkpoint func() (string,
 		}
 	}
 	return name, nil
+}
+
+// indexNames are the tensors the index of a checkpoint in several files (its weight_map) names.
+func indexNames(index string) (map[string]bool, error) {
+	raw, err := os.ReadFile(index)
+	if err != nil {
+		return nil, err
+	}
+	var idx struct {
+		WeightMap map[string]string `json:"weight_map"`
+	}
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return nil, err
+	}
+	if len(idx.WeightMap) == 0 {
+		return nil, fmt.Errorf("%s has no weight_map", index)
+	}
+	names := map[string]bool{}
+	for n := range idx.WeightMap {
+		names[n] = true
+	}
+	return names, nil
 }
 
 // compileCacheBytes is about what the Neural Engine's own cache of compiled programs holds
@@ -232,6 +267,10 @@ type Setup struct {
 	// The programs' names carry a hash of its index (-gptq-HASH), so that other codes or none
 	// convert anew.
 	Codes string
+	// CodesHash is the hash of the codes the definitions convert the model with (models.yaml's
+	// codes, Run.Codes): the programs are named for them, as with Codes, so that a conversion with
+	// them is taken from the sources; to convert here, Codes or CodesDir has them.
+	CodesHash string
 	// FormatFor gives some tensors another format than Format (llm.Options.FormatFor,
 	// "SUBSTRING=FORMAT" entries, such as per_layer=lut8); the programs' names carry them.
 	FormatFor []string
@@ -327,6 +366,16 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if _, routed := model.(llm.Routed); routed && Chip() == "M1" {
+		// the experts' program picks their scales with gather_nd, which an M1's Neural Engine
+		// does not take (docs/handoff-ane-gather.md 1): refused before the checkpoint downloads
+		return Config{}, fmt.Errorf("chat: %s is a mixture of experts, which runs on an M2 or later, not on an M1's Neural Engine", c.Name)
+	}
+	if _, routed := model.(llm.Routed); routed && s.Draft > 1 {
+		// a call's experts run row by row (llm.Routed): checking 7 drafts costs 8 rows of them,
+		// for the few a model accepts (LFM2-8B-A1B: 13 of 95, 2.3 tokens/s against 15)
+		s.Draft = 1
+	}
 	for _, f := range TokenizerFiles(a.Name) {
 		if _, err := fetch(ctx, s.Repo, f, s.Log); err != nil {
 			return Config{}, err
@@ -345,13 +394,23 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if attn := a.Param(llm.Options{}, "attn"); attn != "" {
 		kind += "-" + attn
 	}
-	if s.Codes != "" {
+	// the codes: a directory given, or the definitions' hash of them (CodesHash), whose directory
+	// is needed only to convert (CodesDir): a conversion with them is taken from the sources
+	codes := s.Codes
+	if s.Codes != "" || s.CodesHash != "" {
 		if !strings.HasPrefix(format, "lut") {
 			return Config{}, fmt.Errorf("chat: -codes are lookup tables, for the lutN formats, not %s", format)
 		}
-		h, err := codesHash(s.Codes)
-		if err != nil {
-			return Config{}, err
+		h := s.CodesHash
+		if s.Codes != "" {
+			var err error
+			if h, err = codesHash(s.Codes); err != nil {
+				return Config{}, err
+			}
+		} else if d := CodesDir(s.Dir, h); exists(filepath.Join(d, "index.json")) {
+			if dh, err := codesHash(d); err == nil && dh == h {
+				codes = d
+			}
 		}
 		kind += "-gptq-" + h
 	}
@@ -367,7 +426,14 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	var mtp string
 	params := map[string]string{}
 	if s.Draft > 1 && s.MTP != MTPOff && backend != llm.BackendIntel {
-		if mtp, err = mtpArch(c.ModelConfig, a, pdir, checkpoint); err != nil {
+		index := func() string {
+			p, err := fetch(ctx, s.Repo, "model.safetensors.index.json", s.Log)
+			if err != nil {
+				return ""
+			}
+			return p
+		}
+		if mtp, err = mtpArch(c.ModelConfig, a, pdir, index, checkpoint); err != nil {
 			return Config{}, err
 		}
 		if mtp != "" {
@@ -406,6 +472,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		lastRow, kvOnly bool
 	}
 	pre := prog{seq: prefillSeq, lastRow: a.LastRow && backend != llm.BackendIntel}
+	if _, routed := model.(llm.Routed); routed {
+		// a prompt's call reads each expert its rows chose once (experts.BuildRows), whatever
+		// the rows: more rows a call, fewer reads a token
+		pre.seq = pagedPrefillSeq
+	}
 	if chunk > 0 && backend != llm.BackendIntel {
 		pre.seq = min(pagedPrefillSeq, chunk) // a call's tokens fit in a chunk
 		if cw, ok := model.(llm.CacheWriters); ok && cw.CacheLayers() < model.Layers() {
@@ -442,6 +513,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if len(tiers) > 0 && !slices.Contains(tiers, TierAuto) && s.Log != nil {
 			fmt.Fprintf(s.Log, "no cache tiers for %s: split at its attention, a step costs in proportion to the conversation, not to the context of %d\n", c.Name, context)
 		}
+		tiers = nil
+	}
+	if _, routed := model.(llm.Routed); routed {
+		// the experts are a file of the export, several GiB: one export, of one cache
 		tiers = nil
 	}
 	if slices.Contains(tiers, TierAuto) {
@@ -531,7 +606,7 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 				missing = missing || !converted(ctx, out+programExt(backend))
 			}
 			outs, names, base = append(outs, out), append(names, name), base+"-"+name
-			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: s.Codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
+			ps = append(ps, program{backend: backend, arch: s.Arch, format: s.Format, codes: codes, formatFor: s.FormatFor, params: pp, seq: p.seq, parts: p.parts, cache: cache, paged: tchunk, lastRow: p.lastRow, kvOnly: p.kvOnly})
 		}
 		tps = append(tps, tierProgs{outs, names, ps, base})
 	}
@@ -551,6 +626,30 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 	}
 	if missing {
+		if s.CodesHash != "" && codes == "" {
+			// the codes are needed only now, to convert: from the shared layers when one has them
+			if d := CodesDir(s.Dir, s.CodesHash); fetchCodes(ctx, s.Dir, s.CodesHash, d) {
+				codes = d
+				for ti := range tps {
+					for i := range tps[ti].ps {
+						tps[ti].ps[i].codes = d
+					}
+				}
+				for i := range all.ps {
+					all.ps[i].codes = d
+				}
+			}
+		} else if s.CodesHash != "" {
+			// converted with the definitions' codes, which this machine has: put in the shared
+			// layers, so that another machine (or this one, after a change of what is written)
+			// converts again without them
+			if h, err := codesHash(codes); err == nil && h == s.CodesHash {
+				putCodes(ctx, s.Dir, h, codes)
+			}
+		}
+		if s.CodesHash != "" && codes == "" {
+			return Config{}, fmt.Errorf("chat: %s's programs are converted with the lookup tables %s (models.yaml's codes), which neither the sources nor %s have: --codes DIR, or a models.yaml of your own without codes", c.Name, s.CodesHash, CodesDir(s.Dir, s.CodesHash))
+		}
 		if _, err := checkpoint(); err != nil {
 			return Config{}, err
 		}
@@ -964,6 +1063,10 @@ type program struct {
 	headRows          []int32  // llm.Options.HeadRows, listed in a Core AI export (draftVocabFile)
 }
 
+// CodesDir is where Prepare looks for the codes of a hash (Setup.CodesHash) in a model's
+// directory: codes-HASH beside its programs.
+func CodesDir(dir, hash string) string { return filepath.Join(dir, "codes-"+hash) }
+
 // codesHash names a codes directory (llm.Options.Codes) by its index.json: the first 8 hex
 // digits of its SHA-256. The index has each weight's key, a hash of its values.
 func codesHash(dir string) (string, error) {
@@ -1144,7 +1247,13 @@ func convertShared(ctx context.Context, config, weights, base string, names []st
 	if err := cache.WriteDone(done, paths[0]); err != nil {
 		return nil, err
 	}
-	shareExport(ctx, export, p.paged > 0)
+	// paged when any program is: the first (the shortest cache) may be whole while the longer
+	// ones are split at their attention, and AddSmaller changes their manifests after this
+	paged := false
+	for _, p := range ps {
+		paged = paged || p.paged > 0
+	}
+	shareExport(ctx, export, paged)
 	return paths, nil
 }
 
@@ -1222,13 +1331,7 @@ func FetchWeights(ctx context.Context, repo string, log io.Writer) (string, erro
 	for _, f := range files {
 		want = append(want, File{repo, f})
 	}
-	Expect(ctx, want)
-	for _, f := range files {
-		if _, err := fetch(ctx, repo, f, log); err != nil {
-			return single, err
-		}
-	}
-	return single, nil
+	return single, FetchFiles(ctx, want, log)
 }
 
 // shards are the files an index of a checkpoint in several files names, in order.
@@ -1261,6 +1364,12 @@ func shards(index string) ([]string, error) {
 // a token (hfToken), signing in, agreeing to the terms. repo is OWNER/NAME, or
 // OWNER/NAME@REVISION for a revision other than main.
 func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error {
+	return fetchHFTee(ctx, repo, name, path, log, nil)
+}
+
+// fetchHFTee is fetchHF that also writes the file, when it comes whole from its start, to what
+// tee returns for its size (nil: nowhere): the sources written back to (shared.StartTee).
+func fetchHFTee(ctx context.Context, repo, name, path string, log io.Writer, tee func(size int64) io.Writer) error {
 	repo, rev, _ := strings.Cut(repo, "@")
 	url := hubURL + repo + "/resolve/" + cmp.Or(rev, "main") + "/" + name
 	part := path + ".part"
@@ -1333,7 +1442,13 @@ func fetchHF(ctx context.Context, repo, name, path string, log io.Writer) error 
 	if err != nil {
 		return err
 	}
-	pw := &progress{w: f, done: have, from: have, total: total, plan: planned(path),
+	var dst io.Writer = f
+	if tee != nil && resp.StatusCode == http.StatusOK && resp.ContentLength >= 0 {
+		if w := tee(resp.ContentLength); w != nil {
+			dst = io.MultiWriter(f, w) // w never fails nor holds the download back
+		}
+	}
+	pw := &progress{w: dst, done: have, from: have, total: total, plan: planned(path),
 		bar: console.NewBar(log, fmt.Sprintf("downloading %s from %s", filepath.Base(name), repo))}
 	_, err = io.Copy(pw, resp.Body)
 	if cerr := f.Close(); err == nil {
@@ -1358,7 +1473,7 @@ func logLine(log io.Writer) func(string, ...any) {
 
 // commits are the commits Hugging Face served the repositories' files of a revision from
 // (X-Repo-Commit), by OWNER/NAME@REVISION: what a copy of a file is put under in a shared layer
-// (docs/cache-sharing.md 7.1), never a branch's name.
+// (docs/cache-sharing-design.md 7.1), never a branch's name.
 var (
 	commitsMu sync.Mutex
 	commits   = map[string]string{}
@@ -1455,7 +1570,7 @@ func gb(n, total int64) string {
 
 // Fetch returns the path of a file of a model's repository (Model.Source) here (RepoDir), which
 // it puts there unless it is there: from the machine's cache, the sources, the bundled models or
-// Hugging Face (docs/cache-sharing.md 7).
+// Hugging Face (docs/cache-sharing-design.md 7).
 func Fetch(ctx context.Context, repo, name string, log io.Writer) (string, error) {
 	return fetch(ctx, repo, name, log)
 }

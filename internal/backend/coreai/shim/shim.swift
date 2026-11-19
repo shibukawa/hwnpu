@@ -62,8 +62,8 @@ public func cai_arch() -> UnsafeMutablePointer<CChar> { cstr(AIModel.deviceArchi
 @_cdecl("cai_free")
 public func cai_free(_ p: UnsafeMutablePointer<CChar>?) { free(p) }
 
-/// Loads the .aimodel at path and its function main, or the function NAME of PATH#NAME (a program
-/// with several, whose weights they share). Core AI's cache sometimes keeps an entry
+/// Loads the .aimodel (or coreai-build's .aimodelc) at path and its function main, or the function
+/// NAME of PATH#NAME (a program with several, whose weights they share). Core AI's cache sometimes keeps an entry
 /// whose function then fails to load at once (_GenericObjCError 0) and never recompiles: the
 /// entries of the model are deleted and it is loaded again (*retried set to 1, *errOut the first
 /// attempt's error), unless kind has
@@ -73,7 +73,7 @@ public func cai_open(_ path: UnsafePointer<CChar>, _ kind: Int32, _ retried: Uns
                      _ errOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> UnsafeMutableRawPointer? {
     var file = String(cString: path)
     var name = "main"
-    if let i = file.lastIndex(of: "#"), file[..<i].hasSuffix(".aimodel") {
+    if let i = file.lastIndex(of: "#"), file[..<i].hasSuffix(".aimodel") || file[..<i].hasSuffix(".aimodelc") {
         name = String(file[file.index(after: i)...])
         file = String(file[..<i])
     }
@@ -140,6 +140,9 @@ private func ints(_ s: Span<Int>) -> [Int] {
     for i in 0..<s.count { a.append(s[i]) }
     return a
 }
+
+/// Whether the arrays of the type hold two values a byte (int4, uint4), dense.
+private func isNibbles(_ t: NDArray.ScalarType) -> Bool { t == .int4 || t == .uint4 }
 
 private func scalarBytes(_ t: NDArray.ScalarType) -> Int {
     switch t {
@@ -215,6 +218,9 @@ public func cai_input_array(_ h: UnsafeMutableRawPointer, _ index: Int32) -> Uns
         if dense && elem > 0 {
             memset(p, 0, count * elem) // as a buffer of the caller's: zeros
             made = p
+        } else if dense && isNibbles(d.scalarType) {
+            memset(p, 0, (count + 1) / 2) // two a byte
+            made = p
         }
     }
     guard let p = made else { return nil }
@@ -265,7 +271,13 @@ public func cai_run(_ h: UnsafeMutableRawPointer, _ ins: UnsafePointer<UnsafeMut
             fp.pointee.lent[name] = nil
         }
         let elem = scalarBytes(feed[name]!.scalarType)
+        let nibbles = isNibbles(feed[name]!.scalarType)
         feed[name]!.mutableRawView().withUnsafeMutableBytes { p, shape, strides in
+            if nibbles { // two a byte, dense
+                let (_, count) = isDense(ints(shape), ints(strides))
+                memcpy(p, src, (count + 1) / 2)
+                return
+            }
             copyStrided(src, p, ints(shape), ints(strides), elem, toArray: true)
         }
     }

@@ -1,478 +1,405 @@
-# 変換済みのモデルの配布と、キャッシュの共有 (設計案)
+# Model cache and sharing it
 
-作成: 2026-11-12。状態: P0、P1 の層とフォルダと gc、P2 の S3、AMD のチャットのモデルと初回に作る画像のモデルの書き出しの共有を実装 (0 節、design.md 16.169)。2026-11-15 に取得元を環境変数の URL (フォルダ、WebDAV と HTTP、S3) と固定の並び (`original/` と `hwnpu-lock.json`、`converted/.../vN`) に作り直した (7 節、design.md 16.212)。ほかは設計案。docs/prebuilt.md (Hugging Face で配る計画) と docs/model-table.md の 5 節 (取得元)、11 節 (運用) を、1 つの仕組みにまとめ直したもの。食い違うところはこの文書を正とする。
+[日本語](cache-sharing.ja.md)
 
-## 0. 実装したもの (2026-11-12)
+hwnpu never asks you to convert a model by hand. The first time you use a model it is downloaded, converted for your NPU and kept in a **cache**. This guide explains that cache from four sides:
 
-- 根を 1 つに (`cache.Root`、`HWNPU_CACHE`)。AMD の書き出しは `entries/amd-xdna2/` に作り、`~/models` は読むだけ。IRON の JIT のキャッシュは `iron/` (`~/.npu/cache` を最初の書き出しの前に移し、リンクを残す)。組み込みの IRON の道具は `tools/`。まだ移していないもの: `models/` (チェックポイントと Core ML、OpenVINO のプログラム) を `src/` と `entries/` に分けること
-- `.done` を相対パスに、ダウンロード・変換・書き出しのロック、HF の続きのダウンロードの `If-Range`
-- 取得元 (7 節、2026-11-15 に作り直し): `HWNPU_MODEL_SOURCE`、`_1`、... の URL (`file://`、`http(s)://` の WebDAV と読むだけの HTTP、`s3://`)、`?writeback=true`、`HWNPU_MODEL_HUGGING_FACE`、`.env` (7.4 節)。元のモデルは `original/OWNER/NAME/` と `hwnpu-lock.json`、変換後は `converted/MODEL/TARGET/EXPORT/VERSION/`。定義の `targets` (版) と `develop`。`hwnpu-dev cache sources|ls|push|update|verify|flush|gc|migrate`
-- 元のチェックポイントのフォワードプロキシ (7.1 節): lock のコミットのファイルを取得元から、なければ HF から同じコミットで取り、書き戻す取得元に置く
-- エントリ (6 節): `entry.json` と、AMD のチャットのモデルの書き出しの共有 (`chat.SharedExport`)。鍵は指紋 (モデル、コミット、定義の sha256、`amd_export`、組み込みの道具の hash)。版 (`version`、5 節の lock) はまだない
-- hwnpu-image detect、pose、segment が初回に作る AMD の書き出しも層に (鍵は定義の sha256、道具の hash、Go の側の手で上げる版: `chat.PinnedRecipe`)
-- `hwnpu-dev cache gc N` は取得元のエントリのフォルダを選んで消す (`--orphans` で entry.json のない書きかけも、`--apply` で実際に)。途中で止まった S3 のマルチパートは、バケットのライフサイクルの規則で中止させる
-- Core AI の書き出し (2026-11-14、design.md 16.199): どのコマンドの `NAME.coreai` も、作る前に層を探し、手元で作ったら書ける層へ書き戻す (`kind: coreai`、鍵はモデルのファイルの sha256 かコミット、書き出しの名前、`ailower.FormatVersion`)。ホストが引く表 (`tables.safetensors`) も (`kind: tables`)。変換済みを動かすだけの機械はチェックポイントを落とさない。path (NAS) と S3 (RustFS) で確かめた
-- 次: Anima などの手で作る画像の書き出し (HF の配布物で)、Core ML と OpenVINO のプログラムのエントリ化 (8 節の計画と作るの分離)、`host` の scope、HF の配布物 (4、5、9 節)
+1. [How the cache works on one machine](#1-the-cache-on-one-machine) (everyone)
+2. [Sharing it at home or in a company](#2-sharing-the-cache-with-a-nas-or-s3) with a NAS, a web server or S3
+3. [Reference](#3-user-reference): variables, URLs, commands, folder layouts
+4. [How each kind of NPU uses it](#4-what-is-shared-on-each-npu) and [how it is built inside](#5-internal-architecture)
 
-## 1. 目的
+If you only want to run models, read part 1. If several machines should not each wait for the same download and conversion, read part 2.
 
-- 利用者は、変換済みのものを落として読み込むだけにする。AMD の利用者に IRON、mlir-aie、Peano、Python の環境を入れさせない。GPTQ の校正 (CPU で数時間) も手元でさせない
-- 変換済みのものは GitHub Actions (aix1 の self-hosted runner) で作り、照合してから Hugging Face に上げる。上げる経路はこれだけにする
-- 配っていない組み合わせ (利用者が `builds` で変えたもの) や社内の機械の間でも、作ったものを透過的に使い回せるようにする。共有フォルダ (NFS、SMB、外付け) と S3 を層として重ねる
-- 配布物が使えなければ、今までどおり手元で変換する (後退させない)
+> The history of the design, with every measurement and decision, is kept in [cache-sharing-design.md](cache-sharing-design.md) (Japanese). References to "section 7" and the like in other documents and in code comments point there.
 
-## 2. 今の状態と、共有を妨げる点
+---
 
-できているもの: 元のチェックポイントの取得元の切り替え (`sources`、`search`、path と s3、`internal/chat/sources.go`)、`sha256` の固定とモデルの間のハードリンク、同じバイトのファイルの reflink での共有 (`cache.Clone`、`ShareFiles`)、`cache.Store` の一時ディレクトリと rename。変換済みのものを取ってくる経路はない。
+## 1. The cache on one machine
 
-直すもの (7 節の P0):
+### 1.1 What happens the first time
 
-1. 変換の印 `.done` に絶対パスが入り、ローダーがそれを返す (`internal/chat/model.go` の `convert`、書き起こし、Anima、Sana、Qwen-Image)。写したフォルダは元の機械のパスを指す
-2. `cache.Prune` は `.src` の絶対パスで元の有無を見る。共有した先では元がないと見て消す
-3. プログラムの名前は設定だけで、元のチェックポイントのコミットも hash も入らない。モデルのフォルダは `path.Base(repo)` で、`owner1/X` と `owner2/X` がぶつかる
-4. ロックがない。2 つのプロセスが同じ `.part` に書きうる
-5. HF からの続きのダウンロード (Range) に `If-Range` がない。版の違う `.part` に足しうる
-6. Core ML の配置の判定 (placement の JSON) の鍵にチップが入らない
-7. AMD の書き出しはキャッシュではなく `~/models` にある。版は `manifest.json` の `version: 1` だけ
-
-## 3. 版
-
-2 種類の版を持ち、どちらも手で明示的に上げる。
-
-| 版 | 単位 | 上げるとき | 見るもの |
-|---|---|---|---|
-| `format_version` | 対象の会社ごと (`apple`、`amd`、`intel`) | ローダーが読む形式が変わったとき (IRON の `manifest.json`、`parts.json` の並びなど) | ローダー。バイナリごとに読める範囲をコードで持つ |
-| モデルの版 `version` | モデル × 対象 | 出力が変わるとき全部: 形式やパラメータ、元のコミット、変換器や校正の修正、`format_version` | 配布と利用者。HF の上の場所を決める |
-
-### 3.1 対象
-
-対象は model-table.md 4.1 節の NPU の名前 (世代の階層) を使う。「広い名前の行が既定、狭い名前の行が例外」も同じ。
-
-- 機械の名前を狭いものから並べ (M1: `apple-m1` → `apple`、Strix Point: `amd-xdna2` → `amd`)、定義のある最初の行を使う
-- 版は行ごとに独立。`apple` の版を上げても `apple-m1` は作り直さない
-- M1 で中身が同じものは M1 の行を書かない (`apple` を共有)。M1 で使わないものは `apple-m1: {remove: true}` (今の `not_on: [M1]` に当たる)。配布物を探さず、手元でも作らない
-- 前提: 世代を見分けるコードは Apple にしかない。AMD (`amd-xdna1` / `amd-xdna2`) と Intel (`intel-npu3` / `intel-npu4`) を分けて配るには、`hwnpu.Enumerate` が世代を返すようにする
-- `prebuilt.md` のサブフォルダ `amd-npu2/` は `amd-xdna2/` に揃える (書き出しの中身の IRON の `npu2` はそのまま)
-
-## 4. 定義 (組み込みの `models.yaml`)
-
-`prebuilt.md` 5.3 節の別ファイル (`prebuilt/models.yaml`) は持たず、モデルの定義に書く。バイナリに組み込まれるので、各リリースの hwnpu は自分の取る版を知っていて、HF に新しい版が上がっても古いバイナリは古い版を取り続ける (再現できる)。
-
-```yaml
-models:
-  LFM3-1.7B:
-    from: hf:LiquidAI/LFM3-1.7B@6c1f0e3a...     # 配るモデルはコミットの固定が必須 (40 桁)
-    targets:                                    # 2026-11-15 に読むようにした (版だけ)
-      amd-xdna2: {version: 2}
-      coreai:    {version: 1}
-      # apple は 10 節が決まるまで書かない
-  FLUX.2-klein-4B:
-    develop: true                               # 開発中: 取得元には vN-HASH で置く
+```
+hwnpu-chat -m LFM3-1.7B
+   │
+   ├─ checkpoint (the original weights)   → downloaded from Hugging Face
+   ├─ conversion for your NPU             → made on this machine (minutes)
+   └─ answers
 ```
 
-- 2026-11-15 の実装: 版はモデルの直下の `targets.<対象>.version` (`prebuilt:` の下ではない。取得元が環境変数の URL になり `prebuilt.repo` は要らない)。`format` や `codes` などの欄はまだ読まない。利用者のファイルは名指した対象だけを変える
+Both the downloaded files and the conversion result stay in the cache. The second run starts in seconds, and other hwnpu commands that need the same model use the same files.
 
-- 行に書いたパラメータ全部が、その版の中身。実行時の設定 (フラグ、`builds`、`variants`) がこれと合えば配布物を使い、合わなければ手元で変換する (`-explain` に理由)
-- `like: 行の名前` で、ほかの行の値を引き継いで違うところだけ書ける (`apple-m1: {like: apple, version: 2, prefill: off}`)
-- 利用者のファイルで版やリポジトリを差し替えられる (社内で作り直したもの)
-- 表 (`tables.safetensors`) のように対象によらないものは `targets.any` に書く
+### 1.2 Where it lives
 
-## 5. 指紋と lock ファイル (上げ忘れの検査)
+One folder holds everything hwnpu writes:
 
-`hwnpu-dev prebuilt fingerprint` が、モデル × 対象の行ごとに指紋 (sha256) を計算する。入力:
-
-- 行のパラメータ (`like` を解いた後)、対象の名前
-- `from` のコミットと `sha256`
-- 変換器の版の定数 (`Arch.Revision`、`ExportVersion`、`MANIFEST_VERSION` など)
-- `format_version`
-- 道具の版 (mlir-aie、Peano。`tools/ci/aix1-setup.sh` に固定したもの)
-- 校正の設定 (GPTQ の damp、データ、行数)
-
-`prebuilt/lock.json` に `{model, target, version, fingerprint}` を記録する (`go.sum` に当たる)。PR の検査:
-
-| 状態 | 結果 |
+| OS | Cache root |
 |---|---|
-| 指紋が変わったのに `version` が同じ | 失敗 |
-| `version` が下がった | 失敗 |
-| lock を更新していない | 失敗 |
-| 指紋が同じで `version` だけ上がった | 警告 (作り直しを意図したとき) |
+| macOS | `~/Library/Caches/hwnpu` (not synced to iCloud) |
+| Linux | `$XDG_CACHE_HOME/hwnpu` (`~/.cache/hwnpu`) |
+| Windows | `%LOCALAPPDATA%\hwnpu` |
 
-- `like` で引き継いだ値が変われば引き継いだ行の指紋も変わるので、その行の版も上げることになる
-- 捕まえられないのは、変換器を直して版の定数を上げなかったときだけ (今と同じ)。補いに、CI で作ったものの sha256 と KL を前の版と比べて記録し、「指紋は同じなのに出力が違う」を警告にする。比べるには変換が同じバイトを出すかを確かめる (未確認。決定的でないものは KL で比べる)
-- 指紋は 6 節のエントリの鍵でもある。`版 → 指紋` は lock で引く。利用者が同じパラメータを組めば、配布物にもチームのキャッシュにも当たる
+Move it, for example to an external disk, with `HWNPU_CACHE=/mnt/big/hwnpu`. Your own settings (`models.yaml`, `licenses.json`, `run.json`) are not in the cache, so clearing it never loses them.
 
-## 6. エントリ
+### 1.3 What is inside
 
-再利用するものを全部、不変のエントリにする。エントリはファイルの木と `entry.json`:
-
-```json
-{
-  "key": "<指紋>", "kind": "iron-lm", "scope": "portable",
-  "model": "LFM3-1.7B", "target": "amd-xdna2", "version": 2, "format_version": 1,
-  "recipe": {"...": "指紋の入力そのもの"},
-  "files": [{"path": "decode.elf", "size": 123, "sha256": "..."}],
-  "made_by": {"hwnpu": "<コミット>", "tools": "<amd-tools の hash>", "iron": "v1.4.4"},
-  "checked": {"kl": 0.036, "top1": 0.97, "machine": "aix1", "placement": "all on the NPU"}
-}
-```
-
-- 鍵は作る前に計算できる (models.yaml の固定値から。落としたファイルからではない)。だからチェックポイントを落とさずに探せる
-- 中のパスは全部相対。`.done` は `entry.json` に置き換える (書き終えてから最後に置く)
-- エントリの単位: プログラム 1 本 (`.mlpackage`、IR)、IRON の書き出し 1 つ、表、GPTQ の符号、SigLIP のラベルの埋め込み
-
-共有できる範囲 (`scope`):
-
-| scope | 例 | 置ける層 |
+| Kind | What it is | Made when |
 |---|---|---|
-| `upstream` | HF のチェックポイントのファイル (鍵は sha256) | path、s3 (今のミラー) |
-| `portable` | 変換済みのプログラム、IRON の書き出し、表、符号 | hf、path、s3 |
-| `host` | `.mlmodelc` (OS の版)、Level Zero の blob (ドライバとデバイス)、placement (チップ) | path、s3。鍵に機械の指紋 |
-| `local` | プロンプトのキャッシュ、e5 バンドルのキャッシュ、履歴、ライセンスの同意、ロック | 共有しない |
+| original | The model's files as on Hugging Face (`original/OWNER/NAME/`) | First download |
+| converted | Programs and exports for your NPU (`models/`, `entries/`, `converted/`) | First use on this chip |
+| machine-bound | Things compiled for this exact machine (Core ML `.mlmodelc`, Level Zero blobs, placement results) | First use |
+| IRON kernels | AMD's JIT compile cache (`iron/`) | While exporting |
+| others | prompts, history, locks, work in progress | Always |
 
-## 7. 取得元 (透過型のキャッシュ)
+The cache is not unbounded. Before a download hwnpu checks the free space of the disk (default: keep 10 GB free) and, if you set a limit, removes the least recently used model first.
 
-2026-11-15 に作り直した (design.md 16.212)。それまでの「層」(定義の `sources`、`search`、`cache.layers`、`HWNPU_CACHE_LAYERS`、内容で番地を決める `blobs/sha256`) は、環境変数の URL の並びと、人が見て分かる固定の並びに置き換えた。
-
-```
-0. この機械のキャッシュ  cache.Root (HWNPU_CACHE)          いつも書き戻す・その場で使う
-1. HWNPU_MODEL_SOURCE, _1, _2 ...                          URL ごとの設定 (?writeback=true)
-2. アプリ同梱のモデル    アプリの資源フォルダの models/     読むだけ・その場で使う
-3. Hugging Face          HWNPU_MODEL_HUGGING_FACE (既定 true)
-→ どこにもなければ手元で作る
-
-書き: 0 番へは必ず、?writeback=true の取得元へは裏で、手元で作ったものと後ろの層から読んだものを置く (失敗しても続ける)
-```
-
-2026-11-15 の 2 つ目の変更 (design.md 16.213) で、手元のキャッシュと同梱のモデルも同じ仕組みの層にした。どの層も中は同じ並び (下) で、手元のキャッシュも `original/OWNER/NAME/` に `hwnpu-lock.json` を持つ。どの層から来たファイルも、使うのは手元の `original/OWNER/NAME/FILE` (`chat.RepoDir`)。同梱のモデルはハードリンク、別のファイルシステムならシンボリックリンクで、コピーしない。
-
-取得元は URL で書く。`HWNPU_MODEL_SOURCE` で始まる環境変数を全部集め、番号の順に並べる (番号のない `HWNPU_MODEL_SOURCE` が最初、抜けた番号は気にしない)。エラーになった取得元は飛ばして次へ:
-
-| URL | 取得元 | 書き戻し |
-|---|---|---|
-| `file:///mnt/llm/hwnpu` | フォルダ (マウントした NAS、手元のディスク)。Windows は `file:///C:/models`、`file://server/share` | 普通のファイルの操作 |
-| `https://USER:PASSWORD@nas:5006/hwnpu`、`http://...` | WebDAV (7.5 節)。読むのは GET と HEAD だけなので、書き戻さないならどの HTTP サーバー (nginx の静的配信) でもよい | WebDAV (PUT、MOVE、MKCOL) |
-| `s3://BUCKET/PREFIX?endpoint=http://host:9100&region=R&profile=P&path_style=true&no_sign=true` | S3 (7.2 節) | PUT とマルチパート |
-
-- `?writeback=true` (どの種類にも): 書き戻す。手元で変換したもの (8 節の 3) と、後ろの取得元や HF から読んだもの (フォワードプロキシ) の両方。gated のリポジトリとライセンスの確認のあるモデルも置く (読む機械でのライセンスの確認は手元で今どおり)
-- `HWNPU_MODEL_HUGGING_FACE`: 最後の番兵。`true` (既定) で HF から取る。`false` でネットに出ない (HF への HEAD もしない)。取得元で解決できないものはエラー
-- 取得元の中の並び:
+### 1.4 Looking after it: `hwnpu cache`
 
 ```
-original/OWNER/NAME/FILE...               HF と同じ並びのファイル。そのままモデルのフォルダとして使える
-original/OWNER/NAME/hwnpu-lock.json       コミットと、ファイルごとの sha256 と大きさ
-converted/MODEL/TARGET/EXPORT/VERSION/... 変換したもの。entry.json を最後に書く (あれば揃っている)
+hwnpu cache                          root, free space, limits, sizes by kind
+hwnpu cache ls [-s]                  every unit with size and last use (-s: biggest first)
+hwnpu cache prune --max-size 200GB   remove the least recently used until it fits
+hwnpu cache clear Qwen3-1.7B         remove one model (name, OWNER/NAME or a glob)
 ```
 
-- `hwnpu-lock.json` (`store.Lock`): `{"format": 1, "repo": "OWNER/NAME", "commit": "<40 桁>", "files": {"config.json": {"sha256": "...", "size": 123}}, "updated": "..."}`。名指しのないファイルは読まない。コミットの違うファイルは書き戻さない (`ErrOtherCommit`、キューの記録に残す)
-- コミットの決め方: 定義がコミットを固定していればそれ。`main` を追うモデルは 1 番以降で最初の lock のコミット (どの機械も同じファイルで動く)、なければ手元のキャッシュの lock のコミット (手元にあるものは HF に聞き直さない)、それもなければ HF の `main` (`X-Repo-Commit`)。手元のキャッシュは決まったコミットに従う: 取得元の lock が別のコミットに移ると、手元の lock も移し、ファイルは新しい lock の sha256 と同じなら残し、違えば取り直す (共有の取得元は `ErrOtherCommit` のまま触らない)。取得元にないファイルを HF から取るときも、lock のコミットのものを取る (`resolve/<コミット>/`)。`main` 以外のブランチやタグは、HF に聞いたコミットと lock を照らし、聞けなければ (HF に出られるときは) 取得元を使わない
-- lock を新しいコミットに移すのは明示的なコマンドだけ: `hwnpu-dev cache update [MODEL...]` (書き戻す取得元がなければ手元のキャッシュ、`--source 0`)。HF の今のコミットを聞き、sha256 の変わったファイルだけ落とし直して置き、最後に lock を書く (LFS のファイルは `X-Linked-Etag` で比べ、変わらなければ落とさない)
-- `VERSION` (`store.VersionDir`): 定義の `targets.<対象>.version` が N のモデルは `vN`。`develop: true` なら `vN-<レシピの指紋の 8 桁>`。版のないモデル (今は全部) は `v0-<8 桁>`
-- 当たりの条件: `vN` は版と、道具の hash を除いたレシピ (元のコミット、sha256、引数) が同じもの。道具の hash が違うだけの 2 台が同じフォルダを書き換え合わないように。出力が変わる直しをしたら版を上げる (3 節)。`vN-HASH` と `v0-HASH` は指紋がそのまま同じもの
-- `EXPORT` は手元の書き出しの名前 (`Qwen3.5-0.8B.amd-npu2-q6`、`LFM3-1.7B.coreai`、`tables.safetensors`)。対象のない表は `TARGET` を `any` に
-- ファイル単位の重複除去 (同じ `weight.bin` を 1 つに) はやめた。並びが分かりやすいこと、普通の HTTP サーバーで配れることを取った
-- 落としたものは lock や entry.json の sha256 と照らし、違えばその取得元を飛ばして次へ (この機械では大きなダウンロードにビットの反転があった)
-- 信頼: 書ける取得元は書ける人を信頼する (xclbin や ELF は NPU で動く)
-- `Prune` は手元だけを掃除する。取得元の掃除は `hwnpu-dev cache gc N` で明示的に (エントリのフォルダを entry.json から消す。`--orphans` で entry.json のない書きかけ)
-- 前の並び (`blobs/`、`upstream/`、`entries/`) のフォルダは `hwnpu-dev cache migrate N [--remove]` でハードリンクで移す。元のモデルはファイルの多いコミットを取る。変換後は名前の分かるもの (Core AI、表、AMD の言語モデルと初回の書き出し) だけ
+`prune` and `clear` take `-n` to show what would go without removing it. Whatever was used within the last hour, or is waiting to be uploaded, is kept. After removing something, the next use simply makes it again.
 
-`hwnpu-dev cache sources` で、今効いている層の並び (0 が手元のキャッシュ)、書き戻すか、HF を読むか、読んだ `.env` を出す。`ls [N] [--original]` で中身。
-
-同梱のモデル: インストーラがアプリの資源フォルダ (`github.com/shibukawa/configdir` v1.1.0 の `QueryResourceFolders`: 実行ファイルの隣、`X.app/Contents/Resources`、`PREFIX/share/APP`、`$XDG_DATA_DIRS/APP`) の `models/` に、取得元と同じ並びで置く。環境変数ではなくアプリのコードで決める: hwnpu のコマンドは hwnpu の資源フォルダ (`share/hwnpu/models` など) を読み、hwnpu を組み込むアプリは `modelstore.Options.Bundle` で自分のものを渡す (7.6 節)。
-
-### 7.1 書き戻し
-
-- 手元で揃ってから、裏で置く (落としながら 2 か所に書かない)。終わらずにプロセスが終われば `work/queue` に残して次の起動で続ける。entry.json と lock が最後なので、途中で切れても壊れたものは見えない
-- 後ろの取得元で当たったものは、それより前の書き戻す取得元にも置く (前が速い NAS、後ろが遠い S3 のとき)
-- 置けなかったとき (書けない、容量がない) は `work/queue.log` に残して続ける。書き戻しの失敗で実行を止めない
-- lock は読んで足して書く。2 台が同時に同じリポジトリを足すと片方の名指しが消えることがあるが、消えたファイルは次に読む機械が HF から取って足し直す
-
-別案だったもの: HF の API (`/resolve/`) を真似るキャッシュのサーバー (`hwnpu-dev cache serve`) を 1 台に置き、`HF_ENDPOINT` で向ける。サーバーの運用が要るので入れていない。`original/` は HF と同じ並びなので、要れば後で足せる。
-
-### 7.2 S3 のクライアント
-
-AWS SDK (aws-sdk-go-v2) は重いので使わない。`aws` CLI を呼ぶ今の形 (model-table 5 節、`internal/chat/sources.go` の `fetchS3`) もやめ、`github.com/shibukawa/tinygodriver` の `storage/s3` (署名は `cloud/aws`) にする。元のチェックポイントの取得元 (`type: s3`) と、キャッシュの層の両方をこれ 1 つで読む。
-
-- 依存: 標準ライブラリと tinygodriver の中の小さなパッケージだけ (`cloud/aws`、`internal/cloudhttp`、`internal/hmacsha256`、`encoding/simdhex`)。モジュールは 1 つで go.mod の require は多いが、リンクされるのは使うパッケージだけ
-- 使う操作: `Get` / `GetRange` (続きから落とす)、`Head` (エントリの有無)、`Put`、マルチパートの 4 つ、`List` (gc と ls)
-- 設定の欄は `endpoint` (`WithEndpoint`)、`region` (`WithRegion`)、`path_style` (`WithPathStyle`。既定は amazonaws.com なら仮想ホスト形式、それ以外はパス形式なので、RustFS で `~/.aws/config` に `addressing_style` を書く手順は要らなくなる)。大きなファイルは `WithUnsignedPayload` で、本体を読み込まずに送る
-- tinygodriver が持たないものを hwnpu の側で足す:
-  - 認証: tinygodriver は静的な値と環境変数 (`AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_SESSION_TOKEN`、`AWS_REGION`、`AWS_ENDPOINT_URL_S3`) だけ。`profile` は、hwnpu が `~/.aws/credentials` と `~/.aws/config` のその節の静的な鍵 (`aws_access_key_id`、`aws_secret_access_key`、`aws_session_token`、`region`、`endpoint_url`) だけを読んで渡す。SSO とインスタンスのメタデータは持たない。SSO の利用者は `eval "$(aws configure export-credentials --profile X --format env)"` で環境変数にしてから使う (docs に書く)
-  - マルチパート: `Put` は 1 回の要求 (上限 5 GiB) で、分割は自分でする。64 MiB を超えるファイルは 64 MiB の部分に分けて上げ (IRON のバンクには数 GB のものがある)、失敗したら必ず `AbortMultipartUpload`。途中で止まった分は、tinygodriver に一覧の操作がないので、バケットのライフサイクルの規則 (未完了のマルチパートを N 日で中止) に任せる
-  - 再試行: 5xx、接続の切断、`SlowDown` は指数的に待って 3 回まで。ダウンロードは `GetRange` で続きから
-  - `no_sign` (署名なしの公開バケット): tinygodriver で鍵なしの要求が送れるかを確かめる。送れなければ、公開バケットは `https://` の取得元 (HTTP の GET) として読む
-- 確かめたこと (2026-11-13、RustFS 1.0.5 を手元で): 部分に分けた送り (5 MiB の部分で 12 MiB)、空のファイル (tinygodriver v1.3.8 は長さ 0 の本体を chunked で送り 411 になった。v1.3.9 で直った)、`GetRange` の続き、一覧、削除、パス形式 (`internal/store` の `TestS3Server`、`HWNPU_S3_TEST_ENDPOINT` を与えたときだけ)。Qwen3.5-0.8B の書き出し (1.57 GB) を `push` (10 秒) し、空の根で IRON なしに層から取って NPU で答えた (準備 4.4 秒)
-- Cloudflare R2 で (2026-11-13): `region: auto` で署名が通り、`TestS3Server` が通った (`HWNPU_S3_TEST_BUCKET` に既にあるバケット、`HWNPU_S3_TEST_REGION=auto`)。Qwen3.5-0.8B の書き出しを `push` (1.57 GB、119 秒。この機械の上りは無線で約 13 MB/s)、空の根と IRON なしの hwnpu-chat が層から取って答えた (準備 54 秒、取るのは約 30 MB/s)。R2 の無料枠は保存 10 GB/月なので、試しには小さな書き出しだけを置く
-- 確かめること: AWS の S3 で仮想ホスト形式と、ほかのリージョンへのリダイレクト
-- MinIO は対象にしない (保守が終わった)。S3 互換のサーバーの確認は RustFS で
-
-### 7.3 手元の置き場所
-
-hwnpu が書くものは全部、OS のローミングしないキャッシュのフォルダの下の 1 つの根に収める。ほかの場所には書かない。
-
-| OS | 根 | 備考 |
-|---|---|---|
-| macOS | `~/Library/Caches/hwnpu` | iCloud に同期されない。Time Machine も既定で除く |
-| Linux | `$XDG_CACHE_HOME/hwnpu` (`~/.cache/hwnpu`) | |
-| Windows | `%LOCALAPPDATA%\hwnpu` | `Roaming` (`%APPDATA%`) には置かない。ユーザーの `models.yaml` も同じ根にあるので、掃除は下のサブフォルダだけを触る |
-
-どれも `os.UserCacheDir()` の下で、`HWNPU_CACHE` (コードからは `modelstore.Options.Root`、`cache.SetRoot`) で根ごと移せる (外付けのディスク)。`go test` は `HWNPU_CACHE` がなければプロセスごとの一時フォルダを根にする (試験がこの機械のキャッシュに書かない)。根の下の並び:
+Two settings for the limits (put in the environment or a `.env` file, see 3.2):
 
 ```
-hwnpu/
-  original/OWNER/NAME/FILE...        元のモデル (層 0)。取得元と同じ並び、hwnpu-lock.json 付き (大きさの上限と LRU は 7.7)
-  models/NAME/                       変換したプログラム (次の PR で converted/ に移す)
-  entries/<target>/<name>/           AMD の書き出し (同上)
-  KEY.mlmodelc|.blob|.json           機械ごとのもの (Core ML のコンパイル、Level Zero、placement)
-  work/                              作業中 (.part、変換と書き出しの途中、queue)。rename と reflink が効くよう同じファイルシステムに置く
-  tools/amd-tools-<hash>/            組み込みの IRON の道具
-  iron/                              IRON の JIT のキャッシュ (NPU_CACHE_HOME)
-  prompts/  history/  locks/         local の scope
+HWNPU_CACHE_MIN_FREE=10GB     refuse a download that would leave less free (0 to disable, 5% also works)
+HWNPU_CACHE_MAX_SIZE=200GB    keep the cache under this size, removing the oldest first
 ```
 
-前の hwnpu が `models/NAME/` に置いた元のファイルは、読まれたときに `original/OWNER/NAME/` へ移す (rename)。sha256 を、定義の固定、取得元の lock、HF の `X-Linked-Etag` のどれかと照らし、合えば移して手元の lock に足し、違えば取り直す。sha256 の分からない小さなファイル (LFS でない) は HF に出られるなら取り直し、出られないならそのまま使う。
+### 1.5 Choosing how much memory a model uses
 
-今その外に書いているものを移す:
+A model can have a smaller form for machines with little memory. To run a model beside other programs on a big machine, tell hwnpu to treat it as a smaller machine:
 
-- AMD の書き出し (`~/models/NAME.amd-npu2*`): `entries/amd-xdna2/...` へ。`~/models` は今は読みだけの古い層として探す (書かない)。次の PR で `converted/` に移して読まなくなる (13 節)
-- IRON の JIT のキャッシュ (`~/.npu/cache`、この機械で 52 GB): `RunIRON` が `NPU_CACHE_HOME=<根>/iron` を渡す (mlir-aie の `python/utils/compile` が読む)
-- 作業中のものを `/tmp` に置かない (Linux では RAM の tmpfs のことがあり、GB 級の書き出しで遅くなる)
-- Apple の e5 バンドルのキャッシュ (`~/Library/Caches/<プロセス>/com.apple.e5rt.e5bundlecache`) は OS が持つもので、すでにキャッシュのフォルダの下。場所は変えない
-- ユーザーの設定 (`models.yaml`、`licenses.json`) は今の設定のフォルダのまま (キャッシュではない)
+```
+hwnpu memory                      memory of this machine and your choices
+hwnpu memory LFM3-1.7B 8          run it the 8 GB way in every command
+hwnpu memory LFM3-1.7B --forget   back to this machine's memory
+```
 
-### 7.4 組織と環境ごとの設定: `.env`
+The choice is stored in your settings folder (`~/.config/hwnpu/run.json`), not in the cache, so `prune` does not remove it. Switching the form leaves the old form's programs in the cache until they are the oldest; `hwnpu cache clear NAME` removes them at once.
 
-取得元は環境変数で決める。hwnpu の各コマンドは起動したときに `.env.local` と `.env` を読み (`internal/envfile`)、環境にない変数だけを足す。前にあるものが勝つ:
+---
 
-1. プロセスの環境変数
-2. カレントディレクトリの `.env.local`、`.env`
-3. ユーザーの設定のフォルダ (`~/.config/hwnpu/`、Windows は `%LOCALAPPDATA%\hwnpu\`) の `.env.local`、`.env`
-4. 機械の設定 (Linux `/etc/hwnpu/`、macOS `/Library/Application Support/hwnpu/`、Windows `%ProgramData%\hwnpu\`) の `.env.local`、`.env`: 組織の管理者が配る
+## 2. Sharing the cache with a NAS or S3
 
-- 読むのは `HWNPU_`、`HF_`、`AWS_` で始まる名前だけ (ほかのプロジェクトの `.env` を拾っても困らないように)。テスト (`go test`) では読まない
-- 書き方: 1 行に `NAME=VALUE`、`export ` を前に付けてもよい、`#` から後ろは注釈、`'...'` はそのまま、`"..."` は `\n`、`\"` が使える
-- 秘密 (WebDAV のパスワード、S3 の鍵) は `.env.local` に (git に入れない慣例)。ログと `hwnpu-dev cache sources` には URL の利用者とパスワードを出さない
+### 2.1 The idea
 
-| 変数 | 働き |
+Without sharing, every machine downloads the same checkpoint and converts it again. Conversion is the slow part (on an AMD NPU the first export takes minutes; some models take hours). With sharing, **the first machine does the work once and puts the result in a shared place; every other machine only downloads the result.**
+
+You do this by listing **sources**: places hwnpu looks in, in order, before it goes to Hugging Face.
+
+```
+1. this machine's cache                always first, always written
+2. HWNPU_MODEL_SOURCE, _1, _2 ...      your shared places, in the order of their numbers
+3. models installed with the app       read only (for apps that bundle models)
+4. Hugging Face                        last; HWNPU_MODEL_HUGGING_FACE=false turns it off
+   └─ nothing found → made on this machine
+```
+
+A source with `?writeback=true` is also **written to**: whatever this machine downloads or converts is put there, so the next machine finds it. A source without it is only read. A source that cannot be reached (NAS asleep, VPN down) is skipped for the rest of the run with one line on stderr; the next source is tried and your work goes on.
+
+A machine that only runs models needs no checkpoint and no converter. It downloads the converted files from the source and answers. On an AMD NPU that also means IRON, Peano and Python are not needed on that machine.
+
+### 2.2 Setting a source up
+
+Sources are plain URLs in environment variables, so the same setting works in a shell, a service, a container or a `.env` file.
+
+**A folder** (a NAS mounted over NFS or SMB, an external disk):
+
+```
+HWNPU_MODEL_SOURCE=file:///mnt/nas/hwnpu?writeback=true
+```
+
+Windows: `file:///C:/models` or `file://server/share`.
+
+**WebDAV** (Synology, UGREEN, Nextcloud, nginx with `dav_methods`):
+
+```
+HWNPU_MODEL_SOURCE=https://USER:PASSWORD@nas.local:5006/hwnpu?writeback=true
+```
+
+If the user and password are not in the URL, hwnpu looks in `~/.netrc` and then at `HWNPU_WEBDAV_USER` and `HWNPU_WEBDAV_PASSWORD`. A NAS usually has a self-signed certificate; trust exactly that one with `?tls_sha256=` (get the value with `openssl s_client -connect HOST:PORT </dev/null | openssl x509 -noout -fingerprint -sha256`). For a quick try on a trusted LAN only, `?insecure=true` skips the check.
+
+**Plain HTTP** (any static web server, such as nginx, serving the same folder): read only.
+
+```
+HWNPU_MODEL_SOURCE=http://models.corp.example/hwnpu
+```
+
+**S3** (AWS, Cloudflare R2, RustFS and other S3-compatible servers):
+
+```
+HWNPU_MODEL_SOURCE=s3://my-bucket/hwnpu?region=ap-northeast-1&writeback=true
+HWNPU_MODEL_SOURCE=s3://models/hwnpu?endpoint=http://rustfs.lab:9000&path_style=true&profile=rustfs
+```
+
+Keys come from the usual AWS variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) or a `~/.aws` profile (`profile=NAME`; static keys only). If you use SSO, export the keys first:
+`eval "$(aws configure export-credentials --profile X --format env)"`. A public bucket needs `no_sign=true`. Cloudflare R2 uses `region=auto`.
+
+Check what is in effect:
+
+```
+hwnpu-dev cache sources      the root, each source, whether it is written back to, whether Hugging Face is read
+hwnpu-dev cache ls           what the sources hold
+```
+
+### 2.3 Where to put the settings
+
+Put the variables in a `.env` file. hwnpu reads `.env.local` and `.env` at start, and a variable set in an earlier place wins:
+
+1. the process environment
+2. the current directory
+3. the user's folder: `~/.config/hwnpu/` (Windows: `%LOCALAPPDATA%\hwnpu\`)
+4. the machine's folder, put by an administrator: `/etc/hwnpu/` (macOS: `/Library/Application Support/hwnpu/`, Windows: `%ProgramData%\hwnpu\`)
+
+Only names starting with `HWNPU_`, `HF_` and `AWS_` are read, so another project's `.env` does no harm. Put passwords and keys in `.env.local`, which by convention is not committed. Logs and `hwnpu-dev cache sources` never show the user and password of a URL.
+
+### 2.4 Three set-ups
+
+**At home: one NAS.** Mount the NAS (or use its WebDAV) and give every machine the same line with `?writeback=true`. The first machine that downloads or converts a model fills it; the others only read. The Mac and the Ryzen AI mini PC share the NAS, though each stores its own converted form (see part 4).
+
+**In a company: one writer, many readers.** Give one machine or CI job (the *builder*) a source with `?writeback=true` and write access. Give everyone else the same source read only (a plain `http://` URL is enough, or an S3 bucket with a read-only key) and `HWNPU_MODEL_HUGGING_FACE=false` if the office network must not reach the internet. Put the variables in `/etc/hwnpu/.env` so nobody has to set them up. Readers cannot spoil the share, and the people who can write are the people you already trust with a binary: an exported program runs on the NPU.
+
+**Several levels.** Sources are tried in order and the one that answers first wins. A source found further back is also copied into the nearer writable ones. So a fast local NAS in front of a remote S3 bucket works as a two-level cache:
+
+```
+HWNPU_MODEL_SOURCE=file:///mnt/nas/hwnpu?writeback=true        # fast, in the room
+HWNPU_MODEL_SOURCE_1=s3://corp-models/hwnpu?writeback=true     # shared by all sites
+```
+
+**Offline.** `HWNPU_MODEL_HUGGING_FACE=false` never contacts Hugging Face. A model that no source holds is an error, not a download. Fill the source from a connected machine first.
+
+### 2.5 What a machine does with a shared model
+
+- **The checkpoint** (original weights) is downloaded through the sources first, from Hugging Face last. Files are checked against the SHA-256 recorded for them; a file that does not match (a bit flip in a big download happened once) makes hwnpu skip that source and try the next.
+- **The converted result** is looked up by a key that can be computed before downloading anything, so a machine that finds the result never downloads the checkpoint.
+- Some programs are bound to the machine and are not shared; each machine makes them once (see part 4).
+- Gated models and models with a license prompt can be written to a shared place too. The license prompt is still answered on each machine that runs the model.
+
+### 2.6 Keeping a shared source tidy
+
+A shared source is a folder tree with no server logic, so tidy it with commands:
+
+```
+hwnpu-dev cache update [MODEL...]   move a model to Hugging Face's newest commit (only changed files are downloaded)
+hwnpu-dev cache flush               finish uploads the background left in the queue, and wait
+hwnpu-dev cache verify DIR --sums   check conversions against their entry.json
+hwnpu-dev cache gc 1 --older-than 90 --apply   remove conversions in source 1 made over 90 days ago
+                                    (also --model, --kind, --key; without --apply it only shows them)
+hwnpu cache clean                   remove what a cut-off upload left: half-written folders, temporary files,
+                                    in S3 multipart uploads older than an hour
+```
+
+A model's files stay at the Hugging Face commit recorded in `hwnpu-lock.json` until you run `update`, so the whole team runs the same bytes; nobody is moved to a new revision by accident. For S3 it also helps to add a bucket lifecycle rule that aborts incomplete multipart uploads after a few days.
+
+Machines that crash or lose the network in the middle of an upload leave nothing broken for readers: a conversion is visible only when its `entry.json` exists, and a file only when the lock names it.
+
+---
+
+## 3. User reference
+
+### 3.1 Environment variables
+
+| Variable | Meaning |
 |---|---|
-| `HWNPU_MODEL_SOURCE`、`HWNPU_MODEL_SOURCE_1`、... | 取得元の URL (7 節) |
-| `HWNPU_MODEL_HUGGING_FACE` | `false` でネットに出ない。既定は `true` |
-| `HWNPU_CACHE` | 手元の根 (7.3 節) |
-| `HWNPU_WEBDAV_USER`、`HWNPU_WEBDAV_PASSWORD` | URL にも `~/.netrc` にもないときの WebDAV の利用者 (7.5 節) |
-| `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_PROFILE` | S3 の鍵 (7.2 節) |
-| `HF_TOKEN` | gated のリポジトリ。CI 以外ではデバイスフローのサインイン (design.md 16.153) を勧める |
-| `HWNPU_MODELS`、`HWNPU_ACCEPT_LICENSE`、`HWNPU_BACKEND`、`HWNPU_DEVICE` | 自分の定義のファイル、ライセンスの確認、機械ごとの NPU の選び方 |
+| `HWNPU_MODEL_SOURCE`, `_1`, `_2`, … | Source URLs, tried in the order of their numbers (3.3) |
+| `HWNPU_MODEL_HUGGING_FACE` | `false`: never contact Hugging Face. Default `true` |
+| `HWNPU_CACHE` | This machine's cache root |
+| `HWNPU_CACHE_MIN_FREE` | Free space to keep. Default `10GB`; `0` off; `5%` |
+| `HWNPU_CACHE_MAX_SIZE` | Upper limit of the cache; least recently used removed first. Default none |
+| `HWNPU_WEBDAV_USER`, `HWNPU_WEBDAV_PASSWORD` | WebDAV login when the URL and `~/.netrc` have none |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE` | S3 keys |
+| `HF_TOKEN` | Gated Hugging Face repositories (CI; on a desktop sign in once instead) |
+| `HWNPU_MEMORY` | Treat the machine as this many GB |
+| `HWNPU_COREAI_PREBUILT` | `off`: do not use the precompiled Core AI parts (4.1) |
+| `HWNPU_MODELS`, `HWNPU_ACCEPT_LICENSE`, `HWNPU_BACKEND`, `HWNPU_DEVICE` | Your own model definitions, license prompts, which NPU |
 
-なくしたもの: 定義のファイルの `sources`、`search`、`cache` (書いてあるファイルは、移し方を書いたエラーで止める)、`from: SOURCE:NAME` と `-use SOURCE:NAME` (自分のモデルは取得元の `original/OWNER/NAME/` に lock と一緒に置き、`from: hf:OWNER/NAME` で名指す)、`HWNPU_CACHE_LAYERS`、`HWNPU_CACHE_WRITE` (`?writeback=true` を外す)。設計だけだった `HWNPU_OFFLINE` (`HWNPU_MODEL_HUGGING_FACE=false`) と `HWNPU_PREBUILT` (取得元にあるかないかで決まる) も作らない。
+### 3.2 `.env` files
 
-### 7.5 WebDAV
+`NAME=VALUE`, one per line; a leading `export ` is allowed; `#` starts a comment; `'...'` is literal; `"..."` understands `\n` and `\"`. Order of precedence is in 2.3. Tests (`go test`) do not read them.
 
-`internal/store/webdav.go`。標準ライブラリの `net/http` と `encoding/xml` だけで書いた (依存なし。テストだけが `golang.org/x/net/webdav` のサーバーを使う)。Synology (5005 番が http、5006 番が https)、Nextcloud (`https://HOST/remote.php/dav/files/USER/...`)、nginx の `dav_methods` などを想定。
+### 3.3 Source URLs
 
-- 読み: `GET` (`Range` で途中から続ける。範囲を無視したサーバーには頭から)。有無と大きさは、書き戻す取得元では `PROPFIND` の深さ 0 (`HEAD` の `Content-Length` を省くサーバーや、フォルダにも 200 を返すサーバーがあるため)、読むだけの取得元では `HEAD`
-- 書き: 同じフォルダの一時の名前 (`.put-<乱数>`) に `PUT` してから `MOVE` (`Overwrite: T`) で置く。読む側が書きかけを見ない。親のフォルダがなければ (409、404) 根から `MKCOL` して送り直す。大きなファイルも 1 回の `PUT` (サーバーの上限に注意: nginx の `client_max_body_size`、IIS の `maxAllowedContentLength`)
-- 一覧: `PROPFIND` の深さ 1 で辿る (深さ無限は切ってあるサーバーが多い)。`.put-` の書きかけは出さない。`gc` と `ls` が使う
-- 認証: Basic。利用者とパスワードは URL のもの、なければ `~/.netrc` (`NETRC`、Windows は `_netrc`) のそのホストの `machine`、なければ `HWNPU_WEBDAV_USER` と `HWNPU_WEBDAV_PASSWORD`。401 のエラーにはその並びを書く
-- 再試行: 5xx (501 を除く)、429、接続の切断は S3 と同じく 3 回まで
-- 確かめたこと: `TestWebDAV` (3 MB の読み書き、途中からの続き、空のファイル、フォルダは有無で偽、一覧、削除、鍵の外れ)、`TestWebDAVSource` (エントリと lock を書き戻し、同じサーバーを読むだけの取得元として読む、読むだけへの書き込みはエラー)、`TestWebDAVSignIn` (netrc、パスワードの違い、URL のパスワードを表示しない)。Synology の実機は未確認
-- 自己署名の証明書 (NAS のもの。ホスト名を持たないものは、OS の信頼に足しても Go の検証が通らない): URL に `?tls_sha256=<証明書の SHA-256>` を足すと、その証明書だけを信じる (ホスト名は見ない)。値は `openssl s_client -connect HOST:PORT </dev/null | openssl x509 -noout -fingerprint -sha256`
-- UGREEN の NAS (2026-11-15): フォルダのない所への PUT と、親のない MKCOL が 409 でなく 405 を返す。PUT の前にフォルダを (プロセスで一度) 作り、405 でも作り直す
-- `hwnpu-dev cache import DIR...`: 手で置いたフォルダ (`~/models`) を書き戻す取得元に置く。チェックポイントは Hugging Face のツリー (`/api/models/REPO/tree/COMMIT`) と照らし、大きさと中身 (LFS は sha256、ほかは git の blob の sha1) の同じファイルだけを `original/` に。書き出し (`NAME.amd-npu2*`) は `converted/`。名前が定義にないフォルダは `DIR=OWNER/NAME`
+| URL | Kind | Written back |
+|---|---|---|
+| `file:///path` | Folder | Plain file operations |
+| `http(s)://[USER:PASSWORD@]host[:port]/path` | WebDAV, or any HTTP server read only | PUT, MOVE, MKCOL |
+| `s3://BUCKET/PREFIX` | S3 | PUT and multipart upload (parts of 64 MiB) |
 
-### 7.6 公開の API: `modelstore`
+Parameters, in the query string:
 
-hwnpu をライブラリとして組み込むアプリのための入り口 (`github.com/shibukawa/hwnpu/modelstore`)。hwnpu のコマンドも同じ仕組み (`chat.Fetch`、`chat.FetchWeights`、`chat.RepoDir`) を通る。
+| Parameter | For | Meaning |
+|---|---|---|
+| `writeback=true` | all | Put there what this machine downloads or converts, and what was read from a later source |
+| `tls_sha256=HEX` | https | Trust exactly this certificate (self-signed NAS) |
+| `insecure=true` | https | Skip certificate and host name checks. Trusted LAN only |
+| `endpoint=URL` | s3 | S3-compatible server |
+| `region=R` | s3 | Region (`auto` for R2) |
+| `profile=P` | s3 | A profile of `~/.aws` (static keys) |
+| `path_style=true` | s3 | Bucket in the path instead of the host name. Default for non-AWS hosts |
+| `no_sign=true` | s3 | Public bucket, no signature |
+
+### 3.4 Commands
+
+`hwnpu cache` (for users):
+
+| Command | Does |
+|---|---|
+| `hwnpu cache` | Root, free space, limits, sizes by kind, sources |
+| `ls [-k KIND] [-s] [PATTERN]` | Units with size and last use |
+| `prune [--max-size S] [--older-than 30d]` | Remove the least recently used |
+| `clear PATTERN [--kind K] [--all]` | Remove named units (asks first in a terminal; `-y`) |
+| `clean [-n] [-y]` | Remove leftovers of cut-off uploads from the sources written back to |
+| `hwnpu memory [MODEL [GB\|--forget]]` | How much memory a model runs as |
+
+`hwnpu-dev cache` (for who runs a shared source):
+
+| Command | Does |
+|---|---|
+| `sources` | The sources in effect |
+| `ls [N] [--original]` | What source N holds (conversions, or the repositories' locks) |
+| `push` | Put exports made here (AMD) into the writable sources |
+| `export MODEL...` | Make the AMD exports of chat models with IRON on the CPU alone (no NPU), unless a source has them, put them in the writable sources and print their sizes |
+| `import DIR...` | Put folders made by hand (`~/models`) into a source: checkpoints that match their Hugging Face repository, and exports |
+| `update [MODEL...]` | Move repositories to Hugging Face's newest commit |
+| `verify [--sums]` | Check against `entry.json` |
+| `flush` | Finish the upload queue |
+| `gc N [--model M] [--kind K] [--key K] [--older-than DAYS] [--target T] [--orphans] [--apply]` | Remove conversions from source N (source numbers are those `sources` prints; 0 is this machine's cache) |
+| `migrate N` | Move an older layout (`blobs/`, `upstream/`, `entries/`) by hard links |
+
+### 3.5 What a source looks like inside
+
+```
+original/OWNER/NAME/config.json …     the model's files, as on Hugging Face
+original/OWNER/NAME/hwnpu-lock.json   the commit and each file's SHA-256 and size
+converted/MODEL/TARGET/EXPORT/VERSION/…   a conversion; entry.json is written last
+```
+
+`TARGET` is the kind of NPU (`amd-xdna2`, `coreai`, `any` for things like tables). `VERSION` is `vN` for a model with a version in its definition, `vN-HASH` for a model in development, `v0-HASH` otherwise. The folder can be served as it is by any web server, or browsed with a file manager.
+
+### 3.6 Using it from your own program
 
 ```go
-cd := configdir.New("", "myapp")
-s, err := modelstore.Open(modelstore.Options{
-    Root:    "",       // "" = HWNPU_CACHE、なければユーザーのキャッシュの hwnpu (層 0)
-    Sources: nil,      // nil = HWNPU_MODEL_SOURCE* (.env も)、空 = なし
-    Bundle:  &cd,      // 資源フォルダの models/ (層 2)。nil = なし
-})
-p, err := s.File(ctx, "LiquidAI/LFM3-1.7B", "config.json") // 手元のパス
-w, err := s.Weights(ctx, "LiquidAI/LFM3-1.7B")             // model.safetensors (分割なら索引も)
-dir := s.Dir("LiquidAI/LFM3-1.7B")                         // original/LiquidAI/LFM3-1.7B
+s, _ := modelstore.Open(modelstore.Options{}) // root and sources from the environment
+p, _ := s.File(ctx, "LiquidAI/LFM3-1.7B", "config.json")
+w, _ := s.Weights(ctx, "LiquidAI/LFM3-1.7B")
 ```
 
-層はプロセスの設定 (`Open` がプロセス全体に効く)。変換したものの取得と作成 (`Make`) は次の PR で足す。
+See [USAGE_LIBRARY.md](../USAGE_LIBRARY.md). The same lookup runs behind every hwnpu command.
 
-### 7.7 手元のキャッシュの大きさ: 空きの下限と LRU、`hwnpu cache`
+---
 
-手元のキャッシュ (層 0) は放っておくと増える一方なので、ダウンロードの前に場所を確かめ、使っていないものから消せるようにした (`internal/cache` の `Room`、`Scan`、`PlanPrune`。公開の入り口は `modelstore`)。
+## 4. What is shared on each NPU
 
-| 変数 | 既定 | 意味 |
-|---|---|---|
-| `HWNPU_CACHE_MIN_FREE` | `10GB` (`0` でなし、`5%` のようにディスクの割合も) | 根のあるディスクに残す空き。これを切るダウンロードは始めない (`ErrNoRoom`) |
-| `HWNPU_CACHE_MAX_SIZE` | なし | キャッシュの上限。超えるダウンロードの前に、最近使っていない単位から消して収める。これがあるときだけ、空きの下限を切るときも消す |
+What can be shared depends on what the NPU's toolchain produces. The checkpoint (the original weights) is shared on every chip. The converted result differs:
 
-コードからは `modelstore.Options.Limits` (`cache.SetLimits`)。`go test` では空きの下限を既定で 0 にする。
+| | Apple (Neural Engine) | AMD (XDNA 2) | Intel (NPU) |
+|---|---|---|---|
+| Converted form | Core AI `.aimodel` (and Core ML `.mlpackage`) | IRON export: `xclbin`, ELF instructions, weight banks | OpenVINO IR |
+| Shared through sources | Core AI exports and tables: yes. Core ML programs: not yet | Chat models, the first-run exports of image models, tables: yes | Checkpoints only; programs not yet |
+| Bound to the machine | The Neural Engine compile (per Mac) | Nothing; IRON's JIT cache is local | Level Zero blob (driver, device) |
+| Needs a toolchain to make | Xcode 27 + Metal Toolchain for precompiling | IRON, mlir-aie, Peano, Python | OpenVINO |
+| A reader needs | Just hwnpu | Just hwnpu (no IRON) | Checkpoint (until programs are shared) |
 
-- 単位 (まとめて消すもの): `original/OWNER/NAME` (元のファイル)、`models/NAME` と `converted/MODEL/TARGET/EXPORT/vN` (変換したもの)、`entries/TARGET/NAME` (AMD の書き出し)、`iron/KEY` (IRON のカーネル)、根の `KEY.mlmodelc` などの同じ鍵のもの (この機械でコンパイルしたもの)。それ以外 (`prompts/`、`history/`、`locks/`、`work/`、`dev/`、道具) は数えるだけで消さない
-- 最後に使った時刻: 単位のフォルダの時刻と中のファイルの時刻の新しい方。取得 (`chat.Fetch` は速い道でも)、`chat.ModelDir`、`cache.FindExport` が `cache.Touch` でフォルダの時刻を今にする (5 分に 1 回まで)。atime は noatime/relatime で当てにならないので使わない。IRON のカーネルは IRON が読むときに時刻が変わらないので、作った順になる
-- 消さないもの: 最近 1 時間に使った単位 (ほかのプロセスが読んでいるかもしれない)、このプロセスが使った単位、書き戻しの queue に仕事がある単位 (`store` が `cache.SetBusy` で教える)、書いている途中の単位
-- 消すときは、元のファイルなら `hwnpu-lock.json`、変換したものなら `entry.json` を先に消す (読む側が途中のものを揃っているとみなさない)。空になった親 (`original/OWNER`) も消す
-- 大きさはファイルの大きさの和。ハードリンク (Unix) は 1 回だけ数える (同じ sha256 を別のリポジトリと共有しているもの)。reflink で共有したブロックは区別しない
-- 上限の判定のための走査はプロセスに 1 回 (この機械では IRON の 61 万ファイルで 2.7 秒)。あとは足した分を数える。空きの下限だけなら statfs (`GetDiskFreeSpaceEx`) 1 回
+### 4.1 Apple
 
-一般の利用者のためのコマンドとして `hwnpu` を足した (`hwnpu-dev cache` は取得元の管理のまま)。
+- **Core AI** (`target coreai`): the `.aimodel` is a device-independent bytecode, the same for every Mac. The first Mac that converts puts it in the source; any other Mac downloads it and needs no checkpoint. The tables the commands read rows from (`tables.safetensors`) are shared the same way.
+- **The first compile is per Mac.** Core AI compiles each part for the Neural Engine on first load (seconds to minutes per part). That result lives in Core AI's own cache, tied to the OS build, and cannot be shared.
+- **Precompiled parts** shorten that. On a developer machine with Xcode 27, `hwnpu-dev prebuild -arch all -put EXPORT` compiles the parts for each chip generation (`h13g` = M1, `h14g` = M2, `h15g` = M3 …), strips the weights (about 99% of the size; they are rebuilt from the `.aimodel`) and puts the result next to the export, 1–2% of the export per generation. A Mac fetches the one for its chip and finishes in a second or a minute instead of compiling for tens of minutes. It helps only the models whose parts the Neural Engine accepts, so it is chosen per model. `HWNPU_COREAI_PREBUILT=off` skips it. If the disk fills, the machine's copy of those compiled parts is removed first, because it can be rebuilt in seconds.
+- **Core ML** programs for the Neural Engine are still made on each Mac. The compiled `.mlmodelc` depends on the OS version and the e5 bundle on the machine.
 
-```
-hwnpu cache                          根、ディスクの空き、上限、種類ごとの量、層
-hwnpu cache ls [-k KIND] [-s] [PAT]  単位ごとの大きさと最後に使った時刻 (古い順、-s で大きい順)
-hwnpu cache prune --max-size 200GB   古い順に消して収める (--older-than 30d も。なしなら HWNPU_CACHE_MAX_SIZE)
-hwnpu cache clear Qwen3-1.7B         名前 (モデル名、OWNER/NAME、glob) の単位を消す。--kind、--all。端末では確かめる (-y で聞かない)
-```
+### 4.2 AMD XDNA 2 (Linux)
 
-`prune` と `clear` は `-n` (`--dry-run`) で消すものだけ見せる。`clear` は最近使ったものも消す (書き戻し待ちのものは残す)。
+- Models are converted to an **IRON export**: a folder with `manifest.json`, the NPU programs (`xclbin`, instruction ELFs) and weights, about 0.5–2 GB per chat model. It is stored in `entries/amd-xdna2/` and in sources as `converted/MODEL/amd-xdna2/EXPORT/vN/`.
+- In a source an export is **one packed file**, `files.tar.zst` (tar and zstd), beside `entry.json`, which lists the files inside with their sizes and SHA-256. It is downloaded (resuming if cut off), unpacked and checked file by file; only the unpacked export is kept here. Packing saves 16% over the 13 chat models (65.7 to 55.2 GB) and one upload per file on WebDAV. Exports put loose by an older hwnpu are still read file by file.
+- The key of an export is a fingerprint of: the model, the checkpoint commit, the SHA-256 of the definition, the export's options (`amd_export`) and the hash of the bundled IRON tools that export reads: `iron_export_lm.py` and its common modules, the modules of the model's architecture (a table in `tools/amd/lmdeps.go`, followed through their imports), and every kernel. A change to one model's exporter (Gemma 4's per-layer table) or to an image model's leaves the other chat models' exports found. A change that alters the output needs the key (or the version) to change, so a stale export is never matched.
+- A machine without IRON (the common case in an office) downloads the export and runs on the NPU after "preparing" for a few seconds.
+- Image models that build their programs on first use (`detect`, `pose`, `segment`, FLUX.2 klein) are shared the same way: found in a source, else made with IRON and put back.
+- Programs made **by hand** (some image and audio models, depth, face, labels, models without `amd_export`) are kept in `entries/amd-xdna2/` or `~/models`. Use `hwnpu-dev cache import ~/models` once to put them in a source; machines that need one fetch it by name and keep a local copy, and the first machine that uses a hand-made one writes it back automatically.
+- The IRON compile cache (`iron/`, tens of GB on a developer machine) is never shared. It is a build artifact of the exporter.
 
-### 7.8 モデルを何 GB の機械として動かすか: `hwnpu memory`
+### 4.3 Intel
 
-モデルをメモリいくつの機械でどう動かすか (どのプログラムを作るか、取ってくるか) は models.yaml の定義 (`variants`) が決め、使う人はモデルの特性を知らなくてよい。使う人が選ぶのは「この機械を何 GB の機械として扱うか」だけで、選んだものはモデル管理の設定として、どのコマンドも守る (同じモデルの形違いを何組も入れない)。
+- The checkpoint is shared. OpenVINO programs are converted and compiled on each machine; making them shareable (converted IR as an entry, the Level Zero blob as a machine-bound entry) is planned.
+- The key's structure already has room for it: the target `intel-npu3` / `intel-npu4` is part of the entry's path.
 
-```
-hwnpu memory                         この機械のメモリと、メモリを選んだモデル
-hwnpu memory LFM3-1.7B               何 GB の機械として動くか、そのときの形 (tier none など) とメモリ
-hwnpu memory LFM3-1.7B 8             8 GB の機械として動かす (16 GB の Mac で、ほかのプログラムと一緒に)
-hwnpu memory LFM3-1.7B --forget      この機械のメモリに戻す
-```
+### 4.4 Adding a new chip
 
-- 置き場所: 設定のフォルダ (`~/.config/hwnpu/run.json`、`$XDG_CONFIG_HOME/hwnpu`、Windows は `%LOCALAPPDATA%\hwnpu`)。ユーザーの models.yaml の隣の別のファイルで、`{"models": {"LFM3-1.7B": {"memory": 8}}}`。キャッシュには置かない: `prune` で消えず、同じキャッシュ (`HWNPU_CACHE`) を読むほかの機械には移らない
-- 守るところ: モデルの名前の解決 (`chat.Resolve`、`ResolveFor`、ファミリーや用途で選んだモデル)。hwnpu-chat、hwnpu-image、hwnpu-audio、`modelstore` を使うアプリが同じ。今メモリごとの形を持つのはチャットのモデル (LFM3-1.7B、Qwen3.5-0.8B、Qwen3-1.7B) だけだが、ほかのモデルに `variants` を足せばそのまま効く
-- 優先: その実行のメモリのタグ (`lfm3:8g`) または `hwnpu-chat --memory`、選んだメモリ、`HWNPU_MEMORY`、機械のメモリ。`hwnpu-chat --memory 8` で用意したモデルは、そのメモリが選ばれたものとして残る
-- ファミリーや用途の名前 (`lfm3`) がどのモデルを選ぶかは、この機械のメモリで決まる。選ばれたモデルにメモリが選んであれば、その形で動く
-- 公開の API: `modelstore.Store` の `Memory`、`SetMemory` (0 で忘れる)、`Memories`
-- 形を変えても、前の形のプログラムはキャッシュに残る (LRU で消えるまで)。`hwnpu cache clear NAME` で全部消せば、次は選んだ形のものだけを作る (取ってくる)
+A chip's backend decides what an entry contains and when it is machine-bound. To share it: write the converted result under a fresh folder, add an `entry.json` last that lists the files with sizes and SHA-256 and the key's recipe, choose a `target` name from the hierarchy (a broad name such as `amd`, then the generation `amd-xdna2`), and register the kind so `hwnpu-dev cache push` and the readers know the files. The generic parts (lookup, copying, verification, writing back) need no change.
 
-## 8. 準備の流れ: 計画と作るを分ける
+---
 
-今の `chat.Prepare` と `PrepareAMD` は、まずチェックポイントを落とす。これを次にする:
+## 5. Internal architecture
 
-1. 計画: モデル、対象、設定から、要るエントリの一覧と鍵を出す (表、プログラム、MTP、エンコーダ...)
-2. 探す: エントリごとに 7 節の順で
-3. 作る: なかったものだけ。チェックポイントを落とすのはこのときだけ。作ったら書き戻す
+### 5.1 Layers and the lookup path
 
-エントリごとに当たり外れが決まるので、一部だけの当たりも効く。`-explain` で各エントリの出どころと作った理由を出す。画像、音声、ビジョンの各 `prepare.go` も同じ形に寄せる。
-
-### 8.1 手元で作るとき: 元データも残す
-
-配布物がない (配っていないモデル、配っていない対象、`-prebuilt off`) ときは、今と同じく手元で作る。このときは元のチェックポイント (`src/`) と変換したエントリ (`entries/`) を両方残す。
-
-- 理由: 既存のモデルのパラメータを変えたバリエーション (文脈の長さ、形式、Q、MLP の q6 など) を作るたびに、元を落とし直さないため。model-table.md 11.4 節の「変換が揃ったらすぐ元を消す」は採らない
-- 配布物だけで動いているモデルは元を落とさない (8 節の 3 に行かない)。`src/` はそもそもできない
-- 元を消すのは 11.4 節の「長く使っていない」(`cache.unused_days`) と全体の上限 (`cache.max`) のときだけ。元の最後に使った日時は、それから作ったエントリを使った日時でも更新する (バリエーションを使っている間は元を残す)。`hwnpu-dev cache gc --sources` で明示的に消せる
-- 消した後にバリエーションを作るときは、固定どおりのものを落とし直す (5 節の `sha256` で確かめる)
-
-### 8.2 バリエーション
-
-利用者のファイルに、既存のモデルを引き継いでパラメータを変えたモデルを書く。
-
-```yaml
-models:
-  LFM3-1.7B-32k:
-    like: LFM3-1.7B
-    context: 32768
-    prebuilt: {targets: {amd-xdna2: {like: LFM3-1.7B/amd-xdna2, mlp: q6}}}   # 配布の行を引き継いで変える
-```
-
-- 指紋は変えたパラメータで計算し直す (5 節)。配布の行と同じになれば配布物に当たり、違えば手元で作る。版は持たない (配らないので。lock も要らない)
-- 作ったエントリは `write: true` の層 (チームの NFS や S3) に書き戻されるので、同じバリエーションを使う別の機械は作らずに済む
-- 手元で作ったものと配布物は同じ `entries/` に、同じ鍵の規則で入る。名前で区別しない
-- 元が同じなので、`src/` は元のモデルと共有する (`like` の `from` が同じ)
-
-## 9. GitHub Actions と Hugging Face
-
-安全の手当ては prebuilt.md 5.1 節のまま (PR では self-hosted を動かさない、actor の制限、runner group、専用のユーザー、`HF_TOKEN` は environment)。
+Each layer is a *store*: this machine's cache, then each source, then bundled models, then Hugging Face. They all use the same tree (3.5), so the code that reads a file or an entry does not care which layer it talks to.
 
 ```
-PR (ホストランナー)
-  models.yaml と lock の検査 (5 節)、go test。モデルは作らない
-
-main への push (aix1)
-  1. 前のコミットと比べ、version が上がった (または増えた) モデル × 対象を出す
-  2. 元のチェックポイント (aix1 のキャッシュ、コミット固定)
-  3. 校正 (GPTQ)。指紋の校正の部分が同じならキャッシュから
-  4. 変換と書き出し
-  5. 照合: milcpu の KL、AMD は NPU の上の ironcheck と KL、Intel は OpenVINO の CPU。上限を超えたら失敗
-  6. entry.json を作り、HF の staging に上げる
-  7. NPU の上で照合したもの (amd-xdna2) は、通れば自動で main に進める
-
-workflow_dispatch (owner だけ)
-  rebuild: 同じ version で作り直す (staging だけ上書き。main に進んだものは上書きしない)
-  promote: 実機 (Mac、Intel) で確かめた後に staging から main へ
+chat.Fetch / modelstore.File
+  → for each layer in order: has the file the lock names? (HEAD, or PROPFIND depth 0, or stat)
+     found → download to this machine's original/OWNER/NAME/FILE (4 files at once)
+           → check SHA-256 against the lock; on mismatch skip this layer
+           → if a nearer layer is writable, queue a copy there
+  → not found anywhere → Hugging Face at the lock's commit (resolve/<commit>/)
+           → tee to writable sources while downloading
 ```
 
-ブランチ: Actions は `staging` に上げ、確かめ終えたコミットを `main` に進める (`main` をそのコミットにする)。利用者の hwnpu は既定で `main` だけを読む (`--revision staging` で試せる)。照合に通らなかったものは `staging` に留まり、利用者に届かない。
+The commit is decided once per repository: the definition's pin; else the first source's lock; else this machine's lock; else Hugging Face's `main`. Files come from that commit whichever layer serves them, so two machines never run different bytes of one model. Moving to a newer commit happens only with `hwnpu-dev cache update`.
 
-トークン: 組織 `hwnpu` の fine-grained トークン (リポジトリへの書き込みだけ、組織 `hwnpu` に限る) を GitHub の environment `huggingface` の `HF_TOKEN` に置き、`main` からのジョブにだけ渡す。リポジトリはジョブが初回に作る (公開、gated の元モデルは 8 節のとおり同じ条件で gated に)。
+### 5.2 Entries and keys
 
-HF のリポジトリ (組織 `hwnpu`、1 モデル 1 リポジトリ):
+Everything a conversion produces is an **entry**: a folder tree plus `entry.json`:
 
+```json
+{ "key": "<fingerprint>", "kind": "iron-lm", "scope": "portable",
+  "model": "LFM3-1.7B", "target": "amd-xdna2", "version": 2,
+  "recipe": {...}, "files": [{"path": "decode.elf", "size": 123, "sha256": "..."}],
+  "made_by": {...}, "checked": {...} }
 ```
-README.md         モデルカード (元のモデル、ライセンス、照合の結果)
-hwnpu.json        全部の版の目録 (各 entry.json の写し)
-amd-xdna2/v2/...  版ごとのフォルダ。古いバイナリのために前の版も残す
-intel/v1/...
-any/v1/...        表など対象によらないもの
-```
 
-- 版の間で変わらないファイルは HF の Xet が重複を除くはず。ダウンロードの量にも効くかを確かめ、効かなければ entry.json で前の版のファイルを参照する
-- 古い版は、参照するリリースがなくなってから手で消す
-- 上げるのは `hwnpu-dev cache push --to hf:hwnpu/LFM3-1.7B --revision staging` (手元のエントリをそのまま上げる。CI 専用の形を持たない)
+- The **key** is computed before anything is downloaded, from fixed values in the model's definition (the commit and the files' SHA-256), the options and the versions of the exporter and its tools. That is why a machine can look up a conversion without the checkpoint.
+- **Versions.** `format_version` (per vendor) changes when the loader's format changes; the model's `version` (per model and target, in `models.yaml` under `targets`) is raised by hand when the output changes. A source path contains `vN`; a model still in development uses `vN-HASH` where the hash is the key, so each change is its own folder.
+- **Scope** says how far an entry may travel: `portable` (programs, exports, tables: any machine), `host` (bound to an OS version, a driver or a chip: only with a machine fingerprint in the key), `local` (prompt cache, history, license answers: never shared).
+- All paths in an entry are relative, so a copied folder works anywhere.
 
-## 10. Apple (白紙)
+### 5.3 Writing back
 
-Apple の機械が使えるようになるまで、Apple の配布の形は決めない。`targets` に `apple` の行は書かない。チームの層 (NAS、S3) での共有だけは先に入れた (16.199): Core AI の書き出しは `target: coreai` で、どの Mac も同じものを読む (端末で専用化したものは Core AI 自身のキャッシュに残る)。
+Writes never show a half-written state to readers:
 
-- 今の Core ML の形: 配れるのは `.mlpackage` まで。`.mlmodelc` は OS の版ごと (`host`)、Neural Engine のコンパイル (e5 バンドル) は機械ごとで、初回の重さ (Gemma 4 で 100 秒級) が残る
-- Core AI の方が事前にビルドしたものを配れる見込みがあり、そうなら Apple でも初回のコンパイルをなくせる。確かめること: 何を事前にビルドできるか、それがチップの世代と OS の版のどちらに縛られるか、Neural Engine への配置を確かめられるか
-- Core AI で確かめたこと (design.md 16.174、M1、macOS 27.2): 配れるのは `.aimodel` (端末によらない MLIR バイトコード)。端末で専用化したもの (初回のコンパイルの結果) は Core AI 自身のキャッシュにあり、OS のビルド (`26B123`) と実行ファイルの名前ごとで配れない。キャッシュの鍵は `main.hash` (中身の sha256) だけで、場所によらない。キャッシュに入ったあとは `main.mlirb` (重み) がなくても読める。8 トークンと 128 トークンのプログラムは、関数 2 つの 1 本の `.aimodel` にすれば、重みを 1 回分で配れて、キャッシュも 1 回分になる。初回のコンパイル (LFM3-1.7B で 1 分半ほど) は Core AI でも残る。`.aimodel` は手元に残すのを既定にし、消すのは最終手段のオプションにする (キャッシュはディスクが足りないときや OS の更新で消え、そのときは落とし直しになる)
-- この仕組みの側で備えること: 対象の世代の階層 (3.1 節) にチップは入っている。OS の版に縛られる形なら、エントリに `os: {min, max}` を持たせ、選ぶときに見る (`host` にせず `portable` のまま、OS の範囲で選ぶ)
+- A file is written to a temporary name (`.put-…`) in its folder and renamed (S3 shows an object only when the PUT finishes). A conversion becomes visible when `entry.json` is written last; a repository file is visible when `hwnpu-lock.json` names it.
+- **Tee** while downloading: bytes from Hugging Face are sent to a writable source as they arrive and committed only if the size and SHA-256 match. If the source falls 64 MiB behind, or the download resumes from a `.part`, the tee stops and the file is queued after the download. A download is never slowed or stopped by a slow source.
+- **Convert and upload at the same time**: while a local conversion runs, the export folder is watched; files untouched for 3 seconds are uploaded (4 at a time), so most of the data is already uploaded when the conversion ends. Only the files that changed afterwards and `entry.json` are uploaded at the end.
+- Uploads run in a **queue** (4 streams). Whatever is not done before the command exits is waited for; if the process is interrupted, the queue is kept in `work/queue` and finished at the next start. A failure is logged in `work/queue.log` and never fails the command.
+- A folder being written carries a mark `.writing-ID` (machine, process, last-write time), refreshed every 5 minutes. `hwnpu cache clean` and `gc --orphans` leave folders whose mark or files changed within the last hour, so they never remove what another machine is uploading.
+- Locks are read, extended and written back; two machines adding files to one repository at the same time may lose one of the additions, which the next machine to read the file adds again.
 
-## 11. 進める順
+### 5.4 Transports
 
-1. P0 (手元だけ): 7.3 節の置き場所 (根を 1 つに、`src/` と `entries/`、`NPU_CACHE_HOME`、今の場所からの移し方)、`.done` を `entry.json` に (相対パス)、`source.json` とフォルダ名に owner、エントリごとのロック (flock / LockFileEx)、`If-Range`、placement の鍵にチップ、AMD の書き出しをキャッシュの下へ (`~/models` は読みだけの古い層として探す)、`Prune` を手元の層だけに、指紋の計算
-2. P1: `Store` の interface、計画と作るの分離、path の層 (`write` と `fill`)、`hwnpu-dev cache ls|pull|push|verify|gc`。この機械と Intel の機械の間で試す
-3. P2: s3 の層を tinygodriver で (元のチェックポイントの `type: s3` も `aws` CLI から移す)
-4. P3: models.yaml の `prebuilt`、lock と PR の検査、aix1 の runner と Actions、HF を読む層。最初は LFM3-1.7B の `amd-xdna2`
-5. P4: `host` の scope をチームの層へ。世代を見分けるコード (AMD、Intel)
-6. Apple は 10 節が決まってから
+- **Folder**: ordinary file operations.
+- **WebDAV** (`internal/store/webdav.go`, standard library only): `GET` with `Range` to resume, `PUT` to a temporary name then `MOVE`, `MKCOL` for parents, `PROPFIND` depth 1 to list. Works with servers that do not return `Content-Length` on `HEAD` or that answer 405 where 409 is correct. Retries 3 times on timeouts and 5xx; an unreachable server is switched off for the process with one message.
+- **S3** via the `storage/s3` package of tinygodriver (no AWS SDK): resumable `GetRange`, 64 MiB multipart parts with abort on failure, `ListMultipartUploads` for `clean`, retries on 5xx and `SlowDown`. Checked against RustFS and Cloudflare R2.
+- **Plain HTTP** is the WebDAV client with write operations disabled.
 
-## 12. 決めたこと (2026-11-12)
+### 5.5 The local cache
 
-- 版は手で明示的に上げる (ソースの hash で自動にはしない)。データの形式の `format_version` と、モデル × 対象の `version`
-- 対象は model-table.md 4.1 節の世代の名前。M1 と M2 以降のように分かれるものは行を分ける
-- 上げるのは GitHub Actions だけ
-- Apple は白紙 (10 節)
-- S3 は AWS SDK も `aws` CLI も使わず、tinygodriver の `storage/s3` (7.2 節)
-- AMD (amd-xdna2) は CI の NPU の照合が通れば自動で `main` に進める。Intel と、Apple が決まった後の Apple は `promote` を待つ
-- 書き戻しと写しの先はチームの S3 や NFS の層。どの層を使うかは組織のファイル、利用者のファイル、環境変数の 3 段で決める (7.4 節)。2026-11-15 に 12.1 節で置き換えた
-- HF の名前空間は組織 `hwnpu` (https://huggingface.co/hwnpu、2026-11-12 に取得)。1 モデル 1 リポジトリ (`hwnpu/<モデル名>`)
-- 置き場所は OS のローミングしないキャッシュのフォルダの下の 1 つの根だけ (7.3 節)
-- gated のモデルとライセンスの確認のあるモデルは、既定では `fill` で写さない。組織のファイルで層ごとに `fill_gated: true` (7.1 節)。2026-11-15 に 12.1 節で置き換えた
-- 共有の層には、手元で作ったものの書き戻し (`write`) のほかに、読んだものをそのまま置く写し (`fill`、フォワードプロキシの共有キャッシュ) も持てる (7.1 節)。2026-11-15 に 12.1 節で置き換えた
-- 配布物がなければ今の仕組みで手元で作る。そのときは元データと変換後のデータを両方残し、パラメータを変えたバリエーションを元を落とし直さずに作れるようにする (8.1、8.2 節)
+`internal/cache` owns the root and the rules:
 
-## 12.1 決めたこと (2026-11-15)
+- **Space**: a free-space guard before every download (`ErrNoRoom`) and, if a maximum is set, least-recently-used removal of whole units (a repository, a conversion, an IRON kernel). Last use is the newest time of the folder and its files, touched when the unit is read (atime is not trusted). Units used in the last hour, by this process, or waiting in the upload queue are never removed. The entry file is removed first, so readers never see a half-removed unit.
+- **Locks** per download, conversion and export (`flock`/`LockFileEx`) so two processes never write one `.part`. Resumed downloads send `If-Range`.
+- **Hard links and reflinks** share identical files between models and between the cache and bundled models without copying.
+- The machine-bound keys include the chip, so Core ML placement results for an M1 are not used on an M3.
 
-- 取得元は定義のファイルでなく、環境変数の URL の並び (`HWNPU_MODEL_SOURCE`、`_1`、...、番号の順、エラーなら次)。最後に `HWNPU_MODEL_HUGGING_FACE` (true/false)。`.env` と `.env.local` をカレント、ユーザー、機械の順に読む (7、7.4 節)
-- `http(s)://` は WebDAV、書き戻さないなら読むだけの HTTP。URL のパスワードを受け付け、表示では伏せる。S3 の鍵は今どおり AWS の環境変数かプロファイル
-- `?writeback=true` は、手元で作ったものと読んだものの写しの両方。gated も写す
-- 中の並びは固定: `original/OWNER/NAME/` (コミットのフォルダは作らず `hwnpu-lock.json` で照らす) と `converted/MODEL/TARGET/EXPORT/vN`。lock を移すのは `hwnpu-dev cache update` だけ
-- 版は `targets.<対象>.version`。版ありは `vN`、`develop: true` は `vN-HASH`、版なしは `v0-HASH`
-- `HWNPU_CACHE_LAYERS` は読み替えずに消す。`HWNPU_PREBUILT` は作らない (取得元にあるかで決まる)
-- `HF_TOKEN` は CI 以外では勧めない。refresh token の保存 (OS の資格情報の置き場) と、Actions のトークンの交換 (Hugging Face の Trusted Publishers、RFC 8693) は別に
-- 層を平らに (design.md 16.213): 手元のキャッシュを 0 番 (いつも書き戻す)、同梱のモデルを取得元の後ろ (読むだけ、その場で)。手元の並びも取得元と同じ `original/` に。モデルの探索と取得は公開の API (`modelstore`) にし、各コマンドも同じものを使う。各コマンドの `--dir` は消す (根は `HWNPU_CACHE`)
-- 同梱のモデルの場所はインストーラが置き、アプリのコードで決める (環境変数にしない)。資源フォルダは configdir v1.1.0 の `QueryResourceFolders`
-- `~/models` は次の PR で `converted/` に移して読まなくなる
+### 5.6 What is not built yet
 
-## 13. 未決
+- A Hugging Face organization (`hwnpu`) of ready-converted models, built and checked by CI and read as the last layer before converting locally. Today a conversion is shared through *your* sources.
+- Entries for Core ML and OpenVINO programs, and machine-bound (`host`) entries in shared sources.
+- A single `converted/` folder in the local cache for every kind (some still live in `models/` and `entries/`).
+- Distinguishing the AMD and Intel NPU generations in the target name.
 
-層を平らにする (2026-11-15) の残り (2 つ目の PR):
-
-- 変換したもの (`models/NAME/` のプログラム、`entries/` の AMD の書き出し) を手元でも `converted/MODEL/TARGET/EXPORT/vN/` に。完了の印を `entry.json` 1 つに (今は `NAME.done`、`NAME.ext.done`、`entry.json` が混在)。Core AI と AMD 以外の書き出しも取得元で共有される
-- `~/models` を `hwnpu-dev cache migrate` で一度 `converted/` に移し、以後は読まない。手で作ったものは `hwnpu-dev cache import DIR` で取り込む (tools/amd の案内も合わせる)
-- `modelstore` に変換したものの API (`Make`)
-- 同梱のモデルの変換したものをその場で使う (今は `FetchEntry` がコピーする)
-
-- Synology の WebDAV の実機の確認
-- refresh token の保存と、Actions のトークンの交換 (12.1 節)
+The design record, [cache-sharing-design.md](cache-sharing-design.md), has the details of each, including the planned CI and fingerprint-lock scheme.

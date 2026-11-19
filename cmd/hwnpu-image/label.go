@@ -278,7 +278,7 @@ func openSiglip(ctx context.Context, model string, f siglipFlags, lw io.Writer, 
 				return nil, nil, err
 			}
 		case "":
-			if dir, err = amdExport(m, "tools/amd/iron_siglip2.py"); err != nil {
+			if dir, err = amdExport(ctx, m, "tools/amd/iron_siglip2.py", 0); err != nil {
 				return nil, nil, err
 			}
 		default:

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -88,5 +89,28 @@ func TestLastLine(t *testing.T) {
 	l.Write([]byte("50%\r60%\r"))
 	if got := l.get(); got != "60%" {
 		t.Errorf("%q", got)
+	}
+}
+
+// TestRunIRONStaleDone makes an export again whose out.done was there before: the caller did not
+// take it (made with other tools, gemma-4's int8 table), so it is not of a process that made it
+// while this one waited.
+func TestRunIRONStaleDone(t *testing.T) {
+	t.Setenv("HWNPU_CACHE", t.TempDir())
+	t.Setenv("NPU_CACHE_HOME", t.TempDir())
+	out := filepath.Join(t.TempDir(), "m.amd-npu2")
+	os.MkdirAll(out, 0o755)
+	os.WriteFile(filepath.Join(out, "f"), []byte("old"), 0o644)
+	os.WriteFile(out+".done", nil, 0o644)
+	// "python" writes the export: $1 is the script, $2 the directory it writes
+	python := []string{"/bin/sh", "-c", `mkdir -p "$2" && printf new > "$2/f"`, "sh"}
+	if err := RunIRON(context.Background(), python, "m", "iron_export_lm.py", []string{ExportOut}, out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "f")); string(b) != "new" {
+		t.Errorf("f: %q, the export of before kept", b)
+	}
+	if _, err := os.Stat(out + ".done"); err != nil {
+		t.Error("no out.done after it was made")
 	}
 }

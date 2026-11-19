@@ -67,15 +67,19 @@ func FindAMDExport(m Model) string {
 	if d := AMDExportDir(m); d != "" {
 		names = append(names, filepath.Base(d))
 	}
-	for _, suffix := range []string{".amd-npu2-q4", ".amd-npu2"} {
-		names = append(names, m.Name+suffix)
-	}
+	names = append(names, handMadeNames(m)...)
 	for _, n := range names {
 		if d := cache.FindExport(n, isExport); d != "" {
 			return d
 		}
 	}
 	return ""
+}
+
+// handMadeNames are the names of exports of model m made by hand that hwnpu-chat runs:
+// NAME.amd-npu2-q4, else NAME.amd-npu2.
+func handMadeNames(m Model) []string {
+	return []string{m.Name + ".amd-npu2-q4", m.Name + ".amd-npu2"}
 }
 
 // OnlyAMD reports whether the NPU models run on is AMD's: no backend named (backend or
@@ -120,10 +124,15 @@ func AMDExport(ctx context.Context, use, backend string, log io.Writer) (string,
 		}
 	}
 	if d := FindAMDExport(m); d != "" {
+		ShareMadeByHand(m, d, log) // one made by hand here goes in the sources written back to
 		return d, nil
 	}
 	if len(m.AMDExport) == 0 {
-		msg := fmt.Sprintf("%s has no form for AMD's NPU: hwnpu has no recipe of tools/amd/iron_export_lm.py for it (amd_export in models.yaml), and %s has no %s.amd-npu2-q4 or %s.amd-npu2; --model takes an export's directory too",
+		// one made by hand elsewhere and put in the sources
+		if d := AMDNamed(ctx, m, handMadeNames(m), isExport, log); d != "" {
+			return d, nil
+		}
+		msg := fmt.Sprintf("%s has no form for AMD's NPU: hwnpu has no recipe of tools/amd/iron_export_lm.py for it (amd_export in models.yaml), and neither %s nor the sources have %s.amd-npu2-q4 or %s.amd-npu2; --model takes an export's directory too",
 			m.Name, strings.Join(cache.ExportRoots(), " or "), m.Name, m.Name)
 		if names := amdExports(); len(names) > 0 {
 			msg += ". The exports here: " + strings.Join(names, ", ")
@@ -153,7 +162,8 @@ var checkpointFiles = []string{"tokenizer.json", "tokenizer.jsonl", "tokenizer_c
 	"chat_template.jinja", "generation_config.json", "processor_config.json", "preprocessor_config.json"}
 
 // PrepareAMD makes model m's export for AMD's NPU (AMDExportDir) as models.yaml's amd_export
-// says: from the shared layers when one has it (SharedExport), else it checks that IRON's
+// says: from the shared layers when one has it (SharedExport; else one made by hand under its
+// name that hwnpu-dev cache import put there), else it checks that IRON's
 // environment is there (IRONEnv), downloads the checkpoint (RepoDir: only the files the
 // exporter reads), and runs tools/amd/iron_export_lm.py (the copy
 // built into hwnpu) in that environment into DIR.part, renamed to the export when it is done.
@@ -171,7 +181,9 @@ func PrepareAMD(ctx context.Context, m Model, log io.Writer) (string, error) {
 	if len(shared.Sources()) > 0 {
 		recipe = ExportRecipe(ctx, m, "iron_export_lm.py", m.AMDExport)
 	}
-	err := SharedExport(ctx, "iron-lm", recipe, out, log, func() error {
+	// else one made by hand under its name and put in the sources (hwnpu-dev cache import)
+	imported := []SharedRecipe{{Kind: ImportKind, Recipe: ImportedRecipe(m, cache.AMDTarget, filepath.Base(out))}}
+	err := SharedExportOr(ctx, "iron-lm", recipe, imported, out, log, func() error {
 		python, err := ironPython(ctx)
 		if err != nil {
 			return fmt.Errorf("%s has no export for AMD's NPU here (%s) or in the sources, and making one needs IRON (amd/IRON with mlir-aie and Peano, Python 3.12): %w. Install it as INSTALL_AMD.md says and set %s to its virtual environment or to a script that sets it up, or copy an export made elsewhere to %s",
@@ -216,14 +228,22 @@ func RunIRON(ctx context.Context, python []string, name, script string, args []s
 	if err != nil {
 		return err
 	}
+	// an out.done here before the lock is of an export the caller does not take (made with other
+	// tools or another recipe, whose entry it did not match): made again. One written while
+	// waiting for the lock is of another process that made it meanwhile.
+	var before time.Time
+	if fi, err := os.Stat(out + ".done"); err == nil {
+		before = fi.ModTime()
+	}
 	unlock, err := cache.Lock(ctx, out, "the export "+filepath.Base(out), log)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if _, err := os.Stat(out + ".done"); err == nil {
+	if fi, err := os.Stat(out + ".done"); err == nil && !fi.ModTime().Equal(before) {
 		return nil // another process made it meanwhile
 	}
+	os.Remove(out + ".done")
 	part, logPath := out+".part", out+".log"
 	os.RemoveAll(part) // cut off before: made again
 	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {

@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-// WebDAVConfig is where a WebDAV folder is and who signs in to it (docs/cache-sharing.md 7).
+// WebDAVConfig is where a WebDAV folder is and who signs in to it (docs/cache-sharing-design.md 7).
 type WebDAVConfig struct {
 	Name string
 	// URL is the folder: https://nas:5006/hwnpu (Synology), https://cloud/remote.php/dav/files/USER/hwnpu
@@ -41,6 +41,9 @@ type WebDAVConfig struct {
 	// of the system's roots: a NAS's own certificate, which no authority signed and which names
 	// no host (?tls_sha256= of the URL). The certificate is checked, the host name is not.
 	TLSSHA256 string
+	// Insecure trusts any certificate (?insecure=true of the URL): neither it nor the host name
+	// is checked. TLSSHA256 is the safer way to trust a NAS's own certificate.
+	Insecure bool
 	// ReadOnly reads with GET and HEAD only, as any HTTP server serves them; nothing is written
 	// or listed.
 	ReadOnly bool
@@ -57,6 +60,8 @@ type WebDAV struct {
 
 	mu   sync.Mutex
 	made map[string]bool // the folders known to be there
+	mk   sync.Mutex      // held while folders are made: the puts side by side make the same ones
+	down error           // the server could not be reached: every request fails at once with it
 }
 
 // WebDAVPasswordEnv and WebDAVUserEnv sign in to a WebDAV store the netrc does not name.
@@ -97,7 +102,13 @@ func OpenWebDAV(c WebDAVConfig) (*WebDAV, error) {
 	// a whole large download, but one for the connection and the answer's header
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 5 * time.Minute // a MOVE of a large file can take a while
-	if c.TLSSHA256 != "" {
+	// a NAS that is off is found out soon (not after the default 30 seconds, for each try), and
+	// its name is looked up once: a .local name takes 5 seconds a lookup on macOS (mDNS)
+	tr.DialContext = (&cachedDialer{d: net.Dialer{Timeout: davDialTimeout, KeepAlive: 30 * time.Second}}).DialContext
+	tr.TLSHandshakeTimeout = davDialTimeout
+	tr.MaxIdleConnsPerHost = 8 // the queue's jobs go side by side
+	switch {
+	case c.TLSSHA256 != "":
 		want, err := hex.DecodeString(strings.ReplaceAll(strings.ToLower(c.TLSSHA256), ":", ""))
 		if err != nil || len(want) != sha256.Size {
 			return nil, fmt.Errorf("store: %s: tls_sha256 %q is not a SHA-256 in hex", c.Name, c.TLSSHA256)
@@ -109,11 +120,13 @@ func OpenWebDAV(c WebDAVConfig) (*WebDAV, error) {
 					return fmt.Errorf("store: %s: the server gave no certificate", c.Name)
 				}
 				if got := sha256.Sum256(cs.PeerCertificates[0].Raw); !bytes.Equal(got[:], want) {
-					return fmt.Errorf("store: %s: the server's certificate has the SHA-256 %x, not the tls_sha256 %x", c.Name, got, want)
+					return &pinError{fmt.Errorf("store: %s: the server's certificate has the SHA-256 %x, not the tls_sha256 %x", c.Name, got, want)}
 				}
 				return nil
 			},
 		}
+	case c.Insecure:
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 	return &WebDAV{cfg: c, base: u, user: user, pass: pass, client: &http.Client{Transport: tr}, made: map[string]bool{}}, nil
 }
@@ -155,9 +168,63 @@ type davError struct {
 
 func (e *davError) Error() string { return fmt.Sprintf("store: %s %s: %s", e.Method, e.URL, e.Status) }
 
+// davDialTimeout bounds connecting to a server (its name's lookup too) and its TLS handshake.
+var davDialTimeout = 15 * time.Second
+
+// cachedDialer dials with the addresses of a host looked up once.
+type cachedDialer struct {
+	d     net.Dialer
+	mu    sync.Mutex
+	addrs map[string][]string // host: its addresses
+}
+
+func (c *cachedDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) != nil {
+		return c.d.DialContext(ctx, network, addr)
+	}
+	c.mu.Lock()
+	ips, ok := c.addrs[host]
+	c.mu.Unlock()
+	if !ok {
+		lctx, cancel := context.WithTimeout(ctx, davDialTimeout)
+		ips, err = net.DefaultResolver.LookupHost(lctx, host)
+		cancel()
+		if err != nil {
+			return nil, &net.OpError{Op: "dial", Net: network, Err: err}
+		}
+		c.mu.Lock()
+		if c.addrs == nil {
+			c.addrs = map[string][]string{}
+		}
+		c.addrs[host] = ips
+		c.mu.Unlock()
+	}
+	var first error
+	for _, ip := range ips {
+		conn, err := c.d.DialContext(ctx, network, net.JoinHostPort(ip, port))
+		if err == nil {
+			return conn, nil
+		}
+		first = cmp.Or(first, err)
+	}
+	return nil, first
+}
+
 // do makes a request (body made by body for each try, nil for none), retried as S3's are (5xx,
 // 429, a cut connection). An answer of a status not in ok is a davError, its body closed.
+//
+// A server that cannot be reached (no such host, the connection refused, a certificate not
+// trusted, or no answer in any of the tries) is not tried again in this process: a NAS that is off is a source
+// that is not there, and every request after fails at once (the sources after it are read, and
+// what goes in it stays in the queue for the next run).
 func (w *WebDAV) do(ctx context.Context, method, u string, hdr http.Header, body func() (io.Reader, int64), ok ...int) (*http.Response, error) {
+	w.mu.Lock()
+	down := w.down
+	w.mu.Unlock()
+	if down != nil {
+		return nil, down
+	}
 	var resp *http.Response
 	err := retryIf(ctx, davTransient, func() error {
 		var r io.Reader
@@ -204,12 +271,79 @@ func (w *WebDAV) do(ctx context.Context, method, u string, hdr http.Header, body
 			}
 			return nil, fmt.Errorf("%w (signed in as %s: give the password in the URL, ~/.netrc (machine %s) or %s)", err, who, w.base.Hostname(), WebDAVPasswordEnv)
 		}
+		if unreachable(err) && ctx.Err() == nil {
+			err = &unreachableError{name: w.cfg.Name, host: w.base.Host, err: err}
+			w.mu.Lock()
+			if w.down == nil {
+				w.down = err
+				w.mu.Unlock()
+				fmt.Fprintf(os.Stderr, "store: %s (%s) cannot be reached; read on as if it were not set this run: %v\n", w.cfg.Name, w.base.Host, errors.Unwrap(err))
+			} else {
+				err = w.down
+				w.mu.Unlock()
+			}
+		}
 		return nil, err
 	}
 	return resp, nil
 }
 
+// unreachableError is a server do could not reach.
+type unreachableError struct {
+	name, host string
+	err        error
+}
+
+func (e *unreachableError) Error() string {
+	return fmt.Sprintf("store: %s (%s) cannot be reached: %v", e.name, e.host, e.err)
+}
+func (e *unreachableError) Unwrap() error { return e.err }
+
+// pinError is a certificate that is not the one of tls_sha256.
+type pinError struct{ error }
+
+func (e *pinError) Unwrap() error { return e.error }
+
+// unreachable reports an error of reaching the server at all: its name, a connection, the TLS
+// handshake (not one cut off later, which a try again goes on from).
+func unreachable(err error) bool {
+	var dns *net.DNSError
+	var op *net.OpError
+	var cert *tls.CertificateVerificationError
+	var rec tls.RecordHeaderError
+	var ue *unreachableError
+	var pin *pinError
+	return errors.As(err, &ue) || errors.As(err, &pin) || errors.As(err, &dns) || errors.As(err, &op) && op.Op == "dial" ||
+		errors.As(err, &cert) || errors.As(err, &rec) || tlsHandshakeTimeout(err)
+}
+
+func tlsHandshakeTimeout(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "TLS handshake timeout")
+}
+
+// call is do for an answer whose body is not wanted: read to its end and closed, so that its
+// connection is used again (a connection left open is not, and each new one asks for the host's
+// address again: 5 seconds a request for a NAS's .local name, design.md 16.231).
+func (w *WebDAV) call(ctx context.Context, method, u string, hdr http.Header, body func() (io.Reader, int64), ok ...int) error {
+	resp, err := w.do(ctx, method, u, hdr, body, ok...)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	return resp.Body.Close()
+}
+
 func davTransient(err error) bool {
+	var ue *unreachableError
+	if errors.As(err, &ue) {
+		return false
+	}
+	if unreachable(err) {
+		// a lookup or a connection that only timed out (a .local name over mDNS does now and
+		// then) is tried again before the server is taken for off; one refused is not
+		var ne net.Error
+		return errors.As(err, &ne) && ne.Timeout()
+	}
 	var de *davError
 	if errors.As(err, &de) {
 		return de.StatusCode >= 500 && de.StatusCode != http.StatusNotImplemented || de.StatusCode == http.StatusTooManyRequests
@@ -352,8 +486,15 @@ func (w *WebDAV) Has(ctx context.Context, key string) (int64, bool, error) {
 }
 
 // mkdirs makes the folders of dir (a slash path inside the store, "" for its root) that are
-// not there, from the store's folder down.
+// not there, from the store's folder down, one put at a time (two MKCOLs of one folder at once
+// are refused: 423 Locked).
 func (w *WebDAV) mkdirs(ctx context.Context, dir string) error {
+	w.mk.Lock()
+	defer w.mk.Unlock()
+	return w.mkdirsLocked(ctx, dir)
+}
+
+func (w *WebDAV) mkdirsLocked(ctx context.Context, dir string) error {
 	if dir == "." {
 		dir = ""
 	}
@@ -365,14 +506,14 @@ func (w *WebDAV) mkdirs(ctx context.Context, dir string) error {
 	}
 	u := w.url("")
 	if dir != "" {
-		if err := w.mkdirs(ctx, path.Dir(dir)); err != nil {
+		if err := w.mkdirsLocked(ctx, path.Dir(dir)); err != nil {
 			return err
 		}
 		u = w.url(dir + "/")
 	}
 	// 201 made; 405 (Method Not Allowed) is there already (or, on a UGREEN NAS, its parent is
 	// not: the parents are made first); some servers answer 301 or 200 then
-	_, err := w.do(ctx, "MKCOL", u, nil, nil, http.StatusCreated, http.StatusMethodNotAllowed, http.StatusOK, http.StatusMovedPermanently, http.StatusNoContent)
+	err := w.call(ctx, "MKCOL", u, nil, nil, http.StatusCreated, http.StatusMethodNotAllowed, http.StatusOK, http.StatusMovedPermanently, http.StatusNoContent)
 	if err != nil {
 		return err
 	}
@@ -404,21 +545,21 @@ func (w *WebDAV) put(ctx context.Context, key string, body func() (io.Reader, in
 	if err := w.mkdirs(ctx, dir); err != nil {
 		return err
 	}
-	_, err := w.do(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
+	err := w.call(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
 	if davStatus(err, http.StatusConflict) || davStatus(err, http.StatusNotFound) || davStatus(err, http.StatusMethodNotAllowed) {
 		w.mu.Lock()
 		delete(w.made, dir)
 		w.mu.Unlock()
 		if err = w.mkdirs(ctx, dir); err == nil {
-			_, err = w.do(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
+			err = w.call(ctx, http.MethodPut, w.url(tmp), nil, body, ok...)
 		}
 	}
 	if err != nil {
 		return err
 	}
 	hdr := http.Header{"Destination": {w.url(key)}, "Overwrite": {"T"}}
-	if _, err := w.do(ctx, "MOVE", w.url(tmp), hdr, nil, http.StatusCreated, http.StatusNoContent, http.StatusOK); err != nil {
-		w.do(context.WithoutCancel(ctx), http.MethodDelete, w.url(tmp), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusNotFound)
+	if err := w.call(ctx, "MOVE", w.url(tmp), hdr, nil, http.StatusCreated, http.StatusNoContent, http.StatusOK); err != nil {
+		w.call(context.WithoutCancel(ctx), http.MethodDelete, w.url(tmp), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusNotFound)
 		return err
 	}
 	return nil
@@ -449,6 +590,7 @@ type davEntry struct {
 	rel        string
 	collection bool
 	size       int64
+	mod        time.Time // zero when the server did not say
 }
 
 type multistatus struct {
@@ -460,14 +602,15 @@ type multistatus struct {
 				ResourceType struct {
 					Collection *struct{} `xml:"collection"`
 				} `xml:"resourcetype"`
-				Length string `xml:"getcontentlength"`
+				Length   string `xml:"getcontentlength"`
+				Modified string `xml:"getlastmodified"`
 			} `xml:"prop"`
 		} `xml:"propstat"`
 	} `xml:"response"`
 }
 
 const propfindBody = `<?xml version="1.0" encoding="utf-8"?>
-<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>`
+<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>`
 
 // propfind lists what is at rel (a key, or a folder ending in /) at depth "0" or "1".
 func (w *WebDAV) propfind(ctx context.Context, rel, depth string) ([]davEntry, error) {
@@ -508,6 +651,9 @@ func (w *WebDAV) propfind(ctx context.Context, rel, depth string) ([]davEntry, e
 			if ps.Prop.ResourceType.Collection != nil {
 				e.collection = true
 			}
+			if t, err := http.ParseTime(strings.TrimSpace(ps.Prop.Modified)); err == nil {
+				e.mod = t
+			}
 			if n, err := strconv.ParseInt(strings.TrimSpace(ps.Prop.Length), 10, 64); err == nil {
 				e.size = n
 			}
@@ -524,6 +670,17 @@ func (w *WebDAV) propfind(ctx context.Context, rel, depth string) ([]davEntry, e
 // List walks the folders under prefix with PROPFINDs of depth 1 (depth infinity is often turned
 // off).
 func (w *WebDAV) List(ctx context.Context, prefix string) ([]string, error) {
+	ls, err := w.list(ctx, prefix, false)
+	return keysOf(ls), err
+}
+
+// listAll is List with the temporary files of uploads (.put-) too, and when each was last
+// changed (Clean).
+func (w *WebDAV) listAll(ctx context.Context, prefix string) ([]listed, error) {
+	return w.list(ctx, prefix, true)
+}
+
+func (w *WebDAV) list(ctx context.Context, prefix string, all bool) ([]listed, error) {
 	if err := w.writable(); err != nil {
 		return nil, err // a server read with GETs has no listing
 	}
@@ -531,7 +688,7 @@ func (w *WebDAV) List(ctx context.Context, prefix string) ([]string, error) {
 	if dir != "" && !SafeKey(dir) {
 		return nil, fmt.Errorf("store: %q is not a prefix inside %s", prefix, w)
 	}
-	var keys []string
+	var keys []listed
 	var walk func(dir string) error
 	walk = func(dir string) error {
 		rel := ""
@@ -555,14 +712,14 @@ func (w *WebDAV) List(ctx context.Context, prefix string) ([]string, error) {
 				if err := walk(r.rel); err != nil {
 					return err
 				}
-			case !strings.HasPrefix(name, ".put-"):
-				keys = append(keys, r.rel)
+			case all || !strings.HasPrefix(name, ".put-"):
+				keys = append(keys, listed{r.rel, r.mod})
 			}
 		}
 		return nil
 	}
 	err := walk(dir)
-	slices.Sort(keys)
+	slices.SortFunc(keys, func(a, b listed) int { return strings.Compare(a.key, b.key) })
 	return keys, err
 }
 
@@ -573,8 +730,20 @@ func (w *WebDAV) Delete(ctx context.Context, key string) error {
 	if err := w.checkKey(key); err != nil {
 		return err
 	}
-	_, err := w.do(ctx, http.MethodDelete, w.url(key), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusNotFound)
-	return err
+	return w.call(ctx, http.MethodDelete, w.url(key), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusNotFound)
+}
+
+// removeEmpty removes the folder dir if no file is under it (empty folders may be: a DELETE of
+// a folder removes what is in it too, so it is listed first, to its depth).
+func (w *WebDAV) removeEmpty(ctx context.Context, dir string) bool {
+	if w.writable() != nil || w.checkKey(dir) != nil {
+		return false
+	}
+	if files, err := w.list(ctx, dir+"/", true); err != nil || len(files) > 0 {
+		return false
+	}
+	_, err := w.do(ctx, http.MethodDelete, w.url(dir+"/"), nil, nil, http.StatusNoContent, http.StatusOK, http.StatusAccepted, http.StatusNotFound)
+	return err == nil
 }
 
 // netrcLogin reads the login and the password of host in the netrc (NETRC, else ~/.netrc;

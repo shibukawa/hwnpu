@@ -20,7 +20,19 @@ import (
 // Qwen3.5's does. With o.NoThink it writes the empty thinking of enable_thinking=false.
 var Qwen3 Template = qwen3Format{}
 
-type qwen3Format struct{}
+// Qwen25 is the chat format of Qwen2.5's instruct models (Qwen/Qwen2.5-Coder-7B-Instruct's
+// tokenizer_config.json): Qwen3's without thinking, and a system turn of its own when the
+// messages have none ("You are Qwen, created by Alibaba Cloud. ..."), the tools after it. The
+// prompt ends at "<|im_start|>assistant\n".
+var Qwen25 Template = qwen3Format{plain: true, system: qwen25System}
+
+// qwen25System is the system message Qwen2.5's template writes when the messages have none.
+const qwen25System = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+
+type qwen3Format struct {
+	plain  bool   // no thinking: the answer starts at once (Qwen2.5)
+	system string // the system message when the messages have none, "" for no system turn
+}
 
 func (qwen3Format) Stops() []string { return []string{"<|im_end|>", "<|endoftext|>"} }
 
@@ -37,12 +49,16 @@ const (
 // Render writes what the template does with add_generation_prompt, and enable_thinking unless
 // o.NoThink. The thinking of the answers before the last user question is left out, as the
 // template does, unless o.KeepThinking.
-func (qwen3Format) Render(msgs []Message, tools []Tool, o Options) (string, bool, error) {
+func (f qwen3Format) Render(msgs []Message, tools []Tool, o Options) (string, bool, error) {
 	if len(msgs) == 0 {
 		return "", false, fmt.Errorf("chat: no messages")
 	}
 	var sb strings.Builder
 	hasSystem := msgs[0].Role == "system"
+	if !hasSystem && f.system != "" {
+		msgs = append([]Message{{Role: "system", Content: Content{Text: f.system}}}, msgs...)
+		hasSystem = true
+	}
 	if len(tools) > 0 {
 		sb.WriteString("<|im_start|>system\n")
 		if hasSystem {
@@ -75,7 +91,8 @@ func (qwen3Format) Render(msgs []Message, tools []Tool, o Options) (string, bool
 			sb.WriteString("<|im_start|>" + m.Role + "\n" + content + "<|im_end|>\n")
 		case "assistant":
 			reasoning := ""
-			if m.Reasoning != nil {
+			if f.plain { // no thinking in the template: the content as it is
+			} else if m.Reasoning != nil {
 				reasoning = *m.Reasoning
 			} else if strings.Contains(content, "</think>") {
 				r, _, _ := strings.Cut(content, "</think>")
@@ -86,7 +103,7 @@ func (qwen3Format) Render(msgs []Message, tools []Tool, o Options) (string, bool
 				reasoning = strings.TrimLeft(r, "\n")
 				content = strings.TrimLeft(content[strings.LastIndex(content, "</think>")+len("</think>"):], "\n")
 			}
-			if (i > lastQuery || o.KeepThinking) && (i == len(msgs)-1 || reasoning != "") {
+			if !f.plain && (i > lastQuery || o.KeepThinking) && (i == len(msgs)-1 || reasoning != "") {
 				sb.WriteString("<|im_start|>assistant\n<think>\n" + strings.Trim(reasoning, "\n") + "\n</think>\n\n" + strings.TrimLeft(content, "\n"))
 			} else {
 				sb.WriteString("<|im_start|>assistant\n" + content)
@@ -122,6 +139,9 @@ func (qwen3Format) Render(msgs []Message, tools []Tool, o Options) (string, bool
 		}
 	}
 	sb.WriteString("<|im_start|>assistant\n")
+	if f.plain {
+		return sb.String(), false, nil
+	}
 	if o.NoThink {
 		sb.WriteString("<think>\n\n</think>\n\n")
 		return sb.String(), false, nil

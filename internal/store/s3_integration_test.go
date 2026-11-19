@@ -14,7 +14,7 @@ import (
 	"github.com/shibukawa/tinygodriver/storage/s3"
 )
 
-// TestS3Server runs the S3 store against a real server (RustFS: docs/cache-sharing.md 7.2), when
+// TestS3Server runs the S3 store against a real server (RustFS: docs/cache-sharing-design.md 7.2), when
 // HWNPU_S3_TEST_ENDPOINT names it (with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY). The bucket
 // is HWNPU_S3_TEST_BUCKET, which must be there (Cloudflare R2: region auto), or hwnpu-test, made
 // if missing; the region is HWNPU_S3_TEST_REGION, else us-east-1.

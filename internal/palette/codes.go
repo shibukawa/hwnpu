@@ -1,6 +1,7 @@
 package palette
 
 import (
+	"cmp"
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
@@ -17,8 +18,9 @@ import (
 // chosen for: rounding each weight to the nearest entry of its table keeps the weight error
 // small, not the layer's output error. A directory holds index.json (by key: the format, the
 // shape and the rows a table) and, for each weight, KEY.idx (an index a weight, uint8, row
-// major) and KEY.tab (the tables, rows/group by 2^bits float32 of fp16 values, little endian).
-// The key is WeightKey of the weight as the checkpoint holds it.
+// major) and KEY.tab (the tables, rows/group by 2^bits float32 of fp16 values, little endian;
+// with col_block, rows/group by cols/col_block of them, in row major order). The key is WeightKey
+// of the weight as the checkpoint holds it. CodesWriter writes them from Go (tools/coreai/lutfit).
 type Codes struct {
 	dir   string
 	index map[string]codeEntry
@@ -27,10 +29,11 @@ type Codes struct {
 }
 
 type codeEntry struct {
-	Name  string `json:"name"`
-	Fmt   string `json:"fmt"`
-	Shape []int  `json:"shape"`
-	Group int    `json:"group"`
+	Name     string `json:"name"`
+	Fmt      string `json:"fmt"`
+	Shape    []int  `json:"shape"`
+	Group    int    `json:"group"`
+	ColBlock int    `json:"col_block,omitempty"` // columns a table (0: whole rows)
 }
 
 // LoadCodes reads the index of a codes directory; the codes of other formats (q4_gptq.py's
@@ -98,19 +101,21 @@ func bf16(f float32) uint16 {
 }
 
 // Lookup returns the palettized weight for w (rows x cols, as the checkpoint holds it) when the
-// codes have it in bits wide tables of group rows by whole rows, with the tables multiplied by
-// scale (what the graph multiplies the weight by: a table scales with its weights). ok is false
-// when there are none, or for another layout; the caller then quantizes w itself.
+// codes have it in bits wide tables of group rows, with the tables multiplied by scale (what the
+// graph multiplies the weight by: a table scales with its weights). The codes' column blocks are
+// taken unless colBlock asks for others (0 takes any). ok is false when there are none, or for
+// another layout; the caller then quantizes w itself.
 func (c *Codes) Lookup(w []float32, rows, cols, group, colBlock, bits int, scale float32) (LUT4, bool, error) {
 	if c == nil || len(c.index) == 0 {
-		return LUT4{}, false, nil
-	}
-	if colBlock > 0 && colBlock != cols {
 		return LUT4{}, false, nil
 	}
 	key := WeightKey(w, rows, cols)
 	e, ok := c.index[key]
 	if !ok || lutBits(e.Fmt) != bits || e.Group != group || len(e.Shape) != 2 || e.Shape[0] != rows || e.Shape[1] != cols {
+		return LUT4{}, false, nil
+	}
+	cb := cmp.Or(e.ColBlock, cols)
+	if (colBlock > 0 && colBlock != cb) || cols%cb != 0 {
 		return LUT4{}, false, nil
 	}
 	k := 1 << bits
@@ -122,7 +127,7 @@ func (c *Codes) Lookup(w []float32, rows, cols, group, colBlock, bits int, scale
 	if err != nil {
 		return LUT4{}, false, err
 	}
-	if len(idx) != rows*cols || len(tab) != rows/group*k*4 {
+	if len(idx) != rows*cols || len(tab) != rows/group*(cols/cb)*k*4 {
 		return LUT4{}, false, fmt.Errorf("palette: codes of %s (%s): %d indices and %d table bytes for %d x %d in %s",
 			e.Name, key, len(idx), len(tab), rows, cols, e.Fmt)
 	}
@@ -131,7 +136,7 @@ func (c *Codes) Lookup(w []float32, rows, cols, group, colBlock, bits int, scale
 			return LUT4{}, false, fmt.Errorf("palette: codes of %s: index %d at %d of a %d entry table", e.Name, v, i, k)
 		}
 	}
-	out := LUT4{Rows: rows, Cols: cols, Group: group, ColBlock: cols, Bits: bits, LUT: make([]uint16, rows/group*k)}
+	out := LUT4{Rows: rows, Cols: cols, Group: group, ColBlock: cb, Bits: bits, LUT: make([]uint16, rows/group*(cols/cb)*k)}
 	for i := range out.LUT {
 		out.LUT[i] = f16(math.Float32frombits(binary.LittleEndian.Uint32(tab[4*i:])) * scale)
 	}
@@ -140,4 +145,58 @@ func (c *Codes) Lookup(w []float32, rows, cols, group, colBlock, bits int, scale
 	c.hits++
 	c.mu.Unlock()
 	return out, true, nil
+}
+
+// CodesWriter writes a codes directory (Codes) from Go: the tables and indices of weights
+// palettized here, such as with QuantizeWeighted.
+type CodesWriter struct {
+	dir   string
+	index map[string]codeEntry
+}
+
+// NewCodesWriter starts a codes directory at dir, which it makes.
+func NewCodesWriter(dir string) (*CodesWriter, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	return &CodesWriter{dir: dir, index: map[string]codeEntry{}}, nil
+}
+
+// Add writes q, the palettized form of the weight w (rows x cols, as the checkpoint holds it),
+// under the weight's key; name is what the index calls it.
+func (cw *CodesWriter) Add(name string, w []float32, q LUT4) error {
+	format := fmt.Sprintf("lut%d", q.Bits)
+	if lutBits(format) == 0 {
+		return fmt.Errorf("palette: codes of %s: %d bit tables", name, q.Bits)
+	}
+	key := WeightKey(w, q.Rows, q.Cols)
+	idx := make([]byte, q.Rows*q.Cols)
+	for i := range idx {
+		idx[i] = byte(q.index(i))
+	}
+	tab := make([]byte, 4*len(q.LUT))
+	for i, h := range q.LUT {
+		binary.LittleEndian.PutUint32(tab[4*i:], math.Float32bits(f16val(h)))
+	}
+	if err := os.WriteFile(filepath.Join(cw.dir, key+".idx"), idx, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(cw.dir, key+".tab"), tab, 0o644); err != nil {
+		return err
+	}
+	e := codeEntry{Name: name, Fmt: format, Shape: []int{q.Rows, q.Cols}, Group: q.Group}
+	if q.ColBlock != q.Cols {
+		e.ColBlock = q.ColBlock
+	}
+	cw.index[key] = e
+	return nil
+}
+
+// Close writes the index.
+func (cw *CodesWriter) Close() error {
+	b, err := json.MarshalIndent(cw.index, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(cw.dir, "index.json"), append(b, '\n'), 0o644)
 }

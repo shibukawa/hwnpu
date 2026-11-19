@@ -91,6 +91,18 @@ func TestBuiltinTier(t *testing.T) {
 	if m, _ := Lookup("LFM3-1.7B"); m.Run.Tier != "512,2048" || m.On(16).Run.Tier != "none" || m.On(16).MemoryFor("amd") != 2.2 {
 		t.Errorf("a file of the user's: %+v, on 16 GB %+v", m.Run, m.On(16).Run)
 	}
+	// codes are the 8 hex digits of a codes directory's hash, given down to the variants
+	for _, bad := range []string{`""`, "abc", "0123456789", "zzzzzzzz"} {
+		if _, err := userFiles(t, "version: 1\nmodels:\n  LFM3-1.7B:\n    codes: "+bad+"\n"); err == nil {
+			t.Errorf("codes: %s was taken", bad)
+		}
+	}
+	if _, err := userFiles(t, "version: 1\nmodels:\n  LFM3-1.7B:\n    codes: \"0a1b2c3d\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := Lookup("LFM3-1.7B"); m.Run.Codes != "0a1b2c3d" || m.On(16).Run.Codes != "0a1b2c3d" {
+		t.Errorf("codes: %+v, on 16 GB %+v", m.Run, m.On(16).Run)
+	}
 }
 
 func TestOn(t *testing.T) {

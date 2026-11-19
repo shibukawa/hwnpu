@@ -1,5 +1,5 @@
 // Package s3fake is an S3 server in memory for tests: the path-style objects, ranges, HEAD,
-// DELETE, ListObjectsV2 and multipart uploads, without checking signatures.
+// DELETE, ListObjectsV2 and multipart uploads (with ListMultipartUploads), without checking signatures.
 package s3fake
 
 import (
@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Server is the fake.
@@ -20,16 +21,22 @@ type Server struct {
 	*httptest.Server
 	mu      sync.Mutex
 	Objects map[string][]byte // by "BUCKET/KEY"
-	uploads map[string]map[int][]byte
+	uploads map[string]*upload
 	// Requests counts the requests by method.
 	Requests map[string]int
 	// Signed counts the requests that carried a signature.
 	Signed int
 }
 
+type upload struct {
+	bucket, key string
+	initiated   time.Time
+	parts       map[int][]byte
+}
+
 // New starts a fake that ends with the test.
 func New(t *testing.T) *Server {
-	s := &Server{Objects: map[string][]byte{}, uploads: map[string]map[int][]byte{}, Requests: map[string]int{}}
+	s := &Server{Objects: map[string][]byte{}, uploads: map[string]*upload{}, Requests: map[string]int{}}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
 	return s
@@ -40,6 +47,35 @@ func (s *Server) Put(bucket, key string, b []byte) {
 	s.mu.Lock()
 	s.Objects[bucket+"/"+key] = b
 	s.mu.Unlock()
+}
+
+// StartUpload starts a multipart upload of key initiated at at (one a writeback cut off left)
+// and returns its ID.
+func (s *Server) StartUpload(bucket, key string, at time.Time) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.start(bucket, key, at)
+}
+
+func (s *Server) start(bucket, key string, at time.Time) string {
+	uid := fmt.Sprintf("u%d", s.Requests["POST"]+len(s.uploads)+1)
+	for s.uploads[uid] != nil {
+		uid += "x"
+	}
+	s.uploads[uid] = &upload{bucket: bucket, key: key, initiated: at.UTC(), parts: map[int][]byte{}}
+	return uid
+}
+
+// Uploads returns the IDs of the uploads in progress.
+func (s *Server) Uploads() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for id := range s.uploads {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // Get returns an object.
@@ -84,17 +120,49 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/xml")
 		xml.NewEncoder(w).Encode(res)
+	case r.Method == http.MethodGet && key == "" && q.Has("uploads"):
+		type up struct {
+			Key       string
+			UploadId  string
+			Initiated string
+		}
+		var res struct {
+			XMLName     xml.Name `xml:"ListMultipartUploadsResult"`
+			Bucket      string
+			Upload      []up
+			IsTruncated bool
+		}
+		res.Bucket = bucket
+		for id, u := range s.uploads {
+			if u.bucket == bucket && strings.HasPrefix(u.key, q.Get("prefix")) {
+				res.Upload = append(res.Upload, up{u.key, id, u.initiated.Format(time.RFC3339Nano)})
+			}
+		}
+		sort.Slice(res.Upload, func(i, j int) bool {
+			return res.Upload[i].Key+"/"+res.Upload[i].UploadId < res.Upload[j].Key+"/"+res.Upload[j].UploadId
+		})
+		w.Header().Set("Content-Type", "application/xml")
+		xml.NewEncoder(w).Encode(res)
 	case r.Method == http.MethodPost && q.Has("uploads"):
-		uid := fmt.Sprintf("u%d", len(s.uploads)+1)
-		s.uploads[uid] = map[int][]byte{}
+		uid := s.start(bucket, key, time.Now())
 		fmt.Fprintf(w, `<InitiateMultipartUploadResult><Bucket>%s</Bucket><Key>%s</Key><UploadId>%s</UploadId></InitiateMultipartUploadResult>`, bucket, key, uid)
 	case r.Method == http.MethodPut && q.Get("uploadId") != "":
 		n, _ := strconv.Atoi(q.Get("partNumber"))
 		b, _ := io.ReadAll(r.Body)
-		s.uploads[q.Get("uploadId")][n] = b
+		u := s.uploads[q.Get("uploadId")]
+		if u == nil {
+			http.Error(w, "NoSuchUpload", http.StatusNotFound)
+			return
+		}
+		u.parts[n] = b
 		w.Header().Set("ETag", fmt.Sprintf(`"p%d"`, n))
 	case r.Method == http.MethodPost && q.Get("uploadId") != "":
-		parts := s.uploads[q.Get("uploadId")]
+		u := s.uploads[q.Get("uploadId")]
+		if u == nil {
+			http.Error(w, "NoSuchUpload", http.StatusNotFound)
+			return
+		}
+		parts := u.parts
 		var all []byte
 		for i := 1; i <= len(parts); i++ {
 			all = append(all, parts[i]...)
@@ -103,6 +171,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		delete(s.uploads, q.Get("uploadId"))
 		fmt.Fprintf(w, `<CompleteMultipartUploadResult><ETag>"done"</ETag></CompleteMultipartUploadResult>`)
 	case r.Method == http.MethodDelete && q.Get("uploadId") != "":
+		if s.uploads[q.Get("uploadId")] == nil {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `<Error><Code>NoSuchUpload</Code><Message>no</Message></Error>`)
+			return
+		}
 		delete(s.uploads, q.Get("uploadId"))
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPut:

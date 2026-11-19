@@ -14,13 +14,14 @@ import (
 const (
 	KindOriginal  = "original"  // original/OWNER/NAME: a repository's files (downloaded again)
 	KindConverted = "converted" // models/NAME (programs), converted/MODEL/TARGET/EXPORT/vN (made or downloaded again)
+	KindPrebuilt  = "prebuilt"  // models/NAME/EXPORT.prebuilt: Core AI's prebuilt programs of an export (downloaded again)
 	KindExport    = "export"    // entries/TARGET/NAME: an export for AMD's NPU
 	KindKernels   = "kernels"   // iron/KEY: a kernel IRON compiled
 	KindCompiled  = "compiled"  // KEY.mlmodelc, KEY.blob...: a program compiled for this machine
 )
 
 // Kinds are the kinds of units, in the order they are shown.
-var Kinds = []string{KindOriginal, KindConverted, KindExport, KindKernels, KindCompiled}
+var Kinds = []string{KindOriginal, KindConverted, KindPrebuilt, KindExport, KindKernels, KindCompiled}
 
 // Unit is a part of the cache that is removed whole.
 type Unit struct {
@@ -32,6 +33,12 @@ type Unit struct {
 	Files int
 	// Used is when it was last used: the latest of its folder's time (Touch) and its files'.
 	Used time.Time
+	// Model is the model it is of: OWNER/NAME of a repository, NAME of its programs and exports,
+	// and of a compiled program the one its source (SetSource) is in. "" when not known: IRON's
+	// kernels (shared), a compiled program that recorded no source.
+	Model string
+	// Leftover: a compiled program of which only the record of its source is left.
+	Leftover bool
 }
 
 // Usage is what the root holds.
@@ -105,6 +112,13 @@ func Scan() (Usage, error) {
 				kind = KindKernels
 			}
 			for _, d := range dirs(p, 1) {
+				if kind == KindConverted {
+					// an export's prebuilt programs are a unit of their own (the model's count
+					// leaves them out: tree)
+					for _, pb := range prebuiltDirs(d) {
+						add(Unit{Kind: KindPrebuilt, Path: pb})
+					}
+				}
 				add(Unit{Kind: kind, Path: d})
 			}
 			continue
@@ -144,12 +158,46 @@ func Scan() (Usage, error) {
 		add(*c)
 	}
 	for i := range u.Units {
-		if u.Units[i].Name == "" {
-			rel, _ := filepath.Rel(root, u.Units[i].Path)
-			u.Units[i].Name = filepath.ToSlash(rel)
+		x := &u.Units[i]
+		if x.Name == "" {
+			rel, _ := filepath.Rel(root, x.Path)
+			x.Name = filepath.ToSlash(rel)
+		}
+		if x.Kind != KindCompiled {
+			x.Model = ModelOf(x.Name)
+			continue
+		}
+		x.Leftover = true
+		for _, p := range x.Paths {
+			if !strings.HasSuffix(p, sourceSuffix) {
+				x.Leftover = false
+			}
+		}
+		if src, ok := Source(root, strings.TrimPrefix(x.Name, "compiled/")); ok {
+			if rel, err := filepath.Rel(root, src); err == nil && !strings.HasPrefix(rel, "..") {
+				x.Model = ModelOf(filepath.ToSlash(rel))
+			} else {
+				x.Model = strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+			}
 		}
 	}
 	return u, nil
+}
+
+// ModelOf is the model the path rel under the root (with /) is of: OWNER/NAME of
+// original/OWNER/NAME/..., NAME of models/NAME/..., converted/NAME/... and entries/TARGET/NAME,
+// "" for any other.
+func ModelOf(rel string) string {
+	parts := strings.Split(rel, "/")
+	switch {
+	case parts[0] == "original" && len(parts) >= 3:
+		return parts[1] + "/" + parts[2]
+	case (parts[0] == "models" || parts[0] == "converted") && len(parts) >= 2:
+		return parts[1]
+	case parts[0] == "entries" && len(parts) >= 3:
+		return parts[2]
+	}
+	return ""
 }
 
 // dirs are the entries depth folders below dir (original/OWNER/NAME: 2), the ones that are
@@ -168,6 +216,30 @@ func dirs(dir string, depth int) []string {
 		}
 		out = next
 	}
+	return out
+}
+
+// PrebuiltSuffix ends the folder of an export's prebuilt programs (coreai.PackedSuffix after the
+// export's NAME.coreai).
+const PrebuiltSuffix = ".coreai.prebuilt"
+
+// prebuiltDirs are the folders of exports' prebuilt programs in the model's folder dir: beside
+// its exports, or beside an export in one (a size of depth's).
+func prebuiltDirs(dir string) []string {
+	var out []string
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || p == dir {
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), PrebuiltSuffix) {
+			out = append(out, p)
+			return filepath.SkipDir
+		}
+		if rel, _ := filepath.Rel(dir, p); strings.Count(rel, string(filepath.Separator)) >= 2 {
+			return filepath.SkipDir
+		}
+		return nil
+	})
 	return out
 }
 
@@ -196,6 +268,9 @@ func tree(p string, seen map[fileKey]bool) (int64, int, time.Time) {
 	filepath.WalkDir(p, func(q string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
+		}
+		if d.IsDir() && q != p && strings.HasSuffix(d.Name(), PrebuiltSuffix) {
+			return filepath.SkipDir // a unit of its own (KindPrebuilt)
 		}
 		fi, err := d.Info()
 		if err != nil {
@@ -246,6 +321,12 @@ func UnitOf(path string) (string, bool) {
 		n = 3
 	case "models", "iron":
 		n = 2
+		for i := 2; i < len(parts) && i <= 4; i++ {
+			if parts[0] == "models" && strings.HasSuffix(parts[i], PrebuiltSuffix) {
+				n = i + 1 // an export's prebuilt programs
+				break
+			}
+		}
 	case "converted":
 		n = 5 // converted/MODEL/TARGET/EXPORT/vN
 	default:
@@ -296,6 +377,21 @@ func Removable(x Unit, now time.Time, keep time.Duration) bool {
 		}
 	}
 	return true
+}
+
+// Queued reports whether work is queued for the unit path is in (SetBusy: a writeback to the
+// sources): it is not to be removed.
+func Queued(path string) bool {
+	unit, ok := UnitOf(path)
+	if !ok || busy == nil {
+		return false
+	}
+	for _, p := range busy() {
+		if u, ok := UnitOf(p); ok && u == unit {
+			return true
+		}
+	}
+	return false
 }
 
 // Remove removes x. A repository's lock goes first, so that a process reading it after takes

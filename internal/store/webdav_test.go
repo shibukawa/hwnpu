@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"golang.org/x/net/webdav"
@@ -23,13 +28,14 @@ type davServer struct {
 	root     string
 	requests atomic.Int64
 	ranges   atomic.Int64
+	conns    atomic.Int64 // the connections made to it
 }
 
 func newDAV(t *testing.T) *davServer {
 	t.Helper()
 	d := &davServer{root: t.TempDir()}
 	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(d.root), LockSystem: webdav.NewMemLS()}
-	d.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	d.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.requests.Add(1)
 		if u, p, ok := r.BasicAuth(); !ok || u != "u" || p != "p" {
 			w.Header().Set("WWW-Authenticate", `Basic realm="dav"`)
@@ -45,6 +51,12 @@ func newDAV(t *testing.T) *davServer {
 		}
 		h.ServeHTTP(w, r)
 	}))
+	d.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		if s == http.StateNew {
+			d.conns.Add(1)
+		}
+	}
+	d.Start()
 	t.Cleanup(d.Close)
 	return d
 }
@@ -189,6 +201,42 @@ func TestWebDAVSource(t *testing.T) {
 	}
 }
 
+// TestWebDAVGC removes an entry of a WebDAV source with its folders (a folder of WebDAV stays
+// when its files are deleted), up to the model's, and leaves the others.
+func TestWebDAVGC(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	d := newDAV(t)
+	l := Source{Store: openDAV(t, d), Writeback: true}
+	put := func(model string) {
+		dir := filepath.Join(t.TempDir(), model)
+		write(t, filepath.Join(dir, "sub", "b.bin"), model)
+		rel := EntryPath(model, "amd-xdna2", model+".amd-npu", "v1")
+		if _, err := Describe(dir, Entry{Kind: "amd", Key: model + "@1", Model: model, Scope: ScopePortable, Path: rel}); err != nil {
+			t.Fatal(err)
+		}
+		if err := PutEntry(ctx, l, dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("x")
+	put("y")
+	g, err := PlanGC(ctx, l, func(e Entry) bool { return e.Model == "x" }, false)
+	if err != nil || len(g.Entries) != 1 {
+		t.Fatalf("plan: %+v %v", g, err)
+	}
+	if err := g.Apply(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+	conv := filepath.Join(d.root, "hwnpu", "converted")
+	if _, err := os.Stat(filepath.Join(conv, "x")); err == nil {
+		t.Error("x's folders are left")
+	}
+	if _, err := os.Stat(filepath.Join(conv, "y", "amd-xdna2", "y.amd-npu", "v1", EntryFile)); err != nil {
+		t.Errorf("y: %v", err)
+	}
+}
+
 // TestWebDAVSignIn takes the login from the netrc and says what to do without one.
 func TestWebDAVSignIn(t *testing.T) {
 	ctx := context.Background()
@@ -223,5 +271,95 @@ func TestWebDAVSignIn(t *testing.T) {
 	}
 	if l, p := parseNetrc("default login a password b", "h", ""); l != "a" || p != "b" {
 		t.Errorf("netrc default: %s %s", l, p)
+	}
+}
+
+// TestWebDAVSelfSigned reads over https from a server whose certificate no authority signed: an
+// error by default, read with ?tls_sha256= of its certificate or with ?insecure=true.
+func TestWebDAVSelfSigned(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "hwnpu", "a.txt"), "aaa")
+	h := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(root), LockSystem: webdav.NewMemLS()}
+	srv := httptest.NewTLSServer(h)
+	defer srv.Close()
+	sum := sha256.Sum256(srv.Certificate().Raw)
+	for _, c := range []struct {
+		query string
+		ok    bool
+	}{
+		{"", false},
+		{"?insecure=false", false},
+		{"?tls_sha256=" + hex.EncodeToString(sum[:]), true},
+		{"?tls_sha256=" + strings.Repeat("00", sha256.Size), false},
+		{"?insecure=true", true},
+		{"?insecure=true&writeback=true", true},
+	} {
+		s, err := ParseSource("nas", srv.URL+"/dav/hwnpu"+c.query)
+		if err != nil {
+			t.Fatalf("%q: %v", c.query, err)
+		}
+		b, err := s.Store.Read(ctx, "a.txt")
+		if ok := err == nil && string(b) == "aaa"; ok != c.ok {
+			t.Errorf("%q: read %q %v", c.query, b, err)
+		}
+	}
+	if _, err := ParseSource("nas", srv.URL+"/dav?insecure=maybe"); err == nil {
+		t.Error("insecure=maybe: no error")
+	}
+}
+
+// TestWebDAVDown reads past a server that is off as if it were not set: the source after it
+// answers, at once, and nothing more is asked of the one off.
+func TestWebDAVDown(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close() // its port refuses connections now
+	nas, err := ParseSource("nas", dead.URL+"/dav/hwnpu?writeback=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder := Source{Store: Dir{Name: "folder", Root: t.TempDir()}, Writeback: true}
+	c := strings.Repeat("c", 40)
+	src := filepath.Join(t.TempDir(), "config.json")
+	write(t, src, "{}")
+	if err := PutOriginal(ctx, folder, "lab/m", c, "config.json", src, ""); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	clearLocks()
+	i, _, err := FetchOriginal(ctx, []Source{nas, folder}, "lab/m", c, "config.json", "", filepath.Join(t.TempDir(), "c.json"), nil)
+	if err != nil || i != 1 {
+		t.Fatalf("FetchOriginal: %d %v", i, err)
+	}
+	if err := PutOriginal(ctx, nas, "lab/m", c, "config.json", src, ""); !unreachable(err) {
+		t.Errorf("a write to the server off: %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("took %v: the server off was tried again", d)
+	}
+}
+
+// TestWebDAVConnections writes files in new folders (MKCOL, PUT and MOVE, whose answers are not
+// read) and reads them back over one connection: each new one asked for a NAS's .local address
+// again, 5 seconds a request (design.md 16.231).
+func TestWebDAVConnections(t *testing.T) {
+	ctx := context.Background()
+	d := newDAV(t)
+	st := openDAV(t, d)
+	for i := range 20 {
+		if err := st.Write(ctx, fmt.Sprintf("converted/m/t/e%d/v0/f", i), []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := st.Has(ctx, fmt.Sprintf("converted/m/t/e%d/v0/f", i)); err != nil || !ok {
+			t.Fatal(ok, err)
+		}
+	}
+	if err := st.Delete(ctx, "converted/m/t/e0/v0/f"); err != nil {
+		t.Fatal(err)
+	}
+	if n := d.conns.Load(); n > 1 {
+		t.Errorf("%d connections for %d requests", n, d.requests.Load())
 	}
 }

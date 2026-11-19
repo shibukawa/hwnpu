@@ -114,14 +114,14 @@ func TestRouteByFamily(t *testing.T) {
 }
 
 // TestImageMemoryTags checks the image families picked by a machine's memory written as a tag
-// (hwnpu-image generate -m sana:8g), in any case, with or without a space, and of any size, not
+// (hwnpu-image generate -m image:8g), in any case, with or without a space, and of any size, not
 // only MODEL.md's columns.
 func TestImageMemoryTags(t *testing.T) {
 	setPolicy(t, "+nsfw") // Anima's
 	for name, want := range map[string]string{
-		"sana:8g": "Sana-600M", "sana:8G": "Sana-600M", "sana:8GB": "Sana-600M", "sana:8 G": "Sana-600M",
-		"sana:12g": "Sana-600M", "sana:4g": "Sana-600M", "sana:16G": "SANA1.5-1.6B", "sana:100g": "SANA1.5-1.6B",
-		"anima": "Anima-Aesthetic", "anima:64g": "Anima-Aesthetic", "anima:aesthetic": "Anima-Aesthetic", "anima-turbo": "Anima-Turbo", "moge:20g": "moge-2-vitb", "image:8g": "Sana-600M", "image:16g": "FLUX.2-klein-4B", "depth:64g": "DA3MONO-LARGE", "depth:8g": "DA3-SMALL", "depth:16g": "DA3-BASE",
+		"image:8g": "FLUX.2-klein-4B", "image:8G": "FLUX.2-klein-4B", "image:8GB": "FLUX.2-klein-4B", "image:8 G": "FLUX.2-klein-4B",
+		"image:12g": "FLUX.2-klein-4B", "image:4g": "FLUX.2-klein-4B", "depth:12g": "DA3-SMALL", "depth:100g": "DA3MONO-LARGE",
+		"anima": "Anima-Aesthetic", "anima:64g": "Anima-Aesthetic", "anima:aesthetic": "Anima-Aesthetic", "anima-turbo": "Anima-Turbo", "moge:20g": "moge-2-vitb", "image:16g": "FLUX.2-klein-4B", "depth:64g": "DA3MONO-LARGE", "depth:8g": "DA3-SMALL", "depth:16g": "DA3-BASE",
 	} {
 		m, _, ok, err := Pick(name, 59)
 		if !ok || err != nil || m.Name != want {

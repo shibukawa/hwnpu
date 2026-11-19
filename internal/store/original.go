@@ -210,22 +210,35 @@ func PutOriginal(ctx context.Context, s Source, repo, commit, name, path, sum st
 			return err
 		}
 	}
-	return Record(ctx, s, repo, commit, name, LockedFile{SHA256: sum, Size: fi.Size()}, false,
-		func(l Lock) error {
-			if f, ok := l.Files[name]; ok && f.SHA256 == sum {
-				return errHave
-			}
-			return s.Store.Put(ctx, OriginalKey(repo, name), path)
-		})
+	// the file is put before the lock of the repository is taken (that lock is only for
+	// reading, adding to and writing hwnpu-lock.json), so that the files of one repository go
+	// side by side; a lock of another commit is not written over (its file of the name is not
+	// this one)
+	switch l, err := readLock(ctx, s, repo); {
+	case err == nil && l.Commit != commit:
+		return fmt.Errorf("%s: %s: %s, not %s: %w", s, repo, short(l.Commit), short(commit), ErrOtherCommit)
+	case err == nil && l.Files[name].SHA256 == sum:
+		return nil // there
+	case err != nil && !errors.Is(err, ErrNotFound):
+		return err
+	}
+	// marked until the lock names it, so that Clean leaves the file while this goes on
+	done, err := MarkWriting(ctx, s, "original/"+repo)
+	if err != nil {
+		return err
+	}
+	defer done()
+	if err := s.Store.Put(ctx, OriginalKey(repo, name), path); err != nil {
+		return err
+	}
+	return Record(ctx, s, repo, commit, name, LockedFile{SHA256: sum, Size: fi.Size()}, false)
 }
 
-var errHave = errors.New("there")
-
-// Record names a file of repo of commit in s's lock, after put (nil: the file is there) put it
-// in s. A lock of another commit is ErrOtherCommit, unless follow: then it is replaced by one of
-// commit naming only the file (the files of the other commit stay, not named: what the machine's
-// own cache does when the sources move to another commit).
-func Record(ctx context.Context, s Source, repo, commit, name string, f LockedFile, follow bool, put func(Lock) error) error {
+// Record names a file of repo of commit in s's lock (the file is there). A lock of another
+// commit is ErrOtherCommit, unless follow: then it is replaced by one of commit naming only the
+// file (the files of the other commit stay, not named: what the machine's own cache does when
+// the sources move to another commit).
+func Record(ctx context.Context, s Source, repo, commit, name string, f LockedFile, follow bool) error {
 	unlock, err := lockWork(ctx, s.String()+"|"+repo)
 	if err != nil {
 		return err
@@ -240,13 +253,7 @@ func Record(ctx context.Context, s Source, repo, commit, name string, f LockedFi
 	case l.Commit != commit:
 		return fmt.Errorf("%s: %s: %s, not %s: %w", s, repo, short(l.Commit), short(commit), ErrOtherCommit)
 	}
-	if put != nil {
-		if err := put(l); errors.Is(err, errHave) {
-			return nil
-		} else if err != nil {
-			return err
-		}
-	} else if g, ok := l.Files[name]; ok && g == f {
+	if g, ok := l.Files[name]; ok && g == f {
 		return nil
 	}
 	l.Files = maps.Clone(l.Files)

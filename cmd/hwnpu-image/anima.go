@@ -20,10 +20,10 @@ import (
 	"github.com/shibukawa/hwnpu/internal/chat"
 	"github.com/shibukawa/hwnpu/internal/console"
 	"github.com/shibukawa/hwnpu/internal/imagegen/anima"
+	"github.com/shibukawa/hwnpu/internal/imagegen/aspect"
 	"github.com/shibukawa/hwnpu/internal/imagegen/chroma"
 	"github.com/shibukawa/hwnpu/internal/imagegen/flux2klein"
-	"github.com/shibukawa/hwnpu/internal/imagegen/qwenimage"
-	"github.com/shibukawa/hwnpu/internal/imagegen/sana"
+	"github.com/shibukawa/hwnpu/internal/imagegen/flux3klein"
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/iron"
 )
@@ -32,7 +32,7 @@ import (
 // run, and convert).
 type convertFlags struct {
 	Backend    string `help:"The program format: coreai (Apple's Neural Engine through Core AI, macOS 27: a Mac's only one) or intel (Intel's NPU); convert also takes coreml, the Core ML export --cpu runs. Default: HWNPU_BACKEND, else the NPU found (convert: coreai)."`
-	Size       int    `default:"1024" help:"The image's width and height in pixels, a multiple of 16 (an export each)."`
+	Size       string `default:"1:1" help:"The picture's aspect ratio: 1:1 (1024 x 1024), 1:1s (512 x 512), 2:3, 3:4, 9:16, 3:2, 4:3 or 16:9 (Anima and FLUX.2 klein; Anima an export each, on AMD's NPU for 1:1 and 1:1s only; FLUX.2 klein on AMD's NPU one export of all eight). The other models take 1:1 and 1:1s, and still a pixel count."`
 	Dit        string `placeholder:"FILE" help:"The diffusion model, a file of split_files/diffusion_models/ in circlestone-labs/Anima (default: the model's of models.yaml; convert: anima-turbo-v1.1.safetensors)."`
 	TextFormat string `help:"The text encoder's weights (fp16; lut8, lut6 on Apple's; int8 on Intel; default int8 on Apple's, where fp16's 1.0 GB is over a program's limit, fp16 on Intel)."`
 	DitFormat  string `help:"The DiT's weights (fp16; lut8, lut6 on Apple's; int8, int4 on Intel; default int8 on Apple's: faster than fp16 at half its memory, and nearer it than lut8; fp16 on Intel. Qwen-Image: lut6, its text pass the same and a group's two passes one program with the weights once)."`
@@ -40,17 +40,41 @@ type convertFlags struct {
 	QChunk     int    `name:"qchunk" default:"512" help:"The queries an attention scores at a time (M3: 512 is 25 % faster than 1024 at 1024 x 1024)."`
 }
 
-func (f convertFlags) options() anima.ConvertOptions {
-	return anima.ConvertOptions{Backend: f.Backend, Width: f.Size, Height: f.Size, Dit: f.Dit,
-		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}
+func (f convertFlags) options() (anima.ConvertOptions, error) {
+	w, h, err := anima.ParseAspect(f.Size)
+	return anima.ConvertOptions{Backend: f.Backend, Width: w, Height: h, Dit: f.Dit,
+		TextFormat: f.TextFormat, DitFormat: f.DitFormat, Group: f.Group, QChunk: f.QChunk}, err
 }
 
-// ConvertCmd is "hwnpu-image convert": an Anima directory or a Sana, Chroma or Qwen-Image
-// repository into a Core AI export (Core ML's for --cpu, OpenVINO IR for Intel's NPU).
+// side is the picture's side in pixels for the models whose sizes are still squares: 1:1 and
+// 1:1s, or a pixel count as before.
+func (f convertFlags) side() (int, error) {
+	w, h, err := aspect.ParseOrSide(f.Size, 16)
+	if err != nil {
+		return 0, err
+	}
+	if w != h {
+		return 0, fmt.Errorf("--size %s: this model takes 1:1 or 1:1s for now", f.Size)
+	}
+	return w, nil
+}
+
+// picture is the picture's width and height for a model whose pictures are multiples of
+// multiple pixels: an aspect ratio of --size (aspect.Of), or a pixel count as before (a square).
+func (f convertFlags) picture(multiple int) (w, h int, err error) {
+	return aspect.ParseOrSide(f.Size, multiple)
+}
+
+// pictureIn is picture for a model whose aspect ratios are the sizes of as (FLUX.2 klein's own).
+func (f convertFlags) pictureIn(as []aspect.Aspect, multiple int) (w, h int, err error) {
+	return aspect.ParseOrSideIn(f.Size, as, multiple)
+}
+
+// ConvertCmd is "hwnpu-image convert": an Anima directory or a Chroma repository into a Core AI export (Core ML's for --cpu, OpenVINO IR for Intel's NPU).
 type ConvertCmd struct {
-	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/), or a Sana repository of Efficient-Large-Model (transformer/, vae/, scheduler/)."`
+	Anima string `arg:"" name:"dir" type:"existingdir" help:"The Anima directory (diffusion_models/, text_encoders/, diffusers/), or a Chroma repository of lodestones."`
 	Model string `short:"m" required:"" type:"path" placeholder:"EXPORT" help:"The export to write."`
-	Text  string `type:"existingdir" placeholder:"DIR" help:"Sana: the directory of Gemma 2's text_encoder/ and tokenizer/; Qwen-Image-2.1: of Qwen3-VL-8B's text_encoder/ and processor/; Chroma: of T5's text_encoder/ and the VAE's vae/ (default: the repository)."`
+	Text  string `type:"existingdir" placeholder:"DIR" help:"Chroma: the directory of T5's text_encoder/ and the VAE's vae/ (default: the repository)."`
 	// Chroma's
 	Tokenizer     string   `type:"existingfile" placeholder:"FILE" help:"Chroma: T5's tokenizer.json (Anima's t5_tokenizer/tokenizer.json: Chroma's repository has only spiece.model)."`
 	TextRows      int      `name:"text-rows" help:"Chroma: the text's rows (default 512, its pipeline's; fewer cut longer prompts)."`
@@ -70,7 +94,11 @@ func (c *ConvertCmd) Run() error {
 		if err != nil {
 			return err
 		}
-		o := chroma.ConvertOptions{Backend: backend, Width: c.Size, Height: c.Size, TextFormat: c.TextFormat, DitFormat: c.DitFormat,
+		side, err := c.side()
+		if err != nil {
+			return err
+		}
+		o := chroma.ConvertOptions{Backend: backend, Width: side, Height: side, TextFormat: c.TextFormat, DitFormat: c.DitFormat,
 			Tokenizer: c.Tokenizer, TextRows: c.TextRows}
 		if c.Only != "" {
 			o.Only = map[string]bool{}
@@ -90,25 +118,11 @@ func (c *ConvertCmd) Run() error {
 		if err := chroma.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
 			return err
 		}
-	} else if b, err := os.ReadFile(filepath.Join(c.Anima, "model_index.json")); err == nil && strings.Contains(string(b), "QwenImage21Pipeline") {
-		backend, err := appleFormat("Qwen-Image", c.Backend)
+	} else {
+		o, err := c.options()
 		if err != nil {
 			return err
 		}
-		o := qwenimage.ConvertOptions{Backend: backend, Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
-		if err := qwenimage.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
-			return err
-		}
-	} else if isDir(filepath.Join(c.Anima, "transformer")) {
-		if c.Backend != "" && c.Backend != llm.BackendCoreML && c.Backend != llm.BackendCoreAI && c.Backend != llm.BackendIntel {
-			return fmt.Errorf("Sana converts for coreml, coreai or intel (--backend %s)", c.Backend)
-		}
-		o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat, Backend: cmp.Or(c.Backend, llm.BackendCoreAI)}
-		if err := sana.Convert(c.Anima, cmp.Or(c.Text, c.Anima), c.Model, o, console.Log(os.Stderr)); err != nil {
-			return err
-		}
-	} else {
-		o := c.options()
 		o.Backend = cmp.Or(o.Backend, llm.BackendCoreAI)
 		text, dit := anima.Formats(o.Backend)
 		o.TextFormat, o.DitFormat = cmp.Or(o.TextFormat, text), cmp.Or(o.DitFormat, dit)
@@ -132,28 +146,28 @@ func appleFormat(model, backend string) (string, error) {
 	return "", fmt.Errorf("%s converts for coreml or coreai (--backend %s)", model, backend)
 }
 
-// GenerateCmd is "hwnpu-image generate": a picture from a prompt with Anima or Sana.
+// GenerateCmd is "hwnpu-image generate": a picture from a prompt with FLUX.2 klein, Anima or Chroma1.
 type GenerateCmd struct {
-	Prompts    []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language; Sana: English). Sana, Qwen-Image and Chroma take several: a picture each, the model loaded once (on Apple's Neural Engine --batch of them are drawn together)."`
-	Model      string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: FLUX.2 klein 4B from 16 GB, Sana 600M on 8 GB; flux2-klein, sana, sana:1.6b, anima-turbo and anima (Anima-Aesthetic) with HWNPU_MODEL_ALLOWLIST=+nsfw; a family alone picks for the machine's memory, or for the memory a tag names: sana:8g), or an export's directory (AMD: of tools/amd/iron_anima.py or iron_sana.py). On AMD's NPU a name runs NAME.amd-npu2 (in the cache's entries/amd-xdna2 or ~/models); on Apple's and Intel's (Anima and Sana) the model is downloaded and converted on its first run."`
+	Prompts    []string  `arg:"" name:"prompt" help:"What to draw (Anima: Danbooru tags and natural language). Chroma and FLUX.2 klein take several: a picture each, the model loaded once (on Apple's Neural Engine --batch of them are drawn together)."`
+	Model      string    `short:"m" default:"image" placeholder:"NAME|EXPORT" help:"The model: a name, a family or a use of models.yaml (image: FLUX.2 klein 4B from 8 GB; flux2-klein, chroma, anima-turbo and anima (Anima-Aesthetic) with HWNPU_MODEL_ALLOWLIST=+nsfw; a family alone picks for the machine's memory, or for the memory a tag names: image:8g), or an export's directory (AMD: of tools/amd/iron_anima.py, iron_chroma.py or iron_flux2klein.py). On AMD's NPU a name runs NAME.amd-npu2 (NAME-SIZE.amd-npu2 for another --size) in the cache's entries/amd-xdna2 or ~/models, else one the sources hold, downloaded once (FLUX.2 klein's exported with IRON when they have none; one made by hand in entries/amd-xdna2 goes in the sources written back to on its first use); on Apple's and Intel's (Anima; Chroma1 and FLUX.2 klein on Apple's) the model is downloaded and converted on its first run."`
 	Out        string    `short:"o" type:"path" placeholder:"FILE" help:"The PNG to write (default: image.png, else image (2).png, ... here, then shown in the system's viewer); with several prompts NAME-1.png, NAME-2.png, ..."`
-	Batch      int       `name:"batch" default:"4" placeholder:"N" help:"Sana, Qwen-Image, Chroma and FLUX.2 klein on Apple's Neural Engine with several prompts: the pictures drawn together, N at a time (their prompts are read, then their steps run, then the VAE's stages over all of them, so that a program is loaded once for the N pictures; they are written together, when the last is drawn); 1 draws one picture after another."`
-	KeepDiT    bool      `name:"keep-dit" default:"true" negatable:"" help:"Sana and Chroma on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (the text encoder and the VAE are loaded for each; Chroma on macOS 27 loads the DiT's groups for each step either way)."`
-	Steps      int       `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Anima-Aesthetic 25 with dpm2m, the model card's 30 to 50 with euler; Sana 20)."`
+	Batch      int       `name:"batch" default:"4" placeholder:"N" help:"Chroma and FLUX.2 klein on Apple's Neural Engine with several prompts: the pictures drawn together, N at a time (their prompts are read, then their steps run, then the VAE's stages over all of them, so that a program is loaded once for the N pictures; they are written together, when the last is drawn); FLUX.2 klein on AMD's NPU too, its steps together (a group of the DiT's weights read once for the N pictures; the VAE a picture after another); 1 draws one picture after another."`
+	KeepDiT    bool      `name:"keep-dit" default:"true" negatable:"" help:"Chroma on Apple's Neural Engine with several prompts: keep the DiT loaded between the pictures (the text encoder and the VAE are loaded for each; Chroma on macOS 27 loads the DiT's groups for each step either way)."`
+	Steps      int       `help:"Steps (default: Anima-Turbo's Euler 8, 8 to 12 wanted; Anima-Aesthetic 25 with dpm2m, the model card's 30 to 50 with euler)."`
 	Negative   string    `help:"The negative prompt of the classifier-free guidance (default empty; Anima's model card recommends \"worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration\", without the score tags for Anima-Aesthetic)."`
-	Guidance   float64   `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none, or 1.5 with a --negative; Sana 4.5)."`
+	Guidance   float64   `placeholder:"SCALE" help:"The classifier-free guidance's scale, each step the DiT twice (default: Anima 4, 4 to 5 wanted; Anima-Turbo 1, none, or 1.5 with a --negative)."`
 	Shift      float64   `placeholder:"SHIFT" default:"3.0" help:"Anima: the sigma schedule's shift (Anima's scheduler: 3)."`
 	Sampler    string    `placeholder:"NAME" help:"Anima: the solver, euler (Anima's scheduler; Anima-Turbo's default) or dpm2m (DPM-Solver++ 2M, the default with guidance: the same DiT runs a step, closer to many steps' result in fewer)."`
-	CFGSigmas  []float64 `name:"cfg-sigmas" sep:"," placeholder:"LO,HI" help:"Run the classifier-free guidance only at steps whose sigma is in [LO, HI] (1 is pure noise; 0,1 for every step; default 0.6,1 for Anima and Sana); the other steps run the DiT once."`
+	CFGSigmas  []float64 `name:"cfg-sigmas" sep:"," placeholder:"LO,HI" help:"Run the classifier-free guidance only at steps whose sigma is in [LO, HI] (1 is pure noise; 0,1 for every step; default 0.6,1 for Anima); the other steps run the DiT once."`
 	Seed       uint64    `placeholder:"N" help:"The noise's seed (0: from the time)."`
-	Noise      string    `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8); Sana: (32, H/32, W/32))."`
+	Noise      string    `type:"path" placeholder:"FILE" help:"The initial latents as raw float32 in place of the seed's (Anima: (16, H/8, W/8))."`
 	Latents    string    `type:"path" placeholder:"FILE" help:"Also write the final latents as raw float32 here."`
 	Image      []string  `name:"image" short:"i" placeholder:"FILE[@half]" help:"FLUX.2 klein: a reference image to edit or to compose from (PNG or JPEG; its centre cropped to the picture's shape and scaled to its size); repeat for up to 4, named image 1, image 2, ... in the prompt. FILE@half reads that reference at half the picture's sides (a quarter of its rows in each step: an edit at 1024 x 1024 in about two thirds of the time, with less of the reference's fine detail)."`
 	RefLatents []string  `name:"ref-latents" type:"existingfile" placeholder:"FILE" help:"FLUX.2 klein: a reference's latents as raw float32 (tokens x 128, normalized), for checks against tools/ref/ref_flux2klein.py; repeat for several."`
 	Cache      string    `help:"Compile cache (default: hwnpu in the user cache directory; \"-\" for none)."`
 	CPU        bool      `name:"cpu" help:"Run a Core ML export with the CPU interpreter instead of the NPU (slow; for checking)."`
 	Resident   bool      `name:"resident-dit" help:"AMD: keep every group of the DiT's blocks on the NPU instead of reading each group's weights into one bank before it runs (Anima: pinned memory 7 banks, 3.4 GB at q8)."`
-	Dump       string    `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py or ref_sana.py."`
+	Dump       string    `type:"path" placeholder:"DIR" help:"A directory to write the conditioning and each step's velocity to (raw bf16), to check against tools/ref/ref_anima.py."`
 	convertFlags
 }
 
@@ -174,28 +188,27 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	}
 	c.Out = outs[0]
 	model := expandHome(c.Model)
+	var kleinAs []aspect.Aspect // FLUX.2 and FLUX.3 klein's sizes on this machine's export (nil: the directory's own)
 	if !isPath(c.Model) {
 		m, err := resolve(c.Model, chat.KindImage)
 		if err != nil {
 			return err
 		}
 		model = ""
-		if strings.HasPrefix(m.Family, "flux2-klein") {
-			if model, err = c.kleinModel(ctx, m); err != nil {
+		if strings.HasPrefix(m.Family, "flux3-klein") {
+			if model, kleinAs, err = c.flux3Model(ctx, m); err != nil {
+				return err
+			}
+		} else if strings.HasPrefix(m.Family, "flux2-klein") {
+			if model, kleinAs, err = c.kleinModel(ctx, m); err != nil {
 				return err
 			}
 		} else if strings.HasPrefix(m.Family, "chroma") {
 			if model, err = c.chromaModel(ctx, m); err != nil {
 				return err
 			}
-		} else if strings.HasPrefix(m.Family, "qwen-image") {
-			if model, err = c.qwenImageModel(ctx, m); err != nil {
-				return err
-			}
-		} else if isAnima := strings.HasPrefix(m.Family, "anima"); !isAnima {
-			if model, err = c.sanaModel(ctx, m); err != nil {
-				return err
-			}
+		} else if !strings.HasPrefix(m.Family, "anima") {
+			return fmt.Errorf("%s: hwnpu-image generate draws with Anima, Chroma1 and FLUX.2 klein", m.Name)
 		} else {
 			if c.Dit == "" {
 				c.Dit = m.File
@@ -206,16 +219,12 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 		}
 	}
 	var err error
-	if flux2klein.IsExport(model) {
-		err = c.klein(ctx, model, outs)
+	if flux3klein.IsExport(model) {
+		err = c.flux3(ctx, model, kleinAs, outs)
+	} else if flux2klein.IsExport(model) {
+		err = c.klein(ctx, model, kleinAs, outs)
 	} else if chroma.IsExport(model) {
 		err = c.chroma(ctx, model, outs)
-	} else if qwenimage.IsExport(model) {
-		err = c.qwenImage(ctx, model, outs)
-	} else if sana.IsExport(model) {
-		err = runSana(ctx, sanaRun{model: model, prompts: c.Prompts, outs: outs, batch: c.Batch, keepDiT: c.KeepDiT, negative: c.Negative, noise: c.Noise, latents: c.Latents,
-			steps: c.Steps, guidance: c.Guidance, cfgSigmas: c.CFGSigmas, seed: c.Seed, resident: c.Resident, dump: c.Dump, cpu: c.CPU, cache: c.Cache,
-			size: c.Size})
 	} else if len(c.Prompts) > 1 {
 		err = errors.New("Anima takes one prompt")
 	} else {
@@ -231,66 +240,9 @@ func (c *GenerateCmd) Run(ctx context.Context) error {
 	return err
 }
 
-// sanaModel is the Sana export m runs here: on Apple's Neural Engine the Core AI export
-// (512 x 512 and 1024 x 1024 in one; with --cpu the Core ML export the CPU interpreter runs), on
-// Intel's NPU the OpenVINO IR one, downloaded and converted when missing; on AMD's NPU
-// ~/models/NAME.amd-npu2 of tools/amd/iron_sana.py.
-func (c *GenerateCmd) sanaModel(ctx context.Context, m chat.Model) (string, error) {
-	format, err := imageFormat(ctx, c.Backend)
-	switch {
-	case c.CPU: // the CPU interpreter runs Core ML exports
-		format = llm.BackendCoreML
-	case err == nil: // Apple's Neural Engine or Intel's NPU
-	default:
-		return amdOr(err, m, "tools/amd/iron_sana.py")
-	}
-	if c.Size%32 != 0 {
-		return "", fmt.Errorf("--size %d: Sana's pictures are multiples of 32 pixels", c.Size)
-	}
-	o := sana.ConvertOptions{Width: c.Size, Height: c.Size, Group: c.Group, Backend: format}
-	if c.TextFormat != "" || c.DitFormat != "" {
-		o.TextFormat, o.DitFormat = c.TextFormat, c.DitFormat
-	}
-	return sana.Prepare(chat.WithModel(ctx, m), sana.Setup{Dir: filepath.Join(chat.ModelsDir(), "Sana"), Repo: m.Repo, Name: m.Name,
-		ConvertOptions: o, Log: console.Log(os.Stderr)})
-}
-
-// qwenImageModel is the Qwen-Image-2.1 export m runs here: on Apple's Neural Engine the Core AI
-// export (with --cpu the Core ML one), downloaded and converted when missing; on AMD's NPU ~/models/NAME.amd-npu2 of tools/amd/iron_qwenimage.py.
-func (c *GenerateCmd) qwenImageModel(ctx context.Context, m chat.Model) (string, error) {
-	format, err := imageFormat(ctx, c.Backend)
-	switch {
-	case c.CPU: // the CPU interpreter runs Core ML exports
-		format = llm.BackendCoreML
-	case err == nil && llm.AppleFormat(format):
-	case err == nil:
-		return "", fmt.Errorf("%s runs on AMD's NPU and Apple's Neural Engine; not yet on %s", m.Name, format)
-	default:
-		return amdOr(err, m, "tools/amd/iron_qwenimage.py")
-	}
-	if c.Size%32 != 0 {
-		return "", fmt.Errorf("--size %d: Qwen-Image's pictures are multiples of 32 pixels", c.Size)
-	}
-	o := qwenimage.ConvertOptions{Backend: format, Width: c.Size, Height: c.Size, Group: c.Group, TextFormat: c.TextFormat, DitFormat: c.DitFormat}
-	return qwenimage.Prepare(chat.WithModel(ctx, m), qwenimage.Setup{Dir: filepath.Join(chat.ModelsDir(), "Qwen-Image"), Repo: m.Repo, Name: m.Name, TextRepos: qwenImageRepos(),
-		ConvertOptions: o, Log: console.Log(os.Stderr)})
-}
-
-// qwenImageRepos are the repositories of the Qwen-Image models of the definitions, which hold the
-// same text encoder (qwenimage.Setup.TextRepos).
-func qwenImageRepos() []string {
-	var repos []string
-	for _, m := range chat.Catalog {
-		if strings.HasPrefix(m.Repo, "Qwen/Qwen-Image-2.1") && !slices.Contains(repos, m.Repo) {
-			repos = append(repos, m.Repo)
-		}
-	}
-	return repos
-}
-
 // animaModel is the Anima export m runs here: on AMD's NPU (no Apple or Intel NPU found, no
-// --backend) ~/models/NAME.amd-npu2 of tools/amd/iron_anima.py, "" otherwise (anima prepares
-// the one prepared here).
+// --backend) the export of tools/amd/iron_anima.py that draws --size (animaAMD), "" otherwise
+// (anima prepares the one prepared here).
 func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, error) {
 	if c.CPU || c.Backend != "" {
 		return "", nil
@@ -298,7 +250,44 @@ func (c *GenerateCmd) animaModel(ctx context.Context, m chat.Model) (string, err
 	if _, err := llm.ProgramFormat(ctx, ""); err == nil {
 		return "", nil // Apple's or Intel's NPU
 	}
-	return amdExport(m, "tools/amd/iron_anima.py")
+	w, h, err := anima.ParseAspect(c.Size)
+	if err != nil {
+		return "", err
+	}
+	return animaAMD(ctx, m, w, h)
+}
+
+// animaAMD is the export of Anima model m for AMD's NPU that draws w x h (aspectsAMD).
+func animaAMD(ctx context.Context, m chat.Model, w, h int) (string, error) {
+	return aspectsAMD(ctx, m, w, h, "tools/amd/iron_anima.py", 16, anima.IronSizes)
+}
+
+// aspectsAMD is the export of model m for AMD's NPU that draws w x h, of every aspect ratio by the
+// name NAME.amd-npu2 (an older one of 1024 x 1024 alone by that name draws that size only; sizes are
+// the sizes an export draws), here or in the sources (chat.AMDNamed): made by hand with tool,
+// which the error tells how to run for every aspect ratio of pictures of multiple pixels
+// (aspect.Of) when there is none.
+func aspectsAMD(ctx context.Context, m chat.Model, w, h int, tool string, multiple int, sizes func(dir string) [][2]int) (string, error) {
+	names := []string{strings.ToLower(m.Name) + ".amd-npu2"}
+	draws := func(d string) bool { return isDir(d) && slices.Contains(sizes(d), [2]int{w, h}) }
+	if d := chat.AMDNamed(ctx, m, names, draws, console.Log(os.Stderr)); d != "" {
+		return d, nil
+	}
+	flags := ""
+	if m.File != "" {
+		flags = " --dit " + m.File
+	}
+	var args []string
+	for _, a := range aspect.Of(multiple) {
+		if a.Width == a.Height {
+			args = append(args, fmt.Sprint(a.Width))
+		} else {
+			args = append(args, fmt.Sprintf("%dx%d", a.Width, a.Height))
+		}
+	}
+	return "", fmt.Errorf("AMD's NPU runs exports of %s, and neither this machine (%s) nor the sources have one of %s that draws %dx%d: download %s and run\n  python %s ~/models/%s %s --size %s%s\n(one export of all eight aspect ratios; its first run here puts it in the sources written back to; see docs/amd-npu-models.md)",
+		tool, strings.Join(hcache.ExportRoots(), ", "), m.Name, w, h, strings.TrimPrefix(m.Source(), "hf:"), tool, filepath.Base(m.Repo),
+		shortHome(filepath.Join(chat.AMDRoot(), names[0])), strings.Join(args, " "), flags)
 }
 
 // turboNegativeGuidance is the guidance scale a --negative without --guidance gets on a model that
@@ -310,7 +299,10 @@ const turboNegativeGuidance = 1.5
 // and converted when missing).
 func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	anima.ResidentDiT = c.Resident
-	o := c.options()
+	o, err := c.options()
+	if err != nil {
+		return err
+	}
 	cacheDir := c.Cache
 	dir := chat.ModelsDir()
 	// what goes on in gray (with a spinner or a bar on a terminal), the picture's line as it is
@@ -366,7 +358,11 @@ func (c *GenerateCmd) anima(ctx context.Context, model string) error {
 	if !anima.IsProgramExport(model) {
 		iron.ShareExport(model, logf)
 	}
-	p, err := anima.Open(ctx, dev, model, lw)
+	pw, ph := 0, 0
+	if !anima.IsProgramExport(model) && len(anima.IronSizes(model)) > 1 {
+		pw, ph = o.Width, o.Height // an export of several sizes draws at --size (one of a size alone at its own)
+	}
+	p, err := anima.OpenAt(ctx, dev, model, pw, ph, lw)
 	if err != nil {
 		return err
 	}

@@ -10,7 +10,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/store/s3fake"
@@ -198,8 +200,10 @@ func TestEntries(t *testing.T) {
 	write(t, filepath.Join(exp, "bank.bin"), "weights")
 	write(t, filepath.Join(exp, "check", "x.bin"), "weights")
 	recipe := map[string]string{"model": "m", "commit": "abc"}
-	rel := EntryPath("m", "amd-xdna2", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
-	if !strings.HasPrefix(rel, "converted/m/amd-xdna2/m.amd-npu2/v0-") || len(path.Base(rel)) != 11 {
+	// an entry of loose files (not an export for AMD's NPU or of Core AI, which go packed:
+	// TestPackedEntries)
+	rel := EntryPath("m", "any", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
+	if !strings.HasPrefix(rel, "converted/m/any/m.amd-npu2/v0-") || len(path.Base(rel)) != 11 {
 		t.Fatalf("path %s", rel)
 	}
 	e := describeAt(t, exp, rel, recipe)
@@ -232,6 +236,17 @@ func TestEntries(t *testing.T) {
 	if es, err := ListEntries(ctx, far); err != nil || len(es) != 1 || es[0] != rel {
 		t.Errorf("ListEntries: %v %v", es, err)
 	}
+	// a download cut off before left a file of the right size with other bytes (a reboot before
+	// they were on the disk): it is downloaded again
+	cut := filepath.Join(t.TempDir(), "m.amd-npu2")
+	write(t, filepath.Join(cut+".part", "bank.bin"), "\x00\x00\x00\x00\x00\x00\x00")
+	write(t, filepath.Join(cut+".part", "manifest.json"), `{"version":1}`)
+	if _, err := FetchEntry(ctx, ss, rel, byKey(e.Key), cut, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(cut, true); err != nil {
+		t.Errorf("a file of the right size and other bytes was kept: %v", err)
+	}
 	// a file that changed in the source is found out
 	write(t, filepath.Join(far.Store.(Dir).Root, filepath.FromSlash(rel), "bank.bin"), "tampered")
 	if _, err := FetchEntry(ctx, ss, rel, byKey(e.Key), out+"4", nil); err == nil {
@@ -259,6 +274,15 @@ func TestOriginals(t *testing.T) {
 		t.Errorf("another commit: %v", err)
 	}
 	root := s.Store.(Dir).Root
+	// the file of another commit is not put over the lock's (the put goes before the lock's)
+	ck2 := filepath.Join(t.TempDir(), "config.json")
+	write(t, ck2, `{"b":2}`)
+	if err := PutOriginal(ctx, s, "lab/m", c2, "config.json", ck2, ""); !errors.Is(err, ErrOtherCommit) {
+		t.Errorf("another commit's config.json: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "original", "lab", "m", "config.json")); string(b) != `{"a":1}` {
+		t.Errorf("config.json of the lock's commit put over: %q", b)
+	}
 	if b, _ := os.ReadFile(filepath.Join(root, "original", "lab", "m", "sub", "w.bin")); string(b) != `{"a":1}` {
 		t.Errorf("not a plain folder: %q", b)
 	}
@@ -310,6 +334,54 @@ func TestQueue(t *testing.T) {
 	}
 }
 
+// TestWait does at the end of a command the work a process before left in the queue, and says
+// nothing when there is none.
+func TestWait(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	var out strings.Builder
+	Wait(&out)
+	if out.Len() != 0 {
+		t.Errorf("an empty queue: %q", out.String())
+	}
+	exp := filepath.Join(t.TempDir(), "e")
+	write(t, filepath.Join(exp, "a"), "a")
+	describeAt(t, exp, "converted/m/t/e/v0-12345678", map[string]string{"x": "1"})
+	s := Source{Store: Dir{Name: "share", Root: t.TempDir()}, Writeback: true}
+	SetSources([]Source{s}, true)
+	t.Cleanup(func() { SetSources(nil, true) })
+	j := job{Op: "entry", Source: s.String(), Dir: exp} // left by a process before, not started here
+	b, _ := json.Marshal(j)
+	write(t, filepath.Join(queueDir(), j.id()+".json"), string(b))
+	Wait(&out)
+	if es, _ := ListEntries(context.Background(), s); len(es) != 1 {
+		t.Errorf("entries %v", es)
+	}
+	if !strings.Contains(out.String(), "writing 1 back") {
+		t.Errorf("said %q", out.String())
+	}
+}
+
+// TestOriginalsSideBySide puts the files of one repository at once: the lock names them all.
+func TestOriginalsSideBySide(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	s := Source{Store: Dir{Name: "nas", Root: t.TempDir()}, Writeback: true}
+	c := strings.Repeat("a", 40)
+	const n = 12
+	err := each(ctx, n, n, func(ctx context.Context, i int) error {
+		f := filepath.Join(t.TempDir(), "f")
+		write(t, f, strings.Repeat("x", i+1))
+		return PutOriginal(ctx, s, "lab/m", c, fmt.Sprintf("f%02d.bin", i), f, "")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearLocks()
+	if l, err := ReadLock(ctx, s, "lab/m"); err != nil || len(l.Files) != n {
+		t.Errorf("lock names %d of %d files: %v", len(l.Files), n, err)
+	}
+}
+
 func TestGC(t *testing.T) {
 	t.Setenv(cache.RootEnv, t.TempDir())
 	ctx := context.Background()
@@ -331,7 +403,10 @@ func TestGC(t *testing.T) {
 	a, ra := mk("a", "a's own")
 	b, rb := mk("b", "b's own")
 	root := s.Store.(Dir).Root
-	write(t, filepath.Join(root, "converted", "c", "t", "c.x", "v1", "half"), "a writeback cut off")
+	half := filepath.Join(root, "converted", "c", "t", "c.x", "v1", "half")
+	write(t, half, "a writeback cut off")
+	long := time.Now().Add(-2 * WritingStale) // not one being written
+	os.Chtimes(half, long, long)
 	g, err := PlanGC(ctx, s, func(e Entry) bool { return e.Model == "a" }, false)
 	if err != nil {
 		t.Fatal(err)
@@ -453,5 +528,54 @@ func TestParseSource(t *testing.T) {
 	t.Setenv(SourceEnv+"_x", "file:///x")
 	if _, _, err := FromEnv(); err == nil {
 		t.Error("a source variable without a number")
+	}
+}
+
+// slowGets is a folder store whose Gets take a while, counting how many go on at once.
+type slowGets struct {
+	Dir
+	mu        sync.Mutex
+	now, most int
+}
+
+func (s *slowGets) Get(ctx context.Context, key, dst string, bar func(done, total int64)) (int64, error) {
+	s.mu.Lock()
+	s.now++
+	s.most = max(s.most, s.now)
+	s.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	n, err := s.Dir.Get(ctx, key, dst, bar)
+	s.mu.Lock()
+	s.now--
+	s.mu.Unlock()
+	return n, err
+}
+
+// TestEntryStreams downloads the files of an entry FetchStreams at a time, and the entry is
+// whole.
+func TestEntryStreams(t *testing.T) {
+	t.Setenv(cache.RootEnv, t.TempDir())
+	ctx := context.Background()
+	exp := filepath.Join(t.TempDir(), "m.amd-npu2")
+	for i := 0; i < 9; i++ {
+		write(t, filepath.Join(exp, fmt.Sprintf("bank_g%d.bin", i)), strings.Repeat("w", 1000*(i+1)))
+	}
+	recipe := map[string]string{"model": "m", "commit": "abc"}
+	rel := EntryPath("m", "any", "m.amd-npu2", VersionDir(0, false, Fingerprint(recipe)))
+	describeAt(t, exp, rel, recipe)
+	root := t.TempDir()
+	if err := PutEntry(ctx, Source{Store: Dir{Name: "nas", Root: root}, Writeback: true}, exp); err != nil {
+		t.Fatal(err)
+	}
+	st := &slowGets{Dir: Dir{Name: "nas", Root: root}}
+	out := filepath.Join(t.TempDir(), "m.amd-npu2")
+	if _, err := FetchEntry(ctx, []Source{{Store: st}}, rel, func(Entry) bool { return true }, out, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(out, true); err != nil {
+		t.Error(err)
+	}
+	if st.most != FetchStreams || st.most < 2 {
+		t.Errorf("%d downloads at once, want %d (more than one)", st.most, FetchStreams)
 	}
 }

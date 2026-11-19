@@ -239,8 +239,8 @@ class DitConfig:
         side = self.vae_scale * self.patch
         if self.width % side or self.height % side:
             raise ValueError(f"{self.width}x{self.height} is no whole {side}-pixel patches")
-        if self.tokens % 64:
-            raise ValueError(f"{self.tokens} patches: MHA takes whole 64-row blocks")
+        if self.rows % 64:
+            raise ValueError(f"{self.rows} rows: MHA takes whole 64-row blocks")
         if self.layers % self.group:
             raise ValueError(f"{self.layers} blocks are no whole groups of {self.group}")
 
@@ -254,6 +254,13 @@ class DitConfig:
     def tokens(self) -> int:
         gh, gw = self.grid
         return gh * gw
+
+    @property
+    def rows(self) -> int:
+        """The DiT's graphs' rows: the patches, padded to whole rounds of the attention's 512
+        (832 x 1248's 4056 patches run 4096 rows: the 1024 x 1024 picture's graphs). The pads'
+        rows are zeros in, no key of the self-attention (nk), and not read out."""
+        return self.tokens if self.tokens % 512 == 0 else -(-self.tokens // 512) * 512
 
     @property
     def patch_dim(self) -> int:
@@ -287,6 +294,15 @@ def rope_table(c: DitConfig) -> np.ndarray:
     out = np.empty((gh * gw, D), np.float32)
     out[:, ::2] = np.cos(a)
     out[:, 1::2] = np.sin(a)
+    return out
+
+
+def angles_input(c: DitConfig) -> np.ndarray:
+    """dit_blocks' ``angles`` (rows, head_dim): rope_table's, then the pads' (position 0: no turn).
+    An input, not a weight, so that the pictures of one row count share one graph and banks."""
+    out = np.zeros((c.rows, c.head_dim), np.float32)
+    out[:, ::2] = 1
+    out[: c.tokens] = rope_table(c)
     return out
 
 
@@ -354,17 +370,20 @@ class DitBlock(iron.Graph):
         for a, name in zip(self.ada, ("self_attn", "cross_attn", "mlp")):
             a.load(w, f"{p}.adaln_modulation_{name}")
 
-    def body(self, x, act, temb, ctx, angles, one, nt=None):
+    def body(self, x, act, temb, ctx, angles, one, nt=None, nk=None):
         c = self.c
         E = c.hidden
         n = x.shape[0]
-        # self-attention
+        # self-attention: the keys bounded to the patches' (nk: the pads' rows past them)
         shift, scale, gate = self.ada[0].rows(act, temb, 3)
         h = F.layer_norm(x, (E,), weight=scale + one, eps=1e-6) + shift
         q, k, v = self.self_attn.qkv(h, h, n, n)
         q, k = F.rope(q, angles), F.rope(k, angles)
         H, D = c.heads, c.head_dim
-        o = dit_attention(q.reshape(n, H, D), k.reshape(n, H, D), v.reshape(n, H, D))
+        k, v = k.reshape(n, H, D), v.reshape(n, H, D)
+        if nk is not None:
+            k, v = k[:nk], v[:nk]
+        o = dit_attention(q.reshape(n, H, D), k, v)
         x = x + self.self_attn.out(o.reshape(n, E)) * gate
         # cross-attention over the text. The rows past the prompt's nt are zeros (the host
         # zeroes them), so are their keys and values: "trim" attends the nt rows in one call and
@@ -425,30 +444,31 @@ class _Attn(iron.Graph):
 class DitBlocks(iron.Graph):
     """``group`` DiT blocks over the patches ``x``.
 
-    Inputs: ``x`` (tokens, hidden); ``temb`` (3 * hidden), t_embedder's output; ``et``
-    (hidden), the timestep's sinusoid RMS-normed (``t_embedding_norm``); ``ctx`` (512, 1024),
-    the adapter's text embeddings, zeros past the prompt's rows. Per call (``--dit-cross trim``):
-    ``nt``, ctx's rows before those zeros (1 to 512).
+    Inputs: ``x`` (rows, hidden: the patches, then zeros to whole rounds of 512); ``temb``
+    (3 * hidden), t_embedder's output; ``et`` (hidden), the timestep's sinusoid RMS-normed
+    (``t_embedding_norm``); ``ctx`` (512, 1024), the adapter's text embeddings, zeros past the
+    prompt's rows; ``angles`` (rows, head_dim), the patches' RoPE (angles_input). Per call:
+    ``nt`` (``--dit-cross trim``), ctx's rows before those zeros (1 to 512); ``nk``, the patches
+    (the self-attention's keys).
     """
 
     def __init__(self, c: DitConfig, first: int = 0, w: Safetensors | None = None):
         self.c = c
-        self.scratch = iron.state((c.tokens, c.hidden))
+        self.scratch = iron.state((c.rows, c.hidden))
         self.blocks = [DitBlock(c, self.scratch) for _ in range(c.group)]
         if w is not None:
             for j, b in enumerate(self.blocks):
                 b.load(w, first + j)
-        self.angles = iron.param(bf(rope_table(c)))
         self.one = iron.param(bf(np.ones(c.hidden)))
 
-    def body(self, x, temb, et, ctx, *, nt: Scratchpad[np.int32]):
+    def body(self, x, temb, et, ctx, angles, *, nt: Scratchpad[np.int32], nk: Scratchpad[np.int32]):
         # One command: a host step between the blocks (command_boundary) hangs the first
         # command on the NPU (ERT_CMD_STATE_TIMEOUT), seen 2026-11-05; four blocks are 20 MiB
         # of control code and about 1 s at 1024 x 1024.
         act = F.silu(et)
         rows = nt if DIT_FMT.cross == "trim" else None
         for b in self.blocks:
-            x = b(x, act, temb, ctx, self.angles, self.one, rows)
+            x = b(x, act, temb, ctx, angles, self.one, rows, nk)
         return x
 
 
@@ -733,13 +753,30 @@ class GridShape:
 
     @property
     def Wp(self) -> int:
-        return self.W + VAE_PAD
+        """A padded row's pixels: W and VAE_PAD, and as many more as make it a multiple of 16
+        (a picture whose latents are no multiple of 16 across: 832 x 1248's 104), so that a chunk
+        of 16 rows is whole transfers."""
+        return self.W + VAE_PAD + (-self.W % 16)
+
+    @property
+    def Ha(self) -> int:
+        """The image rows the convolutions run over: H, rounded up to 16 (the rows past H zeros,
+        never written: a chunk's rows there are computed and not copied)."""
+        return -(-self.H // 16) * 16
 
     @property
     def rows(self) -> int:
         """The padded rows and a zero pixel either side, rounded up to 256 rows (zeros) so a
         copy of the whole grid splits into even transfers."""
-        return -(-((self.H + 2) * self.Wp + 2) // 256) * 256
+        return -(-((self.Ha + 2) * self.Wp + 2) // 256) * 256
+
+    def chunks(self, R: int) -> list:
+        """The chunks of R image rows over Ha: (first row, the image's rows of it)."""
+        return [(r0, min(R, self.H - r0)) for r0 in range(0, self.Ha, R)]
+
+    def tap_rows(self) -> int:
+        """Image rows a GridGEMM takes at once: a multiple of 16 dividing Ha, at most VAE_TAP_ROWS."""
+        return max(r for r in range(16, min(VAE_TAP_ROWS, self.Ha) + 1, 16) if self.Ha % r == 0)
 
     @property
     def band(self) -> int:
@@ -753,11 +790,17 @@ class GridShape:
         """Image rows a convolution takes at once: a multiple of 16 dividing H, its im2col rows
         (9 * cin wide) at most 64 MiB."""
         best = 16
-        for r in range(16, self.H + 1, 16):
-            if self.H % r == 0 and r * self.Wp * 9 * cin * 2 <= 64 << 20:
+        for r in range(16, self.Ha + 1, 16):
+            if self.Ha % r == 0 and r * self.Wp * 9 * cin * 2 <= 64 << 20:
                 best = r
-        assert self.H % best == 0 and best * self.Wp % 256 == 0, (self, best)
+        assert self.Ha % best == 0 and best * self.Wp % 256 == 0, (self, best)
         return best
+
+
+def attn_rows(n: int) -> int:
+    """The VAE's attention's rows for n pixels: n where MHA takes them (whole 64-row blocks),
+    else whole rounds of 256 (VaeStage.attn_masked)."""
+    return n if n % 64 == 0 else -(-n // 256) * 256
 
 
 def pipelines(rows: int) -> int:
@@ -819,6 +862,14 @@ class VaeStage(iron.Graph):
                     self._param(f"{path}.{n}.b", qb[i * C : (i + 1) * C])
                 self._param(f"{path}.proj.w", np.asarray(w[f"{path}.proj.weight"], np.float32)[:, :, 0, 0])
                 self._param(f"{path}.proj.b", np.asarray(w[f"{path}.proj.bias"], np.float32))
+                n = g.H * g.W  # the attention runs before any upsampling in its stage
+                p = attn_rows(n)
+                if p != n:  # attn_masked's constants
+                    self._param(f"eye{C}", np.eye(C, dtype=np.float32))
+                    m = np.zeros((p, 64), np.float32)
+                    m[n:, 0] = -30000.0
+                    self._param(f"mask{n}", m)
+                    self._param("ones256x64", np.ones((256, 64), np.float32))
             elif kind == "up":
                 _, path, cin, cout = op
                 wt = np.asarray(w[f"{path}.upsamplers.0.resample.1.weight"], np.float32)  # (cout, cin, 3, 3)
@@ -912,8 +963,9 @@ class VaeStage(iron.Graph):
         them, ``(rows * Wp, C)``) into the grid ``dst`` from image row ``offset_rows``."""
         R = g.H if rows is None else rows
         C, Wp = g.C, g.Wp
+        n = src.shape[0] if getattr(src, "shape", None) else R * Wp  # a chunk's rows: the last may copy fewer
         Copy.step(src, dst,
-                  src=tap((R * Wp, C), C, [R, g.W * C], [Wp * C, 1]),
+                  src=tap((n, C), C, [R, g.W * C], [Wp * C, 1]),
                   dst=tap((g.rows, C), g.pixel(offset_rows, 0) * C, [R, g.W * C], [Wp * C, 1]))
 
     def conv3(self, x, g: GridShape, wname: str, cout: int, out=None):
@@ -927,9 +979,9 @@ class VaeStage(iron.Graph):
             from iron.operators.flm.gemm.design import Epilogue
             from iron_gridgemm import GridGEMM
 
-            R = max(r for r in range(16, min(VAE_TAP_ROWS, g.H) + 1, 16) if g.H % r == 0)
+            R = g.tap_rows()
             kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae, tile_n=gemm_tile_n(cout))
-            for r0 in range(0, g.H, R):
+            for r0, valid in g.chunks(R):
                 n = R * Wp
                 if self.has(f"{wname}.g"):
                     s0 = g.band + r0 * Wp - Wp - 1
@@ -943,16 +995,16 @@ class VaeStage(iron.Graph):
                         t = GridGEMM.step(x[s0 : s0 + n + 2], self.w(f"{wname}.g{dy}"), M=n, MA=n + 2, CA=C, **kw)
                         y = t if y is None else y + t
                 y = y + self.w(f"{wname}.b")
-                self.interior_from(y, gout, out, r0, R)
+                self.interior_from(y, gout, out, r0, valid)
                 command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
             return self.view(out), gout
         R = g.chunk(g.C)
-        for r0 in range(0, g.H, R):
+        for r0, valid in g.chunks(R):
             n = R * Wp
             cols = Copy.step(x, src=tap((g.rows, C), (g.band + r0 * Wp - Wp - 1) * C,
                                         [R, Wp, 3, 3 * C], [Wp * C, C, Wp * C, 1])).reshape(n, 9 * C)
             y = F.linear(cols, self.w(f"{wname}.w"), self.w(f"{wname}.b"), precision=PREC.vae)
-            self.interior_from(y, gout, out, r0, R)
+            self.interior_from(y, gout, out, r0, valid)
         return self.view(out), gout
 
     def conv1(self, x, g: GridShape, wname: str, cout: int):
@@ -960,10 +1012,10 @@ class VaeStage(iron.Graph):
         gout = GridShape(g.H, g.W, cout)
         out = self.new_grid(gout)
         R = g.chunk(g.C)
-        for r0 in range(0, g.H, R):
+        for r0, valid in g.chunks(R):
             s = g.band + r0 * g.Wp
             y = F.linear(x[s : s + R * g.Wp], self.w(f"{wname}.w"), self.w(f"{wname}.b"), precision=PREC.vae)
-            self.interior_from(y, gout, out, r0, R)
+            self.interior_from(y, gout, out, r0, valid)
         return self.view(out), gout
 
     def norm_silu(self, x, g: GridShape, gamma: str):
@@ -979,6 +1031,8 @@ class VaeStage(iron.Graph):
         return b + h, gb
 
     def attn(self, x, g: GridShape, path: str):
+        if attn_rows(g.H * g.W) != g.H * g.W:
+            return self.attn_masked(x, g, path)
         n, C, Wp = g.H * g.W, g.C, g.Wp
         dense = Copy.step(x, src=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [Wp * C, 1])).reshape(n, C)
         h = F.rms_norm(dense, (C,), self.w(f"{path}.norm"), 1e-12)
@@ -988,6 +1042,43 @@ class VaeStage(iron.Graph):
         o = dense + F.linear(o, self.w(f"{path}.proj.w"), self.w(f"{path}.proj.b"), precision=PREC.vae)
         out = self.new_grid(g)
         Copy.step(o, out, dst=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [Wp * C, 1]))
+        return self.view(out), g
+
+    def attn_masked(self, x, g: GridShape, path: str):
+        """attn over pixels that are no whole 64-row blocks of MHA (832 x 1248's 104 x 156
+        latents): the pixels and zeros to whole rounds of 256 rows, the scores as GEMMs (256
+        queries a pass) plus a term that is -30000 at a pad's key (its weight 0), the softmax,
+        and P V^T (iron_chroma_parts.FluxVaeStage.attn's way)."""
+        from iron.operators.softmax import Softmax
+
+        n, C, Wp = g.H * g.W, g.C, g.Wp
+        p = attn_rows(n)
+        ds = iron.state((p, C))
+        self.states.append(ds)
+        Copy.step(x, ds, src=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [Wp * C, 1]),
+                  dst=tap((p, C), 0, [g.H, g.W * C], [g.W * C, 1]))
+        dense = self.view(ds)
+        H = Precision.HIGHEST
+        h = F.rms_norm(dense, (C,), self.w(f"{path}.norm"), 1e-12)
+        q, k, v = (F.linear(h, self.w(f"{path}.{c}.w"), self.w(f"{path}.{c}.b"), precision=PREC.vae) for c in "qkv")
+        q = q * (C ** -0.5)
+        vt = F.linear(self.w(f"eye{C}"), v, precision=H)  # (C, p): V's transpose, exactly
+        Qc = 256
+        ms = iron.state((Qc, p))
+        self.states.append(ms)
+        ms[0:Qc] = F.linear(self.w("ones256x64"), self.w(f"mask{n}"), precision=H)
+        ob = iron.state((p, C))
+        self.states.append(ob)
+        for r0 in range(0, p, Qc):
+            if r0 and r0 % (16 * Qc) == 0:
+                command_boundary()
+            sc = F.linear(q[r0 : r0 + Qc], k, precision=H) + self.view(ms)  # (Qc, p)
+            ob[r0 : r0 + Qc] = F.linear(Softmax.step(sc), vt, precision=H)
+        command_boundary()
+        o = dense + F.linear(self.view(ob), self.w(f"{path}.proj.w"), self.w(f"{path}.proj.b"), precision=PREC.vae)
+        out = self.new_grid(g)
+        Copy.step(o, out, src=tap((p, C), 0, [g.H, g.W * C], [g.W * C, 1]),
+                  dst=tap((g.rows, C), g.pixel(0, 0) * C, [g.H, g.W * C], [Wp * C, 1]))
         return self.view(out), g
 
     def up(self, x, g: GridShape, path: str, cout: int):
@@ -1015,8 +1106,8 @@ class VaeStage(iron.Graph):
         out = self.new_grid(gout)
         Wp, C = g.Wp, g.C
         kw = dict(b_col_maj=True, epilogue_modes=(Epilogue.NONE,), precision=PREC.vae, tile_n=gemm_tile_n(cout))
-        R = max(r for r in range(16, min(VAE_TAP_ROWS, g.H) + 1, 16) if g.H % r == 0)
-        for r0 in range(0, g.H, R):
+        R = g.tap_rows()
+        for r0, valid in g.chunks(R):
             n = R * Wp
             for py in range(2):
                 for px in range(2):
@@ -1034,8 +1125,8 @@ class VaeStage(iron.Graph):
                             y = t if y is None else y + t
                     y = y + self.w(f"{path}.up.b")
                     # logical row i is the output of the low pixel band + r0 Wp + i: row 1 is (r0, 0)
-                    Copy.step(y, out, src=tap((n, cout), cout, [R, g.W, cout], [Wp * cout, cout, 1]),
-                              dst=tap((gout.rows, cout), gout.pixel(2 * r0 + py, px) * cout, [R, g.W, cout],
+                    Copy.step(y, out, src=tap((n, cout), cout, [valid, g.W, cout], [Wp * cout, cout, 1]),
+                              dst=tap((gout.rows, cout), gout.pixel(2 * r0 + py, px) * cout, [valid, g.W, cout],
                                       [2 * gout.Wp * cout, 2 * cout, 1]))
             command_boundary()  # a chunk's control code (the device heap holds 64 MiB)
         return self.view(out), gout
@@ -1083,12 +1174,13 @@ def vae_stages(width: int, height: int) -> list[tuple[list, GridShape]]:
     return s
 
 
-def export_vae(root: Path, out: Path, width: int, height: int, check: bool, only: list | None = None) -> None:
+def export_vae(root: Path, out: Path, width: int, height: int, check: bool, only: list | None = None,
+               name: str = "vae") -> None:
     w = Safetensors(root / "diffusers" / "vae" / "diffusion_pytorch_model.safetensors") if not ARGS.random else \
         RandomWeights(root / "diffusers" / "vae" / "diffusion_pytorch_model.safetensors")
     cfg = json.loads((root / "diffusers" / "vae" / "config.json").read_text())
     stages = vae_stages(width, height)
-    d = out / "vae"
+    d = out / name
     d.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
     for i, (ops, g) in enumerate(stages):
@@ -1161,54 +1253,74 @@ def timestep_sinusoid(t: float, dim: int) -> np.ndarray:
     return np.concatenate([np.cos(a), np.sin(a)]).astype(np.float32)
 
 
-def export_dit(root: Path, out: Path, c: DitConfig, check: bool) -> None:
+def suffix(c: DitConfig, base_rows: int) -> str:
+    """The DiT's graphs' names for c's rows: "" for the export's first size's (base_rows), else
+    _nROWS. They depend on the rows alone (the RoPE is an input, the patches a call's nk): every
+    picture of about 1 M pixels (8 aspect ratios but 1:1s) runs the 1024 x 1024 picture's."""
+    return "" if c.rows == base_rows else f"_n{c.rows}"
+
+
+def export_dit(root: Path, out: Path, c: DitConfig, check: bool, sfx: str = "") -> None:
+    """dit_in, dit_out and dit_blocks of c's rows (named NAME + sfx). dit_blocks of another row
+    count than the first size's shares its banks (iron_dit.share_banks: the same weights
+    in the same places)."""
+    import iron_dit
+
     w = dit_weights(root)
     rng = np.random.default_rng(0)
+    R = c.rows
     # checkpoint: the diffusion model, by which hwnpu-image picks Anima-Turbo's 8 steps without
     # guidance or the others' 30 with it (anima.Pipeline.Distilled)
     meta = dict(config=dataclasses.asdict(c), weights=dataclasses.asdict(DIT_FMT), checkpoint=ARGS.dit)
     # dit_in
     t0 = time.time()
     g = DitIn(c, w)
-    cg = g.compile(patches=(c.tokens, c.patch_dim), tproj=(c.hidden,))
-    m = export_graph(cg, out / "dit_in", "dit_in", meta)
-    print(f"dit_in: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+    cg = g.compile(patches=(R, c.patch_dim), tproj=(c.hidden,))
+    m = export_graph(cg, out / f"dit_in{sfx}", f"dit_in{sfx}", meta)
+    print(f"dit_in{sfx}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
     if check:
-        write_check(g, m, out / "dit_in", dict(patches=bf(rng.standard_normal((c.tokens, c.patch_dim))),
-                                               tproj=bf(timestep_sinusoid(0.7, c.hidden))))
+        write_check(g, m, out / f"dit_in{sfx}", dict(patches=bf(rng.standard_normal((R, c.patch_dim))),
+                                                    tproj=bf(timestep_sinusoid(0.7, c.hidden))))
     # dit_out
     t0 = time.time()
     g = DitOut(c, w)
-    cg = g.compile(x=(c.tokens, c.hidden), temb=(3 * c.hidden,), et=(c.hidden,))
-    m = export_graph(cg, out / "dit_out", "dit_out", meta)
-    print(f"dit_out: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+    cg = g.compile(x=(R, c.hidden), temb=(3 * c.hidden,), et=(c.hidden,))
+    m = export_graph(cg, out / f"dit_out{sfx}", f"dit_out{sfx}", meta)
+    print(f"dit_out{sfx}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
     if check:
-        write_check(g, m, out / "dit_out", dict(x=bf(rng.standard_normal((c.tokens, c.hidden))),
-                                                temb=bf(rng.standard_normal(3 * c.hidden) * 0.5),
-                                                et=bf(rng.standard_normal(c.hidden))))
+        write_check(g, m, out / f"dit_out{sfx}", dict(x=bf(rng.standard_normal((R, c.hidden))),
+                                                     temb=bf(rng.standard_normal(3 * c.hidden) * 0.5),
+                                                     et=bf(rng.standard_normal(c.hidden))))
     # dit_blocks: one ELF, a bank per group
     t0 = time.time()
     g = DitBlocks(c, 0, w)
-    shapes = dict(x=(c.tokens, c.hidden), temb=(3 * c.hidden,), et=(c.hidden,), ctx=(c.text_tokens, c.text_dim))
+    shapes = dict(x=(R, c.hidden), temb=(3 * c.hidden,), et=(c.hidden,), ctx=(c.text_tokens, c.text_dim),
+                  angles=(R, c.head_dim))
     cg = g.compile(**shapes)
-    d = out / "dit_blocks"
+    name = f"dit_blocks{sfx}"
+    d = out / name
     groups = c.layers // c.group
-    m = export_graph(cg, d, "dit_blocks", dict(meta, groups=groups))
-    print(f"dit_blocks: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
+    m = export_graph(cg, d, name, dict(meta, groups=groups))
+    print(f"{name}: compiled in {time.time() - t0:.0f} s; {m['graph']['plan']}", flush=True)
     variants = [{k: b["image"] for k, b in m["banks"].items()}]
-    for i in range(1, groups):
+    shared = sfx and iron_dit.share_banks(m, d, out / "dit_blocks")
+    if shared:
+        variants = shared
+        print(f"{name}: the banks are dit_blocks' (the same weights in the same places): stored once", flush=True)
+    for i in range(1, 1 if shared else groups):
         variants.append(variant_bank(cg, DitBlocks(c, i * c.group, w), d, f"bank_g{i}"))
-        print(f"dit_blocks: bank of blocks {i * c.group}..{(i + 1) * c.group - 1}", flush=True)
+        print(f"{name}: bank of blocks {i * c.group}..{(i + 1) * c.group - 1}", flush=True)
     m["variants"] = variants
     (d / "manifest.json").write_text(json.dumps(m, indent=1) + "\n")
     if check:
         nt = 77
         ctx = rng.standard_normal((c.text_tokens, c.text_dim))
         ctx[nt:] = 0
-        write_check(g, m, d, dict(x=bf(rng.standard_normal((c.tokens, c.hidden))),
-                                  temb=bf(rng.standard_normal(3 * c.hidden) * 0.5),
-                                  et=bf(rng.standard_normal(c.hidden)),
-                                  ctx=bf(ctx)), dict(nt=nt))
+        x = rng.standard_normal((R, c.hidden))
+        x[c.tokens :] = 0
+        write_check(g, m, d, dict(x=bf(x), temb=bf(rng.standard_normal(3 * c.hidden) * 0.5),
+                                  et=bf(rng.standard_normal(c.hidden)), ctx=bf(ctx), angles=bf(angles_input(c))),
+                    dict(nt=nt, nk=c.tokens))
 
 
 ARGS = None
@@ -1220,7 +1332,11 @@ def main(argv=None) -> int:
     ap.add_argument("root", type=Path, help="the Anima directory (diffusion_models/, text_encoders/, vae/, diffusers/)")
     ap.add_argument("out", type=Path)
     ap.add_argument("--dit", default="anima-turbo-v1.1.safetensors")
-    ap.add_argument("--size", type=int, default=1024)
+    ap.add_argument("--size", nargs="+", default=["1024"],
+                    help="the pictures' sizes: N (N x N) or WxH. Several (1024 512 832x1248 ...) make one export of them "
+                         "all: the first (a square of 512 or 1024) laid out as an export of its own, the DiT's graphs of "
+                         "the row counts it has not (_nROWS, on its banks), a VAE each other size in sizes/WxH/vae. A "
+                         "picture whose patches are no whole rounds of 512 runs the next round's graphs, padded")
     ap.add_argument("--width", type=int, default=0)
     ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--group", type=int, default=4)
@@ -1274,20 +1390,41 @@ def main(argv=None) -> int:
     elif a.q4_codes is not None:
         ap.error("--q4-codes needs --dit-attn or --dit-mlp q4 or q8")
     bind_device(a.device, a.cols)
-    c = DitConfig(width=a.width or a.size, height=a.height or a.size, group=a.group)
+    sizes = [parse_size(x) for x in a.size]
+    if a.width or a.height:
+        sizes = [(a.width or sizes[0][0], a.height or sizes[0][1])]
+    sizes = list(dict.fromkeys(sizes))
+    configs = [DitConfig(width=w, height=h, group=a.group) for w, h in sizes]
+    base = configs[0]
+    if base.rows != base.tokens and "dit" in a.only:
+        raise SystemExit(f"--size {sizes[0][0]}x{sizes[0][1]}: the first size's patches are whole rounds of 512 (a square of 512 or 1024)")
     a.out.mkdir(parents=True, exist_ok=True)
     if "text" in a.only:
         export_text(a.root, a.out, a.check)
     if "dit" in a.only:
-        export_dit(a.root, a.out, c, a.check)
+        seen = set()
+        for c in configs:
+            if c.rows in seen:
+                print(f"{c.width}x{c.height}: {c.tokens} patches run the graphs of {c.rows} rows, compiled already", flush=True)
+                continue
+            seen.add(c.rows)
+            export_dit(a.root, a.out, c, a.check and c is base, suffix(c, base.rows))
         if a.q4_codes is not None:
             import iron_q4
 
             print(f"--q4-codes: {iron_q4.CODES_USED['hit']} weights took the chosen codes, "
                   f"{iron_q4.CODES_USED['miss']} were rounded")
     if "vae" in a.only:
-        export_vae(a.root, a.out, c.width, c.height, a.check, a.stages)
+        for c in configs:
+            export_vae(a.root, a.out, c.width, c.height, a.check, a.stages,
+                       name="vae" if c is base else f"sizes/{c.width}x{c.height}/vae")
     return 0
+
+
+def parse_size(spec: str) -> tuple:
+    """A --size: N (N x N) or WxH, in pixels."""
+    w, _, h = spec.lower().partition("x")
+    return int(w), int(h or w)
 
 
 if __name__ == "__main__":

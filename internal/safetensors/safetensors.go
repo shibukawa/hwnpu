@@ -129,6 +129,12 @@ func (f *File) Float32(name string) ([]float32, error) {
 	return f.Float32Range(name, 0, t.Len())
 }
 
+// ScaleSuffix names the scales of a matrix stored in int8 (hwnpu's own layout, not the
+// reference's): an I8 matrix NAME of (rows, cols) and an F16 matrix NAME + ScaleSuffix of (rows,
+// cols / group), each value standing for q * the scale of its row's group. Float32Range expands
+// it (Gemma 4's per-layer embeddings in the tables file, docs/improvements.md 12.7).
+const ScaleSuffix = ".hwnpu_scale"
+
 // Float32Range reads elements [begin, end) of a tensor, in row major order, as float32.
 func (f *File) Float32Range(name string, begin, end int) ([]float32, error) {
 	t, ok := f.tensors[name]
@@ -138,6 +144,9 @@ func (f *File) Float32Range(name string, begin, end int) ([]float32, error) {
 	n := end - begin
 	if begin < 0 || end > t.Len() || n < 0 {
 		return nil, fmt.Errorf("safetensors: %s: range [%d, %d) outside %d elements", name, begin, end, t.Len())
+	}
+	if t.DType == "I8" {
+		return f.int8Range(name, t, begin, end)
 	}
 	size := 2
 	if t.DType == "F32" {
@@ -168,6 +177,33 @@ func (f *File) Float32Range(name string, begin, end int) ([]float32, error) {
 		}
 	default:
 		return nil, fmt.Errorf("safetensors: %s: cannot convert %s to float32", name, t.DType)
+	}
+	return out, nil
+}
+
+// int8Range is Float32Range of an I8 matrix with its scales (ScaleSuffix).
+func (f *File) int8Range(name string, t Tensor, begin, end int) ([]float32, error) {
+	st, ok := f.tensors[name+ScaleSuffix]
+	if !ok || len(t.Shape) != 2 || len(st.Shape) != 2 || st.DType != "F16" || st.Shape[0] != t.Shape[0] ||
+		st.Shape[1] == 0 || t.Shape[1]%st.Shape[1] != 0 {
+		return nil, fmt.Errorf("safetensors: %s: an I8 tensor without its F16 scales %s", name, name+ScaleSuffix)
+	}
+	cols, groups := t.Shape[1], st.Shape[1]
+	group := cols / groups
+	q := make([]byte, end-begin)
+	if _, err := f.f.ReadAt(q, f.dataBase+t.begin+int64(begin)); err != nil {
+		return nil, fmt.Errorf("safetensors: %s: %w", name, err)
+	}
+	// the scales of the rows the range touches
+	r0, r1 := begin/cols, (end+cols-1)/cols
+	scales, err := f.Float32Range(name+ScaleSuffix, r0*groups, r1*groups)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]float32, len(q))
+	for i, b := range q {
+		e := begin + i
+		out[i] = float32(int8(b)) * scales[(e/cols-r0)*groups+e%cols/group]
 	}
 	return out, nil
 }

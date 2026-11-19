@@ -19,7 +19,7 @@ import (
 	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
-// Where the files of the models come from (docs/cache-sharing.md 7), in layers: the machine's
+// Where the files of the models come from (docs/cache-sharing-design.md 7), in layers: the machine's
 // own cache (cache.Root: original/OWNER/NAME, with its hwnpu-lock.json), the sources of the
 // environment (HWNPU_MODEL_SOURCE, HWNPU_MODEL_SOURCE_1, ...: internal/store), the models an
 // application installs with it (store.SetBundles), and Hugging Face last unless
@@ -121,7 +121,7 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 		if c != "" || commit == "" {
 			noteLockCommit(repo, c)
 		}
-		return shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: sum, Size: fi.Size()}, true, nil)
+		return shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: sum, Size: fi.Size()}, true)
 	}
 	if pinnedSum && sameFile(want, name, path, log) {
 		bytes = -1
@@ -158,7 +158,31 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 	if commit != "" {
 		from = base + "@" + commit // the files of the sources' commit
 	}
-	if err := fetchHF(ctx, from, name, path, log); err != nil {
+	// the file goes in the sources written back to as it comes (a tee), where it can; where it
+	// cannot, it is put from the queue after
+	var tees []*shared.Tee
+	tee := func(size int64) io.Writer {
+		c, _ := servedCommit(from)
+		var ws []io.Writer
+		for _, s := range shared.Writebacks() {
+			if t := shared.StartTee(ctx, s, base, c, name, size); t != nil {
+				tees = append(tees, t)
+				ws = append(ws, t)
+			}
+		}
+		if len(ws) == 0 {
+			return nil
+		}
+		return io.MultiWriter(ws...)
+	}
+	err = fetchHFTee(ctx, from, name, path, log, tee)
+	teed := map[string]bool{}
+	for _, t := range tees {
+		if t.Finish(ctx, want, err) {
+			teed[t.Source().String()] = true
+		}
+	}
+	if err != nil {
 		return "", err
 	}
 	c, _ := servedCommit(from)
@@ -166,7 +190,7 @@ func fetch(ctx context.Context, repo, name string, log io.Writer) (string, error
 		return "", err
 	}
 	for _, s := range shared.Writebacks() {
-		if c != "" {
+		if c != "" && !teed[s.String()] {
 			shared.FillLater(s, base, c, name, path, want)
 		}
 	}
@@ -257,7 +281,7 @@ func adopt(ctx context.Context, local shared.Source, repo, commit, name, want, p
 			c = l.Commit // hwnpu off Hugging Face, no source's lock: the commit of what is here
 		}
 	}
-	if shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: got, Size: fi.Size()}, true, nil) != nil {
+	if shared.Record(ctx, local, base, c, name, shared.LockedFile{SHA256: got, Size: fi.Size()}, true) != nil {
 		return false
 	}
 	noteLockCommit(repo, c)

@@ -36,6 +36,9 @@ func ConvertTiers(a *Arch, model Model, w Weights, out, targetName string, nPart
 	if len(caches) == 0 {
 		caches = []int{opts.Cache}
 	}
+	if _, routed := model.(Routed); routed && opts.Backend != BackendCoreAI {
+		return "", fmt.Errorf("llm: %s has mixture of experts layers, which the host runs with Core AI alone (-backend coreai)", a.Title)
+	}
 	if opts.Backend == BackendCoreAI {
 		return convertAIOne(a, model, w, out, targetName, nParts, caches, opts, log)
 	}
@@ -214,7 +217,8 @@ func convertAIOne(a *Arch, model Model, w Weights, out, targetName string, nPart
 	}
 	opts.Cache = caches[0]
 	base := strings.TrimSuffix(strings.TrimSuffix(out, ".aimodel"), ".parts.json")
-	if opts.Paged == 0 && opts.Start == 0 && opts.Layers == 0 && nParts <= 1 {
+	_, routed := model.(Routed) // always in parts
+	if !routed && opts.Paged == 0 && opts.Start == 0 && opts.Layers == 0 && nParts <= 1 {
 		plan := []Part{{}}
 		if targetName != "none" {
 			target, err := LookupTargetFor(BackendCoreAI, targetName)

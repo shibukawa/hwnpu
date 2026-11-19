@@ -40,7 +40,6 @@
 | 読み上げ | Text-to-Speech、Polly、Azure TTS、OpenAI `/v1/audio/speech` | `hwnpu-audio tts` (API の口はまだない) | LFM3-Audio-2B | ◎ | — | — |
 | 状態の判定 | (llama.cpp の System One API) | `hwnpu-chat systemone` | d1-2B、d1-Omni-2B | ◎ | — | — |
 | 画像生成 | OpenAI Images、Imagen | `hwnpu-image generate` (API の口はまだない) | Anima-Turbo | ◎ | ○ | ◎ |
-| 〃 | 〃 | 〃 | Sana / Sana-Sprint | ◎ | — | ◎ |
 | 深度、点群、法線 | (クラウドに定番の API はない) | `hwnpu-image depth` | Depth Anything 3、MoGe-2 | ○ (変換はする、測っていない) | — | ◎ |
 | 顔の検出 (枠と 5 点) | Cloud Vision の顔検出、Rekognition DetectFaces、Azure Face、Apple Vision | `hwnpu-image face-detect` | YuNet | ○ (測っていない) | — | CPU (NPU でも動くが、エネルギーが CPU の 16〜40 倍。docs/amd-npu-models.md 17) |
 | 人の姿勢 (17 点) | Apple Vision の体の姿勢、Video Intelligence の人物検出 | `hwnpu-image pose` | RTMO-s | ◎ | ○ | ◎ (初回に書き出す、docs/amd-npu-models.md 22) |
@@ -98,7 +97,7 @@ AMD の「CPU」の 5 つ (姿勢、検出、OCR、音高、音符) は、どれ
 
 `hwnpu-chat serve` の口は `/v1/models`、`/v1/chat/completions`、`/v1/embeddings` の 3 つです (`internal/chat/server.go`)。モデルはあるのに、口がない機能があります。
 
-- `/v1/audio/transcriptions` (Whisper)、`/v1/audio/speech` (LFM3-Audio)、`/v1/images/generations` (Anima、Sana)
+- `/v1/audio/transcriptions` (Whisper)、`/v1/audio/speech` (LFM3-Audio)、`/v1/images/generations` (FLUX.2 klein、Anima)
 - 画像の解析の口 (Cloud Vision の `images:annotate` のように、1 回で検出、OCR、顔、姿勢、ラベルを返す)
 - `/v1/rerank` (2.3 のリランクを入れた後)
 
@@ -108,7 +107,7 @@ AMD には公開されたグラフ用のコンパイラがなく、モデルご�
 
 - GEMM とほかの演算を交互にすると、切り替え 1 回に約 250 µs、エネルギーで約 1 mJ かかります。同じ演算が続くなら 1 つ 5〜30 µs です。
 - そのため、演算が多く 1 つずつが小さい CNN は CPU に負けます。YuNet (約 70 演算) は 1 枚 127 mJ で、CPU の 1 スレッドなら 7.7 mJ でした。
-- ViT や Transformer、大きな畳み込み (im2col の GEMM) は向いています。DA3、MoGe-2、Sana、Anima はこの形で動いています。
+- ViT や Transformer、大きな畳み込み (im2col の GEMM) は向いています。DA3、MoGe-2、Anima はこの形で動いています。
 
 画像の項目を AMD から進めるなら、次の順を勧めます。
 

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Unified log private data</string>
+			<key>PayloadIdentifier</key>
+			<string>local.hwnpu.logging.private-data.payload</string>
+			<key>PayloadType</key>
+			<string>com.apple.system.logging</string>
+			<key>PayloadUUID</key>
+			<string>D91BAC8E-096E-4DDF-AF7F-3286C268D790</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>System</key>
+			<dict>
+				<key>Enable-Private-Data</key>
+				<true/>
+			</dict>
+		</dict>
+	</array>
+	<key>PayloadDescription</key>
+	<string>Shows the private values of the unified log (for reading why the Neural Engine compiler rejects an operation). Remove it when done.</string>
+	<key>PayloadDisplayName</key>
+	<string>Unified log private data (hwnpu)</string>
+	<key>PayloadIdentifier</key>
+	<string>local.hwnpu.logging.private-data</string>
+	<key>PayloadRemovalDisallowed</key>
+	<false/>
+	<key>PayloadScope</key>
+	<string>System</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>A1FAC387-F2C7-4639-BF0F-9F9665CEB550</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>

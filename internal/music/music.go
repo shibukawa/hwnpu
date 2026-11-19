@@ -77,6 +77,9 @@ type Paths struct {
 	// encoder's patches the indexes of its input each of its program's inputs takes)
 	TextEncoder, MusicEncoder, AudioPreprocessor, Mapper, Quantizer, SPM string
 	TextProgram, TextTable, MusicProgram, MusicPatches                   string
+	// IronDecoder is, on AMD's NPU, the export of tools/amd/iron_magenta.py whose graph runs
+	// SpectroStream's decoder (OpenAMD) in place of Decoder
+	IronDecoder string
 }
 
 func (s Setup) files() []string {
@@ -111,11 +114,8 @@ func Prepare(ctx context.Context, s Setup) (Paths, error) {
 	for _, f := range s.files() {
 		want = append(want, chat.File{Repo: s.Repo, Name: f})
 	}
-	chat.Expect(ctx, want)
-	for _, f := range s.files() {
-		if _, err := chat.Fetch(ctx, s.Repo, f, log); err != nil {
-			return p, err
-		}
+	if err := chat.FetchFiles(ctx, want, log); err != nil {
+		return p, err
 	}
 	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
 		return p, err
@@ -312,7 +312,12 @@ func Open(ctx context.Context, dev *hwnpu.Device, p Paths) (*Generator, error) {
 // OpenOn is Open with SpectroStream's decoder and encoder on the Core ML units given ("gpu",
 // "cpu"; "": the Neural Engine). Core AI takes no units: its programs run on the Neural Engine.
 func OpenOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string) (*Generator, error) {
-	g := &Generator{}
+	return openOn(ctx, dev, p, ssUnits, nil)
+}
+
+// openOn is OpenOn with SpectroStream's decoder dec when not nil (p.Decoder then not opened).
+func openOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string, dec *step) (*Generator, error) {
+	g := &Generator{dec: dec}
 	var err error
 	if g.lw, err = OpenWeights(map[string]string{p.Checkpoint: "params/"}); err != nil {
 		return nil, err
@@ -325,7 +330,10 @@ func OpenOn(ctx context.Context, dev *hwnpu.Device, p Paths, ssUnits string) (*G
 		path, units string
 		to          **step
 	}
-	progs := []prog{{p.Temporal, "", &g.temporal}, {p.Depth, "", &g.depth}, {p.Decoder, ssUnits, &g.dec}}
+	progs := []prog{{p.Temporal, "", &g.temporal}, {p.Depth, "", &g.depth}}
+	if dec == nil {
+		progs = append(progs, prog{p.Decoder, ssUnits, &g.dec})
+	}
 	if p.Encoder != "" {
 		progs = append(progs, prog{p.Encoder, ssUnits, &g.enc})
 	}

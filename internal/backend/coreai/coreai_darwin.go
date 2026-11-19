@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -29,6 +30,7 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/shibukawa/hwnpu/internal/backend"
+	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
 	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/types"
@@ -83,6 +85,9 @@ const lowDisk = 10 << 30
 // and load again (an asset whose bytecode is cut, which would make Core AI parse nothing and
 // abort).
 const kindNoRetry = 0x100
+
+// prebuiltOnce says once a process that its programs come from prebuilt ones.
+var prebuiltOnce sync.Once
 
 func load() error {
 	loadOnce.Do(func() {
@@ -247,6 +252,92 @@ func (d *device) asset(path string) (dir, fn string, cached bool, owned, stored 
 // lowered again from its package, and Core AI compiles it as the first time.
 const DropBytecodeEnv = "HWNPU_COREAI_DROP_BYTECODE"
 
+// PrebuiltEnv set to off makes Core AI compile a program on the device even when a prebuilt one
+// (coreai-build's .aimodelc, Prebuilt) lies beside it.
+const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
+
+// Prebuilt is the program coreai-build compiled for this device's architecture for the asset at
+// dir, or "" without one of the same source (main.hash): X.ARCH.aimodelc beside X.aimodel
+// (hwnpu-dev prebuild), else the packed one beside the export (PackedPath, from the shared
+// layers; Assemble makes it whole). Core AI loads it without the Neural Engine compiler's pass
+// over the program: the device finishes the compiled regions (ANELargeModelCompilerService), 3
+// to 5 times faster for a large program, and fills the same cache entry (the hash is the
+// source's), so the asset itself loads from the entry afterwards (design.md 16.229). The program
+// it holds runs a few percent slower than one compiled on the device.
+func Prebuilt(dir string) string {
+	if os.Getenv(PrebuiltEnv) == "off" {
+		return ""
+	}
+	arch := Arch()
+	if arch == "" {
+		return ""
+	}
+	want, err := os.ReadFile(filepath.Join(dir, "main.hash"))
+	if err != nil {
+		return ""
+	}
+	for _, p := range []string{PrebuiltPath(dir, arch), PackedPath(dir, arch)} {
+		if p == "" {
+			continue
+		}
+		have, err := os.ReadFile(filepath.Join(p, "main.hash"))
+		if err == nil && bytes.Equal(want, have) && onANE(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// fetchedPrebuilt are the exports FetchPrebuilt was called for, by export and architecture.
+var fetchedPrebuilt sync.Map
+
+// fetchPrebuilt asks the shared layers (FetchPrebuilt) once a process for the prebuilt programs
+// of the export that holds the asset at dir, which Core AI would compile.
+func fetchPrebuilt(ctx context.Context, dir string) {
+	export, ok := ExportOf(dir)
+	if !ok || FetchPrebuilt == nil || os.Getenv(PrebuiltEnv) == "off" {
+		return
+	}
+	arch := Arch()
+	if arch == "" {
+		return
+	}
+	once, _ := fetchedPrebuilt.LoadOrStore(export+"\x00"+arch, new(sync.Once))
+	once.(*sync.Once).Do(func() { FetchPrebuilt(ctx, export, arch) })
+}
+
+// openable is the prebuilt program pb for Core AI to open: pb, or, packed (its weights a map onto
+// the asset's bytecode at dir), assembled in a temporary directory that done removes.
+func openable(pb, dir string) (string, func(), error) {
+	if !packed(pb) {
+		return pb, func() {}, nil
+	}
+	cache.Touch(pb) // the export's prebuilt programs, a unit of the cache's LRU of their own
+	tmp, err := os.MkdirTemp(filepath.Dir(dir), ".assemble-*")
+	if err != nil {
+		return "", nil, err
+	}
+	out := filepath.Join(tmp, filepath.Base(pb))
+	if err := Assemble(pb, dir, out); err != nil {
+		os.RemoveAll(tmp)
+		return "", nil, err
+	}
+	return out, func() { os.RemoveAll(tmp) }, nil
+}
+
+// packed reports whether the prebuilt program at pb has a file as a map (Pack).
+func packed(pb string) bool {
+	found := false
+	filepath.WalkDir(pb, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, MapSuffix) {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
 // Parsing a cut bytecode aborts the process, so a cut asset (whether cut now or before) is opened
 // only while its entry is there (hasEntry), with kindNoRetry; otherwise it is lowered again.
 
@@ -262,23 +353,11 @@ func isCut(dir string) bool {
 // without main-this.odix makes Core AI compile the bytecode again (and abort on a cut one); one
 // without its delegates fails to load, and is lowered again. Anything it cannot read says no.
 func hasEntry(dir string) bool {
-	hash, err := os.ReadFile(filepath.Join(dir, "main.hash"))
-	if err != nil {
+	d := entryDir(dir)
+	if d == "" {
 		return false
 	}
-	build, err := syscall.Sysctl("kern.osversion")
-	if err != nil || build == "" {
-		return false
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return false
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	entries, _ := filepath.Glob(filepath.Join(home, "Library", "Caches", "coreai-cache", build, filepath.Base(exe), hex.EncodeToString(hash), "*", "model.aimodelx", "main-this.odix"))
+	entries, _ := filepath.Glob(filepath.Join(d, "*", "model.aimodelx", "main-this.odix"))
 	for _, e := range entries {
 		if fi, err := os.Stat(e); err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
 			return true
@@ -286,6 +365,81 @@ func hasEntry(dir string) bool {
 	}
 	return false
 }
+
+// entryDir is the folder of Core AI's cache that holds the entries of the asset at dir for this
+// process (hasEntry), "" when it cannot be told.
+func entryDir(dir string) string {
+	hash, err := os.ReadFile(filepath.Join(dir, "main.hash"))
+	if err != nil {
+		return ""
+	}
+	base := coreAICacheDir()
+	exe, err := os.Executable()
+	if base == "" || err != nil {
+		return ""
+	}
+	return filepath.Join(base, filepath.Base(exe), hex.EncodeToString(hash))
+}
+
+// coreAICacheDir is Core AI's cache of this OS build, its entries under the executables' names.
+func coreAICacheDir() string {
+	build, err := syscall.Sysctl("kern.osversion")
+	if err != nil || build == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "Library", "Caches", "coreai-cache", build)
+}
+
+func init() { cache.SetRestorable(restorableEntries) }
+
+// restorableEntries are the entries of Core AI's cache (of hwnpu's executables, this OS build)
+// of the programs in the cache's exports that have a prebuilt program for this device: they hold
+// the program's weights again, and the prebuilt program makes them again in seconds rather than
+// the Neural Engine compiler's minutes, so a disk short of room loses them first (cache.Room,
+// docs/cache-sharing-design.md 7.7).
+func restorableEntries() []string {
+	base := coreAICacheDir()
+	if base == "" || os.Getenv(PrebuiltEnv) == "off" || Arch() == "" {
+		return nil
+	}
+	hashes := map[string]bool{}
+	filepath.WalkDir(filepath.Join(cache.Root(), "models"), func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		switch {
+		case strings.HasSuffix(p, PackedSuffix), strings.HasSuffix(p, ".aimodelc"):
+			return filepath.SkipDir
+		case strings.EqualFold(filepath.Ext(p), ".aimodel"):
+			if Prebuilt(p) != "" {
+				if h, err := os.ReadFile(filepath.Join(p, "main.hash")); err == nil {
+					hashes[hex.EncodeToString(h)] = true
+				}
+			}
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	exes, _ := os.ReadDir(base)
+	var out []string
+	for _, e := range exes {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "hwnpu") {
+			continue
+		}
+		for h := range hashes {
+			if p := filepath.Join(base, e.Name(), h); isDir(p) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 
 // cut cuts the asset's bytecode once Core AI's cache holds its program. The file is replaced, not
 // truncated: Core AI may still map the old one.
@@ -323,6 +477,7 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		return nil, fmt.Errorf("coreai: functions and compute units are not supported: %w", types.ErrUnsupported)
 	}
 	path, fn := splitFunction(src.Path)
+	cache.Touch(path) // the model it is of is used now (the cache's LRU)
 	dir, cached, owned, stored := path, true, "", ""
 	if !strings.EqualFold(filepath.Ext(path), ".aimodel") {
 		var err error
@@ -342,13 +497,45 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 		if isCut(dir) {
 			kind |= kindNoRetry
 		}
-		name := dir
+		name, prebuilt := dir, false
+		if !isCut(dir) && !hasEntry(dir) {
+			// no entry yet: a prebuilt program fills it, here or from the shared layers
+			pb := Prebuilt(dir)
+			if pb == "" {
+				fetchPrebuilt(ctx, dir)
+				pb = Prebuilt(dir)
+			}
+			if pb != "" {
+				p, done, err := openable(pb, dir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "coreai: %s: %v; compiled on the device\n", filepath.Base(pb), err)
+				} else {
+					defer done() // Core AI's entry holds the program once it is open
+					name, prebuilt = p, true
+				}
+			}
+		}
 		if fn != "main" {
 			name += "#" + fn
 		}
 		var retried int32
 		var e *byte
 		g.h = caiOpen(cString(name), kind, &retried, &e)
+		if g.h == 0 && prebuilt {
+			// the prebuilt program would not load (another toolchain, a corrupt file): compiled
+			// on the device as without it
+			msg := goString(e)
+			fmt.Fprintf(os.Stderr, "coreai: %s: the prebuilt program failed (%s), compiled on the device\n", filepath.Base(name), msg)
+			name = dir
+			if fn != "main" {
+				name += "#" + fn
+			}
+			g.h = caiOpen(cString(name), kind, &retried, &e)
+		} else if g.h != 0 && prebuilt {
+			prebuiltOnce.Do(func() {
+				fmt.Fprintf(os.Stderr, "  prebuilt programs (%s) finished on the device in place of the Neural Engine compiler (%s=off compiles them)\n", Arch(), PrebuiltEnv)
+			})
+		}
 		if g.h == 0 {
 			return goString(e)
 		}
@@ -376,6 +563,9 @@ func (d *device) Compile(ctx context.Context, src types.GraphSource) (backend.Gr
 	if g.h == 0 {
 		g.Close()
 		return nil, fmt.Errorf("coreai: load %s: %s", src.Path, msg)
+	}
+	if d := entryDir(dir); d != "" {
+		cache.Use(d) // its entry is not removed to make room while this process runs
 	}
 	if stored != "" && os.Getenv(DropBytecodeEnv) == "1" {
 		cut(stored) // best effort: an asset left whole only takes more disk
@@ -452,13 +642,19 @@ func (g *graph) describe(dir, fn string) error {
 		}
 		for _, n := range names {
 			x := byName[n]
-			dt := map[string]types.DType{"f16": types.F16, "f32": types.F32, "i32": types.I32}[x.Elem]
+			dt := map[string]types.DType{"f16": types.F16, "f32": types.F32, "i32": types.I32, "i8": types.I8, "i16": types.I16, "i4": types.I4}[x.Elem]
 			if dt == types.DTypeUnknown {
 				return fmt.Errorf("coreai: %s %q of type %s: %w", kind, n, x.Elem, types.ErrUnsupported)
 			}
 			bytes := dt.Size()
+			if dt == types.I4 {
+				bytes = 1
+			}
 			for _, v := range x.Shape {
 				bytes *= v
+			}
+			if dt == types.I4 { // two a byte
+				bytes = (bytes + 1) / 2
 			}
 			index[n] = len(g.args)
 			g.args = append(g.args, types.ArgInfo{Index: len(g.args), Kind: kind, Name: n, Dims: append([]int(nil), x.Shape...), DType: dt, ModelDType: dt, Bytes: bytes})

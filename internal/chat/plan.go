@@ -3,7 +3,7 @@ package chat
 import (
 	"cmp"
 	"context"
-	shared "github.com/shibukawa/hwnpu/internal/store"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/console"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 // File is a file of a model's repository and where fetch puts it.
@@ -76,6 +77,47 @@ func Expect(ctx context.Context, files []File) {
 		}
 		plan.files[p] = f
 	}
+}
+
+// FetchFiles is Fetch of each of files, store.FetchStreams at a time, after Expect (so that the
+// bar of each, the one the console draws being the one started last, shows the bytes and the
+// time left of all of them): from a NAS over Wi-Fi four files come in about twice as fast as one
+// (2026-11-17). The first error stops the files not started yet and is returned.
+func FetchFiles(ctx context.Context, files []File, log io.Writer) error {
+	Expect(ctx, files)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := make(chan struct{}, max(1, shared.FetchStreams))
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		first error
+	)
+	for _, f := range files {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			if _, err := fetch(ctx, f.Repo, f.Name, log); err != nil {
+				mu.Lock()
+				if first == nil {
+					first = err
+					cancel()
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	return cmp.Or(first, context.Cause(ctx))
 }
 
 // planned is the planned file at path, if Expect looked it up and it is not fetched yet.

@@ -2,7 +2,7 @@
 
 [English](new-model-checklist.md)
 
-作成: 2026-11-07、更新: 2026-11-14 (3.5: Core AI での確かめ方。画像を読むモデルを Core AI に載せたときのもの。続けて Qwen3.5-4B と Gemma 4 E4B: 段の数で分けるプロファイル、再帰の状態のバイト、Neural Engine から外れる演算の探し方、語彙の一部の下書きの出力層。続けて Sana を Core AI で: 1 つの書き出しの大きさを 1 本のプログラムの関数に、コンパイラーで失敗する関数がほかを道連れにすること、交差注意のキーと値をプロンプトごとに 1 回)、2026-11-12 (Qwen-Image-2.1-Turbo を Mac で: 注意の吸い込みで行ごとの int8 があふれること、コンパイルのキャッシュを超えるプログラムの読み込み、画像のモデルの表。続けて、その移植でしたがここになかったもの: k-means-minmax の lut4 の表、プロンプトに 1 回のパスを 1 段上の形式に、大きな DiT の lut4、コンパイルの時間と比べた問い合わせの塊、参照の最大から決める残差の倍率、別の大きさの書き出しとの部品の共有、16 GB の Mac での float32 のストリームの参照)、2026-11-10 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)、2026-11-11 (7.1 節の画像生成の速さ、RTMDet と PP-OCRv6 で見つけた ANE の sigmoid のずれ、16384 を超える幅、OCR の照合。続けて画像のモデルをこの手順と突き合わせた 7.2 節の表と、Sana で ANE と IRON で見つけてここになかったもの、Sana の CFG のステップ、Mac の CFG の順、8 ビットの DiT)、2026-11-12 (Mac の Chroma1: 変調を σ ごとに一度、ANE の int8 の積和と小さな積、コンパイルのキャッシュの大きさ)、2026-11-13 (AMD の gpt-oss-20b: チェックポイントの 4 ビットの形のまま、注意の sink、8 列に割り切れない隠れ次元、プロンプトの専門家に bf16 の行列演算器、DMA の 1023 語、IRON のコンパイルのキャッシュと入っているカーネル)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
+作成: 2026-11-07、更新: 2026-11-18 (11.4: 画像のモデルの書き出しを 8 つのアスペクト比で 1 つにし、取得元に置く。AMD の FLUX.3 klein から)、2026-11-14 (3.5: Core AI での確かめ方。画像を読むモデルを Core AI に載せたときのもの。続けて Qwen3.5-4B と Gemma 4 E4B: 段の数で分けるプロファイル、再帰の状態のバイト、Neural Engine から外れる演算の探し方、語彙の一部の下書きの出力層。続けて Sana を Core AI で: 1 つの書き出しの大きさを 1 本のプログラムの関数に、コンパイラーで失敗する関数がほかを道連れにすること、交差注意のキーと値をプロンプトごとに 1 回)、2026-11-12 (Qwen-Image-2.1-Turbo を Mac で: 注意の吸い込みで行ごとの int8 があふれること、コンパイルのキャッシュを超えるプログラムの読み込み、画像のモデルの表。続けて、その移植でしたがここになかったもの: k-means-minmax の lut4 の表、プロンプトに 1 回のパスを 1 段上の形式に、大きな DiT の lut4、コンパイルの時間と比べた問い合わせの塊、参照の最大から決める残差の倍率、別の大きさの書き出しとの部品の共有、16 GB の Mac での float32 のストリームの参照)、2026-11-10 (PLaMo 3 Translate 0.8B、Qwen3.5-0.8B / 2B、Whisper large-v3-turbo、Qwen3.6-35B-A3B、AMD の下書きの確認を入れて足した点と、画像のモデルを models.yaml で準備できるようにして足した 11 節)、2026-11-11 (7.1 節の画像生成の速さ、RTMDet と PP-OCRv6 で見つけた ANE の sigmoid のずれ、16384 を超える幅、OCR の照合。続けて画像のモデルをこの手順と突き合わせた 7.2 節の表と、Sana で ANE と IRON で見つけてここになかったもの、Sana の CFG のステップ、Mac の CFG の順、8 ビットの DiT)、2026-11-12 (Mac の Chroma1: 変調を σ ごとに一度、ANE の int8 の積和と小さな積、コンパイルのキャッシュの大きさ)、2026-11-13 (AMD の gpt-oss-20b: チェックポイントの 4 ビットの形のまま、注意の sink、8 列に割り切れない隠れ次元、プロンプトの専門家に bf16 の行列演算器、DMA の 1023 語、IRON のコンパイルのキャッシュと入っているカーネル)。LFM3 (VL / Audio / Omni、d1)、Gemma 4 E2B / E4B、Qwen3.5-4B、PLaMo 3 Translate、PLaMo-Embedding、Anima を入れてきた間に、後になってから見つかった問題と、効いた手法を、**最初に確かめる順**に並べたもの。始めからこの順に確かめれば、作り直さずに、少ないメモリで速い形から始められる。
 
 ## 方針: 速さより消費電力
 
@@ -39,7 +39,7 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - **1 トークンの時間 (AMD)**: 生成は重みのバイトではなく演算の数で決まる (Qwen3.5-0.8B は bf16、q4、q6 とも 82〜86 ms、PLaMo 3 2B の q4 は 85 ms、Qwen3.6-35B-A3B の 40 層は 172 ms で、重みを読むだけなら約 33 ms)。層の数と、入れ済みのモデルの時間から見積もる (16.104、16.107、16.92)
 - **重み**: lut4 0.5 B、lut6 0.75 B、lut8 1 B / 重み。M3 (16 GB) で常駐は 3 GiB までが目安。AMD は 4 ビット (q4nx 5 ビット + 注意 q8) で bf16 の 1/2〜1/5 の固定。M1 (16 GB) では、順に回す部分の重みのうち Neural Engine が抱える合計を 2.9 GiB 未満に: 超えると 1 回ごとに約 12 倍遅い (Qwen3.5-4B の lut6 は 2.97 GiB で 1.1 tok/s、lut4 は 1.99 GiB で 10.9。M2 と M4 は 3.62 GiB でも全速、16.109)
 - **語彙**: 出力層は語彙 × 隠れ。linear は 262144 の軸でも ANE に載るが、その後の要素ごとの演算は CPU に落ちる。単調な演算 (ソフトキャップ) はホストに回す (Gemma 4、16.113)
-- **使えない構造**: MoE のルーティング (`gather`)、学習済みの疎な注意、可変の形。MoE は AMD で動く (Qwen3.6-35B-A3B: 生成では経路の選択をデバイスで、プロンプトではホストで、16.89〜16.93、16.110)
+- **使えない構造**: 学習済みの疎な注意、可変の形。MoE は AMD で動く (Qwen3.6-35B-A3B: 生成では経路の選択をデバイスで、プロンプトではホストで、16.89〜16.93、16.110)。Apple でも MoE は Core AI で動く。専門家は部品の間でホストが選ぶ (`llm.Routed`、LFM2-8B-A1B、3.6)。全層の専門家の int8 を Mac のメモリと比べ (8B-A1B で 7.22 GiB、16 GB の M3)、1 層は動く重みの時間の約 3 倍と見込む (LFM2-8B-A1B: 1 層 3.0〜3.3 ms、定数なら 1.0)
 - **チェックポイントが持つ下書き用の層** (Qwen3.5 の `mtp.`): 変換で捨てない。下書きにするとプロンプトからの推測より当たる (M1 の Qwen3.5-0.8B でコード 26.1 → 43.8 tok/s、16.109)
 - **ライセンスと言語** (hwnpu-chat の目録に載せるか)
 
@@ -154,6 +154,17 @@ hwnpu の目的は、NPU だけで動かして消費電力を下げること。�
 - **参照の精度を先に決める**。`runner` を通した CPU のインタプリタは `HWNPU_CPU_F16=1` がなければ fp32 で計算し、aicheck は fp16 に丸めて動かす。fp16 の丸めに頼るプログラム (MOSS-SoundEffect の snake の `(v + 1536) - 1536`) は丸めた参照とだけ合い、fp32 の参照では `--cpu` の経路が壊れていたことも隠れた (16.197)。定数やマスクを入力に取るプログラムは `AICHECK_CONST=mg=1536,m=1` で本物の値を与える
 - **MOSS-SoundEffect の DAC で見つけた Core AI の Neural Engine の落とし穴 (16.197)**: `(v + c) - c` を c が入力でも `v` に畳む。カーネルが 1 より大きく 512 チャンネル以上の幅方向の畳み込みは、入力を別の演算が計算していると値が違う (高さ方向に: x を (1, C, T, 1)、重みを (co, ci, k, 1))。膨張のある畳み込みは長さによって値が違うか GPU に回る (フレームを膨張の幅の行に並べ、行方向に膨張なしで)。畳み込みの前の明示の `pad` も違った。チャンネルを分ける、明示の pad にする、は効かなかった。`sin` はそのまま Neural Engine で動き、fp16 の入力と同じ程度に正確
 - `aicheck run` と `probe` は、コマンドと同じく Neural Engine のロックを取る (`llm.LockNPU`)。2 つのプロセスが同時に使うと Mac が固まったことがあり、ほかのプロセスのコンパイルは時間の計測も乱す
+
+### 3.6 MoE (Core AI)
+
+専門家は部品の間でホストが選び、重みのないプログラムが選んだものを回す。int8 の重みは全層の専門家を持つ配列から結び付ける (`llm.Routed`、`internal/llm/experts`、`internal/llm/chain/moe.go`。handoff-ane-gather.md 1b、最初は LFM2-8B-A1B)。移植の前と後で:
+
+- **専門家の形が `internal/llm/experts` に合うか**: bias のない SwiGLU (gate、up、down)、sigmoid か softmax の点数、選ぶための bias、上位 k の正規化と倍率。共有の専門家、bias、clamp (gpt-oss) はプログラムを足す必要がある。層ごとに大きさが違えば大きさごとにプログラムが要る
+- **先にチップで層の形を測る**: `aicheck moe -model NAME -layers L -copy` (`moeShapes` に形を足す) をモデルが持つ層の数で、同じ大きさの定数の重みと比べる。`aicheck moepack -two` (専門家 2 配列、拡大は gather) も。M3 で 1 層は定数の約 3 倍、持たせる専門家が多いほど結び付けが高い。`aicheck probe gnd16_const gnd16_pts_w1` で拡大の gather がそのチップに載るか分かる (M2・M3 は載り、M1 は載らない)
+- **専門家の誤差と移植の誤差を分ける**: モデルの残りを transformers で、MoE の段を `aicheck moeserve` で回す (`tools/ref/lfm2moe_ane.py run ref|ane`、`compare`)。LFM2-8B-A1B の int8 の専門家を Neural Engine で KL 0.0019、48 トークン同じ文。そのあと変換したものを `hwnpu-dev generate -score` で、キャッシュなし (`-seq N`) とキャッシュありの 1 トークンずつ (`-cache C -seq 1`) の両方: 0.0062 と 0.0056
+- **アーキテクチャでは**: `llm.Routed` を実装する。部品は MoE の層の始まりで終わり、`moe_x_N` (ffn の norm の出力) と `moe_logits_N` (ルーター、fp16: 選択は小さな差で決まる) を出し、y は残差。次の部品は `moe_o_N` を足して始まる。`Tensors` に専門家は入れない (`experts.WriteFile` が読む)。変換は Core AI だけで `llm.PlanRouted` が切る。`llm.Paged` でもあるモデルは注意でも分け、注意の層の出力からルーターまでは層なしの部品 (`NoLayers`) にする (LFM2-8B-A1B: 29 部品、文脈 128000)
+- **行を数える**: 生成の専門家は行ごとにかかるので、hwnpu-chat は MoE のモデルで draft を切り、tier は 1 つ。プロンプトの呼び出しは選ばれた専門家を全部の行に 1 回ずつ回す (`experts.BuildRows`) ので、プロンプトのプログラムは 1 回 128 トークン: LFM2-8B-A1B は 138 tokens/s、1 行ずつなら 24
+- **MoE でないモデルが変わらないことを確かめる**: MoE の経路は `llm.Routed` と `experts` のある manifest だけが通る。LFM3-1.7B: 同じ文、同じ 57.4 tok/s、変換し直しもなし
 
 ## 4. AMD (IRON) と Intel の形
 
@@ -501,7 +512,7 @@ KL だけで決めない。モデルの用途で bf16 (または fp16) と並べ
 コマンドは、モデルを次の順に探す。
 
 1. **手元にある書き出し**: 前に変換したもので、`NAME.done` (最後に書く) があるもの。途中で切れたものは作り直す
-2. **配布された書き出し** (将来): Hugging Face から、その NPU のサブフォルダだけを落とす ([prebuilt.md](prebuilt.md))。書き出しの形式が安定してからにする。今はない
+2. **取得元の書き出し** (`HWNPU_MODEL_SOURCE`、共有の層: [cache-sharing.ja.md](cache-sharing.ja.md)): 同じ作り方 (モデル、チェックポイントの固定、書き出しの道具とオプション、書き出しの版) の項目、なければ `hwnpu-dev cache import` が名前で置いた手作りのもの。新しいモデルの書き出しがそこに置かれ、見つかるようにするには: 11.4。(Hugging Face での配布、[prebuilt.md](prebuilt.md) はまだ計画)
 3. **手元で変換**: 変換器が読むファイルだけを落とし、sha256 を確かめ、変換して `.done` を書く
    - Apple と Intel は、Go の変換器で変換する。手本は Mac と Intel の Anima (`anima.Prepare`) と、hwnpu-chat のモデル (`chat.Prepare`)
    - AMD は、IRON の書き出しの道具 (`tools/amd/iron_*.py`) を IRON の環境 (mlir-aie、Peano、Python) で動かす。環境が見つからなければ、何を入れればよいか (INSTALL_AMD.md) を出して止める。黙って落ちたり、手順を利用者に丸投げしたりしない。hwnpu-chat はこうしている (`chat.PrepareAMD`): models.yaml の `amd_export` に書き出しのモデルとオプション、書き出しのスクリプトは hwnpu に埋め込み (`tools/amd/embed.go`)、IRON の環境は `HWNPU_IRON_ENV` か PATH の python3
@@ -569,9 +580,22 @@ done
   - 残る依存: mlir-aie (`aiecc` の C++ 版、`aie-opt`、`aie-translate`、`bootgen`。wheel で 853 MB)、Peano (AIE の `clang`、`llc`、`ld.lld`。422 MB)、カーネルのソースと AIE API のヘッダ。xclbinutil は hwnpu-dev xclbin で代わる
   - Go に移す部分: IRON の演算ごとの設計 (ObjectFIFO、ワーカー、実行の手順から MLIR を作るところ) と、`iron_graph.export_graph`
 
+### 11.4 画像のモデルの書き出し: 8 つのアスペクト比を 1 つに、取得元に置く (2026-11-18)
+
+AMD の FLUX.2 klein (design.md 16.237、16.238、16.242) と FLUX.3 klein (16.250、16.251)、Core AI の書き出しの prebuilt (cache-sharing-design.md 7.9) から。
+
+- **大きさは models.yaml が決める** (書き出しの道具の既定ではない): `npu.amd.sizes` (と `npu.apple.sizes`) に、`--size` の 8 つのアスペクト比 (`1:1`、`1:1s`、`2:3`、`3:4`、`9:16`、`3:2`、`4:3`、`16:9`。`internal/imagegen/aspect`) と、その NPU の書き出しが描く画素を書く。コマンドはそれ (`npuAspects`) で `--size` を読み、書き出しも作るので、`--size 16:9` は書き出しが持つ大きさを描く (FLUX.2 と FLUX.3 の AMD の 16:9 は 1344 x 768。aspect.All の 1360 x 752 ではない)
+- **8 つで 1 つの書き出し** (大きさごとにしない): 最初の大きさのグラフが重みのバンクを持ち、ほかの大きさのグラフは `sizes/WxH/` に同じバンクの上で置く (`iron_dit.share_banks`: 同じ重みが同じ所にあるものは 1 回だけ)。FLUX.2 klein は 1:1 と 1:1s で 22.68 → 11.77 GB、8 つで 16.23 GB。注意が 512 行の倍数で取れない大きさは詰め物をして回し、鍵を `nk` で区切る: FLUX.2 はテキストの行を先にする (区切りが絵によらず 512)、FLUX.3 は画像の行を詰め、single ブロックの鍵を [画像のパッチ, テキストの枠] に並べ直す (16.251)。詰めた行の数だけで決まるグラフは大きさの間で共有する: 行の数で名前か置き場所を決め、読む側が最初の大きさのものに戻れるようにする (`flux3klein.ironPart`)
+- **鍵**: `chat.PinnedRecipe(model, tool, version)` と書き出しの道具の引数 (`AMDRecipe`)。道具が読むファイルすべての sha256 を models.yaml (`sha256:`) に書く: 固定がないと作り方が nil になり、何も共有されない。道具に渡すものか書き出すもの (大きさ、形式、グラフの並べ方) が変わったら、書き出しの版 (`AMDExportVersion`) を手で上げる。埋め込みの道具のハッシュも鍵に入る
+- **初回の実行が取得元に置く**: `PrepareAMD` は `chat.SharedExportOr` を通して書き出しの道具を動かす。作り方の項目を取ってくるか、書き出して、書き戻す取得元 (`?writeback=true`) すべてに置く仕事を積む (`hwnpu-dev cache flush` で終わらせる)。だから新しい書き出しを NAS に置くには、取得元を設定した機械でモデルを名前で 1 回動かす (ファイルを手で写さない)。手で作った書き出しは `hwnpu-dev cache import DIR` (名前が鍵) か、最初に使ったとき (`chat.ShareMadeByHand`) に置かれる。同じ名前の古い書き出しで、求めた大きさのないものは脇によけて置き換え、ほかに得られなければ戻す
+- **反対側から確かめる**: `hwnpu-dev cache ls N` が `converted/MODEL/amd-xdna2/NAME/vN-…` に項目を出すこと。手元の書き出しをよけてもう一度名前で動かすと、取得元から取ってきて (`fetching …`)、同じバイトの絵を描くこと
+- **チェックポイントも取得元に**: 取得元の `original/OWNER/NAME/` は `hwnpu-lock.json` (コミットと各ファイルの sha256 と大きさ) があるときだけ読まれる。gated のリポジトリを手で写してそれがないと見つからず、Hugging Face に取りに行く (NAS の FLUX.3 klein の `model.safetensors` とテキストエンコーダ、16.250)
+- **Apple (Core AI)**: `.aimodel` の書き出しは初回の変換で同じように `converted/MODEL/coreai/…` に置かれる。機種ごとの prebuilt (重みを除いて先にコンパイルした部品、`coreai-ARCH/`) は、あとで開発用の Mac が `hwnpu-dev prebuild -arch all -put EXPORT` で足す。`coreai-build` が作れる 12 種類だけ、効くモデルだけ: FLUX.2 klein の初回は M2 で 52 → 17 分、Anima-Turbo は 45 → 38 分。チャットのモデルは初回の読み込みが遅くなった (LFM3-1.7B 2:17 → 8:12) ので置かない (cache-sharing-design.md 7.9)
+- **書き出しの時間、大きさ、最大 RSS を記録する**: models.yaml と利用者へのメッセージ (`amdExportTime`) に。初回の実行がどれだけかかるかを伝える
+
 ## 12. 試して効かなかったもの (繰り返さない)
 
-[improvements.md](improvements.md) の 8 節の要点: 小さなモデルを詰め物で ANE に (CPU より遅い)、小さな Qwen3.5 の MLP の 4 ビットを GPTQ で直す (GPL は直らない、q6 にした)、q6 で GEMV を速くする (q8 と同じ時間)、multifunction で 1 GiB を越える (全部 CPU)、MLState の KV、int8 の KV、次の段階を裏で読み込む、Q=16 の 1 本、E4B の lut4、モデルの圧縮、上位の鍵だけの疎な注意、AMD の注意の 4 ビット、GEMV の 1 列 1 コア、MoE の専門家の写し、DiT の `HIGH`、DiT の q4 の既定化、q4nx のプロンプトを bf16 で、RMSNorm の固定の倍率。Whisper のエンコーダの LayerNorm を行ごとの最大で割る (出力が変わらなかった。16.115)、Whisper のエンコーダの注意を問い合わせで分ける (速くならない)。
+[improvements.md](improvements.md) の 8 節の要点: 小さなモデルを詰め物で ANE に (CPU より遅い)、小さな Qwen3.5 の MLP の 4 ビットを GPTQ で直す (GPL は直らない、q6 にした)、q6 で GEMV を速くする (q8 と同じ時間)、multifunction で 1 GiB を越える (全部 CPU)、MLState の KV、int8 の KV、次の段階を裏で読み込む、Q=16 の 1 本、E4B の lut4、モデルの圧縮、上位の鍵だけの疎な注意、AMD の注意の 4 ビット、GEMV の 1 列 1 コア、MoE の専門家の写し、DiT の `HIGH`、DiT の q4 の既定化、q4nx のプロンプトを bf16 で、RMSNorm の固定の倍率。Whisper のエンコーダの LayerNorm を行ごとの最大で割る (出力が変わらなかった。16.115)、Whisper のエンコーダの注意を問い合わせで分ける (速くならない)。 Apple の Neural Engine の MoE では、専門家の重みを定数の表から gather (正しいが重みを読む速さの 1/6)、専門家を 1 配列に (handoff-ane-gather.md 1b)。
 
 ## 13. 今進めているもの (2026-11-10)
 

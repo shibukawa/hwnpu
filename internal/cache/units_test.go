@@ -205,3 +205,110 @@ func names(us []Unit) []string {
 	}
 	return n
 }
+
+// TestScanPrebuilt counts an export's prebuilt programs as a unit of their own, not the
+// model's.
+func TestScanPrebuilt(t *testing.T) {
+	root, _ := fill(t)
+	pb := filepath.Join(root, "models/Old/old-v1.coreai.prebuilt/h14g/x.h14g.aimodelc/main.hash")
+	os.MkdirAll(filepath.Dir(pb), 0o755)
+	os.WriteFile(pb, make([]byte, 500), 0o644)
+	unit, ok := UnitOf(pb)
+	if !ok || unit != filepath.Join(root, "models/Old/old-v1.coreai.prebuilt") {
+		t.Fatalf("unit %q %v", unit, ok)
+	}
+	u, err := Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, x := range u.Units {
+		kinds[x.Name] = x.Kind
+		switch x.Name {
+		case "models/Old/old-v1.coreai.prebuilt":
+			if x.Bytes != 500 {
+				t.Errorf("the prebuilt programs: %d bytes", x.Bytes)
+			}
+		case "models/Old":
+			if x.Bytes != 1000 {
+				t.Errorf("the model counts %d bytes, its prebuilt programs' too", x.Bytes)
+			}
+		}
+	}
+	if kinds["models/Old/old-v1.coreai.prebuilt"] != KindPrebuilt {
+		t.Errorf("units %v", kinds)
+	}
+}
+
+// TestRoomRestorable removes what is made again soon (SetRestorable: Core AI's entries of
+// programs with prebuilt ones), outside the root, first when the disk is short, without a
+// MaxSize, and nothing of the root's; not what this process uses.
+func TestRoomRestorable(t *testing.T) {
+	root, _ := fill(t)
+	outside := t.TempDir()
+	old := time.Now().Add(-48 * time.Hour)
+	var entries []string
+	for _, name := range []string{"a", "b"} {
+		p := filepath.Join(outside, name)
+		os.MkdirAll(p, 0o755)
+		os.WriteFile(filepath.Join(p, "model.aimodelx"), make([]byte, 100), 0o644)
+		filepath.Walk(p, func(q string, _ os.FileInfo, _ error) error { return os.Chtimes(q, old, old) })
+		entries = append(entries, p)
+	}
+	SetRestorable(func() []string { return entries })
+	defer SetRestorable(nil)
+	Use(entries[1]) // loaded by this process
+	free, _, err := DiskSpace(root)
+	if err != nil {
+		t.Skip(err)
+	}
+	SetLimits(&Limits{MinFree: free + 1e9})
+	defer SetLimits(nil)
+	var logged []string
+	err = Room(1, filepath.Join(root, "original/lab/x/f"), func(f string, a ...any) { logged = append(logged, f) })
+	if !errors.Is(err, ErrNoRoom) {
+		t.Fatalf("err %v", err)
+	}
+	if _, err := os.Stat(entries[0]); !os.IsNotExist(err) {
+		t.Error("short of disk, the restorable entry was kept")
+	}
+	if _, err := os.Stat(entries[1]); err != nil {
+		t.Errorf("the entry this process uses went: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "original/lab/old")); err != nil {
+		t.Errorf("short of disk without a MaxSize, a unit of the root went: %v", err)
+	}
+	if len(logged) != 1 {
+		t.Errorf("logged %v", logged)
+	}
+}
+
+// TestScanModel names the model of each unit, of a compiled program by its source, and a
+// compiled program of which only the record of its source is left.
+func TestScanModel(t *testing.T) {
+	root, _ := fill(t)
+	key := strings.Repeat("ab", 32)
+	if err := SetSource(root, key, filepath.Join(root, "models", "Old", "x.mlpackage")); err != nil {
+		t.Fatal(err)
+	}
+	gone := strings.Repeat("cd", 32)
+	if err := SetSource(root, gone, "/elsewhere/Other.mlpackage"); err != nil {
+		t.Fatal(err)
+	}
+	u, err := Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"original/lab/old": "lab/old", "models/Old": "Old", "entries/amd-xdna2/Old.amd-npu2": "Old.amd-npu2",
+		"iron/0123": "", "compiled/" + key: "Old", "compiled/" + gone: "Other", "converted/Old/coreai/Old.coreai/v1": "Old",
+	}
+	for _, x := range u.Units {
+		if m, ok := want[x.Name]; ok && x.Model != m {
+			t.Errorf("%s: model %q, want %q", x.Name, x.Model, m)
+		}
+		if x.Leftover != (x.Name == "compiled/"+gone) {
+			t.Errorf("%s: leftover %v", x.Name, x.Leftover)
+		}
+	}
+}

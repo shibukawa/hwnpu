@@ -53,7 +53,7 @@ fmt.Println(hwnpu.AveragePower(before, after), "W", after.Scope) // "package" �
 
 ## モデルのファイル (modelstore)
 
-`github.com/shibukawa/hwnpu/modelstore` は、hwnpu のコマンドと同じ順でモデルのファイルを探して取ります: この機械のキャッシュ、取得元 (`HWNPU_MODEL_SOURCE`: フォルダ、WebDAV と HTTP、S3)、アプリが一緒に入れたモデル、Hugging Face の順です (docs/cache-sharing.md 7 節)。
+`github.com/shibukawa/hwnpu/modelstore` は、hwnpu のコマンドと同じ順でモデルのファイルを探して取ります: この機械のキャッシュ、取得元 (`HWNPU_MODEL_SOURCE`: フォルダ、WebDAV と HTTP、S3)、アプリが一緒に入れたモデル、Hugging Face の順です (docs/cache-sharing-design.md 7 節)。
 
 ```go
 app := configdir.New("", "myapp") // github.com/shibukawa/configdir v1.1.0
@@ -118,7 +118,7 @@ Strix Point 以降 (XDNA2) では、IRON がビルドした full ELF (`design.el
 - Linux では `/dev/accel/accel0` に読み書きできる権限 (`render` グループ) が必要です
 - `GraphSource{Path: "model.xml"}` で OpenVINO IR (隣の `.bin` も読みます) を、`GraphSource{Blob: ...}` でコンパイル済み blob を渡せます。コンパイラに渡す追加のオプションは `BuildFlags` に `--config KEY="VALUE"` の形で書きます
 - NPU コンパイラが対応しない演算を含むモデルは、配置方針にかかわらず `ErrNotOnNPU` になり、原因の演算とビルドログが返ります
-- Intel の NPU に向けて OpenVINO IR に変換するのは、hwnpu-chat のモデル (LFM3 とその VL・Audio・d1、Gemma 4、Qwen3.5、Qwen3、PLaMo 3、PLaMo-Embedding)、Anima、Sana、`hwnpu-audio` の transcribe (Whisper)、tts、generate (Magenta RealTime 2、MOSS-SoundEffect)、pitch、notes、`hwnpu-image` の depth (DA3、MoGe-2)、face-detect (YuNet)、segment (EfficientSAM のエンコーダ)、detect、pose、ocr です。Chroma、SigLIP 2 (label)、Qwen-Image は AMD の NPU と Apple の Neural Engine だけです (Intel はまだ)。実機で動かしたのは LFM3、PLaMo 3 Translate、PLaMo-Embedding、Anima だけで、ほかは OpenVINO の CPU (`HWNPU_BACKEND=openvino`、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の「OpenVINO で切り分ける」) で変換から結果までを確かめた段階です ([docs/design.md](docs/design.md) 16.166)
+- Intel の NPU に向けて OpenVINO IR に変換するのは、hwnpu-chat のモデル (LFM3 とその VL・Audio・d1、Gemma 4、Qwen3.5、Qwen3、PLaMo 3、PLaMo-Embedding)、Anima、`hwnpu-audio` の transcribe (Whisper)、tts、generate (Magenta RealTime 2、MOSS-SoundEffect)、pitch、notes、`hwnpu-image` の depth (DA3、MoGe-2)、face-detect (YuNet)、segment (EfficientSAM のエンコーダ)、detect、pose、ocr です。Chroma、FLUX.2 klein、SigLIP 2 (label) は AMD の NPU と Apple の Neural Engine だけです (Intel はまだ)。実機で動かしたのは LFM3、PLaMo 3 Translate、PLaMo-Embedding、Anima だけで、ほかは OpenVINO の CPU (`HWNPU_BACKEND=openvino`、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md) の「OpenVINO で切り分ける」) で変換から結果までを確かめた段階です ([docs/design.md](docs/design.md) 16.166)
 
 ## 診断
 

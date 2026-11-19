@@ -1,12 +1,12 @@
 // hwnpu looks after hwnpu on this machine: the NPU and what uses it, the models downloaded and
-// the programs converted from them (the cache, docs/cache-sharing.md 7), and reports of problems.
+// the programs converted from them (the cache, docs/cache-sharing-design.md 7), and reports of problems.
 // The models are run by hwnpu-chat, hwnpu-image and hwnpu-audio.
 //
 //	hwnpu status                             # the NPU (driver, firmware, how busy, power), what uses it, the cache
 //	hwnpu status -w 2s                       # again every 2 seconds
 //	hwnpu issue                              # a draft issue about the last command that failed, opened in the browser
 //	hwnpu cache                              # where the cache is, what it holds, the disk's free space
-//	hwnpu cache ls                           # each unit: its size and when it was last used
+//	hwnpu cache ls                           # by model and kind: the units, size, when last used (-u: each unit)
 //	hwnpu cache prune --max-size 200GB       # remove the least recently used until it fits
 //	hwnpu cache prune --older-than 30d       # remove what was not used for 30 days
 //	hwnpu cache clear Qwen3-1.7B             # remove a model's files and programs
@@ -54,11 +54,13 @@ package main
 
 import (
 	"context"
+	"os"
 
 	"github.com/alecthomas/kong"
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/console"
+	shared "github.com/shibukawa/hwnpu/internal/store"
 )
 
 type cli struct {
@@ -78,5 +80,7 @@ func main() {
 		kong.UsageOnError(),
 		kong.Vars{"kinds": kindHelp, "max_size_env": cache.MaxSizeEnv},
 		kong.BindTo(ctx, (*context.Context)(nil)))
-	k.FatalIfErrorf(console.EndInterrupted(k.Run()))
+	err := console.EndInterrupted(k.Run())
+	shared.Wait(console.Log(os.Stderr)) // what was made here goes in the sources written back to
+	k.FatalIfErrorf(err)
 }

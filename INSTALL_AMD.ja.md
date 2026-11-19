@@ -207,6 +207,10 @@ HWNPU_IRON_ENV=~/mlir-aie/ironenv go run ./cmd/hwnpu-chat "こんにちは"
 
 ある機械で作った書き出しは、同じ NPU のほかの機械でも動きます (ディレクトリを写すか、`-m` に渡す)。
 
+hwnpu-image generate も、FLUX.2 klein 4B (`-m flux2-klein`、`--size` は 8 つのアスペクト比、既定は 1:1) の書き出しを、初回に同じように `tools/amd/iron_flux2klein.py` で作ります。何かを落とす前に、`HWNPU_MODEL_SOURCE` の取得元に書き出しがないかを見ます: ほかの機械の初回が置いたもの、または手で作って `hwnpu-dev cache import` で同じ名前 (`flux.2-klein-4b.amd-npu2`) で置いたもの。書き出しは `--size` の 8 つの大きさ (1:1、1:1s、2:3、3:4、9:16、3:2、4:3、16:9) を 1 つに持ち (16.0 GB、作るのに 30 分ほど。重みは 1 回だけで、大きさごとなら 2 つで 22.7 GB)。16:9 と 9:16 は 1344 x 768 と 768 x 1344 で、ほかの画像モデルの 1360 x 752、752 x 1360 とは異なります。作ったものは書き戻す取得元 (`?writeback=true`) に置きます。
+
+ほかの AMD の書き出し (Anima、Chroma、Depth Anything 3、MoGe-2、YuNet、SigLIP 2、`amd_export` のないチャットのモデル) は手で作ります。hwnpu-image と hwnpu-chat は、手元にあればそれを、なければ取得元にある同じ名前のものを、キャッシュの `entries/amd-xdna2` に一度だけ落として使います (2 回目からはその写し)。`~/.cache/hwnpu/entries/amd-xdna2/NAME.amd-npu2` に作ると、初めて使ったときに記述し (ファイルの SHA-256。一度だけ)、書き戻す取得元に置きます。ほかの機械は作らずに落として使えます。`~/models` のものは読むだけなので、`hwnpu-dev cache import ~/models/NAME.amd-npu2` で置きます。書き出しもチェックポイントも、4 ファイルずつ並べて落とします。
+
 ## 5. 自分のカーネルを使う
 
 ```go

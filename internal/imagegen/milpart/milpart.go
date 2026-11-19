@@ -1,5 +1,5 @@
 // Package milpart has what the MIL programs of the image models share (internal/imagegen/anima/mil,
-// internal/imagegen/sana/mil): a Part, one program that llm.WritePart writes as a Core ML package
+// chroma/mil, flux2klein/mil): a Part, one program that llm.WritePart writes as a Core ML package
 // or lowers to OpenVINO IR, and a Graph with the tensor operations their layers are written in.
 package milpart
 
@@ -9,13 +9,14 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/llm"
 	"github.com/shibukawa/hwnpu/internal/llm/blocks"
+	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
 
 // Part is one program of an image model: a model for llm.WritePart whose Build runs Body.
 type Part struct {
 	Name string
-	// Model prefixes the build's errors ("anima", "sana").
+	// Model prefixes the build's errors ("anima", "chroma").
 	Model string
 	Body  func(g *Graph)
 }
@@ -57,6 +58,34 @@ type Graph struct {
 func (g *Graph) Input(name string, shape ...int) *mlpackage.Var {
 	x := g.B.Input(name, mlpackage.Float16, shape...)
 	g.ins = append(g.ins, mlpackage.Feature{Name: name, DType: mlpackage.Float16, Shape: x.Shape})
+	return x
+}
+
+// InputI32 adds an int32 input (indices, offsets).
+func (g *Graph) InputI32(name string, shape ...int) *mlpackage.Var {
+	x := g.B.Input(name, mlpackage.Int32, shape...)
+	g.ins = append(g.ins, mlpackage.Feature{Name: name, DType: mlpackage.Int32, Shape: x.Shape})
+	return x
+}
+
+// InputI16 adds an int16 input (indices the Neural Engine takes: it has no int32).
+func (g *Graph) InputI16(name string, shape ...int) *mlpackage.Var {
+	x := g.B.Input(name, mlpackage.Int16, shape...)
+	g.ins = append(g.ins, mlpackage.Feature{Name: name, DType: mlpackage.Int16, Shape: x.Shape})
+	return x
+}
+
+// InputI8 adds an int8 input (weights passed at run time).
+func (g *Graph) InputI8(name string, shape ...int) *mlpackage.Var {
+	x := g.B.Input(name, mlpackage.Int8, shape...)
+	g.ins = append(g.ins, mlpackage.Feature{Name: name, DType: mlpackage.Int8, Shape: x.Shape})
+	return x
+}
+
+// InputI4 adds a signed 4-bit input (a Core AI program's: Core ML's model description has none).
+func (g *Graph) InputI4(name string, shape ...int) *mlpackage.Var {
+	x := g.B.Input(name, milspec.DataType_INT4, shape...)
+	g.ins = append(g.ins, mlpackage.Feature{Name: name, DType: milspec.DataType_INT4, Shape: x.Shape})
 	return x
 }
 
