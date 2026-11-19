@@ -281,6 +281,9 @@ func (g *Graph) Linear(x *mlpackage.Var, name, outName string, outDim int) *mlpa
 // the consumer must undo it (an RMSNorm with inScale s).
 func (g *Graph) LinearS(x *mlpackage.Var, name, outName string, outDim int, s float32) *mlpackage.Var {
 	in := x.Shape[len(x.Shape)-1]
+	if bits := RowScaledBits(g.Opts.FormatOf(name)); bits != 0 {
+		return g.linearRows(x, name, "", outName, outDim, bits, s)
+	}
 	w := g.Weight(name, outDim, in, s)
 	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
 	if outName != "" {
@@ -655,7 +658,7 @@ func constOnes(n int) []float32 {
 func (g *Graph) LinearBias(x *mlpackage.Var, name, bias, outName string, outDim int) *mlpackage.Var {
 	in := x.Shape[len(x.Shape)-1]
 	if bits := RowScaledBits(g.Opts.FormatOf(name)); bits != 0 {
-		return g.linearRows(x, name, bias, outName, outDim, bits)
+		return g.linearRows(x, name, bias, outName, outDim, bits, 1)
 	}
 	w := g.Weight(name, outDim, in, 1)
 	bv := g.F16s(bias, []int{outDim}, g.Get(bias, outDim))
@@ -715,14 +718,19 @@ func RowScaledBits(format string) int {
 
 // linearRows is LinearBias for a weight in lutNr: each row divided by its scale (its largest
 // magnitude over the matrix's, in fp16) is palettized in tables of Opts.Group rows, and the
-// output multiplied back by the scales before the bias. Rows of very different magnitudes in one
-// table leave the small ones few levels (gpt-oss's attention: rows of one projection differ by
-// up to 6600 times); with the scales each row spans its table. The output is bounded as the
-// weight's own (the scales are at most 1).
-func (g *Graph) linearRows(x *mlpackage.Var, name, bias, outName string, outDim, bits int) *mlpackage.Var {
+// output multiplied back by the scales before the bias (none for Linear; the scales times s for
+// LinearS). Rows of very different magnitudes in one table leave the small ones few levels
+// (gpt-oss's attention: rows of one projection differ by up to 6600 times); with the scales each
+// row spans its table. The output is bounded as the weight's own (the scales are at most 1).
+func (g *Graph) linearRows(x *mlpackage.Var, name, bias, outName string, outDim, bits int, s float32) *mlpackage.Var {
 	in := x.Shape[len(x.Shape)-1]
 	w := slices.Clone(g.Get(name, outDim, in))
 	scales := RowScales(w, outDim, in)
+	if s != 1 {
+		for i := range scales {
+			scales[i] *= s
+		}
+	}
 	q := palette.QuantizeBits(w, outDim, in, g.Opts.Group, g.Opts.ColBlock, bits, 8, g.lutMode())
 	g.rowsOnly(name, q.ColBlock, in)
 	wv, err := g.B.LUT(name, bits, []int{outDim, in}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
@@ -731,7 +739,14 @@ func (g *Graph) linearRows(x *mlpackage.Var, name, bias, outName string, outDim,
 	}
 	shape := append(append([]int{}, x.Shape[:len(x.Shape)-1]...), outDim)
 	y := g.Op("linear", map[string]any{"x": x, "weight": wv}, shape...)
-	y = g.Op("mul", map[string]any{"x": y, "y": g.F16s(name+"_rows", []int{outDim}, scales)}, shape...)
+	rs := g.F16s(name+"_rows", []int{outDim}, scales)
+	if bias == "" {
+		if outName != "" {
+			return g.B.NamedOp("mul", outName, map[string]any{"x": y, "y": rs}, mlpackage.Float16, shape...)
+		}
+		return g.Op("mul", map[string]any{"x": y, "y": rs}, shape...)
+	}
+	y = g.Op("mul", map[string]any{"x": y, "y": rs}, shape...)
 	inputs := map[string]any{"x": y, "y": g.F16s(bias, []int{outDim}, g.Get(bias, outDim))}
 	if outName != "" {
 		return g.B.NamedOp("add", outName, inputs, mlpackage.Float16, shape...)

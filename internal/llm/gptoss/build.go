@@ -48,7 +48,7 @@ func build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 	if opts.Format == "" {
 		opts.Format = cfg.Format()
 	}
-	opts.FormatFor = append(attnFormats(), opts.FormatFor...)
+	opts.FormatFor = append(defaultFormats(), opts.FormatFor...)
 	noLayers := opts.Layers == llm.NoLayers
 	first := noLayers && opts.Start == 0 // layer 0 up to its router
 	afterAttn := noLayers && opts.Start > 0
@@ -332,11 +332,17 @@ func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 
 	return c.StepInputs(pos, valid, q, cache)
 }
 
-// attnFormats are the attention's formats, ahead of the caller's FormatFor rules (a later rule
-// wins): lut8 with a scale a row (lut8r, blocks.LinearBias). The rows of one projection differ in
-// magnitude by up to 6600 times, so in plain lut8 (a table for 16 rows) the small rows have few
-// levels: on the Neural Engine the KL from the float32 reference on plain text is 0.28 in lut8,
-// 0.069 in lut8r, 0.092 in int8 (a scale a row), 0.033 in fp16; a step on an M3 57 ms in lut8 and
-// lut8r, 73 in int8, 79 in fp16, whose 2.99 GiB on the Neural Engine swaps on a 16 GB Mac with the
-// experts wired (docs/improvements.md).
-func attnFormats() []string { return []string{"self_attn=lut8r"} }
+// defaultFormats are the formats ahead of the caller's FormatFor rules (a later rule wins), each
+// lutN with a scale a row (lutNr, blocks.LinearBias and Linear).
+//
+// The attention in lut8r: the rows of one projection differ in magnitude by up to 6600 times, so
+// in plain lut8 (a table for 16 rows) the small rows have few levels: on the Neural Engine the KL
+// from the float32 reference on plain text is 0.28 in lut8, 0.069 in lut8r, 0.092 in int8 (a
+// scale a row), 0.033 in fp16; a step on an M3 57 ms in lut8 and lut8r, 73 in int8, 79 in fp16,
+// whose 2.99 GiB on the Neural Engine swaps on a 16 GB Mac with the experts wired.
+//
+// The head in lut6r: the head's part 10.2 → 8.1 ms a step and 0.14 GiB less on the Neural Engine,
+// for KL on 4 texts 0.057 → 0.061 (plain lut6 0.063; GPTQ's lut6 codes about the same as lut6r,
+// but they are not shipped). Best answers: --format-for=self_attn=fp16,lm_head=lut8
+// (docs/improvements.md).
+func defaultFormats() []string { return []string{"self_attn=lut8r", "lm_head=lut6r"} }

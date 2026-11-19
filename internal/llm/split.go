@@ -187,6 +187,10 @@ func tensorBytes(name string, shape []int, o Options) int64 {
 		return (n*int64(b)+7)/8 + rows*(cols/int64(block))*2
 	}
 	bits := map[string]int64{"": 4, "lut4": 4, "lut6": 6, "lut8": 8}[format]
+	var rowScales int64 // lutNr: an fp16 scale a row (blocks.LinearBias)
+	if b := map[string]int64{"lut4r": 4, "lut6r": 6, "lut8r": 8}[format]; b > 0 && len(shape) == 2 {
+		bits, rowScales = b, 2*int64(shape[0])
+	}
 	if len(shape) == 2 && bits > 0 {
 		rows, cols := int64(shape[0]), int64(shape[1])
 		group, block := int64(o.Group), int64(o.ColBlock)
@@ -196,7 +200,7 @@ func tensorBytes(name string, shape []int, o Options) int64 {
 		if block <= 0 {
 			block = cols
 		}
-		return (n*bits+7)/8 + (rows+group-1)/group*((cols+block-1)/block)*(1<<bits)*2
+		return (n*bits+7)/8 + (rows+group-1)/group*((cols+block-1)/block)*(1<<bits)*2 + rowScales
 	}
 	return 2 * n
 }

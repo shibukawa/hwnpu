@@ -17,8 +17,9 @@ var Arch = &llm.Arch{
 	LastRow:       true,
 	// 1: the attention's projections fp16 (build), 2026-11-19
 	// 2: fp16 for the first 8 layers, int8 for the rest, 2026-11-19
-	// 3: the attention lut8r (attnFormats), 2026-11-19
-	Revision: 3,
+	// 3: the attention lut8r (defaultFormats), 2026-11-19
+	// 4: the head lut6r, 2026-11-19
+	Revision: 4,
 }
 
 func init() { llm.Register(Arch) }

@@ -266,7 +266,7 @@ models:
     bytes: {amd: 11.79e9, apple: 14.4e9}
     features: [tools, thinking]
     amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256
-    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (wired into memory on 24 GB and more; HWNPU_MOE_WIRE=1 on 16 GB), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables with a scale a row; it always reasons first (the low effort with no_think)"
+    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (wired into memory on 24 GB and more; HWNPU_MOE_WIRE=1 on 16 GB), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b
