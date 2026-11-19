@@ -301,6 +301,17 @@ K tokens per call (`hwnpu-dev probe verify -formats lut4 -layers 16`, 0.97 B wei
 
   So the M1 alone slows down past about 2.9 GiB; the M2, the M3 (Qwen3.5-4B in lut8, 3.96 GiB in one program, at its expected 8 tokens/s, docs/design.md 16.88) and the M4 (3.62 GiB) do not.
 
+K tokens per call in every format the Neural Engine runs (`hwnpu-dev probe verify -layers 8`, 0.49 B weights, macOS 27.2.1, 2026-11-19; report: [npuprobe-m2-verify.md](npu_profiles/npuprobe-m2-verify.md)):
+
+| format | K=1 ms | G weights/s | K=8 × K=1 | K=64 × K=1 | K=64 TFLOPS | K=128 × K=1 | K=128 TFLOPS |
+|---|---|---|---|---|---|---|---|
+| fp16 | 15.5 | 31 | 1.00 | 1.02 | 3.9 | 1.39 | 5.8 |
+| int8 | 8.0 | 61 | 1.01 | 1.06 | 7.4 | 1.52 | 10.3 |
+| lut4 | 4.2 | 117 | 1.02 | 1.13 | **13.3** | 2.95 | 10.2 |
+
+- **Every format checks 64 tokens for about the time of one** (1.02 to 1.13 calls), against AMD's 1.27 for 4 and 2.85 for 8: on the Neural Engine speculative decoding and prompt chunks of 64 cost almost nothing in any format.
+- lut4 reaches 13.3 TFLOPS at 64 tokens, the M3's 13.7; fp16 and int8, which read 4 and 2 times the bytes, stay bound by the weights to 64 and still gain at 128 (1.39 and 1.52 times one call). Past 64, lut4 is the one that falls (2.95 times at 128): a prompt in lut4 is read fastest in chunks of 64.
+
 ### Apple M1 (MacBook Pro 13", 16 GB, macOS 27.2)
 
 `hwnpu-dev probe` with the defaults (bench and limit; report: [npuprobe-m1.md](npu_profiles/npuprobe-m1.md)). `hwnpu-dev report` passes all four checks. 16 layers (0.97 B), against the M2 and the M3 above:
