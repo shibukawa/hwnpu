@@ -31,25 +31,26 @@ import (
 
 // amdResult is one graph exported and timed.
 type amdResult struct {
-	Probe       string  `json:"probe"` // bench, verify, attn
-	Part        string  `json:"part"`  // layers, stream, attn
-	Format      string  `json:"format,omitempty"`
-	Layers      int     `json:"layers,omitempty"`
-	Rows        int     `json:"rows"`
-	Heads       int     `json:"heads,omitempty"`
-	Dim         int     `json:"dim,omitempty"`
-	Params      int64   `json:"params,omitempty"`
-	WeightBytes int64   `json:"weight_bytes,omitempty"`
-	FLOPs       float64 `json:"flops"`
-	Commands    int     `json:"commands"`
-	ExportS     float64 `json:"export_s"`
-	LoadS       float64 `json:"load_s"`
-	Calls       int     `json:"calls,omitempty"`
-	MsPerCall   float64 `json:"ms_per_call,omitempty"`
-	CPUUse      float64 `json:"cpu_use,omitempty"`
-	NetW        float64 `json:"net_w,omitempty"`
-	MJPerCall   float64 `json:"mj_per_call,omitempty"`
-	Error       string  `json:"error,omitempty"`
+	Probe       string    `json:"probe"` // bench, verify, attn
+	Part        string    `json:"part"`  // layers, stream, attn
+	Format      string    `json:"format,omitempty"`
+	Layers      int       `json:"layers,omitempty"`
+	Rows        int       `json:"rows"`
+	Heads       int       `json:"heads,omitempty"`
+	Dim         int       `json:"dim,omitempty"`
+	Params      int64     `json:"params,omitempty"`
+	WeightBytes int64     `json:"weight_bytes,omitempty"`
+	FLOPs       float64   `json:"flops"`
+	Commands    int       `json:"commands"`
+	ExportS     float64   `json:"export_s"`
+	LoadS       float64   `json:"load_s"`
+	Calls       int       `json:"calls,omitempty"`
+	MsPerCall   float64   `json:"ms_per_call,omitempty"`
+	CPUUse      float64   `json:"cpu_use,omitempty"`
+	NetW        float64   `json:"net_w,omitempty"`
+	MJPerCall   float64   `json:"mj_per_call,omitempty"`
+	Power       *amdPower `json:"power,omitempty"`
+	Error       string    `json:"error,omitempty"`
 }
 
 func (r amdResult) gbps() float64 {
@@ -222,7 +223,15 @@ func (p *prober) amdTime(dir string, r *amdResult) error {
 		}
 	}
 	var t result
-	if err := p.measure(func() error { return g.Run(p.ctx, vals) }, &t, false); err != nil {
+	for range 2 { // measure's warm-up, here before the sampler starts
+		if err := g.Run(p.ctx, vals); err != nil {
+			return fmt.Errorf("run: %w", err)
+		}
+	}
+	smp := startAMDSampler(p.amdMetrics)
+	err = p.measure(func() error { return g.Run(p.ctx, vals) }, &t, false)
+	r.Power = smp.stop()
+	if err != nil {
 		return fmt.Errorf("run: %w", err)
 	}
 	r.Calls, r.MsPerCall, r.CPUUse, r.NetW, r.MJPerCall = t.Calls, t.MsPerCall, t.CPUUse, t.NetW, t.MJPerCall
@@ -242,6 +251,9 @@ func logAMD(r amdResult) {
 		} else {
 			line += fmt.Sprintf(", %.2f TFLOPS", r.tflops())
 		}
+		if w := r.Power; w != nil {
+			line += fmt.Sprintf(", package %.1f W (NPU %.1f, rest %.1f), DRAM %.0f GB/s", w.SocketW, w.NPUW, w.RestW, w.DRAMRead+w.DRAMWrite)
+		}
 	}
 	if r.Error != "" {
 		line += "  error: " + short(r.Error, 300)
@@ -260,7 +272,7 @@ func amdDevice(infos []hwnpu.DeviceInfo) *hwnpu.DeviceInfo {
 }
 
 // amdMarkdown is the report's AMD sections.
-func amdMarkdown(sb *strings.Builder, rows []amdResult) {
+func amdMarkdown(sb *strings.Builder, rows []amdResult, idle *amdPower) {
 	var bench, verify, attn []amdResult
 	for _, r := range rows {
 		switch r.Probe {
@@ -322,6 +334,35 @@ func amdMarkdown(sb *strings.Builder, rows []amdResult) {
 		}
 		sb.WriteString("\niron_mha.ImageMHA with QKᵀ and P·V through bfp16 and the softmax's exponential on one bf16 limb (FLUX.2 klein's export, docs/design.md 16.207). TFLOPS counts the two products (4 × rows² × heads × dim).\n")
 	}
+	amdPowerMarkdown(sb, rows, idle)
+}
+
+// amdPowerMarkdown writes where the power of each run went, from gpu_metrics.
+func amdPowerMarkdown(sb *strings.Builder, rows []amdResult, idle *amdPower) {
+	if idle == nil || !slices.ContainsFunc(rows, func(r amdResult) bool { return r.Power != nil }) {
+		return
+	}
+	sb.WriteString("\n## Where the power goes (AMD, gpu_metrics)\n\n")
+	fmt.Fprintf(sb, "At rest: package %.2f W (NPU %.2f, CPU cores %.2f, GPU %.2f, the rest %.2f), DRAM %.1f GB/s read and %.1f written.\n\n",
+		idle.SocketW, idle.NPUW, idle.CoresW, idle.GfxW, idle.RestW, idle.DRAMRead, idle.DRAMWrite)
+	sb.WriteString("| run | ms/call | package W | above rest | NPU W | CPU cores | the rest | NPU's share | the rest's share | DRAM GB/s | NPU busy | NPU MHz |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+	for _, r := range rows {
+		w := r.Power
+		if w == nil {
+			continue
+		}
+		up := w.SocketW - idle.SocketW
+		share := func(x float64) string {
+			if up <= 0.1 {
+				return ""
+			}
+			return fmt.Sprintf("%.0f %%", 100*x/up)
+		}
+		dn, dc, dr := w.NPUW-idle.NPUW, w.CoresW-idle.CoresW, w.RestW-idle.RestW
+		fmt.Fprintf(sb, "| %s %s | %s | %.2f | %+.2f | %.2f | %+.2f | %+.2f | %s | %s | %.1f | %.0f %% | %.0f |\n",
+			r.Probe, r.name(), cell(r.MsPerCall, "%.1f"), w.SocketW, up, w.NPUW, dc, dr, share(dn), share(dr), w.DRAMRead+w.DRAMWrite, w.NPUBusy, w.NPUClock)
+	}
+	sb.WriteString("\nThe SMU's own split (amdgpu's gpu_metrics, the means of a sample every 50 ms while the run is timed). NPU W is the NPU's rail; the rest is the package less the NPU, the CPU cores and the GPU: the data fabric, the memory controller and its PHY, and I/O, the part of moving the weights that is on the package. The DRAM chips are outside it and not measured. The shares are of the package's power above rest.\n")
 }
 
 // amdFlags are the flags that mean something on AMD, and which were given.
@@ -394,7 +435,7 @@ func runAMD(ctx context.Context, info *hwnpu.DeviceInfo, mode string, af amdFlag
 		out = reportName(&rep)
 	}
 	save := func() { write(out, &rep) }
-	p := &prober{ctx: ctx, dev: dev, dir: work, minRun: minRun}
+	p := &prober{ctx: ctx, dev: dev, dir: work, minRun: minRun, amdMetrics: amdMetricsPath()}
 	fmt.Printf("%s, %s, %s, RAM %.0f GiB\nNPU: %s (%s)\n", rep.CPU, rep.Model, rep.OS, float64(rep.RAMBytes)/(1<<30), info.Name, info.Backend)
 	if info.Caps&hwnpu.CapPowerMeter != 0 {
 		if err := p.measureIdle(); err != nil {
@@ -405,6 +446,15 @@ func runAMD(ctx context.Context, info *hwnpu.DeviceInfo, mode string, af amdFlag
 				rep.Meter = s.Source
 			}
 			fmt.Printf("power meter %s, idle %.2f W\n", rep.Meter, p.idleW)
+		}
+	}
+	if p.amdMetrics != "" {
+		smp := startAMDSampler(p.amdMetrics)
+		time.Sleep(4 * time.Second)
+		if rep.AMDIdle = smp.stop(); rep.AMDIdle != nil {
+			i := rep.AMDIdle
+			fmt.Printf("gpu_metrics at rest: package %.2f W (NPU %.2f, cores %.2f, GPU %.2f, the rest %.2f), DRAM %.1f GB/s\n",
+				i.SocketW, i.NPUW, i.CoresW, i.GfxW, i.RestW, i.DRAMRead+i.DRAMWrite)
 		}
 	}
 	fmt.Println("Other programs on the NPU or the CPU spoil the times (pgrep -fa 'hwnpu|iron_').")

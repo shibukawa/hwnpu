@@ -215,7 +215,7 @@ func markdown(rep *report) string {
 		cacheMarkdown(&sb, rep.Cache)
 	}
 	if len(rep.AMD) > 0 {
-		amdMarkdown(&sb, rep.AMD)
+		amdMarkdown(&sb, rep.AMD, rep.AMDIdle)
 	}
 	if len(rep.Notes) > 0 {
 		sb.WriteString("\n")

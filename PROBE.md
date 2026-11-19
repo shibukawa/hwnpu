@@ -37,7 +37,7 @@ On AMD's NPU the probe exports its shapes with IRON, the same exporters hwnpu-ch
 HWNPU_IRON_ENV=~/IRON/ironenv go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
 ```
 
-It takes about 15 minutes (each of its 30 graphs is exported in 5 to 55 seconds and timed for 3) and runs bench, verify and attn (below). Close other programs that use the NPU first (`pgrep -fa 'hwnpu|iron_'`): another model running on it moved a step of FLUX.2 klein from 1.3 to 2.3 s.
+It takes about 20 minutes (each of its 39 graphs is exported in 5 to 55 seconds and timed for 3) and runs bench, verify and attn (below). Close other programs that use the NPU first (`pgrep -fa 'hwnpu|iron_'`): another model running on it moved a step of FLUX.2 klein from 1.3 to 2.3 s.
 
 ### 3. Energy
 
@@ -196,6 +196,20 @@ q4 has no call for 2 to 8 rows (QGEMVRows is q8 and q6 only).
 - **A prompt chunk of q4, q6 or q8 pays its dequantize at every call**: 256 rows take 86 to 92 ms against bfp16's 28 ms, three times as long, and the chunk only nears bfp16's rate at 4096 rows. Holding a chat model's weights for the prompt in bfp16 too (9 bits a weight more) would read prompts up to 3 times as fast; not done.
 
 The image DiTs' attention (24 heads of 128): 12.8 ms at 1536 rows (2.3 TFLOPS), 81.8 ms at 4608 rows (3.2 TFLOPS). It is a fifth of the GEMMs' rate: what is left of a DiT block's time on AMD is the attention (FLUX.2 klein's single block: attention 118 of 198 ms before the exponential's change, docs/design.md 16.207).
+
+Where the power goes (amdgpu's gpu_metrics, the SMU's own split, sampled every 50 ms; `hwnpu-dev probe` reports it on AMD). At rest the package draws 4.4 W:
+
+| run | package W | above rest | NPU rail | CPU cores | the rest of the package | DRAM GB/s |
+|---|---|---|---|---|---|---|
+| q4 decode, layers (as the chat models run) | 13.3 | +9.0 | 1.5 (17 %) | +1.7 | +5.7 | 20 |
+| q4 decode, stream (the ceiling) | 17.2 | +12.8 | 0.75 (6 %) | +1.8 | +10.3 | 48 |
+| bf16 decode, stream | 14.1 | +9.7 | 0.62 (6 %) | +1.6 | +7.5 | 50 |
+| bfp16 GEMM, 4096 rows (15.2 TFLOPS) | 24.7 | +20.3 | 2.0 (10 %) | +0.7 | +17.6 | 50 |
+| image attention, 4608 rows (3.2 TFLOPS) | 15.5 | +11.1 | 0.60 (5 %) | +0.4 | +10.1 | 17 |
+
+- **The NPU's rail is not the NPU's power**: it is 1.5 W in the layers form and falls to 0.6 to 0.75 W as the work grows (stream, attention), and is at most 2.5 W at 15 TFLOPS. It follows the operators' loads more than the work; the AIE array draws mostly from what gpu_metrics leaves in the rest. The 15 % read before was most likely this rail in the chat models' layers form (docs/design.md 16.195: about 1 W while decoding).
+- So the rest is not the memory alone. Fitted over the 39 runs, the NPU rail and the rest above rest are about 6.4 W for being active (the fabric and the NPU's clocks up), plus 0.056 W per GB/s of DRAM traffic (56 pJ a byte) and 0.66 W per TFLOPS (0.66 pJ a FLOP), within 1.2 W for most runs (the q4 stream and the attention 1.4 to 1.8 W over: dequantizing and the softmax are work the FLOPs do not count). The DRAM chips themselves are outside the package and not in these numbers.
+- By that fit, **moving the weights is a small part even at the ceiling**: about 2.7 W of the q4 stream's 11 W, against 6.4 W for being on. In the GEMM at 15 TFLOPS the compute is about 10 of 19.6 W, half: the jobs bound by compute (image models, prompts) now spend their energy on the NPU's arithmetic, decoding on staying awake. Running the same work in less time is what saves energy: the q4 stream costs 136 mJ a token against the layers form's 293.
 
 ### Apple M3 (MacBook Air, 16 GB, macOS 27.0.1)
 

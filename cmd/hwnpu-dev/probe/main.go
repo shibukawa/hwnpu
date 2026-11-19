@@ -138,6 +138,7 @@ type report struct {
 	Cache     []cacheResult    `json:"cache,omitempty"`
 	Resident  []residentResult `json:"resident,omitempty"`
 	AMD       []amdResult      `json:"amd,omitempty"`
+	AMDIdle   *amdPower        `json:"amd_idle,omitempty"` // gpu_metrics' split at rest
 	Notes     []string         `json:"notes,omitempty"`
 }
 
