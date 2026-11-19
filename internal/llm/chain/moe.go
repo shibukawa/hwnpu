@@ -39,6 +39,9 @@ type moe struct {
 	mu      sync.Mutex // one row at a time: the chains that share it run in turn
 	// the programs of one expert on all the rows of a call, by its rows (experts.BuildRows)
 	rows map[int]*moeRows
+	// host runs the experts on the CPU from the checkpoint (llm.HostRouted), in place of g
+	host *experts.Host
+	bias map[int][]float32
 
 	// what the experts took, for HWNPU_MOE_DEBUG: the chain's runs, the rows a layer's experts
 	// ran on, their time and the time of the calls alone
@@ -78,6 +81,16 @@ type moeLayer struct {
 
 // loadMoE loads the experts' program and every layer's experts.
 func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord) (*moe, error) {
+	if rec.Host != nil {
+		h, err := experts.OpenHost(rec.Host, rec.Shape)
+		if err != nil {
+			return nil, fmt.Errorf("chain: the experts: %w", err)
+		}
+		if os.Getenv("HWNPU_MOE_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "chain: the experts of %d layers on the CPU, from %s\n", len(rec.Host.Layers), rec.Host.Checkpoint)
+		}
+		return &moe{shape: rec.Shape, routing: rec.Routing, host: h}, nil
+	}
 	g, err := c.gr.Compile(ctx, hwnpu.GraphSource{Path: rec.Program.Path, Units: c.units})
 	if err != nil {
 		return nil, fmt.Errorf("chain: the experts' program: %w", err)
@@ -304,6 +317,10 @@ func (m *moe) close() {
 	if m == nil {
 		return
 	}
+	if m.host != nil {
+		m.host.Close()
+		m.host = nil
+	}
 	for _, mr := range m.rows {
 		mr.req.Close()
 		mr.g.Close()
@@ -329,6 +346,9 @@ func (m *moe) close() {
 // logits (fp16, rows of experts), writing their output into out (fp16, as xs); the other rows of
 // out are zeros (padding past the step's tokens, which the host does not keep).
 func (m *moe) run(ctx context.Context, layer int, xs, logits, out []byte, rows int) error {
+	if m.host != nil {
+		return m.runHost(layer, xs, logits, out, rows)
+	}
 	ml := m.layers[layer]
 	if ml == nil {
 		return fmt.Errorf("chain: layer %d has no experts held", layer)
@@ -481,5 +501,36 @@ func (m *moe) runRows(ctx context.Context, mr *moeRows, ml *moeLayer, xs, logits
 		n++
 	}
 	copy(out, acc.Bytes())
+	return nil
+}
+
+// runHost runs layer's experts on the CPU (llm.HostRouted).
+func (m *moe) runHost(layer int, xs, logits, out []byte, rows int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	start := time.Now()
+	H, E, K := m.shape.Hidden, m.shape.Experts, m.shape.TopK
+	x := make([][]float32, rows)
+	idx := make([][]int, rows)
+	w := make([][]float32, rows)
+	y := make([][]float32, rows)
+	lg := make([]float32, E)
+	for r := range rows {
+		x[r], y[r] = make([]float32, H), make([]float32, H)
+		vecops.F16ToF32(x[r], xs[2*r*H:2*(r+1)*H])
+		vecops.F16ToF32(lg, logits[2*r*E:2*(r+1)*E])
+		idx[r], w[r] = make([]int, K), make([]float32, K)
+		m.routing.Choose(lg, nil, idx[r], w[r])
+	}
+	if err := m.host.Run(layer, x, idx, w, y); err != nil {
+		return fmt.Errorf("chain: layer %d's experts: %w", layer, err)
+	}
+	clear(out)
+	for r := range rows {
+		vecops.F32ToF16(out[2*r*H:2*(r+1)*H], y[r])
+	}
+	m.Calls += rows
+	m.Time += time.Since(start)
+	m.Called += time.Since(start)
 	return nil
 }

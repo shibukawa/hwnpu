@@ -366,7 +366,8 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if _, routed := model.(llm.Routed); routed && Chip() == "M1" {
+	_, hostExperts := model.(llm.HostRouted)
+	if _, routed := model.(llm.Routed); routed && !hostExperts && Chip() == "M1" {
 		// the experts' program picks their scales with gather_nd, which an M1's Neural Engine
 		// does not take (docs/handoff-ane-gather.md 1): refused before the checkpoint downloads
 		return Config{}, fmt.Errorf("chat: %s is a mixture of experts, which runs on an M2 or later, not on an M1's Neural Engine", c.Name)
@@ -386,6 +387,13 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	checkpoint := sync.OnceValues(func() (string, error) {
 		return FetchWeights(ctx, s.Repo, s.Log)
 	})
+	if hostExperts {
+		// the experts run on the CPU from the checkpoint as it is (llm.HostRouted): it is
+		// needed whatever was converted
+		if _, err := checkpoint(); err != nil {
+			return Config{}, err
+		}
+	}
 	// The name says what the program is: the format always, since a change of the defaults
 	// (LFM3 to lut6 and the grouped attention, 2026-11) must convert anew instead of loading
 	// what an earlier version wrote, and the attention where the architecture has the setting.

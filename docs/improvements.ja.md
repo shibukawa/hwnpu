@@ -475,6 +475,10 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | MoE のモデルは draft と cache tiers なし (`chat.Prepare`) | hwnpu-chat の既定 | 専門家は 1 行ずつ: 1 回に 7 つの draft を確かめると専門家も 8 行。95 のうち 13 しか採られず 2.3 tok/s、なしで 14.1。tier は export 1 つずつで、それぞれに 7.22 GiB の専門家が付く |
 | プロンプトの専門家は、呼び出しの全部の行を専門家 1 つずつで回す (`experts.BuildRows`、`chain.moe.runRows`)。MoE のモデルのプロンプトのプログラムは 1 回 128 トークン (AMD の専門家ごとの行、7.3) | プロンプトの読み込み | プロンプトを読む呼び出しは、行が選んだ専門家をそれぞれ 1 回だけ回す。その専門家に対する行の重み (選んでいない行は 0) を入力にし、出力は次の呼び出しの入力 (acc) で足していく: 1 行ずつなら 64 × 4 回読むところが、1 層で多くて 32 回。LFM2-8B-A1B、1503 トークンのプロンプト (M3): 61.7 s → 15.6 s (1 回 64) → 10.9 s (1 回 128)、24 → 138 tokens/s。1 層 1 行の専門家 1.85 → 0.51 → 0.35 ms。bf16 の基準との KL 0.0057 (48/48)、生成は変わらず (15.3 tok/s) |
 | MoE のモデルを注意でも分ける (`Paged` での `llm.PlanRouted`。注意の層の出力からルーターまでは層なしの部品 `NoLayers`) | 長い文脈 | ホストが塊のキャッシュで注意を取り、専門家も回す: LFM2-8B-A1B は 29 部品、文脈 128000 (1 トークン 14 KiB)。15.0 tok/s (プログラムの中のキャッシュ 4096 で 14.3)、KL 0.0058 (48/48)、16.9K トークンの passkey を見つけた (78 s で読む、216 tokens/s。そこでの生成 11.9 tok/s) |
+| gpt-oss-20b の専門家はチェックポイントの MXFP4 のまま CPU で (`llm.HostRouted`、`experts.Host`、`internal/mxfp4`、`internal/llm/gptoss`。2026-11-19、M3 16 GB) | Mac の gpt-oss-20b: 専門家は int8 で 19 GB、4 ビットのまま Neural Engine で速く回る形はない (8 章) | 部品 (sink つきの注意、YaRN、バイアスつきのルーター。lut8、1.2 GB) は Neural Engine。間でホストが、メモリに映したチェックポイント (`safetensors.File.Map`、10.2 GB、コピーなし) から選んだ専門家を NEON のカーネルで回す (e2m1 は表引き、行は 32 個ごとに int8 にして SDOT)。transformers の float32 との KL 0.0088 (キャッシュなし)、0.0100 (キャッシュあり 1 トークンずつ)、argmax 40/40。hwnpu-chat は最初 12.6 tok/s、下の行の後で 14.5〜15.8。1 ステップ 63〜72 ms、専門家は続けて回すと 1 層 約 1.0 ms、部品の間では 1.3〜1.8 ms |
+| MXFP4 の行を 1 回戻して 4 つのベクトルに (`mxfp4.dot4NEON`) | プロンプト (呼び出しの中で同じ専門家を選んだ行) | 1 層 128 行 113 → 75 ms (ページキャッシュが温まった状態) |
+| プリフォルトが本当にページに触れるように、ホストの専門家にも `HWNPU_MOE_WIRE` (`experts.Host.prefault`) | メモリが足りないときの生成とプロンプト | プリフォルトのループはコンパイラに消されていた (和を使わないため。「touched in 0.0s」)。今は裏で 5〜8 s。16 GB でデスクトップのアプリを開いたままだと、専門家の 10.2 GB はページキャッシュに残らない: 1 トークンの専門家 1 層 4.0 ms (1.0 に対して)、128 行 184 ms (75 に対して)。固定 (mlock) すると `vm.user_wire_limit` (13.06 GB、Neural Engine のプログラムも数える) の下に 9.1〜9.9 GB が入る: 同じ状態で hwnpu-chat 9.8 → 13.3 tok/s、81 トークンのプロンプト 11.6 → 5.5 s。LFM2-8B-A1B と同じく既定は off |
+| 専門家の活性化と量子化を全コアで (`mxfp4.Parallel`、`mxfp4.Run` の働き手を常駐) | 生成 | 続けて回すときの 1 トークンの専門家 1 層 1.01 → 0.93 ms |
 
 ## 8. 試して効かなかったもの・採らなかったもの
 
@@ -546,6 +550,9 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | Neural Engine の MoE: 専門家を 1 配列に (gate と up の横に down の転置、`aicheck moepack`) | 結び付ける配列が半分: Granite 3.1 1B-A400M 1 層 4.5 → 2.6 ms。ただ実行時の重みの切り出しで幅の広い専門家は遅くなる (LFM2-8B-A1B 7.0 ms、2 配列なら 4.35) | handoff-ane-gather.md 1b |
 | Neural Engine の MoE: 選んだ専門家を固定の配列へコピー (`aicheck moe -copy`) | M1 では最良 (結び付け直しが約 5 GB/s 相当)。M3 は結び付けが安い: LFM2-8B-A1B は 2 配列の結び付け 4.35 ms、コピー 4.66。コピーが勝ったのは小さい専門家 (Granite、OLMoE) だけ | handoff-ane-gather.md 1、1b |
 | Neural Engine の MoE: 専門家を 4 ビットで (`aicheck moe4`、`moeserve -bits 4`、M3) | 64 列ごとの scale なら精度は保てる (LFM2-8B-A1B の専門家だけで KL 0.023、top-1 98 %。int8 は 0.0019、行ごとの scale は 0.071)。ただ、どの形も int8 の 1 層 1.7〜2.6 ms より速くない: int8 に 2 つの値を詰めて Neural Engine の `floor_div` で取り出すと 8.7〜11 ms (値も誤り: cosine 0.3)、Core AI の int4 配列 (1 バイトに 2 つ) を `blockwise_shift_scale` で戻すと正しいが GPU で 6.4〜9.8 ms、int4 配列を fp16 に cast すると Neural Engine で正しいが 85 ms。lowering と shim には int4 の入力と `floor_div`、`mod`、`round` を残した | handoff-ane-gather.md 1b |
+| gpt-oss-20b の専門家を 4 ビットで Neural Engine に (A の道。`aicheck mx`、2026-11-19、M3) | Core AI には MX の型がある (`float4E2M1FN` の符号、`float8E8M0FN` のスケール、最後の軸で 32 個ごとの `blockwise_shift_scale`。ailower は `mlpackage.Builder.MXFP4` から書く): 値は正確 (cos 1.000000) だが GPU で回る。M3 では定数でも GPU (5760 × 2880 の gate と up で 0.73 ms)、coreai-build で h15g、h16g、h17g 向けにコンパイルしても Neural Engine の領域ができない (同じ行列の lut4 にはできる。M3 で 0.33 ms)。入力にすると MPSGraph のコピーが fp4 の配列を通さない。チェックポイントの符号を uint4 の入力にし、e2m1 の 16 値の表で引いて (`lut_to_dense`) ブロックのスケールを掛ける形は Neural Engine で正確に回るが、1 専門家 49 ms (表引きだけで 47)。int4 の入力と `blockwise_shift_scale` は GPU。int8 に 2 つ詰めて `floor_div` で取り出す形は 1 層 17〜22 ms で NaN、int4 の cast は 85 ms (handoff-ane-gather.md)。定数は実行時に選べず、768 個の専門家ごとのプログラムは Neural Engine が持てる約 128 を超える。どれも CPU の 1 層 1.0 ms (7.5) より遅い | — |
+| 専門家の呼び出しの間、働き手を回して待たせる (`HWNPU_MXFP4_SPIN`、`HWNPU_MXFP4_SPINNERS`) | Neural Engine の部品の間に CPU が休むと専門家の立ち上がりが遅い: 続けて 1 層 0.93 ms、間に 1 ms で 1.77、3 ms で 2.91。全部の働き手が 5 ms 回すと 1.08 と 1.14。hwnpu-chat では回す働き手が Neural Engine の呼び出しを同じだけ遅らせる (7 つで注意 0.36 → 0.56 ms): 8 つのうち 2 つなら専門家 1 層 1.62 → 1.27 ms でどちらも 15.8 tok/s、4 つで 12.0 tok/s。切り替えとして残し、既定では回さない | — |
+| gpt-oss-20b の出力層を lut4、lut6 に (`-format-for lm_head=…`) | ステップの最後の部品 (2 層と 201088 × 2880 の出力層) は 63〜72 ms のうち 10.5〜13 ms。lut8 の KL 0.0088 (argmax 40/40) に対して lut4 0.068 (36/40)、lut6 0.0136 (39/40)。大きさは 0.27、0.41 GiB (lut8 0.55)。lut8 のまま (出力層の GPTQ の符号は未試行、11.1) | — |
 
 ## 9. 組み合わせの注意 (代償)
 
@@ -598,7 +605,7 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
 | Anima-Turbo (画像生成) | `internal/imagegen/anima` (MIL の 1 つの記述から作る) | Qwen3 の BPE + T5 の Unigram | — (`hwnpu-image`) | 画像を出力 | ◎ M3 で 1024×1024 の 8 ステップ約 40 s、3.8 GB (int8) | △ 変換は可。OpenVINO の CPU で照合済み | ◎ 1024×1024 で 8 ステップ約 68 s、固定 3.4 GiB (DiT は 8 ビット) |
-| gpt-oss-20b | `gptoss` (IRON のみ) | o200k_harmony、バイト単位の BPE (`tokenizer.json`、o200k の前処理) | harmony (`GptOss`: analysis、final、commentary のチャネル、道具は TypeScript の名前空間) | — | — (専門家は int8 で 19 GB、16 GB の Mac に載らない。`internal/llm/experts` は bias と clamp のない SwiGLU の専門家だけ) | — | ○ `iron_export_lm.py gptoss`。24 層 (固定 13.1 GB) でデコード 20.2 tok/s (ステップは出力層まで常駐の 1 配列、文脈 7680 で 17.8。演算が別々のとき 12.4、最初は 10.3)、プロンプトは 256 の塊で 7 ms/トークン (経路はホスト、専門家は bfp16)、専門家はチェックポイントの MXFP4 のまま (mx4)、注意の sink はデバイスで (16.179)。HF fp32 との KL 0.0065〜0.055 (出力層を GPTQ で、`gptoss_gptq.py`)、照合の最上位のトークンは全部一致。package で 1.3 J/トークン |
+| gpt-oss-20b | `gptoss` (IRON。Core AI は専門家を CPU で、7.5) | o200k_harmony、バイト単位の BPE (`tokenizer.json`、o200k の前処理) | harmony (`GptOss`: analysis、final、commentary のチャネル、道具は TypeScript の名前空間) | — | — (専門家は int8 で 19 GB、16 GB の Mac に載らない。`internal/llm/experts` は bias と clamp のない SwiGLU の専門家だけ) | — | ○ `iron_export_lm.py gptoss`。24 層 (固定 13.1 GB) でデコード 20.2 tok/s (ステップは出力層まで常駐の 1 配列、文脈 7680 で 17.8。演算が別々のとき 12.4、最初は 10.3)、プロンプトは 256 の塊で 7 ms/トークン (経路はホスト、専門家は bfp16)、専門家はチェックポイントの MXFP4 のまま (mx4)、注意の sink はデバイスで (16.179)。HF fp32 との KL 0.0065〜0.055 (出力層を GPTQ で、`gptoss_gptq.py`)、照合の最上位のトークンは全部一致。package で 1.3 J/トークン |
 | Qwen3.6-35B-A3B | `qwen35moe` (IRON のみ) | Qwen3.5 と同じ | Qwen3.6 (`Qwen36`: 道具の引数を JSON で、16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`。40 層 (23 GB) でデコード 5.8 tok/s (16.92)、プロンプトは塊で 25 ms/トークン (経路はホスト、16.93)、HF とコサイン 0.989〜0.997 (専門家と出力の行列を GPTQ で、`qwen36_gptq.py`、16.101)、最上位のトークンは全部一致。プロンプトは 1 トークンずつ |
 
 ### 10.2 トークナイザー (`internal/tokenizer`、依存は `golang.org/x/text` だけ)
@@ -739,7 +746,7 @@ Apple / Intel (`hwnpu-image convert`):
 - 時間は A が 2.9〜5 ms、B が 1.0 ms、出力層 5.9 ms (q4)。40 層の見積もりは約 210 ms (5 tok/s)。A の演算の数 (IRON の短い畳み込みが約 10) が残りの大半
 
 **gpt-oss-20b** (16.179)
-- AMD だけ (IRON。経路は Neural Engine に載らない)。24 層、専門家 32 個のうち 1 トークンに 4 個、窓 (128 位置) と全体の注意が交互で頭ごとに学習した sink、隠れ次元 2880 を 3072 で持つ。いつも先に考える (harmony の analysis のチャネル)
+- AMD (IRON) と、専門家をチェックポイントの MXFP4 のまま CPU で回す Core AI (7.5。M3 16 GB の hwnpu-chat で 14.5〜15.8 tok/s)。24 層、専門家 32 個のうち 1 トークンに 4 個、窓 (128 位置) と全体の注意が交互で頭ごとに学習した sink、隠れ次元 2880 を 3072 で持つ。いつも先に考える (harmony の analysis のチャネル)
 - 形式: 専門家はチェックポイントの MXFP4 のまま (mx4)、注意の射影は q8 でプロンプトとデコードが 1 つの表、出力層は q4、埋め込みはホストのファイル。出力層の GPTQ の符号は `gptoss_gptq.py` で作り `--q4-codes` で渡す (models.yaml の `amd_export` は丸め)
 - デコードは 32 コアの常駐の 1 配列で、層ごとに 1 コマンド (経路が次のコマンドのスクラッチパッドの語を書く): 49.4 ms/トークン (20.2 トークン/秒)、文脈 7680 で 56.1 ms。プロンプトは 256 トークンの塊 1.8 s (経路はホスト)。固定 12.22 GiB。package で 0.92 J/トークン
 - 確認: HF fp32 と最上位のトークンが全部一致、コサイン 0.99711〜0.99984 (`ironlm`、32 トークンと 3 ステップ)、5 つの文の KL 0.0093〜0.070 (平均 0.0315。`ironlm -forced -bos 200006` の後に `ref_gptoss.py forced`)、hwnpu-chat agent の課題、実機での巻き戻し (`TestKVRingRewindOnDevice`)
@@ -802,6 +809,7 @@ Apple / Intel (`hwnpu-image convert`):
 | M1、M4 での MoE (M2 は LFM2-8B-A1B が動いた) | 専門家のプログラムは拡大を `gather_nd` で取るが、M1 の Neural Engine は通さない (「Cannot decompose layer on this architecture」)。結び付けの費用もチップで違う (M1 は約 5 GB/s 相当) | 各チップで `aicheck probe gnd16_*`、`aicheck moe` / `moepack`。M1 は拡大を専門家ごとの配列に (`moepack -scales expert`) | handoff-ane-gather.md 1、1b |
 | MoE の生成で残っているもの | 1 トークンの専門家は 1 層 2.6 ms、同じ大きさの定数の重みなら 1.0。うち約 0.9 は最近結び付けていない配列の結び付け。専門家の呼び出しを次の部品に入れても減るのは 22 回の呼び出し (1 回約 0.12 ms、4 %)。4 ビットの専門家は 64 列ごとの scale で答えを保つ (KL 0.023) が、試したどの形も int8 より遅い (8 節) | 新しいチップや Core AI が int4 の配列を Neural Engine で戻すか (`aicheck moe4 -native`) | handoff-ane-gather.md 1b |
 | LFM2-8B-A1B の agent の課題とメモリ | 道具の呼び出しは往復する (API で 2 つ呼び、その応答から答える。`hwnpu-chat agent` は読み、書き換え、実行する)。ただ agent では edit の `old` がファイルと合わず、出力を見ずに望んだ値を答えた。日本語の依頼では呼び出しを文で書いた。持たせる専門家が多いほど結び付けが高い (`aicheck moe` で 14 層ぶん 1 層 2.7 ms、22 層全部 5.3)。メモリ圧か Core AI の上限かは分けていない | CHAT.md 7 節の課題。24 GB 以上の Mac | handoff-ane-gather.md 1b |
+| Apple の gpt-oss-20b で残っているもの | プロンプト: 2156 トークンで 40〜54 s、128 の塊の約 4 分の 3 は専門家 (1 層 75 ms)。int8 の行列積 (`SMMLA`、M2 以降の FEAT_I8MM) で 2 行 × 2 ベクトルを取れば 1 命令の積が 2〜3 倍。GPTQ の lut4 か lut6 の出力層 (lut8 の 0.55 GiB はステップの 6 分の 1)。24 GB 以上の機械 (固定しなくても専門家がページキャッシュに残る)。models.yaml の Apple の項 (今は AMD のみ) と M2。MoE のモデルは下書きを切っている: 8 行の専門家は 8 行ぶんかかる (4 ベクトルのカーネルで一部は減る) | hwnpu-chat を `HWNPU_PROFILE=1`、`HWNPU_MOE_DEBUG=1` で測る |
 
 ### 11.2 Intel (NPU)
 
@@ -935,7 +943,7 @@ AMD の gpt-oss-20b (16.179) は演算とその固定の時間を減らして生
 | 方法 | Apple (Neural Engine) | Intel (NPU) | なぜ |
 |---|---|---|---|
 | ゲートつき MLP の gate と up を 1 つの線形に (2 I 行の行列 1 つ、そのあとに glu) | 測る価値あり | 測る価値あり | 行列積 2 つが広い 1 つに: プログラムの中のカーネルが減り、重みの連続した読み出しが長くなる。hwnpu の `blocks` は線形 2 つで組んでいる。ANE の行は 16384 まで (チャットのモデルの 2 I は入る) |
-| チェックポイントの量子化のまま (MXFP4、入力 32 個ごとに 2 の冪のスケール) | 正確には入らない: ANE の表は 16 行ごとで、入力 32 個ごとではない | 確かめる価値あり: OpenVINO に f4e2m1 と f8e8m0 のスケールがある。NPU のプラグインで動くかは未確認 | 丸め直すと精度が落ちる (gpt-oss: KL 2〜3 倍) |
+| チェックポイントの量子化のまま (MXFP4、入力 32 個ごとに 2 の冪のスケール) | 正確には入らない: ANE の表は 16 行ごとで、入力 32 個ごとではない。2026-11-19 に測った (8 章): Core AI の MX の型は GPU だけ (M3〜M5)、Neural Engine で正確に引く形は 1 専門家 49 ms。gpt-oss の専門家は代わりに CPU で MXFP4 のまま回す (7.5) | 確かめる価値あり: OpenVINO に f4e2m1 と f8e8m0 のスケールがある。NPU のプラグインで動くかは未確認 | 丸め直すと精度が落ちる (gpt-oss: KL 2〜3 倍) |
 | スケールのバイトを減らす (指数 1 バイト、大きなグループ) | — (Core ML の形式は決まっている) | int4 を大きなグループで (今の既定は int8) | 32 個のグループで bf16 のスケールは 4 ビットの重みのバイトの 6 % |
 | 転送と計算を切り分ける | `hwnpu-dev probe` が重みだけを読む。部品の時間と重みのバイトを比べれば同じことが分かる | OpenVINO のプロファイルで同じ | バイトを減らすか計算を減らすかが決まる |
 | 注意の sink (それを持つモデル) | MIL で簡単: softmax の前にスコアへ sink のロジットの列を 1 つつなぎ、あとで落とす | IR で同じ | gpt-oss そのものは経路のせいで動かない。sink のある密なモデルなら |

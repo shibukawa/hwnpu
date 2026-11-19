@@ -361,8 +361,8 @@ func PlanRouted(m Model, opts Options, budget int64) ([]Part, error) {
 	cost[n-1] += post
 	routed, attend := map[int]bool{}, map[int]bool{}
 	for _, c := range rm.RoutedLayers() {
-		if c <= 0 || c >= n {
-			return nil, fmt.Errorf("llm: the mixture of experts layers %v are not within %d layers, after layer 0", rm.RoutedLayers(), n)
+		if c < 0 || c >= n {
+			return nil, fmt.Errorf("llm: the mixture of experts layers %v are not within %d layers", rm.RoutedLayers(), n)
 		}
 		routed[c] = true
 	}
@@ -379,6 +379,10 @@ func PlanRouted(m Model, opts Options, budget int64) ([]Part, error) {
 		}
 	}
 	var out []Part
+	if routed[0] {
+		// layer 0 up to its router (gpt-oss); the next part starts with its experts' output
+		out = append(out, Part{Start: 0, Layers: NoLayers, Bytes: cost[0]})
+	}
 	a := 0 // the current part's first layer
 	for l := 1; l <= n; l++ {
 		if l < n && !routed[l] && !attend[l] {
