@@ -7547,3 +7547,23 @@ Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is
 
 - 絵はバイト単位で同じ。27 部品すべて NPU。`vae_s0` の 1024² の関数は今も端末で仕上げに失敗し (`failedToSpecialize`)、端末でコンパイルする (約 20 秒)
 - **ディスクが少ないと初回が止まる**: 空きが 12〜22 GB のときの初回は、最初のステップが 5〜15 分かかった。macOS の `deleted` が空きを作るために消せるもの (CD_NEAR_LOW_DISK_EVENT) を消し、prebuilt から仕上げたばかりのプログラムが読めなくなる。aned が `Model load failed … isPreCompiledModel=1` を出し、Core AI が OS の中で端末のコンパイルに切り替える (hwnpu には失敗が見えないので、prebuilt で直せない)。22 GB 空いていても消し始めた。初回を測るときは 25 GB 以上空ける
+
+### 16.255 MOSS-SoundEffect の CPU が計算する表を切り出し、チェックポイントなしで動かす — 2026-11-19
+
+MOSS は書き出しがあっても、実行に元のファイル (11.5 GB) を読んでいた (16.253 の「ほかに見えたこと」)。メモリが足りないからではない。CPU が計算に使う表を、チェックポイントから読んでいたため。
+
+- 文の符号器の `model.embed_tokens.weight` (トークンの埋め込み) と `model.norm.weight`
+- DiT の時刻の埋め込みなど (`HostTensors`)
+
+チャットのモデル (model-fit.md T5) と同じく、この 39 の表を `sfx-tables.safetensors` (0.69 GB) に切り出して取得元と共有する (`chat.WrittenTables`)。Prepare は小さなファイルだけを先に取り、チェックポイントは変換するときと表を書くときだけ取る。
+
+**通しの確認** (M1、DAC r3 の 16.254 と合わせて、5 秒、30 ステップ、種 1、"a dog barking"):
+
+| 回 | 元のファイル | 結果 |
+| --- | --- | --- |
+| 表を書く | あり | 表を書いて取得元に置き、2 分 15 秒 |
+| 表から | 4 つのチェックポイントを外す | 取り直さず 1 分 31 秒 (fp16)、1 分 43 秒 (lut8) |
+| 取得元の表から | 外したまま、手元の表も外す | 表 (0.69 GB) を 8.9 秒で取って 1 分 46 秒 (lut8) |
+
+- 音はどの回も、元のファイルを読む前の版 (16.254 の通し) とバイト単位で同じ。すべて Neural Engine
+- 取得元から書き出しと表を取る Mac は、元のファイル 11.5 GB を取らなくてよい
