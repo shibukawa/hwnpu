@@ -7568,4 +7568,6 @@ Compiler internal error: EmitGlobalBackedCoalescedLutTensor: per-cout group 1 is
 **結果** (M1、macOS 27.2)
 - `coreai-build` で h13g (M1) も h15g (M3) も 5 段とも `mps.fullyPlacedOnANE`。前の DAC (r2) は h15g でも通らなかった (M3 の端末のコンパイラは通す)
 - `TestDecodeLatentsCoreAI` (`HWNPU_SFX_COREAI=1`): 5 段とも端末で Neural Engine に乗り (初回の読み込み 段 0 3 分 14 秒、ほかは 1.4〜7.6 秒)、種で決めた潜在 250 フレーム (5 秒) を 4.1 秒で。CPU のインタプリタ (fp32 の sin) との相対 RMS 0.0085 (M3 で 16.197 のときの 0.0085 と同じ)
-- 未確認: `generate -m sfx` を通しで (M1 のディスクの空きが 14 GB で、取得元から 11.5 GB を取れなかった。そのとき hwnpu のキャッシュの掃除が、別のセッションの `hwnpu-image` の Core AI のキャッシュ 14 項目 (約 1.8 GB) を消した)。M3 の端末での級数の速さと値 (h15g の `coreai-build` では乗る)
+- 通し (M1、`--allow-off-npu` なし、5 秒、30 ステップ、種 1、"a dog barking"): MOSS-SoundEffect-v2.0 と -lut8 のどちらもすべて Neural Engine に乗った。DAC を GPU で計算した前の回 (16.253) の音との差は相対 RMS 0.0018。30 ステップで 1 分 35 秒 (前の回は 1 分 49 秒)
+- 最初に通そうとしたときは空きが 14 GB で、取得元から 11.5 GB を取れなかった。そのとき hwnpu のキャッシュの掃除が、別のセッションの `hwnpu-image` の Core AI のキャッシュ 14 項目 (約 1.8 GB) を消した
+- 未確認: M3 の端末での級数の速さと値 (h15g の `coreai-build` では乗る)
