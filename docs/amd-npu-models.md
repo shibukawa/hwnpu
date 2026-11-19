@@ -1238,7 +1238,7 @@ hwnpu-image generate -m EXPORT --noise OUT.noise.bin --latents got.lat --dump DI
 
 ## 25. Whisper large-v3-turbo: 書き起こし (`hwnpu-audio transcribe`、2026-11-19)
 
-OpenAI の Whisper large-v3-turbo (MIT、99 の言語) を AMD の NPU で動かす。符号器 32 層、復号器 4 層、幅 1280、頭 20 (64 ずつ)。設計の記録は design.md 16.252。
+OpenAI の Whisper large-v3-turbo (MIT、99 の言語) を AMD の NPU で動かす。符号器 32 層、復号器 4 層、幅 1280、頭 20 (64 ずつ)。設計の記録は design.md 16.253。
 
 ### 25.1 構成 (`tools/amd/iron_whisper.py`)
 
@@ -1270,7 +1270,7 @@ go run ./cmd/hwnpu-audio transcribe -v speech.wav     # 初回は書き出しを
 
 ## 26. LFM3-Audio-2B の読み上げ (`hwnpu-audio tts`、2026-11-19)
 
-LFM3-Audio-2B で文章を 24 kHz の声にする (Apple と同じ流れ、internal/speech)。設計の記録は design.md 16.253。
+LFM3-Audio-2B で文章を 24 kHz の声にする (Apple と同じ流れ、internal/speech)。設計の記録は design.md 16.254。
 
 ### 26.1 構成 (`tools/amd/iron_lfm3speech.py`)
 
@@ -1303,7 +1303,7 @@ go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは   # 初回は�
 
 ## 27. MOSS-SoundEffect v2.0: 効果音 (`hwnpu-audio generate -m sfx`、2026-11-19)
 
-OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作る。設計の記録は design.md 16.254。
+OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作る。設計の記録は design.md 16.255。
 
 ### 27.1 構成 (`tools/amd/iron_moss_sfx.py`)
 
@@ -1348,7 +1348,7 @@ go run ./cmd/hwnpu-audio generate -m sfx --duration 5s "A dog barking loudly in 
 
 ## 28. Magenta RealTime 2 の SpectroStream の復号器 (`hwnpu-audio generate`、2026-11-19)
 
-Magenta RealTime 2 small (コードは Apache-2.0、重みは CC-BY 4.0) の音楽で、SpectroStream の復号器を AMD の NPU で回す。言語モデル、MusicCoCa、符号器は CPU (Core ML の版)。設計の記録は design.md 16.255。
+Magenta RealTime 2 small (コードは Apache-2.0、重みは CC-BY 4.0) の音楽で、SpectroStream の復号器を AMD の NPU で回す。言語モデル、MusicCoCa、符号器は CPU (Core ML の版)。設計の記録は design.md 16.256。
 
 ### 28.1 構成 (`tools/amd/iron_magenta.py`)
 
