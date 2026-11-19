@@ -8,7 +8,7 @@ on the CPU: internal/music).
 writes decoder/, a graph (iron_graph.py) of internal/music's Decoder over a window of up to 48
 frames (internal/music's 41, DecodeFrames and decodeContext): input x (64, 256), each frame's
 sum of its codes' quantizer embeddings, the window's first frame in row 0 (the rows after its
-frames anything: the decoder is causal in time); outputs out0 and out1 (192 x 480, 64), the
+frames anything: the decoder is causal in time); outputs out0 and out1 (192 x 480, 2), the
 left and the right channel's STFT frames (time-major, then the bin), the real part in column
 0 and the imaginary in 1.
 
@@ -122,13 +122,18 @@ class Decoder(iron.Graph):
             if sc:
                 lv["s"] = self.p(k(f"{name}/shortcut_layer/conv1x1/conv")[0, 0].T), self.p(b(f"{name}/shortcut_layer/conv1x1/conv"))
             self.levels.append(lv)
-        # the output layer: a 7 x 7 convolution to the real and imaginary parts (2, padded to 64)
+        # the output layer: a 7 x 7 convolution to the real and imaginary parts. Its im2col takes
+        # the time taps alone (K 7 x 64), its GEMM the bin taps as columns (bin tap e, part o in
+        # column 2 e + o: 14 of 64), which out_sum shifts and adds; the bias in tap 3's
         ko, bo = k("output_layer/base_conv_last/conv"), b("output_layer/base_conv_last/conv")
-        kp = np.zeros(ko.shape[:3] + (64,), np.float32)
-        kp[..., :2] = ko
+        kt, kf, ci, _ = ko.shape
+        kp = np.zeros((kt, 1, ci, 64), np.float32)
+        for e in range(kf):
+            kp[:, 0, :, 2 * e : 2 * e + 2] = ko[:, e]
         bp = np.zeros(64, np.float32)
-        bp[:2] = bo
+        bp[2 * (kf // 2) : 2 * (kf // 2) + 2] = bo
         self.out_w = self.conv_w(None, kp, bp)
+        self.out_kf = kf
 
     # --- weights ---
 
@@ -265,6 +270,17 @@ class Decoder(iron.Graph):
                           dst=tap((out.shape[0], C), (dt * Fo + df) * C, [T, F_, C], [st * Fo * C, sf * C, 1]))
         return out[0 : out.shape[0]]
 
+    def out_sum(self, y, T: int, F_: int, Fp: int):
+        """The output layer's sum over its bin taps: y holds, for each pixel (t, f) of the padded
+        bins (Fp: F and 3 either side), column 2 e + o of bin tap e; out (T x F, 2) is y[t, f + e,
+        2 e + o] summed over e."""
+        C = y.shape[1]
+        total = None
+        for e in range(self.out_kf):
+            part = Copy.step(y, src=tap(tuple(y.shape), e * C + 2 * e, [T, F_, 2], [Fp * C, C, 1]))
+            total = part if total is None else total + part
+        return total.reshape(T * F_, 2)
+
     def body(self, x):
         T = FRAMES
         lin = lambda y, wb: F.linear(y, wb[0], wb[1], precision=PREC)  # noqa: E731
@@ -301,8 +317,7 @@ class Decoder(iron.Graph):
                 command_boundary()
             # the output layer: ELU, a causal 7 x 7 convolution (time 6 before, the bins 3 either side)
             gs, g = self.to_grid(iron_elu.elu(h), Tl, Fl, 64, top=6, side=3)
-            y = self.conv_on(gs, g, self.out_w, 6, 3, Tl, Fl)
-            outs.append(Copy.step(y[0 : Tl * Fl]))
+            outs.append(self.out_sum(self.conv_on(gs, g, self.out_w, 6, 3, Tl, g.Fp), Tl, Fl, g.Fp))
             command_boundary()
         return tuple(outs)
 

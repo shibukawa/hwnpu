@@ -46,11 +46,19 @@ from iron.operators.mha import MHA
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from iron_anima import RandomWeights, Safetensors, bf, command_boundary  # noqa: E402
 from iron_graph import bind_device, export_graph, write_check  # noqa: E402
+from iron_q4 import install_linear, linear_add, q_param  # noqa: E402
 
 # The encoder's GEMMs' precision (--precision): MEDIUM (bfp16 activations) halves the encoder's
 # time (1.71 s to 0.84 s a window on a Ryzen AI 9 365) for the same text as HIGHEST on the clips
 # tried. The decoder's one row runs on GEMV, in float32 whatever this is
 ENC_PREC = Precision.MEDIUM
+# The decoder's weights (--decoder): q8 (iron_q4's 8.5 bits a weight, its GEMV) or bf16. A token
+# reads the four layers' and the logits' weights, 316 MB in bf16: the decoder's time
+DEC_FMT = "q8"
+# The decoder's attentions of one query: MHA packs a head a block and runs this many pipelines
+# (packed: at most 4 on 8 columns, dividing the 20 heads). Its default, 1, took a layer's cross
+# attention over the 1500 frames 1 ms
+MHA_PIPELINES = 4
 FRAMES = 3000  # a window's mel frames (30 s at 10 ms)
 VOCAB_ALIGN = 1024
 
@@ -109,15 +117,22 @@ class Config:
         return c
 
 
-class Attention(iron.Graph):
-    """q, k (no bias), v and the output projection of one of a layer's attentions."""
+def weight(w, fmt: str = "bf16"):
+    """A linear's weight as an iron.param: bf16, or q8 (iron_q4's 8.5 bits, run by its GEMV)."""
+    return iron.param(bf(w)) if fmt == "bf16" else q_param(f32(w), fmt)
 
-    def __init__(self, w, p: str):
+
+class Attention(iron.Graph):
+    """q, k (no bias), v and the output projection of one of a layer's attentions; ``kv`` False
+    leaves out k and v (the decoder's cross attention: the encoder's graph makes them)."""
+
+    def __init__(self, w, p: str, fmt: str = "bf16", kv: bool = True):
         g = lambda n: f32(w[p + n])  # noqa: E731
-        self.q, self.qb = iron.param(bf(g("q_proj.weight"))), iron.param(bf(g("q_proj.bias")))
-        self.k = iron.param(bf(g("k_proj.weight")))
-        self.v, self.vb = iron.param(bf(g("v_proj.weight"))), iron.param(bf(g("v_proj.bias")))
-        self.o, self.ob = iron.param(bf(g("out_proj.weight"))), iron.param(bf(g("out_proj.bias")))
+        self.q, self.qb = weight(g("q_proj.weight"), fmt), iron.param(bf(g("q_proj.bias")))
+        if kv:
+            self.k = weight(g("k_proj.weight"), fmt)
+            self.v, self.vb = weight(g("v_proj.weight"), fmt), iron.param(bf(g("v_proj.bias")))
+        self.o, self.ob = weight(g("out_proj.weight"), fmt), iron.param(bf(g("out_proj.bias")))
 
 
 class Norm:
@@ -129,9 +144,9 @@ class Norm:
 
 
 class MLP:
-    def __init__(self, w, p: str):
-        self.f1, self.f1b = iron.param(bf(w[p + "fc1.weight"])), iron.param(bf(w[p + "fc1.bias"]))
-        self.f2, self.f2b = iron.param(bf(w[p + "fc2.weight"])), iron.param(bf(w[p + "fc2.bias"]))
+    def __init__(self, w, p: str, fmt: str = "bf16"):
+        self.f1, self.f1b = weight(w[p + "fc1.weight"], fmt), iron.param(bf(w[p + "fc1.bias"]))
+        self.f2, self.f2b = weight(w[p + "fc2.weight"], fmt), iron.param(bf(w[p + "fc2.bias"]))
 
     def __call__(self, h):
         return F.linear(F.gelu(F.linear(h, self.f1, self.f1b, precision=ENC_PREC)), self.f2, self.f2b, precision=ENC_PREC)
@@ -216,16 +231,25 @@ class DecoderLayer(iron.Graph):
         p = f"model.decoder.layers.{i}."
         self.n1, self.n2, self.n3 = (Norm(w, p + n) for n in ("self_attn_layer_norm", "encoder_attn_layer_norm",
                                                              "final_layer_norm"))
-        self.self_attn, self.cross = Attention(w, p + "self_attn."), Attention(w, p + "encoder_attn.")
-        self.mlp = MLP(w, p)
+        f = DEC_FMT
+        self.self_attn, self.cross = Attention(w, p + "self_attn.", f), Attention(w, p + "encoder_attn.", f, kv=False)
+        self.mlp = MLP(w, p, f)
+        if f != "bf16":
+            # q, k and v in one GEMV (k has no bias: zeros), out_proj's and fc2's GEMVs adding the
+            # residual: 5 fewer operators a layer, each about 0.15 ms of a token's
+            g = lambda n: f32(w[p + "self_attn." + n])  # noqa: E731
+            self.qkv = q_param(np.concatenate([g("q_proj.weight"), g("k_proj.weight"), g("v_proj.weight")]), f)
+            self.qkv_b = iron.param(bf(np.concatenate([g("q_proj.bias"), np.zeros(c.hidden, np.float32), g("v_proj.bias")])))
         H, D = c.heads, c.head_dim
         self.keys, self.values = iron.state((c.targets, H, D), name=f"k{i}"), iron.state((c.targets, H, D), name=f"v{i}")
         self.xk, self.xv = iron.state((c.rows, H, D), name=f"xk{i}"), iron.state((c.rows, H, D), name=f"xv{i}")
 
     def body(self, x, pos, n, nk):
+        if DEC_FMT != "bf16":
+            return self.fused(x, pos, n, nk)
         c, a, b = self.c, self.self_attn, self.cross
         H, D = c.heads, c.head_dim
-        kw = dict(heads_interleaved=True, kv_interleaved=True, d=D)
+        kw = dict(heads_interleaved=True, kv_interleaved=True, d=D, num_pipelines=MHA_PIPELINES)
         h = self.n1(x, c)
         q = F.linear(h, a.q, a.qb, precision=ENC_PREC)
         self.keys[pos] = F.linear(h, a.k, precision=ENC_PREC).reshape(H, D)
@@ -237,6 +261,23 @@ class DecoderLayer(iron.Graph):
         o = MHA.step(q.reshape(1, H, D), self.xk[:nk], self.xv[:nk], causal=False, **kw)
         x = x + F.linear(o.reshape(1, c.hidden), b.o, b.ob, precision=ENC_PREC)
         return x + self.mlp(self.n3(x, c))
+
+    def fused(self, x, pos, n, nk):
+        """body with quantized weights: q, k and v from one GEMV, the residuals added in the
+        GEMVs (iron_q4.linear_add)."""
+        c, a, b, m = self.c, self.self_attn, self.cross, self.mlp
+        H, D, E = c.heads, c.head_dim, c.hidden
+        kw = dict(heads_interleaved=True, kv_interleaved=True, d=D, num_pipelines=MHA_PIPELINES)
+        qkv = linear_add(self.n1(x, c), self.qkv, self.qkv_b).reshape(3, H, D)
+        self.keys[pos] = qkv[1]
+        self.values[pos] = qkv[2]
+        o = MHA.step(qkv[0:1], self.keys[:n], self.values[:n], **kw)
+        x = linear_add(o.reshape(1, E), a.o, a.ob, x.reshape(E)).reshape(1, E)
+        q = F.linear(self.n2(x, c), b.q, b.qb, precision=ENC_PREC)
+        o = MHA.step(q.reshape(1, H, D), self.xk[:nk], self.xv[:nk], causal=False, **kw)
+        x = linear_add(o.reshape(1, E), b.o, b.ob, x.reshape(E)).reshape(1, E)
+        h = F.gelu(F.linear(self.n3(x, c), m.f1, m.f1b, precision=ENC_PREC))
+        return linear_add(h, m.f2, m.f2b, x.reshape(E)).reshape(1, E)
 
 
 class Decoder(iron.Graph):
@@ -250,7 +291,7 @@ class Decoder(iron.Graph):
         self.norm = Norm(w, "model.decoder.layer_norm")
         e = np.zeros((c.vocab_pad, c.hidden), np.float32)
         e[: c.vocab] = f32(w["model.decoder.embed_tokens.weight"])
-        self.head = iron.param(bf(e))
+        self.head = weight(e, DEC_FMT)
 
     def body(self, x, *, pos: Scratchpad[np.int32], n: Scratchpad[np.int32], nk: Scratchpad[np.int32]):
         for layer in self.layers:
@@ -290,21 +331,24 @@ def main(argv=None) -> int:
     ap.add_argument("--only", nargs="*", default=["encoder", "decoder"])
     ap.add_argument("--precision", choices=["MEDIUM", "HIGHEST"], default="MEDIUM",
                     help="the encoder's GEMMs: MEDIUM (bfp16 activations) or HIGHEST (bf16)")
+    ap.add_argument("--decoder", choices=["q8", "bf16"], default="q8", help="the decoder's weights")
     ap.add_argument("--random", action="store_true")
     ap.add_argument("--enc-layers", type=int, default=0, help="keep only the encoder's first N blocks (a check of where it drifts)")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--device", default="npu2")
     ap.add_argument("--cols", type=int, default=8)
     a = ap.parse_args(argv)
-    global ENC_PREC
+    global ENC_PREC, DEC_FMT
     ENC_PREC = getattr(Precision, a.precision)
+    DEC_FMT = a.decoder
+    install_linear()
     bind_device(a.device, a.cols)
     c = Config.of(a.root)
     if a.enc_layers:
         c = dataclasses.replace(c, enc_layers=a.enc_layers)
     w = (RandomWeights if a.random else Safetensors)(a.root / "model.safetensors")
     rng = np.random.default_rng(0)
-    meta = dict(config=dataclasses.asdict(c), rows=c.rows, conv_in=c.conv_in, vocab_pad=c.vocab_pad, frames=FRAMES)
+    meta = dict(config=dataclasses.asdict(c), decoder_weights=DEC_FMT, rows=c.rows, conv_in=c.conv_in, vocab_pad=c.vocab_pad, frames=FRAMES)
     if "encoder" in a.only:
         t0 = time.time()
         g = Encoder(c, w)

@@ -3,8 +3,9 @@
 
 IRON has no sin. ``Snake`` is a RowBroadcast, as iron_groupnorm.RowAffine: a line of pixels x
 ``channels`` met by a row of each channel's alpha and inverse, two bf16 limbs each (``row``); the
-kernel reduces alpha x by pi and takes sin by its series in float32 (the reduction internal/sfx's
-stages use for Intel's NPU, and used for Core ML's Neural Engine, in fp16).
+kernel reduces alpha x by pi and takes sin by its series (the reduction internal/sfx's stages use
+for Intel's NPU, and used for Core ML's Neural Engine, in fp16), to bf16's accuracy of the larger
+of x and sin^2 / alpha: kernel_ref is its arithmetic.
 """
 
 from pathlib import Path
@@ -25,6 +26,49 @@ def snake_ref(x, alpha) -> np.ndarray:
     a = np.asarray(alpha, np.float64)
     v = np.asarray(x, np.float64).reshape(-1, len(a))
     return (v + np.sin(a * v) ** 2 / (a + 1e-9)).reshape(np.shape(x))
+
+
+def _b(v) -> np.ndarray:
+    return np.asarray(v, np.float32).astype(bfloat16).astype(np.float64)
+
+
+def _acc(*terms) -> np.ndarray:
+    """A float32 accumulator's sum of exact products, in order: each step rounded to float32."""
+    a = np.zeros(np.broadcast(*terms).shape, np.float32)
+    for t in terms:
+        a = (a.astype(np.float64) + t).astype(np.float32)
+    return a.astype(np.float64)
+
+
+def _split(a):
+    h = _b(a)
+    return h, _b(a - h)
+
+
+# kernels/snake_f32.cc's constants: 1 / pi and pi as bf16 limbs, the series' coefficients
+_IPI = (0.318359375, -4.9591064453125e-05)
+_PI = (3.140625, 0.00096893310546875, -1.2814998626708984e-06)
+_C = (_b(-1 / 6), _b(1 / 120), _b(-1 / 5040))
+
+
+def kernel_ref(x, ah, al, ih, il) -> np.ndarray:
+    """kernels/snake_f32.cc's arithmetic in numpy (bf16 limbs, float32 sums): x (..., C) bf16
+    values, alpha's and the inverse's limbs (C,). bf16 out."""
+    x = np.asarray(x, np.float64)
+    v = _acc(x * al, x * ah)
+    vh, vl = _split(v)
+    t = _acc(vl * _IPI[0], vh * _IPI[1], vh * _IPI[0])
+    n = np.rint(t)
+    nh, nl = _split(n)
+    r = _acc(v, -nh * _PI[0], -nh * _PI[1], -nl * _PI[0], -nh * _PI[2])
+    rh, rl = _split(r)
+    u = _b(rh * rh)
+    p = _acc(_C[1], _C[2] * u)
+    p = _acc(_C[0], _b(p) * u)
+    q = _b(_b(p) * u)
+    sh, sl = _split(_acc(rl, rh * q, rh))
+    s2h, s2l = _split(_acc(sh * sl, sh * sl, sh * sh))
+    return _acc(s2l * ih, s2h * il, s2h * ih, x).astype(bfloat16)
 
 
 class Snake(RowBroadcast):
@@ -53,16 +97,14 @@ class Snake(RowBroadcast):
 
         def reference(x, r):
             r = np.asarray(r, np.float64).reshape(-1, n)[0]
-            alpha = r[:C] + r[C : 2 * C]
-            inv = r[2 * C : 3 * C] + r[3 * C : 4 * C]
             v = np.asarray(x, np.float64).reshape(-1, C)
-            return (v + np.sin(alpha * v) ** 2 * inv).reshape(np.shape(x)).astype(bfloat16)
+            return kernel_ref(v, *(r[k * C : (k + 1) * C] for k in range(4))).reshape(np.shape(x))
 
         kdir = Path(config.aie_kernels_dir())
         return _make_extern(
             "snake_f32", KERNELS / "snake_f32.cc", [t, t, t, np.int32], compile_flags=[f"-DSN_C={C}"],
             contract=KernelContract(trace=Trace.whole_call(), roles=(KIn, KIn, KOut, Param), parameter_bindings=((3, n),),
-                                    reference=reference, tolerance=Tolerance.bf16_ulps(2, atol=1e-5), acc_dtype=np.float32),
+                                    reference=reference, tolerance=Tolerance.bf16_ulps(1, atol=1e-5), acc_dtype=np.float32),
             include_dirs=[str(kdir), config.cxx_header_path(), str(KERNELS)])
 
 
