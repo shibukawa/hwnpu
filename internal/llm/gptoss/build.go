@@ -48,6 +48,12 @@ func build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 	if opts.Format == "" {
 		opts.Format = cfg.Format()
 	}
+	// The attention's projections stay fp16 unless a rule of the caller's says otherwise (a later
+	// FormatFor rule wins): gpt-oss's attention does not bear tables of 16 rows. With them in lut8
+	// the KL from the float32 reference on plain text is 0.29 (the answer of a conversation
+	// 0.0088), in fp16 0.036 (0.0003), for a step about 20 % slower on an M3; every other rounding
+	// of the Neural Engine's path together adds less than 0.04 (docs/improvements.md 7.5).
+	opts.FormatFor = append([]string{"self_attn=fp16"}, opts.FormatFor...)
 	noLayers := opts.Layers == llm.NoLayers
 	first := noLayers && opts.Start == 0 // layer 0 up to its router
 	afterAttn := noLayers && opts.Start > 0

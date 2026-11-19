@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shibukawa/hwnpu/internal/mem"
 	"github.com/shibukawa/hwnpu/internal/mxfp4"
 	"github.com/shibukawa/hwnpu/internal/safetensors"
 )
@@ -65,7 +66,7 @@ type Host struct {
 	warm   sync.WaitGroup
 	stop   chan struct{}
 	mu     sync.Mutex
-	locked [][]byte // the spans HWNPU_MOE_WIRE wired, unwired by Close
+	locked [][]byte // the spans wired (Host.wire), unwired by Close
 }
 
 // OpenHost maps the experts of rec.
@@ -136,13 +137,36 @@ func OpenHost(rec *HostRecord, sh Shape) (*Host, error) {
 		}
 		h.layers[l] = hl
 	}
-	if os.Getenv("HWNPU_MOE_PREFAULT") != "0" || os.Getenv("HWNPU_MOE_WIRE") != "" {
-		h.prefault(os.Getenv("HWNPU_MOE_WIRE") != "")
+	wire := h.wire()
+	if os.Getenv("HWNPU_MOE_PREFAULT") != "0" || wire {
+		h.prefault(wire)
 		if os.Getenv("HWNPU_MOE_PREFAULT") == "wait" { // for measuring: every page in before the first run
 			h.warm.Wait()
 		}
 	}
 	return h, nil
+}
+
+// wire is whether the experts are wired (mlock, prefault): HWNPU_MOE_WIRE=1 or 0 says so;
+// otherwise they are when they take at most half of the machine's memory. Wired, a token's experts
+// cost half as much even with memory to spare (gpt-oss-20b on a 32 GB M4: 1.8 → 0.9 ms a layer,
+// 13.5 → 18.0 tokens/s): unwired pages of a mapped file keep costing the process faults. On a
+// 16 GB machine the 10.2 GB of gpt-oss-20b's experts are left unwired unless asked, so as not to
+// push the other applications out.
+func (h *Host) wire() bool {
+	switch os.Getenv("HWNPU_MOE_WIRE") {
+	case "":
+	case "0":
+		return false
+	default:
+		return true
+	}
+	var n int64
+	for _, hl := range h.layers {
+		n += int64(len(hl.gw) + len(hl.ge) + len(hl.dw) + len(hl.de))
+	}
+	phys := mem.Physical()
+	return phys > 0 && 2*n <= phys
 }
 
 // prefault touches every page of the experts in the background: the first touch of a page a
@@ -152,7 +176,7 @@ func OpenHost(rec *HostRecord, sh Shape) (*Host, error) {
 // touched takes the prefault's sums, so that its reads are not compiled away.
 var touched atomic.Uint32
 
-// With wire (HWNPU_MOE_WIRE) the pages are wired instead (mlock), so that the system does not drop
+// With wire (Host.wire) the pages are wired instead (mlock), so that the system does not drop
 // them for others when memory is short: gpt-oss-20b's 10.2 GB of experts on a 16 GB machine with
 // a desktop's applications open do not stay in the page cache, and a token's experts are read
 // from the disk again (an M3: 4.0 ms a layer for them against 1.1).

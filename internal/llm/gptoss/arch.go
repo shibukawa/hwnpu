@@ -15,6 +15,8 @@ var Arch = &llm.Arch{
 	Architectures: []string{"GptOssForCausalLM"},
 	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	LastRow:       true,
+	// 1: the attention's projections fp16 (build), 2026-11-19
+	Revision: 1,
 }
 
 func init() { llm.Register(Arch) }

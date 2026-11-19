@@ -52,6 +52,27 @@ func (v *Vec) Quantize(x []float32) {
 	}
 }
 
+// pairVec is two Vecs a and b interleaved for SMMLA (mm24Kernel): for each block its 4 segments
+// of 8 values (the evens 0-7, 8-15, the odds 0-7, 8-15), a's then b's, and the scales a, b, a, b.
+type pairVec struct {
+	Q []int8
+	S []float32
+}
+
+func interleave(a, b *Vec) pairVec {
+	nb := len(a.S)
+	p := pairVec{Q: make([]int8, 2*len(a.Q)), S: make([]float32, 4*nb)}
+	for blk := range nb {
+		aq, bq, o := a.Q[blk*Block:], b.Q[blk*Block:], p.Q[2*blk*Block:]
+		for j := range 4 {
+			copy(o[16*j:16*j+8], aq[8*j:8*j+8])
+			copy(o[16*j+8:16*j+16], bq[8*j:8*j+8])
+		}
+		p.S[4*blk], p.S[4*blk+1], p.S[4*blk+2], p.S[4*blk+3] = a.S[blk], b.S[blk], a.S[blk], b.S[blk]
+	}
+	return p
+}
+
 // scale is 2^(e-127), and 2^-127 for e of 0 (a value under float32's normal ones, as zero).
 func scale(e byte) float32 { return math.Float32frombits(uint32(e) << 23) }
 

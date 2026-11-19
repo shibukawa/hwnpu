@@ -190,7 +190,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord) (*moe, error
 	// compresses or swaps out the experts no row chose for a while, and a prompt's calls then wait
 	// for them (an M2 of 16 GB: 14.3 s to 43.3 s for the same prompt, the binding of the arrays
 	// alone growing). Off by default: wiring 7.2 GB of 16 pushes the other applications out.
-	wire := os.Getenv("HWNPU_MOE_WIRE") != ""
+	wire := os.Getenv("HWNPU_MOE_WIRE") != "" && os.Getenv("HWNPU_MOE_WIRE") != "0"
 	var wired int64
 	var wireErr error
 	if wire {

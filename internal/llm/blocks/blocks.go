@@ -9,6 +9,7 @@ package blocks
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 
 	"github.com/shibukawa/hwnpu/internal/llm"
@@ -190,6 +191,12 @@ func (g *Graph) matrix(name, constName string, w []float32, rows, cols int, scal
 		case "", "mse":
 		case "uniform":
 			search = false
+		case "kmeans", "kmeans-minmax":
+			// the tables' fitting of a lutN model (hwnpu-chat's), for a weight FormatFor makes
+			// integer: the scales' search
+			if !strings.HasPrefix(g.Opts.Format, "lut") {
+				g.Fail("quantizer %q is not for %s; use uniform or mse", g.Opts.Quant, format)
+			}
 		default:
 			g.Fail("quantizer %q is not for %s; use uniform or mse", g.Opts.Quant, format)
 		}

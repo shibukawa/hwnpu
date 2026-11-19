@@ -75,28 +75,53 @@ func BenchmarkDot(b *testing.B) {
 // Run with 4 or more vectors (the kernel of a row decoded once for 4) gives Dot's values.
 func TestRunVectors(t *testing.T) {
 	r := rand.New(rand.NewPCG(3, 4))
-	const rows, nb = 70, 90
-	w, e := randomRow(r, rows*nb)
-	for _, n := range []int{1, 4, 5, 9} {
-		vs := make([]*Vec, n)
-		out := make([][]float32, n)
-		for k := range vs {
-			x := make([]float32, nb*Block)
-			for i := range x {
-				x[i] = float32(r.NormFloat64())
+	for _, rows := range []int{70, 71} {
+		const nb = 90
+		w, e := randomRow(r, rows*nb)
+		for _, n := range []int{1, 4, 5, 8, 9, 12, 16, 19} {
+			vs := make([]*Vec, n)
+			out := make([][]float32, n)
+			for k := range vs {
+				x := make([]float32, nb*Block)
+				for i := range x {
+					x[i] = float32(r.NormFloat64())
+				}
+				vs[k] = NewVec(len(x))
+				vs[k].Quantize(x)
+				out[k] = make([]float32, rows)
 			}
-			vs[k] = NewVec(len(x))
-			vs[k].Quantize(x)
-			out[k] = make([]float32, rows)
-		}
-		Run(Job{Out: out, W: w, E: e, V: vs})
-		for k, v := range vs {
-			for row := range rows {
-				want := Dot(w[row*nb*16:(row+1)*nb*16], e[row*nb:(row+1)*nb], v)
-				if got := out[k][row]; math.Abs(float64(got-want)) > 1e-4*math.Max(1, math.Abs(float64(want))) {
-					t.Fatalf("%d vectors: vector %d row %d: %g, want %g", n, k, row, got, want)
+			Run(Job{Out: out, W: w, E: e, V: vs})
+			for k, v := range vs {
+				for row := range rows {
+					want := Dot(w[row*nb*16:(row+1)*nb*16], e[row*nb:(row+1)*nb], v)
+					if got := out[k][row]; math.Abs(float64(got-want)) > 1e-4*math.Max(1, math.Abs(float64(want))) {
+						t.Fatalf("%d rows, %d vectors: vector %d row %d: %g, want %g", rows, n, k, row, got, want)
+					}
 				}
 			}
 		}
+	}
+}
+
+// BenchmarkRunVectors is Run of an expert's gate_up (5760 rows of 2880) with 16 vectors, the
+// rows of a prompt's chunk that chose it (HWNPU_MXFP4_I8MM=0 for the kernel without SMMLA).
+func BenchmarkRunVectors(b *testing.B) {
+	r := rand.New(rand.NewPCG(5, 6))
+	const rows, nb, n = 5760, 90, 16
+	w, e := randomRow(r, rows*nb)
+	vs := make([]*Vec, n)
+	out := make([][]float32, n)
+	for k := range vs {
+		x := make([]float32, nb*Block)
+		for i := range x {
+			x[i] = float32(r.NormFloat64())
+		}
+		vs[k] = NewVec(len(x))
+		vs[k].Quantize(x)
+		out[k] = make([]float32, rows)
+	}
+	b.SetBytes(int64(rows * nb * 17))
+	for b.Loop() {
+		Run(Job{Out: out, W: w, E: e, V: vs})
 	}
 }

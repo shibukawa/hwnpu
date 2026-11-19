@@ -34,8 +34,22 @@ func Run(jobs ...Job) {
 			spans = append(spans, span{j, lo})
 		}
 	}
+	// with SMMLA, the vectors in groups of 8 as 4 pairs (mm28Kernel): 2 rows at a time
+	pairs := make([][]pairVec, len(jobs))
+	if haveI8MM {
+		for j, jb := range jobs {
+			if nb := len(jb.E) / max(jb.Rows(), 1); nb == 0 || nb%2 != 0 {
+				continue
+			}
+			for k := 0; k+8 <= len(jb.V); k += 2 {
+				pairs[j] = append(pairs[j], interleave(jb.V[k], jb.V[k+1]))
+			}
+			pairs[j] = pairs[j][:len(pairs[j])/4*4]
+		}
+	}
 	var next atomic.Int64
 	work := func() {
+		var sixteen [16]float32
 		for {
 			i := int(next.Add(1)) - 1
 			if i >= len(spans) {
@@ -44,9 +58,42 @@ func Run(jobs ...Job) {
 			jb := jobs[spans[i].job]
 			rows := jb.Rows()
 			nb := len(jb.E) / rows
-			for r := spans[i].lo; r < min(spans[i].lo+chunk, rows); r++ {
+			ps := pairs[spans[i].job]
+			hi := min(spans[i].lo+chunk, rows)
+			for r := spans[i].lo; r < hi; r++ {
 				w, e := jb.W[r*nb*16:(r+1)*nb*16], jb.E[r*nb:(r+1)*nb]
 				k := 0
+				if len(ps) > 0 && r+1 < hi {
+					w2, e2 := jb.W[r*nb*16:(r+2)*nb*16], jb.E[r*nb:(r+2)*nb]
+					for g := 0; g < len(ps); g += 4 {
+						mm28Kernel(w2, e2, (*[4]pairVec)(ps[g:g+4]), &sixteen)
+						for p := range 4 {
+							a, b := 2*(g+p), 2*(g+p)+1
+							jb.Out[a][r], jb.Out[b][r] = sixteen[4*p], sixteen[4*p+1]
+							jb.Out[a][r+1], jb.Out[b][r+1] = sixteen[4*p+2], sixteen[4*p+3]
+						}
+					}
+					k = 2 * len(ps)
+					w1, e1 := w2[nb*16:], e2[nb:]
+					var four [4]float32
+					for ; k+4 <= len(jb.V); k += 4 {
+						v4 := (*[4]*Vec)(jb.V[k : k+4])
+						dot4Kernel(w, e, v4, &four)
+						for i, f := range four {
+							jb.Out[k+i][r] = f
+						}
+						dot4Kernel(w1, e1, v4, &four)
+						for i, f := range four {
+							jb.Out[k+i][r+1] = f
+						}
+					}
+					for ; k < len(jb.V); k++ {
+						jb.Out[k][r] = Dot(w, e, jb.V[k])
+						jb.Out[k][r+1] = Dot(w1, e1, jb.V[k])
+					}
+					r++
+					continue
+				}
 				var four [4]float32
 				for ; k+4 <= len(jb.V) && nb > 0; k += 4 {
 					if !dot4Kernel(w, e, (*[4]*Vec)(jb.V[k:k+4]), &four) {

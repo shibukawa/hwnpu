@@ -1,5 +1,7 @@
 package mxfp4
 
+import "os"
+
 const haveKernel = true
 
 //go:noescape
@@ -25,4 +27,22 @@ func dot4Kernel(w, e []byte, v *[4]*Vec, out *[4]float32) bool {
 		out[i] /= 2
 	}
 	return true
+}
+
+//go:noescape
+func mm28NEON(w0, w1, e0, e1 *byte, q *[4]*int8, s *[4]*float32, nb int, lut *int8, out *[16]float32)
+
+// haveI8MM is whether the CPU has FEAT_I8MM (SMMLA): Apple's M2 and later (not the M1).
+var haveI8MM = i8mm() && os.Getenv("HWNPU_MXFP4_I8MM") != "0"
+
+// mm28Kernel is two rows (the second's blocks right after the first's) with the four pairs of
+// vectors p: out[4*k + 2*r + j] is row r's dot product with pair k's vector j. nb even.
+func mm28Kernel(w []byte, e []byte, p *[4]pairVec, out *[16]float32) {
+	nb := len(e) / 2
+	q := [4]*int8{&p[0].Q[0], &p[1].Q[0], &p[2].Q[0], &p[3].Q[0]}
+	s := [4]*float32{&p[0].S[0], &p[1].S[0], &p[2].S[0], &p[3].S[0]}
+	mm28NEON(&w[0], &w[16*nb], &e[0], &e[nb], &q, &s, nb, &doubled[0], out)
+	for i := range out {
+		out[i] /= 2
+	}
 }
