@@ -72,7 +72,7 @@ func (c IssueCmd) Run(ctx context.Context) error {
 			run = &runs[0]
 		}
 	}
-	st := collect(ctx, view{s}, true, c.Wake)
+	st := collect(ctx, view{s}, true, c.Wake, new(samplers))
 	r := newRedactor()
 	title, body := draft(st, run, c.Title, c.Lines, r)
 	u := issueURL(title, body)
