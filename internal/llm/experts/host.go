@@ -310,6 +310,7 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 		h.usage.Add(layer, idx)
 	}
 	if h.place != nil {
+		h.place.count(layer, idx)
 		h.place.ran(layer == h.first)
 	}
 	for r := range rows {

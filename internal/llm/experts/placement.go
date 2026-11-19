@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -126,7 +127,10 @@ type placer struct {
 	mu      sync.Mutex // the wired experts and the system's wiring of them
 	wired   map[int][][]byte
 	bytes   int64
-	limited error // the system's limit on wired memory, met (vm.user_wire_limit)
+	limited error         // the system's limit on wired memory, met (vm.user_wire_limit), or too little free
+	on      []atomic.Bool // by l*E+e: wired, for Run's count of hits
+	hits    atomic.Int64  // the runs of a wired expert
+	runs    atomic.Int64  // every expert's runs
 
 	lock   func([]byte) error // mlock, and munlock: a test's own
 	unlock func([]byte)
@@ -141,7 +145,7 @@ type placer struct {
 func newPlacer(h *Host, p Placement, budget int64, L int) *placer {
 	E := h.shape.Experts
 	pl := &placer{h: h, place: p, budget: budget, L: L, E: E, core: make([]bool, L*E), score: make([]float64, L*E),
-		seen: make([]uint32, L*E), wired: map[int][][]byte{}, quit: make(chan struct{}), lock: mlock, unlock: munlock}
+		seen: make([]uint32, L*E), wired: map[int][][]byte{}, quit: make(chan struct{}), lock: mlock, unlock: munlock, on: make([]atomic.Bool, L*E)}
 	for l, es := range p.Core {
 		for _, e := range es {
 			if l < L && e >= 0 && e < E {
@@ -248,6 +252,7 @@ func (pl *placer) apply(t map[int]bool) (wired, unwired int64) {
 			}
 			pl.bytes -= spanBytes(sp)
 			delete(pl.wired, i)
+			pl.on[i].Store(false)
 		}
 	}
 	// the cores first, then by score: the order target chose them in
@@ -283,7 +288,20 @@ func (pl *placer) apply(t map[int]bool) (wired, unwired int64) {
 		var done [][]byte
 		var err error
 		for _, b := range sp {
-			if err = pl.lock(b); err != nil {
+			// ENOMEM comes and goes while the model loads (the Neural Engine's programs wired
+			// at the same time: an M2 and an M3 wired 0.4–0.6 of 1.9 GB at the first try, and
+			// every expert alone): try again for a while
+			for try := 0; ; try++ {
+				if err = pl.lock(b); err == nil || !errors.Is(err, syscall.ENOMEM) || try == 20 {
+					break
+				}
+				select {
+				case <-pl.quit:
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
+			}
+			if err != nil {
 				break
 			}
 			done = append(done, b)
@@ -296,6 +314,7 @@ func (pl *placer) apply(t map[int]bool) (wired, unwired int64) {
 			break
 		}
 		pl.wired[i] = sp
+		pl.on[i].Store(true)
 		pl.bytes += spanBytes(sp)
 		wired += spanBytes(sp)
 	}
@@ -361,6 +380,30 @@ func (pl *placer) start() {
 	}()
 }
 
+// count notes the experts idx of layer l run, for the share of them wired (report).
+func (pl *placer) count(l int, idx [][]int) {
+	var h, n int64
+	for _, row := range idx {
+		for _, e := range row {
+			if e >= 0 && e < pl.E {
+				n++
+				if pl.on[l*pl.E+e].Load() {
+					h++
+				}
+			}
+		}
+	}
+	pl.hits.Add(h)
+	pl.runs.Add(n)
+}
+
+// report prints the share of the experts' runs that found them wired.
+func (pl *placer) report() {
+	if n := pl.runs.Load(); n > 0 {
+		fmt.Fprintf(os.Stderr, "experts: %.1f%% of %d runs on wired experts (%.1f GB wired)\n", 100*float64(pl.hits.Load())/float64(n), n, float64(pl.bytes)/1e9)
+	}
+}
+
 // ran notes a run of layer: the first layer's runs balance the wiring now and then.
 func (pl *placer) ran(first bool) {
 	now := time.Now().UnixNano()
@@ -396,6 +439,10 @@ func (pl *placer) balance(first bool) {
 	}
 	t0 := time.Now()
 	w, un := pl.apply(pl.target())
+	if errors.Is(pl.limited, syscall.ENOMEM) {
+		// too little free memory to wire the pages now (not the limit, EAGAIN): try again soon
+		pl.last.Store(time.Now().Add(balanceFirst - balanceEvery).UnixNano())
+	}
 	if DebugTime() || first && pl.limited != nil {
 		total := pl.h.bytes()
 		fmt.Fprintf(os.Stderr, "experts: wired %.1f GB of %.1f (budget %.1f; +%.1f −%.1f in %.1fs)", float64(pl.bytes)/1e9, float64(total)/1e9,
@@ -411,6 +458,9 @@ func (pl *placer) balance(first bool) {
 func (pl *placer) stop() {
 	close(pl.quit)
 	pl.wg.Wait()
+	if DebugTime() {
+		pl.report()
+	}
 	pl.mu.Lock()
 	for _, sp := range pl.wired {
 		for _, b := range sp {
@@ -418,5 +468,8 @@ func (pl *placer) stop() {
 		}
 	}
 	pl.wired, pl.bytes = nil, 0
+	for i := range pl.on {
+		pl.on[i].Store(false)
+	}
 	pl.mu.Unlock()
 }
