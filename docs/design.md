@@ -7570,7 +7570,7 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 **未確認・残り**
 
 - 日本語などの英語でない音声 (この機械に音声の素材がない)。Core AI の 65 秒の日本語と同じ素材で比べたい
-- 復号の速さ: 1 トークン 19 ms のほとんどは重みを読む時間 (層 4 つの 210 MB と logits の表 133 MB)。表を 8 ビットにする、logits を候補だけにする、などは試していない
+- 復号の速さ: 1 トークン 19 ms のほとんどは重みを読む時間 (層 4 つの 210 MB と logits の表 133 MB)。表を 8 ビットにする、logits を候補だけにする、などは試していない。16.259 で 13 ms に (時間は重みを読むより演算の数で決まっていた)
 
 ### 16.254 LFM3-Audio-2B の読み上げを AMD の NPU に (IRON、`hwnpu-audio tts`) — 2026-11-19
 
@@ -7647,8 +7647,8 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 
 **残り**
 
-- 言語モデルを NPU に (temporal は 12 層の窓 41 の KV キャッシュと sink、depth は 12 ステップの 2 層。どちらも 1 行の GEMV): 1 フレーム 66 ms のほとんど
-- 出力の層の im2col を減らす (時間のタップだけ im2col にし、周波数のタップは出力の列で持って足す)
+- 言語モデルを NPU に (temporal は 12 層の窓 41 の KV キャッシュと sink、depth は 12 ステップの 2 層。どちらも 1 行の GEMV): 1 フレーム 66 ms のほとんど。16.259 で試し、CPU と同じ速さで使わない
+- 出力の層の im2col を減らす (時間のタップだけ im2col にし、周波数のタップは出力の列で持って足す)。16.259 で済み
 - MusicCoCa の音の側と SpectroStream の符号器 (`--continue`) は CPU のまま
 
 ### 16.257 音のモデルの AMD の書き出しを取得元へ (UGREEN の NAS) — 2026-11-19
@@ -7693,5 +7693,26 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 **残り**
 
 - 音は聞いて確かめていない (この機械に音を聞く手段がない)。数値は CPU の fp16 の版と比べた
-- Snake を前後の GEMM に融合していない (今は Snake のたびに状態を読み書きする。stage 4 の 33 ms のうち約 10 ms)
+- Snake を前後の GEMM に融合していない (今は Snake のたびに状態を読み書きする。stage 4 の 33 ms のうち約 10 ms)。16.259 でカーネルを速くした (融合はしない)
 
+
+### 16.259 音のモデルの AMD の残り: Whisper の復号、Snake、Magenta の出力の層と言語モデル、MEDIUM — 2026-11-19
+
+16.253、16.256、16.258 に残した項目を片づけた。
+
+- **Whisper の復号器** (`iron_whisper.py`): 1 トークン 19 ms → 13 ms (51 → 78 トークン/秒、88.3 秒の英語の書き起こし 9.1 → 6.8 秒)。測ると重みを読む時間ではなく演算の数で決まっていた (LayerNorm 1 つ 146 µs、演算 1 つ約 0.13〜0.15 ms。4 層の内訳は自己注意 5.9、cross 6.7、MLP 4.3、logits 2.3 ms)。したこと:
+  - 重みを q8 に (`--decoder bf16` で元に)。`iron_q4` の q8 の GEMV は K が 512 の倍数に限っていたが、ブロックの並びは 256 の in-feature ずつで、カーネルも 256 ずつ読むので、q8 は 256 の倍数に広げた (Whisper の 1280。q4nx と q6 は DequantBFP の並びのため 512 のまま)。q8 だけでは 17.5 ms
+  - MHA の `num_pipelines`: 渡さないと 1 本で、20 の頭を順に回していた。packed の 1 問い合わせの上限 4 で、cross の MHA が 4 層で 3.9 → 2.0 ms
+  - q、k、v を 1 つの GEMV に (k の bias は 0)、out_proj と fc2 の GEMV が残差を足す (`linear_add`): 1 層の演算が 5 つ減る
+  - 文と時刻の切れ目は bf16 の復号器と同じ (speech-dispatcher の案内の最後の句点 1 つだけ違う)。`QGEMVAdd` の参照は入力を宣言の順 (サブクラスのベクトルが先) で受けるので、名前で受けるように直した (`--check` で落ちていた)
+- **Snake のカーネル** (`kernels/snake_f32.cc`): 100 万値 1.42 → 0.59 ms (RowAffine は 0.29 ms)。計算律速だった (カーネルの積が約 60)。後ろの GEMM は bf16 を読むので、要る精度は x と sin²/α の大きい方の bf16。範囲の縮小 (αx、v/π、nπ) は肢のまま float32 の精度に、級数 (r⁷ まで) は r の上の肢の bf16 の積で、最初の項 r と sin r、sin² だけ 2 つの肢。numpy の模型 (`iron_snake.kernel_ref`、IRON の参照もこれ) で 2e6 の乱数を float64 と比べ、大きい方の項に対する誤差は平均 0.0013、最大 0.014 (bf16 に丸めるだけで 0.0012、0.0066)。DAC の 5 秒の音の復号 1.71 → 1.50 秒、CPU の段との SNR 34.6 → 34.5 dB
+- **Snake を GEMM に融合しない**: 後ろは 7 タップの im2col (Snake を写しの中ですると 7 倍の計算) か 1 × 1 の GEMM で、IRON の GEMM には任意の後処理を入れる口がない。カーネルを速くするほうにした
+- **DAC の MEDIUM**: チャネルごとの尺度 (2 の冪、Snake の出力と重みに振り分けられる) で bfp16 の 8 値のブロックの大きさを揃えても、stage 0〜2 の実際の活性で GEMM 1 つの誤差 (0.5〜1 %) が平均 5 % しか減らなかった。仮数 7 ビットの丸めそのもので、ブロックの中の大きさの違いではない。上と下の 2 つの bfp16 に分けると MEDIUM の 2 倍の計算で、HIGHEST より遅い。HIGHEST のまま
+- **Magenta の出力の層** (`iron_magenta.py`): 7 × 7 の畳み込み (64 → 2) の im2col を時間の 7 タップだけにし (K 3136 → 448、写しが半分で 578 → 82 MB)、周波数の 7 タップは GEMM の列 (タップ e、部分 o を列 2e + o) で持つ。周波数を両側 3 つずつ広げた画素の上で計算し、タップごとにずらして写して足す (`out_sum`)。出力は (192 × 480, 2) に (ホストは列の数を長さから読むので変えなし)。出力の層 226 → 54 ms × 2、復号器の 1 回 1.2 → 0.86 秒。古い版の復号器との波形の SNR 44.7 dB (同じ種、同じ符号)。4 秒の音楽 16.6 → 15.4 秒
+- **Magenta の言語モデルを NPU に**: `tools/amd/iron_magenta_lm.py` で temporal と depth の 1 ステップをグラフにした (q8、q の次元ごとの尺度を重みに畳み、sink の鍵はその尺度で割る。鍵と値の輪は状態に、行 0 が sink)。IRON の参照と cosine 0.99974 (temporal 12 層)、0.99998 (depth)。temporal 34 ms (CPU 35〜39 ms)、depth 4.8 ms × 12 = 58 ms (CPU 56〜64 ms) で速さは同じ。これも演算の数で決まる (temporal の 1 層 23 演算で 3.0 ms)。SpectroStream の復号器は今、言語モデル (CPU) の裏で 1 秒ずつ NPU で動くので、言語モデルを NPU に移すと NPU を取り合って全体が遅くなる。CPU のままにして、書き出しは測るために残す
+- **取得元の整理**: v1 の MOSS の書き出し 2 つ (`v0-e553fdcd`、`v0-4db8e6f6`、12.2 GB) と、書き込みの途中の印 `.writing-` 3 つ (LFM3-Audio と MOSS と Whisper の表) を `hwnpu-dev cache gc` で消した
+
+**残り**
+
+- IRON の full ELF の演算 1 つの固定費 (約 0.13〜0.15 ms)。小さいモデルの 1 トークン (Whisper の復号器、Magenta の言語モデル) はこれで決まる。下がれば `iron_magenta_lm.py` で測り直す
+- Whisper の復号器の LayerNorm を GEMV に融合する (12 + 1 個、約 1.9 ms)。今の `QGEMVQKV` の正規化は RMS で、LayerNorm (平均を引き bias を足す) ではない
