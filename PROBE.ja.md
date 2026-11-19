@@ -1,6 +1,6 @@
 # 手元の機械で hwnpu を確かめる
 
-実機で、hwnpu が NPU を動かせるか、LLM の大きさのモデルがそこでどれだけ速く動くか、NPU がどの大きさのモデルまで受け付けるか、どれだけのエネルギーを使うかを確かめる手順です。どれもモジュールのパスを指定した `go run` で動きます。Go のモジュール以外にクローンやダウンロードは要りません。モデルはツールが Go で生成するので、Python もモデルのファイルも不要です。
+実機で、hwnpu が NPU を動かせるか、LLM の大きさのモデルがそこでどれだけ速く動くか、NPU がどの大きさのモデルまで受け付けるか、どれだけのエネルギーを使うかを確かめる手順です。どれもモジュールのパスを指定した `go run` で動きます。Go のモジュール以外にクローンやダウンロードは要りません。モデルはツールが Go で生成するので、Python もモデルのファイルも不要です（AMD の NPU では、hwnpu がもともとそこで必要とする IRON の Python の環境を使います）。
 
 English: [PROBE.md](PROBE.md)
 
@@ -11,7 +11,7 @@ English: [PROBE.md](PROBE.md)
 | Apple シリコンの Mac | `hwnpu-dev report` | `hwnpu-dev probe` | `hwnpu-dev powerbench -decode 8,16 -gpu`（sudo） |
 | Intel Core Ultra、Linux | `hwnpu-dev report` | `hwnpu-dev probe` | root で動かした `hwnpu-dev probe`（RAPL） |
 | Intel Core Ultra、Windows | `hwnpu-dev report` | `hwnpu-dev probe` | 未対応 |
-| AMD Ryzen AI、Linux | `hwnpu-dev report` | 未対応。AMD バックエンドはモデルではなくカーネルを動かす | |
+| AMD Ryzen AI、Linux | `hwnpu-dev report` | IRON の環境を指定した `hwnpu-dev probe`（下記） | 同じ実行（amdgpu の PPT、root 不要） |
 
 先に機械の準備をしてください: [INSTALL_APPLE.ja.md](INSTALL_APPLE.ja.md)、[INSTALL_INTEL.ja.md](INSTALL_INTEL.ja.md)、[INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)。Go は 1.27 以降が要ります。古い `go` コマンドでも、既定の設定（`GOTOOLCHAIN=auto`）なら必要な版を自分でダウンロードします。
 
@@ -30,6 +30,14 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
 ```
 
 40 分ほどかかり、今いるディレクトリに `npuprobe-<機種>-<日時>.md` と `.json` を書き出します。Ctrl-C で止めても、そこまでの結果は残ります。コマンド名のあとに `bench` か `limit` を付けると片方だけを行います。上限を超えるモデルを分けて動かす検証は `split` で行います（後述）。投機的デコードの検証にあたる計測（後述の verify）は、`verify` を付けたときだけ行います。
+
+AMD の NPU では、hwnpu-chat が初回に動かすのと同じ書き出し（hwnpu-dev に組み込み済み）を使って、測る形を IRON で書き出します。そのため IRON の仮想環境が要ります（[INSTALL_AMD.ja.md](INSTALL_AMD.ja.md)）。モデルのファイルはダウンロードしません:
+
+```bash
+HWNPU_IRON_ENV=~/IRON/ironenv go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe
+```
+
+15 分ほどかかり（30 本のグラフをそれぞれ 5〜55 秒で書き出し、3 秒ずつ測る）、bench、verify、attn（後述）を行います。先に NPU を使っているほかのプログラムを閉じてください（`pgrep -fa 'hwnpu|iron_'`）。別のモデルが動いていたとき、FLUX.2 klein の 1 ステップは 1.3 秒から 2.3 秒になりました。
 
 ### 3. エネルギー
 
@@ -93,6 +101,14 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe split -split-layers
 
 **verify** は、bench と同じモデルを、1 回の呼び出しで K 個のトークン（既定は 1〜128）を通す形にして NPU で動かします。投機的デコードで、下書きした K 個のトークンを 1 回で確かめる呼び出しや、プロンプトをまとめて読む呼び出しと同じ形で、K に関係なく重みは 1 回ずつしか読みません。K を増やしても 1 回の時間がほとんど変わらないうちは重みの読み出しで頭打ちになっていて、K 個の確認が 1 トークンの生成とほぼ同じ時間で済みます。ある K を超えると計算が追いつかなくなり、時間は K に比例して伸びます。レポートには、そのときの計算の速さ（TFLOPS）と、NPU の計算と重みの読み出しの速さの比から求めた、重みを読む時間と計算の時間がつり合う K を出します。これが、投機的デコードで得られる速さの上限と、NPU を最もよく使えるプロンプトの区切りの目安です。注意はトークンごとの代わりの演算だけで、下書きのトークンどうしの注意は含みません。形式は NPU で動くもの（Apple は fp16、int8、lut4）です。
 
+**AMD の NPU**（Ryzen AI、XDNA2）にはグラフのバックエンドがありません。hwnpu はそこで IRON の書き出しを動かすので、probe は `tools/amd/iron_probe.py` で、hwnpu の書き出しと同じ演算子を使い、乱数の重みからグラフを作ります。それを hwnpu がモデルを動かすのと同じ `internal/llm/iron` で測ります。だから数値は、モデルが実際に通る経路の天井です。IRON のサンプルの天井（[docs/amd-xdna2-bench.md](docs/amd-xdna2-bench.md)、hwnpu が自前のカーネルを持つ前の測定）ではありません。
+
+- **bench**: 同じ 8 層と 16 層を、q4（q4nx、1 重み 5 ビット）、q8、bf16 で、1 回に 1 行ずつ、2 通りに動かします。`layers` は各層の 7 つの線形と SwiGLU の積を順に動かします。hwnpu のチャットのモデルの書き出しがデコードの 1 ステップを動かすのと同じ形で、IRON はほかの演算子の後に来た演算子をそのたびにコアへ読み込み直します。`stream` は同じバイト数を同じ形の GEMV に入れて続けて動かします。これは読み込み直されないので、時間は重みの転送だけになります。1 ステップを 1 つの常駐アレイで動かしたときの天井です（gpt-oss-20b の `GptOssStep`、docs/design.md 16.179）。
+- **verify**: 層を 1 回 K 行で動かします。K ごとに hwnpu が通る経路を使います。1 行はデコードの QGEMV、2〜8 行は q8 か q6 の QGEMVRows（下書きを確かめる呼び出し、`--verify`）、256 の倍数はプロンプトの塊の GEMM です（q4 と q8 は呼び出しのたびに重みをデバイス上で逆量子化します。bfp16 は画像の DiT の重みで、ホストで詰めておき、GEMM がそのまま読みます）。既定の K は 1、2、4、8、256、1024、4096 で、`-layers` を指定しなければ最初の層数（8）だけを測ります。
+- **attn**: 画像の DiT の注意を、FLUX.2 klein の書き出しと同じ形（`iron_mha.ImageMHA`、QKᵀ と P·V を bfp16 で、ソフトマックスの指数を bf16 の limb 1 本で）で動かします。128 の幅のヘッドが 24、行は 1536 と 4608 です（512² と 1024² に文の 512 行を足したもの。`-image-rows`、`-image-heads`、`-image-dim`）。
+
+AMD では `hwnpu-dev probe` が 3 つとも行い、`bench`、`verify`、`attn` を付けると 1 つだけを行います。そこでの `-formats` は q4、q6、q8、bf16、bfp16 を取ります。
+
 計測は 1 つずつ別の子プロセスで行います。フレームワークやドライバがプロセスごと落ちても（Core ML の GPU の経路が一部のグラフで assert したことがあります）、失うのはレポートの 1 行で、その行にエラーが残ります。
 
 列の読み方:
@@ -125,6 +141,61 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe split -split-layers
 | `-dir`、`-o` | 一時ディレクトリ、`npuprobe-<機種>-<日時>.md` | |
 
 ## これまでの結果
+
+以下の Apple の結果は Core ML で測ったもので、hwnpu のチャットと画像のモデルが Core AI（macOS 27、docs/improvements.ja.md 7.5）に移る前のものです。ハードウェアで決まることは今も成り立ちます。Neural Engine は重みを約 62〜64 GB/s で読みます（M1 は 44〜48。Core AI のチャットのモデルも M1 で 48 GB/s で読んでいる、docs/improvements.ja.md 12.6）。Core ML で決まることは引き継がれません。1 GiB の上限は Core ML のものです（Core AI のプログラムは M3 で 1 本 2.5〜3 GiB まで持てる）。また Core AI では、大きなプログラムを順に動かすと 1 本ごとに 50〜70 ms かかり、M1 の合計の上限とは別の現象になります。probe にはまだ Core AI の経路がありません。
+
+### AMD Ryzen AI 9 365（Strix Point、XDNA2、32 コア。Linux、amdxdna 0.7、ファームウェア 1.1.2.64）
+
+既定の設定の `hwnpu-dev probe`、2026-11-19、NPU にほかのプログラムがない状態（レポートは [npuprobe-strix.md](npu_profiles/npuprobe-strix.md)）。デコードの 1 ステップ、1 回に 1 行、16 層（0.97 B の重み）を、書き出しが使うすべての形式で:
+
+| 形式 | 1 重みのビット | 重み | 形 | ms/トークン | トークン/秒 | 重みの GB/s | G 重み/秒 | 正味の W | mJ/トークン |
+|---|---|---|---|---|---|---|---|---|---|
+| q4 | 5 | 0.57 GiB | layers | 31.3 | 32 | 19 | 31 | 9.4 | 293 |
+| q4 | 5 | 0.57 GiB | **stream** | **11.6** | **87** | **53** | **84** | 11.8 | **136** |
+| q6 | 6.5 | 0.74 GiB | layers | 40.2 | 25 | 20 | 24 | 9.0 | 363 |
+| q6 | 6.5 | 0.74 GiB | stream | 20.7 | 48 | **38** | 47 | 9.5 | 197 |
+| q8 | 8.5 | 0.96 GiB | layers | 38.2 | 26 | 27 | 25 | 8.7 | 332 |
+| q8 | 8.5 | 0.96 GiB | stream | 19.0 | 53 | 54 | 51 | 10.9 | 207 |
+| bf16 | 16 | 1.81 GiB | layers | 41.0 | 24 | 47 | 24 | 9.1 | 374 |
+| bf16 | 16 | 1.81 GiB | stream | 35.3 | 28 | 55 | 28 | 9.3 | 328 |
+
+G 重み/秒は 1 秒に読む重みの数です。N B（N 十億）の重みのモデルは、形式によらず、およそこれを N で割ったトークン/秒でデコードします。q4 は q4nx（4 ビットの符号と、32 個ごとに bf16 のスケールと最小値）、q6 と q8 は 6 ビットと 8 ビットの符号と、32 個ごとに bf16 のスケールです。
+
+- **q4、q8、bf16 では、演算子を読み込み直さなければ（stream）重みを 53〜55 GB/s で読みます**。DMA の上限（55〜57 GB/s）どおりです。Neural Engine は 62〜65 GB/s（M2、M3、M4）で読むので、4 ビットの重みでは天井どうしで M3 のほうが 1 トークンあたり 1.5 倍速くなります（7.5 ms 対 11.6 ms、129 G 重み/秒対 84。q4nx はスケールと最小値を含めて 1 重み 5 ビット、lut4 は 4 ビット強）。
+- **q6 は読むバイトが少ないのに q8 より遅い**。天井に届かないのは q6 だけで、38 GB/s です。カーネルが 3 バイトから 6 ビットの符号を 4 つずつコアの上で取り出しており、転送ではなくこの計算が上限になっています。1 秒に読む重みは 47 G で、q8 の 51 G より少なく（天井で 20.7 ms 対 19.0 ms、layers の形で 40.2 ms 対 38.2 ms）、下書き 8 つの確認も q8 の 2.9 ステップに対して 3.9 ステップかかります（下記）。AMD で q6 が得をするのはメモリ（q8 より 4 分の 1 少ない）だけで、速さでも元の重みへの近さでも q8 が上です。いちばん速いのは大差で q4 です。
+- **チャットのモデルの書き出しの動かし方では、天井から遠く離れます**。q4 は 19 GB/s で、天井の 3 分の 1 です。1 層は 8 つの演算子で、ほかの演算子の後に来た演算子はそのたびにコアへ読み込み直されます（約 67 µs と、プログラム 1 KB あたり 1.2 µs。docs/design.md 16.179）。q4 の 31 ms のうち 20 ms がこれです。この形では q4 以外の形式はほぼ同じ時間（38〜41 ms）で、形式で減らした分が読み込み直しに隠れます。bf16 は転送が 3.6 倍長いので、これがいちばんよく隠れます（47 GB/s）。1 ステップを 1 つの常駐アレイにした gpt-oss-20b は天井の 93 % で動いています。ほかのモデルにとっては、この形が AMD で残っている一番大きな伸びしろです（この数値では q4 で 2.7 倍）。
+- エネルギー: 天井で動く q4 の 1 トークンは、アイドルを引いて 136 mJ です。M3 の Neural Engine は 37 mJ でした（lut4、`hwnpu-dev powerbench`）。ただし測っているものが違います（amdgpu の PPT はパッケージ全体、powermetrics の値は Neural Engine 自身）ので、比はおおまかな目安です。layers の形は時間だけでなくエネルギーも多くかかります（293 対 136 mJ）。
+
+1 回に K 行（8 層、0.49 B の重み）:
+
+| 形式 | K | 経路 | ms/回 | × K=1 | ms/トークン | TFLOPS |
+|---|---|---|---|---|---|---|
+| q8 | 1 | QGEMV | 19.2 | 1.00 | 19.2 | 0.05 |
+| q8 | 2 | QGEMVRows（下書きの確認） | 19.9 | 1.04 | 9.9 | 0.10 |
+| q8 | 4 | QGEMVRows | 24.4 | 1.27 | 6.1 | 0.16 |
+| q8 | 8 | QGEMVRows | 54.6 | 2.85 | 6.8 | 0.14 |
+| q8 | 256 | 逆量子化と GEMM（プロンプトの塊） | 88.0 | 4.59 | 0.34 | 2.8 |
+| q8 | 4096 | 〃 | 361.9 | 18.9 | 0.088 | 11.0 |
+| q6 | 1 | QGEMV | 20.2 | 1.00 | 20.2 | 0.05 |
+| q6 | 2 | QGEMVRows | 20.8 | 1.03 | 10.4 | 0.09 |
+| q6 | 4 | QGEMVRows | 25.0 | 1.24 | 6.2 | 0.16 |
+| q6 | 8 | QGEMVRows | 79.2 | 3.92 | 9.9 | 0.10 |
+| q6 | 256 | 逆量子化と GEMM | 92.3 | 4.57 | 0.36 | 2.7 |
+| q6 | 4096 | 〃 | 366.8 | 18.2 | 0.090 | 10.9 |
+| q4 | 1 | QGEMV | 15.9 | 1.00 | 15.9 | 0.06 |
+| q4 | 256 | DequantBFP と GEMM（プロンプトの塊） | 85.9 | 5.39 | 0.34 | 2.9 |
+| q4 | 4096 | 〃 | 320.5 | 20.1 | 0.078 | 12.4 |
+| bfp16 | 256 | GEMM、重みはホストで詰めたもの | 27.5 | | 0.11 | 9.0 |
+| bfp16 | 1024 | 〃 | 75.3 | | 0.073 | 13.2 |
+| **bfp16** | **4096** | 〃 | **261.7** | | **0.064** | **15.2** |
+
+q4 には 2〜8 行の呼び出しがありません（QGEMVRows は q8 と q6 だけ）。
+
+- **AMD では投機的デコードの余地が小さい**。下書き 2 つは 1.04 ステップ、4 つは 1.27 ステップで済みますが、8 つは 2.85 ステップ（q6 は 3.92）かかります。プロンプトの塊の GEMM は、256 行までなら行数に関係なく 4.6 ステップかかります。1 回で進める最善は 4 トークンほどです（下書きが全部当たれば 1 トークン 6.1 ms）。Neural Engine は 64 トークンの確認が 1.10 回分で済む（M3、下記）ので、下書きのモデルや MTP の下書きはそちらでずっと得になります。
+- **計算の天井は AMD のほうが高い**。重みを bfp16 で詰めた 4096 行で 15.2 TFLOPS です。M3 の Neural Engine は 13.7（K=64、下記）、M1 は約 5（Anima の MLP、docs/improvements.ja.md 12.5）でした。4096 行以上で計算に縛られる画像のモデルが、GEMM が bfp16 を読むようになってから（docs/design.md 16.200）Neural Engine より AMD で速くなったのはこのためです。FLUX.2 klein の 1024² は約 29 秒（M1 は 41 秒）、Qwen-Image の 1 ステップは 8.4 秒（M1 は 15.9 秒）です。
+- **q4、q6、q8 のプロンプトの塊は、呼び出しのたびに逆量子化の分を払います**。256 行で 86〜92 ms かかり、bfp16 の 28 ms の 3 倍です。bfp16 の速さに近づくのは 4096 行からです。チャットのモデルの重みを、プロンプト用に bfp16 でも持てば（1 重みあたり 9 ビット増える）、プロンプトの読み込みは最大 3 倍速くなるはずです。まだやっていません。
+
+画像の DiT の注意（128 の幅のヘッドが 24）: 1536 行で 12.8 ms（2.3 TFLOPS）、4608 行で 81.8 ms（3.2 TFLOPS）。GEMM の 5 分の 1 の速さで、AMD で DiT のブロックの時間として残っているのは注意です（FLUX.2 klein の 1 重ブロックでは、指数を変える前は 198 ms のうち注意が 118 ms。docs/design.md 16.207）。
 
 ### Apple M3（MacBook Air、16 GB、macOS 27.0.1）
 
@@ -303,11 +374,19 @@ go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe split -split-layers
 
 ### 求む結果
 
-M4 以降の Apple のチップ（1 GiB の上限はチップやメモリで変わるか）、Linux と Windows の Intel Core Ultra（Intel バックエンドはまだ実機で動いていない）、AMD Ryzen AI の `hwnpu-dev report`。`.md` のファイルを付けて issue を開いてください。
+M4 以降の Apple のチップ（1 GiB の上限はチップやメモリで変わるか）、Linux と Windows の Intel Core Ultra（Intel バックエンドはまだ実機で動いていない）、AMD Ryzen AI の `hwnpu-dev report` と、Strix Point 以外のチップ（Krackan Point、Strix Halo）での `hwnpu-dev probe`、Apple での probe の Core AI の経路（同じ形を Core AI のプログラムにしたもの。まだ書いていない）。`.md` のファイルを付けて issue を開いてください。
+
+M1、M2、M3 でも、上の AMD と同じく形式どうしを比べ直したい。`bench` は lut6 と lut8（`hwnpu-dev convert -bits 6` と `8` の重み）も動かして G 重み/秒を出すようになり、`verify` は Neural Engine が受け付けるすべての形式を動かします:
+
+```bash
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe bench
+go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe verify -layers 8
+```
 
 ## この計測の限界
 
 - 重みが乱数なので、精度については何も分かりません。精度は [MODEL_ARCHITECTURE.ja.md](MODEL_ARCHITECTURE.ja.md) を参照してください。
 - KV キャッシュがありません。実際の生成では文脈に対する注意が加わりますが、文脈が短いうちは重みに比べて小さい量です。
 - Core ML の計算計画は配置の見積もりです。CPU use で裏付けを取ります。
+- AMD の stream の形は、1 ステップを 1 つの常駐アレイにしたものの代わりです。バイト数は同じですが、そうしたアレイで増える分（各フェーズの固定の 25〜35 µs、1 層に 1 つのコマンドの境目。docs/design.md 16.179）は含みません。
 - `hwnpu-dev powerbench -decode` と hwnpu-dev probe の Intel 向けの経路は、M3 以外の機械ではまだ動かしていません。

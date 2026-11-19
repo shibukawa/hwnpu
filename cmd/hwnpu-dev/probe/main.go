@@ -77,6 +77,13 @@
 // without an error, so with -resident-cycle (the default) every held program also runs in turn
 // after each load, timed: where those calls slow down is the most it keeps at once.
 //
+// On AMD's NPU (no graph backend: its models are IRON exports) bench, verify and attn export
+// their shapes with tools/amd/iron_probe.py in IRON's environment (HWNPU_IRON_ENV) and time them
+// through internal/llm/iron (amd.go): bench a decode step's linears as hwnpu's exports run them
+// and the same bytes streamed without operators loaded again (the ceiling of a resident step),
+// verify K rows a call (QGEMVRows for 2 to 8, the GEMM in multiples of 256), attn the image DiTs'
+// attention. all runs the three.
+//
 // Placement comes from Core ML's compute plan on Apple; on Intel the driver compiler either builds
 // the whole graph for the NPU or fails. The report also gives the process CPU time per wall time
 // while a model runs: near 0 when the NPU does the work, 1 or more when the CPU does.
@@ -130,6 +137,7 @@ type report struct {
 	Split     []splitResult    `json:"split,omitempty"`
 	Cache     []cacheResult    `json:"cache,omitempty"`
 	Resident  []residentResult `json:"resident,omitempty"`
+	AMD       []amdResult      `json:"amd,omitempty"`
 	Notes     []string         `json:"notes,omitempty"`
 }
 
@@ -151,7 +159,7 @@ func Main() {
 		fmt.Fprintln(fs.Output(), "usage: hwnpu-dev probe [all|bench|limit|split|verify|kv|attn|seam|cache|resident] [flags]")
 		fs.PrintDefaults()
 	}
-	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4 and int4 on the CPU and GPU on Apple; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
+	formats := fs.String("formats", "", "weight formats (default: fp16,int8,lut4,lut6,lut8 and int4 on the CPU and GPU on Apple, limit fp16,int8,lut4; fp16,int8,int4 on Intel; split: lut4 on Apple, int4 on Intel)")
 	layers := fs.String("layers", "8,16", "bench and verify: layer counts (61 M weights each)")
 	tokens := fs.String("tokens", "1,2,4,8,16,32,64,128", "verify: tokens per call (K drafted tokens checked at once, or a chunk of the prompt)")
 	baselines := fs.String("baselines", "cpu,gpu", "bench on Apple: also run each model on these Core ML units (empty for none)")
@@ -192,10 +200,15 @@ func Main() {
 	residentMax := fs.Float64("resident-max-gb", 0, "resident: stop past this total, GiB (default: 60 % of the RAM, at most 16)")
 	residentRun := fs.Bool("resident-run", true, "resident: run each program after its load and all held ones at the end (false: load only)")
 	residentHold := fs.String("resident-hold", "open,close", "resident: open (every program kept until a load fails) and close (each closed before the next), comma separated")
+	imageRows := fs.String("image-rows", "1536,4608", "attn on AMD: rows of the image DiTs' attention, queries and keys (FLUX.2 klein: 1536 at 512², 4608 at 1024²)")
+	imageHeads := fs.Int("image-heads", 24, "attn on AMD: heads of the image DiTs' attention")
+	imageDim := fs.Int("image-dim", 128, "attn on AMD: the width of a head")
 	minRun := fs.Duration("run", 3*time.Second, "time each model for at least this long")
 	work := fs.String("dir", "", "directory for generated models (default: a temporary directory; Apple needs free space of about twice -max-gb)")
 	out := fs.String("o", "", "report file (default npuprobe-<machine>-<time>.md, and .json beside it)")
 	fs.Parse(args)
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if mode != "all" && mode != "bench" && mode != "limit" && mode != "split" && mode != "verify" && mode != "kv" && mode != "attn" && mode != "seam" && mode != "cache" && mode != "resident" {
 		fs.Usage()
 		os.Exit(2)
@@ -232,7 +245,8 @@ func Main() {
 			os.Exit(2)
 		}
 	}
-	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, co, ro, *minRun, *work, *out); err != nil {
+	ao := amdFlags{formats: *formats, layers: *layers, tokens: *tokens, set: set, imageRows: *imageRows, imageHeads: *imageHeads, imageDim: *imageDim}
+	if err := run(ctx, mode, *formats, *layers, *tokens, *baselines, *maxGB, *several, sp, co, ro, ao, *minRun, *work, *out); err != nil {
 		fmt.Fprintln(os.Stderr, "hwnpu-dev probe:", err)
 		os.Exit(1)
 	}
@@ -251,7 +265,7 @@ type splitOpts struct {
 	seamLayers, seamChunk                      int
 }
 
-func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, co cacheOpts, ro residentOpts, minRun time.Duration, work, out string) error {
+func run(ctx context.Context, mode, formats, layerList, tokenList, baselines string, maxGB float64, several bool, sp splitOpts, co cacheOpts, ro residentOpts, ao amdFlags, minRun time.Duration, work, out string) error {
 	infos, err := hwnpu.Enumerate(ctx)
 	if err != nil {
 		return err
@@ -264,6 +278,9 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 		}
 	}
 	if info == nil {
+		if a := amdDevice(infos); a != nil {
+			return runAMD(ctx, a, mode, ao, minRun, work, out)
+		}
 		return errors.New("no NPU that runs models was found (Apple: macOS 14.4 or later on Apple Silicon; Intel: the NPU driver and Level Zero, see INSTALL_INTEL.md; run hwnpu-dev report for details)")
 	}
 	dev, err := hwnpu.OpenDevice(ctx, *info, hwnpu.WithPlacement(hwnpu.PlacementPrefer))
@@ -276,27 +293,21 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 		return err
 	}
 
-	rep := report{Date: time.Now().Format(time.RFC3339), Device: info.Name, Backend: info.Backend, Driver: info.Driver, Firmware: info.Firmware, Go: runtime.Version()}
-	rep.CPU, rep.Model, rep.OS, rep.RAMBytes = machine()
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		rep.Version = bi.Main.Version
-		for _, s := range bi.Settings {
-			if s.Key == "vcs.revision" {
-				rep.Version += " " + s.Value
-			}
-		}
-	}
+	rep := newReport(info)
 	p := &prober{ctx: ctx, dev: dev, gr: gr, coreml: info.Backend == "coreml", minRun: minRun}
 
 	benchFormats, limitFormats := split(formats), split(formats)
 	if formats == "" {
 		benchFormats, limitFormats = []string{"fp16", "int8", "int4"}, []string{"fp16", "int8", "int4"}
 		if p.coreml {
-			benchFormats, limitFormats = []string{"fp16", "int8", "lut4", "int4"}, []string{"fp16", "int8", "lut4"}
+			benchFormats, limitFormats = []string{"fp16", "int8", "lut4", "lut6", "lut8", "int4"}, []string{"fp16", "int8", "lut4"}
+			if mode == "verify" {
+				limitFormats = []string{"fp16", "int8", "lut4", "lut6", "lut8"}
+			}
 		}
 	}
 	for _, f := range benchFormats {
-		if _, ok := probe.BytesPerParam[f]; !ok || (!p.coreml && f == "lut4") {
+		if _, ok := probe.BytesPerParam[f]; !ok || (!p.coreml && strings.HasPrefix(f, "lut")) {
 			return fmt.Errorf("format %q is not available on %s", f, info.Backend)
 		}
 	}
@@ -379,17 +390,7 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 	}
 	p.dir = work
 	if out == "" {
-		name := rep.Model
-		if name == "" {
-			name = runtime.GOOS
-		}
-		name = strings.Map(func(r rune) rune {
-			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
-				return r
-			}
-			return '-'
-		}, name)
-		out = fmt.Sprintf("npuprobe-%s-%s.md", name, time.Now().Format("20060102-1504"))
+		out = reportName(&rep)
 	}
 	save := func() { write(out, &rep) } // keep what was measured if the run is cut short
 
@@ -499,7 +500,7 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 	}
 	if mode == "resident" {
 		for _, f := range ro.formats {
-			if !p.coreml && f == "lut4" || p.coreml && f == "int4" {
+			if !p.coreml && strings.HasPrefix(f, "lut") || p.coreml && f == "int4" {
 				return fmt.Errorf("-resident-formats: %q does not run on the NPU of %s", f, info.Backend)
 			}
 		}
@@ -543,6 +544,36 @@ func run(ctx context.Context, mode, formats, layerList, tokenList, baselines str
 	}
 	fmt.Printf("\nreport: %s (and %s)\n", out, strings.TrimSuffix(out, ".md")+".json")
 	return nil
+}
+
+// newReport is a report's header for the NPU of info.
+func newReport(info *hwnpu.DeviceInfo) report {
+	rep := report{Date: time.Now().Format(time.RFC3339), Device: info.Name, Backend: info.Backend, Driver: info.Driver, Firmware: info.Firmware, Go: runtime.Version()}
+	rep.CPU, rep.Model, rep.OS, rep.RAMBytes = machine()
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		rep.Version = bi.Main.Version
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" {
+				rep.Version += " " + s.Value
+			}
+		}
+	}
+	return rep
+}
+
+// reportName is the default report file, npuprobe-<machine>-<time>.md.
+func reportName(rep *report) string {
+	name := rep.Model
+	if name == "" {
+		name = runtime.GOOS
+	}
+	name = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
+			return r
+		}
+		return '-'
+	}, name)
+	return fmt.Sprintf("npuprobe-%s-%s.md", name, time.Now().Format("20060102-1504"))
 }
 
 // counts parses a comma separated list of positive counts.
