@@ -1,6 +1,7 @@
 package sysload
 
 import (
+	"os"
 	"testing"
 	"unsafe"
 )
@@ -29,5 +30,45 @@ func TestReadDarwin(t *testing.T) {
 	got := s.Read()
 	if got.CPUPercent == nil || got.MemoryUsed <= 0 || got.MemoryUsed > got.MemoryTotal {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestRusageInfoV2Size(t *testing.T) {
+	if n := unsafe.Sizeof(rusageInfoV2{}); n != 160 {
+		t.Fatalf("rusage_info_v2 is %d bytes, want 160", n)
+	}
+}
+
+func TestParseGPUTimes(t *testing.T) {
+	text := `+-o AGXAcceleratorG13X  <class AGXAcceleratorG13X>
+  | {
+  | }
+  +-o AGXDeviceUserClient  <class AGXDeviceUserClient>
+      {
+        "IOUserClientCreator" = "pid 584, WindowServer"
+        "AppUsage" = ({"API"="Metal","accumulatedGPUTime"=1000},{"API"="Metal","accumulatedGPUTime"=500})
+      }
+  +-o AGXDeviceUserClient  <class AGXDeviceUserClient>
+      {
+        "IOUserClientCreator" = "pid 584, WindowServer"
+        "AppUsage" = ({"API"="Metal","accumulatedGPUTime"=250})
+      }
+  +-o AGXDeviceUserClient  <class AGXDeviceUserClient>
+      {
+        "IOUserClientCreator" = "pid 900, hwnpu-chat"
+      }
+`
+	g := parseGPUTimes(text)
+	if len(g) != 1 || g[584] != 1750 {
+		t.Fatalf("got %v", g)
+	}
+}
+
+func TestReadProcsDarwin(t *testing.T) {
+	var s ProcSampler
+	pid := os.Getpid()
+	p := s.Read([]int{pid})[pid]
+	if p.CPUPercent == nil || p.Memory <= 0 {
+		t.Fatalf("got %+v", p)
 	}
 }

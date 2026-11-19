@@ -32,3 +32,30 @@ func TestReadLinux(t *testing.T) {
 	}
 	t.Logf("%+v cpu %.1f%%", got, *got.CPUPercent)
 }
+
+func TestParseDRMFDInfo(t *testing.T) {
+	c := parseDRMFDInfo(`pos:	0
+flags:	02100002
+drm-driver:	amdgpu
+drm-client-id:	42
+drm-pdev:	0000:c4:00.0
+drm-memory-vram:	2048 KiB
+drm-resident-vram:	1024 KiB
+drm-resident-gtt:	1 MiB
+drm-engine-gfx:	1500 ns
+drm-engine-compute:	500 ns
+drm-engine-capacity-gfx:	2
+`)
+	if c.driver != "amdgpu" || c.id != "42" || !c.hasEngine || c.engine != 2000 || c.memory != 2<<20 {
+		t.Fatalf("got %+v", c)
+	}
+}
+
+func TestReadProcsSelf(t *testing.T) {
+	var s ProcSampler
+	pid := os.Getpid()
+	p := s.Read([]int{pid})[pid]
+	if p.CPUPercent == nil || p.Memory <= 0 {
+		t.Fatalf("got %+v", p)
+	}
+}

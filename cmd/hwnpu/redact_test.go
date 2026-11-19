@@ -66,7 +66,7 @@ func TestDraft(t *testing.T) {
 	if title != "hwnpu-image image: step 3: boom" {
 		t.Errorf("title %q", title)
 	}
-	for _, want := range []string{"hwnpu-image image -m anima", "step 3: boom", "Log (2 of 3 lines)", "two\nthree", "used by:  7 hwnpu-chat, 2.0 GB of NPU memory"} {
+	for _, want := range []string{"hwnpu-image image -m anima", "step 3: boom", "Log (2 of 3 lines)", "two\nthree", "      7  hwnpu-chat             -         -      -         -      -    2.0 GB\n"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("%q not in the body:\n%s", want, body)
 		}

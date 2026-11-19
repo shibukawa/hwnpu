@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,6 +61,14 @@ type Process struct {
 	// NPUMemory is the NPU's memory it holds (bytes; 0 when not told).
 	NPUMemory int64  `json:"npu_memory_bytes,omitempty"`
 	Detail    string `json:"detail,omitempty"`
+	// Proc is its load and memory: the CPU's, the GPU's, the NPU's (where the OS tells them).
+	sysload.Proc
+}
+
+// samplers keep the counters that loads are worked out from between collects.
+type samplers struct {
+	sys   sysload.Sampler
+	procs sysload.ProcSampler
 }
 
 // Load is the load part of Status: the machine's (sysload) and the NPU's.
@@ -111,19 +120,32 @@ func version() string {
 }
 
 // collect reads the Status. scan walks the cache (a few seconds with many files); wake lets
-// npuinfo ask a sleeping NPU (and wake it); load keeps the CPU's counters between reads.
-func collect(ctx context.Context, s storeView, scan, wake bool, load *sysload.Sampler) Status {
+// npuinfo ask a sleeping NPU (and wake it); load keeps the counters of the loads between reads.
+func collect(ctx context.Context, s storeView, scan, wake bool, load *samplers) Status {
 	st := Status{
 		Time: time.Now(), Version: version(), OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Memory: mem.Physical(), BackendEnv: os.Getenv(llm.BackendEnv),
 	}
-	st.Load.Sample = load.Read()
+	st.Load.Sample = load.sys.Read()
 	st.OSVersion, st.CPU = osVersion(), cpuName()
 	if info, err := npuinfo.GetWithContext(ctx, npuinfo.Options{Wake: wake, SkipCaches: true}); info != nil {
 		st.Info = info
 		summarize(&st, info)
 		if err != nil {
 			st.NPU = append(st.NPU, "npuinfo: "+err.Error())
+		}
+	}
+	pids := make([]int, len(st.Processes))
+	for i, p := range st.Processes {
+		pids[i] = p.PID
+	}
+	procs := load.procs.Read(pids)
+	for i := range st.Processes {
+		p := &st.Processes[i]
+		npu := p.NPUPercent // Windows' counters, put by summarize
+		p.Proc = procs[p.PID]
+		if npu != nil {
+			p.NPUPercent = npu
 		}
 	}
 	// opening the devices wakes a sleeping NPU (amdxdna): only when asked. Without it the NPU is
@@ -364,7 +386,7 @@ func summarizeWindows(st *Status, w *npuinfo.WindowsInfo) {
 	for _, p := range w.Processes {
 		pr := Process{PID: p.PID, Name: p.Image}
 		if b, ok := busy[p.PID]; ok {
-			pr.Detail = fmt.Sprintf("%.0f%% busy", b)
+			pr.NPUPercent = &b
 		}
 		st.Processes = append(st.Processes, pr)
 	}
@@ -507,22 +529,54 @@ func (st Status) writeLive(w io.Writer, args bool) {
 	for _, l := range st.NPU {
 		fmt.Fprintf(w, "npu:      %s\n", l)
 	}
-	if len(st.Processes) == 0 {
+	writeProcesses(w, st.Processes, args)
+}
+
+// procName is the width of the processes' NAME column.
+const procName = 16
+
+// writeProcesses writes the processes that use the NPU as a table: "-" is not known (another
+// user's process without root, what the OS does not tell). args adds their command lines.
+func writeProcesses(w io.Writer, ps []Process, args bool) {
+	if len(ps) == 0 {
 		fmt.Fprintln(w, "used by:  no process")
+		return
 	}
-	for _, p := range st.Processes {
-		fmt.Fprintf(w, "used by:  %d %s", p.PID, p.Name)
-		if p.NPUMemory > 0 {
-			fmt.Fprintf(w, ", %s of NPU memory", cache.FormatSize(p.NPUMemory))
+	fmt.Fprintln(w, "used by:")
+	row := "%7s  %-*s  %6s %9s  %5s %9s  %5s %9s"
+	head := fmt.Sprintf(row, "PID", procName, "NAME", "CPU%", "MEMORY", "GPU%", "GPU MEM", "NPU%", "NPU MEM")
+	if args {
+		head += "  COMMAND"
+	}
+	fmt.Fprintln(w, head)
+	for _, p := range ps {
+		line := fmt.Sprintf(row, strconv.Itoa(p.PID), procName, trimName(p.Name, procName),
+			percent(p.CPUPercent), sizeOr(p.Memory), percent(p.GPUPercent), sizeOr(p.GPUMemory),
+			percent(p.NPUPercent), sizeOr(p.NPUMemory))
+		if args && len(p.Args) > 0 {
+			line += "  " + strings.Join(p.Args, " ")
 		}
 		if p.Detail != "" {
-			fmt.Fprintf(w, ", %s", p.Detail)
+			line += "  " + p.Detail
 		}
-		if args && len(p.Args) > 1 {
-			fmt.Fprintf(w, ": %s", strings.Join(p.Args, " "))
-		}
-		fmt.Fprintln(w)
+		fmt.Fprintln(w, line)
 	}
+}
+
+// trimName cuts s to n runes, its end shown by "…".
+func trimName(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+func percent(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.1f", *p)
 }
 
 // loadBarWidth is the cells of loadBar's bar.
@@ -559,7 +613,7 @@ func (c StatusCmd) Run(ctx context.Context) error {
 		return err
 	}
 	v := view{s}
-	var load sysload.Sampler
+	var load samplers
 	if c.Watch <= 0 {
 		st := collect(ctx, v, true, c.Wake, &load)
 		if c.JSON {
@@ -605,7 +659,7 @@ const (
 // top is hwnpu status --watch on a terminal: the alternate screen, with what stays written
 // once at the top and the load redrawn in place below it every c.Watch (again all when the
 // terminal is resized), until Ctrl-C.
-func (c StatusCmd) top(ctx context.Context, v view, load *sysload.Sampler) error {
+func (c StatusCmd) top(ctx context.Context, v view, load *samplers) error {
 	out := os.Stdout
 	fmt.Fprint(out, altScreen)
 	defer fmt.Fprint(out, mainScreen)

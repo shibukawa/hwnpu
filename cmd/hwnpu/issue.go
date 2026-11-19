@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/shibukawa/hwnpu/internal/console"
-	"github.com/shibukawa/hwnpu/internal/sysload"
 )
 
 // Repo is where hwnpu issue opens a new issue.
@@ -73,7 +72,7 @@ func (c IssueCmd) Run(ctx context.Context) error {
 			run = &runs[0]
 		}
 	}
-	st := collect(ctx, view{s}, true, c.Wake, new(sysload.Sampler))
+	st := collect(ctx, view{s}, true, c.Wake, new(samplers))
 	r := newRedactor()
 	title, body := draft(st, run, c.Title, c.Lines, r)
 	u := issueURL(title, body)
