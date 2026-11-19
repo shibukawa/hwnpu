@@ -7716,3 +7716,9 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 
 - IRON の full ELF の演算 1 つの固定費 (約 0.13〜0.15 ms)。小さいモデルの 1 トークン (Whisper の復号器、Magenta の言語モデル) はこれで決まる。下がれば `iron_magenta_lm.py` で測り直す
 - Whisper の復号器の LayerNorm を GEMV に融合する (12 + 1 個、約 1.9 ms)。今の `QGEMVQKV` の正規化は RMS で、LayerNorm (平均を引き bias を足す) ではない
+
+### 16.260 `hwnpu status -w` を top のように: 固定の領域と書き換える領域、CPU・GPU・NPU の負荷とメモリ — 2026-11-20
+
+- 端末に出す `-w` は代替画面 (`\x1b[?1049h`) を使い、変わらないもの (版、機械、動かす NPU、デバイス、キャッシュと層: `writeFixed`) を上に 1 度だけ書き、その下 (時刻の帯、負荷、NPU の状態、使っているプロセス: `writeLive`) だけを毎回カーソルを動かして書き換える。行は端末の幅で切り (折り返すと下がずれる)、画面の高さを超える分は出さない (スクロールすると固定の領域が消える)。端末の大きさが変わったら全部を書き直す。Ctrl-C で元の画面とカーソルに戻す。間隔は読む時間を含めて `-w` のとおり。端末でないとき、`--json`、Windows (VT を有効にしていない) は今までどおり繰り返して書く
+- 負荷 (`internal/sysload`、root なし): Linux は `/proc/stat` の差分と `/proc/meminfo` (MemTotal − MemAvailable)、amdgpu の sysfs (`gpu_busy_percent`、`mem_info_vram_*`、`mem_info_gtt_*`)。macOS は `host_statistics` (CPU の tick) と `host_statistics64` (Activity Monitor の「使用済みメモリ」: アプリのメモリ + 固定 + 圧縮)、GPU は I/O Registry の IOAccelerator の PerformanceStatistics (`Device Utilization %`、`In use system memory`)。NPU は Linux が gpu_metrics の IPU の忙しさと電力、プロセスの写像の合計、macOS が IOReport の電力と ANE の driver の wired メモリ (`mem.NPUWired`)。Windows は CPU と GPU をまだ読まない。`--json` の `load` にも入る
+- macOS では「device: not opened (--wake …)」を出さない (開いても起こすものも分かることも増えない)

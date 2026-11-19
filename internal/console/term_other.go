@@ -11,3 +11,5 @@ import (
 func makeRaw(int) (func(), error) { return nil, errors.New("console: no raw mode on this system") }
 
 func columns(*os.File) int { return 80 }
+
+func size(*os.File) (cols, rows int) { return 0, 0 }
