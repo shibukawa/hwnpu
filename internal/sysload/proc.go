@@ -6,7 +6,13 @@ import "time"
 // user's process without root, a driver that does not tell).
 type Proc struct {
 	CPUPercent *float64 `json:"cpu_percent,omitempty"` // of one core: 200 is two cores busy
-	Memory     int64    `json:"memory_bytes,omitempty"`
+	// Memory is what the process holds: on macOS its footprint and its wired memory, on Linux
+	// its resident memory.
+	Memory int64 `json:"memory_bytes,omitempty"`
+	// Wired is the memory it wired (mlock: macOS), counted in Memory. A file's pages wired
+	// (gpt-oss's experts, mapped from the checkpoint) are not in the footprint Activity Monitor
+	// shows: an M3 running gpt-oss-20b, footprint 0.53 GB and 6.41 GB wired.
+	Wired      int64    `json:"wired_bytes,omitempty"`
 	GPUPercent *float64 `json:"gpu_percent,omitempty"`
 	GPUMemory  int64    `json:"gpu_memory_bytes,omitempty"`
 	NPUPercent *float64 `json:"npu_percent,omitempty"`
@@ -18,6 +24,7 @@ type procTimes struct {
 	cpu, gpu, npu          time.Duration
 	hasCPU, hasGPU, hasNPU bool
 	memory, gpuMemory      int64
+	wired                  int64
 }
 
 // ProcSampler reads the load of processes; it keeps their times between reads.
@@ -42,7 +49,7 @@ func (s *ProcSampler) Read(pids []int) map[int]Proc {
 	dt := at.Sub(s.at)
 	out := make(map[int]Proc, len(now))
 	for pid, t := range now {
-		p := Proc{Memory: t.memory, GPUMemory: t.gpuMemory}
+		p := Proc{Memory: t.memory, Wired: t.wired, GPUMemory: t.gpuMemory}
 		if old, ok := s.prev[pid]; ok && dt > 0 {
 			p.CPUPercent = rate(t.hasCPU && old.hasCPU, t.cpu-old.cpu, dt)
 			p.GPUPercent = rate(t.hasGPU && old.hasGPU, t.gpu-old.gpu, dt)
