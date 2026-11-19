@@ -262,7 +262,7 @@ models:
     from: hf:openai/gpt-oss-20b
     license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
     machine: 32
-    memory: 14.6
+    memory: {amd: 14.6, apple: 12.2}
     bytes: {amd: 11.79e9, apple: 14.4e9}
     features: [tools, thinking]
     amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256
