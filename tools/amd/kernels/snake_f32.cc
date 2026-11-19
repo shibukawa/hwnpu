@@ -5,16 +5,21 @@
 // (alpha + 1e-9) a value a channel, each two bf16 limbs (the row holds alpha's high limbs (SN_C),
 // alpha's low limbs, inv's high limbs, inv's low limbs). IRON has no sin; as internal/sfx's
 // stages for Intel's NPU do (in fp16), v = alpha x is reduced to r = v - n pi (n = round(v / pi),
-// by the 1.5 * 2^23 rounding; pi in three limbs) and sin(r) is its Taylor series to r^11 (|r| <=
-// pi / 2: 6e-8 at the ends), sin^2 having the period pi. All in float32 (f32_split.h's limbs),
-// rounded once to bf16, to nearest even. The products of an alpha down to 8e-6 (the first
-// DecoderBlock's) stay normal: sin(r)^2 is about r^2, and r^2 inv about alpha x^2.
+// by the 1.5 * 2^23 rounding; pi in three limbs) and sin(r) is its Taylor series to r^7 (|r| <= pi / 2), sin^2
+// having the period pi.
+//
+// The accuracy is bf16's of the larger of x and sin^2 inv (the GEMM after reads bf16): the
+// sums are float32 (the accumulator), the products of bf16 limbs exact. alpha x, v / pi and n pi
+// take two limbs (pi three), so r is float32's; the series takes r's high limb (its terms are at
+// most a third of r), the first term r both limbs, sin r and sin^2 two limbs. Against float64
+// over 2e6 random x and alpha (iron_snake.kernel_ref is this arithmetic in numpy): the error
+// relative to the larger term mean 0.0013, at most 0.014 (bf16's rounding alone 0.0012 and
+// 0.0066), in about 20 products where all in three limbs took 60 (1.4 ms a million values).
 //===----------------------------------------------------------------------===//
 #include <aie_api/aie.hpp>
 #include <stdint.h>
 
 #include "aie_kernel_utils.h"
-#include "common/f32_split.h"
 
 #ifndef SN_C
 #error "snake_f32.cc needs -DSN_C (the channels)"
@@ -28,36 +33,48 @@ using bf_t = aie::vector<bfloat16, L>;
 using f_t = aie::vector<float, L>;
 
 inline __attribute__((always_inline)) acc_t splat(float c) { return acc_t(aie::broadcast<float, L>(c)); }
+inline __attribute__((always_inline)) bf_t bsplat(float c) { return aie::broadcast<bfloat16, L>(c); }
 
-inline __attribute__((always_inline)) Limbs<L> two(bf_t hi, bf_t lo) {
-  Limbs<L> l;
-  l.hi = hi;
-  l.mid = lo;
-  l.lo = aie::zeros<bfloat16, L>();
-  return l;
+// a = hi + lo to about 2^-17 of a
+inline __attribute__((always_inline)) void split2(acc_t a, bf_t &hi, bf_t &lo, bf_t one) {
+  hi = a.template to_vector<bfloat16>();
+  lo = aie::msc(a, hi, one).template to_vector<bfloat16>();
 }
 
-inline __attribute__((always_inline)) bf_t snake32(bf_t x, const Limbs<L> &al, const Limbs<L> &inv,
-                                                   const Limbs<L> &inv_pi, const Limbs<L> &neg_pi,
-                                                   const acc_t (&c)[5]) {
-  const bf_t one = aie::broadcast<bfloat16, L>(1.0f);
-  const acc_t v = aie::mac(aie::mul(x, al.mid), x, al.hi); // alpha x: two exact products
-  const Limbs<L> vl = bf16_limbs(v);
+struct Consts {
+  bf_t one, iph, ipl, pih, pim, pil;
+  f_t magic;
+  acc_t c0, c1, c2;
+};
+
+inline __attribute__((always_inline)) bf_t snake32(bf_t x, bf_t ah, bf_t al, bf_t ih, bf_t il, const Consts &k) {
+  bf_t vh, vl, nh, nl, rh, rl, sh, sl, s2h, s2l;
+  const acc_t v = aie::mac(aie::mul(x, al), x, ah); // alpha x: two exact products
+  split2(v, vh, vl, k.one);
   // n = round(v / pi)
-  const f_t magic = aie::broadcast<float, L>(12582912.0f);
-  const f_t t = mul_limbs(vl, inv_pi).template to_vector<float>();
-  const acc_t n(aie::sub(aie::add(t, magic), magic));
-  const acc_t r = mac_limbs(v, bf16_limbs(n), neg_pi);
-  const Limbs<L> rl = bf16_limbs(r);
-  const Limbs<L> u = bf16_limbs(mul_limbs(rl, rl));
-  // sin(r) = r (1 + u (c0 + u (c1 + u (c2 + u (c3 + u c4)))))
-  acc_t p = c[4];
-  for (int k = 3; k >= 0; k--)
-    p = aie::add(mul_limbs(bf16_limbs(p), u), c[k]);
-  p = aie::add(mul_limbs(bf16_limbs(p), u), splat(1.0f));
-  const Limbs<L> s = bf16_limbs(mul_limbs(bf16_limbs(p), rl));
-  const acc_t s2 = mul_limbs(s, s);
-  return mac_limbs(acc_t(aie::mul(x, one)), bf16_limbs(s2), inv).template to_vector<bfloat16>();
+  const acc_t t = aie::mac(aie::mac(aie::mul(vl, k.iph), vh, k.ipl), vh, k.iph);
+  const acc_t n(aie::sub(aie::add(t.template to_vector<float>(), k.magic), k.magic));
+  split2(n, nh, nl, k.one); // exact while |n| < 2^16
+  // r = v - n pi
+  acc_t r = aie::msc(v, nh, k.pih);
+  r = aie::msc(r, nh, k.pim);
+  r = aie::msc(r, nl, k.pih);
+  r = aie::msc(r, nh, k.pil);
+  split2(r, rh, rl, k.one);
+  // sin r = r + r u (c0 + u (c1 + u c2)), u = r^2
+  const bf_t u = aie::mul(rh, rh).template to_vector<bfloat16>();
+  acc_t p = aie::mac(k.c1, k.c2.template to_vector<bfloat16>(), u);
+  p = aie::mac(k.c0, p.template to_vector<bfloat16>(), u);
+  const bf_t q = aie::mul(p.template to_vector<bfloat16>(), u).template to_vector<bfloat16>();
+  const acc_t s = aie::mac(aie::mac(aie::mul(rl, k.one), rh, q), rh, k.one);
+  split2(s, sh, sl, k.one);
+  // sin^2 r = sh^2 + 2 sh sl
+  const acc_t s2 = aie::mac(aie::mac(aie::mul(sh, sl), sh, sl), sh, sh);
+  split2(s2, s2h, s2l, k.one);
+  // y = x + sin^2 inv
+  acc_t y = aie::mac(aie::mul(s2l, ih), s2h, il);
+  y = aie::mac(aie::mac(y, s2h, ih), x, k.one);
+  return y.template to_vector<bfloat16>();
 }
 } // namespace
 
@@ -67,19 +84,27 @@ void snake_f32(bfloat16 *restrict x, bfloat16 *restrict row, bfloat16 *restrict 
   event0();
   const auto saved_rounding = aie::get_rounding();
   aie::set_rounding(aie::rounding_mode::conv_even);
-  const Limbs<L> inv_pi = bf16_limbs(splat(0.318309886f));
-  const Limbs<L> neg_pi = bf16_limbs(splat(-3.14159265f));
-  const acc_t c[5] = {splat(-1.0f / 6), splat(1.0f / 120), splat(-1.0f / 5040), splat(1.0f / 362880),
-                      splat(-1.0f / 39916800)};
+  Consts k;
+  k.one = bsplat(1.0f);
+  // 1 / pi and pi as bf16 limbs (each exact in bf16; their sums 1e-7 and 2e-9 off)
+  k.iph = bsplat(0.318359375f);
+  k.ipl = bsplat(-4.9591064453125e-05f);
+  k.pih = bsplat(3.140625f);
+  k.pim = bsplat(0.00096893310546875f);
+  k.pil = bsplat(-1.2814998626708984e-06f);
+  k.magic = aie::broadcast<float, L>(12582912.0f);
+  k.c0 = splat(-1.0f / 6);
+  k.c1 = splat(1.0f / 120);
+  k.c2 = splat(-1.0f / 5040);
   const unsigned pixels = (uint32_t)size / SN_C;
   for (unsigned b = 0; b < SN_C / L; b++) {
-    const Limbs<L> al = two(aie::load_v<L>(row + b * L), aie::load_v<L>(row + SN_C + b * L));
-    const Limbs<L> inv = two(aie::load_v<L>(row + 2 * SN_C + b * L), aie::load_v<L>(row + 3 * SN_C + b * L));
+    const bf_t ah = aie::load_v<L>(row + b * L), al = aie::load_v<L>(row + SN_C + b * L);
+    const bf_t ih = aie::load_v<L>(row + 2 * SN_C + b * L), il = aie::load_v<L>(row + 3 * SN_C + b * L);
     const bfloat16 *restrict p = x + b * L;
     bfloat16 *restrict o = y + b * L;
     AIE_LOOP_MIN_ITERATION_COUNT(1)
     for (unsigned i = 0; i < pixels; i++) {
-      aie::store_v(o, snake32(aie::load_v<L>(p), al, inv, inv_pi, neg_pi, c));
+      aie::store_v(o, snake32(aie::load_v<L>(p), ah, al, ih, il, k));
       p += SN_C;
       o += SN_C;
     }
