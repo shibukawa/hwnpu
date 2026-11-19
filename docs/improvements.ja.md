@@ -476,6 +476,34 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | 窓の長いモデルは、短い文脈のプログラムを同じ `.aimodel` の関数にして先に使う (`chat.ringTiers`、`llm.Windowed`、16.220) | プログラムの中のリングは会話の長さによらず毎回全部渡される: PLaMo 3 の窓 2048 | 文脈 512 のプログラムは窓の層のキャッシュが 512。注意で分けた形どうしなので部品の層が同じで、関数 4 つの 1 本にまとまり重みは増えない (分けない 1 本を関数にしたときの遅れは出ない)。Gemma 4 E2B (窓 512、14 MiB) は文脈 256 でも変わらず、段を作るのは窓の 4 分の 1 が 256 以上のモデルだけ。段を移るとき、移る前の印は `decode.Session.Remark` で作り直す |
 | 1 ステップの速度を、同じプログラムの CPU の float32 と 2 つの分に分けて比べる (`flux2klein.TestF32Check`、16.227: 部分を fp16 と書き出しの形式の Core ML のパッケージにして `milcpu` で回す) | PyTorch の参照が動かない所で、Core AI の書き出しが float32 からどれだけ離れているか | 部分をチェックポイントから Core ML のパッケージに書き、書き出しの実行が落とした入力 (`--dump`) で CPU の解釈器の float32 で回す: fp16 の重みと書き出しの形式の差が重みの分、Neural Engine と CPU の書き出しの形式の差が計算の分。組ごとに CPU の入力を与えると、外れた演算と fp16 の積み重ねを見分けられる。FLUX.2 klein の 512²: 3.8 % = lut8 2.7 % と Neural Engine 2.8 %、各組 0.2〜0.8 % |
 
+### 7.6 NPU にない演算、間違える演算と、その代わり
+
+どの NPU のコンパイラやライブラリにも、ない演算、NPU の外で動く演算、値を間違える演算がある。hwnpu はその対応を待たず、NPU にある演算から結果に要る精度で組み立てるか、小さな部分をホストに移す。演算ごとのやり方:
+
+| 演算 | NPU | ないもの・間違い | 代わり | 数値 |
+|---|---|---|---|---|
+| `sin` (MOSS-SoundEffect の DAC の Snake: x + sin²(αx)/α) | Apple (Core ML)、Intel、AMD | Core ML は `sin` を CPU に落とした (`cos`、`floor`、`round`、`mod`、`cast` も)。IRON には sin も cos もない | 範囲の縮小と級数: n = round(αx/π)、r = αx − nπ (π は 2 つか 3 つに分ける)、sin r は奇数次の級数、sin² の周期は π。fp16 (Apple、Intel) では r/(π/2) の 9 次で、α が 1e-2 未満のチャネルは αx²(1 − y²/3 + 2y⁴/45) (1/α が fp16 を超えるため)。AMD はすべて float32 (bf16 の肢、`kernels/snake_f32.cc`) で r¹¹ まで、小さい α の分岐なし。Core AI は Neural Engine で `sin` を動かすので、そのまま使う (16.136、16.197、16.257) | AMD: カーネルは本物の Snake と bf16 の丸めの範囲で一致、復号器は CPU の版と SNR 34.6 dB、5 秒の音の復号 1.7 秒 (CPU 5.7 秒) |
+| 整数への丸め (上の縮小に使う) | Apple、Intel、AMD | Neural Engine に `round` がない。Core ML は定数 c の (v + c) − c を畳んで消し、Core AI は c が入力でも消す | fp16 で (v + 1536) − 1536、1536 は入力 (`mg`) で渡す。AMD は float32 で 1.5 × 2²³ (16.136、16.197) | |
+| `conv_transpose` | Apple (Core ML) | ストライド 5 と 7 は CPU に落ち、8、4、3 は M1 の Neural Engine で 22 %、45 %、4 % ずれた | 多相: 核 2 の畳み込みで s × 出力チャネルを作り、reshape と transpose で時間に並べる (16.136) | 全段が Neural Engine、ずれ 0.14〜0.29 % |
+| 畳み込み、転置畳み込み、膨張 | AMD | IRON に畳み込みがない | IRON の Copy の im2col (タップは 0 で囲んだ状態の行、膨張は刻み) と、塊ごとに 1 つの GEMM。ストライド s の転置畳み込みは 3 タップの畳み込みで s × 出力チャネルを出し、その行がそのまま出力のフレームになる。DMA の一番内側は 1023 ワードまでなので、超えるときはタップごと (またはチャネルの区画ごと) に写す (Magenta の復号器 16.255、MOSS の DAC 16.257、VAE) | |
+| 膨張つきの畳み込み、幅方向の畳み込み | Apple (Core AI) | Neural Engine が一部を間違える (128 チャネルで膨張 3 の一部の長さ、512 チャネル以上で幅方向の核が 1 より大きいもの) | 膨張は位相の並びの行に、畳み込みは高さ方向に (16.197) | |
+| `silu`、`softplus` | Apple | Neural Engine の `silu` は 1.4 % ずれ (小さな値で悪い)、`softplus` は一部の入力で 0 | `exp`、`log`、`real_div` で書く (16.88、16.95) | Neural Engine の KL 0.33〜0.76 → 0.005〜0.007 (Qwen3.5) |
+| SiLU | AMD | IRON の SiLU は bf16 の表の sigmoid を掛ける: 1 % ずれ、x = −8 から 0 | sigmoid を float32 で (`kernels/silu_f32.cc`、16.206) | Qwen3-4B の層の float32 とのコサイン 0.9998 → 0.99999 |
+| ELU、指数関数 | AMD | IRON に ELU も、演算子としての指数関数もない | mlir-aie の `exp_f32` から float32 のカーネル (`kernels/elu_f32.cc`、16.255) | Magenta の復号器 1 回 1.2 秒 (CPU 5.7 秒) |
+| `tanh` | AMD | IRON の表は最大 0.0051 ずれる | DAC の最後の tanh はホストで (16.257) | |
+| 要素ごとの割り算 | AMD | IRON にない | Sana の線形注意の N/D: 行 [N, cD] を RMS 正規化して cD に支配させる (amd-npu-models.md 14.2) | |
+| GroupNorm、逆数の平方根 | AMD | IRON にどちらもない | 2 つの演算子と、2 つのコマンドの間のホスト: チャネルごとの和は NPU、係数と項はホストで float64、適用は float32 (16.208) | 1024² × 128 チャネルの norm 157 → 約 50 ms |
+| `gather` (埋め込み、行列の 1 行) | Apple、AMD | Neural Engine では CPU で動く。AMD では呼び出しごとの DMA だった | one-hot の行との積 (7.1)。埋め込みの表はホストに置き、呼び出しの前に行を書く (7.3) | |
+| `transpose`、`reduce_sum` | Apple | 一部の形で CPU に落ちた | 出力は計算した順のまま取り、ホストが並べ替える (PLaMo 3)。和は 1 の行との積で (7.1) | |
+| 変換器になかった演算 | Intel (OpenVINO IR) | `ovlower` が最初の未対応で止まった: `clip`、`max_pool`、`pow`、`pixel_shuffle`、`conv_transpose`、`elu`、`cos`、`sin`、`erf`、`softplus`、`cast` | OpenVINO の演算に下ろす (16.166) | OpenVINO の CPU で milcpu と 3e-4 以内。Intel の実機では未確認 |
+
+共通するやり方:
+
+- **NPU にあるもので組む**: sin は級数と範囲の縮小、silu は exp と割り算、gather や和は積、畳み込みは im2col と GEMM
+- **中は出力より広い精度で**: AMD のカーネルは bf16 の肢で float32 に計算し、bf16 に 1 回丸める。fp16 では、あふれも非正規化数も出ないように級数とスケールを選ぶ
+- **小さな部分はホストへ**: norm の統計、最後の tanh、埋め込みの行。データが少なく、ホストは float64 で計算できる
+- **代わりを単独で、次に全体で確かめる**: 演算子をその参照 (float64 かチェックポイントの値) と比べ、次にモデルの出力を CPU の版と比べる。Neural Engine や NPU の値の間違いは、配置の報告には出ない
+
 ## 8. 試して効かなかったもの・採らなかったもの
 
 | 試したこと | 結果 | 節 |
