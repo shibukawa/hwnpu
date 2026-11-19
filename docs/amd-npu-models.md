@@ -1235,3 +1235,148 @@ hwnpu-image generate -m EXPORT --noise OUT.noise.bin --latents got.lat --dump DI
 - `--refs` は参照つきのブロックを書き出す (N: 絵の大きさの N 枚、NdD: 辺が 1/D の N 枚、A+BdD: 混在。`hwnpu-image generate -i FILE@half` が d2)。グラフは 1 ステップの行数だけで決まるので `_nROWS` と名付け、同じ行数の指定は 1 回だけコンパイルする。既定は 4 枚までの等倍と半分の組み合わせのうち 12800 行までで、1024² は 5632〜12800 行の 8 つ (半分 1〜4 枚、等倍 1 枚 + 半分 0〜3 枚、等倍 2 枚)、512² は 2048〜5632 行の 7 つ。時間と照合は design.md 16.209。`--check` は `--proj bf16` で (ホストで詰めた bfp16 は参照が作れない)
 - `--text q8` や `q6` は文の書き出しを小さくするが、パッドの行が参照から離れる (16.206)
 - 電力量はまだ測っていない
+
+## 25. Whisper large-v3-turbo: 書き起こし (`hwnpu-audio transcribe`、2026-11-19)
+
+OpenAI の Whisper large-v3-turbo (MIT、99 の言語) を AMD の NPU で動かす。符号器 32 層、復号器 4 層、幅 1280、頭 20 (64 ずつ)。設計の記録は design.md 16.253。
+
+### 25.1 構成 (`tools/amd/iron_whisper.py`)
+
+| グラフ | 中身 |
+|---|---|
+| `encoder` | 入力は conv1 の im2col (ホストが作る。偶数のフレームを行 0 から、奇数を行 1536 から。1 行はメルの 128 ビン × 3 タップ、384 列)。conv1 と GELU、conv2 (タップ 0 は奇数の半分の積を状態に 1 行ずらして)、GELU、位置埋め込み、32 のブロック (LayerNorm、q と v に bias、k はなし、MHA、出力の射影、LayerNorm、exact の GELU の MLP)、最後の LayerNorm、復号器 4 層の cross の鍵 (bias なし) と値。行は 1500 フレームを 1536 に詰め、鍵は `nk` = 1500。4 ブロックずつ 1 コマンド (10 コマンド)。出力 out0..out7 は層 i の鍵 (2i) と値 (2i + 1) |
+| `decoder` | 1 トークン: 入力はトークンと位置の埋め込みの和 (ホストが足す)。4 層 (自己注意は状態 `k{i}`、`v{i}` (448 × 20 × 64) の `pos` に書いて `n` まで読む。cross は状態 `xk{i}`、`xv{i}` を `nk` まで)、最後の LayerNorm、logits (トークンの埋め込みと共有、52224 列に詰める)。1 コマンド |
+
+ホスト (`internal/transcribe`) は、符号器の出力 8 つを復号器の状態に写して (`iron.Graph.Named`、窓ごとに 31 MB)、トークンごとに復号器を回す。窓の切り方、言語の判定、タイムスタンプ、抑えるトークンは Core AI と同じ。
+
+### 25.2 測定 (Ryzen AI 9 365)
+
+| | 時間 | |
+|---|---|---|
+| 符号器 (30 秒の窓) | 0.84 秒 (MEDIUM)、1.71 秒 (HIGHEST) | 試した音声で文は同じ |
+| 復号器 | 19 ms / トークン (51 トークン/秒) | 重みと logits の表 316 MB を読む |
+| 88.3 秒の英語 (3 窓、タイムスタンプ) | 9.0 秒 | 実時間の 9.8 倍 |
+| 書き出し | 19 秒 | IRON のカーネルが揃っていて。1.7 GB |
+
+最大メモリは 2.0 GiB (NPU の固定メモリとプロセス)。
+
+### 25.3 手順
+
+```bash
+python tools/amd/iron_whisper.py ~/models/whisper-large-v3-turbo ~/models/whisper-large-v3-turbo.amd-npu2   # --precision HIGHEST、--check
+go run ./tools/amd/irongraph ~/models/whisper-large-v3-turbo.amd-npu2/decoder
+go run ./cmd/hwnpu-audio transcribe -v speech.wav     # 初回は書き出しを取得元から、なければ IRON で
+```
+
+## 26. LFM3-Audio-2B の読み上げ (`hwnpu-audio tts`、2026-11-19)
+
+LFM3-Audio-2B で文章を 24 kHz の声にする (Apple と同じ流れ、internal/speech)。設計の記録は design.md 16.254。
+
+### 26.1 構成 (`tools/amd/iron_lfm3speech.py`)
+
+| 部分 | 中身 |
+|---|---|
+| `text/` | `python iron_lfm3tts.py CHECKPOINT OUT --q4` (`iron_export_lm.py` に `lfm3tts` を足し、MLP と head を q8 にして呼ぶ): LFM3-Audio の文のモデル、2048 位置。最後の norm の出力を状態 `hwnpu_hidden` に書く。トークンの埋め込みはホスト (`embed.bin`)。decode 1 コマンド、プロンプトの塊 (1024) 18 コマンド |
+| `depth/` | MaskGIT の 1 回 (グラフ): x (64, 1024) の行 0..11 に符号帳ごとの符号の埋め込みか mask の埋め込み、h (1, 2048)。depth_linear、3 層 (頭 32 を 64 に詰める、GQA 32 / 8、RoPE、q と k の norm、ゲート、SwiGLU)、norm、符号帳ごとの norm と表の GEMV。出力 (12, 2048) |
+| `codec/` | 復号器 (グラフ): 64 フレームの符号のベクトル (12 × 4 の 48 値を 64 に詰め、6 行ずつに写したもの、384 行)。project_out と from_quantizer、8 層 (短い畳み込み 7 タップと窓 30 の注意、サンドイッチの norm)、norm、lin。出力 (384, 1344) の 1282 列が STFT のフレーム |
+| `tables.safetensors` | ホストの表 (bf16): 12 の符号の表 (2017 × 1024)、mask の埋め込み、feedback の表 (24204 × 2048) |
+
+### 26.2 測定 (Ryzen AI 9 365)
+
+| | 時間 |
+|---|---|
+| 文のモデル 1 ステップ | 107 ms |
+| depthformer 1 回 | 24 ms (フレームに 3 回) |
+| codec (64 フレーム、5.1 秒分) | 72 ms |
+| 日本語 5.12 秒 | 11.8 秒 (実時間の 0.43 倍) |
+| 書き出し | 52 秒 (3.0 GB) |
+
+最大メモリは 2.6 GiB。
+
+### 26.3 手順
+
+```bash
+python tools/amd/iron_lfm3speech.py ~/models/LFM3-Audio-2B ~/models/lfm3-audio-2b-tts.amd-npu2   # --only depth codec、--check
+go run ./tools/amd/irongraph ~/models/lfm3-audio-2b-tts.amd-npu2/depth
+go run ./cmd/hwnpu-audio tts --lang ja -o out.wav こんにちは   # 初回は書き出しを取得元から、なければ IRON で
+```
+
+## 27. MOSS-SoundEffect v2.0: 効果音 (`hwnpu-audio generate -m sfx`、2026-11-19)
+
+OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説明から最長 30 秒の 48 kHz の効果音を作る。設計の記録は design.md 16.255。
+
+### 27.1 構成 (`tools/amd/iron_moss_sfx.py`)
+
+| グラフ | 中身 |
+|---|---|
+| `text/` | Qwen3-1.7B の 28 層 (256 行、因果)。入力はホストが引いたトークンの埋め込み、出力は最後の層の隠れ状態 (最後の norm はホスト)。`--text bf16` か `q8` |
+| `dit-context/` | text_embedder (512 行の文の符号器の出力 → 1536) |
+| `dit-blocks-N/` | DiT のブロック N..N+4 (1536 行、鍵は 1500): 自己注意 (RoPE)、512 行の文への cross、FFN。最初の組は patch_embedding、最後の組は head。入力 `x`、`ctx`、`mod` (変調の行、平ら) |
+| `host/` | ホストの表: トークンの埋め込みと最後の norm (bf16)、時刻の埋め込みと scale_shift_table (float32) |
+| `dac-N/` | DAC の復号器の 5 段 (`tools/amd/iron_moss_dac.py`)。時間が行、チャネルが列。畳み込みは im2col と GEMM (HIGHEST)、Snake は float32 のカーネル (`kernels/snake_f32.cc`) |
+
+### 27.2 測定 (Ryzen AI 9 365)
+
+| | 時間 |
+|---|---|
+| DiT 1 ブロック | 41 ms |
+| 速度 1 回 (30 ブロック) | 1.24 秒 |
+| 1 ステップ (CFG で 2 回) | 2.8 秒 |
+| 5 秒の音、25 ステップ | 1 分 06 秒 |
+| DAC の復号、5 秒の音 | 1.7 秒 (CPU の Core ML の段は 5.7 秒) |
+| 書き出し | 28 秒 (IRON のカーネルが揃っていれば) |
+
+最大メモリは 10 秒で 4.71 GiB (lut8 の版 4.75 GiB)。
+
+### 27.2.1 DAC の復号器 (`tools/amd/iron_moss_dac.py`)
+
+- **Snake**: x + sin²(αx) / (α + 1e-9)。IRON に sin がないので、internal/sfx の Intel の NPU の段 (以前は Core ML の Neural Engine の段も) と同じく範囲を縮める: n = round(αx / π) (1.5 × 2²³ の丸め)、r = αx − nπ (π は bf16 の 3 つの肢)、sin r は r¹¹ までの Taylor 級数 (|r| ≤ π/2 で 6e-8)。すべて float32 (`f32_split.h` の肢の積)、bf16 に 1 回丸める。α と 1/α はチャネルごとに bf16 の 2 つの肢で、RowAffine と同じ RowBroadcast の行で渡す。α が 8e-6 の小さいチャネルも float32 では範囲内で、級数の切り替えは要らない。本物の Snake との差は bf16 の丸めの範囲 (相対 0.39 % まで、|x| = 400 の行を含む)
+- **マスクなし**: Core ML の段は、畳み込みの入力ごとにマスクで曲の外を 0 にする。グラフの畳み込みは状態の上下の 32 行の 0 で埋めるだけで、ホスト (`sfx.amdDAC`) が窓を、曲の始めから始めるか、捨てる halo の分だけ前から読むように置く (曲の終わり 30 秒でも同じ)
+- **転置畳み込み** (ストライド s、核 2s): 入力のフレーム q − 1、q、q + 1 の 3 タップの畳み込みで s × 出力チャネル (位相が先) を出す。その行がそのまま出力のフレーム qs..qs + s − 1 になる (並べ替えなし)。2 タップの多相より FLOPs は 1.5 倍だが、行が入力と同じ数で、余白つきの状態に直接書ける
+- **GEMM の向き**: IRON の GEMM は N を 64 ずつ配列の列に分けるので、64〜256 チャネルへの GEMM は 8 列の 1〜4 しか使わない。512 未満のチャネルへは、重みを A、im2col を列優先の B にして C を列優先で書く (メモリでは同じ (行, チャネル))。stage 4 の 1 回が 46 ms から 33 ms に
+- **精度**: 全部 HIGHEST (bf16)。MEDIUM (bfp16) は CPU の段との SNR が 25.8 dB に落ちた (HIGHEST は 34.6 dB)。部分和を float32 にしても (`accumulate_f32`) 同じで、入力の bfp16 そのものの誤差。時間も 2 割しか縮まない
+- **窓**: 各段の 1 回の入力フレームは 768、2048、2048、5120、8192。GEMM の行は 256 (配列の 4 行 × 64) の倍数で区切る (1088 行は 1024 行より 1 行あたり 1.4 倍遅かった)。5 秒の音で段ごとに 1、1、5、8、15 回、各 287、175、61、52、33 ms
+
+### 27.3 手順
+
+```bash
+python tools/amd/iron_moss_sfx.py ~/models/MOSS-SoundEffect-v2.0 ~/models/moss-soundeffect-v2.0.amd-npu2   # --text q8、--check、--groups 1、--only dac
+go run ./tools/amd/irongraph ~/models/moss-soundeffect-v2.0.amd-npu2/dit-blocks-0
+HWNPU_SFX_AMD=~/models/moss-soundeffect-v2.0.amd-npu2 HWNPU_SFX_CPU_DAC=DIR_OF_MLPACKAGES go test ./internal/sfx -run TestAMDDAC -v
+go run ./cmd/hwnpu-audio generate -m sfx --duration 5s "A dog barking loudly in a park."
+```
+
+## 28. Magenta RealTime 2 の SpectroStream の復号器 (`hwnpu-audio generate`、2026-11-19)
+
+Magenta RealTime 2 small (コードは Apache-2.0、重みは CC-BY 4.0) の音楽で、SpectroStream の復号器を AMD の NPU で回す。言語モデル、MusicCoCa、符号器は CPU (Core ML の版)。設計の記録は design.md 16.256。
+
+### 28.1 構成 (`tools/amd/iron_magenta.py`)
+
+| 部分 | 中身 |
+|---|---|
+| 入力 | x (64, 256): 窓の曲の最初のフレームから、フレームごとの符号の量子化の埋め込みの和 |
+| input_layer、residual unit | 1 × 1 の畳み込み (256 → 2560) を (時間 × 5, 512) に、3 × 3 の 2 段 |
+| decoder_0 | 転置 4 × 3 (時間 2 倍、1024)、3 × 3 と shortcut を出力の半分ずつ (左と右) |
+| decoder_1..6 | 半分ずつ同じ重みで: 転置 (位相ごと)、3 × 3、shortcut (1 × 1 か そのまま) の近傍の拡大。周波数は 5 → 480、時間は 96 → 192 |
+| 出力 | ELU、7 × 7 の因果の畳み込み (2 チャンネルを 64 に詰める)。out0 と out1 (192 × 480, 64) の列 0 と 1 が実部と虚部 |
+
+44 コマンド。ELU は `kernels/elu_f32.cc`。
+
+### 28.2 測定 (Ryzen AI 9 365)
+
+| | 時間 |
+|---|---|
+| 復号器 1 回 (新しい 25 フレーム、1 秒分) | 1.2 秒 (CPU 5.7 秒) |
+| そのうち出力の 7 × 7 (半分ずつ) | 226 ms × 2 |
+| 4 秒の音楽 | 13 秒 (全部 CPU で 28 秒) |
+| 書き出し | 13 秒 (89 MB) |
+
+最大メモリは 8 秒で 2.5 GiB。
+
+### 28.3 手順
+
+```bash
+python tools/amd/iron_magenta.py ~/models/magenta-realtime-2 ~/models/magenta-realtime-2-small.amd-npu2   # --check
+go run ./tools/amd/irongraph ~/models/magenta-realtime-2-small.amd-npu2/decoder
+go run ./cmd/hwnpu-audio generate --duration 10s "disco funk" -o out.wav
+```

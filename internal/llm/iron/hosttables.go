@@ -1,6 +1,7 @@
 package iron
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -28,6 +29,10 @@ type HostTable struct {
 	// docs/improvements.md 12.7). Older exports have no format.
 	Format string `json:"format,omitempty"`
 }
+
+// EmbedTable is the buffer of the host table of the token embeddings (tools/amd/iron_hostple.py's
+// EMBED): the rows a call reads in place of a gather on the device.
+const EmbedTable = "hwnpu_embed_rows"
 
 // HostTableInt8 is the HostTable.Format of a part stored as a scale and int8 values.
 const HostTableInt8 = "int8"
@@ -100,6 +105,17 @@ func (m *Model) fillHostTables(ids []int32) error {
 		dst := buf.Bytes()
 		pb, fb := t.t.PartBytes, t.t.fileBytes()
 		part := t.t.Slots * pb
+		if m.embedRow != nil && t.t.Buffer == EmbedTable {
+			// StepRow's row in place of the token's
+			if t.t.Layers != 1 || len(ids) != 1 || len(m.embedRow) != pb {
+				return fmt.Errorf("iron: a row of %d bytes for host table %s of %d parts of %d bytes", len(m.embedRow), t.t.File, t.t.Layers, pb)
+			}
+			copy(dst[t.off:t.off+pb], m.embedRow)
+			if err := buf.SyncToDevice(t.off, pb); err != nil {
+				return err
+			}
+			continue
+		}
 		for r, id := range ids {
 			if id < 0 || int(id) >= t.t.Rows {
 				return fmt.Errorf("iron: token %d outside host table %s of %d rows", id, t.t.File, t.t.Rows)
@@ -123,4 +139,21 @@ func (m *Model) fillHostTables(ids []int32) error {
 		}
 	}
 	return nil
+}
+
+// StepRow runs the decode step at position on row (bf16, the model's hidden size) in place of a
+// token's embedding: an export whose token embeddings are the host's (EmbedTable, --q4), which
+// reads a row the host writes. LFM3-Audio's speech feeds the sum of an audio frame's codes'
+// feedback rows this way (internal/speech).
+func (m *Model) StepRow(ctx context.Context, row []byte, position int) ([]float32, error) {
+	found := false
+	for _, t := range m.hostTables {
+		found = found || t.t.Buffer == EmbedTable
+	}
+	if !found {
+		return nil, fmt.Errorf("iron: the export reads its token embeddings on the device (no host table %s): export it with --q4", EmbedTable)
+	}
+	m.embedRow = row
+	defer func() { m.embedRow = nil }()
+	return m.Step(ctx, 0, position)
 }

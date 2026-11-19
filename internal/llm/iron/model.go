@@ -50,6 +50,9 @@ type Model struct {
 	logf       func(string, ...any)
 	released   bool      // by Release: nothing on the device until Reload
 	parts      []float32 // logits: the partial sums of a row, decoded (kept between steps)
+
+	// embedRow is the row StepRow gives the decode step in place of a token's (EmbedTable's)
+	embedRow []byte
 }
 
 type version struct {
