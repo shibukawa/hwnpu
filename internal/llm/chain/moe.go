@@ -50,7 +50,7 @@ type moe struct {
 
 // report prints what the experts took with HWNPU_MOE_DEBUG.
 func (m *moe) report() {
-	if m == nil || m.Calls == 0 || os.Getenv("HWNPU_MOE_DEBUG") == "" {
+	if m == nil || m.Calls == 0 || !experts.DebugTime() {
 		return
 	}
 	ms := func(d time.Duration, n int) float64 { return float64(d.Microseconds()) / 1e3 / float64(n) }
@@ -79,13 +79,13 @@ type moeLayer struct {
 }
 
 // loadMoE loads the experts' program and every layer's experts.
-func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord) (*moe, error) {
+func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord, p experts.Placement) (*moe, error) {
 	if rec.Host != nil {
-		h, err := experts.OpenHost(rec.Host, rec.Shape)
+		h, err := experts.OpenHostWith(rec.Host, rec.Shape, p)
 		if err != nil {
 			return nil, fmt.Errorf("chain: the experts: %w", err)
 		}
-		if os.Getenv("HWNPU_MOE_DEBUG") != "" {
+		if experts.DebugTime() {
 			fmt.Fprintf(os.Stderr, "chain: the experts of %d layers on the CPU, from %s\n", len(rec.Host.Layers), rec.Host.Checkpoint)
 		}
 		return &moe{shape: rec.Shape, routing: rec.Routing, host: h}, nil
@@ -246,7 +246,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord) (*moe, error
 	if wireErr != nil {
 		fmt.Fprintf(os.Stderr, "chain: HWNPU_MOE_WIRE: %.2f GiB of the experts wired, the rest not: %v\n", float64(wired)/(1<<30), wireErr)
 	}
-	if os.Getenv("HWNPU_MOE_DEBUG") != "" {
+	if experts.DebugTime() {
 		fmt.Fprintf(os.Stderr, "chain: the experts of %d layers held (%.2f GiB wired), placement %v\n", len(rec.Layers), float64(wired)/(1<<30), g.Placement())
 	}
 	return m, nil

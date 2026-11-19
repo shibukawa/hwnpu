@@ -59,18 +59,25 @@ type hostLayer struct {
 // checkpoint mapped into memory: they are not copied, and the system may drop the pages of experts
 // no row chose for a while and read them again.
 type Host struct {
-	shape  Shape
-	act    Act
-	files  []*safetensors.File
-	layers map[int]*hostLayer
-	warm   sync.WaitGroup
-	stop   chan struct{}
-	mu     sync.Mutex
-	locked [][]byte // the spans wired (Host.wire), unwired by Close
+	shape   Shape
+	act     Act
+	files   []*safetensors.File
+	layers  map[int]*hostLayer
+	warm    sync.WaitGroup
+	stop    chan struct{}
+	mu      sync.Mutex
+	locked  [][]byte // the spans wired (Host.wire), unwired by Close
+	usage   *Usage   // how often each expert ran (rows), added by Close to Placement.Usage
+	usageTo string   // Placement.Usage
+	place   *placer  // the experts wired by use, when they are not all (Placement)
+	first   int      // the first layer held
 }
 
-// OpenHost maps the experts of rec.
-func OpenHost(rec *HostRecord, sh Shape) (*Host, error) {
+// OpenHost maps the experts of rec, all of them wired when they fit (Host.wiring).
+func OpenHost(rec *HostRecord, sh Shape) (*Host, error) { return OpenHostWith(rec, sh, Placement{}) }
+
+// OpenHostWith maps the experts of rec, wiring them as p says when they do not all fit.
+func OpenHostWith(rec *HostRecord, sh Shape, p Placement) (*Host, error) {
 	h := &Host{shape: sh, act: rec.Act, layers: map[int]*hostLayer{}}
 	if rec.Act.Kind != ActGptOss {
 		return nil, fmt.Errorf("experts: the gated unit %q is not one the host runs", rec.Act.Kind)
@@ -137,36 +144,29 @@ func OpenHost(rec *HostRecord, sh Shape) (*Host, error) {
 		}
 		h.layers[l] = hl
 	}
-	wire := h.wire()
-	if os.Getenv("HWNPU_MOE_PREFAULT") != "0" || wire {
-		h.prefault(wire)
-		if os.Getenv("HWNPU_MOE_PREFAULT") == "wait" { // for measuring: every page in before the first run
-			h.warm.Wait()
+	n, first := 0, -1
+	for l := range h.layers {
+		n = max(n, l+1)
+		if first < 0 || l < first {
+			first = l
 		}
 	}
+	h.first, h.usage, h.usageTo = first, NewUsage(n, sh.Experts), p.Usage
+	all, budget := h.wiring()
+	pf, _ := DebugOpt("prefault")
+	switch {
+	case all:
+		h.prefault(true)
+	case budget > 0:
+		h.place = newPlacer(h, p, budget, n)
+		h.place.start()
+	case pf != "0" && 2*h.bytes() <= mem.Physical():
+		h.prefault(false) // unwired as asked, and they fit: their pages in before the first runs
+	}
+	if pf == "wait" { // for measuring: every page in before the first run
+		h.warm.Wait()
+	}
 	return h, nil
-}
-
-// wire is whether the experts are wired (mlock, prefault): HWNPU_MOE_WIRE=1 or 0 says so;
-// otherwise they are when they take at most half of the machine's memory. Wired, a token's experts
-// cost half as much even with memory to spare (gpt-oss-20b on a 32 GB M4: 1.8 → 0.9 ms a layer,
-// 13.5 → 18.0 tokens/s): unwired pages of a mapped file keep costing the process faults. On a
-// 16 GB machine the 10.2 GB of gpt-oss-20b's experts are left unwired unless asked, so as not to
-// push the other applications out.
-func (h *Host) wire() bool {
-	switch os.Getenv("HWNPU_MOE_WIRE") {
-	case "":
-	case "0":
-		return false
-	default:
-		return true
-	}
-	var n int64
-	for _, hl := range h.layers {
-		n += int64(len(hl.gw) + len(hl.ge) + len(hl.dw) + len(hl.de))
-	}
-	phys := mem.Physical()
-	return phys > 0 && 2*n <= phys
 }
 
 // prefault touches every page of the experts in the background: the first touch of a page a
@@ -220,7 +220,7 @@ func (h *Host) prefault(wire bool) {
 			}
 		}()
 	}
-	debug := os.Getenv("HWNPU_MOE_DEBUG") != ""
+	debug := DebugTime()
 	if debug || wire {
 		start := time.Now()
 		go func() {
@@ -262,6 +262,22 @@ func shardOf(checkpoint, name string) (string, error) {
 
 // Close unmaps the checkpoint.
 func (h *Host) Close() {
+	if h.place != nil {
+		h.place.stop()
+		h.place = nil
+	}
+	if h.usage != nil {
+		dbg, _ := DebugOpt("usage")
+		for _, p := range []string{h.usageTo, dbg} {
+			if p == "" {
+				continue
+			}
+			if err := h.usage.AddTo(p); err != nil {
+				fmt.Fprintf(os.Stderr, "experts: usage: %v\n", err)
+			}
+		}
+		h.usage = nil
+	}
 	if h.stop != nil {
 		close(h.stop)
 		h.warm.Wait()
@@ -290,6 +306,12 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 	E, H, I := h.shape.Experts, h.shape.Hidden, h.shape.Inter
 	byExpert := make([][]int, E) // the rows that chose each expert, and at which of their k
 	byK := make([][]int, E)
+	if h.usage != nil {
+		h.usage.Add(layer, idx)
+	}
+	if h.place != nil {
+		h.place.ran(layer == h.first)
+	}
 	for r := range rows {
 		for k, e := range idx[r] {
 			byExpert[e] = append(byExpert[e], r)

@@ -266,7 +266,36 @@ models:
     bytes: {amd: 11.79e9, apple: 14.4e9}
     features: [tools, thinking]
     amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256
-    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (wired into memory on 24 GB and more; HWNPU_MOE_WIRE=1 on 16 GB), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
+    # the experts every kind of text runs (tools/moeusage, 19 categories of prompts in about 25
+    # languages, 2026-11-20): in every category at least an even share (1/32) of their layer's
+    # runs; 141 experts (1.9 GB) taking 31–41 % of the runs. Wired from the first run when the
+    # experts do not all fit (experts.Placement)
+    experts_core:
+      - [1, 9, 16, 17, 23, 24]  # layer 0
+      - [0, 10, 13, 16, 18, 28]  # layer 1
+      - [0, 8, 21, 29, 31]  # layer 2
+      - [0, 2, 7, 11, 19]  # layer 3
+      - [6, 10, 12, 15, 20, 30]  # layer 4
+      - [0, 6, 10, 14, 17, 24]  # layer 5
+      - [3, 5, 10, 16, 31]  # layer 6
+      - [1, 3, 4, 10, 13, 14, 17, 21, 24, 28, 30]  # layer 7
+      - [0, 3, 17, 19, 24, 28, 31]  # layer 8
+      - [8, 14, 19, 30]  # layer 9
+      - [7, 10, 23, 26]  # layer 10
+      - [9, 24, 30]  # layer 11
+      - [1, 23, 25, 28]  # layer 12
+      - [1, 4, 21, 24]  # layer 13
+      - [1, 4, 9, 18, 24, 31]  # layer 14
+      - [0, 3, 6, 9, 13, 19, 26, 28, 31]  # layer 15
+      - [0, 11, 15, 17, 21, 24, 31]  # layer 16
+      - [4, 5, 7, 8, 11, 13, 19, 25, 28]  # layer 17
+      - [1, 9, 14, 20, 23, 27]  # layer 18
+      - [7, 13, 19, 20, 29, 31]  # layer 19
+      - [2, 6, 10, 11, 13, 16, 21]  # layer 20
+      - [1, 2, 9, 18, 23, 27]  # layer 21
+      - [0, 4, 11, 15, 22, 23]  # layer 22
+      - [0, 22, 31]  # layer 23
+    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (all wired into memory on 24 GB and more; on 16 GB 6 GB of them, the ones every text runs and those the application runs most), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
   Qwen3-0.6B:
     family: qwen3
     tag: 0.6b

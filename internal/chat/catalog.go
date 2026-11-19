@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"github.com/shibukawa/hwnpu/internal/cache"
@@ -113,6 +114,9 @@ type Model struct {
 	// export is not here: the exporter's model and options (PrepareAMD); none for a model AMD's
 	// NPU has no form of.
 	AMDExport []string
+	// ExpertsCore are the experts of each layer that every kind of text runs (models.yaml's
+	// experts_core), wired from the first run when the experts do not all fit (Config.Experts).
+	ExpertsCore [][]int
 	// File is the model's checkpoint file in a repository that holds several models (Anima's
 	// diffusion models: anima-turbo-v1.1.safetensors), "" when the repository is the one model.
 	File string
@@ -174,6 +178,18 @@ func Lookup(name string) (Model, bool) {
 		}
 	}
 	return Model{}, false
+}
+
+// ExpertsUsage is the file of an application's counts of a mixture of experts' experts in the
+// model's directory dir (experts.Placement.Usage): experts-usage/KEY.bin.
+func ExpertsUsage(dir, key string) string {
+	key = strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ':' || r < ' ' {
+			return '_'
+		}
+		return r
+	}, cmp.Or(key, "default"))
+	return filepath.Join(dir, "experts-usage", key+".bin")
 }
 
 // ModelDir is the directory of model m's converted programs: ModelsDir/NAME (Model.DirName).
