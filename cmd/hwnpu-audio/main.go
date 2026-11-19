@@ -274,8 +274,16 @@ func run(ctx context.Context, o options, args []string) error {
 		return errors.New("music wants a style: texts or WAV files, --codes or --continue")
 	}
 	backend := llm.BackendCoreML // what the CPU interpreter runs
-	var dev *hwnpu.Device
-	if !o.cpu {
+	var dev, amd *hwnpu.Device
+	switch {
+	case !o.cpu && onAMD():
+		// AMD's NPU: SpectroStream's decoder as the graph of tools/amd/iron_magenta.py, the
+		// language model and MusicCoCa on the CPU interpreter
+		if amd, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+			return err
+		}
+		defer amd.Close()
+	case !o.cpu:
 		if dev, backend, err = openAudioDevice(ctx, o.cacheDir, "--cpu runs Magenta RealTime 2 on the CPU"); err != nil {
 			return err
 		}
@@ -291,6 +299,11 @@ func run(ctx context.Context, o options, args []string) error {
 	p, err := music.Prepare(ctx, setup)
 	if err != nil {
 		return err
+	}
+	if amd != nil {
+		if p.IronDecoder, err = music.PrepareAMD(chat.WithModel(ctx, m), m, lw); err != nil {
+			return err
+		}
 	}
 
 	// the style
@@ -315,10 +328,12 @@ func run(ctx context.Context, o options, args []string) error {
 			done("failed")
 			return err
 		}
-		if err := checkNPU(lw, o, st.Placement()); err != nil {
-			done("failed")
-			st.Close()
-			return err
+		if amd == nil { // MusicCoCa runs on the CPU on AMD's NPU
+			if err := checkNPU(lw, o, st.Placement()); err != nil {
+				done("failed")
+				st.Close()
+				return err
+			}
 		}
 		console.Running()
 		var embs [][]float32
@@ -407,7 +422,12 @@ func run(ctx context.Context, o options, args []string) error {
 	console.Preparing()
 	t0 := time.Now()
 	done := spin("loading " + m.Name)
-	g, err := music.Open(ctx, dev, p)
+	var g *music.Generator
+	if amd != nil {
+		g, err = music.OpenAMD(ctx, amd, p)
+	} else {
+		g, err = music.Open(ctx, dev, p)
+	}
 	if err != nil {
 		done("failed")
 		return err
@@ -416,6 +436,8 @@ func run(ctx context.Context, o options, args []string) error {
 	where := "on the CPU interpreter"
 	switch {
 	case o.cpu:
+	case amd != nil:
+		where = "SpectroStream's decoder on the NPU, the language model on the CPU"
 	case g.OnNPU() && len(g.Elsewhere()) == 0:
 		where = "all on the NPU"
 	case g.OnNPU():
@@ -426,8 +448,10 @@ func run(ctx context.Context, o options, args []string) error {
 		where = "NOT all on the NPU"
 	}
 	done(fmt.Sprintf("in %s, %s", console.Duration(time.Since(t0)), where))
-	if err := checkNPU(lw, o, g.Placement()); err != nil {
-		return err
+	if amd == nil { // on AMD's NPU the CPU's part is the plan
+		if err := checkNPU(lw, o, g.Placement()); err != nil {
+			return err
+		}
 	}
 	console.Running()
 	if o.seed == 0 {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -46,20 +47,35 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 			fmt.Fprintf(lw, " %s\n", result)
 		}
 	}
-	var dev *hwnpu.Device
-	backend := llm.BackendCoreML // what the CPU interpreter runs
-	if !o.cpu {
-		d, format, err := openAudioDevice(ctx, o.cacheDir, "--cpu runs MOSS-SoundEffect on the CPU")
-		if err != nil {
+	var (
+		dev *hwnpu.Device
+		p   sfx.Paths
+		err error
+	)
+	if !o.cpu && onAMD() {
+		// AMD's NPU: the graphs of tools/amd/iron_moss_sfx.py (exported on the first run)
+		text, _ := sfx.Formats(cmp.Or(m.Machine, chat.MachineMemory()))
+		if p, err = sfx.PrepareAMD(chat.WithModel(ctx, m), m, cmp.Or(o.textFormat, text), lw); err != nil {
 			return err
 		}
-		defer d.Close()
-		dev, backend = d, format
-	}
-	p, err := sfx.Prepare(ctx, sfx.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Machine: m.Machine,
-		TextFormat: o.textFormat, DitFormat: o.ditFormat, Backend: backend, Log: lw})
-	if err != nil {
-		return err
+		if dev, err = hwnpu.Open(ctx, hwnpu.WithVendor(hwnpu.VendorAMD)); err != nil {
+			return err
+		}
+		defer dev.Close()
+	} else {
+		backend := llm.BackendCoreML // what the CPU interpreter runs
+		if !o.cpu {
+			d, format, err := openAudioDevice(ctx, o.cacheDir, "--cpu runs MOSS-SoundEffect on the CPU")
+			if err != nil {
+				return err
+			}
+			defer d.Close()
+			dev, backend = d, format
+		}
+		if p, err = sfx.Prepare(ctx, sfx.Setup{Dir: chat.ModelDir(m), Repo: m.Source(), Machine: m.Machine,
+			TextFormat: o.textFormat, DitFormat: o.ditFormat, Backend: backend, Log: lw}); err != nil {
+			return err
+		}
 	}
 	g, err := sfx.Open(p, dev)
 	if err != nil {
@@ -70,11 +86,11 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 	// could not tell about (unknown: MLComputePlan fails or times out while the Neural Engine is
 	// busy compiling, which is not a placement off the NPU)
 	var off, unknown []string
-	note := func(name string, p runner.Program, _ time.Duration) {
-		if dev == nil || p.OnNPU() {
+	note := func(name string, pr runner.Program, _ time.Duration) {
+		if dev == nil || pr.OnNPU() {
 			return
 		}
-		pl, ok := p.(interface {
+		pl, ok := pr.(interface {
 			Placement() (known bool, ops []string, reason string)
 		})
 		if !ok {

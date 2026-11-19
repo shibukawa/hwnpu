@@ -157,8 +157,8 @@ def quantize8(w) -> np.ndarray:
     in-features of an out-feature: scale = its largest magnitude / 127 in bf16, codes rounded."""
     w = np.asarray(w, np.float32)
     N, K = w.shape
-    if N % CB or K % 512:
-        raise ValueError(f"q8: ({N}, {K}) is not 64 x 512 blocks")
+    if N % CB or K % K_TILE:
+        raise ValueError(f"q8: ({N}, {K}) is not 64 x 256 blocks")
     g = w.reshape(N, K // GROUP, GROUP)
     scale = (np.abs(g).max(-1) / 127).astype(bfloat16).astype(np.float32)
     safe = np.where(scale > 0, scale, 1)
@@ -171,20 +171,22 @@ def pack8(codes, scale) -> np.ndarray:
     codes = np.asarray(codes, np.int8)
     scale = np.asarray(scale, np.float32)
     N, K = codes.shape
-    if N % CB or K % 512:
-        raise ValueError(f"q8: ({N}, {K}) is not 64 x 512 blocks")
+    if N % CB or K % K_TILE:
+        raise ValueError(f"q8: ({N}, {K}) is not 64 x 256 blocks")
     nb, kb = N // M_TILE, K // K_TILE
     sc = scale.reshape(nb, M_TILE, kb, K_TILE // GROUP).transpose(0, 2, 3, 1).astype(bfloat16)
     c = codes.reshape(nb, M_TILE // 16, 16, kb, K_TILE).transpose(0, 3, 1, 4, 2).reshape(nb, kb, -1)
     blocks = np.concatenate([sc.reshape(nb, kb, -1).view(np.uint8), c.view(np.uint8)], axis=-1)
-    blocks = blocks.reshape(N // CB, 2, K // 512, 2, Q8_BLOCK_BYTES).transpose(0, 2, 3, 1, 4)
+    # q4nx's order ([N/64][K/512][2 k-halves][2 n-halves]) is [N/64][K/256][2 n-halves], which
+    # q8 takes for K a multiple of 256 (Whisper's 1280): its GEMV reads 256 in-features a block
+    blocks = blocks.reshape(N // CB, 2, K // K_TILE, Q8_BLOCK_BYTES).transpose(0, 2, 1, 3)
     return np.ascontiguousarray(blocks.reshape(-1, Q8_BLOCK_BYTES))
 
 
 def dequantize8(q, n: int, k: int) -> np.ndarray:
     """The (n, k) float32 weights of quantize8's blocks."""
-    q = np.asarray(q, np.uint8).reshape(n // CB, k // 512, 2, 2, Q8_BLOCK_BYTES)
-    q = q.transpose(0, 3, 1, 2, 4).reshape(n // M_TILE, k // K_TILE, Q8_BLOCK_BYTES)
+    q = np.asarray(q, np.uint8).reshape(n // CB, k // K_TILE, 2, Q8_BLOCK_BYTES)
+    q = q.transpose(0, 2, 1, 3).reshape(n // M_TILE, k // K_TILE, Q8_BLOCK_BYTES)
     sm = M_TILE * K_TILE // GROUP
     s = q[..., : 2 * sm].copy().view(bfloat16).astype(np.float32).reshape(n // M_TILE, k // K_TILE, -1, M_TILE)
     c = q[..., 2 * sm :].copy().view(np.int8)
@@ -372,8 +374,9 @@ def _operators():
         y = Out(N, obj_shape=(CB,), per=(num_aie_columns,))
 
         def validate(self):
-            if self.K % 512:
-                raise ValueError(f"QGEMV: K ({self.K}) must be a multiple of 512")
+            if self.K % (K_TILE if self.fmt == "q8" else 512):
+                raise ValueError(f"QGEMV: K ({self.K}) of {self.fmt} must be a multiple of "
+                                 f"{K_TILE if self.fmt == 'q8' else 512}")
             if self.blocks % (2 * self.K // K_TILE):
                 raise ValueError(f"QGEMV: {self.blocks} blocks are no whole column blocks of K {self.K}")
             if self.cores not in (1, 2):
@@ -630,7 +633,10 @@ def add_operator(adds: int):
         for d in drains:
             d.await_()
 
-    def reference(self, W, x, a1, a2=None):
+    def reference(self, *given):
+        # the inputs come in the operator's order (the subclass's vectors first), so by name
+        v = dict(zip([b.name for b in self.inputs], given))
+        W, x, a1, a2 = v["W"], v["x"], v["a1"], v.get("a2")
         w = dequantize_fmt(W, self.N, self.K, self.fmt)
         y = w.astype(np.float64) @ np.asarray(x, np.float64) + np.asarray(a1, np.float64).reshape(-1)
         if a2 is not None:
