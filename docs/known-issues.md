@@ -20,6 +20,7 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 | 8 | ディスクが少ないと、仕上げたばかりのプログラムを macOS が消す | 未報告 | 25 GB 以上空ける (人の運用) | 何もしなくてよい |
 | 9 | チャットのモデルでは prebuilt が遅く、止まるものがある | 報告済み (16.247) | チャットのモデルに prebuilt を置かない | 測り直して、置くなら作って置く |
 | 10 | M1 の ANE のコンパイラが `sin` と、まとめた要素ごとの演算の一部を受け付けない | 未報告 | MOSS の DAC の snake を級数で、段 3 を 4500 フレームに | 何もしなくてよい |
+| 11 | `coreai-build` が、端末のコンパイラが ANE に乗せるプログラムを GPU に回す ("NEFUSED_EW: EW: MAX") | 未報告 (下書きあり) | オフラインでも通る形で書く (DAC r3) | 何もしなくてよい。r2 の形に戻す理由はない |
 
 ## 1. 仕上げの 10 秒の間隔 (FB25624129)
 
@@ -98,6 +99,13 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - **直ったら**: 何もしなくてよい (級数の値は CPU の参照と 0.0085 で、sin と同じ)
 - 確かめ方: `sin` だけのプログラムを `coreai-build --architecture h13g` で作り、`mps.fullyPlacedOnANE` があるか
 
+## 11. オフラインのコンパイラの方が厳しい (未報告)
+
+- **何が**: 前の MOSS の DAC (r2、snake に `sin` と clip) の段 4 は、M3 の端末では全部 ANE に乗っていた (design.md 16.197)。しかし `coreai-build` では h15g、h16g、h17g のどれでも "Unsupported NE layer "NEFUSED_EW": EW: MAX" になり、GPU だけの `.aimodelc` を書いて 0 で終わる。先頭から 46 演算なら乗り、47 演算目 (畳み込み → reshape → チャンネルごとの mul の後の clip) を足すと落ちる。この 4 つだけのプログラムは乗り、`sin` を `mul(y, y)` にした段も乗る。前の `sin` と clip との組み合わせで起きる。design.md 16.254
+- **今**: DAC は、どの機種でもオフラインで通る形 (r3) にした。prebuilt を作るなら、オフラインで乗る形で書く
+- **直ったら**: 何もしなくてよい
+- 確かめ方: 段 4 の先頭 47 演算 (`aicheck merge` を `HWNPU_AILOWER_CUT=47` で) を h15g で作り、`mps.fullyPlacedOnANE` があるか
+
 ## 確かめ方 (OS や Metal Toolchain を上げたとき)
 
 - 1 節: 画像のモデルを prebuilt で開き、`log show --predicate 'process == "launchd" AND eventMessage CONTAINS "ANELargeModel"'` に "deferred by 10 seconds" が出るか
@@ -105,6 +113,6 @@ OS や Metal Toolchain を上げたら、まず最後の「確かめ方」で各
 - 3 節: FLUX.2 klein 1024² の初回に "vae_s0 … the prebuilt program failed" が出るか
 - 6、7 節: 6 節の確かめ方を、落ちる 9 種類と h18g で
 - 9 節: 16.247 の表を測り直す
-- 10 節: 10 節の確かめ方を
+- 10、11 節: 各節の確かめ方を
 
 確かめた日と OS、Metal Toolchain の版を、この文書の各節に書き足す。
