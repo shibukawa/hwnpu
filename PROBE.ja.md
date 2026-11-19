@@ -315,16 +315,33 @@ q4 には 2〜8 行の呼び出しがありません（QGEMVRows は q8 と q6 �
 
   約 2.9 GiB を超えて遅くなるのは M1 だけです。M2、M3（Qwen3.5-4B の lut8、1 本で 3.96 GiB が見込みどおり 8 tokens/s、docs/design.md 16.88）、M4（3.62 GiB）は遅くなりません。
 
-Neural Engine が受け付けるすべての形式で 1 回に K トークン（`hwnpu-dev probe verify -layers 8`、0.49 B の重み、macOS 27.2.1、2026-11-19。レポートは [npuprobe-m2-verify.md](npu_profiles/npuprobe-m2-verify.md)）:
+上の AMD と同じく、すべての形式で（`hwnpu-dev probe bench`、macOS 27.2.1、2026-11-20。レポートは [npuprobe-m2-formats.md](npu_profiles/npuprobe-m2-formats.md)）。Neural Engine で 16 層（0.97 B）。fp16 の 16 層（1.81 GiB）は上限を超えて CPU に落ちるので、fp16 の行だけ 8 層です:
+
+| 形式 | 重み 1 つのビット数 | 重み | ms/トークン | 重みの GB/s | G 重み/秒 | AMD の天井（stream）の G 重み/秒 |
+|---|---|---|---|---|---|---|
+| lut4 | 4 | 0.45 GiB | **8.0** | 61 | **122** | q4: 84 |
+| lut6 | 6 | 0.68 GiB | 11.4 | 64 | 85 | q6: 47 |
+| lut8 | 8 | 0.91 GiB | 15.3 | 64 | 64 | q8: 51 |
+| int8 | 8 | 0.91 GiB | 15.4 | 63 | 63 | q8: 51 |
+| fp16（8 層） | 16 | 0.91 GiB | 15.9 | 61 | 31 | bf16: 28 |
+
+- **どの形式でも重みを 61〜64 GB/s で読むので、時間はバイト数に比例します**。lut6 は 6 ビットのとおり lut4 と lut8 の間に入ります（11.4 ms、lut4 の 1.43 倍）。AMD の q6 は q8 より遅くなりましたが、Neural Engine では 6 ビットの表を展開する手間がかかりません。lut8 は int8 と同じ速さです。
+- 重みあたりで比べると、M2 は AMD の天井の 1.45 倍（4 ビット）、1.8 倍（6 ビット）、1.25 倍（8 ビット）、1.1 倍（16 ビット）です。AMD の今のチャットのモデルの動かし方（layers の形、q4 で 31 G 重み/秒）と比べると、4 ビットで 3.9 倍です。
+- GPU は int4 がいちばん速く（12.8 ms）、それでも Neural Engine の lut4 や lut6 より遅いです。GPU の int8 の 16 層は、Core ML の中の例外（NSException）で止まりました。
+
+Neural Engine が受け付けるすべての形式で 1 回に K トークン（`hwnpu-dev probe verify -layers 8`、0.49 B の重み、macOS 27.2.1、2026-11-20。レポートは [npuprobe-m2-verify.md](npu_profiles/npuprobe-m2-verify.md)）:
 
 | 形式 | K=1 ms | G 重み/秒 | K=8 × K=1 | K=64 × K=1 | K=64 TFLOPS | K=128 × K=1 | K=128 TFLOPS |
 |---|---|---|---|---|---|---|---|
-| fp16 | 15.5 | 31 | 1.00 | 1.02 | 3.9 | 1.39 | 5.8 |
-| int8 | 8.0 | 61 | 1.01 | 1.06 | 7.4 | 1.52 | 10.3 |
-| lut4 | 4.2 | 117 | 1.02 | 1.13 | **13.3** | 2.95 | 10.2 |
+| fp16 | 15.6 | 31 | 0.99 | 1.02 | 3.9 | 1.35 | 5.9 |
+| int8 | 7.9 | 62 | 1.07 | 1.04 | 7.6 | 1.51 | 10.5 |
+| lut4 | 4.1 | 119 | 1.03 | 1.13 | **13.4** | 2.98 | 10.2 |
+| lut6 | 5.8 | 84 | 1.01 | 1.02 | 10.6 | 2.21 | 9.8 |
+| lut8 | 7.7 | 64 | 1.01 | 1.02 | 8.0 | 2.28 | 7.1 |
 
 - **どの形式でも、64 トークンの確認が 1 回分ほどで済みます**（1.02〜1.13 回分）。AMD は 4 つで 1.27、8 つで 2.85 でした。Neural Engine では、どの形式でも投機的デコードと 64 のプロンプトの塊がほとんどただです。
-- lut4 は 64 トークンで 13.3 TFLOPS に達し、M3 の 13.7 とほぼ同じです。fp16 と int8 は 4 倍と 2 倍のバイトを読むので 64 までは重みに縛られ、128 でもまだ伸びます（1 回の 1.39 倍と 1.52 倍）。64 を超えて落ちるのは lut4 で（128 で 2.95 倍）、lut4 のプロンプトは 64 の塊で読むのがいちばん速いです。
+- lut4 は 64 トークンで 13.4 TFLOPS に達し、M3 の 13.7 とほぼ同じです。fp16 と int8 は 4 倍と 2 倍のバイトを読むので 64 までは重みに縛られ、128 でもまだ伸びます（1 回の 1.35 倍と 1.51 倍）。64 を超えると表の形式が落ちるので（128 で 2.2〜3.0 倍）、lut4、lut6、lut8 のプロンプトは 64 の塊で読むのがいちばん速いです。
+- 計算に縛られるところでは、大きい表が効いてきます。128 トークンで lut8 は 7.1 TFLOPS、同じバイト数の int8 は 10.5 です（17.4 ms と 11.9 ms）。長いプロンプトでは int8 が lut8 より速く、デコードでは同じです。
 
 ### Apple M1（MacBook Pro 13 インチ、16 GB、macOS 27.2）
 
@@ -401,7 +418,7 @@ Neural Engine が受け付けるすべての形式で 1 回に K トークン（
 
 M4 以降の Apple のチップ（1 GiB の上限はチップやメモリで変わるか）、Linux と Windows の Intel Core Ultra（Intel バックエンドはまだ実機で動いていない）、AMD Ryzen AI の `hwnpu-dev report` と、Strix Point 以外のチップ（Krackan Point、Strix Halo）での `hwnpu-dev probe`、Apple での probe の Core AI の経路（同じ形を Core AI のプログラムにしたもの。まだ書いていない）。`.md` のファイルを付けて issue を開いてください。
 
-M1、M2、M3 でも、上の AMD と同じく形式どうしを比べ直したい。`bench` は lut6 と lut8（`hwnpu-dev convert -bits 6` と `8` の重み）も動かして G 重み/秒を出すようになり、`verify` は Neural Engine が受け付けるすべての形式を動かします:
+M1 と M3 でも、上の AMD と M2 と同じく形式どうしを比べ直したい。`bench` は lut6 と lut8（`hwnpu-dev convert -bits 6` と `8` の重み）も動かして G 重み/秒を出すようになり、`verify` は Neural Engine が受け付けるすべての形式を動かします:
 
 ```bash
 go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe bench
