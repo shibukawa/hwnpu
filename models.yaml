@@ -88,6 +88,26 @@ models:
     features: [tools, thinking]
     amd_export: lfm3 --max-seq-len 12288 --q4
     about: "Liquid AI's 1.7B model, text only, in 6 bit tables: small and fast enough to run behind an agent such as OpenCode"
+  LFM2-8B-A1B:
+    # a mixture of experts (lfm2_moe, 32 experts of which 4 a token): the host picks the experts
+    # between the parts and a program without weights runs them, every layer's experts held in
+    # int8 (docs/handoff-ane-gather.md 1b). Apple only, Core AI: an M3 (2026-11-19) 15.0-16.1
+    # tokens/s, 1503 tokens of prompt in 8.6-10.9 s; an M2 12.0-13.7 tokens/s, 1624 in 13-14.5 s,
+    # loaded in 3.1 s and 8.0 GB (the experts' 7.23 GiB in the process's memory; the first run,
+    # converting, 12.9 GB). Short of memory the system compresses the experts and a prompt takes
+    # up to 3 times as long: HWNPU_MOE_WIRE=1 wires them. Not on an M1: its Neural Engine does
+    # not take the gather_nd that picks the experts' scales. Not picked by a use: 8.0 GB on 16 GB
+    family: lfm2
+    tag: 8b-a1b
+    kind: chat
+    from: hf:LiquidAI/LFM2-8B-A1B@7ed1404fdf502a5446c1b67d4fe1533158d6f2ad
+    license: {id: lfm-open-1.0, url: "https://huggingface.co/LiquidAI/LFM2-8B-A1B/blob/main/LICENSE", class: conditional, terms: "commercial use only below 10 million US dollars of annual revenue (the whole group)"}
+    machine: 16
+    memory: 8.0
+    bytes: 16.7e9
+    features: [tools]
+    not_on: [M1]
+    about: "Liquid AI's LFM2-8B-A1B, a mixture of experts of 8.3B with 1.5B active a token: the experts in int8, the rest in 8 bit tables; a context of 128000, tool calls in Python's form; Apple's M2 and later only"
   LFM3-VL-2B:
     family: lfm3-vl
     tag: 2b

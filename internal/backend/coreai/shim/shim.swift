@@ -141,6 +141,9 @@ private func ints(_ s: Span<Int>) -> [Int] {
     return a
 }
 
+/// Whether the arrays of the type hold two values a byte (int4, uint4), dense.
+private func isNibbles(_ t: NDArray.ScalarType) -> Bool { t == .int4 || t == .uint4 }
+
 private func scalarBytes(_ t: NDArray.ScalarType) -> Int {
     switch t {
     case .float16, .int16, .uint16, .bfloat16: return 2
@@ -215,6 +218,9 @@ public func cai_input_array(_ h: UnsafeMutableRawPointer, _ index: Int32) -> Uns
         if dense && elem > 0 {
             memset(p, 0, count * elem) // as a buffer of the caller's: zeros
             made = p
+        } else if dense && isNibbles(d.scalarType) {
+            memset(p, 0, (count + 1) / 2) // two a byte
+            made = p
         }
     }
     guard let p = made else { return nil }
@@ -265,7 +271,13 @@ public func cai_run(_ h: UnsafeMutableRawPointer, _ ins: UnsafePointer<UnsafeMut
             fp.pointee.lent[name] = nil
         }
         let elem = scalarBytes(feed[name]!.scalarType)
+        let nibbles = isNibbles(feed[name]!.scalarType)
         feed[name]!.mutableRawView().withUnsafeMutableBytes { p, shape, strides in
+            if nibbles { // two a byte, dense
+                let (_, count) = isDense(ints(shape), ints(strides))
+                memcpy(p, src, (count + 1) / 2)
+                return
+            }
             copyStrided(src, p, ints(shape), ints(strides), elem, toArray: true)
         }
     }

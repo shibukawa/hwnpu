@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/console"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/llm/paged"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 )
@@ -65,7 +66,21 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 			return nil, fmt.Errorf("llm: ConvertAI converts the whole model")
 		}
 		var err error
+		_, routed := model.(Routed)
 		switch {
+		case routed && o.Paged > 0:
+			if _, ok := model.(Paged); !ok {
+				return nil, fmt.Errorf("llm: %s cannot be split at its attention (-paged)", a.Title)
+			}
+			switch {
+			case o.Cache <= 0:
+				return nil, fmt.Errorf("llm: -paged needs -cache, the longest sequence")
+			case o.Seq < 1 || o.Seq > o.Paged:
+				return nil, fmt.Errorf("llm: -paged %d takes 1 to %d tokens per call, not %d", o.Paged, o.Paged, o.Seq)
+			}
+			plans[i], err = PlanRouted(model, o, budget)
+		case routed:
+			plans[i], err = PlanRouted(model, o, budget)
 		case o.Paged > 0:
 			if _, ok := model.(Paged); !ok {
 				return nil, fmt.Errorf("llm: %s cannot be split at its attention (-paged)", a.Title)
@@ -107,7 +122,7 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 	type key struct {
 		start int
 		some  bool // the part has layers
-		whole int // the cache of a program not split at its attention, beside one that is
+		whole int  // the cache of a program not split at its attention, beside one that is
 	}
 	var starts []key
 	groups := map[key][]member{}
@@ -186,12 +201,29 @@ func ConvertAI(a *Arch, model Model, w Weights, base, targetName string, progs [
 			}
 		}
 	}
+	var ex *ExpertsRecord
+	if rm, ok := model.(Routed); ok {
+		var err error
+		var seqs []int
+		for _, p := range progs {
+			if q := p.Options.Seq; q > 1 && !slices.Contains(seqs, q) {
+				seqs = append(seqs, q)
+			}
+		}
+		if ex, err = writeAIExperts(rm, w, base, a.Title, seqs, log); err != nil {
+			return nil, err
+		}
+	}
 	var out []string
 	for i, p := range progs {
 		o := p.Options
 		man := Manifest{Model: a.Title, Source: w.Source(), Format: o.Format, Seq: o.Seq, Cache: o.Cache, Target: target.Name, MaxBytes: target.MaxBytes,
 			Backend: BackendCoreAI, Meta: metadata(a, model, w, o), Paged: o.Paged, KVOnly: o.KVOnly}
 		man.Parts = recs[i]
+		if ex != nil {
+			e := *ex
+			man.Experts = &e
+		}
 		if o.Paged > 0 {
 			if err := writeAIPaged(&man, a, model.(Paged), p.Out, o); err != nil {
 				return nil, err
@@ -235,4 +267,45 @@ func writeAIPaged(man *Manifest, a *Arch, pm Paged, out string, o Options) error
 	}
 	man.Mass = &PartRecord{Path: mpath, Inputs: records(ins...), Output: records(outs[0])[0]}
 	return nil
+}
+
+// writeAIExperts writes the experts of a Routed model for Core AI: the program without weights of
+// a row's chosen experts, base.experts.aimodel, and every layer's experts in int8,
+// base.experts.safetensors (experts.WriteFile).
+func writeAIExperts(rm Routed, w Weights, base, title string, seqs []int, log io.Writer) (*ExpertsRecord, error) {
+	sh := rm.ExpertShape()
+	ppath := base + ".experts.aimodel"
+	desc := fmt.Sprintf("%s: %d of %d experts of %d x %d on a row, their weights given at run time (hwnpu-dev convert)", title, sh.TopK, sh.Experts, sh.Hidden, sh.Inter)
+	_, ins, outs, err := writeAI(ppath, map[string]string{MetaDescription: desc}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
+		return experts.Build(b, sh)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var rows []PartRecord
+	for _, q := range seqs {
+		rpath := fmt.Sprintf("%s.experts.q%d.aimodel", base, q)
+		desc := fmt.Sprintf("%s: an expert of %d x %d on %d rows, its weights given at run time (hwnpu-dev convert)", title, sh.Hidden, sh.Inter, q)
+		_, ins, outs, err := writeAI(rpath, map[string]string{MetaDescription: desc}, func(b *mlpackage.Builder) ([]mlpackage.Feature, []mlpackage.Feature, error) {
+			return experts.BuildRows(b, sh, q)
+		})
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, PartRecord{Path: rpath, Inputs: records(ins...), Output: records(outs[0])[0]})
+	}
+	wpath := base + ".experts.safetensors"
+	layers := rm.RoutedLayers()
+	stop := console.Spin(log, filepath.Base(wpath))
+	err = experts.WriteFile(wpath, sh, layers, rm.ExpertNames, func(name string) ([]float32, error) {
+		v, _, err := w.Get(name)
+		return v, err
+	})
+	stop()
+	if err != nil {
+		io.WriteString(log, "\n")
+		return nil, err
+	}
+	fmt.Fprintf(log, ": the experts of %d layers in int8, %.2f GiB\n", len(layers), float64(len(layers)*sh.Experts*3*sh.Hidden*sh.Inter)/(1<<30))
+	return &ExpertsRecord{Program: PartRecord{Path: ppath, Inputs: records(ins...), Output: records(outs[0])[0]}, Rows: rows, Weights: wpath, Layers: layers, Shape: sh, Routing: rm.Routing()}, nil
 }

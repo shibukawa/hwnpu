@@ -366,6 +366,16 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if _, routed := model.(llm.Routed); routed && Chip() == "M1" {
+		// the experts' program picks their scales with gather_nd, which an M1's Neural Engine
+		// does not take (docs/handoff-ane-gather.md 1): refused before the checkpoint downloads
+		return Config{}, fmt.Errorf("chat: %s is a mixture of experts, which runs on an M2 or later, not on an M1's Neural Engine", c.Name)
+	}
+	if _, routed := model.(llm.Routed); routed && s.Draft > 1 {
+		// a call's experts run row by row (llm.Routed): checking 7 drafts costs 8 rows of them,
+		// for the few a model accepts (LFM2-8B-A1B: 13 of 95, 2.3 tokens/s against 15)
+		s.Draft = 1
+	}
 	for _, f := range TokenizerFiles(a.Name) {
 		if _, err := fetch(ctx, s.Repo, f, s.Log); err != nil {
 			return Config{}, err
@@ -462,6 +472,11 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		lastRow, kvOnly bool
 	}
 	pre := prog{seq: prefillSeq, lastRow: a.LastRow && backend != llm.BackendIntel}
+	if _, routed := model.(llm.Routed); routed {
+		// a prompt's call reads each expert its rows chose once (experts.BuildRows), whatever
+		// the rows: more rows a call, fewer reads a token
+		pre.seq = pagedPrefillSeq
+	}
 	if chunk > 0 && backend != llm.BackendIntel {
 		pre.seq = min(pagedPrefillSeq, chunk) // a call's tokens fit in a chunk
 		if cw, ok := model.(llm.CacheWriters); ok && cw.CacheLayers() < model.Layers() {
@@ -498,6 +513,10 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		if len(tiers) > 0 && !slices.Contains(tiers, TierAuto) && s.Log != nil {
 			fmt.Fprintf(s.Log, "no cache tiers for %s: split at its attention, a step costs in proportion to the conversation, not to the context of %d\n", c.Name, context)
 		}
+		tiers = nil
+	}
+	if _, routed := model.(llm.Routed); routed {
+		// the experts are a file of the export, several GiB: one export, of one cache
 		tiers = nil
 	}
 	if slices.Contains(tiers, TierAuto) {
@@ -607,6 +626,27 @@ func Prepare(ctx context.Context, s Setup) (Config, error) {
 		}
 	}
 	if missing {
+		if s.CodesHash != "" && codes == "" {
+			// the codes are needed only now, to convert: from the shared layers when one has them
+			if d := CodesDir(s.Dir, s.CodesHash); fetchCodes(ctx, s.Dir, s.CodesHash, d) {
+				codes = d
+				for ti := range tps {
+					for i := range tps[ti].ps {
+						tps[ti].ps[i].codes = d
+					}
+				}
+				for i := range all.ps {
+					all.ps[i].codes = d
+				}
+			}
+		} else if s.CodesHash != "" {
+			// converted with the definitions' codes, which this machine has: put in the shared
+			// layers, so that another machine (or this one, after a change of what is written)
+			// converts again without them
+			if h, err := codesHash(codes); err == nil && h == s.CodesHash {
+				putCodes(ctx, s.Dir, h, codes)
+			}
+		}
 		if s.CodesHash != "" && codes == "" {
 			return Config{}, fmt.Errorf("chat: %s's programs are converted with the lookup tables %s (models.yaml's codes), which neither the sources nor %s have: --codes DIR, or a models.yaml of your own without codes", c.Name, s.CodesHash, CodesDir(s.Dir, s.CodesHash))
 		}

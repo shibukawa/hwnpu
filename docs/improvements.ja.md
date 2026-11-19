@@ -475,6 +475,10 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | 言語モデルの注意のプログラムを kv ヘッドごとに (`paged.Heads`、`llm.attentionForm`、`llm.RefreshAttention`、16.219) | 注意で分けたモデルの、ホストが呼ぶ注意 (重みなし) | 画像の DiT の `HeadAttention` (16.202) と同じ並べ方を、問い合わせ 8 行と 128 行に: kv ヘッド 2 つ以上で 1 回 5〜26 % 速い (LFM3-1.7B の 128 行 × 4096 キー 4.16 → 3.14 ms)。`reduce_sum` は grouped の形では 8 行のプログラムを外すが、この形では載る。kv ヘッド 1 つだと外れる。重みがないので前のエクスポートも注意だけ書き直す。`HWNPU_ATTENTION=grouped` で前の形 |
 | 窓の長いモデルは、短い文脈のプログラムを同じ `.aimodel` の関数にして先に使う (`chat.ringTiers`、`llm.Windowed`、16.220) | プログラムの中のリングは会話の長さによらず毎回全部渡される: PLaMo 3 の窓 2048 | 文脈 512 のプログラムは窓の層のキャッシュが 512。注意で分けた形どうしなので部品の層が同じで、関数 4 つの 1 本にまとまり重みは増えない (分けない 1 本を関数にしたときの遅れは出ない)。Gemma 4 E2B (窓 512、14 MiB) は文脈 256 でも変わらず、段を作るのは窓の 4 分の 1 が 256 以上のモデルだけ。段を移るとき、移る前の印は `decode.Session.Remark` で作り直す |
 | 1 ステップの速度を、同じプログラムの CPU の float32 と 2 つの分に分けて比べる (`flux2klein.TestF32Check`、16.227: 部分を fp16 と書き出しの形式の Core ML のパッケージにして `milcpu` で回す) | PyTorch の参照が動かない所で、Core AI の書き出しが float32 からどれだけ離れているか | 部分をチェックポイントから Core ML のパッケージに書き、書き出しの実行が落とした入力 (`--dump`) で CPU の解釈器の float32 で回す: fp16 の重みと書き出しの形式の差が重みの分、Neural Engine と CPU の書き出しの形式の差が計算の分。組ごとに CPU の入力を与えると、外れた演算と fp16 の積み重ねを見分けられる。FLUX.2 klein の 512²: 3.8 % = lut8 2.7 % と Neural Engine 2.8 %、各組 0.2〜0.8 % |
+| Neural Engine で MoE、専門家は部品の間でホストが選ぶ (`llm.Routed`、`llm.PlanRouted`、`internal/llm/experts`、`chain/moe.go`、handoff-ane-gather.md 1b) | 経路が `gather` なので外していた MoE のモデル (LFM2-8B-A1B) | 部品は MoE の層の始まりで終わり、ルーターのロジット (fp16) と専門家が取る行を出す (`moe_x_N`、`moe_logits_N`)。ホストが上位 k を取り、重みのないプログラムで選んだ専門家を回す。重みは行ごとの int8 で、全層の専門家をプログラムの入力配列に持つ (LFM2-8B-A1B で 7.22 GiB、一度だけ読み、`Share` した chain と共有)。次の部品が結果 (`moe_o_N`) を足す。専門家の拡大は層の表から Neural Engine の `gather_nd` で取る (int16 の索引。M2・M3 は通り、M1 は通らない)。LFM2-8B-A1B は M2 でも動いた (生成 12.0〜13.1 tok/s、1 層 3.83 ms)。メモリが足りないとシステムが専門家の配列を圧縮し、プロンプトが 14.3 s から 43.3 s まで延びる: `HWNPU_MOE_WIRE=1` で配列を mlock で固定する (既定は off)。LFM2-8B-A1B を M3 (16 GB) で: `hwnpu-dev generate` 15.4 tok/s、hwnpu-chat 14.1。bf16 の専門家の float32 との KL 0.006 (argmax 47〜48/48)。1 層のルーターと専門家 3.0〜3.3 ms、同じ大きさの定数の重み 1.0 |
+| MoE のモデルは draft と cache tiers なし (`chat.Prepare`) | hwnpu-chat の既定 | 専門家は 1 行ずつ: 1 回に 7 つの draft を確かめると専門家も 8 行。95 のうち 13 しか採られず 2.3 tok/s、なしで 14.1。tier は export 1 つずつで、それぞれに 7.22 GiB の専門家が付く |
+| プロンプトの専門家は、呼び出しの全部の行を専門家 1 つずつで回す (`experts.BuildRows`、`chain.moe.runRows`)。MoE のモデルのプロンプトのプログラムは 1 回 128 トークン (AMD の専門家ごとの行、7.3) | プロンプトの読み込み | プロンプトを読む呼び出しは、行が選んだ専門家をそれぞれ 1 回だけ回す。その専門家に対する行の重み (選んでいない行は 0) を入力にし、出力は次の呼び出しの入力 (acc) で足していく: 1 行ずつなら 64 × 4 回読むところが、1 層で多くて 32 回。LFM2-8B-A1B、1503 トークンのプロンプト (M3): 61.7 s → 15.6 s (1 回 64) → 10.9 s (1 回 128)、24 → 138 tokens/s。1 層 1 行の専門家 1.85 → 0.51 → 0.35 ms。bf16 の基準との KL 0.0057 (48/48)、生成は変わらず (15.3 tok/s) |
+| MoE のモデルを注意でも分ける (`Paged` での `llm.PlanRouted`。注意の層の出力からルーターまでは層なしの部品 `NoLayers`) | 長い文脈 | ホストが塊のキャッシュで注意を取り、専門家も回す: LFM2-8B-A1B は 29 部品、文脈 128000 (1 トークン 14 KiB)。15.0 tok/s (プログラムの中のキャッシュ 4096 で 14.3)、KL 0.0058 (48/48)、16.9K トークンの passkey を見つけた (78 s で読む、216 tokens/s。そこでの生成 11.9 tok/s) |
 
 ### 7.6 NPU にない演算、間違える演算と、その代わり
 
@@ -570,6 +574,10 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | Core AI: Sana の先読み、Sana 600M の DiT を 1 本のプログラムに | 先読みはばらつきの中 (部品が小さい)。1 本にすると 1 枚 0.1〜0.3 秒 (512² のノイズ除去 3.1 → 2.7〜3.0 秒) で、書き出しを作り直すほどではない | 16.210 |
 | Core AI: Qwen-Image の文の符号器を短い行数の関数で | 先読みの後は文の時間のほとんどが読み込み (17 本 × 0.2〜0.25 秒)。行を減らしても 1 秒未満で、DiT の組を全部コンパイルし直すことになる | 16.210 |
 | 下書きが当たらないときだけ 1 回 1 トークンの関数に切り替える | M1 の LFM3-1.7B で、1 回 8 トークンは 1 回 1 トークンの +4 % (31.2 対 30.0 ms)。下書きが 25 回に 1 回当たれば 8 トークンが得で、関数を増やすほどの差がない | 16.218 |
+| Neural Engine の MoE: 選んだ専門家の重みを定数の表から gather (`gather_nd`、`aicheck gather`、M3) | 正しい (cosine 1.000000)、表の大きさは効かない。ただし約 3 G 要素/s で、定数の重みを読む速さの 1/6: LFM2-8B-A1B の 4 専門家で 1 層約 15 ms、実行時に結び付ければ 3。gather 1 つで複数の専門家は 1 つずつより遅い (k 2: 2.9 ms と 0.9)、int8 を 1 つの gather にするとコンパイラが通らない (GPU)。専門家の拡大にだけ使う | handoff-ane-gather.md 1b |
+| Neural Engine の MoE: 専門家を 1 配列に (gate と up の横に down の転置、`aicheck moepack`) | 結び付ける配列が半分: Granite 3.1 1B-A400M 1 層 4.5 → 2.6 ms。ただ実行時の重みの切り出しで幅の広い専門家は遅くなる (LFM2-8B-A1B 7.0 ms、2 配列なら 4.35) | handoff-ane-gather.md 1b |
+| Neural Engine の MoE: 選んだ専門家を固定の配列へコピー (`aicheck moe -copy`) | M1 では最良 (結び付け直しが約 5 GB/s 相当)。M3 は結び付けが安い: LFM2-8B-A1B は 2 配列の結び付け 4.35 ms、コピー 4.66。コピーが勝ったのは小さい専門家 (Granite、OLMoE) だけ | handoff-ane-gather.md 1、1b |
+| Neural Engine の MoE: 専門家を 4 ビットで (`aicheck moe4`、`moeserve -bits 4`、M3) | 64 列ごとの scale なら精度は保てる (LFM2-8B-A1B の専門家だけで KL 0.023、top-1 98 %。int8 は 0.0019、行ごとの scale は 0.071)。ただ、どの形も int8 の 1 層 1.7〜2.6 ms より速くない: int8 に 2 つの値を詰めて Neural Engine の `floor_div` で取り出すと 8.7〜11 ms (値も誤り: cosine 0.3)、Core AI の int4 配列 (1 バイトに 2 つ) を `blockwise_shift_scale` で戻すと正しいが GPU で 6.4〜9.8 ms、int4 配列を fp16 に cast すると Neural Engine で正しいが 85 ms。lowering と shim には int4 の入力と `floor_div`、`mod`、`round` を残した | handoff-ane-gather.md 1b |
 
 ## 9. 組み合わせの注意 (代償)
 
@@ -611,6 +619,7 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | LFM3-Audio-2B | `lfm3` + `lfm3-audio-encoder` + `lfm3-depthformer` / `lfm3-codec` | 同上 | LFM3 | 音声入力 (30 秒)、音声出力 (`hwnpu-tts`) | ◎ lut8 | 変換は可 | ◎ 音声入力 (41 秒)、q4 2.03 GiB。音声出力 (`hwnpu-audio tts`、16.254) は q8 の文のモデルと depthformer、codec のグラフで実時間の 0.43 倍、2.6 GiB |
 | LFM3-Omni-2B | 上の 2 つの塔 | 同上 | LFM3 | 画像と音声 | ◎ lut8 | 変換は可 | ◎ q4 2.39 GiB |
 | d1-2B / d1-Omni-2B | `lfm3` の d1 モード | 同上 | System One API (`hwnpu-systemone`) | 画像 (d1-2B)、画像と音声 (d1-Omni) | ◎ lut8 | 変換は可 | — |
+| LFM2-8B-A1B | `lfm2moe` (MoE、`llm.Routed`) | LFM3 と同じ | LFM2 (`chat.LFM2`: think のない ChatML、道具は Python の呼び出し) | — | ○ M3、Core AI のみ: lut8、専門家は行ごとの int8 (7.22 GiB)、注意でも分ける、文脈 128000 (16.9K の passkey を見つけた)、15 tok/s、プロンプト 138〜216 tokens/s、bf16 との KL 0.006 | — | — |
 | gemma-4-E2B-it | `gemma4` | byte fallback の BPE (`tokenizer.json`) | Gemma 4 | Apple / Intel はテキストのみ | ◎ lut6、文脈 131072 | 変換は可 | ◎ q4 7.9 tok/s、1.78 GB (bf16 は 6.1 tok/s)、画像と音声も |
 | gemma-4-E4B-it | `gemma4` | 同上 | Gemma 4 | テキストのみ | ○ lut6、1 本 (`-prefill auto`) | 変換は可 | ○ q4 5.6 tok/s、3.53 GB、文脈 4096 |
 | Qwen3.5-4B | `qwen35` | byte-level BPE + NFC + Qwen の分割規則 | Qwen3.5 | テキストのみ (視覚の塔は変換しない) | ◎ lut8、1 本 (Q=8)、全部 ANE、KL 0.005〜0.007、8 tokens/s 前後 | 変換は可 (int8) | ○ `iron_export_lm.py qwen35 --q4`。32 層で 6.4 tok/s (16.94)、4.7 GB。HF と最上位のトークン 8/9 (同じ q4 のホストのグラフと同じ所で外れる、16.92) |
@@ -621,7 +630,7 @@ Core AI は端末向けに専用化した結果を自分のキャッシュに持
 | plamo-embedding-1b | `plamo-bi` | SentencePiece BPE (`tokenizer.model`) | — (埋め込み API) | — | ◎ lut8 + head-scale | 変換は可 (int8) | — |
 | BERT 系 (all-MiniLM-L6-v2 など) | `bert` | **未実装** (WordPiece) | — | — | 変換のみ (lut8) | 変換のみ (int8) | — |
 | Anima-Turbo (画像生成) | `internal/imagegen/anima` (MIL の 1 つの記述から作る) | Qwen3 の BPE + T5 の Unigram | — (`hwnpu-image`) | 画像を出力 | ◎ M3 で 1024×1024 の 8 ステップ約 40 s、3.8 GB (int8) | △ 変換は可。OpenVINO の CPU で照合済み | ◎ 1024×1024 で 8 ステップ約 68 s、固定 3.4 GiB (DiT は 8 ビット) |
-| gpt-oss-20b | `gptoss` (IRON のみ) | o200k_harmony、バイト単位の BPE (`tokenizer.json`、o200k の前処理) | harmony (`GptOss`: analysis、final、commentary のチャネル、道具は TypeScript の名前空間) | — | — (MoE の経路は Neural Engine に載らない) | — | ○ `iron_export_lm.py gptoss`。24 層 (固定 13.1 GB) でデコード 20.2 tok/s (ステップは出力層まで常駐の 1 配列、文脈 7680 で 17.8。演算が別々のとき 12.4、最初は 10.3)、プロンプトは 256 の塊で 7 ms/トークン (経路はホスト、専門家は bfp16)、専門家はチェックポイントの MXFP4 のまま (mx4)、注意の sink はデバイスで (16.179)。HF fp32 との KL 0.0065〜0.055 (出力層を GPTQ で、`gptoss_gptq.py`)、照合の最上位のトークンは全部一致。package で 1.3 J/トークン |
+| gpt-oss-20b | `gptoss` (IRON のみ) | o200k_harmony、バイト単位の BPE (`tokenizer.json`、o200k の前処理) | harmony (`GptOss`: analysis、final、commentary のチャネル、道具は TypeScript の名前空間) | — | — (専門家は int8 で 19 GB、16 GB の Mac に載らない。`internal/llm/experts` は bias と clamp のない SwiGLU の専門家だけ) | — | ○ `iron_export_lm.py gptoss`。24 層 (固定 13.1 GB) でデコード 20.2 tok/s (ステップは出力層まで常駐の 1 配列、文脈 7680 で 17.8。演算が別々のとき 12.4、最初は 10.3)、プロンプトは 256 の塊で 7 ms/トークン (経路はホスト、専門家は bfp16)、専門家はチェックポイントの MXFP4 のまま (mx4)、注意の sink はデバイスで (16.179)。HF fp32 との KL 0.0065〜0.055 (出力層を GPTQ で、`gptoss_gptq.py`)、照合の最上位のトークンは全部一致。package で 1.3 J/トークン |
 | Qwen3.6-35B-A3B | `qwen35moe` (IRON のみ) | Qwen3.5 と同じ | Qwen3.6 (`Qwen36`: 道具の引数を JSON で、16.90) | — | — | — | ○ `iron_export_lm.py qwen35moe --q4`。40 層 (23 GB) でデコード 5.8 tok/s (16.92)、プロンプトは塊で 25 ms/トークン (経路はホスト、16.93)、HF とコサイン 0.989〜0.997 (専門家と出力の行列を GPTQ で、`qwen36_gptq.py`、16.101)、最上位のトークンは全部一致。プロンプトは 1 トークンずつ |
 
 ### 10.2 トークナイザー (`internal/tokenizer`、依存は `golang.org/x/text` だけ)
@@ -649,6 +658,7 @@ AMD (IRON) では、トークナイザーとチャットの型は書き出した
 | Gemma 4 (`chat.Gemma4`) | 9 会話 (`gemma4_template.json`) | 独自の記法 (文字列は `<\|"\|>`、キーは dictsort) | `<\|think\|>` と `<\|channel>thought … <channel\|>` |
 | Qwen3.5 (`chat.Qwen35`) | 9 会話 | Qwen の説明つきの宣言。引数はオブジェクトと配列が JSON、ほかは Python の `str()` | 最後の質問より後の回答だけに残す |
 | Qwen3 (`chat.Qwen3`) | 9 会話 (`qwen3_template.json`、`--text-content`) | Hermes 式: `<tools>` に JSON、呼び出しは `<tool_call>{"name": …, "arguments": {…}}</tool_call>` | 最後の質問より後の回答だけに残す。思考ありでは `<think>\n` まで書く (テンプレートはモデルに書かせる) |
+| LFM2 (`chat.LFM2`) | 9 会話 (`lfm2_template.json`、`--text-content`) | system の末尾に `List of tools: <\|tool_list_start\|>[…]<\|tool_list_end\|>` の JSON。呼び出しは Python で `<\|tool_call_start\|>[f(a='x', n=1)]<\|tool_call_end\|>` (文字列は一重引用符、オブジェクトと配列は JSON、ほかは Python の `str()`)。応答は `<\|tool_response_start\|>` と `<\|tool_response_end\|>` の間 | なし |
 | System One (`internal/systemone`) | 7 通り (llama.cpp のテンプレートを jinja2 で描画) | d1 の choice / score / noul の問い | `<think></think>` |
 | PLaMo 3 / PFML3 (`chat.Plamo3`) | 8 例 (`tools/ref/plamo3_template_golden.py`) | 道具なし。`target_lang`、`source_lang`、`form`、`context`、`glossary` (`Options.Translation`、API では vLLM と同じ `chat_template_kwargs`) | なし。system メッセージは `context` にする。訳す先がなければ、日本語を含む文は英語へ、ほかは日本語へ訳す。履歴の訳文の札は原文ごとに決めるので、プロンプトの先頭を再利用できる |
 
@@ -689,6 +699,13 @@ AMD (IRON) では、トークナイザーとチャットの型は書き出した
   - E4B は 14.7 → 3.53 GB、3.7 → 5.6 tok/s、KL 0.049
   - 画像と音声つきは、画像か音声が来るまで塔を読まない (16.81): 文だけの間 2818 → 1826 MiB (文だけの書き出しは 1775 MiB)、答えは同じ
 - E4B の古い書き出しでは、2483 トークンのプロンプトで `ERT_CMD_STATE_TIMEOUT` になった。新しい書き出し (62 コマンド) では通る
+
+**LFM2-8B-A1B** (handoff-ane-gather.md 1b)
+- 構造: LFM2 の短い畳み込みと全注意 (QK の norm、ヘッドのゲートなし、サンドイッチ norm なし)、密な 2 層のあと 22 層が専門家 32 (SwiGLU 1792)。sigmoid の点数に `expert_bias` を足して上位 4 を選び (bias は選ぶときだけ)、重みは正規化。パッケージは別 (`lfm2moe`): `lfm3` には触れておらず、LFM3-1.7B は同じ文を同じ 57.4 tok/s で出す
+- プログラムは MoE の層ごとに切る (23 部品)。ルーターは fp16、残りは lut8。専門家は行ごとの int8 (absmax / 127、拡大は fp16) で `model.experts.safetensors` に入り、`model.experts.aimodel` が選んだものを結び付けて回す (`llm.Routed`)
+- 精度は transformers の float32 (専門家は bf16) と比べた (`tools/ref/lfm2moe_ane.py`): 専門家だけ Neural Engine (`aicheck moeserve`) で KL 0.0019、変換したもの全体でキャッシュなし 0.0062、キャッシュありで 1 トークンずつ 0.0056 (`hwnpu-dev generate -score`)。外れは僅差 (53 % と 43 %) の 1 か所で、貪欲な生成はそこで別の語を取る
+- 注意でも分ける (29 部品、文脈 128000)。道具は LFM2 の Python の呼び出し (`chat.LFM2`)
+- hwnpu-chat は draft と tiers なしで回し、プロンプトは 1 回 128 トークンで、専門家は呼び出しの行に 1 回ずつ (7.5): 1503 トークンを 10.9 s。生成は文脈 4096 で 1 トークン 70 ms、うち専門家 57.5 (1 層 2.6 ms)
 
 **Qwen3.5-4B** (16.62)
 - 構造: Gated DeltaNet 24 層 + 全注意 8 層。GDN の状態 (値ヘッドごとに 128×128) は位置ごとに書けないので、新しい種類の状態 `st_` (プログラムが出した新しい状態で丸ごと置き換える) を足した。詰め物のトークンで状態を変えないよう `step_valid` を渡す。投機的デコードで下書きの一部だけを採るときは、採ったトークンだけで実行し直す
@@ -814,6 +831,9 @@ Apple / Intel (`hwnpu-image convert`):
 | ほかのモデルとチップの Core AI | Chroma1-HD、Qwen-Image の 512² と 1024² のまとまり方、Qwen3.5-4B と Gemma 4 E4B。チャットのモデルの M3。M2 での Chroma の Core ML の 2 回目 (同じ機械での比較) | `--backend coreai` で動かす | 16.173、16.176、16.177 |
 | Core AI: Chroma と Qwen-Image の注意の形の残り | どちらも済み (16.211、16.214)。まだ: Chroma1-HD の 1024² (512² は通った)、蒸留なしの Qwen-Image-2.1 の 1024²、ヘッドをまとめた形との 1024² の絵の照合、CPU の float32 との照合 (新旧の照合は 512² の 3 枚ずつ: Qwen-Image 0.99986〜0.99999、Chroma 0.99904〜0.99960)、M2 と M3 | 同じ種を両方の形で描く。512² で CPU の float32 とも比べる | 16.211、16.214 |
 | Anima の書き出しの版 4 の残り | Aesthetic のチェックポイントでの範囲 (測ったのは Turbo だけ: 交差注意の積は最大 8.7)。M2 と M3 での塊の大きさと組の切り替え。ラーメンの絵 (ヘッドをまとめた形と 0.982) を float32 の参照と。Intel の版 4 の書き出し (ヘッドをまとめたまま、動かしていない) | `HWNPU_ANIMA_EXPORT` を付けた `TestBlockRanges`。`aicheck cycle`。512² の Core ML の書き出しを `--cpu` で | 16.201、16.202 |
+| M1、M4 での MoE (M2 は LFM2-8B-A1B が動いた) | 専門家のプログラムは拡大を `gather_nd` で取るが、M1 の Neural Engine は通さない (「Cannot decompose layer on this architecture」)。結び付けの費用もチップで違う (M1 は約 5 GB/s 相当) | 各チップで `aicheck probe gnd16_*`、`aicheck moe` / `moepack`。M1 は拡大を専門家ごとの配列に (`moepack -scales expert`) | handoff-ane-gather.md 1、1b |
+| MoE の生成で残っているもの | 1 トークンの専門家は 1 層 2.6 ms、同じ大きさの定数の重みなら 1.0。うち約 0.9 は最近結び付けていない配列の結び付け。専門家の呼び出しを次の部品に入れても減るのは 22 回の呼び出し (1 回約 0.12 ms、4 %)。4 ビットの専門家は 64 列ごとの scale で答えを保つ (KL 0.023) が、試したどの形も int8 より遅い (8 節) | 新しいチップや Core AI が int4 の配列を Neural Engine で戻すか (`aicheck moe4 -native`) | handoff-ane-gather.md 1b |
+| LFM2-8B-A1B の agent の課題とメモリ | 道具の呼び出しは往復する (API で 2 つ呼び、その応答から答える。`hwnpu-chat agent` は読み、書き換え、実行する)。ただ agent では edit の `old` がファイルと合わず、出力を見ずに望んだ値を答えた。日本語の依頼では呼び出しを文で書いた。持たせる専門家が多いほど結び付けが高い (`aicheck moe` で 14 層ぶん 1 層 2.7 ms、22 層全部 5.3)。メモリ圧か Core AI の上限かは分けていない | CHAT.md 7 節の課題。24 GB 以上の Mac | handoff-ane-gather.md 1b |
 
 ### 11.2 Intel (NPU)
 

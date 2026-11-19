@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/shibukawa/hwnpu/internal/coreai/ailower"
+	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/milspec"
 	"github.com/shibukawa/hwnpu/internal/mlpackage"
 	"github.com/shibukawa/hwnpu/internal/ovir"
@@ -55,11 +56,29 @@ type Manifest struct {
 	// KVOnly marks a model split at its attention converted with Options.KVOnly: its parts end
 	// with the last layer that writes a cache, and the program outputs no logits.
 	KVOnly bool `json:"kv_only,omitempty"`
+	// Experts are the mixture of experts layers of a model cut at them (Routed), which the host
+	// runs between the parts. Conversions of other models have none.
+	Experts *ExpertsRecord `json:"experts,omitempty"`
 	// Backend is the runtime the parts are written for (Options.Backend; empty for coreml).
 	Backend string `json:"backend,omitempty"`
 	// Meta is the metadata of the parts (MetaArch, MetaParam...), also in each part's own
 	// metadata: a package's user defined metadata or an IR's rt_info.
 	Meta map[string]string `json:"meta,omitempty"`
+}
+
+// ExpertsRecord describes the experts of a model cut at its mixture of experts layers (Routed):
+// the program without weights that runs a row's chosen experts (internal/llm/experts) and the
+// file of every layer's experts (experts.WriteFile), both relative to the manifest in the file.
+type ExpertsRecord struct {
+	Program PartRecord `json:"program"`
+	// Rows are programs of one expert on all the rows of a call of several tokens
+	// (experts.BuildRows), one for each tokens per call of the model's programs over 1: a call
+	// that reads a prompt runs each expert its rows chose once.
+	Rows    []PartRecord    `json:"rows,omitempty"`
+	Weights string          `json:"weights"`
+	Layers  []int           `json:"layers"`
+	Shape   experts.Shape   `json:"shape"`
+	Routing experts.Routing `json:"routing"`
 }
 
 // Tier is one cache length of a tiered model.
@@ -448,6 +467,15 @@ func WriteManifest(path string, m *Manifest) error {
 	}
 	m.Smaller = slices.Clone(m.Smaller)
 	relative(m.Smaller)
+	if m.Experts != nil {
+		e := *m.Experts
+		a := []PartRecord{e.Program, {Path: e.Weights}}
+		relative(a)
+		e.Program, e.Weights = a[0], a[1].Path
+		e.Rows = slices.Clone(e.Rows)
+		relative(e.Rows)
+		m.Experts = &e
+	}
 	js, _ := json.MarshalIndent(m, "", "  ")
 	return os.WriteFile(path, append(js, '\n'), 0o644)
 }
@@ -477,6 +505,11 @@ func ReadManifest(path string) (*Manifest, error) {
 		if r != nil {
 			r.Path = filepath.Join(filepath.Dir(path), r.Path)
 		}
+	}
+	if e := m.Experts; e != nil {
+		e.Program.Path = filepath.Join(filepath.Dir(path), e.Program.Path)
+		e.Weights = filepath.Join(filepath.Dir(path), e.Weights)
+		absolute(e.Rows)
 	}
 	for i, t := range m.Tiers {
 		if len(t.Parts) == 0 || i > 0 && t.Cache <= m.Tiers[i-1].Cache {
@@ -552,6 +585,15 @@ func ProgramBytes(path string) int64 {
 	}
 	for _, r := range m.Smaller {
 		n += PartBytes(r.Path)
+	}
+	if e := m.Experts; e != nil {
+		n += PartBytes(e.Program.Path)
+		for _, r := range e.Rows {
+			n += PartBytes(r.Path)
+		}
+		if fi, err := os.Stat(e.Weights); err == nil {
+			n += fi.Size()
+		}
 	}
 	return n
 }
