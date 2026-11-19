@@ -6,7 +6,7 @@
 
 On a Mac, hwnpu-audio runs on the Neural Engine through Core AI alone, so it needs macOS 27 (on macOS 26 or earlier it stops with an error that says so). Each model is converted for Core AI (exports `NAME.coreai` of `.aimodel`s in the model's directory, as hwnpu-chat's and hwnpu-image's), and Core AI keeps the compiled programs in its own cache: a second start loads in 0.1 seconds (docs/design.md 16.196). `--cpu` runs a Core ML export with the CPU interpreter, for checking without the NPU.
 
-On AMD's NPU (Ryzen AI 300 and later) each model runs from an export of IRON's (`tools/amd`), which the first run makes (IRON's environment as [INSTALL_AMD.md](INSTALL_AMD.md) says) unless a source has it, and puts in the sources written back to: transcription, speech and sound effects mostly on the NPU, music's decoder on the NPU and its language model on the CPU. `pitch` and `notes` run on the CPU.
+On AMD's NPU (Ryzen AI 300 and later) each model runs from an export of IRON's (`tools/amd`), which the first run makes (IRON's environment as [INSTALL_AMD.md](INSTALL_AMD.md) says) unless a source has it, and puts in the sources written back to: transcription, speech and sound effects on the NPU, music's decoder on the NPU and its language model on the CPU. `pitch` and `notes` run on the CPU.
 
 ## Music (Magenta RealTime 2)
 
@@ -29,7 +29,7 @@ go run ./cmd/hwnpu-audio generate -m sfx "A dog barking loudly in a park."
 go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a tin roof."   # --steps 50 takes half the time
 ```
 
-On AMD's NPU the text encoder and the DiT run as the graphs of `tools/amd/iron_moss_sfx.py` (the DiT's GEMMs in bfp16, the text encoder in bf16, or in 8 bits for `moss-soundeffect:8g`), and the DAC decoder's stages on the CPU. The first run exports them with IRON (about a minute) unless a source has the export (`moss-soundeffect-v2.0.amd-npu2`). On a Ryzen AI 9 365 a step takes 2.8 seconds (5 seconds of sound in 25 steps in 1 minute 9 seconds; the card's 100 steps about 4 minutes 40 seconds), at about 5 GB.
+On AMD's NPU the text encoder, the DiT and the DAC decoder run as the graphs of `tools/amd/iron_moss_sfx.py` and `iron_moss_dac.py` (the DiT's GEMMs in bfp16, the text encoder in bf16, or in 8 bits for `moss-soundeffect:8g`; the decoder's Snake by a float32 kernel that takes sin by its series, as the version for Intel's NPU does). The first run exports them with IRON (about 30 seconds once IRON's kernels are built) unless a source has the export (`moss-soundeffect-v2.0.amd-npu2`). On a Ryzen AI 9 365 a step takes 2.8 seconds and the decoder 1.7 seconds for 5 seconds of sound (5 seconds in 25 steps in 1 minute 6 seconds; the card's 100 steps about 4 minutes 40 seconds), at about 5 GB.
 
 ## Reading aloud (LFM3-Audio-2B)
 

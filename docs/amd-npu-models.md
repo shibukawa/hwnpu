@@ -1313,7 +1313,7 @@ OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説�
 | `dit-context/` | text_embedder (512 行の文の符号器の出力 → 1536) |
 | `dit-blocks-N/` | DiT のブロック N..N+4 (1536 行、鍵は 1500): 自己注意 (RoPE)、512 行の文への cross、FFN。最初の組は patch_embedding、最後の組は head。入力 `x`、`ctx`、`mod` (変調の行、平ら) |
 | `host/` | ホストの表: トークンの埋め込みと最後の norm (bf16)、時刻の埋め込みと scale_shift_table (float32) |
-| `dac/` | DAC の復号器の 5 段 (Core ML、fp16)。CPU のインタプリタで (`sfx.PrepareAMD` が変換) |
+| `dac-N/` | DAC の復号器の 5 段 (`tools/amd/iron_moss_dac.py`)。時間が行、チャネルが列。畳み込みは im2col と GEMM (HIGHEST)、Snake は float32 のカーネル (`kernels/snake_f32.cc`) |
 
 ### 27.2 測定 (Ryzen AI 9 365)
 
@@ -1322,16 +1322,27 @@ OpenMOSS の MOSS-SoundEffect v2.0 (Apache-2.0) で、英語か中国語の説�
 | DiT 1 ブロック | 41 ms |
 | 速度 1 回 (30 ブロック) | 1.24 秒 |
 | 1 ステップ (CFG で 2 回) | 2.8 秒 |
-| 5 秒の音、25 ステップ | 1 分 09 秒 |
-| 書き出し | 53 秒 + DAC の変換 (6.2 GB) |
+| 5 秒の音、25 ステップ | 1 分 06 秒 |
+| DAC の復号、5 秒の音 | 1.7 秒 (CPU の Core ML の段は 5.7 秒) |
+| 書き出し | 28 秒 (IRON のカーネルが揃っていれば) |
 
-最大メモリは 10 秒で 4.9 GiB。
+最大メモリは 10 秒で 4.71 GiB (lut8 の版 4.75 GiB)。
+
+### 27.2.1 DAC の復号器 (`tools/amd/iron_moss_dac.py`)
+
+- **Snake**: x + sin²(αx) / (α + 1e-9)。IRON に sin がないので、internal/sfx の Intel の NPU の段 (以前は Core ML の Neural Engine の段も) と同じく範囲を縮める: n = round(αx / π) (1.5 × 2²³ の丸め)、r = αx − nπ (π は bf16 の 3 つの肢)、sin r は r¹¹ までの Taylor 級数 (|r| ≤ π/2 で 6e-8)。すべて float32 (`f32_split.h` の肢の積)、bf16 に 1 回丸める。α と 1/α はチャネルごとに bf16 の 2 つの肢で、RowAffine と同じ RowBroadcast の行で渡す。α が 8e-6 の小さいチャネルも float32 では範囲内で、級数の切り替えは要らない。本物の Snake との差は bf16 の丸めの範囲 (相対 0.39 % まで、|x| = 400 の行を含む)
+- **マスクなし**: Core ML の段は、畳み込みの入力ごとにマスクで曲の外を 0 にする。グラフの畳み込みは状態の上下の 32 行の 0 で埋めるだけで、ホスト (`sfx.amdDAC`) が窓を、曲の始めから始めるか、捨てる halo の分だけ前から読むように置く (曲の終わり 30 秒でも同じ)
+- **転置畳み込み** (ストライド s、核 2s): 入力のフレーム q − 1、q、q + 1 の 3 タップの畳み込みで s × 出力チャネル (位相が先) を出す。その行がそのまま出力のフレーム qs..qs + s − 1 になる (並べ替えなし)。2 タップの多相より FLOPs は 1.5 倍だが、行が入力と同じ数で、余白つきの状態に直接書ける
+- **GEMM の向き**: IRON の GEMM は N を 64 ずつ配列の列に分けるので、64〜256 チャネルへの GEMM は 8 列の 1〜4 しか使わない。512 未満のチャネルへは、重みを A、im2col を列優先の B にして C を列優先で書く (メモリでは同じ (行, チャネル))。stage 4 の 1 回が 46 ms から 33 ms に
+- **精度**: 全部 HIGHEST (bf16)。MEDIUM (bfp16) は CPU の段との SNR が 25.8 dB に落ちた (HIGHEST は 34.6 dB)。部分和を float32 にしても (`accumulate_f32`) 同じで、入力の bfp16 そのものの誤差。時間も 2 割しか縮まない
+- **窓**: 各段の 1 回の入力フレームは 768、2048、2048、5120、8192。GEMM の行は 256 (配列の 4 行 × 64) の倍数で区切る (1088 行は 1024 行より 1 行あたり 1.4 倍遅かった)。5 秒の音で段ごとに 1、1、5、8、15 回、各 287、175、61、52、33 ms
 
 ### 27.3 手順
 
 ```bash
-python tools/amd/iron_moss_sfx.py ~/models/MOSS-SoundEffect-v2.0 ~/models/moss-soundeffect-v2.0.amd-npu2   # --text q8、--check、--groups 1
+python tools/amd/iron_moss_sfx.py ~/models/MOSS-SoundEffect-v2.0 ~/models/moss-soundeffect-v2.0.amd-npu2   # --text q8、--check、--groups 1、--only dac
 go run ./tools/amd/irongraph ~/models/moss-soundeffect-v2.0.amd-npu2/dit-blocks-0
+HWNPU_SFX_AMD=~/models/moss-soundeffect-v2.0.amd-npu2 HWNPU_SFX_CPU_DAC=DIR_OF_MLPACKAGES go test ./internal/sfx -run TestAMDDAC -v
 go run ./cmd/hwnpu-audio generate -m sfx --duration 5s "A dog barking loudly in a park."
 ```
 

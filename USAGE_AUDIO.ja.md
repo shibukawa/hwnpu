@@ -6,7 +6,7 @@
 
 Mac では Core AI を通して Neural Engine で動かすだけなので、macOS 27 が要ります (macOS 26 以前では、そう書いたエラーで止まります)。モデルは Core AI 向け (モデルのディレクトリの書き出し `NAME.coreai` に `.aimodel`、hwnpu-chat や hwnpu-image と同じ) に変換し、コンパイルした結果は Core AI が自分のキャッシュに持つので、2 回目からの読み込みは 0.1 秒です (docs/design.md 16.196)。`--cpu` は確かめ用に、Core ML の書き出しを CPU のインタプリタで動かします。
 
-AMD の NPU (Ryzen AI 300 以降) では、どのモデルも IRON の書き出し (`tools/amd`) で動きます。初回は、取得元になければ自分で書き出し (IRON の環境は [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md) のとおり)、書き戻す取得元に置きます。書き起こし、読み上げ、効果音はほとんどが NPU で、音楽は復号器が NPU、言語モデルが CPU です。`pitch` と `notes` は CPU で動きます。
+AMD の NPU (Ryzen AI 300 以降) では、どのモデルも IRON の書き出し (`tools/amd`) で動きます。初回は、取得元になければ自分で書き出し (IRON の環境は [INSTALL_AMD.ja.md](INSTALL_AMD.ja.md) のとおり)、書き戻す取得元に置きます。書き起こし、読み上げ、効果音は NPU で、音楽は復号器が NPU、言語モデルが CPU です。`pitch` と `notes` は CPU で動きます。
 
 ## 音楽 (Magenta RealTime 2)
 
@@ -29,7 +29,7 @@ go run ./cmd/hwnpu-audio generate -m sfx "A dog barking loudly in a park."
 go run ./cmd/hwnpu-audio generate -m sfx --duration 20s --steps 50 "Rain on a tin roof."   # --steps 50 で半分の時間
 ```
 
-AMD の NPU では、文の符号器と DiT は `tools/amd/iron_moss_sfx.py` のグラフ (DiT の行列積は bfp16、文の符号器は bf16、`moss-soundeffect:8g` では 8 ビット)、DAC の復号器の段は CPU で動きます。初回は、取得元に書き出し (`moss-soundeffect-v2.0.amd-npu2`) がなければ IRON で書き出します (約 1 分)。Ryzen AI 9 365 で 1 ステップ 2.8 秒 (5 秒の音を 25 ステップで 1 分 09 秒、カードの 100 ステップなら約 4 分 40 秒)、約 5 GB です。
+AMD の NPU では、文の符号器、DiT、DAC の復号器が `tools/amd/iron_moss_sfx.py` と `iron_moss_dac.py` のグラフで動きます (DiT の行列積は bfp16、文の符号器は bf16、`moss-soundeffect:8g` では 8 ビット。復号器の Snake は、Intel の NPU の版と同じく sin を級数で計算する float32 のカーネル)。初回は、取得元に書き出し (`moss-soundeffect-v2.0.amd-npu2`) がなければ IRON で書き出します (IRON のカーネルが揃っていれば約 30 秒)。Ryzen AI 9 365 で 1 ステップ 2.8 秒、復号器は 5 秒の音に 1.7 秒 (5 秒の音を 25 ステップで 1 分 06 秒、カードの 100 ステップなら約 4 分 40 秒)、約 5 GB です。
 
 ## 読み上げ (LFM3-Audio-2B)
 

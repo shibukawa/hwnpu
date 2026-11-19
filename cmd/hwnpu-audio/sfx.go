@@ -53,8 +53,7 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 		err error
 	)
 	if !o.cpu && onAMD() {
-		// AMD's NPU: the graphs of tools/amd/iron_moss_sfx.py (exported on the first run), the
-		// decoder's stages on the CPU
+		// AMD's NPU: the graphs of tools/amd/iron_moss_sfx.py (exported on the first run)
 		text, _ := sfx.Formats(cmp.Or(m.Machine, chat.MachineMemory()))
 		if p, err = sfx.PrepareAMD(chat.WithModel(ctx, m), m, cmp.Or(o.textFormat, text), lw); err != nil {
 			return err
@@ -88,8 +87,8 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 	// busy compiling, which is not a placement off the NPU)
 	var off, unknown []string
 	note := func(name string, pr runner.Program, _ time.Duration) {
-		if dev == nil || pr.OnNPU() || p.AMD && strings.HasPrefix(name, "hwnpu-dac-") {
-			return // on AMD's NPU the decoder's stages run on the CPU
+		if dev == nil || pr.OnNPU() {
+			return
 		}
 		pl, ok := pr.(interface {
 			Placement() (known bool, ops []string, reason string)
@@ -114,8 +113,6 @@ func runSFX(ctx context.Context, o options, m chat.Model, args []string, lw io.W
 			return "NOT all on the NPU"
 		case len(unknown) > 0:
 			return "placement not known"
-		case p.AMD:
-			return "the text encoder and the DiT on the NPU, the decoder on the CPU"
 		}
 		return "all on the NPU"
 	}

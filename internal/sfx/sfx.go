@@ -109,8 +109,8 @@ type Paths struct {
 	// from (prefix "") and the DiT's HostTensors (prefix "dit."); nil: the checkpoint's. An
 	// export for AMD's NPU has its own (PrepareAMD).
 	Host map[string][]string
-	// AMD says the programs are graphs for AMD's NPU (iron.GraphProgram) and the decoder's
-	// stages Core ML packages the CPU interpreter runs.
+	// AMD says the programs are graphs for AMD's NPU (iron.GraphProgram), the decoder's stages
+	// too (tools/amd/iron_moss_dac.py: amdDAC), or Core ML packages the CPU interpreter runs.
 	AMD bool
 }
 
@@ -300,6 +300,7 @@ type Generator struct {
 	ditW  *Weights // the host's tensors
 	dit   *DiT
 	dac   []Program
+	amd   *amdDAC // the decoder's stages on AMD's NPU
 	progs []runner.Program
 }
 
@@ -358,6 +359,10 @@ func (g *Generator) Load(ctx context.Context, loaded func(name string, p runner.
 		g.dit.Groups = append(g.dit.Groups, pr)
 		g.dit.Sizes = append(g.dit.Sizes, DitGroup)
 	}
+	if g.p.AMD && len(g.p.Stages) > 0 && iron.IsGraph(g.p.Stages[0]) {
+		g.amd, err = openAMDDAC(ctx, g.dev, g.p.Stages)
+		return err
+	}
 	for _, s := range g.p.Stages {
 		pr, err := open(s)
 		if err != nil {
@@ -386,6 +391,10 @@ func (g *Generator) Close() error {
 		p.Close()
 	}
 	g.progs = nil
+	if g.amd != nil {
+		g.amd.Close()
+		g.amd = nil
+	}
 	for _, w := range []*Weights{g.textW, g.ditW} {
 		if w != nil {
 			w.Close()
@@ -477,8 +486,11 @@ func (g *Generator) Generate(ctx context.Context, text []float32, seconds float6
 	if err != nil {
 		return nil, err
 	}
-	z := channels(x, Frames, LatentDim)
 	samples := int(math.Round(seconds*10)) * SampleRate / 10
+	if g.amd != nil {
+		return g.amd.Decode(ctx, x, Frames, Frames, samples)
+	}
+	z := channels(x, Frames, LatentDim)
 	return DecodeLatents(ctx, g.dac, z, Frames, Frames, samples)
 }
 

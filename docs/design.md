@@ -7599,7 +7599,7 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 
 **残り**
 
-- DAC を NPU に (Snake の sin² の float32 のカーネル、`kernels/silu_f32.cc` の形で)。dilation のある畳み込みと転置畳み込みは行のずらしと GEMM で書ける
+- DAC を NPU に (Snake の sin² の float32 のカーネル、`kernels/silu_f32.cc` の形で)。dilation のある畳み込みと転置畳み込みは行のずらしと GEMM で書ける (16.257 でした)
 - 音は聞いて確かめていない (この機械に音を聞く手段がない)。数値は CPU の fp16 の版と比べた
 - lut8 の版 (`moss-soundeffect:8g`、文の符号器を q8) の最大メモリ
 
@@ -7646,3 +7646,31 @@ hwnpu-audio は Core AI と OpenVINO の IR だけで動き、AMD の NPU では
 - 空の根 (`HWNPU_CACHE` を新しいディレクトリに、`HWNPU_IRON_ENV` をないものに、取得元は読むだけ) で: Whisper は書き出し 1.81 GB を取って 42 秒で書き起こした。読み上げは 2.75 GB (詰めたもの) を 62 秒 (44 MB/s) で取り、チェックポイントなしで読み上げた (Whisper で元の文)。効果音は 6.44 GB を 146 秒で取り、チェックポイントなしで生成した (書き出しの `host/` と `dac/` で足りる)。音楽は復号器の書き出しのほかに、言語モデルの Core ML の版のためにチェックポイントが要る
 - lut8 の版の最大メモリ: 10 秒で 4.9 GiB (fp16 の版と同じ。DiT と CPU の DAC が大半)。models.yaml の amd を 5.1 GB に
 - 同じ頃、Mac のセッションが音のモデルの Core AI の書き出し (whisper、tts、MOSS の text、dit、dac、magenta) を取得元に置いていた
+
+### 16.257 MOSS-SoundEffect の DAC の復号器を AMD の NPU に (Snake の sin を float32 の級数で) — 2026-11-19
+
+16.254 で CPU に残した DAC の復号器 (5 段) を IRON のグラフにした (`tools/amd/iron_moss_dac.py`、docs/amd-npu-models.md 27.2.1)。`iron_moss_sfx.py` が `dac-N/` として一緒に書き出し、`hwnpu-audio generate -m sfx` は AMD の NPU では文の符号器から復号まで全部 NPU で動く。
+
+- **Snake** (`kernels/snake_f32.cc`、`iron_snake.py`): IRON には sin も cos もない。internal/sfx の Intel の NPU の段 (以前は Core ML の Neural Engine の段も) と同じく、αx を π で縮めて (n = round(αx / π) を 1.5 × 2²³ の足し引きで、r = αx − nπ を π の 3 つの bf16 の肢で)、sin r を r¹¹ までの Taylor 級数で計算する。ただしすべて float32 (`f32_split.h` の肢の積、最後に bf16 へ 1 回丸める)。チャネルごとの α と 1/(α + 1e-9) は bf16 の 2 つの肢で、`RowAffine` と同じ RowBroadcast の行に入れる。fp16 の版にあった小さな α (最初の DecoderBlock に 8e-6) の級数への切り替えは、float32 では範囲内なので要らない。本物の Snake (float64) と比べた差は bf16 の丸めの範囲 (相対 0.39 % まで。|x| = 400、α = 10 の行を含む)
+- **マスクをやめる**: Core ML の段は、畳み込みの入力ごとにマスク (`m`、`mo`) で曲の外のフレームを 0 にする。グラフの畳み込みは、余白つきの状態の上下の 32 行の 0 を読むだけ。それと同じ値になるように、ホスト (`sfx.amdDAC`) が窓を置く: 窓は曲の最初のフレームから始めるか、捨てる halo の分だけ前から読む。曲の終わり (30 秒) でも同じで、窓をそこで終える。halo は `DACStages` のもの
+- **形**: 時間が行、チャネルが列 (bf16)。畳み込みは IRON の Copy の tap による im2col (tap j は行 t + jd − pad、膨張もそのまま) と GEMM。2048 チャネル (stage 0 の入り口) は 1024 ずつの列の区画に分ける (Snake の行と DMA の一番内側の 1023 ワードのため)。転置畳み込み (ストライド s、核 2s) は、入力のフレーム q − 1、q、q + 1 の 3 タップの畳み込みで s × 出力チャネル (位相が先) を出す。その行がそのまま出力のフレーム qs..qs + s − 1 になる。重みのノルムはホストで畳む。最後の段の出力は出力の層の畳み込み (1 チャネルを 64 に詰める) で、tanh はホスト
+- **GEMM の向き**: IRON の GEMM は N を 64 ずつ配列の 8 列に分ける。64〜256 チャネルへの GEMM は 1〜4 列しか使わなかった。512 チャネル未満へは、重みを A、im2col を列優先の B にして、C を列優先で書く (メモリでは同じ (行, チャネル))。stage 4 の 1 回が 46 ms から 33 ms に
+- **精度**: GEMM は全部 HIGHEST (bf16)。MEDIUM (bfp16) では CPU の段との SNR が 25.8 dB に下がり (HIGHEST は 34.6 dB)、部分和を float32 にしても (`accumulate_f32`) 同じだった (入力の bfp16 の誤差)。時間も 2 割しか縮まない。stage 2〜4 だけを MEDIUM にすると 32.3 dB で、4 % しか縮まない
+- **窓の大きさ**: 1 回の入力フレームは stage 0 から 768、2048、2048、5120、8192。最初は Core ML の段に近い 1024、3328、4096、5376、8192 だったが、短い音では前の段の計算の 4〜6 割が捨てる分だった。GEMM の行は 256 (配列の 4 行 × 64) の倍数で区切る: stage 0 を 544 フレーム (1088 行の区切り) にすると、768 フレーム (1024 行) より 1 回が遅かった (410 ms と 287 ms)
+- 書き出しの版 (`sfx.AMDExportVersion`) を 2 に。v1 (Core ML の `dac/` を CPU で) の書き出しは手元にあっても使わず、作り直す
+
+**確かめたこと** (Ryzen AI 9 365)
+
+- Snake のカーネル、各段のグラフは乱数の入力で IRON の参照と一致 (Snake は差 0、段は cosine 0.999996 以上)
+- 復号器全体 (`TestAMDDAC`): 種 7 の標準正規の潜在から 5 秒を、CPU のインタプリタの Core ML の段 (fp16 で変換) と比べて SNR 34.6 dB、cosine 0.99983
+- 時間: 5 秒の音の復号 1.7 秒 (CPU 5.7 秒)。段ごとの 1 回は 287、175、61、52、33 ms で、5 秒の音に 1、1、5、8、15 回。stage 0 と 1 は HIGHEST の GEMM で約 750 GFLOPS の計算律速。Snake は 100 万値に 1.4 ms で、配列の 1 列あたりのコアを 2、4 にしても変わらなかった
+- `hwnpu-audio generate -m sfx --duration 5s --steps 25`: 1 分 06 秒 (CPU の DAC のときは 1 分 09 秒)。書き出しは 28 秒 (IRON のカーネルが揃っていれば)
+- 最大メモリ (NPU の固定と処理の、10 秒): fp16 の版 4.71 GiB、lut8 の版 4.75 GiB (CPU の DAC のときは 4.9 GiB)。models.yaml の amd を 5.0 GB に
+- 取得元 (NAS) に置いた: `MOSS-SoundEffect-v2.0/amd-xdna2/moss-soundeffect-v2.0.amd-npu2/v0-f04d491b` (6.3 GB) と `MOSS-SoundEffect-v2.0-lut8/.../v0-2a1a87b3` (5.3 GB)。途中の tools/amd で作った `v0-960f0d06` も置かれたが、今の tools では使われない
+- 空の根 (`HWNPU_CACHE` を新しく、`HWNPU_IRON_ENV` をないものに、取得元は読むだけ) で、fp16 の版を取って 5 秒の音を生成した (取得 2 分 46 秒、チェックポイントなし)
+
+**残り**
+
+- 音は聞いて確かめていない (この機械に音を聞く手段がない)。数値は CPU の fp16 の版と比べた
+- Snake を前後の GEMM に融合していない (今は Snake のたびに状態を読み書きする。stage 4 の 33 ms のうち約 10 ms)
+

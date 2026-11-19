@@ -11,17 +11,17 @@ import (
 
 	"github.com/shibukawa/hwnpu/internal/cache"
 	"github.com/shibukawa/hwnpu/internal/chat"
-	"github.com/shibukawa/hwnpu/internal/llm"
 )
 
 // AMDTool is the IRON exporter of MOSS-SoundEffect (tools/amd, built into hwnpu): the text
-// encoder's and the DiT's graphs and the host's tables. PrepareAMD adds the decoder's stages as
-// Core ML packages, which the CPU interpreter runs.
+// encoder's, the DiT's and the DAC decoder's stages' graphs (iron_moss_dac.py) and the host's
+// tables.
 const AMDTool = "iron_moss_sfx.py"
 
 // AMDExportVersion is the version of PrepareAMD's exports (a key of the shared layers:
-// chat.PinnedRecipe), raised by hand when what PrepareAMD makes changes.
-const AMDExportVersion = 1
+// chat.PinnedRecipe), raised by hand when what PrepareAMD makes changes (2: the decoder's stages
+// as graphs, not Core ML packages for the CPU).
+const AMDExportVersion = 2
 
 // AMDExportName is the name of the export for AMD's NPU: NAME.amd-npu2 in lower case.
 func AMDExportName(name string) string { return strings.ToLower(name) + ".amd-npu2" }
@@ -41,14 +41,13 @@ func AMDRecipe(m chat.Model, text string) map[string]string {
 	r := chat.PinnedRecipe(m, AMDTool, AMDExportVersion)
 	if r != nil {
 		r["args"] = "--text " + text
-		r["dac"] = fmt.Sprint(DACRevision)
 	}
 	return r
 }
 
-// dacStage is the decoder's stage i in an export for AMD's NPU.
+// dacStage is the decoder's stage i in an export for AMD's NPU (a graph).
 func dacStage(dir string, i int) string {
-	return filepath.Join(dir, "dac", fmt.Sprintf("hwnpu-dac-%d-r%d-fp16.mlpackage", i, DACRevision))
+	return filepath.Join(dir, fmt.Sprintf("dac-%d", i))
 }
 
 // IsIronExport reports whether dir is a whole export for AMD's NPU (PrepareAMD's).
@@ -74,7 +73,7 @@ func IsIronExport(dir string) bool {
 		}
 	}
 	for _, st := range DACStages() {
-		if _, err := os.Stat(dacStage(dir, st.Index)); err != nil {
+		if _, err := os.Stat(filepath.Join(dacStage(dir, st.Index), "manifest.json")); err != nil {
 			return false
 		}
 	}
@@ -102,9 +101,8 @@ func AMDPaths(dir string) (Paths, error) {
 // PrepareAMD makes the export of MOSS-SoundEffect (m) for AMD's NPU ready, its text encoder in
 // AMDTextFormat(text), and returns its Paths: the export (AMDExportName) here (cache.ExportRoots;
 // one made by hand goes in the sources written back to), else from the shared layers, else it
-// downloads the checkpoint, exports the graphs with IRON in IRON's environment (chat.IRONEnv)
-// and converts the decoder's stages into the cache's entries/amd-xdna2, and puts it in the
-// sources written back to.
+// downloads the checkpoint and exports the graphs with IRON in IRON's environment (chat.IRONEnv)
+// into the cache's entries/amd-xdna2, and puts it in the sources written back to.
 func PrepareAMD(ctx context.Context, m chat.Model, text string, log io.Writer) (Paths, error) {
 	if log == nil {
 		log = io.Discard
@@ -134,11 +132,7 @@ func PrepareAMD(ctx context.Context, m chat.Model, text string, log io.Writer) (
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		src := chat.RepoDir(m.Repo)
-		if err := chat.RunIRON(ctx, python, m.Name, AMDTool, []string{src, chat.ExportOut, "--text", fmtText}, out, log); err != nil {
-			return err
-		}
-		return writeDAC(out, filepath.Join(src, filepath.FromSlash(Files[11])), log)
+		return chat.RunIRON(ctx, python, m.Name, AMDTool, []string{chat.RepoDir(m.Repo), chat.ExportOut, "--text", fmtText}, out, log)
 	})
 	if err != nil {
 		return Paths{}, err
@@ -147,26 +141,4 @@ func PrepareAMD(ctx context.Context, m chat.Model, text string, log io.Writer) (
 		return Paths{}, fmt.Errorf("sfx: %s is no whole export of %s", out, AMDTool)
 	}
 	return AMDPaths(out)
-}
-
-// writeDAC converts the decoder's stages from the VAE's checkpoint into dir/dac (Core ML
-// packages, fp16), for the CPU interpreter.
-func writeDAC(dir, vae string, log io.Writer) error {
-	w, err := OpenWeights([]string{vae}, nil)
-	if err != nil {
-		return err
-	}
-	defer w.Close()
-	if err := os.MkdirAll(filepath.Join(dir, "dac"), 0o755); err != nil {
-		return err
-	}
-	for _, st := range DACStages() {
-		path := dacStage(dir, st.Index)
-		os.RemoveAll(path)
-		fmt.Fprintf(log, "converting %s (the decoder's stage %d, for the CPU)\n", filepath.Base(path), st.Index)
-		if _, err := llm.WritePart(path, st.Part(), w, llm.Options{Backend: llm.BackendCoreML, Format: "fp16"}, nil); err != nil {
-			return fmt.Errorf("sfx: the decoder's stage %d: %w", st.Index, err)
-		}
-	}
-	return nil
 }

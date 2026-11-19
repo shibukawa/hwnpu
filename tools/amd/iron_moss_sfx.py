@@ -16,6 +16,7 @@ pads):
                  1536: x (the latents for the first group, else the residual stream divided by
                  sfx.DitScale), ctx (the context), mod (the step's modulation rows, flat); the
                  last group's head gives the velocity
+  dac-N/         the DAC decoder's stages (iron_moss_dac.py)
   model.json
 
 The DiT follows internal/sfx's programs (WanAudioModel): the residual stream divided by 4 (the
@@ -24,7 +25,8 @@ queries' and keys' RMS norm over all 1536 features, RoPE on Wan's interleaved pa
 RoPE without two_halves), the cross-attention over all 512 text rows. bf16 needs none of the fp16
 programs' rescaling (maxScaled). Its GEMMs run at MEDIUM (bfp16, as Anima's DiT); the GELUs are
 the exact one (closer to the checkpoint's tanh GELU than IRON's tanh kernel, docs/amd-npu-models.md
-18.2). The DAC decoder runs as internal/sfx's Core ML stages on the CPU.
+18.2). The DAC decoder's stages are iron_moss_dac.py's (its Snake by a float32 kernel: IRON has
+no sin).
 
 See docs/amd-npu-models.md.
 """
@@ -304,7 +306,7 @@ def main(argv=None) -> int:
     ap.add_argument("out", type=Path)
     ap.add_argument("--text", choices=["bf16", "q8"], default="bf16",
                     help="the text encoder's projections: bf16 (sfx's fp16) or q8 (sfx's lut8, its first three and last two layers bf16)")
-    ap.add_argument("--only", nargs="*", default=["text", "dit", "host"])
+    ap.add_argument("--only", nargs="*", default=["text", "dit", "dac", "host"])
     ap.add_argument("--groups", type=int, default=LAYERS // GROUP, help="the DiT's groups to export (fewer: a check)")
     ap.add_argument("--random", action="store_true")
     ap.add_argument("--check", action="store_true")
@@ -360,6 +362,10 @@ def main(argv=None) -> int:
                     mod[6 * j + 1] += 1
                     mod[6 * j + 4] += 1
                 write_check(g, m, a.out / name, dict(x=bf(x), ctx=bf(ctx), mod=bf(mod.reshape(-1))), dict(nk=FRAMES, nt=TEXT_ROWS))
+    if "dac" in a.only:
+        import iron_moss_dac
+
+        iron_moss_dac.export(a.root / "vae" / "vae_128d_48k.pth", a.out, list(range(len(iron_moss_dac.RATES))), a.check)
     if "host" in a.only:
         t0 = time.time()
         write_host(a.root, a.out, a.random)
