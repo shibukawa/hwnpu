@@ -10,17 +10,20 @@ layers before it with their roundings (sequential GPTQ), so a layer's codes answ
 the ones before it. The roundings (--modes):
 
     lut     the fixed tables of lutN (--bits), as the conversion's: codes-lutN
-    lutrow  the same of the rows divided by their largest magnitude (measured only; no format)
+    lutrow  the same of the rows divided by their scales, lutNr (blocks.LinearBias): codes-lutNr
     int8    a scale a row (the largest magnitude over 127), integers -127..127: codes-int8
 
     PY=~/models/ref-venv/bin/python
-    $PY -I tools/ref/gptoss_attn_gptq.py MODEL_DIR OUT [--modes lut int8] [--seqs 32 --damp 0.01]
+    $PY -I tools/ref/gptoss_attn_gptq.py MODEL_DIR OUT [--modes lutrow] [--seqs 32 --damp 0.1]
 
 It prints, on new-model-checklist's evaluation texts (127 tokens each, past the first 16
 positions), the KL from the float32 reference with the projections rounded to the nearest level
 (rtn) and with GPTQ's, the experts and everything else float32; OUT/fit-MODES.json keeps them.
-Measured (32 sequences of 512 tokens, damp 0.01): lut8 0.31 -> 0.17, lutrow 0.096 -> 0.071, int8
-0.099 -> 0.043.
+Measured (32 sequences of 512 tokens, damp 0.01): lut8 0.31 -> 0.17, int8 0.099 -> 0.043. lutrow
+(about 10 minutes on an M3): 0.070 -> 0.083 at damp 0.01, the calibration's kinds of text better
+and README, the GPL and Go worse; 0.070 -> 0.059 at 0.1, README and Go still worse. On the Neural
+Engine (hwnpu-dev convert -codes OUT/codes-lut8r) the median KL of each text halves (0.016-0.030
+-> 0.006-0.010) but a few positions of README and Go grow (11.5, 4.4): the mean 0.059 -> 0.069.
 """
 
 import argparse
@@ -71,7 +74,12 @@ class Quant:
         if mode == "int8":
             self.s = (W.abs().amax(1) / 127).clamp_min(1e-30).half().float()
             return
-        self.s = W.abs().amax(1).clamp_min(1e-30).half().float() if mode == "lutrow" else torch.ones(W.shape[0])
+        if mode == "lutrow":
+            # blocks.RowScales: a row's largest magnitude over the matrix's, in fp16 (1 for zeros)
+            top = W.abs().amax(1)
+            self.s = torch.where(top > 0, (top / top.max()).half().float(), torch.ones_like(top))
+        else:
+            self.s = torch.ones(W.shape[0])
         self.T = tables(W / self.s[:, None], bits)
         self.Tr = self.T.repeat_interleave(GROUP, 0)
 
@@ -123,7 +131,7 @@ def main():
     ap.add_argument("out", type=Path)
     ap.add_argument("--seqs", type=int, default=32)
     ap.add_argument("--length", type=int, default=512)
-    ap.add_argument("--damp", type=float, default=0.01)
+    ap.add_argument("--damp", type=float, default=0.1)
     ap.add_argument("--bits", type=int, default=8)
     ap.add_argument("--modes", nargs="+", default=["lut"], choices=["lut", "lutrow", "int8"])
     ap.add_argument("--no-write", action="store_true")
@@ -139,7 +147,7 @@ def main():
     hc = {m: [g.embed(s) for s in cal] for m in a.modes}
     names = ["ref"] + [f"{m} {v}" for m in a.modes for v in ("rtn", "gptq")]
     he = {v: [g.embed(s) for s in ev.values()] for v in names}
-    outs = {m: a.out / f"codes-{fmt if m == 'lut' else m}" for m in a.modes if m != "lutrow"}
+    outs = {m: a.out / f"codes-{dict(lut=fmt, lutrow=fmt + 'r').get(m, m)}" for m in a.modes}
     if not a.no_write:
         for d in outs.values():
             d.mkdir(parents=True, exist_ok=True)
@@ -192,7 +200,8 @@ def main():
 
 
 def add(out, index, name, ck, idx, qz, fmt):
-    """Writes a projection's codes: lutN's indices and tables, or int8's integers and row scales."""
+    """Writes a projection's codes: lutN's indices and tables (lutNr's with the rows' scales), or
+    int8's integers and row scales."""
     raw = ck.raw(name)
     k = key(raw)
     if qz.mode == "int8":
@@ -202,6 +211,9 @@ def add(out, index, name, ck, idx, qz, fmt):
     else:
         idx.to(torch.uint8).numpy().tofile(out / f"{k}.idx")
         qz.T.numpy().astype("<f4").tofile(out / f"{k}.tab")
+        if qz.mode == "lutrow":
+            qz.s.numpy().astype("<f4").tofile(out / f"{k}.rows")
+            fmt += "r"
         index[k] = dict(name=name, fmt=fmt, shape=list(raw.shape), group=GROUP)
 
 

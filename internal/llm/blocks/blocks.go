@@ -724,14 +724,29 @@ func RowScaledBits(format string) int {
 // row spans its table. The output is bounded as the weight's own (the scales are at most 1).
 func (g *Graph) linearRows(x *mlpackage.Var, name, bias, outName string, outDim, bits int, s float32) *mlpackage.Var {
 	in := x.Shape[len(x.Shape)-1]
-	w := slices.Clone(g.Get(name, outDim, in))
-	scales := RowScales(w, outDim, in)
+	var q palette.LUT4
+	var scales []float32
+	found := false
+	if g.Opts.Codes != "" {
+		// codes chosen for the weight as the checkpoint holds it (gptoss_attn_gptq.py's lutrow)
+		c, err := LoadCodes(g.Opts.Codes)
+		if err != nil {
+			g.Fail("%v", err)
+		}
+		if q, scales, found, err = c.LookupRows(g.Get(name, outDim, in), outDim, in, g.Opts.Group, g.Opts.ColBlock, bits); err != nil {
+			g.Fail("%s: %v", name, err)
+		}
+	}
+	if !found {
+		w := slices.Clone(g.Get(name, outDim, in))
+		scales = RowScales(w, outDim, in)
+		q = palette.QuantizeBits(w, outDim, in, g.Opts.Group, g.Opts.ColBlock, bits, 8, g.lutMode())
+	}
 	if s != 1 {
 		for i := range scales {
 			scales[i] *= s
 		}
 	}
-	q := palette.QuantizeBits(w, outDim, in, g.Opts.Group, g.Opts.ColBlock, bits, 8, g.lutMode())
 	g.rowsOnly(name, q.ColBlock, in)
 	wv, err := g.B.LUT(name, bits, []int{outDim, in}, []int{q.Group, q.ColBlock}, q.Indices, q.LUT)
 	if err != nil {
