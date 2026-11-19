@@ -21,6 +21,9 @@ import (
 // major) and KEY.tab (the tables, rows/group by 2^bits float32 of fp16 values, little endian;
 // with col_block, rows/group by cols/col_block of them, in row major order). The key is WeightKey
 // of the weight as the checkpoint holds it. CodesWriter writes them from Go (tools/coreai/lutfit).
+//
+// A weight of format int8 (a scale a row, tools/ref/gptoss_attn_gptq.py) has its integers in KEY.idx
+// (int8, row major) and its scales in KEY.tab (rows float32 of fp16 values); LookupLinear reads it.
 type Codes struct {
 	dir   string
 	index map[string]codeEntry
@@ -49,7 +52,7 @@ func LoadCodes(dir string) (*Codes, error) {
 	}
 	c := &Codes{dir: dir, index: map[string]codeEntry{}}
 	for k, e := range all {
-		if lutBits(e.Fmt) != 0 {
+		if lutBits(e.Fmt) != 0 || e.Fmt == "int8" {
 			c.index[k] = e
 		}
 	}
@@ -141,6 +144,45 @@ func (c *Codes) Lookup(w []float32, rows, cols, group, colBlock, bits int, scale
 		out.LUT[i] = f16(math.Float32frombits(binary.LittleEndian.Uint32(tab[4*i:])) * scale)
 	}
 	out.Indices = pack(idx, bits)
+	c.mu.Lock()
+	c.hits++
+	c.mu.Unlock()
+	return out, true, nil
+}
+
+// LookupLinear returns the int8 weight (a scale a row) for w (rows x cols, as the checkpoint
+// holds it) when the codes have it, with the scales multiplied by scale (what the graph multiplies
+// the weight by). ok is false when there are none; the caller then quantizes w itself.
+func (c *Codes) LookupLinear(w []float32, rows, cols int, scale float32) (Linear, bool, error) {
+	if c == nil || len(c.index) == 0 {
+		return Linear{}, false, nil
+	}
+	key := WeightKey(w, rows, cols)
+	e, ok := c.index[key]
+	if !ok || e.Fmt != "int8" || len(e.Shape) != 2 || e.Shape[0] != rows || e.Shape[1] != cols {
+		return Linear{}, false, nil
+	}
+	data, err := os.ReadFile(filepath.Join(c.dir, key+".idx"))
+	if err != nil {
+		return Linear{}, false, err
+	}
+	tab, err := os.ReadFile(filepath.Join(c.dir, key+".tab"))
+	if err != nil {
+		return Linear{}, false, err
+	}
+	if len(data) != rows*cols || len(tab) != rows*4 {
+		return Linear{}, false, fmt.Errorf("palette: codes of %s (%s): %d integers and %d scale bytes for %d x %d in int8",
+			e.Name, key, len(data), len(tab), rows, cols)
+	}
+	for i, v := range data {
+		if int8(v) == -128 {
+			return Linear{}, false, fmt.Errorf("palette: codes of %s: -128 at %d (int8 codes are -127..127)", e.Name, i)
+		}
+	}
+	out := Linear{Rows: rows, Cols: cols, ColBlock: cols, Bits: 8, Data: data, Scales: make([]uint16, rows)}
+	for r := range out.Scales {
+		out.Scales[r] = f16(math.Float32frombits(binary.LittleEndian.Uint32(tab[4*r:])) * scale)
+	}
 	c.mu.Lock()
 	c.hits++
 	c.mu.Unlock()

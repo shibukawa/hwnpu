@@ -48,12 +48,7 @@ func build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 	if opts.Format == "" {
 		opts.Format = cfg.Format()
 	}
-	// The attention's projections stay fp16 unless a rule of the caller's says otherwise (a later
-	// FormatFor rule wins): gpt-oss's attention does not bear tables of 16 rows. With them in lut8
-	// the KL from the float32 reference on plain text is 0.29 (the answer of a conversation
-	// 0.0088), in fp16 0.036 (0.0003), for a step about 20 % slower on an M3; every other rounding
-	// of the Neural Engine's path together adds less than 0.04 (docs/improvements.md 7.5).
-	opts.FormatFor = append([]string{"self_attn=fp16"}, opts.FormatFor...)
+	opts.FormatFor = append(attnFormats(), opts.FormatFor...)
 	noLayers := opts.Layers == llm.NoLayers
 	first := noLayers && opts.Start == 0 // layer 0 up to its router
 	afterAttn := noLayers && opts.Start > 0
@@ -336,3 +331,12 @@ func (c *Config) StepInputs(pos, valid, q, cache int) map[string][]float32 {
 func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 {
 	return c.StepInputs(pos, valid, q, cache)
 }
+
+// attnFormats are the attention's formats, ahead of the caller's FormatFor rules (a later rule
+// wins): lut8 with a scale a row (lut8r, blocks.LinearBias). The rows of one projection differ in
+// magnitude by up to 6600 times, so in plain lut8 (a table for 16 rows) the small rows have few
+// levels: on the Neural Engine the KL from the float32 reference on plain text is 0.28 in lut8,
+// 0.069 in lut8r, 0.092 in int8 (a scale a row), 0.033 in fp16; a step on an M3 57 ms in lut8 and
+// lut8r, 73 in int8, 79 in fp16, whose 2.99 GiB on the Neural Engine swaps on a 16 GB Mac with the
+// experts wired (docs/improvements.md).
+func attnFormats() []string { return []string{"self_attn=lut8r"} }

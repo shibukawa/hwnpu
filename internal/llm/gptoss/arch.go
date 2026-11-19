@@ -16,7 +16,9 @@ var Arch = &llm.Arch{
 	LoadConfig:    func(raw []byte) (llm.Model, error) { return ParseConfig(raw) },
 	LastRow:       true,
 	// 1: the attention's projections fp16 (build), 2026-11-19
-	Revision: 1,
+	// 2: fp16 for the first 8 layers, int8 for the rest, 2026-11-19
+	// 3: the attention lut8r (attnFormats), 2026-11-19
+	Revision: 3,
 }
 
 func init() { llm.Register(Arch) }

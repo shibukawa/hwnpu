@@ -66,3 +66,45 @@ func TestCodesLookup(t *testing.T) {
 		t.Error("codes taken for another weight")
 	}
 }
+
+func TestCodesLookupLinear(t *testing.T) {
+	const rows, cols = 4, 8
+	w := make([]float32, rows*cols)
+	for i := range w {
+		w[i] = float32(math.Cos(float64(i)))
+	}
+	dir := t.TempDir()
+	key := WeightKey(w, rows, cols)
+	data := make([]byte, rows*cols)
+	for i := range data {
+		data[i] = byte(int8(i - 16))
+	}
+	tab := make([]byte, rows*4)
+	for r := range rows {
+		binary.LittleEndian.PutUint32(tab[4*r:], math.Float32bits(float32(r+1)/128))
+	}
+	os.WriteFile(filepath.Join(dir, key+".idx"), data, 0o644)
+	os.WriteFile(filepath.Join(dir, key+".tab"), tab, 0o644)
+	os.WriteFile(filepath.Join(dir, "index.json"), []byte(`{"`+key+`": {"name": "w", "fmt": "int8", "shape": [4, 8], "group": 1}}`), 0o644)
+	c, err := LoadCodes(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := c.Lookup(w, rows, cols, 16, 0, 8, 1); ok {
+		t.Fatal("an int8 weight's codes taken as lut8")
+	}
+	q, ok, err := c.LookupLinear(w, rows, cols, 2)
+	if err != nil || !ok {
+		t.Fatalf("lookup: %v %v", ok, err)
+	}
+	for i := range data {
+		r := i / cols
+		got := float32(int8(q.Data[i])) * f16val(q.Scales[r])
+		if want := float32(i-16) * float32(r+1) / 128 * 2; got != want {
+			t.Fatalf("weight %d: %g, want %g", i, got, want)
+		}
+	}
+	if _, ok, _ := c.LookupLinear(w[:cols*2], 2, cols, 1); ok {
+		t.Fatal("codes of another weight")
+	}
+}
