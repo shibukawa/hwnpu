@@ -25,6 +25,10 @@ func (j Job) Rows() int { return len(j.Out[0]) }
 // performance, 4 of efficiency), so they take the next chunk as they finish one.
 const chunk = 32
 
+// padFrom is how many vectors past a multiple of 8 take a group of SMMLA padded with zeros
+// (HWNPU_MXFP4_PAD).
+var padFrom = 6
+
 // Run runs the jobs over the CPU's cores.
 func Run(jobs ...Job) {
 	type span struct{ job, lo int }
@@ -34,17 +38,36 @@ func Run(jobs ...Job) {
 			spans = append(spans, span{j, lo})
 		}
 	}
-	// with SMMLA, the vectors in groups of 8 as 4 pairs (mm28Kernel): 2 rows at a time
+	// with SMMLA, the vectors in groups of 8 as 4 pairs (mm28Kernel): 2 rows at a time. The
+	// vectors past the last 8 make a group of their own padded with zeros when there are padFrom
+	// of them or more (their products go nowhere): a group costs about what 8 vectors do, and the
+	// kernels of 4 vectors and of one decode a row again for each call.
 	pairs := make([][]pairVec, len(jobs))
 	if haveI8MM {
 		for j, jb := range jobs {
 			if nb := len(jb.E) / max(jb.Rows(), 1); nb == 0 || nb%2 != 0 {
 				continue
 			}
-			for k := 0; k+8 <= len(jb.V); k += 2 {
-				pairs[j] = append(pairs[j], interleave(jb.V[k], jb.V[k+1]))
+			n := len(jb.V) / 8 * 8
+			if len(jb.V)-n >= padFrom {
+				n += 8
 			}
-			pairs[j] = pairs[j][:len(pairs[j])/4*4]
+			if n == 0 {
+				continue
+			}
+			var zero *Vec
+			vec := func(k int) *Vec {
+				if k < len(jb.V) {
+					return jb.V[k]
+				}
+				if zero == nil {
+					zero = NewVec(len(jb.V[0].Q))
+				}
+				return zero
+			}
+			for k := 0; k < n; k += 2 {
+				pairs[j] = append(pairs[j], interleave(vec(k), vec(k+1)))
+			}
 		}
 	}
 	var next atomic.Int64
@@ -68,12 +91,15 @@ func Run(jobs ...Job) {
 					for g := 0; g < len(ps); g += 4 {
 						mm28Kernel(w2, e2, (*[4]pairVec)(ps[g:g+4]), &sixteen)
 						for p := range 4 {
-							a, b := 2*(g+p), 2*(g+p)+1
-							jb.Out[a][r], jb.Out[b][r] = sixteen[4*p], sixteen[4*p+1]
-							jb.Out[a][r+1], jb.Out[b][r+1] = sixteen[4*p+2], sixteen[4*p+3]
+							if a := 2 * (g + p); a < len(jb.Out) {
+								jb.Out[a][r], jb.Out[a][r+1] = sixteen[4*p], sixteen[4*p+2]
+							}
+							if b := 2*(g+p) + 1; b < len(jb.Out) {
+								jb.Out[b][r], jb.Out[b][r+1] = sixteen[4*p+1], sixteen[4*p+3]
+							}
 						}
 					}
-					k = 2 * len(ps)
+					k = min(2*len(ps), len(jb.V))
 					w1, e1 := w2[nb*16:], e2[nb:]
 					var four [4]float32
 					for ; k+4 <= len(jb.V); k += 4 {
@@ -144,6 +170,9 @@ func init() {
 		if d, err := time.ParseDuration(v); err == nil {
 			Spin = d
 		}
+	}
+	if v := os.Getenv("HWNPU_MXFP4_PAD"); v != "" {
+		fmt.Sscan(v, &padFrom)
 	}
 	if v := os.Getenv("HWNPU_MXFP4_SPINNERS"); v != "" {
 		fmt.Sscan(v, &Spinners)
