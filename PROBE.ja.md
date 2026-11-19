@@ -241,7 +241,7 @@ q4 には 2〜8 行の呼び出しがありません（QGEMVRows は q8 と q6 �
 | int4 | 0.45 GiB | CPU | CPU | 28.1 | 36 | 17 | 3.53 | 300 |
 | **int4** | 0.45 GiB | **GPU** | **GPU** | **8.5** | **117** | 57 | 0.47 | **35** |
 
-- Neural Engine で全速で動くのは lut4 だけです（M2 と M1 では int8 と fp16 も全速でした。下の M2 と M1 の節。M3 を macOS 27.2 にしても int8 と fp16 は遅いままで、OS ではなくチップの違いです）。4 ビットの重みは int8 に比べて 1 トークンで読むバイト数が半分で、生成の速さは重みの読み出しで決まります。
+- Neural Engine で全速で動くのは表の形式だけです（ここでは lut4。lut6 と lut8 も全速、下記。M2 と M1 では int8 と fp16 も全速でした。下の M2 と M1 の節。M3 を macOS 27.2 にしても int8 と fp16 は遅いままで、OS ではなくチップの違いです）。4 ビットの重みは int8 に比べて 1 トークンで読むバイト数が半分で、生成の速さは重みの読み出しで決まります。
 - Neural Engine と GPU の int4 は、1 トークンあたりのエネルギーがほぼ同じ（37 mJ と 35 mJ）で、CPU はその 7 倍ほどです。
 - 1 B の fp16 は大きさの上限を超えるので、CPU で動きます。
 - CPU は読み出すバイト数ではなく計算で頭打ちになり、どの形式でも 1 トークン 30 ms 前後で、3.3〜3.7 コア分を使います。量子化が効くのは NPU と GPU だけです。
@@ -286,6 +286,34 @@ q4 には 2〜8 行の呼び出しがありません（QGEMVRows は q8 と q6 �
 - 128 トークンは 64 トークンの 2.7 倍の時間がかかり、1 トークンあたりでも 64 より遅くなります。上限を超えたら、128 ずつより 64 ずつに分けて流すほうが速くなります。
 - つまり、投機的デコードでは 1 トークンの時間で約 60 個の下書きを確かめられ、プロンプトは約 64 トークンずつ読むのが最も速くなります（重み 1 B で毎秒約 7,000 トークン）。`hwnpu-dev convert -seq` で変換した LFM3-1.7B も同じ傾向でした（1 トークンで 13.7 ms、48 で 15.2 ms、96 で 30.0 ms、11 TFLOPS）。
 
+macOS 27.2.1 で、すべての形式を測り直しました（`hwnpu-dev probe bench` と `hwnpu-dev probe verify -layers 8`、2026-11-20）。Neural Engine で 16 層（0.97 B）。fp16 の 16 層は CPU に落ちるので、fp16 の行だけ 8 層です:
+
+| 形式 | 重み 1 つのビット数 | 重み | ms/トークン | 重みの GB/s | G 重み/秒 | M2 の G 重み/秒 |
+|---|---|---|---|---|---|---|
+| lut4 | 4 | 0.45 GiB | **7.6** | 64 | **128** | 122 |
+| lut6 | 6 | 0.68 GiB | 11.1 | 66 | 88 | 85 |
+| lut8 | 8 | 0.91 GiB | 14.9 | 65 | 65 | 64 |
+| int8 | 8 | 0.91 GiB | 42.0 | 23 | 23 | 63 |
+| fp16（8 層） | 16 | 0.91 GiB | 44.1 | 22 | 11 | 31 |
+| GPU の int4 | 4 | 0.45 GiB | 8.8 | 55 | 111 | 76 |
+
+- **M3 で速いのは lut4 だけではなく、表の形式すべてです**。lut6 と lut8 も M2 と同じく 65〜66 GB/s で読みます。遅いのは int8 と fp16（23 GB/s と 22 GB/s）です。int8 と同じバイト数の lut8 は、M3 では int8 の 2.8 倍速く（14.9 ms と 42.0 ms）、Neural Engine で 8 ビットの重みを使うなら int8 ではなく lut8 にすべきです。
+- CPU はどの形式でも 16 層で約 26 ms です。GPU は int4 がいちばん速く（8.8 ms）、Neural Engine の lut4 と lut6 の間に入ります。
+
+1 回に K トークン（8 層、0.49 B の重み）:
+
+| 形式 | K=1 ms | K=8 × K=1 | K=64 × K=1 | K=64 TFLOPS | K=128 × K=1 | K=128 TFLOPS |
+|---|---|---|---|---|---|---|
+| fp16 | 43.9 | 1.00 | 1.00 | 1.4 | 1.07 | 2.7 |
+| int8 | 21.1 | 1.00 | 1.01 | 2.9 | 1.12 | 5.3 |
+| lut4 | 3.8 | 1.03 | 1.34 | **12.2** | 3.18 | 10.3 |
+| lut6 | 5.7 | 1.00 | 1.00 | 10.9 | 1.95 | 11.2 |
+| lut8 | 7.6 | 1.00 | 1.00 | 8.2 | 2.13 | 7.7 |
+
+- lut6 の K=1 は 7.5 ms と出ましたが、K=2 以降は 5.7〜5.8 ms なので、表では 5.7 ms を 1 回分としました。
+- lut6 と lut8 は、M2 と同じく 64 トークンの確認が 1 回分で済みます。lut4 は 64 で少し伸び（1.34 回分）、どの表の形式も 64 を超えると落ちます（128 で 2〜3.2 倍）。
+- M2 と同じく、128 トークンでは lut8 の計算が小さい表より伸びません（7.7 TFLOPS、ほかは 10〜11）。
+
 ### Apple M2（MacBook Air、16 GB、macOS 27.2）
 
 既定の `hwnpu-dev probe`（bench と limit。レポートは [npuprobe-m2.md](npu_profiles/npuprobe-m2.md)）。16 層（0.97 B）で、上の M3 と比べると:
@@ -301,7 +329,7 @@ q4 には 2〜8 行の呼び出しがありません（QGEMVRows は q8 と q6 �
 
 - 大きさの上限は M3 と層の数まで同じです。fp16 は 8 層（0.91 GiB）が Neural Engine に載り 9 層（1.02 GiB）は載らず、int8 は 17 層と 18 層、lut4 は 35 層（0.99 GiB）と 36 層です。0.91 GiB の fp16 のモデルを 3 つ同時に読み込んでも、3 つとも Neural Engine に載り、1 回 15〜16 ms と 1 つのときと同じでした。
 - lut4 は M3 と同じ速さなので、重みの読み出しで決まる生成もほぼ同じ速さのはずです。CPU は 2 割ほど遅くなります。
-- int8 と fp16 も全速で動きました。どの形式も重みを約 60 GB/s で読みます（0.49 B の fp16 で 15.9 ms）。M3 で全速だったのは lut4 だけです。違いは OS ではなくチップによります。M3 を M2 と同じ macOS 27.2（Core ML も同じ Build 26B123）にして `hwnpu-dev probe bench` を測り直しても、Neural Engine の int8 は 16 層で 42.2 ms（23 GB/s）、fp16 は 8 層で 45.6 ms（21 GB/s）と 27.0.1 のときと変わらず、lut4 だけが 7.6 ms（64 GB/s）でした（レポートは [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)）。
+- int8 と fp16 も全速で動きました。どの形式も重みを約 60 GB/s で読みます（0.49 B の fp16 で 15.9 ms）。M3 で全速だったのは表の形式（lut4、lut6、lut8）だけです。違いは OS ではなくチップによります。M3 を M2 と同じ macOS 27.2（Core ML も同じ Build 26B123）にして `hwnpu-dev probe bench` を測り直しても、Neural Engine の int8 は 16 層で 42.2 ms（23 GB/s）、fp16 は 8 層で 45.6 ms（21 GB/s）と 27.0.1 のときと変わらず、lut4 だけが 7.6 ms（64 GB/s）でした（レポートは [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)）。
 - 上限を超えて CPU に置かれた lut4 は、M3 と同じく極端に遅くなります（40 層で 1 回 6.3 秒、48 層で 17.7 秒）。
 - コンパイルは M3 より長くかかります（lut4 の 32 層で 25 秒）。
 - **M1 と違い、部分を順に回すときの合計の上限はありません**（`hwnpu-dev probe split -formats lut4 -parts 8 -ref none -split-layers N`、2026-11-09。下の M1 の表と同じ大きさ。レポートは [96](npu_profiles/npuprobe-m2-split-96.md)、[100](npu_profiles/npuprobe-m2-split-100.md)、[104](npu_profiles/npuprobe-m2-split-104.md)、[128](npu_profiles/npuprobe-m2-split-128.md) 層）。3.62 GiB まで、全部を読み込んで順に回した時間は単独の合計どおりで、63 GB/s で読みます:
@@ -418,7 +446,7 @@ Neural Engine が受け付けるすべての形式で 1 回に K トークン（
 
 M4 以降の Apple のチップ（1 GiB の上限はチップやメモリで変わるか）、Linux と Windows の Intel Core Ultra（Intel バックエンドはまだ実機で動いていない）、AMD Ryzen AI の `hwnpu-dev report` と、Strix Point 以外のチップ（Krackan Point、Strix Halo）での `hwnpu-dev probe`、Apple での probe の Core AI の経路（同じ形を Core AI のプログラムにしたもの。まだ書いていない）。`.md` のファイルを付けて issue を開いてください。
 
-M1 と M3 でも、上の AMD と M2 と同じく形式どうしを比べ直したい。`bench` は lut6 と lut8（`hwnpu-dev convert -bits 6` と `8` の重み）も動かして G 重み/秒を出すようになり、`verify` は Neural Engine が受け付けるすべての形式を動かします:
+M1 でも、上の AMD、M2、M3 と同じく形式どうしを比べ直したい。`bench` は lut6 と lut8（`hwnpu-dev convert -bits 6` と `8` の重み）も動かして G 重み/秒を出すようになり、`verify` は Neural Engine が受け付けるすべての形式を動かします:
 
 ```bash
 go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe bench

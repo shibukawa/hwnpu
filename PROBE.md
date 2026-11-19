@@ -241,7 +241,7 @@ Speed and energy at 16 layers (0.97 B weights). Speed from `hwnpu-dev probe benc
 | int4 | 0.45 GiB | CPU | CPU | 28.1 | 36 | 17 | 3.53 | 300 |
 | **int4** | 0.45 GiB | **GPU** | **GPU** | **8.5** | **117** | 57 | 0.47 | **35** |
 
-- Only lut4 runs at full speed on the Neural Engine (on the M2 and the M1, int8 and fp16 did too; see their sections. On the M3 with macOS 27.2 they stay slow, so the chip makes the difference, not the OS): 4 bit weights halve the bytes read per token against int8, and decoding is bound by the weight reads.
+- Only the tables run at full speed on the Neural Engine (lut4 here; lut6 and lut8 too, below. On the M2 and the M1, int8 and fp16 did too; see their sections. On the M3 with macOS 27.2 they stay slow, so the chip makes the difference, not the OS): 4 bit weights halve the bytes read per token against int8, and decoding is bound by the weight reads.
 - The Neural Engine and the GPU with int4 cost about the same energy per token (37 and 35 mJ); the CPU costs about 7 times more.
 - fp16 at 1 B is over the size limit and runs on the CPU.
 - The CPU is limited by the arithmetic, not the bytes: about 30 ms per token in every format, at 3.3 to 3.7 cores busy. Quantization only pays on the NPU and the GPU.
@@ -286,6 +286,34 @@ K tokens per call (`hwnpu-dev probe verify -formats lut4 -layers 16`, 0.97 B wei
 - 128 tokens take 2.7 times as long as 64, slower per token than 64: past the limit, splitting a prompt into calls of 64 is faster than calls of 128.
 - So speculative decoding can check up to about 60 drafted tokens for the time of one, and a prompt is read fastest in chunks of about 64 tokens (about 7,000 tokens/s for 1 B weights). LFM3-1.7B converted with `hwnpu-dev convert -seq` behaved alike: 13.7 ms for 1 token, 15.2 ms for 48, 30.0 ms for 96 (11 TFLOPS).
 
+Every format again on macOS 27.2.1 (`hwnpu-dev probe bench` and `hwnpu-dev probe verify -layers 8`, 2026-11-20). 16 layers (0.97 B) on the Neural Engine; fp16 at 16 layers falls to the CPU, so its row is 8 layers:
+
+| format | bits a weight | weights | ms/token | weights GB/s | G weights/s | M2 G weights/s |
+|---|---|---|---|---|---|---|
+| lut4 | 4 | 0.45 GiB | **7.6** | 64 | **128** | 122 |
+| lut6 | 6 | 0.68 GiB | 11.1 | 66 | 88 | 85 |
+| lut8 | 8 | 0.91 GiB | 14.9 | 65 | 65 | 64 |
+| int8 | 8 | 0.91 GiB | 42.0 | 23 | 23 | 63 |
+| fp16 (8 layers) | 16 | 0.91 GiB | 44.1 | 22 | 11 | 31 |
+| int4 on the GPU | 4 | 0.45 GiB | 8.8 | 55 | 111 | 76 |
+
+- **On the M3 every table runs at full speed, not only lut4**: lut6 and lut8 read at 65 to 66 GB/s, as on the M2. int8 and fp16 stay slow (23 and 22 GB/s). So lut8, the same bytes as int8, is 2.8 times as fast as int8 on the M3 (14.9 against 42.0 ms): 8 bit weights should be lut8, not int8, on the Neural Engine.
+- The CPU takes about 26 ms at 16 layers in every format, and the GPU is fastest with int4 (8.8 ms), between lut4 and lut6 on the Neural Engine.
+
+K tokens per call (8 layers, 0.49 B weights):
+
+| format | K=1 ms | K=8 × K=1 | K=64 × K=1 | K=64 TFLOPS | K=128 × K=1 | K=128 TFLOPS |
+|---|---|---|---|---|---|---|
+| fp16 | 43.9 | 1.00 | 1.00 | 1.4 | 1.07 | 2.7 |
+| int8 | 21.1 | 1.00 | 1.01 | 2.9 | 1.12 | 5.3 |
+| lut4 | 3.8 | 1.03 | 1.34 | **12.2** | 3.18 | 10.3 |
+| lut6 | 5.7 | 1.00 | 1.00 | 10.9 | 1.95 | 11.2 |
+| lut8 | 7.6 | 1.00 | 1.00 | 8.2 | 2.13 | 7.7 |
+
+- lut6's K=1 measured 7.5 ms, the others 5.7 to 5.8 from K=2 on; the table takes 5.7 as one call.
+- lut6 and lut8 check 64 tokens for one call, as on the M2. lut4 already gains at 64 (1.34 calls), and every table falls past 64 (2 to 3.2 times at 128).
+- As on the M2, lut8 reaches less compute than the smaller tables at 128 tokens (7.7 TFLOPS against 10 to 11).
+
 ### Apple M2 (MacBook Air, 16 GB, macOS 27.2)
 
 `hwnpu-dev probe` with the defaults (bench and limit; report: [npuprobe-m2.md](npu_profiles/npuprobe-m2.md)). 16 layers (0.97 B), against the M3 above:
@@ -301,7 +329,7 @@ K tokens per call (`hwnpu-dev probe verify -formats lut4 -layers 16`, 0.97 B wei
 
 - The size limit is the M3's to the layer: fp16 8 layers (0.91 GiB) on the Neural Engine and 9 (1.02 GiB) not, int8 17 and 18, lut4 35 (0.99 GiB) and 36. Three fp16 models of 0.91 GiB loaded at once all stay on the Neural Engine at 15 to 16 ms a call, as alone.
 - lut4 runs at the M3's speed, so decoding bound by the weights should be about as fast. The CPU is about a fifth slower.
-- int8 and fp16 run at full speed too: every format reads its weights at about 60 GB/s (0.49 B fp16: 15.9 ms). On the M3 only lut4 did, and the chip makes the difference, not the OS: rerun on the M3 with the M2's macOS 27.2 (the same Core ML, Build 26B123), `hwnpu-dev probe bench` still gives int8 on the Neural Engine 42.2 ms at 16 layers (23 GB/s) and fp16 45.6 ms at 8 layers (21 GB/s), as on 27.0.1, and only lut4 7.6 ms (64 GB/s) (report: [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)).
+- int8 and fp16 run at full speed too: every format reads its weights at about 60 GB/s (0.49 B fp16: 15.9 ms). On the M3 only the tables (lut4, lut6, lut8) did, and the chip makes the difference, not the OS: rerun on the M3 with the M2's macOS 27.2 (the same Core ML, Build 26B123), `hwnpu-dev probe bench` still gives int8 on the Neural Engine 42.2 ms at 16 layers (23 GB/s) and fp16 45.6 ms at 8 layers (21 GB/s), as on 27.0.1, and only lut4 7.6 ms (64 GB/s) (report: [npuprobe-m3-macos27.2.md](npu_profiles/npuprobe-m3-macos27.2.md)).
 - lut4 put on the CPU over the limit is as slow as on the M3 (40 layers 6.3 s a call, 48 layers 17.7 s).
 - Compiling takes longer than on the M3 (lut4 32 layers: 25 s).
 - **No limit on the total of parts run in turn, unlike the M1** (`hwnpu-dev probe split -formats lut4 -parts 8 -ref none -split-layers N`, 2026-11-09; the same sizes as the M1's table below; reports: [96](npu_profiles/npuprobe-m2-split-96.md), [100](npu_profiles/npuprobe-m2-split-100.md), [104](npu_profiles/npuprobe-m2-split-104.md), [128](npu_profiles/npuprobe-m2-split-128.md) layers). Up to 3.62 GiB, the parts loaded at once and run one after another take their own times added up, at 63 GB/s:
@@ -418,7 +446,7 @@ A model over the limit run in parts (`hwnpu-dev probe split -split-layers 128 -p
 
 M4 and later Apple chips (does the 1 GiB limit change with the chip or the RAM?), Intel Core Ultra on Linux and Windows (the Intel backend has not run on real hardware yet), AMD Ryzen AI for `hwnpu-dev report` and `hwnpu-dev probe` on other chips than Strix Point (Krackan Point, Strix Halo), and Core AI's path in the probe on Apple (the same shapes as Core AI programs; not written yet). Open an issue with the `.md` files.
 
-The M1 and the M3 again, for the formats compared as on AMD and the M2 above: `bench` now runs lut6 and lut8 too (the weights of `hwnpu-dev convert -bits 6` and `8`) and gives G weights/s, and `verify` runs every format the Neural Engine takes:
+The M1 again, for the formats compared as on AMD, the M2 and the M3 above: `bench` now runs lut6 and lut8 too (the weights of `hwnpu-dev convert -bits 6` and `8`) and gives G weights/s, and `verify` runs every format the Neural Engine takes:
 
 ```bash
 go run github.com/shibukawa/hwnpu/cmd/hwnpu-dev@latest probe bench
