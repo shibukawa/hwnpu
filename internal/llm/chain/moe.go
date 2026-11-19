@@ -14,7 +14,6 @@ import (
 	"github.com/shibukawa/hwnpu/internal/llm/experts"
 	"github.com/shibukawa/hwnpu/internal/safetensors"
 	"github.com/shibukawa/hwnpu/internal/vecops"
-	"golang.org/x/sys/unix"
 )
 
 // moe runs the mixture of experts layers of a model cut at them (llm.Routed, the manifest's
@@ -200,7 +199,7 @@ func loadMoE(ctx context.Context, c *Chain, rec *llm.ExpertsRecord) (*moe, error
 				return err
 			}
 			if wireErr == nil {
-				if wireErr = unix.Mlock(b.Bytes()); wireErr == nil {
+				if wireErr = mlock(b.Bytes()); wireErr == nil {
 					wired += int64(b.Size())
 					m.locked = append(m.locked, b.Bytes())
 				}
@@ -327,7 +326,7 @@ func (m *moe) close() {
 	}
 	m.rows = nil
 	for _, b := range m.locked {
-		unix.Munlock(b)
+		munlock(b)
 	}
 	m.locked = nil
 	if m.req != nil {
