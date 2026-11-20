@@ -2,7 +2,7 @@
 // load_pdi in a command's control code starts a new configuration (the cores' program memory,
 // their data memory's initial words, the locks, DMAs and switches), written by the control code
 // itself. A change of operator inside a command costs about 100 µs whatever the configuration's
-// size (docs/design.md 16.262), so their number is what to compare.
+// size (docs/design.md 16.264), so their number is what to compare.
 //
 //	go run ./tools/amd/elfconfigs [-seq] [-tokens N] ELF...
 //

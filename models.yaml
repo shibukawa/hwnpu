@@ -44,13 +44,14 @@
 #                 --paged, --tier) do not say: auto, on or off; a weight format (lut8); tokens; a
 #                 chunk of tokens or -1; auto, none or a list of caches
 #   variants      the model on machines of more memory than machine, by the least memory in GB:
-#                 each changes the memory and the five above that it gives, on machines of that
-#                 much or more (variants: {16: {memory: 2.3, prefill: auto}}); a file of your own
-#                 changes the variants it names
+#                 each changes the memory, the five above and amd_export that it gives, on
+#                 machines of that much or more (variants: {16: {memory: 2.3, prefill: auto}});
+#                 a file of your own changes the variants it names
 #   amd_export    how tools/amd/iron_export_lm.py exports it for AMD's NPU: its model and options.
 #                 Without an export here (~/models/NAME.amd-npu2, with -q4 or -q6 for --q4 and
-#                 --mlp q6), the first run downloads the checkpoint and runs it in IRON's
-#                 environment (HWNPU_IRON_ENV, INSTALL_AMD.md); a model without it has no form there
+#                 --mlp q6, then -pN for --expert-places N), the first run downloads the
+#                 checkpoint and runs it in IRON's environment (HWNPU_IRON_ENV, INSTALL_AMD.md); a
+#                 model without it has no form there
 #   not_on        chips (M1, M2, M3, M4, M5; an M1 Pro is an M1) a family or a use does not pick
 #                 the model on: the family's next is picked there (the 2B for PLaMo 3 Translate
 #                 8B on an M1); its name and FAMILY:TAG still run it
@@ -261,11 +262,19 @@ models:
     kind: chat
     from: hf:openai/gpt-oss-20b
     license: {id: apache-2.0, url: "https://huggingface.co/openai/gpt-oss-20b/blob/main/LICENSE", class: open}
-    machine: 32
-    memory: {amd: 14.6, apple: 12.2}
+    # 16 GB: on AMD's NPU 16 of each layer's 32 experts in places (6.90 GiB pinned), the others
+    # read from experts.bin with O_DIRECT when chosen, the decode step routed on the host so that
+    # the next layer's experts are read ahead (design.md 16.261): 14.4 tokens/s, 3.5 % of the
+    # choices read. On a Mac about 4 GB of the experts wired (experts.Placement), the others
+    # mapped from the checkpoint. From 24 GB every expert in the NPU's memory (19.4 tokens/s on
+    # AMD) and wired on a Mac
+    machine: 16
+    memory: {amd: 8.3, apple: 6.4}
+    variants:
+      24: {memory: {amd: 14.6, apple: 12.2}, amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256}
     bytes: {amd: 11.79e9, apple: 14.4e9}
     features: [tools, thinking]
-    amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256
+    amd_export: gptoss --max-seq-len 8192 --prefill-chunk 256 --expert-places 16 --host-route
     # the experts every kind of text runs (tools/moeusage, 19 categories of prompts in about 25
     # languages, 2026-11-20): in every category at least an even share (1/32) of their layer's
     # runs; 141 experts (1.9 GB) taking 31–41 % of the runs. Wired from the first run when the
@@ -302,7 +311,7 @@ models:
     kind: chat
     from: hf:Qwen/Qwen3.6-35B-A3B
     license: {id: apache-2.0, url: "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE", class: open}
-    # AMD (a Ryzen AI 9 365, 2026-11-17, docs/design.md 16.267): 24,188 MiB of the NPU's (the
+    # AMD (a Ryzen AI 9 365, 2026-11-17, docs/design.md 16.269): 24,188 MiB of the NPU's (the
     # experts and head at 4 bits, the mixers at 8) and the process's 880 MiB at its peak while
     # it answers, 26.3 GB; exporting it the first time takes 29 minutes and peaks at 50 GB
     machine: 48

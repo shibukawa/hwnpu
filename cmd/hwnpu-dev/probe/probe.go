@@ -84,7 +84,9 @@ type prober struct {
 	minRun time.Duration
 	idleW  float64 // meter power at rest, when the device has a meter
 	meter  bool
-	exe    string // the executable children run (default: this one)
+	// amdMetrics is amdgpu's gpu_metrics file on an AMD APU, for the split of the power
+	amdMetrics string
+	exe        string // the executable children run (default: this one)
 	// progress is what the last child printed as it went (kind and JSON), kept when it failed
 	progress []string
 }

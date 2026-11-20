@@ -128,6 +128,15 @@ func TestOn(t *testing.T) {
 			t.Errorf("On(%d) = %+v, %v; want %+v, %v", c.machine, got.Run, got.Memory, c.want, c.memory)
 		}
 	}
+	// a variant's amd_export replaces the model's
+	e := Model{Machine: 16, AMDExport: []string{"gptoss", "--expert-places", "16"},
+		Variants: map[int]Variant{24: {AMDExport: []string{"gptoss"}}}}
+	if got := e.On(16).AMDExport; len(got) != 3 {
+		t.Errorf("on 16 GB: %v", got)
+	}
+	if got := e.On(32).AMDExport; len(got) != 1 || len(e.AMDExport) != 3 {
+		t.Errorf("on 32 GB: %v (the model's %v)", got, e.AMDExport)
+	}
 	if m.Run.Prefill != PrefillOff || m.Memory != 4 {
 		t.Error("On changed the model")
 	}
@@ -179,6 +188,8 @@ func TestVariantErrors(t *testing.T) {
 		{"variant prefill", "    variants:\n      16: {prefill: never}\n", "variant of 16 GB: prefill"},
 		{"unknown key", "    variants:\n      16: {memroy: 3}\n", "memroy"},
 		{"not chat", "    kind: depth\n    prefill: \"off\"\n", "for chat models"},
+		{"amd_export without one", "    variants:\n      16: {amd_export: gptoss}\n", "the model has none"},
+		{"empty amd_export", "    amd_export: gptoss\n    variants:\n      16: {amd_export: \"\"}\n", "amd_export is empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			file := chat + tc.more

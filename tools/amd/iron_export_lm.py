@@ -590,7 +590,7 @@ def export(model, versions, out: Path) -> dict:
     vm = {}
     files = dict(xclbins={}, programs={}, checks=[], insts=[], insts_words=0)
     for name, v in versions.items():
-        if os.environ.get("HWNPU_EXPORT_STEPS"):  # each version's operators in order (design.md 16.264)
+        if os.environ.get("HWNPU_EXPORT_STEPS"):  # each version's operators in order (design.md 16.266)
             with open(out / f"{name}.steps.txt", "w") as f:
                 for st in v.sequence.steps:
                     f.write(f"{type(st.op).__name__} {' '.join(repr(st.op).split())[:240]}\n")

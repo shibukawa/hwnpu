@@ -88,3 +88,15 @@ func TestWriteMLPackageTokens(t *testing.T) {
 		t.Fatalf("package %d bytes, weights %d", n, WeightBytes("lut4", 1))
 	}
 }
+
+func TestWriteMLPackageFormats(t *testing.T) {
+	for _, f := range []string{"fp16", "int8", "lut4", "lut6", "lut8", "int4"} {
+		dir := filepath.Join(t.TempDir(), f+".mlpackage")
+		if err := WriteMLPackage(dir, f, 1, 1); err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		if n, w := DirSize(dir), WeightBytes(f, 1); n < w || n > w+w/4 {
+			t.Errorf("%s: package %d bytes, weights %d", f, n, w)
+		}
+	}
+}

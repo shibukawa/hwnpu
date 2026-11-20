@@ -11,10 +11,12 @@ import (
 
 func TestAMDSuffix(t *testing.T) {
 	for args, want := range map[string]string{
-		"--max-seq-len 12288 --q4":                   "-q4",
-		"--max-seq-len 4096 --q4 --mlp q6 --head q6": "-q6",
-		"--max-seq-len 4096":                         "",
-		"--q4 --mlp q8":                              "-q8",
+		"--max-seq-len 12288 --q4":                           "-q4",
+		"--max-seq-len 4096 --q4 --mlp q6 --head q6":         "-q6",
+		"--max-seq-len 4096":                                 "",
+		"--q4 --mlp q8":                                      "-q8",
+		"--max-seq-len 8192 --expert-places 16 --host-route": "-p16",
+		"--q4 --expert-places 24":                            "-q4-p24",
 	} {
 		if got := amdSuffix(strings.Fields(args)); got != want {
 			t.Errorf("%s: %q, want %q", args, got, want)
@@ -28,7 +30,7 @@ func TestAMDExportRecipes(t *testing.T) {
 	models := map[string]bool{"lfm3": true, "lfm3vl": true, "lfm3audio": true, "lfm3omni": true, "gemma4": true,
 		"plamo3": true, "qwen35": true, "qwen35moe": true, "gptoss": true}
 	want := map[string]string{"LFM3-1.7B": "-q4", "Qwen3.5-0.8B": "-q6", "Qwen3.5-2B": "-q6", "Qwen3.5-4B": "-q4",
-		"plamo-3-translate-2b": "-q4", "gemma-4-E2B-it": "-q4", "gpt-oss-20b": ""}
+		"plamo-3-translate-2b": "-q4", "gemma-4-E2B-it": "-q4", "gpt-oss-20b": "-p16"}
 	for _, m := range Catalog {
 		if len(m.AMDExport) == 0 {
 			continue
@@ -39,6 +41,11 @@ func TestAMDExportRecipes(t *testing.T) {
 		if w, ok := want[m.Name]; ok && !strings.HasSuffix(AMDExportDir(m), m.Name+".amd-npu2"+w) {
 			t.Errorf("%s: export %s, want the suffix %s", m.Name, AMDExportDir(m), w)
 		}
+	}
+	// gpt-oss-20b: 16 places a layer on 16 GB (an export of its own), every expert from 24 GB
+	if m, _ := Lookup("gpt-oss-20b"); !strings.HasSuffix(AMDExportDir(m.On(16)), "gpt-oss-20b.amd-npu2-p16") ||
+		!strings.HasSuffix(AMDExportDir(m.On(24)), "gpt-oss-20b.amd-npu2") || m.Machine != 16 {
+		t.Errorf("gpt-oss-20b: machine %d, on 16 GB %s, on 24 GB %s", m.Machine, AMDExportDir(m.On(16)), AMDExportDir(m.On(24)))
 	}
 	for name := range want {
 		if m, ok := Lookup(name); !ok || len(m.AMDExport) == 0 {
