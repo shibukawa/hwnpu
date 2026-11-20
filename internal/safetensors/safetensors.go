@@ -102,6 +102,9 @@ func (f *File) Close() error {
 	return f.f.Close()
 }
 
+// ReadAt reads the file at off into p.
+func (f *File) ReadAt(p []byte, off int64) (int, error) { return f.f.ReadAt(p, off) }
+
 // Names lists the tensors in sorted order.
 func (f *File) Names() []string { return append([]string(nil), f.names...) }
 

@@ -33,7 +33,13 @@ type Placement struct {
 	Usage string
 	// Idle is how long without a run unwires all but Core (0: 5 minutes; below 0: never).
 	Idle time.Duration
+	// Ceiling is a file that keeps the budget's ceiling after the system's warning (placer.warned)
+	// for the next run of the model, of any application: the model's experts-usage/ceiling.
+	Ceiling string
 }
+
+// timeNow is time.Now, a test's own.
+var timeNow = time.Now
 
 // balanceEvery is how often, at most, the wired experts follow the ones in use; the first time
 // after balanceFirst, so that a start with no counts (Core alone) soon wires the ones in use.
@@ -61,21 +67,121 @@ func (pl *placer) effective() int64 {
 	if !ok {
 		return pl.max
 	}
-	eb := pl.h.expertBytes()
-	var core int64
-	for _, c := range pl.core {
-		if c {
-			core += eb
-		}
-	}
-	core = min(core, pl.max)
+	core := pl.coreBytes()
 	switch {
 	case p.Level >= 2 || p.Free <= freeLow:
 		return core
 	case p.Free >= freeHigh:
-		return pl.max
+		return max(min(pl.max, pl.ceiling), core)
 	}
-	return core + (pl.max-core)*int64(p.Free-freeLow)/(freeHigh-freeLow)
+	return max(min(core+(pl.max-core)*int64(p.Free-freeLow)/(freeHigh-freeLow), pl.ceiling), core)
+}
+
+// coreBytes is the size of the core's experts, at most the budget asked for.
+func (pl *placer) coreBytes() int64 {
+	var core int64
+	for _, c := range pl.core {
+		if c {
+			core += pl.h.expertBytes()
+		}
+	}
+	return min(core, pl.max)
+}
+
+// The system's warning (Level 2 and up) while more than the core is wired lowers the ceiling of
+// the budget to a step below what was wired then, for ceilHold; after it the ceiling rises a step
+// at a time. Without it the wiring and the warning chase each other: on a 16 GB M2 with 24–26 %
+// free, 4.3 GB wired brought the warning, the core's 1.9 GB took it away (40 % free), and the
+// next balance wired the 2.4 GB again, every 30 s. A warning that follows a rise within the hold
+// doubles the hold, up to ceilHoldMax (the same M2 was warned again at each rise, every 10
+// minutes); one that does not sets it back to ceilHold.
+const (
+	ceilHold    = 10 * time.Minute
+	ceilHoldMax = 80 * time.Minute
+)
+
+// ceilStep is a step of the ceiling: a quarter of the budget above the core, an expert at least.
+func (pl *placer) ceilStep() int64 {
+	return max((pl.max-pl.coreBytes())/4, pl.h.expertBytes())
+}
+
+// warned lowers the ceiling when the system warns of memory with more than the core wired.
+func (pl *placer) warned() {
+	p, ok := pl.pressure()
+	if !ok || p.Level < 2 {
+		return
+	}
+	pl.mu.Lock()
+	wired := int64(len(pl.wired)) * pl.h.expertBytes() // as the budget counts them (spans are whole pages, a little less)
+	pl.mu.Unlock()
+	core := pl.coreBytes()
+	if wired <= core+pl.h.expertBytes() {
+		return
+	}
+	now := pl.now()
+	if !pl.rose.IsZero() && now.Sub(pl.rose) < pl.hold {
+		pl.hold = min(2*pl.hold, ceilHoldMax)
+	} else {
+		pl.hold = ceilHold
+	}
+	pl.rose = time.Time{}
+	pl.ceiling = max(min(pl.ceiling, wired)-pl.ceilStep(), core)
+	pl.ceilAt = now
+	pl.keepCeiling()
+	if DebugTime() {
+		fmt.Fprintf(os.Stderr, "experts: the system warns of memory with %.1f GB wired: at most %.1f GB for %v\n", float64(wired)/1e9, float64(pl.ceiling)/1e9, pl.hold)
+	}
+}
+
+// rise raises the ceiling a step for each hold it has held.
+func (pl *placer) rise() {
+	if pl.ceiling >= pl.max {
+		return
+	}
+	n := int64(pl.now().Sub(pl.ceilAt) / pl.hold)
+	if n <= 0 {
+		return
+	}
+	pl.ceiling = min(pl.ceiling+min(n, 4)*pl.ceilStep(), pl.max)
+	pl.ceilAt = pl.ceilAt.Add(time.Duration(n) * pl.hold)
+	pl.rose = pl.now()
+	pl.keepCeiling()
+}
+
+// keepCeiling writes the ceiling, its time and its hold to Placement.Ceiling ("BYTES UNIXSECONDS
+// HOLDSECONDS"), or
+// removes the file when there is none: without it every start under the same shortage wires the
+// whole budget once, to be warned and unwire it (2.4 GB of a 16 GB M2's 4.3).
+func (pl *placer) keepCeiling() {
+	path := pl.place.Ceiling
+	if path == "" {
+		return
+	}
+	if pl.ceiling >= pl.max {
+		os.Remove(path)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+		os.WriteFile(path, fmt.Appendf(nil, "%d %d %d\n", pl.ceiling, pl.ceilAt.Unix(), int64(pl.hold/time.Second)), 0o644)
+	}
+}
+
+// readCeiling takes the ceiling an earlier run kept, raised for the time since.
+func (pl *placer) readCeiling() {
+	if pl.place.Ceiling == "" {
+		return
+	}
+	b, err := os.ReadFile(pl.place.Ceiling)
+	if err != nil {
+		return
+	}
+	var bytes, at, hold int64
+	if n, _ := fmt.Sscan(string(b), &bytes, &at, &hold); n != 3 || bytes <= 0 || bytes >= pl.max || at > pl.now().Unix() {
+		return
+	}
+	pl.ceiling, pl.ceilAt = max(bytes, pl.coreBytes()), time.Unix(at, 0)
+	pl.hold = min(max(time.Duration(hold)*time.Second, ceilHold), ceilHoldMax)
+	pl.rise()
 }
 
 // follow sets the budget to effective's, telling a change of more than an expert.
@@ -170,6 +276,12 @@ type placer struct {
 	place  Placement
 	budget int64 // now: max, less while the system is short of memory (effective)
 	max    int64 // the budget asked for (Host.wiring)
+	// ceiling is the most the budget is after the system's warning (warned), from ceilAt
+	ceiling int64
+	ceilAt  time.Time
+	hold    time.Duration    // how long the ceiling holds before a step up (ceilHold, doubled by warnings after rises)
+	rose    time.Time        // the last step up, until the next warning
+	now     func() time.Time // time.Now; a test's own
 	// pressure reads how short of memory the system is (mem.PressureNow; a test's own)
 	pressure func() (mem.Pressure, bool)
 	L, E     int
@@ -197,7 +309,7 @@ type placer struct {
 
 func newPlacer(h *Host, p Placement, budget int64, L int) *placer {
 	E := h.shape.Experts
-	pl := &placer{h: h, place: p, budget: budget, max: budget, pressure: mem.PressureNow, L: L, E: E, core: make([]bool, L*E), score: make([]float64, L*E),
+	pl := &placer{h: h, place: p, budget: budget, max: budget, ceiling: budget, hold: ceilHold, now: func() time.Time { return timeNow() }, pressure: mem.PressureNow, L: L, E: E, core: make([]bool, L*E), score: make([]float64, L*E),
 		seen: make([]uint32, L*E), wired: map[int][][]byte{}, quit: make(chan struct{}), lock: mlock, unlock: munlock, on: make([]atomic.Bool, L*E)}
 	for l, es := range p.Core {
 		for _, e := range es {
@@ -209,6 +321,7 @@ func newPlacer(h *Host, p Placement, budget int64, L int) *placer {
 	if u := readUsageFor(p.Usage, L, E); u != nil {
 		pl.addShares(u.Counts, 1)
 	}
+	pl.readCeiling()
 	pl.lastRun.Store(time.Now().UnixNano())
 	return pl
 }
@@ -418,6 +531,7 @@ func (pl *placer) start() {
 				continue
 			}
 			// the system short of memory: give back what it asks now, not at the next balance
+			pl.warned()
 			if b := pl.effective(); b < pl.budget-pl.h.expertBytes() {
 				pl.follow()
 				_, un := pl.apply(pl.target())
@@ -505,6 +619,8 @@ func (pl *placer) balance(first bool) {
 		}
 		pl.addShares(diff, 1)
 	}
+	pl.warned()
+	pl.rise()
 	pl.follow()
 	t0 := time.Now()
 	w, un := pl.apply(pl.target())
