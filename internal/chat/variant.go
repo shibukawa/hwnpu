@@ -44,6 +44,9 @@ func (r Run) zero() bool { return r == Run{} }
 type Variant struct {
 	Memory PerVendor // nil: the model's
 	Run    Run
+	// AMDExport replaces the model's amd_export (nil: the model's): gpt-oss-20b keeps 16 of its
+	// 32 experts a layer on AMD's NPU on 16 GB, all of them from 24 GB
+	AMDExport []string
 }
 
 // On is the model as a machine of machine GB runs it: with the variant of the largest memory the
@@ -64,6 +67,9 @@ func (m Model) On(machine int) Model {
 		m.Memory = m.MemoryBy.For("")
 	}
 	m.Run = m.Run.over(v.Run)
+	if v.AMDExport != nil {
+		m.AMDExport = v.AMDExport
+	}
 	return m
 }
 
@@ -79,8 +85,9 @@ type RunEntry struct {
 
 // variantEntry is a variant in a definition file: variants: {16: {memory: 2.3, prefill: auto}}.
 type variantEntry struct {
-	Memory   *PerVendor `yaml:"memory"`
-	RunEntry `yaml:",inline"`
+	Memory    *PerVendor `yaml:"memory"`
+	AMDExport *string    `yaml:"amd_export"`
+	RunEntry  `yaml:",inline"`
 }
 
 // toRun checks a definition's fields of Run.
@@ -147,7 +154,16 @@ func toVariants(m Model, es map[int]*variantEntry) (map[int]Variant, error) {
 		if e.Memory != nil {
 			v.Memory = *e.Memory
 		}
-		if v.Memory == nil && r.zero() {
+		if e.AMDExport != nil {
+			switch {
+			case len(m.AMDExport) == 0:
+				return nil, fmt.Errorf("variant of %d GB: amd_export, but the model has none", gb)
+			case len(strings.Fields(*e.AMDExport)) == 0:
+				return nil, fmt.Errorf("variant of %d GB: amd_export is empty", gb)
+			}
+			v.AMDExport = strings.Fields(*e.AMDExport)
+		}
+		if v.Memory == nil && r.zero() && v.AMDExport == nil {
 			return nil, fmt.Errorf("variant of %d GB gives nothing", gb)
 		}
 		out[gb] = v

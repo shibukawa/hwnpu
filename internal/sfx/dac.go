@@ -38,9 +38,10 @@ type DACStage struct {
 
 // DACStages are the stages, each over about as many frames as its output fits in the Neural
 // Engine's 16384 of a dimension (stage 0 over about 1024: Core ML put its transposed convolution on
-// the CPU over 1536), its output a multiple of 9 frames for phaseConv.
+// the CPU over 1536; stage 3 over 4500, as M1's Neural Engine compiler fails it over 4998), its
+// output a multiple of 9 frames for phaseConv.
 func DACStages() []DACStage {
-	ins := []int{1026, 3195, 3996, 4998, 7992}
+	ins := []int{1026, 3195, 3996, 4500, 7992}
 	var st []DACStage
 	ch := decoderDim
 	for i, r := range decoderRates {
@@ -65,7 +66,8 @@ func DACStages() []DACStage {
 
 // Part is the stage's program: inputs x (1, Channels, 1, In), m (1, 1, 1, In) and mo (1, 1, 1,
 // In * Rate), 1 for the frames of the clip and 0 outside it, and mg (1, 1, 1, 1), Magic (the decoder's convolutions pad with
-// zeros, which the program gets by zeroing every convolution's input outside the clip); output y
+// zeros, which the program gets by zeroing every convolution's input outside the clip), and for
+// Core AI mg2 (1, 1, 1, 1), Magic too (snake's); output y
 // (1, Out, 1, In * Rate), the frame k of x giving frames k * Rate to (k + 1) * Rate - 1.
 func (s DACStage) Part() *Part {
 	return &Part{Name: fmt.Sprintf("dac_%d", s.Index), build: func(g *graph) {
@@ -73,6 +75,9 @@ func (s DACStage) Part() *Part {
 		m := g.input("m", 1, 1, 1, s.In)
 		mo := g.input("mo", 1, 1, 1, s.In*s.Rate)
 		d := &dac{graph: g, prefix: "state_dict.", mg: g.input("mg", 1, 1, 1, 1)}
+		if g.Opts.Backend == llm.BackendCoreAI {
+			d.mg2 = g.input("mg2", 1, 1, 1, 1)
+		}
 		i := s.Index
 		if i == 0 {
 			x = d.conv(g.mul(x, m), "post_quant_conv", 1, 0, false)
@@ -91,6 +96,7 @@ type dac struct {
 	*graph
 	prefix string
 	mg     *mlpackage.Var // the input mg, Magic
+	mg2    *mlpackage.Var // the input mg2, Magic again (Core AI)
 }
 
 // weightNorm is a weight-normed convolution's weight: weight_g * weight_v / |weight_v|, the norm
@@ -243,9 +249,10 @@ func (d *dac) polyphase(x *mlpackage.Var, name string, w, bias []float32, ci, co
 // alpha x under it.
 const snakeSmall = 1e-2
 
-// Magic is the value of every stage's input mg: added to a value of fp16 under 512 and taken off
-// again, it rounds the value to an integer (fp16's spacing from 1024 to 2048 is 1). It comes as an
-// input, as a constant Core ML folds the addition and the subtraction away.
+// Magic is the value of every stage's inputs mg and mg2: added to a value of fp16 under 512 and
+// taken off again, it rounds the value to an integer (fp16's spacing from 1024 to 2048 is 1). It
+// comes as an input, as a constant Core ML folds the addition and the subtraction away, and Core
+// AI takes it off as another input (mg2), as it folds (v + mg) - mg into v (design.md 16.197).
 const Magic = 1536
 
 // sinTerms are sin(pi / 2 w) = w (b0 + b1 w^2 + ... + b4 w^8) for |w| <= 1, Taylor's terms (the
@@ -295,23 +302,40 @@ func (d *dac) snake(x *mlpackage.Var, name string) *mlpackage.Var {
 		return d.F16s(name+suffix, []int{1, c, 1, 1}, v)
 	}
 	y := d.clip(d.mul(x, vec("_alpha", big)), -1500, 1500)
-	var sn *mlpackage.Var
-	if d.Opts.Backend != llm.BackendIntel {
-		// Core AI runs sin on the Neural Engine, and folds (v + mg) - mg into v even with mg an
-		// input, so the rounding below does not round there; the CPU interpreter, which runs the
-		// Core ML export, computes in fp32 and does not round it either (design.md 16.197)
-		sn = d.unary("sin", y)
-	} else {
+	var w *mlpackage.Var
+	switch {
+	case d.mg2 != nil:
+		// Core AI: M1's Neural Engine has no sin (Core AI puts it on the GPU, and the stage
+		// with it), and its compiler takes neither y - 3.125 n - (pi - 3.125) n (a "fused"
+		// subtraction of two scaled inputs) nor a clip folded into such an operation, so y is
+		// reduced in units of pi: u = y / pi, n = round(u) by (u + mg) - mg2, w = 2 (u - n).
+		// y's own fp16 rounding is as coarse as u's (design.md 16.254)
+		u := d.scale(y, float32(1/math.Pi))
+		n := d.sub(d.add(u, d.mg), d.mg2)
+		w = d.scale(d.sub(u, n), 2)
+	case d.Opts.Backend == llm.BackendIntel:
 		n := d.sub(d.add(d.scale(y, float32(1/math.Pi)), d.mg), d.mg)
 		r := d.sub(d.sub(y, d.scale(n, 3.125)), d.scale(n, float32(math.Pi-3.125)))
-		w := d.scale(r, float32(2/math.Pi))
-		u := d.mul(w, w)
-		b := sinTerms
-		p := d.addScalar(d.scale(u, b[4]), b[3])
-		for k := 2; k >= 0; k-- {
-			p = d.addScalar(d.mul(p, u), b[k])
-		}
-		sn = d.mul(w, p)
+		w = d.scale(r, float32(2/math.Pi))
+	default:
+		// the Core ML export is only for --cpu: the CPU interpreter computes in fp32, does not
+		// round, and is right with sin
+		return d.snakeOut(x, d.unary("sin", y), name, inv, small, root, sign, anySmall)
+	}
+	u := d.mul(w, w)
+	b := sinTerms
+	p := d.addScalar(d.scale(u, b[4]), b[3])
+	for k := 2; k >= 0; k-- {
+		p = d.addScalar(d.mul(p, u), b[k])
+	}
+	return d.snakeOut(x, d.mul(w, p), name, inv, small, root, sign, anySmall)
+}
+
+// snakeOut is snake's output from sn = sin(alpha x).
+func (d *dac) snakeOut(x, sn *mlpackage.Var, name string, inv, small, root, sign []float32, anySmall bool) *mlpackage.Var {
+	c := x.Shape[1]
+	vec := func(suffix string, v []float32) *mlpackage.Var {
+		return d.F16s(name+suffix, []int{1, c, 1, 1}, v)
 	}
 	out := d.add(x, d.mul(d.mul(sn, sn), vec("_inv_alpha", inv)))
 	if !anySmall {

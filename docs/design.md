@@ -7809,6 +7809,21 @@ docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常�
 - よく使う K 個の割合 (分類を等しく混ぜて): K=16 で 45 %、32 で 67 %、48 で 80 %、64 で 88 % (56 で約 84 %)。20b (32 個のうち 16 個で 81 %) より散らばる。ほかの分類で選んだ置き場に入る割合は computer (K=64 で 69 %) と math (70 %) が低い
 - 芯 (どの分類でも 1/128 以上): 515 個、1 層 14.3 個 (8〜23)、選択の 29〜40 %。`hwnpu-chat` に渡すと (models.yaml の `experts_core` の形、`tools/moeusage/analyze.py` が出す。置き場から最後に追い出す)。hwnpu-chat で選択のコピー 3.1 → 2.8 %、10.0 トークン/秒
 
+**16 GB の機械の gpt-oss-20b** (models.yaml: `machine: 16`、8 GB は不可。`variants` に `amd_export` を足した: 16 GB は置き場 16 とホストのルーティングの書き出し `gpt-oss-20b.amd-npu2-p16`、24 GB 以上は全部置く `gpt-oss-20b.amd-npu2`)
+
+- 16 GB では専門家のファイル (10.96 GB) が置き場 (固定 6.90 GiB) の横のページキャッシュに入らないので、O_DIRECT で読む (`directReads`: ファイルの 2 倍がメモリ以上)。64 GB の機械で `HWNPU_MOE_DEBUG=direct=1` で同じ形にして測った。README の 1217 トークンのプロンプトと 200 トークン、`/proc/PID/smaps` の accel の Size と RSS の和の最大:
+
+| 書き出し | 最大 | プロンプト | デコード | 選択のうち読む |
+|---|---|---|---|---|
+| 全部置く (24 GB 以上) | 12.6 GiB (NPU 12.2 + RSS 0.4) | 8.0 s | 19.4 トークン/秒 | — |
+| 置き場 16、端末の経路、O_DIRECT | 7.7 GiB (6.9 + 0.8) | 10.5 s | 12.9 | 10.6 % |
+| 置き場 16、ホストの経路 (先読み)、O_DIRECT (16 GB) | 7.7 GiB (6.9 + 0.8) | 10.5 s | **14.4** | 3.5 % |
+| 置き場 16、ホストの経路、写像 (24 GB 以上で使うなら) | NPU 6.9 + ページキャッシュ | 9.6 s | 17.2 | 3.5 % |
+
+- 写像で読むと RSS に専門家のファイルのページが入る (置き場 16 の端末の経路で RSS 10.3 GiB)。追い出せるが、16 GB ではそれが置き場と取り合う
+- 24 GB 以上は全部置く方が 11 % 速いので、書き出しを機械のメモリで分けた (`chat.Variant.AMDExport`、書き出しの名前は `--expert-places N` で `-pN`)。名前で呼ぶと 16 GB (`HWNPU_MEMORY=16`) は `-p16` を、24 GB は全部置く方を読む (16.6 と 19.9 トークン/秒、富士山の問い)
+- Apple の 16 GB は部品からの見積もり 6.4 GB (専門家の固定の予算 4.3 GB、Neural Engine 1.44 GiB、プロセス 0.5 GB。固定していない専門家はチェックポイントの写像でページキャッシュ)。Mac で測っていない
+
 **AMD の ONNX Runtime GenAI との比べ** (improvements.md 13 節、AMD の技術記事の数字。この機械ではその環境を入れていないので同じ機械では測っていない)
 
 | gpt-oss-20b | 記事 (専門家を INT4 に量子化し直し、経路は CPU) | hwnpu (MXFP4 のまま、経路も NPU) |
@@ -7816,7 +7831,31 @@ docs/handoff-amd-moe.md の 3 節。Mac の「よく使う専門家だけを常�
 | 全部常駐 | 13.7 GB で 13.4 トークン/秒 | 12.22 GiB + 0.3 で 20.2 |
 | 一部 | 24 層を動的に: 2.7 GB で 2.4 | 置き場 16: 6.90 GiB + 0.3 で 17.2、24: 9.44 GiB で 19.0 |
 
-### 16.262 MOSS-SoundEffect の CPU が計算する表を切り出し、チェックポイントなしで動かす — 2026-11-20
+### 16.262 MOSS-SoundEffect の DAC を M1 の Neural Engine にも: snake の sin を級数に、段 3 を 4500 フレームに — 2026-11-19
+
+16.197 で M3 では DAC の 5 段がすべて Neural Engine に乗ったが、M1 (h13) では 5 段とも GPU に回り、`--allow-off-npu` がないと `generate -m sfx` が失敗した。M1 で直した。
+
+**見つけ方**: `xcrun coreai-build compile dac-N.aimodel --platform macOS --architecture h13g --preferred-compute neural-engine` で、端末のコンパイルが Neural Engine なしで 1 段 1 秒で再現する (乗ったかは `manifest.plist` の `mps.fullyPlacedOnANE`)。理由は `coreai-build` の os_log に出る (`/usr/bin/log show --predicate 'process == "coreai-build"'`。zsh では `log` が組み込みなので `/usr/bin/log`)。snake だけのプログラム (チャンネルは DAC の最後の snake) でも試した。
+
+**乗らなかったもの** (M1 の ANE のコンパイラ)
+1. `sin`: Core AI が GPU に回す (M3 では `sin_v1` が Neural Engine で動く)。段 4 は ANE の部分が 9 つに割れ、その間が snake の数 (8) と同じだった
+2. clip を要素ごとの演算にまとめたもの: "Unsupported NE layer "NEFUSED_EW": EW: MAX"。clip を外すと段全体は通らないが、snake だけなら clip があっても通る
+3. 16.136 の級数 (Intel の形) の `y − 3.125 n − (π − 3.125) n`: "NEFUSED_EW": "KernelPreScales: (1,-0.0165863)" (定数倍した入力どうしの引き算)
+4. 段 3 (256 → 128 チャンネル、stride 3) の 1 回 4998 フレーム (出力 14994): 演算の名前なしの "Failed to compile function …: unexpected failure"。4500、3996、2997 は通る (4500 より上は試していない)
+
+**直し方** (`internal/sfx/dac.go`。Core AI の書き出しだけ。Core ML (`--cpu`) は `sin` のまま、Intel は前の級数のまま)
+- snake の sin を、π を単位にした縮め方の級数で: `u = y / π`、`n = (u + mg) − mg2`、`w = 2 (u − n)`、sin(y) = sin(π/2 · w) を 16.136 の級数で。丸めの定数は 2 つの入力 (`mg`、`mg2`、どちらも 1536): 1 つだと Core AI が `(u + mg) − mg` を `u` に畳む (16.197)。clip (±1500) は残した (|u| < 512 で丸めが正しい)。u は y と同じく fp16 なので、y を fp16 にしたときの誤差と同じくらいの粗さになる
+- 段 3 を 1 回 4500 フレームに (出力 13500 は 9 の倍数で、`phaseConv` に合う)
+- `DACRevision` 3 (書き出しの名前は `hwnpu-dac-r3-fp16`)。M3 も同じ書き出しを取るので、M3 も級数になる
+
+**結果** (M1、macOS 27.2)
+- `coreai-build` で h13g (M1) も h15g (M3) も 5 段とも `mps.fullyPlacedOnANE`。前の DAC (r2) は h15g でも通らなかった (M3 の端末のコンパイラは通す)
+- `TestDecodeLatentsCoreAI` (`HWNPU_SFX_COREAI=1`): 5 段とも端末で Neural Engine に乗り (初回の読み込み 段 0 3 分 14 秒、ほかは 1.4〜7.6 秒)、種で決めた潜在 250 フレーム (5 秒) を 4.1 秒で。CPU のインタプリタ (fp32 の sin) との相対 RMS 0.0085 (M3 で 16.197 のときの 0.0085 と同じ)
+- 通し (M1、`--allow-off-npu` なし、5 秒、30 ステップ、種 1、"a dog barking"): MOSS-SoundEffect-v2.0 と -lut8 のどちらもすべて Neural Engine に乗った。DAC を GPU で計算した前の回の音との差は相対 RMS 0.0018。30 ステップで 1 分 35 秒 (前の回は 1 分 49 秒)
+- 最初に通そうとしたときは空きが 14 GB で、取得元から 11.5 GB を取れなかった。そのとき hwnpu のキャッシュの掃除が、別のセッションの `hwnpu-image` の Core AI のキャッシュ 14 項目 (約 1.8 GB) を消した
+- 未確認: M3 の端末での級数の速さと値 (h15g の `coreai-build` では乗る)
+
+### 16.263 MOSS-SoundEffect の CPU が計算する表を切り出し、チェックポイントなしで動かす — 2026-11-20
 
 MOSS は書き出しがあっても、実行に元のファイル (11.5 GB) を読んでいた (16.253 の「ほかに見えたこと」)。メモリが足りないからではない。CPU が計算に使う表を、チェックポイントから読んでいたため。
 

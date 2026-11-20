@@ -69,10 +69,11 @@ func HostTables() []string {
 
 // Revision counts the changes to the programs that call for converting them again (in their
 // names); DACRevision the decoder's stages' (2: sin, convolutions along the height, dilations as
-// rows, for Core AI's Neural Engine; design.md 16.197).
+// rows, for Core AI's Neural Engine, design.md 16.197; 3: snake's sine by its series, and stage 3
+// over 4500 frames, for M1's, 16.254).
 const (
 	Revision    = 1
-	DACRevision = 2
+	DACRevision = 3
 )
 
 // The defaults of the model card: 100 steps, guidance 4, shift 5.

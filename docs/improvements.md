@@ -401,7 +401,7 @@ Measured on a Ryzen AI 9 365 (Strix Point, NPU2).
 | Qwen3.5's embeddings on the host (16.104) | The head holds a quantized copy, so the bf16 table on the device was unused | 0.8B −0.47 GiB, 2B −0.95 GiB. Logits bit for bit the same. Qwen3.6 keeps it (its routing reads it) |
 | GDN columns in whole blocks of 64 rows (16.104) | Puts the fused projection of the Qwen3.5 with as many value heads as key heads (0.8B, 2B) on q8 / q4 | A column 772 → 776 channels (rows of zeros). 4B unchanged |
 | Anima's DiT in one bank (`iron.GraphOptions.SwapVariants`, 16.106) | One bank for the 7 groups, a group's weight image (304 MiB) read into it when it runs | Pinned 3445 → 1236 MiB, denoising +2 %, latents byte for byte the same. `-resident-dit` keeps all |
-| hwnpu-dev xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | Matrix multiply at 1–4 tenths of the peak (int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
+| hwnpu-dev xclbin and tools/iron (amd-xdna2-bench.md) | Builds IRON designs without XRT's xclbinutil. Measures the data types and DMA | With IRON's sample kernels, matrix multiply at 1–4 tenths of the peak (hwnpu's GEMM of bfp16 weights packed on the host: 15.2 TFLOPS at 4096 rows, PROBE.md; int8 7.3–7.6 TOPS, bf16 2.7–3.0 TFLOPS at 4096³). DMA read 55–57 GB/s, write 48 GB/s, both 64 GB/s. A run costs at least 0.06 ms |
 | A checkpoint's own 4 bits kept (mx4, `iron_gptoss_moe.py`, 16.179) | gpt-oss's MXFP4 experts read as they are: e2m1 nibbles decoded in the kernel (sign × max(m, 2m − 4, 4m − 16)), the group's exponent byte as the scale. 4.3 bits a weight, no error | Rounding them again to q4nx added 6.6 % weight error and took KL 2–3× up. q6 also holds them exactly, at 6.5 bits |
 | Attention sinks in IRON's MHA (`iron_sinks.py`, 16.179) | gpt-oss's learned logit per head: its term added to the softmax's running sum before the last division, on the P×V cores | No work added, the KV cache as without sinks. Cosine 0.999988 against the formula, sinks of 6 included |
 | Fewer operators in the decode step (16.179) | A projection's bias and the block's residual added in its GEMV as the output leaves (`QGEMVAdd`, `kernels/mv_add.h`); a gated MLP's gate and up as one table and one operator (`QGEMVGlu`); q and k one RoPE; a router's bias in MoERoute | Qwen3.5-0.8B 87 → 73 ms, gpt-oss 97.5 → 89.5 ms; one table, no second copy of the weights. Generation is bound by the count of operators (80–150 µs each) |
@@ -526,6 +526,72 @@ What these share:
 - **Compute inside in a wider precision than the output.** On AMD the kernels work in float32 on bf16 limbs and round once to bf16; in fp16 the series and the scales are chosen so nothing overflows or falls to subnormals.
 - **Move the small part to the host.** A norm's statistics, a final tanh, embedding rows: little data, and the host computes them in float64.
 - **Check each stand-in alone and then the whole.** The operator against its reference (float64 or the checkpoint's), then the model's output against the CPU's version, because the Neural Engine's and the NPUs' wrong values do not show in the placement report.
+
+### 7.6 Apple: what leaves the Neural Engine, and past what
+
+What the docs record of ops and programs that do not run on the Neural Engine (they go to the CPU or the GPU, the compile fails, or they run there with wrong values), with the line past which it happens and what hwnpu does instead. "Core ML" and "Core AI" are the backend; a chip is named where it was seen (others not tried). The numbers in parentheses are design.md sections.
+
+**How to find it**: Core AI's placement is in the MPSGraph manifest (`mps.fullyPlacedOnANE`). `coreai-build compile X.aimodel --architecture h13g` (M1; h15g M3) reproduces a device's ANE compile offline in seconds, without the Neural Engine, and its reason is in the os_log of `coreai-build` (`/usr/bin/log show --predicate 'process == "coreai-build"'`, "Unsupported NE layer"; zsh's `log` is a builtin). A program split into N ANE regions ("Configuring bonded mode for procedure … region_K") has N − 1 ops off it between them. `aicheck run -cpu` with `HWNPU_AILOWER_CUT` bisects by the first N ops.
+
+**Ops and forms not on the Neural Engine**
+
+| Op or form | Backend, chip | Past what | Instead | What hwnpu does |
+|---|---|---|---|---|
+| `sin` | Core AI, M1 | Always (M3: on it, `sin_v1` ±8: 0.004, ±32: 0.016) | The program to the GPU | Its series after a reduction to ±π/2 in units of π (MOSS DAC, 16.262) |
+| `sin`, `cos`, `floor`, `round`, `ceil`, `mod`, `floor_div`, `sign`, `cast` | Core ML | Always | CPU | Rounding by `(v + 1536) − 1536` with 1536 an input; series (16.136) |
+| `mod` | Core AI | Always | The program to the GPU | (handoff-ane-gather.md 1b) |
+| A clip folded into an elementwise op ("NEFUSED_EW: EW: MAX") | Core AI, M1 (h13 compiler) | The clip beside the stage's other elementwise ops (alone it compiles) | The program to the GPU | The DAC's snake as below compiles with it (16.262) |
+| A subtraction of a scaled input from a scaled input ("NEFUSED_EW: KernelPreScales (1, −0.0166)") | Core AI, M1 | `y − 3.125 n − (π − 3.125) n` | The program to the GPU | `u = y / π`, `n = (u + mg) − mg2`, `w = 2 (u − n)` (16.262) |
+| `(v + mg) − mg` with mg an input | Core AI | Always: folded into `v` (no rounding) | Wrong values | Take it off as another input, `mg2` (16.262) |
+| `gather` | Core ML | Always | CPU | One-hot matmul, tables from the position (16.13, 16.82, 16.100) |
+| `gather_nd`, `gather_along_axis`, `slice_by_index` from a run-time begin, `reduce_argmax` | Core AI, M1 | Always (int32: "expected fp16, …"; int16: "Cannot decompose layer") | GPU | No gather on M1 (handoff-ane-gather.md) |
+| `gather_nd` | Core AI, M3 | int32 indices; int8 with K 4 | GPU | int16 indices (cos 1.000000, ~3 G elements/s, 1/6 of constant weights): small tables only |
+| `conv_transpose` | Core ML, M1 | Strides 5 and 7; 2048→1024 k16 s8 over 1536 frames (fits at 1024) | CPU | Polyphase for every stride but 2 (16.136) |
+| Dilated convolution | Core ML, M1 | Dilations 17, 27, 40, 48 (2 fits) | CPU | Shifted copies on the channels and a 1×1 conv (16.128) |
+| Dilated convolution | Core AI, M3 | Dilations 5 and 7 along the width | GPU | `phaseConv`: (1, C, T / d, d), undilated along the height (16.197) |
+| `max_pool` | Core ML, M1 | Windows 9 and 13 (stride 1) | CPU | Chains of window 5 (16.129) |
+| Depthwise convolution | Core ML, M1 | Over 4096 channels (5760, 5600) | CPU | Chunks of 4096 (16.145) |
+| Grouped int8 (`int8-g32`) | Core ML, M1 | Always | CPU | int8 a row (16.145) |
+| int4 (`ios18.linear`) | Core ML | A 107520-wide output | CPU (that layer) | lut4; int4 is not used on the Mac (16.164) |
+| Q4_0 as a matmul of 32 columns | Core ML, M3 | Always | CPU (as a grouped conv: on it, 7× slower) | lut6 (16.26) |
+| int8 `blockwise_shift_scale_v2` with bare ops outside | Core AI | Always | The whole program off | The composite `broadcasting_batch_matmul_v1` (16.169) |
+| `exp / sum`, softmax next to the matmul | Core AI | Fused into an attention op | Off | `exp(x − max) × reciprocal(sum)` (16.169, 16.201) |
+| `reduce_sum` of the exponentials | Core ML, M3 / Core AI, M1 | Core ML: from compile to compile (chunks 2048–16384); Core AI: 8 rows × 1024–8192 keys | CPU / off | A matmul with ones (16.22); an attention a kv head at a time (16.219) |
+| Merging chunks of an attention | Core ML, M3 | Chunks reduced along an axis, weighted by sum / total, or 1/n before the max | CPU (all of it) | The sums added and divided once (16.21) |
+| One `transpose`, one `reshape` of a 262144 vocabulary | Core ML, M3 | PLaMo 3's last part; Gemma 4's output | CPU (that op) | Reordered on the host; `-logits host` / `folded` (16.43, 16.71) |
+| `upsample_nearest_neighbor`, `reshape`, `transpose` in SpectroStream | Core ML, M2 | 4 ops | CPU | Given as inputs from the host (16.132) |
+| A (3, 39) convolution + ReLU (Basic Pitch) | Core ML | Even split to width ≤ 16 | CPU | Not solved (16.129) |
+| An 8 × 8 by 8 × 8 matmul (Qwen3.5's GDN chunk) | Core ML / Core AI | Always | CPU / off | 7 products of (8 × 8)·(8 × 128); cumulative sums as a constant linear (16.193) |
+
+**Sizes**
+
+| What | Backend, chip | Past what | Instead | What hwnpu does |
+|---|---|---|---|---|
+| Any dimension | Core ML, M3 (and the others) | Over 16384 (16384 fits, 16385 puts 39 ops on the CPU) | CPU | Contexts ≤ 16383, chunks of 16384, matrices split (16.16–16.22); outputs, inputs and concatenations split (16.129, 16.149, 16.189, 16.248) |
+| An MLP's intermediate | Core AI, M1 | 18944 (Qwen2.5-Coder 7B; 13824 fits) | The part off (0.1 tok/s) | Split at multiples of 32 columns (16.230) |
+| A DAC stage (256 → 128 channels, stride 3) | Core AI, M1 | 4998 frames in, 14994 out ("unexpected failure"; 4500 → 13500 fits; between not tried) | GPU | 4500 frames a call (16.262) |
+| A 1152-channel VAE stage | Core AI, M1 | 1152 × 64 × 64 after MaxScaled + SiLU (48 × 48, 768 × 64 × 64, 576 × 96 × 96 fit) | GPU ("Allocation failure for L2-dep pair"); one failing function takes every function of the `.aimodel` | Tiles ≤ 48 × 48; functions apart (16.184) |
+| A 1024-channel 32 × 32 stage with `tile`; `pixel_shuffle` to 64 × 400 × 400 | Core AI, M1 | "empty reset layer candidates in SS cost model" | GPU | 1 × 1 conv in place of `tile`; bands of ≤ 256 rows (16.189, 16.190) |
+| A program | Core ML / Core AI, M3 | 1 GiB / 2.5–3 GiB (2.5 fits, 3 does not) | CPU / GPU | Split by layers (16.12, 16.169) |
+| Too little work | Core ML | A 3-layer MLP of width 128 at batch 1; one row (Anima's time, SigLIP's queries); an attention chunk of Q=1 under 16384 keys, Q=8 under 4096 | CPU | 8 rows; small parts merged into a larger one (16.6, 16.58, 16.85, 16.183) |
+| An attention's scores | Core ML | Over 64 MiB | On it, 2–3× slower | Chunks of queries (16.85) |
+
+**On the Neural Engine, but wrong**
+
+| What | Backend, chip | Past what | Off by | What hwnpu does |
+|---|---|---|---|---|
+| A convolution along the width whose input another op computes | Core AI, M3 | Kernel > 1, 512 channels or more (2048 frames or more) | 1.26 (relative RMS) | Along the height (16.197) |
+| A dilated convolution | Core AI, M3 | Width, dilation 9 (256 ch): 1.30; height, dilation 3 (128 ch) at 8000 and 15000 frames (7680, 9000, 16000 right): 1.3–1.4 | | `phaseConv` (16.197) |
+| A convolution after an explicit `pad` | Core AI, M3 | | 0.99 | No pad (16.197) |
+| `conv_transpose` | Core ML, M1 | Strides 8, 4, 3 (2: 0.3 %) | 22 %, 45 %, 4 % | Polyphase (0.14–0.29 %, 16.136) |
+| `divide_v1` by a constant | Core AI, M3 | Always | A product: 1.40–1.44 u + d for 0.707 u | `x × (1/c)` (16.182) |
+| Column-block tables and grouped scales (lut 16 × 32, int4-g32/g128, int8-g32) | Core AI, M1 | Always (all on the ANE) | cos 0.966–0.984 | Refused at conversion (`rowsOnly`, 16.230) |
+| `softplus`, `silu` | Core ML, M3 | Some inputs (softplus 0); silu 1.4 % | KL 0.33 / 0.76 | Written with exp (16.88, 16.95) |
+| `sigmoid` (and SiLU as sigmoid × x) through a deep CNN | Core ML | 80 SiLUs (RTMDet-s): 0.0011 after the first convolution, 0.155 after stage 2 | Boxes 98 px off (CPU 7.5), one object lost | `1 / (1 + exp(−x))`, `x / (1 + exp(−x))` (16.149) |
+| fp16 subnormals and tiny products | Both | ~1e-5 and under | Dropped | Scales (16.88, 16.134, 16.202) |
+| Large values | Core ML, M1 | Up to 1.2e7 (SpectroStream), 3.8e4 before an RMS norm (SANA's bos) | 0.80; NaN | Scales of powers of 2; weights × 1/64 (16.133, 16.145) |
+
+**Compile failures and hangs besides the above**: `coreai-build` gives up the ANE where two neighbouring lut tables are the same (every chip, 16.249), and 9 architectures crash in it (known-issues 6); a wide one-hot (128 × 16000) wedged M1's Neural Engine for every process for about 20 minutes (16.131); 60 functions in one `.aimodel` put some on the GPU (16.188).
 
 ## 8. Tried without effect, or not adopted
 
@@ -929,7 +995,7 @@ Collected from what the records call "not yet checked", "not measured" or "estim
   - Calls from ComfyUI nodes
 - The rest of Qwen3.6-35B-A3B's prompt (16.116; a chunk of 256 2.6 s): the experts' command (B, 1.49 s) is bound by the kernel's arithmetic (streaming the weights alone takes 8.4 + 4.4 ms of 19–23 + 15–17 ms a layer; a scalar MAC, no mmul. bf16 mmul in groups of 8 rows was tried and was not faster), the GDN and attention command (A, about 0.7 s; `GatedDeltaRule` receives every row 16 times), the host's routing (about 2.8 ms a layer, mostly a 16 MB copy of x)
 
-## 12. The speed ceiling and what software can still move (estimate of 2026-11-08)
+## 12. The speed ceiling and what software can still move (estimate of 2026-11-08; AMD measured again on 2026-11-19)
 
 This section uses `hwnpu-dev probe` on the M1, M2 and M3 (PROBE.md, `npu_profiles/`) and the AMD measurements (amd-xdna2-bench.md) to answer two questions: does a faster NPU make generation faster, and what can software still change? 12.2 is an estimate from public specs and has not been measured.
 
@@ -942,13 +1008,17 @@ With 16 layers (0.97 B):
 | NPU, rated | 11 TOPS | 15.8 TOPS | 18 TOPS | 50 TOPS |
 | DRAM bandwidth | 68 GB/s | 100 GB/s | 100 GB/s | 90–120 GB/s |
 | int8 weights read at | 62 GB/s | 62 GB/s | 23 GB/s (slow on the M3 only) | — |
-| 4-bit weights read at | 44 GB/s (lut4) | 63 GB/s (lut4) | 64 GB/s (lut4) | 55 GB/s (q4nx GEMV) |
+| 4-bit weights read at | 44 GB/s (lut4) | 63 GB/s (lut4) | 64 GB/s (lut4) | 53 GB/s (q4nx, no operator loaded again); 19 GB/s as the chat models' exports run a step |
+| Matrix products, measured best | about 5 TFLOPS (Anima's MLP, Core AI) | — | 13.7 TFLOPS (K=64, Core ML) | 15.2 TFLOPS (bfp16 weights, 4096 rows) |
+| Checking drafts: 4 tokens a call cost | — | — | 1.0 steps (up to 64: 1.10) | 1.28 steps (8: 2.83) |
 
 - **The ANE reads weights at about 62–64 GB/s on every Apple chip measured.** DRAM grew 1.47× from the M1 to the M2, but int8 stayed at 62 GB/s. On the M2 and M3 the limit is the ANE's own path to memory, not DRAM (100 GB/s)
 - **Moving bytes is the limit, not computing.** On the M2, int8 and lut4 differ 2× in work per byte yet both read at about 63 GB/s
 - **Only the M1's lut4 was compute-bound.** Expanding the 4-bit table is slow there, and the M2 was 1.41× faster (close to the TOPS ratio of 1.44). The M2 reached the ceiling. The M3 has 14% more TOPS and went from 63 to 64 GB/s
 - **AMD is the same.** DMA tops out at 55–57 GB/s with 8 channels (14 GB/s each). The 4-bit GEMV reaches that with 16 cores, and 32 cores are no faster (2.4× spare compute)
 - **gpt-oss-20b on AMD runs at 93 % of this floor** (16.179): a token moves 2.53 GB, 46 ms at 55 GB/s, and takes 49.4 ms. Getting there took removing everything between the reads (operators loaded again, a barrier, exponentials, the host's loop over the logits), not faster arithmetic: the 4 cores a column have compute to spare
+- **Measured again on AMD with the production paths (2026-11-19, `hwnpu-dev probe` on AMD, PROBE.md):** the ceiling holds (53 to 55 GB/s in q4, q8 and bf16 when the operators run back to back), but a step as the chat models' exports run it reaches a third of it in q4 (19 GB/s): each of a layer's 8 operators is loaded onto the cores again, 20 of the 31 ms of 16 layers. gpt-oss-20b's resident step is the form that removes it; for the other models it is worth about 2.7 times in q4
+- **The compute ceiling is the other way round.** amd-xdna2-bench.md's 10 to 40 % of the rating were IRON's sample kernels; with the weights packed as bfp16 on the host the GEMM reaches 15.2 TFLOPS at 4096 rows (9.0 at 256), above the M3's Neural Engine (13.7 at K=64) and about three times the M1's. Work bound by compute (the image DiTs, prompts) is where AMD is ahead: FLUX.2 klein 1024² about 29 s against the M1's 41, a Qwen-Image step 8.4 against 15.9 s
 - TOPS helps only prefill and attention over a long context (the one-row matrix-vector products the ANE cannot fill). One generated token follows model-fit.md section 2: weight bytes ÷ read bandwidth + attention + about 3 ms. A faster NPU shrinks only the second term
 
 ### 12.2 What newer chips may bring (not measured)
@@ -958,7 +1028,7 @@ Generation of LFM3-1.7B (lut4, short context) compared with the M3. The NPU's sh
 | | NPU read, expected | Generation | Prefill | Runs on hwnpu |
 |---|---|---|---|---|
 | Apple M6 (two Neural Engines, 170 GB/s) | The same if one engine still reads 64 GB/s. Up to about 2× if both can be used at once or the path is wider | 1.1–2× | About 2× the M5's compute, 2–4× the M3 | Yes (Core ML) |
-| Snapdragon X2 Elite (80 TOPS, 152 GB/s) | 75–100 GB/s | 1.3–1.6× | About 4× the M3 on paper (effective unknown; AMD reaches 10–40% of its rating) | No (no Qualcomm backend) |
+| Snapdragon X2 Elite (80 TOPS, 152 GB/s) | 75–100 GB/s | 1.3–1.6× | About 4× the M3 on paper (effective unknown; AMD's GEMM reaches 15.2 TFLOPS, 30 % of its 50 TOPS, with bfp16 weights) | No (no Qualcomm backend) |
 | Snapdragon X2 Elite Extreme (228 GB/s) | 115–150 GB/s | 1.8–2.2× | Same as above | Same as above |
 
 - The M6's second engine helps generation only if a layer's matrices can be split into two programs called at the same time. That doubles the fixed cost per call
@@ -975,7 +1045,8 @@ Tokens/s ≈ read bandwidth ÷ bytes read per token × tokens advanced per read 
 | Tokens advanced per read | Speculative decoding (prompt lookup) | Done on Apple and Intel. A Q=8 call costs 13% more than Q=1 | 15.9 → 23.7 tokens/s, 1.2–1.5× over a whole task | 16.33, 16.36, 16.37 |
 | 〃 | A draft model (such as Qwen3.5's `mtp.` layers) for more hits | Apple done (16.109, M1 Qwen3.5-0.8B 26.1 → 43.8 tok/s on code). AMD not yet | Gains if it beats prompt lookup's 1.07–1.67 tokens a call | model-fit.md T9 |
 | 〃 | Read once for several requests (batching) | Not done | One read serves several conversations. Total throughput grows when subagents run side by side | — |
-| 〃 | Draft checking on AMD | Done for q8 / q6 (16.117): a check of 3 rows costs 1.27 decode steps. q4 not yet | Qwen3.5-0.8B 82 → 62–72 ms/token with prompt-lookup drafts | 16.117 |
+| 〃 | Draft checking on AMD | Done for q8 / q6 (16.117): a check of 3 rows costs 1.27 decode steps. q4 not yet | Qwen3.5-0.8B 82 → 62–72 ms/token with prompt-lookup drafts. The probe (PROBE.md): 2 rows 1.04, 4 rows 1.28, 8 rows 2.83 steps, a chunk of 256 rows 4.6: about 4 tokens a call is the most | 16.117 |
+| Time not spent reading (prompts) | AMD: a prompt chunk's weights held as bfp16 too, as the image DiTs' (no dequantize at every call) | Not done | The probe: 256 rows of q4 or q8 86–88 ms against bfp16's 28 (3 times); costs 9 bits a weight more | PROBE.md |
 | Time not spent reading | Fixed cost per call (about 3 ms), switching parts, host work | LFM3-1.7B at a 1K capacity: of 19.1 ms, 13.4 ms reading weights, 2.8 ms attention, 3 ms fixed | 15–16 ms expected after trimming the fixed cost and attention | model-fit.md section 2 |
 | 〃 | AMD: one submission for a whole layer | Done (a full ELF is 2.7× faster than submitting each op). A fused layer reaches 83% of the read floor | Avoids piling up the 0.06 ms per call | amd-xdna2-bench.md section 4.10, amd-npu-models.md section 2 |
 | 〃 | AMD: a decode step as one resident array (no operator loaded again), the host's loops in vector code | Done for gpt-oss-20b (16.179). The other models still run their operators apart (about 67 µs and 1.2 µs a KB of programs each time one follows another) | gpt-oss 79.2 → 49.4 ms. What is left: a command boundary a layer (0.1 ms), a phase's fixed 25–35 µs, the host's 1 ms | 16.179 |
