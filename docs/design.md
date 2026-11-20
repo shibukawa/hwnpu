@@ -8311,9 +8311,9 @@ arXiv の Neural Engine の論文 (2606.22283 のリバースエンジニアリ�
 - 速さ: 今の 2B lut6 の書き出しは 32.0〜32.5 tok/s (`--mtp off`、温度 0、200 トークン、3 回)。出力層 lut4 の書き出しは、Neural Engine の初めてのコンパイルが 2 時間で終わらず測れなかった (ANECompilerService が止めた後も動き続けた)
 - 製品に入れるのに残っていること: MTP (書き出しの `h` は最後の norm の後の値で、MTP の fc が読む。回すと 1 + w が掛からない)、ホストの埋め込みの表 (`WriteTables` は bf16 をそのまま写す)、実行時に埋め込みを引く所 (`chat` のエンジン)、`Revision` を上げて書き出し直し、Neural Engine での 12 問
 
-### 16.271 AMD: QGEMV を 1 列 1 コアに、sandwich を次の GEMV の中で — 2026-11-20
+### 16.275 AMD: QGEMV を 1 列 1 コアに、sandwich を次の GEMV の中で — 2026-11-20
 
-16.264〜16.270 の後、LFM3-1.7B のデコードの設定のし直し (288 回 / トークン、13.6 MB) で最も大きいのは QGEMV の設定だった (2048 出力の q8 で 1 つ 92 KB、1 トークン 46 回で 4.2 MB)。QGEMV は 8 列 × 2 コア (memtile が列ブロックの 64 出力を 32 ずつ 2 コアに分ける) で、その 16 コアのプログラムと DMA の設定を、他の演算子から戻るたびに書き直していた。
+16.266〜16.272 の後、LFM3-1.7B のデコードの設定のし直し (288 回 / トークン、13.6 MB) で最も大きいのは QGEMV の設定だった (2048 出力の q8 で 1 つ 92 KB、1 トークン 46 回で 4.2 MB)。QGEMV は 8 列 × 2 コア (memtile が列ブロックの 64 出力を 32 ずつ 2 コアに分ける) で、その 16 コアのプログラムと DMA の設定を、他の演算子から戻るたびに書き直していた。
 
 - **1 列 1 コア** (`iron_q4.q_linear` の cores、既定 0 = 16384 出力まで 1、越えると 2。`HWNPU_Q_CORES`、`HWNPU_Q_CORES_UP_TO`): 1 つのコアが列ブロックの 64 出力を両方持つ (カーネルは `Q_OUT=64`)。設定はほぼ半分 (2048 出力の q8 で 92 → 36 KB)、GEMV は同じ速さ (帯域で決まる)、結果はビット単位で同じ。QGEMVGlu は 2 コアのまま (1 コアでは gate と up の 2 本の累算で遅くなる: 16.3 トークン/秒)。`HWNPU_GLU_CORES`
 - **sandwich を次の GEMV の中で** (`iron_q4.sandwich_operator`、`sandwich_linear`、`kernels/mv_add.h` の `Q_SANDWICH`): ブロックの出力 h、残差、post norm と次の norm の重み (Gemma 4 の layer_scalar の scale も) を x のチャネルに続けて流し、各コアが y = r + rms(h) w_post と n = rms(y) w_pre を作ってから n の GEMV をする (SandwichAdd と同じ和と丸め: 同じビット)。列 0 の 2 コアが y と n を出す。LFM3 の conv の層の in_proj、MLP の QGEMVGlu、出力層で使う (`HWNPU_LFM3_SANDWICH_GEMV`)。注意の層の前の 11 個は SandwichAdd のまま (q、k、v、ゲートの 4 つが n を読む)。`iron_q4.py check --sandwich [--glu silu|gelu] [--scale]` で y と n は誤差 0、GEMV はコサイン 0.99998
