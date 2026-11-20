@@ -8497,3 +8497,56 @@ Revision 2 の生成の文は、Revision 1 と約 65 トークン目で分かれ
 - 計測の間、別のセッションが Qwen3.6 の置き場の hwnpu-chat (`~/.cache/hwnpu-q36pool`) を回していた。上の表は NPU を他が開いていない回だけ (`/dev/accel/accel0` の fd を見て)
 
 **取得元の書き出し**: #252 で道具 (`iron_export_lm.py` は全部のチャットのモデルが読む) が変わり、鍵が全部変わったので、`hwnpu-dev cache export` で 14 のモデルを作り直して取得元 (NAS) に置いた (古い鍵の物は残る)。`cache export` はモデルの定義だけを作り、gpt-oss-20b の 24 GB からの版 (置き場なし) を作らなかったので、amd_export の違う variants も作るようにした (`amdForms`、`TestAMDForms`)。
+
+### 16.278 AMD: プロンプトの短い畳み込みを 1 つの演算子に、LFM3 のデコードの状態のコピーをなくす — 2026-11-21
+
+16.277 の後の残り (プロンプトの待ち、デコードの設定のし直し)。
+
+**プロンプトの内訳** (LFM3-1.7B q4、`iron_export_lm.py --command-per-step` の書き出しを `HWNPU_IRON_TIMING=1` で。コマンドごとに待つので和は普通の書き出しより約 1 割多い)
+
+| 演算 | 回 | 16 トークン | 1000 トークン |
+|---|---|---|---|
+| ProjectionGEMM | 179 | 219 ms | 319 ms |
+| QDequant / DequantBFP (重みを bf16 / bfp16 に) | 155 / 24 | 92 / 27 ms | 98 / 28 ms |
+| 短い畳み込み (RowwiseMul 91、ElementwiseAdd 78、Copy、窓) | 約 340 | 約 60 ms | 約 75 ms |
+| RMSNorm、ElementwiseAdd (sandwich)、ElementwiseMul、SiLU ほか | | 約 90 ms | 約 190 ms |
+| 和 | 979 | 506 ms | 735 ms |
+
+- GEMM は 16 行でも 1 回 0.9〜2.1 ms。IRON の `flm.ProjectionGEMM` は memtile に置いた B (重み) を、呼び出しの行に関係なく塊の全部の行の単位に流す (`flm/gemm/op.py` のコメント: 数は memtile のロックの値にあり、呼び出しごとの語が届かない)。重みの展開 (q4/q8 → bf16 を DDR に書いて GEMM が読む) も行に関係ない。短いプロンプトはこの 2 つが 6 割で、IRON の GEMM の作りの限界
+- 短い畳み込みは IRON の `F.causal_conv1d` で 1 層約 26 演算 (窓への写し、タップごとの RowwiseMul と和、終わりの 6 行の写し)。RowwiseMul は行の数に従わない
+
+**`ShortConvChunk`** (`iron_shortconv.short_conv_chunk_operator`、`kernels/short_conv.cc` の `short_conv_tile`): LFM3 の B * x、7 タップの畳み込み、C * の 3 つを 1 つに。8 列 1 コアずつ、コアは自分の 256 チャネルの全部の行を 8 行のタイルで順に受け、前の 6 行とタイルの行を `hist` (Worker の初期値なしの Buffer) に持つ。in_proj は 3 回の split でなく 6144 出力の 1 回 (B、C、x の並びを TAP で各コアに切る)。呼び出しの行の数 (`valid`) は RTP で受け、それより後のタイルは 0 を書く。DMA は塊の全部の行を動かす (1024 行で 12 MB、行の数で切る `length_parameter` は 1 次元 1023 までの制限に当たる)。和は float32、u、conv(u)、y をそれぞれ 1 回 bf16 に (デコードの `ShortConvStep` と同じ)。
+
+- `iron_shortconv.py chunk OUT --n N` (書き出しと check、`irongraph -save` で y の呼び出しの行と終わりの状態を比べる): 1、8、9、13、300、1024 行で参照とビット単位で同じ。1 回 0.4〜1.3 ms
+- 本文の層 (`Lfm3Layer`) だけ (`ShortConv.chunked`)。LFM3-Audio の音声エンコーダの ShortConv は前のまま。`HWNPU_LFM3_CHUNK_CONV=0` で IRON の形
+
+**`GdnConvChunk`** (`gdn_conv_chunk_operator`、`gdn_conv_row`): Qwen3.5/3.6 の Gated DeltaNet のプロンプトの畳み込み (4 タップ、IRON の形で約 9 演算) と `GdnSiLU` を 1 つに。iron_gdn の並び (列ごとに `seg` チャネル、最後の 64 が a と b で silu なし) のまま。1 列 1 コアでは silu (float32 の exp と逆数) が重く 256 行で 5.6 ms だったので、1 列 2 コア (memtile が行をコアのチャネルに切る、1 行ずつ、K 行の輪) にした。4 コアは memtile の DMA チャネルが列あたり 10 本要り、6 本を超える。silu は gdn.cc の `silu16` と同じ式。
+
+| Qwen3.6 の幅 (8704 チャネル、256 行の塊) | 3 行 | 256 行 |
+|---|---|---|
+| IRON の畳み込み + GdnSiLU (`chunk --silu 64 --baseline`) | 3.99 ms | 4.72 ms |
+| `GdnConvChunk` (`--gdn`) | 0.95 ms | 4.44 ms |
+
+1、3、200、256 行で参照とビット単位で同じ。`QWEN35_CHUNK_CONV=0` で前の形。呼び出しの行より後の行は 0 (GatedDeltaRule が先も読む)。
+
+**プロンプトの結果** (NPU を他が使っていない回、新旧を交互に 3 回、`ironlm -record` の最初の呼び出しの時間)
+
+| モデル | 設定のし直し | 16 トークン | 長いプロンプト |
+|---|---|---|---|
+| LFM3-1.7B | 890 → 632 回 (56 → 47 MB) | 443 → **386 ms** (−13 %) | 1010 トークン 660 → **583 ms** (−12 %) |
+| Qwen3.5-0.8B | 846 → 702 回 | 343 → **259 ms** (−25 %) | 300 トークン 476 → **439 ms** (−8 %) |
+| LFM3-VL-2B | 890 → 632 回 | (同じ形) | |
+
+HF の float32 との KL (`ironlm -forced -split 256 -max 320` と `tools/ref/forced_logits.py`、256 トークンのプロンプトの後の 64 行): LFM3-1.7B 0.0646 / 0.0492 / 0.173 (top-1 86.6 %) → 0.0643 / 0.0494 / 0.171 (86.6 %)、LFM3-VL-2B 0.1253 / 0.0610 / 0.498 (84.1 %) → 0.1188 / 0.0589 / 0.511 (83.8 %)、Qwen3.5-0.8B 0.0086 / 0.0075 / 0.022 (93.8 %) → 0.0084 / 0.0074 / 0.020 (94.1 %)。今の main の書き出しとのロジットのコサインは最小 0.9993 (LFM3、1010 トークン + 30 歩)、0.9997 (Qwen3.5-0.8B)、0.994 (LFM3-VL、30 歩のうち 2 回トップが入れ替わる。KL は上のとおり)。
+
+**LFM3 のデコード: ShortConvStep が状態の置き場を直接** (`short_conv_operator(slots=)`、iron_gdn の slots と同じ形): 状態 (Checkpoints の全部の slot) を In で受けて呼び出しごとの要素のオフセット `read_at` で読み、同じバッファ (InOut) の `write_at` に書く。前後の Copy 2 つ (13 層で 26 回) がなくなる。`HWNPU_LFM3_SLOTS_CONV=0` で前の形。
+
+- LFM3-1.7B: 252 → 226 回 / トークン、16.5 → **16.8〜16.9 トークン/秒** (1010 トークンの後、交互に 3 回)。1024 の塊の境目をまたぐ 30 歩でロジットはビット単位で同じ。LFM3-VL も 226 回
+
+**試して採らなかったもの**
+- GDN のカーネルを `-Os` / `-Oz` / `-O1` で (`gdn.cc` は IRON の既定の -O2): Qwen3.6 のデコードは GDN の演算子の設定 374 KB (16 コアのプログラム 262 KB) を層ごとに書く (1 トークン約 27 ms / 113 ms) ので縮めたかったが、プログラムの大きさはほぼ変わらない (1045 → 1037 KB) か、-Os では上限を 32 バイト超えた。IRON の build cache は演算子を名前と引数で引くので、フラグだけ変えても作り直されないことにも注意
+- GDN を 1 列 1 コアに (設定がほぼ半分、見積もり 1 トークン約 12 ms): 状態の並び (列の 2 コアの半分ずつ、畳み込みの行の組) をデコードとプロンプトの版と hwnpu の conv_pairs が共有しているので、今回はしていない
+
+**残り**
+- 短いプロンプトの GEMM と重みの展開 (上の 6 割): 塊の行に従う GEMM か、量子化の重みを直接読む数行の GEMM が要る。`QGEMVRows` は q8/q6 の 8 行までで、16.117 の 8 行 389 µs (3584 × 1024) から見積もると 16 行では今の GEMM と同じくらい
+- デコードの残りの設定のし直し: LFM3 の畳み込みの層は 1 層 7 回 (約 250 KB) が 5 回に。それ以上は gpt-oss の `GptOssStep` のような 1 配列の形 (約 1000 行、コアのプログラムが 16 KB に収まるかが最初の関門)
