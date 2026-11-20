@@ -145,7 +145,9 @@ type Model interface {
 //     positions in order, with the one output kv_NAME_new
 //   - win_NAME (1, W, width) with output win_NAME_new (1, W+Seq, width): a window of the last W
 //     rows before the step followed by the step's rows; the host keeps the W rows ending at the
-//     last real token (a short convolution's state)
+//     last real token (a short convolution's state). Or with win_NAME_new (1, W, width), those W
+//     rows themselves, picked by the program for the step's valid tokens: like st_NAME, it cannot
+//     give the window after fewer of them
 //   - st_NAME with output st_NAME_new of the same shape: a state the step replaces as a whole
 //     (a Gated DeltaNet's recurrent state), as it is after the step's valid tokens: the padding
 //     after them must leave it unchanged. It cannot give the state after fewer tokens than the

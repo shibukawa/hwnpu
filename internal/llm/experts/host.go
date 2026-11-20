@@ -70,6 +70,26 @@ type hostLayer struct {
 	gb, db         []float32
 	// the same four tensors in their file, for reading an expert's ranges whole (Host.readIn)
 	src [4]io.ReaderAt
+	// seen is, by expert, when its ranges were last found in memory or read (Host.fresh), in
+	// nanoseconds; made on first use
+	seen     []atomic.Int64
+	seenOnce sync.Once
+}
+
+// residentFor is how long an expert found in memory, or read, is taken to be there without
+// asking again: the system drops the pages used longest ago, and a second after its use an
+// expert is far from those (Qwen3.6-35B-A3B on 16 GB reads 0.4 GB a second into 6 GB).
+const residentFor = time.Second
+
+// fresh reports whether expert e was found in memory or read within residentFor.
+func (hl *hostLayer) fresh(e int, now int64) bool {
+	return hl.seen != nil && now-hl.seen[e].Load() < int64(residentFor)
+}
+
+// saw records that expert e's ranges are in memory now.
+func (hl *hostLayer) saw(e, experts int, now int64) {
+	hl.seenOnce.Do(func() { hl.seen = make([]atomic.Int64, experts) })
+	hl.seen[e].Store(now)
 }
 
 // arrays are the layer's four mapped tensors with an expert's bytes in each and its reader.
@@ -435,13 +455,26 @@ func (h *Host) downBias(hl *hostLayer, e int) []float32 {
 	return hl.db[e*h.shape.Hidden : (e+1)*h.shape.Hidden]
 }
 
-// runRow is Run of one row (a generated token): each of its experts is one piece of work of a
-// core, from the gate and up products through the activation to the down products, so that the
-// cores' workers are woken once a layer. As three Runs over all the experts (the rows' form),
-// each wakes them again: after the Neural Engine's part of a step they are asleep, and
-// Qwen3.6-35B-A3B's 8 experts of a layer took 1.0–1.1 ms with 1.2 ms between the layers against
-// 0.55 back to back. The values are Run's (the same kernel a row, the experts added in the same
-// order).
+// rowPiece is the weights of a piece of work of runRow: 128 rows of Qwen3.6-35B-A3B's gate and up
+// products, 512 of its down products.
+const rowPiece = 128 * 2048
+
+// runItems is the most rows of experts (an expert on a row) whose products Run holds at once:
+// those of a step of 128 tokens with 8 experts a token (12 MB of Qwen3.6-35B-A3B's).
+const runItems = 1024
+
+// runRow is Run of one row (a generated token), as one piece of work of the cores' workers, woken
+// once a layer: as three Runs over all the experts (the rows' form) each wakes them again, and
+// after the Neural Engine's part of a step they are asleep (Qwen3.6-35B-A3B's 8 experts of a
+// layer took 1.0–1.1 ms with 1.2 ms between the layers against 0.55 back to back).
+//
+// The cores take the experts' products in pieces of rowPiece weights, any core any piece: first
+// those of the gate and up products, and an expert's down products once its activations are
+// there (the core that finishes its last piece computes them). With an expert a core, as it was
+// first written, a layer waited for its slowest core: on an M3 (4 cores of performance and 4 of
+// efficiency) 8 cores were no faster than 4 (0.49 and 0.46 ms back to back, 1.20 and 0.88 with
+// 1.2 ms between the layers), a core of efficiency or one that woke late holding a whole expert.
+// The values are Run's (the same kernel a row, the experts added in the same order).
 func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []float32) {
 	H, I := h.shape.Hidden, h.shape.Inter
 	xv := mxfp4.NewVec(H)
@@ -451,16 +484,35 @@ func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []
 	nbG, nbD := H/mxfp4.Block, I/mxfp4.Block
 	alpha, limit := float32(h.act.Alpha), float32(h.act.Limit)
 	gptoss := h.act.Kind == ActGptOss
-	down := make([][]float32, len(idx))
-	mxfp4.Parallel(len(idx), func(k int) {
-		e := idx[k]
+	K := len(idx)
+	rowsG, rowsD := max(rowPiece/H, 1), max(rowPiece/I, 1) // the rows of a piece
+	piecesG, piecesD := (2*I+rowsG-1)/rowsG, (H+rowsD-1)/rowsD
+	type expert struct {
+		gu, down     []float32
+		hv           *mxfp4.Vec
+		nextG, doneG atomic.Int32
+		nextD        atomic.Int32
+		ready        atomic.Bool // the activations are there
+	}
+	ex := make([]expert, K)
+	for k := range ex {
+		ex[k].gu, ex[k].down = make([]float32, 2*I), make([]float32, H)
+	}
+	var left atomic.Int32
+	left.Store(int32(K * (piecesG + piecesD)))
+	gate := func(k, p int) {
+		e, x := idx[k], &ex[k]
 		gw, gs := hl.gw[e*gb:(e+1)*gb], hl.ge[e*ge:(e+1)*ge]
 		bias := h.gateBias(hl, e)
-		gu := make([]float32, 2*I)
-		for r := range gu {
-			gu[r] = mxfp4.Dot(gw[r*nbG*16:(r+1)*nbG*16], gs[r*nbG:(r+1)*nbG], xv) + bias[r]
+		lo, hi := p*rowsG, min((p+1)*rowsG, 2*I)
+		mxfp4.Rows(x.gu[lo:hi], gw[lo*nbG*16:hi*nbG*16], gs[lo*nbG:hi*nbG], xv)
+		for r := lo; r < hi; r++ {
+			x.gu[r] += bias[r]
 		}
-		act := make([]float32, I)
+		if int(x.doneG.Add(1)) < piecesG {
+			return
+		}
+		act, gu := make([]float32, I), x.gu
 		if gptoss {
 			for j := range I {
 				g := min(gu[2*j], limit)
@@ -473,14 +525,43 @@ func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []
 				act[j] = g / (1 + float32(math.Exp(float64(-g)))) * gu[2*j+1]
 			}
 		}
-		hv := mxfp4.NewVec(I)
-		hv.Quantize(act)
+		x.hv = mxfp4.NewVec(I)
+		x.hv.Quantize(act)
+		x.ready.Store(true)
+	}
+	down := func(k, p int) {
+		e, x := idx[k], &ex[k]
 		dw, ds := hl.dw[e*db:(e+1)*db], hl.de[e*de:(e+1)*de]
-		y := make([]float32, H)
-		for r := range y {
-			y[r] = mxfp4.Dot(dw[r*nbD*16:(r+1)*nbD*16], ds[r*nbD:(r+1)*nbD], hv)
+		lo, hi := p*rowsD, min((p+1)*rowsD, H)
+		mxfp4.Rows(x.down[lo:hi], dw[lo*nbD*16:hi*nbD*16], ds[lo*nbD:hi*nbD], x.hv)
+	}
+	// a piece of expert k if one is free: of its down products when they can begin
+	take := func(k int) bool {
+		x := &ex[k]
+		if x.ready.Load() && int(x.nextD.Load()) < piecesD {
+			if p := int(x.nextD.Add(1)) - 1; p < piecesD {
+				down(k, p)
+				left.Add(-1)
+				return true
+			}
 		}
-		down[k] = y
+		if int(x.nextG.Load()) < piecesG {
+			if p := int(x.nextG.Add(1)) - 1; p < piecesG {
+				gate(k, p)
+				left.Add(-1)
+				return true
+			}
+		}
+		return false
+	}
+	mxfp4.Parallel(min(K*(piecesG+piecesD), runtime.GOMAXPROCS(0)), func(i int) {
+		// each worker from an expert of its own; with none free it waits for the pieces the
+		// others are at, which may free an expert's down products (a piece is 10 to 40 µs)
+		for k := i % K; left.Load() > 0; {
+			if !take(k) {
+				k = (k + 1) % K
+			}
+		}
 	})
 	// added by the experts' numbers, as Run adds them
 	order := make([]int, len(idx))
@@ -490,7 +571,7 @@ func (h *Host) runRow(hl *hostLayer, x []float32, idx []int, w []float32, out []
 	slices.SortFunc(order, func(a, b int) int { return idx[a] - idx[b] })
 	for _, k := range order {
 		bias := h.downBias(hl, idx[k])
-		wt, y := w[k], down[k]
+		wt, y := w[k], ex[k].down
 		for c := range H {
 			out[c] += wt * (y[c] + bias[c])
 		}
@@ -510,27 +591,42 @@ var readBufs = sync.Pool{New: func() any { b := make([]byte, readPiece); return 
 // requests, four at a time), and with madvise(WILLNEED) on the ranges first 1.9 MB in 2.6 ms.
 // Where what is in memory is not told (mem.Resident), the kernel is asked to read ahead.
 func (h *Host) readIn(l, e int) (n int64) {
+	hl := h.layers[l]
+	now := time.Now().UnixNano()
+	if hl == nil || hl.fresh(e, now) {
+		return 0
+	}
+	told := true
 	for a := range 4 {
-		n += h.readRange(l, e, a)
+		k, ok := h.readRange(l, e, a)
+		n, told = n+k, told && ok
+	}
+	if told {
+		hl.saw(e, h.shape.Experts, now)
 	}
 	return n
 }
 
-// readRange is readIn of one of the expert's four ranges (hostLayer.arrays).
-func (h *Host) readRange(l, e, array int) (n int64) {
+// readRange is readIn of one of the expert's four ranges (hostLayer.arrays): the bytes it read,
+// and whether the range is in memory now (false where that is not told). Whether it was in
+// memory is asked of two of its pages (mem.Probe): a range is read whole and its rows are used
+// together, so its pages are there or dropped together, and asking of every page took longer
+// than a token's products (2026-11-20, an M3: 47 % of the experts' CPU time against the
+// kernel's 19 %).
+func (h *Host) readRange(l, e, array int) (n int64, ok bool) {
 	hl := h.layers[l]
 	if hl == nil {
-		return 0
+		return 0, false
 	}
 	a := hl.arrays(h.shape)[array]
 	b := a.b[e*a.n : (e+1)*a.n]
-	in, ok := mem.Resident(b)
+	in, ok := mem.Probe(b, 2)
 	if !ok {
 		willneed(b)
-		return 0
+		return 0, false
 	}
-	if in >= int64(len(b)) {
-		return 0
+	if in {
+		return 0, true
 	}
 	buf := readBufs.Get().(*[]byte)
 	defer readBufs.Put(buf)
@@ -538,46 +634,85 @@ func (h *Host) readRange(l, e, array int) (n int64) {
 		k, err := a.src.ReadAt((*buf)[:min(readPiece, len(b)-off)], int64(e*a.n+off))
 		n += int64(k)
 		if err != nil {
-			break
+			return n, false
 		}
 	}
-	return n
+	return n, true
 }
 
 // readers are the reads of readChosen at once.
 const chosenReaders = 8
 
 // readChosen reads the experts a run chose (the rows of each in byExpert) that are neither wired
-// nor in memory, several ranges at once, before the cores run them.
+// nor in memory, several ranges at once, before the cores run them. Those found there or read
+// within residentFor are not asked about.
 func (h *Host) readChosen(layer int, byExpert [][]int) {
 	E := h.shape.Experts
-	var todo [][2]int // expert, range: the blocks first, the longest reads
-	for _, a := range []int{0, 2, 1, 3} {
-		for e, rs := range byExpert {
-			if len(rs) > 0 && (h.place == nil || !h.place.on[layer*E+e].Load()) {
-				todo = append(todo, [2]int{e, a})
-			}
+	hl := h.layers[layer]
+	now := time.Now().UnixNano()
+	var es []int
+	for e, rs := range byExpert {
+		if len(rs) > 0 && (h.place == nil || !h.place.on[layer*E+e].Load()) && !hl.fresh(e, now) {
+			es = append(es, e)
 		}
 	}
-	if len(todo) == 0 {
+	if len(es) == 0 {
 		return
 	}
-	var next atomic.Int32
-	var wg sync.WaitGroup
-	for range min(chosenReaders, len(todo)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				i := int(next.Add(1)) - 1
-				if i >= len(todo) {
-					return
-				}
-				h.dbgRead.Add(h.readRange(layer, todo[i][0], todo[i][1]))
-			}
-		}()
+	var todo [][2]int // expert, range: the blocks first, the longest reads
+	for _, a := range []int{0, 2, 1, 3} {
+		for _, e := range es {
+			todo = append(todo, [2]int{e, a})
+		}
 	}
-	wg.Wait()
+	untold := make([]atomic.Bool, E) // an expert with a range of which it could not be told
+	one := func(i int) {
+		n, ok := h.readRange(layer, todo[i][0], todo[i][1])
+		h.dbgRead.Add(n)
+		if !ok {
+			untold[todo[i][0]].Store(true)
+		}
+	}
+	if len(todo) <= 4*h.shape.TopK {
+		// a generated token's: asking is 1 µs a range, less than starting the readers; they
+		// read what is not there
+		var missing []int
+		for i := range todo {
+			a := hl.arrays(h.shape)[todo[i][1]]
+			e := todo[i][0]
+			if in, ok := mem.Probe(a.b[e*a.n:(e+1)*a.n], 2); !ok || !in {
+				missing = append(missing, i)
+			}
+		}
+		todo2 := make([][2]int, len(missing))
+		for j, i := range missing {
+			todo2[j] = todo[i]
+		}
+		todo = todo2
+	}
+	if len(todo) > 0 {
+		var next atomic.Int32
+		var wg sync.WaitGroup
+		for range min(chosenReaders, len(todo)) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					i := int(next.Add(1)) - 1
+					if i >= len(todo) {
+						return
+					}
+					one(i)
+				}
+			}()
+		}
+		wg.Wait()
+	}
+	for _, e := range es {
+		if !untold[e].Load() {
+			hl.saw(e, E, now)
+		}
+	}
 }
 
 // Has reports whether the host holds layer's experts.
@@ -658,73 +793,90 @@ func (h *Host) Run(layer int, rows [][]float32, idx [][]int, w [][]float32, out 
 		hv   []*mxfp4.Vec
 		down [][]float32
 	}
-	var runs []*run
-	var jobs []mxfp4.Job
 	gb, ge := 2*I*H/2, 2*I*H/32 // an expert's bytes of blocks and scales, gate and up
+	db, de := H*I/2, H*I/32
+	alpha, limit := float32(h.act.Alpha), float32(h.act.Limit)
+	gptoss := h.act.Kind == ActGptOss
+	// the experts in groups of at most runItems rows of theirs, so that the products held at
+	// once are those of a step of a prompt however many rows the call has
+	group := func(es []int) {
+		var runs []*run
+		var jobs []mxfp4.Job
+		for _, e := range es {
+			rs := byExpert[e]
+			ru := &run{e: e}
+			vs := make([]*mxfp4.Vec, len(rs))
+			for j, r := range rs {
+				ru.gu = append(ru.gu, make([]float32, 2*I))
+				vs[j] = xv[r]
+			}
+			runs = append(runs, ru)
+			jobs = append(jobs, mxfp4.Job{Out: ru.gu, W: hl.gw[e*gb : (e+1)*gb], E: hl.ge[e*ge : (e+1)*ge], V: vs})
+		}
+		mxfp4.Run(jobs...)
+		jobs = jobs[:0]
+		// the activations, a row of an expert each, over the cores
+		type item struct {
+			ru *run
+			j  int
+		}
+		var items []item
+		for _, ru := range runs {
+			ru.hv = make([]*mxfp4.Vec, len(ru.gu))
+			for j := range ru.gu {
+				items = append(items, item{ru, j})
+				ru.down = append(ru.down, make([]float32, H))
+			}
+		}
+		mxfp4.Parallel(len(items), func(i int) {
+			ru, gu := items[i].ru, items[i].ru.gu[items[i].j]
+			bias := h.gateBias(hl, ru.e)
+			act := make([]float32, I)
+			if gptoss {
+				for j := range I {
+					g := min(gu[2*j]+bias[2*j], limit)
+					u := min(max(gu[2*j+1]+bias[2*j+1], -limit), limit)
+					act[j] = g / (1 + float32(math.Exp(float64(-alpha*g)))) * (u + 1)
+				}
+			} else {
+				for j := range I {
+					g, u := gu[2*j]+bias[2*j], gu[2*j+1]+bias[2*j+1]
+					act[j] = g / (1 + float32(math.Exp(float64(-g)))) * u
+				}
+			}
+			v := mxfp4.NewVec(I)
+			v.Quantize(act)
+			ru.hv[items[i].j] = v
+		})
+		for _, ru := range runs {
+			jobs = append(jobs, mxfp4.Job{Out: ru.down, W: hl.dw[ru.e*db : (ru.e+1)*db], E: hl.de[ru.e*de : (ru.e+1)*de], V: ru.hv})
+		}
+		mxfp4.Run(jobs...)
+		for _, ru := range runs {
+			bias := h.downBias(hl, ru.e)
+			for j, r := range byExpert[ru.e] {
+				wt := w[r][byK[ru.e][j]]
+				o, y := out[r], ru.down[j]
+				for c := range H {
+					o[c] += wt * (y[c] + bias[c])
+				}
+			}
+		}
+	}
+	var es []int
+	held := 0
 	for e, rs := range byExpert {
 		if len(rs) == 0 {
 			continue
 		}
-		ru := &run{e: e}
-		vs := make([]*mxfp4.Vec, len(rs))
-		for j, r := range rs {
-			ru.gu = append(ru.gu, make([]float32, 2*I))
-			vs[j] = xv[r]
+		if held > 0 && held+len(rs) > runItems {
+			group(es)
+			es, held = es[:0], 0
 		}
-		runs = append(runs, ru)
-		jobs = append(jobs, mxfp4.Job{Out: ru.gu, W: hl.gw[e*gb : (e+1)*gb], E: hl.ge[e*ge : (e+1)*ge], V: vs})
+		es, held = append(es, e), held+len(rs)
 	}
-	mxfp4.Run(jobs...)
-	jobs = jobs[:0]
-	db, de := H*I/2, H*I/32
-	alpha, limit := float32(h.act.Alpha), float32(h.act.Limit)
-	gptoss := h.act.Kind == ActGptOss
-	// the activations, a row of an expert each, over the cores
-	type item struct {
-		ru *run
-		j  int
-	}
-	var items []item
-	for _, ru := range runs {
-		ru.hv = make([]*mxfp4.Vec, len(ru.gu))
-		for j := range ru.gu {
-			items = append(items, item{ru, j})
-			ru.down = append(ru.down, make([]float32, H))
-		}
-	}
-	mxfp4.Parallel(len(items), func(i int) {
-		ru, gu := items[i].ru, items[i].ru.gu[items[i].j]
-		bias := h.gateBias(hl, ru.e)
-		act := make([]float32, I)
-		if gptoss {
-			for j := range I {
-				g := min(gu[2*j]+bias[2*j], limit)
-				u := min(max(gu[2*j+1]+bias[2*j+1], -limit), limit)
-				act[j] = g / (1 + float32(math.Exp(float64(-alpha*g)))) * (u + 1)
-			}
-		} else {
-			for j := range I {
-				g, u := gu[2*j]+bias[2*j], gu[2*j+1]+bias[2*j+1]
-				act[j] = g / (1 + float32(math.Exp(float64(-g)))) * u
-			}
-		}
-		v := mxfp4.NewVec(I)
-		v.Quantize(act)
-		ru.hv[items[i].j] = v
-	})
-	for _, ru := range runs {
-		jobs = append(jobs, mxfp4.Job{Out: ru.down, W: hl.dw[ru.e*db : (ru.e+1)*db], E: hl.de[ru.e*de : (ru.e+1)*de], V: ru.hv})
-	}
-	mxfp4.Run(jobs...)
-	for _, ru := range runs {
-		bias := h.downBias(hl, ru.e)
-		for j, r := range byExpert[ru.e] {
-			wt := w[r][byK[ru.e][j]]
-			o, y := out[r], ru.down[j]
-			for c := range H {
-				o[c] += wt * (y[c] + bias[c])
-			}
-		}
+	if len(es) > 0 {
+		group(es)
 	}
 	return nil
 }

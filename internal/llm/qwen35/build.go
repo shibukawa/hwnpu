@@ -68,13 +68,15 @@ func Build(b *mlpackage.Builder, cfg *Config, w llm.Weights, opts llm.Options) (
 //
 //   - kv_k_N, kv_v_N: the KV cache of each full attention layer N
 //   - win_conv_N: the last ConvKernel-1 rows of the Gated DeltaNet layer N's projected queries,
-//     keys and values, the state of its short convolution
+//     keys and values, the state of its short convolution. The MoE models output the window after
+//     the step's tokens itself (step_window), the others the window and the step's rows
 //   - st_rec_N (1, value heads, key dim, value dim) with output st_rec_N_new: the Gated DeltaNet's
 //     recurrent state, which the step replaces as a whole. It is the state after the step's valid
 //     tokens: the padding after them leaves it as it is (step_valid)
 //
 // and the inputs StepInputs fills: mask_full_attention, rope_cos_full_attention,
-// rope_sin_full_attention and step_valid (1, seq, 1), 1 for the step's tokens and 0 for padding.
+// rope_sin_full_attention, step_valid (1, seq, 1), 1 for the step's tokens and 0 for padding, and
+// of the MoE models with more than a token a step step_window (1, ConvKernel-1, seq+ConvKernel-1).
 //
 // With opts.Paged the program is one part of the model split at its full attention layers
 // (llm.Paged): a part that ends where such a layer N begins outputs its queries attn_q_N, its
@@ -497,7 +499,17 @@ func (m *builder) causalConv(i int, x *mlpackage.Var) *mlpackage.Var {
 		if m.opts.Cache > 0 {
 			win := m.input(fmt.Sprintf("win_conv_%d", i), 1, k-1, ch)
 			padded = m.Op("concat", map[string]any{"values": []*mlpackage.Var{win, x}, "axis": m.B.ScalarI32(1), "interleave": m.B.ScalarBool(false)}, 1, s+k-1, ch)
-			m.output(padded, fmt.Sprintf("win_conv_%d_new", i))
+			next := padded // the window and the step's rows: the host takes the window after them
+			if m.cfg.moe && s == 1 {
+				next = m.slice(padded, 1, 1, k) // after the token
+			} else if m.cfg.moe {
+				// the k-1 rows ending at the step's last token, picked by step_window (a 1 a
+				// row): the whole of Qwen3.6-35B-A3B's 30 layers at 128 tokens a step is 64 MB
+				// of outputs, of which the host keeps 1.5
+				pick := m.input("step_window", 1, k-1, s+k-1)
+				next = m.Op("matmul", map[string]any{"x": pick, "y": padded, "transpose_x": m.B.ScalarBool(false), "transpose_y": m.B.ScalarBool(false)}, 1, k-1, ch)
+			}
+			m.output(next, fmt.Sprintf("win_conv_%d_new", i))
 		} else {
 			padded = m.Op("pad", map[string]any{"x": x, "pad": m.B.Ints(int32(k-1), 0, 0, 0), "mode": m.Str("constant"), "constant_val": m.B.ScalarF16(0)}, 1, s+k-1, ch)
 		}
@@ -721,11 +733,20 @@ func (c *Config) PagedStepInputs(pos, valid, q, cache int) map[string][]float32 
 		ok[t] = 1
 	}
 	cos, sin := blocks.RopeValues(c.RopeInvFreq(), pos, q, c.RotaryDim())
-	return map[string][]float32{
+	in := map[string][]float32{
 		"rope_cos_full_attention": cos,
 		"rope_sin_full_attention": sin,
 		"step_valid":              ok,
 	}
+	if k := c.ConvKernel; c.moe && k > 1 && q > 1 {
+		// row j picks row valid+j of the window and the step's rows (causalConv)
+		w := make([]float32, (k-1)*(q+k-1))
+		for j := range k - 1 {
+			w[j*(q+k-1)+min(valid, q)+j] = 1
+		}
+		in["step_window"] = w
+	}
+	return in
 }
 
 // PagedLayers are the full attention layers: split at them (llm.Options.Paged), their attention
