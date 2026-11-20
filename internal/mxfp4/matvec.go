@@ -153,6 +153,10 @@ func Run(jobs ...Job) {
 	wg.Wait()
 }
 
+// Keeping the workers awake over a layer's three Runs alone (polling in Go between them, 2026-11-20)
+// was slower too: Qwen3.6-35B-A3B's experts of a layer 0.55 → 1.0 ms back to back, the polling
+// goroutines in the way of the scheduler. One Run a layer instead (experts.Host.runRow).
+//
 // Workers sleep between Runs. Polling instead (tried 2026-11-19, M3) keeps them on fast cores:
 // gpt-oss-20b's experts of a layer take 0.93 ms back to back, 1.77 ms with 1 ms between and 1.08
 // with every worker polling for 5 ms. In hwnpu-chat the Neural Engine's parts run between them,

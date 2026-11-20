@@ -17,7 +17,7 @@ and an empty host step ends it, as the host would pick the next layer's experts 
 their own, to time each. Graphs with ``--tiny N`` are N commands of one small add, to time a
 command's own cost. Graphs with ``--switch ORDER --pair silu|linear --reps N`` are one command of N
 of two operators, in runs or alternating, to time a change of operator (a reconfiguration of the
-array, docs/design.md 16.264). Graphs with ``--q4 ROWS --reps N`` are N q4nx GEMVs of (ROWS, 2048) (IRON's
+array, docs/design.md 16.266). Graphs with ``--q4 ROWS --reps N`` are N q4nx GEMVs of (ROWS, 2048) (IRON's
 flm.LMHead), to time a 4-bit GEMV. With ``--q4moe q4`` the experts are q4nx tables read in place:
 ExpertQGEMV (gate, up: a column an expert) and ExpertDownQGEMV (down: the 8 side by side) take
 each expert's byte offset per call, so nothing is copied (docs/design.md 16.75).
@@ -1149,7 +1149,7 @@ class Switch(iron.Graph):
     "silu" (SiLU, add), "linear" (a 2048 x 2048 GEMV, RMS norm) or "gemm" (64 rows by
     2048 x 2048 on GEMM, the whole array; RMS norm). Timed side by side, it
     shows what a change of operator (a reconfiguration of the array) costs inside a command
-    (docs/design.md 16.264)."""
+    (docs/design.md 16.266)."""
 
     def __init__(self, n: int, order: str, pair: str = "silu"):
         self.n, self.order, self.pair = n, order, pair
@@ -1183,7 +1183,7 @@ class Switch(iron.Graph):
 
 def reconfig_teardown() -> None:
     """Compose full ELFs with aiecc's --reconfig-teardown: each configuration is undone after
-    it runs, in place of the reset (an empty PDI's load) before the next (docs/design.md 16.264).
+    it runs, in place of the reset (an empty PDI's load) before the next (docs/design.md 16.266).
     A composition's cache key gains "teardown", so it does not reuse an image built without."""
     from aie.iron.program import Program
     from iron.common.image import compose
@@ -1206,7 +1206,7 @@ def reconfig_ctrl_pkt() -> None:
     """Compose full ELFs with aiecc's --load-pdi-to-ctrl-pkt: each configuration streamed to
     the tiles as control packets by a DMA task, in place of the control code's writes (an
     experiment: IRON does not pass the option. On 2026-11-20 aiecc fails on it, "operand #0 does
-    not dominate this use" in npu_materialized.mlir, docs/design.md 16.264)."""
+    not dominate this use" in npu_materialized.mlir, docs/design.md 16.266)."""
     from aie.iron.program import Program
     from aie.utils.compile.jit import compilabledesign
     from iron.common.image import compose

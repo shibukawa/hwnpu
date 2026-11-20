@@ -52,8 +52,18 @@ type Config struct {
 		MropeSection  []int    `json:"mrope_section"`
 	} `json:"rope_parameters"`
 
-	// Mixture of experts settings of the MoE models (Qwen3.5-35B-A3B and up), rejected.
-	NumExperts int `json:"num_experts"`
+	// Mixture of experts settings of the MoE models (qwen3_5_moe: Qwen3.5-35B-A3B and
+	// Qwen3.6-35B-A3B), which ParseMoE reads and ParseConfig rejects: every layer's MLP is
+	// num_experts experts of moe_intermediate_size, num_experts_per_tok of them chosen a token,
+	// and a shared expert of shared_expert_intermediate_size gated by a sigmoid.
+	NumExperts         int   `json:"num_experts"`
+	TopK               int   `json:"num_experts_per_tok"`
+	MoEIntermediate    int   `json:"moe_intermediate_size"`
+	SharedIntermediate int   `json:"shared_expert_intermediate_size"`
+	MLPOnlyLayers      []int `json:"mlp_only_layers"`
+	DecoderSparseStep  int   `json:"decoder_sparse_step"`
+	NormTopK           *bool `json:"norm_topk_prob"`
+	moe                bool
 
 	// The multi-token prediction layers (mtp.), which the MTP model (-arch qwen35-mtp) reads:
 	// how many, and whether they have an embedding table of their own.
@@ -66,7 +76,10 @@ type Config struct {
 }
 
 // ParseConfig parses config.json and rejects settings the conversion does not handle.
-func ParseConfig(raw []byte) (*Config, error) {
+func ParseConfig(raw []byte) (*Config, error) { return parseConfig(raw, false) }
+
+// parseConfig parses the config of the dense models, or with moe of the MoE models (qwen3_5_moe).
+func parseConfig(raw []byte, moe bool) (*Config, error) {
 	var top struct {
 		ModelType  string          `json:"model_type"`
 		TextConfig json.RawMessage `json:"text_config"`
@@ -75,12 +88,16 @@ func ParseConfig(raw []byte) (*Config, error) {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		return nil, fmt.Errorf("qwen35: %w", err)
 	}
-	var c Config
+	c := Config{moe: moe}
 	text := raw
+	family, textType := "qwen3_5", "qwen3_5_text"
+	if moe {
+		family, textType = "qwen3_5_moe", "qwen3_5_moe_text"
+	}
 	switch top.ModelType {
-	case "qwen3_5":
+	case family:
 		if len(top.TextConfig) == 0 {
-			return nil, fmt.Errorf("qwen35: qwen3_5 config has no text_config")
+			return nil, fmt.Errorf("qwen35: %s config has no text_config", family)
 		}
 		var t struct {
 			ModelType string `json:"model_type"`
@@ -88,11 +105,11 @@ func ParseConfig(raw []byte) (*Config, error) {
 		if err := json.Unmarshal(top.TextConfig, &t); err != nil {
 			return nil, fmt.Errorf("qwen35: text_config: %w", err)
 		}
-		if t.ModelType != "" && t.ModelType != "qwen3_5_text" {
-			return nil, fmt.Errorf("qwen35: text_config model_type %q is not qwen3_5_text", t.ModelType)
+		if t.ModelType != "" && t.ModelType != textType {
+			return nil, fmt.Errorf("qwen35: text_config model_type %q is not %s", t.ModelType, textType)
 		}
 		text, c.Prefix = top.TextConfig, "model.language_model."
-	case "qwen3_5_text":
+	case textType:
 		c.Prefix = "model."
 	default:
 		return nil, fmt.Errorf("qwen35: model_type %q is not supported", top.ModelType)
@@ -119,8 +136,8 @@ func (c *Config) check() error {
 	if c.HiddenAct != "silu" {
 		return fmt.Errorf("qwen35: hidden_act %q is not supported", c.HiddenAct)
 	}
-	if c.NumExperts > 0 {
-		return fmt.Errorf("qwen35: mixture of experts (num_experts %d) is not supported", c.NumExperts)
+	if err := c.checkMoE(); err != nil {
+		return err
 	}
 	if c.AttentionBias {
 		return fmt.Errorf("qwen35: attention_bias is not supported")
@@ -166,6 +183,35 @@ func (c *Config) check() error {
 		if sum != rot/2 {
 			return fmt.Errorf("qwen35: mrope_section %v does not cover the %d rotary pairs", s, rot/2)
 		}
+	}
+	return nil
+}
+
+// checkMoE rejects experts in a dense model's config, and checks a MoE model's: experts in every
+// layer (no mlp_only_layers, decoder_sparse_step 1), their weights renormalized over the chosen
+// ones, sizes of whole MXFP4 blocks (32) for the host's experts.
+func (c *Config) checkMoE() error {
+	if !c.moe {
+		if c.NumExperts > 0 {
+			return fmt.Errorf("qwen35: mixture of experts (num_experts %d) is a qwen3_5_moe model", c.NumExperts)
+		}
+		return nil
+	}
+	switch {
+	case c.NumExperts <= 0 || c.TopK <= 0 || c.TopK > c.NumExperts:
+		return fmt.Errorf("qwen35: %d of %d experts a token", c.TopK, c.NumExperts)
+	case c.NumExperts > 32767:
+		return fmt.Errorf("qwen35: %d experts", c.NumExperts)
+	case len(c.MLPOnlyLayers) > 0:
+		return fmt.Errorf("qwen35: dense layers among the experts' (mlp_only_layers %v) are not supported", c.MLPOnlyLayers)
+	case c.DecoderSparseStep > 1:
+		return fmt.Errorf("qwen35: experts every %d layers (decoder_sparse_step) are not supported", c.DecoderSparseStep)
+	case c.NormTopK != nil && !*c.NormTopK:
+		return fmt.Errorf("qwen35: the chosen experts' weights not renormalized (norm_topk_prob false) are not supported")
+	case c.MoEIntermediate <= 0 || c.MoEIntermediate%32 != 0 || c.HiddenSize%32 != 0:
+		return fmt.Errorf("qwen35: experts of %d x %d: MXFP4 takes sizes of whole blocks of 32", c.HiddenSize, c.MoEIntermediate)
+	case c.SharedIntermediate <= 0:
+		return fmt.Errorf("qwen35: no shared expert (shared_expert_intermediate_size %d)", c.SharedIntermediate)
 	}
 	return nil
 }

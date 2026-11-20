@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/shibukawa/hwnpu/internal/vecops"
 )
 
 // prefetcher guesses the next layer's experts while a row's experts run (one row: a generated
@@ -18,53 +20,81 @@ import (
 // router of l+1 runs on that (the residual before layer l+1's attention). The outputs do not
 // change: the guess only reads pages.
 type prefetcher struct {
-	h *Host
-	n int // the guessed experts brought in (the top n of the guess)
-	// auto brings in fewer (fewWhenShort) while memory is short (reader.short): on an M2 with
-	// experts read from the SSD every token, the top 2 gave 10.3–10.4 and 9.3–9.4 tokens/s (two
-	// prompts) where the top 4 gave 9.9–10.0 and 8.8–8.9 and none 10.2–10.7 and 9.0; with memory to
-	// spare the top 4 are 3–6 % above none (an M3)
-	auto   bool
-	sent   map[int]int // by layer: how many of its guess were brought in
-	few    atomic.Int64
+	h      *Host
+	n      int // the guessed experts brought in (the top n of the guess)
+	keep   int // the guess's length, for the debug counts: twice n, at least 8
 	router map[int]*router
 	mu     sync.Mutex
-	guess  map[int][]int         // by layer: the guessed experts, best first (8)
-	rows   chan guessRow         // the rows to guess the next layer from, off the experts' path
-	ranN   map[int]*atomic.Int64 // by layer: the rows run (ran)
+	guess  map[int][]int // by layer: the guessed experts, best first (keep)
+	queue  chan [2]int   // the experts to bring in: layer, expert
+	rows   chan prefRow  // the rows to guess the next layer's experts from
+	ranN   map[int]*atomic.Int64
 
-	// for HWNPU_MOE_DEBUG: how many of the experts run the guess had in its top 4 and top 8,
-	// the runs of experts not wired, and those of them brought in before
-	top4, top8, runs, misses, covered, late atomic.Int64
-	wg                                      sync.WaitGroup
-	quit                                    chan struct{}
+	// for HWNPU_MOE_DEBUG: how many of the experts run the guess had in its top n and its
+	// whole, the runs of experts not wired, and those of them brought in before
+	topN, topAll, runs, misses, covered atomic.Int64
+	late                                atomic.Int64
+	wg                                  sync.WaitGroup
+	quit                                chan struct{}
 }
 
-// guessRow is a row x (moe_x_l) of layer l, copied for the guess.
-type guessRow struct {
+// prefRow is a row of layer l (moe_x_l), from which layer l+1's experts are guessed.
+type prefRow struct {
 	l    int
 	x    []float32
-	seen int64 // layer l+1's rows run when x was sent: a guess made later than l+1's row is dropped
+	seen int64
 }
 
+// router is a layer's router (experts, hidden) with its bias (experts, nil for none) and the ffn
+// norm's weight (hidden). The weight is float32 (w), or the checkpoint's bf16 mapped (raw).
 type router struct {
-	w, b, norm []float32 // (experts, hidden), (experts), (hidden): the router and the ffn norm's weight
+	w, b, norm []float32
+	raw        []byte
 }
 
-// gptOssRouters reads the routers and the ffn norms of rec's layers (gpt-oss's names, beside
-// the experts' tensors); nil when they are not there.
-func gptOssRouters(rec *HostRecord, sh Shape, floats func(string, int) ([]float32, error)) map[int]*router {
+// logits writes the router's logits of y, with row a scratch of hidden values.
+func (r *router) logits(dst, y, row []float32) {
+	H := len(y)
+	for e := range dst {
+		w := row
+		if r.raw != nil {
+			vecops.BF16ToF32(row, r.raw[2*e*H:2*(e+1)*H])
+		} else {
+			w = r.w[e*H : (e+1)*H]
+		}
+		dst[e] = dot(w, y)
+		if r.b != nil {
+			dst[e] += r.b[e]
+		}
+	}
+}
+
+// hostRouters reads the routers and the ffn norms of rec's layers: the record's names (MXFP4's
+// Router and Norm), or gpt-oss's beside the experts' tensors; nil when they are not there.
+func hostRouters(rec *HostRecord, sh Shape, floats func(string, int) ([]float32, error), bf16 func(string, int) []byte) map[int]*router {
 	out := map[int]*router{}
 	for l, n := range rec.Layers {
-		p, ok := strings.CutSuffix(n.GateUpBlocks, "mlp.experts.gate_up_proj_blocks")
-		if !ok {
-			return nil
+		if n.Router == "" {
+			p, ok := strings.CutSuffix(n.GateUpBlocks, "mlp.experts.gate_up_proj_blocks")
+			if !ok || rec.Act.Kind != ActGptOss {
+				return nil
+			}
+			n.Router, n.RouterBias, n.Norm = p+"mlp.router.weight", p+"mlp.router.bias", p+"post_attention_layernorm.weight"
 		}
 		r := &router{}
 		var err error
-		if r.w, err = floats(p+"mlp.router.weight", sh.Experts*sh.Hidden); err == nil {
-			if r.b, err = floats(p+"mlp.router.bias", sh.Experts); err == nil {
-				r.norm, err = floats(p+"post_attention_layernorm.weight", sh.Hidden)
+		if r.raw = bf16(n.Router, sh.Experts*sh.Hidden); r.raw == nil {
+			r.w, err = floats(n.Router, sh.Experts*sh.Hidden)
+		}
+		if err == nil {
+			if r.b, err = floats(n.RouterBias, sh.Experts); err == nil {
+				r.norm, err = floats(n.Norm, sh.Hidden)
+			}
+		}
+		if err == nil && n.NormOffset != 0 {
+			r.norm = append([]float32(nil), r.norm...) // a copy: floats may give the mapped file's
+			for i := range r.norm {
+				r.norm[i] += float32(n.NormOffset)
 			}
 		}
 		if err != nil {
@@ -76,57 +106,86 @@ func gptOssRouters(rec *HostRecord, sh Shape, floats func(string, int) ([]float3
 	return out
 }
 
-// fewWhenShort is how many guessed experts are brought in while memory is short.
-const fewWhenShort = 2
-
 // prefetchN is how many guessed experts are brought in: HWNPU_MOE_DEBUG's prefetch=N (0: none),
-// else 4, and fewWhenShort while memory is short (auto).
-func prefetchN() (n int, auto bool) {
+// else as many as a token runs (topK), at least 4: gpt-oss-20b's 4 of 32 (the guess's top 4 hold
+// 86 % of the experts run), Qwen3.6-35B-A3B's 8 of 256 (its top 4 hold 44–47 %, its top 8
+// 72–80 %).
+func prefetchN(topK int) int {
 	if v, ok := DebugOpt("prefetch"); ok {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			return 0, false
+			return 0
 		}
-		return min(n, 8), false
+		return min(n, 32)
 	}
-	return 4, true
+	return max(topK, 4)
 }
 
-func newPrefetcher(h *Host, routers map[int]*router, n int, auto bool) *prefetcher {
-	p := &prefetcher{h: h, n: n, auto: auto, router: routers, guess: map[int][]int{}, sent: map[int]int{}, rows: make(chan guessRow, 4), ranN: map[int]*atomic.Int64{}, quit: make(chan struct{})}
+// prefetchReaders are the goroutines that bring pages in: the reads of several experts go on at
+// once (an SSD reads several ranges faster than one after the other).
+const prefetchReaders = 4
+
+func newPrefetcher(h *Host, routers map[int]*router, n int) *prefetcher {
+	p := &prefetcher{h: h, n: n, keep: max(2*n, 8), router: routers, guess: map[int][]int{}, queue: make(chan [2]int, 256), rows: make(chan prefRow, 4), ranN: map[int]*atomic.Int64{}, quit: make(chan struct{})}
 	for l := range routers {
 		p.ranN[l] = new(atomic.Int64)
 	}
+	for range prefetchReaders {
+		p.wg.Add(1)
+		go p.loop()
+	}
 	p.wg.Add(1)
-	go p.guessLoop()
+	go p.guesser()
 	return p
 }
 
+// loop brings the experts queued into memory: each is read whole from the file where it is not
+// in memory (Host.readIn), then every page is touched (a page in the page cache still costs the
+// process a fault when first touched).
+func (p *prefetcher) loop() {
+	defer p.wg.Done()
+	page := os.Getpagesize()
+	var sink byte
+	for {
+		select {
+		case <-p.quit:
+			touched.Add(uint32(sink))
+			return
+		case q := <-p.queue:
+			p.h.readIn(q[0], q[1])
+			for _, b := range p.h.spans(q[0], q[1]) {
+				for j := 0; j < len(b); j += page {
+					sink += b[j]
+				}
+			}
+		}
+	}
+}
+
 // ran is told the experts idx a row of layer l runs, with the row x (moe_x_l): it scores the
-// last guess for l and sends x for l+1's guess (guessLoop).
+// last guess for l and has l+1 guessed (guesser), off the run's own time.
 func (p *prefetcher) ran(l int, x []float32, idx []int) {
 	E := p.h.shape.Experts
 	if c := p.ranN[l]; c != nil {
 		c.Add(1)
 	}
 	p.mu.Lock()
-	g, sent := p.guess[l], p.sent[l]
+	g := p.guess[l]
 	delete(p.guess, l)
-	delete(p.sent, l)
 	p.mu.Unlock()
 	for _, e := range idx {
 		if g != nil {
 			p.runs.Add(1)
 			if i := slices.Index(g, e); i >= 0 {
-				if i < 4 {
-					p.top4.Add(1)
+				if i < p.n {
+					p.topN.Add(1)
 				}
-				p.top8.Add(1)
+				p.topAll.Add(1)
 			}
 		}
 		if pl := p.h.place; pl != nil && e >= 0 && e < E && !pl.on[l*E+e].Load() {
 			p.misses.Add(1)
-			if g != nil && slices.Index(g, e) >= 0 && slices.Index(g, e) < sent {
+			if g != nil && slices.Index(g, e) >= 0 && slices.Index(g, e) < p.n {
 				p.covered.Add(1)
 			}
 		}
@@ -135,15 +194,14 @@ func (p *prefetcher) ran(l int, x []float32, idx []int) {
 		return
 	}
 	select {
-	case p.rows <- guessRow{l, slices.Clone(x), p.ranN[l+1].Load()}:
-	default: // behind: no guess for l+1 rather than wait
+	case p.rows <- prefRow{l, append([]float32(nil), x...), p.ranN[l+1].Load()}:
+	default: // behind: no guess for this layer
 	}
 }
 
-// guessLoop guesses the next layers of the rows sent (ran) and queues the pages of the guessed
-// experts: a layer's guess (2880 × 32 multiplies, about 0.13 ms on an M2) runs beside the experts
-// rather than before them.
-func (p *prefetcher) guessLoop() {
+// guesser guesses the next layer's experts from the rows ran gives it: a router of Qwen3.6's
+// (256 x 2048) takes about as long as the row's experts themselves, so it runs beside them.
+func (p *prefetcher) guesser() {
 	defer p.wg.Done()
 	for {
 		select {
@@ -155,55 +213,22 @@ func (p *prefetcher) guessLoop() {
 	}
 }
 
-// guessNext guesses layer l+1's experts from row x of layer l and queues their pages.
-func (p *prefetcher) guessNext(r guessRow) {
+func (p *prefetcher) guessNext(r prefRow) {
 	l, x := r.l, r.x
 	E := p.h.shape.Experts
 	cur, next := p.router[l], p.router[l+1]
-	order := p.order(x, cur, next)
-	n := min(p.n, len(order))
-	if p.auto && p.h.rd.short() {
-		n = min(n, fewWhenShort)
-		p.few.Add(1)
-	}
-	p.mu.Lock()
-	late := p.ranN[l+1].Load() != r.seen
-	if !late {
-		p.guess[l+1], p.sent[l+1] = order, n
-	}
-	p.mu.Unlock()
-	if late {
-		p.late.Add(1)
+	H := p.h.shape.Hidden
+	if cur == nil || next == nil {
 		return
 	}
-	pl := p.h.place
-	for _, e := range order[:n] {
-		if pl != nil && pl.on[(l+1)*E+e].Load() {
-			continue // wired: in memory already
-		}
-		p.h.rd.guess(l+1, e)
-	}
-}
-
-// order is the experts of the layer of router to, best first (8), for the row x of the layer of
-// router from.
-func (p *prefetcher) order(x []float32, from, to *router) []int {
-	E, H := p.h.shape.Experts, p.h.shape.Hidden
 	y := make([]float32, H)
 	for i, v := range x {
-		if w := from.norm[i]; w > 1e-6 || w < -1e-6 {
-			y[i] = v / w * to.norm[i]
+		if w := cur.norm[i]; w > 1e-6 || w < -1e-6 {
+			y[i] = v / w * next.norm[i]
 		}
 	}
 	logits := make([]float32, E)
-	for e := range E {
-		s := to.b[e]
-		row := to.w[e*H : (e+1)*H]
-		for i, v := range y {
-			s += row[i] * v
-		}
-		logits[e] = s
-	}
+	next.logits(logits, y, make([]float32, H))
 	order := make([]int, E)
 	for i := range order {
 		order[i] = i
@@ -217,16 +242,52 @@ func (p *prefetcher) order(x []float32, from, to *router) []int {
 		}
 		return 0
 	})
-	order = order[:min(8, E)]
-	return order
+	order = order[:min(p.keep, E)]
+	p.mu.Lock()
+	late := p.ranN[l+1].Load() != r.seen
+	if !late {
+		p.guess[l+1] = order
+	}
+	p.mu.Unlock()
+	if late {
+		p.late.Add(1)
+		return
+	}
+	pl := p.h.place
+	for _, e := range order[:min(p.n, len(order))] {
+		if pl != nil && pl.on[(l+1)*E+e].Load() {
+			continue // wired: in memory already
+		}
+		select {
+		case p.queue <- [2]int{l + 1, e}:
+		default: // behind: drop the guess rather than wait
+		}
+	}
 }
 
-// guessed is whether e was among the experts of layer l brought in (the top n of l's guess).
+// guessed reports whether e was among the experts queued from layer l's guess.
 func (p *prefetcher) guessed(l, e int) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	i := slices.Index(p.guess[l], e)
-	return i >= 0 && i < p.sent[l]
+	return i >= 0 && i < p.n
+}
+
+// dot is the dot product of a and b (as long), in four sums.
+func dot(a, b []float32) float32 {
+	var s0, s1, s2, s3 float32
+	n := len(a) &^ 3
+	b = b[:len(a)]
+	for i := 0; i < n; i += 4 {
+		s0 += a[i] * b[i]
+		s1 += a[i+1] * b[i+1]
+		s2 += a[i+2] * b[i+2]
+		s3 += a[i+3] * b[i+3]
+	}
+	for i := n; i < len(a); i++ {
+		s0 += a[i] * b[i]
+	}
+	return s0 + s1 + s2 + s3
 }
 
 func (p *prefetcher) stop() {
@@ -234,16 +295,13 @@ func (p *prefetcher) stop() {
 	p.wg.Wait()
 	if DebugTime() && p.runs.Load() > 0 {
 		r := float64(p.runs.Load())
-		line := fmt.Sprintf("experts: the next layer's guess had %.1f%% of the experts run in its top 4, %.1f%% in its top 8 (%d runs)",
-			100*float64(p.top4.Load())/r, 100*float64(p.top8.Load())/r, p.runs.Load())
+		line := fmt.Sprintf("experts: the next layer's guess had %.1f%% of the experts run in its top %d, %.1f%% in its top %d (%d runs)",
+			100*float64(p.topN.Load())/r, p.n, 100*float64(p.topAll.Load())/r, p.keep, p.runs.Load())
 		if n := p.late.Load(); n > 0 {
 			line += fmt.Sprintf("; %d guesses too late", n)
 		}
 		if m := p.misses.Load(); m > 0 {
 			line += fmt.Sprintf("; of %d runs of experts not wired, %.1f%% brought in before (top %d)", m, 100*float64(p.covered.Load())/float64(m), p.n)
-			if f := p.few.Load(); f > 0 {
-				line += fmt.Sprintf("; top %d for %d guesses with memory short", fewWhenShort, f)
-			}
 		}
 		fmt.Fprintln(os.Stderr, line)
 	}

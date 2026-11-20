@@ -265,7 +265,7 @@ const PrebuiltEnv = "HWNPU_COREAI_PREBUILT"
 // source's), so the asset itself loads from the entry afterwards (design.md 16.229). The program
 // it holds runs a few percent slower than one compiled on the device.
 func Prebuilt(dir string) string {
-	if os.Getenv(PrebuiltEnv) == "off" {
+	if os.Getenv(PrebuiltEnv) == "off" || LeftToDevice(dir) {
 		return ""
 	}
 	arch := Arch()

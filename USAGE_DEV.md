@@ -27,12 +27,14 @@ On macOS, `go run ./cmd/hwnpu-dev powerbench` measures the energy of one call of
 - LFM3 (including judge models such as d1-2B), LFM3-VL's vision encoder, LFM3-Audio / LFM3-Omni's audio encoder and audio output
 - Gemma 4 (gemma-4-E2B-it)
 - Qwen3.5 (the text part of Qwen3.5-4B and others; checked on the CPU only), Qwen3 (Qwen3-0.6B and 1.7B; `hwnpu-chat -m qwen3`)
+- Qwen3.5-MoE / Qwen3.6 (`qwen3_5_moe`: Qwen3.6-35B-A3B; Core AI only, the experts on the CPU in MXFP4 from a checkpoint `hwnpu-dev mxfp4` writes; `hwnpu-chat -m Qwen3.6-35B-A3B` writes it on the first run)
 - BERT style encoders, PLaMo-Embedding-1B
 - PLaMo 3 (PLaMo 3 Translate 2B; checked on the CPU and OpenVINO's CPU only; `hwnpu-chat -m plamo-3-translate-2b` translates)
 - Whisper (whisper-large-v3-turbo; the audio encoder is `-arch whisper-encoder`, the cross attention keys and values `-arch whisper-cross`)
 
 Other commands:
 
+- `hwnpu-dev mxfp4 -o DIR hf:Qwen/Qwen3.6-35B-A3B`: writes a Qwen3.5-MoE checkpoint whose experts are 4 bit MXFP4 (17 GB of the release's 64 GB of bf16 experts), reading the release a layer at a time with Range requests, so the 72 GB are never on the disk; a directory works as the source too, and a run cut off goes on where it stopped
 - `hwnpu-dev check`: runs a converted graph on the CPU in fp32 and checks it layer by layer against a reference from the Hugging Face implementation (`tools/ref/ref_logits.py`). No Mac is needed
 - `hwnpu-dev generate`: generates text with a converted causal LM (the tokenizer is Go too). Converted with `-cache N` it has a KV cache and can write long texts (LFM3-1.7B on an M3 with a cache of 1024: 20.6 ms a token)
 - `hwnpu-dev formats`: compares the accuracy and speed of each weight format (int8, int4-g128, int4) on the NPU

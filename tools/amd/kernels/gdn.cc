@@ -65,7 +65,7 @@ using bf_t = aie::vector<bfloat16, N>;
 
 // The state's limbs a core keeps from one call to the next point into the worker's scratch
 // buffer (gdn_bind, at the start of the core's run): as static arrays (.bss) the array's every
-// configuration wrote them with zeros, 12 KB a core (docs/design.md 16.265).
+// configuration wrote them with zeros, 12 KB a core (docs/design.md 16.267).
 constexpr int r32(int n) { return (n + 31) / 32 * 32; }
 bfloat16 *s_hi; // the three limbs, Dk * P each: s_mid and s_lo follow s_hi (one pointer to load)
 #define s_mid (s_hi + Dk * P)

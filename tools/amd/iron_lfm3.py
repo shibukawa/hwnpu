@@ -49,7 +49,7 @@ from iron.operators.sigmoid import Sigmoid
 from ml_dtypes import bfloat16
 
 # A decode step's short convolution as one operator (iron_shortconv.ShortConvStep) in place of
-# IRON's about 16 (docs/design.md 16.266). HWNPU_LFM3_FUSED_CONV=0 keeps IRON's.
+# IRON's about 16 (docs/design.md 16.268). HWNPU_LFM3_FUSED_CONV=0 keeps IRON's.
 FUSED_CONV = __import__("os").environ.get("HWNPU_LFM3_FUSED_CONV", "1") != "0"
 # A decode step's post-norm, residual and next norm as one operator (iron_sandwich.SandwichAdd)
 # in place of three, twice a layer. HWNPU_LFM3_FUSED_NORMS=0 keeps IRON's.

@@ -53,7 +53,7 @@ NPU が読めるのは固定したバッファだけなので、Mac のように
 - 固定の量の測り方: AMD は smaps の `/dev/accel/accel0` の写像の大きさ。`hwnpu status` は Linux では resident を出す
 - 結果が出たら: improvements.md (と .ja.md)、new-model-checklist.md (と .ja.md) の MoE の節、models.yaml、MODEL.md
 
-## 5. 結果 (2026-11-20、design.md 16.261)
+## 5. 結果 (2026-11-20、design.md 16.263)
 
 - **3.1 使用回数**: できた (`iron.Model.CountExperts`)。デコードは次のコマンドのスクラッチパッドの位置の語を読み戻す (費用は測れない)。20b の 110 プロンプトは Mac とほぼ同じ (芯 140 個と 141 個、131 個が共通)。models.yaml の `experts_core` はそのまま
 - **3.2 一部だけ常駐**: A の形 (置き場) で。カーネルは変えず、デコードは 1 コマンドずつ待ち、ホストが外れをコピーして位置の語を書き直す (待つ費用 1 トークン約 1.2 ms)。20b: 置き場 16 で固定 6.90 GiB、17.2 tok/s (全部 12.22 GiB、20.2)、置き場 24 で 9.44 GiB、19.0。答えは全部の書き出しと 1 文字ずつ同じ。B (CPU で外れを計算) はしていない

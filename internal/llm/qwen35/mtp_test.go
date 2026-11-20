@@ -60,7 +60,7 @@ func mtpReference(t *testing.T, c *MTP, w llm.Weights, x, hid []float32) (logits
 			}
 		}
 	}
-	h = referenceLayers(t, c.Config, w, in, []refLayer{{mtpLayer, false}}, "mtp.norm.weight", -1)
+	h = referenceLayers(t, c.Config, w, in, []refLayer{{mtpLayer, false}}, "mtp.norm.weight", -1, nil)
 	return logits(t, c.Config, w, h), h
 }
 
