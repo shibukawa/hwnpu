@@ -2,19 +2,19 @@ package mxfp4
 
 import (
 	"math/rand/v2"
-	"os"
 	"strconv"
 	"testing"
 	"time"
 )
 
-// TestTokenTime times a token's experts at gpt-oss-20b's shape (HWNPU_MXFP4_BENCH=LAYERS): 4 of
+// TestTokenTime times a token's experts at gpt-oss-20b's shape (HWNPU_MXFP4=bench=LAYERS): 4 of
 // 32 experts a layer, gate_up 5760 rows and down 2880 of 2880, over weights larger than the
 // caches.
 func TestTokenTime(t *testing.T) {
-	layers, _ := strconv.Atoi(os.Getenv("HWNPU_MXFP4_BENCH"))
+	n, _ := Opt("bench")
+	layers, _ := strconv.Atoi(n)
 	if layers == 0 {
-		t.Skip("HWNPU_MXFP4_BENCH=LAYERS")
+		t.Skip("HWNPU_MXFP4=bench=LAYERS")
 	}
 	const H, I, E, K = 2880, 2880, 32, 4
 	nb := H / Block

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/shibukawa/hwnpu/internal/mem"
 	"time"
 )
 
@@ -107,4 +109,54 @@ func TestWiringBudget(t *testing.T) {
 			t.Errorf("HWNPU_MOE_WIRE=%s: all %v budget %d, want %v %d", c.env, all, b, c.all, c.budget)
 		}
 	}
+}
+
+func TestPlacementPressure(t *testing.T) {
+	const L, E = 2, 4
+	h := fakeHost(L, E)
+	eb := h.expertBytes()
+	path := filepath.Join(t.TempDir(), "u.bin")
+	u := NewUsage(L, E)
+	u.Add(0, [][]int{{2, 3}, {2, 3}, {2, 1}, {1}})
+	u.Add(1, [][]int{{0}, {0}, {1}})
+	if err := u.Write(path); err != nil {
+		t.Fatal(err)
+	}
+	pl := fakeLock(newPlacer(h, Placement{Core: [][]int{{}, {3}}, Usage: path, Idle: -1}, 5*eb, L))
+	var now mem.Pressure
+	pl.pressure = func() (mem.Pressure, bool) { return now, true }
+	for _, c := range []struct {
+		p    mem.Pressure
+		want int64
+	}{
+		{mem.Pressure{Free: 80, Level: 1}, 5 * eb},
+		{mem.Pressure{Free: 25, Level: 1}, 5 * eb},
+		{mem.Pressure{Free: 10, Level: 1}, eb},             // the core alone
+		{mem.Pressure{Free: 40, Level: 2}, eb},             // the system's warning
+		{mem.Pressure{Free: 17, Level: 1}, eb + 4*eb*7/15}, // in proportion
+	} {
+		now = c.p
+		if got := pl.effective(); got != c.want {
+			t.Errorf("%+v: budget %d, want %d", c.p, got, c.want)
+		}
+	}
+	now = mem.Pressure{Free: 80, Level: 1}
+	pl.balance(true)
+	if got := len(wiredSet(pl)); got != 5 {
+		t.Fatalf("free: %d experts wired, want 5", got)
+	}
+	// eb + 4eb/3: the core and the best by use (layer 1's expert 0, 2/3 of its layer's runs,
+	// above layer 0's expert 2, 3/7)
+	now = mem.Pressure{Free: 15, Level: 1}
+	pl.follow()
+	pl.apply(pl.target())
+	if got, want := wiredSet(pl), []int{1*E + 0, 1*E + 3}; !slices.Equal(got, want) {
+		t.Fatalf("short: wired %v, want %v", got, want)
+	}
+	now = mem.Pressure{Free: 80, Level: 1}
+	pl.balance(false)
+	if got := len(wiredSet(pl)); got != 5 {
+		t.Fatalf("free again: %d experts wired, want 5", got)
+	}
+	pl.stop()
 }

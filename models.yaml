@@ -295,7 +295,7 @@ models:
       - [1, 2, 9, 18, 23, 27]  # layer 21
       - [0, 4, 11, 15, 22, 23]  # layer 22
       - [0, 22, 31]  # layer 23
-    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (all wired into memory on 24 GB and more; on 16 GB 6 GB of them, the ones every text runs and those the application runs most), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
+    about: "OpenAI's gpt-oss-20b, a mixture of experts (21B, 3.6B active): on AMD's NPU, and on a Mac with Core AI its experts on the CPU (all wired into memory on 24 GB and more; on 16 GB about 4 GB of them, the ones every text runs and those the application runs most, fewer when the system runs short of memory), its experts in the checkpoint's own 4 bit MXFP4 (not rounded again), the attention in 8 bit tables and the output layer in 6 bit ones, with a scale a row; it always reasons first (the low effort with no_think)"
   gpt-oss-120b:
     family: gpt-oss
     tag: 120b
