@@ -7933,4 +7933,13 @@ NPU を開いているプロセスが他にない (`/dev/accel/accel0` を見て
 
 - 精度: 前の書き出しとのコサインは最小 0.9985 (1010 トークンの後 30 歩、top のずれなし)。HF の float32 との KL (`forced_logits.py gemma4`、256 トークンの後 320 行): 前 0.1562 / 0.0659 / 0.590、top-1 83.1 %、後 0.1539 / 0.0684 / 0.600、82.2 %
 - 残りの 1 トークンの演算: QGEMV 206、RMSNorm 102 (q、k、v の head norm と feed-forward の後)、ElementwiseMul 72、GEMV 71 (per-layer input の gate と projection、bf16)、SandwichAdd 70、GELU 70、RoPE 50。次は per-layer input の gate と projection を q8 にして QGEMV にそろえる、GELU と積をまとめる (QGEMVGlu の GELU 版)
+- **MLP の gate と up を 1 つに (QGEMVGlu の GELU 版)**: `kernels/mv_add.h` の `Q_GLU_GELU` (tanh の形、tanh は float32 の exp で `1 - 2 / (exp(2t) + 1)`、2t は ±30 で止める)、`iron_q4.glu_param(..., act="gelu")`、`glu_linear` はプロンプトの塊では MLP 自身の活性 (`act_fn`) を使う。`iron_q4.py check --glu gelu|silu` で 6144 × 1536 の q4 を float64 の参照とコサイン 0.999982 (silu と同じ)。E2B のデコード 672 → 602 回、**9.3 → 9.9 トークン/秒** だが、HF との KL が 0.1539 / 0.0684 / 0.600 から 0.1580 / 0.0736 / 0.625 に上がった (前の書き出しとのコサインも最小 0.9985 → 0.9897)。LFM3 では動かなかったので、プロンプトの塊が GLU の表を MEDIUM の GEMM で読む経路 (前は q_linear の bfp16) を疑っているが、確かめていない。既定はオフ (`HWNPU_GEMMA4_FUSE_GLU=1` でオン)
 - E4B と多モーダルの版 (`gemma4mm`) も同じ経路を通る。作り直していない
+
+### 16.266 AMD: main の rebase 後の gpt-oss-20b の確かめ — 2026-11-20
+
+16.262〜16.265 を、gpt-oss-20b と 120b の置き場 (16.261) が入った main に載せ直した。gpt-oss の経路 (`iron_gptoss*.py`) は変えていないが、`iron_export_lm.py` と共有の道具が変わったので確かめた。
+
+- 書き出し (`gptoss --max-seq-len 8192 --prefill-chunk 256`、3 分 16 秒、最大 RSS 38 GB): 取得元の書き出しとロジットがビット単位で同じ (`ironlm -record` の 300 トークン + 23 歩、コサイン 1.00000、差 0)。設定のし直しはデコード 25 回、プロンプトの塊 534 回で同じ。manifest の違いはプロンプトのホストの手順の `places` (32) だけ
+- デコード (`ironlm -steps 128`、交互に): 20.1〜20.2 トークン/秒 (どちらも)。最初の 1 回だけ前の書き出しが 13.8 だった (読み込みの直後、ページキャッシュと見ている)
+- 置き場 16 (`--expert-places 16`、1 分 11 秒): hwnpu-chat (`--experts-key off`、88 トークンのプロンプトで 300 トークン) の答えが全部置いた書き出しと 1 文字ずつ同じ。置き場の確かめ (`HWNPU_MOE_DEBUG=check`) で 384 個のうち 0 個違い。15.7 トークン/秒 (全部 19.9)。16.261 の 17.2 はアプリの統計ありの値で、ここは統計なし

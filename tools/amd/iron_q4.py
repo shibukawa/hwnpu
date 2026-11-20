@@ -1264,6 +1264,8 @@ def _check(args) -> int:
     install_linear()  # the base F.linear q8's prompt path calls, and the bfp16 fix
     n, k, fmt = args.n, args.k, args.fmt
     rng = np.random.default_rng(1)
+    if args.glu:
+        return _check_glu(args, rng)
     w = rng.standard_normal((n, k)).astype(np.float32) * 0.05
     q = quantize_fmt(w, fmt)
     deq = dequantize_fmt(q, n, k, fmt)
@@ -1334,6 +1336,47 @@ def _check(args) -> int:
     return 0
 
 
+def _check_glu(args, rng) -> int:
+    """QGEMVGlu of a gate and an up of (n, k), act(G x) * (U x), against numpy's of the table's
+    dequantized weights (float64)."""
+    import iron
+    from iron_graph import export_graph, write_check
+
+    # the glu section is defined past main's call: this module by its name, whole
+    import iron_q4 as q4
+
+    glu_table, glu_param, glu_linear = q4.glu_table, q4.glu_param, q4.glu_linear
+    n, k, fmt, act = args.n, args.k, args.fmt, args.glu
+    gate = rng.standard_normal((n, k)).astype(np.float32) * 0.05
+    up = rng.standard_normal((n, k)).astype(np.float32) * 0.05
+    deq = dequantize_fmt(quantize_fmt(glu_table(gate, up), fmt), 2 * n, k, fmt).astype(np.float64)
+    deq = deq.reshape(n // CB, 2, CB, k)
+    G, U = deq[:, 0].reshape(n, k), deq[:, 1].reshape(n, k)
+
+    class Glu(iron.Graph):
+        def __init__(self):
+            self.gu = glu_param(gate, up, fmt, act)
+
+        def body(self, x):
+            return glu_linear(x, self.gu)
+
+        def reference(self, x):
+            x = np.asarray(x, np.float64)
+            g, u = G @ x, U @ x
+            if act == "gelu":
+                a = 0.5 * g * (1 + np.tanh(np.sqrt(2 / np.pi) * (g + 0.044715 * g ** 3)))
+            else:
+                a = g / (1 + np.exp(-g))
+            return (a * u).astype(bfloat16)
+
+    g = Glu()
+    cg = g.compile(x=(k,))
+    m = export_graph(cg, args.out, "qglu", dict(n=n, k=k, fmt=fmt, act=act))
+    write_check(g, m, args.out, dict(x=(rng.standard_normal(k) * 2).astype(bfloat16)), None)
+    print(f"{args.out}: QGEMVGlu ({act}) {fmt} {n} x {k}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1349,6 +1392,8 @@ def main(argv=None) -> int:
     c.add_argument("--adds", type=int, default=0, help="vectors added in the GEMV (QGEMVAdd: 1 or 2)")
     c.add_argument("--qkv", type=int, default=0, help="QGEMVQKV: the rows turned by RoPE (the norm and a bias too)")
     c.add_argument("--x-mean", type=float, default=0.0, help="the mean of x's random values")
+    c.add_argument("--glu", choices=("silu", "gelu"), default=None,
+                   help="QGEMVGlu: a gate and an up of (n, k) as one table, act(G x) * (U x)")
     c.add_argument("--prefill", choices=("bfp16", "bf16"), default=PREFILL["q4"], help="q4nx's prompt path (q_linear)")
     a = ap.parse_args(argv)
     if a.cmd == "check":
@@ -1377,13 +1422,16 @@ def glu_table(gate, up) -> np.ndarray:
     return np.stack([gate.reshape(I // CB, CB, K), up.reshape(I // CB, CB, K)], 1).reshape(2 * I, K)
 
 
-def glu_param(gate, up, fmt: str):
-    """An iron.param of glu_table(gate, up) in fmt, known to glu_linear and glu_part."""
+def glu_param(gate, up, fmt: str, act: str = "silu"):
+    """An iron.param of glu_table(gate, up) in fmt, known to glu_linear and glu_part; act is the
+    gate's activation, silu or gelu (the tanh form)."""
     import iron
 
+    if act not in ("silu", "gelu"):
+        raise ValueError(f"glu_param: {act}, silu or gelu")
     I, K = np.shape(gate)
     p = iron.param(quantize_fmt(glu_table(gate, up), fmt).reshape(-1))
-    _GLU[id(p)] = (p, I, K, fmt)
+    _GLU[id(p)] = (p, I, K, fmt, act)
     return p
 
 
@@ -1426,6 +1474,7 @@ def glu_operators():
         fmt: str = param(array=True)
         blocks: int = param(array=True)  # the table's: 2 I / 64 * K / 256 * 2
         K: int = param(array=True)
+        act: str = param(default="silu", array=True)  # silu, or gelu (the tanh form, Gemma's)
         N: int = param(derive=lambda op: op.blocks * CB // (2 * op.K // K_TILE) // 2, array=True)
         cores: int = param(default=2, array=True)
         block_bytes: int = param(derive=lambda op: FORMATS[op.fmt], array=True)
@@ -1452,8 +1501,9 @@ def glu_operators():
             sums_t = np.ndarray[(K // GROUP,), np.dtype[bfloat16]]
             common = dict(source_file=str(here / f"{self.fmt}_mv.cc"),
                           include_dirs=[str(kdir / "flm_gemma4"), str(kdir), config.cxx_header_path()],
-                          compile_flags=[f"-D{self.fmt.upper()}_K={K}", f"-DQ_OUT={out}", "-DQ_GLU=1"],
-                          object_file_name=f"{self.fmt}_mv_glu_{K}_{out}.o")
+                          compile_flags=[f"-D{self.fmt.upper()}_K={K}", f"-DQ_OUT={out}", "-DQ_GLU=1"]
+                          + (["-DQ_GLU_GELU=1"] if self.act == "gelu" else []),
+                          object_file_name=f"{self.fmt}_mv_glu_{K}_{out}{'_gelu' if self.act == 'gelu' else ''}.o")
             begin = ExternalFunction(f"{self.fmt}_mv_begin", arg_types=[x_t, sums_t, acc_t], **common)
             block = ExternalFunction(f"{self.fmt}_mv_block", arg_types=[blk_t, x_t, sums_t, acc_t, np.int32, np.int32],
                                      **common)
@@ -1553,15 +1603,16 @@ def glu_operators():
     return _GLU_OPS
 
 
-def glu_linear(x, gu):
-    """silu(x G^T) * (x U^T) for a glu_param: one row through QGEMVGlu; a few rows (a call
-    checking drafts) or a prompt chunk through the gate's and the up's column blocks in turn."""
-    p, I, K, fmt = _GLU[id(gu)]
+def glu_linear(x, gu, act_fn=None):
+    """act(x G^T) * (x U^T) for a glu_param: one row through QGEMVGlu; a few rows (a call
+    checking drafts) or a prompt chunk through the gate's and the up's column blocks in turn,
+    then act_fn (the MLP's own activation; silu where None)."""
+    p, I, K, fmt, act = _GLU[id(gu)]
     ops = glu_operators()
     one_row = len(x.shape) == 1 or x.shape[0] == 1
     q = gu.reshape(-1, FORMATS[fmt])
     if one_row:
-        y = ops["glu"].step(q, x.reshape(K), fmt=fmt)
+        y = ops["glu"].step(q, x.reshape(K), fmt=fmt, act=act)
         return y if len(x.shape) == 1 else y.reshape(1, I)
     import iron.functional as F
     from iron import Precision
@@ -1573,7 +1624,7 @@ def glu_linear(x, gu):
         w = ops["dequant"].step(q, fmt=fmt, K=K, parity=parity, blocks=q.shape[0] // 2)
         return _BASE["linear"](x, w, precision=Precision.MEDIUM)
 
-    return F.silu(part(0)) * part(1)
+    return (act_fn or F.silu)(part(0)) * part(1)
 
 
 def install_glu() -> None:
@@ -1588,7 +1639,7 @@ def install_glu() -> None:
         gu = getattr(self, "gu", None)
         if gu is None:
             return base(self, x)
-        return self.down_proj(glu_linear(x, gu))
+        return self.down_proj(glu_linear(x, gu, self.act))
 
     body.hwnpu_glu = True
     GatedMLP.body = body

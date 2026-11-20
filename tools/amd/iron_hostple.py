@@ -40,6 +40,11 @@ PLE = "hwnpu_ple_rows"
 # layer computes each layer's: a GEMV, an RMSNorm, a copy, an add and a product, each a
 # reconfiguration of the array, design.md 16.262). HWNPU_GEMMA4_BATCH_PLE=0 keeps a layer's own.
 BATCH_PLE = os.environ.get("HWNPU_GEMMA4_BATCH_PLE", "1") != "0"
+# The MLP's gate and up as one table, run by QGEMVGlu with gelu (iron_q4.glu_param): one
+# operator of a decode step in place of two GEMVs, a GELU and a product. Off unless
+# HWNPU_GEMMA4_FUSE_GLU=1: E2B's decode 9.3 -> 9.9 tokens/s, but its KL from Hugging Face's
+# float32 0.154 -> 0.158 (median 0.068 -> 0.074, design.md 16.265), where LFM3's did not move.
+FUSE_GLU = os.environ.get("HWNPU_GEMMA4_FUSE_GLU", "0") == "1"
 EMBED = "hwnpu_embed_rows"
 # A prompt chunk's commands end where their scratchpad words would pass IRON's limit (32).
 # Each of IRON's gathers took words of its own, so the chunk was 15 commands for E2B; without
@@ -127,7 +132,15 @@ def install(q4: bool = False, attn: str = "q8", words: int = SCRATCHPAD_WORDS, p
             lins = []
             if attn is not None:
                 lins += [(lin, attn) for lin in (a.q_proj, a.k_proj, a.v_proj, a.o_proj)]
-            if "mlp" not in keep:
+            if "mlp" not in keep and FUSE_GLU and self.config.hidden_act == "gelu_pytorch_tanh":
+                # gate and up as one table: the decode step's one operator (QGEMVGlu with gelu) in
+                # place of two GEMVs, a GELU and a product (design.md 16.265)
+                iron_q4.install_glu()
+                mlp.gu = iron_q4.glu_param(np.asarray(mlp.gate_proj.weight, np.float32),
+                                           np.asarray(mlp.up_proj.weight, np.float32), "q4", act="gelu")
+                mlp.gate_proj = mlp.up_proj = None
+                lins += [(mlp.down_proj, "q4")]
+            elif "mlp" not in keep:
                 lins += [(lin, "q4") for lin in (mlp.gate_proj, mlp.up_proj, mlp.down_proj)]
             for lin, fmt in lins:
                 if lin is not None:

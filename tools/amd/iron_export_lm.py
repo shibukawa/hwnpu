@@ -593,7 +593,7 @@ def export(model, versions, out: Path) -> dict:
         if os.environ.get("HWNPU_EXPORT_STEPS"):  # each version's operators in order (design.md 16.264)
             with open(out / f"{name}.steps.txt", "w") as f:
                 for st in v.sequence.steps:
-                    f.write(f"{type(st.op).__name__} {getattr(st.op, 'name', '')}\n")
+                    f.write(f"{type(st.op).__name__} {' '.join(repr(st.op).split())[:240]}\n")
         if v.artifacts.full_elf:
             shutil.copyfile(v.artifacts.image, out / f"{name}.elf")
             vm[name] = version_manifest(v, f"{name}.elf")

@@ -119,11 +119,26 @@ extern "C" void MV_GLU_NAME(MV_FMT)(float *g, float *u, bf16 *y) {
   const auto one = aie::broadcast<float, 16>(1.0f);
   for (int i = 0; i < OUT; i += 16) {
     aie::vector<float, 16> gv = aie::load_v<16>(g + i);
+#ifdef Q_GLU_GELU
+    // gelu (tanh form, Gemma's gelu_pytorch_tanh): 0.5 g (1 + tanh(t)), t = sqrt(2 / pi) (g +
+    // 0.044715 g^3), tanh(t) = 1 - 2 / (exp(2 t) + 1) in float32 (2 t clamped to +-30)
+    aie::vector<float, 16> g3 = aie::mul(aie::mul(gv, gv).template to_vector<float>(), gv).template to_vector<float>();
+    aie::vector<float, 16> t2 = aie::mul(aie::add(gv, aie::mul(g3, 0.044715f).template to_vector<float>()),
+                                         2.0f * 0.7978845608f).template to_vector<float>();
+    t2 = aie::max(aie::min(t2, aie::broadcast<float, 16>(30.0f)), aie::broadcast<float, 16>(-30.0f));
+    aie::accum<accfloat, 16> z;
+    z.from_vector(t2);
+    aie::vector<float, 16> e = exp_f32<16>(z).template to_vector<float>();
+    aie::vector<float, 16> th = aie::sub(one, aie::mul(aie::inv(aie::add(e, one)), 2.0f).template to_vector<float>());
+    aie::vector<float, 16> a = aie::mul(aie::mul(gv, 0.5f).template to_vector<float>(), aie::add(one, th))
+                                   .template to_vector<float>();
+#else
     aie::accum<accfloat, 16> z;
     z.from_vector(aie::mul(gv, -1.0f).template to_vector<float>());  // aie::neg of floats does not lower
     aie::vector<float, 16> e = exp_f32<16>(z).template to_vector<float>();
     aie::vector<float, 16> s = aie::inv(aie::add(e, one));
     aie::vector<float, 16> a = aie::mul(gv, s).template to_vector<float>();
+#endif
     aie::store_v(g + i, aie::mul(a, aie::load_v<16>(u + i)).template to_vector<float>());
   }
   narrow_to_bf16<OUT>(y, g);
