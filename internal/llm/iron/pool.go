@@ -118,11 +118,11 @@ func (p *expertPool) close() {
 
 // PlaceExperts says which experts the places hold first (experts.Placement: Core, then by the
 // application's counts) and keeps the core ones in place while others will do. The places are
-// filled again before the next call.
-func (m *Model) PlaceExperts(pl experts.Placement) {
+// filled now.
+func (m *Model) PlaceExperts(pl experts.Placement) error {
 	p := m.pool
 	if p == nil {
-		return
+		return nil
 	}
 	clear(p.core)
 	for l, es := range pl.Core {
@@ -151,6 +151,10 @@ func (m *Model) PlaceExperts(pl experts.Placement) {
 	clear(p.last)
 	p.tick = 0
 	p.filled = false
+	if m.released {
+		return nil // filled on Reload's first call
+	}
+	return m.fillPool()
 }
 
 // fill puts the experts to start with into the places: each layer's core experts, then by

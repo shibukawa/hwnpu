@@ -404,7 +404,9 @@ func loadIRON(ctx context.Context, c Config) (*Engine, error) {
 	}
 	// a mixture of experts with fewer places than experts: the core experts and this
 	// application's most used in them first (experts.Placement, as the Mac's wired experts)
-	m.PlaceExperts(c.Experts)
+	if err := m.PlaceExperts(c.Experts); err != nil {
+		return fail(err)
+	}
 	// the experts a mixture of experts runs, counted as the host's experts count them
 	// (experts.Placement.Usage, HWNPU_MOE_DEBUG=usage=FILE): the same files and tools
 	if L, E := m.ExpertsShape(); L > 0 {
